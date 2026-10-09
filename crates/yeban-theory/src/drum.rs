@@ -11,11 +11,26 @@
 //! ## 本模块**不新增任何登记数据**（这是它与"逐流派鼓点型"的分界）
 //!
 //! 全部击点都从 [`MetricGrid`] 既有的 `hits`（`tick` / `bar` / `cell` /
-//! `weight`）与**调用方传入**的参数（分组、反拍位置、摇摆千分比）导出。
+//! `weight`）与**调用方传入**的参数（分组、反拍位置、摇摆千分比、[`DrumStyle`]）导出。
 //! 本模块没有鼓件权重表、没有流派鼓点表、没有"每小节打几下"的常量表
 //! —— 那需要逐流派登记数据，本 crate 无权发明（理由与 `onsets_per_bar`
-//! 同源，见 [`crate::rhythm`] 的模块文档）。因此 `pending 3` 剩下的
-//! "逐流派的鼓点型数据"**仍未**登记；本模块只把已有网格变成鼓点。
+//! 同源，见 [`crate::rhythm`] 的模块文档）。
+//!
+//! ## 逐流派的底鼓落点 [`DrumStyle`]（`pending 3` 的**一部分**登记了）
+//!
+//! [`DrumStyle`] 是**调用方声明的选择**，不是本模块推导出来的知识：调用方说
+//! "这条流派用四踩底鼓"，本模块才把底鼓铺到每一拍。因此本模块仍然**没有**
+//! 流派表，登记发生在 [`crate::genre::GENRES`] 的 `drum_style` 字段
+//! （[`crate::genre::GenreRule::drum_pattern`] 把它传进来）：
+//!
+//! - 缺省 [`DrumStyle::Metric`] 逐位等于本模块的旧口径，因此**未登记**的流派
+//!   行为不变（判据 `metric_style_is_bit_identical_to_the_legacy_entry_points`）；
+//! - [`DrumStyle::FourOnTheFloor`] 只把底鼓从"组起点"扩到"每一拍的起点"。
+//!
+//! **仍未登记**（如实登记，不假装完成）：`pending 3` 要的"每条流派打什么样的
+//! **鼓点序列**"只登记了**底鼓落点**这一维；军鼓位置仍走 [`Backbeat`] 参数、
+//! 踩镲仍铺满网格、onset 数仍由调用方给出。因此 `pending 3` 的数据那一半是
+//! **部分**关闭，不是全部关闭。
 //!
 //! ## 语义（全部是整数运算）
 //!
@@ -42,10 +57,13 @@
 //!
 //!    | 鼓件 | 条件 |
 //!    | :--- | :--- |
-//!    | [`DrumVoice::Kick`] | 该 onset 是**组起点**（拍的起点，且该拍是强位拍／组的第 0 拍） |
+//!    | [`DrumVoice::Kick`] | 该 onset 是拍的起点，且 [`DrumStyle`] **把它判成底鼓位**（缺省 = 组起点，见下一节） |
 //!    | [`DrumVoice::Snare`] | 该 onset 是拍的起点，且其**拍序号**能被 `backbeat` 整除 |
 //!    | [`DrumVoice::HiHat`] | 网格里**每一个** onset |
 //!    | [`DrumVoice::Ride`] | 组起点上**同时**是强位（`weight >= STRONG_BEAT_WEIGHT`）时，叠加在底鼓之上 |
+//!
+//!    [`DrumStyle`] **只改底鼓**：军鼓、踩镲、吊镲的判定与重量读数都不因它改变
+//!    （判据 `a_drum_style_only_moves_the_kick`）。
 //!
 //!    "拍的起点"这一条**不能省**：只用"重量 ≥ 强位"会把强拍内部的每一格都算成
 //!    组起点（4/4 因此得到 8 个军鼓而不是 2 个 —— 这条退化由判据
@@ -158,6 +176,58 @@ impl DrumVoice {
             Self::Snare => 38,
             Self::HiHat => 42,
             Self::Ride => 51,
+        }
+    }
+}
+
+/// 底鼓落点口径：**调用方声明的选择**，由 [`crate::genre::GenreRule`] 的
+/// `drum_style` 字段登记进来。
+///
+/// 本枚举**只改底鼓**（军鼓、踩镲、吊镲的判定与重量读数都不变，判据
+/// `a_drum_style_only_moves_the_kick`）。两个变体的差别只有一处：
+/// "[`strikes_kick`](DrumStyle::strikes_kick) 拿到的组起点读数是真是假时算不算底鼓"。
+///
+/// 选择哪一个不是本模块能推导的知识：它是**流派的通行配器口径**，
+/// 因此登记数据在 [`crate::genre::GENRES`]，缺省值 [`DrumStyle::Metric`]
+/// 让未登记的流派行为与旧口径**逐位相同**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DrumStyle {
+    /// 度量口径（缺省，也是全部未登记流派的取值）：底鼓落在**组起点**上。
+    ///
+    /// "组起点"由调用方的 [`BeatGrouping`] 或拍号自身的度量层级判定，
+    /// 与本模块的旧口径逐位相同。
+    Metric,
+    /// 四踩底鼓：底鼓落在**每一个拍的起点**上（不要求该拍是组起点）。
+    ///
+    /// 这是 disco / house / techno / trance 一类舞曲的通行配器口径
+    /// （每拍一击的底鼓是这些流派不加修饰的默认）。它只**增加**底鼓击点：
+    /// 因为组起点恒是拍的起点，四踩的底鼓集合是度量口径底鼓集合的超集
+    /// （判据 `four_on_the_floor_is_a_superset_of_the_metric_kick`）。
+    FourOnTheFloor,
+}
+
+impl DrumStyle {
+    /// 全部口径，按声明顺序排列。
+    pub const ALL: [Self; 2] = [Self::Metric, Self::FourOnTheFloor];
+
+    /// 稳定的英文名（ASCII 小写）；用于审计直方图与错误文本，不参与判定。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Metric => "metric",
+            Self::FourOnTheFloor => "four-on-the-floor",
+        }
+    }
+
+    /// 这一格（已知落在**拍的起点**上）是否落底鼓。
+    ///
+    /// `is_group_start` 是这一格在调用方口径下"是不是组起点"的读数；
+    /// [`DrumStyle::Metric`] 直接采信它，[`DrumStyle::FourOnTheFloor`] 忽略它。
+    #[must_use]
+    pub const fn strikes_kick(self, is_group_start: bool) -> bool {
+        match self {
+            Self::Metric => is_group_start,
+            Self::FourOnTheFloor => true,
         }
     }
 }
@@ -353,7 +423,46 @@ pub fn drum_pattern(
     grouping: Option<BeatGrouping<'_>>,
     backbeat: Backbeat,
 ) -> Result<Option<DrumPattern>, TheoryError> {
-    swung_drum_pattern(meter, bars, onsets_per_bar, None, grouping, backbeat)
+    styled_drum_pattern(
+        meter,
+        bars,
+        onsets_per_bar,
+        grouping,
+        backbeat,
+        DrumStyle::Metric,
+    )
+}
+
+/// 平直鼓组型，底鼓落点由调用方声明的 [`DrumStyle`] 给出。
+///
+/// 这是 [`swung_styled_drum_pattern`] 的 `permille == None` 写法；
+/// `style == DrumStyle::Metric` 时与 [`drum_pattern`] **逐位相同**。
+///
+/// ```
+/// use yeban_theory::drum::{DrumStyle, DrumVoice, styled_drum_pattern};
+/// use yeban_theory::progression::Meter;
+///
+/// // 4/4、一个小节、16 个 onset、反拍在第 2 拍、四踩底鼓。
+/// let pattern = styled_drum_pattern(Meter::COMMON, 1, 16, None, 2, DrumStyle::FourOnTheFloor)
+///     .unwrap()
+///     .unwrap();
+/// assert_eq!(pattern.hit_count(DrumVoice::Kick), 4);   // 每一拍一击
+/// assert_eq!(pattern.hit_count(DrumVoice::Snare), 2);  // 军鼓不变
+/// assert_eq!(pattern.hit_count(DrumVoice::HiHat), 16); // 踩镲不变
+/// ```
+///
+/// # Errors
+///
+/// 与 [`drum_pattern`] 逐条相同。
+pub fn styled_drum_pattern(
+    meter: Meter,
+    bars: u32,
+    onsets_per_bar: u32,
+    grouping: Option<BeatGrouping<'_>>,
+    backbeat: Backbeat,
+    style: DrumStyle,
+) -> Result<Option<DrumPattern>, TheoryError> {
+    swung_styled_drum_pattern(meter, bars, onsets_per_bar, None, grouping, backbeat, style)
 }
 
 /// 摇摆鼓组型：先按 `grouping` 造网格（缺省走拍号口径），再把 onset 分派到鼓件。
@@ -374,24 +483,68 @@ pub fn swung_drum_pattern(
     grouping: Option<BeatGrouping<'_>>,
     backbeat: Backbeat,
 ) -> Result<Option<DrumPattern>, TheoryError> {
+    swung_styled_drum_pattern(
+        meter,
+        bars,
+        onsets_per_bar,
+        permille,
+        grouping,
+        backbeat,
+        DrumStyle::Metric,
+    )
+}
+
+/// 摇摆鼓组型，底鼓落点由调用方声明的 [`DrumStyle`] 给出。
+///
+/// 与 [`swung_drum_pattern`] 的唯一差别是 `style`：它只改**底鼓**的落点判定
+/// （见 [`DrumStyle::strikes_kick`]），网格、重量、军鼓、踩镲、吊镲全部不变。
+/// `style == DrumStyle::Metric` 时与 [`swung_drum_pattern`] **逐位相同**。
+///
+/// 这是本模块的**唯一**公开实现：另外三个入口都转发到这里，因此
+/// "网格怎么造 / 怎么分派"在本模块只有一份（口径不可能漂移）。
+///
+/// # Errors
+///
+/// 与 [`swung_drum_pattern`] 逐条相同。
+pub fn swung_styled_drum_pattern(
+    meter: Meter,
+    bars: u32,
+    onsets_per_bar: u32,
+    permille: Option<u16>,
+    grouping: Option<BeatGrouping<'_>>,
+    backbeat: Backbeat,
+    style: DrumStyle,
+) -> Result<Option<DrumPattern>, TheoryError> {
     match grouping {
-        None => place_voices(
+        None => {
+            let cells_per_beat = cells_per_beat_of(&meter);
+            place_voices(
+                meter,
+                bars,
+                onsets_per_bar,
+                permille,
+                backbeat,
+                style,
+                |cell| GridReading {
+                    weight: metric_weight_in(meter, cell),
+                    // 缺省分组 = 拍号自身的度量层级（见 [`is_meter_group_start`]）。
+                    group_start: is_meter_group_start(meter, cell, cells_per_beat),
+                },
+            )
+        }
+        Some(grouping) => place_grouped_voices(
             meter,
             bars,
             onsets_per_bar,
             permille,
             backbeat,
-            |cell| metric_weight_in(meter, cell),
-            // 缺省分组 = 拍号自身的度量层级（见 [`is_meter_group_start`]）。
-            |cell| is_meter_group_start(meter, cell, cells_per_beat_of(&meter)),
+            style,
+            grouping,
         ),
-        Some(grouping) => {
-            place_grouped_voices(meter, bars, onsets_per_bar, permille, backbeat, grouping)
-        }
     }
 }
 
-/// [`swung_drum_pattern`] 的**显式分组**分支。
+/// [`swung_styled_drum_pattern`] 的**显式分组**分支。
 ///
 /// 与缺省分支的唯一差别是"重量/组起点"这一对读数：
 /// [`crate::rhythm::metric_weight_grouped`] 把**组起点**判成
@@ -409,6 +562,7 @@ fn place_grouped_voices(
     onsets_per_bar: u32,
     permille: Option<u16>,
     backbeat: Backbeat,
+    style: DrumStyle,
     grouping: BeatGrouping<'_>,
 ) -> Result<Option<DrumPattern>, TheoryError> {
     let cells_per_beat = cells_per_beat_of(&meter);
@@ -423,18 +577,35 @@ fn place_grouped_voices(
         onsets_per_bar,
         permille,
         backbeat,
-        rule,
-        |cell| {
-            if cells_per_beat == 0 {
-                return false;
-            }
-            let offset = u64::from(cell) % cells_per_beat;
-            let beat = u64::from(cell) / cells_per_beat;
-            offset == 0
-                && beat < u64::from(felt_beats_per_bar(meter))
-                && grouping.is_group_start(beat as u8)
+        style,
+        |cell| GridReading {
+            weight: rule(cell),
+            group_start: {
+                if cells_per_beat == 0 {
+                    false
+                } else {
+                    let offset = u64::from(cell) % cells_per_beat;
+                    let beat = u64::from(cell) / cells_per_beat;
+                    offset == 0
+                        && beat < u64::from(felt_beats_per_bar(meter))
+                        && grouping.is_group_start(beat as u8)
+                }
+            },
         },
     )
+}
+
+/// 一格的两个读数：度量重量（[`crate::rhythm::build_weighted_grid`] 选点用）
+/// 与"这一格是不是组起点"（鼓件分派用）。
+///
+/// 两个读数合成**一个**返回值，是为了让 [`place_voices`] 的参数个数留在
+/// clippy 的 7 个以内 —— 不新增 `#[allow]`。
+#[derive(Debug, Clone, Copy)]
+struct GridReading {
+    /// 这一格的度量重量。
+    weight: u8,
+    /// 这一格是不是组起点（口径由调用方给出）。
+    group_start: bool,
 }
 
 /// 每拍的格点数：`cells_per_bar / felt_beats_per_bar`（单位是格）。
@@ -460,36 +631,38 @@ fn cells_per_beat_of(meter: &Meter) -> u64 {
 /// `four_four_full_grid_gives_the_textbook_backbeat`：
 /// 3/4 的格点 1、2、3 都属于第 0 拍，只看"拍序号能被反拍整除"会让军鼓
 /// 在强拍内部每一格都响（4/4 因此得到 8 个军鼓而不是 2 个）。
+///
+/// `kick` 与 `ride` 由调用方**算好**再传进来（调用方同时知道 [`DrumStyle`]
+/// 与"这一格是不是组起点"）：本函数不读 [`DrumStyle`]，因此"鼓件落在哪"
+/// 的判定仍然只有这一处。
 fn voices_at(
     backbeat: Backbeat,
     beat: u8,
     offset_in_beat: u64,
-    is_group_start: bool,
-    accent: bool,
+    kick: bool,
+    ride: bool,
 ) -> [bool; 4] {
     let on_beat_start = offset_in_beat == 0;
     let backbeat_hit = on_beat_start && backbeat != 0 && beat.is_multiple_of(backbeat);
-    [
-        on_beat_start && is_group_start,
-        backbeat_hit,
-        true,
-        on_beat_start && is_group_start && accent,
-    ]
+    [kick, backbeat_hit, true, ride]
 }
 
-/// 把 `rule` 读出的重量灌进网格，再把 onset 分派到鼓件。
+/// 把 `reading` 读出的重量灌进网格，再把 onset 分派到鼓件。
 ///
 /// 这是公开入口的**唯一**实现：网格由
 /// [`crate::rhythm::build_weighted_grid`] 造 —— 分派与网格共用**同一份**
 /// 选点读数，因此不可能对"重心在哪"有两种读法。
+///
+/// `style` **只**参与底鼓判定（`style.strikes_kick(group_start)`）；
+/// 吊镲仍然只读 `group_start`，因此 [`DrumStyle`] 改变不了它。
 fn place_voices(
     meter: Meter,
     bars: u32,
     onsets_per_bar: u32,
     permille: Option<u16>,
     backbeat: Backbeat,
-    rule: impl Fn(u32) -> u8,
-    group_start: impl Fn(u32) -> bool,
+    style: DrumStyle,
+    reading: impl Fn(u32) -> GridReading,
 ) -> Result<Option<DrumPattern>, TheoryError> {
     let beats = felt_beats_per_bar(meter);
     if backbeat == 0 || backbeat > beats {
@@ -505,13 +678,16 @@ fn place_voices(
         return Ok(None);
     }
     let weighted: WeightedGrid =
-        crate::rhythm::build_weighted_grid(meter, bars, onsets_per_bar, permille, rule)?;
+        crate::rhythm::build_weighted_grid(meter, bars, onsets_per_bar, permille, |cell| {
+            reading(cell).weight
+        })?;
     let hits = dispatch(
         weighted.grid(),
         weighted.selected(),
         backbeat,
         cells_per_beat,
-        group_start,
+        style,
+        &reading,
     );
     debug_assert!(
         hits.iter().all(|hit| hit.beat < beats),
@@ -523,16 +699,21 @@ fn place_voices(
     }))
 }
 
-/// 分派本身：`is_group_start(cell)` 给出"这一格是不是组的起点"。
+/// 分派本身：`reading(cell).group_start` 给出"这一格是不是组的起点"。
 ///
 /// `selected` 与 `grid.hits()` 逐位相同（由
 /// [`crate::rhythm::build_weighted_grid`] 同时产出），因此这里不倒推 tick。
+///
+/// [`DrumStyle`] 在这里落地：底鼓 =
+/// `offset_in_beat == 0 && style.strikes_kick(组起点)`；
+/// 吊镲 = `offset_in_beat == 0 && 组起点 && accent`（**不**读 `style`）。
 fn dispatch(
     grid: &MetricGrid,
     selected: &[GridHit],
     backbeat: Backbeat,
     cells_per_beat: u64,
-    is_group_start: impl Fn(u32) -> bool,
+    style: DrumStyle,
+    reading: impl Fn(u32) -> GridReading,
 ) -> Vec<DrumHit> {
     debug_assert_eq!(grid.hits(), selected);
     let mut hits = Vec::with_capacity(grid.len());
@@ -540,12 +721,14 @@ fn dispatch(
         let offset_in_beat = u64::from(hit.cell) % cells_per_beat;
         let beat = (u64::from(hit.cell) / cells_per_beat) as u8;
         let accent = hit.weight >= STRONG_BEAT_WEIGHT;
+        let on_beat_start = offset_in_beat == 0;
+        let group_start = reading(hit.cell).group_start;
         let flags = voices_at(
             backbeat,
             beat,
             offset_in_beat,
-            is_group_start(hit.cell),
-            accent,
+            on_beat_start && style.strikes_kick(group_start),
+            on_beat_start && group_start && accent,
         );
         for voice in DrumVoice::ALL {
             if flags[voice.ordinal()] {
@@ -950,6 +1133,260 @@ mod tests {
             assert_eq!(pattern.meter(), meter);
             assert_eq!(pattern.bars(), 2);
             assert_eq!(pattern.ticks_per_bar(), meter.ticks_per_bar());
+        }
+    }
+
+    #[test]
+    fn metric_style_is_bit_identical_to_the_legacy_entry_points() {
+        // 数什么：对每个 (拍号, onset 数, 摇摆比例, 反拍位置) 组合，逐位比较
+        // `DrumStyle::Metric` 的新入口与旧入口（`drum_pattern` /
+        // `swung_drum_pattern`）产出的击点序列与网格 onset 序列。
+        // 单位 = "比较过的组合个数"；任一组合不同即失败。
+        let mut compared = 0usize;
+        for meter in [Meter::MARCH, Meter::WALTZ, COMMON, Meter::COMPOUND_DUPLE] {
+            let beats = felt_beats_per_bar(meter);
+            let cells = cells_per_bar(meter).unwrap() as u32;
+            for onsets in 1..=cells {
+                for permille in [None, Some(500u16), Some(667)] {
+                    for backbeat in 1..=beats {
+                        let legacy = swung_drum_pattern(meter, 2, onsets, permille, None, backbeat)
+                            .unwrap()
+                            .unwrap();
+                        let styled = swung_styled_drum_pattern(
+                            meter,
+                            2,
+                            onsets,
+                            permille,
+                            None,
+                            backbeat,
+                            DrumStyle::Metric,
+                        )
+                        .unwrap()
+                        .unwrap();
+                        assert!(
+                            legacy.hits() == styled.hits(),
+                            "{meter:?} onsets {onsets} permille {permille:?} backbeat {backbeat}"
+                        );
+                        assert!(legacy.grid().hits() == styled.grid().hits(), "{meter:?}");
+                        assert_eq!(
+                            styled.hits().len(),
+                            legacy.hits().len(),
+                            "{meter:?} onsets {onsets}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        // 实测读数：4 个拍号 × 各自的格位数(8 + 12 + 16 + 12) × 3 个摇摆比例
+        // × 各自的拍数(2 + 3 + 4 + 2) = 3 × (8×2 + 12×3 + 16×4 + 12×2) = **420**
+        // 个组合全部逐位相同。
+        assert_eq!(compared, 420);
+        // 平直入口也必须与旧入口逐位相同。
+        let legacy = drum_pattern(COMMON, 3, 8, None, 2).unwrap().unwrap();
+        let styled = styled_drum_pattern(COMMON, 3, 8, None, 2, DrumStyle::Metric)
+            .unwrap()
+            .unwrap();
+        assert!(legacy.hits() == styled.hits());
+        assert!(legacy.grid().hits() == styled.grid().hits());
+    }
+
+    #[test]
+    fn four_on_the_floor_puts_the_kick_on_every_beat() {
+        // 4/4、16 格全网格、反拍在第 2 拍：四踩底鼓 = 4 个底鼓（每拍一击），
+        // 度量口径 = 2 个（组起点）。军鼓 / 踩镲 / 吊镲一个都不变。
+        let cells = cells_per_bar(COMMON).unwrap() as u32;
+        let metric = styled_drum_pattern(COMMON, 1, cells, None, 2, DrumStyle::Metric)
+            .unwrap()
+            .unwrap();
+        let four = styled_drum_pattern(COMMON, 1, cells, None, 2, DrumStyle::FourOnTheFloor)
+            .unwrap()
+            .unwrap();
+        assert_eq!(metric.hit_count(DrumVoice::Kick), 2);
+        assert_eq!(four.hit_count(DrumVoice::Kick), 4);
+        for beat in 0..felt_beats_per_bar(COMMON) as u32 {
+            assert!(has(&four, DrumVoice::Kick, 0, beat * 4), "kick beat {beat}");
+        }
+        for voice in [DrumVoice::Snare, DrumVoice::HiHat, DrumVoice::Ride] {
+            assert_eq!(
+                metric.hit_count(voice),
+                four.hit_count(voice),
+                "{voice:?} must not move"
+            );
+        }
+        // 底鼓的 tick 集合只能变大：{0, 8×240} ⊂ {0, 4×240, 8×240, 12×240}。
+        let kick_ticks = |p: &DrumPattern| -> Vec<u64> {
+            p.hits()
+                .iter()
+                .filter(|hit| hit.voice == DrumVoice::Kick)
+                .map(|hit| hit.tick)
+                .collect()
+        };
+        assert_eq!(
+            kick_ticks(&metric),
+            vec![0, 8 * GRID_CELL_TICKS],
+            "metric kick"
+        );
+        assert_eq!(
+            kick_ticks(&four),
+            vec![
+                0,
+                4 * GRID_CELL_TICKS,
+                8 * GRID_CELL_TICKS,
+                12 * GRID_CELL_TICKS
+            ],
+            "four-on-the-floor kick"
+        );
+    }
+
+    #[test]
+    fn a_drum_style_only_moves_the_kick() {
+        // 数什么：对每个 (拍号, onset 数, 反拍位置) 组合，比较两种口径下
+        // "非底鼓击点"的 `(voice, tick)` 序列。单位 = 比较过的组合个数。
+        let mut compared = 0usize;
+        for meter in [Meter::MARCH, Meter::WALTZ, COMMON, Meter::COMPOUND_DUPLE] {
+            let beats = felt_beats_per_bar(meter);
+            let cells = cells_per_bar(meter).unwrap() as u32;
+            for onsets in [1u32, 2, 4, 8, cells] {
+                for backbeat in 1..=beats {
+                    let metric =
+                        styled_drum_pattern(meter, 1, onsets, None, backbeat, DrumStyle::Metric)
+                            .unwrap()
+                            .unwrap();
+                    let four = styled_drum_pattern(
+                        meter,
+                        1,
+                        onsets,
+                        None,
+                        backbeat,
+                        DrumStyle::FourOnTheFloor,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let others = |p: &DrumPattern| -> Vec<(DrumVoice, u64)> {
+                        p.hits()
+                            .iter()
+                            .filter(|hit| hit.voice != DrumVoice::Kick)
+                            .map(|hit| (hit.voice, hit.tick))
+                            .collect()
+                    };
+                    assert!(
+                        others(&metric) == others(&four),
+                        "{meter:?} onsets {onsets}"
+                    );
+                    // 底鼓只增不减（组起点恒是拍的起点）。
+                    for hit in metric
+                        .hits()
+                        .iter()
+                        .filter(|hit| hit.voice == DrumVoice::Kick)
+                    {
+                        assert!(
+                            four.hits()
+                                .iter()
+                                .any(|other| other.voice == DrumVoice::Kick
+                                    && other.tick == hit.tick),
+                            "{meter:?} onsets {onsets}: kick at {} vanished",
+                            hit.tick
+                        );
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        // 4 个拍号 × 5 个 onset 数 × 各自的拍数(2 + 3 + 4 + 2) = 5 × 11 = 55。
+        assert_eq!(compared, 55);
+    }
+
+    #[test]
+    fn four_on_the_floor_is_a_superset_of_the_metric_kick() {
+        // 显式分组也要成立：5/4 = [3, 2] 的组起点不是 4/4 式的强位拍。
+        let five_four = Meter::new(5, 4).unwrap();
+        let cases: [(Meter, &[u8]); 4] = [
+            (Meter::MARCH, &[1, 1]),
+            (Meter::WALTZ, &[1, 1, 1]),
+            (COMMON, &[2, 2]),
+            (five_four, &[3, 2]),
+        ];
+        let mut compared = 0usize;
+        for (meter, groups) in cases {
+            let grouping = BeatGrouping::new(meter, groups).unwrap();
+            let cells = cells_per_bar(meter).unwrap() as u32;
+            for onsets in [1u32, 2, 4, 8, cells] {
+                for backbeat in 1..=felt_beats_per_bar(meter) {
+                    let metric = swung_styled_drum_pattern(
+                        meter,
+                        2,
+                        onsets,
+                        None,
+                        Some(grouping),
+                        backbeat,
+                        DrumStyle::Metric,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let four = swung_styled_drum_pattern(
+                        meter,
+                        2,
+                        onsets,
+                        None,
+                        Some(grouping),
+                        backbeat,
+                        DrumStyle::FourOnTheFloor,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    for hit in metric
+                        .hits()
+                        .iter()
+                        .filter(|hit| hit.voice == DrumVoice::Kick)
+                    {
+                        assert!(
+                            four.hits()
+                                .iter()
+                                .any(|other| other.voice == DrumVoice::Kick
+                                    && other.tick == hit.tick),
+                            "{meter:?} onsets {onsets} backbeat {backbeat}: \
+                             the metric kick at {} vanished under four-on-the-floor",
+                            hit.tick
+                        );
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        // 4 个 (拍号, 分组) 组合 × 5 个 onset 数 × 各自的拍数(2 + 3 + 4 + 5) = 5 × 14。
+        assert_eq!(compared, 70);
+    }
+
+    #[test]
+    fn a_drum_style_never_changes_which_inputs_are_rejected() {
+        // 口径只改底鼓落点，不改参数校验：两种口径下四条拒绝路径逐条相同。
+        for style in DrumStyle::ALL {
+            assert!(
+                styled_drum_pattern(COMMON, 1, 16, None, 0, style)
+                    .unwrap()
+                    .is_none(),
+                "{style:?}: backbeat 0 must be rejected, not clamped"
+            );
+            assert!(
+                styled_drum_pattern(COMMON, 1, 16, None, 5, style)
+                    .unwrap()
+                    .is_none(),
+                "{style:?}: backbeat > beats must be rejected"
+            );
+            assert_eq!(
+                styled_drum_pattern(COMMON, 0, 16, None, 2, style).unwrap_err(),
+                TheoryError::ZeroBars,
+                "{style:?}"
+            );
+            assert_eq!(
+                styled_drum_pattern(Meter::MARCH, 1, 9, None, 2, style).unwrap_err(),
+                TheoryError::ProgressionTooDense {
+                    degrees: 9,
+                    slots: 8
+                },
+                "{style:?}"
+            );
         }
     }
 }

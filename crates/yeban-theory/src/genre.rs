@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use crate::chord::Chord;
+use crate::drum::DrumStyle;
 use crate::error::TheoryError;
 use crate::progression::{ChordSpan, Meter, Progression};
 use crate::scale::{Scale, ScaleKind};
@@ -92,6 +93,21 @@ pub struct GenreRule {
     pub swing: Option<f32>,
     /// 音符密度提示：每小节的典型音符数区间，供编曲骨架选密度用。
     pub note_density_hint: (u8, u8),
+    /// 底鼓落点口径（[`crate::drum::DrumStyle`]）：`pending 3` 里
+    /// "逐流派的鼓点型数据"**已登记的那一部分**。
+    ///
+    /// 登记口径（只有满足它才登记非缺省值，否则一律
+    /// [`crate::drum::DrumStyle::Metric`]）：
+    ///
+    /// - [`crate::drum::DrumStyle::FourOnTheFloor`]：**每拍一击的底鼓**是该流派
+    ///   不加修饰的通行默认（disco / house / techno / trance 一类舞曲）；
+    /// - [`crate::drum::DrumStyle::Metric`]：其余全部流派**不替它们猜**一个
+    ///   口径，行为与登记之前**逐位相同**（这也是缺省值的定义）。
+    ///
+    /// ⚠ 本字段只登记**底鼓落点**这一维。军鼓位置仍由调用方给的
+    /// `backbeat`（[`crate::drum::Backbeat`]）决定，踩镲仍铺满网格，
+    /// onset 数仍由调用方给出：`pending 3` 的数据那一半因此是**部分**关闭。
+    pub drum_style: crate::drum::DrumStyle,
     /// 来源标记（见本模块顶部的 `SOURCE_*` 常量）。
     pub source: &'static str,
 }
@@ -109,6 +125,7 @@ impl PartialEq for GenreRule {
             && self.typical_scales == other.typical_scales
             && self.swing == other.swing
             && self.note_density_hint == other.note_density_hint
+            && self.drum_style == other.drum_style
             && self.source == other.source
     }
 }
@@ -447,12 +464,15 @@ impl GenreRule {
         )
     }
 
-    /// 用该流派**登记的**拍号与摇摆比例生成鼓组型（每小节 `onsets_per_bar` 个 onset）。
+    /// 用该流派**登记的**拍号、摇摆比例与底鼓口径生成鼓组型
+    /// （每小节 `onsets_per_bar` 个 onset）。
     ///
-    /// 这是 `pending 3` 所说"具体的鼓点"那一半的**机制**侧：网格来自本流派的
-    /// 拍号与摇摆比例（见 [`GenreRule::rhythm_grid`]），分派规则见 [`crate::drum`]。
-    /// 它**不新增**登记数据：拍分组走**拍号自身**的度量层级，反拍位置走
-    /// [`crate::drum::default_backbeat`]，两者都只读拍号。
+    /// 这是 `pending 3` 所说"具体的鼓点"那一半的**机制**侧加**已登记的数据**：
+    /// 网格来自本流派的拍号与摇摆比例（见 [`GenreRule::rhythm_grid`]），底鼓落点
+    /// 来自本流派的 [`GenreRule::drum_style`]，分派规则见 [`crate::drum`]。
+    /// 拍分组仍走**拍号自身**的度量层级，反拍位置仍走
+    /// [`crate::drum::default_backbeat`]（两者都只读拍号）—— 这两维**没有**登记
+    /// 流派数据，见 [`GenreRule::drum_style`] 的登记口径。
     ///
     /// onset 数**不**读 [`GenreRule::note_density_hint`]（理由同
     /// [`GenreRule::rhythm_grid`]）。返回 `Ok(None)` 的两种情形：
@@ -471,13 +491,14 @@ impl GenreRule {
         bars: u32,
         onsets_per_bar: u32,
     ) -> Result<Option<crate::drum::DrumPattern>, TheoryError> {
-        crate::drum::swung_drum_pattern(
+        crate::drum::swung_styled_drum_pattern(
             self.meter_value(),
             bars,
             onsets_per_bar,
             self.swing_permille()?,
             None,
             crate::drum::default_backbeat(self.meter_value()),
+            self.drum_style,
         )
     }
 }
@@ -502,6 +523,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "phrygian", "mixolydian", "ionian"],
         swing: None,
         note_density_hint: (4, 12),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -514,6 +536,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "ionian", "aeolian"],
         swing: None,
         note_density_hint: (16, 40),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -526,6 +549,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (12, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -538,6 +562,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "dorian"],
         swing: None,
         note_density_hint: (24, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -550,6 +575,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -562,6 +588,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -574,6 +601,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (12, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -586,6 +614,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (12, 36),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -598,6 +627,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (8, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -610,6 +640,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (12, 36),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -622,6 +653,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "melodic_minor"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -634,6 +666,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "chromatic"],
         swing: None,
         note_density_hint: (32, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -646,6 +679,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["whole_tone", "pentatonic_major", "lydian", "dorian"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -658,6 +692,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["whole_tone", "pentatonic_major", "lydian"],
         swing: None,
         note_density_hint: (20, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -670,6 +705,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "dorian", "aeolian"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -682,6 +718,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "phrygian"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -694,6 +731,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "pentatonic_major", "dorian"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -706,6 +744,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "ionian"],
         swing: None,
         note_density_hint: (8, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -718,6 +757,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major"],
         swing: None,
         note_density_hint: (8, 28),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -730,6 +770,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (8, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -742,6 +783,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major"],
         swing: None,
         note_density_hint: (4, 16),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -754,6 +796,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -766,6 +809,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major"],
         swing: Some(56.0),
         note_density_hint: (12, 36),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -778,6 +822,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -790,6 +835,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -802,6 +848,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -814,6 +861,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "major"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -826,6 +874,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "chromatic"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -838,6 +887,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (16, 40),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     // ------------------------------------------------------------------
@@ -855,6 +905,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "mixolydian"],
         swing: Some(66.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -867,6 +918,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "blues", "mixolydian"],
         swing: Some(66.0),
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -879,6 +931,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "mixolydian", "blues"],
         swing: Some(58.0),
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -891,6 +944,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "dorian", "mixolydian", "major"],
         swing: Some(64.0),
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -903,6 +957,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "lydian"],
         swing: Some(60.0),
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -915,6 +970,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "lydian", "aeolian"],
         swing: Some(60.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -927,6 +983,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["chromatic", "whole_tone", "locrian", "blues"],
         swing: None,
         note_density_hint: (32, 160),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -939,6 +996,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "natural_minor"],
         swing: Some(54.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -951,6 +1009,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "blues", "mixolydian"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -963,6 +1022,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian"],
         swing: Some(54.0),
         note_density_hint: (8, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -975,6 +1035,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "melodic_minor"],
         swing: Some(62.0),
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -987,6 +1048,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["harmonic_minor", "dorian", "major", "blues"],
         swing: Some(66.0),
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -999,6 +1061,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "chromatic"],
         swing: None,
         note_density_hint: (24, 80),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1011,6 +1074,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "blues", "chromatic"],
         swing: Some(62.0),
         note_density_hint: (32, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1023,6 +1087,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "major"],
         swing: Some(62.0),
         note_density_hint: (32, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1035,6 +1100,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "pentatonic_minor", "mixolydian"],
         swing: Some(64.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -1047,6 +1113,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "pentatonic_minor"],
         swing: Some(58.0),
         note_density_hint: (4, 16),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -1059,6 +1126,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "mixolydian", "pentatonic_minor"],
         swing: Some(62.0),
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1071,6 +1139,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "major", "mixolydian"],
         swing: Some(66.0),
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1083,6 +1152,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "pentatonic_minor", "mixolydian"],
         swing: Some(56.0),
         note_density_hint: (12, 40),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1095,6 +1165,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major", "blues"],
         swing: Some(58.0),
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -1107,6 +1178,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major", "blues"],
         swing: None,
         note_density_hint: (6, 20),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -1119,6 +1191,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["pentatonic_minor", "blues", "major"],
         swing: None,
         note_density_hint: (4, 16),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -1131,6 +1204,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["blues", "pentatonic_minor"],
         swing: None,
         note_density_hint: (2, 10),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     // ------------------------------------------------------------------
@@ -1147,6 +1221,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_minor", "blues"],
         swing: Some(56.0),
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1159,6 +1234,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1171,6 +1247,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "blues", "pentatonic_minor"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1183,6 +1260,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "blues"],
         swing: None,
         note_density_hint: (24, 80),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1195,6 +1273,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "major"],
         swing: None,
         note_density_hint: (24, 64),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1207,6 +1286,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "blues"],
         swing: None,
         note_density_hint: (24, 64),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1219,6 +1299,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "major", "dorian"],
         swing: Some(54.0),
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1231,6 +1312,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "major", "melodic_minor", "blues"],
         swing: Some(56.0),
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1243,6 +1325,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "natural_minor"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1255,6 +1338,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major"],
         swing: None,
         note_density_hint: (8, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     // ------------------------------------------------------------------
@@ -1271,6 +1355,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "blues", "pentatonic_major"],
         swing: Some(56.0),
         note_density_hint: (12, 40),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1283,6 +1368,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "blues", "pentatonic_major"],
         swing: Some(58.0),
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1295,6 +1381,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major", "dorian"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1307,6 +1394,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_minor", "blues"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1319,6 +1407,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "pentatonic_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1331,6 +1420,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "mixolydian", "whole_tone"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1343,6 +1433,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["pentatonic_minor", "natural_minor", "blues"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1355,6 +1446,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "pentatonic_minor"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1367,6 +1459,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "locrian"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1379,6 +1472,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "locrian", "harmonic_minor"],
         swing: None,
         note_density_hint: (48, 160),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1391,6 +1485,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "locrian"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1403,6 +1498,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "blues"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1415,6 +1511,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "major"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1427,6 +1524,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "whole_tone", "locrian"],
         swing: None,
         note_density_hint: (32, 160),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1439,6 +1537,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "blues"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1451,6 +1550,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "blues"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1463,6 +1563,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_minor", "blues"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1475,6 +1576,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1487,6 +1589,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "phrygian"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1499,6 +1602,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "dorian"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1511,6 +1615,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "lydian", "pentatonic_major"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1523,6 +1628,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["pentatonic_minor", "natural_minor", "blues"],
         swing: None,
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1535,6 +1641,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "major", "dorian"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1547,6 +1654,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "major"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1559,6 +1667,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "lydian", "whole_tone"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1571,6 +1680,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "lydian", "natural_minor", "pentatonic_major"],
         swing: None,
         note_density_hint: (16, 80),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1583,6 +1693,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "pentatonic_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     // ------------------------------------------------------------------
@@ -1599,6 +1710,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "major"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1611,6 +1723,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "natural_minor", "major"],
         swing: None,
         note_density_hint: (12, 40),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1623,6 +1736,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "dorian"],
         swing: None,
         note_density_hint: (24, 64),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1635,6 +1749,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "aeolian"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1647,6 +1762,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "major"],
         swing: Some(56.0),
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1659,6 +1775,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "chromatic"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1671,6 +1788,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "chromatic"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1683,6 +1801,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1695,6 +1814,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (48, 160),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1707,6 +1827,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (32, 96),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1719,6 +1840,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "blues"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1731,6 +1853,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "blues"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1743,6 +1866,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "blues"],
         swing: None,
         note_density_hint: (32, 160),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1755,6 +1879,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "mixolydian", "blues"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1767,6 +1892,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "mixolydian", "blues"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1779,6 +1905,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "pentatonic_minor"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1791,6 +1918,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "natural_minor", "major"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1803,6 +1931,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["lydian", "dorian", "pentatonic_major", "whole_tone"],
         swing: None,
         note_density_hint: (2, 16),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1815,6 +1944,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "phrygian", "lydian"],
         swing: None,
         note_density_hint: (1, 8),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1827,6 +1957,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "lydian", "pentatonic_major"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1839,6 +1970,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "aeolian"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1851,6 +1983,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "lydian"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1863,6 +1996,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "major", "natural_minor"],
         swing: Some(56.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1875,6 +2009,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "pentatonic_minor"],
         swing: Some(58.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1887,6 +2022,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "phrygian"],
         swing: None,
         note_density_hint: (16, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1899,6 +2035,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "phrygian"],
         swing: None,
         note_density_hint: (16, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1911,6 +2048,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "phrygian", "chromatic"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1923,6 +2061,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "pentatonic_major"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1935,6 +2074,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "lydian", "dorian"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     // ------------------------------------------------------------------
@@ -1951,6 +2091,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1963,6 +2104,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1975,6 +2117,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "dorian"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1987,6 +2130,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (6, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -1999,6 +2143,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -2011,6 +2156,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "mixolydian", "dorian", "pentatonic_major"],
         swing: None,
         note_density_hint: (6, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2023,6 +2169,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "mixolydian", "pentatonic_major"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2035,6 +2182,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major", "mixolydian"],
         swing: Some(56.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -2047,6 +2195,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major", "blues"],
         swing: None,
         note_density_hint: (32, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2059,6 +2208,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "blues", "pentatonic_major"],
         swing: Some(58.0),
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -2071,6 +2221,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "mixolydian"],
         swing: Some(56.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -2083,6 +2234,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "aeolian", "pentatonic_minor"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2095,6 +2247,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "ionian", "aeolian"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2107,6 +2260,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "aeolian"],
         swing: None,
         note_density_hint: (24, 72),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2119,6 +2273,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "ionian"],
         swing: None,
         note_density_hint: (32, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2131,6 +2286,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["mixolydian", "dorian", "pentatonic_major"],
         swing: None,
         note_density_hint: (24, 72),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2143,6 +2299,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "harmonic_minor", "dorian"],
         swing: Some(56.0),
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2155,6 +2312,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2167,6 +2325,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2179,6 +2338,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "harmonic_minor"],
         swing: Some(56.0),
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2191,6 +2351,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "phrygian"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2203,6 +2364,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: Some(58.0),
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -2215,6 +2377,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major"],
         swing: None,
         note_density_hint: (12, 40),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     // ------------------------------------------------------------------
@@ -2231,6 +2394,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "natural_minor"],
         swing: None,
         note_density_hint: (32, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2243,6 +2407,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "melodic_minor"],
         swing: Some(54.0),
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2255,6 +2420,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2267,6 +2433,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "phrygian"],
         swing: None,
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2279,6 +2446,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (16, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2291,6 +2459,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "major"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2303,6 +2472,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "natural_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2315,6 +2485,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "major", "dorian"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2327,6 +2498,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (24, 80),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2339,6 +2511,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "major"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2351,6 +2524,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "major", "pentatonic_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2363,6 +2537,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -2375,6 +2550,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (12, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2387,6 +2563,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2399,6 +2576,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "mixolydian"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2411,6 +2589,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2423,6 +2602,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "harmonic_minor", "natural_minor"],
         swing: None,
         note_density_hint: (24, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2435,6 +2615,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "major", "natural_minor"],
         swing: None,
         note_density_hint: (16, 56),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2447,6 +2628,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "natural_minor", "harmonic_minor"],
         swing: None,
         note_density_hint: (24, 80),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     // ------------------------------------------------------------------
@@ -2463,6 +2645,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "blues"],
         swing: None,
         note_density_hint: (24, 80),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2475,6 +2658,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor"],
         swing: None,
         note_density_hint: (12, 40),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2487,6 +2671,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "natural_minor", "pentatonic_minor"],
         swing: None,
         note_density_hint: (8, 32),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2499,6 +2684,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "pentatonic_minor"],
         swing: None,
         note_density_hint: (4, 24),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2511,6 +2697,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "pentatonic_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2523,6 +2710,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "natural_minor", "pentatonic_minor"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2535,6 +2723,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "pentatonic_major"],
         swing: None,
         note_density_hint: (24, 80),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2547,6 +2736,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["major", "dorian", "pentatonic_major"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2559,6 +2749,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::FourOnTheFloor,
         source: SOURCE_20C_COMMERCIAL_PRACTICE,
     },
     GenreRule {
@@ -2571,6 +2762,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "dorian", "major"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2583,6 +2775,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "natural_minor", "pentatonic_minor"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2595,6 +2788,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (12, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2607,6 +2801,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (12, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2619,6 +2814,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["phrygian", "harmonic_minor", "dorian"],
         swing: None,
         note_density_hint: (8, 48),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2631,6 +2827,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "aeolian", "phrygian"],
         swing: None,
         note_density_hint: (8, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2643,6 +2840,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["dorian", "mixolydian", "aeolian"],
         swing: None,
         note_density_hint: (16, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2655,6 +2853,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["harmonic_minor", "dorian", "major", "pentatonic_major"],
         swing: None,
         note_density_hint: (24, 96),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2667,6 +2866,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["mixolydian", "dorian", "pentatonic_major"],
         swing: None,
         note_density_hint: (32, 128),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_COMMON_PRACTICE,
     },
     GenreRule {
@@ -2679,6 +2879,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["pentatonic_major", "pentatonic_minor"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2691,6 +2892,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["pentatonic_major", "pentatonic_minor"],
         swing: None,
         note_density_hint: (8, 40),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
     GenreRule {
@@ -2703,6 +2905,7 @@ pub static GENRES: &[GenreRule] = &[
         typical_scales: &["natural_minor", "pentatonic_minor", "dorian"],
         swing: None,
         note_density_hint: (16, 64),
+        drum_style: DrumStyle::Metric,
         source: SOURCE_TRADITIONAL_THEORY,
     },
 ];
@@ -2863,6 +3066,28 @@ impl GenreLibrary {
         let mut histogram = BTreeMap::new();
         for rule in Self::all() {
             *histogram.entry(rule.source).or_insert(0usize) += 1;
+        }
+        histogram
+    }
+
+    /// 按底鼓口径筛选流派（用于审计"哪些流派登记了四踩底鼓"）。
+    #[must_use]
+    pub fn by_drum_style(style: DrumStyle) -> Vec<&'static GenreRule> {
+        Self::all()
+            .iter()
+            .filter(|rule| rule.drum_style == style)
+            .collect()
+    }
+
+    /// 全部底鼓口径及其条数（用于 notes 文档与审计）。
+    ///
+    /// 键是 [`DrumStyle::name`]，与 [`GenreLibrary::by_drum_style`] 的计数一致
+    /// （判据 `drum_style_histogram_covers_every_rule`）。
+    #[must_use]
+    pub fn drum_style_histogram() -> BTreeMap<&'static str, usize> {
+        let mut histogram = BTreeMap::new();
+        for rule in Self::all() {
+            *histogram.entry(rule.drum_style.name()).or_insert(0usize) += 1;
         }
         histogram
     }
@@ -3168,6 +3393,7 @@ mod tests {
             typical_scales: &[],
             swing: None,
             note_density_hint: (1, 1),
+            drum_style: DrumStyle::Metric,
             source: SOURCE_YEBAN_ORIGINAL,
         }
     }
@@ -3433,6 +3659,7 @@ mod tests {
             typical_scales: scales,
             swing: None,
             note_density_hint: (4, 8),
+            drum_style: DrumStyle::Metric,
             source: SOURCE_YEBAN_ORIGINAL,
         };
         let (alpha, beta) = (make("alpha_salt_probe"), make("beta_salt_probe"));
@@ -3497,5 +3724,104 @@ mod tests {
             empty.chords(PitchClass::C),
             Err(TheoryError::EmptyProgression)
         );
+    }
+
+    #[test]
+    fn drum_style_histogram_covers_every_rule() {
+        // 数什么：182 条流派的 `drum_style` 字段逐条计数，单位 = "条"。
+        // 登记读数：169 条 metric（= 旧口径）+ 13 条 four-on-the-floor。
+        let histogram = GenreLibrary::drum_style_histogram();
+        let total: usize = histogram.values().sum();
+        assert_eq!(total, GenreLibrary::len());
+        assert_eq!(histogram.len(), DrumStyle::ALL.len());
+        assert_eq!(histogram.get("metric"), Some(&169));
+        assert_eq!(histogram.get("four-on-the-floor"), Some(&13));
+        for style in DrumStyle::ALL {
+            assert_eq!(
+                GenreLibrary::by_drum_style(style).len(),
+                histogram[style.name()],
+                "{style:?}"
+            );
+        }
+        // 登记了四踩底鼓的流派必须都是 4/4：换一个拍号，"每拍一击"就要求
+        // 另一套读数（这条判据把登记错误变成红行，而不是静默给出别的拍数）。
+        for rule in GenreLibrary::by_drum_style(DrumStyle::FourOnTheFloor) {
+            assert_eq!(rule.meter, (4, 4), "{}", rule.id);
+        }
+    }
+
+    #[test]
+    fn registered_four_on_the_floor_genres_get_a_kick_on_every_beat() {
+        // 4/4 下每拍一击：只要网格至少含 4 个 onset（每拍一个），
+        // 四踩底鼓恒是 4 个；度量口径恒是 2 个（第 0、2 拍这两个组起点）。
+        let cells = crate::rhythm::cells_per_bar(Meter::COMMON).unwrap() as u32;
+        let registered = GenreLibrary::by_drum_style(DrumStyle::FourOnTheFloor);
+        assert_eq!(registered.len(), 13);
+        for rule in registered {
+            for onsets in [4u32, 8, cells] {
+                let pattern = rule.drum_pattern(1, onsets).unwrap().unwrap();
+                assert_eq!(
+                    pattern.hit_count(crate::drum::DrumVoice::Kick),
+                    4,
+                    "{} onsets {onsets}",
+                    rule.id
+                );
+                let metric = crate::drum::styled_drum_pattern(
+                    rule.meter_value(),
+                    1,
+                    onsets,
+                    None,
+                    crate::drum::default_backbeat(rule.meter_value()),
+                    DrumStyle::Metric,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    metric.hit_count(crate::drum::DrumVoice::Kick),
+                    2,
+                    "{} onsets {onsets}",
+                    rule.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unregistered_genres_stay_bit_identical_to_the_legacy_drum_entry_point() {
+        // 未登记四踩底鼓的流派：`GenreRule::drum_pattern` 必须与**旧入口**
+        // （不知道 `drum_style` 的那一个）逐位相同。
+        // 数什么：比较过的 (流派, onset 数) 组合个数，单位 = "个"。
+        let mut compared = 0usize;
+        for rule in GenreLibrary::by_drum_style(DrumStyle::Metric) {
+            for onsets in [1u32, 2, 3, 4, 8] {
+                let Ok(Some(pattern)) = rule.drum_pattern(2, onsets) else {
+                    continue;
+                };
+                let legacy = crate::drum::swung_drum_pattern(
+                    rule.meter_value(),
+                    2,
+                    onsets,
+                    rule.swing_permille().unwrap(),
+                    None,
+                    crate::drum::default_backbeat(rule.meter_value()),
+                )
+                .unwrap()
+                .unwrap();
+                assert!(
+                    pattern.hits() == legacy.hits(),
+                    "{} onsets {onsets}",
+                    rule.id
+                );
+                assert!(
+                    pattern.grid().hits() == legacy.grid().hits(),
+                    "{} onsets {onsets}",
+                    rule.id
+                );
+                compared += 1;
+            }
+        }
+        // 169 条 metric 流派 × 5 个 onset 数 = 845 个组合（全部构造成功：
+        // 请求的最大 onset 数 8 不超过任何登记拍号的格位数）。
+        assert_eq!(compared, 845);
     }
 }

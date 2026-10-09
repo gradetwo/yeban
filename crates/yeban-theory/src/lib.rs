@@ -111,9 +111,15 @@
 //! [`drum::swung_drum_pattern`] 把**已经存在的** [`rhythm::MetricGrid`] 按
 //! 度量重量与拍分组分派到底鼓／军鼓／踩镲／吊镲，产出一份可逐件读回的鼓组型。
 //! 它同样**不新增登记数据**：分派只读网格既有的 `tick` / `bar` / `cell` / `weight`
-//! 与调用方传入的分组、反拍位置。**逐流派的鼓点型数据仍未登记**
-//! （`GENRES` 里没有这个字段），因此本 crate 不替任何流派猜一套鼓点
-//! （见 [`drum`] 的模块文档）。
+//! 与调用方传入的分组、反拍位置。
+//!
+//! `pending 3` 的**数据那一半**（"哪条流派打什么样的鼓点"）本 crate 只登记了
+//! **底鼓落点**这一维：[`genre::GenreRule`] 的 `drum_style` 字段对 **13 条**
+//! 舞曲流派登记 [`drum::DrumStyle::FourOnTheFloor`]（每拍一击的底鼓），
+//! 其余 **169 条**登记 [`drum::DrumStyle::Metric`]（= 旧口径，逐位不变）——
+//! 本 crate **不替**这些流派猜一个鼓点型。军鼓位置、踩镲密度与 onset 数
+//! **仍未**登记，因此这一半是**部分**关闭（见 [`drum`] 与
+//! [`genre::GenreRule::drum_pattern`] 的文档）。
 //!
 //! ## 登记数据的"第 0 条"不再是唯一入口（本次）
 //!
@@ -153,8 +159,9 @@ pub mod voice_leading;
 
 pub use chord::{Chord, ChordKind, Tonality};
 pub use drum::{
-    Backbeat, DRUM_VOICE_COUNT, DrumHit, DrumPattern, DrumVoice, default_backbeat, drum_pattern,
-    is_meter_group_start, swung_drum_pattern,
+    Backbeat, DRUM_VOICE_COUNT, DrumHit, DrumPattern, DrumStyle, DrumVoice, default_backbeat,
+    drum_pattern, is_meter_group_start, styled_drum_pattern, swung_drum_pattern,
+    swung_styled_drum_pattern,
 };
 pub use error::TheoryError;
 pub use genre::{GenreLibrary, GenreRule};

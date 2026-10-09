@@ -17,7 +17,10 @@ use proptest::prelude::*;
 
 use yeban_theory::TheoryError;
 use yeban_theory::chord::{Chord, ChordKind, Tonality};
-use yeban_theory::drum::{DrumHit, DrumVoice, default_backbeat, swung_drum_pattern};
+use yeban_theory::drum::{
+    DrumHit, DrumStyle, DrumVoice, default_backbeat, styled_drum_pattern, swung_drum_pattern,
+    swung_styled_drum_pattern,
+};
 use yeban_theory::genre::GenreLibrary;
 use yeban_theory::melody::{
     CHORD_TONE_WEIGHT_FLOOR, MELODY_LOWER_BOUND, MELODY_MAX_LEAP, MELODY_UPPER_BOUND,
@@ -1331,6 +1334,10 @@ fn every_registered_genre_produces_a_well_formed_drum_pattern() {
 }
 
 /// 摇摆只移动 tick、不改鼓件分派：同一 `(cell, voice)` 对在两份鼓组型里都存在。
+///
+/// 两侧都读**该流派登记的** [`DrumStyle`]（`rule.drum_style`），因此本判据检验的
+/// 是"摇摆不改分派"，不是"分派与流派无关"——后者由
+/// `the_genre_drum_entry_point_reads_only_the_genres_own_registered_fields` 负责。
 #[test]
 fn swing_never_changes_which_voice_strikes_a_cell() {
     for rule in GenreLibrary::all() {
@@ -1342,13 +1349,14 @@ fn swing_never_changes_which_voice_strikes_a_cell() {
         };
         // 有摇摆比例的流派：鼓件分派与网格格点集合都不因摇摆改变。
         if let Ok(Some(swung_permille)) = rule.swing_permille() {
-            let swung = swung_drum_pattern(
+            let swung = swung_styled_drum_pattern(
                 rule.meter_value(),
                 1,
                 8,
                 Some(swung_permille),
                 None,
                 default_backbeat(rule.meter_value()),
+                rule.drum_style,
             )
             .unwrap()
             .unwrap();
@@ -1371,4 +1379,86 @@ fn swing_never_changes_which_voice_strikes_a_cell() {
             rule.id
         );
     }
+}
+
+/// 流派入口只读**该流派自己登记的**字段：`GenreRule::drum_pattern` 的读数必须
+/// 与"把该流派的拍号 / 摇摆比例 / 底鼓口径显式传给 drum 模块"逐位相同。
+///
+/// 数什么：比较过的 (流派, onset 数) 组合个数，单位 = "个"。
+#[test]
+fn the_genre_drum_entry_point_reads_only_the_genres_own_registered_fields() {
+    let mut compared = 0usize;
+    for rule in GenreLibrary::all() {
+        for onsets in [1u32, 2, 4, 8] {
+            let Ok(Some(pattern)) = rule.drum_pattern(2, onsets) else {
+                continue;
+            };
+            let expected = swung_styled_drum_pattern(
+                rule.meter_value(),
+                2,
+                onsets,
+                rule.swing_permille().unwrap(),
+                None,
+                default_backbeat(rule.meter_value()),
+                rule.drum_style,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(
+                pattern.hits() == expected.hits(),
+                "{} onsets {onsets}",
+                rule.id
+            );
+            assert!(
+                pattern.grid().hits() == expected.grid().hits(),
+                "{} onsets {onsets}",
+                rule.id
+            );
+            compared += 1;
+        }
+    }
+    // 182 条流派 × 4 个 onset 数 = 728 个组合（请求的最大 onset 数 8 不超过
+    // 登记表里最小的格位数 8）。
+    assert_eq!(compared, 728);
+}
+
+/// 四踩底鼓是度量口径底鼓的**严格超集**：登记了它的流派多出的底鼓个数为正，
+/// 且旧的底鼓一个都不少。
+#[test]
+fn four_on_the_floor_genres_get_a_kick_where_the_metric_style_has_none() {
+    let four = GenreLibrary::by_drum_style(DrumStyle::FourOnTheFloor);
+    assert_eq!(four.len(), 13);
+    let mut extra_kicks = 0usize;
+    for rule in four {
+        let cells = cells_per_bar(rule.meter_value()).unwrap() as u32;
+        let styled = rule.drum_pattern(1, cells).unwrap().unwrap();
+        let metric = styled_drum_pattern(
+            rule.meter_value(),
+            1,
+            cells,
+            None,
+            default_backbeat(rule.meter_value()),
+            DrumStyle::Metric,
+        )
+        .unwrap()
+        .unwrap();
+        for hit in metric
+            .hits()
+            .iter()
+            .filter(|hit| hit.voice == DrumVoice::Kick)
+        {
+            assert!(
+                styled
+                    .hits()
+                    .iter()
+                    .any(|other| other.voice == DrumVoice::Kick && other.tick == hit.tick),
+                "{}: the metric kick at {} vanished",
+                rule.id,
+                hit.tick
+            );
+        }
+        extra_kicks += styled.hit_count(DrumVoice::Kick) - metric.hit_count(DrumVoice::Kick);
+    }
+    // 13 条 4/4 流派 × (每拍一击的 4 个 − 组起点的 2 个) = 26 个新增底鼓。
+    assert_eq!(extra_kicks, 26);
 }
