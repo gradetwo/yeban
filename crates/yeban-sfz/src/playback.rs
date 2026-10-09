@@ -1513,4 +1513,246 @@ mod tests {
             .expect("region matches");
         assert_eq!(play.spec.crossfade_gain, 1.0);
     }
+
+    // ------------------------------------------------------------------
+    // 幂等性（类别 5）：同一对象上重复施加同一个值
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn sanitized_is_a_fixed_point_and_playback_rate_is_invariant_under_it() {
+        // 「只施加一次」与「施加两次」相同：净化过的采样率对再净化是恒等（逐位）。
+        let instrument = parse_text(
+            "<region>sample=a.wav pitch_keycenter=60",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        for rates in [
+            RenderRates::new(44_100.0, 48_000.0),
+            RenderRates::new(f32::NAN, 48_000.0),
+            RenderRates::new(0.0, -1.0),
+            RenderRates::new(f32::INFINITY, f32::NEG_INFINITY),
+            RenderRates::new(-44_100.0, 0.0),
+            RenderRates::default(),
+        ] {
+            let once = rates.sanitized();
+            let twice = once.sanitized();
+            assert_eq!(twice, once, "{rates:?} must be a fixed point");
+            assert_eq!(once.sample_hz.to_bits(), twice.sample_hz.to_bits());
+            assert_eq!(once.engine_hz.to_bits(), twice.engine_hz.to_bits());
+            // 预先净化一次与不净化：步进比逐位相同（第二次净化不再改变任何东西）。
+            assert_eq!(
+                region.playback_rate(72, rates).to_bits(),
+                region.playback_rate(72, once).to_bits(),
+                "{rates:?}"
+            );
+            assert_eq!(
+                region.playback_rate(72, once).to_bits(),
+                region.playback_rate(72, twice).to_bits(),
+                "{rates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeating_a_spec_build_is_bit_identical() {
+        // 同一 region + 同一 query + 同一采样率：两次构造逐位相同（三个构造入口都覆盖）。
+        let source = "<region>sample=a.wav key=36 pitch_keycenter=60 transpose=-2 tune=50 \
+                      bend_up=1200 bend_down=1200 volume=-3 pan=-25 \
+                      loop_mode=loop_sustain loop_start=5 loop_end=105 \
+                      amp_veltrack=75 xfin_lokey=40 xfin_hikey=80 group=7 off_by=9";
+        let instrument = parse_text(source, &Default::default()).expect("parses");
+        let region = &instrument.regions()[0];
+        let rates = RenderRates::new(44_100.0, 48_000.0);
+        let query = RegionQuery::new(36, 111);
+
+        let first = region.playback_spec_with(&query, rates);
+        let second = region.playback_spec_with(&query, rates);
+        for (name, left, right) in [
+            ("pitch_ratio", first.pitch_ratio, second.pitch_ratio),
+            ("rate", first.rate, second.rate),
+            ("volume_db", first.volume_db, second.volume_db),
+            ("gain", first.gain, second.gain),
+            ("amp_veltrack", first.amp_veltrack, second.amp_veltrack),
+            ("velocity_gain", first.velocity_gain, second.velocity_gain),
+            (
+                "crossfade_gain",
+                first.crossfade_gain,
+                second.crossfade_gain,
+            ),
+            ("pan", first.pan, second.pan),
+            ("total_gain", first.total_gain(), second.total_gain()),
+        ] {
+            assert_eq!(
+                left.to_bits(),
+                right.to_bits(),
+                "{name} must be bit identical"
+            );
+        }
+        // 两个构造器（标量版 / 借用版）在同一次查询上给出同一个描述。
+        assert_eq!(first, region.playback_spec(36, 111, rates));
+
+        // 端到端入口重复两次：同一个 region、逐位相同的描述。
+        let played_once = instrument
+            .playback_for(RegionQuery::new(36, 111), rates)
+            .expect("region matches");
+        let played_twice = instrument
+            .playback_for(RegionQuery::new(36, 111), rates)
+            .expect("region matches");
+        assert_eq!(played_once.region.sample, played_twice.region.sample);
+        assert_eq!(played_once.spec, played_twice.spec);
+        for (left, right) in [
+            (played_once.spec.rate, played_twice.spec.rate),
+            (played_once.spec.gain, played_twice.spec.gain),
+            (
+                played_once.spec.velocity_gain,
+                played_twice.spec.velocity_gain,
+            ),
+            (
+                played_once.spec.crossfade_gain,
+                played_twice.spec.crossfade_gain,
+            ),
+        ] {
+            assert_eq!(left.to_bits(), right.to_bits());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 多声道一致性（类别 6）：同一个信号喂给 N 路
+    // ------------------------------------------------------------------
+    //
+    // 本 crate **不含**音频缓冲（全仓检索 `[f32]` 数组切片 0 命中），因此没有左右声道
+    // 这回事：基线提交上全仓对该英文词的加词边界检索命中 0 条。它的「声道」轴是 SFZ 的
+    // `lochan` / `hichan`（MIDI 通道 1..=16）。本节把「同一个信号喂给每一路 ⇒ 各路输出
+    // 逐位相同」与「只填一路 ⇒ 其余路不被污染」这两条搬到该轴上。
+
+    #[test]
+    fn the_same_signal_on_every_matching_channel_is_bit_identical() {
+        // 缺省 region 覆盖 1..=16 全部通道：16 路的选中结果与描述必须逐位相同。
+        let instrument = parse_text(
+            "<region>sample=a.wav key=60 pitch_keycenter=60 volume=-3",
+            &Default::default(),
+        )
+        .expect("parses");
+        let baseline = instrument
+            .playback_for(RegionQuery::new(60, 100).with_channel(1), RATES_EQUAL)
+            .expect("channel 1 matches");
+        for channel in 1..=16u8 {
+            let play = instrument
+                .playback_for(RegionQuery::new(60, 100).with_channel(channel), RATES_EQUAL)
+                .expect("a default region covers every MIDI channel");
+            assert_eq!(
+                play.region.sample, baseline.region.sample,
+                "channel {channel}"
+            );
+            assert_eq!(
+                play.spec.gain.to_bits(),
+                baseline.spec.gain.to_bits(),
+                "channel {channel} must not change the gain"
+            );
+            assert_eq!(
+                play.spec.rate.to_bits(),
+                baseline.spec.rate.to_bits(),
+                "channel {channel} must not change the rate"
+            );
+            assert_eq!(
+                play.spec, baseline.spec,
+                "channel {channel}: the spec carries no per-channel state"
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_channel_region_matches_exactly_one_channel_and_never_bleeds() {
+        let instrument = parse_text(
+            "<region>sample=a.wav key=60 lochan=5 hichan=5",
+            &Default::default(),
+        )
+        .expect("parses");
+        for channel in 1..=16u8 {
+            let play = instrument
+                .playback_for(RegionQuery::new(60, 100).with_channel(channel), RATES_EQUAL);
+            if channel == 5 {
+                assert!(play.is_some(), "channel 5 is inside [5, 5]");
+            } else {
+                assert!(
+                    play.is_none(),
+                    "channel {channel} must not bleed into a channel-5 region"
+                );
+            }
+        }
+        // 域外通道值不是「静默落到某一路」：只返回 None，绝不 panic。
+        for channel in [0u8, 17, 128, 255] {
+            assert!(
+                instrument
+                    .playback_for(RegionQuery::new(60, 100).with_channel(channel), RATES_EQUAL)
+                    .is_none(),
+                "channel {channel} is outside the 1..=16 MIDI domain"
+            );
+        }
+    }
+
+    #[test]
+    fn a_channel_span_matches_exactly_its_lanes() {
+        // 只给一端的两半：`lochan=5` ⇒ 5..=16；`hichan=5` ⇒ 1..=5。
+        let upper = parse_text("<region>sample=a.wav key=60 lochan=5", &Default::default())
+            .expect("parses");
+        let lower = parse_text("<region>sample=a.wav key=60 hichan=5", &Default::default())
+            .expect("parses");
+        for channel in 1..=16u8 {
+            let in_upper = upper
+                .playback_for(RegionQuery::new(60, 100).with_channel(channel), RATES_EQUAL)
+                .is_some();
+            assert_eq!(
+                in_upper,
+                channel >= 5,
+                "lochan=5 must cover 5..=16 (channel {channel})"
+            );
+            let in_lower = lower
+                .playback_for(RegionQuery::new(60, 100).with_channel(channel), RATES_EQUAL)
+                .is_some();
+            assert_eq!(
+                in_lower,
+                channel <= 5,
+                "hichan=5 must cover 1..=5 (channel {channel})"
+            );
+        }
+        // 两半的并集覆盖全部 16 路、交集只有第 5 路；两半在同一路（第 5 路）上的描述逐位相同。
+        let left = upper
+            .playback_for(RegionQuery::new(60, 100).with_channel(5), RATES_EQUAL)
+            .expect("channel 5 is in both spans");
+        let right = lower
+            .playback_for(RegionQuery::new(60, 100).with_channel(5), RATES_EQUAL)
+            .expect("channel 5 is in both spans");
+        assert_eq!(left.spec, right.spec);
+        assert_eq!(left.spec.gain.to_bits(), right.spec.gain.to_bits());
+    }
+
+    #[test]
+    fn an_inverted_channel_range_matches_no_lane_and_never_panics() {
+        // 「反向区间」在别的轴上已有同一条口径（`lokey > hikey` 也是永不匹配、
+        // 不发明「自动交换两端」的语义，见 `build_region` / `matches_key`）。
+        let instrument = parse_text(
+            "<region>sample=a.wav key=60 lochan=5 hichan=3",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!((region.lochan, region.hichan), (5, 3));
+        for channel in 0..=255u8 {
+            assert!(
+                !region.matches_channel(channel),
+                "an inverted channel span must match nothing (channel {channel})"
+            );
+        }
+        for channel in [0u8, 1, 3, 4, 5, 16, 255] {
+            assert!(
+                instrument
+                    .playback_for(RegionQuery::new(60, 100).with_channel(channel), RATES_EQUAL)
+                    .is_none()
+            );
+        }
+        // 反向区间不改变「同一音符仍在键桶里」这件事：它只是每一路都匹配失败。
+        assert!(region.matches_key(60));
+    }
 }

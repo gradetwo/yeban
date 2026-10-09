@@ -404,4 +404,77 @@ mod tests {
         assert_eq!(MAX_FX_BUS, 4);
         assert_eq!(SEND_COUNT, 4);
     }
+
+    // ------------------------------------------------------------------
+    // 幂等性 + N 路一致性：`effect1..4` 是 4 路发送量
+    // ------------------------------------------------------------------
+    //
+    // 本 crate 只有这一处 N 路数组（`sends: [f32; SEND_COUNT]`），因此类别 6 的
+    // 「同一个信号喂给每一路 ⇒ 各路逐位相同」与「只填一路 ⇒ 其余路不被污染」
+    // 在这里做机械判定。
+
+    /// 解析一段源文本里的 `<effect>` 条目（保持文件出现顺序）。
+    fn effects_of(source: &str) -> Vec<Effect<'_>> {
+        crate::parser::parse_text(source, &Default::default())
+            .expect("parses")
+            .effects()
+            .to_vec()
+    }
+
+    #[test]
+    fn a_repeated_identical_send_declaration_does_not_compound() {
+        // 同一个值在**同一段**里写两次 = 只写一次（`BTreeMap` 的「后者覆盖」）。
+        let once = effects_of("<effect>\neffect1=50\n<region>sample=a.wav");
+        let twice = effects_of("<effect>\neffect1=50\neffect1=50\n<region>sample=a.wav");
+        assert_eq!(once.len(), 1);
+        assert_eq!(twice.len(), 1, "one section, not two");
+        assert_eq!(once[0], twice[0], "a repeated same value must not compound");
+        assert_eq!(once[0].sends(), &[50.0, 0.0, 0.0, 0.0]);
+
+        // 交错写入仍是「后者覆盖」：`effect2` 的两条同值声明不改变相邻路。
+        let mixed =
+            effects_of("<effect>\neffect2=50\neffect1=10\neffect2=50\n<region>sample=a.wav");
+        assert_eq!(mixed[0].sends(), &[10.0, 50.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_same_value_on_every_send_lane_is_bit_identical_across_lanes() {
+        let all = effects_of(
+            "<effect>\neffect1=50\neffect2=50\neffect3=50\neffect4=50\n<region>sample=a.wav",
+        );
+        assert_eq!(all[0].sends().len(), SEND_COUNT);
+        for lane in 0..SEND_COUNT {
+            assert_eq!(
+                all[0].send(lane).expect("lane is in range").to_bits(),
+                50.0f32.to_bits(),
+                "lane {lane} must carry the same value bit for bit"
+            );
+        }
+        // 只写一路 ⇒ 其余三路保持规范缺省 `0`（不串音、不复制到邻路）。
+        let single = effects_of("<effect>\neffect2=50\n<region>sample=a.wav");
+        assert_eq!(single[0].sends(), &[0.0, 50.0, 0.0, 0.0]);
+        // 越界路号只返回 `None`，不回绕到第 0 路。
+        assert_eq!(all[0].send(SEND_COUNT), None);
+        assert_eq!(all[0].send(usize::MAX), None);
+    }
+
+    #[test]
+    fn a_repeated_identical_section_is_a_second_entry_not_a_compounded_value() {
+        // 两条完全相同的 `<effect>` 段 ⇒ 两条条目，各自的值与「只有一条」时逐位相同。
+        // 段不去重是既有裁决：同一条总线上可以串多级效果（`dsp_order` 就是排序用的）。
+        let one = effects_of("<effect>\nbus=aux1\neffect1=50\n<region>sample=a.wav");
+        let two = effects_of(
+            "<effect>\nbus=aux1\neffect1=50\n<effect>\nbus=aux1\neffect1=50\n<region>sample=a.wav",
+        );
+        assert_eq!(one.len(), 1);
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0], two[1], "both sections carry the same value");
+        assert_eq!(two[0].sends(), one[0].sends());
+        assert_eq!(two[0].bus(), one[0].bus());
+        assert_eq!(
+            two.iter().map(Effect::dsp_order).collect::<Vec<_>>(),
+            vec![None, None],
+            "no per-section counter leaks between sections"
+        );
+    }
 }

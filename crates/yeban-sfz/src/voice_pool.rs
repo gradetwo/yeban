@@ -151,6 +151,12 @@ pub struct VoiceInfo {
     /// 只有 [`VoicePool::process`] 与 [`VoicePool::set_stage`] / [`VoicePool::finish`] 会清它）。
     pub fade_remaining: u32,
     /// 剩余窃取淡入采样数。
+    ///
+    /// 不变量：`active == false` 时恒为 `0`；否则它由 [`VoicePool::process`] **单调递减**
+    /// 到 `0`，到 `0` 之后不再变化 —— 因此它**不需要**像 [`VoiceInfo::fade_remaining`]
+    /// 那样由外部显式清零（后者只在 `retiring` 为真时被推进）。[`VoicePool::retire`] 与
+    /// [`VoicePool::apply_note_polyphony`] 会把它归零（淡出胜过淡入），
+    /// [`VoicePool::set_stage`] 刻意不碰它。
     pub fade_in_remaining: u32,
 }
 
@@ -305,6 +311,11 @@ impl VoicePool {
     }
 
     /// 更新采样率（只影响此后开始的淡出）。
+    ///
+    /// **幂等**：同一个值重复设置与只设置一次状态完全相同。已经在飞的那条淡出
+    /// （[`VoiceInfo::fade_remaining`]）**不**按新采样率重算，也不被清零 —— 它的长度是
+    /// 窃取 / [`VoicePool::retire`] 那一刻由 [`StealFade`] 定下的。因此本方法只改
+    /// [`VoicePool::steal_fade`] 的读数，不触碰任何槽位字段。
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.fade = StealFade::new(sample_rate);
     }
@@ -476,12 +487,19 @@ impl VoicePool {
     }
 
     /// 立即设置某个活跃声部的瞬时电平 (dBFS)（能量注入）。
+    ///
+    /// **幂等**：这里是**赋值**而不是累加，同一个值重复写与只写一次得到相同的
+    /// [`VoiceInfo::level_db`]（非有限取值同样先经 `sanitize_level` 归一）。
     pub fn set_level(&mut self, handle: VoiceHandle, level_db: f32) -> Result<(), SfzError> {
         self.slot_mut(handle)?.level_db = sanitize_level(level_db);
         Ok(())
     }
 
     /// 用闭包批量刷新所有活跃声部的瞬时电平（能量注入，零分配）。
+    ///
+    /// **幂等**（对**纯**闭包而言）：每个槽位都是赋值，同一个纯闭包重复调用得到相同的
+    /// 快照。闭包自身若带内部状态（例如自增计数器），重复调用的结果由调用方负责 ——
+    /// 本方法只保证「同一个读数 ⇒ 同一个写入」。
     pub fn refresh_levels(&mut self, mut level_of: impl FnMut(usize) -> f32) {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.active {
@@ -498,6 +516,9 @@ impl VoicePool {
     /// 两者必须一起复位。只清 `retiring` 会留下「不在淡出、却仍记着剩余淡出采样数」的
     /// 残值，而 [`VoicePool::process`] 只在 `retiring` 为真时推进该计数 —— 残值既不会被
     /// 推进，也不会被回收，快照读出来就是个没有意义的数。
+    ///
+    /// **幂等**：重复施加同一个 `stage` 是恒等 —— 第二次调用既不再次递增代数，也不复活
+    /// 已被取消的淡出（取消之后只能由 [`VoicePool::retire`] 重新武装）。
     pub fn set_stage(&mut self, handle: VoiceHandle, stage: VoiceStage) -> Result<(), SfzError> {
         let slot = self.slot_mut(handle)?;
         slot.stage = stage;
@@ -513,6 +534,12 @@ impl VoicePool {
     }
 
     /// 开始 3ms 指数淡出。淡出走完后 `process` 会把槽位归零并标记可复用。
+    ///
+    /// **幂等（同一步内）**：两次调用之间没有 [`VoicePool::process`] 时，第二次与第一次的
+    /// 状态完全相同 —— 计数器是被**赋值**成完整长度，不是累加。两次调用之间推进过
+    /// `process` 时，第二次把计数器重新武装回完整长度（槽位寿命至多延长一个 3ms）：
+    /// 这是「重新开始一次淡出」的**动作**语义，与 [`VoicePool::note_on`] 是事件而非赋值
+    /// 同一条口径。
     pub fn retire(&mut self, handle: VoiceHandle) -> Result<StealFade, SfzError> {
         let fade = self.fade;
         let slot = self.slot_mut(handle)?;
@@ -1076,5 +1103,292 @@ mod tests {
         };
         assert_eq!(run(), run());
         assert_eq!(run().victim().map(|handle| handle.index), Some(1));
+    }
+
+    // ------------------------------------------------------------------
+    // 幂等性（类别 5）：同一对象上重复施加同一个值
+    // ------------------------------------------------------------------
+    //
+    // 判定口径：对**同一个池实例**把同一个值写两次，逐槽位快照必须与写一次相同。
+    // 快照是 `Vec<Option<VoiceInfo>>`（含空闲槽位，「归零可复用」也因此在判据内）。
+    // 事件型入口（`note_on` / `note_on_in_group`）与动作型入口（`retire` + `process`）
+    // 的结论见本节的最后两条判据。
+
+    /// 把一个池的每个槽位快照成可比较的向量（含空闲槽位）。
+    fn snapshot(pool: &VoicePool) -> Vec<Option<VoiceInfo>> {
+        (0..pool.capacity())
+            .map(|index| pool.voice_at(index))
+            .collect()
+    }
+
+    #[test]
+    fn a_repeated_same_valued_level_write_leaves_every_slot_unchanged() {
+        let mut pool = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let live = pool.note_on(60, 100, -6.0).started();
+        pool.note_on(61, 100, -12.0);
+        let retiring = pool.note_on(62, 100, -3.0).started();
+        pool.retire(retiring).expect("live handle");
+
+        pool.set_level(live, -9.0).expect("live handle");
+        let once = snapshot(&pool);
+        pool.set_level(live, -9.0).expect("live handle");
+        assert_eq!(
+            snapshot(&pool),
+            once,
+            "level is assigned, never accumulated"
+        );
+
+        // 逐位口径：`f32` 用 `to_bits`（`PartialEq` 会把 `-0.0` 与 `0.0` 视为相等）。
+        assert_eq!(
+            pool.voice(live).expect("still active").level_db.to_bits(),
+            (-9.0f32).to_bits()
+        );
+
+        // 同一个纯闭包重复调用：`refresh_levels` 也是逐槽位赋值。
+        pool.refresh_levels(|index| -6.0 - index as f32);
+        let once = snapshot(&pool);
+        pool.refresh_levels(|index| -6.0 - index as f32);
+        assert_eq!(snapshot(&pool), once);
+        assert_eq!(
+            pool.voice(live).expect("still active").level_db.to_bits(),
+            (-6.0f32).to_bits(),
+            "the last write is the one that stands, for every active slot"
+        );
+
+        // 非有限注入同样幂等：第二次写入与第一次是同一个归一结果。
+        pool.set_level(live, f32::NAN).expect("live handle");
+        let once = pool.voice(live).expect("still active").level_db;
+        pool.set_level(live, f32::NAN).expect("live handle");
+        assert_eq!(
+            pool.voice(live).expect("still active").level_db.to_bits(),
+            once.to_bits()
+        );
+    }
+
+    #[test]
+    fn a_repeated_same_valued_stage_write_leaves_every_slot_unchanged() {
+        let mut pool = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let live = pool.note_on(60, 100, -6.0).started();
+        let other = pool.note_on(61, 100, -6.0).started();
+        pool.retire(other).expect("live handle");
+
+        pool.set_stage(live, VoiceStage::Sustain)
+            .expect("live handle");
+        let once = snapshot(&pool);
+        pool.set_stage(live, VoiceStage::Sustain)
+            .expect("live handle");
+        assert_eq!(
+            snapshot(&pool),
+            once,
+            "a repeated stage write must not bump the generation or revive a cancelled fade"
+        );
+
+        // `note_off` 就是 `set_stage(Release)`（见其实现）：重复两次与一次相同，
+        // 包括「第一次把尚未走完的淡出取消掉」这一步。
+        pool.retire(live).expect("live handle");
+        pool.note_off(live).expect("live handle");
+        let cancelled = pool.voice(live).expect("still active");
+        assert!(!cancelled.retiring);
+        assert_eq!(cancelled.fade_remaining, 0);
+        let once = snapshot(&pool);
+        pool.note_off(live).expect("live handle");
+        assert_eq!(snapshot(&pool), once);
+
+        // 幂等 ≠ 句柄失效：重复写之后句柄仍然有效。
+        assert_eq!(
+            pool.voice(live).expect("still active").stage,
+            VoiceStage::Release
+        );
+        assert_eq!(pool.active_count(), 2);
+    }
+
+    #[test]
+    fn a_repeated_same_valued_sample_rate_write_is_a_no_op() {
+        let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
+        let handle = pool.note_on(60, 100, -6.0).started();
+        pool.retire(handle).expect("live handle");
+        let in_flight = pool.voice(handle).expect("still active").fade_remaining;
+        assert_eq!(in_flight, 144, "3ms @ 48kHz");
+
+        pool.set_sample_rate(96_000.0);
+        let once = (
+            snapshot(&pool),
+            pool.steal_fade(),
+            pool.steal_count(),
+            pool.last_stolen(),
+        );
+        assert_eq!(
+            pool.voice(handle).expect("still active").fade_remaining,
+            in_flight,
+            "the rate change must not rescale a fade that is already in flight"
+        );
+        assert_eq!(pool.steal_fade().samples(), 288, "3ms @ 96kHz");
+
+        pool.set_sample_rate(96_000.0);
+        let twice = (
+            snapshot(&pool),
+            pool.steal_fade(),
+            pool.steal_count(),
+            pool.last_stolen(),
+        );
+        assert_eq!(once, twice, "the same rate twice must equal it once");
+    }
+
+    #[test]
+    fn setting_the_sample_rate_after_construction_equals_constructing_with_it() {
+        // 同一个值经两条路径进入：构造参数与 `set_sample_rate`。两条路径后的池必须相同。
+        let direct = VoicePool::new(4, 44_100.0).expect("valid capacity");
+        let mut late = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        late.set_sample_rate(44_100.0);
+        assert_eq!(late.steal_fade(), direct.steal_fade());
+        assert_eq!(late.steal_fade().samples(), 133, "ceil(44.1kHz * 3ms)");
+        assert_eq!(snapshot(&late), snapshot(&direct));
+    }
+
+    #[test]
+    fn retire_without_an_intervening_process_is_idempotent() {
+        let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
+        let handle = pool.note_on(60, 100, -6.0).started();
+        let first = pool.retire(handle).expect("live handle");
+        let once = snapshot(&pool);
+        let second = pool.retire(handle).expect("live handle");
+        assert_eq!(first, second, "both calls report the same envelope");
+        assert_eq!(
+            snapshot(&pool),
+            once,
+            "a repeated retire must assign the counter, not accumulate it"
+        );
+        assert_eq!(
+            pool.voice(handle).expect("still active").fade_remaining,
+            first.samples()
+        );
+        assert!(pool.voice(handle).expect("still active").retiring);
+    }
+
+    #[test]
+    fn retire_after_a_process_step_re_arms_the_counter_by_design() {
+        // 类别 5 的诚实边界：`retire` 是「重新武装一次淡出」的动作，不是「设一个值」。
+        // 中途推进过 `process` 之后再 `retire`，计数器回到满值（槽位寿命至多延长一个
+        // 3ms），因此它在时间域上**不**幂等 —— 这是刻意的 re-arm 语义，不是缺陷。
+        let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
+        let handle = pool.note_on(60, 100, -6.0).started();
+        let fade = pool.retire(handle).expect("live handle");
+        pool.process(100);
+        assert_eq!(
+            pool.voice(handle).expect("still active").fade_remaining,
+            fade.samples() - 100
+        );
+        pool.retire(handle).expect("live handle");
+        assert_eq!(
+            pool.voice(handle).expect("still active").fade_remaining,
+            fade.samples(),
+            "the second retire re-arms the countdown"
+        );
+    }
+
+    #[test]
+    fn process_zero_frames_is_the_identity() {
+        // 三个槽位：一个走 Release（tier 0、序号更早）、一个在 retiring、一个是新窃取的。
+        let mut pool = VoicePool::new(3, 48_000.0).expect("valid capacity");
+        let released = pool.note_on(60, 100, -6.0).started();
+        let retiring = pool.note_on(61, 100, -6.0).started();
+        pool.note_on(62, 100, -6.0);
+        pool.note_off(released).expect("live handle");
+        pool.retire(retiring).expect("live handle");
+        let outcome = pool.note_on(63, 100, -6.0);
+        assert_eq!(
+            outcome.victim(),
+            Some(released),
+            "the earliest tier-0 voice goes first"
+        );
+        let started = outcome.started();
+        assert_eq!(
+            pool.voice(started).expect("still active").fade_in_remaining,
+            144,
+            "a stolen slot starts with a fade-in"
+        );
+        assert_eq!(
+            pool.voice(retiring).expect("still active").fade_remaining,
+            144
+        );
+
+        let before = snapshot(&pool);
+        pool.process(0);
+        assert_eq!(
+            snapshot(&pool),
+            before,
+            "zero frames must not advance a counter or reclaim a slot"
+        );
+        assert!(pool.voice(retiring).is_some());
+    }
+
+    #[test]
+    fn finish_is_state_idempotent_and_the_second_call_is_a_stale_handle_error() {
+        let mut pool = VoicePool::new(2, 48_000.0).expect("valid capacity");
+        let handle = pool.note_on(60, 100, -6.0).started();
+        pool.finish(handle).expect("live handle");
+        let freed = pool.voice_at(handle.index as usize).expect("slot exists");
+        let active = pool.active_count();
+
+        assert!(matches!(
+            pool.finish(handle),
+            Err(SfzError::StaleVoiceHandle)
+        ));
+        let after = pool.voice_at(handle.index as usize).expect("slot exists");
+        assert_eq!(after, freed, "a rejected finish must not touch the slot");
+        assert_eq!(pool.active_count(), active);
+        assert!(pool.voice(handle).is_none());
+
+        // 代数口径：`VoiceInfo` 不带 `generation`，所以用「重新占用后的新句柄」来读它。
+        // 第一次 `finish` 递增 1、重新激活再递增 1 ⇒ 新代数恰好是旧代数 + 2；
+        // 若被拒绝的第二次 `finish` 也递增了代数，这里会读到 + 3。
+        let reused = pool.note_on(72, 100, -3.0).started();
+        assert_eq!(reused.index, handle.index);
+        assert_eq!(
+            reused.generation,
+            handle.generation + 2,
+            "the rejected finish must not bump the generation a second time"
+        );
+    }
+
+    #[test]
+    fn a_repeated_note_on_is_an_event_and_not_a_setter() {
+        // 类别 5 的表内结论：`note_on` **不**满足幂等，这是事件语义而不是缺陷 ——
+        // 同一音符事件重复触发两次就是两个并发声部（两次 note-on 是两件事件）。
+        let mut pool = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let once = pool.note_on(60, 100, -6.0).started();
+        let after_one = snapshot(&pool);
+        let twice = pool.note_on(60, 100, -6.0).started();
+        assert_ne!(once.index, twice.index, "two distinct slots");
+        assert_ne!(once, twice, "two distinct handles");
+        assert!(pool.voice(once).is_some() && pool.voice(twice).is_some());
+        assert_eq!(pool.active_count(), 2, "two triggers start two voices");
+        assert_ne!(snapshot(&pool), after_one);
+
+        // 池满时同一事件第二次触发的是**窃取**：容量与占用数都不变，victim 确定。
+        let mut small = VoicePool::new(1, 48_000.0).expect("valid capacity");
+        let first = small.note_on(60, 100, -6.0).started();
+        let second = small.note_on(60, 100, -6.0);
+        assert_eq!(second.victim(), Some(first));
+        assert_eq!(small.capacity(), 1);
+        assert_eq!(small.active_count(), 1);
+        assert_eq!(small.steal_count(), 1);
+    }
+
+    #[test]
+    fn the_read_only_entry_points_do_not_change_the_pool() {
+        let mut pool = VoicePool::new(3, 48_000.0).expect("valid capacity");
+        pool.note_on(60, 100, -6.0);
+        pool.note_on(61, 100, -6.0);
+        let before = snapshot(&pool);
+        let victim = pool.select_victim();
+        assert_eq!(pool.select_victim(), victim, "a query is pure");
+        assert_eq!(pool.capacity(), 3);
+        assert_eq!(pool.active_count(), 2);
+        assert_eq!(pool.free_count(), 1);
+        assert_eq!(pool.steal_count(), 0);
+        assert_eq!(pool.last_stolen(), None);
+        assert_eq!(pool.voice_at(1), before[1]);
+        assert_eq!(snapshot(&pool), before, "no read-only entry point mutates");
     }
 }
