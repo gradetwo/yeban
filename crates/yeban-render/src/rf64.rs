@@ -3460,8 +3460,7 @@ mod tests {
             ContainerKind::Bw64,
         ] {
             for (declared, passed) in mismatches {
-                let plan =
-                    ContainerPlan::for_payload(kind, format, declared, 8, None);
+                let plan = ContainerPlan::for_payload(kind, format, declared, 8, None);
                 assert_eq!(
                     plan.sizes.data_size, declared,
                     "{kind:?}: 计划里的声明值必须原样保留"
@@ -3482,16 +3481,13 @@ mod tests {
             }
 
             for (declared, passed) in matches {
-                let plan =
-                    ContainerPlan::for_payload(kind, format, declared, 8, None);
+                let plan = ContainerPlan::for_payload(kind, format, declared, 8, None);
                 let mut file = Vec::new();
-                write_container(&mut file, &plan, &data[..passed])
-                    .unwrap_or_else(|error| {
-                        panic!("{kind:?}: 长度一致时必须写得出去, 实际 {error}")
-                    });
-                let parsed = parse_container(&file).unwrap_or_else(|error| {
-                    panic!("{kind:?}: 写得出去却读不回来: {error}")
+                write_container(&mut file, &plan, &data[..passed]).unwrap_or_else(|error| {
+                    panic!("{kind:?}: 长度一致时必须写得出去, 实际 {error}")
                 });
+                let parsed = parse_container(&file)
+                    .unwrap_or_else(|error| panic!("{kind:?}: 写得出去却读不回来: {error}"));
                 assert_eq!(
                     parsed.data.end - parsed.data.start,
                     passed,
@@ -3547,13 +3543,8 @@ mod tests {
                 for bits in [16u16, 32] {
                     let label = format!("{kind:?} ch={channels} bits={bits}");
                     let zero_rate = PcmFormat::integer(channels, 0, bits);
-                    let plan = ContainerPlan::for_payload(
-                        kind,
-                        zero_rate,
-                        data.len() as u64,
-                        4,
-                        None,
-                    );
+                    let plan =
+                        ContainerPlan::for_payload(kind, zero_rate, data.len() as u64, 4, None);
                     assert_eq!(
                         plan.validate(),
                         Err(Rf64Error::ZeroSampleRate),
@@ -3572,19 +3563,13 @@ mod tests {
 
                     // 防空判据: 同一个格式在 48 kHz 下必须写得出去并读回同一个采样率。
                     let good = PcmFormat::integer(channels, 48_000, bits);
-                    let plan = ContainerPlan::for_payload(
-                        kind,
-                        good,
-                        data.len() as u64,
-                        4,
-                        None,
-                    );
+                    let plan = ContainerPlan::for_payload(kind, good, data.len() as u64, 4, None);
                     assert_eq!(plan.validate(), Ok(()), "{label}: 48 kHz 必须可写");
                     let mut file = Vec::new();
                     write_container(&mut file, &plan, &data)
                         .unwrap_or_else(|error| panic!("{label}: {error}"));
-                    let parsed = parse_container(&file)
-                        .unwrap_or_else(|error| panic!("{label}: {error}"));
+                    let parsed =
+                        parse_container(&file).unwrap_or_else(|error| panic!("{label}: {error}"));
                     assert_eq!(
                         parsed.format.sample_rate, 48_000,
                         "{label}: 48 kHz 必须原样读回"
