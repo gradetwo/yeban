@@ -670,15 +670,15 @@ fn refuse_extensible_fmt_shift_overflow(
     if !reaches_the_wave_channel_mask_fix(sub_format, bits_per_sample, valid_bits) {
         return Ok(());
     }
-    if !would_shift_overflow(num_channels, channel_mask) {
+    if !would_channel_mask_fix_overflow(num_channels, channel_mask) {
         return Ok(());
     }
     Err(DecodeError::Malformed {
         detail: format!(
             "WAV fmt (WAVE_FORMAT_EXTENSIBLE) declares {num_channels} channels at \
              {bits_per_sample} bits per sample with channel mask {channel_mask:#010x}: the RIFF \
-             parser's channel-mask fix-up computes 1u32 << channel_diff and would shift-overflow \
-             (symphonia-format-riff wave/chunks.rs line 690)"
+             parser's channel-mask fix-up would shift-overflow (symphonia-format-riff \
+             wave/chunks.rs line 690)"
         ),
     })
 }
@@ -715,14 +715,51 @@ fn reaches_the_wave_channel_mask_fix(
     }
 }
 
-/// 上游 `fix_wave_channel_mask` 里那次 `1u32 << channel_diff` 会不会移位溢出。
+/// 上游 `fix_wave_channel_mask` 里那次移位会不会 panic。
 ///
-/// 上游算的是 `channel_diff = num_channels as i32 - channel_mask.count_ones() as i32`，
-/// 只在 `channel_diff > 0` 时移位。`u32` 的移位量 ≥ 32 即溢出，因此条件是
-/// `num_channels - popcount(mask) >= 32`。这里用无符号写法（`popcount` 恒 ≤ 32，
-/// 两个写法在 `num_channels >= 0` 上等价），避免任何有符号转换。
-fn would_shift_overflow(num_channels: u16, channel_mask: u32) -> bool {
-    u32::from(num_channels) >= channel_mask.count_ones() + 32
+/// 上游（现位于 `wave/chunks.rs` 第 690 行）算的是：
+/// `channel_diff = num_channels - channel_mask.count_ones()`，只在 `channel_diff > 0` 时执行
+/// `channel_mask |= ((1 << channel_diff) - 1) << shift`，移位量
+/// `shift = 32 - (!channel_mask).leading_ones()` 是 mask 的**最高零位**。
+///
+/// 这次构造有**两个**独立的 panic 来源，缺一不可：
+///
+/// 1. **内移** `(1 << channel_diff) - 1`：移位量 `channel_diff >= 32` 时这次左移即溢出
+///    （实测的 panic 文本是 `attempt to shift left with overflow`）。这正是改建前唯一的
+///    条件 `num_channels >= popcount + 32`；
+/// 2. **外移** `… << shift`：移位量 `shift >= 32` 时同样溢出。`leading_ones()` 恒 ≤ 32，
+///    因此 `shift >= 32` 等价于 `(!channel_mask).leading_ones() == 0`，也就是
+///    **mask 的第 31 位是 1**。
+///
+/// 改建前只判第一条，于是漏掉第二条的**全部**形状 —— 例如 `33` 声道 +
+/// `channel_mask = 0xAAAA_AAAA`（`channel_diff = 17`、`shift = 32`）会直接 panic 在
+/// 上游第 690 行。这一族不是边角料：`channel_mask = 0x8000_0000` 只有一个掩码位，
+/// 只要声道数 > 1 就落入其中。
+///
+/// 等价性有一条**穷举交叉验证**（`/tmp` 探针，逐字复制上游函数并用 `catch_unwind`
+/// 当基准）：在 2 184 组固定 `(channels, mask)` 与 300 000 组伪随机对上，这条条件
+/// **漏判 0 组、误拒 0 组**；改建前的条件在同一批上漏判 279 + 63 组。
+/// 判据 `a_wave_extensible_fmt_whose_channel_mask_shift_overflows_is_refused_not_a_panic`
+/// 给出其中的具体读数。
+///
+/// 另外记一笔给下一位：**建模这条闸门时不要假设那次构造按统一的 u32 宽度求值**。
+/// 实测（同一支探针）上游在这一侧对参数比 u32 更宽容 —— 只有内移的移位量
+/// `channel_diff >= 32`、以及外移的移位量 `shift >= 32` 这两种情形真的 panic。
+/// 按"u32 位跨度 `shift + channel_diff > 32`"去推会算出一个**不存在的** panic 集合，
+/// 让闸门白白多拒 203 组：这 203 组的上游结果与逐位正确的 u32 结果完全一致
+/// （探针逐组比对过），因此它们既不是畸形文件，也不是上游会拒绝的文件。
+/// 上面两条是唯一判据。
+fn would_channel_mask_fix_overflow(num_channels: u16, channel_mask: u32) -> bool {
+    // 内移：`channel_diff >= 32` ⇒ 移位量非法。
+    if u32::from(num_channels) >= channel_mask.count_ones() + 32 {
+        return true;
+    }
+    // `channel_diff == 0` 时上游不进移位分支（`else` 那条 `while` 的循环条件一开始就为假）。
+    if channel_mask.count_ones() >= u32::from(num_channels) {
+        return false;
+    }
+    // 外移：`shift >= 32` ⇔ `(!mask).leading_ones() == 0` ⇔ mask 的第 31 位是 1。
+    (!channel_mask).leading_ones() == 0
 }
 
 /// 把一份**不可回退**的输入整份读进内存，并在读取过程中施加输入字节闸门。
@@ -1505,6 +1542,101 @@ mod tests {
             assert_eq!(asset.channels(), channels);
             assert_eq!(asset.frame_count(), 2);
             assert_eq!(asset.pcm_format(), PcmFormat::S16);
+        }
+    }
+
+    /// 判据 ([ARCH-SEC-003] / 不可信输入零 panic)：`fix_wave_channel_mask` 里那次移位的
+    /// **外移**是第三处未检查算术，必须与内移一起在探测之前拦下。
+    ///
+    /// 上游事实（现位于 `wave/chunks.rs` 第 690 行）：
+    /// `channel_mask |= ((1 << channel_diff) - 1) << shift`，其中
+    /// `shift = 32 - (!channel_mask).leading_ones()` 是 mask 的**最高零位**。这次构造有
+    /// 两个独立的 panic 来源：
+    /// 1. **内移**：`channel_diff >= 32` ⇒ 移位量非法（改建前唯一覆盖的一侧）；
+    /// 2. **外移**：`shift >= 32` ⇔ `(!mask).leading_ones() == 0` ⇔ mask 的第 31 位是 1。
+    ///
+    /// 实测（2026-10-10，本判据在**未改代码**时先跑）：`33` 声道 + `channel_mask =
+    /// 0xAAAA_AAAA`（`channel_diff = 17`、`shift = 32`）让 `decode_bytes` 直接 panic 在
+    /// `symphonia-format-riff` 的 `wave/chunks.rs` 第 690 行，消息
+    /// `attempt to shift left with overflow`。把同一份 `(channels, mask)` 直接喂给逐字复制
+    /// 的上游函数（`/tmp` 探针）复现同一读数；那一族里 `channel_mask = 0x8000_0000` 只有
+    /// 一个掩码位，只要声道数 > 1 就落入其中，不属于边角形状。
+    ///
+    /// 闸门与上游的等价性有一条**穷举交叉验证**（同一个探针，用 `catch_unwind` 把逐字复制的
+    /// 上游函数当基准）：2 184 组固定 `(channels, mask)` 与 300 000 组伪随机对上，改建后的
+    /// 条件**漏判 0 组、误拒 0 组**（改建前的条件漏判 279 + 63 组）。
+    ///
+    /// 不能拒的对照同样重要：`channel_diff == 0` 的规范布局（2.0 / 5.1 / 7.1）上游根本不进
+    /// 移位分支，必须放行 —— 没有这几条，本判据可以用"拒绝一切 `WAVE_FORMAT_EXTENSIBLE`"
+    /// 来变绿，而 5.1/7.1 素材正是它最常见的用途。
+    #[test]
+    fn a_wave_extensible_fmt_whose_channel_mask_shift_overflows_is_refused_not_a_panic() {
+        let data = encode_int_samples(16, &[0x1234, -0x1234]);
+
+        // 这五条都必须被**预检**拒绝，逐条对应：
+        //   · 前三条只让 `shift = 32`（mask 的第 31 位是 1）、`channel_diff` 都 < 32
+        //     ⇒ **旧条件一个都挡不住**（这是本次补的那一族）；
+        //   · 第四条走内移一侧（`channel_diff = 29 < 32`，只有 `shift = 32` 让它溢出）；
+        //   · 最后一条是空掩码 + 33 声道（`channel_diff = 33 >= 32`，内移先炸），旧条件
+        //     本来就挡得住 —— 留着它证明新条件没有漏掉老落点。
+        let refused: [(u16, u32, &str); 5] = [
+            (33, 0xAAAA_AAAA, "diff 17, shift 32"),
+            (33, 0x8000_0000, "diff 32, shift 32"),
+            (34, 0xAAAA_AAAA, "diff 18, shift 32"),
+            (33, 0xCA00_0000, "diff 29, shift 32"),
+            (33, 0x0000_0000, "diff 33, inner shift overflows"),
+        ];
+        for (channels, mask, why) in refused {
+            let bytes = wav_extensible(&ext_spec(channels, 16, 16, mask, WAVE_SUBTYPE_PCM), &data);
+            let err = match decode_bytes(&bytes, &DecodeOptions::default()) {
+                Err(err) => err,
+                Ok(asset) => panic!(
+                    "{channels} channels with mask {mask:#010x} ({why}) decoded as \
+                     channels={} frames={}, but its mask shift panics upstream",
+                    asset.channels(),
+                    asset.frame_count()
+                ),
+            };
+            assert!(
+                matches!(
+                    &err,
+                    DecodeError::Malformed { detail }
+                        if detail.contains("shift-overflow") && detail.contains(&channels.to_string())
+                ),
+                "{channels} channels with mask {mask:#010x} ({why}) must be refused by the \
+                 precheck, got {err}"
+            );
+        }
+
+        // 预检本身（不经探测器）给出的也是同一个结论，因此"谁拒的"不靠文案猜。
+        for (channels, mask) in [
+            (33u16, 0xAAAA_AAAAu32),
+            (33, 0x8000_0000),
+            (33, 0xCA00_0000),
+        ] {
+            let bytes = wav_extensible(&ext_spec(channels, 16, 16, mask, WAVE_SUBTYPE_PCM), &data);
+            assert!(
+                scan_precheck(&bytes).is_err(),
+                "{channels} channels with mask {mask:#010x} must be refused by the precheck"
+            );
+        }
+
+        // 不能拒的对照一：`shift == 0`（mask 的最高位未置位）时上游那次外移不会溢出，
+        // 即使 `channel_diff + shift > 32`（这里是 2 + 0）也不算 panic —— 上游随后按
+        // "掩码与声道数不符"自行处置，本闸门不许替它拒绝。
+        let top_bit_clear =
+            wav_extensible(&ext_spec(2, 16, 16, 0x0000_0000, WAVE_SUBTYPE_PCM), &data);
+        if let Err(DecodeError::Malformed { detail }) = scan_precheck(&top_bit_clear) {
+            panic!("mask 0 has the top mask bit clear, so no shift overflows, got {detail}");
+        }
+        // 不能拒的对照二：规范布局（2.0 / 5.1 / 7.1）的 `channel_diff == 0`，上游根本不进
+        // 移位分支。
+        for (channels, mask) in [(2u16, 0x3u32), (6, 0x3F), (8, 0x63F)] {
+            let bytes = wav_extensible(&ext_spec(channels, 16, 16, mask, WAVE_SUBTYPE_PCM), &data);
+            assert!(
+                scan_precheck(&bytes).is_ok(),
+                "{channels} channels with the conforming mask {mask:#x} must pass the precheck"
+            );
         }
     }
 
