@@ -10,15 +10,16 @@
 mod container_support;
 
 use container_support::{
-    CENTRAL_CRC, CENTRAL_EXTERNAL_ATTRIBUTES, CENTRAL_FLAGS, CENTRAL_LOCAL_OFFSET, CENTRAL_METHOD,
-    CENTRAL_UNCOMPRESSED, EOCD_CENTRAL_OFFSET, EOCD_CENTRAL_SIZE, EOCD_DISK, EOCD_ENTRIES_ON_DISK,
-    EOCD_TOTAL_ENTRIES, LOCAL_FLAGS, LOCAL_METHOD, LOCAL_NAME, LOCAL_UNCOMPRESSED, container,
-    data_start, declare_sizes, find_central, find_eocd, find_local, limits, patch_all, put_u16,
-    put_u32, read_u32, small_limits,
+    CENTRAL_COMPRESSED, CENTRAL_CRC, CENTRAL_DISK_START, CENTRAL_EXTERNAL_ATTRIBUTES,
+    CENTRAL_FLAGS, CENTRAL_LOCAL_OFFSET, CENTRAL_METHOD, CENTRAL_UNCOMPRESSED, EOCD_CENTRAL_OFFSET,
+    EOCD_CENTRAL_SIZE, EOCD_DISK, EOCD_ENTRIES_ON_DISK, EOCD_SIGNATURE, EOCD_TOTAL_ENTRIES,
+    LOCAL_COMPRESSED, LOCAL_CRC, LOCAL_FLAGS, LOCAL_METHOD, LOCAL_NAME, LOCAL_UNCOMPRESSED,
+    container, data_start, declare_sizes, find_central, find_eocd, find_local, limits, patch_all,
+    put_u16, put_u32, read_u16, read_u32, small_limits,
 };
 use yeban_model::container::{
-    ContainerEntry, ContainerError, ContainerLimits, DEFAULT_MAX_ENTRY_BYTES, DEFAULT_MAX_RATIO,
-    read_container, write_container,
+    ContainerEntry, ContainerError, ContainerLimits, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_ENTRY_BYTES,
+    DEFAULT_MAX_RATIO, DEFAULT_MAX_TOTAL_BYTES, read_container, write_container,
 };
 
 /// 把合法容器里长度为 `len` 的占位名改成恶意名（等长定点改写）。
@@ -352,16 +353,29 @@ fn disagreeing_eocd_entry_counts_are_rejected() {
 // ======================================================================
 
 /// 规范默认阈值必须被钉住（2 GB / 100:1），且一律取"更紧"的一侧。
+///
+/// 四道阈值**全部**要钉住：实测把 `DEFAULT_MAX_TOTAL_BYTES`（8 GB → 8 GB + 1）或
+/// `DEFAULT_MAX_ENTRIES`（4096 → 4097 / 65535）放宽时，改动前的判据只钉了
+/// `DEFAULT_MAX_ENTRY_BYTES` 与 `DEFAULT_MAX_RATIO` 两道 ⇒ 全仓判据保持全绿，
+/// 于是一条安全上限可以被悄悄放宽而无人察觉。
 #[test]
 fn spec_defaults_are_pinned() {
     assert_eq!(DEFAULT_MAX_ENTRY_BYTES, 2_000_000_000);
     assert_eq!(DEFAULT_MAX_RATIO, 100);
+    assert_eq!(DEFAULT_MAX_TOTAL_BYTES, 8_000_000_000);
+    assert_eq!(DEFAULT_MAX_ENTRIES, 4096);
     let defaults = ContainerLimits::default();
     assert_eq!(defaults.max_entry_bytes, DEFAULT_MAX_ENTRY_BYTES);
+    assert_eq!(defaults.max_total_bytes, DEFAULT_MAX_TOTAL_BYTES);
     assert_eq!(defaults.max_ratio, DEFAULT_MAX_RATIO);
+    assert_eq!(defaults.max_entries, DEFAULT_MAX_ENTRIES);
     assert!(
         defaults.max_entry_bytes <= 2_000_000_000,
         "规范要求单条目 ≤ 2GB，默认值不得放宽"
+    );
+    assert!(
+        defaults.max_entries < usize::from(u16::MAX),
+        "条目数上限必须留在 ZIP32 之内（0xFFFF 是 ZIP64 哨兵）"
     );
 }
 
@@ -602,6 +616,45 @@ fn truncated_eocd_is_rejected() {
     assert_rejected(&bytes, &small_limits(), ContainerError::EocdNotFound);
 }
 
+/// EOCD 的注释长度必须**恰好**补齐到文件末尾：注释里那个"比真 EOCD 更靠后、却没有
+/// 贴到文件末尾"的假签名必须被跳过。
+///
+/// 为什么需要：`src/container/zip.rs` 的单测 `earlier_fake_eocd_signature_is_skipped`
+/// 里，假签名在真签名**之前**，而 `find_eocd` 从尾部往前扫 ⇒ 那个假签名**从来没被
+/// 检查过**。实测：把 `cursor + EOCD_LEN + comment_len == bytes.len()` 改成 `<=` 时，
+/// 全仓判据保持全绿。这里把假签名放进真的注释里、且位置更靠后（扫描先遇到它），
+/// 它的 `comment_len` 字段为零而它没有贴到文件末尾 ⇒ 必须被跳过；否则读取器会把
+/// 那段注释当成一个"空归档"，一个有条目的容器被静默读成零条目。
+#[test]
+fn eocd_comment_must_reach_the_end_of_file() {
+    let comment_len = 32_usize;
+    let mut bytes = container(&[("aaaa", b"\x01")]);
+    let eocd = find_eocd(&bytes);
+    put_u16(&mut bytes, eocd + 20, comment_len as u16);
+
+    let mut comment = vec![0u8; comment_len];
+    // 假签名的文件偏移 = eocd + comment_len - 1 ⇒ 它的 22 字节窗口末尾只差 1 字节
+    // 就贴到文件末尾（`==` 判 false，`<=` 判 true）。
+    let fake = comment_len - 23;
+    comment[fake..fake + 4].copy_from_slice(&EOCD_SIGNATURE.to_le_bytes());
+    bytes.extend_from_slice(&comment);
+
+    let fake_offset = eocd + 22 + fake;
+    assert_eq!(read_u32(&bytes, fake_offset), EOCD_SIGNATURE);
+    assert_eq!(read_u16(&bytes, fake_offset + 20), 0);
+    assert!(
+        fake_offset + 22 < bytes.len(),
+        "假签名必须**没有**贴到文件末尾，否则它与真 EOCD 无法区分"
+    );
+
+    let archive = read_container(&bytes, &small_limits()).expect("真 EOCD 必须被找到");
+    assert_eq!(
+        archive.names().collect::<Vec<_>>(),
+        vec!["aaaa"],
+        "注释里的假 EOCD 签名不得把有条目的容器读成零条目"
+    );
+}
+
 /// central directory 偏移越界。
 #[test]
 fn central_directory_offset_out_of_bounds_is_rejected() {
@@ -705,6 +758,40 @@ fn local_central_size_mismatch_is_rejected() {
     );
 }
 
+/// local header 与 central directory 的**每一个**共有字段都必须逐一比对。
+///
+/// 为什么需要：既有两条判据只改**名字**与**解压尺寸** ⇒ 把 `flags` / `method` /
+/// `crc` / `compressed` 里的任意一格从 `verify_local_header_and_locate_data` 的
+/// OR 链里删掉时，全仓判据保持全绿。于是一个"两处头说不一致"的归档会被接受 ——
+/// 那正是"不同解包器读出不同文件"的经典攻击面（`ARCH-SEC-003`）。
+#[test]
+fn local_central_every_shared_field_must_agree() {
+    let expected = || ContainerError::LocalCentralMismatch {
+        index: 0,
+        name: "aaaa".into(),
+    };
+
+    // u16 字段：通用位标志 / 压缩法。
+    for (offset, value) in [
+        (LOCAL_FLAGS, 0x0008_u16),
+        (LOCAL_METHOD, 8_u16),
+        (LOCAL_FLAGS, 0_u16),
+    ] {
+        let mut bytes = container(&[("aaaa", b"\x01")]);
+        let local = find_local(&bytes, "aaaa");
+        put_u16(&mut bytes, local + offset, value);
+        assert_rejected(&bytes, &small_limits(), expected());
+    }
+
+    // u32 字段：CRC-32 / 压缩后尺寸。
+    for (offset, value) in [(LOCAL_CRC, 0xDEAD_BEEF_u32), (LOCAL_COMPRESSED, 0_u32)] {
+        let mut bytes = container(&[("aaaa", b"\x01")]);
+        let local = find_local(&bytes, "aaaa");
+        put_u32(&mut bytes, local + offset, value);
+        assert_rejected(&bytes, &small_limits(), expected());
+    }
+}
+
 /// `stored` 条目的压缩前后尺寸自相矛盾。
 #[test]
 fn stored_size_mismatch_is_rejected() {
@@ -792,12 +879,48 @@ fn zip64_sentinel_in_central_record_is_rejected() {
     assert_rejected(&bytes, &small_limits(), ContainerError::UnsupportedZip64);
 }
 
+/// central 记录的**三个** ZIP64 哨兵字段逐一判定。
+///
+/// 为什么需要：既有判据只改 `uncompressed` 一格 ⇒ 把 `compressed` 或
+/// `local_header_offset` 的哨兵判定从 `read_zip` 里删掉时，全仓判据保持全绿。
+/// 哨兵字段漏判会让读取器把 ZIP64 归档的"尺寸 = 4 GiB - 1"当真值。
+#[test]
+fn zip64_sentinel_in_every_central_record_field_is_rejected() {
+    for offset in [
+        CENTRAL_COMPRESSED,
+        CENTRAL_UNCOMPRESSED,
+        CENTRAL_LOCAL_OFFSET,
+    ] {
+        let mut bytes = container(&[("aaaa", b"\x01")]);
+        let central = find_central(&bytes, "aaaa");
+        put_u32(&mut bytes, central + offset, 0xFFFF_FFFF);
+        assert_rejected(&bytes, &small_limits(), ContainerError::UnsupportedZip64);
+    }
+}
+
 /// 多卷 / 跨盘归档。
 #[test]
 fn multi_disk_archive_is_rejected() {
     let mut bytes = container(&[("aaaa", b"\x01")]);
     let eocd = find_eocd(&bytes);
     put_u16(&mut bytes, eocd + EOCD_DISK, 1);
+    assert_rejected(
+        &bytes,
+        &small_limits(),
+        ContainerError::UnsupportedMultiDisk,
+    );
+}
+
+/// 单条 central 记录自己的 `disk number start` 也必须是 0。
+///
+/// 为什么需要：既有 `multi_disk_archive_is_rejected` 只改 EOCD 的盘号，从不改
+/// central 记录里的 `disk start` ⇒ 把 `if disk_start != 0` 关掉时，全仓判据保持全绿，
+/// 于是一份"EOCD 说单卷、记录说跨卷"的自相矛盾归档会被放行。
+#[test]
+fn central_record_disk_start_must_be_zero() {
+    let mut bytes = container(&[("aaaa", b"\x01")]);
+    let central = find_central(&bytes, "aaaa");
+    put_u16(&mut bytes, central + CENTRAL_DISK_START, 1);
     assert_rejected(
         &bytes,
         &small_limits(),

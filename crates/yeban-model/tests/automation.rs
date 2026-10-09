@@ -525,10 +525,98 @@ fn points_in_tick_order_is_deterministic_and_ordered() {
     );
 }
 
+/// ②f′ 排序的**主键是 tick**：当 id 顺序与 tick 顺序相反时，两种键给出不同结果。
+///
+/// 实测：既有判据的采样点 id 顺序恰好与 tick 顺序一致 ⇒ 把
+/// `sort_by_key(|point| (point.tick, point.id))` 换成 `(point.id, point.tick)` 时，
+/// 全仓判据保持全绿 —— 于是"按 id 分段插值"这个完全错误的求值口径没有判据看得见。
+#[test]
+fn points_are_ordered_by_tick_even_when_the_ids_run_the_other_way() {
+    let (_, f) = fixture();
+    // id 顺序与 tick 顺序**相反**：900 在 0，500 在 960，100 在 1920。
+    let automation = lane(
+        f.volume,
+        vec![
+            point(900, 0, 10.0, CurveType::Linear),
+            point(500, 960, 20.0, CurveType::Linear),
+            point(100, 1920, 30.0, CurveType::Linear),
+        ],
+    );
+    let ordered: Vec<(u64, EntityId)> = automation
+        .points_in_tick_order()
+        .iter()
+        .map(|p| (p.tick, p.id))
+        .collect();
+    assert_eq!(
+        ordered,
+        vec![(0, id(900)), (960, id(500)), (1920, id(100))],
+        "必须按 (tick, point_id) 升序 —— tick 是主键"
+    );
+    // 区间中点：只有按 tick 分段才会得到 15.0 / 25.0（按 id 分段会取到首点保持）。
+    assert_eq!(
+        automation.value_at(480).map(f32::to_bits),
+        Some(15.0_f32.to_bits()),
+        "第一段的线性插值必须是 15.0"
+    );
+    assert_eq!(
+        automation.value_at(1440).map(f32::to_bits),
+        Some(25.0_f32.to_bits()),
+        "第二段的线性插值必须是 25.0"
+    );
+}
+
+/// ②f″ 时间轴**极值**：采样点可以落在 `u64::MAX`，求值必须保持且不得越界 panic。
+///
+/// 实测：给 `if tick >= last.tick` 加一个 `last.tick != u64::MAX` 的旁路时，全仓判据
+/// 保持全绿 —— 既有判据的采样点最远只到几千 tick，于是"末点落在时间轴极值上"这一格
+/// （旁路之后会掉进 `ordered[upper]` 的越界 panic）没有任何判据看得见。
+#[test]
+fn timeline_extremes_hold_the_boundary_value_without_panicking() {
+    let (_, f) = fixture();
+    let automation = lane(
+        f.volume,
+        vec![
+            point(100, 0, -6.0, CurveType::Linear),
+            point(200, u64::MAX, 0.0, CurveType::Linear),
+        ],
+    );
+    for tick in [0_u64, 1, u64::MAX - 1, u64::MAX] {
+        let value = automation.value_at(tick);
+        assert!(value.is_some(), "tick={tick} 必须有值");
+        assert!(
+            value.is_some_and(f32::is_finite),
+            "tick={tick} 的求值必须有限"
+        );
+    }
+    // 首点之前保持、末点（含末点本身）保持 —— 逐位精确。
+    assert_eq!(
+        automation.value_at(0).map(f32::to_bits),
+        Some((-6.0_f32).to_bits())
+    );
+    assert_eq!(
+        automation.value_at(u64::MAX - 1).map(f32::to_bits),
+        Some(0.0_f32.to_bits())
+    );
+    assert_eq!(
+        automation.value_at(u64::MAX).map(f32::to_bits),
+        Some(0.0_f32.to_bits()),
+        "tick == u64::MAX 必须保持末点值（不是越界 panic）"
+    );
+
+    // 单点泳道落在 u64::MAX 时同样处处保持。
+    let single = lane(f.volume, vec![point(300, u64::MAX, 3.5, CurveType::Linear)]);
+    for tick in [0_u64, 1, u64::MAX] {
+        assert_eq!(
+            single.value_at(tick).map(f32::to_bits),
+            Some(3.5_f32.to_bits()),
+            "单点泳道在 tick={tick} 必须保持"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ③ 新 Op 的 apply_inverse 真逆（逐字节）
 // ---------------------------------------------------------------------------
-
 /// ③a `SetAutomationLane` 的新建 + 修改两种形态都逐字节可逆。
 #[test]
 fn set_automation_lane_is_a_true_inverse_byte_for_byte() {

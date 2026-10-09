@@ -44,6 +44,8 @@ pub const CENTRAL_COMPRESSED: usize = 20;
 pub const CENTRAL_UNCOMPRESSED: usize = 24;
 /// Central header：外部属性。
 pub const CENTRAL_EXTERNAL_ATTRIBUTES: usize = 38;
+/// Central header：`disk number start`（多卷逐条判定）。
+pub const CENTRAL_DISK_START: usize = 34;
 /// Central header：local header 偏移。
 pub const CENTRAL_LOCAL_OFFSET: usize = 42;
 /// Central header：名字起始偏移。

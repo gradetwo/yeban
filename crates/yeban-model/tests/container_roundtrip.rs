@@ -208,6 +208,55 @@ fn project_container_round_trips() {
     assert!(name.starts_with("assets/"));
 }
 
+/// §5.3 的**容器组成边界**：条目名是规范字面量、顺序固定，且 0 / 1 / N 条资产都成立。
+///
+/// 为什么需要：读写两侧共用 `PROJECT_JSON_NAME` / `HISTORY_DAG_NAME` 常量，所以把常量
+/// 改名（`project.JSON` / `history.DAG`）或把两条固定条目的写出顺序调换时，自洽的往返
+/// **看不出**名字或顺序已经漂移 —— 实测全仓判据保持全绿。这里从字节层（`read_container`
+/// 解析出的 central directory 名字）与规范字面量对照，并逐个资产数走一遍组成边界。
+#[test]
+fn project_container_composition_boundaries_are_the_section_5_3_literals() {
+    // 常量本身必须等于规范字面量。
+    assert_eq!(PROJECT_JSON_NAME, "project.json");
+    assert_eq!(HISTORY_DAG_NAME, "history.dag");
+    assert_eq!(ASSETS_DIR, "assets");
+
+    for count in [0_usize, 1, 3] {
+        let project = YebanProjectV1::default();
+        let history = b"[{\"index\":0,\"root\":true}]".to_vec();
+        let mut assets = BTreeMap::new();
+        for index in 0..count {
+            let data = format!("asset-bytes-{index}").into_bytes();
+            assets.insert(AssetHash::of_bytes(&data), data);
+        }
+
+        let bytes = write_project_container(&project, &history, &assets).expect("写入必须成功");
+        let archive = read_container(&bytes, &ContainerLimits::default()).expect("读回必须成功");
+
+        // 条目名与顺序（固定两条在前，资产按哈希升序在后）。
+        let mut expected: Vec<String> = vec!["project.json".to_owned(), "history.dag".to_owned()];
+        for hash in assets.keys() {
+            expected.push(format!("assets/{hash}"));
+        }
+        let names: Vec<String> = archive.names().map(str::to_owned).collect();
+        assert_eq!(names, expected, "资产数 {count}: §5.3 的条目名/顺序漂移了");
+
+        // 内容侧同样成立（组成边界的 0/1/N 三格都要能读回）。
+        let archive = read_project_container(&bytes, &ContainerLimits::default()).expect("读回");
+        assert_eq!(archive.project, project);
+        assert_eq!(archive.history_dag, history);
+        let expected_assets: Vec<(AssetHash, Vec<u8>)> = assets.into_iter().collect();
+        assert_eq!(archive.assets, expected_assets);
+
+        // 空资产容器必须恰好两条固定条目（0 资产这一格单独钉一次）。
+        let empty =
+            write_project_container(&project, &history, &BTreeMap::new()).expect("空资产写入");
+        let empty_archive =
+            read_container(&empty, &ContainerLimits::default()).expect("空资产读回");
+        assert_eq!(empty_archive.len(), 2, "空资产容器必须恰好两条固定条目");
+    }
+}
+
 /// `ARCH-DET-001`：`BTreeMap` 的插入顺序不影响归档字节（键序确定 ⇒ 字节确定）。
 ///
 /// ⚠ 注意本条的**判别力有限**：`BTreeMap` 的迭代序由键序决定，与插入顺序无关，

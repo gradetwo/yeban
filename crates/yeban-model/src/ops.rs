@@ -2415,6 +2415,361 @@ mod tests {
         );
     }
 
+    /// 摆放的 `clip_id` 必须在片段池里：Op 入口自己就要拦住悬空引用。
+    ///
+    /// 实测：把 `AddClipPlacement` 的 `doc.clip_pool.contains_key(...)` 检查关掉时，
+    /// `apply` 返回 `Ok(())` 并把悬空摆放落进文档 —— 既有判据只从
+    /// `YebanProjectV1::validate`（另一层）看过悬空引用，于是"先污染、后报错"的那条
+    /// 入口没有任何判据看得见。
+    #[test]
+    fn add_clip_placement_rejects_a_clip_that_is_not_in_the_pool() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let snapshot = doc.clone();
+        let ghost_clip = fixture_id(700);
+        let op = Op::AddClipPlacement {
+            track_id: f.bass,
+            placement: ClipPlacement {
+                id: fixture_id(701),
+                clip_id: ghost_clip,
+                start_tick: 0,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        };
+        assert_eq!(
+            op.apply(&mut doc),
+            Err(ModelError::ClipNotFound { id: ghost_clip })
+        );
+        assert_eq!(doc, snapshot, "被拒之后文档必须逐字节不动");
+    }
+
+    /// `AddRoutingNode` 的文档承诺 `nodes` 恒按字典序 ⇒ 两条**独立**的加法可交换，
+    /// 且结果与插入顺序无关（顺序独立性 / `ARCH-DET-001` 的写入确定性）。
+    ///
+    /// 实测：把 `partition_point` + 有序 `insert` 换成 `push` 时，全仓判据保持全绿
+    /// —— 于是 `nodes` 的字节形态取决于操作顺序，同一份逻辑内容会写出两种工程字节。
+    #[test]
+    fn routing_node_insertion_is_order_independent_and_keeps_the_list_sorted() {
+        let first = fixture_id(800);
+        let second = fixture_id(801);
+
+        let mut forward = fixture_document();
+        Op::AddRoutingNode { node: second }
+            .apply(&mut forward)
+            .expect("加第二个节点");
+        Op::AddRoutingNode { node: first }
+            .apply(&mut forward)
+            .expect("加第一个节点");
+
+        let mut backward = fixture_document();
+        Op::AddRoutingNode { node: first }
+            .apply(&mut backward)
+            .expect("加第一个节点");
+        Op::AddRoutingNode { node: second }
+            .apply(&mut backward)
+            .expect("加第二个节点");
+
+        assert_eq!(
+            forward, backward,
+            "两条独立的 AddRoutingNode 必须可交换（结果与顺序无关）"
+        );
+        let mut expected = forward.routing_graph.nodes.clone();
+        expected.sort();
+        assert_eq!(
+            forward.routing_graph.nodes, expected,
+            "routing_graph.nodes 必须恒按字典序"
+        );
+        forward.validate().expect("加完节点之后文档仍然合法");
+
+        // 成对撤销必须逐位回到原状。
+        let snapshot = fixture_document();
+        Op::AddRoutingNode { node: second }
+            .apply_inverse(&mut backward)
+            .expect("撤销第二个节点");
+        Op::AddRoutingNode { node: first }
+            .apply_inverse(&mut backward)
+            .expect("撤销第一个节点");
+        assert_eq!(backward, snapshot, "成对撤销必须逐位回到原状");
+    }
+
+    /// 三个可寻址向量轴（设备槽 / 设备参数 / 宏）的**下标 1** 必须被真正寻址。
+    ///
+    /// 实测：夹具里只有 1 个设备、1 个宏，而既有判据从不用 `param_index = 1` ⇒ 把
+    /// `write_param` 的 `get_mut(slot_index)` / `get_mut(param_index)` /
+    /// `get_mut(macro_index)`、或 `read_param` 的 `get(param_index)`、或 `read_macro`
+    /// 的 `get(macro_index)` 换成 `get(0)` 时，全仓判据保持全绿 —— "写到了 0 号而不是
+    /// 被寻址的那一个"没有任何判据看得见。
+    #[test]
+    fn indexed_targets_address_the_exact_device_param_and_macro() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        // 造出"三个轴上都有下标 1"的文档。
+        doc.track_mut(&f.lead)
+            .expect("lead")
+            .devices
+            .push(DeviceDefinition {
+                id: fixture_id(41),
+                name: "Second".to_owned(),
+                params: vec![
+                    crate::project::ParameterValue {
+                        name: "a".to_owned(),
+                        value: 1.0,
+                        unit: None,
+                    },
+                    crate::project::ParameterValue {
+                        name: "b".to_owned(),
+                        value: 2.0,
+                        unit: None,
+                    },
+                ],
+                ..DeviceDefinition::default()
+            });
+        doc.track_mut(&f.lead)
+            .expect("lead")
+            .macros
+            .push(crate::project::MacroParameter {
+                name: "Second".to_owned(),
+                value: 0.25,
+                mappings: Vec::new(),
+            });
+        doc.validate().expect("探针文档必须合法");
+
+        let param = |doc: &YebanProjectV1, slot: usize, index: usize| -> f32 {
+            doc.track(&f.lead).expect("lead").devices[slot].params[index].value
+        };
+        let macro_value = |doc: &YebanProjectV1, index: usize| -> f32 {
+            doc.track(&f.lead).expect("lead").macros[index].value
+        };
+
+        // ---- ① 设备参数：寻址 (slot 1, param 1) ----
+        let before = doc.clone();
+        assert_eq!(param(&doc, 1, 1), 2.0, "夹具的下标 (1,1) 值变了");
+        let op = Op::SetParam {
+            target: AutomationTarget::DeviceParam {
+                track_id: f.lead,
+                slot_index: 1,
+                param_index: 1,
+            },
+            old_val: 2.0,
+            new_val: 7.5,
+        };
+        op.apply(&mut doc).expect("SetParam 必须可应用");
+        assert_eq!(param(&doc, 1, 1), 7.5, "必须写到被寻址的那一格");
+        assert_eq!(param(&doc, 0, 0), 1200.0, "0 号设备 0 号参数不许被动");
+        assert_eq!(param(&doc, 0, 1), 0.3, "0 号设备 1 号参数不许被动");
+        assert_eq!(param(&doc, 1, 0), 1.0, "1 号设备 0 号参数不许被动");
+        op.invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("撤销");
+        assert_eq!(doc, before, "下标 1 的设备参数写入必须逐位可逆");
+
+        // ---- ② 宏：寻址 macro_index 1 ----
+        let before = doc.clone();
+        assert_eq!(macro_value(&doc, 1), 0.25, "夹具的 1 号宏值变了");
+        let op = Op::SetMacro {
+            track_id: f.lead,
+            macro_index: 1,
+            old_val: 0.25,
+            new_val: 0.75,
+        };
+        op.apply(&mut doc).expect("SetMacro 必须可应用");
+        assert_eq!(macro_value(&doc, 1), 0.75, "必须写到被寻址的宏");
+        assert_eq!(macro_value(&doc, 0), 0.5, "0 号宏不许被动");
+        op.invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("撤销");
+        assert_eq!(doc, before, "下标 1 的宏写入必须逐位可逆");
+
+        // ---- ②′ 同一个宏轴也可以经 `SetParam`（`write_param` 的宏分支）寻址 ----
+        // `Op::SetMacro` 与 `Op::SetParam { target: Macro }` 走的是**两条**不同的写路径，
+        // 因此这一格必须单独钉住：把 `write_param` 的 `get_mut(macro_index)` 换成
+        // `get_mut(0)` 时，只有这一格会变红（实测：只用 `Op::SetMacro` 时它保持全绿）。
+        let before = doc.clone();
+        let op = Op::SetParam {
+            target: AutomationTarget::Macro {
+                track_id: f.lead,
+                macro_index: 1,
+            },
+            old_val: 0.25,
+            new_val: 0.75,
+        };
+        op.apply(&mut doc).expect("SetParam(Macro) 必须可应用");
+        assert_eq!(
+            macro_value(&doc, 1),
+            0.75,
+            "SetParam(Macro) 必须写到被寻址的宏"
+        );
+        assert_eq!(macro_value(&doc, 0), 0.5, "SetParam(Macro) 不许碰到 0 号宏");
+        op.invert(&doc)
+            .expect("求逆")
+            .apply(&mut doc)
+            .expect("撤销");
+        assert_eq!(doc, before, "SetParam(Macro) 必须逐位可逆");
+
+        // ---- ③ 越界下标必须报**它们自己的**错误码（不是笼统的状态不符） ----
+        let snapshot = doc.clone();
+        let bad_param = Op::SetParam {
+            target: AutomationTarget::DeviceParam {
+                track_id: f.lead,
+                slot_index: 1,
+                param_index: 9,
+            },
+            old_val: 0.0,
+            new_val: 0.0,
+        };
+        assert!(
+            matches!(
+                bad_param.apply(&mut doc),
+                Err(ModelError::ParamIndexOutOfRange { index: 9, .. })
+            ),
+            "参数下标越界必须报 ParamIndexOutOfRange"
+        );
+        let bad_macro = Op::SetMacro {
+            track_id: f.lead,
+            macro_index: 9,
+            old_val: 0.0,
+            new_val: 0.5,
+        };
+        assert!(
+            matches!(
+                bad_macro.apply(&mut doc),
+                Err(ModelError::MacroIndexOutOfRange { index: 9, .. })
+            ),
+            "宏下标越界必须报 MacroIndexOutOfRange"
+        );
+        let bad_slot = Op::SetParam {
+            target: AutomationTarget::DeviceParam {
+                track_id: f.lead,
+                slot_index: 9,
+                param_index: 0,
+            },
+            old_val: 0.0,
+            new_val: 0.0,
+        };
+        assert!(
+            matches!(
+                bad_slot.apply(&mut doc),
+                Err(ModelError::DeviceSlotOutOfRange { index: 9, .. })
+            ),
+            "设备槽越界必须报 DeviceSlotOutOfRange"
+        );
+        assert_eq!(doc, snapshot, "越界路径不得改文档");
+    }
+
+    /// **每一个**自带 `previous_*` 撤销载荷的删除类变体都要核对"载荷 == 文档现值"。
+    ///
+    /// 实测：`stale_payloads_are_rejected_before_mutating` 只覆盖 `DeleteNote` 与
+    /// `ModifyNoteVelocity`；把 `RemoveClipPlacement` / `RemoveDevice` / `RemoveTrack`
+    /// / `DisconnectRouting` / `RemoveSection` / `RemoveScene` /
+    /// `RemoveAutomationPoint` / `RemoveAutomationLane` 的比对**逐个**关掉时，全仓判据
+    /// 保持全绿 —— 于是一个陈旧的撤销载荷会静默删掉**别的**东西。
+    #[test]
+    fn every_remove_with_a_previous_payload_rejects_a_stale_payload() {
+        let f = fixture();
+        let volume_target = AutomationTarget::TrackVolume { track_id: f.lead };
+        let cases: Vec<(&'static str, Op)> = vec![
+            (
+                "RemoveClipPlacement",
+                Op::RemoveClipPlacement {
+                    track_id: f.lead,
+                    placement_id: f.placement,
+                    previous_placement: ClipPlacement {
+                        start_tick: 1,
+                        ..fixture_document().tracks[&f.lead].clips[&f.placement]
+                    },
+                },
+            ),
+            (
+                "RemoveDevice",
+                Op::RemoveDevice {
+                    track_id: f.lead,
+                    slot_index: 0,
+                    previous_device: DeviceDefinition {
+                        name: "Stale".to_owned(),
+                        ..fixture_document().tracks[&f.lead].devices[0].clone()
+                    },
+                },
+            ),
+            (
+                "RemoveTrack",
+                Op::RemoveTrack {
+                    track_id: f.bass,
+                    previous_track: TrackV3 {
+                        name: "Stale".to_owned(),
+                        ..fixture_document().tracks[&f.bass].clone()
+                    },
+                },
+            ),
+            (
+                "DisconnectRouting",
+                Op::DisconnectRouting {
+                    edge_id: f.edge,
+                    previous_edge: RoutingEdge {
+                        gain_db: Some(-1.0),
+                        ..fixture_document().routing_graph.edges[&f.edge]
+                    },
+                },
+            ),
+            (
+                "RemoveSection",
+                Op::RemoveSection {
+                    section_id: f.section,
+                    previous_section: SectionV3 {
+                        end_tick: 1,
+                        ..fixture_document().sections[&f.section].clone()
+                    },
+                },
+            ),
+            (
+                "RemoveScene",
+                Op::RemoveScene {
+                    scene_id: f.scene,
+                    previous_scene: SceneV3 {
+                        name: "Stale".to_owned(),
+                        ..fixture_document().scenes[&f.scene].clone()
+                    },
+                },
+            ),
+            (
+                "RemoveAutomationPoint",
+                Op::RemoveAutomationPoint {
+                    target: volume_target,
+                    point_id: fixture_id(80),
+                    previous_point: AutomationPoint {
+                        value: 0.0,
+                        ..fixture_document().tracks[&f.lead].automation_lanes[&volume_target].points
+                            [&fixture_id(80)]
+                    },
+                },
+            ),
+            (
+                "RemoveAutomationLane",
+                Op::RemoveAutomationLane {
+                    target: volume_target,
+                    previous_lane: AutomationLane {
+                        write_mode: crate::project::AutomationWriteMode::Write,
+                        ..fixture_document().tracks[&f.lead].automation_lanes[&volume_target]
+                            .clone()
+                    },
+                },
+            ),
+        ];
+
+        for (name, op) in cases {
+            let mut doc = fixture_document();
+            let snapshot = doc.clone();
+            assert_eq!(
+                op.apply(&mut doc),
+                Err(ModelError::OpStateMismatch { op: name }),
+                "{name} 的陈旧载荷必须被拒绝"
+            );
+            assert_eq!(doc, snapshot, "{name} 被拒之后文档必须逐字节不动");
+        }
+    }
+
     /// 判据（混音开关 `MUST-GATE-010` 的一格）：`SetTrackMute` / `SetTrackSolo` 的三条硬性质
     /// —— **可逆** / **前置条件走既有错误码** / **无操作（`new == old`）被放行**。
     ///
