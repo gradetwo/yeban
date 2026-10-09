@@ -2062,6 +2062,110 @@ mod tests {
         assert_eq!(parsed.format.block_align(), 32_764);
     }
 
+    /// 手搭一个 `RIFF` 容器: 12 字节头 + 一个 `fmt ` chunk + 可选的 `data` chunk。
+    ///
+    /// `fmt_declared_len` 与 `fmt_body.len()` 可以**不一致** —— 那正是本判据要构造的
+    /// 畸形形状。顶层大小字段写 0: [`parse_container`] 不读它。
+    fn raw_riff(fmt_declared_len: u32, fmt_body: &[u8], with_data: bool) -> Vec<u8> {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        raw.extend_from_slice(b"fmt ");
+        raw.extend_from_slice(&fmt_declared_len.to_le_bytes());
+        raw.extend_from_slice(fmt_body);
+        if fmt_body.len() % 2 == 1 {
+            raw.push(0);
+        }
+        if with_data {
+            push_chunk(&mut raw, b"data", &payload(2));
+        }
+        raw
+    }
+
+    /// 判据 12f: 读取器**拒绝族**里此前一条判据都没有的三个成员各自被明确拒绝。
+    ///
+    /// # 量的是什么
+    ///
+    /// `Rf64Error` 共 13 个变体。把每个变体在**本模块的判据代码**里出现的次数数一遍，
+    /// 12 个里有 9 个是 1 次以上，而下面这三个是 **0 次**:
+    ///
+    /// | 变体 | 生产代码里的落点 | 加本判据之前的判据数 |
+    /// | :--- | :--- | :--- |
+    /// | `BadFmtLen` | `fmt ` 负载短于 16 字节, 或 EXTENSIBLE 标签的负载短于 40 字节 | 0 |
+    /// | `MissingData` | 容器里没有 `data` chunk | 0 |
+    /// | `ZeroChannels` | `fmt ` 里的声道数为 0 | 0 |
+    ///
+    /// 本判据把每一个都喂给 [`parse_container`] 并断言**具体的**变体, 而不是
+    /// "返回了 `Err` 就行"。
+    ///
+    /// # 为什么"返回了 `Err` 就行"不够（实测的盲区, 三种注入全绿）
+    ///
+    /// 同模块的 `every_single_byte_mutation_returns_a_result_instead_of_panicking`
+    /// **明确接受 `Ok`**（它的文档写了理由: 破坏可能落在不被读取的字节上）, 因此它
+    /// 抓不到下面三种注入。三者各自单独施加在**加本判据之前**的判据集上, 本机实测
+    /// 读数都是 `85 passed; 0 failed` —— 整个拒绝族对这三条语义是**盲**的:
+    ///
+    /// 1. 删掉 `parse_fmt_payload` 里的声道数检查（现位于第 1330 行）⇒ 声道数为 0 的
+    ///    `fmt ` 被解析**成功**, 调用方拿到一个 `block_align()` 为 0 的格式;
+    /// 2. 把 `data` 缺失的出口换成"空区间"（现位于第 1301 行）⇒ 一个声称了 `fmt `
+    ///    却没有任何音频的容器被当成成功;
+    /// 3. 把短 `fmt ` 那个出口的错误换成 `MissingFmt`（现位于第 1324 行）⇒ 调用方读到
+    ///    错误的诊断（"缺 fmt chunk"，而文件里有一个坏的 `fmt ` chunk）。
+    ///
+    /// 三种注入在本判据下各自变红，红行点名下面表里的 `case`。
+    #[test]
+    fn every_member_of_the_reader_rejection_family_is_pinned() {
+        // 四种畸形形状。每个闭包都**不捕获**环境（因此能放进 `fn` 指针表里）
+        // 并现场造出容器, 使每行自证其输入。
+        //
+        // 这个别名不是风格: 把三元素元组直接写成数组的元素类型会触发
+        // `clippy::type_complexity`（本项目 `clippy::all` 是 `deny`）, 而加
+        // `#[allow]` 是弱化门禁。别名让类型仍被写清楚, 同时满足 lint。
+        type Case = (&'static str, fn() -> Vec<u8>, Rf64Error);
+        let cases: [Case; 4] = [
+            (
+                "fmt 声明长度 10 (< 16)",
+                || raw_riff(10, &stereo_16bit().fmt_payload()[..10], true),
+                Rf64Error::BadFmtLen(10),
+            ),
+            (
+                "fmt 声明长度 16 但 tag 是 EXTENSIBLE (需要 40)",
+                || {
+                    let mut body = stereo_16bit().fmt_payload();
+                    body[0..2].copy_from_slice(&0xFFFEu16.to_le_bytes());
+                    raw_riff(16, &body, true)
+                },
+                Rf64Error::BadFmtLen(16),
+            ),
+            (
+                "容器里没有 data chunk",
+                || raw_riff(16, &stereo_16bit().fmt_payload(), false),
+                Rf64Error::MissingData,
+            ),
+            (
+                "fmt 的声道数为 0",
+                || {
+                    let mut body = stereo_16bit().fmt_payload();
+                    body[2..4].copy_from_slice(&0u16.to_le_bytes());
+                    raw_riff(16, &body, true)
+                },
+                Rf64Error::ZeroChannels,
+            ),
+        ];
+        for (case, build, expected) in cases {
+            assert_eq!(parse_container(&build()), Err(expected), "{case}");
+        }
+
+        // 基准（防空判据）: 同一个构造函数 + 一个合法 `fmt ` + `data` ⇒ 必须成功。
+        // 少了这一条, "四种形状全都 `Err`"也可能只是因为这个构造器造出来的容器
+        // 本来就坏, 而与被点名的字段无关。
+        assert!(
+            parse_container(&raw_riff(16, &stereo_16bit().fmt_payload(), true)).is_ok(),
+            "基准形状必须能解析, 否则上面的四行没有区分力"
+        );
+    }
+
     /// 判据 12d: **任意单字节破坏都不 panic**（把每个字节单独置成 `0xFF` 后重解析），
     /// 三种容器各扫一遍：`RIFF`（无 `ds64`、长度字段是真值）与 `RF64` / `BW64`
     /// （有 `ds64`、`data` 长度是哨兵）走的是两条不同的算术路径。
