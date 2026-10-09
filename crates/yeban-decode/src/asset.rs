@@ -667,4 +667,79 @@ mod tests {
         let handle = std::thread::spawn(move || clone.pcm_hash());
         assert_eq!(handle.join().unwrap(), shared.pcm_hash());
     }
+
+    /// 判据（类别④ 参数极值／0 端点）：`DecodeFacts` 的两个数值字段取 **0** 与
+    /// **类型极大值**时，只读访问器必须给出确定的值，而不是除零 panic / `NaN`。
+    ///
+    /// 逐项判定（量什么 → 怎么量 → 单位）：
+    ///
+    /// | 输入 | 访问器 | 判定 | 依据 |
+    /// | :--- | :--- | :--- | :--- |
+    /// | `channels = 0` | `frame_count()` | `0` 帧 | 访问器里有一条 `channels == 0` 的提前返回（现位于 `frame_count` 内） |
+    /// | `channels = 0` | `duration_seconds()` | `0.0` 秒 | 同上，再走一次提前返回 |
+    /// | `sample_rate = 0` | `duration_seconds()` | `0.0` 秒 | 访问器里有 `sample_rate == 0` 的提前返回（现位于 `duration_seconds` 内） |
+    /// | `channels = u16::MAX` | `frame_count()` | `samples.len() / 65535` 帧 | 整数除法，无溢出 |
+    /// | `sample_rate = u32::MAX` | `duration_seconds()` | 有限 `f64` | 一次 IEEE-754 除法，分母非 0 |
+    ///
+    /// 为什么必须钉：`channels == 0` 与 `sample_rate == 0` 在生产路径上是**不可达**的
+    /// （[`DecodedAsset::new`] 是 crate 内唯一构造点，三处调用点都由「平面数 ≥ 1」与
+    /// 「采样率闸门」保证），因此这两条提前返回是**防御性**的、没有被任何判据覆盖过。
+    /// 未覆盖的防御分支会随重构静默消失；本判据把它的**可观测结论**（0 帧 / 0.0 秒）
+    /// 写成字面值。删掉任一条提前返回都会在这里红，实测读数：
+    ///
+    /// - 删 `channels == 0` 那条 ⇒ `attempt to divide by zero`（`frame_count` 内做
+    ///   `samples.len() / 0`）；
+    /// - 删 `sample_rate == 0` 那条 ⇒ `left: inf` / `right: 0.0`（`4.0 / 0.0`）。
+    ///
+    /// 单位：帧（每声道采样数）、秒。
+    #[test]
+    fn facts_at_the_zero_and_max_endpoints_yield_defined_values() {
+        let facts = DecodeFacts {
+            channels: 0,
+            sample_rate: 48_000,
+            pcm_format: PcmFormat::F32,
+            declared_bit_depth: Some(32),
+            declared_frames: None,
+            encoder_delay_frames: None,
+            encoder_padding_frames: None,
+            duration: Reconciliation::DeclaredUnknown,
+        };
+        let no_channels = DecodedAsset::new(facts.clone(), vec![0.25, -0.5, 0.125, -0.0625]);
+        // 4 个样本、0 声道：不许做 `samples.len() / 0`。
+        assert_eq!(no_channels.frame_count(), 0);
+        assert_eq!(no_channels.duration_seconds(), 0.0);
+        // 摘要仍必须能算出来（它把 `frame_count` 写进头部）。
+        assert!(!no_channels.pcm_hash().as_str().is_empty());
+
+        let zero_rate = DecodedAsset::new(
+            DecodeFacts {
+                // 声道数取 1，把"0 Hz"与"0 声道"两条守则分开量。
+                channels: 1,
+                sample_rate: 0,
+                ..facts.clone()
+            },
+            vec![0.25, -0.5, 0.125, -0.0625],
+        );
+        // 1 声道、4 个样本、0 Hz：不许产生 `inf` / `NaN`。
+        assert_eq!(zero_rate.frame_count(), 4);
+        assert_eq!(zero_rate.duration_seconds(), 0.0);
+        assert!(zero_rate.duration_seconds().is_finite());
+
+        // 类型极大值一侧：`u16::MAX` 声道、`u32::MAX` Hz。
+        let at_max = DecodedAsset::new(
+            DecodeFacts {
+                channels: u16::MAX,
+                sample_rate: u32::MAX,
+                ..facts
+            },
+            vec![0.25, -0.5, 0.125],
+        );
+        // 3 个样本 / 65535 声道 ⇒ 0 整帧（整数除法向下取整，不回绕）。
+        assert_eq!(at_max.frame_count(), 0);
+        // 0 帧 / (2^32 - 1) Hz = 0.0 秒，且必须是有限值。
+        assert_eq!(at_max.duration_seconds(), 0.0);
+        assert!(at_max.duration_seconds().is_finite());
+        // 极大值的头部仍然进摘要，不 panic。
+        assert!(!at_max.pcm_hash().as_str().is_empty());
+    }
 }

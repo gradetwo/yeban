@@ -1234,4 +1234,196 @@ mod tests {
             }
         }
     }
+
+    /// 判据（类别④ 参数极值／类别⑦ 块长度极值）：重采样器在**短于一个分块**的输入上
+    /// 要求的工作量是 `(CHUNK_FRAMES + SINC_LEN/2) × 比例`，**与输入帧数无关**。
+    ///
+    /// 量什么：`resample_interleaved_with_budget` 在任何分配之前交给
+    /// [`limits::check_layout`] 的那个 `frames` 数（单位：帧），也就是输出缓冲要装下的
+    /// 帧数。怎么量：把它交给一个**时长上限紧到必然跳闸**的预算，从
+    /// [`LimitViolation::DurationTooLong`] 的 `frames` 字段里**读**出来 —— 判定发生在
+    /// 分配与 `Async::new_sinc` 之后、`process_all_into_buffer` 之前，因此这条判据不会
+    /// 真的跑重采样（不烧 CPU，也不受机器速度影响）。
+    ///
+    /// 读数（ratio = 输出率 / 输入率）：
+    ///
+    /// | 输入帧 | 输入率 → 输出率 | 比例 | 理想输出帧数 | 实际要求帧数 | 放大 |
+    /// | :--- | :--- | :--- | :--- | :--- | :--- |
+    /// | 1 | 2 Hz → 8 kHz | 4 000 | 4 000 | 4 612 010 | 1 153.0× |
+    /// | 1 | 2 Hz → 8 kHz（4 声道） | 4 000 | — | 4 612 010 | 同上（与声道数无关） |
+    /// | 1 | 1 Hz → 768 kHz | 768 000 | 768 000 | 885 504 010 | 1 153.0× |
+    ///
+    /// `4 612 010 = 1024×4 000 + 10 + 128×4 000 + 4 000`（分块项 + rubato 的常量 10 +
+    /// 前置延迟项 + 理想输出）。**默认预算放行最后一行**：`885 504 010` 帧 × 4 字节
+    /// ≈ 3.30 GiB 的 `f32`，而它是**1 帧输入**；`check_layout` 的四道闸门没有一道会挡它
+    /// （时长闸门按 `frames / 输出率` 算，而输出率被极端放大；字节闸门是 96 kHz 立体声
+    /// 3 小时的 8.29 GB）。本判据把这两个数字钉住，好让下一位不必重新测。
+    ///
+    /// 时间代价（`/tmp` 探针，本机 debug 构建，未在 CI 上测过；release 计时**未测** ——
+    /// 本机不许编译 symphonia 重依赖做 release 构建）：
+    ///
+    /// | 调用（1 帧输入） | 比例 | 内部处理帧数 | 读到的墙钟 |
+    /// | :--- | :--- | :--- | :--- |
+    /// | `resample_interleaved(&[0.0], 1, 2, 4_000)` | 2 000 | 2 306 010 | 11.5 s |
+    /// | `resample_interleaved(&[0.0], 1, 2, 8_000)` | 4 000 | 4 612 010 | > 20 s（未在 20 s 内返回） |
+    ///
+    /// ⚠ 这是**已知的、未修的**资源放大，不是"通过"。修它需要产品裁决（给比例设上界，
+    /// 或改分块策略），而改分块会**改变输出的位模式** —— 见下一条判据。
+    ///
+    /// 注入：把 `Async::new_sinc` 的分块实参从 `CHUNK_FRAMES` 改成 `1` ⇒ 本条第一个读数
+    /// 从 `4 612 010` 变成 `520 010`，本判据以 `left: 520010` / `right: 4612010` 红。
+    #[test]
+    fn the_resampler_demands_chunk_frames_times_ratio_regardless_of_input_length() {
+        // 只让时长闸门生效：其余四道放宽到不可能触发。
+        let one_second = PcmBudget::new(u64::MAX, u64::MAX, u16::MAX, u32::MAX, 1);
+
+        // 从错误里读"要求帧数"，而不是跑重采样。
+        let read_needed_frames = |frames: usize, channels: u16, in_rate: u32, out_rate: u32| {
+            let samples = vec![0.0f32; frames * usize::from(channels)];
+            match resample_interleaved_with_budget(
+                &samples,
+                channels,
+                in_rate,
+                out_rate,
+                &one_second,
+            ) {
+                Err(DecodeError::Budget(LimitViolation::DurationTooLong { frames, .. })) => frames,
+                other => panic!(
+                    "the tight duration cap must reject before any resampling: {in_rate} -> \
+                     {out_rate} at {frames} frames gave {other:?}"
+                ),
+            }
+        };
+
+        let ratio = 4_000u64; // 8 000 Hz / 2 Hz
+        let needed_mono = read_needed_frames(1, 1, 2, 8_000);
+        let needed_stereo = read_needed_frames(1, 2, 2, 8_000);
+        let chunk = u64::try_from(CHUNK_FRAMES).unwrap();
+        let delay_coefficient = u64::try_from(SINC_LEN / 2).unwrap();
+        assert_eq!(
+            needed_mono,
+            chunk * ratio + 10 + delay_coefficient * ratio + ratio
+        );
+        assert_eq!(needed_mono, 4_612_010);
+        // 与声道数无关 —— 这个数描述的是**每声道帧数**。
+        assert_eq!(needed_stereo, needed_mono);
+
+        // 与理想输出的比：`limits` 自己给出的理想值是 4 000 帧。
+        let contract = limits::resample_len_contract(1, 8_000, 2).expect("non-zero rates");
+        assert_eq!(contract.ideal_floor, ratio);
+        assert_eq!(needed_mono / contract.ideal_floor, 1_153);
+
+        // 合法参数的**上界**：`DEFAULT_MAX_SAMPLE_RATE` / 1 Hz。
+        let widest = read_needed_frames(1, 1, 1, limits::DEFAULT_MAX_SAMPLE_RATE);
+        assert_eq!(widest, 885_504_010);
+        let widest_bytes = widest * 4;
+        assert_eq!(widest_bytes, 3_542_016_040);
+
+        // 默认预算**不挡**它：四道闸门全部放行。此后直到那一份 3.30 GiB 的
+        // `try_reserve` 之间**没有**任何闸门（本条只断言"闸门放行"，不断言分配成功）。
+        let default = PcmBudget::default();
+        assert_eq!(
+            limits::check_layout(1, limits::DEFAULT_MAX_SAMPLE_RATE, widest, &default),
+            Ok(())
+        );
+        assert!(widest * 4 <= default.max_pcm_bytes);
+        assert!(widest <= default.max_duration_frames(limits::DEFAULT_MAX_SAMPLE_RATE));
+    }
+
+    /// 判据（[ARCH-DET-001] 确定性配置的载荷性）：[`CHUNK_FRAMES`] **参与逐位结果**，
+    /// 因此"给短输入用更小的分块"不是一条免费的优化。
+    ///
+    /// 量什么：同一段输入、同一组采样率，两次重采样产出的 `f32` 位模式（`to_bits()`）
+    /// 在哪个下标上第一次不同。怎么量：一侧走本 crate 的 [`resample_interleaved`]
+    /// （内部固定 `CHUNK_FRAMES`），另一侧用**同一组** rubato 构造参数、只把分块换成
+    /// `输入帧数`（下限 1），再逐位比对。
+    ///
+    /// 读数（`/tmp` 探针 2026-10-10，本机 debug 构建，217 组 `(输入帧数, 比例, 声道数)`
+    /// 里 212 组逐位相同、5 组不同）：
+    ///
+    /// | 输入帧 | 输入率 → 输出率 | 声道 | 输出帧数 | 首个不同的位下标 |
+    /// | :--- | :--- | :--- | :--- | :--- |
+    /// | 1 | 8 kHz → 96 kHz | 1 | 12 | 8 |
+    /// | 1 | 8 kHz → 48 kHz | 1 | 6 | 5 |
+    /// | 1 | 44.1 kHz → 96 kHz | 1 | 3 | 1 |
+    /// | 1 | 44.1 kHz → 48 kHz | 1 | 3 | 无（逐位相同，对照组） |
+    ///
+    /// 结论：分块**不是**内部实现细节，它是本 crate 发布的确定性口径的一部分；
+    /// 上一条判据里那 3.30 GiB 的资源放大因此不能用"缩小分块"来修 —— 那会改变输出。
+    ///
+    /// 注入（实测）：把 `Async::new_sinc` 的分块实参从 `CHUNK_FRAMES` 改成 `1` ⇒ 表里第
+    /// 一行变成"无差异"，本判据以
+    /// `8000 -> 96000: first bit difference moved` + `left: None` / `right: Some(8)` 红
+    /// （同一次注入也让上一条判据的读数从 `4 612 010` 变成 `520 010`）。
+    #[test]
+    fn the_chunk_size_takes_part_in_the_bit_exact_output() {
+        // 与 `resample_interleaved_with_budget` 同一组构造参数，唯一变量是分块。
+        let with_chunk = |samples: &[f32],
+                          channels: u16,
+                          in_rate: u32,
+                          out_rate: u32,
+                          chunk: usize| {
+            let frames = samples.len() / usize::from(channels);
+            let ratio = f64::from(out_rate) / f64::from(in_rate);
+            let params = SincInterpolationParameters::new(256, WindowFunction::BlackmanHarris2);
+            let mut resampler = Async::<f32>::new_sinc(
+                ratio,
+                MAX_RELATIVE_RATIO,
+                &params,
+                chunk,
+                usize::from(channels),
+                FixedAsync::Input,
+            )
+            .expect("the same construction the production path uses");
+            let needed_frames = resampler.process_all_needed_output_len(frames);
+            let mut output: Vec<f32> = Vec::new();
+            output.resize(needed_frames * usize::from(channels), 0.0);
+            let produced = {
+                let input =
+                    InterleavedSlice::new(samples, usize::from(channels), frames).expect("input");
+                let mut out =
+                    InterleavedSlice::new_mut(&mut output, usize::from(channels), needed_frames)
+                        .expect("output");
+                let (_, produced) = resampler
+                    .process_all_into_buffer(&input, &mut out, frames, None)
+                    .expect("process_all_into_buffer");
+                produced
+            };
+            output.truncate(produced * usize::from(channels));
+            output
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>()
+        };
+
+        // (输入帧数, 输入率, 输出率, 期望的首个不同下标；None = 期望逐位相同)
+        let rows: [(usize, u32, u32, Option<usize>); 4] = [
+            (1, 8_000, 96_000, Some(8)),
+            (1, 8_000, 48_000, Some(5)),
+            (1, 44_100, 96_000, Some(1)),
+            (1, 44_100, 48_000, None),
+        ];
+        for (frames, in_rate, out_rate, expected_first_diff) in rows {
+            let samples: Vec<f32> = (0..frames).map(|i| (i % 61) as f32 * 0.01 - 0.3).collect();
+            let published = resample_interleaved(&samples, 1, in_rate, out_rate)
+                .expect("the published entry point")
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>();
+            let small_chunk = with_chunk(&samples, 1, in_rate, out_rate, frames.max(1));
+            assert_eq!(
+                published.len(),
+                small_chunk.len(),
+                "{in_rate} -> {out_rate}: the produced length must not depend on the chunk size"
+            );
+            let first_diff = published
+                .iter()
+                .zip(small_chunk.iter())
+                .position(|(a, b)| a != b);
+            assert_eq!(
+                first_diff, expected_first_diff,
+                "{in_rate} -> {out_rate}: first bit difference moved"
+            );
+        }
+    }
 }

@@ -1454,4 +1454,63 @@ mod tests {
             })
         );
     }
+
+    /// 判据（类别④ 参数极值／0 端点）：**全零预算**是合法的，且它的语义是
+    /// "只放行空输入"，不是"放行一切"。
+    ///
+    /// 逐项判定（量什么 → 怎么量 → 单位 → 结论）：
+    ///
+    /// | 参数 | 取值 | 被调用的函数 | 结论 | 依据 |
+    /// | :--- | :--- | :--- | :--- | :--- |
+    /// | 五个字段全部 | `0` | `interleaved_samples_limit()` | `0` 个样本 | `0 / 4` |
+    /// | 五个字段全部 | `0` | `max_duration_frames(任意)` | `0` 帧 | `0 × 采样率` |
+    /// | 五个字段全部 | `0` | `check_input_len(0, ..)` | `Ok` | 闭区间：`0 > 0` 为假 |
+    /// | 五个字段全部 | `0` | `check_input_len(1, ..)` | `InputTooLarge` | 非空输入一律拒 |
+    /// | 五个字段全部 | `0` | `check_layout(1, 1, 0, ..)` | `TooManyChannels` | `1 > max_channels = 0` |
+    /// | 五个字段全部 | `0` | `check_layout(0, 1, 0, ..)` | `ZeroChannels` | 声道数为 0 是畸形声明，先于预算 |
+    /// | `max_channels` | `0` | `check_layout(任意 ≥ 1, ..)` | 一律 `TooManyChannels` | 声道闸门在最前 |
+    ///
+    /// 与"声道数为 0"是**两件事**：前者是调用方把预算收到零（合法的收紧），后者是流声明的
+    /// 畸形（[`LimitViolation::ZeroChannels`]）。判据把两者分开断言，免得实现把
+    /// "预算零"错报成"声道零"。
+    ///
+    /// 注入（实测）：把 `check_input_len` 的 `bytes > budget.max_input_bytes` 改成 `>=`
+    /// （闭区间变成开区间）⇒ 本条以
+    /// `left: Err(InputTooLarge { bytes: 0, limit: 0 })` / `right: Ok(())` 红，读数是
+    /// `0 passed / 1 failed / 118 filtered out`（只打红这一条）。
+    #[test]
+    fn an_all_zero_budget_admits_only_the_empty_input() {
+        let zero = PcmBudget::new(0, 0, 0, 0, 0);
+        assert_eq!(zero.interleaved_samples_limit(), 0);
+        for rate in [0u32, 1, 48_000, u32::MAX] {
+            assert_eq!(zero.max_duration_frames(rate), 0, "rate {rate}");
+        }
+        assert_eq!(check_input_len(0, &zero), Ok(()));
+        assert_eq!(
+            check_input_len(1, &zero),
+            Err(LimitViolation::InputTooLarge { bytes: 1, limit: 0 })
+        );
+        assert_eq!(
+            check_input_len(u64::MAX, &zero),
+            Err(LimitViolation::InputTooLarge {
+                bytes: u64::MAX,
+                limit: 0
+            })
+        );
+        // 声道数为 0 的声明先于预算判定：两条错误不能混成一个。
+        assert_eq!(
+            check_layout(0, 48_000, 0, &zero),
+            Err(LimitViolation::ZeroChannels)
+        );
+        // 任何非空布局都撞在"声道数上限 0"上（时长/字节闸门对 0 帧是恒真的）。
+        for channels in [1u16, 2, u16::MAX] {
+            assert_eq!(
+                check_layout(channels, 48_000, 0, &zero),
+                Err(LimitViolation::TooManyChannels { channels, limit: 0 }),
+                "{channels} channels"
+            );
+        }
+        // `for_layout` 从不产生"几乎放行一切"的零预算：退化参数返回 `None`。
+        assert_eq!(PcmBudget::for_layout(0, 0, 0), None);
+    }
 }
