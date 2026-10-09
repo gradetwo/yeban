@@ -692,6 +692,46 @@ fn include_resolution_is_deterministic_across_runs() {
 }
 
 #[test]
+fn reusing_one_resolver_twice_equals_two_fresh_resolvers() {
+    // 类别 3：`IncludeResolver::resolve` 每次都自带一份新的解析状态（宏表 / 递归栈 /
+    // 文件计数），所以**同一个实例**连续两次 `resolve` 必须与两个全新实例各自
+    // `resolve` 一次逐位一致 —— 「重新打开」不得把上一次调用的宏表或递归栈带过来。
+    let dir = TempDir::new("sfz-resolver-reuse");
+    let root = dir.path();
+    fs::create_dir_all(root.join("parts")).expect("dirs");
+    fs::write(root.join("parts/a.sfz"), "<region>sample=a.wav\n").expect("write");
+    fs::write(root.join("parts/b.sfz"), "<region>sample=b.wav\n").expect("write");
+    let with_define = "#define $DIR parts\n#include \"$DIR/a.sfz\"\n#include \"$DIR/b.sfz\"\n";
+    fs::write(root.join("main.sfz"), with_define).expect("write");
+
+    let limits = ParseLimits::default();
+    let run = |resolver: &IncludeResolver| {
+        let sources = resolver.resolve("main.sfz").expect("resolves");
+        let paths: Vec<String> = sources.iter().map(|source| source.path.clone()).collect();
+        let instrument = parse_sources(&sources, &limits).expect("parses");
+        (paths, format!("{instrument:?}"))
+    };
+
+    let reused = IncludeResolver::new(root, limits).expect("base dir");
+    let first = run(&reused);
+    let second = run(&reused);
+    let fresh = run(&IncludeResolver::new(root, limits).expect("base dir"));
+
+    // 非空证明：`#define` 真的展开了两条 include，否则「相等」是空判据。
+    assert_eq!(first.0, vec!["main.sfz", "parts/a.sfz", "parts/b.sfz"]);
+    assert_eq!(first, second, "one resolver must be reentrant");
+    assert_eq!(first, fresh, "reuse must equal a fresh instance");
+
+    // 宏表确实不进下一次调用：删掉 `#define` 之后 `$DIR` 找不到文件（未定义宏原样保留）。
+    fs::write(root.join("main.sfz"), "#include \"$DIR/a.sfz\"\n").expect("rewrite");
+    let leaked = reused.resolve("main.sfz");
+    assert!(
+        leaked.is_err(),
+        "the macro table from the previous call must not survive: {leaked:?}"
+    );
+}
+
+#[test]
 fn off_time_is_modeled_and_range_checked_explicitly() {
     let limits = ParseLimits::default();
 

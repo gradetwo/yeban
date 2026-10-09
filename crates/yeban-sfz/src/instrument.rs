@@ -1906,7 +1906,7 @@ mod tests {
     use super::*;
     use crate::curve::CurvePoint;
     use crate::midi::MidiOpcode;
-    use crate::parser::{Header, ParseLimits, parse_text};
+    use crate::parser::{Header, ParseLimits, SfzSource, parse_sources, parse_text};
 
     fn region(note: u8, seq_position: u32, seq_length: u32) -> Region<'static> {
         Region {
@@ -4905,5 +4905,104 @@ type=com.mda.Limiter
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 类别 3：重新加载 / 重新打开之后与全新实例一致
+    // ------------------------------------------------------------------
+
+    /// 一份**每一类段头都在场**的语料：`<control>` / `<global>` / `<master>` /
+    /// `<group>` / `<region>` / `<curve>` / `<effect>` / `<midi>`。
+    ///
+    /// 与 `CORPUS_CURVES` / `CORPUS_EFFECT` 的分工：那两条只带一类定义段，
+    /// 本条同时带三类定义段与三层继承（`global` / `master` / `group`），用来测
+    /// 「整结构」而不是某一刀切片。
+    const CORPUS_ALL_SECTIONS: &str = "\
+<control>default_path=samples/ set_cc7=100 label_cc1=Volume
+<global>volume=-3 amp_veltrack=80 bend_up=300 bend_down=-300
+<master>sw_last=36 sw_default=36
+<group>key=36 seq_length=2 lovel=1 hivel=127
+<region>seq_position=1 sample=k1.wav pitch_keycenter=48 xfin_locc1=0 xfin_hicc1=64
+<region>seq_position=2 sample=k2.wav pitch_keycenter=48 loop_mode=loop_continuous loop_start=10 loop_end=200
+<curve>curve_index=8
+v000=0
+v064=0.5
+v127=1
+<effect>bus=aux1 type=com.mda.Limiter param_offset=400 dsp_order=2 effect1=50
+<midi>cc1=64 curve_index=8
+<region>sample=a.wav trigger=release";
+
+    /// 类别 3：同一份 `.sfz` 连续解析两次必须归约出**同一个结构**。
+    ///
+    /// 已有的判据里，`curve` / `effect` / `midi` 三条只比较各自的切片；
+    /// `structured_random_input_never_panics_and_is_deterministic` 比较整结构的
+    /// `Debug`，但输入是 96 字节的随机串。本条用一份每一类段头都在场的语料，
+    /// 直接比较 [`Instrument`] 的 `PartialEq` —— 它包含 region 表、`<curve>` /
+    /// `<effect>` / `<midi>` 三张定义段表、`<control>` 的两张乐器级表、
+    /// `warnings` 与 [`Instrument::new`] 派生的 `key_buckets`。
+    ///
+    /// 先断言各类条目数，再比相等：否则「两份空结构相等」也能变绿。
+    #[test]
+    fn the_whole_instrument_is_structurally_equal_across_independent_parses() {
+        let limits = ParseLimits::default();
+        let first = parse_text(CORPUS_ALL_SECTIONS, &limits).expect("parses");
+        let second = parse_text(CORPUS_ALL_SECTIONS, &limits).expect("parses");
+
+        assert_eq!(first.regions().len(), 3, "regions");
+        assert_eq!(first.curves().len(), 1, "curves");
+        assert_eq!(first.effects().len(), 1, "effects");
+        assert_eq!(first.midi_sections().len(), 1, "midi sections");
+        assert_eq!(first.cc_labels().len(), 1, "control label_ccN");
+        assert_eq!(first.cc_defaults().len(), 1, "control set_ccN");
+        assert!(first.warnings().is_empty(), "the corpus is well formed");
+
+        assert_eq!(
+            first, second,
+            "the same bytes must reduce to the same structure"
+        );
+    }
+
+    /// 类别 3：「重新打开」在本 crate 里的形态是把同一批字节再交给解析器一次。入口有两条
+    /// —— 整段文本（[`parse_text`]）与已展开的片段表（[`parse_sources`]）。三条路径必须
+    /// 归约出同一个结构：
+    ///
+    /// 1. 整段文本；
+    /// 2. 同一批字节装进单条 [`SfzSource`]；
+    /// 3. 同一批字节在段头边界切成两条 [`SfzSource`]，第二条的 `first_line` 接着第一条数。
+    ///
+    /// 第 3 条是真正的「重新打开」形态（`IncludeResolver` 交付的就是片段表），而
+    /// `Region::source_line` 是结构里的一个字段 ⇒ 片段行号接不上就会在这里变红。
+    /// 解析状态跨片段延续是 [`parse_sources`] 的文档契约，不是这条判据的疏漏。
+    #[test]
+    fn reopening_the_same_bytes_as_sources_reduces_to_the_same_structure() {
+        let limits = ParseLimits::default();
+        let whole = parse_text(CORPUS_ALL_SECTIONS, &limits).expect("parses");
+        assert_eq!(whole.regions().len(), 3, "the fixture must not be empty");
+
+        let single = [SfzSource {
+            path: "instrument.sfz".to_string(),
+            text: CORPUS_ALL_SECTIONS.to_string(),
+            first_line: 1,
+        }];
+        let via_single = parse_sources(&single, &limits).expect("parses");
+        assert_eq!(whole, via_single, "one source must equal the whole text");
+
+        let split_at = CORPUS_ALL_SECTIONS.find("<effect>").expect("marker");
+        let head = SfzSource {
+            path: "instrument.sfz".to_string(),
+            text: CORPUS_ALL_SECTIONS[..split_at].to_string(),
+            first_line: 1,
+        };
+        let tail = SfzSource {
+            path: "instrument.sfz".to_string(),
+            text: CORPUS_ALL_SECTIONS[split_at..].to_string(),
+            first_line: 1 + CORPUS_ALL_SECTIONS[..split_at].matches('\n').count(),
+        };
+        let split = [head, tail];
+        let via_split = parse_sources(&split, &limits).expect("parses");
+        assert_eq!(
+            whole, via_split,
+            "a two-way split of the same bytes must keep every line number"
+        );
     }
 }

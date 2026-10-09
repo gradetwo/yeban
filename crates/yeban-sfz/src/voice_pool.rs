@@ -1590,4 +1590,165 @@ mod tests {
         assert_eq!(snapshot(&pool), saturated);
         assert_eq!(pool.active_count(), 2);
     }
+
+    // ------------------------------------------------------------------
+    // 类别 3：排空之后与全新实例一致
+    // ------------------------------------------------------------------
+
+    /// 类别 3：把一个池子**整轮排空**（每一声部都 `retire` → `process` 走完淡出）之后，
+    /// 它的全部可观测状态必须与一个全新实例逐位一致。
+    ///
+    /// 本 crate **没有** `reset` 入口（`reset` 这个词在 `src/` 下出现 0 次），所以「复位」
+    /// 的可达形态就是「排空」；这里是那条口径的机械判据。比较范围是
+    /// [`snapshot`]（每个槽位的每个 [`VoiceInfo`] 字段，含空闲槽位）、容量 / 占用 / 空闲
+    /// 计数、累计窃取次数、最近被窃取句柄与 3 ms 淡出长度。
+    ///
+    /// 为什么排空走 `retire` + `process` 而不是 `finish`：前者是本 crate 唯一的**运行期**
+    /// 回收路径（`process` 在淡出走完后调 [`Slot::free`]），后者是渲染器主动释放的旁路。
+    /// 走 `retire` 才能证明「运行期回收」与「构造」落在同一个状态上。
+    #[test]
+    fn a_drained_pool_is_indistinguishable_from_a_fresh_one() {
+        let mut used = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let handles: Vec<VoiceHandle> = (60..64u8)
+            .map(|note| used.note_on(note, 100, -6.0).started())
+            .collect();
+        assert_eq!(
+            used.active_count(),
+            4,
+            "the fixture must start from a full pool"
+        );
+
+        for handle in handles {
+            used.note_off(handle).expect("live handle");
+            used.retire(handle).expect("live handle");
+        }
+        // 3 ms @ 48kHz：一次推进就走完，全部槽位由 `process` 回收。
+        used.process(144);
+        assert_eq!(used.active_count(), 0, "every voice must be reclaimed");
+
+        let fresh = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        assert_eq!(
+            snapshot(&used),
+            snapshot(&fresh),
+            "every slot field must be back at its construction value"
+        );
+        assert_eq!(used.capacity(), fresh.capacity());
+        assert_eq!(used.free_count(), 4);
+        assert_eq!(used.steal_count(), fresh.steal_count(), "no steal happened");
+        assert_eq!(used.last_stolen(), fresh.last_stolen());
+        assert_eq!(used.steal_fade(), fresh.steal_fade());
+    }
+
+    /// 类别 3 +「换主人」：一个被排空过的池子在同样的输入序列下必须做出**同样的判定**
+    /// （窃取同一个槽位、返回同一种 [`NoteOnOutcome`]），但有两处全局序号**有意**不复位，
+    /// 各有一条硬理由：
+    ///
+    /// - [`VoiceHandle::generation`] 必须继续递增：若它回到构造值，「排空之前发出的旧句柄」
+    ///   会在新主人手上重新变成有效句柄。`stale_handles_are_rejected` 钉的是同一主人内的
+    ///   那条；本条钉跨主人回收的这一条。
+    /// - [`VoiceInfo::order`] 是全局单调触发戳（其文档是「越大越晚触发」），排空**不**使它
+    ///   回到 0。判定用的排序键（[`VoicePool::select_victim`] 的第 3 键、
+    ///   [`VoicePool::polyphony_victim`] 的第 2 键）只比较**同时在场**的声部，因此一个
+    ///   统一的偏移不改变任何选择结果 —— 本条把这个偏移量也量出来。
+    #[test]
+    fn a_reused_pool_keeps_the_monotone_stamp_and_the_slot_generation() {
+        let script: [(u8, f32, VoiceStage); 4] = [
+            (60, -6.0, VoiceStage::Attack),
+            (61, -20.0, VoiceStage::Sustain),
+            (62, -70.0, VoiceStage::Sustain),
+            (63, -12.0, VoiceStage::Release),
+        ];
+        // 返回（被窃取的槽位下标, 第 5 次触发的句柄, 每次触发的触发戳）。
+        let replay = |pool: &mut VoicePool| {
+            let mut victims = Vec::new();
+            let mut orders = Vec::new();
+            for (note, level, stage) in script {
+                let outcome = pool.note_on(note, 100, level);
+                if let Some(victim) = outcome.victim() {
+                    victims.push(victim.index as usize);
+                }
+                let handle = outcome.started();
+                orders.push(pool.voice(handle).expect("live handle").order);
+                pool.set_stage(handle, stage).expect("live handle");
+            }
+            // 池已满：第 5 次触发必然窃取 tier 0 里触发最早的声部（`Release` 的 63）。
+            let outcome = pool.note_on(64, 100, -3.0);
+            let victim = outcome.victim().expect("the pool is full");
+            victims.push(victim.index as usize);
+            let started = outcome.started();
+            orders.push(pool.voice(started).expect("live handle").order);
+            // 换主人：被窃取的**旧句柄必须失效**（[`NoteOnOutcome::Stolen`] 的文档写明它
+            // 「已失效」）。若槽位沿用同一个代数，旧句柄就会静默读到新声部的数据 ——
+            // 既有判据只比较过两次独立运行的 victim 下标，没有一条钉住这一点。
+            assert!(
+                pool.voice(victim).is_none(),
+                "the stolen handle must be stale, not address the new voice"
+            );
+            assert_ne!(
+                victim.generation, started.generation,
+                "an ownership change must advance the slot generation"
+            );
+            (victims, started, orders)
+        };
+
+        let mut fresh = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let fresh_run = replay(&mut fresh);
+        assert_eq!(
+            fresh_run.2,
+            vec![1, 2, 3, 4, 5],
+            "a fresh pool stamps from 1"
+        );
+
+        // 另一个池：先整轮排空（4 次激活 ⇒ 触发戳 1..=4），再跑同一份脚本。
+        let mut reused = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let stale: Vec<VoiceHandle> = (100..104u8)
+            .map(|note| reused.note_on(note, 100, -6.0).started())
+            .collect();
+        for handle in &stale {
+            reused.retire(*handle).expect("live handle");
+        }
+        reused.process(144);
+        assert_eq!(
+            reused.active_count(),
+            0,
+            "the fixture must be fully drained"
+        );
+        assert_eq!(
+            snapshot(&reused),
+            snapshot(&VoicePool::new(4, 48_000.0).expect("valid capacity")),
+            "the drain itself must land on the construction state"
+        );
+
+        let reused_run = replay(&mut reused);
+        assert_eq!(
+            reused_run.0, fresh_run.0,
+            "the same script must steal from the same slots"
+        );
+        for (index, fresh_order) in fresh_run.2.iter().enumerate() {
+            assert_eq!(
+                reused_run.2[index],
+                fresh_order + 4,
+                "stamp {index} keeps the constant monotone offset"
+            );
+        }
+        assert!(
+            reused_run.1.generation > fresh_run.1.generation,
+            "generation {} must keep advancing past a drained pool (fresh {})",
+            reused_run.1.generation,
+            fresh_run.1.generation
+        );
+        assert_eq!(
+            reused.last_stolen().map(|handle| handle.index),
+            fresh.last_stolen().map(|handle| handle.index)
+        );
+        for handle in &stale {
+            assert!(
+                matches!(
+                    reused.set_level(*handle, -3.0),
+                    Err(SfzError::StaleVoiceHandle)
+                ),
+                "a handle from before the drain must stay stale"
+            );
+        }
+    }
 }
