@@ -29,6 +29,21 @@
 //!    DEFLATE 流的最远匹配距离是 **1881 / 1881 / 1881 / 1187**（`score.xml`）与 4×**95**
 //!    （`container.xml`）字节（量法 = 手写 raw-DEFLATE 走查器，单位 = 字节）
 //!    ⇒ `MAX_WINDOW` 降到 2048 也不会让任何判据变红。
+//! ⑨ **取值拒绝的字面读数**（本票新增，`value_rejections_*`）：`MusicXmlError` 的 **15** 个
+//!    变体里有 **4** 个在本票之前**零判据** —— `InvalidNumber` / `InvalidTempo` /
+//!    `UnsupportedAlter` / `UnsupportedBeatType`（量法 = 本 crate 的 `tests/` 与
+//!    `src/musicxml.rs` 的 `#[cfg(test)]` 模块里数引用处；单位 = 引用处数，四者都是 **0**）。
+//!    注入证据（本票实测，两个方向都跑过）：把触发这四者的检查**一次性**去掉
+//!    （`src/musicxml.rs` 里 8 处字面替换）之后，
+//!    (a) 在本票新增的判据**之前**，本 crate 的 **108** 条判据**全绿**（`65 + 25 + 9 + 9`
+//!        passed、0 failed、退出码 0）；
+//!    (b) 在本票新增的判据**之后**，同一次注入让本 crate **唯一**变红的就是
+//!        `value_rejections_are_explicit_and_their_messages_are_pinned`
+//!        （`musicxml_contract` 读数 `25 passed; 1 failed`，红行是本判据的第一条断言）。
+//!    另有一轮一条一测的注入：四类检查与四条 `Display` 文本各改坏一次（共 **11** 次），
+//!    每次都只有本判据变红（同一次运行里 `musicxml_contract` 的其余 **25** 条与 **65** 条
+//!    单元判据全绿；`cargo test` 在出现失败后**不再**执行后面两个 SMF 二进制）。
+//!    ⇒ 本票之后，`MusicXmlError` 的 **15/15** 个变体各有至少一条判据。
 //!
 //! ## 规范出处
 //!
@@ -327,6 +342,161 @@ fn structural_errors_are_explicit() {
         parse_musicxml(b"<score-partwise><!-- never closed"),
         Err(MusicXmlError::Malformed { .. })
     ));
+}
+
+/// 把一段 `<measure>` 内容包成最小的 partwise 文档。
+///
+/// XML 由判据**自己**拼（⛔ 不新增夹具文件 ⇒ 没有第二份来源、没有哈希要登记）。
+fn measure_document(body: &str) -> Vec<u8> {
+    format!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P\">\
+         <part-name>Value rejection</part-name></score-part></part-list>\
+         <part id=\"P\"><measure number=\"1\">{body}</measure></part></score-partwise>"
+    )
+    .into_bytes()
+}
+
+/// 判据（本票新增）：四类**取值**拒绝各有一个字面 `Err` 读数，`Display` 文本也被钉住。
+///
+/// ## 补的是哪个缺口（本票实测）
+///
+/// 本票之前，`MusicXmlError` 的 **15** 个变体里有 **4** 个在**全部**测试里出现 **0** 次
+/// （量法 = 在本 crate 的 `tests/` 与 `src/musicxml.rs` 的 `#[cfg(test)]` 模块里数引用处；
+/// 单位 = 引用处数）：`InvalidNumber` / `InvalidTempo` / `UnsupportedAlter` /
+/// `UnsupportedBeatType`。注入证据：把触发这四者的检查**一次性**去掉（`src/musicxml.rs` 里
+/// 8 处字面替换）后、在**本判据之前**，本 crate 的 **108** 条判据**全绿**
+/// （`65 + 25 + 9 + 9` passed、0 failed、退出码 0）⇒ 那时没有任何东西阻止它们被删掉、
+/// 改错或静默放宽。本判据存在之后，同一次注入让**唯一**变红的就是本判据；
+/// 另有 **11** 次一条一测的注入（四类检查和四条 `Display` 文本各改坏一次），
+/// 每次也只有本判据变红（其余 **25** 条集成判据与 **65** 条单元判据保持绿）。
+///
+/// ## 量什么（单位已写明）
+///
+/// 每条 `assert_eq!` 数的是**一个 `Err` 值**（判别式 + 载荷）；四条 `Display` 断言各数
+/// **一个字符串**。全部输入与期望值都在本函数里 ⇒ 没有第二个来源。
+#[test]
+fn value_rejections_are_explicit_and_their_messages_are_pinned() {
+    // ① `InvalidNumber`：叶子元素的文本不是期望的数字。四个叶子各走一条不同的解析器
+    //    （`<duration>` = u64、`<octave>` = i32、`<voice>` = u16、`<step>` = 音级字母表）。
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<note><pitch><step>C</step><octave>4</octave></pitch><duration>-1</duration></note>"
+        )),
+        Err(MusicXmlError::InvalidNumber {
+            element: "duration",
+            text: "-1".to_owned()
+        }),
+        "负号不是无符号数 ⇒ <duration> 必须拒绝"
+    );
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<note><pitch><step>C</step><octave>abc</octave></pitch><duration>1</duration></note>"
+        )),
+        Err(MusicXmlError::InvalidNumber {
+            element: "octave",
+            text: "abc".to_owned()
+        }),
+        "<octave> 的文本不是整数"
+    );
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration>\
+             <voice>99999</voice></note>"
+        )),
+        Err(MusicXmlError::InvalidNumber {
+            element: "voice",
+            text: "99999".to_owned()
+        }),
+        "99999 超过 u16 的上界 65535"
+    );
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<note><pitch><step>H</step><octave>4</octave></pitch><duration>1</duration></note>"
+        )),
+        Err(MusicXmlError::InvalidNumber {
+            element: "step",
+            text: "H".to_owned()
+        }),
+        "H 不在 A..G 的七级字母表里"
+    );
+
+    // ② `UnsupportedAlter`：微分音（非整数半音）明确拒绝，⛔ 不静默截断成 0
+    //    （那不是"容错"，是把音高读错）。
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<note><pitch><step>C</step><alter>0.5</alter><octave>4</octave></pitch>\
+             <duration>1</duration></note>"
+        )),
+        Err(MusicXmlError::UnsupportedAlter {
+            text: "0.5".to_owned()
+        }),
+        "半个半音没有 MIDI 音高可用"
+    );
+
+    // ③ `UnsupportedBeatType`：分母必须是正的 2 的幂 ⇒ 3 与 0 都不行。
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<attributes><time><beats>4</beats><beat-type>3</beat-type></time></attributes>"
+        )),
+        Err(MusicXmlError::UnsupportedBeatType { value: 3 }),
+        "3 不是 2 的幂 ⇒ 无法表达为 denominator_pow2"
+    );
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<attributes><time><beats>4</beats><beat-type>0</beat-type></time></attributes>"
+        )),
+        Err(MusicXmlError::UnsupportedBeatType { value: 0 }),
+        "0 不是正的 2 的幂"
+    );
+
+    // ④ `InvalidTempo`：0 与非数字都拒绝（⛔ 不回退成某个默认速度）。
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<direction><sound tempo=\"0\"/></direction>"
+        )),
+        Err(MusicXmlError::InvalidTempo {
+            text: "0".to_owned()
+        }),
+        "tempo=0 会让 mpqn 无界"
+    );
+    assert_eq!(
+        parse_musicxml(&measure_document(
+            "<direction><sound tempo=\"abc\"/></direction>"
+        )),
+        Err(MusicXmlError::InvalidTempo {
+            text: "abc".to_owned()
+        }),
+        "tempo 的文本不是数"
+    );
+
+    // ⑤ 四者的 `Display` 文本（调用方看到的**字面**读数）也各钉一条。
+    //    单位 = 字符串；比对的是 `to_string()` 的输出。
+    assert_eq!(
+        MusicXmlError::InvalidNumber {
+            element: "duration",
+            text: "-1".to_owned()
+        }
+        .to_string(),
+        "<duration> 不是数字: -1"
+    );
+    assert_eq!(
+        MusicXmlError::UnsupportedAlter {
+            text: "0.5".to_owned()
+        }
+        .to_string(),
+        "<alter> 不是整数半音: 0.5"
+    );
+    assert_eq!(
+        MusicXmlError::UnsupportedBeatType { value: 3 }.to_string(),
+        "<beat-type> 不是 2 的幂: 3"
+    );
+    assert_eq!(
+        MusicXmlError::InvalidTempo {
+            text: "abc".to_owned()
+        }
+        .to_string(),
+        "<sound tempo> 非法: abc"
+    );
 }
 
 #[test]
