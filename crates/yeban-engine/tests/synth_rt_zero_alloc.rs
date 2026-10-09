@@ -234,6 +234,20 @@
 //! 不是器件构造初值）。窗口里音符铺满（`saturated_notes`）⇒ 末尾仍在有声段，
 //! 因此这条见证不是"落回地板"那一条的重复。
 //! 它**不新增场景**，也不改变任何窗口的分配断言。
+//!
+//! # 场景 16 的覆盖度见证（`line/engine-18` 追记）：换采样率时主总线槽位**还没**武装
+//!
+//! 缺陷的形状是一条**顺序**上的不对称：`ParamTable::set_sample_rate` 的转发点曾经带
+//! `if self.master_armed` 守卫 ⇒「先换采样率、后武装主总线」会留下按**旧**采样率算出的
+//! `α`（同一条 5 ms 的斜坡被拉长／压短）。它住在**快照边界**（在实时窗口内部，`α` 的
+//! 重算含一次 `exp`），但既有的场景 16 换采样率窗口里那一格**已经**武装过 ⇒ 对新增的
+//! 那条路径是空转。本追记在**同一个场景**里加一个窗口：构造在 48 kHz、一个量子都不发
+//! 主总线事件、发布一份 44.1 kHz 的快照 ⇒ 未武装时的转发；随后武装、再过一个量子。
+//! 两个窗口都断言 `allocations == 0 && deallocations == 0`，并断言"换采样率时确实
+//! 还没有武装"（覆盖度自检，防空转）。
+//! 语义（`α` 必须是新采样率的）**不**在这里钉 —— 它由 `src/param.rs` 的判据 ⑧
+//! 与 `tests/param_automation.rs` 的 P13 用逐位等号钉住。
+//! 本追记**不新增场景**。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -2020,6 +2034,86 @@ fn main() -> ExitCode {
     }
     if param_runtime.armed_param_target(&param_track).is_none() {
         failures.push("换采样率把已武装的参数目标丢了 —— α 重算不该复位平滑器".to_owned());
+    }
+
+    // ---- 场景 16 的**加宽**（`line/engine-18`）：换采样率时主总线槽位**还没**武装 ----
+    //
+    // 上面那个换采样率窗口里，主总线槽位**已经**武装过 ⇒ `ParamTable::set_sample_rate`
+    // 从第一条修订起就会转发给那一格。还有**另一个顺序**要走：换采样率时那一格**还没**
+    // 被武装。两个边界在同一个量子里有**固定先后**（事件边界在前、快照边界在后）⇒
+    // "快照换了采样率"与"主总线收到第一个目标"可以在不同的修订里，这个中间状态是
+    // 真实可达的。本票把那一格的跟随改成**无条件**（语义由 `src/param.rs` 的判据 ⑧ 与
+    // `tests/param_automation.rs` 的 P13 钉住）⇒ 这里量它的**零分配**属性：
+    // 未武装时换采样率 ⇒ 转发（含一次 `exp`）⇒ 随后武装 ⇒ 逐样本应用。
+    //
+    // ⚠ 本窗口是**零分配/覆盖度**见证，**不是**语义判据：上面两条判据才钉住"α 必须是
+    // 新采样率的"（本窗口的读数区间对两个 `α` 都成立）。
+    let cold_fixture = note_project(&saturated_notes());
+    let cold_master = cold_fixture.master;
+    let cold_snapshot =
+        EngineSnapshot::from_project(&cold_fixture.project, 1).expect("未武装夹具快照");
+    let cold_slot = SnapshotSlot::new(cold_snapshot);
+    let (cold_retire, _cold_queue) = retire_channel(8);
+    let (mut cold_sender, cold_receiver) = event_channel(16);
+    let (cold_publisher, _cold_collector) = meter_channel(8192);
+    let mut cold_runtime =
+        EngineRuntime::new(&cold_slot, cold_retire, cold_receiver, cold_publisher);
+    let mut cold_output = vec![0.0f32; 128 * 2];
+    cold_runtime.process_quantum(&mut cold_output, 2); // 预热（窗口外）
+    let mut cold_shifted = cold_fixture.project.clone();
+    cold_shifted.audio_config.sample_rate = SampleRate::Hz44100;
+    let cold_shifted_snapshot =
+        EngineSnapshot::from_project(&cold_shifted, 2).expect("未武装换采样率快照");
+    cold_slot.publish(cold_shifted_snapshot);
+    let (allocations, deallocations) = measure("param rate-change while unarmed + quantum", || {
+        cold_output.fill(0.0);
+        cold_runtime.process_quantum(&mut cold_output, 2);
+    });
+    let armed_before_event = cold_runtime.armed_master_param_target();
+    println!(
+        "[engine-param/J16b] 换采样率（主总线**未**武装）: allocations={allocations} \
+         deallocations={deallocations} 武装={armed_before_event:?}"
+    );
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "参数目标表在**未武装**状态下换采样率时分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations}（`set_sample_rate` 的 `α` 重算含一次 `exp`）"
+        ));
+    }
+    if armed_before_event.is_some() {
+        failures.push(
+            "本窗口的前提是换采样率时主总线槽位**还没有**武装 —— 它已经被武装过 ⇒ 本窗口\
+             对新增的那条路径是空转"
+                .to_owned(),
+        );
+    }
+    // 武装（窗口外）之后再过一个量子：新采样率的 `α` 从第一条 `apply_master` 起生效。
+    let accepted = cold_sender.publish(&[EngineEvent::SetParam {
+        target: ParamAddress::new(cold_master, MASTER_GAIN_SLOT),
+        value: 0.25,
+    }]);
+    assert_eq!(accepted, 1, "主总线参数事件必须真的进队列");
+    let (allocations, deallocations) = measure("param armed-after-rate-change + quantum", || {
+        cold_output.fill(0.0);
+        cold_runtime.process_quantum(&mut cold_output, 2);
+    });
+    let cold_gain = cold_runtime.armed_master_param_gain();
+    println!(
+        "[engine-param/J16b] 换采样率之后武装 + 一个量子: allocations={allocations} \
+         deallocations={deallocations} 平滑值={cold_gain:?}"
+    );
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "主总线槽位在换采样率之后武装的窗口里分配/释放了内存: allocations={allocations} \
+             deallocations={deallocations}"
+        ));
+    }
+    // 只钉**区间**（"仍在平滑中"），不钉随时间变化的具体值：那个等号由 P13 负责。
+    match cold_gain {
+        Some(gain) if gain > 0.25 && gain < 1.0 => {}
+        other => failures.push(format!(
+            "换采样率之后武装的主总线平滑值不在'仍在平滑中'的区间 (0.25, 1.0) 里: {other:?}"
+        )),
     }
 
     // ---- 场景 17：**每轨插入卷积混响**（`crate::insert` 的第三件器件）在实时窗口内零分配 ----

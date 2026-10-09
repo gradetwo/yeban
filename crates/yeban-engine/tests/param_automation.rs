@@ -31,12 +31,14 @@
 //! | P10 | 主总线的阶跃目标同样**被平滑**（第一个帧的相对变化 `< 1 %`，比值单调不增，最终收敛到 `0.25`） | 主总线路径走 `snap_to`（旁路单极点低通） |
 //! | P11 | 主总线槽位的地址空间：一条轨带 `MASTER_GAIN_SLOT`、主总线带 `TRACK_GAIN_SLOT`、主总线带别的槽位号、主总线的非法值 —— 四种口径的输出与接线前**逐字节相同**且被**计数**（不占逐轨槽位） | 串用两个槽位号也接受 / 非法值也 `set_target` / 不计数 |
 //! | P12 | **主总线自动化的确定性**：同样的工程 + 同样的事件序列 ⇒ 两次独立装配的两条声道都逐位相同 | 引入真熵源 / 让事件顺序影响结果 |
+//! | P13 | **先换采样率、后武装主总线槽位**：新采样率上的 `α` 与"一开始就在该采样率"逐位相同（`armed_master_param_gain` 等号） | 快照边界只把新采样率转发给**已武装**的主总线槽位（判据 ⑧ 钉住的那条不对称） |
 //!
 //! ## 覆盖范围（**明说**）
 //!
 //! 本文件覆盖 `crate::param` 的槽位裁决与 `rt.rs` 的**事件边界**（`accept`）、
 //! **快照边界**（`set_sample_rate` 与主总线身份）与**逐样本应用**（`apply` 与
-//! `apply_master`）。它**不**覆盖：`yeban_dsp::smoothing` 内部的一阶低通正确性
+//! `apply_master`）。P13（`line/engine-18`）补上了"两个边界之间的**顺序**"这一维。
+//! 它**不**覆盖：`yeban_dsp::smoothing` 内部的一阶低通正确性
 //! （那是该模块自己的单元判据）、参数曲线的插值（那是
 //! `yeban_model::automation_value_at` 的职责，`tests/rt_zero_alloc.rs` 场景 ⑤
 //! 已经在控制侧调它）、以及**声相**与**插入器件参数**的自动化槽位（本模块
@@ -537,4 +539,71 @@ fn the_master_event_sequence_is_bit_identical_across_assemblies() {
     );
     assert_eq!(first_right, second_right);
     assert!(first_left.iter().any(|sample| *sample != 0.0), "不许是空转");
+}
+
+/// 判据 P13：**先换采样率、后武装主总线槽位**时，平滑器的 `α` 必须已经是新采样率的
+/// —— 也就是与"一开始就构造在该采样率"的那一次运行**逐位相同**。
+///
+/// 为什么这个顺序是**真实可达**的：`ParamTable::set_sample_rate` 的调用点在**快照边界**
+/// （`rt.rs` 的步骤 2a'），而主总线槽位的武装点在**事件边界**（步骤 1 的
+/// `params.accept`），两者之间隔着"换了快照采样率但还没有收到过任何主总线目标"这个
+/// 状态。同一条纪律下，逐轨槽位从来没有这个不对称：它们在快照边界**无条件**全量跟随。
+///
+/// 窗口取 8 个量子（1 024 帧）：44.1 kHz 上一条 5 ms 的 `1.0 → 0.25` 斜坡需要
+/// ≈ 2 470 个样本才吸附，按旧采样率（48 kHz）算出的 `α` 需要 ≈ 2 694 个
+/// ⇒ 这一窗**对两个 `α` 敏感**（实测两者约 0.2572 与 0.2605，见下面的字面读数）。
+#[test]
+fn a_master_slot_armed_after_a_sample_rate_change_uses_the_new_sample_rate() {
+    let fixture = note_project(&[NOTE]);
+    let mut shifted = fixture.project.clone();
+    shifted.audio_config.sample_rate = yeban_model::SampleRate::Hz44100;
+
+    // A：先在 48 kHz 上装配，换到 44.1 kHz 的快照**过一个量子之后**才武装主总线。
+    let mut late = ParamRig::new(&fixture.project, 1);
+    late.quantum();
+    let snapshot = EngineSnapshot::from_project(&shifted, 2).expect("换采样率快照");
+    late.slot.publish(snapshot);
+    late.quantum(); // 快照边界：把 44.1 kHz 同步给平滑器（此刻主总线**还没有**武装）
+    assert_eq!(
+        late.runtime.armed_master_param_gain(),
+        None,
+        "本判据的前提：换采样率时主总线槽位还没有收到过任何目标"
+    );
+    late.set_param(fixture.master, MASTER_GAIN_SLOT, 0.25);
+
+    // B：一开始就装配在 44.1 kHz —— 唯一的事实源；量子位置与 A 对齐。
+    let mut fresh = ParamRig::new(&shifted, 1);
+    fresh.quantum();
+    let same = EngineSnapshot::from_project(&shifted, 2).expect("同采样率快照");
+    fresh.slot.publish(same);
+    fresh.quantum();
+    fresh.set_param(fixture.master, MASTER_GAIN_SLOT, 0.25);
+
+    const WINDOW: usize = 8;
+    late.quanta(WINDOW);
+    fresh.quanta(WINDOW);
+
+    let late_gain = late
+        .runtime
+        .armed_master_param_gain()
+        .expect("A 必须已武装");
+    let fresh_gain = fresh
+        .runtime
+        .armed_master_param_gain()
+        .expect("B 必须已武装");
+    assert!(
+        fresh_gain > 0.25 && fresh_gain < 1.0,
+        "参照必须仍在平滑中（否则本判据对 α 不敏感，实得 {fresh_gain}）"
+    );
+    assert_eq!(
+        late_gain, fresh_gain,
+        "先换采样率再武装主总线，平滑器的 α 必须是新采样率的（逐位）"
+    );
+    assert_eq!(
+        late.runtime.stats().param_master_gain_frames,
+        fresh.runtime.stats().param_master_gain_frames,
+        "两条路径被乘过的帧数必须相同"
+    );
+    let _ = late.queue.drain(64);
+    let _ = fresh.queue.drain(64);
 }

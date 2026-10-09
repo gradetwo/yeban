@@ -259,9 +259,22 @@ impl ParamTable {
         }
     }
 
-    /// 快照边界：把采样率同步给**已分配**的平滑器（`α` 随之重算，含 `exp`）。
+    /// 快照边界：把采样率同步给**全部**平滑器（`α` 随之重算，含 `exp`）。
     ///
     /// 当前值与目标都**不动** ⇒ 换采样率不会让一个正在平滑的增益跳变。
+    ///
+    /// ⚠ **主总线那一格也必须跟随**，哪怕它还没有被武装过（判据 ⑧）。曾经的写法是
+    /// "只在 `master_armed` 时跟随"，理由是"没收到过目标时当前值与目标都恒为 `1.0`，
+    /// 没有东西会因为 `α` 变旧而漂移" —— 那条理由**只对此刻**成立：`α` 是**持久状态**，
+    /// 武装发生在**快照边界之后**的事件边界上，而 `set_sample_rate` 在采样率相同时
+    /// 直接返回 ⇒ 旧 `α` 从此再也没有被修正的入口，"先换采样率、后武装"会得到一条
+    /// 按 `旧率 ÷ 新率` 缩放过的斜坡（48 kHz → 96 kHz 时是 10 ms 而不是 5 ms）。
+    /// 逐轨槽位从来没有这个不对称：它们无条件全量转发。现在两者同款。
+    ///
+    /// 代价是每次**真的**换采样率时多一次 `exp`。它落在快照边界（每个修订至多一次），
+    /// 不在逐样本路径上，且 `ParamSmoother::set_sample_rate` 在采样率相同时直接返回
+    /// ⇒ 稳态下**一次都不跑**（[ADR-0001 D32] 的超越函数类纪律）。
+    /// 零分配、零锁、零阻塞 I/O、零日志 [MUST-GATE-001]。
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         if sample_rate == self.sample_rate {
             return;
@@ -270,11 +283,7 @@ impl ParamTable {
         for gain in &mut self.gains[..self.len] {
             gain.set_sample_rate(sample_rate);
         }
-        // 主总线槽位只在**已经收到过目标**时才需要跟随：没收到过时它的当前值与目标
-        // 都恒为 `1.0`，没有任何东西会因为 `α` 变旧而漂移（`exp` 因此不必跑）。
-        if self.master_armed {
-            self.master.set_sample_rate(sample_rate);
-        }
+        self.master.set_sample_rate(sample_rate);
     }
 
     /// 事件边界：处理一条 `SetParam`（见模块文档 §2 的裁决表）。
@@ -678,5 +687,65 @@ mod tests {
         for (index, (l, r)) in left.iter().zip(right.iter()).enumerate() {
             assert_eq!(l, r, "第 {index} 帧：两条声道必须用同一个增益");
         }
+    }
+
+    /// 判据 ⑧：**换采样率发生在主总线槽位第一次武装之前**时，那一格也必须用
+    /// **新**采样率的 `α` —— 也就是与"一开始就构造在该采样率"的同类表**逐位相同**。
+    ///
+    /// 它钉住一个**顺序**上的不对称：逐轨槽位在 [`ParamTable::set_sample_rate`] 里
+    /// **无条件**跟随（`self.gains[..self.len]` 全量转发），而主总线那一格曾经只在
+    /// "**已经**武装过"时才跟随。于是「先换采样率、后武装主总线」会留下一个按
+    /// **旧**采样率算出的 `α` ⇒ 同一条 5 ms 的斜坡按 `旧率 ÷ 新率` 被拉长或压短
+    /// （48 kHz → 96 kHz 时变成 10 ms），与模块文档 §3 第 2 条"采样率变化才重算 `α`"
+    /// 的契约不符 —— 那个 `α` 从此**再也没有**被修正的入口：`set_sample_rate` 在
+    /// 采样率相同时直接返回，武装发生在快照边界**之后**。
+    ///
+    /// 判据是**逐位等号**（两个表在同一批样本上的输出数组），不是容差：
+    /// `α` 不同 ⇒ 第一个样本就不同。
+    #[test]
+    fn a_rate_change_before_the_master_slot_is_armed_leaves_no_stale_alpha() {
+        let master = EntityId::new();
+
+        // A：先构造在 48 kHz，**换到** 96 kHz，然后才第一次武装主总线槽位。
+        let mut late = ParamTable::new(48_000.0);
+        late.set_sample_rate(96_000.0);
+        assert!(!late.master_armed(), "还没有事件 ⇒ 主总线槽位未武装");
+        assert_eq!(
+            late.accept(address(master, MASTER_GAIN_SLOT), 0.25, master),
+            ParamOutcome::Accepted
+        );
+
+        // B：一开始就构造在 96 kHz（唯一的事实源）。
+        let mut fresh = ParamTable::new(96_000.0);
+        assert_eq!(
+            fresh.accept(address(master, MASTER_GAIN_SLOT), 0.25, master),
+            ParamOutcome::Accepted
+        );
+
+        // 4 000 帧：96 kHz 上的 5 ms 斜坡（≈ 5 386 样本才吸附）**还没**走完，
+        // 而按 48 kHz 的 `α` 走（≈ 2 694 样本）已经吸附 ⇒ 两种情形在这一窗内可分。
+        let mut late_left = [1.0f32; 4_000];
+        let mut late_right = [1.0f32; 4_000];
+        let mut fresh_left = [1.0f32; 4_000];
+        let mut fresh_right = [1.0f32; 4_000];
+        assert_eq!(late.apply_master(&mut late_left, &mut late_right), 4_000);
+        assert_eq!(fresh.apply_master(&mut fresh_left, &mut fresh_right), 4_000);
+
+        assert_eq!(
+            late.master_gain(),
+            fresh.master_gain(),
+            "先换采样率再武装主总线，平滑器的输出值必须与一开始就在该采样率逐位相同"
+        );
+        assert_eq!(
+            late_left, fresh_left,
+            "左声道的逐样本轨迹必须逐位相同（α 必须是新采样率的）"
+        );
+        assert_eq!(late_right, fresh_right, "右声道同上（立体声联动）");
+        // 反向见证：两条轨迹**真的**被推进过（否则上面两条等号是空转）。
+        assert!(
+            fresh_left[3_999] < 1.0 && fresh_left[3_999] > 0.25,
+            "96 kHz 的第一窗必须仍在平滑中（实得 {}）",
+            fresh_left[3_999]
+        );
     }
 }
