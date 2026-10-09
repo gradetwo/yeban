@@ -44,6 +44,19 @@
 //!    每次都只有本判据变红（同一次运行里 `musicxml_contract` 的其余 **25** 条与 **65** 条
 //!    单元判据全绿；`cargo test` 在出现失败后**不再**执行后面两个 SMF 二进制）。
 //!    ⇒ 本票之后，`MusicXmlError` 的 **15/15** 个变体各有至少一条判据。
+//! ⑩ **容器层的三处读数**（本票新增，`mxl_rootfile_attribute_*` / `mxl_zip64_markers_*` /
+//!    `mxl_malformed_readings_*`）：
+//!    (a) 根文件的属性扫描器原先**不跟引号状态** ⇒ 另一个属性的**值**里出现
+//!        `full-path='backup.xml'` 时，容器里**存在的** `backup.xml` 被**静默**当成根文件
+//!        （同一份字节，本模块与符合规范的读取器读出**不同**的乐谱）⇒ 已修，两个方向都有判据；
+//!    (b) **条目**字段里的 ZIP64 标记（`0xFFFFFFFF`，APPNOTE 4.4.8 / 4.4.9 / 4.4.16）原先按调用方
+//!        给的 `max_entry_bytes` 报出**三种不同**的读数（默认上界 ⇒ `LimitExceeded`；
+//!        上界放到 `usize::MAX` ⇒ `SizeMismatch`；压缩长度为标记 ⇒ `Malformed`）⇒ 已点名成
+//!        `UnsupportedZip64`，判据要求 3 个标记 × 2 种上界 = 6 条读数**全同**；
+//!    (c) `MxlError::Malformed` 在本票之前于**全部**测试里出现 **0** 次（量法 = 本 crate 的
+//!        `tests/` 与 `src/mxl.rs` 的 `#[cfg(test)]` 模块里数引用处；单位 = 引用处数），
+//!        而它在产品代码里有 **11** 个构造点 ⇒ 本票钉住其中 **7** 个在 64 位目标上可达的
+//!        （字面 `offset` + `detail`）；**4** 个不可达的逐条登记理由，⛔ 不写成"已通过"。
 //!
 //! ## 规范出处
 //!
@@ -59,6 +72,10 @@
 //!   容器（stored 条目、stored DEFLATE 块）。ZIP64 / 加密 / 非 deflate 压缩法的**接受**仍然
 //!   **没有**判据 —— 这三者的**拒绝**有判据（见 `src/mxl.rs` 的边界 1/2/3）。
 //!   `data descriptor` 与多块流的**接受**由本票新增的判据钉住（边界 7 与 `src/mxl/inflate.rs`）。
+//! - ⛔ 不证明 `MxlError::Malformed` 的 **11/11** 个构造点都被覆盖：本票只钉住 **7** 个
+//!   （64 位目标上可达的那些）；另外 **4** 个给出了不可达的理由（见
+//!   `mxl_malformed_readings_are_pinned_by_offset_and_detail` 的文档），其中 **3** 个
+//!   在 **32 位**目标上可达而本机（aarch64、64 位）跑不到 ⇒ 那是**已知缺口**，不是"通过"。
 //! - ⛔ 不证明导出、引擎接线、界面可用：都不存在。
 //! - ⛔ 不证明完整 MusicXML 4.0 语义：`forward` / `grace` / `unpitched` / `transpose`
 //!   只证明"被登记为未实现"，不证明语义正确。
@@ -1664,4 +1681,368 @@ fn mxl_eocd_scan_honours_the_comment_length() {
         Ok(expected),
         "注释里的假 EOCD 不该顶替真的 EOCD"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 容器层：属性扫描的引号规则 / ZIP64 标记 / `MxlError::Malformed` 的字面读数（本票新增）
+//
+// 上面那一票把"能读的形状"钉住了（three shapes + 32 KiB 窗口）。本节补的是**容器层读数**
+// 本身的三处缺口（量法见本节各判据的"量什么"）：
+// ① 根文件的属性扫描器不按引号走 ⇒ 另一个属性的**值**能劫持根文件（**修**，见 (a)）；
+// ② 条目字段里的 ZIP64 标记按调用方的上界报成三种不同读数（**修**，见 (b)）；
+// ③ `MxlError::Malformed` 在全部测试里零引用 ⇒ 11 个构造点无一被判据约束（**补判据**，见 (c)）。
+// ⛔ 本节不新增夹具文件：字节全部由判据**自己**拼（没有第二份来源、没有哈希要登记）。
+// ---------------------------------------------------------------------------
+
+/// 判据侧手拼的**中央目录条目头**（APPNOTE 4.3.12 的固定 46 字节）。
+///
+/// 只有三条长度字段可改，其余全 0（⇒ 尺寸 / CRC / 本地头偏移都不是 ZIP64 标记，
+/// 压缩法 = 0）。偏移逐字段写在注释里，供 `Malformed` 的 `offset` 读数核对。
+fn central_stub(name_len: u16, extra_len: u16, comment_len: u16) -> Vec<u8> {
+    let mut head: Vec<u8> = b"PK\x01\x02".to_vec(); // 0..4 签名
+    head.extend_from_slice(&[0u8; 24]); // 4..28 版本 / 标志 / 压缩法 / 时间 / CRC / 两个尺寸
+    head.extend_from_slice(&name_len.to_le_bytes()); // 28..30 条目名长度
+    head.extend_from_slice(&extra_len.to_le_bytes()); // 30..32 额外字段长度
+    head.extend_from_slice(&comment_len.to_le_bytes()); // 32..34 注释长度
+    head.extend_from_slice(&[0u8; 12]); // 34..46 盘号 / 属性 ×2 / 本地头偏移
+    assert_eq!(head.len(), 46, "中央目录条目的固定部分是 46 字节");
+    head
+}
+
+/// 判据侧手拼的 **EOCD**（APPNOTE 4.3.16 的固定 22 字节，注释长度恒为 0）。
+fn eocd_tail(total: u16, size: u32, offset: u32) -> Vec<u8> {
+    let mut tail: Vec<u8> = b"PK\x05\x06".to_vec(); // 0..4 签名
+    tail.extend_from_slice(&0u16.to_le_bytes()); // 4..6 本盘号
+    tail.extend_from_slice(&0u16.to_le_bytes()); // 6..8 中央目录所在盘号
+    tail.extend_from_slice(&total.to_le_bytes()); // 8..10 本盘条目数
+    tail.extend_from_slice(&total.to_le_bytes()); // 10..12 条目总数
+    tail.extend_from_slice(&size.to_le_bytes()); // 12..16 中央目录尺寸
+    tail.extend_from_slice(&offset.to_le_bytes()); // 16..20 中央目录偏移
+    tail.extend_from_slice(&0u16.to_le_bytes()); // 20..22 注释长度
+    assert_eq!(tail.len(), 22, "EOCD 的固定部分是 22 字节");
+    tail
+}
+
+/// 判据（本票新增，**(a)**）：`full-path` 只认**引号之外**的属性名。
+///
+/// ## 补的是哪个缺口（本票实测）
+///
+/// `attribute`（现位于 `src/mxl.rs` 第 581 行那一带）原先用 `windows` 找子串，
+/// **不跟引号状态**。于是 `note="full-path='backup.xml'"` 这种"另一个属性的**值**"里的
+/// 文本被当成属性读 ⇒ 容器里**存在**的 `backup.xml` 被静默当成根文件：
+/// 同一份字节，本模块与符合规范的读取器读出**不同**的乐谱（⛔ 不是"报错"，是"读错"）。
+///
+/// ## 量什么（单位 = 部件名 / 一个 `Err` 值）
+///
+/// ① 诱饵 `backup.xml` 与真载荷 `score.xml` 的 `part-name` 分别是 `Decoy Part` 与
+/// `Handmade MVP`（各 1 个字符串）⇒ "读错"与"读对"的读数**不同**。
+/// ② 四条容器各断言**一个** `Result`（三 Ok 一 Err）。
+/// ③ 劫持目标**不存在**的那条断言 `MissingRootFile` 的路径载荷（1 个字符串）。
+#[test]
+fn mxl_rootfile_attribute_is_not_read_from_another_attribute_value() {
+    let text = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    // 诱饵：同一份 XML，只换部件名。它必须**自己可读**，否则"读错"会退化成"报错"。
+    let decoy = String::from_utf8(HANDMADE_MVP.to_vec())
+        .expect("自造夹具是 UTF-8")
+        .replace("Handmade MVP", "Decoy Part");
+    assert_ne!(decoy.as_bytes(), HANDMADE_MVP, "诱饵必须与真载荷不同");
+    assert_eq!(
+        parse("decoy", decoy.as_bytes()).parts[0].name,
+        "Decoy Part",
+        "诱饵本身必须是一份可读的乐谱"
+    );
+
+    let zip_with = |xml: &[u8], decoy_entry: bool| -> Vec<u8> {
+        let mut entries = vec![
+            ZipEntrySpec::stored("META-INF/container.xml", xml),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ];
+        if decoy_entry {
+            entries.push(ZipEntrySpec::stored("backup.xml", decoy.as_bytes()));
+        }
+        build_zip(&entries, None)
+    };
+
+    // ① 双引号的值里夹一段单引号的伪属性，且它指向**存在**的 `backup.xml`。
+    let double = zip_with(
+        br#"<container><rootfiles><rootfile note="full-path='backup.xml'" full-path="score.xml"/></rootfiles></container>"#,
+        true,
+    );
+    let score = parse_mxl(&double).expect("真属性指向 score.xml ⇒ 必须可读");
+    assert_eq!(score, text, "⛔ 不是 backup.xml 里那份诱饵");
+    assert_eq!(score.parts[0].name, "Handmade MVP");
+
+    // ② 单引号的值里夹一段双引号的伪属性（两种引号都要跟）。
+    let single = zip_with(
+        br#"<container><rootfiles><rootfile note='full-path="backup.xml"' full-path="score.xml"/></rootfiles></container>"#,
+        true,
+    );
+    assert_eq!(parse_mxl(&single), Ok(text.clone()));
+
+    // ③ 劫持目标**不存在** ⇒ 也必须读真属性（修之前这里是 MissingRootFile{path:"absent.xml"}）。
+    let absent = zip_with(
+        br#"<container><rootfiles><rootfile media-type="full-path='absent.xml'" full-path="score.xml"/></rootfiles></container>"#,
+        false,
+    );
+    assert_eq!(parse_mxl(&absent), Ok(text.clone()));
+    // 对照臂：真的没有 `full-path`（值里那段伪属性**不是**属性）⇒ 明确的 NoRootFile。
+    // ⚠️ 修之前这里是 `MissingRootFile { path: "absent.xml" }` —— 那正是"值被当成属性"的读数。
+    let no_attribute = build_zip(
+        &[
+            ZipEntrySpec::stored(
+                "META-INF/container.xml",
+                br#"<container><rootfiles><rootfile note="full-path='absent.xml'"/></rootfiles></container>"#,
+            ),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&no_attribute),
+        Err(MxlError::NoRootFile),
+        "值里的伪属性不是属性 ⇒ 这个 <rootfile> 没有 full-path"
+    );
+
+    // ④ 名字字符边界照旧：`xfull-path` 不是 `full-path`（这条与引号规则**无关**）。
+    let prefixed = zip_with(
+        br#"<container><rootfiles><rootfile xfull-path="score.xml"/></rootfiles></container>"#,
+        false,
+    );
+    assert_eq!(parse_mxl(&prefixed), Err(MxlError::NoRootFile));
+
+    // 确定性 [ARCH-DET-001]：同一份字节两次结果相同。
+    assert_eq!(parse_mxl(&double), parse_mxl(&double));
+}
+
+/// 判据（本票新增，**(b)**）：条目字段里的 ZIP64 标记点名，⛔ 不按调用方的上界改口。
+///
+/// ## 补的是哪个缺口（本票实测）
+///
+/// APPNOTE 4.4.8 / 4.4.9 / 4.4.16：**条目**的压缩长度 / 未压缩长度 / 本地头偏移取
+/// `0xFFFFFFFF` 是 ZIP64 标记，真值在 ZIP64 扩展信息 extra field（4.5.3，ID `0x0001`）。
+/// 本票之前，同一个带标记的容器报出**三种不同**的读数，且其中两种取决于调用方的上界：
+///
+/// | 标记字段 | 默认上界（64 MiB） | 上界 = `usize::MAX` |
+/// | :--- | :--- | :--- |
+/// | 未压缩长度 | `LimitExceeded { limit: "entry_bytes", value: 4294967295, max: 67108864 }` | `SizeMismatch { declared: 4294967295, … }` |
+/// | 压缩长度 | `Malformed`（本地头签名） | `Malformed`（本地头签名） |
+/// | 本地头偏移 | `Malformed { offset: 4294967295 }` | `Malformed { offset: 4294967295 }` |
+/// | EOCD 的目录尺寸 / 偏移 | `Malformed`（中央目录越过文件尾） | `Malformed`（中央目录越过文件尾） |
+///
+/// ⇒ "格式不支持"被说成了"你的上界太小"。本票在中央目录那一层点名成
+/// `UnsupportedZip64`（与 EOCD 的两条尺寸 / 偏移标记同一个读数）。
+///
+/// ## 量什么（单位 = 一个 `Err` 值 / 一条 `Result`）
+///
+/// ① 对照臂：一份**可读**的两条目容器（`parse_mxl` ⇒ `Ok`，1 条断言）。
+/// ② 五处 ZIP64 标记 × **两种**上界 = 10 条断言，全部要求 `UnsupportedZip64`
+/// ⇒ 读数**与上界无关**（这正是本条要钉的那句话）。五处 = EOCD 的中央目录尺寸与偏移
+/// （APPNOTE 4.4.23 / 4.4.24）＋ 条目的压缩长度 / 未压缩长度 / 本地头偏移
+/// （APPNOTE 4.4.8 / 4.4.9 / 4.4.16）。第六条标记（EOCD 的条目总数 `0xFFFF`，APPNOTE 4.4.22）
+/// 已由 `mxl_container_field_mismatches_are_rejected_by_name` 的第 ⑤ 条钉住，⛔ 不重复。
+/// ③ 边界：`0xFFFFFFFE`（标记的**近邻**）仍走"声明长度 > 上界"的原路 ⇒ 1 条断言
+/// ⇒ 证明 ② 认的是**恰好** `0xFFFFFFFF`，不是"任何大数"。
+#[test]
+fn mxl_zip64_markers_are_named_not_blamed_on_the_limit() {
+    // 三条 32 位字段在中央目录条目头里的偏移（APPNOTE 4.3.12）。
+    const COMPRESSED_AT: usize = 20;
+    const UNCOMPRESSED_AT: usize = 24;
+    const LOCAL_OFFSET_AT: usize = 42;
+
+    // 对照臂：一份**可读**的容器（2 个条目、stored、CRC 与尺寸都由判据自己的写出器算）
+    // ⇒ 下面每个变体与它的差别**只有**那 4 个被改成标记的字节。
+    let clean = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container_xml("score.xml")),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    assert_eq!(
+        parse_mxl(&clean),
+        Ok(parse("handmade_mvp_partwise", HANDMADE_MVP)),
+        "对照臂必须是一份可读的容器"
+    );
+    // 判据侧的中央目录起点：EOCD 固定在最后 22 字节（`build_zip` 不写注释）。
+    let eocd = clean.len() - 22;
+    assert_eq!(&clean[eocd..eocd + 4], b"PK\x05\x06");
+    let first_entry = le32(&clean, eocd + 16) as usize;
+    assert_eq!(&clean[first_entry..first_entry + 4], b"PK\x01\x02");
+    assert_eq!(
+        central_entries(&clean)[0].name,
+        b"META-INF/container.xml",
+        "第 1 个中央目录条目就是 container.xml"
+    );
+
+    let wide = MxlLimits {
+        max_entry_bytes: usize::MAX,
+        ..MxlLimits::default()
+    };
+    let markers = [
+        ("EOCD 的中央目录尺寸", eocd + 12),
+        ("EOCD 的中央目录偏移", eocd + 16),
+        ("条目的压缩长度", first_entry + COMPRESSED_AT),
+        ("条目的未压缩长度", first_entry + UNCOMPRESSED_AT),
+        ("条目的本地头偏移", first_entry + LOCAL_OFFSET_AT),
+    ];
+    for (label, at) in markers {
+        let mut zip = clean.clone();
+        zip[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            parse_mxl(&zip),
+            Err(MxlError::UnsupportedZip64),
+            "{label} = 0xFFFFFFFF 必须在**默认**上界下点名 ZIP64"
+        );
+        assert_eq!(
+            parse_mxl_with_limits(&zip, &wide),
+            Err(MxlError::UnsupportedZip64),
+            "{label} = 0xFFFFFFFF 的读数必须**与上界无关**（⛔ 不是 LimitExceeded）"
+        );
+    }
+
+    // 不是 `0xFFFFFFFF` 的值照旧不是 ZIP64 标记：`0xFFFFFFFE` 走原来的上界检查。
+    let mut nearly = clean.clone();
+    nearly[first_entry + UNCOMPRESSED_AT..first_entry + UNCOMPRESSED_AT + 4]
+        .copy_from_slice(&0xffff_fffeu32.to_le_bytes());
+    assert_eq!(
+        parse_mxl(&nearly),
+        Err(MxlError::LimitExceeded {
+            limit: "entry_bytes",
+            value: 0xffff_fffe,
+            max: MxlLimits::default().max_entry_bytes,
+        }),
+        "`0xFFFFFFFF` 才是 ZIP64 标记（APPNOTE 4.4.9），近邻值仍走声明长度的上界"
+    );
+}
+
+/// 判据（本票新增，**(c)**）：`MxlError::Malformed` 的**字面读数**（偏移 + 说明）。
+///
+/// ## 补的是哪个缺口（本票实测）
+///
+/// `Malformed` 在本票之前于**全部**测试里出现 **0** 次（量法 = 本 crate 的 `tests/` 与
+/// `src/mxl.rs` 的 `#[cfg(test)]` 模块里数引用处；单位 = 引用处数），而它在产品代码里有
+/// **11** 个构造点 ⇒ 每个构造点都可以被删掉、改说明文字或改 `offset` 而不让任何判据变红
+/// （`mxl_container_fuzz_never_panics` 只要求 `Ok` 或 `Err`，⛔ 不看是哪一个 `Err`）。
+///
+/// ## 量什么（单位 = 一个 `Err` 值：判别式 + `offset` + `detail`）
+///
+/// 本判据钉住 **7** 个在 **64 位目标**上可达的构造点，每个一条断言：输入由判据**自己**手拼
+/// （`central_stub` / `eocd_tail` / `build_zip`），因此每个 `offset` 都是可以手算的**字面**值：
+///
+/// | # | 输入 | 期望 `offset` | 期望 `detail` |
+/// | ---: | :--- | ---: | :--- |
+/// | ① | 中央目录条目签名改成 `PK\x01\x03` | 0 | 中央目录条目的签名不是 `PK\x01\x02` |
+/// | ② | EOCD 声称目录有 4096 字节（文件只有 68） | 46（EOCD 的位置） | 中央目录越过文件尾 |
+/// | ③ | 条目名声称 4000 字节 | 46（名字的起点） | 条目名越过文件尾 |
+/// | ④ | 额外字段声称 60000 字节 | 60046（下一条目的起点） | 中央目录条目越过文件尾 |
+/// | ⑤ | 本地头签名改成 `PKX\x04` | 0（本地头的偏移） | local file header 的签名不是 `PK\x03\x04` |
+/// | ⑥ | 中央目录声称数据区 60000 字节 | 52（数据区的起点） | 条目数据区越过文件尾 |
+/// | ⑦ | 中央目录的签名可读、头部其余在文件尾之外 | 28 | 读 16 位字段时越过文件尾 |
+///
+/// ## 剩下 **4** 个构造点：在 64 位目标上不可达（⛔ 这不是"通过"）
+///
+/// 1. **中央目录的偏移 + 尺寸溢出**：`checked_add` 的两个操作数都是 `u32` 零扩展成 `usize`
+///    ⇒ 和 ≤ `2³³ − 2`，在 64 位 `usize` 上**不可能**溢出（32 位目标才可能）⇒ 本机跑不到。
+/// 2. **local file header 的长度字段溢出**：`30 + 65535 + 65535` 是上界 ⇒ 同上。
+/// 3. **条目数据区长度溢出**：`start + compressed ≤ 2³³ + …` ⇒ 同上。
+/// 4. **读 32 位字段时越过文件尾**：中央目录的读序是「先 `u16_at(pos+28/30/32)`，再取
+///    `pos+46` 起的条目名，最后才读 `pos+8` 起的 32 位字段」。条目名（长度可以是 0）能读出来
+///    就蕴含 `pos + 46 ≤ 文件长度`，而最后一个 32 位字段正好结束在 `pos + 46`
+///    ⇒ 32 位那一步**不可能**越界；名字读不出来时报的是第 ③ 条。`find_eocd` 与 EOCD 自身的
+///    读取都由 `pos + 22 + 注释 == 文件长度` 兜住。
+///
+/// ⇒ 前 3 个是**平台相关**（32 位目标才可达），第 4 个是 64 位与 32 位都不可达。
+/// 本机（aarch64、64 位）对它们**没有**判据；⛔ 本条不把它们写成"已验证"。
+#[test]
+fn mxl_malformed_readings_are_pinned_by_offset_and_detail() {
+    // ① 中央目录条目的签名不是 PK\x01\x02（头在偏移 0 ⇒ 读数 0）。
+    let mut broken_signature = central_stub(0, 0, 0);
+    broken_signature[2] = b'X';
+    broken_signature.extend_from_slice(&eocd_tail(1, 46, 0));
+    assert_eq!(
+        parse_mxl(&broken_signature),
+        Err(MxlError::Malformed {
+            offset: 0,
+            detail: "中央目录条目的签名不是 PK\\x01\\x02",
+        })
+    );
+
+    // ② 中央目录越过文件尾（EOCD 在偏移 46；声称 4096 字节的目录）。
+    let mut directory_past_eof = central_stub(0, 0, 0);
+    directory_past_eof.extend_from_slice(&eocd_tail(1, 4096, 0));
+    assert_eq!(directory_past_eof.len(), 68, "46 + 22");
+    assert_eq!(
+        parse_mxl(&directory_past_eof),
+        Err(MxlError::Malformed {
+            offset: 46,
+            detail: "中央目录越过文件尾",
+        })
+    );
+
+    // ③ 条目名越过文件尾（名字起点 = 46；声称 4000 字节，低于 4096 的名字上界）。
+    let mut name_past_eof = central_stub(4000, 0, 0);
+    name_past_eof.extend_from_slice(&eocd_tail(1, 46, 0));
+    assert_eq!(
+        parse_mxl(&name_past_eof),
+        Err(MxlError::Malformed {
+            offset: 46,
+            detail: "条目名越过文件尾",
+        })
+    );
+
+    // ④ 中央目录条目越过文件尾（名字长度 0 ⇒ 下一条目的起点 = 46 + 0 + 60000 + 0）。
+    let mut entry_past_eof = central_stub(0, 60000, 0);
+    entry_past_eof.extend_from_slice(&eocd_tail(1, 46, 0));
+    assert_eq!(
+        parse_mxl(&entry_past_eof),
+        Err(MxlError::Malformed {
+            offset: 60046,
+            detail: "中央目录条目越过文件尾",
+        })
+    );
+
+    // ⑤ local file header 的签名不是 PK\x03\x04（唯一的本地头在偏移 0）。
+    let container = container_xml("score.xml");
+    let mut local_signature = build_zip(
+        &[ZipEntrySpec::stored("META-INF/container.xml", &container)],
+        None,
+    );
+    assert_eq!(local_signature[..4], *b"PK\x03\x04");
+    local_signature[2] = b'X';
+    assert_eq!(
+        parse_mxl(&local_signature),
+        Err(MxlError::Malformed {
+            offset: 0,
+            detail: "local file header 的签名不是 PK\\x03\\x04",
+        })
+    );
+
+    // ⑥ 条目数据区越过文件尾（数据区起点 = 30 + 22 字节的条目名 = 52）。
+    let mut lying_extent = ZipEntrySpec::stored("META-INF/container.xml", &container);
+    lying_extent.compressed = 60000;
+    let data_past_eof = build_zip(&[lying_extent], None);
+    assert_eq!(
+        parse_mxl(&data_past_eof),
+        Err(MxlError::Malformed {
+            offset: 52,
+            detail: "条目数据区越过文件尾",
+        })
+    );
+
+    // ⑦ 读 16 位字段时越过文件尾：26 字节的文件里，中央目录的签名在 0、EOCD 在 4，
+    //    但中央目录条目的 28..30 落在文件之外。
+    let mut short_header: Vec<u8> = b"PK\x01\x02".to_vec();
+    short_header.extend_from_slice(&eocd_tail(1, 0, 0));
+    assert_eq!(short_header.len(), 26, "4 + 22");
+    assert_eq!(
+        parse_mxl(&short_header),
+        Err(MxlError::Malformed {
+            offset: 28,
+            detail: "读 16 位字段时越过文件尾",
+        })
+    );
+
+    // 每一条的输入都只差**一个**事实：上面 7 个变体都不该 panic（这 7 条断言本身就是证据）。
+    // 确定性 [ARCH-DET-001]：同一份字节两次结果相同。
+    assert_eq!(parse_mxl(&broken_signature), parse_mxl(&broken_signature));
 }

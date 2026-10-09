@@ -37,6 +37,15 @@
 //!
 //! 1. ⛔ **ZIP64**：条目数 `0xFFFF` 或尺寸/偏移 `0xFFFFFFFF` ⇒ 明确
 //!    [`MxlError::UnsupportedZip64`](crate::mxl::MxlError::UnsupportedZip64)。因此 **>4 GiB 的容器、>65535 个条目的容器读不了**。
+//!    "尺寸/偏移 `0xFFFFFFFF`" 有**五处**，全部点名（APPNOTE 4.4.8 / 4.4.9 / 4.4.16 与
+//!    4.5.3 的 ZIP64 扩展信息 extra field `0x0001`）：EOCD 的中央目录**尺寸**与**偏移**
+//!    两条（APPNOTE 4.3.16），以及**每个条目**的压缩长度 / 未压缩长度 / 本地头偏移三条。
+//!    ⚠️ 最后三条是**本票补的**：在补之前，同一个 ZIP64 条目按调用方给的
+//!    `MxlLimits::max_entry_bytes` 报出**三种不同**的读数（默认上界 ⇒ `LimitExceeded`；
+//!    上界放到 `usize::MAX` ⇒ `SizeMismatch`；压缩长度为标记 ⇒ `Malformed`）
+//!    ⇒ 把"格式不支持"说成了"调用方的上界太小"。判据
+//!    `mxl_zip64_markers_are_named_not_blamed_on_the_limit` 钉住五个标记
+//!    在**两种**上界下给出**同一个** `UnsupportedZip64`。
 //! 2. ⛔ **加密**：general purpose flag 的 bit 0 ⇒ 明确 [`MxlError::Encrypted`](crate::mxl::MxlError::Encrypted)。
 //! 3. ⛔ **其它压缩法**：只认 0 与 8（deflate）。`bzip2`(12) / `lzma`(14) / `zstd`(93) 等明确
 //!    [`MxlError::UnsupportedCompression`](crate::mxl::MxlError::UnsupportedCompression)。
@@ -45,6 +54,16 @@
 //!    标签的 `full-path` 属性；属性值里只解 5 个预定义实体（`&amp;` `&lt;` `&gt;`
 //!    `&quot;` `&apos;`），**数字字符引用原样保留**（⇒ 路径对不上条目名时是明确的
 //!    [`MxlError::MissingRootFile`](crate::mxl::MxlError::MissingRootFile)，⛔ 不会静默读错文件）。
+//!    ⚠️ 那条"⛔ 不会静默读错文件"原来**只靠实体那一半**成立：属性扫描器不按引号走 ⇒
+//!    另一个属性的**值**里出现 `full-path='other.xml'` 时，容器里**存在的** `other.xml`
+//!    会被静默当成根文件（**同一份字节**，本模块与符合规范的读取器读出**不同**的乐谱）。
+//!    本票把扫描器改成按 XML 的引号规则走（`"…"` / `'…'` 之间不作属性名起点），
+//!    判据 `mxl_rootfile_attribute_is_not_read_from_another_attribute_value` 钉住两条方向：
+//!    值里那段伪属性指向的条目**存在** ⇒ 仍然读**真**属性指向的那一份；
+//!    标签里**真的**没有 `full-path`（只有值里那段伪属性）⇒ 明确的
+//!    [`MxlError::NoRootFile`](crate::mxl::MxlError::NoRootFile)
+//!    （修之前，前一条报 `MissingRootFile { path: "other.xml" }`、后一条报
+//!    `MissingRootFile { path: "absent.xml" }` —— 两条都是"值被当成属性"的读数）。
 //! 6. ⛔ **无 `META-INF/container.xml` 时不猜**：即使容器里只有一个 XML 条目也不回退
 //!    （OPC 要求根文件由 `container.xml` 指定）⇒ 明确 [`MxlError::NoContainer`](crate::mxl::MxlError::NoContainer)。
 //! 7. ⛔ **data descriptor**（general purpose flag bit 3）本身不需要额外代码：尺寸与 CRC 全部
@@ -374,14 +393,29 @@ fn central_directory<'a>(
                 offset: name_start,
                 detail: "条目名越过文件尾",
             })?;
+        let flags = u16_at(bytes, pos + 8)?;
+        let method = u16_at(bytes, pos + 10)?;
+        let crc32 = u32_at(bytes, pos + 16)?;
+        let compressed = u32_at(bytes, pos + 20)?;
+        let uncompressed = u32_at(bytes, pos + 24)?;
+        let local_offset = u32_at(bytes, pos + 42)?;
+        // APPNOTE 4.4.8 / 4.4.9 / 4.4.16：这三条 32 位字段取 `0xFFFFFFFF` 是 **ZIP64 标记**，
+        // 真值在 ZIP64 扩展信息 extra field（APPNOTE 4.5.3，ID `0x0001`）里 ⇒ 本模块不支持。
+        // ⛔ 若不在这里点名，同一个容器会按调用方给的 `max_entry_bytes` 报出**不同**的读数
+        // （默认上界 ⇒ `LimitExceeded`，上界放到 `usize::MAX` ⇒ `SizeMismatch` / `Malformed`）
+        // ⇒ 那是"把**格式**问题说成**策略**问题"。判据
+        // `mxl_zip64_markers_are_named_not_blamed_on_the_limit` 钉住这条。
+        if compressed == u32::MAX || uncompressed == u32::MAX || local_offset == u32::MAX {
+            return Err(MxlError::UnsupportedZip64);
+        }
         entries.push(CentralEntry {
             name,
-            flags: u16_at(bytes, pos + 8)?,
-            method: u16_at(bytes, pos + 10)?,
-            crc32: u32_at(bytes, pos + 16)?,
-            compressed: u32_at(bytes, pos + 20)?,
-            uncompressed: u32_at(bytes, pos + 24)?,
-            local_offset: u32_at(bytes, pos + 42)?,
+            flags,
+            method,
+            crc32,
+            compressed,
+            uncompressed,
+            local_offset,
         });
         pos = name_start + name_len + extra_len + comment_len;
         if pos > bytes.len() {
@@ -578,32 +612,65 @@ fn tag_name(tag: &[u8]) -> Option<&[u8]> {
 }
 
 /// 取标签里某个属性的值（去引号，⛔ 不解实体；调用方决定要不要解）。
+///
+/// 扫描**按 XML 的引号规则走**：`"…"` / `'…'` 之间的字节一律不作为属性名的起点。
+/// 因此 `<rootfile note="full-path='other.xml'" full-path="score.xml"/>` 取到的是
+/// `score.xml`，⛔ 不是另一个属性**值**里那段长得很像属性的文本（若不按引号走，
+/// 容器里存在的 `other.xml` 会被**静默**当成根文件解析 —— 同一份字节，
+/// 本模块与符合规范的读取器会读出**不同**的乐谱）。
+/// 判据 `mxl_rootfile_attribute_is_not_read_from_another_attribute_value` 钉住这条。
 fn attribute(tag: &[u8], key: &[u8]) -> Option<Vec<u8>> {
     let mut pos = 0usize;
-    while let Some(found) = find(&tag[pos..], key) {
-        let at = pos + found;
-        let after = at + key.len();
-        // 属性名必须是独立词：前一个字节不能是名字字符。
-        let boundary = at == 0 || !is_name_byte(tag[at - 1]);
-        let mut cursor = after;
-        while tag.get(cursor).is_some_and(u8::is_ascii_whitespace) {
-            cursor += 1;
-        }
-        if boundary && tag.get(cursor) == Some(&b'=') {
-            cursor += 1;
-            while tag.get(cursor).is_some_and(u8::is_ascii_whitespace) {
-                cursor += 1;
+    let mut quote: Option<u8> = None;
+    while let Some(&byte) = tag.get(pos) {
+        match quote {
+            Some(open) => {
+                if byte == open {
+                    quote = None;
+                }
+                pos += 1;
             }
-            let quote = *tag.get(cursor)?;
-            if quote == b'"' || quote == b'\'' {
-                let start = cursor + 1;
-                let end = start + memchr(quote, tag.get(start..)?)?;
-                return tag.get(start..end).map(<[u8]>::to_vec);
+            None if byte == b'"' || byte == b'\'' => {
+                quote = Some(byte);
+                pos += 1;
+            }
+            None => {
+                // 属性名必须是独立词：前一个字节不能是名字字符。
+                let boundary = pos == 0 || !is_name_byte(tag[pos - 1]);
+                if boundary
+                    && tag[pos..].starts_with(key)
+                    && let Some(value) = quoted_value(tag, pos + key.len())
+                {
+                    return Some(value);
+                }
+                pos += 1;
             }
         }
-        pos = at + 1;
     }
     None
+}
+
+/// `=` 之后被引号包住的值；`cursor` 指向属性名的下一个字节。
+///
+/// ⛔ 不是任何一步都 `Err`/`panic`：形状不对就 `None`（调用方继续往后找）。
+fn quoted_value(tag: &[u8], mut cursor: usize) -> Option<Vec<u8>> {
+    while tag.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    if tag.get(cursor) != Some(&b'=') {
+        return None;
+    }
+    cursor += 1;
+    while tag.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    let opening = *tag.get(cursor)?;
+    if opening != b'"' && opening != b'\'' {
+        return None;
+    }
+    let start = cursor + 1;
+    let end = start + memchr(opening, tag.get(start..)?)?;
+    tag.get(start..end).map(<[u8]>::to_vec)
 }
 
 fn is_name_byte(byte: u8) -> bool {
@@ -671,6 +738,42 @@ mod tests {
         // CRC-32 的标准自检向量（IEEE 802.3 / PNG / ZIP 用的是同一个）。
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
         assert_eq!(crc32(b""), 0);
+    }
+
+    #[test]
+    fn attribute_values_do_not_masquerade_as_attributes() {
+        // 引号状态由扫描器自己跟：另一个属性的**值**里那段 `full-path='…'` 不是属性。
+        let score = Some(b"score.xml".to_vec());
+        assert_eq!(
+            attribute(
+                br#"rootfile note="full-path='other.xml'" full-path="score.xml""#,
+                b"full-path"
+            ),
+            score,
+            "双引号值里的单引号伪属性必须被跳过"
+        );
+        assert_eq!(
+            attribute(
+                br#"rootfile note='full-path="other.xml"' full-path="score.xml""#,
+                b"full-path"
+            ),
+            score,
+            "单引号值里的双引号伪属性必须被跳过"
+        );
+        // 名字字符边界照旧：`data-full-path` / `xfull-path` 都不是 `full-path`。
+        assert_eq!(
+            attribute(br#"rootfile data-full-path="other.xml""#, b"full-path"),
+            None
+        );
+        assert_eq!(
+            attribute(br#"rootfile xfull-path="other.xml""#, b"full-path"),
+            None
+        );
+        // 形状不对（没有 `=`）⇒ 继续往后找，⛔ 不是整个标签放弃。
+        assert_eq!(
+            attribute(br#"rootfile full-path full-path="score.xml""#, b"full-path"),
+            score
+        );
     }
 
     #[test]
