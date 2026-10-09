@@ -2394,6 +2394,105 @@ mod tests {
         assert_eq!(parsed.sizes.sample_count, 10);
     }
 
+    /// `WAVE_FORMAT_EXTENSIBLE` 的 `wValidBitsPerSample = 0` 必须**回退**到容器的
+    /// `wBitsPerSample` —— 不得让 `PcmFormat::bits_per_sample` 变成 0。
+    ///
+    /// # 量的是什么
+    ///
+    /// 一个 40 字节的 `fmt ` 负载: `wBitsPerSample` = 32、`wValidBitsPerSample` = 0、
+    /// 6 声道、掩码 `0x3F`、整数 PCM GUID。量的是 [`parse_container`] 读回来的三个
+    /// **整数**: `bits_per_sample`、`block_align()` 与 `sizes.sample_count`。
+    ///
+    /// # 为什么这条契约必须钉住
+    ///
+    /// `wValidBitsPerSample = 0` 被当成真值时会写进 `bits_per_sample`, 于是
+    /// `bytes_per_sample()` 与 `block_align()` 也都是 0, 而 `parse_container` 求帧数的
+    /// 那次除法只能靠 `max(1)` 兜住 —— 结果是**把 `data` 负载的字节数当成帧数**。
+    /// 那是编出来的读数, 不是文件里写的。（`wBitsPerSample = 0` 走的是另一条路:
+    /// 在建 `PcmFormat` 之前就拒绝, 见 `Rf64Error::ZeroBitsPerSample`。）
+    ///
+    /// # 注入实测（本机, 先全绿后补本判据）
+    ///
+    /// 在本判据落地**之前**, 把 `parse_fmt_payload` 里 `le::read_u16(payload, 18)`
+    /// 之后的 `.filter(|&bits| bits > 0)` 删掉（那一版现位于第 1781 行）⇒ 本 crate 的
+    /// `--lib --tests` 全量表读数是 **211 passed; 0 failed**, 一条都不红;
+    /// 把回退值 `.unwrap_or(bits_per_sample)` 改成 `.unwrap_or(0)` 同样全绿。
+    /// 两种注入在本判据下各自变红。
+    #[test]
+    fn a_zero_valid_bits_per_sample_falls_back_to_the_container_bit_depth() {
+        // 读侧入口是 `parse_container`, 因此手搭容器: 12 字节顶层头 + `fmt ` + `data`。
+        // 顶层长度字段写 0（`parse_container` 不读它）。
+        let container = |valid_bits: u16, data_len: usize| -> Vec<u8> {
+            let mut body = PcmFormat::integer(6, 48_000, 32).fmt_payload();
+            // 前提: 这个形状必须真的走 EXTENSIBLE 分支, 否则本判据没有射程。
+            assert_eq!(body.len(), 40, "EXTENSIBLE 负载长度");
+            assert_eq!(le::read_u16(&body, 0), Some(0xFFFE), "格式标签");
+            assert_eq!(le::read_u16(&body, 14), Some(32), "容器 wBitsPerSample");
+            body[18..20].copy_from_slice(&le::u16(valid_bits));
+            let data = vec![0u8; data_len];
+            let mut raw = Vec::new();
+            raw.extend_from_slice(b"RIFF");
+            raw.extend_from_slice(&0u32.to_le_bytes());
+            raw.extend_from_slice(b"WAVE");
+            push_chunk(&mut raw, b"fmt ", &body);
+            push_chunk(&mut raw, b"data", &data);
+            raw
+        };
+
+        // 负载 = 16 帧 × 6 声道 × 4 字节 = 384 字节。除数 24 与除数 1 的差别在这里
+        // 是 16 与 384 —— 后者正是"把负载字节数当成帧数"。
+        let parsed = parse_container(&container(0, 24 * 16)).expect("0 是回退, 不是拒绝");
+        assert_eq!(
+            parsed.format.bits_per_sample, 32,
+            "wValidBitsPerSample=0 必须回退到容器的 wBitsPerSample; 实际读到 {}",
+            parsed.format.bits_per_sample
+        );
+        assert_eq!(parsed.format.block_align(), 24, "6 声道 × 4 字节");
+        assert_eq!(parsed.format.byte_rate(), 1_152_000, "48000 × 24");
+        assert_eq!(
+            parsed.sizes.sample_count, 16,
+            "帧数 = 负载字节数 ÷ nBlockAlign; 实际读到 {} (384 是负载字节数)",
+            parsed.sizes.sample_count
+        );
+        assert_eq!(
+            parsed.format.channel_mask,
+            Some(0x3F),
+            "EXTENSIBLE 分支真的走到了"
+        );
+        assert!(!parsed.format.is_float, "整数 PCM GUID");
+    }
+
+    /// `wValidBitsPerSample` **小于**容器的 `wBitsPerSample` 时必须被**采纳** ——
+    /// 读取器读的是这个字段, 不是"永远用容器的值"。
+    ///
+    /// 本判据是上面那条的**反面**: 少了它, "读取器一律忽略 `wValidBitsPerSample`"
+    /// 这种改法也能让上面那条全绿。本机注入实测（在本判据落地之前）: 把
+    /// `let valid_bits = if tag == 0xFFFE` 的谓词改成 `0x0001`（那一版现位于第 1780 行）
+    /// ⇒ 全量表 **211 passed; 0 failed**。本判据在该注入下变红。
+    ///
+    /// 读数: 6 声道 / 容器 32 位 / 有效 24 位 ⇒ `block_align` 是 **18**（不是 24）,
+    /// `byte_rate` 是 864000, 负载 16 帧 × 18 字节 = 288 字节 ⇒ 帧数 16。
+    #[test]
+    fn a_valid_bits_per_sample_below_the_container_is_adopted() {
+        let mut body = PcmFormat::integer(6, 48_000, 32).fmt_payload();
+        assert_eq!(body.len(), 40, "EXTENSIBLE 负载长度");
+        assert_eq!(le::read_u16(&body, 14), Some(32), "容器 wBitsPerSample");
+        body[18..20].copy_from_slice(&le::u16(24)); // wValidBitsPerSample = 24
+        let data = vec![0u8; 18 * 16];
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        push_chunk(&mut raw, b"fmt ", &body);
+        push_chunk(&mut raw, b"data", &data);
+
+        let parsed = parse_container(&raw).expect("24 位有效位深是合法的");
+        assert_eq!(parsed.format.bits_per_sample, 24, "有效位深必须被采纳");
+        assert_eq!(parsed.format.block_align(), 18, "6 声道 × 3 字节");
+        assert_eq!(parsed.format.byte_rate(), 864_000, "48000 × 18");
+        assert_eq!(parsed.sizes.sample_count, 16, "288 ÷ 18");
+    }
+
     /// 判据 12b: `ds64` 里那个 **64 位** `dataSize` 可以让"负载起点 + 声明长度"溢出
     /// `usize`。这种输入必须走 `Truncated` 出口 —— **不得 panic, 也不得回绕**。
     ///
@@ -2616,6 +2715,80 @@ mod tests {
         assert!(
             parse_container(&raw_riff(16, &stereo_16bit().fmt_payload(), true)).is_ok(),
             "基准形状必须能解析, 否则上面的五行没有区分力"
+        );
+    }
+
+    /// `WAVE_FORMAT_EXTENSIBLE` 的 `fmt ` 负载在 **16..39 字节**之间时必须**干净拒绝**,
+    /// 不得靠切片越界 panic。
+    ///
+    /// 40 字节是 18 字节的 `WAVEFORMATEX` 加 22 字节的扩展部分（`cbSize` = 22 时
+    /// GUID 落在 24..40）。长度不足 40 时偏移 24..40 的 GUID 读取会越界, 因此
+    /// `payload.len() < 40` 那条检查**不是**冗余 —— 它是这条路径唯一的守卫。
+    ///
+    /// # 注入实测（本机, 在本判据落地之前）
+    ///
+    /// 把那条检查的上界从 40 放宽到 24 ⇒ 全量表读数是 **211 passed; 0 failed**。
+    /// 原因是既有的拒绝族判据只喂了**16 字节**的 EXTENSIBLE 负载（16 < 24, 仍然被
+    /// 拦下）, 24..39 这一段没有任何判据走过。放宽后本判据以 **panic**
+    /// （`range end index 40 out of range`）变红。
+    ///
+    /// # 读数
+    ///
+    /// 20 / 24 / 30 / 39 四个长度都必须是 `Err(BadFmtLen(长度))`; 同一个形状补齐到
+    /// 40 字节必须能解析（否则本判据只是把这个分支关掉）。
+    #[test]
+    fn an_extensible_fmt_payload_shorter_than_forty_bytes_is_rejected() {
+        let full = PcmFormat::integer(6, 48_000, 32).fmt_payload();
+        assert_eq!(full.len(), 40, "EXTENSIBLE 负载长度");
+        assert_eq!(le::read_u16(&full, 0), Some(0xFFFE), "格式标签");
+        for len in [20usize, 24, 30, 39] {
+            assert_eq!(
+                parse_container(&raw_riff(len as u32, &full[..len], true)),
+                Err(Rf64Error::BadFmtLen(len as u32)),
+                "{len} 字节的 EXTENSIBLE 负载"
+            );
+        }
+        // 基准: 补齐到 40 字节必须能解析。
+        assert!(
+            parse_container(&raw_riff(40, &full, true)).is_ok(),
+            "40 字节的 EXTENSIBLE 负载必须能解析, 否则上面的四行没有区分力"
+        );
+    }
+
+    /// 无 `ds64` 的 `RIFF` 里帧数 = `data` 负载字节数 ÷ `nBlockAlign` ——
+    /// `nBlockAlign` = 1 的 8 位单声道也按 **1** 除（帧数就是字节数）。
+    ///
+    /// `parse_container` 的除法写作 `block_align().max(1)`。`max(1)` 是**除零兜底**:
+    /// `block_align()` 为 0 需要声道数或位深为 0, 而这两条在更早处已被拒绝, 因此
+    /// 解析成功的文件里除数恒 ≥ 1。本判据钉住"除数就是 `nBlockAlign` 本身",
+    /// 使兜底值不能悄悄变成别的数。
+    ///
+    /// # 注入实测（本机, 在本判据落地之前）
+    ///
+    /// 把 `.max(1)` 改成 `.max(2)` ⇒ 全量表读数是 **211 passed; 0 failed**。
+    /// 8 位单声道（`nBlockAlign` = 1）此前没有任何判据走过, 而那正是唯一能分辨
+    /// 除数 1 与 2 的输入。本判据在该注入下变红（帧数 64 → 32）。
+    #[test]
+    fn the_frame_count_divides_by_the_exact_block_align() {
+        // 8 位单声道: 1 声道 × 1 字节 ⇒ `nBlockAlign` 1。
+        let body = PcmFormat::integer(1, 48_000, 8).fmt_payload();
+        assert_eq!(le::read_u16(&body, 12), Some(1), "写出的 nBlockAlign");
+        let data = vec![0u8; 64];
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"RIFF");
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.extend_from_slice(b"WAVE");
+        push_chunk(&mut raw, b"fmt ", &body);
+        push_chunk(&mut raw, b"data", &data);
+
+        let parsed = parse_container(&raw).expect("8 位单声道是合法的");
+        assert_eq!(parsed.format.bits_per_sample, 8);
+        assert_eq!(parsed.format.block_align(), 1);
+        assert_eq!(parsed.format.byte_rate(), 48_000, "48000 × 1");
+        assert_eq!(
+            parsed.sizes.sample_count, 64,
+            "nBlockAlign = 1 ⇒ 帧数 = 负载字节数; 实际读到 {}",
+            parsed.sizes.sample_count
         );
     }
 
