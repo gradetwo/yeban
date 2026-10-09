@@ -2524,6 +2524,97 @@ mod tests {
         );
     }
 
+    /// **类别⑥ 的实测量**: 单声道信号喂立体声母带器件时, 只填一路 / 两路都填 / 只填另一路
+    /// —— 三个读数的关系是本机实测的字面值。
+    ///
+    /// # 三条读数（对象 = 同一份 2 s、0.1 幅度、997 Hz 单声道信号; 单位 = LUFS / dBTP）
+    ///
+    /// | 填法 | 积分响度 (LUFS) | 真峰值 (dBTP) |
+    /// | :--- | :--- | :--- |
+    /// | 只填**左**路, 右路数字静音 | **−23.010252** | **−20.000000** |
+    /// | 两路都填同一个信号 | **−19.999952** | **−20.000000** |
+    /// | 只填**右**路, 左路数字静音 | **−23.010252** | **−20.000000** |
+    ///
+    /// # 这两格说明什么（不是"修 bug", 是把既有口径钉住）
+    ///
+    /// 1. **真峰值与"填在哪个声道"无关**: 两路各自过检测器后取 `max`
+    ///    （`measure_master_at` 那两行）, 而 `max` 可交换 ⇒ 只填左与只填右**逐位相同**。
+    /// 2. **积分响度不是**, 且差**恰好** `10·log₁₀(2)` = **3.010300 dB**: K 加权后的
+    ///    声道功率是**相加**的（`GatedLoudness::integrated_stereo_at`）, 因此同一份信号
+    ///    放两路比放一路响 3.01 LU。实测差 = `−19.999952 − (−23.010252)` = `3.010300`,
+    ///    与理论值在全部打印位小数上相同。
+    ///
+    /// # 因此"单声道输入进立体声导出"这条路**在导出层被拒绝**, 不是在这里被下混
+    ///
+    /// 上面第 2 格意味着: 若让"一路填满、一路静音"的母带走完导出, 响度会按**单声道口径**
+    /// 报低 3.01 LU 并被抬 3.01 dB 的增益 —— 于是同一份单声道内容**复制到两路**与**只放一路**
+    /// 会得到两个不同的交付物。`export_master` 的 `NotStereo` 守卫（判据
+    /// `malformed_exports_are_refused_instead_of_silently_degraded`）正是在这里生效:
+    /// **不做下混、不复制、不猜**。本判据把该守卫要挡的那 3.01 dB 量成字面值。
+    ///
+    /// 判别力: 把真峰值那两行改成"按左路为准"（去掉 `max`）⇒ 第三条断言红;
+    /// 让响度只算单声道功率（去掉声道求和）⇒ 第二条断言红。
+    #[test]
+    fn a_mono_signal_in_a_stereo_device_is_three_lufs_louder_when_both_channels_carry_it() {
+        let mono = sine_997(0.1, 96_000);
+        let silent = vec![0.0f32; mono.len()];
+
+        let left_only = measure_master(48_000, &mono, &silent).expect("48 kHz");
+        let both = measure_master(48_000, &mono, &mono).expect("48 kHz");
+        let right_only = measure_master(48_000, &silent, &mono).expect("48 kHz");
+
+        // 1. 真峰值对"填在哪个声道"可交换, 且三个读数的真峰值是同一个数。
+        assert_eq!(
+            left_only.true_peak_dbtp.to_bits(),
+            right_only.true_peak_dbtp.to_bits(),
+            "真峰值取两路 max, 只填左与只填右必须逐位相同: {} vs {}",
+            left_only.true_peak_dbtp,
+            right_only.true_peak_dbtp
+        );
+        assert_eq!(
+            left_only.true_peak_dbtp.to_bits(),
+            both.true_peak_dbtp.to_bits(),
+            "两声道的真峰值必须相同: {} vs {}",
+            left_only.true_peak_dbtp,
+            both.true_peak_dbtp
+        );
+        assert_eq!(
+            both.true_peak_dbtp.to_bits(),
+            (-20.0f32).to_bits(),
+            "本机实测的真峰值字面值 −20.000000 dBTP, 实际 {}",
+            both.true_peak_dbtp
+        );
+        // 2. 积分响度按声道功率求和 ⇒ 两路差恰好 10·log10(2)。
+        assert_eq!(left_only.integrated_lufs, -23.010_252, "只填一路的本机实测");
+        assert_eq!(both.integrated_lufs, -19.999_952, "两路都填的本机实测");
+        assert_eq!(
+            left_only.integrated_lufs.to_bits(),
+            right_only.integrated_lufs.to_bits(),
+            "响度对左右互换必须对称: {} vs {}",
+            left_only.integrated_lufs,
+            right_only.integrated_lufs
+        );
+        let delta = both.integrated_lufs - left_only.integrated_lufs;
+        assert!(
+            (delta - 3.010_3).abs() < 1e-6,
+            "两路与一路的差必须是 10·log10(2) = 3.010300 LU, 实际 {delta}"
+        );
+
+        // 3. 短时/瞬时窗口的口径: 2 s 信号给不出 LRA（3 s 窗口从未填满）, 而**瞬时**
+        //    （400 ms）这一个最大值也照同一条 3.01 dB 走 —— 两条独立读数互为交叉验证。
+        assert_eq!(
+            left_only.max_momentary_lufs, -23.008_871,
+            "本机实测的瞬时最大值"
+        );
+        assert_eq!(both.max_momentary_lufs, -19.998_571, "本机实测的瞬时最大值");
+        assert_eq!(
+            left_only.loudness_range_lu, None,
+            "2 s 信号不得给出 LRA（3 s 窗口没填满）—— 若这里出了数, 说明读数覆盖了超过 2 s"
+        );
+        assert_eq!(both.loudness_range_lu, None);
+        assert_eq!(right_only.loudness_range_lu, None);
+    }
+
     /// **参差声道下的真峰值上限必须真的被达到**: [`GainBound::TruePeakCeiling`] 不是一句空话。
     ///
     /// 尾巴里的满幅脉冲不在母带区域内（[`ExportPreset::apply`] 只改最短的 `min` 帧）,
