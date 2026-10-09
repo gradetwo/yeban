@@ -99,6 +99,8 @@ pub fn resample_interleaved(
 ///
 /// - 采样率为 0 或超出 [`PcmBudget::max_sample_rate`]；
 /// - `samples.len()` 不是 `channels` 的整数倍；
+/// - 声道数超出 [`PcmBudget::max_channels`]（在任何分配之前判，见
+///   `an_over_budget_channel_count_is_refused_before_any_resampling`）；
 /// - 输出会超出 [`PcmBudget::max_pcm_bytes`] 或 [`PcmBudget::max_duration_secs`]；
 /// - 重采样器构造或处理失败；
 /// - 输出帧数落在长度契约之外（这会是一条真正的实现缺陷）。
@@ -129,6 +131,28 @@ pub fn resample_interleaved_with_budget(
                 samples.len()
             ),
         });
+    }
+    // 声道数闸门**在这里**判，也就是在任何分配之前、且与帧数无关。
+    //
+    // 改建前它只由下面的 `check_layout`（以及恒等分支里的那一次）判，而那两次都晚于
+    // `Async::new_sinc`：重采样器在构造时就会分配 `channels` 份内部缓冲
+    // （`rubato` 的 `vec![vec![0.0; chunk_size + 2 * sinc_len]; channels]`）。实测
+    // （`/tmp` 计数分配器探针，65535 声道 = `u16::MAX`、1 帧、48 kHz → 96 kHz）：
+    // 峰值存活**额外** 404 420 659 字节 ≈ 385.7 MiB，然后才返回 `TooManyChannels`；
+    // 同一个输入走**恒等**路径（48 kHz → 48 kHz）时该读数是 **0 字节** —— 同一条闸门在
+    // 同一个函数的两条分支上位置不同。
+    //
+    // 同一处还有第二个缺口：`frames == 0` 的提前返回位于 `check_layout` **之前**，因此
+    // 「65535 声道 + 0 帧」改建前是 `Ok(空)`，而紧挨着的「0 声道 + 0 帧」是
+    // `ZeroChannels` —— 同一道闸门的两半在 0 帧输入上得到相反待遇。判定与
+    // `check_layout` 的首道闸门同源同值（[`LimitViolation::TooManyChannels`]），因此这里
+    // **只提前判定，不改判据**；唯一可见的差异是「0 帧 + 超预算声道数」由放行改为拒绝，
+    // 方向是收紧（判据 `an_over_budget_channel_count_is_refused_before_any_resampling`）。
+    if channels > budget.max_channels {
+        return Err(DecodeError::Budget(LimitViolation::TooManyChannels {
+            channels,
+            limit: budget.max_channels,
+        }));
     }
     let frames = samples.len() / channels_usize;
     if frames == 0 {
@@ -492,6 +516,97 @@ mod tests {
         assert!(matches!(
             resample_interleaved(&[0.0; 5], 2, 48_000, 96_000),
             Err(DecodeError::InconsistentLayout { .. })
+        ));
+    }
+
+    /// 判据 (闸门站点 / 参数极值 + 块长度极值)：**声道数**闸门必须在任何分配之前、
+    /// 且与帧数无关。
+    ///
+    /// 改建前 `channels > budget.max_channels` 只由 `check_layout` 判，而那两次调用都在
+    /// `Async::new_sinc` **之后**（重采样器构造时会分配 `channels` 份内部缓冲），而且
+    /// 非恒等路径的那一次还在 `frames == 0` 的提前返回之后。后果有两半，本判据把两半都钉住：
+    ///
+    /// - **资源**：65535 声道（`u16::MAX`）、1 帧、48 kHz → 96 kHz 改建前要先把重采样器
+    ///   的内部缓冲分配出来再报 `TooManyChannels`。`/tmp` 的计数分配器探针读数是
+    ///   **404 420 659 字节**（≈385.7 MiB）的峰值额外存活内存（= `65535 × (1024 + 2×256) × 4`
+    ///   字节 + 约 1.77 MiB 的 sinc 表，与 `rubato` 的 `vec![vec![0.0; buffer_len]; channels]`
+    ///   逐项对上）；同一输入走**恒等**路径（48 kHz → 48 kHz）时该读数是 **0 字节**。
+    ///   ⚠ 这一半**不能**由本条判据自己证伪：两条分支改建前后都返回同一个
+    ///   `TooManyChannels`，变的只是"判在分配之前还是之后"。因此第 ③ 组钉的是**形状**
+    ///   （两条分支同一结论），资源那一半的证据是上面那支探针的前后读数
+    ///   （404 420 659 B → 0 B）。本 crate 不能内置计数分配器：那要 `unsafe`，而
+    ///   `lib.rs` 是 `#![forbid(unsafe_code)]`。
+    /// - **判据形状（可注入的那一半）**：`frames == 0` 的提前返回改建前位于闸门之前，于是
+    ///   「65535 声道 + 0 帧」是 `Ok(空)`，而紧挨着的「0 声道 + 0 帧」是 `ZeroChannels`。
+    ///   同一道闸门的两半在 0 帧输入上得到相反的待遇。改建后两半都在提前返回之前判，
+    ///   方向是**收紧**。
+    ///
+    /// 注入：删掉 `resample_interleaved_with_budget` 里新加的那次 `channels > max_channels`
+    /// 判定 ⇒ 本条以 `expected TooManyChannels for 65 channels at 0 frames, got Ok([])` 红
+    /// （第 ① 组；`cargo test -p yeban-decode --lib` 的读数是 **105 passed / 1 failed**，
+    /// 即该注入只打红这一条 —— 全库没有别的判据钉这个位置）。
+    #[test]
+    fn an_over_budget_channel_count_is_refused_before_any_resampling() {
+        // ① 0 帧 + 超预算声道数：不得走 "0 帧 ⇒ Ok(空)" 那个提前返回。
+        //    比对的字面值与 `LimitViolation` 的字段名一起写出来，避免 `matches!` 把
+        //    `limit` 写错也看不出来。
+        match resample_interleaved(&[], 65, 48_000, 96_000) {
+            Err(DecodeError::Budget(LimitViolation::TooManyChannels { channels, limit })) => {
+                assert_eq!((channels, limit), (65, 64));
+            }
+            other => panic!("expected TooManyChannels for 65 channels at 0 frames, got {other:?}"),
+        }
+
+        // ② 对照：0 帧 + 预算内声道数仍然是 `Ok(空)` —— 这条闸门不是"拒绝一切空输入"，
+        //    0 帧的既有语义（见 `zero_frame_input_stays_zero_frame_output`）原样保留。
+        assert!(
+            resample_interleaved(&[], 2, 48_000, 96_000)
+                .expect("0 frames with 2 channels still yields an empty output")
+                .is_empty()
+        );
+
+        // ③ `u16::MAX` 声道、1 帧：**恒等**与**非恒等**两条分支给出同一条判据（改建前
+        //    非恒等那一条要先把 385.7 MiB 的内部缓冲分配出来才报同一个错）。
+        let widest = vec![0.0f32; 65_535];
+        for (in_rate, out_rate) in [(48_000u32, 96_000u32), (48_000, 48_000)] {
+            let outcome = resample_interleaved(&widest, 65_535, in_rate, out_rate);
+            assert!(
+                matches!(
+                    outcome,
+                    Err(DecodeError::Budget(LimitViolation::TooManyChannels {
+                        channels: 65_535,
+                        limit: 64
+                    }))
+                ),
+                "{in_rate} -> {out_rate}: got {outcome:?}"
+            );
+        }
+
+        // ④ 闭区间：恰好 `max_channels` 个声道必须通过（闸门不是 `>=`）。64 声道 × 2 帧
+        //    的输出很短，因此这条断言不会把默认预算撑破。
+        let at_cap = resample_interleaved(&[0.0; 128], 64, 48_000, 96_000)
+            .expect("exactly max_channels must pass the channel gate");
+        assert_eq!(at_cap.len(), 256);
+
+        // ⑤ 闸门真的读调用方的预算，而不是写死的 64：`max_channels = 1` 时立体声即拒。
+        let mono_only = PcmBudget::new(u64::MAX, 1 << 30, 1, 768_000, 60);
+        match resample_interleaved_with_budget(&[0.0; 4], 2, 48_000, 96_000, &mono_only) {
+            Err(DecodeError::Budget(LimitViolation::TooManyChannels { channels, limit })) => {
+                assert_eq!((channels, limit), (2, 1));
+            }
+            other => panic!("expected TooManyChannels at a 1-channel cap, got {other:?}"),
+        }
+
+        // ⑥ 相邻优先级没有被改动：`samples.len()` 不是整数倍时仍然是布局错误，
+        //    采样率为 0 时仍然是采样率错误（两者都排在声道数闸门之前，与
+        //    `resample_interleaved_with_budget` 的判定顺序一致）。
+        assert!(matches!(
+            resample_interleaved(&[0.0; 5], 65, 48_000, 96_000),
+            Err(DecodeError::InconsistentLayout { .. })
+        ));
+        assert!(matches!(
+            resample_interleaved(&[], 65, 0, 96_000),
+            Err(DecodeError::Budget(LimitViolation::ZeroSampleRate))
         ));
     }
 
