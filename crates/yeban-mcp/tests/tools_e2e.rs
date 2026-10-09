@@ -3935,6 +3935,259 @@ fn edit_notes_track_flags_write_mute_and_solo_and_undo_restores_them() {
     );
 }
 
+/// **工具面真的能取走一整条音轨**：`ops[].kind == "removeTrack"` 走完
+/// `tools/call` → 提案 → 合并 → 撤销 的整条管线，而且它**自带寻址**（顶层
+/// `trackId` / `clipId` 的内容不被读取）。
+///
+/// 这条判据对着一处**实测缺口**：模型有 `Op::RemoveTrack`（载荷 `track_id` +
+/// 整条 `previous_track` 撤销载荷），而它在整个 `crates/yeban-mcp` 里**一次都没有被
+/// 构造过**（两个口径实测都是 0：① `Op::RemoveTrack\s*\{` ② `Op::RemoveTrack\b`；
+/// 同一模式对 `Op::AddTrack` 读 3 / 5 ⇒ 模式有效）。而 **写侧造得出音轨**：
+/// `yeban_open_project` 的 `create: true` 与 `yeban_propose_section` 都真的构造
+/// `Op::AddTrack` ⇒ 建得出的音轨取不走（唯一出路是 `yeban_undo`，那会连带回退同一
+/// 提交里的其它一切）。读侧却一直在报身份（`yeban_query_project` 的 `tracks`）。
+///
+/// 判据的**牙齿**：① 被取走的那条音轨在夹具里**自己带着摆放**，因此"撤销载荷是整条
+/// 音轨（含子结构）"这条断言有内容可查；② 顶层 `trackId` / `clipId` 传的是**别的**
+/// 实体（另一条音轨 + 一个合法 ULID 片段身份），若实现改成读顶层身份就会取错对象或
+/// 报错；③ 主总线那一次必须**响亮拒绝**（`CONFLICT`），而不是"顺带把主总线也摘了"。
+#[test]
+fn edit_notes_remove_track_deletes_one_track_and_undo_restores_it() {
+    let scratch = Scratch::new("remove-track-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    // 被取走的那条：非主总线，且**自己带着摆放**（撤销载荷必须把子结构一起带回）。
+    let target = project
+        .tracks
+        .values()
+        .find(|track| track.id != project.master_bus_track_id && !track.clips.is_empty())
+        .expect("样本里必须有带摆放的非主总线音轨");
+    let target_id = target.id;
+    let target_clips = target.clips.len();
+    let target_name = target.name.clone();
+    let master_id = project.master_bus_track_id;
+    // 顶层两个实参传**别的**实体：本形态一个都不读。
+    let envelope_track = project
+        .tracks
+        .values()
+        .find(|track| track.id != target_id)
+        .expect("样本里必须不止一条音轨")
+        .id;
+    let envelope_clip = project
+        .clip_pool
+        .values()
+        .next()
+        .expect("样本里必须有片段池条目")
+        .id;
+    let bytes_before = project_bytes(&dispatcher);
+
+    let target_text = target_id.to_canonical_string();
+    let proposed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": envelope_track.to_canonical_string(),
+            "clipId": envelope_clip.to_canonical_string(),
+            "ops": [{"kind": "removeTrack", "trackId": target_text}],
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+    let ops = &proposed["data"]["proposal"]["ops"];
+    assert_eq!(ops.as_array().map(Vec::len), Some(1), "{proposed}");
+    assert_eq!(ops[0]["op"]["RemoveTrack"]["track_id"], json!(target_text));
+    assert_eq!(
+        ops[0]["op"]["RemoveTrack"]["previous_track"]["name"],
+        json!(target_name),
+        "撤销载荷必须是**文档里那一条**音轨 (整条, 不是调用方声明的)"
+    );
+    assert_eq!(
+        ops[0]["op"]["RemoveTrack"]["previous_track"]["clips"]
+            .as_object()
+            .map(serde_json::Map::len),
+        Some(target_clips),
+        "撤销载荷必须把音轨自己的摆放一起带上"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = proposed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "取走音轨" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher.domain().active_project().expect("工程");
+    assert!(
+        !after.tracks.contains_key(&target_id),
+        "合并后那条音轨必须真的从 `tracks` 里消失"
+    );
+    assert!(
+        after.tracks.contains_key(&envelope_track),
+        "顶层 `trackId` 传的那条音轨**不是**目标, 必须一动不动"
+    );
+    assert!(after.tracks.contains_key(&master_id), "主总线必须还在");
+    assert!(after.validate().is_ok(), "取走之后工程必须仍然合法");
+
+    // 读侧与写侧落在同一个模型字段上: `yeban_query_project` 的 `project.tracks` 里没有它了。
+    let reading = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["tracks"], "limit": 1000}),
+    );
+    assert_eq!(reading["status"], "success", "{reading}");
+    assert!(
+        reading["data"]["project"]["tracks"]
+            .get(&target_text)
+            .is_none(),
+        "读侧必须报不出这条音轨了: {reading}"
+    );
+    assert!(
+        reading["data"]["project"]["tracks"]
+            .get(envelope_track.to_canonical_string())
+            .is_some(),
+        "别的音轨必须还被报出来 (阴性对照): {reading}"
+    );
+
+    // 可回退：一次撤销 ⇒ 逐字节回到提案之前的工程（含音轨自己的摆放）。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (音轨随 Op::RemoveTrack 的逆 AddTrack 一起回来)"
+    );
+
+    // ---- 两条**批的形状自相矛盾**的口径在 `tools/call` 层也真的生效 ----
+    // ① `removeTrack` 与别的 `kind` 同给 ⇒ 拒绝（摘掉它 / 改它是同一批里的两件事）。
+    let mixed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": envelope_track.to_canonical_string(),
+            "clipId": envelope_clip.to_canonical_string(),
+            "ops": [
+                {"kind": "removeTrack", "trackId": target_text},
+                {"kind": "setTrackMute", "value": true},
+            ],
+        }),
+    );
+    assert_domain_error(&mixed, "INVALID_PARAMETER_RANGE", "取走与编辑不能同给");
+    assert_eq!(
+        mixed["error"]["data"]["reason"], "removeTrackTakesNoOtherOps",
+        "{mixed}"
+    );
+    assert_eq!(
+        mixed["error"]["data"]["trackId"],
+        json!(target_text),
+        "报出的必须是**被取走**的那条音轨: {mixed}"
+    );
+    // ② `removeTrack` 与 `placement` 同给 ⇒ 拒绝（摘掉它 / 在它上面摆是相反的两件事）。
+    let with_placement = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": envelope_track.to_canonical_string(),
+            "clipId": envelope_clip.to_canonical_string(),
+            "ops": [{"kind": "removeTrack", "trackId": target_text}],
+            "placement": {"startTick": 0},
+        }),
+    );
+    assert_domain_error(
+        &with_placement,
+        "INVALID_PARAMETER_RANGE",
+        "取走整条音轨与摆片段不能同给",
+    );
+    assert_eq!(
+        with_placement["error"]["data"]["reason"], "removeTrackIsNotPlacement",
+        "{with_placement}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "两次被拒的调用都不得改工程"
+    );
+}
+
+/// **主总线取不走，而且失败是带内领域错误**：同一个 `removeTrack` 形态指向
+/// `master_bus_track_id` 时，`tools/call` 报 `CONFLICT`
+/// （`data.reason == "masterBusTrackCannotBeRemoved"`），工程一个字节都不改。
+///
+/// 这条与模型自己的不变量对齐：`Op::validate` 用 `OpStateMismatch` 拒绝取走主总线
+/// （`YebanProjectV1::validate` 要求"有音轨时主总线在 `tracks` 里且 `kind == Master`"，
+/// 而且 `master_bus_track_id` 不能悬空），本层把它提前报成契约码 `CONFLICT` —— 与
+/// `removeRoutingNode` 拒绝主总线节点（`masterBusNodeCannotBeRemoved`）同一口径。
+#[test]
+fn edit_notes_remove_track_refuses_the_master_bus() {
+    let scratch = Scratch::new("remove-track-master-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let master = project.master_bus_track_id;
+    let master_text = master.to_canonical_string();
+    // 顶层 `clipId` 只用来让信封**形状合法**（本形态一个都不读）。
+    let envelope_clip = project
+        .clip_pool
+        .values()
+        .next()
+        .expect("样本里必须有片段池条目")
+        .id
+        .to_canonical_string();
+    let other = project
+        .tracks
+        .values()
+        .find(|track| track.id != master)
+        .expect("样本里必须有非主总线音轨")
+        .id
+        .to_canonical_string();
+    let bytes_before = project_bytes(&dispatcher);
+
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": master_text,
+            "clipId": envelope_clip,
+            "ops": [{"kind": "removeTrack", "trackId": master_text}],
+        }),
+    );
+    assert_domain_error(&refused, "CONFLICT", "主总线不能被取走");
+    assert_eq!(
+        refused["error"]["data"]["reason"], "masterBusTrackCannotBeRemoved",
+        "{refused}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒的调用不得改工程"
+    );
+
+    // 阴性对照: 同一次调用换成一条非主总线音轨 ⇒ 建得出提案（上面红的不是"全都拒"）。
+    let accepted = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": master_text,
+            "clipId": envelope_clip,
+            "ops": [{"kind": "removeTrack", "trackId": other}],
+        }),
+    );
+    assert_eq!(accepted["status"], "success", "{accepted}");
+}
+
 /// **工具面真的能写自动化泳道自己的属性**：`ops[].kind == "setAutomationLane"` 走完
 /// `tools/call` → 提案 → 合并 → 撤销 的整条管线，并且关掉读开关之后**唯一求值入口**
 /// 真的返回"无自动化值"。

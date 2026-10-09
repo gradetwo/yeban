@@ -2040,8 +2040,34 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 /// 先建材料、再摆材料，两步各自成一个可审查的提案，而不是把两件事塞进一次提交。
 fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
-    let track_id = arg_id(call, "trackId")?;
-    let clip_id = arg_id(call, "clipId")?;
+    let raw_ops = call
+        .arguments
+        .get("ops")
+        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "缺少 `ops`"))?;
+    // `ops` 先解析（一次），因此"这一批到底要做什么"在**任何寻址之前**就已知：
+    // 音轨实体级形态（`removeTrack`）自带 `trackId`，它不需要顶层 `trackId` / `clipId`
+    // —— 那两个实参的语义是"目标片段（及其音轨）"，本形态一个音符都不读、也不碰片段池。
+    // 与三个路由级形态、段落形态、场景形态同一纪律（它们的寻址也在操作对象里）。
+    //
+    // ⚠ 空 `ops` 的**唯一**合法情形是"只摆放"（见下面那条口径），因此这里先放行空的那
+    // 一格，再对非空数组调 `parse_ops` —— 后者自己的空数组守卫**没有**放松。
+    let placement_only = call.arguments.get(notes::PLACEMENT_FIELD).is_some()
+        && raw_ops.as_array().is_some_and(|items| items.is_empty());
+    let note_ops = if placement_only {
+        Vec::new()
+    } else {
+        notes::parse_ops(raw_ops)?
+    };
+    let track_entity_only = notes::NoteOp::all_track_entity_level(&note_ops);
+    let (track_id, clip_id) = if track_entity_only {
+        // 缺省的两个身份在这里取**占位**的 nil 身份：本分支下它们一个都不会被读
+        // （`compile` 走的是"不查音轨与片段池"的那条路），而且它们**不**参与
+        // `ops[].kind` 的任何判定。判据
+        // `remove_track_does_not_need_the_envelope_ids_or_midi` 钉住这条。
+        (EntityId::default(), EntityId::default())
+    } else {
+        (arg_id(call, "trackId")?, arg_id(call, "clipId")?)
+    };
     let creating = arg_bool(call, notes::CREATE_PARAM, false);
     let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
     if creating && placement_raw.is_some() {
@@ -2054,12 +2080,7 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             }),
         ));
     }
-    let raw_ops = call
-        .arguments
-        .get("ops")
-        .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "缺少 `ops`"))?;
     if creating {
-        let note_ops = notes::parse_ops(raw_ops)?;
         let clip_name = arg_str(call, notes::CLIP_NAME_PARAM)
             .filter(|name| !name.is_empty())
             .unwrap_or(notes::DEFAULT_NEW_CLIP_NAME);
@@ -2075,17 +2096,24 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
             include_ops(call),
         );
     }
+    // 音轨实体级形态（`removeTrack`）**单独成一路**：摘掉一条音轨和"在同一次调用里
+    // 编辑它 / 在它上面摆片段"是同一批里互相矛盾的两件事。规则住在 `notes::`
+    // （本机探针真的执行得到），判定时点是**编译之前**。它紧接在 `create` 那条守卫之后：
+    // 两条都是"这一批的形状自相矛盾"，而 `create` 是更外层的那一条（它连 `ops` 的合法
+    // 集合都变了），因此 `createRequiresAddOps` / `placementIsNotCreation` 优先。
+    let removing_track = matches!(note_ops.as_slice(), [notes::NoteOp::RemoveTrack { .. }]);
+    // 被取走的那条音轨身份（`removing_track` 为真时必有；否则 `None`）。
+    let removed_track = match note_ops.as_slice() {
+        [notes::NoteOp::RemoveTrack { track_id: target }] => Some(*target),
+        _ => None,
+    };
+    notes::reject_remove_track_conflicts(&note_ops, placement_raw.is_some())?;
     // 摆放那一半先解析（它会拒绝未知形态、未知键、越界与"推不出长度"，
     // 也拒绝已被占用的摆放身份，以及 `move`/`remove` 找不到的摆放身份）。
     let placement = notes::parse_placement_edit(project, &track_id, &clip_id, &call.arguments)?;
-    // 空 `ops` 只在摆放在场时成立；否则仍走 `parse_ops` 的空数组守卫
-    // （"空操作不是一次编辑请求"这条口径没有放松）。
-    let note_ops =
-        if placement.is_some() && raw_ops.as_array().is_some_and(|items| items.is_empty()) {
-            Vec::new()
-        } else {
-            notes::parse_ops(raw_ops)?
-        };
+    // 空 `ops` 只在摆放在场时成立（上面 `placement_only` 已经放行了那一格）；其余情形
+    // 走的是 `parse_ops` 自己的空数组守卫 —— "空操作不是一次编辑请求"这条口径没有放松。
+    // `note_ops` 在上面**只解析这一次**，因此同一次调用里不可能出现"两份形状不同的 ops"。
     // 池级形态（`removeClip`）**单独成一路**：它把顶层 `clipId` 那个**片段池条目**
     // 取走，既不读不写音符，也不碰摆放 ⇒ 与另外三路互斥。两条排他性规则住在
     // `notes::reject_remove_clip_conflicts`（那里能被本机探针真的执行到），
@@ -2141,20 +2169,38 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // 而池级取走一个音符都不读、取走之后池里也没有这条片段可量（旧代码会在克隆体上
     // 白跑一遍全文档模拟，然后读到一个已被取走的身份）。模型的 `ClipInUse` 前置条件
     // 仍由 `propose_draft` 的整批模拟把关 —— 那一步没有被跳过。
-    if !removing_clip {
+    if !removing_clip && !removing_track {
         notes::check_polyphony(project, &clip_id, &compiled)?;
     }
     // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"，把池级取走说成
     // "音轨级编辑"，不把一次纯路由边增益写入说成"音轨级编辑"，不把一次纯段落取走
-    // 说成"音轨级编辑"，也不把一次纯场景取走说成"段落级编辑" —— 那是六个不同的
-    // 对象）。五个非音符的桶各自计数，混合调用只报**真的出现过**的那些桶。
+    // 说成"音轨级编辑"，也不把一次纯场景取走说成"段落级编辑" —— 那是七个不同的
+    // 对象）。六个非音符的桶各自计数，混合调用只报**真的出现过**的那些桶。
     let note_level = note_ops.iter().filter(|op| op.is_note_level()).count();
     let routing_level = note_ops.iter().filter(|op| op.is_routing_level()).count();
     let section_level = note_ops.iter().filter(|op| op.is_section_level()).count();
     let scene_level = note_ops.iter().filter(|op| op.is_scene_level()).count();
-    let track_level = note_ops.len() - note_level - routing_level - section_level - scene_level;
+    let track_entity_level = note_ops
+        .iter()
+        .filter(|op| op.is_track_entity_level())
+        .count();
+    // "音轨级"= 写一条音轨的**属性**（那些形态的目标是顶层 `trackId`），
+    // 因此要把音轨实体级那一条**减掉** —— 取走音轨不是"改音轨属性"。
+    let track_level = note_ops.len()
+        - note_level
+        - routing_level
+        - section_level
+        - scene_level
+        - track_entity_level;
     let description = if removing_clip {
         format!("取走片段池条目: {clip_id}")
+    } else if removing_track {
+        // `removeTrack` 单独成一路（`reject_remove_track_conflicts` 保证），
+        // 因此这里可以逐条点名被取走的那条音轨（而不是报一个计数）。
+        format!(
+            "取走音轨: {}",
+            removed_track.expect("removing_track 蕴含批里只有一条 removeTrack")
+        )
     } else if note_ops.is_empty() {
         placement_description
     } else if routing_level == note_ops.len() {
@@ -2165,15 +2211,23 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("场景级编辑: {scene_level} 步")
     } else if note_level == 0 && routing_level == 0 && section_level == 0 && scene_level == 0 {
         format!("音轨级编辑: {track_level} 步")
-    } else if track_level == 0 && routing_level == 0 && section_level == 0 && scene_level == 0 {
+    } else if track_level == 0
+        && track_entity_level == 0
+        && routing_level == 0
+        && section_level == 0
+        && scene_level == 0
+    {
         format!("音符编辑: {note_level} 步")
     } else {
-        let mut parts: Vec<String> = Vec::with_capacity(5);
+        let mut parts: Vec<String> = Vec::with_capacity(6);
         if note_level > 0 {
             parts.push(format!("音符编辑: {note_level} 步"));
         }
         if track_level > 0 {
             parts.push(format!("音轨级编辑: {track_level} 步"));
+        }
+        if track_entity_level > 0 {
+            parts.push(format!("音轨实体级编辑: {track_entity_level} 步"));
         }
         if section_level > 0 {
             parts.push(format!("段落级编辑: {section_level} 步"));
@@ -2186,12 +2240,19 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         }
         parts.join(" + ")
     };
+    // 音轨实体级形态自带寻址：顶层 `clip_id` 在这个分支下是**占位**的 nil 身份，
+    // 因此标题点的是自带的那条音轨，而不是一个假身份。
+    let title_target = if removing_track {
+        removed_track.expect("removing_track 蕴含批里只有一条 removeTrack")
+    } else {
+        clip_id
+    };
     propose_draft(
         domain,
         project,
         "notes",
         description,
-        format!("edit_notes {clip_id}"),
+        format!("edit_notes {title_target}"),
         compiled,
         include_ops(call),
     )

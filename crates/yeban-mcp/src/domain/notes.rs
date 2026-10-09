@@ -632,6 +632,51 @@
 //! 目标**不在**顶层 `trackId` / `clipId` 上：本形态自带寻址（`sceneId`），与场景取走形态
 //! 同一纪律；它一个音符都不读，因此**不要求**片段是 MIDI，也不碰音轨、片段池、路由图
 //! 与曲式段落。
+//!
+//! ## 音轨实体取走形态（`ops[].kind == "removeTrack"`）
+//! —— 关闭"工具面建得出音轨、取不走音轨"这条缺口
+//!
+//! 与上两节**同型**：模型早就有 [`Op::RemoveTrack`]（载荷 `track_id` + 整条
+//! `previous_track` 撤销载荷，`Op::validate` 还拒绝取走主总线），而它在
+//! `crates/yeban-mcp` 里的**构造点**实测是 0 —— 与此同时**写侧造得出音轨**：
+//! `domain/project_create.rs` 的 `create: true` 分支与 `domain/section_build.rs`
+//! 的配器骨架都真的构造 [`Op::AddTrack`]。⇒ 一个 Agent 打开工程后能建音轨、
+//! 能改它的音量 / 开关 / 泳道，却**取不走**它；唯一出路是 `yeban_undo`，
+//! 而那会连带回退同一提交里的其它一切。读侧一直在报身份
+//! （`yeban_query_project` 的 `tracks`）。
+//!
+//! 本形态关的是"取走**整条音轨实体**"这一半，而且它**自成一层**：它不是"写音轨属性"
+//! （那五个音轨属性级形态的目标是**工具顶层**的 `trackId`），因此分类上单列
+//! （[`NoteOp::is_track_entity_level`]；`domain::plan_edit_notes` 的提案标题靠它，
+//! 否则一次"取走音轨"会被报成"音轨级编辑"）。
+//!
+//! 形态：`{"kind":"removeTrack","trackId":"<ULID>"}` —— 载荷是**空**的（只有寻址）；
+//! 撤销载荷 `previous_track` 由 [`compile`] 从**当前文档**读（模型的前置条件要求它
+//! 逐字段等于文档现值，因此本层不采信调用方声明的旧状态）。
+//!
+//! 三条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有 `kind` / `trackId` 之外的键 | `INVALID_PARAMETER_RANGE`（`reason = "unknownRemoveTrackField"`） |
+//! | `trackId` 缺失 / 不是字符串 / 不是合法 ULID | `INVALID_PARAMETER_RANGE`（缺字段走统一的缺字段错误） |
+//! | `project.tracks` 里没有这个身份 | `ENTITY_NOT_FOUND`（`reason = "trackNotFound"`） |
+//! | 这个身份是**主总线** | `CONFLICT`（`reason = "masterBusTrackCannotBeRemoved"`） |
+//! | 与别的 `kind` 同给 | `INVALID_PARAMETER_RANGE`（`reason = "removeTrackTakesNoOtherOps"`） |
+//! | 与 `placement` 同给 | `INVALID_PARAMETER_RANGE`（`reason = "removeTrackIsNotPlacement"`） |
+//!
+//! ⚠ **本形态的寻址不用工具顶层的 `trackId`**：那个实参的语义是"目标片段所在的音轨"
+//! （[`compile`] 的入口拿它查音轨与片段池），而本形态的寻址在操作对象**自带**的
+//! `trackId` 上 —— 与三个路由级形态、段落形态、场景形态同一纪律。顶层 `trackId` /
+//! `clipId` 在本形态单独出现时因此**不被读取**（可以给任意合法 ULID）：`removeTrack`
+//! 一个音符都不读，也**不要求**片段是 MIDI。
+//!
+//! 不碰的东西（逐条给理由，不冒充已完成）：**片段池不回收**（池里的材料可能仍被别的
+//! 音轨引用；模型 `Op` 全集里也没有资产 / 池级回收变体）；**路由图不清理**（图只存
+//! 身份、不存音轨对象，取走一条仍在 `routing_graph.nodes` 里的音轨不会让图失效 ——
+//! 想清节点请走 `disconnectRouting` + `removeRoutingNode` 两步）；**不查别的音轨的
+//! `folder_id`**（`YebanProjectV1::validate` 自己会报悬空引用，而且工具面没有任何形态
+//! 能设置 `folder_id`）。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -822,16 +867,20 @@ pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
 /// 多写一个键（尤其是嵌套的 `trackId`）是**响亮失败**，不静默丢弃。
 pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 
-/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 摆放形态在前，
-/// 音轨级、路由级、段落级与场景级形态在后）。
+/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 音轨级 / 摆放形态在前，
+/// 音轨属性级、路由级、段落级与场景级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
-pub const OP_KINDS: [&str; 16] = [
+/// ⚠ 两个"音轨"词面的键分属两个不同的桶：`REMOVE_TRACK_KIND`（`removeTrack`）
+/// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
+/// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
+pub const OP_KINDS: [&str; 17] = [
     "add",
     "delete",
     "move",
     "velocity",
     REMOVE_CLIP_KIND,
+    REMOVE_TRACK_KIND,
     SET_PARAM_KIND,
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
@@ -1303,6 +1352,30 @@ pub const SET_SCENE_FIELDS: [&str; 5] = [
 /// 操作对象顶层只认这两个键（嵌套的 `sceneId` 直接放在顶层是拼写错误）。
 pub const SET_SCENE_OP_FIELDS: [&str; 2] = ["kind", SCENE_PAYLOAD_FIELD];
 
+/// `ops[].kind` 的**取走音轨**形态名（写 [`Op::RemoveTrack`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveTrack` 的小驼峰），与 [`REMOVE_SECTION_KIND`] /
+/// [`REMOVE_SCENE_KIND`] / [`REMOVE_CLIP_KIND`] 同一条命名规则。
+pub const REMOVE_TRACK_KIND: &str = "removeTrack";
+
+/// 取走音轨形态的**目标**字段名（`ops[].trackId`，必填）。
+///
+/// 音轨身份与路由节点身份（[`ROUTING_NODE_FIELD`]）、段落身份（[`SECTION_FIELD`]）、
+/// 场景身份（[`SCENE_FIELD`]）、片段身份（顶层 `clipId`）**不是**同一个字面量：
+/// 五者是五种实体，共用一个词会让"取走的是哪一个"从形状上无法区分。
+///
+/// ⚠ 本形态的寻址**不用**工具顶层的 `trackId`：那个实参是"目标片段所在的音轨"
+/// （[`compile`] 的入口拿它查音轨与片段池），而本形态自带寻址 —— 与三个路由级形态、
+/// 段落形态、场景形态同一纪律。顶层的 `trackId` / `clipId` 对本形态无意义。
+pub const REMOVE_TRACK_FIELD: &str = "trackId";
+
+/// 取走音轨形态允许出现的**全部**键（判别键 + 寻址键）。
+///
+/// 目标片段与音轨的旧状态**都不在**这里：本形态自带寻址（[`REMOVE_TRACK_FIELD`]），
+/// 而撤销载荷 `previous_track` 由 [`compile`] 从**当前文档**读。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const REMOVE_TRACK_FIELDS: [&str; 2] = ["kind", REMOVE_TRACK_FIELD];
+
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
 /// 目标名逐字等于 `project.json` 的变体名（[`LaneKind::parse`] 那一份词表）；
@@ -1769,6 +1842,37 @@ pub enum NoteOp {
         /// 属性覆盖（合并语义）。
         patch: ScenePatch,
     },
+    /// 取走**一条音轨**（[`Op::RemoveTrack`]，即把这个身份从 `project.tracks` 取走）。
+    ///
+    /// 这是本枚举里唯一的**音轨实体级**形态：它取走的是音轨**本身**（连带它自己的
+    /// `clips` 摆放与 `automation_lanes`），而不是音轨上的某个属性
+    /// —— 属性由 [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] 写
+    /// （见 [`Self::is_track_entity_level`] 与 [`Self::is_note_level`] 的分工）。
+    ///
+    /// ⚠ 写侧在它之前**一处都没有**：`Op::AddTrack` 在工具面上由
+    /// `yeban_open_project` 的 `create: true` 与 `yeban_propose_section` 的骨架**真的**
+    /// 构造（`domain/project_create.rs` / `domain/section_build.rs`），而
+    /// `Op::RemoveTrack` 在 `crates/yeban-mcp/src` 里的构造点实测是 0 ⇒ 工具面
+    /// **建得出**音轨、**取不走**音轨（唯一出路是 `yeban_undo`，而那会连带回退
+    /// 同一提交里的其它一切）。读侧却一直在报音轨身份
+    /// （`yeban_query_project` 的 `tracks`）。
+    ///
+    /// 目标由**自带的** `trackId` 给出（[`REMOVE_TRACK_FIELD`]），与顶层 `trackId` /
+    /// `clipId` 无关 —— 后者是"目标片段所在的音轨"（[`compile`] 的入口用它查音轨与
+    /// 片段池）。与三个路由级形态、段落形态、场景形态同一纪律。
+    ///
+    /// 载荷是**空**的：只有寻址。撤销载荷 `previous_track` 由 [`compile`] 从
+    /// **当前文档**读（模型的前置条件要求它逐字段等于文档现值，因此本层不采信
+    /// 调用方声明的旧状态），[`reject_remove_track_fields`] 只认 `kind` 与 `trackId`。
+    ///
+    /// 模型的两条前置条件：主总线**不能**被取走（`Op::validate` 报
+    /// `OpStateMismatch`）—— 那一条由 [`compile`] 提前报（`masterBusTrackCannotBeRemoved`，
+    /// 与 `removeRoutingNode` 的主总线拒绝同一口径）；音轨必须**存在**
+    /// （`TrackNotFound`）—— 同样提前报（`trackNotFound`）。
+    RemoveTrack {
+        /// 音轨身份（本形态自带寻址）。
+        track_id: EntityId,
+    },
 }
 
 impl NoteOp {
@@ -1791,6 +1895,7 @@ impl NoteOp {
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
             Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
             Self::SetScene { .. } => SET_SCENE_KIND,
+            Self::RemoveTrack { .. } => REMOVE_TRACK_KIND,
         }
     }
 
@@ -1800,7 +1905,7 @@ impl NoteOp {
     /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
     /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] / [`Self::RemoveRoutingNode`]
     /// 是**路由级**的、[`Self::RemoveSection`] 是**段落级**的、[`Self::RemoveScene`]
-    /// 是**场景级**的：它们跟片段内容无关。
+    /// 是**场景级**的、[`Self::RemoveTrack`] 是**音轨实体级**的：它们跟片段内容无关。
     /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
@@ -1818,7 +1923,35 @@ impl NoteOp {
                 | Self::RemoveSection { .. }
                 | Self::RemoveScene { .. }
                 | Self::SetScene { .. }
+                | Self::RemoveTrack { .. }
         )
+    }
+
+    /// 该形态取走的是**一整条音轨实体**（而不是音轨上的一个属性 / 音符 / 摆放）。
+    ///
+    /// 与**音轨属性级**形态（`setParam` / `setTrackMute` / `setTrackSolo` /
+    /// `setAutomationLane` / `removeAutomationPoint`）**不是**同一件事：那五个写的是
+    /// 一条音轨**属性**，目标由工具顶层的 `trackId` 给出；本形态取走音轨**本身**
+    /// （连带它自己的摆放与泳道），目标由操作对象**自带**的 `trackId` 给出。
+    /// 两者必须在提案标题里分得开 —— 一次"取走音轨"不能被报成"音轨级编辑"
+    /// （见 `domain::plan_edit_notes`）。
+    #[must_use]
+    pub const fn is_track_entity_level(&self) -> bool {
+        matches!(self, Self::RemoveTrack { .. })
+    }
+
+    /// 批内**每一条**都是音轨实体级形态（[`Op::RemoveTrack`] 的写侧）。
+    ///
+    /// 这一问只用于[`compile`]（以及它上游的 `domain::plan_edit_notes`）决定
+    /// "要不要先取顶层 `trackId` / `clipId`"：本形态一个音符都不读、也不碰片段池，
+    /// 因此它的寻址是**自带**的 `trackId`。**空批不算**（`false`）—— 空 `ops` 本来
+    /// 就被 [`parse_ops`] 挡掉，把它算成"全是"会让一条错误路径变成另一条。
+    ///
+    /// ⚠ 混批（取走音轨 + 别的形态）在 [`reject_remove_track_conflicts`] 里**响亮拒绝**，
+    /// 因此本方法在合法输入上的取值与"批里有没有 `removeTrack`"是同一个答案。
+    #[must_use]
+    pub fn all_track_entity_level(ops: &[Self]) -> bool {
+        !ops.is_empty() && ops.iter().all(Self::is_track_entity_level)
     }
 
     /// 该形态改的是**路由图**（而不是音符 / 音轨 / 泳道 / 片段池 / 段落）。
@@ -1880,6 +2013,7 @@ impl NoteOp {
 /// {"kind":"removeAutomationPoint","point":{"lane":"Macro","macroIndex":0,
 ///                                          "pointId":"<ULID>"}}
 /// {"kind":"removeClip"}
+/// {"kind":"removeTrack","trackId":"<ULID>"}
 /// {"kind":"setRoutingGain","edgeId":"<ULID>","value":-6.0}
 /// {"kind":"setRoutingGain","edgeId":"<ULID>","value":null}
 /// {"kind":"disconnectRouting","edgeId":"<ULID>"}
@@ -1943,6 +2077,15 @@ impl NoteOp {
 /// 撤销载荷 `old_scene` 从当前文档读，操作对象里 [`SET_SCENE_OP_FIELDS`] 之外的键
 /// 一律响亮拒绝。
 ///
+/// `removeTrack` 是**唯一的音轨实体级**形态（见 [`NoteOp::RemoveTrack`]，
+/// [`NoteOp::is_track_entity_level`]）：它把 `trackId` 那条**音轨本身**从
+/// `project.tracks` 取走（[`Op::RemoveTrack`]，连带它自己的 `clips` 摆放与
+/// `automation_lanes`），用 [`REMOVE_TRACK_FIELD`] 寻址（与节点 / 边 / 段落 / 场景 /
+/// 片段都是**不同的**实体），撤销载荷 `previous_track` 从当前文档读，
+/// 对象里 [`REMOVE_TRACK_FIELDS`] 之外的键一律响亮拒绝。⚠ 它与五个**音轨属性级**
+/// 形态不是一层：那五个写一条音轨的属性，目标由工具顶层的 `trackId` 给出；
+/// 本形态取走音轨本身，目标由本对象自带的 `trackId` 给出。
+///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 /
@@ -1952,7 +2095,8 @@ impl NoteOp {
 ///   [`DISCONNECT_ROUTING_FIELDS`] 之外的键 / 取走路由节点对象里有
 ///   [`REMOVE_ROUTING_NODE_FIELDS`] 之外的键 / 取走段落对象里有
 ///   [`REMOVE_SECTION_FIELDS`] 之外的键 / 取走场景对象里有
-///   [`REMOVE_SCENE_FIELDS`] 之外的键 / 写入场景的操作对象里有
+///   [`REMOVE_SCENE_FIELDS`] 之外的键 / 取走音轨对象里有
+///   [`REMOVE_TRACK_FIELDS`] 之外的键 / 写入场景的操作对象里有
 ///   [`SET_SCENE_OP_FIELDS`] 之外的键 / 写入场景的 `scene` 对象里有
 ///   [`SET_SCENE_FIELDS`] 之外的键 / `name` 或 `color` 是空串 / `create: true` 而没给
 ///   `name` →
@@ -2032,6 +2176,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         REMOVE_CLIP_KIND => {
             reject_remove_clip_fields(object)?;
             Ok(NoteOp::RemoveClip)
+        }
+        REMOVE_TRACK_KIND => {
+            reject_remove_track_fields(object)?;
+            Ok(NoteOp::RemoveTrack {
+                track_id: read_id(object, REMOVE_TRACK_FIELD)?,
+            })
         }
         SET_ROUTING_GAIN_KIND => {
             reject_routing_gain_fields(object)?;
@@ -2295,6 +2445,52 @@ fn reject_remove_scene_fields(object: &Map<String, Value>) -> Result<(), Fault> 
             "hint": "本形态的载荷是空的 (只认 `kind` 与 `sceneId`); 场景身份取自 \
                      `yeban_query_project` 的 `entities[]` 里 `kind == \"scene\"` 的条目, \
                      撤销载荷 `previousScene` 由服务端从当前文档读 (不接受调用方声明)",
+        }),
+    ))
+}
+
+/// 拒绝 `removeTrack` 操作对象里 [`REMOVE_TRACK_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_scene_fields`] / [`reject_remove_section_fields`] /
+/// [`reject_remove_routing_node_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：
+/// 最像"写对了"的几种错法是给一个**别的实体**的寻址（`sceneId` / `sectionId` /
+/// `nodeId` / `edgeId`）、给一个**工具顶层**的 `clipId`（那是"目标片段"，不是音轨）、
+/// 或以为要报告"音轨取走前的状态"而多写 `previousTrack` —— 三种都会被静默忽略，
+/// 而调用方以为音轨已经取走。
+///
+/// ⚠ 顶层 `trackId` 与操作对象自带的 `trackId` **不是同一个东西**：后者是本形态的
+/// 寻址（被取走的那条音轨），前者是"目标片段所在的音轨"（[`compile`] 的入口拿它查
+/// 音轨与片段池）。两者都叫 `trackId`，但一个在信封里、一个在操作对象里，
+/// 因此本函数不会把顶层那个键当成"未知键" —— 它根本不在操作对象里。
+///
+/// # Errors
+///
+/// 出现 `kind` / `trackId` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownRemoveTrackField"`）。
+fn reject_remove_track_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_TRACK_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_TRACK_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_TRACK_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRemoveTrackField",
+            "unsupportedFields": unknown,
+            "supportedRemoveTrackFields": REMOVE_TRACK_FIELDS,
+            "hint": "本形态的载荷是空的 (只认 `kind` 与 `trackId`); 音轨身份取自 \
+                     `yeban_query_project` 的 `tracks` 字段, 撤销载荷 `previousTrack` \
+                     由服务端从当前文档读 (不接受调用方声明)",
         }),
     ))
 }
@@ -3290,16 +3486,32 @@ pub fn compile(
     clip_id: &EntityId,
     ops: &[NoteOp],
 ) -> Result<Vec<Op>, Fault> {
-    let track = project
-        .track(track_id)
-        .map_err(|error| from_model("音轨查找", &error))?;
-    let entry = project
-        .clip_pool
-        .get(clip_id)
-        .ok_or_else(|| Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}")))?;
+    // 音轨实体级形态（`removeTrack`）自带寻址，而且一个音符都不读：它不需要顶层
+    // `trackId` / `clipId`（那两个是"目标片段所在的音轨"的寻址）。判据
+    // `remove_track_does_not_need_midi_and_ignores_the_envelope` 钉住这条。
+    // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
+    let track_entity_only = NoteOp::all_track_entity_level(ops);
+    let track = if track_entity_only {
+        None
+    } else {
+        Some(
+            project
+                .track(track_id)
+                .map_err(|error| from_model("音轨查找", &error))?,
+        )
+    };
+    let entry = if track_entity_only {
+        None
+    } else {
+        Some(project.clip_pool.get(clip_id).ok_or_else(|| {
+            Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}"))
+        })?)
+    };
     // "必须是 MIDI 片段"这条断言只在**真的有音符操作**时成立：`setParam` 一个音符都不读。
     // 四个音符形态的调用因此逐字节等于旧行为（它们总是走到这条断言）。
-    if ops.iter().any(NoteOp::is_note_level) && entry.content.notes().is_none() {
+    if ops.iter().any(NoteOp::is_note_level)
+        && entry.is_some_and(|entry| entry.content.notes().is_none())
+    {
         return Err(Fault::domain(
             ErrorCode::ClipNotFound,
             format!("片段 {clip_id} 不是 MIDI 片段, 没有音符集合"),
@@ -3394,14 +3606,20 @@ pub fn compile(
             NoteOp::SetTrackFlag { flag, value } => {
                 // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
                 // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
-                flag.compile(*track_id, flag.read(track), *value)
+                // `track` 在这里必然是 `Some`：本形态**不是**音轨实体级，因此上面那条
+                // "要不要查顶层 `trackId`"的分支一定取了音轨（见 `track_entity_only`）。
+                flag.compile(*track_id, flag.read(track.expect("非音轨实体级必查音轨")), *value)
             }
             NoteOp::SetLane { edit } => {
                 let target = edit.spec.target(*track_id);
                 // 撤销载荷来自**当前文档**：模型 `SetAutomationLane` 的前置条件要求
                 // `old_lane` 等于文档现值（`RemoveAutomationLane` 同理要求
                 // `previous_lane`），因此这里不采信调用方声明的"旧状态"。
-                let current = track.automation_lanes.get(&target).cloned();
+                let current = track
+                    .expect("非音轨实体级必查音轨")
+                    .automation_lanes
+                    .get(&target)
+                    .cloned();
                 match edit.change {
                     LaneChange::Remove => {
                         let previous_lane = current.ok_or_else(|| {
@@ -3437,7 +3655,11 @@ pub fn compile(
             }
             NoteOp::RemovePoint { spec, address } => {
                 let target = spec.target(*track_id);
-                let lane = track.automation_lanes.get(&target).ok_or_else(|| {
+                let lane = track
+                    .expect("非音轨实体级必查音轨")
+                    .automation_lanes
+                    .get(&target)
+                    .ok_or_else(|| {
                     Fault::domain_with_data(
                         ErrorCode::EntityNotFound,
                         format!("这条自动化泳道不存在, 没有点可以取走: {target:?}"),
@@ -3485,7 +3707,7 @@ pub fn compile(
                 // 都不在本层复制，模型是唯一事实源。
                 Op::RemoveClip {
                     clip_id: *clip_id,
-                    previous_clip: entry.clone(),
+                    previous_clip: entry.expect("非音轨实体级必查片段池").clone(),
                 }
             }
             NoteOp::SetRoutingGain { edge_id, gain_db } => {
@@ -3700,6 +3922,66 @@ pub fn compile(
                     new_scene: patch.apply_to(&base),
                 }
             }
+            NoteOp::RemoveTrack { track_id: target } => {
+                // 撤销载荷来自**当前文档**的**整条**音轨：模型 `RemoveTrack` 的前置条件
+                // 要求 `previous_track` 逐字段等于文档现值（`TrackV3` 不是 `Copy`，
+                // 因此这里是克隆），本层因此不采信调用方声明的旧状态，也不接受调用方
+                // 送来的载荷（`reject_remove_track_fields` 只认 `kind` 与 `trackId`）。
+                //
+                // 两条提前拒绝（与 `removeRoutingNode` 的主总线拒绝同一纪律 —— 让身份
+                // 打错 / 取走主总线在**编译期**就带上 `reason` 与 `hint`，而不是在提案
+                // 模拟那一步冒出一个泛化消息）：
+                //
+                // 1. 主总线**不能**被取走：`Op::validate` 用它自己的错误词
+                //    （`OpStateMismatch`）报这条模型不变量，而 `YebanProjectV1::validate`
+                //    要求"有音轨时主总线在 `tracks` 里且 `kind == Master`" —— 主总线被
+                //    取走之后工程立刻不合法，且 `master_bus_track_id` 会悬空。
+                //    这里用一个说得通的契约码（`CONFLICT`）报同一个结论。
+                // 2. 音轨必须**存在**（模型报 `TrackNotFound`）。
+                //
+                // "还有谁来引用它"（别的音轨的 `folder_id` / 路由图里的边与节点）
+                // **不在这里**复制：`YebanProjectV1::validate` 会自己报
+                // `TrackNotFound`（悬空的 `folder_id`）。工具面没有任何形态能设置
+                // `folder_id`（模型 `Op` 全集里没有这个变体），而路由图只存身份、
+                // 不存音轨对象 —— 取走一条仍在图里的音轨**不会**让图失效。
+                let current = project.tracks.get(target);
+                if let Some(master) = current
+                    && *target == project.master_bus_track_id
+                    && !target.is_nil()
+                {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!(
+                            "身份 {target} 是工程的主总线 (名字 `{}`), 模型要求主总线留在 \
+                             `tracks` 里, 不能取走",
+                            master.name
+                        ),
+                        serde_json::json!({
+                            "trackId": target.to_canonical_string(),
+                            "masterBusTrackId": project.master_bus_track_id.to_canonical_string(),
+                            "reason": "masterBusTrackCannotBeRemoved",
+                            "hint": "主总线是唯一的声学出口 (`PdcPlan::compute` 以\
+                                     「主总线在 tracks 里且 kind == Master」为前置条件); \
+                                     本形态只取走**非**主总线音轨",
+                        }),
+                    ));
+                }
+                let previous_track = current.cloned().ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {target} 的音轨, 没有音轨可以取走"),
+                        serde_json::json!({
+                            "trackId": target.to_canonical_string(),
+                            "reason": "trackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                Op::RemoveTrack {
+                    track_id: *target,
+                    previous_track,
+                }
+            }
         });
     }
     Ok(compiled)
@@ -3870,6 +4152,61 @@ pub fn reject_remove_clip_conflicts(ops: &[NoteOp], placement_present: bool) -> 
             serde_json::json!({
                 "reason": "removeClipIsNotPlacement",
                 "hint": "先 `placement.kind: \"remove\"` 取走摆放, 再单独一次调用取走池里的材料",
+            }),
+        ));
+    }
+    Ok(())
+}
+
+/// 拒绝**音轨实体级形态**（`removeTrack`）与另外几路混用。
+///
+/// 音轨实体级取走把一条**音轨本身**（连带它自己的 `clips` 摆放与 `automation_lanes`）
+/// 取走。它必须**单独**出现在 `ops` 里，也不能和 `placement` 同给 —— 那两件事都在
+/// 同一个对象上做相反的动作（摘掉它 / 在它上面摆片段），让它们同时在场等于让调用方
+/// 猜哪一个先发生。所有规则都在**建提案之前**响亮拒绝：一个自相矛盾的批走到模型层，
+/// 撞到的会是一个说不清是哪条 op 的错（第一条 `RemoveTrack` 真的摘掉音轨之后，
+/// 第二条对同一条轨的 `old_*` 必然与"调用前的文档"不符 ⇒ `OpStateMismatch`）。
+///
+/// 与 [`reject_remove_clip_conflicts`] 同一条纪律：只在真的出现 `removeTrack` 时才做事
+/// （其余形态逐字节等于接线之前的行为）。
+///
+/// # Errors
+///
+/// - `removeTrack` 与别的 `kind` 同给 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "removeTrackTakesNoOtherOps"`，`data.opKinds` = 本次真给的 `kind`
+///   列表，`data.trackId` = 被取走的那条音轨）；
+/// - `removeTrack` 与 `placement` 同给 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "removeTrackIsNotPlacement"`）。
+pub fn reject_remove_track_conflicts(ops: &[NoteOp], placement_present: bool) -> Result<(), Fault> {
+    let removed = ops.iter().find_map(|op| match op {
+        NoteOp::RemoveTrack { track_id } => Some(*track_id),
+        _ => None,
+    });
+    let Some(track_id) = removed else {
+        return Ok(());
+    };
+    if ops.len() > 1 {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`removeTrack` 只能**单独**出现: 同一次调用不能既取走一条音轨、又对它\
+             (或对别的东西) 做别的编辑",
+            serde_json::json!({
+                "reason": "removeTrackTakesNoOtherOps",
+                "trackId": track_id.to_canonical_string(),
+                "opKinds": ops.iter().map(NoteOp::kind_name).collect::<Vec<_>>(),
+                "hint": "取走音轨请单独一次调用; 要先把这条轨上的摆放/泳道清掉, 也请各自\
+                         单独成一次调用 (批内每条的撤销载荷都从调用前的文档读)",
+            }),
+        ));
+    }
+    if placement_present {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`removeTrack` 与 `placement` 不能同给: 前者取走整条音轨, 后者在音轨上动摆放",
+            serde_json::json!({
+                "reason": "removeTrackIsNotPlacement",
+                "trackId": track_id.to_canonical_string(),
+                "hint": "先 `placement.kind: \"remove\"` 取走摆放, 再单独一次调用取走音轨",
             }),
         ));
     }
@@ -5118,16 +5455,18 @@ mod tests {
         // 2026-10-09：新增 `disconnectRouting` 后全集为 12（裁决 R22，性质不变）；
         // 同日新增 `removeRoutingNode`（第三个路由级形态）后为 13；同日再新增
         // `removeSection`（唯一的段落级形态）后为 14；同日再新增 `removeScene`
-        // （唯一的场景级形态）后为 15；本票再新增 `setScene`（场景级**写入**形态，
-        // 与 `removeScene` 共用场景级那个桶）后为 16 —— 这是**同步**计数
+        // （唯一的场景级形态）后为 15；`setScene`（场景级**写入**形态，
+        // 与 `removeScene` 共用场景级那个桶）后为 16；本票再新增 `removeTrack`
+        // （唯一的音轨实体级形态）后为 17 —— 这是**同步**计数
         // （多了一个真存在的 `kind`），不是弱化判据。
-        assert_eq!(OP_KINDS.len(), 16);
+        assert_eq!(OP_KINDS.len(), 17);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
         assert!(OP_KINDS.contains(&SET_AUTOMATION_LANE_KIND));
         assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
         assert!(OP_KINDS.contains(&REMOVE_CLIP_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_TRACK_KIND));
         assert!(OP_KINDS.contains(&SET_ROUTING_GAIN_KIND));
         assert!(OP_KINDS.contains(&DISCONNECT_ROUTING_KIND));
         assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
@@ -7628,6 +7967,361 @@ mod tests {
         .expect("解析");
         assert!(
             reject_remove_clip_conflicts(&note_ops, true).is_ok(),
+            "别的形态不受这两条规则影响"
+        );
+    }
+
+    /// 音轨实体级形态的**字面**判据：载荷只有音轨身份（撤销载荷从**当前文档**读整条
+    /// 音轨），一步就能被 `Op::invert` 逐字节回退到原状。
+    ///
+    /// 这一条对着"读侧报得出音轨、工具面写得出音轨的属性却取不走音轨"的缺口：
+    /// `yeban_query_project` 的 `tracks` 一直在报身份，`Op::AddTrack` 在 MCP 侧也**真的**
+    /// 被 `yeban_open_project` 与 `yeban_propose_section` 构造，而 `Op::RemoveTrack` 在
+    /// `crates/yeban-mcp/src` 的实测构造点是 0 ⇒ 建得出的音轨取不走（唯一出路是
+    /// `yeban_undo`，那会连带回退同一提交里的其它一切）。
+    ///
+    /// 注入（实测红）：把编译出的模型变体由 `Op::RemoveTrack` 换成 `Op::AddTrack`
+    /// 一个副本（一次什么都不删的写）⇒ 变体匹配那条红；把撤销载荷换成**另一条**音轨的
+    /// 克隆（而不是文档里那一条）⇒ "撤销载荷必须是文档里那一条"红。
+    #[test]
+    fn remove_track_compiles_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let target = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有非主总线音轨")
+            .id;
+        assert_ne!(target, project.master_bus_track_id, "夹具前提");
+        let expected = project.tracks[&target].clone();
+        assert!(
+            !expected.clips.is_empty(),
+            "夹具前提: 被取走的那条音轨自己带着摆放 (撤销载荷必须把子结构一起带回)"
+        );
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+        let (track_id, clip_id) = lead_clip(&project);
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND, "trackId": target.to_canonical_string()}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), REMOVE_TRACK_KIND);
+        assert!(!ops[0].is_note_level(), "音轨实体级不读不写音符");
+        assert!(!ops[0].is_routing_level(), "音轨不是路由图的一部分");
+        assert!(!ops[0].is_section_level(), "音轨不是曲式段落");
+        assert!(!ops[0].is_scene_level(), "音轨不是场景");
+        assert!(ops[0].is_track_entity_level());
+        assert!(NoteOp::all_track_entity_level(&ops));
+        assert_eq!(ops[0], NoteOp::RemoveTrack { track_id: target });
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::RemoveTrack {
+                track_id: addressed,
+                previous_track,
+            } => {
+                assert_eq!(*addressed, target);
+                assert_eq!(
+                    previous_track, &expected,
+                    "撤销载荷必须是**文档里那一条**音轨 (不是调用方声明的)"
+                );
+            }
+            other => panic!("应当是 RemoveTrack: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("取走");
+        assert!(
+            !project.tracks.contains_key(&target),
+            "音轨必须真的从 `tracks` 里消失"
+        );
+        assert!(project.validate().is_ok(), "取走之后工程必须仍然合法");
+        // 片段池**没有**被回收: 池里的材料可能仍被别的音轨引用。
+        assert!(
+            project.clip_pool.contains_key(&clip_id),
+            "池级材料不随音轨一起消失"
+        );
+
+        // 逆操作: `RemoveTrack` 的逆是 `AddTrack`（两条载荷都只有音轨身份 +
+        // 整条音轨），因此必须把音轨**连同它的摆放**原样放回去。
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.tracks.get(&target),
+            Some(&expected),
+            "逆操作必须把音轨 (含子结构) 放回原来的形状"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到取走之前的文档"
+        );
+    }
+
+    /// 音轨实体级的**字段名与支持集合**被钉住（不多报一个键，也不少报一个键）。
+    ///
+    /// 注入（实测红）：把 [`REMOVE_TRACK_FIELD`] 改成 `sceneId` ⇒ 本判据红 ——
+    /// 音轨与场景是两种实体，共用一个词会让"取走的是哪一个"从形状上无法区分。
+    #[test]
+    fn remove_track_field_names_are_pinned() {
+        assert_eq!(REMOVE_TRACK_KIND, "removeTrack");
+        assert_eq!(REMOVE_TRACK_FIELD, "trackId");
+        assert_ne!(REMOVE_TRACK_FIELD, SCENE_FIELD, "音轨不是场景");
+        assert_ne!(REMOVE_TRACK_FIELD, SECTION_FIELD, "音轨不是曲式段落");
+        assert_ne!(REMOVE_TRACK_FIELD, ROUTING_NODE_FIELD, "音轨不是路由节点");
+        assert_ne!(REMOVE_TRACK_FIELD, ROUTING_EDGE_FIELD, "音轨不是路由边");
+        assert_eq!(REMOVE_TRACK_FIELDS, ["kind", "trackId"]);
+        assert!(OP_KINDS.contains(&REMOVE_TRACK_KIND));
+        // 与模型自己的变体名同词（不手写第二张会漂移的表）。
+        let project = filled_project();
+        let (track_id, _) = lead_clip(&project);
+        assert_eq!(
+            Op::RemoveTrack {
+                track_id,
+                previous_track: project.tracks[&track_id].clone(),
+            }
+            .name(),
+            "RemoveTrack"
+        );
+    }
+
+    /// 音轨实体级的形状错误**响亮失败**（绝不静默丢弃），而规范形状放行。
+    ///
+    /// 注入（实测红）：去掉 [`reject_remove_track_fields`] 的调用 ⇒ 前六条
+    /// （把别的实体的寻址 `sceneId` / `sectionId` / `nodeId` / `edgeId` 与工具顶层的
+    /// `clipId` 搬过来、以及多写 `previousTrack`）被**静默接受**，本判据红。
+    #[test]
+    fn remove_track_shapes_fail_loudly() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let target = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有非主总线音轨")
+            .id;
+        let target_text = target.to_canonical_string();
+        let scene_id = *project.scenes.keys().next().expect("样本里必须有场景");
+        let section_id = *project
+            .sections
+            .keys()
+            .next()
+            .expect("样本里必须有曲式段落");
+        let (node, _) = a_non_master_node(&project);
+
+        for broken in [
+            // 把**场景**的寻址搬过来: `trackId` 缺失, 而且 `sceneId` 不是本形态的键。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND,
+                                "sceneId": scene_id.to_canonical_string()}]),
+            // 把**曲式段落**的寻址搬过来。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND,
+                                "sectionId": section_id.to_canonical_string()}]),
+            // 把**路由节点**的寻址搬过来。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND, "nodeId": node.to_canonical_string()}]),
+            // 把**路由边**的寻址搬过来。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND, "edgeId": node.to_canonical_string()}]),
+            // 把工具顶层的 `clipId` 搬过来（那是别的实体的寻址）。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND, "trackId": target_text,
+                                "clipId": clip_id.to_canonical_string()}]),
+            // 以为要报告"音轨删除前的状态"而多写 `previousTrack`。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND, "trackId": target_text,
+                                "previousTrack": null}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownRemoveTrackField",
+                "{broken}"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedRemoveTrackFields"],
+                serde_json::json!(["kind", "trackId"]),
+                "{broken}"
+            );
+        }
+
+        for broken in [
+            // 缺 `trackId`。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND}]),
+            // `trackId` 不是字符串。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND, "trackId": 70}]),
+            // `trackId` 不是合法 ULID。
+            serde_json::json!([{"kind": REMOVE_TRACK_KIND, "trackId": "not-a-ulid"}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err(&format!("必须被拒: {broken}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{broken}"
+            );
+        }
+
+        // 阴性对照: 规范形状必须被接受 —— 上面红的不是"全都拒"。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND, "trackId": target_text}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(ops[0].is_track_entity_level());
+        compile(&project, &track_id, &clip_id, &ops).expect("编译");
+    }
+
+    /// 音轨不存在 ⇒ 本层 `ENTITY_NOT_FOUND`（带上 `reason` 与 `trackId`）；
+    /// 主总线 ⇒ `CONFLICT`；两者都**不改文档**（编译期只读）。
+    ///
+    /// 注入（实测红）：把存在性检查换成一条**兜底**（取文档里任意一条音轨当撤销载荷，
+    /// 而不是报错）⇒ 第一条红，诊断里 `previousTrack` 是**另一条**音轨的身份
+    /// —— 那正是"静默取错载荷"的形状。
+    #[test]
+    fn remove_track_refuses_a_missing_track_and_the_master_bus() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let missing = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        assert!(!project.tracks.contains_key(&missing), "夹具前提");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND, "trackId": missing.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("音轨不存在");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "trackNotFound");
+        assert_eq!(
+            lane_fault_data(&fault)["trackId"],
+            serde_json::json!(missing.to_canonical_string())
+        );
+
+        // 主总线: 模型的不变量在这里被提前报成 `CONFLICT` (模型自己会用
+        // `OpStateMismatch` 报同一个结论, 但那条路径不带本层的 `reason` / `hint`)。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND,
+             "trackId": project.master_bus_track_id.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("主总线不能取走");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "masterBusTrackCannotBeRemoved"
+        );
+        assert_eq!(
+            lane_fault_data(&fault)["masterBusTrackId"],
+            serde_json::json!(project.master_bus_track_id.to_canonical_string())
+        );
+        // 而且这个身份**真的**在文档里 (主总线的拒绝不是"顺带报了不存在")。
+        assert!(project.tracks.contains_key(&project.master_bus_track_id));
+
+        // 阴性对照: 非主总线音轨走得通, 且失败路径一个字节都没改文档
+        // (`compile` 只读; 上面两次 `expect_err` 的 `project` 未被移动)。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND,
+             "trackId": project.master_bus_track_id.to_canonical_string()}
+        ]))
+        .expect("解析");
+        assert!(compile(&project, &track_id, &clip_id, &ops).is_err());
+    }
+
+    /// 音轨实体级**不要求片段是 MIDI**、也**不读顶层身份**：`removeTrack` 自带寻址，
+    /// 顶层 `trackId` / `clipId` 是占位的 nil 身份也照样编译。
+    ///
+    /// 注入（实测红）：把 [`compile`] 入口的 `track_entity_only` 分支去掉 ⇒ 本判据红
+    /// （nil 顶层身份查不到音轨 ⇒ `TRACK_NOT_FOUND`），而三个路由级 / 段落 / 场景形态
+    /// 的同类判据仍绿 —— 它们是**别的**形态，各自有自己的自带寻址。
+    #[test]
+    fn remove_track_does_not_need_the_envelope_ids_or_midi() {
+        let project = filled_project();
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+        let audio_track = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+
+        // 顶层给一条**别的**音轨 + 一条**非 MIDI** 片段: 本形态一个都不读。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND, "trackId": audio_track.to_canonical_string()}
+        ]))
+        .expect("解析");
+        let compiled = compile(&project, &audio_track, &audio_clip, &ops)
+            .expect("音轨实体级写入不读片段内容, 非 MIDI 片段也必须被接受");
+        assert_eq!(compiled.len(), 1);
+        assert!(matches!(compiled[0], Op::RemoveTrack { .. }));
+
+        // 顶层两个身份是 nil 占位 ⇒ 仍然编译（`all_track_entity_level` 走的那条路）。
+        let nil = EntityId::default();
+        let compiled = compile(&project, &nil, &nil, &ops)
+            .expect("音轨实体级自带寻址, 顶层 trackId / clipId 不被读取");
+        assert!(matches!(compiled[0], Op::RemoveTrack { .. }));
+
+        // 阴性对照: 换一个**音符级**形态, 同样的 nil 顶层身份必须**响亮失败**
+        // （否则本判据证明不了"顶层身份真的被跳过", 只证明了"有个兜底"）。
+        let note_ops = parse_ops(&serde_json::json!([
+            {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &nil, &nil, &note_ops).expect_err("音符级必须要音轨");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
+    }
+
+    /// 音轨实体级与别的形态 / 摆放**互斥**：三条规则各自红一次，且阴性对照放行。
+    ///
+    /// 注入（实测红）：删掉 mixed 那条分支 ⇒ 第一条红；删掉 `placement_present` 那条
+    /// 分支 ⇒ 第二条红；把"没有 `removeTrack` 时什么都不做"去掉 ⇒ 末条红。
+    #[test]
+    fn remove_track_conflicts_fail_loudly() {
+        let single = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND, "trackId": "01J8Z0000000000000000000AB"}
+        ]))
+        .expect("解析");
+        assert!(
+            reject_remove_track_conflicts(&single, false).is_ok(),
+            "阴性对照: 单独出现且没有摆放 ⇒ 放行"
+        );
+
+        let mixed = parse_ops(&serde_json::json!([
+            {"kind": REMOVE_TRACK_KIND, "trackId": "01J8Z0000000000000000000AB"},
+            {"kind": "velocity", "noteId": "01J8Z0000000000000000000CD", "velocity": 40}
+        ]))
+        .expect("解析");
+        let fault = reject_remove_track_conflicts(&mixed, false).expect_err("必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "removeTrackTakesNoOtherOps"
+        );
+        assert_eq!(
+            lane_fault_data(&fault)["opKinds"],
+            serde_json::json!(["removeTrack", "velocity"]),
+            "报出的必须是本次真给的 kind 列表"
+        );
+        assert_eq!(
+            lane_fault_data(&fault)["trackId"],
+            serde_json::json!("01J8Z0000000000000000000AB"),
+            "报出的必须是**被取走**的那条音轨"
+        );
+
+        let fault = reject_remove_track_conflicts(&single, true).expect_err("必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "removeTrackIsNotPlacement"
+        );
+
+        // 没有 `removeTrack` 的调用逐字节等于旧行为（摆放形态也照旧）。
+        let note_ops = parse_ops(&serde_json::json!([
+            {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}
+        ]))
+        .expect("解析");
+        assert!(
+            reject_remove_track_conflicts(&note_ops, true).is_ok(),
             "别的形态不受这两条规则影响"
         );
     }
