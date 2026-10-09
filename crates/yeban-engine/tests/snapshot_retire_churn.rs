@@ -17,7 +17,7 @@
 //! | 音频线程无任何堆释放 | 实时线程窗口内 `deallocations == 0` | 计数型全局分配器，**线程局部**武装 |
 //! | （更强）无任何堆分配 | 同窗口 `allocations == 0`（单独报告，来源必须点名） | 同一个分配器 |
 //! | 释放发生在**主线程** | ① 实时线程 `EngineSnapshot` 析构计数 `== 0`；② 归属窗口内"全局释放数 == 主线程释放数"；③ `RetireQueue::release_thread() == 主线程` 且 `foreign_drains == 0` | `snapshot::release_probe` + 分配器 |
-//! | 60Hz 循环排空 | 节拍 = 每 **5 个量子**（128 帧 × 5 ÷ 48 kHz = **13.3 ms**，标称 75 Hz）；实测**平均**间隔 ≤ 6 个量子 = 16.0 ms ≤ 16.67 ms（⇒ 实际不慢于 60 Hz）；`pending` 有界并最终 `== 0` | `RetireQueue::drain` + `AUDIO_QUANTA` 音频时钟 |
+//! | 60Hz 循环排空 | 节拍 = 每 **5 个量子**（128 帧 × 5 ÷ 48 kHz = **13.3 ms**，标称 75 Hz）；把高频交换段按**主线程进度**等分成 64 个窗口 ⇒ ① 空节拍窗口 ≤ 2 / 64；② **每一个**窗口的节拍数 ≥ 8（结构下界 31 拍/窗的 1/4）—— 两条都只依赖"主线程推进了多少次交换"，与调度速度无关；`pending` 有界并最终 `== 0` | `RetireQueue::drain` + `AUDIO_QUANTA` 音频时钟 + 分窗样本 |
 //! | 零泄漏 | **等式**：`创建数 == 释放数 + 存活数`，且 `queue.pending() == 0 && slot.pending_len() == 0` | `release_probe::total()` 差值 |
 //! | 控制面**看得见**这些读数 | `EngineStats` 的退役镜像与队列/槽的权威读数**逐项相等**（`pending`/`drained`/`drain_calls`/`pruned`/释放线程归属/`foreign_drains`/`stash`） | 音频线程退出循环后读一次 `EngineStats`（此刻主线程阻塞在 `join` ⇒ 同一静止时刻）+ 队列自身的读数 |
 //! | （`line/engine-mirror-race`）**镜像不漂** | ① 静止点上 `镜像 == 权威`（逐项**等号**，无容差）；② 静止点前后各读一次全套读数 ⇒ 必须逐项相等（"静止"是**测出来**的）；③ 见证：精确待回收 ≥ 尾段积压、`drained`/`drain_calls`/`pruned` 严格 > 0；④ `pushed − drained == 精确待回收` | 静止点上 `Arc::strong_count(accounting) == 1`（生产端已不存在）+ `RetireAccounting` 的两个单调量 |
@@ -72,7 +72,8 @@
 //! 仍然**没有**证明的：① 判定"音频线程"靠的是 `std::thread` 的线程身份，
 //! 不是 cpal 的真实回调线程（本机不编译 cpal，见 AGENTS.md §5）；
 //! ② "60Hz"是按**音频时钟**（量子数）模拟的节拍，不是墙上时钟定时器 ——
-//! 平均间隔是测出来的（≤ 6 个量子 = 16.0 ms），单拍最大间隔受 OS 调度影响，只报告不断言。
+//! 判据钉的是**分窗中位数**（空窗口数 + 中位窗口最长间隔），单拍最大间隔与旧的
+//! "平均间隔"都**只报告不断言**。旧的"平均间隔"为什么不作数见 [`TICK_WINDOWS`] 那段实测。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -111,14 +112,78 @@ const DRAIN_ALL: usize = 1 << 20;
 /// 标称 6 会让实测均值落到 16.8 ms（**比 60 Hz 略慢**）；标称 5 则实测均值 ≈ 5.3 个量子
 /// = 14.1 ms，于是"实际排空频率 ≥ 60 Hz"这句话是**测出来的**而不是赚来的。
 const QUANTA_PER_60HZ_TICK: u64 = 5;
-/// 实测**平均**间隔的上限（量子数）：6 个量子 = 16.0 ms ≤ 16.67 ms ⇒ 实际不慢于 60 Hz。
-const MAX_MEAN_QUANTA_PER_TICK: u64 = 6;
 
-// ⚠ **刻意没有**"相邻两次节拍最大间隔"的硬判据。实测教训（本机 M2，同一台机器上还有别的
-// 构筑在跑）：这个量在 5 ~ 67 个量子之间跳（67 个量子 = 179 ms），而同一时刻
-// `max_pending_before_drain` 始终只有 3 —— 因为主线程被 OS 抢占时**同时也停止了发布**，
-// 所以"间隔被拉长"量的是**墙上时钟的调度**，不是排空循环的节拍。
-// 它照常**打印**出来（可观测），但判据只钉"平均速率"这条与调度无关的量。
+// ---------------------------------------------------------------------------
+// 60Hz 节拍的**分窗**判据（本文件唯一被重做过的判据；旧形态与两次实测见下）
+// ---------------------------------------------------------------------------
+//
+// ⚠ 旧形态（`tick_triggers × 6 < churn_quanta` ⇒ 报"平均间隔 > 6 个量子"）是**脆弱判据**，
+// 与 R20 的锁心跳同类。本机 M2 实测（**没有**刻意加压，同一台机器上另有构筑在跑；
+// 基线 `8661fe8`）：
+//
+// ```text
+// 轮「高频交换」      : quanta=26783 tick_triggers=4438 ⇒ 平均 6.04 个量子 ⇒ FAIL
+// 轮「高频交换（复跑）」: quanta=25469 tick_triggers=4504 ⇒ 平均 5.66 个量子 ⇒ ok
+// 轮「高频交换（复跑）」: quanta=37539 tick_triggers=4790 ⇒ 平均 7.84 个量子 ⇒ FAIL
+// 轮「高频交换（复跑）」: quanta=84767 tick_triggers=5093 ⇒ 平均 16.65 个量子 ⇒ FAIL
+// 轮「播放中交换」    : quanta=61708 tick_triggers=4875 ⇒ 平均 12.66 个量子 ⇒ FAIL
+// （同一进程内 5 轮：4 红 1 绿；而同一批运行里 `音频线程 alloc=0 dealloc=0`、
+//   创建 52565 == 释放 52560 + 存活 5 ⇒ 零泄漏、`双读相等=true` 全部正常）
+// ```
+//
+// 为什么脆弱：`churn_quanta` 不是"时间"，它是**音频线程抢到的 CPU 份额**（音频线程在
+// 本机以 ~46× 实时速度空转）。`tick_triggers` 也不是"时间"，它是**主线程观察到时钟推进
+// 的次数**（gap ≥ 5 才记一拍；一次 600 个量子的长间隔也**只记一拍**）。于是二者的比值
+// 量的是"主线程 / 音频线程 的相对调度份额"，**不是**排空循环的节拍。上表里
+// `tick_triggers` 在 4438 ~ 5093 之间稳（因为主线程每次交换至少看一次表），而
+// `churn_quanta` 从 25 469 涨到 84 767 —— 红的涨落全部来自**分母**，也就是 OS 调度。
+//
+// # 试过又**否掉**的形态：分窗"最长无排空间隔"的上界
+//
+// 先按"多次采样的中位数"做了一版（每窗取最长间隔，判据取中位数 ≤ 64 个量子）。
+// 本机实测**否掉了它**：在 12 核机器上另起 16 个空转进程（本测试自己另有 2 个空转线程
+// ⇒ 约 3.7× 超配）后，中位窗口最长间隔是 **110 / 122 / 137 / 144 / 192 个量子**
+// （同一批运行 `idle=0/64`、`max_pending_before_drain=3~4`、零泄漏全部正常）。
+// 也就是说：中位数只挡得住**孤立**的调度抖动，挡不住**持续**的 CPU 饥饿 ——
+// 而"持续被别的进程抢走 CPU"与"排空循环被音频线程饿死"在这个仪器上产生同样的读数。
+// 把上限放宽到能容纳 192 就又回到"阈值无意义"。
+// 结论：**任何以音频时钟为尺子的速率判据都随调度摆动**，不能当硬判据。
+//
+// # 采用的形态：**主线程进度**上的节拍推进（与绝对速度无关）
+//
+//   ① **空节拍窗口数**：把高频交换段按**主线程进度**（交换序号）等分成 [`TICK_WINDOWS`]
+//      个窗口，要求"一拍都没跑"的窗口数 ≤ [`MAX_IDLE_TICK_WINDOWS`]；
+//   ② **每个窗口的节拍数下界**：要求**每一个**窗口的节拍数 ≥ [`MIN_WINDOW_TICKS`]。
+//
+// 为什么这两条对调度不敏感（结构性论证，不是实测拟合）：
+//   * 窗口按**交换序号**切分 ⇒ 主线程被 OS 抢占时窗口只会被**推迟**，不会凭空多出/少掉
+//     一个窗口（窗口内照样要跑完同样多的交换）；
+//   * 每次交换的握手要求音频线程**至少跑过一个量子**：`LAST_REVISION` 由音频线程逐量子
+//     推进，而主线程必须等到它才能发布下一条 ⇒ 一个窗口内音频时钟**必然**推进
+//     ≥ 窗口交换数（10 000 ÷ 64 = 157）个量子；
+//   * 主线程每次交换的等待循环**至少读一次** `AUDIO_QUANTA`，而 `last_drain_quanta` 只在
+//     记一拍时更新 ⇒ 累计间隔每攒够 5 个量子就必然落在一读上 ⇒ **结构下界 = 157 ÷ 5 = 31 拍/窗**。
+//     这个下界**不来自速度**（跑得慢只会让每个窗口跨越更多量子、记到更多拍），
+//     所以它能当硬判据：只有"排空循环被整段饿死"才可能让它掉下来。
+//   * 实测复核（两组相差 3.7 倍负载）：`min_window_ticks` = **43 ~ 46**（本机被别的构筑
+//     压着）与 **49 ~ 59**（另起 16 个空转进程）—— 负载**升高**时它**升高**。
+//     [`MIN_WINDOW_TICKS`] 取 8，是结构下界 31 的 1/4、实测最差值的 1/5。
+//
+// 仍然**只打印不断言**的量：`max_quanta_between_drains`（单点最大间隔，实测跳到 601 个量子
+// = 1.6 s，而同一时刻 `max_pending_before_drain` 只有 4 —— 主线程被抢占时**同时也停止了
+// 发布**，所以它量的是墙上时钟的调度，不是排空循环）、`median_window_max_gap`
+// （上面被否掉的那个形态，留作可观测对照）与 `churn_quanta / tick_triggers`（旧形态的均值）。
+/// 节拍观测窗口数：把每轮的高频交换段按**主线程进度**（交换序号）等分成这么多个窗口，
+/// 每窗独立取"节拍数"与"最长无排空间隔"两个样本。
+const TICK_WINDOWS: usize = 64;
+/// 允许"一拍都没跑"的窗口数上限（64 个窗口里的 2 个 ⇒ 允许 3% 的窗口被整段抢占）。
+const MAX_IDLE_TICK_WINDOWS: usize = 2;
+/// **每个窗口**的节拍数下界（拍）。窗口 = 157 次交换 ⇒ 8 拍 = 约 1 拍 / 20 次交换。
+///
+/// 取值来历（见上方分窗段）：结构下界 31 拍/窗（157 ÷ 5），实测最差 43 拍/窗
+/// （含 3.7× 超配那一组的最低值）。取 8 = 结构下界的 1/4，给"窗口内交换数少于标称"
+/// 这类实现漂移留余量，同时仍然把"排空周期退化到 > 约 100 个量子"判红。
+const MIN_WINDOW_TICKS: u64 = 8;
 /// 单次交换的等待预算：超过它说明音频线程没在推进（而不是"慢"）⇒ 记失败而不是挂死。
 const SWAP_TIMEOUT: Duration = Duration::from_secs(5);
 /// "排空前积压"的上限（条）。
@@ -291,12 +356,27 @@ struct RoundReport {
     /// 两个归属窗口合计（打印用）。
     released_in_attribution: u64,
     /// 排空节拍。
+    ///
+    /// ⚠ `max_quanta_between_drains` 是**单点最大间隔**，只打印不断言（见 [`TICK_WINDOWS`]）。
     max_quanta_between_drains: u64,
     max_pending_before_drain: usize,
     /// 60Hz 节拍**触发次数**（不管队列当时是否有货；空队列的 `drain` 不计入
     /// `RetireQueue::drain_calls`，所以节拍本身要单独数）。
     tick_triggers: u64,
-    /// 高频交换段结束时的音频时钟读数（"平均排空间隔"判据的分母）。
+    /// 分窗样本的**汇总读数**（原始样本是 `run_round` 的局部数组）。
+    ///
+    /// ① [`Self::idle_tick_windows`]：64 个窗口里"一拍都没跑"的窗口数（判据，上限
+    ///    [`MAX_IDLE_TICK_WINDOWS`]）；
+    /// ② [`Self::min_window_ticks`]：各窗口节拍数的**最小值**（判据，下界
+    ///    [`MIN_WINDOW_TICKS`]）；
+    /// ③ [`Self::median_window_max_gap`] / [`Self::max_window_max_gap`]：各窗口"最长无排空
+    ///    间隔"的中位数与最大值 —— **只打印**（实测在 3.7× 超配下中位数到 192 个量子，
+    ///    所以它当不了硬判据；论证见 [`TICK_WINDOWS`]）。
+    idle_tick_windows: usize,
+    min_window_ticks: u64,
+    median_window_max_gap: u64,
+    max_window_max_gap: u64,
+    /// 高频交换段结束时的音频时钟读数（旧"平均排空间隔"形态的分母；现在只打印）。
     churn_quanta: u64,
     /// 零泄漏对账。
     created: u64,
@@ -331,9 +411,12 @@ struct RoundReport {
 ///
 /// "主线程 60Hz 循环"的节拍必须**与交换速率解耦**：若只在每次交换之后检查一次，
 /// "一次交换里跑过几个量子"就决定了排空间隔。把节拍检查放进**自旋等待**
-/// （主线程此刻唯一在做的事）之后，排空间隔由**音频时钟**决定 ⇒ 标称
-/// [`QUANTA_PER_60HZ_TICK`] 个量子（13.3 ms），实测平均 ≤
-/// [`MAX_MEAN_QUANTA_PER_TICK`] 个量子（16.0 ms ≤ 16.67 ms）。
+/// （主线程此刻唯一在做的事）之后，标称节拍由**音频时钟**决定 ⇒
+/// [`QUANTA_PER_60HZ_TICK`] 个量子（13.3 ms）。
+///
+/// `window_max_gap` 是**当前窗口**的最长无排空间隔（量子数）；它由本函数逐次观测更新，
+/// 由 `run_round` 在窗口边界取走。它**只进打印**、不进判据（理由见 [`TICK_WINDOWS`]）；
+/// 判据用的是同一批窗口的**节拍数**（`report.tick_triggers` 的分窗差分）。
 fn wait_for_revision(
     target: u64,
     budget: Duration,
@@ -341,6 +424,7 @@ fn wait_for_revision(
     slot: &SnapshotSlot,
     report: &mut RoundReport,
     last_drain_quanta: &mut u64,
+    window_max_gap: &mut u64,
 ) -> bool {
     let started = Instant::now();
     let mut spins = 0u32;
@@ -350,6 +434,9 @@ fn wait_for_revision(
         let gap = quanta.saturating_sub(*last_drain_quanta);
         if gap > report.max_quanta_between_drains {
             report.max_quanta_between_drains = gap;
+        }
+        if gap > *window_max_gap {
+            *window_max_gap = gap;
         }
         if gap >= QUANTA_PER_60HZ_TICK {
             report.tick_triggers += 1;
@@ -384,6 +471,40 @@ fn wait_for_revision_inert(target: u64, budget: Duration) -> bool {
         }
     }
     true
+}
+
+/// 旧形态（`churn_quanta / tick_triggers`）的**对照读数**，只打印不作断言。
+///
+/// ⚠ 它量的是"音频线程 / 主线程 的相对调度份额"，不是排空循环的节拍：本机同一台机器上
+/// 实测 5.66 ~ 16.65 个量子（见 [`TICK_WINDOWS`]）。留在这里是为了让报告能贴出
+/// "旧形态会怎么报"与"新形态怎么报"的对照。
+fn mean_quanta_per_tick(report: &RoundReport) -> f64 {
+    report.churn_quanta as f64 / report.tick_triggers.max(1) as f64
+}
+
+/// 关掉当前节拍窗口：把样本（最长无排空间隔 + 节拍数）落进数组，并清零窗口内累加量。
+///
+/// 收尾时**再取一次**间隔：窗口关掉的那一刻，距上一次排空可能已经又走了若干量子
+/// （最后一次时钟观测之后没有节拍），那一段也算这个窗口的停顿。
+fn close_tick_window(
+    index: usize,
+    max_gaps: &mut [u64; TICK_WINDOWS],
+    ticks: &mut [u64; TICK_WINDOWS],
+    window_max_gap: &mut u64,
+    last_drain_quanta: u64,
+    tick_triggers: u64,
+    tick_base: &mut u64,
+) {
+    let tail = AUDIO_QUANTA
+        .load(Ordering::Acquire)
+        .saturating_sub(last_drain_quanta);
+    if tail > *window_max_gap {
+        *window_max_gap = tail;
+    }
+    max_gaps[index] = *window_max_gap;
+    ticks[index] = tick_triggers - *tick_base;
+    *window_max_gap = 0;
+    *tick_base = tick_triggers;
 }
 
 /// 跑一轮：独立的 槽 / 退役队列 / 音频线程 / 对账。
@@ -507,11 +628,46 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
     let mut transport_commands_sent = u64::from(spec.transport);
     let mut handshake_failures = 0usize;
 
+    // 60Hz 节拍的**分窗样本**（判据取「空窗口数 + 每窗节拍数下界」，见 [`TICK_WINDOWS`]）。
+    // ⚠ 窗口边界按**交换序号**（= 主线程进度）等分，**不**按量子数、也**不**按墙上时钟：
+    // 主线程被 OS 抢占时窗口只会被推迟，不会凭空多出或少掉窗口。
+    let per_window = (spec.swaps as usize).div_ceil(TICK_WINDOWS).max(1);
+    let windows_used = ((spec.swaps as usize).div_ceil(per_window)).min(TICK_WINDOWS);
+    let mut window_max_gaps = [0u64; TICK_WINDOWS];
+    let mut window_ticks = [0u64; TICK_WINDOWS];
+    let mut window_index = 0usize;
+    let mut window_max_gap = 0u64;
+    let mut window_tick_base = 0u64;
+
     for index in 0..scheduled {
         let in_backlog = index >= spec.swaps;
         if index == spec.swaps {
-            // 高频交换段的终点（音频时钟读数），供"平均排空间隔"判据使用。
+            // 高频交换段的终点（音频时钟读数）。旧"平均间隔"形态的分母现在**只打印**对照。
             report.churn_quanta = AUDIO_QUANTA.load(Ordering::Acquire);
+            // 高频交换段结束 ⇒ 关掉最后一个节拍窗口。
+            close_tick_window(
+                window_index,
+                &mut window_max_gaps,
+                &mut window_ticks,
+                &mut window_max_gap,
+                last_drain_quanta,
+                report.tick_triggers,
+                &mut window_tick_base,
+            );
+        } else if !in_backlog {
+            let this_window = (index as usize / per_window).min(TICK_WINDOWS - 1);
+            if this_window != window_index {
+                close_tick_window(
+                    window_index,
+                    &mut window_max_gaps,
+                    &mut window_ticks,
+                    &mut window_max_gap,
+                    last_drain_quanta,
+                    report.tick_triggers,
+                    &mut window_tick_base,
+                );
+                window_index = this_window;
+            }
         }
         revision += 1;
         let snapshot = match EngineSnapshot::from_project(project, revision) {
@@ -536,6 +692,7 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
                 &slot,
                 &mut report,
                 &mut last_drain_quanta,
+                &mut window_max_gap,
             )
         };
         if !observed {
@@ -561,6 +718,30 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
         }
     }
     report.churn_quanta = AUDIO_QUANTA.load(Ordering::Acquire);
+
+    // ---- 分窗样本 → 判据用的两个汇总读数（空窗口数 / 每窗节拍数下界）----
+    if windows_used < TICK_WINDOWS || windows_used < 2 {
+        failures.push(format!(
+            "分窗规模不足：{} 次交换 ÷ {} 个窗口 = {} 次/窗 —— 节拍判据就没有样本",
+            spec.swaps, TICK_WINDOWS, per_window
+        ));
+    }
+    window_max_gaps[..windows_used].sort_unstable();
+    report.median_window_max_gap = window_max_gaps[windows_used / 2];
+    report.max_window_max_gap = window_max_gaps[..windows_used]
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    report.idle_tick_windows = window_ticks[..windows_used]
+        .iter()
+        .filter(|&&ticks| ticks == 0)
+        .count();
+    report.min_window_ticks = window_ticks[..windows_used]
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(0);
 
     // ---- 尾段：只发布不排空，制造退役积压（归属窗口的输入）----
     report.backlog_before_attribution = queue.pending();
@@ -900,19 +1081,45 @@ fn run_round(spec: &RoundSpec, project: &YebanProjectV1, main_thread: ThreadId) 
     if report.drained_during_churn == 0 {
         failures.push("60Hz 循环一次都没排空 —— 排空路径未被覆盖".to_owned());
     }
-    // ⑤ 60Hz 节奏：标称节拍 = 每 [`QUANTA_PER_60HZ_TICK`] 个量子（13.3 ms，标称 75 Hz），
-    // 判据钉**平均**速率：`churn_quanta / tick_triggers ≤ MAX_MEAN_QUANTA_PER_TICK`
-    // （6 个量子 = 16.0 ms ≤ 16.67 ms ⇒ 实际不慢于 60 Hz）。
-    // 用"平均"而不是"最大间隔"的理由见 [`QUANTA_PER_60HZ_TICK`] 旁边的那段实测教训。
-    if report
-        .tick_triggers
-        .saturating_mul(MAX_MEAN_QUANTA_PER_TICK)
-        < report.churn_quanta
-    {
+    // ⑤ 60Hz 节奏（**重做过的判据**，见 [`TICK_WINDOWS`] 上方的两段实测）：
+    // 标称节拍 = 每 [`QUANTA_PER_60HZ_TICK`] 个量子（13.3 ms，标称 75 Hz）。判据钉的是
+    // **排空循环在主线程进度上有没有停过**，而不是它相对音频线程跑得多快：
+    //
+    //   ① 空节拍窗口数（一拍都没跑的窗口）⇒ 排空循环被整段饿死；
+    //   ② 每个窗口的节拍数下界 ⇒ 排空周期没有在整段运行里退化。
+    //
+    // 旧形态（`tick_triggers × 6 < churn_quanta`，报"平均间隔 > 6 个量子"）**已删除**：
+    // 它量的是主线程与音频线程的**相对调度份额**（分子稳、分母随负载摆动 25k ~ 112k），
+    // 本机同一台机器上实测 4 红 1 绿。证据、被否掉的中位数形态、以及这两条为什么
+    // 与速度无关，全部见 [`TICK_WINDOWS`]。
+    // `churn_quanta / tick_triggers`（旧均值）、`median_window_max_gap`（被否掉的形态）
+    // 与 `max_quanta_between_drains`（单点最大间隔）仍**打印**出来做对照，但**不作断言**。
+    if report.idle_tick_windows > MAX_IDLE_TICK_WINDOWS {
         failures.push(format!(
-            "60Hz 节拍只跑了 {} 拍，但音频时钟走过 {} 个量子 ⇒ 平均间隔 > {} 个量子（16.0 ms）",
-            report.tick_triggers, report.churn_quanta, MAX_MEAN_QUANTA_PER_TICK
+            "60Hz 节拍在 {} / {} 个窗口里一拍都没跑（上限 {} 个空窗口）⇒ 排空循环被整段饿死；\
+             旧均值为 {:.2} 个量子，单点最大间隔 {} 个量子",
+            report.idle_tick_windows,
+            TICK_WINDOWS,
+            MAX_IDLE_TICK_WINDOWS,
+            mean_quanta_per_tick(&report),
+            report.max_quanta_between_drains
         ));
+    }
+    if report.min_window_ticks < MIN_WINDOW_TICKS {
+        failures.push(format!(
+            "60Hz 节拍最少的窗口只记到 {} 拍（每个窗口的下界 {MIN_WINDOW_TICKS}，\
+             结构下界 {} 拍/窗）⇒ 排空周期在整段运行里退化；旧均值为 {:.2} 个量子，\
+             中位窗口最长间隔 {} 个量子",
+            report.min_window_ticks,
+            (spec.swaps as usize).div_ceil(TICK_WINDOWS) / QUANTA_PER_60HZ_TICK as usize,
+            mean_quanta_per_tick(&report),
+            report.median_window_max_gap
+        ));
+    }
+    // 判别力的**非平凡性**见证：分窗样本本身必须存在且非全零
+    // （"0 个空窗口 + 0 长度的间隔"是空转的绿）。
+    if report.max_window_max_gap == 0 {
+        failures.push("分窗见证不成立：所有窗口的最长间隔都是 0 —— 没有样本".to_owned());
     }
     // 积压必须有界：60Hz 循环"跟得上"的直接读数（容量 4096 还是硬上限）。
     if report.max_pending_before_drain > MAX_PENDING_BEFORE_DRAIN {
@@ -1031,6 +1238,7 @@ fn main() -> ExitCode {
              audio_alloc={} audio_dealloc={} audio_releases={} switches={} stash={} \
              drain_calls={} drained(churn)={} pruned(churn)={} max_pending_before_drain={} \
              max_quanta_between_drains={} tick_triggers={} backlog={} \
+             tick_windows(idle={}/{} median_max_gap={} max_max_gap={} min_ticks={} legacy_mean_gap={:.2}) \
              prune(pruned={} released={} watched={} alloc={}) drain(drained={} released={} watched={} alloc={}) \
              created={} released={} live={} queue_pending={} slot_pending={} release_thread_is_main={} foreign_drains={} \
              stats_mirror(pending={} drained={} drain_calls={} pruned={} release_thread_is_main={} foreign_drains={} stash={})",
@@ -1053,6 +1261,12 @@ fn main() -> ExitCode {
             report.max_quanta_between_drains,
             report.tick_triggers,
             report.backlog_before_attribution,
+            report.idle_tick_windows,
+            TICK_WINDOWS,
+            report.median_window_max_gap,
+            report.max_window_max_gap,
+            report.min_window_ticks,
+            mean_quanta_per_tick(&report),
             report.pruned_in_attribution,
             report.released_in_prune,
             report.watched_in_prune,
