@@ -1054,4 +1054,118 @@ mod tests {
             }
         }
     }
+
+    /// 判据（⑥-7 类别⑥ 多声道一致性）：**单声道输入**与"把同一路信号复制进 N 个声道"的输入，
+    /// 在重采样后必须给出（a）精确的长度关系、（b）同一次调用内部**逐位**相同的各声道、
+    /// 以及（c）与单声道结果在**已声明容差**内一致的每一个样本。
+    ///
+    /// 为什么需要它：既有的 ⑥ 判据只钉"2 声道、两路相同 ⇒ 两路输出逐位相同"与"一路恒 0
+    /// ⇒ 该路输出逐位 +0.0"。**单声道喂多声道**（`channels = 1` 与 `channels = N` 的
+    /// 交叉一致性）此前是空白，而这正是"不丢声道、不复制错声道"的落点。
+    ///
+    /// 为什么（c）**不是**逐位判据（这是一条实测结论，不是放宽）：`rubato` 自己的判据
+    /// （`asynchro.rs` 的 `process_one_block_*` 系列）对"1 声道与 4 声道跑同一路信号"用的
+    /// 就是容差 —— 它断言 `diff < 1e-10`（`f64`），并在注释里写明"4ch 输出必须在浮点容差内
+    /// 与 1ch 输出一致"。本 crate 工作在 `f32`，实测（本机 `/tmp` 探针，`-O` 构建、
+    /// 逐样本 `abs(mono[i] - many[i * channels])` 的最大值）：48 kHz → 44.1 kHz 是
+    /// 1.19e-7（1001 帧）/ 1.49e-7（5000 帧），48 kHz → 96 kHz 是 5.96e-8，
+    /// 44.1 kHz → 48 kHz 是 1.49e-7；而**恒等**比例（48 kHz → 48 kHz）在被测的每一种
+    /// 帧数下都逐位相同（差分 0）。因此"跨声道数逐位相同"不是 `rubato` 的契约，把它写成
+    /// 逐位判据会是一条**永远红**的假判据。⇒ 本条把逐位的部分放在（b）（同一次调用内部），
+    /// 把跨声道数的一致性放在（c）并给出实测读数与 6× 余量的界。
+    ///
+    /// 实测读数（本机，5_000 帧、`channels ∈ {2, 3, 4, 8}`、三组采样率）：
+    /// （a）`many.len() == single.len() * channels` 全部成立；
+    /// （b）同一次调用内部的声道间位模式失配数是 **0**；
+    /// （c）跨声道数的最大绝对差逐组为 48 kHz→44.1 kHz **1.19e-7**、
+    /// 48 kHz→96 kHz **5.96e-8**、44.1 kHz→48 kHz **1.49e-7**（界取 `1.0e-6`，约 6.7× 余量）。
+    ///
+    /// 注入（证明本条不是空判据）：在非恒等路径的 `output.truncate(produced_samples)`
+    /// 之后加一句"若 `output.len() > 1` 则 `output[1] += 1.0e-3`"（把第 0 帧的第 1 个声道
+    /// 推离它的同路伙伴）⇒ 本条在（b）处以
+    /// `2 channels at 48000 -> 44100: channels carrying the same input must be bit-identical
+    /// inside one call` 红；整库读数是 `112 passed / 2 failed`（另一条红的是既有的 ⑥-3
+    /// `identical_channels_resample_bit_identically_and_a_silent_channel_stays_silent`）。
+    #[test]
+    fn a_mono_input_and_an_n_channel_copy_agree_per_channel() {
+        // 非直流信号：只用整数运算生成，不调用任何超越函数。帧数取 5_000 —— 与
+        // `/tmp` 探针量出（c）的读数时用的夹具逐参数相同，因此文档里的字面值可直接复算。
+        let frames = 5_000usize;
+        let mono: Vec<f32> = (0..frames)
+            .map(|index| (index % 37) as f32 * 0.02 - 0.4)
+            .collect();
+        for channels in [2u16, 3, 4, 8] {
+            let mut interleaved = Vec::with_capacity(frames * usize::from(channels));
+            for sample in &mono {
+                for _ in 0..channels {
+                    interleaved.push(*sample);
+                }
+            }
+            for (in_rate, out_rate) in [
+                (48_000u32, 44_100u32),
+                (48_000, 96_000),
+                (44_100, 48_000),
+                (48_000, 48_000),
+            ] {
+                let single = resample_interleaved(&mono, 1, in_rate, out_rate)
+                    .unwrap_or_else(|err| panic!("mono {in_rate} -> {out_rate}: {err}"));
+                let many = resample_interleaved(&interleaved, channels, in_rate, out_rate)
+                    .unwrap_or_else(|err| {
+                        panic!("{channels} channels {in_rate} -> {out_rate}: {err}")
+                    });
+
+                // （a）长度关系是**精确**的：每个声道的帧数与单声道逐帧对齐，不多不少。
+                assert_eq!(
+                    many.len(),
+                    single.len() * usize::from(channels),
+                    "{channels} channels at {in_rate} -> {out_rate}: \
+                     the output must hold the same frame count in every channel"
+                );
+
+                // （b）同一次调用内部，被复制出来的各声道**逐位**相同（上游契约的一半）。
+                let width = usize::from(channels);
+                let mismatched = many
+                    .chunks(width)
+                    .flat_map(|frame| frame[1..].iter().map(move |sample| (frame[0], *sample)))
+                    .filter(|(first, other)| first.to_bits() != other.to_bits())
+                    .count();
+                assert_eq!(
+                    mismatched, 0,
+                    "{channels} channels at {in_rate} -> {out_rate}: \
+                     channels carrying the same input must be bit-identical inside one call"
+                );
+
+                // （c）跨声道数的一致性：在实测读数（≤1.49e-7）之上留 6× 余量，用来抓
+                //     "某个声道被换掉/清零/写进别的声道的数据"，而不是重新钉上游的舍入。
+                let mut worst = 0.0f32;
+                for (index, sample) in single.iter().enumerate() {
+                    let diff = (many[index * width] - sample).abs();
+                    if diff > worst {
+                        worst = diff;
+                    }
+                }
+                assert!(
+                    worst <= 1.0e-6,
+                    "{channels} channels at {in_rate} -> {out_rate}: \
+                     the first channel differs from the mono result by {worst:e}"
+                );
+
+                // （d）非空洞对照：这一路信号不是常数，否则上面三条对"全零输出"也成立。
+                assert!(
+                    single.iter().any(|sample| sample.abs() > 1.0e-3),
+                    "{in_rate} -> {out_rate}: the fixture must carry signal"
+                );
+
+                // （e）恒等比例是逐样本原样返回，因此那一条路径上跨声道数也必须**逐位**相同
+                //     —— 与（c）的容差无关，是（c）不能变成"永远绿"的对照。
+                if in_rate == out_rate {
+                    assert!(
+                        worst == 0.0,
+                        "{channels} channels at {in_rate} -> {out_rate}: \
+                         the identity path must be a bit-exact copy"
+                    );
+                }
+            }
+        }
+    }
 }

@@ -2301,4 +2301,284 @@ mod tests {
             "import_bytes must report the same refusal"
         );
     }
+
+    /// 样本的位模式。类别③与类别⑥的判据只承认**逐位**相同，不承认"值相等"
+    /// （`-0.0` 与 `+0.0` 值相等而位模式不等，`pcm_hash` 也区分二者）。
+    fn sample_bits(samples: &[f32]) -> Vec<u32> {
+        samples.iter().map(|sample| sample.to_bits()).collect()
+    }
+
+    /// 判据（③-6 类别③ 复位/重新打开后与全新实例一致）：**同一个磁盘路径**关掉再打开，
+    /// 与"全新一次打开"逐位一致；两个各自全新的 reader 同样一致；`import_path` 的
+    /// **两遍遍历**（摘要一遍 + 解码一遍）也不留任何残余。
+    ///
+    /// 为什么需要它：本 crate **没有** `open`/`close` 句柄。机械枚举的口径与读数
+    /// （全 crate，`grep -rn` 与 `grep -rnw` 两种，单位都是"命中行数"）：
+    /// `\bclose\b` = **0** 行（16 行 `close` 全是 `fail closed` / `assert_close` /
+    /// `is_closed` 的子串）；`open` 4 行 = `grep -rnw open` 也是 4 行（**没有**假阳性），
+    /// 其中 2 行是 `File::open`（现位于第 84 行与第 392 行）、2 行是注释里的 `fail open`。
+    /// 因此"open → close → open"在本 crate 的**唯一**可达形态就是"同一个路径被打开两次"，
+    /// 而此前没有任何判据打开过同一个路径两次：`decode_path_matches_decode_bytes` 只解一次
+    /// 磁盘路径，`importing_the_same_bytes_twice_yields_the_same_keys` 只覆盖内存入口。
+    ///
+    /// 与既有判据的分工（不重复计量同一件事）：
+    /// - `decoding_the_same_bytes_twice_is_bit_identical` 钉**内存**入口的重复施加；
+    /// - `decode_path_matches_decode_bytes` 钉"两个**不同**入口对同一份字节给同一结果"；
+    /// - 本条钉"同一个路径被**重新打开**"（`metadata` 与 `File::open` 各走两遍）以及
+    ///   `import_path` 的**两遍遍历**都不留残余。
+    ///
+    /// 全 crate 唯一的可变状态对象是 [`limits::IdleGuard`]，它的"复位后 == 全新实例"由
+    /// `repeated_resets_leave_the_guard_in_the_same_state_as_a_single_reset` 钉住；
+    /// 重采样侧那四个入口每次都**新建**一个重采样器（`Async::new_sinc` 在全 crate 只有
+    /// 一个调用点），因此"换主人后与全新实例一致"对它们是构造性质，由
+    /// `every_resample_entry_is_idempotent_on_repeated_application` 从外部读数钉住。
+    ///
+    /// 实测读数（本机）：本判据的全部断言都是**逐位**相等，没有一处需要容差；
+    /// 两条路径、两个 reader、两次流式导入的 `pcm_hash` / `asset_hash` 全部相等。
+    ///
+    /// 注入（证明本条不是空判据）：在 `decode_source` 里放一个调用计数器，让第 2、4、… 次
+    /// 调用在终检之前 `samples.pop()` 一次（模拟"重新打开读到了别的状态"）⇒ 本条在第二次
+    /// `decode_path` 处以 `DurationMismatch(Mismatch { declared: 1000, decoded: 999,
+    /// tolerance: 0, delta: 1 })` 红；只跑本条时读数是 `0 passed / 1 failed`。
+    #[test]
+    fn reopening_the_same_path_reproduces_a_bit_identical_asset() {
+        let spec = int_spec(2, 16);
+        let values: Vec<i32> = (0..2_000)
+            .map(|index| (index % 97) * 300 - 14_400)
+            .collect();
+        let bytes = wav(&spec, &encode_int_samples(16, &values));
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("yeban-decode-reopen-{}.wav", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+
+        // ① 同一个路径打开两次（中间没有别的读者）：样本位模式、事实、内容摘要三者全等。
+        let first = decode_path(&path, &DecodeOptions::default()).unwrap();
+        let second = decode_path(&path, &DecodeOptions::default()).unwrap();
+        assert_eq!(
+            sample_bits(first.samples()),
+            sample_bits(second.samples()),
+            "reopening the same path must restore the same sample bits"
+        );
+        assert_eq!(first.facts(), second.facts());
+        assert_eq!(first.pcm_hash(), second.pcm_hash());
+        assert_eq!(first.frame_count(), second.frame_count());
+
+        // ② 重新打开的结果必须等于"同一份字节的内存入口"的结果 —— 通道、采样率与
+        //    位模式一起比，因此"第二次打开读到了别的偏移"这类缺陷会在这里红。
+        let from_bytes = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
+        assert_eq!(first.pcm_hash(), from_bytes.pcm_hash());
+        assert_eq!(
+            sample_bits(first.samples()),
+            sample_bits(from_bytes.samples())
+        );
+        assert_eq!(first.channels(), from_bytes.channels());
+        assert_eq!(first.sample_rate(), from_bytes.sample_rate());
+
+        // ③ 两个各自全新的 `Read + Seek`（reader 侧的"重新打开"）：`MeasuredSource` 的
+        //    定长测量不能留下与调用次数有关的状态。
+        let reader_first =
+            decode_reader(Cursor::new(bytes.clone()), &DecodeOptions::default()).unwrap();
+        let reader_second =
+            decode_reader(Cursor::new(bytes.clone()), &DecodeOptions::default()).unwrap();
+        assert_eq!(reader_first.pcm_hash(), reader_second.pcm_hash());
+        assert_eq!(
+            sample_bits(reader_first.samples()),
+            sample_bits(reader_second.samples())
+        );
+
+        // ④ 两遍遍历的磁盘导入入口：摘要是第一遍、解码是第二遍，两次导入必须给出同一把
+        //    CAS 键与同一份 PCM，并且与内存入口的键相同。
+        let imported_first =
+            crate::asset::import_path(&path, "CC0-1.0", &DecodeOptions::default()).unwrap();
+        let imported_second =
+            crate::asset::import_path(&path, "CC0-1.0", &DecodeOptions::default()).unwrap();
+        let cleanup = std::fs::remove_file(&path);
+        assert_eq!(imported_first.asset_hash(), imported_second.asset_hash());
+        assert_eq!(imported_first.pcm_hash(), imported_second.pcm_hash());
+        assert_eq!(
+            imported_first.index.byte_len,
+            imported_second.index.byte_len
+        );
+        assert_eq!(imported_first.index.byte_len, bytes.len() as u64);
+
+        let imported_bytes =
+            crate::asset::import_bytes(&bytes, "reopen.wav", "CC0-1.0", &DecodeOptions::default())
+                .unwrap();
+        assert_eq!(imported_first.asset_hash(), imported_bytes.asset_hash());
+        assert_eq!(imported_first.pcm_hash(), imported_bytes.pcm_hash());
+
+        // ⑤ 夹具非空洞：这一路信号不是常数，因此上面的位模式相等不是"两者都为零"的退化。
+        assert!(first.samples().iter().any(|sample| sample.abs() > 0.1));
+        cleanup.unwrap();
+    }
+
+    /// 判据（⑥-8 类别⑥ 多声道一致性 / 声道数极值）：声明的声道数在**极值**上必须被类型化拒绝
+    /// 而不是 panic；上游收下的最大声道数（26）此前没有任何判据走过；各声道声明值相同时
+    /// 解出的交织帧里各声道**逐位**相同，且声道数与帧数不丢不增。
+    ///
+    /// 为什么需要它：既有的解码侧声道判据只钉两件事 —— `the_channel_and_rate_gates_fire_on_its_own`
+    /// 把预算压到 1 声道再看立体声被拒（**上界** `max_channels` 的闭区间从未在解码侧被测过），
+    /// `one_frame_and_non_power_of_two_streams_decode_exactly_and_zero_frames_are_refused`
+    /// 只钉 2 声道的 L==R 交织对。以下三类此前是空白：
+    ///
+    /// 1. **声明的极值**：0 声道、32769 声道与 65535 声道。8-bit 的这两个极值是一个**与既有
+    ///    溢出判据不同的形状** —— `num_channels × (bits_per_sample / 8)` 在 8-bit 下是
+    ///    `n × 1`，`32769` 与 `65535` 都 **不**溢出 `u16`，因此 RIFF 预检对它们是沉默的，
+    ///    拒绝必须来自上游的声道数闸门。既有判据用的是 16-bit 的 32769（那里预检会先跳闸），
+    ///    因此覆盖不到这个形状。
+    /// 2. **上界 26**：上游 `map_wave_channel_count` 接受 1..=26，27 起拒绝。26 是解码侧
+    ///    **真实可达**的最大声道数。
+    /// 3. **解码器的声道预算闸门在 WAV 上不可达**：`max_channels` 默认 64，而上游把 PCM/WAV
+    ///    的声道数卡在 26，因此解码侧永远走不到 [`LimitViolation::TooManyChannels`]。
+    ///    本条把这个事实**钉成断言**（极值拒绝不得是 `Budget` 变体），而不是留成一句注释。
+    ///    能超过 26 声道的只有别的容器（Ogg Vorbis 的 `channels` 是 `u8`，可到 255），
+    ///    而本 crate 没有 Ogg 的字节级夹具，因此那条路径**没有**判据覆盖，照实登记。
+    ///
+    /// 另两条**不可达**的守卫也在这里说清（不是本判据的落点）：解码循环里"声道数中途变了"
+    /// 与"样本格式中途变了"两处 `InconsistentLayout`（现位于第 331 行与第 338 行）无法由
+    /// 公开入口到达 —— WAV/FLAC 的声道数在一条流里恒定，而真正会中途换布局的串联 Ogg
+    /// 先撞上 `ResetRequired`（本 crate 明确拒绝），因此那两处是防御性代码。
+    ///
+    /// 实测读数（本机）：0 声道 ⇒ `malformed stream: riff: invalid channel count`；
+    /// 26 声道 ⇒ 正常解出；27 声道 ⇒ 同上那条 invalid channel count；
+    /// 32769 / 65535 声道 @8-bit ⇒ 同上（**不是**预算变体，也不是预检的溢出文案）；
+    /// 65535 声道 @16-bit ⇒ 预检的溢出文案（`u16` 乘法会溢出）。
+    ///
+    /// 注入（三条，逐条在本机跑过）：
+    /// - 预检对 tag 1 的 `u16` 乘法溢出**不再拒绝**（条件改成恒假）⇒ 本条在上游
+    ///   `read_pcm_fmt` 第 100 行的 `attempt to multiply with overflow` 处 panic，
+    ///   只跑本条时读数是 `0 passed / 1 failed`（这证明 ⑤ 钉的拒绝是真的在挡 panic）；
+    /// - 预检把 8-bit 的每样本字节数误算成 **2**（过度拒绝）⇒ 本条在 ④ 的第一轮以
+    ///   `32769 channels at 8 bits: expected the upstream channel-count refusal, got
+    ///   malformed stream: WAV fmt declares 32769 channels at 8 bits per sample: the RIFF
+    ///   parser computes num_channels * (bits_per_sample / 8) in u16 and would overflow`
+    ///   红，只跑本条时读数是 `0 passed / 1 failed`（这证明 ④ 钉的**落点**）；
+    /// - `check_layout` 的声道闸门从闭区间改成 `>=` ⇒ 本条在 ⑥ 的"恰好等于上限"处红；
+    ///   整库读数是 `108 passed / 6 failed`（另外 5 条是既有的声道/预算判据）。
+    #[test]
+    fn channel_count_extremes_are_refused_and_equal_channels_stay_bit_identical() {
+        // ① 各声道声明值相同 ⇒ 解出的交织帧里各声道逐位相同；声道数与帧数不丢不增。
+        let frames = 40usize;
+        let values: Vec<i32> = (0..frames)
+            .map(|index| (index as i32 % 101) * 100 - 5_000)
+            .collect();
+        for channels in [1u16, 2, 3, 4, 8, 26] {
+            let mut interleaved = Vec::with_capacity(frames * usize::from(channels));
+            for value in &values {
+                for _ in 0..channels {
+                    interleaved.push(*value);
+                }
+            }
+            let asset = decode_bytes(
+                &int_wav(channels, 16, &interleaved),
+                &DecodeOptions::default(),
+            )
+            .unwrap_or_else(|err| panic!("{channels} channels must decode: {err}"));
+            assert_eq!(
+                asset.channels(),
+                channels,
+                "{channels} channels were not kept"
+            );
+            assert_eq!(asset.frame_count(), u64::try_from(frames).unwrap());
+            assert_eq!(asset.samples().len(), frames * usize::from(channels));
+            let mismatched = asset
+                .samples()
+                .chunks(usize::from(channels))
+                .flat_map(|frame| frame[1..].iter().map(move |sample| (frame[0], *sample)))
+                .filter(|(first, other)| first.to_bits() != other.to_bits())
+                .count();
+            assert_eq!(
+                mismatched, 0,
+                "{channels} channels carrying the same declared value must decode to the same bits"
+            );
+        }
+
+        // ② 0 声道：类型化拒绝；同一份字节把声明改回 1 声道必须照常解出（证明红的是闸门）。
+        let mut zero = int_wav(1, 16, &[100, -100]);
+        patch_declared_channels(&mut zero, 0);
+        let err = decode_bytes(&zero, &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("invalid channel count")),
+            "0 declared channels: expected the upstream channel-count refusal, got {err}"
+        );
+        patch_declared_channels(&mut zero, 1);
+        assert_eq!(
+            decode_bytes(&zero, &DecodeOptions::default())
+                .unwrap()
+                .frame_count(),
+            2,
+            "the same bytes with 1 declared channel must decode"
+        );
+
+        // ③ 27 声道：上游上界之外，必须与 26 声道形成闭区间的两侧。
+        let err =
+            decode_bytes(&int_wav(27, 16, &[1_000; 27]), &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail } if detail.contains("invalid channel count")),
+            "27 channels: expected the upstream channel-count refusal, got {err}"
+        );
+
+        // ④ 32769 / 65535 声道 @8-bit：`num_channels × 1` 不溢出 `u16`，因此预检沉默 ——
+        //    拒绝必须来自上游声道数闸门，而且**不能**是解码预算的声道变体
+        //    （那证明解码侧 `max_channels` 在 WAV 上不可达）。
+        for channels in [32_769u16, 65_535] {
+            let widest = int_wav(channels, 8, &vec![0i32; usize::from(channels)]);
+            let err = decode_bytes(&widest, &DecodeOptions::default()).unwrap_err();
+            assert!(
+                matches!(&err, DecodeError::Malformed { detail }
+                    if detail.contains("invalid channel count")),
+                "{channels} channels at 8 bits: expected the upstream channel-count refusal, \
+                 got {err}"
+            );
+            assert!(
+                !matches!(err, DecodeError::Budget(_)),
+                "{channels} channels: the decoder-side channel budget must not be what \
+                 refuses a WAV: {err}"
+            );
+        }
+
+        // ⑤ 对照：同一处算术改成 16-bit ⇒ `num_channels × 2` 溢出 `u16`，预检先跳闸。
+        //    两个极值由此分走**两条不同的拒绝路径**（预检 vs 上游声道数闸门）。
+        let mut overflowing = int_wav(1, 16, &[0, 0]);
+        patch_declared_channels(&mut overflowing, 65_535);
+        let err = decode_bytes(&overflowing, &DecodeOptions::default()).unwrap_err();
+        assert!(
+            matches!(&err, DecodeError::Malformed { detail }
+                if detail.contains("65535") && detail.contains("would overflow")),
+            "65535 channels at 16 bits: expected the precheck overflow refusal, got {err}"
+        );
+
+        // ⑥ 解码侧 `max_channels` 的**闭区间**：恰好等于上限必须通过，少一个必须被拒。
+        let stereo = int_wav(2, 16, &[1_000; 64]);
+        let at_cap = DecodeOptions {
+            budget: PcmBudget {
+                max_channels: 2,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        assert_eq!(
+            decode_bytes(&stereo, &at_cap).unwrap().channels(),
+            2,
+            "exactly max_channels must pass the channel gate"
+        );
+        let below_cap = DecodeOptions {
+            budget: PcmBudget {
+                max_channels: 1,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        assert!(
+            matches!(
+                decode_bytes(&stereo, &below_cap),
+                Err(DecodeError::Budget(LimitViolation::TooManyChannels {
+                    channels: 2,
+                    limit: 1
+                }))
+            ),
+            "one below max_channels must be refused"
+        );
+    }
 }
