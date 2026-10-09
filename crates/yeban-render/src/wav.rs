@@ -447,6 +447,48 @@ mod tests {
     }
 
     /// 判据 5: 格式与缓冲不匹配、以及不支持的位深都被明确拒绝。
+    /// 判据 4b: 我们写出的**浮点** RIFF 现在带 `fact` chunk（非 PCM 的必填项,
+    /// 见 [`crate::rf64`] 模块头的核验表）, 而独立的第三方读取器 `hound` **仍然**
+    /// 能逐位读回 —— 这是"新增的 chunk 没有把文件读坏"的第三方见证。
+    ///
+    /// 同时本 crate 的读取器必须报告 `fact` 的载荷长度 = 4 字节（`u32` 帧数）。
+    ///
+    /// **两份写入器在这里刻意不同**（如实登记）: [`write_plain_wav`] 走 `hound`,
+    /// 而 hound **从不写** `fact` —— 它 `src/write.rs` 的原话是 "Hound never writes a
+    /// fact chunk. For all the formats that Hound can write, the fact chunk is
+    /// redundant." 本仓库不改第三方实现 ⇒ 浮点 + `fact` 只由 [`crate::rf64`] 的
+    /// 生产写入器提供; 本判据覆盖的也是那一条路径。
+    #[test]
+    fn hound_reads_the_float_riff_that_carries_our_fact_chunk() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("float-fact.wav");
+
+        let format = PcmFormat::float(2, 48_000, 32);
+        let samples = ramp(64);
+        let payload: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let frames = (samples.len() / 2) as u64;
+        let plan = crate::rf64::ContainerPlan::for_payload(
+            crate::rf64::ContainerKind::Riff,
+            format,
+            payload.len() as u64,
+            frames,
+            None,
+        );
+        let mut file = std::fs::File::create(&path).expect("创建文件");
+        crate::rf64::write_container(&mut file, &plan, &payload).expect("写入");
+        drop(file);
+
+        // 第三方裁判: `hound` 读回的格式与样本必须逐位一致。
+        let (read_format, read_pcm) = read_plain_wav(&path).expect("hound 读回");
+        assert_eq!(read_format, format);
+        assert_eq!(read_pcm, PcmBuffer::Float32(samples));
+
+        // 本 crate 的读取器: `fact` 必须存在, 长度是 4 字节。
+        let bytes = std::fs::read(&path).expect("读文件");
+        let layout = ChunkLayout::from_bytes(&bytes).expect("chunk 布局");
+        assert_eq!(layout.len_of(b"fact"), Some(crate::rf64::FACT_PAYLOAD_LEN));
+    }
+
     #[test]
     fn mismatched_format_and_buffer_are_rejected() {
         let format = PcmFormat::integer(2, 48_000, 16);

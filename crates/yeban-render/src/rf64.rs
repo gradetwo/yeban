@@ -14,6 +14,18 @@
 //! | `WAVE_FORMAT_EXTENSIBLE` 的 `fmt ` 负载 = 40 字节（`cbSize`=22 + validBits + channelMask + 16 字节 GUID） | hound `read_wave_format_extensible`（要求 >=40 且 `cbSize == 22`）; libsndfile `rf64_write_fmt_chunk` |
 //! | `KSDATAFORMAT_SUBTYPE_PCM` / `..._IEEE_FLOAT` 的 16 字节 GUID | hound `src/lib.rs` 常量逐字节读取 |
 //! | RIFF chunk 长度不含偶数对齐补位字节 | libsndfile `rf64_write_tailer`: `if (psf->dataend & 1) write 1 pad` |
+//! | **非 PCM（IEEE 浮点）容器必须带 `fact` chunk**: `u32` 帧数, 位置在 `fmt ` 之后、`bext` 之前 | FFmpeg `libavformat/wavenc.c`: `codecpar->codec_tag != 0x01`（即"非 PCM"）时写 `fact`, `wav->fact_pos` 紧跟 `fmt ` 且在 `bext` 之前, 结尾回填帧数; hound `src/read.rs` 的 `ChunkKind::Fact` 分支引 Rev.3 原文 "All (compressed) non-PCM formats must have a fact chunk. The chunk contains at least one value, the number of samples in the file." |
+//!
+//! 上面最后一行是**本模块此前的缺口**: [`write_container`] 对浮点负载不写 `fact`。
+//! 仓库内还有第二条**独立**证据说明这条 chunk 该写: `examples/support/l1_digest_record.rs`
+//! 的 f32 WAV 编码器（本 crate 的 L1 摘要落点, 与 `rf64` 是两份独立实现）写出的头恒定
+//! **56 字节** = `RIFF(12) + fmt (8+16) + fact(8+4) + data(8)`, 其中 `fact` 的负载就是帧数。
+//! 计数依据: 那条判据的 `wav_bytes = 65592`、`frames = 8192`、`channels = 2`、32f
+//! ⇒ 负载 `8192 × 2 × 4 = 65536` 字节, 头部 `65592 − 65536 = 56` 字节。
+//!
+//! **写 `fact` 不会让它变陈旧**: hound `src/write.rs` 警告"追加写时不会更新 `fact`"。
+//! 本模块的写入器是**一次性**的（`for_payload` 在写之前就拿到总帧数, 头部只写一遍,
+//! 之后不再 seek 回去改长度）, 因此那条警告在这里不适用。
 //!
 //! ## 本模块零第三方依赖
 //!
@@ -30,7 +42,8 @@
 //!   [`Rf64Error::UnsupportedBextVersion`], 登记为 `pending`。
 //! - BW64 的 `axml`/`bxml`/`sxml`/`chna` 四个 XML chunk 未实现（[ARCH-FMT-001]
 //!   只要求 RF64/BW64 容器 + `bext`）, `ContainerKind::Bw64` 产出的是
-//!   "BW64 标识 + `ds64` + `fmt ` + `bext`"这一子集, 不是完整 BS.2088 文件。
+//!   "BW64 标识 + `ds64` + `fmt ` + （浮点时 `fact`）+ `bext`"这一子集, 不是完整
+//!   BS.2088 文件。
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -44,6 +57,33 @@ pub const BEXT_FIXED_LEN: usize = 602;
 
 /// `bext` v2 在固定前缀里额外的响度字段长度（5 × `i16`）。
 pub const BEXT_V2_LOUDNESS_LEN: usize = 10;
+
+/// `fact` chunk 的负载长度（字节）: 一个 `u32` 帧数。
+///
+/// FFmpeg 与 hound 的实现里这个字段都是一个 `u32`（`avio_wl32` / `read_le_u32`）。
+pub const FACT_PAYLOAD_LEN: usize = 4;
+
+/// 写进 `fact` chunk 的 `u32` 帧数 [ARCH-FMT-001]。
+///
+/// `sample_count` 是**帧数**（每声道采样数）, 与 [`Rf64Sizes::sample_count`] 同口径。
+/// 严格小于 [`SENTINEL_U32`] 时直接写原值。
+///
+/// 取到 [`SENTINEL_U32`] 或更大时改写哨兵: 那个值在 `fact` 里已经是"未知/看 `ds64`"的
+/// 记号, 把它**同时**当成一个精确计数会让两种含义无法区分。代价是"帧数恰好等于
+/// `0xFFFF_FFFF`"这一格与哨兵重合 —— 这是 `u32` 字段借满值当哨兵的固有代价,
+/// 不是本函数的取舍（FFmpeg 的判据是 `number_of_samples > UINT32_MAX`, 在那一格
+/// 同样写出 `0xFFFF_FFFF`）。
+///
+/// 能取到哨兵分支只可能是 `RF64`/`BW64` —— `sample_count ≥ 0xFFFF_FFFF` 且浮点每样本
+/// 至少 1 字节 ⇒ 负载**至少** 4 294 967 295 字节, 加上任何头部都超过 `data` 的 32 位
+/// 上限, `for_payload` 必然升级到带 `ds64` 的容器, 而真值就写在 `ds64.sampleCount` 里。
+const fn fact_frame_count(sample_count: u64) -> u32 {
+    if sample_count < SENTINEL_U32 as u64 {
+        sample_count as u32
+    } else {
+        SENTINEL_U32
+    }
+}
 
 /// PDC/音频容器通用的小端读写工具。
 mod le {
@@ -682,10 +722,19 @@ impl ContainerPlan {
     ) -> Self {
         // chunk 的总占用 = 8 (头) + 负载 + 必要的偶数补位字节。
         let fmt_total = chunk_total(format.fmt_payload().len());
+        // 非 PCM（浮点）必须带 `fact` —— 见模块头的核验表。整数 PCM 不写它:
+        // FFmpeg 的条件就是 `codec_tag != 0x01`, 而 PCM 的 `fact` 是冗余的
+        // （hound `src/write.rs` 的原话: "For all the formats that Hound can write,
+        // the fact chunk is redundant"）。
+        let fact_total = if format.is_float {
+            chunk_total(FACT_PAYLOAD_LEN)
+        } else {
+            0
+        };
         let bext_total = bext
             .as_ref()
             .map_or(0, |block| chunk_total(block.to_bytes().len()));
-        let header_no_ds64 = 12 + fmt_total + bext_total + 8;
+        let header_no_ds64 = 12 + fmt_total + fact_total + bext_total + 8;
         // RIFF 的长度字段包含 chunk 之间的偶数补位字节, 因此 data 负载的补位也要算进去。
         let payload_total = payload_len + (payload_len % 2);
         let projected = header_no_ds64 as u64 + payload_total;
@@ -726,6 +775,10 @@ impl ContainerPlan {
 
     /// 构造头部字节（`data` chunk 头之后、音频负载之前的一切）。
     ///
+    /// chunk 顺序: 可选 `ds64` → `fmt ` → 可选 `fact`（**仅非 PCM**）→ 可选 `bext`
+    /// → `data` 头。`fact` 的位置与"仅非 PCM"这两个约束都来自模块头核验表里的
+    /// FFmpeg 语句。
+    ///
     /// 这是个**纯函数** —— 大尺寸场景的全部判据都打在它身上, 因此不需要真的写
     /// 4 GiB。
     #[must_use]
@@ -742,6 +795,15 @@ impl ContainerPlan {
             push_chunk(&mut out, b"ds64", &self.sizes.to_bytes());
         }
         push_chunk(&mut out, b"fmt ", &self.format.fmt_payload());
+        // `fact` 紧跟 `fmt `、在 `bext` 之前（FFmpeg 的 `wav->fact_pos` 就是写在这里）。
+        // 只有非 PCM 写它; 载荷是帧数, 不是"总采样数"。
+        if self.format.is_float {
+            push_chunk(
+                &mut out,
+                b"fact",
+                &le::u32(fact_frame_count(self.sizes.sample_count)),
+            );
+        }
         if let Some(bext) = &self.bext {
             push_chunk(&mut out, b"bext", &bext.to_bytes());
         }
@@ -1369,6 +1431,202 @@ mod tests {
         assert_eq!(block.version, 2);
         assert_eq!(block.origination_date, "2026-10-05");
         assert_eq!(block.origination_time, "13:37:00");
+    }
+
+    /// 从 `header_bytes()` 里取出某个 chunk 的**负载**（走到 `data` 头就停）。
+    ///
+    /// 为什么不能用 [`parse_container`]: 大尺寸场景只有头部、没有负载（写不出
+    /// 5 GB 的判据数据）, 而 `parse_container` 要求 `data` 负载真的存在。
+    /// 头部是刚由 [`ContainerPlan::header_bytes`] 写出来的, 因此它的长度字段可信。
+    /// `data` 的长度字段在 RF64 下是哨兵 —— 所以循环必须在读它**之前**停。
+    fn header_chunk_payload(header: &[u8], fourcc: &[u8; 4]) -> Option<Vec<u8>> {
+        let mut cursor = 12usize;
+        while cursor + 8 <= header.len() {
+            let id: [u8; 4] = header[cursor..cursor + 4].try_into().expect("4 字节");
+            if &id == b"data" {
+                return None;
+            }
+            let declared = le::read_u32(header, cursor + 4).expect("长度字段") as usize;
+            let payload = header.get(cursor + 8..cursor + 8 + declared)?;
+            if &id == fourcc {
+                return Some(payload.to_vec());
+            }
+            cursor += 8 + declared + (declared % 2);
+        }
+        None
+    }
+
+    /// 判据 9b: **非 PCM（IEEE 浮点）容器必须带 `fact` chunk**, 位置与载荷都正确;
+    /// 同一条判据还钉住**反方向** —— 整数 PCM 不得写它。
+    ///
+    /// 每个读数的来源与单位:
+    /// - **顺序**（chunk 序列）: 模块头核验表里 FFmpeg 的 `wav->fact_pos` —— 紧跟
+    ///   `fmt `、在 `bext` 之前;
+    /// - **载荷长度**（字节）: [`FACT_PAYLOAD_LEN`] = 4（一个 `u32`）;
+    /// - **载荷数值**（帧）: 必须等于传给 `for_payload` 的 `frame_count`, 不是"总采样数";
+    /// - **`riffSize`**（字节）: 仍然等于文件长度减 8。
+    ///
+    /// 注入（先红后还原）: 把 [`ContainerPlan::header_bytes`] 里的
+    /// `if self.format.is_float` 改成 `false` ⇒ 第一段红; 改成 `true`
+    /// ⇒ 第二段（整数不得有 `fact`）红。
+    #[test]
+    fn non_pcm_containers_carry_the_mandatory_fact_chunk() {
+        const FRAMES: u64 = 480;
+        let block = Bext {
+            version: 1,
+            coding_history: "CH".to_owned(),
+            ..Bext::default()
+        };
+
+        // 浮点: 三种容器都必须带 `fact`, 且就在 `fmt ` 之后。
+        for kind in [
+            ContainerKind::Riff,
+            ContainerKind::Rf64,
+            ContainerKind::Bw64,
+        ] {
+            let format = PcmFormat::float(2, 48_000, 32);
+            let data = vec![0u8; FRAMES as usize * 2 * 4];
+            let plan = ContainerPlan::for_payload(
+                kind,
+                format,
+                data.len() as u64,
+                FRAMES,
+                Some(block.clone()),
+            );
+            let mut file = Vec::new();
+            write_container(&mut file, &plan, &data).expect("写入");
+
+            let expected: Vec<[u8; 4]> = if kind.uses_ds64() {
+                vec![*b"ds64", *b"fmt ", *b"fact", *b"bext", *b"data"]
+            } else {
+                vec![*b"fmt ", *b"fact", *b"bext", *b"data"]
+            };
+            assert_eq!(
+                chunk_order(&file).expect("解析"),
+                expected,
+                "{kind:?}: 浮点容器必须带 `fact` 且排在 `fmt ` 之后"
+            );
+
+            let parsed = parse_container(&file).expect("解析");
+            let fact = parsed
+                .chunks
+                .iter()
+                .find(|chunk| &chunk.fourcc == b"fact")
+                .expect("浮点容器必须有 fact chunk");
+            assert_eq!(
+                fact.payload_len, FACT_PAYLOAD_LEN,
+                "{kind:?}: fact 的声明长度(字节)"
+            );
+            assert_eq!(
+                le::read_u32(&file, fact.payload_offset),
+                Some(FRAMES as u32),
+                "{kind:?}: fact 的 u32 必须等于帧数(帧)"
+            );
+            assert_eq!(
+                parsed.sizes.riff_size,
+                file.len() as u64 - 8,
+                "{kind:?}: 加了 fact 之后 riffSize 仍必须是文件长度 - 8"
+            );
+        }
+
+        // 整数 PCM: 一个 `fact` 都不许有（PCM 的 `fact` 是冗余的）。
+        for format in [
+            PcmFormat::integer(2, 48_000, 16),
+            PcmFormat::integer(2, 48_000, 24),
+        ] {
+            let bytes_per_sample = usize::from(format.bits_per_sample) / 8;
+            let data = vec![0u8; FRAMES as usize * 2 * bytes_per_sample];
+            let plan = ContainerPlan::for_payload(
+                ContainerKind::Riff,
+                format,
+                data.len() as u64,
+                FRAMES,
+                Some(block.clone()),
+            );
+            let header = plan.header_bytes();
+            assert!(
+                !header.windows(4).any(|window| window == b"fact".as_slice()),
+                "整数 PCM 不得带 fact chunk: {format:?}"
+            );
+        }
+    }
+
+    /// 判据 9c: `fact` 的数值**只在放不进 `u32` 时**才退化为哨兵; 退化时真值在
+    /// `ds64.sampleCount` 里（因此那个容器必然是带 `ds64` 的）。
+    ///
+    /// 大尺寸用 [`ContainerPlan::for_payload`] 的**假想**尺寸参数化 —— 与
+    /// `payload_beyond_four_gib_switches_to_rf64` 同一手法, 不写任何大文件。
+    /// 单位: `payload_len` 是**字节**, `frame_count` 是**帧**。
+    ///
+    /// 注入（先红后还原）:
+    /// ① 把 `fact_frame_count` 的条件 `sample_count < SENTINEL_U32 as u64` 改成
+    /// `false` ⇒ 第 1、2 段红（能表示的帧数也被写成哨兵）;
+    /// ② 把 `else` 分支的 `SENTINEL_U32` 改成 `0` ⇒ 第 3 段红;
+    /// ③ 把整个函数体换成恒真的 `sample_count as u32` ⇒ 第 3 段红, 靠的是
+    /// `0x1_0000_0000` 那一格（它的低 32 位是 `0`）。**只取 `0xFFFF_FFFF` 的版本抓不到
+    /// 这条注入** —— 那一格与哨兵逐位重合（见 `fact_frame_count` 的文档）; 本判据因此
+    /// 取两个值, 而不是一个。
+    #[test]
+    fn fact_degrades_to_the_sentinel_only_when_the_frame_count_does_not_fit() {
+        let format = PcmFormat::float(2, 48_000, 32);
+
+        // 1) 放得下的 RIFF: 原样写帧数。头部长度(字节) = 12 + (8+16) + (8+4) + 8 = 56。
+        let frames = 250_000u64;
+        let payload_len = frames * 2 * 4;
+        let plan =
+            ContainerPlan::for_payload(ContainerKind::Riff, format, payload_len, frames, None);
+        assert_eq!(plan.kind, ContainerKind::Riff, "2 MB 不该升级");
+        assert_eq!(
+            plan.header_bytes().len(),
+            56,
+            "RIFF 立体声 32f 且无 bext 的头部长度(字节)"
+        );
+        assert_eq!(
+            header_chunk_payload(&plan.header_bytes(), b"fact").expect("有 fact"),
+            (frames as u32).to_le_bytes().to_vec()
+        );
+
+        // 2) 负载 > 4 GiB 但帧数仍放得进 u32: 容器升级到 RF64, 帧数**照原样**写。
+        let big_payload: u64 = 5_000_000_000;
+        let big_frames = big_payload / 8;
+        assert!(big_frames < u64::from(SENTINEL_U32));
+        let plan =
+            ContainerPlan::for_payload(ContainerKind::Riff, format, big_payload, big_frames, None);
+        assert_eq!(plan.kind, ContainerKind::Rf64, "必须升级");
+        assert_eq!(
+            header_chunk_payload(&plan.header_bytes(), b"fact").expect("有 fact"),
+            (big_frames as u32).to_le_bytes().to_vec(),
+            "帧数放得进 u32 时不许写哨兵(帧)"
+        );
+
+        // 3) 帧数本身放不进 u32: `fact` 写哨兵, 真值在 `ds64.sampleCount`。
+        //
+        // 取**两个**值: `0xFFFF_FFFF` 这一格与哨兵逐位重合（见 `fact_frame_count` 的
+        // 文档, 那是 `u32` 字段借满值当哨兵的固有代价）; `0x1_0000_0000` 这一格是用来
+        // **区分**"真的走哨兵分支"与"无脑 `sample_count as u32` 截断"的 —— 后者的低
+        // 32 位是 `0`, 因此只有真的走哨兵分支才会得到 `0xFFFF_FFFF`。
+        for overflow in [u64::from(SENTINEL_U32), u64::from(SENTINEL_U32) + 1] {
+            let plan = ContainerPlan::for_payload(
+                ContainerKind::Riff,
+                format,
+                overflow * 8,
+                overflow,
+                None,
+            );
+            assert!(
+                plan.kind.uses_ds64(),
+                "这个尺寸必须带 ds64, 否则真值无处可写"
+            );
+            assert_eq!(
+                header_chunk_payload(&plan.header_bytes(), b"fact").expect("有 fact"),
+                SENTINEL_U32.to_le_bytes().to_vec(),
+                "放不进 u32 的帧数在 fact 里必须是哨兵 (帧数 {overflow})"
+            );
+            assert_eq!(
+                plan.sizes.sample_count, overflow,
+                "ds64.sampleCount 必须写真值(帧)"
+            );
+        }
     }
 
     /// 判据 10: 单/双声道用 16 字节 `fmt `（tag 1/3）; 多声道自动切到 40 字节
