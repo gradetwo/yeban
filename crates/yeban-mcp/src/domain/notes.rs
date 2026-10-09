@@ -25,6 +25,29 @@
 //! 取值的权威判定也在模型层（[`MidiNote::validate`]）：越界 → `ProbabilityOutOfRange`
 //! → 契约码 `OUT_OF_RANGE`。本层只额外拦下"不是数字"这类 JSON 形状错误。
 //!
+//! ## `add.note.ratchet` / `add.note.microTimingTicks`：让**已实现**的渲染能力可达
+//!
+//! 同一类缺口的第二个实例。离线母带渲染器**已经**按模型语义消费这两个字段
+//! （`crate::domain::render` 的连击一节用 `step = (duration_ticks / ratchet).max(1)`
+//! 逐脉冲排程；微时序经 `crate::domain::render_math::note_frame_span` 并入起点），
+//! 但在这个字段接线之前，17 个工具的**任何一个**都写不了它们 ⇒ 能力已实现、工具面
+//! 不可达，而且把 `ratchet` 写进 `ops[].note` 会被**静默丢弃**（`parse_note` 不读它）。
+//!
+//! 现在：可选字段（缺省 = `None` = 等价于 1 / 无偏移 = 逐字节等于接线之前的行为），
+//! 字面值搬进 [`MidiNote`]，区间由模型层把关（`1..=16` / `-240..=240`）。
+//!
+//! ## `note` 的未知键：响亮拒绝，不静默丢弃
+//!
+//! 顶层实参已经是这个口径 —— `ToolCall::from_params` 对不在参数表里的键返回
+//! `UnknownParam`（"拼错的参数必须被拒绝, 不能静默忽略"）。这条纪律此前**只守了顶层**：
+//! `note` 对象是自由形状，多写的键被原样吞掉。现在 [`reject_unknown_note_fields`] 把
+//! 同一口径下沉一层，`data.supportedNoteFields` 逐条列出支持集合。
+//!
+//! **登记边界（本线未接线，绝不静默）**：模型里还有四个表现力字段没有工具面通路 ——
+//! `slide` / `pitchBendCurve` / `syllable` / `phonemes`。渲染器对它们一律如实登记进
+//! 响应的 `unsupported`（`noteSlide` / `notePitchBend` / `noteLyrics`），而工具面
+//! 现在会**响亮拒绝**这四个键（`data.unsupportedNoteFields`），不再吞掉。
+//!
 //! ## 材料创建形态（`arguments.create: true`）—— 关闭 needs-8 的 MIDI 那一半
 //!
 //! 台账 `docs/ledger/tools-domain-notes.md:283` 的 **needs-8** 记的事实是：
@@ -59,6 +82,7 @@ use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
 
+use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{ClipContent, ClipPoolEntry, EntityId, MidiNote, Op, YebanProjectV1};
 
 use super::error::{Fault, from_model};
@@ -87,6 +111,47 @@ pub const CLIP_NAME_PARAM: &str = "clipName";
 /// - "这一遍响不响"由 `MidiNote::triggers(rng_seed)` **确定性**裁决
 ///   （`MODEL-AST-005`），实时引擎与离线母带用的是同一个入口。
 pub const PROBABILITY_FIELD: &str = "probability";
+
+/// `add` 音符对象里的**连击**字段名（`ops[].note.ratchet`，可选）。
+///
+/// 语义与判定入口都在**模型层**（[`MidiNote::ratchet`]）：`None` 等价于 1；
+/// 取值域 `1..=16` 由 [`MidiNote::validate`] 把关（`RATCHET_MIN`/`RATCHET_MAX`）
+/// ⇒ 越界是 `RatchetOutOfRange` ⇒ 契约码 `OUT_OF_RANGE`。
+///
+/// 为什么本字段值得一条工具面通路：离线母带渲染器**已经**按模型语义展开它
+/// （`crate::domain::render` 的连击一节：`step = (duration_ticks / ratchet).max(1)`，
+/// 与实时引擎同一条公式），但在这个字段接线之前**没有任何工具**能写它 ——
+/// 于是"渲染器会展开连击"这件已实现的能力在 17 个工具的面上**不可达**。
+/// 交付形态：只搬字面值进 `MidiNote`，"怎么分"不在这层另立第二份规则。
+pub const RATCHET_FIELD: &str = "ratchet";
+
+/// `add` 音符对象里的**微时序**字段名（`ops[].note.microTimingTicks`，可选，单位：tick）。
+///
+/// 语义与判定入口都在**模型层**（[`MidiNote::micro_timing_ticks`]）：`None` 等价于 0；
+/// 取值域 `-240..=240` 由 [`MidiNote::validate`] 把关（`MICRO_TIMING_MAX_ABS`）
+/// ⇒ 越界是 `MicroTimingOutOfRange` ⇒ 契约码 `OUT_OF_RANGE`。
+///
+/// 渲染器同样**已经**把它并入起点（`crate::domain::render` 的排程：
+/// `placement.start_tick + note.start_tick + micro_timing_ticks`，经
+/// `crate::domain::render_math::note_frame_span`）。
+pub const MICRO_TIMING_FIELD: &str = "microTimingTicks";
+
+/// `add.note` 对象**允许**出现的全部键。
+///
+/// 与 [`parse_note`] 真正读取的键**同源**（判据 `expressive_note_field_names_are_pinned`
+/// 钉住"不多报"）：集合之外的键一律**响亮拒绝**（[`reject_unknown_note_fields`]），
+/// 绝不静默丢弃 —— 顶层实参已经是这个口径（`ToolCall` 的 `UnknownParam`：拼错的参数
+/// 必须被拒绝、不能静默忽略），同一条纪律不许只守一层。
+pub const NOTE_FIELDS: &[&str] = &[
+    "id",
+    "startTick",
+    "pitch",
+    "durationTicks",
+    "velocity",
+    PROBABILITY_FIELD,
+    RATCHET_FIELD,
+    MICRO_TIMING_FIELD,
+];
 
 /// 单个片段的**发声数**上限（同时发声的音符数）。
 ///
@@ -146,20 +211,23 @@ impl NoteOp {
 ///
 /// ```json
 /// {"kind":"add","note":{"id":"<可选 26 字符 ULID>","startTick":0,"pitch":60,
-///                       "durationTicks":480,"velocity":100,"probability":0.5}}
+///                       "durationTicks":480,"velocity":100,"probability":0.5,
+///                       "ratchet":4,"microTimingTicks":-12}}
 /// {"kind":"delete","noteId":"<ULID>"}
 /// {"kind":"move","noteId":"<ULID>","deltaTick":960,"deltaPitch":12}
 /// {"kind":"velocity","noteId":"<ULID>","velocity":80}
 /// ```
 ///
-/// `note.probability` 是**可选**字段（缺省 = 必然触发，逐字节等于旧行为）：给了就是
-/// [`MidiNote::probability`] 的字面值，语义与判定入口见 [`PROBABILITY_FIELD`]。
+/// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
+/// （缺省逐字节等于旧行为）：给了就是 [`MidiNote`] 对应字段的字面值，语义与判定入口
+/// 见 [`PROBABILITY_FIELD`] / [`RATCHET_FIELD`] / [`MICRO_TIMING_FIELD`]。
+/// `note` 里 [`NOTE_FIELDS`] 之外的键一律**响亮拒绝**，不静默丢弃。
 ///
 /// # Errors
 ///
-/// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 →
+/// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 →
 ///   `INVALID_PARAMETER_RANGE`（含未知 `kind`）；
-/// - 音高、力度、时值、概率越界 → `OUT_OF_RANGE`；
+/// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
 /// - 身份文本不是合法 ULID → `INVALID_PARAMETER_RANGE`。
 pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
     let Value::Array(items) = value else {
@@ -221,6 +289,7 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
 
 /// 解析 `note` 对象。
 fn parse_note(object: &Map<String, Value>) -> Result<MidiNote, Fault> {
+    reject_unknown_note_fields(object)?;
     let id = match object.get("id") {
         None | Some(Value::Null) => deterministic_id(&format!(
             "note:{start}:{pitch}:{duration}",
@@ -253,9 +322,105 @@ fn parse_note(object: &Map<String, Value>) -> Result<MidiNote, Fault> {
     let mut note = MidiNote::new(id, start_tick, pitch, duration_ticks);
     note.velocity = velocity;
     note.probability = read_probability(object)?;
+    note.ratchet = read_ratchet(object)?;
+    note.micro_timing_ticks = read_micro_timing(object)?;
     note.validate()
         .map_err(|error| from_model("音符校验", &error))?;
     Ok(note)
+}
+
+/// 拒绝 `note` 对象里 [`NOTE_FIELDS`] 之外的键。
+///
+/// 键序是确定性的（`serde_json::Map` 在本 crate 的 feature 集合下是 `BTreeMap`），
+/// 因此同一个非法载荷每次报的是**同一个** `field` —— 判据可以逐字钉住它。
+///
+/// # Errors
+///
+/// 出现未知键 ⇒ `INVALID_PARAMETER_RANGE`，`data` 带 `field`（第一个未知键）、
+/// `supportedNoteFields`（[`NOTE_FIELDS`]）与 `hint`。
+fn reject_unknown_note_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let Some(unknown) = object
+        .keys()
+        .find(|key| !NOTE_FIELDS.contains(&key.as_str()))
+    else {
+        return Ok(());
+    };
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!("`note` 不接受字段 `{unknown}`（不是可选项缺失, 而是拼写/不支持）"),
+        serde_json::json!({
+            "field": unknown,
+            "supportedNoteFields": NOTE_FIELDS,
+            // 模型里有、但工具面**还没有**通路的四个表现力字段: 说出来, 不要吞掉。
+            "unsupportedNoteFields": ["slide", "pitchBendCurve", "syllable", "phonemes"],
+            "hint": "未知键不静默忽略: 去掉它, 或改用 supportedNoteFields 里的字段",
+        }),
+    ))
+}
+
+/// 读可选的 `note.ratchet`（缺省 = `None` = 等价于 1）。
+///
+/// 取值的**权威**判定在模型层（[`MidiNote::validate`] 的 `RATCHET_MIN..=RATCHET_MAX`）；
+/// 这里额外拦一次同类区间，好让越界带上 `field` / `value` / `min` / `max` 的 `data`
+/// 载荷（与 `pitch` / `velocity` / `probability` 的既有口径一致），并把"不是整数"
+/// 这类 JSON 形状错误与区间错误分成两个契约码。
+fn read_ratchet(object: &Map<String, Value>) -> Result<Option<u8>, Fault> {
+    let Some(value) = object.get(RATCHET_FIELD) else {
+        return Ok(None);
+    };
+    let number = value.as_i64().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{RATCHET_FIELD}` 必须是整数, 实际收到 {value}"),
+        )
+    })?;
+    if !(i64::from(RATCHET_MIN)..=i64::from(RATCHET_MAX)).contains(&number) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`{RATCHET_FIELD}` 越界: {number} 不在 {RATCHET_MIN}..={RATCHET_MAX}"),
+            serde_json::json!({
+                "field": RATCHET_FIELD,
+                "value": number,
+                "min": RATCHET_MIN,
+                "max": RATCHET_MAX,
+            }),
+        ));
+    }
+    Ok(Some(u8::try_from(number).unwrap_or(RATCHET_MAX)))
+}
+
+/// 读可选的 `note.microTimingTicks`（缺省 = `None` = 等价于 0）。
+///
+/// 与 [`read_ratchet`] 同口径：区间 `-MICRO_TIMING_MAX_ABS..=MICRO_TIMING_MAX_ABS`
+/// 的权威判定在模型层，这里补 `field` / `value` / `min` / `max` 的 `data` 并区分
+/// 形状错误与区间错误。
+fn read_micro_timing(object: &Map<String, Value>) -> Result<Option<i16>, Fault> {
+    let Some(value) = object.get(MICRO_TIMING_FIELD) else {
+        return Ok(None);
+    };
+    let number = value.as_i64().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`{MICRO_TIMING_FIELD}` 必须是整数, 实际收到 {value}"),
+        )
+    })?;
+    let bound = i64::from(MICRO_TIMING_MAX_ABS);
+    if !(-bound..=bound).contains(&number) {
+        return Err(Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!(
+                "`{MICRO_TIMING_FIELD}` 越界: {number} 不在 {}..={}",
+                -bound, bound
+            ),
+            serde_json::json!({
+                "field": MICRO_TIMING_FIELD,
+                "value": number,
+                "min": -bound,
+                "max": bound,
+            }),
+        ));
+    }
+    Ok(Some(i16::try_from(number).unwrap_or(MICRO_TIMING_MAX_ABS)))
 }
 
 /// 读可选的 `note.probability`（缺省 = `None` = 必然触发）。
@@ -873,6 +1038,172 @@ mod tests {
             .next()
             .expect("至少一个音符");
         assert_eq!(note.probability, Some(0.5));
+    }
+
+    // -----------------------------------------------------------------------
+    // 连击 / 微时序字段（`add.note.ratchet` / `add.note.microTimingTicks`）
+    // —— 渲染器**已经**按模型语义实现这两个字段，工具面此前写不进去
+    // -----------------------------------------------------------------------
+
+    /// 缺省不写 ⇒ `None`（= `ratchet` 等价于 1、微时序等价于 0 = 加这两个字段之前的
+    /// 逐字节行为）。
+    #[test]
+    fn add_without_ratchet_or_micro_timing_stays_none() {
+        let ops = parse_ops(&Value::Array(vec![add_json(0, 60)])).expect("解析");
+        let NoteOp::Add { note } = &ops[0] else {
+            panic!("必须是 add");
+        };
+        assert_eq!(note.ratchet, None, "缺省必须是不写这个字段");
+        assert_eq!(note.micro_timing_ticks, None, "缺省必须是不写这个字段");
+    }
+
+    /// 字段名的字面拼写被钉住（工具面的实参名是契约的一部分，改名会让既有 Agent 静默降级），
+    /// 且支持集合与 `parse_note` 真正读的键**同源**（多报一个键就是假话）。
+    #[test]
+    fn expressive_note_field_names_are_pinned() {
+        assert_eq!(RATCHET_FIELD, "ratchet");
+        assert_eq!(MICRO_TIMING_FIELD, "microTimingTicks");
+        for expected in [
+            "id",
+            "startTick",
+            "pitch",
+            "durationTicks",
+            "velocity",
+            "probability",
+            "ratchet",
+            "microTimingTicks",
+        ] {
+            assert!(
+                NOTE_FIELDS.contains(&expected),
+                "支持集合必须含 {expected}: {NOTE_FIELDS:?}"
+            );
+        }
+        assert_eq!(
+            NOTE_FIELDS.len(),
+            8,
+            "支持集合不得多报未读的键: {NOTE_FIELDS:?}"
+        );
+    }
+
+    /// 给了就**逐值**搬进 `MidiNote`，并一路进 `Op::AddNote`。
+    #[test]
+    fn ratchet_and_micro_timing_reach_the_add_note_op() {
+        for (ratchet, micro) in [(1u8, 0i16), (2, -12), (16, 240), (4, -240)] {
+            let mut item = add_json(0, 64);
+            item["note"]["ratchet"] = serde_json::json!(ratchet);
+            item["note"]["microTimingTicks"] = serde_json::json!(micro);
+            let ops = parse_ops(&Value::Array(vec![item])).expect("解析");
+            let NoteOp::Add { note } = &ops[0] else {
+                panic!("必须是 add");
+            };
+            assert_eq!(note.ratchet, Some(ratchet), "ratchet 字面值");
+            assert_eq!(note.micro_timing_ticks, Some(micro), "微时序字面值");
+
+            let project = filled_project();
+            let (track_id, clip_id) = lead_clip(&project);
+            let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+            match &compiled[0] {
+                Op::AddNote { note, .. } => {
+                    assert_eq!(note.ratchet, Some(ratchet));
+                    assert_eq!(note.micro_timing_ticks, Some(micro));
+                }
+                other => panic!("必须是 AddNote, 实际 {other:?}"),
+            }
+        }
+    }
+
+    /// 越界 ⇒ `OUT_OF_RANGE`（带 `field` / `value` / `min` / `max`），不是静默夹紧。
+    #[test]
+    fn ratchet_and_micro_timing_out_of_range_are_out_of_range() {
+        for bad in [0i64, 17, -1, 200] {
+            let mut item = add_json(0, 60);
+            item["note"]["ratchet"] = serde_json::json!(bad);
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::OutOfRange),
+                "ratchet {bad}"
+            );
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("必须是领域失败");
+            };
+            let data = data.as_ref().expect("必须带 data");
+            assert_eq!(data["field"], "ratchet");
+            assert_eq!(data["min"], 1);
+            assert_eq!(data["max"], 16);
+        }
+        for bad in [241i64, -241, 1000] {
+            let mut item = add_json(0, 60);
+            item["note"]["microTimingTicks"] = serde_json::json!(bad);
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::OutOfRange),
+                "微时序 {bad}"
+            );
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("必须是领域失败");
+            };
+            let data = data.as_ref().expect("必须带 data");
+            assert_eq!(data["field"], "microTimingTicks");
+            assert_eq!(data["min"], -240);
+            assert_eq!(data["max"], 240);
+        }
+    }
+
+    /// 形状错（不是整数）⇒ `INVALID_PARAMETER_RANGE`，而不是被截断、取整或当成缺省。
+    #[test]
+    fn ratchet_and_micro_timing_must_be_integers() {
+        for bad in [
+            serde_json::json!(2.5),
+            serde_json::json!("4"),
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!([4]),
+        ] {
+            for field in ["ratchet", "microTimingTicks"] {
+                let mut item = add_json(0, 60);
+                item["note"][field] = bad.clone();
+                let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+                assert_eq!(
+                    fault.domain_code(),
+                    Some(ErrorCode::InvalidParameterRange),
+                    "{field} = {bad}"
+                );
+            }
+        }
+    }
+
+    /// `note` 里的未知键 ⇒ 响亮拒绝（列出支持集合），**绝不**静默丢弃。
+    ///
+    /// 与顶层实参口径同源（`tools.rs` 的 `UnknownParam`：拼错的参数必须被拒绝、不能静默
+    /// 忽略）—— 同一条纪律不许只守一层。`slide` / `pitchBendCurve` / `syllable` /
+    /// `phonemes` 四个模型字段**仍然**没有工具面通路，它们必须**响亮地**说出来，
+    /// 而不是原样吞掉。
+    #[test]
+    fn unknown_note_fields_are_rejected_with_the_supported_set() {
+        for unknown in ["slyde", "ratchett", "microtimingticks", "noteId", "slide"] {
+            let mut item = add_json(0, 60);
+            item["note"][unknown] = serde_json::json!(1);
+            let fault = parse_ops(&Value::Array(vec![item])).expect_err("必须拒绝");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{unknown}"
+            );
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("必须是领域失败");
+            };
+            let data = data.as_ref().expect("必须带 data");
+            assert_eq!(data["field"], unknown);
+            let supported = data["supportedNoteFields"].as_array().expect("必须是数组");
+            for expected in ["startTick", "pitch", "ratchet", "microTimingTicks"] {
+                assert!(
+                    supported.iter().any(|value| value == expected),
+                    "支持集合必须含 {expected}: {data}"
+                );
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

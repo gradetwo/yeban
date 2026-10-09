@@ -3180,3 +3180,216 @@ fn edit_notes_add_carries_probability_into_the_project_and_undo_restores_it() {
         "撤销必须逐字节复原 (概率字段随 AddNote 一起可逆)"
     );
 }
+
+/// **连击与微时序在工具面上可达，且被母带渲染器真的消费**：
+/// `yeban_edit_notes` 的 `add.note.ratchet` / `add.note.microTimingTicks` 进工程
+/// （合并后逐字段可读），渲染响应的 `data.ratchet` 与逐源 `notesRatcheted` 反映它，
+/// 撤销逐字节复原。
+///
+/// 改动之前 `parse_note` 根本不读这两个字段（**静默丢弃**），而渲染器**已经**按模型
+/// 语义展开连击 ⇒ 已实现的能力在 17 个工具的面上不可达。这条判据从工具调用一路走到
+/// 磁盘上的 WAV，因此注入"删掉这两个字段的解析"会当场变红。
+///
+/// 同一判据里还有两条**响亮失败**（与顶层实参同一条纪律：拼错的参数不许静默忽略）：
+/// `ratchet: 4.5` 是形状错 ⇒ `INVALID_PARAMETER_RANGE`；`note.slyde` 是未知键 ⇒
+/// `INVALID_PARAMETER_RANGE`，`data` 带 `supportedNoteFields`。
+#[test]
+fn edit_notes_ratchet_and_micro_timing_reach_the_rendered_master() {
+    let scratch = Scratch::new("expressive-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("expressive.yeban");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "Expressive",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+
+    // 必须挑**真的被摆放**的 MIDI 片段: 只进池子不摆放的片段渲染器不会遍历。
+    let (track, clip) = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        project
+            .tracks
+            .values()
+            .find_map(|track| {
+                track.clips.values().find_map(|placement| {
+                    let entry = project.clip_pool.get(&placement.clip_id)?;
+                    entry.content.notes().is_some().then(|| {
+                        (
+                            track.id.to_canonical_string(),
+                            entry.id.to_canonical_string(),
+                        )
+                    })
+                })
+            })
+            .expect("默认种子必须有一条被摆放的 MIDI 片段")
+    };
+
+    // ---- ① 形状错与未知键都必须**响亮**失败 ----
+    let half = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip,
+            "ops": [{"kind": "add", "note": {
+                "startTick": 0, "pitch": 60, "durationTicks": 240, "ratchet": 4.5
+            }}]
+        }),
+    );
+    assert_domain_error(&half, "INVALID_PARAMETER_RANGE", "ratchet 必须是整数");
+
+    let typo = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip,
+            "ops": [{"kind": "add", "note": {
+                "startTick": 0, "pitch": 60, "durationTicks": 240, "slyde": 1
+            }}]
+        }),
+    );
+    assert_domain_error(&typo, "INVALID_PARAMETER_RANGE", "未知键不得静默丢弃");
+    assert_eq!(typo["error"]["data"]["field"], "slyde", "{typo}");
+    let supported = typo["error"]["data"]["supportedNoteFields"]
+        .as_array()
+        .expect("supportedNoteFields 必须是数组");
+    for expected in [
+        "id",
+        "startTick",
+        "pitch",
+        "durationTicks",
+        "velocity",
+        "probability",
+        "ratchet",
+        "microTimingTicks",
+    ] {
+        assert!(
+            supported.iter().any(|value| value == expected),
+            "支持集合必须含 {expected}: {typo}"
+        );
+    }
+    // 越界（1..=16 / -240..=240）也是 `OUT_OF_RANGE`，不是静默夹紧。
+    for (field, bad) in [
+        ("ratchet", json!(0)),
+        ("ratchet", json!(17)),
+        ("microTimingTicks", json!(241)),
+    ] {
+        let out = call(
+            &mut dispatcher,
+            &auth,
+            "yeban_edit_notes",
+            json!({
+                "trackId": track, "clipId": clip,
+                "ops": [{"kind": "add", "note": {
+                    "startTick": 0, "pitch": 60, "durationTicks": 240, field: bad
+                }}]
+            }),
+        );
+        assert_domain_error(&out, "OUT_OF_RANGE", field);
+        assert_eq!(out["error"]["data"]["field"], field, "{out}");
+    }
+
+    // ---- ② 合法值 ⇒ 提案真的带着它们，且不动工程字节 ----
+    let bytes_before = project_bytes(&dispatcher);
+    let note_id = yeban_mcp::domain::ids::deterministic_id("note:ratchet:e2e");
+    let note_id = note_id.to_canonical_string();
+    let edited = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip, "includeOps": true,
+            "ops": [{"kind": "add", "note": {
+                "id": note_id, "startTick": 0, "pitch": 96,
+                "durationTicks": 240, "ratchet": 4, "microTimingTicks": -12
+            }}]
+        }),
+    );
+    assert_eq!(edited["status"], "success", "{edited}");
+    let payload = &edited["data"]["proposal"]["ops"][0]["op"]["AddNote"]["note"];
+    assert_eq!(payload["ratchet"], 4, "提案 op 载荷必须带着连击: {edited}");
+    // 工具面的实参名是 camelCase（`microTimingTicks`），落进工程的是模型自己的
+    // 持久化键（`micro_timing_ticks`）—— 两处名字不同是**同一份字段**，不是两份。
+    assert_eq!(payload["micro_timing_ticks"], -12, "{edited}");
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    // ---- ③ 合并 ⇒ 工程里逐字段可读 ----
+    let proposal_id = edited["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "连击 + 微时序" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let persisted = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes())
+        .flat_map(|notes| notes.values())
+        .find(|note| note.id.to_canonical_string() == note_id)
+        .expect("新音符必须在池里的那个片段里");
+    assert_eq!(persisted.ratchet, Some(4), "合并后工程里必须带着连击");
+    assert_eq!(
+        persisted.micro_timing_ticks,
+        Some(-12),
+        "合并后工程里必须带着微时序"
+    );
+
+    // ---- ④ 母带渲染器**真的**消费它们 ----
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_render_master",
+        json!({ "format": "wav", "sampleRate": 48_000 }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    assert!(
+        rendered["data"]["ratchet"]["notesExpanded"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1,
+        "至少一个音符必须被登记为连击: {rendered}"
+    );
+    assert!(
+        rendered["data"]["ratchet"]["pulses"].as_u64().unwrap_or(0) >= 4,
+        "连击脉冲数必须真的展开: {rendered}"
+    );
+    let ratcheted: u64 = rendered["data"]["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .map(|source| source["notesRatcheted"].as_u64().unwrap_or(0))
+        .sum();
+    assert!(ratcheted >= 1, "逐源读数必须反映连击: {rendered}");
+    let wav = scratch.join("expressive.master.wav");
+    assert!(wav.exists(), "母带必须落在磁盘上: {}", wav.display());
+    assert_eq!(
+        file_sha256(&wav),
+        rendered["data"]["sha256"].as_str().expect("sha256"),
+        "磁盘字节的摘要必须等于响应里的读数"
+    );
+
+    // ---- ⑤ 可回退：撤销一次 ⇒ 逐字节回到提案之前的工程 ----
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (连击与微时序随 AddNote 一起可逆)"
+    );
+}

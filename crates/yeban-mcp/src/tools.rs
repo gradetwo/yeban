@@ -611,7 +611,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "ops",
                 "array",
                 true,
-                "音符操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,probability?}}` / `delete` / `move` / `velocity`。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]",
+                "音符操作列表 (NoteOp): `{\"kind\":\"add\",\"note\":{id?,startTick,pitch,durationTicks,velocity?,probability?,ratchet?,microTimingTicks?}}` / `delete` / `move` / `velocity`。`note.probability` (可选, 0.0..=1.0) 是**确定性**概率触发, 由 `MidiNote::triggers(rng_seed)` 裁决 [MODEL-AST-005]; `note.ratchet` (可选, 整数 1..=16) 的连击细分与 `note.microTimingTicks` (可选, 整数 -240..=240 tick) 的起点偏移都由母带渲染器**真的**消费 (与实时引擎同一条格点公式)。`note` 里这 8 个键之外的字段一律 `INVALID_PARAMETER_RANGE` (绝不静默丢弃): 模型另有 `slide`/`pitchBendCurve`/`syllable`/`phonemes` 四个表现力字段, 工具面**还没有**通路, 渲染器会如实登记进 `unsupported`",
             ),
             // `create` / `clipName` 是**可选**实参（缺省 = 逐字节等于旧行为），
             // 与 `yeban_open_project` 的 `create` 同词同义（ADR-0001 D48）。
