@@ -827,6 +827,17 @@ impl EngineRuntime {
         self.synth.armed_drum_slots()
     }
 
+    /// 本快照武装的**每轨音色参数**（[`crate::synth::ToneParams`]；诊断/判据用）。
+    ///
+    /// 与 [`Self::armed_drums`] 同族（同一个上游对象的只读投影）：把"武装进去的那个数"
+    /// 变成**可读**的，判据不必只从音频输出反推。`None` = 该轨没有占槽或不在本快照里。
+    /// 波形下标与第二条支路的电平/失谐都在返回值里（[`crate::synth::ToneParams`] 的四个
+    /// `osc*` 读数）⇒ "换了一份快照之后振荡器参数真的到了实时侧"可以直接断言。
+    #[must_use]
+    pub fn armed_tone(&self, track: &EntityId) -> Option<crate::synth::ToneParams> {
+        self.synth.tone_params(*track)
+    }
+
     /// 本快照武装的**主总线线性增益**（诊断/判据用）。
     ///
     /// 与 [`Self::armed_pan_gain`] 同族：把"武装进去的那个数"变成**可读**的，

@@ -65,6 +65,24 @@
 //! **精确的触发数**（由夹具的音符栅格算出，不是"大于 0"）；场景 12 做 31 次同采样率
 //! 重新武装 ＋ 一次 **44.1 kHz**（鼓机照常武装）＋ 换回 48 kHz ＋ 换一套键位映射
 //! ＋ 换回复音合成器，每一步都断言零分配零释放。
+//!
+//! # 场景 13 / 14（`line/engine-2` 追加）：波形选择与**第二条振荡器**
+//!
+//! 器件 `yeban_dsp::polysynth` 早就是双振荡器，但引擎侧到本票才把
+//! `osc1_wave` / `osc2_wave` / `osc2_level` / `osc2_detune_cents` 四个参数投影进
+//! `ToneParams`。既有全部场景的夹具都**没有**振荡器参数 ⇒ `osc2_level` 恒为 0
+//! ⇒ 器件的第二条支路一帧也不执行，这条武装路径与逐样本路径都是空转。
+//!
+//! 场景 13 用一条轨（音符铺满窗口）＋一台**只写振荡器键**的设备
+//! （`osc1_wave = 4`、`osc2` 开在电平 0.6、失谐 11 音分）跑 10,000 个量子；
+//! 场景 14 在同一份夹具上做 31 次重新武装，**每一轮换一次两个波形下标**，
+//! 并做两条覆盖度见证：① 实时侧读数 `EngineRuntime::armed_tone` 逐轮等于发布值；
+//! ② 31 轮里至少有一次输出指纹发生变化（参数真的到了器件）。
+//! 两个场景的每一个窗口都断言 `allocations == 0 && deallocations == 0`。
+//!
+//! ⚠ **本目标只测四元组里的两个分量**（`allocations` / `deallocations`）：
+//! 它没有锁探针，也没有 I/O 边界（那是 `tests/rt_zero_alloc.rs` 的
+//! `[MUST-GATE-001]` 目标）。因此这两个场景**不**声称"六分量全 0"。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -194,6 +212,103 @@ fn drum_device(extra: &[(&str, f32)], map: [f32; 5]) -> DeviceDefinition {
         params,
         latency_samples: 0,
     }
+}
+
+/// 场景 13 / 14 的**振荡器设备**（只写振荡器键 ⇒ 滤波器旁通、音源是复音合成器）。
+///
+/// 刻意**不**带任何鼓机键位（`kick_note` 等）：带上就会被识别成鼓机，
+/// 场景 13 / 14 要测的恰恰是复音合成器的**振荡器**路径。
+fn osc_device(
+    osc1_wave: f32,
+    osc2_wave: f32,
+    osc2_level: f32,
+    osc2_detune_cents: f32,
+) -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: "Hollow".to_owned(),
+        kind: DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: vec![
+            ParameterValue {
+                name: "osc1_wave".to_owned(),
+                value: osc1_wave,
+                unit: None,
+            },
+            ParameterValue {
+                name: "osc2_wave".to_owned(),
+                value: osc2_wave,
+                unit: None,
+            },
+            ParameterValue {
+                name: "osc2_level".to_owned(),
+                value: osc2_level,
+                unit: None,
+            },
+            ParameterValue {
+                name: "osc2_detune_cents".to_owned(),
+                value: osc2_detune_cents,
+                unit: None,
+            },
+        ],
+        latency_samples: 0,
+    }
+}
+
+/// 把一台振荡器设备挂到夹具轨上（**只改夹具**，不改模型层）。
+fn set_oscillators(
+    project: &mut yeban_model::YebanProjectV1,
+    track: EntityId,
+    osc1_wave: f32,
+    osc2_wave: f32,
+    osc2_level: f32,
+    osc2_detune_cents: f32,
+) {
+    let entry = project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨");
+    entry.devices = vec![osc_device(
+        osc1_wave,
+        osc2_wave,
+        osc2_level,
+        osc2_detune_cents,
+    )];
+}
+
+/// 把一段输出折进 FNV-1a 64 中间值（跨量子累积用；只做整数运算，**不分配**）。
+fn osc_fold(mut hash: u64, samples: &[f32]) -> u64 {
+    for sample in samples {
+        for byte in sample.to_bits().to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// 从**新建的**实时侧渲染 `quanta` 个量子，返回输出的累积指纹（`osc1_wave` 是唯一变量）。
+///
+/// ⚠ 全部构造（工程 → 快照 → `EngineRuntime`）都在测量窗口**之外** —— 这个函数只用于
+/// 场景 14 的差分覆盖度见证，不参与"零分配"读数。
+fn osc_render_fingerprint(osc1_wave: f32, quanta: usize) -> u64 {
+    let fixture = note_project(&saturated_notes());
+    let mut project = fixture.project;
+    let track = fixture.track;
+    set_oscillators(&mut project, track, osc1_wave, 1.0, 0.6, 11.0);
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("差分夹具快照");
+    let slot = SnapshotSlot::new(snapshot);
+    let (retire, _queue) = retire_channel(64);
+    let (_sender, receiver) = event_channel(64);
+    let (publisher, _collector) = meter_channel(8192);
+    let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+    let mut output = vec![0.0f32; 128 * 2];
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for _ in 0..quanta {
+        runtime.process_quantum(&mut output, 2);
+        hash = osc_fold(hash, &output);
+    }
+    hash
 }
 
 fn main() -> ExitCode {
@@ -1217,6 +1332,145 @@ fn main() -> ExitCode {
         armed_after_swap,
     );
 
+    // ---- 场景 13：**波形选择 + 第二条振荡器**在实时窗口内零分配 ----
+    //
+    // 为什么必须单独一个场景：器件（`yeban_dsp::polysynth`）早就是双振荡器，但引擎侧
+    // 到本票才把 `osc1_wave` / `osc2_wave` / `osc2_level` / `osc2_detune_cents` 四个参数
+    // 投影进 `ToneParams` ⇒ 这条**武装路径**（`poly_synth_params` → `set_params`）与
+    // "第二条支路真的在逐样本路径上跑"都没有被既有场景走过（既有夹具的
+    // `osc2_level` 恒为 0 ⇒ 第二条支路一帧也不执行）。
+    //
+    // 夹具：音符铺满窗口（同场景 1 的栅格）＋一条轨挂**只写振荡器键**的设备
+    // （⇒ 滤波器旁通、音源是复音合成器、`osc1_wave = 4`（glass）、
+    // `osc2` 开在电平 0.6、失谐 11 音分、波表 1（organ））。
+    let osc_fixture = note_project(&saturated_notes());
+    let mut osc_project = osc_fixture.project;
+    let osc_track = osc_fixture.track;
+    set_oscillators(&mut osc_project, osc_track, 4.0, 1.0, 0.6, 11.0);
+    let osc_snapshot = EngineSnapshot::from_project(&osc_project, 1).expect("振荡器夹具快照");
+    match osc_snapshot.tone(&osc_track) {
+        Some(tone)
+            if tone.osc1_wave() == 4 && tone.osc2_wave() == 1 && tone.osc2_level() == 0.6 =>
+        {
+            if !tone.is_bypass() {
+                failures.push("只有振荡器键的夹具必须是滤波器旁通".to_owned());
+            }
+        }
+        other => failures.push(format!("夹具快照的振荡器投影不对：{other:?}")),
+    }
+    let osc_slot = SnapshotSlot::new(osc_snapshot);
+    let (osc_retire, mut osc_queue) = retire_channel(64);
+    let (_osc_sender, osc_receiver) = event_channel(64);
+    let (osc_publisher, _osc_collector) = meter_channel(8192);
+    let mut osc_runtime = EngineRuntime::new(&osc_slot, osc_retire, osc_receiver, osc_publisher);
+    let mut osc_output = vec![0.0f32; 128 * 2];
+    // 预热：首次武装（`PolySynth::set_params`，含 `tan`）与首个量子。
+    osc_runtime.process_quantum(&mut osc_output, 2);
+    if osc_runtime
+        .armed_tone(&osc_track)
+        .map(|tone| tone.osc1_wave())
+        != Some(4)
+    {
+        failures.push("预热之后实时侧必须已经武装 glass（下标 4）".to_owned());
+    }
+
+    let mut osc_nonzero = 0usize;
+    let (allocations, deallocations) =
+        measure("oscillator (waveform + 2nd osc) 10_000 quanta", || {
+            for _ in 0..10_000 {
+                osc_runtime.process_quantum(&mut osc_output, 2);
+                for sample in &osc_output {
+                    if *sample != 0.0 {
+                        osc_nonzero += 1;
+                    }
+                }
+            }
+        });
+    if allocations != 0 || deallocations != 0 {
+        failures.push(format!(
+            "波形选择 / 第二条振荡器在实时窗口内分配/释放了内存: \
+             allocations={allocations} deallocations={deallocations}"
+        ));
+    }
+    if osc_nonzero == 0 {
+        failures
+            .push("波形/第二条支路窗口里没有任何非零样本 —— 零分配判据是空转（假绿）".to_owned());
+    }
+    let osc_stats = osc_runtime.stats();
+    if osc_stats.notes_triggered < 200 {
+        failures.push(format!(
+            "振荡器窗口只触发了 {} 个音符，未达到压测规模（应 ≥ 200）",
+            osc_stats.notes_triggered
+        ));
+    }
+
+    // ---- 场景 14：**重新武装振荡器参数**（波形下标 / 波表 / 电平 / 失谐）----
+    //
+    // 每一轮都换一次 `osc1_wave` 与 `osc2_wave`：覆盖 `EngineSnapshot::from_project`
+    // 的投影、`begin_snapshot` 的 `tone != slot.tone` 分支与器件的 `set_params`。
+    // 覆盖度见证有两条：
+    //   ① 每一轮的实时侧读数（`armed_tone`）等于发布的波形下标；
+    //   ② 循环之后的**差分**检查：两台新建的实时侧只差一个 `osc1_wave`，输出指纹必须不同
+    //      （见下面的注释：从**同一台** runtime 的相邻量子比指纹是**没有牙的**）。
+    let mut osc_switches = 0u64;
+    let mut osc_rearms_matching = 0u64;
+    for revision in 2..=32u64 {
+        let osc1_wave = (revision % 5) as f32;
+        let osc2_wave = ((revision + 2) % 5) as f32;
+        set_oscillators(&mut osc_project, osc_track, osc1_wave, osc2_wave, 0.6, 11.0);
+        let next = EngineSnapshot::from_project(&osc_project, revision).expect("快照");
+        osc_slot.publish(next);
+        let (allocations, deallocations) = measure("oscillator re-arm + quantum", || {
+            osc_runtime.process_quantum(&mut osc_output, 2);
+        });
+        if allocations != 0 || deallocations != 0 {
+            failures.push(format!(
+                "重新武装振荡器参数时实时路径分配/释放: \
+                 allocations={allocations} deallocations={deallocations}（revision={revision}）"
+            ));
+        }
+        match osc_runtime.armed_tone(&osc_track) {
+            Some(tone) if u32::from(tone.osc1_wave()) == revision as u32 % 5 => {
+                osc_rearms_matching += 1;
+            }
+            other => failures.push(format!(
+                "重新武装后波形下标不是 {}：{other:?}（revision={revision}）",
+                revision % 5
+            )),
+        }
+        osc_switches += osc_queue.drain(64) as u64;
+    }
+    if osc_switches == 0 {
+        failures.push("振荡器场景没有从退役队列回收任何旧快照 —— 场景 14 是空转".to_owned());
+    }
+    if osc_rearms_matching != 31 {
+        failures.push(format!(
+            "31 次重新武装里只有 {osc_rearms_matching} 次的实时侧波形下标与发布值一致"
+        ));
+    }
+
+    // ⚠ **差分**覆盖度见证（这一条才有牙）。
+    //
+    // 第一版写的是"同一台 runtime 的相邻量子指纹必须变化"，本票的注入 I1
+    // （`poly_synth_params` 丢掉 `.with_oscillators(..)`）实测**不红** —— 因为相邻量子
+    // 之间声部状态本来就在推进（相位、包络、失谐拍频），指纹变化与波形无关。
+    // 改成"两台**新建**的实时侧只差一个 `osc1_wave`"：声部状态从零开始、逐量子同步推进，
+    // 唯一的差别就是波表 ⇒ 指纹不同才是"波形真的到了器件"。I1 下这一条变红（实测）。
+    let low = osc_render_fingerprint(0.0, 8);
+    let high = osc_render_fingerprint(4.0, 8);
+    if low == high {
+        failures.push(
+            "只差一个 `osc1_wave` 的两台实时侧给出了相同的输出指纹 —— 波形参数没有真的到器件"
+                .to_owned(),
+        );
+    }
+    println!(
+        "[engine-osc/J13] 波形选择 + 第二条振荡器: quanta={} 非零样本={osc_nonzero} \
+         重新武装={osc_rearms_matching}/31 退役回收={osc_switches} 次；\
+         差分指纹 wave0={low:#018x} wave4={high:#018x}",
+        osc_stats.quanta,
+    );
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -1236,7 +1490,8 @@ fn main() -> ExitCode {
              + 31 次通道条重新武装 + 10,000 量子每轨插入混响（两条轨，含通道条＋混响同一台设备） \
              + 31 次混响重新武装 + 换采样率时的拒绝路径 \
              + 10,000 量子每轨鼓机音源（两条轨，一条鼓机＋一条复音） \
-             + 31 次鼓机重新武装 + 换采样率 / 换键位映射 / 换回复音合成器，实时窗口内零分配零释放"
+             + 31 次鼓机重新武装 + 换采样率 / 换键位映射 / 换回复音合成器 \
+             + 10,000 量子波形选择＋第二条振荡器 + 31 次振荡器重新武装，实时窗口内零分配零释放"
         );
         ExitCode::SUCCESS
     } else {

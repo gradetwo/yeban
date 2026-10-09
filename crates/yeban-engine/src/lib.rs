@@ -23,7 +23,7 @@
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
 //! | [`meter`] | VU / 峰值电平独立高容量 SPSC、每节点电平状态机、UI 60Hz 抽干 | [ARCH-UI-002]、[ROAD-M2-008] |
-//! | [`synth`] | 静态预分配声部池与逐样本合成（**真的出声**：整数相位波表 + ADSR + 力度增益） | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DET-001]、[ROAD-M2-005]、[ROAD-M2-006] |
+//! | [`synth`] | 静态预分配声部池与逐样本合成（**真的出声**：整数相位波表 + ADSR + 力度增益；波形可选、双振荡器） | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DET-001]、[ROAD-M2-005]、[ROAD-M2-006] |
 //! | [`transport`] | **确定性走带状态机**（960 PPQ 整数 tick：`Play`/`Stop`/`SeekTicks`）+ RT→UI 原子读数镜面 | [ARCH-RT-001]、[ARCH-DET-001]、[MODEL-ISO-001]、[ROAD-M2-001] |
 //! | [`rt`] | 渲染量子驱动（`EngineRuntime`），**不依赖 cpal** | [ARCH-TOP-002]、[ARCH-RT-001] |
 //! | [`rt_probe`] | 实时路径的**可插桩边界**：见证型锁探针 + 单一诊断/I-O 出口 + 线程窗口与外线程计数 | [ARCH-RT-001]、[MUST-GATE-001] |
@@ -72,9 +72,9 @@
 //! 1. **声部合成已接入（合成器是最小实现）**：`process_quantum` 现在真的把
 //!    **工程的 MIDI 音符**变成样本 —— 模型 → 快照（tick → 样本位置、确定性概率触发、
 //!    力度/音量增益）→ 实时侧（整数相位波表读数 + ADSR）→ 逐轨电平 → 立体声母线。
-//!    仍然**没有**的：滤波器/音色参数（`TrackV3` 里还没有到音频线程的乐器参数形状）、
-//!    3 ms 声部窃取淡出（[ARCH-RT-004]）、声相定律（母线汇流是等增益复制）、
-//!    循环片段展开、采样播放与 `yeban-sfz` 接入。
+//!    仍然**没有**的：`osc1` 电平/失谐投影、参数自动化平滑（[`yeban_dsp::smoothing`] 无消费者）、
+//!    循环片段展开、采样播放与 `yeban-sfz` 接入（滤波器 / 声相定律 / 母线限制器 /
+//!    3 ms 窃取淡出 / 走带与节拍器已由后续切片接通）。
 //!    详见 [`synth`] 的模块文档 §4 与 `docs/ledger/engine-sound-notes.md`。
 //! 2. **走带已实现（本切片）**：播放头由 [`rt::EngineRuntime`] 自己持有
 //!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），每量子按 [`transport`] 的
