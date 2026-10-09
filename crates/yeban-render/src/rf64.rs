@@ -389,8 +389,9 @@ fn scale_hundredths(value: f32) -> i16 {
 
 /// Broadcast Extension (`bext`) 元数据块 [ARCH-FMT-001]。
 ///
-/// 文字字段是定长 NUL 填充的字节串（规范未规定字符集; 这里按 ASCII/UTF-8 写入并
-/// 截断到字段长度, 超出部分**丢弃而不是 panic**, 与 FFmpeg/libndsfile 的行为一致）。
+/// 文字字段是定长 NUL 填充的字节串（规范未规定字符集; 这里按 ASCII/UTF-8 写入）。
+/// 超长时**丢弃**多余部分, 不 panic; 但截断点落在**字符边界**上, 以免把一个多字节
+/// 字符切成两半 —— 见 `push_fixed`。代价是最多少写一个字符, 字段的其余字节仍补 0。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bext {
     /// `Description`（256 字节）。
@@ -747,13 +748,23 @@ impl Bext {
     }
 }
 
-/// 把 `value` 写进 `width` 字节的定长字段, 超出即截断, 其余补 0。
+/// 把 `value` 写进 `width` 字节的定长字段, 超长即截断, 其余补 0。
 ///
-/// 按**字节**截断而不是按字符: 规范字段是字节串, 按字符截断可能把多字节 UTF-8
-/// 从中间切断, 写出的就不再是合法文本。
+/// 截断点必须落在**字符边界**上, 不能落在任意字节位置上。字段宽的单位是字节, 而按
+/// 字节硬截会把一个多字节 UTF-8 序列从中间切断 —— 实测: `"→"`（`E2 86 92`, 3 字节）
+/// 重复 200 次写进 256 字节的 `Description` 时, 第 256 字节是**孤立的前导字节**
+/// `E2`, 那一段字节不是合法文本; 读回来时 [`Bext::from_bytes`] 的 `from_utf8_lossy`
+/// 只能把它换成 U+FFFD, 于是"写出去的名字"与"读回来的名字"不是同一个字符串。
+///
+/// 因此这里取**不超过 `width` 的最大字符边界**: 代价是最多少写一个字符（剩下的字节
+/// 补 0）, 换来字段的有效区始终是合法 UTF-8。纯 ASCII 输入不受影响 —— 每个字节都是
+/// 字符边界 —— 因此既有的 ASCII 产物**逐字节不变**, 仍恰好占满 `width`。
 fn push_fixed(out: &mut Vec<u8>, value: &str, width: usize) {
     let raw = value.as_bytes();
-    let take = raw.len().min(width);
+    let mut take = raw.len().min(width);
+    while take > 0 && !value.is_char_boundary(take) {
+        take -= 1;
+    }
     out.extend_from_slice(&raw[..take]);
     out.resize(out.len() + (width - take), 0);
 }
@@ -1974,6 +1985,112 @@ mod tests {
         assert_eq!(decoded.description.len(), 256);
         assert_eq!(decoded.originator.len(), 32);
         assert_eq!(decoded.originator_reference.len(), 32);
+    }
+
+    /// 判据 17b: 超长**多字节**文本字段的截断点落在**字符边界**上 —— 字段的有效区必须是
+    /// 合法 UTF-8, 往返读回不得出现替换字符 U+FFFD, 且截断点是**最大的**字符边界。
+    ///
+    /// 这是判据 17 的补集: 那一条只用纯 ASCII（每个字节都是字符边界）, 因此它对
+    /// "按字节硬截"与"按字符边界截"**不可分辨**。本条用 3 字节的 `→`（`E2 86 92`）
+    /// 让 256 / 32 这两个宽度落在字符的**中间**。
+    ///
+    /// 注入（先红后还原）: 把 `push_fixed` 的 `take` 换回 `raw.len().min(width)`
+    /// （不再回退到字符边界）⇒ 本判据的断言全部变红。
+    #[test]
+    fn overlong_multibyte_text_fields_are_cut_on_a_character_boundary() {
+        const ARROW: &str = "\u{2192}"; // UTF-8: E2 86 92, 3 字节
+        let description = ARROW.repeat(200); // 600 字节 > 256
+        let originator = ARROW.repeat(20); // 60 字节 > 32
+        let reference = ARROW.repeat(20);
+        let block = Bext {
+            description: description.clone(),
+            originator: originator.clone(),
+            originator_reference: reference.clone(),
+            coding_history: String::new(),
+            ..Bext::default()
+        };
+        let bytes = block.to_bytes();
+        assert_eq!(bytes.len(), BEXT_FIXED_LEN);
+
+        for (width, at, value) in [
+            (256usize, 0usize, description.as_str()),
+            (32, 256, originator.as_str()),
+            (32, 288, reference.as_str()),
+        ] {
+            let field = &bytes[at..at + width];
+            let used = field.iter().position(|&byte| byte == 0).unwrap_or(width);
+            let text = core::str::from_utf8(&field[..used])
+                .unwrap_or_else(|error| panic!("宽度 {width} 的字段有效区不是合法 UTF-8: {error}"));
+            assert!(
+                value.starts_with(text),
+                "有效区 {text:?} 不是输入 {value:?} 的前缀"
+            );
+            assert!(
+                field[used..].iter().all(|&byte| byte == 0),
+                "有效区之后的 {} 字节必须全是 NUL 补位",
+                width - used
+            );
+            // 最大性: 有效区里若还能再放一个字符, 截断点就不是最大的字符边界。
+            if let Some(next) = value[used..].chars().next() {
+                assert!(
+                    used + next.len_utf8() > width,
+                    "宽度 {width} 里还能再放一个 {next:?}（{} 字节）",
+                    next.len_utf8()
+                );
+            }
+        }
+
+        let decoded = Bext::from_bytes(&bytes).expect("解码");
+        assert!(
+            !decoded.description.contains('\u{FFFD}'),
+            "回读出现替换字符"
+        );
+        assert!(!decoded.originator.contains('\u{FFFD}'), "回读出现替换字符");
+        assert!(
+            !decoded.originator_reference.contains('\u{FFFD}'),
+            "回读出现替换字符"
+        );
+        assert!(description.starts_with(&decoded.description));
+        assert!(originator.starts_with(&decoded.originator));
+
+        // 变异敏感度自证: 同一份输入上朴素的"按字节截断"必然产出非法 UTF-8。
+        // 没有这条, 上面的"合法 UTF-8"断言可能是空判据（例如输入恰好对齐）。
+        assert!(
+            core::str::from_utf8(&description.as_bytes()[..256]).is_err(),
+            "输入必须让按字节截断落在字符中间, 否则本判据测不到东西"
+        );
+        assert!(core::str::from_utf8(&originator.as_bytes()[..32]).is_err());
+    }
+
+    /// 判据 17c: 放得下的多字节字段**不得**被多截一个字符 —— 截断只发生在超长时,
+    /// 且恰好占满一个字段的输入必须逐字符完整保留。
+    #[test]
+    fn a_multibyte_text_field_that_fits_is_written_whole() {
+        const ARROW: &str = "\u{2192}"; // 3 字节
+        let fits = ARROW.repeat(85); // 255 字节 < 256
+        let exact = format!("{fits}x"); // 255 + 1 = 恰好 256 字节
+        for (description, expected) in
+            [(exact.clone(), exact.clone()), (fits.clone(), fits.clone())]
+        {
+            let block = Bext {
+                description,
+                coding_history: String::new(),
+                ..Bext::default()
+            };
+            let bytes = block.to_bytes();
+            let decoded = Bext::from_bytes(&bytes).expect("解码");
+            assert_eq!(decoded.description, expected, "放得下的字段必须逐字符保留");
+        }
+        // `Originator` 宽 32 字节: 10 个 `→`（30 字节）放得下, 11 个（33 字节）放不下,
+        // 因此第二个必须截到 30 字节而不是 32 字节。
+        let block = Bext {
+            originator: ARROW.repeat(11),
+            coding_history: String::new(),
+            ..Bext::default()
+        };
+        let decoded = Bext::from_bytes(&block.to_bytes()).expect("解码");
+        assert_eq!(decoded.originator, ARROW.repeat(10));
+        assert_eq!(decoded.originator.len(), 30);
     }
 
     /// 判据 18: 带 `bext` 的 RIFF 文件仍能被读回（`riffSize` 含 bext 与补位）。
