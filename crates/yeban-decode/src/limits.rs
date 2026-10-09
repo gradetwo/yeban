@@ -67,6 +67,23 @@
 //! `ccee870` 把该路径改成流式**之前**的事实，改完后没有回写这里。同一份更正也已写进
 //! `docs/ledger/decode-limits-notes.md` 的 §8 更正注（本 crate 不改该文件）。
 //!
+//! ## 重采样工作集：为什么比例本身必须是一道闸门
+//!
+//! `rubato` 的异步 sinc 重采样器在**任何**输入长度上都要按"一个处理分块 + 半个滤波器"
+//! 准备输出缓冲。那两项是**输入**帧数：`CHUNK_FRAMES + SINC_LEN/2` = 1 152 帧。折算到
+//! **输出**侧就是 `1 152 × 比例` 帧，**与输入有多少帧无关**（实测：1 帧、1 000 帧、
+//! 4 096 帧输入在同一个比例下的"要求帧数 − 理想输出帧数"是同一个数）。
+//!
+//! 于是比例成了资源放大的**唯一**来源。合法参数的上界是 1 Hz → 768 kHz（比例 768 000）：
+//! 那时**1 帧**输入要求 `885 504 010` 帧 = `3 542 016 040` 字节的输出缓冲，而
+//! [`check_layout`] 的四道闸门一道都不挡它 —— 时长闸门按 `frames / 输出率` 算（1 153 秒，
+//! 远低于 6 小时），字节闸门是 96 kHz 立体声 3 小时的 `8 294 400 000` 字节。
+//!
+//! 因此本模块把比例抽成一道**独立闸门**：[`PcmBudget::max_resample_ratio`] +
+//! [`check_resample_ratio`]。它只读调用方声明的两个采样率，所以在**任何分配之前**判定，
+//! 也不依赖 `rubato` 的任何行为。它**只拒绝**，不改动任何被放行的输出 —— 被放行的那一份
+//! 输出与闸门存在之前**逐位相同**。
+//!
 //! 边界: 本模块**不做**任何 I/O、不持有缓冲、不知道 symphonia 的存在。它只回答
 //! "这个尺寸/这个长度是否在预算内"。
 
@@ -117,6 +134,22 @@ pub const DEFAULT_MAX_CHANNELS: u16 = 64;
 /// 默认采样率闸门：768 kHz（DXD 级别之上再留一倍余量）。
 pub const DEFAULT_MAX_SAMPLE_RATE: u32 = 768_000;
 
+/// 默认重采样**比例**闸门：`1_000`（单位是"输出率 / 输入率"的倍数）。
+///
+/// 为什么需要它：`rubato` 的异步 sinc 在每个处理分块上都要按"一个分块 + 半个滤波器"
+/// 准备输出缓冲，折算到**输出**侧就是 `CHUNK_FRAMES + SINC_LEN/2` = 1 152 帧 × 比例 ——
+/// 与输入帧数无关。极端比例（1 Hz → 768 kHz 是 768 000×）会让**1 帧**输入要求约 3.54 GB。
+/// 见 [`PcmBudget::max_resample_ratio`] 与 [`check_resample_ratio`]。
+///
+/// 1 000 是这样选的：本 crate 的采样率域是 `(0, 768 kHz]`，而**真实音频**的最低标准采样率
+/// 是 8 kHz（ITU-T G.711 的电话带宽），所以域内最宽的真实转换是 8 kHz → 768 kHz = **96×**。
+/// 1 000× 是它的**十倍**余量 —— 这道闸门是安全闸门而不是实现限制（见模块文档），因此它
+/// 只拒绝 `输出率 > 1 000 × 输入率` 的采样率对（在 768 kHz 的上限下就是"输入率低于
+/// 768 Hz"），而那正是资源放大的唯一来源。1 000× 同时把
+/// 重采样器的额外工作集钉在 `1 152 × 1 000 = 1 152 000` 帧：单声道 `4 608 000` 字节，
+/// 声道数上限（64）下 `294 912 000` 字节。
+pub const DEFAULT_MAX_RESAMPLE_RATIO: u64 = 1_000;
+
 /// `seconds` 秒 × `channels` 声道交织 `f32` PCM 的精确字节数。
 ///
 /// 全程 `u128` 中间量，因此**不会回绕**；超出 `u64` 或任一参数为 0 时返回 `None`。
@@ -142,7 +175,7 @@ pub const fn pcm_bytes_for(seconds: u64, sample_rate: u32, channels: u16) -> Opt
 /// 显式的预算值。默认值见 [`PcmBudget::default`]（由产品要求推导，见模块文档）。
 ///
 /// 语义约定：
-/// - 五道上限（输入字节 / PCM 字节 / 声道数 / 采样率 / 时长）**各自独立**生效，
+/// - 六道上限（输入字节 / PCM 字节 / 声道数 / 采样率 / 时长 / 重采样比例）**各自独立**生效，
 ///   且判定全部发生在**分配之前**；
 /// - 判定是闭区间：恰好等于上限**通过**，超出一个单位即 [`LimitViolation`]；
 /// - 预算为 0 是合法的（等价于"拒绝一切非空资产"），用于调用方主动收紧。
@@ -159,6 +192,19 @@ pub struct PcmBudget {
     /// 单次解码允许的音频时长上限（秒）。与声道数无关，因此能独立约束"低采样率 ×
     /// 少声道但极长"的素材。
     pub max_duration_secs: u64,
+    /// 重采样**比例**上限（输出率 / 输入率，闭区间）。唯一判定点是
+    /// [`check_resample_ratio`]，只有重采样入口会用到它。
+    ///
+    /// 为什么比例需要自己的一道闸门：`rubato` 的异步 sinc 在**任何**输入长度上都要按
+    /// "一个处理分块 + 半个滤波器"（`CHUNK_FRAMES + SINC_LEN/2` = 1 152 个**输入**帧）
+    /// 准备输出缓冲，折算到输出侧就是 `1 152 × 比例` 帧 —— 与输入帧数无关。所以比例
+    /// 是资源放大的唯一来源，而它不在其他任何一道闸门的度量里：时长闸门按输出率折算
+    /// （极端比例下反而"显得很短"），字节与声道闸门只管输出那一份。
+    ///
+    /// 默认值见 [`DEFAULT_MAX_RESAMPLE_RATIO`]；取 `u64::MAX` 等于**关掉**这道闸门。
+    /// 判据 `the_resample_ratio_cap_is_closed_and_reads_the_callers_budget` 钉住它的
+    /// 语义，`the_resample_ratio_cap_bounds_the_resampler_working_set` 钉住它挡下的那个资源。
+    pub max_resample_ratio: u64,
 }
 
 impl PcmBudget {
@@ -170,6 +216,7 @@ impl PcmBudget {
         max_channels: u16,
         max_sample_rate: u32,
         max_duration_secs: u64,
+        max_resample_ratio: u64,
     ) -> Self {
         Self {
             max_input_bytes,
@@ -177,6 +224,7 @@ impl PcmBudget {
             max_channels,
             max_sample_rate,
             max_duration_secs,
+            max_resample_ratio,
         }
     }
 
@@ -223,6 +271,7 @@ impl PcmBudget {
             max_channels: channels,
             max_sample_rate: sample_rate,
             max_duration_secs: seconds,
+            max_resample_ratio: DEFAULT_MAX_RESAMPLE_RATIO,
         })
     }
 }
@@ -261,6 +310,7 @@ impl Default for PcmBudget {
             max_channels: DEFAULT_MAX_CHANNELS,
             max_sample_rate: DEFAULT_MAX_SAMPLE_RATE,
             max_duration_secs: DEFAULT_MAX_DURATION_SECS,
+            max_resample_ratio: DEFAULT_MAX_RESAMPLE_RATIO,
         }
     }
 }
@@ -417,6 +467,18 @@ pub enum LimitViolation {
         /// 声道数。
         channels: u16,
     },
+    /// 重采样**比例**超过上限（`out_rate > in_rate × limit`）。
+    ///
+    /// 这是一道**独立**闸门，理由见 [`PcmBudget::max_resample_ratio`]：比例是重采样工作集
+    /// 的唯一放大来源，而其他五道闸门都不度量它。
+    ResampleRatioTooHigh {
+        /// 输入采样率。
+        in_rate: u32,
+        /// 输出采样率。
+        out_rate: u32,
+        /// 生效的比例上限（输出率 / 输入率的倍数）。
+        limit: u64,
+    },
     /// 向分配器申请缓冲被拒绝（`Vec::try_reserve` 失败）。
     AllocationRefused {
         /// 本次想要追加的样本数。
@@ -466,6 +528,15 @@ impl fmt::Display for LimitViolation {
             Self::LayoutOverflow { frames, channels } => write!(
                 f,
                 "frame/channel product overflows: {frames} frames x {channels} channels"
+            ),
+            Self::ResampleRatioTooHigh {
+                in_rate,
+                out_rate,
+                limit,
+            } => write!(
+                f,
+                "resampling {in_rate} Hz to {out_rate} Hz is over the {limit}x \
+                 output/input sample-rate ratio cap"
             ),
             Self::AllocationRefused { samples } => {
                 write!(f, "allocator refused a buffer for {samples} more samples")
@@ -643,6 +714,41 @@ pub fn check_layout(
     Ok(())
 }
 
+/// 校验重采样**比例**（`out_rate / in_rate`）不超过 [`PcmBudget::max_resample_ratio`]。
+///
+/// 量的是"输出率是输入率的几倍"。为什么必须有这道闸门：`rubato` 的异步 sinc 在**任何**
+/// 输入长度上都要按"一个处理分块 + 半个滤波器"（`CHUNK_FRAMES + SINC_LEN/2` = 1 152 个
+/// **输入**帧）准备输出缓冲，折算到输出侧就是 `1 152 × 比例` 帧，与输入帧数无关。于是
+/// 那 3.54 GB 的读数（1 帧、1 Hz → 768 kHz）完全由比例决定，而 [`check_layout`] 的四道
+/// 闸门一道都不度量它：时长闸门按**输出率**折算帧数（1 153 秒，远低于 6 小时）。
+///
+/// 判定是**闭区间**：`out_rate == in_rate × 上限` 通过。比较在 `u128` 里做，因此不会回绕。
+/// 本函数只读两个声明出来的采样率，所以判定发生在**任何分配之前**，也不依赖 `rubato`
+/// 的任何行为。它**只拒绝**：被放行的采样率对上，重采样输出与这道闸门存在之前逐位相同。
+///
+/// # Errors
+///
+/// - [`LimitViolation::ZeroSampleRate`]：任一采样率为 0（比例无定义）；
+/// - [`LimitViolation::ResampleRatioTooHigh`]：`out_rate > in_rate × 上限`。
+pub fn check_resample_ratio(
+    in_rate: u32,
+    out_rate: u32,
+    budget: &PcmBudget,
+) -> Result<(), LimitViolation> {
+    if in_rate == 0 || out_rate == 0 {
+        return Err(LimitViolation::ZeroSampleRate);
+    }
+    // `u32 × u64` 在 `u128` 里最多到 2^96，不会回绕。
+    if u128::from(out_rate) > u128::from(in_rate) * u128::from(budget.max_resample_ratio) {
+        return Err(LimitViolation::ResampleRatioTooHigh {
+            in_rate,
+            out_rate,
+            limit: budget.max_resample_ratio,
+        });
+    }
+    Ok(())
+}
+
 /// 计算重采样的长度契约（精确有理数运算，零浮点）。
 ///
 /// 语义：输出帧数 ≈ `输入帧数 × out_rate / in_rate`，容差为
@@ -761,6 +867,7 @@ mod tests {
             max_channels: u16::MAX,
             max_sample_rate: u32::MAX,
             max_duration_secs: budget.max_duration_secs,
+            max_resample_ratio: u64::MAX,
         };
         let exact = 6 * 60 * 60 * 96_000;
         assert_eq!(by_time_only.max_duration_frames(96_000), exact);
@@ -799,6 +906,7 @@ mod tests {
             max_channels: u16::MAX,
             max_sample_rate: u32::MAX,
             max_duration_secs: budget.max_duration_secs,
+            max_resample_ratio: u64::MAX,
         };
         for &rate in &[1u32, 8_000, 44_100, 48_000, 96_000, 768_000] {
             let limit = budget.max_duration_frames(rate);
@@ -925,7 +1033,7 @@ mod tests {
     /// 注入 `>` → `>=` 会在这里先红。
     #[test]
     fn input_byte_budget_is_enforced() {
-        let budget = PcmBudget::new(1_024, 4_096, 8, 96_000, 60);
+        let budget = PcmBudget::new(1_024, 4_096, 8, 96_000, 60, DEFAULT_MAX_RESAMPLE_RATIO);
         assert_eq!(check_input_len(0, &budget), Ok(()));
         assert_eq!(check_input_len(1_024, &budget), Ok(()));
         assert_eq!(
@@ -953,6 +1061,7 @@ mod tests {
             DEFAULT_MAX_CHANNELS,
             DEFAULT_MAX_SAMPLE_RATE,
             u64::MAX / u64::from(DEFAULT_MAX_SAMPLE_RATE),
+            DEFAULT_MAX_RESAMPLE_RATIO,
         );
         assert_eq!(check_layout(8, 96_000, 96_000, &wide), Ok(()));
 
@@ -1033,6 +1142,118 @@ mod tests {
         );
     }
 
+    /// 判据 ⑥：重采样**比例**闸门（[`check_resample_ratio`]）闭区间、独立、且读调用方的预算。
+    ///
+    /// 为什么它必须是一道**独立**闸门：比例不在其他五道闸门的度量里 —— `check_layout` 拿到
+    /// 的是**输出**那一份（帧数、声道数、采样率、时长），而放大项 `1 152 × 比例` 与输入帧数
+    /// 无关（见 `crate::resample` 的两条读数判据）。本模块是纯逻辑层，因此这里的断言只用
+    /// `u32`/`u64` 算术，不碰 `rubato`。
+    #[test]
+    fn the_resample_ratio_cap_is_closed_and_reads_the_callers_budget() {
+        let default = PcmBudget::default();
+        assert_eq!(default.max_resample_ratio, DEFAULT_MAX_RESAMPLE_RATIO);
+        assert_eq!(default.max_resample_ratio, 1_000);
+
+        // 闭区间：恰好等于上限通过，低一档的输入率即拒。
+        assert_eq!(
+            check_resample_ratio(768, DEFAULT_MAX_SAMPLE_RATE, &default),
+            Ok(())
+        );
+        assert_eq!(
+            check_resample_ratio(767, DEFAULT_MAX_SAMPLE_RATE, &default),
+            Err(LimitViolation::ResampleRatioTooHigh {
+                in_rate: 767,
+                out_rate: DEFAULT_MAX_SAMPLE_RATE,
+                limit: 1_000
+            })
+        );
+
+        // 降采样（比例 < 1）不受约束；同率（比例 1）也不受约束。
+        assert_eq!(check_resample_ratio(96_000, 8_000, &default), Ok(()));
+        assert_eq!(check_resample_ratio(48_000, 48_000, &default), Ok(()));
+
+        // 0 率仍然是"比例无定义"，不是比例越界 —— 两个错误的处置不同。
+        assert_eq!(
+            check_resample_ratio(0, 48_000, &default),
+            Err(LimitViolation::ZeroSampleRate)
+        );
+        assert_eq!(
+            check_resample_ratio(48_000, 0, &default),
+            Err(LimitViolation::ZeroSampleRate)
+        );
+
+        // 闸门读的是调用方的预算：收紧到 1 ⇒ 2 倍转换即拒；放宽到 `u64::MAX` ⇒ 闸门关掉。
+        let tight = PcmBudget {
+            max_resample_ratio: 1,
+            ..PcmBudget::default()
+        };
+        assert_eq!(
+            check_resample_ratio(48_000, 96_000, &tight),
+            Err(LimitViolation::ResampleRatioTooHigh {
+                in_rate: 48_000,
+                out_rate: 96_000,
+                limit: 1
+            })
+        );
+        let off = PcmBudget {
+            max_resample_ratio: u64::MAX,
+            ..PcmBudget::default()
+        };
+        assert_eq!(
+            check_resample_ratio(1, DEFAULT_MAX_SAMPLE_RATE, &off),
+            Ok(())
+        );
+
+        // 类型极大值端点：比较在 `u128` 里做，因此不会回绕成"通过"。
+        assert_eq!(
+            check_resample_ratio(u32::MAX, u32::MAX, &default),
+            Ok(()),
+            "the same rate is ratio 1 regardless of magnitude"
+        );
+        assert_eq!(check_resample_ratio(1, 2, &default), Ok(()));
+        assert_eq!(
+            check_resample_ratio(1, u32::MAX, &tight),
+            Err(LimitViolation::ResampleRatioTooHigh {
+                in_rate: 1,
+                out_rate: u32::MAX,
+                limit: 1
+            })
+        );
+    }
+
+    /// 判据 ⑥ 的对照：默认上限必须放行**真实音频的每一个标准采样率对** —— 这道闸门是
+    /// 安全闸门，不是实现限制（见模块文档的"上限的定性"）。
+    #[test]
+    fn the_default_resample_ratio_cap_admits_every_standard_audio_rate_pair() {
+        let default = PcmBudget::default();
+        // ITU-T G.711 电话带宽到 DXD 之上：本 crate 采样率域内的真实音频速率。
+        let rates = [
+            8_000u32,
+            11_025,
+            16_000,
+            22_050,
+            32_000,
+            44_100,
+            48_000,
+            88_200,
+            96_000,
+            176_400,
+            192_000,
+            352_800,
+            384_000,
+            DEFAULT_MAX_SAMPLE_RATE,
+        ];
+        for &in_rate in &rates {
+            for &out_rate in &rates {
+                assert_eq!(
+                    check_resample_ratio(in_rate, out_rate, &default),
+                    Ok(()),
+                    "{in_rate} Hz -> {out_rate} Hz must pass the default ratio cap"
+                );
+            }
+        }
+    }
+
     /// 判据 ③/④：PCM 字节闸门在**默认预算下**闭区间，且**可配置**（小预算立刻生效）。
     #[test]
     fn layout_budget_rejects_an_asset_over_the_pcm_cap() {
@@ -1059,7 +1280,7 @@ mod tests {
         }
 
         // 判据 ④：把预算调小 ⇒ 一份**小**素材也会被拒（证明上限真的可配置、真的生效）。
-        let tiny = PcmBudget::new(1_024, 128, 8, 96_000, 60);
+        let tiny = PcmBudget::new(1_024, 128, 8, 96_000, 60, DEFAULT_MAX_RESAMPLE_RATIO);
         assert_eq!(check_layout(1, 8_000, 32, &tiny), Ok(()));
         assert_eq!(
             check_layout(1, 8_000, 33, &tiny),
@@ -1086,7 +1307,14 @@ mod tests {
         // 拦下（"u64::MAX 帧"首先是一个时长问题），所以这里显式把时长闸门开到 u64::MAX
         // 才能把 `frames × channels` 的溢出路径单独逼出来 —— 这条断言钉的是
         // "调用方给了荒唐预算时，乘法仍然不回绕"。
-        let overflowing = PcmBudget::new(u64::MAX, !3u64, 64, u32::MAX, u64::MAX);
+        let overflowing = PcmBudget::new(
+            u64::MAX,
+            !3u64,
+            64,
+            u32::MAX,
+            u64::MAX,
+            DEFAULT_MAX_RESAMPLE_RATIO,
+        );
         assert_eq!(
             check_layout(2, 48_000, u64::MAX, &overflowing),
             Err(LimitViolation::LayoutOverflow {
@@ -1480,7 +1708,7 @@ mod tests {
     /// 这一条（`0 passed / 1 failed`）。
     #[test]
     fn an_all_zero_budget_admits_only_the_empty_input() {
-        let zero = PcmBudget::new(0, 0, 0, 0, 0);
+        let zero = PcmBudget::new(0, 0, 0, 0, 0, 0);
         assert_eq!(zero.interleaved_samples_limit(), 0);
         for rate in [0u32, 1, 48_000, u32::MAX] {
             assert_eq!(zero.max_duration_frames(rate), 0, "rate {rate}");

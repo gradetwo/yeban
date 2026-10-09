@@ -2135,7 +2135,14 @@ mod tests {
     #[test]
     fn a_non_seekable_source_obeys_the_input_byte_budget() {
         let limit = 256u64;
-        let budget = PcmBudget::new(limit, !3u64, 64, 768_000, 60);
+        let budget = PcmBudget::new(
+            limit,
+            !3u64,
+            64,
+            768_000,
+            60,
+            limits::DEFAULT_MAX_RESAMPLE_RATIO,
+        );
         let options = DecodeOptions {
             budget,
             ..DecodeOptions::default()
@@ -2219,7 +2226,14 @@ mod tests {
 
         let limit = 256u64;
         let options = DecodeOptions {
-            budget: PcmBudget::new(limit, !3u64, 64, 768_000, 60),
+            budget: PcmBudget::new(
+                limit,
+                !3u64,
+                64,
+                768_000,
+                60,
+                limits::DEFAULT_MAX_RESAMPLE_RATIO,
+            ),
             ..DecodeOptions::default()
         };
         let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2269,7 +2283,14 @@ mod tests {
         let bytes = int_wav(1, 16, &[1, -2, 3, -4]);
         assert_eq!(bytes.len(), 52);
         let capped = |limit: u64| DecodeOptions {
-            budget: PcmBudget::new(limit, !3u64, 64, 768_000, 60),
+            budget: PcmBudget::new(
+                limit,
+                !3u64,
+                64,
+                768_000,
+                60,
+                limits::DEFAULT_MAX_RESAMPLE_RATIO,
+            ),
             ..DecodeOptions::default()
         };
 

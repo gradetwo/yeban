@@ -6,7 +6,9 @@
 //!
 //! 判据编号沿用 notes 的 C 系列。
 
-use yeban_decode::limits::{LimitViolation, PcmBudget, check_layout, pcm_bytes_for};
+use yeban_decode::limits::{
+    DEFAULT_MAX_RESAMPLE_RATIO, LimitViolation, PcmBudget, check_layout, pcm_bytes_for,
+};
 use yeban_decode::{DecodeError, DecodeOptions, DecodeResult, DecodedAsset, decode_bytes};
 
 // 上游调用形状的类型别名（写短一点，也避免 `clippy::type_complexity` 之类的噪声）。
@@ -89,7 +91,7 @@ fn default_budget_admits_the_documented_session_and_refuses_one_more_frame() {
 fn a_small_pcm_budget_stops_a_real_wav_with_a_precise_error() {
     let bytes = wav_pcm16_mono(64, 8_000);
     let strict = DecodeOptions {
-        budget: PcmBudget::new(u64::MAX, 128, 64, 768_000, 60),
+        budget: PcmBudget::new(u64::MAX, 128, 64, 768_000, 60, DEFAULT_MAX_RESAMPLE_RATIO),
         ..DecodeOptions::default()
     };
     let err = decode_bytes(&bytes, &strict).unwrap_err();
@@ -169,7 +171,14 @@ fn the_resample_path_obeys_the_callers_budget() {
 
     // 只够"理想输出"（44100 帧）的预算：重采样器实际要分配的缓冲含滤波器延迟/余量，
     // 因此必须被拒 —— 证明闸门发生在 `try_reserve` 之前的真实长度上。
-    let ideal_only = PcmBudget::new(u64::MAX, 44_100 * 4, 64, 768_000, 60);
+    let ideal_only = PcmBudget::new(
+        u64::MAX,
+        44_100 * 4,
+        64,
+        768_000,
+        60,
+        DEFAULT_MAX_RESAMPLE_RATIO,
+    );
     let err = yeban_decode::resample_interleaved_with_budget(
         asset.samples(),
         1,
@@ -199,7 +208,14 @@ fn the_resample_path_obeys_the_callers_budget() {
     .expect("长度契约");
 
     // 采样率闸门同样走调用方预算。
-    let narrow = PcmBudget::new(u64::MAX, 1 << 30, 64, 44_100, 60);
+    let narrow = PcmBudget::new(
+        u64::MAX,
+        1 << 30,
+        64,
+        44_100,
+        60,
+        DEFAULT_MAX_RESAMPLE_RATIO,
+    );
     assert!(matches!(
         yeban_decode::resample_interleaved_with_budget(asset.samples(), 1, 48_000, 44_100, &narrow),
         Err(DecodeError::Budget(

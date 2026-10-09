@@ -65,12 +65,18 @@
 //! | 声道数 | 64 | [`limits::DEFAULT_MAX_CHANNELS`]（7.1 的 8 倍余量，挡畸形声明） |
 //! | 采样率 | 768 kHz | [`limits::DEFAULT_MAX_SAMPLE_RATE`]（DXD 之上再留一倍） |
 //! | 时长 | 6 小时 | [`limits::DEFAULT_MAX_DURATION_SECS`]（低采样率 × 少声道的独立 backstop） |
+//! | 重采样比例 | 1 000×（输出率 / 输入率） | [`limits::DEFAULT_MAX_RESAMPLE_RATIO`]（真实域内最宽转换 8 kHz → 768 kHz = 96× 的 10 倍余量） |
 //!
-//! 上表**五道**闸门**各自独立**、全部发生在**分配之前**；判定是闭区间（恰好等于上限
+//! 上表**六道**闸门**各自独立**、全部发生在**分配之前**；判定是闭区间（恰好等于上限
 //! 通过）。前四道（PCM 字节 / 声道数 / 采样率 / 时长）由 [`limits::check_layout`] 判定，
-//! 第五道（输入容器字节）由 [`limits::check_input_len`] 在打开与探测之前判定；"每一道都能
-//! 单独把输入挡下"由 `limits` 的判据逐道钉住（`every_budget_gate_trips_on_its_own`
-//! 与 `input_byte_budget_is_enforced`）。
+//! 第五道（输入容器字节）由 [`limits::check_input_len`] 在打开与探测之前判定，第六道
+//! （重采样比例）由 [`limits::check_resample_ratio`] 在重采样入口判定 —— 它只在重采样
+//! 路径上有意义，因为**比例是重采样工作集的唯一放大来源**：`rubato` 的异步 sinc 在任何
+//! 输入长度上都要按 `(CHUNK_FRAMES + SINC_LEN/2) × 比例` 准备输出缓冲，而其他五道闸门
+//! 都不度量它（合法上界 1 Hz → 768 kHz 下，**1 帧**输入会要求 3.54 GB，时长闸门按输出率
+//! 折算只有 1 153 秒）。"每一道都能单独把输入挡下"由 `limits` 的判据逐道钉住
+//! （`every_budget_gate_trips_on_its_own`、`input_byte_budget_is_enforced` 与
+//! `the_resample_ratio_cap_is_closed_and_reads_the_callers_budget`）。
 //! 预算显式可配置（[`DecodeOptions::budget`]、`resample_interleaved_with_budget`），
 //! 并且一律用 `Vec::try_reserve` 把"分配器拒绝"变成错误而不是 abort —— 畸形输入
 //! 不能把进程吃掉 [ARCH-SEC-003]。
