@@ -35,7 +35,8 @@
 //!    争用对照，观察到 `lock_waits == 1`），证明读数有判别力；
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
-//! # 十七个场景（在既有 `harness = false` 风格上扩展；㉓ 由 `line/engine-drums` 追加）
+//! # 十七个场景（在既有 `harness = false` 风格上扩展；㉓ 由 `line/engine-drums` 追加；
+//! ⑲d 由 `line/engine-12` 追加在同一窗口里）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -51,7 +52,7 @@
 //! | ⑯ | 满批事件洪峰 128 条/量子 × 500 量子（参数 + 音符 + 走带混排） | `EventReceiver::drain_with` 的**满块**边界（`[EngineEvent; SCRATCH_EVENTS]`） |
 //! | ⑰ | PDC 补偿延迟线：2 000 量子稳态 + 1 000 量子跨快照**重新武装**（32 → 96 帧） | `CompensationBank::rearm` 的 `set_delay` 分支 + 逐样本环形延迟读写（`ROAD-M2-004` 接线之后新增；行为判据在 `tests/pdc_mix_path.rs`） |
 //! | ⑱ | 退役队列欠容（容量 1 + 控制面**故意**不排空）64 轮 | `SnapshotReader::retire_or_stash` 的 `PushError::Full` 分支 ⇒ `note_suppressed(SnapshotRetireStash)`（`N6` 选项 A） |
-//! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A） |
+//! | ⑲ | 电平容量不足（轨道数 `SCRATCH_METERS + 44` = 300）100 量子 | `render_block` 的"轨道数 > 暂存槽 − 1"分支 ⇒ `note_suppressed(MeterCapacityDrop)`（`N6` 选项 A）；**⑲d**（`line/engine-12`）在同一窗口里追加"SPSC 环满的丢帧读数"`EngineStats::meter_dropped_frames`：`写入 + 丢弃 == 量子数 × SCRATCH_METERS`（等号）且丢弃 > 0 |
 //! | ⑳ | 设备回调体 2 000 次（`yeban_engine::device::render_callback`） | cpal 建流的闭包、`NullBackend::render` 与判据调用的**同一个**函数 ⇒ "回调里多做了事"（分配/锁/I-O/日志）在这里变红；**feature `device` 门控**（`--no-default-features` 下本场景不跑） |
 //! | ㉑ | 节拍器 2 000 量子全程打拍（`transport.metronome_enabled = true`；关闭侧另 200 量子） | `render_block` 的 3a'（`metronome::render_quantum`）：每拍帧位置反算（`Transport::frames_until_tick` 的整数 `div_ceil`）、强弱拍增益选择、逐样本"比对 + 一次乘 + 两次加"、**跨量子延续**的游标；关闭侧覆盖"整段跳过"分支。行为判据在 `tests/metronome_render.rs` |
 //! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
@@ -85,7 +86,8 @@
 //! 否则"控制面能看见"就要拿渲染路径来换。⑫b 同时实测**注入口径**：
 //! `Vec::new()` 不分配（无效注入），`Vec::with_capacity(1)` 才分配（有效注入）。
 //!
-//! # 本判据怎么变红（十一组注入；I1~I10 的实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4 与 §12，I11 见上表与交付报告）
+//! # 本判据怎么变红（注入表；I1~I10 的实测记录见 `docs/ledger/gate-rt-zero-alloc-notes.md` §4 与 §12，
+//! I11 见上表，I12/I13 见各自的 ticket，I14 见下节与 `line/engine-12` 的交付报告）
 //!
 //! | # | 注入点（`crates/yeban-engine/src/`） | 变红的判据 |
 //! | :-: | :--- | :--- |
@@ -102,6 +104,37 @@
 //! | I11 | `rt.rs::render_block` 的 3a' 节拍器分支里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉑（节拍器开启侧）—— ㉑b（关闭侧）与其它场景不动（跳过分支里没有那句）；实测红行：`㉑ FAIL … 四元组[alloc=2000 dealloc=2000 …]` 且汇总 `41 / 42 通过`，还原后 `42 / 42`（记录在本票的交付报告里；`gate-rt-zero-alloc-notes.md` 是**带日期的历史读数**、不属本票、一字未改） |
 //! | I12 | 删掉 `rt.rs::render_block` 的混响采样率守卫（`if current.sample_rate() == *armed_reverb_sample_rate`）**并**把"同轨同槽只 `set_params`"的快路径也去掉（⇒ 每次重新武装都调 `Reverb::set_sample_rate`） | **仅** ㉒（换采样率那一段）的**分配/释放**分量；实测红行：`reverb rate-mismatch re-arm + quantum: allocations=48 deallocations=48` ⇒ `㉒ FAIL … 实时路径分配了 48 次`，汇总 `43 / 44`；⚠ **只删守卫、保留快路径的注入不会变红**（同轨同槽不调 `set_sample_rate` ⇒ 零分配）—— 那条半注入的实测红行是 `㉒c FAIL … 换采样率之后混响必须整段不武装`，见本票报告 |
 //! | I13 | `synth.rs::render_track` 的**鼓机触发分支**里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉓（鼓机音源侧）的**分配/释放**分量；实测红行：`㉓ FAIL … 四元组[alloc=216 dealloc=216 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]` ⇒ 汇总 `45 / 46`。同一个注入也打红 `synth_rt_zero_alloc` 的 J11（`drum instrument 10_000 quanta: allocations=213 deallocations=213`；213 = 那个窗口的鼓击数）；还原后 `46 / 46` 与 J11 全窗 `allocations=0 deallocations=0` |
+//! | I14 | `rt.rs::stats()` 的 `meter_dropped_frames` 写死 `0`（`line/engine-12`） | **仅** ⑲d（新读数的精确分解）的**行为**分量（不是四元组）；同族判据同时红：`meter_rt_contract` 的 S8、`synth_rt_zero_alloc` 的 J19、`rt` 库单测；见下节 |
+//!
+//! # I14 的实测记录（`line/engine-12`：电平 SPSC 丢帧读数）
+//!
+//! **注入**（`crates/yeban-engine/src/rt.rs` 的 `stats()` 里把
+//! `meter_dropped_frames: self.meters.dropped(),` 改成 `meter_dropped_frames: 0,`）后逐字重跑：
+//!
+//! ```text
+//! [MUST-GATE-001] 判据 ⑲d FAIL [ARCH-UI-002] SPSC 环满的丢帧可读且精确：写入 + 丢弃 == 本应发布帧数（四元组同一窗口）
+//! [MUST-GATE-001] 判据汇总: 48 / 49 通过
+//! [MUST-GATE-001] FAIL 判据 ⑲d …: 电平帧：写入=3840 丢弃=0 合计=3840 本应发布=25600（256×100）is_meter_lagging=false 增量判定=false；…
+//! ```
+//!
+//! 同一次注入在另外三个判据上的红行（各自逐字）：
+//!
+//! ```text
+//! （rt 库单测）panicked at crates/yeban-engine/src/rt.rs: 容量 1 + 不抽干必须丢帧，实际 0
+//! [ARCH-UI-002] FAIL: S8 容量 1 + 不抽干必须丢帧, 实际 0
+//! [ARCH-UI-002] FAIL: S8 本应发布的帧数 = 写进队列 + 丢掉: 1 + 0 ≠ 基线 256
+//! [engine-sound/J5] FAIL: 容量 1 + 不抽干的窗口里 `meter_dropped_frames` 仍是 0 —— 覆盖度不足（假绿）
+//! [engine-sound/J5] FAIL: 本应发布的帧数必须等于 写入 + 丢弃：1 + 0 ≠ 4002
+//! ```
+//!
+//! **没红的注入（如实登记）**：在 `render_block` 里（`rt_probe::quantum_enter()` 之后）
+//! 加一次"纯读 `self.meters.dropped()` 并 `black_box` 掉"—— 四元组判据 **49 / 49 照旧全绿**。
+//! 理由：那是一次 `u64` 字段读，没有分配、没有锁、没有 I/O；分配器与两个探针**按定义**
+//! 看不见它。这条不是判据的漏洞：它说明"多读一次已有计数器"落在四元组的量程之外
+//! （要抓这类改动只能靠代码审查或基准，`gate-rt-zero-alloc-notes.md` §4.3 的盲区登记同族）。
+//!
+//! **还原**：把注入前的副本 `cp` 回来之后 `cmp` 逐字节无差异，`shasum -a 256` 六个文件
+//! 全部与注入前**逐一相同**（哈希见本票交付报告）；重跑本判据 ⇒ **49 / 49 通过**。
 //!
 //! # I9 的实测记录（`N6` 选项 A 的验收证据；本节只在本文件里留档，账本由集成者补记）
 //!
@@ -1858,10 +1891,21 @@ fn scenario_meter_capacity_overflow(report: &mut Report) {
         .meter_bulk_publishes
         .saturating_sub(before.meter_bulk_publishes);
     let frames = stats.meter_frames.saturating_sub(before.meter_frames);
+    // `line/engine-12` 追加：**SPSC 环满而丢掉的帧数**（新读数 `meter_dropped_frames`）。
+    // 它与 `meter_capacity_drops`（节点次）是两个失败面；本场景同时经历两者，
+    // 因此这一条等式把"发布批次**放得下**、但环满了"那一半也钉住。
+    let dropped_frames = stats
+        .meter_dropped_frames
+        .saturating_sub(before.meter_dropped_frames);
+    // 本量子的**发布批次条数**恒为 `SCRATCH_METERS`（255 条普通轨 + 1 条母线）
+    // ⇒ 本应发布的帧数 = 量子数 × `SCRATCH_METERS`，与环容量无关。
+    let offered_frames = SCRATCH_METERS as u64 * METER_OVERFLOW_QUANTA;
     scenario.note(format!(
         "轨道数={OVERSIZE_TRACKS}（母线 + {} 条普通轨；暂存槽={SCRATCH_METERS}，母线占 1）\
          量子={METER_OVERFLOW_QUANTA}；容量丢弃={drops}（要求 {drops_per_quantum}/量子）\
          批量发布={publishes}（要求 1/量子）；纯计数诊断={}；\
+         电平帧：写入={frames} 丢弃={dropped_frames} 本应发布={offered_frames}\
+         （写入 + 丢弃必须等于它）；\
          ⚠ 电平队列写入帧数={frames} **不是**计量工作量：SPSC 环容量 4096、本场景不抽干 \
          ⇒ 15 个满批（{SCRATCH_METERS} 帧/量子）之后 `publish` 只能写 0 条",
         OVERSIZE_TRACKS - 1,
@@ -1887,6 +1931,31 @@ fn scenario_meter_capacity_overflow(report: &mut Report) {
              纯计数诊断={}（要求 {METER_OVERFLOW_QUANTA}）",
             drops_per_quantum * METER_OVERFLOW_QUANTA,
             scenario.suppressed
+        ),
+    );
+
+    // `line/engine-12` 追加：**SPSC 环满的丢帧读数**（同一条四元组窗口）。
+    //
+    // 为什么加在这里而不是新开场景：本场景的环（容量 4096）在 16 个满批之后必然满，
+    // 而且它的判据本来就逐项记账 ⇒ 新读数只需要一条**等号**就位；
+    // 同时它给出的证据是最强的那一档（四元组 + 锁探针见证 + 纯计数出口见证）。
+    //
+    // 判据：`写入 + 丢弃 == 本应发布帧数`（等号，无容差），并且丢弃必须**真的**发生
+    // （否则"读数恒为 0"也能让等号成立 —— 那是假绿）。
+    report.assert(
+        "⑲d",
+        "[ARCH-UI-002] SPSC 环满的丢帧可读且精确：写入 + 丢弃 == 本应发布帧数（四元组同一窗口）",
+        dropped_frames > 0
+            && frames + dropped_frames == offered_frames
+            && stats.is_meter_lagging()
+            && stats.is_meter_lagging_since(&before),
+        format!(
+            "电平帧：写入={frames} 丢弃={dropped_frames} 合计={} 本应发布={offered_frames}\
+             （{SCRATCH_METERS}×{METER_OVERFLOW_QUANTA}）is_meter_lagging={} \
+             增量判定={}；环容量 4096 + 不抽干 ⇒ 丢弃是**预期**的",
+            frames + dropped_frames,
+            stats.is_meter_lagging(),
+            stats.is_meter_lagging_since(&before)
         ),
     );
 }

@@ -161,6 +161,17 @@
 //! 见证方式与场景 ⑰c 同族：63 次交换之后两个读数必须等于**最后一份已武装快照**的计划值
 //! （而不是构造初值 0），且"引擎输出延迟 − 对齐基准 = 母线限制器的 33 帧"。
 //! 这条见证**不新增场景**，也不改变任何窗口的分配断言。
+//!
+//! # 场景 19（`line/engine-12` 追加）：电平 SPSC **满队列**下的实时窗口
+//!
+//! 新增读数 `EngineStats::meter_dropped_frames` 的来源是 `MeterPublisher::publish`
+//! 在**音频回调路径**上按"没写进环里的条数"推进的那个计数器；读它发生在 `stats()` 里，
+//! 而 `stats()` 由 `process_quantum` 每次回调调用一次（收尾发布跨线程镜像）
+//! ⇒ 来源与读路径**都在**实时窗口内部。场景 19 让环**持续满着**（容量 1、控制面不抽干）
+//! 跑完整个窗口：两个臂（容量 4096 / 容量 1）都断言
+//! `allocations == 0 && deallocations == 0`，覆盖度见证取"容量 1 的臂
+//! `meter_dropped_frames > 0`"，**权威判据**取 `写入 + 丢弃 == 大容量臂测出的
+//! 本应发布帧数`（等号）—— 没有那条见证，"读数恒为 0"也能让等号成立（假绿）。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -2343,6 +2354,121 @@ fn main() -> ExitCode {
         failures.push("统计镜像场景的窗口里没有触发任何音符 —— 读数没有在动".to_owned());
     }
 
+    // ---- 场景 19：电平 SPSC **满队列**下的实时窗口（`line/engine-12` 追加）----
+    //
+    // 新增读数 `EngineStats::meter_dropped_frames` 的来源是发布端自己的计数器
+    // （`MeterPublisher::publish` 在**音频回调路径**上按"没写进去的条数"推进它）；
+    // 读它发生在 `stats()` 里，而 `stats()` 由 `process_quantum` 每次回调调用一次
+    // （收尾发布跨线程镜像）⇒ 这条读数与它的来源都在实时窗口内部。本条场景让环
+    // **持续满着**（容量 1、控制面不抽干）跑完整个窗口：丢帧分支与新读数的读路径
+    // 都在被测量的那 2_000 个量子内，断言仍然是 `allocations == 0 && deallocations == 0`。
+    //
+    // 两个臂用**同一个夹具**（`note_project`：1 条轨 + 母线 ⇒ 每量子 2 帧）：
+    // 大容量臂给出"本应发布的帧数"这个独立基线，容量 1 的臂必须满足
+    // `写入 + 丢弃 == 那个基线`（**等号**，无容差）。没有覆盖度见证的话，
+    // "读数恒为 0" 也能让等号成立（假绿）。
+    const DROP_QUANTA: usize = 2_000;
+    let mut drop_output = vec![0.0f32; 128 * 2];
+
+    let drop_snapshot_a =
+        EngineSnapshot::from_project(&fixture.project, 1).expect("满队列夹具快照");
+    let drop_slot_a = SnapshotSlot::new(drop_snapshot_a);
+    let (drop_retire_a, _drop_queue_a) = retire_channel(8);
+    let (_drop_sender_a, drop_receiver_a) = event_channel(64);
+    let (drop_publisher_a, _drop_collector_a) = meter_channel(4096);
+    let mut drop_runtime_a = EngineRuntime::new(
+        &drop_slot_a,
+        drop_retire_a,
+        drop_receiver_a,
+        drop_publisher_a,
+    );
+
+    let drop_snapshot_b =
+        EngineSnapshot::from_project(&fixture.project, 1).expect("满队列夹具快照");
+    let drop_slot_b = SnapshotSlot::new(drop_snapshot_b);
+    let (drop_retire_b, _drop_queue_b) = retire_channel(8);
+    let (_drop_sender_b, drop_receiver_b) = event_channel(64);
+    let (drop_publisher_b, _drop_collector_b) = meter_channel(1);
+    let mut drop_runtime_b = EngineRuntime::new(
+        &drop_slot_b,
+        drop_retire_b,
+        drop_receiver_b,
+        drop_publisher_b,
+    );
+
+    // 预热（窗口外）：首份快照武装。
+    drop_runtime_a.process_quantum(&mut drop_output, 2);
+    drop_runtime_b.process_quantum(&mut drop_output, 2);
+
+    let (drop_a_alloc, drop_a_dealloc) = measure("meter queue 4096 (no drain)", || {
+        for _ in 0..DROP_QUANTA {
+            drop_runtime_a.process_quantum(&mut drop_output, 2);
+        }
+    });
+    let drop_baseline = drop_runtime_a.stats();
+    let (drop_b_alloc, drop_b_dealloc) = measure("meter queue 1 (no drain)", || {
+        for _ in 0..DROP_QUANTA {
+            drop_runtime_b.process_quantum(&mut drop_output, 2);
+        }
+    });
+    let drop_stats = drop_runtime_b.stats();
+    println!(
+        "[engine-12/J19] 电平满队列窗口: 大容量臂 2_000 量子 allocations={drop_a_alloc} \
+         deallocations={drop_a_dealloc} 本应发布帧数={}; 容量 1 臂 allocations={drop_b_alloc} \
+         deallocations={drop_b_dealloc} 写入={} 丢弃={} capacity_drops={}",
+        drop_baseline.meter_frames,
+        drop_stats.meter_frames,
+        drop_stats.meter_dropped_frames,
+        drop_stats.meter_capacity_drops
+    );
+    if drop_a_alloc != 0 || drop_a_dealloc != 0 {
+        failures.push(format!(
+            "大容量电平臂在实时窗口内分配/释放了内存: allocations={drop_a_alloc} \
+             deallocations={drop_a_dealloc}"
+        ));
+    }
+    if drop_b_alloc != 0 || drop_b_dealloc != 0 {
+        failures.push(format!(
+            "满队列电平臂在实时窗口内分配/释放了内存: allocations={drop_b_alloc} \
+             deallocations={drop_b_dealloc}（丢帧计数与新读数的读路径都在窗口里）"
+        ));
+    }
+    if drop_baseline.meter_dropped_frames != 0 {
+        failures.push(format!(
+            "大容量电平臂不该丢帧，实际 {} —— 读数会假警报",
+            drop_baseline.meter_dropped_frames
+        ));
+    }
+    if drop_stats.meter_dropped_frames == 0 {
+        failures.push(
+            "容量 1 + 不抽干的窗口里 `meter_dropped_frames` 仍是 0 —— 覆盖度不足（假绿）"
+                .to_owned(),
+        );
+    }
+    if drop_stats.meter_frames + drop_stats.meter_dropped_frames != drop_baseline.meter_frames {
+        failures.push(format!(
+            "本应发布的帧数必须等于 写入 + 丢弃：{} + {} ≠ {}",
+            drop_stats.meter_frames, drop_stats.meter_dropped_frames, drop_baseline.meter_frames
+        ));
+    }
+    if drop_stats.meter_capacity_drops != 0 {
+        failures.push(format!(
+            "SPSC 环满不该被记成批次容量不足: capacity_drops={}",
+            drop_stats.meter_capacity_drops
+        ));
+    }
+    if !drop_stats.is_meter_lagging() || !drop_stats.is_meter_lagging_since(&drop_baseline) {
+        failures.push("丢过帧 ⇒ `is_meter_lagging` / `is_meter_lagging_since` 必须为真".to_owned());
+    }
+    // 静止点上跨线程镜像必须带上这个字段（与权威读数逐字段相等）。
+    let drop_mirror = drop_runtime_b.stats_mirror().read();
+    if drop_mirror != drop_stats {
+        failures.push(format!(
+            "满队列臂的镜像与权威读数不一致：镜像 meter_dropped_frames={} 权威={}",
+            drop_mirror.meter_dropped_frames, drop_stats.meter_dropped_frames
+        ));
+    }
+
     println!(
         "[engine-sound/J5] 汇总: quanta={} scheduled_notes={} notes_triggered={} voice_steals={} \
          非零样本={nonzero} 峰值={peak:.6} filled(nonzero={filled_nonzero}, scheduled={}, triggered={})",
@@ -2370,7 +2496,9 @@ fn main() -> ExitCode {
              + 31 次等价重新武装 + 1 次换 IR + 换采样率时的拒绝路径 + 换回复武装 \
              + 2,000 量子 `EngineStats` 跨线程只读镜像（写者＝音频线程 / 读者＝控制线程），\
              实时窗口内零分配零释放（63 次快照交换同时见证 PDC 延迟读数：对齐 {want_alignment} / \
-             引擎输出 {want_output}）"
+             引擎输出 {want_output}）\
+             + 2 × 2,000 量子电平满队列窗口（容量 1 ⇒ 丢帧读数 meter_dropped_frames 在窗口内\
+             非零，且 写入 + 丢弃 == 本应发布帧数）"
         );
         ExitCode::SUCCESS
     } else {

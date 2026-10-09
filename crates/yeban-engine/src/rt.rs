@@ -180,6 +180,31 @@ pub struct EngineStats {
     /// 累计因电平容量耗尽而未计量/被淘汰的节点次数
     /// （发布批次放不下的轨道 + [`MeterBank`] 淘汰的槽）。
     pub meter_capacity_drops: u64,
+    /// 累计因电平 SPSC 队列满而**丢弃的帧数**（`= MeterPublisher::dropped()`；
+    /// 单调不减（饱和）；无重置）。
+    ///
+    /// 单位是**帧（条）**，不是"节点次"。它与 [`Self::meter_capacity_drops`] 是
+    /// **两个不同的失败面**：那个数的是"本量子的某一帧在**发布批次**里放不下"
+    /// （`SCRATCH_METERS` 装不下轨数，或 `MeterBank` 淘汰了槽），这个数的是
+    /// "批次放得下，但**SPSC 环**已经满了"（UI 侧没有按 60Hz 抽干）。
+    /// 合并成一个数会让"轨数超出临时缓冲"与"UI 落后到丢帧"在读数上无法区分。
+    ///
+    /// ⚠ [`Self::meter_frames`] 统计的是**真的写进队列**的帧数 ⇒ 本应发布的帧数
+    /// = `meter_frames + meter_dropped_frames`。两者之差就是"UI 没跟上"的精确条数
+    /// （等号判据见 `tests/meter_rt_contract.rs` 的 S8）。
+    ///
+    /// 为什么需要它：`MeterPublisher::dropped()` 一直被称为"可观测的健康指标"
+    /// （`crates/yeban-engine/src/meter.rs` 现位于第 199 行），但那个计数器住在
+    /// [`EngineRuntime`] 的**私有字段**（`meters`）里，而运行时归音频回调线程所有
+    /// （设备腿 = `yeban-app` 的默认运行形态）⇒ 控制面拿不到它。
+    /// `line/engine-meters` 的台账把这条登记为缺口（"`dropped` 没有接到 UI 告警"，
+    /// 该条现位于 `docs/ledger/engine-meters-notes.md` 第 309–310 行）。
+    /// 本字段把那个**已有的**计数器搬进 `EngineStats` 与跨线程只读镜像
+    /// （不新增第二份计数：读数是发布端自己的那一个）。
+    ///
+    /// **冷值 0**（与 `EngineStats::default()` 同值）：从来没有发生过丢帧
+    /// ⇒ 判据可以用 `> 0` 当"UI 落后过"的见证，而不必从音频输出反推。
+    pub meter_dropped_frames: u64,
     /// 本线程的 FTZ/DAZ 开关结果。
     pub ftz: Option<FtzDazOutcome>,
     /// 播放头已渲染的样本数（= 音频线程当前的绝对位置）。
@@ -466,6 +491,35 @@ impl EngineStats {
     #[must_use]
     pub const fn has_retire_backlog(&self) -> bool {
         self.retire_pending > 0
+    }
+
+    /// **"UI 落后到丢电平帧"的累计判定**：自进程开始以来，是否至少丢弃过一帧
+    /// （[`Self::meter_dropped_frames`] `> 0`）。
+    ///
+    /// 与 [`Self::is_snapshot_lagging`] **同一个形状**（累计、**粘滞**）：
+    /// `true` 的含义不是"此刻正在丢"，而是"本进程的 UI 至少落后过一次"。
+    /// 控制面要对"这一段采样窗口"提问时用 [`Self::is_meter_lagging_since`]。
+    #[must_use]
+    pub const fn is_meter_lagging(&self) -> bool {
+        self.meter_dropped_frames > 0
+    }
+
+    /// **自上次读取以来**丢弃的电平帧数（增量；饱和减法）。
+    ///
+    /// 语义：`self.meter_dropped_frames - previous.meter_dropped_frames`（读到更旧的
+    /// 基线时给出 `0` 而不是回绕）。控制面的 60Hz 循环每次读 `stats()` 时把上一帧留着，
+    /// 比较这个增量就能区分"很久以前丢过一帧"与"这 16.7 ms 正在丢"—— 降速/告警决策
+    /// 需要的是后者。
+    #[must_use]
+    pub const fn meter_dropped_since_last_read(&self, previous: &Self) -> u64 {
+        self.meter_dropped_frames
+            .saturating_sub(previous.meter_dropped_frames)
+    }
+
+    /// 采样窗口内的"UI 落后"判定：`self` 相对 `previous` 至少新丢了一帧。
+    #[must_use]
+    pub const fn is_meter_lagging_since(&self, previous: &Self) -> bool {
+        self.meter_dropped_since_last_read(previous) > 0
     }
 }
 
@@ -900,8 +954,10 @@ impl EngineRuntime {
     /// [`EngineStats::retire_pending`] / [`EngineStats::retire_drained`] /
     /// [`EngineStats::retire_pruned`]（退役回收的两条路径）、
     /// [`EngineStats::release_thread_is_main`] / [`EngineStats::foreign_drains`]
-    /// （"释放发生在哪个线程"）。判定见 [`EngineStats::is_snapshot_lagging`] 与
-    /// [`EngineStats::stash_events_since_last_read`]。
+    /// （"释放发生在哪个线程"）、以及电平 SPSC 的丢帧读数
+    /// [`EngineStats::meter_dropped_frames`]（"UI 有没有落后到丢帧"）。判定见
+    /// [`EngineStats::is_snapshot_lagging`] / [`EngineStats::stash_events_since_last_read`]
+    /// 与 [`EngineStats::is_meter_lagging`] / [`EngineStats::meter_dropped_since_last_read`]。
     ///
     /// ⚠ 本函数要 `&self` ⇒ 只有在**调用者就是音频线程**（或运行时尚未移走）时才能用。
     /// 运行时归 cpal 回调线程所有之后，控制面请读 [`Self::stats_mirror`]
@@ -919,6 +975,9 @@ impl EngineRuntime {
             meter_capacity_drops: self
                 .meter_capacity_drops
                 .saturating_add(self.bank.capacity_drops()),
+            // 不在这里重数一遍：读数就是发布端自己那一个计数器（`publish` 里
+            // `frames.len() - pushed` 的累计）。**零分配、零锁、零 I/O**：一次 `u64` 字段读。
+            meter_dropped_frames: self.meters.dropped(),
             ftz: self.ftz,
             rendered_samples: self.synth.position(),
             scheduled_notes: self.armed_scheduled_notes,
@@ -2209,6 +2268,111 @@ mod tests {
             collector,
             runtime,
         }
+    }
+
+    /// 指定**电平 SPSC 容量**的装配：容量 1 是"制造 UI 落后"的标准夹具
+    /// （一个量子要发"非母线轨 + 1"帧 ⇒ 控制面不抽干就必然丢帧）。
+    fn rig_with_meter_capacity(meter_capacity: usize) -> Rig {
+        let slot = SnapshotSlot::new(simple_snapshot(1));
+        let (retire, queue) = retire_channel(16);
+        let (sender, receiver) = event_channel(64);
+        let (publisher, collector) = meter_channel(meter_capacity);
+        let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        Rig {
+            slot,
+            queue,
+            sender,
+            collector,
+            runtime,
+        }
+    }
+
+    /// `[ARCH-UI-002]` **电平丢帧必须可读**，而且读数必须是"本应发布的帧数"的**精确分解**。
+    ///
+    /// 量什么：`meter_frames`（真的写进队列的帧数）与 `meter_dropped_frames`
+    /// （因 SPSC 环满而丢掉的帧数），单位都是**帧**。
+    ///
+    /// 为什么要两条臂：一条**大容量**的臂给出"本应发布的帧数"（`= 量子数 × 每量子帧数`），
+    /// 它是独立测出来的基线；另一条**容量 1** 的臂必须满足
+    /// `meter_frames + meter_dropped_frames == 基线` 这个**等号**。容量 1 的臂同时是
+    /// 覆盖度见证（`meter_dropped_frames > 0`）—— 否则"读数恒为 0"也能让等号成立（假绿）。
+    ///
+    /// 注入：把 `stats()` 的 `meter_dropped_frames` 写死成 `0`、或换成
+    /// `meter_capacity_drops`，本判据立刻变红（本票实测记录见报告）。
+    #[test]
+    fn meter_drops_are_readable_and_decompose_the_offered_frames_exactly() {
+        const QUANTA: usize = 32;
+        let mut output = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+
+        // 臂 A：容量足够 + 不抽干 ⇒ **零丢帧**（"读数不会假警报"的对照臂）。
+        let mut generous = rig_with_meter_capacity(4096);
+        for _ in 0..QUANTA {
+            generous.runtime.process_quantum(&mut output, 2);
+        }
+        let baseline = generous.runtime.stats();
+        assert_eq!(
+            baseline.meter_dropped_frames, 0,
+            "容量足够时不许丢帧（假警报会让这条读数失去意义）"
+        );
+        assert!(!baseline.is_meter_lagging());
+        assert!(
+            baseline.meter_frames > 0,
+            "覆盖度：窗口里必须真的发布了电平帧"
+        );
+        let offered = baseline.meter_frames;
+
+        // 臂 B：容量 1 + 不抽干 ⇒ 环持续满着，每量子都丢帧。
+        let mut starved = rig_with_meter_capacity(1);
+        for _ in 0..QUANTA {
+            starved.runtime.process_quantum(&mut output, 2);
+        }
+        let stats = starved.runtime.stats();
+        assert!(
+            stats.meter_dropped_frames > 0,
+            "容量 1 + 不抽干必须丢帧，实际 {}",
+            stats.meter_dropped_frames
+        );
+        assert_eq!(
+            stats.meter_frames + stats.meter_dropped_frames,
+            offered,
+            "本应发布的帧数 = 写进队列的帧数 + 丢掉的帧数（两者单位都是帧）"
+        );
+        assert!(stats.is_meter_lagging(), "丢过帧 ⇒ 粘滞判定为真");
+        // **两个失败面不是同一件事**：容量 1 的丢帧来自 SPSC 环满（发布批次放得下），
+        // 而 `meter_capacity_drops` 数的是"帧在发布批次里放不下 / MeterBank 淘汰槽"。
+        // 注入：把本字段接到 `meter_capacity_drops` ⇒ 这一条与上面那条等号同时红。
+        assert_eq!(
+            stats.meter_capacity_drops, 0,
+            "SPSC 环满**不是**批次容量不足（两个读数单位不同、来源不同）"
+        );
+        assert_eq!(
+            stats.meter_bulk_publishes, baseline.meter_bulk_publishes,
+            "两条臂的量子数相同 ⇒ 批量发布次数相同（丢帧不改变结构计数）"
+        );
+
+        // 增量判定：与更早的基线比。
+        let previous = EngineStats {
+            meter_dropped_frames: stats.meter_dropped_frames - 1,
+            ..EngineStats::default()
+        };
+        assert_eq!(stats.meter_dropped_since_last_read(&previous), 1);
+        assert!(stats.is_meter_lagging_since(&previous));
+        assert_eq!(stats.meter_dropped_since_last_read(&stats), 0);
+        assert!(!stats.is_meter_lagging_since(&stats));
+        // 读到更旧的基线 ⇒ 0（饱和减法，不回绕）。
+        let newer = EngineStats {
+            meter_dropped_frames: stats.meter_dropped_frames + 7,
+            ..EngineStats::default()
+        };
+        assert_eq!(stats.meter_dropped_since_last_read(&newer), 0);
+
+        // 跨线程只读镜像：静止点上与权威读数**逐字段相等**（新字段在镜像里也有位置）。
+        let mirror = starved.runtime.stats_mirror();
+        assert_eq!(
+            mirror.read(),
+            stats,
+            "镜像必须带上 meter_dropped_frames（一个字段一个原子量）"
+        );
     }
 
     /// `[ARCH-UI-002]` 弹道系数必须跟随**处理量子（128）**而不是**设备缓冲（项目声明的 block_size）**。

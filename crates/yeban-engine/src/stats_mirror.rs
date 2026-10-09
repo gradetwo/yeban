@@ -154,6 +154,7 @@ pub struct EngineStatsMirror {
     meter_frames: AtomicU64,
     meter_bulk_publishes: AtomicU64,
     meter_capacity_drops: AtomicU64,
+    meter_dropped_frames: AtomicU64,
     ftz: AtomicU8,
     rendered_samples: AtomicU64,
     scheduled_notes: AtomicU64,
@@ -212,6 +213,7 @@ impl EngineStatsMirror {
             meter_frames: AtomicU64::new(0),
             meter_bulk_publishes: AtomicU64::new(0),
             meter_capacity_drops: AtomicU64::new(0),
+            meter_dropped_frames: AtomicU64::new(0),
             ftz: AtomicU8::new(FTZ_NONE),
             rendered_samples: AtomicU64::new(0),
             scheduled_notes: AtomicU64::new(0),
@@ -278,6 +280,8 @@ impl EngineStatsMirror {
             .store(stats.meter_bulk_publishes, Ordering::Relaxed);
         self.meter_capacity_drops
             .store(stats.meter_capacity_drops, Ordering::Relaxed);
+        self.meter_dropped_frames
+            .store(stats.meter_dropped_frames, Ordering::Relaxed);
         self.ftz.store(encode_ftz(stats.ftz), Ordering::Relaxed);
         self.rendered_samples
             .store(stats.rendered_samples, Ordering::Relaxed);
@@ -377,6 +381,7 @@ impl EngineStatsMirror {
             meter_frames: self.meter_frames.load(Ordering::Relaxed),
             meter_bulk_publishes: self.meter_bulk_publishes.load(Ordering::Relaxed),
             meter_capacity_drops: self.meter_capacity_drops.load(Ordering::Relaxed),
+            meter_dropped_frames: self.meter_dropped_frames.load(Ordering::Relaxed),
             ftz: decode_ftz(self.ftz.load(Ordering::Relaxed)),
             rendered_samples: self.rendered_samples.load(Ordering::Relaxed),
             scheduled_notes: self.scheduled_notes.load(Ordering::Relaxed),
@@ -463,6 +468,7 @@ mod tests {
             meter_frames: 5,
             meter_bulk_publishes: 6,
             meter_capacity_drops: 7,
+            meter_dropped_frames: 8,
             ftz: Some(FtzDazOutcome::Unsupported),
             rendered_samples: 9,
             scheduled_notes: 10,

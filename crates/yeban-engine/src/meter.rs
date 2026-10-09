@@ -197,6 +197,10 @@ impl MeterPublisher {
     }
 
     /// 累计因队列满而丢弃的帧数（UI 若持续不抽，这个数字会上升 —— 可观测的健康指标）。
+    ///
+    /// ⚠ 本句柄归**音频线程**所有（`EngineRuntime` 的私有字段）⇒ 设备腿下控制面读不到它。
+    /// 引擎把**同一个**计数器转发进 [`crate::rt::EngineStats::meter_dropped_frames`]
+    /// （以及跨线程只读镜像），控制面因此不必拿到本句柄。
     #[must_use]
     pub const fn dropped(&self) -> u64 {
         self.dropped

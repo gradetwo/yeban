@@ -20,6 +20,7 @@
 //! | S5 | 满幅正弦 ⇒ 峰值 ≈ 0 dBFS；幅度单调；`NaN`/`Inf` 不产生 `NaN` | 删掉 `sanitize_sample` |
 //! | S6 | 队列溢出**可观测**：`dropped > 0` 且 UI 看到的 quantum 落后于生产者 | 把 dropped 计数删掉 |
 //! | S7 | `drain_latest` 抽干整批且自身零分配 | 在 collector 里分配临时 `Vec` |
+//! | S8 | 丢帧读数在**运行时路径**上可读（`EngineStats::meter_dropped_frames`），且 `meter_frames + dropped == 本应发布帧数`；两个臂的窗口都零分配 | 把 `stats()` 的该字段写死 `0`，或把它接到 `meter_capacity_drops` |
 //!
 //! 覆盖度自检（S1 末尾）：quanta / 帧数必须真的达到压测规模，避免"窗口里什么都没跑"的假绿。
 
@@ -149,6 +150,28 @@ fn engine_rig_with(
     let (retire, queue) = retire_channel(64);
     let (_sender, receiver) = event_channel(64);
     let (publisher, collector) = meter_channel(8192);
+    let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+    (slot, queue, collector, runtime)
+}
+
+/// 同 [`engine_rig`]，但**电平 SPSC 的容量**由调用方给定。
+///
+/// 容量 1 是"制造 UI 落后"的标准夹具：一个量子要发"非母线轨数 + 1"帧，
+/// 控制面不抽干 ⇒ 第二个量子起环就是满的 ⇒ 每量子都有帧被丢。
+fn engine_rig_with_meter_capacity(
+    meter_capacity: usize,
+) -> (
+    Arc<SnapshotSlot>,
+    yeban_engine::snapshot::RetireQueue,
+    MeterCollector,
+    EngineRuntime,
+) {
+    let snapshot =
+        EngineSnapshot::from_project(&yeban_model::samples::filled_project(), 1).expect("夹具快照");
+    let slot = SnapshotSlot::new(snapshot);
+    let (retire, queue) = retire_channel(64);
+    let (_sender, receiver) = event_channel(64);
+    let (publisher, collector) = meter_channel(meter_capacity);
     let runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
     (slot, queue, collector, runtime)
 }
@@ -409,6 +432,107 @@ fn scenario_ui_latest_wins_and_overflow_is_observable(report: &mut Report) {
     );
 }
 
+/// S8：**电平丢帧的读数**（`EngineStats::meter_dropped_frames`）在**完整运行时路径**上可读，
+/// 而且它是"本应发布的帧数"的精确分解。
+///
+/// 与 S6 的区别：S6 直接操作 `MeterPublisher`（**发布侧句柄在手**）；S8 走
+/// `EngineRuntime::process_quantum`，读数只从 `EngineStats` 出 —— 那才是设备腿的形态
+/// （`EngineRuntime` 归 cpal 回调线程所有，控制面只能读 `stats()` / 镜像）。
+///
+/// 两个测量臂：
+/// * **臂 A**（容量 4096、不抽干）⇒ 零丢帧，它给出独立的基线 `本应发布的帧数`；
+/// * **臂 B**（容量 1、不抽干）⇒ 必须丢帧（覆盖度见证），且
+///   `meter_frames + meter_dropped_frames == 基线`（**等号**，无容差）。
+///
+/// 两个臂的窗口都用 [`measure`] 包住 ⇒ "环满时的发布路径"仍然零分配、零释放。
+fn scenario_meter_drop_readout(report: &mut Report) {
+    const QUANTA: usize = 64;
+    let mut output = [0.0f32; 128 * 2];
+
+    // --- 臂 A：容量足够 ⇒ 零丢帧（"读数不假警报"的对照）---
+    let (_slot_a, _queue_a, _collector_a, mut generous) = engine_rig_with_meter_capacity(4096);
+    let counts = measure("S8a 容量 4096 不抽干", || {
+        for _ in 0..QUANTA {
+            generous.process_quantum(&mut output, 2);
+        }
+    });
+    report.expect_zero("S8a", counts);
+    let baseline = generous.stats();
+    report.check(
+        baseline.meter_dropped_frames == 0 && !baseline.is_meter_lagging(),
+        format!(
+            "S8 容量足够时不许报丢帧: meter_dropped_frames={} is_meter_lagging={}",
+            baseline.meter_dropped_frames,
+            baseline.is_meter_lagging()
+        ),
+    );
+    report.check(
+        baseline.meter_frames > 0,
+        "S8 覆盖度：窗口里必须真的发布了电平帧".to_owned(),
+    );
+
+    // --- 臂 B：容量 1 ⇒ 每量子丢帧 ---
+    let (_slot_b, _queue_b, _collector_b, mut starved) = engine_rig_with_meter_capacity(1);
+    let counts = measure("S8b 容量 1 不抽干", || {
+        for _ in 0..QUANTA {
+            starved.process_quantum(&mut output, 2);
+        }
+    });
+    report.expect_zero("S8b", counts);
+    let stats = starved.stats();
+    println!(
+        "[meter-rt] S8 丢帧读数: 基线的本应发布帧数={} 臂B写入={} 臂B丢弃={} \
+         capacity_drops={} quanta={}",
+        baseline.meter_frames,
+        stats.meter_frames,
+        stats.meter_dropped_frames,
+        stats.meter_capacity_drops,
+        stats.quanta
+    );
+    report.check(
+        stats.meter_dropped_frames > 0,
+        format!(
+            "S8 容量 1 + 不抽干必须丢帧, 实际 {}",
+            stats.meter_dropped_frames
+        ),
+    );
+    report.check(
+        stats.meter_frames + stats.meter_dropped_frames == baseline.meter_frames,
+        format!(
+            "S8 本应发布的帧数 = 写进队列 + 丢掉: {} + {} ≠ 基线 {}",
+            stats.meter_frames, stats.meter_dropped_frames, baseline.meter_frames
+        ),
+    );
+    // 两个失败面**不是**同一件事：SPSC 环满（发布批次放得下）与批次容量不足
+    // （`meter_capacity_drops`）在同一个窗口里必须能被分开读出来。
+    report.check(
+        stats.meter_capacity_drops == 0
+            && stats.meter_bulk_publishes == baseline.meter_bulk_publishes,
+        format!(
+            "S8 丢帧来自 SPSC 环满, 不是批次容量不足: capacity_drops={} bulk_publishes={}/{}",
+            stats.meter_capacity_drops, stats.meter_bulk_publishes, baseline.meter_bulk_publishes
+        ),
+    );
+    report.check(
+        stats.is_meter_lagging() && stats.is_meter_lagging_since(&baseline),
+        "S8 粘滞判定与增量判定都必须为真".to_owned(),
+    );
+    report.check(
+        stats.meter_dropped_since_last_read(&baseline) == stats.meter_dropped_frames
+            && stats.meter_dropped_since_last_read(&stats) == 0,
+        "S8 增量判定: 对更早基线给全量, 对自己的基线给 0".to_owned(),
+    );
+    // 设备腿形态：跨线程只读镜像必须带上这个字段（静止点上与权威读数逐字段相等）。
+    let mirror = starved.stats_mirror();
+    report.check(
+        mirror.read() == stats,
+        format!(
+            "S8 镜像必须与权威读数逐字段相等（含 meter_dropped_frames={}）",
+            stats.meter_dropped_frames
+        ),
+    );
+}
+
 /// S5 + S7：真峰值/RMS 口径（正弦/单调/NaN）+ `drain_latest` 自身零分配。
 fn scenario_real_levels_and_zero_alloc_consumer(report: &mut Report) {
     let node = EntityId::new();
@@ -479,6 +603,7 @@ fn main() -> ExitCode {
     scenario_publish_contract_per_quantum(&mut report);
     scenario_silence_is_finite(&mut report);
     scenario_ui_latest_wins_and_overflow_is_observable(&mut report);
+    scenario_meter_drop_readout(&mut report);
     scenario_real_levels_and_zero_alloc_consumer(&mut report);
 
     if report.failures.is_empty() {
