@@ -512,7 +512,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "create",
                 "boolean",
                 false,
-                "从零新建工程 (默认 false = 打开已存在的容器)。目标路径已存在 ⇒ `CONFLICT`, 绝不静默覆盖; 与 `readOnly:true` 同给 ⇒ `INVALID_PARAMETER_RANGE`",
+                "从零新建工程 (默认 false = 打开已存在的容器)。目标路径已存在 ⇒ `CONFLICT`, 绝不静默覆盖; 与 `readOnly:true` 同给 ⇒ `INVALID_PARAMETER_RANGE`; 不给它时再给 `title`/`bpm`/`timeSignature`/`seed` 里任何一个 ⇒ `INVALID_PARAMETER_RANGE` (`createOnlyParameter`, 绝不静默丢弃)",
             ),
             param(
                 "title",
@@ -525,6 +525,21 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "number",
                 false,
                 "`create:true` 时的速度 (BPM, 模型区间 20..=999; 缺省 120)",
+            ),
+            // `timeSignature` 是**可选**实参（缺省 = 模型默认 `4/4` = 逐字节等于旧行为）。
+            //
+            // 为什么必须有一条通路：`YebanProjectV1::time_signature` 是模型层一等字段，
+            // 且已经被四个地方消费 —— 本 crate 的 `section_build::ticks_per_bar`
+            // (配器段落长度)、`export_midi` (SMF 的拍号元事件)、`engine_state` (会话读数)、
+            // 以及宿主的 小节/时间码 投影。但模型 `Op` 全集里**没有**写它的变体，
+            // 因此模板层 (本工具) 是唯一的落点：接线之前，工具面建出来的工程恒为 `4/4`,
+            // 也就是说 `propose_section` 的 `bars`、SMF 的拍号与界面时间码都按一个
+            // 谁也设不了的值走。
+            param(
+                "timeSignature",
+                "string",
+                false,
+                "`create:true` 时的拍号, \"N/D\" 文本 (例 \"3/4\"、\"6/8\"; 缺省 4/4)。取值由模型层 `TimeSignature::validate` 判决: 分子 1..=32, 分母 ∈ {1,2,4,8,16,32}; 形状错误 ⇒ `INVALID_PARAMETER_RANGE`, 取值越界 ⇒ `OUT_OF_RANGE`。种子摆放的时值与 `yeban_propose_section` 的 `bars` 都按这个拍号算; 不给 `create` 时给它是 `INVALID_PARAMETER_RANGE` (`createOnlyParameter`)",
             ),
             param(
                 "seed",

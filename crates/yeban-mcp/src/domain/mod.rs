@@ -1624,6 +1624,16 @@ fn plan_redo(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     })
 }
 
+/// `yeban_open_project` 里**只对 `create: true` 有意义**的实参。
+///
+/// 没有 `create` 时给它们一律**响亮拒绝**（`INVALID_PARAMETER_RANGE` +
+/// `data.reason = "createOnlyParameter"`），绝不静默丢弃 —— 与
+/// `yeban_import_audio` 的 `placementWithoutTrack` 同一条纪律：调用方给了键，
+/// 就必须知道那个键到底被读了没有。"`timeSignature` 给了但没 `create` ⇒ 工程仍是 `4/4`"
+/// 正是这条纪律要拦住的那种"看起来有"。
+const CREATE_ONLY_PARAMS: [&str; 4] =
+    ["title", "bpm", project_create::TIME_SIGNATURE_PARAM, "seed"];
+
 /// `yeban_open_project`。
 ///
 /// 读盘一律走 [`store::load_project`]（**只接受 `.yeban` 容器**，`ADR-0001 D43`），
@@ -1640,6 +1650,25 @@ fn plan_open(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     // 而没有任何工具能建工程）。
     if arg_bool(call, "create", false) {
         return plan_create(domain, path, read_only, call);
+    }
+    // 只对 `create: true` 有意义的实参：在没有 `create` 时**响亮拒绝**，
+    // 而不是静默丢弃（`title` / `bpm` / `seed` 在加这条之前就是被静默忽略的）。
+    let create_only: Vec<&str> = CREATE_ONLY_PARAMS
+        .into_iter()
+        .filter(|name| call.arguments.contains_key(*name))
+        .collect();
+    if !create_only.is_empty() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{}` 只在 `create: true` 时有效 (本次是打开已有工程)",
+                create_only.join("`, `")
+            ),
+            serde_json::json!({
+                "reason": "createOnlyParameter",
+                "parameters": create_only,
+            }),
+        ));
     }
     let loaded = store::load_project(&path)?;
     let json = store::serialize_project(&loaded.project)?;
@@ -1731,6 +1760,7 @@ fn plan_create(
     let config = project_create::parse_config(
         call.arguments.get("title"),
         call.arguments.get("bpm"),
+        call.arguments.get(project_create::TIME_SIGNATURE_PARAM),
         seed.and_then(|seed| seed.get("trackCount")),
         seed.and_then(|seed| seed.get("clipName")),
         seed.and_then(|seed| seed.get("notes")),

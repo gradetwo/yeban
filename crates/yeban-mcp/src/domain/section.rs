@@ -37,8 +37,8 @@ use super::section_build::{BuildCode, BuildFault};
 use crate::tools::ErrorCode;
 
 pub use super::section_build::{
-    MAX_BARS, MAX_PARTS, NOTE_NAMES, NOTE_PITCH_CLASSES, Scale, SectionPlan, TICKS_PER_BAR_4_4,
-    available_presets, detect_cycle, mode_names, parse_scale, preset_parts, ticks_per_bar,
+    MAX_BARS, MAX_PARTS, NOTE_NAMES, NOTE_PITCH_CLASSES, Scale, SectionPlan, available_presets,
+    detect_cycle, mode_names, parse_scale, preset_parts, ticks_per_bar,
     unwired_for_section_op_kinds,
 };
 

@@ -102,9 +102,6 @@ use super::ids::deterministic_id;
 /// 小节数上限（超过即 `OUT_OF_RANGE`）。
 pub const MAX_BARS: u64 = 64;
 
-/// `4/4` 一小节的 tick 数（`960 PPQ`）—— 级联展开的时间跨度基准。
-pub const TICKS_PER_BAR_4_4: u64 = PPQ * 4;
-
 /// 每种风格预设的声部数上限（用于生成确定性音轨名）。
 ///
 /// 这是**本层的护栏**，不是 theory 的数字：`part_names` 目前只覆盖 3/4 声部，
@@ -569,6 +566,10 @@ fn shift_bytes(pitch: u8, offset: i16) -> u8 {
 }
 
 /// 每小节 tick 数（由工程拍号算出，`960 PPQ`）。
+///
+/// **这是"一小节多少 tick"的唯一算法**：配器段落的长度、`yeban_open_project`
+/// 的 `create:true` 种子摆放、`yeban_set_macro` 的级联跨度全部走它。
+/// 任何地方再写一次 `PPQ * 4` 就等于给 `3/4` 工程埋一条只对 `4/4` 成立的捷径。
 #[must_use]
 pub fn ticks_per_bar(project: &YebanProjectV1) -> u64 {
     let signature = project.time_signature;

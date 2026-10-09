@@ -3022,6 +3022,230 @@ fn create_seed_arguments_change_the_document() {
     );
 }
 
+/// `create: true` 的 `timeSignature` 真的改变产物，且**下游真的按它算**。
+///
+/// ## 缺口（实测，不是推测）
+///
+/// `YebanProjectV1::time_signature` 是模型层一等字段，四个地方在消费它
+/// （`section_build::ticks_per_bar` 的段落长度、SMF 的拍号元事件、会话读数、
+/// 宿主的时间码），但模型 `Op` 全集里**没有**写它的变体 ⇒ 模板层（`create`）
+/// 是唯一落点。在加这条实参之前，工具面建出来的工程**恒为 `4/4`**。
+///
+/// ## 这条判据的牙长在哪（四个独立读数）
+///
+/// 1. `create` 的响应 `seed.timeSignature` / `seed.ticksPerBar`（从**文档**算出的读数）；
+/// 2. 文档里那条种子摆放的时值 = 一小节 = `2880`（`3/4` 的 3 拍 × 960 PPQ；
+///    `4/4` 是 `3840`）—— 它由 `Op::AddClipPlacement` 的载荷**逐字节**决定，
+///    因此"写死 `PPQ * 4`"会在这里变红；
+/// 3. `yeban_propose_section` 的段落长度 = `bars × 2880`（配器与拍号共用同一个函数）；
+/// 4. SMF：共享映射编出的字节被 `yeban_midi::midi::parse_smf` 读回，
+///    conductor 轨上 tick 0 的拍号必须是 `(3, 4)`（`denominator_pow2 = 2`）。
+#[test]
+fn create_with_a_three_four_signature_reaches_the_seed_the_arrangement_and_the_smf() {
+    let scratch = Scratch::new("create-3-4");
+    // 三段各要一份**干净的会话**（`create` 对"已有另一个活跃工程"是 `CONFLICT`，
+    // 那是另一条判据的地盘，不该在这里被顺带触发）。名字 `dispatcher` 的绑定会遮蔽
+    // 同名工厂函数，因此它必须是**最后**一条。
+    let (mut plain_dispatcher, plain_auth) = dispatcher();
+    let (mut refusing_dispatcher, refusing_auth) = dispatcher();
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("waltz.yeban");
+
+    // ---- ① 建一个 3/4 工程 ----
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "Waltz",
+            "timeSignature": "3/4",
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["seed"]["timeSignature"],
+        json!({"numerator": 3, "denominator": 4}),
+        "响应必须如实回读文档里的拍号: {created}"
+    );
+    assert_eq!(
+        created["data"]["seed"]["ticksPerBar"],
+        json!(2_880),
+        "{created}"
+    );
+
+    // ---- ② 文档：拍号 + 种子摆放正好一小节 ----
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    assert_eq!(project.time_signature.numerator, 3);
+    assert_eq!(project.time_signature.denominator, 4);
+    let durations: Vec<u64> = project
+        .tracks
+        .values()
+        .flat_map(|track| {
+            track
+                .clips
+                .values()
+                .map(|placement| placement.duration_ticks)
+        })
+        .collect();
+    assert_eq!(durations, vec![2_880], "种子摆放必须正好一个 3/4 小节");
+
+    // ---- ③ 稀疏视图把拍号读回来（与实参无关的第二条读路径）----
+    let viewed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({ "fields": ["time_signature"] }),
+    );
+    assert_eq!(viewed["status"], "success", "{viewed}");
+    assert_eq!(
+        viewed["data"]["project"]["time_signature"],
+        json!({"numerator": 3, "denominator": 4}),
+        "{viewed}"
+    );
+
+    // ---- ④ 配器：段落长度按 3/4 算（2 小节 = 5760 tick）----
+    let proposed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Waltz", "stylePreset": "pop", "bars": 2 }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+    let section = &proposed["data"]["willCreate"]["sections"][0];
+    assert_eq!(section["startTick"], json!(0), "{proposed}");
+    assert_eq!(
+        section["endTick"],
+        json!(5_760),
+        "2 个 3/4 小节 = 2 × 2880: {proposed}"
+    );
+    let proposal_id = proposed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "merge Waltz" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let project = dispatcher.domain().active_project().expect("活跃工程");
+    let merged_section = project
+        .sections
+        .values()
+        .find(|candidate| candidate.name == "Waltz")
+        .expect("段落必须真的进文档");
+    assert_eq!(
+        merged_section.end_tick - merged_section.start_tick,
+        5_760,
+        "文档里的段落长度必须等于响应里的派生读数"
+    );
+
+    // ---- ⑤ SMF：拍号进 conductor 轨，且能读回 ----
+    let mapping = yeban_midi::export::export_from_project(project).expect("共享映射");
+    let bytes = mapping.to_smf_bytes().expect("SMF 编码");
+    let parsed = yeban_midi::midi::parse_smf(&bytes).expect("读回");
+    let conductor = parsed.tempos.first().expect("tick 0 的 tempo + 拍号");
+    assert_eq!(conductor.tick, 0);
+    assert_eq!(conductor.numerator, Some(3), "拍号分子必须是 3");
+    assert_eq!(
+        conductor.denominator_pow2,
+        Some(2),
+        "分母 4 = 2^2（SMF 的 dd 字段）"
+    );
+    // 工具面自己也必须能导出（同一份映射，`extension_tools` 已钉住逐字节相等）。
+    let exported = call(&mut dispatcher, &auth, "yeban_export_midi", json!({}));
+    assert_eq!(exported["status"], "success", "{exported}");
+
+    // ---- ⑥ 缺省路径仍是 4/4（逐字节等于接线之前）----
+    let plain = scratch.join("plain.yeban");
+    let default_created = call(
+        &mut plain_dispatcher,
+        &plain_auth,
+        "yeban_open_project",
+        json!({ "path": plain.display().to_string(), "create": true, "title": "Plain" }),
+    );
+    assert_eq!(default_created["status"], "success", "{default_created}");
+    assert_eq!(
+        default_created["data"]["seed"]["timeSignature"],
+        json!({"numerator": 4, "denominator": 4})
+    );
+    assert_eq!(default_created["data"]["seed"]["ticksPerBar"], json!(3_840));
+
+    // ---- ⑦ 越界拍号：响亮拒绝，且**一个字节都不写** ----
+    let rejected = scratch.join("refused.yeban");
+    let (status, outcome) = call_raw(
+        &mut refusing_dispatcher,
+        &refusing_auth,
+        "yeban_open_project",
+        json!({
+            "path": rejected.display().to_string(),
+            "create": true,
+            "timeSignature": "4/5",
+        }),
+    );
+    assert_eq!(status, 200, "领域失败必须走带内 ToolResponse");
+    let refused = outcome.expect("带内 ToolResponse");
+    assert_domain_error(&refused, "OUT_OF_RANGE", "分母 5 不在模型集合里");
+    assert!(
+        !rejected.exists(),
+        "被拒的请求不得留下任何文件: {}",
+        rejected.display()
+    );
+}
+
+/// **只对 `create: true` 有意义**的实参，在没有 `create` 时**响亮拒绝**，绝不静默丢弃。
+///
+/// 为什么这条必须存在：四个键（`title` / `bpm` / `timeSignature` / `seed`）都是
+/// "模板层"的东西，打开已有工程时它们一个字节也改不了。若静默忽略，调用方会得到
+/// `success`，却以为 `timeSignature: "3/4"` 生效了 —— 那正是本 crate 反复立过的
+/// 纪律要拦住的事（`yeban_import_audio` 的 `placementWithoutTrack` 是同一款处置）。
+#[test]
+fn create_only_arguments_are_refused_when_create_is_absent() {
+    let scratch = Scratch::new("create-only");
+    let (path, _bytes) = scratch.write_project("existing.yeban");
+
+    for (name, value) in [
+        ("title", json!("Nope")),
+        ("bpm", json!(96.0)),
+        ("timeSignature", json!("3/4")),
+        ("seed", json!({"trackCount": 2})),
+    ] {
+        let (mut dispatcher, auth) = dispatcher();
+        let mut arguments = json!({ "path": path.display().to_string() });
+        arguments[name] = value;
+        let refused = call(&mut dispatcher, &auth, "yeban_open_project", arguments);
+        assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", name);
+        assert_eq!(
+            refused["error"]["data"]["reason"],
+            json!("createOnlyParameter"),
+            "`{name}` 必须报出机器可读的理由: {refused}"
+        );
+        assert_eq!(
+            refused["error"]["data"]["parameters"],
+            json!([name]),
+            "被拒的键必须逐个列出: {refused}"
+        );
+        assert!(
+            dispatcher.domain().active_project().is_none(),
+            "`{name}`: 被拒的请求不得打开任何工程"
+        );
+    }
+
+    // 对照组：同样的工程、不带那四个键 ⇒ 正常打开（证明上面红的是"多给了键"）。
+    let (mut dispatcher, auth) = dispatcher();
+    let opened = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(opened["status"], "success", "{opened}");
+    assert_eq!(opened["data"]["opened"], true, "{opened}");
+}
+
 /// 建工程与既有幂等层的行为一致：同一个非空 `idempotencyKey` 只建**一次**
 /// （第二次拿到 `replayed: true` 信封 + 首次的载荷），文件字节一位不改。
 ///

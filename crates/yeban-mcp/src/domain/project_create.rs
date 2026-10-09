@@ -34,12 +34,13 @@
 //!
 //! ```text
 //! master_bus_track_id = deterministic_id("project:{title}:master")
+//! time_signature      = 实参 timeSignature (缺省 4/4)   ← 只在这里能设
 //! tracks[master]      = TrackV3 { kind: Master, name: "Master" }
 //! routing_graph.nodes = [master]                     ← 主总线**已在图里**
 //! routing_graph.edges = []                           ← 还没有任何声部
 //! tracks[track-0]     = TrackV3 { kind: Midi, name: "Track 1" }
 //! clip_pool[clip-0]   = ClipContent::Midi { 4 个音符 (C4 D4 E4 G4, 各 1 拍) }
-//! tracks[track-0].clips[placement-0] = 起点 0, 时值 1 小节
+//! tracks[track-0].clips[placement-0] = 起点 0, 时值 1 小节 (由拍号算出: 4/4 = 3840, 3/4 = 2880)
 //! routing_graph.edges[edge-0] = track-0 → master (TrackToBus)
 //! ```
 //!
@@ -71,6 +72,18 @@
 //!   （只读地新建一个文件是自相矛盾的要求）；
 //! - 落盘仍走**唯一**入口 `store::write_project_atomic`（同目录临时文件 + `fsync` +
 //!   `rename`，`ARCH-SEC-004`），本模块不自己拼 ZIP、也不自己写盘。
+//!
+//! ## 拍号（`arguments.timeSignature`）：模板字段里最后一个"谁也设不了"的值
+//!
+//! `YebanProjectV1::time_signature` 是模型层一等字段，`validate()` 真的判它，
+//! 而且**已有四个消费者**：本 crate 的 `section_build::ticks_per_bar`（配器段落长度）、
+//! `export_midi`（SMF 的拍号元事件）、`engine_state`（会话读数）、以及宿主的
+//! 小节/时间码投影。但模型 `Op` 全集里**没有**写它的变体 ⇒ 模板层（本模块）是唯一
+//! 的落点，而在加 [`TIME_SIGNATURE_PARAM`] 之前，工具面建出来的工程**恒为 `4/4`**。
+//!
+//! 因此本模块同时修掉一处同族缺陷：种子摆放的"一小节"不再写死 `PPQ * 4`，而是走
+//! [`super::section_build::ticks_per_bar`] —— 那是"每小节多少 tick"的**唯一**算法。
+//! 缺省路径（不给 `timeSignature`）在 `4/4` 下逐字节等于接线之前的行为。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -78,7 +91,7 @@ use std::path::Path;
 use serde_json::Value;
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, RoutingEdge,
-    RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
+    RoutingGraph, RoutingKind, TimeSignature, TrackKind, TrackV3, YebanProjectV1,
 };
 
 use super::error::Fault;
@@ -101,6 +114,15 @@ pub const MAX_TRACK_COUNT: u64 = section_build::MAX_PARTS as u64;
 /// 默认种子音符：`(音高, 时值 tick)` —— C4 D4 E4 G4，各 1 拍（960 PPQ）。
 pub const DEFAULT_SEED_NOTES: [(u8, u64); 4] = [(60, 960), (62, 960), (64, 960), (67, 960)];
 
+/// `create: true` 时的**拍号**实参名（`arguments.timeSignature`，可选；缺省 = `4/4`）。
+///
+/// 为什么必须在这里给一条通路：`YebanProjectV1::time_signature` 是模型层的一等字段，
+/// 而 `Op` 全集里**没有**写它的变体 —— 因此本模块的模板层是**唯一**能把它落进文档的
+/// 地方。缺了这条参数，工具面建出来的每一个工程都只能是 `4/4`：段落长度
+/// （本 crate 的 `section_build::ticks_per_bar`）、SMF 的拍号元事件（`export_midi`）
+/// 与宿主的时间码全部按一个谁也设不了的值走。
+pub const TIME_SIGNATURE_PARAM: &str = "timeSignature";
+
 /// `create: true` 时的**可选最小内容**。
 ///
 /// 全部字段都有默认值 ⇒ `create: true` 单独给就足以产出"可渲染、可配器"的工程。
@@ -110,6 +132,11 @@ pub struct CreateConfig {
     pub title: String,
     /// 速度（BPM）。`None` ⇒ 模型默认 120。
     pub bpm: Option<f64>,
+    /// 拍号（缺省 `4/4` = 模型默认）。
+    ///
+    /// 与 `bpm` 同一条口径：它是**顶层文档字段**，模型 `Op` 全集写不了它，
+    /// 因此只能由模板定型（见 [`TIME_SIGNATURE_PARAM`] 的文档）。
+    pub time_signature: TimeSignature,
     /// MIDI 轨道数（`1..=MAX_TRACK_COUNT`，默认 1）。
     pub track_count: u64,
     /// 第一个片段的名字（默认 `Motif`）。
@@ -123,6 +150,7 @@ impl Default for CreateConfig {
         Self {
             title: String::new(),
             bpm: None,
+            time_signature: TimeSignature::default(),
             track_count: DEFAULT_TRACK_COUNT,
             clip_name: "Motif".to_owned(),
             notes: DEFAULT_SEED_NOTES.to_vec(),
@@ -142,6 +170,64 @@ pub struct CreatedProject {
     pub ops: Vec<Op>,
 }
 
+/// 解析 `"N/D"` 形状的拍号文本（`arguments.timeSignature`，可选；缺省 = 模型默认 `4/4`）。
+///
+/// ## 为什么是文本而不是对象
+///
+/// 模型把拍号序列化成 `{numerator, denominator}`，但实参面已经有一条"人写的文本"
+/// 先例（`yeban_propose_section` 的 `scale`），拍号同理：`"3/4"` 比一个两键对象更难写错，
+/// 且 `4/4` / `6/8` 正是乐手写拍号的方式。
+///
+/// ## 两类失败用两个码（形状 ≠ 取值）
+///
+/// - **形状**错误（不是字符串 / 没有 `/` / 任一侧不是十进制整数（**不含**空白、
+///   符号或小数点））⇒ [`ErrorCode::InvalidParameterRange`]；
+/// - **取值**越界 ⇒ [`ErrorCode::OutOfRange`]。判定它的**唯一**入口是模型层的
+///   [`TimeSignature::validate`]（`code_for_model` 已把它映到 `OUT_OF_RANGE`）：
+///   本层**不复制**那张"分子 `1..=32` / 分母 `{1,2,4,8,16,32}`"的表，
+///   否则它就会成为第二份会漂移的真相。
+pub fn parse_time_signature(value: Option<&Value>) -> Result<TimeSignature, Fault> {
+    let Some(value) = value else {
+        return Ok(TimeSignature::default());
+    };
+    let text = value
+        .as_str()
+        .ok_or_else(|| invalid("`timeSignature` 必须是 \"N/D\" 形状的字符串 (例: \"3/4\")"))?;
+    let (numerator, denominator) = text.split_once('/').ok_or_else(|| {
+        invalid(&format!(
+            "`timeSignature` 必须是 \"N/D\" 形状的字符串, 实际 `{text}`"
+        ))
+    })?;
+    let signature = TimeSignature {
+        numerator: time_signature_part(numerator, "分子")?,
+        denominator: time_signature_part(denominator, "分母")?,
+    };
+    signature
+        .validate()
+        .map_err(|error| super::error::from_model("拍号校验", &error))?;
+    Ok(signature)
+}
+
+/// 拍号的一半：十进制整数，且装得进 `u8`。
+///
+/// 装不进 `u8` 是**取值**失败（`OUT_OF_RANGE`）而不是形状失败 —— `"300/4"` 与
+/// `"33/4"` 是同一类错误（数值超出模型允许的集合），不该因为"进制解析器表示不了"
+/// 就换一个错误码。
+fn time_signature_part(text: &str, label: &str) -> Result<u8, Fault> {
+    let raw = text.parse::<u64>().map_err(|_| {
+        invalid(&format!(
+            "`timeSignature` 的{label}必须是十进制整数, 实际 `{text}`"
+        ))
+    })?;
+    u8::try_from(raw).map_err(|_| {
+        Fault::domain_with_data(
+            ErrorCode::OutOfRange,
+            format!("`timeSignature` 的{label}超出 8 位无符号整数范围: {raw}"),
+            serde_json::json!({ "component": label, "value": raw }),
+        )
+    })
+}
+
 /// 解析 `create: true` 的可选实参。
 ///
 /// # Errors
@@ -152,10 +238,13 @@ pub struct CreatedProject {
 ///   （与模型 [`yeban_model::error::ModelError::BpmOutOfRange`] 同一条边界，
 ///   在这里提前拒绝，避免写下一份 `validate()` 会拒的文档）；
 /// - `trackCount` 不在 `1..=MAX_TRACK_COUNT` ⇒ `INVALID_PARAMETER_RANGE`；
-/// - `notes` 的任一条目形状非法、音高越界、时值为 0 ⇒ `INVALID_PARAMETER_RANGE`。
+/// - `notes` 的任一条目形状非法、音高越界、时值为 0 ⇒ `INVALID_PARAMETER_RANGE`；
+/// - `timeSignature` 的形状非法 ⇒ `INVALID_PARAMETER_RANGE`、取值越界 ⇒
+///   `OUT_OF_RANGE`（两种处置的分界见 [`parse_time_signature`]）。
 pub fn parse_config(
     title: Option<&Value>,
     bpm: Option<&Value>,
+    time_signature: Option<&Value>,
     track_count: Option<&Value>,
     clip_name: Option<&Value>,
     notes: Option<&Value>,
@@ -182,6 +271,7 @@ pub fn parse_config(
         }
         config.bpm = Some(bpm);
     }
+    config.time_signature = parse_time_signature(time_signature)?;
     if let Some(value) = track_count {
         let count = value
             .as_u64()
@@ -261,6 +351,9 @@ pub fn build(config: &CreateConfig, path: &Path) -> Result<CreatedProject, Fault
     if let Some(bpm) = config.bpm {
         project.bpm = bpm;
     }
+    // 拍号：与 `bpm` 同一条口径 —— 顶层文档字段由**模板**定型（模型 `Op` 全集没有
+    // 写 `time_signature` 的变体，见 `TIME_SIGNATURE_PARAM` 的文档）。
+    project.time_signature = config.time_signature;
     project.master_bus_track_id = master_id;
     project.tracks.insert(
         master_id,
@@ -278,7 +371,10 @@ pub fn build(config: &CreateConfig, path: &Path) -> Result<CreatedProject, Fault
 
     // 2. 内容（**真的走 `Op`**，因此模型层的前置条件与自校验都真的被跑过）。
     let mut ops: Vec<Op> = Vec::new();
-    let bar_ticks = PPQ.saturating_mul(4);
+    // 种子摆放的"一小节"由**工程的拍号**算出，走与配器段落长度**同一个**函数
+    // （`section_build::ticks_per_bar`）。早先这里写死 `PPQ * 4`，那只对 `4/4` 成立
+    // —— 一旦拍号可设，写死的那条就是同一份"每小节多少 tick"的第二份算法。
+    let bar_ticks = section_build::ticks_per_bar(&project);
     let mut track_ids: Vec<EntityId> = Vec::new();
     for index in 0..config.track_count {
         let track_id = deterministic_id(&format!("project:{label}:track:{index}"));
@@ -383,6 +479,13 @@ pub fn seed_summary(created: &CreatedProject) -> Value {
         "clipPoolCount": created.project.clip_pool.len(),
         "noteCount": notes,
         "placementCount": placements,
+        // 拍号与"一小节多少 tick"：两者都**从文档读**（不是回抄实参），
+        // 而 `ticksPerBar` 与段落长度共用同一个函数 ⇒ 调用方不必自己算拍号算术。
+        "timeSignature": {
+            "numerator": created.project.time_signature.numerator,
+            "denominator": created.project.time_signature.denominator,
+        },
+        "ticksPerBar": section_build::ticks_per_bar(&created.project),
         "opKinds": created.ops.iter().map(Op::name).collect::<Vec<_>>(),
         "renderReady": notes > 0,
         "specId": SPEC_ID,
@@ -502,19 +605,27 @@ mod tests {
 
     #[test]
     fn out_of_range_parameters_are_rejected_with_the_existing_code() {
-        let too_fast = parse_config(None, Some(&serde_json::json!(5000.0)), None, None, None)
-            .expect_err("越界 BPM 必须被拒");
+        let too_fast = parse_config(
+            None,
+            Some(&serde_json::json!(5000.0)),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("越界 BPM 必须被拒");
         assert_eq!(
             too_fast.domain_code(),
             Some(ErrorCode::InvalidParameterRange)
         );
-        let zero_tracks = parse_config(None, None, Some(&serde_json::json!(0)), None, None)
+        let zero_tracks = parse_config(None, None, None, Some(&serde_json::json!(0)), None, None)
             .expect_err("0 轨必须被拒");
         assert_eq!(
             zero_tracks.domain_code(),
             Some(ErrorCode::InvalidParameterRange)
         );
         let bad_note = parse_config(
+            None,
             None,
             None,
             None,
@@ -527,6 +638,7 @@ mod tests {
             Some(ErrorCode::InvalidParameterRange)
         );
         let zero_duration = parse_config(
+            None,
             None,
             None,
             None,
@@ -552,5 +664,115 @@ mod tests {
         assert_eq!(summary["trackCount"], serde_json::json!(2));
         assert_eq!(summary["noteCount"], serde_json::json!(4));
         assert_eq!(summary["routingEdgeCount"], serde_json::json!(1));
+        // 两个新读数都是**从文档**算出来的（缺省 = 4/4 ⇒ 3840 tick 一小节）。
+        assert_eq!(
+            summary["timeSignature"],
+            serde_json::json!({"numerator": 4, "denominator": 4})
+        );
+        assert_eq!(summary["ticksPerBar"], serde_json::json!(3_840));
+    }
+
+    /// 不给 `timeSignature` ⇒ 逐字节等于接线之前：文档 `4/4`、种子摆放正好 3840 tick。
+    #[test]
+    fn the_default_time_signature_keeps_the_seed_bar_at_four_four() {
+        assert_eq!(
+            parse_time_signature(None).expect("缺省"),
+            TimeSignature::default()
+        );
+        let created = build(&CreateConfig::default(), &path()).expect("建工程");
+        assert_eq!(created.project.time_signature.numerator, 4);
+        assert_eq!(created.project.time_signature.denominator, 4);
+        assert_eq!(section_build::ticks_per_bar(&created.project), 3_840);
+        let durations: Vec<u64> = created
+            .project
+            .tracks
+            .values()
+            .flat_map(|track| {
+                track
+                    .clips
+                    .values()
+                    .map(|placement| placement.duration_ticks)
+            })
+            .collect();
+        assert_eq!(durations, vec![3_840], "缺省路径必须逐字节等于接线之前");
+    }
+
+    /// `3/4` 真的落进文档，并且**真的**改变了"一小节"的两种落点：
+    /// 种子摆放的时值（构造期写进 `Op`）与配器段落长度（同一个 `ticks_per_bar`）。
+    #[test]
+    fn time_signature_lands_in_the_document_and_drives_the_seed_bar_length() {
+        let parsed = parse_time_signature(Some(&serde_json::json!("3/4"))).expect("3/4");
+        assert_eq!(parsed.numerator, 3);
+        assert_eq!(parsed.denominator, 4);
+        let created = build(
+            &CreateConfig {
+                time_signature: parsed,
+                ..CreateConfig::default()
+            },
+            &path(),
+        )
+        .expect("建工程");
+        assert_eq!(created.project.time_signature, parsed, "文档必须带上拍号");
+        // 独立事实源：这是段落长度与摆放长度共用的**唯一**算法。
+        let bar = section_build::ticks_per_bar(&created.project);
+        assert_eq!(bar, 2_880, "960 PPQ 的 3/4 一小节 = 3 拍 × 960");
+        assert_ne!(bar, 3_840, "必须不是写死的 4/4 一小节");
+        let durations: Vec<u64> = created
+            .project
+            .tracks
+            .values()
+            .flat_map(|track| {
+                track
+                    .clips
+                    .values()
+                    .map(|placement| placement.duration_ticks)
+            })
+            .collect();
+        assert_eq!(durations, vec![bar], "种子摆放必须正好一小节");
+        let summary = seed_summary(&created);
+        assert_eq!(
+            summary["timeSignature"],
+            serde_json::json!({"numerator": 3, "denominator": 4})
+        );
+        assert_eq!(summary["ticksPerBar"], serde_json::json!(2_880));
+        created.project.validate().expect("自校验");
+    }
+
+    /// 两类失败用两个码：**形状**错误 ⇒ `INVALID_PARAMETER_RANGE`，
+    /// **取值**越界 ⇒ `OUT_OF_RANGE`（后者由模型层 `TimeSignature::validate` 判决）。
+    #[test]
+    fn time_signature_shape_and_range_failures_use_distinct_codes() {
+        for bad in [
+            serde_json::json!(3),
+            serde_json::json!(null),
+            serde_json::json!({"numerator": 3, "denominator": 4}),
+            serde_json::json!("3"),
+            serde_json::json!("three/four"),
+            serde_json::json!("3/4/5"),
+            serde_json::json!("3 / 4"),
+        ] {
+            let fault = parse_time_signature(Some(&bad)).expect_err(&format!("形状错误: {bad}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "形状错误必须报 INVALID_PARAMETER_RANGE: {bad}"
+            );
+        }
+        for bad in [
+            serde_json::json!("0/4"),
+            serde_json::json!("33/4"),
+            serde_json::json!("4/0"),
+            serde_json::json!("4/3"),
+            serde_json::json!("4/5"),
+            serde_json::json!("300/4"),
+            serde_json::json!("4/400"),
+        ] {
+            let fault = parse_time_signature(Some(&bad)).expect_err(&format!("取值越界: {bad}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::OutOfRange),
+                "取值越界必须报 OUT_OF_RANGE: {bad}"
+            );
+        }
     }
 }
