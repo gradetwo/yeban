@@ -1647,6 +1647,12 @@ impl YebanProjectV1 {
     /// `folder_id` 有指向、音轨/片段/资产/路由图各自合法、
     /// 摆放引用的片段存在于片段池。
     ///
+    /// 另有一条**跨集合**一致性（本判据的下半部分）：
+    /// [`RoutingGraph::nodes`](RoutingGraph::nodes) 必须够得着唯一声学出口 ——
+    /// 有音轨时 [`YebanProjectV1::master_bus_track_id`] 必须在 `nodes` 里；
+    /// 没有音轨时主总线身份必须是 nil 且 `nodes` 必须为空
+    /// （空工程里任何节点身份都悬空）。理由见 `validate` 函数体内那段注释。
+    ///
     /// # Errors
     ///
     /// 违反上述任一条件即返回对应的 [`ModelError`]。
@@ -1744,6 +1750,36 @@ impl YebanProjectV1 {
         }
 
         self.routing_graph.validate()?;
+
+        // 主总线必须**够得着**：把主总线身份放进 `routing_graph.nodes`
+        // [MODEL-AST-004, ROAD-M1-002]。
+        //
+        // `RoutingGraph` 是唯一声学真理源，而"主总线是唯一声学出口"这件事只有
+        // 主总线出现在节点集合里才成立：图的下游消费者（`yeban-engine` 的
+        // `PdcPlan::compute`）以"主总线在 `nodes` 里"为**前置条件**，不满足就直接
+        // 报 `PdcError::UnknownMaster`，一个块都不渲染。在本条判据出现之前，
+        // 模型对"有音轨、但主总线不在 `nodes` 里"的文档**照单全收**（`validate()`
+        // 返回 `Ok`）—— 模型说合法、引擎说不可渲染，同一份文档在两个消费者眼里
+        // 是两件事，且读文件时看不见。按 [ADR-0001 D43] 的"让损坏的文件响亮失败"
+        // 口径，这是必须拒绝的自相矛盾输入。
+        //
+        // 空工程一侧是它的对偶：没有音轨时主总线身份必须是 nil（上面那条
+        // `TrackNotFound` 已经管住），此时**任何**节点身份都不可能对应一份存在的
+        // 音轨，因此 `nodes` 必须为空。默认工程恰好取这一支。
+        //
+        // 错误码复用 `RoutingNodeNotFound`（主总线身份就是它在图里该有的那一个
+        // 节点身份），理由与 `line/model-automation` 的 N5 相同：新增 `ModelError`
+        // 变体会牵动 `yeban-mcp` 的 `code_for_model` 穷举 match 与契约码表，
+        // 那是**另一条线**的范围。
+        if self.tracks.is_empty() {
+            if let Some(node) = self.routing_graph.nodes.first() {
+                return Err(ModelError::RoutingNodeNotFound { id: *node });
+            }
+        } else if !self.routing_graph.nodes.contains(&self.master_bus_track_id) {
+            return Err(ModelError::RoutingNodeNotFound {
+                id: self.master_bus_track_id,
+            });
+        }
         Ok(())
     }
 
@@ -2219,6 +2255,69 @@ mod tests {
         );
     }
 
+    /// 主总线必须出现在 `routing_graph.nodes` 里 —— 两个方向各一条。
+    ///
+    /// 与 `routing_graph_rejects_dangling_endpoints_and_duplicate_nodes` 的分工：
+    /// 那一条问的是**单张图内部**自洽（边的两端必须在 `nodes` 里）；本判据问的是
+    /// **跨集合**自洽（唯一声学出口必须够得着）。图自己的 `validate()` 结构上问不出
+    /// 后者 —— 它看不到 `tracks` 与 `master_bus_track_id`。
+    ///
+    /// 下游证据：`crates/yeban-engine/src/graph.rs` 的 `PdcPlan::compute` 以"主总线在
+    /// `nodes` 里"为前置条件，否则 `PdcError::UnknownMaster`。
+    #[test]
+    fn master_bus_track_must_be_reachable_in_the_routing_graph() {
+        let master_id = fixture_id(3);
+        let mut project = YebanProjectV1 {
+            tracks: BTreeMap::from([(master_id, master_track(master_id))]),
+            master_bus_track_id: master_id,
+            ..YebanProjectV1::default()
+        };
+        // 没有 `nodes` 时引擎拒绝渲染；模型必须与它同口径。
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::RoutingNodeNotFound { id: master_id }),
+            "主总线不在 routing_graph.nodes 里必须被拒绝 (下游 PdcPlan::compute 会报 UnknownMaster)"
+        );
+
+        project.routing_graph.nodes = vec![master_id];
+        assert_eq!(
+            project.validate(),
+            Ok(()),
+            "把主总线放进 nodes 之后必须合法"
+        );
+
+        // 可经操作日志达成的形态：`RemoveTrack` 不会回收节点身份 —— 被移走的那条
+        // 音轨在 `nodes` 里留下的是一条悬空身份（本判据只钉主总线这一条，悬空
+        // 非主总线节点的口径未在本条裁决）。
+        let lead_id = fixture_id(4);
+        project
+            .insert_track(midi_track(lead_id))
+            .expect("插入一条 MIDI 轨");
+        project.routing_graph.nodes = vec![master_id, lead_id];
+        assert_eq!(project.validate(), Ok(()));
+        let removed = project.remove_track(&lead_id).expect("被插入的轨必须存在");
+        assert_eq!(removed.id, lead_id);
+        assert_eq!(
+            project.routing_graph.nodes,
+            vec![master_id, lead_id],
+            "RemoveTrack 不动 routing_graph.nodes"
+        );
+    }
+
+    /// 空工程一侧：任何节点身份都不可能对应存在的音轨 ⇒ 必须为空。
+    #[test]
+    fn an_empty_project_may_not_declare_routing_nodes() {
+        let ghost = fixture_id(77);
+        let mut project = YebanProjectV1::default();
+        assert_eq!(project.validate(), Ok(()));
+        project.routing_graph.nodes = vec![ghost];
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::RoutingNodeNotFound { id: ghost }),
+            "0 轨工程声明节点身份必须被拒绝 (没有任何音轨能拥有它)"
+        );
+    }
+
     #[test]
     fn duplicate_routing_edge_in_json_is_rejected() {
         let node_a = fixture_id(1);
@@ -2359,6 +2458,12 @@ mod tests {
                 (track_id, midi_track(track_id)),
             ]),
             master_bus_track_id: master_id,
+            // 主总线必须在 `nodes` 里，否则 `validate()` 会按"够不着唯一声学出口"拒绝
+            // （本条判据末尾就断言了 `validate() == Ok`）。
+            routing_graph: RoutingGraph {
+                nodes: vec![master_id],
+                edges: BTreeMap::new(),
+            },
             ..YebanProjectV1::default()
         };
         project
