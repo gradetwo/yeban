@@ -130,6 +130,12 @@ where
 /// **不可回退的源**（`is_seekable() == false`）会先被整份读进内存，再当成可回退的源
 /// 解码。理由与代价见下面的注释；上限就是调用方的 [`PcmBudget::max_input_bytes`]。
 ///
+/// 第五道闸门（输入容器字节）由本函数**自己**对每个源判一次：凡是 [`MediaSource::byte_len`]
+/// 报得出长度的源，超预算都在探测之前返回 [`LimitViolation::InputTooLarge`]。
+/// [`decode_path`] / [`decode_bytes`] / [`decode_reader`] 在调用本函数之前已经对同一个数字
+/// 判过一次（因此对它们是一个恒真的重复判定），但本函数是**公共**入口 ——
+/// 直接调用它的调用方不会经过那三次预检。
+///
 /// # Errors
 ///
 /// 见 [`DecodeError`]。
@@ -161,6 +167,18 @@ pub fn decode_source<'s>(
         let bytes = slurp_unseekable(&mut *source, options.budget.max_input_bytes)?;
         Box::new(Cursor::new(bytes))
     };
+    // 第五道闸门（输入容器字节）：**取到源之后**在这里判一次 —— 对可回退的源，这是它
+    // 唯一的一次判定（`decode_source` 是公共入口，直接调用它的调用方不经过
+    // [`decode_path`] / [`decode_bytes`] / [`decode_reader`] 的那三次预检）。少了这一判，
+    // 同一份 52 字节的 WAV 经 `decode_bytes` 会被 [`LimitViolation::InputTooLarge`] 挡下、
+    // 经 `decode_source` 却能解出资产（实测读数见判据
+    // `a_seekable_source_obeys_the_input_byte_budget_through_decode_source`）。
+    // `byte_len()` 是可选能力（管道常常报 `None`），因此这里只判"报得出长度的源"；
+    // 不可回退的源由 [`slurp_unseekable`] **边读边判**，本行对它是恒真的重复判定
+    // （slurp 之后是 `Cursor`，它报的长度已经在上限之内）。
+    if let Some(len) = source.byte_len() {
+        limits::check_input_len(len, &options.budget)?;
+    }
     // 上游的 RIFF/WAVE 解析器有两处畸形声明会整型溢出并 panic（`u16` 乘法与 `u32` 移位）。
     // 本 crate 的契约是"不可信输入只返回 DecodeError"，而我们不能改上游，因此在探测之前
     // 先把 `fmt ` 块走一遍。
@@ -1787,6 +1805,61 @@ mod tests {
                 limit + 1
             ),
         }
+    }
+
+    /// 判据 ([ARCH-SEC-003] / `HD-24` 第五道闸门)：**可回退**的源经公共入口
+    /// [`decode_source`] 也必须过输入字节闸门。
+    ///
+    /// 为什么需要它：[`decode_path`] / [`decode_bytes`] / [`decode_reader`] 都在调用
+    /// [`decode_source`] **之前**各判了一次输入字节，因此走这三个入口一切正常；而
+    /// `decode_source` 自己是 `pub` 的，直接用它收下一个可回退的源（`File`、`Cursor`、
+    /// [`MeasuredSource`] 都是）时，这道闸门此前**完全没有被求值** —— 同一份 52 字节的
+    /// WAV、同一个 16 字节的预算，经 `decode_bytes` 是
+    /// `InputTooLarge { bytes: 52, limit: 16 }`，经 `decode_source` 却是 `Ok(frames=4)`。
+    ///
+    /// 三段断言：① 内存入口拒绝（对照读数）；② 同一个预算下可回退的 `Cursor` 源同样拒绝，
+    /// 数字逐字相同；③ 闭区间 —— 上限设成恰好 52 字节时同一个源必须**解出**同一份资产
+    /// （证明这条闸门没有变成"见源就拒"）。
+    ///
+    /// 注入：把 `decode_source` 里那段 `if let Some(len) = source.byte_len()` 删掉（回到
+    /// 修复前的形状）⇒ 第二段断言红，字面读数是 `Ok(...)` 而不是 `InputTooLarge`。
+    #[test]
+    fn a_seekable_source_obeys_the_input_byte_budget_through_decode_source() {
+        // 44 字节头 + 4 帧 × 2 字节 = 52 字节。
+        let bytes = int_wav(1, 16, &[1, -2, 3, -4]);
+        assert_eq!(bytes.len(), 52);
+        let capped = |limit: u64| DecodeOptions {
+            budget: PcmBudget::new(limit, !3u64, 64, 768_000, 60),
+            ..DecodeOptions::default()
+        };
+
+        // ① 内存入口：16 字节上限拒绝 52 字节输入。
+        assert!(matches!(
+            decode_bytes(&bytes, &capped(16)),
+            Err(DecodeError::Budget(LimitViolation::InputTooLarge {
+                bytes: 52,
+                limit: 16
+            }))
+        ));
+
+        // ② 可回退的源（`Cursor`，`byte_len() == Some(52)`）：同一个拒绝。
+        match decode_source(
+            Box::new(Cursor::new(bytes.clone())),
+            &Hint::new(),
+            &capped(16),
+        ) {
+            Err(DecodeError::Budget(LimitViolation::InputTooLarge { bytes: got, limit })) => {
+                assert_eq!(got, 52);
+                assert_eq!(limit, 16);
+            }
+            other => panic!("a seekable source must obey the input-byte cap, got {other:?}"),
+        }
+
+        // ③ 闭区间：上限恰好 52 字节 ⇒ 同一个源必须解出资产（4 帧），不得误拒。
+        let exact = decode_source(Box::new(Cursor::new(bytes)), &Hint::new(), &capped(52))
+            .expect("exactly 52 bytes must pass a 52-byte cap (closed interval)");
+        assert_eq!(exact.frame_count(), 4);
+        assert_eq!(exact.channels(), 1);
     }
 
     #[test]
