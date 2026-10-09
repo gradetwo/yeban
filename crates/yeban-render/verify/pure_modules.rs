@@ -4,7 +4,7 @@
 //! `scripts/gates/run-gates.sh crate yeban-render` 在本机自动跳过编译
 //! （用户硬性纪律: M2 上不跑高耗 CPU 任务）。但**纯计算**部分并不需要 rayon。
 //!
-//! 本文件把三个**零第三方依赖**的模块按路径包含进来, 用
+//! 本文件把**五个零第三方依赖**的模块按路径包含进来, 用
 //! `rustc --edition 2024 --test` 单独编译执行:
 //!
 //! ```text
@@ -15,10 +15,19 @@
 //!
 //! 覆盖范围（**如实声明**）:
 //!
-//! - ✅ 覆盖: VLQ 编解码、确定性有序归约核、TPDF 抖动与位深转换, 以及三者串起来的
-//!   "同一输入 + 任意产生顺序 ⇒ 逐位相同"端到端判据。
+//! - ✅ 覆盖: [`dither`]（TPDF 抖动与位深转换）、[`pdc`]（关键路径延迟与环形延迟线）、
+//!   [`rf64`]（RF64/BW64 容器、`bext` v1/v2、chunk 布局）、[`sum`]（确定性有序归约核）、
+//!   [`vlq`]（VLQ 编解码）, 以及它们串起来的"同一输入 + 任意产生顺序 ⇒ 逐位相同"
+//!   端到端镜像判据。
 //! - ❌ 不覆盖: 任何依赖 `rayon` / `hound` / `midly` / `yeban-model` 的代码
-//!   （`render.rs`、`rf64.rs` 的写入入口、`midi.rs`、`wav.rs`）。那些交给 CI。
+//!   （`render.rs`、`wav.rs`、`midi.rs`、`mastering.rs`、`rng.rs`）。那些交给 CI。
+//!
+//! ## `vlq` 的路径为什么指向隔壁 crate
+//!
+//! `src/vlq.rs` 与 `src/midi.rs` 已**下移**到独立 crate `yeban-midi`（账本第 283/284 轮;
+//! `yeban-render` 用 `pub use yeban_midi::vlq;` 再导出同一份源码）。这里用 `#[path]`
+//! 直接包含**同一份文件**, 而不是复制一份实现 —— 确定性契约要求编解码只有一份。
+//! 这正是 `undo-wiring-notes.md` 记的既有手法（`#[path]` 引入同一份源码）。
 //!
 //! 本文件不被 `cargo` 自动发现（不是 `src/`、`tests/`、`benches/`、`examples/`）,
 //! 因此不会给 CI 增加任何编译目标 —— 这是刻意的。
@@ -37,7 +46,9 @@ mod pdc;
 mod rf64;
 #[path = "../src/sum.rs"]
 mod sum;
-#[path = "../src/vlq.rs"]
+// `src/vlq.rs` 随 SMF 编解码一起下移到 `yeban-midi`（见模块头的"路径为什么指向隔壁
+// crate"）。这里包含的是**同一份源码**, 不是副本。
+#[path = "../../yeban-midi/src/vlq.rs"]
 mod vlq;
 
 use dither::DitherRng;
