@@ -152,6 +152,15 @@
 //! 场景 18 做 31 次**等价**重新武装（内容标识相同 ⇒ 只 `set_params`）、1 次**换 IR**、
 //! 1 次 **44.1 kHz**（IR 帧数变 ⇒ 引擎拒绝重建缓冲并按设备数计数）与 1 次换回 48 kHz。
 //! 覆盖度自检取**整窗的精确帧数**（`2 × 10,001 × 128`），不是"大于 0"。
+//!
+//! # 场景 2 的覆盖度见证（`line/engine-11` 追加）：PDC 延迟读数
+//!
+//! 快照边界新增了两次**纯读**（`PdcPlan::total_latency` / `PdcPlan::output_latency`
+//! → `EngineStats::pdc_alignment_frames` / `engine_output_latency_frames`），位置与
+//! `CompensationBank::rearm` **同一个分支** ⇒ 它落在场景 2 的 63 个测量窗口里。
+//! 见证方式与场景 ⑰c 同族：63 次交换之后两个读数必须等于**最后一份已武装快照**的计划值
+//! （而不是构造初值 0），且"引擎输出延迟 − 对齐基准 = 母线限制器的 33 帧"。
+//! 这条见证**不新增场景**，也不改变任何窗口的分配断言。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -159,6 +168,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use yeban_engine::meter::meter_channel;
+use yeban_engine::mixer::BUS_LIMITER_LATENCY_FRAMES;
 use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
@@ -501,6 +511,37 @@ fn main() -> ExitCode {
     }
     if switches == 0 {
         failures.push("主线程侧没有从退役队列回收任何旧快照 —— 场景 2 是空转".to_owned());
+    }
+    // ---- 场景 2 的覆盖度见证（`line/engine-11` 追加）：PDC 延迟读数 ----
+    //
+    // 快照边界新增了两次纯读（`PdcPlan::total_latency` / `output_latency`），位置与
+    // `CompensationBank::rearm` 同一个分支 ⇒ 上面 63 个测量窗口都真的走过它。
+    // 见证方式与场景 ⑰c 同族：读数必须等于**最后一份已武装快照**的计划值。
+    // 它同时证明"窗口里真的发生了重新武装"（否则读数会停在构造初值 0）。
+    let latency_stats = runtime.stats();
+    let fixture_plan =
+        EngineSnapshot::from_project(&fixture.project, 64).expect("最后一份等价快照");
+    let (want_alignment, want_output) = (
+        fixture_plan.pdc().total_latency(),
+        fixture_plan.pdc().output_latency(),
+    );
+    if latency_stats.pdc_alignment_frames != want_alignment
+        || latency_stats.engine_output_latency_frames != want_output
+    {
+        failures.push(format!(
+            "快照边界的 PDC 延迟读数没有跟上已武装快照：对齐 {} vs 计划 {want_alignment}、\
+             引擎输出 {} vs 计划 {want_output}",
+            latency_stats.pdc_alignment_frames, latency_stats.engine_output_latency_frames
+        ));
+    }
+    if latency_stats.engine_output_latency_frames
+        != latency_stats.pdc_alignment_frames + BUS_LIMITER_LATENCY_FRAMES
+    {
+        failures.push(format!(
+            "生产路径的引擎输出延迟必须比对对齐基准多 {BUS_LIMITER_LATENCY_FRAMES} 帧：\
+             对齐={} 输出={}",
+            latency_stats.pdc_alignment_frames, latency_stats.engine_output_latency_frames
+        ));
     }
 
     // ---- 场景 3：回到 `filled_project`（真实密度的规范样本）复测 ----
@@ -2328,7 +2369,8 @@ fn main() -> ExitCode {
              IR 在构造期预建、快照边界只做同长度换 IR）\
              + 31 次等价重新武装 + 1 次换 IR + 换采样率时的拒绝路径 + 换回复武装 \
              + 2,000 量子 `EngineStats` 跨线程只读镜像（写者＝音频线程 / 读者＝控制线程），\
-             实时窗口内零分配零释放"
+             实时窗口内零分配零释放（63 次快照交换同时见证 PDC 延迟读数：对齐 {want_alignment} / \
+             引擎输出 {want_output}）"
         );
         ExitCode::SUCCESS
     } else {

@@ -326,6 +326,36 @@ pub struct EngineStats {
     /// 在读数上完全一样（相位错位不会 panic、也不会让峰值判据变红）。
     /// `delay == 0` 的直通节点不计入（它们没有工作可做）。
     pub pdc_processed_blocks: u64,
+    /// **支路对齐基准 `L_max`**（采样点；`PdcPlan::total_latency()` 的读数）。
+    ///
+    /// 它是"进入总线求和节点之前的最长支路延迟"，也就是那些延迟线要补齐的目标
+    /// （逐节点的补偿量 `D(v)` 由 [`EngineRuntime::armed_pdc_delay`] 可读）。
+    /// **不含**接在总线求和**之后**的 `master` 自身延迟 —— 母线前瞻限制器的
+    /// [`BUS_LIMITER_LATENCY_FRAMES`](crate::mixer::BUS_LIMITER_LATENCY_FRAMES) = 33 帧
+    /// [ADR-0001 D44(b)]。问"喂进引擎第 0 帧的信号第几帧出现在输出"要读
+    /// [`Self::engine_output_latency_frames`]。
+    ///
+    /// 取**已武装快照**的计划值（快照边界覆写；还没有任何快照被处理时是 `0`）。
+    /// 它与 [`Self::engine_output_latency_frames`] 是**两个不同的数**：把后者当成
+    /// 前者会给出错误的端到端延迟预算（差 `master` 自身的延迟）。
+    pub pdc_alignment_frames: u32,
+    /// **引擎输出延迟**（采样点；`PdcPlan::output_latency()` 的读数）。
+    ///
+    /// `= pdc_alignment_frames + master 自身延迟`，即"喂进引擎第 0 帧的信号在第几帧
+    /// 出现在输出"。它是 `[ARCH-PDC-002]` 的监听延迟预算表里"内部 DSP 拓扑调度"
+    /// 那一格**在引擎侧**的可读形式：这个数此前**只算不读** ——
+    /// `PdcPlan::output_latency` 由母线限制器延迟回填那一条改动（`b6842b0`）引入，
+    /// 而 `yeban-engine` 侧没有任何读者（量法：
+    /// `grep -rn 'output_latency' crates/yeban-engine/src` 在本次改动前只命中
+    /// `graph.rs` 自身的定义与文档）。控制面要算端到端预算，必须把设备侧读数
+    /// （[`crate::latency`]）与这个数相加。
+    ///
+    /// 取**已武装快照**的计划值（快照边界覆写；还没有任何快照被处理时是 `0`）。
+    /// 生产路径（[`crate::snapshot::EngineSnapshot::from_project`]）在 `master` 上回填
+    /// 母线限制器的 33 帧 [ADR-0001 D44(b)]，因此它通常**大于**
+    /// [`Self::pdc_alignment_frames`]；显式注入延迟表的那条路径
+    /// （`from_project_with_latencies`）**不**追加那 33 帧 ⇒ 两者相等。
+    pub engine_output_latency_frames: u32,
     /// **节拍器累计触发过的咔哒声次数**（[`crate::metronome`]）。
     ///
     /// 与 [`Self::pdc_processed_blocks`] 同族：它把"节拍器真的在打拍子"变成可读的
@@ -490,6 +520,10 @@ pub struct EngineRuntime {
     pdc_unarmed_nodes: u64,
     /// 见 [`EngineStats::pdc_clamped_frames`]。
     pdc_clamped_frames: u64,
+    /// 见 [`EngineStats::pdc_alignment_frames`]（快照边界覆写；初值 0）。
+    pdc_alignment_frames: u32,
+    /// 见 [`EngineStats::engine_output_latency_frames`]（快照边界覆写；初值 0）。
+    engine_output_latency_frames: u32,
     /// 本快照武装的声相衰减律（`audio_config.pan_law` 的投影）。
     armed_pan_law: PanLaw,
     /// 本快照武装的每轨声相增益 `(左, 右)`（构造期算好，实时侧只做乘法）。
@@ -740,6 +774,8 @@ impl EngineRuntime {
             pdc: CompensationBank::preallocated(PDC_SLOTS, MAX_PDC_DELAY_FRAMES),
             pdc_unarmed_nodes: 0,
             pdc_clamped_frames: 0,
+            pdc_alignment_frames: 0,
+            engine_output_latency_frames: 0,
             armed_pan_law: PanLaw::default(),
             armed_pan_gains: [(
                 EntityId::default(),
@@ -907,6 +943,8 @@ impl EngineRuntime {
             pdc_unarmed_nodes: self.pdc_unarmed_nodes,
             pdc_clamped_frames: self.pdc_clamped_frames,
             pdc_processed_blocks: self.pdc.processed_blocks(),
+            pdc_alignment_frames: self.pdc_alignment_frames,
+            engine_output_latency_frames: self.engine_output_latency_frames,
             metronome_clicks: self.metronome.clicks(),
             drum_hits: self.synth.drum_hits(),
             quanta_per_second: self.armed_quanta_per_second,
@@ -1313,6 +1351,8 @@ impl EngineRuntime {
             armed_master,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
+            pdc_alignment_frames,
+            engine_output_latency_frames,
             armed_revision,
             armed_master_gain,
             armed_metronome_enabled,
@@ -1429,6 +1469,20 @@ impl EngineRuntime {
                 let shortfall = self.pdc.rearm(current.pdc());
                 *pdc_unarmed_nodes = pdc_unarmed_nodes.wrapping_add(shortfall.unarmed_nodes as u64);
                 *pdc_clamped_frames = pdc_clamped_frames.wrapping_add(shortfall.clamped_frames);
+
+                // --- 2b''') PDC 计划的**两个延迟读数**：纯读、不碰任何样本 ---
+                // [ARCH-PDC-001, ARCH-PDC-002]。此前这两个数**只算不读**：
+                // `PdcPlan` 在控制线程算好，实时侧只消费逐节点的 `D(v)`，
+                // 于是"引擎输出延迟（`L_max` ＋ 母线求和之后的 `master` 自身延迟）"
+                // 在整条引擎链路上无法读到（量法见
+                // [`EngineStats::engine_output_latency_frames`] 的字段文档）。
+                //
+                // 位置刻意与 `rearm` 同一个快照边界：两者读的是**同一份**计划
+                // ⇒ "武装了什么"与"读到的延迟是多少"不可能指向两个修订。
+                // 逐量子不重读（计划在快照生命周期内不变）⇒ 实时路径只多两次
+                // `u32` 拷贝；**零分配、零锁、零 I/O、零日志** [MUST-GATE-001]。
+                *pdc_alignment_frames = current.pdc().total_latency();
+                *engine_output_latency_frames = current.pdc().output_latency();
 
                 // --- 2c) 声相增益：在**构造期语义**下算一次（`cos`/`sin` 属超越函数类,
                 // 不进逐样本路径）。`pan_law` 与 `pan` 在整份快照的生命周期内不变。

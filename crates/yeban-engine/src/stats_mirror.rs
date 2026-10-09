@@ -179,6 +179,8 @@ pub struct EngineStatsMirror {
     pdc_unarmed_nodes: AtomicU64,
     pdc_clamped_frames: AtomicU64,
     pdc_processed_blocks: AtomicU64,
+    pdc_alignment_frames: AtomicU32,
+    engine_output_latency_frames: AtomicU32,
     metronome_clicks: AtomicU64,
     drum_hits: AtomicU64,
     quanta_per_second: AtomicU64,
@@ -235,6 +237,8 @@ impl EngineStatsMirror {
             pdc_unarmed_nodes: AtomicU64::new(0),
             pdc_clamped_frames: AtomicU64::new(0),
             pdc_processed_blocks: AtomicU64::new(0),
+            pdc_alignment_frames: AtomicU32::new(0),
+            engine_output_latency_frames: AtomicU32::new(0),
             metronome_clicks: AtomicU64::new(0),
             drum_hits: AtomicU64::new(0),
             quanta_per_second: AtomicU64::new(0),
@@ -322,6 +326,10 @@ impl EngineStatsMirror {
             .store(stats.pdc_clamped_frames, Ordering::Relaxed);
         self.pdc_processed_blocks
             .store(stats.pdc_processed_blocks, Ordering::Relaxed);
+        self.pdc_alignment_frames
+            .store(stats.pdc_alignment_frames, Ordering::Relaxed);
+        self.engine_output_latency_frames
+            .store(stats.engine_output_latency_frames, Ordering::Relaxed);
         self.metronome_clicks
             .store(stats.metronome_clicks, Ordering::Relaxed);
         self.drum_hits.store(stats.drum_hits, Ordering::Relaxed);
@@ -400,6 +408,8 @@ impl EngineStatsMirror {
             pdc_unarmed_nodes: self.pdc_unarmed_nodes.load(Ordering::Relaxed),
             pdc_clamped_frames: self.pdc_clamped_frames.load(Ordering::Relaxed),
             pdc_processed_blocks: self.pdc_processed_blocks.load(Ordering::Relaxed),
+            pdc_alignment_frames: self.pdc_alignment_frames.load(Ordering::Relaxed),
+            engine_output_latency_frames: self.engine_output_latency_frames.load(Ordering::Relaxed),
             metronome_clicks: self.metronome_clicks.load(Ordering::Relaxed),
             drum_hits: self.drum_hits.load(Ordering::Relaxed),
             quanta_per_second: unpack_optional_f32(self.quanta_per_second.load(Ordering::Relaxed)),
@@ -426,7 +436,7 @@ impl Default for EngineStatsMirror {
 }
 
 impl core::fmt::Debug for EngineStatsMirror {
-    /// 打印**读出来**的那一份读数（不是 39 个原子量的内部状态）。
+    /// 打印**读出来**的那一份读数（不是 49 个原子量的内部状态）。
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EngineStatsMirror")
             .field("stats", &self.read())
@@ -478,6 +488,8 @@ mod tests {
             pdc_unarmed_nodes: 22,
             pdc_clamped_frames: 23,
             pdc_processed_blocks: 24,
+            pdc_alignment_frames: 45,
+            engine_output_latency_frames: 46,
             metronome_clicks: 25,
             drum_hits: 26,
             quanta_per_second: Some(375.5),
