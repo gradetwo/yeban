@@ -186,6 +186,28 @@ impl PcmBudget {
         self.max_pcm_bytes / 4
     }
 
+    /// 时长闸门在 `sample_rate` Hz 下的**帧数上界**：`max_duration_secs × sample_rate`。
+    ///
+    /// 这是 [`check_layout`] 判定顺序里那道独立时长闸门的**唯一**数值来源。单独抽出来的
+    /// 理由是"边解边判"：只按声明帧数预检、再在解完之后终检的实现，会让一个**没有声明
+    /// 帧数**的输入（`declared_frames == None`）被字节预算而不是时长预算约束住 —— 于是
+    /// "6 小时"这道闸门在峰值内存上等于不存在（实测：44.1 kHz 立体声下字节预算允许
+    /// 约 6.53 小时，8 kHz 单声道下允许约 75 小时）。解码循环必须能逐包用同一条公式
+    /// 判定，否则两处判定会各自漂移。
+    ///
+    /// 乘法在 `u128` 里做，因此**不会回绕**；乘积超出 `u64` 表示范围时返回 `u64::MAX`
+    /// （等价于"这道闸门在此采样率下不构成约束"，与 [`check_layout`] 在 `u128` 里比较
+    /// 的结论一致）。
+    #[must_use]
+    pub const fn max_duration_frames(&self, sample_rate: u32) -> u64 {
+        let max_frames = self.max_duration_secs as u128 * sample_rate as u128;
+        if max_frames > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            max_frames as u64
+        }
+    }
+
     /// 由**产品要求**反推一个预算：至少容纳 `seconds` 秒的 `sample_rate` Hz
     /// `channels` 声道素材。
     ///
@@ -563,7 +585,11 @@ pub fn interleaved_samples(frames: u64, channels: u16) -> Result<u64, LimitViola
 ///
 /// 判定顺序（**每一道闸门各自独立**，任何一道都能单独把输入挡下）：
 /// 声道数为 0 → 声道数超限 → 采样率为 0 → 采样率超限 → 时长超限 → PCM 字节超预算。
-/// 全部用 `u128` 中间量做比较，因此不会先溢出再判定。
+/// 全部用 `u128`/`u64` 精确整数比较，因此不会先溢出再判定。
+///
+/// 时长闸门那一步用的是 [`PcmBudget::max_duration_frames`]，**不是**就地写一遍乘法：
+/// 解码循环在只知道采样率、还不知道容器声明帧数时必须能逐包判同一道闸门（见
+/// [`crate::decode::decode_source`] 的实测理由）。
 ///
 /// # Errors
 ///
@@ -593,9 +619,10 @@ pub fn check_layout(
         });
     }
     // 时长闸门：`frames > max_duration_secs × sample_rate` 即超过 [`PcmBudget::max_duration_secs`]
-    // 秒（整数精确，闭区间：恰好等于上限通过）。乘法在 `u128` 里做，不会回绕。
-    let max_frames = u128::from(budget.max_duration_secs) * u128::from(sample_rate);
-    if u128::from(frames) > max_frames {
+    // 秒（整数精确，闭区间：恰好等于上限通过）。乘法在 `u128` 里做，不会回绕；数值来自
+    // [`PcmBudget::max_duration_frames`]，因此解码循环里的逐包判定用的是**同一条**公式。
+    let max_frames = budget.max_duration_frames(sample_rate);
+    if frames > max_frames {
         return Err(LimitViolation::DurationTooLong {
             frames,
             sample_rate,
@@ -707,6 +734,84 @@ mod tests {
     use super::*;
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// 判据 (时长闸门的单值来源)：`max_duration_frames` 必须与"逐包边解边判"用到的
+    /// 数值**逐位相同**，且与 [`check_layout`] 的闭区间边界一致。
+    ///
+    /// 为什么单独钉：解码循环用它做逐包判定，而 `check_layout` 用它做终检。两处一旦各自
+    /// 算一遍，就会出现"循环放行的帧数被终检拒绝"这种只在长素材上暴露的分歧。
+    ///
+    /// 注入：把 `max_duration_frames` 的返回改成 `u64::MAX`（等于"这道闸门永不跳闸"）
+    /// ⇒ 本判据的第一条与第三条断言红；把 `check_layout` 的 `>` 改成 `>=` ⇒ 第二条红。
+    #[test]
+    fn the_duration_gate_has_exactly_one_numeric_source() {
+        let budget = PcmBudget {
+            max_duration_secs: 6 * 60 * 60,
+            ..PcmBudget::default()
+        };
+        // 与逐包判定同值。
+        assert_eq!(budget.max_duration_frames(8_000), 6 * 60 * 60 * 8_000);
+        assert_eq!(budget.max_duration_frames(48_000), 6 * 60 * 60 * 48_000);
+        // 闭区间：恰好等于上界通过，多一帧即拒（终检一侧）。为了只让**时长**这一道
+        // 闸门生效，其余四道放宽 —— 默认预算在 96 kHz **立体声**下是字节预算先跳闸
+        // （3 小时），拿默认预算判时长边界会量错闸门。
+        let by_time_only = PcmBudget {
+            max_input_bytes: u64::MAX,
+            max_pcm_bytes: u64::MAX,
+            max_channels: u16::MAX,
+            max_sample_rate: u32::MAX,
+            max_duration_secs: budget.max_duration_secs,
+        };
+        let exact = 6 * 60 * 60 * 96_000;
+        assert_eq!(by_time_only.max_duration_frames(96_000), exact);
+        assert_eq!(check_layout(2, 96_000, exact, &by_time_only), Ok(()));
+        let err = check_layout(2, 96_000, exact + 1, &by_time_only).unwrap_err();
+        assert!(
+            matches!(err, LimitViolation::DurationTooLong { .. }),
+            "got {err}"
+        );
+        // 逐包判定一侧：用同一个数，超一帧就返回。
+        assert!(exact <= by_time_only.max_duration_frames(96_000));
+        assert!(exact + 1 > by_time_only.max_duration_frames(96_000));
+
+        // 乘积超出 u64 时**饱和**而不是回绕（回绕会把上界变成一个小数字，于是把
+        // 合法素材误拒 —— 那是 fail-closed 的反面：一道只会误报的闸门）。
+        let absurd = PcmBudget {
+            max_duration_secs: u64::MAX,
+            ..PcmBudget::default()
+        };
+        assert_eq!(absurd.max_duration_frames(u32::MAX), u64::MAX);
+        // 采样率为 0 时上界是 0：任何非零帧数都被时长闸门挡下。
+        assert_eq!(budget.max_duration_frames(0), 0);
+    }
+
+    /// 判据 (时长闸门的单值来源)：`max_duration_frames` 与逐包判定同值。
+    ///
+    /// 覆盖"规范采样率 + 极端采样率"两类：`1 Hz` 与 `768 kHz` 都必须在同一条公式上
+    /// 得到闭区间边界，且 `u64::MAX` 上界不得 panic（`limit + 1` 会回绕，因此那里只断言
+    /// 不 panic 的取值）。
+    #[test]
+    fn max_duration_frames_matches_the_layout_gate_at_the_boundary() {
+        let budget = PcmBudget::default();
+        let by_time_only = PcmBudget {
+            max_input_bytes: u64::MAX,
+            max_pcm_bytes: u64::MAX,
+            max_channels: u16::MAX,
+            max_sample_rate: u32::MAX,
+            max_duration_secs: budget.max_duration_secs,
+        };
+        for &rate in &[1u32, 8_000, 44_100, 48_000, 96_000, 768_000] {
+            let limit = budget.max_duration_frames(rate);
+            assert_eq!(check_layout(1, rate, limit, &by_time_only), Ok(()));
+            if limit < u64::MAX {
+                let err = check_layout(1, rate, limit + 1, &by_time_only).unwrap_err();
+                assert!(
+                    matches!(err, LimitViolation::DurationTooLong { .. }),
+                    "rate {rate}: got {err}"
+                );
+            }
+        }
+    }
 
     /// 判据 ①（HD-24 核心）：默认预算是**产品要求的函数**，不是拍出来的数字。
     ///

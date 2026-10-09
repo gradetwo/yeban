@@ -203,17 +203,32 @@ pub fn decode_source<'s>(
         .make_audio_decoder(audio_params, &AudioDecoderOptions::default())
         .map_err(|err| DecodeError::from_symphonia(&err))?;
 
-    // 预算：先按"声明"做一次廉价的前置检查（畸形文件常在头里就声称几小时）。
-    // 传 `channels = 1` 是有意的 —— 这一层只判"每声道帧数 × 4 字节"是否超预算，
+    // 时长闸门在开始解码之前**按声明**判一次（畸形文件常在头里就声称几小时）。传
+    // `channels = 1` 是有意的 —— 这一层只判"每声道帧数 × 4 字节"是否超预算，
     // 声道数还不知道（要等第一个解码缓冲），因此不会在这里误判声道相关的分支。
     // 时长闸门与声道数无关（`frames / sample_rate`），因此在这里判它是准确的。
+    //
+    // ⚠ 只判这一层是不够的：`declared_frames` 可以是 `None`（FLAC 的
+    // `STREAMINFO.total_samples == 0` 就是"未知"的规范写法，实测读数见判据
+    // `the_duration_gate_fires_on_undeclared_frames_while_decoding`）。那种输入会
+    // 绕过上面这次预检，而**下面那个循环只按字节预算逐包判** —— 于是"6 小时"这道闸门
+    // 在整段解码期间不生效，峰值缓冲由 `max_pcm_bytes` 而不是时长预算决定（8 kHz
+    // 单声道下字节预算允许约 75 小时，是时长上界的 12.6×）。这正是
+    // `docs/ledger/decode-limits-notes.md` §2.2 说的"低采样率 × 少声道：字节便宜、
+    // 时间昂贵"那一格，只是它当时假设声明帧数总是存在。因此循环里用**同一条**公式
+    // （[`PcmBudget::max_duration_frames`]）逐包判它。
     if let Some(frames) = declared_frames {
         limits::check_layout(1, sample_rate, frames, &options.budget)?;
     }
+    let max_duration_frames = options.budget.max_duration_frames(sample_rate);
 
     let sample_budget = options.budget.interleaved_samples_limit();
     let mut samples: Vec<f32> = Vec::new();
     let mut layout: Option<(u16, PcmFormat)> = None;
+    // 已解出的**帧数**（每声道样本数）。时长闸门以帧为单位，因此这里显式记账，
+    // 而不是每轮用 `samples.len() / channels` 反算（除法在循环里，且 `channels`
+    // 要到第一个缓冲才知道）。
+    let mut decoded_frames: u64 = 0;
 
     // [MUST-GATE-011] 不推进闸门 —— 见 [`limits::MAX_IDLE_PACKETS`] 的完整实测理由。
     let mut idle_packets = limits::IdleGuard::new();
@@ -246,6 +261,7 @@ pub fn decode_source<'s>(
             bump_idle(&mut idle_packets)?;
             continue;
         }
+        // 缓冲自述的形状先自洽，再谈预算：一个自相矛盾的缓冲不该被拿去算时长。
         if planes == 0 || frames_in_buffer.checked_mul(planes) != Some(total) {
             return Err(DecodeError::InconsistentLayout {
                 detail: format!(
@@ -253,6 +269,19 @@ pub fn decode_source<'s>(
                      x {planes} planes"
                 ),
             });
+        }
+        // 时长闸门逐包生效（数值与终检同源）。用投影值判定：这一包真的加进去之后会到
+        // 多少帧。判定放在**分配之前**，因此"没有声明帧数"的输入不会先把缓冲涨到字节
+        // 预算才被拒。
+        let projected_frames =
+            decoded_frames.saturating_add(u64::try_from(frames_in_buffer).unwrap_or(u64::MAX));
+        if projected_frames > max_duration_frames {
+            return Err(DecodeError::Budget(LimitViolation::DurationTooLong {
+                frames: projected_frames,
+                sample_rate,
+                seconds: projected_frames / u64::from(sample_rate),
+                limit_secs: options.budget.max_duration_secs,
+            }));
         }
         let channels = u16::try_from(planes).map_err(|_| {
             DecodeError::Budget(LimitViolation::TooManyChannels {
@@ -310,6 +339,7 @@ pub fn decode_source<'s>(
         let start = samples.len();
         samples.resize(start + total, 0.0);
         buffer.copy_to_slice_interleaved(&mut samples[start..]);
+        decoded_frames = projected_frames;
         // 这一轮真的推进了，闸门清零。
         idle_packets.reset();
     }
@@ -1636,6 +1666,91 @@ mod tests {
         let from_bytes = decode_bytes(&bytes, &DecodeOptions::default()).unwrap();
         assert_eq!(from_path.samples(), from_bytes.samples());
         cleanup.unwrap();
+    }
+
+    /// 判据 (时长闸门的**逐包**落点)：**没有声明帧数**时，时长闸门必须在解码过程中逐包
+    /// 生效，而不是"先把整段解完、再在终检拒掉"。
+    ///
+    /// 为什么需要它：`decode_source` 只对 `declared_frames` 做预检（`if let Some`），
+    /// 而解码循环只按字节预算逐包判。`declared_frames == None` 的输入因此会绕过预检，
+    /// 峰值缓冲由 `max_pcm_bytes` 决定 —— 8 kHz 单声道下那是约 75 小时，是 6 小时时长
+    /// 上界的 12.6×（`docs/ledger/decode-limits-notes.md` §2.2 的"字节便宜、时间昂贵"格）。
+    ///
+    /// 实测形状（本判据的基座，FLAC 的 `STREAMINFO.total_samples == 0` 就是"未知"的
+    /// 规范写法）：
+    /// - 该输入的读数曾经是 `declared_frames=None, frame_count=25600`；
+    /// - 预算收到 1 秒时的读数曾经是
+    ///   `25600 frames at 8000 Hz is 3 s of audio, over the 1-second duration cap`
+    ///   —— 即"整段解完之后才拒"。
+    ///
+    /// 判据用**报告出来的帧数**把两种实现区分开：逐包判定报的是"越界那一刻的投影帧数"
+    /// （8192，第 32 包），终检报的是"整段的总帧数"（25600）。只看"返回了
+    /// `DurationTooLong`"是不够的 —— 那个错误在修复前后都会出现。
+    #[test]
+    fn the_duration_gate_fires_on_undeclared_frames_while_decoding() {
+        // FLAC 的 `total_samples` 写 0：规范含义是"未知"，因此 `track.num_frames == None`。
+        let spec = FlacSpec {
+            total_samples_override: Some(0),
+            ..FlacSpec::default()
+        };
+        let bytes = flac_constant(&spec, 100, 0); // 100 块 × 256 帧 = 25600 帧 @8 kHz
+        let total = decode_bytes(&bytes, &DecodeOptions::default())
+            .unwrap()
+            .frame_count();
+        assert_eq!(total, 25_600, "the fixture must be longer than the gate");
+
+        let one_second = DecodeOptions {
+            budget: PcmBudget {
+                max_duration_secs: 1,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        let err = decode_bytes(&bytes, &one_second).unwrap_err();
+        let DecodeError::Budget(LimitViolation::DurationTooLong {
+            frames,
+            sample_rate,
+            limit_secs,
+            ..
+        }) = err
+        else {
+            panic!("expected DurationTooLong, got {err}");
+        };
+        assert_eq!(sample_rate, 8_000);
+        assert_eq!(limit_secs, 1);
+        // 每包 256 帧、上界 8000 帧 ⇒ 前 31 包（7936 帧）合法，第 32 包投影到 8192 帧
+        // 时越界。终检则会报整段的 25600 帧。
+        assert_eq!(
+            frames,
+            32 * 256,
+            "the gate must fire on the packet that crosses the limit, not after \
+             decoding all {total} frames"
+        );
+        assert!(
+            frames < total,
+            "reporting {frames} frames proves the loop stopped early; the end-of-stream \
+             check would have reported {total}"
+        );
+        // 恰好 1 秒的上界必须仍然通过（闭区间，逐包判定不能把闸门焊死）。
+        let exact_bytes = flac_constant(&spec, 31, 0); // 31 × 256 = 7936 帧 < 8000
+        assert_eq!(
+            decode_bytes(&exact_bytes, &one_second)
+                .unwrap()
+                .frame_count(),
+            7_936
+        );
+        let over_bytes = flac_constant(&spec, 33, 0); // 33 × 256 = 8448 帧 > 8000
+        assert!(matches!(
+            decode_bytes(&over_bytes, &one_second),
+            Err(DecodeError::Budget(LimitViolation::DurationTooLong { .. }))
+        ));
+        // 同一份输入在默认预算下正常解出 ⇒ 上面红的是时长闸门，不是格式。
+        assert_eq!(
+            decode_bytes(&bytes, &DecodeOptions::default())
+                .unwrap()
+                .frame_count(),
+            total
+        );
     }
 
     #[test]
