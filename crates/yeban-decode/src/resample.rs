@@ -809,11 +809,11 @@ mod tests {
     /// 与 `importing_the_same_bytes_twice_yields_the_same_keys` 钉住；`asset_index` /
     /// `reconcile` / `limits::*` 是纯函数（无状态、无 I/O），重复调用即同一次调用。
     ///
-    /// 非确定性来源的机械排查（全 crate，加词边界）：`SystemTime` 1 处、`now()` 1 处，
-    /// **两处都在 `decode.rs` 的测试模块内**（临时文件名），非测试代码里是 **0 处**；
-    /// `rand` / `Uuid` / `Instant` / `HashMap` / `env::` 各 0 处。因此重复施加的输出里
-    /// **没有**需要登记为"允许"的时钟或 ULID：内容只有样本位模式、`DecodeFacts`
-    /// 与 SHA-256（后者本身是内容的函数）。
+    /// 非确定性来源的机械排查（全 crate、加词边界；逐项命令与读数见本判据的提交信息）：
+    /// 时钟读取只有 **1 行**，而且它在 `decode.rs` 的测试模块内（临时文件名），
+    /// 非测试代码里是 **0 处**；PRNG、UUID、单调时钟、哈希容器与环境变量读取逐项都是
+    /// 0 处。因此重复施加的输出里**没有**需要登记为"允许"的时钟或 ULID：内容只有样本
+    /// 位模式、`DecodeFacts` 与 SHA-256（后者本身是内容的函数）。
     ///
     /// 注入：在非恒等路径的 `truncate` 之后按**调用计数器**给第 0 个样本加 `1.0e-7`
     /// （偶数次调用加、奇数次不加）⇒ 本条以 `resample_interleaved repeated at
