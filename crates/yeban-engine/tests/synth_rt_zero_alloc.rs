@@ -172,6 +172,20 @@
 //! `allocations == 0 && deallocations == 0`，覆盖度见证取"容量 1 的臂
 //! `meter_dropped_frames > 0`"，**权威判据**取 `写入 + 丢弃 == 大容量臂测出的
 //! 本应发布帧数`（等号）—— 没有那条见证，"读数恒为 0"也能让等号成立（假绿）。
+//!
+//! # 场景 7 的覆盖度见证（`line/engine-13` 追记）：插入链动态级的**当前**衰减
+//!
+//! 新增读数 `EngineStats::insert_current_reduction_db` 的来源是
+//! `ChannelStrip::current_gain_reduction_db` 在**逐轨插入分支**里的一次字段读
+//! （`−compressor.gain_db()`），位置与既有的 `max_gain_reduction_db` **同一个瞬间**；
+//! 覆写点在同一条实时路径的逐轨循环收尾处 ⇒ 来源与写路径**都在**实时窗口内部。
+//! 场景 7 的两轨夹具（两条轨都挂了会压的通道条）整段窗口都在压 ⇒ 该读数在窗口末尾
+//! **必须 > 0**：这就是"新读数真的被写进去过"的见证。
+//!
+//! 它**不新增场景**（3a' 分支本来就在场景 5 / 7 / 8 / 17 / 18 的窗口里），
+//! 也不改变任何窗口的分配断言。⚠ 本条**不**声称"六分量全 0"（那只属于
+//! `tests/rt_zero_alloc.rs` 的 `[MUST-GATE-001]` 目标）—— 它只测
+//! `allocations` / `deallocations` 两个分量与新增读数的覆盖度。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
@@ -955,12 +969,23 @@ fn main() -> ExitCode {
                 .to_owned(),
         );
     }
+    // 覆盖度见证（`line/engine-13` 追记）：新增读数 `insert_current_reduction_db` 的
+    // 来源是逐轨插入分支里对器件 getter 的一次字段读 ⇒ 它落在上面 10_000 个测量窗口
+    // 的每一个里（两条轨都会压）。窗口末尾它**必须 > 0**：这是"新读数真的被写进去过"
+    // 的机械形式；没有这条见证，"读数恒 0"也能让零分配断言绿（假绿）。
+    let current_db = strip_stats.insert_current_reduction_db;
+    if !current_db.is_finite() || current_db <= 0.0 {
+        failures.push(format!(
+            "插入链的当前衰减读数没有在实时窗口里被写进去（{current_db} dB）—— 新读数的零分配判据是空转"
+        ));
+    }
     println!(
-        "[engine-wiring-2/J7] 插入通道条: quanta={} 整链处理帧数={} 动态级压过帧数={} 最大衰减={:.3} dB 非零样本={strip_nonzero}",
+        "[engine-wiring-2/J7] 插入通道条: quanta={} 整链处理帧数={} 动态级压过帧数={} 最大衰减={:.3} dB 当前衰减={:.3} dB 非零样本={strip_nonzero}",
         strip_stats.quanta,
         strip_stats.insert_strip_frames,
         strip_stats.insert_gain_reductions,
         strip_stats.insert_max_reduction_db,
+        strip_stats.insert_current_reduction_db,
     );
 
     // ---- 场景 8：快照交换时**重新武装**通道条（`set_params` / `set_sample_rate`）----

@@ -263,6 +263,38 @@ pub struct EngineStats {
     /// [`ChannelStrip::max_gain_reduction_db`]（转自压缩器的 `max_reduction_db`）
     /// 本来就以 dB 报数，这里**不换算**，免得引入第二套口径。
     pub insert_max_reduction_db: f32,
+    /// **每轨插入器件**动态级在**本量子结束时**的瞬时增益衰减
+    /// （dB，`≥ 0`；`0.0` = 那一刻完全透明）。
+    ///
+    /// 与 [`Self::insert_max_reduction_db`] 的区别是**语义，不是单位**：那个是**全程最大**
+    /// （只增不减的累计量），这个是**量规**（可升可降，随动态级释放回落）。两者单位相同
+    /// （dB）⇒ 可以互相比较：任意时刻本读数 **≤** [`Self::insert_max_reduction_db`]
+    /// （等号与回落判据见 `tests/channel_strip_insert.rs` 的 C15）。
+    ///
+    /// 口径（三条，都要与判据一起读）：
+    ///
+    /// 1. 读数取 [`ChannelStrip::current_gain_reduction_db`] —— 器件里**早就存在**的
+    ///    getter（住在 `crates/yeban-dsp/src/channel_strip.rs`，现位于第 655 行），
+    ///    而 `yeban-engine` 此前**一个读者都没有**（量法：
+    ///    `grep -rn 'current_gain_reduction_db' crates/yeban-engine/src` 在本次改动前
+    ///    命中 **0** 行）。它与上面的 `max_reduction_db`、以及
+    ///    [`Self::insert_gain_reductions`] 用的是**同一个器件、同一个瞬间**的状态
+    ///    ⇒ 本字段**不增加**任何 DSP 调用、不碰任何样本、不分配、不加锁
+    ///    ⇒ 渲染输出逐位不变；
+    /// 2. 一个量子内可能有多条轨的通道条在工作 ⇒ 取**最大值**（与
+    ///    [`Self::insert_max_reduction_db`] 的跨轨口径**相同**：两者都是"这条引擎里
+    ///    压得最狠的那一台"）；
+    /// 3. 本量子**一台武装通道条都没有处理过帧** ⇒ **不更新**（保持上一次的值），
+    ///    与 [`Self::limiter_current_reduction`] 的边界口径相同 —— 它描述的是
+    ///    "插入链最后一次工作时压了多少"，不是"这个量子压了多少"。**有**武装通道条
+    ///    但它的动态级没开（只有 EQ／滤波的通道条）时读数是 `0.0`：
+    ///    那是"插入链现在是透明的"这一条**事实**，不是缺失。
+    ///
+    /// 为什么需要它：[`Self::insert_max_reduction_db`] 回答不了"此刻压了多少" ——
+    /// 一个 UI 的插入链 GR 表要的是后者。母线限制器**早有**这一对读数
+    /// （[`Self::limiter_max_reduction`] ＋ [`Self::limiter_current_reduction`]），
+    /// 而插入链只有累计量 ⇒ 本字段补的是同一条读数在**插入链**上的缺项。
+    pub insert_current_reduction_db: f32,
     /// **每轨插入器件**（通道条）累计处理过的帧数（[`crate::insert`]；0 = 从未处理）。
     ///
     /// 口径：读数取 [`ChannelStrip::processed_frames`]，即通道条**整级链**处理过的帧数
@@ -701,6 +733,9 @@ pub struct EngineRuntime {
     insert_gain_reductions: u64,
     /// 插入器件累计最大衰减（dB；与 [`EngineStats::insert_max_reduction_db`] 同源）。
     insert_max_reduction_db: f32,
+    /// 插入链动态级**当前**衰减（dB；量规，可升可降。与
+    /// [`EngineStats::insert_current_reduction_db`] 同源）。
+    insert_current_reduction_db: f32,
     /// 累计被**插入器件**处理过的帧数（与 [`EngineStats::insert_strip_frames`] 同源）。
     insert_strip_frames: u64,
     /// 累计被**插入器件的混响级**处理过的帧数（与 [`EngineStats::insert_reverb_frames`] 同源）。
@@ -854,6 +889,7 @@ impl EngineRuntime {
             armed_insert_slots: 0,
             insert_gain_reductions: 0,
             insert_max_reduction_db: 0.0,
+            insert_current_reduction_db: 0.0,
             insert_strip_frames: 0,
             insert_reverb_frames: 0,
             insert_reverb_rate_rejects: 0,
@@ -990,6 +1026,7 @@ impl EngineRuntime {
             limiter_current_reduction: self.limiter_current_reduction,
             insert_gain_reductions: self.insert_gain_reductions,
             insert_max_reduction_db: self.insert_max_reduction_db,
+            insert_current_reduction_db: self.insert_current_reduction_db,
             insert_strip_frames: self.insert_strip_frames,
             insert_reverb_frames: self.insert_reverb_frames,
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
@@ -1391,6 +1428,7 @@ impl EngineRuntime {
             armed_insert_slots,
             insert_gain_reductions,
             insert_max_reduction_db,
+            insert_current_reduction_db,
             insert_strip_frames,
             reverb_pool,
             armed_reverbs,
@@ -1782,6 +1820,18 @@ impl EngineRuntime {
                 // 因为本函数就是音频回调：实时路径上不许有任何到 I/O 边界的调用。
                 rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
             }
+            // 本量子插入链动态级的**当前**衰减（跨轨取最大；量规）。
+            //
+            // 两个局部量只在**本量子**内有意义：`insert_current_db` 收集"本量子每条轨
+            // 的通道条报出的瞬时衰减"的最大值，`insert_current_seen` 记下"本量子真的
+            // 有一台武装通道条处理过帧"。循环之后只在 `seen` 为真时**覆写**读数 ——
+            // 与 `limiter_current_reduction` 的"没有快照的量子不更新"同口径
+            // （见 [`EngineStats::insert_current_reduction_db`] 的口径第 3 条）。
+            //
+            // ⚠ 这两个局部量是**读数的搬运**，不参与任何样本计算 ⇒ 逐样本路径**一个字
+            // 都没动** ⇒ 渲染输出逐位不变（判据见 `tests/channel_strip_insert.rs` 的 C15）。
+            let mut insert_current_db = 0.0f32;
+            let mut insert_current_seen = false;
             for id in current.tracks().keys() {
                 if *id == master || produced >= track_budget {
                     continue;
@@ -1849,6 +1899,13 @@ impl EngineRuntime {
                     if reduction_db > *insert_max_reduction_db {
                         *insert_max_reduction_db = reduction_db;
                     }
+                    // **当前**衰减（量规）：与上面两条计数**同一台器件、同一个瞬间**读出。
+                    // 它只读字段（`−compressor.gain_db()`），不碰样本、不分配、不加锁。
+                    let current_db = strip.current_gain_reduction_db();
+                    if current_db > insert_current_db {
+                        insert_current_db = current_db;
+                    }
+                    insert_current_seen = true;
                 }
                 // --- 3a''') 插入链的**混响级**：逐样本（器件的接口是立体声块）---
                 // [crate::insert] 模块文档 §8.3。位置与通道条**同一条链上的后一级**：
@@ -1955,6 +2012,23 @@ impl EngineRuntime {
                     |(_, l, r)| (*l, *r),
                 );
                 sum_into_bus(block, &track_scratch[..frames], gain_l, gain_r);
+            }
+
+            // --- 插入链动态级的**当前**衰减读数（3a' 的收尾）：逐轨循环之后覆写**一次** ---
+            //
+            // 读数的搬运（不是计算）：本量子至少有一台武装通道条处理过帧时，把
+            // `insert_current_db`（跨轨最大）覆写进统计。放在循环**之后**而不是
+            // 循环**之内**有两个理由：
+            //
+            // 1. 一个量子只有**一个**读数（与 `insert_max_reduction_db` 的跨轨口径相同）。
+            //    循环内每轨各写一次会让读数的终值取决于"最后一条轨是谁"（`BTreeMap`
+            //    的键序），那是把实现细节当成语义；
+            // 2. 它是**量规**：一台都不工作时**不覆写**（保持上一次的值），
+            //    见 [`EngineStats::insert_current_reduction_db`] 的口径第 3 条。
+            //
+            // 零分配、零锁、零 I/O、零日志：一次 `f32` 字段写。
+            if insert_current_seen {
+                *insert_current_reduction_db = insert_current_db;
             }
 
             // --- 3a') 节拍器咔哒声：**逐轨汇流之后、主总线推子与母线限制器之前** ---

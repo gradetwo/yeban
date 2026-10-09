@@ -167,6 +167,7 @@ pub struct EngineStatsMirror {
     limiter_current_reduction_bits: AtomicU32,
     insert_gain_reductions: AtomicU64,
     insert_max_reduction_db_bits: AtomicU32,
+    insert_current_reduction_db_bits: AtomicU32,
     insert_strip_frames: AtomicU64,
     insert_reverb_frames: AtomicU64,
     insert_reverb_rate_rejects: AtomicU64,
@@ -226,6 +227,7 @@ impl EngineStatsMirror {
             limiter_current_reduction_bits: AtomicU32::new(0),
             insert_gain_reductions: AtomicU64::new(0),
             insert_max_reduction_db_bits: AtomicU32::new(0),
+            insert_current_reduction_db_bits: AtomicU32::new(0),
             insert_strip_frames: AtomicU64::new(0),
             insert_reverb_frames: AtomicU64::new(0),
             insert_reverb_rate_rejects: AtomicU64::new(0),
@@ -304,6 +306,10 @@ impl EngineStatsMirror {
             .store(stats.insert_gain_reductions, Ordering::Relaxed);
         self.insert_max_reduction_db_bits
             .store(stats.insert_max_reduction_db.to_bits(), Ordering::Relaxed);
+        self.insert_current_reduction_db_bits.store(
+            stats.insert_current_reduction_db.to_bits(),
+            Ordering::Relaxed,
+        );
         self.insert_strip_frames
             .store(stats.insert_strip_frames, Ordering::Relaxed);
         self.insert_reverb_frames
@@ -400,6 +406,10 @@ impl EngineStatsMirror {
             insert_max_reduction_db: f32::from_bits(
                 self.insert_max_reduction_db_bits.load(Ordering::Relaxed),
             ),
+            insert_current_reduction_db: f32::from_bits(
+                self.insert_current_reduction_db_bits
+                    .load(Ordering::Relaxed),
+            ),
             insert_strip_frames: self.insert_strip_frames.load(Ordering::Relaxed),
             insert_reverb_frames: self.insert_reverb_frames.load(Ordering::Relaxed),
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects.load(Ordering::Relaxed),
@@ -481,6 +491,7 @@ mod tests {
             limiter_current_reduction: 0.125,
             insert_gain_reductions: 17,
             insert_max_reduction_db: -6.5,
+            insert_current_reduction_db: 3.25,
             insert_strip_frames: 19,
             insert_reverb_frames: 20,
             insert_reverb_rate_rejects: 21,

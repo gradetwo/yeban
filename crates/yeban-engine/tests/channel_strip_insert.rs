@@ -19,6 +19,7 @@
 //! | C12 | **不同量子数（块切分）**下前缀逐位相同（D1 的引擎侧对账） | 用了跨量子残留的临时缓冲 / 量子边界上有一次性副作用 |
 //! | C13 | 引擎的 `ChannelStrip` **就是** `yeban_dsp::channel_strip::ChannelStrip`（类型 + `new`/`set_params`/`process_mono` 函数地址同一性 + **零延迟**契约） | 在引擎侧留第二份通道条实现 / 器件带延迟却登记 0 |
 //! | C14 | 设备链顺序：第一个**含已识别参数名**的效果器是唯一来源；更早的无关效果器不参与、更晚的不覆盖 | 取"最后一个"或"任意一个"设备 |
+//! | C15 | `insert_current_reduction_db` 是**量规**（源静音后回落）而不是第二个累计量：任意时刻 `当前 ≤ 全程最大`、`全程最大` 单调不减、静音段末尾 `当前` 落到峰值的一小部分；未武装工程两者恒为 0 | 把"当前"直接抄成"最大"（第二个累计量） / 漏读器件 getter（恒 0） / 跨轨取"最后一条轨"而不是最大 |
 //!
 //! ## C8 的跨提交对账（**不硬编码哈希**）
 //!
@@ -706,4 +707,296 @@ fn the_first_recognised_effect_in_the_chain_is_the_only_strip_source() {
     });
     assert_eq!(slots, 2, "两条轨各挂一台器件 ⇒ 两个槽位");
     assert!(first_armed && second_armed, "两条轨都必须真的武装进去");
+}
+
+/// C15：`insert_current_reduction_db` 是**量规**，不是第二个累计量。
+///
+/// # 判据（六个断言，每个都能单独变红）
+///
+/// | # | 断言 | 单位/对象 |
+/// | :-: | :--- | :--- |
+/// | 1 | 覆盖度：夹具真的压到（`insert_gain_reductions > 0`、`insert_max_reduction_db > 0`），且窗口里真的有声 | 帧 / dB |
+/// | 2 | 不变式：**每一个量子边界**上 `当前 ≤ 全程最大`，且两者都 `≥ 0` | dB |
+/// | 3 | 累计量单调不减：逐量子采样的 `全程最大` 序列**永不下降** | dB |
+/// | 4 | **量规回落**：源静音段末尾的 `当前` < 压缩段峰值 `当前`，且 < 终点 `全程最大` 的一半 | dB |
+/// | 5 | 未武装工程（同夹具去掉设备）整段窗口之后两者**逐位为 `0.0`**；镜像与权威在静止点上逐字段相等 | dB |
+/// | 6 | **跨轨口径 = 最大**：同一个两轨工程的三次渲染（两轨都挂 / 只挂 A / 只挂 B）里，逐量子 `两轨 = max(只 A, 只 B)` **逐位相等** | dB |
+///
+/// # 为什么这些断言有牙（它们分别打在哪条注入上）
+///
+/// - 第 4 条打"把当前读数抄成第二个累计量"（读数改成器件的 `max_reduction_db`）：
+///   尾部当前 == 终点最大 ⇒ 第 4 条红，而第 2、3 条仍然绿 —— 这正是"量规与累计量"的分界；
+/// - 第 4 条同时打"漏读器件 getter、读数不写"：那样**峰值** `当前` 也是 0，
+///   "末尾 < 峰值"不成立（`0 < 0` 为假）；
+/// - 第 6 条打"跨轨取**最后一条轨**而不是最大"：三条臂的两条单轨读数在多个量子边界上
+///   相差数 dB（下面显式断言这一点）⇒ "最后一条轨"的读数会与 `max` 不等；
+/// - 第 5 条打"读数写成非零常数"：没有武装器件时它必须逐位是 `0.0`。
+///
+/// # 窗口设计（为什么是 700 个量子）
+///
+/// `NOTES` 的最后一条音符在 tick 2400 结束（1 tick = 25 样本 ⇒ 第 60 000 帧），
+/// 即第 468.75 个量子；700 个量子 = 89 600 帧 ⇒ 尾部约 231 个量子（≈ 0.48 s）是
+/// **源静音**段。动态级的默认释放时间常数是 0.1 s（`CompressorParams::DEFAULT`）
+/// ⇒ 那一段是 4.8 个时间常数：量规必须明显回落，而累计量必须一动不动。
+/// 没有那段静音，"回落"与"一直没压"在读数上不可区分（假绿）。
+#[test]
+fn insert_current_reduction_is_a_gauge_not_a_second_counter() {
+    /// 渲染量子数（见判据文档的窗口设计）。
+    const RELEASE_QUANTA: usize = 700;
+
+    let (project, _track) = armed_project();
+
+    // 逐量子采样：`samples[i]` = **第 i 个量子处理完之后**的两个读数
+    // （`render_with` 的回调在量子**之前**调用 ⇒ 采到的是上一个量子的结果）。
+    let mut samples: Vec<(f32, f32)> = Vec::with_capacity(RELEASE_QUANTA + 1);
+    let mut mirror_matches_authoritative = true;
+    let rendered = render_with(&project, RELEASE_QUANTA, 1, |_quantum, rig| {
+        let stats = rig.runtime.stats();
+        samples.push((
+            stats.insert_current_reduction_db,
+            stats.insert_max_reduction_db,
+        ));
+        // 静止点等号（同一条线程、没有并发写者）：镜像的搬运必须逐字段一致。
+        // 它不是本判据的主角（`stats_mirror.rs` 的漂移闸门负责那一面），但新字段
+        // 一旦漏出 `publish`，这里会立刻红。
+        if rig.runtime.stats_mirror().read() != stats {
+            mirror_matches_authoritative = false;
+        }
+    });
+    let final_stats = rendered.stats;
+    samples.push((
+        final_stats.insert_current_reduction_db,
+        final_stats.insert_max_reduction_db,
+    ));
+
+    assert_eq!(
+        samples.len(),
+        RELEASE_QUANTA + 1,
+        "逐量子采样必须覆盖每一个量子边界（含末端）"
+    );
+    // ---- 判据 1：覆盖度（防"什么都没跑"的假绿）----
+    assert!(
+        rendered.nonzero() > 0,
+        "窗口里必须真的有声，否则量规判据是空转（假绿）"
+    );
+    assert!(
+        final_stats.insert_gain_reductions > 0,
+        "夹具的动态级必须真的压过帧（压过帧数 = 0 ⇒ 本判据没有覆盖动态级）"
+    );
+    assert!(
+        final_stats.insert_max_reduction_db > 0.0,
+        "夹具的全程最大衰减必须 > 0 dB（0 ⇒ 只有检波器在跑、弹道没压）"
+    );
+
+    // ---- 判据 2 + 3：逐量子不变式与累计量的单调性 ----
+    let mut invariant_violations = 0usize;
+    let mut monotonicity_violations = 0usize;
+    let mut previous_max = 0.0f32;
+    let mut peak_current = 0.0f32;
+    let mut peak_current_quantum = 0usize;
+    for (quantum, (current, all_time_max)) in samples.iter().copied().enumerate() {
+        // 两个读数都是 dB 衰减 ⇒ 非负有限（`-0.0 < 0.0` 为假 ⇒ `-0.0` 合法）。
+        if current < 0.0 || all_time_max < 0.0 || !current.is_finite() || !all_time_max.is_finite()
+        {
+            invariant_violations += 1;
+        }
+        // **量规 ≤ 累计量**：器件自己的 `max_reduction_db` 是逐帧取最大，
+        // 而 `current` 只是某一帧的值 ⇒ 这条不等式的两边来自同一个器件、同一瞬间。
+        if current > all_time_max {
+            invariant_violations += 1;
+        }
+        if all_time_max < previous_max {
+            monotonicity_violations += 1;
+        }
+        previous_max = all_time_max;
+        if current > peak_current {
+            peak_current = current;
+            peak_current_quantum = quantum;
+        }
+    }
+    assert_eq!(
+        invariant_violations, 0,
+        "每一个量子边界上都必须 `0 ≤ 当前 ≤ 全程最大`（同源同瞬间）"
+    );
+    assert_eq!(
+        monotonicity_violations, 0,
+        "`insert_max_reduction_db` 是只增不减的累计量：逐量子采样绝不允许下降"
+    );
+
+    // ---- 判据 4：量规在源静音段回落，累计量不动 ----
+    //
+    // 峰值必须出现在**还在出声**的段里（第 468 个量子之前），否则夹具没有覆盖到
+    // "压限正在建立"的那一半。
+    assert!(
+        peak_current > 0.0,
+        "峰值当前衰减必须 > 0 dB（恒 0 ⇒ 读数根本没被写进去）"
+    );
+    assert!(
+        peak_current_quantum < 468,
+        "峰值必须落在音符还在响的段里（实测第 {peak_current_quantum} 个量子）"
+    );
+    let (tail_current, tail_max) = samples[RELEASE_QUANTA];
+    assert!(
+        tail_current < peak_current,
+        "源静音段末尾的当前衰减（{tail_current} dB）必须严格小于压缩段峰值（{peak_current} dB）\
+         —— 相等 ⇒ 这个读数是第二个累计量，不是量规"
+    );
+    assert!(
+        tail_current * 2.0 < tail_max,
+        "源静音段末尾的当前衰减（{tail_current} dB）必须落到终点全程最大（{tail_max} dB）的\
+         一半以下（释放时间常数 0.1 s，尾部静音约 0.48 s ⇒ 实测应当低一个数量级）"
+    );
+    assert!(
+        tail_max >= peak_current,
+        "累计量在整段窗口里不得下降（终点 {tail_max} dB，峰值当前 {peak_current} dB）"
+    );
+    println!(
+        "[engine-wiring-2/C15] 量规 vs 累计量: 峰值当前={peak_current:.4} dB（第 {peak_current_quantum} 个量子）\
+         终点当前={tail_current:.4} dB 终点最大={tail_max:.4} dB 压过帧数={} 镜像等号={mirror_matches_authoritative}",
+        final_stats.insert_gain_reductions
+    );
+    assert!(
+        mirror_matches_authoritative,
+        "静止点上镜像必须与权威读数逐字段相等（新字段漏出 `publish` ⇒ 这里红）"
+    );
+
+    // ---- 判据 5（对照臂）：没有武装通道条 ⇒ 两个读数都必须是冷值 ----
+    //
+    // 同一个夹具、同一条轨、同样的音符，**只**去掉设备链 ⇒ 插入链整段跳过
+    // ⇒ 两个读数必须逐位为 `0.0`。这一条把"读数恒 0"与"没有插入链"分开：
+    // 若实现里把读数写成非零常数（不读器件），这里会红。
+    let bare = tuned_project(&NOTES, MixSpec::volume(0.0));
+    let bare_rendered = render(&bare.project, RELEASE_QUANTA);
+    assert_eq!(
+        bare_rendered.stats.insert_current_reduction_db.to_bits(),
+        0.0f32.to_bits(),
+        "没有武装通道条时当前衰减必须是冷值 0.0"
+    );
+    assert_eq!(
+        bare_rendered.stats.insert_max_reduction_db.to_bits(),
+        0.0f32.to_bits(),
+        "没有武装通道条时全程最大衰减必须是冷值 0.0"
+    );
+    assert_eq!(
+        bare_rendered.stats.insert_gain_reductions, 0,
+        "没有武装通道条时压过帧数必须为 0"
+    );
+    // 同一条轨在**有**设备时必须报出非零（否则上面那个 0 是"什么都没测"）。
+    assert_eq!(
+        bare.project
+            .tracks
+            .get(&bare.track)
+            .map(|entry| entry.devices.len()),
+        Some(0),
+        "对照臂的那条轨必须真的没有设备（它是 `armed_project` 的同一份夹具，只少了 `mount`）"
+    );
+    assert!(
+        final_stats.insert_current_reduction_db > 0.0,
+        "同一个夹具**有**设备时当前衰减必须报出非零（与对照臂的 0 构成一对）"
+    );
+
+    // ---- 判据 6：跨轨口径必须是**最大**，不是"最后一条轨" ----
+    //
+    // 三条臂用**同一份工程**（同一次 `two_track_project` ⇒ 同一批 `EntityId`、
+    // 同一个 `BTreeMap` 键序），唯一差别是哪条轨还挂着自己的器件：
+    //
+    //   * `both`：两条轨各挂一台**参数相同**的通道条；
+    //   * `only_first` / `only_second`：把另一条轨的设备链清空。
+    //
+    // 逐轨插入链的状态只取决于**本轨自己的样本与参数**（声源、参数表、电平、
+    // PDC 与母线都在它之后）⇒ `both` 的读数必须逐量子等于 `max(only_first, only_second)`。
+    // 若实现取的是"循环里最后一条轨"的值，`max` 与它会在两条单轨读数不同的量子边界上分叉。
+    //
+    // ⚠ **夹具必须让"谁更大"双向出现**：`BTreeMap` 的迭代顺序由 `EntityId`（ULID）决定，
+    // 而 ULID 带随机分量 ⇒ "最后一条轨"是 A 还是 B 在每次运行里都可能不同。
+    // 若夹具里 A 恒 ≥ B，那么"最后一条轨"注入只在**一半**的运行里被抓到（判据会变成掷硬币）。
+    // 因此两条轨用**相同的参数、错开的音符窗口**：
+    //
+    //   * 轨 A 的音符在 tick 0..480（帧 0..12 000 ⇒ 量子 0..93.75）；
+    //   * 轨 B 的音符在 tick 960..1440（帧 24 000..36 000 ⇒ 量子 187.5..281.25）。
+    //
+    // ⇒ A 先压、B 后压：A 在开头独占（`only_first > only_second`），B 在自己的窗口里
+    // 稳压住正在释放的 A（`only_second > only_first`）。下面**两条方向都要断言非空**
+    // ——那就是"无论迭代顺序如何，这条判据都有牙"的机械形式。
+    let notes_first = [NoteSpec::at(0, 480, 60, 127)];
+    let notes_second = [NoteSpec::at(960, 480, 60, 127)];
+    let (mut two_track, first, second) = support::two_track_project(&notes_first, &notes_second);
+    mount(
+        &mut two_track,
+        first,
+        vec![effect(&[("threshold_db", -30.0), ("ratio", 8.0)])],
+    );
+    mount(
+        &mut two_track,
+        second,
+        vec![effect(&[("threshold_db", -30.0), ("ratio", 8.0)])],
+    );
+
+    /// 渲染一份两轨工程并逐量子采出 `insert_current_reduction_db` 序列。
+    fn gauge_series(project: &YebanProjectV1, quanta: usize) -> Vec<f32> {
+        let mut series: Vec<f32> = Vec::with_capacity(quanta + 1);
+        let rendered = render_with(project, quanta, 1, |_quantum, rig| {
+            series.push(rig.runtime.stats().insert_current_reduction_db);
+        });
+        series.push(rendered.stats.insert_current_reduction_db);
+        series
+    }
+
+    let both = gauge_series(&two_track, RELEASE_QUANTA);
+    let mut only_first_project = two_track.clone();
+    mount(&mut only_first_project, second, vec![]);
+    let only_first = gauge_series(&only_first_project, RELEASE_QUANTA);
+    let mut only_second_project = two_track.clone();
+    mount(&mut only_second_project, first, vec![]);
+    let only_second = gauge_series(&only_second_project, RELEASE_QUANTA);
+
+    assert_eq!(both.len(), RELEASE_QUANTA + 1);
+    assert_eq!(only_first.len(), RELEASE_QUANTA + 1);
+    assert_eq!(only_second.len(), RELEASE_QUANTA + 1);
+
+    // 牙齿：两个方向都必须真的出现（各以 > 1 dB 为准）。
+    // 没有这一条，"最后一条轨"注入的检出率取决于 ULID 的随机顺序（掷硬币）。
+    let mut first_above = 0usize;
+    let mut second_above = 0usize;
+    let mut max_separation = 0.0f32;
+    for (single_a, single_b) in only_first.iter().zip(only_second.iter()) {
+        if single_a - single_b > 1.0 {
+            first_above += 1;
+        }
+        if single_b - single_a > 1.0 {
+            second_above += 1;
+        }
+        max_separation = max_separation.max((single_a - single_b).abs());
+    }
+    assert!(
+        first_above > 0 && second_above > 0,
+        "两条单轨读数必须在**两个方向**上都出现过 > 1 dB 的差（实测 A 领先 {first_above} 个量子边界、\
+         B 领先 {second_above} 个）—— 单方向夹具会让跨轨口径判据变成掷硬币"
+    );
+
+    let mut mismatches = 0usize;
+    let mut first_mismatch: Option<(usize, f32, f32, f32)> = None;
+    for quantum in 0..=RELEASE_QUANTA {
+        let expected = only_first[quantum].max(only_second[quantum]);
+        if both[quantum].to_bits() != expected.to_bits() {
+            mismatches += 1;
+            if first_mismatch.is_none() {
+                first_mismatch = Some((
+                    quantum,
+                    both[quantum],
+                    only_first[quantum],
+                    only_second[quantum],
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        mismatches, 0,
+        "两轨的当前衰减必须逐量子等于两条单轨读数的**最大**（首个不符：{first_mismatch:?}）"
+    );
+    println!(
+        "[engine-wiring-2/C15] 跨轨口径: A 领先 {first_above} 个量子边界 / B 领先 {second_above} 个 / 共 {} 最大差异={max_separation:.4} dB 逐位最大={}",
+        RELEASE_QUANTA + 1,
+        mismatches == 0
+    );
 }
