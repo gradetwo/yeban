@@ -3405,6 +3405,122 @@ fn edit_notes_add_carries_probability_into_the_project_and_undo_restores_it() {
     );
 }
 
+/// **工具面真的能写静态混音值**：`ops[].kind == "setParam"` 走完
+/// `tools/call` → 提案 → 合并 → 撤销 的整条管线。
+///
+/// 这条判据对着一处**实测缺口**：模型早就有 `Op::SetParam`
+/// （`AutomationTarget::TrackVolume` / `TrackPan` 直接读写 `TrackV3::volume_db` / `pan`），
+/// 而在这个 kind 之前 **17** 个工具里**没有**任何一个能写它们
+/// （`yeban_edit_automation` 写的是自动化**点**，`yeban_import_audio` 的 `gainDb`
+/// 是**片段**增益）。三条注入都能让它变红：删掉 `parse_one` 的 `SET_PARAM_KIND` 分支
+/// （未知 `kind`）、把 `old_val` 改成调用方声明（`data.proposal.ops[0]` 的载荷不再是
+/// 文档现值）、或让 `compile` 无条件要求 MIDI 片段（音频片段那条路径变成 `CLIP_NOT_FOUND`）。
+#[test]
+fn edit_notes_set_param_writes_the_static_mix_value_and_undo_restores_it() {
+    let scratch = Scratch::new("set-param-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let track = project
+        .tracks
+        .values()
+        .find(|track| track.kind == yeban_model::TrackKind::Audio)
+        .expect("样本里必须有音频轨");
+    let (track_id, volume_before, pan_before) = (track.id, track.volume_db, track.pan);
+    let track_text = track_id.to_canonical_string();
+    let clip = project
+        .clip_pool
+        .values()
+        .find(|entry| entry.content.notes().is_none())
+        .expect("样本里必须有非 MIDI 片段")
+        .id
+        .to_canonical_string();
+
+    // 响亮失败三条：不可写的目标名 / 别名。
+    let send_gain = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setParam", "lane": "SendGain", "value": 0.0}]}),
+    );
+    assert_domain_error(&send_gain, "INVALID_PARAMETER_RANGE", "SendGain 静态写");
+    assert_eq!(
+        send_gain["error"]["data"]["reason"], "staticLaneNotApplicable",
+        "{send_gain}"
+    );
+    let alias = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_text, "clipId": clip,
+               "ops": [{"kind": "setParam", "lane": "trackVolume", "value": 0.0}]}),
+    );
+    assert_domain_error(&alias, "INVALID_PARAMETER_RANGE", "别名");
+    assert_eq!(
+        alias["error"]["data"]["reason"], "unknownStaticLane",
+        "{alias}"
+    );
+
+    let bytes_before = project_bytes(&dispatcher);
+    // 目标是**非 MIDI**（音频）片段：纯静态写入不读片段内容, 因此必须被接受。
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text, "clipId": clip, "includeOps": true,
+            "ops": [
+                {"kind": "setParam", "lane": "TrackVolume", "value": -11.5},
+                {"kind": "setParam", "lane": "TrackPan", "value": 0.5}
+            ]
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    // 撤销载荷必须来自**当前文档**, 不是调用方声明。
+    assert_eq!(
+        created["data"]["proposal"]["ops"][0]["op"]["SetParam"]["old_val"],
+        json!(volume_before),
+        "音量撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(
+        created["data"]["proposal"]["ops"][1]["op"]["SetParam"]["old_val"],
+        json!(pan_before),
+        "声相撤销载荷必须等于文档现值: {created}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = created["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "静态混音值" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let after = dispatcher
+        .domain()
+        .active_project()
+        .expect("工程")
+        .track(&track_id)
+        .expect("音轨");
+    assert_eq!(after.volume_db, -11.5, "合并后静态音量必须真的改了");
+    assert_eq!(after.pan, 0.5, "合并后静态声相必须真的改了");
+
+    // 可回退：撤销一次 ⇒ 逐字节回到提案之前的工程。
+    let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+    assert_eq!(undone["status"], "success", "{undone}");
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "撤销必须逐字节复原 (静态混音值随 Op::SetParam 一起可逆)"
+    );
+}
+
 /// **连击与微时序在工具面上可达，且被母带渲染器真的消费**：
 /// `yeban_edit_notes` 的 `add.note.ratchet` / `add.note.microTimingTicks` 进工程
 /// （合并后逐字段可读），渲染响应的 `data.ratchet` 与逐源 `notesRatcheted` 反映它，

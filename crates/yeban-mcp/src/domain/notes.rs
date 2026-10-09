@@ -99,6 +99,40 @@
 //!
 //! 空 `ops` 只在**摆放在场**时被接受：那时"这次调用要做什么"由 `placement` 承载，
 //! 音符那一半就是"一个音符都不动"（[`parse_ops`] 自己的空数组守卫**没有**放松）。
+//!
+//! ## 静态混音值形态（`ops[].kind == "setParam"`）—— 关闭"工具面写不了静态混音值"
+//!
+//! 模型早就有 [`Op::SetParam`]（目标 [`AutomationTarget::TrackVolume`] / [`AutomationTarget::TrackPan`]，
+//! `read_param` / `write_param` 直接读写 `TrackV3::volume_db` / `TrackV3::pan`），
+//! 而在这个 kind 之前，**17** 个工具里**没有**任何一个能写它们：`yeban_edit_automation`
+//! 写的是 [`Op::SetAutomationPoint`]（自动化**点**），读侧能报 `staticValue` 却没有写侧；
+//! `yeban_import_audio` 的 `gainDb` 是**片段**增益，不是音轨静态值。
+//!
+//! 为什么落在本工具的 `ops[]` 上（而不是新增工具、也不改 `yeban_edit_automation` 的实参）：
+//!
+//! - `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.2 给本工具的行是
+//!   `ops: Vec<NoteOp>` —— `NoteOp` 的 JSON 形状**没有契约**
+//!   （`schemas/mcp-tools.schema.json` 只把本工具列在 `name.enum` 里，
+//!   实参由 `crate::tools::ToolSpec::input_schema` 逐条派生），
+//!   因此**加一个 kind** 不改 `schemas/**` 一个字节；
+//! - 本工具是**扩展工具**名单之外的那十个之一，而扩展工具（含 `yeban_edit_automation`）
+//!   的实参集合被 `schemas/mcp-tools.schema.json` 的
+//!   `definitions.ExtensionToolArguments.$defs` 逐字段钉住
+//!   （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`）
+//!   ⇒ 往它们身上加实参会**必须**同步 `schemas/**`（本线禁改）；
+//! - `ADR-0001` **D46** 的扩张原则是"先扩既有工具的参数，只有确实不合适才新增工具"。
+//!
+//! 语义与模型**同源**，本层不另立第二份：
+//!
+//! - 目标名用 `yeban_edit_automation` 的同一份词汇表（[`LaneKind`]），只放行
+//!   [`StaticLane::NAMES`] 这两个"有静态值"的目标；另外三个仍是**响亮失败**；
+//! - `old_val`（撤销载荷）从**当前文档**读，走 [`AutomationTarget::static_value`]
+//!   （与 `yeban_edit_automation` 的 `staticValue` 读数**同一个**入口），
+//!   因此撤销是模型自己的 [`Op::invert`]，本层不写逆操作；
+//! - 值域判定（声相 `-1.0..=1.0`、非有限值）**不在本层**：`Op::SetParam` 的
+//!   `apply` 会调模型自己的 `validate_param_value`，本层只拦"不是数字"这类 JSON 形状错误。
+//!
+//! 落地路径与本工具既有的音符编辑**完全相同**：先提案、再 `yeban_merge_proposal`。
 
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
@@ -107,10 +141,12 @@ use serde_json::{Map, Value};
 
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
-    ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, YebanProjectV1,
+    AutomationTarget, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote,
+    Op, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
+use super::extension_pure::LaneKind;
 use super::ids::deterministic_id;
 use crate::tools::ErrorCode;
 
@@ -251,6 +287,58 @@ pub const PLACEMENT_MOVE_FIELDS: &[&str] = &[PLACEMENT_KIND_FIELD, "startTick", 
 /// `remove` 形态允许的键：判别键 + 被取走的摆放身份。
 pub const PLACEMENT_REMOVE_FIELDS: &[&str] = &[PLACEMENT_KIND_FIELD, "placementId"];
 
+/// `ops[].kind` 的**静态混音值**形态名（写 [`Op::SetParam`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetParam` 的小驼峰），与其余四个 kind
+/// （`add` / `delete` / `move` / `velocity`）同一风格。
+pub const SET_PARAM_KIND: &str = "setParam";
+
+/// `setParam` 的**目标**字段名（`ops[].lane`，必填）。
+///
+/// 借用 `yeban_edit_automation` 的同名实参与 [`LaneKind`] 的同一份词汇表
+/// （`ADR-0001` D48：同一个词必须同一个意思）——目标名逐字等于 `project.json` 的变体名。
+pub const SET_PARAM_LANE_FIELD: &str = "lane";
+
+/// `setParam` 的**新值**字段名（`ops[].value`，必填，数字）。
+pub const SET_PARAM_VALUE_FIELD: &str = "value";
+
+/// `ops[].kind` 的**全集**（规范顺序：四个音符/摆放形态在前，静态值在后）。
+///
+/// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
+pub const OP_KINDS: [&str; 5] = ["add", "delete", "move", "velocity", SET_PARAM_KIND];
+
+/// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
+///
+/// 为什么单列一个二值枚举而不是直接收 [`LaneKind`]：`SendGain` 的模型语义是
+/// `Option<f32>`（`None` = 单位增益），`SetParam` **明文拒绝**它（必须走
+/// `Op::SetRoutingGain`）；`DeviceParam` / `Macro` 的静态写入在本工具面**没有**
+/// 通路。用二值类型把"哪三个不可写"变成**不可表达**，比在 `compile` 里补一条
+/// 不可达分支更诚实。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaticLane {
+    /// 音轨静态音量（`TrackV3::volume_db`，单位 dB，有限值）。
+    TrackVolume,
+    /// 音轨静态声相（`TrackV3::pan`，-1.0..=1.0）。
+    TrackPan,
+}
+
+impl StaticLane {
+    /// 允许的目标名，**规范顺序**（错误信息的 `allowed` 与判据共用）。
+    ///
+    /// 从 [`LaneKind`] 自己的 `as_str` 派生 ⇒ 词汇表**只有一份**（不是第二张手写表）。
+    pub const NAMES: [&'static str; 2] =
+        [LaneKind::TrackVolume.as_str(), LaneKind::TrackPan.as_str()];
+
+    /// 把目标落到具体音轨上（[`Op::SetParam`] 的载荷）。
+    #[must_use]
+    pub fn target(self, track_id: EntityId) -> AutomationTarget {
+        match self {
+            Self::TrackVolume => AutomationTarget::TrackVolume { track_id },
+            Self::TrackPan => AutomationTarget::TrackPan { track_id },
+        }
+    }
+}
+
 /// 一次 `placement` 实参要做的**摆放编辑**（三种形态的编译结果）。
 ///
 /// 三个变体逐一对应模型层的三个 `Op`：`Add` → [`Op::AddClipPlacement`]、
@@ -329,6 +417,17 @@ pub enum NoteOp {
         /// 新力度 `0..=127`。
         velocity: u8,
     },
+    /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量或声相。
+    ///
+    /// 这是本枚举里**唯一**音轨级（而非音符级）的形态：它不读、不写任何音符，
+    /// 目标音轨由调用方的 `trackId` 给出（见 [`compile`]）。值域判定在模型层
+    /// （[`Op::SetParam`] 的 `apply` → `validate_param_value`）。
+    SetParam {
+        /// 目标（只有"有静态值"的两个变体）。
+        lane: StaticLane,
+        /// 目标值；`TrackVolume` 单位 dB（有限值），`TrackPan` ∈ -1.0..=1.0。
+        value: f32,
+    },
 }
 
 impl NoteOp {
@@ -340,7 +439,18 @@ impl NoteOp {
             Self::Delete { .. } => "delete",
             Self::Move { .. } => "move",
             Self::Velocity { .. } => "velocity",
+            Self::SetParam { .. } => SET_PARAM_KIND,
         }
+    }
+
+    /// 该形态是否**读/写音符**（即是否必须在一条 MIDI 片段上施加）。
+    ///
+    /// [`Self::SetParam`] 是**音轨级**的：它跟片段内容无关。这条区分让
+    /// [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
+    /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
+    #[must_use]
+    pub const fn is_note_level(&self) -> bool {
+        !matches!(self, Self::SetParam { .. })
     }
 }
 
@@ -355,6 +465,8 @@ impl NoteOp {
 /// {"kind":"delete","noteId":"<ULID>"}
 /// {"kind":"move","noteId":"<ULID>","deltaTick":960,"deltaPitch":12}
 /// {"kind":"velocity","noteId":"<ULID>","velocity":80}
+/// {"kind":"setParam","lane":"TrackVolume","value":-6.0}
+/// {"kind":"setParam","lane":"TrackPan","value":-0.25}
 /// ```
 ///
 /// `note.probability` / `note.ratchet` / `note.microTimingTicks` 是**可选**字段
@@ -362,10 +474,15 @@ impl NoteOp {
 /// 见 [`PROBABILITY_FIELD`] / [`RATCHET_FIELD`] / [`MICRO_TIMING_FIELD`]。
 /// `note` 里 [`NOTE_FIELDS`] 之外的键一律**响亮拒绝**，不静默丢弃。
 ///
+/// `setParam` 是唯一的**音轨级**形态：`lane` 只认 [`StaticLane::NAMES`]，
+/// 其余三个自动化目标名（`SendGain` / `DeviceParam` / `Macro`）与未知名字都是
+/// **响亮失败**（`INVALID_PARAMETER_RANGE`，`data.allowed` 给出全集）。
+/// 值的范围判定**不在本层**（见 [`compile`]）。
+///
 /// # Errors
 ///
 /// - `ops` 不是数组 / 元素不是对象 / 缺字段 / 字段类型不对 / `note` 里有未知键 →
-///   `INVALID_PARAMETER_RANGE`（含未知 `kind`）；
+///   `INVALID_PARAMETER_RANGE`（含未知 `kind`、未知 `lane`、不可写 `lane`）；
 /// - 音高、力度、时值、概率、连击、微时序越界 → `OUT_OF_RANGE`；
 /// - 身份文本不是合法 ULID → `INVALID_PARAMETER_RANGE`。
 pub fn parse_ops(value: &Value) -> Result<Vec<NoteOp>, Fault> {
@@ -418,12 +535,116 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             note_id: read_id(object, "noteId")?,
             velocity: read_range(object, "velocity", 0, 127)?,
         }),
+        SET_PARAM_KIND => Ok(NoteOp::SetParam {
+            lane: parse_static_lane(object)?,
+            value: read_number(object, SET_PARAM_VALUE_FIELD)?,
+        }),
         other => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("未知 `kind`: `{other}`"),
-            serde_json::json!({ "supportedKinds": ["add", "delete", "move", "velocity"] }),
+            serde_json::json!({ "supportedKinds": OP_KINDS }),
         )),
     }
+}
+
+/// 解析 `setParam` 的 `lane`（只认 [`StaticLane::NAMES`]）。
+///
+/// 词汇表与 `yeban_edit_automation` **同一份**（[`LaneKind`]）：已知但不可写的三个目标是
+/// **响亮失败**，未知名字（别名 / 拼错）是另一条响亮失败，两条都不静默回退到默认值。
+///
+/// | 情形 | `data.reason` |
+/// | :--- | :--- |
+/// | `lane` 不是字符串 | `laneMustBeString` |
+/// | 名字是另外三个自动化目标（`SendGain` / `DeviceParam` / `Macro`） | `staticLaneNotApplicable` |
+/// | 名字不在 [`LaneKind`] 的词汇表里（别名 / 拼错） | `unknownStaticLane` |
+/// | `lane` 缺失 | 统一的缺字段错误（无 `data`） |
+fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
+    let raw = object
+        .get(SET_PARAM_LANE_FIELD)
+        .ok_or_else(|| missing(SET_PARAM_LANE_FIELD, "字符串"))?;
+    let text = raw.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SET_PARAM_LANE_FIELD}` 必须是字符串, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": SET_PARAM_LANE_FIELD,
+                "reason": "laneMustBeString",
+                "allowed": StaticLane::NAMES,
+            }),
+        )
+    })?;
+    let Some(kind) = LaneKind::parse(text) else {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("未知静态目标 `{text}`"),
+            serde_json::json!({
+                "field": SET_PARAM_LANE_FIELD,
+                "reason": "unknownStaticLane",
+                "received": text,
+                "allowed": StaticLane::NAMES,
+                "note": "只接受 project.json 的规范变体名 (不接受 trackVolume 这类别名)",
+            }),
+        ));
+    };
+    // 另外三个目标是**已知但此形态不适用**：说清楚它们各自为什么不适用，
+    // 而不是笼统地报"未知名字"。
+    match kind {
+        LaneKind::TrackVolume => Ok(StaticLane::TrackVolume),
+        LaneKind::TrackPan => Ok(StaticLane::TrackPan),
+        LaneKind::SendGain => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "`setParam` 不接受目标 `SendGain`: `SendGain` 的取值是 `Option<f32>` \
+             (`None` = 单位增益), `Op::SetParam` 明文拒绝它; 发送增益必须走 `Op::SetRoutingGain`",
+            serde_json::json!({
+                "field": SET_PARAM_LANE_FIELD,
+                "reason": "staticLaneNotApplicable",
+                "received": kind.as_str(),
+                "allowed": StaticLane::NAMES,
+            }),
+        )),
+        LaneKind::DeviceParam | LaneKind::Macro => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{SET_PARAM_KIND}` 不接受目标 `{}`: 本形态只写**音轨**的静态音量/声相; \
+                 设备参数与宏的静态写入在工具面没有通路",
+                kind.as_str()
+            ),
+            serde_json::json!({
+                "field": SET_PARAM_LANE_FIELD,
+                "reason": "staticLaneNotApplicable",
+                "received": kind.as_str(),
+                "allowed": StaticLane::NAMES,
+            }),
+        )),
+    }
+}
+
+/// 读一个**有限**的 JSON 数字（`f64` → `f32`，与 `value` 的模型类型同宽）。
+///
+/// 非有限值（`NaN` / `±inf`）在**本层**就被拒：模型 [`Op::SetParam`] 的
+/// `validate_param_value` 也把它判成 `NonFiniteValue` ⇒ 契约码
+/// `INVALID_PARAMETER_RANGE`（`domain/error.rs` 的映射），两侧**同一个码**，
+/// 不是两份口径。范围（声相 `-1.0..=1.0`）**不在这里**：那是模型的事。
+fn read_number(object: &Map<String, Value>, field: &str) -> Result<f32, Fault> {
+    let raw = object.get(field).ok_or_else(|| missing(field, "数字"))?;
+    let number = raw.as_f64().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是数字, 实际收到 {raw}"),
+            serde_json::json!({ "field": field, "reason": "valueMustBeNumber" }),
+        )
+    })?;
+    if !number.is_finite() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是有限数, 实际收到 {number}"),
+            serde_json::json!({ "field": field, "value": number, "reason": "nonFiniteValue" }),
+        ));
+    }
+    // `Op::SetParam` 的载荷类型就是 `f32`, 所以这一步的 f64 → f32 舍入是模型类型本身
+    // 要求的 (与 `read_probability` 同型): IEEE 最近偶数, 确定性。
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(number as f32)
 }
 
 /// 解析 `note` 对象。
@@ -603,9 +824,15 @@ fn read_probability(object: &Map<String, Value>) -> Result<Option<f32>, Fault> {
 /// `previous_note`，`MoveNote` 与 `ModifyNoteVelocity` 的前置条件会核对
 /// "音符此刻确实存在且内容一致"。
 ///
+/// `SetParam` 是**音轨级**的：目标由 `track_id` 给出，`old_val` 从当前文档读
+/// （[`AutomationTarget::static_value`]，与 `yeban_edit_automation` 的 `staticValue`
+/// 读数同一个入口），因此模型的 `OpStateMismatch` 前置条件天然成立。
+///
 /// # Errors
 ///
-/// - 片段不存在 / 不是 MIDI 片段 → `CLIP_NOT_FOUND`；
+/// - 音轨不存在 → `TRACK_NOT_FOUND`；
+/// - 片段不存在 → `CLIP_NOT_FOUND`；**有音符操作**且片段不是 MIDI → `CLIP_NOT_FOUND`
+///   （纯 `setParam` 调用不要求片段是 MIDI：它不读片段内容）；
 /// - 音符不存在 → `ENTITY_NOT_FOUND`；
 /// - 模型层校验失败 → [`super::error::code_for_model`] 给出的契约码。
 pub fn compile(
@@ -621,7 +848,9 @@ pub fn compile(
         .clip_pool
         .get(clip_id)
         .ok_or_else(|| Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}")))?;
-    if entry.content.notes().is_none() {
+    // "必须是 MIDI 片段"这条断言只在**真的有音符操作**时成立：`setParam` 一个音符都不读。
+    // 四个音符形态的调用因此逐字节等于旧行为（它们总是走到这条断言）。
+    if ops.iter().any(NoteOp::is_note_level) && entry.content.notes().is_none() {
         return Err(Fault::domain(
             ErrorCode::ClipNotFound,
             format!("片段 {clip_id} 不是 MIDI 片段, 没有音符集合"),
@@ -700,6 +929,19 @@ pub fn compile(
                     new_vel: *velocity,
                 }
             }
+            NoteOp::SetParam { lane, value } => {
+                let target = lane.target(*track_id);
+                // 撤销载荷来自**唯一**的静态值入口 (`AutomationTarget::static_value`)：
+                // 本层不自己读 `track.volume_db` / `track.pan`（那会是第二份真相）。
+                let old_val = target
+                    .static_value(project)
+                    .map_err(|error| from_model("静态值读取", &error))?;
+                Op::SetParam {
+                    target,
+                    old_val,
+                    new_val: *value,
+                }
+            }
         });
     }
     Ok(compiled)
@@ -766,7 +1008,8 @@ pub fn compile_create(
                     ErrorCode::InvalidParameterRange,
                     format!(
                         "`create: true` 时 `ops` 只允许 `add` (新片段里还没有音符可以被 \
-                         `delete`/`move`/`velocity` 指向), 实际收到 `{}`",
+                         `delete`/`move`/`velocity` 指向; `setParam` 是音轨级的, 与\
+                         建材料无关), 实际收到 `{}`",
                         other.kind_name()
                     ),
                     serde_json::json!({
@@ -1546,6 +1789,179 @@ mod tests {
         )
         .expect_err("音符不存在");
         assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+    }
+
+    /// `ops[].kind == "setParam"` 的**规范**形状：解析 → 编译 → 真的改工程 → 逆操作回原。
+    ///
+    /// 这一条是"工具面写不了静态混音值"缺口的**字面**判据：它钉住
+    /// `old_val` 来自当前文档（不是调用方声明）、`new_val` 是 `Op::SetParam` 的载荷、
+    /// 且 `Op::invert` 能逐字节回退。
+    #[test]
+    fn set_param_compiles_against_the_document_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let volume_before = project.track(&track_id).expect("音轨").volume_db;
+        let pan_before = project.track(&track_id).expect("音轨").pan;
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "TrackVolume", "value": -9.5},
+            {"kind": "setParam", "lane": "TrackPan", "value": 0.75}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(ops.iter().all(|op| !op.is_note_level()), "两条都是音轨级");
+        assert_eq!(ops[0].kind_name(), SET_PARAM_KIND);
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 2);
+        match &compiled[0] {
+            Op::SetParam {
+                target:
+                    AutomationTarget::TrackVolume {
+                        track_id: target_track,
+                    },
+                old_val,
+                new_val,
+            } => {
+                assert_eq!(*target_track, track_id);
+                assert_eq!(*old_val, volume_before, "撤销载荷必须来自当前文档");
+                assert_eq!(*new_val, -9.5);
+            }
+            other => panic!("应当是 TrackVolume 的 SetParam: {other:?}"),
+        }
+
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "setParam".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        assert_eq!(project.track(&track_id).expect("音轨").volume_db, -9.5);
+        assert_eq!(project.track(&track_id).expect("音轨").pan, 0.75);
+
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        let restored = project.track(&track_id).expect("音轨");
+        assert_eq!(restored.volume_db, volume_before, "音量必须逐字节回原值");
+        assert_eq!(restored.pan, pan_before, "声相必须逐字节回原值");
+    }
+
+    /// 声相值域**不在本层**：越界的 `value` 在模型自己的 `validate_param_value` 处
+    /// 变成 `PanOutOfRange`（契约码 `OUT_OF_RANGE`），本层只搬字面值。
+    #[test]
+    fn set_param_pan_range_is_judged_by_the_model_not_by_this_layer() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        // 本层必须**接受**这个形状（-1.0..=1.0 的判定不属于它）。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "TrackPan", "value": 2.0}
+        ]))
+        .expect("本层不做值域判定");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        let mut simulated = project.clone();
+        let failure = compiled[0]
+            .apply(&mut simulated)
+            .expect_err("模型必须拒绝越界声相");
+        assert_eq!(
+            super::super::error::code_for_model(&failure),
+            ErrorCode::OutOfRange
+        );
+    }
+
+    /// 另外三个自动化目标名与别名都是**响亮失败**：不静默回退、不猜。
+    #[test]
+    fn set_param_rejects_non_static_lanes_and_aliases() {
+        for (payload, expected_reason) in [
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "SendGain", "value": 0.0}]),
+                Some("staticLaneNotApplicable"),
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "DeviceParam", "value": 0.0}]),
+                Some("staticLaneNotApplicable"),
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "Macro", "value": 0.0}]),
+                Some("staticLaneNotApplicable"),
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "trackVolume", "value": 0.0}]),
+                Some("unknownStaticLane"),
+            ),
+            // 缺 `value` / `value` 不是数字 / `lane` 不是字符串 / 缺 `lane`。
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "TrackVolume"}]),
+                None,
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "TrackVolume", "value": "loud"}]),
+                Some("valueMustBeNumber"),
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "lane": 3, "value": 0.0}]),
+                Some("laneMustBeString"),
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "value": 0.0}]),
+                None,
+            ),
+        ] {
+            let fault = parse_ops(&payload).expect_err(&format!("必须被拒: {payload}"));
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{payload}"
+            );
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("必须是领域失败: {payload}");
+            };
+            let Some(reason) = expected_reason else {
+                assert!(data.is_none(), "缺字段错误不该带 data: {payload}");
+                continue;
+            };
+            let data = data.clone().expect("形状错误必须带 data");
+            assert_eq!(data["reason"], reason, "{payload} 的 data: {data}");
+            if reason.contains("Lane") {
+                assert_eq!(
+                    data["allowed"],
+                    serde_json::json!(StaticLane::NAMES),
+                    "{payload} 必须报出允许集合"
+                );
+            }
+        }
+    }
+
+    /// 纯 `setParam` 调用**不要求**片段是 MIDI（它一个音符都不读）；
+    /// 同一片段上的音符操作**仍然**要求 MIDI（旧行为逐字节不变）。
+    #[test]
+    fn set_param_alone_does_not_require_a_midi_clip() {
+        let project = filled_project();
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段");
+        let track_id = project
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio)
+            .expect("样本里必须有音频轨")
+            .id;
+        let clip_id = audio_clip.id;
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "TrackVolume", "value": -12.0}
+        ]))
+        .expect("解析");
+        compile(&project, &track_id, &clip_id, &ops).expect("纯静态写入不要求 MIDI 材料");
+
+        let note_ops = parse_ops(&serde_json::json!([
+            {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &track_id, &clip_id, &note_ops)
+            .expect_err("音符操作仍然要求 MIDI 材料");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
     }
 
     #[test]
