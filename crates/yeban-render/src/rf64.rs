@@ -52,6 +52,16 @@
 //!   `a_bext_text_field_that_cannot_round_trip_is_refused_before_any_byte`。
 //!   [`ContainerPlan::header_bytes`] 仍然信任计划（它没有 `Result` 出口）, 因此直接用它
 //!   拼文件的调用方要先过 `validate()`。
+//! - **写入点还要把负载长度与声明的 `data` 长度对齐**（本轮新增）：这两条长度有两个
+//!   独立来源（计划里的 [`Rf64Sizes::data_size`] 与 `payload.len()`），不一致时
+//!   修复前的 `write_container` 照样返回 `Ok(())` —— 声明偏长则本 crate 的读取器
+//!   报 `Truncated`，声明偏短则读取器**静默丢掉尾巴**。判据是
+//!   `the_payload_length_must_match_the_declared_data_length`。
+//! - **`sample_rate == 0` 也被拒绝**（本轮新增，来源是 crate 内与 [`crate::wav`] 的
+//!   分歧）：本模块的读取器**读得回**零采样率 —— 它产出的是外部解码器打不开的
+//!   `nAvgBytesPerSec = 0` 容器，而同一个 crate 走 `hound` 的写入器
+//!   （[`crate::wav::check_container_fields`]）早已拒绝它。判据是
+//!   `a_zero_sample_rate_is_refused_before_any_byte`。
 //! - 只实现 `bext` 版本 1 与 2 的读写; 1997 年的 v0 布局未核验, 读到即返回
 //!   [`Rf64Error::UnsupportedBextVersion`], 登记为 `pending`。**写入器与读取器的
 //!   接受集现在是同一个** `{1, 2}`: [`Bext::to_bytes`] 对 v0 **与 v≥3** 都拒绝
@@ -1098,16 +1108,38 @@ impl ContainerPlan {
     ///    （读取器读回的不是同一个字符串, 见
     ///    [`Bext::field_that_does_not_round_trip`]）。
     ///
+    /// # 第四类: `sample_rate == 0`（本轮补上, 来源是 crate 内两条写入器的分歧）
+    ///
+    /// 前三类都是"本 crate 的读取器会拒绝"。第四类不同, 它的来源是 [`crate::wav`]:
+    /// 同一个 crate 的**另一条**写入器 `write_plain_wav` 走 `hound`, 而
+    /// [`crate::wav::check_container_fields`] 明确拒绝 `sample_rate == 0`, 文档里写明
+    /// 理由是 "hound 写 `nBlockAlign` 时 **现位于第 332 行**做
+    /// `bytes_per_sec / spec.sample_rate`, 除数为 0 ⇒ panic"。本模块的
+    /// [`Self::byte_rate`] 是**饱和**乘法而不是除法, 因此不会 panic —— 它写出
+    /// `nAvgBytesPerSec = 0` 的 `fmt `, 一个任何符合规范的解码器都打不开的容器。
+    /// 本机实测（修复前, 判据
+    /// `a_zero_sample_rate_is_refused_before_any_byte`）:
+    ///
+    /// ```text
+    /// RIFF ch=2 bits=16 rate=0 -> validate Ok(()), write_container Ok(写出 60 字节), parse_container Ok(sample_rate = 0)
+    /// ```
+    ///
+    /// 即本 crate 的读取器**读得回来**, 所以这一条不是对称性判据, 而是"同一 crate 的
+    /// 两条写入器不得对同一个显然不可用的格式给出两个判决"。
+    ///
     /// 这与 [`Bext::to_bytes`] 那条"写入器只写 [`Bext::from_bytes`] 读得回的版本"
     /// 是同一条纪律: **写入器与读取器的接受集必须是同一个**。
     ///
     /// # Errors
     ///
-    /// 上面三类。`Ok(())` ⇒ [`write_container`] 写出的字节能被 [`parse_container`]
+    /// 上面四类。`Ok(())` ⇒ [`write_container`] 写出的字节能被 [`parse_container`]
     /// 读回, 且 `fmt ` 的四个字段逐字段相同。
     pub fn validate(&self) -> Result<(), Rf64Error> {
         if self.format.channels == 0 {
             return Err(Rf64Error::ZeroChannels);
+        }
+        if self.format.sample_rate == 0 {
+            return Err(Rf64Error::ZeroSampleRate);
         }
         if !self.format.block_align_fits_u16() {
             return Err(Rf64Error::UnrepresentableBlockAlign {
@@ -1251,6 +1283,28 @@ pub enum Rf64Error {
     UnsupportedFormatTag(u16),
     /// 声道数为 0。
     ZeroChannels,
+    /// 采样率为 0。
+    ///
+    /// 与 [`Self::ZeroChannels`] 是同一条纪律, 只是这次**本 crate 的读取器读得回来**:
+    /// 产出的文件声称"每秒 0 个采样"、`nAvgBytesPerSec` 也是 0, 是**外部**解码器打不开
+    /// 的容器。同一份字节交给 `hound`（本 crate 在 [`crate::wav`] 里当裁判的第三方实现）
+    /// 时, `hound` 写 `nBlockAlign` 的那一处 **现位于第 332 行**对 `spec.sample_rate`
+    /// 做除法 ⇒ 除数为 0 的 panic。[`crate::wav::check_container_fields`] 因此早已把
+    /// `sample_rate == 0` 列进"必须在创建文件之前说'不'"。
+    ZeroSampleRate,
+    /// [`write_container`] 拿到的负载长度与计划里声明的 `data` 长度不一致。
+    ///
+    /// 声明值落在 `data` chunk 的 32 位长度字段（`RIFF`）或 `ds64.dataSize`
+    /// （`RF64`/`BW64`）里, 而真实字节数是 `payload.len()`。两者不一致时写入器的既有
+    /// 保证不成立: 声明得比实际长 ⇒ 本 crate 的读取器返回
+    /// [`Self::Truncated`]; 声明得比实际短 ⇒ 读取器只交出前 `declared` 字节,
+    /// **其余字节被静默丢掉**。判定见 [`write_container`]。
+    DataSizeMismatch {
+        /// 计划声明的 `data` 负载长度（字节）。
+        declared: u64,
+        /// 实际交进来的负载长度（字节）。
+        actual: u64,
+    },
     /// `fmt ` 的 `nBlockAlign`（声道数 × 每样本容器字节数）放不进 `u16`。
     ///
     /// 这是一个**无法在 WAV 里表示**的声道布局（两个因子都直接来自文件字节）,
@@ -1291,6 +1345,11 @@ impl core::fmt::Display for Rf64Error {
             Self::BadFmtLen(len) => write!(f, "fmt chunk 长度不受支持: {len}"),
             Self::UnsupportedFormatTag(tag) => write!(f, "不受支持的格式标签: {tag:#06X}"),
             Self::ZeroChannels => f.write_str("声道数为 0"),
+            Self::ZeroSampleRate => f.write_str("采样率为 0"),
+            Self::DataSizeMismatch { declared, actual } => write!(
+                f,
+                "声明的 data 负载长度是 {declared} 字节, 实际交进来的是 {actual} 字节"
+            ),
             Self::UnrepresentableBlockAlign {
                 channels,
                 bytes_per_sample,
@@ -1334,15 +1393,54 @@ impl From<io::Error> for Rf64Error {
 /// 这条顺序是有意的: `out` 可以是真实文件, 先写头再报错会留下一个残缺的交付物
 /// （与 [`crate::wav::write_plain_wav`] 的"拒绝时不留字节"同一条纪律）。
 ///
+/// # 负载长度必须等于计划声明的 `data` 长度（本轮补上）
+///
+/// `data` 的长度**有两条独立的来源**, 而它们只在调用方守规矩时才一致:
+///
+/// - **声明值** —— 计划里 [`Rf64Sizes::data_size`]。它由
+///   [`ContainerPlan::for_payload`] 的 `payload_len` 参数算出, 落在 `RIFF` 的
+///   `data` 32 位长度字段或 `RF64`/`BW64` 的 `ds64.dataSize` 里;
+/// - **真实值** —— `payload.len()`, 即本函数真的写出去的字节数。
+///
+/// 下面这些类型都是 `pub` 字段: [`ContainerPlan`]、[`Rf64Sizes`], 而
+/// [`ContainerPlan::for_payload`] 也不校验这两个参数彼此是否一致。于是一个把
+/// `payload_len` 与真正交进来的切片写岔的调用方（或直接拼 `ContainerPlan` 字面量的
+/// 调用方）能让本函数在**修复前**返回 `Ok(())`, 而交付物是:
+///
+/// ```text
+/// 声明 34 字节, 实际交 32 字节 -> write_container Ok(写出 76 字节), parse_container Err(Truncated { what: "data 负载" })
+/// 声明 30 字节, 实际交 32 字节 -> write_container Ok(写出 76 字节), parse_container Ok 但只交出 30 字节, 尾巴 2 字节被静默丢掉
+/// 声明  0 字节, 实际交 32 字节 -> 同上, 读取器报告 0 帧
+/// ```
+///
+/// （本机实测, 三种容器 `RIFF`/`RF64`/`BW64` 逐格同形; 判据
+/// `the_payload_length_must_match_the_declared_data_length`。）
+///
+/// 两种形态都让本函数的既有保证 "`Ok(())` ⇒ 写出的字节能被 [`parse_container`]
+/// 读回" 不成立, 因此它们在写任何字节之前都返回
+/// [`Rf64Error::DataSizeMismatch`]。这与 [`ContainerPlan::validate`] 是同一个位置、
+/// 同一条纪律: **写入器只写自己的读取器读得回全部字节的容器**。
+///
+/// [`ContainerPlan::header_bytes`] 自己**做不了**这项检查 —— 它的签名里没有负载,
+/// 这正是这条校验落在**写入点**而不是头部构造点的原因。
+///
 /// # Errors
 ///
-/// 计划不可写（见 [`ContainerPlan::validate`]）或底层写入失败。
+/// 计划不可写（见 [`ContainerPlan::validate`]）、负载长度与声明的 `data` 长度不符
+/// （[`Rf64Error::DataSizeMismatch`]）, 或底层写入失败。
 pub fn write_container<W: Write>(
     out: &mut W,
     plan: &ContainerPlan,
     payload: &[u8],
 ) -> Result<(), Rf64Error> {
     plan.validate()?;
+    let actual = payload.len() as u64;
+    if actual != plan.sizes.data_size {
+        return Err(Rf64Error::DataSizeMismatch {
+            declared: plan.sizes.data_size,
+            actual,
+        });
+    }
     out.write_all(&plan.header_bytes())?;
     out.write_all(payload)?;
     if payload.len() % 2 == 1 {
@@ -3307,5 +3405,192 @@ mod tests {
             ..Bext::default()
         };
         let _ = block.to_bytes();
+    }
+
+    /// 判据 28: **负载长度必须等于计划声明的 `data` 长度** —— 两条长度来源不一致时,
+    /// [`write_container`] 在写任何字节之前返回 [`Rf64Error::DataSizeMismatch`]。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: **6 种**长度岔口 × **3 种**容器 = **18 格**（`RIFF` / `RF64` / `BW64`）。
+    /// 单位: 负载长度是**字节**, `data` 的声明长度也是**字节**。每格查三件事:
+    /// ① [`write_container`] 给出 `Err(DataSizeMismatch { declared, actual })`,
+    /// 且两个字段就是交进去的那两个数; ② `out` 里 **0 字节**;
+    /// ③ 反向 —— 一致的那几格必须写得出去, 且 `parse_container` 读回的 `data`
+    /// 范围**恰好**是整条负载。
+    ///
+    /// # 修复前的字面读数（本机实测: 负载 32 字节, 三种容器逐格同形）
+    ///
+    /// ```text
+    /// 声明 34 字节, 实际 32 -> write_container Ok(写出 76 字节), parse_container Err(Truncated { what: "data 负载" })
+    /// 声明 32 字节, 实际 30 -> write_container Ok(写出 74 字节), parse_container Err(Truncated { what: "data 负载" })
+    /// 声明 30 字节, 实际 32 -> write_container Ok(写出 76 字节), parse_container Ok 但只交出 30 字节
+    /// 声明  0 字节, 实际 32 -> write_container Ok(写出 76 字节), parse_container Ok 且报告 0 帧
+    /// ```
+    ///
+    /// 三种容器的真实字节数是: 声明 32/实际 32 → `RIFF` 76 字节（`RF64`/`BW64` 112 字节）;
+    /// 声明 34/实际 32 → 同为 76（112）; 声明 32/实际 30 → 74（110）;
+    /// 声明 30 或 0/实际 32 → 76（112）。
+    ///
+    /// # 注入
+    ///
+    /// 删掉 [`write_container`] 里那段 `actual != plan.sizes.data_size` 的检查
+    /// ⇒ 第 1、2 格回到上表（`Ok` 且写出字节）⇒ 红。把比较写成 `actual < declared`
+    /// 只会放行"声明偏长"一格, 仍红。
+    ///
+    /// 防空判据是后半段: 长度一致的 2 格 × 3 种容器必须写得出去并整条读回 ——
+    /// 少了它, "18 格全部 `Err`" 也会让本判据变绿。
+    #[test]
+    fn the_payload_length_must_match_the_declared_data_length() {
+        let format = stereo_16bit();
+        let data = payload(8);
+        let full = data.len() as u64;
+        // (声明的负载长度, 实际交进去的字节数)
+        let mismatches: [(u64, usize); 4] = [
+            (full + 2, data.len()),
+            (full - 2, data.len()),
+            (full, data.len() - 2),
+            (1, data.len()),
+        ];
+        let matches: [(u64, usize); 2] = [(full, data.len()), (30, 30)];
+
+        for kind in [
+            ContainerKind::Riff,
+            ContainerKind::Rf64,
+            ContainerKind::Bw64,
+        ] {
+            for (declared, passed) in mismatches {
+                let plan =
+                    ContainerPlan::for_payload(kind, format, declared, 8, None);
+                assert_eq!(
+                    plan.sizes.data_size, declared,
+                    "{kind:?}: 计划里的声明值必须原样保留"
+                );
+                let mut file = Vec::new();
+                assert_eq!(
+                    write_container(&mut file, &plan, &data[..passed]),
+                    Err(Rf64Error::DataSizeMismatch {
+                        declared,
+                        actual: passed as u64,
+                    }),
+                    "{kind:?}: 声明 {declared} 字节 / 实际 {passed} 字节必须被拒"
+                );
+                assert!(
+                    file.is_empty(),
+                    "{kind:?}: 被拒的写入不得留下任何字节（实测零字节）"
+                );
+            }
+
+            for (declared, passed) in matches {
+                let plan =
+                    ContainerPlan::for_payload(kind, format, declared, 8, None);
+                let mut file = Vec::new();
+                write_container(&mut file, &plan, &data[..passed])
+                    .unwrap_or_else(|error| {
+                        panic!("{kind:?}: 长度一致时必须写得出去, 实际 {error}")
+                    });
+                let parsed = parse_container(&file).unwrap_or_else(|error| {
+                    panic!("{kind:?}: 写得出去却读不回来: {error}")
+                });
+                assert_eq!(
+                    parsed.data.end - parsed.data.start,
+                    passed,
+                    "{kind:?}: 读取器必须交出**整条**负载, 不得静默丢尾巴"
+                );
+                assert_eq!(
+                    &file[parsed.data.clone()],
+                    &data[..passed],
+                    "{kind:?}: 读回的负载必须逐字节相同"
+                );
+            }
+        }
+    }
+
+    /// 判据 29: `sample_rate == 0` 在**创建任何字节之前**被拒绝 —— 不是写出一个
+    /// `nAvgBytesPerSec = 0` 的容器。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: **6 种**格式组合（`1`/`2`/`6` 声道 × `16`/`32` 位）× 三种容器,
+    /// 每种在 `rate = 0` 下必须被拒、在 `rate = 48_000` 下必须写得出去。
+    /// 单位: 采样率是**Hz**（本判据只用到 `0` 与 `48_000` 两个值）; 拒绝的读数是
+    /// [`Rf64Error::ZeroSampleRate`] 与 `out` 的**字节数**（必须是 0）。
+    ///
+    /// # 为什么这条不是对称性判据（如实说明）
+    ///
+    /// 本 crate 的读取器**读得回**零采样率的文件 —— 它照样填 `sample_rate = 0`。
+    /// 这条的来源是同一个 crate 的**另一条**写入器: [`crate::wav::check_container_fields`]
+    /// 拒绝 `sample_rate == 0`, 理由是 `hound` 在写 `nBlockAlign` 的那一处
+    /// **现位于第 332 行**对它做除法（除数为 0 ⇒ panic）。因此"同一个显然不可用的格式
+    /// 不得有两个判决"。修复前的本机实测:
+    ///
+    /// ```text
+    /// RIFF ch=2 bits=16 rate=0 -> validate Ok(()), write_container Ok(写出 60 字节), parse_container Ok(sample_rate = 0)
+    /// ```
+    ///
+    /// # 注入
+    ///
+    /// 删掉 [`ContainerPlan::validate`] 里 `sample_rate == 0` 那一支 ⇒ 每格回到
+    /// 上表（`Ok` 且写出字节）⇒ 红。
+    ///
+    /// 防空判据是后半段: 同一个格式在 48 kHz 下必须写得出去、读回 `sample_rate = 48_000`
+    /// —— 少了它, "全部 `Err`" 也会让本判据变绿。
+    #[test]
+    fn a_zero_sample_rate_is_refused_before_any_byte() {
+        let data = payload(4);
+        for kind in [
+            ContainerKind::Riff,
+            ContainerKind::Rf64,
+            ContainerKind::Bw64,
+        ] {
+            for channels in [1u16, 2, 6] {
+                for bits in [16u16, 32] {
+                    let label = format!("{kind:?} ch={channels} bits={bits}");
+                    let zero_rate = PcmFormat::integer(channels, 0, bits);
+                    let plan = ContainerPlan::for_payload(
+                        kind,
+                        zero_rate,
+                        data.len() as u64,
+                        4,
+                        None,
+                    );
+                    assert_eq!(
+                        plan.validate(),
+                        Err(Rf64Error::ZeroSampleRate),
+                        "{label}: 零采样率必须被 validate 拒绝"
+                    );
+                    let mut file = Vec::new();
+                    assert_eq!(
+                        write_container(&mut file, &plan, &data),
+                        Err(Rf64Error::ZeroSampleRate),
+                        "{label}: 零采样率必须被 write_container 拒绝"
+                    );
+                    assert!(
+                        file.is_empty(),
+                        "{label}: 被拒的写入不得留下任何字节（实测零字节）"
+                    );
+
+                    // 防空判据: 同一个格式在 48 kHz 下必须写得出去并读回同一个采样率。
+                    let good = PcmFormat::integer(channels, 48_000, bits);
+                    let plan = ContainerPlan::for_payload(
+                        kind,
+                        good,
+                        data.len() as u64,
+                        4,
+                        None,
+                    );
+                    assert_eq!(plan.validate(), Ok(()), "{label}: 48 kHz 必须可写");
+                    let mut file = Vec::new();
+                    write_container(&mut file, &plan, &data)
+                        .unwrap_or_else(|error| panic!("{label}: {error}"));
+                    let parsed = parse_container(&file)
+                        .unwrap_or_else(|error| panic!("{label}: {error}"));
+                    assert_eq!(
+                        parsed.format.sample_rate, 48_000,
+                        "{label}: 48 kHz 必须原样读回"
+                    );
+                }
+            }
+        }
     }
 }
