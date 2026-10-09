@@ -156,12 +156,23 @@ pub(crate) fn finite_or_zero(sample: f32) -> f32 {
 /// 原地迭代基 2 复数变换（正向或逆向）。
 ///
 /// 由两处非音频速率的消费者共用：波表导入分析（[`crate::oscillator`]）。
-/// `f64` 与直白实现在这里是合适的——它不在渲染循环里——且 `n` 必须是 2 的幂。
-/// 长度不足 2 或长度不匹配时直接返回（不 panic、不分配）。
+/// `f64` 与直白实现在这里是合适的——它不在渲染循环里。
+///
+/// **全定义（不 panic、不分配、不改一个比特）**：`n` 不是 2 的幂、`n < 2`、或两条
+/// 切片长度不匹配时，一律原样返回。基 2 蝶形**只**在 2 的幂上有定义 —— 位反转置换
+/// 与"每级跨度翻倍"的蝶形会给出一对越过 `n` 的下标：本机 release 档实测
+/// `index out of bounds: the len is 3 but the index is 3`（3、5、6、12、100、1000
+/// 都给出同一类越界）。因此这一条**必须**是入口处的真守卫，不能只写成
+/// `debug_assert!`：断言在 release 档被整个编译掉，剩下的是越界下标；而
+/// `0.is_power_of_two() == false`，断言排在长度守卫之前时连**空输入**都会在 debug
+/// 档 panic，与本函数自己的契约（"长度不足 2 … 直接返回、不 panic"）相反。
+///
+/// 判据 [`tests::fft_rejects_every_degenerate_length_bit_for_bit`] 钉住"退化长度原样
+/// 返回"，[`tests::the_power_of_two_transform_is_frozen_bit_for_bit`] 钉住"2 的幂长度
+/// 的输出逐位未变"。
 pub fn fft(re: &mut [f64], im: &mut [f64], inverse: bool) {
     let n = re.len();
-    debug_assert!(n.is_power_of_two(), "FFT 长度必须是 2 的幂");
-    if im.len() != n || n < 2 {
+    if im.len() != n || n < 2 || !n.is_power_of_two() {
         return;
     }
 
@@ -385,6 +396,118 @@ mod tests {
         let mut one_im = [0.0f64];
         fft(&mut one_re, &mut one_im, false);
         assert_eq!(one_re, [2.0]);
+    }
+
+    /// **判据（新写，可红）**：任何退化长度都必须**逐位不变地**返回，一个都不 panic。
+    ///
+    /// 量什么：`fft` 返回之后 `re` / `im` 的 `f64` 位型与调用**之前**是否逐项相同
+    /// （单位：`f64` 位型）。扫描集合 = `{0, 1}` ∪ `{3…257 里全部非 2 的幂}` ∪
+    /// `{1000, 4097, 1_000_003}`：1 帧、非 2 的幂、超长三种极值都在里面；另有长度
+    /// 不匹配一条。
+    ///
+    /// 为什么 `0` 必须单列：旧代码把 `debug_assert!(n.is_power_of_two())` 排在
+    /// `n < 2` 之前，而 `0.is_power_of_two() == false` ⇒ **空输入在 debug 档 panic**，
+    /// 与本函数自己的契约（"长度不足 2 … 直接返回、不 panic"）相反；release 档因断言
+    /// 被编译掉反而返回 —— 同一个输入两档两种终止方式。非 2 的幂则**两档都** panic，
+    /// 只是机制不同（debug 断言 / release `index out of bounds`）。
+    ///
+    /// 正对照：2 的幂长度必须**真的被变换**（否则"逐位不变"可能只是"整个函数被短路
+    /// 成直通"）。
+    ///
+    /// 怎么变红：把 `!n.is_power_of_two()` 从守卫里删掉 ⇒ 非 2 的幂走到基 2 蝶形，
+    /// 越界下标；或把这一行守卫挪回 `debug_assert!` 之后 ⇒ 空输入 panic。
+    #[test]
+    fn fft_rejects_every_degenerate_length_bit_for_bit() {
+        let mut lengths: Vec<usize> = vec![0, 1, 1000, 4097, 1_000_003];
+        lengths.extend((3..=257usize).filter(|n| !n.is_power_of_two()));
+        lengths.sort_unstable();
+        lengths.dedup();
+
+        for &n in &lengths {
+            let mut re: Vec<f64> = (0..n).map(|i| (i % 13) as f64 - 6.0).collect();
+            let mut im: Vec<f64> = (0..n).map(|i| (i % 7) as f64).collect();
+            let re_before: Vec<u64> = re.iter().map(|v| v.to_bits()).collect();
+            let im_before: Vec<u64> = im.iter().map(|v| v.to_bits()).collect();
+            fft(&mut re, &mut im, false);
+            fft(&mut re, &mut im, true);
+            assert!(
+                re.iter().map(|v| v.to_bits()).eq(re_before),
+                "n = {n}: 退化长度改动了实部"
+            );
+            assert!(
+                im.iter().map(|v| v.to_bits()).eq(im_before),
+                "n = {n}: 退化长度改动了虚部"
+            );
+        }
+        assert!(
+            lengths.len() >= 200,
+            "退化长度集合太小（{} 个）⇒ 判据覆盖不住",
+            lengths.len()
+        );
+
+        // 长度不匹配：一个比特都不许动。
+        let mut re = [1.0f64; 8];
+        let mut im = [3.0f64; 7];
+        fft(&mut re, &mut im, false);
+        assert_eq!(re, [1.0; 8]);
+        assert_eq!(im, [3.0; 7]);
+
+        // 正对照：2 的幂必须真的被变换。
+        for n in [2usize, 4, 8, 64, 256, 1024] {
+            let mut re: Vec<f64> = (0..n).map(|i| (i % 13) as f64 - 6.0).collect();
+            let mut im = vec![0.0f64; n];
+            let before: Vec<u64> = re.iter().map(|v| v.to_bits()).collect();
+            fft(&mut re, &mut im, false);
+            assert!(
+                !re.iter().map(|v| v.to_bits()).eq(before),
+                "n = {n}: 2 的幂长度没有被变换 ⇒ 守卫把整个函数短路成了直通"
+            );
+        }
+    }
+
+    /// **判据（新写，可红）**：2 的幂长度的输出**冻结**为一个位型指纹。
+    ///
+    /// 量什么：对固定夹具（`n = 64 / 256 / 1024`）先正变换再逆变换，把每一步 `re` /
+    /// `im` 的全部 `f64` 位型按序喂进 FNV-1a 64（单位：一个 64 位哈希，覆盖 5 376 个
+    /// 位型）。这个数是**守卫改造之前**测出来的读数 ⇒ 这条同时是"新守卫对合法长度
+    /// 零影响"的证据：夹具、位型、哈希三者都逐位未变。
+    ///
+    /// 怎么变红：动这条路径上任何一个数 —— 把逆变换的尺度 `1.0 / n as f64` 改成
+    /// `1.0 / (n as f64 + 1.0)`，或把位反转置换的 `i < j` 改成 `i <= j`。
+    #[test]
+    fn the_power_of_two_transform_is_frozen_bit_for_bit() {
+        let fixture = |n: usize| -> (Vec<f64>, Vec<f64>) {
+            let re: Vec<f64> = (0..n)
+                .map(|i| (((i * 37) % 11) as f64 - 5.0) + i as f64 * 0.125)
+                .collect();
+            (re, vec![0.0f64; n])
+        };
+        let mut words: Vec<u64> = Vec::new();
+        for n in [64usize, 256, 1024] {
+            let (mut re, mut im) = fixture(n);
+            fft(&mut re, &mut im, false);
+            words.extend(re.iter().chain(im.iter()).map(|v| v.to_bits()));
+            fft(&mut re, &mut im, true);
+            words.extend(re.iter().chain(im.iter()).map(|v| v.to_bits()));
+        }
+        assert_eq!(words.len(), 5_376, "夹具规模变了 ⇒ 指纹的前提不再成立");
+        assert_eq!(
+            fnv1a64(&words),
+            0x0a2b_55f0_f304_0c28,
+            "2 的幂长度的输出位型漂移了"
+        );
+    }
+
+    /// FNV-1a 64：把一整段位型折成一个可比较（且失败时可打印）的数。
+    fn fnv1a64(words: &[u64]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for word in words {
+            for byte in word.to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
     }
 
     #[test]
