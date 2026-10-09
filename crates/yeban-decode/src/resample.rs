@@ -1497,4 +1497,113 @@ mod tests {
             "the asset entry must refuse an over-cap target rate before resampling"
         );
     }
+
+    /// 判据（待裁决项的判据材料）：**相对（scale-free）闸门不可能**把「1 帧 @ 1 Hz →
+    /// 768 kHz」的资源放大与**既有判据已在用**的短片段转换分开 —— 两者的相对放大几乎相同，
+    /// 只差**绝对量级**。
+    ///
+    /// 量什么：`resample_interleaved_with_budget` 在任何分配之前交给
+    /// [`limits::check_layout`] 的帧数（单位：帧），以及它相对**理想输出**
+    /// （`输入帧数 × 输出率 ÷ 输入率`，精确有理数）的倍数（单位：百万分之一，无量纲）。
+    /// 怎么量：把该函数交给一个**时长上限为 0** 的预算，从
+    /// [`LimitViolation::DurationTooLong`] 的 `frames` 字段里**读**出来 —— 判定发生在
+    /// 分配之前，因此本条不跑重采样，也不烧 CPU。
+    ///
+    /// 三条读数（本机 aarch64、debug 构建，`/tmp` 探针与下面的断言同值）：
+    ///
+    /// | 输入 | 理想输出帧数 | 要求帧数 | 放大 |
+    /// | :--- | ---: | ---: | ---: |
+    /// | 1 帧 2 声道 44.1 kHz → 48 kHz（**既有判据在用**） | 1.088 4… | 1 265 | **1 162.218 75×** |
+    /// | 96 000 帧 1 声道 48 kHz → 96 kHz（既有判据在用） | 192 000 | 194 314 | 1.012 052× |
+    /// | 1 帧 1 声道 1 Hz → 768 kHz（参数合法上界） | 768 000 | 885 504 010 | **1 153.000 013×** |
+    ///
+    /// 判定表（每一行的处置）：
+    ///
+    /// - 第一行由判据
+    ///   `identical_channels_resample_bit_identically_and_a_silent_channel_stays_silent`
+    ///   钉住（现位于第 1120 行起）：它断言那一路输出里静音声道逐位 `+0.0`、被驱动声道
+    ///   非零，因此第一行不是可以随手丢弃的边角料，而是一份**已经被守护的输出位模式**。
+    /// - 第二行是本 crate 判据套件里**通过全部预算闸门**的最大要求帧数（把整个套件跑一遍、
+    ///   记录通过闸门后的读数得到；同一趟里通过闸门的最大转换比例是 12，来自 8 kHz → 96 kHz）。
+    /// - 第三行是 [ARCH-SEC-003] 要求的"不可信输入的资源上限"在此处的缺口：默认预算的
+    ///   四道闸门全部放行，见判据
+    ///   `the_resampler_demands_chunk_frames_times_ratio_regardless_of_input_length`。
+    ///
+    /// 结论：第一行的相对放大**大于**第三行（差 9 218 737 ppm，约 0.79%）⇒ 「放大倍数 ≤ K」
+    /// 这类闸门会**先**拒掉第一行；第一行与第三行只差**绝对值**（1 265 帧 vs 885 504 010 帧，
+    /// 相差 700 003 倍）。⇒ 能把两者分开的闸门只能落在**绝对值**（要求帧数上限）或
+    /// **转换比例**（最小输入采样率／最大比例）上，而那两个数值是产品裁决，本 crate 不发明。
+    /// 作为对照：第二行是"正常素材"的量级（放大 1.012×，要求 194 314 帧 ≈ 777 KiB）。
+    ///
+    /// 为什么这条判据本身有用：它把"相对闸门不可能"变成可复算的机械读数，并把任何绝对闸门
+    /// 必须落在的**开区间**（194 314, 885 504 010）帧、以及比例闸门必须落在的区间
+    /// （12, 768 000）钉在判据里。若日后有人改 `CHUNK_FRAMES` / `SINC_LEN` / `rubato` 的调用
+    /// 参数，使得第一行的相对放大**不再大于**第三行，本条会红 —— 那时"放大倍数上限"才第一次
+    /// 成为一个可能选项，本判据会提醒重新裁决。
+    ///
+    /// 注入（实测）：把生产路径的 `SincInterpolationParameters::new(256, …)` 的 `256` 改成
+    /// `128` ⇒ 前置延迟项减半，第一行读数从 `1 265` 变成 `1 195`，本条以
+    /// `left: 1195` / `right: 1265` 红。同一次注入只打红三条判据（`133 passed / 3 failed`）：
+    /// 本条、
+    /// `the_resampler_demands_chunk_frames_times_ratio_regardless_of_input_length`
+    /// （`left: 4356010` / `right: 4612010`）、
+    /// `the_chunk_size_takes_part_in_the_bit_exact_output`
+    /// （`first bit difference moved`：`left: Some(0)` / `right: Some(8)`）。
+    ///
+    /// 注入（实测，第二种）：把生产路径的 `CHUNK_FRAMES` 从 `1024` 改成 `512` ⇒ 分块项减半，
+    /// 第一行读数从 `1 265` 变成 `708`，本条以 `left: 708` / `right: 1265` 红；同一次注入
+    /// 仍然只打红三条（`133 passed / 3 failed`）：本条、`configuration_is_pinned`
+    /// （`left: 512` / `right: 1024`）、
+    /// `the_resampler_demands_chunk_frames_times_ratio_regardless_of_input_length`
+    /// （`left: 2564010` / `right: 4612010`）。
+    #[test]
+    fn a_relative_gate_cannot_separate_the_short_clip_amplification_from_a_pinned_conversion() {
+        // 时长上限为 0 ⇒ 任何非零要求帧数都被时长闸门拒；判定发生在分配之前。
+        let no_time = PcmBudget::new(u64::MAX, u64::MAX, u16::MAX, u32::MAX, 0);
+        let needed = |frames: usize, channels: u16, in_rate: u32, out_rate: u32| {
+            let samples = vec![0.0f32; frames * usize::from(channels)];
+            match resample_interleaved_with_budget(&samples, channels, in_rate, out_rate, &no_time)
+            {
+                Err(DecodeError::Budget(LimitViolation::DurationTooLong { frames, .. })) => frames,
+                other => panic!("the zero duration cap must reject before resampling: {other:?}"),
+            }
+        };
+        // 要求帧数相对理想输出帧数的倍数，单位 ppm；全程整数，因此没有浮点误差。
+        let amplification_ppm = |needed: u64, frames: u64, in_rate: u32, out_rate: u32| {
+            let numerator = u128::from(needed) * u128::from(in_rate) * 1_000_000;
+            let denominator = u128::from(frames) * u128::from(out_rate);
+            u64::try_from(numerator / denominator).expect("a ppm ratio fits in u64")
+        };
+
+        // 第一行：既有判据在用的短片段转换（1 帧、2 声道、44.1 kHz → 48 kHz）。
+        let pinned = needed(1, 2, 44_100, 48_000);
+        assert_eq!(pinned, 1_265);
+        let pinned_ppm = amplification_ppm(pinned, 1, 44_100, 48_000);
+        assert_eq!(pinned_ppm, 1_162_218_750);
+
+        // 第二行：通过闸门的最大读数（正常素材量级）。
+        let long_input = needed(96_000, 1, 48_000, 96_000);
+        assert_eq!(long_input, 194_314);
+        let long_ppm = amplification_ppm(long_input, 96_000, 48_000, 96_000);
+        assert_eq!(long_ppm, 1_012_052);
+
+        // 第三行：参数合法上界（1 帧、1 声道、1 Hz → 768 kHz）。
+        let hole = needed(1, 1, 1, limits::DEFAULT_MAX_SAMPLE_RATE);
+        assert_eq!(hole, 885_504_010);
+        let hole_ppm = amplification_ppm(hole, 1, 1, limits::DEFAULT_MAX_SAMPLE_RATE);
+        assert_eq!(hole_ppm, 1_153_000_013);
+
+        // 相对量级：被守护的那一行放大**更大**，因此"放大倍数上限"型闸门先拒它。
+        assert!(
+            pinned_ppm > hole_ppm,
+            "the pinned conversion ({pinned_ppm} ppm) must outgrow the legal upper bound \
+             ({hole_ppm} ppm); otherwise a scale-free amplification cap becomes possible and \
+             this decision must be re-adjudicated"
+        );
+        assert_eq!(pinned_ppm - hole_ppm, 9_218_737);
+        // 绝对量级：两者相差 700 003 倍 ⇒ 只有绝对闸门（或比例闸门）能把它们分开。
+        assert_eq!(hole / pinned, 700_003);
+        // 对照：正常素材的放大是 1.0× 量级。
+        assert_eq!(long_ppm / 1_000_000, 1);
+    }
 }
