@@ -2857,4 +2857,67 @@ mod tests {
         );
         assert_eq!(master.digest, digest_before, "被拒的导出不许改动摘要");
     }
+
+    /// 判据 (守门人, **类别 4: 极值与不可用读数**): 响度范围取到**非有限**值时,
+    /// [`MasterLoudness::to_bext_loudness`] 必须写哨兵 [`Loudness::UNKNOWN`], 不得把它
+    /// 当成一个合法读数缩放进 `bext`。
+    ///
+    /// # 为什么这一格可达
+    ///
+    /// 五个响度字段都是 `pub`, 而 [`MasterLoudness`] 是 `#[derive(Clone, Copy)]` 的公开
+    /// 数据载体: 调用方（或将来另一条测量链）可以把 `loudness_range_lu` 写成
+    /// `Some(f32::INFINITY)`。其余四个字段的"非有限 ⇒ 哨兵"由真实静音夹具覆盖
+    /// （`the_bext_bridge_scales_finite_readings_and_sentinels_the_rest` 走的是
+    /// `measure_master` 的静音读数）, 只有 `loudness_range` 这一支**走不到**:
+    /// 它的 `None`（低于绝对门限 / 样本不足 3 s）与"`Some(非有限)`"是两回事,
+    /// 而静音夹具只产出 `None`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个手工构造的 [`MasterLoudness`], 只把 `loudness_range_lu` 依次置为
+    /// `Some(inf)` / `Some(NaN)` / `Some(7.5)`。单位: LRA 是 **0.01 LU**（`bext` 的
+    /// `LoudnessRange` 刻度）。读数: 三个 `i16`。
+    ///
+    /// # 运算类别（ADR-0001 的 D32）
+    ///
+    /// 本判据只用 `is_finite` / `×100` / `round` 与整数比较, 不含超越函数, 因此按 D32
+    /// 第 1 类**可以在任何架构上逐位断言**。
+    ///
+    /// 注入证明（本机实测）: 删掉 `to_bext_loudness` 里 `Some(range)` 的
+    /// `if range.is_finite()` 守卫之后本轮注入里的这一次**全绿**（192 条判据无一变红）;
+    /// 本判据在那条注入下变红
+    /// （`inf` 会被 `scale_hundredths` 饱和成 `i16::MAX`）。
+    #[test]
+    fn a_non_finite_loudness_range_becomes_the_unknown_sentinel() {
+        let mut loudness = MasterLoudness {
+            integrated_lufs: -20.0,
+            loudness_range_lu: Some(f32::INFINITY),
+            max_momentary_lufs: -20.0,
+            max_short_term_lufs: -20.0,
+            true_peak_dbtp: -6.0,
+            oversampling: MASTERING_TRUE_PEAK_OVERSAMPLING,
+        };
+        assert_eq!(
+            loudness.to_bext_loudness().loudness_range,
+            Loudness::UNKNOWN,
+            "+inf 的 LRA 必须写成哨兵"
+        );
+        loudness.loudness_range_lu = Some(f32::NAN);
+        assert_eq!(
+            loudness.to_bext_loudness().loudness_range,
+            Loudness::UNKNOWN,
+            "NaN 的 LRA 必须写成哨兵"
+        );
+        loudness.loudness_range_lu = Some(f32::NEG_INFINITY);
+        assert_eq!(
+            loudness.to_bext_loudness().loudness_range,
+            Loudness::UNKNOWN,
+            "-inf 的 LRA 必须写成哨兵"
+        );
+        // 防空判据: 有限值必须照常按 0.01 LU 缩放 —— 否则上面三条只是把功能关掉。
+        loudness.loudness_range_lu = Some(7.5);
+        assert_eq!(loudness.to_bext_loudness().loudness_range, 750);
+        loudness.loudness_range_lu = Some(0.0);
+        assert_eq!(loudness.to_bext_loudness().loudness_range, 0);
+    }
 }

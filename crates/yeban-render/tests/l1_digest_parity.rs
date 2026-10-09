@@ -54,8 +54,9 @@ mod export_pipeline;
 use std::path::PathBuf;
 
 use export_pipeline::l1_digest_record::{
-    CrossPlatform, DigestRecord, DigestScope, FieldDiff, Judgement, SCHEMA, Verdict, hex_lower,
-    judge, judge_policy, parse, report, skip_explanation, to_json_line, to_pretty_json,
+    CrossPlatform, DigestRecord, DigestScope, FieldDiff, JudgeError, Judgement, SCHEMA, Verdict,
+    hex_lower, judge, judge_policy, parse, report, same_platform, skip_explanation, to_json_line,
+    to_pretty_json, toolchain_locked,
 };
 use export_pipeline::l1_receipt::Threads;
 use export_pipeline::{
@@ -621,4 +622,231 @@ fn cross_platform_policy_is_explicit_and_never_dresses_up_skip_as_pass() {
     assert_ne!(mismatch.verdict, Verdict::Fail);
     assert_eq!(mismatch.verdict.exit_code(), 2);
     assert!(!mismatch.digest_equal);
+}
+
+/// 判据 ⑫：`pcm-f32-le` 容器的**定长头布局**逐字段正确（模块文档的偏移表就是判据）。
+///
+/// # 为什么需要单独一条
+///
+/// [`encode_wav_f32_le`] 的文档把布局写成一张偏移表（offset 0 / 12 / 36 / 48 …）。
+/// 判据 ⑧ 只钉"`data` 载荷的 SHA-256", 判据 ⑨ 只让独立的第三方读取器读回**样本** ——
+/// 两者都不看 `RIFF` 的长度字段。本机实测: 把 offset 4 那个 32 位长度字段 +1 之后
+/// 本轮注入里的这一次**全绿**（192 条判据无一变红）: `hound` 照样打开, 载荷哈希也不变,
+/// 因为它只哈希 `data` 段。
+///
+/// # 量的是什么（对象 + 单位）
+///
+/// 对象: 一份真渲染导出的 WAV 字节。单位: 偏移是**字节**, 三个长度字段的单位都是字节,
+/// `block_align` 的单位是**字节/帧**, 位深的单位是**位/样本**。
+///
+/// # 运算类别（ADR-0001 的 D32）
+///
+/// 本判据只做整数读取与相等比较, 不含浮点, 因此按 D32 第 1 类**可以在任何架构上
+/// 逐位断言**。
+#[test]
+fn the_wav_container_header_matches_the_documented_layout() {
+    let (record, wav) = local_record(Threads::Auto, "判据 ⑫");
+    let payload = record.params.frames * record.params.channels as u64 * 4;
+    let u32_at = |at: usize| u32::from_le_bytes(wav[at..at + 4].try_into().expect("4 字节"));
+    let u16_at = |at: usize| u16::from_le_bytes(wav[at..at + 2].try_into().expect("2 字节"));
+    let channels = u16::try_from(record.params.channels).expect("声道数进 u16");
+    let block_align = 4u16 * channels;
+
+    assert_eq!(&wav[0..4], b"RIFF");
+    assert_eq!(u64::from(u32_at(4)), 36 + payload, "RIFF 长度 = 36 + 载荷");
+    assert_eq!(&wav[8..12], b"WAVE");
+    assert_eq!(&wav[12..16], b"fmt ");
+    assert_eq!(u32_at(16), 16, "fmt 负载长度");
+    assert_eq!(u16_at(20), 3, "WAVE_FORMAT_IEEE_FLOAT");
+    assert_eq!(u16_at(22), channels);
+    assert_eq!(u32_at(24), record.params.sample_rate);
+    assert_eq!(
+        u32_at(28),
+        record.params.sample_rate * u32::from(block_align),
+        "nAvgBytesPerSec"
+    );
+    assert_eq!(u16_at(32), block_align, "nBlockAlign");
+    assert_eq!(u16_at(34), 32, "wBitsPerSample");
+    assert_eq!(&wav[36..40], b"fact");
+    assert_eq!(u32_at(40), 4, "fact 负载长度");
+    assert_eq!(u64::from(u32_at(44)), record.params.frames, "fact 里的帧数");
+    assert_eq!(&wav[48..52], b"data");
+    assert_eq!(u64::from(u32_at(52)), payload, "data 负载长度");
+    assert_eq!(
+        wav.len() as u64,
+        export_pipeline::l1_digest_record::WAV_HEADER_BYTES + payload
+    );
+    // 防空判据: 同一份字节的 `data` 载荷必须与原读取器交出的一致。
+    assert_eq!(
+        export_pipeline::l1_digest_record::wav_data_payload(&wav)
+            .expect("data 载荷")
+            .len() as u64,
+        payload
+    );
+}
+
+/// 判据 ⑬：工具链锁定要求 `rustc_release` **与** `rustc_host` **都**相同。
+///
+/// # 为什么需要单独一条
+///
+/// `cross_platform_policy_is_explicit_and_never_dresses_up_skip_as_pass` 里那份"异平台"
+/// 记录**两个**字段都不同, 于是 `&&` 与 `||` 给出同一个判决。本机实测: 把
+/// [`toolchain_locked`] 的 `&&` 换成 `||` 之后注入那次 192 条判据无一变红 ——
+/// 只有"只差一个字段"的那一格能分开两种写法。
+///
+/// # 量的是什么（对象 + 单位）
+///
+/// 对象: 本机真渲染出来的那份记录, 以及它的两个**只改一个字段**的副本。单位:
+/// 判决是三值记号（PASS / FAIL / SKIP）与退出码（0 / 1 / 2）。
+#[test]
+fn the_toolchain_lock_requires_both_release_and_host() {
+    let (local, _) = local_record(Threads::Auto, "判据 ⑬ 基线");
+    assert!(toolchain_locked(&local.platform, &local.platform), "自反");
+
+    let mut other_release = local.clone();
+    other_release.platform.rustc_release = format!("{}-next", local.platform.rustc_release);
+    assert!(
+        same_platform(&local.platform, &other_release.platform),
+        "本判据要的正是'同平台'这个前提"
+    );
+    assert!(
+        !toolchain_locked(&local.platform, &other_release.platform),
+        "release 不同 ⇒ 工具链未锁定"
+    );
+    let judgement = judge(&local, &other_release).expect("同 schema ⇒ 可比");
+    assert_eq!(judgement.verdict, Verdict::Skip);
+    assert_eq!(judgement.reason, "toolchain-not-locked");
+    assert_eq!(judgement.verdict.exit_code(), 2);
+    assert!(!judgement.toolchain_locked);
+
+    let mut other_host = local.clone();
+    other_host.platform.rustc_host = "some-other-host".to_owned();
+    assert!(same_platform(&local.platform, &other_host.platform));
+    assert!(
+        !toolchain_locked(&local.platform, &other_host.platform),
+        "host 不同 ⇒ 工具链未锁定"
+    );
+    assert_eq!(
+        judge(&local, &other_host).expect("可比").reason,
+        "toolchain-not-locked"
+    );
+
+    // 防空判据: 两个字段都相同 ⇒ 锁定, 且判决回到逐字段比对。
+    assert!(toolchain_locked(&local.platform, &local.platform));
+    assert_eq!(judge(&local, &local).expect("可比").verdict, Verdict::Pass);
+}
+
+/// 判据 ⑭：一份**自相矛盾**的记录不是可用基准 —— 两个方向都要拒。
+///
+/// # 为什么需要单独一条
+///
+/// `the_digest_is_the_sha256_of_the_wav_bit_stream` 断言的是**本机重算**的两个值相等
+/// （两条独立实现给出同一个哈希）, 它证明不了 `DigestRecord::validate` 会拒绝一份
+/// **外部**自相矛盾的记录。本机实测这**两条**注入各自让 192 条判据全绿:
+///
+/// 1. 把 `validate` 里 `wav_bytes != WAV_HEADER_BYTES + payload` 放宽成 `<` ⇒
+///    一个声称"整个文件比载荷还小"的记录会被判自洽;
+/// 2. 删掉 `validate` 里 `digest != sample_digest` 那一支 ⇒ 一份"载荷哈希 ≠ 位型哈希"
+///    的记录会被 `judge` 当成**可比**记录（而它声称的口径是 `pcm-payload-only`:
+///    无损编码下这两个哈希是同一个函数）。
+///
+/// # 量的是什么（对象 + 单位）
+///
+/// 对象: 本机真渲染出来的记录, 以及只改一个字段的两个副本。单位: `wav_bytes` 是字节,
+/// 两个摘要都是 64 位小写十六进制; 读数是一个原因码与一个 `JudgeError` 变体。
+#[test]
+fn an_internally_inconsistent_record_is_not_a_usable_baseline() {
+    let (record, _) = local_record(Threads::Auto, "判据 ⑭");
+    assert_eq!(record.digest, record.sample_digest, "基准记录必须自洽");
+    record.validate().expect("基准记录必须自洽");
+
+    // ① 文件字节数比载荷还小 ⇒ 记录声称的容器不可能存在。
+    let mut too_small = record.clone();
+    too_small.envelope.wav_bytes -= 1;
+    let error = too_small
+        .validate()
+        .expect_err("wav_bytes 与载荷不自洽必须被拒");
+    assert_eq!(error.code, "wav-bytes-mismatch");
+    // 反方向同样要拒（原来的判定是 `!=`, 因此两个方向都覆盖）。
+    let mut too_big = record.clone();
+    too_big.envelope.wav_bytes += 1;
+    assert_eq!(
+        too_big.validate().expect_err("多一个字节同样不自洽").code,
+        "wav-bytes-mismatch"
+    );
+
+    // ② 无损口径下两个摘要必须逐字符相同。
+    let mut mismatched = record.clone();
+    mismatched.sample_digest = "0".repeat(64);
+    let error = mismatched
+        .validate()
+        .expect_err("载荷哈希与位型哈希不同必须被拒");
+    assert_eq!(error.code, "payload-and-bits-digest-differ");
+    // 判决层也必须把它当成"不可用", 而不是"差异"。
+    assert!(matches!(
+        judge(&record, &mismatched),
+        Err(JudgeError::LocalMalformed(_))
+    ));
+    assert!(matches!(
+        judge(&mismatched, &record),
+        Err(JudgeError::ReferenceMalformed(_))
+    ));
+}
+
+/// 判据 ⑮：**严格的解析器** —— 未知字段、未知 schema 与缺失的必填字段都必须被拒。
+///
+/// # 为什么这一条落在 `cargo test` 里（而不是只在手工脚手架里）
+///
+/// 同一批契约**已有**判据在 `examples/support/l1_digest_record_tests.rs` 里。那个文件是
+/// `rustc --edition 2024 --test` 的**手工脚手架**: `examples/support/` 下没有 `main.rs`,
+/// 因此 `cargo test`、`cargo test --all-targets`（CI 的调用形态）都**不编译**它, 而
+/// `scripts/` 与 `.github/` 里也没有任何一步调用 `rustc --test`（本机实测: 对全库 grep
+/// `pure_modules` / `l1_digest_record_tests` / `l1_receipt_tests` 零命中）。
+/// 本机实测**两条**注入让 192 条判据全绿: 删掉未知字段那个循环、以及关掉未知 schema 的
+/// 判定。因此这两条契约在**自动化门禁里此前没有判据**, 本判据是它们的门禁落点。
+///
+/// # 量的是什么（对象 + 单位）
+///
+/// 对象: 参考摘要的多行 JSON 文本, 以及只改一处（插入一行 / 换一个 schema 值 / 删掉一行）
+/// 的三个副本。单位: 字段数是**个**, 偏移是**行**; 读数是一个 `Result` 与它的原因文本。
+#[test]
+fn the_record_parser_refuses_what_it_does_not_understand() {
+    let reference = reference();
+    let text = to_pretty_json(&reference);
+    assert!(parse(&text).is_ok(), "基准记录必须能被自己解析");
+
+    // ① 未知字段: 在多行形态里插一行。
+    let unknown_field = text.replacen("{\n", "{\n  \"totally_unknown\": 1,\n", 1);
+    assert_ne!(unknown_field, text);
+    let error = parse(&unknown_field).expect_err("未知字段必须被拒");
+    assert!(
+        error.to_string().contains("未知字段"),
+        "原因必须点名未知字段: {error}"
+    );
+
+    // ② 未知 schema: 只换那一个字段的值。
+    let wrong_schema = text.replacen(
+        &format!("\"schema\":\"{SCHEMA}\""),
+        "\"schema\":\"yeban-l1-digest/999\"",
+        1,
+    );
+    assert_ne!(wrong_schema, text, "schema 字段必须存在且按单行形态书写");
+    let error = parse(&wrong_schema).expect_err("不认识的 schema 必须被拒");
+    assert!(
+        error.to_string().contains("schema"),
+        "原因必须点名 schema: {error}"
+    );
+
+    // ③ 缺失的必填字段: 把 `frames` 那一行整行删掉。
+    let missing = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("\"frames\":"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(missing, text);
+    let error = parse(&missing).expect_err("缺必填字段必须被拒");
+    assert!(
+        error.to_string().contains("frames"),
+        "原因必须点名缺失的字段: {error}"
+    );
 }

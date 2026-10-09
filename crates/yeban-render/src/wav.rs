@@ -788,4 +788,189 @@ mod tests {
         );
         assert_eq!(plan.validate(), Ok(()), "16 位必须可写");
     }
+
+    /// 判据 11（**读取器侧**）：声明了 0 采样率的外部文件必须被 [`read_plain_wav`] 拒绝。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一份**合法写出**的 16-bit 单声道 WAV, 只把 `fmt ` 负载里的两个字段改成 0 ——
+    /// `nSamplesPerSec`（负载偏移 4, 单位 Hz）与 `nAvgBytesPerSec`（负载偏移 8, 单位
+    /// 字节/秒）。两个都要改: `hound` 的读取器校验
+    /// `nAvgBytesPerSec == nBlockAlign × nSamplesPerSec`, 只改一个会先被它拒
+    /// （实测是 `Error::FormatError("inconsistent fmt chunk")`）, 那就测不到本模块的判决。
+    /// 偏移从**同一份合法文件**的 chunk 表里取, 不写死常量。单位: 偏移是字节。
+    ///
+    /// # 为什么这一条不能由写入器侧的判据代替
+    ///
+    /// 读回的值来自**外部文件的内容**（[`read_plain_wav`] 的文档写明这一点）。写入器侧的
+    /// `a_zero_channel_count_is_refused_before_any_file_exists` 只证明"我们不写这种文件",
+    /// 证明不了"别人写的这种文件我们拒绝"。
+    ///
+    /// 注入证明（本机实测）: 删掉 [`read_plain_wav`] 里那句 `check_container_fields(&format)?`
+    /// 之后本轮 90 次注入里的**这一次全绿**：当时全量 192 条判据（lib 168 ＋ 集成 10 ＋ 13 ＋
+    /// doc 1）的 `test result` 全是 `ok`
+    /// —— 读取器会把 `sample_rate = 0` 的容器当成合法读数交出去。本判据在那条注入下变红。
+    #[test]
+    fn the_reader_refuses_a_file_that_declares_a_zero_sample_rate() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("zero_rate_from_disk.wav");
+        let format = PcmFormat::integer(1, 48_000, 16);
+        write_plain_wav(&path, &format, &PcmBuffer::Int16(vec![0, 1, -1, 0]))
+            .expect("先写一份合法文件");
+
+        let mut bytes = std::fs::read(&path).expect("读文件");
+        let parsed = crate::rf64::parse_container(&bytes).expect("自研读取器解析");
+        let fmt = parsed
+            .chunks
+            .iter()
+            .find(|chunk| &chunk.fourcc == b"fmt ")
+            .expect("容器必须有 fmt ");
+        let rate = fmt.payload_offset + 4;
+        let byte_rate = fmt.payload_offset + 8;
+        bytes[rate..rate + 4].copy_from_slice(&0u32.to_le_bytes());
+        bytes[byte_rate..byte_rate + 4].copy_from_slice(&0u32.to_le_bytes());
+        std::fs::write(&path, &bytes).expect("写回");
+
+        // 前提自证: 这份文件真的被独立的第三方读取器接受了 —— 否则测到的是它的拒绝。
+        assert!(
+            hound::WavReader::open(&path).is_ok(),
+            "本判据要的是'hound 接受、我们拒绝'这一格"
+        );
+        assert!(
+            matches!(
+                read_plain_wav(&path),
+                Err(WavError::RejectedFormat {
+                    field: "sample_rate",
+                    ..
+                })
+            ),
+            "读取器必须拒绝声明 0 采样率的外部文件"
+        );
+    }
+
+    /// 判据 12（**读取器侧**）：从外部文件读到的**非有限浮点样本**必须被拒绝。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一份 32-bit 浮点单声道 WAV, 载荷里第 2 个样本的位型被改成 `NaN`
+    /// （`0x7FC0_0000`）。单位: 样本是 `f32` 位型, 偏移是字节。
+    ///
+    /// # 为什么这一格可达且必须拦住
+    ///
+    /// [`PcmBuffer::is_in_range`] 对浮点的定义就是**有限**（`NaN` / `±inf` 非法）。
+    /// 整数变体由元素宽度自己保证落在合法区间里, 因此"读到的样本越界"这条拒绝
+    /// **只可能由浮点文件触发** —— 它是那条判据唯一的可达入口。
+    ///
+    /// 注入证明（本机实测）: 删掉 [`read_plain_wav`] 里那句 `if !buffer.is_in_range()`
+    /// 之后本轮注入里的这一次**全绿**（192 条判据无一变红）; 本判据在那条注入下变红。
+    #[test]
+    fn the_reader_refuses_a_file_that_carries_a_non_finite_float_sample() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("nan_from_disk.wav");
+        let format = PcmFormat::float(1, 48_000, 32);
+        let payload_samples = [0.25f32, 0.5, -0.75, 1.0];
+        let mut payload: Vec<u8> = payload_samples
+            .iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+        // 把第 2 个样本改成 `NaN`（IEEE-754 单精度静默 NaN 的规范位型）。
+        payload[4..8].copy_from_slice(&0x7FC0_0000u32.to_le_bytes());
+        let plan = crate::rf64::ContainerPlan::for_payload(
+            crate::rf64::ContainerKind::Riff,
+            format,
+            payload.len() as u64,
+            payload_samples.len() as u64,
+            None,
+        );
+        let mut file = std::fs::File::create(&path).expect("创建文件");
+        crate::rf64::write_container(&mut file, &plan, &payload).expect("写入");
+        drop(file);
+
+        // 前提自证: 容器本身是合法的（第三方读取器能打开）, 被拒的是那一格样本。
+        let mut reader = hound::WavReader::open(&path).expect("hound 必须能打开这份容器");
+        let raw: Vec<f32> = reader
+            .samples::<f32>()
+            .collect::<Result<_, _>>()
+            .expect("读样本");
+        assert!(raw[1].is_nan(), "前提: 文件里那个样本真的是 NaN");
+        assert!(
+            matches!(
+                read_plain_wav(&path),
+                Err(WavError::RejectedFormat {
+                    field: "samples",
+                    ..
+                })
+            ),
+            "读取器必须拒绝携带 NaN 的外部文件"
+        );
+    }
+
+    /// 判据 13：`format_of` 对**三个**位深都必须给出通过 [`check_match`] 的格式。
+    ///
+    /// # 为什么需要单独一条
+    ///
+    /// `format_of_agrees_with_check_match` 只用 `Int24` 一个缓冲。把 `Float32` 那一支
+    /// 改写成整数格式之后它仍然全绿（本机实测: 注入那次全量 192 条判据的 `test result` 都是 `ok`）——
+    /// 而那时 [`format_of`] 给出的格式会被同一个 [`check_match`] 拒绝, 也就是
+    /// "由缓冲反推的格式与校验器自相矛盾"。
+    ///
+    /// 本判据对三个位深各跑一遍 `format_of` → `check_match` 的往返, 因此三支都必须自洽。
+    #[test]
+    fn format_of_pairs_every_depth_with_the_checker() {
+        let channels = 2u16;
+        let sample_rate = 48_000u32;
+        let mut rng = DeterministicDitherRng::new(0x1234_5678);
+        let samples = [0.0f32, 0.25, -0.25, 0.5, -0.5, 1.0];
+        for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
+            let buffer = quantize(&samples, depth, &mut rng);
+            let format = format_of(&buffer, channels, sample_rate);
+            assert_eq!(
+                format.bits_per_sample,
+                depth.bits(),
+                "{depth:?}: format_of 必须报告缓冲自己的位深"
+            );
+            assert_eq!(
+                format.is_float,
+                matches!(depth, BitDepth::Float32),
+                "{depth:?}: format_of 必须报告缓冲自己的类别"
+            );
+            assert!(
+                check_match(&format, &buffer).is_ok(),
+                "{depth:?}: format_of 的产物必须自己能过 check_match"
+            );
+        }
+    }
+
+    /// 判据 14：**同一个位深、不同类别**的格式与缓冲必须被拒 —— 判定的两半各自有判别力。
+    ///
+    /// # 为什么需要单独一条
+    ///
+    /// `mismatched_format_and_buffer_are_rejected` 里两个格式的**位深都与缓冲不同**
+    /// （16 对 24、32 对 24）, 因此它只钉住"位深那一半"; 把类别那一半（`is_float`）
+    /// **整条删掉**之后它仍然全绿（本机实测: 注入那次全量 192 条判据无一变红）。
+    /// 这一格是能让两半分离的输入: `PcmFormat::integer(2, 48_000, 32)` 与
+    /// `PcmBuffer::Float32` 的位深都是 32, 只有类别不同。
+    ///
+    /// 反向（浮点格式 + 32 位**整数**缓冲）在本 crate 的 [`PcmBuffer`] 里**不可达**
+    /// （没有 `Int32` 变体）, 因此本判据只钉可达的那一个方向, 并如实说明。
+    #[test]
+    fn a_thirty_two_bit_integer_format_does_not_accept_a_float_buffer() {
+        let int32 = PcmFormat::integer(2, 48_000, 32);
+        let buffer = PcmBuffer::Float32(vec![0.0, 0.5, -0.5, 1.0]);
+        assert_eq!(
+            int32.bits_per_sample,
+            buffer.depth().bits(),
+            "本判据的前提是'两边的位深相同', 只有类别不同"
+        );
+        assert!(
+            matches!(
+                check_match(&int32, &buffer),
+                Err(WavError::FormatMismatch { .. })
+            ),
+            "32 位整数格式不得接受浮点缓冲"
+        );
+        // 防空判据: 换成浮点格式, 同一个缓冲必须通过。
+        let float32 = PcmFormat::float(2, 48_000, 32);
+        assert!(check_match(&float32, &buffer).is_ok());
+    }
 }
