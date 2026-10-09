@@ -33,6 +33,7 @@
 //! | P12 | **主总线自动化的确定性**：同样的工程 + 同样的事件序列 ⇒ 两次独立装配的两条声道都逐位相同 | 引入真熵源 / 让事件顺序影响结果 |
 //! | P13 | **先换采样率、后武装主总线槽位**：新采样率上的 `α` 与"一开始就在该采样率"逐位相同（`armed_master_param_gain` 等号） | 快照边界只把新采样率转发给**已武装**的主总线槽位（判据 ⑧ 钉住的那条不对称） |
 //! | P14 | **参数极值不得让母线出现非有限样本**：逐轨槽与主总线槽各推 `1.0e20`（两个合法值）⇒ 母线上必然 `±∞`，但输出必须**全有限**（`NaN` 与非有限样本各 0 条） | 删掉 `render_block` 里 `saturate_bus_to_finite(...)` 那一行**调用**（函数本体的判据都在 `src/rt.rs`，全是直接调用，**没有**一条走调用点） |
+//! | P15 | **两个主总线乘子的顺序是契约**：静态推子 `scale_bus`（步骤 3a''）在**前**、自动化乘子 `apply_master`（步骤 3a'''）在**后** ⇒ `g` 与 `m` 都非恒等且都**不是** 2 的幂时，`both == fl(fader · m)` 逐位 | 把 `scale_bus(block, master_gain)` 挪到 `apply_master(...)` **之后**（既有主总线判据全部取 2 的幂目标 ⇒ 逐位同解；本票实测全量 24 个目标全绿） |
 //!
 //! ## 覆盖范围（**明说**）
 //!
@@ -683,5 +684,141 @@ fn an_extreme_gain_must_not_push_the_bus_out_of_the_finite_range() {
         "[engine-param/P14] 极端增益 {HUGE:e} × {HUGE:e}: 非有限={non_finite} NaN={nan} \
          最大压限={:.4} 当前压限={:.4}",
         stats.limiter_max_reduction, stats.limiter_current_reduction
+    );
+}
+
+/// `value` 是否是 2 的幂（正有限值，且尾数位全零）。
+///
+/// ⛔ 刻意**不**用 `log2`（超越函数类，[ADR-0001 D32]）：这是一次纯整数判定。
+fn is_power_of_two_gain(value: f32) -> bool {
+    value > 0.0 && value.is_finite() && (value.to_bits() & 0x007f_ffff) == 0
+}
+
+/// 判据 P15：**两个主总线乘子的顺序是契约** —— 静态推子（`scale_bus`，步骤 3a''）
+/// 在**前**、自动化乘子（`apply_master`，步骤 3a'''）在**后**。
+///
+/// ## 被测量
+///
+/// `note_project` 的整段左右声道样本（**位模式**）。三条臂：
+///
+/// | 臂 | 主总线推子 | 主总线自动化 | 输出 |
+/// | :--- | :--- | :--- | :--- |
+/// | `plain` | 0 dB | 无 | `x` |
+/// | `fader` | −6 dB（`g`） | 无 | `fl(x · g)` |
+/// | 被测 | −6 dB（`g`） | 目标 `m`（已吸附） | 契约：`fl(fl(x · g) · m)` |
+///
+/// `g = 10^(−6/20) ≈ 0.5011872` 与 `m = 0.7` 都**不是** 2 的幂，因此两种顺序
+/// （`fl(fl(x·g)·m)` 与 `fl(fl(x·m)·g)`）在这一窗口里必然给出不同的位模式
+/// （覆盖度见证 ④）。
+///
+/// ## 为什么单独立一条
+///
+/// 既有的主总线判据（P9 / P10 / P12 与 `tests/idempotency_and_channel_consistency.rs`
+/// 的 ⑤-2）全部把自动化目标取成 **2 的幂**（`0.25` / `0.5` / `0.125`），而乘 2 的幂
+/// 是**精确**的 ⇒ `fl(fl(x·g)·2⁻ⁿ) == fl(fl(x·2⁻ⁿ)·g)` 逐位成立，顺序写反没有任何
+/// 判据变红。本票（engine-28）注入实测（把 `scale_bus` 挪到 `apply_master` 之后）：
+/// 全量 24 个目标全绿。`src/rt.rs` 步骤 3a''' 的注释把顺序写成契约（"浮点乘法不满足
+/// 结合律 ⇒ 顺序不是无关紧要的细节"）—— 本判据就是那条注释的机械形式。
+///
+/// ⚠ 覆盖边界：三条臂都必须在母线限制器的透明区（`limiter_gain_reductions == 0`），
+/// 否则非线性会让线性等式失效 —— 这一点由覆盖度见证 ② 显式断言。
+#[test]
+fn the_static_master_fader_is_applied_before_the_automation_multiplier() {
+    /// 主总线推子（dB）：−6 dB ⇒ 线性增益 ≈ 0.501 187 2（不是 2 的幂）。
+    const FADER_DB: f32 = -6.0;
+    /// 自动化乘子的目标：0.7（不是 2 的幂）。
+    const TARGET: f32 = 0.7;
+
+    let fixture = note_project(&[NOTE]);
+    let master = fixture.master;
+    let plain_project = fixture.project.clone();
+    let mut fader_project = fixture.project.clone();
+    fader_project
+        .tracks
+        .get_mut(&master)
+        .expect("夹具里必须有主总线")
+        .volume_db = FADER_DB;
+
+    let gain = EngineSnapshot::from_project(&fader_project, 1)
+        .expect("推子快照")
+        .master_gain();
+    // ---- 覆盖度见证 ①：`g` 与 `m` 都必须不是 2 的幂 ----
+    assert!(
+        gain > 0.0 && gain < 1.0,
+        "−6 dB 的推子必须落在 (0, 1)（实得 {gain}）"
+    );
+    assert!(
+        !is_power_of_two_gain(gain) && !is_power_of_two_gain(TARGET),
+        "覆盖度：`g`={gain} 与 `m`={TARGET} 都必须不是 2 的幂，否则两种顺序逐位同解（判据空转）"
+    );
+
+    let plain = render(&plain_project, QUANTA);
+    let fader = render(&fader_project, QUANTA);
+    let mut rig = ParamRig::new(&fader_project, 1);
+    assert_eq!(rig.set_param(master, MASTER_GAIN_SLOT, TARGET), 1);
+    rig.quanta(QUANTA);
+
+    // ---- 覆盖度见证 ②：三条臂都必须在母线限制器的透明区 ----
+    for (label, arm) in [("无推子", &plain), ("有推子", &fader)] {
+        assert_eq!(
+            arm.stats.limiter_gain_reductions, 0,
+            "{label} 臂必须落在限制器的透明区（否则下面的线性等式不成立）"
+        );
+        assert!(arm.peak() > 0.0, "{label} 臂必须真的出声");
+    }
+    assert_eq!(
+        rig.runtime.stats().limiter_gain_reductions,
+        0,
+        "被测臂必须落在限制器的透明区"
+    );
+    assert_eq!(
+        rig.runtime.armed_master_param_gain(),
+        Some(TARGET),
+        "自动化乘子必须已吸附到目标（否则下面的逐位等号不能写成常量 TARGET）"
+    );
+
+    let settled = 3_000..QUANTA * 128;
+    let mut checked = 0usize;
+    let mut order_sensitive = 0usize;
+    for index in settled {
+        // ---- 覆盖度见证 ③：静态推子是一次**逐位精确**的标量乘 ----
+        assert_eq!(
+            fader.left[index].to_bits(),
+            (plain.left[index] * gain).to_bits(),
+            "第 {index} 帧：静态推子必须恰好是 `x · g`（左声道）"
+        );
+        assert_eq!(
+            fader.right[index].to_bits(),
+            (plain.right[index] * gain).to_bits(),
+            "第 {index} 帧：静态推子必须恰好是 `x · g`（右声道）"
+        );
+        // ---- 主判据：契约顺序 ⇒ fl(fl(x · g) · m)，逐位 ----
+        assert_eq!(
+            rig.left[index].to_bits(),
+            (fader.left[index] * TARGET).to_bits(),
+            "第 {index} 帧：自动化乘子必须在静态推子**之后**（左声道）"
+        );
+        assert_eq!(
+            rig.right[index].to_bits(),
+            (fader.right[index] * TARGET).to_bits(),
+            "第 {index} 帧：自动化乘子必须在静态推子**之后**（右声道）"
+        );
+        // ---- 覆盖度见证 ④：写反顺序在这一帧上会给出另一个位模式 ----
+        if ((plain.left[index] * TARGET) * gain).to_bits() != rig.left[index].to_bits() {
+            order_sensitive += 1;
+        }
+        checked += 1;
+    }
+    assert!(
+        checked > 40_000,
+        "窗口必须覆盖绝大多数样本（实得 {checked}）"
+    );
+    assert!(
+        order_sensitive > 0,
+        "两种顺序必须在某一帧上给出不同的位模式，否则本判据测不到顺序"
+    );
+    println!(
+        "[engine-param/P15] 主总线顺序：静态推子 g={gain} 先、自动化 m={TARGET} 后；\
+         逐位核对 {checked} 帧，其中 {order_sensitive} 帧对两种顺序敏感"
     );
 }

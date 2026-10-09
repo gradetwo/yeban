@@ -23,6 +23,7 @@
 //! | P4 | 剪掉一条支路之后，幸存支路挪进的**槽位**不得重放被剪支路的音频（见该判据自己的文档块） | 删掉 `CompensationBank::rearm` 里"换主人就清线"那一句 ⇒ 继承的环把上一任的音频播出来 |
 //! | P5 | 计划项数超过池的槽位 ⇒ `pdc_unarmed_nodes` 如实累加，`pdc_clamped_frames` **保持 0**（两个读数各归各的） | 把两条累加**互换**，或把任一条改成不累加（两种注入实测都让本判据红，见交付报告） |
 //! | P6 | 补偿量超过线容量 ⇒ `pdc_clamped_frames` 按**帧**如实累加，`pdc_unarmed_nodes` **保持 0** | 同上 |
+//! | P7 | PDC 补偿**不得移动逐轨电平的取样点**（`bank.measure` 在 `self.pdc.apply` **之前**，即规范 §3.4 第 3 条的"求和节点输入侧"） | `fast` 轨在 24 个量子上的 `MeterFrame`：峰值 / 均方 / 平滑均方 / 峰值保持，**逐位** | 把 `self.pdc.apply(&track, …)` 挪到 `bank.measure(track, …)` **之前**（相位仍对齐 ⇒ P1/P2/P3 全绿；本票实测全量 24 个目标全绿） |
 //!
 //! 判据都**走产品路径**：模型 `YebanProjectV1` → `EngineSnapshot::from_project`
 //! （`LatencyTable::from_project` 读 `DeviceDefinition::latency_samples`）→
@@ -78,9 +79,13 @@ use std::collections::BTreeMap;
 
 use support::{render, render_snapshot};
 use yeban_engine::graph::LatencyTable;
+use yeban_engine::meter::{MeterFrame, SCRATCH_METERS, meter_channel};
 use yeban_engine::mixer::{BUS_LIMITER_LATENCY_FRAMES, LIMITER_THRESHOLD};
+use yeban_engine::ring::event_channel;
+use yeban_engine::rt::EngineRuntime;
 use yeban_engine::rt::{MAX_PDC_DELAY_FRAMES, PDC_SLOTS};
 use yeban_engine::snapshot::EngineSnapshot;
+use yeban_engine::snapshot::{SnapshotSlot, retire_channel};
 use yeban_model::{
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
     MidiNote, RoutingEdge, RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
@@ -881,5 +886,156 @@ fn an_over_long_pdc_delay_is_counted_in_frames_and_never_as_unarmed_nodes() {
         render.stats.pdc_clamped_frames,
         render.stats.pdc_unarmed_nodes,
         render.nonzero()
+    );
+}
+
+/// 逐轨电平帧序列：走产品路径（`EngineSnapshot` → `SnapshotSlot` →
+/// `EngineRuntime::process_quantum`），每个量子从电平 SPSC 抽干一次，只留 `node`
+/// 的那一条帧（`MeterCollector::tick` 一次批量读）。
+fn track_meter_frames(project: &YebanProjectV1, quanta: usize, node: EntityId) -> Vec<MeterFrame> {
+    let snapshot = EngineSnapshot::from_project(project, 1).expect("夹具工程必须合法");
+    let slot = SnapshotSlot::new(snapshot);
+    let (retire, _queue) = retire_channel(64);
+    let (_sender, receiver) = event_channel(64);
+    let (publisher, mut collector) = meter_channel(65_536);
+    let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+    let mut output = [0.0f32; 128 * 2];
+    let mut frames = Vec::with_capacity(quanta);
+    for _ in 0..quanta {
+        runtime.process_quantum(&mut output, 2);
+        let mut scratch = [MeterFrame::default(); SCRATCH_METERS];
+        let drained = collector.tick(&mut scratch);
+        if let Some(frame) = scratch[..drained].iter().find(|frame| frame.node == node) {
+            frames.push(*frame);
+        }
+    }
+    frames
+}
+
+/// P7：**PDC 补偿不得移动逐轨电平的取样点**。
+///
+/// ## 被测量
+///
+/// `fast` 轨在每个量子上的 [`MeterFrame`]：`peak` / `rms` / `rms_smoothed` /
+/// `peak_hold`（单位：线性幅度）的**位模式**。两条臂的唯一差别是慢支路上报的
+/// 自身延迟（`0` vs [`SLOW_LATENCY`]）。
+///
+/// ## 为什么该轨的电平读数必须逐位相同
+///
+/// `src/rt.rs` 步骤 3a 的取样点是 `bank.measure(track, quantum, &track_scratch…)`
+/// （现位于第 2220 行），而 `self.pdc.apply(&track, …)` 在它**之后**
+/// （现位于第 2241 行）。也就是说逐轨电平量的是"该轨自己渲染出来的、声相之前的
+/// 单声道结果"，而 PDC 是**求和节点输入侧**的事（规范 §3.4 第 3 条的原话）。
+/// 两条臂里该轨自己的渲染逐位相同 ⇒ 它的电平读数必须逐位相同。
+///
+/// ## 为什么单独立一条
+///
+/// 把 `self.pdc.apply(...)` 挪到 `bank.measure(...)` **之前**（相位仍然对齐、
+/// 母线输出逐位不变 ⇒ P1 / P2 / P3 全绿），电平读数会整体后移
+/// `SLOW_LATENCY = 400` 帧 = 3.125 个量子。此前**没有任何判据**读 PDC 工程里的
+/// 逐轨电平帧（既有电平判据全部跑在零 PDC 延迟的夹具上）。本票（engine-28）
+/// 注入实测：全量 24 个目标全绿。
+#[test]
+fn pdc_compensation_does_not_move_the_per_track_meter_tap() {
+    /// 渲染长度（量子）：与 P1 / P2 同一个窗口。
+    const WINDOW: usize = QUANTA;
+
+    let ids = ids();
+    let reference_project = project(ids, 0, Some(0), None);
+    let pdc_project = project(ids, SLOW_LATENCY, Some(0), None);
+
+    // ---- 前提（与实现无关的纯函数读数）----
+    let plan = EngineSnapshot::from_project(&pdc_project, 1).expect("被测工程必须合法");
+    assert_eq!(
+        plan.pdc().total_latency(),
+        SLOW_LATENCY,
+        "L_max 由慢支路上报的自身延迟决定 [ARCH-PDC-001]"
+    );
+    assert_eq!(
+        plan.pdc().compensation(&ids.fast),
+        Some(SLOW_LATENCY),
+        "快支路必须在汇入母线前整体后移 {SLOW_LATENCY} 帧"
+    );
+    assert_ne!(
+        SLOW_LATENCY % 128,
+        0,
+        "移位必须不是整数个量子，否则本判据对量子边界不敏感"
+    );
+
+    let reference = track_meter_frames(&reference_project, WINDOW, ids.fast);
+    let delayed = track_meter_frames(&pdc_project, WINDOW, ids.fast);
+
+    // ---- 覆盖度 ①：每个量子都必须拿到该轨的帧（槽位真的在册）----
+    assert_eq!(
+        reference.len(),
+        WINDOW,
+        "参照臂每个量子都必须产出该轨的电平帧（实得 {}）",
+        reference.len()
+    );
+    assert_eq!(
+        delayed.len(),
+        WINDOW,
+        "被测臂每个量子都必须产出该轨的电平帧（实得 {}）",
+        delayed.len()
+    );
+    // ---- 覆盖度 ②：该轨真的出声（否则"逐位相同"是静音对静音）----
+    let sounding = reference.iter().filter(|frame| frame.peak > 0.0).count();
+    assert!(
+        sounding > 0,
+        "参照臂的该轨必须至少有一个量子在出声，否则本判据是空转"
+    );
+    // ---- 覆盖度 ③：那条延迟真的作用在**音频**上（否则是"同一条臂比两次"）----
+    assert_ne!(
+        render(&reference_project, WINDOW).fingerprint(),
+        render(&pdc_project, WINDOW).fingerprint(),
+        "PDC 必须真的改变母线输出（P1 的逐位后移），否则本判据没有测到被测对象"
+    );
+
+    // ---- 主判据：逐轨电平读数逐位相同（PDC 不许移动这个取样点）----
+    let mut compared = 0usize;
+    for (index, (plain, shifted)) in reference.iter().zip(delayed.iter()).enumerate() {
+        assert_eq!(
+            plain.node, shifted.node,
+            "第 {index} 个量子：节点身份必须相同"
+        );
+        assert_eq!(
+            plain.quantum, shifted.quantum,
+            "第 {index} 个量子：量子序号必须相同"
+        );
+        assert_eq!(
+            plain.peak.to_bits(),
+            shifted.peak.to_bits(),
+            "第 {index} 个量子：逐轨峰值不得被 PDC 移动（{} vs {}）",
+            plain.peak,
+            shifted.peak
+        );
+        assert_eq!(
+            plain.rms.to_bits(),
+            shifted.rms.to_bits(),
+            "第 {index} 个量子：逐轨 RMS 不得被 PDC 移动（{} vs {}）",
+            plain.rms,
+            shifted.rms
+        );
+        assert_eq!(
+            plain.rms_smoothed.to_bits(),
+            shifted.rms_smoothed.to_bits(),
+            "第 {index} 个量子：平滑 RMS 不得被 PDC 移动（{} vs {}）",
+            plain.rms_smoothed,
+            shifted.rms_smoothed
+        );
+        assert_eq!(
+            plain.peak_hold.to_bits(),
+            shifted.peak_hold.to_bits(),
+            "第 {index} 个量子：峰值保持不得被 PDC 移动（{} vs {}）",
+            plain.peak_hold,
+            shifted.peak_hold
+        );
+        compared += 1;
+    }
+    assert_eq!(compared, WINDOW, "必须逐量子核对整段窗口");
+    println!(
+        "[pdc-mix] P7 PDC 不动逐轨电平取样点：{compared} 个量子逐位相同（该轨出声的量子 {sounding} 个；\
+         D(fast)={SLOW_LATENCY} 帧 = {:.3} 个量子）",
+        SLOW_LATENCY as f32 / 128.0
     );
 }

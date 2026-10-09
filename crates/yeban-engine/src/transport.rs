@@ -956,4 +956,118 @@ mod tests {
         assert_eq!(Transport::free_running(48_000, 5.0).bpm(), MIN_BPM);
         assert_eq!(Transport::free_running(48_000, 5_000.0).bpm(), MAX_BPM);
     }
+
+    /// 判据：**同一条命令的返回值也幂等** —— 状态没变时 `apply` 必须报
+    /// [`TransportEffect::None`]，只有真的换了状态才报 `StateChanged`。
+    ///
+    /// 量什么：`Transport::apply` 的返回值（枚举，逐变体比较）与状态（枚举）。
+    ///
+    /// ## 为什么单独立一条
+    ///
+    /// `EngineRuntime::render_block` 只消费 [`TransportEffect::Seeked`]（它去调
+    /// `synth.seek`），`StateChanged` 被调用点丢弃 ⇒ 这条契约在**音频与位置读数上
+    /// 不可观测**，`tests/idempotency_and_channel_consistency.rs` 的 ⑤-3（整段样本 +
+    /// 位置读数逐位相同）因此对它是盲的。本票（engine-28）注入实测：把 `Play` 分支的
+    /// `if self.state == TransportState::Playing` 改成 `if false`（⇒ 重复 `Play`
+    /// 也报 `StateChanged`），全量 24 个目标全绿。
+    ///
+    /// ⚠ 覆盖边界：本判据钉的是**公开 API 的返回值**（`Transport` / `TransportEffect`
+    /// 都是 `pub`，是 `yeban-engine` 对控制面的契约），不是 RT 路径上的行为 ——
+    /// 后者由 ⑤-3 覆盖。
+    #[test]
+    fn reapplying_a_command_reports_no_state_change() {
+        let mut transport = Transport::free_running(48_000, 120.0);
+        assert_eq!(
+            transport.state(),
+            TransportState::Playing,
+            "前提：自由跑的构造状态是 Playing"
+        );
+        assert_eq!(
+            transport.apply(TransportCommand::Play),
+            TransportEffect::None,
+            "已经在播放 ⇒ 重复 Play 不得报状态变更"
+        );
+        assert_eq!(
+            transport.apply(TransportCommand::Play),
+            TransportEffect::None,
+            "重复两次同样不得报状态变更"
+        );
+        assert_eq!(
+            transport.apply(TransportCommand::Stop),
+            TransportEffect::StateChanged(TransportState::Stopped),
+            "真的换了状态 ⇒ 必须报 StateChanged"
+        );
+        assert_eq!(
+            transport.apply(TransportCommand::Stop),
+            TransportEffect::None,
+            "已经停住 ⇒ 重复 Stop 不得报状态变更"
+        );
+        assert_eq!(
+            transport.apply(TransportCommand::Pause),
+            TransportEffect::None,
+            "`Pause` 与 `Stop` 在本状态机里是同一件事 ⇒ 停住时同样是 None"
+        );
+        assert_eq!(
+            transport.apply(TransportCommand::Play),
+            TransportEffect::StateChanged(TransportState::Playing),
+            "从停住恢复播放 ⇒ 必须报 StateChanged"
+        );
+        assert_eq!(
+            transport.apply(TransportCommand::Pause),
+            TransportEffect::StateChanged(TransportState::Stopped),
+            "播放中 Pause ⇒ 必须报 StateChanged"
+        );
+        // 覆盖度：七条命令真的都被施加过（返回值口径不影响命令计数）。
+        assert_eq!(transport.commands_applied(), 7);
+    }
+
+    /// 判据：`seek(t)` 必须**清相位余数** —— 定位之后的 tick 轨迹不得带着定位前的零头。
+    ///
+    /// 量什么：`advance_frames` 若干帧之后的 `position_ticks`（整数 tick）与
+    /// `remainder`（`tick_den` 的分数，无量纲整数）。`tick_num = 120_000_000 × 960`、
+    /// `tick_den = 1_000_000 × 60 × 48_000` ⇒ **1 帧 = 0.04 tick**。
+    ///
+    /// ## 为什么单独立一条
+    ///
+    /// 既有判据 `seek_sets_the_exact_origin` 确实断言了 `remainder() == 0`，但它在
+    /// seek **之前**推进的是 5 000 帧 = **恰好 200 tick**（余数本来就是 0）
+    /// ⇒ 那条断言对本条契约是**空转**的。本票（engine-28）注入实测：删掉
+    /// `Transport::seek` 里的 `self.remainder = 0;`，全量 24 个目标全绿。
+    ///
+    /// 构造：先推进 128 帧（= 5.12 tick ⇒ 余数 0.12 tick），再 `SeekTicks(100)`，
+    /// 然后推进 **24 帧 = 0.96 tick**：清零之后不足 1 tick（位置不动）；带着陈旧
+    /// 0.12 tick 的零头会凑成 **1.08 tick** ⇒ 多跳 1 tick。最后再推进 1 帧
+    /// （= 1.00 tick 恰好进位）作为"计数真的在走"的见证。
+    #[test]
+    fn seek_clears_the_phase_remainder() {
+        let mut transport = Transport::free_running(48_000, 120.0);
+        transport.advance_frames(128);
+        assert_eq!(transport.position_ticks(), 5, "128 帧 = 5.12 tick");
+        assert_eq!(
+            transport.remainder(),
+            345_600_000_000,
+            "前提：推进 128 帧之后必须留下非零的相位余数（0.12 tick）"
+        );
+
+        transport.apply(TransportCommand::SeekTicks(100));
+        assert_eq!(transport.position_ticks(), 100, "定位到 tick 100");
+        assert_eq!(
+            transport.remainder(),
+            0,
+            "定位必须清相位余数（陈旧零头会污染之后的 tick 计数）"
+        );
+
+        transport.advance_frames(24);
+        assert_eq!(
+            transport.position_ticks(),
+            100,
+            "24 帧 = 0.96 tick 不得进位（带陈旧 0.12 tick 的零头会凑成 1.08 ⇒ 多跳 1 tick）"
+        );
+        transport.advance_frames(1);
+        assert_eq!(
+            transport.position_ticks(),
+            101,
+            "再推 1 帧 = 1.00 tick 恰好进位一次（见证计数真的在走）"
+        );
+    }
 }

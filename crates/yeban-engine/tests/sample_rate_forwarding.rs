@@ -40,6 +40,15 @@
 //! | F4 | 换率时**在册**通道条槽位的 `ChannelStrip::set_sample_rate` | 换率之后的整段样本**位模式**（同上） | 删掉 `strip.set_sample_rate(sample_rate)`（实测变红） |
 //! | F5 | 换率时**在册**鼓机槽位的 `DrumMachine::set_sample_rate` | 换率之后的整段样本**位模式**（同上） | 删掉 `drums[index].set_sample_rate(sample_rate_u32)`（`else if sample_rate_changed` 那一支，实测变红） |
 //! | F6 | **率不变**的快照里**新出现**的轨道的声部槽位 | 切换之后的整段样本**位模式**（相对“刚出现时就带上它”的参照） | `TrackSlot::empty(sample_rate_u32)` 的实参写死 `48_000`（实测变红） |
+//! | F7 | **在册**（已武装）的逐轨槽与主总线槽在快照换率时必须重算 `α` | 换率之后每个量子的**平滑器输出序列**（线性幅度，逐位；与"一开始就在新率"逐位相同、与"率没变"逐位不同） | `ParamTable::set_sample_rate` 的 `self.gains[..self.len]` 改成 `self.gains[..0]`，或删掉 `self.master.set_sample_rate(sample_rate)`（均实测变红，见该判据自己的文档） |
+//!
+//! F1 / F6 与 F7 的分界：前两条测的是**槽位建立那一刻**的采样率（`accept` 惰性建槽、
+//! `begin_snapshot` 在率不变时新建槽），F7 测的是**已经在册**（已武装、可能正在自动化中）
+//! 的槽位在快照换率时有没有被重算。`tests/param_automation.rs` 的 P8 只断言
+//! "换率之后收敛到目标"，而 48 kHz 与 96 kHz 的 `α` 在 400 个量子里都会吸附
+//! ⇒ P8 对 `α` **不敏感**；P13 与 `src/param.rs` 单元判据 ⑧ 覆盖的是主总线槽位
+//! **还没武装**时的那条顺序。⚠ 与 F3/F4/F5 不同，F7 比较的是**平滑器输出序列**
+//! （不是音频样本）：换率之后同一份工程的音频本来就按采样率变化，序列才是可比的量。
 //!
 //! ## F3/F4/F5 的构造（为什么"换率臂"必须与"从头就是新率"的臂逐位相同）
 //!
@@ -70,7 +79,7 @@ use std::sync::Arc;
 use support::{NoteSpec, note_project, render, render_with, two_track_project, zero_crossings};
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::meter::meter_channel;
-use yeban_engine::param::TRACK_GAIN_SLOT;
+use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
@@ -80,6 +89,10 @@ use yeban_model::{
 
 /// 切换发生的量子下标（切换**在渲染该量子之前**发布 ⇒ 该量子已经是新率）。
 const SWITCH_QUANTUM: usize = 40;
+
+/// F7 的观察窗（量子）：96 kHz 上一条 5 ms 斜坡要走 ≈ 42 个量子才吸附 ⇒ 10 个量子
+/// 一定仍在走；而 48 kHz 的 `α` 在同一窗里已经走得远得多（F7 的判别力见证 ③）。
+const F7_WINDOW: usize = 10;
 
 /// 每臂渲染的量子数：96 kHz 下 2000 × 128 = 256 000 帧。
 const QUANTA: usize = 2_000;
@@ -256,6 +269,15 @@ impl ParamRig {
             _slot: slot,
             _queue: queue,
         }
+    }
+
+    /// 发布一份**等价**快照（只改采样率与修订号）⇒ 触发音频线程的快照边界。
+    ///
+    /// 与 `support::Runtime::publish_equivalent` 同义；本文件用的是本地 `ParamRig`
+    /// （它留住了事件生产端），所以自己带一份。
+    fn publish_equivalent(&self, project: &YebanProjectV1, revision: u64) {
+        self._slot
+            .publish(EngineSnapshot::from_project(project, revision).expect("等价快照"));
     }
 }
 
@@ -531,4 +553,189 @@ fn a_slot_created_at_an_unchanged_rate_uses_the_snapshot_sample_rate() {
         &reference.right[SWITCH_FRAME..],
     );
     println!("[engine-rate/F6] 率不变时新建槽位：切换后逐位相同=true");
+}
+
+/// 两个 `f32` 序列是否**逐位**相同（`+0.0` 与 `-0.0` 算不同）。
+fn bitwise_equal(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(l, r)| l.to_bits() == r.to_bits())
+}
+
+/// **F7**：**已经在册**的槽位（逐轨槽与主总线槽）在快照换采样率时必须重算 `α`
+/// —— 也就是与"一开始就在新采样率"的同类装配**逐位相同**。
+///
+/// ## 与 F1 / F6 的区别（为什么必须单独立一条）
+///
+/// * F1 的槽位是**换率之后**才惰性建立的（`accept` 里的
+///   `ParamSmoother::new(self.sample_rate, …)` 直接取当时的新率）；
+/// * F6 测的是"率不变时新建的槽位"；
+/// * `tests/param_automation.rs` 的 P8 只断言换率之后平滑器**收敛到目标**
+///   —— 48 kHz 与 96 kHz 的 `α` 在 400 个量子里都会吸附，所以 P8 对 `α` 不敏感；
+/// * P13 与 `src/param.rs` 的单元判据 ⑧ 覆盖的是**主总线槽位在换率时还没武装**
+///   的那条顺序。
+///
+/// ⇒ "**在册**（已经武装）的槽位在换率时重不重算 `α`"此前没有任何判据。
+/// 本票（engine-28）注入实测（`ParamTable::set_sample_rate` 的
+/// `self.gains[..self.len]` 改成 `self.gains[..0]`，主总线那一行不动）：
+/// `tests/sample_rate_forwarding.rs` 与全量 24 个目标**全绿**。后果：一条已经在
+/// 自动化中的轨在 44.1/48 → 96 kHz 之后仍按旧率走 5 ms（96 kHz 下变成 10 ms 的斜坡）。
+///
+/// ## 构造（三臂状态逐位相同，只差"换率时 `α` 有没有被重算"）
+///
+/// | 步骤 | 三臂共同 | A（换率） | B（参照） | C（判别力见证） |
+/// | :--- | :--- | :--- | :--- | :--- |
+/// | 1 | 在 `start_rate` 上装配，发两条**恒等**（`1.0`）目标 ⇒ 建槽位/武装但不碰样本 | 48 kHz | 96 kHz | 48 kHz |
+/// | 2 | 第 0 个量子消费它们（此刻 value == target == 1.0） | | | |
+/// | 3 | 发布一份 `switch_to` 采样率的快照（修订 2）⇒ 快照边界的 `set_sample_rate` | 96 kHz | 96 kHz | 48 kHz |
+/// | 4 | 发两条**非恒等**目标，跑 [`F7_WINDOW`] 个量子，逐量子读平滑器输出 | | | |
+///
+/// 步骤 1–2 之后三臂的**状态**逐位相同（都是恒等、都已吸附），因此步骤 4 的增益
+/// 序列只取决于 `α`：A 与 B 必须逐位相同，而 C（率从未变过）必须与 B 不同 ——
+/// 后者是本判据"真的对 `α` 敏感"的机械证据。
+#[test]
+fn armed_slots_follow_a_mid_life_sample_rate_change() {
+    const WINDOW: usize = F7_WINDOW;
+    const TRACK_TARGET: f32 = 0.25;
+    const MASTER_TARGET: f32 = 0.7;
+
+    /// 一条臂的读数。
+    struct ArmedSeries {
+        /// 每个量子的逐轨槽平滑输出（线性幅度）。
+        track: Vec<f32>,
+        /// 每个量子的主总线槽平滑输出（线性幅度）。
+        master: Vec<f32>,
+        /// 换率**之前**在册的逐轨槽位数。
+        slots_before: usize,
+        /// 换率**之前**主总线槽的平滑输出（未武装时是 `None`）。
+        master_before: Option<f32>,
+    }
+
+    /// 跑一条臂：`start_rate` 是构造采率，`switch_to` 是第 1 个量子之前发布的
+    /// 快照采率（可以与 `start_rate` 相同 = "率没变"）。
+    fn arm(start_rate: SampleRate, switch_to: SampleRate) -> ArmedSeries {
+        let fixture = note_project(&[NoteSpec::at(0, 7_680, 69, 127)]);
+        let track = fixture.track;
+        let master = fixture.master;
+        let project = at_rate(fixture.project.clone(), start_rate);
+        let switched = at_rate(project.clone(), switch_to);
+        let mut rig = ParamRig::new(&project);
+
+        // 1) 两条恒等目标 ⇒ 建槽位 / 武装主总线，但一个样本都不改（恒等快路径）。
+        rig.sender.publish(&[
+            EngineEvent::SetParam {
+                target: ParamAddress::new(track, TRACK_GAIN_SLOT),
+                value: 1.0,
+            },
+            EngineEvent::SetParam {
+                target: ParamAddress::new(master, MASTER_GAIN_SLOT),
+                value: 1.0,
+            },
+        ]);
+        // 2) 第 0 个量子：事件边界消费它们，三臂状态逐位相同（1.0 / 1.0）。
+        rig.runtime.process_quantum(&mut rig.output, 2);
+        let slots_before = rig.runtime.armed_param_slot_count();
+        let master_before = rig.runtime.armed_master_param_gain();
+
+        // 3) 快照边界：只有 A 的这一份快照换了采样率。
+        rig.publish_equivalent(&switched, 2);
+        rig.runtime.process_quantum(&mut rig.output, 2);
+
+        // 4) 非恒等目标 ⇒ 三臂同时开始一条 5 ms 的斜坡，只有 `α` 可能不同。
+        rig.sender.publish(&[
+            EngineEvent::SetParam {
+                target: ParamAddress::new(track, TRACK_GAIN_SLOT),
+                value: TRACK_TARGET,
+            },
+            EngineEvent::SetParam {
+                target: ParamAddress::new(master, MASTER_GAIN_SLOT),
+                value: MASTER_TARGET,
+            },
+        ]);
+        let mut track_series = Vec::with_capacity(WINDOW);
+        let mut master_series = Vec::with_capacity(WINDOW);
+        for _ in 0..WINDOW {
+            rig.runtime.process_quantum(&mut rig.output, 2);
+            track_series.push(
+                rig.runtime
+                    .armed_param_gain(&track)
+                    .expect("逐轨槽位必须在册"),
+            );
+            master_series.push(
+                rig.runtime
+                    .armed_master_param_gain()
+                    .expect("主总线槽位必须已武装"),
+            );
+        }
+        ArmedSeries {
+            track: track_series,
+            master: master_series,
+            slots_before,
+            master_before,
+        }
+    }
+
+    let switched = arm(SampleRate::Hz48000, SampleRate::Hz96000);
+    let fresh = arm(SampleRate::Hz96000, SampleRate::Hz96000);
+    let unchanged = arm(SampleRate::Hz48000, SampleRate::Hz48000);
+
+    // ---- 覆盖度 ①：两条被测臂的槽位在换率**之前**就已在册（这是与 F1 的分界）----
+    for (label, arm) in [("A(48→96)", &switched), ("B(96→96)", &fresh)] {
+        assert_eq!(
+            arm.slots_before, 1,
+            "{label}: 逐轨槽位必须已在册（否则测的是惰性建立那一路，属 F1）"
+        );
+        assert_eq!(
+            arm.master_before,
+            Some(1.0),
+            "{label}: 主总线槽位必须已武装且是恒等值（否则测的是 P13 那一路）"
+        );
+    }
+    // ---- 覆盖度 ②：参照臂在窗口末尾仍在平滑中（吸附会把 `α` 的差别吃掉）----
+    let last_track = *fresh.track.last().expect("窗口非空");
+    let last_master = *fresh.master.last().expect("窗口非空");
+    assert!(
+        last_track > TRACK_TARGET && last_track < 1.0,
+        "覆盖度：参照臂的逐轨斜坡必须仍在走（实得 {last_track}）"
+    );
+    assert!(
+        last_master > MASTER_TARGET && last_master < 1.0,
+        "覆盖度：参照臂的主总线斜坡必须仍在走（实得 {last_master}）"
+    );
+
+    // ---- 主判据：换率的那条臂必须与"一开始就在新率"逐位相同 ----
+    assert_bit_identical(
+        "F7 逐轨槽平滑输出（换率 vs 一开始就在新率）",
+        &switched.track,
+        &fresh.track,
+    );
+    assert_bit_identical(
+        "F7 主总线槽平滑输出（换率 vs 一开始就在新率）",
+        &switched.master,
+        &fresh.master,
+    );
+
+    // ---- 覆盖度 ③（判别力见证）：率**没变**的那条臂必须给出另一个轨迹 ----
+    assert!(
+        !bitwise_equal(&unchanged.track, &fresh.track),
+        "率没变的那条臂必须与 96 kHz 参照不同，否则本判据对 `α` 不敏感（逐轨首值 {} vs {}）",
+        unchanged.track[0],
+        fresh.track[0]
+    );
+    assert!(
+        !bitwise_equal(&unchanged.master, &fresh.master),
+        "率没变的那条臂的主总线轨迹必须与 96 kHz 参照不同（首值 {} vs {}）",
+        unchanged.master[0],
+        fresh.master[0]
+    );
+    println!(
+        "[engine-rate/F7] 在册槽位换率：逐轨 {} 个量子、主总线 {} 个量子逐位相同；\
+         48 kHz 判别力见证首值 逐轨 {} vs 参照 {}",
+        switched.track.len(),
+        switched.master.len(),
+        unchanged.track[0],
+        fresh.track[0]
+    );
 }
