@@ -79,6 +79,25 @@
 //! `pre_delay_s = 0` 时**不**走延迟线（`pre_len = 0`），湿输入就是当前样本，
 //! 逐位不受影响。
 //!
+//! ## 2.2 预延迟**长度变更**时清零（本轮的缺口修复）
+//!
+//! "秒 → 帧"的读数（`pre_len`）**变了**的时候，[`ConvolutionReverb::set_params`] /
+//! [`ConvolutionReverb::set_sample_rate`] 会把两条预延迟线清零并把写头归零。
+//!
+//! 为什么必须清：线按 [`MAX_PRE_DELAY_FRAMES`] 预分配、永不缩小，因此**长度变长**
+//! （例如 `1 ms → 100 ms`）时，新读头会指向一段在**旧**、更短的延迟下写进缓冲、
+//! 但从未被读出的旧音频。那段旧激励成为"幽灵回声"出现在湿路里 —— 它既不是新延迟
+//! 该给的内容，也依赖上一次的处理历史，因此不是确定性的可复现输出。判据
+//! `convolution_reverb::tests::changing_the_pre_delay_length_never_replays_stale_audio`
+//! 用一个相反的要求钉住它：清空延迟线所需的全部可见激励恰好被随后的静音冲掉
+//! ⇒ 湿输出只能留下卷积核的 FFT 舍入底（本机实测峰值约 `1.2e-6`）。
+//!
+//! ⚠ 代价与边界（不隐藏）：本器件**没有**做交叉淡化，也**没有**做分数延迟插值。
+//! 长度只按整帧变化；持续拖动 `pre_delay_s` 时，每当读数跨过一帧就清一次线
+//! （`2 × MAX_PRE_DELAY_FRAMES` 次原地写，**零分配**，由
+//! `tests/convolution_reverb_rt_zero_alloc.rs` 判据 1 的"每 250 个量子换一次
+//! `pre_delay_s`"覆盖）。要平滑拖动，调用方应在器件之外做参数平滑。
+//!
 //! # 3. 分配纪律 [ARCH-RT-001]
 //!
 //! 两个分配入口，都必须在音频回调**之外**调用：
@@ -222,6 +241,7 @@ pub struct ConvolutionReverb {
     ///
     /// 长度恒为 [`MAX_PRE_DELAY_FRAMES`]（在 [`Self::set_sample_rate`] 或
     /// [`Self::set_impulse_response`] 里**一次性**分配）。实际延迟是 `pre_len` 帧。
+    /// 长度变更时的清零见 [`Self::retune_pre_delay`]。
     pre: [Vec<f32>; 2],
     /// 实际预延迟（帧）。`0` = 不延迟（此时不读延迟线）。
     pre_len: usize,
@@ -267,7 +287,7 @@ impl ConvolutionReverb {
     /// 采样率只影响预延迟的"秒 → 帧"换算；它**不**重采样 IR（IR 是按帧给的）。
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.sample_rate = sanitise_sample_rate(sample_rate);
-        self.ensure_delay_lines();
+        self.retune_pre_delay();
     }
 
     /// 设定四条脉冲响应：`h_ll` / `h_lr` / `h_rl` / `h_rr`。
@@ -285,7 +305,7 @@ impl ConvolutionReverb {
         h_rl: &[f32],
         h_rr: &[f32],
     ) -> usize {
-        self.ensure_delay_lines();
+        self.retune_pre_delay();
         self.kernels.set_impulse_response(h_ll, h_lr, h_rl, h_rr)
     }
 
@@ -325,14 +345,13 @@ impl ConvolutionReverb {
     /// 设定参数（**零分配**，可以逐块调用）。
     ///
     /// 退化输入（`NaN` / `±inf`）会被替换成缺省值再钳制（见 `sanitise`）。
+    ///
+    /// ⚠ `pre_delay_s` 折算出的帧数**变了**时，两条预延迟线会被清零、写头归零
+    /// （见 [`Self::retune_pre_delay`] 与模块文档 §2.2）。这条路径逐样本零分配。
     pub fn set_params(&mut self, params: ConvolutionReverbParams) {
-        let params = sanitise(params);
-        self.params = params;
-        self.ir_gain = db_to_gain(params.ir_gain_db);
-        self.pre_len = frames_for_pre_delay(params.pre_delay_s, self.sample_rate);
-        if self.pre_len > 0 && self.pre_index >= self.pre_len {
-            self.pre_index = 0;
-        }
+        self.params = sanitise(params);
+        self.ir_gain = db_to_gain(self.params.ir_gain_db);
+        self.retune_pre_delay();
     }
 
     /// 当前参数（已净化）。
@@ -459,8 +478,26 @@ impl ConvolutionReverb {
         }
     }
 
-    /// 保证两条预延迟线已按上限分配，并重算 `pre_len`。
-    fn ensure_delay_lines(&mut self) {
+    /// 按当前参数保证两条预延迟线已就绪，并处理**长度变更**。
+    ///
+    /// 两个动作，顺序固定：
+    ///
+    /// 1. 线的长度**恒为** [`MAX_PRE_DELAY_FRAMES`]（按上限一次性分配，此后永不重新
+    ///    分配 —— 调参因此逐样本零分配 [ARCH-RT-001]）；
+    /// 2. 重算 `pre_len`；**长度真的变了**就把两条线清零、写头归零。
+    ///
+    /// 第 2 步的清零不是装饰。不清的话，长度**变长**时读头会指向上一次（更短）
+    /// 延迟留下的旧音频：新预延迟的前若干帧会读出一段"幽灵回声"（旧激励在
+    /// `pre_len` 帧之前并不存在，却出现在湿路里），而且它依赖上一次的处理历史，
+    /// 因此不是确定性的可复现输出。清零让"长度变更"有一个干净的、定义明确的后果
+    /// （与 [`Self::reset`] 同一条纪律）。
+    ///
+    /// ⚠ 代价（诚实边界）：本函数**不**在长度变更时对旧/新延迟做交叉淡化，也不做
+    /// 分数延迟插值 —— 那需要第二条读头与混合状态（另一张票）。因此持续拖动
+    /// [`ConvolutionReverbParams::pre_delay_s`] 时，每当"秒 → 帧"的读数跨过一帧就会
+    /// 清一次线（`2 × MAX_PRE_DELAY_FRAMES` 次原地写，零分配）。接线的调用方若要
+    /// 平滑拖动，应当在**器件之外**做参数平滑，或接受这段湿路的硬切换。
+    fn retune_pre_delay(&mut self) {
         if self.pre[0].len() != MAX_PRE_DELAY_FRAMES {
             self.pre = [
                 vec![0.0; MAX_PRE_DELAY_FRAMES],
@@ -468,7 +505,14 @@ impl ConvolutionReverb {
             ];
             self.pre_index = 0;
         }
-        self.pre_len = frames_for_pre_delay(self.params.pre_delay_s, self.sample_rate);
+        let wanted = frames_for_pre_delay(self.params.pre_delay_s, self.sample_rate);
+        if wanted != self.pre_len {
+            for line in &mut self.pre {
+                line.fill(0.0);
+            }
+            self.pre_index = 0;
+            self.pre_len = wanted;
+        }
     }
 }
 
@@ -716,6 +760,84 @@ mod tests {
                 "样本 {i}: 一次调用与分块调用必须逐位相同"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 判据 5b：预延迟**长度变更**不许重放旧音频
+    // -----------------------------------------------------------------------
+
+    /// 量什么：把预延迟从**短**改成**长**之后，一个 300 帧静音块的湿输出
+    /// （单位：线性样本值；读数取 300 帧的 `Σ|out|` 与 `peak|out|`）。
+    ///
+    /// 判据：两个读数都 `≤ STALE_FLOOR = 1e-3`（见下"为什么不是逐位 0"）。
+    ///
+    /// 观测方式（为什么这样读出的必然是"旧音频"）：延迟线按上限预分配、永不缩小。
+    /// 先用 `pre_len = 100` 把 200 帧常数 `7.0` 推进去 —— 写头走过 200 格，而短延迟
+    /// 只读得到其中 100 格，因此**至少** 100 格 `7.0` 停在缓冲里没被读出。再把
+    /// `pre_len` 改成 300：若线不被清，写头仍停在第 200 格，新延迟要读的格位正落在
+    /// 那些旧样本上 ⇒ 湿输出在"新预延迟尚未到齐"的样本上给出 `7.0`。
+    ///
+    /// 为什么这些旧音频本不该被听见：旧样本写进来的时刻比新读头**早不到** `pre_len`
+    /// 帧，而随后的 300 帧静音会覆盖读头走过的全部格位（`300 ≥ 3 × pre_len`）⇒
+    /// 长度变更后的前 300 帧湿输出只能是卷积核的舍入底，不能含旧激励。
+    ///
+    /// 为什么判据不是逐位 `0`：卷积核是频域实现，单位脉冲也要过一次 256 点 FFT
+    /// 往返，因此"输入全零"在湿路上留下一个**实测约 `1.2e-6`** 的舍入底（本机
+    /// aarch64，本票读数：`peak = 1.1920929e-6`、`Σ|out| = 9.1179485e-5`）。逐位 `0`
+    /// 会把这条物理底当成缺陷。`STALE_FLOOR = 1e-3` 比那个底高三个数量级，又比
+    /// 旧音频的读数（`peak = 7.0`、`Σ|out| = 1400`）低六个数量级 ⇒ 两侧都不含糊。
+    ///
+    /// 注入（实测见本票报告）：删掉 [`ConvolutionReverb::retune_pre_delay`] 里
+    /// "长度变了就清零那一步"、只保留 `self.pre_len = wanted` ⇒ 本判据变红
+    /// （实测 `Σ|out| = 1400`、`peak = 7.0000024`，门限 `1e-3`）。
+    #[test]
+    fn changing_the_pre_delay_length_never_replays_stale_audio() {
+        /// 旧音频的读数（`1400` / `7.0`）与 FFT 舍入底（`9.1e-5` / `1.2e-6`）之间的门限。
+        const STALE_FLOOR: f32 = 1e-3;
+        const SHORT: usize = 100;
+        const LONG: usize = 300;
+        let mut shell = ConvolutionReverb::new();
+        shell.set_sample_rate(SR);
+        let delta = impulse_ir(1, 0, 1.0);
+        let silence = impulse_ir(1, 0, 0.0);
+        assert_eq!(
+            shell.set_impulse_response(&delta, &silence, &silence, &delta),
+            1
+        );
+
+        // 短预延迟：把 200 帧常数灌进延迟线（短延迟读不完，旧样本留在缓冲里）。
+        shell.set_params(ConvolutionReverbParams {
+            pre_delay_s: SHORT as f32 / SR,
+            dry: 0.0,
+            wet: 1.0,
+            ir_gain_db: 0.0,
+        });
+        assert_eq!(shell.pre_delay_frames(), SHORT, "前置条件：短延迟生效");
+        let mut fill = vec![7.0f32; 2 * 200];
+        shell.process(&mut fill);
+
+        // 变长：读窗口移进那段旧音频本该在的地方。
+        shell.set_params(ConvolutionReverbParams {
+            pre_delay_s: LONG as f32 / SR,
+            dry: 0.0,
+            wet: 1.0,
+            ir_gain_db: 0.0,
+        });
+        assert_eq!(shell.pre_delay_frames(), LONG, "前置条件：长延迟生效");
+
+        let mut probe = vec![0.0f32; 2 * LONG];
+        shell.process(&mut probe);
+        let energy: f32 = probe.iter().map(|v| v.abs()).sum();
+        let peak = probe.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let first_nonzero = probe
+            .iter()
+            .position(|v| *v != 0.0)
+            .map_or("无".to_string(), |i| format!("第 {} 个 f32", i));
+        assert!(
+            peak <= STALE_FLOOR && energy <= STALE_FLOOR,
+            "预延迟变长后湿路重放了旧音频：peak = {peak}、Σ|out| = {energy}、\
+             首个非零样本 = {first_nonzero}（门限 {STALE_FLOOR}）"
+        );
     }
 
     // -----------------------------------------------------------------------
