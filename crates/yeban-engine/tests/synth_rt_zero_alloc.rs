@@ -284,6 +284,26 @@
 //! ⚠ 本场景的**四元组**（锁尝试/等待、I/O 请求/发生）在 `tests/rt_zero_alloc.rs`
 //! 的 ⑰d 里测：那条判据的窗口附带 `rt_probe` 锁与 I/O 探针。
 
+//! # 场景 21（`line/engine-23` 追加）：母线**有限值守卫**（类别 4「参数极值」）
+//!
+//! 缺陷（本票实测，量法见 `crate::rt::saturate_bus_to_finite` 的文档）：一个
+//! **模型接受**的极值音量（`TrackV3::validate` 只要求 `volume_db` 有限，没有上界）
+//! 让线性增益落在"有限但接近 `f32` 上限"的位置（`track_gain(770.0) = 3.1622822e38`）
+//! ⇒ 与任何 |x| > 1.075 的信号相乘即上溢成 `±∞` ⇒ 母线限制器（`yeban-dsp`，不动）
+//! 的窗口峰值 `W = ∞`、目标增益 `T / W = 0` ⇒ `∞ · 0 = NaN` **写进声卡缓冲**。
+//!
+//! 修法：在限制器的**输入侧**加一道有限值守卫（`∞ → ±MAX_LINEAR_MAGNITUDE`、
+//! `NaN → 0`），**有限样本逐位不变** ⇒ 既有（有限）渲染输出不变。
+//!
+//! 场景 21 用一份 `volume_db = 770.0` 的夹具跑 400 个量子，窗口断言三件事：
+//! ① `allocations == 0 && deallocations == 0`（判定只是一次 `is_finite` 分支）；
+//! ② 输出里**非有限样本 == 0**（去掉守卫那次调用 ⇒ 实测 `非有限样本=2484 NaN=2484`，
+//!    本票的注入读数）；
+//! ③ 覆盖度见证两条 —— 窗口里非零样本 > 0 **且** `limiter_gain_reductions > 0`
+//! （极值音量必须是"响亮的一声被限制成有限值"，而不是静音或被静默丢弃）。
+//! 夹具自身的合法性（`project.validate().is_ok()`）与"增益确实落在上溢区间"
+//! 也在场景里断言 ⇒ 这是一个**模型接受**的工程，不是构造出来的非法输入。
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -297,7 +317,7 @@ use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, event_channel};
 use yeban_engine::rt::EngineRuntime;
 use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
-use yeban_engine::synth::VOICES_PER_TRACK;
+use yeban_engine::synth::{VOICES_PER_TRACK, track_gain};
 
 mod support;
 
@@ -2900,6 +2920,106 @@ fn main() -> ExitCode {
             "剪枝之后幸存支路的武装延迟必须是 {PDC_REBIND_LATENCY} 帧，实际 \
              {rebind_keeper_delay:?} ⇒ 场景 20 的窗口没有覆盖那条有历史的延迟线"
         ));
+    }
+
+    // ---- 场景 21（`line/engine-23` 追加）：母线**有限值守卫**在实时窗口内零分配 ----
+    //
+    // 窗口里跑的是"逐样本 `is_finite` 判定 + 非有限样本饱和"，位置在 `render_block`
+    // 步骤 3b⁰（母线限制器的输入侧）。
+    //
+    // 夹具刻意取**模型接受**的极值：`TrackV3::validate` 只要求 `volume_db` **有限**
+    // （`crates/yeban-model/src/project.rs`，现位于第 1204 行起），没有上界 ⇒
+    // `volume_db = 770.0` 是一个**合法**工程，而
+    // `synth::track_gain(770.0) = 3.1622822e38`（有限）⇒ 任何 |x| > 1.075 的信号
+    // 相乘即上溢成 `±∞` ⇒（加守卫之前）限制器把 `∞` 变成 `NaN`。
+    const GUARD_QUANTA: usize = 400;
+    /// 夹具的极值音量（dB）。落在"增益有限、乘积上溢"的窗口 `(760, 771)` 内。
+    const GUARD_VOLUME_DB: f32 = 770.0;
+    let mut guard_fixture = note_project(&saturated_notes());
+    guard_fixture
+        .project
+        .tracks
+        .get_mut(&guard_fixture.track)
+        .expect("夹具有一条 MIDI 轨")
+        .volume_db = GUARD_VOLUME_DB;
+    if let Err(error) = guard_fixture.project.validate() {
+        failures.push(format!(
+            "母线有限值守卫的夹具必须是**模型接受**的工程（否则它测的不是极值参数，\
+             而是模型校验）：validate 返回 {error:?}"
+        ));
+    }
+    let guard_gain = track_gain(GUARD_VOLUME_DB);
+    if !guard_gain.is_finite() || guard_gain <= f32::MAX / 2.0 {
+        failures.push(format!(
+            "夹具音量 {GUARD_VOLUME_DB} dB 的线性增益必须是**有限**且接近 f32 上限的\
+             （实得 {guard_gain:e}）⇒ 否则本场景落在非上溢区间，是空转"
+        ));
+    }
+    let guard_snapshot =
+        EngineSnapshot::from_project(&guard_fixture.project, 1).expect("守卫夹具快照必须能编译");
+    let guard_slot = SnapshotSlot::new(guard_snapshot);
+    let (guard_retire, mut guard_queue) = retire_channel(8);
+    let (_guard_sender, guard_receiver) = event_channel(64);
+    let (guard_publisher, _guard_collector) = meter_channel(8192);
+    let mut guard_runtime =
+        EngineRuntime::new(&guard_slot, guard_retire, guard_receiver, guard_publisher);
+    let mut guard_output = vec![0.0f32; 128 * 2];
+    // 预热（窗口之外）：首份快照的武装与声部起音。
+    guard_runtime.process_quantum(&mut guard_output, 2);
+    let mut guard_nan = 0u64;
+    let mut guard_nonfinite = 0u64;
+    let mut guard_nonzero = 0u64;
+    let mut guard_peak = 0.0f32;
+    let (guard_alloc, guard_dealloc) = measure("bus finite guard (extreme volume_db)", || {
+        for _ in 0..GUARD_QUANTA {
+            guard_runtime.process_quantum(&mut guard_output, 2);
+            for sample in &guard_output {
+                if sample.is_nan() {
+                    guard_nan += 1;
+                }
+                if !sample.is_finite() {
+                    guard_nonfinite += 1;
+                }
+                if *sample != 0.0 {
+                    guard_nonzero += 1;
+                }
+                guard_peak = guard_peak.max(sample.abs());
+            }
+        }
+    });
+    let guard_stats = guard_runtime.stats();
+    while guard_queue.drain(8) > 0 {}
+    println!(
+        "[engine-23/J21] 母线有限值守卫: {GUARD_QUANTA} 量子 allocations={guard_alloc} \
+         deallocations={guard_dealloc} 音量={GUARD_VOLUME_DB} dB 线性增益={guard_gain:e} \
+         非有限样本={guard_nonfinite} NaN={guard_nan} 非零样本={guard_nonzero} \
+         峰值={guard_peak:.6} 限制器压过帧数={}",
+        guard_stats.limiter_gain_reductions
+    );
+    if guard_alloc != 0 || guard_dealloc != 0 {
+        failures.push(format!(
+            "母线有限值守卫在实时窗口内分配/释放了内存: allocations={guard_alloc} \
+             deallocations={guard_dealloc}（判定只是一次 `is_finite` 分支，不允许分配）"
+        ));
+    }
+    if guard_nonfinite != 0 || guard_nan != 0 {
+        failures.push(format!(
+            "极值但**模型接受**的音量（{GUARD_VOLUME_DB} dB）把非有限样本写进了输出：\
+             非有限={guard_nonfinite} NaN={guard_nan} ⇒ 限制器输入侧必须先把非有限样本\
+             收进有限域（`EngineRuntime::render_block` 步骤 3b⁰）"
+        ));
+    }
+    // 覆盖度见证（防"窗口里什么都没跑"的假绿）：窗口里真的在出声，
+    // 而且真的响到把母线限制器压下去（否则"零 NaN"可能只是因为静音）。
+    if guard_nonzero == 0 {
+        failures.push("母线有限值守卫的窗口里没有任何非零样本 —— 本场景是空转".to_owned());
+    }
+    if guard_stats.limiter_gain_reductions == 0 {
+        failures.push(
+            "母线有限值守卫的窗口里限制器一次都没有压过 —— 极值音量下本场景必须是\
+             \"响亮的一声被限制成有限值\"，而不是静音"
+                .to_owned(),
+        );
     }
 
     println!(

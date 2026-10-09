@@ -1648,6 +1648,20 @@ pub fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool)
 }
 
 /// 音轨线性增益（dB → 线性；非有限输入按静音处理）。超越函数类，构造期一次。
+///
+/// ## 值域（`line/engine-23` 的实测边界，**不改本函数**）
+///
+/// 本函数只**要求有限**：`volume_db ≤ -120` 给 `0.0`，其上是
+/// `yeban_dsp::math::db_to_gain`。后者对**溢出**的 `exp2` 结果归零
+/// （`yeban_dsp::math::exp2` 对非有限结果返回 `0.0`），因此 `volume_db ≥ ~770.7`
+/// 得到的是**静音**（实测 `771.0 → 0.0`），而 `~760 … ~770.6` 之间是一段
+/// **有限但极大**的增益（`770.0 → 3.1622822e38`）。
+///
+/// ⚠ 那一段的乘积会**上溢成 `±∞`**：`TrackV3::validate` 只要求 `volume_db` 有限
+/// （没有上界）⇒ `volume_db = 770.0` 是**模型接受**的工程。本函数**不**把这段夹掉
+/// （那会改变既有渲染输出，且需要一条"值域上限"的裁决）；引擎保证的是**信号侧**
+/// 不会把非有限值交给母线限制器 —— 见 `crate::rt` 的 `render_block` 步骤 3b⁰
+/// （母线有限值守卫）。
 #[must_use]
 pub fn track_gain(volume_db: f32) -> f32 {
     if volume_db.is_finite() {

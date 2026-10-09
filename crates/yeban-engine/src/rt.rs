@@ -122,6 +122,7 @@ use crate::insert::{
     ChannelStrip, ChannelStripParams, CompressorParams, ConvolutionReverb, ConvolutionReverbParams,
     Reverb, ReverbParams,
 };
+use crate::level::MAX_LINEAR_MAGNITUDE;
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
@@ -2350,6 +2351,19 @@ impl EngineRuntime {
                 // （`frames.min(块容量)`）⇒ 行为逐位不变。
                 let limiter_frames = frames.min(block.capacity());
                 let (left, right) = block.stereo_mut();
+                // --- 3b⁰) 母线**有限值守卫**（本票）：见 [`saturate_bus_to_finite`] ---
+                //
+                // ⚠ 位置是**限制器的输入侧**，不能换：限制器是**递归状态**器件，
+                // 它自己的口径对 `NaN` 有定义（`nan_to_zero`）但对 `±∞` **刻意保留**
+                // （`crates/yeban-dsp/src/limiter.rs` 的 `nan_to_zero` 文档逐字写着
+                // "`±∞` 原样保留"）⇒ 一个 `∞` 会让窗口峰值 `W = ∞`、目标增益
+                // `T / W = 0`，随后 `∞ · 0 = NaN` **静默**污染整条母线。
+                // 因此"交给限制器的必须是有限值"是**引擎侧**的契约。
+                //
+                // 有限样本**逐位不变** ⇒ 既有（有限）渲染输出逐位不变；只有
+                // 非有限样本被收进有限域。零分配、零锁、零 I/O、零日志
+                // [MUST-GATE-001]：只是一次 `is_finite` 判定的分支与一次赋值。
+                saturate_bus_to_finite(&mut left[..limiter_frames], &mut right[..limiter_frames]);
                 limiter.process_stereo(&mut left[..limiter_frames], &mut right[..limiter_frames]);
             }
             let reduced = limiter.reduction_count().saturating_sub(before);
@@ -2452,6 +2466,95 @@ fn scale_bus(block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>, gain: f32) {
     for (l, r) in left.iter_mut().zip(right.iter_mut()) {
         *l *= gain;
         *r *= gain;
+    }
+}
+
+/// 母线**有限值守卫**：把非有限样本收进有限域，**有限样本逐位不变**。
+///
+/// 调用点是 [`EngineRuntime::render_block`] 的步骤 3b⁰：**母线限制器的输入侧**。
+///
+/// ## 1. 它修的是一个实测出来的缺陷（类别 4「参数极值」／类别 1「非有限输出」）
+///
+/// **量什么／怎么量／单位**：把 `TrackV3::volume_db` 设成各种值，用
+/// `EngineSnapshot::from_project` + `EngineRuntime::process_quantum`（1 条轨、24 个交叠
+/// 音符、400 个量子 × 128 帧 × 2 声道 = **102 400** 个输出样本）渲染，数输出里
+/// **非有限样本的个数**（单位：个）。实测（`volume_db` → NaN 个数）：
+///
+/// | `volume_db` | `synth::track_gain` | 输出 NaN 个数 |
+/// | :--- | :--- | ---: |
+/// | `0.0` | `1.0` | `0` |
+/// | `700.0` | `1.0000022e35` | `0` |
+/// | `760.0` | `1.0000008e38` | `23554` |
+/// | `770.0` | `3.1622822e38`（**有限**） | `99448` |
+/// | `771.0` | `0.0`（`exp2` 对溢出结果归零） | `0` |
+///
+/// 同一张表里换**主总线**那一轨（`master.volume_db`，经 [`scale_bus`]）在 `770.0` 上
+/// 给出 `72742` 个 NaN。两条路径的输入都是**模型接受**的工程：`TrackV3::validate`
+/// 只要求 `volume_db` **有限**（`crates/yeban-model/src/project.rs`，现位于第 1204 行起），
+/// 没有上界 ⇒ `770.0` 是**合法**工程。`SetParam` 事件侧同款：`ParamTable::accept`
+/// 接受任何**有限且非负**的值，而 `value = f32::MAX` 在 4 / 24 个交叠音符下分别给出
+/// `84888` / `100112` 个 NaN（窗口 600 量子 ⇒ 153 600 个样本）。
+///
+/// **机理**（三段，每一段都实测过）：
+///
+/// 1. 引擎把**有限**增益乘到信号上，乘积**上溢出**成 `±∞`
+///    （`3.1622822e38 × 24 个声部的合成结果 > f32::MAX`）；
+/// 2. `∞` 流进母线限制器：它是**递归状态**器件，窗口峰值 `W = ∞` ⇒ 目标增益
+///    `T / W = 0`（非有限输入本身由器件的 `nan_to_zero` 挡住，但那个函数**刻意**
+///    保留 `±∞`，见 `crates/yeban-dsp/src/limiter.rs` 的 `nan_to_zero` 文档）；
+/// 3. 输出 `sample(∞) × gain(0) = NaN`，`soft_knee(NaN) = NaN` ⇒ **NaN 写进声卡缓冲**。
+///
+/// ⚠ 本 crate 改不了第 2 段（限制器住在 `yeban-dsp`，且那条口径是有意为之），
+/// 因此把契约补在**引擎这一侧**：交给限制器的输入必须是有限值。
+///
+/// ## 2. 饱和到什么值，为什么
+///
+/// `NaN → 0.0`（与限制器自己的 `nan_to_zero` **同口径** ⇒ 限制器环形缓冲里存进去
+/// 的仍是同一个 `0.0`，一位不差）；`±∞ → ±`[`MAX_LINEAR_MAGNITUDE`]
+/// （`= 16.0` = 4 × 满量程 = **+24.08 dBFS**）。
+///
+/// 为什么是这个常数而不是 `f32::MAX`：`f32::MAX` 会让限制器的目标增益
+/// `0.9 / 3.4e38 = 2.6e-39` 落进**次正规数**，而引擎的实时路径开着 FTZ/DAZ
+/// （[ARCH-RT-003]）⇒ 那个目标会被冲刷成 `0.0`，输出变成**整段静音**（比 NaN 好，
+/// 但比"响亮的一声被限制"更不像"饱和"）。`MAX_LINEAR_MAGNITUDE` 是**引擎已有的**
+/// 线性幅度上限（[`crate::level`] 的 `sanitize_sample` 用的就是它，口径"超出即视为
+/// 已削顶"），取它不需要发明任何新常数，也不需要第二份域表。
+///
+/// ## 3. 为什么它**不**改变既有渲染输出
+///
+/// 判定只有一条：`!sample.is_finite()`。因此
+///
+/// - **有限**样本（含 `±0.0`、次正规数、`f32::MAX`）走的是"原样写回"⇒ 逐位相同；
+/// - 现状下会产生 `NaN` 的那些样本，本来就已经是坏的输出。
+///
+/// 也就是说：**每一个有限输入下的输出都与加本守卫之前逐位相同**；改变只发生在
+/// 今天输出 `NaN` 的那些情形。母线输出的上界（限制器契约"限制后峰值 ≤ 天花板"）
+/// 因此第一次对**任意**输入成立 —— 今天它在输 `∞` 时是失效的。
+///
+/// ## 4. 实时分类（[ADR-0001 D32]）
+///
+/// 逐样本只有一次 `is_finite` 判定、一次比较与（罕见路径上的）一次赋值：**分配 0、
+/// 释放 0、锁 0、阻塞 I/O 0、日志 0** [MUST-GATE-001]。判据：
+/// `tests/synth_rt_zero_alloc.rs` 的场景 J21（四元组）与 `rt::tests` 的三条单元判据。
+///
+/// ## 5. 登记（本守卫**没有**做的事）
+///
+/// 1. **不计数**：饱和了多少个样本不可观测。这与 [`crate::level`] 的 `sanitize_sample`
+///    钳位是同一个已登记的缺口（`docs/ledger/engine-meters-notes.md` 现位于第 308 行），
+///    本票按同一口径登记而不新增 `EngineStats` 字段（那会改动跨线程镜像的契约）；
+/// 2. **不修上游**：`SetParam` 的极大有限值与 `volume_db` 的极大有限值仍然被**接受**
+///    —— 本守卫作用于**信号**，不发明参数值域（那需要一条裁决：见交付报告的 needs）；
+/// 3. **不动限制器本身**：`yeban-dsp` 的 `nan_to_zero` 保留 `±∞` 那条口径由它的
+///    属主决定，本 crate 只保证"不把 `∞` 交给它"。
+fn saturate_bus_to_finite(left: &mut [f32], right: &mut [f32]) {
+    for sample in left.iter_mut().chain(right.iter_mut()) {
+        if !sample.is_finite() {
+            *sample = if sample.is_nan() {
+                0.0
+            } else {
+                MAX_LINEAR_MAGNITUDE.copysign(*sample)
+            };
+        }
     }
 }
 
@@ -2966,6 +3069,118 @@ mod tests {
         assert_eq!(block.left(), &[1.0f32, 1.0, 1.0][..]);
         assert_eq!(block.right(), &[-2.0f32, -2.0, -2.0][..]);
         assert_eq!(block.left().len(), 3, "只缩放有效帧");
+    }
+
+    /// 判据（本票）：有限样本经 [`saturate_bus_to_finite`] **逐位不变**
+    /// —— 含 `±0.0`、次正规数、`f32::MAX`、`f32::MIN` 与普通值。
+    ///
+    /// 这是"本守卫不改既有（有限）渲染输出"的**实现本体**：断言用 `to_bits()`，
+    /// 因此 `-0.0` 与 `+0.0` 的差别也在量程内。
+    #[test]
+    fn the_bus_guard_leaves_every_finite_sample_bit_for_bit() {
+        let finite = [
+            0.0f32,
+            -0.0,
+            1.0,
+            -1.0,
+            MAX_LINEAR_MAGNITUDE,
+            -MAX_LINEAR_MAGNITUDE,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            f32::from_bits(1), // 最小次正规数
+            f32::MAX,
+            f32::MIN,
+            1.0e-45,
+        ];
+        let mut left = finite;
+        let mut right = finite;
+        saturate_bus_to_finite(&mut left, &mut right);
+        for (index, (got, want)) in left.iter().zip(finite.iter()).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "左声道第 {index} 个有限样本必须逐位不变（实得 {got:e}，期望 {want:e}）"
+            );
+        }
+        assert_eq!(right.map(f32::to_bits), finite.map(f32::to_bits));
+    }
+
+    /// 判据（本票）：`NaN` 归 `0.0`（与限制器的 `nan_to_zero` 同口径），
+    /// `±∞` 收进 `±`[`MAX_LINEAR_MAGNITUDE`]（而不是留给限制器 —— 那会变成 `NaN`）。
+    ///
+    /// 反向见证：本判据同时断言**饱和真的发生**（`16.0` 而不是原值），
+    /// 因此它不会因为"守卫什么都没做"而假绿。
+    #[test]
+    fn the_bus_guard_saturates_non_finite_samples_into_the_linear_range() {
+        let mut left = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -f32::NAN,
+            0.5,
+            f32::INFINITY,
+        ];
+        let mut right = [f32::NEG_INFINITY, 0.25, f32::NAN, f32::INFINITY, 2.0, 0.0];
+        saturate_bus_to_finite(&mut left, &mut right);
+        assert_eq!(
+            left,
+            [
+                0.0,
+                MAX_LINEAR_MAGNITUDE,
+                -MAX_LINEAR_MAGNITUDE,
+                0.0,
+                0.5,
+                MAX_LINEAR_MAGNITUDE
+            ],
+            "NaN ⇒ 0、±∞ ⇒ ±{MAX_LINEAR_MAGNITUDE}，有限值不动"
+        );
+        assert_eq!(
+            right,
+            [
+                -MAX_LINEAR_MAGNITUDE,
+                0.25,
+                0.0,
+                MAX_LINEAR_MAGNITUDE,
+                2.0,
+                0.0
+            ]
+        );
+        assert!(
+            left.iter().chain(right.iter()).all(|s| s.is_finite()),
+            "守卫之后不允许还有非有限样本"
+        );
+    }
+
+    /// 判据（本票）：饱和值必须在**限制器**里得到定义好的结果 ——
+    /// `+MAX_LINEAR_MAGNITUDE` 进限制器 ⇒ 输出有限且不超过天花板。
+    ///
+    /// 它钉住"为什么取 16.0 而不是 `f32::MAX`"：`f32::MAX` 会让目标增益
+    /// `0.9 / 3.4e38` 落进**次正规数**，被 FTZ/DAZ 冲刷成 `0.0` ⇒ 输出静音。
+    #[test]
+    fn the_saturation_value_survives_the_bus_limiter() {
+        let mut limiter = BusLimiter::new();
+        let mut left = [MAX_LINEAR_MAGNITUDE; DEFAULT_BLOCK_FRAMES];
+        let mut right = [-MAX_LINEAR_MAGNITUDE; DEFAULT_BLOCK_FRAMES];
+        saturate_bus_to_finite(&mut left, &mut right);
+        // 守卫对有限值逐位不变 ⇒ 送进限制器的就是 ±16.0。
+        assert_eq!(left[0], MAX_LINEAR_MAGNITUDE);
+        limiter.process_stereo(&mut left, &mut right);
+        assert!(
+            left.iter().chain(right.iter()).all(|s| s.is_finite()),
+            "±16.0 经母线限制器之后必须全是有限值"
+        );
+        let peak = left[crate::mixer::LIMITER_LATENCY_FRAMES..]
+            .iter()
+            .chain(right[crate::mixer::LIMITER_LATENCY_FRAMES..].iter())
+            .fold(0.0f32, |acc, s| acc.max(s.abs()));
+        assert!(
+            peak > 0.0,
+            "饱和值必须产出**有声**的有限输出，而不是被冲刷成静音"
+        );
+        assert!(
+            peak <= crate::mixer::LIMITER_CEILING + f32::EPSILON,
+            "限制器契约：限制后峰值 ≤ 天花板（实得 {peak}）"
+        );
     }
 
     /// 判据：轨道数超过电平状态容量时**不 panic、不扩容**，而是计数并保留母线。
