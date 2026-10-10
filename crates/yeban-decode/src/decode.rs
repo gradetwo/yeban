@@ -4440,8 +4440,11 @@ mod tests {
     /// 样本喂它（见下面的自检断言）—— ⛔ 不用"本地全绿"当证据。
     ///
     /// 核的两件性质：
-    /// 1. **R102／R109／R118**：每个 `.all(` 的**前 40 行**内必须出现一处**界定被遍历集合大小**
-    ///    的界。⚠ R118 的分类：**算**的是 `frame_count` / `.len()` / `.count()` / `is_empty`
+    /// 1. **R102／R109／R118**：每个 `.all(` 的**前 12 行**内必须出现一处**界定被遍历集合大小**
+    ///    的界。⚠ **窗口是 12 而不是 40**：`decode.rs` 很长，40 行的窗口会让**邻近**判据的界
+    ///    把我的空档填上（实测：删掉 `assert_eq!(asset.frame_count(), 512)` 那一行，40 行窗口
+    ///    仍然 ALL-GREEN；收到 12 行之后**同一条注入 RED**）。⇒ 本判据是**窗口启发式**，
+    ///    ⛔ **不等于** R114 要求的"根绑定"：邻界仍可能满足它。⚠ R118 的分类：**算**的是 `frame_count` / `.len()` / `.count()` / `is_empty`
     ///    / `!= 0`（它们界定集合**大小**）；**不算**的是元素值界（`peak > 1.0`）与运行期计数器
     ///    （`visited += 1`）—— 后者不界定"被遍历的集合"，`.all()` 在空集上仍然真空为真。
     /// 2. **R100**：每处 `env::temp_dir()` 之后的 60 行内必须有 `.expect(`（判据先写后读、
@@ -4632,7 +4635,7 @@ mod tests {
         for (name, source) in sources {
             // ⚠ 先保字节数掩码（R113）：否则**本判据自己的断言字符串**里出现的针会被当成真命中。
             let masked = mask(source);
-            let offenders = scan_all(&masked, all_needle, &bound_needles, 40);
+            let offenders = scan_all(&masked, all_needle, &bound_needles, 12);
             all_sites += masked.matches(all_needle).count();
             assert!(
                 offenders.is_empty(),

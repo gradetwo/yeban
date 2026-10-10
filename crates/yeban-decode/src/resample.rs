@@ -2214,6 +2214,13 @@ mod tests {
             let input = sine(4_800, f64::from(in_rate), 1_000.0, 0.5);
             let output = resample_interleaved(&input, 1, in_rate, out_rate)
                 .unwrap_or_else(|err| panic!("{in_rate} -> {out_rate}: {err}"));
+            // ⚠ R114／R118（界必须**根绑定**到被遍历的那个集合，⛔ 不许借用邻居）：
+            // 下面那条 `.all()` 在空集上真空为真。此前它靠**下游**的 `rms(&output)` 变 NaN
+            // 才"顺带"被抓住 —— 那是借来的界，不是根绑定。这里补一条指 `output` 自己的大小界。
+            assert!(
+                !output.is_empty(),
+                "{in_rate} -> {out_rate}: the filtered output must not be empty"
+            );
             assert!(
                 output.iter().all(|sample| sample.is_finite()),
                 "{in_rate} -> {out_rate}: the filtered path must stay finite"
