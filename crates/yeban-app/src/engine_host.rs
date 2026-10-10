@@ -1699,6 +1699,12 @@ mod tests {
         // （demo 夹具的 slot 0 是 TrackVolume、slot 1 是 TrackPan ⇒ 两条都要关，
         // 否则剩下的那条会照发，`written == 0` 就不成立。）
         let before = host.automation_counts();
+        let enabled_before = project
+            .tracks
+            .values()
+            .flat_map(|track| track.automation_lanes.values())
+            .filter(|lane| lane.read_enabled)
+            .count();
         for lane in project
             .tracks
             .values_mut()
@@ -1706,17 +1712,19 @@ mod tests {
         {
             lane.read_enabled = false;
         }
-        // R58：等号判据要有一条落在同一表达式上的 `assert_ne!` —— 先证明"关掉之后
-        // 至少有一条泳道是关的"（否则下面的 0 可能是"本来就没泳道"）。
+        let enabled_after = project
+            .tracks
+            .values()
+            .flat_map(|track| track.automation_lanes.values())
+            .filter(|lane| lane.read_enabled)
+            .count();
+        assert_eq!(enabled_after, 0, "关灯之后不得还有开着的泳道");
+        // R58：同一条 `==` 上的 `assert_ne!` 必须是**真探针**（R69）—— 用"关灯前 ≠ 关灯后"
+        // 证明这次关灯真的改了状态。⛔ 写成 `count != 0` 是**假探针**（关灯后它恒为 0 ⇒ 必红，
+        // 正是上一轮 CI 抓到的那条）。
         assert_ne!(
-            project
-                .tracks
-                .values()
-                .flat_map(|track| track.automation_lanes.values())
-                .filter(|lane| lane.read_enabled)
-                .count(),
-            0,
-            "夹具前提：关掉之后必须**没有**开着的泳道"
+            enabled_before, enabled_after,
+            "关灯必须真的把「开着」的条数从 {enabled_before} 变成 0"
         );
         assert_eq!(
             host.publish_automation(Some(&project)),
