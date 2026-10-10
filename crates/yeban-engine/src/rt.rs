@@ -4180,4 +4180,48 @@ mod tests {
             "右声道必须重新有声（不是静音对静音）"
         );
     }
+
+    /// 判据（类别③ **换主人**）：声相槽位是**按下标复用**的 ⇒ 新主人**不得**继承
+    /// 上一任的声相自动化目标 —— 否则会把另一条轨的声相播给这一条。
+    #[test]
+    fn a_pan_slot_changing_owner_does_not_inherit_the_automation() {
+        let (snapshot_a, track_a) = note_snapshot_with_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot_a);
+        let mut warm = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut warm, 2);
+        // 轨 A 武装**硬左**（右增益目标 = 0）。
+        let events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track_a, TRACK_PAN_LEFT_SLOT),
+                value: 1.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track_a, TRACK_PAN_RIGHT_SLOT),
+                value: 0.0,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&events), 2);
+        for _ in 0..96 {
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+
+        // 换一份**另一条轨**的快照（静态**居中** ⇒ 左右逐位相同）。
+        let (snapshot_b, track_b) = note_snapshot_with_pan(2, 0.0);
+        assert_ne!(track_a, track_b, "夹具前提：两条轨身份必须不同");
+        rig.slot.publish(snapshot_b);
+        for _ in 0..96 {
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        assert!(
+            out.iter()
+                .step_by(2)
+                .zip(out.iter().skip(1).step_by(2))
+                .all(|(l, r)| l.to_bits() == r.to_bits()),
+            "新主人必须从它**自己的**静态声相（居中）起步，⛔ 不得继承上一任的硬左目标"
+        );
+    }
 }
