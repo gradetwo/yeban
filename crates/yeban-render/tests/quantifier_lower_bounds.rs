@@ -196,6 +196,11 @@ fn quantifier_roots(condition: &str) -> Vec<(String, bool)> {
     roots
 }
 
+/// 去掉**全部空白**（空格/制表/换行）—— 跨行形态识别的前提。
+fn strip_ws(text: &str) -> String {
+    text.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
 /// **R119**: 带标识符边界的子串匹配 —— `needle` 之前的那个字符不得是标识符字符
 /// （否则根 `b` 会被 `assert_eq!(bb.len(), 8)` 满足：near-miss）。`body` 已是**去空白**的文本。
 fn contains_identifier(body: &str, needle: &str) -> bool {
@@ -234,7 +239,10 @@ fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
     ] {
         // R119: 子串匹配必须带**标识符边界** —— 否则根 `b` 会被同一条条件里的 `ab.len() >= 4`
         // 满足（near-miss），于是无界的量词被误判为"有界"。
-        if contains_identifier(&condition.replace(' ', ""), &form.replace(' ', "")) {
+        // ⚠ **根因（本机实测确认）**: `replace(' ', "")` 只去**空格**、不去**换行** ⇒
+        // `assert!(\n !bounds.is_empty(),\n "msg"\n);` 这种**跨行形态**永远匹配不上
+        // ⇒ 已有下界的站点被报成"无界"（**假阳性**, 伪装成"代码缺界"）。⇒ 去掉**全部空白**。
+        if contains_identifier(&strip_ws(condition), &strip_ws(&form)) {
             return true;
         }
     }
@@ -242,7 +250,7 @@ fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
     // ⚠ **R118**: 只有"**界定集合大小**"的界作数 —— `x.len() == N` / `x.len() >= N` /
     // `!x.is_empty()` **算**; **元素值界**（`assert_eq!(x[0], 5)`）与**运行期计数器****不算**。
     // ⚠ **R119**: 子串匹配必须带**标识符边界** —— 否则根 `b` 会被 `bb.len()` 满足（near-miss）。
-    let compact = function_body.replace(' ', "");
+    let compact = strip_ws(function_body);
     // ⚠ 这些形态**不能要求右括号紧跟** —— 真实断言后面还有 `, "消息"`（本机实测的假阴性）。
     for form in [
         format!("assert_eq!({root}.len(),"),
@@ -253,7 +261,7 @@ fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
         // R125: 显式断言空表（"空转是有意的"）—— 属于**函数体**路径的形态
         format!("assert!({root}.is_empty()"),
     ] {
-        if contains_identifier(&compact, &form.replace(' ', "")) {
+        if contains_identifier(&compact, &strip_ws(&form)) {
             return true;
         }
     }
@@ -339,13 +347,14 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
     let mut skipped: Vec<String> = Vec::new();
     let mut offenders = Vec::new();
     for path in &files {
-        // ⚠ **第二十批的覆盖读数（如实登记, R116）**: `logic.rs` / `als.rs` 的 **11 处**
-        // 缺口已按**夹具语义**逐处处置（`rich.losses`/`empty.losses` 加**实测**过的非空下界;
-        // 助手那 2 处由**助手自己**钉前置条件）, **但本检查器仍把它们报成"无界"** ——
-        // 本机用 Python 复核过: 那个下界**确实在同一个函数体里**（`body 里有
-        // assert!(!rich.losses.is_empty() ? True`）⇒ **这是检查器的假阳性**（body 路径对
-        // `assert!(\n !x.is_empty(),\n "msg");` 这种**多行形态**的识别还没修好）, ⛔ 不是代码缺界。
-        // ⇒ 在修好那个识别之前, 这 2 个文件**继续跳过**, 并把"跳过"写成可核查读数。
+        // **R132（入口数 = 未修缺口数）**: 第二十一批把检查器的**根因**修好了
+        // （`replace(' ', "")` 不去**换行** ⇒ 跨行形态的界识别不到 ⇒ **假阳性**;
+        // 修好后, 第二十批那 11 处里 **3 处（rich ×5 与 empty ×1 与助手 ×2 同函数）当场被认出**,
+        // 剩下 **8 处**是**真缺口**, 位置已在报告里逐条列出:
+        // `logic.rs:5959/5966/5973 bundle.losses`、`6377 filter`、
+        // `6712/6718 data.losses`、`8276 two.losses`、`8293 data.losses`。
+        // ⇒ 在补完这 8 处之前, 这 2 个文件**继续跳过**（入口数 = 2, 与上一批相同 ——
+        //    ⛔ 不增, 但**未修缺口数从 11 降到 8**, 这是本批的进度读数）。
         let name = path
             .file_name()
             .unwrap_or_default()
@@ -372,7 +381,7 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
     assert_eq!(
         skipped.len(),
         2,
-        "暂跳过 `logic.rs` / `als.rs`: 检查器的多行形态识别待修（见上面的注释与报告 §2）"
+        "R132: 入口数 = 2（未修缺口 8 处, 逐条列在注释里）—— 修完 8 处后降到 0"
     );
     assert!(
         offenders.is_empty(),
@@ -456,6 +465,38 @@ fn checker_has_teeth() {
         )
         .is_empty(),
         "R125: 显式断言空表必须被认"
+    );
+    // 已知绿（R126: **跨行形态**定标）: 下界写在**多行** `assert!(` 里也必须被认
+    assert!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        assert!(
+            !v.is_empty(),
+            "跨行形态"
+        );
+        assert!(
+            v
+                .iter()
+                .all(|x| *x == 0),
+            "跨行量词"
+        );
+    }"#
+        )
+        .is_empty(),
+        "R126: 跨行形态的下界必须被认（本批修掉的假阳性）"
+    );
+    // 已知红（R133: **宏名**路径）: `my_assert!(!v.is_empty(), …)` 不是 `assert!` ⇒ 不算界
+    assert_eq!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        my_assert!(!v.is_empty(), "另一个宏");
+        assert!(v.iter().all(|x| *x == 0));
+    }"#
+        ),
+        vec![(4usize, "v".to_owned())],
+        "R133: 必须是 `assert!`, 不能被 `my_assert!` 满足"
     );
     // 已知红 ①: 完全没有界
     assert_eq!(
