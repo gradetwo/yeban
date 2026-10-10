@@ -497,3 +497,288 @@ fn a_new_project_can_be_created_over_stdio_and_reaches_a_rendered_master() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **19 个 `ops[].kind` 逐个走一次真 `tools/call`**（真进程 / 真 stdio 批处理）。
+///
+/// 单位 = 一次 `tools/call` 的**响应对象**（以及 [`session`] 已经断言的**子进程退出码 0**）。
+/// 判定的不是"这次调用成功"，而是"它**走到了领域实现**"：
+///
+/// * 顶层**不得**出现 JSON-RPC `error` 对象 —— 领域失败一律**带内**
+///   （`result.status == "error"` + 契约 enum 里的码）。出现 `error` 就是实现级
+///   （`-32603`）/ 协议级（`-32601` / `-32602`）出口 ⇒ 本判据红；
+/// * 带内失败的码必须在 `ErrorCode::SCHEMA_CONTRACT` 里（不发明新码）。
+///
+/// 为什么用**两段会话**：批处理没有交互往返，而 19 个形态里有 12 个需要夹具里**真实的
+/// 身份**（音符 / 设备 / 路由边 / 场景 / 段落 / 池条目）。第一段只用三条请求把这些身份
+/// 读出来，第二段才发 19 条 —— 两段都是真进程。
+///
+/// 注入（实测红）：把 `parse_one` 的任一条臂删掉 ⇒ 那一个 `kind` 会得到「未知 `kind`」
+/// 的带内错（仍算可达）但**提案数量**少一条 ⇒ 末尾的"成功 ≥ N"下界变红；
+/// 把某条臂改成 `Fault::not_wired`（实现级出口）⇒ 顶层出现 `error` ⇒ 立刻红。
+#[test]
+fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
+    let path = write_container_project("e2e-kinds.yeban");
+    let probe = session(&[
+        req(1, "initialize", serde_json::json!({})),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": path.display().to_string()},
+            }),
+        ),
+        req(
+            3,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_query_project",
+                "arguments": {
+                    "fields": ["tracks", "sections", "scenes", "clip_pool",
+                               "routing_graph", "master_bus_track_id"],
+                    "limit": 1000,
+                },
+            }),
+        ),
+    ]);
+    assert_eq!(
+        probe[1]["result"]["status"], "success",
+        "打开夹具容器必须成功: {}",
+        probe[1]
+    );
+    let project = &probe[2]["result"]["data"]["project"];
+    let master = project["master_bus_track_id"]
+        .as_str()
+        .expect("主总线")
+        .to_owned();
+    let tracks = project["tracks"].as_object().expect("tracks");
+    let lead = tracks
+        .iter()
+        .find(|(id, track)| **id != master && track["kind"] == "Midi")
+        .map(|(id, _)| id.clone())
+        .expect("夹具里必须有非主总线的 MIDI 音轨");
+    let device = tracks[&lead]["devices"]
+        .as_array()
+        .and_then(|list| list.first())
+        .and_then(|value| value["id"].as_str())
+        .expect("夹具的音轨必须带一台设备")
+        .to_owned();
+    let (clip, note) = project["clip_pool"]
+        .as_object()
+        .expect("clip_pool")
+        .iter()
+        .find_map(|(id, entry)| {
+            entry["content"]["Midi"]["notes"]
+                .as_object()
+                .and_then(|notes| notes.keys().next())
+                .map(|note| (id.clone(), note.clone()))
+        })
+        .expect("夹具里必须有一条带音符的 MIDI 片段");
+    let edge = project["routing_graph"]["edges"]
+        .as_array()
+        .and_then(|list| list.first())
+        .and_then(|value| value["id"].as_str())
+        .expect("夹具必须有路由边")
+        .to_owned();
+    let node = project["routing_graph"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|id| **id != master)
+        .expect("夹具必须有非主总线节点")
+        .to_owned();
+    let scene = project["scenes"]
+        .as_object()
+        .and_then(|map| map.keys().next())
+        .expect("夹具必须有场景")
+        .clone();
+    let section = project["sections"]
+        .as_object()
+        .and_then(|map| map.keys().next())
+        .expect("夹具必须有曲段")
+        .clone();
+    // 自动化点：在**全部**音轨的泳道里找一条按名字就能寻址的（`TrackVolume` / `TrackPan`；
+    // `SendGain` 还要 `edgeId`，本判据不需要它）。
+    let (lane_name, lane_tick) = tracks
+        .values()
+        .filter_map(|track| track["automation_lanes"].as_array())
+        .flat_map(|lanes| lanes.iter())
+        .filter_map(|lane| {
+            let target = lane["target"].as_object()?.keys().next()?.clone();
+            if target != "TrackVolume" && target != "TrackPan" {
+                return None;
+            }
+            let tick = lane["points"].as_object()?.values().next()?["tick"].as_u64()?;
+            Some((target, tick))
+        })
+        .next()
+        .unwrap_or_else(|| {
+            panic!(
+                "夹具里必须有一条 TrackVolume / TrackPan 泳道且带采样点: tracks={}",
+                serde_json::to_string(&tracks).expect("json")
+            )
+        });
+
+    let ops: Vec<(&str, Value)> = vec![
+        (
+            "add",
+            serde_json::json!({"kind": "add",
+            "note": {"startTick": 0, "pitch": 61, "durationTicks": 480}}),
+        ),
+        (
+            "delete",
+            serde_json::json!({"kind": "delete", "noteId": note}),
+        ),
+        (
+            "move",
+            serde_json::json!({"kind": "move", "noteId": note, "deltaTick": 0, "deltaPitch": 1}),
+        ),
+        (
+            "velocity",
+            serde_json::json!({"kind": "velocity", "noteId": note, "velocity": 64}),
+        ),
+        ("removeClip", serde_json::json!({"kind": "removeClip"})),
+        (
+            "removeTrack",
+            serde_json::json!({"kind": "removeTrack", "trackId": lead}),
+        ),
+        (
+            "insertDevice",
+            serde_json::json!({"kind": "insertDevice", "trackId": lead,
+            "device": {"deviceId": "01J8ZQ000000000000000000DV", "name": "Probe",
+                       "kind": "InternalEffect", "bypassed": false,
+                       "latencySamples": 8, "params": []}}),
+        ),
+        (
+            "removeDevice",
+            serde_json::json!({"kind": "removeDevice", "trackId": lead,
+            "deviceId": device}),
+        ),
+        (
+            "setParam",
+            serde_json::json!({"kind": "setParam", "lane": "TrackVolume", "value": -4.5}),
+        ),
+        (
+            "setTrackMute",
+            serde_json::json!({"kind": "setTrackMute", "value": true}),
+        ),
+        (
+            "setTrackSolo",
+            serde_json::json!({"kind": "setTrackSolo", "value": false}),
+        ),
+        (
+            "setAutomationLane",
+            serde_json::json!({"kind": "setAutomationLane",
+            "lane": {"lane": "TrackVolume", "readEnabled": true}}),
+        ),
+        (
+            "removeAutomationPoint",
+            serde_json::json!({"kind": "removeAutomationPoint",
+            "point": {"lane": lane_name, "tick": lane_tick}}),
+        ),
+        (
+            "setRoutingGain",
+            serde_json::json!({"kind": "setRoutingGain", "edgeId": edge, "value": -3.0}),
+        ),
+        (
+            "disconnectRouting",
+            serde_json::json!({"kind": "disconnectRouting", "edgeId": edge}),
+        ),
+        (
+            "removeRoutingNode",
+            serde_json::json!({"kind": "removeRoutingNode", "nodeId": node}),
+        ),
+        (
+            "removeSection",
+            serde_json::json!({"kind": "removeSection", "sectionId": section}),
+        ),
+        (
+            "removeScene",
+            serde_json::json!({"kind": "removeScene", "sceneId": scene}),
+        ),
+        (
+            "setScene",
+            serde_json::json!({"kind": "setScene",
+            "scene": {"sceneId": scene, "tempo": 128.0}}),
+        ),
+    ];
+    assert_eq!(ops.len(), 19, "目录是 19 个 kind");
+
+    let mut requests = vec![
+        req(1, "initialize", serde_json::json!({})),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": path.display().to_string()},
+            }),
+        ),
+    ];
+    for (index, (_kind, op)) in ops.iter().enumerate() {
+        requests.push(req(
+            u32::try_from(index).expect("小") + 10,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_edit_notes",
+                "arguments": {"trackId": lead, "clipId": clip, "ops": [op]},
+            }),
+        ));
+    }
+    let res = session(&requests);
+    assert_eq!(res.len(), 21, "1 个握手 + 1 次打开 + 19 次调用: {res:?}");
+
+    let mut reached = 0usize;
+    let mut succeeded = 0usize;
+    for (index, (kind, _op)) in ops.iter().enumerate() {
+        let response = &res[index + 2];
+        assert!(
+            response.get("error").is_none(),
+            "`{kind}` 掉进了 JSON-RPC 出口（实现级 / 协议级）: {response}"
+        );
+        assert_eq!(response["id"], serde_json::json!(index + 10));
+        let result = &response["result"];
+        match result["status"].as_str() {
+            Some("success") => {
+                succeeded += 1;
+                assert!(
+                    result["data"]["proposal"]["proposalId"].is_string(),
+                    "`{kind}` 成功时必须真的建成提案: {result}"
+                );
+            }
+            Some("error") => {
+                let code = result["error"]["code"].as_str().expect("码是字符串");
+                assert!(
+                    yeban_mcp::tools::ErrorCode::SCHEMA_CONTRACT
+                        .iter()
+                        .any(|known| known.as_str() == code),
+                    "`{kind}` 的失败码 `{code}` 不在契约 enum 里: {result}"
+                );
+            }
+            other => panic!("`{kind}` 的响应既不是 success 也不是 error: {other:?}"),
+        }
+        reached += 1;
+    }
+    assert_eq!(reached, 19, "19 个形态都必须走到领域实现");
+    // 下界是**非平凡**的（不是 0）：夹具必须让大多数形态真的建成提案，
+    // 否则"19 个都可达"可以靠"全都报带内错"骗过去。
+    let refusals: Vec<String> = ops
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| res[index + 2]["result"]["status"] == "error")
+        .map(|(_, (kind, _))| (*kind).to_owned())
+        .collect();
+    assert_eq!(
+        succeeded, 17,
+        "17 / 19 真的建成提案；另外 2 条是**带内**领域拒绝（不是实现级出口）：\
+         `removeClip`（池条目仍被摆放引用）与 `removeRoutingNode`（节点仍被边引用）—— \
+         模型的前置条件，判据 `the_declared...` 之外由它们各自的用例覆盖。\
+         实际 {succeeded}; 被拒的形态 = {refusals:?}"
+    );
+    assert_eq!(
+        refusals,
+        vec!["removeClip".to_owned(), "removeRoutingNode".to_owned()],
+        "被拒的必须是那两条'仍被引用'的形态（换掉夹具会改变这个读数，届时改这里）"
+    );
+}
