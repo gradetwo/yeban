@@ -2572,3 +2572,51 @@ fn mxl_deflate_entry_accepts_a_reading_exactly_equal_to_the_limit() {
         }
     }
 }
+/// 判据 (类别③ 明确 Err / 核对**次序**): 长度核对在 CRC 核对**之前** —— 两者同时不符时
+/// 报的是 `SizeMismatch`（⛔ 不是 `CrcMismatch`）。
+///
+/// 补的是哪个缺口（本票注入实测）：把这两段核对**整体调换顺序**（注入 S03）后全部判据
+/// **保持绿** —— 已有的 `mxl_container_field_mismatches_are_rejected_by_name` 每次只
+/// 弄坏**一个**字段 ⇒ "两个都坏时报哪一条"此前没有判据。
+#[test]
+fn the_length_check_runs_before_the_crc_check() {
+    let container = container_xml("score.xml");
+    let mut broken = ZipEntrySpec::deflate_stored("score.xml", HANDMADE_MVP);
+    broken.uncompressed = 2717; // 声明比实际多 1（在默认上界之内）
+    broken.crc = 0; // CRC 也不符
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            broken,
+        ],
+        None,
+    );
+
+    match parse_mxl(&zip) {
+        Err(MxlError::SizeMismatch {
+            name,
+            declared,
+            actual,
+        }) => {
+            assert_eq!(name, "score.xml");
+            assert_eq!(declared, 2717);
+            assert_eq!(actual, 2716);
+        }
+        other => panic!("长度与 CRC 同时不符时必须先报 SizeMismatch，得到 {other:?}"),
+    }
+
+    // 对照臂：只弄坏 CRC（长度对）⇒ 报 CrcMismatch，证明两条核对都真的在跑。
+    let mut crc_only = ZipEntrySpec::deflate_stored("score.xml", HANDMADE_MVP);
+    crc_only.crc = 0;
+    let zip_crc = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            crc_only,
+        ],
+        None,
+    );
+    match parse_mxl(&zip_crc) {
+        Err(MxlError::CrcMismatch { name, .. }) => assert_eq!(name, "score.xml"),
+        other => panic!("只坏 CRC 时必须报 CrcMismatch，得到 {other:?}"),
+    }
+}

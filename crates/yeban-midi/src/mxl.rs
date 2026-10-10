@@ -810,4 +810,126 @@ mod tests {
         assert_eq!(find_eocd(b"PK\x03\x04"), Err(MxlError::NotZip));
         assert_eq!(find_eocd(b""), Err(MxlError::NotZip));
     }
+
+    /// 判据 (类别③ 明确 Err / 错误文案黄金表): `MxlError` 的 **14** 个变体各有一个
+    /// **字面** `Display` 读数。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把每一个变体的文案各改坏一次（注入 R01..R14），
+    /// **14 次全部全绿** ⇒ 在本 crate 的 `tests/` 与 `src/` 里对 `MxlError` 的
+    /// `to_string()` / `format!` / `Display` 引用次数此前是 **0**。
+    #[test]
+    fn mxl_error_display_text_is_pinned_for_every_variant() {
+        let cases: Vec<(MxlError, &str)> = vec![
+            (
+                MxlError::NotZip,
+                "文件尾没有 ZIP 的 EOCD 签名 ⇒ 不是 .mxl 容器",
+            ),
+            (
+                MxlError::Malformed {
+                    offset: 4,
+                    detail: "中央目录越过文件尾",
+                },
+                "偏移 4 处容器结构非法: 中央目录越过文件尾",
+            ),
+            (
+                MxlError::LimitExceeded {
+                    limit: "entries",
+                    value: 2,
+                    max: 1,
+                },
+                "entries = 2 超过上界 1",
+            ),
+            (
+                MxlError::InflatedTooLarge {
+                    name: "score.xml".to_owned(),
+                    max: 64,
+                },
+                "条目 score.xml 膨胀后超过上界 64 字节（已在上界处截停）",
+            ),
+            (
+                MxlError::UnsupportedZip64,
+                "容器带 ZIP64 标记（本模块不支持）",
+            ),
+            (
+                MxlError::UnsupportedCompression {
+                    name: "a.bin".to_owned(),
+                    method: 12,
+                },
+                "条目 a.bin 的压缩法是 12（只认 0 与 8）",
+            ),
+            (
+                MxlError::Encrypted {
+                    name: "a.bin".to_owned(),
+                },
+                "条目 a.bin 带加密位",
+            ),
+            (MxlError::NoContainer, "容器里没有 META-INF/container.xml"),
+            (
+                MxlError::NoRootFile,
+                "container.xml 里没有 <rootfile full-path=…>",
+            ),
+            (
+                MxlError::MissingRootFile {
+                    path: "score.xml".to_owned(),
+                },
+                "rootfile 指向的条目不存在: score.xml",
+            ),
+            (
+                MxlError::InvalidDeflate {
+                    offset: 7,
+                    detail: "输入在块中途结束",
+                },
+                "偏移 7 处 DEFLATE 流非法: 输入在块中途结束",
+            ),
+            (
+                MxlError::SizeMismatch {
+                    name: "score.xml".to_owned(),
+                    declared: 100,
+                    actual: 2716,
+                },
+                "条目 score.xml 膨胀后 2716 字节，中央目录声明 100 字节",
+            ),
+            (
+                MxlError::CrcMismatch {
+                    name: "score.xml".to_owned(),
+                    declared: 1,
+                    actual: 2,
+                },
+                "条目 score.xml 的 CRC-32 是 0x00000002，中央目录声明 0x00000001",
+            ),
+            (
+                MxlError::MusicXml(MusicXmlError::Empty),
+                "载荷不是可读的 MusicXML: 输入里没有任何元素",
+            ),
+        ];
+        assert_eq!(cases.len(), 14, "MxlError 的变体数");
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
+        }
+
+        // ⚠️ **登记（未被注入验证）**：`MxlError` 的 `Error::source()` 走 std 的默认实现
+        // ⇒ 即使 `MusicXml(..)` 包着一个 `MusicXmlError` 也恒 `None`。本批没有能打它的
+        // 字面注入。⛔ 不计入"已注入验证"。
+        assert!(
+            std::error::Error::source(&MxlError::MusicXml(MusicXmlError::Empty)).is_none(),
+            "MxlError 的 source() 当前是 std 默认的 None（连 MusicXml 臂也一样）"
+        );
+    }
+
+    /// 判据 (类别④ 参数极值 / 默认值): `MxlLimits::default()` 的三个上界是**字面值**。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把三个默认值各砍半（注入 V01/V02/V03）后
+    /// 全部判据**保持绿** —— 已有的判据把 `MxlLimits::default().max_entry_bytes`
+    /// **当作期望值自己用**（`mxl_zip64_markers_are_named_not_blamed_on_the_limit`
+    /// 的 `max:` 字段），那是"常量自比"：默认值改了，期望值跟着改，恒真。
+    #[test]
+    fn mxl_limits_defaults_are_literal() {
+        let limits = MxlLimits::default();
+        assert_eq!(
+            limits.max_entry_bytes, 67108864,
+            "默认条目上界 = 64 MiB（字面值，⛔ 不用 64 * 1024 * 1024）"
+        );
+        assert_eq!(limits.max_entries, 1024, "默认条目数（字面值）");
+        assert_eq!(limits.max_name_bytes, 4096, "默认条目名上界（字面值）");
+    }
 }

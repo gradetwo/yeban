@@ -1117,4 +1117,72 @@ mod tests {
             other => panic!("累计输出越过上界必须报 Limit，得到 {other:?}"),
         }
     }
+
+    /// 判据 (类别③ 明确 Err / 错误文案): `InflateError` 的 `Display` 是**字面**读数
+    /// （偏移 + 说明）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把文案里的 `: ` 去掉（注入 S01）后全部判据
+    /// **保持绿** ⇒ `InflateError` 的 `Display` 此前零判据（判据只比对
+    /// `detail` / `kind` / `offset` 三个**字段**，从不读整句文案）。
+    #[test]
+    fn inflate_error_display_text_is_pinned() {
+        let error = InflateError {
+            offset: 12,
+            detail: "块类型 3 未定义（RFC 1951 §3.2.3）",
+            kind: InflateErrorKind::Malformed,
+        };
+        assert_eq!(
+            error.to_string(),
+            "偏移 12 处 DEFLATE 流非法: 块类型 3 未定义（RFC 1951 §3.2.3）"
+        );
+
+        // ⚠️ **登记（未被注入验证）**：`InflateError` 的 `Error::source()` 走 std 的
+        // 默认实现 ⇒ 恒 `None`；没有可做字面替换的臂 ⇒ 本批没有能打它的注入。
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
+    /// 判据 (类别④ 参数极值 / 上界的**两个端点**): `max_output` 的 `0` 与 `usize::MAX`
+    /// 都必须按**普通上界**处理 —— `0` 立刻拒绝，`usize::MAX` 不特判成拒绝。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把字面量路径的 `out.len() >= max_output` 放宽成
+    /// `>`（注入 U01）、把 `stored` 的 `out.len() + length > max_output` 放宽成
+    /// `> max_output.max(1)`（注入 U02）后全部判据**保持绿** —— 既有的三条上界判据用的
+    /// 上界都 ≥ 4 ⇒ `0` 这个端点此前没有判据。
+    #[test]
+    fn the_output_limit_has_both_endpoints() {
+        // `stored` 路径：上界 0 必须拒绝 1 字节。
+        let stored = encode_stored(b"a");
+        match inflate_raw(&stored, 0) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("stored 路径在上界 0 处必须报 Limit，得到 {other:?}"),
+        }
+
+        // 字面量路径：同一个端点。
+        let fixed = {
+            let mut bits = BitWriter::new();
+            bits.value(1, 1); // BFINAL = 1
+            bits.value(1, 2); // BTYPE = 01（固定 Huffman）
+            fixed_symbol(&mut bits, u32::from(b'a'));
+            fixed_symbol(&mut bits, 256); // 块结束码
+            bits.finish()
+        };
+        match inflate_raw(&fixed, 0) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("字面量路径在上界 0 处必须报 Limit，得到 {other:?}"),
+        }
+        // 上界 1：恰好收下这 1 个字节。
+        assert_eq!(inflate_raw(&fixed, 1).as_deref(), Ok(&b"a"[..]));
+        // 另一个端点：`usize::MAX` 不是"无上界"的哨兵，但也不得被特判成拒绝。
+        assert_eq!(
+            inflate_raw(&fixed, usize::MAX).as_deref(),
+            Ok(&b"a"[..]),
+            "usize::MAX 必须按普通上界处理（⛔ 不是特判为 0）"
+        );
+    }
 }

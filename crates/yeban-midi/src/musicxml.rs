@@ -2033,4 +2033,98 @@ mod tests {
         assert_eq!(empty.note_count(), 0);
         assert_eq!(empty.tick_range(), None);
     }
+
+    /// 判据 (类别③ 明确 Err / 错误文案黄金表): `MusicXmlError` 的 **15** 个变体各有一个
+    /// **字面** `Display` 读数。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把每一个变体的文案各改坏一次（注入 Q01..Q15），
+    /// **11 次全绿**（只有 `InvalidNumber` / `UnsupportedAlter` / `UnsupportedBeatType` /
+    /// `InvalidTempo` 这 4 个被 `value_rejections_are_explicit_and_their_messages_are_pinned`
+    /// 守住）⇒ 15 个臂里此前 **11 个零判据**。
+    ///
+    /// ⚠️ 期望值一律是**字面字符串**（`DepthExceeded` 也写 `256` 而不是 `MAX_DEPTH`：
+    /// 与常量自比会在常量被改时恒真）。
+    #[test]
+    fn music_xml_error_display_text_is_pinned_for_every_variant() {
+        let cases: Vec<(MusicXmlError, &str)> = vec![
+            (
+                MusicXmlError::InvalidUtf8 { offset: 17 },
+                "偏移 17 处不是合法 UTF-8",
+            ),
+            (MusicXmlError::Empty, "输入里没有任何元素"),
+            (
+                MusicXmlError::UnsupportedRoot {
+                    root: "score-timewise".to_owned(),
+                },
+                "根元素不是 score-partwise: score-timewise",
+            ),
+            (
+                MusicXmlError::Malformed {
+                    offset: 5,
+                    detail: "注释未闭合",
+                },
+                "偏移 5 处结构非法: 注释未闭合",
+            ),
+            (
+                MusicXmlError::DepthExceeded { offset: 9 },
+                "偏移 9 处的嵌套深度超过 256",
+            ),
+            (
+                MusicXmlError::UnknownEntity {
+                    name: "nbsp".to_owned(),
+                },
+                "未知实体引用: &nbsp;",
+            ),
+            (
+                MusicXmlError::InvalidNumber {
+                    element: "octave",
+                    text: "x".to_owned(),
+                },
+                "<octave> 不是数字: x",
+            ),
+            (MusicXmlError::DivisionsNotPositive, "<divisions> 必须 > 0"),
+            (
+                MusicXmlError::UnsupportedAlter {
+                    text: "1.5".to_owned(),
+                },
+                "<alter> 不是整数半音: 1.5",
+            ),
+            (
+                MusicXmlError::UnsupportedBeatType { value: 3 },
+                "<beat-type> 不是 2 的幂: 3",
+            ),
+            (
+                MusicXmlError::InvalidTempo {
+                    text: "0".to_owned(),
+                },
+                "<sound tempo> 非法: 0",
+            ),
+            (
+                MusicXmlError::PitchOutOfRange {
+                    step: 'C',
+                    alter: 0,
+                    octave: 99,
+                },
+                "音高越界: step=C alter=0 octave=99",
+            ),
+            (MusicXmlError::NoteOutsidePart, "<note> 出现在 <part> 之外"),
+            (
+                MusicXmlError::BackupUnderflow { tick: 5, amount: 9 },
+                "<backup> 在 tick 5 回退 9（越界）",
+            ),
+            (MusicXmlError::TickOverflow, "tick 加法溢出 u64"),
+        ];
+        assert_eq!(cases.len(), 15, "MusicXmlError 的变体数");
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
+        }
+
+        // ⚠️ **登记（未被注入验证）**：`MusicXmlError` 的 `Error::source()` 走 std 的
+        // 默认实现 ⇒ 恒 `None`；`impl std::error::Error for MusicXmlError {}` 里没有可做
+        // 字面替换的臂 ⇒ 本批**没有**能打它的注入。⛔ 不计入"已注入验证"。
+        assert!(
+            std::error::Error::source(&MusicXmlError::Empty).is_none(),
+            "MusicXmlError 没有内层错误 ⇒ source() 必须是 std 的默认 None"
+        );
+    }
 }
