@@ -1416,6 +1416,24 @@ fn the_scanners_reject_bad_input_and_accept_good_input() {
     assert_eq!(variable_sites.len(), 1, "变量 needle 也是 1 个站点");
     assert!(!variable_sites[0].1, "变量 needle ⛔ 不得判为 literal");
 
+    // ⭐ **R223③＋R224①（构造之后的"正对照"）**：喂 token 的臂**不得抬高真扫描计数** ——
+    // 本 crate 的审计只扫 `src/`，而臂与宏调用都在 `tests/` ⇒ 结构上无法污染。
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let scanned = source_files(&root.join(SRC_ROOT));
+    assert!(
+        scanned
+            .iter()
+            .all(|p| !p.to_string_lossy().contains("/tests/")),
+        "扫描域里 ⛔ 不得包含 `tests/`（否则臂里的 token 会污染它自己检验的计数）"
+    );
+    // ⭐ **正对照（构造之后）**：扫描域必须**真的**含源文件，⛔ 否则上一条是真空的。
+    assert!(
+        scanned
+            .iter()
+            .any(|p| p.to_string_lossy().ends_with("src/lib.rs")),
+        "扫描域必须包含 `src/lib.rs` ⇒ 上一条不是真空断言"
+    );
+
     // ③ `has_integer_literal`：坏输入＝**浮点**字面量 ⇒ ⛔ 不得判为整数。
     assert!(
         !has_integer_literal("assert_eq!(x, 1.5);"),
@@ -1522,3 +1540,46 @@ fn the_device_injection_evidence_is_complete_and_each_row_is_asserted() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ R222①：把逐行断言**拆成独立判据**（否则 libtest 在**第一条失败臂**处停止 ⇒ 日志只覆盖 1/N）
+// ---------------------------------------------------------------------------
+
+/// 逐行断言：该类型的注入证据行必须存在、读数正确、还原为逐字节核对通过。
+///
+/// ⭐ **每行一个独立 `#[test]`**（由宏生成）⇒ 失败日志可覆盖 **N/N**（配合 `--no-fail-fast`）。
+macro_rules! device_injection_row {
+    ($name:ident, $ty:literal, $reading:literal) => {
+        #[test]
+        fn $name() {
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let (text, _) = read_evidence_text(&root.join(DEVICE_INJECTION_PATH));
+            let row = text
+                .lines()
+                .find(|l| l.starts_with(&format!("{}|", $ty)))
+                .unwrap_or_else(|| panic!("证据表里必须有 {} 这一行", $ty));
+            let cols: Vec<&str> = row.split('|').collect();
+            assert_eq!(cols.len(), 4, "每行必须恰好 4 列：{row}");
+            assert_eq!(cols[2], $reading, "读数不符：{row}");
+            assert_eq!(cols[3], "yes", "还原必须逐字节核对通过：{row}");
+        }
+    };
+}
+
+device_injection_row!(noisegen_default_is_red, "NoiseGen", "RED");
+device_injection_row!(adsr_default_is_red, "Adsr", "RED");
+device_injection_row!(ladderfilter_default_is_red, "LadderFilter", "RED");
+device_injection_row!(reverb_default_is_red, "Reverb", "RED");
+device_injection_row!(convolution_default_is_red, "Convolution", "RED");
+device_injection_row!(convolutionreverb_default_is_red, "ConvolutionReverb", "RED");
+device_injection_row!(
+    truestereoconvolution_default_is_red,
+    "TrueStereoConvolution",
+    "RED"
+);
+device_injection_row!(paramsmoother_default_is_red, "ParamSmoother", "RED");
+device_injection_row!(kweighting_default_is_red, "KWeighting", "RED");
+device_injection_row!(loudnessmeter_default_is_red, "LoudnessMeter", "RED");
+device_injection_row!(compressor_default_is_red, "Compressor", "RED");
+device_injection_row!(channelstrip_default_is_red, "ChannelStrip", "RED");
+device_injection_row!(combfilter_default_is_red, "CombFilter", "RED");
