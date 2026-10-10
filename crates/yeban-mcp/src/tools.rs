@@ -714,11 +714,17 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 false,
                 "摆放编辑, 三种形态由 `kind` 选择 (缺省 `add`): `add` = `{startTick?: 非负整数 (默认 0), durationTicks?: >=1 (默认 = 片段内容长度; 片段推不出长度时必填), placementId?: ULID (默认由 片段+音轨+起点 确定性派生), muted?: 布尔 (默认 false)}` 把 `clipId` 摆到 `trackId` 上 (`Op::AddClipPlacement`); `move` = `{kind:\"move\", placementId: ULID (必填), startTick: 非负整数 (必填, 新起点)}` 平移一条已有摆放 (`Op::MoveClipPlacement`, 现值从工程读取); `remove` = `{kind:\"remove\", placementId: ULID (必填)}` 取走一条已有摆放 (`Op::RemoveClipPlacement`, 撤销载荷从工程读取)。三者的键之外的键一律 `INVALID_PARAMETER_RANGE`; 形态不适用但别处合法的键报 `placementFieldNotApplicable` (不静默丢弃)。`move`/`remove` 的 `clipId` 必须等于文档里那条摆放引用的片段, 否则 `INVALID_PARAMETER_RANGE` (`placementClipMismatch`); 该音轨上没有这条摆放 ⇒ `ENTITY_NOT_FOUND`; `move` 到原起点 ⇒ `CONFLICT` (`placementAlreadyAtStartTick`)。`add` 时目标音轨上已有该摆放身份 ⇒ `CONFLICT` (内容相同的重放请用 `idempotencyKey`)。与 `create:true` 同给 ⇒ `INVALID_PARAMETER_RANGE` (先建材料, 再单独一次调用摆放)",
             ),
-            param(
+            // ⭐ 第八批实测：这一条**遮蔽**了公共那份（`ParamSpec` 同名两份、界不同：
+            // 公共 `(None, Some(256))` vs 本条 `(None, None)`）⇒ `input_schema()` 合并前
+            // 会**丢掉约束**、而判据 `every_string_params_bound_status_is_registered`
+            // 会报"同一参数名在不同工具里的界不一致"。这里补上与契约**逐值相同**的界。
+            bounded_param(
                 "idempotencyKey",
                 "string",
                 false,
                 "幂等重放键: 同键第二次调用返回 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`)",
+                None,
+                Some(256),
             ),
             param(
                 INCLUDE_OPS_PARAM,

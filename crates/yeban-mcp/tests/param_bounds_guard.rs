@@ -59,6 +59,98 @@ fn declared_bounds(spec: &ToolSpec) -> Vec<(String, String, Option<usize>, Optio
         .collect()
 }
 
+/// **每个 string 参数的界状态**（⭐ 第八批：把"覆盖面"机械化 —— ⛔ 不靠人读源码）。
+///
+/// 口径（单位 = **不同的 JSON 参数名**，登记条目数必须与注册表**双向相等**）：
+/// 新增一个 string 参数（或改它的界）⇒ **必须在表里改一行**，否则
+/// [`every_string_params_bound_status_is_registered`] 红。
+///
+/// `Unbounded` 的第二项是 **R161 要求的爆炸半径**（谁能触发／后果），⛔ 不许写"未定"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundStatus {
+    /// 有长度约束：`(min_len, max_len)`，必须与 `ParamSpec` **逐值相同**。
+    Length(Option<usize>, Option<usize>),
+    /// 身份类：由 ULID 解析器定**字符集与长度**（26 字符 Crockford Base32）。
+    Identity,
+    /// 哈希类：由 SHA-256 解析器定（64 位十六进制）。
+    Hash,
+    /// 词表／白名单类：由枚举字面量表定。
+    WordList,
+    /// 结构化文本：由**格式解析器**定（例如 `"N/D"` 拍号）。
+    Parsed(&'static str),
+    /// 自由文本：**无界**（已按 R161 登记为候选 ＋ 爆炸半径；收口需改 `schemas/**`）。
+    Unbounded(&'static str),
+}
+
+/// 21 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 21] = [
+    ("idempotencyKey", BoundStatus::Length(None, Some(256))),
+    ("name", BoundStatus::Length(Some(1), None)),
+    ("trackId", BoundStatus::Identity),
+    ("clipId", BoundStatus::Identity),
+    ("edgeId", BoundStatus::Identity),
+    ("pointId", BoundStatus::Identity),
+    ("placementId", BoundStatus::Identity),
+    ("proposalId", BoundStatus::Identity),
+    ("assetHash", BoundStatus::Hash),
+    ("lane", BoundStatus::WordList),
+    ("format", BoundStatus::WordList),
+    (
+        "timeSignature",
+        BoundStatus::Parsed("N/D 形状（分子/分母各自有区间）"),
+    ),
+    (
+        "path",
+        BoundStatus::Unbounded(
+            "本地操作员自选路径：`app:admin` 作用域（stdio 形态 = 能写本进程 stdin 的进程；HTTP 形态 = 持 \nBearer 令牌者）。后果：超长路径只影响该次调用的**错误报文长度**；不改工程、\n不落盘（除它自己指定的目标）。收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
+        ),
+    ),
+    (
+        "outDir",
+        BoundStatus::Unbounded(
+            "同 `path`：诊断包的输出目录，操作员自选。后果限于该次调用的目录创建与报文长度。\n收口面：`schemas/**`。",
+        ),
+    ),
+    (
+        "title",
+        BoundStatus::Unbounded(
+            "新建工程的标题：落进文档 `title` 字段 ⇒ 超长标题会**写进工程文件**（体积放大）。\n收口面：`schemas/**` 的 `maxLength`。",
+        ),
+    ),
+    (
+        "clipName",
+        BoundStatus::Unbounded(
+            "片段名（`create:true` 时的标签）：落进文档 ⇒ 超长名字写进工程文件。收口面：`schemas/**`。",
+        ),
+    ),
+    (
+        "commitMessage",
+        BoundStatus::Unbounded(
+            "提交信息：落进提交图（`Commit`）⇒ 超长信息写进工程文件与历史。收口面：`schemas/**`。",
+        ),
+    ),
+    (
+        "sectionName",
+        BoundStatus::Unbounded("曲式段落名：落进文档 ⇒ 同上。收口面：`schemas/**`。"),
+    ),
+    (
+        "reason",
+        BoundStatus::Unbounded("拒绝提案的原因：落进提交信息 ⇒ 同上。收口面：`schemas/**`。"),
+    ),
+    (
+        "scale",
+        BoundStatus::Unbounded(
+            "音阶名：**未知值会走词表校验**（`STYLE_NOT_FOUND` / `INVALID_PARAMETER_RANGE`）⇒ \n界的形态是词表而不是长度；这里的无界只指「长度」这一维。",
+        ),
+    ),
+    (
+        "stylePreset",
+        BoundStatus::Unbounded(
+            "风格预设名：同 `scale`（未知值走词表校验），长度维无界。收口面：`schemas/**`。",
+        ),
+    ),
+];
+
 #[test]
 fn every_declared_bound_is_broadcast_and_every_broadcast_bound_is_declared() {
     // ⭐ R56：先喂**一条已知红**（广播缺 `minLength`）与**一条已知绿**（广播与声明一致）。
@@ -256,4 +348,74 @@ fn no_private_work_directory_lives_inside_the_repository() {
         offenders.is_empty(),
         "仓库树内不得有私有工作目录（R141：应放在会话工作区根的 `.mod-mcp/`）：{offenders:#?}"
     );
+}
+
+/// **每个 string 参数的界状态都必须在表里**（两方向 ＋ 非真空 ＋ 与注册表逐值一致）。
+///
+/// 注入（配对已知红）：把某个 `Unbounded` 条目从表里删掉 ⇒ 本判据红（"新参数没登记"）；
+/// 把某个 `Length` 的数值改掉 ⇒ 本判据红（表与注册表不一致）。
+#[test]
+fn every_string_params_bound_status_is_registered() {
+    let declared: BTreeSet<String> = TOOLS
+        .iter()
+        .flat_map(|spec| spec.all_params())
+        .filter(|param| param.json_type == "string")
+        .map(|param| param.name.to_owned())
+        .collect();
+    let registered: BTreeSet<String> = STRING_PARAM_BOUNDS
+        .iter()
+        .map(|(name, _status)| (*name).to_owned())
+        .collect();
+    // ⭐ R119/R120：非真空下界（本 crate 的 string 参数声明数）。
+    assert!(
+        declared.len() >= 20,
+        "string 参数声明数太小（{}）—— 注册表枚举可能写错了",
+        declared.len()
+    );
+    // 方向 ①：注册表里的每个 string 参数都必须在表里；方向 ②：表里不许有注册表没有的名字。
+    let missing: Vec<&String> = declared.difference(&registered).collect();
+    let stale: Vec<&String> = registered.difference(&declared).collect();
+    assert!(
+        missing.is_empty(),
+        "这些 string 参数**没有登记界状态**（新增参数必须在本文件的表里改一行）：{missing:?}"
+    );
+    assert!(stale.is_empty(), "表里有注册表中不存在的参数：{stale:?}");
+    // 方向 ③：`Length` 条目必须与 `ParamSpec` **逐值相同**。
+    let mut mismatches: Vec<String> = Vec::new();
+    for (name, status) in STRING_PARAM_BOUNDS {
+        let specs: Vec<&yeban_mcp::tools::ParamSpec> = TOOLS
+            .iter()
+            .flat_map(|spec| spec.all_params())
+            .filter(|param| param.name == name)
+            .collect();
+        assert!(!specs.is_empty(), "表里的 `{name}` 在注册表里找不到");
+        let seen: BTreeSet<(Option<usize>, Option<usize>)> = specs
+            .iter()
+            .map(|param| (param.min_len, param.max_len))
+            .collect();
+        assert_eq!(seen.len(), 1, "`{name}` 在不同工具里的界不一致：{seen:?}");
+        let actual = seen.into_iter().next().expect("非空");
+        match status {
+            BoundStatus::Length(min, max) => {
+                if actual != (min, max) {
+                    mismatches.push(format!("{name}: 表 ({min:?},{max:?}) vs 注册表 {actual:?}"));
+                }
+            }
+            other => {
+                if actual != (None, None) {
+                    mismatches.push(format!(
+                        "{name}: 表登记为 {other:?}，但注册表里带了长度界 {actual:?}"
+                    ));
+                }
+            }
+        }
+        // `Unbounded` 的**爆炸半径**必须写明（R161：⛔ 不许"未定"）。
+        if let BoundStatus::Unbounded(blast) = status {
+            assert!(
+                blast.chars().count() >= 20 && !blast.contains("未定"),
+                "`{name}` 的爆炸半径太短或写了'未定'：{blast}"
+            );
+        }
+    }
+    assert!(mismatches.is_empty(), "表与注册表不一致：{mismatches:#?}");
 }
