@@ -50,13 +50,20 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// 在该文件**上方插入任意行**会把它们整体错位（实测：插入 6 行后，两条入口失配 ⇒ 判据**假红**）。
 /// 修法（R117／R119 家族）：入口改成**内容锚**（把站点那一行规范化后取片段），⛔ 不用行号。
 /// 现在先**如实登记**，因为"假红"比"假绿"安全 —— 它不会让真缺陷溜过去。
-const ALLOWLIST: &[(&str, usize, &str)] = &[
-    // ⭐ **R132 的进度读数**：入口数 ＝ "还有多少未修缺口"。
-    // 本批把窗口从"固定行数"改成"**函数体边界**"后，原先两条"识别器盲区"入口**已撤**
-    // （接收者 `out` 是定长数组，其声明就在同一个函数体里 ⇒ 现在认得出）⇒ **入口数 = 0**。
-    //
-    // ⚠ 若将来再加入口：**⛔ 不许用行号**（上方插行即错位 ⇒ 假红；R117／R119）——
-    // 必须改用**内容锚**（文件 ＋ 站点行的规范化文本 ＋ 站点序号）。
+const ALLOWLIST: &[(&str, &str, &str)] = &[
+    // ⭐ **R146／R153 的进度读数**：条目 ＝ "已评审但**未修**"的真缺口（⛔ 不许用行号做身份 ——
+    // 上方插行即错位 ⇒ 假红；身份改用**站点片段的内容锚**，见 `allowlist_entry_matches`）。
+    // ⭐ 本批根绑定（R153）**新暴露**了 2 处被"窗口任一"规则掩盖的真无界站点：
+    (
+        "src/insert.rs",
+        "assert!(a.iter().all(|v| v.is_finite()));",
+        "真无界（R153 新暴露）：`a` 无长度下界 ⇒ 空切片时 all 恒真；下一轮加 !a.is_empty()",
+    ),
+    (
+        "tests/idempotency_and_channel_consistency.rs",
+        ".all(|(l, r)| l.to_bits() == r.to_bits())",
+        "真无界（R153 新暴露）：左右逐位相等在**空缓冲**上恒真 ⇒ 下一轮加非空界",
+    ),
 ];
 
 /// 窗口：`.all(` 站点**之前**多少行内去找"界"。
@@ -195,6 +202,23 @@ fn mask_noncode(text: &str) -> String {
     out
 }
 
+/// ⭐ **R153**：站点遍历的**根表达式**必须**从站点派生**（⛔ 不用白名单）。
+/// 形态：`X.iter()`／`X[` 之前的 `X`（截到最近的界符）。
+fn site_root(context: &str) -> Option<String> {
+    let flat = squeeze(context);
+    let index = flat.find(".iter()")?;
+    let before = &flat[..index];
+    let root: String = before
+        .chars()
+        .rev()
+        .take_while(|c| !matches!(c, '(' | ',' | ';' | '=' | '{' | '}' | '!' | '&' | '|' | ':'))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if root.is_empty() { None } else { Some(root) }
+}
+
 /// **R139**：压缩文本必须**去掉全部空白**（⛔ 只去空格不够 —— 跨行形态会匹配不上，
 /// 把**对的代码**报成缺陷）。
 fn squeeze(text: &str) -> String {
@@ -294,15 +318,26 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     let start = body_start.max(line_no.saturating_sub(WINDOW_MAX + 1));
     let window = lines[start..line_no.saturating_sub(1).min(lines.len())].join("\n");
     // ⭐ **R96／R113**：注释与字面量里的 `len() >=` **不算界** ⇒ 先掩码（保长）。
-    let window = mask_noncode(&window);
-    let forms = size_bound_forms();
-    if forms.iter().any(|form| window.contains(form.as_str())) {
+    // ⚠ 掩码之后**再压缩**：针是从**压缩**文本派生的（`xs.len()>=`），
+    // 拿它去匹配**未压缩**窗口（`xs.len() >=`）永远不中 —— 实测 4 条臂因此全红。
+    let window = squeeze(&mask_noncode(&window));
+    // ⭐ **R153：五种基础形态都必须**提到站点的根**** —— ⛔ "窗口里出现任一"不算
+    // （那是无根绑定：删掉一个界会被同函数体里**别的**界兜住 ⇒ 实例级注入不可隔离）。
+    let mut bound = false;
+    // ⚠ 根必须从**站点自身**的上下文派生（含站点行）：`.all(` 常独占一行，
+    // 而 `.iter()` 在**上一行** ⇒ 只看"站点之前的窗口"会派生不出根（实测 5 条臂全红）。
+    let site_context = lines[line_no.saturating_sub(4)..line_no.min(lines.len())].join("\n");
+    if let Some(root) = site_root(&site_context) {
+        let len_root = format!("{root}.len()");
+        bound = window.contains(&format!("{len_root}=="))
+            || window.contains(&format!("{len_root}>="))
+            || window.contains(&format!("{len_root}>"))
+            || (window.contains(&format!("{root}.is_empty()")) && window.contains('!'));
+    }
+    if bound {
         return true;
     }
-    // `assert!(… !is_empty() …)`：`!` 与调用之间可能有空格/换行 ⇒ 单独认一次形态。
-    if window.contains("!") && window.contains("is_empty()") {
-        return true;
-    }
+    let _ = size_bound_forms();
     // ⭐ 本 crate 实测命中的两种**额外**有界形态（仍是"界定被遍历集合大小"，符合 R118）：
     // (a) **定长数组接收者**：窗口里有 `let <ident> = [ … ; <N> ]` 且站点遍历 `<ident>`；
     // (b) **切片上界被标量相等钉住**：站点形如 `x[..n]`，窗口里有 `assert_eq!(n, <数>)`。
@@ -359,19 +394,31 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     false
 }
 
+/// ⭐ **R146／R153**：allowlist 的**身份 ＝ 内容锚**（⛔ 不用行号）。
+/// 匹配规则：文件相同 **且** 站点片段（去空白后）相同。
+fn allowlist_entry_matches(allowlist: &[(&str, &str, &str)], file: &str, snippet: &str) -> bool {
+    let needle = squeeze(snippet);
+    allowlist
+        .iter()
+        .any(|(path, anchor, _)| *path == file && squeeze(anchor) == needle)
+}
+
 /// ⭐ **R136（棘轮双向相等）**：登记了入口、但该站点**已经**有界 ⇒ 这是**陈旧入口**
 /// （修好却忘了删行）⇒ 也必须红。返回 `(文件, 行号)`。
 fn stale_entries(
     sources: &[(&str, &str)],
-    allowlist: &[(&str, usize, &str)],
-) -> Vec<(String, usize)> {
+    allowlist: &[(&str, &str, &str)],
+) -> Vec<(String, String)> {
     let mut stale = Vec::new();
-    for (file, line, _reason) in allowlist {
+    for (file, anchor, _reason) in allowlist {
         let Some((_, source)) = sources.iter().find(|(path, _)| path == file) else {
             continue;
         };
-        if has_size_bound(source, *line) {
-            stale.push(((*file).to_owned(), *line));
+        // 内容锚 ⇒ 在文件里找到**同一个片段**的站点行号。
+        for (index, line) in source.lines().enumerate() {
+            if squeeze(line) == squeeze(anchor) && has_size_bound(source, index + 1) {
+                stale.push(((*file).to_owned(), (*anchor).to_owned()));
+            }
         }
     }
     stale
@@ -394,19 +441,16 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
             if has_size_bound(source, line_no) {
                 continue;
             }
-            if ALLOWLIST
-                .iter()
-                .any(|(file, line, _)| file == path && *line == line_no)
-            {
-                continue;
-            }
-            // ⭐ **R131**：失败信息必须点出**缺界的那一句**（⛔ 不只报文件与行号）。
             let snippet = source
                 .lines()
                 .nth(line_no - 1)
                 .unwrap_or("")
                 .trim()
                 .to_owned();
+            if allowlist_entry_matches(ALLOWLIST, path, &snippet) {
+                continue;
+            }
+            // ⭐ **R131**：失败信息带**缺界的那一句**。
             unbounded.push(((*path).to_owned(), line_no, snippet));
         }
     }
@@ -608,7 +652,8 @@ fn the_ratchet_is_bidirectional_and_flags_stale_entries() {
     let site = sites(source);
     assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
 
-    let stale = stale_entries(sources, &[("fake.rs", site[0], "陈旧：此处其实已经有界")]);
+    let anchor = source.lines().nth(site[0] - 1).unwrap().trim();
+    let stale = stale_entries(sources, &[("fake.rs", anchor, "陈旧：此处其实已经有界")]);
     assert_eq!(
         stale.len(),
         1,
@@ -619,7 +664,8 @@ fn the_ratchet_is_bidirectional_and_flags_stale_entries() {
     let unbounded_source = "fn t() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
     let sources2: &[(&str, &str)] = &[("fake.rs", unbounded_source)];
     let site2 = sites(unbounded_source);
-    let not_stale = stale_entries(sources2, &[("fake.rs", site2[0], "仍在缺口里")]);
+    let anchor2 = unbounded_source.lines().nth(site2[0] - 1).unwrap().trim();
+    let not_stale = stale_entries(sources2, &[("fake.rs", anchor2, "仍在缺口里")]);
     assert!(
         not_stale.is_empty(),
         "⛔ 真缺口上的入口**不是**陈旧入口（不得误报）"
