@@ -1829,4 +1829,40 @@ mod tests {
         assert!(info.fade_remaining > 0, "the fade-out length is armed");
         assert_eq!(info.fade_in_remaining, 0, "a fade-out wins over a fade-in");
     }
+
+    #[test]
+    fn the_polyphony_victim_is_the_earliest_trigger_not_the_lowest_slot() {
+        // `polyphony_victim` 的键是 `(力度, 触发序号, 槽位下标)`：同力度时**最早触发**的声部
+        // 先让位，而不是下标最小的槽位。构造「先触发但下标更大」的在场声部来区分这两者 ——
+        // `index` 只在 `order` 平局时才起作用（u64 回绕，公开 API 不可达）。
+        let mut pool = VoicePool::new(4, 48_000.0).expect("valid capacity");
+        let first = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let second = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        let third = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        pool.finish(first).expect("live handle");
+        let reused = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        assert_eq!(
+            (first.index, second.index, third.index, reused.index),
+            (0, 1, 2, 0),
+            "the freed lowest slot is reused"
+        );
+        // 在场：second(槽位 1，序号 2)、third(槽位 2，序号 3)、reused(槽位 0，序号 4)。
+        // `limit = 2` 把在场数压到 1 ⇒ 让位两个：序号 2、3 让位，序号 4 留下。
+        // 若按键改从下标取最小，则留下的会是 `third`（下标 2）而 `reused`（下标 0）让位。
+        let start = pool.note_on_in_group(60, 100, -6.0, 0).started();
+        pool.apply_note_polyphony(start, limit(2, true))
+            .expect("live handle");
+        assert!(
+            pool.voice(second).expect("still active").retiring,
+            "the earliest trigger retires first"
+        );
+        assert!(
+            pool.voice(third).expect("still active").retiring,
+            "the second earliest follows"
+        );
+        assert!(
+            !pool.voice(reused).expect("still active").retiring,
+            "the lowest slot index must not win over the latest trigger"
+        );
+    }
 }

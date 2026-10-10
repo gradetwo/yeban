@@ -2206,4 +2206,141 @@ mod tests {
             "the registered default warning cap"
         );
     }
+
+    // ------------------------------------------------------------------
+    // 第七批：此前「测试 0 引用」的诊断臂、公开自由函数与 `unlimited()` 配额
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn an_empty_header_name_is_reported_with_its_line() {
+        // `<>` 是「有尖括号但没名字」：明确 `Err`，不是静默忽略。
+        let error = parse_text("<>\n", &Default::default()).expect_err("empty header name");
+        assert!(
+            matches!(error, SfzError::EmptyHeaderName { line: 1 }),
+            "unexpected verdict: {error:?}"
+        );
+        assert_eq!(error.to_string(), "line 1: empty header name");
+    }
+
+    #[test]
+    fn an_unterminated_header_is_reported_verbatim() {
+        // `<region` 没有闭合尖括号：错误载荷必须带**原文**（`truncate_for_error` 的口径）。
+        let error = parse_text("<region\n", &Default::default()).expect_err("unterminated header");
+        assert!(
+            matches!(&error, SfzError::UnterminatedHeader { line: 1, .. }),
+            "unexpected verdict: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "line 1: unterminated header in `<region`"
+        );
+    }
+
+    #[test]
+    fn a_macro_expansion_that_grows_the_line_is_reported() {
+        // 宏展开把行撑过 `max_line_bytes` ⇒ 独立的 `MacroExpansionTooLong`
+        // （与「原始行太长」的 `LineTooLong` 是**两个**不同的诊断）。
+        let limits = ParseLimits {
+            max_line_bytes: 23,
+            ..ParseLimits::default()
+        };
+        let error = parse_text("#define $A 1234567890\n$A$A$A$A\n", &limits)
+            .expect_err("the expansion exceeds the line cap");
+        assert!(
+            matches!(
+                error,
+                SfzError::MacroExpansionTooLong { line: 2, limit: 23 }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+        // 原始行本身不长：换成 `LineTooLong` 会让这条判据变红。
+        assert_eq!(
+            error.to_string(),
+            "line 2: macro expansion grew the line beyond 23 bytes"
+        );
+    }
+
+    #[test]
+    fn the_macro_expansion_length_cap_boundary_is_exact() {
+        // 展开后的长度上限与原始行共用 `max_line_bytes`，且是**闭**上界：恰好 33 字节放行，
+        // 44 字节才 `Err`。
+        //
+        // ⚠️ 两把尺子：`LineTooLong` 量的是 `split_inclusive('\n')` 的切片（**含**行尾换行），
+        // 而这里量的是 `expand_macros` 拼出来的缓冲（**不含**换行 —— `run()` 传进去的行
+        // 已经没有换行）。所以 `$A` = `12345678901`（11 字节）× 3 份 = 33 字节，
+        // 而 `#define` 行按另一把尺子量是 23 字节。
+        let limits = ParseLimits {
+            max_line_bytes: 33,
+            ..ParseLimits::default()
+        };
+        parse_text("#define $A 12345678901\n$A$A$A\n", &limits)
+            .expect("an expansion of exactly the cap is accepted");
+        let error = parse_text("#define $A 12345678901\n$A$A$A$A\n", &limits)
+            .expect_err("one substitution past the cap");
+        assert!(
+            matches!(
+                error,
+                SfzError::MacroExpansionTooLong { line: 2, limit: 33 }
+            ),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn parse_f32_rejects_non_finite_and_blank_input() {
+        // 公开自由函数：空白 ⇒ `None`；非有限 ⇒ `None`（`is_finite` 是这条契约的全部）。
+        assert_eq!(parse_f32(""), None);
+        assert_eq!(parse_f32("   "), None);
+        assert_eq!(parse_f32("1.5"), Some(1.5));
+        assert_eq!(parse_f32("  -2 "), Some(-2.0));
+        assert_eq!(parse_f32("inf"), None);
+        assert_eq!(parse_f32("NaN"), None);
+        assert_eq!(parse_f32("nope"), None);
+    }
+
+    #[test]
+    fn parse_int_trims_and_rejects_junk() {
+        assert_eq!(parse_int(""), None);
+        assert_eq!(parse_int("7 7"), None, "an interior space is not a number");
+        assert_eq!(parse_int(" 7"), Some(7));
+        assert_eq!(
+            parse_int("  7 "),
+            Some(7),
+            "leading and trailing space is trimmed"
+        );
+        assert_eq!(parse_int("-7"), Some(-7));
+        assert_eq!(parse_int("7.0"), None);
+    }
+
+    #[test]
+    fn the_unlimited_quota_set_lifts_every_limit() {
+        // `unlimited()` 是给「已由调用方自己兜住上限」的场景用的公开入口：
+        // 16 个字段必须是**逐字段**的全域，任何一个留下小值都会在那里变红。
+        let unlimited = ParseLimits::unlimited();
+        assert_eq!(unlimited.max_line_bytes, usize::MAX);
+        assert_eq!(unlimited.max_regions, usize::MAX);
+        assert_eq!(unlimited.max_curves, usize::MAX);
+        assert_eq!(unlimited.max_effects, usize::MAX);
+        assert_eq!(unlimited.max_midi_sections, usize::MAX);
+        assert_eq!(unlimited.max_midi_opcodes, usize::MAX);
+        assert_eq!(unlimited.max_opcodes_per_header, usize::MAX);
+        assert_eq!(unlimited.max_defines, usize::MAX);
+        assert_eq!(unlimited.max_macro_expansions_per_line, usize::MAX);
+        assert_eq!(unlimited.max_source_bytes, usize::MAX);
+        assert_eq!(unlimited.max_include_depth, usize::MAX);
+        assert_eq!(unlimited.max_include_files, usize::MAX);
+        assert_eq!(unlimited.max_glob_matches, usize::MAX);
+        assert_eq!(unlimited.max_glob_depth, usize::MAX);
+        assert_eq!(unlimited.max_glob_scanned, usize::MAX);
+        assert_eq!(unlimited.max_warnings, usize::MAX);
+        // 行为读数：默认配额会截断的警告条数，在 `unlimited()` 下全留。
+        let mut text = String::new();
+        for index in 0..300 {
+            text.push_str(&format!("<x{index}>\n"));
+        }
+        let instrument = parse_text(&text, &unlimited).expect("unlimited accepts it");
+        assert_eq!(instrument.warnings().len(), 300);
+        // 并且 1 个 region 在 `unlimited()` 下必须放行（`max_regions` 留在小值会变红）。
+        parse_text("<region>sample=a.wav", &unlimited).expect("one region fits");
+    }
 }

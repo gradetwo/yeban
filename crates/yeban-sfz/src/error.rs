@@ -446,3 +446,306 @@ pub enum SfzError {
     #[error("voice handle is stale or does not belong to this pool")]
     StaleVoiceHandle,
 }
+
+// ---------------------------------------------------------------------------
+// 诊断文案（公开面：`Display`）的黄金表
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 每个 `SfzError` 臂的 `Display` 文案**逐字**钉住。
+    ///
+    /// 这条判据覆盖 44 个 `thiserror` 臂的全部公开诊断面：文案改动（哪怕是删一个词）
+    /// 都会在这里变红。同时断言 `source()` 恒为 `None` —— 本 crate 刻意不携带底层
+    /// `io::Error`（见 `Io` 的文档：保留 `PartialEq`），因此错误链只有一层。
+    #[test]
+    fn every_sfz_error_display_arm_is_pinned() {
+        let cases: Vec<(SfzError, &str)> = vec![
+            (
+                SfzError::Io {
+                    path: String::from("s"),
+                    detail: String::from("s"),
+                },
+                "cannot read `s`: s",
+            ),
+            (
+                SfzError::NotUtf8 {
+                    path: String::from("s"),
+                },
+                "`s` is not valid UTF-8",
+            ),
+            (
+                SfzError::SourceTooLarge {
+                    path: String::from("s"),
+                    len: 3,
+                    limit: 3,
+                },
+                "`s` is 3 bytes, exceeding the 3 byte source limit",
+            ),
+            (
+                SfzError::IncludeNotQuoted {
+                    line: 3,
+                    text: String::from("s"),
+                },
+                "line 3: #include path must be double-quoted, got `s`",
+            ),
+            (
+                SfzError::IncludeUnterminated { line: 3 },
+                "line 3: unterminated #include string",
+            ),
+            (
+                SfzError::IncludeEmptyPath { line: 3 },
+                "line 3: #include path is empty",
+            ),
+            (
+                SfzError::IncludeAbsolutePath {
+                    line: 3,
+                    path: String::from("s"),
+                },
+                "line 3: absolute #include path `s` is rejected (sandbox)",
+            ),
+            (
+                SfzError::IncludeEscape {
+                    line: 3,
+                    path: String::from("s"),
+                },
+                "line 3: #include path `s` escapes the base directory (sandbox)",
+            ),
+            (
+                SfzError::IncludeInvalidPath {
+                    line: 3,
+                    path: String::from("s"),
+                },
+                "line 3: #include path `s` is not a valid filesystem path",
+            ),
+            (
+                SfzError::IncludeNotFound {
+                    line: 3,
+                    path: String::from("s"),
+                },
+                "line 3: #include target `s` does not exist",
+            ),
+            (
+                SfzError::IncludeNotAFile {
+                    line: 3,
+                    path: String::from("s"),
+                },
+                "line 3: #include target `s` is not a regular file",
+            ),
+            (
+                SfzError::IncludeUnsupportedExtension {
+                    line: 3,
+                    path: String::from("s"),
+                },
+                "line 3: #include target `s` must end in .sfz or .sfzh",
+            ),
+            (
+                SfzError::IncludeNoMatch {
+                    line: 3,
+                    pattern: String::from("s"),
+                },
+                "line 3: #include pattern `s` matched no file",
+            ),
+            (
+                SfzError::IncludeCycle {
+                    path: String::from("s"),
+                },
+                "include cycle detected at `s`",
+            ),
+            (
+                SfzError::IncludeDepthExceeded { limit: 3 },
+                "#include nesting exceeds the 3 level limit",
+            ),
+            (
+                SfzError::IncludeCountExceeded { limit: 3 },
+                "#include expansion produced more than 3 files",
+            ),
+            (
+                SfzError::GlobMatchesExceeded {
+                    pattern: String::from("s"),
+                    limit: 3,
+                },
+                "include pattern `s` matched more than 3 files",
+            ),
+            (
+                SfzError::GlobScanExceeded {
+                    pattern: String::from("s"),
+                    limit: 3,
+                },
+                "include pattern `s` required scanning more than 3 directory entries",
+            ),
+            (
+                SfzError::UnterminatedHeader {
+                    line: 3,
+                    text: String::from("s"),
+                },
+                "line 3: unterminated header in `s`",
+            ),
+            (
+                SfzError::EmptyHeaderName { line: 3 },
+                "line 3: empty header name",
+            ),
+            (
+                SfzError::InvalidInteger {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: String::from("s"),
+                },
+                "line 3: `s` expects an integer, got `s`",
+            ),
+            (
+                SfzError::IntegerOutOfRange {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: -2,
+                    min: -2,
+                    max: -2,
+                },
+                "line 3: `s` value -2 out of range -2..=-2",
+            ),
+            (
+                SfzError::FloatOutOfRange {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: 1.5,
+                    min: 1.5,
+                    max: 1.5,
+                },
+                "line 3: `s` value 1.5 out of range 1.5..=1.5",
+            ),
+            (
+                SfzError::VelocityCurveIndexOutOfRange {
+                    line: 3,
+                    opcode: String::from("s"),
+                    index: String::from("s"),
+                },
+                "line 3: `s` velocity index `s` is not in 0..=127",
+            ),
+            (
+                SfzError::InvalidFloat {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: String::from("s"),
+                },
+                "line 3: `s` expects a number, got `s`",
+            ),
+            (
+                SfzError::NonFiniteFloat {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: String::from("s"),
+                },
+                "line 3: `s` must be finite, got `s`",
+            ),
+            (
+                SfzError::InvalidDuration {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: 1.5,
+                },
+                "line 3: `s` must not be negative, got 1.5",
+            ),
+            (
+                SfzError::InvalidNote {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: String::from("s"),
+                },
+                "line 3: `s` expects a note name or MIDI number 0..=127, got `s`",
+            ),
+            (
+                SfzError::InvalidOption {
+                    line: 3,
+                    opcode: String::from("s"),
+                    value: String::from("s"),
+                    allowed: "opt",
+                },
+                "line 3: `s` value `s` is not one of opt",
+            ),
+            (
+                SfzError::LineTooLong {
+                    line: 3,
+                    len: 3,
+                    limit: 3,
+                },
+                "line 3: line is 3 bytes, exceeding the 3 byte line limit",
+            ),
+            (
+                SfzError::CurveWithoutIndex { line: 3 },
+                "line 3: <curve> defines points but no curve_index",
+            ),
+            (
+                SfzError::ReservedCurveIndex { line: 3, index: 5 },
+                "line 3: curve_index 5 is reserved for an ARIA built-in curve (use 7..=254)",
+            ),
+            (
+                SfzError::DuplicateCurveIndex { line: 3, index: 5 },
+                "line 3: curve_index 5 is already defined",
+            ),
+            (
+                SfzError::TooManyRegions { limit: 3 },
+                "more than 3 <region> sections",
+            ),
+            (
+                SfzError::TooManyCurves { limit: 3 },
+                "more than 3 <curve> sections",
+            ),
+            (
+                SfzError::TooManyEffects { limit: 3 },
+                "more than 3 <effect> sections",
+            ),
+            (
+                SfzError::TooManyMidiSections { limit: 3 },
+                "more than 3 <midi> sections",
+            ),
+            (
+                SfzError::TooManyMidiOpcodes { limit: 3 },
+                "more than 3 <midi> opcodes are registered in total",
+            ),
+            (
+                SfzError::TooManyOpcodes {
+                    scope: "opt",
+                    limit: 3,
+                },
+                "`opt` scope declares more than 3 distinct opcodes",
+            ),
+            (
+                SfzError::TooManyDefines { limit: 3 },
+                "more than 3 #define variables",
+            ),
+            (
+                SfzError::MacroExpansionExceeded {
+                    line: 3,
+                    name: String::from("s"),
+                    limit: 3,
+                },
+                "line 3: macro expansion of `s` exceeded 3 substitutions",
+            ),
+            (
+                SfzError::MacroExpansionTooLong { line: 3, limit: 3 },
+                "line 3: macro expansion grew the line beyond 3 bytes",
+            ),
+            (
+                SfzError::InvalidVoiceCapacity {
+                    requested: 3,
+                    max: 3,
+                },
+                "voice pool capacity 3 out of range 1..=3",
+            ),
+            (
+                SfzError::StaleVoiceHandle,
+                "voice handle is stale or does not belong to this pool",
+            ),
+        ];
+        assert_eq!(cases.len(), 44);
+        for (error, expected) in cases {
+            assert_eq!(format!("{error}"), expected, "Display for {error:?}");
+            assert!(
+                std::error::Error::source(&error).is_none(),
+                "{error:?} must not carry a source (no io::Error is chained)"
+            );
+        }
+    }
+}

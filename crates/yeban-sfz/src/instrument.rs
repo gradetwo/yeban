@@ -5856,4 +5856,47 @@ v127=1
             "an empty sample still takes the prefix and its separator"
         );
     }
+
+    // ------------------------------------------------------------------
+    // 第七批：CC 门控的上界闭合、sample 路径的「不清洗」口径
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_cc_gate_upper_bound_is_inclusive() {
+        // `hiccN=V` 把上界设为 V，且上下界都是**闭**的：`cc == V` 必须放行。
+        let region = first_region("<region>sample=a.wav hicc64=64");
+        assert!(region.cc_gates_ok(|_| 64), "the upper bound is inclusive");
+        assert!(
+            !region.cc_gates_ok(|_| 65),
+            "one past the bound is excluded"
+        );
+        assert!(region.cc_gates_ok(|_| 0));
+        // 下界同样是闭的。
+        let low = first_region("<region>sample=a.wav locc64=64");
+        assert!(low.cc_gates_ok(|_| 64), "the lower bound is inclusive");
+        assert!(!low.cc_gates_ok(|_| 63));
+    }
+
+    #[test]
+    fn sample_paths_are_passed_through_without_sanitizing() {
+        // 产线**不**清洗 sample 路径：`..`、绝对路径、反斜杠与控制字符全部原样保留，
+        // 只做「前缀 + 分隔符」的拼接。拒绝语义属于调用方（第七批报告里登记为 API 缺口）。
+        for sample in [
+            "../x.wav",
+            "/abs/x.wav",
+            "sub\\x.wav",
+            "a\u{1}b.wav",
+            "x.wav",
+        ] {
+            let source = format!("<region>sample={sample}");
+            let region = first_region(&source);
+            assert_eq!(region.sample_path(), sample, "no rewriting of {sample:?}");
+        }
+        let prefixed = first_region("<control>\ndefault_path=S/\n<region>sample=../x.wav");
+        assert_eq!(
+            prefixed.sample_path(),
+            "S/../x.wav",
+            "the prefix is joined verbatim, without resolving `..`"
+        );
+    }
 }

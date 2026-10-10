@@ -681,3 +681,96 @@ fn a_wildcard_glob_does_not_descend_into_a_symlinked_directory() {
         "unexpected verdict: {error:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 第七批：此前「测试 0 引用」的 include 诊断臂与 `base_dir()`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_unterminated_include_string_is_reported() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "main.sfz", "#include \"inc.sfz\n");
+    let error = IncludeResolver::new(root, ParseLimits::default())
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("must reject");
+    assert!(
+        matches!(error, SfzError::IncludeUnterminated { line: 1 }),
+        "unexpected verdict: {error:?}"
+    );
+    assert_eq!(error.to_string(), "line 1: unterminated #include string");
+}
+
+#[test]
+fn an_empty_include_path_is_reported() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "main.sfz", "#include \"\"\n");
+    let error = IncludeResolver::new(root, ParseLimits::default())
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("must reject");
+    assert!(
+        matches!(error, SfzError::IncludeEmptyPath { line: 1 }),
+        "unexpected verdict: {error:?}"
+    );
+    assert_eq!(error.to_string(), "line 1: #include path is empty");
+}
+
+#[test]
+fn an_include_path_with_a_nul_byte_is_reported() {
+    // 词法层拒绝 NUL（见 `check_relative` 的文档）；这也是 `IncludeInvalidPath` 的唯一入口。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "main.sfz", "#include \"a\0b.sfz\"\n");
+    let error = IncludeResolver::new(root, ParseLimits::default())
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("must reject");
+    assert!(
+        matches!(error, SfzError::IncludeInvalidPath { line: 1, .. }),
+        "unexpected verdict: {error:?}"
+    );
+    assert!(
+        error.to_string().contains("is not a valid filesystem path"),
+        "unexpected message: {error}"
+    );
+}
+
+#[test]
+fn a_base_that_is_not_a_directory_is_an_io_error() {
+    // `IncludeResolver::new` 的第二个失败口：规范化成功但不是目录。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "plain.sfz", "<region>sample=a.wav\n");
+    let error = IncludeResolver::new(root.join("plain.sfz"), ParseLimits::default())
+        .expect_err("a file is not a base directory");
+    assert!(
+        matches!(error, SfzError::Io { .. }),
+        "unexpected verdict: {error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("include base is not a directory"),
+        "unexpected message: {error}"
+    );
+}
+
+#[test]
+fn base_dir_reports_the_canonical_sandbox_root() {
+    // `base_dir()` 是给调用方做展示 / 诊断的公开访问器：必须是**规范化后**的根。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    let resolver = IncludeResolver::new(root, ParseLimits::default()).expect("base dir");
+    assert_eq!(
+        resolver.base_dir(),
+        fs::canonicalize(root).expect("canonical root")
+    );
+    // 通过 `..` 进根的等价写法必须归一到同一个根。
+    fs::create_dir_all(root.join("sub")).expect("create sub dir");
+    let via_parent =
+        IncludeResolver::new(root.join("sub/.."), ParseLimits::default()).expect("base dir via ..");
+    assert_eq!(via_parent.base_dir(), resolver.base_dir());
+}
