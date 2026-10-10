@@ -3737,6 +3737,10 @@ fn the_raw_string_termination_counts_the_same_hashes() {
         checked, declared,
         "R160 双向①：{declared} 条原始字符串臂必须全部求值"
     );
+    // R257①：数字必须带**区域 ＋ 单位** ⇒ 本判据自己把 N 打印出来（区域=本判据，单位=数组条目数）。
+    eprintln!(
+        "[R187-PROBE model_isolation::raw_arms] N={declared} region=the_raw_string_termination_counts_the_same_hashes.cases unit=array_entries"
+    );
     // ⛔ **不合法样本**单独登记：只断言"它不合法"，⛔ **不**据此判掩码器缺陷。
     let illegal = "let s = r#\"a\"#b\"#;\n";
     eprintln!(
