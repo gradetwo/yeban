@@ -8250,6 +8250,24 @@ mod tests {
         assert_eq!(donor.len(), output.len(), "记录条数");
     }
 
+    /// **R84 的形态**: 按**路径描述**在文档表里定位那一行, 再从**那一行**取 sha256。
+    ///
+    /// 为什么不用 `doc.contains(常量)`: 那只证明"这个串在文件里出现过" ——
+    /// **两行对调**、或者某一行的路径名被改掉, `contains` 都照样通过。
+    /// 本函数把**描述 → 行 → 该行的 64 位十六进制**这条链钉死。
+    fn documented_sha256(doc: &str, row_label: &str) -> Option<String> {
+        // 注意: 文档里同一个路径名可能在**表格之外的正文**里也出现一次, 因此要
+        // 遍历所有含该描述的行, 取**第一条带 64 位十六进制单元**的行（真正的表格行）。
+        doc.lines()
+            .filter(|line| line.contains(row_label))
+            .find_map(|row| {
+                row.split('|')
+                    .map(|cell| cell.trim().trim_matches('`').trim())
+                    .find(|cell| cell.len() == 64 && cell.chars().all(|c| c.is_ascii_hexdigit()))
+                    .map(str::to_owned)
+            })
+    }
+
     /// 判据 (**R70② 第三种处理**: 上游定输入字节 ⇒ **必须重算哈希**):
     /// 每一份 `include_bytes!` 原样复制的供体字节, 都要与**代码常量**和**文档表**同时对上。
     ///
@@ -8277,13 +8295,14 @@ mod tests {
     fn every_embedded_donor_byte_block_matches_its_recorded_sha256() {
         let provenance = include_str!("../assets/logic-donor-owner/PROVENANCE.md");
         let readme = include_str!("../assets/logic-donor/README.md");
-        let cases: [(&str, &[u8], &str, usize, &str); 5] = [
+        let cases: [(&str, &[u8], &str, usize, &str, &str); 5] = [
             (
                 "MIT 供体 ProjectData",
                 LOGIC_DONOR_PROJECT_DATA,
                 LOGIC_DONOR_SHA256,
                 LOGIC_DONOR_PROJECT_DATA_BYTES,
                 readme,
+                "Alternatives/000/ProjectData",
             ),
             (
                 "1 轨 ProjectData",
@@ -8291,6 +8310,7 @@ mod tests {
                 LOGIC_OWNER_DONOR_1T_SHA256,
                 LOGIC_OWNER_DONOR_1T_BYTES,
                 provenance,
+                "furelise-1track/ProjectData",
             ),
             (
                 "2 轨 ProjectData",
@@ -8298,6 +8318,7 @@ mod tests {
                 LOGIC_OWNER_DONOR_2T_SHA256,
                 LOGIC_OWNER_DONOR_2T_BYTES,
                 provenance,
+                "furelise-2tracks/ProjectData",
             ),
             (
                 "1 轨 export.mid",
@@ -8305,6 +8326,7 @@ mod tests {
                 LOGIC_OWNER_DONOR_1T_MID_SHA256,
                 3_822,
                 provenance,
+                "furelise-1track/export.mid",
             ),
             (
                 "2 轨 export.mid",
@@ -8312,19 +8334,24 @@ mod tests {
                 LOGIC_OWNER_DONOR_2T_MID_SHA256,
                 6_687,
                 provenance,
+                "furelise-2tracks/export.mid",
             ),
         ];
         let mut digests: Vec<(&str, String)> = Vec::new();
-        for (label, bytes, recorded, expected_len, doc) in cases {
+        for (label, bytes, recorded, expected_len, doc, row_label) in cases {
             assert_eq!(bytes.len(), expected_len, "{label}: 字节数");
             let digest = sha256_hex(bytes);
             assert_eq!(
                 digest, recorded,
                 "{label}: 嵌入字节必须等于代码常量（①字节契约）"
             );
-            assert!(
-                doc.contains(recorded),
-                "{label}: 文档表里必须写着同一个值（②文档契约）"
+            // ② 文档契约（**R84 的形态**）: 不是 `doc.contains(常量)`（那只证明"串在文件里出现过",
+            // 换行/换行位置都不管, 两行对调也照样通过）, 而是:
+            // **按描述（路径名）定位到那一行**, 再从**那一行**取 64 位十六进制, 与常量逐字比较。
+            assert_eq!(
+                documented_sha256(doc, row_label),
+                Some(recorded.to_owned()),
+                "{label}: 文档表里 **`{row_label}` 那一行** 的 sha256 必须等于代码常量"
             );
             digests.push((label, digest));
         }
@@ -8339,22 +8366,38 @@ mod tests {
             }
         }
         // 真探针 ②: 翻转一个字节（长度不变）必须改变摘要。
-        let mut flipped = LOGIC_OWNER_DONOR_1T_PROJECT_DATA.to_vec();
-        assert!(flipped.len() > 1, "夹具必须非空");
+        let original: Vec<u8> = LOGIC_OWNER_DONOR_1T_PROJECT_DATA.to_vec();
+        let mut flipped = original.clone();
         let victim = flipped.len() / 2;
         flipped[victim] ^= 0x01;
+        // R80: 原来这里是 `assert!(flipped.len() > 1, "夹具必须非空")` —— 对一个
+        // `include_bytes!` 的 181 KB 常量**恒真**, 是"看起来像真断言"的空判据。
+        // 换成从**真实值**导出的两句: 副本确实被改了, 且只改了长度以外的一个字节。
+        assert_ne!(
+            flipped, original,
+            "翻转必须真的改变副本（否则后面的摘要比较是空的）"
+        );
+        assert_eq!(flipped.len(), original.len(), "只翻转一个字节, 长度不变");
         assert_eq!(
-            flipped.len(),
-            LOGIC_OWNER_DONOR_1T_PROJECT_DATA.len(),
-            "只翻转一个字节, 长度不变"
+            flipped
+                .iter()
+                .zip(&original)
+                .filter(|(a, b)| a != b)
+                .count(),
+            1,
+            "必须恰好一个字节不同"
         );
         assert_ne!(
             sha256_hex(&flipped),
             LOGIC_OWNER_DONOR_1T_SHA256,
             "翻转一个字节后摘要必须变 ⇒ 本判据的摘要真的读了全部字节"
         );
-        // 文档契约的反向自证: 两份文档确实各自含表（不是空文件）。
-        assert!(readme.contains("sha256"), "README 必须含哈希表");
-        assert!(provenance.contains("sha256"), "PROVENANCE 必须含哈希表");
+        // 反向自证（R84 的形态）: **五条路径各自都能在文档里定位到一行** ——
+        // 定位不到就说明表被删/被改名, 而这不是"文件里出现过 sha256 字样"能替代的。
+        let located = cases
+            .iter()
+            .filter(|(_, _, _, _, doc, row_label)| documented_sha256(doc, row_label).is_some())
+            .count();
+        assert_eq!(located, 5, "五条路径都必须能在文档表里定位到唯一一行");
     }
 }

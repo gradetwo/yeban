@@ -5191,6 +5191,7 @@ mod tests {
                 },
             ),
         ];
+        let mut observed: Vec<Rf64Error> = Vec::new();
         for (label, bext, expected) in &cases {
             let plan = ContainerPlan::for_payload(
                 ContainerKind::Riff,
@@ -5200,6 +5201,7 @@ mod tests {
                 Some(bext.clone()),
             );
             assert_eq!(plan.validate(), Err(expected.clone()), "{label}: validate");
+            observed.push(plan.validate().expect_err("上面刚断言过是 Err"));
             let mut file = Vec::new();
             assert_eq!(
                 write_container(&mut file, &plan, &data),
@@ -5208,26 +5210,28 @@ mod tests {
             );
             assert!(file.is_empty(), "{label}: 被拒的写入不得留下字节");
         }
-        // 非空证明: 三个形状里有两种不同的变体。
-        assert!(matches!(cases[0].2, Rf64Error::UnsupportedBextVersion(3)));
-        assert!(matches!(
-            cases[1].2,
-            Rf64Error::BextLoudnessVersionMismatch {
-                version: 2,
-                has_loudness: false
-            }
-        ));
-        assert_ne!(cases[0].2, cases[1].2, "两种拒绝必须各自点名");
-        assert_ne!(cases[1].2, cases[2].2, "同一个变体的两个取值也必须分开");
+        // 非空证明（**R80: 从"跑出来的观测"导出, 不是从夹具字面量导出**）:
+        // `observed` 是上面真正调用 `plan.validate()` 拿到的值 ⇒ 若产线把三种形状
+        // 都拒绝成**同一个变体**, 下面第一条就会红。
+        assert_eq!(observed.len(), 3, "三个形状各观测一次");
+        let distinct: std::collections::HashSet<_> =
+            observed.iter().map(core::mem::discriminant).collect();
+        assert!(
+            distinct.len() >= 2,
+            "三种形状必须**跑出**至少两种不同的拒绝, 实际只有 {} 种",
+            distinct.len()
+        );
+        assert_ne!(observed[0], observed[1], "两种拒绝必须各自点名");
+        assert_ne!(observed[1], observed[2], "同一个变体的两个取值也必须分开");
         // **R58 的"同变体、不同载荷"**: 后一对必须是**同一个变体**, 否则它只测到判别式。
         assert_eq!(
-            core::mem::discriminant(&cases[1].2),
-            core::mem::discriminant(&cases[2].2),
+            core::mem::discriminant(&observed[1]),
+            core::mem::discriminant(&observed[2]),
             "版本 2 缺响度 与 版本 1 带响度 必须落在同一个变体上"
         );
         assert_ne!(
-            core::mem::discriminant(&cases[0].2),
-            core::mem::discriminant(&cases[1].2),
+            core::mem::discriminant(&observed[0]),
+            core::mem::discriminant(&observed[1]),
             "而前一对必须是**跨变体**（两种不同的拒绝）"
         );
     }
