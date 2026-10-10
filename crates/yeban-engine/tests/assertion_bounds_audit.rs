@@ -59,6 +59,12 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
     // 且**该片段必须在文件内唯一**（否则两个同形站点会互相冒充 ⇒ 见 `ambiguous_anchors` 守卫）。
 ];
 
+/// ⭐ **R207／R209②／R210④**：**可检索标记**。必须用 `eprintln!`（⛔ 断言消息在**通过时**不打印），
+/// 并且**只有 `--nocapture` 下可见**；⭐ 读到 0 时先核对**目标**（错目标会给**静默的 0**）。
+fn mark(id: &str, detail: &str) {
+    eprintln!("[assertion-bounds][{id}] {detail}");
+}
+
 /// 窗口：`.all(` 站点**之前**多少行内去找"界"。
 // ⚠ 窗口必须**够宽**才能看到接收者的声明（实测：30 行时，我自己的声相判据里
 //  落在窗口外 ⇒ **假阳 2 处**）。
@@ -444,6 +450,10 @@ fn stale_entries(
 
 #[test]
 fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
+    mark(
+        "every_all_assertion_in_this_crate_is_bounded_or_allowlisted",
+        "entered",
+    );
     // ① R93／R100：被扫集合必须达到下界。
     assert!(
         SOURCES.len() >= MIN_SOURCES,
@@ -520,6 +530,7 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
 
 #[test]
 fn the_bound_recogniser_has_both_teeth_and_silence() {
+    mark("the_bound_recogniser_has_both_teeth_and_silence", "entered");
     let bounded = [
         (
             "len() ==",
@@ -571,6 +582,10 @@ fn the_bound_recogniser_has_both_teeth_and_silence() {
 
 #[test]
 fn the_window_is_the_function_body_not_a_fixed_line_count() {
+    mark(
+        "the_window_is_the_function_body_not_a_fixed_line_count",
+        "entered",
+    );
     // ① **同函数体内、界远在 ~120 行之前** ⇒ 必须认得出（固定 60 行窗口会**漏**）。
     let mut far = String::from("fn t() {\n    assert!(xs.len() >= 3);\n");
     for _ in 0..120 {
@@ -596,6 +611,7 @@ fn the_window_is_the_function_body_not_a_fixed_line_count() {
 
 #[test]
 fn the_two_extra_bound_forms_have_their_own_arms() {
+    mark("the_two_extra_bound_forms_have_their_own_arms", "entered");
     // ① **定长数组接收者**（构造上界定）：声明与站点可**跨行**（接收者在上一行）。
     let fixed = "fn t() {\n    let mut out = [0.0f32; 128];\n    assert!(out.iter()\n        .all(|s| *s == 0.0));\n}\n";
     let site = sites(fixed);
@@ -644,6 +660,10 @@ fn the_two_extra_bound_forms_have_their_own_arms() {
 
 #[test]
 fn function_definition_lines_are_recognised_generally_not_by_a_prefix_list() {
+    mark(
+        "function_definition_lines_are_recognised_generally_not_by_a_prefix_list",
+        "entered",
+    );
     // ⭐ **R143 的实测代价**：本 crate 有 `pub const fn` **178** 处、`unsafe fn` 15、
     // `pub(super) fn` 10 —— 前缀清单（只认 `fn `/`pub fn `/`const fn `…）**全都不认**。
     for form in [
@@ -674,6 +694,10 @@ fn function_definition_lines_are_recognised_generally_not_by_a_prefix_list() {
 
 #[test]
 fn the_ratchet_is_bidirectional_and_flags_stale_entries() {
+    mark(
+        "the_ratchet_is_bidirectional_and_flags_stale_entries",
+        "entered",
+    );
     // 夹具：一个**有界**的站点（同函数体里有 `len() >=`）＋ 一条把它登记为"无界"的入口
     // ⇒ ⭐ **陈旧入口**（修好却忘删行）必须被报出来。
     let source =
@@ -708,6 +732,10 @@ fn the_ratchet_is_bidirectional_and_flags_stale_entries() {
 
 #[test]
 fn identifier_boundaries_are_checked_on_both_sides_and_when_stripping() {
+    mark(
+        "identifier_boundaries_are_checked_on_both_sides_and_when_stripping",
+        "entered",
+    );
     // ① **前缀孪生**（已有）：钉的是 `n_other`，⛔ 不得当作 `drained` 的界。
     let prefix_twin = "fn t() {\n    let drained = 10;\n    let n_other = 10;\n    assert_eq!(n_other, 10);\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
     let site = sites(prefix_twin);
@@ -749,6 +777,10 @@ fn identifier_boundaries_are_checked_on_both_sides_and_when_stripping() {
 
 #[test]
 fn comments_and_literals_are_masked_before_matching_bounds() {
+    mark(
+        "comments_and_literals_are_masked_before_matching_bounds",
+        "entered",
+    );
     // ⭐ **R96**：注释里的 `len() >= 3` **不是界**（掩码后不算）⇒ 该站点必须判无界。
     let commented = "fn t() {\n    // 说明：调用方保证 xs.len() >= 3\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
     let site = sites(commented);
@@ -786,6 +818,10 @@ fn comments_and_literals_are_masked_before_matching_bounds() {
 
 #[test]
 fn the_equality_length_form_is_recognised_but_element_value_bounds_are_not() {
+    mark(
+        "the_equality_length_form_is_recognised_but_element_value_bounds_are_not",
+        "entered",
+    );
     // ⭐ `assert_eq!(xs.len(), 4)`（**界定集合大小**）⇒ 认。
     let len_eq =
         "fn t() {\n    assert_eq!(xs.len(), 4);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
@@ -820,6 +856,10 @@ fn the_equality_length_form_is_recognised_but_element_value_bounds_are_not() {
 
 #[test]
 fn ambiguous_content_anchors_are_reported_not_silently_resolved() {
+    mark(
+        "ambiguous_content_anchors_are_reported_not_silently_resolved",
+        "entered",
+    );
     // 两个**同形**站点 ⇒ 同一内容锚在文件里出现 2 次 ⇒ 必须报**歧义**（⛔ 不静默取一个）。
     let source = "fn a() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\nfn b() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
     let sources: &[(&str, &str)] = &[("fake.rs", source)];
@@ -877,6 +917,10 @@ fn bound_form_instances() -> Vec<(&'static str, &'static str, &'static str)> {
 
 #[test]
 fn each_bound_form_has_its_own_instance_level_injection() {
+    mark(
+        "each_bound_form_has_its_own_instance_level_injection",
+        "entered",
+    );
     let mut matched = 0usize;
     for (form, source, bound_line) in bound_form_instances() {
         let site = sites(source);
@@ -914,6 +958,10 @@ fn each_bound_form_has_its_own_instance_level_injection() {
 
 #[test]
 fn the_stale_entry_case_is_built_by_replacement_not_by_growing_a_fixed_array() {
+    mark(
+        "the_stale_entry_case_is_built_by_replacement_not_by_growing_a_fixed_array",
+        "entered",
+    );
     // ⭐ **R160**：allowlist 是**定长数组** ⇒ 给它"多加一条"是**编译错误**（无效样本）。
     // 正确造法 = **替换**已有的那一条（这里用一条**合成** allowlist，长度不变）。
     let source =
@@ -950,6 +998,10 @@ fn the_stale_entry_case_is_built_by_replacement_not_by_growing_a_fixed_array() {
 
 #[test]
 fn the_synthetic_replacement_pattern_covers_three_more_rules() {
+    mark(
+        "the_synthetic_replacement_pattern_covers_three_more_rules",
+        "entered",
+    );
     let mut matched = 0usize;
 
     // 规则 A：**注释里的界不算界**（`mask_noncode`）。绿 = 不认；注入 = 把注释**变成真代码** ⇒ 认。
@@ -1092,6 +1144,10 @@ fn class_floor_holds(counts: &[usize; 4], floor: usize) -> bool {
 
 #[test]
 fn integer_count_sites_are_classified_into_four_classes() {
+    mark(
+        "integer_count_sites_are_classified_into_four_classes",
+        "entered",
+    );
     let counts = count_by_class(SOURCES);
     let mut report = String::new();
     for (index, name) in COUNT_CLASSES.iter().enumerate() {
@@ -1136,6 +1192,7 @@ fn integer_count_sites_are_classified_into_four_classes() {
 
 #[test]
 fn each_count_class_has_its_own_arm() {
+    mark("each_count_class_has_its_own_arm", "entered");
     let cases: [(&str, usize); 4] = [
         ("    assert_eq!(frames.len(), 4);", 0),
         ("    assert_eq!(checked, 7);", 1),
@@ -1154,6 +1211,27 @@ fn each_count_class_has_its_own_arm() {
     }
     println!("[assertion-bounds] R118 每类各配一条臂：**{matched}/4**");
     assert_eq!(matched, 4, "四类必须各配一条（实得 {matched}/4）");
+    // ⭐ **R210② 的纯粹反例臂**：**非断言行**必须被拒 —— 若分类器"假计入"（把非计数断言也算进来），
+    // 计数会**升高**（旧规模地板照样通过），但本条臂会**红**。
+    assert_eq!(
+        classify_count("    let seen = 0;"),
+        None,
+        "⛔ 假计入：非断言行不得被算成计数站点（否则计数升高而缺陷仍在）"
+    );
+    assert_eq!(
+        classify_count("    seen += 1;"),
+        None,
+        "⛔ 假计入：纯 `+=` 行（无断言）不得被算成计数站点"
+    );
+    // ⭐ **能真正抓到"假计入"的那条臂**：这一行**含数字**（满足 `,2)`）却**不是断言**
+    // ⇒ 干净的分类器必须返回 `None`；若分类器不再要求"是断言行"，它会被**假计入**
+    // ⇒ 计数**升高**（旧规模地板照样通过）而**本条臂会红**（R210② 的纯粹形态）。
+    assert_eq!(
+        classify_count("    let pair = (1, 2);"),
+        None,
+        "⛔ 假计入：含数字但**非断言**的行必须被拒（否则计数升高而缺陷仍在）"
+    );
+
     // 反向对照（R149/R156）：**注释行**不是站点。
     assert_eq!(
         classify_count("    // assert_eq!(frames.len(), 4);"),
