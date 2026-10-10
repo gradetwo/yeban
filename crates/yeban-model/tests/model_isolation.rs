@@ -2186,10 +2186,10 @@ fn unbounded_all_any_sites(relative: &str, raw: &str) -> Vec<String> {
         if masked.as_bytes()[start] != raw.as_bytes()[start] {
             continue;
         }
-        let hi = (start + 2500).min(raw.len());
-        let lo = start.saturating_sub(2500);
-        // 前后都看（下界常写在断言**之前**），但下界必须挂在**同一个集合根**上（见 `has_root_bound`）。
-        let window = &masked[lo..hi];
+        // R140：搜索域 = **本函数体**（⛔ 不是固定宽度窗口）。
+        // R144：派生"根"之前先 `trim_start()`（下面 `collection_root` 的实参已 trim；
+        // 若根派生成空串，`has_root_bound` 返回 false ⇒ **报无界**，⛔ 绝不静默漏判）。
+        let window = enclosing_fn_body(&masked, start);
         // 只看**本断言自己的实参**（⛔ 否则会把下一条断言的 `.all(` 算到自己头上）。
         let Some(body) = paren_body(&masked, start + "assert!".len()) else {
             continue;
@@ -2207,6 +2207,71 @@ fn unbounded_all_any_sites(relative: &str, raw: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// `open` 是 `{` 的位置 ⇒ 返回配对花括号之间的正文（用于取**函数体**）。
+fn brace_body(text: &str, open: usize) -> Option<&str> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0_i32;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[open + 1..i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 站点所属的**函数体**（R140：下界的搜索域不是"固定宽度窗口"，而是**函数体边界**）。
+///
+/// 为什么必须换掉固定窗口：
+/// - 窗口**太窄** ⇒ 同函数内写得远的同根下界被漏掉 ⇒ **多报**（假阳性）；
+/// - 窗口**太宽** ⇒ 跨到**隔壁函数**里，借用同名变量的下界 ⇒ **漏报**（假阴性，R114 明禁）。
+///
+/// 函数体边界同时避开这两头：既无宽度参数，也不可能跨函数借用。
+///
+/// ⭐ R143：必须认**带参数/带返回值**的函数（`fn f(v: &[u8]) -> bool {`）—— 只认 `fn name() {`
+/// 会把大量函数**整段漏扫**（别处实测 252/709 个带参函数没被扫到）。这里只要求
+/// `fn ` 出现在标识符边界上，参数与返回类型一概不关心。
+fn enclosing_fn_body(masked: &str, at: usize) -> &str {
+    let mut best: Option<usize> = None;
+    let mut cursor = 0_usize;
+    while let Some(found) = masked[cursor..].find("fn ") {
+        let start = cursor + found;
+        cursor = start + 1;
+        if start >= at {
+            break;
+        }
+        let boundary_ok = start == 0
+            || !masked[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if boundary_ok {
+            best = Some(start);
+        }
+    }
+    let Some(fn_start) = best else {
+        return &masked[..at.min(masked.len())];
+    };
+    let Some(brace) = masked[fn_start..].find('{') else {
+        return &masked[..at.min(masked.len())];
+    };
+    match brace_body(masked, fn_start + brace) {
+        Some(body) => body,
+        None => &masked[..at.min(masked.len())],
+    }
 }
 
 /// `open` 是 `(` 的位置（在**已掩码**文本里）⇒ 返回配对括号之间的正文。
@@ -2573,27 +2638,69 @@ fn bounds_must_match_the_root_at_a_token_boundary() {
         "R119 孪生点②：`my_assert_eq!(x.len(), 3)` 不得被当成集合下界"
     );
 
-    // ---- R126 自审：本扫描器用的是**固定窗口** ⇒ 必须用**已知红定标宽度**并登记安全方向 ----
-    // 近距（≈1 KB，窗口内）⇒ 认；远距（≈3.3 KB，超出 ±2500）⇒ **报无界**。
-    // 安全方向：窗口过窄只会**多报**（假阳性），⛔ 不会漏报（假清洁）——
-    // 这正是 R126 允许的方向；本判据把这两个读数钉住，窗口宽度一旦被改小/改大都必须重新定标。
-    let filler_near = "let _ = 0;\n".repeat(90); // ≈ 990 B < 2500
-    let near = format!(
-        "fn f() {{\n{filler_near}assert!(x.len() >= 2);\nassert!(x.windows(2).all(|p| p[0] < p[1]));\n}}\n"
+    // ---- R140：搜索域 = **函数体边界**（旧版是 ±2500 固定窗口）⇒ 重新定标 ----
+    // ① 同函数内**写得很远**（≈3.3 KB，旧窗口外）的同根下界 ⇒ 现在必须**认**
+    //    （旧口径会多报 ⇒ 这是函数体边界带来的**覆盖面提升**）。
+    let far_filler = "let _ = 0;\n".repeat(300);
+    let same_fn_far = format!(
+        "fn f() {{\nassert!(v.len() >= 2);\n{far_filler}assert!(v.windows(2).all(|p| p[0] < p[1]));\n}}\n"
     );
     assert_eq!(
-        unbounded_all_any_sites("synthetic", &near).len(),
+        unbounded_all_any_sites("synthetic", &same_fn_far).len(),
         0,
-        "R126 定标：窗口**内**的同根下界必须被认到（≈1 KB）"
+        "R140 定标：同函数内写得远的同根下界必须被认到（旧 ±2500 窗口会多报）"
     );
-    let filler_far = "let _ = 0;\n".repeat(300); // ≈ 3300 B > 2500
-    let far = format!(
-        "fn f() {{\n{}{}assert!(x.windows(2).all(|p| p[0] < p[1]));\n}}\n",
-        "assert!(x.len() >= 2);\n", filler_far
-    );
+    // ② ⛔ 隔壁**另一个函数**里的同根下界 **不得**被借用（旧窗口会跨函数 ⇒ 假阴性，R114 明禁）。
+    let other_fn = "fn a() { assert!(v.len() >= 2); }\nfn b() { assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
     assert_eq!(
-        unbounded_all_any_sites("synthetic", &far).len(),
+        unbounded_all_any_sites("synthetic", other_fn).len(),
         1,
-        "R126 定标：超出 ±2500 窗口的同根下界会被**多报**（安全方向，已登记）"
+        "R140 定标：隔壁函数的同根下界不得被借用（函数体边界必须挡住）"
+    );
+    // ③ R143：**带参数/带返回值**的函数必须被扫到（只认 `fn name()` 会整段漏扫）。
+    let parameterized = "fn f(v: &[u8]) -> bool {\n    assert!(v.len() >= 2);\n    assert!(v.windows(2).all(|p| p[0] < p[1]));\n    true\n}\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", parameterized).len(),
+        0,
+        "R143：带参数的函数里的同根下界必须被认到"
+    );
+    // ④ R140：站点行只有 `.all(…)`、**接收者在上一行**（跨行形态）⇒ 必须认到（上下文含站点行）。
+    let cross_line = "fn f() {\n    assert!(v.len() >= 2);\n    assert!(\n        v\n            .windows(2)\n            .all(|p| p[0] < p[1])\n    );\n}\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", cross_line).len(),
+        0,
+        "R140：跨行接收者 + 同根下界必须被认到（⛔ R139：归一化不能只去空格）"
+    );
+    // ⑤ R144：根派生成**空串**时⛔ 不得静默漏判 ⇒ 必须**报无界**。
+    let empty_root = "fn f() { assert!(.iter().all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", empty_root).len(),
+        1,
+        "R144：根派生成空串 ⇒ 必须报无界（空串静默漏判比假红更危险）"
+    );
+
+    // ---- R142：每个"认"的臂都要有**配对已知红**（⛔ 单向臂 = 空断言）----
+    // 臂 `len() >` ⇒ 配对已知绿（下面）；臂 `len() >=` ⇒ 已知绿见上。
+    let gt_arm = "fn f() { assert!(v.len() > 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", gt_arm).len(),
+        0,
+        "R142：`len() > N` 臂必须有配对的**已知绿**"
+    );
+    // ⛔ **方向写反**的对照①：`len() < N` 是**上界**，⛔ 不界定"至少 N 个" ⇒ 必须报无界。
+    let wrong_direction =
+        "fn f() { assert!(v.len() < 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", wrong_direction).len(),
+        1,
+        "R142：`len() < N` 是上界，不得被当成下界（方向写反 ⇒ 静默永不生效）"
+    );
+    // ⛔ **方向写反**的对照②：`v.is_empty()`（没有 `!`）不得被当成非空界。
+    let empty_claim =
+        "fn f() { assert!(v.is_empty()); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", empty_claim).len(),
+        1,
+        "R142：`v.is_empty()` 不得被当成非空界（`!` 是方向本身）"
     );
 }
