@@ -106,6 +106,11 @@ fn is_char_literal(bytes: &[u8], index: usize) -> bool {
     false
 }
 
+/// ⭐ **R238② 本线的掩码约定（⛔ 与其他线可能不同，抄用前先读这一行）**：
+/// **字节等长（R113）＋ 只抹"内容"＋ **保留定界符**（`"`／`'`／原始字符串的 `"#…`）**。
+/// ⚠️ 对照：别的线（`model`）的约定是"**内容与定界符都抹**" —— **两者都对**，
+/// 但**期望值必须点名本线约定**（否则按别线约定写的臂会误红/误绿）。
+///
 /// 逐**字节**掩码注释、字符串字面量与**字符字面量**（R113：掩码与原文字节等长 ⇒ 偏移可直接映射）。
 fn mask(source: &str) -> String {
     mask_impl(source, true)
@@ -1303,8 +1308,14 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         })
         .count();
     eprintln!(
-        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R215① 余量：别处 = {elsewhere}，地板 = {ELSEWHERE_FLOOR}，余量 = {}（0 = 恰好在下界上：删除任一个被搜文件都会按设计变红）",
-        elsewhere as i64 - ELSEWHERE_FLOOR as i64
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R215① 余量：别处 = {elsewhere}，地板 = {ELSEWHERE_FLOOR}，余量 = {}{}",
+        elsewhere as i64 - ELSEWHERE_FLOOR as i64,
+        // ⭐ R236②：余量为 0 时**显式告警**（⛔ 不静默）。
+        if elsewhere as i64 - ELSEWHERE_FLOOR as i64 == 0 {
+            " ⚠️ WARNING: margin is 0 —— 删除任一个被搜文件都会按设计变红（这不是回归）"
+        } else {
+            ""
+        }
     );
     assert!(
         elsewhere >= ELSEWHERE_FLOOR,
