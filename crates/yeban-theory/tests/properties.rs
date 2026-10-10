@@ -475,6 +475,11 @@ proptest! {
 
 #[test]
 fn every_genre_produces_a_playable_sketch() {
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     // 对全部流派跑一遍"走向展开 → 声部连接"，确保规则库里的数据
     // 每一行都能真的走通到声部层，而不只是"字符串能解析"。
     for rule in GenreLibrary::all() {
@@ -1124,6 +1129,8 @@ proptest! {
         let constraints = MelodyConstraints::new(lower, upper, max_leap)?;
         match melody_over_chords(&key, &spans, &grid, constraints, seed) {
             Ok(melody) => {
+                // R93：空旋律会让下面两个性质循环真空通过。
+                prop_assert!(!melody.notes().is_empty());
                 for note in melody.notes() {
                     prop_assert!(note.pitch >= lower && note.pitch <= upper);
                     let pc = PitchClass::new(note.pitch % 12)?;

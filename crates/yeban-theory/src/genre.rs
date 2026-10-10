@@ -3157,6 +3157,11 @@ mod tests {
 
     #[test]
     fn every_rule_has_a_plausible_bpm_range_meter_and_names() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             assert!(rule.has_valid_bpm_range(), "{}: bad bpm", rule.id);
             assert!(
@@ -3214,6 +3219,11 @@ mod tests {
 
     #[test]
     fn idiomatic_data_is_structurally_valid() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         // 每条规则的走向与音阶都必须能被本 crate 自己的解析器吃下，
         // 否则 MCP 的 `yeban_propose_section` 会在运行时才发现数据是坏的。
         for rule in GenreLibrary::all() {

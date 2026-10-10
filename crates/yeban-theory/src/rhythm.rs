@@ -1045,6 +1045,8 @@ mod tests {
             let cells = cells_per_bar(meter).unwrap();
             let onsets = u32::try_from(cells).unwrap();
             let grid = metric_grid(meter, 3, onsets).unwrap();
+            // R93：`grid.hits()` 是运行期集合；空域会让下面的性质断言真空通过。
+            assert!(!grid.hits().is_empty(), "{meter:?}: scan domain is empty");
             let bar_ticks = meter.ticks_per_bar();
             for hit in grid.hits() {
                 let bar_start = u64::from(hit.bar) * bar_ticks;

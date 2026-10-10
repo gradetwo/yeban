@@ -57,6 +57,60 @@
 * 文本扫描器的**可绕过性**（裁决 R104）：把断言拆成"先绑定到变量、再断言变量"即可绕过；
   扫描器只覆盖字面形态，**不构成完备保证**。
 
+## 1b. 第十一批补录：五种"界"的形态 ＋ 两个扫描器盲区
+
+**⭐ 可观测的"界"有五种形态**（扫描器只认一种就会漏或假阳）：
+
+| 形态 | 例子 | 条数（第十一批读数） |
+|---|---|---|
+| ① 显式 `len() >= N` | `assert!(pattern.hits().len() >= 2)` | 3（仅此形态） |
+| ② **宏隐式相等** `assert_eq!(len, N)` | `assert_eq!(GenreLibrary::all().len(), 182)` | **24**（仅此形态） |
+| ③ `!x.is_empty()` | `assert!(!grid.hits().is_empty())` | 计入"其它" |
+| ④ **值界**（求和/计数等于非零字面量） | `assert_eq!(bpm_low, 16814)`、`assert_eq!(distinct, 14)` | 1（仅此形态） |
+| ⑤ **运行期计数器** | `assert!(strong_seen >= 32)` | 12 条判据含计数器 |
+
+⭐ **R102 复查（"下界两写法"）**：遍历运行期/计算/过滤集合的判据共 **47** 条；
+**只认显式写法**的扫描器会把 **37 条**报成"无界"——**全部是假阳**（24 条只有宏隐式、
+12 条有计数器、1 条只有值界）。⇒ 第十批新加的下界**两种写法都用了**
+（9 条库域用宏隐式 `assert_eq!(…len(), 182)`；`drum`/`melody` 的域用显式 `len() >= 2` ＋ `!is_empty()`）。
+
+⭐ **扫描器盲区二（本轮实测）**：`!x.is_empty()` **不是** `len() >= N`，
+第一版正则不认它 ⇒ 把第十批**已经修好**的 `drum::every_hit_matches_its_grid_onset_bit_for_bit`
+误报成"无界"。⇒ **"扫描器报缺"必须先人工核对，再动手改判据**。
+
+## 1c. 第十一批新修的 5 条（R93 剩余面：过滤结果与计算集合）
+
+| 判据 | 扫什么 | 加的下界 |
+|---|---|---|
+| `genre::every_rule_has_a_plausible_bpm_range_meter_and_names` | `all()` | `assert_eq!(…len(), 182)` |
+| `genre::idiomatic_data_is_structurally_valid` | `all()` | 同上 |
+| `rhythm::onsets_never_leave_their_own_bar` | `grid.hits()` | `assert!(!grid.hits().is_empty())` |
+| `properties::every_genre_produces_a_playable_sketch` | `all()`（循环内断言的是 **spans**，不是域） | `assert_eq!(…len(), 182)` |
+| `properties::a_narrow_window_never_produces_an_out_of_window_note` | `melody.notes()`（proptest 体内） | `prop_assert!(!melody.notes().is_empty())` |
+
+⭐ **R106 复查（`filter(...)` ＋ 循环内断言 ＋ 无计数/下界）**：候选 **4** 条，
+**全部是假阳** —— 过滤结果**当场与字面量向量/计数比较**
+（`assert_eq!(starts, vec![0, 2, 4])`、`assert_eq!(filter(...).count(), 4)`）或由 `seen` 数组计数。
+
+## 1d. R100（外部夹具缺失 = 真空第三种形态）核实
+
+本 crate **没有任何判据读运行期外部资源**：
+`std::fs` / `CARGO_TARGET_TMPDIR` / `read_dir` / `File::` / `include_bytes!` / `PathBuf` /
+`std::env::var` 在 `src/**` 与 `tests/**` 里的命中**只有两处**：
+① `lib.rs` 的文档注释（声明"不做 I/O"）；② `lib.rs::crate_has_no_hidden_nondeterminism_sources`
+的**禁用针清单**（`"std::fs::"`、`"std::env::var"` 作为**字符串**）。
+⇒ **R100 在本 crate 不适用的结论有代码守卫**（该守卫测试本身会因引入 `std::fs::` 而红）。
+
+## 1e. 工具纪律（第十一批新增）
+
+* ⭐⭐ **`cargo fmt` 会重排插入的长断言** ⇒ "同一份编辑是否已落盘"的幂等检查
+  ⛔ **必须在 `cargo fmt` 之后再做一次**（本轮实测：fmt 把单行断言折成 5 行，
+  前一次回读因此失配，导致同一处下界被**插入两次**；已删除重复并加"每条判据恰好 1 条界"的后置校验）。
+* ⭐ **R103 负向实测**：故意弄脏工作区 ⇒ 驱动器 `REFUSED`（exit 3）。
+  本轮第一次跑 R105 探针时，也因工作区有未提交改动而被拒 ⇒ 再次证明守卫有效。
+* ⭐ **R92（交换类注入的哨兵三步）在本驱动器里不必要**：多编辑注入按**行号一次性**写入
+  （先全部算出新内容，再逐文件整体落盘），不存在"读到半交换状态"的窗口 ⇒ 交换是原子的。
+
 ## 2. R70② 自比台账（"两次运行相同"不是契约）
 
 机械扫出 **13** 条 `assert_eq!(f(x), f(x))`（两侧**源码文本相同**）：
