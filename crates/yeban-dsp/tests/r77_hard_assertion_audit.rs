@@ -1423,7 +1423,9 @@ fn the_scanners_reject_bad_input_and_accept_good_input() {
     assert!(
         scanned
             .iter()
-            .all(|p| !p.to_string_lossy().contains("/tests/")),
+            // ⚠ **R231**：路径断言必须**先归一化** —— 否则 Windows 上是 `…\tests\…`，
+            // `contains("/tests/")` **恒假** ⇒ 这条守卫会**静默失效**（不会红，但也不再防护）。
+            .all(|p| !normalize_path(p, &root).contains("/tests/")),
         "扫描域里 ⛔ 不得包含 `tests/`（否则臂里的 token 会污染它自己检验的计数）"
     );
     // ⭐ **正对照（构造之后）**：扫描域必须**真的**含源文件，⛔ 否则上一条是真空的。
@@ -1586,3 +1588,82 @@ device_injection_row!(loudnessmeter_default_is_red, "LoudnessMeter", "RED");
 device_injection_row!(compressor_default_is_red, "Compressor", "RED");
 device_injection_row!(channelstrip_default_is_red, "ChannelStrip", "RED");
 device_injection_row!(combfilter_default_is_red, "CombFilter", "RED");
+
+// ---------------------------------------------------------------------------
+// ⭐ R224③：计数口径总表（每个数字带**口径列**与**依据**）
+// ---------------------------------------------------------------------------
+
+/// 提交在仓库里的计数口径总表。
+const COUNT_REGISTER_PATH: &str = "tests/data/count_register.txt";
+
+/// ⭐ **R224③**：每个数字必须带**口径**（masked／raw／structural／log_lines／runtime_passed）
+/// 与**依据**；其中**结构性**数字由**同一谓词复算**（R217②），⛔ 不许两面各写一套。
+#[test]
+fn the_count_register_carries_a_class_and_a_basis_for_every_number() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let (text, _) = read_evidence_text(&root.join(COUNT_REGISTER_PATH));
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect();
+    let allowed = ["masked", "raw", "structural", "log_lines", "runtime_passed"];
+    for row in &rows {
+        let cols: Vec<&str> = row.split('|').collect();
+        assert_eq!(
+            cols.len(),
+            4,
+            "每行必须 4 列（name|value|class|basis）：{row}"
+        );
+        assert!(
+            allowed.contains(&cols[2]),
+            "口径必须是五类之一（masked/raw/structural/log_lines/runtime_passed）：{row}"
+        );
+        assert!(!cols[3].trim().is_empty(), "每行必须给出**依据**：{row}");
+        assert!(cols[1].parse::<u64>().is_ok(), "值必须是数字：{row}");
+    }
+    // ⭐ 同一谓词复算：结构性数字必须与源码/证据表逐字对齐。
+    let mut impls = 0usize;
+    for path in source_files(&root.join(SRC_ROOT)) {
+        let src = normalize_source(&fs::read_to_string(path).unwrap_or_default());
+        impls += src.matches("impl Default for ").count();
+    }
+    let value = |name: &str| -> u64 {
+        rows.iter()
+            .find(|r| r.starts_with(name))
+            .unwrap_or_else(|| panic!("总表里必须有 {name}"))
+            .split('|')
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    assert_eq!(
+        value("impl_default_for"),
+        impls as u64,
+        "`impl Default for` 计数必须与**同一谓词**复算一致（实测 {impls}）"
+    );
+    for (name, path) in [
+        ("rows_hard_assertion_table", TABLE_PATH),
+        ("rows_integer_count_categories", INTEGER_BOUND_PATH),
+        ("rows_src_match_sites", MATCH_SITES_PATH),
+        ("rows_device_injection_evidence", DEVICE_INJECTION_PATH),
+    ] {
+        let (t, _) = read_evidence_text(&root.join(path));
+        let n = t
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .count() as u64;
+        assert_eq!(value(name), n, "{name} 必须等于证据表的实际数据行数（{n}）");
+    }
+    // ⭐ 两类"外部口径"必须**点名依据**（⛔ 不是凭空写数字）。
+    for name in ["raw_assert_in_src", "masked_assert_in_src"] {
+        let row = rows
+            .iter()
+            .find(|r| r.starts_with(name))
+            .unwrap_or_else(|| panic!("总表里必须有 {name}"));
+        assert!(
+            row.contains("grep") || row.contains("掩码"),
+            "外部口径必须写明命令或掩码器：{row}"
+        );
+    }
+}

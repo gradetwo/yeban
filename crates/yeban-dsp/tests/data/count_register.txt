@@ -1,0 +1,15 @@
+# 计数口径总表（R224③）：每个数字必须带**口径列**与**依据**
+# 口径五类：masked（排除注释/字符串后计）｜raw（全文原样计）｜structural（结构性条目数）｜log_lines（日志行数）｜runtime_passed（运行期 passed 求和）
+# 列：name|value|class|basis
+# 合计 11 条：raw 3 ／ masked 1 ／ structural 5 ／ log_lines 1 ／ runtime_passed 1
+raw_assert_in_src|1369|raw|grep -rno assert crates/yeban-dsp/src 后 wc -l（未掩码的全文扫描）
+masked_assert_in_src|1355|masked|外部掩码器（见 .mod-dsp/b37/mask.py）后计 assert
+impl_default_for|40|structural|grep -rc '^impl Default for' crates/yeban-dsp/src/**/*.rs 求和（数组条目式）
+rows_hard_assertion_table|267|structural|证据文件行数（去掉 # 表头）
+rows_integer_count_categories|198|structural|证据文件行数（去掉 # 表头）
+rows_src_match_sites|31|structural|证据文件行数（去掉 # 表头）
+rows_device_injection_evidence|15|structural|证据文件行数（去掉 # 表头）
+digits_in_comment_fragments|12728|raw|对 // 片段内的数字字符计数（含数字的注释片段）
+digits_in_string_fragments|1459|raw|对 "…" 片段内的数字字符计数（含数字的字符串片段）
+test_result_lines_last_run|20|log_lines|上一轮 test 门日志里 'test result:' 的行数（目标数）
+runtime_passed_last_run|501|runtime_passed|上一轮 test 门 'test result:' 行的 passed 求和
