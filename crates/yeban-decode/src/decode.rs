@@ -5141,6 +5141,54 @@ mod tests {
             );
         }
 
+        // ⭐⭐ **R227②（"计数**大幅上升**"那一侧）**：本 crate 的守卫是**精确计数**
+        // （⛔ 不是 `>= N` 地板）⇒ **上升也会红**；下面把这件事写成**常驻臂**：
+        // 站点多出很多时，计数**必须**变大（⇒ 精确计数能看见"上升"，而地板看不见）。
+        let many_sites = concat!(
+            "let _ = a.iter().",
+            "all(|s| *s > 0.0);\n",
+            "let _ = b.iter().",
+            "all(|s| *s > 0.0);\n",
+            "let _ = c.iter().",
+            "all(|s| *s > 0.0);\n",
+        );
+        let one_site = concat!("let _ = a.iter().", "all(|s| *s > 0.0);\n");
+        let many_count = count_all(&mask(many_sites));
+        let one_count = count_all(&mask(one_site));
+        eprintln!(
+            "[R187-PROBE decode::count-rise] one={one_count} many={many_count} \
+             (an exact count sees the RISE; a `>= N` floor would not)"
+        );
+        assert_eq!(one_count, 1);
+        assert!(
+            many_count > one_count,
+            "the count must RISE with the number of sites - this is the blind side a floor cannot see"
+        );
+
+        // ⭐⭐ **R254②：让独立来源**覆盖**判据体**（⛔ 不是整文件），并报**三源是否一致**。
+        // 源 A = 运行期循环计数（10）；源 B = 声明值（13）；源 C = **判据体内**的宏出现次数。
+        // ⚠ 三者**单位不同** ⇒ "不一致"本身正是"该数**不是臂数**"的证据（R254②）。
+        let own_source = include_str!("decode.rs");
+        let fn_start = own_source
+            .find("fn the_crate_source_keeps_a_set_size_bound")
+            .expect("the criterion must be present in its own file");
+        let fn_body = &own_source[fn_start..];
+        let body_end = fn_body.find("\n    }\n").unwrap_or(fn_body.len());
+        let body = &fn_body[..body_end];
+        let body_macros = body.matches("assert!").count()
+            + body.matches("assert_eq!").count()
+            + body.matches("assert_ne!").count();
+        eprintln!(
+            "[R187-PROBE decode::arms-three-sources] A(loop,runtime)={arms_ran} \
+             B(statement,declared)={DECLARED_STATEMENT_ARMS} C(criterion-body macros)={body_macros} \
+             A+B={} (the three sources do NOT agree: they measure different things)",
+            arms_ran + DECLARED_STATEMENT_ARMS
+        );
+        assert!(
+            body_macros >= arms_ran + DECLARED_STATEMENT_ARMS,
+            "the criterion-body macro count (an upper bound) must be at least the declared total"
+        );
+
         // ⭐⭐ **R247①／②：臂计数的**来源** ＋ **独立对账**。**
         // ① 运行期累加的只有**循环驱动**的臂；**语句驱动**的臂是**声明值**（手数）⇒ 分别打印，⛔ 不合并。
         // ② **独立来源**（⛔ 不与计数器互相自证）：`include_str!("decode.rs")` 里
