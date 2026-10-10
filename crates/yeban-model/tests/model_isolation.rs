@@ -3448,7 +3448,7 @@ fn the_decomment_helper_has_four_adversarial_arms() {
     let margin = separated.saturating_sub(3);
     if margin == 0 {
         eprintln!(
-            "[R187-PROBE model_isolation::decomment] WARN margin=0 (bound: >=3 separating arms; any arm that stops separating turns this criterion red)"
+            "[R187-PROBE model_isolation::decomment] WARN margin=0 (bound: >=3 separating arms) reason: by design - if any arm stops separating the two rules, this criterion turns red. That is not a regression."
         );
     }
     eprintln!(
@@ -3581,9 +3581,32 @@ fn the_masker_passes_the_rust_specific_adversarial_set() {
             true,
         ),
     ];
+    // ⭐ R242③：**样本合法性由 `rustc` 一次性文件判定**（跑完即删），结论记在这里：
+    //   生命周期 `fn f<'a>(x: &'a str) -> &'a str` ⇒ rustc rc=0（合法）
+    //   字符字面量 `'\''`                                   ⇒ rustc rc=0（合法）
+    //   `r#"a " b"#`（内容含 `"`）                          ⇒ rustc rc=0（合法）
+    //   `br#"x " y"#`                                        ⇒ rustc rc=0（合法）
+    //   标识符 `let rust = 1;`                               ⇒ rustc rc=0（合法）
+    //   ⛔ 反例：`r##"a"##b"##` ⇒ rustc **error[E0765]**（不合法）⇒ 它**不得**用来指控掩码器。
+    // ⇒ 本判据的 5 条臂**全部**用合法样本 ⇒ 第二十三轮"真掩码器缺陷"的归因**成立**。
     let declared = cases.len();
     let mut checked = 0_usize;
     for (label, sample, needle, expect) in cases {
+        // ⭐ R241①：**夹具自证其形状** —— 否则臂变红时会默默指控自己。
+        let shape_ok = match label {
+            "lifetimes" => sample.contains("'a") && sample.contains("'static"),
+            "char_literal_with_quote" => sample.contains("= '\\'';"),
+            "raw_string_with_inner_quote" => sample.contains("r#\"") && sample.contains("\" b\"#"),
+            "byte_raw_string_with_inner_quote" => {
+                sample.contains("br#\"") && sample.contains("\" y\"#")
+            }
+            "identifier_is_not_a_raw_string" => sample.contains("let rust = 1;"),
+            _ => false,
+        };
+        assert!(
+            shape_ok,
+            "[R187-PROBE model_isolation::rustmask_{label}_shape] 夹具必须自证其形状"
+        );
         let masked = mask_rust_source(sample);
         assert_eq!(
             masked.len(),
@@ -3597,6 +3620,10 @@ fn the_masker_passes_the_rust_specific_adversarial_set() {
         );
         checked += 1;
     }
+    // R233④：臂数 N ＋ 本轮实际跑到第几条（全过 ⇒ 跑到 N）。
+    eprintln!(
+        "[R187-PROBE model_isolation::rustmask_arms] N={declared} reached={checked} (first-failure stops the log at that arm)"
+    );
     assert_eq!(
         checked, declared,
         "R160 双向①：{declared} 条 Rust 专有样本必须全部求值"
