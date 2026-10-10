@@ -810,7 +810,16 @@ fn local_config_stays_outside_after_container_round_trip() {
     if let Ok(default_path) = LocalMachineConfig::default_path() {
         assert!(default_path.is_absolute());
         assert!(default_path.ends_with(Path::new(".yeban").join("config.json")));
-        assert!(!default_path.starts_with(env!("CARGO_MANIFEST_DIR")));
+        // ⭐ R239②：负向**路径**断言必须配**正对照**，否则平台/分隔符差异会让它静默恒真。
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            manifest.starts_with(manifest),
+            "[R187-PROBE model_isolation::path_positive_control] 正对照：'以 manifest 开头'必须可判真"
+        );
+        assert!(
+            default_path.strip_prefix(manifest).is_err(),
+            "[R187-PROBE model_isolation::path_outside] 默认配置路径必须在工程之外"
+        );
     }
 }
 
@@ -3418,6 +3427,12 @@ fn the_decomment_helper_has_four_adversarial_arms() {
     let mut checked = 0_usize;
     let mut separated = 0_usize;
     for (label, sample, correct_expect, weak_expect) in arms {
+        // ⭐ R239②：负向断言的**抗真空前置** —— 样本里必须真的出现该针，
+        // 否则"未命中"会因为**样本里根本没有这个针**而恒真（比会红的守卫更危险）。
+        assert!(
+            sample.contains("HashMap"),
+            "[R187-PROBE model_isolation::decomment_{label}_presence] 样本必须真的含该针（否则本臂恒真）"
+        );
         let correct = code_has(sample, "HashMap");
         let weak = code_only_full_line_comments_only(sample).contains("HashMap");
         assert_eq!(
