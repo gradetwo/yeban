@@ -79,6 +79,13 @@ fn all_sources() -> Vec<(String, String)> {
     files
 }
 
+/// **路径规范化**（R63）：Windows 的 `SourceFile` 路径用 `\` 分隔 ⇒ 任何
+/// `contains("/src/")`／`ends_with("tests/x.rs")` 在 Windows 上都会**假失败或真空通过**。
+/// ⚠ 这是本文件**跨平台**才暴露的形态：Linux 腿永远看不到（windows 腿实测红过一次）。
+fn normalized_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 fn normalized(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -566,14 +573,21 @@ fn the_crates_own_transcendental_call_sites_are_the_registered_list() {
     );
     // 真源码：生产区必须**一个都没有**。
     let mut found: BTreeSet<String> = BTreeSet::new();
+    let mut scanned = 0usize;
     for (path, text) in all_sources() {
-        if !path.contains("/src/") {
+        if !normalized_path(&path).contains("/src/") {
             continue;
         }
+        scanned += 1;
         for site in transcendental_sites(&text) {
             found.insert(format!("{path} {site}"));
         }
     }
+    // ⭐ **非真空**断言：路径过滤写错（例如漏了规范化）会让扫描面变成空集 ⇒ 判据**恒绿**。
+    assert!(
+        scanned >= 30,
+        "生产区扫描面太小（{scanned} 个文件）—— 路径过滤可能写错了（R63/R70③）"
+    );
     assert!(
         found.is_empty(),
         "本 crate 生产区不得出现超越函数（它们会让'我们定字节'的硬断言变成跨平台假设）：{found:?}"
@@ -614,9 +628,9 @@ fn upstream_dsp_hard_assertions_are_registered() {
     let files = all_sources();
     let render_tests = files
         .iter()
-        .find(|(path, _text)| path.ends_with("tests/render_master.rs"))
+        .find(|(path, _text)| normalized_path(path).ends_with("tests/render_master.rs"))
         .map(|(_path, text)| text.clone())
-        .expect("tests/render_master.rs 必须在源码集合里");
+        .expect("tests/render_master.rs 必须在源码集合里（路径按 R63 规范化后比较）");
     for (name, why) in UPSTREAM_DSP_HARD_ASSERTIONS {
         assert!(
             render_tests.contains(&format!("fn {name}(")),
