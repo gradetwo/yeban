@@ -2086,4 +2086,80 @@ mod tests {
         assert_eq!(original.notes[0].probability, Some(0.5));
         assert_eq!(original.name, "A");
     }
+
+    /// 判据 (类别: `PartialEq` 的**顺序敏感**面): `MidiExport` 的相等用的是 `Vec` 的
+    /// 逐元素比较 ⇒ **同一批轨道/速度记录换个顺序就不相等**（⛔ 不是多重集语义）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `MidiExport` 的 `PartialEq` 顶成一个
+    /// "按 `name` 排序后再比较"的手写实现（注入 `b11:FLT04`）后全部判据**保持绿**
+    /// ⇒ 这个顺序敏感面此前没有判据。
+    #[test]
+    fn export_equality_is_sensitive_to_track_order() {
+        let lane = |name: &str, channel: u8| MidiExportTrack {
+            name: name.to_owned(),
+            channel,
+            notes: Vec::new(),
+        };
+        let forward = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            tracks: vec![lane("A", 0), lane("B", 1)],
+        };
+        let reversed = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            tracks: vec![lane("B", 1), lane("A", 0)],
+        };
+        assert!(forward == forward.clone(), "对照臂：同一顺序必须相等");
+        assert!(
+            forward != reversed,
+            "换个顺序必须不相等（`Vec` 是顺序敏感的）"
+        );
+
+        // `tempos` 同样顺序敏感。
+        let with_tempos = |first: u64, second: u64| MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: vec![
+                MidiTempo {
+                    tick: first,
+                    microseconds_per_quarter: Some(500_000),
+                    numerator: None,
+                    denominator_pow2: None,
+                },
+                MidiTempo {
+                    tick: second,
+                    microseconds_per_quarter: Some(600_000),
+                    numerator: None,
+                    denominator_pow2: None,
+                },
+            ],
+            tracks: Vec::new(),
+        };
+        assert!(
+            with_tempos(0, 100) != with_tempos(100, 0),
+            "`tempos` 也是顺序敏感的"
+        );
+    }
+
+    /// 判据 (R75: **常量的字面钉子**): 本 crate 的公开常量一律用**字面值**钉住。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `musicxml::DEFAULT_VELOCITY` 从 `80` 改成 `81`
+    /// （注入 `b11:CONST01`）后全部判据**保持绿** ⇒ 该常量此前只有"**与自己比**"的断言
+    /// （`musicxml_contract.rs` 里的 `.all(|n| n.velocity == DEFAULT_VELOCITY)`）——
+    /// 那是**常量自比**：常量改了、期望值跟着改、恒真。
+    #[test]
+    fn public_constants_are_pinned_by_literals() {
+        assert_eq!(
+            DEFAULT_PPQ, 960,
+            "工程与 SMF 的时间分度基准 [MODEL-AST-001]"
+        );
+        assert_eq!(crate::musicxml::DEFAULT_VELOCITY, 80, "MusicXML 默认力度");
+        assert_eq!(crate::musicxml::MAX_DEPTH, 256, "元素嵌套深度上限");
+        assert_eq!(crate::vlq::VLQ_MAX, 0x0FFF_FFFF, "VLQ 的 28 位上界");
+        assert_eq!(crate::vlq::VLQ_MAX_BYTES, 4, "VLQ 的最大字节数");
+        assert_eq!(crate::export::MIDI_CHANNEL_COUNT, 16, "SMF 的通道数");
+    }
 }

@@ -1367,3 +1367,64 @@ fn a_minimal_export_is_pinned_byte_for_byte() {
         "MTrk 的负载长度字段（大端 13）"
     );
 }
+/// 判据 (R78④: **文档表两方向**): 本文件的**文档/字面读数**与**实际写出的 conductor 轨
+/// 字节**必须互相对得上 —— 用 `include_str!` 把本文件读回来做 `contains` 检查。
+///
+/// - 方向 ①（**文档 → 字节**）：文档写着 `TrackName 长度 15` 与字面值 `0x0F`
+///   ⇒ 实际负载的 TrackName 长度字段必须是 `0x0F`（= 15）。
+/// - 方向 ②（**字节 → 文档**）：实际负载里的名称字节必须**逐字节**出现在文档列出的
+///   字节表里。
+///
+/// 补的是哪个缺口（本票注入实测）：把 conductor 轨的名字加长 1 字节（注入 `b11:DOC01`）
+/// ⇒ 长度字段从 `0x0F` 变成 `0x10` ⇒ 本判据与既有的
+/// `exported_bytes_have_literal_smf1_header_and_terminators` 一起变红。
+/// ⚠️ "文档与实现一致"这件事此前**没有判据**：那条既有判据钉的是字节，但**不读文档**
+/// ⇒ 文档漂移（改了名字却忘了改文档里的长度）它是看不见的。
+#[test]
+fn the_conductor_track_documentation_matches_the_written_bytes() {
+    let doc = include_str!("smf_contract.rs");
+    // 方向 ① 的文档侧。
+    assert!(
+        doc.contains("TrackName 长度 15"),
+        "文档必须写明 conductor 轨的 TrackName 长度是 15"
+    );
+    assert!(doc.contains("0x0F"), "文档必须写出长度字段的字面值 0x0F");
+    assert!(
+        doc.contains("b'Y', b'e', b'b', b'a', b'n'"),
+        "文档必须逐字节列出 conductor 的名字"
+    );
+
+    let bytes = MidiExport {
+        format: MidiFormat::Parallel,
+        ppq: DEFAULT_PPQ,
+        tempos: Vec::new(),
+        tracks: vec![track_from_notes("", 0, &[note(480, 60, 240)])],
+    }
+    .to_smf_bytes()
+    .expect("编码");
+    let chunks = track_chunks(&bytes).expect("chunk 布局");
+    let conductor = &bytes[chunks[1].payload.clone()];
+
+    // 方向 ① 的字节侧。
+    assert_eq!(
+        conductor[0..3],
+        [0x00, 0xFF, 0x03],
+        "delta 0 + TrackName 元事件"
+    );
+    assert_eq!(
+        conductor[3], 0x0F,
+        "TrackName 长度字段（文档写的是 15 / 0x0F）"
+    );
+    assert_eq!(conductor[3], 15, "同一件事的十进制读数");
+    // 方向 ②。
+    assert_eq!(
+        &conductor[4..19],
+        b"Yeban Conductor",
+        "文档列出的名称字节必须原样出现在负载里"
+    );
+    assert_eq!(
+        &conductor[19..23],
+        &[0x00, 0xFF, 0x2F, 0x00],
+        "TrackName 之后紧跟 EndOfTrack"
+    );
+}

@@ -2187,4 +2187,21 @@ mod tests {
             "黄金表必须逐臂恰好一次（缺一臂或重复都红）"
         );
     }
+
+    /// 判据 (类别: 词法边界): `<![CDATA[…]]>` 在**第一个** `]]>` 处结束（⛔ 不是最后一个）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `find("]]>")` 换成 `rfind("]]>")`
+    /// （注入 `b11:ORD20`）后全部判据**保持绿** —— 既有判据的 CDATA 正文里没有 `]]>`。
+    #[test]
+    fn a_cdata_section_ends_at_the_first_close_marker() {
+        // `<part-name>` 是文本元素 ⇒ CDATA 正文与它后面的文本都会进 `pending`。
+        let xml = "<score-partwise><part-list><score-part id=\"P\"><part-name>\
+                   <![CDATA[a]]>b]]></part-name></score-part></part-list>\
+                   <part id=\"P\"></part></score-partwise>";
+        let parsed = score(xml);
+        assert_eq!(
+            parsed.parts[0].name, "ab]]>",
+            "第一个 `]]>`（在 `a` 之后）就结束 CDATA ⇒ 正文 `a`，其后的 `b]]>` 是普通文本"
+        );
+    }
 }
