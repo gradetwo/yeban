@@ -51,19 +51,12 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// 修法（R117／R119 家族）：入口改成**内容锚**（把站点那一行规范化后取片段），⛔ 不用行号。
 /// 现在先**如实登记**，因为"假红"比"假绿"安全 —— 它不会让真缺陷溜过去。
 const ALLOWLIST: &[(&str, &str, &str)] = &[
-    // ⭐ **R146／R153 的进度读数**：条目 ＝ "已评审但**未修**"的真缺口（⛔ 不许用行号做身份 ——
-    // 上方插行即错位 ⇒ 假红；身份改用**站点片段的内容锚**，见 `allowlist_entry_matches`）。
-    // ⭐ 本批根绑定（R153）**新暴露**了 2 处被"窗口任一"规则掩盖的真无界站点：
-    (
-        "src/insert.rs",
-        "assert!(a.iter().all(|v| v.is_finite()));",
-        "真无界（R153 新暴露）：`a` 无长度下界 ⇒ 空切片时 all 恒真；下一轮加 !a.is_empty()",
-    ),
-    (
-        "tests/idempotency_and_channel_consistency.rs",
-        ".all(|(l, r)| l.to_bits() == r.to_bits())",
-        "真无界（R153 新暴露）：左右逐位相等在**空缓冲**上恒真 ⇒ 下一轮加非空界",
-    ),
+    // ⭐ **R132 的进度读数**：条目数 ＝ "已评审但**未修**"的真缺口数。
+    // 本批把两条**真无界直接修掉**（`src/insert.rs` 加 `!a.is_empty()`；
+    // `tests/idempotency_and_channel_consistency.rs` 加 `out.len() >= 2`）⇒ **条目数 = 0**。
+    //
+    // ⚠ 若将来再加入口：**身份必须用内容锚**（文件 ＋ 站点规范化片段），⛔ 不许用行号；
+    // 且**该片段必须在文件内唯一**（否则两个同形站点会互相冒充 ⇒ 见 `ambiguous_anchors` 守卫）。
 ];
 
 /// 窗口：`.all(` 站点**之前**多少行内去找"界"。
@@ -332,6 +325,9 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
         bound = window.contains(&format!("{len_root}=="))
             || window.contains(&format!("{len_root}>="))
             || window.contains(&format!("{len_root}>"))
+            // ⭐ `assert_eq!(x.len(), N)` 的形态：`x.len(),`（⛔ 上一版漏了这个变体）
+            || window.contains(&format!("{len_root},"))
+            // ⚠ **不算**：元素值界 `assert_eq!(x[0], N)`（它不界定集合大小，R118）
             || (window.contains(&format!("{root}.is_empty()")) && window.contains('!'));
     }
     if bound {
@@ -394,6 +390,28 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     false
 }
 
+/// ⭐ **R146／R153**：内容锚必须在**文件内唯一** —— 否则两个同形站点会互相冒充
+/// （实测：陈旧入口检查因此**误报**）。返回 `(文件, 锚)`。
+fn ambiguous_anchors(
+    sources: &[(&str, &str)],
+    allowlist: &[(&str, &str, &str)],
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (file, anchor, _reason) in allowlist {
+        let Some((_, source)) = sources.iter().find(|(path, _)| path == file) else {
+            continue;
+        };
+        let hits = source
+            .lines()
+            .filter(|line| squeeze(line) == squeeze(anchor))
+            .count();
+        if hits > 1 {
+            out.push(((*file).to_owned(), (*anchor).to_owned()));
+        }
+    }
+    out
+}
+
 /// ⭐ **R146／R153**：allowlist 的**身份 ＝ 内容锚**（⛔ 不用行号）。
 /// 匹配规则：文件相同 **且** 站点片段（去空白后）相同。
 fn allowlist_entry_matches(allowlist: &[(&str, &str, &str)], file: &str, snippet: &str) -> bool {
@@ -450,8 +468,14 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
             if allowlist_entry_matches(ALLOWLIST, path, &snippet) {
                 continue;
             }
-            // ⭐ **R131**：失败信息带**缺界的那一句**。
-            unbounded.push(((*path).to_owned(), line_no, snippet));
+            // ⭐ **R131**：失败信息带**根名** ＋ **缺界的那一句**。
+            let ctx = source.lines().nth(line_no.saturating_sub(5)).unwrap_or("");
+            let root = site_root(ctx).unwrap_or_else(|| "<不可解析>".to_owned());
+            unbounded.push((
+                (*path).to_owned(),
+                line_no,
+                format!("（根 = {root:?}）{snippet}"),
+            ));
         }
     }
 
@@ -468,6 +492,12 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
         unbounded.len()
     );
     // ⭐ **R136**：陈旧入口也必须红（棘轮双向）。
+    // ⭐ 内容锚必须**文件内唯一**（否则会互相冒充）。
+    let ambiguous = ambiguous_anchors(SOURCES, ALLOWLIST);
+    assert!(
+        ambiguous.is_empty(),
+        "内容锚在文件内**不唯一** ⇒ 必须补足上下文或加站点序号：{ambiguous:?}"
+    );
     let stale = stale_entries(SOURCES, ALLOWLIST);
     assert!(
         stale.is_empty(),
@@ -747,4 +777,63 @@ fn comments_and_literals_are_masked_before_matching_bounds() {
         has_size_bound(real, site_r[0]),
         "对照：真代码里的 `len() >=` ⇒ 必须认（否则说明掩码把代码也掩了）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ **R131 的根名** ＋ ⭐ **配对臂**：`assert_eq!(x.len(), N)` **认**／元素值界 **⛔ 不认**；
+// ⭐ **内容锚必须文件内唯一**（歧义 ⇒ 报出，⛔ 不静默取一个）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_equality_length_form_is_recognised_but_element_value_bounds_are_not() {
+    // ⭐ `assert_eq!(xs.len(), 4)`（**界定集合大小**）⇒ 认。
+    let len_eq =
+        "fn t() {\n    assert_eq!(xs.len(), 4);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site = sites(len_eq);
+    assert_eq!(site.len(), 1);
+    assert!(
+        has_size_bound(len_eq, site[0]),
+        "⭐ `assert_eq!(x.len(), N)` 必须被认成界（上一版漏了 `len(),` 变体）"
+    );
+
+    // ⛔ **元素值界**（`assert_eq!(xs[0], 4)`）不界定集合 ⇒ **不认**（R118）。
+    let elem = "fn t() {\n    assert_eq!(xs[0], 4);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site_e = sites(elem);
+    assert_eq!(site_e.len(), 1);
+    assert!(
+        !has_size_bound(elem, site_e[0]),
+        "⛔ 元素值界不界定集合大小 ⇒ 不得当成界（R118）"
+    );
+
+    // ⭐ **R131**：失败信息必须带**根名**（可解析时）。
+    assert_eq!(
+        site_root("    assert!(v.iter().all(|x| *x > 0));").as_deref(),
+        Some("v"),
+        "根必须能从站点表达式派生（R153）"
+    );
+    // ⚠ 空根对照：`.iter()` 之前没有标识符 ⇒ **不可解析**（⛔ 不得静默返回某个默认根）。
+    assert!(
+        site_root("    assert!(.iter().all(|x| *x > 0));").is_none(),
+        "⛔ 空根：派生不出根时必须返回 None（⛔ 不得静默编造根名）"
+    );
+}
+
+#[test]
+fn ambiguous_content_anchors_are_reported_not_silently_resolved() {
+    // 两个**同形**站点 ⇒ 同一内容锚在文件里出现 2 次 ⇒ 必须报**歧义**（⛔ 不静默取一个）。
+    let source = "fn a() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\nfn b() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let sources: &[(&str, &str)] = &[("fake.rs", source)];
+    let anchor = "    assert!(xs.iter().all(|x| *x > 0));";
+    let ambiguous = ambiguous_anchors(sources, &[("fake.rs", anchor, "同形站点")]);
+    assert_eq!(
+        ambiguous.len(),
+        1,
+        "⭐ 内容锚在文件内出现 2 次 ⇒ 必须报歧义（否则两个站点互相冒充）"
+    );
+
+    // 反向对照：**唯一**的锚 ⇒ 不报歧义。
+    let unique = "fn a() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let sources_u: &[(&str, &str)] = &[("fake.rs", unique)];
+    let not_ambiguous = ambiguous_anchors(sources_u, &[("fake.rs", anchor, "唯一")]);
+    assert!(not_ambiguous.is_empty(), "⛔ 唯一的锚不得被误报为歧义");
 }

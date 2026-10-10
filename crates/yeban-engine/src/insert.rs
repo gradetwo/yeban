@@ -1604,6 +1604,11 @@ mod tests {
         let peak = a.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
         assert_eq!(peak.to_bits(), 1.0f32.to_bits(), "IR 必须峰值归一化到 1.0");
         // 每个样本都是有限值（器件的 IR 校验会拒绝非有限值 ⇒ 这台器件会整台不工作）。
+        // ⭐ 常驻判据（R115／R153）抓到的**真无界**：空切片时 `all` 恒真 ⇒ 先钉集合非空。
+        assert!(
+            !a.is_empty(),
+            "夹具前提：IR 切片必须非空（空切片会让下面的 all(..) 恒真）"
+        );
         assert!(a.iter().all(|v| v.is_finite()));
 
         let other_seed = synthesise_impulse_response(frames, 0.35, TEST_SR, 8);
