@@ -889,3 +889,147 @@ fn identifier_matching_has_near_miss_controls() {
         row2.reach
     );
 }
+
+// ---------------------------------------------------------------------------
+// R149／R150：`src/` 内"匹配站点"普查（表 ＋ 判据逐字校验）
+// ---------------------------------------------------------------------------
+
+/// 提交在仓库里的匹配站点表。
+const MATCH_SITES_PATH: &str = "tests/data/src_match_sites.txt";
+
+/// 被普查的匹配方法名（子串/前后缀匹配都算）。
+const MATCH_METHODS: &[&str] = &[
+    ".contains(",
+    ".find(",
+    ".starts_with(",
+    ".ends_with(",
+    ".strip_prefix(",
+    ".strip_suffix(",
+];
+
+/// 一行的扫描结果：`(needle, 是否字面量)`。
+///
+/// ⚠ **R150 自审（口径差异，逐条记录）**：
+/// - 本函数是**行式**扫描（⛔ 不跨行）——实测本 crate 里"调用被折行"的站点 **0** 处
+///   （`grep -c '\.contains($\|\.find($…'` = 0），因此当前不漏；但这条**是口径差异**，
+///   若将来出现折行形态，本函数会漏、而基于 span 的判据不会；
+/// - 字面量判定只认**双引号**开头（⛔ 不认原始字符串 `r"…"`／字符字面量 `'x'`）——
+///   实测本 crate 的 24 处非双引号 needle 全部是**变量**，无原始字符串/字符字面量；
+/// - 注释行与行尾 `\r` 不参与判定（`trim_end` 后匹配）。
+fn match_sites_on_line(line: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    for method in MATCH_METHODS {
+        let mut cursor = 0usize;
+        while let Some(p) = line[cursor..].find(method) {
+            let at = cursor + p + method.len();
+            if at < line.len() {
+                let literal = line[at..].starts_with('"');
+                let rest = &line[at..];
+                let needle: String = if literal {
+                    rest[1..].chars().take_while(|c| *c != '"').collect()
+                } else {
+                    rest.chars()
+                        .take_while(|c| *c != ')' && *c != ',')
+                        .collect()
+                };
+                out.push((needle.trim().to_string(), literal));
+            }
+            cursor = at;
+            if cursor >= line.len() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 审计整棵 `src/` 树的匹配站点，返回证据表的文本。
+fn render_match_sites(crate_root: &Path) -> String {
+    let mut rows: Vec<String> = Vec::new();
+    let mut literal = 0usize;
+    let mut variable = 0usize;
+    for path in source_files(&crate_root.join(SRC_ROOT)) {
+        let rel = path
+            .strip_prefix(crate_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            for (needle, is_literal) in match_sites_on_line(line) {
+                if is_literal {
+                    literal += 1;
+                } else {
+                    variable += 1;
+                }
+                rows.push(format!(
+                    "{}|{}|{}|{}",
+                    rel,
+                    index + 1,
+                    if is_literal { "literal" } else { "variable" },
+                    needle
+                ));
+            }
+        }
+    }
+    rows.sort();
+    let mut out = String::new();
+    out.push_str("# R149／R150 匹配站点普查：`src/` 内 .contains/.find/.starts_with/.ends_with/.strip_prefix/.strip_suffix\n");
+    out.push_str("# 列：file|line|kind(literal|variable)|needle\n");
+    out.push_str(
+        "# ⚠ 口径差异（R150）：行式扫描（本 crate 折行站点实测 0 处）；字面量只认双引号。\n",
+    );
+    out.push_str(&format!(
+        "# 合计 {} 处：literal {} ／ variable {}\n",
+        rows.len(),
+        literal,
+        variable
+    ));
+    for row in &rows {
+        out.push_str(row);
+        out.push('\n');
+    }
+    out
+}
+
+/// **匹配站点普查表必须与当前源码逐字一致**（＋ R93 非真空地板）。
+#[test]
+fn the_src_match_site_census_matches_the_committed_evidence() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rendered = render_match_sites(&crate_root);
+    let literal = rendered.matches("|literal|").count();
+    let variable = rendered.matches("|variable|").count();
+    let total = literal + variable;
+    assert!(
+        total >= 25,
+        "匹配站点太少：{total}（地板 25）⇒ 扫描器可能退化"
+    );
+    assert!(
+        literal >= 5,
+        "字面量 needle 太少：{literal}（地板 5）⇒ 字面量判定可能失效"
+    );
+    assert!(
+        variable >= 15,
+        "变量 needle 太少：{variable}（地板 15）⇒ 分类可能退化"
+    );
+    let path = crate_root.join(MATCH_SITES_PATH);
+    if std::env::var("R77_WRITE").is_ok() {
+        fs::write(&path, &rendered).expect("写匹配站点表");
+        let (back, _) = read_evidence_text(&path);
+        assert_eq!(back, rendered, "匹配站点表写入后回读不一致");
+        return;
+    }
+    let (committed, had_crlf) = read_evidence_text(&path);
+    assert_eq!(
+        committed, rendered,
+        "匹配站点表与当前源码不一致 ⇒ 用 R77_WRITE=1 重生成（⛔ 仅在 cargo fmt 之后）"
+    );
+    if had_crlf {
+        eprintln!("[r77] 注意：匹配站点表在盘上是 CRLF（已在比较前归一化）");
+    }
+    eprintln!("[r77] R149 读数：匹配站点 {total} 处（literal {literal}／variable {variable}）");
+}
