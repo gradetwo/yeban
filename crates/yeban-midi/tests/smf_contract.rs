@@ -1448,6 +1448,7 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
 /// ⭐ **R120：真对象必须附机械下界**（真的扫过足够多的源码行）。
 #[test]
 fn no_needle_is_bound_to_a_variable_before_being_searched() {
+    eprintln!("[R187-PROBE b23:no_needle_is_bound_to_a_variable_before_being_searched] ran");
     /// 形态注册表：**只**认这两种"针绑成变量后去搜索"的写法（R160 双向归零见 §②）。
     const FORMS: [&str; 2] = ["contains(<ident>)", "contains(&<ident>)"];
 

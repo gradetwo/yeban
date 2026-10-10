@@ -1439,6 +1439,7 @@ mod tests {
     /// ⭐ R110/R126：这条绊线**故意不是**"自比"——它复述的是**登记值**，所以实现一改就红。
     #[test]
     fn the_two_display_observation_paths_agree() {
+        eprintln!("[R187-PROBE b23:the_two_display_observation_paths_agree] ran");
         let offset = 12usize;
         let detail = "块类型 3 未定义（RFC 1951 §3.2.3）";
         let error = InflateError {
