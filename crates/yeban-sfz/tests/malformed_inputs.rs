@@ -249,10 +249,24 @@ fn fixed_malformed_corpus_never_panics() {
     let limits = ParseLimits::default();
     // R93（非真空断言）：这一条**遍历固定语料**并只断言「不 panic」——
     // 若语料被清空，循环体一次都不跑，判据会**真空通过**。下界把这件事钉住。
-    assert!(
-        MALFORMED_SAMPLES.len() >= 20,
-        "the malformed corpus must stay populated (R93), got {}",
+    // ⭐ R188（第二十七批）：⛔ 语料**大小地板**不是守卫 ⇒ 改成**行为两臂** ＋ 规模降级为诊断。
+    eprintln!(
+        "R188 诊断：malformed 语料条目 = {}（仅供阅读，⛔ 非失败条件）",
         MALFORMED_SAMPLES.len()
+    );
+    // 红臂：语料里**确有**被拒的样本（行为，⛔ 不是"列表够长"）；
+    // 绿臂：一个**良构**文档必须通过（证明红臂不是"什么都拒"）。
+    let rejected = MALFORMED_SAMPLES
+        .iter()
+        .filter(|sample| parse_text(sample, &limits).is_err())
+        .count();
+    assert!(
+        rejected >= 1,
+        "red arm: the corpus must contain at least one truly rejected sample (behaviour, not size)"
+    );
+    assert!(
+        parse_text("<region>sample=a.wav\n", &limits).is_ok(),
+        "green arm: a well-formed document must parse"
     );
     for sample in MALFORMED_SAMPLES {
         // 只关心「不 panic」；Ok / Err 都合法。
@@ -786,6 +800,14 @@ fn round_robin_is_deterministic_across_independent_parses() {
     ];
     assert_eq!(sequence(&first), expected);
     assert_eq!(sequence(&second), expected);
+    // ⭐ R183 判据内红臂：把期望值**改坏一项** ⇒ 同一个比较必须拒绝。
+    let mut mutated = expected.clone();
+    mutated[2] = "MUTATED.wav";
+    assert_ne!(
+        sequence(&first),
+        mutated,
+        "red arm: a mutated expectation must be rejected"
+    );
 }
 
 #[test]
@@ -819,11 +841,18 @@ fn include_resolution_is_deterministic_and_its_digest_is_pinned() {
     // 钉它的 `sha256`（**字面常量**），并要求同一份摘要出现在仓库的文档表里
     // （`include_str!` ⇒ 两个方向都会红）。
     let (paths_probe, _) = run();
-    // R93（非真空断言）：被扫集合必须**非空且达下界** —— 否则摘要是对空集合算的，判据真空。
-    assert!(
-        paths_probe.len() >= 3,
-        "the glob must keep matching the fixture (R93), got {}",
+    // ⭐ R188（第二十七批）：⛔ 不用"命中数地板"当守卫 ⇒ 改成**行为两臂** ＋ 规模降级为诊断。
+    eprintln!(
+        "R188 诊断：glob 命中路径数 = {}（仅供阅读，⛔ 非失败条件）",
         paths_probe.len()
+    );
+    assert!(
+        paths_probe.iter().any(|path| path.ends_with("a.sfz")),
+        "green arm: the glob must match a known fixture file: {paths_probe:?}"
+    );
+    assert!(
+        !paths_probe.iter().any(|path| path.ends_with("zz.sfz")),
+        "red arm: a non-existent file must NOT appear in the glob result: {paths_probe:?}"
     );
     // R60／R93：路径必须是**归一化**形态（`check_relative` 把 `\\` 换成 `/`、`join_prefix` 用 `/`）
     // ⇒ 摘要与平台无关；这一条把「Windows 腿根本不跑、Linux 腿看不见」的形态钉住。

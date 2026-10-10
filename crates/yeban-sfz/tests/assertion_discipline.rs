@@ -804,7 +804,8 @@ fn self_test_classifier() {
         // ⚠️ R118：**只有运行期计数器**（界定的是动作，不是被遍历集合）⇒ 必须报无界
         "let v = f(); let mut checked = 0; for x in &v { checked += 1; } assert!(checked >= 3); assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ R119：近名（`bb` 不得给 `b` 记界）
-        "let v = f(); let bb = g(); assert!(bb.len() >= 2); assert!(v.iter().all(|x| *x > 0));",
+        // ⚠️ 根必须是 `b`（⏔ 不是 `v`）：R190 实验 E 测得，写成 `v` 时该臂**无牙**（取消边界后判据仍全绿）
+        "let b = f(); let bb = g(); assert!(bb.len() >= 2); assert!(b.iter().all(|x| *x > 0));",
         // ⚠️ 绑定式但**没有界** ⇒ 必须报无界（这是第十九批的盲区，现已收窄）
         "let v = f(); let ok = v.iter().all(|x| *x > 0); assert!(ok);",
         // ⚠️ `C2` 的尾位量词**没有界** ⇒ 必须报无界（跨函数盲区收窄后的红臂）
