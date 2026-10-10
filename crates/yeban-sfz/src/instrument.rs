@@ -6011,7 +6011,7 @@ v127=1
         // `MalformedDefine` **一个断言都没有**。这里让 6 个可达变体落在**不同行**上，
         // 逐条钉住 line 与载荷（第 8 个变体 `Truncated` 不可达，见报告）。
         let instrument = parse_text(
-            "<sample>key=1\n#bogus\n$NOPE=1\n#include \"x.sfz\"\n#define $\n<region>key=1\n",
+            "<sample>key=1\n#bogus\n$NOPE=1\n#include \"x.sfz\"\n#define $\n#define noDollar\n<region>key=1\n",
             &Default::default(),
         )
         .expect("warnings never fail the parse");
@@ -6031,8 +6031,11 @@ v127=1
                     name: "NOPE".to_string()
                 },
                 Warning::IncludeIgnored { line: 4 },
+                // `#define $`：有 `$` 但名字为空（`handle_define` 的第二处告警）。
                 Warning::MalformedDefine { line: 5 },
-                Warning::RegionWithoutSample { line: 6 },
+                // `#define noDollar`：连 `$` 都没有（`handle_define` 的第一处告警）。
+                Warning::MalformedDefine { line: 6 },
+                Warning::RegionWithoutSample { line: 7 },
             ]
         );
         assert!(instrument.is_empty(), "no region survives these lines");
