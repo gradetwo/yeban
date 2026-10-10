@@ -460,6 +460,22 @@ jobs:
           set -o pipefail
           cargo test -p yeban-dsp --all-targets --locked --no-fail-fast 2>&1 | tee -a /tmp/gate.log
 
+      # 为什么加这一步体检: 上传步的「绿而无效」实测过一次 —— 它报 success 而 artifacts 为空。
+      # 本步把「文件是否存在」与「多少字节」打印出来 ⇒ 缺失或空文件当场可见,
+      # 且与本改动**唯一**的另一点（`if-no-files-found: error`）互相印证:
+      # 体检通过而上传空 ⇒ 故障在上传侧; 体检失败 ⇒ 故障在写入侧。
+      - name: 门日志体检 (存在性与字节数)
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/gate.log ]; then
+            echo "gate.log exists, bytes=$(wc -c < /tmp/gate.log)"
+            ls -l /tmp/gate.log
+          else
+            echo "::error::gate.log not found, so the upload can only be empty"
+            exit 1
+          fi
+
       # 为什么上传日志产物: 实测一次 `windows` 红时**四条取证路全空**
       # (`jobs/<jid>/logs` 0 字节 / `gh run view --log` 空 / `失败摘要` 的 summary=none /
       #  run 级 zip 里没有 windows 腿) ⇒ 失败正文**结构上不可得**, 只能靠复现。
