@@ -4515,6 +4515,60 @@ mod tests {
                     continue;
                 }
                 // 双引号字符串（支持 \" 转义；**字节数不变**）
+                // ⭐ **R225①：原始字符串** `r"…"` / `r#"…"#` / `br#"…"#`：内部的 `"` **不结束**它。
+                // ⛔ 不处理 ⇒ `r#"a " b"#` 会在**内层** `"` 处断掉 ⇒ 失同步 ⇒ **假阴性**。
+                if (bytes[i] == 'r'
+                    || (bytes[i] == 'b' && i + 1 < bytes.len() && bytes[i + 1] == 'r'))
+                    && (i == 0 || !(bytes[i - 1].is_alphanumeric() || bytes[i - 1] == '_'))
+                {
+                    let mut j = if bytes[i] == 'b' { i + 2 } else { i + 1 };
+                    let mut hashes = 0usize;
+                    while j < bytes.len() && bytes[j] == '#' {
+                        hashes += 1;
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == '"' {
+                        j += 1;
+                        while j < bytes.len() {
+                            if bytes[j] == '"' {
+                                let mut k = j + 1;
+                                let mut seen = 0usize;
+                                while seen < hashes && k < bytes.len() && bytes[k] == '#' {
+                                    seen += 1;
+                                    k += 1;
+                                }
+                                if seen == hashes {
+                                    j = k;
+                                    break;
+                                }
+                            }
+                            j += 1;
+                        }
+                        for blank in out.iter_mut().take(j).skip(i) {
+                            if *blank != '\n' {
+                                *blank = ' ';
+                            }
+                        }
+                        i = j;
+                        continue;
+                    }
+                }
+                // ⭐ **R225①：字符字面量 vs 生命周期**：`'x'`／`'\''` 是字面量（含 `'"'`，它会
+                // 让只看 `"` 的掩码器**凭空开一个字符串** ⇒ 假阴性）；`'a`（生命周期）是**普通字节**。
+                // 判别法：**只在很短的窗口内能闭合**时才算字面量。
+                if bytes[i] == '\'' {
+                    let escaped =
+                        i + 3 < bytes.len() && bytes[i + 1] == '\\' && bytes[i + 3] == '\'';
+                    let plain = i + 2 < bytes.len() && bytes[i + 1] != '\\' && bytes[i + 2] == '\'';
+                    if escaped || plain {
+                        let end = if escaped { i + 4 } else { i + 3 };
+                        for blank in out.iter_mut().take(end).skip(i) {
+                            *blank = ' ';
+                        }
+                        i = end;
+                        continue;
+                    }
+                }
                 if bytes[i] == '"' {
                     out[i] = ' ';
                     i += 1;
@@ -5029,6 +5083,106 @@ mod tests {
         assert!(
             masked_nested.contains(needle_for_mask),
             "R220(1): the needle AFTER the nested block must stay visible (real resynchronisation)"
+        );
+
+        // ⭐⭐ **R225①：原始字符串／字符字面量／生命周期**（Rust 的四件套**不够**）。
+        // 每条都同时看**长度等长**与**语义同步**（后面的针必须还看得见）。
+        eprintln!("[R187-PROBE decode::mask-rust-lex] raw/char/lifetime arms");
+        let rust_lex: [(&str, &str, bool); 5] = [
+            // (名字, 样本, 注释/字面量**里面**的针是否应当仍可见) —— 这里全都应当**不可见**
+            (
+                "raw 字符串含内层双引号",
+                concat!("let a = r#\"x \" y\"#; let b = frame", "_count;\n"),
+                true, // 注意：针在字面量**之后** ⇒ 必须可见（反失同步）
+            ),
+            (
+                "byte-raw 字符串",
+                concat!("let a = br#\"x \" y\"#; let b = frame", "_count;\n"),
+                true,
+            ),
+            (
+                "字符字面量是双引号",
+                concat!("let q = '\"'; let b = frame", "_count;\n"),
+                true,
+            ),
+            (
+                "生命周期不被当字面量",
+                concat!(
+                    "fn f<'a>(x: &'a str) -> &'a str { x } let b = frame",
+                    "_count;\n"
+                ),
+                true,
+            ),
+            (
+                "针在 raw 字符串**内部**",
+                concat!("let a = r#\"frame", "_count\"#;\n"),
+                false, // 在字面量内部 ⇒ 必须**不可见**
+            ),
+        ];
+        for (name, sample, survives) in rust_lex {
+            let masked = mask(sample);
+            assert_eq!(
+                masked.chars().count(),
+                sample.chars().count(),
+                "{name}: length must be preserved"
+            );
+            assert_eq!(
+                masked.contains(needle_for_mask),
+                survives,
+                "{name}: needle visibility after masking is wrong (a desynchronised masker hides \
+                 real code - the dangerous direction)"
+            );
+        }
+
+        // ⭐ **R227①：命中判别器"每一个正特征"的最小样本**（行注释 ＋ 块注释 ＋ 字符串 ＋ raw ＋
+        // 字符字面量 ＋ 生命周期 各一），并断言**注释／字面量**里的针都不可见、其后的针可见。
+        let all_features = concat!(
+            "// line frame",
+            "_count\n",
+            "/* block frame",
+            "_count */\n",
+            "let s = \"str frame",
+            "_count\";\n",
+            "let r = r#\"raw frame",
+            "_count\"#;\n",
+            "let c = '\"';\n",
+            "fn g<'a>(x: &'a str) {} \n",
+            "let after = frame",
+            "_count;\n",
+        );
+        let masked_all = mask(all_features);
+        assert_eq!(
+            masked_all.chars().count(),
+            all_features.chars().count(),
+            "the combined sample must stay length-equal"
+        );
+        assert_eq!(
+            masked_all.matches(needle_for_mask).count(),
+            1,
+            "R227(1): exactly ONE needle survives - the one on the last line, which is real code; \n             every needle inside a comment or a literal must be masked away"
+        );
+
+        // ⭐ **R225③：计数会"看不见"的缺陷** —— 站点数**不变**而界**丢了**。
+        // 两个样本的 `.all(` 站点数**相同**，但一个带界、一个不带 ⇒ **计数谓词**给同样的数，
+        // 而**扫描器**必须给出不同的判定。把这件事写成断言（计数绝非覆盖面）。
+        let with_bound = concat!(
+            "fn a() { let n = xs.len(); let _ = xs.iter().",
+            "all(|s| *s > 0.0); }\n"
+        );
+        let without_bound = concat!("fn a() { let _ = xs.iter().", "all(|s| *s > 0.0); }\n");
+        assert_eq!(
+            count_all(&mask(with_bound)),
+            count_all(&mask(without_bound)),
+            "the COUNT is identical for both samples - that is exactly the blind spot"
+        );
+        assert!(
+            scan_all(&mask(with_bound), all_needle, &bound_needles, 12).is_empty(),
+            "the sample WITH a bound must pass the scanner"
+        );
+        assert_eq!(
+            scan_all(&mask(without_bound), all_needle, &bound_needles, 12).len(),
+            1,
+            "the sample WITHOUT a bound must be reported - the count cannot see this"
         );
 
         // ⭐⭐ **R219①：计数谓词必须有成对的接受／拒绝臂**（模式计数先用两臂验证）。
