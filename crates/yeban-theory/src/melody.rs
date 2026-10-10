@@ -953,4 +953,62 @@ mod tests {
         assert_eq!(melody.len(), 8);
         assert_eq!(pitches, vec![70, 79, 72, 60, 58, 66, 54, 54]);
     }
+
+    /// 形态 D 注入实测（本票）：[`MelodyConstraints`] 有 `new` 与 `validate`
+    /// **两个**公开入口，但既有判据只读 `new` ⇒ 把 `validate` 里的
+    /// `upper > 127` 改成 `>= 127` 时全部既有判据仍然全绿：`new(60, 127, 12)`
+    /// 仍然 `Ok`，而它内部的判决却会把合法端点 127（G9，MIDI 最高音）拒掉。
+    ///
+    /// 口径：两个入口是**同一条**输入约束的两种写法，必须在同一个域上给同一个
+    /// 判决。这条判据把两边的 `is_ok()` 逐个输入对账，并显式钉住端点读数。
+    #[test]
+    fn new_and_validate_agree_on_the_midi_boundary() {
+        for (lower, upper, max_leap) in [
+            (60u8, 127u8, 12u8),
+            (0, 127, 0),
+            (127, 127, 0),
+            (60, 128, 12),
+            (128, 128, 0),
+            (72, 60, 12),
+        ] {
+            let constructed = MelodyConstraints::new(lower, upper, max_leap);
+            let validated = MelodyConstraints {
+                lower,
+                upper,
+                max_leap,
+            }
+            .validate();
+            assert_eq!(
+                constructed.is_ok(),
+                validated.is_ok(),
+                "`new` and `validate` disagree on ({lower}, {upper}, {max_leap})"
+            );
+        }
+        // 端点读数是显式的：127 合法、128 越界，两个入口一致。
+        assert!(
+            MelodyConstraints::new(60, 127, 12)
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        assert!(MelodyConstraints::new(60, 128, 12).is_err());
+        assert!(
+            MelodyConstraints {
+                lower: 60,
+                upper: 128,
+                max_leap: 12,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            MelodyConstraints {
+                lower: 127,
+                upper: 127,
+                max_leap: 0,
+            }
+            .validate()
+            .is_ok()
+        );
+    }
 }

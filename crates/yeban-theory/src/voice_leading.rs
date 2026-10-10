@@ -620,4 +620,257 @@ mod tests {
         let second = realize_three_voices(&spans).unwrap();
         assert_eq!(first, second);
     }
+
+    /// 形态 D 注入实测（本票）：`candidate_voicings` 的两处**接受窗口下界**
+    /// 各放宽一次时全部既有判据保持全绿 —— 既有判据只用 3 声部与 4 声部：
+    ///
+    /// 1. `ranges.len() < 2` → `<= 2`：2 声部被误判成 [`TheoryError::TooFewVoices`]；
+    /// 2. `realize` 的 `voice_count() < 2` → `<= 2`：同上，只是换了一个守卫。
+    ///
+    /// 口径（文档承诺）："声部数 < 2 → `TooFewVoices`"，因此 **2 声部必须可行**。
+    /// 这条判据把窗口的两个端点同时钉住：2 声部成、1 声部 [`TooFewVoices`]。
+    #[test]
+    fn two_voices_sit_inside_the_window_at_its_lower_bound() {
+        const TWO: [VoiceRange; 2] = [
+            VoiceRange {
+                lower: Pitch::C4,
+                upper: Pitch::C5,
+            },
+            VoiceRange {
+                lower: Pitch::E4,
+                upper: Pitch::G5,
+            },
+        ];
+        let key = c_major();
+        let spans = expand_progression(&key, "I-V", 2).unwrap();
+        let two = VoicingConstraints {
+            ranges: &TWO,
+            max_voice_jump: 12,
+            max_total_movement: 24,
+        };
+        let result = realize(&spans, &two).unwrap();
+        assert_eq!(result.voicings.len(), 2);
+        for voicing in &result.voicings {
+            assert_eq!(voicing.len(), 2, "every voicing must carry 2 voices");
+            assert!(
+                voicing[0].value() < voicing[1].value(),
+                "voices must ascend strictly: {voicing:?}"
+            );
+        }
+        // 1 声部仍然必须报 `TooFewVoices`（放宽不能把这一侧一起放走）。
+        const ONE: [VoiceRange; 1] = [VoiceRange {
+            lower: Pitch::C4,
+            upper: Pitch::C5,
+        }];
+        let one = VoicingConstraints {
+            ranges: &ONE,
+            max_voice_jump: 12,
+            max_total_movement: 24,
+        };
+        assert_eq!(
+            realize(&spans, &one).unwrap_err(),
+            TheoryError::TooFewVoices { count: 1 }
+        );
+    }
+
+    /// 形态 D 注入实测（本票）：`recurse` 的早退 `if start > end` 被改成
+    /// `>=` 时全部既有判据保持全绿。既有判据 `a_single_pitch_range_is_legal_and_realizable`
+    /// 只验证了 `VoiceRange::new(C4, C4)` 的**构造**与 `width()`，从没让一个
+    /// 只有一个音高的音域**真的**参加连接。
+    ///
+    /// 改成 `>=` 之后 `start == end` 的那一档被提前返回，只有一个音高的音域
+    /// 永远产不出声位。口径：单个音高的音域是合法的（文档：`lower > upper`
+    /// 才报 [`TheoryError::VoiceRangeInvalid`]），它能且只能取那一个音高。
+    #[test]
+    fn a_range_of_exactly_one_pitch_can_still_be_realized() {
+        const ONE_PITCH_EACH: [VoiceRange; 3] = [
+            VoiceRange {
+                lower: Pitch::C4,
+                upper: Pitch::C4,
+            },
+            VoiceRange {
+                lower: Pitch::E4,
+                upper: Pitch::E4,
+            },
+            VoiceRange {
+                lower: Pitch::G4,
+                upper: Pitch::G4,
+            },
+        ];
+        let key = c_major();
+        let spans = expand_progression(&key, "I", 1).unwrap();
+        let constraints = VoicingConstraints {
+            ranges: &ONE_PITCH_EACH,
+            max_voice_jump: 12,
+            max_total_movement: 24,
+        };
+        let result = realize(&spans, &constraints).unwrap();
+        assert_eq!(
+            result.voicings,
+            vec![vec![Pitch::C4, Pitch::E4, Pitch::G4]],
+            "three single-pitch ranges pin the one possible voicing"
+        );
+        assert!(result.movements.is_empty());
+        assert_eq!(result.total_movement, 0);
+    }
+
+    /// 形态 D 注入实测（本票）：`candidate_voicings` 的
+    /// `tones.len() < ranges.len()` 被改成 `<=` 时全部既有判据保持全绿 ——
+    /// 它要求"可选和弦音数**恰好等于**声部数"，而既有判据的最高声部数是 4，
+    /// 可选音总是远多于声部数。
+    ///
+    /// 口径（文档承诺）："和弦可选音**少于**声部数 → [`TheoryError::TooManyVoices`]"
+    /// ⇒ 相等是合法的。三和弦在 `realize` 铺开的 C2..C7 六个八度里恰好有
+    /// 3 × 6 = 18 个音高，因此 18 声部正好是这个窗口的上边界：只有一个声位
+    /// （每个声部被自己的单音音域钉死）。
+    #[test]
+    fn as_many_voices_as_distinct_chord_tones_is_still_legal() {
+        const EIGHTEEN_TONES: [u8; 18] = [
+            36, 40, 43, 48, 52, 55, 60, 64, 67, 72, 76, 79, 84, 88, 91, 96, 100, 103,
+        ];
+        const PINNED: [VoiceRange; 18] = [
+            VoiceRange {
+                lower: Pitch::from_raw(36),
+                upper: Pitch::from_raw(36),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(40),
+                upper: Pitch::from_raw(40),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(43),
+                upper: Pitch::from_raw(43),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(48),
+                upper: Pitch::from_raw(48),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(52),
+                upper: Pitch::from_raw(52),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(55),
+                upper: Pitch::from_raw(55),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(60),
+                upper: Pitch::from_raw(60),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(64),
+                upper: Pitch::from_raw(64),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(67),
+                upper: Pitch::from_raw(67),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(72),
+                upper: Pitch::from_raw(72),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(76),
+                upper: Pitch::from_raw(76),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(79),
+                upper: Pitch::from_raw(79),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(84),
+                upper: Pitch::from_raw(84),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(88),
+                upper: Pitch::from_raw(88),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(91),
+                upper: Pitch::from_raw(91),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(96),
+                upper: Pitch::from_raw(96),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(100),
+                upper: Pitch::from_raw(100),
+            },
+            VoiceRange {
+                lower: Pitch::from_raw(103),
+                upper: Pitch::from_raw(103),
+            },
+        ];
+        assert_eq!(PINNED.len(), EIGHTEEN_TONES.len());
+        let key = c_major();
+        let spans = expand_progression(&key, "I", 1).unwrap();
+        let constraints = VoicingConstraints {
+            ranges: &PINNED,
+            max_voice_jump: 12,
+            max_total_movement: 24,
+        };
+        let result = realize(&spans, &constraints).unwrap();
+        assert_eq!(result.voicings.len(), 1);
+        assert_eq!(
+            result.voicings[0]
+                .iter()
+                .map(|pitch| pitch.value())
+                .collect::<Vec<_>>(),
+            EIGHTEEN_TONES.to_vec(),
+            "18 voices over exactly 18 chord tones has one voicing"
+        );
+    }
+
+    /// 形态 D 注入实测（本票）：`exceeded_total_target` 的判定
+    /// `sum > max_total_movement` 被改成 `>=` 时全部既有判据保持全绿 ——
+    /// 既有判据里的行和从不恰好等于上界。
+    ///
+    /// 口径（文档承诺）：这个标志问的是"总移动量**超过**上界"，因此
+    /// **恰好等于**上界时必须是 `false`。读数取自既有的唯一可行解
+    /// `C4-E4-G4 -> C4-F4-A4`（每个声部移动 0 / 1 / 2，行和 = 3）。
+    #[test]
+    fn the_total_movement_flag_is_strict_at_the_boundary() {
+        const RANGES: [VoiceRange; 3] = [
+            VoiceRange {
+                lower: Pitch::C4,
+                upper: Pitch::D4,
+            },
+            VoiceRange {
+                lower: Pitch::E4,
+                upper: Pitch::F4,
+            },
+            VoiceRange {
+                lower: Pitch::G4,
+                upper: Pitch::A4,
+            },
+        ];
+        let key = c_major();
+        let spans = expand_progression(&key, "I-IV", 2).unwrap();
+        let at = |max_total_movement: i16| {
+            realize(
+                &spans,
+                &VoicingConstraints {
+                    ranges: &RANGES,
+                    max_voice_jump: 2,
+                    max_total_movement,
+                },
+            )
+            .unwrap()
+        };
+        // 行和恒为 0 + 1 + 2 = 3，先把这个读数钉住。
+        let equal = at(3);
+        assert_eq!(equal.movements, vec![vec![0u8, 1, 2]]);
+        assert_eq!(equal.total_movement, 3);
+        assert!(
+            !equal.exceeded_total_target,
+            "exactly equal to the target is not `exceeded`"
+        );
+        // 低一个半音的上界：必须报"超过"。
+        assert!(at(2).exceeded_total_target);
+        // 高一个半音的上界：不报。
+        assert!(!at(4).exceeded_total_target);
+        // 上界为 0（且单声部跳进仍满足）时同样报"超过"。
+        assert!(at(0).exceeded_total_target);
+    }
 }

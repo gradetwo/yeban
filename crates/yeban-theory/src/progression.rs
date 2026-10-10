@@ -1009,4 +1009,44 @@ mod tests {
             assert_eq!(progression.degrees(), reparsed.degrees(), "{text}");
         }
     }
+
+    /// 形态 D 注入实测（本票）：`Degree::new` 在本 crate 里**没有任何判据**
+    /// ⇒ 把 `degree < 1 || degree > 7` 的两个不等式各放宽一次（`>= 7` /
+    /// `<= 1`），全部既有判据仍然全绿：既有判据走的是 `Progression::parse`，
+    /// 而 `parse` 的级数来自 `ROMAN_MATCH_ORDER` 的匹配表，从不经过 `new`。
+    ///
+    /// 口径：`new` 的域是**闭区间** `1..=7`，端点两侧都要显式拒绝，
+    /// 且默认读数（`accidental` / `suffix`）为零值。
+    #[test]
+    fn degree_new_accepts_the_closed_range_one_to_seven() {
+        for degree in 1u8..=7 {
+            let made = Degree::new(degree, RomanQuality::Major).unwrap();
+            assert_eq!(made.degree, degree);
+            assert_eq!(made.accidental, 0);
+            assert_eq!(made.quality, RomanQuality::Major);
+            assert_eq!(made.suffix, None);
+        }
+        assert_eq!(
+            Degree::new(7, RomanQuality::Minor).unwrap().degree,
+            7,
+            "the upper end 7 is legal"
+        );
+        assert_eq!(
+            Degree::new(1, RomanQuality::Major).unwrap().degree,
+            1,
+            "the lower end 1 is legal"
+        );
+        assert_eq!(
+            Degree::new(0, RomanQuality::Major).unwrap_err(),
+            TheoryError::DegreeNumberOutOfRange
+        );
+        assert_eq!(
+            Degree::new(8, RomanQuality::Major).unwrap_err(),
+            TheoryError::DegreeNumberOutOfRange
+        );
+        assert_eq!(
+            Degree::new(u8::MAX, RomanQuality::Minor).unwrap_err(),
+            TheoryError::DegreeNumberOutOfRange
+        );
+    }
 }

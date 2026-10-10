@@ -845,4 +845,143 @@ mod tests {
         assert_eq!(d_major.spell(PitchClass::C).unwrap().to_string(), "C");
         assert!(!d_major.contains(PitchClass::C));
     }
+
+    /// 形态 D 注入实测（本票）：`prefer_flat` 里 `tonic_flat` 那一项的
+    /// `&&` 被改成 `||` 时全部既有判据保持全绿。优先级把
+    /// `matches!(..) && minor_like` 变成 `matches!(..) || minor_like`，
+    /// 于是返回式 `minor_like || tonic_flat || flat_keys` 从
+    /// "`minor_like` ∨ `flat_keys`" 变成 "`minor_like` ∨ {1,3,6,8,10} ∨ `flat_keys`"：
+    /// **多了音级 6（F#）**。既有判据只测 F 大调（pc 5，本来就在 `flat_keys` 里）
+    /// 与 D 大调（pc 2），从没问过 F# 大调。
+    ///
+    /// 口径：`flat_keys` 是 {F, Bb, Eb, Ab, Db} = {5,10,3,8,1}；F# 大调有 6 个
+    /// 升号，必须走升号侧。这条判据把两个集合的**差集**（pc 6）钉住。
+    #[test]
+    fn sharp_keys_are_not_folded_onto_the_flat_side_by_the_minor_rule() {
+        // 小调类的调式恒用降号（既有口径）。
+        for minor_like in [
+            ScaleKind::NaturalMinor,
+            ScaleKind::Aeolian,
+            ScaleKind::HarmonicMinor,
+            ScaleKind::MelodicMinor,
+            ScaleKind::Dorian,
+            ScaleKind::Phrygian,
+            ScaleKind::PentatonicMinor,
+            ScaleKind::Blues,
+        ] {
+            assert!(
+                minor_like.prefer_flat(PitchClass::C),
+                "{minor_like:?} must prefer flats"
+            );
+        }
+        // 降号侧的五个大调主音。
+        for flat_key in [
+            PitchClass::F,
+            PitchClass::AS,
+            PitchClass::DS,
+            PitchClass::GS,
+            PitchClass::CS,
+        ] {
+            assert!(
+                ScaleKind::Major.prefer_flat(flat_key),
+                "{flat_key:?} is a flat key"
+            );
+        }
+        // 升号侧：F# 必须**不**因为小调规则被折到降号侧，C/G/D/A/E/B 同理。
+        for sharp_key in [
+            PitchClass::FS,
+            PitchClass::C,
+            PitchClass::G,
+            PitchClass::D,
+            PitchClass::A,
+            PitchClass::E,
+            PitchClass::B,
+        ] {
+            assert!(
+                !ScaleKind::Major.prefer_flat(sharp_key),
+                "{sharp_key:?} must stay on the sharp side"
+            );
+        }
+        // 读数落到拼写上：F# 大调的三级拼成 A#，不是 Bb。
+        let fs_major = Scale::new(PitchClass::FS, ScaleKind::Major);
+        assert_eq!(fs_major.spell(PitchClass::AS).unwrap().to_string(), "A#");
+    }
+
+    /// 形态 D 注入实测（本票）：`ScaleKind::parse` 的定长栈缓冲守卫
+    /// `if len < buffer.len()` 被放宽成 `<=` 时全部既有判据保持全绿 ——
+    /// 既有判据喂的音阶名都短于 32 字节。
+    ///
+    /// 放宽之后，第 33 个非分隔字节会写到 `buffer[buffer.len()]`（越界 panic）。
+    /// 口径：任意长度的输入都只返回 `Err(ScaleNameUnknown)`，**不** panic
+    /// （与本 crate 在其它超长入参上的口径一致）。上游 `Scale::parse` 的
+    /// 根音部分同样只能在根音之后留下这个长后缀。
+    #[test]
+    fn an_over_long_scale_name_is_rejected_instead_of_overflowing_the_buffer() {
+        for length in [0usize, 1, 31, 32, 33, 64, 255, 4096, 100_000] {
+            let long = "m".repeat(length);
+            assert_eq!(
+                ScaleKind::parse(&long).unwrap_err(),
+                TheoryError::ScaleNameUnknown,
+                "length {length}"
+            );
+            // 带分隔符的长输入归一化后仍是 `length` 个字节，走同一条边界。
+            let separated = "q-".repeat(length);
+            assert_eq!(
+                ScaleKind::parse(&separated).unwrap_err(),
+                TheoryError::ScaleNameUnknown,
+                "separated length {length}"
+            );
+        }
+        // 32 字节的缓冲最多放 32 个归一化字节：33 个不同的合法字节也必须被拒。
+        let mut alphabet = String::new();
+        for byte in b'a'..=b'z' {
+            alphabet.push(char::from(byte));
+        }
+        let too_long = alphabet.repeat(2);
+        assert!(too_long.len() > 32);
+        assert_eq!(
+            ScaleKind::parse(&too_long).unwrap_err(),
+            TheoryError::ScaleNameUnknown
+        );
+    }
+
+    /// 形态 D 注入实测（本票）：`close_keys` 的**下属方向**那一项
+    /// `subdominant.is_none() && self.contains(..)` 被改成 `||` 时全部既有
+    /// 判据保持全绿（`dominant` 方向的同名改动会变红，见既有判据
+    /// `fifth_circle_neighbors_are_the_dominant_and_subdominant` ——
+    /// 两个方向并不对称）。改成 `||` 之后，第一次迭代就无条件写入读数，
+    /// 于是"最近的、**仍在音阶内的**调"退化成了"五度圈上第一步"。
+    ///
+    /// 口径：两个方向都必须**跳过音阶外**的五度圈步。全音音阶（{0,2,4,6,8,10}）
+    /// 的最近邻都不在第 1 步：属方向第 1 步是 G(7)（不在音阶内）、第 2 步是
+    /// D(2)（在内）；下属方向第 1 步是 F(5)（不在）、第 2 步是 Bb(10)（在内）。
+    #[test]
+    fn close_keys_skips_circle_steps_that_are_not_in_the_scale() {
+        let whole_tone = Scale::new(PitchClass::C, ScaleKind::WholeTone);
+        let (dominant, subdominant) = whole_tone.close_keys();
+        assert_eq!(
+            dominant,
+            Some(PitchClass::D),
+            "the nearest in-scale dominant of a whole-tone scale is D at step 2, not G at step 1"
+        );
+        assert_eq!(
+            subdominant,
+            Some(PitchClass::AS),
+            "the nearest in-scale subdominant is Bb at step 2, not F at step 1"
+        );
+        // 两个读数都必须在音阶内（这是"近关系调"的定义）。
+        for neighbour in [dominant, subdominant] {
+            let neighbour = neighbour.expect("the whole-tone scale has both neighbours");
+            assert!(
+                whole_tone.contains(neighbour),
+                "{neighbour:?} is claimed as a close key but is not in the scale"
+            );
+        }
+        // 对照：C 大调的两个方向都在第 1 步（读数是 F 与 G）。
+        let major = Scale::new(PitchClass::C, ScaleKind::Major);
+        assert_eq!(
+            major.close_keys(),
+            (Some(PitchClass::G), Some(PitchClass::F))
+        );
+    }
 }

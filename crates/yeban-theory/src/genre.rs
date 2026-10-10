@@ -4101,4 +4101,130 @@ mod tests {
         // 请求的最大 onset 数 8 不超过任何登记拍号的格位数）。
         assert_eq!(compared, 845);
     }
+
+    /// 形态 D 注入实测（本票）：`GenreRule` 的 [`PartialEq`] 是**逐字段**比较
+    /// （手写而不是派生，因为 `swing` 是 `f32`），但本 crate 之前没有任何判据
+    /// 读它 ⇒ 把任一字段那一项的 `&&` 改成 `||`（优先级会让整条表达式裂成
+    /// `(前 6 项) || (后 5 项)`）、或把某一项整条删掉，全部既有判据仍然全绿。
+    ///
+    /// 量什么：11 个字段各自单独改动一次后 `rule == mutated` 的布尔值，单位 = 字段。
+    /// 口径：以登记表第 0 条为基准，逐字段**只改一个**，断言不等；再断言自反
+    /// （`base == base`）与"逐字段相同 ⇒ 相等"。自反那一条会让"把某个字段的
+    /// `==` 改成 `!=`"也变红。
+    #[test]
+    fn genre_rule_equality_is_field_by_field() {
+        let base = GenreLibrary::all()[0];
+        assert_eq!(base, base, "equality must be reflexive");
+        // 逐字段相同（照抄一份）必须相等。
+        let mut same = base;
+        same.id = base.id;
+        assert_eq!(same, base);
+
+        // 两个**登记表里真实存在的**、与基准不同的走向/音阶切片：不硬编码
+        // 内容，免得"基准恰好就是它"。
+        let alt_progressions = GenreLibrary::all()
+            .iter()
+            .map(|rule| rule.typical_progressions)
+            .find(|list| *list != base.typical_progressions)
+            .expect("the registry must hold two distinct progression lists");
+        let alt_scales = GenreLibrary::all()
+            .iter()
+            .map(|rule| rule.typical_scales)
+            .find(|list| *list != base.typical_scales)
+            .expect("the registry must hold two distinct scale lists");
+
+        let mut other = base;
+        other.id = "zzz_equality_probe";
+        assert_ne!(base, other, "field `id` is not compared");
+        let mut other = base;
+        other.name_zh = "相等性探针";
+        assert_ne!(base, other, "field `name_zh` is not compared");
+        let mut other = base;
+        other.name_en = "equality probe";
+        assert_ne!(base, other, "field `name_en` is not compared");
+        let mut other = base;
+        other.default_bpm_range = (base.default_bpm_range.0 + 1, base.default_bpm_range.1);
+        assert_ne!(base, other, "field `default_bpm_range` is not compared");
+        let mut other = base;
+        other.meter = (base.meter.0, base.meter.1);
+        assert_eq!(base, other, "an equal meter must still compare equal");
+        other.meter = if base.meter == (3, 4) { (4, 4) } else { (3, 4) };
+        assert_ne!(base, other, "field `meter` is not compared");
+        let mut other = base;
+        other.typical_progressions = alt_progressions;
+        assert_ne!(base, other, "field `typical_progressions` is not compared");
+        let mut other = base;
+        other.typical_scales = alt_scales;
+        assert_ne!(base, other, "field `typical_scales` is not compared");
+        let mut other = base;
+        other.swing = Some(base.swing.map_or(50.0, |percent| percent + 1.0));
+        assert_ne!(base, other, "field `swing` is not compared");
+        let mut other = base;
+        other.note_density_hint = (base.note_density_hint.0 + 1, base.note_density_hint.1);
+        assert_ne!(base, other, "field `note_density_hint` is not compared");
+        let mut other = base;
+        other.drum_style = if base.drum_style == DrumStyle::Metric {
+            DrumStyle::FourOnTheFloor
+        } else {
+            DrumStyle::Metric
+        };
+        assert_ne!(base, other, "field `drum_style` is not compared");
+        let mut other = base;
+        other.source = if base.source == SOURCE_YEBAN_ORIGINAL {
+            SOURCE_20C_COMMERCIAL_PRACTICE
+        } else {
+            SOURCE_YEBAN_ORIGINAL
+        };
+        assert_ne!(base, other, "field `source` is not compared");
+    }
+
+    /// 形态 D 注入实测（本票）：`contains_ascii` 的早退
+    /// `needle.len() > haystack.len()` 被放宽成 `>=` 时，全部既有判据保持全绿
+    /// —— 没有任何被搜的关键词长度**恰好**等于某条 haystack。
+    ///
+    /// 两者等长时唯一可能的匹配就是"整条 haystack 就是关键词"，那时早退把
+    /// 真匹配误判成假。这条判据直接喂那个等长的边界（含非 ASCII 的中文名，
+    /// 它们走同一条字节路径）。
+    #[test]
+    fn contains_ascii_matches_a_needle_as_long_as_the_haystack() {
+        assert!(contains_ascii("abc", "abc"), "equal lengths must match");
+        assert!(contains_ascii("abc", "ab"));
+        assert!(contains_ascii("abc", "bc"));
+        assert!(!contains_ascii("abc", "abcd"));
+        assert!(!contains_ascii("abc", "x"));
+        // 空关键词匹配一切（既有口径）；空 haystack 只匹配空关键词。
+        assert!(contains_ascii("abc", ""));
+        assert!(!contains_ascii("", "a"));
+        assert!(contains_ascii("", ""));
+        // 非 ASCII 在等长时同样匹配（中文名走同一条字节路径）。
+        assert!(contains_ascii("自然大调", "自然大调"));
+        assert!(!contains_ascii("自然大调", "自然大调x"));
+    }
+
+    /// 形态 D 注入实测（本票）：`GenreRule::swing_permille` 的取整方向没有判据
+    /// —— 登记表里每一条的百分数都是 10 的整数倍（54.0 / 66.0 / …），因此
+    /// `libm::roundf` 换成 `libm::truncf` 时全部既有判据保持全绿（两种取整在
+    /// 这些数上给出同一个千分比）。
+    ///
+    /// 口径（文档承诺）：`permille = round(percent * 10)`。这条判据喂三个
+    /// **不是** 10 的整数倍的百分数，它们把"四舍五入"与"向零截断"分开。
+    #[test]
+    fn swing_permille_rounds_to_the_nearest_permille_instead_of_truncating() {
+        let with_swing = |percent: f32| {
+            let mut rule = GenreLibrary::all()[0];
+            rule.swing = Some(percent);
+            rule.swing_permille()
+        };
+        // `percent * 10` 的小数部分 > 0.5 ⇒ 必须进位（截断会少 1）。
+        assert_eq!(with_swing(54.09).unwrap(), Some(541));
+        assert_eq!(with_swing(50.06).unwrap(), Some(501));
+        // 上界一侧同样进位到 1000（合法端点），截断会停在 999。
+        assert_eq!(with_swing(99.96).unwrap(), Some(1000));
+        // 小数部分 < 0.5 ⇒ 必须舍去（截断碰巧也对，用来钉住另一侧）。
+        assert_eq!(with_swing(54.01).unwrap(), Some(540));
+        assert_eq!(
+            with_swing(50.0).unwrap(),
+            Some(crate::swing::SWING_PERMILLE_STRAIGHT)
+        );
+    }
 }

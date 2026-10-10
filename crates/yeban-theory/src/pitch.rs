@@ -1244,4 +1244,105 @@ mod tests {
         // -32768 mod 12 == 4：C 向下 32768 个半音落在 E。
         assert_eq!(PitchClass::C.transpose(i16::MIN), PitchClass::E);
     }
+
+    /// 形态 D 注入实测（本票）：三个公开边界判定的**上界那一侧**没有被任何
+    /// 既有判据读到 —— 既有判据只喂域内的值。三条单行放宽
+    /// （`NoteName::new` 的 `letter >= 7` → `> 7`、`NoteName::with_letter` 的
+    /// 同名比较 → `> 7`、`PitchClass::new` 的 `value >= 12` → `> 12`）
+    /// 全部保持既有判据全绿；而放宽之后越界值会被真的构造出来，随后在
+    /// `LETTER_PITCH_CLASS[..]` / `LETTER_NAMES[..]` / `SHARP_NAMES[..]`
+    /// 上越界索引（panic）。
+    ///
+    /// 口径：三条边界的合法侧都是**闭**的、非法侧从下一个整数开始。
+    /// 上界与下界都显式钉住，且 `alter` 的 `-2..=2` 也一起对账。
+    #[test]
+    fn the_letter_and_pitch_class_bounds_are_closed_on_the_legal_side() {
+        // `NoteName::new`：字母 0..7、变音记号 -2..=2。
+        for letter in 0u8..7 {
+            assert!(
+                NoteName::new(letter, 0).is_ok(),
+                "letter {letter} must be legal"
+            );
+        }
+        for alter in -2i8..=2 {
+            assert!(
+                NoteName::new(0, alter).is_ok(),
+                "alter {alter} must be legal"
+            );
+        }
+        assert_eq!(
+            NoteName::new(7, 0).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        assert_eq!(
+            NoteName::new(u8::MAX, 0).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        assert_eq!(
+            NoteName::new(0, 3).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        assert_eq!(
+            NoteName::new(0, -3).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+
+        // `NoteName::with_letter`：目标字母同样是 0..7。并非每个目标字母都能
+        // 在重升/重降之内表示（那一层由 `NoteName::new` 的第二道校验负责），
+        // 因此这里只钉**字母边界**：可表示时给 Ok，越界字母恒为 Err。
+        let b_sharp = NoteName::new(6, 1).unwrap();
+        assert!(b_sharp.with_letter(0).is_ok(), "B# written as C is C##");
+        assert_eq!(
+            b_sharp.with_letter(7).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        assert_eq!(
+            b_sharp.with_letter(u8::MAX).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        // `name_for_letter` 是同一条边界的第三个入口（既有判据只覆盖这一侧，
+        // 这里把三个入口对齐，免得只守住其中一个）。
+        assert_eq!(
+            PitchClass::C.name_for_letter(7).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+
+        // `PitchClass::new`：0..12，上界 12 必须被拒。
+        for value in 0u8..12 {
+            assert_eq!(PitchClass::new(value).unwrap().semitones(), value);
+        }
+        assert_eq!(
+            PitchClass::new(12).unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 12 }
+        );
+        assert_eq!(
+            PitchClass::new(u8::MAX).unwrap_err(),
+            TheoryError::PitchOutOfRange {
+                value: u32::from(u8::MAX)
+            }
+        );
+    }
+
+    /// 形态 D 注入实测（本票）：`Interval::from_semitones` 在本 crate 里
+    /// **没有任何判据**（`grep` 到的调用点只在生产代码）⇒ 把上界从 `> 12`
+    /// 改成 `>= 12` 时全部既有判据仍然全绿，而纯八度（12 个半音）会从
+    /// `Some(PERFECT_OCTAVE)` 变成 `None`。
+    ///
+    /// 口径：域是**闭区间** `0..=12`，13 与 `u8::MAX` 越界。
+    #[test]
+    fn from_semitones_covers_the_closed_range_up_to_the_octave() {
+        for semitones in 0u8..=12 {
+            let interval = Interval::from_semitones(semitones)
+                .unwrap_or_else(|| panic!("{semitones} semitones must be constructible"));
+            assert_eq!(interval.semitones(), semitones);
+        }
+        assert_eq!(Interval::from_semitones(0), Some(Interval::UNISON));
+        assert_eq!(
+            Interval::from_semitones(12),
+            Some(Interval::PERFECT_OCTAVE),
+            "the octave is the closed upper end of the domain"
+        );
+        assert_eq!(Interval::from_semitones(13), None);
+        assert_eq!(Interval::from_semitones(u8::MAX), None);
+    }
 }

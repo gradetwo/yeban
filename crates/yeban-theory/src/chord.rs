@@ -945,4 +945,45 @@ mod tests {
         let c_maj7 = Chord::new(PitchClass::C, ChordKind::Major7);
         assert!(!c_maj7.is_dominant_function(PitchClass::C));
     }
+
+    /// 形态 D 注入实测（本票）：`Chord::from_voicing` 的**斜杠低音**从来没有
+    /// 判据读过。两处单行改动各自保持全部既有判据全绿：
+    ///
+    /// 1. `pitches.iter().map(|p| p.value()).min()?` 改成 `.max()?` ——
+    ///    低音被取成**最高**音高（既有判据只读 `root` 与 `kind`）；
+    /// 2. `bass.filter(|&b| b != root)` 改成 `b == root` —— 低音等于根音时
+    ///    反而报出 `C/C` 这样的原位斜杠标记（既有判据不读 `symbol()` 的低音）。
+    ///
+    /// 口径：低音读**最低**音高；它等于根音时**不**报斜杠低音。三个转位
+    /// 各给一条读数，另加一条"书写顺序不是口径"（证明读的是最低音高，
+    /// 不是第一个元素）。
+    #[test]
+    fn from_voicing_reads_the_slash_bass_from_the_lowest_pitch() {
+        let p = |value: i32| Pitch::new(value).unwrap();
+        // 根位：最低音 = 根音 ⇒ 不报斜杠低音。
+        let root_position = Chord::from_voicing(&[p(60), p(64), p(67)]).unwrap();
+        assert_eq!(root_position.root, PitchClass::C);
+        assert_eq!(root_position.kind, ChordKind::Major);
+        assert_eq!(root_position.bass, None);
+        assert_eq!(root_position.symbol(), "C");
+        // 第一转位：最低音 = 三音 ⇒ 报 /E。
+        let first_inversion = Chord::from_voicing(&[p(64), p(67), p(72)]).unwrap();
+        assert_eq!(first_inversion.root, PitchClass::C);
+        assert_eq!(first_inversion.bass, Some(PitchClass::E));
+        assert_eq!(first_inversion.symbol(), "C/E");
+        // 第二转位：最低音 = 五音 ⇒ 报 /G。
+        let second_inversion = Chord::from_voicing(&[p(67), p(72), p(76)]).unwrap();
+        assert_eq!(second_inversion.root, PitchClass::C);
+        assert_eq!(second_inversion.bass, Some(PitchClass::G));
+        assert_eq!(second_inversion.symbol(), "C/G");
+        // 书写顺序不是口径：把最高音（C5 = 72）写在第一个，低音仍是 E。
+        let shuffled = Chord::from_voicing(&[p(72), p(64), p(67)]).unwrap();
+        assert_eq!(shuffled.root, PitchClass::C);
+        assert_eq!(shuffled.bass, Some(PitchClass::E));
+        assert_eq!(shuffled.symbol(), "C/E");
+        // 拉开八度的同一组音级同理（最低音 64 仍是三音）。
+        let spread = Chord::from_voicing(&[p(64), p(79), p(84)]).unwrap();
+        assert_eq!(spread.root, PitchClass::C);
+        assert_eq!(spread.bass, Some(PitchClass::E));
+    }
 }
