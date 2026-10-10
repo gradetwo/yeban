@@ -2867,6 +2867,8 @@ mod tests {
     fn warning_equality_discriminates_different_values() {
         // R58：`assert_eq!(instrument.warnings().to_vec(), vec![...])` 依赖 `Warning` 的 `==`；
         // 削弱它会让那批判据一起变空。这里在**同一个 `==`** 上给反向断言。
+        // ⚠️ **自反性（两侧都是字面量、构造上相等 ⇒ 恒真）**：⛔ 不是证据。
+        // 本条判据的牙全在下面的 `assert_ne!`（同一变体、不同载荷 ⇒ R69 的真探针）。
         assert_eq!(
             Warning::Truncated {
                 kept: 1,
@@ -3147,6 +3149,192 @@ mod tests {
             }
             .to_string(),
             "warning list capped at 1000000000: 4294967295 warning(s) dropped"
+        );
+    }
+
+    #[test]
+    fn the_warning_display_renders_degenerate_payloads() {
+        // R72 的延伸：黄金表**每臂一行**（臂编号断言要求），所以「同一臂的**退化载荷**」
+        // 的渲染必须另立判据 —— 与 `Truncated` 的边界文案同一条纪律。
+        // 前两条**可达**（直接用 `parse_text` 产出 ⇒ 同时证明可达性）：
+        let instrument = parse_text("#\n<region>sample=a.wav\n", &ParseLimits::default())
+            .expect("warnings only");
+        assert_eq!(
+            instrument.warnings()[0].to_string(),
+            "line 1: unknown directive `#`"
+        );
+        let instrument = parse_text(
+            "<control>set_cc7=\n<region>sample=a.wav\n",
+            &ParseLimits::default(),
+        )
+        .expect("warnings only");
+        assert_eq!(
+            instrument.warnings()[0].to_string(),
+            "line 1: `set_cc7` value `` is not an integer, declaration dropped"
+        );
+        // 后两条**不可达**，只能手工构造（原因逐条登记在下面）：
+        assert_eq!(
+            Warning::IgnoredHeader {
+                line: 1,
+                name: String::new()
+            }
+            .to_string(),
+            "line 1: unknown header `<>` ignored"
+        );
+        assert_eq!(
+            Warning::UndefinedMacro {
+                line: 2,
+                name: String::new()
+            }
+            .to_string(),
+            "line 2: undefined macro `$` kept verbatim"
+        );
+        // ⭐ 登记：空段头名走的是**硬错误**，不是 `IgnoredHeader` ⇒ 上面那一条不可达。
+        let error = parse_text("<>\n<region>sample=a.wav\n", &ParseLimits::default())
+            .expect_err("an empty header name is a hard error");
+        assert!(
+            matches!(error, SfzError::EmptyHeaderName { line: 1 }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn every_parser_side_quota_is_exact_at_its_limit() {
+        // 中间值：**恰好等于限额 ⇒ 通过**，**限额 + 1 ⇒ 报错**（与两端互补）。
+        // `"<region>sample=a\n"` 是 17 字节（含换行；`split_inclusive` 的切片把换行算在内）。
+        let limits = ParseLimits {
+            max_line_bytes: 17,
+            ..ParseLimits::default()
+        };
+        assert!(
+            parse_text("<region>sample=a\n", &limits).is_ok(),
+            "17 bytes == limit"
+        );
+        let error = parse_text("<region>sample=ab\n", &limits).expect_err("18 bytes");
+        assert!(
+            matches!(error, SfzError::LineTooLong { limit: 17, .. }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_regions: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("<region>sample=a.wav\n", &limits).is_ok());
+        let error = parse_text("<region>sample=a.wav\n<region>sample=b.wav\n", &limits)
+            .expect_err("two regions");
+        assert!(
+            matches!(error, SfzError::TooManyRegions { limit: 1 }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_opcodes_per_header: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("<region>sample=a.wav\n", &limits).is_ok());
+        let error =
+            parse_text("<region>sample=a.wav volume=-1\n", &limits).expect_err("two opcodes");
+        assert!(
+            matches!(error, SfzError::TooManyOpcodes { limit: 1, .. }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_defines: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("#define $A 1\n", &limits).is_ok());
+        let error = parse_text("#define $A 1\n#define $B 2\n", &limits).expect_err("two defines");
+        assert!(
+            matches!(error, SfzError::TooManyDefines { limit: 1 }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_macro_expansions_per_line: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("#define $A 1\n$A\n", &limits).is_ok());
+        let error = parse_text("#define $A 1\n$A$A\n", &limits).expect_err("two substitutions");
+        assert!(
+            matches!(error, SfzError::MacroExpansionExceeded { limit: 1, .. }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_curves: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("<curve>curve_index=7 v000=0\n", &limits).is_ok());
+        let error = parse_text(
+            "<curve>curve_index=7 v000=0\n<curve>curve_index=8 v000=0\n",
+            &limits,
+        )
+        .expect_err("two curves");
+        assert!(
+            matches!(error, SfzError::TooManyCurves { limit: 1 }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_effects: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("<effect>bus=main\n", &limits).is_ok());
+        let error =
+            parse_text("<effect>bus=main\n<effect>bus=main\n", &limits).expect_err("two effects");
+        assert!(
+            matches!(error, SfzError::TooManyEffects { limit: 1 }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_midi_sections: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("<midi>\n", &limits).is_ok());
+        let error = parse_text("<midi>\n<midi>\n", &limits).expect_err("two midi sections");
+        assert!(
+            matches!(error, SfzError::TooManyMidiSections { limit: 1 }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_midi_opcodes: 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_text("<midi>cc1=1\n", &limits).is_ok());
+        let error = parse_text("<midi>cc1=1 cc2=2\n", &limits).expect_err("two midi opcodes");
+        assert!(
+            matches!(error, SfzError::TooManyMidiOpcodes { limit: 1 }),
+            "{error:?}"
+        );
+
+        let limits = ParseLimits {
+            max_warnings: 1,
+            ..ParseLimits::default()
+        };
+        let instrument = parse_text("<x1>\n<region>sample=a.wav\n", &limits).expect("one warning");
+        assert_eq!(
+            instrument.warnings().len(),
+            1,
+            "exactly at the limit ⇒ no marker"
+        );
+        let instrument =
+            parse_text("<x1>\n<x2>\n<region>sample=a.wav\n", &limits).expect("two warnings");
+        assert_eq!(
+            instrument.warnings().to_vec(),
+            vec![
+                Warning::IgnoredHeader {
+                    line: 1,
+                    name: String::from("x1")
+                },
+                Warning::Truncated {
+                    kept: 1,
+                    dropped: 1
+                }
+            ]
         );
     }
 }

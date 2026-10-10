@@ -452,10 +452,14 @@ mod tests {
                 let range = XfRange { low, high };
                 for value in 0u8..=127 {
                     for curve in [XfCurve::Gain, XfCurve::Power] {
+                        // ⚠️ **自比（两侧同一个表达式）**：本条只抓**非确定性**，
+                        // ⛔ 不是契约（R70②／R75）。字面契约在同文件的
+                        // `crossfade_gain_curve_is_pinned`（`0.5f32.sqrt()` 等）。
                         assert_eq!(
                             bits(fade_in(range, value, curve)),
                             bits(fade_in(range, value, curve))
                         );
+                        // ⚠️ 同上的**自比**（只证明确定性）。
                         assert_eq!(
                             bits(fade_out(range, value, curve)),
                             bits(fade_out(range, value, curve))
@@ -475,6 +479,7 @@ mod tests {
         assert_eq!(fade_down.gain_at(1), 0.75);
         assert_eq!(fade_up.axis, XfAxis::Velocity);
         assert_eq!(fade_down.axis, XfAxis::Cc(1));
+        // ⚠️ 自反性（恒真，⛔ 不是证据）；真正的牙是下一行的 `assert_ne!`（R58／R69）。
         assert_eq!(fade_up, fade_up);
         assert_ne!(fade_up, fade_down);
     }

@@ -771,7 +771,7 @@ fn round_robin_is_deterministic_across_independent_parses() {
 }
 
 #[test]
-fn include_resolution_is_deterministic_across_runs() {
+fn include_resolution_is_deterministic_and_its_digest_is_pinned() {
     let dir = TempDir::new("sfz");
     let root = dir.path();
     fs::create_dir_all(root.join("parts")).expect("dirs");
@@ -797,7 +797,55 @@ fn include_resolution_is_deterministic_across_runs() {
             .collect();
         (paths, samples)
     };
-    assert_eq!(run(), run());
+    // R70②：**两次运行相同是自比，⛔ 不是契约**。这里把归约结果写成规范摘要，
+    // 钉它的 `sha256`（**字面常量**），并要求同一份摘要出现在仓库的文档表里
+    // （`include_str!` ⇒ 两个方向都会红）。
+    let canonical = || {
+        let (paths, samples) = run();
+        format!(
+            "paths:\n{}\nsamples:\n{}",
+            paths.join("\n"),
+            samples.join("\n")
+        )
+    };
+    let summary = canonical();
+    let digest = support::sha256_hex(summary.as_bytes());
+    assert_eq!(
+        digest, DIGEST_INCLUDE_RESOLUTION,
+        "the canonical summary changed (actual digest {digest}):\n{summary}"
+    );
+    assert!(
+        DIGEST_TABLE.contains(DIGEST_INCLUDE_RESOLUTION),
+        "the digest must also appear in the checked-in table"
+    );
+    // 确定性**另算**：它是另一条性质，⛔ 不能替代上面的字面契约。
+    assert_eq!(canonical(), summary, "two runs must agree");
+}
+
+/// 上面那份规范摘要的 `sha256`。**字面常量**：翻转任何一位都会让判据变红。
+const DIGEST_INCLUDE_RESOLUTION: &str =
+    "025e07f2edb4e6609dd2e6aaaa8936fab5fd79f0a88e6e9997b529e454a54b14";
+
+/// 归约摘要的文档表（R78④ 的**第二方向**：代码里的常量必须出现在这张表里）。
+const DIGEST_TABLE: &str = include_str!("data/sfz_digest_table.md");
+
+/// 手写 SHA-256 的**已知答案自测**（NIST 向量）—— 新守卫必须先被喂已知值（R56）。
+#[test]
+fn the_sha256_helper_matches_the_published_test_vectors() {
+    assert_eq!(
+        support::sha256_hex(b""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        support::sha256_hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    // 55 字节（补位后跨进第二个分组）与 56 字节（正好触发补零分支）两端。
+    assert_ne!(
+        support::sha256_hex(&[b'a'; 55]),
+        support::sha256_hex(&[b'a'; 56]),
+        "different lengths must not collide here"
+    );
 }
 
 #[test]

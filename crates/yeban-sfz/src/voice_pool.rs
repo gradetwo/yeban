@@ -1134,6 +1134,7 @@ mod tests {
             pool.note_on(61, 100, f32::NAN);
             pool.note_on(62, 100, -6.0)
         };
+        // ⚠️ **自比**：只证明两次运行一致（R70②）；**字面契约**是下一行的 `Some(1)`。
         assert_eq!(run(), run());
         assert_eq!(run().victim().map(|handle| handle.index), Some(1));
     }

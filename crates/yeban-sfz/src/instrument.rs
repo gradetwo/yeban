@@ -6255,4 +6255,31 @@ v127=1
             );
         }
     }
+
+    #[test]
+    fn the_sample_path_has_no_cap_but_the_parser_line_cap_bounds_it() {
+        // 契约①（**构造层**）：`sample_path()` **没有**长度上限 —— 恰好 64 KiB
+        // （= `DEFAULT_MAX_LINE_BYTES`）与 64 KiB + 1 的前缀都**原样**拼接。
+        for extra in [0usize, 1] {
+            let prefix = "p".repeat(crate::parser::DEFAULT_MAX_LINE_BYTES + extra);
+            let mut region: Region<'_> = region(60, 1, 1);
+            region.default_path = Some(Cow::Owned(prefix.clone()));
+            region.sample = Cow::Borrowed("k.wav");
+            assert_eq!(region.sample_path().len(), prefix.len() + "/k.wav".len());
+            assert!(region.sample_path().starts_with(&prefix));
+            assert!(region.sample_path().ends_with("/k.wav"));
+        }
+        // 契约②（**解析层**）：这么长的前缀经 `.sfz` 文本**不可达** —— `max_line_bytes`
+        // 先一步拦下 ⇒ ①的"无上限"在实践中被**输入上限**包住（R60：两条契约都写）。
+        let too_long = format!(
+            "<region>default_path={} sample=k.wav",
+            "p".repeat(crate::parser::DEFAULT_MAX_LINE_BYTES)
+        );
+        let error = parse_text(&too_long, &ParseLimits::default()).expect_err("line cap");
+        assert!(
+            matches!(error, SfzError::LineTooLong { limit, .. }
+                if limit == crate::parser::DEFAULT_MAX_LINE_BYTES),
+            "{error:?}"
+        );
+    }
 }

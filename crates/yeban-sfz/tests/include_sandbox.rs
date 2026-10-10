@@ -1146,3 +1146,139 @@ fn a_truncated_glob_is_indistinguishable_from_a_real_miss() {
         "a different pattern must not compare equal"
     );
 }
+
+#[test]
+fn every_include_side_quota_is_exact_at_its_limit() {
+    // 中间值：**恰好等于限额 ⇒ 通过**；**限额 + 1 ⇒ 报错**（`max_glob_depth` 除外，
+    // 它是静默的 —— 见 `a_truncated_glob_is_indistinguishable_from_a_real_miss`）。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "tiny.sfz", "x"); // 1 字节，且扩展名合法
+    write_file(root, "leaf.sfz", "<region>sample=a.wav\n");
+    write_file(root, "main.sfz", "#include \"leaf.sfz\"\n");
+    write_file(root, "only/one.sfz", "<region>sample=one.wav\n");
+    write_file(root, "glob.sfz", "#include \"only/*.sfz\"\n");
+    write_file(root, "kit/sub/deep.sfz", "<region>sample=deep.wav\n");
+    write_file(root, "deep.sfz", "#include \"kit/**/*.sfz\"\n");
+
+    // max_source_bytes：1 字节文件恰好等于限额 1 ⇒ 通过；限额 0 ⇒ 报错。
+    let limits = ParseLimits {
+        max_source_bytes: 1,
+        ..ParseLimits::default()
+    };
+    assert!(
+        IncludeResolver::new(root, limits)
+            .expect("base")
+            .resolve("tiny.sfz")
+            .is_ok()
+    );
+    let limits = ParseLimits {
+        max_source_bytes: 0,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, limits)
+        .expect("base")
+        .resolve("tiny.sfz")
+        .expect_err("cap 0");
+    assert!(
+        matches!(error, SfzError::SourceTooLarge { limit: 0, .. }),
+        "{error:?}"
+    );
+
+    // max_include_depth：判据是 `depth >= 限额`（入口自身 depth = 0）⇒ 允许**一层**
+    // include 需要限额 **2**（恰好够）；限额 1 ⇒ 在 `leaf.sfz`（depth 1）上报错。
+    let limits = ParseLimits {
+        max_include_depth: 2,
+        ..ParseLimits::default()
+    };
+    assert!(
+        IncludeResolver::new(root, limits)
+            .expect("base")
+            .resolve("main.sfz")
+            .is_ok()
+    );
+    let limits = ParseLimits {
+        max_include_depth: 1,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, limits)
+        .expect("base")
+        .resolve("main.sfz")
+        .expect_err("one include needs depth 2");
+    assert!(
+        matches!(error, SfzError::IncludeDepthExceeded { limit: 1 }),
+        "{error:?}"
+    );
+
+    // max_include_files：入口 + 1 个 include = 2 个文件，恰好等于限额 2 ⇒ 通过；限额 1 ⇒ 报错。
+    let limits = ParseLimits {
+        max_include_files: 2,
+        ..ParseLimits::default()
+    };
+    assert!(
+        IncludeResolver::new(root, limits)
+            .expect("base")
+            .resolve("main.sfz")
+            .is_ok()
+    );
+    let limits = ParseLimits {
+        max_include_files: 1,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, limits)
+        .expect("base")
+        .resolve("main.sfz")
+        .expect_err("files 1");
+    assert!(
+        matches!(error, SfzError::IncludeCountExceeded { limit: 1 }),
+        "{error:?}"
+    );
+
+    // max_glob_matches：`only/*.sfz` 恰好 1 个匹配 ⇒ 限额 1 通过；限额 0 报错。
+    let limits = ParseLimits {
+        max_glob_matches: 1,
+        ..ParseLimits::default()
+    };
+    assert!(
+        IncludeResolver::new(root, limits)
+            .expect("base")
+            .resolve("glob.sfz")
+            .is_ok()
+    );
+    let limits = ParseLimits {
+        max_glob_matches: 0,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, limits)
+        .expect("base")
+        .resolve("glob.sfz")
+        .expect_err("matches 0");
+    assert!(
+        matches!(error, SfzError::GlobMatchesExceeded { limit: 0, .. }),
+        "{error:?}"
+    );
+
+    // max_glob_depth：`kit/**/*.sfz` 的文件在深度 2 ⇒ 限额 2 通过；限额 1 ⇒ **静默**无匹配。
+    let limits = ParseLimits {
+        max_glob_depth: 2,
+        ..ParseLimits::default()
+    };
+    assert!(
+        IncludeResolver::new(root, limits)
+            .expect("base")
+            .resolve("deep.sfz")
+            .is_ok()
+    );
+    let limits = ParseLimits {
+        max_glob_depth: 1,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, limits)
+        .expect("base")
+        .resolve("deep.sfz")
+        .expect_err("truncated");
+    assert!(
+        matches!(error, SfzError::IncludeNoMatch { .. }),
+        "{error:?}"
+    );
+}
