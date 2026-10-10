@@ -5134,6 +5134,54 @@ mod tests {
             );
         }
 
+        // ⭐⭐ **R235：掩码臂的**正对照**不可省** —— 缺它则"臂全绿"与"掩码器把一切都吞了"
+        // **不可区分**。正对照 = 一个**既无注释也无字面量**的样本必须**逐字节不变**地通过掩码。
+        let plain_code = concat!("let rust = 1; let x = frame", "_count;\n");
+        assert_eq!(
+            mask(plain_code),
+            plain_code,
+            "positive control: a source with no comments or literals must pass through UNCHANGED"
+        );
+
+        // ⭐⭐ **R237①：逐字符打印** —— 一次就把"**夹具错**"与"**实现错**"分开。
+        // `'"'` 这一例：三字节应被掩、**其后 `;` 仍可见**。
+        let quote_sample = concat!("let q = '\"'; let b = frame", "_count;\n");
+        let quote_masked = mask(quote_sample);
+        eprintln!("[R187-PROBE decode::char-literal-dump] (index, raw, masked)");
+        for (index, (raw, masked)) in quote_sample
+            .chars()
+            .zip(quote_masked.chars())
+            .enumerate()
+            .take(12)
+        {
+            eprintln!("[R187-PROBE decode::char-literal-dump] {index:>2} {raw:?} {masked:?}");
+        }
+        assert_eq!(
+            quote_masked.chars().count(),
+            quote_sample.chars().count(),
+            "the `'\"'` sample must stay length-equal"
+        );
+        assert!(
+            quote_masked.contains(needle_for_mask),
+            "the needle after the char literal must stay visible (the literal must not open a string)"
+        );
+        assert_eq!(
+            quote_sample.chars().skip(8).take(3).collect::<String>(),
+            "'\"'",
+            "the fixture text itself must be the expected three bytes (else the arm accuses itself)"
+        );
+
+        // ⭐⭐ **R237②：语料预检必须先于臂设计** —— 这些构造在**被扫语料**里各出现几次。
+        let corpus: String = sources.iter().map(|(_, source)| *source).collect();
+        let raw_count = corpus.matches(concat!("r#", "\"")).count();
+        let byte_raw_count = corpus.matches(concat!("br#", "\"")).count();
+        let char_lit_count = corpus.matches(concat!("'\\", "'")).count();
+        let quote_char_count = corpus.matches(concat!("'\"", "'")).count();
+        eprintln!(
+            "[R187-PROBE decode::corpus] raw={raw_count} byte-raw={byte_raw_count} \
+             char-literal={char_lit_count} quote-char={quote_char_count}"
+        );
+
         // ⭐ **R227①：命中判别器"每一个正特征"的最小样本**（行注释 ＋ 块注释 ＋ 字符串 ＋ raw ＋
         // 字符字面量 ＋ 生命周期 各一），并断言**注释／字面量**里的针都不可见、其后的针可见。
         let all_features = concat!(
@@ -5223,6 +5271,15 @@ mod tests {
             without_decode < four_files,
             "dropping `decode.rs` (the only file with `.all(` sites) must lower the count \
              (without={without_decode}, all={four_files})"
+        );
+        let min_margin = per_file.iter().map(|(_, count)| *count).min().unwrap_or(0);
+        eprintln!(
+            "[R187-PROBE decode::margin] min-per-file-sites={min_margin} \
+             (0 => dropping that file does NOT trip the exact count: WARNING, declared)"
+        );
+        assert_eq!(
+            min_margin, 0,
+            "the minimum per-file margin IS zero here - declared, not assumed away"
         );
         assert_eq!(
             per_file.iter().filter(|(_, count)| *count == 0).count(),
