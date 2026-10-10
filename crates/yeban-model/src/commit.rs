@@ -2042,4 +2042,45 @@ mod tests {
         assert_ne!(back.created_at, 0_u64);
         assert_ne!(back.rng_seed, 0_u64);
     }
+
+    /// `CommitGraph` 的**图级** `==` 必须逐字段有牙（R58 形状③：单字段差异）。
+    ///
+    /// 为什么需要（第九轮 face 1）：`assert_eq!(back, graph)`（本文件的
+    /// `history_dag_round_trips_and_is_byte_stable` 与 `tests/commit_merge.rs`）依赖的是
+    /// **`CommitGraph` 的图级 `==`**（内部经 `BTreeMap<EntityId, Commit>` 落到 `Commit`
+    /// 的 `==`）。此前只有**字段级**的 `assert_ne!`（`back.author` / `created_at` …）
+    /// ⇒ 图级 `PartialEq` 被削弱成"恒等"时，那条往返判据会变成空判据而无一变红。
+    /// 本判据给"只差**一个** `Commit` 字段"的两张图谱一条 `assert_ne!` ＋ 正侧 `assert_eq!`。
+    #[test]
+    fn commit_graph_equality_separates_a_single_commit_field() {
+        let build = |created_at: u64, branch: &str, message: &str| {
+            let mut graph = CommitGraph::new();
+            graph
+                .genesis(
+                    CommitDraft::new(fixture_id(1), branch, "agent", message)
+                        .with_created_at(created_at)
+                        .with_rng_seed(7)
+                        .with_ops(vec![add_section_op(11)]),
+                )
+                .expect("genesis");
+            graph
+        };
+        let base = build(1_760_000_000_000, "main", "genesis");
+        assert_eq!(base, base.clone(), "同一图谱必须与自己的副本相等（正侧）");
+        assert_ne!(
+            base,
+            build(1_760_000_000_001, "main", "genesis"),
+            "只差 `created_at` 的图谱必须判为不同"
+        );
+        assert_ne!(
+            base,
+            build(1_760_000_000_000, "other", "genesis"),
+            "只差分支名必须判为不同"
+        );
+        assert_ne!(
+            base,
+            build(1_760_000_000_000, "main", "other"),
+            "只差提交消息必须判为不同"
+        );
+    }
 }
