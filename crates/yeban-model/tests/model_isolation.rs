@@ -2245,7 +2245,11 @@ fn brace_body(text: &str, open: usize) -> Option<&str> {
 /// 会把大量函数**整段漏扫**（别处实测 252/709 个带参函数没被扫到）。这里只要求
 /// `fn ` 出现在标识符边界上，参数与返回类型一概不关心。
 fn enclosing_fn_body(masked: &str, at: usize) -> &str {
-    let mut best: Option<usize> = None;
+    // ⭐ 必须取**真正包含站点**的最内层函数：只取"最近的一个 `fn `"是错的 —— 若那个 `fn` 是
+    // **嵌套在别的函数里的内部函数**（本 crate 的 `no_hash_containers_anywhere_in_src` 里就有
+    // `fn walk(...)`），而站点在它**外面**，就会拿到错误的函数体 ⇒ 同根下界看不见 ⇒
+    // **假阳性**（第十六轮的形态级注入 `I16-06` 当场抓到：合法的同根界被报成无界）。
+    let mut starts: Vec<usize> = Vec::new();
     let mut cursor = 0_usize;
     while let Some(found) = masked[cursor..].find("fn ") {
         let start = cursor + found;
@@ -2259,19 +2263,24 @@ fn enclosing_fn_body(masked: &str, at: usize) -> &str {
                 .next_back()
                 .is_some_and(|c| c.is_alphanumeric() || c == '_');
         if boundary_ok {
-            best = Some(start);
+            starts.push(start);
         }
     }
-    let Some(fn_start) = best else {
-        return &masked[..at.min(masked.len())];
-    };
-    let Some(brace) = masked[fn_start..].find('{') else {
-        return &masked[..at.min(masked.len())];
-    };
-    match brace_body(masked, fn_start + brace) {
-        Some(body) => body,
-        None => &masked[..at.min(masked.len())],
+    // 从**最近**往最远找，第一个"函数体真的包含站点"的就是最内层宿主函数。
+    for &fn_start in starts.iter().rev() {
+        let Some(brace) = masked[fn_start..].find('{') else {
+            continue;
+        };
+        let open = fn_start + brace;
+        let Some(body) = brace_body(masked, open) else {
+            continue;
+        };
+        let end = open + 1 + body.len();
+        if at > open && at < end {
+            return body;
+        }
     }
+    &masked[..at.min(masked.len())]
 }
 
 /// `open` 是 `(` 的位置（在**已掩码**文本里）⇒ 返回配对括号之间的正文。
@@ -2702,5 +2711,139 @@ fn bounds_must_match_the_root_at_a_token_boundary() {
         unbounded_all_any_sites("synthetic", empty_claim).len(),
         1,
         "R142：`v.is_empty()` 不得被当成非空界（`!` 是方向本身）"
+    );
+}
+
+/// **R150 的跨工具标定源**：形状表（label, 片段, 期望的无界站点数）。
+///
+/// 本表是**唯一真源**：Rust 侧用它自证；独立工具（`/Users/crow/work/music/.mod-model/inj/
+/// crosscheck.py`）**从本文件解析同一张表**，用自己的实现复算并逐行比对。
+/// ⇒ 两个实现若口径不一致，读数会在报告里**逐行**暴露（⛔ 不允许"两个工具各说各话"）。
+///
+/// 表的每一行同时是 R142 的"认臂 ↔ 配对已知红"：每个**认**的形态都紧跟一条**同族反例**。
+#[test]
+fn the_shape_table_is_the_single_source_of_truth() {
+    let table: [(&str, &str, usize); 14] = [
+        // ---- 认（有界）的五个臂，每臂后面紧跟同族反例 ----
+        (
+            "arm_ge",
+            "fn f() { assert!(v.len() >= 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            0,
+        ),
+        (
+            "arm_gt",
+            "fn f() { assert!(v.len() > 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            0,
+        ),
+        (
+            "arm_not_empty",
+            "fn f() { assert!(!v.is_empty()); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            0,
+        ),
+        (
+            "arm_len_eq",
+            "fn f() { assert_eq!(v.len(), 3); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            0,
+        ),
+        (
+            "arm_same_root",
+            "fn f() { assert!(v.len() >= 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            0,
+        ),
+        // ---- 反例：方向、形状、近失、域 ----
+        (
+            "red_none",
+            "fn f() { assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_wrong_direction_lt",
+            "fn f() { assert!(v.len() < 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_missing_bang",
+            "fn f() { assert!(v.is_empty()); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_element_value",
+            "fn f() { assert_eq!(v[0], 3); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_substring_near_miss",
+            "fn f() { assert!(bb.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_field_vs_var",
+            "fn f() { assert!(outer.b.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_other_function",
+            "fn a() { assert!(v.len() >= 2); }\nfn b() { assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_empty_root",
+            "fn f() { assert!(.iter().all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+        (
+            "red_macro_eq_tail",
+            "fn f() { my_assert_eq!(v.len(), 3); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n",
+            1,
+        ),
+    ];
+    // 绿色形态（不产生站点的"非断言"与"跨行接收者 + 有界"）
+    let mut checked = 0_usize;
+    for (label, snippet, expected) in table {
+        let got = unbounded_all_any_sites(label, snippet).len();
+        assert_eq!(
+            got, expected,
+            "R150 形状表：`{label}` 期望 {expected} 个无界站点，实得 {got}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 14,
+        "R150：形状表必须至少 14 行（实际 {checked}）"
+    );
+    // 非断言与跨行形态（单列，避免把"认"的臂与它们混在一张表里）
+    let macro_tail = "fn f() { my_assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("macro_tail", macro_tail).len(),
+        0,
+        "R119 孪生点①"
+    );
+    let cross_line = "fn f() {\n    assert!(v.len() >= 2);\n    assert!(\n        v\n            .windows(2)\n            .all(|p| p[0] < p[1])\n    );\n}\n";
+    assert_eq!(
+        unbounded_all_any_sites("cross_line", cross_line).len(),
+        0,
+        "R140 跨行接收者"
+    );
+    let parameterized = "fn f(v: &[u8]) -> bool {\n    assert!(v.len() >= 2);\n    assert!(v.windows(2).all(|p| p[0] < p[1]));\n    true\n}\n";
+    assert_eq!(
+        unbounded_all_any_sites("parameterized", parameterized).len(),
+        0,
+        "R143 带参函数"
+    );
+    // ⭐ R140/R143：**嵌套函数**之后的站点 —— 最近的那个 `fn ` 是内层函数、但站点在它**外面**
+    // ⇒ 必须回退到真正的宿主函数（否则同根下界看不见 ⇒ **假阳性**）。这条对照是形态级注入
+    // `I16-06` 抓到的真缺陷的常驻化（第十六轮）。
+    let nested_then_site = "fn outer() {\n    fn inner() { let _ = 1; }\n    assert!(v.len() >= 2);\n    assert!(v.windows(2).all(|p| p[0] < p[1]));\n}\n";
+    assert_eq!(
+        unbounded_all_any_sites("nested_then_site", nested_then_site).len(),
+        0,
+        "宿主体内的站点必须用**宿主**函数体（内层 `fn` 不包含站点）"
+    );
+    // 反向对照：站点在**内层函数之内**、界在外层 ⇒ 内层作用域无界 ⇒ 报无界（保守方向：多报）。
+    let site_inside_inner = "fn outer() {\n    assert!(v.len() >= 2);\n    fn inner() { assert!(v.windows(2).all(|p| p[0] < p[1])); }\n}\n";
+    assert_eq!(
+        unbounded_all_any_sites("site_inside_inner", site_inside_inner).len(),
+        1,
+        "内层函数之内的站点不得借用外层函数的界（保守方向：多报）"
     );
 }
