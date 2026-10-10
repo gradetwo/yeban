@@ -1182,6 +1182,11 @@ proptest! {
 /// 放在 `proptest!` 之外：本判据没有随机输入，遍历的是全部 182 条登记流派。
 #[test]
 fn every_genre_can_change_its_section_with_the_seed() {
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     let mut genres_that_vary = 0usize;
     for rule in GenreLibrary::all() {
         let baseline = rule.sketch(PitchClass::C, 4).unwrap();

@@ -797,6 +797,8 @@ mod tests {
 
     #[test]
     fn voices_are_a_total_mapping_with_distinct_ordinals_names_and_keys() {
+        // R102：`windows(2)` 在长度 < 2 时恒真 ⇒ 先钉下界（长度是编译期常量也要钉）。
+        assert!(DrumVoice::ALL.len() >= 2, "the voice table must have pairs");
         for (index, voice) in DrumVoice::ALL.iter().enumerate() {
             assert_eq!(voice.ordinal(), index, "{}", voice.name());
         }
@@ -905,6 +907,10 @@ mod tests {
         for meter in [Meter::MARCH, Meter::WALTZ, COMMON, Meter::SEVEN_EIGHT] {
             let grid = full_grid(meter, 2);
             let pattern = pattern(meter, 2, grid.onsets_per_bar(), None, 2);
+            assert!(
+                !grid.hits().is_empty() && pattern.hits().len() >= 2,
+                "{meter:?}: scan domain too small"
+            );
             for hit in grid.hits() {
                 assert!(has(&pattern, DrumVoice::HiHat, hit.bar, hit.cell));
             }
@@ -1202,6 +1208,10 @@ mod tests {
         for meter in [Meter::MARCH, Meter::WALTZ, COMMON, Meter::COMPOUND_DUPLE] {
             let grid = full_grid(meter, 2);
             let pattern = pattern(meter, 2, grid.onsets_per_bar(), None, 1);
+            assert!(
+                !pattern.hits().is_empty() && !grid.hits().is_empty(),
+                "{meter:?}: scan domain too small"
+            );
             for hit in pattern.hits() {
                 let onset = grid.hits().iter().find(|onset| {
                     onset.tick == hit.tick

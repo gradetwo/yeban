@@ -626,6 +626,11 @@ mod tests {
                 let grid = metric_grid(Meter::COMMON, 3, 8).unwrap();
                 let constraints = MelodyConstraints::new(60, 84, max_leap).unwrap();
                 let melody = melody_over_chords(&key, &spans, &grid, constraints, seed).unwrap();
+                // R102：`windows(2)` 在少于 2 个元素时恒真 ⇒ 先钉下界。
+                assert!(
+                    melody.notes().len() >= 2,
+                    "seed {seed}: scan domain too small"
+                );
                 let mut worst = 0u8;
                 for pair in melody.notes().windows(2) {
                     worst = worst.max(pair[0].pitch.abs_diff(pair[1].pitch));
@@ -697,6 +702,9 @@ mod tests {
 
     #[test]
     fn strong_beats_take_a_chord_tone_when_the_window_has_one() {
+        // R106：`if note.weight < 1 { continue; }` 是过滤路径 ⇒ 必须计数并钉下界，
+        // 否则"没有强拍"时循环体内一条断言都不跑（真空通过）。
+        let mut strong_seen = 0usize;
         let key = c_major();
         let spans = four_spans();
         let grid = metric_grid(Meter::COMMON, 4, 8).unwrap();
@@ -708,6 +716,7 @@ mod tests {
                 if note.weight < 1 {
                     continue;
                 }
+                strong_seen += 1;
                 let span = spans
                     .iter()
                     .find(|span| {
@@ -728,6 +737,7 @@ mod tests {
                 );
             }
         }
+        assert!(strong_seen >= 16 * 2, "at least two strong beats per seed");
     }
 
     #[test]
@@ -877,6 +887,11 @@ mod tests {
 
     #[test]
     fn genre_melody_for_matches_the_unseeded_api_when_the_seed_picks_the_first_entries() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         // 旧 API 的行为是不变契约：种子若选中第 0 条走向与第 0 个音阶，
         // 种子版必须与 `genre_melody_with` 逐位相同。
         for rule in GenreLibrary::all() {

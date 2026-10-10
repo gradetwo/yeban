@@ -3196,6 +3196,11 @@ mod tests {
 
     #[test]
     fn id_is_lowercase_snake_case_ascii() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             assert!(
                 rule.id
@@ -3336,6 +3341,11 @@ mod tests {
 
     #[test]
     fn get_and_ids_agree() {
+        assert_eq!(
+            GenreLibrary::ids().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for id in GenreLibrary::ids() {
             let rule = GenreLibrary::get(id).unwrap();
             assert_eq!(rule.id, id);
@@ -3440,6 +3450,11 @@ mod tests {
 
     #[test]
     fn the_seed_selector_can_reach_every_registered_kind() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         // 类别⑤／类别③：种子选择的**幂等性**与**可复现性**。
         // 数什么：对每条流派、每个种子，`progression_for` / `scale_for` 连续
         // 调用两次的比较次数，单位 = "次"。种子 0..=63。
@@ -3554,6 +3569,11 @@ mod tests {
 
     #[test]
     fn registered_progression_and_scale_counts_are_pinned() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         // 数什么：把 182 条流派的 `typical_progressions` / `typical_scales`
         // 逐条相加。单位 = "条"（走向）与"个"（音阶）。
         let (mut progressions, mut scales) = (0usize, 0usize);
@@ -3576,6 +3596,11 @@ mod tests {
 
     #[test]
     fn the_bounded_accessors_answer_every_registered_index_and_nothing_beyond() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let last = rule.progression_count() - 1;
             assert_eq!(rule.progression_at(0), Some(rule.typical_progressions[0]));
@@ -3596,6 +3621,11 @@ mod tests {
 
     #[test]
     fn scale_at_parses_every_registered_name_and_reports_bounds_with_the_existing_error() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             for index in 0..rule.scale_count() {
                 let scale = rule.scale_at(PitchClass::C, index).unwrap();
@@ -3625,6 +3655,11 @@ mod tests {
 
     #[test]
     fn registered_scale_names_fold_onto_canonical_kinds_except_two_documented_aliases() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         // 实测（不是假设）：登记表里出现两个"别名"名 `ionian` 与 `aeolian`，
         // 而 `ScaleKind::parse` 把它们折到 `Major` / `NaturalMinor`。
         // 后果：`parse(name).name()` 的往返对这两个名字**不成立**，
@@ -3704,6 +3739,11 @@ mod tests {
 
     #[test]
     fn sketch_at_zero_and_a_zero_picking_seed_match_sketch_bit_for_bit() {
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         // 旧 API 的行为是**不变契约**：显式索引 0 与"种子恰好选中第 0 条"
         // 都必须与 `sketch` 逐位相同。
         for rule in GenreLibrary::all() {
@@ -3737,6 +3777,12 @@ mod tests {
 
     #[test]
     fn every_seeded_sketch_keeps_the_sketch_invariants_and_stays_in_its_own_key() {
+        // R93：本判据的全部断言都在 `for rule in all()` 里 ⇒ 域空了会真空通过。
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let bars = 4u32;
             let meter = rule.meter_value();
