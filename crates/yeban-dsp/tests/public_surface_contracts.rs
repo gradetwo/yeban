@@ -840,7 +840,6 @@ fn every_device_default_behaves_like_its_new_constructor() {
     );
 
     // 卷积（脉冲响应由夹具给：⛔ 不依赖任何构造器差异即可比较）。
-    let ir: Vec<f32> = (0..32).map(|index| 1.0 / (index as f32 + 1.0)).collect();
     // ⚠ **不自己设 IR**（R154）：若这里 `set_impulse_response(&ir)`，那么"`Default` 预配置了别的 IR"
     // 会被**遮蔽** ⇒ 等价性判据对 `Convolution` **没有牙**。这里只用实例**自带的** IR 处理输入。
     let drive_convolution = |mut conv: Convolution| -> Vec<u32> {
@@ -857,10 +856,10 @@ fn every_device_default_behaves_like_its_new_constructor() {
     );
 
     // 卷积混响（交织立体声块）。
+    // ⚠ **不自己设 IR／params**（R154）：否则"`Default` 预配置了 IR／参数"会被遮蔽 ⇒ 判据没有牙。
+    // 只设采样率（⛔ 与 `Default` 可能预配置的内容不重叠）。
     let drive_conv_reverb = |mut reverb: ConvolutionReverb| -> Vec<u32> {
         reverb.set_sample_rate(SR);
-        reverb.set_stereo_impulse_response(&ir, &ir);
-        reverb.set_params(ConvolutionReverbParams::default());
         let mut block: Vec<f32> = (0..2 * N)
             .map(|index| (index % 11) as f32 / 11.0 - 0.4)
             .collect();
@@ -875,8 +874,8 @@ fn every_device_default_behaves_like_its_new_constructor() {
     );
 
     // 真立体声卷积（四条脉冲响应）。
+    // ⚠ **不自己设 IR**（R154，同上）。
     let drive_stereo_conv = |mut conv: TrueStereoConvolution| -> Vec<u32> {
-        conv.set_impulse_response(&ir, &ir, &ir, &ir);
         let mut block: Vec<f32> = (0..2 * N)
             .map(|index| (index % 13) as f32 / 13.0 - 0.4)
             .collect();

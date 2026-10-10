@@ -1339,3 +1339,43 @@ fn normalisation_has_a_paired_control() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// R146：把"结构上不可能造配对已知红"的器件类**机械登记**（⛔ 不只写在报告里）
+// ---------------------------------------------------------------------------
+
+/// ⭐ **机械登记**：`ShapingEq`／`TransientShaper` 的 `process` 把**参数按调用传入**
+/// （`params: EqParams`／`params: TransientParams`）⇒ `Default` **无法携带参数差异**
+/// ⇒ 对这两个类型**结构上不可能**构造"只改默认值"的配对已知红。
+///
+/// ⭐ **配对对照**：`Convolution::process` **不接收参数** ⇒ 它的 `Default` **可以**携带差异
+/// （本会话已实测红：预配置 IR ⇒ 判据红）。两侧一起断言 ⇒ 这条分类**有判别力**，
+/// ⛔ 不是"看起来像"。
+#[test]
+fn the_structurally_impossible_paired_reds_are_registered_mechanically() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let shaping =
+        normalize_source(&fs::read_to_string(root.join("src/shaping.rs")).expect("读 shaping.rs"));
+    let convolution = normalize_source(
+        &fs::read_to_string(root.join("src/convolution.rs")).expect("读 convolution.rs"),
+    );
+    // ① 参数按调用传入：签名里出现 `params: <类型>`。
+    // ⚠ 实测：`shaping.rs` 里各有 **2** 处（`process` 签名 ＋ 一个测试辅助函数），
+    // 所以这里用**存在性**形态（R180：⛔ 不用"计数等于某值"的集合大小界，那会提前消解）。
+    assert!(
+        shaping.matches("params: EqParams").count() >= 1,
+        "`ShapingEq::process` 必须把 `params: EqParams` 按调用传入（⇒ Default 无法携带参数差异）"
+    );
+    assert!(
+        shaping.matches("params: TransientParams").count() >= 1,
+        "`TransientShaper::process` 必须把 `params: TransientParams` 按调用传入"
+    );
+    // ② 配对对照：`Convolution::process` **不接收**参数（`&mut [f32]` 就地处理）。
+    assert_eq!(
+        convolution
+            .matches("pub fn process(&mut self, block: &mut [f32]) -> usize")
+            .count(),
+        1,
+        "`Convolution::process` 不该接收参数 ⇒ 它的 Default **可以**携带差异（已实测红）"
+    );
+}
