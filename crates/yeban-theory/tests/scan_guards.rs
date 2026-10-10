@@ -33,8 +33,55 @@ use yeban_theory::scale::{Scale, ScaleKind};
 fn mask_preserving_len(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = raw.to_owned().into_bytes();
+    let mask = |out: &mut Vec<u8>, start: usize, end: usize| {
+        let stop = end.min(out.len());
+        for byte in out.iter_mut().take(stop).skip(start) {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    };
     let mut index = 0usize;
     while index < bytes.len() {
+        // ⭐ R225①：**raw / byte-raw 字符串**（`r"…"`、`r#"…"#`、`br#"…"#`）。
+        // 结束条件必须计**同样个数**的 `#`（`"` ＋ N 个 `#` —— R229③ 点名的 off-by-i）。
+        let raw_at = if bytes[index] == b'r' {
+            Some(index)
+        } else if bytes[index] == b'b' && index + 1 < bytes.len() && bytes[index + 1] == b'r' {
+            Some(index + 1)
+        } else {
+            None
+        };
+        if let Some(rs) = raw_at {
+            let mut cursor = rs + 1;
+            let mut hashes = 0usize;
+            while cursor < bytes.len() && bytes[cursor] == b'#' {
+                hashes += 1;
+                cursor += 1;
+            }
+            if cursor < bytes.len() && bytes[cursor] == b'"' {
+                let body = cursor + 1;
+                let mut end = bytes.len();
+                let mut probe = body;
+                while probe < bytes.len() {
+                    if bytes[probe] == b'"'
+                        && bytes[probe + 1..]
+                            .iter()
+                            .take(hashes)
+                            .filter(|b| **b == b'#')
+                            .count()
+                            == hashes
+                    {
+                        end = probe + 1 + hashes;
+                        break;
+                    }
+                    probe += 1;
+                }
+                mask(&mut out, index, end);
+                index = end;
+                continue;
+            }
+        }
         match bytes[index] {
             b'"' => {
                 let start = index;
@@ -50,10 +97,30 @@ fn mask_preserving_len(raw: &str) -> String {
                     }
                     index += 1;
                 }
-                for byte in out.iter_mut().take(index.min(bytes.len())).skip(start) {
-                    if *byte != b'\n' {
-                        *byte = b' ';
+                mask(&mut out, start, index);
+            }
+            // ⭐ R225①：**字符字面量**只在**12 字节内能闭合**时才算字面量。
+            // 否则 `&'a str` 这类**生命周期**会一路吞到下一个 `'` ⇒ **假阴性**。
+            b'\'' => {
+                let limit = (index + 12).min(bytes.len());
+                let mut close = None;
+                let mut probe = index + 1;
+                while probe < limit {
+                    if bytes[probe] == b'\\' {
+                        probe += 2;
+                        continue;
                     }
+                    if bytes[probe] == b'\'' {
+                        close = Some(probe);
+                        break;
+                    }
+                    probe += 1;
+                }
+                if let Some(c) = close {
+                    mask(&mut out, index, c + 1);
+                    index = c + 1;
+                } else {
+                    index += 1;
                 }
             }
             b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'/' => {
@@ -61,16 +128,12 @@ fn mask_preserving_len(raw: &str) -> String {
                 while index < bytes.len() && bytes[index] != b'\n' {
                     index += 1;
                 }
-                for byte in out.iter_mut().take(index).skip(start) {
-                    *byte = b' ';
-                }
+                mask(&mut out, start, index);
             }
             b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
                 let start = index;
                 index += 2;
-                // ⭐ R220①：块注释必须**按嵌套深度**消费。只找**第一个** `*/` 会在
-                // `/* a /* b */ c */` 上提前收工，把 `c */ …` 留成"代码" ⇒ **假阳性**
-                // （而长度自检**照样通过** ⇒ 长度等长是**必要但不充分**的）。
+                // ⭐ R220①：块注释必须**按嵌套深度**消费（只找第一个 `*/` 会漏 ⇒ 假阳性）。
                 let mut depth = 1usize;
                 while index + 1 < bytes.len() && depth > 0 {
                     if bytes[index] == b'/' && bytes[index + 1] == b'*' {
@@ -85,17 +148,12 @@ fn mask_preserving_len(raw: &str) -> String {
                     }
                     index += 1;
                 }
-                for byte in out.iter_mut().take(index).skip(start) {
-                    if *byte != b'\n' {
-                        *byte = b' ';
-                    }
-                }
+                mask(&mut out, start, index);
             }
             _ => index += 1,
         }
     }
     let masked = String::from_utf8(out).expect("masking only writes ASCII spaces");
-    // ⭐ R113 自检：逐字节等长。
     assert_eq!(
         masked.len(),
         raw.len(),
@@ -649,6 +707,41 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             "R220①: the residue `c */` must be masked, not left as code ({label})"
         );
     }
+
+    // ⭐ R225① **四件套之外的 Rust 构造** ＋ ⭐ 正对照（R229③ 的"标识符不得被当原始字符串"）。
+    for (label, sample, visible) in [
+        // 生命周期：`'a` **不是**字符字面量 ⇒ 其后的真针必须可见
+        (
+            "lifetime",
+            "fn f<'a>(s: &'a str) -> &'a str { s } assert_ne!(x, x);",
+            1usize,
+        ),
+        // 字符字面量里含引号：字符被掩，其后的真针必须可见
+        ("char-with-quote", "let q = '\"'; assert_ne!(x, x);", 1),
+        // 原始字符串：按**同样个数的 `#`** 收尾 ⇒ 其后的真针必须可见
+        (
+            "raw-string",
+            "let s = r#\"has \" quotes\"#; assert_ne!(x, x);",
+            1,
+        ),
+        // 原始字符串**内含**针 ⇒ 必须**不可见**
+        ("raw-string-hidden", "let s = r#\"assert_ne!(x, x);\"#;", 0),
+        // ⭐ 正对照：标识符（`rust`）**不得**被当成 raw string ⇒ 基名必须保留
+        ("identifier-not-raw", "let rust = 1; assert_ne!(x, x);", 1),
+    ] {
+        let masked = mask_preserving_len(sample);
+        assert_eq!(masked.len(), sample.len(), "R225① length: {label}");
+        assert_eq!(
+            masked.matches("assert_ne!").count(),
+            visible,
+            "R225① visible-needle count: {label}"
+        );
+    }
+    // 正对照的"标识符仍可见"读数（只掩**内容**，⛔ 不抹标识符本身）。
+    assert!(
+        mask_preserving_len("let rust = 1;").contains("rust"),
+        "R229③: an identifier must survive masking (it is not a raw string)"
+    );
 
     // ---- R56/R112：五种形态**每种一条已知绿** ＋ **一条"无界"已知红** ----
     // (label, sample, expect_bound, expected form mask)
