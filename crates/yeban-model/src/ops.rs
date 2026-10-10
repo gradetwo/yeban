@@ -4512,6 +4512,12 @@ mod tests {
     fn routing_node_ops_keep_the_node_list_sorted() {
         let mut doc = fixture_document();
         let before = doc.routing_graph.nodes.clone();
+        // R93：`windows(2).all(…)` 在**长度 < 2** 时恒真 ⇒ 先钉住夹具下界，
+        // 否则"插入最小节点后仍有序"可以在退化夹具上空转。
+        assert!(
+            before.len() >= 2,
+            "夹具必须至少两个节点, 否则下面的有序性断言是空转的: {before:?}"
+        );
         assert!(
             before.windows(2).all(|pair| pair[0] < pair[1]),
             "夹具自身必须已经有序: {before:?}"
@@ -4525,6 +4531,10 @@ mod tests {
             doc.routing_graph.nodes.first(),
             Some(&smallest),
             "新节点必须排在最前（push 会把它放到末尾）"
+        );
+        assert!(
+            doc.routing_graph.nodes.len() >= 3,
+            "插入后必须至少三个节点, 否则有序性断言在退化输入上空转"
         );
         assert!(
             doc.routing_graph

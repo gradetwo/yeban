@@ -817,6 +817,12 @@ fn lane_arrays_serialize_in_target_key_order() {
     }
     let mut expected: Vec<AutomationTarget> = lanes.keys().copied().collect();
     expected.sort();
+    // R93：`windows(2).all(…)` 对长度 < 2 的集合**恒真** ⇒ 先钉住下界，
+    // 否则"序列化成键升序"可以在一张只有 0/1 条泳道的夹具上空转。
+    assert!(
+        expected.len() >= 2,
+        "夹具必须真的有多条不同泳道（≥2）, 否则顺序断言是空转的: {expected:?}"
+    );
     assert!(
         expected.windows(2).all(|pair| pair[0] < pair[1]),
         "夹具必须真的有多条不同泳道: {expected:?}"

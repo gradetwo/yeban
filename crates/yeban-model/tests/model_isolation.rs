@@ -1391,8 +1391,30 @@ fn window_and_pid_sets_are_deterministic() {
     for pair in ordered.windows(2) {
         assert!(pair[0] < pair[1], "相邻元素必须严格升序: {pair:?}");
     }
-    // 连续两次遍历必须完全相同（哈希种子不得影响顺序）。
-    assert_eq!(session.windows_in_order(), session.windows_in_order());
+    // ⛔ 原写法 `assert_eq!(a(), a())` 是**恒真**（同一个纯函数、同一份未变状态被调用两次，
+    //    两侧文本完全相同 ⇒ R75/R80 的形状①）。改成**跨实例**确定性：另起一个会话
+    //    （走**另一条合法构造路径** `new()`，R86 要求驱动不得对两个被测实例做相同初始化），
+    //    按同样的插入顺序放同样 6 个视窗 ⇒ 两个**不同实例**的遍历必须逐元素相同。
+    //    这样"哈希种子不影响顺序"才是真的被检验，而不是自比。
+    let mut twin = SessionRuntimeState::new();
+    for index in [3_usize, 0, 5, 2, 4, 1] {
+        assert!(twin.open_window(all_windows[index]));
+    }
+    assert_eq!(
+        twin.open_windows.len(),
+        6,
+        "R93：对照组必须真的装进 6 个视窗，否则下面两条断言是空转的"
+    );
+    assert_eq!(
+        session.windows_in_order(),
+        twin.windows_in_order(),
+        "两个独立实例（同样插入顺序、不同构造路径）必须给出同一顺序 —— BTreeSet 与哈希种子无关"
+    );
+    assert_eq!(
+        session.windows_in_order().len(),
+        6,
+        "R93：被遍历的集合非空且达到下界"
+    );
 
     // PID 集合：重复 PID 去重 + 升序。
     session.track_plugin_process(

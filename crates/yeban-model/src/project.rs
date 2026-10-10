@@ -5139,6 +5139,95 @@ mod tests {
         );
     }
 
+    /// **R94 掩码器**：把 Rust 源码里的**注释与字符串/字符字面量**换成空格，
+    /// 但**保留换行**（行号与行结构不变）。识别器必须先掩码再找锚点。
+    ///
+    /// 为什么需要（第十轮）：本判据族按**文本锚点**切片（`find("pub struct RoutingGraph {")` /
+    /// `find("\n    }\n")`）。锚点若出现在**注释或字符串**里，未掩码的扫描器会把它当真锚点
+    /// ⇒ 判据被"假锚点"骗过（R94 的掩码缺失形态）。
+    ///
+    /// 为什么字符字面量只认闭合形态 `'x'` / `'\n'`：Rust 的**生命周期** `'de` / `'a` 也以 `'`
+    /// 开头，把它们当字面量会吞掉大段代码（本文件就有 `impl<'de> Deserialize<'de>`）。
+    fn mask_rust_comments_and_strings(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0_usize;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                while i < chars.len() && chars[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                let mut depth = 0_usize;
+                while i < chars.len() {
+                    if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                        depth += 1;
+                        out.push(' ');
+                        out.push(' ');
+                        i += 2;
+                        continue;
+                    }
+                    if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                        depth -= 1;
+                        out.push(' ');
+                        out.push(' ');
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                    out.push(if chars[i] == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '"' {
+                out.push(' ');
+                i += 1;
+                while i < chars.len() {
+                    let d = chars[i];
+                    if d == '\\' {
+                        out.push(' ');
+                        i += 1;
+                        if i < chars.len() {
+                            out.push(if chars[i] == '\n' { '\n' } else { ' ' });
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if d == '"' {
+                        out.push(' ');
+                        i += 1;
+                        break;
+                    }
+                    out.push(if d == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '\'' {
+                let escaped = i + 3 < chars.len() && chars[i + 1] == '\\' && chars[i + 3] == '\'';
+                let plain = i + 2 < chars.len() && chars[i + 2] == '\'';
+                if escaped || plain {
+                    let take = if escaped { 4 } else { 3 };
+                    for _ in 0..take {
+                        out.push(' ');
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
     /// 从 `project.rs` 的源码文本里抽出 `pub struct RoutingGraph { … }` 的字段名。
     ///
     /// R51 探针注释：**入口先规范化换行**（`\r\n` 与孤立 `\r` 都折成 `\n`）。
@@ -5149,6 +5238,7 @@ mod tests {
     /// `routing_graph_source_scan_pins_both_line_ending_contracts` 逐条钉住。
     fn routing_graph_fields_in_source(text: &str) -> Vec<String> {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = mask_rust_comments_and_strings(&text);
         let struct_at = text.find("pub struct RoutingGraph {").expect("结构体定义");
         let struct_body = &text[struct_at..];
         let struct_end = struct_body.find("\n}").expect("结构体结束");
@@ -5168,6 +5258,7 @@ mod tests {
     /// 在 CRLF 工作区上 panic。`RoutingGraph` 在文件里只有一个 `impl` 块，故锚点唯一。
     fn routing_graph_validate_body_in_source(text: &str) -> String {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = mask_rust_comments_and_strings(&text);
         let impl_at = text.find("impl RoutingGraph {").expect("impl 定义");
         let impl_body = &text[impl_at..];
         let fn_at = impl_body
@@ -5352,6 +5443,71 @@ mod tests {
                 ..placement
             },
             "只差 `loop_config.enabled` 必须判为不同"
+        );
+    }
+
+    /// **R94 的探针**：掩码器必须先掩掉注释与字符串里的锚点，且**保留换行**；
+    /// 并且要证明**识别器真的调用了掩码器**。
+    ///
+    /// 为什么需要：本判据族按文本锚点切片，未掩码时"注释/字符串里写一行
+    /// `pub struct RoutingGraph {` 紧跟一行 `}`"就能把扫描器骗到别处（R94 的掩码缺失形态）。
+    /// 本判据给掩码器喂一条**已知红**（假锚点必须被掩掉 ⇒ 识别器仍只认真定义）与一条
+    /// **已知绿**（真代码不得被掩、换行数不变、真源码里的真锚点仍可被找到）。
+    #[test]
+    fn the_source_masker_hides_comments_and_strings_but_keeps_code_and_newlines() {
+        // 块注释**跨行**且内含 `}`：未掩码时 `find("\n}")` 会在注释里就停下 ⇒ 抽到空字段。
+        let fake = "/* pub struct RoutingGraph {\n} */\nfn real() {}\n";
+        let masked = mask_rust_comments_and_strings(fake);
+        assert!(
+            !masked.contains("pub struct RoutingGraph {"),
+            "注释里的锚点必须先被掩掉: {masked:?}"
+        );
+        assert!(masked.contains("fn real()"), "真代码不得被掩掉");
+        assert_eq!(
+            masked.matches('\n').count(),
+            fake.matches('\n').count(),
+            "掩码必须保留换行（行号不能漂）"
+        );
+        assert_eq!(masked.len(), fake.len(), "ASCII 输入下掩码必须保长");
+        // 生命周期 `'de` 不得被当成字符字面量而吞掉后面的代码（本文件真有 `impl<'de>`）。
+        let lifetimes = "impl<'de> Deserialize<'de> for X { fn f() {} }";
+        assert_eq!(
+            mask_rust_comments_and_strings(lifetimes),
+            "impl<'de> Deserialize<'de> for X { fn f() {} }",
+            "生命周期不得被掩码吞掉"
+        );
+
+        // 已知绿：真源码里的**真**锚点在掩码后仍然找得到，且行数不变。
+        let raw = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project.rs"),
+        )
+        .expect("读取 project.rs");
+        let text = raw.replace("\r\n", "\n").replace('\r', "\n");
+        let masked_real = mask_rust_comments_and_strings(&text);
+        assert!(masked_real.contains("pub struct RoutingGraph {"));
+        assert!(masked_real.contains("impl RoutingGraph {"));
+        assert_eq!(
+            masked_real.matches('\n').count(),
+            text.matches('\n').count(),
+            "真源码掩码后行数必须不变"
+        );
+        // R58：同一个 `==` 上成对。
+        assert_ne!(
+            masked_real, text,
+            "真源码里有注释/字符串 ⇒ 掩码结果必须与原文本不同"
+        );
+
+        // ⭐ 关键：把"注释里的假锚点"插到真源码**之前**，识别器仍必须只认后面那个真定义。
+        // 未掩码时会先在注释里撞上锚点、并在注释内的 `}` 处停下 ⇒ 抽到空字段 ⇒ 红。
+        let decoy = format!("/* pub struct RoutingGraph {{\n}} */\n{text}");
+        assert_eq!(
+            routing_graph_fields_in_source(&decoy),
+            vec!["nodes".to_owned(), "edges".to_owned()],
+            "注释里的假锚点不得被识别器当真（R94：识别器必须先掩码）"
+        );
+        assert!(
+            routing_graph_validate_body_in_source(&decoy).contains("self.nodes"),
+            "正文抽取也不得被注释里的假锚点带偏"
         );
     }
 }
