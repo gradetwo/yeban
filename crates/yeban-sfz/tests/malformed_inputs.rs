@@ -623,6 +623,17 @@ fn an_effect_section_without_normative_opcodes_produces_nothing_and_no_error() {
     // 空段 / 只写非规范 opcode 的段：没有数据可丢 ⇒ 不产生条目也不报错（与 `<curve>` 同口径）。
     // 注意 `param_offset` 是 ARIA 为 `<effect>` 文档化的 opcode（`/opcodes/param_offset/`），
     // 所以它**不算**非规范；这里用的 `fx1` 才是 Rapture 的厂商私有名字。
+    // ⭐ R102 的**正对照**：循环里的 negated-`any(IgnoredHeader)` 在 `warnings()` 为空时真空
+    // ⇒ 先用一个真正未知的段头证明**这个谓词能命中**，下面的检查才有意义。
+    let control = parse_text("<bogus>\n", &ParseLimits::default()).expect("parses");
+    assert!(
+        control
+            .warnings()
+            .iter()
+            .any(|warning| matches!(warning, yeban_sfz::Warning::IgnoredHeader { .. })),
+        "the positive control must produce an ignored-header warning, got {:?}",
+        control.warnings()
+    );
     for source in [
         "<effect>",
         "<effect>\n",

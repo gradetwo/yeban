@@ -2126,6 +2126,24 @@ mod tests {
             ),
             "master must not be reported as an ignored header"
         );
+        // ⭐ R102 的**正对照**：上面那条是 negated-`any` —— 若 `warnings()` 为空它会**真空通过**
+        // （而"master 被识别"时警告本来就该是空的，所以真空是**常态** ✗）。
+        // 这里先证明**同一个谓词能命中**（借一个真正未知的段头），再断言 master 不在其中。
+        let control = parse_text("<master>key=36\n<bogus>\n", &Default::default()).expect("parses");
+        assert!(
+            control
+                .warnings()
+                .iter()
+                .any(|warning| matches!(warning, Warning::IgnoredHeader { .. })),
+            "the positive control must produce an ignored-header warning, got {:?}",
+            control.warnings()
+        );
+        assert!(
+            !control.warnings().iter().any(
+                |warning| matches!(warning, Warning::IgnoredHeader { name, .. } if name == "master")
+            ),
+            "even with warnings present, master must not be among them"
+        );
         assert_eq!(Header::from_name("master"), Some(Header::Master));
         assert_eq!(Header::from_name("MASTER"), Some(Header::Master));
         assert_eq!(Header::Master.name(), "master");
