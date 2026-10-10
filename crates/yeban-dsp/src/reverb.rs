@@ -1420,4 +1420,83 @@ mod tests {
         assert_ne!(fast.0, corner.0, "两个采样率的首次到达必须不同");
         assert_ne!(fast.1, corner.1, "两个采样率的位型必须不同");
     }
+
+    /// **判据（新写，可红）**：**再次**调用 [`Reverb::set_sample_rate`] 必须丢弃
+    /// 预延迟线里的历史（哪怕是同一个采样率）。
+    ///
+    /// 量什么：探测块的两条声道输出（`f32` 位型，帧数）。
+    ///
+    /// 夹具为什么要这样搭：预延迟线是**唯一**进入梳状组的通道，而梳状组一旦被激励
+    /// 就有长尾。为了让"线里的历史"成为**唯一**可观测的差异，激励取"整块输入里只有
+    /// 最后一个样本非零" —— 该样本要再过 `pre_len` 帧才会被读到，因此激励结束时
+    /// 梳状组**一次也没被激励**，而预延迟线里**确实**有内容。
+    ///
+    /// 为什么需要它（机械读数）：[`Reverb::set_sample_rate`] 在预延迟线已按
+    /// `PREDELAY_MAX` 分配时走 `else` 分支把两条线清零。把那两行 `fill(0.0)`
+    /// 改成"只清第 0 格"时，全库 437 条判据**全绿**（实测：本票 48 次注入里的 R04）：
+    /// 既有的 `changing_the_pre_delay_length_never_replays_stale_audio` 走的是
+    /// [`Reverb::set_params`]，不覆盖这个入口。
+    ///
+    /// 注入实测：`set_sample_rate` 的 `else` 分支只清第 0 格 ⇒ 本判据变红。
+    #[test]
+    fn calling_set_sample_rate_again_drops_the_predelay_history() {
+        /// 激励帧数：必须大于 `pre_len`（`0.05 s @ 48 kHz` = `2 400` 帧）。
+        const EXCITE: usize = 8_192;
+        /// 探测帧数：大于 `pre_len`，让残留的样本真的到达梳状组。
+        const PROBE: usize = 4_096;
+
+        let params = ReverbParams {
+            size: 0.5,
+            damp: 0.35,
+            // `mix = 1.0` ⇒ 干路为 0，输出只来自湿路（梳状组 ＋ 预延迟线）。
+            mix: 1.0,
+            width: 0.8,
+            predelay: 0.05,
+        };
+        let build = || {
+            let mut verb = Reverb::new();
+            verb.set_sample_rate(SR);
+            verb.set_params(params);
+            verb
+        };
+        // 只有最后一个样本非零 ⇒ 激励结束时梳状组是静的，预延迟线里却有内容。
+        let tail_excite = |verb: &mut Reverb| {
+            let mut left = vec![0.0f32; EXCITE];
+            let mut right = vec![0.0f32; EXCITE];
+            left[EXCITE - 1] = 1.0;
+            right[EXCITE - 1] = 1.0;
+            verb.process(&mut left, &mut right);
+        };
+
+        // `rearmed`：第二次 `set_sample_rate`（按文档必须丢弃预延迟历史）。
+        // `control`：不调第二次 —— 它是本判据的**牙**：它证明夹具的预延迟线里
+        // 真的有会被重放的内容。
+        let mut rearmed = build();
+        tail_excite(&mut rearmed);
+        rearmed.set_sample_rate(SR);
+        let mut control = build();
+        tail_excite(&mut control);
+
+        let mut rearmed_l = vec![0.0f32; PROBE];
+        let mut rearmed_r = vec![0.0f32; PROBE];
+        rearmed.process(&mut rearmed_l, &mut rearmed_r);
+        let mut control_l = vec![0.0f32; PROBE];
+        let mut control_r = vec![0.0f32; PROBE];
+        control.process(&mut control_l, &mut control_r);
+
+        assert!(
+            control_l.iter().any(|sample| sample.abs() > 1e-4)
+                && control_r.iter().any(|sample| sample.abs() > 1e-4),
+            "对照实例没有重放任何东西 ⇒ 夹具里根本没有预延迟历史，本判据没有判别力"
+        );
+        for (frame, sample) in rearmed_l.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.0f32.to_bits(),
+                "第 {frame} 帧：再次 set_sample_rate 之后预延迟线的旧内容被重放了（幅度 {}）",
+                sample
+            );
+        }
+        assert!(rearmed_r.iter().all(|sample| *sample == 0.0));
+    }
 }

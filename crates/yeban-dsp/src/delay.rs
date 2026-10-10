@@ -842,4 +842,68 @@ mod tests {
             "reset 之后与刚 configure 的实例有 {differing} 帧不同 ⇒ 旧抽头位置被重放"
         );
     }
+
+    /// **判据（新写，可红）**：同一采样率下**再次** `configure` 必须丢弃线里的旧音频。
+    ///
+    /// 量什么：第二次 `configure` 之后喂静音得到的输出切片（`f32` 位型，帧数），
+    /// 以及前置条件（第一次处理输出里有非零样本，帧数）。
+    ///
+    /// 为什么需要它（机械读数）：[`Delay::configure`] 的文档写的是"它同时清零时间抽头
+    /// 与阻尼状态"，而"清零线内容"这一步只由 `line.clear()` 承担 ——
+    /// `line.resize(max + 2, 0.0)` 在**长度不变**时是**空操作**，它会**保留**旧内容。
+    /// 把 `line.clear();` 删掉时，全库 437 条判据**全绿**（实测：本票 48 次注入里的 R01）；
+    /// 既有的 `reset_reproduces_a_freshly_built_device_bit_for_bit` 走的是
+    /// [`Delay::reset`]（那里用的是 `line.fill(0.0)`），因此不覆盖这条路。
+    ///
+    /// ⚠ 夹具为什么必须让第一次处理**绕满整条线**（这是第二版；第一版实测全绿、
+    /// 已作废）：读位置比写位置**落后** `delay` 帧，因此线里 `[0, delay)` 这一段会在
+    /// 被读到**之前**先被覆写。第二次 `configure` 之后写头回到 `0`，于是本次调用
+    /// **最先读到**的是线**末尾**的 `[len − delay, len)` 这一段 —— 只有把旧音频写到
+    /// 那里（写头绕满一圈），它才是可观测的。
+    ///
+    /// 注入实测：删掉 `configure` 里的 `line.clear();` ⇒ 本判据变红。
+    #[test]
+    fn reconfiguring_at_the_same_sample_rate_drops_the_old_line_content() {
+        /// 采样率：`2.0 s` 的线长与 `0.05 s` 的延迟抽头。
+        const RATE: f32 = 48_000.0;
+        /// 线长 = `MAX_DELAY_SECONDS(2.0) · RATE + 2`（与 `configure` 同一算式）。
+        const LINE: usize = 96_002;
+        /// 延迟抽头：`0.05 s @ 48 kHz` = `2 400` 帧。
+        const TAP: usize = 2_400;
+        let params = DelayParams {
+            time_s: 0.05,
+            feedback: 0.0,
+            mix: 1.0,
+            damp: 0.0,
+            ping_pong: false,
+        };
+        let mut delay = Delay::new();
+        delay.configure(RATE);
+
+        // 第一次处理：整整一圈，且只有**最后一个**样本非零 ⇒ 它落在线的最后一格。
+        let mut left = vec![0.0f32; LINE];
+        let mut right = vec![0.0f32; LINE];
+        left[LINE - 1] = 1.0;
+        right[LINE - 1] = 1.0;
+        delay.process(params, &mut left, &mut right);
+        assert!(
+            left.iter().any(|sample| sample.abs() > 1e-3),
+            "第一次处理必须有输出 ⇒ 线里真的写进了音频"
+        );
+
+        // 同一采样率再次 configure：按文档，线与抽头都必须回到刚装配的状态。
+        delay.configure(RATE);
+        let mut probe_l = vec![0.0f32; TAP + 1_200];
+        let mut probe_r = vec![0.0f32; TAP + 1_200];
+        delay.process(params, &mut probe_l, &mut probe_r);
+        for (frame, sample) in probe_l.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.0f32.to_bits(),
+                "第 {frame} 帧：再次 configure 之后旧音频被重放了（幅度 {}）",
+                sample
+            );
+        }
+        assert!(probe_r.iter().all(|sample| *sample == 0.0));
+    }
 }

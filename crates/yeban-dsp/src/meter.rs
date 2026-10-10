@@ -2342,4 +2342,44 @@ mod tests {
             }
         }
     }
+
+    /// **判据（新写，可红）**：真峰值**上报**的延迟必须等于多相核的群延迟。
+    ///
+    /// 量什么：`TruePeakDetector::latency_samples()` 的读数（单位：样本），
+    /// 以及 `TRUE_PEAK_TAPS` / `TRUE_PEAK_LATENCY_SAMPLES` 的**字面值**。
+    ///
+    /// 为什么需要它（机械读数）：既有判据只钉住 `TRUE_PEAK_LATENCY_SAMPLES ==
+    /// TRUE_PEAK_TAPS / 2`（**常量对常量**）与核的相干性，**没有一条**把
+    /// **上报口径**与那个常量绑起来。把访问器的返回从 `TRUE_PEAK_LATENCY_SAMPLES`
+    /// 改成 `TRUE_PEAK_LATENCY_SAMPLES + 1` 时，全库 437 条判据**全绿**
+    /// （实测：本票 48 次注入里的 L11）。上报值差一个样本，调用方的 PDC 补偿
+    /// 就整体差一个样本。
+    ///
+    /// 字面值断言是刻意的：若 `TRUE_PEAK_LATENCY_SAMPLES` 与 `TRUE_PEAK_TAPS`
+    /// **一起**被改（例如 `34` 与 `17`），"常量对常量"的判据仍然绿。
+    /// 注入实测：改访问器的返回 ⇒ 本判据变红。
+    #[test]
+    fn the_reported_true_peak_latency_is_the_kernel_centre() {
+        // 字面值（不是常量对常量）。
+        assert_eq!(TRUE_PEAK_TAPS, 32);
+        assert_eq!(TRUE_PEAK_LATENCY_SAMPLES, 16);
+        // 上报口径 == 核的 sinc 中心 == 常量。
+        assert_eq!(
+            TruePeakDetector::new().latency_samples(),
+            TRUE_PEAK_LATENCY_SAMPLES,
+            "默认 8× 表的上报延迟必须等于核中心"
+        );
+        assert_eq!(
+            TruePeakDetector::with_oversampling(TRUE_PEAK_PHASES_HIGH)
+                .expect("16× 表存在")
+                .latency_samples(),
+            TRUE_PEAK_LATENCY_SAMPLES,
+            "上报口径与过采样倍数无关（两张表共用同一个抽头数）"
+        );
+        // 处理与复位都不改这个读数（它是编译期常量返回）。
+        let mut detector = TruePeakDetector::new();
+        let _ = detector.process(&[1.0f32; 64]);
+        detector.reset();
+        assert_eq!(detector.latency_samples(), TRUE_PEAK_LATENCY_SAMPLES);
+    }
 }

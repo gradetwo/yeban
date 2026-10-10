@@ -944,4 +944,93 @@ mod tests {
             "两侧输出都不得超过天花板 {LIMITER_CEILING}"
         );
     }
+
+    /// **判据（新写，可红）**：空块在**已经推进过**的实例上也必须是完全的空操作。
+    ///
+    /// 量什么：两台实例在"同一个中间点上，其中一台多调了一次零帧"之后的
+    /// 剩余输出（`f32` 位型，帧数）＋ `gain()`（无量纲）＋ `reduction_count()`（个样本）。
+    ///
+    /// 为什么需要它（机械读数）：既有的 `zero_frames_is_a_no_op` 用的是**全新**实例，
+    /// 那里 `self.write` 本来就是 `0`，所以"零帧时把写头归零"这类改动**不可观测**。
+    /// 把 `if frames == 0 { return 0; }` 改成"先把 `self.write` 归零再返回"时，
+    /// 全库 437 条判据**全绿**（实测：本票 48 次注入里的 B01）。
+    /// 写头是音频状态：它一偏，输出与输入的**对齐**就整体平移。
+    ///
+    /// 注入实测：零帧分支里插入 `self.write = 0;` ⇒ 本判据变红。
+    #[test]
+    fn an_empty_block_never_moves_an_already_advanced_instance() {
+        /// 中间点：把写头推到非零（`HALF % LOOKAHEAD_SAMPLES` = `100 % 33` = 1）。
+        const HALF: usize = 100;
+        let source: Vec<f32> = (0..2 * HALF)
+            .map(|index| 0.5 * (index as f32 * 0.07).sin())
+            .collect();
+
+        let mut plain = Limiter::new();
+        let mut empty = Limiter::new();
+        let mut plain_l = source.clone();
+        let mut plain_r = source.clone();
+        let mut empty_l = source.clone();
+        let mut empty_r = source.clone();
+
+        plain.process_stereo(&mut plain_l[..HALF], &mut plain_r[..HALF]);
+        empty.process_stereo(&mut empty_l[..HALF], &mut empty_r[..HALF]);
+        assert_eq!(empty.process_stereo(&mut [], &mut []), 0, "零帧必须报 0 帧");
+        assert_eq!(
+            empty.gain().to_bits(),
+            plain.gain().to_bits(),
+            "零帧不得改增益"
+        );
+        assert_eq!(
+            empty.reduction_count(),
+            plain.reduction_count(),
+            "零帧不得改计数"
+        );
+        assert_eq!(empty.engaged(), plain.engaged(), "零帧不得改 engaged");
+
+        plain.process_stereo(&mut plain_l[HALF..], &mut plain_r[HALF..]);
+        empty.process_stereo(&mut empty_l[HALF..], &mut empty_r[HALF..]);
+        assert_eq!(
+            plain_l, empty_l,
+            "一次零帧改变了随后的输出 ⇒ 写头被推进了（它不是空操作）"
+        );
+        assert_eq!(plain_r, empty_r);
+    }
+
+    /// **判据（新写，可红）**：一路静音时，该路输出必须**逐位**为静音。
+    ///
+    /// 量什么：右声道输出切片（`f32` 位型，帧数），以及左声道的非空证明
+    /// （至少一个样本的绝对值 > `0.1`）。
+    ///
+    /// 为什么需要它（机械读数）：限制器是立体声**联动**的（两条声道共享一个增益），
+    /// 但两条环是**各自独立**的。既有判据的夹具几乎都用"左右相同的输入"
+    /// （`sub_threshold_samples_are_bit_identical`、`stereo` 一族），
+    /// 因此"某一路的样本被写进另一路"这类串线**不可观测**。实测：把
+    /// `self.ring[1][self.write] = input_r;` 改成 `= input_l;`、以及把
+    /// `right[frame] = soft_knee(sample_r * self.gain);` 改成用 `sample_l`，
+    /// 两次注入下全库 437 条判据**全绿**（本票 48 次注入里的 M07 与 M02）。
+    ///
+    /// 注入实测：上述两处任改一处 ⇒ 本判据变红。
+    #[test]
+    fn a_silent_channel_stays_bit_silent() {
+        /// 观测帧数：`LOOKAHEAD_SAMPLES` 的若干倍，让被延迟的样本真的到达输出。
+        const FRAMES: usize = 512;
+        let mut limiter = Limiter::new();
+        let mut left: Vec<f32> = (0..FRAMES)
+            .map(|index| 0.9 * (index as f32 * 0.05).sin())
+            .collect();
+        let mut right = vec![0.0f32; FRAMES];
+        limiter.process_stereo(&mut left, &mut right);
+        assert!(
+            left.iter().any(|sample| sample.abs() > 0.1),
+            "左路必须真的有信号 ⇒ 本判据测的不是空壳"
+        );
+        for (frame, sample) in right.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.0f32.to_bits(),
+                "第 {frame} 帧右路不是逐位静音（幅度 {}）⇒ 另一路的样本串过来了",
+                sample
+            );
+        }
+    }
 }

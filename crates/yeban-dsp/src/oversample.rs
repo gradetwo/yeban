@@ -598,4 +598,31 @@ mod tests {
             "上采样峰位必须在原型中心抽头上（相位顺序被互换）"
         );
     }
+
+    /// **判据（新写，可红）**：`downsample` 的 `scratch` 不足时必须**跳过**，
+    /// 不得写输出、不得 panic。
+    ///
+    /// 量什么：一次 `downsample` 调用后的输出切片（长度 `n`，单位：样本）。
+    ///
+    /// 为什么需要它（机械读数）：既有的 `short_buffers_are_rejected_instead_of_panicking`
+    /// 里那一支 `downsample` 夹具是 `out.len() = 2 < n = 8`，**只触发第一条守卫**
+    /// （`out.len() < n`），`scratch` 那条守卫从未被走到。把
+    /// `|| scratch.len() < OS_TAPS - 1 + v.len()` 整段删掉时，全库 437 条判据**全绿**
+    /// （实测：本票 48 次注入里的 B10）。
+    ///
+    /// 注入实测：删掉 `scratch` 长度守卫 ⇒ 本判据在
+    /// `scratch[c..c + v.len()]` 处越界 panic（变红）。
+    #[test]
+    fn a_downsample_with_a_short_scratch_is_skipped_instead_of_panicking() {
+        let mut os = Oversampler2x::new();
+        let v = [1.0f32; 64]; // n = 32，与 out.len() 相等 ⇒ 不触发第一条守卫
+        let mut out = [0.0f32; 32];
+        // `OS_TAPS - 1 + v.len()` = 62 + 64 = 126 > 8。
+        let mut short_scratch = [0.0f32; 8];
+        os.downsample(&v, &mut out, &mut short_scratch);
+        assert_eq!(
+            out, [0.0f32; 32],
+            "scratch 不足时必须是'什么都不做'，而不是写半个结果或 panic"
+        );
+    }
 }
