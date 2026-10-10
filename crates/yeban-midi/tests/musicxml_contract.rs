@@ -2704,3 +2704,33 @@ fn the_entry_name_limit_fires_before_the_zip64_marker() {
         other => panic!("期望 name_bytes 的 LimitExceeded，得到 {other:?}"),
     }
 }
+/// 判据 (类别: 核对次序): `read_entry` **先查加密位、再查声明的未压缩长度上界**。
+///
+/// 补的是哪个缺口（本票注入实测）：把加密位检查挪到声明长度检查**之后**（注入 ORD13）
+/// 后全部判据**保持绿** —— 既有判据分别构造"只置加密位"与"只超上界"两种容器，
+/// 从不同时给两个条件（第七批打了加密位 vs **压缩法**，本批打加密位 vs **声明长度**）。
+#[test]
+fn the_encryption_flag_is_reported_before_the_declared_length_limit() {
+    let container = container_xml("score.xml");
+    let mut spec = ZipEntrySpec::stored("score.xml", HANDMADE_MVP);
+    spec.flags = 0x0001; // general purpose flag bit 0 = 加密
+    spec.uncompressed = 1_000_000; // 同时远超上界
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            spec,
+        ],
+        None,
+    );
+    let limits = MxlLimits {
+        max_entry_bytes: 200_000,
+        ..MxlLimits::default()
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &limits),
+        Err(MxlError::Encrypted {
+            name: "score.xml".to_owned()
+        }),
+        "加密位必须先于声明长度上界开火"
+    );
+}

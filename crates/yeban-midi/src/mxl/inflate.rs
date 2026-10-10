@@ -1185,4 +1185,83 @@ mod tests {
             "usize::MAX 必须按普通上界处理（⛔ 不是特判为 0）"
         );
     }
+
+    /// 判据: `max_output` 恰好落在**中间块边界**上时，**下一块**必须在上界处被拒
+    /// （⛔ 不是"上界在块边界上就放行"）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `stored` 的上界改成 `max_output + out.len()`
+    /// （注入 INB01）或把固定表的 `codes` 上界改成 `max_output + out.len()`
+    /// （注入 INB02，即把**累计**上界改成**逐块**上界）后全部判据**保持绿** ——
+    /// 第五批的 `the_output_limit_spans_every_block_of_a_multi_block_stream` 打的是
+    /// "第二块越界"，第六批打的是**单块**的两端点；"上界**恰好**等于到某个中间块末尾的
+    /// 累计字节数、而流还有下一块"这一步此前没有判据。
+    #[test]
+    fn a_limit_that_lands_on_a_block_boundary_still_rejects_the_next_block() {
+        /// `count` 个连续 stored 块，每块 `payload.len()` 字节，只有最后一块 `BFINAL=1`。
+        fn stored_chain(payload: &[u8], count: usize) -> Vec<u8> {
+            let mut out = Vec::new();
+            for index in 0..count {
+                out.push(if index + 1 == count { 0x01u8 } else { 0x00u8 });
+                let length = payload.len() as u16;
+                out.extend_from_slice(&length.to_le_bytes());
+                out.extend_from_slice(&(!length).to_le_bytes());
+                out.extend_from_slice(payload);
+            }
+            out
+        }
+        /// 一个 `BFINAL` / 固定 Huffman（`BTYPE=01`）的块：`count` 个字面量 `'a'` + 块结束码。
+        fn fixed_block(payload: &[u8], final_block: bool) -> Vec<u8> {
+            let mut bits = BitWriter::new();
+            bits.value(u32::from(final_block), 1);
+            bits.value(1, 2);
+            for _ in 0..payload.len() {
+                fixed_symbol(&mut bits, u32::from(payload[0]));
+            }
+            fixed_symbol(&mut bits, 256);
+            bits.finish()
+        }
+
+        let chain = stored_chain(b"abcd", 3);
+        assert_eq!(chain.len(), 27, "3 × (1 位头 + 2 LEN + 2 NLEN + 4 字节)");
+        // 上界 8 = 恰好两块 ⇒ 第三块必须被拒。
+        match inflate_raw(&chain, 8) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("上界 8 恰好落在块边界上 ⇒ 第三块必须报 Limit，得到 {other:?}"),
+        }
+        // 上界 12 = 整条流 ⇒ 接受。
+        assert_eq!(inflate_raw(&chain, 12).as_deref(), Ok(&b"abcdabcdabcd"[..]));
+
+        // 第二条：**第一块是 stored、第二块是压缩块**（固定 Huffman）⇒ 压缩块那一步
+        // 看到的是 `out.len() = 4`（不是 0），"逐块上界"与"累计上界"在这里分岔。
+        let mut mixed = vec![0x00u8]; // BFINAL=0, BTYPE=00（stored）
+        let length = 4u16;
+        mixed.extend_from_slice(&length.to_le_bytes());
+        mixed.extend_from_slice(&(!length).to_le_bytes());
+        mixed.extend_from_slice(b"abcd");
+        let fixed = fixed_block(b"aaaa", true);
+        mixed.extend_from_slice(&fixed);
+        assert_eq!(mixed.len(), 9 + fixed.len(), "stored 9 字节 + 固定块");
+
+        // 上界 6：stored 收 4 字节，压缩块的第 3 个字面量越界 ⇒ Limit。
+        match inflate_raw(&mixed, 6) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("压缩块中途越界必须报 Limit，得到 {other:?}"),
+        }
+        // 上界 4 = 恰好第一块 ⇒ 压缩块一个字面量都不许写。
+        match inflate_raw(&mixed, 4) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("上界 4 时压缩块必须立刻报 Limit，得到 {other:?}"),
+        }
+        // 上界 8 = 整条流 ⇒ 接受。
+        assert_eq!(inflate_raw(&mixed, 8).as_deref(), Ok(&b"abcdaaaa"[..]));
+    }
 }

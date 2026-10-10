@@ -1855,4 +1855,144 @@ mod tests {
             "黄金表必须逐臂恰好一次（缺一臂或不重复都红）"
         );
     }
+
+    /// 判据 (类别: 公开 **`Debug` 形状**，续): 其余 **8** 个公开类型的派生 `Debug`
+    /// 输出逐字面钉住（`MidiExportTrack` / `MidiExport` / `MidiFormat` / `MidiError` /
+    /// `ParsedMidi` / `MusicXmlPart` / `MusicXmlScore` / `MxlLimits`）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把这 8 个类型的 `#[derive(Debug)]` 各顶成一个
+    /// 写死的手写 `impl Debug`（注入 DBG05..DBG12）后全部判据**保持绿**。
+    /// ⚠️ 派生 `Debug` 的形状由类型定义决定 ⇒ 只能靠**插入手写 `impl` 顶掉 derive**
+    /// 才造得出牙（与第七批同一机制）。
+    /// ⛔ `CentralEntry` 不在此列：它是**私有**结构体，它的 `Debug` 不是公开面。
+    #[test]
+    fn more_public_debug_shapes_are_pinned() {
+        assert_eq!(format!("{:?}", MidiFormat::SingleTrack), "SingleTrack");
+        assert_eq!(format!("{:?}", MidiFormat::Parallel), "Parallel");
+        assert_eq!(format!("{:?}", MidiError::NoTracks), "NoTracks");
+        assert_eq!(format!("{:?}", MidiError::InvalidPpq(0)), "InvalidPpq(0)");
+        assert_eq!(
+            format!(
+                "{:?}",
+                MidiExportTrack {
+                    name: "A".to_owned(),
+                    channel: 0,
+                    notes: Vec::new(),
+                }
+            ),
+            "MidiExportTrack { name: \"A\", channel: 0, notes: [] }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                MidiExport {
+                    format: MidiFormat::SingleTrack,
+                    ppq: 960,
+                    tempos: Vec::new(),
+                    tracks: Vec::new(),
+                }
+            ),
+            "MidiExport { format: SingleTrack, ppq: 960, tempos: [], tracks: [] }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                ParsedMidi {
+                    format: MidiFormat::Parallel,
+                    ppq: 480,
+                    tempos: Vec::new(),
+                    notes: Vec::new(),
+                }
+            ),
+            "ParsedMidi { format: Parallel, ppq: 480, tempos: [], notes: [] }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                crate::musicxml::MusicXmlPart {
+                    id: "P".to_owned(),
+                    name: "N".to_owned(),
+                    notes: Vec::new(),
+                }
+            ),
+            "MusicXmlPart { id: \"P\", name: \"N\", notes: [] }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                crate::musicxml::MusicXmlScore {
+                    divisions: 1,
+                    ppq: 960,
+                    tempos: Vec::new(),
+                    parts: Vec::new(),
+                    ignored_elements: std::collections::BTreeMap::new(),
+                    unsupported_elements: std::collections::BTreeMap::new(),
+                }
+            ),
+            "MusicXmlScore { divisions: 1, ppq: 960, tempos: [], parts: [], \
+             ignored_elements: {}, unsupported_elements: {} }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                crate::mxl::MxlLimits {
+                    max_entry_bytes: 1,
+                    max_entries: 2,
+                    max_name_bytes: 3,
+                }
+            ),
+            "MxlLimits { max_entry_bytes: 1, max_entries: 2, max_name_bytes: 3 }"
+        );
+    }
+
+    /// 判据 (类别: **`PartialEq` 语义 / 浮点自反性**): `MidiExportTrack` 与 `MidiExport`
+    /// 因 `MidiNote::probability: Option<f32>` **只有 `PartialEq`**（没有 `Eq`）
+    /// ⇒ 含 `NaN` 概率的音符让**整个导出输入不等于一份字段完全相同的拷贝**。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `MidiExportTrack` / `MidiExport` 的
+    /// `#[derive(PartialEq)]` 各顶成一个只看 `name` / `ppq` 的手写 `impl PartialEq`
+    /// （注入 PEQ01/PEQ02）后全部判据**保持绿**。
+    ///
+    /// ⚠️ 这是**登记在案的语言级现状**（`f32::NAN != f32::NAN`），⛔ 不是缺陷；
+    /// 钉住它是为了让"某天有人给这两个类型手写 `PartialEq`／加上 `Eq`"**可观测**。
+    /// ⛔ 本判据**不用** `x == x` 写法（会触发 `clippy::eq_op`），而是构造两份字段
+    /// 完全相同、但概率是 `NaN` 的值。
+    #[test]
+    fn an_export_track_with_a_nan_probability_is_not_equal_to_itself() {
+        let note_id = entity_id("00000000000000000000000000").expect("ULID");
+        let with_nan = || MidiExportTrack {
+            name: "A".to_owned(),
+            channel: 0,
+            notes: vec![MidiNote {
+                probability: Some(f32::NAN),
+                ..MidiNote::new(note_id, 0, 60, 480)
+            }],
+        };
+        assert!(
+            with_nan() != with_nan(),
+            "两份字段完全相同、概率是 NaN 的轨道**不相等** ⇒ NaN 的自反性不成立"
+        );
+
+        let export = || MidiExport {
+            format: MidiFormat::SingleTrack,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            tracks: vec![with_nan()],
+        };
+        assert!(
+            export() != export(),
+            "外层 `MidiExport` 的相等语义同样被 NaN 污染（它逐字段委托给轨道）"
+        );
+
+        // 对照臂：把 NaN 换成有限值 ⇒ 自反性回来（证明上面红的是 NaN、不是别的东西）。
+        let finite = || MidiExportTrack {
+            name: "A".to_owned(),
+            channel: 0,
+            notes: vec![MidiNote {
+                probability: Some(0.5),
+                ..MidiNote::new(note_id, 0, 60, 480)
+            }],
+        };
+        assert!(finite() == finite(), "有限概率 ⇒ 两份相同的轨道必须相等");
+    }
 }
