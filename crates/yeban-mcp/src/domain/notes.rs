@@ -10925,10 +10925,10 @@ mod tests {
                 "velocity",
                 serde_json::json!({"noteId": ulid, "velocity": 64}),
             ),
-            (REMOVE_CLIP_KIND, serde_json::json!({})),
-            (REMOVE_TRACK_KIND, serde_json::json!({"trackId": ulid})),
+            ("removeClip", serde_json::json!({})),
+            ("removeTrack", serde_json::json!({"trackId": ulid})),
             (
-                INSERT_DEVICE_KIND,
+                "insertDevice",
                 serde_json::json!({
                     "trackId": ulid,
                     "device": {
@@ -10942,43 +10942,66 @@ mod tests {
                 }),
             ),
             (
-                REMOVE_DEVICE_KIND,
+                "removeDevice",
                 serde_json::json!({"trackId": ulid, "deviceId": ulid}),
             ),
             (
-                SET_PARAM_KIND,
+                "setParam",
                 serde_json::json!({"lane": "TrackVolume", "value": 0.0}),
             ),
-            (SET_TRACK_MUTE_KIND, serde_json::json!({"value": true})),
-            (SET_TRACK_SOLO_KIND, serde_json::json!({"value": false})),
+            ("setTrackMute", serde_json::json!({"value": true})),
+            ("setTrackSolo", serde_json::json!({"value": false})),
             (
-                SET_AUTOMATION_LANE_KIND,
+                "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
             (
-                REMOVE_AUTOMATION_POINT_KIND,
+                "removeAutomationPoint",
                 serde_json::json!({"point": {"lane": "TrackVolume", "tick": 0}}),
             ),
             (
-                SET_ROUTING_GAIN_KIND,
+                "setRoutingGain",
                 serde_json::json!({"edgeId": ulid, "value": null}),
             ),
-            (DISCONNECT_ROUTING_KIND, serde_json::json!({"edgeId": ulid})),
-            (
-                REMOVE_ROUTING_NODE_KIND,
-                serde_json::json!({"nodeId": ulid}),
-            ),
-            (REMOVE_SECTION_KIND, serde_json::json!({"sectionId": ulid})),
-            (REMOVE_SCENE_KIND, serde_json::json!({"sceneId": ulid})),
-            (
-                SET_SCENE_KIND,
-                serde_json::json!({"scene": {"sceneId": ulid}}),
-            ),
+            ("disconnectRouting", serde_json::json!({"edgeId": ulid})),
+            ("removeRoutingNode", serde_json::json!({"nodeId": ulid})),
+            ("removeSection", serde_json::json!({"sectionId": ulid})),
+            ("removeScene", serde_json::json!({"sceneId": ulid})),
+            ("setScene", serde_json::json!({"scene": {"sceneId": ulid}})),
         ];
+        // The catalogue itself is pinned with **literals** (order included): most entries of
+        // `OP_KINDS` are written as `*_KIND` constants, so asserting only "same length" or
+        // "contains that constant" would stay true when the constant's *value* changes
+        // (constant self-comparison is always true).
+        assert_eq!(
+            OP_KINDS,
+            [
+                "add",
+                "delete",
+                "move",
+                "velocity",
+                "removeClip",
+                "removeTrack",
+                "insertDevice",
+                "removeDevice",
+                "setParam",
+                "setTrackMute",
+                "setTrackSolo",
+                "setAutomationLane",
+                "removeAutomationPoint",
+                "setRoutingGain",
+                "disconnectRouting",
+                "removeRoutingNode",
+                "removeSection",
+                "removeScene",
+                "setScene",
+            ],
+            "`ops[].kind` catalog literals and their order"
+        );
         assert_eq!(
             table.len(),
             OP_KINDS.len(),
-            "本表必须与 `OP_KINDS` 逐条对齐（多一个少一个都要改这里）"
+            "the table must line up with the catalog"
         );
         for (kind, extra) in &table {
             assert!(OP_KINDS.contains(kind), "`{kind}` 必须在目录里");
