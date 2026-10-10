@@ -1,0 +1,20 @@
+# R217(3) 器件类 `Default` 逐实例注入证据（**常驻**，由判据逐字校验）
+# 口径：把 `Default` 换成**合法替代状态** ⇒ 判据 `every_device_default_behaves_like_its_new_constructor` 必须红；
+#       还原**逐字节对照**后必须绿。GREEN_DRIVE_INSENSITIVE = 驱动对该差异不敏感（已另立绊线）。
+# 列：type|injected_default|reading|restored_byte_identical
+# 合计 15 条：RED 13 ／ GREEN_DRIVE_INSENSITIVE 2
+NoiseGen|Self::new() then set_colour(NoiseColour::Pink)|RED|yes
+Adsr|Self::new() then set_params(0.5, 0.2, 0.8, 0.3)|RED|yes
+LadderFilter|Self::new() then configure(48k, 200.0, 0.9, 1.0)|RED|yes
+Reverb|Self::new() then set_sample_rate(48k) + set_params{mix: 0.0}|RED|yes
+Convolution|Self::new() then set_impulse_response(&[1.0, 0.5])|RED|yes
+ConvolutionReverb|Self::new() then set_sample_rate(48k) + set_stereo_impulse_response(&[1.0,0.5], &[1.0,0.5])|RED|yes
+TrueStereoConvolution|Self::new() then 4x set_impulse_response(&[1.0, 0.5])|RED|yes
+ParamSmoother|Self::new(48_000.0, 0.05)|RED|yes
+KWeighting|Self::for_sample_rate(44_100.0)|RED|yes
+LoudnessMeter|Self::for_sample_rate(44_100.0)|RED|yes
+Compressor|Self::new(CompressorParams{ratio: 1.0, ..DEFAULT}, 48_000.0)|RED|yes
+ChannelStrip|Self::new(ChannelStripParams{filter_enabled: false, ..DEFAULT}, 48_000.0)|RED|yes
+CombFilter|Self::new() then prepare(44_100.0)|RED|yes
+GatedLoudness|Self::for_sample_rate(44_100.0)|GREEN_DRIVE_INSENSITIVE|yes
+Delay|Self::new() then configure(44_100.0)|GREEN_DRIVE_INSENSITIVE|yes

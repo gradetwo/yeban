@@ -1450,3 +1450,75 @@ fn the_scanners_reject_bad_input_and_accept_good_input() {
         "比例断言必须判为 condition_counter"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R217(3)：器件类逐实例注入证据（**常驻** ＋ **逐条断言**）
+// ---------------------------------------------------------------------------
+
+/// 提交在仓库里的注入证据表。
+const DEVICE_INJECTION_PATH: &str = "tests/data/device_default_injection_evidence.txt";
+
+/// ⭐ **R217③ 形态**：把一次性外部注入**常驻化**，并**逐条断言**（⛔ 不是只看第一条 ——
+/// libtest 在**第一条失败臂**处停止，若把 N 条臂塞进一个判据，证据链可能只有 1/N）。
+///
+/// ⭐ **R217②**：表头的计数必须**由同一谓词数出**（这里复用同一份 `rows`），
+/// ⛔ 不重述扫描规则 —— 否则计数器会与"被计数者"用两份不同的规格（R119 的错）。
+#[test]
+fn the_device_injection_evidence_is_complete_and_each_row_is_asserted() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let (text, _) = read_evidence_text(&root.join(DEVICE_INJECTION_PATH));
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        15,
+        "注入证据表必须恰好 15 条（13 RED ＋ 2 弱驱动），实测 {}",
+        rows.len()
+    );
+
+    // ⭐ 逐条断言（每一条都独立成立，⛔ 不依赖前一条通过）。
+    let mut reds = 0usize;
+    for row in &rows {
+        let cols: Vec<&str> = row.split('|').collect();
+        assert_eq!(cols.len(), 4, "每行必须恰好 4 列：{row}");
+        assert!(
+            matches!(cols[2], "RED" | "GREEN_DRIVE_INSENSITIVE"),
+            "读数只能是 RED 或 GREEN_DRIVE_INSENSITIVE：{row}"
+        );
+        assert_eq!(cols[3], "yes", "每条的还原都必须是逐字节核对通过：{row}");
+        if cols[2] == "RED" {
+            reds += 1;
+        }
+    }
+
+    // ⭐ R217②：表头计数与数据行**由同一谓词**得出。
+    let header = text
+        .lines()
+        .find(|l| l.starts_with("# 合计"))
+        .expect("表头必须有合计行");
+    assert!(
+        header.contains(&format!("合计 {} 条", rows.len())),
+        "表头合计必须等于数据行数（{rows:?}）：{header}"
+    );
+    assert!(
+        header.contains(&format!("RED {reds}")),
+        "表头 RED 计数必须等于按**同一谓词**数出的条数 {reds}：{header}"
+    );
+
+    // ⭐ 表不能凭空写：每行的类型必须在源码里有 `impl Default for <类型>`。
+    let mut src = String::new();
+    for path in source_files(&root.join(SRC_ROOT)) {
+        src.push_str(&normalize_source(
+            &fs::read_to_string(path).unwrap_or_default(),
+        ));
+    }
+    for row in &rows {
+        let ty = row.split('|').next().unwrap_or("");
+        assert!(
+            src.contains(&format!("impl Default for {ty} ")),
+            "源码里必须存在 `impl Default for {ty}`（证据行不得凭空写）：{row}"
+        );
+    }
+}
