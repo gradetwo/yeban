@@ -647,6 +647,35 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
 // ---------------------------------------------------------------------------
 
 /// ⭐ 把"界的五种形态"做成**常驻判据**，并**自带正负对照**（R56/R112）。
+/// ⭐ **R245③ 夹具形状自证（计算偏移，由编译器执行）**。
+///
+/// 口径（⛔ 无任何写死位置）：**掩码里出现的每个针，必须在原文的**同一字节偏移**处也存在**；
+/// 且掩码里的针的**总数**必须等于该臂声明的可见数。混合夹具（同时含隐藏针与可见针）
+/// 因此也被正确判定 —— 这正是本自证在批 25 **当场抓出我第一版模型错误**的地方
+/// （第一版假设"第一个针就是可见针"，对混合夹具不成立）。
+fn assert_needle_offset(label: &str, raw: &str, masked: &str, visible: usize) {
+    let needle = "assert_ne!";
+    assert!(
+        raw.contains(needle),
+        "R245③ {label}: the fixture must contain the needle"
+    );
+    let mut from = 0usize;
+    let mut found = 0usize;
+    while let Some(at) = masked[from..].find(needle) {
+        let absolute = from + at;
+        assert!(
+            raw[absolute..].starts_with(needle),
+            "R245③ {label}: a needle visible at byte {absolute} is not at that offset in the raw text"
+        );
+        found += 1;
+        from = absolute + needle.len();
+    }
+    assert_eq!(
+        found, visible,
+        "R245③ {label}: the number of visible needles must match the declared arm"
+    );
+}
+
 #[test]
 fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() {
     // ---- R113：掩码逐字节等长（含多字节 UTF-8 与三类上下文）----
@@ -678,6 +707,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     ] {
         let masked = mask_preserving_len(sample);
         assert_eq!(masked.len(), sample.len(), "R113: {label}");
+        assert_needle_offset(label, sample, &masked, visible);
         assert_eq!(
             masked.matches("assert_ne!").count(),
             visible,
@@ -702,6 +732,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     ] {
         let masked = mask_preserving_len(sample);
         assert_eq!(masked.len(), sample.len(), "R220① length: {label}");
+        assert_needle_offset(label, sample, &masked, visible_needles);
         assert_eq!(
             masked.matches("assert_ne!").count(),
             visible_needles,
@@ -736,6 +767,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     ] {
         let masked = mask_preserving_len(sample);
         assert_eq!(masked.len(), sample.len(), "R225① length: {label}");
+        assert_needle_offset(label, sample, &masked, visible);
         assert_eq!(
             masked.matches("assert_ne!").count(),
             visible,
