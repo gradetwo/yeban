@@ -83,6 +83,118 @@ fn size_bound_forms() -> [String; 5] {
     ]
 }
 
+/// ⭐ **R147①**：剥关键字（`let`／`let mut`）**必须紧跟非标识符字符** ——
+/// ⛔ 否则 `letter = 5` 会被剥成 `ter = 5`（前缀剥离孪生，与 `bb` vs `b` 同类）。
+fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(keyword)?;
+    match rest.chars().next() {
+        None => Some(rest),
+        Some(c) if !(c.is_alphanumeric() || c == '_') => Some(rest.trim_start()),
+        _ => None,
+    }
+}
+
+/// ⭐ **R147②**：`call(ident` 之后必须**紧跟非标识符字符** ——
+/// ⛔ 否则 `assert_eq!(drained_x, 10)` 会被当成 `drained` 的界（**后缀**孪生）。
+fn has_call_with_ident(flat: &str, call: &str, ident: &str) -> bool {
+    let needle = format!("{call}({ident}");
+    let mut cursor = 0usize;
+    while let Some(offset) = flat[cursor..].find(&needle) {
+        let end = cursor + offset + needle.len();
+        match flat[end..].chars().next() {
+            Some(c) if c.is_alphanumeric() || c == '_' => cursor = end,
+            _ => return true,
+        }
+    }
+    false
+}
+
+/// ⭐ **R96／R113**：把**注释／字符串／字符字面量**掩成空格 ——
+/// ① **保留换行**（⛔ 吃掉换行会让行号漂移）② **逐字符等长**（按 `len_utf8` 补空格 ⇒ 偏移不错位）。
+fn mask_noncode(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut state = 0u8; // 0 代码 1 行注释 2 块注释 3 字符串 4 字符字面量
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match state {
+            0 => {
+                if c == '/' && next == Some('/') {
+                    state = 1;
+                    out.push(' ');
+                    out.push(' ');
+                    i += 2;
+                    continue;
+                }
+                if c == '/' && next == Some('*') {
+                    state = 2;
+                    out.push(' ');
+                    out.push(' ');
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    state = 3;
+                    out.push(' ');
+                    i += 1;
+                    continue;
+                }
+                // ⚠ 只有形如 `'x'` / `'\n'` 才当字符字面量（⛔ 生命周期 `'a` 不当）。
+                if c == '\'' {
+                    let closes = chars
+                        .get(i + 1)
+                        .map(|_| chars.get(i + 2).copied() == Some('\''))
+                        .unwrap_or(false)
+                        || (chars.get(i + 1) == Some(&'\\') && chars.get(i + 3) == Some(&'\''));
+                    if closes {
+                        state = 4;
+                        out.push(' ');
+                        i += 1;
+                        continue;
+                    }
+                }
+                out.push(c);
+            }
+            1 => {
+                if c == '\n' {
+                    state = 0;
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+            }
+            2 => {
+                if c == '*' && next == Some('/') {
+                    state = 0;
+                    out.push(' ');
+                    out.push(' ');
+                    i += 2;
+                    continue;
+                }
+                out.push(if c == '\n' { '\n' } else { ' ' });
+            }
+            3 | 4 => {
+                if c == '\\' {
+                    out.push(' ');
+                    if chars.get(i + 1).is_some() {
+                        out.push(' ');
+                        i += 2;
+                        continue;
+                    }
+                } else if (state == 3 && c == '"') || (state == 4 && c == '\'') {
+                    state = 0;
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
+
 /// **R139**：压缩文本必须**去掉全部空白**（⛔ 只去空格不够 —— 跨行形态会匹配不上，
 /// 把**对的代码**报成缺陷）。
 fn squeeze(text: &str) -> String {
@@ -181,6 +293,8 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     let body_start = enclosing_body_start(&lines, line_no);
     let start = body_start.max(line_no.saturating_sub(WINDOW_MAX + 1));
     let window = lines[start..line_no.saturating_sub(1).min(lines.len())].join("\n");
+    // ⭐ **R96／R113**：注释与字面量里的 `len() >=` **不算界** ⇒ 先掩码（保长）。
+    let window = mask_noncode(&window);
     let forms = size_bound_forms();
     if forms.iter().any(|form| window.contains(form.as_str())) {
         return true;
@@ -217,9 +331,12 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
             if !(t.starts_with("let") || t.contains("letmut")) || !t.contains("=[") {
                 continue;
             }
-            let name = t
-                .trim_start_matches("letmut")
-                .trim_start_matches("let")
+            // ⚠ 名字必须从**未压缩**的行派生：压缩后 `let mut out` 变成 `letmutout`，
+            // 剥完 `letmut` 紧跟 `o`（字母）⇒ 会被 R147① 的边界检查**正确**拒掉。
+            let raw = line.trim_start();
+            let stripped = strip_keyword(raw, "let mut").or_else(|| strip_keyword(raw, "let"));
+            let Some(stripped) = stripped else { continue };
+            let name = stripped
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect::<String>();
@@ -232,9 +349,9 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     // ⭐ **R118 ✅ 形态 B：`接收者[..界]` ＋ 界被**同函数体**的标量相等钉住**
     // （修正上一版**方向写反**的缺陷：真实写法是 `scratch[..drained]`，⛔ 不是 `[..scratch]`）。
     if let Some((_, bound)) = slice_receiver_bound(&site_line) {
-        let pinned = flat.contains(&format!("assert_eq!({bound},"))
-            || flat.contains(&format!("assert!({bound}>="))
-            || flat.contains(&format!("assert!({bound}>=0"));
+        // ⭐ **R147②**：`assert_eq!` 的参数名必须**右边界完整**（⛔ `drained_x` 不算 `drained`）。
+        let pinned = has_call_with_ident(&flat, "assert_eq!", &bound)
+            || has_call_with_ident(&flat, "assert!", &bound);
         if pinned {
             return true;
         }
@@ -506,5 +623,82 @@ fn the_ratchet_is_bidirectional_and_flags_stale_entries() {
     assert!(
         not_stale.is_empty(),
         "⛔ 真缺口上的入口**不是**陈旧入口（不得误报）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ **R147**：near-miss 臂必须**三向齐备**（前缀／后缀／剥离）＋ ⭐ **R96 掩码**臂。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn identifier_boundaries_are_checked_on_both_sides_and_when_stripping() {
+    // ① **前缀孪生**（已有）：钉的是 `n_other`，⛔ 不得当作 `drained` 的界。
+    let prefix_twin = "fn t() {\n    let drained = 10;\n    let n_other = 10;\n    assert_eq!(n_other, 10);\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
+    let site = sites(prefix_twin);
+    assert_eq!(site.len(), 1);
+    assert!(
+        !has_size_bound(prefix_twin, site[0]),
+        "⛔ 前缀孪生：`n_other` 的相等不得当作 `drained` 的界"
+    );
+
+    // ② ⭐ **后缀孪生（R147②）**：钉的是 `drained_x` ⇒ 右边界不完整 ⇒ 不得当作 `drained` 的界。
+    let suffix_twin = "fn t() {\n    let drained = 10;\n    assert_eq!(drained_x, 10);\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
+    let site_s = sites(suffix_twin);
+    assert_eq!(site_s.len(), 1);
+    assert!(
+        !has_size_bound(suffix_twin, site_s[0]),
+        "⛔ **后缀孪生**：`assert_eq!(drained_x, 10)` 的右边界不完整 ⇒ 不得当作 `drained` 的界"
+    );
+
+    // ③ ⭐ **剥离孪生（R147①）**：`letter = [0.0f32; 128];` 不是 `let` 声明 ⇒
+    // 名字派生必须**拒掉**它（⛔ 否则会剥成 `ter` 并当成定长数组接收者）。
+    let strip_twin = "fn t() {\n    letter = [0.0f32; 128];\n    assert!(letter.iter().all(|s| *s == 0.0));\n}\n";
+    let site_t = sites(strip_twin);
+    assert_eq!(site_t.len(), 1);
+    assert!(
+        !has_size_bound(strip_twin, site_t[0]),
+        "⛔ **剥离孪生**：`letter` 不得被当成 `let`（剥出 `ter`）⇒ 该站点必须判无界"
+    );
+
+    // 反向对照：**真的** `let ter = [0.0f32; 128];` ⇒ 认（证明上面拒的是边界，不是把功能关掉）。
+    let real =
+        "fn t() {\n    let ter = [0.0f32; 128];\n    assert!(ter.iter().all(|s| *s == 0.0));\n}\n";
+    let site_r = sites(real);
+    assert_eq!(site_r.len(), 1);
+    assert!(
+        has_size_bound(real, site_r[0]),
+        "对照：真 `let ter = [ … ; N ]` ⇒ 必须认（否则说明我把功能关掉而不是修边界）"
+    );
+}
+
+#[test]
+fn comments_and_literals_are_masked_before_matching_bounds() {
+    // ⭐ **R96**：注释里的 `len() >= 3` **不是界**（掩码后不算）⇒ 该站点必须判无界。
+    let commented = "fn t() {\n    // 说明：调用方保证 xs.len() >= 3\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site = sites(commented);
+    assert_eq!(site.len(), 1);
+    assert!(
+        !has_size_bound(commented, site[0]),
+        "⛔ R96：**注释里**的 `len() >= 3` 不得被当成界（否则假阴）"
+    );
+
+    // ⭐ **R96**：字符串字面量里的 `len() >= 3` 同样不算。
+    let in_string =
+        "fn t() {\n    let _msg = \"xs.len() >= 3\";\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site_s = sites(in_string);
+    assert_eq!(site_s.len(), 1);
+    assert!(
+        !has_size_bound(in_string, site_s[0]),
+        "⛔ R96：**字符串字面量里**的 `len() >= 3` 不得被当成界"
+    );
+
+    // 反向对照：**真代码**里的 `assert!(xs.len() >= 3);` ⇒ 认。
+    let real =
+        "fn t() {\n    assert!(xs.len() >= 3);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site_r = sites(real);
+    assert_eq!(site_r.len(), 1);
+    assert!(
+        has_size_bound(real, site_r[0]),
+        "对照：真代码里的 `len() >=` ⇒ 必须认（否则说明掩码把代码也掩了）"
     );
 }
