@@ -1428,6 +1428,20 @@ fn the_scanners_reject_bad_input_and_accept_good_input() {
             .all(|p| !normalize_path(p, &root).contains("/tests/")),
         "扫描域里 ⛔ 不得包含 `tests/`（否则臂里的 token 会污染它自己检验的计数）"
     );
+    // ⭐⭐ **R240①／R231③ 成对读数**：**同一条**路径断言在"未归一化"与"已归一化"下的结果 ——
+    // 用本机合成路径证明"静默失效"确实存在，且 `normalize_path` 确实修掉它（⛔ 不是声明）。
+    let windows_ish = Path::new("crates\\yeban-dsp\\tests\\x.rs");
+    let raw_guard = !windows_ish.to_string_lossy().contains("/tests/");
+    let norm_guard = !normalize_path(windows_ish, Path::new("crates")).contains("/tests/");
+    assert!(
+        raw_guard,
+        "未归一化时该守卫**恒真**（⛔ 不再防护）—— 这正是 Windows 上的**静默失效**形态"
+    );
+    assert!(
+        !norm_guard,
+        "归一化后该守卫**正确为假** ⇒ 修法有效（成对读数：raw={raw_guard} / normalized={norm_guard}）"
+    );
+
     // ⭐ **正对照（构造之后）**：扫描域必须**真的**含源文件，⛔ 否则上一条是真空的。
     // ⚠ **P0 修复**：⛔ 不能对**原始**路径用 POSIX 后缀 —— Windows 上是 `…\src\lib.rs`，
     // `ends_with("src/lib.rs")` 会**恒假** ⇒ 该正对照在 `windows` 腿上红（实测）。
