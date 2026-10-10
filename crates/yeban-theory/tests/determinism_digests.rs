@@ -23,6 +23,7 @@ use yeban_theory::progression::{Meter, expand_progression};
 use yeban_theory::rhythm::{metric_grid, swung_metric_grid};
 use yeban_theory::scale::{Scale, ScaleKind};
 use yeban_theory::splitmix64;
+use yeban_theory::swing::SwingPair;
 use yeban_theory::voice_leading::realize_three_voices;
 
 /// FNV-1a 64（公有领域）：纯 64 位整数运算，无超越函数。
@@ -138,30 +139,53 @@ fn deterministic_readings_are_pinned_to_literal_digests() {
 // 本守卫先用"一条已知红 ＋ 一条已知绿"自证（R56），再扫全 crate 源码。
 // ---------------------------------------------------------------------------
 
-/// 字符串字面量所占的字节区间（用来把"出现在字符串里的宏名"排除掉 ——
-/// 本批实测过这个假阳性：本判据自己的"已知红"样例就是一段字符串）。
-fn string_ranges(source: &str) -> Vec<(usize, usize)> {
+/// **被掩码的字节区间**：字符串字面量 ＋ 行注释 ＋ 块注释（三者都要掩掉），
+/// 区间内保留换行以维持行号。
+///
+/// ⚠ R94：掩码必须同时覆盖**注释**。本批实测：只掩字符串时，源码里**注释**提到的
+/// `assert_eq!(f(x), f(x))` 会被当成真断言（假阳）；反过来，若"抹掉字符串内容"而
+/// 不是"跳过字符串里的宏名"，`assert_ne!(from_symbol("Cm7"), from_symbol("CM7"))`
+/// 的两侧会被抹成同文（假红）。两种错法都踩过，所以这里只记**区间**、绝不改文本。
+fn masked_ranges(source: &str) -> Vec<(usize, usize)> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
     let mut index = 0usize;
     while index < bytes.len() {
-        if bytes[index] == b'"' {
-            let start = index;
-            index += 1;
-            while index < bytes.len() {
-                if bytes[index] == b'\\' {
-                    index += 2;
-                    continue;
-                }
-                if bytes[index] == b'"' {
-                    index += 1;
-                    break;
-                }
+        match bytes[index] {
+            b'"' => {
+                let start = index;
                 index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index += 2;
+                        continue;
+                    }
+                    if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+                ranges.push((start, index));
             }
-            ranges.push((start, index));
-        } else {
-            index += 1;
+            b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'/' => {
+                let start = index;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                ranges.push((start, index));
+            }
+            b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
+                let start = index;
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+                ranges.push((start, index));
+            }
+            _ => index += 1,
         }
     }
     ranges
@@ -173,8 +197,8 @@ fn string_ranges(source: &str) -> Vec<(usize, usize)> {
 /// 出现在字符串字面量里的宏名不算调用。
 fn identical_sides(source: &str, macro_name: &str) -> Vec<usize> {
     let needle = format!("{macro_name}!(");
-    let ranges = string_ranges(source);
-    let in_string = |offset: usize| ranges.iter().any(|(a, b)| offset >= *a && offset < *b);
+    let ranges = masked_ranges(source);
+    let masked = |offset: usize| ranges.iter().any(|(a, b)| offset >= *a && offset < *b);
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let split_top = |text: &str| -> Option<(usize, usize)> {
         let mut depth = 0i32;
@@ -200,7 +224,7 @@ fn identical_sides(source: &str, macro_name: &str) -> Vec<usize> {
     while let Some(position) = source[offset..].find(&needle) {
         let abs = offset + position;
         offset = abs + needle.len();
-        if in_string(abs) {
+        if masked(abs) {
             continue;
         }
         let after = &source[offset..];
@@ -258,6 +282,15 @@ fn assert_ne_never_compares_a_value_with_itself() {
     );
     // 字符串里的宏名不算调用（已知绿）。
     assert!(identical_sides("let s = \"assert_ne!(x, x);\";", "assert_ne").is_empty());
+    // R94：**注释**里的宏名同样不算调用（已知绿）。只掩字符串时这两条会假阳。
+    assert!(identical_sides("// assert_ne!(x, x);", "assert_ne").is_empty());
+    assert!(identical_sides("/* assert_ne!(x, x); */", "assert_ne").is_empty());
+    assert!(identical_sides("/// assert_ne!(x, x);", "assert_ne").is_empty());
+    // 掩码保留换行 ⇒ 行号不变（已知红在第 3 行）。
+    assert_eq!(
+        identical_sides("// c\n\nassert_ne!(x, x);", "assert_ne"),
+        vec![3]
+    );
 
     const SOURCES: [(&str, &str); 16] = [
         ("src/lib.rs", include_str!("../src/lib.rs")),
@@ -306,6 +339,8 @@ fn the_remaining_self_comparisons_are_inventoried_and_bounded() {
     // 自证（R56）：已知红 + 已知绿。
     assert_eq!(identical_sides("assert_eq!(x, x);", "assert_eq"), vec![1]);
     assert!(identical_sides("assert_eq!(x, y);", "assert_eq").is_empty());
+    // R94：注释里的自比不算（已知绿）。
+    assert!(identical_sides("// assert_eq!(f(x), f(x))", "assert_eq").is_empty());
 
     assert_eq!(
         identical_sides(include_str!("../src/lib.rs"), "assert_eq").len(),
@@ -444,4 +479,148 @@ fn root_text_neighbourhood_is_swept_systematically() {
         Tonality::FlatMajor,
         "the Unicode flat is a flat sign"
     );
+}
+
+// ---------------------------------------------------------------------------
+// R91：把"每个记号的等价类都有代表"做成**常驻判据**（⛔ 不只靠人工核查）。
+// ---------------------------------------------------------------------------
+
+/// 文档口径的降号记号集合是 `b` / `B` / `♭`，升号记号集合是 `#` / `♯`。
+///
+/// 本判据**逐字符**给出读数（每个记号各自一个代表文本），因此"删掉集合里任一记号"
+/// 会让**对应那一行**按构造变红 —— 这正是第八批 `49 → 63` 格教训的常驻化：
+/// 当时那条判据只列**后缀字符串**，漏掉 `B`/`BB` 就整类失去代表，而"表长断言"
+/// 只证明表与枚举对得上、**不证明覆盖了所有等价类**。
+#[test]
+fn every_accidental_sign_has_a_representative_root_text() {
+    // 每个降号记号各自一个代表：删掉任一个 ⇒ 对应行必红。
+    let mut flat_checked = 0usize;
+    for (sign, text) in [("b", "Cb"), ("B", "CB"), ("\u{266d}", "C\u{266d}")] {
+        flat_checked += 1;
+        assert_eq!(
+            Tonality::infer_from_root_text(text),
+            Tonality::FlatMajor,
+            "flat sign {sign:?} via root text {text:?}"
+        );
+        // 同一记号在**字母 B 之后**也必须算降号（R42 的原始缺陷面）。
+        let after_b = format!("B{sign}");
+        assert_eq!(
+            Tonality::infer_from_root_text(&after_b),
+            Tonality::FlatMajor,
+            "flat sign {sign:?} after the letter B via {after_b:?}"
+        );
+    }
+    // 每个非降号字符都不得被当成降号（含升号两个写法与几个无关字符）。
+    let mut sharp_checked = 0usize;
+    for sign in ["#", "\u{266f}", "x", "n", "0", " ", ""] {
+        sharp_checked += 1;
+        let text = format!("C{sign}");
+        assert_eq!(
+            Tonality::infer_from_root_text(&text),
+            Tonality::SharpMajor,
+            "{text:?} must stay on the sharp side"
+        );
+        // 字母 B 单独出现（不带记号）也走升号侧。
+        let after_b = format!("B{sign}");
+        assert_eq!(
+            Tonality::infer_from_root_text(&after_b),
+            Tonality::SharpMajor,
+            "{after_b:?} must stay on the sharp side"
+        );
+    }
+    // 记号集合与解析器一致：三个降号记号都能被 `parse_pitch_class` 认出并降一级。
+    for sign in ["b", "B", "\u{266d}"] {
+        let parsed = parse_pitch_class(&format!("C{sign}")).unwrap();
+        assert_eq!(parsed, PitchClass::B, "{sign:?} lowers C to B");
+    }
+    // ⭐ R93 非真空：两个表都必须真的跑到下界（运行期计数器，不是常量折叠）。
+    assert_eq!(flat_checked, 3, "three flat signs");
+    assert_eq!(sharp_checked, 7, "seven non-flat characters");
+}
+
+// ---------------------------------------------------------------------------
+// R93：扫描域必须达到下界（否则"遍历后断言性质"会**真空通过**）。
+// ---------------------------------------------------------------------------
+
+/// 本 crate 的**运行期扫描域**逐个钉住大小／非空。
+///
+/// 动机（R93）：`for x in <运行期集合> { assert!(性质(x)) }` 在集合为空时**恒真**，
+/// 而路径过滤、平台差异或数据改动都可能让集合变空 —— 判据会**静默失去全部判别力**。
+/// 本判据因此把每个域的下界集中断言一次：域空了，这里先红。
+///
+/// ⚠ 覆盖范围如实登记：本判据覆盖**库派生**域与三个**网格/旋律/鼓组**域；
+/// 另有 16 条既有判据遍历运行期集合而未自带下界（清单见报告），其中 11 条扫
+/// `GenreLibrary::all()` —— 该域的下界由本条与
+/// `library_size_is_pinned_to_the_measured_number` 共同守住。
+#[test]
+fn scan_domains_reach_their_lower_bounds() {
+    let key = Scale::new(PitchClass::C, ScaleKind::Major);
+
+    // 库派生域。
+    assert_eq!(GenreLibrary::all().len(), 182, "all()");
+    assert_eq!(GenreLibrary::ids().len(), 182, "ids()");
+    assert_eq!(
+        GenreLibrary::by_source(SOURCE_TRADITIONAL_THEORY).len(),
+        52,
+        "by_source(traditional)"
+    );
+    assert!(!GenreLibrary::search("a").is_empty(), "search(a)");
+    assert_eq!(
+        GenreLibrary::by_drum_style(yeban_theory::drum::DrumStyle::FourOnTheFloor).len(),
+        13
+    );
+
+    // 节奏网格域：每小节 4 个 onset × 3 小节。
+    let grid = metric_grid(Meter::COMMON, 3, 4).unwrap();
+    assert_eq!(grid.hits().len(), 12, "grid hits");
+    assert!(!grid.hits().is_empty());
+
+    // 旋律域：非空且等于网格 onset 数。
+    let spans = expand_progression(&key, "I-V-vi-IV", 4).unwrap();
+    let grid4 = metric_grid(Meter::COMMON, 4, 5).unwrap();
+    let melody = melody_over_chords(&key, &spans, &grid4, MelodyConstraints::DEFAULT, 0).unwrap();
+    assert_eq!(melody.notes().len(), grid4.hits().len(), "melody notes");
+    assert!(!melody.notes().is_empty());
+
+    // 声部连接域。
+    let realized = realize_three_voices(&expand_progression(&key, "I-V", 2).unwrap()).unwrap();
+    assert_eq!(realized.voicings.len(), 2, "voicings");
+    assert_eq!(realized.movements.len(), 1, "movements");
+
+    // 鼓组域（每小节 onset 数 × 小节数 ≥ 网格 onset 数）。
+    let pattern = yeban_theory::drum::drum_pattern(Meter::COMMON, 1, 16, None, 2)
+        .unwrap()
+        .unwrap();
+    assert!(!pattern.hits().is_empty(), "drum hits");
+    assert!(pattern.hits().len() >= 16, "at least one hit per onset");
+}
+
+// ---------------------------------------------------------------------------
+// R86：器件类 `Default` 的读数（**合法替代状态**注入必须被抓住）。
+// ---------------------------------------------------------------------------
+
+/// 本 crate 的 `Default` 实现只有两个（都是 `derive`）：`GenreLibrary`（单元类型）
+/// 与 `SwingPair`。本判据钉住可观测读数 ⇒ 把 `Default` 换成"合法的非零状态"
+/// （例如 `SwingPair { first: 1, second: 1 }`）会变红。
+///
+/// ⚠ R86②：判据的驱动**不得**对两个被测实例做**相同的初始化** —— 那会遮蔽构造期
+/// 差异。本判据只查一个实例的读数，不比较两个同初值的实例；"两个同初值实例"的
+/// 形态见第八批的 13 条自比清单（已由字面摘要取代）。
+#[test]
+fn default_readings_are_pinned() {
+    assert_eq!(
+        SwingPair::default(),
+        SwingPair {
+            first: 0,
+            second: 0
+        }
+    );
+    assert_eq!(SwingPair::default().total(), 0);
+    assert_eq!(SwingPair::default().offbeat_offset(), 0);
+    // `GenreLibrary` 是单元类型：`default()` 的读数只体现在库查询上。
+    // `GenreLibrary` 是单元结构体：⛔ 不用 `<T>::default()` 造它（clippy
+    // `default_constructed_unit_structs`），直接写类型。
+    let _defaulted = GenreLibrary;
+    assert_eq!(GenreLibrary::len(), 182);
+    assert!(!GenreLibrary::is_empty());
 }
