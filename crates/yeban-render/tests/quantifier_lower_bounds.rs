@@ -1052,11 +1052,24 @@ fn count_floors_cannot_see_defects_in_either_direction() {
                 total_per_file_offenders(src) - unbounded_quantifiers_with(&[form], src).len()
             })
             .sum();
-        let margin = measured.saturating_sub(floor);
+        // **R235**: "显式断言空表"在本仓实测 0 ⇒ 它是 **golden-pin 类**（由**合成正对照**行使）
+        // ⇒ 余量**无定义**, ⛔ 不是 0。
+        if form == "explicit-empty-table" {
+            eprintln!(
+                "[R187-PROBE render/tests/quantifier_lower_bounds R215-MARGINS] 形态 `{form}`: 实测 {measured}（golden-pin 类, 由合成正对照行使）⇒ **余量无定义**（⛔ 不是 0）"
+            );
+            continue;
+        }
+        let margin = measured - floor;
         eprintln!(
-            "[R187-PROBE render/tests/quantifier_lower_bounds R215-MARGINS] 形态 `{form}`: 实测 {measured} − 下界 {floor} = 余量 {margin}"
+            "[R187-PROBE render/tests/quantifier_lower_bounds R215-MARGINS] 形态 `{form}`: 实测 {measured} − 下界 {floor} = 余量 **{margin}**"
         );
-        assert!(measured >= floor, "形态 `{form}` 实测低于下界");
+        // **R236②**: 余量为 0 时必须**显式告警**（"非零"看不出"再删一条就破"）
+        if margin == 0 {
+            eprintln!(
+                "[R187-PROBE render/tests/quantifier_lower_bounds R236-WARN] ⚠ 形态 `{form}` 余量为 **0** ⇒ 无缓冲: 实测值再降 1 就会红"
+            );
+        }
         if margin < min_margin {
             min_margin = margin;
             min_form = form;
@@ -1066,6 +1079,158 @@ fn count_floors_cannot_see_defects_in_either_direction() {
         "[R187-PROBE render/tests/quantifier_lower_bounds R215-MARGINS] 最小余量 = {min_margin}（形态 `{min_form}`）"
     );
     assert!(min_margin < usize::MAX, "余量表必须非空");
+}
+
+/// 判据 (**R237②: 语料预检必须先于臂设计**): 逐构造给出"它在**语料**里出现几次"的读数。
+/// 若某构造在语料里 **0** 次 ⇒ "臂没抓到"**不是判据弱**, 而是**根本没有触发面**
+/// ⇒ 这类臂只能由**夹具**行使（本判据把这句话打成可检索读数, ⛔ 不靠印象）。
+/// **R237 补充: 风险声明必须同时给**类别**与**触发面**** ——
+/// 本检查器的掩码风险类别 = **假阴性（失同步 ⇒ 抹掉后续正文）**;
+/// 触发面 = `'\"'`（**单引号包裹的双引号字符字面量**）: 见下面打印的计数。
+#[test]
+fn corpus_precheck_reports_the_trigger_surface_of_every_construct() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut sources: Vec<String> = std::fs::read_dir(root.join("src"))
+        .expect("读 src/")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .map(|path| std::fs::read_to_string(path).expect("读源文件"))
+        .collect();
+    sources.sort();
+    let joined = sources.join("\n");
+    // 逐构造的**语料计数**（当场算, ⛔ 不写死）
+    let counts: [(&str, usize); 5] = [
+        ("字符字面量含双引号 `'\"'`", joined.matches("'\"'").count()),
+        ("原始字符串 `r#\"`", joined.matches("r#\"").count()),
+        ("生命周期 `'a`", joined.matches("'a").count()),
+        ("块注释 `/*`", joined.matches("/*").count()),
+        ("行注释 `//`", joined.matches("//").count()),
+    ];
+    for (construct, count) in counts {
+        let surface = if count == 0 {
+            "⛔ 语料里 0 次 ⇒ **只能由夹具行使**（臂没抓到 ≠ 判据弱）"
+        } else {
+            "✅ 语料里有触发面"
+        };
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R237-CORPUS] 构造 `{construct}`: 语料出现 {count} 次 — {surface}"
+        );
+    }
+    // 类别 ＋ 触发面（R237 补充）: 掩码风险的类别固定为**假阴性**; 触发面必须被**算出来**
+    let trigger = joined.matches("'\"'").count();
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R237-RISK] 掩码风险类别 = 假阴性（失同步 ⇒ 抹掉后续正文）; 触发面 = `'\"'` 计数 {trigger}"
+    );
+    assert!(
+        !sources.is_empty(),
+        "语料必须非空（否则预检本身没有触发面）"
+    );
+}
+
+/// 把两段文本按**字节**对齐成两行, 空格显示为 `·`（掩码可见）—— **R237① 的裁判**。
+fn two_row_referee(fixture: &str, masked: &str, upto: usize) -> (String, String) {
+    let a: Vec<u8> = fixture.bytes().take(upto).collect();
+    let b: Vec<u8> = masked.bytes().take(upto).collect();
+    let render = |row: &[u8]| {
+        row.iter()
+            .map(|byte| match byte {
+                b' ' => '·',
+                b'\n' => '⏎',
+                _ => *byte as char,
+            })
+            .collect::<String>()
+    };
+    (render(&a), render(&b))
+}
+
+/// 判据 (**R233④/R234③: 同一判据内的臂 ⇒ 首败即停 ⇒ 日志只覆盖 1/N**):
+/// 逐判据给出**臂数 N**（当场从结构算出）＋ 明确写出"若首条臂失败, 单轮取证只覆盖 1/N"。
+#[test]
+fn arm_inventory_reports_first_failure_coverage() {
+    let samples = 7usize; // `masking_survives_adversarial_constructs` 的样本数
+    let pairs = REGISTERED_BOUND_FORMS.len();
+    let inventory: [(&str, usize); 6] = [
+        ("masking_survives_adversarial_constructs", samples * 3),
+        (
+            "every_recognised_bound_form_has_a_paired_known_red",
+            pairs * 4,
+        ),
+        (
+            "each_registered_form_is_individually_witnessed",
+            pairs * pairs + pairs,
+        ),
+        ("each_registered_form_has_its_own_lower_bound", pairs + 1),
+        (
+            "count_floors_cannot_see_defects_in_either_direction",
+            3 + pairs,
+        ),
+        ("char_literal_fixture_is_refereed_byte_by_byte", 6),
+    ];
+    let mut total = 0usize;
+    for (criterion, arms) in inventory {
+        total += arms;
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R233-ARMS] `{criterion}`: 臂数 **{arms}**（首败即停 ⇒ 单轮取证最多覆盖 1/{arms}）"
+        );
+        assert!(arms >= 1, "`{criterion}` 必须至少有一个臂");
+    }
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R233-ARMS] 清单内臂数合计 = **{total}**（⛔ 不可与站点数/判据数相加, R208）"
+    );
+    assert!(total >= inventory.len(), "臂数合计不得小于判据数");
+}
+
+/// 判据 (**R237①: 逐字节打印是"模型 vs 实现"的唯一裁判**):
+/// 对 `'"'`（**字符字面量含引号**）这一个夹具, 一次打印就能把"**夹具写错**"与"**实现错**"分开。
+/// 三条正特征必须**同时**成立, 否则臂无牙:
+/// ① 那三个字节（`'` `"` `'`）被掩掉; ② 其后的 `;` **仍可见**（未被吞掉）;
+/// ③ 掩码后仍**含**后半段的界文本（`len() >= 3`）。
+/// ⚠ **R210**: 本判据只做裁判, ⛔ 不把它当成"抓到了什么"。
+#[test]
+fn char_literal_fixture_is_refereed_byte_by_byte() {
+    let fixture = "fn t() { let q = '\"'; assert!(v.len() >= 3 && v.iter().all(|x| *x == 0)); }";
+    let masked = mask(fixture);
+    let (row_fixture, row_masked) = two_row_referee(fixture, &masked, 40);
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R237-REFEREE] 夹具 = {row_fixture}"
+    );
+    eprintln!("[R187-PROBE render/tests/quantifier_lower_bounds R237-REFEREE] 掩码 = {row_masked}");
+    // ① 三字节被掩
+    let quote_at = fixture
+        .find("'\"'")
+        .expect("夹具必须含 单引号+双引号+单引号");
+    assert_eq!(
+        &masked[quote_at..quote_at + 3],
+        "   ",
+        "① `'\"'` 的三个字节必须被掩成空格（裁判行: {row_masked}）"
+    );
+    // ② 其后的 `;` 仍可见
+    let semi_at = quote_at + 3;
+    assert_eq!(
+        fixture.as_bytes()[semi_at],
+        b';',
+        "夹具必须紧跟一个 `;`（模型如此）"
+    );
+    assert_eq!(
+        masked.as_bytes()[semi_at],
+        b';',
+        "② 其后的 `;` 必须**仍可见** ⇒ ⛔ 实现不许把后续正文一起吞掉（R214① 的假阴性）"
+    );
+    // ③ 掩码后仍含后半段的界文本
+    assert!(
+        masked.contains("len() >= 3"),
+        "③ 掩码后必须**仍含**后半段的界文本 ⇒ 后面的结构没有被当作字符串抹掉"
+    );
+    // 交叉: 该夹具的两个极性都要成立（有界 ⇒ 绿; 去掉界 ⇒ 红）
+    assert!(
+        unbounded_quantifiers(fixture).is_empty(),
+        "正极（有界）必须绿"
+    );
+    let no_bound = fixture.replace("v.len() >= 3 && ", "");
+    assert!(
+        !unbounded_quantifiers(&no_bound).is_empty(),
+        "负极（去掉界）必须红"
+    );
 }
 
 /// 判据 (**R227①: 样本必须同时命中判别器的每一个正特征, 否则臂无牙**):
