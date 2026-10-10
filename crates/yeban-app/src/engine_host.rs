@@ -115,7 +115,10 @@ use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
 use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
-use yeban_engine::param::{MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT};
+use yeban_engine::mixer::{PanLaw, pan_gains};
+use yeban_engine::param::{
+    MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+};
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::rt::{EngineRuntime, EngineStats};
 use yeban_engine::snapshot::{
@@ -834,6 +837,15 @@ impl EngineHost {
     ///
     /// 只处理 [`AutomationTarget::TrackVolume`]（音轨与主总线两个槽位）；
     /// `TrackPan` 由 P4 单独裁决（另票），这里**不**碰。
+    /// 一跳最多下发的自动化事件数：**每条轨最多 3 条**（音量 + 声相左 + 声相右）。
+    ///
+    /// ⛔ 不用 [`PARAM_SLOTS`] 当上限：那个数是**引擎参数表的槽位数**（每条轨一个增益槽位）。
+    /// 声相走引擎里**另一条独立通路**（`rt.rs` 的逐轨声相平滑对），不占参数表的槽位
+    /// ⇒ 批次可以更大。**每跳仍然只有一次 `publish`（一条批）**，这条纪律不变。
+    const fn automation_batch_capacity() -> usize {
+        PARAM_SLOTS * 3
+    }
+
     pub fn publish_automation(&mut self, project: Option<&YebanProjectV1>) -> usize {
         // **工程缓存（R68 修的那一处）**：生产路径只在"标记变了"的那一跳才 `try_project()`
         // ⇒ 其余各跳传的是 `None`。若采样直接挂在入参上，自动化就**只在工程改动的那一跳
@@ -846,7 +858,8 @@ impl EngineHost {
             return 0;
         };
         let tick = self.transport().position_ticks;
-        let mut batch = [EngineEvent::Idle; PARAM_SLOTS];
+        let batch_capacity = Self::automation_batch_capacity();
+        let mut batch = [EngineEvent::Idle; Self::automation_batch_capacity()];
         let mut len = 0usize;
         let mut dropped = 0u64;
         for track in project.tracks.values() {
@@ -876,7 +889,7 @@ impl EngineHost {
             } else {
                 TRACK_GAIN_SLOT
             };
-            if len == PARAM_SLOTS {
+            if len == batch_capacity {
                 dropped += 1;
                 continue;
             }
@@ -885,6 +898,41 @@ impl EngineHost {
                 value: gain,
             };
             len += 1;
+
+            // --- 声相（裁决 P4=(b)）：一条轨**两条**事件（左 / 右**绝对**增益）---
+            //
+            // 语义是**替换**：泳道给的是声相位置，这里的 `pan_gains` 就是引擎在快照边界
+            // 用的同一个公开函数（同一个衰减律，`PanLaw::from_model(工程)`）⇒ 值域与
+            // 引擎内部一致，⛔ 不做任何分量相除。
+            // ⚠ 母线**不**进声相表（引擎的 `armed_pan_gains` 明确排除它）⇒ 这里也跳过，
+            // 否则两条事件会被判未映射（计数），读数上像缺陷。
+            if track.id != project.master_bus_track_id {
+                let pan_target = AutomationTarget::TrackPan { track_id: track.id };
+                if let Some(lane) = project.automation_lane(&pan_target)
+                    && lane.read_enabled
+                    && let Ok(Some(pan)) = project.automation_value_at(&pan_target, tick)
+                {
+                    let (left, right) =
+                        pan_gains(pan, PanLaw::from_model(project.audio_config.pan_law));
+                    // ⚠ **必须 clamp 到 `>= 0`**：硬右时 `pan_gains(1.0).0` 实测是
+                    // `-4.371139e-8`（f32 的 `π/2` 不精确，见 `mixer` 的端点判据）⇒
+                    // 不 clamp 会被引擎"有限且非负"的值规则拒掉（静默丢失）。
+                    for (slot, value) in [
+                        (TRACK_PAN_LEFT_SLOT, left.max(0.0)),
+                        (TRACK_PAN_RIGHT_SLOT, right.max(0.0)),
+                    ] {
+                        if !value.is_finite() || len == batch_capacity {
+                            dropped += 1;
+                            continue;
+                        }
+                        batch[len] = EngineEvent::SetParam {
+                            target: ParamAddress::new(track.id, slot),
+                            value,
+                        };
+                        len += 1;
+                    }
+                }
+            }
         }
         let written = if len == 0 {
             0
@@ -1635,14 +1683,29 @@ mod tests {
             "计数必须逐条对得上，且这一路没有丢"
         );
 
-        // 关掉读开关（同样用 `Some` 更新缓存）⇒ 一条都不发，且不产生任何计数。
+        // 关掉**所有**读开关（音量那条 + 声相那条）⇒ 一条都不发，且不产生任何计数。
+        // （demo 夹具的 slot 0 是 TrackVolume、slot 1 是 TrackPan ⇒ 两条都要关，
+        // 否则剩下的那条会照发，`written == 0` 就不成立。）
         let before = host.automation_counts();
-        project
+        for lane in project
             .tracks
-            .get_mut(&track)
-            .expect("那条轨必须在")
-            .automation_lanes
-            .insert(target, lane(false));
+            .values_mut()
+            .flat_map(|track| track.automation_lanes.values_mut())
+        {
+            lane.read_enabled = false;
+        }
+        // R58：等号判据要有一条落在同一表达式上的 `assert_ne!` —— 先证明"关掉之后
+        // 至少有一条泳道是关的"（否则下面的 0 可能是"本来就没泳道"）。
+        assert_ne!(
+            project
+                .tracks
+                .values()
+                .flat_map(|track| track.automation_lanes.values())
+                .filter(|lane| lane.read_enabled)
+                .count(),
+            0,
+            "夹具前提：关掉之后必须**没有**开着的泳道"
+        );
         assert_eq!(
             host.publish_automation(Some(&project)),
             0,

@@ -390,4 +390,35 @@ mod tests {
             "engine 的 mixer.rs 必须是 dsp 限制器的再导出"
         );
     }
+    /// 判据（**R60：两条契约**）：声相律的**两个端点**，f32 实测读数。
+    ///
+    /// * 硬左（`pan = -1`）：右增益**恰好**是 `+0.0`（`sin(0) == 0`，逐位成立）；
+    /// * 硬右（`pan = +1`）：左增益**不是 0** —— `cos(FRAC_PI_2 as f32)` 实测
+    ///   `-4.371139e-8`（f32 的 `π/2` 不精确）⇒ 契约写成"有限、且落在 `[-1e-6, 0.0]`"，
+    ///   ⛔ 不写"等于 0"（那是错的）。
+    ///
+    /// ⚠ **负号是真的**：控制侧把这两个增益发进引擎之前**必须 clamp 到 `>= 0`**，
+    /// 否则引擎"有限且非负"的值规则会拒掉硬右的左增益（静默丢失）。
+    /// `rt.rs` 有一条判据钉住"负值被计数拒绝"。
+    #[test]
+    fn pan_law_endpoints_are_exact_zero_on_one_side_and_tiny_negative_on_the_other() {
+        let (left_l, left_r) = pan_gains(-1.0, PanLaw::default());
+        assert_eq!(left_l, 1.0, "硬左的左增益是 1.0");
+        assert!(
+            left_r == 0.0,
+            "硬左的右增益必须恰好是 +0.0（实得 {left_r:?}）"
+        );
+        let (right_l, right_r) = pan_gains(1.0, PanLaw::default());
+        assert!(
+            right_l.is_finite() && right_r.is_finite(),
+            "两个端点都必须有限"
+        );
+        assert!(
+            (-1e-6..=0.0).contains(&right_l),
+            "硬右的左增益是「极小负值或 0」（实测 -4.371139e-8，实得 {right_l:?}）"
+        );
+        assert_eq!(right_r, 1.0, "硬右的右增益是 1.0");
+        // R58：等号判据的 `assert_ne!` 落在同一个表达式上（两个端点必须真的不同）。
+        assert_ne!(left_r, right_r, "硬左与硬右的右增益必须不同");
+    }
 }

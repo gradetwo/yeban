@@ -177,6 +177,21 @@ pub const TRACK_GAIN_SLOT: u16 = 0;
 /// 它与 [`TRACK_GAIN_SLOT`] **不通用** —— 串用一律未映射。
 pub const MASTER_GAIN_SLOT: u16 = 1;
 
+/// **逐轨声相左增益**的槽位号（裁决 P4=(b)，自动化接线的最后一块）。
+///
+/// 语义：值是**线性增益**（不是声相位置）—— 控制侧用 [`crate::mixer::pan_gains`]
+/// 把声相位置折成 `(左, 右)`，再把这两个**绝对**增益发进来（"替换"口径；
+/// ⛔ 不做分量相除：硬左时右增益恰为 `0`，相除会出 `0/0`）。
+///
+/// ⚠ **本表（[`ParamTable`]）不消费这两个槽位**：[`ParamTable::accept`] 仍然只认
+/// [`TRACK_GAIN_SLOT`]／[`MASTER_GAIN_SLOT`]，其余一律 [`ParamOutcome::Unmapped`]。
+/// 声相事件由 `crate::rt` 的**事件循环先截走**，写进那条独立的逐轨声相平滑对
+/// （`rt.rs` 的 `armed_pan_l`／`armed_pan_r`）。这条分流有判据钉住。
+pub const TRACK_PAN_LEFT_SLOT: u16 = 2;
+
+/// **逐轨声相右增益**的槽位号（与 [`TRACK_PAN_LEFT_SLOT`] 成对，语义相同）。
+pub const TRACK_PAN_RIGHT_SLOT: u16 = 3;
+
 /// 参数目标表的槽位数：与声部池的轨道上限**同一个事实源**。
 ///
 /// 理由与 `PDC_SLOTS` 相同：不是"刚好够用"，而是"不为同一件事造第二个上限"。
@@ -815,6 +830,7 @@ mod tests {
             text.contains("slots: 1"),
             "槽位数必须跟着状态走（1 个在册槽位 ⇒ `slots: 1`，实得 {text}）"
         );
+
         // R58：等号/包含式的判据必须另有一条 `assert_ne!` 落在**同一个**表达式上 ——
         // 证明 Debug 文本**真的随状态变**，而不是恒等于同一个常量。
         assert_ne!(
@@ -822,5 +838,32 @@ mod tests {
             format!("{:?}", ParamTable::new(SR)),
             "有 1 个在册槽位的 Debug 文本必须与空表不同（否则 `slots` 没被打印成读数）"
         );
+    }
+    /// 判据：声相槽位常量是 **2 / 3**（字面量钉住，⛔ 不是常量自比），
+    /// 且 [`ParamTable`] **不消费**它们 —— 它把它们判成 `Unmapped` 并计数。
+    ///
+    /// 两条合起来钉住"分流发生在 `rt.rs` 的事件循环里"这个结构：常量被改动、
+    /// 或有人把声相槽位接进 `accept`，本判据就变红。
+    #[test]
+    fn pan_slot_constants_are_two_and_three_and_the_param_table_rejects_them() {
+        assert_eq!(TRACK_PAN_LEFT_SLOT, 2, "声相左槽位号是 2（字面量契约）");
+        assert_eq!(TRACK_PAN_RIGHT_SLOT, 3, "声相右槽位号是 3（字面量契约）");
+        // R58：等号判据要有一条落在**同一个**表达式上的 `assert_ne!`。
+        assert_ne!(
+            TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+            "两个声相槽位必须不同"
+        );
+        let master = EntityId::new();
+        let track = EntityId::new();
+        let mut table = ParamTable::new(SR);
+        for slot in [TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT] {
+            assert_eq!(
+                table.accept(ParamAddress::new(track, slot), 0.5, master),
+                ParamOutcome::Unmapped,
+                "槽位 {slot} 必须**不**被参数表消费（分流在 rt.rs 的事件循环里）"
+            );
+        }
+        assert_eq!(table.unmapped(), 2, "两次都必须被计数（不静默）");
+        assert_eq!(table.slot_count(), 0, "不得为它们建槽位");
     }
 }
