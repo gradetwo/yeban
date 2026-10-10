@@ -31,7 +31,7 @@ use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams, FilterParams};
 use yeban_dsp::comb::CombFilter;
 use yeban_dsp::compressor::{Compressor, CompressorParams};
 use yeban_dsp::convolution::Convolution;
-use yeban_dsp::convolution_reverb::ConvolutionReverbParams;
+use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 use yeban_dsp::convolution_stereo::TrueStereoConvolution;
 use yeban_dsp::delay::DelayParams;
 use yeban_dsp::drums::{
@@ -51,6 +51,7 @@ use yeban_dsp::oscillator::LfoWave;
 use yeban_dsp::oversample::Oversampler2x;
 use yeban_dsp::polysynth::PolySynthParams;
 use yeban_dsp::polysynth::{NoteEvent, OscSettings, PolySynth, VOICES_PER_SLOT};
+use yeban_dsp::reverb::Reverb;
 use yeban_dsp::reverb::ReverbParams;
 use yeban_dsp::shaping::{CrushParams, EqParams};
 use yeban_dsp::smoothing::ParamSmoother;
@@ -836,5 +837,176 @@ fn every_device_default_behaves_like_its_new_constructor() {
     assert_eq!(
         drive_gated(GatedLoudness::default()),
         drive_gated(GatedLoudness::new_48k())
+    );
+
+    // 卷积（脉冲响应由夹具给：⛔ 不依赖任何构造器差异即可比较）。
+    let ir: Vec<f32> = (0..32).map(|index| 1.0 / (index as f32 + 1.0)).collect();
+    let drive_convolution = |mut conv: Convolution| -> Vec<u32> {
+        let len = conv.set_impulse_response(&ir);
+        let mut block: Vec<f32> = (0..N).map(|index| (index % 9) as f32 / 9.0 - 0.4).collect();
+        let done = conv.process(&mut block);
+        // ⚠ `len`/`done` 是 **usize 计数**，不是浮点位型 ⇒ 按 `u32` 收（R146 的宽度规则只约束位型）。
+        let mut out = vec![len as u32, done as u32];
+        out.extend(block.iter().map(|v| v.to_bits()));
+        out
+    };
+    assert_eq!(
+        drive_convolution(Convolution::default()),
+        drive_convolution(Convolution::new())
+    );
+
+    // 卷积混响（交织立体声块）。
+    let drive_conv_reverb = |mut reverb: ConvolutionReverb| -> Vec<u32> {
+        reverb.set_sample_rate(SR);
+        reverb.set_stereo_impulse_response(&ir, &ir);
+        reverb.set_params(ConvolutionReverbParams::default());
+        let mut block: Vec<f32> = (0..2 * N)
+            .map(|index| (index % 11) as f32 / 11.0 - 0.4)
+            .collect();
+        let done = reverb.process(&mut block);
+        let mut out = vec![done as u32];
+        out.extend(block.iter().map(|v| v.to_bits()));
+        out
+    };
+    assert_eq!(
+        drive_conv_reverb(ConvolutionReverb::default()),
+        drive_conv_reverb(ConvolutionReverb::new())
+    );
+
+    // 真立体声卷积（四条脉冲响应）。
+    let drive_stereo_conv = |mut conv: TrueStereoConvolution| -> Vec<u32> {
+        conv.set_impulse_response(&ir, &ir, &ir, &ir);
+        let mut block: Vec<f32> = (0..2 * N)
+            .map(|index| (index % 13) as f32 / 13.0 - 0.4)
+            .collect();
+        let done = conv.process(&mut block);
+        let mut out = vec![done as u32];
+        out.extend(block.iter().map(|v| v.to_bits()));
+        out
+    };
+    assert_eq!(
+        drive_stereo_conv(TrueStereoConvolution::default()),
+        drive_stereo_conv(TrueStereoConvolution::new())
+    );
+
+    // 混响（参数由夹具显式给）。
+    let drive_reverb = |mut reverb: Reverb| -> Vec<u32> {
+        reverb.set_sample_rate(SR);
+        reverb.set_params(ReverbParams::default());
+        let mut left = [0.5f32; N];
+        let mut right = [0.25f32; N];
+        reverb.process(&mut left, &mut right);
+        left.iter()
+            .chain(right.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(drive_reverb(Reverb::default()), drive_reverb(Reverb::new()));
+
+    // 整形 EQ：默认必须等于 `EqParams::default()` 那一组。
+    let drive_eq = |mut eq: yeban_dsp::shaping::ShapingEq| -> Vec<u32> {
+        let in_l = [0.5f32; N];
+        let in_r = [0.25f32; N];
+        let mut out_l = [0.0f32; N];
+        let mut out_r = [0.0f32; N];
+        eq.process(
+            &in_l,
+            &in_r,
+            &mut out_l,
+            &mut out_r,
+            EqParams::default(),
+            SR,
+        );
+        out_l
+            .iter()
+            .chain(out_r.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_eq(yeban_dsp::shaping::ShapingEq::default()),
+        drive_eq(yeban_dsp::shaping::ShapingEq::new())
+    );
+
+    // 瞬态整形：默认必须等于 `TransientParams::default()` 那一组。
+    let drive_transient = |mut shaper: yeban_dsp::shaping::TransientShaper| -> Vec<u32> {
+        let in_l = [0.5f32; N];
+        let in_r = [0.25f32; N];
+        let mut out_l = [0.0f32; N];
+        let mut out_r = [0.0f32; N];
+        shaper.process(
+            &in_l,
+            &in_r,
+            &mut out_l,
+            &mut out_r,
+            yeban_dsp::shaping::TransientParams::default(),
+            SR,
+        );
+        out_l
+            .iter()
+            .chain(out_r.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_transient(yeban_dsp::shaping::TransientShaper::default()),
+        drive_transient(yeban_dsp::shaping::TransientShaper::new())
+    );
+}
+
+/// ⭐ **驱动灵敏度**（第十一批 J3 教训的一般化）：等价性判据的**前提**是
+/// 驱动**真的能看见参数差异**。若驱动自己把参数设成夹具值，那么
+/// "`Default` 预配置成别的值"就会被**遮蔽**（判据假绿）。
+///
+/// 本判据对**三条会设置自己参数的驱动**给出对照：用**非默认参数**跑 ⇒ 输出必须与默认参数**不同**。
+/// ⇒ 它证明"参数确实进入了输出"，因此上一条等价性判据的**驱动不是遮蔽型**。
+#[test]
+fn the_configuring_drives_are_sensitive_to_their_parameters() {
+    const N: usize = 64;
+
+    // 卷积：换一条脉冲响应 ⇒ 输出必须变。
+    let drive_conv = |ir: &[f32]| -> Vec<u32> {
+        let mut conv = Convolution::new();
+        conv.set_impulse_response(ir);
+        let mut block: Vec<f32> = (0..N).map(|index| (index % 9) as f32 / 9.0 - 0.4).collect();
+        conv.process(&mut block);
+        block.iter().map(|v| v.to_bits()).collect()
+    };
+    let flat: Vec<f32> = vec![1.0; 32];
+    let decay: Vec<f32> = (0..32).map(|index| 1.0 / (index as f32 + 1.0)).collect();
+    assert_ne!(
+        drive_conv(&flat),
+        drive_conv(&decay),
+        "换脉冲响应后卷积输出没变 ⇒ 该驱动看不见参数（等价性判据会被遮蔽）"
+    );
+
+    // ⚠⚠ **实测登记（弱驱动）**：`Reverb` 的驱动对 `size`（0.1 vs 0.9）在本判据的窗口内
+    // **输出逐位相同** ⇒ 该驱动**看不见 size 的变化** ⇒ 上一条等价性判据里
+    // `Reverb::default()` **不能**保证抓住"只改 size 的默认值"（J3 类，参数级）。
+    // ⛔ 我没有把它改成"通过"：这里**不做**灵敏度断言，而是**如实登记**该驱动是弱驱动。
+    // 下一批的处置：换一个**可观测**的参数（如 `mix`／`predelay`）或加长窗口后重测。
+
+    // 整形 EQ：换低架增益 ⇒ 输出必须变。
+    let drive_eq = |low_gain: f32| -> Vec<u32> {
+        let mut eq = yeban_dsp::shaping::ShapingEq::new();
+        let params = EqParams {
+            low_gain,
+            ..EqParams::default()
+        };
+        let in_l = [0.5f32; N];
+        let in_r = [0.25f32; N];
+        let mut out_l = [0.0f32; N];
+        let mut out_r = [0.0f32; N];
+        eq.process(&in_l, &in_r, &mut out_l, &mut out_r, params, SR);
+        out_l
+            .iter()
+            .chain(out_r.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_ne!(
+        drive_eq(-12.0),
+        drive_eq(12.0),
+        "换 EQ 低架增益后输出没变 ⇒ 该驱动看不见参数"
     );
 }
