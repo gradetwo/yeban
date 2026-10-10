@@ -196,6 +196,25 @@ fn quantifier_roots(condition: &str) -> Vec<(String, bool)> {
     roots
 }
 
+/// **R119**: 带标识符边界的子串匹配 —— `needle` 之前的那个字符不得是标识符字符
+/// （否则根 `b` 会被 `assert_eq!(bb.len(), 8)` 满足：near-miss）。`body` 已是**去空白**的文本。
+fn contains_identifier(body: &str, needle: &str) -> bool {
+    let mut from = 0usize;
+    while let Some(found) = body[from..].find(needle) {
+        let at = from + found;
+        let ok = at == 0
+            || !body[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
+        if ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
 /// 五种界形态之一是否落在**同一个根**上（R111 ＋ R114）。
 fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
     if root.is_empty() {
@@ -215,7 +234,10 @@ fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
             return true;
         }
     }
-    // ②⑤: 界在**同一个函数体**里, 且**同一个根**上（宏隐式相等 / 运行期计数器）
+    // ②⑤: 界在**同一个函数体**里, 且**同一个根**上（宏隐式相等 / 运行期计数器）。
+    // ⚠ **R118**: 只有"**界定集合大小**"的界作数 —— `x.len() == N` / `x.len() >= N` /
+    // `!x.is_empty()` / 计数器; **元素值界**（`assert_eq!(x[0], 5)`）**不算**, 它不保证集合非空。
+    // ⚠ **R119**: 子串匹配必须带**标识符边界** —— 否则根 `b` 会被 `bb.len()` 满足（near-miss）。
     let compact = function_body.replace(' ', "");
     // ⚠ 这些形态**不能要求右括号紧跟** —— 真实断言后面还有 `, "消息"`（本机实测的假阴性）。
     for form in [
@@ -225,7 +247,7 @@ fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
         format!("assert!({root}.len()>"),
         format!("assert_eq!({root}.len(),16"),
     ] {
-        if compact.contains(&form.replace(' ', "")) {
+        if contains_identifier(&compact, &form.replace(' ', "")) {
             return true;
         }
     }
@@ -444,6 +466,56 @@ fn checker_has_teeth() {
     assert!(
         unbounded_quantifiers(multibyte).is_empty(),
         "多字节片段里的界必须被认"
+    );
+}
+
+/// **R122**: 三条常驻判据各自的**已知红**都要有一条**常驻对照**（⛔ 不能只靠历史批次的红）。
+/// 本函数把"掩码器被写坏"这一已知红喂给长度校验, 并确认它会红。
+#[test]
+fn masking_check_reddens_when_the_masker_drops_bytes() {
+    /// 故意写坏的掩码器: 注释整段删掉（**不补空格** ⇒ 字节数变短）。
+    fn broken_mask(text: &str) -> String {
+        text.lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+    }
+    let sample = "// 注释\n    fn t() { }";
+    assert_eq!(mask(sample).len(), sample.len(), "正确掩码: 等长");
+    assert_ne!(
+        broken_mask(sample).len(),
+        sample.len(),
+        "R122: 写坏的掩码器**必须**被长度校验抓住（否则本判据没有牙）"
+    );
+}
+
+/// **R118/R119 的常驻对照**: 元素值界不算集合界; 前缀相近的兄弟根不算本根的界。
+#[test]
+fn value_and_near_miss_bounds_are_not_accepted() {
+    // 已知红（R118）: 只有元素值界 ⇒ 集合可能为空 ⇒ 必须被抓住
+    let element_only = r#"
+    fn t() {
+        assert_eq!(v[0], 5);
+        assert!(v.iter().all(|x| *x == 5));
+    }"#;
+    assert_eq!(
+        unbounded_quantifiers(element_only),
+        vec![(4usize, "v".to_owned())],
+        "R118: 元素值界不是集合界"
+    );
+    // 已知红（R119）: 界属于**前缀相近的兄弟根** `bb` ⇒ 根 `b` 仍未受限
+    let near_miss = r#"
+    fn t() {
+        assert_eq!(bb.len(), 8);
+        assert!(b.iter().all(|x| *x == 0));
+    }"#;
+    assert_eq!(
+        unbounded_quantifiers(near_miss),
+        vec![(4usize, "b".to_owned())],
+        "R119: `bb.len()` 不得被当成 `b` 的界"
     );
 }
 
