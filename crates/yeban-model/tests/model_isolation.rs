@@ -619,7 +619,10 @@ fn no_hash_containers_anywhere_in_src() {
     let mut files = Vec::new();
     walk(&src_root, &mut files);
     // R199：规模**降级为诊断**（地板是反向指标 —— 缺陷会把计数抬高，地板照样过）。
-    eprintln!("[R187-PROBE hash_scan] scanned {} files", files.len());
+    eprintln!(
+        "[R187-PROBE model_isolation::hash_scan] scanned {} files",
+        files.len()
+    );
 
     for path in &files {
         let text = std::fs::read_to_string(path).expect("读取源文件");
@@ -636,32 +639,32 @@ fn no_hash_containers_anywhere_in_src() {
     // 扫描器自身有牙（R199 两臂式）：命中臂 ＋ 不命中臂。
     assert!(
         code_has("use std::collections::HashMap;", "HashMap"),
-        "[R187-PROBE hash_use] 真代码里的 `use` 必须命中"
+        "[R187-PROBE model_isolation::hash_use] 真代码里的 `use` 必须命中"
     );
     assert!(
         code_has("struct X { m: HashSet<u8> }", "HashSet"),
-        "[R187-PROBE hash_struct] 真代码里的字段类型必须命中"
+        "[R187-PROBE model_isolation::hash_struct] 真代码里的字段类型必须命中"
     );
     assert!(
         !code_has("// HashMap 只出现在注释里\n", "HashMap"),
-        "[R187-PROBE hash_line_comment] 整行注释不得命中"
+        "[R187-PROBE model_isolation::hash_line_comment] 整行注释不得命中"
     );
     // ⭐ 下面四条是 R199 的收获：地板从来没抓到的**潜在假阳性**。
     assert!(
         !code_has("/// 文档注释提到 HashMap 也不行\n", "HashMap"),
-        "[R187-PROBE hash_doc_comment] 文档注释不得命中"
+        "[R187-PROBE model_isolation::hash_doc_comment] 文档注释不得命中"
     );
     assert!(
         !code_has("let note = \"HashMap\";\n", "HashMap"),
-        "[R187-PROBE hash_string_literal] 字符串字面量不得命中"
+        "[R187-PROBE model_isolation::hash_string_literal] 字符串字面量不得命中"
     );
     assert!(
         !code_has("let x = 1; // HashMap 行尾注释\n", "HashMap"),
-        "[R187-PROBE hash_trailing_comment] 行尾注释不得命中"
+        "[R187-PROBE model_isolation::hash_trailing_comment] 行尾注释不得命中"
     );
     assert!(
         !code_has("/* HashMap 块注释 */\n", "HashMap"),
-        "[R187-PROBE hash_block_comment] 块注释不得命中"
+        "[R187-PROBE model_isolation::hash_block_comment] 块注释不得命中"
     );
 }
 
@@ -2539,7 +2542,10 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
     // `files.len() >= 16` 同口径），不是精确冻结 —— 别的线加测试文件不该把本判据弄红，
     // 但"扫描域塌成空/个位数"必须红。当前实际 **26** 个（第十一轮读数）。
     // R199：规模**降级为诊断**（地板是反向指标）。真正的保证是上面的两臂断言。
-    eprintln!("[R187-PROBE all_any_scan] scanned {} files", files.len());
+    eprintln!(
+        "[R187-PROBE model_isolation::all_any_scan] scanned {} files",
+        files.len()
+    );
 
     let mut offenders: Vec<String> = Vec::new();
     for path in &files {
@@ -2897,11 +2903,13 @@ fn the_shape_table_is_the_single_source_of_truth() {
         "R160 双向②：标签必须唯一（重复 ⇒ 有行被覆盖）"
     );
     // R199：规模降级为诊断；真正的保证是"每行都求值 ＋ 标签唯一"两条机械断言。
-    eprintln!("[R187-PROBE shape_table] declared {declared} rows");
+    eprintln!("[R187-PROBE model_isolation::shape_table] declared {declared} rows");
     // 方向二（续）：认/拒两类都必须足量 —— ⛔ 防"表漂移成只认不拒"或反之。
     // R199：这两类计数也是**地板**（反向指标）⇒ 降级为诊断。
     // 真正的保证是"每一行都有各自的期望值"—— 认臂期望 0、拒臂期望 >= 1。
-    eprintln!("[R187-PROBE shape_table_arms] accepts {accepts} / rejects {rejects}");
+    eprintln!(
+        "[R187-PROBE model_isolation::shape_table_arms] accepts {accepts} / rejects {rejects}"
+    );
     // 非断言与跨行形态（单列，避免把"认"的臂与它们混在一张表里）
     let macro_tail = "fn f() { my_assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
     assert_eq!(
@@ -3300,7 +3308,7 @@ fn the_crate_scan_flags_bad_shapes_inserted_in_memory() {
     walk(&root.join("tests"), &mut files);
     // R199：规模降级为诊断（真正的保证是上面的红/绿两臂）。
     eprintln!(
-        "[R187-PROBE filter_loop_scan] scanned {} files",
+        "[R187-PROBE model_isolation::filter_loop_scan] scanned {} files",
         files.len()
     );
     let mut offenders = Vec::new();
@@ -3318,4 +3326,69 @@ fn the_crate_scan_flags_bad_shapes_inserted_in_memory() {
         "R182：filter+循环断言缺下界：\n{}",
         offenders.join("\n")
     );
+}
+
+/// **错误规则**（证伪臂，R210/R188）：只删"以 `//` 开头的**整行**"注释。
+///
+/// 这是 `code_only` 的**旧实现**。它把字符串字面量、行尾注释、块注释、文档注释
+/// 里的记号都当成"真代码" ⇒ **假阳性**。本函数只为证伪保留。
+fn code_only_full_line_comments_only(src: &str) -> String {
+    src.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **R210 常驻判据**：去注助手（`code_only`）的四条**对抗样本**逐条给读数。
+///
+/// 为什么需要：第二十轮我用"把 `code_only` 退回弱实现"的**外部注入**证明新臂有牙。
+/// 但失败日志会在**第一条**失败臂处停止 ⇒ 证据链只覆盖 1/4。本条把四条臂**常驻化**，
+/// 并对每条臂同时给出**弱实现**与**强实现**的结论 ⇒ 四条全部可证。
+#[test]
+fn the_decomment_helper_has_four_adversarial_arms() {
+    // (标签, 样本, 正确结论, 弱实现结论)
+    let arms: [(&str, &str, bool, bool); 4] = [
+        // ⚠️ 更正（R210）：`///` 开头的行**也**被弱规则删掉（`starts_with("//")` 为真）
+        // ⇒ 这条臂**不区分**两种规则。第二十轮报的"4 个缺陷"**应为 3 个**。
+        ("doc_comment", "/// 文档注释提到 HashMap\n", false, false),
+        ("string_literal", "let note = \"HashMap\";\n", false, true),
+        (
+            "trailing_comment",
+            "let x = 1; // HashMap 行尾\n",
+            false,
+            true,
+        ),
+        ("block_comment", "/* HashMap 块注释 */\n", false, true),
+    ];
+    let declared = arms.len();
+    let mut checked = 0_usize;
+    let mut separated = 0_usize;
+    for (label, sample, correct_expect, weak_expect) in arms {
+        let correct = code_has(sample, "HashMap");
+        let weak = code_only_full_line_comments_only(sample).contains("HashMap");
+        assert_eq!(
+            correct, correct_expect,
+            "[R187-PROBE model_isolation::decomment_{label}] 正确（掩码）规则的结论错了"
+        );
+        assert_eq!(
+            weak, weak_expect,
+            "[R187-PROBE model_isolation::decomment_{label}_weak] 弱规则的结论与预期不符"
+        );
+        if correct != weak {
+            separated += 1;
+        }
+        checked += 1;
+    }
+    // R160 双向：每条臂都求值 ＋ 每条臂都必须**区分**两种规则。
+    assert_eq!(
+        checked, declared,
+        "R160 双向①：{declared} 条对抗臂必须全部求值"
+    );
+    // R210：**不是每条臂都区分**。文档注释那条两侧结论相同（弱规则也删 `///` 行）
+    // ⇒ 本线由弱规则造成的**真缺陷是 3 个**（字符串字面量 / 行尾注释 / 块注释）。
+    assert_eq!(
+        separated, 3,
+        "区分臂数应为 3（doc_comment 不区分），实得 {separated}"
+    );
+    eprintln!("[R187-PROBE model_isolation::decomment] {separated}/{declared} arms separated");
 }
