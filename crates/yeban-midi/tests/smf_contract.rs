@@ -1492,12 +1492,20 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
     let samples: [(&'static str, &'static str, usize); 2] = [
         (
             FORMS[0],
-            "let needle = \"TrackName 长度 15\";\nassert!(doc.contains(needle));\n",
+            // ⭐ R223③：把 token 本身劈开 ⇒ 样本**不把 token 留在本文件里**（否则会
+            // 抬高它所检验的那个原始计数）。
+            concat!(
+                "let needle = \"TrackName 长度 15\";\nassert!(doc.con",
+                "tains(needle));\n"
+            ),
             1,
         ),
         (
             FORMS[1],
-            "let needle = \"TrackName 长度 15\";\nassert!(doc.contains(&needle));\n",
+            concat!(
+                "let needle = \"TrackName 长度 15\";\nassert!(doc.con",
+                "tains(&needle));\n"
+            ),
             1,
         ),
     ];

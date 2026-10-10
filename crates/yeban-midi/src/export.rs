@@ -1262,25 +1262,30 @@ mod tests {
         );
     }
 
-    /// 判据 (R183: **常驻判据自带绿/红两臂** ⇒ ⭐ **外部注入分母归 0**): 上面那条真表判据是
-    /// **绿臂**（真表必须通过）；本条是**红臂** —— 把**坏表**喂给同一个 checker，它必须**有牙**。
-    /// ⭐ 下界早已抽成函数 `assert_every_midi_export_error_arm_is_covered`（R183 的第一半），所以可以直接喂坏输入。
-    /// ⭐ R180: 自检**不用集合大小界**，而是喂**具体坏表**再看它是否被拒。
+    /// 判据 (R183 ＋ **R222①：臂必须拆成独立判据**): **缺臂**的坏表必须被拒。
+    /// ⚠️ 原来两条臂写在**同一个判据**里 ⇒ libtest 在**第一条失败臂**处停止 ⇒ 日志只覆盖 1/2。
     #[test]
-    fn the_arm_coverage_checker_rejects_broken_tables() {
+    fn the_arm_coverage_checker_rejects_a_short_table() {
         eprintln!(
-            "[R187-PROBE b25:export::tests::the_arm_coverage_checker_rejects_broken_tables] ran"
+            "[R187-PROBE b27:export::tests::the_arm_coverage_checker_rejects_a_short_table] ran"
         );
-        // ⚠️ 这些错误枚举**不含 `Copy`**（有 `String` 载荷）⇒ 用工厂闭包，⛔ 不能移动同一个值两次。
+        // ⚠️ 这些错误枚举**不含 `Copy`**（有 `String` 载荷）⇒ 用工厂闭包。
         let real = || MidiExportError::NoMidiContent;
-        // 红臂①（缺臂）：只有一行 ⇒ 编号集合不完整。
         let too_short = [(real(), "没有可导出的轨道")];
         assert!(
             std::panic::catch_unwind(|| assert_every_midi_export_error_arm_is_covered(&too_short))
                 .is_err(),
             "缺臂的坏表必须被拒（本 crate 有 6 个变体）"
         );
-        // 红臂②（重复臂）：同一行两遍 ⇒ 集合有多余。
+    }
+
+    /// 判据 (R183 ＋ **R222①**): **重复臂**的坏表必须被拒（独立判据 ⇒ 与上一条互不遮蔽）。
+    #[test]
+    fn the_arm_coverage_checker_rejects_a_duplicated_table() {
+        eprintln!(
+            "[R187-PROBE b27:export::tests::the_arm_coverage_checker_rejects_a_duplicated_table] ran"
+        );
+        let real = || MidiExportError::NoMidiContent;
         let duplicated = [(real(), "没有可导出的轨道"), (real(), "没有可导出的轨道")];
         assert!(
             std::panic::catch_unwind(|| assert_every_midi_export_error_arm_is_covered(&duplicated))
