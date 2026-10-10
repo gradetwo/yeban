@@ -3124,3 +3124,178 @@ fn the_bound_rules_have_falsification_arms() {
         "证伪臂不足：只有 {disagreed}/{arms} 条臂能区分正确与错误规则"
     );
 }
+
+/// **R182**：`filter(...)` ＋ 循环内断言 ＋ **没有任何计数/大小下界** ⇒ 真空（`[] == []`）。
+///
+/// 为什么需要：本判据族此前只扫 `.all(…)/.any(…)`，对"过滤后循环断言"这一类是**盲的**。
+/// 本函数把该形态收窄成机械判定：函数体内若有 `filter(` 且有"循环内含断言"，
+/// 则必须同时存在以下任一下界，否则算无界站点：
+/// ① `ident >= N`（运行期计数器）；② `.len() >=/> N`；③ `assert_eq!(….len(), N|CONST)`；
+/// ④ `!….is_empty()`。
+fn unbounded_filter_loop_sites(relative: &str, raw: &str) -> Vec<String> {
+    let masked = mask_rust_source(raw);
+    let mut found = Vec::new();
+    let mut cursor = 0_usize;
+    while let Some(at) = masked[cursor..].find("#[test]") {
+        let start = cursor + at;
+        cursor = start + 1;
+        let Some(fn_at) = masked[start..].find("fn ") else {
+            continue;
+        };
+        let fn_at = start + fn_at;
+        let Some(brace) = masked[fn_at..].find('{') else {
+            continue;
+        };
+        let open = fn_at + brace;
+        let Some(body) = brace_body(&masked, open) else {
+            continue;
+        };
+        if !body.contains("filter(") {
+            continue;
+        }
+        let mut loop_assert = false;
+        let mut search = 0_usize;
+        while let Some(found_at) = body[search..].find("for ") {
+            let loop_at = search + found_at;
+            search = loop_at + 1;
+            let Some(loop_brace) = body[loop_at..].find('{') else {
+                continue;
+            };
+            let Some(loop_body) = brace_body(body, loop_at + loop_brace) else {
+                continue;
+            };
+            if loop_body.contains("assert!")
+                || loop_body.contains("assert_eq!")
+                || loop_body.contains("assert_ne!")
+            {
+                loop_assert = true;
+                break;
+            }
+        }
+        if !loop_assert {
+            continue;
+        }
+        // 下界（四种形态任一）
+        let flat = compact(body);
+        let mut bounded = flat.contains("is_empty()") && flat.contains('!');
+        let mut i = 0_usize;
+        let bytes = flat.as_bytes();
+        while !bounded && i + 1 < bytes.len() {
+            if bytes[i] == b'>' && bytes[i + 1] == b'=' {
+                let before = flat[..i].trim_end();
+                let after = flat[i + 2..].trim_start();
+                let name_ok = before
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == ')');
+                let val_ok = after
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+                if name_ok && val_ok {
+                    bounded = true;
+                }
+            }
+            i += 1;
+        }
+        let mut j = 0_usize;
+        while !bounded && j + 1 < bytes.len() {
+            if bytes[j] == b'=' && bytes[j + 1] == b'=' {
+                // `assert_eq!(….len(),N|CONST)` 已在宏内隐含，这里只认显式 `==`
+                j += 1;
+            }
+            j += 1;
+        }
+        if !bounded {
+            let line = raw[..start].matches('\n').count() + 1;
+            found.push(format!("{relative}:{line} filter+loop"));
+        }
+    }
+    found
+}
+
+/// **R183 常驻对照**：把"外部注入"变成**判据内的内存注入**。
+///
+/// 做法：读**真实文件文本**，在内存里插入坏形态/好形态，再用**与真实扫描同一个函数**判定。
+/// ⇒ 外部注入的分母归 0（本条覆盖"扫描器真的会在真文件上抓到坏形态"这件事）。
+#[test]
+fn the_crate_scan_flags_bad_shapes_inserted_in_memory() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let real = std::fs::read_to_string(root.join("tests/model_isolation.rs")).expect("read self");
+    // 基线：真文件当前是干净的。
+    assert_eq!(
+        unbounded_all_any_sites("baseline", &real).len(),
+        0,
+        "基线：真文件不得有无界站点"
+    );
+    let anchor = "fn no_hash_containers_anywhere_in_src() {";
+    let at = real.find(anchor).expect("anchor") + anchor.len();
+    let splice = |extra: &str| format!("{}\n{extra}{}", &real[..at], &real[at..]);
+    // 红臂：插入无界的 `.all(..)` ⇒ 必须被扫到 **1** 处。
+    let bad = splice(
+        "    let probe: Vec<u32> = vec![1, 2, 3];\n    assert!(probe.windows(2).all(|p| p[0] < p[1]));\n",
+    );
+    assert_eq!(
+        unbounded_all_any_sites("in_memory_bad", &bad).len(),
+        1,
+        "R183 红臂：内存里插入的无界站点必须被扫到"
+    );
+    // 绿臂：插入**同根下界** ⇒ 0 处（不得过度报告）。
+    let good = splice(
+        "    let probe: Vec<u32> = vec![1, 2, 3];\n    assert!(probe.len() >= 2);\n    assert!(probe.windows(2).all(|p| p[0] < p[1]));\n",
+    );
+    assert_eq!(
+        unbounded_all_any_sites("in_memory_good", &good).len(),
+        0,
+        "R183 绿臂：带同根下界的站点不得被报"
+    );
+    // R182：过滤后循环断言的形态，同样用**真文件内存注入**证明有牙。
+    // ⚠️ R182 的两条臂**不能**拼进真实文件：宿主函数很大、自带别的界 ⇒ 污染判定
+    // （与第十六轮的"上下文污染"同类）。这两条臂改用**独立小夹具**（仍是常驻对照）。
+    let filter_red = "#[test]\nfn t() {\n    let seen: Vec<u32> = vec![1, 2, 3];\n    for x in seen.iter().filter(|v| **v > 0) {\n        assert!(*x > 0);\n    }\n}\n";
+    assert_eq!(
+        unbounded_filter_loop_sites("filter_red", filter_red).len(),
+        1,
+        "R182 红臂：无计数下界的 filter+循环断言必须被扫到"
+    );
+    let filter_green = "#[test]\nfn t() {\n    let seen: Vec<u32> = vec![1, 2, 3];\n    let mut judged = 0_usize;\n    for x in seen.iter().filter(|v| **v > 0) {\n        assert!(*x > 0);\n        judged += 1;\n    }\n    assert!(judged >= 1, \"判据在空转\");\n}\n";
+    assert_eq!(
+        unbounded_filter_loop_sites("filter_green", filter_green).len(),
+        0,
+        "R182 绿臂：带计数器下界的 filter+循环断言不得被报"
+    );
+    // 真实扫描域：整仓不得有该形态的无界站点（R100：被扫文件数有下界）。
+    let mut files = Vec::new();
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("读取 {} 失败: {error}", dir.display()))
+            .map(|entry| entry.expect("目录项").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    walk(&root.join("src"), &mut files);
+    walk(&root.join("tests"), &mut files);
+    assert!(files.len() >= 20, "扫描域下界（实际 {}）", files.len());
+    let mut offenders = Vec::new();
+    for path in &files {
+        let relative = path
+            .strip_prefix(root)
+            .expect("crate 根之下")
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(path).expect("读取源文件");
+        offenders.extend(unbounded_filter_loop_sites(&relative, &text));
+    }
+    assert!(
+        offenders.is_empty(),
+        "R182：filter+循环断言缺下界：\n{}",
+        offenders.join("\n")
+    );
+}
