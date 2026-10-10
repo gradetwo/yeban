@@ -4476,6 +4476,36 @@ mod tests {
             let mut out = bytes.clone();
             let mut i = 0usize;
             while i < bytes.len() {
+                // ⭐ **块注释**（R214① 的对偶风险）：⛔ 不处理它 ⇒ 含 `"` 的块注释会让掩码器
+                // **失去同步**（把后续正文当字符串抹掉）⇒ **假阴性**（掩盖真违规，比假阳性更危险）。
+                // Rust 的块注释**可嵌套** ⇒ 用深度计数。
+                if bytes[i] == '/' && i + 1 < bytes.len() && bytes[i + 1] == '*' {
+                    let mut depth = 1usize;
+                    out[i] = ' ';
+                    out[i + 1] = ' ';
+                    i += 2;
+                    while i < bytes.len() && depth > 0 {
+                        if bytes[i] == '/' && i + 1 < bytes.len() && bytes[i + 1] == '*' {
+                            depth += 1;
+                            out[i] = ' ';
+                            out[i + 1] = ' ';
+                            i += 2;
+                            continue;
+                        }
+                        if bytes[i] == '*' && i + 1 < bytes.len() && bytes[i + 1] == '/' {
+                            depth -= 1;
+                            out[i] = ' ';
+                            out[i + 1] = ' ';
+                            i += 2;
+                            continue;
+                        }
+                        if bytes[i] != '\n' {
+                            out[i] = ' ';
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
                 // 行注释
                 if bytes[i] == '/' && i + 1 < bytes.len() && bytes[i + 1] == '/' {
                     while i < bytes.len() && bytes[i] != '\n' {
@@ -4655,6 +4685,60 @@ mod tests {
             red.len(),
             "masking must preserve the byte count"
         );
+
+        // ⭐⭐ **R214① 的四件套对抗样本**（掩码风险是**对偶**的：无掩码 ⇒ 假阳性；**失同步 ⇒ 假阴性**）。
+        // 判据：每个样本都必须 ① **字符等长**（保字节数）② **无泄漏**（被掩掉的部分里不能留下针）
+        // ③ 反失同步臂：块注释**之后**的正文里的针必须**仍然可见**（掩码器必须重新同步）。
+        eprintln!("[R187-PROBE decode::mask-adversarial] four adversarial samples");
+        let needle_for_mask = concat!("frame", "_count");
+        let adversarial: [(&str, &str, bool); 5] = [
+            // (名字, 样本, 掩码后针是否**应当**仍可见)
+            (
+                "字符串含 //",
+                concat!("let s = \"frame", "_count // x\";\n"),
+                false,
+            ),
+            (
+                "行尾注释含 \"",
+                concat!("let x = 1; // a quote \" frame", "_count\n"),
+                false,
+            ),
+            (
+                "行尾注释含 //",
+                concat!("let x = 1; // // frame", "_count\n"),
+                false,
+            ),
+            (
+                "块注释含 \" 与 //",
+                concat!("/* a \" and // frame", "_count */\nlet y = 2;\n"),
+                false,
+            ),
+            // ⭐ 反失同步：块注释**结束之后**的针必须**还看得见**。
+            (
+                "块注释后的针必须可见",
+                concat!("/* \" */ frame", "_count\n"),
+                true,
+            ),
+        ];
+        for (name, sample, needle_survives) in adversarial {
+            let masked = mask(sample);
+            assert_eq!(
+                masked.chars().count(),
+                sample.chars().count(),
+                "{name}: masking must preserve the character count"
+            );
+            assert_eq!(
+                masked.matches('\n').count(),
+                sample.matches('\n').count(),
+                "{name}: masking must preserve the newlines"
+            );
+            assert_eq!(
+                masked.contains(needle_for_mask),
+                needle_survives,
+                "{name}: needle visibility after masking is wrong (a desynchronised masker would \
+                 swallow the rest of the source)"
+            );
+        }
         assert_eq!(
             mask(green).lines().count(),
             green.lines().count(),
@@ -4834,13 +4918,21 @@ mod tests {
             ("asset.rs", include_str!("asset.rs")),
             ("limits.rs", include_str!("limits.rs")),
         ];
+        // ⭐ R119 的规格必须**与扫描器一致**：站点计数也要要求 `.all` **紧跟 `(`**。
+        // 我原先用 `matches(all_needle)`（无边界）⇒ 把 `[..all_lines` 里的 `.all` 也数进去了
+        // （`all_sites` 从 5 假涨到 6）⇒ **计数器与扫描器两套规格**是同一类错。
+        let count_all = |text: &str| {
+            text.match_indices(all_needle)
+                .filter(|(offset, _)| text[offset + all_needle.len()..].starts_with('('))
+                .count()
+        };
         let mut all_sites = 0usize;
         let mut temp_sites = 0usize;
         for (name, source) in sources {
             // ⚠ 先保字节数掩码（R113）：否则**本判据自己的断言字符串**里出现的针会被当成真命中。
             let masked = mask(source);
             let offenders = scan_all(&masked, all_needle, &bound_needles, 12);
-            all_sites += masked.matches(all_needle).count();
+            all_sites += count_all(&masked);
             assert!(
                 offenders.is_empty(),
                 "{name}: every `.all(` must have a set-size bound within 40 lines, offenders: \
@@ -4918,6 +5010,20 @@ mod tests {
         );
 
         // R122：证明扫描器**不是惰性的** —— 命中点数必须达到下界。
+        // ⭐ **R213**：这个精确计数守的是"**被搜集合塌缩**"（⛔ 不是 R199 的"扫描量地板"——
+        // 那类缺陷会把计数**抬高**）。⇒ 配一条**行为臂**：把被搜集合**缩小**（取源码前半），
+        // 计数必须**随之变小**；若它不随集合变化，就说明这个界根本没在量集合。
+        let full_sites = count_all(&mask(real));
+        // ⚠ 按**行**取前半（按字节切会在多字节字符中间 panic）。
+        let all_lines: Vec<&str> = real.lines().collect();
+        let half_source = all_lines[..all_lines.len() / 2].join("\n");
+        let half_sites = count_all(&mask(&half_source));
+        eprintln!("[R187-PROBE decode::searched-set] full={full_sites} half={half_sites}");
+        assert!(
+            half_sites < full_sites,
+            "shrinking the searched set must lower the count (full={full_sites}, half={half_sites})"
+        );
+
         // ⭐ **R199**：原先是"计数 >= 地板"（**反向指标**：任何 >= 地板的数都过，包括"多到离谱"）。
         // 改成**精确计数**（把可观察量钉死），并用 `eprintln!` 把实际值打出来（可检索、可对账）。
         // 机制侧另有**喂坏输入的两臂**（见上面的 `no_needle_at_all` ⇒ 0 命中）、⛔ 不靠地板证明"扫到了"。
