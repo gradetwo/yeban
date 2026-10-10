@@ -4918,13 +4918,21 @@ mod tests {
         );
 
         // R122：证明扫描器**不是惰性的** —— 命中点数必须达到下界。
-        assert!(
-            all_sites >= 5,
-            "the scan must actually match `.all(` sites, matched {all_sites}"
+        // ⭐ **R199**：原先是"计数 >= 地板"（**反向指标**：任何 >= 地板的数都过，包括"多到离谱"）。
+        // 改成**精确计数**（把可观察量钉死），并用 `eprintln!` 把实际值打出来（可检索、可对账）。
+        // 机制侧另有**喂坏输入的两臂**（见上面的 `no_needle_at_all` ⇒ 0 命中）、⛔ 不靠地板证明"扫到了"。
+        eprintln!("[R187-PROBE scanner-sites] .all sites={all_sites} temp_dir sites={temp_sites}");
+        assert_eq!(
+            all_sites, 5,
+            "the number of `.all(<` sites in the scanned sources is an observable; a floor would \
+             accept any larger (wrong) number"
         );
-        assert!(
-            temp_sites >= 2,
-            "the scan must actually match `env::temp_dir()` sites, matched {temp_sites}"
+        // 口径：这是**掩码后**的站点数，覆盖四个被扫文件（asset.rs 1 处临时文件夹具 ＋
+        // decode.rs 3 处）。我此前口头报的"3 处"漏了 asset.rs —— **精确计数把它抓出来了**；
+        // 旧地板（>= 2）对 3 和 4 都放行，因此永远发现不了这个错。
+        assert_eq!(
+            temp_sites, 4,
+            "the number of `env::temp_dir()` sites in the scanned sources is an observable"
         );
     }
 
