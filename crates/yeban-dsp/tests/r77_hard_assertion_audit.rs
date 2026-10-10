@@ -1452,7 +1452,10 @@ fn the_scanners_reject_bad_input_and_accept_good_input() {
             .any(|p| normalize_path(p, &root) == "src/lib.rs"),
         "扫描域必须包含 `src/lib.rs` ⇒ 上一条不是真空断言（路径须先归一化）"
     );
+}
 
+#[test]
+fn the_integer_scanners_reject_bad_input_and_accept_good_input() {
     // ③ `has_integer_literal`：坏输入＝**浮点**字面量 ⇒ ⛔ 不得判为整数。
     assert!(
         !has_integer_literal("assert_eq!(x, 1.5);"),
