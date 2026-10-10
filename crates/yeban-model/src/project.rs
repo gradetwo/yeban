@@ -5139,10 +5139,14 @@ mod tests {
     /// 而 `render` 会继续把 `Ok` 当权威。本判据按**源码文本**逐字段点名，并禁止 `_ =>`。
     #[test]
     fn routing_graph_validate_covers_every_field_and_has_no_wildcard_fallback() {
-        let text = std::fs::read_to_string(
+        let raw = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project.rs"),
         )
         .expect("读取 project.rs");
+        // ⚠️ 平台差异（CI 的 windows 腿实测换行是 CRLF）：本判据按**文本锚点**切片，
+        // 因此必须先把换行规范化成 `\n`，否则 `find("\n}")` 在 Windows 上找不到锚点
+        // 而 panic（实测：`windows (yeban-mcp / yeban-model 的平台分支)` 只红这一条）。
+        let text = raw.replace("\r\n", "\n").replace('\r', "\n");
 
         // 结构体字段：`pub struct RoutingGraph {` 到下一个顶层 `}` 之间。
         let struct_at = text.find("pub struct RoutingGraph {").expect("结构体定义");
