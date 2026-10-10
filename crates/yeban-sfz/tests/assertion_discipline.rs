@@ -1127,9 +1127,9 @@ fn shape_counts(sources: &[(std::path::PathBuf, String)]) -> (usize, usize) {
 /// 返回 `(规则A, 规则B)`，`规则A` = 断言**宏出现次数**，`规则B` = **含断言宏的行数**。
 /// ⭐ 两条规则**独立**（一个按宏、一个按行）⇒ 二者之差就是"**跨行的宏**"这个缺口读数；
 /// ⛔ 若把计数点按"4 空格缩进"插入，就会漏掉嵌套块里的臂（这正是 `midi` 的缺陷）。
-fn count_self_test_arms(source: &str) -> (usize, usize) {
+fn count_arms_in(source: &str, signature: &str) -> (usize, usize) {
     let masked = mask(source);
-    let start = match masked.find("fn self_test_classifier()") {
+    let start = match masked.find(signature) {
         Some(index) => index,
         None => return (0, 0),
     };
@@ -1222,12 +1222,24 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         sources.len()
     );
 
+    // ⭐ R247②：**两区各自独立计数**（⛔ 分区数**不可相加**）；单位 = **宏出现次数（上界）**与**含宏的行数**。
     // ⭐ R247①：**臂计数器当场算**（⛔ 不用我手数的"≈38"）。
     // ⚠️  是**相对 crate 根**的路径，测试的 CWD 是工作区根 ⇒ 必须锚在 。
     let own_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assertion_discipline.rs");
     let own_source = fs::read_to_string(&own_path).expect("read this criterion's own source");
-    let (arms_by_macro, arms_by_line) = count_self_test_arms(&own_source);
+    let (arms_by_macro, arms_by_line) = count_arms_in(&own_source, "fn self_test_classifier()");
+    let (body_macros, body_lines) = count_arms_in(
+        &own_source,
+        "fn no_unbounded_all_any_assertion_in_this_crate()",
+    );
+    eprintln!(
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R247② 判据体区独立计数：按宏 = {body_macros}（**上界**，⛔ 不是臂数）；按行 = {body_lines}；⚠️ 与自测区 22 **不可相加**"
+    );
+    assert!(
+        body_macros > 0,
+        "R247②: the criterion-body region must contain arms"
+    );
     eprintln!(
         "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R247① 臂计数：规则A（按宏）= {arms_by_macro}；规则B（按行）= {arms_by_line}；差 = {}（差 = 跨行书写的宏；两条规则独立 ⇒ 这是**交叉对账**）",
         arms_by_macro as i64 - arms_by_line as i64
