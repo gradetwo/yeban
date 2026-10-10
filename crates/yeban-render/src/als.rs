@@ -1584,4 +1584,51 @@ mod tests {
             );
         }
     }
+
+    /// 判据 (**上游契约的字节面 ＋ R60 的"两条契约"**): `.als` 的**压缩字节流**也要被钉住。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, 特性档）
+    ///
+    /// 既有的字节面判据是 `assert_eq!(first.bytes, second.bytes, "两次导出的字节必须相同")`
+    /// —— 那是**自比**: 同一个进程里两遍走同一段代码。把压缩级别从
+    /// [`Compression::default`] 改成 `Compression::best()` 之后, XML 一模一样
+    /// （`filled_project_exports_gzip_xml_with_a_complete_loss_table` 仍然全绿）,
+    /// 而**交付给用户的字节已经变了**。
+    ///
+    /// # 两条契约（R60）
+    ///
+    /// 1. **内容契约**（`<LiveSet>` / 音轨名 / 计数 / 损失表）—— 既有判据覆盖;
+    /// 2. **字节契约**（`mtime = 0` / OS 字节 255 / `Compression::default` 下的 deflate 流）——
+    ///    本判据覆盖。第 2 条**依赖 `flate2`（`miniz_oxide` 后端）的实现**: 升级 flate2
+    ///    会让本判据红 —— 而那**正是**要有人显式复核一次的地方（`Cargo.lock` 钉住版本）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: `filled_project()` 导出一次得到的 `export.bytes`（单位: 字节）。
+    /// 读数: 字节数（一个整数）＋ SHA-256 十六进制串（64 字符）。
+    ///
+    /// # 非空证明
+    ///
+    /// 摘要与长度**两个独立读数**都要对得上 ⇒ 空输入、截断、换压缩级别、改 gzip 头
+    /// （`mtime`/OS 字节）都会红。
+    #[test]
+    fn the_filled_project_als_byte_stream_is_pinned() {
+        let export = export_project(&filled_project()).expect("导出");
+        assert_eq!(export.bytes.len(), ALS_FILLED_BYTES, "字节数");
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&export.bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            digest, ALS_FILLED_SHA256,
+            "填充工程的 `.als` 字节流必须就是钉住的那一份"
+        );
+    }
+
+    /// `filled_project()` 导出一次的**字节数**（实测, `stat` 口径: `Vec<u8>::len`）。
+    const ALS_FILLED_BYTES: usize = 2909;
+    /// 同一份字节流的 SHA-256（实测）。
+    const ALS_FILLED_SHA256: &str =
+        "9219c074428e471db3183108f70489b7c18545b74beacbbcb5f7b679cab29cb8";
 }

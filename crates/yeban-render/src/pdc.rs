@@ -1300,7 +1300,7 @@ mod tests {
     ///
     /// # 量的是什么（对象 + 单位）
     ///
-    /// 对象: 6 节点 / 6 边（`a` 自身延迟 `u32::MAX`、`b` 3、`c` 100、`d` 7、`e` 0、`master` 0）。
+    /// 对象: 7 节点 / 7 边（`a` 自身延迟 `u32::MAX`、`b` 3、`c` 100、`d` 7、`e` 0、`master` 0、`f` 0）。
     /// 读数: 6 个 `arrival` ＋ 6 个 `output_latency` ＋ `longest_path` ＋ 6 条边的
     /// `delay_of`（**全部是手工算出来的字面量**, 单位: 采样帧）。
     ///
@@ -1312,7 +1312,7 @@ mod tests {
     #[test]
     fn a_mixed_chain_and_diamond_saturates_at_several_levels() {
         let g = graph(
-            &["a", "b", "c", "d", "e", "master"],
+            &["a", "b", "c", "d", "e", "f", "master"],
             &[
                 ("a", "b"),
                 ("b", "e"),
@@ -1320,6 +1320,7 @@ mod tests {
                 ("b", "master"),
                 ("c", "master"),
                 ("d", "master"),
+                ("d", "f"),
             ],
             &[
                 ("a", u32::MAX),
@@ -1328,6 +1329,9 @@ mod tests {
                 ("d", 7),
                 ("e", 0),
                 ("master", 0),
+                // `f` 只吃 `d` 的支路: 它的 `arrival` = 7 **远小于** `longest_path` = `u32::MAX`
+                // ⇒ 它是"补偿必须用**目的地 arrival**、不许用全局 `longest_path`"的落点。
+                ("f", 0),
             ],
         );
         let mixed = plan(&g, "master").expect("无环");
@@ -1339,6 +1343,7 @@ mod tests {
             ("d", (0, 7)),
             ("e", (u32::MAX, u32::MAX)),
             ("master", (u32::MAX, u32::MAX)),
+            ("f", (7, 7)),
         ];
         for (node, (arrival, latency)) in expected {
             assert_eq!(mixed.arrival[node], arrival, "{node}: arrival");
@@ -1355,6 +1360,7 @@ mod tests {
             (("b", "master"), 0),
             (("c", "master"), u32::MAX - 100),
             (("d", "master"), u32::MAX - 7),
+            (("d", "f"), 0),
         ];
         for ((from, to), frames) in compensations {
             assert_eq!(
@@ -1372,6 +1378,12 @@ mod tests {
         assert_ne!(distinct[0], distinct[1], "0 与 MAX−7 必须不同");
         assert_ne!(distinct[1], distinct[2], "MAX−7 与 MAX−100 必须不同");
         assert_ne!(distinct[0], distinct[2], "0 与 MAX−100 必须不同");
+        // 非空证明: **目的地的 arrival 必须小于 longest_path**（否则测不到"用哪个 L"）。
+        assert_eq!(mixed.arrival["f"], 7, "f 的 arrival 必须是那个小值");
+        assert!(
+            mixed.arrival["f"] < mixed.longest_path,
+            "本夹具必须有 arrival < longest_path 的目的地, 否则 `delay_of` 用哪个 L 都看不出"
+        );
         // 非空证明: 饱和格子与小值格子同时存在。
         assert_eq!(
             expected.iter().filter(|(_, (_, l))| *l == u32::MAX).count(),
@@ -1380,8 +1392,8 @@ mod tests {
         );
         assert_eq!(
             expected.iter().filter(|(_, (_, l))| *l < 1000).count(),
-            2,
-            "2 格是小值（100 与 7）"
+            3,
+            "3 格是小值（100 / 7 / 7）"
         );
     }
 }
