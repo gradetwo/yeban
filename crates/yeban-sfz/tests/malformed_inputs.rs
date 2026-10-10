@@ -814,9 +814,14 @@ fn include_resolution_is_deterministic_and_its_digest_is_pinned() {
         digest, DIGEST_INCLUDE_RESOLUTION,
         "the canonical summary changed (actual digest {digest}):\n{summary}"
     );
-    assert!(
-        DIGEST_TABLE.contains(DIGEST_INCLUDE_RESOLUTION),
-        "the digest must also appear in the checked-in table"
+    // ② 文档契约（**R84 的正确形态**）：**按描述定位表格行**，从**那一行**取摘要，
+    // 再与**运行时算出的**摘要比较（针不在源码里，检查才有牙）。
+    // ⛔ 不用 `DIGEST_TABLE.contains(常量)`：两行对调它照样绿。
+    let documented = support::documented_digest(DIGEST_TABLE, "DIGEST_INCLUDE_RESOLUTION");
+    assert_eq!(
+        documented.as_deref(),
+        Some(digest.as_str()),
+        "the table row for DIGEST_INCLUDE_RESOLUTION must carry the runtime digest"
     );
     // 确定性**另算**：它是另一条性质，⛔ 不能替代上面的字面契约。
     assert_eq!(canonical(), summary, "two runs must agree");
@@ -826,8 +831,11 @@ fn include_resolution_is_deterministic_and_its_digest_is_pinned() {
 const DIGEST_INCLUDE_RESOLUTION: &str =
     "025e07f2edb4e6609dd2e6aaaa8936fab5fd79f0a88e6e9997b529e454a54b14";
 
-/// 归约摘要的文档表（R78④ 的**第二方向**：代码里的常量必须出现在这张表里）。
+/// 归约摘要的文档表（R78④／**R84**：按描述定位表格行，再从那一行取摘要）。
 const DIGEST_TABLE: &str = include_str!("data/sfz_digest_table.md");
+
+/// 手写 SHA-256 的 NIST 已知答案摘要（同样登记进文档表）。
+const DIGEST_SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
 /// 手写 SHA-256 的**已知答案自测**（NIST 向量）—— 新守卫必须先被喂已知值（R56）。
 #[test]
@@ -836,9 +844,11 @@ fn the_sha256_helper_matches_the_published_test_vectors() {
         support::sha256_hex(b""),
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     );
+    assert_eq!(support::sha256_hex(b"abc"), DIGEST_SHA256_ABC);
+    // 同一条 R84 形态也覆盖第二个常量（⇒ 表里**两行**，使"两行对调"可测）。
     assert_eq!(
-        support::sha256_hex(b"abc"),
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        support::documented_digest(DIGEST_TABLE, "DIGEST_SHA256_ABC").as_deref(),
+        Some(DIGEST_SHA256_ABC)
     );
     // 55 字节（补位后跨进第二个分组）与 56 字节（正好触发补零分支）两端。
     assert_ne!(

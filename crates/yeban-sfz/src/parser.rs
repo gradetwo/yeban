@@ -3337,4 +3337,79 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn the_default_limits_are_pinned_by_literals() {
+        // R86／R78①：`ParseLimits::default()` 的 16 个值此前只有**行为层**覆盖（第八批），
+        // 没有判据把它们逐个钉成**字面量**。这里给字面表（⛔ 不用常量自比）。
+        let limits = ParseLimits::default();
+        assert_eq!(limits.max_line_bytes, 65_536, "max_line_bytes");
+        assert_eq!(limits.max_regions, 65_536, "max_regions");
+        assert_eq!(
+            limits.max_opcodes_per_header, 4_096,
+            "max_opcodes_per_header"
+        );
+        assert_eq!(limits.max_defines, 4_096, "max_defines");
+        assert_eq!(
+            limits.max_macro_expansions_per_line, 64,
+            "max_macro_expansions_per_line"
+        );
+        assert_eq!(limits.max_source_bytes, 16_777_216, "max_source_bytes");
+        assert_eq!(limits.max_include_depth, 16, "max_include_depth");
+        assert_eq!(limits.max_include_files, 1_024, "max_include_files");
+        assert_eq!(limits.max_glob_matches, 4_096, "max_glob_matches");
+        assert_eq!(limits.max_glob_depth, 16, "max_glob_depth");
+        assert_eq!(limits.max_glob_scanned, 65_536, "max_glob_scanned");
+        assert_eq!(limits.max_warnings, 256, "max_warnings");
+        assert_eq!(limits.max_curves, 4_096, "max_curves");
+        assert_eq!(limits.max_effects, 4_096, "max_effects");
+        assert_eq!(limits.max_midi_sections, 4_096, "max_midi_sections");
+        assert_eq!(limits.max_midi_opcodes, 4_096, "max_midi_opcodes");
+        // ⭐ **R86 的第二个合法状态**：`unlimited()` 与 `default()` 必须**不同**
+        // （同类型、不同载荷 ⇒ R69 的真探针），否则"测试专用无限制状态"就与缺省混同。
+        assert_ne!(
+            limits,
+            ParseLimits::unlimited(),
+            "default and unlimited differ"
+        );
+        assert!(ParseLimits::unlimited().max_regions > limits.max_regions);
+    }
+
+    #[test]
+    fn the_error_payload_truncation_boundary_is_exact() {
+        // R72 的延伸：`truncate_for_error` 有 **7 处产线调用**、此前 **0 条判据**
+        // （黄金表用的是 1 字节载荷 "s"，永远走不到截断分支）。
+        // 边界：`<= 96` 字节原样；`> 96` 截到 96 字节 + `…`；多字节字符跨在 96 上时
+        // **回退到字符边界**（宁可少留几个字节，也不切出半个 UTF-8 字符）。
+        let exact = "a".repeat(96);
+        assert_eq!(
+            truncate_for_error(&exact),
+            exact,
+            "exactly 96 bytes is verbatim"
+        );
+
+        let over = "a".repeat(97);
+        let truncated = truncate_for_error(&over);
+        assert_eq!(truncated, format!("{}…", "a".repeat(96)));
+        assert_eq!(truncated.len(), 96 + "…".len());
+        assert_eq!(truncated.chars().filter(|c| *c == '…').count(), 1);
+
+        // 多字节边界：95 个 ASCII + 1 个 3 字节字符（共 98 字节）⇒ 96 落在该字符中间
+        // ⇒ 回退到 95 ⇒ 保留 95 字节 + `…`（比上限少 1 字节，但仍是合法 UTF-8）。
+        let straddling = format!("{}{}", "a".repeat(95), "€");
+        let truncated = truncate_for_error(&straddling);
+        assert_eq!(truncated, format!("{}…", "a".repeat(95)));
+        assert_eq!(truncated.len(), 95 + "…".len());
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+
+        // **可达性**：超长 `set_ccN` 取值的告警文本里真的出现这个省略号。
+        let long_value = "1".repeat(200);
+        let text = format!("<control>set_cc7={long_value}\n<region>sample=a.wav\n");
+        let instrument = parse_text(&text, &ParseLimits::default()).expect("warnings only");
+        let rendered = instrument.warnings()[0].to_string();
+        assert!(
+            rendered.contains(&format!("`{}…`", "1".repeat(96))),
+            "{rendered}"
+        );
+    }
 }

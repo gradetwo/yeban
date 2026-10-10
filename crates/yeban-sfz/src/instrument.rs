@@ -6282,4 +6282,29 @@ v127=1
             "{error:?}"
         );
     }
+
+    #[test]
+    fn the_note_polyphony_default_is_the_unlimited_state() {
+        // R86：`Default` 与 `UNLIMITED` 是**两个合法状态**，`Default ≡ UNLIMITED` 是唯一契约。
+        assert_eq!(NotePolyphony::default(), NotePolyphony::UNLIMITED);
+        assert_eq!(NotePolyphony::default().limit, 0);
+        assert!(NotePolyphony::default().self_mask);
+        // 真探针（R69）：**同一类型、不同载荷**必须不等 —— 两个字段各来一条。
+        assert_ne!(
+            NotePolyphony::default(),
+            NotePolyphony {
+                limit: 1,
+                self_mask: true
+            },
+            "a one-voice limit must not compare equal to the default"
+        );
+        assert_ne!(
+            NotePolyphony::default(),
+            NotePolyphony {
+                limit: 0,
+                self_mask: false
+            },
+            "self_mask participates in equality"
+        );
+    }
 }

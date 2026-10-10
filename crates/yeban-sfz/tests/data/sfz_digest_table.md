@@ -6,3 +6,4 @@
 | 摘要常量 | 用途 | 值 |
 | :-- | :-- | :-- |
 | `DIGEST_INCLUDE_RESOLUTION` | `include_resolution_is_deterministic_and_its_digest_is_pinned`：`#include "parts/*.sfz"` 展开后的 **路径序列 + 归约样本序列** 的规范摘要 | `025e07f2edb4e6609dd2e6aaaa8936fab5fd79f0a88e6e9997b529e454a54b14` |
+| `DIGEST_SHA256_ABC` | 手写 SHA-256 的 NIST 已知答案（`"abc"`）：证明哈希实现本身可用 | `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad` |

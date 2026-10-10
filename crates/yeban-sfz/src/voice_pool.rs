@@ -1866,4 +1866,31 @@ mod tests {
             "the lowest slot index must not win over the latest trigger"
         );
     }
+
+    #[test]
+    fn the_voice_pool_default_matches_the_explicit_constructor() {
+        // R86 的形态：**两条不同的构造路径**，**同一段驱动**，然后比较输出。
+        // ⚠️ 驱动**不得**对两个实例做相同的初始化（否则会遮蔽构造期差异）：
+        // 一个来自 `Default::default()`，另一个来自 `new(DEFAULT_VOICE_CAPACITY, 48_000.0)`。
+        let drive = |pool: &mut VoicePool| {
+            pool.note_on(60, 100, -6.0);
+            pool.note_on(61, 100, -12.0);
+            let handle = pool.note_on(62, 100, -3.0).started();
+            pool.retire(handle).expect("live handle");
+            snapshot(pool)
+        };
+        let mut from_default = VoicePool::default();
+        let mut from_new =
+            VoicePool::new(DEFAULT_VOICE_CAPACITY, 48_000.0).expect("valid capacity");
+        let driven_default = drive(&mut from_default);
+        let driven_new = drive(&mut from_new);
+        assert_eq!(
+            driven_default, driven_new,
+            "the two construction paths must be observationally identical"
+        );
+        assert_eq!(from_default.capacity(), from_new.capacity());
+        // 真探针（R69）：不同容量 ⇒ 同一段驱动下的输出必须**不等**。
+        let mut small = VoicePool::new(1, 48_000.0).expect("valid capacity");
+        assert_ne!(driven_default, drive(&mut small), "a one-slot pool differs");
+    }
 }

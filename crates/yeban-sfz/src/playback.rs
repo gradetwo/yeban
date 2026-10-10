@@ -1863,4 +1863,41 @@ mod tests {
         // 反向区间不改变「同一音符仍在键桶里」这件事：它只是每一路都匹配失败。
         assert!(region.matches_key(60));
     }
+
+    #[test]
+    fn the_render_rates_default_is_the_no_conversion_state() {
+        // R86 的形态：**不同的构造路径**产出同一个值。
+        // ⚠️ 驱动**不得**把两个实例用同一条路径初始化（否则构造期差异被遮蔽）：
+        // 这里一条走 `Default::default()`，另两条走 `new()`（含非法速率被 sanitize 的分支）。
+        assert_eq!(
+            RenderRates::default(),
+            RenderRates::new(FALLBACK_SAMPLE_RATE, FALLBACK_SAMPLE_RATE),
+            "default must agree with the explicit fallback constructor"
+        );
+        // ⚠️ 实测订正：`new()` **有意不做校验**（文档明写"校验发生在 `sanitized`"）
+        // ⇒ 非法速率被**原样保留**，只有 `sanitized()` 才回退到 fallback。
+        assert_ne!(
+            RenderRates::default(),
+            RenderRates::new(f32::NAN, 0.0),
+            "new() keeps illegal rates verbatim (it is not the normalizing path)"
+        );
+        // 第三条构造路径：非法速率经 `sanitized()` 归一到与缺省**同一个**状态。
+        assert_eq!(
+            RenderRates::default(),
+            RenderRates::new(f32::NAN, 0.0).sanitized(),
+            "sanitized() is the normalizing path"
+        );
+        assert_eq!(
+            RenderRates::default(),
+            RenderRates::new(-1.0, f32::INFINITY).sanitized(),
+            "negative / infinite rates sanitize to the fallback too"
+        );
+        // 真探针（R69）：真实速率必须**不等**于缺省；两条真实速率也互不相等。
+        assert_ne!(RenderRates::default(), RenderRates::new(44_100.0, 48_000.0));
+        assert_ne!(
+            RenderRates::new(44_100.0, 48_000.0),
+            RenderRates::new(48_000.0, 44_100.0),
+            "the two fields are not interchangeable"
+        );
+    }
 }

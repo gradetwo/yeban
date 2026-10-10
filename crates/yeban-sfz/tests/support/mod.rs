@@ -133,3 +133,21 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     }
     out
 }
+
+/// **R84 的文档契约形态**：按**描述**定位到那一行，再从**那一行**取 64 位十六进制摘要。
+///
+/// 为什么不用 `doc.contains(常量)`：那只证明「这个串在文件里出现过」——
+/// **两行对调**、或某一行的描述名被改掉，`contains` 都照样通过（按构造可证：
+/// `contains` 只问「出现过没有」，对调不改变出现集合）。
+///
+/// 实现：先筛出**含该描述**的行，再取该行里**恰好 64 位十六进制**的那个反引号单元格。
+#[allow(dead_code)]
+pub fn documented_digest(doc: &str, row_label: &str) -> Option<String> {
+    doc.lines()
+        .filter(|line| line.contains(row_label))
+        .find_map(|line| {
+            line.split('`')
+                .find(|cell| cell.len() == 64 && cell.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .map(str::to_string)
+        })
+}
