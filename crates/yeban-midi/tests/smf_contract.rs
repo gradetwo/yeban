@@ -1439,14 +1439,20 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
         "TrackName 之后紧跟 EndOfTrack"
     );
 }
-/// 判据 (R115: 审计要落成**常驻判据** ＋ **自带正负对照**): 判据里**不许**把"针"
-/// 绑定成变量再去搜索同一份被 `include_str!` 读回来的文件 —— 那是 R104 登记的分析器盲区
-/// （子串绑成变量即可绕过静态检查）。
+/// 判据 (R115 ＋ **R160**): 判据里**不许**把"针"绑定成变量再去搜索同一份被
+/// `include_str!` 读回来的文件 —— 那是 R104 登记的分析器盲区（子串绑成变量即可绕过）。
+///
+/// ⭐ **每一形态都有"只有它会红"的注入**（见 `FORMS` 注册表）；
+/// ⭐ **R160：注册表 allowlist 必须双向归零**（少一条 ⇒ 有形态没人证明；多一条 ⇒ 注册了
+/// 不存在的形态）；⭐ **R119：整串匹配必须带标识符边界**（`bb` 不许被 `b` 命中）；
+/// ⭐ **R120：真对象必须附机械下界**（真的扫过足够多的源码行）。
 #[test]
 fn no_needle_is_bound_to_a_variable_before_being_searched() {
-    /// 探测器：把 `let <ident> = "<字面量>";` 绑定的名字收集起来，再找同一份源码里
-    /// 是否出现 `contains(<ident>)` / `contains(&<ident>)`。
-    fn detector(source: &str) -> Vec<String> {
+    /// 形态注册表：**只**认这两种"针绑成变量后去搜索"的写法（R160 双向归零见 §②）。
+    const FORMS: [&str; 2] = ["contains(<ident>)", "contains(&<ident>)"];
+
+    /// 探测器：返回 `(绑定的名字, 命中的形态)`。
+    fn detector(source: &str) -> Vec<(String, &'static str)> {
         let mut bound: Vec<String> = Vec::new();
         for line in source.lines() {
             let t = line.trim();
@@ -1466,46 +1472,86 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
                 bound.push(name.to_owned());
             }
         }
-        let mut hits = Vec::new();
+        let mut hits: Vec<(String, &'static str)> = Vec::new();
         for name in bound {
-            if source.contains(&format!("contains({name})"))
-                || source.contains(&format!("contains(&{name})"))
-            {
-                hits.push(name);
+            // ⭐ R119：整串要求（含右括号）⇒ 天然带标识符边界（`contains(bb)` 不命中 `b`）。
+            if source.contains(&format!("contains({name})")) {
+                hits.push((name.clone(), FORMS[0]));
+            }
+            if source.contains(&format!("contains(&{name})")) {
+                hits.push((name, FORMS[1]));
             }
         }
         hits
     }
 
-    // ① 正对照：**已知含**该形态的样例必须被探到（否则探针恒绿 = 假阴性，R112）。
-    let known_bad = "let needle = \"TrackName 长度 15\";\nassert!(doc.contains(needle));\n";
-    assert_eq!(
-        detector(known_bad).len(),
-        1,
-        "正对照：探针必须能发现已知坏样例"
-    );
-    // ①′ R119 **near-miss 对照**：绑的名字是 `b`，真源码里只有 `contains(bb)` ⇒
-    // ⛔ 不许被误报（子串匹配的 `bb`/`b` 陷阱；本探针要求 `contains(<name>)` 整串含右括号）。
+    // ① **每形态一条正对照**（已知含 ⇒ 必须探到），并记录探到的形态。
+    let samples: [(&'static str, &'static str, usize); 2] = [
+        (
+            FORMS[0],
+            "let needle = \"TrackName 长度 15\";\nassert!(doc.contains(needle));\n",
+            1,
+        ),
+        (
+            FORMS[1],
+            "let needle = \"TrackName 长度 15\";\nassert!(doc.contains(&needle));\n",
+            1,
+        ),
+    ];
+    let mut seen: Vec<&'static str> = Vec::new();
+    for (form, sample, want) in samples {
+        let hits = detector(sample);
+        assert_eq!(
+            hits.len(),
+            want,
+            "正对照（形态 {form}）：探针必须发现已知坏样例"
+        );
+        for (_, got) in &hits {
+            seen.push(got);
+        }
+    }
+    // ② ⭐ R160 **双向归零**：注册表每条形态都必须被正对照命中（⛔ 不许有死形态），
+    // 且正对照**只**能命中注册表里的形态（⛔ 不许出现未注册形态）。
+    for form in FORMS {
+        assert!(
+            seen.contains(&form),
+            "形态 {form} 没有任何正对照 ⇒ 有形态没人证明（R160 少一条）"
+        );
+    }
+    for got in &seen {
+        assert!(
+            FORMS.contains(got),
+            "正对照命中了未注册的形态 {got}（R160 多一条）"
+        );
+    }
+
+    // ①′ R119 near-miss：绑名 `b`、源码只有 `contains(bb)` ⇒ 不许误报。
     let near_miss = "let b = \"needdle\";\nassert!(doc.contains(bb));\n";
     assert_eq!(
         detector(near_miss).len(),
         0,
         "near-miss：`contains(bb)` 不许被 `contains(b)` 的探针误报（R119）"
     );
-    // ② 负对照：**已知不含**该形态的样例必须探不到。
+    // ③ 负对照：用 `format!` 现场构造针（**没有**绑定字符串字面量）⇒ 不许误报。
     let known_good = "let n = 15;\nassert!(doc.contains(&format!(\"长度 {n}\")));\n";
     assert_eq!(detector(known_good).len(), 0, "负对照：不许误报");
 
-    // ③ 真对象：本 crate 的判据源码里都不许出现。
+    // ④ 真对象 ＋ ⭐ R120 机械下界：必须**真的扫过**足够多的源码行。
+    let mut scanned_lines = 0usize;
     for (name, source) in [
         ("smf_contract.rs", include_str!("smf_contract.rs")),
         ("musicxml_contract.rs", include_str!("musicxml_contract.rs")),
         ("real_world_smf.rs", include_str!("real_world_smf.rs")),
     ] {
+        scanned_lines += source.lines().count();
         assert_eq!(
             detector(source).len(),
             0,
             "{name} 里出现了 R104 的「针绑成变量」绕过形态"
         );
     }
+    assert!(
+        scanned_lines >= 3000,
+        "R120 机械下界：真对象必须真的被扫过（实际只扫到 {scanned_lines} 行）"
+    );
 }
