@@ -22,14 +22,25 @@ use std::path::PathBuf;
 
 use yeban_mcp::undo_session::read_rust_sources;
 
-/// **动态集合源**（R93 的题面：`read_dir` / `glob` / `WalkDir` / 目录遍历后的过滤）：
-/// 能在运行期变成**空集**的东西。
+/// **动态集合源**（R93 的题面：目录遍历/枚举后断言性质）：能在运行期变成**空集**的东西。
 ///
 /// ⚠ 口径：**单文件读取**（`fs::read_to_string(path)` / `fs::read(path)`）**不算** ——
 /// 它不是"遍历一个集合后断言性质"，没有"空集合 ⇒ 恒绿"的形状。
 /// ⚠ 只含动态源但**不做任何断言**的**取数助手**（`fn all_sources() -> Vec<...>`）也不算：
 /// 下界的责任在**消费它的判据**身上，不在取数函数身上。
-const DYNAMIC_SOURCES: [&str; 4] = ["read_rust_sources", "read_dir", "WalkDir", "glob("];
+///
+/// ⚠ **第八批实测**：`DYNAMIC_SOURCES` 与 `DEFENSIVE_SOURCES` 必须分开 ——
+/// 本 crate **不使用** `WalkDir` / `glob(`（实测 0 处命中）⇒ 它们**不能**参与
+/// "每个针都必须在别处存在"的断言（否则那条断言在检查**虚构**的针）。
+/// 但它们**仍参与识别**（将来引入时不许漏检）。
+const DYNAMIC_SOURCES: [&str; 2] = ["read_rust_sources", "read_dir"];
+/// **防御性**识别的动态源：本 crate 目前不用，仍参与识别，⛔ 不参与存在性断言。
+const DEFENSIVE_SOURCES: [&str; 2] = ["WalkDir", "glob("];
+
+/// 识别用的**全部**动态源（必需 ＋ 防御性）。
+fn all_dynamic_sources() -> impl Iterator<Item = &'static str> {
+    DYNAMIC_SOURCES.into_iter().chain(DEFENSIVE_SOURCES)
+}
 
 /// **非真空形态**：命中任一即认为该函数声明了"被扫集合非空／达到下界"。
 const NON_VACUITY_FORMS: [&str; 5] = ["is_empty()", ".len(), ", "non_empty", "scanned", "seen =="];
@@ -193,10 +204,7 @@ fn dynamic_scans_declare_a_lower_bound() {
     let mut checked = 0usize;
     for (path, text) in all_sources() {
         for function in functions(&text) {
-            if !DYNAMIC_SOURCES
-                .iter()
-                .any(|needle| function.body.contains(needle))
-            {
+            if !all_dynamic_sources().any(|needle| function.body.contains(needle)) {
                 continue;
             }
             // 只审"**同时断言了性质**"的函数：纯取数助手不承担下界责任。
@@ -265,28 +273,52 @@ fn path_comparisons_are_normalized() {
 fn the_guard_registry_is_not_empty_and_each_needle_exists() {
     // 守卫**自己**也要非真空：注册表不得为空，且每个针都必须真的出现在源码里
     // （否则"找不到 ⇒ 不检查"会让守卫悄悄退化）。
+    //
+    // ⚠ **第八批实测的假绿（R119/R120）**：第一版把**本文件**也算进"源码"，
+    // 而针的字面量**就写在本文件的注册表里** ⇒ `joined.contains(needle)` **恒真**
+    // （把 `"glob("` 改成 `"glob_probe("` 的注入**全绿**）。⇒ 现在**排除本文件**，
+    // 并且要求"**别处**真的有命中"。
     assert!(!DYNAMIC_SOURCES.is_empty() && !NON_VACUITY_FORMS.is_empty() && !PATHISH.is_empty());
+    let mut scanned = 0usize;
     let joined = all_sources()
-        .iter()
-        .map(|(_path, text)| text.as_str())
+        .into_iter()
+        .filter(|(path, _text)| !path.ends_with("non_vacuity_guard.rs"))
+        .map(|(_path, text)| {
+            scanned += 1;
+            text
+        })
         .collect::<Vec<_>>()
         .join("\n");
+    // ⭐ 非真空下界：别处至少要有 50 个 .rs 文件参与"针是否真的存在"的判定。
+    assert!(
+        scanned >= 50,
+        "排除本文件后的扫描面太小（{scanned} 个 .rs）—— 针的存在性判定会退化成假绿"
+    );
+    let mut miss: Vec<String> = Vec::new();
     for needle in DYNAMIC_SOURCES {
-        assert!(
-            joined.contains(needle),
-            "注册的动态集合源 `{needle}` 在源码里一个都找不到 —— 守卫的针已经腐烂"
-        );
+        if !joined.contains(needle) {
+            miss.push(format!("动态集合源 `{needle}`"));
+        }
     }
+    let lower = joined.to_ascii_lowercase();
     for needle in PATHISH {
-        assert!(
-            joined.to_ascii_lowercase().contains(needle),
-            "注册的路径前缀 `{needle}` 在源码里找不到"
-        );
+        if !lower.contains(needle) {
+            miss.push(format!("路径前缀 `{needle}`"));
+        }
     }
     for form in NON_VACUITY_FORMS {
-        assert!(
-            joined.contains(form),
-            "注册的非真空形态 `{form}` 在源码里找不到"
-        );
+        if !joined.contains(form) {
+            miss.push(format!("非真空形态 `{form}`"));
+        }
     }
+    assert!(
+        miss.is_empty(),
+        "这些针在**别处**一个都找不到（守卫的针已经腐烂，或注册表写错了）：{miss:?}"
+    );
+    // ⭐ R188：**诊断**（⛔ 不是判据）—— 防御性动态源在本 crate 的命中数。
+    let defensive_hits: Vec<(&str, usize)> = DEFENSIVE_SOURCES
+        .iter()
+        .map(|needle| (*needle, joined.matches(needle).count()))
+        .collect();
+    eprintln!("诊断（不参与判定）：防御性动态源命中数 = {defensive_hits:?}");
 }
