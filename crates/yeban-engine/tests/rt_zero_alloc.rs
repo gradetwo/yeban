@@ -44,7 +44,7 @@
 //! | ② | 快照交换 63 次逐步 + 1 000 次高频 | `SnapshotReader::begin_block` 的原子切换 + 旧快照入退役队列 |
 //! | ③ | 走带 200 轮命令 + 2 000 量子播放 + 500 量子停住 | `EngineEvent::Transport` 出队应用、整数 tick 推进、`SeekTicks` 的声部释放、停住分支 |
 //! | ④ | 电平计量 10 000 量子 + UI 侧 60Hz 抽干 | 每轨/母线电平状态机 + **每量子恰好一次**批量发布 |
-//! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`：**逐轨 ＋ 主总线**两个槽位） | 控制侧 `automation_value_at` → 控制侧换域（`db_to_gain`）→ SPSC → 实时侧**参数目标表**（`crate::param`：事件边界建槽位/更新目标 + 逐样本平滑乘法）＋ 主总线槽位的逐样本立体声乘法（`ParamTable::apply_master`） |
+//! | ⑤ | 自动化求值 2 000 量子（每量子一批 `SetParam`：**逐轨增益 ＋ 主总线增益 ＋ 声相左/右**四个槽位；⑤f 是声相那条**逐样本平滑**路径的覆盖度见证） | 控制侧 `automation_value_at` → 控制侧换域（`db_to_gain`）→ SPSC → 实时侧**参数目标表**（`crate::param`：事件边界建槽位/更新目标 + 逐样本平滑乘法）＋ 主总线槽位的逐样本立体声乘法（`ParamTable::apply_master`） |
 //! | ⑥ | 限制器/混音链 2 000 量子（滤波器 + 声相 + **主总线推子** + 前瞻限制 + 声部窃取） | `BusLimiter::process_stereo`、声相增益乘加、`scale_bus` 的主总线逐样本乘、声部窃取路径 |
 //! | ⑬ | 回调缓冲长度边界：1/2/3/127/128/129/1024/1025 帧 × 25 轮 + 非帧对齐缓冲 | `process_quantum` 的**任意长度**切块与逐帧交错拷贝、尾部残余样本契约 |
 //! | ⑭ | 采样率 × 项目声明 `block_size` 全组合切换（2 000 量子） | `render_block` 的**重新武装**分支：`MeterBank::set_quanta_per_second`、`SynthEngine::begin_snapshot`、`Transport::arm` |
@@ -183,7 +183,9 @@ use std::time::{Duration, Instant};
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::graph::{LatencyTable, PdcPlan};
 use yeban_engine::meter::{MeterCollector, MeterFrame, SCRATCH_METERS, meter_channel};
-use yeban_engine::param::{MASTER_GAIN_SLOT, TRACK_GAIN_SLOT};
+use yeban_engine::param::{
+    MASTER_GAIN_SLOT, TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+};
 use yeban_engine::ring::{
     DEFAULT_EVENT_CAPACITY, EngineEvent, EventSender, ParamAddress, SCRATCH_EVENTS,
     TransportCommand, event_channel,
@@ -1113,6 +1115,8 @@ fn scenario_automation(report: &mut Report) {
     rig.preheat();
     let frames_before = rig.stats().param_gain_frames;
     let master_frames_before = rig.stats().param_master_gain_frames;
+    // 声相（裁决 P4=(b)）的覆盖度见证基线：本窗口内被**平滑**声相乘过的帧数。
+    let pan_frames_before = rig.runtime.pan_automation_frames();
 
     let mut scenario = Scenario::new("⑤自动化求值");
     let mut lowest = f32::INFINITY;
@@ -1161,6 +1165,16 @@ fn scenario_automation(report: &mut Report) {
                 target: ParamAddress::new(master, MASTER_GAIN_SLOT),
                 value: master_value,
             },
+            // 声相两条槽位（裁决 P4=(b)，槽位 2/3）：值在 0.3..0.9 之间来回走
+            // （三角波，⛔ 不用超越函数），**每一量子都发** ⇒ 逐样本平滑路径每帧都被走到。
+            EngineEvent::SetParam {
+                target: ParamAddress::new(track, TRACK_PAN_LEFT_SLOT),
+                value: 0.3 + 0.6 * ((quantum % 40) as f32 / 39.0),
+            },
+            EngineEvent::SetParam {
+                target: ParamAddress::new(track, TRACK_PAN_RIGHT_SLOT),
+                value: 0.9 - 0.6 * ((quantum % 40) as f32 / 39.0),
+            },
         ];
         published += rig.sender.publish(&batch) as u64;
 
@@ -1207,6 +1221,26 @@ fn scenario_automation(report: &mut Report) {
             AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64,
             stats.param_gain_rejects,
             stats.param_unmapped_events
+        ),
+    );
+
+    // ⑤f（本票新增，裁决 P4=(b)）：**声相**槽位也走**逐样本平滑**路径，
+    // 且它**不占** `ParamTable` 的槽位（因此 ⑤d/⑤e 的读数不受它影响 —— 两份见证互补）。
+    // ⭐ **R93 非真空**：断言的是"窗口内**每一帧**都被平滑声相乘过"（= 量子数 × 128），
+    // 不是"大于 0" —— 后者在路径被跳过时也会通过。
+    let pan_frames = rig
+        .runtime
+        .pan_automation_frames()
+        .saturating_sub(pan_frames_before);
+    report.assert(
+        "⑤f",
+        "覆盖度：声相自动化真的走**逐样本平滑**路径（见证读数 = 量子数 × 128）",
+        pan_frames == AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64
+            && rig.runtime.pan_automation_value_rejects() == 0,
+        format!(
+            "平滑声相乘过的帧数={pan_frames}（要求 {}，即窗口内每一帧）；声相值拒绝={}（要求 0）",
+            AUTOMATION_QUANTA * DEFAULT_BLOCK_FRAMES as u64,
+            rig.runtime.pan_automation_value_rejects()
         ),
     );
 
