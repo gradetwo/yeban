@@ -279,8 +279,14 @@ fn the_guard_registry_is_not_empty_and_each_needle_exists() {
     // （把 `"glob("` 改成 `"glob_probe("` 的注入**全绿**）。⇒ 现在**排除本文件**，
     // 并且要求"**别处**真的有命中"。
     assert!(!DYNAMIC_SOURCES.is_empty() && !NON_VACUITY_FORMS.is_empty() && !PATHISH.is_empty());
+    let all = all_sources();
+    // ⭐ R213：这个绝对下界是**裁定指定的例外**（R188/R199 通常禁"数量地板"）——
+    // 它守的失败模式是"**被搜集合塌缩**"（太小），不是"缺陷抬高计数"。
+    // 因此它必须①保留、②**根绑定到被搜集合自己**、③配一条行为臂
+    // （把集合缩到界之下 ⇒ 必须变红，见注入 `A9-existbound-shrunk`）。
+    let total = all.len();
     let mut scanned = 0usize;
-    let joined = all_sources()
+    let joined = all
         .into_iter()
         .filter(|(path, _text)| !path.ends_with("non_vacuity_guard.rs"))
         .map(|(_path, text)| {
@@ -289,10 +295,16 @@ fn the_guard_registry_is_not_empty_and_each_needle_exists() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    // ⭐ 非真空下界：别处至少要有 50 个 .rs 文件参与"针是否真的存在"的判定。
     assert!(
         scanned >= 50,
         "排除本文件后的扫描面太小（{scanned} 个 .rs）—— 针的存在性判定会退化成假绿"
+    );
+    // ② **根绑定到被搜集合自己**：排除那一个定义文件后，必须**恰好**剩 `total - 1` 个。
+    //    （被搜集合若塌缩，这里与上面的绝对界会**同时**收紧；上面的界负责"太小"这一失败模式。）
+    assert_eq!(
+        scanned,
+        total.saturating_sub(1),
+        "排除定义文件后必须恰好剩 `total - 1` 个 .rs（根绑定到被搜集合自己）：total={total} scanned={scanned}"
     );
     let mut miss: Vec<String> = Vec::new();
     for needle in DYNAMIC_SOURCES {

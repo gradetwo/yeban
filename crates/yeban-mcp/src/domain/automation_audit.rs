@@ -112,12 +112,38 @@ pub fn code_without_literals(line: &str) -> String {
     let mut out: Vec<char> = chars.clone();
     let mut index = 0usize;
     while index < chars.len() {
-        // ⓐ 行尾注释：从 `//` 到行末**逐字符**换成空格（等长 ⇒ 列号也不漂）。
+        // ⓐ 行尾注释：从 `//` 到**下一个换行**（⛔ 不是"到输入末尾" —— 多行输入下
+        //    后者会把**后续正文**一起抹掉 ⇒ **假阴性**，R214① 实测）。
         if chars[index] == '/' && chars.get(index + 1) == Some(&'/') {
-            for cell in out.iter_mut().skip(index) {
-                *cell = ' ';
+            let mut cursor = index;
+            while cursor < chars.len() && chars[cursor] != '\n' {
+                out[cursor] = ' ';
+                cursor += 1;
             }
-            break;
+            index = cursor;
+            continue;
+        }
+        // ⓐ' **块**注释 `/* … */`：里面可能同时含 `"` 与 `//`（R214① 的对抗样本 ④）——
+        //    不掩它就会让 `"` **翻转字符串状态** ⇒ 掩码失同步 ⇒ 掩盖真违规。换行保留。
+        if chars[index] == '/' && chars.get(index + 1) == Some(&'*') {
+            let mut cursor = index;
+            out[cursor] = ' ';
+            out[cursor + 1] = ' ';
+            cursor += 2;
+            while cursor < chars.len() {
+                if chars[cursor] == '*' && chars.get(cursor + 1) == Some(&'/') {
+                    out[cursor] = ' ';
+                    out[cursor + 1] = ' ';
+                    cursor += 2;
+                    break;
+                }
+                if chars[cursor] != '\n' {
+                    out[cursor] = ' ';
+                }
+                cursor += 1;
+            }
+            index = cursor;
+            continue;
         }
         // ⓑ 字符字面量 `'x'` / `'\n'` / `'"'`（⛔ 不是生命周期 `'a`）。
         if chars[index] == '\'' {

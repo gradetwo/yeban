@@ -69,6 +69,47 @@ fn code_without_literals_masks_but_keeps_the_length() {
         automation_audit::code_without_literals("lane.value_at(tick)").contains("value_at("),
         "真调用必须留下"
     );
+
+    // ⭐ R214①：掩码风险是**对偶的** —— 本助手属于"**掩码失同步 ⇒ 假阴性**"那一侧
+    // （比"无掩码 ⇒ 假阳性"更危险：它会把后续正文当字符串抹掉，**掩盖真违规**）。
+    // 因此必须用**四件套对抗样本**逐条读：等长（字符数）＋ **不泄漏**针。
+    let adversarial: [(&str, &str); 4] = [
+        // ① 字符串里含 `//`
+        (
+            "let a = \"http://x\"; let b = lane.value_at(1);",
+            "value_at(",
+        ),
+        // ② **行尾**注释里含 `"`
+        (
+            "let c = 1; // 他说 \"lane.value_at(2)\" 是坏的\nlet d = lane.value_at(3);",
+            "value_at(",
+        ),
+        // ③ **行尾**注释里含 `//`
+        (
+            "let e = 2; // http://y lane.value_at(4)\nlet f = lane.value_at(5);",
+            "value_at(",
+        ),
+        // ④ ⭐ **块**注释里含 `"` 与 `//`
+        (
+            "let g = 3; /* 块注释: \"lane.value_at(6)\" 与 http://z */\nlet h = lane.value_at(7);",
+            "value_at(",
+        ),
+    ];
+    for (index, (source, needle)) in adversarial.iter().enumerate() {
+        let masked = automation_audit::code_without_literals(source);
+        assert_eq!(
+            masked.chars().count(),
+            source.chars().count(),
+            "对抗样本 #{} 掩码必须等长",
+            index + 1
+        );
+        // 真站点（注释之外那一个）必须**留下** ⇒ 掩码不得失同步跑飞。
+        assert!(
+            masked.matches(needle).count() >= 1,
+            "对抗样本 #{} 的**真站点**必须留下（掩码失同步会把后续正文当字符串抹掉 ⇒ 假阴性）: {masked}",
+            index + 1
+        );
+    }
 }
 
 /// `path_ends_with`：两种分隔符都要认（R63/R93 的共享约定）。
