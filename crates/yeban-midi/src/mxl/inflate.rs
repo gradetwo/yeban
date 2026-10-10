@@ -1264,4 +1264,44 @@ mod tests {
         // 上界 8 = 整条流 ⇒ 接受。
         assert_eq!(inflate_raw(&mixed, 8).as_deref(), Ok(&b"abcdaaaa"[..]));
     }
+
+    /// 判据: 长度码 **286 / 287** 未定义（RFC 1951 §3.2.5）⇒ 明确的 `Malformed`
+    /// （⛔ 不是静默当成块结束码）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把那个 `let … else` 的分支从
+    /// `return Err("长度码 286/287 未定义")` 改成 `return Ok(())`（注入 `b14:HLIT286`）后
+    /// 全部判据**保持绿** —— 既有判据只覆盖了 `HLIT` 的**码数**上界
+    /// （`a_dynamic_header_with_too_many_literal_codes_is_rejected`），
+    /// ⛔ 没有覆盖"码**值** 286/287 出现在数据里"这一半。
+    #[test]
+    fn the_undefined_length_codes_are_rejected() {
+        /// 固定 Huffman 块：`BFINAL=1`、`BTYPE=01`，正文只有一个 `symbol`。
+        fn only_symbol(symbol: u32) -> Vec<u8> {
+            let mut bits = BitWriter::new();
+            bits.value(1, 1); // BFINAL = 1
+            bits.value(1, 2); // BTYPE = 01（固定 Huffman）
+            fixed_symbol(&mut bits, symbol);
+            bits.finish()
+        }
+
+        for symbol in [286u32, 287] {
+            match inflate_raw(&only_symbol(symbol), 1024) {
+                Err(InflateError { detail, kind, .. }) => {
+                    assert_eq!(detail, "长度码 286/287 未定义（RFC 1951 §3.2.5）");
+                    assert_eq!(kind, InflateErrorKind::Malformed);
+                }
+                other => panic!("长度码 {symbol} 必须被拒绝，得到 {other:?}"),
+            }
+        }
+
+        // 对照臂：**285** 是合法的最大长度码（258 字节）⇒ 不能顺手把它也算作未定义；
+        // 它之后缺少距离码，报的必须是**另一个**错。
+        match inflate_raw(&only_symbol(285), 1024) {
+            Err(InflateError { detail, .. }) => assert_ne!(
+                detail, "长度码 286/287 未定义（RFC 1951 §3.2.5）",
+                "285 是合法长度码，⛔ 不许被这一支拒掉"
+            ),
+            other => panic!("285 之后缺距离码应当是另一个错误，得到 {other:?}"),
+        }
+    }
 }
