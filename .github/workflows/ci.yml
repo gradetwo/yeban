@@ -231,7 +231,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test -p "${{ matrix.crate }}" --all-targets --locked 2>&1 | tee -a /tmp/gate.log
+          cargo test -p "${{ matrix.crate }}" --all-targets --locked 2>&1 | tee -a "$GATE_LOG"
 
       # R64: 实验性导出特性 (`experimental-als-export` / `experimental-logic-export`)
       # 此前**没有任何自动步骤**带这个开关 ⇒ `yeban-render` 的 `src/logic.rs`
@@ -247,7 +247,7 @@ jobs:
           if grep -q '^experimental-logic-export' "crates/${{ matrix.crate }}/Cargo.toml"; then
             cargo clippy -p "${{ matrix.crate }}" --all-targets --locked \
               --features experimental-als-export,experimental-logic-export \
-              -- -D warnings 2>&1 | tee -a /tmp/gate.log
+              -- -D warnings 2>&1 | tee -a "$GATE_LOG"
           else
             echo "::notice::${{ matrix.crate }} 未声明实验性导出特性, 本腿跳过"
           fi
@@ -259,7 +259,7 @@ jobs:
           if grep -q '^experimental-logic-export' "crates/${{ matrix.crate }}/Cargo.toml"; then
             cargo test -p "${{ matrix.crate }}" --all-targets --locked \
               --features experimental-als-export,experimental-logic-export \
-              2>&1 | tee -a /tmp/gate.log
+              2>&1 | tee -a "$GATE_LOG"
           else
             echo "::notice::${{ matrix.crate }} 未声明实验性导出特性, 本腿跳过"
           fi
@@ -322,7 +322,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test --workspace --all-targets --locked 2>&1 | tee -a /tmp/gate.log
+          cargo test --workspace --all-targets --locked 2>&1 | tee -a "$GATE_LOG"
 
       # ⚠ 这里**故意暂时没有**"真实界面的内省判据"这一步。
       # 它的首次执行(commit 66b002c, run 37223586792)证明: `crates/yeban-app/src/test_port_adapter.rs`
@@ -398,6 +398,16 @@ jobs:
       contains(needs.plan.outputs.crates, 'yeban-dsp')
     runs-on: windows-latest
     timeout-minutes: 60
+    # 为什么把日志路径提到作业级 env（实测代价换来）:
+    # 原先各步 `tee /tmp/gate.log` 与上传的 `path: /tmp/gate.log` 都写成**字面量路径**。
+    # 实测一次: 上传步报 **success** 而 `artifacts` **为空** —— 因为该步写了
+    # `if-no-files-found: warn`, 于是"文件找不到"被降级为**警告**, 该步照旧绿。
+    # 那是"绿而无效"的一个实例: 我加的取证步**不提供取证**, 而读者会以为产物已就位。
+    # 修法三件: (1) 用 `runner.temp` 表达路径, 让写入与上传**共用同一路径**;
+    #          (2) `if-no-files-found: error` ⇒ 缺失**变红**而不是变绿;
+    #          (3) 加一步体检打印存在性与字节数 ⇒ "找不到"**立即可见**。
+    env:
+      GATE_LOG: ${{ runner.temp }}/gate.log
     steps:
       - uses: actions/checkout@v4
 
@@ -429,7 +439,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked -- -D warnings 2>&1 | tee /tmp/gate.log
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked -- -D warnings 2>&1 | tee "$GATE_LOG"
 
       # 为什么把三个 crate 拆成三步（实测代价换来）:
       # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
@@ -444,33 +454,49 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test -p yeban-model --all-targets --locked --no-fail-fast 2>&1 | tee -a /tmp/gate.log
+          cargo test -p yeban-model --all-targets --locked --no-fail-fast 2>&1 | tee -a "$GATE_LOG"
 
       - name: test (yeban-mcp 的 .yeban.lock Windows 分支)
         shell: bash
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test -p yeban-mcp --all-targets --locked --no-fail-fast 2>&1 | tee -a /tmp/gate.log
+          cargo test -p yeban-mcp --all-targets --locked --no-fail-fast 2>&1 | tee -a "$GATE_LOG"
 
       - name: test (yeban-dsp 的扫描器)
         shell: bash
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo test -p yeban-dsp --all-targets --locked --no-fail-fast 2>&1 | tee -a /tmp/gate.log
+          cargo test -p yeban-dsp --all-targets --locked --no-fail-fast 2>&1 | tee -a "$GATE_LOG"
+
+      # 为什么加这一步体检: `if-no-files-found: error` 会让缺失变红, 但红在哪里不够直白。
+      # 这一步把"文件是否存在"和"多少字节"打印出来 ⇒ 缺失/空文件**当场可见**,
+      # 且它与上传用的是**同一个** `$GATE_LOG` ⇒ 体检通过而上传空, 就说明是上传侧的问题。
+      - name: 门日志体检 (存在性与字节数)
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$GATE_LOG" ]; then
+            echo "GATE_LOG=$GATE_LOG exists, bytes=$(wc -c < "$GATE_LOG")"
+            ls -l "$GATE_LOG"
+          else
+            echo "::error::GATE_LOG=$GATE_LOG 不存在 ⇒ 上传必然为空 (这正是"绿而无效"的形态)"
+            exit 1
+          fi
 
       # 为什么上传日志产物: 实测一次 `windows` 红时**四条取证路全空**
       # (`jobs/<jid>/logs` 0 字节 / `gh run view --log` 空 / `失败摘要` 的 summary=none /
       #  run 级 zip 里没有 windows 腿) ⇒ 失败正文**结构上不可得**, 只能靠复现。
-      # 该步骤已经把输出 `tee` 到 `/tmp/gate.log`, 因此把它作为产物上传即可闭环。
+      # 该步骤已经把输出 `tee` 到 `$GATE_LOG`, 因此把它作为产物上传即可闭环。
+      # `if-no-files-found: error` 是刻意的: 缺失必须**变红**, ⛔ 不允许再出现"绿而无效"。
       - name: 上传门日志产物 (取证用)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-gate-log
-          path: /tmp/gate.log
-          if-no-files-found: warn
+          path: ${{ env.GATE_LOG }}
+          if-no-files-found: error
 
       - name: 失败摘要
         if: failure()
@@ -479,7 +505,7 @@ jobs:
           {
             echo "### Windows 腿未通过 — 多半是平台分支/lint/环境假设"
             echo '```text'
-            tail -100 /tmp/gate.log 2>/dev/null || echo "(没有捕获到日志)"
+            tail -100 "$GATE_LOG" 2>/dev/null || echo "(没有捕获到日志)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
