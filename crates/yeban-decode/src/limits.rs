@@ -2051,6 +2051,8 @@ mod tests {
     ///
     /// 同一件事也钉住了 `#[derive(Debug)]` 的**形状**：`Debug` 的输出就是变体名 ＋ 字段名，
     /// 而本函数与黄金表的构造式**写出**了全部变体名与全部字段名，因此形状不可能悄悄变。
+    /// ⚠ **本 `match` 必须保持无通配符**：加上 `_ =>` 之后新增变体不会再红，而编译只出
+    /// `unreachable_patterns` **警告**（裁决 R51 的实测读数：加 `_ => {}` 之后全部判据仍全绿）。
     fn limit_violation_arm(violation: &LimitViolation) -> &'static str {
         match violation {
             LimitViolation::InputTooLarge { .. } => "InputTooLarge",
@@ -2126,6 +2128,8 @@ mod tests {
     ///
     /// 注入（实测）：给枚举加一个 `LenContractViolation::Placeholder` 变体（不在本函数里
     /// 列出）⇒ `cargo check` 以 `non-exhaustive patterns: Placeholder not covered` 红。
+    /// ⚠ **本 `match` 必须保持无通配符**：加上 `_ =>` 之后新增变体不会再红，而编译只出
+    /// `unreachable_patterns` **警告**（裁决 R51 的实测读数：加 `_ => {}` 之后全部判据仍全绿）。
     fn len_contract_violation_arm(violation: &LenContractViolation) -> &'static str {
         match violation {
             LenContractViolation::UndefinedRatio { .. } => "UndefinedRatio",

@@ -284,6 +284,13 @@ pub fn encode_int_samples(bits: u16, values: &[i32]) -> Vec<u8> {
             8 => out.push(u8::try_from(v + 128).expect("8-bit sample in -128..=127")),
             16 => out.extend_from_slice(&i16::try_from(v).expect("fits i16").to_le_bytes()),
             24 => {
+                // 24 位是**有符号**的 3 字节：越界值必须在这里就炸，不能靠"取低 3 字节"
+                // 静默截断 —— 那会让判据拿到一份**悄悄错了**的夹具，而失败点出现在别处
+                // （与 8/16 位同一条约定，见 `integer_fixture_range_is_pinned_…`）。
+                assert!(
+                    (-8_388_608..=8_388_607).contains(&v),
+                    "24-bit sample in -8388608..=8388607, got {v}"
+                );
                 let raw = v.to_le_bytes();
                 out.extend_from_slice(&raw[..3]);
             }
@@ -365,9 +372,13 @@ pub fn flac_constant_with_frame_spans(
     frames: u16,
     constant: i32,
 ) -> (Vec<u8>, Vec<(usize, usize)>) {
+    // FLAC 的声道域是 **1..=8**，由两处字段各自钉死：`STREAMINFO` 的声道字段是 3 位
+    // （存 `channels - 1`，因此 1..=8），帧头的声道赋值是 4 位（`0b0000..=0b0111` 表示
+    // 1..=8 个**独立**声道；`0b1000..=0b1010` 是三种立体声去相关，仍是 2 声道）。
+    // 因此本夹具能构造 1..=8，**构造不出** 9 声道 —— 这不是夹具的取舍，是容器的上界。
     assert!(
-        spec.channels == 1 || spec.channels == 2,
-        "only 1 or 2 channels"
+        (1..=8).contains(&spec.channels),
+        "FLAC's channel domain is 1..=8 (3-bit STREAMINFO field / 4-bit frame field)"
     );
     assert_eq!(spec.bits, 16, "fixture only packs 16-bit samples");
     assert_eq!(
@@ -1094,5 +1105,108 @@ mod tests {
         // 5 字节与 6 字节档只钉长度（本 crate 的夹具用不到那么大的帧号）。
         assert_eq!(encode(0x20_0000).len(), 5);
         assert_eq!(encode(0x400_0000).len(), 6);
+    }
+
+    /// 判据（夹具自检 / 整数与浮点编码器的端序与量程）：三种位宽的**字节序**逐个钉住，
+    /// 且 24 位的量程两端都要**在夹具层**报错。
+    ///
+    /// 量什么：`encode_int_samples` 与 `encode_f32_samples` 的**逐字节**输出。
+    /// 怎么量：取每个位深的边界值，与手写的小端字节串比对。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 调用 | 字节 |
+    /// | :--- | :--- |
+    /// | `(16, &[0x1234])` | `34 12` |
+    /// | `(24, &[0x12_3456])` | `56 34 12` |
+    /// | `(24, &[-8_388_608])` | `00 00 80` |
+    /// | `(24, &[8_388_607])` | `FF FF 7F` |
+    /// | `(32, &[0x1234_5678])` | `78 56 34 12` |
+    /// | `encode_f32_samples(&[1.0])` | `00 00 80 3F` |
+    ///
+    /// 为什么需要它：既有 `integer_fixture_range_is_pinned_…` 只对 24/32 位断言了**长度**，
+    /// 字节序无人看管；`encode_f32_samples` 完全没有自检。
+    ///
+    /// 注入（实测）：把 24 位那支的 `raw[..3]` 改成 `raw[1..]` ⇒ 本条在 24 位三行红。
+    #[test]
+    fn the_sample_encoders_are_little_endian_at_every_depth() {
+        assert_eq!(encode_int_samples(16, &[0x1234]), vec![0x34, 0x12]);
+        assert_eq!(encode_int_samples(24, &[0x12_3456]), vec![0x56, 0x34, 0x12]);
+        assert_eq!(
+            encode_int_samples(24, &[-8_388_608]),
+            vec![0x00, 0x00, 0x80],
+            "the 24-bit lower bound must sign-extend into the top byte"
+        );
+        assert_eq!(encode_int_samples(24, &[8_388_607]), vec![0xFF, 0xFF, 0x7F]);
+        assert_eq!(
+            encode_int_samples(32, &[0x1234_5678]),
+            vec![0x78, 0x56, 0x34, 0x12]
+        );
+        assert_eq!(encode_f32_samples(&[1.0]), 1.0f32.to_le_bytes().to_vec());
+        assert_eq!(
+            encode_f32_samples(&[-2.5]),
+            (-2.5f32).to_le_bytes().to_vec()
+        );
+        // `-0.0` 与 `+0.0` 的位型不同，夹具必须原样搬运（摘要判据依赖这一点）。
+        assert_ne!(
+            encode_f32_samples(&[0.0]),
+            encode_f32_samples(&[-0.0]),
+            "the encoder must preserve the sign bit of zero"
+        );
+    }
+
+    /// 判据（夹具自检）：24 位越界值必须在**夹具层**炸，而不是被静默截断成低 3 字节。
+    ///
+    /// 为什么需要它：改建前 24 位那支是 `v.to_le_bytes()` 取 `raw[..3]` —— **没有任何量程
+    /// 检查**，因此传 `8_388_608`（上界加一）会得到一份"看起来合法、值却错"的夹具，失败点
+    /// 出现在别的判据里。8 位与 16 位本来就有这道检查（各自的 `should_panic` 判据），24 位
+    /// 是唯一漏掉的位深。
+    ///
+    /// 注入（实测）：把新加的 `assert!((-8_388_608..=8_388_607).contains(&v), …)` 删掉 ⇒
+    /// 本条以"应当 panic 却没有"红。
+    #[test]
+    #[should_panic(expected = "24-bit sample in -8388608..=8388607")]
+    fn twenty_four_bit_fixture_rejects_a_value_that_does_not_fit_i24() {
+        let _ = encode_int_samples(24, &[8_388_608]);
+    }
+
+    /// 判据（夹具自检）：`WavSpec` 的两个派生字段按定义算。
+    ///
+    /// 量什么：`block_align()`（字节/帧）与 `byte_rate()`（字节/秒）。
+    /// 怎么量：直接算，并与手写值比对。
+    ///
+    /// 读数（本机、debug 构建）：2 声道 16 位 ⇒ `block_align = 4`；48 kHz ⇒ `byte_rate = 192000`。
+    ///
+    /// 为什么需要它：这两个字段要写进 `fmt ` 块体，而 symphonia 会用 `byte_rate` 推算每包
+    /// 帧数。它们错了，`data` 块的切包就会跟着错，失败会表现成"解码器读少了几个样本"。
+    ///
+    /// 注入（实测）：把 `block_align` 的 `self.channels * (self.bits / 8)` 改成
+    /// `self.channels * self.bits` ⇒ 本条红。
+    #[test]
+    fn the_wav_spec_derives_block_align_and_byte_rate() {
+        let stereo = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits: 16,
+            format: WavFormat::Integer,
+        };
+        assert_eq!(stereo.block_align(), 4);
+        assert_eq!(stereo.byte_rate(), 192_000);
+        let mono24 = WavSpec {
+            channels: 1,
+            sample_rate: 8_000,
+            bits: 24,
+            format: WavFormat::Integer,
+        };
+        assert_eq!(mono24.block_align(), 3);
+        assert_eq!(mono24.byte_rate(), 24_000);
+        let float = WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits: 32,
+            format: WavFormat::Float,
+        };
+        assert_eq!(float.block_align(), 8);
+        assert_eq!(float.byte_rate(), 352_800);
     }
 }

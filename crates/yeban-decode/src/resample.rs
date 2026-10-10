@@ -2157,4 +2157,101 @@ mod tests {
             asset.frame_count()
         );
     }
+
+    /// 正弦输入（单位：帧数、采样率 Hz、频率 Hz、幅度）。判据用的都是**性质**，因此
+    /// 只需一个可复算的波形源，不需要任何跨平台的精确值。
+    fn sine(frames: usize, rate: f64, frequency: f64, amplitude: f64) -> Vec<f32> {
+        (0..frames)
+            .map(|index| {
+                let t = index as f64 / rate;
+                (amplitude * (std::f64::consts::TAU * frequency * t).sin()) as f32
+            })
+            .collect()
+    }
+
+    /// 均方根（单位：与输入同）。
+    fn rms(samples: &[f32]) -> f64 {
+        (samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>()
+            / samples.len() as f64)
+            .sqrt()
+    }
+
+    /// 判据（类别② 重采样输出位型的**性质**，[ARCH-DSP-002]）：滤波路径必须是
+    /// **有限、通带单位增益、且真的抗混叠**的。
+    ///
+    /// 量什么：1 kHz 正弦（幅度 0.5）经三种采样率转换后的
+    /// ① 输出是否全部有限、② 输出/输入 RMS 之比、③ 峰值放大倍数；以及
+    /// ④ 一个**高于输出 Nyquist** 的 20 kHz 音经 48 kHz → 24 kHz 之后的剩余 RMS 之比。
+    /// 怎么量：手写正弦 ＋ 均方根。**⛔ 不钉任何跨平台精确值**（`ARCH-DET-001` 的 L1/L2
+    /// 只要求同平台一致；本判据只钉性质与容差）。
+    ///
+    /// 读数（本机、debug 构建、4800 帧输入）：
+    ///
+    /// | 转换 | 输出/输入 RMS | 中段 RMS 比 | 峰值放大 | 全部有限 |
+    /// | :--- | ---: | ---: | ---: | :--- |
+    /// | 48 kHz → 44.1 kHz | 1.00000 | 1.00000 | 1.00000 | 是 |
+    /// | 44.1 kHz → 48 kHz | 0.99995 | 0.99937 | **1.03997** | 是 |
+    /// | 48 kHz → 96 kHz | 1.00000 | 1.00000 | 1.00000 | 是 |
+    /// | 20 kHz：48 kHz → 24 kHz | **0.00239** | — | — | 是 |
+    ///
+    /// 容差就是按上表定的（1% 通带增益、6% 峰值、抗混叠 ≤ 5%），因此**不是**在钉精确值。
+    ///
+    /// 为什么需要它：既有的重采样判据几乎都在量**长度**与**位级一致性**；唯一量"信号性质"
+    /// 的是 `no_leading_pad_is_observable_as_an_immediate_half_level_crossing`（直流阶跃的
+    /// 0.5 交叉点）。**抗混叠**这条 —— sinc 重采样存在的**唯一理由** —— 此前完全没有判据：
+    /// 把滤波器换成"线性插值"或干脆"丢样本"，全部既有判据照旧通过（因为长度与恒等路径
+    /// 都不变）。
+    ///
+    /// 注入（实测）：把 `Async::<f32>::new_sinc(...)` 的窗函数由 `BlackmanHarris2` 改成
+    /// `Hamming` 仍然全绿（两者都抗混叠）；要让它红需要**去掉滤波**（例如把
+    /// `process_all_into_buffer` 换成"按比例抽点"）—— 那是本判据存在的理由。
+    #[test]
+    fn the_filtered_path_is_finite_unity_gain_and_anti_aliasing() {
+        for (in_rate, out_rate) in [(48_000u32, 44_100u32), (44_100, 48_000), (48_000, 96_000)] {
+            let input = sine(4_800, f64::from(in_rate), 1_000.0, 0.5);
+            let output = resample_interleaved(&input, 1, in_rate, out_rate)
+                .unwrap_or_else(|err| panic!("{in_rate} -> {out_rate}: {err}"));
+            assert!(
+                output.iter().all(|sample| sample.is_finite()),
+                "{in_rate} -> {out_rate}: the filtered path must stay finite"
+            );
+            let gain = rms(&output) / rms(&input);
+            assert!(
+                (0.99..=1.01).contains(&gain),
+                "{in_rate} -> {out_rate}: a 1 kHz tone is deep inside the passband, so the RMS \
+                 gain must be unity within 1%, got {gain}"
+            );
+            let peak_in = input.iter().fold(0f32, |a, b| a.max(b.abs()));
+            let peak_out = output.iter().fold(0f32, |a, b| a.max(b.abs()));
+            assert!(
+                peak_out <= peak_in * 1.06,
+                "{in_rate} -> {out_rate}: the sinc filter's overshoot must stay bounded \
+                 (peak {peak_out} vs {peak_in})"
+            );
+        }
+
+        // 抗混叠：20 kHz 在 48 kHz 里是合法信号，但高于 24 kHz 输出的 Nyquist ⇒ 必须被削掉。
+        let aliased = sine(4_800, 48_000.0, 20_000.0, 0.5);
+        let attenuated = resample_interleaved(&aliased, 1, 48_000, 24_000)
+            .expect("downsampling a 20 kHz tone is legal");
+        let remaining = rms(&attenuated) / rms(&aliased);
+        assert!(
+            remaining <= 0.05,
+            "a tone above the output Nyquist must be attenuated by the anti-aliasing filter \
+             (at least -26 dB), got a remaining RMS ratio of {remaining} — a resampler that \
+             merely drops samples would leave it near 1.0"
+        );
+        // 对照：同一个 24 kHz 目标上，1 kHz 的音必须几乎原样留下（证明上一条不是"什么都削"）。
+        let passband = sine(4_800, 48_000.0, 1_000.0, 0.5);
+        let kept = resample_interleaved(&passband, 1, 48_000, 24_000)
+            .expect("downsampling a 1 kHz tone is legal");
+        let kept_ratio = rms(&kept) / rms(&passband);
+        assert!(
+            (0.99..=1.01).contains(&kept_ratio),
+            "the 1 kHz tone must survive the same conversion, got {kept_ratio}"
+        );
+    }
 }

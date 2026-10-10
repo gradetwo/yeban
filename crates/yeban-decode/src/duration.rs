@@ -272,4 +272,63 @@ mod tests {
             assert!(rendered.contains(field), "the rendering must keep {field}");
         }
     }
+
+    /// 判据（枚举形状 / 裁决 R48）：[`Reconciliation`] 的**全部 4 个变体**都被覆盖，
+    /// 且每个变体的 `is_reconciled()` 与 `into_result()` 都被钉住。
+    ///
+    /// 量什么：每个变体的 `is_reconciled()`（布尔）与 `into_result()` 是否 `Err`。
+    /// 怎么量：一张 4 行的表 ＋ 一个**无通配符 `match`**。
+    ///
+    /// 读数（本机、debug 构建）：`DeclaredUnknown` / `Exact` / `WithinTolerance` ⇒
+    /// `is_reconciled() == true` 且 `into_result()` 为 `Ok`；`OutsideTolerance` ⇒ `false`
+    /// 且 `into_result()` 为 `Err(Mismatch { .. })`。
+    ///
+    /// ⚠⚠ **本条同时登记一处 fail-open 默认**：[`Reconciliation::is_reconciled`] 的实现是
+    /// `!matches!(self, Self::OutsideTolerance { .. })`，[`Reconciliation::into_result`] 的最后
+    /// 一条是通配符 `other => Ok(other)`。也就是说**将来新增一个变体会默认被判成"对账通过"**
+    /// （fail-open）。本条的无通配符 `match` 不能改变产线那两处，但它把"新增变体"变成**编译
+    /// 错误**，从而强制作者显式决定新变体算不算通过。
+    ///
+    /// ⚠ **本 `match` 必须保持无通配符**：加上 `_ =>` 之后新增变体不会再红，而编译只出
+    /// `unreachable_patterns` **警告**（裁决 R51 的实测读数）。
+    ///
+    /// 注入（实测）：给枚举加一个 `Placeholder` 变体 ⇒ 本条以
+    /// `error[E0004]: non-exhaustive patterns` 让 `cargo check` 红。
+    #[test]
+    fn every_reconciliation_variant_is_covered() {
+        /// 变体 → 是否算"对账通过"。⛔ 不要加 `_ =>` 分支（见本条文档的 ⚠）。
+        fn reconciled(outcome: &Reconciliation) -> bool {
+            match outcome {
+                Reconciliation::DeclaredUnknown => true,
+                Reconciliation::Exact => true,
+                Reconciliation::WithinTolerance { .. } => true,
+                Reconciliation::OutsideTolerance { .. } => false,
+            }
+        }
+        let cases = [
+            Reconciliation::DeclaredUnknown,
+            Reconciliation::Exact,
+            Reconciliation::WithinTolerance { delta: 3 },
+            Reconciliation::OutsideTolerance {
+                declared: 768,
+                decoded: 512,
+                tolerance: 1,
+                delta: 256,
+            },
+        ];
+        assert_eq!(cases.len(), 4, "the table must cover every arm");
+        for outcome in cases {
+            let expected = reconciled(&outcome);
+            assert_eq!(
+                outcome.is_reconciled(),
+                expected,
+                "{outcome:?}: is_reconciled"
+            );
+            assert_eq!(
+                outcome.into_result().is_ok(),
+                expected,
+                "{outcome:?}: into_result must agree with is_reconciled"
+            );
+        }
+    }
 }

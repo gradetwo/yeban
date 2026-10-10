@@ -4141,4 +4141,85 @@ mod tests {
             other => panic!("decode_reader must obey the input-byte gate, got {other:?}"),
         }
     }
+
+    /// 判据（类别⑥ 声道数极值 / 声道的**容器上界**）：FLAC 的声道域是 **1..=8**，因此
+    /// `DEFAULT_MAX_CHANNELS = 64` 这道闸门**不可能被任何容器的内容触发**，它只是 backstop；
+    /// 在 FLAC 上能触发它的只有"把预算收紧到 7"。
+    ///
+    /// 量什么：8 声道 FLAC 解出的 `channels()`、其 `STREAMINFO` 声道字段的**原始位值**，
+    /// 以及"预算 `max_channels = 7` + 8 声道内容"的返回值。
+    /// 怎么量：夹具构造 8 声道 CONSTANT FLAC（每声道同一个直流值）；位值从
+    /// `STREAMINFO[10..18]` 的大端 64 位里按 `>> 41 & 0b111` 取（与
+    /// `testfix::tests::flac_fixture_has_a_valid_streaminfo_and_frame_chain` 同一公式）。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 项 | 值 |
+    /// | :--- | :--- |
+    /// | 8 声道 FLAC 的 `channels()` | 8 |
+    /// | `samples().len()`（256 帧 × 8） | 2048 |
+    /// | `STREAMINFO` 声道字段 | **7**（= `channels - 1`，3 位字段的**最大值**） |
+    /// | `max_channels = 7` 时 | `TooManyChannels { channels: 8, limit: 7 }` |
+    ///
+    /// **为什么 >8 不可达（机械理由，不是夹具取舍）**：FLAC 用**两处**字段各自钉住声道域 ——
+    /// `STREAMINFO` 的声道字段是 **3 位**（存 `channels - 1`，故 1..=8），帧头的声道赋值是
+    /// **4 位**（`0b0000..=0b0111` ＝ 1..=8 个独立声道；`0b1000..=0b1010` 是三种立体声去相关，
+    /// 仍是 2 声道）。两处都放不下 9。WAV 那一侧上游在 **32 声道**就 `riff: invalid channel
+    /// count`（本 crate 的 `>64` 格因此也不可达）；Ogg 需要一份合法 Vorbis 夹具（尚未构造）。
+    /// ⇒ 三族容器里**没有任何一族**能用内容触发 64 声道闸门。
+    ///
+    /// 注入（实测）：把夹具的声道域断言由 `(1..=8).contains(…)` 改成 `spec.channels <= 8`
+    /// 之外的形式不会红（那是夹具自检的事）；本条真正钉住的是下面三个读数，把
+    /// `check_layout` 的 `channels > budget.max_channels` 改成 `>=` ⇒ 本条的第三行红。
+    #[test]
+    fn the_channel_gate_cannot_be_tripped_by_content_of_any_enabled_container() {
+        let spec = FlacSpec {
+            sample_rate: 8_000,
+            channels: 8,
+            bits: 16,
+            block_frames: 256,
+            total_samples_override: None,
+        };
+        let bytes = flac_constant(&spec, 1, 500);
+        let asset = decode_bytes(&bytes, &DecodeOptions::default())
+            .expect("an 8-channel FLAC is inside FLAC's channel domain");
+        assert_eq!(asset.channels(), 8);
+        assert_eq!(asset.frame_count(), 256);
+        assert_eq!(asset.samples().len(), 256 * 8);
+
+        // `STREAMINFO` 的声道字段必须读到 3 位字段的最大值 7（= 8 - 1）。
+        let info = &bytes[8..42];
+        let packed = u64::from_be_bytes([
+            info[10], info[11], info[12], info[13], info[14], info[15], info[16], info[17],
+        ]);
+        assert_eq!(
+            (packed >> 41) & 0b111,
+            7,
+            "the 3-bit channel field saturates at 7 (= 8 channels); 9 would need 8"
+        );
+        // 编译期断言：FLAC 的声道上界（8）必须低于闸门默认值（64），否则本条的前提
+        // （"这道闸门只是 backstop"）就不成立。放成 `const` 断言而不是运行时 `assert!`，
+        // 是为了让它在**编译**期生效（也避开 clippy 的 "constant assertion" 告警）。
+        const _: () = assert!(
+            8u16 < crate::limits::DEFAULT_MAX_CHANNELS,
+            "FLAC's channel ceiling must be below the gate's default"
+        );
+
+        // 闸门在 FLAC 上只能靠"收紧预算"触发，报的是**内容声明的**声道数。
+        let tightened = DecodeOptions {
+            budget: PcmBudget {
+                max_channels: 7,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        match decode_bytes(&bytes, &tightened) {
+            Err(DecodeError::Budget(LimitViolation::TooManyChannels { channels, limit })) => {
+                assert_eq!((channels, limit), (8, 7));
+            }
+            other => {
+                panic!("the channel gate must fire on the first decoded buffer, got {other:?}")
+            }
+        }
+    }
 }

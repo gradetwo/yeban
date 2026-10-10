@@ -960,4 +960,77 @@ mod tests {
         assert_eq!(imported.index.hash, AssetHash::of_bytes(&bytes));
         assert_eq!(imported.decoded.frame_count(), 2);
     }
+
+    /// 判据（枚举形状 / 裁决 R48）：[`PcmFormat`] 的**全部 10 个变体**都被覆盖。
+    ///
+    /// 量什么：每个变体的 `bit_depth()`、`is_float()`、`model_bit_depth()`（单位：位 / 布尔 /
+    /// 规范枚举）。怎么量：一张 10 行的表，逐行比对；并由一个**无通配符 `match`** 把"枚举
+    /// 新增变体"变成**编译期**错误。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 变体 | `bit_depth()` | `is_float()` | `model_bit_depth()` |
+    /// | :--- | ---: | :--- | :--- |
+    /// | `U8` | 8 | false | `None` |
+    /// | `U16` | 16 | false | `None` |
+    /// | `U24` | 24 | false | `None` |
+    /// | `U32` | 32 | false | `None` |
+    /// | `S8` | 8 | false | `None` |
+    /// | `S16` | 16 | false | `Some(Int16)` |
+    /// | `S24` | 24 | false | `Some(Int24)` |
+    /// | `S32` | 32 | false | `None` |
+    /// | `F32` | 32 | true | `Some(Float32)` |
+    /// | `F64` | 64 | true | `None` |
+    ///
+    /// 为什么需要它：既有的 `model_bit_depth_only_covers_the_normative_enum` **列举**了
+    /// 3 ＋ 7 个变体，但那是**手写清单**不是枚举保证 —— 加第 11 个变体时那份清单不会红。
+    /// 本条的无通配符 `match` 会让它红。
+    ///
+    /// ⚠ **本 `match` 必须保持无通配符**：加上 `_ =>` 之后新增变体不会再红，而编译只出
+    /// `unreachable_patterns` **警告**（裁决 R51 的实测读数：加 `_ => {}` 之后全部判据仍全绿）。
+    ///
+    /// 注入（实测）：把 `Self::F64 => (64, true, None)` 那一行改成 `(32, true, None)` ⇒
+    /// 本条以 `F64` 行红。
+    #[test]
+    fn every_pcm_format_variant_is_covered() {
+        /// 逐变体读三个属性。⛔ 不要加 `_ =>` 分支（见本条文档的 ⚠）。
+        fn read(format: &PcmFormat) -> (u16, bool, Option<BitDepth>) {
+            let _ = format; // 让"臂名"与"属性"分开，便于注入逐行改坏
+            match format {
+                PcmFormat::U8 => (8, false, None),
+                PcmFormat::U16 => (16, false, None),
+                PcmFormat::U24 => (24, false, None),
+                PcmFormat::U32 => (32, false, None),
+                PcmFormat::S8 => (8, false, None),
+                PcmFormat::S16 => (16, false, Some(BitDepth::Int16)),
+                PcmFormat::S24 => (24, false, Some(BitDepth::Int24)),
+                PcmFormat::S32 => (32, false, None),
+                PcmFormat::F32 => (32, true, Some(BitDepth::Float32)),
+                PcmFormat::F64 => (64, true, None),
+            }
+        }
+        let variants = [
+            PcmFormat::U8,
+            PcmFormat::U16,
+            PcmFormat::U24,
+            PcmFormat::U32,
+            PcmFormat::S8,
+            PcmFormat::S16,
+            PcmFormat::S24,
+            PcmFormat::S32,
+            PcmFormat::F32,
+            PcmFormat::F64,
+        ];
+        assert_eq!(variants.len(), 10, "the table must cover every arm");
+        for format in variants {
+            let (depth, is_float, model) = read(&format);
+            assert_eq!(format.bit_depth(), depth, "{format:?}: bit_depth");
+            assert_eq!(format.is_float(), is_float, "{format:?}: is_float");
+            assert_eq!(
+                format.model_bit_depth(),
+                model,
+                "{format:?}: model_bit_depth"
+            );
+        }
+    }
 }

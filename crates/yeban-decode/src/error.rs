@@ -310,6 +310,8 @@ mod tests {
     ///
     /// 注入（实测）：加一个 `DecodeError::Placeholder` 变体 ⇒ `cargo check` 以
     /// `non-exhaustive patterns` 红。
+    /// ⚠ **本 `match` 必须保持无通配符**：加上 `_ =>` 之后新增变体不会再红，而编译只出
+    /// `unreachable_patterns` **警告**（裁决 R51 的实测读数：加 `_ => {}` 之后全部判据仍全绿）。
     fn decode_error_arm(error: &DecodeError) -> &'static str {
         match error {
             DecodeError::Io(_) => "Io",
