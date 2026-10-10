@@ -1952,4 +1952,89 @@ mod tests {
         // 非空证明的后半: 三个数字确实互不相同, 因此上面三条断言各自都有射程。
         assert_ne!(plan.longest_path_frames() as usize, nodes);
     }
+
+    /// 判据 (**R58**): [`RenderError`] 的相等必须读**变体与载荷**。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// `invalid_inputs_are_rejected` 用 `assert_eq!(..err(), Some(RenderError::ZeroChannels))`
+    /// 这类**整值**比较钉住 6 种拒绝（含 `MasterNotInGraph(ulid(7))` 的**载荷**）。
+    /// 把 `RenderError` 的 `==` 削成"只比判别式"（`std::mem::discriminant`）之后,
+    /// **6 条断言全部继续通过** —— 载荷（哪个 ULID、哪个 `what`、哪条消息）无人看管。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 7 对 `RenderError`（单位: 一个错误）。读数: `==` / `!=` 的判决。
+    ///
+    /// # 非空证明
+    ///
+    /// 成对的取值**既有跨变体**（`ZeroChannels` vs `ZeroBlockSize`）**也有同变体不同载荷**
+    /// （两个不同 ULID、两个不同 `what`、两条不同消息）⇒ "只比判别式"这种改法必红。
+    #[test]
+    fn the_render_error_equality_reads_every_variant_and_payload() {
+        let pairs: [(&str, RenderError, RenderError); 7] = [
+            (
+                "跨变体 1",
+                RenderError::ZeroChannels,
+                RenderError::ZeroBlockSize,
+            ),
+            (
+                "跨变体 2",
+                RenderError::ZeroBlockSize,
+                RenderError::ZeroFrames,
+            ),
+            (
+                "同变体的 ULID 载荷",
+                RenderError::MasterNotInGraph(ulid(7)),
+                RenderError::MasterNotInGraph(ulid(8)),
+            ),
+            (
+                "同变体的 what 载荷",
+                RenderError::SizeOverflow {
+                    what: "block_size * channels",
+                },
+                RenderError::SizeOverflow {
+                    what: "frames * channels",
+                },
+            ),
+            (
+                "同变体的消息载荷",
+                RenderError::InvalidGraph("环".to_owned()),
+                RenderError::InvalidGraph("端点缺失".to_owned()),
+            ),
+            (
+                "Source 的消息载荷",
+                RenderError::Source {
+                    node: ulid(1),
+                    message: "a".to_owned(),
+                },
+                RenderError::Source {
+                    node: ulid(1),
+                    message: "b".to_owned(),
+                },
+            ),
+            (
+                "Source 的节点载荷",
+                RenderError::Source {
+                    node: ulid(1),
+                    message: "a".to_owned(),
+                },
+                RenderError::Source {
+                    node: ulid(2),
+                    message: "a".to_owned(),
+                },
+            ),
+        ];
+        assert_eq!(pairs.len(), 7);
+        for (label, left, right) in &pairs {
+            assert_ne!(left, right, "{label}: 两个不同取值必须不相等");
+            assert_ne!(right, left, "{label}: 不等必须对称");
+            assert_eq!(*left, left.clone(), "{label}: 自反");
+        }
+        // 非空证明: 夹具里既有跨变体也有同变体不同载荷 ⇒ 单靠判别式的 `==` 必红。
+        let same_variant = pairs.iter().filter(|(label, a, b)| {
+            std::mem::discriminant(a) == std::mem::discriminant(b) && label.contains("载荷")
+        });
+        assert!(same_variant.count() >= 4, "至少 4 对是同变体不同载荷");
+    }
 }

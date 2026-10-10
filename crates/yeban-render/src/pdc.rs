@@ -1218,4 +1218,72 @@ mod tests {
             other => panic!("无关节点上的自环必须让整张图被拒绝, 得到 {other:?}"),
         }
     }
+
+    /// 判据 (**类别 4/7: 多级累加与饱和**): 一条 **4 节点链**上饱和是**逐级**发生的
+    /// （每一级都从上一级的**饱和值**继续加）; 而一条**菱形**里, 饱和后的 `L_max` 仍要让
+    /// 短支路补上一个**巨大但有限**的延迟。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 既有的饱和判据最长是 **2 级**（`u32::MAX + 5`, 以及第六批的 `半 + 半`）;
+    /// 它们都不能把"**饱和之后继续用饱和值累加**"与"**饱和那一刻就把它当成终点**"
+    /// 分开 —— 后者在 2 级夹具上给出同样结果。菱形那一半更不能: 既有菱形夹具的
+    /// 延迟都很小, `L_max − L_i` 永远不会接近 `u32::MAX`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: ① 4 节点链（自身延迟 `半, 半, 1, 1`, 单位: 采样帧）;
+    /// ② 菱形（快支路 4 帧 / 慢支路 `u32::MAX` 帧）。读数: 每一级的 `arrival` /
+    /// `output_latency`、`longest_path` 与两条边的 `delay_of`（都是帧）。
+    ///
+    /// # 非空证明
+    ///
+    /// ① 里**有两个不同的饱和点**（第 2 级与第 3 级各饱和一次）且第 4 级仍在加
+    /// ⇒ "只在第一次饱和后停住"必红; ② 里补偿 `u32::MAX − 4` **既非 0 也非饱和值**
+    /// ⇒ "饱和后一律给 0"必红。
+    #[test]
+    fn saturation_propagates_through_a_longer_chain_and_a_diamond() {
+        let half = u32::MAX / 2 + 1;
+        // ① 4 节点链: n0(半) → n1(半) → n2(1) → master(1)
+        let g = graph(
+            &["n0", "n1", "n2", "master"],
+            &[("n0", "n1"), ("n1", "n2"), ("n2", "master")],
+            &[("n0", half), ("n1", half), ("n2", 1), ("master", 1)],
+        );
+        let chain = plan(&g, "master").expect("无环");
+        assert_eq!(chain.output_latency["n0"], half, "第 1 级还没有饱和");
+        assert_eq!(chain.output_latency["n1"], u32::MAX, "第 2 级第一次饱和");
+        assert_eq!(
+            chain.output_latency["n2"],
+            u32::MAX,
+            "第 3 级必须从**饱和值**继续加（再饱和一次）"
+        );
+        assert_eq!(
+            chain.longest_path,
+            u32::MAX,
+            "第 4 级仍在累加: 饱和之后不许停住"
+        );
+        assert_eq!(chain.arrival["n2"], u32::MAX, "到达 n2 时已经是饱和值");
+        assert_eq!(chain.delay_of("n0", "n1"), Some(0), "单入边不补");
+
+        // ② 菱形: 快支路 4 帧, 慢支路 u32::MAX 帧。
+        let g = graph(
+            &["fast", "slow", "master"],
+            &[("fast", "master"), ("slow", "master")],
+            &[("fast", 4), ("slow", u32::MAX)],
+        );
+        let diamond = plan(&g, "master").expect("无环");
+        assert_eq!(diamond.longest_path, u32::MAX);
+        assert_eq!(
+            diamond.delay_of("fast", "master"),
+            Some(u32::MAX - 4),
+            "快支路必须补上一个**巨大但有限**的延迟"
+        );
+        assert_eq!(diamond.delay_of("slow", "master"), Some(0), "长支路不补");
+        assert_ne!(
+            diamond.delay_of("fast", "master"),
+            diamond.delay_of("slow", "master"),
+            "两条支路的补偿必须不同（饱和后不许一律给 0）"
+        );
+    }
 }

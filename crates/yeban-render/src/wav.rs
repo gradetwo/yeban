@@ -973,4 +973,74 @@ mod tests {
         let float32 = PcmFormat::float(2, 48_000, 32);
         assert!(check_match(&float32, &buffer).is_ok());
     }
+
+    /// 判据 (**R58**): [`WavError`] 的相等必须读**变体与载荷**。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// `the_two_writers_in_this_crate_agree_on_a_zero_bit_depth` 用
+    /// `assert_eq!(hound_spec(&odd), Err(WavError::UnsupportedDepth(8)))` 做**整值**比较
+    /// （载荷 `8` 是关键: 它是**被拒绝的那个位深**）。把 `WavError` 的 `==` 削成
+    /// "只比判别式"之后, 这条断言仍然通过, 且 `RejectedFormat { field, detail }` 的
+    /// `field`/`detail` 也无人看管。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 4 对 `WavError`（单位: 一个错误）。读数: `==` / `!=` 的判决。
+    ///
+    /// # 非空证明
+    ///
+    /// 4 对里既有跨变体, 也有**同变体不同载荷**（位深 8 vs 16、`field` 两个取值、
+    /// `Hound` 的两条消息）⇒ "只比判别式"必红。
+    #[test]
+    fn the_wav_error_equality_reads_every_variant_and_payload() {
+        let pairs: [(&str, WavError, WavError); 4] = [
+            (
+                "跨变体",
+                WavError::UnsupportedDepth(8),
+                WavError::UnsupportedDepth(16),
+            ),
+            (
+                "RejectedFormat 的 field",
+                WavError::RejectedFormat {
+                    field: "channels",
+                    detail: "0".to_owned(),
+                },
+                WavError::RejectedFormat {
+                    field: "sample_rate",
+                    detail: "0".to_owned(),
+                },
+            ),
+            (
+                "RejectedFormat 的 detail",
+                WavError::RejectedFormat {
+                    field: "channels",
+                    detail: "0".to_owned(),
+                },
+                WavError::RejectedFormat {
+                    field: "channels",
+                    detail: "越界样本".to_owned(),
+                },
+            ),
+            (
+                "Hound 的消息",
+                WavError::Hound("a".to_owned()),
+                WavError::Hound("b".to_owned()),
+            ),
+        ];
+        assert_eq!(pairs.len(), 4);
+        for (label, left, right) in &pairs {
+            assert_ne!(left, right, "{label}: 必须不相等");
+            assert_eq!(*left, left.clone(), "{label}: 自反");
+        }
+        // 非空证明: 至少 3 对是同变体不同载荷。
+        let same_variant = pairs
+            .iter()
+            .filter(|(_, a, b)| std::mem::discriminant(a) == std::mem::discriminant(b))
+            .count();
+        assert!(
+            same_variant >= 3,
+            "至少 3 对同变体不同载荷, 实际 {same_variant}"
+        );
+    }
 }

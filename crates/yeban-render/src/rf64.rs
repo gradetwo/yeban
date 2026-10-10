@@ -5220,4 +5220,146 @@ mod tests {
         assert_ne!(cases[0].2, cases[1].2, "两种拒绝必须各自点名");
         assert_ne!(cases[1].2, cases[2].2, "同一个变体的两个取值也必须分开");
     }
+
+    /// 判据 (**R58**: 依赖 `==` 的判据必须有一条 `assert_ne!` 落在同一个 `==` 上):
+    /// [`Bext`] 与 [`ContainerKind`] 的相等必须读**每个字段/变体**。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 这两处 `PartialEq` 都是 `derive` 的, 而判据里有 **4 条** `assert_eq!(decoded, block)`
+    /// （`Bext`, 覆盖 v1/v2 与带/不带编码历史）与 **5 条以上** `assert_eq!(parsed.kind, kind)`
+    /// （`ContainerKind`）—— 它们**全是正向**。把 `Bext` 的 `==` 削成"只比 `description`"、
+    /// 或把 `ContainerKind` 的 `==` 削成恒真之后, 全量判据**全绿**:
+    /// 前者的字段被别的断言逐个钉住只是运气, 后者的"三档都在用"完全靠 `==`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个 [`Bext`]（10 个字段）与 10 个"只差一个字段"的副本; 以及 3 个
+    /// [`ContainerKind`] 变体。读数: `==` / `!=` 的判决（布尔 11 + 4）。
+    ///
+    /// # 非空证明
+    ///
+    /// 10 个字段里**既有** `String` / `u64` / `u16` / `[u8; 64]` / `Option<Loudness>`
+    /// 五种类型, 也有 `loudness: None` 与 `Some(..)` 的**present/absent** 两态;
+    /// `ContainerKind` 的三格两两不等 ⇒ "恒真"与"恒假"两种退化都会红。
+    #[test]
+    fn the_bext_and_container_kind_equality_read_every_field() {
+        let base = Bext {
+            description: "描述".to_owned(),
+            originator: "发起者".to_owned(),
+            originator_reference: "01J8ZK9WQ7F5N2V4B6C8D0E1F2".to_owned(),
+            origination_date: "2026-10-10".to_owned(),
+            origination_time: "13:37:00".to_owned(),
+            time_reference: 42,
+            version: 2,
+            umid: [0xAB; 64],
+            loudness: Some(Loudness {
+                loudness_value: 1,
+                loudness_range: 2,
+                max_true_peak_level: 3,
+                max_momentary_loudness: 4,
+                max_short_term_loudness: 5,
+            }),
+            coding_history: "A=PCM".to_owned(),
+        };
+        assert_eq!(base, base.clone(), "自反");
+        let variants = [
+            (
+                "description",
+                Bext {
+                    description: String::new(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "originator",
+                Bext {
+                    originator: String::new(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "originator_reference",
+                Bext {
+                    originator_reference: String::new(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "origination_date",
+                Bext {
+                    origination_date: "1970-01-01".to_owned(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "origination_time",
+                Bext {
+                    origination_time: "00:00:00".to_owned(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "time_reference",
+                Bext {
+                    time_reference: 43,
+                    ..base.clone()
+                },
+            ),
+            (
+                "version",
+                Bext {
+                    version: 1,
+                    ..base.clone()
+                },
+            ),
+            (
+                "umid",
+                Bext {
+                    umid: [0u8; 64],
+                    ..base.clone()
+                },
+            ),
+            (
+                "loudness 的有无",
+                Bext {
+                    loudness: None,
+                    ..base.clone()
+                },
+            ),
+            (
+                "coding_history",
+                Bext {
+                    coding_history: String::new(),
+                    ..base.clone()
+                },
+            ),
+        ];
+        assert_eq!(variants.len(), 10, "10 个字段各一个副本");
+        for (field, variant) in variants {
+            assert_ne!(base, variant, "只差 `{field}` 的两个 bext 必须不相等");
+            assert_ne!(variant, base, "`{field}`: 不等必须对称");
+        }
+        // `Option<Loudness>` 的 present/absent 之外, 还要分得开 `Some(..)` 的两个**取值**。
+        let loud = base.loudness.expect("夹具带响度");
+        let other = Loudness {
+            loudness_value: 9,
+            ..loud
+        };
+        assert_ne!(loud, other, "Loudness 的取值必须参与比较");
+
+        // `ContainerKind`: 三格两两不等, 且每一格都等于自己。
+        let kinds = [
+            ContainerKind::Riff,
+            ContainerKind::Rf64,
+            ContainerKind::Bw64,
+        ];
+        for (index, left) in kinds.iter().enumerate() {
+            assert_eq!(*left, *left, "自反");
+            for right in &kinds[index + 1..] {
+                assert_ne!(*left, *right, "{left:?} 与 {right:?} 必须不同");
+            }
+        }
+        assert_eq!(kinds.len(), 3, "三种容器");
+    }
 }

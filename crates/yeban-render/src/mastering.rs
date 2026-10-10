@@ -441,6 +441,16 @@ impl ExportPreset {
 
         if let Some(ceiling) = self.true_peak_ceiling_dbtp
             && ceiling.is_finite()
+            // ⚠ **上游契约的名字**（不是本守卫自己的防线）:
+            // `yeban_dsp::meter::sanitize_sample` 把 `±inf` 钳到 `±MAX_LINEAR_MAGNITUDE`、
+            // 把 `NaN` 钳到 `0.0`, 因此 `TruePeakDetector::true_peak()` 的读数**恒有限**
+            // （本机实测: ±inf 输入 ⇒ 有限 25.20702 dBTP）。该契约由 `yeban-dsp` 的
+            // `meter::tests::the_true_peak_reading_is_always_finite` 守住
+            // （由 `mod-render` 的交接说明 `/tmp/mod-render/handoff-mod-dsp.md` 转派, 见裁决 R50）。
+            // ⇒ 本行目前是**文档**而非防线: 可达的非有限取值只有 `−inf`, 那一侧
+            // `allowed_db = +inf`, 而 `+inf < gain_db` 对任何 `gain_db` 都是假。
+            // **若上游那条判据变红或被删除, 本行就变成真防线** —— 请同时复核
+            // `within_measurement_resolution` 的文档（它依赖同一条上游契约）。
             && before.true_peak_dbtp.is_finite()
         {
             // 上限允许多少增益: 真峰值加上它就正好碰到上限。
@@ -3240,5 +3250,45 @@ mod tests {
             .expect("48 kHz");
         assert_eq!(loud.bound, GainBound::TruePeakCeiling);
         assert!(loud.gain_db < 0.0, "实际 {} dB", loud.gain_db);
+    }
+
+    /// 判据 (**R58**): [`GainBound`] 与 [`TruePeakOversampling`] 的相等必须读**每个变体**。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// `assert_eq!(outcome.bound, GainBound::…, ..)` 在本文件里出现 **16 次**,
+    /// `assert_eq!(measured.oversampling, TruePeakOversampling::…)` 出现 **5 次** ——
+    /// 两条链**全部是正向**, 一个恒真的 `==` 会让这 **21 条断言一起变成空判据**
+    /// （"预设到底由谁定下"与"读数是什么口径"这两件对外承诺会同时失守）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: `GainBound` 的 3 格与 `TruePeakOversampling` 的 2 格（单位: 一个取值）。
+    /// 读数: `==` / `!=` 的判决（3 + 1 对）。
+    ///
+    /// # 非空证明
+    ///
+    /// 两族各自的格子**两两不等**且自反 ⇒ 恒真/恒假两种退化都会红。
+    #[test]
+    fn the_gain_bound_and_oversampling_equality_are_pinned() {
+        let bounds = [
+            GainBound::NothingToDo,
+            GainBound::LoudnessTarget,
+            GainBound::TruePeakCeiling,
+        ];
+        for (index, left) in bounds.iter().enumerate() {
+            assert_eq!(*left, *left, "自反");
+            for right in &bounds[index + 1..] {
+                assert_ne!(*left, *right, "{left:?} 与 {right:?} 必须不同");
+            }
+        }
+        assert_eq!(bounds.len(), 3, "三种归属");
+        let oversampling = [TruePeakOversampling::Eight, TruePeakOversampling::Sixteen];
+        assert_eq!(oversampling[0], TruePeakOversampling::Eight, "自反");
+        assert_ne!(
+            oversampling[0], oversampling[1],
+            "8× 与 16× 必须不同（母带一侧的口径就是靠它区分的）"
+        );
+        assert_eq!(oversampling.len(), 2, "两档过采样");
     }
 }
