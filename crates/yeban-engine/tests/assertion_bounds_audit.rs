@@ -83,6 +83,37 @@ fn size_bound_forms() -> [String; 5] {
     ]
 }
 
+/// **R139**：压缩文本必须**去掉全部空白**（⛔ 只去空格不够 —— 跨行形态会匹配不上，
+/// 把**对的代码**报成缺陷）。
+fn squeeze(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 从上下文里**派生** `接收者[..界]`（⛔ 不用硬编码标识符白名单 —— 那是我上一版的缺陷）。
+fn slice_receiver_bound(context: &str) -> Option<(String, String)> {
+    let flat = squeeze(context);
+    let start = flat.find("[..")?;
+    let bound_start = start + 3;
+    let rest = &flat[bound_start..];
+    let bound: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    let before = &flat[..start];
+    let receiver: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if receiver.is_empty() || bound.is_empty() {
+        return None;
+    }
+    Some((receiver, bound))
+}
+
 /// 站点**所在函数体**的起点行下标（0 起）：向上找第一个 `fn …` 起头处。
 fn enclosing_body_start(lines: &[&str], line_no: usize) -> usize {
     let mut index = line_no.saturating_sub(1);
@@ -135,36 +166,48 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     // ⚠ 站点行常常只是 `.all(|…| …)`（接收者在**上一行**，如 `out.iter()`）⇒
     // 必须用**包含站点行的整段上下文**提取标识符，⛔ 不能只看站点那一行（实测漏判 2 处）。
     let site_line = lines[start..line_no.min(lines.len())].join("\n");
-    let idents: Vec<String> = ["out", "scratch", "mono", "left", "right", "block"]
-        .iter()
-        .map(|name| (*name).to_owned())
-        .filter(|name| site_line.contains(name.as_str()))
-        .collect();
-    for name in &idents {
-        // (a) 定长数组：声明行同时含有该标识符、`[`、`;` 与 `]`。
-        let fixed_array = window.lines().any(|line| {
-            line.contains(name.as_str())
-                && line.contains('[')
-                && line.contains(';')
-                && line.contains(']')
-                && (line.contains("let ") || line.contains("let mut "))
+    let flat = squeeze(&site_line);
+
+    // ⭐ **R118 ✅ 形态 A：定长数组接收者** —— 接收者由 **`[..`／站点文本派生**（⛔ 不用白名单）。
+    // 声明行形如 `let mut out = [0.0f32; 128];`（含接收者、`[`、`;`、`]`、`let`）。
+    if let Some((receiver, _)) = slice_receiver_bound(&site_line) {
+        let declared_fixed = lines[start..line_no].iter().any(|line| {
+            let t = squeeze(line);
+            t.contains(&format!("{receiver}=["))
+                && t.contains(';')
+                && t.contains(']')
+                && (t.starts_with("let") || t.contains("letmut"))
         });
-        if fixed_array {
+        if declared_fixed {
             return true;
         }
-    }
-    // (b) 切片上界被**标量相等**钉住（`x[..n]` + `assert_eq!(n, N)`）。
-    for name in &idents {
-        if site_line.contains(&format!("[..{name}]")) || site_line.contains(&format!("[..{name} "))
-        {
-            let pinned = window.lines().any(|line| {
-                line.contains("assert_eq!(")
-                    && line.contains(&format!("{name},"))
-                    && line.contains(char::is_numeric)
-            });
-            if pinned {
+    } else {
+        // 无切片形态时，退回到"扫窗口里每个 `let … = [ … ; … ]`"的接收者名字。
+        for line in &lines[start..line_no] {
+            let t = squeeze(line);
+            if !(t.starts_with("let") || t.contains("letmut")) || !t.contains("=[") {
+                continue;
+            }
+            let name = t
+                .trim_start_matches("letmut")
+                .trim_start_matches("let")
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<String>();
+            if !name.is_empty() && flat.contains(&format!("{name}.iter()")) {
                 return true;
             }
+        }
+    }
+
+    // ⭐ **R118 ✅ 形态 B：`接收者[..界]` ＋ 界被**同函数体**的标量相等钉住**
+    // （修正上一版**方向写反**的缺陷：真实写法是 `scratch[..drained]`，⛔ 不是 `[..scratch]`）。
+    if let Some((_, bound)) = slice_receiver_bound(&site_line) {
+        let pinned = flat.contains(&format!("assert_eq!({bound},"))
+            || flat.contains(&format!("assert!({bound}>="))
+            || flat.contains(&format!("assert!({bound}>=0"));
+        if pinned {
+            return true;
         }
     }
     false
@@ -317,30 +360,28 @@ fn the_two_extra_bound_forms_have_their_own_arms() {
     let pinned = "fn t() {\n    let drained = 10;\n    assert_eq!(drained, 10);\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
     let site = sites(pinned);
     assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
-    // ⚠ **本形态目前**未支持****（如实钉住）：识别器把它写成 `[..scratch]`（方向反了），
-    // 而真实写法是 **`scratch[..drained]`**（接收者在左、界在方括号里）⇒ 它一直**没生效**过。
-    // 修法（下一轮）：认 `接收者[..界]` ＋ 同函数体内 `assert_eq!(界, N)`；本轮⛔ 不假装支持。
+    // ⭐ **翻面（R108：翻面的臂必须喂已知红）**：形态 B 修正方向后**必须认得出**。
+    // 老版本写成找 `[..scratch]`（方向反了）⇒ 它**从未生效** ⇒ 上批只能钉成"未支持"。
     assert!(
-        !has_size_bound(pinned, site[0]),
-        "⭐ 未支持形态：`接收者[..界]` ＋ 标量相等 —— 识别器方向写反 ⇒ 目前判无界（下一轮修）"
+        has_size_bound(pinned, site[0]),
+        "⭐ `接收者[..界]` ＋ 同函数体的 `assert_eq!(界, N)` ⇒ **认**（方向已修正）"
     );
 
-    // ⭐ **已知局限臂（如实钉住，⛔ 不假装它是通用形态）**：接收者标识符不在白名单里 ⇒ 认不出。
-    // 修法（下一轮）：标识符**从站点表达式派生**，⛔ 不用硬编码列表。
-    let other_ident = "fn t() {\n    let n = 10;\n    assert_eq!(n, 10);\n    assert!(buf[..n].iter().all(|f| *f == 0.0));\n}\n";
-    let site = sites(other_ident);
-    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+    // ⭐ **同形态的**已知红**：把那条标量相等**去掉** ⇒ 界没被钉住 ⇒ 必须判**无界**。
+    let unpinned2 = "fn t() {\n    let drained = 10;\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
+    let site_u = sites(unpinned2);
+    assert_eq!(site_u.len(), 1, "对照夹具必须恰好 1 个站点");
     assert!(
-        !has_size_bound(other_ident, site[0]),
-        "⭐ 已知局限：接收者标识符不在硬编码白名单里 ⇒ 判无界（假阳；下一轮改为从站点表达式派生）"
+        !has_size_bound(unpinned2, site_u[0]),
+        "⛔ 没有标量相等钉住切片上界 ⇒ 必须判无界（这是形态 B 的已知红）"
     );
 
-    // ③ **反例**：切片上界**没有**被钉住 ⇒ 必须判无界。
-    let unpinned = "fn t() {\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
-    let site = sites(unpinned);
-    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+    // ⭐ **R119 的 near-miss**：钉的是**另一个**标识符（`n_other`）⇒ 不得被当成 `drained` 的界。
+    let near_miss = "fn t() {\n    let drained = 10;\n    let n_other = 10;\n    assert_eq!(n_other, 10);\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
+    let site_n = sites(near_miss);
+    assert_eq!(site_n.len(), 1, "对照夹具必须恰好 1 个站点");
     assert!(
-        !has_size_bound(unpinned, site[0]),
-        "⛔ 切片上界未被钉住 ⇒ 无界（`drained` 可能为 0）"
+        !has_size_bound(near_miss, site_n[0]),
+        "⛔ near-miss：钉住的是 `n_other`（⛔ 不是 `drained`）⇒ 不得当作 `drained` 的界（标识符边界）"
     );
 }
