@@ -10,6 +10,19 @@
 //! * **真探针**：**同一变体、不同载荷**（`T{1,1}` vs `T{1,2}`）✓；
 //!   结构体**单字段差异**（无判别式）✓。
 //! * **必然失败的断言**（R75）：两侧在**构造上相等** ⇒ 判据恒假 ⇒ 与被测代码无关地永远红。
+//! * **同义反复**（R80）：两侧是**不同的字面量**（`assert_ne!(0usize, 2usize)`）⇒ 恒真 ⇒
+//!   看起来像真断言却什么都没测到 ⇒ 正确形态是**读夹具表**（`assert_ne!(cases[0].1, cases[1].1)`）。
+//!
+//! ## 各种形状的**强度**（⛔ 不许把弱探针当成强证据）
+//!
+//! | 形状 | 判定 | 强度 |
+//! | :--- | :--- | :--- |
+//! | 两侧同文 | 恒真／恒假 | **0**（恒假 ⇒ 必然红；恒真 ⇒ 零信息） |
+//! | 两侧是字面量 | 恒真 | **0**（R80） |
+//! | 同一枚举两个无载荷变体 | 判别式先判完 | **弱**（只证明判别式，⛔ 不证明载荷） |
+//! | `<常量> != <常量>` | 两个**命名**常量 | **弱**（只证明这两个常量当前指向不同的值；⛔ 与被比较类型的 `==` 无关） |
+//! | 同一变体不同载荷 / 结构体单字段差异 | 真探针 | **强**（`==` 被削弱就会红） |
+//! | 自反探针 `f(x) == f(x)` | 恒真 | **很弱**（只挡"函数不纯"；必须加注说明强度） |
 //!
 //! ### R77：凡"我们定字节"的硬断言，必须逐**被调函数**问是否含超越函数
 //!
@@ -35,6 +48,8 @@ enum ProbeShape {
     ConstantPairWithoutMessage,
     /// 同上，但**带了说明**（已加注 ⇒ 合格形状）。
     ConstantPairWithMessage,
+    /// **两侧都是字面量**（`assert_ne!(0usize, 2usize)`）⇒ 恒真 ⇒ 什么也没测到（R80）。
+    BothSidesAreLiterals,
     /// `assert_ne!` 两侧是**同一枚举的两个不同无载荷变体** ⇒ 判别式先判完（R69 形状①）。
     EnumVariantInequality,
 }
@@ -234,6 +249,34 @@ fn masked_code(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// 是不是一个**字面量**（数字 / 字符串 / 字符 / 布尔 / 带后缀的数字）。
+///
+/// R80：两侧都是字面量的 `assert_ne!` **恒真**（"不同的字面量永远不相等"），
+/// 它看起来像真断言却什么都没测到 —— 要改成**读夹具表**（`assert_ne!(cases[0].1, cases[1].1)`）。
+fn is_literal(expr: &str) -> bool {
+    let text = expr.trim();
+    if text.is_empty() {
+        return false;
+    }
+    if matches!(text, "true" | "false") {
+        return true;
+    }
+    if (text.starts_with('"') && text.ends_with('"') && text.len() >= 2)
+        || (text.starts_with('\'') && text.ends_with('\'') && text.len() >= 3)
+    {
+        return true;
+    }
+    let first = text.bytes().next().unwrap_or(b'x');
+    if first.is_ascii_digit()
+        || (first == b'-' && text.len() > 1 && text.as_bytes()[1].is_ascii_digit())
+    {
+        return text.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.' || byte == b'-'
+        });
+    }
+    false
+}
+
 /// 扫一个文件里所有 `assert_eq!`／`assert_ne!` 的"没有牙"形状。
 fn probe_shapes(text: &str) -> Vec<(usize, ProbeShape)> {
     let masked = masked_code(text);
@@ -263,7 +306,9 @@ fn probe_shapes(text: &str) -> Vec<(usize, ProbeShape)> {
             if left == right {
                 out.push((line, ProbeShape::SameSides));
             } else if needle == "assert_ne!(" {
-                if is_screaming_const(&left) && is_screaming_const(&right) {
+                if is_literal(&left) && is_literal(&right) {
+                    out.push((line, ProbeShape::BothSidesAreLiterals));
+                } else if is_screaming_const(&left) && is_screaming_const(&right) {
                     out.push((
                         line,
                         if args.len() < 3 {
@@ -428,6 +473,41 @@ fn enum_variant_inequality_probes_are_absent_or_annotated() {
         offenders.is_empty(),
         "`assert_ne!` 落在同一枚举的两个无载荷变体上 ⇒ 判别式先判完（假探针）；\
          要么改成同一变体不同载荷的真探针，要么加 `R69:` 注明它只证明判别式：{offenders:?}"
+    );
+}
+
+#[test]
+fn no_assertion_compares_two_literals() {
+    // R56：先喂已知红＋已知绿。
+    let red =
+        "assert_ne!(0usize, 2usize, \"两个夹具必须是不同的样本数\");\nassert_ne!(\"a\", \"b\");";
+    let green = "assert_ne!(cases[0].1, cases[1].1);\nassert_ne!(code, \"NOT_IMPLEMENTED\");";
+    assert_eq!(
+        probe_shapes(red)
+            .iter()
+            .filter(|(_line, shape)| *shape == ProbeShape::BothSidesAreLiterals)
+            .count(),
+        2,
+        "已知红样本必须被抓到两条"
+    );
+    assert!(
+        probe_shapes(green)
+            .iter()
+            .all(|(_line, shape)| *shape != ProbeShape::BothSidesAreLiterals),
+        "已知绿样本不得被抓到（读**夹具表**的探针必须留在绿）"
+    );
+    // 真源码：0 处（R80 的第三种空判据形状）。
+    let mut offenders: Vec<String> = Vec::new();
+    for (path, text) in all_sources() {
+        for (line, shape) in probe_shapes(&text) {
+            if shape == ProbeShape::BothSidesAreLiterals {
+                offenders.push(format!("{path}:{line}"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "两侧都是字面量的断言**恒真** ⇒ 什么都没测到（R80）。改成读**夹具表**或读被测值：{offenders:?}"
     );
 }
 
