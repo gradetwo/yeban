@@ -1001,3 +1001,148 @@ fn the_synthetic_replacement_pattern_covers_three_more_rules() {
     println!("[assertion-bounds] 形态推广：本轮新增 **{matched}/3** 条规则自带绿/红两臂");
     assert_eq!(matched, 3, "三条规则必须各配一条（实得 {matched}/3）");
 }
+
+// ---------------------------------------------------------------------------
+// R118（整数计数四类）＋ R183/R185（每类下界抽成函数、喂坏输入证明有牙）
+//   collection_size / value_bound / element_value_bound / condition_counter
+//   R149/R156：数条目排除注释；R177：按类名定位；R186：下界在同一文件喂坏表。
+// ---------------------------------------------------------------------------
+
+const COUNT_CLASSES: [&str; 4] = [
+    "collection_size",
+    "value_bound",
+    "element_value_bound",
+    "condition_counter",
+];
+
+/// 分类一条整数计数断言。① 元素值界（有下标）② 集合大小（len/is_empty/count）
+/// ③④ 先归"值界"；③ 由 [`count_by_class`] 在**函数体窗口**里复查 `+=` 后改写。
+fn classify_count(line: &str) -> Option<usize> {
+    let t = squeeze(line);
+    if t.starts_with("//") {
+        return None;
+    }
+    if !t.contains("assert_eq!(") && !t.contains("assert!(") {
+        return None;
+    }
+    let has_number = (0..10).any(|d| t.contains(&format!(",{d})")))
+        || (0..10).any(|d| t.contains(&format!("=={d}")));
+    if !has_number {
+        return None;
+    }
+    if t.contains('[') && t.contains(']') {
+        return Some(2);
+    }
+    if t.contains(".len()") || t.contains(".is_empty()") || t.contains(".count()") {
+        return Some(0);
+    }
+    // ③ **同一行**里的计数器证据（臂用单行夹具；跨行由 [`count_by_class`] 在函数体窗口里复查）。
+    if let Some(name) = ident_of(line)
+        && (t.contains(&format!("{name}+=")) || t.contains(&format!("letmut{name}")))
+    {
+        return Some(3);
+    }
+    Some(1)
+}
+
+/// 计数断言左侧的**根标识符**（③ 档根绑定用）。
+fn ident_of(line: &str) -> Option<String> {
+    let squeezed = squeeze(line);
+    let after = squeezed.split_once('(')?.1;
+    let name: String = after
+        .chars()
+        .skip_while(|c| !(c.is_alphanumeric() || *c == '_'))
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// 按类名计数（表头/注释行由 [`classify_count`] 直接跳过）。
+fn count_by_class(sources: &[(&str, &str)]) -> [usize; 4] {
+    let mut counts = [0usize; 4];
+    for (_, source) in sources {
+        let lines: Vec<&str> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            let Some(mut class) = classify_count(line) else {
+                continue;
+            };
+            // ③ 根绑定：`+= 1` 通常在**另一行** ⇒ 必须在**函数体窗口**里查（实测只看当前行时为 0）。
+            if class == 1
+                && let Some(name) = ident_of(line)
+            {
+                let start = enclosing_body_start(&lines, index + 1);
+                let window = lines[start..index].join("\n");
+                if window.contains(&format!("{name} +="))
+                    || window.contains(&format!("{name}+="))
+                    || window.contains(&format!("let mut {name}"))
+                {
+                    class = 3;
+                }
+            }
+            counts[class] += 1;
+        }
+    }
+    counts
+}
+
+/// R183/R185：下界抽成**函数**（⛔ 不是就地写 `>= 1`）。
+fn class_floor_holds(counts: &[usize; 4], floor: usize) -> bool {
+    counts.iter().all(|count| *count >= floor)
+}
+
+#[test]
+fn integer_count_sites_are_classified_into_four_classes() {
+    let counts = count_by_class(SOURCES);
+    let mut report = String::new();
+    for (index, name) in COUNT_CLASSES.iter().enumerate() {
+        report.push_str(&format!("{name}={} ", counts[index]));
+    }
+    println!(
+        "[assertion-bounds] R118 整数计数四类：{report}（合计 {}）",
+        counts.iter().sum::<usize>()
+    );
+    for (index, name) in COUNT_CLASSES.iter().enumerate() {
+        assert!(
+            counts[index] >= 1,
+            "类 `{name}` 必须至少 1 条（实得 {} ⇒ 该类是真空的）",
+            counts[index]
+        );
+    }
+    // R183/R185/R186：同一文件里喂**坏表** ⇒ 判假；正向对照 ⇒ 判真。
+    assert!(
+        !class_floor_holds(&[1, 0, 1, 1], 1),
+        "⭐ 下界函数必须能拒坏表（⛔ 否则它只是装饰）"
+    );
+    assert!(
+        class_floor_holds(&[1, 1, 1, 1], 1),
+        "下界函数的正向对照：四类都 ≥1 ⇒ 判真"
+    );
+}
+
+#[test]
+fn each_count_class_has_its_own_arm() {
+    let cases: [(&str, usize); 4] = [
+        ("    assert_eq!(frames.len(), 4);", 0),
+        ("    assert_eq!(checked, 7);", 1),
+        ("    assert_eq!(frames[0].peak, 0);", 2),
+        ("    let mut seen = 0; seen += 1; assert_eq!(seen, 3);", 3),
+    ];
+    let mut matched = 0usize;
+    for (text, expected) in cases {
+        assert_eq!(
+            classify_count(text),
+            Some(expected),
+            "类 `{}` 的合成输入必须落到该类",
+            COUNT_CLASSES[expected]
+        );
+        matched += 1;
+    }
+    println!("[assertion-bounds] R118 每类各配一条臂：**{matched}/4**");
+    assert_eq!(matched, 4, "四类必须各配一条（实得 {matched}/4）");
+    // 反向对照（R149/R156）：**注释行**不是站点。
+    assert_eq!(
+        classify_count("    // assert_eq!(frames.len(), 4);"),
+        None,
+        "注释行不得计入（数条目必须排除注释）"
+    );
+}
