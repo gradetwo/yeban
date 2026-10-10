@@ -774,3 +774,245 @@ fn base_dir_reports_the_canonical_sandbox_root() {
         IncludeResolver::new(root.join("sub/.."), ParseLimits::default()).expect("base dir via ..");
     assert_eq!(via_parent.base_dir(), resolver.base_dir());
 }
+
+// ---------------------------------------------------------------------------
+// 第八批：glob 深度的静默截断、6 个 include 侧限额字段、路径载荷的尺子
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_glob_depth_cap_truncates_silently() {
+    // `max_glob_depth` 与 `max_include_depth` 是**两种口径**：
+    // - glob 深度超限 ⇒ 直接 `Ok(())` 停止下探（没有任何「深度超限」错误变体）；
+    //   于是调用方看到的只是「没有匹配」。
+    // - include 深度超限 ⇒ 明确 `Err(IncludeDepthExceeded)`。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "kit/sub/deep.sfz", "<region>sample=deep.wav\n");
+    write_file(root, "main.sfz", "#include \"kit/**/*.sfz\"\n");
+    let found = resolve_and_parse(root, "main.sfz").expect("the default depth finds it");
+    assert_eq!(found.regions()[0].sample, "deep.wav");
+
+    let limits = ParseLimits {
+        max_glob_depth: 1,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("a truncated walk leaves no match");
+    assert!(
+        matches!(error, SfzError::IncludeNoMatch { .. }),
+        "the truncation is silent, so the verdict is `IncludeNoMatch`: {error:?}"
+    );
+}
+
+#[test]
+fn every_include_side_quota_field_is_wired_to_a_reachable_check() {
+    // 与解析侧同一条纪律：把 6 个 include / glob 字段**单独**收回一个小值，
+    // 每个字段自己的检查点都必须有可观测后果（唯一的例外是 glob 深度 —— 那是静默截断，
+    // 由 `the_glob_depth_cap_truncates_silently` 单独钉住）。
+    let full = ParseLimits::unlimited();
+
+    // max_source_bytes
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    let body = "<region>sample=a.wav\n";
+    write_file(root, "one.sfz", body);
+    IncludeResolver::new(root, full)
+        .expect("base dir")
+        .resolve("one.sfz")
+        .expect("unlimited accepts the file");
+    let error = IncludeResolver::new(
+        root,
+        ParseLimits {
+            max_source_bytes: 10,
+            ..full
+        },
+    )
+    .expect("base dir")
+    .resolve("one.sfz")
+    .expect_err("source byte cap");
+    assert!(
+        matches!(error, SfzError::SourceTooLarge { len, limit, .. } if len == body.len() && limit == 10),
+        "{error:?}"
+    );
+
+    // max_include_depth（入口文件自身在深度 0）
+    write_file(root, "leaf.sfz", body);
+    write_file(root, "top.sfz", "#include \"leaf.sfz\"\n");
+    IncludeResolver::new(root, full)
+        .expect("base dir")
+        .resolve("top.sfz")
+        .expect("unlimited accepts one nesting level");
+    let error = IncludeResolver::new(
+        root,
+        ParseLimits {
+            max_include_depth: 0,
+            ..full
+        },
+    )
+    .expect("base dir")
+    .resolve("top.sfz")
+    .expect_err("depth cap");
+    assert!(
+        matches!(error, SfzError::IncludeDepthExceeded { limit: 0 }),
+        "{error:?}"
+    );
+
+    // max_include_files（含入口文件）
+    IncludeResolver::new(root, full)
+        .expect("base dir")
+        .resolve("top.sfz")
+        .expect("unlimited accepts two files");
+    let error = IncludeResolver::new(
+        root,
+        ParseLimits {
+            max_include_files: 1,
+            ..full
+        },
+    )
+    .expect("base dir")
+    .resolve("top.sfz")
+    .expect_err("file count cap");
+    assert!(
+        matches!(error, SfzError::IncludeCountExceeded { limit: 1 }),
+        "{error:?}"
+    );
+
+    // max_glob_matches
+    write_file(root, "parts/a.sfz", body);
+    write_file(root, "parts/b.sfz", body);
+    write_file(root, "glob.sfz", "#include \"parts/*.sfz\"\n");
+    IncludeResolver::new(root, full)
+        .expect("base dir")
+        .resolve("glob.sfz")
+        .expect("unlimited accepts two matches");
+    let error = IncludeResolver::new(
+        root,
+        ParseLimits {
+            max_glob_matches: 1,
+            ..full
+        },
+    )
+    .expect("base dir")
+    .resolve("glob.sfz")
+    .expect_err("match cap");
+    assert!(
+        matches!(error, SfzError::GlobMatchesExceeded { limit: 1, .. }),
+        "{error:?}"
+    );
+
+    // max_glob_scanned（`read_dir` 迭代次数）
+    let error = IncludeResolver::new(
+        root,
+        ParseLimits {
+            max_glob_scanned: 1,
+            ..full
+        },
+    )
+    .expect("base dir")
+    .resolve("glob.sfz")
+    .expect_err("scan cap");
+    assert!(
+        matches!(error, SfzError::GlobScanExceeded { limit: 1, .. }),
+        "{error:?}"
+    );
+
+    // max_glob_depth（静默截断 ⇒ 仍然是「无匹配」）
+    write_file(root, "kit/sub/deep.sfz", body);
+    write_file(root, "deep.sfz", "#include \"kit/**/*.sfz\"\n");
+    IncludeResolver::new(root, full)
+        .expect("base dir")
+        .resolve("deep.sfz")
+        .expect("unlimited walks to the bottom");
+    let error = IncludeResolver::new(
+        root,
+        ParseLimits {
+            max_glob_depth: 1,
+            ..full
+        },
+    )
+    .expect("base dir")
+    .resolve("deep.sfz")
+    .expect_err("truncated walk");
+    assert!(
+        matches!(error, SfzError::IncludeNoMatch { .. }),
+        "the glob depth cap is the one silent cap: {error:?}"
+    );
+}
+
+#[test]
+fn source_and_payload_paths_are_the_display_relative_path() {
+    // `SfzSource::path`（此前全仓无读取点 ⇒ 本 crate 内是**只写字段**）与错误载荷里的
+    // `path` 是**同一把尺子**：相对基准目录、`/` 分隔的展示路径 —— 不是绝对路径、
+    // 也不是文件名。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "parts/a.sfz", "<region>sample=a.wav\n");
+    write_file(root, "inc.sfz", "<region>sample=inc.wav\n");
+    write_file(
+        root,
+        "main.sfz",
+        "<region>sample=main.wav\n#include \"inc.sfz\"\n#include \"parts/*.sfz\"\n<region>sample=tail.wav\n",
+    );
+    let limits = ParseLimits::default();
+    let sources = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect("resolves");
+    let paths: Vec<&str> = sources.iter().map(|source| source.path.as_str()).collect();
+    // 两处片段 push（include 之前的文本、循环结束后的尾段）都带同一把尺子的路径。
+    assert_eq!(
+        paths,
+        vec!["main.sfz", "inc.sfz", "parts/a.sfz", "main.sfz"]
+    );
+
+    // `IncludeNotFound`：载荷是请求的相对路径。
+    write_file(root, "bad.sfz", "#include \"missing/inc.sfz\"\n");
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("bad.sfz")
+        .expect_err("must reject");
+    assert!(
+        matches!(&error, SfzError::IncludeNotFound { line: 1, path } if path == "missing/inc.sfz"),
+        "unexpected verdict: {error:?}"
+    );
+
+    // `SourceTooLarge`：同一个相对路径 + 实际字节数。
+    write_file(root, "big.sfz", "<region>sample=a.wav\n");
+    let tight = ParseLimits {
+        max_source_bytes: 10,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, tight)
+        .expect("base dir")
+        .resolve("big.sfz")
+        .expect_err("must reject");
+    assert!(
+        matches!(&error, SfzError::SourceTooLarge { path, len, limit } if path == "big.sfz" && *len == 21 && *limit == 10),
+        "unexpected verdict: {error:?}"
+    );
+
+    // `NotUtf8`：同一个相对路径。
+    fs::write(root.join("bin.sfz"), [0xff, 0xfe, 0x00]).expect("write non-utf8 bytes");
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("bin.sfz")
+        .expect_err("must reject");
+    assert!(
+        matches!(&error, SfzError::NotUtf8 { path } if path == "bin.sfz"),
+        "unexpected verdict: {error:?}"
+    );
+
+    // `IncludeCycle`：载荷是**闭合环**的那个相对路径。
+    write_file(root, "a.sfz", "#include \"b.sfz\"\n");
+    write_file(root, "b.sfz", "#include \"a.sfz\"\n");
+    let error = IncludeResolver::new(root, limits)
+        .expect("base dir")
+        .resolve("a.sfz")
+        .expect_err("must reject");
+    assert!(
+        matches!(&error, SfzError::IncludeCycle { path } if path == "a.sfz"),
+        "unexpected verdict: {error:?}"
+    );
+}

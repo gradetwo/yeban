@@ -2343,4 +2343,259 @@ mod tests {
         // 并且 1 个 region 在 `unlimited()` 下必须放行（`max_regions` 留在小值会变红）。
         parse_text("<region>sample=a.wav", &unlimited).expect("one region fits");
     }
+
+    // ------------------------------------------------------------------
+    // 第八批：`max_opcodes_per_header` 的两把尺子、`max_regions` 的量法、
+    //         10 个解析侧限额字段的「单独收回 ⇒ 自己的检查报错」
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_per_header_opcode_cap_counts_names_in_scopes_but_occurrences_in_sections() {
+        // ⚠️ **同一个限额，两把尺子**：
+        // - 继承链作用域（control / global / master / group / region）数**不同的名字**：
+        //   `insert_opcode` 先 `!map.contains_key(name)` 再 `map.len() >= limit`，
+        //   所以同一个名字重复写多少次都只占 1 个份额；
+        // - 定义段（`<curve>` / `<effect>` / `<midi>`）数**每一次出现**：
+        //   `curve_opcodes` / `effect_opcodes` 是先自增再比较，`<midi>` 直接数条目。
+        let limits = ParseLimits {
+            max_opcodes_per_header: 2,
+            ..ParseLimits::default()
+        };
+        // 名字尺子：同一个名字重复 3 次 ⇒ 只占 1 个份额 ⇒ 放行。
+        parse_text("<region>sample=a.wav a=1 a=2 a=3", &limits)
+            .expect("three repeats of one name count once");
+        // 名字尺子：第 3 个**不同**名字就 Err。
+        let distinct = parse_text("<region>sample=a.wav a=1 b=2 c=3", &limits)
+            .expect_err("three distinct names exceed the cap");
+        assert!(
+            matches!(
+                distinct,
+                SfzError::TooManyOpcodes {
+                    scope: "region",
+                    limit: 2
+                }
+            ),
+            "unexpected verdict: {distinct:?}"
+        );
+        // 出现次数尺子：`<curve>` 的两条放行……
+        parse_text("<curve>curve_index=7 v000=0", &limits).expect("two curve opcodes fit");
+        // ……同一个点重复出现也**各算一条** ⇒ 第 3 条就 Err。
+        let curve = parse_text("<curve>curve_index=7\nv000=0\nv000=0", &limits)
+            .expect_err("every occurrence counts in <curve>");
+        assert!(
+            matches!(
+                curve,
+                SfzError::TooManyOpcodes {
+                    scope: "curve",
+                    limit: 2
+                }
+            ),
+            "unexpected verdict: {curve:?}"
+        );
+        // `<effect>` 同理（重复的 `bus` 也计数）。
+        let effect = parse_text("<effect>bus=main\nbus=main\nbus=main", &limits)
+            .expect_err("every occurrence counts in <effect>");
+        assert!(
+            matches!(
+                effect,
+                SfzError::TooManyOpcodes {
+                    scope: "effect",
+                    limit: 2
+                }
+            ),
+            "unexpected verdict: {effect:?}"
+        );
+    }
+
+    #[test]
+    fn the_region_cap_counts_built_regions_not_headers() {
+        // `max_regions` 在**段头切换**时按 `self.regions.len()` 检查，而 `regions` 只收
+        // **建成**的 region ⇒ 没有 `sample` 的段（丢弃 + `RegionWithoutSample` 警告）
+        // 不占配额。这与「数段头」是两种口径。
+        let limits = ParseLimits {
+            max_regions: 1,
+            ..ParseLimits::default()
+        };
+        let accepted = parse_text(
+            "<region>key=1\n<region>key=2\n<region>sample=a.wav",
+            &limits,
+        )
+        .expect("discarded regions do not consume the cap");
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(
+            accepted.warnings().len(),
+            2,
+            "both header-only regions warn"
+        );
+        let error = parse_text("<region>sample=a.wav\n<region>sample=b.wav", &limits)
+            .expect_err("two built regions exceed the cap");
+        assert!(
+            matches!(error, SfzError::TooManyRegions { limit: 1 }),
+            "unexpected verdict: {error:?}"
+        );
+    }
+
+    #[test]
+    fn every_parser_side_quota_field_is_wired_to_a_reachable_check() {
+        // `unlimited()` 把 16 个字段都设成全域。逐字段把它**单独**收回一个小值，
+        // 那个字段自己的检查点必须报错 —— 否则该字段就是死字段（配上全域也看不出来）。
+        // 同一输入在 `unlimited()` 下必须放行（对照）。
+        let full = ParseLimits::unlimited();
+
+        let line = "<region>sample=a.wav\n";
+        parse_text(line, &full).expect("unlimited accepts this line");
+        let error = parse_text(
+            line,
+            &ParseLimits {
+                max_line_bytes: 10,
+                ..full
+            },
+        )
+        .expect_err("line cap");
+        assert!(
+            matches!(error, SfzError::LineTooLong { limit: 10, .. }),
+            "{error:?}"
+        );
+
+        let regions = "<region>sample=a.wav\n<region>sample=b.wav\n";
+        parse_text(regions, &full).expect("unlimited accepts two regions");
+        let error = parse_text(
+            regions,
+            &ParseLimits {
+                max_regions: 1,
+                ..full
+            },
+        )
+        .expect_err("region cap");
+        assert!(
+            matches!(error, SfzError::TooManyRegions { limit: 1 }),
+            "{error:?}"
+        );
+
+        let opcodes = "<region>sample=a.wav volume=-1\n";
+        parse_text(opcodes, &full).expect("unlimited accepts two opcode names");
+        let error = parse_text(
+            opcodes,
+            &ParseLimits {
+                max_opcodes_per_header: 1,
+                ..full
+            },
+        )
+        .expect_err("opcode cap");
+        assert!(
+            matches!(error, SfzError::TooManyOpcodes { limit: 1, .. }),
+            "{error:?}"
+        );
+
+        let defines = "#define $A 1\n#define $B 2\n";
+        parse_text(defines, &full).expect("unlimited accepts two defines");
+        let error = parse_text(
+            defines,
+            &ParseLimits {
+                max_defines: 1,
+                ..full
+            },
+        )
+        .expect_err("define cap");
+        assert!(
+            matches!(error, SfzError::TooManyDefines { limit: 1 }),
+            "{error:?}"
+        );
+
+        let macros = "#define $A 1\n$A$A\n";
+        parse_text(macros, &full).expect("unlimited accepts two substitutions");
+        let error = parse_text(
+            macros,
+            &ParseLimits {
+                max_macro_expansions_per_line: 1,
+                ..full
+            },
+        )
+        .expect_err("substitution cap");
+        assert!(
+            matches!(error, SfzError::MacroExpansionExceeded { limit: 1, .. }),
+            "{error:?}"
+        );
+
+        // `max_warnings` 的后果不是 `Err`，而是**保留条数**。
+        let warnings = "<x1>\n<x2>\n<region>sample=a.wav";
+        assert_eq!(
+            parse_text(warnings, &full)
+                .expect("unlimited keeps both warnings")
+                .warnings()
+                .len(),
+            2
+        );
+        assert_eq!(
+            parse_text(
+                warnings,
+                &ParseLimits {
+                    max_warnings: 1,
+                    ..full
+                }
+            )
+            .expect("still parses")
+            .warnings()
+            .len(),
+            1
+        );
+
+        let curves =
+            "<curve>curve_index=7 v000=0\n<curve>curve_index=8 v000=0\n<region>sample=a.wav";
+        parse_text(curves, &full).expect("unlimited accepts two curves");
+        let error = parse_text(
+            curves,
+            &ParseLimits {
+                max_curves: 1,
+                ..full
+            },
+        )
+        .expect_err("curve cap");
+        assert!(
+            matches!(error, SfzError::TooManyCurves { limit: 1 }),
+            "{error:?}"
+        );
+
+        let effects = "<effect>bus=main\n<effect>bus=main\n<region>sample=a.wav";
+        parse_text(effects, &full).expect("unlimited accepts two effects");
+        let error = parse_text(
+            effects,
+            &ParseLimits {
+                max_effects: 1,
+                ..full
+            },
+        )
+        .expect_err("effect cap");
+        assert!(
+            matches!(error, SfzError::TooManyEffects { limit: 1 }),
+            "{error:?}"
+        );
+
+        let midi = "<midi>cc1=1\n<midi>cc2=2";
+        parse_text(midi, &full).expect("unlimited accepts two <midi> sections");
+        let error = parse_text(
+            midi,
+            &ParseLimits {
+                max_midi_sections: 1,
+                ..full
+            },
+        )
+        .expect_err("midi section cap");
+        assert!(
+            matches!(error, SfzError::TooManyMidiSections { limit: 1 }),
+            "{error:?}"
+        );
+        let error = parse_text(
+            midi,
+            &ParseLimits {
+                max_midi_opcodes: 1,
+                ..full
+            },
+        )
+        .expect_err("midi opcode budget");
+        assert!(
+            matches!(error, SfzError::TooManyMidiOpcodes { limit: 1 }),
+            "{error:?}"
+        );
+    }
 }

@@ -5899,4 +5899,57 @@ v127=1
             "the prefix is joined verbatim, without resolving `..`"
         );
     }
+
+    #[test]
+    fn the_sample_path_matrix_is_pinned() {
+        // `sample_path()` 是**纯函数**：拼接规则只有两条 ——
+        // ① 前缀为空 ⇒ 原样返回 `sample`；② `sample` 以 `/` 开头 ⇒ 视为绝对路径，不拼前缀；
+        // 否则拼「前缀 + 分隔符 + sample」，分隔符在前缀已以 `/` 结尾时是空串。
+        // 下表把每一格的取值**逐字**钉住（含空串、单字符、双斜杠、反斜杠、`..`、控制字符）。
+        //
+        // (default_path, sample, expected)
+        let cases: &[(Option<&str>, &str, &str)] = &[
+            // 无前缀：原样。
+            (None, "", ""),
+            (None, "k.wav", "k.wav"),
+            (None, "/abs/k.wav", "/abs/k.wav"),
+            (None, "sub/k.wav", "sub/k.wav"),
+            (None, "..", ".."),
+            (None, "..\\k.wav", "..\\k.wav"),
+            (None, "\\k.wav", "\\k.wav"),
+            (None, "a\u{1}b.wav", "a\u{1}b.wav"),
+            // 空前缀（解析期已被丢弃 ⇒ `None`，见 `an_empty_default_path_is_stored_as_absent`）。
+            (Some(""), "k.wav", "k.wav"),
+            // 单字符前缀：补一个分隔符。
+            (Some("A"), "", "A/"),
+            (Some("A"), "k.wav", "A/k.wav"),
+            (Some("A"), "/abs/k.wav", "/abs/k.wav"),
+            // 以 `/` 结尾的前缀：不再补分隔符（因此 `A//` 会留下双斜杠）。
+            (Some("A/"), "k.wav", "A/k.wav"),
+            (Some("A//"), "k.wav", "A//k.wav"),
+            // 以反斜杠结尾的前缀**不**算分隔符（只认 `/`）。
+            (Some("A\\"), "k.wav", "A\\/k.wav"),
+            // 前缀本身是 `/`：结果是绝对路径。
+            (Some("/"), "k.wav", "/k.wav"),
+            // 前缀含 `..`：原样保留，不做规范化。
+            (Some("../s"), "k.wav", "../s/k.wav"),
+            // 前缀含控制字符：原样。
+            (Some("a\u{1}"), "k.wav", "a\u{1}/k.wav"),
+            // sample 含内部 `/`：仍然拼前缀（只有**开头**的 `/` 才算绝对）。
+            (Some("S/"), "sub/k.wav", "S/sub/k.wav"),
+            (Some("S"), "sub/deep/k.wav", "S/sub/deep/k.wav"),
+            // sample 含 `..`：原样拼接。
+            (Some("S/"), "../k.wav", "S/../k.wav"),
+        ];
+        for (prefix, sample, expected) in cases {
+            let mut region = region(60, 1, 1);
+            region.default_path = prefix.map(Cow::Borrowed);
+            region.sample = Cow::Borrowed(sample);
+            assert_eq!(
+                region.sample_path(),
+                *expected,
+                "sample_path(prefix={prefix:?}, sample={sample:?})"
+            );
+        }
+    }
 }
