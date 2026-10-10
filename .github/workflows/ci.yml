@@ -114,6 +114,14 @@ jobs:
       - name: 机械红线守卫
         run: python3 scripts/guards/policy_check.py
 
+      # R65: 工作流的改动永远不被工作流验证 —— 那次只改 `ci.yml` + 文档的推送
+      # 让 `plan` 判出空 crate 集合, 于是 `rust` 矩阵腿**整体 skipped**, 新加的腿
+      # 在它自己的提交上一次都没跑。因此加一条**不依赖 crate 集合**的结构自检:
+      # 只要 `checks` 跑, 它就验证本文件可解析、且关键腿与守卫在位。
+      # ⛔ `skipped` 不算绿; 本步骤的证据是它自己的输出行。
+      - name: 工作流结构自检 (R65)
+        run: python3 scripts/guards/check_workflow_structure.py
+
       - name: JSON Schema 契约 (schema 自身合法性)
         run: |
           set -euo pipefail
