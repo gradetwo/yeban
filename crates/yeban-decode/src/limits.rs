@@ -2038,7 +2038,31 @@ mod tests {
         ];
         assert_eq!(cases.len(), 10, "the golden table must cover every arm");
         for (arm, violation, expected) in cases {
+            assert_eq!(limit_violation_arm(&violation), arm, "arm label {arm}");
             assert_eq!(violation.to_string(), expected, "arm {arm}");
+        }
+    }
+
+    /// **无通配符**的 `match`：枚举新增一个变体就会让这段**编译**失败。
+    ///
+    /// 存在理由：黄金表里的 `assert_eq!(cases.len(), 10)` 只保证"表里有 10 行"，**抓不到**
+    /// "枚举多了一个变体而表没跟上"（表长仍是 10，断言照过）。加了本函数之后，"覆盖全部臂"
+    /// 从一句口号变成机器保证 —— 新增变体、或给某个臂**改名字**，都在 `cargo check` 上红。
+    ///
+    /// 同一件事也钉住了 `#[derive(Debug)]` 的**形状**：`Debug` 的输出就是变体名 ＋ 字段名，
+    /// 而本函数与黄金表的构造式**写出**了全部变体名与全部字段名，因此形状不可能悄悄变。
+    fn limit_violation_arm(violation: &LimitViolation) -> &'static str {
+        match violation {
+            LimitViolation::InputTooLarge { .. } => "InputTooLarge",
+            LimitViolation::ZeroChannels => "ZeroChannels",
+            LimitViolation::TooManyChannels { .. } => "TooManyChannels",
+            LimitViolation::ZeroSampleRate => "ZeroSampleRate",
+            LimitViolation::SampleRateTooHigh { .. } => "SampleRateTooHigh",
+            LimitViolation::DurationTooLong { .. } => "DurationTooLong",
+            LimitViolation::PcmBudgetExceeded { .. } => "PcmBudgetExceeded",
+            LimitViolation::LayoutOverflow { .. } => "LayoutOverflow",
+            LimitViolation::ResampleRatioTooHigh { .. } => "ResampleRatioTooHigh",
+            LimitViolation::AllocationRefused { .. } => "AllocationRefused",
         }
     }
 
@@ -2089,7 +2113,24 @@ mod tests {
         ];
         assert_eq!(cases.len(), 3, "the golden table must cover every arm");
         for (arm, violation, expected) in cases {
+            assert_eq!(
+                len_contract_violation_arm(&violation),
+                arm,
+                "arm label {arm}"
+            );
             assert_eq!(violation.to_string(), expected, "arm {arm}");
+        }
+    }
+
+    /// 同 [`limit_violation_arm`]：[`LenContractViolation`] 的**无通配符** `match`。
+    ///
+    /// 注入（实测）：给枚举加一个 `LenContractViolation::Placeholder` 变体（不在本函数里
+    /// 列出）⇒ `cargo check` 以 `non-exhaustive patterns: Placeholder not covered` 红。
+    fn len_contract_violation_arm(violation: &LenContractViolation) -> &'static str {
+        match violation {
+            LenContractViolation::UndefinedRatio { .. } => "UndefinedRatio",
+            LenContractViolation::Unrepresentable { .. } => "Unrepresentable",
+            LenContractViolation::OutsideBounds { .. } => "OutsideBounds",
         }
     }
 }

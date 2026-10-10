@@ -295,7 +295,38 @@ mod tests {
         // 这里就会以"臂数不符"红）。
         assert_eq!(cases.len(), 15, "the golden table must cover every arm");
         for (arm, error, expected) in cases {
+            assert_eq!(decode_error_arm(&error), arm, "arm label {arm}");
             assert_eq!(error.to_string(), expected, "arm {arm}");
+        }
+    }
+
+    /// **无通配符**的 `match`：`DecodeError` 新增一个变体、或给某个臂改名，都会让这段
+    /// **编译**失败。
+    ///
+    /// 存在理由：黄金表的 `assert_eq!(cases.len(), 15)` 只保证"表里有 15 行"，**抓不到**
+    /// "枚举多了一个变体而表没跟上"。本函数把"覆盖全部 15 个臂"变成机器保证，也顺带钉住
+    /// `#[derive(Debug)]` 的**形状**（`Debug` 的输出就是变体名 ＋ 字段名，而这里与黄金表的
+    /// 构造式写出了全部变体名与字段名）。
+    ///
+    /// 注入（实测）：加一个 `DecodeError::Placeholder` 变体 ⇒ `cargo check` 以
+    /// `non-exhaustive patterns` 红。
+    fn decode_error_arm(error: &DecodeError) -> &'static str {
+        match error {
+            DecodeError::Io(_) => "Io",
+            DecodeError::UnsupportedFormat => "UnsupportedFormat",
+            DecodeError::NoAudioTrack => "NoAudioTrack",
+            DecodeError::MissingCodecParameters => "MissingCodecParameters",
+            DecodeError::UnsupportedCodec { .. } => "UnsupportedCodec",
+            DecodeError::MissingSampleRate => "MissingSampleRate",
+            DecodeError::ResetRequired => "ResetRequired",
+            DecodeError::Malformed { .. } => "Malformed",
+            DecodeError::Budget(_) => "Budget",
+            DecodeError::InconsistentLayout { .. } => "InconsistentLayout",
+            DecodeError::EmptyStream => "EmptyStream",
+            DecodeError::DurationMismatch(_) => "DurationMismatch",
+            DecodeError::ResamplerConfiguration { .. } => "ResamplerConfiguration",
+            DecodeError::Resampling { .. } => "Resampling",
+            DecodeError::LengthContract(_) => "LengthContract",
         }
     }
 }
