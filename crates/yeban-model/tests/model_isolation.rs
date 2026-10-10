@@ -1666,3 +1666,99 @@ fn audio_port_binding_is_unbound_only_when_all_four_fields_are_empty() {
     };
     assert!(!all.is_unbound(), "四字段都非空时同样判为已绑定");
 }
+
+/// `task_progress` 必须按**身份**取回那一条任务，而不是"任意一条"。
+///
+/// 为什么需要（第六轮注入实测）：把 `self.tasks.get(&task)` 换成
+/// `self.tasks.values().next()` 时全仓判据保持全绿 —— 既有
+/// `window_and_pid_sets_are_deterministic` 只看**集合**，从没有拿两个不同身份
+/// 去查同一张表。多任务并发进度是 UI 的直接输入，取错身份是用户可见的错。
+#[test]
+fn task_progress_returns_the_named_task_and_not_another_one() {
+    let first = TaskId::new(1);
+    let second = TaskId::new(2);
+    let mut state = SessionRuntimeState::default();
+    assert!(state.task_progress(first).is_none(), "空会话没有任务");
+
+    state.set_task(
+        first,
+        TaskProgress {
+            kind: TaskKind::ProjectLoad,
+            completed_units: 1,
+            total_units: 4,
+            cancellable: true,
+            label: "load".to_owned(),
+        },
+    );
+    state.set_task(
+        second,
+        TaskProgress {
+            kind: TaskKind::Render,
+            completed_units: 3,
+            total_units: 4,
+            cancellable: false,
+            label: "render".to_owned(),
+        },
+    );
+
+    assert_eq!(state.task_progress(first).expect("first").label, "load");
+    assert_eq!(
+        state.task_progress(first).expect("first").completed_units,
+        1
+    );
+    assert_eq!(state.task_progress(second).expect("second").label, "render");
+    assert_eq!(
+        state.task_progress(second).expect("second").completed_units,
+        3
+    );
+    assert!(
+        state.task_progress(TaskId::new(3)).is_none(),
+        "陌生身份必须落空"
+    );
+}
+
+/// `SessionRuntimeState::default()` 必须是**空会话且播放头为 0**。
+///
+/// 为什么需要（第六轮注入实测）：把 `playhead_ticks: 0` 改成 `1` 时全仓判据保持全绿 ——
+/// `playhead_is_integer_ticks_at_960_ppq` 探的是 `seek_ticks` / `advance_ticks`，
+/// 从没有断言过**缺省**播放头。
+#[test]
+fn session_default_is_a_clean_slate_at_tick_zero() {
+    let state = SessionRuntimeState::default();
+    assert_eq!(state.playhead_ticks, 0);
+    assert!(!state.is_playing);
+    assert!(state.plugin_pids().is_empty());
+    assert!(state.windows_in_order().is_empty());
+    assert!(state.task_progress(TaskId::new(1)).is_none());
+    assert_eq!(state.undo_cursor.skip, 0);
+    assert_eq!(state.validate(), Ok(()), "缺省会话必须自洽");
+}
+
+/// `SecretRef` 的 `Display` 必须给出**引用名本身**（不是空串、也不是掩码）。
+///
+/// 为什么需要（第六轮注入实测）：把 `f.write_str(&self.0)` 换成 `f.write_str("")`
+/// 时全仓判据保持全绿。引用名是要进容器 / 日志的**身份**，不是秘密 —— 它必须可读。
+#[test]
+fn secret_ref_display_is_the_reference_name() {
+    let reference = SecretRef::new("vault://yeban/cloud-token").expect("合法引用名");
+    assert_eq!(reference.to_string(), "vault://yeban/cloud-token");
+    assert_eq!(reference.to_string(), reference.entry());
+    assert!(!reference.to_string().is_empty());
+}
+
+/// `SecretMaterial` 的 `Debug` 必须**打码但保留字节数**。
+///
+/// 为什么需要（第六轮注入实测）：把 `"SecretMaterial(<redacted {} bytes>)"` 换成
+/// `"SecretMaterial(<redacted>)"` 时全仓判据保持全绿 —— `secret_material_is_wiped_on_drop`
+/// 探的是释放清零，从没有钉住打码形态本身。字节数是审计线索（"这次到底带了多少秘密"），
+/// 丢了它就只能靠猜。
+#[test]
+fn secret_material_debug_keeps_the_redacted_byte_count() {
+    let material = SecretMaterial::from_text("super-secret");
+    let rendered = format!("{material:?}");
+    assert_eq!(rendered, "SecretMaterial(<redacted 12 bytes>)");
+    assert!(
+        !rendered.contains("super-secret"),
+        "Debug 通道绝不能泄出密钥本体: {rendered}"
+    );
+}

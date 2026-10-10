@@ -1321,4 +1321,33 @@ mod tests {
             dir.display()
         );
     }
+
+    /// `default_stamped_op()` 的载荷必须被**逐字段**钉住。
+    ///
+    /// 为什么需要（第六轮注入实测）：把 `end_tick: 7680` 改成 `7681` 时全仓判据保持全绿。
+    /// 原因是 `ops.default.json` / `ops.filled.json` **没有**冻结哈希 ——
+    /// `crates/yeban-model/tests/model_isolation.rs` 的逐字节样本表只覆盖
+    /// `project.default.json` / `project.filled.json`，而
+    /// `export_all_writes_four_byte_stable_samples` 只比较"两次导出相等"。
+    /// 于是发布用的 ops 样本内容**只有这一条判据看着**。
+    #[test]
+    fn the_default_op_sample_payload_is_frozen_field_by_field() {
+        let stamped = default_stamped_op();
+        assert_eq!(stamped.timestamp, 1_760_000_000_000);
+        let Op::SetSection {
+            section_id,
+            old_section,
+            new_section,
+        } = stamped.op
+        else {
+            panic!("默认样本的变体必须是 SetSection");
+        };
+        assert_eq!(section_id, fixture_id(70));
+        assert_eq!(old_section, None);
+        assert_eq!(new_section.id, fixture_id(70));
+        assert_eq!(new_section.name, "Intro");
+        assert_eq!(new_section.start_tick, 0);
+        assert_eq!(new_section.end_tick, 7680);
+        assert_eq!(new_section.color.as_deref(), Some("#22AA88"));
+    }
 }

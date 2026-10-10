@@ -1931,4 +1931,73 @@ mod tests {
             default_snapshot_hash(&left.clone())
         );
     }
+
+    /// 草稿里的随机种子必须**原样**进入提交，并且真的落进 `history.dag` 的字节里。
+    ///
+    /// 为什么需要（第六轮注入实测）：把 `CommitDraft::with_rng_seed` 的
+    /// `self.rng_seed = rng_seed` 换成 `self.rng_seed = 0` 时全仓判据保持全绿 ——
+    /// 既有 5 处调用只用 `with_rng_seed(3)` 之类的形式**构造**草稿，从没有断言过提交里的
+    /// 种子。`Commit::rng_seed` 是**持久化字段**（`rng_seed: draft.rng_seed` ⇒ 进
+    /// `history.dag`），不是运行态。
+    #[test]
+    fn the_draft_rng_seed_reaches_the_commit_and_the_history_dag() {
+        const SEED: u64 = 0x0BAD_C0DE_0BAD_C0DE;
+        let mut graph = CommitGraph::new();
+        let root = graph
+            .genesis(
+                CommitDraft::new(fixture_id(1), "main", "agent", "genesis")
+                    .with_rng_seed(SEED)
+                    .with_ops(vec![add_section_op(11)]),
+            )
+            .expect("genesis");
+        assert_eq!(
+            graph.commit(&root).expect("commit").rng_seed,
+            SEED,
+            "草稿里的种子必须原样进入提交"
+        );
+        let decoded = decode_history_dag(&encode_history_dag(&graph))
+            .expect("解码")
+            .expect("非空图谱");
+        assert_eq!(
+            decoded.commit(&root).expect("commit").rng_seed,
+            SEED,
+            "种子必须真的落进 history.dag 的字节里（持久化字段, 不是运行态）"
+        );
+    }
+
+    /// `ops_backwards` 必须**恰好**尊重步数预算，含"预算小于历史长度"这一格。
+    ///
+    /// 为什么需要（第六轮注入实测）：把 `steps` 换成 `steps.saturating_add(1)` 时全仓判据
+    /// 保持全绿 —— 既有 6 处调用都用"预算 ≥ 历史长度"的输入（`ops_backwards(&id, 2)`
+    /// 那条恰好等于历史长度），于是"要 1 条时只给 1 条"这一格没有任何判据。
+    #[test]
+    fn ops_backwards_honours_a_step_budget_smaller_than_the_history() {
+        let mut graph = CommitGraph::new();
+        let mut head = graph
+            .genesis(
+                CommitDraft::new(fixture_id(1), "main", "agent", "genesis")
+                    .with_ops(vec![add_section_op(1)]),
+            )
+            .expect("genesis");
+        for index in 2..=3_u128 {
+            head = graph
+                .append(
+                    CommitDraft::new(fixture_id(index), "main", "agent", "step")
+                        .with_ops(vec![add_section_op(index)]),
+                )
+                .expect("append");
+        }
+        for budget in 1..=3_usize {
+            assert_eq!(
+                graph.ops_backwards(&head, budget).expect("ops").len(),
+                budget,
+                "预算 {budget} 必须恰好取回 {budget} 条"
+            );
+        }
+        assert_eq!(
+            graph.ops_backwards(&head, 9).expect("ops").len(),
+            3,
+            "预算超出历史长度时必须封顶在历史长度"
+        );
+    }
 }

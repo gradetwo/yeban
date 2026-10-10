@@ -4834,4 +4834,35 @@ mod tests {
         );
         assert_eq!(reversed, fixture_document(), "被拒的操作不得改文档");
     }
+
+    /// `StampedOp::user_ui` 必须**原样**保留来源与时间戳。
+    ///
+    /// 为什么需要（第六轮注入实测）：把时间戳换成 `timestamp.saturating_add(1)` 时全仓
+    /// 判据保持全绿 —— 本构造器零产线调用点，且没有任何判据断言过它写进去的两个字段。
+    #[test]
+    fn user_ui_stamps_the_ui_origin_and_the_given_timestamp() {
+        let stamped = StampedOp::user_ui(
+            1_760_000_000_123,
+            Op::SetTrackMute {
+                track_id: fixture_id(2),
+                old_mute: false,
+                new_mute: true,
+            },
+        );
+        assert_eq!(stamped.origin, OpOrigin::UserUi);
+        assert_eq!(stamped.timestamp, 1_760_000_000_123);
+        // 与通用入口同源：`new(UserUi, t, op)` 必须逐字段相同。
+        assert_eq!(
+            stamped,
+            StampedOp::new(
+                OpOrigin::UserUi,
+                1_760_000_000_123,
+                Op::SetTrackMute {
+                    track_id: fixture_id(2),
+                    old_mute: false,
+                    new_mute: true,
+                }
+            )
+        );
+    }
 }

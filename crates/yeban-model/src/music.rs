@@ -723,4 +723,25 @@ mod tests {
         let id = EntityId::from_str("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("canonical ulid");
         assert_eq!(id.to_canonical_string(), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
     }
+
+    /// `MidiNote::default()` 的载荷必须被**逐字段**钉住（常量本身也钉住取值）。
+    ///
+    /// 为什么需要（第六轮注入实测）：把默认音高 `60` 改成 `61` 时全仓判据保持全绿 ——
+    /// `impl Default for MidiNote` 的**取值**此前没有任何判据看着（`music.rs` 的 20 条
+    /// 判据都在探 `MidiNote::new` 的入参与触发判定）。
+    #[test]
+    fn midi_note_default_is_middle_c_with_the_documented_payload() {
+        // 先钉常量本身的取值：常量被改时"常量 vs 常量−1"那种边界写法抓不到。
+        assert_eq!(DEFAULT_VELOCITY, 100);
+        assert_eq!(DEFAULT_DURATION_TICKS, 960);
+        assert_eq!(DEFAULT_DURATION_TICKS, crate::ids::PPQ);
+
+        let note = MidiNote::default();
+        assert_eq!(note.id, EntityId::default());
+        assert_eq!(note.start_tick, 0);
+        assert_eq!(note.pitch, 60, "默认必须是中音 C");
+        assert_eq!(note.velocity, 100);
+        assert_eq!(note.duration_ticks, 960);
+        assert_eq!(note.probability, None, "默认必须必然触发");
+    }
 }

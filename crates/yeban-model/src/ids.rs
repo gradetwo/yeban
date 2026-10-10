@@ -516,4 +516,61 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    /// `ContentHash` 的 `Display` 必须是**完整的小写十六进制摘要**。
+    ///
+    /// 为什么需要（第六轮注入实测）：把 `f.write_str(&self.0)` 换成 `f.write_str("")`
+    /// 时全仓判据保持全绿 —— 既有判据只用 `as_str()` / `to_string()` 的**长度**做断言。
+    #[test]
+    fn content_hash_display_is_the_full_lowercase_hex_digest() {
+        let hash = ContentHash::of_bytes(b"abc");
+        let text = hash.to_string();
+        assert_eq!(
+            text, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "Display 必须给出完整摘要, 不是空串或截断"
+        );
+        assert_eq!(text.len(), SHA256_HEX_LEN);
+        assert_eq!(text, hash.as_str());
+        assert!(
+            text.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+    }
+
+    /// `EntityId::from_str` 的**规范口径**：往返稳定，且**不得**静默容忍前后空白。
+    ///
+    /// 为什么需要（第六轮注入实测）：把 `ulid::Ulid::from_string(s)` 换成
+    /// `from_string(&s.trim().to_uppercase())` 时全仓判据保持全绿 —— 既有判据只喂
+    /// 规范形态。实测（临时探针）：`ulid` crate 本来就接受小写输入，因此"小写"这一半是
+    /// 等价变体；真正被这次注入放宽的是**前后空白**这一半。
+    #[test]
+    fn entity_id_from_str_is_canonical_and_rejects_surrounding_whitespace() {
+        let canonical = "01J8ZQ0000000000000000000A";
+        let parsed = EntityId::from_str(canonical).expect("规范形态必须可解析");
+        assert_eq!(parsed.to_canonical_string(), canonical);
+        // 规范形态恒为 26 个大写字符。
+        assert_eq!(parsed.to_canonical_string().len(), ULID_TEXT_LEN);
+        assert!(
+            parsed
+                .to_canonical_string()
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
+        );
+        // 小写输入（`ulid` crate 本来就收）必须**规范化**成同一个身份。
+        assert_eq!(
+            EntityId::from_str(&canonical.to_lowercase())
+                .expect("小写由 ulid crate 接受")
+                .to_canonical_string(),
+            canonical
+        );
+        // 前后空白**不得**被静默吞掉。
+        assert!(
+            EntityId::from_str(&format!(" {canonical}")).is_err(),
+            "前导空白必须被拒（不得静默 trim）"
+        );
+        assert!(
+            EntityId::from_str(&format!("{canonical} ")).is_err(),
+            "尾随空白必须被拒（不得静默 trim）"
+        );
+    }
 }
