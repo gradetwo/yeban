@@ -67,6 +67,14 @@ fn centre_pan_is_equal_power_and_exactly_half_sqrt_two_of_hard_left() {
     );
     assert_eq!(centre.stats.limiter_gain_reductions, 0);
     assert_eq!(left.stats.limiter_gain_reductions, 0);
+    // ⭐ **R93 显式下界**：`(centre_l - centre_r).abs() <= 1e-12` 在**两侧都是 0** 时**恒真**
+    // （静音也是"完全对称"）。本判据的其余部分确实会因下游 `centre_l / hard_l` 变 `NaN` 而红，
+    // 但"真空"必须在这里**直接**被排除，而不是靠读者自己往下推。
+    assert!(
+        centre_l > 1e-3 && centre_r > 1e-3,
+        "夹具前提：居中渲染的左右峰值必须显著非零（否则对称性断言是真空的）: \
+         centre_l={centre_l} centre_r={centre_r}"
+    );
     assert!(
         (centre_l - centre_r).abs() <= 1e-12,
         "居中必须左右**完全**对称: {centre_l} vs {centre_r}"
