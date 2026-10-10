@@ -16,7 +16,7 @@
 //! ⛔ **明确不认**（裁决 **R118**：界必须**界定集合大小**）：
 //! - **元素值界**（`assert_eq!(x[0], 5)`）—— 它约束的是元素，⛔ 不约束集合有没有元素；
 //! - **运行期计数器**（`assert!(checked >= N)`）—— 它界定的是**动作**，⛔ 不是被遍历集合。
-//! 这两类各有一条**已知红**自测（「只有值界 ⇒ 必须报无界」「只有计数器 ⇒ 必须报无界」）。
+//!   这两类各有一条**已知红**自测（「只有值界 ⇒ 必须报无界」「只有计数器 ⇒ 必须报无界」）。
 //!
 //! ⚠️ 另（**R119**）：根绑定必须**带标识符边界** —— `bb.len() >= 2` ⛔ 不得给根 `b` 记界
 //! （近名对照已进自测）。
@@ -194,21 +194,6 @@ fn has_non_vacuity_evidence(body: &str, root: Option<&str>) -> bool {
         Some(r) => iterates_literal(body, r),
         None => literal_iteration(body),
     }
-}
-
-/// 有没有 `for <pat> in <expr>` 且 `expr` 的根是 `root`。
-fn iterates(body: &str, root: &str) -> bool {
-    let mut rest = body;
-    while let Some(index) = rest.find("for ") {
-        if let Some(rel) = rest[index..].find(" in ") {
-            let after = rest[index + rel + " in ".len()..].trim_start();
-            if after.trim_start_matches('&').starts_with(root) {
-                return true;
-            }
-        }
-        rest = &rest[index + 4..];
-    }
-    false
 }
 
 /// 有没有 `for <pat> in <字面量/范围/常量>`，且**该迭代表达式的根是 `root`**。
