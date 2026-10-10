@@ -2263,4 +2263,31 @@ mod tests {
             "a degenerate (zero) default field must make the difference count collapse to 0"
         );
     }
+
+    /// 判据（R86 对 `IdleGuard` 的落地）：`Default` 必须等于"未推进"，**推进一次必须与它
+    /// 可区分**，而 `reset()` 之后必须**回到**与默认相等（若 `reset()` 是 no-op，第 3 条会红）。
+    ///
+    /// 读数（本机、debug）：`default().idle() == 0`、`default() == new()`、一次 `bump()` 后
+    /// `!= default()` 且 `idle() == 1`、`reset()` 后 `== default()`。
+    ///
+    /// 注入（实测）：把 `reset()` 改成 no-op ⇒ 第 3 条红（推进过的 guard 不会等于默认值）。
+    #[test]
+    fn the_idle_guard_default_is_distinguishable_from_a_bumped_state() {
+        let fresh = IdleGuard::default();
+        assert_eq!(fresh.idle(), 0, "the default guard must start at zero");
+        assert_eq!(fresh, IdleGuard::new(), "Default and new() must agree");
+        let mut bumped = IdleGuard::default();
+        let tripped = bumped.bump();
+        assert!(!tripped, "a single bump must not trip the cap");
+        assert_eq!(bumped.idle(), 1);
+        assert_ne!(
+            fresh, bumped,
+            "a bumped guard must differ from the default — otherwise Default is invisible"
+        );
+        bumped.reset();
+        assert_eq!(
+            bumped, fresh,
+            "reset() must return the guard to the default state (a no-op reset would fail here)"
+        );
+    }
 }

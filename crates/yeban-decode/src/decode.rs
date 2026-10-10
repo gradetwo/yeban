@@ -4555,7 +4555,6 @@ mod tests {
             temp_needle: &str,
             loud_needles: &[&str],
             write_needles: &[&str],
-            window: usize,
         ) -> Vec<(usize, String)> {
             let lines: Vec<&str> = source.lines().collect();
             let mut findings = Vec::new();
@@ -4563,15 +4562,16 @@ mod tests {
                 if !line.contains(temp_needle) {
                     continue;
                 }
-                let last = (index + window).min(lines.len());
-                let window_lines = &lines[index..last];
-                let write = window_lines
+                // ⭐ **R174（根绑定）**：⛔ 不再用"窗口内某处有响亮失败"，而是**不限距离**地向下找
+                // **第一条写入语句**，并要求**它自己**带响亮失败。这样就没有"写入离得远 ⇒ 漏报"
+                // 的残余面（原实现只认 60 行内的写入）。
+                let write = lines[index..]
                     .iter()
                     .position(|later| write_needles.iter().any(|needle| later.contains(needle)));
                 let loud_on_write = write.is_some_and(|offset| {
                     loud_needles
                         .iter()
-                        .any(|needle| window_lines[offset].contains(needle))
+                        .any(|needle| lines[index + offset].contains(needle))
                 });
                 if !loud_on_write {
                     findings.push((index + 1, (*line).to_owned()));
@@ -4607,7 +4607,7 @@ mod tests {
             "known-red: an `.all(` with no set-size bound in its window must be reported"
         );
         assert_eq!(
-            scan_temp_dir(&mask(red), temp_needle, &loud_needles, &write_needles, 60).len(),
+            scan_temp_dir(&mask(red), temp_needle, &loud_needles, &write_needles).len(),
             1,
             "known-red: a temp_dir without a later .expect( must be reported"
         );
@@ -4616,7 +4616,7 @@ mod tests {
             "known-green: a `.all(` preceded by `.len()` must not be reported"
         );
         assert!(
-            scan_temp_dir(&mask(green), temp_needle, &loud_needles, &write_needles, 60).is_empty(),
+            scan_temp_dir(&mask(green), temp_needle, &loud_needles, &write_needles).is_empty(),
             "known-green: a temp_dir followed by .expect( must not be reported"
         );
         // R113③：掩码**必须保字节数**（否则行号/偏移错位 ⇒ 真违规会静默跳过）。
@@ -4651,11 +4651,41 @@ mod tests {
                 temp_needle,
                 &loud_needles,
                 &write_needles,
-                60,
             )
             .len(),
             1,
             "known-red: a write whose failure is swallowed must be reported"
+        );
+
+        // ⭐ **R174 的配对对照（收窄残余漏报面）**：写入离 `temp_dir()` **80 行**远时，
+        // 响亮的那条**必须满足**、被吞掉的那条**必须被报** —— 证明"窗口"这个限制已经消失。
+        let mut far_green =
+            String::from(concat!("fn fg() {\n    let mut p = ", "env::temp_dir();\n"));
+        let mut far_red =
+            String::from(concat!("fn fr() {\n    let mut p = ", "env::temp_dir();\n"));
+        for _ in 0..80 {
+            far_green.push_str("    let _filler = 0;\n");
+            far_red.push_str("    let _filler = 0;\n");
+        }
+        far_green.push_str(concat!(
+            "    std::fs::write(&p, b\"x\").",
+            "expect(\"writable\");\n}\n"
+        ));
+        far_red.push_str(concat!("    std::fs::write(&p, b\"x\").", "ok();\n}\n"));
+        assert!(
+            scan_temp_dir(
+                &mask(&far_green),
+                temp_needle,
+                &loud_needles,
+                &write_needles
+            )
+            .is_empty(),
+            "a loud write 80 lines below temp_dir must satisfy the guard"
+        );
+        assert_eq!(
+            scan_temp_dir(&mask(&far_red), temp_needle, &loud_needles, &write_needles).len(),
+            1,
+            "a swallowed write 80 lines below temp_dir must be reported"
         );
 
         // ⭐ **假清洁的固化对照**（R119）：把 `(` 也放进针里、再要求后面还有 `(`（本判据第一版的
@@ -4716,8 +4746,7 @@ mod tests {
                 "{name}: every `.all(` must have a set-size bound within 40 lines, offenders: \
                  {offenders:?}"
             );
-            let temp_offenders =
-                scan_temp_dir(&masked, temp_needle, &loud_needles, &write_needles, 60);
+            let temp_offenders = scan_temp_dir(&masked, temp_needle, &loud_needles, &write_needles);
             temp_sites += masked.matches(temp_needle).count();
             assert!(
                 temp_offenders.is_empty(),
@@ -4773,5 +4802,77 @@ mod tests {
             temp_sites >= 2,
             "the scan must actually match `env::temp_dir()` sites, matched {temp_sites}"
         );
+    }
+
+    /// 判据（R86 对 `DecodeOptions` 的落地，与 `limits` 那条同形）：默认选项必须与
+    /// **只改一个字段**的合法替代**可区分**，且每档**恰好只**改一个字段（差异计数 == 1）。
+    ///
+    /// 读数（本机、debug）：3 档全部与默认值不等、差异计数**逐一为 1**、`count(default, default) == 0`。
+    ///
+    /// ⚠ `duration_tolerance_frames` 的默认值**本来就是 0**（`DURATION_TOLERANCE_FRAMES`），
+    /// 因此它的合法替代是 **`+1`**，⛔ 不能用"减半"（`0 / 2 == 0` 会让差异计数塌成 0 ——
+    /// 那正是 `PcmBudget` 那条判据用来抓"默认值退化"的形态，这里不适用）。
+    ///
+    /// 注入（实测）：把该判据的 `count` 改成"只比 `budget`" ⇒ 另两档的差异计数变 0 ⇒ 红。
+    #[test]
+    fn every_default_option_field_is_distinguishable_from_a_legal_alternative() {
+        fn count(a: &DecodeOptions, b: &DecodeOptions) -> usize {
+            [
+                a.budget != b.budget,
+                a.duration_tolerance_frames != b.duration_tolerance_frames,
+                a.verify_declared_duration != b.verify_declared_duration,
+            ]
+            .iter()
+            .filter(|changed| **changed)
+            .count()
+        }
+        let base = DecodeOptions::default();
+        let alternatives: [(&str, DecodeOptions); 3] = [
+            (
+                "budget",
+                DecodeOptions {
+                    budget: crate::limits::PcmBudget {
+                        max_channels: base.budget.max_channels / 2,
+                        ..base.budget
+                    },
+                    ..base
+                },
+            ),
+            (
+                "duration_tolerance_frames",
+                DecodeOptions {
+                    duration_tolerance_frames: base.duration_tolerance_frames + 1,
+                    ..base
+                },
+            ),
+            (
+                "verify_declared_duration",
+                DecodeOptions {
+                    verify_declared_duration: !base.verify_declared_duration,
+                    ..base
+                },
+            ),
+        ];
+        assert_eq!(
+            alternatives.len(),
+            3,
+            "all three option fields must be exercised"
+        );
+        assert_eq!(
+            count(&base, &base),
+            0,
+            "a value must not differ from itself"
+        );
+        for (field, alternative) in alternatives {
+            assert_ne!(
+                base, alternative,
+                "changing only `{field}` must make the options distinguishable"
+            );
+            assert_eq!(
+                count(&base, &alternative),
+                1,
+                "the `{field}` case must differ in exactly one field"
+            );
+        }
     }
 }
