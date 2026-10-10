@@ -75,6 +75,30 @@ LARGE_FILE_ALLOWLIST: tuple[str, ...] = ()
 
 SKIP_DIRS = {".git", "target", "node_modules", ".worktrees", "dist", ".cargo-home"}
 
+
+def iter_repo_paths():
+    """R175: 剪枝遍历 —— 语义等价于 `REPO.rglob("*")`, 但**不走进** SKIP_DIRS。
+
+    动机 (mod-decode 批 17 实测, 已登记为候选): `rglob` 会**先走进** `target/`
+    再在事后用 `rel_parts`/`SKIP_DIRS` 过滤 ⇒ 本工作区 `target/` 有 1.9 GB
+    ⇒ 本地一次守卫跑要十几分钟。CI 上 checkout 干净所以看不出成本, 但那只是
+    "这次没踩到", 不是"没有这个问题"。
+
+    语义: 与 `rglob("*")` 一样**同时产出目录与文件**, 只是被剪掉的目录不再下探。
+    调用点仍各自保留原有的 `is_file()` / 后缀 / `SKIP_DIRS` 判定, 所以结果是
+    **同一个集合** —— 这一点由「改前/改后守卫判决逐字相同」来证明, 不靠断言。
+    """
+    import os
+
+    for dirpath, dirnames, filenames in os.walk(REPO):
+        # 原地裁剪 ⇒ os.walk 不会再下探这些目录。这才是"剪枝"; rglob 做不到。
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        base = Path(dirpath)
+        for d in dirnames:
+            yield base / d
+        for f in filenames:
+            yield base / f
+
 Violation = tuple[str, str, str]  # (guard_id, location, message)
 
 
@@ -114,7 +138,7 @@ def read_manifest(crate_dir: Path) -> dict:
 
 def iter_source_files(suffixes: tuple[str, ...] = (".rs", ".toml", ".slint")) -> list[Path]:
     out: list[Path] = []
-    for p in REPO.rglob("*"):
+    for p in iter_repo_paths():
         if not p.is_file():
             continue
         if any(part in SKIP_DIRS for part in rel_parts(p)):
@@ -245,7 +269,7 @@ def g05_forbidden_default_features() -> list[Violation]:
 def g06_large_files_registered() -> list[Violation]:
     """[AGENTS.md 红线 9] 不得提交 >10MB 未登记二进制。"""
     bad: list[Violation] = []
-    for path in REPO.rglob("*"):
+    for path in iter_repo_paths():
         if not path.is_file() or any(part in SKIP_DIRS for part in rel_parts(path)):
             continue
         if path.stat().st_size <= MAX_FILE_BYTES:
@@ -317,7 +341,7 @@ def g07_no_asio_sdk() -> list[Violation]:
     """[MUST-GATE-013 / ROAD-M-1-004] 仓库内不得出现 Steinberg ASIO SDK。"""
     bad: list[Violation] = []
     suspicious = re.compile(r"(asio[^a-z]*sdk|steinberg[^a-z]*asio|asio\.h$)", re.IGNORECASE)
-    for path in REPO.rglob("*"):
+    for path in iter_repo_paths():
         if any(part in SKIP_DIRS for part in rel_parts(path)):
             continue
         if suspicious.search(path.name):
@@ -416,7 +440,7 @@ def g12_no_tool_cache_in_tree() -> list[Violation]:
     """
     bad: list[Violation] = []
     cache_dirs = {".cache", ".wrangler", ".cargo-home", "node_modules", ".venv"}
-    for path in REPO.rglob("*"):
+    for path in iter_repo_paths():
         if not path.is_file():
             continue
         if any(part in SKIP_DIRS for part in path.parts):
