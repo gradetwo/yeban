@@ -4433,4 +4433,228 @@ mod tests {
             }
         }
     }
+
+    /// R115 常驻化（第 1/2 件）：**源码文本扫描器**，核两件机械性质。
+    ///
+    /// 扫描器**自己**是纯函数 `scan_sources`，因此可以按 R56 用**运行期拼出来的**已知红/已知绿
+    /// 样本喂它（见下面的自检断言）—— ⛔ 不用"本地全绿"当证据。
+    ///
+    /// 核的两件性质：
+    /// 1. **R102／R109／R118**：每个 `.all(` 的**前 40 行**内必须出现一处**界定被遍历集合大小**
+    ///    的界。⚠ R118 的分类：**算**的是 `frame_count` / `.len()` / `.count()` / `is_empty`
+    ///    / `!= 0`（它们界定集合**大小**）；**不算**的是元素值界（`peak > 1.0`）与运行期计数器
+    ///    （`visited += 1`）—— 后者不界定"被遍历的集合"，`.all()` 在空集上仍然真空为真。
+    /// 2. **R100**：每处 `env::temp_dir()` 之后的 60 行内必须有 `.expect(`（判据先写后读、
+    ///    写失败**响亮失败**；⛔ 不允许静默跳过 ⇒ 也就没有 `SKIP(vacuous)` 这一支）。
+    ///
+    /// ⚠ **R119（near-miss）**：`.all(` 的匹配要求**前一个字符是 `.`、后一个字符是 `(`**
+    /// ⇒ `small(`/`overall(`/`install(` 不会被误认。
+    /// ⚠ **R84／R80**：两个针都在**运行期拼接**（`concat!`），⛔ 不写成整片字面量 —— 否则针
+    /// 出现在本判据自己的源码里，检查会**自我满足**。
+    /// ⚠ **R122／"可能惰性"**：扫描器最后必须断言**真的扫到了**下界数量的 `.all(` 与
+    /// `env::temp_dir()` 命中点，否则"零违规"可能只是"零命中"。
+    #[test]
+    fn the_crate_source_keeps_a_set_size_bound_before_every_all_and_a_write_before_every_temp_dir()
+    {
+        // 针：运行期拼接（R84），所以这两片字符串**不是**完整形态。
+        // ⚠ R119 的**规格**很关键：针只到 `.all`，**边界检查**才要求后面紧跟 `(`。
+        // 若把 `(` 也放进针里、再要求后面还有 `(`，就会**一个都匹配不到**（假清洁）——
+        // 本判据第一版就是这么写的，正是**已知红对照**把它抓出来的。
+        let all_needle = concat!(".", "all");
+        let temp_needle = concat!("env::", "temp_dir()");
+        let bound_needles = ["frame_count", ".len()", ".count()", "is_empty", "!= 0"];
+        let expect_needles = [concat!(".", "expect("), concat!(".", "unwrap(")];
+
+        /// **保字节数**地把 行注释 与 双引号字符串 的内容换成空格（R113：⛔ 不能改长度，
+        /// 否则行号与偏移都会错位 ⇒ 真违规会被静默跳过）。换行符本身保留。
+        fn mask(source: &str) -> String {
+            let bytes: Vec<char> = source.chars().collect();
+            let mut out = bytes.clone();
+            let mut i = 0usize;
+            while i < bytes.len() {
+                // 行注释
+                if bytes[i] == '/' && i + 1 < bytes.len() && bytes[i + 1] == '/' {
+                    while i < bytes.len() && bytes[i] != '\n' {
+                        out[i] = ' ';
+                        i += 1;
+                    }
+                    continue;
+                }
+                // 双引号字符串（支持 \" 转义；**字节数不变**）
+                if bytes[i] == '"' {
+                    out[i] = ' ';
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == '\\' {
+                            out[i] = ' ';
+                            if i + 1 < bytes.len() {
+                                out[i + 1] = ' ';
+                            }
+                            i += 2;
+                            continue;
+                        }
+                        let closing = bytes[i] == '"';
+                        out[i] = ' ';
+                        i += 1;
+                        if closing {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                i += 1;
+            }
+            out.into_iter().collect()
+        }
+
+        /// 返回 `(行号, 该行)`，只报告窗口内**既没有集合大小界**的 `.all(`。
+        fn scan_all(
+            source: &str,
+            all_needle: &str,
+            bound_needles: &[&str],
+            window: usize,
+        ) -> Vec<(usize, String)> {
+            let lines: Vec<&str> = source.lines().collect();
+            let mut findings = Vec::new();
+            for (index, line) in lines.iter().enumerate() {
+                // R119：标识符边界 —— 后一个字符必须是 `(`（前一个字符由针自带 `.`）。
+                for (offset, _) in line.match_indices(all_needle) {
+                    let after = line[offset + all_needle.len()..].chars().next();
+                    if after != Some('(') {
+                        continue;
+                    }
+                    let first = index.saturating_sub(window);
+                    let bounded = lines[first..index]
+                        .iter()
+                        .any(|earlier| bound_needles.iter().any(|needle| earlier.contains(needle)));
+                    // 同一行内的界也算（单行写法）。
+                    let bounded = bounded
+                        || bound_needles
+                            .iter()
+                            .any(|needle| line[..offset].contains(needle));
+                    if !bounded {
+                        findings.push((index + 1, (*line).to_owned()));
+                    }
+                }
+            }
+            findings
+        }
+
+        /// 返回所有 `env::temp_dir()` 之后 `window` 行内**没有** `.expect(` 的行号。
+        fn scan_temp_dir(
+            source: &str,
+            temp_needle: &str,
+            expect_needles: &[&str],
+            window: usize,
+        ) -> Vec<(usize, String)> {
+            let lines: Vec<&str> = source.lines().collect();
+            let mut findings = Vec::new();
+            for (index, line) in lines.iter().enumerate() {
+                if !line.contains(temp_needle) {
+                    continue;
+                }
+                let last = (index + window).min(lines.len());
+                if !lines[index..last]
+                    .iter()
+                    .any(|later| expect_needles.iter().any(|needle| later.contains(needle)))
+                {
+                    findings.push((index + 1, (*line).to_owned()));
+                }
+            }
+            findings
+        }
+
+        // ---- R56／R108：先用已知红 ＋ 已知绿喂这两个扫描器（样本在运行期拼出来）----
+        let red = concat!(
+            "fn f(x: &[f32]) {\n",
+            "    assert!(x.iter().",
+            "all(|s| s.is_finite()));\n", // ⛔ 前 40 行没有任何集合大小界
+            "    let mut p = ",
+            "env::temp_dir();\n", // ⛔ 后面没有 .expect(
+            "    p.push(\"a\");\n",
+            "}\n",
+        );
+        let green = concat!(
+            "fn g(x: &[f32]) {\n",
+            "    assert_eq!(x.len(), 4);\n",
+            "    assert!(x.iter().",
+            "all(|s| s.is_finite()));\n", // ✅ 前 40 行有 .len()
+            "    let mut p = ",
+            "env::temp_dir();\n",
+            "    std::fs::write(&p, b\"x\").",
+            "expect(\"writable\");\n", // ✅ 有 .expect(
+            "}\n",
+        );
+        assert_eq!(
+            scan_all(red, all_needle, &bound_needles, 40).len(),
+            1,
+            "known-red: an `.all(` with no set-size bound in its window must be reported"
+        );
+        assert_eq!(
+            scan_temp_dir(&mask(red), temp_needle, &expect_needles, 60).len(),
+            1,
+            "known-red: a temp_dir without a later .expect( must be reported"
+        );
+        assert!(
+            scan_all(green, all_needle, &bound_needles, 40).is_empty(),
+            "known-green: a `.all(` preceded by `.len()` must not be reported"
+        );
+        assert!(
+            scan_temp_dir(&mask(green), temp_needle, &expect_needles, 60).is_empty(),
+            "known-green: a temp_dir followed by .expect( must not be reported"
+        );
+        // R113③：掩码**必须保字节数**（否则行号/偏移错位 ⇒ 真违规会静默跳过）。
+        assert_eq!(
+            mask(red).len(),
+            red.len(),
+            "masking must preserve the byte count"
+        );
+        assert_eq!(
+            mask(green).lines().count(),
+            green.lines().count(),
+            "masking must preserve the line count"
+        );
+        // 掩码的已知红：字符串里的针必须被掩掉。
+        assert!(
+            !mask("let s = \"env::temp_dir()\";").contains(temp_needle),
+            "known-red for the masker: a needle inside a string literal must be masked out"
+        );
+
+        // ---- 真扫本 crate 的四个源文件（`include_str!` 的路径相对本文件所在目录）----
+        let sources = [
+            ("decode.rs", include_str!("decode.rs")),
+            ("resample.rs", include_str!("resample.rs")),
+            ("asset.rs", include_str!("asset.rs")),
+            ("limits.rs", include_str!("limits.rs")),
+        ];
+        let mut all_sites = 0usize;
+        let mut temp_sites = 0usize;
+        for (name, source) in sources {
+            // ⚠ 先保字节数掩码（R113）：否则**本判据自己的断言字符串**里出现的针会被当成真命中。
+            let masked = mask(source);
+            let offenders = scan_all(&masked, all_needle, &bound_needles, 40);
+            all_sites += masked.matches(all_needle).count();
+            assert!(
+                offenders.is_empty(),
+                "{name}: every `.all(` must have a set-size bound within 40 lines, offenders: \
+                 {offenders:?}"
+            );
+            let temp_offenders = scan_temp_dir(&masked, temp_needle, &expect_needles, 60);
+            temp_sites += masked.matches(temp_needle).count();
+            assert!(
+                temp_offenders.is_empty(),
+                "{name}: every `env::temp_dir()` must be followed by `.expect(` within 60 lines, \
+                 offenders: {temp_offenders:?}"
+            );
+        }
+        // R122：证明扫描器**不是惰性的** —— 命中点数必须达到下界。
+        assert!(
+            all_sites >= 5,
+            "the scan must actually match `.all(` sites, matched {all_sites}"
+        );
+        assert!(
+            temp_sites >= 2,
+            "the scan must actually match `env::temp_dir()` sites, matched {temp_sites}"
+        );
+    }
 }
