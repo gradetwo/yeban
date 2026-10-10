@@ -5366,6 +5366,8 @@ mod tests {
             ContainerKind::Bw64,
         ];
         for (index, left) in kinds.iter().enumerate() {
+            // ⚠ R75 自审: 这是**自反探针**（`x == x`）, 它只挡"`==` 恒假"的实现,
+            // 强度很弱 —— 真正的牙是下面"三格两两不等"那几句。
             assert_eq!(*left, *left, "自反");
             for right in &kinds[index + 1..] {
                 assert_ne!(*left, *right, "{left:?} 与 {right:?} 必须不同");

@@ -3277,6 +3277,8 @@ mod tests {
             GainBound::TruePeakCeiling,
         ];
         for (index, left) in bounds.iter().enumerate() {
+            // ⚠ R75 自审: 自反探针（`x == x`）强度很弱, 只挡"`==` 恒假"的实现;
+            // 真正的牙是下面"三格两两不等"与 8×/16× 那一对。
             assert_eq!(*left, *left, "自反");
             for right in &bounds[index + 1..] {
                 assert_ne!(*left, *right, "{left:?} 与 {right:?} 必须不同");

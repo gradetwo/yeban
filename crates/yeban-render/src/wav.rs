@@ -1141,7 +1141,12 @@ mod tests {
             assert_eq!(digest, expected_digest, "{label}: 字节流");
         }
         // 非空证明: 两端样本数不同。
-        assert_ne!(0usize, 2usize, "两个夹具必须是不同的样本数");
+        // R75: 这里原来是 `assert_ne!(0usize, 2usize)` —— 两个**字面量**互不相等是恒真的,
+        // 什么也没测到（本机自审抓到的同义反复）。改成读**夹具表本身**。
+        assert_ne!(
+            cases[0].1, cases[1].1,
+            "两个夹具必须是不同的样本数（读夹具表, 不是读字面量）"
+        );
     }
 
     /// 零样本 WAV 的字节数（实测）。
