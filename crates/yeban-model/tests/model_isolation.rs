@@ -2269,18 +2269,44 @@ fn has_root_bound(window: &str, root: &str) -> bool {
     if root.is_empty() {
         return false;
     }
+    // 标识符边界：`bb.len()` 里**含有** `b.len()` 这个子串 ⇒ 子串匹配会把 `bb` 的下界
+    // 记到 `b` 头上（第十二轮由 R114 判据的"near-miss"已知红当场抓到）。
+    let boundary_ok = |at: usize| {
+        at == 0
+            || !window[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    };
     let len = format!("{root}.len()");
     let mut search = 0_usize;
-    while let Some(at) = window[search..].find(&len) {
-        let after = search + at + len.len();
+    while let Some(found) = window[search..].find(&len) {
+        let at = search + found;
+        search = at + 1;
+        if !boundary_ok(at) {
+            continue;
+        }
+        let after = at + len.len();
         let rest = window[after..].trim_start();
         if rest.starts_with(">=") || rest.starts_with('>') {
             return true;
         }
-        search = search + at + 1;
+        // 宏隐式相等（R102 写法②）：`assert_eq!(<root>.len(), N|CONST)`
+        if window[..at].trim_end().ends_with("assert_eq!(") {
+            return true;
+        }
     }
-    window.contains(&format!("!{root}.is_empty()"))
-        || window.contains(&format!("assert_eq!({len},"))
+    // 显式写法之一：`!<root>.is_empty()`（同样要求标识符边界）。
+    let neg = format!("!{root}.is_empty()");
+    let mut search = 0_usize;
+    while let Some(found) = window[search..].find(&neg) {
+        let at = search + found;
+        search = at + 1;
+        if boundary_ok(at + 1) {
+            return true;
+        }
+    }
+    false
 }
 
 /// **R93/R102/R106 常驻判据**：本 crate 的 `src/**` 与 `tests/**` 里不得出现"无下界的
@@ -2319,6 +2345,51 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         "注释里的示例不得被当真（R94）"
     );
 
+    // ---- R113：掩码必须**保字节数**（⛔ 不是字符数），否则偏移错位 ⇒ 真断言被静默跳过 ----
+    let multibyte = "// 中文注释（多字节）：断言在下一行\nfn f() { assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    let masked_multibyte = mask_rust_source(multibyte);
+    assert_eq!(
+        masked_multibyte.len(),
+        multibyte.len(),
+        "R113：掩码必须保**字节**长度（按 len_utf8() 补空格）"
+    );
+    assert!(
+        multibyte.len() > multibyte.chars().count(),
+        "R113 的分母：夹具必须真的含多字节字符（否则本自检是空转的）"
+    );
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", multibyte).len(),
+        1,
+        "R113：多字节注释**之后**的真断言必须仍被扫到（偏移不得错位）"
+    );
+
+    // ---- R111：五种"界"形态逐条给结论（本面只认真正能界定集合的那几种）----
+    // 形态②：`!x.is_empty()` —— 认。
+    let green_not_empty =
+        "fn f() { assert!(!v.is_empty()); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", green_not_empty).len(),
+        0,
+        "R111 形态②（`!is_empty()`）必须被认到"
+    );
+    // 形态④：**值界** `assert_eq!(x, CONST)` —— ⛔ **不认**：它界定的是取值，不是**集合大小**，
+    // `x` 为空集合时那条断言同样可以成立 ⇒ 后面的 `.all(…)` 仍然真空。
+    let value_bound = "fn f() { assert_eq!(v, 4); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", value_bound).len(),
+        1,
+        "R111 形态④（值界）**不得**被当成集合下界（否则 `.all(…)` 会真空通过）"
+    );
+    // 形态⑤：**运行期计数器** `ident >= N` —— ⛔ 在本面同样**不认**：计数器不界定被遍历的集合；
+    // 它对应的是 R106 的"`filter(...)` ＋ 循环内断言"形态（那条由仓库里的
+    // `assert!(judged >= 3, "…判据在空转")` 承担，本判据不改写那条契约）。
+    let counter = "fn f() { assert!(seen >= 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", counter).len(),
+        1,
+        "R111 形态⑤（计数器）不界定集合 ⇒ 本面不得把它当集合下界"
+    );
+
     // ---- 真源码扫描（R100：被扫文件数必须有下界）----
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
@@ -2355,11 +2426,60 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
             .to_string_lossy()
             .into_owned();
         let text = std::fs::read_to_string(path).expect("读取源文件");
+        // R113 的**常驻自检**：对**每一个**被扫文件断言掩码保字节长度
+        // （本 crate 的源码里有中文注释 ⇒ 只要掩码按"每字符 1 空格"就会在这里红）。
+        assert_eq!(
+            mask_rust_source(&text).len(),
+            text.len(),
+            "{relative}: 掩码必须保字节长度（R113）"
+        );
         offenders.extend(unbounded_all_any_sites(&relative, &text));
     }
     assert!(
         offenders.is_empty(),
         "发现无下界的 `.all(…)`/`.any(…)` 断言（len<2 时恒真 / `[] == []` 真空）：\n{}",
         offenders.join("\n")
+    );
+}
+
+/// **R114 常驻判据**：下界必须**根绑定** —— ⛔ 不得"借用邻居"的下界。
+///
+/// 为什么需要（第十一轮实测的**假阴性**）：第一版扫描器在断言周围的窗口里找**任何** `>=`
+/// 就认下有界 ⇒ 一旦删掉某一处显式下界，它会拿**邻近另一条断言**的下界（例如同一个测试里
+/// `a.len() >= 2`）当自己的 ⇒ 该处漏报（`M11-01` 实测 GREEN）。
+/// 本判据用合成输入把这个形态**钉死**：下界挂在**别的集合**上 ⇒ 仍算无界；挂在**同一个根**上
+/// ⇒ 才算有界（R56：一条已知红 ＋ 一条已知绿）。
+#[test]
+fn bounds_must_be_root_bound_not_borrowed_from_a_neighbour() {
+    // ⛔ 已知红：下界挂在 `a` 上，被断言的集合是 `b` ⇒ 必须仍然报"无界"。
+    let borrowed =
+        "fn f() { assert!(a.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", borrowed).len(),
+        1,
+        "R114：挂在**别的集合**上的下界不得算作本断言的下界（借用邻居 = 假阴性）"
+    );
+    // ✅ 已知绿：下界挂在**同一个根** `b` 上 ⇒ 认。
+    let rooted = "fn f() { assert!(b.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", rooted).len(),
+        0,
+        "R114：同根下界必须被认到"
+    );
+    // ✅ 已知绿：宏隐式相等同样必须**同根**。
+    let rooted_macro =
+        "fn f() { assert_eq!(b.len(), 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", rooted_macro).len(),
+        0,
+        "R114：同根的宏隐式相等必须被认到"
+    );
+    // ⛔ 已知红：同根但**只差一个字符**（`bb`）的下界也不得被借用。
+    let near_miss =
+        "fn f() { assert!(bb.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", near_miss).len(),
+        1,
+        "R114：根必须精确匹配，⛔ 不得前缀匹配"
     );
 }
