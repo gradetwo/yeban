@@ -676,8 +676,15 @@ fn p9_degenerate_inputs_never_produce_non_finite_output() {
             }
         }
     }
-    println!("[yeban-dsp/polysynth] P9 退化组合: {checked} 组, 全部输出有限=true");
-    assert!(checked >= 6 * 7 * 5 * 6, "覆盖度不足: 只有 {checked} 组");
+    // ⭐ **R209①**：覆盖度**不是"地板"而是精确计数** —— 地板 `>= 6*7*5*6` 对 **1261 也放行**，
+    // 于是循环上下界的一处偏移（多跑或少跑）会被掩盖。这里改成**精确值**，
+    // 并把实际读数降级为 `eprintln!`（⛔ 不作失败条件）。
+    eprintln!("[yeban-dsp/polysynth] P9 退化组合: {checked} 组, 全部输出有限=true");
+    assert_eq!(
+        checked,
+        6 * 7 * 5 * 6,
+        "覆盖度必须**恰好**是全部组合（实测 {checked} 组）—— 多跑或少跑都说明循环上下界漂了"
+    );
 }
 
 // ---------------------------------------------------------------------------
