@@ -6190,7 +6190,25 @@ v127=1
                 expected.as_str(),
                 "prefix={prefix:?} sample={sample:?}"
             );
+            // ⭐ R183 判据内**自带红臂**（把外部注入转为判据内对照）：
+            // 把期望值**故意改坏** ⇒ 同一个比较**必须拒绝**它 ⇒ 证明上表不是恒真。
+            let mutated = format!("{}MUTATED", expected);
+            assert_ne!(
+                region.sample_path().as_ref(),
+                mutated.as_str(),
+                "red arm: a mutated expectation must be rejected (prefix={prefix:?})"
+            );
         }
+        // ⭐ 更强的一层：把**整行**改坏（样本也改）⇒ 比较必须拒绝。
+        let (prefix, sample, expected) = &cases[0];
+        let mut region: Region<'_> = region(60, 1, 1);
+        region.default_path = (*prefix).map(Cow::Borrowed);
+        region.sample = Cow::Borrowed(sample);
+        assert_ne!(
+            region.sample_path().as_ref(),
+            format!("{expected}MUTATED").as_str(),
+            "red arm (whole row): a mutated row must be rejected"
+        );
         // 超长前缀不截断：200 字节前缀 + `/` + `k.wav`。
         assert_eq!(cases[12].2.len(), long.len() + 6);
     }
