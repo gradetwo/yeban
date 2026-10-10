@@ -139,7 +139,33 @@ const FORM_MACRO_LEN: u8 = 1 << 1; // ② assert_eq!(x.len(), N)  ← 宏隐式�
 const FORM_NOT_EMPTY: u8 = 1 << 2; // ③ assert!(!x.is_empty())
 const FORM_VALUE: u8 = 1 << 3; // ④ assert_eq!(累加器, 常量)
 const FORM_COUNTER: u8 = 1 << 4; // ⑤ 运行期计数器
-// ⑥ = `assert_eq!(<提到本循环接收者的表达式>, <整数字面量>)`，在 scan_bounds 里就地判定。
+const FORM_SUBSET: u8 = 1 << 5; // ⑥ 接收者作用域的**子集计数**（⛔ 不界定集合）
+
+/// ⭐ **R160 注册表**：六种形态**全部**登记在这里。
+///
+/// ⛔ 只有这四个**界定集合大小**（进入判定）：① ② ③ ⑤。
+/// ④（聚合值界）与 ⑥（子集计数）**已登记但不定界** —— 登记它们的目的是让
+/// `classify_assertion` 能**报出**它们，从而使 R160 的"双向归零"可检查。
+const FORM_REGISTRY: [(u8, &str); 6] = [
+    (FORM_EXPLICIT_LEN, "① explicit len >=/>/== N"),
+    (FORM_MACRO_LEN, "② macro-implicit assert_eq!(len, N)"),
+    (FORM_NOT_EMPTY, "③ !is_empty()"),
+    (
+        FORM_VALUE,
+        "④ aggregate/value bound (does NOT bound the set)",
+    ),
+    (
+        FORM_COUNTER,
+        "⑤ runtime counter (only when incremented once per iteration)",
+    ),
+    (
+        FORM_SUBSET,
+        "⑥ receiver-scoped subset count (does NOT bound the traversed set)",
+    ),
+];
+
+/// 界定**集合大小**的形态集合（R118）。
+const FORM_SET_SIZE: u8 = FORM_EXPLICIT_LEN | FORM_MACRO_LEN | FORM_NOT_EMPTY | FORM_COUNTER;
 
 /// 收集 `body` 里声明的 `let mut <ident>`（形态 ④/⑤ 的载体）。
 fn mutable_locals(body: &str) -> Vec<String> {
@@ -254,11 +280,13 @@ fn classify_assertion(name: &str, args: &[String], locals: &[String]) -> u8 {
             text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
                 .any(|word| word == local)
         };
-        // ⚠ R118：`assert_eq!(<聚合量>, <常量>)` **不算**集合大小界 ⇒ 只登记为"值界"，
-        // 由调用方按"不界定集合"处理（FORM_VALUE 表示**不足以**定界）。
+        // ④ 聚合/值界：第一个实参是**裸标识符**且与常量比较（⛔ 不界定集合）。
         if name == "assert_eq" && mentions(&first) && args.len() >= 2 {
             let second = normalize(&args[1]);
-            if second.chars().all(|c| c.is_ascii_digit() || c == '_') || second.contains('*') {
+            let is_literal =
+                second.chars().all(|c| c.is_ascii_digit() || c == '_') || second.contains('*');
+            let bare = !first.is_empty() && first.chars().all(|c| c.is_alphanumeric() || c == '_');
+            if is_literal && bare {
                 forms |= FORM_VALUE;
             }
         }
@@ -266,6 +294,19 @@ fn classify_assertion(name: &str, args: &[String], locals: &[String]) -> u8 {
         // `unconditional_increment`（每轮无条件 `+= 1`）决定。
         if name == "assert" && mentions(&first) && (first.contains(">=") || first.contains('>')) {
             forms |= FORM_COUNTER;
+        }
+    }
+    // ⑥ 接收者作用域的**子集计数**：第一个实参含方法调用、第二个是整数字面量
+    //    （⛔ 只界定过滤后的子集，**不**界定被遍历集合）。
+    if name == "assert_eq"
+        && args.len() >= 2
+        && first.contains('(')
+        && first.contains('.')
+        && !first.contains(".len()")
+    {
+        let second = normalize(&args[1]);
+        if !second.is_empty() && second.chars().all(|c| c.is_ascii_digit() || c == '_') {
+            forms |= FORM_SUBSET;
         }
     }
     forms
@@ -277,6 +318,28 @@ fn test_region(raw: &str) -> &str {
         Some(position) => &raw[position..],
         None => raw,
     }
+}
+
+/// 一段文本里**所有**断言提供的形态之并（R160 注册表检查用）。
+fn forms_in_sample(text: &str) -> u8 {
+    let mut all = 0u8;
+    for name in [
+        "assert_eq",
+        "assert_ne",
+        "assert",
+        "prop_assert",
+        "prop_assert_eq",
+    ] {
+        let needle = format!("{name}!(");
+        let mut inner = text;
+        while let Some(p) = inner.find(&needle) {
+            let open_paren = p + needle.len() - 1;
+            let args = top_level_args(inner, open_paren);
+            all |= classify_assertion(name, &args, &mutable_locals(text));
+            inner = &inner[open_paren + 1..];
+        }
+    }
+    all
 }
 
 /// 掩码文本里的**测试函数体**区间（`#[test]` → 匹配的 `}`）。
@@ -443,10 +506,9 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
                         .collect();
                     let receiver_mentioned =
                         receivers.iter().any(|receiver| words.contains(receiver));
-                    // 形态 ①/②/③
-                    if forms & (FORM_EXPLICIT_LEN | FORM_MACRO_LEN | FORM_NOT_EMPTY) != 0
-                        && receiver_mentioned
-                    {
+                    // ⭐ R118：只有**界定集合大小**的形态（FORM_SET_SIZE 去掉计数器）能当"根绑定"。
+                    // 计数器单独处理（要求每轮无条件 +1），所以这里排除 FORM_COUNTER。
+                    if forms & (FORM_SET_SIZE & !FORM_COUNTER) != 0 && receiver_mentioned {
                         rooted_here = true;
                     }
                     if mutated.iter().any(|ident| words.contains(ident)) {
@@ -488,66 +550,78 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     }
 
     // ---- R56/R112：五种形态**每种一条已知绿** ＋ **一条"无界"已知红** ----
-    let cases: [(&str, &str, bool); 9] = [
+    // (label, sample, expect_bound, expected form mask)
+    let cases: [(&str, &str, bool, u8); 9] = [
         // ① 显式 len() >= N（界定集合 ✅）
         (
             "grid",
             "for hit in grid.hits() { assert!(grid.hits().len() >= 2); }",
             true,
+            FORM_EXPLICIT_LEN,
         ),
-        // ② 宏隐式相等 assert_eq!(len, N)（界定集合 ✅）
+        // ② 宏隐式相等（界定集合 ✅）
         (
             "all",
             "for rule in GenreLibrary::all() { assert_eq!(GenreLibrary::all().len(), 182); }",
             true,
+            FORM_MACRO_LEN,
         ),
-        // ③ !is_empty()（界定集合 ✅，下界 1）
+        // ③ !is_empty()（界定集合 ✅）
         (
             "grid",
             "for hit in grid.hits() { assert!(!grid.hits().is_empty()); }",
             true,
+            FORM_NOT_EMPTY,
         ),
-        // ⑤ 运行期计数器：每轮**无条件** += 1 ⇒ 等价于下界（界定集合 ✅）
+        // ⑤ 运行期计数器：每轮**无条件** += 1（界定集合 ✅）
         (
             "all",
             "let mut seen = 0usize; for rule in GenreLibrary::all() { seen += 1; } assert!(seen >= 182);",
             true,
+            FORM_COUNTER,
         ),
-        // ⛔ ④ 聚合/值界（R118 已知红：**不界定集合** ⇒ 必须报无界）
+        // ⛔ ④ 聚合/值界（R118 已知红：**不界定集合**）
         (
             "all",
             "let mut bpm = 0u32; for rule in GenreLibrary::all() { bpm += rule.default_bpm_range.0 as u32; } assert_eq!(bpm, 16814);",
             false,
+            FORM_VALUE,
         ),
-        // ⛔ ⑤′ 计数器但**条件自增**（R118 已知红：不构成集合大小的界）
+        // ⛔ ⑤′ 计数器但**条件自增**（R118 已知红）
         (
             "all",
             "let mut seen = 0usize; for rule in GenreLibrary::all() { if rule.swing.is_some() { seen += 1; } } assert!(seen >= 1);",
             false,
+            FORM_COUNTER,
         ),
-        // ⛔ ⑥ 接收者作用域的**子集计数**（R118 已知红：只界定过滤后的子集）
+        // ⛔ ⑥ 接收者作用域的**子集计数**（R118 已知红）
         (
             "pattern",
             "for hit in pattern.hits() { } assert_eq!(pattern.hit_count(2), 4);",
             false,
+            FORM_SUBSET,
         ),
-        // ⛔ 无任何界（已知红，R112 的正对照）
+        // ⛔ 已知红（R112 的正对照）：界**看起来像**形态 ①，但它绑在别的接收者
+        //    （`rule.id` 而不是被遍历的 `GenreLibrary::all()`）⇒ 判定必须是**无界**。
         (
             "all",
             "for rule in GenreLibrary::all() { assert!(rule.id.len() > 0); }",
             false,
+            FORM_EXPLICIT_LEN,
         ),
-        // ⛔ R119 near-miss：循环遍历 `gridlines.hits()`，界却写在 `grid.hits()` 上
-        //     ⇒ 标识符边界必须把它们分开（子串匹配会误判为有界）
+        // ⛔ R119 near-miss：循环遍历 gridlines.hits()，界却写在 grid.hits() 上
         (
             "gridlines",
             "for hit in gridlines.hits() { assert!(grid.hits().len() >= 2); }",
             false,
+            FORM_EXPLICIT_LEN,
         ),
     ];
     let mut green_seen = 0usize;
     let mut red_seen = 0usize;
-    for (label, sample, expect_bound) in cases {
+    let mut covered_forms = 0u8; // R160 方向②：注册形态必须**被正对照命中**
+    let mut declared_forms = 0u8; // R160 方向①：正对照只能命中**已登记**形态
+    for (label, sample, expect_bound, expected_form) in cases {
         // 样例外层套一个合成测试体 —— 扫描器的作用域就是"测试函数体"。
         let wrapped = format!("#[test]\nfn sample() {{\n{sample}\n}}\n");
         let masked = mask_preserving_len(&wrapped);
@@ -556,6 +630,23 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             loops, 1,
             "{label}: exactly one runtime loop must be recognised"
         );
+        // ⭐ R160 双向归零：
+        // ① 正对照命中的形态**必须恰好**是它登记的形态（既不多也不少）；
+        // ② 注册表里的**每一种**形态都必须被某个正对照命中（没有"有形态没人证明"）。
+        let hit_forms = forms_in_sample(&wrapped);
+        assert_eq!(
+            hit_forms, expected_form,
+            "{label}: classified forms {hit_forms:#07b} != registered form {expected_form:#07b}"
+        );
+        assert_eq!(
+            hit_forms & !FORM_REGISTRY.iter().fold(0u8, |acc, (flag, _)| acc | flag),
+            0,
+            "{label}: hits a form that is not in the registry"
+        );
+        // ⭐ R160：覆盖统计对**所有**对照生效 —— ④/⑥ 是**已登记但不定界**的形态，
+        // 它们的正对照就是"必须判成无界"（expect_bound = false）。
+        covered_forms |= hit_forms;
+        declared_forms |= expected_form;
         let bounded = rooted + counter_only == 1 && unbounded.is_empty();
         assert_eq!(
             bounded, expect_bound,
@@ -571,6 +662,22 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     assert_eq!(
         red_seen, 5,
         "five known-red samples (R118 value/subset/conditional + R119 near-miss + no bound)"
+    );
+    // ⭐ R160 双向归零（两条一起才能同时排除"有形态没人证明"与"注册了不存在的形态"）。
+    let registry = FORM_REGISTRY.iter().fold(0u8, |acc, (flag, _)| acc | flag);
+    assert_eq!(registry.count_ones(), 6, "six registered forms");
+    assert_eq!(
+        covered_forms, registry,
+        "R160①: every registered form must be hit by a positive control"
+    );
+    assert_eq!(
+        declared_forms, registry,
+        "R160②: positive controls may only declare registered forms"
+    );
+    assert_eq!(
+        FORM_SET_SIZE | FORM_VALUE | FORM_SUBSET,
+        registry,
+        "allowlist partition"
     );
 
     // ---- 真源码：15 个文件 ----
@@ -626,38 +733,68 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         total_counter, 1,
         "loops covered by a mutated-accumulator bound"
     );
-    // ⭐ **残余清单**（R97 的形态）：R118 收紧后分类器**不认**这 **23** 个循环的界形态，
-    // 但它们各自的界已由人工核对（见 `docs/shape-d-audit.md` §1f）。
-    // 逐文件钉住计数 ⇒ 新增一个"分类器不认"的循环会让这里变红。
-    let golden: [(&str, usize); 5] = [
-        ("src/genre.rs", 7),
-        ("src/voice_leading.rs", 1),
-        ("src/melody.rs", 1),
-        ("src/drum.rs", 2),
-        ("tests/properties.rs", 12),
+    // ⭐ **残余清单**（R97 的形态）：R118 收紧后分类器**不认**这 **23** 个循环。
+    // 逐**条**钉住（文件 ＋ 循环表达式）⇒ 新增一条、删掉一条、或换一个循环都会红。
+    // 每一行的"为什么认不到"记在 `docs/shape-d-audit.md` §1j。
+    let golden_residual: [(&str, &str); 23] = [
+        (
+            "src/voice_leading.rs",
+            "for ... in spans.iter().zip(result.voicings.iter())",
+        ),
+        ("src/genre.rs", "for ... in GenreLibrary::all()"),
+        ("src/genre.rs", "for ... in GenreLibrary::all()"),
+        ("src/genre.rs", "for ... in GenreLibrary::all()"),
+        ("src/genre.rs", "for ... in GenreLibrary::all()"),
+        (
+            "src/genre.rs",
+            "for ... in GenreLibrary::by_drum_style(DrumStyle::Metric)",
+        ),
+        ("src/genre.rs", "for ... in GenreLibrary::all()"),
+        ("src/genre.rs", "for ... in GenreLibrary::all()"),
+        ("src/melody.rs", "for ... in GenreLibrary::all()"),
+        (
+            "src/drum.rs",
+            "for ... in metric .hits() .iter() .filter(|hit| hit.voice == DrumVoice::Kick)",
+        ),
+        (
+            "src/drum.rs",
+            "for ... in metric .hits() .iter() .filter(|hit| hit.voice == DrumVoice::Kick)",
+        ),
+        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
+        ("tests/properties.rs", "for ... in grid.hits()"),
+        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
+        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
+        ("tests/properties.rs", "for ... in melody.notes()"),
+        ("tests/properties.rs", "for ... in grid.hits()"),
+        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
+        (
+            "tests/properties.rs",
+            "for ... in pattern.hits().windows(2)",
+        ),
+        ("tests/properties.rs", "for ... in pattern.hits()"),
+        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
+        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
+        (
+            "tests/properties.rs",
+            "for ... in metric .hits() .iter() .filter(|hit| hit.voice == DrumVoice::Kick)",
+        ),
     ];
-    let mut actual: Vec<(String, usize)> = Vec::new();
-    for (name, _) in &residual {
-        match actual.iter_mut().find(|(key, _)| key == name) {
-            Some((_, count)) => *count += 1,
-            None => actual.push((name.clone(), 1)),
-        }
-    }
-    actual.sort();
-    let mut expected: Vec<(String, usize)> = golden
+    let mut expected: Vec<(String, String)> = golden_residual
         .iter()
-        .map(|(name, count)| ((*name).to_owned(), *count))
+        .map(|(file, expr)| ((*file).to_owned(), (*expr).to_owned()))
         .collect();
     expected.sort();
+    // 多行循环表达式在比较前归一化空白（两侧都归一化）。
+    let mut actual: Vec<(String, String)> = residual
+        .iter()
+        .map(|(file, expr)| (file.clone(), normalize(expr)))
+        .collect();
+    actual.sort();
     assert_eq!(
         actual, expected,
-        "the unrecognised-bound residual changed; residual items: {residual:#?}"
+        "the unrecognised-bound residual changed; actual: {actual:#?}"
     );
-    assert_eq!(
-        residual.len(),
-        golden.iter().map(|(_, count)| count).sum::<usize>(),
-        "residual total"
-    );
+    assert_eq!(actual.len(), 23, "23 registered unrecognised loops");
 }
 
 // ---------------------------------------------------------------------------
