@@ -192,9 +192,46 @@ fn mutated_idents(body: &str) -> Vec<String> {
     out
 }
 
+/// 该标识是否在本循环体内**无条件**自增 1（`x += 1` 或 `x = x + 1`，且在花括号深度 0 处）。
+///
+/// ⭐ R118：条件自增（写在 `if`/内层 `for` 里）不构成集合大小的界。
+fn unconditional_increment(body: &str, ident: &str) -> bool {
+    let patterns = [format!("{ident} += 1"), format!("{ident} = {ident} + 1")];
+    let bytes = body.as_bytes();
+    for pattern in patterns {
+        let mut rest = body;
+        while let Some(position) = rest.find(&pattern) {
+            let absolute = body.len() - rest.len() + position;
+            let mut depth = 0i32;
+            for byte in &bytes[..absolute] {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if depth == 0 {
+                return true;
+            }
+            rest = &rest[position + pattern.len()..];
+        }
+    }
+    false
+}
+
 /// 对**单条断言**分类：返回它提供了哪些形态。
 ///
 /// ⭐ R114：只看**这条断言自己的实参**，⛔ 不用固定字符窗口。
+/// ⭐ **R118**：只有"**界定被遍历集合的大小**"的界才算数。
+///
+/// | 形态 | 界定集合大小？ |
+/// |---|---|
+/// | ① `x.len() >= N` / `> N` / `== N` | ✅ |
+/// | ② `assert_eq!(x.len(), N)`（宏隐式相等） | ✅ |
+/// | ③ `!x.is_empty()` | ✅（下界 1） |
+/// | ⑤ 运行期计数器（**每轮无条件** `+= 1`）＋ 断言 | ✅（等价于下界 N） |
+/// | ④ 聚合/值界 `assert_eq!(bpm_low, 16814)` | ⛔ **不界定集合**（求和可以为任何值） |
+/// | ⑥ 接收者作用域的**子集计数** `assert_eq!(metric.hit_count(Kick), 2)` | ⛔ **不界定被遍历集合**（只界定过滤后的子集） |
 fn classify_assertion(name: &str, args: &[String], locals: &[String]) -> u8 {
     let mut forms = 0u8;
     let first = args.first().map(|a| normalize(a)).unwrap_or_default();
@@ -217,12 +254,16 @@ fn classify_assertion(name: &str, args: &[String], locals: &[String]) -> u8 {
             text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
                 .any(|word| word == local)
         };
+        // ⚠ R118：`assert_eq!(<聚合量>, <常量>)` **不算**集合大小界 ⇒ 只登记为"值界"，
+        // 由调用方按"不界定集合"处理（FORM_VALUE 表示**不足以**定界）。
         if name == "assert_eq" && mentions(&first) && args.len() >= 2 {
             let second = normalize(&args[1]);
             if second.chars().all(|c| c.is_ascii_digit() || c == '_') || second.contains('*') {
-                forms |= FORM_VALUE | FORM_COUNTER;
+                forms |= FORM_VALUE;
             }
         }
+        // ⭐ R118 ⑤：计数器的断言读数。**是否算集合大小界**由调用方按
+        // `unconditional_increment`（每轮无条件 `+= 1`）决定。
         if name == "assert" && mentions(&first) && (first.contains(">=") || first.contains('>')) {
             forms |= FORM_COUNTER;
         }
@@ -367,9 +408,11 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
         let scope = &masked[scope_start..scope_end];
         let receivers = receivers_in(expr);
         let locals = mutable_locals(&masked[scope_start..loop_pos]);
+        // ⭐ R118 ⑤：只有"每轮**无条件**自增 1"的计数器才是集合大小的界；
+        // 条件自增（在 `if` 里）或聚合（`+= n`）都不算。
         let mutated: Vec<String> = mutated_idents(body)
             .into_iter()
-            .filter(|ident| locals.contains(ident))
+            .filter(|ident| locals.contains(ident) && unconditional_increment(body, ident))
             .collect();
 
         // 作用域内**所有**断言（一次性收集），再按"接收者/累加器"绑定到本循环
@@ -405,18 +448,6 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
                         && receiver_mentioned
                     {
                         rooted_here = true;
-                    }
-                    // 形态 ⑥（本批新增）：`assert_eq!(<提到本循环接收者的表达式>, <整数字面量>)`
-                    // 例如 `assert_eq!(metric.hit_count(DrumVoice::Kick), 2)` —— 这也是真正的域下界。
-                    if name == "assert_eq" && receiver_mentioned && args.len() >= 2 {
-                        let second = normalize(&args[1]);
-                        if !second.is_empty()
-                            && second
-                                .chars()
-                                .all(|c| c.is_ascii_digit() || c == '_' || c == ' ')
-                        {
-                            rooted_here = true;
-                        }
                     }
                     if mutated.iter().any(|ident| words.contains(ident)) {
                         counter_here = true;
@@ -457,41 +488,60 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     }
 
     // ---- R56/R112：五种形态**每种一条已知绿** ＋ **一条"无界"已知红** ----
-    let cases: [(&str, &str, bool); 6] = [
-        // ① 显式 len() >= N
+    let cases: [(&str, &str, bool); 9] = [
+        // ① 显式 len() >= N（界定集合 ✅）
         (
             "grid",
             "for hit in grid.hits() { assert!(grid.hits().len() >= 2); }",
             true,
         ),
-        // ② 宏隐式相等
+        // ② 宏隐式相等 assert_eq!(len, N)（界定集合 ✅）
         (
             "all",
             "for rule in GenreLibrary::all() { assert_eq!(GenreLibrary::all().len(), 182); }",
             true,
         ),
-        // ③ !is_empty()
+        // ③ !is_empty()（界定集合 ✅，下界 1）
         (
             "grid",
             "for hit in grid.hits() { assert!(!grid.hits().is_empty()); }",
             true,
         ),
-        // ④ 值界（累加器 == 常量）
-        (
-            "all",
-            "let mut total = 0usize; for rule in GenreLibrary::all() { total += 1; } assert_eq!(total, 16814);",
-            true,
-        ),
-        // ⑤ 运行期计数器
+        // ⑤ 运行期计数器：每轮**无条件** += 1 ⇒ 等价于下界（界定集合 ✅）
         (
             "all",
             "let mut seen = 0usize; for rule in GenreLibrary::all() { seen += 1; } assert!(seen >= 182);",
             true,
         ),
-        // ⛔ 已知红：无任何界（R112 的正对照：这条**必须**被判成无界）
+        // ⛔ ④ 聚合/值界（R118 已知红：**不界定集合** ⇒ 必须报无界）
+        (
+            "all",
+            "let mut bpm = 0u32; for rule in GenreLibrary::all() { bpm += rule.default_bpm_range.0 as u32; } assert_eq!(bpm, 16814);",
+            false,
+        ),
+        // ⛔ ⑤′ 计数器但**条件自增**（R118 已知红：不构成集合大小的界）
+        (
+            "all",
+            "let mut seen = 0usize; for rule in GenreLibrary::all() { if rule.swing.is_some() { seen += 1; } } assert!(seen >= 1);",
+            false,
+        ),
+        // ⛔ ⑥ 接收者作用域的**子集计数**（R118 已知红：只界定过滤后的子集）
+        (
+            "pattern",
+            "for hit in pattern.hits() { } assert_eq!(pattern.hit_count(2), 4);",
+            false,
+        ),
+        // ⛔ 无任何界（已知红，R112 的正对照）
         (
             "all",
             "for rule in GenreLibrary::all() { assert!(rule.id.len() > 0); }",
+            false,
+        ),
+        // ⛔ R119 near-miss：循环遍历 `gridlines.hits()`，界却写在 `grid.hits()` 上
+        //     ⇒ 标识符边界必须把它们分开（子串匹配会误判为有界）
+        (
+            "gridlines",
+            "for hit in gridlines.hits() { assert!(grid.hits().len() >= 2); }",
             false,
         ),
     ];
@@ -517,8 +567,11 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             red_seen += 1;
         }
     }
-    assert_eq!(green_seen, 5, "five known-green forms");
-    assert_eq!(red_seen, 1, "one known-red unbounded sample");
+    assert_eq!(green_seen, 4, "four known-green set-size forms");
+    assert_eq!(
+        red_seen, 5,
+        "five known-red samples (R118 value/subset/conditional + R119 near-miss + no bound)"
+    );
 
     // ---- 真源码：15 个文件 ----
     const SOURCES: [(&str, &str); 15] = [
@@ -570,17 +623,18 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         "loops covered by a receiver-bound assertion"
     );
     assert_eq!(
-        total_counter, 9,
+        total_counter, 1,
         "loops covered by a mutated-accumulator bound"
     );
-    // ⭐ **残余清单**（R97 的形态）：分类器**不认**这 **15** 个循环的界形态，
+    // ⭐ **残余清单**（R97 的形态）：R118 收紧后分类器**不认**这 **23** 个循环的界形态，
     // 但它们各自的界已由人工核对（见 `docs/shape-d-audit.md` §1f）。
     // 逐文件钉住计数 ⇒ 新增一个"分类器不认"的循环会让这里变红。
-    let golden: [(&str, usize); 4] = [
-        ("src/genre.rs", 3),
+    let golden: [(&str, usize); 5] = [
+        ("src/genre.rs", 7),
         ("src/voice_leading.rs", 1),
+        ("src/melody.rs", 1),
         ("src/drum.rs", 2),
-        ("tests/properties.rs", 9),
+        ("tests/properties.rs", 12),
     ];
     let mut actual: Vec<(String, usize)> = Vec::new();
     for (name, _) in &residual {
