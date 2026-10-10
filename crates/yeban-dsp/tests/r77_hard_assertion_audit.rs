@@ -41,6 +41,26 @@ const SRC_ROOT: &str = "src";
 /// 提交在仓库里的证据表（相对 crate 根）。
 const TABLE_PATH: &str = "tests/data/hard_assertion_table.txt";
 
+/// ⭐ **棘轮入口表**（R132）：`platform` 类契约里**尚未在源码中标注平台依赖**的那些。
+///
+/// 表里的每一行都是一个**未修缺口**（口径：该判据用位型比较，却没有在源码里声明
+/// "我只在冻结架构上有意义"）。本判据把它当作**棘轮**：
+/// 入口**只能减少** —— 新增未标注的 `platform` 判据会让判据红，
+/// 而给某条判据加上标记后必须**同时**从表里删掉（否则"陈旧入口"也会让判据红）。
+const ALLOWLIST_PATH: &str = "tests/data/platform_dependent_allowlist.txt";
+
+/// 源码里声明"本判据的平台依赖"的标记（任一出现即算已标注）。
+///
+/// 依据：本 crate 的既有约定是**位型只在冻结架构（aarch64）内比对**（裁决 R24／R25），
+/// 因此"已标注"的形态就是在这几处之一写明这件事。
+const PLATFORM_MARKERS: &[&str] = &[
+    "冻结架构",
+    "平台感知",
+    "platform-dependent",
+    "FROZEN_ARCHITECTURE",
+    "点名跳过",
+];
+
 /// 判据里被钉死的量属于哪一类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Kind {
@@ -179,6 +199,34 @@ fn is_test_fn(src: &str, span: &FnSpan) -> bool {
         .rev()
         .collect();
     tail.contains("#[test]")
+}
+
+/// ⭐ **R134 共享助手：读盘 ＋ 行尾归一化 ＋ 报告原始行尾**。
+///
+/// 凡读 `tests/data/*.txt` 的判据都应走这里：本判据在内存里生成的是 LF，
+/// 而 **Windows 检出会把仓库文本变成 CRLF** ⇒ 不归一化就会**只因为行尾**在
+/// `windows` 腿上报红（实测：提交 `fd54598` 正是这样红的）。
+/// ⛔ **行尾本身不是失败条件**：这里只把原始形态回报给调用者作**诊断**。
+fn read_evidence_text(path: &Path) -> (String, bool) {
+    let raw = fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到证据文件 {path:?}：{e}"));
+    let had_crlf = raw.contains("\r\n");
+    (raw.replace("\r\n", "\n"), had_crlf)
+}
+
+/// 判据体（含前置文档注释）里是否声明了平台依赖。
+fn declares_platform_dependence(file_src: &str, test: &str) -> bool {
+    let Some(at) = file_src.find(&format!("fn {test}(")) else {
+        return false;
+    };
+    let start = file_src[..at].rfind("\n\n\n").map_or(0, |p| p + 1);
+    let head_end = at;
+    // ⚠ 必须落在**字符边界**上：源码里有中文注释 ⇒ 按字节偏移切片会 panic。
+    let mut tail_end = (at + 1_200).min(file_src.len());
+    while tail_end < file_src.len() && !file_src.is_char_boundary(tail_end) {
+        tail_end += 1;
+    }
+    let region = format!("{}{}", &file_src[start..head_end], &file_src[at..tail_end]);
+    PLATFORM_MARKERS.iter().any(|m| region.contains(m))
 }
 
 /// 源码里出现的宿主超越函数名（去重、排序）。
@@ -592,14 +640,7 @@ fn the_hard_assertion_table_matches_the_committed_evidence() {
         assert_eq!(back, rendered, "证据表写入后回读不一致");
         return;
     }
-    let committed_raw = fs::read_to_string(&table_path).unwrap_or_else(|e| {
-        panic!("读不到证据表 {TABLE_PATH}：{e}（用 R77_WRITE=1 生成，⛔ 仅在 cargo fmt 之后）")
-    });
-    // ⚠ **行尾归一化**：本判据在内存里渲染的是 `\n`，而 Windows 检出可能把仓库里的文本
-    // 变成 `\r\n` ⇒ 不归一化就会**只因为行尾**在 windows 腿上报红
-    // （实测：`fd54598` 的 `windows` 作业正是这样红的）。
-    // 归一化后比较的是**内容**，而行尾是版本控制的职责（`.gitattributes`）。
-    let committed = committed_raw.replace("\r\n", "\n");
+    let (committed, had_crlf) = read_evidence_text(&table_path);
     if committed != rendered {
         let committed_lines: Vec<&str> = committed.lines().collect();
         let rendered_lines: Vec<&str> = rendered.lines().collect();
@@ -628,7 +669,97 @@ fn the_hard_assertion_table_matches_the_committed_evidence() {
         panic!("证据表与当前源码不一致（{detail}）：先跑 cargo fmt，再用 R77_WRITE=1 重生成");
     }
     // ⭐ 报告原始行尾（诊断用；⛔ 不作为失败条件）。
-    if committed_raw.contains('\r') {
+    if had_crlf {
         eprintln!("[r77] 注意：证据表在盘上是 CRLF（已在比较前归一化）");
     }
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 棘轮判据（R132）：platform 类契约必须声明平台依赖，否则进"入口表"
+// ---------------------------------------------------------------------------
+
+/// ⭐ **R132 棘轮**：`platform` 类契约**要么在源码里声明平台依赖**（`冻结架构`／
+/// `平台感知`／`platform-dependent`／`FROZEN_ARCHITECTURE`／`点名跳过`），
+/// **要么出现在入口表**（＝一个**未修缺口**）。两侧**双向相等**：
+/// 新增未标注的 `platform` 判据 ⇒ 红（新缺口）；已标注却仍留在表里 ⇒ 红（陈旧入口）。
+///
+/// ⛔ **本判据不做的事**：它不把位型比较改成容差 —— 本 crate 的既有约定是
+/// "位型只在冻结架构（aarch64）内比对"（裁决 R24／R25），因此**保留位型比较 ＋
+/// 就地标注**才是正解；容差只用于**跨架构**的数值断言（本 crate 目前没有）。
+#[test]
+fn every_platform_dependent_criterion_declares_its_platform_dependence() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rows = audit_tree(&crate_root);
+    let platform: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.class == Class::PlatformDependent)
+        .collect();
+
+    let mut cache: BTreeMap<String, String> = BTreeMap::new();
+    let mut unmarked: Vec<String> = Vec::new();
+    let mut marked = 0usize;
+    for r in &platform {
+        let src = cache
+            .entry(r.file.clone())
+            .or_insert_with(|| fs::read_to_string(crate_root.join(&r.file)).unwrap_or_default());
+        if declares_platform_dependence(src, &r.test) {
+            marked += 1;
+        } else {
+            unmarked.push(format!("{}|{}", r.file, r.test));
+        }
+    }
+    unmarked.sort();
+
+    // ⭐ R93 地板：两侧都要有余量，⛔ 否则"一条都没扫到"会真空通过。
+    assert!(
+        platform.len() >= 20,
+        "platform 类太少：{} 条（地板 20）⇒ 分类器可能退化",
+        platform.len()
+    );
+    assert!(
+        marked >= 1,
+        "没有任何判据被识别为『已标注』⇒ 标记扫描可能失效"
+    );
+
+    let allowlist_path = crate_root.join(ALLOWLIST_PATH);
+    if std::env::var("R77_WRITE").is_ok() {
+        let mut out = String::new();
+        out.push_str("# R132 棘轮入口表：platform 类契约里**未在源码标注平台依赖**的那些。\n");
+        out.push_str(
+            "# 口径见 crates/yeban-dsp/tests/r77_hard_assertion_audit.rs 的 PLATFORM_MARKERS。\n",
+        );
+        out.push_str(
+            "# 本表只能收缩：新增未标注的 platform 判据会让判据红；标注后必须同时删行。\n",
+        );
+        out.push_str(&format!("# 当前入口数 = {}\n", unmarked.len()));
+        for entry in &unmarked {
+            out.push_str(&format!("{entry}\n"));
+        }
+        fs::write(&allowlist_path, &out).expect("写入口表");
+        let (back, _) = read_evidence_text(&allowlist_path);
+        assert_eq!(back, out, "入口表写入后回读不一致");
+        return;
+    }
+
+    let (declared, had_crlf) = read_evidence_text(&allowlist_path);
+    let entries: Vec<String> = declared
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        entries, unmarked,
+        "入口表与实测不一致（新缺口 ＝ 出现未标注的 platform 判据；或陈旧入口 ＝ 已标注却未删行）\
+         ⇒ 用 R77_WRITE=1 重生成（⛔ 仅在 cargo fmt 之后）"
+    );
+    if had_crlf {
+        eprintln!("[r77] 注意：入口表在盘上是 CRLF（已在比较前归一化）");
+    }
+    eprintln!(
+        "[r77] R132 进度读数：platform 契约 {} 条｜已标注 {} 条｜**未修入口 {} 条**",
+        platform.len(),
+        marked,
+        entries.len()
+    );
 }
