@@ -68,6 +68,11 @@ fn is_char_literal(bytes: &[u8], index: usize) -> bool {
 
 /// 逐**字节**掩码注释、字符串字面量与**字符字面量**（R113：掩码与原文字节等长 ⇒ 偏移可直接映射）。
 fn mask(source: &str) -> String {
+    mask_impl(source, true)
+}
+
+/// `mask_char_literals = false` ＝ **旧的有缺陷实现**（⛔ 不掩码字符字面量）⇒ 用于**配对已知红**。
+fn mask_impl(source: &str, mask_char_literals: bool) -> String {
     let bytes = source.as_bytes();
     let mut out = bytes.to_vec();
     let mut i = 0usize;
@@ -98,7 +103,7 @@ fn mask(source: &str) -> String {
                 } else if c == b'"' {
                     state = State::Str;
                     i += 1;
-                } else if c == b'\'' && is_char_literal(bytes, i) {
+                } else if mask_char_literals && c == b'\'' && is_char_literal(bytes, i) {
                     // ⚠️ 第十九/二十二批实测：**字符字面量**里的 `{`／`}`／`"` 会破坏花括号配对
                     // （`statements()` 里的 `split([';', '{', '}'])` 就是活例）⇒ 必须与字符串同样掩码。
                     state = State::Char;
@@ -168,12 +173,17 @@ fn mask(source: &str) -> String {
 }
 
 /// 量词断言里**被量化集合的根绑定**（`v.iter().all(..)` ⇒ `v`；`!c.iter().any(..)` ⇒ `c`）。
-fn quantified_root(body: &str) -> Option<String> {
+fn quantified_root(body: &str, in_test: bool) -> Option<String> {
     // ① 绑定式（`let ok = x.iter().all(..); assert!(ok);`）—— 第十九批登记的盲区已收窄。
     if let Some(root) = bound_quantifier_root(body) {
         return Some(root);
     }
-    // ② 直接式
+    // ② 尾位量词（跨函数盲区的一层收窄）—— ⚠️ **只在测试上下文**里启用：
+    //    生产代码里 `self.gates.iter().all(..)` 是**正常干活**，实测会误伤 5 个产线函数。
+    if in_test && let Some(root) = tail_quantifier_root(body) {
+        return Some(root);
+    }
+    // ③ 直接式
     let mut rest = body;
     while let Some(index) = find_token(rest, "assert!(") {
         let tail = &rest[index..];
@@ -544,8 +554,17 @@ fn skip_parens(text: &str, open: usize) -> Option<usize> {
 ///
 /// R140：窗口 ＝ **函数体边界**（⛔ 不是固定宽度）；⛔ 只认 `fn name()` 会漏掉**带参数**的函数
 /// —— 第二十一批实测：旧规则命中 **448/709**，改成"跳过参数表 ＋ 要求 `{` 先于 `;`"后 **700/710**。
-fn functions(source: &str) -> Vec<(String, String)> {
-    let masked = mask(source);
+fn functions(source: &str) -> Vec<(String, String, usize)> {
+    functions_impl(source, true, true)
+}
+
+/// `top_level_semicolon = false` ＝ **旧的有缺陷实现**（`contains(';')`）⇒ 用于**配对已知红**。
+fn functions_impl(
+    source: &str,
+    mask_char_literals: bool,
+    top_level_semicolon: bool,
+) -> Vec<(String, String, usize)> {
+    let masked = mask_impl(source, mask_char_literals);
     let bytes = masked.as_bytes();
     let mut out = Vec::new();
     let mut search = 0usize;
@@ -565,7 +584,13 @@ fn functions(source: &str) -> Vec<(String, String)> {
         let Some(brace_rel) = masked[params_end..].find('{') else {
             break;
         };
-        if has_top_level_semicolon(&masked[params_end..params_end + brace_rel]) {
+        let signature = &masked[params_end..params_end + brace_rel];
+        let bodyless = if top_level_semicolon {
+            has_top_level_semicolon(signature)
+        } else {
+            signature.contains(';')
+        };
+        if bodyless {
             search = params_end + 1;
             continue;
         }
@@ -586,7 +611,7 @@ fn functions(source: &str) -> Vec<(String, String)> {
             i += 1;
         }
         if end > brace {
-            out.push((name, source[brace..end].to_string()));
+            out.push((name, source[brace..end].to_string(), start));
         }
         search = end.max(name_end + 1);
     }
@@ -618,8 +643,8 @@ fn quantified_snippet(body: &str, root: Option<&str>) -> String {
 }
 
 /// 本函数体内的量词断言是否**有界**（先按原根，再按 `resolve_root` 回溯的根各试一次）。
-fn is_evidenced(body: &str) -> bool {
-    let Some(root) = quantified_root(body) else {
+fn is_evidenced(body: &str, in_test: bool) -> bool {
+    let Some(root) = quantified_root(body, in_test) else {
         return has_non_vacuity_evidence(body, None);
     };
     // 沿绑定链**逐跳**都试一次（⛔ 不能只试链尾：`w → v → f` 里界常写在中途的 `v` 上）。
@@ -636,9 +661,86 @@ fn is_evidenced(body: &str) -> bool {
     has_non_vacuity_evidence(body, Some(root.as_str()))
 }
 
+/// **尾位量词**：函数把量词表达式的值**返回**出去（`fn f(v) -> bool { v.iter().all(..) }`）。
+///
+/// 这是跨函数盲区（`C2`）的**一层收窄**：把"辅助函数体内的量词"也当成**站点**，
+/// 从而要求它在本函数内有界。⛔ 只看**尾位**（最后一条语句）—— 否则会误伤
+/// `tests/support/mod.rs::documented_digest` 里 `cell.bytes().all(is_ascii_hexdigit)`
+/// 这种**正常干活**的量词（实测爆炸半径 1，故必须收紧）。
+fn tail_quantifier_root(body: &str) -> Option<String> {
+    if !body.contains(".all(") && !body.contains(".any(") {
+        return None;
+    }
+    // 去掉外层花括号
+    let inner = body
+        .trim()
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or(body);
+    // 最后一条**顶层**语句（深度 0 的最后一个 `;` 之后）
+    let mut depth = 0i32;
+    let mut last = 0usize;
+    for (index, ch) in inner.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ';' if depth == 0 => last = index + 1,
+            _ => {}
+        }
+    }
+    let tail = inner[last..].trim();
+    if !tail.contains(".all(") && !tail.contains(".any(") {
+        return None;
+    }
+    // ⛔ 必须是**最外层调用**：量词调用的配对右括号必须就在尾部结尾 ——
+    //   `text.bytes().all(..) == false`（比较）与 `lines.find(|l| l.bytes().all(..))`
+    //   （量词**嵌在别的调用里**，`documented_digest` 就是这一形态）都**不是**"返回值就是量词"。
+    let mut outermost_end = None;
+    for marker in [".all(", ".any("] {
+        if let Some(pos) = tail.find(marker) {
+            let mut depth = 0i32;
+            for (offset, ch) in tail[pos..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            outermost_end = Some(pos + offset + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            break;
+        }
+    }
+    if outermost_end != Some(tail.len()) {
+        return None;
+    }
+    // 接收者链的根
+    for marker in [".all(", ".any("] {
+        if let Some(pos) = tail.find(marker) {
+            // 取接收者链的**第一个**标识符（`v.iter()` ⇒ `v`；⛔ 不是 `iter`）。
+            let receiver = tail[..pos].trim_start().trim_start_matches('&');
+            let root: String = receiver
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !root.is_empty() {
+                return Some(root);
+            }
+        }
+    }
+    None
+}
+
 /// 量化断言：`assert!( … .all(` 或 `assert!( ! … .any(`（两类真空面）。
-fn is_quantified_assertion(body: &str) -> bool {
+fn is_quantified_assertion(body: &str, in_test: bool) -> bool {
     if bound_quantifier_root(body).is_some() {
+        return true;
+    }
+    if in_test && tail_quantifier_root(body).is_some() {
         return true;
     }
     let mut rest = body;
@@ -675,6 +777,8 @@ fn self_test_classifier() {
         "let v = f(); let ok = v.iter().all(|x| *x > 0); assert!(ok); assert!(v.len() >= 3);",
         // 绑定式且界指向**绑定的**那个集合（`w`）—— 通过 resolve_root 回溯
         "let v = f(); let w = v.regions(); let ok = w.iter().all(|x| *x > 0); assert!(ok); assert_eq!(v.regions().len(), 3);",
+        // `C2` 收窄（第二十三批）：**尾位**量词的辅助函数，且**本函数内有界**
+        "{ assert!(v.len() >= 1); v.iter().all(|x| *x > 0.0) }",
         // 块绑定（第二十一批收窄）：`let ok = { <含量词表达式> };` 且**有界**
         "let v = f(); let ok = { v.iter().all(|x| *x > 0) }; assert!(ok); assert!(v.len() >= 3);",
         // ② 的**实参换序**（必须同样被接受）
@@ -691,6 +795,8 @@ fn self_test_classifier() {
         "let v = f(); let bb = g(); assert!(bb.len() >= 2); assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ 绑定式但**没有界** ⇒ 必须报无界（这是第十九批的盲区，现已收窄）
         "let v = f(); let ok = v.iter().all(|x| *x > 0); assert!(ok);",
+        // ⚠️ `C2` 的尾位量词**没有界** ⇒ 必须报无界（跨函数盲区收窄后的红臂）
+        "{ v.iter().all(|x| *x > 0.0) }",
         // ⚠️ 块绑定但**没有界** ⇒ 必须报无界
         "let v = f(); let ok = { v.iter().all(|x| *x > 0) }; assert!(ok);",
         // ⚠️ 专打 ⑦ 的过宽：别处有 `..`，但被量化的集合**不是**字面量
@@ -701,16 +807,19 @@ fn self_test_classifier() {
     for (index, body) in greens.iter().enumerate() {
         // 绿夹具只要求「被判为非真空」（⑦ 那种是**循环**而不是量词断言，不适用量化检查）。
         assert!(
-            is_evidenced(body),
+            is_evidenced(body, true),
             "green {index} must be accepted as non-vacuous: {body}"
         );
     }
     for (index, body) in reds.iter().enumerate() {
         assert!(
-            is_quantified_assertion(body),
+            is_quantified_assertion(body, true),
             "red {index} must be quantified"
         );
-        assert!(!is_evidenced(body), "red {index} must be rejected: {body}");
+        assert!(
+            !is_evidenced(body, true),
+            "red {index} must be rejected: {body}"
+        );
     }
     // ⭐ 第二十二批实测：返回类型里的**数组长度分号**会让"无体声明"判定误伤。
     let array_return =
@@ -742,8 +851,51 @@ fn self_test_classifier() {
         captured[0].1
     );
     assert!(
-        is_evidenced(&captured[0].1),
+        is_evidenced(&captured[0].1, true),
         "the captured body must still be judged as bounded"
+    );
+
+    // ⛔ **不得被当成站点**的对照（避免误伤正常干活的量词；实测 `documented_digest` 是这一形态）。
+    let non_sites = [
+        // 比较形态：量词在 `== false` 里 ⇒ 不是"返回值就是量词"
+        "{ text.bytes().all(|b| b.is_ascii_hexdigit()) == false }",
+        // 量词在**非尾位**语句里（存进变量但**没有被断言**）⇒ 不是站点
+        "{ let ok = text.bytes().all(|b| b.is_ascii_hexdigit()); let _ = ok; 1 }",
+    ];
+    for (index, body) in non_sites.iter().enumerate() {
+        assert!(
+            !is_quantified_assertion(body, true),
+            "non-site {index} must NOT be treated as a quantified assertion: {body}"
+        );
+    }
+
+    // ⭐ 配对已知红（R108／第二十三批）：把两个缺陷**故意复现**一次，证明守卫有牙。
+    //  ① 不掩码字符字面量 ⇒ 花括号计数必然不同（用**不平衡**的字符字面量才可见）。
+    let unbalanced = "fn a() { let open = '{'; assert!(v.iter().all(|x| *x > 0)); }";
+    assert_eq!(
+        mask(unbalanced).matches('{').count(),
+        1,
+        "fixed rule: the char literal must be masked"
+    );
+    assert_eq!(
+        mask_impl(unbalanced, false).matches('{').count(),
+        2,
+        "paired known-red: without char-literal masking the brace count is wrong"
+    );
+    //  ② 旧的分号判定（`contains(';')`）⇒ 把**有体**函数判成无体声明。
+    let array_signature = " -> [u8; 3] ";
+    assert!(
+        array_signature.contains(';'),
+        "paired known-red: the naive rule sees a body-less declaration"
+    );
+    assert!(
+        !has_top_level_semicolon(array_signature),
+        "fixed rule: a bracket-nested semicolon does not mean body-less"
+    );
+    let dropped = functions_impl(array_return, true, false);
+    assert!(
+        dropped.is_empty(),
+        "paired known-red: the naive rule must drop the whole function: {dropped:?}"
     );
 
     // R133：**近名对照** —— `my_assert!(` ⛔ 不得被当成 `assert!(`；`before ` ⛔ 不得被当成 `for `。
@@ -753,7 +905,7 @@ fn self_test_classifier() {
     ];
     for (index, body) in decoys.iter().enumerate() {
         assert!(
-            !is_quantified_assertion(body),
+            !is_quantified_assertion(body, true),
             "decoy {index} must not be counted as a quantified assertion: {body}"
         );
     }
@@ -765,8 +917,8 @@ fn self_test_classifier() {
     let lf = "let v = f();\nassert!(v.len() >= 2);\nassert!(v.iter().all(|x| *x > 0));\n";
     let crlf = lf.replace('\n', "\r\n");
     assert_eq!(
-        is_evidenced(&crlf.replace("\r\n", "\n")),
-        is_evidenced(lf),
+        is_evidenced(&crlf.replace("\r\n", "\n"), true),
+        is_evidenced(lf, true),
         "R134: CRLF must not change the verdict (normalize before scanning)"
     );
 
@@ -827,10 +979,16 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
     for (path, text) in &sources {
-        for (name, body) in functions(text) {
+        // **测试上下文**：`tests/**` 整文件；`src/**` 从第一个 `#[cfg(test)]` 起。
+        // 只有测试上下文才启用"尾位量词"这条收窄规则 —— 否则会误伤产线里
+        // `self.gates.iter().all(..)`／`digits.bytes().all(..)` 这类**正常干活**的量词（实测 5 处）。
+        let cfg_test_at = text.find("#[cfg(test)]");
+        let is_tests_file = path.components().any(|c| c.as_os_str() == "tests");
+        for (name, body, decl_start) in functions(text) {
             scanned += 1;
-            let root = quantified_root(&body);
-            if is_quantified_assertion(&body) && !is_evidenced(&body) {
+            let in_test = is_tests_file || cfg_test_at.is_some_and(|at| decl_start > at);
+            let root = quantified_root(&body, in_test);
+            if is_quantified_assertion(&body, in_test) && !is_evidenced(&body, in_test) {
                 // R131：报"缺界"时**必须能指出缺的是哪一句**（否则先怀疑检查器）。
                 // 这里把**量词断言那一句本身**摘出来（根绑定／提示根名），便于复核。
                 let snippet = quantified_snippet(&body, root.as_deref());
