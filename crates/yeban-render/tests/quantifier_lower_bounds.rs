@@ -226,58 +226,73 @@ fn contains_identifier(body: &str, needle: &str) -> bool {
 }
 
 /// 五种界形态之一是否落在**同一个根**上（R111 ＋ R114）。
-fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
+/// 形态 → 该形态可用的**针**（`{root}` 会被替换）。路径: `condition` = 断言表达式里, `body` = 同函数体里。
+///
+/// **R185**: 分类器本身就是判据 ⇒ 每个形态必须**可单独归因**（哪个形态把这条断言判成"有界"）。
+fn form_needles(form: &str, root: &str) -> Vec<(&'static str, String)> {
+    match form {
+        "explicit-len-ge" => vec![
+            ("condition", format!("{root}.len() >=")),
+            ("condition", format!("{root}.len() >")),
+            ("body", format!("assert!({root}.len()>=")),
+            ("body", format!("assert!({root}.len()>")),
+        ],
+        "macro-implicit-len-eq" => vec![
+            ("body", format!("assert_eq!({root}.len(),")),
+            ("body", format!("assert_eq!({root}.len(),16")),
+        ],
+        "not-is-empty" => vec![
+            ("condition", format!("!{root}.is_empty()")),
+            ("condition", format!("!{root}.is_empty() &&")),
+            ("condition", format!("{root}.is_empty() ==")),
+            ("body", format!("assert!(!{root}.is_empty()")),
+        ],
+        "value-bound-len-eq" => vec![
+            ("condition", format!("{root}.len() ==")),
+            ("condition", format!("{root}.len()==")),
+        ],
+        // R125: `assert!(x.is_empty(), …)` —— "空表是**有意**的"（对照夹具）⇒ 同样算把域钉住。
+        "explicit-empty-table" => vec![
+            ("condition", format!("assert!({root}.is_empty()")),
+            ("body", format!("assert!({root}.is_empty()")),
+        ],
+        other => unreachable!("未注册的形态: {other}"),
+    }
+}
+
+/// 只启用 `enabled` 里的形态, 返回**第一个命中**的形态名（`None` = 无界）。
+///
+/// **R119**: 子串匹配必须带**标识符边界**（否则根 `b` 会被 `ab.len()` 满足 —— near-miss）。
+/// **R139**: 去**全部空白**（只去空格会漏掉**跨行形态**, 那是假阳性）。
+fn bound_form_for<'a>(
+    enabled: &[&'a str],
+    function_body: &str,
+    condition: &str,
+    root: &str,
+) -> Option<&'a str> {
     if root.is_empty() {
-        return true; // 取不出根（字面量等）⇒ 不判, 交给人工
+        return Some("root-not-recovered"); // 取不出根（字面量等）⇒ 不判, 交给人工
     }
-    // ①③: 界就在**被断言的那个表达式里**（最强形态, 与根天然绑定）
-    for form in [
-        format!("{root}.len() >="),
-        format!("{root}.len() >"),
-        format!("{root}.len() =="),
-        format!("{root}.len()=="),
-        format!("!{root}.is_empty()"),
-        format!("{root}.is_empty() =="),
-        format!("!{root}.is_empty() &&"),
-        // **R125**: `assert!(x.is_empty(), …)` —— "空表是**有意**的"（对照夹具）⇒ 同样算把域钉住。
-        format!("assert!({root}.is_empty()"),
-    ] {
-        // R119: 子串匹配必须带**标识符边界** —— 否则根 `b` 会被同一条条件里的 `ab.len() >= 4`
-        // 满足（near-miss），于是无界的量词被误判为"有界"。
-        // ⚠ **根因（本机实测确认）**: `replace(' ', "")` 只去**空格**、不去**换行** ⇒
-        // `assert!(\n !bounds.is_empty(),\n "msg"\n);` 这种**跨行形态**永远匹配不上
-        // ⇒ 已有下界的站点被报成"无界"（**假阳性**, 伪装成"代码缺界"）。⇒ 去掉**全部空白**。
-        if contains_identifier(&strip_ws(condition), &strip_ws(&form)) {
-            return true;
+    let cond = strip_ws(condition);
+    let body = strip_ws(function_body);
+    for form in enabled {
+        for (path, needle) in form_needles(form, root) {
+            let hay = if path == "condition" { &cond } else { &body };
+            if contains_identifier(hay, &strip_ws(&needle)) {
+                return Some(form);
+            }
         }
     }
-    // ②: 界在**同一个函数体**里, 且**同一个根**上（宏隐式相等 / 值界）。
-    // ⚠ **R118**: 只有"**界定集合大小**"的界作数 —— `x.len() == N` / `x.len() >= N` /
-    // `!x.is_empty()` **算**; **元素值界**（`assert_eq!(x[0], 5)`）与**运行期计数器****不算**。
-    // ⚠ **R119**: 子串匹配必须带**标识符边界** —— 否则根 `b` 会被 `bb.len()` 满足（near-miss）。
-    let compact = strip_ws(function_body);
-    // ⚠ 这些形态**不能要求右括号紧跟** —— 真实断言后面还有 `, "消息"`（本机实测的假阴性）。
-    for form in [
-        format!("assert_eq!({root}.len(),"),
-        format!("assert!(!{root}.is_empty()"),
-        format!("assert!({root}.len()>="),
-        format!("assert!({root}.len()>"),
-        format!("assert_eq!({root}.len(),16"),
-        // R125: 显式断言空表（"空转是有意的"）—— 属于**函数体**路径的形态
-        format!("assert!({root}.is_empty()"),
-    ] {
-        if contains_identifier(&compact, &strip_ws(&form)) {
-            return true;
-        }
-    }
-    // ⚠ **R118**: "运行期计数器"（`let mut count` / `+= 1` / `assert_eq!(count, N)`）**不算**
-    // 界定集合大小 —— 它数的是**迭代次数/处理过的元素**，与"被遍历的那个集合是否非空"
-    // 是两件事。⇒ 本判据**不认**这个形态；`checker_has_teeth` 里有一条**已知红**专门喂它。
-    false
+    None
 }
 
 /// 扫一个源文件, 返回"没有根绑定下界的量词站点"（行号 ＋ 根）。
 fn unbounded_quantifiers(source: &str) -> Vec<(usize, String)> {
+    unbounded_quantifiers_with(&REGISTERED_BOUND_FORMS, source)
+}
+
+/// 只把 `enabled` 里的形态当作"界"来扫描（`enabled = &[]` ⇒ 每个站点都算无界 ⇒ 总站点数）。
+fn unbounded_quantifiers_with(enabled: &[&str], source: &str) -> Vec<(usize, String)> {
     let masked = mask(source);
     assert_eq!(masked.len(), source.len(), "R113: 掩码必须逐字节等长");
     let mut offenders = Vec::new();
@@ -326,7 +341,7 @@ fn unbounded_quantifiers(source: &str) -> Vec<(usize, String)> {
                     .map(|(_, body)| body.clone())
                     .unwrap_or_default();
                 for root in roots {
-                    if !has_root_bound(&body, condition, &root) {
+                    if bound_form_for(enabled, &body, condition, &root).is_none() {
                         offenders.push((line, root));
                     }
                 }
@@ -797,4 +812,128 @@ fn every_standing_criterion_has_a_synthetic_green_and_red_arm() {
         sample.len(),
         "判据3 红臂: 写坏的掩码必须不等长"
     );
+}
+
+/// 判据 (**逐形态隔离见证**, R182): 对 5 条已注册形态**逐个**做"停用它"的见证 ——
+/// 停用形态 `f` 后, **只有 `f` 的正对照**变红, 其余四个仍绿 ⇒ 每个形态都有**独有**的牙。
+#[test]
+fn each_registered_form_is_individually_witnessed() {
+    let controls: [(&str, &str); 5] = [
+        (
+            "explicit-len-ge",
+            "\n    fn t() {\n        assert!(v.len() >= 8 && v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "macro-implicit-len-eq",
+            "\n    fn t() {\n        assert_eq!(v.len(), 16);\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "not-is-empty",
+            "\n    fn t() {\n        assert!(!v.is_empty() && v.iter().any(|x| *x == 1));\n    }",
+        ),
+        (
+            "value-bound-len-eq",
+            "\n    fn t() {\n        assert!(v.len() == 4 && v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "explicit-empty-table",
+            "\n    fn t() {\n        assert!(v.is_empty(), \"对照\");\n        assert!(!v.iter().any(|x| *x == 1));\n    }",
+        ),
+    ];
+    // 全开 ⇒ 五条正对照都必须绿（先证基线）
+    for (form, snippet) in controls {
+        assert!(
+            unbounded_quantifiers(snippet).is_empty(),
+            "{form}: 全开时必须绿"
+        );
+    }
+    for disabled in REGISTERED_BOUND_FORMS {
+        let enabled: Vec<&str> = REGISTERED_BOUND_FORMS
+            .iter()
+            .copied()
+            .filter(|f| *f != disabled)
+            .collect();
+        let mut red = Vec::new();
+        for (form, snippet) in controls {
+            if !unbounded_quantifiers_with(&enabled, snippet).is_empty() {
+                red.push(form);
+            }
+        }
+        assert_eq!(
+            red,
+            vec![disabled],
+            "停用 `{disabled}` 后必须**只有它**的正对照变红（R182: 逐形态独有的牙）"
+        );
+    }
+}
+
+/// 判据 (**R185**: 每个形态都要有**自己的下界**): 逐形态给出两条读数 ——
+/// ① **合成正对照数**（必须恰为 1, 这是该形态的机械下界）;
+/// ② **本仓实际命中数**（实测并打印; ⛔ 不许"某形态 0 条"静默合法）。
+#[test]
+fn each_registered_form_has_its_own_lower_bound() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("src"))
+        .expect("读 src/")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    files.sort();
+    let sources: Vec<String> = files
+        .iter()
+        .map(|path| std::fs::read_to_string(path).expect("读源文件"))
+        .collect();
+    // 站点总数（`enabled = &[]` ⇒ 每个站点都算"无界"）
+    let total: usize = sources
+        .iter()
+        .map(|src| unbounded_quantifiers_with(&[], src).len())
+        .sum();
+    assert!(
+        total >= 20,
+        "本仓至少应有 20 个量词站点（实测 {total}）—— 否则扫描面失效"
+    );
+    // **R185 的逐形态下界（地板全部从**实测**来, R134; 实测值 14/15/23/1/0 ⇒ 留余量）**:
+    // 前四种形态在本仓有真实命中; 第五种（"显式断言空表"）在本仓**实测为 0** ——
+    // ⛔ 不许让"0 条"静默合法 ⇒ 它的下界是**合成正对照**（恰 1 条）, 且必须由
+    // `each_registered_form_is_individually_witnessed` 提供**独有**的牙。这一行把 0 变成**登记**。
+    let floors: [(&str, usize); 5] = [
+        ("explicit-len-ge", 5),
+        ("macro-implicit-len-eq", 5),
+        ("not-is-empty", 10),
+        ("value-bound-len-eq", 1),
+        ("explicit-empty-table", 0),
+    ];
+    assert_eq!(
+        floors.len(),
+        REGISTERED_BOUND_FORMS.len(),
+        "R185: 每个已注册形态都必须有自己的下界（双向）"
+    );
+    for (form, floor) in floors {
+        assert!(
+            REGISTERED_BOUND_FORMS.contains(&form),
+            "下界表里的 `{form}` 不在注册表里"
+        );
+        let alone: usize = sources
+            .iter()
+            .map(|src| {
+                total_per_file_offenders(src) - unbounded_quantifiers_with(&[form], src).len()
+            })
+            .sum();
+        println!("R185 形态 `{form}`: 本仓命中 {alone} 个站点（下界 {floor}）");
+        assert!(
+            alone >= floor,
+            "形态 `{form}` 的本仓命中 {alone} 低于下界 {floor}"
+        );
+        if floor == 0 {
+            assert_eq!(
+                alone, 0,
+                "0 下界的形态必须**实测 0**（它的界由合成正对照 ＋ 隔离见证承担）"
+            );
+        }
+    }
+}
+
+/// 单文件的站点总数（`enabled = &[]`）。
+fn total_per_file_offenders(source: &str) -> usize {
+    unbounded_quantifiers_with(&[], source).len()
 }
