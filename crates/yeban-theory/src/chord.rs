@@ -986,4 +986,324 @@ mod tests {
         assert_eq!(spread.root, PitchClass::C);
         assert_eq!(spread.bass, Some(PitchClass::E));
     }
+
+    /// 全部 21 种和弦，顺序与 `CHORD_INTERVALS` 的声明顺序一致。
+    const ALL_KINDS: [ChordKind; 21] = [
+        ChordKind::Major,
+        ChordKind::Minor,
+        ChordKind::Diminished,
+        ChordKind::Augmented,
+        ChordKind::Sus2,
+        ChordKind::Sus4,
+        ChordKind::Six,
+        ChordKind::Dominant7,
+        ChordKind::Major7,
+        ChordKind::Minor7,
+        ChordKind::HalfDiminished7,
+        ChordKind::Diminished7,
+        ChordKind::MinorMajor7,
+        ChordKind::Dominant9,
+        ChordKind::Major9,
+        ChordKind::Minor9,
+        ChordKind::Dominant11,
+        ChordKind::Dominant13,
+        ChordKind::Add9,
+        ChordKind::SixNine,
+        ChordKind::Dominant7Sus4,
+    ];
+
+    /// 形态 D 注入实测（第四批）：做了**公开 API 零覆盖普查** —— 对 217 条
+    /// `pub fn` 逐条统计"判据调用"与"生产调用点"。`ChordKind::name_en` 与
+    /// `name_zh` 的统计是 **0 / 0 / 0**（本 crate 判据 0、本 crate 生产调用 0、
+    /// 工作区其它 crate 调用 0）：把 `Major` 的英文名改成 `"minor triad"`、
+    /// 中文名改成 `"小三和弦"`，**四道闸门全绿**。
+    ///
+    /// 口径：21 种和弦的两个名字逐条钉到字面量上，并要求两张表**两两不同**
+    /// （同名会让"按名字找和弦"变成有歧义）。
+    #[test]
+    fn every_chord_kind_has_its_documented_english_and_chinese_name() {
+        const NAMES: [(ChordKind, &str, &str); 21] = [
+            (ChordKind::Major, "major triad", "大三和弦"),
+            (ChordKind::Minor, "minor triad", "小三和弦"),
+            (ChordKind::Diminished, "diminished triad", "减三和弦"),
+            (ChordKind::Augmented, "augmented triad", "增三和弦"),
+            (ChordKind::Sus2, "suspended second", "挂二和弦"),
+            (ChordKind::Sus4, "suspended fourth", "挂四和弦"),
+            (ChordKind::Six, "major sixth", "大六和弦"),
+            (ChordKind::Dominant7, "dominant seventh", "属七和弦"),
+            (ChordKind::Major7, "major seventh", "大七和弦"),
+            (ChordKind::Minor7, "minor seventh", "小七和弦"),
+            (
+                ChordKind::HalfDiminished7,
+                "half-diminished seventh",
+                "半减七和弦",
+            ),
+            (ChordKind::Diminished7, "diminished seventh", "减七和弦"),
+            (ChordKind::MinorMajor7, "minor major seventh", "小大七和弦"),
+            (ChordKind::Dominant9, "dominant ninth", "属九和弦"),
+            (ChordKind::Major9, "major ninth", "大九和弦"),
+            (ChordKind::Minor9, "minor ninth", "小九和弦"),
+            (ChordKind::Dominant11, "dominant eleventh", "十一和弦"),
+            (ChordKind::Dominant13, "dominant thirteenth", "十三和弦"),
+            (ChordKind::Add9, "added ninth", "加九和弦"),
+            (ChordKind::SixNine, "six-nine", "六九和弦"),
+            (
+                ChordKind::Dominant7Sus4,
+                "dominant seventh suspended fourth",
+                "属七挂四和弦",
+            ),
+        ];
+        assert_eq!(NAMES.len(), ALL_KINDS.len());
+        for (index, (kind, english, chinese)) in NAMES.iter().enumerate() {
+            assert_eq!(*kind, ALL_KINDS[index], "table order must match ALL_KINDS");
+            assert_eq!(kind.name_en(), *english, "english name of {kind:?}");
+            assert_eq!(kind.name_zh(), *chinese, "chinese name of {kind:?}");
+        }
+        for (index, (_, english, chinese)) in NAMES.iter().enumerate() {
+            for (_, other_en, other_zh) in &NAMES[index + 1..] {
+                assert_ne!(english, other_en, "duplicate english name {english}");
+                assert_ne!(chinese, other_zh, "duplicate chinese name {chinese}");
+            }
+        }
+    }
+
+    /// 形态 D 注入实测（第四批）：`ChordKind::has_seventh` 的普查读数同样是
+    /// **0 / 0 / 0** ⇒ 把整个 `matches!` 取反（`!matches!(...)`）时四道闸门全绿。
+    ///
+    /// 口径：12 种含七度的种类取真、其余 9 种取假。挂四（`Sus4`）不含七度，
+    /// 而属七挂四（`Dominant7Sus4`）含 —— 这一对是文档里明写的一处区分。
+    #[test]
+    fn has_seventh_matches_the_documented_kind_list() {
+        const WITH_SEVENTH: [ChordKind; 12] = [
+            ChordKind::Dominant7,
+            ChordKind::Major7,
+            ChordKind::Minor7,
+            ChordKind::HalfDiminished7,
+            ChordKind::Diminished7,
+            ChordKind::MinorMajor7,
+            ChordKind::Dominant9,
+            ChordKind::Major9,
+            ChordKind::Minor9,
+            ChordKind::Dominant11,
+            ChordKind::Dominant13,
+            ChordKind::Dominant7Sus4,
+        ];
+        const WITHOUT_SEVENTH: [ChordKind; 9] = [
+            ChordKind::Major,
+            ChordKind::Minor,
+            ChordKind::Diminished,
+            ChordKind::Augmented,
+            ChordKind::Sus2,
+            ChordKind::Sus4,
+            ChordKind::Six,
+            ChordKind::Add9,
+            ChordKind::SixNine,
+        ];
+        for kind in WITH_SEVENTH {
+            assert!(kind.has_seventh(), "{kind:?} contains a seventh");
+        }
+        for kind in WITHOUT_SEVENTH {
+            assert!(!kind.has_seventh(), "{kind:?} has no seventh");
+        }
+        assert_eq!(WITH_SEVENTH.len() + WITHOUT_SEVENTH.len(), ALL_KINDS.len());
+        // 文档明写的一处区分：挂四不含七度，属七挂四含。
+        assert!(!ChordKind::Sus4.has_seventh());
+        assert!(ChordKind::Dominant7Sus4.has_seventh());
+    }
+
+    /// 形态 D 注入实测（第四批）：`Chord::note_names` 的普查读数是 **0 / 0 / 0**
+    /// ⇒ 把 `.map(|pc| self.pitch_class_name(pc))` 换成 `.map(|pc| pc.default_name())`
+    /// （丢掉调性上下文）时四道闸门全绿。
+    ///
+    /// 口径：`note_names()` 与 `pitch_classes()` 同长度；每个名字的调性由
+    /// **和弦自己的** `tonality` 决定 —— 同一个音级集合在降号侧与升号侧给出
+    /// 不同的名字序列。根音那一项必须与 `root_name()` 一致（两条独立路径）。
+    #[test]
+    fn note_names_consume_the_chords_tonality() {
+        let flat = Chord::with_tonality(PitchClass::AS, ChordKind::Major7, Tonality::FlatMajor);
+        let sharp = Chord::with_tonality(PitchClass::AS, ChordKind::Major7, Tonality::SharpMajor);
+        let flat_names: Vec<String> = flat.note_names().iter().map(|n| n.to_string()).collect();
+        let sharp_names: Vec<String> = sharp.note_names().iter().map(|n| n.to_string()).collect();
+        assert_eq!(flat_names.len(), flat.pitch_classes().len());
+        assert_eq!(sharp_names.len(), sharp.pitch_classes().len());
+        assert_eq!(flat_names[0], flat.root_name().to_string());
+        assert_eq!(sharp_names[0], sharp.root_name().to_string());
+        assert_eq!(flat_names[0], "Bb");
+        assert_eq!(sharp_names[0], "A#");
+        // 调性真的被消费：两种上下文给出**不同**的名字序列。
+        assert_ne!(
+            flat_names, sharp_names,
+            "the tonality must reach the spelling of every chord tone"
+        );
+    }
+
+    /// 形态 D 注入实测（第四批）：`Chord::is_inverted` 的普查读数是 **0 / 0 / 0**
+    /// ⇒ 把 `self.bass.is_some()` 取反时四道闸门全绿。
+    ///
+    /// 口径：`is_inverted()` 与 `bass.is_some()` 同真值，三个转位与显式
+    /// `with_bass` 都必须置位，原位必须不置位。
+    #[test]
+    fn is_inverted_tracks_the_slash_bass() {
+        let root_position = Chord::new(PitchClass::C, ChordKind::Major);
+        assert!(!root_position.is_inverted());
+        assert_eq!(root_position.bass, None);
+        for inversion in [1u8, 2, 3] {
+            let chord = root_position.inversion(inversion);
+            assert_eq!(
+                chord.is_inverted(),
+                chord.bass.is_some(),
+                "inversion {inversion} must agree with its own bass field"
+            );
+        }
+        assert!(root_position.inversion(1).is_inverted());
+        assert!(root_position.inversion(2).is_inverted());
+        assert!(
+            root_position
+                .with_bass(PitchClass::G)
+                .unwrap()
+                .is_inverted()
+        );
+    }
+
+    /// 形态 D 注入实测（第四批）：`Chord::with_bass` 的普查读数是 **0 / 0 / 0**
+    /// ⇒ 把成员判定的 `if self.pitch_classes().contains(&bass)` 取反
+    /// （改成 `!contains`），于是构成音被拒、非构成音被接受，四道闸门全绿。
+    ///
+    /// 口径（文档承诺）：低音必须属于和弦构成音，否则
+    /// `TheoryError::ChordQualityUnknown`。三个构成音逐个接受、非构成音逐个拒绝。
+    #[test]
+    fn with_bass_accepts_exactly_the_chord_tones() {
+        let c_major = Chord::new(PitchClass::C, ChordKind::Major);
+        for bass in [PitchClass::C, PitchClass::E, PitchClass::G] {
+            let chord = c_major.with_bass(bass).unwrap();
+            assert_eq!(chord.bass, Some(bass));
+            assert_eq!(
+                chord.symbol(),
+                format!("C/{}", bass.default_name()),
+                "the slash bass must reach the symbol"
+            );
+            assert!(chord.is_inverted());
+        }
+        for foreign in [
+            PitchClass::CS,
+            PitchClass::D,
+            PitchClass::FS,
+            PitchClass::A,
+            PitchClass::B,
+        ] {
+            assert_eq!(
+                c_major.with_bass(foreign).unwrap_err(),
+                TheoryError::ChordQualityUnknown,
+                "{foreign:?} is not a chord tone of C major"
+            );
+        }
+        // 原和弦不被改动（`with_bass` 按值消费）。
+        assert_eq!(c_major.bass, None);
+    }
+
+    /// 形态 D 注入实测（第四批）：`Tonality::scale_kind` 的普查读数是
+    /// **0 判据 / 1 生产调用点** ⇒ 把 `Self::Minor` 的映射从
+    /// `ScaleKind::NaturalMinor` 改成 `ScaleKind::Major` 时四道闸门全绿。
+    ///
+    /// 口径：三个调性上下文的音阶种类与降号偏好都是文档化的读数；
+    /// `infer_from_root_text` 只看根音文本里的变音记号（`bb13` 也是降号侧）。
+    #[test]
+    fn tonality_context_maps_to_the_documented_scale_kind_and_preference() {
+        assert_eq!(Tonality::SharpMajor.scale_kind(), ScaleKind::Major);
+        assert_eq!(Tonality::FlatMajor.scale_kind(), ScaleKind::Major);
+        assert_eq!(Tonality::Minor.scale_kind(), ScaleKind::NaturalMinor);
+        assert!(!Tonality::SharpMajor.prefer_flat());
+        assert!(Tonality::FlatMajor.prefer_flat());
+        assert!(Tonality::Minor.prefer_flat());
+        assert_eq!(Tonality::infer_from_root_text("Bb13"), Tonality::FlatMajor);
+        assert_eq!(Tonality::infer_from_root_text("bb13"), Tonality::FlatMajor);
+        assert_eq!(Tonality::infer_from_root_text("F#m7"), Tonality::SharpMajor);
+        assert_eq!(Tonality::infer_from_root_text("C"), Tonality::SharpMajor);
+        assert_eq!(Tonality::infer_from_root_text(""), Tonality::SharpMajor);
+    }
+
+    /// 形态 D 注入实测（第四批）：`ChordKind::accepted_suffixes` 与
+    /// `from_suffix` 的普查读数都是"**0 判据**，有生产调用点" ⇒ 从 Minor 的
+    /// 后缀表里删掉 `"-"`（`C-` 的爵士简写）时四道闸门全绿 ——
+    /// 既有判据只走 `symbol()` 输出的**规范**后缀，从不枚举 `accepted_suffixes`。
+    ///
+    /// 口径：每个种类的**规范后缀**必须在自己的接受表里；表里的**每一个**
+    /// 后缀都必须解析回同一个种类；几个爵士简写显式钉住。
+    #[test]
+    fn every_accepted_suffix_round_trips_and_the_shorthands_are_present() {
+        let mut seen = 0usize;
+        for kind in ALL_KINDS {
+            let canonical = kind.suffix();
+            assert!(
+                kind.accepted_suffixes().contains(&canonical),
+                "{kind:?}: canonical suffix {canonical:?} is not in its own accepted list"
+            );
+            for suffix in kind.accepted_suffixes() {
+                assert_eq!(
+                    ChordKind::from_suffix(suffix).unwrap(),
+                    kind,
+                    "{kind:?}: {suffix:?} does not parse back to its own kind"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 52, "the accepted-suffix table changed size");
+        // 爵士简写：文档明写 `C-7` / `CΔ7` / `C°7` / `Cø7`。
+        assert_eq!(Chord::from_symbol("C-7").unwrap().kind, ChordKind::Minor7);
+        assert_eq!(Chord::from_symbol("C-").unwrap().kind, ChordKind::Minor);
+        assert_eq!(Chord::from_symbol("CΔ7").unwrap().kind, ChordKind::Major7);
+        assert_eq!(
+            Chord::from_symbol("C°7").unwrap().kind,
+            ChordKind::Diminished7
+        );
+        assert_eq!(
+            Chord::from_symbol("Cø7").unwrap().kind,
+            ChordKind::HalfDiminished7
+        );
+        assert_eq!(Chord::from_symbol("Csus").unwrap().kind, ChordKind::Sus4);
+        assert_eq!(
+            Chord::from_symbol("Co").unwrap().kind,
+            ChordKind::Diminished
+        );
+        // 逐条钉住几个表项（删除任一项都必须变红）。
+        for (kind, suffix) in [
+            (ChordKind::Major, "M"),
+            (ChordKind::Major, "Δ"),
+            (ChordKind::Minor, "-"),
+            (ChordKind::Diminished, "°"),
+            (ChordKind::Diminished, "o"),
+            (ChordKind::Augmented, "+"),
+            (ChordKind::Sus4, "sus"),
+            (ChordKind::HalfDiminished7, "ø"),
+            (ChordKind::Minor7, "-7"),
+        ] {
+            assert!(
+                kind.accepted_suffixes().contains(&suffix),
+                "{kind:?} must accept {suffix:?}"
+            );
+        }
+    }
+
+    /// 形态 D 注入实测（第四批）：手写的 `impl fmt::Display for Chord` 普查不到
+    /// （普查只扫 `pub fn`）⇒ 把它的函数体换成 `f.write_str("?")` 时四道闸门
+    /// **全绿**：既有判据读的是 `symbol()`，没有任何判据格式化过一个 `Chord`。
+    ///
+    /// 口径：`Display` 与 `symbol()` 是同一个文本的两个出口（`Display` 就是
+    /// 委派），因此两者必须逐字相同；另外钉住两个字面读数。
+    #[test]
+    fn display_chord_agrees_with_the_symbol() {
+        for kind in ALL_KINDS {
+            for root in [PitchClass::C, PitchClass::FS, PitchClass::AS, PitchClass::E] {
+                let chord = Chord::new(root, kind);
+                assert_eq!(chord.to_string(), chord.symbol());
+                assert_eq!(format!("{chord}"), chord.symbol());
+            }
+        }
+        assert_eq!(Chord::new(PitchClass::C, ChordKind::Major).to_string(), "C");
+        assert_eq!(
+            Chord::with_tonality(PitchClass::AS, ChordKind::Minor7, Tonality::FlatMajor)
+                .to_string(),
+            "Bbm7"
+        );
+    }
 }

@@ -984,4 +984,124 @@ mod tests {
             (Some(PitchClass::G), Some(PitchClass::F))
         );
     }
+
+    /// 形态 D 注入实测（第四批）：`ScaleKind::name_zh` 的普查读数是
+    /// **0 / 0 / 0** ⇒ 把 `Major | Ionian` 的中文名改成 `"自然小调"` 时
+    /// 四道闸门全绿。
+    ///
+    /// 口径：16 个音阶种类的中文名逐条钉住；两组别名（`Major`/`Ionian`、
+    /// `NaturalMinor`/`Aeolian`）必须给出同一个名字。
+    #[test]
+    fn every_scale_kind_has_its_documented_chinese_name() {
+        const NAMES: [(ScaleKind, &str); 16] = [
+            (ScaleKind::Major, "自然大调"),
+            (ScaleKind::Ionian, "自然大调"),
+            (ScaleKind::NaturalMinor, "自然小调"),
+            (ScaleKind::Aeolian, "自然小调"),
+            (ScaleKind::HarmonicMinor, "和声小调"),
+            (ScaleKind::MelodicMinor, "旋律小调"),
+            (ScaleKind::Dorian, "多利亚"),
+            (ScaleKind::Phrygian, "弗里吉亚"),
+            (ScaleKind::Lydian, "利底亚"),
+            (ScaleKind::Mixolydian, "混合利底亚"),
+            (ScaleKind::Locrian, "洛克里亚"),
+            (ScaleKind::PentatonicMajor, "大调五声"),
+            (ScaleKind::PentatonicMinor, "小调五声"),
+            (ScaleKind::Blues, "布鲁斯"),
+            (ScaleKind::WholeTone, "全音音阶"),
+            (ScaleKind::Chromatic, "半音音阶"),
+        ];
+        for (kind, chinese) in NAMES {
+            assert_eq!(kind.name_zh(), chinese, "{kind:?}");
+        }
+        // 别名必须同名字（两张表不能漂移）。
+        assert_eq!(ScaleKind::Major.name_zh(), ScaleKind::Ionian.name_zh());
+        assert_eq!(
+            ScaleKind::NaturalMinor.name_zh(),
+            ScaleKind::Aeolian.name_zh()
+        );
+        // 除两组别名外，其余名字两两不同。
+        let mut distinct = 0usize;
+        for (index, (_, chinese)) in NAMES.iter().enumerate() {
+            if !NAMES[index + 1..].iter().any(|(_, other)| other == chinese) {
+                distinct += 1;
+            }
+        }
+        assert_eq!(distinct, 14, "14 distinct chinese names over 16 kinds");
+    }
+
+    /// 形态 D 注入实测（第四批）：`ScaleKind::church_mode_index` 的普查读数是
+    /// **0 判据 / 1 生产调用点** ⇒ 把 `Dorian` 的下标从 1 改成 2（变成利底亚的
+    /// 字母表）时四道闸门全绿 —— 既有拼写判据只喂 F 大调 / D 大调 / 降号大调，
+    /// 从没问过一个**教会调式**的字母序列。
+    ///
+    /// 口径：七个教会调式的旋转下标逐条钉住；和声/旋律小调按伊奥尼亚的字母表
+    /// 处理（下标 0）；非七声音阶返回 `None`。落点用拼写复核（D 多利亚的第三级
+    /// 是 `F` 而不是 `E#`）。
+    #[test]
+    fn church_mode_index_pins_the_seven_mode_rotation() {
+        assert_eq!(ScaleKind::Major.church_mode_index(), Some(0));
+        assert_eq!(ScaleKind::Ionian.church_mode_index(), Some(0));
+        assert_eq!(ScaleKind::Dorian.church_mode_index(), Some(1));
+        assert_eq!(ScaleKind::Phrygian.church_mode_index(), Some(2));
+        assert_eq!(ScaleKind::Lydian.church_mode_index(), Some(3));
+        assert_eq!(ScaleKind::Mixolydian.church_mode_index(), Some(4));
+        assert_eq!(ScaleKind::NaturalMinor.church_mode_index(), Some(5));
+        assert_eq!(ScaleKind::Aeolian.church_mode_index(), Some(5));
+        assert_eq!(ScaleKind::Locrian.church_mode_index(), Some(6));
+        assert_eq!(ScaleKind::HarmonicMinor.church_mode_index(), Some(0));
+        assert_eq!(ScaleKind::MelodicMinor.church_mode_index(), Some(0));
+        for non_diatonic in [
+            ScaleKind::PentatonicMajor,
+            ScaleKind::PentatonicMinor,
+            ScaleKind::Blues,
+            ScaleKind::WholeTone,
+            ScaleKind::Chromatic,
+        ] {
+            assert_eq!(non_diatonic.church_mode_index(), None, "{non_diatonic:?}");
+        }
+        // 落点：D 多利亚的第三级是 F（不是 E#），G 混合利底亚的第七级是 F。
+        let d_dorian = Scale::new(PitchClass::D, ScaleKind::Dorian);
+        assert_eq!(d_dorian.spell(PitchClass::F).unwrap().to_string(), "F");
+        let g_mixolydian = Scale::new(PitchClass::G, ScaleKind::Mixolydian);
+        assert_eq!(g_mixolydian.spell(PitchClass::F).unwrap().to_string(), "F");
+    }
+
+    /// 形态 D 注入实测（第四批）：手写的 `impl Display for Scale` 普查不到
+    /// （普查只扫 `pub fn`）⇒ 把 `write!(f, "{} {}", self.tonic, self.kind.name())`
+    /// 改成只写 `self.kind.name()` 时四道闸门全绿。
+    ///
+    /// 口径：`Display` 必须同时给出主音与种类名（文档写法 `<根音> <音阶名>`），
+    /// 也就是必须与 `Scale::parse` 的输入格式互逆。
+    #[test]
+    fn display_scale_names_both_the_tonic_and_the_kind() {
+        for (tonic, kind) in [
+            (PitchClass::C, ScaleKind::Major),
+            (PitchClass::FS, ScaleKind::HarmonicMinor),
+            (PitchClass::AS, ScaleKind::Blues),
+            (PitchClass::D, ScaleKind::Dorian),
+        ] {
+            let scale = Scale::new(tonic, kind);
+            let text = scale.to_string();
+            assert_eq!(text, format!("{tonic} {}", kind.name()), "{kind:?}");
+            assert!(
+                text.contains(kind.name()),
+                "{text:?} must carry the kind name"
+            );
+            assert!(
+                text.starts_with(&tonic.to_string()),
+                "{text:?} must carry the tonic"
+            );
+            // 与解析器互逆。
+            assert_eq!(Scale::parse(&text).unwrap(), scale, "{text}");
+        }
+        assert_eq!(
+            Scale::new(PitchClass::C, ScaleKind::Major).to_string(),
+            "C major"
+        );
+        assert_eq!(
+            Scale::new(PitchClass::AS, ScaleKind::Blues).to_string(),
+            "A# blues"
+        );
+    }
 }

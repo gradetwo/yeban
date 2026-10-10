@@ -873,4 +873,52 @@ mod tests {
         // 上界为 0（且单声部跳进仍满足）时同样报"超过"。
         assert!(at(0).exceeded_total_target);
     }
+
+    /// 形态 D 注入实测（第四批）：第三批把 `realize` 里的状态去重
+    /// `a.0 == b.0 && a.1 == b.1` → `||` 登记为"**未能**构造出可观测反例"。
+    /// 本批用一个**脱离工作区**的探针 crate（`/tmp` 下的 `path` 依赖，
+    /// 对 7 组约束 × 3 个调 × 6 个拍号 × 17 条走向 × 4 种小节数 = 8568 个组合
+    /// 逐个跑 `realize`，把两次输出 diff）找到了反例：**2 声部**配置下有
+    /// **2496** 个组合的读数不同。
+    ///
+    /// 这条判据钉住其中最小的一例：C 大调 `I-V-vi-IV`、一小节、两个声部。
+    /// `||` 会把"累计代价相同、当前声位不同"的前缀也合并掉，束宽因此塌成
+    /// "每个代价只剩字典序最小的那一条"，同一输入给出总移动量 **10** 的
+    /// 更差路径（唯一最优解是 **4**）。
+    #[test]
+    fn equal_cost_prefixes_are_not_merged_by_the_beam_deduplication() {
+        const TWO_VOICES: [VoiceRange; 2] = [
+            VoiceRange {
+                lower: Pitch::C4,
+                upper: Pitch::C5,
+            },
+            VoiceRange {
+                lower: Pitch::E4,
+                upper: Pitch::G5,
+            },
+        ];
+        let key = c_major();
+        let spans = expand_progression(&key, "I-V-vi-IV", 1).unwrap();
+        let constraints = VoicingConstraints {
+            ranges: &TWO_VOICES,
+            max_voice_jump: 12,
+            max_total_movement: 24,
+        };
+        let result = realize(&spans, &constraints).unwrap();
+        assert_eq!(result.voicings.len(), 4);
+        assert_eq!(
+            result
+                .voicings
+                .iter()
+                .map(|voices| voices.iter().map(|p| p.value()).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec![67, 72], vec![67, 71], vec![69, 72], vec![69, 72]],
+            "pruning equal-cost prefixes changes the 2-voice optimum"
+        );
+        assert_eq!(result.total_movement, 4);
+        assert_eq!(result.max_voice_jump(), 2);
+        assert!(!result.exceeded_total_target);
+        // 同一配置重复调用必须逐位相同（束搜索是确定性的）。
+        assert_eq!(realize(&spans, &constraints).unwrap(), result);
+    }
 }

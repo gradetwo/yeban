@@ -1345,4 +1345,150 @@ mod tests {
         assert_eq!(Interval::from_semitones(13), None);
         assert_eq!(Interval::from_semitones(u8::MAX), None);
     }
+
+    /// 形态 D 注入实测（第四批）：`SpelledPitch::from_pitch_with_name` 的普查
+    /// 读数是 **0 / 0 / 0** ⇒ 把八度推导里的 `- 1` 去掉（整体升一个八度）
+    /// 时四道闸门全绿。
+    ///
+    /// 口径（文档承诺）：`octave = (midi - 音级) / 12 - 1`（MIDI 0 = C-1），
+    /// 结果不在 `-1..=9` 时返回 [`TheoryError::PitchOutOfRange`]。
+    #[test]
+    fn from_pitch_with_name_derives_the_documented_octave() {
+        // C4 = 60：音级 C 落在八度 4。
+        let c4 = SpelledPitch::from_pitch_with_name(Pitch::C4, NoteName::new(0, 0).unwrap())
+            .expect("C4 written as C is legal");
+        assert_eq!(c4.octave, 4);
+        assert_eq!(c4.to_string(), "C4");
+        // 最低音 MIDI 0 就是 C-1；写成 B 需要八度 -2 ⇒ 越界。
+        let lowest = SpelledPitch::from_pitch_with_name(
+            Pitch::new(0).unwrap(),
+            NoteName::new(0, 0).unwrap(),
+        )
+        .expect("MIDI 0 written as C is C-1");
+        assert_eq!(lowest.octave, -1);
+        assert_eq!(lowest.to_string(), "C-1");
+        assert_eq!(
+            SpelledPitch::from_pitch_with_name(
+                Pitch::new(0).unwrap(),
+                NoteName::new(6, 0).unwrap()
+            )
+            .unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 0 }
+        );
+        // 八度读数逐字母与文档公式一致：`octave = (midi - 音级)/12 - 1`
+        // （除法是 `div_euclid`，负数向下取整）。注意口径只看**音级**、
+        // 不看字母：同一个音级的不同字母给出同一个八度。
+        for letter in 0u8..7 {
+            let name = NoteName::new(letter, 0).unwrap();
+            let written = SpelledPitch::from_pitch_with_name(Pitch::C4, name)
+                .unwrap_or_else(|err| panic!("letter {letter}: {err}"));
+            let pc = i32::from(name.pitch_class().semitones());
+            assert_eq!(
+                i32::from(written.octave),
+                (60 - pc).div_euclid(12) - 1,
+                "letter {letter}"
+            );
+            assert_eq!(written.name, name);
+        }
+    }
+
+    /// 形态 D 注入实测（第四批）：`Pitch::transposed` 的普查读数是 **0 / 0 / 0**
+    /// ⇒ 把加法改成减法（`+ semitones` → `- semitones`）时四道闸门全绿
+    /// （`PitchClass::transpose` 有判据，`Pitch::transposed` 没有）。
+    ///
+    /// 口径：域内位移与 `Pitch::new(value + semitones)` 同读数；越界返回
+    /// [`TheoryError::PitchOutOfRange`]（`Pitch::new` 报的是**离零的绝对值**，
+    /// 不是回绕后的无符号数）；`i16` 全域不 panic。
+    #[test]
+    fn transposed_shifts_and_reports_out_of_range_instead_of_wrapping() {
+        assert_eq!(Pitch::C4.transposed(0).unwrap(), Pitch::C4);
+        assert_eq!(Pitch::C4.transposed(7).unwrap(), Pitch::new(67).unwrap());
+        assert_eq!(Pitch::C4.transposed(-12).unwrap(), Pitch::new(48).unwrap());
+        assert_eq!(Pitch::new(0).unwrap().transposed(0).unwrap().value(), 0);
+        // 两个方向各越界一次，错误值必须是绝对值而不是回绕值。
+        assert_eq!(
+            Pitch::new(0).unwrap().transposed(-1).unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 1 }
+        );
+        assert_eq!(
+            Pitch::new(127).unwrap().transposed(1).unwrap_err(),
+            TheoryError::PitchOutOfRange { value: 128 }
+        );
+        // `i16` 全域：域内的每一对 (音高, 位移) 都必须等于直接构造。
+        for value in 0u8..=127 {
+            let pitch = Pitch::new(i32::from(value)).unwrap();
+            for semitones in [i16::MIN, -128, -1, 0, 1, 128, i16::MAX] {
+                let expected = i32::from(value) + i32::from(semitones);
+                match pitch.transposed(semitones) {
+                    Ok(shifted) => {
+                        assert!((0..=127).contains(&expected), "midi {value} + {semitones}");
+                        assert_eq!(shifted.value() as i32, expected);
+                    }
+                    Err(TheoryError::PitchOutOfRange { value: reported }) => {
+                        assert!(
+                            !(0..=127).contains(&expected),
+                            "midi {value} + {semitones} is in range but was rejected"
+                        );
+                        assert_eq!(reported, expected.unsigned_abs());
+                    }
+                    Err(other) => panic!("midi {value} + {semitones}: unexpected {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// 形态 D 注入实测（第四批）：`Pitch::to_hz` 的普查读数是 **0 / 0 / 0**
+    /// （`note_to_hz` 有判据，包装它的方法没有）⇒ 把返回的 Hz 乘 2 时四道
+    /// 闸门全绿。
+    ///
+    /// 口径：`Pitch::to_hz` 必须与自由函数 [`note_to_hz`] 在整段 MIDI 域上
+    /// 逐位相同。只钉两个**精确**读数（A4 = 440 与它的上八度 880），
+    /// 其余按"与自由函数一致"比 —— 超越函数不钉精确值。
+    #[test]
+    fn pitch_to_hz_agrees_with_the_free_function_on_the_whole_midi_domain() {
+        for value in 0u8..=127 {
+            let pitch = Pitch::new(i32::from(value)).unwrap();
+            let hz = pitch.to_hz();
+            assert_eq!(hz, note_to_hz(value), "midi {value}");
+            assert!(hz.is_finite() && hz > 0.0, "midi {value}: {hz}");
+        }
+        assert!((Pitch::new(69).unwrap().to_hz() - 440.0).abs() < 1e-9);
+        assert!((Pitch::new(81).unwrap().to_hz() - 880.0).abs() < 1e-9);
+        assert!((Pitch::new(57).unwrap().to_hz() - 220.0).abs() < 1e-9);
+    }
+
+    /// 形态 D 注入实测（第四批）：手写的 `Display` 实现在 `pub fn` 普查里
+    /// 看不到。`Pitch` 的 `Display`（委派 `default_spelling`）与
+    /// `Interval` 的 `Display`（委派 `name()`）都被改成常数字符串时四道闸门
+    /// **全绿**：既有判据读的是 `default_spelling()` 与 `name()` 本身。
+    ///
+    /// 口径：每个 `Display` 必须与它委派的具名读数逐字相同，另钉几个字面读数。
+    #[test]
+    fn display_impls_agree_with_their_named_accessors() {
+        for value in [0u8, 60, 69, 127] {
+            let pitch = Pitch::new(i32::from(value)).unwrap();
+            assert_eq!(pitch.to_string(), pitch.default_spelling().to_string());
+            assert_eq!(format!("{pitch}"), pitch.default_spelling().to_string());
+        }
+        assert_eq!(Pitch::C4.to_string(), "C4");
+        assert_eq!(Pitch::new(0).unwrap().to_string(), "C-1");
+        for semitones in 0u8..=12 {
+            let interval = Interval::from_semitones(semitones).unwrap();
+            assert_eq!(interval.to_string(), interval.name());
+            assert_eq!(format!("{interval}"), interval.name());
+        }
+        assert_eq!(Interval::UNISON.to_string(), "P1");
+        assert_eq!(Interval::PERFECT_FIFTH.to_string(), "P5");
+        assert_eq!(Interval::PERFECT_OCTAVE.to_string(), "P8");
+        // `PitchClass` / `NoteName` / `SpelledPitch` 三条同样与具名读数一致。
+        for value in 0u8..12 {
+            let pitch_class = PitchClass::new(value).unwrap();
+            assert_eq!(
+                pitch_class.to_string(),
+                pitch_class.default_name().to_string()
+            );
+        }
+        let name = NoteName::new(6, 1).unwrap();
+        assert_eq!(name.to_string(), format!("B{}", name.accidental_text()));
+    }
 }

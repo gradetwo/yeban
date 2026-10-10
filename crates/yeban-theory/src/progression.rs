@@ -1049,4 +1049,75 @@ mod tests {
             TheoryError::DegreeNumberOutOfRange
         );
     }
+
+    /// 形态 D 注入实测（第四批）：`RomanQuality::seventh_kind` 的普查读数是
+    /// **0 判据 / 0 调用点**（`triad_kind` 有生产调用点因而被间接守住，
+    /// `seventh_kind` 连调用点都没有）⇒ 把 `Major` 的映射从 `Major7` 改成
+    /// `Minor7` 时四道闸门全绿。
+    ///
+    /// 口径：五种罗马数字性质的**三和弦**与**七和弦**两张映射表都逐条钉住；
+    /// 两个映射的"减"一侧不同（三和弦 `Diminished`、七和弦 `Diminished7`），
+    /// 增一侧也不同（`Augmented` 的三和弦是 `Augmented`、七和弦是 `Dominant7`）。
+    #[test]
+    fn roman_quality_maps_to_the_documented_triad_and_seventh_kinds() {
+        const TABLE: [(RomanQuality, ChordKind, ChordKind); 5] = [
+            (RomanQuality::Major, ChordKind::Major, ChordKind::Major7),
+            (RomanQuality::Minor, ChordKind::Minor, ChordKind::Minor7),
+            (
+                RomanQuality::Diminished,
+                ChordKind::Diminished,
+                ChordKind::Diminished7,
+            ),
+            (
+                RomanQuality::Augmented,
+                ChordKind::Augmented,
+                ChordKind::Dominant7,
+            ),
+            (
+                RomanQuality::HalfDiminished,
+                ChordKind::Diminished,
+                ChordKind::HalfDiminished7,
+            ),
+        ];
+        for (quality, triad, seventh) in TABLE {
+            assert_eq!(quality.triad_kind(), triad, "triad of {quality:?}");
+            assert_eq!(quality.seventh_kind(), seventh, "seventh of {quality:?}");
+        }
+        // 三和弦与七和弦在五处**全部**不同（`HalfDiminished` 的三和弦是
+        // `Diminished`、七和弦是 `HalfDiminished7`），因此两张表不是同一张：
+        // 只钉住 `triad_kind` 的判据挡不住 `seventh_kind` 的错误。
+        let mut differing = 0usize;
+        for (_, triad, seventh) in TABLE {
+            if triad != seventh {
+                differing += 1;
+            }
+        }
+        assert_eq!(differing, 5, "no quality shares its triad and seventh kind");
+    }
+
+    /// 形态 D 注入实测（第四批）：手写的 `impl Display for Degree` 普查不到
+    /// （普查只扫 `pub fn`）⇒ 把它的函数体换成 `f.write_str("I")` 时四道闸门
+    /// **全绿**：`Progression` 的 `Display` 走 `Degree::symbol`，
+    /// 而 `progression_display_round_trips` 只做"再解析回同一个级数序列"，
+    /// 一个恒返回 `"I"` 的 `Display` 在这条判据下仍然自洽（只是所有走向都塌成 I）。
+    #[test]
+    fn display_degree_agrees_with_its_symbol() {
+        let mut checked = 0usize;
+        for text in [
+            "I", "ii", "iii", "IV", "V", "vi", "vii", "bVII", "#iv", "V7", "iiø", "I+",
+        ] {
+            let degree = Degree::parse(text).unwrap();
+            assert_eq!(degree.to_string(), degree.symbol(), "{text}");
+            assert_eq!(format!("{degree}"), degree.symbol(), "{text}");
+            checked += 1;
+        }
+        assert_eq!(checked, 12);
+        // 逐字读数：全大写是大三和弦、小写是小三和弦、`°`/`ø`/`+` 是性质标记。
+        assert_eq!(Degree::parse("V").unwrap().to_string(), "V");
+        assert_eq!(Degree::parse("ii").unwrap().to_string(), "ii");
+        assert_eq!(Degree::parse("vii").unwrap().to_string(), "vii");
+        assert_eq!(Degree::parse("bVII").unwrap().to_string(), "bVII");
+        assert_eq!(Degree::parse("V7").unwrap().to_string(), "V7");
+        assert_eq!(Degree::parse("I+").unwrap().to_string(), "I+");
+    }
 }

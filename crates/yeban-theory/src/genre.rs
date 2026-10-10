@@ -4227,4 +4227,53 @@ mod tests {
             Some(crate::swing::SWING_PERMILLE_STRAIGHT)
         );
     }
+
+    /// 形态 D 注入实测（第四批）：新增的**数值字面量 ±1** 注入轴发现
+    /// `default_bpm_range` 与 `note_density_hint` 的**数值**没有任何判据 ——
+    /// 把 `gregorian_chant` 的速度下限从 50 改成 49、把密度下限从 4 改成 3，
+    /// 四道闸门全绿（既有判据只查"结构合法"：非零、有序、分母是 2 的幂）。
+    ///
+    /// 与拍号字段对照：`meter` **有**判据 —— `every_rule_sketch_uses_the_rules_own_meter`
+    /// 末尾有一条防真空读数 `non_common == 28`（非 4/4 的条数），所以把
+    /// `(4, 4)` 改成 `(3, 4)` 会变红。
+    ///
+    /// 口径：这是**聚合读数**（六个数 + 三个分布计数），与既有的
+    /// `library_size_is_pinned_to_the_measured_number` / `source_histogram_covers_every_rule`
+    /// 同一形状。⚠ 局限如实登记：聚合读数抓得住**单条**登记数据的小改动，
+    /// 抓不住"一条 +1、另一条 -1"的抵消式改动（那需要逐条钉死 182 条，
+    /// 会把数据表的每次有意扩充都变成改判据）。
+    #[test]
+    fn registry_numeric_aggregates_are_pinned_to_the_measured_readings() {
+        let mut bpm_low = 0u32;
+        let mut bpm_high = 0u32;
+        let mut meter_numerator = 0u32;
+        let mut meter_denominator = 0u32;
+        let mut density_low = 0u32;
+        let mut density_high = 0u32;
+        let mut swing_some = 0usize;
+        let mut non_common = 0usize;
+        for rule in GenreLibrary::all() {
+            bpm_low += u32::from(rule.default_bpm_range.0);
+            bpm_high += u32::from(rule.default_bpm_range.1);
+            meter_numerator += u32::from(rule.meter.0);
+            meter_denominator += u32::from(rule.meter.1);
+            density_low += u32::from(rule.note_density_hint.0);
+            density_high += u32::from(rule.note_density_hint.1);
+            if rule.swing.is_some() {
+                swing_some += 1;
+            }
+            if rule.meter_value() != Meter::COMMON {
+                non_common += 1;
+            }
+        }
+        // 182 条流派上的实测求和（单位：BPM / 拍号分子 / 拍号分母 / 音符数 / 条）。
+        assert_eq!(bpm_low, 16814, "sum of BPM lower bounds");
+        assert_eq!(bpm_high, 27018, "sum of BPM upper bounds");
+        assert_eq!(meter_numerator, 717, "sum of meter numerators");
+        assert_eq!(meter_denominator, 756, "sum of meter denominators");
+        assert_eq!(density_low, 3159, "sum of density lower bounds");
+        assert_eq!(density_high, 11882, "sum of density upper bounds");
+        assert_eq!(swing_some, 34, "rules with a registered swing");
+        assert_eq!(non_common, 28, "rules whose meter is not 4/4");
+    }
 }

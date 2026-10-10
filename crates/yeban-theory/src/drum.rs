@@ -1472,4 +1472,31 @@ mod tests {
             );
         }
     }
+
+    /// 形态 D 注入实测（第四批）：`DrumVoice::gm_key` 的普查读数是
+    /// **0 判据 / 0 调用点**（整个工作区没有任何地方读它）⇒ 把任一个鼓件的
+    /// 通用 MIDI 编号改掉时四道闸门全绿。
+    ///
+    /// ⚠ 既有判据 `voices_are_a_total_mapping_with_distinct_ordinals_names_and_keys`
+    /// 只钉住"四个编号**两两不同**"：把 Kick 从 36 改成 38 会变红（撞上 Snare），
+    /// 但把 Snare 从 38 改成 37、HiHat 从 42 改成 41、Ride 从 51 改成 50
+    /// **都不会**变红。这条判据因此钉的是**具体编号**，不是"互不相同"。
+    #[test]
+    fn gm_key_pins_the_general_midi_percussion_numbers() {
+        assert_eq!(DrumVoice::Kick.gm_key(), 36);
+        assert_eq!(DrumVoice::Snare.gm_key(), 38);
+        assert_eq!(DrumVoice::HiHat.gm_key(), 42);
+        assert_eq!(DrumVoice::Ride.gm_key(), 51);
+        // 全体映射：顺序就是 `DrumVoice::ALL`，读数与逐个断言一致。
+        let keys: Vec<u8> = DrumVoice::ALL.iter().map(|voice| voice.gm_key()).collect();
+        assert_eq!(keys, vec![36, 38, 42, 51]);
+        assert_eq!(keys.len(), DRUM_VOICE_COUNT);
+        // 编号落在一段合法的 MIDI 打击乐键位里。
+        for key in keys {
+            assert!(
+                (35..=81).contains(&key),
+                "{key} is outside the GM percussion range"
+            );
+        }
+    }
 }
