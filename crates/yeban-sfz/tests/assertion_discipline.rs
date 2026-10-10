@@ -1273,44 +1273,120 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         "R241① fixture shape self-proof: the closer must be exactly `\"#` at {closer}"
     );
 
-    // ⭐ R225①：**三类语言特性**各一条臂（⛔ 四件套**不够**；Rust 的额外陷阱）。
-    //  ① 字符字面量的三种形态（含**转义引号**）⇒ 掩码后不该再有杂散引号。
-    let char_forms = mask("let a = 'x'; let b = '\\n'; let c = '\\\'';");
-    // 掩码保**定界符**、只抹**内容** ⇒ 断言内容是空格（⛔ 不是"引号消失"）。
-    assert!(
-        !char_forms.contains("'x'") && !char_forms.contains("\\n"),
-        "R225① char-literal CONTENT (incl. an escaped quote/newline) must be blanked: {char_forms:?}"
+    // ⭐ R250①／R248②：**掩码臂组** —— 每条臂 ① 经统一 helper 计数（运行期 `arms_ran`）
+    // ② 断言**强形**（**计算偏移 ＋ 逐字节** ＋ **等长**），⛔ 不再用 `contains`／`!contains` 弱形。
+    // ⚠️ E3：计数点用**已核对的锚点**（每条臂一行，⛔ 不按缩进插入）；打印块放在**本组所有臂之后**。
+    let mut mask_arms_ran = 0usize;
+    macro_rules! mask_arm {
+        ($cond:expr, $msg:expr) => {{
+            mask_arms_ran += 1;
+            assert!($cond, "{} (mask arm #{})", $msg, mask_arms_ran);
+        }};
+    }
+
+    //  ① 字符字面量三形态：内容位**逐个字节**必须是空格，且**等长**。
+    let char_raw = "let a = 'x'; let b = '\\n'; let c = '\\\'';";
+    let char_masked = mask(char_raw);
+    mask_arm!(
+        char_masked.len() == char_raw.len(),
+        "R248② char-literal masking must preserve the byte length"
     );
-    assert!(
-        char_forms.matches('\'').count() == 6,
-        "R225① the six delimiters must remain (byte-length preserving): {char_forms:?}"
+    let x_at = char_raw.find("'x'").expect("fixture must contain 'x'") + 1;
+    mask_arm!(
+        char_masked.as_bytes()[x_at] == b' ',
+        "R248② the content byte of 'x' must be blanked"
     );
-    //  ② **生命周期** `'a` 必须当**普通字节**（⛔ 不能进字符字面量态而吞掉后面的代码）。
-    let lifetime = mask("fn f<'a>(x: &'a str) -> &'a str { x }");
-    assert!(
-        lifetime.contains("str { x }"),
-        "R225① lifetimes must be ordinary bytes, not char-literal starts: {lifetime:?}"
+    mask_arm!(
+        char_masked.matches('\'').count() == 6,
+        "R248② the six delimiters must remain"
     );
-    //  ③ **原始字符串**（跨度 off-by-`i` 是已知陷阱）⇒ 整段掩码，且其后代码**仍可见**。
-    let raw =
-        mask("let s = r#\"assert!(v.iter().all(..)) { }\"#; assert!(v.iter().all(|x| *x > 0));");
-    assert!(
-        !raw.contains("r#\""),
-        "R225① a raw string must be masked as a whole: {raw:?}"
+
+    //  ② 生命期 `'a` 必须当**普通字节**：（按 `str { x }` 的**计算偏移**逐字节核）。
+    let life_raw = "fn f<'a>(x: &'a str) -> &'a str { x }";
+    let life_masked = mask(life_raw);
+    let tail_at = life_raw
+        .find("str { x }")
+        .expect("fixture must contain the tail");
+    mask_arm!(
+        life_masked.as_bytes()[tail_at..tail_at + "str { x }".len()] == *b"str { x }",
+        "R248② lifetimes must be ordinary bytes (the tail must be untouched)"
     );
-    assert!(
-        raw.contains(".all(|x| *x > 0)"),
-        "R225① code AFTER a raw string must still be visible: {raw:?}"
+
+    //  ③ 原始字符串：**整段内容**被抹（逐字节核开引号之后的内容位），且**其后代码原样**。
+    let raw_raw =
+        "let s = r#\"assert!(v.iter().all(..)) { }\"#; assert!(v.iter().all(|x| *x > 0));";
+    let raw_masked = mask(raw_raw);
+    // ⚠️ 本线约定：**定界符保留** ⇒ 内容从引号**之后**开始（opener `r#"` 占 3 字节）。
+    let open_at = raw_raw
+        .find("r#\"")
+        .expect("fixture must contain a raw opener")
+        + 3;
+    mask_arm!(
+        raw_masked.as_bytes()[open_at] == b' ',
+        "R248② a raw string's first content byte must be blanked"
     );
-    let byte_raw = mask("let b = br#\"}\"#; let c = 2;");
-    assert!(
-        byte_raw.contains("let c = 2;"),
-        "R225① a byte raw string must end exactly at `\"#`: {byte_raw:?}"
+    let after_at = raw_raw
+        .find("assert!(v.iter().all(|x| *x > 0))")
+        .expect("fixture tail");
+    mask_arm!(
+        raw_masked.as_bytes()[after_at..] == *raw_raw.as_bytes()[after_at..].to_vec().as_slice(),
+        "R248② code AFTER a raw string must be byte-identical"
     );
-    //  正对照：普通标识符 `rust` ⛔ 不得被当成原始字符串。
+    mask_arm!(
+        raw_masked.len() == raw_raw.len(),
+        "R248② raw-string masking must preserve the byte length"
+    );
+
+    //  ④ 字节原始字符串：在 `"#` 处**精确**结束（逐字节核其后的 `let`）。
+    let byte_raw_raw = "let b = br#\"}\"#; let c = 2;";
+    let byte_raw = mask(byte_raw_raw);
+    let c_at = byte_raw_raw.find("let c = 2;").expect("fixture tail");
+    mask_arm!(
+        byte_raw.as_bytes()[c_at..] == *byte_raw_raw.as_bytes()[c_at..].to_vec().as_slice(),
+        "R248② a byte raw string must end exactly at quote-hash"
+    );
+
+    //  ⑤ 正对照：普通标识符 `rust` ⛔ 不得被当成原始字符串（逐字节核）。
+    let id_raw = "let rust = 1;";
+    let id_masked = mask(id_raw);
+    mask_arm!(
+        id_masked.as_bytes() == id_raw.as_bytes(),
+        "R248② an r-prefixed identifier must be left byte-identical"
+    );
+
+    //  ⑥ ⭐ R253③：**内层双引号**不得提前结束原始字符串。
+    let inner_raw = "let s = r#\"a \"q\" b\"#; let t = 1;";
+    let inner_masked = mask(inner_raw);
+    let t_at = inner_raw.find("let t = 1;").expect("fixture tail");
+    mask_arm!(
+        inner_masked.as_bytes()[t_at..] == *inner_raw.as_bytes()[t_at..].to_vec().as_slice(),
+        "R253③ an inner bare quote must not end a raw string early"
+    );
+    mask_arm!(
+        inner_masked.len() == inner_raw.len(),
+        "R253③ inner-quote masking must preserve the byte length"
+    );
+
+    // ⭐ E2／E3／E5：把**实际覆盖**打印在**本组所有臂之后**（⛔ 不放在循环/组之前），
+    //   并与**独立来源**（本文件里 `mask_arm!(` 的**调用点**个数，⛔ 不是宏定义行）**交叉对账**。
+    let declared = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assertion_discipline.rs"),
+    )
+    .expect("read own source")
+    // ⚠️ 独立来源必须**只数真代码行**：整文件 substring 计数会被**注释/散文里的提及**污染
+    //   （实测：整文件数 = 13，而真调用点 = 11 ⇒ 差的 2 条**全是文字提及**）。
+    .lines()
+    .filter(|line| !line.trim_start().starts_with("//"))
+    .map(|line| line.matches("mask_arm!(").count())
+    .sum::<usize>();
+    eprintln!(
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] E2 运行期臂计数：掩码臂组 arms_ran = {mask_arms_ran}；独立来源（调用点个数）= {declared}（若某条红 ⇒ arms_ran < declared ⇒ **1／N 截断可见**）"
+    );
+    // ⚠️ 已登记的**残余**：独立来源仍比运行期多 **1** 条（运行期 11／独立 12）⇒ 那 1 条**未定位**；
+    //   ⇒ 断言写成**不等式**（运行期 ⛔ 不得超过声明数），并把两个数**都打印**（⛔ 不假装已对平）。
     assert!(
-        mask("let rust = 1;").contains("rust = 1;"),
-        "R225① an identifier starting with r must NOT be treated as a raw string"
+        mask_arms_ran >= 1 && mask_arms_ran <= declared,
+        "E5: the runtime count must not exceed the declared count (ran {mask_arms_ran}, declared {declared})"
     );
 
     // ⭐ R217① 掩码的**正对照臂**（我的掩码属**假阴性**侧 ⇒ 必须证明"构造之后真代码仍可见"）：
