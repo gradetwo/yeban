@@ -44,7 +44,29 @@
 
 use std::fs;
 
-/// 逐**字节**掩码注释与字符串字面量（R113：掩码与原文字节等长 ⇒ 偏移可直接映射）。
+/// 区分**字符字面量**与**生命周期**：`'x'`／`'\\n'`／`'\\''` 是字面量，`'a`（后无引号）是生命周期。
+fn is_char_literal(bytes: &[u8], index: usize) -> bool {
+    let Some(&next) = bytes.get(index + 1) else {
+        return false;
+    };
+    if next == b'\\' {
+        return true;
+    }
+    if next == b'\'' {
+        return false;
+    }
+    // `'x'`：第三个字节必须是 `'`（多字节字符的 UTF-8 首字节也算）
+    let mut i = index + 2;
+    while i < bytes.len() && i <= index + 5 {
+        if bytes[i] == b'\'' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// 逐**字节**掩码注释、字符串字面量与**字符字面量**（R113：掩码与原文字节等长 ⇒ 偏移可直接映射）。
 fn mask(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut out = bytes.to_vec();
@@ -55,6 +77,7 @@ fn mask(source: &str) -> String {
         Line,
         Block,
         Str,
+        Char,
     }
     let mut state = State::Code;
     while i < bytes.len() {
@@ -75,6 +98,11 @@ fn mask(source: &str) -> String {
                 } else if c == b'"' {
                     state = State::Str;
                     i += 1;
+                } else if c == b'\'' && is_char_literal(bytes, i) {
+                    // ⚠️ 第十九/二十二批实测：**字符字面量**里的 `{`／`}`／`"` 会破坏花括号配对
+                    // （`statements()` 里的 `split([';', '{', '}'])` 就是活例）⇒ 必须与字符串同样掩码。
+                    state = State::Char;
+                    i += 1;
                 } else {
                     i += 1;
                 }
@@ -93,6 +121,23 @@ fn mask(source: &str) -> String {
                     out[i + 1] = b' ';
                     state = State::Code;
                     i += 2;
+                } else {
+                    if c != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            State::Char => {
+                if c == b'\\' {
+                    out[i] = b' ';
+                    if i + 1 < bytes.len() && bytes[i + 1] != b'\n' {
+                        out[i + 1] = b' ';
+                    }
+                    i += 2;
+                } else if c == b'\'' {
+                    state = State::Code;
+                    i += 1;
                 } else {
                     if c != b'\n' {
                         out[i] = b' ';
@@ -453,6 +498,26 @@ fn positive_any(body: &str) -> bool {
     false
 }
 
+/// 在 `text` 里找**顶层**（方括号／圆括号深度 0）的 `;`。
+///
+/// ⚠️ 第二十二批实测：⛔ 不能用 `text.contains(';')` —— 返回类型里的数组长度写作
+/// `&[f32; SEND_COUNT]`／`[VoiceHandle; 3]`／`[(Warning, &'static str); 8]`，
+/// 那个 `;` **在括号内**。早先的实现据此把这三个**有体**的函数判成"无体声明"⇒
+/// 它们的函数体**从未被扫描**（实测未纳管 3 个，逐个核对：`effect::sends`、
+/// `parser::warning_display_cases`、`voice_pool::fade_fixture`）。
+fn has_top_level_semicolon(text: &str) -> bool {
+    let mut depth = 0i32;
+    for byte in text.bytes() {
+        match byte {
+            b'[' | b'(' => depth += 1,
+            b']' | b')' => depth -= 1,
+            b';' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// 从 `(` 开始找到配对的 `)`（返回其**后一位**的下标）。
 fn skip_parens(text: &str, open: usize) -> Option<usize> {
     let bytes = text.as_bytes();
@@ -500,10 +565,7 @@ fn functions(source: &str) -> Vec<(String, String)> {
         let Some(brace_rel) = masked[params_end..].find('{') else {
             break;
         };
-        if masked[params_end..params_end + brace_rel]
-            .find(';')
-            .is_some()
-        {
+        if has_top_level_semicolon(&masked[params_end..params_end + brace_rel]) {
             search = params_end + 1;
             continue;
         }
@@ -650,6 +712,40 @@ fn self_test_classifier() {
         );
         assert!(!is_evidenced(body), "red {index} must be rejected: {body}");
     }
+    // ⭐ 第二十二批实测：返回类型里的**数组长度分号**会让"无体声明"判定误伤。
+    let array_return =
+        "fn a() -> [u8; 3] { assert!(v.len() >= 1); assert!(v.iter().all(|x| *x > 0)); }";
+    let captured = functions(array_return);
+    assert_eq!(
+        captured.len(),
+        1,
+        "an array-typed return must still be captured"
+    );
+    assert!(
+        captured[0].1.contains(".all("),
+        "the body of an array-typed function must be scanned: {:?}",
+        captured[0].1
+    );
+
+    // ⭐ 第二十二批实测：**字符字面量**里的花括号会破坏配对（`['{', '}']` 是活例）。
+    // 控制：掩码后 `'{'` 必须消失；且 `functions()` 仍能拿到**完整的**函数体（含量词断言）。
+    let char_literal_src = "fn a() { let pairs = ['{', '}']; assert!(v.len() >= 1); assert!(v.iter().all(|x| *x > 0)); }";
+    assert!(
+        !mask(char_literal_src).contains("'{'"),
+        "char literals must be masked like strings"
+    );
+    let captured = functions(char_literal_src);
+    assert_eq!(captured.len(), 1, "exactly one function must be captured");
+    assert!(
+        captured[0].1.contains(".all("),
+        "the whole body must be captured despite char-literal braces: {:?}",
+        captured[0].1
+    );
+    assert!(
+        is_evidenced(&captured[0].1),
+        "the captured body must still be judged as bounded"
+    );
+
     // R133：**近名对照** —— `my_assert!(` ⛔ 不得被当成 `assert!(`；`before ` ⛔ 不得被当成 `for `。
     let decoys = [
         "let v = f(); my_assert!(v.iter().all(|x| *x > 0));",
