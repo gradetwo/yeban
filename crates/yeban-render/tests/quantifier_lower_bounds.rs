@@ -23,27 +23,30 @@ use std::path::{Path, PathBuf};
 /// 并**保留换行**（行号可用）。
 fn mask(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
     let mut i = 0usize;
-    while i < bytes.len() {
+    while i < text.len() {
         let rest = &text[i..];
         if rest.starts_with("//") {
             let end = rest.find('\n').map_or(text.len(), |offset| i + offset);
-            for ch in text[i..end].chars() {
-                out.push_str(&" ".repeat(ch.len_utf8()));
-            }
+            mask_span(&mut out, &text[i..end]);
             i = end;
         } else if rest.starts_with("/*") {
             let end = rest.find("*/").map_or(text.len(), |offset| i + offset + 2);
-            for ch in text[i..end].chars() {
-                out.push(if ch == '\n' { '\n' } else { ' ' });
-                if ch != '\n' {
-                    // 上面已压入一个空格; 其余 UTF-8 字节用空格补齐。
-                    out.push_str(&" ".repeat(ch.len_utf8() - 1));
-                }
-            }
+            mask_span(&mut out, &text[i..end]);
             i = end;
+        } else if let Some((offset_in_rest, closer)) = raw_string_head(rest) {
+            // ⚠ `raw_string_head` 给的是**相对 `rest` 的**偏移 ⇒ 必须加上 `i`（本机实测的越界 bug）。
+            let body = i + offset_in_rest;
+            let end = text[body..]
+                .find(&closer)
+                .map_or(text.len(), |offset| body + offset + closer.len());
+            mask_span(&mut out, &text[i..end]);
+            i = end;
+        } else if let Some(len) = char_literal_len(rest) {
+            mask_span(&mut out, &text[i..i + len]);
+            i += len;
         } else if rest.starts_with('"') {
+            let bytes = text.as_bytes();
             let mut j = i + 1;
             while j < bytes.len() {
                 if bytes[j] == b'\\' {
@@ -56,12 +59,7 @@ fn mask(text: &str) -> String {
                 j += 1;
             }
             let end = (j + 1).min(text.len());
-            for ch in text[i..end].chars() {
-                out.push(if ch == '\n' { '\n' } else { ' ' });
-                if ch != '\n' {
-                    out.push_str(&" ".repeat(ch.len_utf8() - 1));
-                }
-            }
+            mask_span(&mut out, &text[i..end]);
             i = end;
         } else {
             let ch = rest.chars().next().expect("非空");
@@ -70,6 +68,61 @@ fn mask(text: &str) -> String {
         }
     }
     out
+}
+
+/// 把 `slice` **按字节等长**地抹成空格（换行保留）—— 掩码的唯一定长手段（R113）。
+fn mask_span(out: &mut String, slice: &str) {
+    for ch in slice.chars() {
+        if ch == '\n' {
+            out.push('\n');
+        } else {
+            out.push_str(&" ".repeat(ch.len_utf8()));
+        }
+    }
+}
+
+/// 原始字符串头: `r"` / `r#"` / `br#"` … ⇒ 返回（正文起点, 结束定界符）。
+fn raw_string_head(rest: &str) -> Option<(usize, String)> {
+    let prefix = if rest.starts_with("br") {
+        2
+    } else if rest.starts_with('r') {
+        1
+    } else {
+        return None;
+    };
+    let after = &rest[prefix..];
+    let hashes = after.chars().take_while(|c| *c == '#').count();
+    if !after[hashes..].starts_with('"') {
+        return None;
+    }
+    Some((prefix + hashes + 1, format!("\"{}", "#".repeat(hashes))))
+}
+
+/// **字符字面量**的字节长度（`'x'` / `'\n'` / `'\''`）; 生命周期 `'a` ⇒ `None`（⛔ 不许抹到下一个 `'`）。
+fn char_literal_len(rest: &str) -> Option<usize> {
+    if !rest.starts_with('\'') {
+        return None;
+    }
+    let mut chars = rest.chars();
+    chars.next()?;
+    let second = chars.next()?;
+    if second == '\\' {
+        let mut len = 2;
+        for ch in chars {
+            len += ch.len_utf8();
+            if ch == '\'' {
+                return Some(len);
+            }
+        }
+        None
+    } else {
+        let third = chars.next()?;
+        if third == '\'' {
+            Some(1 + second.len_utf8() + 1)
+        } else {
+            None
+        }
+    }
 }
 
 /// 取一个表达式片段的**根**: 从**紧邻量词之前**往回读标识符链（而不是从行首往前读 ——
@@ -362,11 +415,11 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .collect();
     files.sort();
-    // **R196 的实验读数（[R187-PROBE R196-FLOORS]）**: 取消"至少 7 个源文件"这一行,
+    // **R196 的实验读数（[R187-PROBE render/tests/quantifier_lower_bounds R196-FLOORS]）**: 取消"至少 7 个源文件"这一行,
     // **受害清单为空** ⇒ 这个约束**从未提供过证据**（真正的下界在 `scan_reached` 里, 那条有受害清单）
     // ⇒ 按 R196 **降级为诊断**（打印, 不判红）。⛔ 这不是说"放宽更好"。
     eprintln!(
-        "[R187-PROBE R196-FLOORS] src 文件数 = {}（诊断, 非断言; 下界由 scan_reached 承担）",
+        "[R187-PROBE render/tests/quantifier_lower_bounds R196-FLOORS] src 文件数 = {}（诊断, 非断言; 下界由 scan_reached 承担）",
         files.len()
     );
     let mut scanned = 0usize;
@@ -757,6 +810,67 @@ fn scan_reached(files: usize, scanned: usize, skipped: usize) -> Result<(), Stri
     Ok(())
 }
 
+/// 判据 (**R214① 的对抗样本**): 掩码必须**既等长又不泄漏**。
+///
+/// 风险是**对偶的**: 不掩码 ⇒ **假阳性**（注释/字符串里的东西被当成代码）;
+/// 掩码**失同步** ⇒ **假阴性**（更危险: 把后续正文当字符串抹掉 ⇒ 掩盖真违规）。
+/// 四件套: ①字符串含 `//` ②行注释含 `"` ③行注释含 `//` ④**块**注释含 `"` 与 `//`;
+/// 另加三个 Rust 特有陷阱: ⑤**字符字面量**含 `"` ⑥**原始字符串**含 `"` ⑦生命周期 `'a`。
+/// 每条样本读**两个数**: 逐字节等长 ＋ **无泄漏**（样本**之后**那条真实违规必须仍被抓到）。
+///
+/// ⚠ 本判据不是纸面练习: 加它的**同一次**修复, 就在本仓 `als.rs` **露出**一处被
+/// 失同步掩码隐藏的真缺口（`losses_matching(..)` 没有根绑定的域）⇒ 已修。
+#[test]
+fn masking_survives_adversarial_constructs() {
+    let cases: [(&str, &str); 7] = [
+        (
+            "①字符串含 //",
+            "fn t() { let s = \"http://x\"; assert!(v.iter().all(|x| *x == 0)); }",
+        ),
+        (
+            "②行注释含 \"",
+            "fn t() { // 含 \" 引号\n    assert!(v.iter().all(|x| *x == 0)); }",
+        ),
+        (
+            "③行注释含 //",
+            "fn t() { // 含 // 两个斜杠\n    assert!(v.iter().all(|x| *x == 0)); }",
+        ),
+        (
+            "④块注释含 \" 与 //",
+            "fn t() { /* \" 与 // */ assert!(v.iter().all(|x| *x == 0)); }",
+        ),
+        (
+            "⑤字符字面量含 \"",
+            "fn t() { let q = '\"'; assert!(v.iter().all(|x| *x == 0)); }",
+        ),
+        (
+            "⑥原始字符串含 \"",
+            "fn t() { let s = r#\"a \"b\" c\"#; assert!(v.iter().all(|x| *x == 0)); }",
+        ),
+        (
+            "⑦生命周期 `'a`",
+            "fn f<'a>(x: &'a str) -> usize { let _ = x; assert!(v.iter().all(|y| *y == 0)); 0 }",
+        ),
+    ];
+    for (name, src) in cases {
+        let masked = mask(src);
+        assert_eq!(
+            masked.len(),
+            src.len(),
+            "{name}: 掩码必须逐字节等长（R113）"
+        );
+        assert_eq!(
+            masked.matches('\n').count(),
+            src.matches('\n').count(),
+            "{name}: 换行数必须不变"
+        );
+        assert!(
+            !unbounded_quantifiers(src).is_empty(),
+            "{name}: **无泄漏** —— 样本之后的真实违规必须仍被抓到（R214①: 失同步 = 假阴性）"
+        );
+    }
+}
+
 /// 判据 (**配对已知红**: 机械下界): 上界/下界三条件各自**破坏即拒绝**。
 #[test]
 fn scan_lower_bounds_reject_broken_inputs() {
@@ -861,6 +975,53 @@ fn every_standing_criterion_has_a_synthetic_green_and_red_arm() {
     );
 }
 
+/// **R213**: 去重站点总数的**根绑定**下界 —— 参数就是**真正被搜的那个集合**。
+/// 返回 `Err` 的理由, 便于**行为臂**直接断言"缩到界之下会红"。
+fn assert_site_floor(sources: &[String]) -> Result<usize, String> {
+    let total: usize = sources
+        .iter()
+        .map(|src| unbounded_quantifiers_with(&[], src).len())
+        .sum();
+    if sources.len() < 7 {
+        return Err(format!("被搜集合只剩 {} 个文件（下界 7）", sources.len()));
+    }
+    if total < 20 {
+        return Err(format!("去重站点总数 {total} 低于下界 20"));
+    }
+    Ok(total)
+}
+
+/// 判据 (**R213 的行为臂**): 把**被搜集合**缩到界之下 ⇒ 必须红; 正常集合 ⇒ 绿。
+#[test]
+fn site_floor_reddens_when_the_searched_set_collapses() {
+    // 绿臂: 7 个文件（≥ 7）且每个 3 个站点（合计 21 ≥ 20）⇒ 两个条件都满足
+    let real: Vec<String> = ["a", "b", "c", "d", "e", "f", "g"]
+        .iter()
+        .map(|_| {
+            "fn t() { assert!(v.iter().all(|x| *x == 0)); assert!(w.iter().all(|y| *y == 1)); assert!(u.iter().any(|z| *z == 2)); }"
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        assert_site_floor(&real).expect("正常集合必须通过"),
+        21,
+        "7 个文件 × 3 个站点"
+    );
+    // 行为臂: 集合塌缩 ⇒ 必须 `Err`（并且是**集合太小**这个理由）
+    let collapsed: Vec<String> = vec!["fn t() {}".to_owned(); 2];
+    let err = assert_site_floor(&collapsed).expect_err("缩到 2 个文件必须红");
+    assert!(
+        err.contains("被搜集合"),
+        "红理由必须点名**被搜集合**: {err}"
+    );
+    // 行为臂 2: 文件数够但站点太少 ⇒ 也必须红
+    let few_sites: Vec<String> = vec!["fn t() {}".to_owned(); 8];
+    assert!(
+        assert_site_floor(&few_sites).is_err(),
+        "站点总数不足也必须红（R213）"
+    );
+}
+
 /// 判据 (**逐形态隔离见证**, R182): 对 5 条已注册形态**逐个**做"停用它"的见证 ——
 /// 停用形态 `f` 后, **只有 `f` 的正对照**变红, 其余四个仍绿 ⇒ 每个形态都有**独有**的牙。
 #[test]
@@ -938,11 +1099,15 @@ fn each_registered_form_has_its_own_lower_bound() {
         .map(|src| unbounded_quantifiers_with(&[], src).len())
         .sum();
     // **R203**: 探针读数写成 `eprintln!`（⛔ 不写进断言消息 —— 通过的断言在**任何模式**下都不打印）。
-    eprintln!("[R187-PROBE R204-SITES] 站点去重总数 total = {total}（定义 ①）");
-    // **R199 实验读数（[R187-PROBE R196-FLOORS] dedup-total-floor）**: 把这条地板取消后
-    // **受害清单为空**（"真空臂"）⇒ 它的作用已被别处承担 ⇒ 按 R199 **降级为诊断**（上面那行 `eprintln!`）。
-    // ⛔ 这不是说"放宽更好" —— 只是"它从未提供证据"。
-    let _ = total;
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R204-SITES] 站点去重总数 total = {total}（定义 ①）"
+    );
+    // **R213 的裁定（与 R199 分属两类, ⛔ 不要删）**:
+    // - **R199 是"扫描量"地板**: 缺陷会**抬高**计数 ⇒ 计数类地板挡不住它;
+    // - **本界守"被搜集合塌缩"**: 集合太小 ⇒ 结论不可用 ⇒ 必须**保留**, 并**根绑定到被搜集合**
+    //   （`sources` 就是真正读进来的那批文件）＋ 配**行为臂**（把集合缩到界之下 ⇒ 必须变红）。
+    // 上面那条 `eprintln!` 读数继续保留（R204 的可检索量法）。
+    assert_site_floor(&sources).expect("被搜集合不得塌缩（R213）");
     // **R185 的逐形态下界（地板全部从**实测**来, R134; 实测值 14/15/23/1/0 ⇒ 留余量）**:
     // 前四种形态在本仓有真实命中; 第五种（"显式断言空表"）在本仓**实测为 0** ——
     // ⛔ 不许让"0 条"静默合法 ⇒ 它的下界是**合成正对照**（恰 1 条）, 且必须由
@@ -970,7 +1135,9 @@ fn each_registered_form_has_its_own_lower_bound() {
                 total_per_file_offenders(src) - unbounded_quantifiers_with(&[form], src).len()
             })
             .sum();
-        eprintln!("[R187-PROBE R185-FORMS] 形态 `{form}`: 本仓命中 {alone} 个站点（下界 {floor}）");
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R185-FORMS] 形态 `{form}`: 本仓命中 {alone} 个站点（下界 {floor}）"
+        );
         assert!(
             alone >= floor,
             "形态 `{form}` 的本仓命中 {alone} 低于下界 {floor}"

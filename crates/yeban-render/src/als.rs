@@ -1348,12 +1348,15 @@ mod tests {
         assert!(xml.contains("yeban-loss"), "XML 本体必须带损失标记");
 
         // 逐项覆盖（每一项都对应映射表里的一格）。
+        // **R102/R111（本批被掩码修复**露出**的真缺口）**: 下面断言的集合来自**函数调用**,
+        // 若它返回空表, `.any` 恒假而断言只是"红", 但**同族的"取反"写法会真空通过**;
+        // 因此这里先把结果**绑定并钉住非空**, 让量词有根绑定的域。
+        let poly = losses_matching(&export, "device:Yeban PolySynth#");
         assert!(
-            losses_matching(&export, "device:Yeban PolySynth#")
-                .iter()
-                .any(|loss| loss.bounced_to_audio),
-            "设备未映射"
+            !poly.is_empty(),
+            "R102/R111: 该设备的损失条目必须存在（否则下面的 `.any` 没有域）"
         );
+        assert!(poly.iter().any(|loss| loss.bounced_to_audio), "设备未映射");
         assert!(
             export
                 .losses
