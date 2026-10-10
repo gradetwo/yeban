@@ -1425,4 +1425,48 @@ mod tests {
             malformed.to_string().len()
         );
     }
+
+    /// 判据 (R193/R196 **常驻绊线**): 两处判据**观测同一个产线面**（`InflateError::Display`）——
+    /// 既有 `inflate_error_display_text_is_pinned`（字面文案）与
+    /// `two_inflate_errors_differing_only_in_kind_have_the_same_display_text`（只差 kind 相等）。
+    /// 本条把**两处观测绑在一起**：它独立复述**登记下来的模板**，再与本判据直接读到的
+    /// `to_string()` 比对。
+    ///
+    /// ⚠️ **用法（R193：⛔ 不许删断言、⛔ 不许改判据、⛔ 不许当失败跳过）**：
+    /// 本判据**变红** ⇒ **产线的 `Display` 模板被改过**（`b21:SELFTEST-KINDVISIBLE` 那次注入
+    /// 正是这种改动）⇒ 必须 **① 重跑那条外部注入样本 ② 按新实现同步更新登记**
+    /// （字面判据与选项②判据的期望值都要改）。
+    /// ⭐ R110/R126：这条绊线**故意不是**"自比"——它复述的是**登记值**，所以实现一改就红。
+    #[test]
+    fn the_two_display_observation_paths_agree() {
+        let offset = 12usize;
+        let detail = "块类型 3 未定义（RFC 1951 §3.2.3）";
+        let error = InflateError {
+            offset,
+            detail,
+            kind: InflateErrorKind::Malformed,
+        };
+        // 观测路径 A：**登记下来的模板**（与 `inflate_error_display_text_is_pinned` 同一期望值）。
+        let registered = format!("偏移 {offset} 处 DEFLATE 流非法: {detail}");
+        // 观测路径 B：直接读产线的 `Display`。
+        let observed = error.to_string();
+        assert_eq!(
+            observed, registered,
+            "两处观测必须一致；变红 ⇒ 产线 Display 改了 ⇒ 重跑 b21:SELFTEST-KINDVISIBLE 并更新登记"
+        );
+        assert_ne!(
+            observed,
+            format!(
+                "偏移 {offset} 处 DEFLATE 流非法: {detail}（{kind:?}）",
+                kind = error.kind
+            ),
+            "配对对照：若模板**带上** kind，上面那条就不再成立（⛔ 不是平凡相等）"
+        );
+        // ⭐ R188：规模只做诊断，⛔ 不当自检判据。
+        eprintln!(
+            "DIAGNOSTIC tripwire: observed_len={} registered_len={}",
+            observed.len(),
+            registered.len()
+        );
+    }
 }
