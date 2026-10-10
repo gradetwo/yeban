@@ -856,6 +856,7 @@ fn masking_survives_adversarial_constructs() {
             "fn f<'a>(x: &'a str) -> usize { let _ = x; assert!(v.iter().all(|y| *y == 0)); 0 }",
         ),
     ];
+    let mut observed_arms = 0usize;
     for (name, src) in cases {
         let masked = mask(src);
         assert_eq!(
@@ -872,7 +873,22 @@ fn masking_survives_adversarial_constructs() {
             !unbounded_quantifiers(src).is_empty(),
             "{name}: **无泄漏** —— 样本之后的真实违规必须仍被抓到（R214①: 失同步 = 假阴性）"
         );
+        observed_arms += 3; // 三读数/样本
     }
+    // **R254②**: **两个独立来源**必须相等 —— 结构（`cases.len() × 3`）ｖｓ 运行期（局部自增）;
+    // 不等就说明"这个数不是臂数"（`midi` 实测: 合并正则 13 / 三宏相加 9 / 运行期 5 互不相等）。
+    let declared_arms = cases.len() * 3;
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R254-ARMS-DECLARED] 声明臂数 = {declared_arms}（样本 {} × 3 读数; 单位 = 读数对, 区域 = 本判据）",
+        cases.len()
+    );
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R254-ARMS-OBSERVED] 观测臂数 = {observed_arms}（运行期局部自增）"
+    );
+    assert_eq!(
+        declared_arms, observed_arms,
+        "R254②: 两个独立来源必须相等, 否则该数不是臂数"
+    );
 }
 
 /// 判据 (**配对已知红**: 机械下界): 上界/下界三条件各自**破坏即拒绝**。
