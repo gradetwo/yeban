@@ -24,7 +24,7 @@ use yeban_model::{AssetHash, AssetHasher, AssetMetadata, BitDepth, MediaKind};
 
 use crate::decode::{self, DecodeOptions};
 use crate::duration::Reconciliation;
-use crate::error::DecodeResult;
+use crate::error::{DecodeError, DecodeResult};
 use crate::limits;
 
 /// 解码器实际产出的样本格式。
@@ -327,18 +327,27 @@ pub fn asset_index(bytes: &[u8], original_path: &str, license: &str) -> AssetMet
 /// `yeban_model` 自己的判据保证（`AssetHasher` 的契约），本 crate 的
 /// `tests/import_streaming.rs` 再从"真实文件"一侧复算一遍。
 ///
+/// **同时返回摘要实际覆盖的字节数**（单位：字节）。为什么要这个数：分离的
+/// `std::fs::metadata` 读数与"摘要真的读了几个字节"是两件事 —— 文件在摘要过程中被改写
+/// 时它们会不同，而内容寻址的键只对**被摘要的那份字节**成立。调用方
+/// （[`import_path_with_len`]）因此用这个数当 `byte_len`，并在它与第二次测量不等时拒绝。
+///
 /// # Errors
 ///
 /// 流自身的 I/O 失败原样上报（[`DecodeError::Io`]）。
-fn hash_reader<R: Read>(mut reader: R) -> DecodeResult<AssetHash> {
+fn hash_reader<R: Read>(mut reader: R) -> DecodeResult<(AssetHash, u64)> {
     let mut hasher = AssetHasher::new();
     let mut buffer = vec![0u8; HASH_BUFFER_BYTES];
+    let mut hashed: u64 = 0;
     loop {
         match reader.read(&mut buffer) {
             // 读到 0 字节即流结束。`read` 对空缓冲返回 0 是合法的，因此这里不靠
             // "缓冲是否填满"判断结束，只有 `Ok(0)` 才是终点。
-            Ok(0) => return Ok(hasher.finalize()),
-            Ok(filled) => hasher.update(&buffer[..filled]),
+            Ok(0) => return Ok((hasher.finalize(), hashed)),
+            Ok(filled) => {
+                hasher.update(&buffer[..filled]);
+                hashed = hashed.saturating_add(u64::try_from(filled).unwrap_or(u64::MAX));
+            }
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
             Err(err) => return Err(err.into()),
         }
@@ -375,8 +384,24 @@ pub fn import_bytes(
 /// 重读），因此"在 `Read::read` 上顺手 `update`"会把回读的字节重复计进摘要。两遍
 /// 顺序读的代价是一次顺序 I/O，换来的是摘要口径与 `AssetHash::of_bytes` 恒等。
 ///
-/// 摘要**写不进**逐字节的预算声明：读的过程中文件可能变大，因此第二遍的边界仍由
-/// `decode_path` 自己的闸门把守（见 [`DecodeError::Budget`]）。
+/// ## 三道长度测量（TOCTOU）
+///
+/// 本函数在两个时刻量同一个文件（算摘要之前、算完之后），而两次之间文件可能被别的进程
+/// 改写。因此长度要过**三道**判定，全部发生在分配与解码之前：
+///
+/// 1. 第一次量到的长度（算摘要之前）；
+/// 2. 摘要**实际读到**的字节数 —— 文件在摘要过程中变大时，只有这个数看得住；
+/// 3. 第二次量到的长度。
+///
+/// 任何一道超预算 ⇒ [`DecodeError::Budget`]（[`LimitViolation::InputTooLarge`]）。
+/// 三道都过之后，若第二次量到的长度与摘要实际读到的字节数**不同**，返回
+/// [`DecodeError::Malformed`]，文案同时点出两个数 —— 因为此时"被摘要的字节"与"磁盘上的
+/// 这份文件"不是同一个东西，把 `byte_len` 写成任何一个数都会是假话。⛔ 不静默取其一。
+///
+/// 对正常文件零影响：没有并发改写时三道测量相等，比对恒真。判据
+/// `tests::the_second_length_measurement_obeys_the_input_byte_budget`、
+/// `tests::a_file_that_changes_between_the_two_measurements_is_refused`（注入长度来源）、
+/// `tests::a_stable_file_records_the_length_that_was_actually_hashed`（这一侧）。
 ///
 /// # Errors
 ///
@@ -386,18 +411,81 @@ pub fn import_path(
     license: &str,
     options: &DecodeOptions,
 ) -> DecodeResult<ImportedAsset> {
+    import_path_with_len(path, license, options, file_len)
+}
+
+/// 量一个路径当前的字节数。
+///
+/// 抽成独立函数，是为了让"两次测量之间文件被改写"这条 TOCTOU 窗口**可判**：
+/// [`import_path_with_len`] 把它当参数收下，判据因此可以注入"第二次报大"或"第二次报小"的
+/// 实现，而产线入口 [`import_path`] 传的永远是这里的真实实现。
+///
+/// # Errors
+///
+/// 路径不存在或不可访问时把 `std::io::Error` 原样上报。
+fn file_len(path: &Path) -> std::io::Result<u64> {
+    Ok(std::fs::metadata(path)?.len())
+}
+
+/// [`import_path`] 的完整版：**长度来源可注入**。
+///
+/// 为什么要这条缝：`import_path` 必须在**两个时刻**量同一个文件（算摘要之前、算完之后），
+/// 而这两次测量之间文件可能被别的进程改写。判据要能构造那一格，就必须能替换"怎么量长度"。
+///
+/// ## 两次长度不一致时返回什么
+///
+/// 判定顺序（每一步都在**分配与解码之前**）：
+/// 1. 第一次量到的长度（算摘要之前）—— 超预算 ⇒ [`LimitViolation::InputTooLarge`]；
+/// 2. 摘要**实际读到**的字节数 —— 超预算 ⇒ 同上（读的过程中文件变大也不放过）；
+/// 3. 第二次量到的长度 —— 超预算 ⇒ 同上。
+///
+/// 第 3 步之后，若第二次量到的长度与摘要实际读到的字节数不同，返回
+/// [`DecodeError::Malformed`]，文案同时点出两个数。理由：内容寻址的键是**被摘要的那份
+/// 字节**的 SHA-256；长度对不上意味着"被摘要的字节"与"现在磁盘上的这份文件"不是同一个
+/// 东西，此时把 `byte_len` 写成任何一个数都会是假话。⛔ 不静默取其一。
+///
+/// 对正常文件零影响：没有并发改写时三次测量相等，"第 3 步之后的比对"恒真。
+///
+/// # Errors
+///
+/// 见 [`crate::error::DecodeError`]；长度来源自身的 I/O 失败原样上报。
+fn import_path_with_len<F>(
+    path: &Path,
+    license: &str,
+    options: &DecodeOptions,
+    mut len_of: F,
+) -> DecodeResult<ImportedAsset>
+where
+    F: FnMut(&Path) -> std::io::Result<u64>,
+{
     // 第一道闸门：先看声明长度，比打开文件更便宜（畸形/超大素材在这里就被拒）。
-    let declared_len = std::fs::metadata(path)?.len();
+    let declared_len = len_of(path)?;
     limits::check_input_len(declared_len, &options.budget)?;
-    let hash = hash_reader(std::fs::File::open(path)?)?;
-    // 第一遍读完后的真实长度：文件可能在 `metadata` 之后变大，绝不"先读了再说"。
-    let actual_len = std::fs::metadata(path)?.len();
+    let (hash, hashed) = hash_reader(std::fs::File::open(path)?)?;
+    // 第二道闸门：摘要**实际读到**的字节数。文件在摘要过程中变大时，第一次测量看不住它，
+    // 而这个数才是"我们真的处理了多少字节"。
+    limits::check_input_len(hashed, &options.budget)?;
+    // 第三道闸门：第一遍读完后的真实长度 —— 文件可能在第一次测量之后变大，
+    // 绝不"先读了再说"。
+    let actual_len = len_of(path)?;
     limits::check_input_len(actual_len, &options.budget)?;
+    // 三道测量必须相等。不等就意味着"被摘要的那份字节"与"现在磁盘上的这份文件"不是
+    // 同一个东西：此时把 `byte_len` 写成任何一个数都会是假话（写第二次测量 ⇒ 与摘要覆盖
+    // 的字节数不符；写摘要字节数 ⇒ 与文件当前长度不符）。因此拒绝，⛔ 不静默取其一。
+    if actual_len != hashed {
+        return Err(DecodeError::Malformed {
+            detail: format!(
+                "the file changed while it was being read: the digest covers {hashed} bytes but                  the file now reports {actual_len} bytes; refusing to index a container whose \
+                 digest cannot be trusted"
+            ),
+        });
+    }
     let decoded = decode::decode_path(path, options)?;
     let index = AssetMetadata {
         hash,
         original_path: path.to_string_lossy().into_owned(),
-        byte_len: actual_len,
+        // 权威长度 = 摘要实际覆盖的字节数（`== actual_len`，上面刚判过）。
+        byte_len: hashed,
         media_kind: MediaKind::Audio,
         license: license.to_owned(),
     };
@@ -408,6 +496,8 @@ pub fn import_path(
 mod tests {
     use super::*;
     use crate::decode::decode_bytes;
+    use crate::error::DecodeError;
+    use crate::limits::{LimitViolation, PcmBudget};
     use crate::testfix::{WavFormat, WavSpec, encode_int_samples, wav};
 
     fn fixture(values: &[i32], channels: u16) -> Vec<u8> {
@@ -741,5 +831,133 @@ mod tests {
         assert!(at_max.duration_seconds().is_finite());
         // 极大值的头部仍然进摘要，不 panic。
         assert!(!at_max.pcm_hash().as_str().is_empty());
+    }
+
+    /// 临时文件路径（进程号 + 名字，避免并行判据互相覆盖）。
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("yeban-toctou-{}-{name}.wav", std::process::id()));
+        path
+    }
+
+    /// 判据（`HD-24` 输入字节闸门 / TOCTOU 窗口）：**第二次**量到的长度也要过闸门。
+    ///
+    /// 量什么：`import_path_with_len` 在"注入的长度来源第二次报出超过预算的值"时的返回值。
+    /// 怎么量：注入一个按序列返回 `[真实长度, 超限值]` 的闭包 —— 这就是"文件在两次测量
+    /// 之间变大"的可判形态；预算设成只容得下真实长度。
+    ///
+    /// 读数（本机、debug 构建）：`InputTooLarge { bytes: <超限值>, limit: <真实长度> }`。
+    ///
+    /// 为什么需要它：`import_path` 在两个时刻量同一个文件，两次之间文件可能被改写。
+    /// 第三批的注入普查实测：把第二次 `check_input_len(actual_len, …)` 的实参换成
+    /// `declared_len` 之后**全部判据照旧通过** —— 这道闸门此前没有判据。
+    ///
+    /// 注入（实测）：把第二次 `check_input_len` 的实参换成 `declared_len` ⇒ 本条红。
+    #[test]
+    fn the_second_length_measurement_obeys_the_input_byte_budget() {
+        let bytes = fixture(&[1, -2, 3, -4], 1);
+        let real = u64::try_from(bytes.len()).expect("the fixture fits u64");
+        let over = real + 1_000;
+        let path = temp_path("second-gate");
+        std::fs::write(&path, &bytes).expect("the fixture file must be writable");
+        let options = DecodeOptions {
+            budget: PcmBudget {
+                max_input_bytes: real,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        let mut measurements = 0u32;
+        let outcome = import_path_with_len(&path, "CC0-1.0", &options, |_path| {
+            measurements += 1;
+            Ok(if measurements == 1 { real } else { over })
+        });
+        std::fs::remove_file(&path).expect("the fixture file must be removable");
+        assert_eq!(measurements, 2, "the entry must measure the file twice");
+        match outcome {
+            Err(DecodeError::Budget(LimitViolation::InputTooLarge { bytes: got, limit })) => {
+                assert_eq!(
+                    (got, limit),
+                    (over, real),
+                    "the SECOND measurement must be the one that is gated"
+                );
+            }
+            other => panic!("the second measurement must be gated, got {other:?}"),
+        }
+    }
+
+    /// 判据（内容寻址的自洽性 / TOCTOU 窗口）：两次量到的长度与摘要实际读到的字节数
+    /// **不一致**时必须拒绝，⛔ 不静默取其一。
+    ///
+    /// 量什么：注入的长度来源报出"第二次比真实文件**小**"时的返回值。
+    /// 怎么量：闭包返回 `[真实长度, 真实长度 − 1]`，两者都在预算之内 —— 因此只有"三次测量
+    /// 必须相等"这一步能拒它，闸门不会代劳。
+    ///
+    /// 读数（本机、debug 构建）：`Malformed`，文案同时点出摘要实际读到的字节数与第二次
+    /// 量到的字节数。
+    ///
+    /// 为什么必须拒绝而不是取其一：CAS 的键是**被摘要的那份字节**的 SHA-256。长度对不上
+    /// 意味着"被摘要的字节"与"现在磁盘上的这份文件"不是同一个东西，此时 `byte_len` 写成
+    /// 任何一个数都会是假话（写小的那个 ⇒ 索引与摘要不符；写大的那个 ⇒ 与摘要覆盖的字节数
+    /// 不符）。两条路都会让 `.yeban` 归档里的 `assets/{sha256}` 与 `byte_len` 互相矛盾。
+    ///
+    /// 注入（实测）：把"三次测量必须相等"那一步删掉 ⇒ 本条红（返回 `Ok`，且 `byte_len`
+    /// 被写成那个不实的数）。
+    #[test]
+    fn a_file_that_changes_between_the_two_measurements_is_refused() {
+        let bytes = fixture(&[1, -2, 3, -4], 1);
+        let real = u64::try_from(bytes.len()).expect("the fixture fits u64");
+        let shrunken = real - 1;
+        let path = temp_path("mismatch");
+        std::fs::write(&path, &bytes).expect("the fixture file must be writable");
+        let mut measurements = 0u32;
+        let outcome = import_path_with_len(&path, "CC0-1.0", &DecodeOptions::default(), |_path| {
+            measurements += 1;
+            Ok(if measurements == 1 { real } else { shrunken })
+        });
+        std::fs::remove_file(&path).expect("the fixture file must be removable");
+        assert_eq!(measurements, 2);
+        match outcome {
+            Err(DecodeError::Malformed { detail }) => {
+                assert!(
+                    detail.contains(&real.to_string()) && detail.contains(&shrunken.to_string()),
+                    "the refusal must name both numbers, got {detail}"
+                );
+                assert!(
+                    detail.contains("changed"),
+                    "the refusal must say the file changed, got {detail}"
+                );
+            }
+            other => panic!(
+                "a length that disagrees with what was hashed must be refused, not silently \\
+                 picked, got {other:?}"
+            ),
+        }
+    }
+
+    /// 判据（对照组 / 正常文件零影响）：两次测量相等时，索引的 `byte_len` 等于**摘要实际
+    /// 覆盖的字节数**，也等于真实文件长度。
+    ///
+    /// 量什么：真实临时文件经 `import_path` 得到的 `index.byte_len` 与 `index.hash`。
+    /// 怎么量：写一份 WAV 到临时目录、导入、与 `bytes.len()` 和 `AssetHash::of_bytes` 比对。
+    ///
+    /// 读数（本机、debug 构建）：`byte_len == bytes.len()`、`hash == AssetHash::of_bytes(bytes)`。
+    ///
+    /// 为什么需要它：上面两条都在注入的长度来源上判。本条钉住**没有并发改写时三次测量
+    /// 相等**，也就是"修复对正常文件零影响"这一侧。
+    #[test]
+    fn a_stable_file_records_the_length_that_was_actually_hashed() {
+        let bytes = fixture(&[1, -2, 3, -4], 2);
+        let path = temp_path("stable");
+        std::fs::write(&path, &bytes).expect("the fixture file must be writable");
+        let imported = import_path(&path, "CC0-1.0", &DecodeOptions::default())
+            .expect("a stable file must import");
+        std::fs::remove_file(&path).expect("the fixture file must be removable");
+        assert_eq!(
+            imported.index.byte_len,
+            u64::try_from(bytes.len()).expect("the fixture fits u64")
+        );
+        assert_eq!(imported.index.hash, AssetHash::of_bytes(&bytes));
+        assert_eq!(imported.decoded.frame_count(), 2);
     }
 }
