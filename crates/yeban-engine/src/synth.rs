@@ -1847,6 +1847,61 @@ mod tests {
         assert_eq!(engine.table_levels(), yeban_dsp::oscillator::LEVELS);
     }
 
+    /// 判据：**鼓机投影**的槽位上限与声部池是**同一条边界**（`>= MAX_TRACK_SLOTS`）。
+    ///
+    /// `begin_snapshot` 把本快照的鼓机收进一个**定长栈数组**
+    /// `wanted_drums: [Option<(EntityId, DrumsParams)>; MAX_TRACK_SLOTS]`。
+    /// 守卫若写成 `wanted_drums_len > MAX_TRACK_SLOTS`，第 `MAX_TRACK_SLOTS + 1` 条
+    /// 鼓机轨就会写 `wanted_drums[MAX_TRACK_SLOTS]` ⇒ **数组越界 panic**。
+    /// 声部池那一侧（上一条判据）早已被钉住，鼓机这一侧此前没有判据 ——
+    /// 同一道边界的**两半必须各自有判据**。
+    ///
+    /// **量什么**：`MAX_TRACK_SLOTS + 1` 条鼓机轨下 `begin_snapshot` 是否返回
+    /// （不 panic）、`track_drops`（条）、以及第一条鼓机轨是否真的被武装（覆盖度见证）。
+    ///
+    /// 注入实测：`if wanted_drums_len >= MAX_TRACK_SLOTS {` → `>`
+    /// （`synth.rs`）⇒ 本判据实测变红（`index out of bounds`）。
+    #[test]
+    fn drum_slot_exhaustion_is_counted_and_never_panics() {
+        let device = DeviceDefinition {
+            id: EntityId::new(),
+            name: "Kit".to_owned(),
+            kind: DeviceKind::InternalInstrument,
+            bypassed: false,
+            params: [
+                ("kick_note", 36.0),
+                ("snare_note", 38.0),
+                ("closed_hat_note", 42.0),
+                ("open_hat_note", 46.0),
+                ("clap_note", 39.0),
+            ]
+            .iter()
+            .map(|(name, value)| yeban_model::ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: None,
+            })
+            .collect(),
+            latency_samples: 0,
+        };
+        let params = DrumsParams::from_devices(&[device]).expect("五个键位写全 ⇒ 必须武装");
+        let ids: Vec<EntityId> = (0..MAX_TRACK_SLOTS + 1).map(|_| EntityId::new()).collect();
+        let drums: Vec<(&EntityId, &DrumsParams)> = ids.iter().map(|id| (id, &params)).collect();
+
+        let mut engine = SynthEngine::new(48_000);
+        engine.begin_snapshot(48_000, &ids, [], drums);
+        assert_eq!(
+            engine.track_drops(),
+            1,
+            "第 {} 条轨必须被计数（不 panic、不扩容）",
+            MAX_TRACK_SLOTS + 1
+        );
+        assert!(
+            engine.drum_params(ids[0]).is_some(),
+            "第一条鼓机轨必须真的被武装（覆盖度见证：这条路径真的跑到了）"
+        );
+    }
+
     /// 判据：声部池满时**硬窃取**被计数，且仍然逐样本确定。
     #[test]
     fn voice_stealing_is_counted_and_deterministic() {

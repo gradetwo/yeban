@@ -519,4 +519,26 @@ mod tests {
         assert!(voice.is_idle(), "停住必须丢掉尾巴");
         assert_eq!(block.left()[0], 0.0);
     }
+
+    /// 判据：**峰值为 `0.0` 的 click 表不得被归一化除零**（类别①非有限输入）。
+    ///
+    /// **可达路径**（不是假想）：`ClickWave::new` 的帧长
+    /// `sample_rate · CLICK_MS / 1000` 先钳到 `1..=MAX_CLICK_FRAMES`。
+    /// 采样率 `1` Hz（`arm` 的同款兜底只把 `0` 换成 48 kHz）⇒ 帧长是 **1**，
+    /// 而那一帧恰好落在二次衰减包络的 `t = 0` 上（`sin(0) · 1 = 0`）⇒ `peak == 0`。
+    /// 守卫若是 `peak >= 0.0`，这一次除法就是 `0.0 / 0.0 = NaN`，NaN 会一路
+    /// 乘进母线。**量什么**：`ClickWave::new(1)` 的 1 个样值的有限性（单位：个样值）。
+    ///
+    /// 注入实测：`if peak > 0.0 {` → `if peak >= 0.0 {`（`metronome.rs`）⇒ 本判据
+    /// 实测变红（读到 `[NaN]`）。
+    #[test]
+    fn a_one_frame_click_stays_finite() {
+        let click = ClickWave::new(1);
+        assert_eq!(click.len(), 1, "1 Hz 采样率下 click 帧长必须钳到下界 1");
+        assert!(
+            click.samples().iter().all(|sample| sample.is_finite()),
+            "1 帧 click 的样值必须全部有限（实得 {:?}）",
+            click.samples()
+        );
+    }
 }

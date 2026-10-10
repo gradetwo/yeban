@@ -1091,3 +1091,67 @@ fn the_same_platform_rule_is_hard_red_and_foreign_platforms_only_skip() {
         "`ON_MEASURED_PLATFORM` 必须就是编译期平台事实"
     );
 }
+
+/// 判据：**同一条轨**上换一套鼓机参数（同一个槽位、同一个 id）必须**下发到器件**。
+///
+/// `SynthEngine::begin_snapshot` 的鼓机武装有三条口径（`synth.rs` 的注释 §3）：
+/// 同轨同参数 ⇒ **一个字段都不写**；同轨**参数变了** ⇒ `set_params`
+/// （相位 / 包络 / RNG / 滤波器状态保留）；换轨 ⇒ `reset`。
+/// 把守卫换成 `if !same_track {`（即**只认换轨、不认参数变化**）之后，
+/// 24 个目标 + lib 单元全绿（注入表 y07）：既有 D8 只读"武装表"（快照里的那一份数），
+/// 看不到**器件里**那一份数是否被刷新 —— 两份数是两件事。
+///
+/// **量什么**：两条渲染的**逐位指纹**（u64，`Render::fingerprint`）：
+/// 两条都以 `master_level = 0.8` 起跑，都在第 10 个量子重新武装；
+/// 一条换成**等价**快照（继续 0.8），另一条换成同轨的 `master_level = 0.2`。
+/// 前 10 个量子（1280 帧）必须逐位相同，之后必须**出现差异**。
+#[test]
+fn a_changed_drum_parameter_reaches_the_device() {
+    let fixture = note_project(&DRUM_NOTES);
+    let track = fixture.track;
+    let mut loud = fixture.project.clone();
+    mount(&mut loud, track, vec![kit(&[("master_level", 0.8)])]);
+    let mut quiet = fixture.project.clone();
+    mount(&mut quiet, track, vec![kit(&[("master_level", 0.2)])]);
+
+    // 见证：两套参数**本身**必须产出不同的声音（否则下面的断言测的是别的东西）。
+    let loud_alone = render(&loud, 40);
+    let quiet_alone = render(&quiet, 40);
+    assert_ne!(
+        loud_alone.fingerprint(),
+        quiet_alone.fingerprint(),
+        "两套鼓机参数必须产出不同的渲染（否则这条判据没有判别力）"
+    );
+
+    let switch = 10usize;
+    let prefix = switch * 128;
+    let baseline = render_with(&loud, 40, 3, |quantum, rig| {
+        if quantum == switch {
+            rig.publish_equivalent(&loud, 4);
+        }
+    });
+    let swapped = render_with(&loud, 40, 3, |quantum, rig| {
+        if quantum == switch {
+            rig.publish_equivalent(&quiet, 4);
+        }
+    });
+
+    for index in 0..prefix {
+        assert_eq!(
+            baseline.left[index].to_bits(),
+            swapped.left[index].to_bits(),
+            "第 {index} 帧：切换之前两条必须逐位相同"
+        );
+    }
+    let first_difference = (prefix..baseline.left.len())
+        .find(|index| baseline.left[*index].to_bits() != swapped.left[*index].to_bits());
+    assert!(
+        first_difference.is_some(),
+        "同轨换鼓机参数必须真的改变器件（实测两条在切换之后逐位相同 ⇒ \
+         `set_params` 没有被调用）"
+    );
+    println!(
+        "[engine-drums/D12] 同轨换参数：首个差异帧={:?}（切换帧={prefix}）",
+        first_difference
+    );
+}

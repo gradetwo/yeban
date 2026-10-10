@@ -2690,6 +2690,77 @@ mod tests {
         .expect("合法图")
     }
 
+    /// 与 [`snapshot_with_master_track`] 同形，但**每条轨挂一台被识别的通道条**
+    /// （`("eq_low_gain", 6.0)` ⇒ `insert.strip()` 是 `Some`）—— 只用于
+    /// **插入槽容量边界**的判据（`armed_strips` 是 `MAX_TRACK_SLOTS` 长的定长数组）。
+    fn snapshot_with_master_track_and_strips(revision: u64, track_count: usize) -> EngineSnapshot {
+        let master = EntityId::new();
+        let mut nodes = vec![master];
+        let mut routing = RoutingGraph {
+            nodes: Vec::new(),
+            ..RoutingGraph::default()
+        };
+        let mut tracks: BTreeMap<EntityId, TrackParams> = BTreeMap::new();
+        let mut inserts: BTreeMap<EntityId, crate::insert::InsertParams> = BTreeMap::new();
+        let master_model = TrackV3 {
+            id: master,
+            ..TrackV3::default()
+        };
+        tracks.insert(
+            master,
+            crate::snapshot::TrackParams::from_track(&master_model, 0),
+        );
+        for _ in 0..track_count {
+            let track = EntityId::new();
+            nodes.push(track);
+            let id = EntityId::new();
+            routing.edges.insert(
+                id,
+                RoutingEdge {
+                    id,
+                    source_node: track,
+                    destination_node: master,
+                    kind: RoutingKind::TrackToBus,
+                    gain_db: None,
+                },
+            );
+            let model = TrackV3 {
+                id: track,
+                devices: vec![yeban_model::DeviceDefinition {
+                    id: EntityId::new(),
+                    name: "Strip".to_owned(),
+                    kind: yeban_model::DeviceKind::InternalEffect,
+                    bypassed: false,
+                    params: vec![yeban_model::ParameterValue {
+                        name: "eq_low_gain".to_owned(),
+                        value: 6.0,
+                        unit: None,
+                    }],
+                    latency_samples: 0,
+                }],
+                ..TrackV3::default()
+            };
+            tracks.insert(track, TrackParams::from_track(&model, 0));
+            let insert = crate::insert::InsertParams::from_devices(&model.devices, 48_000);
+            if !insert.is_empty() {
+                inserts.insert(track, insert);
+            }
+        }
+        routing.nodes = nodes;
+        EngineSnapshot::from_parts(
+            revision,
+            48_000,
+            DEFAULT_BLOCK_FRAMES,
+            2,
+            master,
+            tracks,
+            &routing,
+            &LatencyTable::new(),
+        )
+        .expect("合法图")
+        .with_inserts(inserts)
+    }
+
     struct Rig {
         slot: Arc<SnapshotSlot>,
         queue: crate::snapshot::RetireQueue,
@@ -3271,6 +3342,41 @@ mod tests {
             "超出声部池的 {MAX_TRACK_SLOTS} 个槽的轨道必须逐条计入 `track_drops`；\
              这条搬运此前没有任何判据（把那一格硬写成 0 时 20 个目标全绿）",
             MAX_TRACK_SLOTS = crate::synth::MAX_TRACK_SLOTS
+        );
+    }
+
+    /// 判据：**插入槽**的上限边界是 `>= MAX_TRACK_SLOTS`（不是 `>`）。
+    ///
+    /// `process_quantum` 的插入武装循环把通道条装进
+    /// `armed_strips: [(EntityId, Option<ChannelStrip>); MAX_TRACK_SLOTS]`（定长栈数组）。
+    /// 守卫若写成 `*armed_insert_slots > MAX_TRACK_SLOTS`，第 `MAX_TRACK_SLOTS + 1`
+    /// 条带插入的轨就会写 `armed_strips[MAX_TRACK_SLOTS]` ⇒ **数组越界 panic**。
+    /// 声相槽那一侧有既有判据守着（注入 `self.armed_pan_slots >= MAX_TRACK_SLOTS` → `>`
+    /// 实测变红），插入槽这一侧此前没有 —— 三张姊妹表（声相 / 通道条 / 混响 / 卷积）
+    /// 的同一道边界必须各自有判据。
+    ///
+    /// **量什么**：`MAX_TRACK_SLOTS + 1` 条各带一台通道条的轨，渲染 1 个量子是否
+    /// 返回（不 panic）、`track_drops`（条）。
+    ///
+    /// 注入实测：`if *id == master || *armed_insert_slots >= MAX_TRACK_SLOTS {` → `>`
+    /// （`rt.rs`）⇒ 本判据实测变红（`index out of bounds`）。
+    #[test]
+    fn insert_slot_exhaustion_is_counted_and_never_panics() {
+        let slot = SnapshotSlot::new(snapshot_with_master_track_and_strips(
+            1,
+            crate::synth::MAX_TRACK_SLOTS + 1,
+        ));
+        let (retire, _queue) = retire_channel(16);
+        let (_sender, receiver) = event_channel(64);
+        let (publisher, _collector) = meter_channel(1024);
+        let mut runtime = EngineRuntime::new(&slot, retire, receiver, publisher);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        runtime.process_quantum(&mut out, 2);
+        assert_eq!(
+            runtime.stats().track_drops,
+            1,
+            "第 {} 条带插入的轨必须被计数（不 panic、不扩容）",
+            crate::synth::MAX_TRACK_SLOTS + 1
         );
     }
 

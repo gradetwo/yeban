@@ -695,4 +695,34 @@ mod tests {
             "engine 的 drums.rs 必须是 dsp 鼓机与其参数类型的再导出"
         );
     }
+
+    /// 判据：`clap_bursts` 的 `f32 → u32` **上界是 u16 全域**，不是 u8。
+    ///
+    /// `bursts_from_f32` 的文档口径是"非有限 ⇒ 器件默认值；否则四舍五入并钳到
+    /// `0..=u16::MAX`"（`drums.rs` 的规则 5）。上界若被写成 `u8::MAX`，那么
+    /// 256…65535 这一段配置会被**静默**压成 255 —— 声音于是由"配置"变成了"猜"。
+    /// 下界同样要钉住：负值必须落到 `0`（不是回绕成巨大的 u32）。
+    ///
+    /// **量什么**：`bursts_from_f32(v)` 的返回值（单位：次连击）。
+    ///
+    /// 注入实测：`clamp(0.0, f32::from(u16::MAX))` → `clamp(0.0, f32::from(u8::MAX))`
+    /// （`drums.rs`）⇒ 本判据实测变红（`256` 读到 `255`）。
+    #[test]
+    fn clap_bursts_keep_the_whole_u16_range() {
+        assert_eq!(bursts_from_f32(0.0), 0, "下界");
+        assert_eq!(bursts_from_f32(-3.0), 0, "负值必须落到下界（不得回绕）");
+        assert_eq!(bursts_from_f32(255.0), 255);
+        assert_eq!(bursts_from_f32(256.0), 256, "u8 上界之上必须保留");
+        assert_eq!(bursts_from_f32(1_000.0), 1_000);
+        assert_eq!(
+            bursts_from_f32(f32::from(u16::MAX)),
+            u32::from(u16::MAX),
+            "u16 上界必须保留"
+        );
+        assert_eq!(
+            bursts_from_f32(1.0e9),
+            u32::from(u16::MAX),
+            "只有超过 u16 上界才钳住"
+        );
+    }
 }

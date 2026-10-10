@@ -23,7 +23,7 @@ mod support;
 
 use support::{
     NoteSpec, audio_clip_project, bare_track_project, empty_project, note_project, render,
-    render_with, rms_peak, zero_crossings,
+    render_with, rms_peak, two_track_project, zero_crossings,
 };
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::MAX_NOTES_PER_TRACK;
@@ -350,4 +350,86 @@ fn note_capacity_is_bounded_and_counted() {
     // 渲染一个量子仍然正常（不 panic），并且第一个音符真的响
     let rendered = render(&fixture.project, 1);
     assert!(rendered.nonzero() > 0, "容量上限之内的音符必须照常发声");
+}
+
+/// 判据：**片段级静音**（`ClipPlacement::muted`）必须让该摆放**整段逐位静音**。
+///
+/// 快照层在 `project_schedules` 里对静音摆放 `continue`（**整个摆放不进调度表**）。
+/// 这条契约此前**没有任何判据**：把 `if placement.muted { continue; }` 换成
+/// `if false {` 之后，24 个目标 + lib 单元全绿（`docs/ledger` 的注入表 s10）。
+/// 三种"看起来像静音"的错法都不会被读数抓到 —— 只降增益、跳过触发但保留尾巴、
+/// 只在第一个量子静音 —— 所以断言用**整段逐位静音**（不是"峰值变小"）。
+///
+/// **量什么**：40 个量子（5120 帧）里非零样本的**个数**（单位：个样本）。
+#[test]
+fn a_muted_clip_placement_contributes_no_samples() {
+    let mut fixture = note_project(&[NoteSpec::quarter(60)]);
+    let audible = render(&fixture.project, 40);
+    assert!(
+        audible.nonzero() > 0,
+        "未静音的摆放必须先出声（否则下面的等号没有判别力）"
+    );
+
+    let track = fixture.track;
+    let entry = fixture
+        .project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨");
+    let mut muted = 0usize;
+    for placement in entry.clips.values_mut() {
+        placement.muted = true;
+        muted += 1;
+    }
+    assert_eq!(muted, 1, "夹具必须恰好有一个摆放（实得 {muted}）");
+
+    let silent = render(&fixture.project, 40);
+    assert_eq!(
+        silent.nonzero(),
+        0,
+        "静音的摆放必须整段逐位静音（实得 {} 个非零样本）",
+        silent.nonzero()
+    );
+}
+
+/// 判据：**轨道级静音/独奏**折算成的增益门必须真的把增益压到 `0.0`。
+///
+/// 快照层用 `track_is_audible(mute, solo, solo_safe, any_solo)` 决定 `gain`
+/// （`0.0` 或 `track_gain(volume_db)`）；口声部照常触发，但乘子是 0 ⇒ 逐位静音。
+/// 这条契约此前**没有任何判据**：把 `let gain = if audible {` 换成 `if true {`
+/// 之后全绿（`docs/ledger` 的注入表 s11）。两条断言刻意分开：
+/// ① 两条轨都静音 ⇒ 整段逐位静音；② 一条轨 `solo` ≡ 另一条轨 `mute`（逐位相同）。
+#[test]
+fn track_mute_and_solo_gate_the_rendered_gain() {
+    let (project, first, second) =
+        two_track_project(&[NoteSpec::quarter(60)], &[NoteSpec::at(0, 960, 67, 100)]);
+    assert!(
+        render(&project, 40).nonzero() > 0,
+        "两条轨都不静音时必须出声（否则下面的等号没有判别力）"
+    );
+
+    let mut all_muted = project.clone();
+    all_muted.tracks.get_mut(&first).expect("第一条轨").mute = true;
+    all_muted.tracks.get_mut(&second).expect("第二条轨").mute = true;
+    let muted = render(&all_muted, 40);
+    assert_eq!(
+        muted.nonzero(),
+        0,
+        "两条轨都静音 ⇒ 整段逐位静音（实得 {} 个非零样本）",
+        muted.nonzero()
+    );
+
+    let mut solo = project.clone();
+    solo.tracks.get_mut(&first).expect("第一条轨").solo = true;
+    let mut second_muted = project.clone();
+    second_muted.tracks.get_mut(&second).expect("第二条轨").mute = true;
+    let solo_render = render(&solo, 40);
+    let muted_render = render(&second_muted, 40);
+    assert_eq!(
+        solo_render.fingerprint(),
+        muted_render.fingerprint(),
+        "solo 一条轨必须与「另一条轨静音」逐位相同（指纹 {:#x} vs {:#x}）",
+        solo_render.fingerprint(),
+        muted_render.fingerprint()
+    );
 }

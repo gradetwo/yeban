@@ -201,7 +201,7 @@ mod support;
 use support::{MixSpec, NoteSpec, note_project, pdc_rebind_fixture, render, tuned_project};
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::meter::meter_channel;
-use yeban_engine::mixer::{LIMITER_CEILING, PanLaw, pan_gains};
+use yeban_engine::mixer::{BUS_LIMITER_LATENCY_FRAMES, LIMITER_CEILING, PanLaw, pan_gains};
 use yeban_engine::param::{MASTER_GAIN_SLOT, ParamTable, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::rt::EngineRuntime;
@@ -922,4 +922,82 @@ fn the_interleaved_output_maps_channel_zero_to_left_and_the_rest_to_right() {
             "[engine-chan/6-10] channels=0 ⇒ 归一为单路：{compared} 个样本与 channels=1 逐位相同"
         );
     }
+}
+
+/// 判据：走带**定位**（`SeekTicks`）必须释放**鼓机**的在响槽位。
+///
+/// `SynthEngine::seek` 的文档口径是"释放全部声部并把播放头设到 `position`"，
+/// 并且**两个池都要清**：声部池（`slot.synth.reset()`）与鼓机池
+/// （`machine.reset()`）—— 少了后者，一次定位之后上一件音源的鼓尾巴会继续
+/// 从新位置响出来（`synth.rs` 第 1254 行的注释）。把 `machine.reset();` 那一行
+/// 删掉之后，24 个目标 + lib 单元全绿（注入表 y02）：声部池那一半有判据，
+/// 鼓机这一半此前**没有**。
+///
+/// **量什么**：定位前后 `EngineStats::drum_active_slots`（个）与定位之后那一个
+/// 量子的**非零样本数**（个）。
+#[test]
+fn a_transport_seek_releases_the_drum_tail() {
+    // 夹具：一条轨 + 一台完整的鼓机（五个键位写全 ⇒ `DrumsParams` 必须武装）。
+    let fixture = note_project(&[NoteSpec::at(0, 480, 36, 127), NoteSpec::at(0, 480, 39, 90)]);
+    let track = fixture.track;
+    let mut project = fixture.project.clone();
+    let device = yeban_model::DeviceDefinition {
+        id: EntityId::new(),
+        name: "Kit".to_owned(),
+        kind: yeban_model::DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: [
+            ("kick_note", 36.0),
+            ("snare_note", 38.0),
+            ("closed_hat_note", 42.0),
+            ("open_hat_note", 46.0),
+            ("clap_note", 39.0),
+        ]
+        .iter()
+        .map(|(name, value)| yeban_model::ParameterValue {
+            name: (*name).to_owned(),
+            value: *value,
+            unit: None,
+        })
+        .collect(),
+        latency_samples: 0,
+    };
+    project
+        .tracks
+        .get_mut(&track)
+        .expect("夹具里必须有那条 MIDI 轨")
+        .devices = vec![device];
+
+    let mut rig = EventRig::new(&project, 1, 2);
+    // 让两件鼓真的响起来（2 个量子 = 256 帧）。
+    rig.run(2, 2, |_, _| {});
+    let sounding = rig.runtime.stats().drum_active_slots;
+    let played = rig.left.iter().filter(|sample| **sample != 0.0).count();
+    assert!(
+        sounding > 0 && played > 0,
+        "鼓必须正在响（占用槽位={sounding} 非零样本={played}）—— 否则下面的静音断言没有判别力"
+    );
+
+    let before = rig.left.len();
+    // `SeekTicks(1920)` = 48 000 帧（@48 kHz / 120 BPM）⇒ 落在两个起音之后。
+    rig.run(1, 2, |_, rig| {
+        rig.sender.publish(&[EngineEvent::Transport {
+            command: TransportCommand::SeekTicks(1_920),
+        }]);
+    });
+    let after = rig.runtime.stats().drum_active_slots;
+    let tail: Vec<f32> = rig.left[before..].to_vec();
+    assert_eq!(after, 0, "定位之后不得还有在响的鼓机槽位（实得 {after}）");
+    // 母线限制器有 `BUS_LIMITER_LATENCY_FRAMES`（33）帧延迟线 ⇒ 定位之前的最后 33 帧
+    // 仍会从延迟线里出来。那不是鼓尾巴，判据必须把它排除掉。
+    let bus_flush = usize::try_from(BUS_LIMITER_LATENCY_FRAMES).expect("33 能装进 usize");
+    let leaked = tail.iter().filter(|sample| **sample != 0.0).count();
+    assert!(
+        leaked <= bus_flush,
+        "定位之后只允许母线延迟线的冲刷（≤ {bus_flush} 帧），实得 {leaked} 个非零样本"
+    );
+    assert!(
+        tail[bus_flush..].iter().all(|sample| *sample == 0.0),
+        "定位之后（跳过母线延迟线冲刷）必须逐位静音"
+    );
 }

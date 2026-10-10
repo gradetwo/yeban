@@ -1415,4 +1415,37 @@ driver_io_sum_is_roundtrip=false";
         assert_eq!(sanitize_label("ok-1.2:3_x"), "ok-1.2:3_x");
         assert_eq!(sanitize_label("中文"), "--");
     }
+
+    /// 判据：百分位的**钳位上界是 `100`** ⇒ `p = 100` 必须取到**最大**元素。
+    ///
+    /// 最近秩口径是 `rank = ceil(p/100 · n)`、下标 `max(rank, 1) − 1` 再钳到 `n − 1`
+    /// （见 `percentile_nearest_rank` 的文档）。100 个升序样本时：
+    /// `p = 100` ⇒ `rank = 100` ⇒ 下标 `99`（最大值）；`p = 0` ⇒ `rank = 1` ⇒ 下标 `0`。
+    /// 上界若被写成 `99`，同一个调用会静默返回**第 99 个**元素 ——
+    /// 报出来的"最差回调间隔"于是从来不是真的最差。
+    ///
+    /// **量什么**：`percentile_nearest_rank(&0..100, p)` 的返回值（单位：与输入同）。
+    /// 末一条断言是**非空证明**：`p = 100` 与 `p = 99` 必须落在不同元素上。
+    ///
+    /// 注入实测：`percentile.clamp(0.0, 100.0)` → `clamp(0.0, 99.0)`（`latency.rs`）
+    /// ⇒ 本判据实测变红（`left == Some(98.0)`）。
+    #[test]
+    fn percentile_one_hundred_is_the_maximum_and_zero_is_the_minimum() {
+        let sorted: Vec<f64> = (0..100).map(|index| index as f64).collect();
+        assert_eq!(
+            percentile_nearest_rank(&sorted, 100.0),
+            Some(99.0),
+            "p = 100 必须取最大值"
+        );
+        assert_eq!(
+            percentile_nearest_rank(&sorted, 0.0),
+            Some(0.0),
+            "p = 0 必须取最小值"
+        );
+        assert_ne!(
+            percentile_nearest_rank(&sorted, 100.0),
+            percentile_nearest_rank(&sorted, 99.0),
+            "100 个样本时 p = 100 与 p = 99 必须落在不同元素上（非空证明）"
+        );
+    }
 }
