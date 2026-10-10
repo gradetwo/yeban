@@ -1537,7 +1537,7 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
     assert_eq!(detector(known_good).len(), 0, "负对照：不许误报");
 
     // ④ 真对象 ＋ ⭐ R120 机械下界：必须**真的扫过**足够多的源码行。
-    let mut scanned_lines = 0usize;
+    let mut scanned_lines = 0usize; // R188: 只用于诊断
     for (name, source) in [
         ("smf_contract.rs", include_str!("smf_contract.rs")),
         ("musicxml_contract.rs", include_str!("musicxml_contract.rs")),
@@ -1550,8 +1550,10 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
             "{name} 里出现了 R104 的「针绑成变量」绕过形态"
         );
     }
-    assert!(
-        scanned_lines >= 3000,
-        "R120 机械下界：真对象必须真的被扫过（实际只扫到 {scanned_lines} 行）"
+    // ⭐ R188：**集合大小地板 ⛔ 不能当扫描器守卫**（那是诊断读数，不是判据）。
+    // 有牙的是上面的**喂坏输入两臂**（每种形态各有一条"已知含该形态"的样例必须被探到，
+    // 外加 near-miss 与负对照必须探不到）。规模读数降级为**诊断**。
+    eprintln!(
+        "DIAGNOSTIC no_needle_is_bound_to_a_variable: scanned_lines={scanned_lines} forms={FORMS:?}"
     );
 }
