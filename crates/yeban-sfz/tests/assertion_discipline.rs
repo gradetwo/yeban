@@ -9,10 +9,17 @@
 //! 路径被过滤、平台差异导致集合为空时**静默通过**（R93／R102／R109）。
 //!
 //! ## 认的下界形态（裁决 R111 的五种 ＋ R112 的正对照 ＋ 字面量集合）
-//! ① 显式 `x.len() >= N`／`> N`　② 宏隐式相等 `assert_eq!(x.len(), N)`
-//! ③ 非空 `!x.is_empty()`　④ 值界（与非空字面量比较）　⑤ 运行期计数器
-//! ⑥ 正对照（同一谓词在**另一个实例**上证明能命中，R112）
+//! ① 显式 `x.len() >= N`／`> N`　② 宏隐式相等 `assert_eq!(x.len(), N)`（**两种实参顺序**）
+//! ③ 非空 `!x.is_empty()`　⑥ 正对照（同一谓词在**另一个实例**上证明能命中，R112）
 //! ⑦ 被遍历的集合本身是**字面量数组／固定范围／全大写常量**（按构造非真空）
+//!
+//! ⛔ **明确不认**（裁决 **R118**：界必须**界定集合大小**）：
+//! - **元素值界**（`assert_eq!(x[0], 5)`）—— 它约束的是元素，⛔ 不约束集合有没有元素；
+//! - **运行期计数器**（`assert!(checked >= N)`）—— 它界定的是**动作**，⛔ 不是被遍历集合。
+//! 这两类各有一条**已知红**自测（「只有值界 ⇒ 必须报无界」「只有计数器 ⇒ 必须报无界」）。
+//!
+//! ⚠️ 另（**R119**）：根绑定必须**带标识符边界** —— `bb.len() >= 2` ⛔ 不得给根 `b` 记界
+//! （近名对照已进自测）。
 //!
 //! ## 已登记的局限（如实，⛔ 不假装能核）
 //! - 文本扫描器**无法**核实 ⑥ 的正对照与目标**同类型**（R104 同族）。
@@ -126,6 +133,28 @@ fn quantified_root(body: &str) -> Option<String> {
     None
 }
 
+/// R119：**带标识符边界**的出现判定（`bb.len() >= 2` ⛔ 不得给根 `b` 记界）。
+fn mentions_ident(hay: &str, ident: &str) -> bool {
+    if ident.is_empty() {
+        return false;
+    }
+    let bytes = hay.as_bytes();
+    let ident_bytes = ident.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut from = 0usize;
+    while let Some(rel) = hay[from..].find(ident) {
+        let start = from + rel;
+        let end = start + ident_bytes.len();
+        let left_ok = start == 0 || !is_word(bytes[start - 1]);
+        let right_ok = end >= bytes.len() || !is_word(bytes[end]);
+        if left_ok && right_ok {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
 /// 把函数体粗切成语句（`;` 与花括号）。
 fn statements(body: &str) -> Vec<&str> {
     body.split([';', '{', '}']).collect()
@@ -135,35 +164,26 @@ fn statements(body: &str) -> Vec<&str> {
 ///
 /// `root == None` 表示本体内根本没有量词断言 ⇒ 只按"有没有字面量／固定范围循环"判定。
 fn has_non_vacuity_evidence(body: &str, root: Option<&str>) -> bool {
-    let mentions_root = |stmt: &str| root.is_none_or(|r| stmt.contains(r));
+    let binds_root = |stmt: &str| match root {
+        Some(r) => mentions_ident(stmt, r), // R119：必须**带边界**匹配
+        None => true,
+    };
     for stmt in statements(body) {
-        if !mentions_root(stmt) {
+        if !binds_root(stmt) {
             continue;
         }
-        // ① 显式 ② 宏隐式相等 ③ 非空 ④ 值界 ⑤ 运行期计数器
+        // 只认**界定集合大小**的三形态（R118）：
+        // ① 显式 `len() >= N`　② 宏隐式相等 `assert_eq!(…len(), N)`（两种实参顺序）　③ `!is_empty()`
         if stmt.contains(".len() >=")
             || stmt.contains(".len() > ")
             || stmt.contains(".count() >=")
             || stmt.contains(".count() > ")
-            // ② 宏隐式相等：**两种实参顺序都认**（`assert_eq!(x.len(), N)` 与 `assert_eq!(N, x.len())`）。
-            // ⚠️ 必须同时要求 `assert_eq!(`：否则 `let _ = x.len();` 这种**没有下界**的语句也会被认成下界
-            // （实测：Z1 把实参换序后曾被误判为"无下界" ⇒ 假阳性；A1 删掉下界后必须仍判红）。
             || (stmt.contains("assert_eq!(") && stmt.contains(".len()"))
             || stmt.contains("!.is_empty()")
             || non_empty_call(stmt)
-            || has_value_bound(stmt)
-            || [
-                "seen", "count", "total", "scanned", "checked", "visited", "hits",
-            ]
-            .iter()
-            .any(|n| stmt.contains(&format!("{n} >=")) || stmt.contains(&format!("{n} > ")))
         {
             return true;
         }
-    }
-    // ⑤ 运行期计数器：计数器语句本身不含根，但**循环必须遍历这个根**
-    if root.is_some_and(|r| iterates(body, r)) && counter_bound(body) {
-        return true;
     }
     // ⑥ 正对照（R112）：正极性 `any`。⚠️ 登记局限：文本层核不到"同类型"。
     if positive_any(body) {
@@ -216,15 +236,6 @@ fn iterates_literal(body: &str, root: &str) -> bool {
     false
 }
 
-/// 运行期计数器下界（`assert!(checked >= 3)` 之类）。
-fn counter_bound(body: &str) -> bool {
-    [
-        "seen", "count", "total", "scanned", "checked", "visited", "hits",
-    ]
-    .iter()
-    .any(|n| body.contains(&format!("{n} >=")) || body.contains(&format!("{n} > ")))
-}
-
 /// `!x.is_empty()`（含 `!x.iter().is_empty()` 之外的常见写法）。
 fn non_empty_call(body: &str) -> bool {
     let bytes = body.as_bytes();
@@ -242,28 +253,6 @@ fn non_empty_call(body: &str) -> bool {
         }
         if index >= 1 && bytes[index - 1] == b'!' {
             return true;
-        }
-    }
-    false
-}
-
-/// 值界：`assert_eq!(x, [..])` / `assert_eq!(x, vec![..])` 且字面量非空。
-fn has_value_bound(body: &str) -> bool {
-    for marker in ["assert_eq!(", "assert_eq!(\n"] {
-        let mut rest = body;
-        while let Some(index) = rest.find(marker) {
-            let tail = &rest[index..];
-            let end = tail.find(");").map(|e| e + 1).unwrap_or(tail.len());
-            let call = &tail[..end.min(tail.len())];
-            let holds_literal = (call.contains('[') && call.contains(']'))
-                || (call.contains("vec![") && call.contains(']'));
-            if holds_literal && !call.contains("is_empty") {
-                let inner = call.split_once(',').map(|(_, rhs)| rhs).unwrap_or("");
-                if inner.contains(']') && inner.chars().any(|c| c.is_ascii_digit() || c == '"') {
-                    return true;
-                }
-            }
-            rest = &tail[2..];
         }
     }
     false
@@ -381,10 +370,6 @@ fn self_test_classifier() {
         "let v = f(); assert_eq!(v.len(), 4); assert!(v.iter().all(|x| *x > 0));",
         // ③ 非空
         "let v = f(); assert!(!v.is_empty()); assert!(v.iter().all(|x| *x > 0));",
-        // ④ 值界
-        "let v = f(); assert_eq!(v, vec![1, 2, 3]); assert!(v.iter().all(|x| *x > 0));",
-        // ⑤ 计数器
-        "let v = f(); let mut checked = 0; for x in &v { checked += 1; } assert!(checked >= 3); assert!(v.iter().all(|x| *x > 0));",
         // ⑥ 正对照
         "let v = f(); assert!(!v.iter().any(|x| *x > 0)); let c = g(); assert!(c.iter().any(|x| *x > 0));",
         // ⑦ 字面量集合
@@ -395,6 +380,12 @@ fn self_test_classifier() {
     let reds = [
         "let v = f(); assert!(v.iter().all(|x| *x > 0));",
         "let v = f(); assert!(!v.iter().any(|x| *x > 0));",
+        // ⚠️ R118：**只有值界**（元素值）⇒ 不界定集合大小 ⇒ 必须报无界
+        "let v = f(); assert_eq!(v[0], 5); assert!(v.iter().all(|x| *x > 0));",
+        // ⚠️ R118：**只有运行期计数器**（界定的是动作，不是被遍历集合）⇒ 必须报无界
+        "let v = f(); let mut checked = 0; for x in &v { checked += 1; } assert!(checked >= 3); assert!(v.iter().all(|x| *x > 0));",
+        // ⚠️ R119：近名（`bb` 不得给 `b` 记界）
+        "let v = f(); let bb = g(); assert!(bb.len() >= 2); assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ 专打 ⑦ 的过宽：别处有 `..`，但被量化的集合**不是**字面量
         "let v = f(); for i in 0..3 { let _ = i; } assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ 同上：别处有 `for … in [..]`，但被量化的集合不是它
@@ -430,21 +421,38 @@ fn self_test_classifier() {
 fn no_unbounded_all_any_assertion_in_this_crate() {
     self_test_classifier();
 
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // 覆盖面：`src/**` ＋ `tests/**`（含 `tests/support/`）。
+    // ⚠️ 早先只扫 `src/**` ⇒ `tests/**` 里的量词断言不受本判据管辖（已登记为局限）；
+    // 现在**纳入**（本文件自身也在其中 —— 自测夹具都是**字符串**，会被掩码，⛔ 不会自伤）。
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dirs = [
+        root.join("src"),
+        root.join("tests"),
+        root.join("tests").join("support"),
+    ];
     let mut sources = Vec::new();
-    for entry in fs::read_dir(&dir).expect("read src/") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let text = fs::read_to_string(&path).expect("read source");
-            sources.push((path, text));
+    for dir in &dirs {
+        for entry in fs::read_dir(dir).expect("read source dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let text = fs::read_to_string(&path).expect("read source");
+                sources.push((path, text));
+            }
         }
     }
     // ⭐ R93：先钉住被扫集合**非空且达下界** —— 否则本判据会随着"文件没读到"真空通过。
     assert!(
-        sources.len() >= 8,
+        sources.len() >= 12,
         "R93: the source scan must not go empty, got {}",
         sources.len()
     );
+    for dir in &dirs {
+        assert!(
+            sources.iter().any(|(path, _)| path.starts_with(dir)),
+            "every scanned directory must contribute: {}",
+            dir.display()
+        );
+    }
 
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
