@@ -1697,6 +1697,12 @@ mod tests {
             &[("conv_ir_decay_s", f32::NAN), ("conv_ir_seed", f32::NAN)],
         )]);
         let plan = nan.convolution().expect("`conv_` 名字出现过 ⇒ 必须武装");
+        // ⭐ **R114／R125（本判据的实缺口）**：空 IR 是**缺陷**（器件没产出）⇒
+        // 先钉**集合非空**，否则下面的 `all(..)` 在空 IR 上**恒真**、什么也没测。
+        assert!(
+            !plan.ir().is_empty(),
+            "夹具前提：IR 必须非空（空 IR 会让下面的 all(..) 恒真）"
+        );
         assert!(
             plan.ir().iter().all(|v| v.is_finite()),
             "非有限旋钮不许产出非有限 IR（那会让器件整台拒绝）"
@@ -1709,13 +1715,12 @@ mod tests {
             false,
             &[("conv_ir_decay_s", 1e30)],
         )]);
+        let huge_ir = huge.convolution().expect("必须武装").ir().to_vec();
         assert!(
-            huge.convolution()
-                .expect("必须武装")
-                .ir()
-                .iter()
-                .all(|v| v.is_finite())
+            !huge_ir.is_empty(),
+            "夹具前提：极大衰减的 IR 必须非空（空 IR 会让 all(..) 恒真）"
         );
+        assert!(huge_ir.iter().all(|v| v.is_finite()));
 
         // 负种子：`f32 → u32` 是饱和转换 ⇒ 0 ⇒ `Rng::new` 换成内部常数。有定义、不 panic。
         let negative = from_devices(&[device(
@@ -1723,14 +1728,12 @@ mod tests {
             false,
             &[("conv_ir_seed", -123.0)],
         )]);
+        let negative_ir = negative.convolution().expect("必须武装").ir().to_vec();
         assert!(
-            negative
-                .convolution()
-                .expect("必须武装")
-                .ir()
-                .iter()
-                .all(|v| v.is_finite())
+            !negative_ir.is_empty(),
+            "夹具前提：负种子的 IR 必须非空（空 IR 会让 all(..) 恒真）"
         );
+        assert!(negative_ir.iter().all(|v| v.is_finite()));
     }
 
     /// 三件器件**各自独立**取来源：同一台设备可以同时是三者的来源（模块文档 §9 的
