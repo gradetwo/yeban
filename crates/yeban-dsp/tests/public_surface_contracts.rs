@@ -34,7 +34,8 @@ use yeban_dsp::convolution_reverb::ConvolutionReverbParams;
 use yeban_dsp::convolution_stereo::TrueStereoConvolution;
 use yeban_dsp::delay::DelayParams;
 use yeban_dsp::drums::{
-    DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice, KickParams, SnareParams,
+    ClapParams, DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice, HiHatParams,
+    KickParams, SnareParams,
 };
 use yeban_dsp::math::{db_to_gain, lerp};
 use yeban_dsp::meter::{TruePeakDetector, dbfs};
@@ -42,7 +43,7 @@ use yeban_dsp::oversample::Oversampler2x;
 use yeban_dsp::polysynth::PolySynthParams;
 use yeban_dsp::polysynth::{NoteEvent, OscSettings, PolySynth, VOICES_PER_SLOT};
 use yeban_dsp::reverb::ReverbParams;
-use yeban_dsp::shaping::EqParams;
+use yeban_dsp::shaping::{CrushParams, EqParams};
 use yeban_dsp::smoothing::ParamSmoother;
 
 /// 判据用的采样率（Hz）。
@@ -509,6 +510,37 @@ fn the_documented_defaults_are_pinned_by_literals() {
     assert_eq!(kit.master_level.to_bits(), 1.0f32.to_bits());
     assert_eq!(kit.kick.tune_hz.to_bits(), 55.0f32.to_bits());
     assert_eq!(kit.snare.tone_hz.to_bits(), 185.0f32.to_bits());
+
+    // 位深整形参数：16 bit、无降采样、无抗混叠（默认最透明的一侧）。
+    let crush = CrushParams::default();
+    assert_eq!(
+        crush.bits.to_bits(),
+        16.0f32.to_bits(),
+        "默认不能是最粗糙的 4 bit"
+    );
+    assert_eq!(crush.down.to_bits(), 1.0f32.to_bits());
+    assert_eq!(crush.aa.to_bits(), 0.0f32.to_bits());
+
+    // 鼓机：闭/开镲参数。
+    let hat = HiHatParams::default();
+    assert_eq!(hat.base_hz.to_bits(), 320.0f32.to_bits());
+    assert_eq!(hat.highpass_hz.to_bits(), 6_000.0f32.to_bits());
+    assert_eq!(hat.lowpass_hz.to_bits(), 14_000.0f32.to_bits());
+    assert_eq!(hat.attack_s.to_bits(), 0.0005f32.to_bits());
+    assert_eq!(hat.closed_decay_s.to_bits(), 0.045f32.to_bits());
+    assert_eq!(hat.open_decay_s.to_bits(), 0.32f32.to_bits());
+    assert_eq!(hat.level.to_bits(), 0.7f32.to_bits(), "默认不能是静音");
+
+    // 鼓机：拍手参数。
+    let clap = ClapParams::default();
+    assert_eq!(clap.highpass_hz.to_bits(), 2_000.0f32.to_bits());
+    assert_eq!(clap.lowpass_hz.to_bits(), 5_000.0f32.to_bits());
+    assert_eq!(clap.bursts, 4);
+    assert_eq!(clap.burst_decay_s.to_bits(), 0.012f32.to_bits());
+    assert_eq!(clap.burst_spacing_s.to_bits(), 0.010f32.to_bits());
+    assert_eq!(clap.attack_s.to_bits(), 0.0005f32.to_bits());
+    assert_eq!(clap.decay_s.to_bits(), 0.22f32.to_bits());
+    assert_eq!(clap.level.to_bits(), 0.8f32.to_bits(), "默认不能是静音");
 
     let mut os_default = Oversampler2x::default();
     let mut os_new = Oversampler2x::new();
