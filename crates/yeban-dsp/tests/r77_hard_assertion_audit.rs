@@ -213,20 +213,74 @@ fn read_evidence_text(path: &Path) -> (String, bool) {
     (raw.replace("\r\n", "\n"), had_crlf)
 }
 
-/// 判据体（含前置文档注释）里是否声明了平台依赖。
+/// 判据（含**紧邻其上的连续上下文**）里是否声明了平台依赖。
+///
+/// ⭐ **R140**：窗口**不是固定宽度**，而是**函数体边界** ＋ 向上的**连续上下文**
+/// （`///`／`//!`／`#[…]`／`//`／空行都算，遇到别的代码即停）。
+/// 固定宽度的两种错法：**太窄 ⇒ 漏**（假阳）；**太宽 ⇒ 借到邻居的标记**（假阴，R114 明禁）。
+///
+/// ⭐ **R133 near-miss**：函数名用 [`fn_spans`] 的**精确相等**匹配，
+/// ⛔ 不是 `contains("fn {test}(")` —— 后者会把 `fn {test}_x(` 借给 `{test}`。
 fn declares_platform_dependence(file_src: &str, test: &str) -> bool {
-    let Some(at) = file_src.find(&format!("fn {test}(")) else {
+    let Some(span) = fn_spans(file_src).into_iter().find(|s| s.name == test) else {
         return false;
     };
-    let start = file_src[..at].rfind("\n\n\n").map_or(0, |p| p + 1);
-    let head_end = at;
-    // ⚠ 必须落在**字符边界**上：源码里有中文注释 ⇒ 按字节偏移切片会 panic。
-    let mut tail_end = (at + 1_200).min(file_src.len());
-    while tail_end < file_src.len() && !file_src.is_char_boundary(tail_end) {
-        tail_end += 1;
+    // ⚠ 先定位 `fn` **自己所在的行**，再从它的**上一行**开始向上走连续上下文
+    // （第一版直接从 `span.start` 往上找换行 ⇒ 拿到的是 `fn` 那行本身 ⇒ 立刻 break ⇒ 永远漏标记）。
+    let lines: Vec<&str> = file_src.split('\n').collect();
+    let mut offset = 0usize;
+    let mut fn_line = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        if offset <= span.start && span.start <= offset + line.len() {
+            fn_line = index;
+            break;
+        }
+        offset += line.len() + 1;
     }
-    let region = format!("{}{}", &file_src[start..head_end], &file_src[at..tail_end]);
+    let mut start_line = fn_line;
+    while start_line > 0 {
+        let prev = lines.get(start_line - 1).copied().unwrap_or("");
+        let trimmed = prev.trim_start();
+        let is_context = trimmed.is_empty()
+            || trimmed.starts_with("///")
+            || trimmed.starts_with("//!")
+            || trimmed.starts_with("#[")
+            || trimmed.starts_with("//");
+        if !is_context {
+            break;
+        }
+        start_line -= 1;
+    }
+    let mut start = 0usize;
+    for line in lines.iter().take(start_line) {
+        start += line.len() + 1;
+    }
+    let region = &file_src[start..span.end];
     PLATFORM_MARKERS.iter().any(|m| region.contains(m))
+}
+
+/// **函数体里是否调用了 `name`**。
+///
+/// ⭐ **R133 near-miss**：`my_bar(` ⛔ 不算调用 `bar` —— 匹配处**前一个字符**不得是
+/// 标识符字符（字母/数字/下划线）。这正是 `contains(&format!("{name}("))` 的孪生点缺陷。
+fn calls_function(body: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
+    let mut cursor = 0usize;
+    while let Some(p) = body[cursor..].find(&needle) {
+        let at = cursor + p;
+        let boundary_ok = match body[..at].chars().next_back() {
+            None => true,
+            Some(prev) => !(prev.is_alphanumeric() || prev == '_'),
+        };
+        if boundary_ok {
+            return true;
+        }
+        cursor = at + needle.len();
+        if cursor >= body.len() {
+            break;
+        }
+    }
+    false
 }
 
 /// 源码里出现的宿主超越函数名（去重、排序）。
@@ -345,8 +399,8 @@ fn classify_source(file: &str, src: &str) -> Vec<Row> {
             if *other == name {
                 continue;
             }
-            let needle = format!("{other}(");
-            if body.contains(&needle) {
+            // ⭐ R133：用带标识符边界的 `calls_function`，⛔ 不用裸 `contains("{name}(")`。
+            if calls_function(body, other) {
                 set.insert((*other).clone());
             }
         }
@@ -393,7 +447,7 @@ fn classify_source(file: &str, src: &str) -> Vec<Row> {
         let mut reached = BTreeSet::new();
         let mut direct = BTreeSet::new();
         for other in &prod_names {
-            if body.contains(&format!("{other}(")) {
+            if calls_function(body, other) {
                 direct.insert((*other).clone());
             }
         }
@@ -761,5 +815,77 @@ fn every_platform_dependent_criterion_declares_its_platform_dependence() {
         platform.len(),
         marked,
         entries.len()
+    );
+}
+
+/// ⭐ **R133 孪生点对照**：两处**标识符匹配**都配 near-miss 对照。
+///
+/// 本会话已因孪生点踩坑 5 次（函数体 vs 条件路径／宏名／`find_token`／子串绑定…），
+/// 因此**凡 `find`／`contains`／`ends_with` 匹配标识符处**都必须有对照：
+/// - ① [`declares_platform_dependence`] 用 [`fn_spans`] 的**精确相等**匹配函数名
+///   ⇒ `fn foo_x()` 上的标记 ⛔ **不得**借给 `fn foo()`；
+/// - ② [`calls_function`] 带**标识符边界**
+///   ⇒ `my_bar(` ⛔ **不得**算作调用 `bar`（这正是裸 `contains("bar(")` 的孪生点缺陷）。
+#[test]
+fn identifier_matching_has_near_miss_controls() {
+    // ① 函数名匹配：精确相等。
+    let neighbour = "mod tests {\n    /// 冻结架构\n    #[test]\n    fn foo_x() {}\n    #[test]\n    fn foo() { assert_eq!(1u32, 1); }\n}\n";
+    assert!(
+        !declares_platform_dependence(neighbour, "foo"),
+        "`fn foo_x()` 的标记 ⛔ 不得借给 `fn foo()`（孪生点：前缀匹配）"
+    );
+    let self_marked = "mod tests {\n    /// 冻结架构\n    #[test]\n    fn foo() { assert_eq!(1u32, 1); }\n    #[test]\n    fn foo_x() {}\n}\n";
+    assert!(
+        declares_platform_dependence(self_marked, "foo"),
+        "紧邻 `fn foo()` 上方的标记必须算作它已标注"
+    );
+
+    // ② 调用匹配：标识符边界。
+    assert!(
+        !calls_function("fn user() { my_bar() }", "bar"),
+        "`my_bar(` ⛔ 不得算作调用 `bar`（孪生点：后缀/子串匹配）"
+    );
+    assert!(
+        !calls_function("fn user() { bar_x() }", "bar"),
+        "`bar_x(` ⛔ 不得算作调用 `bar`"
+    );
+    assert!(
+        calls_function("fn user() { bar() }", "bar"),
+        "`bar(` 必须算作调用 `bar`（否则对照自身真空）"
+    );
+    assert!(
+        calls_function("fn user() { self.bar() }", "bar"),
+        "`self.bar(` 必须算作调用 `bar`（`.` 不是标识符字符）"
+    );
+
+    // ③ 端到端：**受控实验**（R91）——同一判据形态，只改一处调用名。
+    // 可达集的定义是 {直接调用的产线函数} ∪ {它们的传递闭包}，所以
+    // 调用 `user()`（它又调用 `my_bar()`）时正确计数是 **2**；若把 `my_bar(` 误当成
+    // `bar(`（孪生点缺陷），`bar` 会额外进来 ⇒ **3**。
+    let near_miss = "fn bar() -> f32 { 1.0 }\nfn my_bar() -> f32 { 2.0 }\nfn user() -> f32 { my_bar() }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { assert_eq!(user().to_bits(), 0x3f80_0000); }\n}\n";
+    let rows = classify_source("synthetic2.rs", near_miss);
+    let row = rows.iter().find(|r| r.test == "t").expect("必须扫到 t");
+    assert_eq!(
+        row.reach, 2,
+        "调用 `my_bar()` 的正确可达计数是 2（`user` ＋ `my_bar`）——          孪生点缺陷会额外把 `bar` 算进来 ⇒ 3（实得 {}）",
+        row.reach
+    );
+    assert_eq!(
+        row.class,
+        Class::HardAssertable,
+        "这三个产线函数都无超越函数 ⇒ 必须判可硬断言（顺带确认分类没被计数带偏）"
+    );
+
+    // 正对照：真的调用 `bar()` 时计数必须是 3（⇒ 上一条的"2"不是因为少算了东西）。
+    let real_call = near_miss.replace(
+        "fn user() -> f32 { my_bar() }",
+        "fn user() -> f32 { bar() + my_bar() }",
+    );
+    let rows2 = classify_source("synthetic3.rs", &real_call);
+    let row2 = rows2.iter().find(|r| r.test == "t").expect("必须扫到 t");
+    assert_eq!(
+        row2.reach, 3,
+        "真调用 `bar()` 与 `my_bar()` 时可达计数必须是 3（实得 {}）——          否则『2』只是因为少算了",
+        row2.reach
     );
 }

@@ -592,6 +592,8 @@ impl WavetableOscillator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
+    // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
     /// **判据（新写，可红）**：`Lfo::reset` 之后的 LFO 与**全新实例**在同样的速率下
     /// 逐位一致（相位与输出都回到周期起点）。
@@ -1089,6 +1091,8 @@ mod tests {
         assert!(oscillator.level() <= before.max(table.level_for(2093.0, 96_000.0)));
         assert_eq!(oscillator.level(), table.level_for(2093.0, 96_000.0));
     }
+    // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
+    // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
     /// **判据（新写，可红）**：非有限**相位**不得写进递归状态。
     ///

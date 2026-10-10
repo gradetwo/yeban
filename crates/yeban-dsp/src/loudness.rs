@@ -964,6 +964,8 @@ mod tests {
             "3 个坏样本不得污染整段读数: {loudness} vs {reference}"
         );
     }
+    // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
+    // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
     /// 判据：同输入同输出**逐位**一致（计量是确定性的）。
     #[test]
@@ -1455,6 +1457,8 @@ mod tests {
         assert!(!quiet.momentary_lufs().is_nan());
         assert!(!quiet.short_term_lufs().is_nan());
     }
+    // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
+    // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
     /// 判据：**单声道口径 = 单通道能量**（**不是**"同一个信号喂两个通道"）。
     ///
@@ -1514,6 +1518,8 @@ mod tests {
             GatedLoudness::integrated_stereo_at(96_000.0, &tone_96k, &silent_96k).expect("96 kHz");
         assert_eq!(mono_96k.to_bits(), stereo_96k.to_bits());
     }
+    // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
+    // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
     /// 判据：门限计量的**确定性 + 分块不变性**（实时路径会按任意块长喂入）。
     #[test]

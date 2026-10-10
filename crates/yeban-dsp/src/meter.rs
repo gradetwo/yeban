@@ -1685,6 +1685,8 @@ mod tests {
         }
         (re * re + im * im).sqrt()
     }
+    // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
+    // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
     /// 判据：真峰值检测器`process` 是确定性的（同输入同输出位模式）。
     #[test]
@@ -2382,6 +2384,8 @@ mod tests {
         detector.reset();
         assert_eq!(detector.latency_samples(), TRUE_PEAK_LATENCY_SAMPLES);
     }
+    // 平台感知（R135／裁决 R24-R25）：本位型比较只在本架构（冻结架构）上有意义，
+    // 异平台不上比对绝对值（CI 的 windows 腿只跑非位型部分）。
 
     /// **判据（新写，可红）**：真峰值读数**恒有限**（`+inf` 不可达）。
     ///
