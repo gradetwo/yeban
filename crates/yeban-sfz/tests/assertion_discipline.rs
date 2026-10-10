@@ -159,10 +159,8 @@ fn has_non_vacuity_evidence(body: &str, root: Option<&str>) -> bool {
         }
     }
     // ⑤ 运行期计数器：计数器语句本身不含根，但**循环必须遍历这个根**
-    if let Some(r) = root {
-        if iterates(body, r) && counter_bound(body) {
-            return true;
-        }
+    if root.is_some_and(|r| iterates(body, r)) && counter_bound(body) {
+        return true;
     }
     // ⑥ 正对照（R112）：正极性 `any`。⚠️ 登记局限：文本层核不到"同类型"。
     if positive_any(body) {
@@ -222,21 +220,6 @@ fn counter_bound(body: &str) -> bool {
     ]
     .iter()
     .any(|n| body.contains(&format!("{n} >=")) || body.contains(&format!("{n} > ")))
-}
-
-/// `assert_eq!(… .len(), N)` —— R111 的「宏隐式相等」形态。
-fn has_assert_eq_on_len(body: &str) -> bool {
-    let mut rest = body;
-    while let Some(index) = rest.find("assert_eq!(") {
-        let tail = &rest[index..];
-        let end = tail.find(");").map(|e| e + 1).unwrap_or(tail.len());
-        let call = &tail[..end.min(tail.len())];
-        if call.contains(".len(),") {
-            return true;
-        }
-        rest = &tail[2..];
-    }
-    false
 }
 
 /// `!x.is_empty()`（含 `!x.iter().is_empty()` 之外的常见写法）。
