@@ -2312,13 +2312,31 @@ mod tests {
             let output = resample_interleaved(&input, 1, in_rate, out_rate)
                 .unwrap_or_else(|err| panic!("{in_rate} -> {out_rate}: {err}"));
             let frames = output.len();
+            // ⚠ R93（非真空断言）：**先**证明被扫集合非空且达到下界。否则一旦 `frames` 为 0
+            // （或小到中段为空），`seconds` 与 `expected` 都会是 0，而 `measured` 也是 0
+            // ⇒ 下面的容差断言 **`0 <= 2` 真空通过**。本 crate 的这条判据此前就缺这一层。
+            assert!(
+                frames > 10,
+                "{in_rate} -> {out_rate}: a degenerate buffer ({frames} frames) would make the \
+                 zero-crossing scan vacuous"
+            );
             let lo = frames / 10;
             let hi = frames - frames / 10;
             let middle = &output[lo..hi];
+            assert!(
+                !middle.is_empty(),
+                "{in_rate} -> {out_rate}: the scanned middle must not be empty"
+            );
             let seconds = (hi - lo) as f64 / f64::from(out_rate);
             // 一个 1 kHz 正弦每秒过零 2 × 1000 次。
             let expected = 2.0 * 1_000.0 * seconds;
             let measured = zero_crossings(middle) as f64;
+            // 下界断言：0.08 s 的 1 kHz 正弦应当有约 160 次过零 ⇒ 远大于 100。
+            assert!(
+                measured > 100.0,
+                "{in_rate} -> {out_rate}: expected a large crossing count over {seconds:.3} s, \
+                 measured {measured} — a tiny count means the scan was vacuous"
+            );
             assert!(
                 (measured - expected).abs() <= 2.0,
                 "{in_rate} -> {out_rate}: a 1 kHz tone must stay 1 kHz; expected about \

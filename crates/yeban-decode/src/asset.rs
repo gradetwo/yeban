@@ -640,6 +640,12 @@ mod tests {
         };
         let check = |count: usize| {
             let samples: Vec<f32> = (0..count).map(|index| index as f32 * 0.031_25).collect();
+            // R93：本判据下面要遍历 `&samples` 断言性质 ⇒ 先证明这个集合非空
+            // （调用方的 `1..=600` 已经排除 0，这里把它写成显式断言）。
+            assert!(
+                !samples.is_empty(),
+                "the staged sample set must not be empty"
+            );
             let asset = DecodedAsset::new(facts.clone(), samples.clone());
             // 独立重建规范字节流 —— 这份代码不看 `pcm_hash` 的实现，只按模块文档的口径写。
             let mut stream: Vec<u8> = Vec::new();
