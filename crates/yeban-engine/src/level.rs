@@ -38,6 +38,14 @@ pub use yeban_dsp::meter::{
     dbfs_clamped, sanitize_sample, supersedes,
 };
 
+// **换域转发**（裁决 R55，自动化接线）：控制侧要把 `AutomationTarget::TrackVolume` 的
+// **分贝**值换成音频线程增益槽位收的**线性乘子**。这一步的唯一实现在
+// `yeban_dsp::math`；`yeban-app` 不依赖 `yeban-dsp`（依赖方向是 app → engine），
+// 因此由引擎转发。⛔ 这不是"引擎私藏第二份 `exp2`"：下面的
+// `the_forwarded_db_to_gain_is_literally_the_dsp_function` 用**函数指针地址**把两者
+// 绑成同一个符号。
+pub use yeban_dsp::math::db_to_gain;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,5 +532,34 @@ mod tests {
         let measured = true_peak.process(&block);
         assert!(sample_peak < 0.72);
         assert!(measured > 0.999, "真峰值应抓到采样点之间的过冲: {measured}");
+    }
+
+    /// 判据（裁决 **R55**）：`crate::level::db_to_gain` **就是** `yeban_dsp::math::db_to_gain`
+    /// —— 同一份实现，不是第二份。
+    ///
+    /// **为什么需要这条转发**：自动化接线（R55）要把 `AutomationTarget::TrackVolume` 的
+    /// **分贝**值换成音频线程增益槽位收的**线性乘子**，而 `yeban-app` 不依赖 `yeban-dsp`
+    /// （依赖方向是 app → engine）⇒ 由引擎转发这一步换域。
+    /// ⛔ 转发**不允许**退化成"引擎私藏第二份 `exp2`"：下面的函数指针比较把它绑成同一个符号
+    /// （引擎若自己定义一份，`fn_addr_eq` 变红；若删掉转发，本文件编译不过）。
+    ///
+    /// **量什么**：两个函数指针地址是否相等（布尔），以及换域的两个端点值。
+    #[test]
+    fn the_forwarded_db_to_gain_is_literally_the_dsp_function() {
+        let engine: fn(f32) -> f32 = db_to_gain;
+        let dsp: fn(f32) -> f32 = yeban_dsp::math::db_to_gain;
+        assert!(
+            core::ptr::fn_addr_eq(engine, dsp),
+            "引擎的 `db_to_gain` 必须就是 dsp 的那一份实现（函数指针地址相同）"
+        );
+        // 非空证明：它真的做换域（0 dB → 1.0 乘子；-6.0206 dB → 约 0.5）。
+        assert!(
+            (db_to_gain(0.0) - 1.0).abs() < 1e-6,
+            "0 dB 必须换域成乘子 1.0"
+        );
+        assert!(
+            (db_to_gain(-6.020_6) - 0.5).abs() < 1e-3,
+            "-6.0206 dB 必须换域成约 0.5"
+        );
     }
 }
