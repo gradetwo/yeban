@@ -3245,6 +3245,11 @@ mod tests {
     #[test]
     fn every_rule_can_produce_a_chord_sketch() {
         // 端到端：从流派规则直接产出 4 小节和弦骨架。
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let spans = rule.sketch(PitchClass::C, 4).unwrap_or_else(|err| {
                 panic!("{}: sketch failed: {err}", rule.id);
@@ -3278,6 +3283,11 @@ mod tests {
         // 拍号的小节；否则 `meter_value()` 这个公开取值口没有任何消费者，
         // 规则数据与实际时长静默不一致。
         let mut non_common = 0usize;
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let meter = rule.meter_value();
             let bars = 4u64;
@@ -3510,6 +3520,11 @@ mod tests {
         // 从未被选中，其余位置全部可达。这不是缺陷：那 5 个位置的种类与先出现的
         // 那一条**逐位相同**，`scale_for` 返回的是种类，因此观察不到差别。
         let mut unreachable: Vec<(&str, Vec<usize>)> = Vec::new();
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let count = rule.scale_count();
             // 预先算一次每个位置的种类，避免在内层循环里反复构造 `Scale`。
@@ -3589,6 +3604,11 @@ mod tests {
         let (mut progressions, mut scales) = (0usize, 0usize);
         let mut progression_histogram = [0usize; 8];
         let mut scale_histogram = [0usize; 8];
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             progressions += rule.progression_count();
             scales += rule.scale_count();
@@ -3678,6 +3698,11 @@ mod tests {
         // 不偷偷去重）。
         let mut genres_with_an_alias = 0usize;
         let mut duplicate_kind_entries = 0usize;
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let mut kinds: Vec<&str> = Vec::new();
             let mut aliased = false;
@@ -3706,6 +3731,11 @@ mod tests {
         // 数什么：对每条流派，种子 0..64 里能取到多少个**不同的**登记条目。
         // 单位 = 条（走向）/ 个（音阶，按 kind 去重后的口径）。
         let (mut distinct_kinds, mut duplicate_kind_entries) = (0usize, 0usize);
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let mut registered_kinds: Vec<&str> = Vec::new();
             for index in 0..rule.scale_count() {
@@ -4125,6 +4155,10 @@ mod tests {
         // （不知道 `drum_style` 的那一个）逐位相同。
         // 数什么：比较过的 (流派, onset 数) 组合个数，单位 = "个"。
         let mut compared = 0usize;
+        assert!(
+            !GenreLibrary::by_drum_style(DrumStyle::Metric).is_empty(),
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::by_drum_style(DrumStyle::Metric) {
             for onsets in [1u32, 2, 3, 4, 8] {
                 let Ok(Some(pattern)) = rule.drum_pattern(2, onsets) else {
@@ -4308,6 +4342,11 @@ mod tests {
         let mut density_high = 0u32;
         let mut swing_some = 0usize;
         let mut non_common = 0usize;
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             bpm_low += u32::from(rule.default_bpm_range.0);
             bpm_high += u32::from(rule.default_bpm_range.1);
@@ -4350,6 +4389,11 @@ mod tests {
         use std::collections::BTreeMap;
         fn histogram(value_of: impl Fn(&GenreRule) -> (u32, u32)) -> BTreeMap<(u32, u32), usize> {
             let mut map: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+            assert_eq!(
+                GenreLibrary::all().len(),
+                182,
+                "scan domain must not shrink"
+            );
             for rule in GenreLibrary::all() {
                 *map.entry(value_of(rule)).or_insert(0) += 1;
             }

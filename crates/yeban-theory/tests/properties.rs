@@ -661,9 +661,11 @@ proptest! {
         prop_assert_eq!(grid.swing_permille(), rule.swing_permille()?);
         prop_assert_eq!(grid.total_ticks(), u64::from(bars) * rule.meter_value().ticks_per_bar());
         let bar_ticks = rule.meter_value().ticks_per_bar();
+        assert!(!grid.hits().is_empty(), "scan domain must not shrink");
         for pair in grid.hits().windows(2) {
             prop_assert!(pair[0].tick < pair[1].tick);
         }
+        assert!(!grid.hits().is_empty(), "scan domain must not shrink");
         for hit in grid.hits() {
             let bar_start = u64::from(hit.bar) * bar_ticks;
             prop_assert!(hit.tick >= bar_start && hit.tick < bar_start + bar_ticks);
@@ -696,6 +698,7 @@ proptest! {
         let swung = swung_metric_grid(meter, bars, onsets, Some(1000))?;
         prop_assert_eq!(straight.len(), swung.len());
         // 平直网格必须正好落在 16 分格点上。
+        assert!(!straight.hits().is_empty(), "scan domain must not shrink");
         for hit in straight.hits() {
             prop_assert_eq!(hit.tick % 240, 0);
         }
@@ -705,10 +708,12 @@ proptest! {
         ticks.sort_unstable();
         ticks.dedup();
         prop_assert_eq!(ticks.len(), count);
+        assert!(!swung.hits().is_empty(), "scan domain must not shrink");
         for pair in swung.hits().windows(2) {
             prop_assert!(pair[0].tick < pair[1].tick);
         }
         // 摇摆只把后半格点向右移，前半格点逐位不动。
+        assert!(!swung.hits().is_empty() && !straight.hits().is_empty(), "scan domain must not shrink");
         for (plain, moved) in straight.hits().iter().zip(swung.hits()) {
             prop_assert_eq!(plain.bar, moved.bar);
             prop_assert_eq!(plain.cell, moved.cell);
@@ -733,6 +738,11 @@ proptest! {
 #[test]
 fn a_bar_of_beats_selects_exactly_the_beat_grid() {
     let mut meters = std::collections::BTreeSet::new();
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     for rule in GenreLibrary::all() {
         meters.insert(rule.meter);
     }
@@ -751,6 +761,8 @@ fn a_bar_of_beats_selects_exactly_the_beat_grid() {
         assert_eq!(got, want, "{numerator}/{denominator}");
         // 每个 onset 的 tick 恒是"每拍 tick 数"的整数倍。
         let ticks_per_beat = meter.ticks_per_bar() / u64::from(beats);
+        assert!(!grid.hits().is_empty(), "scan domain must not shrink");
+        assert!(!grid.hits().is_empty(), "scan domain must not shrink");
         for hit in grid.hits() {
             assert_eq!(hit.tick % ticks_per_beat, 0, "{numerator}/{denominator}");
         }
@@ -855,9 +867,11 @@ proptest! {
         prop_assert_eq!(grid.swing_permille(), permille);
 
         let bar_ticks = meter.ticks_per_bar();
+        assert!(!grid.hits().is_empty(), "scan domain must not shrink");
         for window in grid.hits().windows(2) {
             prop_assert!(window[0].tick < window[1].tick, "{:?}", window);
         }
+        assert!(!grid.hits().is_empty(), "scan domain must not shrink");
         for hit in grid.hits() {
             let bar_start = u64::from(hit.bar) * bar_ticks;
             prop_assert!(hit.tick >= bar_start && hit.tick < bar_start + bar_ticks);
@@ -898,6 +912,11 @@ proptest! {
 #[test]
 fn the_builtin_hierarchy_survives_the_grouping_api_on_every_registered_meter() {
     let mut meters = std::collections::BTreeSet::new();
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     for rule in GenreLibrary::all() {
         meters.insert(rule.meter);
     }
@@ -960,6 +979,11 @@ fn every_genre_produces_a_melody_in_its_own_scale() {
     let mut checked = 0usize;
     let mut notes_checked = 0usize;
     let mut strong_beats_checked = 0usize;
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     for rule in GenreLibrary::all() {
         let key = rule
             .primary_scale(PitchClass::C)
@@ -992,6 +1016,10 @@ fn every_genre_produces_a_melody_in_its_own_scale() {
             assert_eq!(melody.swing_permille(), rule.swing_permille().unwrap());
             assert_eq!(melody.seed(), seed);
             // onset 逐位取自网格。
+            assert!(
+                !melody.notes().is_empty() && !grid.hits().is_empty(),
+                "scan domain must not shrink"
+            );
             for (note, hit) in melody.notes().iter().zip(grid.hits()) {
                 assert_eq!(note.start_tick, hit.tick, "{}", rule.id);
                 assert_eq!(note.bar, hit.bar, "{}", rule.id);
@@ -1016,6 +1044,7 @@ fn every_genre_produces_a_melody_in_its_own_scale() {
                 assert!(note.duration_ticks > 0, "{}", rule.id);
                 notes_checked += 1;
             }
+            assert!(!melody.notes().is_empty(), "scan domain must not shrink");
             for pair in melody.notes().windows(2) {
                 assert!(
                     pair[0].pitch.abs_diff(pair[1].pitch) <= 12,
@@ -1039,6 +1068,7 @@ fn every_genre_produces_a_melody_in_its_own_scale() {
                 rule.id
             );
             // 强拍：窗口里有和弦音时，那个音必须是和弦音（默认窗口下恒成立）。
+            assert!(!melody.notes().is_empty(), "scan domain must not shrink");
             for note in melody.notes() {
                 if note.weight < 1 {
                     continue;
@@ -1097,6 +1127,7 @@ proptest! {
         prop_assert_eq!(melody.len(), grid.len());
         prop_assert_eq!(melody.total_ticks(), grid.total_ticks());
         prop_assert_eq!(melody.meter(), rule.meter_value());
+        assert!(!melody.notes().is_empty() && !grid.hits().is_empty(), "scan domain must not shrink");
         for (note, hit) in melody.notes().iter().zip(grid.hits()) {
             prop_assert_eq!(note.start_tick, hit.tick);
             prop_assert_eq!(note.bar, hit.bar);
@@ -1104,6 +1135,7 @@ proptest! {
             let pc = PitchClass::new(note.pitch % 12)?;
             prop_assert!(key.contains(pc));
         }
+        assert!(!melody.notes().is_empty(), "scan domain must not shrink");
         for pair in melody.notes().windows(2) {
             prop_assert!(pair[0].pitch.abs_diff(pair[1].pitch) <= 12);
             prop_assert_eq!(pair[0].end_tick(), pair[1].start_tick);
@@ -1212,6 +1244,7 @@ fn every_genre_can_change_its_section_with_the_seed() {
             let melody = genre_melody_for(rule, PitchClass::C, 2, 4, seed).unwrap();
             let key = rule.scale_for(PitchClass::C, seed).unwrap();
             assert_eq!(melody.key(), key, "{}", rule.id);
+            assert!(!melody.notes().is_empty(), "scan domain must not shrink");
             for note in melody.notes() {
                 let pc = PitchClass::new(note.pitch % 12).unwrap();
                 assert!(key.contains(pc), "{} seed {seed}", rule.id);
@@ -1311,6 +1344,11 @@ proptest! {
 fn every_registered_genre_produces_a_well_formed_drum_pattern() {
     let mut checked = 0usize;
     let mut too_dense = 0usize;
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     for rule in GenreLibrary::all() {
         for onsets in [1u32, 2, 3, 4, 6, 8, 12] {
             let Ok(Some(pattern)) = rule.drum_pattern(2, onsets) else {
@@ -1335,6 +1373,7 @@ fn every_registered_genre_produces_a_well_formed_drum_pattern() {
             );
             assert_eq!(pattern.ticks_per_bar(), rule.meter_value().ticks_per_bar());
             assert!(pattern.hit_count(DrumVoice::HiHat) <= grid.len());
+            assert!(pattern.hits().len() >= 2, "scan domain must not shrink");
             for pair in pattern.hits().windows(2) {
                 assert!(
                     (pair[0].tick, pair[0].voice.ordinal())
@@ -1345,6 +1384,7 @@ fn every_registered_genre_produces_a_well_formed_drum_pattern() {
                     pair[1]
                 );
             }
+            assert!(!pattern.hits().is_empty(), "scan domain must not shrink");
             for hit in pattern.hits() {
                 assert!(hit.tick < pattern.total_ticks(), "{} {hit:?}", rule.id);
                 let onset = grid.hits().iter().find(|onset| {
@@ -1378,6 +1418,11 @@ fn every_registered_genre_produces_a_well_formed_drum_pattern() {
 /// `the_genre_drum_entry_point_reads_only_the_genres_own_registered_fields` 负责。
 #[test]
 fn swing_never_changes_which_voice_strikes_a_cell() {
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     for rule in GenreLibrary::all() {
         let Ok(straight) = rule.rhythm_grid(1, 8) else {
             continue;
@@ -1399,6 +1444,7 @@ fn swing_never_changes_which_voice_strikes_a_cell() {
             .unwrap()
             .unwrap();
             assert_eq!(swung.len(), plain.len(), "{}", rule.id);
+            assert!(!plain.hits().is_empty(), "scan domain must not shrink");
             for hit in plain.hits() {
                 assert!(
                     swung
@@ -1426,6 +1472,11 @@ fn swing_never_changes_which_voice_strikes_a_cell() {
 #[test]
 fn the_genre_drum_entry_point_reads_only_the_genres_own_registered_fields() {
     let mut compared = 0usize;
+    assert_eq!(
+        GenreLibrary::all().len(),
+        182,
+        "scan domain must not shrink"
+    );
     for rule in GenreLibrary::all() {
         for onsets in [1u32, 2, 4, 8] {
             let Ok(Some(pattern)) = rule.drum_pattern(2, onsets) else {
@@ -1480,6 +1531,7 @@ fn four_on_the_floor_genres_get_a_kick_where_the_metric_style_has_none() {
         )
         .unwrap()
         .unwrap();
+        assert!(!metric.hits().is_empty(), "scan domain must not shrink");
         for hit in metric
             .hits()
             .iter()

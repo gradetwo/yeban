@@ -1368,6 +1368,7 @@ mod tests {
                         "{meter:?} onsets {onsets}"
                     );
                     // 底鼓只增不减（组起点恒是拍的起点）。
+                    assert!(!metric.hits().is_empty(), "scan domain must not shrink");
                     for hit in metric
                         .hits()
                         .iter()
@@ -1428,6 +1429,7 @@ mod tests {
                     )
                     .unwrap()
                     .unwrap();
+                    assert!(!metric.hits().is_empty(), "scan domain must not shrink");
                     for hit in metric
                         .hits()
                         .iter()

@@ -375,6 +375,34 @@ fn test_bodies(masked: &str) -> Vec<(usize, usize)> {
     out
 }
 
+/// 去掉迭代链上的**回调**部分（`.filter(|h| …)` 里的 `h` 不是集合接收者）。
+///
+/// ⭐ 不这样做，多接收者规则会把闭包变量（`hit`）与路径（`DrumVoice`）也算成接收者，
+/// 从而要求"每个接收者都有集合大小界" —— 那是不可能满足的。
+fn iteration_chain(expr: &str) -> String {
+    let mut text = expr.to_owned();
+    for marker in [
+        ".filter(",
+        ".map(",
+        ".flat_map(",
+        ".any(",
+        ".all(",
+        ".find(",
+        ".position(",
+        ".fold(",
+        ".scan(",
+        ".try_fold(",
+        ".take_while(",
+        ".skip_while(",
+        ".inspect(",
+    ] {
+        if let Some(position) = text.find(marker) {
+            text.truncate(position);
+        }
+    }
+    text
+}
+
 /// 一段文本里出现的"接收者"标识集合（被 `.` 或 `::` 跟着的标识）
 fn receivers_in(expr: &str) -> Vec<String> {
     let chars: Vec<char> = expr.chars().collect();
@@ -469,7 +497,7 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
         let body_end = index.saturating_sub(1);
         let body = &masked[body_start..body_end];
         let scope = &masked[scope_start..scope_end];
-        let receivers = receivers_in(expr);
+        let receivers = receivers_in(&iteration_chain(expr));
         let locals = mutable_locals(&masked[scope_start..loop_pos]);
         // ⭐ R118 ⑤：只有"每轮**无条件**自增 1"的计数器才是集合大小的界；
         // 条件自增（在 `if` 里）或聚合（`+= n`）都不算。
@@ -479,8 +507,10 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
             .collect();
 
         // 作用域内**所有**断言（一次性收集），再按"接收者/累加器"绑定到本循环
-        let mut rooted_here = false;
         let mut counter_here = false;
+        // ⭐ 多接收者（`zip` 两个集合）：**每一个**接收者都必须被集合大小界覆盖。
+        let mut covered_receivers: Vec<String> = Vec::new();
+        let mut size_forms_here = false;
         for name in [
             "assert_eq",
             "assert_ne",
@@ -504,12 +534,15 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
                                 .collect::<Vec<_>>()
                         })
                         .collect();
-                    let receiver_mentioned =
-                        receivers.iter().any(|receiver| words.contains(receiver));
-                    // ⭐ R118：只有**界定集合大小**的形态（FORM_SET_SIZE 去掉计数器）能当"根绑定"。
-                    // 计数器单独处理（要求每轮无条件 +1），所以这里排除 FORM_COUNTER。
-                    if forms & (FORM_SET_SIZE & !FORM_COUNTER) != 0 && receiver_mentioned {
-                        rooted_here = true;
+                    // ⭐ R118/R119：只有**界定集合大小**的形态能当根绑定，而且
+                    // "接收者"与"集合大小形态"必须出现在**同一条断言**里。
+                    if forms & (FORM_SET_SIZE & !FORM_COUNTER) != 0 {
+                        size_forms_here = true;
+                        for receiver in &receivers {
+                            if words.contains(receiver) && !covered_receivers.contains(receiver) {
+                                covered_receivers.push(receiver.clone());
+                            }
+                        }
                     }
                     if mutated.iter().any(|ident| words.contains(ident)) {
                         counter_here = true;
@@ -519,6 +552,10 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
             }
         }
         // 累加器的形态判定：作用域内提到"本循环改动的标识"的 assert_eq!/assert! 也算形态 ④/⑤
+        // ⭐ 多接收者规则：`zip`/多集合循环的**每个**接收者都要有集合大小界。
+        let rooted_here = size_forms_here
+            && !receivers.is_empty()
+            && receivers.iter().all(|r| covered_receivers.contains(r));
         if counter_here && !rooted_here {
             counter_only += 1;
         } else if rooted_here {
@@ -726,7 +763,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         "runtime-collection loops in the criteria corpus"
     );
     assert_eq!(
-        total_rooted, 52,
+        total_rooted, 74,
         "loops covered by a receiver-bound assertion"
     );
     assert_eq!(
@@ -736,49 +773,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     // ⭐ **残余清单**（R97 的形态）：R118 收紧后分类器**不认**这 **23** 个循环。
     // 逐**条**钉住（文件 ＋ 循环表达式）⇒ 新增一条、删掉一条、或换一个循环都会红。
     // 每一行的"为什么认不到"记在 `docs/shape-d-audit.md` §1j。
-    let golden_residual: [(&str, &str); 23] = [
-        (
-            "src/voice_leading.rs",
-            "for ... in spans.iter().zip(result.voicings.iter())",
-        ),
-        ("src/genre.rs", "for ... in GenreLibrary::all()"),
-        ("src/genre.rs", "for ... in GenreLibrary::all()"),
-        ("src/genre.rs", "for ... in GenreLibrary::all()"),
-        ("src/genre.rs", "for ... in GenreLibrary::all()"),
-        (
-            "src/genre.rs",
-            "for ... in GenreLibrary::by_drum_style(DrumStyle::Metric)",
-        ),
-        ("src/genre.rs", "for ... in GenreLibrary::all()"),
-        ("src/genre.rs", "for ... in GenreLibrary::all()"),
-        ("src/melody.rs", "for ... in GenreLibrary::all()"),
-        (
-            "src/drum.rs",
-            "for ... in metric .hits() .iter() .filter(|hit| hit.voice == DrumVoice::Kick)",
-        ),
-        (
-            "src/drum.rs",
-            "for ... in metric .hits() .iter() .filter(|hit| hit.voice == DrumVoice::Kick)",
-        ),
-        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
-        ("tests/properties.rs", "for ... in grid.hits()"),
-        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
-        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
-        ("tests/properties.rs", "for ... in melody.notes()"),
-        ("tests/properties.rs", "for ... in grid.hits()"),
-        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
-        (
-            "tests/properties.rs",
-            "for ... in pattern.hits().windows(2)",
-        ),
-        ("tests/properties.rs", "for ... in pattern.hits()"),
-        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
-        ("tests/properties.rs", "for ... in GenreLibrary::all()"),
-        (
-            "tests/properties.rs",
-            "for ... in metric .hits() .iter() .filter(|hit| hit.voice == DrumVoice::Kick)",
-        ),
-    ];
+    let golden_residual: [(&str, &str); 1] = [("tests/properties.rs", "for ... in grid.hits()")];
     let mut expected: Vec<(String, String)> = golden_residual
         .iter()
         .map(|(file, expr)| ((*file).to_owned(), (*expr).to_owned()))
@@ -794,7 +789,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         actual, expected,
         "the unrecognised-bound residual changed; actual: {actual:#?}"
     );
-    assert_eq!(actual.len(), 23, "23 registered unrecognised loops");
+    assert_eq!(actual.len(), 1, "1 registered unrecognised loops");
 }
 
 // ---------------------------------------------------------------------------

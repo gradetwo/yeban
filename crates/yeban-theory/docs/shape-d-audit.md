@@ -227,6 +227,48 @@ TIMEOUT／NO_TEST_RAN）。分类器逐条喂过已知红：
 （`user 0.68 / sys 4.24`）⇒ 第十二批的假 `TIMEOUT`（30s 预算被冷构建吃掉）有了量化依据：
 **证明相的每次计时都必须记录"此次是冷还是热"**；本批的对照注入全部在**热**状态下计时。
 
+## 1m. 第十五批：把残余从 **23 收窄到 1**（R97 闭环完成）
+
+⭐ **收窄动作**（三轮，全部先补**真实**集合大小界，再让分类器认出来）：
+| 轮 | 动作 | 残余 |
+|---|---|---|
+| 起始 | R118 收紧后的读数 | **23** |
+| 第 1 轮 | 10 处补集合大小界（`all()` ／ `by_drum_style` ／ `grid.hits()` ／ `pattern.hits()` ／ `spans`+`result.voicings`）＋ 分类器支持**多接收者** | 13 |
+| 第 2 轮 | 再补 10 处 `all()` 界（`genre.rs` 7 ／ `melody.rs` 1 ／ `properties.rs` 2） | 5 |
+| 第 3 轮 | 补 3 处（`drum.rs` 过滤循环 ×2 ／ `properties.rs` zip）＋ 分类器**剥掉回调** | **1** |
+
+⭐ **分类器两处一般化**（都进了常驻判据）：
+1. **多接收者绑定**：`for x in a.iter().zip(b.iter())` 要求 `a` 与 `b` **都**被集合大小界覆盖
+   （``assert!(!spans.is_empty() && !result.voicings.is_empty())``）。
+2. **剥掉迭代链上的回调**：`.filter(|hit| …)` 里的 `hit` 与路径 `DrumVoice` **不是**集合接收者；
+   不剥掉就会要求"每个接收者都有界"，那对过滤循环**不可能满足**（第十五批实测：`drum.rs` 两条）。
+
+⭐ **唯一残余（1 条，且分类器是对的）**：
+`tests/properties.rs::every_drum_voice_lands_exactly_where_the_documented_rule_says` 的 `for hit in grid.hits()`。
+该判据**故意**遍历可能为**空**的网格（空输入安全）⇒ ⛔ **不能**断言非空。
+第十五批的机械插入**又一次被它当场否证**（`properties.rs:1319` 变红）⇒ 已回退并在原位写下注释：
+```rust
+// ⚠ 本判据**故意**遍历可能为空的 grid（空输入安全）⇒ 这里⛔ 不能断言非空。
+```
+⇒ **"未认 1 条"是正确结论**，不是缺口。这是第十三批登记的那个**合法例外类**的**具体实例**。
+
+⭐ **机械插入两次被同一类判据否证**（第十三批 33 处、第十五批 1 处）⇒ 规则：
+**"遍历可能为空的集合"必须人工判定**；机械规则无法区分"域意外为空"与"空是待测输入"。
+
+## 1n. 第十五批：形态注册表模板（供其它判据复用）
+
+`FORM_REGISTRY` 的做法可复用到任何"**有一组形态/类别 ＋ 每个类别要有见证**"的判据：
+1. 形态登记成 `const REGISTRY: [(flag, &str); N]`，每条带**稳定 flag**（位标志）与说明；
+2. 每个对照声明它**期望命中**的形态掩码；
+3. 断言三条：`registry.count_ones() == N`、`covered == registry`（R160①）、
+   `declared == registry`（R160②）；
+4. 对照里放**一条已知红**（期望判定与"默认结论"相反），并把**无效样本**（编译错误型红）排除在分母外。
+
+**候选复用点（登记，⛔ 本批不改）**：`tests/golden_tables.rs::every_public_type_keeps_its_trait_surface`
+里的"11 个 trait × 32 个公开类型"也是一张**类别注册表**（`Debug`/`Eq`/`Send`/`Sync`/`Copy`/`Ord`/`Hash`/
+`Display`/`FromStr`/`Error`/`Default`）—— 它有同样的双向风险（"注册了没人测"／"测了没注册"）。
+**爆炸半径**：`crates/yeban-theory/tests/golden_tables.rs`（本 crate 内，属我可写面）；**未在本批动手**。
+
 ## 2. R70② 自比台账（"两次运行相同"不是契约）
 
 机械扫出 **13** 条 `assert_eq!(f(x), f(x))`（两侧**源码文本相同**）：

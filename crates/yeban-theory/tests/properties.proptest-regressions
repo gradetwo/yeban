@@ -10,3 +10,4 @@ cc 2dbde7c79c4824dcacf9fdd8441d8c9786feb5cf8fa7d8b2b3fc4dd1b7b7a4bc # shrinks to
 cc 04c3b11b808f4efcdb64fef1e3a976d0df3ed68193f14903da97e687b0dcd130 # shrinks to tonic_value = 0, kind_index = 0, tonic_octave = 6, degree = 26
 cc cb16b6e34127f9699c94e3824d1dcdabf52526b3957153499555e44a43f355e8 # shrinks to pair_ticks = 3, permille = 500
 cc 33933d90f94edc72aa2944f2bdf0dd36642a3fc80b0ce2417acdfd70f437eec6 # shrinks to onset = 593, pair_ticks = 594, permille = 1000
+cc a93bb6674e4e4094a82963b13c6be5c641c8bbb1a21d89a9457706ce17a79197 # shrinks to meter_index = 0, bars = 1, onsets = 0

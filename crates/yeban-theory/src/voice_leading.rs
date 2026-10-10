@@ -403,6 +403,10 @@ mod tests {
         let key = c_major();
         let spans = expand_progression(&key, "ii-V-I-vi", 4).unwrap();
         let result = realize_three_voices(&spans).unwrap();
+        assert!(
+            !spans.is_empty() && !result.voicings.is_empty(),
+            "scan domain must not shrink"
+        );
         for (span, voicing) in spans.iter().zip(result.voicings.iter()) {
             for pitch in voicing {
                 assert!(

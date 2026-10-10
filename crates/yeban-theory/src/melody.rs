@@ -927,6 +927,11 @@ mod tests {
     fn every_seeded_melody_stays_in_the_key_it_was_built_from() {
         let mut differing = 0usize;
         let mut total = 0usize;
+        assert_eq!(
+            GenreLibrary::all().len(),
+            182,
+            "scan domain must not shrink"
+        );
         for rule in GenreLibrary::all() {
             let mut first: Option<Melody> = None;
             for seed in 0u64..8 {
