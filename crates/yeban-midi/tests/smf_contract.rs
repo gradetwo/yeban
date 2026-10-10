@@ -1439,3 +1439,65 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
         "TrackName 之后紧跟 EndOfTrack"
     );
 }
+/// 判据 (R115: 审计要落成**常驻判据** ＋ **自带正负对照**): 判据里**不许**把"针"
+/// 绑定成变量再去搜索同一份被 `include_str!` 读回来的文件 —— 那是 R104 登记的分析器盲区
+/// （子串绑成变量即可绕过静态检查）。
+#[test]
+fn no_needle_is_bound_to_a_variable_before_being_searched() {
+    /// 探测器：把 `let <ident> = "<字面量>";` 绑定的名字收集起来，再找同一份源码里
+    /// 是否出现 `contains(<ident>)` / `contains(&<ident>)`。
+    fn detector(source: &str) -> Vec<String> {
+        let mut bound: Vec<String> = Vec::new();
+        for line in source.lines() {
+            let t = line.trim();
+            let Some(rest) = t.strip_prefix("let ") else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(" = ") else {
+                continue;
+            };
+            let (name, value) = (name.trim(), value.trim());
+            if !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && value.starts_with('"')
+                && value.ends_with(';')
+                && value.len() > 4
+            {
+                bound.push(name.to_owned());
+            }
+        }
+        let mut hits = Vec::new();
+        for name in bound {
+            if source.contains(&format!("contains({name})"))
+                || source.contains(&format!("contains(&{name})"))
+            {
+                hits.push(name);
+            }
+        }
+        hits
+    }
+
+    // ① 正对照：**已知含**该形态的样例必须被探到（否则探针恒绿 = 假阴性，R112）。
+    let known_bad = "let needle = \"TrackName 长度 15\";\nassert!(doc.contains(needle));\n";
+    assert_eq!(
+        detector(known_bad).len(),
+        1,
+        "正对照：探针必须能发现已知坏样例"
+    );
+    // ② 负对照：**已知不含**该形态的样例必须探不到。
+    let known_good = "let n = 15;\nassert!(doc.contains(&format!(\"长度 {n}\")));\n";
+    assert_eq!(detector(known_good).len(), 0, "负对照：不许误报");
+
+    // ③ 真对象：本 crate 的判据源码里都不许出现。
+    for (name, source) in [
+        ("smf_contract.rs", include_str!("smf_contract.rs")),
+        ("musicxml_contract.rs", include_str!("musicxml_contract.rs")),
+        ("real_world_smf.rs", include_str!("real_world_smf.rs")),
+    ] {
+        assert_eq!(
+            detector(source).len(),
+            0,
+            "{name} 里出现了 R104 的「针绑成变量」绕过形态"
+        );
+    }
+}

@@ -2919,3 +2919,37 @@ fn a_duplicate_entry_name_takes_the_first_entry() {
         "同名条目必须取**第一个**（⛔ 不是最后一个）"
     );
 }
+/// 判据 (类别: 加密位的**来源**): 加密位以**中央目录**为准，⛔ 不是本地头。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `read_entry` 里的 `entry.flags`（中央目录）
+/// 换成**本地头**的 `flags`（注入 `b15:LOCFLAGS`）后全部判据**保持绿** ——
+/// 既有判据的两处 flags 永远一致（同一个 `build_zip` 写出来的）⇒ "以哪一份为准"没判据。
+#[test]
+fn the_encryption_bit_is_read_from_the_central_directory() {
+    let container = container_xml("score.xml");
+    let mut zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    // `CentralEntry` 借用了 `zip` ⇒ 先把要用的读数拷出来（否则下面改字节会 E0502）。
+    let (off, central_flags) = {
+        let entries = central_entries(&zip);
+        assert_eq!(entries.len(), 2, "前提：两条条目");
+        (entries[1].local_offset as usize, entries[1].flags)
+    };
+    assert_eq!(&zip[off..off + 4], b"PK\x03\x04", "前提：第 2 条的本地头");
+
+    // 只把**本地头**的 flags 置上加密位（0x0001），中央目录保持 0。
+    assert_eq!(le16(&zip, off + 6), 0, "前提：本地头原本没有加密位");
+    zip[off + 6..off + 8].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(le16(&zip, off + 6), 1, "前提：本地头现在有加密位");
+    assert_eq!(central_flags, 0, "前提：中央目录的加密位仍是 0");
+
+    assert!(
+        parse_mxl(&zip).is_ok(),
+        "加密位以**中央目录**为准 ⇒ 本地头那一位必须被忽略"
+    );
+}
