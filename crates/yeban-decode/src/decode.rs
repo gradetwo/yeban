@@ -3465,10 +3465,13 @@ mod tests {
     /// `one-frame FLAC: the 54-byte prefix of a 54-byte container must not decode` 一类文案红。
     #[test]
     fn every_proper_prefix_of_a_decodable_container_is_refused() {
-        let cases: [(&str, Vec<u8>, u64); 3] = [
+        let ogg = crate::testfix::ogg_vorbis_silence(2);
+        let ogg_len = ogg.len();
+        let cases: [(&str, Vec<u8>, u64); 4] = [
             ("WAV", int_wav(1, 16, &[1_000, -1_000, 2_000, -2_000]), 4),
             ("one-frame FLAC", flac_fixture(1), 256),
             ("three-frame FLAC", flac_fixture(3), 768),
+            ("Ogg Vorbis", ogg, crate::testfix::OGG_FIXTURE_FRAMES),
         ];
         let mut refused = 0usize;
         for (label, bytes, frames) in cases {
@@ -3487,8 +3490,9 @@ mod tests {
             });
             assert_eq!(full.frame_count(), frames, "{label}: frame count");
         }
-        assert_eq!(refused, 52 + 54 + 78);
-        assert_eq!(refused, 184);
+        assert_eq!(refused, 52 + 54 + 78 + ogg_len);
+        assert_eq!(refused, 184 + ogg_len);
+        assert_eq!(ogg_len, 251, "the Ogg fixture's byte length is pinned");
     }
 
     /// 一个**不可回退**的源：前 `interrupts` 次 `read` 返回
@@ -4221,5 +4225,46 @@ mod tests {
                 panic!("the channel gate must fire on the first decoded buffer, got {other:?}")
             }
         }
+    }
+
+    /// 判据（第三族容器**正常解出**）：一个最小但**合法**的 Ogg Vorbis 流必须解出
+    /// 1 声道 / 44.1 kHz / [`crate::testfix::OGG_FIXTURE_FRAMES`] 帧的静音资产。
+    ///
+    /// 量什么：`decode_bytes` 对 [`crate::testfix::ogg_vorbis_silence`] 的 `channels()`、
+    /// `sample_rate()`、`frame_count()`、`pcm_format()`、以及全部样本是否为零。
+    /// 怎么量：夹具逐字段构造（Ogg 页 CRC-32 ＋ Vorbis 三个头包），不需要任何外部样本。
+    ///
+    /// 读数（本机、debug 构建）：`channels = 1`、`sample_rate = 44100`、`frames = 128`、
+    /// `pcm_format = F32`，全部样本 `== 0.0`。
+    ///
+    /// 为什么需要它：**这是本 crate 第一个 Ogg 判据**。此前 `decode.rs` 的声道数判据文档
+    /// 自己登记了"本 crate 没有 Ogg 的字节级夹具，因此那条路径没有判据覆盖"。构造这个夹具
+    /// 的路走得很长，两条约束是**实测出来的、都不是可选的**（写进夹具文档）：
+    /// 1. **至少 2 个数据页** —— `AudioDecoderOptions::default().gapless == true`，gapless 会把
+    ///    "解码器重置后的第一个包"静音（`buf.clear()`）；
+    /// 2. EOS 页的 **granule 必须等于解出的帧数** —— Ogg/Vorbis 读端把最后那个 granule 当作
+    ///    "容器声明的总帧数"，而本 crate 的对账容差是 **0**。
+    ///
+    /// 另有三处 setup 头的位级陷阱写在 [`crate::testfix::ogg_vorbis_setup`] 的文档里：
+    /// 每个计数都是"值 ＋ 1"；无序码本在 `ordered` 之后多一位 `is_sparse`；
+    /// `code_len` 存的是"长度 − 1"。
+    ///
+    /// 注入（实测）：把 EOS 页的 granule 由 `OGG_FIXTURE_FRAMES` 改成 `2 * OGG_FIXTURE_FRAMES`
+    /// ⇒ 本条以 `declared duration disagrees with decoded frames` 红（**这一条正是夹具能红
+    /// 的关键**：granule 与解出帧数不等时，本 crate 的对账闸门会拒绝整份资产）。
+    #[test]
+    fn a_minimal_ogg_vorbis_stream_decodes_to_silence() {
+        let bytes = crate::testfix::ogg_vorbis_silence(2);
+        let asset = decode_bytes(&bytes, &DecodeOptions::default())
+            .expect("a minimal but legal Ogg Vorbis stream must decode");
+        assert_eq!(asset.channels(), 1);
+        assert_eq!(asset.sample_rate(), 44_100);
+        assert_eq!(asset.pcm_format(), PcmFormat::F32);
+        assert_eq!(asset.frame_count(), crate::testfix::OGG_FIXTURE_FRAMES);
+        assert!(
+            asset.samples().iter().all(|sample| *sample == 0.0),
+            "the fixture's floor is unused, so every sample must be exactly zero"
+        );
+        assert!(asset.samples().len() == usize::try_from(asset.frame_count()).unwrap());
     }
 }

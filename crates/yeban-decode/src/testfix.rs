@@ -312,6 +312,233 @@ pub fn encode_f32_samples(values: &[f32]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Ogg Vorbis 夹具
+// ---------------------------------------------------------------------------
+
+/// 最小合法 Ogg Vorbis 夹具**解出的帧数**。
+///
+/// 它同时是最后一个 Ogg 页的 `granule position`：本 crate 的对账容差是 0
+/// （[`crate::limits::DURATION_TOLERANCE_FRAMES`]），而 Ogg/Vorbis 读端把最后那个 granule
+/// 当作"容器声明的总帧数"。两者不等就会被 `duration::reconcile` 拒绝。
+pub const OGG_FIXTURE_FRAMES: u64 = 128;
+
+/// Vorbis 的位打包是 **LSB-first**（symphonia 用 `BitReaderRtl`）。
+struct LsbBits {
+    bytes: Vec<u8>,
+    acc: u8,
+    filled: u32,
+}
+
+impl LsbBits {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            acc: 0,
+            filled: 0,
+        }
+    }
+
+    fn put(&mut self, value: u64, count: u32) {
+        for index in 0..count {
+            if (value >> index) & 1 == 1 {
+                self.acc |= 1 << self.filled;
+            }
+            self.filled += 1;
+            if self.filled == 8 {
+                self.bytes.push(self.acc);
+                self.acc = 0;
+                self.filled = 0;
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.filled > 0 {
+            self.bytes.push(self.acc);
+        }
+        self.bytes
+    }
+}
+
+/// Ogg 页 CRC-32：多项式 `0x04C11DB7`、初值 0、**不反射**、不异或输出；CRC 字段先置零。
+#[must_use]
+pub fn ogg_crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0;
+    for byte in data {
+        crc ^= u32::from(*byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// 一个 Ogg 页：27 字节页头 ＋ 段表 ＋ 体。每个包各占一个段（本夹具的包都 < 255 字节）。
+#[must_use]
+pub fn ogg_page(
+    header_type: u8,
+    granule: u64,
+    serial: u32,
+    sequence: u32,
+    packets: &[Vec<u8>],
+) -> Vec<u8> {
+    let mut page = Vec::new();
+    page.extend_from_slice(b"OggS");
+    page.push(0); // stream_structure_version
+    page.push(header_type);
+    page.extend_from_slice(&granule.to_le_bytes());
+    page.extend_from_slice(&serial.to_le_bytes());
+    page.extend_from_slice(&sequence.to_le_bytes());
+    page.extend_from_slice(&[0u8; 4]); // CRC 占位
+    page.push(u8::try_from(packets.len()).expect("at most 255 packets per page here"));
+    for packet in packets {
+        page.push(u8::try_from(packet.len()).expect("packets must be < 256 bytes here"));
+    }
+    for packet in packets {
+        page.extend_from_slice(packet);
+    }
+    let crc = ogg_crc32(&page);
+    page[22..26].copy_from_slice(&crc.to_le_bytes());
+    page
+}
+
+/// Vorbis 识别头（30 字节）：1 声道、44.1 kHz、blocksize 2^8 / 2^11。
+#[must_use]
+pub fn ogg_vorbis_ident() -> Vec<u8> {
+    let mut packet = vec![1];
+    packet.extend_from_slice(b"vorbis");
+    packet.extend_from_slice(&0u32.to_le_bytes()); // version
+    packet.push(1); // channels
+    packet.extend_from_slice(&44_100u32.to_le_bytes());
+    packet.extend_from_slice(&0i32.to_le_bytes()); // bitrate max
+    packet.extend_from_slice(&0i32.to_le_bytes()); // bitrate nominal
+    packet.extend_from_slice(&0i32.to_le_bytes()); // bitrate min
+    packet.push(0xB8); // blocksize_0 = 2^8, blocksize_1 = 2^11
+    packet.push(1); // framing
+    packet
+}
+
+/// Vorbis 注释头（带一个 vendor 串、零条注释）。
+#[must_use]
+pub fn ogg_vorbis_comment() -> Vec<u8> {
+    let mut packet = vec![3];
+    packet.extend_from_slice(b"vorbis");
+    packet.extend_from_slice(&5u32.to_le_bytes());
+    packet.extend_from_slice(b"yeban");
+    packet.extend_from_slice(&0u32.to_le_bytes()); // 注释条数
+    packet.push(1); // framing
+    packet
+}
+
+/// 最小 Vorbis setup 头。逐字段取值与理由：
+///
+/// - **每个计数字段都是"读出的值 ＋ 1"**（`codebook_count` 是 8 位＋1，`time`/`floor`/
+///   `residue`/`mapping`/`mode` 的 count 都是 6 位＋1，`floor0_number_of_books` 是 4 位＋1，
+///   `residue_partition_size` 是 24 位＋1，`residue_classifications` 是 6 位＋1）
+///   ⇒ **floor/residue/mapping/mode 各至少 1 个**，写 `0` 表示"1 个"。
+/// - 码本：`ordered = 0`（无序）之后还有 1 位 **`is_sparse`**；`code_len` 存的是
+///   **长度 − 1**；`lookup_type = 0`（无 VQ lookup）。
+/// - floor0：`order = 0`、`amplitude_bits = 0` ⇒ 音频包里的 `amplitude` 必为 0
+///   ⇒ 全部声道 `do_not_decode` ⇒ **静音**（本夹具要的就是静音）。
+///   `order` 必须为 0：一旦 > 0 就要走 `codebook.read_vq()`，而 `lookup_type = 0` 的码本
+///   在那一步返回 `vorbis: not a vq codebook`。
+/// - residue：`begin = end = 0` ⇒ 空区间，一个样本都不读；`is_used = 0` ⇒ 不读书号。
+#[must_use]
+pub fn ogg_vorbis_setup() -> Vec<u8> {
+    let mut bits = LsbBits::new();
+    bits.put(5, 8);
+    for byte in b"vorbis" {
+        bits.put(u64::from(*byte), 8);
+    }
+    bits.put(0, 8); // codebook_count - 1
+    bits.put(0x56_43_42, 24); // codebook sync
+    bits.put(1, 16); // dimensions
+    bits.put(1, 24); // entries
+    bits.put(0, 1); // ordered = 0
+    bits.put(0, 1); // is_sparse = 0（稠密）
+    bits.put(0, 5); // code_len - 1
+    bits.put(0, 4); // lookup_type = 0
+    bits.put(0, 6); // time count - 1
+    bits.put(0, 16); // time type
+    bits.put(0, 6); // floor count - 1
+    bits.put(0, 16); // floor_type = 0
+    bits.put(0, 8); // floor0_order = 0
+    bits.put(44_100, 16); // floor0_rate
+    bits.put(16, 16); // floor0_bark_map_size
+    bits.put(0, 6); // floor0_amplitude_bits = 0
+    bits.put(0, 8); // floor0_amplitude_offset
+    bits.put(0, 4); // number_of_books - 1
+    bits.put(0, 8); // book_list[0]
+    bits.put(0, 6); // residue count - 1
+    bits.put(0, 16); // residue_type = 0
+    bits.put(0, 24); // begin
+    bits.put(0, 24); // end
+    bits.put(0, 24); // partition_size - 1
+    bits.put(0, 6); // classifications - 1
+    bits.put(0, 8); // classbook
+    bits.put(0, 3); // low_bits
+    bits.put(0, 1); // high_bits 标志 ⇒ is_used = 0
+    bits.put(0, 6); // mapping count - 1
+    bits.put(0, 16); // mapping_type = 0
+    bits.put(0, 1); // num_submaps 标志 = 0 ⇒ 1 个子映射
+    bits.put(0, 1); // coupling 标志 = 0
+    bits.put(0, 2); // reserved
+    bits.put(0, 8); // submap unused
+    bits.put(0, 8); // submap floor = 0
+    bits.put(0, 8); // submap residue = 0
+    bits.put(0, 6); // mode count - 1
+    bits.put(0, 1); // block_flag = 0（短块）
+    bits.put(0, 16); // window_type
+    bits.put(0, 16); // transform_type
+    bits.put(0, 8); // mapping = 0
+    bits.put(1, 1); // framing
+    bits.finish()
+}
+
+/// 一个**可解码**的最小 Ogg Vorbis 流（1 声道、44.1 kHz、静音）。
+///
+/// 页序：BOS(识别头) → 注释头 → setup 头 → `packets` 个数据页（最后一个带 EOS 与
+/// `granule = `[`OGG_FIXTURE_FRAMES`]）。
+///
+/// 两条实测约束（都不是可选的）：
+/// 1. **至少 2 个数据页**：`AudioDecoderOptions::default().gapless == true`，而 gapless
+///    会把"解码器重置后的第一个包"静音（`buf.clear()`）。
+/// 2. EOS 页的 **granule 必须等于解出的帧数**（本 crate 的对账容差是 0）。
+///
+/// 音频包取 `0x12`：位序（LSB-first）为 `[0 = 音频包][amplitude = 1][floor_book_idx = 0]
+/// …`；`amplitude_bits = 0` 时这个位不会被读，因此包内容对静音夹具不敏感 ——
+/// 这也是为什么夹具只用它来占位。
+///
+/// # Panics
+///
+/// `packets < 2` 时 panic：少于两个数据页解不出帧（见上）。
+#[must_use]
+pub fn ogg_vorbis_silence(packets: u32) -> Vec<u8> {
+    assert!(
+        packets >= 2,
+        "gapless trimming silences the first data page"
+    );
+    let mut out = ogg_page(0x02, 0, 7, 0, &[ogg_vorbis_ident()]);
+    out.extend_from_slice(&ogg_page(0, 0, 7, 1, &[ogg_vorbis_comment()]));
+    out.extend_from_slice(&ogg_page(0, 0, 7, 2, &[ogg_vorbis_setup()]));
+    for index in 0..packets {
+        let last = index + 1 == packets;
+        out.extend_from_slice(&ogg_page(
+            if last { 0x04 } else { 0x00 },
+            if last { OGG_FIXTURE_FRAMES } else { 0 },
+            7,
+            3 + index,
+            &[vec![0x12]],
+        ));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // FLAC 夹具
 // ---------------------------------------------------------------------------
 
@@ -1208,5 +1435,68 @@ mod tests {
         };
         assert_eq!(float.block_align(), 8);
         assert_eq!(float.byte_rate(), 352_800);
+    }
+
+    /// 判据（夹具自检）：Ogg 夹具的**页结构与 CRC**必须自洽，且 EOS 页的 granule 恰为
+    /// [`OGG_FIXTURE_FRAMES`]。
+    ///
+    /// 量什么：各页的 `OggS` 魔术、CRC 自洽性（把 CRC 字段清零后重算）、页序号序列、
+    /// EOS 标志与 granule，以及"数据页数 ≥ 2"这条硬约束。
+    /// 怎么量：逐页走查 —— 27 字节页头 ＋ 段表，按段表长度推进。
+    ///
+    /// 读数（本机、debug 构建）：`ogg_vorbis_silence(2)` = 5 页（BOS / 注释 / setup / 数据 /
+    /// EOS 数据），页序号 0..4，最后一个 granule = 128，每页 CRC 与重算值相同。
+    ///
+    /// 为什么需要它：夹具错了会把"解码器坏了"读成真。本夹具的字节全部手写（没有外部样本），
+    /// 因此必须有一条判据把页边界与 CRC 钉住。
+    #[test]
+    fn ogg_fixture_pages_are_well_formed_and_the_last_granule_is_the_frame_count() {
+        let bytes = ogg_vorbis_silence(2);
+        let mut offset = 0usize;
+        let mut pages = Vec::new();
+        while offset < bytes.len() {
+            assert_eq!(&bytes[offset..offset + 4], b"OggS", "page {offset} magic");
+            let granule =
+                u64::from_le_bytes(bytes[offset + 6..offset + 14].try_into().expect("8 bytes"));
+            let sequence =
+                u32::from_le_bytes(bytes[offset + 18..offset + 22].try_into().expect("4 bytes"));
+            let header_type = bytes[offset + 5];
+            let segments = usize::from(bytes[offset + 26]);
+            let mut body = 0usize;
+            for index in 0..segments {
+                body += usize::from(bytes[offset + 27 + index]);
+            }
+            let end = offset + 27 + segments + body;
+            // CRC 自洽：把 CRC 字段清零后重算。
+            let mut copy = bytes[offset..end].to_vec();
+            copy[22..26].fill(0);
+            let recomputed = ogg_crc32(&copy);
+            let stored = u32::from_le_bytes(bytes[offset + 22..offset + 26].try_into().unwrap());
+            assert_eq!(recomputed, stored, "page {sequence} CRC");
+            pages.push((sequence, header_type, granule));
+            offset = end;
+        }
+        assert_eq!(offset, bytes.len(), "the pages must tile the whole fixture");
+        assert_eq!(pages.len(), 5, "BOS + comment + setup + 2 data pages");
+        assert_eq!(
+            pages.iter().map(|page| page.0).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4],
+            "page sequence numbers must be 0..N"
+        );
+        assert_eq!(pages[0].1 & 0x02, 0x02, "the first page must be a BOS page");
+        assert_eq!(pages[4].1 & 0x04, 0x04, "the last page must be an EOS page");
+        assert_eq!(
+            pages[3].2, 0,
+            "non-final data pages carry granule 0 in this fixture"
+        );
+        assert_eq!(
+            pages[4].2, OGG_FIXTURE_FRAMES,
+            "the EOS granule is the declared frame count and must match what decodes"
+        );
+        let one = ogg_vorbis_silence(3);
+        assert!(
+            one.len() > bytes.len(),
+            "more data pages must grow the fixture"
+        );
     }
 }
