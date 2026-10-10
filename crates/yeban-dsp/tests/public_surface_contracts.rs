@@ -1044,4 +1044,25 @@ fn the_configuring_drives_are_sensitive_to_their_parameters() {
         drive_gated_sr(GatedLoudness::for_sample_rate(44_100.0).expect("44.1k")),
         "实测：该驱动对采样率不敏感（若此处变红 ⇒ 实现改了，请重跑注入并更新本条登记）"
     );
+
+    // ⚠⚠ **实测登记（弱驱动，R148 形态）**：`Delay` 的等价性驱动对**采样率**不敏感 ——
+    // 未 `configure` 的实例与该 `configure(44_100.0)` 的实例，在本窗口内输出**逐位相同**
+    // （本机注入实测：把 `Default` 改成 44.1 kHz 配置 ⇒ 等价性判据**仍绿**）。
+    // ⇒ 上一条等价性判据对 `Delay` **看不见采样率差异** ⇒ **没有牙**。本断言是**绊线**。
+    let drive_delay_sr = |mut delay: yeban_dsp::delay::Delay| -> Vec<u32> {
+        let mut left = [0.5f32; N];
+        let mut right = [0.25f32; N];
+        delay.process(DelayParams::default(), &mut left, &mut right);
+        left.iter()
+            .chain(right.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    let mut delay_44 = yeban_dsp::delay::Delay::new();
+    delay_44.configure(44_100.0);
+    assert_eq!(
+        drive_delay_sr(yeban_dsp::delay::Delay::new()),
+        drive_delay_sr(delay_44),
+        "实测：该驱动对采样率不敏感（若此处变红 ⇒ 实现改了，请重跑注入并更新本条登记）"
+    );
 }
