@@ -1939,7 +1939,10 @@ mod tests {
         assert_eq!(loudness.max_momentary_loudness, Loudness::UNKNOWN);
         assert_eq!(loudness.max_short_term_loudness, Loudness::UNKNOWN);
         // 增益 0 ⇒ 浮点母带逐位不变。
-        assert!(master.samples.iter().all(|sample| *sample == 0.0));
+        assert!(
+            !master.samples.is_empty() && master.samples.iter().all(|sample| *sample == 0.0),
+            "R102/R111"
+        );
         // 但**负载不是全零字节**: TPDF 抖动在四舍五入**之前**加入
         // （`crate::dither::quantize_i24`）, 因此数字静音得到 ±1 LSB 的噪声。
         // 这是抖动模块的既有契约, 本判据把它写成可执行的读数。

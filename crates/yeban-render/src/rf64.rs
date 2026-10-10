@@ -5442,8 +5442,10 @@ mod tests {
         write_container(&mut file, &plan, &data).expect("写入");
         // 非空证明 ②: 夹具真的含 bext 的保留区（190 个零字节里至少有一段）。
         assert!(
-            file.windows(190)
-                .any(|window| window.iter().all(|byte| *byte == 0)),
+            file.len() >= 190
+                && file
+                    .windows(190)
+                    .any(|window| window.iter().all(|byte| *byte == 0)),
             "夹具必须真的写出 bext 的保留区, 否则本判据测不到它"
         );
         assert_eq!(file.len(), RIFF_PINNED_BYTES, "字节数");

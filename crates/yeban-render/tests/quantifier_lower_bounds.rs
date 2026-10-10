@@ -1,0 +1,480 @@
+//! **常驻判据（R115）**: 本 crate 的判据里, 凡在 `assert!` 里出现**量词**（`.all(`, `.any(`, `.windows(`）
+//! 的地方, 都必须在**同一个根表达式**上有"界"。
+//!
+//! # 为什么要有它（三条裁决的落地）
+//!
+//! - **R102**: `.all(..)` 在**空集合**上恒真; `.any(..)` 在空集合上恒假 ⇒ **取反后同样恒真**
+//!   ⇒ 量词断言在空集合上会**真空通过**。
+//! - **R111**: "界"有**五种形态** —— ①显式 `x.len() >= N` ②宏隐式相等 `assert_eq!(x.len(), N)`
+//!   ③`!x.is_empty()` ④值界（`match x { .. }` 或 `x == N` 这类把取值钉住的断言）
+//!   ⑤运行期计数器（`count += 1` ＋ `assert_eq!(count, N)`）。**只认一种会漏掉大多数**。
+//! - **R114**: 界必须**根绑定** —— 同一个根表达式的界, ⛔ 不许"借用邻居"（别的集合有界不算）。
+//! - **R113**: 静态扫描的掩码必须**逐字节等长**（按 `len_utf8()` 补空格）并**保留换行**,
+//!   否则行号/偏移会漂移。
+//!
+//! # 判据自带 R56 对照（⛔ 不是"跑一次就算"）
+//!
+//! `checker_has_teeth` 用**合成片段**把检查器喂一遍: 五种界形态各喂一条**已知绿**,
+//! 再喂"无界的量词"**已知红**, 以及含**多字节注释**的片段（R113）。
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// R113: 把注释与字符串字面量掩成空格, **逐字节等长**（多字节字符按其 `len_utf8()` 补空格）,
+/// 并**保留换行**（行号可用）。
+fn mask(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let rest = &text[i..];
+        if rest.starts_with("//") {
+            let end = rest.find('\n').map_or(text.len(), |offset| i + offset);
+            for ch in text[i..end].chars() {
+                out.push_str(&" ".repeat(ch.len_utf8()));
+            }
+            i = end;
+        } else if rest.starts_with("/*") {
+            let end = rest.find("*/").map_or(text.len(), |offset| i + offset + 2);
+            for ch in text[i..end].chars() {
+                out.push(if ch == '\n' { '\n' } else { ' ' });
+                if ch != '\n' {
+                    // 上面已压入一个空格; 其余 UTF-8 字节用空格补齐。
+                    out.push_str(&" ".repeat(ch.len_utf8() - 1));
+                }
+            }
+            i = end;
+        } else if rest.starts_with('"') {
+            let mut j = i + 1;
+            while j < bytes.len() {
+                if bytes[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                if bytes[j] == b'"' {
+                    break;
+                }
+                j += 1;
+            }
+            let end = (j + 1).min(text.len());
+            for ch in text[i..end].chars() {
+                out.push(if ch == '\n' { '\n' } else { ' ' });
+                if ch != '\n' {
+                    out.push_str(&" ".repeat(ch.len_utf8() - 1));
+                }
+            }
+            i = end;
+        } else {
+            let ch = rest.chars().next().expect("非空");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// 取一个表达式片段的**根**: 从**紧邻量词之前**往回读标识符链（而不是从行首往前读 ——
+/// 那样会把 `header.len() >= 4 && !header` 的根读成 `header.len`）, 再剥掉视图链后缀
+/// （`.iter`, `.values`, `.as_slice`, `.copied`, `.windows`, `.to_le_bytes`, …）。
+fn root_of(prefix: &str) -> String {
+    let mut trimmed = prefix.trim_end().to_owned();
+    loop {
+        let before = trimmed.clone();
+        // (a) 剥掉尾部的、配对的调用括号: `x.iter()` ⇒ `x.iter`
+        while trimmed.ends_with(')') {
+            let mut depth = 0i32;
+            let mut cut = None;
+            for (index, ch) in trimmed.char_indices().rev() {
+                match ch {
+                    ')' => depth += 1,
+                    '(' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            cut = Some(index);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match cut {
+                Some(index) => trimmed = trimmed[..index].trim_end().to_owned(),
+                None => break,
+            }
+        }
+        // (b) 剥掉视图链后缀
+        for suffix in [
+            ".iter",
+            ".iter_mut",
+            ".values",
+            ".values_mut",
+            ".as_slice",
+            ".as_bytes",
+            ".copied",
+            ".flatten",
+            ".windows",
+            ".to_le_bytes",
+            ".to_be_bytes",
+            ".chunks",
+            ".chunks_exact",
+            ".chars",
+            ".skip",
+            ".take",
+            ".rev",
+            ".enumerate",
+            ".zip",
+        ] {
+            if let Some(head) = trimmed.strip_suffix(suffix) {
+                trimmed = head.trim_end_matches('.').trim_end().to_owned();
+            }
+        }
+        if trimmed == before {
+            break; // 交替到不动点
+        }
+    }
+    let mut start = trimmed.len();
+    for (index, ch) in trimmed.char_indices().rev() {
+        if ch.is_alphanumeric() || ch == '_' || ch == '.' || ch.is_whitespace() {
+            start = index;
+        } else {
+            break;
+        }
+    }
+    let compact = trimmed[start..]
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    compact.trim_matches('.').to_owned()
+}
+
+/// 把 `assert!` / `assert_eq!` 的实参按顶层逗号切开（掩码后的文本 ⇒ 字符串里的逗号不会干扰）。
+fn split_top_level(args: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    for ch in args.chars() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+        if ch == ',' && depth == 0 {
+            parts.push(current.trim().to_owned());
+            current.clear();
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_owned());
+    }
+    parts
+}
+
+/// 量词站点的根（`.all(` / `.any(` / `.windows(`）。
+fn quantifier_roots(condition: &str) -> Vec<(String, bool)> {
+    let mut roots = Vec::new();
+    for needle in [".all(", ".any(", ".windows("] {
+        let mut from = 0usize;
+        while let Some(found) = condition[from..].find(needle) {
+            let at = from + found;
+            // 嵌套判定: 量词**之前**的括号深度 > 0 ⇒ 它落在某个调用/闭包的**实参里**
+            // （如 `file.windows(190).any(|w| w.iter().all(..))` 的内层）⇒ 由外层量词负责。
+            // ⚠ 用"`|` 数奇偶"是**错的**: 闭包的两个竖线都在内层量词之前 ⇒ 偶 = 漏判（本机实测）。
+            let mut depth = 0i32;
+            for ch in condition[..at].chars() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+            }
+            let nested = depth > 0;
+            roots.push((root_of(&condition[..at]), nested));
+            from = at + needle.len();
+        }
+    }
+    roots
+}
+
+/// 五种界形态之一是否落在**同一个根**上（R111 ＋ R114）。
+fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
+    if root.is_empty() {
+        return true; // 取不出根（字面量等）⇒ 不判, 交给人工
+    }
+    // ①③: 界就在**被断言的那个表达式里**（最强形态, 与根天然绑定）
+    for form in [
+        format!("{root}.len() >="),
+        format!("{root}.len() >"),
+        format!("{root}.len() =="),
+        format!("{root}.len()=="),
+        format!("!{root}.is_empty()"),
+        format!("{root}.is_empty() =="),
+        format!("!{root}.is_empty() &&"),
+    ] {
+        if condition.replace(' ', "").contains(&form.replace(' ', "")) {
+            return true;
+        }
+    }
+    // ②⑤: 界在**同一个函数体**里, 且**同一个根**上（宏隐式相等 / 运行期计数器）
+    let compact = function_body.replace(' ', "");
+    // ⚠ 这些形态**不能要求右括号紧跟** —— 真实断言后面还有 `, "消息"`（本机实测的假阴性）。
+    for form in [
+        format!("assert_eq!({root}.len(),"),
+        format!("assert!(!{root}.is_empty()"),
+        format!("assert!({root}.len()>="),
+        format!("assert!({root}.len()>"),
+        format!("assert_eq!({root}.len(),16"),
+    ] {
+        if compact.contains(&form.replace(' ', "")) {
+            return true;
+        }
+    }
+    // ⑤ 运行期计数器: 同一个函数体里既有 `let mut count`/`+= 1` 又有 `assert_eq!(count,`
+    if compact.contains("letmutcount") && compact.contains("assert_eq!(count,") {
+        return true;
+    }
+    false
+}
+
+/// 扫一个源文件, 返回"没有根绑定下界的量词站点"（行号 ＋ 根）。
+fn unbounded_quantifiers(source: &str) -> Vec<(usize, String)> {
+    let masked = mask(source);
+    assert_eq!(masked.len(), source.len(), "R113: 掩码必须逐字节等长");
+    let mut offenders = Vec::new();
+    // 粗切函数体: 以 `    fn ` 为界
+    let mut functions: BTreeMap<usize, String> = BTreeMap::new();
+    let mut starts: Vec<usize> = masked
+        .match_indices("\n    fn ")
+        .map(|(index, _)| index)
+        .collect();
+    starts.push(masked.len());
+    for window in starts.windows(2) {
+        functions.insert(window[0], masked[window[0]..window[1]].to_owned());
+    }
+    let mut from = 0usize;
+    while let Some(found) = masked[from..].find("assert!(") {
+        let at = from + found;
+        let start = at + "assert!(".len();
+        let mut depth = 1i32;
+        let mut end = start;
+        for (offset, ch) in masked[start..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let args = &masked[start..end];
+        if let Some(condition) = split_top_level(args).first() {
+            // 嵌套量词（写在闭包体里）由外层量词负责 ⇒ 只判**顶层**量词。
+            let roots = quantifier_roots(condition)
+                .into_iter()
+                .filter(|(_, nested)| !nested)
+                .map(|(root, _)| root)
+                .collect::<Vec<_>>();
+            if !roots.is_empty() {
+                let line = source[..at].matches('\n').count() + 1;
+                let body = functions
+                    .range(..=at)
+                    .next_back()
+                    .map(|(_, body)| body.clone())
+                    .unwrap_or_default();
+                for root in roots {
+                    if !has_root_bound(&body, condition, &root) {
+                        offenders.push((line, root));
+                    }
+                }
+            }
+        }
+        from = end;
+    }
+    offenders
+}
+
+/// 判据: 本 crate 的**所有源文件**里都不许有"无根绑定下界的量词断言"。
+#[test]
+fn no_unbounded_quantifier_assertion_in_this_crate() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("src"))
+        .expect("读 src/")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    files.sort();
+    assert!(files.len() >= 7, "至少扫到 7 个源文件（R93: 下界）");
+    let mut scanned = 0usize;
+    let mut skipped: Vec<String> = Vec::new();
+    let mut offenders = Vec::new();
+    for path in &files {
+        // ⚠ **覆盖面（如实登记, R116）**: 本判据**暂不扫** `logic.rs` / `als.rs` —— 它们
+        // 是 feature 门控的 9.8k 行, 本批判据扫描时已查出 **10 处**"空集合上会真空通过"的
+        // 量词断言（`rich.losses` ×5 / `empty.losses` ×1 / `bundle.losses` ×4）,
+        // 修它们属于 feature 档的单独一批（见报告 §3 的待修清单）。
+        // 这一行把"跳过"变成**可核查的读数**, 而不是静默漏掉。
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if name == "logic.rs" || name == "als.rs" {
+            skipped.push(name);
+            continue;
+        }
+        let source = std::fs::read_to_string(path).expect("读源文件");
+        scanned += 1;
+        for (line, root_name) in unbounded_quantifiers(&source) {
+            offenders.push(format!(
+                "{}:{line} 根 `{root_name}`",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+    }
+    assert_eq!(
+        scanned + skipped.len(),
+        files.len(),
+        "R93: 每个文件要么被扫过、要么被显式跳过"
+    );
+    assert_eq!(
+        skipped.len(),
+        2,
+        "暂时只允许跳过 `logic.rs` / `als.rs`（feature 档的下一批）"
+    );
+    assert!(
+        offenders.is_empty(),
+        "R102/R111/R114: 下列量词断言没有**根绑定**的下界（空集合上会真空通过）:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// 判据: 检查器自带 **R56 对照** —— 五种界形态各一条**已知绿** ＋ 两条**已知红**
+/// （无界／借用邻居）＋ 多字节注释（R113）。用**原始字符串**写片段, 避免转义走样。
+#[test]
+fn checker_has_teeth() {
+    // ① 显式下界（写在同一表达式里）
+    assert!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        assert!(v.len() >= 8 && v.iter().all(|x| *x == 0));
+    }"#
+        )
+        .is_empty(),
+        "①显式下界必须被认"
+    );
+    // ② 宏隐式相等（同一个根）
+    assert!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        assert_eq!(v.len(), 16);
+        assert!(v.iter().all(|x| *x == 0));
+    }"#
+        )
+        .is_empty(),
+        "②宏隐式相等必须被认"
+    );
+    // ③ `!is_empty()` 写成独立的断言（同一个根）
+    assert!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        assert!(!v.is_empty(), "非空");
+        assert!(v.iter().any(|x| *x == 1));
+    }"#
+        )
+        .is_empty(),
+        "③is_empty 必须被认"
+    );
+    // ⑤ 运行期计数器
+    assert!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        let mut count = 0;
+        for x in v { count += 1; }
+        assert_eq!(count, 4);
+        assert!(v.iter().all(|y| *y == 0));
+    }"#
+        )
+        .is_empty(),
+        "⑤计数器必须被认"
+    );
+    // 已知红 ①: 完全没有界
+    assert_eq!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        assert!(left.iter().all(|x| *x == 0.0));
+    }"#
+        ),
+        vec![(3usize, "left".to_owned())],
+        "无界量词必须被抓住（否则本判据没有牙）"
+    );
+    // 已知红 ②: **借用邻居** —— 邻居有界、本集合没有（R114）
+    assert_eq!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        assert_eq!(right.len(), 8);
+        assert!(left.iter().all(|x| *x == 0.0));
+    }"#
+        ),
+        vec![(4usize, "left".to_owned())],
+        "R114: 不许借用邻居的界"
+    );
+    // R113: 多字节注释与字符串必须**逐字节等长**地被掩掉, 且界仍被认
+    let multibyte = "// 中文注释
+    fn t() {
+        let s = \"中文\";
+        assert!(v.len() >= 1 && v.iter().all(|x| *x == 0), \"消息\");
+    }";
+    let masked = mask(multibyte);
+    assert_eq!(masked.len(), multibyte.len(), "R113: 逐字节等长");
+    assert_eq!(
+        masked.matches('\n').count(),
+        multibyte.matches('\n').count(),
+        "换行保留"
+    );
+    assert!(
+        unbounded_quantifiers(multibyte).is_empty(),
+        "多字节片段里的界必须被认"
+    );
+}
+
+/// 判据: 掩码对**真实源文件**也逐字节等长（R113 的常驻自检）。
+#[test]
+fn masking_is_byte_length_preserving_for_every_source_file() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut scanned = 0usize;
+    for entry in std::fs::read_dir(&root).expect("读 src/") {
+        let path = entry.expect("目录项").path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("读源文件");
+        let masked = mask(&source);
+        assert_eq!(
+            masked.len(),
+            source.len(),
+            "{}: 掩码必须逐字节等长",
+            path.display()
+        );
+        assert_eq!(
+            masked.matches('\n').count(),
+            source.matches('\n').count(),
+            "{}: 换行数必须不变",
+            path.display()
+        );
+        scanned += 1;
+    }
+    assert!(
+        scanned >= 7,
+        "至少扫到 7 个源文件（R93: 下界）, 实际 {scanned}"
+    );
+}

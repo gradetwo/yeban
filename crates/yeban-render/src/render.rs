@@ -1443,7 +1443,10 @@ mod tests {
             300 * 2,
             "输出长度必须精确等于 frames * channels"
         );
-        assert!(output.samples.iter().all(|&s| s == 0.25));
+        assert!(
+            !output.samples.is_empty() && output.samples.iter().all(|&s| s == 0.25),
+            "R102/R111"
+        );
     }
 
     /// 判据: 空转图 (Master 没有任何入边, 自己就是唯一源) 也能渲染。
@@ -1664,7 +1667,10 @@ mod tests {
         let output = plan.execute(registry).expect("渲染");
         assert_eq!(output.samples.len(), 256 * 4);
         for frame in output.samples.chunks(4) {
-            assert!(frame.iter().all(|&s| s == 0.125), "四个声道必须一致");
+            assert!(
+                frame.len() == 4 && frame.iter().all(|&s| s == 0.125),
+                "R102/R111 ④值界: 四个声道必须一致"
+            );
         }
     }
 
@@ -1752,9 +1758,10 @@ mod tests {
         }
         // 敏感度自证: 这条判据不是"每一帧都相同"的空判据 —— 帧与帧之间必须不同。
         assert!(
-            values
-                .windows(2)
-                .any(|pair| pair[0].to_bits() != pair[1].to_bits()),
+            values.len() >= 2
+                && values
+                    .windows(2)
+                    .any(|pair| pair[0].to_bits() != pair[1].to_bits()),
             "信号在逐帧上是常数 ⇒ 本判据测不到声道错位"
         );
     }
@@ -1778,7 +1785,7 @@ mod tests {
             )]))
             .expect("第一段渲染");
         assert!(
-            filled.samples.iter().all(|&sample| sample == 0.25),
+            !filled.samples.is_empty() && filled.samples.iter().all(|&sample| sample == 0.25),
             "第一段必须把两个声道都填上 0.25, 否则本判据测不到残留"
         );
 

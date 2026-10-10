@@ -1066,7 +1066,7 @@ mod tests {
         }
         // 敏感度自证: 这条信号真的会让延迟线输出非零（前 2 帧静音不算）。
         assert!(
-            out.chunks(2).skip(2).any(|frame| frame[0] != 0.0),
+            out.len() > 4 && out.chunks(2).skip(2).any(|frame| frame[0] != 0.0),
             "信号在延迟之后必须出现, 否则本判据是空的"
         );
     }
@@ -1148,7 +1148,7 @@ mod tests {
         match plan(&g, "master") {
             Err(PdcError::Cycle { remaining }) => {
                 assert!(
-                    remaining.iter().any(|node| node.contains('a')),
+                    !remaining.is_empty() && remaining.iter().any(|node| node.contains('a')),
                     "自环节点必须留在残留集里: {remaining:?}"
                 );
             }
