@@ -27,13 +27,15 @@
 //!
 //! 本文件的断言全部只走**公开 API ＋ 字面值**，不含超越函数的精确值钉法（裁决 R24/R25）。
 
-use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams};
+use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams, FilterParams};
 use yeban_dsp::compressor::{Compressor, CompressorParams};
 use yeban_dsp::convolution::Convolution;
 use yeban_dsp::convolution_reverb::ConvolutionReverbParams;
 use yeban_dsp::convolution_stereo::TrueStereoConvolution;
 use yeban_dsp::delay::DelayParams;
-use yeban_dsp::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumVoice};
+use yeban_dsp::drums::{
+    DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice, KickParams, SnareParams,
+};
 use yeban_dsp::math::{db_to_gain, lerp};
 use yeban_dsp::meter::{TruePeakDetector, dbfs};
 use yeban_dsp::oversample::Oversampler2x;
@@ -458,6 +460,55 @@ fn the_documented_defaults_are_pinned_by_literals() {
         by_default.true_peak().to_bits(),
         by_new.true_peak().to_bits()
     );
+
+    // 通道条的滤波级参数：截止取上界、无共振、无驱动。
+    let filt = FilterParams::default();
+    assert_eq!(filt.cutoff_hz.to_bits(), 20_000.0f32.to_bits());
+    assert_eq!(filt.resonance.to_bits(), 0.0f32.to_bits());
+    assert_eq!(filt.drive.to_bits(), 0.0f32.to_bits());
+
+    // 通道条参数：增益 0 dB、三级全开。
+    let strip = ChannelStripParams::default();
+    assert_eq!(strip.input_gain_db.to_bits(), 0.0f32.to_bits());
+    assert_eq!(strip.output_gain_db.to_bits(), 0.0f32.to_bits());
+    assert!(strip.eq_enabled, "默认必须启用 EQ 级");
+    assert!(strip.filter_enabled, "默认必须启用滤波级");
+    assert!(strip.compressor_enabled, "默认必须启用动态级");
+
+    // 压缩器参数：阈值 −12 dBFS、4:1、软膝 6 dB、起振 10 ms、释放 100 ms、makeup 0 dB。
+    let comp = CompressorParams::default();
+    assert_eq!(comp.threshold_db.to_bits(), (-12.0f32).to_bits());
+    assert_eq!(comp.ratio.to_bits(), 4.0f32.to_bits());
+    assert_eq!(comp.knee_db.to_bits(), 6.0f32.to_bits());
+    assert_eq!(comp.attack_s.to_bits(), 0.010f32.to_bits());
+    assert_eq!(comp.release_s.to_bits(), 0.100f32.to_bits());
+    assert_eq!(comp.makeup_db.to_bits(), 0.0f32.to_bits());
+
+    // 鼓机：底鼓参数。
+    let kick = KickParams::default();
+    assert_eq!(kick.tune_hz.to_bits(), 55.0f32.to_bits());
+    assert_eq!(kick.glide_hz.to_bits(), 120.0f32.to_bits());
+    assert_eq!(kick.glide_s.to_bits(), 0.035f32.to_bits());
+    assert_eq!(kick.attack_s.to_bits(), 0.0005f32.to_bits());
+    assert_eq!(kick.decay_s.to_bits(), 0.40f32.to_bits());
+    assert_eq!(kick.level.to_bits(), 1.0f32.to_bits(), "默认不能是静音");
+
+    // 鼓机：军鼓参数。
+    let snare = SnareParams::default();
+    assert_eq!(snare.tone_hz.to_bits(), 185.0f32.to_bits());
+    assert_eq!(snare.tone_ratio.to_bits(), 1.784f32.to_bits());
+    assert_eq!(snare.tone_decay_s.to_bits(), 0.12f32.to_bits());
+    assert_eq!(snare.tone_level.to_bits(), 0.5f32.to_bits());
+    assert_eq!(snare.noise_highpass_hz.to_bits(), 3_000.0f32.to_bits());
+    assert_eq!(snare.noise_lowpass_hz.to_bits(), 10_000.0f32.to_bits());
+    assert_eq!(snare.noise_level.to_bits(), 1.0f32.to_bits());
+    assert_eq!(snare.level.to_bits(), 1.0f32.to_bits(), "默认不能是静音");
+
+    // 鼓组：总电平与两块子参数（默认不能整套静音）。
+    let kit = DrumKitParams::default();
+    assert_eq!(kit.master_level.to_bits(), 1.0f32.to_bits());
+    assert_eq!(kit.kick.tune_hz.to_bits(), 55.0f32.to_bits());
+    assert_eq!(kit.snare.tone_hz.to_bits(), 185.0f32.to_bits());
 
     let mut os_default = Oversampler2x::default();
     let mut os_new = Oversampler2x::new();

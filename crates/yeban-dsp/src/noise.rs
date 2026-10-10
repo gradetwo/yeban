@@ -624,4 +624,54 @@ mod tests {
             "不同的原始泄漏必须给出不同的流"
         );
     }
+
+    /// **判据（新写，可红）**：④ 第二个种子与零种子的**序列**也被钉住（补单种子锚的余量）。
+    ///
+    /// 量什么：`Rng::new(0x1234_5678)` 与 `Rng::new(0)` 各前 4 个 `next_u32()` 的
+    /// **字面量**（u32），以及 `Rng::new(0)` 与 `Rng::new(FALLBACK_SEED)` 的**同序**性。
+    ///
+    /// 为什么需要它：既有 `the_seeded_sequence_is_frozen_bit_for_bit` 只钉了
+    /// **一个**种子（`0xdead_beef`）的前 8 个输出 ＋ 零种子的**内部状态**。
+    /// 只钉一个种子的序列，对"算法改动恰好保住该种子的前 8 个字"没有余量
+    /// （虽属低概率，代价却只有 8 个常量）。本判据补上**第二个种子**与
+    /// **零种子的序列**（不只是状态）。
+    ///
+    /// ⚠ 跨平台判定：`next_u32` 只有整数异或与移位 ⇒ 到处逐位相同；
+    /// 本判据只断言整数，不涉及浮点 ⇒ 属 IEEE 精确类（裁决 R24 不需要 ulp 预算）。
+    /// 另加 `assert_ne!` 的牙：两个不同种子必须给出**不同**的序列
+    /// （裁决 R58：只靠 `==` 的判据要有一条 `assert_ne!`）。
+    #[test]
+    fn a_second_seed_and_the_zero_seed_are_frozen_bit_for_bit() {
+        let first_words = |seed: u32| -> [u32; 4] {
+            let mut rng = Rng::new(seed);
+            [
+                rng.next_u32(),
+                rng.next_u32(),
+                rng.next_u32(),
+                rng.next_u32(),
+            ]
+        };
+        assert_eq!(
+            first_words(0x1234_5678),
+            [0x8798_5aa5, 0x155b_24a3, 0x4820_f4c4, 0x81b3_ac98],
+            "种子 0x1234_5678 的序列漂移了"
+        );
+        assert_eq!(
+            first_words(0),
+            [0x510c_4619, 0xe02e_553e, 0x7bb9_8f3a, 0x0183_a8b5],
+            "零种子（替代常数 0x9e37_79b9）的序列漂移了"
+        );
+        // 牙：零种子与替代种子同序，但**与另一个种子不同序**。
+        let zero = first_words(0);
+        assert_eq!(
+            zero,
+            first_words(Rng::new(0).state()),
+            "零种子必须等价于用替代常数显式播种"
+        );
+        assert_ne!(
+            zero,
+            first_words(0x1234_5678),
+            "两个不同种子给出了同一序列 ⇒ 本判据没有判别力"
+        );
+    }
 }

@@ -2453,5 +2453,22 @@ mod tests {
             "±inf 的真峰值 {} 低于钳位幅度 {MAX_LINEAR_MAGNITUDE}",
             positive_infinity
         );
+        // ⭐ **字面量锚点**（`yeban-render` 的具体数值也有锚了）：
+        // `[±inf; N]` 的线性真峰值 = `18.195227`（`0x4191_8fd3`），即 `25.207 dBTP`。
+        // 该数只经过核表的**乘加**（无超越函数）⇒ 属 IEEE 精确类 ⇒ 跨架构逐位相同，
+        // 可以钉字面量（裁决 R24 不需要 ulp 预算）。
+        assert_eq!(
+            positive_infinity.to_bits(),
+            0x4191_8fd3,
+            "±inf 的线性真峰值位型漂移了（实得 {}）",
+            positive_infinity
+        );
+        // ⚠ dB 侧**只断言区间**：`dbfs` 走 `f32::log10`（宿主 libm 的超越函数）
+        // ⇒ 按裁决 R24/R25 不得跨平台钉精确值。容差取 0.01 dB（≈ 0.1% 线性）。
+        let dbtp = crate::meter::dbfs(positive_infinity);
+        assert!(
+            (dbtp - 25.207).abs() < 0.01,
+            "±inf 的 dBTP 读数 {dbtp} 偏离 25.207 超过 0.01 dB"
+        );
     }
 }
