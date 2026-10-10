@@ -6166,4 +6166,93 @@ v127=1
         // 超长前缀不截断：200 字节前缀 + `/` + `k.wav`。
         assert_eq!(cases[12].2.len(), long.len() + 6);
     }
+
+    #[test]
+    fn the_reopened_structure_matches_literal_expectations() {
+        // R70② 的 sfz 版：本 crate **没有字节产物**（无序列化面 ⇒ 无压缩级别可换），
+        // 所以「两次运行相同」的最近类比是「多条解析路径归约出同一个结构」。
+        // **只有自比不够**：这里把语料里每一段的取值逐条钉成**字面期望**，
+        // 让 reopen 那条判据不再只是「A == B」。
+        let limits = ParseLimits::default();
+        let whole = parse_text(CORPUS_ALL_SECTIONS, &limits).expect("parses");
+
+        // region 表：顺序 + 样本路径（`default_path` 已拼接）+ 每段的关键字段。
+        let samples: Vec<String> = whole
+            .regions()
+            .iter()
+            .map(|region| region.sample_path().into_owned())
+            .collect();
+        assert_eq!(
+            samples,
+            vec!["samples/k1.wav", "samples/k2.wav", "samples/a.wav"]
+        );
+        assert_eq!(whole.regions()[0].seq_position, 1);
+        assert_eq!(whole.regions()[0].crossfades.len(), 1);
+        assert_eq!(whole.regions()[1].seq_position, 2);
+        assert_eq!(
+            whole.regions()[1]
+                .loop_window()
+                .map(crate::playback::LoopWindow::len),
+            Some(190)
+        );
+        assert_eq!(whole.regions()[2].trigger, Trigger::Release);
+        // `<global>` / `<group>` 的取值落到每个 region 上。
+        assert_eq!(whole.regions()[0].volume, -3.0);
+        assert_eq!(whole.regions()[0].amp_veltrack, 80.0);
+        assert_eq!(whole.regions()[0].bend_up, 300);
+        assert_eq!(whole.regions()[0].lokey, 36);
+
+        // 曲线：定义域是 **0..=127**（MIDI CC 取值域），三个字面点恰好命中。
+        assert_eq!(whole.curves().len(), 1);
+        assert_eq!(whole.curve_value_at(8, 0.0), Some(0.0));
+        assert_eq!(whole.curve_value_at(8, 64.0), Some(0.5));
+        assert_eq!(whole.curve_value_at(8, 127.0), Some(1.0));
+
+        // 效果器：总线 / 类型 / 参数偏移 / 序号。
+        assert_eq!(whole.effects().len(), 1);
+        assert_eq!(whole.effects()[0].bus(), EffectBus::Aux(1));
+        assert_eq!(whole.effects()[0].type_name(), Some("com.mda.Limiter"));
+        assert_eq!(whole.effects()[0].param_offset(), Some(400));
+        assert_eq!(whole.effects()[0].dsp_order(), Some(2));
+
+        // `<midi>`：原样登记的 opcode（顺序与原文都保留）。
+        assert_eq!(whole.midi_sections().len(), 1);
+        assert_eq!(whole.midi_sections()[0].opcode("cc1"), Some("64"));
+        assert_eq!(whole.midi_sections()[0].opcode("curve_index"), Some("8"));
+        assert_eq!(whole.midi_sections()[0].len(), 2);
+
+        // `<control>` 的两张**文件级**表。
+        assert_eq!(whole.cc_defaults().get(&7), Some(&100));
+        assert_eq!(
+            whole.cc_labels().get(&1).map(|label| label.as_ref()),
+            Some("Volume")
+        );
+        assert!(whole.warnings().is_empty(), "{:?}", whole.warnings());
+    }
+
+    #[test]
+    fn the_sample_path_ends_are_pinned() {
+        // `sample_path()` 的两端：**恰好 1 字节**的前缀 / 样本，以及「样本恰好等于前缀本身」。
+        let cases: &[(Option<&str>, &str, &str)] = &[
+            (None, "a", "a"),
+            (Some("a"), "b", "a/b"),
+            (Some("a"), "a", "a/a"),
+            (Some("a"), "", "a/"),
+            (Some(""), "", ""),
+            (Some("/"), "/", "/"),
+            (Some("a/"), "a/", "a/a/"),
+            (Some("a/"), "/", "/"),
+            (Some("."), ".", "./."),
+        ];
+        for (prefix, sample, expected) in cases {
+            let mut region: Region<'_> = region(60, 1, 1);
+            region.default_path = (*prefix).map(Cow::Borrowed);
+            region.sample = Cow::Borrowed(sample);
+            assert_eq!(
+                region.sample_path(),
+                *expected,
+                "prefix={prefix:?} sample={sample:?}"
+            );
+        }
+    }
 }

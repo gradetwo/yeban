@@ -3114,4 +3114,39 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn the_truncation_display_renders_the_payload_ends() {
+        // R48 的约束：`warning_display_cases()` 是**每臂一行**（臂编号断言要求序列恰为
+        // `0..N`），所以同一条 `Truncated` 的**边界文案**只能放在另一条判据里 ——
+        // 否则表里出现重复臂编号，`the_warning_golden_table_covers_every_arm_number`
+        // 会（正确地）变红。
+        //
+        // R60（跨平台）：取值刻意**避开** `usize::MAX`（宽度随平台变），
+        // 用 32 位也放得下的字面量，因此期望文案与平台无关。
+        assert_eq!(
+            Warning::Truncated {
+                kept: 0,
+                dropped: 0
+            }
+            .to_string(),
+            "warning list capped at 0: 0 warning(s) dropped"
+        );
+        assert_eq!(
+            Warning::Truncated {
+                kept: 1,
+                dropped: 9
+            }
+            .to_string(),
+            "warning list capped at 1: 9 warning(s) dropped"
+        );
+        assert_eq!(
+            Warning::Truncated {
+                kept: 1_000_000_000,
+                dropped: 4_294_967_295
+            }
+            .to_string(),
+            "warning list capped at 1000000000: 4294967295 warning(s) dropped"
+        );
+    }
 }

@@ -363,4 +363,30 @@ mod tests {
             "unexpected error: {error:?}"
         );
     }
+
+    #[test]
+    fn the_set_cc_index_ends_are_real_declarations() {
+        // 索引域的两端（`0` 与 `127`）都是**真实声明**，不是「没写索引」的别名。
+        for (name, cc) in [("set_cc0", 0u16), ("set_cc127", 127u16)] {
+            assert_eq!(
+                set_cc_declaration(name, "7", 3).expect("in range"),
+                SetCcOutcome::Value { cc, initial: 7 },
+                "{name}"
+            );
+        }
+        // 前导零是同一个数值、**不同**的名字。
+        assert_eq!(
+            set_cc_declaration("set_cc00", "7", 3).expect("in range"),
+            SetCcOutcome::Value { cc: 0, initial: 7 }
+        );
+        // 解析器**不**去重：同一索引声明两次各自成立（「后者胜」是调用方的口径）。
+        assert_eq!(
+            set_cc_declaration("set_cc0", "1", 1).expect("ok"),
+            SetCcOutcome::Value { cc: 0, initial: 1 }
+        );
+        assert_eq!(
+            set_cc_declaration("set_cc0", "2", 2).expect("ok"),
+            SetCcOutcome::Value { cc: 0, initial: 2 }
+        );
+    }
 }

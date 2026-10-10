@@ -1097,3 +1097,52 @@ fn every_include_side_quota_at_zero_fires_its_own_check() {
         assert!(matches_variant, "{label}: unexpected verdict {error:?}");
     }
 }
+
+#[test]
+fn a_truncated_glob_is_indistinguishable_from_a_real_miss() {
+    // `max_glob_depth` 是唯一**静默**的限额：下探被截断之后，调用方看到的与
+    // 「真的没有匹配」**完全一样**（同变体、同载荷）—— 这就是「静默」的定义，
+    // 也是它唯一的可观测后果链。两个基准目录、**同一个**包含模式：
+    // ① 有深层文件但深度被截断；② 什么都没有。
+    let limits = ParseLimits {
+        max_glob_depth: 1,
+        ..ParseLimits::default()
+    };
+
+    let truncated_dir = TempDir::new("sfz");
+    let truncated_root = truncated_dir.path();
+    write_file(
+        truncated_root,
+        "kit/sub/deep.sfz",
+        "<region>sample=deep.wav\n",
+    );
+    write_file(truncated_root, "main.sfz", "#include \"kit/**/*.sfz\"\n");
+
+    let empty_dir = TempDir::new("sfz");
+    let empty_root = empty_dir.path();
+    write_file(empty_root, "main.sfz", "#include \"kit/**/*.sfz\"\n");
+
+    let truncated = IncludeResolver::new(truncated_root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("the walk is truncated");
+    let missing = IncludeResolver::new(empty_root, limits)
+        .expect("base dir")
+        .resolve("main.sfz")
+        .expect_err("there is genuinely nothing to match");
+
+    // ⭐ 「不可区分」：两个错误逐字段相同（调用方**无从**判断是截断还是真没有）。
+    assert_eq!(
+        truncated, missing,
+        "a truncated walk must be indistinguishable from a real miss"
+    );
+    // R58／R69：同一个 `==` 上放一条**真探针**（同一变体、不同载荷 ⇒ 必须不等）。
+    assert_ne!(
+        truncated,
+        SfzError::IncludeNoMatch {
+            line: 1,
+            pattern: "kit/*.sfz".to_string()
+        },
+        "a different pattern must not compare equal"
+    );
+}
