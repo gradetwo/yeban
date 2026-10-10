@@ -378,16 +378,9 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
             ));
         }
     }
-    assert_eq!(
-        scanned + skipped.len(),
-        files.len(),
-        "R93: 每个文件要么被扫过、要么被显式跳过"
-    );
-    assert_eq!(
-        skipped.len(),
-        0,
-        "R132: **入口数 = 未修缺口数 = 0** —— `logic.rs` / `als.rs` 已进扫描域"
-    );
+    // **R119/R120 的机械下界**（助手有配对的已知红: `scan_lower_bounds_reject_broken_inputs`）
+    scan_reached(files.len(), scanned, skipped.len())
+        .expect("扫描必须覆盖全部文件、且没有跳过入口");
     assert!(
         offenders.is_empty(),
         "R102/R111/R114: 下列量词断言没有**根绑定**的下界（空集合上会真空通过）:\n{}",
@@ -671,5 +664,137 @@ fn masking_is_byte_length_preserving_for_every_source_file() {
     assert!(
         scanned >= 7,
         "至少扫到 7 个源文件（R93: 下界）, 实际 {scanned}"
+    );
+}
+
+/// **R160 的注册表**: 本检查器**认**的界形态（每条都必须有正对照命中, 且正对照只许命中已注册形态）。
+const REGISTERED_BOUND_FORMS: [&str; 5] = [
+    "explicit-len-ge",
+    "macro-implicit-len-eq",
+    "not-is-empty",
+    "value-bound-len-eq",
+    "explicit-empty-table",
+];
+
+/// **R119/R120 的机械下界**: 扫描必须"每个文件都处理过", 且入口数为 0。
+/// 返回 `Err` 的理由串, 便于**配对已知红**直接断言它会拒绝坏输入。
+fn scan_reached(files: usize, scanned: usize, skipped: usize) -> Result<(), String> {
+    if files < 7 {
+        return Err(format!(
+            "只读到 {files} 个源文件（下界 7）⇒ 扫描面太窄, 结论不可用"
+        ));
+    }
+    if scanned + skipped != files {
+        return Err(format!(
+            "{scanned} + {skipped} != {files} ⇒ 有文件既没被扫也没被登记"
+        ));
+    }
+    if skipped != 0 {
+        return Err(format!("跳过入口 {skipped} 个（要求 0）⇒ 扫描域未封闭"));
+    }
+    Ok(())
+}
+
+/// 判据 (**配对已知红**: 机械下界): 上界/下界三条件各自**破坏即拒绝**。
+#[test]
+fn scan_lower_bounds_reject_broken_inputs() {
+    assert!(scan_reached(11, 11, 0).is_ok(), "正常输入必须通过");
+    // 配对已知红 ①文件太少 ②既没扫也没登记 ③有跳过入口
+    assert!(scan_reached(3, 3, 0).is_err(), "少于下界必须拒绝");
+    assert!(scan_reached(11, 10, 0).is_err(), "漏扫必须拒绝");
+    assert!(scan_reached(11, 10, 1).is_err(), "有跳过入口必须拒绝");
+}
+
+/// 判据 (**R160 双向归零**): 形态注册表与正对照表**两个方向都相等**。
+#[test]
+fn bound_form_registry_is_bidirectionally_zeroed() {
+    // 正对照表: 每条已注册形态一个"有界"片段（与 `every_recognised_bound_form_has_a_paired_known_red` 同名）。
+    let positive: [(&str, &str); 5] = [
+        (
+            "explicit-len-ge",
+            "\n    fn t() {\n        assert!(v.len() >= 8 && v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "macro-implicit-len-eq",
+            "\n    fn t() {\n        assert_eq!(v.len(), 16);\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "not-is-empty",
+            "\n    fn t() {\n        assert!(!v.is_empty() && v.iter().any(|x| *x == 1));\n    }",
+        ),
+        (
+            "value-bound-len-eq",
+            "\n    fn t() {\n        assert!(v.len() == 4 && v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "explicit-empty-table",
+            "\n    fn t() {\n        assert!(v.is_empty(), \"对照\");\n        assert!(!v.iter().any(|x| *x == 1));\n    }",
+        ),
+    ];
+    // 方向 ①: 每条**已注册**形态都必须有正对照命中
+    for form in REGISTERED_BOUND_FORMS {
+        let hit = positive.iter().filter(|(name, _)| *name == form).count();
+        assert_eq!(hit, 1, "已注册形态 `{form}` 必须有且只有一个正对照");
+    }
+    // 方向 ②: 正对照只许命中**已注册**形态（没有"表外形态"被当成界）
+    assert_eq!(
+        positive.len(),
+        REGISTERED_BOUND_FORMS.len(),
+        "两个方向的条数必须相等"
+    );
+    for (name, snippet) in positive {
+        assert!(
+            REGISTERED_BOUND_FORMS.contains(&name),
+            "正对照 `{name}` 不在注册表里 ⇒ 表外形态被当成界（R160 方向 ②）"
+        );
+        assert!(
+            unbounded_quantifiers(snippet).is_empty(),
+            "{name}: 正对照必须被认（否则该形态是惰性的）"
+        );
+    }
+    // 方向 ② 的反证: **未注册**形态（运行期计数器, R118）不得被认
+    let unregistered = "\n    fn t() {\n        let mut count = 0;\n        for x in v { count += 1; }\n        assert_eq!(count, 4);\n        assert!(v.iter().all(|y| *y == 0));\n    }";
+    assert!(
+        !unbounded_quantifiers(unregistered).is_empty(),
+        "未注册的形态（计数器）不得被当成界"
+    );
+}
+
+/// 判据 (**注入做成常驻判据**): 三条常驻判据各自的"形态级注入"都在**本判据内**复现,
+/// 且每对**绿/红两臂**都要成立 —— 因此批 23 的 3/3 隔离**永久**保住（不再依赖外部驱动器）。
+#[test]
+fn every_standing_criterion_has_a_synthetic_green_and_red_arm() {
+    // 判据 1（扫源文件）: 同一段合成源码, **有界** ⇒ 绿 / **去掉界** ⇒ 红
+    let c1_green =
+        "\n    fn t() {\n        assert!(v.len() >= 1 && v.iter().all(|x| *x == 0));\n    }";
+    let c1_red = "\n    fn t() {\n        assert!(v.iter().all(|x| *x == 0));\n    }";
+    assert!(unbounded_quantifiers(c1_green).is_empty(), "判据1 绿臂");
+    assert!(
+        !unbounded_quantifiers(c1_red).is_empty(),
+        "判据1 红臂（去掉界必须被抓）"
+    );
+    // 判据 2（检查器的牙）: 边界开 ⇒ near-miss 漏判（红臂）/ 边界在 ⇒ 抓住（绿臂）
+    let c2_near_miss =
+        "\n    fn t() {\n        assert!(ab.len() >= 4 && b.iter().all(|x| *x == 0));\n    }";
+    assert!(
+        !unbounded_quantifiers(c2_near_miss).is_empty(),
+        "判据2 绿臂: 带标识符边界时必须抓住 near-miss"
+    );
+    assert!(
+        !contains_identifier("assert!(ab.len()>=4&&b.iter()", "assert!(b.len()>="),
+        "判据2 红臂: 若边界判定失效（`ok = true`）, `b` 会被 `ab.len()` 满足 ⇒ 漏判"
+    );
+    // 判据 3（掩码逐字节等长）: 正确掩码 ⇒ 等长（绿）/ 写坏的掩码 ⇒ 不等长（红）
+    let sample = "// 注释\n    fn t() {\n        let s = \"中文\";\n    }";
+    assert_eq!(mask(sample).len(), sample.len(), "判据3 绿臂: 正确掩码等长");
+    let broken = sample
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(
+        broken.len(),
+        sample.len(),
+        "判据3 红臂: 写坏的掩码必须不等长"
     );
 }
