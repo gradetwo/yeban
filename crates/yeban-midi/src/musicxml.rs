@@ -2204,4 +2204,22 @@ mod tests {
             "第一个 `]]>`（在 `a` 之后）就结束 CDATA ⇒ 正文 `a`，其后的 `b]]>` 是普通文本"
         );
     }
+
+    /// 判据 (类别: 词法边界 / 错误读数): 未闭合的 `<![CDATA[` 报
+    /// `Malformed { offset: <CDATA 的起始字节>, detail: "CDATA 未闭合" }`。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把文案改成 `"CDATA 结束标记缺失"`
+    /// （注入 `b12:CDATA`）后全部判据**保持绿** —— `structural_errors_are_explicit`
+    /// 只覆盖了**注释**未闭合，CDATA 这一支此前没有判据。
+    #[test]
+    fn an_unclosed_cdata_section_names_the_start_offset() {
+        assert_eq!(
+            parse_musicxml(b"<score-partwise><![CDATA[never"),
+            Err(MusicXmlError::Malformed {
+                offset: 16,
+                detail: "CDATA 未闭合",
+            }),
+            "偏移 16 = `<score-partwise>`（16 字节）之后 CDATA 的起始位置"
+        );
+    }
 }

@@ -2162,4 +2162,39 @@ mod tests {
         assert_eq!(crate::vlq::VLQ_MAX_BYTES, 4, "VLQ 的最大字节数");
         assert_eq!(crate::export::MIDI_CHANNEL_COUNT, 16, "SMF 的通道数");
     }
+
+    /// 判据 (R69 的**单字段差异**形状): `MidiExport` 的相等必须区分 `format` 与 `ppq`
+    /// 这两个**单字段**差异。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `MidiExport` 的 `PartialEq` 顶成一个
+    /// **忽略 `format`** 的手写实现（注入 `b12:PFEQ`）后全部判据**保持绿** ——
+    /// 批十一打了 `tracks`/`tempos` 的**顺序**敏感，但 `format`/`ppq` 的单字段差异
+    /// 此前没有判据。
+    #[test]
+    fn export_equality_distinguishes_format_and_ppq() {
+        let base = MidiExport {
+            format: MidiFormat::Parallel,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            tracks: Vec::new(),
+        };
+        // 单字段差异 ①：只改 `format`。
+        assert!(
+            base != MidiExport {
+                format: MidiFormat::SingleTrack,
+                ..base.clone()
+            },
+            "只改 `format` 就必须不相等"
+        );
+        // 单字段差异 ②：只改 `ppq`。
+        assert!(
+            base != MidiExport {
+                ppq: 480,
+                ..base.clone()
+            },
+            "只改 `ppq` 就必须不相等"
+        );
+        // 对照臂：原样拷贝必须相等。
+        assert!(base == base.clone(), "对照臂：同值必须相等");
+    }
 }

@@ -373,6 +373,18 @@ fn the_two_fur_elise_480ppq_files_differ_by_exactly_channel_one() {
         .into_iter()
         .filter(|key| key.0 == 0)
         .collect();
+    // ⭐ R93：先钉住**被扫集合的下界** —— 否则"两边都是空集"会让下面那条比较真空通过。
+    // 实测读数：单声部 517 颗、双声部通道 0 也是 517 颗（388 颗在通道 1）。
+    assert_eq!(
+        sorted_keys(&one_parsed).len(),
+        517,
+        "单声部文件的音符数（下界；为 0 时下面的比较会真空通过）"
+    );
+    assert_eq!(
+        only_channel_0.len(),
+        517,
+        "过滤后的通道 0 音符数（下界；R93 的反真空断言）"
+    );
     assert_eq!(
         only_channel_0,
         sorted_keys(&one_parsed),

@@ -2848,3 +2848,44 @@ fn the_local_header_signature_is_checked_before_the_length_fields() {
         other => panic!("签名与长度字段同时坏掉时必须先报签名，得到 {other:?}"),
     }
 }
+/// 判据 (**登记在案的现状**，⛔ 不是被认可的契约): 中央目录**声明的尺寸**
+/// （EOCD 的 `size` 字段）只是一个**外层**边界 —— 逐条走查**不保证**每条记录都落在
+/// `offset + size` 之内。
+///
+/// 补的是哪个缺口（本票注入实测）：在走查里加上"每条记录必须落在声明尺寸内"的检查
+/// （注入 `b12:EXTENT`）后**两条判据变红** ⇒ 这个宽松行为此前**没有被任何判据描述**，
+/// 却是既有判据所依赖的（`mxl_malformed_readings_are_pinned_by_offset_and_detail` 与
+/// `the_zip64_marker_fires_before_the_entry_name_limit` 的夹具都在声明尺寸之外还有记录）。
+/// ⭐ 钉住它是为了让"某天有人去强制声明尺寸"这件事**可观测**（会先红在这里），
+/// 而不是为了禁止那个改动 —— 真要改，应当连同本判据与那两条一起改。
+#[test]
+fn the_declared_central_directory_size_is_only_an_outer_bound() {
+    let container = container_xml("score.xml");
+    let mut zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    let eocd = zip.len() - 22;
+    assert_eq!(&zip[eocd..eocd + 4], b"PK\x05\x06");
+    // 把声明的中央目录尺寸缩到**一条记录的固定部分**（46 字节）—— 远小于两条记录的总长。
+    zip[eocd + 12..eocd + 16].copy_from_slice(&46u32.to_le_bytes());
+
+    assert!(
+        parse_mxl(&zip).is_ok(),
+        "声明尺寸之外的第二条记录仍会被读到 ⇒ 尺寸只是外层边界（登记在案的现状）"
+    );
+
+    // 对照臂：尺寸声明得**超过文件尾**才是它真正把守的东西 ⇒ 明确的 Malformed。
+    let mut over = zip.clone();
+    over[eocd + 12..eocd + 16].copy_from_slice(&(u32::MAX / 2).to_le_bytes());
+    match parse_mxl(&over) {
+        Err(MxlError::Malformed { offset, detail }) => {
+            assert_eq!(offset, eocd);
+            assert_eq!(detail, "中央目录越过文件尾");
+        }
+        other => panic!("声明尺寸超过文件尾必须报 Malformed，得到 {other:?}"),
+    }
+}

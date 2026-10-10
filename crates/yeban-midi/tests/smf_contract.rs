@@ -1382,18 +1382,6 @@ fn a_minimal_export_is_pinned_byte_for_byte() {
 /// ⇒ 文档漂移（改了名字却忘了改文档里的长度）它是看不见的。
 #[test]
 fn the_conductor_track_documentation_matches_the_written_bytes() {
-    let doc = include_str!("smf_contract.rs");
-    // 方向 ① 的文档侧。
-    assert!(
-        doc.contains("TrackName 长度 15"),
-        "文档必须写明 conductor 轨的 TrackName 长度是 15"
-    );
-    assert!(doc.contains("0x0F"), "文档必须写出长度字段的字面值 0x0F");
-    assert!(
-        doc.contains("b'Y', b'e', b'b', b'a', b'n'"),
-        "文档必须逐字节列出 conductor 的名字"
-    );
-
     let bytes = MidiExport {
         format: MidiFormat::Parallel,
         ppq: DEFAULT_PPQ,
@@ -1404,6 +1392,29 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
     .expect("编码");
     let chunks = track_chunks(&bytes).expect("chunk 布局");
     let conductor = &bytes[chunks[1].payload.clone()];
+
+    // ⭐ R89：文档侧的针**在运行时由被测输出构造** —— ⛔ 不是把字面量先写进被搜的文件里
+    // 再回头搜它（那样 `contains` 近乎恒真）。所以先算出长度与名字，再构造针。
+    let name_len = conductor[3];
+    let name = &conductor[4..4 + usize::from(name_len)];
+    let doc = include_str!("smf_contract.rs");
+    assert!(
+        doc.contains(&format!("TrackName 长度 {name_len}")),
+        "文档必须写明 conductor 轨的 TrackName 长度是 {name_len}"
+    );
+    assert!(
+        doc.contains(&format!("0x{name_len:02X}")),
+        "文档必须写出长度字段的字面值 0x{name_len:02X}"
+    );
+    let head_first_5 = name[..5]
+        .iter()
+        .map(|byte| format!("b'{}'", *byte as char))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        doc.contains(&head_first_5),
+        "文档必须逐字节列出 conductor 名字的前 5 个字节: {head_first_5}"
+    );
 
     // 方向 ① 的字节侧。
     assert_eq!(
