@@ -458,4 +458,27 @@ mod tests {
         .expect("解析");
         assert_eq!(query.fields, vec!["bpm".to_owned(), "title".to_owned()]);
     }
+    /// 分页的**缺省上限**是已发布的字面值 100，而且"不给 `limit`"真的用它。
+    ///
+    /// 注入（实测红）：`DEFAULT_LIMIT` 100 → 101 ⇒ 既有判据**全绿**（它们从不提这个数）；
+    /// 本判据红。
+    #[test]
+    fn the_default_page_size_is_the_published_hundred() {
+        assert_eq!(DEFAULT_LIMIT, 100);
+        assert_eq!(MAX_LIMIT, 1000);
+        let query = parse(&args(serde_json::json!({}))).expect("缺省查询");
+        assert_eq!(query.limit, 100, "不给 `limit` ⇒ 用缺省页大小");
+        assert_eq!(query.offset, 0);
+        assert!(!query.limit_clamped, "缺省不是被夹紧来的");
+        // 端点：(1000, 1001) 这一对是"夹紧"的边界。
+        assert_eq!(
+            parse(&args(serde_json::json!({"limit": 1000})))
+                .expect("上界")
+                .limit,
+            1000
+        );
+        let clamped = parse(&args(serde_json::json!({"limit": 1001}))).expect("夹紧");
+        assert_eq!(clamped.limit, 1000);
+        assert!(clamped.limit_clamped);
+    }
 }

@@ -298,3 +298,47 @@ fn the_catalog_kinds_are_exactly_the_parse_arms() {
          只在目录里（没有解析臂）: {only_catalog:?}\n只在解析臂里（没登记）: {only_arms:?}"
     );
 }
+
+/// 分类器**真的**分得开"构造"与"模式"（本判据喂纯合成的三行文本）。
+///
+/// 为什么必须有这一条：`every_op_variant_has_a_registered_construction_site` 的
+/// 结论完全依赖 [`constructed_variants`]，而它的三条规则是从真实源码里"看出来"的。
+/// 没有这一条时，把规则②（紧跟 `=>`）删掉，真实源码上**看不出差别**
+/// （因为那些模式旁边还有别的判据兜着）—— 那是"冗余防线"的经典形状。
+///
+/// 注入（实测红）：删掉规则②（`if text[after..].starts_with("=>")`）、
+/// 规则①（`matches!(`）或规则③（`|`）中的任一条 ⇒ 本判据红。
+#[test]
+fn the_classifier_tells_constructions_from_patterns() {
+    // 构造：`push(...)`、`let x = ...`、`=> Op::V {`（右值是构造）。
+    let constructions = concat!(
+        "ops.push(Op::AddTrack { track: t });\n",
+        "let op = Op::SetAutomationPoint { lane, tick, value, curve };\n",
+        "Self::Mute => Op::SetTrackMute { track_id, old_mute, new_mute },\n",
+        "Ok(Op::AddNote { track_id, clip_id, note })\n",
+    );
+    assert_eq!(
+        constructed_variants(constructions),
+        ["AddNote", "AddTrack", "SetAutomationPoint", "SetTrackMute"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+    // 模式：match 臂 / `matches!` / 或模式交替 —— 一个都不许被当成构造。
+    let patterns = concat!(
+        "match op { Op::AddClip { clip } => { let _ = clip; } _ => {} }\n",
+        "if matches!(op, Op::AddClip { .. }) { return; }\n",
+        "matches!(op, Op::AddNote { .. } | Op::DeleteNote { .. });\n",
+    );
+    assert!(
+        constructed_variants(patterns).is_empty(),
+        "模式不得被当成构造: {:?}",
+        constructed_variants(patterns)
+    );
+    // `NoteOp::` 前缀不算（本 crate 的两个枚举前缀重叠，这是最容易错的字面陷阱）。
+    assert!(
+        constructed_variants("let x = NoteOp::AddNote { track_id, clip_id, note };").is_empty()
+    );
+    // 单元变体（后面不跟 `{`）算构造。
+    assert!(constructed_variants("let x = Op::RemoveClip;").contains("RemoveClip"));
+}

@@ -557,4 +557,47 @@ mod tests {
         assert_eq!(response.id, Id::Null);
         assert_eq!(response.to_value()["error"]["code"], PARSE_ERROR);
     }
+    /// JSON-RPC 的**数字码**与版本串是**线协议字面量**，必须用字面值钉住。
+    ///
+    /// 为什么必须有这一条：既有判据全都用 `PARSE_ERROR` 这类**常量**当期望值
+    /// （常量自比）⇒ 把常量的取值改掉时两边一起变，判据恒真。第四批注入实测：
+    /// `JR-parse`（-32700 → -32701）、`JR-invalid`（-32600 → -32609）、
+    /// `JR-unauth`（-32001 → -32002）**三条全绿**。
+    ///
+    /// 注入（实测红）：改上面任一条的取值 ⇒ 本判据红。
+    #[test]
+    fn the_protocol_version_and_error_codes_are_the_wire_literals() {
+        assert_eq!(JSONRPC_VERSION, "2.0");
+        assert_eq!(PARSE_ERROR, -32700);
+        assert_eq!(INVALID_REQUEST, -32600);
+        assert_eq!(METHOD_NOT_FOUND, -32601);
+        assert_eq!(INVALID_PARAMS, -32602);
+        assert_eq!(INTERNAL_ERROR, -32603);
+        assert_eq!(UNAUTHORIZED, -32001);
+        assert_eq!(FORBIDDEN, -32003);
+        assert_eq!(TOOL_NOT_FOUND, -32004);
+        assert_eq!(NOT_IMPLEMENTED, -32005);
+        // 九个数码互不相同，且排序后的**完整取值表**也钉住（防"改两个码让它们相撞"）。
+        let mut codes = [
+            PARSE_ERROR,
+            INVALID_REQUEST,
+            METHOD_NOT_FOUND,
+            INVALID_PARAMS,
+            INTERNAL_ERROR,
+            UNAUTHORIZED,
+            FORBIDDEN,
+            TOOL_NOT_FOUND,
+            NOT_IMPLEMENTED,
+        ];
+        codes.sort_unstable();
+        let mut unique = codes.to_vec();
+        unique.dedup();
+        assert_eq!(unique.len(), 9, "九个数码必须互不相同");
+        assert_eq!(
+            codes,
+            [
+                -32700, -32603, -32602, -32601, -32600, -32005, -32004, -32003, -32001
+            ]
+        );
+    }
 }

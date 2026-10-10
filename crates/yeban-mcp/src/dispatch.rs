@@ -1167,4 +1167,28 @@ mod tests {
         let sample = crate::tools::ToolResponse::failure(ErrorCode::IoError, "x").to_value();
         assert_eq!(sample["error"]["code"], "IO_ERROR");
     }
+    /// 缺省协议版本是**线协议字面量**，而且 `initialize` 真的回显它（没给就回缺省）。
+    ///
+    /// 注入（实测红）：把 [`DEFAULT_PROTOCOL_VERSION`] 改成 `"2024-11-06"` ⇒ 既有判据
+    /// **全绿**（它们只检查"回应里有 `protocolVersion` 这个键"）；本判据红。
+    #[test]
+    fn the_default_protocol_version_is_the_wire_literal() {
+        assert_eq!(DEFAULT_PROTOCOL_VERSION, "2024-11-05");
+        let request = Request::parse(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
+            .expect("初始化请求");
+        let value = Dispatcher::initialize_result(&request);
+        assert_eq!(
+            value["protocolVersion"], "2024-11-05",
+            "缺省必须回线协议的已发布版本: {value}"
+        );
+        // 客户端给了就回显它（协议允许服务端在回应里确定版本）。
+        let echoed = Request::parse(
+            r#"{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"X"}}"#,
+        )
+        .expect("初始化请求");
+        assert_eq!(
+            Dispatcher::initialize_result(&echoed)["protocolVersion"],
+            "X"
+        );
+    }
 }

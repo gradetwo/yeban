@@ -991,4 +991,25 @@ mod tests {
         let written = export_to_default_dir().expect("导出到 target/schema-samples");
         assert_eq!(written.len(), crate::tools::TOOL_COUNT + 4);
     }
+    /// 样本目录名是**跨语言契约**（Python 探针与 CI 都按字面值找它）。
+    ///
+    /// 为什么不能用常量自比：既有判据 `default_out_dir_is_the_workspace_target` 写的是
+    /// `dir.ends_with(SAMPLES_DIR_NAME)` ⇒ 把常量改成别的值时两边一起变、判据恒真，
+    /// 而 `verify/e2e_audio_clip_seed.py` / `verify/idempotency_replay_schema.py`
+    /// 与 `scripts/gates/validate_schemas.py --samples-dir target/schema-samples`
+    /// 仍然按**字面值** `schema-samples` 找文件 ⇒ 它们会静默找不到（不是红）。
+    ///
+    /// 注入（实测红）：`SAMPLES_DIR_NAME` "schema-samples" → "samples" ⇒ 既有判据全绿；
+    /// 本判据红。
+    #[test]
+    fn the_sample_directory_name_is_the_cross_language_literal() {
+        assert_eq!(SAMPLES_DIR_NAME, "schema-samples");
+        let dir = default_out_dir();
+        assert!(
+            dir.ends_with("schema-samples"),
+            "缺省输出目录必须以字面值结尾: {}",
+            dir.display()
+        );
+        assert!(dir.ends_with("target/schema-samples") || dir.ends_with("target\\schema-samples"));
+    }
 }

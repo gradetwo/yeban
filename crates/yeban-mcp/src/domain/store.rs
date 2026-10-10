@@ -1241,4 +1241,47 @@ mod tests {
             "{value}"
         );
     }
+    /// 容器文件大小上界的**公式**按字面值钉住（含固定的 4 KiB 余量与逐条目元数据项）。
+    ///
+    /// 注入（实测红）：把 `.saturating_add(4_096)` 改成 `.saturating_add(0)` ⇒
+    /// 既有判据 `the_declared_size_gate_refuses_before_reading_the_file` **全绿**
+    /// —— 它拿 `max_container_file_bytes(&tight)` 的返回值当夹具输入（常量自比）；
+    /// 本判据红。
+    #[test]
+    fn the_container_size_bound_is_the_published_formula() {
+        // 0 个条目 ⇒ 只剩固定余量。
+        assert_eq!(
+            max_container_file_bytes(&ContainerLimits {
+                max_entry_bytes: 0,
+                max_total_bytes: 0,
+                max_ratio: 1,
+                max_entries: 0,
+            }),
+            4_096,
+            "固定余量"
+        );
+        // 1 个条目 ⇒ 余量 + (名字上限 + 128) × 2（local header 一份 + central directory 一份）。
+        // ⚠ 名字上限是**另一个 crate 的公开常量**（`yeban_model::container::MAX_ENTRY_NAME_BYTES`），
+        // 因此这里也把它的**取值**按字面值钉住 —— 它变了本判据要红（公式跟着变）。
+        assert_eq!(MAX_ENTRY_NAME_BYTES, 4_096);
+        assert_eq!(
+            max_container_file_bytes(&ContainerLimits {
+                max_entry_bytes: 0,
+                max_total_bytes: 0,
+                max_ratio: 1,
+                max_entries: 1,
+            }),
+            4_096 + (4_096 + 128) * 2
+        );
+        // 总量项按原样加上去。
+        assert_eq!(
+            max_container_file_bytes(&ContainerLimits {
+                max_entry_bytes: 0,
+                max_total_bytes: 1_024,
+                max_ratio: 1,
+                max_entries: 0,
+            }),
+            1_024 + 4_096
+        );
+    }
 }

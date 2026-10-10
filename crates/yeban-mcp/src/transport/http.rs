@@ -1316,4 +1316,73 @@ mod tests {
         );
         let _ = body(&server);
     }
+    /// 请求头/体的**上限**与四个线协议字符串都是已发布的字面值。
+    ///
+    /// 注入（实测红）：`MAX_REQUEST_HEAD_BYTES` 16 KiB → 8 KiB、`MAX_REQUEST_BODY_BYTES`
+    /// 1 MiB → 512 KiB、`BEARER_CHALLENGE` 改名、`CONTENT_TYPE_JSON` 去掉 charset
+    /// ⇒ 既有判据**全绿**（它们全都拿这些**常量**当输入）；本判据红。
+    #[test]
+    fn the_published_request_ceilings_are_the_wire_literals() {
+        assert_eq!(MAX_REQUEST_HEAD_BYTES, 16 * 1024);
+        assert_eq!(MAX_REQUEST_BODY_BYTES, 1024 * 1024);
+    }
+
+    /// 请求体的闸门**含端点**：恰好等于上限**不是** 413，超一字节才是。
+    ///
+    /// 注入（实测红）：把 `declared > MAX_REQUEST_BODY_BYTES` 改成 `>=` ⇒
+    /// 既有判据只喂 `MAX + 1`（超限那一侧）⇒ 全绿；本判据红。
+    #[test]
+    fn the_body_ceiling_is_inclusive() {
+        let server = loopback_server();
+        // 组装一个**恰好** `MAX_REQUEST_BODY_BYTES` 字节的合法 JSON-RPC 体。
+        let prefix = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"pad":""#;
+        let suffix = r#""}}"#;
+        let pad = MAX_REQUEST_BODY_BYTES - prefix.len() - suffix.len();
+        let exact = format!("{prefix}{}{suffix}", "a".repeat(pad));
+        assert_eq!(
+            exact.len(),
+            MAX_REQUEST_BODY_BYTES,
+            "夹具前提: 恰好一个上限"
+        );
+
+        let response = server.handle_text(&request(Some(&bearer(&server)), &exact));
+        assert_ne!(
+            response.status, 413,
+            "恰好等于上限**不得**被判成超限 (闸门含端点): {}",
+            response.body
+        );
+
+        let over = format!("{prefix}{}{suffix}", "a".repeat(pad + 1));
+        assert_eq!(over.len(), MAX_REQUEST_BODY_BYTES + 1);
+        let response = server.handle_text(&request(Some(&bearer(&server)), &over));
+        assert_eq!(response.status, 413, "超一字节必须 413");
+    }
+
+    /// 四个**线路字符串**与 401 的挑战头都是已发布的字面值。
+    ///
+    /// 注入（实测红）：`BEARER_CHALLENGE` 改名、`CONTENT_TYPE_JSON` 去掉 charset ⇒
+    /// 既有判据拿常量当期望值 ⇒ 全绿；本判据红。
+    #[test]
+    fn the_wire_header_literals_are_published() {
+        assert_eq!(MCP_PATH, "/mcp");
+        assert_eq!(SUPPORTED_METHOD, "POST");
+        assert_eq!(CONTENT_TYPE_JSON, "application/json; charset=utf-8");
+        assert_eq!(BEARER_CHALLENGE, "Bearer realm=\"yeban-mcp\"");
+        assert_eq!(DYNAMIC_PORT, 0);
+        // 401 真的带上那个挑战头。
+        let server = loopback_server();
+        let response = server.handle_text(&request(
+            None,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        ));
+        assert_eq!(response.status, 401);
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(name, value)| *name == "WWW-Authenticate" && value == BEARER_CHALLENGE),
+            "401 必须带 WWW-Authenticate 挑战头: {:?}",
+            response.headers
+        );
+    }
 }
