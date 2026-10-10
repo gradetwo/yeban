@@ -4955,4 +4955,49 @@ mod tests {
         );
         assert_eq!(other, fixture_document(), "失败的批次不得改文档");
     }
+
+    /// `Op` 的 `==` 必须**区分载荷与变体**（R58 的探针）。
+    ///
+    /// 为什么需要（第八轮 R58 对照实验）：把 `Op` 的 `derive PartialEq` 删掉、换成"恒真"
+    /// 手写 impl 后，全仓判据**一条都不红** —— 而本 crate 有**成批**依赖
+    /// `assert_eq!(back, op)` 的往返判据（`op_variants_match_ops_schema_exactly`、
+    /// 历史 DAG 编解码、样本往返……）。那批判据在 `PartialEq` 被削弱后会**同时变成空判据**。
+    /// 本判据落在**同一个** `==` 上：同一变体不同载荷、同一变体不同目标、不同变体，
+    /// 三者都必须判为不同。
+    #[test]
+    fn op_equality_separates_payloads_targets_and_variants() {
+        let a = Op::SetTrackMute {
+            track_id: fixture_id(2),
+            old_mute: false,
+            new_mute: true,
+        };
+        assert_eq!(a, a.clone(), "同一值必须与自己相等（成对的正侧）");
+        assert_ne!(
+            a,
+            Op::SetTrackMute {
+                track_id: fixture_id(2),
+                old_mute: false,
+                new_mute: false,
+            },
+            "同一变体、不同载荷必须判为不同"
+        );
+        assert_ne!(
+            a,
+            Op::SetTrackMute {
+                track_id: fixture_id(3),
+                old_mute: false,
+                new_mute: true,
+            },
+            "同一变体、不同目标必须判为不同"
+        );
+        assert_ne!(
+            a,
+            Op::SetTrackSolo {
+                track_id: fixture_id(2),
+                old_solo: false,
+                new_solo: true,
+            },
+            "不同变体必须判为不同"
+        );
+    }
 }
