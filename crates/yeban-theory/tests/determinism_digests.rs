@@ -353,12 +353,17 @@ fn reference_is_flat(text: &str) -> bool {
     chars.any(|ch| matches!(ch, 'b' | 'B' | '\u{266d}'))
 }
 
-/// 49 个根音文本（7 字母 × 7 后缀）逐个钉住，并与 `parse_pitch_class` 的
-/// 变音记号口径对账。另钉五对同音异名与一处八度回绕。
+/// 63 个根音文本（7 字母 × **9** 后缀）逐个钉住，并与 `parse_pitch_class` 的
+/// 变音记号口径对账。另钉多记号组合、五对同音异名与两处八度回绕读数。
+///
+/// ⚠ 后缀表必须含 **`B`** 与 **`BB`**：`parse_pitch_class` 的降号集合是
+/// `b` / `B` / `♭`，而"字母 `B` 与降号记号 `B`"正是 R42 的原始缺陷面。
+/// 本批实测：只列 7 种后缀时，"把 `B` 从降号集合里删掉"这条注入**不动**这条判据
+/// ⇒ 表本身有覆盖缺口，已补成 9 种（7 × 9 = 63）。
 #[test]
 fn root_text_neighbourhood_is_swept_systematically() {
     const LETTERS: [&str; 7] = ["C", "D", "E", "F", "G", "A", "B"];
-    const SUFFIXES: [&str; 7] = ["", "#", "##", "b", "bb", "\u{266f}", "\u{266d}"];
+    const SUFFIXES: [&str; 9] = ["", "#", "##", "b", "bb", "B", "BB", "\u{266f}", "\u{266d}"];
     let mut swept = 0usize;
     for letter in LETTERS {
         for suffix in SUFFIXES {
@@ -387,7 +392,20 @@ fn root_text_neighbourhood_is_swept_systematically() {
             swept += 1;
         }
     }
-    assert_eq!(swept, 49, "7 letters x 7 suffixes");
+    assert_eq!(swept, 63, "7 letters x 9 suffixes");
+
+    // 多记号组合（字母 B 后面跟记号 `B` 的两种大小写 + 混合记号）。
+    for (text, expected) in [
+        ("CB", Tonality::FlatMajor),
+        ("BB", Tonality::FlatMajor),
+        ("bB", Tonality::FlatMajor),
+        ("CbB", Tonality::FlatMajor),
+        ("C#", Tonality::SharpMajor),
+        ("B#", Tonality::SharpMajor),
+        ("B", Tonality::SharpMajor),
+    ] {
+        assert_eq!(Tonality::infer_from_root_text(text), expected, "{text:?}");
+    }
 
     // 五对同音异名：拼写不同、音级相同、调性相反（升号侧 vs 降号侧）。
     for (sharp, flat) in [
