@@ -104,6 +104,7 @@
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
+use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
 use yeban_engine::param::{MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT};
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
