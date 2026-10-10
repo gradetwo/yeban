@@ -1178,6 +1178,26 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         sources.len()
     );
 
+    // ⭐ R241①／R242③：**夹具必须能自证其形状**（否则"臂没抓到"与"夹具不是那个形状"不可分）。
+    let raw_fixture =
+        "let s = r#\"assert!(v.iter().all(..)) { }\"#; assert!(v.iter().all(|x| *x > 0));";
+    let probe = raw_fixture
+        .find("r#\"")
+        .expect("the fixture must contain a raw-string opener");
+    assert_eq!(
+        &raw_fixture.as_bytes()[probe..probe + 3],
+        b"r#\"",
+        "R241① fixture shape self-proof: the opener must be exactly `r#\"` at {probe}"
+    );
+    let closer = raw_fixture
+        .find("\"#;")
+        .expect("the fixture must contain a closer");
+    assert_eq!(
+        &raw_fixture.as_bytes()[closer..closer + 2],
+        b"\"#",
+        "R241① fixture shape self-proof: the closer must be exactly `\"#` at {closer}"
+    );
+
     // ⭐ R225①：**三类语言特性**各一条臂（⛔ 四件套**不够**；Rust 的额外陷阱）。
     //  ① 字符字面量的三种形态（含**转义引号**）⇒ 掩码后不该再有杂散引号。
     let char_forms = mask("let a = 'x'; let b = '\\n'; let c = '\\\'';");
