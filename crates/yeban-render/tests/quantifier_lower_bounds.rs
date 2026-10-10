@@ -365,7 +365,7 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
     // **R196 的实验读数（[R187-PROBE R196-FLOORS]）**: 取消"至少 7 个源文件"这一行,
     // **受害清单为空** ⇒ 这个约束**从未提供过证据**（真正的下界在 `scan_reached` 里, 那条有受害清单）
     // ⇒ 按 R196 **降级为诊断**（打印, 不判红）。⛔ 这不是说"放宽更好"。
-    println!(
+    eprintln!(
         "[R187-PROBE R196-FLOORS] src 文件数 = {}（诊断, 非断言; 下界由 scan_reached 承担）",
         files.len()
     );
@@ -930,15 +930,19 @@ fn each_registered_form_has_its_own_lower_bound() {
         .iter()
         .map(|path| std::fs::read_to_string(path).expect("读源文件"))
         .collect();
-    // 站点总数（`enabled = &[]` ⇒ 每个站点都算"无界"）
+    // **R204 的两种量法（定义必须写明）**:
+    // ① **站点去重总数** = `enabled = &[]` 时每个站点都算"无界" ⇒ 逐文件求和（本变量 `total`）;
+    // ② **形态归属之和** = 只开单个形态时被它认下的站点数之和（可重叠 ⇒ ⛔ 比 ① 大）。
     let total: usize = sources
         .iter()
         .map(|src| unbounded_quantifiers_with(&[], src).len())
         .sum();
-    assert!(
-        total >= 20,
-        "本仓至少应有 20 个量词站点（实测 {total}）—— 否则扫描面失效"
-    );
+    // **R203**: 探针读数写成 `eprintln!`（⛔ 不写进断言消息 —— 通过的断言在**任何模式**下都不打印）。
+    eprintln!("[R187-PROBE R204-SITES] 站点去重总数 total = {total}（定义 ①）");
+    // **R199 实验读数（[R187-PROBE R196-FLOORS] dedup-total-floor）**: 把这条地板取消后
+    // **受害清单为空**（"真空臂"）⇒ 它的作用已被别处承担 ⇒ 按 R199 **降级为诊断**（上面那行 `eprintln!`）。
+    // ⛔ 这不是说"放宽更好" —— 只是"它从未提供证据"。
+    let _ = total;
     // **R185 的逐形态下界（地板全部从**实测**来, R134; 实测值 14/15/23/1/0 ⇒ 留余量）**:
     // 前四种形态在本仓有真实命中; 第五种（"显式断言空表"）在本仓**实测为 0** ——
     // ⛔ 不许让"0 条"静默合法 ⇒ 它的下界是**合成正对照**（恰 1 条）, 且必须由
@@ -966,7 +970,7 @@ fn each_registered_form_has_its_own_lower_bound() {
                 total_per_file_offenders(src) - unbounded_quantifiers_with(&[form], src).len()
             })
             .sum();
-        println!("R185 形态 `{form}`: 本仓命中 {alone} 个站点（下界 {floor}）");
+        eprintln!("[R187-PROBE R185-FORMS] 形态 `{form}`: 本仓命中 {alone} 个站点（下界 {floor}）");
         assert!(
             alone >= floor,
             "形态 `{form}` 的本仓命中 {alone} 低于下界 {floor}"
