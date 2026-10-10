@@ -73,7 +73,23 @@ MAX_FILE_BYTES = 10 * 1024 * 1024
 #: 允许存在的大文件白名单 (相对仓库根); 新增需给出理由与许可登记
 LARGE_FILE_ALLOWLIST: tuple[str, ...] = ()
 
-SKIP_DIRS = {".git", "target", "node_modules", ".worktrees", "dist", ".cargo-home"}
+SKIP_DIRS = {
+    ".git",
+    "target",
+    "node_modules",
+    ".worktrees",
+    "dist",
+    ".cargo-home",
+    # R176 的加法半边: `__pycache__` 是 Python 产物, 而本仓**跟踪了 6 个**
+    # `__pycache__/*.pyc` (`git ls-files | grep -c '__pycache__'` = 6)
+    # ⇒ **任何一次本地 `import`** 都会重新生成它们 ⇒ 工作树变脏 ⇒
+    # `git rebase` 拒绝(`Please commit or stash them`) ⇒ **推送被挡**
+    # (我自己在做 R175 的等价性比对时就被挡了两次)。
+    # 守卫本来也不扫 `.pyc`(后缀只认 .rs/.toml/.slint/.py/.sh), 所以这个加法
+    # **不改变任何判定结果** —— 这一点由"改前/改后守卫输出逐字相同"证明。
+    # 另一半("把产物移出版本控制")需要单独裁决, 见 R176 ①。
+    "__pycache__",
+}
 
 
 def iter_repo_paths():
