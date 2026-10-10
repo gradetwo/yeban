@@ -398,6 +398,14 @@ jobs:
       contains(needs.plan.outputs.crates, 'yeban-dsp')
     runs-on: windows-latest
     timeout-minutes: 60
+    # 本步是"一次一改"的第 3 步, 目的**只**是判定"作业级 `env:`"是否会让工作流文件不可用。
+    # 实测背景: 上一次把三处改动一起推（`if-no-files-found: warn→error` + 体检步 + 本 env）,
+    # 结果工作流文件**不可用**（run 的 `name` = `path` 且 **零 jobs** ⇒ 整条 CI 没跑）。
+    # 前两步已单独推送并读回 `name = CI` 且腿非空 ⇒ 本步是**唯一剩下的可疑构造**。
+    # 若本次推送后 `name` 仍为 `CI` 且腿非空 ⇒ env 无罪（那次坏是**组合**效应）;
+    # 若本次 `name` == `path` 或 jobs 为空 ⇒ 元凶即"作业级 env 的用法", 以后改用别的方式传路径。
+    env:
+      GATE_LOG: ${{ runner.temp }}/gate.log
     steps:
       - uses: actions/checkout@v4
 
