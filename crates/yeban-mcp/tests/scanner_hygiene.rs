@@ -222,3 +222,139 @@ fn the_dry_run_scan_is_not_fooled_by_comments_or_strings() {
         "真的坏形状必须被抓到（否则这条判据自己没牙）: {caught:#?}"
     );
 }
+
+/// 全部 `.rs`（`src` ＋ `tests`），**按路径排序**（读数与文件系统顺序无关）。
+fn all_sources() -> Vec<(String, String)> {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files =
+        yeban_mcp::undo_session::read_rust_sources(&[root.join("src"), root.join("tests")]);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+/// **R228①/R253③：masked 与 raw 的差异必须**先分型**，且差异本身不是缺陷信号。**
+///
+/// 口径（单位与区域都写在这里）：
+/// * **区域** = `crates/yeban-mcp/src/**`（生产区文件，**不含** `tests/**`）；
+/// * **针集** = 本 crate 生产扫描器实际使用的那些（`value_at(` / `.ease(` / `interpolate` /
+///   `origin:` / `dryRun` / `&mut Domain` / `&mut YebanProjectV1` / `apply_inverse`）；
+/// * **两种口径**：① **子串**（⛔ 含污染 ⇒ 只是一个**上界**）；② **词边界**（针的两侧不得是
+///   标识符字符 ⇒ 排除 `dryRunParam` 这类）。
+///
+/// 断言（⛔ 不写死具体数字 —— 数字随源码变动，写死就是毒）：
+/// 1. ⭐ **不变量**：没有任何一行的针**在代码里却被掩掉**（那才是假阴性）；
+/// 2. 词边界口径 ≤ 子串口径（偏置方向固定：子串只会**多**算）；
+/// 3. 子串口径 ≥ 40（非真空下界，R119/R120）；
+/// 4. 分型结果只允许两种：`string`（针在字符串字面量里 —— 正确掩码）与
+///    `raw-interior`（跨行 raw 字符串的内部行 —— **已知限制**，见下面的恒等式说明）。
+///
+/// ⚠ **R251③ 的恒等式（⛔ 不是读数）**：某形态若**按构造**必为 0，它就不携带信息：
+/// * 针在**行注释**里 ⇒ 行注释**整段**被掩（含 `"` 与 `//`）⇒ **恒等式 0**；
+/// * 针在**块注释**里 ⇒ **修复前非 0**（那是真的假阴性，第九批实测红）、**修复后 0**
+///   ⇒ 它**依赖掩码器实现**，⛔ 不是恒等式；
+/// * 针在**单行字符串/单行 raw** 里 ⇒ 恒等式 0；针在**跨行 raw 的内部行** ⇒ **非 0**（已知限制）。
+#[test]
+fn masked_versus_raw_differences_are_typed_and_never_hide_code() {
+    const NEEDLES: [&str; 8] = [
+        "value_at(",
+        ".ease(",
+        "interpolate",
+        "origin:",
+        "dryRun",
+        "&mut Domain",
+        "&mut YebanProjectV1",
+        "apply_inverse",
+    ];
+    let mut substring = 0usize;
+    let mut word_boundary = 0usize;
+    let mut in_string = 0usize;
+    let mut other = 0usize;
+    let mut hidden_in_code: Vec<String> = Vec::new();
+    let mut scanned_lines = 0usize;
+    for (path, text) in all_sources() {
+        if !path.contains("src") || path.contains("tests") {
+            continue;
+        }
+        for (index, line) in text.lines().enumerate() {
+            scanned_lines += 1;
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let masked = automation_audit::code_without_literals(line);
+            for needle in NEEDLES {
+                if !line.contains(needle) || masked.contains(needle) {
+                    continue;
+                }
+                substring += 1;
+                if is_inside_string_literal(line, needle) {
+                    in_string += 1;
+                } else {
+                    other += 1;
+                }
+                if !is_inside_string_literal(line, needle) && !inside_cross_line_raw(line) {
+                    hidden_in_code.push(format!("{path}:{}", index + 1));
+                }
+                // 词边界口径：只在针的两侧都不是标识符字符时计入。
+                for (at, _) in line.match_indices(needle) {
+                    let left = line[..at].chars().next_back().unwrap_or(' ');
+                    let right = line[at + needle.len()..].chars().next().unwrap_or(' ');
+                    if !left.is_alphanumeric()
+                        && left != '_'
+                        && !right.is_alphanumeric()
+                        && right != '_'
+                    {
+                        word_boundary += 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(scanned_lines >= 5_000, "扫描面太小（{scanned_lines} 行）");
+    assert!(
+        substring >= 40,
+        "子串口径差异数太小（{substring}）—— 分型可能什么都没扫到"
+    );
+    assert!(
+        word_boundary <= substring,
+        "词边界口径（{word_boundary}）不得大于子串口径（{substring}）—— 偏置方向写反了"
+    );
+    assert!(
+        hidden_in_code.is_empty(),
+        "这些行里针在**代码**中却被掩掉（假阴性）：{hidden_in_code:#?}"
+    );
+    eprintln!(
+        "诊断（⛔ 不作判据）：口径①子串={substring}（上界）口径②词边界={word_boundary}；\
+         分型 string={in_string} other={other}"
+    );
+}
+
+/// 该针在**这一行**里是否落在字符串字面量内部（逐行口径）。
+fn is_inside_string_literal(line: &str, needle: &str) -> bool {
+    let Some(at) = line.find(needle) else {
+        return false;
+    };
+    let before = &line[..at];
+    // 逐字符数引号（忽略转义）：奇数 ⇒ 落在字符串内部。
+    let mut inside = false;
+    let mut chars = before.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' => {
+                chars.next();
+            }
+            '"' => inside = !inside,
+            '/' if !inside && chars.peek() == Some(&'/') => return false,
+            _ => {}
+        }
+    }
+    inside
+}
+
+/// 粗略判定：该行是否可能是**跨行 raw 字符串的内部行**（已知限制的承载体）。
+///
+/// 口径：行内出现裸的 `value_at(` 这类针、且**不在**字符串里、且该行**没有**引号配对
+/// ⇒ 最可能的解释是"上一行开了 raw 字符串"（逐行助手看不见那个上下文）。
+fn inside_cross_line_raw(line: &str) -> bool {
+    !is_inside_string_literal(line, "value_at(") && line.matches('"').count() % 2 == 1
+}
