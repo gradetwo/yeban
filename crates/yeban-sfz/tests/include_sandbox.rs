@@ -1282,3 +1282,72 @@ fn every_include_side_quota_is_exact_at_its_limit() {
         "{error:?}"
     );
 }
+
+#[test]
+fn a_duplicate_define_overrides_identically_on_both_insertion_paths() {
+    // ⭐ R215③：`#define` 有**两个插入点**（`Parser::handle_define` 与
+    //   `handle_resolver_define`）。两处的**可观测契约必须一致**：**同名后定义覆盖**。
+    //   ⏔ 不改 `#define` 语义，只**钉住它**。
+    // 路径 A（解析器侧）：`#define` 直接写在被解析的文本里 ⇒ 作用在 **sample 值**上。
+    let dir_a = TempDir::new("sfz");
+    let root_a = dir_a.path();
+    write_file(
+        root_a,
+        "main.sfz",
+        "#define $A 1\n#define $A 2\n<region>sample=$A.wav\n",
+    );
+    eprintln!(
+        "[R187-PROBE include_sandbox::a_duplicate_define_overrides_identically_on_both_insertion_paths] R215③ 两条插入路径：parser-side 与 resolver-side 都要跑（仅供阅读）"
+    );
+    let instrument_a = resolve_and_parse(root_a, "main.sfz").expect("path A parses");
+    let sample_a = instrument_a.regions()[0].sample.to_string();
+    assert_eq!(sample_a, "2.wav", "parser-side path: last define must win");
+
+    // 路径 B（resolver 侧）：两个 `#define` 写在**被包含的文件**里，
+    //   并被用于**后续 include 的路径** ⇒ 可观测结果是"哪一个目录被包含进来"。
+    let dir_b = TempDir::new("sfz");
+    let root_b = dir_b.path();
+    write_file(root_b, "defs.sfz", "#define $D parts\n#define $D other\n");
+    write_file(root_b, "other/a.sfz", "<region>sample=other.wav\n");
+    write_file(
+        root_b,
+        "main.sfz",
+        "#include \"defs.sfz\"\n#include \"$D/a.sfz\"\n",
+    );
+    let instrument_b = resolve_and_parse(root_b, "main.sfz").expect("path B parses");
+    let samples_b: Vec<String> = instrument_b
+        .regions()
+        .iter()
+        .map(|r| r.sample.to_string())
+        .collect();
+    assert_eq!(
+        samples_b,
+        vec![String::from("other.wav")],
+        "resolver-side path: last define must win (got {samples_b:?})"
+    );
+
+    // ⭐ R215③ 行为臂（红清单）：把**后定义**指向**不存在的目录**
+    //   ⇒ 同一个可观测结果必须变红（即：`other.wav` ⏔ 不得出现）。
+    let dir_c = TempDir::new("sfz");
+    let root_c = dir_c.path();
+    write_file(root_c, "defs.sfz", "#define $D other\n#define $D missing\n");
+    write_file(root_c, "other/a.sfz", "<region>sample=other.wav\n");
+    write_file(
+        root_c,
+        "main.sfz",
+        "#include \"defs.sfz\"\n#include \"$D/a.sfz\"\n",
+    );
+    // ⚠️ 本判据被**常驻判据**抓过一次：写成 `Vec` + `!red.iter().any(..)` 时，
+    //   `red` 为空会让断言**真空通过**（`!any` 对空集合恒真）⇒ 改成**普通布尔**断言（⛔ 无量词）。
+    let saw_other = match resolve_and_parse(root_c, "main.sfz") {
+        Err(_) => false,
+        Ok(instrument) => instrument
+            .regions()
+            .iter()
+            .any(|r| r.sample.contains("other.wav")),
+    };
+    assert!(
+        !saw_other,
+        "R215③ behaviour arm: the SECOND define points at a missing dir, so `other.wav` must NOT appear"
+    );
+}

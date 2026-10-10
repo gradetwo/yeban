@@ -1119,6 +1119,28 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         sources.len()
     );
 
+    // ⭐ R217① 掩码的**正对照臂**（我的掩码属**假阴性**侧 ⇒ 必须证明"构造之后真代码仍可见"）：
+    //   在一段**注释／字符串／字符字面量**之后写一个真站点 ⇒ 它必须**仍被**分类器判为站点。
+    let after_comment = {
+        let mut src = String::from("// {\n/* } { */\nlet s = \"assert!(v.iter().all(..))\";\n");
+        src.push_str("let c = '{';\n");
+        src.push_str("assert!(v.iter().all(|x| *x > 0));\n");
+        src
+    };
+    let masked_after = mask(&after_comment);
+    assert!(
+        masked_after.contains(".all("),
+        "R217① positive control: a real site AFTER comments/strings/char literals must survive masking"
+    );
+    assert!(
+        is_quantified_assertion(&after_comment, true),
+        "R217① positive control: the site after the decoys must still be classified as a site"
+    );
+    assert!(
+        !is_evidenced(&after_comment, true),
+        "R217① positive control: it is unbounded, so it must still be reported"
+    );
+
     // ⭐ R212② 自测：**每个形态谓词喂 正例／反例 各一**（证明它有牙）。
     /// 一个形态谓词的**正例／反例**臂（`(名字, 谓词, 正例, 反例)`）。
     type ShapeArm = (&'static str, fn(&str) -> bool, &'static str, &'static str);
