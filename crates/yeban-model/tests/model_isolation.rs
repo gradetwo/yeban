@@ -2142,6 +2142,51 @@ fn mask_rust_source(text: &str) -> String {
             }
             continue;
         }
+        // ⭐ R225①：**Rust 原始字符串**（`r"…"` / `r#"…"#` / `r##"…"##`）。
+        // ⛔ 不处理它 ⇒ 内容里的 `"` 会被当成字符串结尾 ⇒ 失同步 ⇒ 后面的真代码被吞
+        // （**假阴性**）。字节版 `br#"…"#` 由"允许 `r` 前面是 `b`"覆盖。
+        if c == 'r' {
+            let prev = if i == 0 { ' ' } else { chars[i - 1] };
+            let boundary_ok = !(prev.is_ascii_alphanumeric() || prev == '_')
+                || (prev == 'b'
+                    && (i < 2 || !(chars[i - 2].is_ascii_alphanumeric() || chars[i - 2] == '_')));
+            if boundary_ok {
+                let mut j = i + 1;
+                let mut hashes = 0_usize;
+                while j < chars.len() && chars[j] == '#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if j < chars.len() && chars[j] == '"' {
+                    let mut k = i;
+                    while k <= j {
+                        blank(&mut out, chars[k]);
+                        k += 1;
+                    }
+                    while k < chars.len() {
+                        if chars[k] == '"' {
+                            let mut m = 0_usize;
+                            while m < hashes && k + 1 + m < chars.len() && chars[k + 1 + m] == '#' {
+                                m += 1;
+                            }
+                            if m == hashes {
+                                // clippy(R127)：⛔ 不用 `for t in k..=k+hashes { chars[t] }`
+                                // ⇒ 用迭代器（needless_range_loop）。
+                                for ch in chars.iter().skip(k).take(hashes + 1) {
+                                    blank(&mut out, *ch);
+                                }
+                                k += hashes + 1;
+                                break;
+                            }
+                        }
+                        blank(&mut out, chars[k]);
+                        k += 1;
+                    }
+                    i = k;
+                    continue;
+                }
+            }
+        }
         if c == '"' {
             blank(&mut out, c);
             i += 1;
@@ -2914,8 +2959,10 @@ fn the_shape_table_is_the_single_source_of_truth() {
     // 方向二（续）：认/拒两类都必须足量 —— ⛔ 防"表漂移成只认不拒"或反之。
     // R199：这两类计数也是**地板**（反向指标）⇒ 降级为诊断。
     // 真正的保证是"每一行都有各自的期望值"—— 认臂期望 0、拒臂期望 >= 1。
+    // R229②：真界的**余量给数值**（本界是等式 ⇒ 余量恒 0）。
     eprintln!(
-        "[R187-PROBE model_isolation::shape_table_arms] accepts {accepts} / rejects {rejects}"
+        "[R187-PROBE model_isolation::shape_table_arms] accepts {accepts} / rejects {rejects} margin={} (bound: checked==declared)",
+        declared - checked
     );
     // 非断言与跨行形态（单列，避免把"认"的臂与它们混在一张表里）
     let macro_tail = "fn f() { my_assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
@@ -3473,5 +3520,98 @@ fn the_masker_passes_five_adversarial_samples() {
     // R215①：**零余量**必须显式声明 —— 任何一条样本失败，本判据就会红。
     eprintln!(
         "[R187-PROBE model_isolation::masker_margin] bytes_equal={bytes_equal}/{declared} margin=0"
+    );
+}
+
+/// **R225① 常驻判据**：掩码器对 **Rust 专有构造**的对抗集。
+///
+/// 四件套对 Rust **不充分**：还必须覆盖 **生命周期**、**字符字面量**、**原始字符串**
+/// （`r"…"` / `r#"…"#`，以及字节版 `br#"…"#`）。
+/// 每条样本断言两件事（R224①）：**字节等长** ＋ **构造之后的真代码仍然可见**（正对照）。
+///
+/// ⭐ R229③：掩码约定是"**抹内容、保定界符、保等长**" ⇒ 期望值必须按这个约定写，
+/// ⛔ 不是"掩码后不该有引号"。下面额外断言：从字符串样本里取出的 `"` 仍存在（定界符还在），
+/// 而它的**内容**已变成空格。
+#[test]
+fn the_masker_passes_the_rust_specific_adversarial_set() {
+    // (标签, 样本, 构造之后的针, 期望可见)
+    let cases: [(&str, &str, &str, bool); 5] = [
+        // ① 生命周期 `'a` / `'static` **不得**被当成字符字面量（否则一路吞到下一个 `'`）。
+        (
+            "lifetimes",
+            "fn f<'a>(x: &'a str) -> &'static str { x }\nlet g = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+        // ② 字符字面量 `'\''`（内含引号）必须被正确消费。
+        (
+            "char_literal_with_quote",
+            "let q = '\\'';\nlet g = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+        // ③ ⭐ **原始字符串内含 `"`**：⛔ 不得在内容里的 `"` 处提前结束（否则后续代码被吞）。
+        (
+            "raw_string_with_inner_quote",
+            "let s = r#\"a \" b\"#;\nlet g = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+        // ④ 字节原始字符串 `br#"…"#` 同上。
+        (
+            "byte_raw_string_with_inner_quote",
+            "let b = br#\"x \" y\"#;\nlet g = HashSet::new();\n",
+            "HashSet",
+            true,
+        ),
+        // ⑤ **正对照**：普通标识符 `rust` ⛔ 不得被当成原始字符串的前缀。
+        (
+            "identifier_is_not_a_raw_string",
+            "let rust = 1;\nlet g = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+    ];
+    let declared = cases.len();
+    let mut checked = 0_usize;
+    for (label, sample, needle, expect) in cases {
+        let masked = mask_rust_source(sample);
+        assert_eq!(
+            masked.len(),
+            sample.len(),
+            "[R187-PROBE model_isolation::rustmask_{label}] 掩码必须保**字节**长度"
+        );
+        assert_eq!(
+            code_has(sample, needle),
+            expect,
+            "[R187-PROBE model_isolation::rustmask_{label}] 构造之后的真代码必须仍然可见"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, declared,
+        "R160 双向①：{declared} 条 Rust 专有样本必须全部求值"
+    );
+    // ⭐ R229③：**先写清本线的掩码约定**，再按约定写期望。
+    // 本线约定 = "**内容与定界符都抹成空格**、长度不变"（比"保定界符"更强：
+    // 掩码区里连 `"` 都不残留，任何残留都不可能被当成代码）。
+    // ⛔ `sfz` 的约定是"抹内容、保定界符"—— 两者**都对**，但期望值必须与**本线约定**一致。
+    let sample = "let s = \"secret\";\n";
+    let masked = mask_rust_source(sample);
+    assert_eq!(masked.len(), sample.len(), "长度必须不变（R113/R216①）");
+    assert!(
+        !masked.contains("secret"),
+        "[R187-PROBE model_isolation::rustmask_content] 掩码后**内容必须被抹**"
+    );
+    assert!(
+        !masked.contains('"'),
+        "[R187-PROBE model_isolation::rustmask_delimiters] 本线约定：定界符**也**被抹（残留不可能被当代码）"
+    );
+    eprintln!(
+        "[R187-PROBE model_isolation::masker_convention] content=erased delimiters=erased length=equal"
+    );
+    // R229②：真界的余量读数（本判据的界是"全部样本求值"，余量 = 0）。
+    eprintln!(
+        "[R187-PROBE model_isolation::rustmask_margin] checked={checked}/{declared} margin=0"
     );
 }
