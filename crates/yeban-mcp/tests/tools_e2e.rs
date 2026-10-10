@@ -6362,3 +6362,82 @@ fn pool_entry_removal_also_covers_a_non_midi_entry_once_unplaced() {
         "第二次撤销连摆放一起逐字节复原"
     );
 }
+
+/// **`yeban_close_project` 的缺省行为是"先保存"**（`saveFirst` 缺省 `true`）。
+///
+/// 为什么需要它：`saveFirst` 的缺省值是**唯一**决定"关闭时会不会把未落盘的改动丢掉"的那一位，
+/// 而第四批注入把 `arg_bool(call, "saveFirst", true)` 改成 `false` 时**全量测试全绿**
+/// —— 既有用例要么显式给 `true`、要么显式给 `false`，**没有一条不给**。
+///
+/// 单位 = 一次 `tools/call` 的响应 + 磁盘上那份工程的字节。判据**不依赖墙钟**。
+///
+/// 注入（实测红）：把缺省值 `true` 改成 `false` ⇒ 第 1 段 `saved` 与磁盘内容两条断言红。
+#[test]
+fn closing_without_the_flag_saves_first_by_default() {
+    let scratch = Scratch::new("close-default-saves");
+    let (mut first, auth) = dispatcher();
+    let (path, _opened) = open(&scratch, &mut first, &auth);
+
+    // 造一次**真的改动**：改宏旋钮（会展开级联自动化点）并合并。
+    let track = macro_track(&first);
+    let proposal = propose_macro(&mut first, &auth, &track, 0.875);
+    let merged = call(
+        &mut first,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal, "commitMessage": "改动" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let in_memory = project_bytes(&first);
+
+    // 不带任何实参关闭 ⇒ 必须**先保存**。
+    let closed = call(&mut first, &auth, "yeban_close_project", json!({}));
+    assert_eq!(closed["status"], "success", "{closed}");
+    assert_eq!(
+        closed["data"]["saved"], true,
+        "**不给 `saveFirst`** 时必须先保存（缺省 true）: {closed}"
+    );
+    let from_disk = yeban_mcp::domain::store::load_project(&path).expect("读回磁盘上的工程");
+    // 口径与 [`project_bytes`] 逐字一致（`to_string_pretty` + 末尾换行）。
+    let mut disk = serde_json::to_string_pretty(&from_disk.project).expect("JSON");
+    disk.push('\n');
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(disk.as_bytes()).as_str(),
+        yeban_model::AssetHash::of_bytes(in_memory.as_bytes()).as_str(),
+        "磁盘上的工程必须包含那次改动"
+    );
+
+    // 阴性对照：显式 `saveFirst: false` ⇒ `saved == false`，磁盘**不含**第二次改动。
+    let (mut second, auth_second) = dispatcher();
+    let reopened = call(
+        &mut second,
+        &auth_second,
+        "yeban_open_project",
+        json!({ "path": path.display().to_string() }),
+    );
+    assert_eq!(reopened["status"], "success", "{reopened}");
+    let track = macro_track(&second);
+    let discarded_proposal = propose_macro(&mut second, &auth_second, &track, 0.125);
+    let _ = call(
+        &mut second,
+        &auth_second,
+        "yeban_merge_proposal",
+        json!({ "proposalId": discarded_proposal, "commitMessage": "第二次改动" }),
+    );
+    let discarded = project_bytes(&second);
+    let closed = call(
+        &mut second,
+        &auth_second,
+        "yeban_close_project",
+        json!({ "saveFirst": false }),
+    );
+    assert_eq!(closed["data"]["saved"], false, "{closed}");
+    let from_disk = yeban_mcp::domain::store::load_project(&path).expect("读回");
+    let mut disk = serde_json::to_string_pretty(&from_disk.project).expect("JSON");
+    disk.push('\n');
+    assert_ne!(
+        yeban_model::AssetHash::of_bytes(disk.as_bytes()).as_str(),
+        yeban_model::AssetHash::of_bytes(discarded.as_bytes()).as_str(),
+        "`saveFirst: false` 不得把第二次改动写盘"
+    );
+}

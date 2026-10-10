@@ -1200,3 +1200,144 @@ fn request_and_response_scale_edges_over_stdio() {
         wire.len()
     );
 }
+
+/// 用给定实参跑一次真二进制，喂可选 stdin，返回 `(退出码, stdout, stderr)`。
+///
+/// 与 [`session`] 的分工：那个是"一次 stdio 会话（断言退出码 0 + 解析响应行）"；
+/// 这个是"跑一次 CLI（关心退出码与两路输出）"。
+fn run_cli(args: &[&str], stdin: &str) -> (i32, String, String) {
+    use std::io::Write as _;
+
+    let bin = env!("CARGO_BIN_EXE_yeban-mcp");
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn yeban-mcp");
+    {
+        let mut sink = child.stdin.take().expect("stdin");
+        if !stdin.is_empty() {
+            let _ = sink.write_all(stdin.as_bytes());
+        }
+    }
+    let output = child.wait_with_output().expect("等待子进程");
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// **CLI 面是已发布的契约**：`--help` 的用法文本、未知实参的退出码与报文。
+///
+/// 为什么需要它：`src/bin/yeban-mcp.rs` 的实参解析（`--help` / `--scopes` /
+/// `--test-mode` / `--print-token` / `--token-file` / `--enable-mcp-http`）在
+/// **第四批注入之前没有任何判据** —— 实测把 `--help` 改名、把 `--print-token` 短路、
+/// 把 `--test-mode` 判反，**全量测试全绿**（`BIN-help` / `BIN-printtoken` /
+/// `BIN-testmode` 三条注入）。
+///
+/// 单位 = 一次进程的 `(退出码, stdout, stderr)`。判据**不依赖墙钟**。
+///
+/// 注入（实测红）：把 `"--help"` 改成 `"--helpx"` ⇒ 第 1 段红；未知实参不再报错 ⇒ 第 2 段红。
+#[test]
+fn the_cli_surface_is_a_published_contract() {
+    // ① `--help`：退出码 0，用法里逐个列出七个开关。
+    let (code, out, _err) = run_cli(&["--help"], "");
+    assert_eq!(code, 0, "--help 必须成功退出");
+    for flag in [
+        "--stdio",
+        "--print-token",
+        "--token-file",
+        "--scopes",
+        "--test-mode",
+        "--enable-mcp-http",
+        "-h, --help",
+    ] {
+        assert!(out.contains(flag), "用法文本必须列出 `{flag}`: {out}");
+    }
+    // ② 未知实参：退出码 2 + 报文点名那个实参 + 仍然是用法文本（不是 panic）。
+    let (code, _out, err) = run_cli(&["--probe-unknown"], "");
+    assert_eq!(code, 2, "未知实参必须用退出码 2");
+    assert!(
+        err.contains("--probe-unknown"),
+        "报文必须点名未知实参: {err}"
+    );
+    assert!(err.contains("用法:"), "未知实参也要打用法: {err}");
+    // ③ `--token-file` 缺值：也是配置问题（退出码 2），不是 panic。
+    let (code, _out, err) = run_cli(&["--token-file"], "");
+    assert_eq!(code, 2, "缺值的实参必须用退出码 2");
+    assert!(!err.is_empty());
+}
+
+/// **`--print-token` 生成一次、之后复用同一份**（并落在给定的路径上）。
+///
+/// 为什么需要它：令牌文件是**跨进程**的鉴权依据，而这条路径（`load_or_create` +
+/// "已生成/已复用" 两态）此前没有判据 —— 把 `if config.print_token` 短路成全绿。
+///
+/// 单位 = 一次进程的 `(退出码, stdout, stderr)` + 令牌文件的内容。**不依赖墙钟**。
+///
+/// 注入（实测红）：把 `if config.print_token {` 改成 `if false {` ⇒ 第 1 段
+/// 拿不到 stdout 上的令牌（变成进 stdio 批处理），红。
+#[test]
+fn the_print_token_flag_writes_then_reuses_the_token_file() {
+    let path = scratch().join(format!("cli-token-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let shown = path.display().to_string();
+
+    let (code, out, err) = run_cli(&["--print-token", "--token-file", &shown], "");
+    assert_eq!(code, 0, "--print-token 必须成功退出: {err}");
+    let token = out.trim();
+    assert!(
+        token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "stdout 上必须是一枚 64 位十六进制令牌: {token:?}"
+    );
+    assert!(err.contains("已生成"), "第一次必须报「已生成」: {err}");
+    assert!(err.contains(&shown), "必须报出令牌文件路径: {err}");
+    let first = std::fs::read_to_string(&path).expect("令牌文件必须落盘");
+
+    // ② 第二次：复用**同一枚**令牌（文件内容逐字节不变），并如实报"已复用"。
+    let (code, out2, err2) = run_cli(&["--print-token", "--token-file", &shown], "");
+    assert_eq!(code, 0);
+    assert_eq!(out2.trim(), token, "第二次必须复用同一枚令牌");
+    assert!(err2.contains("已复用"), "第二次必须报「已复用」: {err2}");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("令牌文件还在"),
+        first,
+        "复用不得改写令牌文件"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// **`--test-mode` 在进程退出时被如实报出**（`模式 production` vs `模式 test`）。
+///
+/// 为什么需要它：`--test-mode` 决定 `RunMode`，而 `RunMode` 决定
+/// `Scope::UiInject` 这类"生产模式硬禁"的作用域能不能用 —— 判反它是一条**安全**缺陷。
+/// 二进制在 stdio 收尾时把模式写进 stderr（`模式 {mode}`），因此这是**黑盒可观测**的。
+///
+/// 单位 = 一次进程的 `(退出码, stderr)`。**不依赖墙钟**。
+///
+/// 注入（实测红）：把 `"--test-mode" => config.test_mode = true` 改成 `= false`
+/// ⇒ 第 2 段读到 `模式 production`，红。
+#[test]
+fn the_test_mode_flag_is_reported_by_the_process() {
+    let path = scratch().join(format!("cli-mode-{}.txt", std::process::id()));
+    let shown = path.display().to_string();
+    let initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+
+    let (code, _out, err) = run_cli(&["--stdio", "--token-file", &shown], initialize);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("模式 production"), "缺省必须是生产模式: {err}");
+
+    let (code, _out, err) = run_cli(
+        &["--stdio", "--test-mode", "--token-file", &shown],
+        initialize,
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("模式 test"),
+        "`--test-mode` 必须报到 stderr: {err}"
+    );
+    let _ = std::fs::remove_file(&path);
+}

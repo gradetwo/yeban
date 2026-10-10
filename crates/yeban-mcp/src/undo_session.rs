@@ -1836,4 +1836,91 @@ mod tests {
             }
         );
     }
+    /// **撤/重做的步数上限是已发布的 10_000**，且"请求远超上限"不会改变行为。
+    ///
+    /// 为什么需要它：`MAX_STEPS` 是防"`steps: u32::MAX` 把会话拖死"的那道闸门，
+    /// 但**没有任何判据提到它的取值** —— 第四批注入把 `10_000` 改成 `100` 时**全绿**。
+    ///
+    /// 注入（实测红）：`MAX_STEPS` 10_000 → 100 ⇒ 第一条断言红。
+    #[test]
+    fn the_undo_step_cap_is_the_published_ten_thousand() {
+        // 字面值（不是常量自比）。
+        assert_eq!(MAX_STEPS, 10_000);
+        // 行为侧：请求远超上限时，实际施加的步数**不得超过可用步数**。
+        let (mut session, fixture) = session();
+        for step in 0..3_u8 {
+            let op = velocity_op(&session, &fixture, 30 + step);
+            session
+                .commit(CommitRequest {
+                    now_ms: NOW + u64::from(step) + 1,
+                    origin: OpOrigin::UserUi,
+                    message: format!("步数上限夹具 #{step}"),
+                    ops: vec![op],
+                })
+                .expect("提交");
+        }
+        let applied = session.undo_steps(usize::MAX).expect("极大步数不是错误");
+        assert_eq!(applied.steps, 3, "只能撤到历史起点");
+        // ⚠ 登记边界：要观察"夹到 10_000 而不是 available"需要 >10_000 次提交，
+        // 本机代价不可接受 ⇒ 那一半只由上面的**字面值**钉住。
+    }
+
+    /// **主干分支名是已发布的字面值 `"main"`**，而且第一条提交真的落在它上面。
+    ///
+    /// 为什么需要它：分支名是**跨工具**契约（别的 crate 与 GUI 按名字找主干），
+    /// 而第四批注入把 `"main"` 改成 `"master"` 时**全绿**。
+    ///
+    /// 注入（实测红）：`MAIN_BRANCH` `"main"` → `"master"` ⇒ 第一条断言红。
+    #[test]
+    fn the_main_branch_name_is_the_published_literal() {
+        assert_eq!(MAIN_BRANCH, "main");
+        let (mut session, fixture) = session();
+        assert_eq!(session.state().branch(), "main", "会话的活跃分支名");
+        commit_fixture(&mut session, &fixture);
+        assert!(
+            session.graph().branch_head(MAIN_BRANCH).is_ok(),
+            "开始提交之后主干必须存在"
+        );
+        assert_eq!(session.graph().branch_count(), 1);
+    }
+
+    /// **重做施加的步数恰好是请求的步数**（夹到剩余可重做数）。
+    ///
+    /// 为什么需要它：既有判据只有 `redo_steps(1)`（单步）与多步**撤销**；
+    /// 第四批注入把 `plan_redo` 的 `clamp(1, MAX_STEPS)` 改成 `clamp(1, 1)`
+    /// （即"每次重做最多一步"）时**全绿**。
+    ///
+    /// 注入（实测红）：`plan_redo` 的 `clamp(1, MAX_STEPS)` → `clamp(1, 1)` ⇒
+    /// `redone.steps == 2` 那条断言红。
+    #[test]
+    fn redo_applies_exactly_the_requested_number_of_steps() {
+        let (mut session, fixture) = session();
+        let mut states = vec![session.project_bytes().expect("字节")];
+        for step in 0..3_u8 {
+            let op = velocity_op(&session, &fixture, 40 + step);
+            session
+                .commit(CommitRequest {
+                    now_ms: NOW + u64::from(step) + 1,
+                    origin: OpOrigin::UserUi,
+                    message: format!("重做夹具 #{step}"),
+                    ops: vec![op],
+                })
+                .expect("提交");
+            states.push(session.project_bytes().expect("字节"));
+        }
+        let undone = session.undo_steps(3).expect("撤到起点");
+        assert_eq!(undone.steps, 3);
+
+        let redone = session.redo_steps(2).expect("两步重做");
+        assert_eq!(redone.steps, 2, "请求两步就必须重做两步");
+        assert_eq!(
+            session.project_bytes().expect("字节"),
+            states[2],
+            "两步重做必须逐字节回到第二次提交之后"
+        );
+        let rest = session.redo_steps(100).expect("夹到剩余");
+        assert_eq!(rest.steps, 1, "只剩一步可重做");
+        assert_eq!(session.project_bytes().expect("字节"), states[3]);
+        assert_eq!(session.redo_steps(1).unwrap_err(), UndoRefusal::NoRedo);
+    }
 }
