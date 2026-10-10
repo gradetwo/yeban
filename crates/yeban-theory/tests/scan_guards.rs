@@ -791,6 +791,12 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             residual.push((name.to_owned(), item));
         }
     }
+    // ⭐ R203 探针：通过的断言不打印 ⇒ 用显式 `eprintln!` 才能检索到"这一轮真的跑了"。
+    eprintln!(
+        "[R187-PROBE scan-loop-bounds] loops={total_loops} rooted={total_rooted} \
+         counter={total_counter} residual={}",
+        residual.len()
+    );
     // ⭐ R93 非真空：扫描域必须达到下界（数字是实测值，改动即红）。
     assert_eq!(
         total_loops, 76,
@@ -924,9 +930,28 @@ fn no_criterion_reads_a_runtime_external_resource() {
             violations.push(format!("{name}:{hit}"));
         }
     }
-    // ⭐ R93 非真空：扫描域必须达到下界。
-    assert_eq!(scanned_files, 15, "scanned files");
-    assert!(scanned_lines >= 8000, "scanned lines: {scanned_lines}");
+    // ⭐ R199：**删除规模地板**（`lines >= 8000` 是**反向指标** —— 语料变大它照样过，
+    // 语料被换成别的东西它也可能过）⇒ 改成**喂坏输入的两臂** ＋ 显式探针（R203）。
+    let bad_arm = hits_in("let handle = std::fs::read_to_string(\"p\").unwrap();");
+    let good_arm = hits_in("let total = 1 + 1;");
+    // ⭐ R203：探针必须**显式打印** —— `assert!(.., "msg")` 的 msg **只在失败时出现**，
+    // 通过的断言什么都不打印 ⇒ 标记**不可检索**。本探针在 `--nocapture` 下 CI 可见。
+    eprintln!(
+        "[R187-PROBE scan-external-resource] files={scanned_files} lines={scanned_lines} \
+         bad_arm_hits={} good_arm_hits={}",
+        bad_arm.len(),
+        good_arm.len()
+    );
+    assert_eq!(
+        bad_arm.len(),
+        1,
+        "R199 red arm: a violation must be detected"
+    );
+    assert!(
+        good_arm.is_empty(),
+        "R199 green arm: clean input yields no hit"
+    );
+    assert_eq!(scanned_files, 15, "the corpus is the expected file set");
     assert!(
         violations.is_empty(),
         "criteria must not read runtime external resources: {violations:#?}"
