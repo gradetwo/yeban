@@ -595,6 +595,53 @@ fn value_and_near_miss_bounds_are_not_accepted() {
     );
 }
 
+/// 判据 (**配对已知红**): 本检查器认的**每一种界形态**, 都必须有一条"**去掉它就会红**"的配对读数。
+///
+/// 只有"认"没有"去掉会红" ⇒ 那个形态可能是**惰性**的（R122: 未喂已知红的判据要登记为"可能惰性"）。
+/// 本判据把 5 种形态**逐条配对**, 每条都给「**有界 ⇒ 绿** / **去掉界 ⇒ 红**」两个读数。
+#[test]
+fn every_recognised_bound_form_has_a_paired_known_red() {
+    // (形态名, **有界**的片段, **去掉界**的片段)
+    let pairs: [(&str, &str, &str); 5] = [
+        (
+            "①显式 len() >=",
+            "\n    fn t() {\n        assert!(v.len() >= 8 && v.iter().all(|x| *x == 0));\n    }",
+            "\n    fn t() {\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "②宏隐式相等 assert_eq!(len, N)",
+            "\n    fn t() {\n        assert_eq!(v.len(), 16);\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+            "\n    fn t() {\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "③!is_empty()",
+            "\n    fn t() {\n        assert!(!v.is_empty() && v.iter().any(|x| *x == 1));\n    }",
+            "\n    fn t() {\n        assert!(v.iter().any(|x| *x == 1));\n    }",
+        ),
+        (
+            "④值界 len() == N",
+            "\n    fn t() {\n        assert!(v.len() == 4 && v.iter().all(|x| *x == 0));\n    }",
+            "\n    fn t() {\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "⑥显式断言空表（R125）",
+            "\n    fn t() {\n        assert!(v.is_empty(), \"对照\");\n        assert!(!v.iter().any(|x| *x == 1));\n    }",
+            "\n    fn t() {\n        assert!(!v.iter().any(|x| *x == 1));\n    }",
+        ),
+    ];
+    assert_eq!(pairs.len(), 5, "五种被认的界形态各一对（计数下限, R93）");
+    for (form, with_bound, without_bound) in pairs {
+        assert!(
+            unbounded_quantifiers(with_bound).is_empty(),
+            "{form}: 有界必须绿"
+        );
+        assert!(
+            !unbounded_quantifiers(without_bound).is_empty(),
+            "{form}: **去掉界必须红**（否则该形态是惰性的 —— R122）"
+        );
+    }
+}
+
 /// 判据: 掩码对**真实源文件**也逐字节等长（R113 的常驻自检）。
 #[test]
 fn masking_is_byte_length_preserving_for_every_source_file() {
