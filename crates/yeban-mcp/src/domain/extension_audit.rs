@@ -126,7 +126,7 @@ pub fn scan_write_paths(sources: &[(String, String)]) -> Vec<String> {
                 continue;
             }
             for needle in DIRECT_MUTATION_NEEDLES {
-                if line.contains(needle) {
+                if crate::domain::automation_audit::code_without_literals(line).contains(needle) {
                     violations.push(format!(
                         "{path}:{} 直接改权威工程 (`{needle}`) —— 必须走 `{COMMIT_ENTRY}` \
                          才能同时写进 Op 日志 (否则撤销坏掉): {code}",
@@ -169,7 +169,9 @@ pub fn scan_direct_edit_origins(sources: &[(String, String)]) -> Vec<String> {
             if line.trim_start().starts_with("//") {
                 continue;
             }
-            let Some((_, rhs)) = line.split_once("origin:") else {
+            // ⭐ R94：**先掩码再判**（行尾注释／字符串里的 `origin:` 不是代码）。
+            let masked = crate::domain::automation_audit::code_without_literals(line);
+            let Some((_, rhs)) = masked.split_once("origin:") else {
                 continue;
             };
             seen += 1;
@@ -197,7 +199,7 @@ pub fn scan_direct_edit_origins(sources: &[(String, String)]) -> Vec<String> {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                if line.contains(needle) {
+                if crate::domain::automation_audit::code_without_literals(line).contains(needle) {
                     violations.push(format!(
                         "{path}:{} 仍在借 `{needle}` —— 那不是'代理直接编辑'这一档: {}",
                         lineno + 1,
@@ -235,7 +237,9 @@ pub fn scan_dry_run_entry_points(sources: &[(String, String)]) -> Vec<String> {
         if code.starts_with("//") {
             continue;
         }
-        if line.contains("fn plan_") && line.contains("&mut Domain") {
+        // ⭐ R94：掩码后再判（否则行尾注释里的 `&mut Domain` 会漏成违规）。
+        let masked = crate::domain::automation_audit::code_without_literals(line);
+        if masked.contains("fn plan_") && masked.contains("&mut Domain") {
             violations.push(format!(
                 "{path}:{} 计划入口拿到了**可变**领域引用 —— dryRun 因此能改状态: {code}",
                 lineno + 1
@@ -257,7 +261,9 @@ pub fn scan_dry_run_entry_points(sources: &[(String, String)]) -> Vec<String> {
             ));
         }
         for (lineno, line) in production.lines().enumerate() {
-            if line.contains(MUTABLE_PROJECT_REF) {
+            if crate::domain::automation_audit::code_without_literals(line)
+                .contains(MUTABLE_PROJECT_REF)
+            {
                 violations.push(format!(
                     "{path}:{} 计划阶段拿到了可变工程 (`{MUTABLE_PROJECT_REF}`): {}",
                     lineno + 1,

@@ -6596,3 +6596,73 @@ fn every_documented_tool_default_is_the_value_the_tool_uses() {
         "缺省片段名必须是 `{DEFAULT_NEW_CLIP_NAME}`: {final_names:?}"
     );
 }
+
+/// **已登记边界 ①：`idempotencyKey` 只有"空串 = 未提供"这一条边界，没有长度上界。**
+///
+/// ## 风险读数（集成者要的 (c)）
+///
+/// * **谁能触发**：任何**已经有 `app:admin`** 的本地调用方 —— stdio 形态 = 能往本进程写 stdin 的进程；
+///   HTTP 形态 = 持 Bearer 令牌者（默认档不启 HTTP，且只监听 `127.0.0.1`）。
+/// * **后果**：幂等表里留一条**任意长**的键（内存放大），且它在 `ReplayedToolResponse` 里被回显。
+///   它**不**改工程、**不**落盘 ⇒ 危害面限于"会话内存"与"响应体积"。
+/// * **收口的最小改动面**：契约 `schemas/mcp-tools.schema.json` 给 `idempotencyKey` 加 `maxLength`
+///   ＋ `dispatch.rs` 拒超长键。⚠ 按 **ADR-0001 D46**：改 `schemas/**` 必须先停并报 ⇒ 本轮**不动**。
+///
+/// ## 本判据的处置：**把当前行为钉住**（(b) 的形态）
+///
+/// 三条读数：空串 = 未提供（两次都真的施加）；非空 = 重放；**64 KiB 的键被接受**（未收口）。
+/// 注入（实测红）：给 `dispatch.rs` 加上"空串也算键"的分支 ⇒ 第一条红；
+/// 加上"超过 1 KiB 就拒" ⇒ 第三条红（**这正是收口时会发生的改变**）。
+#[test]
+fn the_idempotency_key_boundary_is_emptiness_only() {
+    let scratch = Scratch::new("idem-boundary");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+    let track = macro_track(&dispatcher);
+
+    // ① 空串 = **未提供**：两次都真的施加（没有 `replayed` 信封）。
+    let blank = json!({"trackId": track, "macroIndex": 0, "value": 0.11,
+                       "idempotencyKey": ""});
+    let before = dispatcher.domain().proposal_count();
+    let first = call(&mut dispatcher, &auth, "yeban_set_macro", blank.clone());
+    assert_eq!(first["status"], "success", "{first}");
+    assert!(first.get("replayed").is_none(), "空串不得进幂等表");
+    let second = call(&mut dispatcher, &auth, "yeban_set_macro", blank.clone());
+    assert!(
+        second.get("replayed").is_none(),
+        "空串第二次仍必须真的施加（契约: 空串按未提供处理）: {second}"
+    );
+    assert_eq!(
+        dispatcher.domain().proposal_count(),
+        before + 2,
+        "两次空串调用必须各建一条提案"
+    );
+
+    // ② 非空 = 重放（长度与内容都不参与判定）。
+    let keyed = json!({"trackId": track, "macroIndex": 0, "value": 0.22,
+                       "idempotencyKey": "k-boundary"});
+    let third = call(&mut dispatcher, &auth, "yeban_set_macro", keyed.clone());
+    assert!(third.get("replayed").is_none(), "{third}");
+    let fourth = call(&mut dispatcher, &auth, "yeban_set_macro", keyed);
+    assert_eq!(fourth["replayed"], true, "非空键必须重放: {fourth}");
+
+    // ③ ⭐ **已知未收口**：64 KiB 的键**被接受**（没有长度上界）。
+    let huge = "k".repeat(64 * 1024);
+    let huge_arguments = json!({"trackId": track, "macroIndex": 0, "value": 0.44,
+                                "idempotencyKey": huge});
+    let huge_first = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_set_macro",
+        huge_arguments.clone(),
+    );
+    assert_eq!(
+        huge_first["status"], "success",
+        "⚠ 64 KiB 的幂等键当前**被接受** —— 这是已登记、**未收口**的边界: {huge_first}"
+    );
+    let huge_second = call(&mut dispatcher, &auth, "yeban_set_macro", huge_arguments);
+    assert_eq!(
+        huge_second["replayed"], true,
+        "超长键同样参与重放（⇒ 它真的进了幂等表）: {huge_second}"
+    );
+}

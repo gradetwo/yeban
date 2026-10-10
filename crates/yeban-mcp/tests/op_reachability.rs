@@ -127,13 +127,73 @@ fn production_region(text: &str) -> String {
 }
 
 /// 该文本里**被构造**的 `Op` 变体名（已剔除 match 模式）。
+/// **全文区间掩码**（R94）：注释区间与字符串**内部**的字节下标为 `true`。
+///
+/// * 字符串的**开/闭引号不掩** —— 否则针自身的引号会被判成"在串里"，扫描器就再也读不到东西
+///   （本文件第五批实测：把引号一起掩掉 ⇒ reason 数变成 0）。
+/// * **换行永不掩**（⛔ 否则行号与行结构都会漂移）。
+/// * 只标区间、**不删字符**（⛔ 不用"抹掉内容"代替"跳过区间"：那会改变表达式语义 ⇒ 假红）。
+fn skipped_offsets(text: &str) -> Vec<bool> {
+    let bytes = text.as_bytes();
+    let mut mask = vec![false; bytes.len()];
+    let mut index = 0usize;
+    let mut in_string = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if byte == b'\\' {
+                if index + 1 < bytes.len() {
+                    mask[index + 1] = true;
+                }
+                index += 2;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = false;
+                index += 1;
+                continue;
+            }
+            if byte != b'\n' {
+                mask[index] = true;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                mask[index] = true;
+                index += 1;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    mask
+}
+
+/// 该字节是否落在注释／字符串**内部**（越界按"不在"处理）。
+fn is_skipped(mask: &[bool], at: usize) -> bool {
+    mask.get(at).copied().unwrap_or(false)
+}
+
 fn constructed_variants(text: &str) -> BTreeSet<String> {
     let bytes = text.as_bytes();
+    // R94：先算区间掩码 —— **注释与字符串里的 `Op::X {` 不是构造点**
+    // （本函数此前完全没有掩码：注释里写一个 `Op::SetSection {{` 就会被算进去）。
+    let mask = skipped_offsets(text);
     let mut out = BTreeSet::new();
     let mut index = 0usize;
     while let Some(offset) = text[index..].find("Op::") {
         let at = index + offset;
         index = at + 4;
+        if is_skipped(&mask, at) {
+            continue;
+        }
         // 排除 `NoteOp::`：前一个字符不得是标识符字符
         if at > 0 {
             let previous = bytes[at - 1];
@@ -337,6 +397,18 @@ fn the_classifier_tells_constructions_from_patterns() {
         "match op { Op::AddClip { clip } => { let _ = clip; } _ => {} }\n",
         "if matches!(op, Op::AddClip { .. }) { return; }\n",
         "matches!(op, Op::AddNote { .. } | Op::DeleteNote { .. });\n",
+    );
+    // ⭐ R94：**注释与字符串里的 `Op::X {{` 不是构造点**（本函数此前完全没有掩码）。
+    let quoted = concat!(
+        "// 文档里写 Op::SetSection {{ section_id, .. }} 只是引用\n",
+        "let sample = \"Op::AddTrack {{ track: t }}\";\n",
+        "let real = Op::RemoveScene {{ scene_id }}; // 尾注释里写 Op::SetScene {{ .. }}\n",
+    );
+    let found = constructed_variants(quoted);
+    assert_eq!(
+        found,
+        ["RemoveScene"].into_iter().map(str::to_owned).collect(),
+        "只有真构造点该被读到（注释/字符串里的引文必须跳过）"
     );
     assert!(
         constructed_variants(patterns).is_empty(),

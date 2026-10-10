@@ -108,26 +108,56 @@ pub fn production_region(text: &str) -> String {
 /// 本仓库的生产代码里没有这种写法；真出现了，它会让判据偏**严**（多报），不会漏报。
 #[must_use]
 pub fn code_without_literals(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut inside = false;
-    let mut chars = line.chars();
-    while let Some(character) = chars.next() {
-        match character {
-            '\\' if inside => {
-                // 字符串里的转义：连下一个字符一起丢掉。
-                chars.next();
+    let chars: Vec<char> = line.chars().collect();
+    let mut out: Vec<char> = chars.clone();
+    let mut index = 0usize;
+    while index < chars.len() {
+        // ⓐ 行尾注释：从 `//` 到行末**逐字符**换成空格（等长 ⇒ 列号也不漂）。
+        if chars[index] == '/' && chars.get(index + 1) == Some(&'/') {
+            for cell in out.iter_mut().skip(index) {
+                *cell = ' ';
             }
-            '"' => inside = !inside,
-            other if inside => {
-                let _ = other;
-            }
-            other => out.push(other),
+            break;
         }
+        // ⓑ 字符字面量 `'x'` / `'\n'` / `'"'`（⛔ 不是生命周期 `'a`）。
+        if chars[index] == '\'' {
+            let (inner_start, inner_end) = if chars.get(index + 1) == Some(&'\\') {
+                (index + 2, index + 3)
+            } else {
+                (index + 1, index + 2)
+            };
+            if chars.get(inner_end) == Some(&'\'') {
+                for cell in out.iter_mut().take(inner_end).skip(inner_start) {
+                    *cell = ' ';
+                }
+                index = inner_end + 1;
+                continue;
+            }
+        }
+        // ⓒ 字符串字面量：**只掩内部**，开/闭引号留着（R94：掩内部，不掩界符）。
+        if chars[index] == '"' {
+            let mut cursor = index + 1;
+            while cursor < chars.len() {
+                if chars[cursor] == '\\' {
+                    out[cursor] = ' ';
+                    if cursor + 1 < chars.len() {
+                        out[cursor + 1] = ' ';
+                    }
+                    cursor += 2;
+                    continue;
+                }
+                if chars[cursor] == '"' {
+                    break;
+                }
+                out[cursor] = ' ';
+                cursor += 1;
+            }
+            index = cursor + 1;
+            continue;
+        }
+        index += 1;
     }
-    if let Some(comment) = out.find("//") {
-        out.truncate(comment);
-    }
-    out
+    out.into_iter().collect()
 }
 
 /// 扫描一批源码，返回违规清单（空 = 干净）。
@@ -280,15 +310,31 @@ mod tests {
 
     #[test]
     fn literals_and_trailing_comments_are_stripped_before_judging() {
-        assert_eq!(code_without_literals("let x = \"value_at(\";"), "let x = ;");
-        assert_eq!(
-            code_without_literals("let y = 1; // .ease( 只是注释"),
-            "let y = 1; "
-        );
+        // ⭐ R94 口径：**掩码等长**（按字符数）—— 只标区间、不删字符，列号也不漂。
+        let cases = [
+            "let x = \"value_at(\";",
+            "let y = 1; // .ease( 只是注释",
+            "f(\"a\\\"b\")",
+            "let c = '\"'; let d = lane.value_at(tick);",
+        ];
+        for case in cases {
+            let masked = code_without_literals(case);
+            assert_eq!(
+                masked.chars().count(),
+                case.chars().count(),
+                "掩码必须等长: {case:?} → {masked:?}"
+            );
+        }
+        // 掩掉的是**字面量与注释**：针不得留下。
+        assert!(!code_without_literals("let x = \"value_at(\";").contains("value_at("));
+        assert!(!code_without_literals("let y = 1; // .ease( 只是注释").contains(".ease("));
         // 真调用必须留下（这正是要被抓到的形状）。
         assert!(code_without_literals("lane.value_at(tick)").contains("value_at("));
-        // 转义引号不会让状态机错位。
-        assert_eq!(code_without_literals("f(\"a\\\"b\")"), "f()");
+        // ⛔ 生命周期 `'a` 不是字符字面量，不得被掩。
+        assert_eq!(
+            code_without_literals("fn f<'a>(x: &'a str) -> &'a str { x }"),
+            "fn f<'a>(x: &'a str) -> &'a str { x }"
+        );
     }
 
     #[test]

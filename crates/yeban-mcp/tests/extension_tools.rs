@@ -1184,6 +1184,12 @@ fn error_code_vocabulary_is_the_contract_enum_exactly() {
     let sources = yeban_mcp::undo_session::read_rust_sources(
         &yeban_mcp::undo_session::production_source_roots(),
     );
+    // ⭐ R93：被扫集合必须有下界（否则"扫到空集"会让下面的断言恒绿）。
+    assert!(
+        sources.len() >= 30,
+        "生产区扫描面太小（{} 个文件）—— 目录枚举或路径比较可能写错了",
+        sources.len()
+    );
     let schema =
         std::fs::read_to_string(repo_path("schemas/mcp-tools.schema.json")).expect("读契约");
     assert_eq!(
@@ -1334,6 +1340,13 @@ fn every_source_file_is_declared_as_a_module() {
 #[test]
 fn the_write_paths_commit_through_the_single_undo_entry() {
     let mcp = yeban_mcp::undo_session::read_rust_sources(&[repo_path("crates/yeban-mcp/src")]);
+    // ⭐ R93：**被扫集合必须有下界** —— 否则"扫到空集"会让下面的断言恒绿
+    // （本 crate 第五批实测过同形：Windows 上 `path.contains("/src/")` 恒 false ⇒ 扫描面为空）。
+    assert!(
+        mcp.len() >= 30,
+        "生产区扫描面太小（{} 个文件）—— 目录枚举或路径比较可能写错了",
+        mcp.len()
+    );
     assert_eq!(
         extension_audit::scan_write_paths(&mcp),
         Vec::<String>::new(),
@@ -1344,6 +1357,13 @@ fn the_write_paths_commit_through_the_single_undo_entry() {
 #[test]
 fn direct_edit_origins_in_production_sources_are_the_mcp_edit_variant() {
     let mcp = yeban_mcp::undo_session::read_rust_sources(&[repo_path("crates/yeban-mcp/src")]);
+    // ⭐ R93：**被扫集合必须有下界** —— 否则"扫到空集"会让下面的断言恒绿
+    // （本 crate 第五批实测过同形：Windows 上 `path.contains("/src/")` 恒 false ⇒ 扫描面为空）。
+    assert!(
+        mcp.len() >= 30,
+        "生产区扫描面太小（{} 个文件）—— 目录枚举或路径比较可能写错了",
+        mcp.len()
+    );
     assert_eq!(
         extension_audit::scan_direct_edit_origins(&mcp),
         Vec::<String>::new(),
@@ -1380,6 +1400,13 @@ fn direct_edit_origins_in_production_sources_are_the_mcp_edit_variant() {
 #[test]
 fn dry_run_entry_points_take_shared_references_only() {
     let mcp = yeban_mcp::undo_session::read_rust_sources(&[repo_path("crates/yeban-mcp/src")]);
+    // ⭐ R93：**被扫集合必须有下界** —— 否则"扫到空集"会让下面的断言恒绿
+    // （本 crate 第五批实测过同形：Windows 上 `path.contains("/src/")` 恒 false ⇒ 扫描面为空）。
+    assert!(
+        mcp.len() >= 30,
+        "生产区扫描面太小（{} 个文件）—— 目录枚举或路径比较可能写错了",
+        mcp.len()
+    );
     assert_eq!(
         extension_audit::scan_dry_run_entry_points(&mcp),
         Vec::<String>::new(),
@@ -1775,4 +1802,44 @@ fn diagnostics_bundle_content_matches_the_project_included_flag() {
          要么把 flag 改成 true 并同步模块文档/注册表"
     );
     std::fs::remove_dir_all(&out_dir).ok();
+}
+
+/// **已登记边界 ②：`yeban_import_audio` 的 `name` 只校验"是字符串"，空串会真的落进文档。**
+///
+/// ## 风险读数（集成者要的 (c)）
+///
+/// * **谁能触发**：任何有 `app:admin` 的调用方（与边界 ① 同一条链路）。
+/// * **后果**：片段池里出现一条**空名字**的条目 ⇒ 界面/导出的名称列出现空白项；
+///   它**不影响**音频字节、哈希与撤销（`Op` 载荷仍然完整）。
+/// * **收口的最小改动面**：契约 `schemas/mcp-tools.schema.json` 给 `name` 加 `minLength: 1`
+///   （或实现侧在 `import_audio::plan` 里拒空串 —— 但那会**改变已发布行为**）。
+///   ⚠ 按 **ADR-0001 D46**：改 `schemas/**` 必须先停并报 ⇒ 本轮**不动**。
+///
+/// ## 本判据的处置：**把当前行为钉住**（(b) 的形态）
+///
+/// 注入（实测红）：在 `import_audio::plan` 里加"空串 ⇒ `INVALID_PARAMETER_RANGE`"
+/// ⇒ 第一条断言红（**这正是收口时会发生的改变**）。
+#[test]
+fn an_empty_import_name_is_accepted_and_lands_in_the_document() {
+    let mut dispatcher = dispatcher_with_project(filled_project());
+    let audio = write_audio_fixture("empty-name", &wav_s16(48_000, &[0, 1, -1, 0, 2, -2]));
+    let imported = call_tool(
+        &mut dispatcher,
+        "yeban_import_audio",
+        serde_json::json!({ "name": "", "path": audio.display().to_string() }),
+    );
+    assert_eq!(
+        imported["status"], "success",
+        "⚠ 空 `name` 当前**被接受** —— 这是已登记、**未收口**的边界: {imported}"
+    );
+    // 两方向：空名字必须**真的**落进文档（否则这条判据是空的）。
+    let pool = &dispatcher
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .clip_pool;
+    assert!(
+        pool.values().any(|entry| entry.name.is_empty()),
+        "空名字必须真的落进片段池（否则这条判据什么也没证明）"
+    );
 }

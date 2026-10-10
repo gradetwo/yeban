@@ -171,9 +171,16 @@ fn reasons_in(text: &str) -> BTreeSet<String> {
     let bytes = text.as_bytes();
     let needle = b"\"reason\"";
     let mut out = BTreeSet::new();
+    let mask = skipped_offsets(text);
     let mut from = 0usize;
     while let Some(offset) = find(&bytes[from..], needle) {
-        let start = from + offset + needle.len();
+        let at = from + offset;
+        // ⭐ R94：命中的 `"reason"` 若落在注释／字符串**内部** ⇒ 跳过（提取仍用原文）。
+        if is_skipped(&mask, at) {
+            from = at + needle.len();
+            continue;
+        }
+        let start = at + needle.len();
         let mut index = start;
         // 跳过空白与冒号
         while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b':') {
@@ -678,22 +685,80 @@ fn is_identifier_reason(value: &str) -> bool {
 ///   `{`）；
 /// * 运行时 `map.insert(...)` 加进去的键**不在内**（那种形状的 reason 会读成空集，
 ///   本文件把它如实登记为 `&[]`）。
+///
+/// **全文区间掩码**（R94）：注释区间与字符串**内部**的字节下标为 `true`。
+///
+/// 口径：**开/闭引号不掩**（否则针自身的引号会被判成"在串里"，扫描器就再也读不到东西 ——
+/// 本文件第五批实测：把引号一起掩掉，reason 数变成 0）；**换行永不掩**（否则行号与行结构
+/// 都会漂移）；**只标区间、不删字符**（不用"抹掉内容"代替"跳过区间"，那会改变表达式语义 ⇒ 假红）。
+fn skipped_offsets(text: &str) -> Vec<bool> {
+    let bytes = text.as_bytes();
+    let mut mask = vec![false; bytes.len()];
+    let mut index = 0usize;
+    let mut in_string = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if byte == b'\\' {
+                if index + 1 < bytes.len() {
+                    mask[index + 1] = true;
+                }
+                index += 2;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = false;
+                index += 1;
+                continue;
+            }
+            if byte != b'\n' {
+                mask[index] = true;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                mask[index] = true;
+                index += 1;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    mask
+}
+
+/// 该字节是否落在注释／字符串**内部**（越界按"不在"处理）。
+fn is_skipped(mask: &[bool], at: usize) -> bool {
+    mask.get(at).copied().unwrap_or(false)
+}
+
 fn reason_payloads(text: &str) -> BTreeMap<String, BTreeSet<String>> {
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let joined = text;
     let bytes = joined.as_bytes();
-    // 逐行找 `"reason"`，但跳过注释行（文档注释里写了 `"reason": "x"` 不算）。
+    // R94：逐命中点判断是否落在注释／字符串内部（⛔ 不再只跳过"整行以 `//` 开头"）。
+    let mask = skipped_offsets(joined);
     let mut line_start = 0usize;
     while line_start < joined.len() {
         let line_end = joined[line_start..]
             .find('\n')
             .map_or(joined.len(), |skip| line_start + skip);
         let line = &joined[line_start..line_end];
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with("//") {
+        {
             let mut cursor = 0usize;
             while let Some(offset) = find(&line.as_bytes()[cursor..], b"\"reason\"") {
                 let at = cursor + offset;
+                if is_skipped(&mask, line_start + at) {
+                    cursor = at + 1;
+                    continue;
+                }
                 let mut index = at + b"\"reason\"".len();
                 while index < line.len()
                     && (line.as_bytes()[index] == b' ' || line.as_bytes()[index] == b':')
@@ -891,16 +956,21 @@ pub const REASON_SURFACE_LINES: usize = 405;
 fn reason_surface_in(text: &str) -> Vec<(String, Vec<String>)> {
     let region = production_region(text);
     let mut order: Vec<(String, Vec<String>)> = Vec::new();
+    let mask = skipped_offsets(&region);
     let mut line_start = 0usize;
     while line_start < region.len() {
         let line_end = region[line_start..]
             .find('\n')
             .map_or(region.len(), |skip| line_start + skip);
         let line = &region[line_start..line_end];
-        if !line.trim_start().starts_with("//") {
+        {
             let mut cursor = 0usize;
             while let Some(offset) = find(&line.as_bytes()[cursor..], b"\"reason\"") {
                 let at = cursor + offset;
+                if is_skipped(&mask, line_start + at) {
+                    cursor = at + 1;
+                    continue;
+                }
                 let mut index = at + b"\"reason\"".len();
                 while index < line.len()
                     && (line.as_bytes()[index] == b' ' || line.as_bytes()[index] == b':')
@@ -1102,4 +1172,53 @@ fn the_reason_surface_digest_is_frozen_and_documented() {
         "reason 数"
     );
     assert_eq!(canonical.lines().count(), REASON_SURFACE_LINES, "规范行数");
+}
+
+/// **R94：三个扫描器都跳过"注释区间"与"字符串内部"**。
+///
+/// 为什么需要它：原来三个扫描器只跳过"整行以 `//` 开头"，因此
+/// ① 行尾注释里的引文、② 字符串字面量里的 `"reason": "x"` 都会被**当成真站点**。
+/// 本判据先喂**合成样本**（已知红／已知绿），再回读真源码的两个规模读数。
+///
+/// 注入（实测红）：把 `is_skipped` 的判断删掉 ⇒ 合成样本读出 `fakeInString`/`fakeInComment`，红。
+#[test]
+fn the_reason_scanners_skip_comments_and_string_intervals() {
+    // ⭐ R94 的两个已知红形态都在这一份样本里：行尾注释 ＋ 字符串字面量。
+    let sample = "fn f() {\n    // 文档里写 \"reason\": \"fakeInComment\",\n    \
+                  let s = \"示例: \\\"reason\\\": \\\"fakeInString\\\"\";\n    \
+                  let data = serde_json::json!({ \"reason\": \"realOne\" });\n}\n";
+    let found = reasons_in(sample);
+    assert_eq!(
+        found.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["realOne"],
+        "只有真站点该被读到（注释与字符串里的引文必须跳过）"
+    );
+    let payloads = reason_payloads(sample);
+    assert_eq!(payloads.len(), 1, "载荷扫描器同样只该看到一个 reason");
+    assert!(payloads.contains_key("realOne"));
+    let surface = reason_surface_in(sample);
+    assert_eq!(surface.len(), 1, "规范形式同理");
+    assert_eq!(surface[0].0, "realOne");
+
+    // 已知绿：区间掩码**不改变**真源码的读数（规模与内容都必须一致）。
+    let files = read_rust_sources(&[manifest_dir().join("src")]);
+    let canonical = reason_surface(&files);
+    assert_eq!(
+        canonical
+            .lines()
+            .filter(|line| !line.starts_with("  "))
+            .count(),
+        REASON_SURFACE_REASONS,
+        "reason 数不得因为掩码而变"
+    );
+    assert_eq!(
+        canonical.lines().count(),
+        REASON_SURFACE_LINES,
+        "规范行数不得变"
+    );
+    assert_eq!(
+        yeban_model::AssetHash::of_bytes(canonical.as_bytes()).as_str(),
+        FROZEN_REASON_SURFACE_SHA256,
+        "加入区间掩码后摘要必须**逐位不变**（否则就是掩码改变了口径）"
+    );
 }
