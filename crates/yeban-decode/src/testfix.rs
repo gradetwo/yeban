@@ -1925,10 +1925,13 @@ mod tests {
     fn name_located_rows_reject_a_mislabelled_table_and_accept_an_unrelated_difference() {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
+        eprintln!("[R187-PROBE name-located-1] arms start: {N} arms", N = 4);
         // R187 sample: arm-1 绿（名字与 Debug 一致）
         let good: Vec<(&str, String)> = vec![("U8", "U8".to_owned()), ("S16", "S16".to_owned())];
+        eprintln!("[R187-PROBE name-located-arm1] good table accepted");
         assert_rows_are_name_located(&good);
 
+        eprintln!("[R187-PROBE name-located-arm2] mislabelled row: expecting rejection");
         // R187 sample: arm-2 红（名字改错）
         let mislabelled: Vec<(&str, String)> =
             vec![("U8", "U8".to_owned()), ("S16x", "S16".to_owned())];
@@ -1937,9 +1940,10 @@ mod tests {
                 &mislabelled
             )))
             .is_err(),
-            "a row whose declared name is not the variant's own name must be rejected"
+            "[R187-PROBE name-located-arm2] a mislabelled row must be rejected"
         );
 
+        eprintln!("[R187-PROBE name-located-arm3] duplicate names: expecting rejection");
         // R187 sample: arm-3 红（两行重名）
         let duplicated: Vec<(&str, String)> =
             vec![("U8", "U8".to_owned()), ("U8", "U8".to_owned())];
@@ -1948,9 +1952,10 @@ mod tests {
                 &duplicated
             )))
             .is_err(),
-            "two rows carrying the same variant name must be rejected"
+            "[R187-PROBE name-located-arm3] duplicate names must be rejected"
         );
 
+        eprintln!("[R187-PROBE name-located-arm4] unrelated difference: expecting acceptance");
         // R187 sample: arm-4 绿（**只差无关维度**：名字相同、`Debug` 呈现不同）—— R191 的反平凡臂。
         let unrelated_difference: Vec<(&str, String)> =
             vec![("U8", "U8".to_owned()), ("S16", "S16(99)".to_owned())];

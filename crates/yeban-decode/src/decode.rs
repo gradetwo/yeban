@@ -4950,6 +4950,7 @@ mod tests {
             .filter(|changed| **changed)
             .count()
         }
+        eprintln!("[R187-PROBE decode-options-arm1] 3 alternatives");
         let base = DecodeOptions::default();
         let alternatives: [(&str, DecodeOptions); 3] = [
             (

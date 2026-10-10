@@ -2285,6 +2285,7 @@ mod tests {
     /// 注入（实测）：把 `reset()` 改成 no-op ⇒ 第 3 条红（推进过的 guard 不会等于默认值）。
     #[test]
     fn the_idle_guard_default_is_distinguishable_from_a_bumped_state() {
+        eprintln!("[R187-PROBE idle-guard-arm1] default is the zero state");
         let fresh = IdleGuard::default();
         assert_eq!(fresh.idle(), 0, "the default guard must start at zero");
         assert_eq!(fresh, IdleGuard::new(), "Default and new() must agree");
