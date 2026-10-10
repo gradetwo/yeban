@@ -2889,3 +2889,33 @@ fn the_declared_central_directory_size_is_only_an_outer_bound() {
         other => panic!("声明尺寸超过文件尾必须报 Malformed，得到 {other:?}"),
     }
 }
+/// 判据 (类别: 容器条目定位): 同名条目在中央目录里出现**两次**时，取的是**第一个**。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `find_entry` 的 `find` 换成 `rfind`
+/// （注入 `b13:DUPE`）后全部判据**保持绿** —— 既有判据的所有容器里每个条目名都只出现
+/// 一次 ⇒ "同名时取哪一个"此前没有判据。
+#[test]
+fn a_duplicate_entry_name_takes_the_first_entry() {
+    let container = container_xml("score.xml");
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            // 第一条同名条目是合法乐谱。
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+            // 第二条同名条目的根元素不是 score-partwise ⇒ 若取了它就会报 UnsupportedRoot。
+            ZipEntrySpec::stored("score.xml", b"<not-musicxml/>"),
+        ],
+        None,
+    );
+    let entries = central_entries(&zip);
+    assert_eq!(entries.len(), 3, "前提：确实有三条中央目录记录");
+    assert_eq!(
+        entries[1].name, entries[2].name,
+        "前提：第 2、3 条记录**同名**"
+    );
+    assert_eq!(
+        parse_mxl(&zip),
+        Ok(parse("handmade_mvp_partwise", HANDMADE_MVP)),
+        "同名条目必须取**第一个**（⛔ 不是最后一个）"
+    );
+}
