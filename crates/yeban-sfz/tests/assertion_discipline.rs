@@ -145,7 +145,10 @@ fn has_non_vacuity_evidence(body: &str, root: Option<&str>) -> bool {
             || stmt.contains(".len() > ")
             || stmt.contains(".count() >=")
             || stmt.contains(".count() > ")
-            || stmt.contains(".len(),")
+            // ② 宏隐式相等：**两种实参顺序都认**（`assert_eq!(x.len(), N)` 与 `assert_eq!(N, x.len())`）。
+            // ⚠️ 必须同时要求 `assert_eq!(`：否则 `let _ = x.len();` 这种**没有下界**的语句也会被认成下界
+            // （实测：Z1 把实参换序后曾被误判为"无下界" ⇒ 假阳性；A1 删掉下界后必须仍判红）。
+            || (stmt.contains("assert_eq!(") && stmt.contains(".len()"))
             || stmt.contains("!.is_empty()")
             || non_empty_call(stmt)
             || has_value_bound(stmt)
@@ -386,6 +389,8 @@ fn self_test_classifier() {
         "let v = f(); assert!(!v.iter().any(|x| *x > 0)); let c = g(); assert!(c.iter().any(|x| *x > 0));",
         // ⑦ 字面量集合
         "for x in [1, 2, 3] { assert!(x > 0); }",
+        // ② 的**实参换序**（必须同样被接受）
+        "let v = f(); assert_eq!(4, v.len()); assert!(v.iter().all(|x| *x > 0));",
     ];
     let reds = [
         "let v = f(); assert!(v.iter().all(|x| *x > 0));",
