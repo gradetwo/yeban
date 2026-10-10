@@ -585,6 +585,31 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         assert_eq!(masked.len(), sample.len(), "R113 byte-length: {sample:?}");
     }
 
+    // ⭐ R217① **反失同步正对照臂**：构造（字符串／注释）**之后**的真针必须**仍然可见**。
+    // ⛔ 只验"被隐藏"那半边不完整 —— 掩码器若在末尾没有重新同步（例如块注释把该行剩下的
+    // 一起抹掉），下面的计数会变成 0 而不是 1。
+    for (label, sample, visible) in [
+        (
+            "string",
+            "let s = \"assert_ne!(x, x);\"; assert_ne!(y, y);",
+            1usize,
+        ),
+        ("line-comment", "// assert_ne!(x, x);\nassert_ne!(y, y);", 1),
+        (
+            "block-comment",
+            "/* assert_ne!(x, x); */ assert_ne!(y, y);",
+            1,
+        ),
+    ] {
+        let masked = mask_preserving_len(sample);
+        assert_eq!(masked.len(), sample.len(), "R113: {label}");
+        assert_eq!(
+            masked.matches("assert_ne!").count(),
+            visible,
+            "R217① anti-desync arm {label}: the needle AFTER the construction must stay visible"
+        );
+    }
+
     // ---- R56/R112：五种形态**每种一条已知绿** ＋ **一条"无界"已知红** ----
     // (label, sample, expect_bound, expected form mask)
     let cases: [(&str, &str, bool, u8); 14] = [
@@ -947,7 +972,8 @@ fn no_criterion_reads_a_runtime_external_resource() {
     eprintln!(
         "[R187-PROBE yeban-theory::tests::scan_guards::scan-external-resource] \
          files={scanned_files} lines={scanned_lines} elsewhere_files={elsewhere_files} \
-         bad_arm_hits={} good_arm_hits={}",
+         elsewhere_margin={} bad_arm_hits={} good_arm_hits={} probes_in_this_file=2",
+        elsewhere_files - 15,
         bad_arm.len(),
         good_arm.len()
     );
