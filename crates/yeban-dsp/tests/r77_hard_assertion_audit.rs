@@ -1418,7 +1418,10 @@ fn the_scanners_reject_bad_input_and_accept_good_input() {
     let variable_sites = match_sites_on_line("if xs.contains(&needle) { }");
     assert_eq!(variable_sites.len(), 1, "变量 needle 也是 1 个站点");
     assert!(!variable_sites[0].1, "变量 needle ⛔ 不得判为 literal");
+}
 
+#[test]
+fn the_scan_root_arms_reject_tests_and_see_sources() {
     // ⭐ **R223③＋R224①（构造之后的"正对照"）**：喂 token 的臂**不得抬高真扫描计数** ——
     // 本 crate 的审计只扫 `src/`，而臂与宏调用都在 `tests/` ⇒ 结构上无法污染。
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1473,7 +1476,10 @@ fn the_integer_scanners_reject_bad_input_and_accept_good_input() {
         has_integer_literal("assert_eq!(total, 96);"),
         "纯整数字面量必须被识别"
     );
+}
 
+#[test]
+fn the_integer_bound_classifier_separates_the_four_classes() {
     // ④ `classify_integer_assert`：坏输入＝**值界** ⇒ ⛔ 不得判为"界定集合大小"。
     assert_eq!(
         classify_integer_assert("assert!(value >= 0);"),
