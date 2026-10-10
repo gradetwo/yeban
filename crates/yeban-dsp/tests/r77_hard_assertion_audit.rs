@@ -283,6 +283,25 @@ fn calls_function(body: &str, name: &str) -> bool {
     false
 }
 
+/// ⭐ **R164**：把源码文本归一化到**平台无关**口径。
+///
+/// **根因（本批 CI 实测，⛔ 不是推断）**：`windows` 腿检出的是 **CRLF** 文件；
+/// `str::lines()` 只在**按行切分**时去掉行尾 `\r`，**跨行的片段**（例如断言证据串）
+/// 里仍然留着 `\r` ⇒ 生成器产出的**行体**与 Linux 生成的 committed 表不同
+/// （而**表头逐字相同**，正是 CI 报文里的 `left`／`right` 头部一致、行体不同的形态）。
+/// ⛔ 修复**不是**在 Windows 上跳过，而是**两侧同口径归一化**。
+fn normalize_source(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// ⭐ **R164**：把路径归一化到 **POSIX 分隔符**（Windows 的 `Display` 会给 `\`）。
+fn normalize_path(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 /// 源码里出现的宿主超越函数名（去重、排序）。
 fn host_transcendentals(body: &str) -> Vec<String> {
     let mut set = BTreeSet::new();
@@ -514,12 +533,8 @@ fn source_files(root: &Path) -> Vec<PathBuf> {
 fn audit_tree(crate_root: &Path) -> Vec<Row> {
     let mut rows = Vec::new();
     for path in source_files(&crate_root.join(SRC_ROOT)) {
-        let rel = path
-            .strip_prefix(crate_root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let src = fs::read_to_string(&path).unwrap_or_default();
+        let rel = normalize_path(&path, crate_root);
+        let src = normalize_source(&fs::read_to_string(&path).unwrap_or_default());
         rows.extend(classify_source(&rel, &src));
     }
     rows.sort();
@@ -967,12 +982,8 @@ fn render_match_sites(crate_root: &Path) -> String {
     let mut variable = 0usize;
     let mut risk = 0usize;
     for path in source_files(&crate_root.join(SRC_ROOT)) {
-        let rel = path
-            .strip_prefix(crate_root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let text = fs::read_to_string(&path).unwrap_or_default();
+        let rel = normalize_path(&path, crate_root);
+        let text = normalize_source(&fs::read_to_string(&path).unwrap_or_default());
         for (index, line) in text.lines().enumerate() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("//") {
@@ -1169,12 +1180,8 @@ fn render_integer_bound_table(crate_root: &Path) -> String {
     let mut rows: Vec<String> = Vec::new();
     let mut counts = [0usize; 4];
     for path in source_files(&crate_root.join(SRC_ROOT)) {
-        let rel = path
-            .strip_prefix(crate_root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let text = fs::read_to_string(&path).unwrap_or_default();
+        let rel = normalize_path(&path, crate_root);
+        let text = normalize_source(&fs::read_to_string(&path).unwrap_or_default());
         for row in classify_source(&rel, &text) {
             if row.kind != Kind::IntegerCount {
                 continue;
@@ -1266,5 +1273,69 @@ fn the_integer_count_categories_match_the_committed_evidence() {
     }
     for line in rendered.lines().filter(|l| l.starts_with("# 合计")) {
         eprintln!("[r77] R118 读数：{line}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ R164／R147：归一化的**配对已知红**（本机就能证明 Windows 一致性）
+// ---------------------------------------------------------------------------
+
+/// ⭐ **常驻判据（R147 配对形态）**：归一化**真的在起作用**，且生成的证据**不含平台痕迹**。
+///
+/// 背景（CI 实测）：`windows` 腿检出 CRLF ⇒ 生成器的**行体**里带 `\r` ⇒ 与 Linux 生成的
+/// committed 表不相等（**表头相同、行体不同**）。本判据把这件事变成**本机可证**：
+/// 正例（归一化后相等）＋ **配对反例**（不归一化则不等）⇒ 证明"相等"来自归一化本身，
+/// ⛔ 不是因为两侧本来就一样。
+#[test]
+fn normalisation_has_a_paired_control() {
+    // ① CRLF：归一化后必须相等。
+    assert_eq!(
+        normalize_source("a\r\nb\r\n"),
+        normalize_source("a\nb\n"),
+        "CRLF 与 LF 归一化后必须相等"
+    );
+    // ⭐ 配对反例：**不**归一化时必须**不**相等（否则上一条什么都没证明）。
+    assert_ne!(
+        "a\r\nb\r\n", "a\nb\n",
+        "未归一化时 CRLF 与 LF 必须不相等 ⇒ 证明归一化是必要的"
+    );
+
+    // ② 路径分隔符：归一化后必须相等。
+    // ⚠ 夹具注意（本机实测的坑）：**在 Unix 上 `\` 不是分隔符** ⇒ `strip_prefix` 会失败、
+    // `unwrap_or(path)` 返回整条路径。因此这里用一个**不匹配的 root**，专门验"分隔符替换"这一步。
+    let nowhere = Path::new("/nonexistent-root-xyz");
+    let windows_style = Path::new("crates\\yeban-dsp\\src\\a.rs");
+    assert_eq!(
+        normalize_path(windows_style, nowhere),
+        normalize_path(Path::new("crates/yeban-dsp/src/a.rs"), nowhere),
+        "`\\` 与 `/` 归一化后必须相等"
+    );
+    assert_eq!(
+        normalize_path(windows_style, nowhere),
+        "crates/yeban-dsp/src/a.rs"
+    );
+    // ⭐ 配对反例：**原样**取字符串会给出 `\` ⇒ 与 POSIX 形式不等（证明替换有必要）。
+    assert_ne!(
+        windows_style.to_string_lossy().as_ref(),
+        "crates/yeban-dsp/src/a.rs"
+    );
+
+    // ③ 端到端：三张证据表里**不得**出现 `\r`（否则 Windows 上必然不一致）。
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for (label, rendered) in [
+        (
+            "hard_assertion_table",
+            render_table(&audit_tree(&crate_root)),
+        ),
+        ("src_match_sites", render_match_sites(&crate_root)),
+        (
+            "integer_count_categories",
+            render_integer_bound_table(&crate_root),
+        ),
+    ] {
+        assert!(
+            !rendered.contains('\r'),
+            "{label} 的行体里出现了 CR ⇒ Windows 上会与 committed 表不一致"
+        );
     }
 }
