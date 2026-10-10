@@ -351,6 +351,10 @@ pub struct ParamSpec {
     pub json_type: &'static str,
     /// 是否必填。
     pub required: bool,
+    /// `minLength`（**Unicode 码点**计数，JSON Schema 语义）；`None` = 不约束。
+    pub min_len: Option<usize>,
+    /// `maxLength`（**Unicode 码点**计数，JSON Schema 语义）；`None` = 不约束。
+    pub max_len: Option<usize>,
     /// 规范语义。
     pub doc: &'static str,
 }
@@ -377,12 +381,19 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         name: DRY_RUN_PARAM,
         json_type: "boolean",
         required: false,
+        min_len: None,
+        max_len: None,
         doc: "只读模拟校验: 只做参数与领域合法性校验, 不改任何状态",
     },
     ParamSpec {
         name: IDEMPOTENCY_KEY_PARAM,
         json_type: "string",
         required: false,
+        // ⭐ D46 收口（实现侧）：契约 `schemas/mcp-tools.schema.json` 写着
+        // `maxLength: 256` ⇒ 工具面**必须真的拒**，否则"契约说有界、实现无界"
+        // 就是 R142 的"静默永不生效"。以 Unicode 码点计数（JSON Schema 语义）。
+        min_len: None,
+        max_len: Some(256),
         doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存; 该响应是 `{\"replayed\":true,\"response\":…}` 信封 (契约 `definitions.ReplayedToolResponse`), 而不是裸 `ToolResponse`; 空串按未提供处理",
     },
 ];
@@ -451,6 +462,21 @@ impl ToolSpec {
                             expected: spec.json_type,
                         });
                     }
+                    // ⭐ D46：长度约束必须**真的执行**（契约里写着就必须成立）。
+                    if spec.json_type == "string"
+                        && let Some(text) = value.as_str()
+                    {
+                        let length = text.chars().count();
+                        if spec.min_len.is_some_and(|min| length < min)
+                            || spec.max_len.is_some_and(|max| length > max)
+                        {
+                            return Err(ToolCallError::ParamLengthOutOfRange {
+                                name: spec.name.to_owned(),
+                                min: spec.min_len,
+                                max: spec.max_len,
+                            });
+                        }
+                    }
                 }
                 None if spec.required => {
                     return Err(ToolCallError::MissingParam {
@@ -483,6 +509,31 @@ const fn param(
         name,
         json_type,
         required,
+        min_len: None,
+        max_len: None,
+        doc,
+    }
+}
+
+/// 带**长度约束**的参数（`minLength` / `maxLength`，Unicode 码点计数）。
+///
+/// 为什么需要它：契约（`schemas/mcp-tools.schema.json`）是唯一权威定义，
+/// 但它自己**不会**执行任何东西 —— 实现侧不照着做，约束就是 R142 说的
+/// "静默永不生效"（第五批实测：schema 改完，64 KiB 的幂等键**照样**被接受）。
+const fn bounded_param(
+    name: &'static str,
+    json_type: &'static str,
+    required: bool,
+    doc: &'static str,
+    min_len: Option<usize>,
+    max_len: Option<usize>,
+) -> ParamSpec {
+    ParamSpec {
+        name,
+        json_type,
+        required,
+        min_len,
+        max_len,
         doc,
     }
 }
@@ -912,7 +963,16 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("name", "string", true, "片段显示名"),
+            // ⭐ D46 收口（实现侧）：契约写着 `minLength: 1` ⇒ 空名字必须被拒
+            // （第五批实测：空串会**真的落进** `clip_pool`）。
+            bounded_param(
+                "name",
+                "string",
+                true,
+                "片段显示名 (非空, minLength 1)",
+                Some(1),
+                None,
+            ),
             param(
                 "assetHash",
                 "string",
@@ -1103,9 +1163,30 @@ impl ToolSpec {
         let mut properties = Map::new();
         let mut required: Vec<Value> = Vec::new();
         for spec in self.all_params() {
-            let mut property = Map::new();
+            // ⚠ 有的工具（如 `yeban_edit_notes`）**自己**又声明了一份 `idempotencyKey`
+            // （描述文本与公共那份不同）⇒ `properties.insert` 会**覆盖**掉公共那份，
+            // 于是公共参数的 `maxLength` 在广播面上**消失**（而校验面仍然生效 ⇒ 两边不一致）。
+            // 处置：**合并** —— 描述文本取后者，长度约束**谁有取谁**。
+            let mut property = properties
+                .get(spec.name)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            for key in ["minLength", "maxLength"] {
+                if let Some(value) = property.get(key).cloned() {
+                    property.insert(key.to_owned(), value);
+                }
+            }
             property.insert("type".to_owned(), Value::from(spec.json_type));
             property.insert("description".to_owned(), Value::from(spec.doc));
+            // ⭐ D46：注册表即契约的唯一实现 ⇒ 约束也要广播出去（否则 schema 与
+            // `tools/list` 各说各话）。
+            if let Some(min) = spec.min_len {
+                property.insert("minLength".to_owned(), Value::from(min as u64));
+            }
+            if let Some(max) = spec.max_len {
+                property.insert("maxLength".to_owned(), Value::from(max as u64));
+            }
             properties.insert(spec.name.to_owned(), Value::Object(property));
             if spec.required
                 && !required
@@ -1160,6 +1241,16 @@ pub enum ToolCallError {
         name: String,
         /// 期望的 JSON 类型。
         expected: &'static str,
+    },
+    /// 字符串参数**长度越界**（`minLength` / `maxLength`，Unicode 码点计数）。
+    #[error("参数 `{name}` 长度越界 (minLength = {min:?}, maxLength = {max:?})")]
+    ParamLengthOutOfRange {
+        /// 参数名。
+        name: String,
+        /// 契约声明的下界。
+        min: Option<usize>,
+        /// 契约声明的上界。
+        max: Option<usize>,
     },
     /// 未知参数。
     #[error("未知参数 `{name}`")]

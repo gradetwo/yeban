@@ -6597,72 +6597,117 @@ fn every_documented_tool_default_is_the_value_the_tool_uses() {
     );
 }
 
-/// **已登记边界 ①：`idempotencyKey` 只有"空串 = 未提供"这一条边界，没有长度上界。**
+/// **D46 已收口：`idempotencyKey` 的边界 = "空串视为未提供" ＋ `maxLength = 256`。**
 ///
-/// ## 风险读数（集成者要的 (c)）
+/// ## 收口读数（谁定的、定在哪）
 ///
-/// * **谁能触发**：任何**已经有 `app:admin`** 的本地调用方 —— stdio 形态 = 能往本进程写 stdin 的进程；
-///   HTTP 形态 = 持 Bearer 令牌者（默认档不启 HTTP，且只监听 `127.0.0.1`）。
-/// * **后果**：幂等表里留一条**任意长**的键（内存放大），且它在 `ReplayedToolResponse` 里被回显。
-///   它**不**改工程、**不**落盘 ⇒ 危害面限于"会话内存"与"响应体积"。
-/// * **收口的最小改动面**：契约 `schemas/mcp-tools.schema.json` 给 `idempotencyKey` 加 `maxLength`
-///   ＋ `dispatch.rs` 拒超长键。⚠ 按 **ADR-0001 D46**：改 `schemas/**` 必须先停并报 ⇒ 本轮**不动**。
+/// * 契约 `schemas/mcp-tools.schema.json`（**集成者按 ADR-0001 D46 改**，提交 `7cc80cd2`）
+///   的公共 `arguments.properties.idempotencyKey` 与 7 个扩展工具实参定义共 **8 处**
+///   写着 `"maxLength": 256`。
+/// * ⚠ **第五批的实测教训（R142"静默永不生效"）**：只改 schema **不会**改变行为 ——
+///   本判据曾钉住"64 KiB 键被接受"，schema 改完之后它**照样绿**。
+///   因此收口必须**实现侧**也执行：`ParamSpec` 增加 `min_len`/`max_len`，
+///   `validate_arguments` 真的判、`input_schema()` 如实广播（本 crate 内改动）。
 ///
-/// ## 本判据的处置：**把当前行为钉住**（(b) 的形态）
+/// ## 单位与量
 ///
-/// 三条读数：空串 = 未提供（两次都真的施加）；非空 = 重放；**64 KiB 的键被接受**（未收口）。
-/// 注入（实测红）：给 `dispatch.rs` 加上"空串也算键"的分支 ⇒ 第一条红；
-/// 加上"超过 1 KiB 就拒" ⇒ 第三条红（**这正是收口时会发生的改变**）。
+/// `maxLength` 按 **Unicode 码点**计数（JSON Schema 语义）。超界在**契约层**
+/// （`ToolSpec::validate_arguments`）被拦成 JSON-RPC `-32602` —— 与"类型错/拼错键"同一条出口，
+/// 不进领域、不落幂等表。
+///
+/// 注入（实测红，R142 的**配对已知红**）：把 `COMMON_PARAMS` 里那条
+/// `max_len: Some(256)` 去掉 ⇒ 第 3/4 段红（257 个字符又被接受）。
 #[test]
-fn the_idempotency_key_boundary_is_emptiness_only() {
+fn the_idempotency_key_boundary_is_emptiness_and_256_codepoints() {
     let scratch = Scratch::new("idem-boundary");
-    let (mut dispatcher, auth) = dispatcher();
-    open(&scratch, &mut dispatcher, &auth);
-    let track = macro_track(&dispatcher);
+    let (mut first, auth) = dispatcher();
+    open(&scratch, &mut first, &auth);
+    let track = macro_track(&first);
 
     // ① 空串 = **未提供**：两次都真的施加（没有 `replayed` 信封）。
     let blank = json!({"trackId": track, "macroIndex": 0, "value": 0.11,
                        "idempotencyKey": ""});
-    let before = dispatcher.domain().proposal_count();
-    let first = call(&mut dispatcher, &auth, "yeban_set_macro", blank.clone());
-    assert_eq!(first["status"], "success", "{first}");
-    assert!(first.get("replayed").is_none(), "空串不得进幂等表");
-    let second = call(&mut dispatcher, &auth, "yeban_set_macro", blank.clone());
+    let before = first.domain().proposal_count();
+    let a = call(&mut first, &auth, "yeban_set_macro", blank.clone());
+    assert_eq!(a["status"], "success", "{a}");
+    assert!(a.get("replayed").is_none(), "空串不得进幂等表");
+    let b = call(&mut first, &auth, "yeban_set_macro", blank.clone());
     assert!(
-        second.get("replayed").is_none(),
-        "空串第二次仍必须真的施加（契约: 空串按未提供处理）: {second}"
+        b.get("replayed").is_none(),
+        "空串第二次仍必须真的施加（契约: 空串按未提供处理）: {b}"
     );
     assert_eq!(
-        dispatcher.domain().proposal_count(),
+        first.domain().proposal_count(),
         before + 2,
         "两次空串调用必须各建一条提案"
     );
 
-    // ② 非空 = 重放（长度与内容都不参与判定）。
+    // ② 非空（≤ 256 码点）= 重放。
     let keyed = json!({"trackId": track, "macroIndex": 0, "value": 0.22,
                        "idempotencyKey": "k-boundary"});
-    let third = call(&mut dispatcher, &auth, "yeban_set_macro", keyed.clone());
-    assert!(third.get("replayed").is_none(), "{third}");
-    let fourth = call(&mut dispatcher, &auth, "yeban_set_macro", keyed);
-    assert_eq!(fourth["replayed"], true, "非空键必须重放: {fourth}");
+    let c = call(&mut first, &auth, "yeban_set_macro", keyed.clone());
+    assert!(c.get("replayed").is_none(), "{c}");
+    let d = call(&mut first, &auth, "yeban_set_macro", keyed);
+    assert_eq!(d["replayed"], true, "非空键必须重放: {d}");
 
-    // ③ ⭐ **已知未收口**：64 KiB 的键**被接受**（没有长度上界）。
-    let huge = "k".repeat(64 * 1024);
-    let huge_arguments = json!({"trackId": track, "macroIndex": 0, "value": 0.44,
-                                "idempotencyKey": huge});
-    let huge_first = call(
-        &mut dispatcher,
+    // ③ near-miss（R142）：**恰好 256 个码点**必须**被接受**（闸门含端点）。
+    let exactly = "k".repeat(256);
+    let (status, outcome) = call_raw(
+        &mut first,
         &auth,
         "yeban_set_macro",
-        huge_arguments.clone(),
+        json!({"trackId": track, "macroIndex": 0, "value": 0.33,
+               "idempotencyKey": exactly}),
+    );
+    assert_eq!(status, 200, "恰好 256 码点必须被接受: {outcome:?}");
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    // ④ **257 个码点 ⇒ 参数校验失败**（JSON-RPC `-32602`，不进领域、不落幂等表）。
+    let over = "k".repeat(257);
+    let cached_before = first.domain().proposal_count();
+    let (status, outcome) = call_raw(
+        &mut first,
+        &auth,
+        "yeban_set_macro",
+        json!({"trackId": track, "macroIndex": 0, "value": 0.44,
+               "idempotencyKey": over}),
+    );
+    assert_eq!(status, 400, "超界幂等键必须被拒: {outcome:?}");
+    let error = outcome.expect_err("必须是 JSON-RPC 层错误");
+    assert_eq!(error.code, -32602, "必须走既有的参数码: {error:?}");
+    assert!(
+        error.message.contains("idempotencyKey") || format!("{error:?}").contains("idempotencyKey"),
+        "错误必须点名参数: {error:?}"
     );
     assert_eq!(
-        huge_first["status"], "success",
-        "⚠ 64 KiB 的幂等键当前**被接受** —— 这是已登记、**未收口**的边界: {huge_first}"
+        first.domain().proposal_count(),
+        cached_before,
+        "被拒的调用不得进领域（也就不会落幂等表）"
     );
-    let huge_second = call(&mut dispatcher, &auth, "yeban_set_macro", huge_arguments);
+
+    // ⑤ 多字节字符按**码点**计（⛔ 不是字节）：256 个汉字必须被接受。
+    let wide = "汉".repeat(256);
+    assert_eq!(wide.len(), 256 * 3, "夹具前提：每个汉字 3 字节");
+    let (status, outcome) = call_raw(
+        &mut first,
+        &auth,
+        "yeban_set_macro",
+        json!({"trackId": track, "macroIndex": 0, "value": 0.55,
+               "idempotencyKey": wide}),
+    );
     assert_eq!(
-        huge_second["replayed"], true,
-        "超长键同样参与重放（⇒ 它真的进了幂等表）: {huge_second}"
+        status, 200,
+        "`maxLength` 按 Unicode 码点计 ⇒ 256 个汉字（768 字节）必须被接受: {outcome:?}"
     );
+
+    // ⑥ 广播方向（两方向之二）：**每个**工具的 `tools/list` schema 都必须声明
+    //    `idempotencyKey.maxLength = 256`（契约里是 8 处：公共 ＋ 7 个扩展定义）。
+    for spec in yeban_mcp::tools::TOOLS {
+        let advertised = spec.input_schema();
+        assert_eq!(
+            advertised["properties"]["idempotencyKey"]["maxLength"], 256,
+            "`{}` 的 `tools/list` 必须广播 maxLength: {advertised}",
+            spec.name
+        );
+    }
 }

@@ -1804,42 +1804,70 @@ fn diagnostics_bundle_content_matches_the_project_included_flag() {
     std::fs::remove_dir_all(&out_dir).ok();
 }
 
-/// **已登记边界 ②：`yeban_import_audio` 的 `name` 只校验"是字符串"，空串会真的落进文档。**
+/// **D46 已收口：`yeban_import_audio` 的 `name` 有 `minLength: 1` ⇒ 空名字被拒、不落文档。**
 ///
-/// ## 风险读数（集成者要的 (c)）
+/// ## 收口读数（谁定的、定在哪）
 ///
-/// * **谁能触发**：任何有 `app:admin` 的调用方（与边界 ① 同一条链路）。
-/// * **后果**：片段池里出现一条**空名字**的条目 ⇒ 界面/导出的名称列出现空白项；
-///   它**不影响**音频字节、哈希与撤销（`Op` 载荷仍然完整）。
-/// * **收口的最小改动面**：契约 `schemas/mcp-tools.schema.json` 给 `name` 加 `minLength: 1`
-///   （或实现侧在 `import_audio::plan` 里拒空串 —— 但那会**改变已发布行为**）。
-///   ⚠ 按 **ADR-0001 D46**：改 `schemas/**` 必须先停并报 ⇒ 本轮**不动**。
+/// * 契约 `schemas/mcp-tools.schema.json`（集成者按 ADR-0001 D46 改，提交 `7cc80cd2`）
+///   的 `yeban_import_audio.name` 写着 `"minLength": 1`。
+/// * ⚠ **只改 schema 不会改变行为**（R142：本判据第五批钉住的正是"空串被接受且真的落进
+///   `clip_pool`"，schema 改完它**照样绿**）⇒ 实现侧同时执行：`ParamSpec::min_len`
+///   ＋ `validate_arguments` 真的判 ＋ `input_schema()` 如实广播。
 ///
-/// ## 本判据的处置：**把当前行为钉住**（(b) 的形态）
+/// ## 单位与量
 ///
-/// 注入（实测红）：在 `import_audio::plan` 里加"空串 ⇒ `INVALID_PARAMETER_RANGE`"
-/// ⇒ 第一条断言红（**这正是收口时会发生的改变**）。
+/// `minLength` 按 **Unicode 码点**计数；空串 ⇒ 码点数 0 < 1 ⇒ 在**契约层**被拦成
+/// JSON-RPC `-32602`（与"类型错/拼错键"同一条出口），**不进领域**（因此池里不会有条目）。
+///
+/// 注入（实测红，R142 的**配对已知红**）：把 `bounded_param("name", …, Some(1), None)`
+/// 换成 `param("name", …)` ⇒ 第 1/2 段红（空名字又被接受）。
 #[test]
-fn an_empty_import_name_is_accepted_and_lands_in_the_document() {
+fn an_empty_import_name_is_rejected_and_never_lands_in_the_document() {
     let mut dispatcher = dispatcher_with_project(filled_project());
     let audio = write_audio_fixture("empty-name", &wav_s16(48_000, &[0, 1, -1, 0, 2, -2]));
-    let imported = call_tool(
+
+    // ① 空 `name` ⇒ 契约层拒（`-32602`），**不进领域**。
+    let (status, code) = call_tool_raw(
         &mut dispatcher,
         "yeban_import_audio",
         serde_json::json!({ "name": "", "path": audio.display().to_string() }),
     );
-    assert_eq!(
-        imported["status"], "success",
-        "⚠ 空 `name` 当前**被接受** —— 这是已登记、**未收口**的边界: {imported}"
-    );
-    // 两方向：空名字必须**真的**落进文档（否则这条判据是空的）。
+    assert_eq!(status, 400, "空 `name` 必须是参数错误（HTTP 400）");
+    assert_eq!(code, Some(-32602), "必须走既有的参数码");
     let pool = &dispatcher
         .domain()
         .active_project()
         .expect("活跃工程")
         .clip_pool;
     assert!(
-        pool.values().any(|entry| entry.name.is_empty()),
-        "空名字必须真的落进片段池（否则这条判据什么也没证明）"
+        !pool.values().any(|entry| entry.name.is_empty()),
+        "被拒的导入**不得**在池里留下空名字条目"
+    );
+
+    // ② near-miss（R142）：**恰好 1 个码点**必须被接受，且**真的**落进文档。
+    let imported = call_tool(
+        &mut dispatcher,
+        "yeban_import_audio",
+        serde_json::json!({ "name": "K", "path": audio.display().to_string() }),
+    );
+    assert_eq!(imported["status"], "success", "{imported}");
+    let pool = &dispatcher
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .clip_pool;
+    assert!(
+        pool.values().any(|entry| entry.name == "K"),
+        "1 个码点的名字必须真的落进片段池（否则这条判据是空的）"
+    );
+
+    // ③ 广播方向（两方向之二）：`tools/list` 的 `inputSchema` 必须**也**声明 `minLength`，
+    //    否则"契约说要非空、`tools/list` 说随便"就是各说各话。
+    let advertised = tools::tool("yeban_import_audio")
+        .expect("注册表")
+        .input_schema();
+    assert_eq!(
+        advertised["properties"]["name"]["minLength"], 1,
+        "`tools/list` 必须广播 minLength: {advertised}"
     );
 }
