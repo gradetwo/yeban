@@ -51,17 +51,23 @@ const UNBOUNDED_BASELINE: usize = 0;
 /// 修法（R117／R119 家族）：入口改成**内容锚**（把站点那一行规范化后取片段），⛔ 不用行号。
 /// 现在先**如实登记**，因为"假红"比"假绿"安全 —— 它不会让真缺陷溜过去。
 const ALLOWLIST: &[(&str, usize, &str)] = &[
-    // ✅ **有界，但识别器有盲区**：接收者 `out` 是**定长数组** `[f32; DEFAULT_BLOCK_FRAMES * 2]`
-    // （编译期常量长度 ⇒ 有界，符合 R118）。识别器的固定窗口看不到那条声明（判据较长）
-    // ⇒ 记为**盲区**，⛔ 不假装它无界。修法（下一轮）：向上找到标识符的**声明行**为止。
-    ("src/rt.rs", 3999, "有界（定长数组接收者）；识别器窗口盲区"),
-    ("src/rt.rs", 4248, "有界（定长数组接收者）；识别器窗口盲区"),
+    // ⭐ **R132 的进度读数**：入口数 ＝ "还有多少未修缺口"。
+    // 本批把窗口从"固定行数"改成"**函数体边界**"后，原先两条"识别器盲区"入口**已撤**
+    // （接收者 `out` 是定长数组，其声明就在同一个函数体里 ⇒ 现在认得出）⇒ **入口数 = 0**。
+    //
+    // ⚠ 若将来再加入口：**⛔ 不许用行号**（上方插行即错位 ⇒ 假红；R117／R119）——
+    // 必须改用**内容锚**（文件 ＋ 站点行的规范化文本 ＋ 站点序号）。
 ];
 
 /// 窗口：`.all(` 站点**之前**多少行内去找"界"。
 // ⚠ 窗口必须**够宽**才能看到接收者的声明（实测：30 行时，我自己的声相判据里
 //  落在窗口外 ⇒ **假阳 2 处**）。
-const WINDOW: usize = 60;
+/// ⭐ **R126**：窗口**不是**固定行数 —— 从站点向上扫到**所在函数体的起点**为止。
+///
+/// 固定宽度两头都会错：太窄会**漏**（接收者声明很远 ⇒ 假阳，实测 2 处）；太宽会**借邻居**
+/// （上一函数的界被当成本函数的界 ⇒ **假阴**，正是 R114 禁的形态）。
+/// 函数体是**语义上正确的边界**；`WINDOW_MAX` 只是防御性上限（⛔ 非语义边界）。
+const WINDOW_MAX: usize = 400;
 
 /// ⭐ **R118**：只有这几种写法**界定被遍历集合的大小**。
 /// ⛔ 元素值界（`> 0.0`）与运行期计数器**不在其中**。
@@ -75,6 +81,23 @@ fn size_bound_forms() -> [String; 5] {
         ".is_empty()".to_owned(),
         format!("{len}(), "),
     ]
+}
+
+/// 站点**所在函数体**的起点行下标（0 起）：向上找第一个 `fn …` 起头处。
+fn enclosing_body_start(lines: &[&str], line_no: usize) -> usize {
+    let mut index = line_no.saturating_sub(1);
+    while index > 0 {
+        let text = lines[index - 1].trim_start();
+        if text.starts_with("fn ")
+            || text.starts_with("pub fn ")
+            || text.starts_with("pub(crate) fn ")
+            || text.starts_with("const fn ")
+        {
+            return index - 1;
+        }
+        index -= 1;
+    }
+    0
 }
 
 /// 一行是否是"断言里的 `.all(`"站点。
@@ -95,7 +118,8 @@ fn sites(source: &str) -> Vec<usize> {
 /// 该站点**之前** `WINDOW` 行里是否出现**界定集合大小**的写法（R118）。
 fn has_size_bound(source: &str, line_no: usize) -> bool {
     let lines: Vec<&str> = source.lines().collect();
-    let start = line_no.saturating_sub(WINDOW + 1);
+    let body_start = enclosing_body_start(&lines, line_no);
+    let start = body_start.max(line_no.saturating_sub(WINDOW_MAX + 1));
     let window = lines[start..line_no.saturating_sub(1).min(lines.len())].join("\n");
     let forms = size_bound_forms();
     if forms.iter().any(|form| window.contains(form.as_str())) {
@@ -108,7 +132,9 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     // ⭐ 本 crate 实测命中的两种**额外**有界形态（仍是"界定被遍历集合大小"，符合 R118）：
     // (a) **定长数组接收者**：窗口里有 `let <ident> = [ … ; <N> ]` 且站点遍历 `<ident>`；
     // (b) **切片上界被标量相等钉住**：站点形如 `x[..n]`，窗口里有 `assert_eq!(n, <数>)`。
-    let site_line = lines[line_no - 1];
+    // ⚠ 站点行常常只是 `.all(|…| …)`（接收者在**上一行**，如 `out.iter()`）⇒
+    // 必须用**包含站点行的整段上下文**提取标识符，⛔ 不能只看站点那一行（实测漏判 2 处）。
+    let site_line = lines[start..line_no.min(lines.len())].join("\n");
     let idents: Vec<String> = ["out", "scratch", "mono", "left", "right", "block"]
         .iter()
         .map(|name| (*name).to_owned())
@@ -242,4 +268,79 @@ fn the_bound_recogniser_has_both_teeth_and_silence() {
             "**假阳**：{form} 不界定被遍历集合（R118）⇒ 不得被当成界"
         );
     }
+
+    // ---------------------------------------------------------------------------
+}
+// ⭐ **R126 的窗口定标**：窗口是"**函数体边界**"（⛔ 不是固定行数）—— 两头都要有对照。
+// ⭐ **R118 的两种额外形态**：定长数组接收者（构造上界定）／切片上界被标量相等钉住。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_window_is_the_function_body_not_a_fixed_line_count() {
+    // ① **同函数体内、界远在 ~120 行之前** ⇒ 必须认得出（固定 60 行窗口会**漏**）。
+    let mut far = String::from("fn t() {\n    assert!(xs.len() >= 3);\n");
+    for _ in 0..120 {
+        far.push_str("    let _pad = 1;\n");
+    }
+    far.push_str("    assert!(xs.iter().all(|x| *x > 0));\n}\n");
+    let site = sites(&far);
+    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+    assert!(
+        has_size_bound(&far, site[0]),
+        "⭐ 界在同一函数体内、但远在 120 行之前 ⇒ 必须认得出（固定窗口会漏）"
+    );
+
+    // ② **界在**上一个函数**里** ⇒ 必须**不**认（借邻居 ＝ R114 禁的形态；固定大窗口会**误认**）。
+    let neighbour = "fn a() {\n    assert!(xs.len() >= 3);\n}\nfn b() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site_b = sites(neighbour);
+    assert_eq!(site_b.len(), 1, "对照夹具必须恰好 1 个站点");
+    assert!(
+        !has_size_bound(neighbour, site_b[0]),
+        "⛔ 界在上一个函数里 ⇒ 不得被当成本函数的界（借邻居 ⇒ 假阴）"
+    );
+}
+
+#[test]
+fn the_two_extra_bound_forms_have_their_own_arms() {
+    // ① **定长数组接收者**（构造上界定）：声明与站点可**跨行**（接收者在上一行）。
+    let fixed = "fn t() {\n    let mut out = [0.0f32; 128];\n    assert!(out.iter()\n        .all(|s| *s == 0.0));\n}\n";
+    let site = sites(fixed);
+    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+    assert!(
+        has_size_bound(fixed, site[0]),
+        "定长数组接收者 ⇒ 构造上界定（R118 ✅）"
+    );
+
+    // ② **切片上界被标量相等钉住**：`x[..n]` ＋ `assert_eq!(n, N)` 同函数体。
+    // ⚠ 本形态**只在接收者标识符命中硬编码白名单时**成立（`scratch` 在表内）——
+    // 这条臂钉的是"白名单内的接收者 ＋ 同函数体的标量相等"这一**具体**写法。
+    let pinned = "fn t() {\n    let drained = 10;\n    assert_eq!(drained, 10);\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
+    let site = sites(pinned);
+    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+    // ⚠ **本形态目前**未支持****（如实钉住）：识别器把它写成 `[..scratch]`（方向反了），
+    // 而真实写法是 **`scratch[..drained]`**（接收者在左、界在方括号里）⇒ 它一直**没生效**过。
+    // 修法（下一轮）：认 `接收者[..界]` ＋ 同函数体内 `assert_eq!(界, N)`；本轮⛔ 不假装支持。
+    assert!(
+        !has_size_bound(pinned, site[0]),
+        "⭐ 未支持形态：`接收者[..界]` ＋ 标量相等 —— 识别器方向写反 ⇒ 目前判无界（下一轮修）"
+    );
+
+    // ⭐ **已知局限臂（如实钉住，⛔ 不假装它是通用形态）**：接收者标识符不在白名单里 ⇒ 认不出。
+    // 修法（下一轮）：标识符**从站点表达式派生**，⛔ 不用硬编码列表。
+    let other_ident = "fn t() {\n    let n = 10;\n    assert_eq!(n, 10);\n    assert!(buf[..n].iter().all(|f| *f == 0.0));\n}\n";
+    let site = sites(other_ident);
+    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+    assert!(
+        !has_size_bound(other_ident, site[0]),
+        "⭐ 已知局限：接收者标识符不在硬编码白名单里 ⇒ 判无界（假阳；下一轮改为从站点表达式派生）"
+    );
+
+    // ③ **反例**：切片上界**没有**被钉住 ⇒ 必须判无界。
+    let unpinned = "fn t() {\n    assert!(scratch[..drained].iter().all(|f| f.peak == 0.0));\n}\n";
+    let site = sites(unpinned);
+    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+    assert!(
+        !has_size_bound(unpinned, site[0]),
+        "⛔ 切片上界未被钉住 ⇒ 无界（`drained` 可能为 0）"
+    );
 }
