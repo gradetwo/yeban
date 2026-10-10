@@ -183,6 +183,14 @@ fn constructed_variants(text: &str) -> BTreeSet<String> {
         if text[after..].starts_with("=>") {
             continue;
         }
+        // 规则④：紧跟 `|` ⇒ 模式（模式交替的**左边**那一支）。
+        // 与规则③（`Op::V` 前面是 `|` ⇒ 交替的右边那一支）配对：交替要两支都判成模式
+        // 才算完整。两条**各自**可独立观测 —— 见自测里的 `if let A | B = op {}` 输入
+        // （③ 抓 B、④ 抓 A）。实测教训：只用旧输入（含 `matches!` 与 `=>`）时，
+        // 去掉规则③**全绿** ⇒ 那两条当时互为冗余。
+        if text[after..].starts_with('|') {
+            continue;
+        }
         // 规则①：同一行里前面有未闭合的 `matches!(` ⇒ 模式
         let line_start = text[..at].rfind('\n').map_or(0, |position| position + 1);
         let prefix = &text[line_start..at];
@@ -334,6 +342,13 @@ fn the_classifier_tells_constructions_from_patterns() {
         constructed_variants(patterns).is_empty(),
         "模式不得被当成构造: {:?}",
         constructed_variants(patterns)
+    );
+    // `if let A | B = op` 形态：`matches!` 与 `=>` 都不在场 ⇒ 只有规则③（B 前面是 `|`）
+    // 与规则④（A 后面是 `|`）能判它。
+    assert!(
+        constructed_variants("if let Op::AddNote { .. } | Op::DeleteNote { .. } = op {}")
+            .is_empty(),
+        "`if let A | B` 的两支都不许被当成构造"
     );
     // `NoteOp::` 前缀不算（本 crate 的两个枚举前缀重叠，这是最容易错的字面陷阱）。
     assert!(
