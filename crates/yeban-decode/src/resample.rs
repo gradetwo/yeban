@@ -2344,4 +2344,83 @@ mod tests {
             );
         }
     }
+
+    /// 判据（重采样通带的**逐频点幅度响应** [ARCH-DSP-002]）：通带内 8 个频点的增益必须都在
+    /// 单位增益附近，且**整条曲线的峰谷差**有上界。
+    ///
+    /// 量什么：8 个频点 × 3 种转换比率下的 **RMS 增益**（输出中段 RMS ÷ 输入中段 RMS，单位：倍）
+    /// 与**峰谷差**（倍）。
+    /// 怎么量：`sine()` 造 4800 帧 1 声道正弦（去掉两端各 10% 避开滤波器边界），逐个频点过
+    /// `resample_interleaved`，再除一次 RMS。⛔ 不钉任何跨平台精确值，只钉区间与上界。
+    ///
+    /// 读数（本机、debug 构建；单位增益 = 1.0）：
+    ///
+    /// | 转换 | 100 Hz | 500 Hz | 1 kHz | 2 kHz | 4 kHz | 6 kHz | 8 kHz | 10 kHz | 峰谷差 |
+    /// | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+    /// | 48k→96k | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 0.99999 | 0.00001 |
+    /// | 48k→24k | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 0.99999 | 0.99997 | 0.99986 | 0.00014 |
+    /// | 48k→44.1k | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 1.00000 | 0.99999 | 0.99999 | 0.99998 | 0.00002 |
+    ///
+    /// **容差设计**（为什么是这两个数）：
+    /// - 逐点 `[0.995, 1.005]`（≈ ±0.043 dB）：最差实测点 0.99986 ⇒ 到**下界**还有约 0.5% 余量，
+    ///   而任何"高通/低通倾向"的实现（哪怕只偏 0.5%）都会被抓到。
+    /// - 峰谷差 `≤ 0.005`：最差实测 0.00014 ⇒ 余量约 35 倍。**这一项才是"响应曲线平不平"的
+    ///   直接读数** —— 逐点区间只能证明每个点没跑远，峰谷差证明整条曲线**没有系统性倾斜**。
+    ///
+    /// 为什么需要它（R91 的"旧形态按构造必绿"）：既有判据
+    /// [`super::tests::the_filtered_path_is_finite_unity_gain_and_anti_aliasing`] 只探 **1 kHz 一个点**
+    /// （容差 `[0.99, 1.01]`）。⭐ 对"**在 1 kHz 恰好单位增益、高频下垂**"这一整类滤波器，
+    /// 旧形态**按构造必然绿**：它一个高频点都不看。本判据把 8 个频点连成曲线，那一类才会红。
+    /// 实测（注入 `SINC_LEN` 256 → 64）：⭐ **旧判据仍然全绿**，本判据红 —— 见提交信息。
+    ///
+    /// ⚠ R93（非真空）：本判据扫的是"算出来的曲线"，因此**先断言扫到的点数与下界**
+    /// （`visited == 8 × 3` 且每个中段非空），否则空曲线会让"逐点区间"与"峰谷差"一起真空通过
+    /// （`max`/`min` 在空集上不可定义，但"没有点被判过"本身就是真空）。
+    #[test]
+    fn the_passband_amplitude_response_is_flat_point_by_point() {
+        const FREQUENCIES: [f64; 8] = [
+            100.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 6_000.0, 8_000.0, 10_000.0,
+        ];
+        const RATES: [u32; 3] = [96_000, 24_000, 44_100];
+        let mut visited = 0usize;
+        for out_rate in RATES {
+            let mut gains = Vec::with_capacity(FREQUENCIES.len());
+            for frequency in FREQUENCIES {
+                let input = sine(4_800, 48_000.0, frequency, 0.5);
+                let output =
+                    resample_interleaved(&input, 1, 48_000, out_rate).unwrap_or_else(|err| {
+                        panic!("48 kHz -> {out_rate} Hz at {frequency} Hz: {err}")
+                    });
+                let skip_in = 480usize;
+                let skip_out = skip_in * out_rate as usize / 48_000;
+                let tail_in = &input[skip_in..];
+                let tail_out = &output[skip_out..];
+                assert!(
+                    !tail_in.is_empty() && !tail_out.is_empty(),
+                    "48 kHz -> {out_rate} Hz at {frequency} Hz: the compared tails must be non-empty"
+                );
+                let gain = rms(tail_out) / rms(tail_in);
+                assert!(
+                    (0.995..=1.005).contains(&gain),
+                    "48 kHz -> {out_rate} Hz at {frequency} Hz: the passband gain must stay within \
+                     0.995..=1.005, measured {gain}"
+                );
+                gains.push(gain);
+                visited += 1;
+            }
+            let high = gains.iter().copied().fold(f64::MIN, f64::max);
+            let low = gains.iter().copied().fold(f64::MAX, f64::min);
+            assert!(
+                high - low <= 0.005,
+                "48 kHz -> {out_rate} Hz: the passband response must be flat (peak-to-peak \
+                 <= 0.005), measured {:.5} over {gains:?}",
+                high - low
+            );
+        }
+        assert_eq!(
+            visited,
+            FREQUENCIES.len() * RATES.len(),
+            "every (rate, frequency) pair must be measured — a smaller count means the sweep was vacuous"
+        );
+    }
 }
