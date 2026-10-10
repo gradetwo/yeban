@@ -5134,6 +5134,17 @@ mod tests {
             );
         }
 
+        // ⭐⭐ **R242③：样本合法性由 `rustc` 一次性文件判定**（⛔ 不是靠猜）。
+        // 读数（本轮实测，`rustc --edition 2024 --crate-type lib --emit=metadata`，文件建在私有目录、跑完即删）：
+        //   嵌套块注释 **exit=0（合法）** ｜ `'"'` 字符字面量 **0** ｜ 生命周期 **0** ｜
+        //   raw 字符串 **0** ｜ byte-raw **0** ｜ 普通 `r"` **0** ｜
+        //   ⚠ `r##"a"##b"##` ⇒ **exit=1 `error[E0765]`（不合法）** ⇒ **合法性与"掩码后不可见"是两件事**：
+        //   "构造后不可见"有三个成因：真掩码缺陷／期望按错约定／**样本本身不合法**。
+        //   ⚠ 我的 harness 第一次跑出"**全部 exit=1**"，原因是 `-o /dev/null` 让 rustc 到 `/dev` 下建临时文件
+        //   （`Operation not permitted`）＋ `| head` 吞掉退出码 ⇒ **这是工具缺陷，不是样本问题**；
+        //   加一条**平凡合法样本**（`pub fn f() {} pub const X: u32 = 5;`）作正对照 ⇒ 它 exit=0，才证明 harness 可信。
+        // 我的 23 条臂的样本**全部**属于上述合法形态（⛔ 没有一个是用 `r##"a"##b"##` 那种形态）。
+        //
         // ⭐⭐ **R235：掩码臂的**正对照**不可省** —— 缺它则"臂全绿"与"掩码器把一切都吞了"
         // **不可区分**。正对照 = 一个**既无注释也无字面量**的样本必须**逐字节不变**地通过掩码。
         let plain_code = concat!("let rust = 1; let x = frame", "_count;\n");
@@ -5173,13 +5184,18 @@ mod tests {
 
         // ⭐⭐ **R237②：语料预检必须先于臂设计** —— 这些构造在**被扫语料**里各出现几次。
         let corpus: String = sources.iter().map(|(_, source)| *source).collect();
+        // ⚠ **R242①**：形态必须**覆盖全** —— 只 grep 带 `#` 的形态会得出**相反结论**
+        // （`theory` 实证：`r#"` = 0 而**普通** `r"` 有 65 处）。⇒ 两种形态都数。
+        let plain_r_count = corpus.matches(concat!("r", "\"")).count();
+        let plain_br_count = corpus.matches(concat!("br", "\"")).count();
         let raw_count = corpus.matches(concat!("r#", "\"")).count();
         let byte_raw_count = corpus.matches(concat!("br#", "\"")).count();
         let char_lit_count = corpus.matches(concat!("'\\", "'")).count();
         let quote_char_count = corpus.matches(concat!("'\"", "'")).count();
         eprintln!(
-            "[R187-PROBE decode::corpus] raw={raw_count} byte-raw={byte_raw_count} \
-             char-literal={char_lit_count} quote-char={quote_char_count}"
+            "[R187-PROBE decode::corpus] plain-r={plain_r_count} plain-br={plain_br_count} \
+             hashed-raw={raw_count} byte-raw={byte_raw_count} char-literal={char_lit_count} \
+             quote-char={quote_char_count}"
         );
 
         // ⭐ **R227①：命中判别器"每一个正特征"的最小样本**（行注释 ＋ 块注释 ＋ 字符串 ＋ raw ＋
@@ -5245,6 +5261,15 @@ mod tests {
             0,
             "`.all` NOT followed by `(` must not be counted (the boundary spec)"
         );
+        // ⭐ **R239②：负向臂不得静默变恒真** —— 必须证明"守卫还在守"：把上面那个**不计入**的样本
+        // 掩码之后，其**尾部真代码**必须**仍然存在**（否则"计数为 0"可能只是因为文本被吞光了）。
+        let reject_sample = concat!("a[..", "all_lines]\n");
+        let reject_masked = mask(reject_sample);
+        assert!(
+            reject_masked.contains("all_lines]"),
+            "R239(2): the tail of the rejected sample must survive masking, otherwise the zero \
+             count is indistinguishable from 'the whole text was swallowed'"
+        );
 
         // ⭐ **R215①（零余量声明）**：下面两个 `assert_eq!` 的**余量恒为 0** ——
         // **删除任一被搜文件都会按设计变红**（文件数从 4 掉到 3 ⇒ 计数必然下降）。
@@ -5275,7 +5300,8 @@ mod tests {
         let min_margin = per_file.iter().map(|(_, count)| *count).min().unwrap_or(0);
         eprintln!(
             "[R187-PROBE decode::margin] min-per-file-sites={min_margin} \
-             (0 => dropping that file does NOT trip the exact count: WARNING, declared)"
+             (WARNING: dropping `asset.rs` or `limits.rs` does NOT trip the exact count - \
+             that is BY DESIGN, not a regression: those two files hold zero `.all(` sites)"
         );
         assert_eq!(
             min_margin, 0,
