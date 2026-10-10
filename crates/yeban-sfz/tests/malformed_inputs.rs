@@ -251,18 +251,31 @@ fn fixed_malformed_corpus_never_panics() {
     // 若语料被清空，循环体一次都不跑，判据会**真空通过**。下界把这件事钉住。
     // ⭐ R188（第二十七批）：⛔ 语料**大小地板**不是守卫 ⇒ 改成**行为两臂** ＋ 规模降级为诊断。
     eprintln!(
-        "R188 诊断：malformed 语料条目 = {}（仅供阅读，⛔ 非失败条件）",
+        "[R187-PROBE malformed_inputs::fixed_malformed_corpus_never_panics] R188 诊断：malformed 语料条目 = {}（仅供阅读，⛔ 非失败条件）",
         MALFORMED_SAMPLES.len()
     );
     // 红臂：语料里**确有**被拒的样本（行为，⛔ 不是"列表够长"）；
     // 绿臂：一个**良构**文档必须通过（证明红臂不是"什么都拒"）。
-    let rejected = MALFORMED_SAMPLES
-        .iter()
-        .filter(|sample| parse_text(sample, &limits).is_err())
-        .count();
+    let has_rejected = |samples: &[&str]| {
+        samples
+            .iter()
+            .any(|sample| parse_text(sample, &limits).is_err())
+    };
     assert!(
-        rejected >= 1,
+        has_rejected(MALFORMED_SAMPLES),
         "red arm: the corpus must contain at least one truly rejected sample (behaviour, not size)"
+    );
+    // ⭐ R199 的**常驻纯粹反例**（使"地板不敏感"永久有读数）：
+    //   合成一个 **25 条良构** 的语料 ⇒ 计数**升高**到 25（⇒ 旧地板 `len() >= 20` **会放行**），
+    //   而缺陷（"语料不再考验畸形输入"）**仍在** ⇒ **行为谓词**必须判它**不合格**。
+    let padded: Vec<&str> = (0..25).map(|_| "<region>sample=a.wav").collect();
+    assert!(
+        padded.len() >= 20,
+        "the withdrawn size floor WOULD have passed on this set"
+    );
+    assert!(
+        !has_rejected(&padded),
+        "R199 pure counterexample: a padded-but-degenerate corpus must be detected by behaviour, not size"
     );
     assert!(
         parse_text("<region>sample=a.wav\n", &limits).is_ok(),
@@ -843,7 +856,7 @@ fn include_resolution_is_deterministic_and_its_digest_is_pinned() {
     let (paths_probe, _) = run();
     // ⭐ R188（第二十七批）：⛔ 不用"命中数地板"当守卫 ⇒ 改成**行为两臂** ＋ 规模降级为诊断。
     eprintln!(
-        "R188 诊断：glob 命中路径数 = {}（仅供阅读，⛔ 非失败条件）",
+        "[R187-PROBE malformed_inputs::include_resolution_is_deterministic_and_its_digest_is_pinned] R188 诊断：glob 命中路径数 = {}（仅供阅读，⛔ 非失败条件）",
         paths_probe.len()
     );
     assert!(

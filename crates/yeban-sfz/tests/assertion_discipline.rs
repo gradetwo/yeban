@@ -967,6 +967,34 @@ fn offenders_in(path: &std::path::Path, text: &str) -> Vec<String> {
     offenders
 }
 
+/// ⭐ **R213**：R212① 的"别处 ≥ N 个文件"界 —— **根绑定到被搜集合自己**。
+///
+/// 返回**违规清单**（空 = 通过）。两个用途：
+/// - 绿臂：真实被搜集合 ⇒ 应为**空**；
+/// - **行为臂**：把被搜集合**缩到只剩定义文件自己** ⇒ 必须**恰好 1 条**（与 `midi` 的
+///   `b25:EXISTBOUND` 范本同形）。
+///
+/// ⚠️ 为什么它**不**违反 R188／R199（裁定理由）：R199 管的是"**扫描量**地板"
+/// —— 缺陷会把计数**抬高**，地板照放行；本界守的是"被搜集合**塌缩到定义文件自己**"
+/// —— 失败模式是集合变得**太小**（⛔ 相反的失败模式）⇒ 两类地板不同。
+fn elsewhere_bound(
+    sources: &[(std::path::PathBuf, String)],
+    defining_file: &str,
+    floor: usize,
+) -> Vec<String> {
+    let elsewhere = sources
+        .iter()
+        .filter(|(path, _)| path.file_name().and_then(|n| n.to_str()) != Some(defining_file))
+        .count();
+    if elsewhere < floor {
+        vec![format!(
+            "R213: only {elsewhere} files besides the defining file (floor = {floor})"
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
 #[test]
 fn no_unbounded_all_any_assertion_in_this_crate() {
     self_test_classifier();
@@ -1018,7 +1046,30 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         "the offender must name the criterion and the root: {bad_found:?}"
     );
     // 规模只作**诊断**打印（⛔ 不是失败条件）。
-    eprintln!("R183 诊断：源文件 = {}（仅供阅读）", sources.len());
+    eprintln!(
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R183 诊断：源文件 = {}（仅供阅读）",
+        sources.len()
+    );
+
+    // ⭐ R213：**保留** R212① 的"别处 ≥ N 个文件"界（裁定指定的例外），并**配行为臂**。
+    //   界**根绑定到被搜集合自己**（"别处"那个集合）；行为臂把集合**缩到只剩定义文件自己** ⇒
+    //   必须**恰好 1 条**红（`midi` 的 `b25:EXISTBOUND` 范本）。
+    const ELSEWHERE_FLOOR: usize = 16;
+    let here = elsewhere_bound(&sources, "assertion_discipline.rs", ELSEWHERE_FLOOR);
+    assert!(here.is_empty(), "R213: {here:?}");
+    let self_only: Vec<(std::path::PathBuf, String)> = sources
+        .iter()
+        .filter(|(path, _)| {
+            path.file_name().and_then(|n| n.to_str()) == Some("assertion_discipline.rs")
+        })
+        .cloned()
+        .collect();
+    let shrunk = elsewhere_bound(&self_only, "assertion_discipline.rs", ELSEWHERE_FLOOR);
+    assert_eq!(
+        shrunk.len(),
+        1,
+        "R213 behaviour arm: a set collapsed to the defining file must give EXACTLY 1 red: {shrunk:?}"
+    );
 
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
@@ -1028,7 +1079,9 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         offenders.extend(found);
     }
     // 扫过的函数数只作**诊断**（⛔ R180：不许当自检界）。
-    eprintln!("R183 诊断：扫过的函数 = {scanned}（仅供阅读）");
+    eprintln!(
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R183 诊断：扫过的函数 = {scanned}（仅供阅读）"
+    );
     assert!(
         offenders.is_empty(),
         "these functions quantify over a collection without any non-vacuity evidence: {offenders:#?}"
