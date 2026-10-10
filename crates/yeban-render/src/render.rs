@@ -1456,7 +1456,10 @@ mod tests {
         let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
         sources.insert(master, Box::new(ConstantSource(0.5)));
         let output = plan.execute(sources).expect("渲染");
-        assert!(output.samples.iter().all(|&s| s == 0.5));
+        assert!(
+            !output.samples.is_empty() && output.samples.iter().all(|&s| s == 0.5),
+            "R102: 空输出上 `.all` 恒真"
+        );
         assert_eq!(plan.longest_path_frames(), 0);
     }
 

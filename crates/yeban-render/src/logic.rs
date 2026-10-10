@@ -5735,6 +5735,26 @@ mod tests {
             "/Library/Application Support/Logic/Logic Pro X Demosongs/Swing!.logicx/Alternatives/004/ProjectData",
             "/Library/Application Support/Logic/Logic Pro X Demosongs/ocean eyes.logicx/Alternatives/001/ProjectData",
         ];
+        // ⚠ **R100（真空第三种形态: 外部夹具缺失）**: 这四个绝对路径只存在于装了 Logic Pro
+        // 演示曲的机器上 ⇒ 缺失时下面的 `continue` 会让整条判据**一个核对都不做却通过**。
+        // 三条同时上: ①**全在/全不在** ②空跑打**机器可检索**的 `SKIP(vacuous)` 记号
+        // （明示不计作覆盖） ③有夹具时断言核对数**等于**夹具数（真下界）。
+        let present = demos
+            .iter()
+            .filter(|demo| std::path::Path::new(demo).exists())
+            .count();
+        assert!(
+            present == 0 || present == demos.len(),
+            "演示工程必须全在或全不在: 现在 {present}/{}",
+            demos.len()
+        );
+        if present == 0 {
+            eprintln!(
+                "SKIP(vacuous): 0/{} 个 Logic 演示工程存在 ⇒ 本判据未做任何核对",
+                demos.len()
+            );
+            return;
+        }
         let mut present = 0usize;
         for demo in demos {
             let Ok(bytes) = std::fs::read(demo) else {
@@ -5776,9 +5796,8 @@ mod tests {
                  +0x12 起 UTF-8 名字、其后 4 字节 0"
             );
         }
-        if present == 0 {
-            eprintln!("skip: 本机没有 Apple 演示工程（CI 上不存在 ⇒ 本判据不跑、绝不红）");
-        }
+        assert_eq!(present, demos.len(), "走到这里说明都在（下界 = 夹具数）");
+        eprintln!("可选演示工程核对完成：{present}/{}", demos.len());
     }
 
     // ---- chunk 家族对账（诊断） ----
@@ -6176,6 +6195,27 @@ mod tests {
         const STORED_TRACK_TAG: [u8; 4] = [0x6b, 0x61, 0x72, 0x54];
         const FORWARD_KART: [u8; 4] = [0x54, 0x72, 0x61, 0x6b];
 
+        // ⚠ 本条的 `demos` 是**元组**数组（路径 ＋ 期望读数）, 因此取路径要写 `.0`。
+        // ⚠ **R100（真空第三种形态: 外部夹具缺失）**: 这四个绝对路径只存在于装了 Logic Pro
+        // 演示曲的机器上 ⇒ 缺失时下面的 `continue` 会让整条判据**一个核对都不做却通过**。
+        // 三条同时上: ①**全在/全不在** ②空跑打**机器可检索**的 `SKIP(vacuous)` 记号
+        // （明示不计作覆盖） ③有夹具时断言核对数**等于**夹具数（真下界）。
+        let present = demos
+            .iter()
+            .filter(|entry| std::path::Path::new(entry.0).exists())
+            .count();
+        assert!(
+            present == 0 || present == demos.len(),
+            "演示工程必须全在或全不在: 现在 {present}/{}",
+            demos.len()
+        );
+        if present == 0 {
+            eprintln!(
+                "SKIP(vacuous): 0/{} 个 Logic 演示工程存在 ⇒ 本判据未做任何核对",
+                demos.len()
+            );
+            return;
+        }
         let mut present = 0usize;
         for (
             path,
@@ -6348,9 +6388,8 @@ mod tests {
                  长 {filled_len}），kind {kind}，subtype 23，NumberOfTracks {plist_tracks}"
             );
         }
-        if present == 0 {
-            eprintln!("skip: 本机没有 Apple 演示工程（CI 上不存在 ⇒ 本判据不跑、绝不红）");
-        }
+        assert_eq!(present, demos.len(), "走到这里说明都在（下界 = 夹具数）");
+        eprintln!("可选演示工程核对完成：{present}/{}", demos.len());
     }
 
     /// 一段字节里 `needle` 作为子串出现的次数（用来证明"某四个字节在本族里出现多少次"）。

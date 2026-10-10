@@ -2261,7 +2261,7 @@ mod tests {
             );
             let header = plan.header_bytes();
             assert!(
-                !header.windows(4).any(|window| window == b"fact".as_slice()),
+                header.len() >= 4 && !header.windows(4).any(|window| window == b"fact".as_slice()),
                 "整数 PCM 不得带 fact chunk: {format:?}"
             );
         }

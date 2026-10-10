@@ -1576,7 +1576,10 @@ mod tests {
         assert_eq!(outcome.gain_db, 0.0);
         assert!(!outcome.before.integrated_is_measurable());
         assert_eq!(outcome.before.true_peak_dbtp, f32::NEG_INFINITY);
-        assert!(left.iter().all(|value| *value == 0.0));
+        assert!(
+            left.len() >= 8 && left.iter().all(|value| *value == 0.0),
+            "R102: 空缓冲上 `.all` 恒真"
+        );
     }
 
     /// 采样率不在内置四档 ⇒ `None`, **不静默回落**。
@@ -3243,8 +3246,14 @@ mod tests {
             !outcome.before.true_peak_dbtp.is_finite(),
             "静音的真峰值就是「测不出」"
         );
-        assert!(left.iter().all(|sample| sample.to_bits() == 0));
-        assert!(right.iter().all(|sample| sample.to_bits() == 0));
+        assert!(
+            left.len() >= 8 && left.iter().all(|sample| sample.to_bits() == 0),
+            "R102"
+        );
+        assert!(
+            right.len() >= 8 && right.iter().all(|sample| sample.to_bits() == 0),
+            "R102"
+        );
 
         // 对照: 非静音 + 同一个上限 ⇒ 这一支必须真的有动作。
         let tone = sine_997(0.5, 48_000);

@@ -592,7 +592,7 @@ mod tests {
         master_deliveries.sort_unstable();
         let times: Vec<u32> = master_deliveries.iter().map(|(_, at)| *at).collect();
         assert!(
-            times.windows(2).all(|pair| pair[0] == pair[1]),
+            times.len() >= 2 && times.windows(2).all(|pair| pair[0] == pair[1]),
             "Master 的各路到达时刻必须一致, 实际 {master_deliveries:?}"
         );
 
@@ -617,7 +617,7 @@ mod tests {
                 })
                 .collect();
             assert!(
-                times.windows(2).all(|pair| pair[0] == pair[1]),
+                times.len() >= 2 && times.windows(2).all(|pair| pair[0] == pair[1]),
                 "{destination} 的各路到达时刻必须一致, 实际 {times:?}"
             );
         }
@@ -785,7 +785,10 @@ mod tests {
         );
         let plan = plan(&g, "master").expect("无环");
         assert_eq!(plan.longest_path, 0);
-        assert!(plan.edge_delay.values().all(|&delay| delay == 0));
+        assert!(
+            !plan.edge_delay.is_empty() && plan.edge_delay.values().all(|&delay| delay == 0),
+            "R102: 无边时 `.all` 恒真"
+        );
     }
 
     /// 无入边的源节点: `arrival` 必须是 0, 而不是 `None` 或缺键。
