@@ -2206,6 +2206,9 @@ fn unbounded_all_any_sites_with(
 ) -> Vec<String> {
     let masked = mask_rust_source(raw);
     let mut found = Vec::new();
+    // R217②：站点计数与"是否站点"的判定**共用同一个谓词**（就在同一循环里数）。
+    // ⛔ 不再另写一份"看起来一样"的正则 —— 那样计数会与判据漂移（假涨）。
+    let mut sites_seen = 0_usize;
     let mut search = 0_usize;
     while let Some(position) = masked[search..].find("assert!(") {
         let start = search + position;
@@ -2239,11 +2242,15 @@ fn unbounded_all_any_sites_with(
             continue;
         }
         let root = collection_root(body[..call].trim());
+        sites_seen += 1;
         if !has_root_bound(&compact(window), &root) {
             let line = raw[..start].matches('\n').count() + 1;
             found.push(format!("{relative}:{line} 集合根=`{root}`"));
         }
     }
+    eprintln!(
+        "[R187-PROBE model_isolation::site_total] {relative}: {sites_seen} sites (same predicate)"
+    );
     found
 }
 
@@ -3391,4 +3398,80 @@ fn the_decomment_helper_has_four_adversarial_arms() {
         "区分臂数应为 3（doc_comment 不区分），实得 {separated}"
     );
     eprintln!("[R187-PROBE model_isolation::decomment] {separated}/{declared} arms separated");
+}
+
+/// **R214① ＋ R216① 常驻判据**：掩码器的**五件套对抗样本**。
+///
+/// 本线用 `mask_rust_source`（注释/字符串 → 空格、**保字节长度**）。
+/// 风险侧 = **假阴性**（掩码过度 ⇒ 真断言被跳过）⇒ 更危险。本判据把该侧**封死**：
+/// 每一条都断言 ① **字节长度守恒**（函数内自检的同款断言）＋ ② **该掩的掩了**（无泄漏）
+/// ＋ ③ 第 5 条是**反失同步臂**：构造之后的**真代码必须仍然可见**。
+///
+/// 五条全过才算"不是工厂"（⛔ 不是"永远输出空格"）。
+#[test]
+fn the_masker_passes_five_adversarial_samples() {
+    // (标签, 样本, 针, 期望 code_has)
+    let cases: [(&str, &str, &str, bool); 5] = [
+        // ① 字符串里含 `//`：不得把它当行注释（否则后面的真代码被吞）。
+        (
+            "string_with_slashes",
+            "let s = \"a // b\";\nlet after = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+        // ② **行尾**注释里含 `"`：不得让它启一段假字符串。
+        (
+            "trailing_comment_with_quote",
+            "let x = 1; // say \"hi\"\nlet y = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+        // ③ **行尾**注释里含 `//`。
+        (
+            "trailing_comment_with_slashes",
+            "let x = 1; // a // b\nlet y = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+        // ④ **块**注释里含 `"` 与 `//`：不得失同步。
+        (
+            "block_comment_with_quote_and_slashes",
+            "/* \"a\" // b */\nlet z = HashMap::new();\n",
+            "HashMap",
+            true,
+        ),
+        // ⑤ **反失同步臂**：构造**之后**的真代码必须仍然可见（针在前，代码在后）。
+        (
+            "anti_desync_after_construct",
+            "/* \"x\" // y */ let w = HashSet::new();\n",
+            "HashSet",
+            true,
+        ),
+    ];
+    let declared = cases.len();
+    let mut checked = 0_usize;
+    let mut bytes_equal = 0_usize;
+    for (label, sample, needle, expect) in cases {
+        let masked = mask_rust_source(sample);
+        assert_eq!(
+            masked.len(),
+            sample.len(),
+            "[R187-PROBE model_isolation::masker_{label}] 掩码必须保**字节**长度"
+        );
+        bytes_equal += 1;
+        assert_eq!(
+            code_has(sample, needle),
+            expect,
+            "[R187-PROBE model_isolation::masker_{label}] 针的可⻅性不符（掩码失同步或泄漏）"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, declared,
+        "R160 双向①：{declared} 条对抗样本必须全部求值"
+    );
+    // R215①：**零余量**必须显式声明 —— 任何一条样本失败，本判据就会红。
+    eprintln!(
+        "[R187-PROBE model_isolation::masker_margin] bytes_equal={bytes_equal}/{declared} margin=0"
+    );
 }
