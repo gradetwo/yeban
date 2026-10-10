@@ -4865,4 +4865,78 @@ mod tests {
             )
         );
     }
+
+    /// 空 `Batch` 与**嵌套** `Batch` 的行为逐条钉住（顺序独立性的其余形态）。
+    ///
+    /// 为什么需要（第八轮面 5）：第六轮只打了"`Batch` 子操作倒序"（由既有的
+    /// `inverted_batch_is_applied_in_reverse_order` 判红），**空批次**与**嵌套批次**
+    /// 这两格没有判据：空批次必须是恒等（应用与求逆都不改文档、逆还是空批次），
+    /// 嵌套批次的内层顺序必须与外层一致。
+    #[test]
+    fn empty_and_nested_batches_are_identity_and_ordered() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let before = doc.clone();
+
+        // ---- 空批次：应用是恒等，逆操作还是空批次 ----
+        let empty = Op::Batch {
+            ops: Vec::new(),
+            description: String::new(),
+        };
+        empty.apply(&mut doc).expect("空批次必须通过");
+        assert_eq!(doc, before, "空批次不得改文档");
+        assert_eq!(
+            empty.invert(&doc).expect("空批次的逆操作"),
+            Op::Batch {
+                ops: Vec::new(),
+                description: String::new(),
+            }
+        );
+
+        // ---- 嵌套批次：内层顺序与外层一致（先 AddNote 再 DeleteNote ⇒ 回到原状）----
+        let note_id = fixture_id(90);
+        let note = MidiNote::new(note_id, 960, 64, 480);
+        let add = Op::AddNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note: note.clone(),
+        };
+        let remove = Op::DeleteNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id,
+            previous_note: note.clone(),
+        };
+        let nested = Op::Batch {
+            ops: vec![
+                Op::Batch {
+                    ops: vec![add.clone()],
+                    description: "inner".to_owned(),
+                },
+                remove.clone(),
+            ],
+            description: "outer".to_owned(),
+        };
+        nested.apply(&mut doc).expect("嵌套批次必须通过");
+        assert_eq!(doc, before, "先加后删必须回到原状");
+        assert_eq!(doc.validate(), Ok(()), "批次结束后文档必须自洽");
+
+        // 顺序**有**意义：倒过来（先删后加）时内层的前置条件不成立。
+        let reversed = Op::Batch {
+            ops: vec![
+                remove,
+                Op::Batch {
+                    ops: vec![add],
+                    description: "inner".to_owned(),
+                },
+            ],
+            description: "outer".to_owned(),
+        };
+        let mut other = fixture_document();
+        assert!(
+            reversed.apply(&mut other).is_err(),
+            "顺序有意义：先删一个不存在的音符必须被拒"
+        );
+        assert_eq!(other, fixture_document(), "失败的批次不得改文档");
+    }
 }

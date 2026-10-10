@@ -4958,4 +4958,229 @@ mod tests {
         assert!(track.automation_lanes.is_empty());
         assert!(track.clips.is_empty());
     }
+
+    /// `RoutingGraph::validate` 的**四类结构检查逐条点名校验**（含正对照）。
+    ///
+    /// 为什么需要（第八轮 · R58 权威转移）：`yeban-render` 把 `graph.validate()` 当
+    /// **权威**并透传（`crates/yeban-render/src/render.rs:477` ⇒ `RenderError::InvalidGraph`）。
+    /// 既有判据只钉了 4 类里的 2 类（重复节点、悬挂端点）⇒ 另两类的**拒绝原因**没有任何
+    /// 判据：边键与内嵌 `id` 不一致（`EntityKeyMismatch`）、增益非有限（`NonFiniteValue`）。
+    /// 判定松了，`render` 只会如实转发一个错判定。
+    #[test]
+    fn routing_graph_validate_rejects_each_structural_class_by_name() {
+        let node_a = fixture_id(1);
+        let node_b = fixture_id(2);
+        let edge_id = fixture_id(10);
+        let ghost = fixture_id(99);
+        let edge = |id: EntityId,
+                    source_node: EntityId,
+                    destination_node: EntityId,
+                    gain_db: Option<f32>| RoutingEdge {
+            id,
+            source_node,
+            destination_node,
+            kind: RoutingKind::BusToMaster,
+            gain_db,
+        };
+
+        // ---- 正对照：一张自洽的图必须通过（否则下面的"拒绝"会退化成"什么都拒绝"）----
+        let valid = RoutingGraph {
+            nodes: vec![node_a, node_b],
+            edges: BTreeMap::from([(edge_id, edge(edge_id, node_a, node_b, Some(-3.0)))]),
+        };
+        assert_eq!(valid.validate(), Ok(()));
+
+        // ---- 1. 节点列表重复 ----
+        let duplicate_nodes = RoutingGraph {
+            nodes: vec![node_a, node_a],
+            edges: BTreeMap::new(),
+        };
+        assert_eq!(
+            duplicate_nodes.validate(),
+            Err(ModelError::DuplicateEntityId { id: node_a })
+        );
+
+        // ---- 2. 边的键与内嵌 `id` 不一致 ----
+        let foreign_key = fixture_id(11);
+        let key_mismatch = RoutingGraph {
+            nodes: vec![node_a, node_b],
+            edges: BTreeMap::from([(foreign_key, edge(edge_id, node_a, node_b, None))]),
+        };
+        assert_eq!(
+            key_mismatch.validate(),
+            Err(ModelError::EntityKeyMismatch {
+                key: foreign_key,
+                embedded: edge_id,
+            })
+        );
+
+        // ---- 3. 端点不在 `nodes` 里（源侧、目的侧各一格）----
+        let dangling_source = RoutingGraph {
+            nodes: vec![node_a],
+            edges: BTreeMap::from([(edge_id, edge(edge_id, ghost, node_a, None))]),
+        };
+        assert_eq!(
+            dangling_source.validate(),
+            Err(ModelError::RoutingNodeNotFound { id: ghost })
+        );
+        let dangling_destination = RoutingGraph {
+            nodes: vec![node_a],
+            edges: BTreeMap::from([(edge_id, edge(edge_id, node_a, ghost, None))]),
+        };
+        assert_eq!(
+            dangling_destination.validate(),
+            Err(ModelError::RoutingNodeNotFound { id: ghost })
+        );
+
+        // ---- 4. 增益非有限（由 `RoutingEdge::validate` 承担）----
+        // 用 `INFINITY` 而不是 `NAN`：判据自己靠 `==` 比较 `f64` 载荷，而 `NaN != NaN`。
+        let non_finite = RoutingGraph {
+            nodes: vec![node_a, node_b],
+            edges: BTreeMap::from([(edge_id, edge(edge_id, node_a, node_b, Some(f32::INFINITY)))]),
+        };
+        assert_eq!(
+            non_finite.validate(),
+            Err(ModelError::NonFiniteValue {
+                field: "routing.edge.gain_db",
+                value: f64::INFINITY,
+            })
+        );
+
+        // ---- R58：同一个 `==` 上必须有一条 `assert_ne!` ----
+        // `ModelError` / `Result` 的 `PartialEq` 若被削弱成"恒等"，上面全部 `assert_eq!`
+        // 会一起变成空判据而**没有一条变红**；下面这几条就是那个失效模式的探测器。
+        assert_ne!(valid.validate(), duplicate_nodes.validate());
+        assert_ne!(valid.validate(), key_mismatch.validate());
+        assert_ne!(duplicate_nodes.validate(), key_mismatch.validate());
+        assert_ne!(
+            duplicate_nodes.validate(),
+            Err(ModelError::DuplicateEntityId { id: node_b }),
+            "不同的重复身份必须给出不同的错误值"
+        );
+    }
+
+    /// `RoutingGraph::validate` 的**权威边界**：它对拓扑与全局可达性**刻意沉默**。
+    ///
+    /// 为什么需要（第八轮 · 权威转移）：`render` 在 `validate()` 之后**另外**查主总线
+    /// （`RenderError::MasterNotInGraph`），并把环交给 `yeban-render::pdc::plan` 的
+    /// Kahn 排序（`PdcError::Cycle`，`crates/yeban-render/src/pdc.rs:233`）。
+    /// 本判据把那半边**写成断言**：`validate` 松了会红，`validate` 被收紧到越界也会红
+    /// （那时 `render` 的假设要重新对账）。
+    #[test]
+    fn routing_graph_validate_is_silent_about_topology_and_global_reachability() {
+        let node_a = fixture_id(1);
+        let node_b = fixture_id(2);
+        let edge_id = fixture_id(10);
+        let edge = |id: EntityId, source_node: EntityId, destination_node: EntityId| RoutingEdge {
+            id,
+            source_node,
+            destination_node,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        };
+
+        // 1) 自环：结构上自洽 ⇒ 通过（环由下游判）。
+        let self_loop = RoutingGraph {
+            nodes: vec![node_a],
+            edges: BTreeMap::from([(edge_id, edge(edge_id, node_a, node_a))]),
+        };
+        assert_eq!(self_loop.validate(), Ok(()), "自环不是结构错误");
+
+        // 2) 二元环 a→b→a：结构上自洽 ⇒ 通过。
+        let cycle = RoutingGraph {
+            nodes: vec![node_a, node_b],
+            edges: BTreeMap::from([
+                (edge_id, edge(edge_id, node_a, node_b)),
+                (fixture_id(11), edge(fixture_id(11), node_b, node_a)),
+            ]),
+        };
+        assert_eq!(cycle.validate(), Ok(()), "环不是结构错误");
+
+        // 3) 平行边（同一对端点两条边）：结构上自洽 ⇒ 通过。
+        let parallel = RoutingGraph {
+            nodes: vec![node_a, node_b],
+            edges: BTreeMap::from([
+                (edge_id, edge(edge_id, node_a, node_b)),
+                (fixture_id(11), edge(fixture_id(11), node_a, node_b)),
+            ]),
+        };
+        assert_eq!(parallel.validate(), Ok(()), "平行边不是结构错误");
+
+        // 4) 悬挂节点（没有任何边引用它）⇒ 通过（`render` 自己剪掉）。
+        let hanging = RoutingGraph {
+            nodes: vec![node_a, node_b, fixture_id(3)],
+            edges: BTreeMap::from([(edge_id, edge(edge_id, node_a, node_b))]),
+        };
+        assert_eq!(hanging.validate(), Ok(()), "悬挂节点不是结构错误");
+
+        // 5) 图里根本没有"主总线"这个概念：`RoutingGraph` 不知道谁是 master ⇒ 通过。
+        let without_master = RoutingGraph {
+            nodes: vec![node_a, node_b],
+            edges: BTreeMap::new(),
+        };
+        assert_eq!(
+            without_master.validate(),
+            Ok(()),
+            "主总线是**跨集合**条件（`YebanProjectV1` 才看得到），不在本判定里"
+        );
+
+        // R58：边界断言也要有 `assert_ne!` 落在同一个 `==` 上。
+        assert_ne!(
+            self_loop.validate(),
+            Err(ModelError::RoutingNodeNotFound { id: node_a })
+        );
+    }
+
+    /// **机械守卫**：`RoutingGraph::validate` 必须**消费**结构体的每一个字段，且不得有通配兜底。
+    ///
+    /// 为什么需要（第八轮 · R58 的 fail-open 形态）：`validate` 的文档声明了 4 类检查，
+    /// 但"声明"不是"覆盖"。一旦给 `RoutingGraph` 加一个字段而忘了在 `validate` 里查它，
+    /// 那个字段就**默认通过**（`decode` 的 `Reconciliation` 就是这样 fail-open 的），
+    /// 而 `render` 会继续把 `Ok` 当权威。本判据按**源码文本**逐字段点名，并禁止 `_ =>`。
+    #[test]
+    fn routing_graph_validate_covers_every_field_and_has_no_wildcard_fallback() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project.rs"),
+        )
+        .expect("读取 project.rs");
+
+        // 结构体字段：`pub struct RoutingGraph {` 到下一个顶层 `}` 之间。
+        let struct_at = text.find("pub struct RoutingGraph {").expect("结构体定义");
+        let struct_body = &text[struct_at..];
+        let struct_end = struct_body.find("\n}").expect("结构体结束");
+        let fields: Vec<String> = struct_body[..struct_end]
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("pub ")?;
+                let (name, _) = rest.split_once(':')?;
+                Some(name.trim().to_owned())
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            vec!["nodes".to_owned(), "edges".to_owned()],
+            "字段集合变了 ⇒ 本判据与 validate 都必须跟着改（R58：不得留下默认通过的字段）"
+        );
+
+        // `impl RoutingGraph` 里的 `validate` 正文。
+        let impl_at = text.find("impl RoutingGraph {").expect("impl 定义");
+        let impl_body = &text[impl_at..];
+        let fn_at = impl_body
+            .find("pub fn validate(&self) -> Result<(), ModelError> {")
+            .expect("validate 定义");
+        let fn_body = &impl_body[fn_at..];
+        let fn_end = fn_body.find("\n    }\n").expect("validate 结束");
+        let body = &fn_body[..fn_end];
+
+        for field in &fields {
+            assert!(
+                body.contains(&format!("self.{field}")),
+                "validate 必须**消费** `self.{field}` —— R58：权威判定不得有默认通过的字段"
+            );
+        }
+        assert!(
+            !body.contains("_ =>"),
+            "validate 不得有通配兜底（fail-open 形态：新变体/新字段默认通过）"
+        );
+    }
 }
