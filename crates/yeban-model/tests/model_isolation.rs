@@ -50,10 +50,13 @@ use yeban_model::container::{
 };
 use yeban_model::local_config::{
     AudioPortBinding, DEFAULT_SECRET_BACKEND, EditorRole, ExternalEditor, KNOWN_SECRET_BACKENDS,
-    LOCAL_CONFIG_VERSION, LocalMachineConfig, SecretMaterial, SecretRef, SecretStore,
-    SecretStoreError, UnavailableSecretStore, secret_store_for,
+    LOCAL_CONFIG_VERSION, LocalMachineConfig, MAX_SECRET_REF_LEN, SecretMaterial, SecretRef,
+    SecretStore, SecretStoreError, UnavailableSecretStore, secret_store_for,
 };
-use yeban_model::samples::{default_project, filled_project};
+use yeban_model::ops::{Op, StampedOp};
+use yeban_model::samples::{
+    default_project, default_stamped_op, filled_project, filled_stamped_op,
+};
 use yeban_model::session::{
     PluginProcess, SessionRuntimeState, SessionStateError, TaskId, TaskKind, TaskProgress, WindowId,
 };
@@ -1761,4 +1764,182 @@ fn secret_material_debug_keeps_the_redacted_byte_count() {
         !rendered.contains("super-secret"),
         "Debug 通道绝不能泄出密钥本体: {rendered}"
     );
+}
+
+/// `ops.default.json` / `ops.filled.json` 的**逐字节冻结**（与 `project.*.json` 同口径）。
+///
+/// 为什么需要（第六轮发现、第七轮落地）：`project_json_byte_samples_are_frozen` 的
+/// 逐字节表**只覆盖 `project.default.json` / `project.filled.json`**；
+/// `samples::tests::export_all_writes_four_byte_stable_samples` 只比较"两次导出相等"
+/// ⇒ 发布用的两个 **ops 样本**此前**没有任何冻结哈希**，任何确定性的载荷改动都能过。
+///
+/// 口径与 `samples::write_json` 逐字节同形：`serde_json::to_string_pretty` ＋ 一个换行。
+/// 用 `--ignored --nocapture` 的冻结入口（见 `print_frozen_isolation_table`）重新取证。
+#[test]
+fn ops_json_byte_samples_are_frozen() {
+    const FROZEN_OPS_JSON: [(&str, &str, usize); 2] = [
+        (
+            "ops.default.json",
+            "d331a363621468c9135216ba00332e8ddc40f380b0a00360840ed07e55d14069",
+            351,
+        ),
+        (
+            "ops.filled.json",
+            "9dcf3e5c98070062c6ede3613df4b40cd00ec88579fa794041d2b2cb00b82a4d",
+            1932,
+        ),
+    ];
+    let samples = [
+        ("ops.default.json", default_stamped_op()),
+        ("ops.filled.json", filled_stamped_op()),
+    ];
+    for ((name, stamped), (frozen_name, frozen_sha, frozen_len)) in
+        samples.iter().zip(FROZEN_OPS_JSON)
+    {
+        assert_eq!(*name, frozen_name);
+        let bytes = ops_sample_bytes(stamped);
+        assert_eq!(
+            bytes.len(),
+            frozen_len,
+            "{name}: 样本字节数变了（冻结表里的字面读数）"
+        );
+        // 两个入口必须逐字节一致（与 project 侧同一条冗余）。
+        let mut via_vec = serde_json::to_vec_pretty(stamped).expect("to_vec_pretty");
+        via_vec.push(b'\n');
+        assert_eq!(
+            bytes, via_vec,
+            "{name}: to_string_pretty 与 to_vec_pretty 必须同字节"
+        );
+        assert_eq!(
+            sha256_hex(&bytes),
+            frozen_sha,
+            "{name}: ops 样本的逐字节内容变了。若这是有意的契约变更, \
+             请用 `cargo test -p yeban-model --test model_isolation -- --ignored --nocapture` \
+             重新冻结；若是无意改动, 它此前**没有**任何判据拦得住"
+        );
+    }
+
+    // ---- 判据自身有牙：改一个 ops 载荷字段必须让摘要变红 ----
+    let mut tampered = default_stamped_op();
+    let Op::SetSection { new_section, .. } = &mut tampered.op else {
+        panic!("默认样本的变体必须是 SetSection");
+    };
+    new_section.end_tick += 1;
+    assert_ne!(
+        sha256_hex(&ops_sample_bytes(&tampered)),
+        FROZEN_OPS_JSON[0].1,
+        "改一个载荷字段后摘要必须变红 —— 否则这条冻结判据是空转的"
+    );
+}
+
+/// 与 `samples::write_json` 逐字节同形的 ops 样本编码。
+fn ops_sample_bytes(stamped: &StampedOp) -> Vec<u8> {
+    let mut json = serde_json::to_string_pretty(stamped).expect("序列化");
+    json.push('\n');
+    json.into_bytes()
+}
+
+/// `LocalMachineConfig::default()` 的载荷逐字段钉住。
+///
+/// 为什么需要（第七轮注入实测）：把 `version: LOCAL_CONFIG_VERSION` 改成 `0` 时全仓判据
+/// 保持全绿 —— 既有 `local_config_round_trip_is_field_exact_and_deterministic` 用的是
+/// **显式**构造的配置。
+#[test]
+fn local_machine_config_default_is_frozen_field_by_field() {
+    let config = LocalMachineConfig::default();
+    assert_eq!(LOCAL_CONFIG_VERSION, 1, "先钉常量本身的取值");
+    assert_eq!(config.version, 1);
+    assert!(config.audio_binding.is_unbound());
+    assert!(config.external_editors.is_empty());
+    assert!(config.cloud_tokens.is_empty());
+    config.validate().expect("缺省配置必须自洽");
+}
+
+/// `SecretRef` 的 **serde 入口**必须走与 `SecretRef::new` 同一把校验尺子。
+///
+/// 为什么需要（第七轮注入实测）：把 `Deserialize for SecretRef` 的 `Self::new(raw)` 换成
+/// 直接构造 `SecretRef(raw)`（绕过校验）时全仓判据保持全绿 —— 而那条 impl 的文档**明确
+/// 承诺**"反序列化也走 `SecretRef::new` 的校验"（R52：判据名/文档 ≠ 覆盖面）。
+#[test]
+fn secret_ref_deserialization_goes_through_the_validator() {
+    let good: SecretRef =
+        serde_json::from_str("\"vault://yeban/cloud-token\"").expect("合法条目名");
+    assert_eq!(good.entry(), "vault://yeban/cloud-token");
+
+    for bad in [
+        "\"\"",
+        "\"has space\"",
+        "\"has\\ttab\"",
+        "\"has\\nnewline\"",
+    ] {
+        assert!(
+            serde_json::from_str::<SecretRef>(bad).is_err(),
+            "坏条目名 {bad} 必须在校验处被拒"
+        );
+    }
+    // 长度上界的同一把尺子（`MAX_SECRET_REF_LEN`）。
+    let too_long = "x".repeat(MAX_SECRET_REF_LEN + 1);
+    assert!(
+        serde_json::from_str::<SecretRef>(&format!("\"{too_long}\"")).is_err(),
+        "超长条目名必须被拒"
+    );
+}
+
+/// `TaskProgress.cancellable` 与 `PluginProcess.sandboxed` 必须被**照原样**存入会话态。
+///
+/// 为什么需要（第七轮全字段读点普查）：这两个字段是**全仓零读点**的公开字段
+/// （`crates/yeban-model/src/session.rs:104` / `:133`）—— 它们属于"给调用方/界面准备的
+/// 载荷"，模型层唯一的义务是**不篡改**。写入端把它们强制成 `false` 时，此前没有任何
+/// 判据看得见（测试自己也不读它们）。
+#[test]
+fn session_writers_do_not_rewrite_the_payload_they_are_given() {
+    let mut state = SessionRuntimeState::default();
+    let task = TaskId::new(1);
+    state.set_task(
+        task,
+        TaskProgress {
+            kind: TaskKind::Render,
+            completed_units: 0,
+            total_units: 2,
+            cancellable: false,
+            label: "render".to_owned(),
+        },
+    );
+    assert!(!state.task_progress(task).expect("task").cancellable);
+    state.set_task(
+        task,
+        TaskProgress {
+            kind: TaskKind::Render,
+            completed_units: 1,
+            total_units: 2,
+            cancellable: true,
+            label: "render".to_owned(),
+        },
+    );
+    assert!(
+        state.task_progress(task).expect("task").cancellable,
+        "写入端不得改写调用方给的载荷"
+    );
+
+    let instance = EntityId::default();
+    state.track_plugin_process(
+        instance,
+        PluginProcess {
+            pid: 42,
+            sandboxed: true,
+        },
+    );
+    assert!(
+        state.plugin_processes[&instance].sandboxed,
+        "写入端不得改写调用方给的载荷"
+    );
+    state.track_plugin_process(
+        instance,
+        PluginProcess {
+            pid: 43,
+            sandboxed: false,
+        },
+    );
+    assert!(!state.plugin_processes[&instance].sandboxed);
+    assert_eq!(state.plugin_processes[&instance].pid, 43);
 }

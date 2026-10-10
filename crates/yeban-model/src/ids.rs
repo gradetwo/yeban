@@ -573,4 +573,36 @@ mod tests {
             "尾随空白必须被拒（不得静默 trim）"
         );
     }
+
+    /// `ContentHash` 的 **serde 入口**必须与 `parse` 同一把尺子。
+    ///
+    /// 为什么需要（第七轮注入实测）：把 `Deserialize for ContentHash` 的
+    /// `Self::parse(raw).map_err(...)` 换成 `Ok(Self(raw))`（绕过校验）时全仓判据保持
+    /// 全绿 —— 既有 `hash_parsing_requires_exactly_sixty_four_hex_digits` 只把 serde
+    /// 入口探在 **`AssetHash`** 上（同一个文件、同一个形状的两个类型，覆盖不对称）。
+    #[test]
+    fn content_hash_deserialization_goes_through_the_same_ruler_as_parse() {
+        let good = ContentHash::of_bytes(b"abc");
+        let parsed: ContentHash =
+            serde_json::from_str(&format!("\"{good}\"")).expect("规范摘要必须能从 JSON 读进来");
+        assert_eq!(parsed, good);
+
+        let too_short = "a".repeat(SHA256_HEX_LEN - 1);
+        let too_long = "a".repeat(SHA256_HEX_LEN + 1);
+        let upper = "A".repeat(SHA256_HEX_LEN);
+        let non_hex = "g".repeat(SHA256_HEX_LEN);
+        for bad in [
+            "",
+            "abc",
+            too_short.as_str(),
+            too_long.as_str(),
+            upper.as_str(),
+            non_hex.as_str(),
+        ] {
+            assert!(
+                serde_json::from_str::<ContentHash>(&format!("\"{bad}\"")).is_err(),
+                "非法摘要 {bad:?} 不得从 JSON 进来"
+            );
+        }
+    }
 }

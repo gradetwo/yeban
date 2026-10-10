@@ -4919,4 +4919,43 @@ mod tests {
         );
         assert_eq!(doc.validate(), Ok(()));
     }
+
+    /// `DeviceDefinition::default()` 的载荷逐字段钉住。
+    ///
+    /// 为什么需要（第七轮注入实测）：把 `name: "Device"` 改成 `"Device "`（尾随空格）时
+    /// 全仓判据保持全绿 —— 本 impl 的取值此前没有任何判据看着。
+    #[test]
+    fn device_definition_default_is_frozen_field_by_field() {
+        let device = DeviceDefinition::default();
+        assert_eq!(device.id, EntityId::default());
+        assert_eq!(device.name, "Device");
+        assert_eq!(device.kind, DeviceKind::default());
+        assert!(!device.bypassed);
+        assert!(device.params.is_empty());
+        assert_eq!(device.latency_samples, 0);
+    }
+
+    /// `TrackV3::default()` 的载荷逐字段钉住。
+    ///
+    /// 为什么需要（第七轮注入实测）：把 `name: "Track"` 改成 `"Track "` 时全仓判据保持
+    /// 全绿 —— `filled_project()` 里的音轨都带**显式**名字，所以样本冻结判据看不到
+    /// `Default` 的取值。
+    #[test]
+    fn track_v3_default_is_frozen_field_by_field() {
+        let track = TrackV3::default();
+        assert_eq!(track.id, EntityId::default());
+        assert_eq!(track.name, "Track");
+        assert_eq!(track.kind, TrackKind::default());
+        assert_eq!(track.volume_db, 0.0);
+        assert_eq!(track.pan, 0.0);
+        assert!(!track.mute);
+        assert!(!track.solo);
+        assert!(!track.solo_safe);
+        assert!(track.folder_id.is_none());
+        assert!(track.color.is_none());
+        assert!(track.devices.is_empty());
+        assert!(track.macros.is_empty());
+        assert!(track.automation_lanes.is_empty());
+        assert!(track.clips.is_empty());
+    }
 }

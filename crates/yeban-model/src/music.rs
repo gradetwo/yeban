@@ -744,4 +744,17 @@ mod tests {
         assert_eq!(note.duration_ticks, 960);
         assert_eq!(note.probability, None, "默认必须必然触发");
     }
+
+    /// `SlideConfig::default()` 的载荷逐字段钉住。
+    ///
+    /// 为什么需要（第七轮注入实测）：把 `duration_ticks: PPQ / 2` 改成 `PPQ` 时全仓判据
+    /// 保持全绿 —— 既有判据都用**显式**构造的 `SlideConfig`。
+    #[test]
+    fn slide_config_default_is_frozen_field_by_field() {
+        let slide = SlideConfig::default();
+        assert_eq!(slide.duration_ticks, 480);
+        assert_eq!(crate::ids::PPQ / 2, 480);
+        assert_eq!(slide.target_pitch, 0);
+        assert_eq!(slide.curve, CurveType::Linear);
+    }
 }

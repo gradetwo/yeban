@@ -1717,3 +1717,46 @@ fn a_device_removal_legally_leaves_a_dangling_target_that_validate_still_accepts
         "存在性由唯一求值入口报**具体**错误，而不是在校验期假装它没问题"
     );
 }
+
+/// 每个 `AutomationUnit` 臂都必须有**编号**，且每个变体的符号被逐条钉住。
+///
+/// 为什么需要（第七轮，R48 两半）：既有判据只钉了 5 个变体里的 2 个
+/// （`Decibels` → `"dB"`、`Native` → `""`）⇒ 把 `Normalized` / `Bipolar` 那一支的符号
+/// 改坏时没有任何判据变红。
+///
+/// R48 的另一半在这里落地：`assert_eq!(table.len(), N)` 数的是**表**、读不到枚举，
+/// 所以另配一支**无通配符** `match` 的臂编号探针（`arm`）——加了变体而忘了往表里加一行时，
+/// 表长仍是 N、断言照样过；`arm` 的无通配符 `match` 会**编译错**，这才堵住那个洞。
+/// 下面的循环同时断言"表行的编号 == 探针给出的编号"，且编号集合恰好是 `0..N`（R51：探针注释）。
+#[test]
+fn every_automation_unit_symbol_is_pinned_by_arm_number() {
+    const ARM_COUNT: usize = 4;
+    let table: [(usize, AutomationUnit, &str); ARM_COUNT] = [
+        (0, AutomationUnit::Decibels, "dB"),
+        (1, AutomationUnit::Normalized, ""),
+        (2, AutomationUnit::Bipolar, ""),
+        (3, AutomationUnit::Native, ""),
+    ];
+
+    /// R48 探针：**无通配符** `match`。加变体而不更新本函数 ⇒ 编译错。
+    const fn arm(unit: AutomationUnit) -> usize {
+        match unit {
+            AutomationUnit::Decibels => 0,
+            AutomationUnit::Normalized => 1,
+            AutomationUnit::Bipolar => 2,
+            AutomationUnit::Native => 3,
+        }
+    }
+
+    let mut numbered: Vec<usize> = Vec::new();
+    for (index, unit, symbol) in table {
+        assert_eq!(arm(unit), index, "臂编号必须与表行一致");
+        assert_eq!(unit.symbol(), symbol, "单位符号必须逐条钉住");
+        numbered.push(index);
+    }
+    assert_eq!(
+        numbered,
+        (0..ARM_COUNT).collect::<Vec<_>>(),
+        "臂编号必须恰好是 0..N（R48 的臂编号断言）"
+    );
+}
