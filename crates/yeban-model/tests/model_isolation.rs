@@ -1618,3 +1618,51 @@ fn print_frozen_isolation_table() {
         std::any::type_name::<SessionRuntimeState>()
     );
 }
+
+/// `AudioPortBinding::is_unbound` 的"一个端口都没绑定"必须**四个字段全空**才成立。
+///
+/// 为什么需要（第五轮注入实测）：本方法是全 crate **零调用点、零判据引用**的公开判定器
+/// （`grep -w is_unbound` 只命中定义行自身），因此把它整段换成 `false` 时全仓判据
+/// 保持全绿。
+#[test]
+fn audio_port_binding_is_unbound_only_when_all_four_fields_are_empty() {
+    assert!(
+        AudioPortBinding::default().is_unbound(),
+        "全默认（四字段皆空）必须判为未绑定"
+    );
+
+    // 四个字段**逐个**都能单独把它变成"已绑定"。
+    let device_in = AudioPortBinding {
+        input_device: Some("Focusrite".to_owned()),
+        ..AudioPortBinding::default()
+    };
+    let device_out = AudioPortBinding {
+        output_device: Some("BuiltIn".to_owned()),
+        ..AudioPortBinding::default()
+    };
+    let port_in = AudioPortBinding {
+        input_ports: BTreeMap::from([(0_u32, "Mic 1".to_owned())]),
+        ..AudioPortBinding::default()
+    };
+    let port_out = AudioPortBinding {
+        output_ports: BTreeMap::from([(1_u32, "Out 2".to_owned())]),
+        ..AudioPortBinding::default()
+    };
+    for (label, binding) in [
+        ("input_device", &device_in),
+        ("output_device", &device_out),
+        ("input_ports", &port_in),
+        ("output_ports", &port_out),
+    ] {
+        assert!(!binding.is_unbound(), "{label} 非空时不得判为未绑定");
+        binding.validate().expect("非空标识串必须自洽");
+    }
+
+    let all = AudioPortBinding {
+        input_device: Some("Focusrite".to_owned()),
+        output_device: Some("BuiltIn".to_owned()),
+        input_ports: BTreeMap::from([(0_u32, "Mic 1".to_owned())]),
+        output_ports: BTreeMap::from([(1_u32, "Out 2".to_owned())]),
+    };
+    assert!(!all.is_unbound(), "四字段都非空时同样判为已绑定");
+}

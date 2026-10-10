@@ -4736,4 +4736,102 @@ mod tests {
             prop_assert_eq!(&doc, &initial);
         }
     }
+
+    /// 时间轴平移的 **`u64` 上界**：越过 `u64::MAX` 必须被拒。
+    ///
+    /// 为什么需要（第五轮注入实测）：上界由**两道**防线共同承担 —— `shifted_tick` 里的
+    /// `shifted > i128::from(u64::MAX)` 判定，与 `u64::try_from(shifted).ok()` 的兜底。
+    /// 单独关掉任一条时全仓判据保持全绿（另一条兜住）；把**两条同时**关掉（上界判定
+    /// 删掉 + 兜底改成 `unwrap_or(0)`）时全仓判据**仍然全绿** ⇒ "越过 `u64::MAX` 非法"
+    /// 这条契约此前没有任何判据。
+    #[test]
+    fn shifting_a_note_past_the_u64_tick_ceiling_is_rejected() {
+        assert_eq!(shifted_tick(0, 0), Some(0));
+        assert_eq!(shifted_tick(u64::MAX, 0), Some(u64::MAX));
+        assert_eq!(
+            shifted_tick(u64::MAX - 1, 1),
+            Some(u64::MAX),
+            "上界本身必须可达"
+        );
+        assert_eq!(shifted_tick(u64::MAX, 1), None, "越过 u64::MAX 必须非法");
+        assert_eq!(shifted_tick(u64::MAX, i64::MAX), None);
+        assert_eq!(shifted_tick(0, -1), None, "越过 0 必须非法");
+
+        // 端到端：负向越界必须被拒，且不改文档。
+        let f = fixture();
+        let mut doc = fixture_document();
+        let before = doc.clone();
+        let backwards = Op::MoveNote {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            delta_tick: i64::MIN,
+            delta_pitch: 0,
+        };
+        assert_eq!(
+            backwards.apply(&mut doc),
+            Err(ModelError::OpStateMismatch { op: "MoveNote" })
+        );
+        assert_eq!(doc, before, "越界的平移绝不能改文档");
+    }
+
+    /// `Op` 的**顺序独立性只在明确的子集上成立**：目标不相交的操作可交换；
+    /// 目标相交的操作**不可交换**（后一条载荷里的旧值会被前一条改写）。
+    ///
+    /// 为什么需要（第五轮普查）：全仓 `grep -rn commut` **零命中** —— "哪些子集可交换"
+    /// 这条契约此前没有任何判据；顺序敏感性只由各变体自己的 `old_*` 守卫间接表达，
+    /// 而"顺序**有**意义"这一半从没被正面写下来过。
+    #[test]
+    fn disjoint_target_ops_commute_while_same_target_ops_do_not() {
+        let f = fixture();
+        let mute_lead = Op::SetTrackMute {
+            track_id: f.lead,
+            old_mute: false,
+            new_mute: true,
+        };
+        let mute_bass = Op::SetTrackMute {
+            track_id: f.bass,
+            old_mute: false,
+            new_mute: true,
+        };
+
+        // 可交换：两条操作作用在**不同**音轨上 ⇒ 两种顺序必须得到同一份文档。
+        let mut forward = fixture_document();
+        mute_lead.apply(&mut forward).expect("静音 lead");
+        mute_bass.apply(&mut forward).expect("静音 bass");
+        let mut backward = fixture_document();
+        mute_bass.apply(&mut backward).expect("静音 bass");
+        mute_lead.apply(&mut backward).expect("静音 lead");
+        assert_eq!(forward, backward, "目标不相交的操作必须可交换");
+        assert_ne!(forward, fixture_document(), "两种顺序都必须真的改动了文档");
+        assert!(forward.track(&f.lead).expect("lead").mute);
+        assert!(forward.track(&f.bass).expect("bass").mute);
+
+        // 不可交换：两条操作改**同一**音轨的同一个字段 ⇒ 倒序时旧值是陈旧的。
+        let on = Op::SetTrackMute {
+            track_id: f.lead,
+            old_mute: false,
+            new_mute: true,
+        };
+        let off = Op::SetTrackMute {
+            track_id: f.lead,
+            old_mute: true,
+            new_mute: false,
+        };
+        let mut in_order = fixture_document();
+        on.apply(&mut in_order).expect("开");
+        off.apply(&mut in_order).expect("关");
+        assert!(
+            !in_order.track(&f.lead).expect("lead").mute,
+            "正序必须回到未静音"
+        );
+
+        let mut reversed = fixture_document();
+        assert_eq!(
+            off.apply(&mut reversed),
+            Err(ModelError::OpStateMismatch { op: "SetTrackMute" }),
+            "同目标操作的顺序**有意义**：倒序时载荷旧值与文档现值不符"
+        );
+        assert_eq!(reversed, fixture_document(), "被拒的操作不得改文档");
+    }
 }

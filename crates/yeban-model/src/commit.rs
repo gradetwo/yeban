@@ -1855,4 +1855,80 @@ mod tests {
         );
         sound.validate().expect("自洽的深度缓存必须通过");
     }
+
+    /// `CommitDraft::with_snapshot` 的载荷**只在快照点被原样采纳**，非快照点被丢弃。
+    ///
+    /// 为什么需要（第五轮注入实测）：本方法是全 crate **零调用点、零判据引用**的公开
+    /// 构造器（`grep -w with_snapshot` 只命中定义行自身），因此把
+    /// `self.snapshot_ref = Some(snapshot_ref)` 改成 `self.snapshot_ref = None` 时
+    /// 全仓判据保持全绿 —— 而 `insert_commit` 里
+    /// `draft.snapshot_ref.unwrap_or_else(|| default_snapshot_hash(&draft.ops))`
+    /// 这条"调用方提供优先"的分支也就完全没有判据。
+    #[test]
+    fn the_caller_supplied_snapshot_ref_is_adopted_verbatim_only_at_snapshot_depths() {
+        let provided = ContentHash::of_bytes(b"caller-supplied-snapshot");
+        assert_ne!(
+            provided,
+            default_snapshot_hash(&[add_section_op(11)]),
+            "探针必须与缺省摘要不同, 否则下面两条断言区分不了两条分支"
+        );
+
+        let mut graph = CommitGraph::new();
+        // 深度 1（根提交）必然是快照点 ⇒ 采纳载荷里的引用。
+        let root = graph
+            .genesis(
+                CommitDraft::new(fixture_id(1), "main", "agent", "genesis")
+                    .with_ops(vec![add_section_op(11)])
+                    .with_snapshot(provided.clone()),
+            )
+            .expect("genesis");
+        assert_eq!(
+            graph.commit(&root).expect("commit").snapshot_ref,
+            Some(provided.clone()),
+            "快照点必须**原样**采纳调用方给的快照引用"
+        );
+
+        // 深度 2 不是快照点 ⇒ 载荷里的引用被丢弃。
+        let child = graph
+            .append(
+                CommitDraft::new(fixture_id(2), "main", "agent", "step")
+                    .with_ops(vec![add_section_op(12)])
+                    .with_snapshot(provided),
+            )
+            .expect("append");
+        assert_eq!(
+            graph.commit(&child).expect("commit").snapshot_ref,
+            None,
+            "非快照深度不得携带快照引用"
+        );
+    }
+
+    /// 缺省快照摘要必须**内容敏感**，而不只是**长度敏感**。
+    ///
+    /// 为什么需要（第五轮注入实测）：既有的
+    /// `default_snapshot_hash_is_deterministic_and_content_sensitive` 比较的是
+    /// **不同长度**的 ops（2 条 vs 3 条），于是把摘要里的 `{op:?}` 换成常量串时它
+    /// 仍然全绿 —— 名称里的 content-sensitive 只被"长度"这一维探过。
+    #[test]
+    fn the_default_snapshot_hash_distinguishes_equal_length_different_content() {
+        let left = vec![add_section_op(11), add_section_op(12)];
+        let right = vec![add_section_op(11), add_section_op(13)];
+        assert_eq!(left.len(), right.len(), "本判据的分母: 两侧长度必须相同");
+        assert_ne!(
+            default_snapshot_hash(&left),
+            default_snapshot_hash(&right),
+            "同长度的不同 ops 必须给出不同摘要"
+        );
+        // ops 的**顺序**也是内容的一部分。
+        let reversed = vec![add_section_op(12), add_section_op(11)];
+        assert_ne!(
+            default_snapshot_hash(&left),
+            default_snapshot_hash(&reversed)
+        );
+        // 同一输入重复计算必须稳定。
+        assert_eq!(
+            default_snapshot_hash(&left),
+            default_snapshot_hash(&left.clone())
+        );
+    }
 }
