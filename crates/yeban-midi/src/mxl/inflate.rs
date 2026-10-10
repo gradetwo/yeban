@@ -1366,9 +1366,11 @@ mod tests {
         arms.sort_unstable();
         let mut distinct = arms.clone();
         distinct.dedup();
+        // ⭐ R180：自检**不用集合大小界**（`distinct.len() == all.len()` 是"借来的界"），
+        // 改成与**字面值集合**比较 ⇒ 界根绑定到"这两个变体应有的编号"本身。
         assert_eq!(
-            distinct.len(),
-            all.len(),
+            distinct,
+            vec![0u8, 1u8],
             "两个变体不许共用同一个编号（重复臂 ⇒ 集合有多余）"
         );
         assert_eq!(

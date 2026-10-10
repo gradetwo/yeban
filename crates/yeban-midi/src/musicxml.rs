@@ -2222,4 +2222,28 @@ mod tests {
             "偏移 16 = `<score-partwise>`（16 字节）之后 CDATA 的起始位置"
         );
     }
+
+    /// 判据 (R183: **常驻判据自带绿/红两臂** ⇒ ⭐ **外部注入分母归 0**): 上面那条真表判据是
+    /// **绿臂**（真表必须通过）；本条是**红臂** —— 把**坏表**喂给同一个 checker，它必须**有牙**。
+    /// ⭐ 下界早已抽成函数 `assert_every_music_xml_error_arm_is_covered`（R183 的第一半），所以可以直接喂坏输入。
+    /// ⭐ R180: 自检**不用集合大小界**，而是喂**具体坏表**再看它是否被拒。
+    #[test]
+    fn the_arm_coverage_checker_rejects_broken_tables() {
+        // ⚠️ 这些错误枚举**不含 `Copy`**（有 `String` 载荷）⇒ 用工厂闭包，⛔ 不能移动同一个值两次。
+        let real = || MusicXmlError::Empty;
+        // 红臂①（缺臂）：只有一行 ⇒ 编号集合不完整。
+        let too_short = [(real(), "输入为空")];
+        assert!(
+            std::panic::catch_unwind(|| assert_every_music_xml_error_arm_is_covered(&too_short))
+                .is_err(),
+            "缺臂的坏表必须被拒（本 crate 有 15 个变体）"
+        );
+        // 红臂②（重复臂）：同一行两遍 ⇒ 集合有多余。
+        let duplicated = [(real(), "输入为空"), (real(), "输入为空")];
+        assert!(
+            std::panic::catch_unwind(|| assert_every_music_xml_error_arm_is_covered(&duplicated))
+                .is_err(),
+            "重复臂的坏表必须被拒"
+        );
+    }
 }
