@@ -18,6 +18,19 @@
 //! - **运行期计数器**（`assert!(checked >= N)`）—— 它界定的是**动作**，⛔ 不是被遍历集合。
 //!   这两类各有一条**已知红**自测（「只有值界 ⇒ 必须报无界」「只有计数器 ⇒ 必须报无界」）。
 //!
+//! ## 绑定追踪的覆盖与**仍盲**的形态（第二十一批实测）
+//!
+//! 已追踪：`let ok = <含 .all/.any 的表达式>;`（含**块绑定** `let ok = { … };`）
+//! 与**简单绑定链** `let w = v.regions();`（逐跳找界）。
+//! - 块绑定：注入 `B4`（无界）⇒ **RED**；`B5`（有界）⇒ **ALL_GREEN**（双向都验过）。
+//! - **仍盲（⛔ 且为什么不可判）**：
+//!   1. **量词结果经函数传出**（`fn ok(v: &[f32]) -> bool { v.iter().all(..) }` 再 `assert!(ok(&v))`）——
+//!      判定它需要**跨函数的数据流**（被调函数内部还要有界），语法扫描器看不到调用图 ⇒ 放弃。
+//!   2. **运行期构造的集合名**（`let name = format!(..); let v = map[&name];`）——
+//!      名字到集合的映射不在语法里 ⇒ 放弃。
+//!
+//! ⇒ 这两条**由函数级规则兜住一部分**：函数体内直接写的量词断言仍会被查。
+//!
 //! ⚠️ 另（**R119**）：根绑定必须**带标识符边界** —— `bb.len() >= 2` ⛔ 不得给根 `b` 记界
 //! （近名对照已进自测）。
 //!
@@ -185,6 +198,50 @@ fn mentions_ident(hay: &str, ident: &str) -> bool {
 /// 只认**单语句、无块**的绑定；遇到块（`{`）或宏体就放弃该条（⛔ 不猜）。
 fn let_bindings(body: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
+    // ① **块绑定**：`let <name> = { <inner> };`（第二十一批收窄的盲区）。
+    //    ⛔ 必须先于"按 `;{}` 切分"的处理 —— 切分会把块内容切出去。
+    let bytes = body.as_bytes();
+    let mut search = 0usize;
+    while let Some(rel) = body[search..].find("let ") {
+        let start = search + rel;
+        let name_start = start + 4;
+        let name: String = body[name_start..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            let after_name = name_start + name.len();
+            if let Some(eq_rel) = body[after_name..].find('=') {
+                let eq = after_name + eq_rel;
+                let mut cursor = eq + 1;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                if bytes.get(cursor) == Some(&b'{') {
+                    let mut depth = 0i32;
+                    let mut end = cursor;
+                    for (index, byte) in bytes.iter().enumerate().skip(cursor) {
+                        match byte {
+                            b'{' => depth += 1,
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = index;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if end > cursor {
+                        out.push((name.clone(), body[cursor + 1..end].to_string()));
+                    }
+                }
+            }
+        }
+        search = start + 4;
+    }
+    // ② 单语句绑定（原路径）
     for stmt in statements(body) {
         let trimmed = stmt.trim_start();
         let Some(rest) = trimmed.strip_prefix("let ") else {
@@ -215,6 +272,7 @@ fn resolve_one(body: &str, name: &str) -> Option<String> {
     let bindings = let_bindings(body);
     let (_, rhs) = bindings.iter().find(|(n, _)| n == name)?;
     let next: String = rhs
+        .trim_start()
         .trim_start_matches('&')
         .chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -242,6 +300,7 @@ fn bound_quantifier_root(body: &str) -> Option<String> {
             continue;
         }
         let root: String = rhs
+            .trim_start()
             .trim_start_matches('&')
             .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -394,7 +453,32 @@ fn positive_any(body: &str) -> bool {
     false
 }
 
-/// 把源码切成 `(函数名, 函数体)`（按花括号配对）。
+/// 从 `(` 开始找到配对的 `)`（返回其**后一位**的下标）。
+fn skip_parens(text: &str, open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (index, byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 把源码切成 `(函数名, 函数体)`（按花括号配对；**含带参数的函数**）。
+///
+/// R140：窗口 ＝ **函数体边界**（⛔ 不是固定宽度）；⛔ 只认 `fn name()` 会漏掉**带参数**的函数
+/// —— 第二十一批实测：旧规则命中 **448/709**，改成"跳过参数表 ＋ 要求 `{` 先于 `;`"后 **700/710**。
 fn functions(source: &str) -> Vec<(String, String)> {
     let masked = mask(source);
     let bytes = masked.as_bytes();
@@ -408,9 +492,22 @@ fn functions(source: &str) -> Vec<(String, String)> {
             .map(|e| name_start + e)
             .unwrap_or(name_start);
         let name = masked[name_start..name_end].trim().to_string();
-        let Some(brace) = masked[name_end..].find('{').map(|e| name_end + e) else {
+        // R140：⛔ 不能只认 `fn name()`（那会漏掉**全部带参数的函数** —— 实测 448/709）。
+        // 这里跳过参数表，再要求 `{` **先于** `;`（后者表示 trait／声明，无函数体）。
+        let Some(params_end) = skip_parens(&masked, name_end) else {
             break;
         };
+        let Some(brace_rel) = masked[params_end..].find('{') else {
+            break;
+        };
+        if masked[params_end..params_end + brace_rel]
+            .find(';')
+            .is_some()
+        {
+            search = params_end + 1;
+            continue;
+        }
+        let brace = params_end + brace_rel;
         let mut depth = 0i32;
         let mut end = brace;
         let mut i = brace;
@@ -444,8 +541,13 @@ fn quantified_snippet(body: &str, root: Option<&str>) -> String {
             continue;
         }
         let trimmed = stmt.trim();
-        return if trimmed.len() > 160 {
-            format!("{}…", &trimmed[..160])
+        // R137：⛔ 不能按**字节**切多字节源码（会 panic）⇒ 先退到字符边界（`is_char_boundary`）。
+        let mut end = trimmed.len().min(160);
+        while end > 0 && !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        return if trimmed.len() > end {
+            format!("{}…", &trimmed[..end])
         } else {
             trimmed.to_string()
         };
@@ -511,6 +613,8 @@ fn self_test_classifier() {
         "let v = f(); let ok = v.iter().all(|x| *x > 0); assert!(ok); assert!(v.len() >= 3);",
         // 绑定式且界指向**绑定的**那个集合（`w`）—— 通过 resolve_root 回溯
         "let v = f(); let w = v.regions(); let ok = w.iter().all(|x| *x > 0); assert!(ok); assert_eq!(v.regions().len(), 3);",
+        // 块绑定（第二十一批收窄）：`let ok = { <含量词表达式> };` 且**有界**
+        "let v = f(); let ok = { v.iter().all(|x| *x > 0) }; assert!(ok); assert!(v.len() >= 3);",
         // ② 的**实参换序**（必须同样被接受）
         "let v = f(); assert_eq!(4, v.len()); assert!(v.iter().all(|x| *x > 0));",
     ];
@@ -525,6 +629,8 @@ fn self_test_classifier() {
         "let v = f(); let bb = g(); assert!(bb.len() >= 2); assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ 绑定式但**没有界** ⇒ 必须报无界（这是第十九批的盲区，现已收窄）
         "let v = f(); let ok = v.iter().all(|x| *x > 0); assert!(ok);",
+        // ⚠️ 块绑定但**没有界** ⇒ 必须报无界
+        "let v = f(); let ok = { v.iter().all(|x| *x > 0) }; assert!(ok);",
         // ⚠️ 专打 ⑦ 的过宽：别处有 `..`，但被量化的集合**不是**字面量
         "let v = f(); for i in 0..3 { let _ = i; } assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ 同上：别处有 `for … in [..]`，但被量化的集合不是它
