@@ -807,6 +807,12 @@ pub struct EngineRuntime {
     pan_automation_frames: u64,
     /// 被拒绝的声相**值**数（非有限 / 负数）。
     pan_automation_value_rejects: u64,
+    /// **R76 的读数**：已经设好的声相自动化目标被**同量子的快照武装**取消掉的次数。
+    ///
+    /// 机制：`ParamSmoother::snap_to` **同时写 `value` 与 `target`**
+    /// （`yeban-dsp/src/smoothing.rs:165`）⇒ 槽位**换主人**时那次 `snap_to`
+    /// 会把同量子早先设好的自动化目标一并抹掉。⛔ 不许静默：这里逐次计数。
+    pan_automation_resets: u64,
     /// 本快照武装的**主总线线性增益**（构造期由
     /// [`crate::snapshot::EngineSnapshot::master_gain`] 算好）。
     ///
@@ -1076,6 +1082,7 @@ impl EngineRuntime {
             armed_pan_armed: [false; MAX_TRACK_SLOTS],
             pan_automation_frames: 0,
             pan_automation_value_rejects: 0,
+            pan_automation_resets: 0,
             armed_master_gain: 1.0,
             armed_metronome_enabled: false,
             armed_metronome_ticks_per_beat: 0,
@@ -1339,6 +1346,13 @@ impl EngineRuntime {
     #[must_use]
     pub const fn pan_automation_value_rejects(&self) -> u64 {
         self.pan_automation_value_rejects
+    }
+
+    /// **R76 的读数**：已设好的声相自动化目标被**同量子的快照武装**取消掉的次数
+    /// （机制见字段文档：`snap_to` 会同时写 `target`）。
+    #[must_use]
+    pub const fn pan_automation_resets(&self) -> u64 {
+        self.pan_automation_resets
     }
 
     /// **本量子**已计量的节点次数
@@ -1755,6 +1769,7 @@ impl EngineRuntime {
             armed_pan_armed,
             pan_automation_frames,
             pan_automation_value_rejects,
+            pan_automation_resets,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
             pdc_alignment_frames,
@@ -1942,6 +1957,11 @@ impl EngineRuntime {
                     // 上一任的声相自动化目标 —— 那会把另一条轨的声相播给这一条。
                     // 判据见 `a_pan_slot_changing_owner_does_not_inherit_the_automation`。
                     if armed_pan_gains[slot].0 != *id {
+                        // R76：上一任留下的自动化目标会被这次武装的 `snap_to` **一并取消**
+                        // （`snap_to` 同时写 `value` 与 `target`）⇒ **计数**，⛔ 不静默。
+                        if armed_pan_armed[slot] {
+                            *pan_automation_resets = pan_automation_resets.wrapping_add(1);
+                        }
                         armed_pan_armed[slot] = false;
                     }
                     armed_pan_gains[slot] = (*id, gain_l, gain_r);
@@ -4221,6 +4241,196 @@ mod tests {
                 .zip(out.iter().skip(1).step_by(2))
                 .all(|(l, r)| l.to_bits() == r.to_bits()),
             "新主人必须从它**自己的**静态声相（居中）起步，⛔ 不得继承上一任的硬左目标"
+        );
+    }
+
+    /// 判据（**R76**）：**换主人**的那次快照武装会把**已经设好的**自动化目标
+    /// 一并取消（`ParamSmoother::snap_to` 同时写 `value` 与 `target`，
+    /// `yeban-dsp/src/smoothing.rs:165`）。
+    ///
+    /// 这条语义**钉住**而不是假装不存在，并且要求它**可见**（⛔ 不静默）：
+    /// 1. `pan_automation_resets() == 1`（取消被计数）；
+    /// 2. 换主人之后的渲染输出**居中**（左右逐位相同）⇒ 目标真的回到了**静态**值；
+    /// 3. `pan_automation_frames()` 在换主人那一量子**不再增长**（该槽位已不在平滑路径上）。
+    ///
+    /// 顺序很重要：换主人必须发生在**已经武装过之后**（否则事件连槽位都找不到，
+    /// 那是另一条判据 `a_pan_event_before_the_first_arming_is_counted_not_silent`）。
+    #[test]
+    fn a_snapshot_swap_that_changes_the_owner_cancels_the_target_and_counts_it() {
+        let (snapshot_a, track_a) = note_snapshot_with_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot_a);
+        let mut warm = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut warm, 2);
+
+        // 轨 A 上先设好自动化目标（硬左）。
+        let events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track_a, TRACK_PAN_LEFT_SLOT),
+                value: 1.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track_a, TRACK_PAN_RIGHT_SLOT),
+                value: 0.0,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&events), 2);
+        let mut armed_quantum = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut armed_quantum, 2);
+        assert!(
+            rig.runtime.pan_automation_frames() > 0,
+            "夹具前提：先让平滑路径真的跑起来（否则谈不上被取消）"
+        );
+        let frames_before = rig.runtime.pan_automation_frames();
+
+        // 换一份**另一条轨**（轨 B）的快照 ⇒ 槽位换主人 ⇒ `snap_to` 取消目标。
+        let (snapshot_b, track_b) = note_snapshot_with_pan(2, 0.0);
+        assert_ne!(track_a, track_b, "夹具前提：两条轨身份必须不同");
+        rig.slot.publish(snapshot_b);
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+
+        assert_eq!(
+            rig.runtime.pan_automation_resets(),
+            1,
+            "换主人取消已设目标必须被**计数**（R76：⛔ 不静默）"
+        );
+        assert_eq!(
+            rig.runtime.pan_automation_frames(),
+            frames_before,
+            "换主人之后该槽位不再走平滑路径（帧数不得再增长）"
+        );
+        assert!(
+            out.iter().step_by(2).any(|l| *l != 0.0),
+            "夹具前提：这一量子必须真的在出声（否则上面的读数没有意义）"
+        );
+        // ⚠ **本判据刻意不断言"渲染回到居中"**：实测**不成立** ——
+        // 换主人之后 `peak_l = 0.7496`、`peak_r = 0.3992`（仍是偏左的输出）。
+        // ⛔ 不写没验证过的声明。这条不对称已登记为**未解释的开放发现**
+        // （见本文件模块文档的 R76 条目）：要么静态声相表没在这次武装里生效，
+        // 要么还有**另一条**给母线写 L/R 的路径。在查清之前，本判据只钉**可复现的两条读数**：
+        // `pan_automation_resets() == 1`（取消被计数）与 `pan_automation_frames()` 不再增长。
+    }
+
+    /// 判据（**两侧必须各自生效**）：硬左让**右**声道归零，硬右让**左**声道归零。
+    ///
+    /// 为什么值得单独一条：R55 的判据只测了"硬左"（左目标 1.0、右目标 0.0）⇒
+    /// 若**右**槽位的事件没生效（右目标留在静态 √½），硬左那一半照样会过。
+    /// 本判据用**硬右**那一半把它拆穿（左目标 0.0）：右槽位若失效，左声道**不会**归零。
+    #[test]
+    fn both_pan_sides_take_effect_independently() {
+        let (snapshot, track) = note_snapshot_with_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot);
+        let mut warm = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut warm, 2);
+
+        // **硬右**：左目标 0.0、右目标 1.0。
+        let events = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track, TRACK_PAN_LEFT_SLOT),
+                value: 0.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track, TRACK_PAN_RIGHT_SLOT),
+                value: 1.0,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&events), 2);
+        for _ in 0..96 {
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        let peak_l = out.iter().step_by(2).fold(0.0f32, |a, l| a.max(l.abs()));
+        let peak_r = out
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .fold(0.0f32, |a, r| a.max(r.abs()));
+        assert!(
+            peak_r > 0.0,
+            "夹具前提：右声道必须有声（实得 peak_r = {peak_r}）"
+        );
+        assert!(
+            peak_l <= peak_r * 0.01,
+            "硬右 ⇒ **左**声道必须归零（左/右峰值 = {peak_l} / {peak_r}）—— \
+             不归零说明**左槽位的事件没生效**（右槽位失效时它不会归零）"
+        );
+    }
+
+    /// 判据（**隔离右槽位**）：用**两个不同的右目标值**比较 L/R 峰值比。
+    ///
+    /// 为什么必须单独一条：硬左（R 目标 0）与硬右（L 目标 0）**各自都能在右槽位失效时
+    /// 通过** —— 硬左时右声道照样单调下降（只是停在 √½ 而不是 0），硬右时比的是**左**声道。
+    /// 本判据把右目标从 `0.5` 改到 `0.0`：右槽位若失效，比值会**始终停在居中（≈1.0）**，
+    /// 第 1 段就会红。
+    #[test]
+    fn the_right_pan_slot_is_isolated_by_two_target_values() {
+        let (snapshot, track) = note_snapshot_with_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot);
+        let mut warm = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut warm, 2);
+
+        let ratio_after = |rig: &mut Rig| -> f32 {
+            for _ in 0..96 {
+                let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+                rig.runtime.process_quantum(&mut out, 2);
+            }
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            rig.runtime.process_quantum(&mut out, 2);
+            let peak_l = out.iter().step_by(2).fold(0.0f32, |a, l| a.max(l.abs()));
+            let peak_r = out
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .fold(0.0f32, |a, r| a.max(r.abs()));
+            if peak_l > 0.0 { peak_r / peak_l } else { 0.0 }
+        };
+
+        // 段 1：左 1.0、右 **0.5** ⇒ 比值必须停在 ≈0.5（右槽位失效 ⇒ 停在 ≈1.0）。
+        let half = [
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track, TRACK_PAN_LEFT_SLOT),
+                value: 1.0,
+            },
+            EngineEvent::SetParam {
+                target: crate::ring::ParamAddress::new(track, TRACK_PAN_RIGHT_SLOT),
+                value: 0.5,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&half), 2);
+        let ratio_half = ratio_after(&mut rig);
+        assert!(
+            (0.3..0.7).contains(&ratio_half),
+            "右目标是 0.5 ⇒ 比值必须停在 ≈0.5（右槽位失效会停在 ≈1.0；实得 {ratio_half}）"
+        );
+
+        // 段 2：右目标改 **0.0** ⇒ 比值必须掉到 ≈0（证明**右**槽位的事件真的生效）。
+        let zero = [EngineEvent::SetParam {
+            target: crate::ring::ParamAddress::new(track, TRACK_PAN_RIGHT_SLOT),
+            value: 0.0,
+        }];
+        assert_eq!(rig.sender.publish(&zero), 1);
+        // ⭐ **瞬态牙**：右目标 0.5 → 0.0 的**第一个**量子，比值必须
+        // **严格大于 0 且严格小于 `ratio_half`** —— 阶跃（把 `process()` 换成 `target()`）
+        // 会在这一量子直接把右声道置 0 ⇒ 比值 0 ⇒ 必红。
+        let mut first = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut first, 2);
+        let peak_l = first.iter().step_by(2).fold(0.0f32, |a, l| a.max(l.abs()));
+        let peak_r = first
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .fold(0.0f32, |a, r| a.max(r.abs()));
+        let ratio_first = if peak_l > 0.0 { peak_r / peak_l } else { 0.0 };
+        assert!(
+            ratio_first > 0.0 && ratio_first < ratio_half,
+            "改目标的第一个量子必须**还在平滑**（0 < 比值 < {ratio_half}；阶跃会给 0，实得 {ratio_first}）"
+        );
+        let ratio_zero = ratio_after(&mut rig);
+        assert!(
+            ratio_zero < 0.1,
+            "右目标改成 0.0 ⇒ 比值必须掉到 ≈0（实得 {ratio_zero}）"
         );
     }
 }
