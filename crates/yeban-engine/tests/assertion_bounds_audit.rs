@@ -837,3 +837,107 @@ fn ambiguous_content_anchors_are_reported_not_silently_resolved() {
     let not_ambiguous = ambiguous_anchors(sources_u, &[("fake.rs", anchor, "唯一")]);
     assert!(not_ambiguous.is_empty(), "⛔ 唯一的锚不得被误报为歧义");
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ **R146 每形态实例级注入（合成实例）** —— 5 种形态各配一条：
+//    ① **有界**（已知绿）② **删掉该界**（注入 ⇒ 已知红）③ **还原**（回绿）。
+//    ⭐ **R160**：陈旧入口用**替换**造（⛔ 不给定长数组"多加一条"—— 那是**编译错误** ⇒ 无效样本）。
+// ---------------------------------------------------------------------------
+
+/// 五种形态的**合成实例**：`(形态名, 站点源, 界那一句)`。⛔ 每个实例**只**含一种界。
+fn bound_form_instances() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        (
+            "① len() >=",
+            "fn t() {\n    assert!(xs.len() >= 3);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n",
+            "    assert!(xs.len() >= 3);\n",
+        ),
+        (
+            "② len() >",
+            "fn t() {\n    assert!(xs.len() > 2);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n",
+            "    assert!(xs.len() > 2);\n",
+        ),
+        (
+            "③ !is_empty()",
+            "fn t() {\n    assert!(!xs.is_empty());\n    assert!(xs.iter().all(|x| *x > 0));\n}\n",
+            "    assert!(!xs.is_empty());\n",
+        ),
+        (
+            "④ assert_eq!(len, N)",
+            "fn t() {\n    assert_eq!(xs.len(), 4);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n",
+            "    assert_eq!(xs.len(), 4);\n",
+        ),
+        (
+            "⑤ 同根（切片上界被标量相等钉住）",
+            "fn t() {\n    let n = 10;\n    assert_eq!(n, 10);\n    assert!(xs[..n].iter().all(|v| *v == 0.0));\n}\n",
+            "    assert_eq!(n, 10);\n",
+        ),
+    ]
+}
+
+#[test]
+fn each_bound_form_has_its_own_instance_level_injection() {
+    let mut matched = 0usize;
+    for (form, source, bound_line) in bound_form_instances() {
+        let site = sites(source);
+        assert_eq!(site.len(), 1, "合成实例必须恰好 1 个站点（{form}）");
+        // ① 已知绿：有该界 ⇒ 认。
+        assert!(
+            has_size_bound(source, site[0]),
+            "已知绿失败：{form} 的界必须被认成有界"
+        );
+        // ② 注入：**删掉那一句界**（⛔ 等价于"真实站点缺界"）⇒ 必须判**无界**（已知红）。
+        let injected = source.replace(bound_line, "");
+        assert_ne!(
+            injected, source,
+            "注入必须真的改掉源（{form}）：锚点 = {bound_line:?}"
+        );
+        let site_injected = sites(&injected);
+        assert_eq!(site_injected.len(), 1, "注入后仍应只有 1 个站点（{form}）");
+        assert!(
+            !has_size_bound(&injected, site_injected[0]),
+            "已知红失败：{form} 删掉界之后必须判无界（否则该形态**没有牙**）"
+        );
+        // ③ 还原：源字符串未被原地改动（`replace` 返回新串）⇒ 再判一次必须回绿。
+        assert!(
+            has_size_bound(source, site[0]),
+            "还原失败：{form} 恢复后必须仍然判有界"
+        );
+        matched += 1;
+    }
+    println!("[assertion-bounds] R146 各形态实例级注入：**{matched}/5**");
+    assert_eq!(
+        matched, 5,
+        "五种形态必须**各配一条**实例级注入（R146）：实得 {matched}/5"
+    );
+}
+
+#[test]
+fn the_stale_entry_case_is_built_by_replacement_not_by_growing_a_fixed_array() {
+    // ⭐ **R160**：allowlist 是**定长数组** ⇒ 给它"多加一条"是**编译错误**（无效样本）。
+    // 正确造法 = **替换**已有的那一条（这里用一条**合成** allowlist，长度不变）。
+    let source =
+        "fn t() {\n    assert!(xs.len() >= 3);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let sources: &[(&str, &str)] = &[("fake.rs", source)];
+    let site = sites(source);
+    let anchor = source.lines().nth(site[0] - 1).unwrap().trim();
+
+    // 替换前：入口指向一个**有界**站点 ⇒ 陈旧（必须报）。
+    let before: &[(&str, &str, &str)] = &[("fake.rs", anchor, "陈旧：站点其实已经有界")];
+    assert_eq!(
+        stale_entries(sources, before).len(),
+        1,
+        "⭐ 陈旧入口必须被报出（长度不变的**替换**造法，R160）"
+    );
+
+    // 替换后：同一条入口改指向一个**真无界**站点（新数组，长度相同）⇒ **不再**是陈旧。
+    let unbounded = "fn t() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let sources2: &[(&str, &str)] = &[("fake.rs", unbounded)];
+    let site2 = sites(unbounded);
+    let anchor2 = unbounded.lines().nth(site2[0] - 1).unwrap().trim();
+    let after: &[(&str, &str, &str)] = &[("fake.rs", anchor2, "仍在缺口里")];
+    assert!(
+        stale_entries(sources2, after).is_empty(),
+        "⛔ 真缺口上的入口不是陈旧入口（替换造法的反向对照）"
+    );
+}
