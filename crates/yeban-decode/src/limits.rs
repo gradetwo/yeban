@@ -2137,4 +2137,109 @@ mod tests {
             LenContractViolation::OutsideBounds { .. } => "OutsideBounds",
         }
     }
+
+    /// 判据（R86：**`Default` 不是"非现实的缺陷类"**）：默认预算必须与**逐字段的合法替代状态**
+    /// 都可区分，而且**每个实例都是单独构造的**（⛔ 驱动不得对两个被测实例做相同的初始化 ——
+    /// 那会遮蔽构造期差异）。
+    ///
+    /// 量什么：`PcmBudget::default()` 与 6 个"只改一个字段"的合法替代状态之间的 `==`（布尔）。
+    /// 怎么量：每个替代状态都从 `default()` 出发，**只**把它自己的那一个字段改成一个合法的、
+    /// 更紧的值（`..base` 其余照抄）⇒ 两侧的初始化**必然不同**，任何一处"该字段没被
+    /// `PartialEq` 看见"或"默认值其实是 0/未设"都会被抓住。
+    ///
+    /// 读数（本机、debug 构建）：6 个替代状态**全部**与默认值不等（`assert_ne!` 逐一成立），
+    /// 且默认值等于它自己（`==` 反身）。
+    ///
+    /// 为什么需要它：`PcmBudget::default()` 是六个闸门的**唯一**默认来源；若某个字段的默认值
+    /// 退化成 0（或被 `PartialEq` 忽略），"闸门默认开着"这件事就没有任何判据能发现 ——
+    /// 既有判据只逐字段核对**数值**，不核对"这些字段彼此可区分"。
+    ///
+    /// ⭐ R114（下界要**根绑定**）：本判据的界来自 `base` **自己的字段**（`base.max_channels`
+    /// 等），⛔ 不借用相邻字段或常量表，因此字段被重命名/改类型时这里会编译失败，而不是
+    /// 悄悄比对一个无关的数。
+    ///
+    /// 注入（实测）：把 `impl PartialEq for PcmBudget`（或派生）改成"只比 `max_pcm_bytes`"
+    /// ⇒ 本条红（至少一个替代状态变得与默认值相等）。
+    #[test]
+    fn every_default_field_is_distinguishable_from_a_legal_alternative_state() {
+        let base = PcmBudget::default();
+        // ⭐ 每个替代状态**单独构造**（R86 第二条），且只改**它自己**那一个字段。
+        let alternatives: [(&str, PcmBudget); 6] = [
+            (
+                "max_input_bytes",
+                PcmBudget {
+                    max_input_bytes: base.max_input_bytes / 2,
+                    ..base
+                },
+            ),
+            (
+                "max_pcm_bytes",
+                PcmBudget {
+                    max_pcm_bytes: base.max_pcm_bytes / 2,
+                    ..base
+                },
+            ),
+            (
+                "max_channels",
+                PcmBudget {
+                    max_channels: base.max_channels / 2,
+                    ..base
+                },
+            ),
+            (
+                "max_sample_rate",
+                PcmBudget {
+                    max_sample_rate: base.max_sample_rate / 2,
+                    ..base
+                },
+            ),
+            (
+                "max_duration_secs",
+                PcmBudget {
+                    max_duration_secs: base.max_duration_secs / 2,
+                    ..base
+                },
+            ),
+            (
+                "max_resample_ratio",
+                PcmBudget {
+                    max_resample_ratio: base.max_resample_ratio / 2,
+                    ..base
+                },
+            ),
+        ];
+        // R93：先证明被扫集合非空且达到下界。
+        assert_eq!(
+            alternatives.len(),
+            6,
+            "all six gate fields must be exercised"
+        );
+        assert_eq!(base, base, "the default must at least equal itself");
+        for (field, alternative) in alternatives {
+            assert_ne!(
+                base, alternative,
+                "changing only `{field}` must make the budget distinguishable — otherwise the \
+                 default value of `{field}` is invisible to equality"
+            );
+            // 反向自证：这一档**恰好只**改了一个字段。⭐ 这一条还顺带抓住"默认值退化" ——
+            // 若某字段的默认值是 0，那么 `0 / 2 == 0` ⇒ 差异数会是 0 ⇒ 本条红（R86 的核心）。
+            let differing = [
+                alternative.max_input_bytes != base.max_input_bytes,
+                alternative.max_pcm_bytes != base.max_pcm_bytes,
+                alternative.max_channels != base.max_channels,
+                alternative.max_sample_rate != base.max_sample_rate,
+                alternative.max_duration_secs != base.max_duration_secs,
+                alternative.max_resample_ratio != base.max_resample_ratio,
+            ]
+            .iter()
+            .filter(|changed| **changed)
+            .count();
+            assert_eq!(
+                differing, 1,
+                "the `{field}` case must differ from the default in exactly one field — 0 means \
+                 that field's default is degenerate (e.g. zero), above 1 means the driver \
+                 initialised more than one field"
+            );
+        }
+    }
 }
