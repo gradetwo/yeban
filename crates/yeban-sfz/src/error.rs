@@ -748,4 +748,64 @@ mod tests {
             );
         }
     }
+
+    /// R48 穷举探针：`SfzError` 新增变体时这里**编译失败**。
+    ///
+    /// 为什么需要它：黄金表 `every_sfz_error_display_arm_is_pinned` 断言的
+    /// `cases.len()` 数的是**表**的条数，读不到枚举本身；只有一支**无通配符**的 `match`
+    /// 才能在编译期把「枚举加了臂、表没加」变成硬失败。
+    fn every_sfz_error_variant_is_matched(error: SfzError) {
+        match error {
+            SfzError::Io { .. } => {}
+            SfzError::NotUtf8 { .. } => {}
+            SfzError::SourceTooLarge { .. } => {}
+            SfzError::IncludeNotQuoted { .. } => {}
+            SfzError::IncludeUnterminated { .. } => {}
+            SfzError::IncludeEmptyPath { .. } => {}
+            SfzError::IncludeAbsolutePath { .. } => {}
+            SfzError::IncludeEscape { .. } => {}
+            SfzError::IncludeInvalidPath { .. } => {}
+            SfzError::IncludeNotFound { .. } => {}
+            SfzError::IncludeNotAFile { .. } => {}
+            SfzError::IncludeUnsupportedExtension { .. } => {}
+            SfzError::IncludeNoMatch { .. } => {}
+            SfzError::IncludeCycle { .. } => {}
+            SfzError::IncludeDepthExceeded { .. } => {}
+            SfzError::IncludeCountExceeded { .. } => {}
+            SfzError::GlobMatchesExceeded { .. } => {}
+            SfzError::GlobScanExceeded { .. } => {}
+            SfzError::UnterminatedHeader { .. } => {}
+            SfzError::EmptyHeaderName { .. } => {}
+            SfzError::InvalidInteger { .. } => {}
+            SfzError::IntegerOutOfRange { .. } => {}
+            SfzError::FloatOutOfRange { .. } => {}
+            SfzError::VelocityCurveIndexOutOfRange { .. } => {}
+            SfzError::InvalidFloat { .. } => {}
+            SfzError::NonFiniteFloat { .. } => {}
+            SfzError::InvalidDuration { .. } => {}
+            SfzError::InvalidNote { .. } => {}
+            SfzError::InvalidOption { .. } => {}
+            SfzError::LineTooLong { .. } => {}
+            SfzError::CurveWithoutIndex { .. } => {}
+            SfzError::ReservedCurveIndex { .. } => {}
+            SfzError::DuplicateCurveIndex { .. } => {}
+            SfzError::TooManyRegions { .. } => {}
+            SfzError::TooManyCurves { .. } => {}
+            SfzError::TooManyEffects { .. } => {}
+            SfzError::TooManyMidiSections { .. } => {}
+            SfzError::TooManyMidiOpcodes { .. } => {}
+            SfzError::TooManyOpcodes { .. } => {}
+            SfzError::TooManyDefines { .. } => {}
+            SfzError::MacroExpansionExceeded { .. } => {}
+            SfzError::MacroExpansionTooLong { .. } => {}
+            SfzError::InvalidVoiceCapacity { .. } => {}
+            SfzError::StaleVoiceHandle => {}
+        }
+    }
+
+    #[test]
+    fn the_sfz_error_variant_probe_is_exhaustive() {
+        // 探针必须被**使用**，否则 `dead_code` 会（在 `-D warnings` 下）让门禁变红。
+        every_sfz_error_variant_is_matched(SfzError::StaleVoiceHandle);
+    }
 }

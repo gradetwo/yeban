@@ -53,7 +53,18 @@ use crate::midi::{MidiOpcode, MidiSection};
 pub const DEFAULT_MAX_LINE_BYTES: usize = 64 * 1024;
 /// 单个 `<region>` 段最大数量 (65,536)。
 pub const DEFAULT_MAX_REGIONS: usize = 65_536;
-/// 单个作用域内不同 opcode 名最大数量 (4,096)。
+/// 单个作用域内的 opcode 上限 (4,096)。
+///
+/// ⚠️ **同一个上限由两把尺子使用**（裁决 R47：只登记口径，**不**统一行为）：
+///
+/// | 段 | 被量的对象 | 为什么是它 |
+/// | :-- | :-- | :-- |
+/// | `<control>` / `<global>` / `<master>` / `<group>` / `<region>` | **不同 opcode 名**的数量（同一个名字重复写只算一个） | 继承链的存储是**按名字索引的表**（`BTreeMap`），代价随**不同名字数**增长；重复写同一个名字只覆盖同一个槽位 |
+/// | `<curve>` / `<effect>` / `<midi>` | **每一次 opcode 出现**的次数（同名重复也各算一次） | 这三个定义段的存储是**序列**（点表 / 发送槽 / 原样条目），代价随**出现次数**增长 |
+///
+/// 因此「同一个名字重复 N 次」在继承链里合法，而在定义段里会被判超限 —— 这是**存储形态**
+/// 的直接后果，不是随手写下的不一致。两把尺子各有判据守着，见
+/// `the_per_header_opcode_cap_counts_names_in_scopes_but_occurrences_in_sections`。
 pub const DEFAULT_MAX_OPCODES_PER_HEADER: usize = 4_096;
 /// `#define` 变量最大数量 (4,096)。
 pub const DEFAULT_MAX_DEFINES: usize = 4_096;
@@ -119,7 +130,8 @@ pub struct ParseLimits {
     pub max_midi_sections: usize,
     /// 全文登记的 `<midi>` opcode 总数，见 [`DEFAULT_MAX_MIDI_OPCODES`]。
     pub max_midi_opcodes: usize,
-    /// 单作用域最大 opcode 数，见 [`DEFAULT_MAX_OPCODES_PER_HEADER`]。
+    /// 单作用域 opcode 上限，见 [`DEFAULT_MAX_OPCODES_PER_HEADER`] 的「两把尺子」表：
+    /// 继承链作用域量**不同名字数**，定义段量**出现次数**。
     pub max_opcodes_per_header: usize,
     /// 最大 `#define` 变量数，见 [`DEFAULT_MAX_DEFINES`]。
     pub max_defines: usize,
@@ -342,8 +354,59 @@ pub enum Warning {
         /// 原始取值（超长时截断到 96 字节，与其它错误载荷同口径）。
         value: String,
     },
-    /// 警告数达到 [`ParseLimits::max_warnings`] 后的截断标志。
-    Truncated,
+    /// 警告数达到 [`ParseLimits::max_warnings`] 后的**截断标记**。
+    ///
+    /// 裁决 R46：截断是**真实发生**的事实，因此它必须出现在公开输出里 ——
+    /// 本变体由 [`Parser::warn`] 在上限**首次**被撞破时压入，之后每丢弃一条就把
+    /// `dropped` 加一（标记本身只有一条，且**不**计入上限）。
+    ///
+    /// 载荷的两个数都是**实质**告警的条数（不含本标记自身）：
+    /// - `kept`：实际保留的告警条数（在 `max_warnings > 0` 时等于上限）；
+    /// - `dropped`：被丢弃的告警条数（累计）。
+    Truncated {
+        /// 实际保留的**实质**告警条数。
+        kept: usize,
+        /// 被丢弃的**实质**告警条数（累计）。
+        dropped: usize,
+    },
+}
+
+impl core::fmt::Display for Warning {
+    /// 逐变体渲染（**无通配符分支**：新增变体会让这里编译失败，充当穷举探针，见 R48）。
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::IgnoredHeader { line, name } => {
+                write!(f, "line {line}: unknown header `<{name}>` ignored")
+            }
+            Self::UndefinedMacro { line, name } => {
+                write!(f, "line {line}: undefined macro `${name}` kept verbatim")
+            }
+            Self::IncludeIgnored { line } => {
+                write!(f, "line {line}: `#include` ignored in plain-text mode")
+            }
+            Self::RegionWithoutSample { line } => {
+                write!(f, "line {line}: `<region>` without `sample` dropped")
+            }
+            Self::UnknownDirective { line, text } => {
+                write!(f, "line {line}: unknown directive `#{text}`")
+            }
+            Self::MalformedDefine { line } => {
+                write!(f, "line {line}: malformed `#define`")
+            }
+            Self::MalformedSetCc {
+                line,
+                opcode,
+                value,
+            } => write!(
+                f,
+                "line {line}: `{opcode}` value `{value}` is not an integer, declaration dropped"
+            ),
+            Self::Truncated { kept, dropped } => write!(
+                f,
+                "warning list capped at {kept}: {dropped} warning(s) dropped"
+            ),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -867,8 +930,17 @@ impl<'a> Parser<'a> {
     fn warn(&mut self, warning: Warning) {
         if self.warnings.len() < self.limits.max_warnings {
             self.warnings.push(warning);
+        } else if self.warnings_truncated {
+            // 截断标记已经在表尾：后续每一次丢弃只把累计数加一（标记**不**重复压入）。
+            if let Some(Warning::Truncated { dropped, .. }) = self.warnings.last_mut() {
+                *dropped += 1;
+            }
         } else {
+            // 上限首次被撞破：记下截断事实 + 一条带载荷的标记。标记**不**计入上限，
+            // 因此 `max_warnings = n` 时 `warnings()` 最多是 n 条实质告警 + 1 条标记。
             self.warnings_truncated = true;
+            let kept = self.warnings.len();
+            self.warnings.push(Warning::Truncated { kept, dropped: 1 });
         }
     }
 
@@ -2180,14 +2252,26 @@ mod tests {
 
     #[test]
     fn the_warning_cap_boundary_is_exact() {
-        // 警告条数上限也是闭上界：`n` 条全留，第 `n + 1` 条起被丢弃。
+        // 警告条数上限是闭上界（`n` 条实质告警全留，第 `n + 1` 条起被丢弃），
+        // 且上限只对**实质**告警计数：截断标记另占一格（裁决 R46）。
         let limits = ParseLimits {
             max_warnings: 2,
             ..ParseLimits::default()
         };
         let instrument = parse_text("<x1>\n<x2>\n<x3>\n<region>sample=a.wav", &limits)
             .expect("unknown headers only warn");
-        assert_eq!(instrument.warnings().len(), 2);
+        assert_eq!(
+            instrument.warnings().len(),
+            3,
+            "two real warnings + one marker"
+        );
+        assert_eq!(
+            instrument.warnings()[2],
+            Warning::Truncated {
+                kept: 2,
+                dropped: 1
+            }
+        );
     }
 
     #[test]
@@ -2200,10 +2284,18 @@ mod tests {
             text.push_str(&format!("<x{index}>\n"));
         }
         let instrument = parse_text(&text, &ParseLimits::default()).expect("warns, never fails");
+        // 字面读数：256 条**实质**告警 + 1 条截断标记（标记不计入上限，R46）。
         assert_eq!(
             instrument.warnings().len(),
-            256,
-            "the registered default warning cap"
+            257,
+            "the registered default warning cap plus the truncation marker"
+        );
+        assert_eq!(
+            instrument.warnings().last(),
+            Some(&Warning::Truncated {
+                kept: 256,
+                dropped: 512 - 256,
+            })
         );
     }
 
@@ -2537,7 +2629,8 @@ mod tests {
             .expect("still parses")
             .warnings()
             .len(),
-            1
+            2,
+            "one real warning plus the truncation marker (R46)"
         );
 
         let curves =
@@ -2596,6 +2689,165 @@ mod tests {
         assert!(
             matches!(error, SfzError::TooManyMidiOpcodes { limit: 1 }),
             "{error:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 第十批（R46）：`Warning` 的 `Display` 黄金表 + 截断标记的载荷语义
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn every_warning_display_arm_is_pinned() {
+        // R46：`Warning` 此前**没有** `Display`（`Debug` 是唯一渲染通道），现在逐臂钉住文案。
+        // 新增变体会让 `impl Display for Warning` 的**无通配符** match 编译失败。
+        let cases: [(Warning, &str); 8] = [
+            (
+                Warning::IgnoredHeader {
+                    line: 7,
+                    name: "sample".to_string(),
+                },
+                "line 7: unknown header `<sample>` ignored",
+            ),
+            (
+                Warning::UndefinedMacro {
+                    line: 8,
+                    name: "NOPE".to_string(),
+                },
+                "line 8: undefined macro `$NOPE` kept verbatim",
+            ),
+            (
+                Warning::IncludeIgnored { line: 9 },
+                "line 9: `#include` ignored in plain-text mode",
+            ),
+            (
+                Warning::RegionWithoutSample { line: 10 },
+                "line 10: `<region>` without `sample` dropped",
+            ),
+            (
+                Warning::UnknownDirective {
+                    line: 11,
+                    text: "bogus".to_string(),
+                },
+                "line 11: unknown directive `#bogus`",
+            ),
+            (
+                Warning::MalformedDefine { line: 12 },
+                "line 12: malformed `#define`",
+            ),
+            (
+                Warning::MalformedSetCc {
+                    line: 13,
+                    opcode: "set_cc7".to_string(),
+                    value: "63.5".to_string(),
+                },
+                "line 13: `set_cc7` value `63.5` is not an integer, declaration dropped",
+            ),
+            (
+                Warning::Truncated {
+                    kept: 256,
+                    dropped: 3,
+                },
+                "warning list capped at 256: 3 warning(s) dropped",
+            ),
+        ];
+        assert_eq!(cases.len(), 8, "one case per variant");
+        for (warning, expected) in cases {
+            assert_eq!(format!("{warning}"), expected, "Display for {warning:?}");
+        }
+    }
+
+    /// R48 穷举探针：`Warning` 新增变体时这里**编译失败**
+    /// （黄金表只数「表」的条数，读不到枚举本身）。
+    fn every_warning_variant_is_matched(warning: Warning) {
+        match warning {
+            Warning::IgnoredHeader { .. } => {}
+            Warning::UndefinedMacro { .. } => {}
+            Warning::IncludeIgnored { .. } => {}
+            Warning::RegionWithoutSample { .. } => {}
+            Warning::UnknownDirective { .. } => {}
+            Warning::MalformedDefine { .. } => {}
+            Warning::MalformedSetCc { .. } => {}
+            Warning::Truncated { .. } => {}
+        }
+    }
+
+    #[test]
+    fn the_warning_variant_probe_is_exhaustive() {
+        every_warning_variant_is_matched(Warning::Truncated {
+            kept: 0,
+            dropped: 0,
+        });
+    }
+
+    #[test]
+    fn a_full_warning_list_gets_exactly_one_marker_with_accurate_counts() {
+        // R46：撞破上限时**必须**收到一条带载荷的 `Warning::Truncated`，而且**只有一条**；
+        // `kept` 是保留的**实质**告警数，`dropped` 随每次丢弃累计。
+        let limits = ParseLimits {
+            max_warnings: 1,
+            ..ParseLimits::default()
+        };
+        let instrument = parse_text("<x1>\n<x2>\n<x3>\n<x4>\n<region>sample=a.wav", &limits)
+            .expect("warning-only input");
+        let warnings = instrument.warnings();
+        assert_eq!(warnings.len(), 2, "one real warning + one marker");
+        assert_eq!(
+            warnings[0],
+            Warning::IgnoredHeader {
+                line: 1,
+                name: "x1".to_string()
+            }
+        );
+        assert_eq!(
+            warnings[1],
+            Warning::Truncated {
+                kept: 1,
+                dropped: 3
+            }
+        );
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|warning| matches!(warning, Warning::Truncated { .. }))
+                .count(),
+            1,
+            "the marker must not be duplicated"
+        );
+        assert_eq!(
+            warnings[1].to_string(),
+            "warning list capped at 1: 3 warning(s) dropped"
+        );
+    }
+
+    #[test]
+    fn the_truncation_marker_is_absent_until_the_cap_is_hit() {
+        let fits = ParseLimits {
+            max_warnings: 4,
+            ..ParseLimits::default()
+        };
+        let instrument = parse_text("<x1>\n<x2>\n<x3>\n<region>sample=a.wav", &fits)
+            .expect("warning-only input");
+        assert_eq!(instrument.warnings().len(), 3);
+        assert!(
+            instrument
+                .warnings()
+                .iter()
+                .all(|warning| !matches!(warning, Warning::Truncated { .. })),
+            "no marker while the list still fits"
+        );
+        // 上限为 0：第一条实质告警就被丢弃 ⇒ 表里**只有**标记。
+        let zero = ParseLimits {
+            max_warnings: 0,
+            ..ParseLimits::default()
+        };
+        let instrument =
+            parse_text("<x1>\n<region>sample=a.wav", &zero).expect("warning-only input");
+        assert_eq!(
+            instrument.warnings().to_vec(),
+            vec![Warning::Truncated {
+                kept: 0,
+                dropped: 1
+            }]
         );
     }
 }
