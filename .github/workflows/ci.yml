@@ -225,6 +225,37 @@ jobs:
           set -o pipefail
           cargo test -p "${{ matrix.crate }}" --all-targets --locked 2>&1 | tee -a /tmp/gate.log
 
+      # R64: 实验性导出特性 (`experimental-als-export` / `experimental-logic-export`)
+      # 此前**没有任何自动步骤**带这个开关 ⇒ `yeban-render` 的 `src/logic.rs`
+      # (8252 行 / 37 判据) 与 `src/als.rs` (1587 行 / 5 判据) 在自动 CI 里
+      # **从不编译**。判据写得对、`--features` 也真能跑, 仍不够: 判据要真的被
+      # 跑到, 必须同时满足「目标被编进来」与「步骤带那个开关」两个条件。
+      # 只有声明了该特性的 crate 才跑这一腿 (对其余 crate 传不存在的
+      # `--features` 会直接报错), 因此用 Cargo.toml 守卫而不是 blanket flag。
+      - name: clippy (实验性导出特性, -D warnings)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if grep -q '^experimental-logic-export' "crates/${{ matrix.crate }}/Cargo.toml"; then
+            cargo clippy -p "${{ matrix.crate }}" --all-targets --locked \
+              --features experimental-als-export,experimental-logic-export \
+              -- -D warnings 2>&1 | tee -a /tmp/gate.log
+          else
+            echo "::notice::${{ matrix.crate }} 未声明实验性导出特性, 本腿跳过"
+          fi
+
+      - name: test (实验性导出特性)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if grep -q '^experimental-logic-export' "crates/${{ matrix.crate }}/Cargo.toml"; then
+            cargo test -p "${{ matrix.crate }}" --all-targets --locked \
+              --features experimental-als-export,experimental-logic-export \
+              2>&1 | tee -a /tmp/gate.log
+          else
+            echo "::notice::${{ matrix.crate }} 未声明实验性导出特性, 本腿跳过"
+          fi
+
       - name: 上传无头 UI 截图 (若该 crate 产出了)
         if: always()
         uses: actions/upload-artifact@v4
