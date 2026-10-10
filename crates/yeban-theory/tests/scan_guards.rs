@@ -30,6 +30,11 @@ use yeban_theory::scale::{Scale, ScaleKind};
 /// 因此 `masked.len() == raw.len()` **恒成立**（函数自己断言这一点）。
 /// 若按"每个字符一个空格"补，多字节 UTF-8 会**缩短**字节长度，
 /// 凡用偏移在掩码/原文之间映射的地方都会**静默跳过**。
+///
+/// ⭐ **本线的掩码约定（R238②/R239③ 点名）**：**抹掉"定界符 ＋ 内容"，保留等长**。
+/// 与 `sfz`（**保定界符**）的约定不同 —— **两者都对**，但**臂的期望值必须按本线约定写**。
+/// 本线覆盖：`"…"`、`//`、按**嵌套深度**的 `/* */`、**字符字面量（12 字节闭合规则）**、
+/// **raw/byte-raw 字符串（两端计同样个数的 `#`）**；**生命周期**（`&'a str`）⛔ 不是字面量。
 fn mask_preserving_len(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = raw.to_owned().into_bytes();
@@ -1090,8 +1095,21 @@ fn no_criterion_reads_a_runtime_external_resource() {
     }
     // ⭐ R199：**删除规模地板**（`lines >= 8000` 是**反向指标** —— 语料变大它照样过，
     // 语料被换成别的东西它也可能过）⇒ 改成**喂坏输入的两臂** ＋ 显式探针（R203）。
+    // ⭐ R233④/R234③：**臂数 N 与本轮跑到第几条**用**运行期计数器**（⛔ 不写常量）。
+    let mut arms_ran = 0usize;
     let bad_arm = hits_in("let handle = std::fs::read_to_string(\"p\").unwrap();");
+    arms_ran += 1;
     let good_arm = hits_in("let total = 1 + 1;");
+    arms_ran += 1;
+    // ⭐ R239② **负向臂不得静默变恒真**：注掉违规后的**尾部真代码**必须仍在掩码结果里
+    // —— 即"负向臂的守卫必须证明自己**还在守**"（R238①：未归一化的守卫会**静默不再防护**）。
+    let negative_arm = "// std::fs::x\nlet visible_after = 1;";
+    assert!(hits_in(negative_arm).is_empty(), "R239② negative arm");
+    arms_ran += 1;
+    assert!(
+        mask_preserving_len(negative_arm).contains("visible_after"),
+        "R239②: the negative arm must not pass by masking everything"
+    );
     // ⭐ R203：探针必须**显式打印** —— `assert!(.., "msg")` 的 msg **只在失败时出现**，
     // 通过的断言什么都不打印 ⇒ 标记**不可检索**。本探针在 `--nocapture` 下 CI 可见。
     // ⭐ R212① 分类：本判据是 **(a) 存在性主张**（"没有任何判据读运行期外部资源"）。
@@ -1105,8 +1123,20 @@ fn no_criterion_reads_a_runtime_external_resource() {
     eprintln!(
         "[R187-PROBE yeban-theory::tests::scan_guards::scan-external-resource] \
          files={scanned_files} lines={scanned_lines} elsewhere_files={elsewhere_files} \
-         elsewhere_margin={} bad_arm_hits={} good_arm_hits={} markers_in_raw_source={}",
+         elsewhere_margin={} ZERO_MARGIN_WARN={} min_margin={} arms_ran={} \
+         bad_arm_hits={} good_arm_hits={} markers_in_raw_source={} \
+         convention=mask-delimiters-and-contents",
         elsewhere_files - 15,
+        // ⭐ R236②：余量**必须报数值**；为 0 时**显式告警**（⛔ 不静默）。
+        // ⭐ R240③：0 的**原因**是"删除任一被搜文件都会**按设计**变红，这不是回归"。
+        if elsewhere_files == 15 {
+            "YES(by_design: removing any scanned file reds it)"
+        } else {
+            "no"
+        },
+        // ⭐ R236②：**最小余量单独报**（这里只有一个余量，故最小 = 它）。
+        elsewhere_files - 15,
+        arms_ran,
         bad_arm.len(),
         good_arm.len(),
         // ⭐ R220②：数**标记**必须用 **raw** 源文本（标记正文就在字符串字面量里）；
@@ -1114,6 +1144,11 @@ fn no_criterion_reads_a_runtime_external_resource() {
         include_str!("scan_guards.rs")
             .matches("R187-PROBE yeban-theory::tests::scan_guards::")
             .count()
+    );
+    // ⭐ R236②：余量**不得为负**（否则界已经被违反，判定会失去意义）。
+    assert!(
+        elsewhere_files >= 15,
+        "R236②: margin must not be negative ({elsewhere_files})"
     );
     assert_eq!(
         bad_arm.len(),
