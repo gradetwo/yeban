@@ -197,7 +197,10 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
         unbounded.len()
     );
     assert!(
-        unbounded.len() <= UNBOUNDED_BASELINE,
+        // ⚠ 用 `==` 而不是 `<=`：`UNBOUNDED_BASELINE` 是 `usize` 的最小值 0 时，
+        // `len() <= 0` 被 clippy 判成恒真（`absurd_extreme_comparisons` ⇒ `-D warnings` 下是门）。
+        // 棘轮的语义本来就是"**恰好**等于基线"，`==` 更准确。
+        unbounded.len() == UNBOUNDED_BASELINE,
         "无界 `.all(` 站点 {} 处 > 基线 {UNBOUNDED_BASELINE} ⇒ 新增站点必须逐条评审并登记理由：{unbounded:?}",
         unbounded.len()
     );
