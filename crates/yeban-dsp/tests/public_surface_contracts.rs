@@ -331,9 +331,14 @@ fn the_documented_constants_are_pinned_by_literals() {
 /// 注入实测：把 `.field("ir_frames", &self.ir_frames)` 换成
 /// `.field("ir_re", &self.ir_re)`（打印频域 IR 缓冲）⇒ **全库 468 条判据全绿**
 /// （DBG1）⇒ 这条契约此前没有判据。
+///
+/// ⚠ 夹具必须**先配置一条 IR**：`Convolution::new()` 的 `ir_re` 是**空 `Vec`**，
+/// 打印它仍然很短 ⇒ 第一版夹具让本判据在注入下**假绿**（证明轮实测），已修正。
 #[test]
 fn convolution_debug_prints_only_scalars() {
-    let conv = Convolution::new();
+    let mut conv = Convolution::new();
+    let ir: Vec<f32> = (0..64).map(|index| 0.5 - index as f32 * 0.001).collect();
+    conv.set_impulse_response(&ir);
     let text = format!("{conv:?}");
     assert!(text.contains("Convolution"), "Debug 文本必须点名类型");
     assert!(
@@ -347,9 +352,13 @@ fn convolution_debug_prints_only_scalars() {
 ///
 /// 注入实测：把 `.field("paths", &TRUE_STEREO_PATHS)` 换成
 /// `.field("kernels", &self.kernels)`（打印四条核）⇒ **全库 468 条判据全绿**（DBG2）。
+///
+/// ⚠ 与判据 9 同理，夹具**先配置四条 IR**（否则内部的 `Convolution` 是空壳）。
 #[test]
 fn true_stereo_convolution_debug_prints_only_scalars() {
-    let conv = TrueStereoConvolution::new();
+    let mut conv = TrueStereoConvolution::new();
+    let ir: Vec<f32> = (0..64).map(|index| 0.25 + index as f32 * 0.001).collect();
+    conv.set_impulse_response(&ir, &ir, &ir, &ir);
     let text = format!("{conv:?}");
     assert!(
         text.contains("TrueStereoConvolution"),
