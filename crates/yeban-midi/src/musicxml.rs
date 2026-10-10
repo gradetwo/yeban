@@ -2229,7 +2229,9 @@ mod tests {
     /// ⭐ R180: 自检**不用集合大小界**，而是喂**具体坏表**再看它是否被拒。
     #[test]
     fn the_arm_coverage_checker_rejects_broken_tables() {
-        eprintln!("[R187-PROBE b23:the_arm_coverage_checker_rejects_broken_tables] ran");
+        eprintln!(
+            "[R187-PROBE b25:musicxml::tests::the_arm_coverage_checker_rejects_broken_tables] ran"
+        );
         // ⚠️ 这些错误枚举**不含 `Copy`**（有 `String` 载荷）⇒ 用工厂闭包，⛔ 不能移动同一个值两次。
         let real = || MusicXmlError::Empty;
         // 红臂①（缺臂）：只有一行 ⇒ 编号集合不完整。

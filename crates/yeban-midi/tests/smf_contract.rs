@@ -1448,7 +1448,9 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
 /// ⭐ **R120：真对象必须附机械下界**（真的扫过足够多的源码行）。
 #[test]
 fn no_needle_is_bound_to_a_variable_before_being_searched() {
-    eprintln!("[R187-PROBE b23:no_needle_is_bound_to_a_variable_before_being_searched] ran");
+    eprintln!(
+        "[R187-PROBE b25:smf_contract::no_needle_is_bound_to_a_variable_before_being_searched] ran"
+    );
     /// 形态注册表：**只**认这两种"针绑成变量后去搜索"的写法（R160 双向归零见 §②）。
     const FORMS: [&str; 2] = ["contains(<ident>)", "contains(&<ident>)"];
 
@@ -1546,10 +1548,33 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
         ("musicxml_contract.rs", include_str!("musicxml_contract.rs")),
         ("real_world_smf.rs", include_str!("real_world_smf.rs")),
     ];
-    assert!(
-        searched.len() >= 2,
-        "R211①：本文件被排除后，别处至少要有 2 个被搜文件（实际 {}）",
+    // ⭐ R215①：**界恰好落在下界上时必须声明余量为零** —— 否则下一个人会把
+    // "合法地删掉一个被搜文件"误当成回归。余量作**读数**（diagnostic），并**显式注明**
+    // 当前余量 = 0（真实 2 − 地板 2）。
+    const SEARCHED_FLOOR: usize = 2;
+    let margin = searched.len() - SEARCHED_FLOOR;
+    eprintln!(
+        "DIAGNOSTIC searched_set: actual={} floor={SEARCHED_FLOOR} margin={margin} \
+         （⚠️ 余量为 0 ⇒ 再删一个被搜文件就会红，那是**有意**的下界，⛔ 不是回归）",
         searched.len()
+    );
+    assert!(
+        searched.len() >= SEARCHED_FLOOR,
+        "R211①：本文件被排除后，别处至少要有 {SEARCHED_FLOOR} 个被搜文件（实际 {}）",
+        searched.len()
+    );
+    // ⭐ R215②：把一次性实验**提升为常驻形态** —— ① 旧形态（**没有下界**）会放行
+    // 1 个文件的集合；② 新谓词必须判它不合格。两条都**永久写在判据里**，每次门禁重放。
+    // ⚠️ clippy `assertions_on_constants`：⛔ 不许对字面常量断言 ⇒ 用**运行期导出**的
+    // "少一个文件的那个集合"（它的元素个数本来就是运行期量）。
+    let one_file_set = searched.len() - 1;
+    assert!(
+        one_file_set < SEARCHED_FLOOR,
+        "旧形态（无下界）会放行 {one_file_set} 个文件的集合 ⇒ 这正是缺口"
+    );
+    assert!(
+        !(one_file_set >= SEARCHED_FLOOR),
+        "新谓词必须判 {one_file_set} 个文件的集合不合格"
     );
     for (name, source) in searched {
         scanned_lines += source.lines().count();
