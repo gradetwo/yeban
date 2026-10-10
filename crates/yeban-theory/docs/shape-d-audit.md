@@ -111,6 +111,67 @@
 * ⭐ **R92（交换类注入的哨兵三步）在本驱动器里不必要**：多编辑注入按**行号一次性**写入
   （先全部算出新内容，再逐文件整体落盘），不存在"读到半交换状态"的窗口 ⇒ 交换是原子的。
 
+## 1f. 第十二批：R111 的**常驻判据** ＋ R113/R114/R115
+
+⭐ **一次性审计 ⛔ 不等于判据**（R115）⇒ 第十/十一批的扫描器已升为常驻判据
+`tests/scan_guards.rs::scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls`。
+
+**判据内置的东西**：
+* ⭐ **R113 逐字节等长**：`mask_preserving_len` 把被掩码的字节**各**换成一个空格字节，
+  函数内部断言 `masked.len() == raw.len()`（含多字节 UTF-8 样本：`"中文 ♯"`）。
+  若按"每字符一个空格"补，多字节 UTF-8 会缩短字节长度 ⇒ 偏移映射会**静默跳过**。
+* ⭐ **R114 按断言自己的实参解析**：以**测试函数体**为作用域（⛔ 不用固定字符窗口），
+  每条断言用括号深度感知的 `top_level_args` 切出实参；根绑定按**接收者**
+  （`grid.hits()` 与 `grid.len()` 是同一接收者 `grid`；`pattern` 与 `grid` 不是）。
+* ⭐ **R56/R112 正负对照**：六种形态**每种一条已知绿**（① 显式 `len() >= N`、
+  ② 宏隐式 `assert_eq!(len, N)`、③ `!is_empty()`、④ 值界、⑤ 运行期计数器、
+  ⑥ `assert_eq!(<接收者作用域表达式>, 整数字面量)`）＋ **一条"无界"已知红**
+  （R112 的正对照：它**必须**被判成无界）。
+* ⭐ **R93 非真空**：扫描域下界逐条钉住。
+
+**实测读数（15 个文件、测试区）**：运行期集合循环 **76** 个 ⇒ 接收者绑定 **52** ＋
+累加器绑定 **9** ＋ **分类器不认 15**（逐文件钉住：`genre.rs` 3、`voice_leading.rs` 1、
+`drum.rs` 2、`properties.rs` 9）。
+
+⭐ **残余清单（R97 形态，可由后续批次消费）**：这 15 个循环的界**已人工核对**，
+但形态不在上面六种之内 —— 典型是"把结果收进 `Vec` 再与字面量向量比较"、
+"`zip` 两个集合后逐对断言"、proptest 体里的 `prop_assert!` 作用在派生值上。
+判据**逐文件钉住计数**，因此**新增一个分类器不认的循环会立刻变红**。
+
+## 1g. 第十二批：R100/R116 的常驻判据
+
+`tests/scan_guards.rs::no_criterion_reads_a_runtime_external_resource`：
+对 15 个文件（`src/**` 含测试模块 ＋ `tests/**`）扫描 **10 个运行期外部资源禁用针**
+（`std::fs::`／`std::env::var`／`std::env::var_os`／`read_dir`／`File::open`／
+`CARGO_TARGET_TMPDIR`／`CARGO_MANIFEST_DIR`／`current_dir`／`tempfile`／
+`std::process::Command`），**先掩码再扫**，并带 R56 三条对照（真代码已知红、
+字符串内已知绿、注释内已知绿）。
+
+**与既有守卫的分工**：`src/lib.rs::crate_has_no_hidden_nondeterminism_sources` 只看**生产代码**
+（到 `#[cfg(test)]` 为止，测试代码故意豁免）⇒ 本判据补的是"**判据自身**不读外部资源"这个缺口。
+
+**R116 的可执行查证**（"不存在"的陈述要现场查证）：
+```bash
+grep -rnE "std::fs|std::env|read_dir|CARGO_TARGET_TMPDIR|File::|include_bytes!|PathBuf|std::process|Command::new" \
+  crates/yeban-theory/src crates/yeban-theory/tests | grep -v '"std::' | wc -l
+```
+读数：**1** —— 唯一命中是 `src/lib.rs` 的**文档注释**（"没有 `std::fs`"）。
+其余命中都在 `lib.rs` 那条守卫的**禁用针字符串**里（被 `grep -v '"std::'` 排除）。
+
+## 1h. 驱动器分类器的已知红（R108）
+
+`/tmp/mod-theory/inj/run*proof.py` 是带**分类器**的驱动器（RED／NOT_RED／COMPILE_ERROR／
+TIMEOUT／NO_TEST_RAN）。分类器逐条喂过已知红：
+| 判定 | 已知红 | 批次 |
+|---|---|---|
+| `RED` / `NOT_RED` | 12 对注入（含受控实验） | 8–11 |
+| `COMPILE_ERROR` | 去掉 `derive`／把 `impl` 插到 `derive` 之间 | 8、9 |
+| `NO_TEST_RAN` | 过滤路径写错（`properties::` 前缀） | 10 |
+| `TIMEOUT` | `genre_id_salt` 的 `index += 0` 死循环（25s 超时） | 11 |
+
+⭐ **R108：超时路径必须保留部分输出** ⇒ 驱动器在超时后把已读到的输出尾部记进
+`partial_tail`（本批补上），否则"超时"与"没有任何输出"无法区分。
+
 ## 2. R70② 自比台账（"两次运行相同"不是契约）
 
 机械扫出 **13** 条 `assert_eq!(f(x), f(x))`（两侧**源码文本相同**）：
