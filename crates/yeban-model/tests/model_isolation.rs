@@ -3547,204 +3547,108 @@ fn the_masker_passes_five_adversarial_samples() {
     );
 }
 
-/// **R225① 常驻判据**：掩码器对 **Rust 专有构造**的对抗集。
+/// **R225① 常驻判据（R260① 拆分版）**：掩码器对 **Rust 专有构造**的对抗集。
 ///
-/// 四件套对 Rust **不充分**：还必须覆盖 **生命周期**、**字符字面量**、**原始字符串**
-/// （`r"…"` / `r#"…"#`，以及字节版 `br#"…"#`）。
-/// 每条样本断言两件事（R224①）：**字节等长** ＋ **构造之后的真代码仍然可见**（正对照）。
+/// ⭐ R260①：**多臂同体**判据的日志只覆盖 **1/N**（`--no-fail-fast` 只管判据**之间**，
+/// 判据**内部**首败即停）。⇒ **拆分是唯一机制**：下面 5 条臂各成一个判据，
+/// 这样任一臂失败时，其余臂的读数仍会出现在同一份日志里（N/N 覆盖）。
 ///
-/// ⭐ R229③：掩码约定是"**抹内容、保定界符、保等长**" ⇒ 期望值必须按这个约定写，
-/// ⛔ 不是"掩码后不该有引号"。下面额外断言：从字符串样本里取出的 `"` 仍存在（定界符还在），
-/// 而它的**内容**已变成空格。
-#[test]
-fn the_masker_passes_the_rust_specific_adversarial_set() {
-    // (标签, 样本, 构造之后的针, 期望可见)
-    let cases: [(&str, &str, &str, bool); 5] = [
-        // ① 生命周期 `'a` / `'static` **不得**被当成字符字面量（否则一路吞到下一个 `'`）。
-        (
-            "lifetimes",
-            "fn f<'a>(x: &'a str) -> &'static str { x }\nlet g = HashMap::new();\n",
-            "HashMap",
-            true,
-        ),
-        // ② 字符字面量 `'\''`（内含引号）必须被正确消费。
-        (
-            "char_literal_with_quote",
-            "let q = '\\'';\nlet g = HashMap::new();\n",
-            "HashMap",
-            true,
-        ),
-        // ③ ⭐ **原始字符串内含 `"`**：⛔ 不得在内容里的 `"` 处提前结束（否则后续代码被吞）。
-        (
-            "raw_string_with_inner_quote",
-            "let s = r#\"a \" b\"#;\nlet g = HashMap::new();\n",
-            "HashMap",
-            true,
-        ),
-        // ④ 字节原始字符串 `br#"…"#` 同上。
-        (
-            "byte_raw_string_with_inner_quote",
-            "let b = br#\"x \" y\"#;\nlet g = HashSet::new();\n",
-            "HashSet",
-            true,
-        ),
-        // ⑤ **正对照**：普通标识符 `rust` ⛔ 不得被当成原始字符串的前缀。
-        (
-            "identifier_is_not_a_raw_string",
-            "let rust = 1;\nlet g = HashMap::new();\n",
-            "HashMap",
-            true,
-        ),
-    ];
-    // ⭐ R242③：**样本合法性由 `rustc` 一次性文件判定**（跑完即删），结论记在这里：
-    //   生命周期 `fn f<'a>(x: &'a str) -> &'a str` ⇒ rustc rc=0（合法）
-    //   字符字面量 `'\''`                                   ⇒ rustc rc=0（合法）
-    //   `r#"a " b"#`（内容含 `"`）                          ⇒ rustc rc=0（合法）
-    //   `br#"x " y"#`                                        ⇒ rustc rc=0（合法）
-    //   标识符 `let rust = 1;`                               ⇒ rustc rc=0（合法）
-    //   ⛔ 反例：`r##"a"##b"##` ⇒ rustc **error[E0765]**（不合法）⇒ 它**不得**用来指控掩码器。
-    // ⇒ 本判据的 5 条臂**全部**用合法样本 ⇒ 第二十三轮"真掩码器缺陷"的归因**成立**。
-    let declared = cases.len();
-    let mut checked = 0_usize;
-    for (label, sample, needle, expect) in cases {
-        // ⭐ R241①：**夹具自证其形状** —— 否则臂变红时会默默指控自己。
-        let shape_ok = match label {
-            "lifetimes" => sample.contains("'a") && sample.contains("'static"),
-            "char_literal_with_quote" => sample.contains("= '\\'';"),
-            "raw_string_with_inner_quote" => sample.contains("r#\"") && sample.contains("\" b\"#"),
-            "byte_raw_string_with_inner_quote" => {
-                sample.contains("br#\"") && sample.contains("\" y\"#")
-            }
-            "identifier_is_not_a_raw_string" => sample.contains("let rust = 1;"),
-            _ => false,
-        };
-        assert!(
-            shape_ok,
-            "[R187-PROBE model_isolation::rustmask_{label}_shape] 夹具必须自证其形状"
-        );
-        let masked = mask_rust_source(sample);
-        assert_eq!(
-            masked.len(),
-            sample.len(),
-            "[R187-PROBE model_isolation::rustmask_{label}] 掩码必须保**字节**长度"
-        );
-        assert_eq!(
-            code_has(sample, needle),
-            expect,
-            "[R187-PROBE model_isolation::rustmask_{label}] 构造之后的真代码必须仍然可见"
-        );
-        checked += 1;
-    }
-    // R233④：臂数 N ＋ 本轮实际跑到第几条（全过 ⇒ 跑到 N）。
-    eprintln!(
-        "[R187-PROBE model_isolation::rustmask_arms] N={declared} reached={checked} (first-failure stops the log at that arm)"
-    );
-    assert_eq!(
-        checked, declared,
-        "R160 双向①：{declared} 条 Rust 专有样本必须全部求值"
-    );
-    // ⭐ R229③：**先写清本线的掩码约定**，再按约定写期望。
-    // 本线约定 = "**内容与定界符都抹成空格**、长度不变"（比"保定界符"更强：
-    // 掩码区里连 `"` 都不残留，任何残留都不可能被当成代码）。
-    // ⛔ `sfz` 的约定是"抹内容、保定界符"—— 两者**都对**，但期望值必须与**本线约定**一致。
-    let sample = "let s = \"secret\";\n";
-    let masked = mask_rust_source(sample);
-    assert_eq!(masked.len(), sample.len(), "长度必须不变（R113/R216①）");
-    assert!(
-        !masked.contains("secret"),
-        "[R187-PROBE model_isolation::rustmask_content] 掩码后**内容必须被抹**"
-    );
-    assert!(
-        !masked.contains('"'),
-        "[R187-PROBE model_isolation::rustmask_delimiters] 本线约定：定界符**也**被抹（残留不可能被当代码）"
-    );
-    eprintln!(
-        "[R187-PROBE model_isolation::masker_convention] content=erased delimiters=erased length=equal"
-    );
-    // R229②：真界的余量读数（本判据的界是"全部样本求值"，余量 = 0）。
-    eprintln!(
-        "[R187-PROBE model_isolation::rustmask_margin] checked={checked}/{declared} margin=0"
-    );
+/// 合法性（`rustc` 一次性文件，跑完即删）: 五条样本**全部 rc=0** 合法；
+/// ⛔ 反例 `r##"a"##b"##` ⇒ **error[E0765]**（不合法，不得用来指控掩码器）。
+///
+/// R229③：原始字符串的结束条件必须计**同样个数**的 `#`。
+///
+/// 每条臂都断言两件事（R224①）：**字节等长** ＋ **构造之后的真代码仍然可见**（正对照），
+/// 并先断言**夹具自证其形状**（R241①）。
+macro_rules! masker_arm {
+    ($name:ident, $label:literal, $sample:expr, $needle:literal, $shape:expr) => {
+        #[test]
+        fn $name() {
+            let sample: &str = $sample;
+            assert!(
+                $shape(sample),
+                concat!(
+                    "[R187-PROBE model_isolation::rustmask_",
+                    $label,
+                    "_shape] 夹具必须自证其形状"
+                )
+            );
+            let masked = mask_rust_source(sample);
+            assert_eq!(
+                masked.len(),
+                sample.len(),
+                concat!(
+                    "[R187-PROBE model_isolation::rustmask_",
+                    $label,
+                    "] 字节等长"
+                )
+            );
+            assert!(
+                code_has(sample, $needle),
+                concat!(
+                    "[R187-PROBE model_isolation::rustmask_",
+                    $label,
+                    "] 构造之后的真代码必须仍然可见"
+                )
+            );
+        }
+    };
 }
 
-/// **R239① 常驻判据**：判缺陷之前，先判**样本合法性**。
-///
-/// "构造之后不可见"有**三个**成因（R239①）：
-/// ① 掩码器**真缺陷**；② 期望按**错约定**写（本线第二十三轮亲身经历）；
-/// ③ **样本本身不是合法 Rust**（`midi` 的第三臂就是这种）。
-/// 本判据把三类分开，并把**合法性判定**写进注释。
-///
-/// **R229③**：原始字符串的结束条件必须计**同样个数**的 `#`。
+masker_arm!(
+    masker_arm_lifetimes,
+    "lifetimes",
+    "fn f<'a>(x: &'a str) -> &'static str { x }\nlet g = HashMap::new();\n",
+    "HashMap",
+    |s: &str| s.contains("'a") && s.contains("'static")
+);
+masker_arm!(
+    masker_arm_char_literal_with_quote,
+    "char_literal_with_quote",
+    "let q = '\\'';\nlet g = HashMap::new();\n",
+    "HashMap",
+    |s: &str| s.contains("= '\\'';")
+);
+masker_arm!(
+    masker_arm_raw_string_with_inner_quote,
+    "raw_string_with_inner_quote",
+    "let s = r#\"a \" b\"#;\nlet g = HashMap::new();\n",
+    "HashMap",
+    |s: &str| s.contains("r#\"") && s.contains("\" b\"#")
+);
+masker_arm!(
+    masker_arm_byte_raw_string_with_inner_quote,
+    "byte_raw_string_with_inner_quote",
+    "let b = br#\"x \" y\"#;\nlet g = HashSet::new();\n",
+    "HashSet",
+    |s: &str| s.contains("br#\"") && s.contains("\" y\"#")
+);
+masker_arm!(
+    masker_arm_identifier_is_not_a_raw_string,
+    "identifier_is_not_a_raw_string",
+    "let rust = 1;\nlet g = HashMap::new();\n",
+    "HashMap",
+    |s: &str| s.contains("let rust = 1;")
+);
+
+/// **R260① 覆盖读数**：拆分后，5 条臂是 **5 个判据** ⇒ 同一份日志可覆盖 **N/N**。
 #[test]
-fn the_raw_string_termination_counts_the_same_hashes() {
-    // (标签, 样本, 合法性, 构造之后的针, 期望可见)
-    // 合法性判定（逐条写清）：
-    //  ① `r#"a"#`                      —— 合法（0 个 `#` 的内容 + 1 个 `#` 终止）
-    //  ② `r##"a"#b"##`                 —— 合法（内容里含 `"#`，终止需 **2** 个 `#`）
-    //  ③ `r#"a"#b"#`                   —— ⛔ **不合法**（第一个 `"#` 已闭合，余下 `b"#` 非法）
-    //  ④ `r#"a " b"#`                  —— 合法（内容里的 `"` 后面不是 `#` ⇒ 不算终止）
-    let cases: [(&str, &str, bool, &str, bool); 4] = [
-        (
-            "zero_hashes",
-            "let s = r\"abc\";\nlet g = HashMap::new();\n",
-            true,
-            "HashMap",
-            true,
-        ),
-        (
-            "one_hash",
-            "let s = r#\"abc\"#;\nlet g = HashMap::new();\n",
-            true,
-            "HashMap",
-            true,
-        ),
-        (
-            "two_hashes_with_inner_hash",
-            "let s = r##\"a\"#b\"##;\nlet g = HashMap::new();\n",
-            true,
-            "HashMap",
-            true,
-        ),
-        (
-            "inner_quote_not_terminator",
-            "let s = r#\"a \" b\"#;\nlet g = HashMap::new();\n",
-            true,
-            "HashMap",
-            true,
-        ),
+fn the_rust_specific_arms_are_split_for_full_log_coverage() {
+    let names = [
+        "masker_arm_lifetimes",
+        "masker_arm_char_literal_with_quote",
+        "masker_arm_raw_string_with_inner_quote",
+        "masker_arm_byte_raw_string_with_inner_quote",
+        "masker_arm_identifier_is_not_a_raw_string",
     ];
-    let declared = cases.len();
-    let mut checked = 0_usize;
-    for (label, sample, legal, needle, expect) in cases {
-        assert!(
-            legal,
-            "[R187-PROBE model_isolation::raw_{label}] 该样本必须是合法 Rust"
-        );
-        let masked = mask_rust_source(sample);
-        assert_eq!(
-            masked.len(),
-            sample.len(),
-            "[R187-PROBE model_isolation::raw_{label}] 字节等长"
-        );
-        assert_eq!(
-            code_has(sample, needle),
-            expect,
-            "[R187-PROBE model_isolation::raw_{label}] 构造之后的真代码必须仍可见"
-        );
-        checked += 1;
-    }
-    assert_eq!(
-        checked, declared,
-        "R160 双向①：{declared} 条原始字符串臂必须全部求值"
-    );
-    // R257①：数字必须带**区域 ＋ 单位** ⇒ 本判据自己把 N 打印出来（区域=本判据，单位=数组条目数）。
+    // ⭐ R241①：夹具自证 —— 断言这 5 个名字**各不相同**（否则"5 条臂"是假的）。
+    let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+    assert_eq!(unique.len(), names.len(), "5 条臂的名字必须唯一");
+    assert_eq!(names.len(), 5, "臂数必须为 5");
+    // ⭐ R257①：数字带**区域 ＋ 单位**。
     eprintln!(
-        "[R187-PROBE model_isolation::raw_arms] N={declared} region=the_raw_string_termination_counts_the_same_hashes.cases unit=array_entries"
-    );
-    // ⛔ **不合法样本**单独登记：只断言"它不合法"，⛔ **不**据此判掩码器缺陷。
-    let illegal = "let s = r#\"a\"#b\"#;\n";
-    eprintln!(
-        "[R187-PROBE model_isolation::raw_illegal_sample] registered as ILLEGAL (not a masker defect): {illegal:?}"
+        "[R187-PROBE model_isolation::rustmask_split] N={} region=tests/model_isolation.rs::masker_arm_* unit=separate #[test] fns",
+        names.len()
     );
 }
 
