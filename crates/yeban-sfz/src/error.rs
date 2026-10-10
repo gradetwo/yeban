@@ -460,9 +460,12 @@ mod tests {
     /// 这条判据覆盖 44 个 `thiserror` 臂的全部公开诊断面：文案改动（哪怕是删一个词）
     /// 都会在这里变红。同时断言 `source()` 恒为 `None` —— 本 crate 刻意不携带底层
     /// `io::Error`（见 `Io` 的文档：保留 `PartialEq`），因此错误链只有一层。
-    #[test]
-    fn every_sfz_error_display_arm_is_pinned() {
-        let cases: Vec<(SfzError, &str)> = vec![
+    /// 黄金表的唯一来源：每个 `SfzError` 臂一条 `(错误值, 期望 Display 文案)`。
+    ///
+    /// R48：这张表**必须**与 `sfz_error_arm` 的臂编号一一对应
+    /// （由 `the_sfz_error_golden_table_covers_every_arm_number` 守住）。
+    fn display_cases() -> Vec<(SfzError, &'static str)> {
+        vec![
             (
                 SfzError::Io {
                     path: String::from("s"),
@@ -738,7 +741,12 @@ mod tests {
                 SfzError::StaleVoiceHandle,
                 "voice handle is stale or does not belong to this pool",
             ),
-        ];
+        ]
+    }
+
+    #[test]
+    fn every_sfz_error_display_arm_is_pinned() {
+        let cases = display_cases();
         assert_eq!(cases.len(), 44);
         for (error, expected) in cases {
             assert_eq!(format!("{error}"), expected, "Display for {error:?}");
@@ -749,63 +757,111 @@ mod tests {
         }
     }
 
-    /// R48 穷举探针：`SfzError` 新增变体时这里**编译失败**。
+    /// R48／R51 穷举探针：返回**臂编号**（`0..N`），**无通配符分支**。
     ///
-    /// 为什么需要它：黄金表 `every_sfz_error_display_arm_is_pinned` 断言的
-    /// `cases.len()` 数的是**表**的条数，读不到枚举本身；只有一支**无通配符**的 `match`
-    /// 才能在编译期把「枚举加了臂、表没加」变成硬失败。
-    fn every_sfz_error_variant_is_matched(error: SfzError) {
+    /// ⚠️ 本 `match` 必须保持**无通配符**：加一个 `_` 就会让 R48 失效
+    ///（第十批 L6 实测「给探针加通配符 ⇒ 所有判据仍全绿」，见裁决 R51）。
+    /// 枚举新增变体时这里会**编译失败**（`error[E0004]`）—— 这是黄金表的
+    /// `cases.len()` 断言**给不了**的保证（那一行数的是**表**，读不到枚举）。
+    fn sfz_error_arm(error: &SfzError) -> u8 {
         match error {
-            SfzError::Io { .. } => {}
-            SfzError::NotUtf8 { .. } => {}
-            SfzError::SourceTooLarge { .. } => {}
-            SfzError::IncludeNotQuoted { .. } => {}
-            SfzError::IncludeUnterminated { .. } => {}
-            SfzError::IncludeEmptyPath { .. } => {}
-            SfzError::IncludeAbsolutePath { .. } => {}
-            SfzError::IncludeEscape { .. } => {}
-            SfzError::IncludeInvalidPath { .. } => {}
-            SfzError::IncludeNotFound { .. } => {}
-            SfzError::IncludeNotAFile { .. } => {}
-            SfzError::IncludeUnsupportedExtension { .. } => {}
-            SfzError::IncludeNoMatch { .. } => {}
-            SfzError::IncludeCycle { .. } => {}
-            SfzError::IncludeDepthExceeded { .. } => {}
-            SfzError::IncludeCountExceeded { .. } => {}
-            SfzError::GlobMatchesExceeded { .. } => {}
-            SfzError::GlobScanExceeded { .. } => {}
-            SfzError::UnterminatedHeader { .. } => {}
-            SfzError::EmptyHeaderName { .. } => {}
-            SfzError::InvalidInteger { .. } => {}
-            SfzError::IntegerOutOfRange { .. } => {}
-            SfzError::FloatOutOfRange { .. } => {}
-            SfzError::VelocityCurveIndexOutOfRange { .. } => {}
-            SfzError::InvalidFloat { .. } => {}
-            SfzError::NonFiniteFloat { .. } => {}
-            SfzError::InvalidDuration { .. } => {}
-            SfzError::InvalidNote { .. } => {}
-            SfzError::InvalidOption { .. } => {}
-            SfzError::LineTooLong { .. } => {}
-            SfzError::CurveWithoutIndex { .. } => {}
-            SfzError::ReservedCurveIndex { .. } => {}
-            SfzError::DuplicateCurveIndex { .. } => {}
-            SfzError::TooManyRegions { .. } => {}
-            SfzError::TooManyCurves { .. } => {}
-            SfzError::TooManyEffects { .. } => {}
-            SfzError::TooManyMidiSections { .. } => {}
-            SfzError::TooManyMidiOpcodes { .. } => {}
-            SfzError::TooManyOpcodes { .. } => {}
-            SfzError::TooManyDefines { .. } => {}
-            SfzError::MacroExpansionExceeded { .. } => {}
-            SfzError::MacroExpansionTooLong { .. } => {}
-            SfzError::InvalidVoiceCapacity { .. } => {}
-            SfzError::StaleVoiceHandle => {}
+            SfzError::Io { .. } => 0,
+            SfzError::NotUtf8 { .. } => 1,
+            SfzError::SourceTooLarge { .. } => 2,
+            SfzError::IncludeNotQuoted { .. } => 3,
+            SfzError::IncludeUnterminated { .. } => 4,
+            SfzError::IncludeEmptyPath { .. } => 5,
+            SfzError::IncludeAbsolutePath { .. } => 6,
+            SfzError::IncludeEscape { .. } => 7,
+            SfzError::IncludeInvalidPath { .. } => 8,
+            SfzError::IncludeNotFound { .. } => 9,
+            SfzError::IncludeNotAFile { .. } => 10,
+            SfzError::IncludeUnsupportedExtension { .. } => 11,
+            SfzError::IncludeNoMatch { .. } => 12,
+            SfzError::IncludeCycle { .. } => 13,
+            SfzError::IncludeDepthExceeded { .. } => 14,
+            SfzError::IncludeCountExceeded { .. } => 15,
+            SfzError::GlobMatchesExceeded { .. } => 16,
+            SfzError::GlobScanExceeded { .. } => 17,
+            SfzError::UnterminatedHeader { .. } => 18,
+            SfzError::EmptyHeaderName { .. } => 19,
+            SfzError::InvalidInteger { .. } => 20,
+            SfzError::IntegerOutOfRange { .. } => 21,
+            SfzError::FloatOutOfRange { .. } => 22,
+            SfzError::VelocityCurveIndexOutOfRange { .. } => 23,
+            SfzError::InvalidFloat { .. } => 24,
+            SfzError::NonFiniteFloat { .. } => 25,
+            SfzError::InvalidDuration { .. } => 26,
+            SfzError::InvalidNote { .. } => 27,
+            SfzError::InvalidOption { .. } => 28,
+            SfzError::LineTooLong { .. } => 29,
+            SfzError::CurveWithoutIndex { .. } => 30,
+            SfzError::ReservedCurveIndex { .. } => 31,
+            SfzError::DuplicateCurveIndex { .. } => 32,
+            SfzError::TooManyRegions { .. } => 33,
+            SfzError::TooManyCurves { .. } => 34,
+            SfzError::TooManyEffects { .. } => 35,
+            SfzError::TooManyMidiSections { .. } => 36,
+            SfzError::TooManyMidiOpcodes { .. } => 37,
+            SfzError::TooManyOpcodes { .. } => 38,
+            SfzError::TooManyDefines { .. } => 39,
+            SfzError::MacroExpansionExceeded { .. } => 40,
+            SfzError::MacroExpansionTooLong { .. } => 41,
+            SfzError::InvalidVoiceCapacity { .. } => 42,
+            SfzError::StaleVoiceHandle => 43,
         }
     }
 
     #[test]
-    fn the_sfz_error_variant_probe_is_exhaustive() {
-        // 探针必须被**使用**，否则 `dead_code` 会（在 `-D warnings` 下）让门禁变红。
-        every_sfz_error_variant_is_matched(SfzError::StaleVoiceHandle);
+    fn the_sfz_error_golden_table_covers_every_arm_number() {
+        // 把黄金表逐行映射成**臂编号**并断言序列恰为 `0..N`：
+        // 表缺一臂 ⇒ 序列变短 ⇒ 红；表里出现重复臂 ⇒ 序列有重复 ⇒ 红。
+        // （枚举新增变体由 `sfz_error_arm` 的非穷举 `match` 在**编译期**拦下。）
+        let cases = display_cases();
+        let arms: Vec<u8> = cases
+            .iter()
+            .map(|(error, _)| sfz_error_arm(error))
+            .collect();
+        assert_eq!(arms, (0..cases.len() as u8).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn sfz_error_equality_discriminates_different_values() {
+        // R58：黄金表与 `matches!` 判据依赖 `SfzError` 的相等性／模式匹配；
+        // 同一个 `==` 上必须有反向断言（同变体、不同载荷也必须不等）。
+        let not_quoted = SfzError::IncludeNotQuoted {
+            line: 1,
+            text: String::from("a"),
+        };
+        assert_eq!(not_quoted.clone(), not_quoted);
+        assert_ne!(
+            not_quoted,
+            SfzError::IncludeNotQuoted {
+                line: 1,
+                text: String::from("b")
+            },
+            "the payload participates in equality"
+        );
+        assert_ne!(
+            SfzError::IncludeNotQuoted {
+                line: 1,
+                text: String::from("a")
+            },
+            SfzError::IncludeUnterminated { line: 1 },
+            "different variants must not compare equal"
+        );
+        assert_ne!(
+            SfzError::LineTooLong {
+                line: 1,
+                len: 2,
+                limit: 3
+            },
+            SfzError::LineTooLong {
+                line: 1,
+                len: 2,
+                limit: 4
+            },
+            "the limit participates in equality"
+        );
     }
 }

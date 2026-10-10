@@ -2696,11 +2696,12 @@ mod tests {
     // 第十批（R46）：`Warning` 的 `Display` 黄金表 + 截断标记的载荷语义
     // ------------------------------------------------------------------
 
-    #[test]
-    fn every_warning_display_arm_is_pinned() {
-        // R46：`Warning` 此前**没有** `Display`（`Debug` 是唯一渲染通道），现在逐臂钉住文案。
-        // 新增变体会让 `impl Display for Warning` 的**无通配符** match 编译失败。
-        let cases: [(Warning, &str); 8] = [
+    /// `Warning` 黄金表的唯一来源：每个变体一条 `(告警值, 期望 Display 文案)`。
+    ///
+    /// R48：这张表**必须**与 `warning_arm` 的臂编号一一对应
+    /// （由 `the_warning_golden_table_covers_every_arm_number` 守住）。
+    fn warning_display_cases() -> [(Warning, &'static str); 8] {
+        [
             (
                 Warning::IgnoredHeader {
                     line: 7,
@@ -2749,34 +2750,45 @@ mod tests {
                 },
                 "warning list capped at 256: 3 warning(s) dropped",
             ),
-        ];
+        ]
+    }
+
+    #[test]
+    fn every_warning_display_arm_is_pinned() {
+        // R46：`Warning` 此前**没有** `Display`（`Debug` 是唯一渲染通道），现在逐臂钉住文案。
+        // 新增变体会让 `impl Display for Warning` 的**无通配符** match 编译失败。
+        let cases = warning_display_cases();
         assert_eq!(cases.len(), 8, "one case per variant");
         for (warning, expected) in cases {
             assert_eq!(format!("{warning}"), expected, "Display for {warning:?}");
         }
     }
 
-    /// R48 穷举探针：`Warning` 新增变体时这里**编译失败**
-    /// （黄金表只数「表」的条数，读不到枚举本身）。
-    fn every_warning_variant_is_matched(warning: Warning) {
+    /// R48／R51 穷举探针：返回**臂编号**（`0..N`），**无通配符分支**。
+    ///
+    /// ⚠️ 本 `match` 必须保持**无通配符**：加一个 `_` 就会让 R48 失效
+    ///（第十批 L6 实测「给探针加通配符 ⇒ 所有判据仍全绿」，见裁决 R51）。
+    /// 新增变体时这里会**编译失败**（`error[E0004]`）；`impl Display for Warning`
+    /// 的 `match` 是第二道同类保险。
+    fn warning_arm(warning: &Warning) -> u8 {
         match warning {
-            Warning::IgnoredHeader { .. } => {}
-            Warning::UndefinedMacro { .. } => {}
-            Warning::IncludeIgnored { .. } => {}
-            Warning::RegionWithoutSample { .. } => {}
-            Warning::UnknownDirective { .. } => {}
-            Warning::MalformedDefine { .. } => {}
-            Warning::MalformedSetCc { .. } => {}
-            Warning::Truncated { .. } => {}
+            Warning::IgnoredHeader { .. } => 0,
+            Warning::UndefinedMacro { .. } => 1,
+            Warning::IncludeIgnored { .. } => 2,
+            Warning::RegionWithoutSample { .. } => 3,
+            Warning::UnknownDirective { .. } => 4,
+            Warning::MalformedDefine { .. } => 5,
+            Warning::MalformedSetCc { .. } => 6,
+            Warning::Truncated { .. } => 7,
         }
     }
 
     #[test]
-    fn the_warning_variant_probe_is_exhaustive() {
-        every_warning_variant_is_matched(Warning::Truncated {
-            kept: 0,
-            dropped: 0,
-        });
+    fn the_warning_golden_table_covers_every_arm_number() {
+        // 表缺一臂 ⇒ 序列变短 ⇒ 红；表里出现重复臂 ⇒ 序列有重复 ⇒ 红。
+        let cases = warning_display_cases();
+        let arms: Vec<u8> = cases.iter().map(|(w, _)| warning_arm(w)).collect();
+        assert_eq!(arms, (0..cases.len() as u8).collect::<Vec<u8>>());
     }
 
     #[test]
@@ -2848,6 +2860,91 @@ mod tests {
                 kept: 0,
                 dropped: 1
             }]
+        );
+    }
+
+    #[test]
+    fn warning_equality_discriminates_different_values() {
+        // R58：`assert_eq!(instrument.warnings().to_vec(), vec![...])` 依赖 `Warning` 的 `==`；
+        // 削弱它会让那批判据一起变空。这里在**同一个 `==`** 上给反向断言。
+        assert_eq!(
+            Warning::Truncated {
+                kept: 1,
+                dropped: 1
+            },
+            Warning::Truncated {
+                kept: 1,
+                dropped: 1
+            }
+        );
+        assert_ne!(
+            Warning::Truncated {
+                kept: 1,
+                dropped: 1
+            },
+            Warning::Truncated {
+                kept: 1,
+                dropped: 2
+            },
+            "the payload participates in equality"
+        );
+        assert_ne!(
+            Warning::IncludeIgnored { line: 1 },
+            Warning::RegionWithoutSample { line: 1 },
+            "different variants must not compare equal"
+        );
+        assert_ne!(
+            Warning::IncludeIgnored { line: 1 },
+            Warning::IncludeIgnored { line: 2 },
+            "the line participates in equality"
+        );
+    }
+
+    #[test]
+    fn the_truncation_counter_accumulates_across_many_drops() {
+        // `dropped` 是**累计**数：上限 1 ＋ 10 条告警 ⇒ 1 条实质 ＋ 标记 `{ kept: 1, dropped: 9 }`；
+        // 而且标记**恒为一条**（不随每次丢弃增长）。
+        let limits = ParseLimits {
+            max_warnings: 1,
+            ..ParseLimits::default()
+        };
+        let mut text = String::new();
+        for index in 0..10 {
+            text.push_str(&format!("<x{index}>\n"));
+        }
+        text.push_str("<region>sample=a.wav\n");
+        let instrument = parse_text(&text, &limits).expect("warning-only input");
+        let warnings = instrument.warnings();
+        assert_eq!(warnings.len(), 2, "one real warning + one marker");
+        assert_eq!(
+            warnings[1],
+            Warning::Truncated {
+                kept: 1,
+                dropped: 9
+            }
+        );
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|warning| matches!(warning, Warning::Truncated { .. }))
+                .count(),
+            1,
+            "the marker never grows into several entries"
+        );
+
+        // 恰好 n 条**不**出现标记（边界在「第 n + 1 条」上）。
+        let exact = ParseLimits {
+            max_warnings: 2,
+            ..ParseLimits::default()
+        };
+        let instrument =
+            parse_text("<x1>\n<x2>\n<region>sample=a.wav\n", &exact).expect("warning-only input");
+        assert_eq!(instrument.warnings().len(), 2);
+        assert!(
+            instrument
+                .warnings()
+                .iter()
+                .all(|warning| !matches!(warning, Warning::Truncated { .. }))
         );
     }
 }

@@ -1319,3 +1319,29 @@ fn the_region_cap_boundary_is_exact() {
         "unexpected verdict: {error:?}"
     );
 }
+
+#[test]
+fn the_truncation_marker_is_reachable_from_outside_the_crate() {
+    // R46 的载荷必须是**公开**面：本判据从 **crate 外**解构
+    // `Warning::Truncated { kept, dropped }` 并渲染它（enum 变体字段天然公开，
+    // 这里把这一点钉在外部视角 —— crate 内的判据看不到可见性）。
+    let limits = ParseLimits {
+        max_warnings: 1,
+        ..Default::default()
+    };
+    let instrument =
+        parse_text("<x1>\n<x2>\n<x3>\n<region>sample=a.wav\n", &limits).expect("warnings only");
+    let truncated: Vec<(usize, usize)> = instrument
+        .warnings()
+        .iter()
+        .filter_map(|warning| match warning {
+            yeban_sfz::Warning::Truncated { kept, dropped } => Some((*kept, *dropped)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(truncated, vec![(1, 2)]);
+    assert_eq!(
+        instrument.warnings().last().expect("a marker").to_string(),
+        "warning list capped at 1: 2 warning(s) dropped"
+    );
+}

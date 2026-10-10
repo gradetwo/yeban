@@ -6040,4 +6040,92 @@ v127=1
         );
         assert!(instrument.is_empty(), "no region survives these lines");
     }
+
+    // ------------------------------------------------------------------
+    // 第十一批（R58）：凡判据体依赖某个 `==`，必须在**同一个 `==`** 上有反向断言
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn instrument_equality_discriminates_different_reductions() {
+        // 背景（裁决 R58）：`assert_eq!(whole, via_split)` 这类判据只有在 `Instrument` 的
+        // `==` **真的有牙**时才有意义 —— 把 `PartialEq` 削弱成「恒真」会让它们**同时变空
+        // 而一条都不红**。因此这里在**同一个 `==`** 上放反向断言。
+        let a = parse_text("<region>sample=a.wav", &Default::default()).expect("parses");
+        let b = parse_text("<region>sample=b.wav", &Default::default()).expect("parses");
+        assert_eq!(a, a.clone(), "the reflexive case stays");
+        assert_ne!(a, b, "a different sample path must not compare equal");
+
+        // 数值字段参与相等性。
+        let quiet =
+            parse_text("<region>sample=a.wav volume=-6", &Default::default()).expect("parses");
+        assert_ne!(a, quiet, "a different volume must not compare equal");
+
+        // 警告表参与相等性（两个不同的未知段头 ⇒ 两条不同的警告）。
+        let ignored_sample =
+            parse_text("<sample>key=1\n<region>sample=a.wav", &Default::default()).expect("parses");
+        let ignored_other =
+            parse_text("<zzz>key=1\n<region>sample=a.wav", &Default::default()).expect("parses");
+        assert_ne!(
+            ignored_sample, ignored_other,
+            "different warning payloads must not compare equal"
+        );
+
+        // 曲线表参与相等性。
+        let low = parse_text(
+            "<curve>curve_index=7 v000=0.25\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let high = parse_text(
+            "<curve>curve_index=7 v000=0.75\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_ne!(low, high, "different curve data must not compare equal");
+        assert_ne!(
+            low.curves(),
+            high.curves(),
+            "the curve slice keeps its teeth"
+        );
+        assert_eq!(low.curves(), low.clone().curves());
+
+        // `<effect>` / `<midi>` 的归约同样要有牙。
+        let effect_a = parse_text(
+            "<effect>bus=main\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let effect_b = parse_text(
+            "<effect>bus=midi\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        assert_ne!(effect_a.effects(), effect_b.effects());
+        let midi_a = parse_text("<midi>cc1=1", &Default::default()).expect("parses");
+        let midi_b = parse_text("<midi>cc1=2", &Default::default()).expect("parses");
+        assert_ne!(midi_a.midi_sections(), midi_b.midi_sections());
+    }
+
+    #[test]
+    fn playback_spec_equality_discriminates_different_values() {
+        // 同 R58：`assert_eq!(spec, region.playback_spec(..))` 必须有反向断言陪着。
+        let region = first_region("<region>sample=a.wav volume=-3");
+        let spec = region.playback_spec(60, 100, crate::playback::RenderRates::default());
+        assert_eq!(
+            spec,
+            region.playback_spec(60, 100, crate::playback::RenderRates::default()),
+            "the same build repeats"
+        );
+        let louder = first_region("<region>sample=a.wav volume=-2");
+        assert_ne!(
+            spec,
+            louder.playback_spec(60, 100, crate::playback::RenderRates::default()),
+            "a different volume must not produce an equal spec"
+        );
+        let other_note = region.playback_spec(61, 100, crate::playback::RenderRates::default());
+        assert_ne!(
+            spec, other_note,
+            "a different note must not produce an equal spec"
+        );
+    }
 }
