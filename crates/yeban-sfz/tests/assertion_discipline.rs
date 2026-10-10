@@ -943,6 +943,29 @@ fn self_test_classifier() {
     );
 }
 
+/// 对一个源文件求**违例清单**（判据名 + 根 + 缺界的那一句）。
+///
+/// ⭐ R183：把这段抽成**函数**，于是可以用**坏输入**直接证明它有牙
+/// —— ⛔ R180 不许把自检断言写成"集合大小界"，坏输入驱动才是正确形态。
+fn offenders_in(path: &std::path::Path, text: &str) -> Vec<String> {
+    let mut offenders = Vec::new();
+    let cfg_test_at = text.find("#[cfg(test)]");
+    let is_tests_file = path.components().any(|c| c.as_os_str() == "tests");
+    for (name, body, decl_start) in functions(text) {
+        let in_test = is_tests_file || cfg_test_at.is_some_and(|at| decl_start > at);
+        let root = quantified_root(&body, in_test);
+        if is_quantified_assertion(&body, in_test) && !is_evidenced(&body, in_test) {
+            let snippet = quantified_snippet(&body, root.as_deref());
+            offenders.push(format!(
+                "{}::{name}（根 = {:?}）缺界的那一句： {snippet}",
+                path.display(),
+                root.as_deref().unwrap_or("<无>")
+            ));
+        }
+    }
+    offenders
+}
+
 #[test]
 fn no_unbounded_all_any_assertion_in_this_crate() {
     self_test_classifier();
@@ -974,49 +997,37 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         }
     }
     eprintln!("R134 诊断：含 CRLF 的源文件数 = {crlf_files}（归一化后扫描；⛔ 不是失败条件）");
-    // ⭐ R93：先钉住被扫集合**非空且达下界** —— 否则本判据会随着"文件没读到"真空通过。
+    // ⭐ R183／R180：自检**不用集合大小界**，改用**喂坏输入**证明扫描管线有牙。
+    //   绿臂：有界体 ⇒ 0 条违例；红臂：真空体 ⇒ **恰好 1 条**，且**点名判据与根**。
+    let clean_source = "#[test]\nfn t() { let v = f(); assert!(v.len() >= 1); assert!(v.iter().all(|x| *x > 0)); }\n";
+    let bad_source = "#[test]\nfn t() { let v = f(); assert!(v.iter().all(|x| *x > 0)); }\n";
+    let probe = std::path::Path::new("probe.rs");
     assert!(
-        sources.len() >= 12,
-        "R93: the source scan must not go empty, got {}",
-        sources.len()
+        offenders_in(probe, clean_source).is_empty(),
+        "green arm: a bounded body must yield no offender"
     );
-    for dir in &dirs {
-        assert!(
-            sources.iter().any(|(path, _)| path.starts_with(dir)),
-            "every scanned directory must contribute: {}",
-            dir.display()
-        );
-    }
+    let bad_found = offenders_in(probe, bad_source);
+    assert_eq!(
+        bad_found.len(),
+        1,
+        "red arm: an unbounded quantifier must yield exactly one offender: {bad_found:?}"
+    );
+    assert!(
+        bad_found[0].contains("t（根 = \"v\"）"),
+        "the offender must name the criterion and the root: {bad_found:?}"
+    );
+    // 规模只作**诊断**打印（⛔ 不是失败条件）。
+    eprintln!("R183 诊断：源文件 = {}（仅供阅读）", sources.len());
 
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
     for (path, text) in &sources {
-        // **测试上下文**：`tests/**` 整文件；`src/**` 从第一个 `#[cfg(test)]` 起。
-        // 只有测试上下文才启用"尾位量词"这条收窄规则 —— 否则会误伤产线里
-        // `self.gates.iter().all(..)`／`digits.bytes().all(..)` 这类**正常干活**的量词（实测 5 处）。
-        let cfg_test_at = text.find("#[cfg(test)]");
-        let is_tests_file = path.components().any(|c| c.as_os_str() == "tests");
-        for (name, body, decl_start) in functions(text) {
-            scanned += 1;
-            let in_test = is_tests_file || cfg_test_at.is_some_and(|at| decl_start > at);
-            let root = quantified_root(&body, in_test);
-            if is_quantified_assertion(&body, in_test) && !is_evidenced(&body, in_test) {
-                // R131：报"缺界"时**必须能指出缺的是哪一句**（否则先怀疑检查器）。
-                // 这里把**量词断言那一句本身**摘出来（根绑定／提示根名），便于复核。
-                let snippet = quantified_snippet(&body, root.as_deref());
-                offenders.push(format!(
-                    "{}::{name}（根 = {:?}）缺界的那一句： {snippet}",
-                    path.display(),
-                    root.as_deref().unwrap_or("<无>")
-                ));
-            }
-        }
+        let found = offenders_in(path, text);
+        scanned += functions(text).len();
+        offenders.extend(found);
     }
-    // ⭐ R111⑤／R93：运行期计数器 —— 扫过的函数数必须达标。
-    assert!(
-        scanned >= 300,
-        "R93/R111⑤: the scan must cover every test body, only {scanned} seen"
-    );
+    // 扫过的函数数只作**诊断**（⛔ R180：不许当自检界）。
+    eprintln!("R183 诊断：扫过的函数 = {scanned}（仅供阅读）");
     assert!(
         offenders.is_empty(),
         "these functions quantify over a collection without any non-vacuity evidence: {offenders:#?}"
