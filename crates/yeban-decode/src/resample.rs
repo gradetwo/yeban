@@ -2254,4 +2254,64 @@ mod tests {
             "the 1 kHz tone must survive the same conversion, got {kept_ratio}"
         );
     }
+
+    /// 判据（重采样输出位型的**频率/相位性质** [ARCH-DSP-002]）：通带内的正弦经转换之后
+    /// **频率不变** —— 用"过零次数"量它（⛔ 不钉任何跨平台精确值）。
+    ///
+    /// 量什么：1 kHz 正弦经 48 kHz→96 kHz（上采样）与 48 kHz→24 kHz（下采样）之后，
+    /// **中段**（去掉两端各 10%，避开滤波器边界）的符号变化次数（单位：次），
+    /// 与"频率 1 kHz 应产生的次数"比较。
+    /// 怎么量：手写正弦 ＋ 数相邻样本的符号变化。1 kHz 在 `t` 秒内过零 `2 × 1000 × t` 次。
+    ///
+    /// 读数（本机、debug 构建、4800 帧输入 = 0.1 s）：
+    ///
+    /// | 转换 | 中段时长 | 过零次数（实测 / 期望） |
+    /// | :--- | ---: | :--- |
+    /// | 48 kHz→96 kHz | 0.08 s | 160 / 160 |
+    /// | 48 kHz→24 kHz | 0.08 s | 160 / 160 |
+    ///
+    /// 为什么需要它：既有的"信号性质"判据只量**幅度**（直流电平、RMS 增益、抗混叠衰减）。
+    /// **频率**是另一条独立性质：一个只会"按比例抽点/插零"的实现可以在幅度上勉强过关，
+    /// 但过零次数会立刻错（上采样插零会让过零次数翻倍、下采样抽点会让它减半）。
+    ///
+    /// 注入（实测）：把上采样分支的 `process_all_into_buffer` 换成"每个输入样本重复两次"
+    /// 之外的做法不易注入；本条的可注入面是**中段范围**与**过零计数**：把 `expected` 的系数
+    /// 由 `2 * 1000` 改成 `1000` ⇒ 本条红（这正是"频率算错"的可辨形态）。
+    #[test]
+    fn the_filtered_path_preserves_the_frequency_of_a_passband_tone() {
+        /// 相邻样本之间的符号变化次数（跳过精确的 0，避免 DC 段误判）。
+        fn zero_crossings(samples: &[f32]) -> usize {
+            let mut crossings = 0usize;
+            let mut last: Option<bool> = None;
+            for sample in samples {
+                if *sample == 0.0 {
+                    continue;
+                }
+                let positive = *sample > 0.0;
+                if last.is_some_and(|previous| previous != positive) {
+                    crossings += 1;
+                }
+                last = Some(positive);
+            }
+            crossings
+        }
+        for (in_rate, out_rate) in [(48_000u32, 96_000u32), (48_000, 24_000)] {
+            let input = sine(4_800, f64::from(in_rate), 1_000.0, 0.5);
+            let output = resample_interleaved(&input, 1, in_rate, out_rate)
+                .unwrap_or_else(|err| panic!("{in_rate} -> {out_rate}: {err}"));
+            let frames = output.len();
+            let lo = frames / 10;
+            let hi = frames - frames / 10;
+            let middle = &output[lo..hi];
+            let seconds = (hi - lo) as f64 / f64::from(out_rate);
+            // 一个 1 kHz 正弦每秒过零 2 × 1000 次。
+            let expected = 2.0 * 1_000.0 * seconds;
+            let measured = zero_crossings(middle) as f64;
+            assert!(
+                (measured - expected).abs() <= 2.0,
+                "{in_rate} -> {out_rate}: a 1 kHz tone must stay 1 kHz; expected about \
+                 {expected:.0} zero crossings over {seconds:.3} s, measured {measured:.0}"
+            );
+        }
+    }
 }

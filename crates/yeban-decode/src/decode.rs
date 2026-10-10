@@ -4267,4 +4267,102 @@ mod tests {
         );
         assert!(asset.samples().len() == usize::try_from(asset.frame_count()).unwrap());
     }
+
+    /// 判据（串联物理流 / [ARCH-SEC-003]）：**两条物理流串联**的 Ogg 必须以
+    /// [`DecodeError::ResetRequired`] 拒绝，**与第二条流的声道数是否相同无关**。
+    ///
+    /// 量什么：`decode_bytes` 对 [`crate::testfix::ogg_vorbis_chained`] 的返回值 ——
+    /// 第二条第 1 声道与第 2 声道两种取法。
+    /// 怎么量：夹具把同一条最小 Vorbis 流写两遍，`serial` 不同（7 与 8），第二条的识别头声道数
+    /// 由参数决定。
+    ///
+    /// 读数（本机、debug 构建）：两种取法**都**得到
+    /// `Err(DecodeError::ResetRequired)`（文案 `stream requires a decoder reset mid-decode
+    /// (chained stream)`）。
+    ///
+    /// 为什么需要它（两条结论）：
+    /// 1. [`DecodeError::ResetRequired`] 此前**没有入口判据** —— 它只在
+    ///    `symphonia_errors_map_onto_typed_variants` 里被**构造**过一次，而没有任何判据证明
+    ///    真实字节能走到它。
+    /// 2. ⭐ **"中途换声道布局"那条 `InconsistentLayout` 分支不可达**：实测表明串联给的是
+    ///    `ResetRequired`，而不是"第二个缓冲的声道数不同"。⇒ `decode.rs` 里
+    ///    `locked_channels != channels` 那一格的机械理由是"容器不支持在同一逻辑流里换布局"，
+    ///    而"串联"这条唯一候选路径由读端自己先拒了。
+    ///
+    /// 注入（实测）：把夹具第二条的 `serial` 与第一条相同（8 → 7）⇒ 本条**仍然全绿**
+    /// （两种声道数取法都还是 `ResetRequired`）。也就是说**触发条件不是 serial 的差异**，
+    /// 而是"页序列里出现了**第二组 BOS/头页**" —— 读端据此判定"新的逻辑流开始了"。
+    /// 这条读数已按 R51 的口径如实登记：本判据钉的是"第二组头页必被拒"，不是"serial 必须不同"。
+    #[test]
+    fn a_chained_ogg_stream_is_refused_with_a_reset_demand() {
+        for second_channels in [1u8, 2] {
+            let bytes = crate::testfix::ogg_vorbis_chained(3, second_channels);
+            match decode_bytes(&bytes, &DecodeOptions::default()) {
+                Err(DecodeError::ResetRequired) => {}
+                other => panic!(
+                    "a chained Ogg stream (second stream {second_channels} channel(s)) must be \
+                     refused with ResetRequired, got {other:?}"
+                ),
+            }
+        }
+        // 对照：单条物理流（同样的 setup 与数据页）必须**正常解出** —— 证明上面红的是"串联"
+        // 而不是夹具本身坏了。
+        let single = crate::testfix::ogg_vorbis_vq_stream(7, 1, 8, false, 3);
+        let asset = decode_bytes(&single, &DecodeOptions::default())
+            .expect("a single physical stream must still decode");
+        assert_eq!(asset.channels(), 1);
+        assert_eq!(asset.frame_count(), crate::testfix::OGG_FIXTURE_FRAMES);
+    }
+
+    /// 判据（`Floor0` 的**被使用**路径）：`order = 1` ＋ `amplitude_bits = 8` 的 floor0 必须
+    /// 合成出 128 帧，而 `amplitude_bits = 1` 的同一份流必须解不出帧。
+    ///
+    /// 量什么：`decode_bytes` 对 [`crate::testfix::ogg_vorbis_vq_stream`] 在 `amplitude_bits ∈
+    /// {1, 8}` 两档下的返回值（其余字段完全相同，包括 `lookup_type = 1` 的 VQ 码本与
+    /// `delta_value = 1.0`）。
+    /// 怎么量：两条流只在 `amplitude_bits` 那 6 位上不同。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | `amplitude_bits` | 读数 |
+    /// | :--- | :--- |
+    /// | 8 | `Ok`：1 声道、44100 Hz、**128 帧**、全部样本有限（floor 被真正合成） |
+    /// | 1 | 每个音频包都被解码器拒 ⇒ `Err(EmptyStream)` |
+    ///
+    /// 为什么需要它：静音夹具（`amplitude_bits = 0`）走的是"floor 未使用 ⇒ 全部声道
+    /// `do_not_decode`"，**完全不经过** `Floor0::synthesis`。本条让那条路径真的跑起来，
+    /// 并把 `amplitude_bits` 的 1 vs 8 这个**实测边界**钉住。
+    ///
+    /// ⚠ **未诊断的部分（如实登记）**：`Floor0::synthesis` 里有一处
+    /// `if p + q == 0.0 { decode_error("vorbis: invalid floor0 coefficients") }`
+    /// （`symphonia-codec-vorbis/src/floor.rs:326`）。我**读到了**这个条件，但**没能构造出**
+    /// 触发它的输入：把 VQ 系数置零（`delta_value = 0`）在 `amplitude_bits = 8` 下**照常解出**
+    /// 128 帧（实测）。`p`／`q` 是 `(coeff - 2cos ω)` 的连乘，置零的系数要撞上
+    /// `ω ≡ 0 (mod 2π)` 才会让 `p + q == 0`，那取决于 `bark_map_size` 与 bark 映射的具体取值。
+    /// ⇒ 该条件目前**没有判据**，`amplitude_bits = 1` 为何失败也**未诊断**（只钉住读数）。
+    ///
+    /// 注入（实测）：把 `amplitude_bits` 那 6 位固定成 8（把 `= 1` 的用例也写成 8）⇒
+    /// 本条第二格红。
+    #[test]
+    fn a_used_floor0_synthesises_at_amplitude_bits_eight_but_not_one() {
+        let used = crate::testfix::ogg_vorbis_vq_stream(7, 1, 8, false, 3);
+        let asset = decode_bytes(&used, &DecodeOptions::default())
+            .expect("a used floor0 (order = 1, amplitude_bits = 8) must decode");
+        assert_eq!(asset.channels(), 1);
+        assert_eq!(asset.sample_rate(), 44_100);
+        assert_eq!(asset.frame_count(), crate::testfix::OGG_FIXTURE_FRAMES);
+        assert!(
+            asset.samples().iter().all(|sample| sample.is_finite()),
+            "the synthesised floor must produce finite samples"
+        );
+
+        let starved = crate::testfix::ogg_vorbis_vq_stream(7, 1, 1, false, 3);
+        match decode_bytes(&starved, &DecodeOptions::default()) {
+            Err(DecodeError::EmptyStream) => {}
+            other => panic!(
+                "amplitude_bits = 1 must starve the floor so every audio packet is refused, \
+                 got {other:?}"
+            ),
+        }
+    }
 }

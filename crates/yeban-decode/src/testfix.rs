@@ -538,6 +538,138 @@ pub fn ogg_vorbis_silence(packets: u32) -> Vec<u8> {
     out
 }
 
+/// `lookup_type = 1` 的 VQ 码本 ＋ **被使用**的 floor0（`order = 1`）。
+///
+/// 与 [`ogg_vorbis_setup`] 的差别（逐条都是实测出来的）：
+/// - 码本带 VQ lookup（`lookup_type = 1`）：`minimum_value = 0`、`delta_value` 由 `zero_coefficients`
+///   决定、`value_bits = 1`、`sequence_p = 0`，`lookup_values` **不是读出来的**，而是
+///   `lookup1_values(entries = 1, dimensions = 1) = 1`，因此只读 1 个 1 位的 multiplicand（写 1）。
+/// - `delta_value = 1.0` 的 Vorbis 位型是 **`0x62A0_0000`**（`float32_unpack`：`mantissa = 1 << 21`、
+///   `exponent = 788`）；写 0 时 VQ 向量全零。
+/// - floor0 的 `order = 1` ⇒ 音频包里要读一个码字，`coeffs` 来自 VQ 向量。
+///
+/// **`amplitude_bits = 8` 与 `= 1` 不同**（实测）：`amplitude_bits = 1` 时本夹具仍解不出帧，
+/// `= 8` 时解出 128 帧。因此调用方要"被使用的 floor"就传 8。
+///
+/// 零系数（`zero_coefficients = true`）会让 `Floor0::synthesis` 走到
+/// `if p + q == 0.0 { decode_error("vorbis: invalid floor0 coefficients") }`
+/// （`symphonia-codec-vorbis/src/floor.rs:326`），也就是说那个包被拒 ⇒ 整份资产解码失败。
+#[must_use]
+pub fn ogg_vorbis_vq_setup(amplitude_bits: u64, zero_coefficients: bool) -> Vec<u8> {
+    let mut bits = LsbBits::new();
+    bits.put(5, 8);
+    for byte in b"vorbis" {
+        bits.put(u64::from(*byte), 8);
+    }
+    bits.put(0, 8); // codebook_count - 1
+    bits.put(0x56_43_42, 24);
+    bits.put(1, 16); // dimensions
+    bits.put(1, 24); // entries
+    bits.put(0, 1); // ordered
+    bits.put(0, 1); // is_sparse
+    bits.put(0, 5); // code_len - 1
+    bits.put(1, 4); // lookup_type = 1
+    bits.put(0, 32); // minimum_value = 0.0
+    bits.put(if zero_coefficients { 0 } else { 0x62A0_0000 }, 32); // delta_value
+    bits.put(0, 4); // value_bits - 1
+    bits.put(0, 1); // sequence_p
+    bits.put(1, 1); // multiplicand[0]
+    bits.put(0, 6);
+    bits.put(0, 16);
+    bits.put(0, 6); // floor count - 1
+    bits.put(0, 16); // floor_type = 0
+    bits.put(1, 8); // floor0_order = 1
+    bits.put(44_100, 16);
+    bits.put(16, 16); // bark_map_size
+    bits.put(amplitude_bits, 6);
+    bits.put(0, 8);
+    bits.put(0, 4); // number_of_books - 1
+    bits.put(0, 8); // book_list[0]
+    bits.put(0, 6);
+    bits.put(0, 16);
+    bits.put(0, 24);
+    bits.put(0, 24);
+    bits.put(0, 24);
+    bits.put(0, 6);
+    bits.put(0, 8);
+    bits.put(0, 3);
+    bits.put(0, 1);
+    bits.put(0, 6);
+    bits.put(0, 16);
+    bits.put(0, 1);
+    bits.put(0, 1);
+    bits.put(0, 2);
+    bits.put(0, 8);
+    bits.put(0, 8);
+    bits.put(0, 8);
+    bits.put(0, 6);
+    bits.put(0, 1);
+    bits.put(0, 16);
+    bits.put(0, 16);
+    bits.put(0, 8);
+    bits.put(1, 1);
+    bits.finish()
+}
+
+/// 用 [`ogg_vorbis_vq_setup`] 组装的流（`serial` 可指定，便于串联）。
+///
+/// 数据页里的音频包是 `0x12`：位序（LSB-first）`[0 = 音频][amplitude = 1][floor_book_idx = 0]
+/// [码字 = 0][framing = 1]`。
+#[must_use]
+pub fn ogg_vorbis_vq_stream(
+    serial: u32,
+    channels: u8,
+    amplitude_bits: u64,
+    zero_coefficients: bool,
+    packets: u32,
+) -> Vec<u8> {
+    assert!(
+        packets >= 2,
+        "gapless trimming silences the first data page"
+    );
+    let mut ident = ogg_vorbis_ident();
+    ident[11] = channels;
+    let mut out = ogg_page(0x02, 0, serial, 0, &[ident]);
+    out.extend_from_slice(&ogg_page(0, 0, serial, 1, &[ogg_vorbis_comment()]));
+    out.extend_from_slice(&ogg_page(
+        0,
+        0,
+        serial,
+        2,
+        &[ogg_vorbis_vq_setup(amplitude_bits, zero_coefficients)],
+    ));
+    for index in 0..packets {
+        let last = index + 1 == packets;
+        out.extend_from_slice(&ogg_page(
+            if last { 0x04 } else { 0x00 },
+            if last { OGG_FIXTURE_FRAMES } else { 0 },
+            serial,
+            3 + index,
+            &[vec![0x12]],
+        ));
+    }
+    out
+}
+
+/// **两条物理流串联**的 Ogg：第二条用不同的 `serial`（并可选不同声道数）。
+///
+/// 实测：读端对"中途出现新的逻辑流"一律报
+/// `stream requires a decoder reset mid-decode (chained stream)`（[`crate::DecodeError::ResetRequired`]），
+/// **与第二条流的声道数是否相同无关**。⇒ 本 crate 的 `decode_source` 循环里那条
+/// "中途换布局"的分支（`locked_channels != channels`）**不能**由串联 Ogg 到达。
+#[must_use]
+pub fn ogg_vorbis_chained(packets_each: u32, second_channels: u8) -> Vec<u8> {
+    let mut out = ogg_vorbis_vq_stream(7, 1, 8, false, packets_each);
+    out.extend_from_slice(&ogg_vorbis_vq_stream(
+        8,
+        second_channels,
+        8,
+        false,
+        packets_each,
+    ));
+    out
+}
+
 // ---------------------------------------------------------------------------
 // FLAC 夹具
 // ---------------------------------------------------------------------------
