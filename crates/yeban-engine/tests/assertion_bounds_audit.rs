@@ -118,17 +118,46 @@ fn slice_receiver_bound(context: &str) -> Option<(String, String)> {
 fn enclosing_body_start(lines: &[&str], line_no: usize) -> usize {
     let mut index = line_no.saturating_sub(1);
     while index > 0 {
-        let text = lines[index - 1].trim_start();
-        if text.starts_with("fn ")
-            || text.starts_with("pub fn ")
-            || text.starts_with("pub(crate) fn ")
-            || text.starts_with("const fn ")
-        {
+        if is_fn_definition(lines[index - 1]) {
             return index - 1;
         }
         index -= 1;
     }
     0
+}
+
+/// ⭐ **R143**：函数定义行必须用**通用判定**，⛔ 不用前缀清单。
+///
+/// 实测代价（本 crate）：前缀清单只认 `fn `/`pub fn `/`pub(crate) fn `/`const fn `，
+/// 而本 crate 另有 **`pub const fn` 178 处**、`unsafe fn` 15、`pub(super) fn` 10、
+/// `pub(crate) const fn` 2 ⇒ 这些函数的"函数体边界"全部失效 ⇒ 窗口会**借邻居**（假阴）。
+///
+/// 判定 = 逐个剥掉修饰词后，**以 `fn ` 起头**（调用行如 `fn_name();` ⛔ 不匹配）。
+/// ⚠ 剥完若为空串 ⇒ `starts_with` 为假 ⇒ **安全侧**（⛔ 不会静默通过）。
+fn is_fn_definition(text: &str) -> bool {
+    let mut rest = text.trim_start();
+    loop {
+        let before = rest;
+        for keyword in [
+            "pub(crate)",
+            "pub(super)",
+            "pub(self)",
+            "pub",
+            "const",
+            "unsafe",
+            "async",
+            "default",
+            "extern",
+        ] {
+            if let Some(stripped) = rest.strip_prefix(keyword) {
+                rest = stripped.trim_start();
+            }
+        }
+        if rest == before {
+            break;
+        }
+    }
+    rest.starts_with("fn ") || rest.starts_with("fn<")
 }
 
 /// 一行是否是"断言里的 `.all(`"站点。
@@ -213,6 +242,24 @@ fn has_size_bound(source: &str, line_no: usize) -> bool {
     false
 }
 
+/// ⭐ **R136（棘轮双向相等）**：登记了入口、但该站点**已经**有界 ⇒ 这是**陈旧入口**
+/// （修好却忘了删行）⇒ 也必须红。返回 `(文件, 行号)`。
+fn stale_entries(
+    sources: &[(&str, &str)],
+    allowlist: &[(&str, usize, &str)],
+) -> Vec<(String, usize)> {
+    let mut stale = Vec::new();
+    for (file, line, _reason) in allowlist {
+        let Some((_, source)) = sources.iter().find(|(path, _)| path == file) else {
+            continue;
+        };
+        if has_size_bound(source, *line) {
+            stale.push(((*file).to_owned(), *line));
+        }
+    }
+    stale
+}
+
 #[test]
 fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
     // ① R93／R100：被扫集合必须达到下界。
@@ -223,7 +270,7 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
     );
 
     let mut scanned_sites = 0usize;
-    let mut unbounded: Vec<(String, usize)> = Vec::new();
+    let mut unbounded: Vec<(String, usize, String)> = Vec::new();
     for (path, source) in SOURCES {
         for line_no in sites(source) {
             scanned_sites += 1;
@@ -236,7 +283,14 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
             {
                 continue;
             }
-            unbounded.push(((*path).to_owned(), line_no));
+            // ⭐ **R131**：失败信息必须点出**缺界的那一句**（⛔ 不只报文件与行号）。
+            let snippet = source
+                .lines()
+                .nth(line_no - 1)
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            unbounded.push(((*path).to_owned(), line_no, snippet));
         }
     }
 
@@ -251,6 +305,12 @@ fn every_all_assertion_in_this_crate_is_bounded_or_allowlisted() {
         "[assertion-bounds] 扫过 {} 个文件 / {scanned_sites} 个 `.all(` 站点；无界 {} 处：{unbounded:?}",
         SOURCES.len(),
         unbounded.len()
+    );
+    // ⭐ **R136**：陈旧入口也必须红（棘轮双向）。
+    let stale = stale_entries(SOURCES, ALLOWLIST);
+    assert!(
+        stale.is_empty(),
+        "陈旧入口（站点已**有界**却仍登记在 allowlist）⇒ 必须删除该入口：{stale:?}"
     );
     assert!(
         // ⚠ 用 `==` 而不是 `<=`：`UNBOUNDED_BASELINE` 是 `usize` 的最小值 0 时，
@@ -383,5 +443,68 @@ fn the_two_extra_bound_forms_have_their_own_arms() {
     assert!(
         !has_size_bound(near_miss, site_n[0]),
         "⛔ near-miss：钉住的是 `n_other`（⛔ 不是 `drained`）⇒ 不得当作 `drained` 的界（标识符边界）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ **R143**（函数定义行必须通用认）＋ ⭐ **R136**（棘轮**双向**：陈旧入口也红）
+// ＋ ⭐ **R119**（near-miss：`fn name_x(` ⛔ 不得当成 `fn name(`）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn function_definition_lines_are_recognised_generally_not_by_a_prefix_list() {
+    // ⭐ **R143 的实测代价**：本 crate 有 `pub const fn` **178** 处、`unsafe fn` 15、
+    // `pub(super) fn` 10 —— 前缀清单（只认 `fn `/`pub fn `/`const fn `…）**全都不认**。
+    for form in [
+        "fn plain(",
+        "pub fn public(",
+        "pub const fn public_const(",
+        "pub(crate) const fn crate_const(",
+        "pub(super) fn super_fn(",
+        "unsafe fn unsafe_fn(",
+        "const fn const_fn(",
+        "    async fn async_fn(",
+        "pub fn generic<T: Copy>(",
+    ] {
+        assert!(
+            is_fn_definition(form),
+            "通用判定必须认出函数定义行：{form:?}"
+        );
+    }
+
+    // ⭐ **R119 near-miss**：**调用行**与**别的名字**都不得被当成定义行。
+    for not_def in ["    fn_name();", "    let fn_like = 1;", "    pub fnx();"] {
+        assert!(
+            !is_fn_definition(not_def),
+            "⛔ 非定义行不得被当成函数定义：{not_def:?}"
+        );
+    }
+}
+
+#[test]
+fn the_ratchet_is_bidirectional_and_flags_stale_entries() {
+    // 夹具：一个**有界**的站点（同函数体里有 `len() >=`）＋ 一条把它登记为"无界"的入口
+    // ⇒ ⭐ **陈旧入口**（修好却忘删行）必须被报出来。
+    let source =
+        "fn t() {\n    assert!(xs.len() >= 3);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let sources: &[(&str, &str)] = &[("fake.rs", source)];
+    let site = sites(source);
+    assert_eq!(site.len(), 1, "对照夹具必须恰好 1 个站点");
+
+    let stale = stale_entries(sources, &[("fake.rs", site[0], "陈旧：此处其实已经有界")]);
+    assert_eq!(
+        stale.len(),
+        1,
+        "⭐ R136：站点已有界却仍登记 ⇒ 必须报出陈旧入口（棘轮双向）"
+    );
+
+    // 反向对照：把入口挂到一个**真的无界**站点上 ⇒ **不是**陈旧入口。
+    let unbounded_source = "fn t() {\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let sources2: &[(&str, &str)] = &[("fake.rs", unbounded_source)];
+    let site2 = sites(unbounded_source);
+    let not_stale = stale_entries(sources2, &[("fake.rs", site2[0], "仍在缺口里")]);
+    assert!(
+        not_stale.is_empty(),
+        "⛔ 真缺口上的入口**不是**陈旧入口（不得误报）"
     );
 }
