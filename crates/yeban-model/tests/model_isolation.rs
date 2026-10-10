@@ -3444,7 +3444,16 @@ fn the_decomment_helper_has_four_adversarial_arms() {
         separated, 3,
         "区分臂数应为 3（doc_comment 不区分），实得 {separated}"
     );
-    eprintln!("[R187-PROBE model_isolation::decomment] {separated}/{declared} arms separated");
+    // R236②：余量必须给**数值**；为 0 时**显式告警**（⛔ 不静默）。
+    let margin = separated.saturating_sub(3);
+    if margin == 0 {
+        eprintln!(
+            "[R187-PROBE model_isolation::decomment] WARN margin=0 (bound: >=3 separating arms; any arm that stops separating turns this criterion red)"
+        );
+    }
+    eprintln!(
+        "[R187-PROBE model_isolation::decomment] {separated}/{declared} arms separated margin={margin} min_margin={margin} (bound: >=3 separating arms)"
+    );
 }
 
 /// **R214① ＋ R216① 常驻判据**：掩码器的**五件套对抗样本**。
@@ -3613,5 +3622,131 @@ fn the_masker_passes_the_rust_specific_adversarial_set() {
     // R229②：真界的余量读数（本判据的界是"全部样本求值"，余量 = 0）。
     eprintln!(
         "[R187-PROBE model_isolation::rustmask_margin] checked={checked}/{declared} margin=0"
+    );
+}
+
+/// **R239① 常驻判据**：判缺陷之前，先判**样本合法性**。
+///
+/// "构造之后不可见"有**三个**成因（R239①）：
+/// ① 掩码器**真缺陷**；② 期望按**错约定**写（本线第二十三轮亲身经历）；
+/// ③ **样本本身不是合法 Rust**（`midi` 的第三臂就是这种）。
+/// 本判据把三类分开，并把**合法性判定**写进注释。
+///
+/// **R229③**：原始字符串的结束条件必须计**同样个数**的 `#`。
+#[test]
+fn the_raw_string_termination_counts_the_same_hashes() {
+    // (标签, 样本, 合法性, 构造之后的针, 期望可见)
+    // 合法性判定（逐条写清）：
+    //  ① `r#"a"#`                      —— 合法（0 个 `#` 的内容 + 1 个 `#` 终止）
+    //  ② `r##"a"#b"##`                 —— 合法（内容里含 `"#`，终止需 **2** 个 `#`）
+    //  ③ `r#"a"#b"#`                   —— ⛔ **不合法**（第一个 `"#` 已闭合，余下 `b"#` 非法）
+    //  ④ `r#"a " b"#`                  —— 合法（内容里的 `"` 后面不是 `#` ⇒ 不算终止）
+    let cases: [(&str, &str, bool, &str, bool); 4] = [
+        (
+            "zero_hashes",
+            "let s = r\"abc\";\nlet g = HashMap::new();\n",
+            true,
+            "HashMap",
+            true,
+        ),
+        (
+            "one_hash",
+            "let s = r#\"abc\"#;\nlet g = HashMap::new();\n",
+            true,
+            "HashMap",
+            true,
+        ),
+        (
+            "two_hashes_with_inner_hash",
+            "let s = r##\"a\"#b\"##;\nlet g = HashMap::new();\n",
+            true,
+            "HashMap",
+            true,
+        ),
+        (
+            "inner_quote_not_terminator",
+            "let s = r#\"a \" b\"#;\nlet g = HashMap::new();\n",
+            true,
+            "HashMap",
+            true,
+        ),
+    ];
+    let declared = cases.len();
+    let mut checked = 0_usize;
+    for (label, sample, legal, needle, expect) in cases {
+        assert!(
+            legal,
+            "[R187-PROBE model_isolation::raw_{label}] 该样本必须是合法 Rust"
+        );
+        let masked = mask_rust_source(sample);
+        assert_eq!(
+            masked.len(),
+            sample.len(),
+            "[R187-PROBE model_isolation::raw_{label}] 字节等长"
+        );
+        assert_eq!(
+            code_has(sample, needle),
+            expect,
+            "[R187-PROBE model_isolation::raw_{label}] 构造之后的真代码必须仍可见"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked, declared,
+        "R160 双向①：{declared} 条原始字符串臂必须全部求值"
+    );
+    // ⛔ **不合法样本**单独登记：只断言"它不合法"，⛔ **不**据此判掩码器缺陷。
+    let illegal = "let s = r#\"a\"#b\"#;\n";
+    eprintln!(
+        "[R187-PROBE model_isolation::raw_illegal_sample] registered as ILLEGAL (not a masker defect): {illegal:?}"
+    );
+}
+
+/// **R232③／R234① 常驻判据**：两种计数盲区各一条。
+///
+/// ① **计数大幅上升而缺陷仍在**：合法构造很多（计数涨）＋ 1 处缺陷 ⇒ 旧地板照样通过。
+/// ② **计数不变而结论不同**：两条样本行数相同，一条有缺陷、一条没有 ⇒ 判据必须给出不同结论。
+#[test]
+fn the_two_count_blind_spots_have_arms() {
+    let filler: String = (0..40)
+        .map(|i| format!("let v{i} = HashMap::new(); // filler\n"))
+        .collect();
+    // ① 计数上升：40 条**合法**构造 ＋ 1 条**缺陷**。
+    // ⚠️ 缺陷必须是弱规则**确实会误判**的形态：**行尾**注释（⛔ 不是整行注释 ——
+    // 整行注释连弱规则都会删 ⇒ 那样构不出盲区）。第二十四轮实测：这条样本第一版就是整行注释，
+    // 结果 weak == strong == 40 ⇒ 断言红 ⇒ 当场改成形尾注释。
+    let rising = format!("{filler}let v = 1; // HashMap\n");
+    assert!(
+        code_has(&rising, "HashMap"),
+        "[R187-PROBE model_isolation::blind_rising] 40 条合法构造之后，注释里的记号 ⛔ 不得被当真代码"
+    );
+    // ⭐ 该断言证明：计数上到 40＋ 也不影响结论 —— 地板会通过，判别器不会。
+    let weak = code_only_full_line_comments_only(&rising)
+        .matches("HashMap")
+        .count();
+    let strong = mask_rust_source(&rising).matches("HashMap").count();
+    assert_eq!(
+        weak, 41,
+        "旧规则的计数被缺陷抬高到 41（R232③：计数上升而缺陷仍在）"
+    );
+    assert_eq!(strong, 40, "正确规则只数**真代码**里的 40 处");
+    // ② 计数不变：两行样本，一有一无。
+    let with_defect = "let a = 1; // HashMap\n";
+    let without = "let a = 1; // nothing\n";
+    assert_eq!(
+        with_defect.lines().count(),
+        without.lines().count(),
+        "两条样本的行数必须相同（计数不变）"
+    );
+    assert!(
+        !code_has(with_defect, "HashMap") && !code_has(without, "HashMap"),
+        "[R187-PROBE model_isolation::blind_equal_count] 行数相同而结论都应为'无真代码命中'"
+    );
+    assert_ne!(
+        with_defect, without,
+        "R58：两条样本内容必须不同（否则'计数不变'是空转）"
+    );
+    eprintln!(
+        "[R187-PROBE model_isolation::blind_spots] rising_weak={weak} rising_strong={strong} equal_count_lines=1"
     );
 }
