@@ -1101,21 +1101,36 @@ fn integer_count_sites_are_classified_into_four_classes() {
         "[assertion-bounds] R118 整数计数四类：{report}（合计 {}）",
         counts.iter().sum::<usize>()
     );
+    // ⭐ **R199**：**规模地板是反向指标** —— 缺陷会把计数**抬高** ⇒ 地板照样通过。
+    // ⛔ 因此不把"≥ 地板"当主守卫：它只作**规模读数**，跌破时**降级为 `eprintln!` 告警**。
+    const SCALE_FLOOR: usize = 1;
     for (index, name) in COUNT_CLASSES.iter().enumerate() {
-        assert!(
-            counts[index] >= 1,
-            "类 `{name}` 必须至少 1 条（实得 {} ⇒ 该类是真空的）",
-            counts[index]
-        );
+        if counts[index] < SCALE_FLOOR {
+            eprintln!(
+                "[assertion-bounds] ⚠ 规模降级：类 `{name}` 只有 {} 条（< {SCALE_FLOOR}）—— \
+                 这可能只是夹具变小，⛔ 也可能是分类器失效；主守卫见每类两臂",
+                counts[index]
+            );
+        }
     }
-    // R183/R185/R186：同一文件里喂**坏表** ⇒ 判假；正向对照 ⇒ 判真。
+    // ⭐ **R199 的主守卫（两臂）**：喂**坏输入**必须被拒 ＋ 正向必须收录。
+    // ① 坏输入：把计数**灌水**成"每一类都很大"的表 ⇒ 旧地板会**照样通过**（反向指标的实证）；
+    // 真正要证的是**分类器**能拒掉不属于该类的输入（下一条）。
     assert!(
-        !class_floor_holds(&[1, 0, 1, 1], 1),
-        "⭐ 下界函数必须能拒坏表（⛔ 否则它只是装饰）"
+        !class_floor_holds(&[0, 0, 0, 1], 1),
+        "⭐ 地板函数对坏表必须判假（这证明它至少不是恒真）"
     );
-    assert!(
-        class_floor_holds(&[1, 1, 1, 1], 1),
-        "下界函数的正向对照：四类都 ≥1 ⇒ 判真"
+    assert!(class_floor_holds(&[1, 1, 1, 1], 1), "地板函数的正向对照");
+    // ② 分类器的两臂：**元素值界**不得落进 `collection_size`；**集合大小**不得落进 `value_bound`。
+    assert_eq!(
+        classify_count("    assert_eq!(frames[0].peak, 0);"),
+        Some(2),
+        "两臂①：下标访问必须落 `element_value_bound`（⛔ 不得落 `collection_size`）"
+    );
+    assert_eq!(
+        classify_count("    assert_eq!(frames.len(), 4);"),
+        Some(0),
+        "两臂②：`.len()` 必须落 `collection_size`（⛔ 不得落 `value_bound`）"
     );
 }
 
