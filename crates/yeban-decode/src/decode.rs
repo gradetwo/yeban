@@ -4466,7 +4466,8 @@ mod tests {
         let all_needle = concat!(".", "all");
         let temp_needle = concat!("env::", "temp_dir()");
         let bound_needles = ["frame_count", ".len()", ".count()", "is_empty", "!= 0"];
-        let expect_needles = [concat!(".", "expect("), concat!(".", "unwrap(")];
+        let loud_needles = [concat!(".", "expect("), concat!(".", "unwrap(")];
+        let write_needles = ["fs::write(", concat!("File::", "create("), "OpenOptions"];
 
         /// **保字节数**地把 行注释 与 双引号字符串 的内容换成空格（R113：⛔ 不能改长度，
         /// 否则行号与偏移都会错位 ⇒ 真违规会被静默跳过）。换行符本身保留。
@@ -4544,10 +4545,16 @@ mod tests {
         }
 
         /// 返回所有 `env::temp_dir()` 之后 `window` 行内**没有** `.expect(` 的行号。
+        /// ⚠ **R114（根绑定）**：② 的界必须挂在**那条写入语句自己**身上，⛔ 不是"窗口里某处
+        /// 有 `.expect(`"。实测：窗口 12/60 时，删掉写入的 `.unwrap()` 之后窗口里**别的** `.unwrap()`
+        /// （`cleanup.unwrap()` 等）会把空档填上 ⇒ 注入 **ALL-GREEN**（借来的界）；
+        /// 而窗口收到 3 行又会漏掉本 crate 第一处（写入在 `temp_dir()` 之后 **9 行**，中间是多行
+        /// `format!`）⇒ 产生**假违规**。⇒ 正解是"找窗口里**第一条写入语句**，要求**它自己**带响亮失败"。
         fn scan_temp_dir(
             source: &str,
             temp_needle: &str,
-            expect_needles: &[&str],
+            loud_needles: &[&str],
+            write_needles: &[&str],
             window: usize,
         ) -> Vec<(usize, String)> {
             let lines: Vec<&str> = source.lines().collect();
@@ -4557,10 +4564,16 @@ mod tests {
                     continue;
                 }
                 let last = (index + window).min(lines.len());
-                if !lines[index..last]
+                let window_lines = &lines[index..last];
+                let write = window_lines
                     .iter()
-                    .any(|later| expect_needles.iter().any(|needle| later.contains(needle)))
-                {
+                    .position(|later| write_needles.iter().any(|needle| later.contains(needle)));
+                let loud_on_write = write.is_some_and(|offset| {
+                    loud_needles
+                        .iter()
+                        .any(|needle| window_lines[offset].contains(needle))
+                });
+                if !loud_on_write {
                     findings.push((index + 1, (*line).to_owned()));
                 }
             }
@@ -4594,7 +4607,7 @@ mod tests {
             "known-red: an `.all(` with no set-size bound in its window must be reported"
         );
         assert_eq!(
-            scan_temp_dir(&mask(red), temp_needle, &expect_needles, 60).len(),
+            scan_temp_dir(&mask(red), temp_needle, &loud_needles, &write_needles, 60).len(),
             1,
             "known-red: a temp_dir without a later .expect( must be reported"
         );
@@ -4603,7 +4616,7 @@ mod tests {
             "known-green: a `.all(` preceded by `.len()` must not be reported"
         );
         assert!(
-            scan_temp_dir(&mask(green), temp_needle, &expect_needles, 60).is_empty(),
+            scan_temp_dir(&mask(green), temp_needle, &loud_needles, &write_needles, 60).is_empty(),
             "known-green: a temp_dir followed by .expect( must not be reported"
         );
         // R113③：掩码**必须保字节数**（否则行号/偏移错位 ⇒ 真违规会静默跳过）。
@@ -4621,6 +4634,37 @@ mod tests {
         assert!(
             !mask("let s = \"env::temp_dir()\";").contains(temp_needle),
             "known-red for the masker: a needle inside a string literal must be masked out"
+        );
+
+        // 已知红（② 的**新分支**：写入存在、但**不响亮**）—— root-bound 之后必须仍然报 1 条。
+        let red_silent_write = concat!(
+            "fn h() {\n",
+            "    let mut p = ",
+            "env::temp_dir();\n",
+            "    std::fs::write(&p, b\"x\").",
+            "ok();\n",
+            "}\n",
+        );
+        assert_eq!(
+            scan_temp_dir(
+                &mask(red_silent_write),
+                temp_needle,
+                &loud_needles,
+                &write_needles,
+                60,
+            )
+            .len(),
+            1,
+            "known-red: a write whose failure is swallowed must be reported"
+        );
+
+        // ⭐ **假清洁的固化对照**（R119）：把 `(` 也放进针里、再要求后面还有 `(`（本判据第一版的
+        // 错误规格）去扫**同一条已知红** ⇒ 得到 **0 条**。把这件事写成断言，"针为什么只到
+        // `.all`" 才有机器可核的理由，而不是文档里的一句话。
+        let wrong_needle = concat!(".", "all(");
+        assert!(
+            scan_all(red, wrong_needle, &bound_needles, 40).is_empty(),
+            "the mis-specified needle must find nothing on the known-red sample — that false-clean              is exactly what this control prevents"
         );
 
         // ---- 真扫本 crate 的四个源文件（`include_str!` 的路径相对本文件所在目录）----
@@ -4642,7 +4686,8 @@ mod tests {
                 "{name}: every `.all(` must have a set-size bound within 40 lines, offenders: \
                  {offenders:?}"
             );
-            let temp_offenders = scan_temp_dir(&masked, temp_needle, &expect_needles, 60);
+            let temp_offenders =
+                scan_temp_dir(&masked, temp_needle, &loud_needles, &write_needles, 60);
             temp_sites += masked.matches(temp_needle).count();
             assert!(
                 temp_offenders.is_empty(),
