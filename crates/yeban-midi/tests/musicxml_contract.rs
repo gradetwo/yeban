@@ -2802,3 +2802,49 @@ fn the_declared_length_limit_fires_before_the_compression_method() {
         "声明长度上界先于压缩法检查开火（⛔ 不是 UnsupportedCompression）"
     );
 }
+/// 判据 (第四类"两条都坏时报哪一条"): `entry_data` **先查本地头签名、再读两个 16 位
+/// 长度字段**（`name_len` / `extra_len`）。
+///
+/// 补的是哪个缺口（本票注入实测）：把两个 `u16_at(offset + 26/28)` 的读取**提前**到签名
+/// 检查之前（注入 `b10:ORD16`）后全部判据**保持绿** —— 既有判据要么签名对、要么长度可读，
+/// 从不同时给两个坏条件（`read_entry` 的三对次序已在批七/批八/批九打满，本判据补的是
+/// **`entry_data` 内部**这一对）。
+#[test]
+fn the_local_header_signature_is_checked_before_the_length_fields() {
+    let container = container_xml("score.xml");
+    let mut zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    let eocd = zip.len() - 22;
+    let central = le32(&zip, eocd + 16) as usize;
+    let first_record_len = 46 + b"META-INF/container.xml".len();
+    let second = central + first_record_len;
+    assert_eq!(
+        &zip[second..second + 4],
+        b"PK\x01\x02",
+        "第二条中央目录记录"
+    );
+
+    // 把 `score.xml` 的 local_offset 指到"文件尾前 8 字节"：那里既不是本地头签名，
+    // 也读不到 `+26` / `+28` 两个 16 位字段。
+    let start = zip.len() - 8;
+    zip[second + 42..second + 46].copy_from_slice(&(start as u32).to_le_bytes());
+    assert_ne!(
+        &zip[start..start + 4],
+        b"PK\x03\x04".as_slice(),
+        "前提：那 4 个字节不是本地头签名"
+    );
+    assert!(start + 28 > zip.len(), "前提：+26/+28 越界");
+
+    match parse_mxl(&zip) {
+        Err(MxlError::Malformed { offset, detail }) => {
+            assert_eq!(offset, start, "错必须报到签名处");
+            assert_eq!(detail, "local file header 的签名不是 PK\\x03\\x04");
+        }
+        other => panic!("签名与长度字段同时坏掉时必须先报签名，得到 {other:?}"),
+    }
+}

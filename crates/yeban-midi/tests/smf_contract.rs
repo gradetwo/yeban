@@ -1312,3 +1312,58 @@ fn running_status_and_explicit_status_bytes_parse_identically() {
         .expect("running status 下的零力度 NoteOn 也必须可读");
     assert_eq!(parsed_keys(&closed), vec![(0, 60, 64, 0, 96)]);
 }
+/// 判据 (R70②: **交付字节的字面契约**): 一份最小导出（格式 0、960 PPQ、**无 tempo**、
+/// 一条无名轨道、一颗 0→480 的 C4 音符）的**完整 35 字节**逐字节钉住。
+///
+/// ## 补的是哪个缺口（R70②）
+///
+/// 本 crate 的字节面此前只有"**两次运行相同**"式的判据 ——
+/// `export_is_byte_deterministic` / `two_exports_of_the_same_project_are_byte_identical` /
+/// `export_is_byte_deterministic_across_two_calls` —— 那是**自比**：换一条编码路径
+/// （或 `midly` 升级）后它们**仍然全绿**，而**交付出去的字节已经变了**。
+/// `exported_bytes_have_literal_smf1_header_and_terminators` 只钉了头部 + conductor 轨 +
+/// 音符轨的**前缀**，⛔ 不是整份文件。本判据把整份文件（35 字节）写成字面量。
+///
+/// ## 字节面的三件套（逐个给）
+///
+/// | 面 | 生产者 | 读者 | 字面摘要 |
+/// | :--- | :--- | :--- | :--- |
+/// | `.mid` 导出 | `MidiExport::to_smf_bytes`（`midly` 的 `write_std`） | 本 crate 的 `parse_smf` / `track_chunks` / `vlq` | ⭐ **本判据：整份 35 字节** ＋ `exported_bytes_have_literal_smf1_header_and_terminators`（头部/轨首/轨尾） |
+/// | 真 `.mid` 夹具 | 公共领域文件（已提交，字节由文件内容固定） | 同上 | `real_world_smf.rs` 的**已测读数**（逐音符 / tempo 记录） |
+/// | `.mxl` 容器 | ⛔ **本 crate 不写出**（只读） | `parse_mxl` | 已提交夹具的**文件字节**（SHA-256 登记在 `tests/fixtures/README.md`） |
+/// | `.mxl` 的 DEFLATE 载荷 | 判据侧的 `deflate_stored_block` / `BitWriter` | `inflate_raw` | `inflate` 单元判据的**字面字节数组**（如 `[0x01, 0x00, 0x00, 0xff, 0xff]`） |
+#[test]
+fn a_minimal_export_is_pinned_byte_for_byte() {
+    let export = MidiExport {
+        format: MidiFormat::SingleTrack,
+        ppq: DEFAULT_PPQ,
+        tempos: Vec::new(),
+        tracks: vec![MidiExportTrack {
+            name: String::new(),
+            channel: 0,
+            notes: vec![note(0, 60, 480)],
+        }],
+    };
+    let bytes = export.to_smf_bytes().expect("编码");
+    assert_eq!(
+        bytes,
+        vec![
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, // "MThd" + 负载长度 6
+            0x00, 0x00, // 格式 0（大端）
+            0x00, 0x01, // 1 条轨道（大端）
+            0x03, 0xC0, // 960 PPQ（大端）
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x0D, // "MTrk" + 负载长度 13
+            0x00, 0x90, 0x3C, 0x64, // delta 0, NoteOn ch0 key 60 vel 100
+            0x83, 0x60, 0x80, 0x3C, 0x00, // delta 480, NoteOff ch0 key 60 vel 0
+            0x00, 0xFF, 0x2F, 0x00, // EndOfTrack
+        ],
+        "最小导出的完整字节（字面契约）"
+    );
+    assert_eq!(bytes.len(), 35, "长度本身也是契约的一部分");
+    assert_eq!(&bytes[14..18], b"MTrk", "第 14 字节起是第二条 chunk 的标识");
+    assert_eq!(
+        &bytes[18..22],
+        &[0x00, 0x00, 0x00, 0x0D],
+        "MTrk 的负载长度字段（大端 13）"
+    );
+}

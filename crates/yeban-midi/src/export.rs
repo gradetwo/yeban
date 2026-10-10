@@ -1220,4 +1220,45 @@ mod tests {
             "黄金表必须逐臂恰好一次（缺一臂或重复都红）"
         );
     }
+
+    /// 判据 (类别: 公开 `Debug` 形状，续): `MidiExportError` 与 `InflateErrorKind` 的派生
+    /// `Debug` 输出逐字面钉住。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把这两个枚举的 `#[derive(Debug)]` 各顶成一个写死的
+    /// 手写 `impl Debug`（注入 `b10:DBG15` / `b10:DBG16`）后全部判据**保持绿**。
+    /// ⛔ `CentralEntry` **不在**此列：它是**私有**结构体，其 `Debug` 不是公开面。
+    ///
+    /// ⚠️ **依赖行为钉子（照实登记）**：`DanglingClip` 里的两个字段是
+    /// `yeban_model::EntityId`，它的 `Debug` 是**派生**的 ⇒ 打印成
+    /// `EntityId(Ulid(N))`（`ulid` crate 的 `Ulid` 的 `Debug`）。这一段的形状由
+    /// **`ulid` 依赖**决定，⛔ 不是本 crate 的形状；换 `ulid` 版本它就可能变。
+    #[test]
+    fn remaining_error_debug_shapes_are_pinned() {
+        assert_eq!(
+            format!("{:?}", MidiExportError::NoMidiContent),
+            "NoMidiContent"
+        );
+        assert_eq!(
+            format!("{:?}", MidiExportError::Encode(MidiError::NoTracks)),
+            "Encode(NoTracks)"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                MidiExportError::DanglingClip {
+                    track: crate::midi::entity_id("00000000000000000000000000").expect("ULID"),
+                    clip: crate::midi::entity_id("00000000000000000000000001").expect("ULID"),
+                }
+            ),
+            "DanglingClip { track: EntityId(Ulid(0)), clip: EntityId(Ulid(1)) }"
+        );
+        assert_eq!(
+            format!("{:?}", crate::mxl::InflateErrorKind::Malformed),
+            "Malformed"
+        );
+        assert_eq!(
+            format!("{:?}", crate::mxl::InflateErrorKind::Limit),
+            "Limit"
+        );
+    }
 }

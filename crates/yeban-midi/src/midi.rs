@@ -1997,4 +1997,93 @@ mod tests {
         };
         assert!(finite() == finite(), "有限概率 ⇒ 两份相同的轨道必须相等");
     }
+
+    /// 判据 (类别: `PartialEq` 的**浮点面**): `-0.0` 与 `+0.0` **相等**、次正规数与自身
+    /// **相等** —— `PartialEq` 用的是 IEEE 的 `==`（⛔ 不是按位比较）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `MidiExportTrack` 的 `PartialEq` 改成比较概率的
+    /// **位模式**（`f32::to_bits`，注入 `b10:FLT03`）后全部判据里只有本批之前的 NaN 判据变红；
+    /// 而**按位比较**与 **NaN 判据**是两件不同的事：一个"字段全等才算相等"的实现会让
+    /// `-0.0` 与 `+0.0` 不等，而 NaN 那一侧的反自反性仍然成立。
+    #[test]
+    fn float_sign_and_subnormals_do_not_break_track_equality() {
+        let note_id = entity_id("00000000000000000000000000").expect("ULID");
+        let track = |probability: f32| MidiExportTrack {
+            name: "A".to_owned(),
+            channel: 0,
+            notes: vec![MidiNote {
+                probability: Some(probability),
+                ..MidiNote::new(note_id, 0, 60, 480)
+            }],
+        };
+
+        // IEEE：`-0.0 == 0.0` ⇒ 两个**符号位不同**的轨道必须相等。
+        assert!(
+            track(-0.0) == track(0.0),
+            "-0.0 与 +0.0 必须相等（⛔ 不是按位比较）"
+        );
+
+        // 次正规数（最小正正规数的一半）与自身相等。
+        let subnormal = f32::MIN_POSITIVE / 2.0;
+        assert!(
+            subnormal > 0.0 && subnormal < f32::MIN_POSITIVE,
+            "前提：这个值确实是次正规数"
+        );
+        assert!(
+            track(subnormal) == track(subnormal),
+            "次正规数与自身必须相等"
+        );
+
+        // 反向臂：真正不同的值必须不等。
+        assert!(track(0.1) != track(0.2), "不同概率必须不等");
+        // 反向臂：`None` 与 `Some(0.0)` 必须不等。
+        let none = MidiExportTrack {
+            name: "A".to_owned(),
+            channel: 0,
+            notes: vec![MidiNote::new(note_id, 0, 60, 480)],
+        };
+        assert!(none != track(0.0), "None 与 Some(0.0) 必须不等");
+    }
+
+    /// 判据 (类别: `Clone` 的**深拷贝**语义): `MidiExportTrack::clone` 必须把
+    /// `Vec<MidiNote>` 里的载荷（以及 `MidiNote` 自己的 `String` / `Vec` 载荷）
+    /// **真的复制**一份 —— 改克隆不影响原件。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `Clone` 顶成一个丢掉 `notes` 的手写实现
+    /// （注入 `b10:CLN01`）后全部判据**保持绿** ⇒ 本 crate 此前没有任何判据查过
+    /// `clone()` 的**深拷贝**语义（判据都用 `clone()`，但从没验证它复制了载荷）。
+    #[test]
+    fn clone_of_an_export_track_copies_every_payload() {
+        let note_id = entity_id("00000000000000000000000000").expect("ULID");
+        let mut note = MidiNote::new(note_id, 0, 60, 480);
+        note.probability = Some(0.5);
+        note.syllable = Some("la".to_owned());
+        note.phonemes = vec!["l".to_owned(), "a".to_owned()];
+        note.pitch_bend_curve = vec![(0, 0), (240, 100)];
+        let original = MidiExportTrack {
+            name: "A".to_owned(),
+            channel: 3,
+            notes: vec![note],
+        };
+
+        let mut clone = original.clone();
+        assert!(clone == original, "克隆必须与原件相等");
+        assert_eq!(clone.notes.len(), 1, "音符必须被复制");
+        assert_eq!(clone.notes[0].syllable.as_deref(), Some("la"));
+        assert_eq!(clone.notes[0].phonemes.len(), 2);
+        assert_eq!(clone.notes[0].pitch_bend_curve.len(), 2);
+
+        // 改克隆 ⇒ 原件必须不受影响（深拷贝的第一条直接证据）。
+        clone.notes[0].syllable = Some("changed".to_owned());
+        clone.notes[0].phonemes.clear();
+        clone.notes[0].pitch_bend_curve.clear();
+        clone.notes[0].probability = None;
+        clone.name.push('!');
+        assert_eq!(original.notes.len(), 1, "原件仍有 1 颗音符");
+        assert_eq!(original.notes[0].syllable.as_deref(), Some("la"));
+        assert_eq!(original.notes[0].phonemes.len(), 2);
+        assert_eq!(original.notes[0].pitch_bend_curve.len(), 2);
+        assert_eq!(original.notes[0].probability, Some(0.5));
+        assert_eq!(original.name, "A");
+    }
 }
