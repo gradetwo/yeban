@@ -1271,3 +1271,62 @@ fn each_count_class_has_its_own_arm() {
         "注释行不得计入（数条目必须排除注释）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R214②/R225①：掩码器的**五条臂**（每条给期望读数 `⇒ N`）＋ 正对照。
+//   ⭐ R235 的语料预检（`grep` 本 crate）：**字符字面量 0 次／raw 字符串 0 次／生命周期 26 次**
+//   ⇒ ⭐ 这些构造在语料里**无触发面** ⇒ 只能由**夹具**触发（因此本判据必须自带夹具）。
+//   ⭐ 正对照**不可省**：缺它则"臂全绿"与"掩码器把一切都吞了"不可区分。
+// ---------------------------------------------------------------------------
+
+/// 掩码后**可见的针**条数（0 或 1）——期望读数就是它。
+fn visible_needle(source: &str, needle: &str) -> usize {
+    usize::from(mask_noncode(source).contains(needle))
+}
+
+#[test]
+fn masker_five_arms_with_expected_readings() {
+    const NEEDLE: &str = "len() >= 3";
+
+    // ① 生命周期 `&'a str`（语料 26 次）⇒ **1**（生命周期不得被当字符字面量）。
+    let lifetime = "fn t<'a>(x: &'a str) {\n    assert!(xs.len() >= 3);\n}\n";
+    assert_eq!(
+        visible_needle(lifetime, NEEDLE),
+        1,
+        "臂①（生命周期，语料 26 次）：其后的真代码必须可见 ⇒ 期望 1"
+    );
+
+    // ② 字符字面量含双引号（语料 0 次，夹具触发）⇒ **1**。
+    let char_quote = "fn t() {\n    let q = '\"';\n    assert!(xs.len() >= 3);\n}\n";
+    assert_eq!(
+        visible_needle(char_quote, NEEDLE),
+        1,
+        "臂②（字符字面量含 `\"`，语料 0 次）：字面量之后的真代码必须可见 ⇒ 期望 1"
+    );
+
+    // ③ 原始字符串（语料 0 次）**本身不含针**，针在它**之后** ⇒ **1**。
+    let raw_after = "fn t() {\n    let s = r#\"hello\"#;\n    assert!(xs.len() >= 3);\n}\n";
+    assert_eq!(
+        visible_needle(raw_after, NEEDLE),
+        1,
+        "臂③（原始字符串，语料 0 次）：其后的真代码必须可见 ⇒ 期望 1"
+    );
+
+    // ④ ⭐ **raw 内藏针** ⇒ **0**（字符串里的针不得计入）。
+    let raw_needle = "fn t() {\n    let s = r#\"assert!(xs.len() >= 3);\"#;\n}\n";
+    assert_eq!(
+        visible_needle(raw_needle, NEEDLE),
+        0,
+        "臂④（raw 内藏针）：字符串**内部**的针不得可见 ⇒ 期望 0"
+    );
+
+    // ⑤ ⭐ **正对照**（⛔ 不可省）：普通代码里的针 ⇒ **1**。
+    let control = "fn t() {\n    let rust = 1;\n    assert!(xs.len() >= 3);\n}\n";
+    assert_eq!(
+        visible_needle(control, NEEDLE),
+        1,
+        "臂⑤（正对照）：普通代码里的针必须可见 ⇒ 期望 1（⛔ 缺它则无法区分'臂全绿'与'掩码器吞掉一切'）"
+    );
+
+    println!("[assertion-bounds] masker 五条臂：5/5（期望读数 1／1／1／0／1）");
+}
