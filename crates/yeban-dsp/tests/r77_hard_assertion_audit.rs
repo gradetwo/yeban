@@ -1082,3 +1082,189 @@ fn the_src_match_site_census_matches_the_committed_evidence() {
     }
     eprintln!("[r77] R149 读数：匹配站点 {total} 处（literal {literal}／variable {variable}）");
 }
+
+// ---------------------------------------------------------------------------
+// R118：`integer_count` 判据的界**是否界定集合大小**（四类）
+// ---------------------------------------------------------------------------
+
+/// 一条整数断言所属的类别（枚举名 ⛔ 不以变体后缀命名，避免 clippy::enum_variant_names）。
+///
+/// **R118 口径**：只有 [`IntegerScope::CollectionSize`] **界定集合大小** ⇒ 才算非真空下界；
+/// 其余三类（值界／元素值界／条件计数器）**⛔ 不算**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum IntegerScope {
+    /// 界定**集合大小**（帧数／长度／命中总数／扫描域条目数）。
+    CollectionSize,
+    /// 值界：对**单个值**的上下界（如 `>= 0`、`<= 1`）。
+    ValueBound,
+    /// 元素值界：对**每个元素**的界（`all(|x| …)`／`any(…)`）。
+    ElementValueBound,
+    /// 条件计数器：数"满足条件的元素个数"，再与总数比较（比例断言）。
+    ConditionCounter,
+}
+
+impl IntegerScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            IntegerScope::CollectionSize => "collection_size",
+            IntegerScope::ValueBound => "value_bound",
+            IntegerScope::ElementValueBound => "element_value_bound",
+            IntegerScope::ConditionCounter => "condition_counter",
+        }
+    }
+}
+
+/// 判据体里含**整数**字面量的断言片段。
+fn integer_assert_segments(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(p) = body[cursor..].find("assert") {
+        let start = cursor + p;
+        let end = body[start..]
+            .find(");")
+            .map_or_else(|| (start + 260).min(body.len()), |e| start + e);
+        let seg = &body[start..end];
+        if !seg.contains("to_bits()") && has_integer_literal(seg) {
+            out.push(seg.to_string());
+        }
+        cursor = end + 1;
+        if cursor >= body.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// 给一条整数断言分类（优先级：集合大小 > 条件计数器 > 元素值界 > 值界）。
+fn classify_integer_assert(seg: &str) -> IntegerScope {
+    let has = |needle: &str| seg.contains(needle);
+    let collection_markers = [
+        ".len()",
+        "is_empty",
+        "frames",
+        "count",
+        "total",
+        "hits",
+        "seen",
+        "differing",
+        "n_seen",
+    ];
+    let counter_markers = [
+        "* 10 >=", "* 100 >=", ">= total", ">= n", "ratio", "/ total",
+    ];
+    if collection_markers.iter().any(|m| has(m)) {
+        return IntegerScope::CollectionSize;
+    }
+    if counter_markers.iter().any(|m| has(m)) {
+        return IntegerScope::ConditionCounter;
+    }
+    if has(".all(") || has(".any(") || has("for ") {
+        return IntegerScope::ElementValueBound;
+    }
+    IntegerScope::ValueBound
+}
+
+/// 审计全树的 `integer_count` 判据，返回证据表文本（含每类计数）。
+fn render_integer_bound_table(crate_root: &Path) -> String {
+    let mut rows: Vec<String> = Vec::new();
+    let mut counts = [0usize; 4];
+    for path in source_files(&crate_root.join(SRC_ROOT)) {
+        let rel = path
+            .strip_prefix(crate_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        for row in classify_source(&rel, &text) {
+            if row.kind != Kind::IntegerCount {
+                continue;
+            }
+            let Some(span) = fn_spans(&text).into_iter().find(|s| s.name == row.test) else {
+                continue;
+            };
+            let body = &text[span.start..span.end];
+            let segments = integer_assert_segments(body);
+            let category = segments
+                .iter()
+                .map(|seg| classify_integer_assert(seg))
+                .min()
+                .unwrap_or(IntegerScope::ValueBound);
+            let evidence = segments
+                .first()
+                .map_or_else(String::new, |seg| seg.trim().replace('\n', " "));
+            let evidence: String = evidence.chars().take(90).collect();
+            counts[categorize_index(category)] += 1;
+            rows.push(format!(
+                "{}|{}|{}|{}",
+                rel,
+                row.test,
+                category.as_str(),
+                evidence
+            ));
+        }
+    }
+    rows.sort();
+    let mut out = String::new();
+    out.push_str("# R118 `integer_count` 判据的『界』分类（四类）\n");
+    out.push_str("# 列：file|test|category|首条整数断言的证据（截断 90 字符）\n");
+    out.push_str("# 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；\n");
+    out.push_str("#   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：collection_size > condition_counter > element_value_bound > value_bound。\n");
+    out.push_str(&format!(
+        "# 合计 {} 条：collection_size {} ／ value_bound {} ／ element_value_bound {} ／ condition_counter {}\n",
+        rows.len(),
+        counts[0],
+        counts[1],
+        counts[2],
+        counts[3]
+    ));
+    for row in &rows {
+        out.push_str(row);
+        out.push('\n');
+    }
+    out
+}
+
+fn categorize_index(b: IntegerScope) -> usize {
+    match b {
+        IntegerScope::CollectionSize => 0,
+        IntegerScope::ValueBound => 1,
+        IntegerScope::ElementValueBound => 2,
+        IntegerScope::ConditionCounter => 3,
+    }
+}
+
+/// 提交在仓库里的 `integer_count` 分类表。
+const INTEGER_BOUND_PATH: &str = "tests/data/integer_count_categories.txt";
+
+/// **`integer_count` 四类分类表必须与当前源码逐字一致**（＋ R93 非真空地板）。
+#[test]
+fn the_integer_count_categories_match_the_committed_evidence() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rendered = render_integer_bound_table(&crate_root);
+    let total = rendered.matches("|collection_size|").count()
+        + rendered.matches("|value_bound|").count()
+        + rendered.matches("|element_value_bound|").count()
+        + rendered.matches("|condition_counter|").count();
+    assert!(
+        total >= 200,
+        "分类条目太少：{total}（地板 200）⇒ 分类器可能退化"
+    );
+    let path = crate_root.join(INTEGER_BOUND_PATH);
+    if std::env::var("R77_WRITE").is_ok() {
+        fs::write(&path, &rendered).expect("写 integer_count 分类表");
+        let (back, _) = read_evidence_text(&path);
+        assert_eq!(back, rendered, "分类表写入后回读不一致");
+        return;
+    }
+    let (committed, had_crlf) = read_evidence_text(&path);
+    assert_eq!(
+        committed, rendered,
+        "分类表与当前源码不一致 ⇒ 用 R77_WRITE=1 重生成（⛔ 仅在 cargo fmt 之后）"
+    );
+    if had_crlf {
+        eprintln!("[r77] 注意：分类表在盘上是 CRLF（已在比较前归一化）");
+    }
+    for line in rendered.lines().filter(|l| l.starts_with("# 合计")) {
+        eprintln!("[r77] R118 读数：{line}");
+    }
+}

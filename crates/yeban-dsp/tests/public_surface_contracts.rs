@@ -841,12 +841,13 @@ fn every_device_default_behaves_like_its_new_constructor() {
 
     // 卷积（脉冲响应由夹具给：⛔ 不依赖任何构造器差异即可比较）。
     let ir: Vec<f32> = (0..32).map(|index| 1.0 / (index as f32 + 1.0)).collect();
+    // ⚠ **不自己设 IR**（R154）：若这里 `set_impulse_response(&ir)`，那么"`Default` 预配置了别的 IR"
+    // 会被**遮蔽** ⇒ 等价性判据对 `Convolution` **没有牙**。这里只用实例**自带的** IR 处理输入。
     let drive_convolution = |mut conv: Convolution| -> Vec<u32> {
-        let len = conv.set_impulse_response(&ir);
         let mut block: Vec<f32> = (0..N).map(|index| (index % 9) as f32 / 9.0 - 0.4).collect();
         let done = conv.process(&mut block);
-        // ⚠ `len`/`done` 是 **usize 计数**，不是浮点位型 ⇒ 按 `u32` 收（R146 的宽度规则只约束位型）。
-        let mut out = vec![len as u32, done as u32];
+        // ⚠ `done` 是 **usize 计数**，不是浮点位型 ⇒ 按 `u32` 收（R146 的宽度规则只约束位型）。
+        let mut out = vec![done as u32];
         out.extend(block.iter().map(|v| v.to_bits()));
         out
     };
