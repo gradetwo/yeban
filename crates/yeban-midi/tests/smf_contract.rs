@@ -1539,11 +1539,19 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
 
     // ④ 真对象 ＋ ⭐ R120 机械下界：必须**真的扫过**足够多的源码行。
     let mut scanned_lines = 0usize; // R188: 只用于诊断
-    for (name, source) in [
-        ("smf_contract.rs", include_str!("smf_contract.rs")),
+    // ⭐ **R211①**：**排除本文件** —— 定义针的那个文件（本文件）⛔ 不能算进被搜集合，
+    // 否则"针存在"由**自称自**满足 ⇒ 断言恒真（把针改名后注入也会全绿）。
+    // ⭐ 并把"别处 ≥ 2 个文件"写成**根绑定到被搜集合自己**的下界。
+    let searched: [(&str, &str); 2] = [
         ("musicxml_contract.rs", include_str!("musicxml_contract.rs")),
         ("real_world_smf.rs", include_str!("real_world_smf.rs")),
-    ] {
+    ];
+    assert!(
+        searched.len() >= 2,
+        "R211①：本文件被排除后，别处至少要有 2 个被搜文件（实际 {}）",
+        searched.len()
+    );
+    for (name, source) in searched {
         scanned_lines += source.lines().count();
         assert_eq!(
             detector(source).len(),
