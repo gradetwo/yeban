@@ -690,6 +690,187 @@ pub fn ogg_vorbis_chained(packets_each: u32, second_channels: u8) -> Vec<u8> {
     out
 }
 
+/// Vorbis 的 `float32` 位型里 `delta_value = 1.0` 的正确编码。
+///
+/// `float32_unpack(x)` 的口径是 `mantissa × 2^(exponent − 788)`，其中
+/// `mantissa = x & 0x1FFFFF`、`exponent = (x & 0x7FE00000) >> 21`。因此 `1.0` 要的是
+/// **`mantissa = 1`、`exponent = 788`**：`0x6280_0001`。
+///
+/// ⚠ **登记一次算错**：第八/九/十批我一直用 `0x62A0_0000`，它的 `mantissa` 是 **0**
+/// （`0x62A0_0000 & 0x1FFFFF == 0`）⇒ 它编码的是 **0.0**，不是 1.0。后果是 floor 的 VQ 向量
+/// 全零（见 [`ogg_vorbis_nonzero_setup`] 的说明）。
+pub const OGG_VORBIS_DELTA_ONE: u64 = 0x6280_0001;
+
+/// 逐字段构造 setup 的位写入器（`amplitude_bits` 与 `delta` 可配）。
+fn nonzero_setup_bits(amplitude_bits: u64, delta: u64) -> LsbBits {
+    let mut bits = LsbBits::new();
+    bits.put(5, 8);
+    for byte in b"vorbis" {
+        bits.put(u64::from(*byte), 8);
+    }
+    bits.put(2, 8); // codebook_count - 1 = 2 ⇒ 3 本码本
+    // 码本 0：floor 的 VQ 书（entries = 1，lookup_type = 1）
+    bits.put(0x56_43_42, 24);
+    bits.put(1, 16);
+    bits.put(1, 24);
+    bits.put(0, 1);
+    bits.put(0, 1);
+    bits.put(0, 5);
+    bits.put(1, 4);
+    bits.put(0, 32); // minimum_value = 0.0
+    bits.put(delta, 32);
+    bits.put(0, 4); // value_bits - 1
+    bits.put(0, 1); // sequence_p
+    bits.put(1, 1); // multiplicand[0]（lookup_values = lookup1_values(1, 1) = 1）
+    // 码本 1：residue 的 classbook（entries = 1，无 VQ lookup）
+    bits.put(0x56_43_42, 24);
+    bits.put(1, 16);
+    bits.put(1, 24);
+    bits.put(0, 1);
+    bits.put(0, 1);
+    bits.put(0, 5);
+    bits.put(0, 4);
+    // 码本 2：residue 的 VQ 书（entries = 2，lookup_values = lookup1_values(2, 1) = 2）
+    bits.put(0x56_43_42, 24);
+    bits.put(1, 16);
+    bits.put(2, 24);
+    bits.put(0, 1);
+    bits.put(0, 1);
+    bits.put(0, 5);
+    bits.put(0, 5);
+    bits.put(1, 4);
+    bits.put(0, 32);
+    bits.put(delta, 32);
+    bits.put(0, 4);
+    bits.put(0, 1);
+    bits.put(1, 1);
+    bits.put(1, 1);
+    bits.put(0, 6); // time count - 1
+    bits.put(0, 16);
+    // floor：1 个，type 0，order = 1（要读一个 VQ 码字）
+    bits.put(0, 6);
+    bits.put(0, 16);
+    bits.put(1, 8); // floor0_order
+    bits.put(44_100, 16);
+    bits.put(16, 16); // bark_map_size
+    bits.put(amplitude_bits, 6);
+    bits.put(0, 8);
+    bits.put(0, 4); // number_of_books - 1
+    bits.put(0, 8); // book_list[0] = 0（用码本 0）
+    // residue：1 个，type 0；区间 [0, 128)、partition_size = 128 ⇒ **恰好 1 个 partition**
+    bits.put(0, 6);
+    bits.put(0, 16);
+    bits.put(0, 24); // begin
+    bits.put(128, 24); // end
+    bits.put(127, 24); // partition_size - 1
+    bits.put(0, 6); // classifications - 1 = 0 ⇒ 1 个分类
+    bits.put(1, 8); // classbook = 1
+    bits.put(1, 3); // low_bits = 1 ⇒ is_used = 1（只用到 j = 0）
+    bits.put(0, 1); // high_bits 标志 = 0
+    bits.put(2, 8); // j = 0 的 VQ 书 = 2
+    // mapping：1 个，type 0
+    bits.put(0, 6);
+    bits.put(0, 16);
+    bits.put(0, 1);
+    bits.put(0, 1);
+    bits.put(0, 2);
+    bits.put(0, 8);
+    bits.put(0, 8);
+    bits.put(0, 8);
+    // mode：1 个
+    bits.put(0, 6);
+    bits.put(0, 1);
+    bits.put(0, 16);
+    bits.put(0, 16);
+    bits.put(0, 8);
+    bits.put(1, 1); // framing
+    bits
+}
+
+/// **非零谱**的 setup：3 本码本 ＋ 一个可用的 residue partition。
+///
+/// 构造过程（每一段的来源）：
+/// 1. **码本 0**（floor 的 VQ 书）：`entries = 1`、`lookup_type = 1`、`delta_value` = `delta`、
+///    一个 `multiplicand = 1`。`lookup_values` **不是读出来的**，是
+///    `lookup1_values(entries, dimensions)` 算出来的（本处 = 1）。
+/// 2. **码本 1**（classbook）：`entries = 1`、无 VQ lookup。每个 partition 的"分类号"从它读。
+/// 3. **码本 2**（residue 的 VQ 书）：`entries = 2`、`lookup_values = lookup1_values(2, 1) = 2`，
+///    两个 `multiplicand` 都写 1 ⇒ 任何码字的 VQ 向量都是 `1 × delta + 0`。
+/// 4. **residue**：`begin = 0`、`end = 128`、`partition_size = 128` ⇒
+///    `parts_to_read = 128 / 128 = 1`；`classifications = 1`、`classbook = 1`、
+///    分类 0 的 `is_used = 1`（`low_bits = 1`）且 `j = 0` 用书 2。
+/// 5. **音频包**（见 [`ogg_vorbis_nonzero_stream`]）：`[0 音频][amplitude（amplitude_bits 位）]
+///    [floor_book_idx 1 位][floor 的 VQ 码字 1 位][classbook 码字 1 位]
+///    [128 个 residue 码字 ×1 位][framing 1 位]`。
+///    `read_residue_partition_format0` 的 `step = partition_size / dimensions = 128`，
+///    因此它**恰好读 128 个码字**，每个给 `out[i]` 加 `delta`。
+///
+/// ⇒ 谱非零 ⇒ `floor × residue ≠ 0` ⇒ **输出样本非全零**（实测 128/128 非零）。
+///
+/// **`delta = 0`（`zero_coefficients`）为什么会被拒**（机械解释，回答了两轮"读到但构造不出"）：
+/// VQ 向量全零 ⇒ `coeffs[0] = 2·cos(0) = 2`；floor0 合成时
+/// `p + q == 0` 当且仅当 `sin²ω == 0` **且** `(coeffs[0] − 2cos ω)² == 0`，也就是
+/// `ω ≡ 0 (mod 2π)` —— 那只发生在 bark 映射里出现 **0** 的位置上。命中即
+/// `vorbis: invalid floor0 coefficients`（`symphonia-codec-vorbis/src/floor.rs:326`）。
+#[must_use]
+pub fn ogg_vorbis_nonzero_setup(amplitude_bits: u64, zero_coefficients: bool) -> Vec<u8> {
+    let delta = if zero_coefficients {
+        0
+    } else {
+        OGG_VORBIS_DELTA_ONE
+    };
+    nonzero_setup_bits(amplitude_bits, delta).finish()
+}
+
+/// **非零谱**的音频包（字段顺序见 [`ogg_vorbis_nonzero_setup`] 的第 5 条）。
+#[must_use]
+pub fn ogg_vorbis_nonzero_packet(amplitude_bits: u64) -> Vec<u8> {
+    let mut bits = LsbBits::new();
+    bits.put(0, 1); // 音频包（第 1 位必须是 0）
+    bits.put(
+        1,
+        u32::try_from(amplitude_bits).expect("amplitude_bits fits u32"),
+    );
+    bits.put(0, 1); // floor_book_idx
+    bits.put(0, 1); // floor 的 VQ 码字 ⇒ 系数 = delta
+    bits.put(0, 1); // classbook 码字 ⇒ 分类 0
+    for _ in 0..128 {
+        bits.put(0, 1); // 码本 2 的码字 ⇒ VQ 向量 = delta
+    }
+    bits.put(1, 1); // framing
+    bits.finish()
+}
+
+/// **非零谱**的完整流（1 声道、44.1 kHz、`OGG_FIXTURE_FRAMES` 帧、样本非零）。
+#[must_use]
+pub fn ogg_vorbis_nonzero_stream(packets: u32, zero_coefficients: bool) -> Vec<u8> {
+    assert!(
+        packets >= 2,
+        "gapless trimming silences the first data page"
+    );
+    let packet = ogg_vorbis_nonzero_packet(8);
+    let mut out = ogg_page(0x02, 0, 7, 0, &[ogg_vorbis_ident()]);
+    out.extend_from_slice(&ogg_page(0, 0, 7, 1, &[ogg_vorbis_comment()]));
+    out.extend_from_slice(&ogg_page(
+        0,
+        0,
+        7,
+        2,
+        &[ogg_vorbis_nonzero_setup(8, zero_coefficients)],
+    ));
+    for index in 0..packets {
+        let last = index + 1 == packets;
+        out.extend_from_slice(&ogg_page(
+            if last { 0x04 } else { 0x00 },
+            if last { OGG_FIXTURE_FRAMES } else { 0 },
+            7,
+            3 + index,
+            std::slice::from_ref(&packet),
+        ));
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // FLAC 夹具
 // ---------------------------------------------------------------------------

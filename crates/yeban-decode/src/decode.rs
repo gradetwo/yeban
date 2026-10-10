@@ -4373,4 +4373,64 @@ mod tests {
             ),
         }
     }
+
+    /// 判据（**非零谱** ⇒ 非静音样本 [ARCH-SEC-003][ARCH-DSP-002]）：一个 residue 区间非空、
+    /// 且 VQ 系数非零的 Ogg Vorbis 流必须解出**全部样本非零**的资产；把 VQ 系数置零则必须被拒。
+    ///
+    /// 量什么：`decode_bytes` 对 [`crate::testfix::ogg_vorbis_nonzero_stream`] 两种取法下的
+    /// **非零样本个数**（不是"没崩"）、峰值绝对值、帧数。
+    /// 怎么量：夹具的 residue 是 `begin = 0 / end = 128 / partition_size = 128` ⇒ 恰好 1 个
+    /// partition ⇒ `read_residue_partition_format0` 读 128 个码字，每个给谱加 `delta`。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | `delta_value` | 读数 |
+    /// | :--- | :--- |
+    /// | `1.0`（[`crate::testfix::OGG_VORBIS_DELTA_ONE`]） | `Ok`：128 帧、**非零样本 128/128**、峰值 `58.523415` |
+    /// | `0`（VQ 向量全零） | 每个音频包被拒 ⇒ `Err(EmptyStream)` |
+    ///
+    /// 为什么需要它：此前所有 Ogg 夹具的稀疏约束都是 `begin = end = 0` ⇒ 谱恒为零 ⇒
+    /// 输出 `floor × 0 = 0` ⇒ **静音**。也就是说 `floor` 是否被使用、`residue` 是否有数据，
+    /// 在那批夹具上**都测不出来**。本条第一次让"谱非零"这件事有机械读数（非零样本计数），
+    /// 并且用**同一个 `==`** 两侧都断言（`assert_ne!(nonzero, 0)` 落在"非零计数"上）。
+    ///
+    /// ⚠ 一并登记 `delta` 的算错修正：`float32_unpack` 的口径是 `mantissa × 2^(exponent − 788)`，
+    /// 因此 `1.0` 要 `mantissa = 1、exponent = 788` ⇒ **`0x6280_0001`**。第八/九/十批我一直写的
+    /// `0x62A0_0000` 的 `mantissa` 是 **0** ⇒ 它编码的是 **0.0**，正是"floor 系数全零 ⇒
+    /// `p + q == 0` ⇒ `vorbis: invalid floor0 coefficients`"两轮构造不出非静音的根因。
+    ///
+    /// 注入（实测）：把 [`crate::testfix::OGG_VORBIS_DELTA_ONE`] 改成 `0x62A0_0000`（回到算错的
+    /// 常数）⇒ 本条第一格红（读数变成 `EmptyStream`）。
+    #[test]
+    fn a_nonzero_residue_spectrum_decodes_to_nonzero_samples() {
+        let bytes = crate::testfix::ogg_vorbis_nonzero_stream(2, false);
+        let asset = decode_bytes(&bytes, &DecodeOptions::default())
+            .expect("a non-zero spectrum must decode");
+        assert_eq!(asset.channels(), 1);
+        assert_eq!(asset.sample_rate(), 44_100);
+        assert_eq!(asset.frame_count(), crate::testfix::OGG_FIXTURE_FRAMES);
+        let nonzero = asset.samples().iter().filter(|s| **s != 0.0).count();
+        // ⛔ 不用"没崩"当证据：必须数出非零样本，并在**同一个** `!=` 上给出两侧断言。
+        assert_ne!(
+            nonzero, 0,
+            "a non-zero residue must produce non-zero samples"
+        );
+        assert_eq!(
+            nonzero,
+            asset.samples().len(),
+            "every sample carries the non-zero spectrum"
+        );
+        assert_eq!(nonzero, 128);
+        let peak = asset.samples().iter().fold(0f32, |max, s| max.max(s.abs()));
+        assert!(peak > 1.0, "the peak must be well above zero, got {peak}");
+        assert!(asset.samples().iter().all(|s| s.is_finite()));
+
+        let zero = crate::testfix::ogg_vorbis_nonzero_stream(2, true);
+        match decode_bytes(&zero, &DecodeOptions::default()) {
+            Err(DecodeError::EmptyStream) => {}
+            other => {
+                panic!("zero VQ coefficients make p + q == 0 and must be refused, got {other:?}")
+            }
+        }
+    }
 }
