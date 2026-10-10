@@ -4667,6 +4667,36 @@ mod tests {
             "the mis-specified needle must find nothing on the known-red sample — that false-clean              is exactly what this control prevents"
         );
 
+        // ⭐ **R119 配对近失配**：`small(`/`overall(`/`install(` 都含 `all`，但前面不是 `.`
+        // 或后面不是 `(` ⇒ 必须**一条都不报**；同一段里放一个真的 `.all(` ⇒ 必须**恰好报 1 条**。
+        let near_miss = concat!(
+            "fn n(xs: &[f32]) {\n",
+            "    let overall = small(xs);\n",
+            "    let install = other(xs);\n",
+            "}\n",
+        );
+        assert!(
+            scan_all(near_miss, all_needle, &bound_needles, 40).is_empty(),
+            "near-miss identifiers must not be reported"
+        );
+        let near_miss_with_real = concat!(
+            "fn n(xs: &[f32]) {\n",
+            "    let overall = small(xs);\n",
+            "    assert!(xs.iter().",
+            "all(|s| s.is_finite()));\n",
+            "}\n",
+        );
+        assert_eq!(
+            scan_all(near_miss_with_real, all_needle, &bound_needles, 40).len(),
+            1,
+            "the real `.all(` in the same sample must still be reported exactly once"
+        );
+
+        // ⭐ **R120 负臂**：谁的针都不含的样本必须 0 命中 ⇒ 证明计数不是凭空造数。
+        let no_needle_at_all = "fn z() {}\n";
+        assert_eq!(no_needle_at_all.matches(all_needle).count(), 0);
+        assert_eq!(no_needle_at_all.matches(temp_needle).count(), 0);
+
         // ---- 真扫本 crate 的四个源文件（`include_str!` 的路径相对本文件所在目录）----
         let sources = [
             ("decode.rs", include_str!("decode.rs")),
@@ -4695,6 +4725,45 @@ mod tests {
                  offenders: {temp_offenders:?}"
             );
         }
+        // ⭐⭐ **常驻注入（判据自带的红臂）**：在**真实源码**上做一次合成替换，要求扫描器由绿变红。
+        // 绿臂 = 上面两圈（未改动的真源码 ⇒ 0 违规）。⇒ "注入"成了判据的一部分，不依赖外部脚本。
+        // R163：注入必须带一句**自身会通过**的断言（下面 `assert_ne!` 证明替换真的发生了）。
+        let real = sources
+            .iter()
+            .find(|(name, _)| *name == "decode.rs")
+            .map(|(_, source)| *source)
+            .expect("decode.rs must be in the scanned set");
+        // ⚠ 早先两次尝试都**没有**让违规数增加（实测 FAILED）：先只换第一处 `frame_count`，
+        // 再换**全部** `frame_count` —— 两者都没用，因为 `decode.rs` 里没有哪个 `.all(` 是
+        // **只**靠 `frame_count` 界住的（其余的界仍在窗口内）。⇒ 常驻注入必须**自己造一个
+        // 必然违规的现场**，而不是指望改某个名字就打破现有防线。
+        // 做法：在**真实源码**末尾追加一段合成函数，与前面的正文隔 **13 个空行** ⇒ 该 `.all(`
+        // 的前 12 行**全是空行**，窗口里不可能有界。
+        let mut mutated = real.to_string();
+        mutated.push_str(concat!(
+            "\n\n\n\n\n\n\n\n\n\n\n\n\n",
+            "#[cfg(test)]\n",
+            "fn injected_probe() {\n",
+            "    let xs: Vec<f32> = Vec::new();\n",
+            "    let _ = xs.iter().",
+            "all(|s| *s == 0.0);\n",
+            "}\n",
+        ));
+        // R163：注入必须带一句**自身会通过**的断言（替换/追加真的发生了）。
+        assert_ne!(
+            real, mutated,
+            "the synthetic injection must change the real source"
+        );
+        assert!(
+            mutated.len() > real.len(),
+            "the synthetic injection must append to the real source"
+        );
+        assert_eq!(
+            scan_all(&mask(&mutated), all_needle, &bound_needles, 12).len(),
+            scan_all(&mask(real), all_needle, &bound_needles, 12).len() + 1,
+            "the synthetic injection must make the scanner report exactly one more offender"
+        );
+
         // R122：证明扫描器**不是惰性的** —— 命中点数必须达到下界。
         assert!(
             all_sites >= 5,

@@ -2138,6 +2138,21 @@ mod tests {
         }
     }
 
+    /// 逐字段差异计数（**根绑定**到 `PcmBudget` 自己的字段，R114）。
+    fn count_field_differences(a: &PcmBudget, b: &PcmBudget) -> usize {
+        [
+            a.max_input_bytes != b.max_input_bytes,
+            a.max_pcm_bytes != b.max_pcm_bytes,
+            a.max_channels != b.max_channels,
+            a.max_sample_rate != b.max_sample_rate,
+            a.max_duration_secs != b.max_duration_secs,
+            a.max_resample_ratio != b.max_resample_ratio,
+        ]
+        .iter()
+        .filter(|changed| **changed)
+        .count()
+    }
+
     /// 判据（R86：**`Default` 不是"非现实的缺陷类"**）：默认预算必须与**逐字段的合法替代状态**
     /// 都可区分，而且**每个实例都是单独构造的**（⛔ 驱动不得对两个被测实例做相同的初始化 ——
     /// 那会遮蔽构造期差异）。
@@ -2223,17 +2238,7 @@ mod tests {
             );
             // 反向自证：这一档**恰好只**改了一个字段。⭐ 这一条还顺带抓住"默认值退化" ——
             // 若某字段的默认值是 0，那么 `0 / 2 == 0` ⇒ 差异数会是 0 ⇒ 本条红（R86 的核心）。
-            let differing = [
-                alternative.max_input_bytes != base.max_input_bytes,
-                alternative.max_pcm_bytes != base.max_pcm_bytes,
-                alternative.max_channels != base.max_channels,
-                alternative.max_sample_rate != base.max_sample_rate,
-                alternative.max_duration_secs != base.max_duration_secs,
-                alternative.max_resample_ratio != base.max_resample_ratio,
-            ]
-            .iter()
-            .filter(|changed| **changed)
-            .count();
+            let differing = count_field_differences(&base, &alternative);
             assert_eq!(
                 differing, 1,
                 "the `{field}` case must differ from the default in exactly one field — 0 means \
@@ -2241,5 +2246,21 @@ mod tests {
                  initialised more than one field"
             );
         }
+        // ⭐ **配对已知红（R119/R120 的"机械下界"配套）**：把默认值的一个字段**退化为 0** 之后，
+        // `0 / 2 == 0` ⇒ 差异计数必须是 **0**（这正是 V2 注入让本判据变红的那一格）。
+        // 把这一支写成resident断言，"差异计数 == 1"才有配对的负臂，而不是只靠绿侧。
+        let degenerate_base = PcmBudget {
+            max_channels: 0,
+            ..PcmBudget::default()
+        };
+        let degenerate_alternative = PcmBudget {
+            max_channels: degenerate_base.max_channels / 2,
+            ..degenerate_base
+        };
+        assert_eq!(
+            count_field_differences(&degenerate_base, &degenerate_alternative),
+            0,
+            "a degenerate (zero) default field must make the difference count collapse to 0"
+        );
     }
 }
