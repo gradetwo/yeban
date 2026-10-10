@@ -42,6 +42,7 @@ use yeban_dsp::envelope::Adsr;
 use yeban_dsp::filter::LadderFilter;
 use yeban_dsp::limiter::Limiter;
 use yeban_dsp::loop_window::LoopWindow;
+use yeban_dsp::loudness::{GatedLoudness, KWeighting, LoudnessMeter};
 use yeban_dsp::math::{db_to_gain, lerp};
 use yeban_dsp::meter::LevelDetector;
 use yeban_dsp::meter::{TruePeakDetector, dbfs};
@@ -776,5 +777,64 @@ fn every_device_default_behaves_like_its_new_constructor() {
     assert_eq!(
         drive_strip(ChannelStrip::default()),
         drive_strip(ChannelStrip::new(ChannelStripParams::DEFAULT, SR))
+    );
+
+    // 动态：压缩器（默认必须是 `CompressorParams::DEFAULT`，⛔ 不是某个别的预设）。
+    let drive_compressor = |mut comp: Compressor| -> Vec<u32> {
+        let mut left = [0.9f32; N];
+        let mut right = [0.4f32; N];
+        comp.process_stereo(&mut left, &mut right);
+        left.iter()
+            .chain(right.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_compressor(Compressor::default()),
+        drive_compressor(Compressor::new(CompressorParams::DEFAULT, SR))
+    );
+
+    // K 加权（默认必须是 48 kHz 的那一组系数）。
+    // ⚠ `KWeighting::process_stereo` 返回 `(f64, f64)` ⇒ 摘要用 `u64` 位型。
+    let drive_kweight = |mut filter: KWeighting| -> Vec<u64> {
+        let mut out = Vec::with_capacity(2 * N);
+        for index in 0..N {
+            let x = 0.5 - index as f32 * 0.001;
+            let (l, r) = filter.process_stereo(x, -x);
+            out.push(l.to_bits());
+            out.push(r.to_bits());
+        }
+        out
+    };
+    let kweight_new = KWeighting::new_48k();
+    assert_eq!(
+        drive_kweight(KWeighting::default()),
+        drive_kweight(kweight_new)
+    );
+
+    // 响度表（未填满窗口时读数必须是同一个有限值或同一个 `-inf`）。
+    // ⚠ `mean_square()` 是 `f64` ⇒ 分开收两种位型（`u32` 与 `u64`），⛔ 不截断。
+    let drive_loudness = |mut meter: LoudnessMeter| -> (u32, u64) {
+        let block: Vec<f32> = (0..N).map(|index| (index % 7) as f32 / 7.0 - 0.4).collect();
+        meter.add_mono(&block);
+        (
+            meter.loudness_lufs().to_bits(),
+            meter.mean_square().to_bits(),
+        )
+    };
+    assert_eq!(
+        drive_loudness(LoudnessMeter::default()),
+        drive_loudness(LoudnessMeter::new_48k())
+    );
+
+    // 门控响度（同上，用 `momentary` 读数）。
+    let drive_gated = |mut meter: GatedLoudness| -> Vec<u32> {
+        let block: Vec<f32> = (0..N).map(|index| (index % 5) as f32 / 5.0 - 0.3).collect();
+        meter.add_mono(&block);
+        vec![meter.momentary_lufs().to_bits()]
+    };
+    assert_eq!(
+        drive_gated(GatedLoudness::default()),
+        drive_gated(GatedLoudness::new_48k())
     );
 }
