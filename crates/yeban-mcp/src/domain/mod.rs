@@ -4633,4 +4633,35 @@ mod tests {
         assert_eq!(tail[63].0, 65, "最新的一条必须是第 65 条");
         assert_eq!(tail[0].1.sample_rate, 48_001);
     }
+    /// `create: true` 与 `readOnly: true` 同给 ⇒ **响亮拒绝**
+    /// （`INVALID_PARAMETER_RANGE`，`reason = "createIsNotReadOnly"`）。
+    ///
+    /// 为什么必须有这一条：静默忽略只读位会让调用方以为"没写盘"，而新建工程**必须**写盘
+    /// —— 这是一条自相矛盾的要求，不是可以取默认值的余地。判据同时钉住"拒绝发生在
+    /// 目标路径存在性检查**之前/之后**不影响本结论"（本夹具的路径不存在）。
+    ///
+    /// 注入（实测红）：删掉 `plan_create` 开头那条 `if read_only` 守卫 ⇒
+    /// `create + readOnly` 会一路走到真正建工程的路径，本判据红。
+    #[test]
+    fn create_with_read_only_is_refused_as_a_contradiction() {
+        let domain = domain();
+        let fault = plan(
+            &domain,
+            &call(
+                "yeban_open_project",
+                serde_json::json!({
+                    "path": unique_path().display().to_string(),
+                    "create": true,
+                    "readOnly": true,
+                }),
+            ),
+        )
+        .expect_err("create + readOnly 自相矛盾");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        let data = data.as_ref().expect("本形态的失败必须带 data");
+        assert_eq!(data["reason"], "createIsNotReadOnly");
+    }
 }

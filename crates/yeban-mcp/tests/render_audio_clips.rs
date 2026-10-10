@@ -1517,3 +1517,47 @@ fn a_placed_audio_clip_survives_save_close_reopen_without_an_assets_index() {
         "同一工程 + 同一注入时钟 ⇒ 同一 sha256"
     );
 }
+
+/// **>2 声道的素材被拒绝，而不是静默丢声道**（`RENDER_FAILED` +
+/// `data.reason = "assetChannelLayout"`），且被拒的渲染**不落盘**。
+///
+/// 为什么必须有这一条：`clip_math::channel_layout(4, 2)` 返回 `None`，而这条 `None`
+/// 分支是"绝不悄悄降混"这条契约的**唯一**证据。它此前没有任何判据 —— 第四批注入
+/// （`assetChannelLayout` 那条分支被改成 `continue`）在**全量**测试下全绿。
+///
+/// 注入（实测红）：把这条 `return Err(...)` 换成 `continue`（把 4 声道素材当"没渲染"）
+/// ⇒ 本判据红。
+#[test]
+fn a_multichannel_asset_is_refused_instead_of_silently_downmixed() {
+    let scratch = Scratch::new("channel-layout");
+    // 4 声道：两份立体声图案拼起来（解码只看 WAV 头里的声道数与帧数）。
+    let mut samples = pattern(480);
+    samples.extend(pattern(480));
+    let quad = fixture(wav_f32(4, 48_000, &samples), &Tune::default());
+    let out = scratch.join("master.wav");
+    let fault = build_with(&quad.project, &pool(&quad), &out, args(&out))
+        .expect_err("4 声道素材进立体声母线必须被拒");
+    assert_eq!(fault.domain_code(), Some(ErrorCode::RenderFailed));
+    let value = fault.into_result().expect("带内");
+    assert_eq!(value["error"]["code"], "RENDER_FAILED");
+    assert_eq!(value["error"]["data"]["reason"], "assetChannelLayout");
+    assert_eq!(value["error"]["data"]["sourceChannels"], 4);
+    assert_eq!(value["error"]["data"]["targetChannels"], 2);
+    assert_eq!(
+        value["error"]["data"]["supported"],
+        json!([1, 2]),
+        "报文必须列出支持的声道数, 便于自纠"
+    );
+    assert!(!out.exists(), "被拒的渲染不得留下半成品");
+
+    // 阴性对照: 单声道素材（supported 里的另一项）照旧渲染得出来。
+    let single = fixture(wav_f32(1, 48_000, &pattern(240)), &Tune::default());
+    let mono_out = scratch.join("mono.wav");
+    let artifact = build_with(&single.project, &pool(&single), &mono_out, args(&mono_out))
+        .expect("单声道素材必须能渲染");
+    assert_eq!(
+        artifact.response_data()["audio"]["assets"][0]["channelLayout"],
+        "mono-to-all",
+        "单声道素材走 `ChannelLayout::MonoToAll` 的规范名 (与 clip_math 同一份真相)"
+    );
+}

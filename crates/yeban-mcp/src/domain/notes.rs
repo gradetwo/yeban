@@ -10896,4 +10896,310 @@ mod tests {
         );
         assert_eq!(value["error"]["data"]["startTick"], existing.start_tick);
     }
+    /// `kind` 的**目录 ↔ 解析臂的双射**：`OP_KINDS` 里的每一个都必须被 `parse_one` 接受，
+    /// 并**逐字回环**到同一个字面量（`kind_name()`）。
+    ///
+    /// 为什么必须有这一条：`OP_KINDS` 是一张**字面量表**，`parse_one` 的 `match` 是另一份
+    /// 真相 —— `kind_name()` 的穷举 `match` 只保证"每个 `NoteOp` 变体都登记了一个名字"
+    /// （漏一个变体 ⇒ E0004），它**不**保证"`OP_KINDS` 里的名字真的有解析臂"。
+    /// 只把名字加进 `OP_KINDS` 而忘了加臂 ⇒ 错误报文会把它列进 `supportedKinds`，
+    /// 而真调用它却报「未知 `kind`」。本判据把这条不对称变成红的。
+    ///
+    /// 注入（实测红）：从 `parse_one` 删掉 `REMOVE_SECTION_KIND` 臂 ⇒ 本判据红；
+    /// 把 `OP_KINDS` 里的 `"setScene"` 改成 `"setScenes"` ⇒ 本判据红。
+    #[test]
+    fn every_catalog_kind_parses_and_round_trips() {
+        let ulid = "01J8ZQ00000000000000000999";
+        // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
+        let table: [(&str, serde_json::Value); 19] = [
+            (
+                "add",
+                serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
+            ),
+            ("delete", serde_json::json!({"noteId": ulid})),
+            (
+                "move",
+                serde_json::json!({"noteId": ulid, "deltaTick": 0, "deltaPitch": 0}),
+            ),
+            (
+                "velocity",
+                serde_json::json!({"noteId": ulid, "velocity": 64}),
+            ),
+            (REMOVE_CLIP_KIND, serde_json::json!({})),
+            (REMOVE_TRACK_KIND, serde_json::json!({"trackId": ulid})),
+            (
+                INSERT_DEVICE_KIND,
+                serde_json::json!({
+                    "trackId": ulid,
+                    "device": {
+                        "deviceId": ulid,
+                        "name": "Probe",
+                        "kind": "InternalEffect",
+                        "bypassed": false,
+                        "latencySamples": 0,
+                        "params": [],
+                    },
+                }),
+            ),
+            (
+                REMOVE_DEVICE_KIND,
+                serde_json::json!({"trackId": ulid, "deviceId": ulid}),
+            ),
+            (
+                SET_PARAM_KIND,
+                serde_json::json!({"lane": "TrackVolume", "value": 0.0}),
+            ),
+            (SET_TRACK_MUTE_KIND, serde_json::json!({"value": true})),
+            (SET_TRACK_SOLO_KIND, serde_json::json!({"value": false})),
+            (
+                SET_AUTOMATION_LANE_KIND,
+                serde_json::json!({"lane": {"lane": "TrackVolume"}}),
+            ),
+            (
+                REMOVE_AUTOMATION_POINT_KIND,
+                serde_json::json!({"point": {"lane": "TrackVolume", "tick": 0}}),
+            ),
+            (
+                SET_ROUTING_GAIN_KIND,
+                serde_json::json!({"edgeId": ulid, "value": null}),
+            ),
+            (DISCONNECT_ROUTING_KIND, serde_json::json!({"edgeId": ulid})),
+            (
+                REMOVE_ROUTING_NODE_KIND,
+                serde_json::json!({"nodeId": ulid}),
+            ),
+            (REMOVE_SECTION_KIND, serde_json::json!({"sectionId": ulid})),
+            (REMOVE_SCENE_KIND, serde_json::json!({"sceneId": ulid})),
+            (
+                SET_SCENE_KIND,
+                serde_json::json!({"scene": {"sceneId": ulid}}),
+            ),
+        ];
+        assert_eq!(
+            table.len(),
+            OP_KINDS.len(),
+            "本表必须与 `OP_KINDS` 逐条对齐（多一个少一个都要改这里）"
+        );
+        for (kind, extra) in &table {
+            assert!(OP_KINDS.contains(kind), "`{kind}` 必须在目录里");
+            let mut object = extra.as_object().expect("对象").clone();
+            object.insert("kind".to_owned(), Value::from(*kind));
+            let ops = parse_ops(&serde_json::json!([Value::Object(object)]))
+                .unwrap_or_else(|fault| panic!("`{kind}` 的规范形状必须能解析, 实际 {fault:?}"));
+            assert_eq!(ops.len(), 1);
+            assert_eq!(
+                ops[0].kind_name(),
+                *kind,
+                "解析出来的 `NoteOp` 必须回环到同一个 `kind`"
+            );
+        }
+        // 阴性对照：目录外的名字必须响亮拒绝，且报文里列出**整张**目录。
+        let fault = parse_ops(&serde_json::json!([{"kind": "noSuchKind"}]))
+            .expect_err("目录外的 kind 必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["supportedKinds"],
+            serde_json::json!(OP_KINDS),
+            "拒绝报文必须列出与 `OP_KINDS` 同一份真相"
+        );
+    }
+
+    /// `disconnectRouting` 的未知键**响亮失败**（`unknownDisconnectRoutingField`）。
+    ///
+    /// 注入（实测红）：去掉 [`reject_disconnect_routing_fields`] 的调用 ⇒
+    /// 嵌套的 `trackId` / `value` 会被静默忽略，而调用方以为边已经断开。
+    #[test]
+    fn disconnect_routing_rejects_unknown_keys_loudly() {
+        let ulid = "01J8ZQ00000000000000000999";
+        for broken in [
+            serde_json::json!([{"kind": DISCONNECT_ROUTING_KIND, "edgeId": ulid, "trackId": ulid}]),
+            serde_json::json!([{"kind": DISCONNECT_ROUTING_KIND, "edgeId": ulid, "value": 0.0}]),
+            serde_json::json!([{"kind": DISCONNECT_ROUTING_KIND, "edgeId": ulid, "gainDb": 1.0}]),
+        ] {
+            let fault = parse_ops(&broken).expect_err("未知键必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            assert_eq!(
+                lane_fault_data(&fault)["reason"],
+                "unknownDisconnectRoutingField"
+            );
+            assert_eq!(
+                lane_fault_data(&fault)["supportedDisconnectRoutingFields"],
+                serde_json::json!(DISCONNECT_ROUTING_FIELDS)
+            );
+        }
+        // 阴性对照：规范形状放行。
+        assert!(
+            parse_ops(&serde_json::json!([{"kind": DISCONNECT_ROUTING_KIND, "edgeId": ulid}]))
+                .is_ok()
+        );
+    }
+
+    /// `setAutomationLane` 的 `writeMode` 两种形状错误**各有各的 reason**。
+    ///
+    /// 注入（实测红）：把 `writeModeMustBeString` 那一段的 `as_str()` 改成 `as_str().unwrap_or("Off")`
+    /// ⇒ 非字符串被静默当成 `Off`，第一条红；把 `unknownWriteMode` 那一段的 `other =>` 臂
+    /// 改成落到 `Off` ⇒ 第二条红。
+    #[test]
+    fn lane_write_mode_shape_failures_use_distinct_reasons() {
+        let ulid = "01J8ZQ00000000000000000999";
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_AUTOMATION_LANE_KIND,
+            "lane": {"lane": "TrackVolume", "writeMode": 7},
+        }]))
+        .expect_err("数字写模式必须被拒");
+        assert_eq!(lane_fault_data(&fault)["reason"], "writeModeMustBeString");
+        assert_eq!(
+            lane_fault_data(&fault)["allowed"],
+            serde_json::json!(LANE_WRITE_MODES)
+        );
+
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_AUTOMATION_LANE_KIND,
+            "lane": {"lane": "TrackVolume", "writeMode": "Bogus"},
+        }]))
+        .expect_err("未知写模式必须被拒");
+        assert_eq!(lane_fault_data(&fault)["reason"], "unknownWriteMode");
+        assert_eq!(lane_fault_data(&fault)["received"], "Bogus");
+
+        // 阴性对照：四个规范名逐个放行。
+        for mode in LANE_WRITE_MODES {
+            assert!(
+                parse_ops(&serde_json::json!([{
+                    "kind": SET_AUTOMATION_LANE_KIND,
+                    "lane": {"lane": "TrackVolume", "writeMode": mode},
+                }]))
+                .is_ok(),
+                "{mode} 必须放行"
+            );
+        }
+        let _ = ulid;
+    }
+
+    /// `setAutomationLane` 的 `domain` 形状错误**响亮失败**（`domainMustBeObjectOrNull`）。
+    #[test]
+    fn lane_domain_shape_failure_is_a_parameter_error() {
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_AUTOMATION_LANE_KIND,
+            "lane": {"lane": "TrackVolume", "domain": 5},
+        }]))
+        .expect_err("数字 domain 必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "domainMustBeObjectOrNull"
+        );
+        // 阴性对照：`null`（= 清掉覆盖）与规范对象都放行。
+        assert!(
+            parse_ops(&serde_json::json!([{
+                "kind": SET_AUTOMATION_LANE_KIND,
+                "lane": {"lane": "TrackVolume", "domain": null},
+            }]))
+            .is_ok()
+        );
+        assert!(
+            parse_ops(&serde_json::json!([{
+                "kind": SET_AUTOMATION_LANE_KIND,
+                "lane": {"lane": "TrackVolume", "domain": {"min": -12.0, "max": 6.0}},
+            }]))
+            .is_ok()
+        );
+    }
+
+    /// `SendGain` 目标缺 `edgeId` ⇒ **响亮失败**（`edgeIdRequired`）。
+    ///
+    /// 注入（实测红）：把那个 `ok_or_else` 换成 `unwrap_or(None)` ⇒ 缺 `edgeId` 的
+    /// `SendGain` 目标会被当成"没有边"往下走，本判据红。
+    #[test]
+    fn send_gain_lane_without_an_edge_id_is_refused() {
+        for raw in [
+            serde_json::json!([{
+                "kind": SET_AUTOMATION_LANE_KIND,
+                "lane": {"lane": "SendGain"},
+            }]),
+            serde_json::json!([{
+                "kind": REMOVE_AUTOMATION_POINT_KIND,
+                "point": {"lane": "SendGain", "tick": 0},
+            }]),
+        ] {
+            let fault = parse_ops(&raw).expect_err("SendGain 缺 edgeId 必须被拒");
+            assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+            assert_eq!(lane_fault_data(&fault)["reason"], "edgeIdRequired");
+            assert_eq!(lane_fault_data(&fault)["field"], "edgeId");
+        }
+    }
+
+    /// `setScene` 的两处形状错误**各有各的 reason**：
+    /// `create: true` 且没有 `name` ⇒ `sceneNameRequiredWhenCreating`；
+    /// `tempo` 既不是数字也不是 `null` ⇒ `sceneTempoMustBeNumberOrNull`。
+    ///
+    /// 注入（实测红）：删掉 `create && patch.name.is_none()` 那条守卫 ⇒ 第一条红；
+    /// 把 `tempo` 的 `as_f64()` 换成 `as_f64().unwrap_or(120.0)` ⇒ 第二条红。
+    #[test]
+    fn set_scene_name_and_tempo_shape_failures_use_distinct_reasons() {
+        let ulid = "01J8ZQ00000000000000000999";
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_SCENE_KIND,
+            "scene": {"sceneId": ulid, "create": true},
+        }]))
+        .expect_err("create 且没有 name 必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "sceneNameRequiredWhenCreating"
+        );
+
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_SCENE_KIND,
+            "scene": {"sceneId": ulid, "tempo": "fast"},
+        }]))
+        .expect_err("字符串 tempo 必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "sceneTempoMustBeNumberOrNull"
+        );
+        assert_eq!(lane_fault_data(&fault)["received"], "fast");
+
+        // 阴性对照：`create: true` + `name` 放行；`tempo: null` 放行。
+        assert!(
+            parse_ops(&serde_json::json!([{
+                "kind": SET_SCENE_KIND,
+                "scene": {"sceneId": ulid, "create": true, "name": "Chorus"},
+            }]))
+            .is_ok()
+        );
+        assert!(
+            parse_ops(&serde_json::json!([{
+                "kind": SET_SCENE_KIND,
+                "scene": {"sceneId": ulid, "tempo": null},
+            }]))
+            .is_ok()
+        );
+    }
+
+    /// **程序化构造**的设备定义（参数非有限）在 `compile` 里被拒
+    /// （`invalidDeviceDefinition`）。
+    ///
+    /// 这一道是**纵深防御**：工具面走 [`parse_device`]，非有限参数在**解析期**就被拒
+    /// （判据 `device_payload_shapes_fail_loudly` 钉住），因此从 JSON 到不了这里。
+    /// 但 [`compile`] 是公开函数、`NoteOp::InsertDevice` 可以直接构造 ⇒ 这道闸门
+    /// 仍然必须真的拒（否则一条程序化构造的批会把 `NaN` 写进文档，而
+    /// `YebanProjectV1::validate` 要到提案模拟那一步才报）。
+    #[test]
+    fn a_programmatically_built_device_with_a_non_finite_param_is_refused() {
+        let project = filled_project();
+        let track = device_track(&project);
+        let (_, clip_id) = lead_clip(&project);
+        let mut device = project.tracks[&track].devices[0].clone();
+        device.id = EntityId::from_str("01J8ZQ00000000000000000DEV").expect("ULID");
+        device.params.push(ParameterValue {
+            name: "broken".to_owned(),
+            value: f32::NAN,
+            unit: None,
+        });
+        let ops = vec![NoteOp::InsertDevice {
+            track_id: track,
+            slot_index: None,
+            device,
+        }];
+        let fault = compile(&project, &track, &clip_id, &ops).expect_err("NaN 参数必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(lane_fault_data(&fault)["reason"], "invalidDeviceDefinition");
+    }
 }

@@ -1486,4 +1486,58 @@ mod tests {
         .expect("普通增益必须放行");
         assert!(!ok.ops.is_empty());
     }
+    /// 工程 BPM 或素材采样率**推不出** tick 数、而调用方又没给 `durationTicks` ⇒
+    /// **响亮拒绝**（`reason = "tempoUnusable"`），**不猜**一个假时长。
+    ///
+    /// 为什么必须有这一条：`frames_to_ticks_ceil` 在 `bpm <= 0` / `sample_rate == 0` 时
+    /// 返回 `None`（合法工程走不到 —— `YebanProjectV1::validate` 与
+    /// `SampleRate::from_hz` 已经把关），但 `plan` 是**公开函数**，
+    /// 一份手工构造的工程仍能到这一步。静默当成 0 或 1 tick 会让音频片段落在错的位置。
+    ///
+    /// 注入（实测红）：把那个 `ok_or_else` 换成 `unwrap_or(1)` ⇒
+    /// 本判据读不到 `tempoUnusable`（时长被静默猜成 1 tick），红。
+    #[test]
+    fn an_unusable_tempo_is_refused_instead_of_guessing_a_duration() {
+        let mut project = filled_project();
+        project.bpm = 0.0; // 病态文档：真实打开路径会被 validate() 拦住
+        let track = audio_track(&project);
+        let bytes = wav_s16(48_000, &[0, 1_000, -1_000, 0]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let fault = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Bed",
+                "assetHash": hash.as_str(),
+                "trackId": track.to_canonical_string(),
+            })),
+        )
+        .expect_err("推不出时长必须被拒, 不猜");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        let data = data.as_ref().expect("本形态的失败必须带 data");
+        assert_eq!(data["reason"], "tempoUnusable");
+        assert_eq!(data["field"], "durationTicks");
+        assert_eq!(data["bpm"], serde_json::json!(0.0));
+        assert_eq!(data["sampleRate"], serde_json::json!(48_000));
+
+        // 阴性对照: **同一个缺 `durationTicks` 的请求**在一份合法 BPM 上照旧规划成功
+        // ⇒ 上面红的不是"缺时长一律拒", 而是"推不出时长时**不猜**"。
+        let mut healthy = filled_project();
+        healthy.bpm = 120.0;
+        let ok = plan(
+            &healthy,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Bed",
+                "assetHash": hash.as_str(),
+                "trackId": track.to_canonical_string(),
+            })),
+        )
+        .expect("合法 BPM 下由素材全长换算时长");
+        assert!(!ok.ops.is_empty());
+    }
 }
