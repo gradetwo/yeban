@@ -472,7 +472,7 @@ mod tests {
         assert_eq!(two[0], two[1], "both sections carry the same value");
         assert_eq!(two[0].sends(), one[0].sends());
         assert_eq!(two[0].bus(), one[0].bus());
-        let orders: Vec<Option<u16>> = two.iter().map(Effect::dsp_order).collect();
+        let orders: Vec<Option<u8>> = two.iter().map(Effect::dsp_order).collect();
         assert_eq!(
             orders,
             vec![None, None],
