@@ -1,81 +1,62 @@
 # R118 `integer_count` 判据的『界』分类（四类）
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
-#   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：collection_size > condition_counter > element_value_bound > value_bound。
-# 合计 265 条：collection_size 33 ／ value_bound 222 ／ element_value_bound 5 ／ condition_counter 5
+#   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
+# 合计 198 条：collection_size 33 ／ value_bound 156 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
-src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out, [2.0, 2.0]
+src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
-src/block.rs|peak_finds_maximum|value_bound|assert_eq!(peak(&[0.1, -0.8, 0.3]), 0.8
-src/block.rs|scale_into_is_exact_and_touches_nothing_else|value_bound|assert_eq!(out, [2.0, -4.0, 1.0, 9.0, 9.0]
 src/channel_strip.rs|bypassing_the_dynamics_stops_the_reduction_counter|value_bound|assert!(on.0 > 0, "动态级开着却不压缩 ⇒ 判据测错了对象"
 src/channel_strip.rs|chunking_does_not_change_output|collection_size|assert_eq!(                 differing, 0,                 "块长 {chunk} 改变了输出 ⇒ 器件不是逐样本前向依赖"
 src/channel_strip.rs|compression_happens_and_matches_the_arithmetic|collection_size|assert!(             strip.gain_reduction_count() > 0,             "窗口里从未压缩过 ⇒ 判据测错了对象"
 src/channel_strip.rs|degenerate_slice_lengths_do_not_panic|collection_size|assert_eq!(strip.process_stereo(&mut [], &mut []), 0
 src/channel_strip.rs|eq_before_filter_is_observable|collection_size|assert!(             differing > 0,             "交换 EQ 与滤波之后输出逐位相同 ⇒ 顺序不是契约"
 src/channel_strip.rs|hostile_inputs_never_escape_as_non_finite|value_bound|assert!(finite_outputs > 0
-src/channel_strip.rs|illegal_sample_rates_are_clamped|value_bound|assert_eq!(             ChannelStrip::new(ChannelStripParams::DEFAULT, 44_100.0).sample_ra
-src/channel_strip.rs|input_metering_excludes_the_trim_and_the_gains_are_multiplicative|value_bound|assert!(                 (b - expected).abs() < 1.0e-6,                 "第 {i} 帧 {b} 与 a·g
 src/channel_strip.rs|latency_is_zero|value_bound|assert_eq!(ChannelStrip::default().latency_samples(), 0
 src/channel_strip.rs|mono_path_matches_a_duplicated_stereo_pair|collection_size|assert_eq!(differing, 0
 src/channel_strip.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|assert_eq!(p.input_gain_db, 0.0, "NaN 增益必须归到恒等（0 dB）"
 src/channel_strip.rs|set_params_and_sample_rate_are_live_and_allocation_free_paths|collection_size|assert_eq!(frames_before, 512
 src/channel_strip.rs|stage_order_is_the_contract|collection_size|assert!(             differing > 0,             "交换滤波与压缩之后输出逐位相同 ⇒ 顺序不是契约（判据失效）"
-src/channel_strip.rs|stereo_metering_follows_the_louder_channel|value_bound|assert!(             (strip.input_peak() - 1.0).abs() < 1.0e-6,             "输入峰值 {} 必须取较响
 src/channel_strip.rs|the_chain_matches_an_independently_built_reference_chain|collection_size|assert!(             differing == 0,             "本器件的输出与按 §2 顺序手工搭的参照链不同（{differing} / {L
-src/channel_strip.rs|the_eq_really_changes_the_level|value_bound|assert!(             dbfs(boosted_rms) > dbfs(flat_rms) + 1.0,             "高架提升没有抬高输出电平 ⇒
+src/channel_strip.rs|the_eq_really_changes_the_level|value_bound|assert!(             max_delta_flat < 1.0e-3,             "平坦 EQ 与旁通的差达到 {max_delta_flat:.
 src/channel_strip.rs|the_filter_really_removes_the_high_component|value_bound|assert!(             killed_db > 40.0,             "低通只把 9 kHz 压了 {killed_db:.3} dB（要求 > 4
 src/channel_strip.rs|the_same_input_twice_is_bit_identical|collection_size|assert_eq!(h1, h2
 src/comb.rs|a_fixed_length_matches_a_textbook_ring_buffer_bit_for_bit|collection_size|assert_eq!(                     differing, 0,                     "freq {freq} / resonance
-src/comb.rs|noise_becomes_periodic|value_bound|assert!(num_in / den_in < 0.1, "test input was not white noise"
 src/comb.rs|one_wavelength_per_delay_at_any_sample_rate|value_bound|assert_eq!(                 c.delay_samples(),                 expected,                 "
-src/comb.rs|retuning_never_replays_audio_from_outside_the_line|value_bound|assert_eq!(             device_warmup_peak, 0.0,             "前置条件失败：标记还没进线就已经出来了 ⇒ 夹具不成立"
-src/comb.rs|rings_at_its_tuned_frequency|value_bound|assert!(tuned > 0.02, "comb did not ring at all: {tuned}"
-src/comb.rs|stays_bounded_at_full_feedback|element_value_bound|assert!(out.iter().all(|v| v.is_finite() && v.abs() < 8.0)
+src/comb.rs|retuning_never_replays_audio_from_outside_the_line|value_bound|assert!(             back_peak < 1e-3,             "换回长长度后线外的旧音频被重放：峰值 {back_peak:e}（应 < 1
 src/comb.rs|tuning_is_clamped_into_the_buffer|value_bound|assert!(capacity > 0
-src/compressor.rs|a_full_scale_square_wave_never_escapes_the_bound|value_bound|assert!(peak <= 1.0, "输出峰值 {peak} 越界"
-src/compressor.rs|a_known_sine_gets_the_arithmetically_expected_steady_state_reduction|value_bound|assert!(             (measured - expected).abs() < 0.15,             "实测 {measured} dB，算术期
 src/compressor.rs|a_transparent_setting_has_exactly_zero_gain|condition_counter|assert_eq!(gain_db_for(x, p), 0.0, "ratio=1 必须在 x={x} 处给 0 dB"
-src/compressor.rs|alpha_is_always_inside_zero_and_one|value_bound|assert!(a > 0.0 && a < 1.0, "sr={sr} t={t} a={a}"
 src/compressor.rs|alpha_matches_an_independent_exp2_formulation|value_bound|assert!((a - b).abs() < 1e-6, "sr={sr} t={t} a={a} b={b}"
-src/compressor.rs|attack_time_matches_the_declared_time_constant|value_bound|assert!(             (measured_s - expected_s).abs() < 0.10 * expected_s,             "检波器
 src/compressor.rs|below_threshold_is_bit_transparent|value_bound|assert_eq!(different, 0, "膝下输出必须逐位等于输入"
 src/compressor.rs|changing_the_sample_rate_recomputes_alpha|value_bound|assert!(             comp.alpha_attack < at_48k,             "采样率翻倍后 α 必须减半左右: {} vs {at_4
 src/compressor.rs|chunking_does_not_change_output|value_bound|assert_eq!(                         mismatches, 0,                         "chunk = {chunk
-src/compressor.rs|gain_attack_follows_the_declared_attack_constant|value_bound|assert!(steady < -3.0, "稳态增益 {steady} dB 太浅"
-src/compressor.rs|hard_knee_gain_lands_on_the_closed_form|value_bound|assert!(             (comp.gain_db() - expected).abs() < 0.05,             "实测 {} vs 闭式 {e
+src/compressor.rs|gain_attack_follows_the_declared_attack_constant|value_bound|assert!(             (measured_s - expected_s).abs() < 0.05 * expected_s,             "起振实
 src/compressor.rs|hostile_blocks_never_write_a_non_finite_sample|value_bound|assert_eq!(                 bad, 0,                 "makeup={makeup_db} dB：mono 写回了 {bad} 
-src/compressor.rs|hostile_samples_never_escape_into_the_state|value_bound|assert!((0.0..=1.0).contains(&gain), "gain 越界: {gain}"
-src/compressor.rs|infinite_ratio_pins_the_output_at_the_threshold|value_bound|assert!((y - (-6.0)).abs() < 0.05, "x={x} y={y}"
 src/compressor.rs|latency_is_zero|value_bound|assert_eq!(comp.latency_samples(), 0
-src/compressor.rs|makeup_is_applied_after_the_compressor_gain|condition_counter|assert!(             (ratio_db - 6.020_6).abs() < 0.02,             "makeup 实测 {ratio_db} 
-src/compressor.rs|mean_square_never_leaves_its_domain|value_bound|assert!(ms >= 0.0, "block={block} n={n} ms={ms}"
-src/compressor.rs|over_full_scale_input_stays_finite|value_bound|assert!(             (comp.gain_db() - (-18.030_9)).abs() < 0.05,             "gain_db = {
+src/compressor.rs|mean_square_never_leaves_its_domain|value_bound|assert!(worst_ms <= 16.0 + 1e-3, "最大均方 = {worst_ms}"
+src/compressor.rs|over_full_scale_input_stays_finite|value_bound|assert!(             worst < 0.05,             "稳态段最大偏差 {worst}；末样本 {}，期望 4·10^(−18.0309/2
 src/compressor.rs|processed_sample_counting_is_per_channel|value_bound|assert_eq!(             comp.processed_samples(),             128,             "立体声块按帧推进，按
-src/compressor.rs|release_time_matches_the_declared_time_constant|value_bound|assert!(steady < -3.0, "稳态增益 {steady} dB 太浅，弹道测不出来"
 src/compressor.rs|reset_clears_state_and_statistics|collection_size|assert!(comp.reduction_count() > 0
 src/compressor.rs|reset_reproduces_a_freshly_built_compressor_bit_for_bit|value_bound|assert!(warmup.4 > 0, "夹具必须真的驱动压缩器"
-src/compressor.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|assert_eq!(p.ratio, 1.0
 src/compressor.rs|silence_stays_silent_and_never_becomes_nan|element_value_bound|assert!(buf.iter().all(|s| *s == 0.0), "静音必须逐位为 0"
 src/compressor.rs|static_curve_matches_the_closed_form_on_a_grid|value_bound|assert!(worst < 1e-3, "两个算式在网格上的最大差 = {worst} dB"
 src/compressor.rs|stereo_and_mono_paths_agree_bit_for_bit_on_identical_channels|value_bound|assert_eq!(mismatches, 0
 src/compressor.rs|the_gain_attack_settle_time_scales_linearly_with_attack_s|condition_counter|assert!(             (hi - lo) / hi < 0.01,             "settle/attack_s 在 10/20/100 ms 上不
-src/compressor.rs|the_soft_knee_is_continuous_at_both_junctions|value_bound|assert_eq!(p.knee_db, 8.0
+src/compressor.rs|the_soft_knee_is_continuous_at_both_junctions|value_bound|assert!(             (inside(half) - outside(half)).abs() < 1e-4,             "o=+W/2 处膝内 
 src/compressor.rs|unequal_length_stereo_slices_are_handled_without_panicking|value_bound|assert_eq!(comp.process_stereo(&mut l, &mut r), 4
 src/convolution.rs|a_single_partition_ir_matches_the_reference|value_bound|assert_eq!(conv.partitions(), 1
 src/convolution.rs|an_over_long_ir_is_truncated_at_the_documented_cap|value_bound|assert_eq!(             conv.partitions(),             CONV_MAX_IR_FRAMES / CONV_BLOCK_FRA
 src/convolution.rs|an_unconfigured_convolution_is_a_bit_exact_passthrough|collection_size|assert_eq!(conv.ir_frames(), 0
 src/convolution.rs|partitioned_convolution_matches_direct_time_domain_convolution|collection_size|assert_eq!(conv.set_impulse_response(&ir), 400
 src/convolution.rs|reconfiguring_does_not_leak_the_previous_ir_tail|element_value_bound|assert!(             silence.iter().all(|v| *v == 0.0),             "同长度换 IR 后静音输入有输出（上一个 
-src/convolution.rs|the_inner_transform_tolerates_degenerate_inputs|value_bound|assert!(re.iter().all(|v| *v == 0.0)
+src/convolution.rs|the_inner_transform_tolerates_degenerate_inputs|value_bound|assert_eq!(re[0], 1.0
 src/convolution.rs|the_reported_latency_is_zero_and_the_first_tap_is_immediate|value_bound|assert_eq!(CONV_LATENCY, 0
 src/convolution_reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             shell.set_impulse_response(&delta, &silence, &silence, &delta),   
 src/convolution_reverb.rs|debug_prints_only_scalars|collection_size|assert!(             text.len() < 400,             "Debug 输出过长（{} 字节）⇒ 缓冲被打印了: {text}",   
 src/convolution_reverb.rs|dry_and_wet_mix_is_the_stated_linear_combination|value_bound|assert!(wet_energy > 1e-6, "湿路输出全零 ⇒ 判据测的是空壳"
-src/convolution_reverb.rs|params_are_sanitised|value_bound|assert!(shell.ir_gain().is_finite() && shell.ir_gain() > 0.0
 src/convolution_reverb.rs|pre_delay_is_not_pdc_latency|value_bound|assert_eq!(shell.latency_samples(), 0
 src/convolution_reverb.rs|pre_delay_shifts_the_wet_impulse_by_exactly_n_frames|value_bound|assert_eq!(             shell.set_impulse_response(&delta, &silence, &silence, &delta),   
-src/convolution_reverb.rs|reset_clears_the_tail_and_the_delay_line|value_bound|assert!(             excite.iter().any(|v| v.abs() > 1e-3),             "激励块没有产生湿信号 ⇒ 本判据测
+src/convolution_reverb.rs|reset_clears_the_tail_and_the_delay_line|element_value_bound|assert!(             excite.iter().any(|v| v.abs() > 1e-3),             "激励块没有产生湿信号 ⇒ 本判据测
 src/convolution_reverb.rs|stereo_convenience_keeps_the_cross_paths_silent|value_bound|assert_eq!(shell.set_stereo_impulse_response(&h_l, &h_r), 128
 src/convolution_reverb.rs|the_four_paths_keep_their_named_order|value_bound|assert_eq!(shell.set_impulse_response(&h_ll, &h_lr, &h_rl, &h_rr), 1
 src/convolution_reverb.rs|zero_dry_and_zero_wet_is_exact_silence|value_bound|assert_eq!(*out, 0.0, "样本 {i}: 干湿都是 0 必须是精确静音"
@@ -83,16 +64,12 @@ src/convolution_stereo.rs|an_unconfigured_instance_is_a_bit_exact_passthrough_fo
 src/convolution_stereo.rs|four_unequal_or_empty_irs_are_rejected_and_force_passthrough|collection_size|assert_eq!(                 conv.set_impulse_response(a, b, c, d),                 0,     
 src/convolution_stereo.rs|the_four_paths_are_wired_as_named|collection_size|assert_eq!(conv.ir_frames(), 1
 src/convolution_stereo.rs|the_four_paths_match_four_direct_convolutions|collection_size|assert_eq!(conv.set_impulse_response(&h_ll, &h_lr, &h_rl, &h_rr), 300
-src/delay.rs|a_plain_delay_keeps_the_channels_apart|value_bound|assert!(left[period].abs() > 0.5
-src/delay.rs|a_time_change_slides_instead_of_jumping|value_bound|assert!(             worst < most_shifted_step * 1.5,             "delay time change stepp
-src/delay.rs|an_unallocated_delay_is_a_passthrough|value_bound|assert_eq!(left, [0.5, -0.25]
-src/delay.rs|damping_darkens_later_repeats|value_bound|assert!(             damped_ratio < bright_ratio * 0.4,             "damped {damped_ratio}
-src/delay.rs|degenerate_parameters_never_escape_the_clamps|value_bound|assert!(             peak.is_finite() && peak < 100.0,             "clamped feedback ran a
-src/delay.rs|echoes_decay_at_the_feedback_rate|value_bound|assert!(             (second / first - 0.5).abs() < 0.02,             "second echo {}",   
-src/delay.rs|ping_pong_alternates_the_channels|value_bound|assert!(             left[period].abs() > 0.35,             "first echo should be on the l
-src/delay.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|collection_size|assert!(             fresh_l.iter().any(|v| v.abs() > 0.05) && used_l.iter().any(|v| v.abs
+src/delay.rs|a_plain_delay_keeps_the_channels_apart|element_value_bound|assert!(             right.iter().all(|v| v.abs() < 1e-6),             "nothing should cro
+src/delay.rs|degenerate_parameters_never_escape_the_clamps|value_bound|assert!(d.max_seconds() <= MAX_DELAY_SECONDS + 1e-3
+src/delay.rs|ping_pong_alternates_the_channels|value_bound|assert!(             right[period * 2].abs() > 0.2,             "second echo should be on 
+src/delay.rs|reset_reproduces_a_freshly_built_device_bit_for_bit|collection_size|assert_eq!(             differing, 0,             "reset 之后与刚 configure 的实例有 {differing} 帧
 src/delay.rs|the_delay_time_is_seconds_not_samples|value_bound|assert_eq!(                 peak, expected_tap,                 "at {sample_rate} Hz a 50 
-src/delay.rs|the_time_floor_is_folded_onto_the_documented_minimum|value_bound|assert!(floor.iter().any(|bits| *bits != 0), "夹具输出全零"
+src/delay.rs|the_time_floor_is_folded_onto_the_documented_minimum|element_value_bound|assert!(floor.iter().any(|bits| *bits != 0), "夹具输出全零"
 src/delay.rs|two_instances_do_not_share_time_or_feedback|value_bound|assert!(             short_alone[short_tap].abs() > 0.9,             "the 50 ms echo shoul
 src/drums/mod.rs|a_closed_hat_chokes_every_ringing_open_hat|value_bound|assert_eq!(machine.active_slots(), 2
 src/drums/mod.rs|a_finished_hit_frees_its_slot|value_bound|assert_eq!(machine.active_slots(), 1
@@ -100,122 +77,90 @@ src/drums/mod.rs|an_untouched_machine_renders_bit_exact_silence|value_bound|asse
 src/drums/mod.rs|finite_values_outside_a_domain_reach_the_bound_exactly|value_bound|assert_eq!(clean.snare.tone_hz, MIN_FREQ_HZ, "0 Hz 不是合法音高"
 src/drums/mod.rs|hostile_parameters_never_produce_a_non_finite_sample|value_bound|assert_eq!(bad, 0, "{} 产出 {bad} 个非有限样本", voice.name()
 src/drums/mod.rs|more_hits_than_slots_steals_the_lowest_level_slot_deterministically|value_bound|assert_eq!(machine.triggers(), (DRUM_SLOTS + 1) as u64
-src/drums/mod.rs|render_is_bit_identical_under_any_block_split|value_bound|assert!(             whole.iter().any(|sample| *sample != 0.0),             "夹具必须出声（否则逐位相等
-src/drums/mod.rs|sanitised_clamps_every_field_into_its_documented_domain|value_bound|assert_eq!(kit.kick.level, 0.0, "NaN 音量必须退化为静音"
+src/drums/mod.rs|render_is_bit_identical_under_any_block_split|value_bound|assert!(                 mismatch.is_none(),                 "块长 {split} 帧的切分在第 {} 个样本上与整块
 src/drums/mod.rs|set_params_during_a_fade_does_not_cancel_the_fade|value_bound|assert!(fading_before > 0, "夹具必须至少造出一个淡出中的槽位"
 src/drums/mod.rs|the_default_steal_fade_is_the_three_millisecond_constant|collection_size|assert_eq!(steal_fade_frames_for(48_000.0), 144
-src/drums/mod.rs|the_hat_ratios_are_mutually_inharmonic|value_bound|assert!(                     (first - second).abs() > 1.0e-3,                     "比值 {i} 
 src/drums/mod.rs|the_steal_fade_cap_is_pinned_for_absurd_sample_rates|collection_size|assert_eq!(steal_fade_frames_for(16.0e6), 24_000, "1.6e7 Hz 已越过上界"
 src/drums/mod.rs|the_voice_discriminants_round_trip|collection_size|assert_eq!(usize::from(voice.as_u8()), index
-src/envelope.rs|attack_reaches_peak_then_decays_to_sustain|value_bound|assert!(peak >= 0.99, "attack did not reach peak: {peak}"
-src/envelope.rs|degenerate_parameters_are_clamped_instead_of_producing_nan|value_bound|assert_eq!(env.sustain(), 1.0
-src/envelope.rs|release_decays_to_idle_and_reports_inactive|value_bound|assert_eq!(env.value(), 0.0
-src/envelope.rs|retrigger_during_release_restarts_attack|value_bound|assert!(mid_release > 0.0
-src/envelope.rs|steal_fade_finishes_in_time_and_never_steps|value_bound|assert_eq!(env.value(), 1.0, "must start the fade from full level"
-src/envelope.rs|the_first_parameter_request_always_recomputes_the_coefficients|value_bound|assert!(short > 0.1, "起振必须真的在推进（实得 {short}）"
-src/envelope.rs|zero_sustain_voice_finishes_while_key_held|value_bound|assert_eq!(env.value(), 0.0
-src/filter.rs|degenerate_configuration_is_clamped|value_bound|assert!(filter.coefficient() < 1.0
-src/filter.rs|full_resonance_stays_bounded|value_bound|assert!(peak < 12.0, "ladder ran away: {peak}"
+src/envelope.rs|the_first_parameter_request_always_recomputes_the_coefficients|value_bound|assert!(             short < 0.4,             "请求 10 ms 起振，第 120 帧却到了 {short} ⇒ 起振被当成了 1 个
+src/envelope.rs|zero_sustain_voice_finishes_while_key_held|value_bound|assert_eq!(render(&mut env, true, 128), 0.0
 src/filter.rs|is_transparent_below_the_knee|condition_counter|assert!(ratio < -70.0, "filter colours a clean sine: {ratio:.1} dB"
-src/filter.rs|low_pass_attenuates_above_the_cutoff|value_bound|assert!(pass > 0.8, "passband too quiet: {pass}"
 src/filter.rs|never_emits_subnormal_tail_values|value_bound|assert!(                 value == 0.0 || value.abs() >= f32::MIN_POSITIVE,                
-src/filter.rs|resonance_lifts_the_cutoff|value_bound|assert!(resonant > flat * 1.5, "no resonance: {resonant} vs {flat}"
-src/filter.rs|stays_continuous_on_a_sine|value_bound|assert!(                 worst < ideal * 2.5,                 "cutoff {freq} res {res} dri
-src/limiter.rs|a_peak_exactly_at_the_threshold_is_not_a_reduction|collection_size|assert_eq!(limiter.gain(), 1.0, "恰好等于阈值时目标增益就是 1.0"
+src/limiter.rs|a_peak_exactly_at_the_threshold_is_not_a_reduction|collection_size|assert_eq!(limiter.reduction_count(), 0
 src/limiter.rs|gain_release_is_bounded_per_sample|value_bound|assert!(                 rise <= LIMITER_RELEASE_PER_SAMPLE + LIMITER_RELEASE_PER_SAMPLE *
 src/limiter.rs|limit_engages_in_a_single_sample|value_bound|assert!(             gains[31] > 0.9,             "过载之前增益应当还在 1.0 附近: {}",             gai
 src/limiter.rs|limited_peak_never_exceeds_threshold|collection_size|assert!(             limiter.reduction_count() > 0,             "限制器报告 0 个被压样本 —— 夹具没有驱动它（
-src/limiter.rs|overload_never_steps_the_waveform|value_bound|assert!(worst < 0.06, "过载段出现阶跃: 最大相邻位移 {worst}"
 src/limiter.rs|reset_reproduces_a_freshly_built_limiter_bit_for_bit|value_bound|assert!(warmup.4, "夹具必须真的驱动限制器"
 src/limiter.rs|stereo_linking_follows_the_louder_channel|collection_size|assert!(limiter.reduction_count() > 0, "一侧的瞬态必须产生压限"
-src/limiter.rs|the_release_ramp_never_overshoots_its_target|value_bound|assert!(limiter.gain() < 1.0, "夹具必须先把增益压下去"
+src/limiter.rs|the_release_ramp_never_overshoots_its_target|value_bound|assert!(             returned_to_unity,             "40 000 帧内必须回到 1.0（每样本 {LIMITER_RELEAS
 src/limiter.rs|zero_frames_is_a_no_op|collection_size|assert_eq!(processed, 0
-src/loop_window.rs|a_loop_seam_wraps_without_a_step|value_bound|assert!(             unwindowed_step > 0.9,             "the control signal must actually 
+src/loop_window.rs|a_loop_seam_wraps_without_a_step|value_bound|assert_eq!(looped[0], 0.0, "head must start at silence"
 src/loop_window.rs|out_of_range_lookup_is_clamped|value_bound|assert_eq!(window.at(0), 0.0
 src/loop_window.rs|short_blocks_are_handled_without_panicking|value_bound|assert_eq!(short[0], 0.0
 src/loop_window.rs|the_window_is_complementary_to_its_mirror|value_bound|assert!((sum - 1.0).abs() < 1e-6, "w({index}) + mirror = {sum}"
 src/loop_window.rs|the_window_matches_the_specified_curve|value_bound|assert_eq!(values[0], 0.0, "w(0) must be exactly zero"
 src/loudness.rs|biquad_gains_match_the_itu_analytic_values|value_bound|assert!((shelf_dc_gain() - 1.0).abs() < 1e-3
-src/loudness.rs|dc_is_rejected_by_the_k_weighting_high_pass|value_bound|assert!(             loudness < -100.0,             "稳态直流必须被高通级拒绝, 实际 {loudness} LUFS"
 src/loudness.rs|derived_coefficients_reproduce_the_itu_48k_table|value_bound|assert!(                 (got - want).abs() < 1e-12,                 "推导的 shelf[{index}] =
-src/loudness.rs|gate_thresholds_and_window_lengths_are_the_documented_values|value_bound|assert_eq!(ABSOLUTE_GATE_LUFS, -70.0
+src/loudness.rs|gate_thresholds_and_window_lengths_are_the_documented_values|value_bound|assert_eq!(GATING_HOPS_PER_BLOCK, 4
 src/loudness.rs|hostile_samples_do_not_poison_the_reading|value_bound|assert!(             (loudness - reference).abs() < 1e-3,             "3 个坏样本不得污染整段读数: {lo
 src/loudness.rs|k_weighting_is_rate_consistent_on_a_wideband_fixture|value_bound|assert!(                 (reading - reference).abs() < 0.05,                 "{rate} Hz 的宽
-src/loudness.rs|loudness_tracks_amplitude_by_six_db_per_halving|value_bound|assert!(             ((full - half) - 6.020_6).abs() < 0.02,             "减半应降 6.0206 dB, 
-src/loudness.rs|minus_twenty_dbfs_997hz_is_minus_twenty_lufs_at_every_supported_rate|value_bound|assert!(                 (ungated + 20.0).abs() < 0.025,                 "{rate} Hz 的无门限读数
 src/loudness.rs|minus_twenty_dbfs_997hz_stereo_is_minus_twenty_lufs|value_bound|assert!(             (loudness + 20.0).abs() < 0.05,             "997 Hz −20 dBFS 双声道应为 −2
 src/loudness.rs|momentary_window_covers_four_hundred_milliseconds_with_seventy_five_percent_overlap|value_bound|assert_eq!(meter.hop_samples(), 4_800
 src/loudness.rs|one_channel_only_is_three_db_quieter|value_bound|assert!(             (loudness + 23.010_3).abs() < 0.05,             "单通道 −20 dBFS 应为 −23.
 src/loudness.rs|reset_restores_the_initial_state|collection_size|assert_eq!(meter, LoudnessMeter::new_48k()
-src/loudness.rs|sample_rate_support_covers_the_four_derived_tables|value_bound|assert_eq!(             K_WEIGHTING_SAMPLE_RATES_HZ,             [44_100.0, 48_000.0, 88_2
+src/loudness.rs|sample_rate_support_covers_the_four_derived_tables|value_bound|assert!(                 KWeighting::for_sample_rate(rate).is_none(),                 "{ra
 src/loudness.rs|short_term_window_is_three_seconds_wide|value_bound|assert_eq!(                 meter.short_term_lufs(),                 f32::NEG_INFINITY,   
 src/loudness.rs|silence_and_empty_input_are_negative_infinity_never_nan|collection_size|assert_eq!(meter.frames(), 0
-src/loudness.rs|silence_padding_pulls_ungated_loudness_down_but_not_the_gated_one|value_bound|assert!(             (ungated + 23.010_3).abs() < 0.05,             "无门限时静音段应把读数拉到 −23.01 
 src/loudness.rs|the_absolute_gate_sits_at_minus_seventy_lufs|value_bound|assert!(                 (ungated - target as f32).abs() < 0.05,                 "构造前提: 无门
-src/loudness.rs|the_relative_gate_removes_the_quiet_section|value_bound|assert!(             (ungated + 22.967).abs() < 0.05,             "无门限应读到 −22.967, 实际 {ung
-src/math.rs|db_conversion_boundaries_are_pinned_at_the_documented_thresholds|value_bound|assert_eq!(db_to_gain(-120.0), 0.0
+src/loudness.rs|the_relative_gate_removes_the_quiet_section|value_bound|assert!(             (quiet_only + 40.0).abs() < 0.1,             "安静段单独应读到 −40 量级, 实际 {qu
+src/math.rs|db_conversion_boundaries_are_pinned_at_the_documented_thresholds|value_bound|assert_eq!(db_to_gain(f32::NEG_INFINITY), 0.0
 src/math.rs|db_conversion_round_trips|value_bound|assert!((db_to_gain(0.0) - 1.0).abs() < 1e-6
 src/math.rs|fft_tolerates_mismatched_and_degenerate_lengths|value_bound|assert_eq!(re, [1.0; 4]
 src/math.rs|note_to_hz_matches_concert_pitch|value_bound|assert!((note_to_hz(69.0) - 440.0).abs() < 1e-3
 src/math.rs|pade_tanh_is_monotonic_and_accurate_in_range|value_bound|assert!(pade_tanh(0.0).abs() < 1e-9
-src/math.rs|sanitise_sample_rate_clamps_degenerate_inputs|value_bound|assert_eq!(sanitise_sample_rate(0.0), MIN_SAMPLE_RATE
+src/math.rs|sanitise_sample_rate_clamps_degenerate_inputs|value_bound|assert_eq!(sanitise_sample_rate(f32::NAN), MIN_SAMPLE_RATE
 src/math.rs|semitone_ratio_is_an_octave_at_twelve_semitones|condition_counter|assert!((semitone_ratio(0.0) - 1.0).abs() < 1e-6
-src/math.rs|soft_limit_is_transparent_then_bounded|value_bound|assert!(soft_limit(0.9) > 0.82 && soft_limit(0.9) < 0.9
+src/math.rs|soft_limit_is_transparent_then_bounded|value_bound|assert!(soft_limit(f32::INFINITY) <= 1.0
 src/math.rs|soft_limit_never_produces_nan|value_bound|assert_eq!(soft_limit(f32::NAN), 0.0
-src/math.rs|the_shared_fft_puts_a_sine_in_one_bin|value_bound|assert!(power > 100.0, "the sine's own bin is empty"
+src/math.rs|the_shared_fft_puts_a_sine_in_one_bin|value_bound|assert!(power < 1e-6, "energy leaked into bin {bin}"
 src/math.rs|the_shared_fft_round_trips|value_bound|assert!(re[0].abs() > 1.0
-src/meter.rs|ballistics_reject_invalid_parameters_without_nan|value_bound|assert!(reading.peak_hold <= 1.0
-src/meter.rs|dbfs_is_the_exact_inverse_of_the_documented_definition|value_bound|assert_eq!(dbfs(1.0), 0.0
+src/meter.rs|ballistics_reject_invalid_parameters_without_nan|value_bound|assert!((later.peak_hold - loud.peak_hold).abs() < 1e-6
+src/meter.rs|dbfs_is_the_exact_inverse_of_the_documented_definition|value_bound|assert_eq!(dbfs(0.0), f32::NEG_INFINITY
 src/meter.rs|eight_times_oversampling_fixes_the_four_tenths_nyquist_underread|value_bound|assert!(             (four_times - expected_four).abs() < 2e-3,             "构造前提: 4× 应读到 
 src/meter.rs|empty_block_still_decays_hold_and_keeps_finite_rms|value_bound|assert!((loud.peak_hold - 1.0).abs() < 1e-6
 src/meter.rs|frozen_pre_hoist_table_is_reproduced_bit_for_bit|value_bound|assert_eq!(                     bits,                     frozen_bits,                    
 src/meter.rs|full_scale_sine_peaks_at_zero_dbfs|value_bound|assert!((reading.peak - 1.0).abs() < 1e-3, "峰值应达满量程"
-src/meter.rs|full_scale_square_wave_rms_is_exactly_one|value_bound|assert_eq!(reading.peak, 1.0
-src/meter.rs|half_scale_sine_is_minus_six_dbfs|value_bound|assert!(             (reading.peak_dbfs() + 6.0206).abs() < 0.1,             "半幅峰值应约 -6.02
-src/meter.rs|nan_and_infinity_inputs_never_produce_nan_levels|value_bound|assert_eq!(nan_reading.peak, 0.0
+src/meter.rs|full_scale_square_wave_rms_is_exactly_one|value_bound|assert_eq!(dbfs(reading.rms), 0.0, "RMS = 1 ⇒ 0 dBFS"
 src/meter.rs|peak_hold_decays_by_the_documented_rate|value_bound|assert!((first.peak_hold - 1.0).abs() < 1e-6
-src/meter.rs|reset_clears_state_but_keeps_ballistics|value_bound|assert!(detector.peak_hold() > 0.0
 src/meter.rs|sanitize_clamps_and_never_returns_nan|value_bound|assert_eq!(sanitize_sample(f32::NAN), 0.0
 src/meter.rs|silent_detector_has_no_ballistics|value_bound|assert!((first.peak_hold - 0.5).abs() < 1e-6
 src/meter.rs|sixteen_times_tightens_the_worst_case_grid_comb_by_the_documented_margin|value_bound|assert!(                 b >= a,                 "16× 的网格是 8× 的超集, 读数不得更小: f={frequency}·f
-src/meter.rs|smoothed_rms_follows_the_documented_time_constant|value_bound|assert!(             (last.rms_smoothed - expected).abs() < 0.01,             "τ 之后平滑 RMS 
 src/meter.rs|stereo_reading_is_channel_linked|value_bound|assert!(             reading.peak_dbfs().abs() < 0.1,             "单声道满幅时联动峰值应达 0 dBFS, 实际
 src/meter.rs|supersedes_accepts_equal_and_newer_but_not_older|value_bound|assert!(supersedes(7, 7)
 src/meter.rs|the_reported_true_peak_latency_is_the_kernel_centre|value_bound|assert_eq!(TRUE_PEAK_TAPS, 32
-src/meter.rs|true_peak_dominates_sample_peak_and_sanitizes_hostile_input|value_bound|assert!(true_peak < 2.0, "窗化插值不应产生离谱过冲: {true_peak}"
 src/meter.rs|true_peak_is_transparent_at_dc_and_low_frequency|value_bound|assert!(             (dc - 0.5).abs() < 1e-6,             "稳态直流 0.5 的真峰值必须是 0.5, 实际 {dc}"
 src/meter.rs|true_peak_kernel_is_coherent|collection_size|assert_eq!(table.len(), if name == "8x" { 8 } else { 16 }
 src/meter.rs|true_peak_oversampling_is_either_eight_or_sixteen|value_bound|assert_eq!(TruePeakDetector::new().oversampling(), 8
 src/meter.rs|true_peak_sees_the_intersample_overshoot|value_bound|assert!(             (sample_peak - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,        
 src/meter.rs|true_peak_steady_state_underread_is_within_the_documented_budget|value_bound|assert!(                 reading >= floor,                 "8× 在 f={frequency}·fs 的稳态读数是 {
-src/meter.rs|zero_input_is_negative_infinity_or_floor_never_nan|value_bound|assert_eq!(reading.peak, 0.0
+src/meter.rs|zero_input_is_negative_infinity_or_floor_never_nan|value_bound|assert_eq!(reading.peak_dbfs(), f32::NEG_INFINITY
 src/noise.rs|a_corner_below_the_documented_floor_is_folded_onto_the_floor|value_bound|assert_eq!(render(below), at_floor, "转折频率 {below} Hz 必须折到 1 Hz"
 src/noise.rs|brown_falls_at_six_db_per_octave|value_bound|assert!(             (measured + 6.0).abs() < 0.8,             "brown slope should be abou
-src/noise.rs|colour_switch_is_observable_and_corner_is_clamped|value_bound|assert!(noise.process(white, 0.0).is_finite()
 src/noise.rs|pink_falls_at_three_db_per_octave|value_bound|assert!(             (measured + 3.0).abs() < 0.6,             "pink slope should be about
-src/noise.rs|rng_is_deterministic_and_bipolar|value_bound|assert!((-1.0..1.0).contains(&x)
 src/noise.rs|rng_never_gets_stuck_and_never_reaches_one|value_bound|assert_ne!(rng.state(), 0
 src/noise.rs|rng_state_can_be_restored_to_replay_a_render|value_bound|assert_eq!(original.next_u32(), replay.next_u32()
-src/noise.rs|stays_bounded|value_bound|assert!(v.is_finite() && v.abs() < 20.0, "{colour:?} ran away: {v}"
-src/noise.rs|the_brown_leak_clamp_is_load_bearing_at_both_ends|value_bound|assert_eq!(             render(200.0, 1_000.0),             render(200.0, 2_000.0),       
 src/noise.rs|white_is_flat|value_bound|assert!(             measured.abs() < 0.5,             "white should be flat, measured {me
 src/oscillator.rs|a_high_note_has_no_energy_outside_its_harmonics|value_bound|assert!(             clean < -40.0,             "band-limited playback leaked {clean:.1} d
-src/oscillator.rs|a_short_cycle_is_resampled_rather_than_refused|value_bound|assert!(first > 0.9, "fundamental lost in resampling: {first}"
+src/oscillator.rs|a_short_cycle_is_resampled_rather_than_refused|value_bound|assert!(                 harmonic_amplitude(table.level_samples(0), harmonic) < first * 0.
 src/oscillator.rs|an_imported_cycle_is_band_limited_at_every_level|value_bound|assert!(                 energy < 1e-6,                 "level {level} leaked above its Ny
 src/oscillator.rs|an_imported_cycle_is_normalised_and_dc_free|value_bound|assert!((peak - 1.0).abs() < 1e-3, "level {level} peak {peak}"
-src/oscillator.rs|an_imported_cycle_keeps_its_harmonic_balance|value_bound|assert!(first > 0.1, "fundamental vanished: {first}"
-src/oscillator.rs|an_imported_cycle_keeps_its_phase|value_bound|assert!(             share > 0.99,             "phase was not preserved, cosine share {sha
+src/oscillator.rs|an_imported_cycle_keeps_its_harmonic_balance|value_bound|assert!(             (harmonic_amplitude(level0, 3) / first - 0.5).abs() < 0.02,          
 src/oscillator.rs|every_level_is_band_limited_to_its_own_nyquist|value_bound|assert!(                     energy < 1e-6,                     "{} level {level} has ener
-src/oscillator.rs|every_level_is_full_length_and_still_normalised|value_bound|assert!((peak - 1.0).abs() < 0.15, "level {level} peak {peak}"
 src/oscillator.rs|level_for_freq_agrees_with_the_wavetable|collection_size|assert_eq!(level, LEVELS - 1, "没有一级放得下时必须退到最短一级"
-src/oscillator.rs|lfo_shapes_are_bounded_and_retriggerable|value_bound|assert!(                     value.is_finite() && (-1.0..=1.0).contains(&value),          
-src/oscillator.rs|one_shot_parks_at_the_end_of_its_cycle|value_bound|assert_eq!(lfo.phase(), 1.0, "one-shot must park at the cycle end"
+src/oscillator.rs|one_shot_parks_at_the_end_of_its_cycle|value_bound|assert_eq!(more[0], Lfo::shape(LfoWave::Saw, 0.0)
 src/oscillator.rs|sampling_wraps_and_interpolates|value_bound|assert!(             (at_zero - at_one).abs() < 1e-5,             "phase 1.0 should wrap t
-src/oscillator.rs|sine_stays_in_range_and_advances_phase|value_bound|assert!((-1.0..=1.0).contains(&v)
-src/oscillator.rs|square_is_bipolar|value_bound|assert_eq!(buf, [1.0, 1.0, -1.0, -1.0]
-src/oscillator.rs|the_first_frequency_request_always_reselects_the_level|value_bound|assert_eq!(             correct,             level_for_freq(440.0, 48_000.0),             
-src/oscillator.rs|the_level_chosen_for_a_note_cannot_alias|value_bound|assert!(                 top <= 48_000.0 * 0.5,                 "{freq} Hz picked level {l
-src/oscillator.rs|the_oscillator_wraps_phase_and_stays_bounded|value_bound|assert_eq!(oscillator.frequency(), 440.0
+src/oscillator.rs|the_first_frequency_request_always_reselects_the_level|value_bound|assert_ne!(             correct, 0,             "夹具：440 Hz 的正确级不是 0 ⇒ 占位级与正确级可区分（本判据有判别力）"
+src/oscillator.rs|the_level_chosen_for_a_note_cannot_alias|value_bound|assert!(                     longer > 48_000.0 * 0.5,                     "{freq} Hz could
 src/oscillator.rs|unusable_cycles_are_rejected_with_a_reason|value_bound|assert_eq!(             Wavetable::from_cycle(&[0.0; MIN_CYCLE - 1]).err(),             So
 src/oversample.rs|a_downsample_with_a_short_scratch_is_skipped_instead_of_panicking|value_bound|assert_eq!(             out, [0.0f32; 32],             "scratch 不足时必须是'什么都不做'，而不是写半个结果或 pa
 src/oversample.rs|decimation_removes_everything_above_the_base_nyquist|value_bound|assert!(wanted > 0.3, "the 3 kHz tone came out at {wanted}"
@@ -224,9 +169,8 @@ src/oversample.rs|round_trip_is_unity_at_dc|value_bound|assert!((v - 0.5).abs() 
 src/oversample.rs|round_trip_latency_is_reported_and_phase_linear|collection_size|assert_eq!(OS_TAPS % 2, 1, "an odd tap count is what centres the delay"
 src/oversample.rs|short_buffers_are_rejected_instead_of_panicking|value_bound|assert_eq!(out, [0.0; 4]
 src/oversample.rs|the_odd_phase_is_the_half_sample_and_not_a_copy_of_the_even_phase|collection_size|assert_eq!(             total,             128 - 32,             "夹具必须扫过恰好 {0} 个基础样本（实测 {t
-src/oversample.rs|the_round_trip_impulse_response_is_symmetric_about_the_reported_latency|value_bound|assert!(             out[centre].abs() > 0.1,             "夹具必须让脉冲真的落在上报延迟那一格：{}",        
 src/oversample.rs|the_upsample_phase_order_puts_the_prototype_peak_at_its_centre_tap|value_bound|assert_eq!(             peak,             2 * impulse + OS_CENTRE,             "上采样峰位必须在原型
-src/oversample.rs|upsample_kills_the_image_above_the_base_nyquist|value_bound|assert!(pass > 0.3, "passband came out at {pass}"
+src/oversample.rs|upsample_kills_the_image_above_the_base_nyquist|value_bound|assert!(             stop < pass * 0.02,             "30 kHz image is only {:.1} dB down",
 src/polysynth.rs|a4_puts_its_energy_in_the_440_hz_bin|value_bound|assert!(at_440 > 0.1, "440 Hz bin 太弱: {at_440:.6}"
 src/polysynth.rs|a_sample_rate_change_keeps_the_envelope_time_scale|value_bound|assert!(             crossing.abs_diff(EXPECTED_ATTACK_FRAMES) <= 2,             "换采样率之后起振
 src/polysynth.rs|a_sample_rate_change_retunes_a_pending_note|value_bound|assert_eq!(stolen_arm.voice_steals(), 1, "夹具必须真的窃取"
@@ -234,37 +178,26 @@ src/polysynth.rs|a_stolen_voice_starts_its_new_note_with_the_configured_release|
 src/polysynth.rs|an_empty_recipe_list_still_yields_one_table|collection_size|assert_eq!(tables.len(), 1
 src/polysynth.rs|an_off_second_oscillator_is_bit_identical|value_bound|assert_eq!(a_bits, b_bits, "level = 0 的支路必须完全不参与"
 src/polysynth.rs|default_params_match_the_moved_engine_tone|value_bound|assert_eq!(params.osc1(), OscSettings::new(0, 1.0, 0.0)
-src/polysynth.rs|degenerate_params_stay_finite_and_audible|element_value_bound|assert!(             out.iter().any(|sample| *sample != 0.0),             "退化参数把链路弄成静音"
 src/polysynth.rs|hard_stealing_jumps_more_than_soft_stealing|value_bound|assert!(             hard > soft,             "硬窃取的样本跳变必须更大: 硬 {hard:.6} / 软 {soft:.6}"
-src/polysynth.rs|render_is_bit_identical_under_any_block_split|value_bound|assert!(             whole.iter().any(|sample| *sample != 0.0),             "夹具必须出声（否则逐位相等
+src/polysynth.rs|render_is_bit_identical_under_any_block_split|value_bound|assert!(                 mismatch.is_none(),                 "块长 {split} 帧的切分在第 {} 个样本上与整块
 src/polysynth.rs|stealing_is_deterministic|value_bound|assert_eq!(synth.voice_steals(), 1
 src/polysynth.rs|the_earliest_voice_is_stolen_first|value_bound|assert_eq!(synth.voice_steals(), 1
 src/polysynth.rs|the_second_oscillator_adds_its_own_fundamental|value_bound|assert!(             dual_220 > 20.0 * single_220,             "第二条振荡器必须带来它自己的基频: 单 {singl
 src/polysynth.rs|ties_on_start_sample_are_broken_by_the_smallest_index|value_bound|assert_eq!(synth.voice_steals(), 1
-src/reverb.rs|an_unconfigured_reverb_is_a_passthrough|value_bound|assert_eq!(left, [0.5, -0.25, 0.125]
-src/reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             fill_peak, 0.0,             "前置条件不成立：灌线段就出声了 ⇒ 梳状组已被激励，本判据测不出预延迟线的
-src/reverb.rs|impulse_tail_decays_and_stays_bounded|value_bound|assert!(peak <= 1.0, "reverb overshot: {peak}"
-src/reverb.rs|long_input_never_blows_up|element_value_bound|assert!(l.iter().all(|s| s.is_finite() && s.abs() < 4.0)
-src/reverb.rs|pre_delay_holds_the_tail_back|value_bound|assert!(first_ms(&late) > first_ms(&early) + 20.0
+src/reverb.rs|an_unconfigured_reverb_is_a_passthrough|value_bound|assert!(             (verb.params().mix - 0.5).abs() < 1e-6,             "the finite knob 
+src/reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             stale_peak,             0.0,             "预延迟变长后湿路重放了旧长度下写进缓冲的音频：峰
 src/reverb.rs|predelay_is_measured_in_seconds_at_any_sample_rate|value_bound|assert!(                 (added - 50.0).abs() < 2.0,                 "at {sample_rate} Hz 
-src/reverb.rs|sustained_tones_do_not_blow_up|value_bound|assert!(peak < 8.0, "{freq} Hz spiked to {peak}"
-src/reverb.rs|width_controls_the_stereo_spread|value_bound|assert!(diff > 0.01, "stereo tanks are identical"
-src/shaping.rs|a_bit_depth_below_the_floor_is_folded_onto_the_floor|value_bound|assert_eq!(                 render(bits),                 floor,                 "bits = {
-src/shaping.rs|abrupt_parameter_slams_stay_bounded|value_bound|assert!(peak < 16.0, "block {index}: peak {peak} ran away"
+src/reverb.rs|width_controls_the_stereo_spread|value_bound|assert!(diff0 < diff * 0.1, "width 0 should collapse to mono"
+src/shaping.rs|a_bit_depth_below_the_floor_is_folded_onto_the_floor|value_bound|assert_ne!(render(6.0), floor, "6 bit 必须与 4 bit 不同"
 src/shaping.rs|bit_depth_sets_the_quantisation_step|value_bound|assert!(                 worst_grid < 1e-2,                 "{bits} bits: an output is {wo
-src/shaping.rs|deeper_divisors_push_the_mirror_lower_in_level_and_frequency|value_bound|assert!(                 (fold - (48_000.0 / down - freq)).abs() < 1.0,                 "d
+src/shaping.rs|deeper_divisors_push_the_mirror_lower_in_level_and_frequency|value_bound|assert!(                 level > -40.0,                 "down {down}: no mirror found ({le
 src/shaping.rs|divisor_and_anti_alias_move_the_mirror|value_bound|assert!(             no_divisor < -40.0,             "down = 1 still mirrors at {no_diviso
 src/shaping.rs|eq_band_gains_match_the_cookbook|value_bound|assert!((low - 12.0).abs() < 1.0, "low shelf end: {low:.2} dB"
 src/shaping.rs|eq_flat_is_unity|value_bound|assert!(gain.abs() < 0.05, "flat EQ {freq} Hz: {gain:.3} dB"
 src/shaping.rs|eq_shelves_reach_their_gain_at_the_ends_and_slope_back|value_bound|assert!(             (bottom - 12.0).abs() < 1.0,             "low shelf at 65 Hz: {bottom
-src/shaping.rs|short_and_mismatched_buffers_are_safe|value_bound|assert!(             out.iter().all(|v| v.abs() <= 0.5),             "clamped amounts must
-src/shaping.rs|the_transient_shaper_is_level_independent|value_bound|assert!(             loud_attack > 1.01,             "attack did not lift the onset: {loud
-src/smoothing.rs|a_disabled_smoother_is_explicitly_instant|value_bound|assert_eq!(smoother.alpha(), 0.0
-src/smoothing.rs|a_step_never_jumps_instantly|value_bound|assert!(                 step >= 0.0 && step <= bound,                 "sample {sample}: s
-src/smoothing.rs|a_time_constant_beyond_the_float_grid_cannot_round_alpha_to_one|value_bound|assert!(             smoother.alpha() < 1.0,             "α 舍入到 1.0 ⇒ 平滑器永久卡死：{}",        
+src/shaping.rs|short_and_mismatched_buffers_are_safe|value_bound|assert_eq!(again, [0.5f32; 512]
+src/shaping.rs|the_transient_shaper_is_level_independent|value_bound|assert!(             db(steady).abs() < 1.0,             "a held note should settle to uni
 src/smoothing.rs|block_rendering_stays_on_the_ramp|value_bound|assert!(pair[1] > pair[0]
-src/smoothing.rs|degenerate_parameters_never_produce_nan_or_a_stuck_smoother|value_bound|assert!(                     (0.0..1.0).contains(&smoother.alpha()),                     "
 src/smoothing.rs|sample_rate_changes_recompute_the_coefficient|value_bound|assert!(             smoother.alpha() > at_48k,             "a shorter τ in samples must s
-src/smoothing.rs|snap_to_bypasses_the_ramp|value_bound|assert_eq!(smoother.value(), 0.5
 src/smoothing.rs|the_response_matches_the_closed_form|value_bound|assert!(                 (value - expected).abs() < 1e-4,                 "sample {sample}
 src/smoothing.rs|the_time_constant_is_five_milliseconds|value_bound|assert!(             crossing.abs_diff(expected) <= 2,             "63.2% at sample {cross
