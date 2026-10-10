@@ -5219,6 +5219,17 @@ mod tests {
         ));
         assert_ne!(cases[0].2, cases[1].2, "两种拒绝必须各自点名");
         assert_ne!(cases[1].2, cases[2].2, "同一个变体的两个取值也必须分开");
+        // **R58 的"同变体、不同载荷"**: 后一对必须是**同一个变体**, 否则它只测到判别式。
+        assert_eq!(
+            core::mem::discriminant(&cases[1].2),
+            core::mem::discriminant(&cases[2].2),
+            "版本 2 缺响度 与 版本 1 带响度 必须落在同一个变体上"
+        );
+        assert_ne!(
+            core::mem::discriminant(&cases[0].2),
+            core::mem::discriminant(&cases[1].2),
+            "而前一对必须是**跨变体**（两种不同的拒绝）"
+        );
     }
 
     /// 判据 (**R58**: 依赖 `==` 的判据必须有一条 `assert_ne!` 落在同一个 `==` 上):

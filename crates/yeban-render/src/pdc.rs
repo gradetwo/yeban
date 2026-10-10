@@ -1286,4 +1286,102 @@ mod tests {
             "两条支路的补偿必须不同（饱和后不许一律给 0）"
         );
     }
+
+    /// 判据 (**类别 4/7: 更多节点 ＋ 菱形混合**): 一条**饱和的链**与一个**菱形**接在同一张图上,
+    /// 且**目的地不止一个**（`e` 不是 master）时, 每一级延迟仍必须是"**从饱和值继续加**"的结果。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 既有的饱和判据要么是纯链（2 级 / 4 级）, 要么是纯菱形（只有一个目的地）。
+    /// 本夹具把两者**接到同一个上游**（`b` 既进 `e` 又进 `master`）, 并让 `d` 走
+    /// 另一条**小延迟**支路 —— 于是同一张图上出现 **0 / `u32::MAX − 7` / `u32::MAX − 100`
+    /// 三种补偿**。任何"饱和之后一律给 0"或"用全局 `longest_path` 代替目的地 `arrival`"
+    /// 的改法都会在这三个值上分开。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 6 节点 / 6 边（`a` 自身延迟 `u32::MAX`、`b` 3、`c` 100、`d` 7、`e` 0、`master` 0）。
+    /// 读数: 6 个 `arrival` ＋ 6 个 `output_latency` ＋ `longest_path` ＋ 6 条边的
+    /// `delay_of`（**全部是手工算出来的字面量**, 单位: 采样帧）。
+    ///
+    /// # 非空证明
+    ///
+    /// ① 六格 `output_latency` 里**既有**饱和值（`a`/`b`/`e`/`master`）**也有**两个小值
+    /// （`c`=100、`d`=7）⇒ "整张图被当成饱和"会红;
+    /// ② 三条补偿 `0` / `MAX−7` / `MAX−100` **互不相同** ⇒ "一律给 0"会红。
+    #[test]
+    fn a_mixed_chain_and_diamond_saturates_at_several_levels() {
+        let g = graph(
+            &["a", "b", "c", "d", "e", "master"],
+            &[
+                ("a", "b"),
+                ("b", "e"),
+                ("d", "e"),
+                ("b", "master"),
+                ("c", "master"),
+                ("d", "master"),
+            ],
+            &[
+                ("a", u32::MAX),
+                ("b", 3),
+                ("c", 100),
+                ("d", 7),
+                ("e", 0),
+                ("master", 0),
+            ],
+        );
+        let mixed = plan(&g, "master").expect("无环");
+        // 手工算出的表（`arrival`, `output_latency`）—— 不是用被测函数自己算的。
+        let expected = [
+            ("a", (0u32, u32::MAX)),
+            ("b", (u32::MAX, u32::MAX)),
+            ("c", (0, 100)),
+            ("d", (0, 7)),
+            ("e", (u32::MAX, u32::MAX)),
+            ("master", (u32::MAX, u32::MAX)),
+        ];
+        for (node, (arrival, latency)) in expected {
+            assert_eq!(mixed.arrival[node], arrival, "{node}: arrival");
+            assert_eq!(
+                mixed.output_latency[node], latency,
+                "{node}: output_latency"
+            );
+        }
+        assert_eq!(mixed.longest_path, u32::MAX, "最长路径就是饱和值");
+        let compensations = [
+            (("a", "b"), 0),
+            (("b", "e"), 0),
+            (("d", "e"), u32::MAX - 7),
+            (("b", "master"), 0),
+            (("c", "master"), u32::MAX - 100),
+            (("d", "master"), u32::MAX - 7),
+        ];
+        for ((from, to), frames) in compensations {
+            assert_eq!(
+                mixed.delay_of(from, to),
+                Some(frames),
+                "{from} → {to}: 补偿必须是目的地 arrival 减去来源 output_latency"
+            );
+        }
+        // 非空证明: 三种补偿互不相同。
+        let distinct = [
+            mixed.delay_of("b", "e").expect("有边"),
+            mixed.delay_of("d", "e").expect("有边"),
+            mixed.delay_of("c", "master").expect("有边"),
+        ];
+        assert_ne!(distinct[0], distinct[1], "0 与 MAX−7 必须不同");
+        assert_ne!(distinct[1], distinct[2], "MAX−7 与 MAX−100 必须不同");
+        assert_ne!(distinct[0], distinct[2], "0 与 MAX−100 必须不同");
+        // 非空证明: 饱和格子与小值格子同时存在。
+        assert_eq!(
+            expected.iter().filter(|(_, (_, l))| *l == u32::MAX).count(),
+            4,
+            "4 格是饱和值"
+        );
+        assert_eq!(
+            expected.iter().filter(|(_, (_, l))| *l < 1000).count(),
+            2,
+            "2 格是小值（100 与 7）"
+        );
+    }
 }

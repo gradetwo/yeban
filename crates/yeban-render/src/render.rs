@@ -2031,10 +2031,28 @@ mod tests {
             assert_ne!(right, left, "{label}: 不等必须对称");
             assert_eq!(*left, left.clone(), "{label}: 自反");
         }
-        // 非空证明: 夹具里既有跨变体也有同变体不同载荷 ⇒ 单靠判别式的 `==` 必红。
-        let same_variant = pairs.iter().filter(|(label, a, b)| {
-            std::mem::discriminant(a) == std::mem::discriminant(b) && label.contains("载荷")
-        });
-        assert!(same_variant.count() >= 4, "至少 4 对是同变体不同载荷");
+        // 非空证明（**R58 的"同变体、不同载荷"**）: 探针不能只是"判别式先判完"。
+        // 这里**按判别式**逐对分类: 同变体的那 5 对必须由**载荷**把它们分开。
+        let same_variant: Vec<&(&str, RenderError, RenderError)> = pairs
+            .iter()
+            .filter(|(_, a, b)| core::mem::discriminant(a) == core::mem::discriminant(b))
+            .collect();
+        assert_eq!(
+            same_variant.len(),
+            5,
+            "夹具里必须恰有 5 对**同变体不同载荷**（跨变体的那 2 对不算数）"
+        );
+        for (label, a, b) in same_variant {
+            assert_ne!(
+                a, b,
+                "{label}: 同变体的**载荷**必须不同, 否则探针只测到判别式"
+            );
+        }
+        // 非空证明: 另外 2 对确实是**跨变体**的（所以"只比判别式"的 `==` 也过不了它们）。
+        let cross_variant = pairs
+            .iter()
+            .filter(|(_, a, b)| core::mem::discriminant(a) != core::mem::discriminant(b))
+            .count();
+        assert_eq!(cross_variant, 2, "另有 2 对跨变体");
     }
 }
