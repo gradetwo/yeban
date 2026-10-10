@@ -5010,6 +5010,73 @@ mod tests {
         );
 
         // R122：证明扫描器**不是惰性的** —— 命中点数必须达到下界。
+        // ⭐⭐ **R220① 第 ③ 条臂：嵌套块注释** —— `/* a /* b */ c */`。
+        // ⚠ **R216①**：长度等长是**必要但不充分**的 —— 掩码器若停在**第一个** `*/`，
+        // 长度仍然等长，但会把 `c */` 当作**代码**留下 ⇒ **假阳性**。因此必须另加**语义同步**臂。
+        eprintln!("[R187-PROBE decode::mask-nested] nested block comment arm");
+        let nested = concat!("/* a /* b */ c */ frame", "_count\n");
+        let masked_nested = mask(nested);
+        assert_eq!(
+            masked_nested.chars().count(),
+            nested.chars().count(),
+            "R216(1): the nested sample must stay length-equal (necessary, not sufficient)"
+        );
+        assert!(
+            !masked_nested.contains("c */"),
+            "R220(1): the masker must consume the WHOLE nested block - a residue like `c */` \
+             would be read as code (false positive)"
+        );
+        assert!(
+            masked_nested.contains(needle_for_mask),
+            "R220(1): the needle AFTER the nested block must stay visible (real resynchronisation)"
+        );
+
+        // ⭐⭐ **R219①：计数谓词必须有成对的接受／拒绝臂**（模式计数先用两臂验证）。
+        // ⚠ 样本用 `concat!` 拼出 ⇒ `.all(` 不会以完整形态出现在本文件里（否则会**抬高**真扫描的计数）。
+        assert_eq!(
+            count_all(&mask(concat!(".", "all(|s| s);\n"))),
+            1,
+            "a real `.all(` must be counted"
+        );
+        assert_eq!(
+            count_all(&mask(concat!("a[..", "all_lines]\n"))),
+            0,
+            "`.all` NOT followed by `(` must not be counted (the boundary spec)"
+        );
+
+        // ⭐ **R215①（零余量声明）**：下面两个 `assert_eq!` 的**余量恒为 0** ——
+        // **删除任一被搜文件都会按设计变红**（文件数从 4 掉到 3 ⇒ 计数必然下降）。
+        eprintln!(
+            "[R187-PROBE decode::scanned-files] files={} (zero margin by design)",
+            sources.len()
+        );
+        // ⚠ **R215① 的精确形态**：余量是**逐文件**的，⛔ 不是"删任何一个都会红"。
+        // 逐文件读数（`decode.rs` 5 个、其余 0 个）⇒ 删 `decode.rs` **会**变红；
+        // 删 `limits.rs`（本文件 0 站点）**不会** ⇒ 必须**声明到文件级**，否则就是过度声明。
+        let per_file: Vec<(&str, usize)> = sources
+            .iter()
+            .map(|(name, source)| (*name, count_all(&mask(source))))
+            .collect();
+        eprintln!("[R187-PROBE decode::sites-per-file] {per_file:?}");
+        let four_files: usize = per_file.iter().map(|(_, count)| *count).sum();
+        assert_eq!(four_files, 5, "the exact count over all four scanned files");
+        let without_decode: usize = per_file
+            .iter()
+            .filter(|(name, _)| *name != "decode.rs")
+            .map(|(_, count)| *count)
+            .sum();
+        assert!(
+            without_decode < four_files,
+            "dropping `decode.rs` (the only file with `.all(` sites) must lower the count \
+             (without={without_decode}, all={four_files})"
+        );
+        assert_eq!(
+            per_file.iter().filter(|(_, count)| *count == 0).count(),
+            2,
+            "two of the four files contribute zero sites (asset.rs, limits.rs) - dropping one of \
+             them does NOT lower this count, so the margin statement is per file, not universal"
+        );
+
         // ⭐ **R213**：这个精确计数守的是"**被搜集合塌缩**"（⛔ 不是 R199 的"扫描量地板"——
         // 那类缺陷会把计数**抬高**）。⇒ 配一条**行为臂**：把被搜集合**缩小**（取源码前半），
         // 计数必须**随之变小**；若它不随集合变化，就说明这个界根本没在量集合。
