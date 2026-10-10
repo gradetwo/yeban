@@ -377,7 +377,16 @@ pub fn ogg_crc32(data: &[u8]) -> u32 {
     crc
 }
 
-/// 一个 Ogg 页：27 字节页头 ＋ 段表 ＋ 体。每个包各占一个段（本夹具的包都 < 255 字节）。
+/// 一个 Ogg 页：27 字节页头 ＋ 段表 ＋ 体。
+///
+/// **包按 Ogg 的 lacing 规则切段**：每个包写成 `len / 255` 个 `255` 段，再写一个
+/// `len % 255` 的收尾段（`len` 恰为 255 的倍数时收尾段是 `0`）。一个包因此**可以超过
+/// 255 字节** —— 这是必需的：`residue` 的一个 partition 要读 `partition_size / dimensions`
+/// 个码字，很容易上百字节。
+///
+/// # Panics
+///
+/// 整页的段数超过 255 时 panic（Ogg 的 `page_segments` 是 1 字节）。
 #[must_use]
 pub fn ogg_page(
     header_type: u8,
@@ -386,18 +395,29 @@ pub fn ogg_page(
     sequence: u32,
     packets: &[Vec<u8>],
 ) -> Vec<u8> {
+    let mut lacing = Vec::new();
+    for packet in packets {
+        let mut remaining = packet.len();
+        while remaining >= 255 {
+            lacing.push(255u8);
+            remaining -= 255;
+        }
+        lacing.push(u8::try_from(remaining).expect("the remainder is below 255"));
+    }
+    assert!(
+        lacing.len() <= 255,
+        "a page holds at most 255 segments; split the packet across pages"
+    );
     let mut page = Vec::new();
     page.extend_from_slice(b"OggS");
-    page.push(0); // stream_structure_version
+    page.push(0);
     page.push(header_type);
     page.extend_from_slice(&granule.to_le_bytes());
     page.extend_from_slice(&serial.to_le_bytes());
     page.extend_from_slice(&sequence.to_le_bytes());
-    page.extend_from_slice(&[0u8; 4]); // CRC 占位
-    page.push(u8::try_from(packets.len()).expect("at most 255 packets per page here"));
-    for packet in packets {
-        page.push(u8::try_from(packet.len()).expect("packets must be < 256 bytes here"));
-    }
+    page.extend_from_slice(&[0u8; 4]);
+    page.push(u8::try_from(lacing.len()).expect("checked above"));
+    page.extend_from_slice(&lacing);
     for packet in packets {
         page.extend_from_slice(packet);
     }
@@ -1629,6 +1649,40 @@ mod tests {
         assert!(
             one.len() > bytes.len(),
             "more data pages must grow the fixture"
+        );
+    }
+
+    /// 判据（夹具自检）：[`ogg_page`] 按 Ogg 的 lacing 规则把**大包**切成多段，且 CRC 覆盖段表。
+    ///
+    /// 量什么：一个 600 字节的包在页里占的段数、段值序列与整页长度（单位：段／字节）。
+    /// 怎么量：直接构造一页，逐字节核对段表。
+    ///
+    /// 读数（本机、debug 构建）：600 字节 ⇒ 段值 `255, 255, 90`（3 段）、`page_segments == 3`、
+    /// 整页 = 27 + 3 + 600 = 630 字节；恰好 255 字节 ⇒ 段值 `255, 0`（2 段，收尾 0 表示包在此结束）。
+    ///
+    /// 为什么需要它：这是**非静音** Ogg 夹具的前置条件 —— 一个 residue partition 要读
+    /// `partition_size / dimensions` 个码字，包很容易超过 255 字节；改建前 [`ogg_page`] 只写
+    /// 单段并在 ≥ 256 字节时 panic（第十批实测：`part=1` 那一格需要 2048 字节的包 ⇒ 夹具 panic）。
+    ///
+    /// 注入（实测）：把 lacing 的 `while remaining >= 255` 改成 `while remaining > 255` ⇒
+    /// 恰好 255 字节的包会被写成单段 `255`（读端会当成"包未结束"）⇒ 本条红。
+    #[test]
+    fn ogg_page_splits_large_packets_across_lacing_segments() {
+        let page = ogg_page(0, 0, 7, 0, &[vec![0u8; 600]]);
+        assert_eq!(page[26], 3, "600 bytes need three lacing values");
+        assert_eq!(&page[27..30], &[255, 255, 90]);
+        assert_eq!(page.len(), 27 + 3 + 600);
+        let exact = ogg_page(0, 0, 7, 0, &[vec![0u8; 255]]);
+        assert_eq!(exact[26], 2, "exactly 255 bytes needs a terminating 0");
+        assert_eq!(&exact[27..29], &[255, 0]);
+        assert_eq!(exact.len(), 27 + 2 + 255);
+        // CRC 必须覆盖段表：改一个段值后重算，值应当变。
+        let mut copy = page.clone();
+        copy[28] ^= 0x01;
+        copy[22..26].fill(0);
+        assert_ne!(
+            ogg_crc32(&copy),
+            u32::from_le_bytes(page[22..26].try_into().expect("4 bytes"))
         );
     }
 }

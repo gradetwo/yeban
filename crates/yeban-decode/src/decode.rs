@@ -4333,6 +4333,14 @@ mod tests {
     /// `do_not_decode`"，**完全不经过** `Floor0::synthesis`。本条让那条路径真的跑起来，
     /// 并把 `amplitude_bits` 的 1 vs 8 这个**实测边界**钉住。
     ///
+    /// ⚠ **两档用的是同一个包 `0x12`**（[`crate::testfix::ogg_vorbis_vq_stream`] 写死），
+    /// 因此两档之间变化的**不只是** floor 的幅度位宽，还有"这 8 位怎么被消费"。也就是说
+    /// 上面那条"1 档被饿死"只是**读数**，不是已证实的机制。第十批实测：把包改成按
+    /// `amplitude_bits = 8` **正确对齐**、`amplitude = 1` 时，解码器报的是
+    /// `vorbis: invalid floor0 coefficients`（读实现得到的落点是 `floor.rs:326` 的
+    /// `p + q == 0.0`）—— 即"被使用的 floor0"在正确对齐的包上**并不**像本条第一格那样顺利
+    /// 解出。⛔ 因此本条的名称与文档**只声明实测读数**，不声明机制。
+    ///
     /// ⚠ **未诊断的部分（如实登记）**：`Floor0::synthesis` 里有一处
     /// `if p + q == 0.0 { decode_error("vorbis: invalid floor0 coefficients") }`
     /// （`symphonia-codec-vorbis/src/floor.rs:326`）。我**读到了**这个条件，但**没能构造出**
