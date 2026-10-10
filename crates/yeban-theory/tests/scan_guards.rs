@@ -588,7 +588,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
 
     // ---- R56/R112：五种形态**每种一条已知绿** ＋ **一条"无界"已知红** ----
     // (label, sample, expect_bound, expected form mask)
-    let cases: [(&str, &str, bool, u8); 9] = [
+    let cases: [(&str, &str, bool, u8); 11] = [
         // ① 显式 len() >= N（界定集合 ✅）
         (
             "grid",
@@ -646,6 +646,20 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             false,
             FORM_EXPLICIT_LEN,
         ),
+        // ⭐ R183 双臂：回调剥离 —— 界在**真接收者**上（闭包变量不算接收者）⇒ 有界（绿臂）
+        (
+            "xs",
+            "for h in xs.hits().iter().filter(|v| v.ok) { assert!(xs.hits().len() >= 2); }",
+            true,
+            FORM_EXPLICIT_LEN,
+        ),
+        // ⛔ R183 双臂：回调剥离 —— 界只写在**闭包变量**上 ⇒ 必须判无界（红臂）
+        (
+            "xs",
+            "for h in xs.hits().iter().filter(|ys| ys.ok) { assert!(ys.hits().len() >= 2); }",
+            false,
+            FORM_EXPLICIT_LEN,
+        ),
         // ⛔ R119 near-miss：循环遍历 gridlines.hits()，界却写在 grid.hits() 上
         (
             "gridlines",
@@ -695,9 +709,9 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             red_seen += 1;
         }
     }
-    assert_eq!(green_seen, 4, "four known-green set-size forms");
+    assert_eq!(green_seen, 5, "five known-green arms");
     assert_eq!(
-        red_seen, 5,
+        red_seen, 6,
         "five known-red samples (R118 value/subset/conditional + R119 near-miss + no bound)"
     );
     // ⭐ R160 双向归零（两条一起才能同时排除"有形态没人证明"与"注册了不存在的形态"）。
