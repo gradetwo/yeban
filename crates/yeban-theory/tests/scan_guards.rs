@@ -412,11 +412,10 @@ fn receivers_in(expr: &str) -> Vec<String> {
         if ch.is_alphanumeric() || *ch == '_' {
             current.push(*ch);
         } else if !current.is_empty() {
-            let next = chars.get(index + 1).copied();
+            // ⭐ 看**终止符本身**（`ch`），不是它的下一个字符（差一位 ⇒ zip 第二接收者取不到）。
             let prev_is_colon = index >= 2 && chars[index - 1] == ':' && chars[index - 2] == ':';
-            if (next == Some('.') || (next == Some(':') && !prev_is_colon))
-                && !out.contains(&current)
-            {
+            let followed = *ch == '.' || (*ch == ':' && !prev_is_colon);
+            if followed && !out.contains(&current) {
                 out.push(current.clone());
             }
             current.clear();
@@ -588,7 +587,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
 
     // ---- R56/R112：五种形态**每种一条已知绿** ＋ **一条"无界"已知红** ----
     // (label, sample, expect_bound, expected form mask)
-    let cases: [(&str, &str, bool, u8); 11] = [
+    let cases: [(&str, &str, bool, u8); 14] = [
         // ① 显式 len() >= N（界定集合 ✅）
         (
             "grid",
@@ -660,6 +659,27 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             false,
             FORM_EXPLICIT_LEN,
         ),
+        // ⭐ R183 双臂（多接收者）：两个接收者**都**有界 ⇒ 有界（绿臂）
+        (
+            "xs/ys",
+            "for (a, b) in xs.hits().iter().zip(ys.hits().iter()) { assert!(xs.hits().len() >= 2 && ys.hits().len() >= 2); }",
+            true,
+            FORM_EXPLICIT_LEN,
+        ),
+        // ⛔ R183 双臂（多接收者）：**只有第一个**接收者有界 ⇒ 必须判无界（红臂）
+        (
+            "xs/ys",
+            "for (a, b) in xs.hits().iter().zip(ys.hits().iter()) { assert!(xs.hits().len() >= 2); }",
+            false,
+            FORM_EXPLICIT_LEN,
+        ),
+        // ⛔ R183 双臂（多接收者）：**只有第二个**接收者有界 ⇒ 必须判无界（红臂）
+        (
+            "xs/ys",
+            "for (a, b) in xs.hits().iter().zip(ys.hits().iter()) { assert!(ys.hits().len() >= 2); }",
+            false,
+            FORM_EXPLICIT_LEN,
+        ),
         // ⛔ R119 near-miss：循环遍历 gridlines.hits()，界却写在 grid.hits() 上
         (
             "gridlines",
@@ -709,9 +729,9 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
             red_seen += 1;
         }
     }
-    assert_eq!(green_seen, 5, "five known-green arms");
+    assert_eq!(green_seen, 6, "six known-green arms");
     assert_eq!(
-        red_seen, 6,
+        red_seen, 8,
         "five known-red samples (R118 value/subset/conditional + R119 near-miss + no bound)"
     );
     // ⭐ R160 双向归零（两条一起才能同时排除"有形态没人证明"与"注册了不存在的形态"）。
@@ -777,7 +797,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         "runtime-collection loops in the criteria corpus"
     );
     assert_eq!(
-        total_rooted, 74,
+        total_rooted, 73,
         "loops covered by a receiver-bound assertion"
     );
     assert_eq!(
@@ -787,7 +807,14 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     // ⭐ **残余清单**（R97 的形态）：R118 收紧后分类器**不认**这 **23** 个循环。
     // 逐**条**钉住（文件 ＋ 循环表达式）⇒ 新增一条、删掉一条、或换一个循环都会红。
     // 每一行的"为什么认不到"记在 `docs/shape-d-audit.md` §1j。
-    let golden_residual: [(&str, &str); 1] = [("tests/properties.rs", "for ... in grid.hits()")];
+    let golden_residual: [(&str, &str); 2] = [
+        // ⚠ 两条都是**合法例外**（空输入是判据的主题），代价面见 docs/shape-d-audit.md §1j/§1o。
+        (
+            "tests/properties.rs",
+            "for ... in result.movements.iter().enumerate()",
+        ),
+        ("tests/properties.rs", "for ... in grid.hits()"),
+    ];
     let mut expected: Vec<(String, String)> = golden_residual
         .iter()
         .map(|(file, expr)| ((*file).to_owned(), (*expr).to_owned()))
@@ -803,7 +830,11 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         actual, expected,
         "the unrecognised-bound residual changed; actual: {actual:#?}"
     );
-    assert_eq!(actual.len(), 1, "1 registered unrecognised loops");
+    assert_eq!(
+        actual.len(),
+        2,
+        "2 registered unrecognised loops (both justified exceptions)"
+    );
 }
 
 // ---------------------------------------------------------------------------

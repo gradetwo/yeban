@@ -607,6 +607,10 @@ mod tests {
         let starts: Vec<u64> = melody.notes().iter().map(|note| note.start_tick).collect();
         let grid_ticks: Vec<u64> = grid.hits().iter().map(|hit| hit.tick).collect();
         assert_eq!(starts, grid_ticks);
+        assert!(
+            !melody.notes().is_empty() && !grid.hits().is_empty(),
+            "scan domain must not shrink"
+        );
         for (note, hit) in melody.notes().iter().zip(grid.hits()) {
             assert_eq!(note.bar, hit.bar);
             assert_eq!(note.cell, hit.cell);

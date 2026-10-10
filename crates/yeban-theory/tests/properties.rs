@@ -404,6 +404,7 @@ proptest! {
         }
         prop_assert!(result.max_voice_jump() <= 12);
         // `movements` 必须与 `voicings` 自洽
+        // ⚠ 本判据**故意**遍历可能为空的 movements（单区段 ⇒ 零次移动）⇒ ⛔ 不能断言非空。
         for (index, row) in result.movements.iter().enumerate() {
             prop_assert_eq!(row.len(), 3);
             for (voice, step) in row.iter().enumerate() {
