@@ -105,12 +105,14 @@
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
-use yeban_engine::ring::{EngineEvent, EventSender, TransportCommand, event_channel};
+use yeban_engine::param::{MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT};
+use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::rt::{EngineRuntime, EngineStats};
 use yeban_engine::snapshot::{
     EngineSnapshot, RetireQueue, SnapshotError, SnapshotSlot, retire_channel,
 };
 use yeban_engine::transport::{TransportMirror, TransportReading, TransportState};
+use yeban_model::AutomationTarget;
 use yeban_model::EntityId;
 use yeban_model::project::YebanProjectV1;
 
@@ -408,6 +410,13 @@ pub struct EngineHost {
     events: Option<EventSender>,
     /// RT → UI 的走带读数镜面（与 `EngineRuntime` 里那一份是**同一个** `Arc`）。
     transport_mirror: Option<std::sync::Arc<TransportMirror>>,
+    /// **R55 自动化下发的读数**：累计写进 SPSC 的 `SetParam` 条数。
+    automation_published: u64,
+    /// **R55 自动化下发的读数**：因"装不下"（SPSC 满 / 批次上限）而没有写进去的条数。
+    ///
+    /// ⛔ 不许静默丢：没有写进去的值会在**下一跳**重算并重发（采样是幂等的：同一个
+    /// `position_ticks` 给出同一批值），同时这里逐条计数 —— 控制面能看出"最近有没有丢"。
+    automation_dropped: u64,
     /// **设备腿**：已经交给真实声卡的那条流（[`EngineHost::open_device`]）。
     ///
     /// `Some` ⇒ `runtime` 是 `None`（`EngineRuntime` 已经 **move 进** cpal 的回调闭包，
@@ -779,6 +788,96 @@ impl EngineHost {
         }
     }
 
+    /// **R55：把已开启的 `TrackVolume` 自动化泳道采样成 `SetParam` 并下发**。
+    ///
+    /// 返回**实际写进 SPSC 的条数**。设计口径（裁决 R55 / R61，逐条都有机械依据）：
+    ///
+    /// 1. **采样时点 = 音频时钟**：`self.transport().position_ticks`，也就是
+    ///    [`TransportMirror`] 的读数（RT → UI 的原子 seqlock）⇒ ⛔ 一行墙钟都不用；
+    /// 2. **每一跳（60 Hz）至多一批**：`≤ PARAM_SLOTS` 条装进定长数组、**一次**
+    ///    `publish`。机械理由：渲染量子长度固定（[`DEFAULT_BLOCK_FRAMES`] = 128 帧 @
+    ///    48 kHz ⇒ 375 量子/秒），而采样时点由 `position_ticks` **唯一确定** ⇒
+    ///    同一条泳道在同一跳里只可能有一个值；
+    /// 3. **不绕过平滑**：音频线程照旧走既有的 `yeban_engine::param` 目标表
+    ///    （τ ≈ 5 ms 单极点）⇒ 本函数**不碰**引擎侧任何产线代码；
+    /// 4. **换域**（槽位收的是**线性乘子**，见 `EngineEvent::SetParam` 的契约）：
+    ///    `db_to_gain(自动化 dB) / db_to_gain(静态 dB)` —— 绝对值 ÷ 当前静态值。
+    ///    `static_db` 非有限 ⇒ 静态增益为 0 ⇒ **直接取自动化绝对值**（R61-1）；
+    ///    ⛔ 本函数绝不产出 `NaN`/`inf`（非有限或负的乘子一律**计数丢弃**）；
+    /// 5. **不许静默丢**：`publish` 返回实际写入数，差额计进 `automation_dropped`，
+    ///    并在下一跳自然重发（采样幂等）。读数见 [`Self::automation_counts`]。
+    ///
+    /// **为什么 60 Hz 够**（⚠ 改采样点的人先读这一段）：平滑时间常数 τ = 5 ms
+    /// （`yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S`），心跳 16.67 ms = **3.33 τ**
+    /// ⇒ 每个新目标在下一跳之前收敛 `1 − e^(−3.33) ≈ 96.4 %` ⇒ 渲染参数以
+    /// **≈5 ms 滞后 / 16.7 ms 阶梯**跟随曲线。60 Hz 的 Nyquist 是 30 Hz，而 5 ms
+    /// 单极点拐点 ≈ 32 Hz ⇒ **保真上限 ≈ 10–15 Hz**：够推子曲线与渐强，
+    /// **不够**音频速率调制（要更快就得移动采样点，那是另一条裁决）。
+    ///
+    /// 只处理 [`AutomationTarget::TrackVolume`]（音轨与主总线两个槽位）；
+    /// `TrackPan` 由 P4 单独裁决（另票），这里**不**碰。
+    pub fn publish_automation(&mut self, project: &YebanProjectV1) -> usize {
+        let tick = self.transport().position_ticks;
+        let mut batch = [EngineEvent::Idle; PARAM_SLOTS];
+        let mut len = 0usize;
+        let mut dropped = 0u64;
+        for track in project.tracks.values() {
+            let target = AutomationTarget::TrackVolume { track_id: track.id };
+            let Some(lane) = project.automation_lane(&target) else {
+                continue;
+            };
+            if !lane.read_enabled {
+                continue;
+            }
+            let Ok(Some(automated_db)) = project.automation_value_at(&target, tick) else {
+                continue;
+            };
+            let static_gain = db_to_gain(track.volume_db);
+            let gain = if static_gain.is_finite() && static_gain > 0.0 {
+                db_to_gain(automated_db) / static_gain
+            } else {
+                // R61-1：静态不可闻（非有限 / 0）⇒ 直接用自动化的绝对值。
+                db_to_gain(automated_db)
+            };
+            if !gain.is_finite() || gain < 0.0 {
+                dropped += 1;
+                continue;
+            }
+            let slot = if track.id == project.master_bus_track_id {
+                MASTER_GAIN_SLOT
+            } else {
+                TRACK_GAIN_SLOT
+            };
+            if len == PARAM_SLOTS {
+                dropped += 1;
+                continue;
+            }
+            batch[len] = EngineEvent::SetParam {
+                target: ParamAddress::new(track.id, slot),
+                value: gain,
+            };
+            len += 1;
+        }
+        let written = if len == 0 {
+            0
+        } else {
+            self.events
+                .as_mut()
+                .map_or(0, |sender| sender.publish(&batch[..len]))
+        };
+        self.automation_published = self.automation_published.saturating_add(written as u64);
+        self.automation_dropped = self
+            .automation_dropped
+            .saturating_add(dropped + (len - written) as u64);
+        written
+    }
+
+    /// **R55 的读数**：`(累计写进 SPSC 的条数, 累计因装不下而丢弃的条数)`。
+    #[must_use]
+    pub const fn automation_counts(&self) -> (u64, u64) {
+        (self.automation_published, self.automation_dropped)
+    }
+
     /// 当前快照槽的计数（[`HeartbeatReadings`] 之外的静止读数；没有引擎时 `None`）。
     #[must_use]
     pub fn snapshot_counts(&self) -> Option<SnapshotCounts> {
@@ -1004,7 +1103,10 @@ impl EngineHost {
 mod tests {
     use super::*;
     use yeban_model::project::YebanProjectV1;
-    use yeban_model::{AutomationTarget, EntityId, Op};
+    use yeban_model::{
+        AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType,
+        EntityId, Op,
+    };
 
     use crate::bridge::{ViewState, demo_project};
     use crate::undo::{UndoPort, UndoSession};
@@ -1407,5 +1509,74 @@ mod tests {
             .publish_project(&demo_project(), EditMark::new(None, 0))
             .expect_err("没有引擎时发布必须报错");
         assert!(matches!(error, EngineHostError::NoEngine), "{error:?}");
+    }
+
+    /// 判据（**R55**）：自动化泳道被采样成 `SetParam` 下发，且三条边界都成立。
+    ///
+    /// 1. **开着的** `TrackVolume` 泳道 ⇒ 至少下发 1 条；
+    /// 2. 同一个采样时点再发一次 ⇒ **条数相同**（采样是 tick 的纯函数 ⇒ 幂等）；
+    /// 3. `read_enabled = false` ⇒ **一条都不发**（关掉的泳道是"没有值"，不是"值等于 0"）。
+    ///
+    /// 采样时点是 `EngineHost::transport().position_ticks`（RT→UI 镜面 = 音频时钟）；
+    /// 本判据**不注入任何时钟**：`reload` 之后走带停住 ⇒ tick = 0（可复现）。
+    /// ⚠ 本判据**只能由 CI 执行**（`yeban-app` 依赖 Slint，`AGENTS.md §5` 禁止本机编译）。
+    #[test]
+    fn automation_lanes_are_sampled_from_the_audio_clock_and_published() {
+        let mut project = demo_project();
+        let track = *project.tracks.keys().next().expect("demo 工程必须有轨");
+        let target = AutomationTarget::TrackVolume { track_id: track };
+        let point = |tick: u64, value: f32| AutomationPoint {
+            id: EntityId::new(),
+            tick,
+            value,
+            curve: CurveType::Linear,
+        };
+        let lane = |read_enabled: bool| AutomationLane {
+            target,
+            points: std::collections::BTreeMap::from([
+                (EntityId::new(), point(0, -12.0)),
+                (EntityId::new(), point(960, 0.0)),
+            ]),
+            read_enabled,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        };
+        project
+            .tracks
+            .get_mut(&track)
+            .expect("那条轨必须在")
+            .automation_lanes
+            .insert(target, lane(true));
+
+        let mut host = EngineHost::new();
+        host.reload(&project, 4).expect("重建");
+        assert_eq!(
+            host.transport().position_ticks,
+            0,
+            "停住的走带 ⇒ 采样时点是 tick 0"
+        );
+        let written = host.publish_automation(&project);
+        assert!(written >= 1, "开着的泳道必须至少下发一条（实得 {written}）");
+        let again = host.publish_automation(&project);
+        assert_eq!(
+            again, written,
+            "同一个采样时点重复采样必须给出同一批条数（幂等）"
+        );
+        assert_eq!(
+            host.automation_counts(),
+            (written as u64 * 2, 0),
+            "计数必须逐条对得上，且这一路没有丢"
+        );
+
+        // 关掉读开关 ⇒ 一条都不发，且不产生任何计数。
+        let before = host.automation_counts();
+        project
+            .tracks
+            .get_mut(&track)
+            .expect("那条轨必须在")
+            .automation_lanes
+            .insert(target, lane(false));
+        assert_eq!(host.publish_automation(&project), 0, "关掉的泳道不得下发");
+        assert_eq!(host.automation_counts(), before, "关掉的泳道不产生任何计数");
     }
 }

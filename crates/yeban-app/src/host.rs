@@ -1970,6 +1970,22 @@ impl ProductionLoop {
             }
         }
         let readings = engine.heartbeat();
+        // **④ R55：自动化泳道 → `SetParam`**（与前三步同一个 tick、同一个 UI 线程）。
+        //
+        // 为什么在这里、而不是在 `EngineHost` 内部：泳道与"静态音量"都在**工程**里，
+        // 而工程由本循环持有（`EngineHost` 只持 `EditMark`）。
+        //
+        // 采样时点 = `EngineHost::transport().position_ticks`（RT→UI 镜面 = **音频时钟**）
+        // ⇒ 同一个工程在同一条音频时间线上给出同一批值（⛔ 没有任何墙钟输入）；
+        // 每个 tick 至多一批 `SetParam`（≤ `PARAM_SLOTS` 条）。
+        // 这一步**不**碰音频线程：值走既有无锁 SPSC，平滑仍由引擎侧既有的
+        // `yeban_engine::param` 目标表（τ ≈ 5 ms）完成 ⇒ `ParamTable` 一字未动。
+        //
+        // 60 Hz 够不够：τ = 5 ms ⇒ 16.67 ms 心跳 = 3.33 τ ⇒ 每步收敛 ≈96.4 %；
+        // 保真上限 ≈10–15 Hz（够推子/渐强，不够音频速率调制）。
+        if let Some(project) = project {
+            engine.publish_automation(project);
+        }
         drop(engine);
         ProductionTick {
             published_revision,
