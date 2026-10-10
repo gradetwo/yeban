@@ -5952,4 +5952,89 @@ v127=1
             );
         }
     }
+
+    // ------------------------------------------------------------------
+    // 第九批：`sw_lokey` / `sw_hikey`（调用方数据）与 `Warning` 的
+    //         line / 载荷（`Warning` 没有 `Display`，`Debug` 是唯一通道）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_keyswitch_range_defaults_to_the_whole_keyboard() {
+        // `sw_lokey` / `sw_hikey` 是**调用方数据**：`keyswitch_ok` 的文档写明
+        // 「`last` 是 `[sw_lokey, sw_hikey]` 范围内最后按下的音（调用方负责过滤）」，
+        // 本 crate **从不读**这两个字段 ⇒ 它们的解析值只能由判据守。
+        let region = first_region("<region>sample=a.wav");
+        assert_eq!((region.sw_lokey, region.sw_hikey), (0, 127));
+        let explicit = first_region("<region>sample=a.wav sw_lokey=36 sw_hikey=48");
+        assert_eq!((explicit.sw_lokey, explicit.sw_hikey), (36, 48));
+        // 域 `0..=127` 的两个端点都合法，且两端可以相等。
+        let zero = first_region("<region>sample=a.wav sw_lokey=0 sw_hikey=0");
+        assert_eq!((zero.sw_lokey, zero.sw_hikey), (0, 0));
+        let top = first_region("<region>sample=a.wav sw_lokey=127 sw_hikey=127");
+        assert_eq!((top.sw_lokey, top.sw_hikey), (127, 127));
+    }
+
+    #[test]
+    fn the_keyswitch_range_follows_the_scope_chain_and_is_range_checked() {
+        // 两个端点**各自独立**地沿 `region → group → master → global` 解析：
+        // 这里 `sw_lokey` 来自 `<global>`、`sw_hikey` 来自 `<group>`。
+        let instrument = parse_text(
+            "<global>sw_lokey=10 sw_hikey=100\n<group>sw_hikey=90\n<region>sample=a.wav",
+            &Default::default(),
+        )
+        .expect("parses");
+        let region = &instrument.regions()[0];
+        assert_eq!((region.sw_lokey, region.sw_hikey), (10, 90));
+        // 越界是明确 `Err`（`IntegerOutOfRange`），不是静默钳位。
+        for bad in ["sw_lokey=128", "sw_hikey=-1"] {
+            let error = parse_text(&format!("<region>sample=a.wav {bad}"), &Default::default())
+                .expect_err("out of range");
+            assert!(
+                matches!(
+                    error,
+                    SfzError::IntegerOutOfRange {
+                        min: 0,
+                        max: 127,
+                        ..
+                    }
+                ),
+                "unexpected verdict for {bad}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_reachable_warning_carries_its_line_and_payload() {
+        // ⚠️ `Warning` **没有** `Display` 实现（登记为 API 缺口），所以 `line` 与载荷就是
+        // 调用方唯一的定位信息。此前：`IncludeIgnored` / `RegionWithoutSample` 只以
+        // `{ .. }` 匹配（`line` 从未断言），而 `UnknownDirective` / `UndefinedMacro` /
+        // `MalformedDefine` **一个断言都没有**。这里让 6 个可达变体落在**不同行**上，
+        // 逐条钉住 line 与载荷（第 8 个变体 `Truncated` 不可达，见报告）。
+        let instrument = parse_text(
+            "<sample>key=1\n#bogus\n$NOPE=1\n#include \"x.sfz\"\n#define $\n<region>key=1\n",
+            &Default::default(),
+        )
+        .expect("warnings never fail the parse");
+        assert_eq!(
+            instrument.warnings().to_vec(),
+            vec![
+                Warning::IgnoredHeader {
+                    line: 1,
+                    name: "sample".to_string()
+                },
+                Warning::UnknownDirective {
+                    line: 2,
+                    text: "bogus".to_string()
+                },
+                Warning::UndefinedMacro {
+                    line: 3,
+                    name: "NOPE".to_string()
+                },
+                Warning::IncludeIgnored { line: 4 },
+                Warning::MalformedDefine { line: 5 },
+                Warning::RegionWithoutSample { line: 6 },
+            ]
+        );
+        assert!(instrument.is_empty(), "no region survives these lines");
+    }
 }
