@@ -95,7 +95,14 @@ fn code_without_literals_masks_but_keeps_the_length() {
             "value_at(",
         ),
     ];
-    for (index, (source, needle)) in adversarial.iter().enumerate() {
+    // ⑤ ⭐ **块注释里有一个未配对的 `"`**（R214① 的失同步形状：它会把**后续行**吞掉）。
+    let unpaired = "let i = 4; /* 他说 \" 这个引号没有配对 */\nlet j = lane.value_at(8);";
+    let samples: Vec<(&str, &str)> = adversarial
+        .iter()
+        .copied()
+        .chain(std::iter::once((unpaired, "value_at(")))
+        .collect();
+    for (index, (source, needle)) in samples.iter().enumerate() {
         let masked = automation_audit::code_without_literals(source);
         assert_eq!(
             masked.chars().count(),
@@ -103,13 +110,56 @@ fn code_without_literals_masks_but_keeps_the_length() {
             "对抗样本 #{} 掩码必须等长",
             index + 1
         );
-        // 真站点（注释之外那一个）必须**留下** ⇒ 掩码不得失同步跑飞。
-        assert!(
-            masked.matches(needle).count() >= 1,
-            "对抗样本 #{} 的**真站点**必须留下（掩码失同步会把后续正文当字符串抹掉 ⇒ 假阴性）: {masked}",
+        // ⭐ 每个样本都**恰好一个真站点**：被引用的那个（在注释/字符串里）必须被掩掉，
+        // 代码里的那个必须留下 ⇒ `count == 1`（⛔ 不是 `>= 1`：后者放过了泄漏）。
+        assert_eq!(
+            masked.matches(needle).count(),
+            1,
+            "对抗样本 #{} 必须**恰好**留下代码里那一个针（注释/字符串里的必须被掩掉，且不得失同步吞掉后续正文）: {masked}",
             index + 1
         );
     }
+
+    // ⭐ R225①：四件套对 Rust **不充分** —— 还要看**生命周期**与**字符字面量**，
+    // 以及 raw／byte-raw 字符串。
+    // ① 生命周期 `'a` **不是**字符字面量（旧写法"见 `'` 就当字面量"会一路吞到下一个 `'` ⇒ 假阴性）。
+    let lifetime = "fn f<'a>(x: &'a str) -> &'a str { x } let y = lane.value_at(9);";
+    let masked = automation_audit::code_without_literals(lifetime);
+    assert_eq!(
+        masked.matches("value_at(").count(),
+        1,
+        "生命周期之后不得失同步: {masked}"
+    );
+    assert!(masked.contains("&'a str"), "生命周期必须原样留下: {masked}");
+    // ② 字符字面量里的引号（`'"'`）必须被掩掉，且不得让它翻转字符串状态。
+    let char_literal = "let q = '\"'; let z = lane.value_at(10);";
+    let masked = automation_audit::code_without_literals(char_literal);
+    assert_eq!(
+        masked.matches("value_at(").count(),
+        1,
+        "字符字面量之后不得失同步: {masked}"
+    );
+    // ③ **单行** raw 字符串：它的定界符仍是 `"`，内部必须被掩掉、代码里的针必须留下。
+    let raw_single = "let r = r#\"lane.value_at(11)\"#; let w = lane.value_at(12);";
+    let masked = automation_audit::code_without_literals(raw_single);
+    assert_eq!(
+        masked.matches("value_at(").count(),
+        1,
+        "单行 raw 字符串必须被掩掉内部: {masked}"
+    );
+    // ④ ⚠ **已知限制（R190：登记 ＋ 爆炸半径，⛔ 不假装有牙）**：本助手是**逐行**的，
+    //    所以**跨行** raw 字符串的**内部行**仍会被当成代码（R228① 实测：真实源码里
+    //    有 **7 行 production 区**的内部行含 `&mut Domain`／`dryRun`，当前**未**触发违规，
+    //    因为对应扫描器要求同一行还有第二个针 `fn plan_`）。这里把它作为**诊断**打印。
+    // 真实调用形态是**逐行**喂（`for line in production.lines()`）⇒ 内部行**单独**进来时，
+    // 助手**无法知道**它在一个跨行 raw 字符串里 ⇒ 它会被当成代码。
+    let interior_line = " lane.value_at(13) ";
+    let masked_line = automation_audit::code_without_literals(interior_line);
+    eprintln!(
+        "诊断（⛔ 不作判据）：跨行 raw 字符串的**内部行**逐行喂入时，针是否被掩掉 = {} \
+         （已知限制：逐行助手看不见跨行上下文；真实源码里 production 区有 7 行这种内部行）",
+        !masked_line.contains("value_at(")
+    );
 }
 
 /// `path_ends_with`：两种分隔符都要认（R63/R93 的共享约定）。
