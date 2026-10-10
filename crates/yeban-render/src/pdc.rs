@@ -1152,4 +1152,70 @@ mod tests {
             other => panic!("自环必须被拒绝为 Cycle, 得到 {other:?}"),
         }
     }
+
+    /// 判据 (**环的两种延伸**): ① **多节点环**（3 个节点）与一条**合法支路**并存;
+    /// ② **自环挂在与被剪枝无关的节点上**（`z → z`, 而 `z` 不在任何到 Master 的路径上）
+    /// —— 两种形态都必须让**整张图**被判为 [`PdcError::Cycle`], 而且残留集要点名真正的环节点。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// `cycles_are_rejected` 用的是**二环**且环里的节点同时是 Master 的前驱;
+    /// 上一条判据的自环直接连到 Master。把入度那一遍改成"自环不加度数"之后, 两条既有判据
+    /// 都仍然全绿（二环不受影响; 上一条的自环那条边仍然被 `arrival` 反向…… 见下）,
+    /// 而本条的 `z` 会变成一个**与主路径无关**的源节点 ⇒ 计划被算出来而不是被拒绝。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 两个图（单位: 节点 / 边）。读数: `plan` 的判决与 `remaining` 里的节点名（个）。
+    ///
+    /// # 非空证明
+    ///
+    /// ① 里环有 **3** 个节点、合法支路有 **2** 个节点 ⇒ 残留集必须**只**含环那 3 个;
+    /// ② 里 `z` 与主路径**没有任何边相连** ⇒ "只在环影响 Master 时才拒绝"的改法会漏掉它。
+    #[test]
+    fn a_cycle_anywhere_makes_the_whole_graph_a_cycle() {
+        // ① 三节点环 p → q → r → p, 另加一条合法支路 a → master。
+        let g = graph(
+            &["a", "p", "q", "r", "master"],
+            &[("a", "master"), ("p", "q"), ("q", "r"), ("r", "p")],
+            &[],
+        );
+        match plan(&g, "master") {
+            Err(PdcError::Cycle { remaining }) => {
+                assert_eq!(
+                    remaining.len(),
+                    3,
+                    "残留集只该含环里的三个节点: {remaining:?}"
+                );
+                for node in ["p", "q", "r"] {
+                    assert!(
+                        remaining.iter().any(|entry| entry.contains(node)),
+                        "{node} 必须在残留集里: {remaining:?}"
+                    );
+                }
+                assert!(
+                    !remaining.iter().any(|entry| entry.contains('a')),
+                    "合法支路上的 a 不该被算成环节点: {remaining:?}"
+                );
+            }
+            other => panic!("三节点环必须被拒绝为 Cycle, 得到 {other:?}"),
+        }
+
+        // ② 自环挂在**与主路径无关**的节点上。
+        let g = graph(
+            &["a", "z", "master"],
+            &[("a", "master"), ("z", "z")],
+            &[("z", 7)],
+        );
+        match plan(&g, "master") {
+            Err(PdcError::Cycle { remaining }) => {
+                assert_eq!(remaining.len(), 1, "只有 z 排不出来: {remaining:?}");
+                assert!(
+                    remaining[0].contains('z'),
+                    "残留集必须点名 z: {remaining:?}"
+                );
+            }
+            other => panic!("无关节点上的自环必须让整张图被拒绝, 得到 {other:?}"),
+        }
+    }
 }

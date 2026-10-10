@@ -4952,4 +4952,97 @@ mod tests {
         // 非空证明: `JUNK` 的负载是奇数 ⇒ 少了补位 `data` 就会错位。
         assert_eq!(3 % 2, 1, "JUNK 必须是奇数负载");
     }
+
+    /// 判据 (**未实现的 chunk 族, 表驱动**): 8 个未实现的 chunk 名 × 4 个负载长度
+    /// （0 / 1 / 2 / 3 字节）× **连续三个**同一 chunk, 每一个形状都必须被跳过,
+    /// 而且跳过之后 `data` 仍逐字节读对。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 上一条判据只用了两个 chunk（`axml` 18 字节 / `JUNK` 3 字节）**各一个**。
+    /// 把"已出现过的 fourcc 不再入表"（去重）注入进去之后, 上一条判据仍然全绿 ——
+    /// 它的两个 fourcc 不同; 只有**连续三个同名** chunk 才会让去重后的 `chunks.len()`
+    /// 对不上。此外本表覆盖了**带空格**的 fourcc（`cue ` / `r64m`）与**零长度**负载
+    /// （`0 % 2 == 0` ⇒ 不能无条件补位）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 8 个 fourcc × 4 个负载长度（单位: 字节）× 连续 3 个 chunk。读数:
+    /// `parse_container` 的判决、`data` 区间的内容、`chunks` 的条数（3 + 3 个已知 chunk）
+    /// 与每个 fourcc 的负载长度。
+    ///
+    /// # 非空证明
+    ///
+    /// 4 个长度里既有偶数（0 / 2）也有奇数（1 / 3）⇒ "无条件补位"与"从不补位"两种改法
+    /// 都会在这张表上红; 8 个名字里既有带空格的也有不带的, 且**连续三个同名**
+    /// ⇒ "去重"与"前缀匹配"两种改法也会红。
+    #[test]
+    fn every_unimplemented_chunk_shape_is_skipped() {
+        let data = payload(4);
+        let names: [[u8; 4]; 8] = [
+            *b"axml", *b"bxml", *b"sxml", *b"chna", *b"iXML", *b"cue ", *b"r64m", *b"JUNK",
+        ];
+        let mut shapes = 0usize;
+        for fourcc in names {
+            for len in [0usize, 1, 2, 3] {
+                let plan = ContainerPlan::for_payload(
+                    ContainerKind::Bw64,
+                    stereo_16bit(),
+                    data.len() as u64,
+                    4,
+                    None,
+                );
+                let mut file = plan.header_bytes();
+                file.extend_from_slice(&data);
+                let before = chunk_order(&file).expect("原始容器可解析").len();
+                let data_header_at = file.len() - data.len() - 8;
+                let mut inserted = Vec::new();
+                for _ in 0..3 {
+                    push_chunk(&mut inserted, &fourcc, &vec![0x5A; len]);
+                }
+                file.splice(data_header_at..data_header_at, inserted);
+
+                let label = format!(
+                    "{} 连续 3 个 × {len} 字节",
+                    String::from_utf8_lossy(&fourcc)
+                );
+                let parsed = parse_container(&file)
+                    .unwrap_or_else(|error| panic!("{label}: 未实现的 chunk 让解析失败: {error}"));
+                assert_eq!(
+                    &file[parsed.data.clone()],
+                    data.as_slice(),
+                    "{label}: data 负载"
+                );
+                assert_eq!(parsed.format, stereo_16bit(), "{label}: fmt 必须读对");
+                assert_eq!(
+                    parsed.chunks.len(),
+                    before + 3,
+                    "{label}: 连续三个同名 chunk 不得被合并"
+                );
+                let order = chunk_order(&file).expect("解析");
+                assert_eq!(
+                    &order[before - 1..],
+                    &[fourcc, fourcc, fourcc, *b"data"],
+                    "{label}: 三个未知 chunk 必须按原顺序出现, 后面紧跟 data"
+                );
+                let lengths = chunk_lengths(&parsed.chunks);
+                assert_eq!(
+                    lengths.get(&String::from_utf8_lossy(&fourcc).into_owned()),
+                    Some(&len),
+                    "{label}: 负载长度"
+                );
+                shapes += 1;
+            }
+        }
+        assert_eq!(shapes, 32, "8 个名字 × 4 个长度");
+        // 非空证明: 长度里既有偶数也有奇数; 名字里既有带空格的也有不带的。
+        assert_eq!(
+            [0usize, 1, 2, 3]
+                .iter()
+                .filter(|len| **len % 2 == 1)
+                .count(),
+            2
+        );
+        assert_eq!(names.iter().filter(|name| name[3] == b' ').count(), 1);
+    }
 }
