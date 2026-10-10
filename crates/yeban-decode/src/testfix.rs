@@ -1902,4 +1902,77 @@ mod tests {
             u32::from_le_bytes(page[22..26].try_into().expect("4 bytes"))
         );
     }
+
+    /// 判据（**R183 的终点形态**：把"注入"收进判据内的绿/红两臂 ⇒ 那几种形态的**外部注入分母归 0**）。
+    ///
+    /// 核的是 [`assert_rows_are_name_located`] 这个**下界函数**本身：喂正确表必须过、喂坏表必须被拒。
+    /// ⛔ 不假装有牙：四条臂都用 `catch_unwind` 真跑一遍，**被拒**是断言出来的事实。
+    ///
+    /// ⭐ **R187**：每条样本都带 `// R187 sample: …` 标记，便于与"被测形态"分开。
+    /// ⭐ **R191（配对对照必须排除平凡性）**：只给"坏表被拒"是**平凡**的（任何会 panic 的东西都满足）。
+    /// 因此**必须再给一条"只差无关维度的表照样通过"** —— 下面 arm-4（名字相同、值不同）与
+    /// arm-1（名字相同、值相同）成对，说明这条判据区分的是**名字**而不是"有没有值"。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 臂 | 样本 | 期望 | 实测 |
+    /// | :--- | :--- | :--- | :--- |
+    /// | arm-1 | 名字与 `Debug` 一致 | 通过 | 通过 |
+    /// | arm-2 | 某行名字改错（`S16x`） | **被拒** | 被拒（panic 被捕获） |
+    /// | arm-3 | 两行**重名** | **被拒** | 被拒 |
+    /// | arm-4 | 名字相同、**值不同**（只差无关维度） | 通过 | 通过 |
+    #[test]
+    fn name_located_rows_reject_a_mislabelled_table_and_accept_an_unrelated_difference() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        // R187 sample: arm-1 绿（名字与 Debug 一致）
+        let good: Vec<(&str, String)> = vec![("U8", "U8".to_owned()), ("S16", "S16".to_owned())];
+        assert_rows_are_name_located(&good);
+
+        // R187 sample: arm-2 红（名字改错）
+        let mislabelled: Vec<(&str, String)> =
+            vec![("U8", "U8".to_owned()), ("S16x", "S16".to_owned())];
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| assert_rows_are_name_located(
+                &mislabelled
+            )))
+            .is_err(),
+            "a row whose declared name is not the variant's own name must be rejected"
+        );
+
+        // R187 sample: arm-3 红（两行重名）
+        let duplicated: Vec<(&str, String)> =
+            vec![("U8", "U8".to_owned()), ("U8", "U8".to_owned())];
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| assert_rows_are_name_located(
+                &duplicated
+            )))
+            .is_err(),
+            "two rows carrying the same variant name must be rejected"
+        );
+
+        // R187 sample: arm-4 绿（**只差无关维度**：名字相同、`Debug` 呈现不同）—— R191 的反平凡臂。
+        let unrelated_difference: Vec<(&str, String)> =
+            vec![("U8", "U8".to_owned()), ("S16", "S16(99)".to_owned())];
+        assert_rows_are_name_located(&unrelated_difference);
+        // ⭐ **反平凡性（R191）再钉一次** —— 两条对照各自"只差一个维度"：
+        // arm-2 与 arm-1 **只差声明的名字**（`Debug` 相同）⇒ 必须被拒；
+        assert_ne!(
+            good[1].0, mislabelled[1].0,
+            "arm-2 differs only in the name"
+        );
+        assert_eq!(
+            good[1].1, mislabelled[1].1,
+            "arm-2 keeps the same Debug text"
+        );
+        // arm-4 与 arm-1 **只差 `Debug` 文本**（名字相同）⇒ 必须通过。
+        assert_eq!(
+            good[1].0, unrelated_difference[1].0,
+            "arm-4 keeps the same name"
+        );
+        assert_ne!(
+            good[1].1, unrelated_difference[1].1,
+            "arm-4 differs only in the Debug text"
+        );
+    }
 }
