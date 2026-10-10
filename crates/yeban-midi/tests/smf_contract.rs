@@ -1448,6 +1448,9 @@ fn the_conductor_track_documentation_matches_the_written_bytes() {
 /// ⭐ **R120：真对象必须附机械下界**（真的扫过足够多的源码行）。
 #[test]
 fn no_needle_is_bound_to_a_variable_before_being_searched() {
+    // ⭐ R244①：**运行期臂计数器** —— libtest 在同一判据内**首败即停** ⇒ 若某条臂失败，
+    // 探针打印的 `arms_ran` 会**小于** N ⇒ ⭐ **1/N 截断变成可见读数**（⛔ 不再靠推断）。
+    let mut arms_ran = 0usize;
     eprintln!(
         "[R187-PROBE b25:smf_contract::no_needle_is_bound_to_a_variable_before_being_searched] ran"
     );
@@ -1538,6 +1541,7 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
 
     // ①′ R119 near-miss：绑名 `b`、源码只有 `contains(bb)` ⇒ 不许误报。
     let near_miss = "let b = \"needdle\";\nassert!(doc.contains(bb));\n";
+    arms_ran += 1;
     assert_eq!(
         detector(near_miss).len(),
         0,
@@ -1545,6 +1549,7 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
     );
     // ③ 负对照：用 `format!` 现场构造针（**没有**绑定字符串字面量）⇒ 不许误报。
     let known_good = "let n = 15;\nassert!(doc.contains(&format!(\"长度 {n}\")));\n";
+    arms_ran += 1;
     assert_eq!(detector(known_good).len(), 0, "负对照：不许误报");
 
     // ④ 真对象 ＋ ⭐ R120 机械下界：必须**真的扫过**足够多的源码行。
@@ -1566,6 +1571,7 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
          （⚠️ 余量为 0 ⇒ 再删一个被搜文件就会红，那是**有意**的下界，⛔ 不是回归）",
         searched.len()
     );
+    arms_ran += 1;
     assert!(
         searched.len() >= SEARCHED_FLOOR,
         "R211①：本文件被排除后，别处至少要有 {SEARCHED_FLOOR} 个被搜文件（实际 {}）",
@@ -1576,10 +1582,12 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
     // ⚠️ clippy `assertions_on_constants`：⛔ 不许对字面常量断言 ⇒ 用**运行期导出**的
     // "少一个文件的那个集合"（它的元素个数本来就是运行期量）。
     let one_file_set = searched.len() - 1;
+    arms_ran += 1;
     assert!(
         one_file_set < SEARCHED_FLOOR,
         "旧形态（无下界）会放行 {one_file_set} 个文件的集合 ⇒ 这正是缺口"
     );
+    arms_ran += 1;
     assert!(
         !(one_file_set >= SEARCHED_FLOOR),
         "新谓词必须判 {one_file_set} 个文件的集合不合格"
@@ -1597,5 +1605,8 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
     // 外加 near-miss 与负对照必须探不到）。规模读数降级为**诊断**。
     eprintln!(
         "DIAGNOSTIC no_needle_is_bound_to_a_variable: scanned_lines={scanned_lines} forms={FORMS:?}"
+    );
+    eprintln!(
+        "[R187-PROBE b31:smf_contract::no_needle_is_bound_to_a_variable] arms_ran={arms_ran} of 13"
     );
 }
