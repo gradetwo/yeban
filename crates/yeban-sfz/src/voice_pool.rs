@@ -933,6 +933,15 @@ mod tests {
             Err(SfzError::InvalidVoiceCapacity { .. })
         ));
         assert_eq!(VoicePool::default().capacity(), DEFAULT_VOICE_CAPACITY);
+        // ⭐ R154 配对已知红：**另一个合法容量**⏔ 不得与缺省相同。
+        let other = VoicePool::new(DEFAULT_VOICE_CAPACITY - 1, 48_000.0)
+            .expect("a legal capacity")
+            .capacity();
+        assert_ne!(
+            VoicePool::default().capacity(),
+            other,
+            "red arm: a different legal capacity must not equal the default"
+        );
     }
 
     // ------------------------------------------------------------------

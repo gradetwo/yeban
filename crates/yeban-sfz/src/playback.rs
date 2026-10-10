@@ -872,6 +872,13 @@ mod tests {
             2.0
         );
         assert_eq!(RenderRates::default(), RATES_EQUAL);
+        // ⭐ R154／R86 配对已知红：**第二个合法状态**（播放率不等）
+        //   ⏔ 不得与缺省相等 —— 否则上一条等价断言就是恒真。
+        assert_ne!(
+            RenderRates::default(),
+            RenderRates::new(48_000.0, 44_100.0),
+            "red arm: a different legal state must not equal the default"
+        );
     }
 
     #[test]
