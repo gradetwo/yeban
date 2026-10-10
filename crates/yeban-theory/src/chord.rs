@@ -1338,4 +1338,89 @@ mod tests {
             );
         }
     }
+
+    /// 裁决 R42（人类裁决，文档是规范）：`Tonality::infer_from_root_text` 必须把
+    /// **根音字母**与**它之后的变音记号**分开 —— 先取根音字母，再看字母**之后**
+    /// 的记号。文档原文："只看根音文本里的变音记号：带 `b` 走降号侧，其余
+    /// （含 `#` 与无记号）走升号侧。"
+    ///
+    /// 这条判据钉住 35 个根音文本的**规范**映射表。在本条判据加入时（实现修复
+    /// **之前**）其中 **6 条是红的**：`B`/`b`/`B#`/`B##`/`B♯` 被误判成降号侧
+    /// （根音**字母** `B`/`b` 被当成了降号记号），`C♭` 被误判成升号侧
+    /// （Unicode `♭` 根本没被认成记号）。
+    ///
+    /// 口径来源：变音记号集合与 [`crate::pitch::parse_pitch_class`] **完全一致**
+    /// （降号 = `b` / `B` / `♭`，升号 = `#` / `♯`），因为 `infer_from_root_text`
+    /// 的入参就是 `Chord::from_symbol` 交给 `parse_pitch_class` 的**同一段根音
+    /// 文本**，两者必须是同一个口径。
+    #[test]
+    fn infer_from_root_text_separates_the_letter_from_the_accidental() {
+        const TABLE: [(&str, Tonality); 35] = [
+            ("C", Tonality::SharpMajor),
+            ("c", Tonality::SharpMajor),
+            ("D", Tonality::SharpMajor),
+            ("d", Tonality::SharpMajor),
+            ("E", Tonality::SharpMajor),
+            ("F", Tonality::SharpMajor),
+            ("G", Tonality::SharpMajor),
+            ("A", Tonality::SharpMajor),
+            ("B", Tonality::SharpMajor),
+            ("b", Tonality::SharpMajor),
+            ("C#", Tonality::SharpMajor),
+            ("D#", Tonality::SharpMajor),
+            ("F#", Tonality::SharpMajor),
+            ("G#", Tonality::SharpMajor),
+            ("A#", Tonality::SharpMajor),
+            ("Cb", Tonality::FlatMajor),
+            ("Db", Tonality::FlatMajor),
+            ("Eb", Tonality::FlatMajor),
+            ("Gb", Tonality::FlatMajor),
+            ("Ab", Tonality::FlatMajor),
+            ("Bb", Tonality::FlatMajor),
+            ("bb", Tonality::FlatMajor),
+            ("C##", Tonality::SharpMajor),
+            ("B#", Tonality::SharpMajor),
+            ("B##", Tonality::SharpMajor),
+            ("Bbb", Tonality::FlatMajor),
+            ("Cbb", Tonality::FlatMajor),
+            ("CB", Tonality::FlatMajor),
+            ("BB", Tonality::FlatMajor),
+            ("bB", Tonality::FlatMajor),
+            ("CbB", Tonality::FlatMajor),
+            ("B\u{266d}", Tonality::FlatMajor),
+            ("B\u{266f}", Tonality::SharpMajor),
+            ("C\u{266d}", Tonality::FlatMajor),
+            ("F\u{266f}", Tonality::SharpMajor),
+        ];
+        for (text, expected) in TABLE {
+            assert_eq!(
+                Tonality::infer_from_root_text(text),
+                expected,
+                "root text {text:?}"
+            );
+        }
+        // 与 `parse_pitch_class` 的变音记号口径对账：两个函数吃的是同一段根音
+        // 文本，因此"降号侧"必须精确等价于"解出的变音记号为负"。
+        let signed_alter = |text: &str| -> Option<i32> {
+            let parsed = parse_pitch_class(text).ok()?;
+            let letter = text.chars().next()?;
+            let natural = parse_pitch_class(&letter.to_string()).ok()?;
+            let raw =
+                (i32::from(parsed.semitones()) - i32::from(natural.semitones())).rem_euclid(12);
+            Some(if raw > 6 { raw - 12 } else { raw })
+        };
+        let mut cross_checked = 0usize;
+        for (text, expected) in TABLE {
+            let Some(alter) = signed_alter(text) else {
+                continue;
+            };
+            assert_eq!(
+                expected == Tonality::FlatMajor,
+                alter < 0,
+                "{text:?}: tonality says {expected:?} but parse_pitch_class gives alter {alter}"
+            );
+            cross_checked += 1;
+        }
+        assert_eq!(cross_checked, 35, "every table row must be parseable");
+    }
 }
