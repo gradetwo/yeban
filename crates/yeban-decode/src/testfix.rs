@@ -341,12 +341,30 @@ impl Default for FlacSpec {
 /// 每个声道写 CONSTANT 子帧（值 `constant`），因此音频是直流 —— 对"位深/声道/长度"
 /// 这些判据而言足够，而且字节量最小、最容易核对。
 ///
+/// 帧号写成 FLAC 规范的 **UTF-8 编码数**（见 [`push_utf8_number`]），因此帧数**没有**
+/// "≤ 127"这个上界；真正的上界是 `STREAMINFO.total_samples` 的 36 位字段。
+///
 /// # Panics
 ///
 /// 参数超出本夹具支持的最小合法子集时 panic（夹具错误必须在测试里立刻可见，
 /// 不能悄悄生成一个非法文件让 CI 去猜）。
 #[must_use]
 pub fn flac_constant(spec: &FlacSpec, frames: u16, constant: i32) -> Vec<u8> {
+    flac_constant_with_frame_spans(spec, frames, constant).0
+}
+
+/// [`flac_constant`] 的完整版：同时返回每个帧在字节串里的 `(起点, 长度)`。
+///
+/// 存在理由：判据 `the_idle_guard_trips_on_1025_consecutive_bad_packets` 必须**逐帧**
+/// 破坏 CRC-16（让解封装器照常产出包、而每个包都解码失败），因此它需要帧边界。
+/// 把边界从夹具里交出来，胜过在判据里按 UTF-8 帧号长度重算一遍帧长 —— 那是同一件事
+/// 写在两个地方，任何一处改动都会让另一处静默失效。
+#[must_use]
+pub fn flac_constant_with_frame_spans(
+    spec: &FlacSpec,
+    frames: u16,
+    constant: i32,
+) -> (Vec<u8>, Vec<(usize, usize)>) {
     assert!(
         spec.channels == 1 || spec.channels == 2,
         "only 1 or 2 channels"
@@ -356,9 +374,10 @@ pub fn flac_constant(spec: &FlacSpec, frames: u16, constant: i32) -> Vec<u8> {
         spec.block_frames, 256,
         "fixture pins the 256-sample block code"
     );
+    assert!(frames > 0, "the fixture needs at least one frame");
     assert!(
-        frames > 0 && frames < 128,
-        "frame numbers must stay single-byte UTF-8"
+        u64::from(frames) * u64::from(spec.block_frames) < (1u64 << 36),
+        "total_samples is a 36-bit STREAMINFO field"
     );
     assert!(
         spec.sample_rate > 0 && spec.sample_rate < (1 << 20),
@@ -383,10 +402,111 @@ pub fn flac_constant(spec: &FlacSpec, frames: u16, constant: i32) -> Vec<u8> {
     out.push(0x80);
     out.extend_from_slice(&[0x00, 0x00, 34]);
     out.extend_from_slice(&stream_info(spec, total_samples, min_frame, max_frame));
-    for frame in encoded_frames {
-        out.extend_from_slice(&frame);
+    let mut spans = Vec::with_capacity(encoded_frames.len());
+    for frame in &encoded_frames {
+        spans.push((out.len(), frame.len()));
+        out.extend_from_slice(frame);
     }
-    out
+    (out, spans)
+}
+
+/// 与 [`flac_constant`] 相同，但把**每一个**帧的 CRC-16 都写成不可能匹配的值。
+///
+/// 破坏方式是把原 CRC 按位取反：取反值必然与原值不同，而原值就是正确的那个，
+/// 因此校验必然失败（不需要假设"某个具体值不会被撞上"）。
+///
+/// ⚠ **它产出不了"到达解码器的坏包"**（2026-10-10 实测）：symphonia 的 FLAC **读端**
+/// 自己会校验帧尾 CRC-16，不符时**跳过整个帧**、一个包都不产出。因此
+/// `flac_constant_with_broken_frame_crc(spec, 1025, _)` 的读数是 `EmptyStream`
+/// （`bump_idle` 一次都没跑），而不是"1025 次不推进"。
+///
+/// 本函数因此只用于**反向对照**：判据
+/// `crate::decode::tests::the_idle_guard_trips_on_1025_consecutive_bad_packets` 用它钉住
+/// "破坏 CRC 走不到解码器"这件事。要构造"读端收下、解码器拒收"的包，请用
+/// [`flac_constant_with_reserved_subframes`]。
+#[must_use]
+pub fn flac_constant_with_broken_frame_crc(spec: &FlacSpec, frames: u16, constant: i32) -> Vec<u8> {
+    let (mut bytes, spans) = flac_constant_with_frame_spans(spec, frames, constant);
+    for (start, len) in spans {
+        let crc_at = start + len - 2;
+        let original = u16::from_be_bytes([bytes[crc_at], bytes[crc_at + 1]]);
+        bytes[crc_at..crc_at + 2].copy_from_slice(&(!original).to_be_bytes());
+    }
+    bytes
+}
+
+/// 与 [`flac_constant`] 相同，但把**每一个**帧的子帧类型都改成 FLAC 规范里的**保留**值，
+/// 并用**正确的** CRC-16 覆盖帧尾。
+///
+/// 存在的理由：这是"解封装器照常产出包、而解码器逐个失败"的**唯一**可达形状，也就是
+/// `crate::decode` 循环里 `Err(SymphoniaError::DecodeError(_))` 那条容忍分支的唯一入口。
+/// 乍看之下"破坏帧尾 CRC-16"更直接，但实测（2026-10-10）读端自己会校验帧尾 CRC 并跳过
+/// 整个帧 ⇒ 一个包都不产出。因此必须让帧**结构自洽**（帧头 CRC-8 与帧尾 CRC-16 都正确），
+/// 只让**子帧语义**非法：读端不解析子帧，解码器才解析。
+///
+/// 子帧类型字节是 8 位 `[零填充 1][类型 6][浪费位标志 1]`，本函数写 `0b0_001101_0`
+/// （类型 `001101` 在规范里是保留值）。
+///
+/// 判据 `crate::decode::tests::the_idle_guard_trips_on_1025_consecutive_bad_packets`
+/// 用它把 [`crate::limits::MAX_IDLE_PACKETS`] 的**端到端**行为钉住。
+#[must_use]
+pub fn flac_constant_with_reserved_subframes(
+    spec: &FlacSpec,
+    frames: u16,
+    constant: i32,
+) -> Vec<u8> {
+    let (mut bytes, spans) = flac_constant_with_frame_spans(spec, frames, constant);
+    for (start, len) in spans {
+        // 帧长 = 11 + 帧号字节数 ⇒ 子帧起点 = `start + len - 5`
+        // （4 字节帧头 + 帧号 + 1 字节块大小 + 1 字节 CRC-8）。
+        let subframe_at = start + len - 5;
+        let crc_at = start + len - 2;
+        bytes[subframe_at] = 0b0001_1010;
+        // 改完子帧必须重算 CRC-16，否则读端会把整帧丢掉（见上）。
+        let crc = crc16(&bytes[start..crc_at]);
+        bytes[crc_at..crc_at + 2].copy_from_slice(&crc.to_be_bytes());
+    }
+    bytes
+}
+
+/// 把 FLAC 的 **UTF-8 编码数**推进位写入器。
+///
+/// FLAC 复用 UTF-8 的**位型**来编码最长 36 位的无符号数（帧号或样本号）。编码规则：
+/// 1 字节承载 7 位，2 字节承载 11 位，3 字节 16 位，4 字节 21 位，5 字节 26 位，6 字节
+/// 31 位；续字节一律 `10xxxxxx`。
+///
+/// 存在理由：本夹具此前只写单字节帧号，于是"帧数 ≤ 127"成了**夹具**的硬上界。判据
+/// `crate::decode::tests::the_idle_guard_trips_on_1025_consecutive_bad_packets` 需要
+/// 1025 个包（逐个来自 1025 个帧），因此必须按规范编码多字节帧号。
+///
+/// 自检：本函数由 `testfix` 自己的判据
+/// `flac_frame_numbers_use_the_spec_utf8_encoding` 在 127/128 与 2047/2048 两个边界上
+/// 逐字节钉住（与 UTF-8 自身的编码结果相同）。
+///
+/// # Panics
+///
+/// 值超出 31 位时 panic：那超出本夹具支持的最小合法子集。
+fn push_utf8_number(w: &mut BitWriter, value: u64) {
+    let bits = 64 - value.leading_zeros();
+    // (总字节数, 首字节前缀, 首字节载荷位数)
+    let (len, prefix, first_bits) = match bits {
+        0..=7 => (1u32, 0x00u8, 7u32),
+        8..=11 => (2, 0xC0, 5),
+        12..=16 => (3, 0xE0, 4),
+        17..=21 => (4, 0xF0, 3),
+        22..=26 => (5, 0xF8, 2),
+        27..=31 => (6, 0xFC, 1),
+        other => panic!("a FLAC UTF-8 number carries at most 31 bits, got {other}"),
+    };
+    let first = prefix
+        | u8::try_from((value >> (6 * (len - 1))) & ((1u64 << first_bits) - 1))
+            .expect("the first byte payload fits u8");
+    w.push_bits(u64::from(first), 8);
+    for index in (0..len - 1).rev() {
+        let continuation = 0x80
+            | u8::try_from((value >> (6 * index)) & 0x3F).expect("a continuation payload fits u8");
+        w.push_bits(u64::from(continuation), 8);
+    }
 }
 
 /// 单个固定块大小帧：4 字节帧头 + UTF-8 帧号 + 8 位块大小 + CRC-8 + 子帧 + CRC-16。
@@ -400,7 +520,7 @@ fn flac_frame(spec: &FlacSpec, index: u16, constant: i32) -> Vec<u8> {
     header.push_bits(u64::from(spec.channels - 1), 4); // independent channels
     header.push_bits(0b000, 3); // sample size = from STREAMINFO
     header.push_bits(0, 1); // reserved
-    header.push_bits(u64::from(index), 8); // UTF-8 frame number (0..=127)
+    push_utf8_number(&mut header, u64::from(index)); // FLAC 的 UTF-8 编码帧号
     header.push_bits(u64::from(spec.block_frames - 1), 8);
     header.align();
     let mut frame = header.into_bytes();
@@ -846,5 +966,133 @@ mod tests {
             info[10], info[11], info[12], info[13], info[14], info[15], info[16], info[17],
         ]);
         assert_eq!(packed & 0xF_FFFF_FFFF, 511);
+    }
+
+    /// 判据（夹具自检 / 压缩容器的帧号编码）：FLAC 的帧号是 **UTF-8 编码数**，因此
+    /// 0…127 占 1 字节、128…2047 占 2 字节、2048… 占 3 字节。
+    ///
+    /// 量什么：[`flac_constant_with_frame_spans`] 返回的帧跨度与帧头里的帧号字节。
+    /// 怎么量：在 127/128 与 2047/2048 两个边界上逐字节比对；并把跨度与帧区做无缝覆盖核对。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 帧号 | 帧号字节 | 帧长（字节） |
+    /// | :--- | :--- | ---: |
+    /// | 0 | `00` | 12 |
+    /// | 127 | `7F` | 12 |
+    /// | 128 | `C2 80` | 13 |
+    /// | 2047 | `DF BF` | 13 |
+    /// | 2048 | `E0 A0 80` | 14 |
+    ///
+    /// 帧长 = 11 + 帧号字节数（4 字节头 + 帧号 + 1 字节块大小 + 1 字节 CRC-8 +
+    /// 3 字节单声道 16 位 CONSTANT 子帧 + 2 字节 CRC-16）。
+    ///
+    /// 为什么需要它：既有判据 `flac_fixture_has_a_valid_streaminfo_and_frame_chain` 把
+    /// `header_len` 写死成 6（= 4 + 1 + 1），那个假设只在帧号 < 128 时成立。本档帧号
+    /// 改成多字节编码之后，必须有一条判据把"哪一档用几个字节"钉住，否则夹具错了会把
+    /// 解码失败误读成"解码器坏了"。
+    ///
+    /// 注入（实测）：把 `push_utf8_number` 的第二档前缀由 `0xC0` 改成 `0xE0` ⇒ 本条在
+    /// 帧 128 的字节比对上红；把 `first_bits` 的对应档由 5 改成 4 ⇒ 同上。
+    #[test]
+    fn flac_frame_numbers_use_the_spec_utf8_encoding() {
+        let spec = FlacSpec::default();
+
+        let (one, spans) = flac_constant_with_frame_spans(&spec, 1, 0);
+        assert_eq!(spans, vec![(42usize, 12usize)]);
+        assert_eq!(one.len(), 42 + 12);
+        assert_eq!(one[42 + 4], 0x00, "frame 0 is a single 0x00 byte");
+
+        let (edge, spans) = flac_constant_with_frame_spans(&spec, 129, 0);
+        assert_eq!(spans.len(), 129);
+        assert_eq!(spans[127], (spans[126].0 + 12, 12), "frame 127: one byte");
+        assert_eq!(spans[128].1, 13, "frame 128: two bytes");
+        let f128 = spans[128].0;
+        assert_eq!(
+            &edge[f128 + 4..f128 + 6],
+            &[0xC2, 0x80],
+            "frame 128 must be UTF-8 C2 80"
+        );
+
+        let (big, spans) = flac_constant_with_frame_spans(&spec, 2049, 0);
+        assert_eq!(spans[2047].1, 13, "frame 2047: still two bytes");
+        assert_eq!(spans[2048].1, 14, "frame 2048: three bytes");
+        let f2048 = spans[2048].0;
+        assert_eq!(
+            &big[f2048 + 4..f2048 + 7],
+            &[0xE0, 0xA0, 0x80],
+            "frame 2048 must be UTF-8 E0 A0 80"
+        );
+
+        // 跨度必须无缝覆盖整个帧区：既有"帧号恒为 1 字节"的算法错一处就会在这里露出来。
+        for (bytes, spans) in [
+            (&edge, &flac_constant_with_frame_spans(&spec, 129, 0).1),
+            (&big, &flac_constant_with_frame_spans(&spec, 2049, 0).1),
+        ] {
+            let mut cursor = 42usize;
+            for (start, len) in spans {
+                assert_eq!(*start, cursor, "frame spans must be contiguous");
+                cursor += len;
+            }
+            assert_eq!(
+                cursor,
+                bytes.len(),
+                "the spans must cover the whole frame area"
+            );
+        }
+    }
+
+    /// 判据（夹具自检 / UTF-8 编码数的位打包）：`push_utf8_number` 在**每一档的两个端点**
+    /// 与"载荷最高位为 1"的点上逐字节正确。
+    ///
+    /// 量什么：`push_utf8_number(value)` 写出的字节（单位：字节）。怎么量：直接调用私有的
+    /// 位写入器（本模块的判据可以访问它），逐值比对期望字节。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 值 | 字节 | 档 |
+    /// | ---: | :--- | :--- |
+    /// | `0x00` | `00` | 1 字节 |
+    /// | `0x7F` | `7F` | 1 字节上端 |
+    /// | `0x80` | `C2 80` | 2 字节下端 |
+    /// | `0x7FF` | `DF BF` | 2 字节上端 |
+    /// | `0x800` | `E0 A0 80` | 3 字节下端 |
+    /// | `0x8000` | `E8 80 80` | 3 字节，**载荷最高位为 1** |
+    /// | `0xFFFF` | `EF BF BF` | 3 字节上端 |
+    /// | `0x1_0000` | `F0 90 80 80` | 4 字节下端 |
+    /// | `0x1F_FFFF` | `F7 BF BF BF` | 4 字节上端 |
+    ///
+    /// 为什么需要它：**只测每一档的起始值抓不到载荷位宽写错** —— 例如把 3 字节档的首字节
+    /// 载荷位数由 4 写成 3，在 `0x800`（载荷 `0`）上读数完全一样，只有 `0x8000`（载荷 `8`）
+    /// 才露出来。本批注入实测正是这样：`12..=16 => (3, 0xE0, 4)` 改成 `(3, 0xE0, 3)`
+    /// 时，既有判据全绿。
+    ///
+    /// 注入（实测）：把 `12..=16 => (3, 0xE0, 4)` 改成 `(3, 0xE0, 3)` ⇒ 本条以
+    /// `value 0x8000` 红。
+    #[test]
+    fn push_utf8_number_packs_every_band_at_both_ends() {
+        fn encode(value: u64) -> Vec<u8> {
+            let mut writer = BitWriter::new();
+            push_utf8_number(&mut writer, value);
+            writer.align();
+            writer.into_bytes()
+        }
+        let cases: [(u64, &[u8]); 9] = [
+            (0x00, &[0x00]),
+            (0x7F, &[0x7F]),
+            (0x80, &[0xC2, 0x80]),
+            (0x7FF, &[0xDF, 0xBF]),
+            (0x800, &[0xE0, 0xA0, 0x80]),
+            (0x8000, &[0xE8, 0x80, 0x80]),
+            (0xFFFF, &[0xEF, 0xBF, 0xBF]),
+            (0x1_0000, &[0xF0, 0x90, 0x80, 0x80]),
+            (0x1F_FFFF, &[0xF7, 0xBF, 0xBF, 0xBF]),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(encode(value), expected, "value {value:#x}");
+        }
+        // 5 字节与 6 字节档只钉长度（本 crate 的夹具用不到那么大的帧号）。
+        assert_eq!(encode(0x20_0000).len(), 5);
+        assert_eq!(encode(0x400_0000).len(), 6);
     }
 }

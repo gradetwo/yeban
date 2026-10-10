@@ -988,8 +988,9 @@ mod tests {
     use super::*;
     use crate::testfix::{
         FlacSpec, WavExtensibleSpec, WavFormat, WavSpec, encode_f32_samples, encode_int_samples,
-        flac_constant, fmt_body_offset, wav, wav_extensible, wav_extensible_with_junk,
-        wav_with_chunks_before_fmt, wav_with_declared_len,
+        flac_constant, flac_constant_with_broken_frame_crc, flac_constant_with_reserved_subframes,
+        fmt_body_offset, wav, wav_extensible, wav_extensible_with_junk, wav_with_chunks_before_fmt,
+        wav_with_declared_len,
     };
 
     fn int_spec(channels: u16, bits: u16) -> WavSpec {
@@ -3825,5 +3826,319 @@ mod tests {
         )
         .expect("intermittent interrupts must not accumulate: the cap counts CONSECUTIVE ones");
         assert_eq!(alternating.pcm_hash(), direct.pcm_hash());
+    }
+
+    /// 判据（`MUST-GATE-011` "解码不推进"闸门的**端到端**判据）：连续 **1025** 个
+    /// "解封装器照常产出、解码器逐个失败"的包必须让解码终止并返回 [`DecodeError::Malformed`]，
+    /// 而恰好 **1024** 个必须走完流并以 [`DecodeError::EmptyStream`] 返回。
+    ///
+    /// 量什么：`decode_bytes` 对"每个帧的 CRC-16 都被破坏的 FLAC"的返回**变体**，
+    /// 帧数取 1024 与 1025（单位：帧 = 包）。
+    /// 怎么量：用夹具的 [`flac_constant_with_broken_frame_crc`] —— 帧**头**的 CRC-8 保持
+    /// 正确，因此解封装器仍然逐个定位帧并逐帧产出包；解码器每次都在帧 CRC-16 上失败 ⇒
+    /// 走 `decode_source` 循环里 `Err(SymphoniaError::DecodeError(_))` 那条容忍分支 ⇒
+    /// 每一轮都过一次 `bump_idle`。
+    ///
+    /// 读数（本机、debug 构建）：1025 帧 ⇒ `Malformed`，文案含
+    /// `stopped making progress: 1024 consecutive packets produced no audio`；
+    /// 1024 帧 ⇒ `EmptyStream`。也就是说这道闸门是**闭区间**：恰好 1024 次不推进不算越界，
+    /// 第 1025 次才报错 —— 与 [`limits::IdleGuard::bump`] 的 `idle > MAX_IDLE_PACKETS` 同值。
+    ///
+    /// 为什么此前没有它：[`limits::IdleGuard`] 的文档自己登记了"本闸门**没有**端到端判据"，
+    /// 理由是 WAV"声明长度远超真实字节"那条路径实测不复现（上游报 `UnexpectedEof`），
+    /// 而 FLAC 夹具的帧号是**单字节 UTF-8**（`frames < 128`）⇒ 最多 127 个包，够不到 1024。
+    /// 本批把夹具的帧号改成 FLAC 规范的 UTF-8 编码数（0…127 一字节、128…2047 两字节），
+    /// 这条空白因此被填上；夹具自检见
+    /// `testfix::tests::flac_frame_numbers_use_the_spec_utf8_encoding`。
+    ///
+    /// 注入（实测）：把 `decode_source` 里
+    /// `Err(SymphoniaError::DecodeError(_)) => { bump_idle(&mut idle_packets)?; continue; }`
+    /// 的 `bump_idle` 去掉 ⇒ 1025 帧那一格变成 `EmptyStream`，本条红；
+    /// 把 `IdleGuard::bump` 的 `>` 改成 `>=` ⇒ 1024 帧那一格变成 `Malformed`，本条红。
+    #[test]
+    fn the_idle_guard_trips_on_1025_consecutive_bad_packets() {
+        let cap = limits::MAX_IDLE_PACKETS;
+        assert_eq!(cap, 1_024, "the gate's value is pinned as a literal");
+        let spec = FlacSpec {
+            sample_rate: 8_000,
+            channels: 1,
+            bits: 16,
+            block_frames: 256,
+            total_samples_override: None,
+        };
+
+        // 对照：同一批字节在 CRC 不被破坏时照常解出（证明下面红的是 CRC，不是夹具坏了）。
+        let legal = flac_constant(&spec, 8, 0);
+        assert_eq!(
+            decode_bytes(&legal, &DecodeOptions::default())
+                .expect("an intact FLAC must decode")
+                .frame_count(),
+            8 * 256
+        );
+
+        // 反向对照：只破坏帧尾 CRC-16 **走不到解码器** —— symphonia 的 FLAC 读端自己会
+        // 校验帧尾 CRC，不符时跳过整个帧、一个包都不产出。因此 1025 帧的结果是 EmptyStream
+        // （`bump_idle` 一次都没跑），而不是"1025 次不推进"。这一段把"为什么必须用保留子帧
+        // 类型"这件事钉住：没有它，下一条断言会被误读成"破坏 CRC 也行"。
+        let crc_broken = flac_constant_with_broken_frame_crc(&spec, 1_025, 0);
+        match decode_bytes(&crc_broken, &DecodeOptions::default()) {
+            Err(DecodeError::EmptyStream) => {}
+            other => panic!(
+                "a CRC-broken FLAC must be dropped by the READER (no packet ever reaches the \
+                 decoder), got {other:?}"
+            ),
+        }
+        // 同一形状只坏一帧时读端会跳过它、其余帧照常解出（证明上面红的确实是"读端跳过"，
+        // 不是"整份文件坏了"）。
+        // 破坏面用夹具交出来的帧跨度定位，不重算帧长。
+        let (mut one_bad, spans) = crate::testfix::flac_constant_with_frame_spans(&spec, 4, 0);
+        let (start, len) = spans[2];
+        let crc_at = start + len - 2;
+        let original = u16::from_be_bytes([one_bad[crc_at], one_bad[crc_at + 1]]);
+        one_bad[crc_at..crc_at + 2].copy_from_slice(&(!original).to_be_bytes());
+        match decode_bytes(&one_bad, &DecodeOptions::default()) {
+            Err(DecodeError::DurationMismatch(_)) => {}
+            other => panic!(
+                "one dropped frame must surface as a declared/decoded mismatch, got {other:?}"
+            ),
+        }
+
+        // 恰好用尽：1024 个"读端收下、解码器拒收"的包走完流，一个样本都没解出来 ⇒ EmptyStream。
+        let at_cap = flac_constant_with_reserved_subframes(&spec, u16::try_from(cap).unwrap(), 0);
+        match decode_bytes(&at_cap, &DecodeOptions::default()) {
+            Err(DecodeError::EmptyStream) => {}
+            other => panic!(
+                "exactly {cap} consecutive bad packets are inside the closed interval and must \
+                 end at EmptyStream, got {other:?}"
+            ),
+        }
+
+        // 多一个：第 1025 次"不推进"必须让循环停下来并报 Malformed。
+        let over_cap =
+            flac_constant_with_reserved_subframes(&spec, u16::try_from(cap + 1).unwrap(), 0);
+        match decode_bytes(&over_cap, &DecodeOptions::default()) {
+            Err(DecodeError::Malformed { detail }) => assert!(
+                detail.contains("stopped making progress") && detail.contains("1024"),
+                "the idle gate must name itself and its cap, got {detail}"
+            ),
+            other => panic!(
+                "{} consecutive bad packets must trip the idle guard, got {other:?}",
+                cap + 1
+            ),
+        }
+
+        // 更多包不会改变结论：循环在第 1025 次就停手，不是走到流末尾才发现。
+        let way_over = flac_constant_with_reserved_subframes(&spec, 3_000, 0);
+        assert!(matches!(
+            decode_bytes(&way_over, &DecodeOptions::default()),
+            Err(DecodeError::Malformed { .. })
+        ));
+    }
+
+    /// 判据（公开面的映射表）：`PcmFormat::from_buffer` 的每一个**可达**分支都随线上位深
+    /// 与浮点标签走，且 `PcmFormat::bit_depth` / `PcmFormat::is_float` 与之一致。
+    ///
+    /// 量什么：`decode_bytes` 对六种 WAV 声明（8/16/24/32 位整数、32/64 位浮点）与一种
+    /// FLAC 的 `pcm_format()`、`pcm_format().bit_depth()`、`is_float()`。
+    /// 怎么量：每格用 `testfix` 的构造器生成线上字节，再读解出资产的事实。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 容器 | 线上声明 | `pcm_format()` | 位深 | `is_float()` |
+    /// | :--- | :--- | :--- | ---: | :--- |
+    /// | WAV tag 1 | 8 位 | `U8` | 8 | false |
+    /// | WAV tag 1 | 16 位 | `S16` | 16 | false |
+    /// | WAV tag 1 | 24 位 | `S24` | 24 | false |
+    /// | WAV tag 1 | 32 位 | `S32` | 32 | false |
+    /// | WAV tag 3 | 32 位 | `F32` | 32 | true |
+    /// | WAV tag 3 | 64 位 | `F64` | 64 | true |
+    /// | FLAC | 16 位 | `S32` | 32 | false |
+    ///
+    /// 覆盖边界（如实登记）：本 crate 启用的编解码器只产出上表这六种。`U16` / `U24` /
+    /// `U32` / `S8` 四个变体**没有**可达的线上声明（symphonia 的 PCM 解码器对整数只给
+    /// `U8` / `S16` / `S24` / `S32`，FLAC 只给 `S32`），因此那四个分支的 `bit_depth()`
+    /// 由纯函数判据覆盖，不由本条覆盖。
+    ///
+    /// 为什么需要它：本批的**公开面普查**显示 `PcmFormat::from_buffer` 是全部 60 个公开
+    /// `fn` 里**唯一**一个在全部判据文本里零引用、且只有一个产线调用点的。它的效果此前
+    /// 只被零散的 `pcm_format()` 断言间接覆盖（只有 `S16` 与 `F32` 断言过），映射表本身
+    /// 没有判据。
+    ///
+    /// 注入（实测）：把 `B::F64(_) => Self::F64` 改成 `Self::F32` ⇒ 本条在 64 位浮点那
+    /// 一行红；把 `B::U8(_) => Self::U8` 改成 `Self::S8` ⇒ 本条在 8 位那一行红。
+    #[test]
+    fn the_decoded_pcm_format_follows_the_wire_bit_depth_and_the_float_tag() {
+        // 64 位浮点的线上体不能用 `encode_f32_samples`，这里按 `f64` 小端排。
+        let mut f64_body = Vec::new();
+        for sample in [0.5f64, -0.5, 0.25, -0.25] {
+            f64_body.extend_from_slice(&sample.to_le_bytes());
+        }
+        // 整数体取 8 位量程内的值：`testfix::encode_int_samples` 对超出量程的值会**故意**
+        // panic（"夹具错误必须立刻可见"），而本条量的是格式而不是幅度。
+        let ints = [0i32, 1, -1, 2];
+        let floats = [0.5f32, -0.5, 0.25, -0.25];
+
+        // 一格 = (标签, 线上声明, 线上体, 期望格式, 期望位深, 期望 is_float)。
+        type Case = (&'static str, WavSpec, Vec<u8>, PcmFormat, u16, bool);
+        let cases: [Case; 6] = [
+            (
+                "WAV tag 1, 8 bits",
+                WavSpec {
+                    channels: 1,
+                    sample_rate: 8_000,
+                    bits: 8,
+                    format: WavFormat::Integer,
+                },
+                encode_int_samples(8, &ints),
+                PcmFormat::U8,
+                8,
+                false,
+            ),
+            (
+                "WAV tag 1, 16 bits",
+                WavSpec {
+                    channels: 1,
+                    sample_rate: 8_000,
+                    bits: 16,
+                    format: WavFormat::Integer,
+                },
+                encode_int_samples(16, &ints),
+                PcmFormat::S16,
+                16,
+                false,
+            ),
+            (
+                "WAV tag 1, 24 bits",
+                WavSpec {
+                    channels: 1,
+                    sample_rate: 8_000,
+                    bits: 24,
+                    format: WavFormat::Integer,
+                },
+                encode_int_samples(24, &ints),
+                PcmFormat::S24,
+                24,
+                false,
+            ),
+            (
+                "WAV tag 1, 32 bits",
+                WavSpec {
+                    channels: 1,
+                    sample_rate: 8_000,
+                    bits: 32,
+                    format: WavFormat::Integer,
+                },
+                encode_int_samples(32, &ints),
+                PcmFormat::S32,
+                32,
+                false,
+            ),
+            (
+                "WAV tag 3, 32 bits",
+                WavSpec {
+                    channels: 1,
+                    sample_rate: 8_000,
+                    bits: 32,
+                    format: WavFormat::Float,
+                },
+                encode_f32_samples(&floats),
+                PcmFormat::F32,
+                32,
+                true,
+            ),
+            (
+                "WAV tag 3, 64 bits",
+                WavSpec {
+                    channels: 1,
+                    sample_rate: 8_000,
+                    bits: 64,
+                    format: WavFormat::Float,
+                },
+                f64_body,
+                PcmFormat::F64,
+                64,
+                true,
+            ),
+        ];
+        for (label, spec, body, format, depth, is_float) in cases {
+            let asset = decode_bytes(&wav(&spec, &body), &DecodeOptions::default())
+                .unwrap_or_else(|err| panic!("{label}: {err}"));
+            assert_eq!(asset.pcm_format(), format, "{label}: format");
+            assert_eq!(asset.pcm_format().bit_depth(), depth, "{label}: bit depth");
+            assert_eq!(asset.pcm_format().is_float(), is_float, "{label}: is_float");
+            assert_eq!(asset.frame_count(), 4, "{label}: frames");
+        }
+
+        // FLAC 的出口是 `S32`（解码器把 16 位整数样本放宽到 32 位容器），与线性的
+        // `bits_per_sample` 声明**不同** —— 这正是"位深来自解码器真的吐出了什么"。
+        let flac_spec = FlacSpec {
+            sample_rate: 8_000,
+            channels: 2,
+            bits: 16,
+            block_frames: 256,
+            total_samples_override: None,
+        };
+        let flac = decode_bytes(
+            &flac_constant(&flac_spec, 2, 500),
+            &DecodeOptions::default(),
+        )
+        .expect("the FLAC fixture must decode");
+        assert_eq!(flac.pcm_format(), PcmFormat::S32);
+        assert_eq!(flac.pcm_format().bit_depth(), 32);
+        assert!(!flac.pcm_format().is_float());
+    }
+
+    /// 判据（`HD-24` 第五道闸门 / 公开入口对称性）：`decode_reader` 也必须过**输入字节**闸门。
+    ///
+    /// 量什么：`decode_reader` 在预算小于真实字节数时的返回值，以及预算恰好等于真实字节数
+    /// 时的解出帧数。
+    /// 怎么量：[`MeasuredSource`] 在构造时量出流长度，`decode_reader` 用它判
+    /// [`limits::check_input_len`]。判据把上限设成"真实长度减一"与"恰好等于真实长度"。
+    ///
+    /// 读数（本机、debug 构建）：上限 = 长度 − 1 ⇒
+    /// `InputTooLarge { bytes: <真实长度>, limit: <长度−1> }`；上限 = 长度 ⇒ 闭区间通过、
+    /// 解出 2 帧。
+    ///
+    /// 为什么需要它：本批的公开面普查显示 `decode_reader` 是四个公开入口里**唯一没有**
+    /// 输入字节闸门判据的那个。注入实测坐实了这一点：把 [`MeasuredSource::byte_len`] 改成
+    /// `None`（两处 `if let Some(len)` 因此全部跳过）之后，全部既有判据**照旧通过**。
+    ///
+    /// 注入（实测）：把 `MeasuredSource::byte_len` 改成 `None` ⇒ 本条以
+    /// `decode_reader must obey the input-byte gate` 红；把 `check_input_len` 的 `>` 改成
+    /// `>=` ⇒ 本条的"恰好等于上限"那一格红。
+    #[test]
+    fn the_reader_entry_obeys_the_input_byte_budget() {
+        let bytes = int_wav(2, 16, &[1, -2, 3, -4]);
+        let real = u64::try_from(bytes.len()).expect("the fixture fits u64");
+
+        // 闭区间：恰好等于真实长度必须通过。
+        let exact = DecodeOptions {
+            budget: PcmBudget {
+                max_input_bytes: real,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        assert_eq!(
+            decode_reader(Cursor::new(bytes.clone()), &exact)
+                .expect("exactly the input length must pass the closed interval")
+                .frame_count(),
+            2
+        );
+
+        // 少一个字节：必须报 InputTooLarge，且数字是真实长度与生效上限。
+        let short = DecodeOptions {
+            budget: PcmBudget {
+                max_input_bytes: real - 1,
+                ..PcmBudget::default()
+            },
+            ..DecodeOptions::default()
+        };
+        match decode_reader(Cursor::new(bytes.clone()), &short) {
+            Err(DecodeError::Budget(LimitViolation::InputTooLarge { bytes: got, limit })) => {
+                assert_eq!((got, limit), (real, real - 1));
+            }
+            other => panic!("decode_reader must obey the input-byte gate, got {other:?}"),
+        }
     }
 }

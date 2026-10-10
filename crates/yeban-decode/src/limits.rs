@@ -375,20 +375,37 @@ pub const DURATION_TOLERANCE_FRAMES: u64 = 0;
 ///
 /// 1024 这个数字对合法输入是极宽松的：WAV / FLAC 的音频包之间最多夹几个非音频包，
 /// 不可能连续 1024 个包一帧音频都不出。而任何"不推进"的病态输入都会在 1024 轮内被拒。
+///
+/// **2026-10-10 起这条数字有端到端读数**：1024 个"读端收下、解码器拒收"的 FLAC 包
+/// ⇒ `Err(EmptyStream)`（闭区间内侧），1025 个 ⇒ `Err(Malformed)`（越界一档）。
+/// 见 [`IdleGuard`] 的覆盖现状表。
 pub const MAX_IDLE_PACKETS: u32 = 1_024;
 
 /// "解码不推进"计数器。
 ///
 /// 纯逻辑、零依赖，因此**闸门本身的行为可以在本机单独跑**（见 `#[cfg(test)]`）。
 ///
-/// **覆盖现状（实测，2026-10-08）**：本闸门**没有**端到端判据。`decode.rs` 侧的入口
-/// 判据 `a_declared_data_length_far_beyond_the_real_bytes_returns_instead_of_looping`
-/// 只钉"有界返回"这条不变量；把 `decode.rs` 的 `bump_idle` 记账停掉之后，该判据
-/// 与全部既有判据**照样通过** —— 因为 symphonia 的 RIFF/WAVE 读端在真实字节耗尽时
-/// 先返回 `UnexpectedEof`（44 字节头 + 64 字节样本、`data` 声明 128 / 4096 / 65535
-/// 的实测全部是 `Err(Io(UnexpectedEof))`），"每轮返回空包、永不推进"那条路径没有出现。
-/// 因此**不得**把本闸门当作"已被端到端证明"；它是一个防御性不变量，只有上面那条
-/// 计数器的单元判据覆盖它的算术。
+/// **覆盖现状（实测，2026-10-10 起）**：本闸门**已有**端到端判据 ——
+/// `decode::tests::the_idle_guard_trips_on_1025_consecutive_bad_packets`。它用"读端收下、
+/// 解码器拒收"的包把闭区间钉住：连续 1 024 次不推进 ⇒ 走完流、`Err(EmptyStream)`；
+/// 第 1 025 次 ⇒ `Err(Malformed("demuxer stopped making progress…"))`。
+///
+/// 走上这条判据的路是 2026-10-10 实测出来的，写在这里免得下一位重走：
+///
+/// | 构造 | 读端行为 | `bump_idle` 次数 |
+/// | :--- | :--- | :--- |
+/// | 帧尾 CRC-16 被破坏 | 读端自己校验 CRC-16，**跳过整个帧**、不产出包 | **0** |
+/// | 子帧类型改成规范保留值 + **正确**的 CRC-16 | 帧结构自洽 ⇒ 读端照常产出包，解码器拒收 | 每帧 1 次 |
+///
+/// 表里第一行是反直觉的那一格：`flac_constant_with_broken_frame_crc(spec, 1025, _)` 的
+/// 读数是 `EmptyStream`（1025 帧，却一次 `bump_idle` 都没有），因此"破坏 CRC"**构造不出**
+/// 本闸门的输入。第二行才是可达形状（`flac_constant_with_reserved_subframes`）。
+///
+/// 在此之前本段的结论是"没有端到端判据"，理由是 WAV 那条路径不复现（2026-10-08）：
+/// symphonia 的 RIFF/WAVE 读端在真实字节耗尽时先返回 `UnexpectedEof`
+/// （44 字节头 + 64 字节样本、`data` 声明 128 / 4096 / 65535 的实测全部是
+/// `Err(Io(UnexpectedEof))`），"每轮返回空包、永不推进"没有出现。原结论因此**已被取代**，
+/// 但那条 WAV 读数仍然成立（它说明"为什么要换一条路构造"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IdleGuard {
     idle: u32,
