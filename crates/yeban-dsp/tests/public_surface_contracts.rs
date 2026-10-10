@@ -892,7 +892,7 @@ fn every_device_default_behaves_like_its_new_constructor() {
     // 混响（参数由夹具显式给）。
     let drive_reverb = |mut reverb: Reverb| -> Vec<u32> {
         reverb.set_sample_rate(SR);
-        reverb.set_params(ReverbParams::default());
+        // ⚠ **不自己设参数**（R148）：否则"`Default` 预配置成别的值"会被**遮蔽** ⇒ 判据对该类型没有牙。
         let mut left = [0.5f32; N];
         let mut right = [0.25f32; N];
         reverb.process(&mut left, &mut right);
@@ -980,11 +980,30 @@ fn the_configuring_drives_are_sensitive_to_their_parameters() {
         "换脉冲响应后卷积输出没变 ⇒ 该驱动看不见参数（等价性判据会被遮蔽）"
     );
 
-    // ⚠⚠ **实测登记（弱驱动）**：`Reverb` 的驱动对 `size`（0.1 vs 0.9）在本判据的窗口内
-    // **输出逐位相同** ⇒ 该驱动**看不见 size 的变化** ⇒ 上一条等价性判据里
-    // `Reverb::default()` **不能**保证抓住"只改 size 的默认值"（J3 类，参数级）。
-    // ⛔ 我没有把它改成"通过"：这里**不做**灵敏度断言，而是**如实登记**该驱动是弱驱动。
-    // 下一批的处置：换一个**可观测**的参数（如 `mix`／`predelay`）或加长窗口后重测。
+    // ⚠ **实测登记（R148）**：`Reverb` 对 `size`（0.1 vs 0.9）在本窗口内**输出逐位相同**
+    // ⇒ `size` 是**不可观测**参数（该驱动看不见它）。因此这里改用**可观测**的参数
+    // （`mix` 干湿比）做灵敏度对照 —— ⛔ 不是把判据改成"通过"。
+    let drive_reverb_mix = |mix: f32| -> Vec<u32> {
+        let mut reverb = Reverb::new();
+        reverb.set_sample_rate(SR);
+        let params = ReverbParams {
+            mix,
+            ..ReverbParams::default()
+        };
+        reverb.set_params(params);
+        let mut left = [0.5f32; N];
+        let mut right = [0.25f32; N];
+        reverb.process(&mut left, &mut right);
+        left.iter()
+            .chain(right.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_ne!(
+        drive_reverb_mix(0.0),
+        drive_reverb_mix(1.0),
+        "换混响干湿比后输出没变 ⇒ 该参数也不可观测（R148 要的是实测灵敏度）"
+    );
 
     // 整形 EQ：换低架增益 ⇒ 输出必须变。
     let drive_eq = |low_gain: f32| -> Vec<u32> {
