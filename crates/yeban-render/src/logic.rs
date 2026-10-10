@@ -5949,6 +5949,11 @@ mod tests {
         assert_eq!(declared, difference, "缺失清单必须恰好等于实测差集");
 
         let bundle = build_bundle(&fixture_project(), "000", "Losses");
+        // R125/R131: 本判据对 `bundle.losses` 做量词断言 ⇒ 先钉它的域。
+        assert!(
+            !bundle.losses.is_empty(),
+            "R125: 空的 `bundle.losses` 会让下面的量词真空通过"
+        );
         let data = &bundle.files["Alternatives/000/ProjectData"];
         let emitted = emitted_chunk_families(data);
         for (name, _role) in MISSING_CHUNK_FAMILIES {
@@ -6682,6 +6687,11 @@ mod tests {
     #[test]
     fn donor_losses_register_what_remains_the_donors() {
         let data = project_data_from_donor(&fixture_project());
+        // R125/R131: 本判据对 `data.losses` 做量词断言 ⇒ 先钉它的域。
+        assert!(
+            !data.losses.is_empty(),
+            "R125: 空的 `data.losses` 会让下面的量词真空通过"
+        );
         let text = data
             .losses
             .iter()
@@ -8273,6 +8283,11 @@ mod tests {
 
         // 2 条 MIDI 轨：**容量之内** ⇒ 一个字都不加（激活由供体自带）。
         let two = project_data_from_donor(&project_with_midi_tracks(2));
+        // R125/R131: 本判据对 `two.losses` 做量词断言 ⇒ 先钉它的域。
+        assert!(
+            !two.losses.is_empty(),
+            "R125: 空的 `two.losses` 会让下面的量词真空通过"
+        );
         assert!(
             !two.losses
                 .iter()
@@ -8282,6 +8297,11 @@ mod tests {
 
         // 3 条 MIDI 轨：超出容量 1 条 ⇒ 必须逐条登记实测的阻塞点。
         let data = project_data_from_donor(&project_with_midi_tracks(3));
+        // R125/R131: 本判据对 `data.losses` 做量词断言 ⇒ 先钉它的域。
+        assert!(
+            !data.losses.is_empty(),
+            "R125: 空的 `data.losses` 会让下面的量词真空通过"
+        );
         let text = data
             .losses
             .iter()

@@ -118,6 +118,11 @@ fn root_of(prefix: &str) -> String {
             ".chunks_exact",
             ".chars",
             ".skip",
+            ".filter",
+            ".filter_map",
+            ".map",
+            ".find",
+            ".find_map",
             ".take",
             ".rev",
             ".enumerate",
@@ -344,7 +349,8 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
     files.sort();
     assert!(files.len() >= 7, "至少扫到 7 个源文件（R93: 下界）");
     let mut scanned = 0usize;
-    let mut skipped: Vec<String> = Vec::new();
+    // R132: 入口表**保留但恒空**（入口数 = 未修缺口数 = 0）—— 双向相等断言仍在下文。
+    let skipped: Vec<String> = Vec::new();
     let mut offenders = Vec::new();
     for path in &files {
         // **R132（入口数 = 未修缺口数）**: 第二十一批把检查器的**根因**修好了
@@ -360,10 +366,9 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if name == "logic.rs" || name == "als.rs" {
-            skipped.push(name);
-            continue;
-        }
+        // **R132**: 入口已**全部撤回**（2 → 0）—— 8 处真缺口已逐处按 R125/R131 处置,
+        // 且夹具的域都经**实测**确认非空（feature 档 265 条全绿即证）。
+        let _ = &name;
         let source = std::fs::read_to_string(path).expect("读源文件");
         scanned += 1;
         for (line, root_name) in unbounded_quantifiers(&source) {
@@ -380,8 +385,8 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
     );
     assert_eq!(
         skipped.len(),
-        2,
-        "R132: 入口数 = 2（未修缺口 8 处, 逐条列在注释里）—— 修完 8 处后降到 0"
+        0,
+        "R132: **入口数 = 未修缺口数 = 0** —— `logic.rs` / `als.rs` 已进扫描域"
     );
     assert!(
         offenders.is_empty(),
