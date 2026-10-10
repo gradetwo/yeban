@@ -513,4 +513,42 @@ mod tests {
         assert_eq!(BitDepth::Int16.full_scale_min(), -32_768);
         assert_eq!(BitDepth::Int24.full_scale_max(), 8_388_607);
     }
+
+    /// 判据: [`TPDF_PEAK_LSB`] 这个**公开**常量必须与 `tpdf_lsb` 的实际上下界一致 ——
+    /// 它此前在本 crate 里**零引用**（产线与判据都没有读过它）。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `pub const TPDF_PEAK_LSB: f32 = 1.0;` 改成 `0.5` 后, 全量判据**全绿** ——
+    /// `tpdf_is_bounded_by_one_lsb` 用的是字面量 `1.0`, 不是这个常量。于是
+    /// "常量说上界是 0.5、实现给到 1.0"这种自相矛盾没有任何判据。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 恒定种子的 xorshift32 上的 200 000 次 [`tpdf_lsb`] 抽样（单位: LSB）。
+    /// 读数: 常量本身（LSB）与抽样的最大绝对值（LSB）。
+    ///
+    /// # 非空证明
+    ///
+    /// 三角分布的两半各自覆盖 `(−1, 1)`, 因此 20 万次抽样里必然出现 `|x| > 0.95` 的值
+    /// （下面直接断言它）—— 上界写成 `0.5` 会与它冲突, 而"上界是 1.0 却不紧"也会被
+    /// 同一个读数挡住。
+    #[test]
+    fn the_tpdf_peak_constant_matches_the_actual_bound() {
+        assert_eq!(TPDF_PEAK_LSB, 1.0, "TPDF 的峰值是 1 LSB（峰峰值 2 LSB）");
+        let mut rng = rng();
+        let mut largest = 0.0f32;
+        for _ in 0..200_000 {
+            let sample = tpdf_lsb(&mut rng);
+            assert!(
+                sample.abs() < TPDF_PEAK_LSB,
+                "抽样 {sample} 越过了 TPDF_PEAK_LSB = {TPDF_PEAK_LSB}"
+            );
+            largest = largest.max(sample.abs());
+        }
+        assert!(
+            largest > 0.95,
+            "20 万次抽样的最大幅值只有 {largest}, 常量 {TPDF_PEAK_LSB} 不是紧的上界"
+        );
+    }
 }

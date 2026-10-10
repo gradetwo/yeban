@@ -1780,4 +1780,105 @@ mod tests {
             );
         }
     }
+
+    /// 判据 (**类别 4: 参数极值**): 同一条轨道上多个设备的延迟累加是**饱和**的 ——
+    /// 病态输入（真实和超过 `u32::MAX`）只饱和, **不得**在 debug 下 panic。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `accumulated.saturating_add(device.latency_samples)` 换回普通的 `+` 之后,
+    /// 全量判据**全绿**。既有的 `track_latencies_sum_unbypassed_devices_only` 用的是
+    /// `32 / 4096（旁通）/ 100`, 和是 132, 远在 `u32` 之内。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一条轨道, 两个**未旁通**设备（单位: 采样帧）, 延迟分别是 `u32::MAX` 与 `1`;
+    /// 另一条轨道只有**旁通**的 `u32::MAX` 设备。读数: [`track_latencies`] 的 `u32`
+    /// （单位: 帧）。
+    ///
+    /// # 非空证明
+    ///
+    /// 真实和 `u32::MAX + 1` 在 `u64` 口径下超过 `u32::MAX`（下面直接断言）; 而旁通那一格
+    /// 期望 `0` —— 两格不同, 因此不是"所有输入都给同一个值"。
+    #[test]
+    fn a_track_latency_sum_saturates_instead_of_overflowing() {
+        let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
+        let hot = ulid(0x21);
+        tracks.insert(
+            hot,
+            TrackV3 {
+                devices: vec![
+                    DeviceDefinition {
+                        latency_samples: u32::MAX,
+                        ..DeviceDefinition::default()
+                    },
+                    DeviceDefinition {
+                        latency_samples: 1,
+                        ..DeviceDefinition::default()
+                    },
+                ],
+                ..TrackV3::default()
+            },
+        );
+        let bypassed = ulid(0x22);
+        tracks.insert(
+            bypassed,
+            TrackV3 {
+                devices: vec![DeviceDefinition {
+                    latency_samples: u32::MAX,
+                    bypassed: true,
+                    ..DeviceDefinition::default()
+                }],
+                ..TrackV3::default()
+            },
+        );
+
+        assert!(
+            u64::from(u32::MAX) + 1 > u64::from(u32::MAX),
+            "这一格的真实和必须超过 u32, 否则本判据测不到溢出"
+        );
+        let latencies = track_latencies(&tracks);
+        assert_eq!(latencies[&hot], u32::MAX, "u32::MAX + 1 必须饱和, 不得回绕");
+        assert_eq!(latencies[&bypassed], 0, "旁通设备完全不产生延迟");
+    }
+
+    /// 判据: [`L1_BLOCK_SIZE`] 就是 [ARCH-DET-001] 写死的 **128** 采样点, 而
+    /// [`RenderOptions::default`] 必须**是**那一档 L1 配置。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `impl Default for RenderOptions` 里的 `block_size: L1_BLOCK_SIZE` 改成 `64`
+    /// 之后, 全量判据**全绿** —— `RenderOptions::default()` 在产线与判据里都**没有**调用点
+    /// （`grep -rn 'RenderOptions::default' crates/yeban-render` 无命中）, 既有的每一条
+    /// 判据都用 `RenderOptions::l1(..)`。同样的注入对常量
+    /// `pub const L1_BLOCK_SIZE: usize = 128;`（改成 64）也全绿。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 常量 [`L1_BLOCK_SIZE`] 与 [`RenderOptions::default`] 的字段。
+    /// 读数: 块大小（帧）、线程数（`Option<usize>`）、种子（无单位计数）。
+    ///
+    /// # 非空证明
+    ///
+    /// 后半段把 `l1()` 的**显式**参数取成与默认值不同的一档（512 帧 / 4 声道 / 96 kHz /
+    /// 种子 7）⇒ 它必须带上 `L1_BLOCK_SIZE` 而不是调用方给的那个数 —— 少了这一半,
+    /// "常量改成 512"与"`l1` 把块大小透传成实参"都会让前半段全绿。
+    #[test]
+    fn the_l1_block_size_and_the_default_options_are_the_spec_shape() {
+        assert_eq!(L1_BLOCK_SIZE, 128, "ARCH-DET-001 的固定处理块大小（帧）");
+        let default = RenderOptions::default();
+        assert_eq!(default.block_size, L1_BLOCK_SIZE, "默认块大小（帧）");
+        assert_eq!(default.threads, None, "默认线程数 = 让调度器决定");
+        assert_eq!(default.seed, 0, "默认种子");
+
+        // `l1` 无论收到什么, 块大小恒为 L1_BLOCK_SIZE。
+        let explicit = RenderOptions::l1(512, 4, 96_000, 7);
+        assert_eq!(explicit.block_size, L1_BLOCK_SIZE);
+        assert_eq!(explicit.frames, 512);
+        assert_eq!(explicit.channels, 4);
+        assert_eq!(explicit.sample_rate, 96_000);
+        assert_eq!(explicit.seed, 7);
+        assert_eq!(explicit.threads, None);
+        assert_eq!(explicit.with_threads(3).threads, Some(3));
+    }
 }

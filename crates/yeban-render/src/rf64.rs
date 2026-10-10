@@ -4672,4 +4672,169 @@ mod tests {
         assert!(parsed.format.is_float);
         assert_eq!(parsed.format.channel_mask, Some(0x3F));
     }
+
+    /// 判据 (**类别 6: 多声道一致性**): [`default_channel_mask`] 对**每一个**列出的
+    /// 声道数给出的都是 libsndfile 那一档掩码 —— `1` / `2` / `4` 三格此前没有判据。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `1 => 0x4` 改成 `1 => 0x1`（FC → FL）后, 全量
+    /// `cargo test -p yeban-render --no-default-features --lib --tests --no-fail-fast`
+    /// **全绿**（`190 passed; 0 failed` + 10 + 17）。同样的注入对
+    /// `2 => 0x1 | 0x2` 与 `4 => 0x1 | 0x2 | 0x10 | 0x20` 各一次, 也都是全绿。
+    /// 既有的三处掩码断言只覆盖 `default_channel_mask(6) == 0x3F`、
+    /// `default_channel_mask(8) == 0xFF` 与 `default_channel_mask(3) == 0`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: [`default_channel_mask`] 的输入（单位: 声道数）与输出
+    /// （单位: 一个 `u32` 声道位掩码）。读数: 10 个 `u32`, 加上"掩码真的落到
+    /// `fmt ` 偏移 20 并被读回"的字节读数（单位: 字节偏移）。
+    ///
+    /// # 非空证明
+    ///
+    /// 五格列出的掩码**互不相同**（`0x4` / `0x3` / `0x33` / `0x3F` / `0xFF`）, 与回退那一档
+    /// 的 `0` 也不同 ⇒ 本条不是"所有输入都给同一个值"的退化判据（下面直接断言两对不等）。
+    #[test]
+    fn every_documented_default_channel_mask_is_pinned() {
+        let documented = [
+            (1u16, 0x4u32),                                         // FC
+            (2, 0x1 | 0x2),                                         // FL FR
+            (4, 0x1 | 0x2 | 0x10 | 0x20),                           // FL FR BL BR
+            (6, 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20),               // 5.1
+            (8, 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80), // 7.1
+        ];
+        for (channels, expected) in documented {
+            assert_eq!(
+                default_channel_mask(channels),
+                expected,
+                "{channels} 声道的默认掩码（一个 u32 声道位掩码）"
+            );
+        }
+        assert_ne!(default_channel_mask(1), default_channel_mask(2));
+        assert_ne!(default_channel_mask(2), default_channel_mask(4));
+        // 未列出的声道数回退为 0（direct out）—— 这一档与上面五格都不同。
+        for unlisted in [0u16, 3, 5, 7, 9] {
+            assert_eq!(
+                default_channel_mask(unlisted),
+                0,
+                "{unlisted} 声道必须回退为 0"
+            );
+        }
+
+        // 掩码真的落到 `fmt ` 的偏移 20, 并且能被本 crate 的读取器读回。
+        let format = PcmFormat::integer(4, 48_000, 16);
+        let body = format.fmt_payload();
+        assert_eq!(body.len(), 40, "4 声道必须走 EXTENSIBLE（字节）");
+        assert_eq!(
+            le::read_u32(&body, 20),
+            Some(default_channel_mask(4)),
+            "fmt 偏移 20 的 dwChannelMask"
+        );
+        let data = vec![0u8; 8];
+        let plan =
+            ContainerPlan::for_payload(ContainerKind::Riff, format, data.len() as u64, 1, None);
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("写入");
+        let parsed = parse_container(&file).expect("解析");
+        assert_eq!(parsed.format.channel_mask, Some(default_channel_mask(4)));
+    }
+
+    /// 判据 (**类别 4: 参数极值**): [`PcmFormat::byte_rate`] 与
+    /// [`PcmFormat::block_align`] 一样是**饱和**乘法 —— 采样率顶到 `u32::MAX` 时
+    /// `nAvgBytesPerSec` 饱和, **不得**在 debug 下 panic。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `self.sample_rate.saturating_mul(self.block_align() as u32)` 换回普通的 `*`
+    /// 之后, 全量判据**全绿**。既有的每一处 `byte_rate()` 断言（`288_000`、`1_152_000`、
+    /// `864_000`、`48000 × 24`）的采样率都是 48 kHz, 乘积远在 `u32` 之内。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: `sample_rate = u32::MAX`、8 声道、32 位的 [`PcmFormat`]。
+    /// 读数: `block_align()`（字节/帧）、`byte_rate()`（字节/秒, 期望饱和到 `u32::MAX`）、
+    /// `fmt_payload()` 的长度（字节）与它偏移 8 的 `nAvgBytesPerSec` 字段, 以及
+    /// [`ContainerPlan::validate`] 的判决。
+    ///
+    /// # 非空证明
+    ///
+    /// 真实乘积 `u32::MAX × 32` 在 `u64` 口径下**超过 `u32::MAX`**（下面直接断言）,
+    /// 而 `block_align` 本身是 `32`（不是 0）—— 因此这一格既不是"0 × 0"也不是"没溢出"。
+    #[test]
+    fn a_byte_rate_that_overflows_saturates_instead_of_panicking() {
+        let format = PcmFormat::integer(8, u32::MAX, 32);
+        assert_eq!(format.block_align(), 32, "8 声道 × 4 字节（字节/帧）");
+        assert!(
+            u64::from(format.block_align()) * u64::from(u32::MAX) > u64::from(u32::MAX),
+            "这一格的真实乘积必须超过 u32, 否则本判据测不到溢出"
+        );
+        assert_eq!(
+            format.byte_rate(),
+            u32::MAX,
+            "nAvgBytesPerSec 必须饱和到 u32::MAX, 不得回绕也不得 panic"
+        );
+
+        let body = format.fmt_payload();
+        assert_eq!(body.len(), 40, "8 声道必须走 EXTENSIBLE（字节）");
+        assert_eq!(
+            le::read_u32(&body, 8),
+            Some(u32::MAX),
+            "fmt 偏移 8 的 nAvgBytesPerSec"
+        );
+        // 头部算术也要对这一个格式是全函数（`fmt_payload` 在里面被调用）。
+        let plan = ContainerPlan::for_payload(ContainerKind::Riff, format, 0, 0, None);
+        assert_eq!(plan.validate(), Ok(()), "饱和的 byte_rate 不该让计划不可写");
+        assert!(!plan.header_bytes().is_empty(), "头部仍然必须写得出来");
+    }
+
+    /// 判据 (**类别 6: 多声道一致性**): `channel_mask` 只要**显式给出**, 双声道也必须走
+    /// 40 字节 `WAVE_FORMAT_EXTENSIBLE` —— [`PcmFormat::is_extensible`] 的两个析取项
+    /// 都要有判据。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `self.channels > 2 || self.channel_mask.is_some()` 削成 `self.channels > 2` 之后,
+    /// 全量判据**全绿**。既有的 EXTENSIBLE 夹具（6 声道、掩码 `0x3F`）同时满足两个析取项,
+    /// 因此分不出"只看声道数"与"两个都看"。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 双声道 + 显式掩码 `0x4` 的 [`PcmFormat`]（单位: 声道数 / 位掩码）。
+    /// 读数: `is_extensible()`（布尔）、`format_tag()`（规范标签）、`fmt_payload()` 的
+    /// 长度（字节）与它偏移 16 / 18 / 20 的三个字段, 以及往返读回的 `PcmFormat`。
+    ///
+    /// # 非空证明
+    ///
+    /// 后半段用**同一个格式去掉掩码**作对照: 它必须**不是** EXTENSIBLE（16 字节 `fmt `,
+    /// 标签 `0x0001`）。少了这一半, "一律 EXTENSIBLE"也会让前半段全绿。
+    #[test]
+    fn an_explicit_channel_mask_forces_extensible_on_a_stereo_format() {
+        let masked = PcmFormat {
+            channel_mask: Some(0x4),
+            ..PcmFormat::integer(2, 48_000, 16)
+        };
+        assert!(masked.is_extensible(), "显式掩码必须触发 EXTENSIBLE");
+        assert_eq!(masked.format_tag(), 0xFFFE);
+        let body = masked.fmt_payload();
+        assert_eq!(body.len(), 40, "EXTENSIBLE 负载是 40 字节");
+        assert_eq!(le::read_u16(&body, 0), Some(0xFFFE), "格式标签");
+        assert_eq!(le::read_u16(&body, 16), Some(22), "cbSize");
+        assert_eq!(le::read_u16(&body, 18), Some(16), "wValidBitsPerSample");
+        assert_eq!(le::read_u32(&body, 20), Some(0x4), "dwChannelMask");
+
+        let data = vec![0u8; 8];
+        let plan =
+            ContainerPlan::for_payload(ContainerKind::Riff, masked, data.len() as u64, 2, None);
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("写入");
+        let parsed = parse_container(&file).expect("解析");
+        assert_eq!(parsed.format, masked, "掩码必须逐字段往返");
+
+        // 对照: 同一个格式**不**给掩码 ⇒ 16 字节的普通 PCM。
+        let plain = PcmFormat::integer(2, 48_000, 16);
+        assert!(!plain.is_extensible());
+        assert_eq!(plain.format_tag(), 0x0001);
+        assert_eq!(plain.fmt_payload().len(), 16);
+    }
 }

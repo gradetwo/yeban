@@ -506,11 +506,25 @@ impl ExportPreset {
 /// 改掉样本"的自证, 就是这条边界的守门人。
 ///
 /// 两个操作数都已被调用方确认有限（目标/上限 `is_finite`, 实测读数有限）, 因此
-/// `next_up` 不会碰到 `NaN`/`±inf`。
+/// `next_up` 不会碰到 `NaN`; 它仍然可以是 `+inf`（见下一节）。
+///
+/// # `f32::MAX` 那一格：分辨率会**溢出成 `+inf`**（本轮修掉的缺口）
+///
+/// `magnitude.next_up()` 在 `magnitude == f32::MAX` 时是 `+inf`, 于是
+/// `next_up() - magnitude` 也是 `+inf` —— 而 `residual <= +inf` **恒真**,
+/// 任何残差（包括 3.4e38 dB）都会被判成"落在测量分辨率里"。实测:
+/// 2 s −19.999952 LUFS 的母带 + 目标 `Some(f32::MAX)` LUFS ⇒ 修复前
+/// `NormalizeOutcome { gain_db: 0.0, bound: LoudnessTarget }` 而**样本一位未动**
+/// —— 报告说"已经在目标上", 而目标差 3.4e38 LUFS。这与
+/// [`ExportPreset::apply`] 文档里"`NormalizeOutcome` 永远描述一件真事"是同一条契约,
+/// 只是入口换成了一个**有限**数（`Some(f32::INFINITY)` 那一档早就有判据了）。
+///
+/// `+inf` 不是一个间距, 因此这一格必须**不**吸收残差。判据是
+/// `tests::a_finite_target_at_the_top_of_the_range_is_not_already_met`。
 fn within_measurement_resolution(demand: f32, actual: f32, residual: f32) -> bool {
     let magnitude = demand.abs().max(actual.abs());
     let resolution = magnitude.next_up() - magnitude;
-    residual.abs() <= resolution
+    resolution.is_finite() && residual.abs() <= resolution
 }
 
 /// 母带导出被拒绝的原因。
@@ -2994,5 +3008,133 @@ mod tests {
         assert_eq!(loudness.to_bext_loudness().loudness_range, 750);
         loudness.loudness_range_lu = Some(0.0);
         assert_eq!(loudness.to_bext_loudness().loudness_range, 0);
+    }
+
+    /// 判据: 写进容器的帧数取自**缓冲的实际长度**, 不是 [`RenderOutput::frames`] 字段 ——
+    /// 后者是调用方给的数据, 可能与缓冲不一致。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `let frames = master.samples.len() / 2;` 换成 `master.frames as usize` 之后,
+    /// 全量判据**全绿** —— 既有的夹具（[`master_output`]）让那个字段恒等于
+    /// `samples.len() / 2`, 两者在每一格上都相等。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个**故意说谎**的 [`RenderOutput`]（缓冲 2 000 帧, 字段写 7 帧）。
+    /// 读数: [`MasterExport::frames`]（帧）、`data` 负载长度（字节）与
+    /// `ds64.sampleCount`（帧）—— 三个读数各自独立地指向缓冲长度。
+    ///
+    /// # 非空证明
+    ///
+    /// `7 ≠ 2 000`（下面直接断言）, 而 24 位立体声的负载长度是 `2 000 × 2 × 3`
+    /// = 12 000 字节 —— 字段那一版会给 7。
+    #[test]
+    fn the_container_frame_count_comes_from_the_buffer_not_the_field() {
+        let tone = sine_997(0.1, 2_000);
+        let mut master = master_output(&tone, &tone);
+        assert_eq!(master.frames, 2_000, "夹具的实际帧数");
+        master.frames = 7; // 调用方给的字段与缓冲不一致
+        let mut rng = seed_rng(0x0BAD_C0DE_DEAD_BEEF);
+
+        let export = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::new(None, None),
+            BitDepth::Int24,
+            ContainerKind::Rf64,
+            &metadata(),
+            &mut rng,
+        )
+        .expect("导出必须成功");
+
+        assert_ne!(export.frames, master.frames, "字段与缓冲必须真的不一致");
+        assert_eq!(export.frames, 2_000, "帧数必须来自缓冲的实际长度");
+        assert_eq!(
+            export.payload.len(),
+            2_000 * 2 * 3,
+            "24 位立体声的负载字节数"
+        );
+        let parsed = crate::rf64::parse_container(&export.file).expect("解析");
+        assert_eq!(parsed.sizes.sample_count, 2_000, "ds64 的 sampleCount");
+    }
+
+    /// 判据 (**类别 4: 极值**): **有限**但顶到 `f32::MAX` 的目标**不是**"已经在目标上"。
+    ///
+    /// # 缺口（本机实测, 修复前）
+    ///
+    /// 测量分辨率是 `magnitude.next_up() - magnitude`, 而
+    /// `f32::MAX.next_up() == f32::INFINITY` ⇒ 量级恰为 `f32::MAX` 的那一格分辨率是
+    /// **`+inf`**, 于是 `residual <= inf` 恒真、`gain_db` 被改写成 `0.0`。实测:
+    /// 2 s −19.999952 LUFS 的母带 + 目标 `Some(f32::MAX)` LUFS ⇒ 修复前返回
+    /// `NormalizeOutcome { gain_db: 0.0, bound: LoudnessTarget }` 而样本**一位未动** ——
+    /// 报告说"已经在目标上", 而目标差 3.4e38 LUFS。这与既有的
+    /// `a_non_finite_target_or_ceiling_is_not_a_constraint` 要消灭的自相矛盾是同一件事,
+    /// 只是入口换成了一个**有限**数。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 2 s、0.1 幅度、997 Hz 立体声（单位: LUFS / dBTP）与目标 `Some(f32::MAX)`
+    /// （单位: LUFS）。读数: [`NormalizeOutcome::gain_db`]（dB）、
+    /// [`NormalizeOutcome::bound`]、样本位型, 以及 [`export_master`] 的判决。
+    ///
+    /// # 非空证明
+    ///
+    /// 后半段把目标换成一个普通的有限值（`-14.0`）⇒ 同一个结构必须给出
+    /// `bound = LoudnessTarget`、`gain_db > 5` 且样本**真的被改**。少了这一半,
+    /// "把所有增益都算成 0"也会让前半段全绿。
+    #[test]
+    fn a_finite_target_at_the_top_of_the_range_is_not_already_met() {
+        let tone = sine_997(0.1, 48_000 * 2);
+        let pristine: Vec<u32> = tone.iter().map(|sample| sample.to_bits()).collect();
+
+        let (mut left, mut right) = (tone.clone(), tone.clone());
+        let outcome = ExportPreset::new(Some(f32::MAX), None)
+            .apply(48_000, &mut left, &mut right)
+            .expect("48 kHz");
+        assert_eq!(
+            outcome.bound,
+            GainBound::LoudnessTarget,
+            "有限的目标仍然是那条起作用的约束"
+        );
+        assert!(
+            outcome.gain_db > 1.0e30,
+            "目标比实测响度高约 3.4e38 LUFS ⇒ 增益必须是一个巨大的正数（dB）, 实际 {}",
+            outcome.gain_db
+        );
+
+        // 与目标一致: 那个增益把样本推出 f32 有限域 ⇒ 导出必须拒绝
+        // （与 `the_export_refuses_a_gain_that_overflows_the_master` 的 `1e38` 同一条纪律）。
+        let mut master = master_output(&tone, &tone);
+        let mut rng = seed_rng(0x0BAD_C0DE_DEAD_BEEF);
+        let error = export_master(
+            48_000,
+            &mut master,
+            ExportPreset::new(Some(f32::MAX), None),
+            BitDepth::Int24,
+            ContainerKind::Riff,
+            &metadata(),
+            &mut rng,
+        )
+        .expect_err("溢出成 ±inf 的母带必须在回写之前被拒绝");
+        assert!(
+            matches!(error, MasterExportError::NonFiniteSamples { .. }),
+            "期望 NonFiniteSamples, 得到 {error:?}"
+        );
+
+        // 防空判据: 普通有限目标照常施加增益（不是"一律不施加"）。
+        let (mut left, mut right) = (tone.clone(), tone.clone());
+        let ordinary = ExportPreset::new(Some(-14.0), None)
+            .apply(48_000, &mut left, &mut right)
+            .expect("48 kHz");
+        assert_eq!(ordinary.bound, GainBound::LoudnessTarget);
+        assert!(ordinary.gain_db > 5.0, "实际 {}", ordinary.gain_db);
+        assert_ne!(
+            left.iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            pristine,
+            "普通目标必须真的改掉样本"
+        );
     }
 }
