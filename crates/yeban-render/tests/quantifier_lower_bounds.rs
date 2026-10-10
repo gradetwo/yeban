@@ -1067,7 +1067,7 @@ fn count_floors_cannot_see_defects_in_either_direction() {
         // **R236②**: 余量为 0 时必须**显式告警**（"非零"看不出"再删一条就破"）
         if margin == 0 {
             eprintln!(
-                "[R187-PROBE render/tests/quantifier_lower_bounds R236-WARN] ⚠ 形态 `{form}` 余量为 **0** ⇒ 无缓冲: 实测值再降 1 就会红"
+                "[R187-PROBE render/tests/quantifier_lower_bounds R236-WARN] ⚠ 形态 `{form}` 余量为 **0** ⇒ 无缓冲: 实测值再降 1 就会红。**原因**: 本仓只有 1 处该形态的界; 删掉那处界会让判据**按设计**变红（⛔ 这不是回归, 而是判据在履职）"
             );
         }
         if margin < min_margin {
@@ -1081,49 +1081,106 @@ fn count_floors_cannot_see_defects_in_either_direction() {
     assert!(min_margin < usize::MAX, "余量表必须非空");
 }
 
-/// 判据 (**R237②: 语料预检必须先于臂设计**): 逐构造给出"它在**语料**里出现几次"的读数。
-/// 若某构造在语料里 **0** 次 ⇒ "臂没抓到"**不是判据弱**, 而是**根本没有触发面**
-/// ⇒ 这类臂只能由**夹具**行使（本判据把这句话打成可检索读数, ⛔ 不靠印象）。
-/// **R237 补充: 风险声明必须同时给**类别**与**触发面**** ——
-/// 本检查器的掩码风险类别 = **假阴性（失同步 ⇒ 抹掉后续正文）**;
-/// 触发面 = `'\"'`（**单引号包裹的双引号字符字面量**）: 见下面打印的计数。
+/// **R243② 的辅助**: 一行里出现的**原始字符串开口**（四形态分开: `r"` / `r#"` / `br"` / `br#"`）。
+/// 带**标识符前缀边界**（前一个字节不是字母/数字/下划线）—— 否则 `for#"` 之类会被误计。
+fn raw_openings_in_line(line: &str) -> Vec<&'static str> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let prev_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if prev_ok {
+            let rest = &line[i..];
+            for kind in ["br#\"", "br\"", "r#\"", "r\""] {
+                if rest.starts_with(kind) {
+                    out.push(kind);
+                    i += kind.len();
+                    break;
+                }
+            }
+        }
+        // ⚠ 必须按**字符**前进: 按字节 +1 会落在 UTF-8 中间 ⇒ `&line[i..]` panic（本机实测）。
+        i += line[i..].chars().next().map_or(1, |ch| ch.len_utf8());
+    }
+    out
+}
+
+/// 判据 (**R237② ＋ R243②: 语料预检先于臂设计; 读数是**逐线本地**的**):
+/// ① 逐**形态**分开报（原始字符串 `r"` / `r#"` / `br"` / `br#"` **四个都单列**）;
+/// ② 声明**偏置**（计数是**上界**: 可能命中字符串/注释里的同形文本; 语料**不含** `tests/` 里的臂夹具）;
+/// ③ **标明逐线本地**（⛔ 跨线搬数会出错 —— 本线自己的数才算数）;
+/// ④ 给出**命中行样例**（R184: 清单要**读**, ⛔ 不只数个数）。
 #[test]
 fn corpus_precheck_reports_the_trigger_surface_of_every_construct() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut sources: Vec<String> = std::fs::read_dir(root.join("src"))
+    let mut files: Vec<(String, String)> = std::fs::read_dir(root.join("src"))
         .expect("读 src/")
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .map(|path| std::fs::read_to_string(path).expect("读源文件"))
+        .map(|path| {
+            (
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                std::fs::read_to_string(&path).expect("读源文件"),
+            )
+        })
         .collect();
-    sources.sort();
-    let joined = sources.join("\n");
-    // 逐构造的**语料计数**（当场算, ⛔ 不写死）
-    let counts: [(&str, usize); 5] = [
-        ("字符字面量含双引号 `'\"'`", joined.matches("'\"'").count()),
-        ("原始字符串 `r#\"`", joined.matches("r#\"").count()),
-        ("生命周期 `'a`", joined.matches("'a").count()),
-        ("块注释 `/*`", joined.matches("/*").count()),
-        ("行注释 `//`", joined.matches("//").count()),
-    ];
-    for (construct, count) in counts {
-        let surface = if count == 0 {
-            "⛔ 语料里 0 次 ⇒ **只能由夹具行使**（臂没抓到 ≠ 判据弱）"
-        } else {
-            "✅ 语料里有触发面"
-        };
+    files.sort();
+    assert!(!files.is_empty(), "语料必须非空");
+    // 逐构造: (显示名, 判定函数) —— 逐一给 **计数 ＋ 前 2 条命中行样例**
+    let raw_shapes = ["br#\"", "br\"", "r#\"", "r\""];
+    for shape in raw_shapes {
+        let mut count = 0usize;
+        let mut samples: Vec<String> = Vec::new();
+        for (name, text) in &files {
+            for (index, line) in text.lines().enumerate() {
+                if raw_openings_in_line(line).contains(&shape) {
+                    count += 1;
+                    if samples.len() < 2 {
+                        samples.push(format!("{name}:{}", index + 1));
+                    }
+                }
+            }
+        }
         eprintln!(
-            "[R187-PROBE render/tests/quantifier_lower_bounds R237-CORPUS] 构造 `{construct}`: 语料出现 {count} 次 — {surface}"
+            "[R187-PROBE render/tests/quantifier_lower_bounds R243-CORPUS] 原始字符串形态 `{shape}`: **{count}** 次; 样例 {samples:?}"
         );
     }
-    // 类别 ＋ 触发面（R237 补充）: 掩码风险的类别固定为**假阴性**; 触发面必须被**算出来**
-    let trigger = joined.matches("'\"'").count();
+    let line_constructs: [(&str, &str); 4] = [
+        ("字符字面量含双引号", "'\"'"),
+        ("生命周期 `'a`", "'a"),
+        ("块注释 `/*`", "/*"),
+        ("行注释 `//`", "//"),
+    ];
+    for (label, needle) in line_constructs {
+        let mut count = 0usize;
+        let mut samples: Vec<String> = Vec::new();
+        for (name, text) in &files {
+            for (index, line) in text.lines().enumerate() {
+                if line.contains(needle) {
+                    count += 1;
+                    if samples.len() < 2 {
+                        samples.push(format!("{name}:{}", index + 1));
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R243-CORPUS] 构造 `{label}`: **{count}** 次; 样例 {samples:?}"
+        );
+    }
     eprintln!(
-        "[R187-PROBE render/tests/quantifier_lower_bounds R237-RISK] 掩码风险类别 = 假阴性（失同步 ⇒ 抹掉后续正文）; 触发面 = `'\"'` 计数 {trigger}"
+        "[R187-PROBE render/tests/quantifier_lower_bounds R243-CORPUS] 偏置声明: 上述计数是**上界**（可命中字符串/注释里的同形文本）; 语料 = `src/*.rs`（⛔ 不含 `tests/` 的臂夹具）; **逐线本地**: ⛔ 不得跨线搬用"
     );
-    assert!(
-        !sources.is_empty(),
-        "语料必须非空（否则预检本身没有触发面）"
+    // **R237 补充（风险声明: 类别 ＋ 触发面）**
+    let trigger = files
+        .iter()
+        .map(|(_, text)| text.matches("'\"'").count())
+        .sum::<usize>();
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R237-RISK] 掩码风险类别 = 假阴性（失同步 ⇒ 抹掉后续正文）; 触发面 = `'\"'` **{trigger}** 次（本线本地, 当场算）"
     );
 }
 
@@ -1141,6 +1198,97 @@ fn two_row_referee(fixture: &str, masked: &str, upto: usize) -> (String, String)
             .collect::<String>()
     };
     (render(&a), render(&b))
+}
+
+/// 判据 (**R239①/R241①/R242③: 判缺陷前先判**样本合法性**; 夹具必须**自证其形状****):
+/// 每条臂的样本先声明它**必须含**什么、**必须不含**什么, 并**当场断言**。
+/// ⇒ 臂变红时不再"默默指控自己"（批 28 的样本 ⑤ 正是栽在这里: 红的是**实现**, 却被当成夹具问题）。
+#[test]
+fn every_arm_sample_proves_its_own_shape() {
+    let root = "v";
+    let checks: [(&str, &str, &[&str], &[&str]); 5] = [
+        (
+            "explicit-len-ge",
+            "assert!({r}.len() >= 8 && {r}.iter().all(|x| *x == 0));",
+            // ⚠ 自证断言在**替换之后**检查 ⇒ 必须写替换后的形状（本机实测: 写 `{r}` 会被自己抓住）
+            &[".len() >=", ".all(", "v.iter()"],
+            &["w.len()"],
+        ),
+        (
+            "macro-implicit-len-eq",
+            "assert_eq!({r}.len(), 16);",
+            &["assert_eq!(", ".len(),"],
+            &[".all("],
+        ),
+        (
+            "not-is-empty",
+            "assert!(!{r}.is_empty() && {r}.iter().any(|x| *x == 1));",
+            // 自证断言在**替换之后**检查 ⇒ 写替换后的形状
+            &["!v.is_empty()", ".any("],
+            &["w.is_empty()"],
+        ),
+        (
+            "value-bound-len-eq",
+            "assert!({r}.len() == 4 && {r}.iter().all(|x| *x == 0));",
+            &[".len() ==", ".all("],
+            &["w.len()"],
+        ),
+        (
+            "explicit-empty-table",
+            "assert!({r}.is_empty(), \"对照\");",
+            &["v.is_empty()"],
+            &["!v.is_empty()"],
+        ),
+    ];
+    assert_eq!(
+        checks.len(),
+        REGISTERED_BOUND_FORMS.len(),
+        "每个已注册形态都要有自证样本"
+    );
+    for (form, template, required, forbidden) in checks {
+        let sample = template.replace("{r}", root);
+        for needle in required {
+            assert!(
+                sample.contains(needle),
+                "R239①: 形态 `{form}` 的样本必须**自证**含 `{needle}`（样本: {sample}）"
+            );
+        }
+        for needle in forbidden {
+            assert!(
+                !sample.contains(needle),
+                "R239①: 形态 `{form}` 的样本必须**自证不含** `{needle}`（样本: {sample}）"
+            );
+        }
+        // 量化器计数: 断言样本里的 `.all(`/`.any(` 数量（⛔ 防止"零量化器"的假样本）
+        let quantifiers = sample.matches(".all(").count() + sample.matches(".any(").count();
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R239-SHAPE] 形态 `{form}`: 必含 {required:?} 必不含 {forbidden:?} 量化器数 = {quantifiers}"
+        );
+        assert!(quantifiers <= 1, "自证样本不该含多个量化器: {sample}");
+    }
+    // 掩码对抗样本的自证（R239①: 先判样本合法性）
+    let mask_samples: [(&str, &str); 3] = [
+        ("含 `'\"'`", "let q = '\"';"),
+        ("含 `r#\"`", "let s = r#\"x\"#;"),
+        ("含块注释", "/* x */"),
+    ];
+    for (label, sample) in mask_samples {
+        let construct_ok = match label {
+            "含 `'\"'`" => sample.contains("'\"'"),
+            "含 `r#\"`" => sample.contains("r#\""),
+            _ => sample.contains("/*") && sample.contains("*/"),
+        };
+        assert!(
+            construct_ok,
+            "R239①: 掩码样本必须自证其形状: {label} / {sample}"
+        );
+        let masked = mask(sample);
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R239-SHAPE] 掩码样本 `{label}`: 逐字节等长 = {}",
+            masked.len() == sample.len()
+        );
+        assert_eq!(masked.len(), sample.len(), "自证: 掩码必须等长");
+    }
 }
 
 /// 判据 (**R233④/R234③: 同一判据内的臂 ⇒ 首败即停 ⇒ 日志只覆盖 1/N**):
@@ -1167,12 +1315,14 @@ fn arm_inventory_reports_first_failure_coverage() {
         ("char_literal_fixture_is_refereed_byte_by_byte", 6),
     ];
     let mut total = 0usize;
-    for (criterion, arms) in inventory {
-        total += arms;
+    for (index, (criterion, arms)) in inventory.iter().enumerate() {
+        total += *arms;
         eprintln!(
-            "[R187-PROBE render/tests/quantifier_lower_bounds R233-ARMS] `{criterion}`: 臂数 **{arms}**（首败即停 ⇒ 单轮取证最多覆盖 1/{arms}）"
+            "[R187-PROBE render/tests/quantifier_lower_bounds R233-ARMS] 第 **{}/{n}** 条判据 `{criterion}`: 臂数 **{arms}**（首败即停 ⇒ 单轮取证最多覆盖 1/{arms}）",
+            index + 1,
+            n = inventory.len()
         );
-        assert!(arms >= 1, "`{criterion}` 必须至少有一个臂");
+        assert!(*arms >= 1, "`{criterion}` 必须至少有一个臂");
     }
     eprintln!(
         "[R187-PROBE render/tests/quantifier_lower_bounds R233-ARMS] 清单内臂数合计 = **{total}**（⛔ 不可与站点数/判据数相加, R208）"
