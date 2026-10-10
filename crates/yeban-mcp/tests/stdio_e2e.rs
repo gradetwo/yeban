@@ -1271,15 +1271,18 @@ fn the_cli_surface_is_a_published_contract() {
     assert!(!err.is_empty());
 }
 
-/// **`--print-token` 生成一次、之后复用同一份**（并落在给定的路径上）。
+/// **`--print-token` 的两条平台契约**：Unix 上"生成一次、之后复用"，
+/// 非 Unix 上**明确拒绝**（POSIX 0600 做不到）。
 ///
 /// 为什么需要它：令牌文件是**跨进程**的鉴权依据，而这条路径（`load_or_create` +
-/// "已生成/已复用" 两态）此前没有判据 —— 把 `if config.print_token` 短路成全绿。
+/// "已生成/已复用" 两态）此前没有判据 —— 把 `if config.print_token` 短路时全绿。
+/// ⚠ **平台分支是实测教训**：第一版只写了 Unix 那一半，Windows 腿立刻红
+/// （二进制在非 Unix 上按设计拒绝 0600 校验 ⇒ 退出码非 0）。两条契约现在都钉住。
 ///
 /// 单位 = 一次进程的 `(退出码, stdout, stderr)` + 令牌文件的内容。**不依赖墙钟**。
 ///
-/// 注入（实测红）：把 `if config.print_token {` 改成 `if false {` ⇒ 第 1 段
-/// 拿不到 stdout 上的令牌（变成进 stdio 批处理），红。
+/// 注入（实测红）：把 `if config.print_token {` 改成 `if false {` ⇒ Unix 段拿不到
+/// stdout 上的令牌，红。
 #[test]
 fn the_print_token_flag_writes_then_reuses_the_token_file() {
     let path = scratch().join(format!("cli-token-{}.txt", std::process::id()));
@@ -1287,6 +1290,16 @@ fn the_print_token_flag_writes_then_reuses_the_token_file() {
     let shown = path.display().to_string();
 
     let (code, out, err) = run_cli(&["--print-token", "--token-file", &shown], "");
+    if !cfg!(unix) {
+        // 非 Unix：**明确拒绝**（不是静默放过权限）。
+        assert_ne!(code, 0, "非 Unix 上 `--print-token` 必须非零退出: {err}");
+        assert!(
+            err.contains("0600"),
+            "报文必须说明「0600 权限校验做不到」这个原因: {err}"
+        );
+        return;
+    }
+
     assert_eq!(code, 0, "--print-token 必须成功退出: {err}");
     let token = out.trim();
     assert!(
