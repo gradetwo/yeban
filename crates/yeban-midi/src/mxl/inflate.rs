@@ -1335,4 +1335,46 @@ mod tests {
             assert!(!bits.finish().is_empty(), "符号 {symbol} 必须被编码");
         }
     }
+
+    /// **编译期穷举探针**（R177）: 给 `InflateErrorKind` 的每个变体一个唯一编号 ⇒
+    /// **新增一个变体**就让下面这个 `match` 非穷尽、**编译失败**。
+    ///
+    /// ⚠️ 为什么需要它：`InflateError` 的 `kind` 字段此前**没有**臂探针
+    /// （现场查证：`grep -rn 'InflateErrorKind' crates/yeban-midi/src/mxl/inflate.rs` 只见
+    /// 定义与构造点；`grep -rn 'fn inflate.*arm'` = 0）⇒ 给这个 2 变体公开枚举**加一个变体**
+    /// 当时不会被任何判据机械抓到。
+    /// ⛔ **不许给这个 `match` 加 `_ =>` 通配臂**（R51）：加了以后新增变体也能编译过，
+    /// 探针立刻**静默失效**，而**所有判据仍然全绿**。
+    fn inflate_error_kind_arm(kind: InflateErrorKind) -> u8 {
+        match kind {
+            InflateErrorKind::Malformed => 0,
+            InflateErrorKind::Limit => 1,
+        }
+    }
+
+    /// 判据 (R160/R177 **双向归零**): `InflateErrorKind` 的臂码集合必须**恰好** `0..2`。
+    ///
+    /// - **少一条**（某个变体没有臂）⇒ 编号集合不完整 ⇒ 红；
+    /// - **重复一条**（两个变体共用编号）⇒ 集合有多余 ⇒ 红。
+    ///
+    /// ⭐ R120／R174 **根绑定**：下界**根绑定到这张全表自己**（去重后的长度必须等于
+    /// 变体数组的长度），⛔ 不是"借用邻居"的界 —— 借来的界会随窗口大小来回摆动。
+    #[test]
+    fn every_inflate_error_kind_arm_is_covered() {
+        let all = [InflateErrorKind::Malformed, InflateErrorKind::Limit];
+        let mut arms: Vec<u8> = all.iter().copied().map(inflate_error_kind_arm).collect();
+        arms.sort_unstable();
+        let mut distinct = arms.clone();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            all.len(),
+            "两个变体不许共用同一个编号（重复臂 ⇒ 集合有多余）"
+        );
+        assert_eq!(
+            arms,
+            (0..2).collect::<Vec<u8>>(),
+            "臂码必须恰好 `0..2`（缺一臂 ⇒ 集合不完整）"
+        );
+    }
 }
