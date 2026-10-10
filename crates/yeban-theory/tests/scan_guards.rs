@@ -647,6 +647,22 @@ fn scan_bounds(masked: &str) -> (usize, usize, usize, Vec<String>) {
 // ---------------------------------------------------------------------------
 
 /// ⭐ 把"界的五种形态"做成**常驻判据**，并**自带正负对照**（R56/R112）。
+/// ⭐ 拆出的**独立判据**（E1/E5）：掩码等长的臂不再与 24 条臂同体 ——
+/// 本族失败时日志只覆盖本族，其余族仍会跑到（分区报：区域＝本 `#[test]`，单位＝臂条目）。
+#[test]
+fn mask_preserves_byte_length_on_multibyte_samples() {
+    // ---- R113：掩码逐字节等长（含多字节 UTF-8 与三类上下文）----
+    for sample in [
+        "let s = \"中文 ♯\"; assert_eq!(a, a);",
+        "// 注释 中文\nassert_ne!(x, x);",
+        "/* 块注释 ♭♯ */ code();",
+        "",
+    ] {
+        let masked = mask_preserving_len(sample);
+        assert_eq!(masked.len(), sample.len(), "R113 byte-length: {sample:?}");
+    }
+}
+
 /// ⭐ **R245③ 夹具形状自证（计算偏移，由编译器执行）**。
 ///
 /// 口径（⛔ 无任何写死位置）：**掩码里出现的每个针，必须在原文的**同一字节偏移**处也存在**；
@@ -678,17 +694,6 @@ fn assert_needle_offset(label: &str, raw: &str, masked: &str, visible: usize) {
 
 #[test]
 fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() {
-    // ---- R113：掩码逐字节等长（含多字节 UTF-8 与三类上下文）----
-    for sample in [
-        "let s = \"中文 ♯\"; assert_eq!(a, a);",
-        "// 注释 中文\nassert_ne!(x, x);",
-        "/* 块注释 ♭♯ */ code();",
-        "",
-    ] {
-        let masked = mask_preserving_len(sample);
-        assert_eq!(masked.len(), sample.len(), "R113 byte-length: {sample:?}");
-    }
-
     // ⭐ R217① **反失同步正对照臂**：构造（字符串／注释）**之后**的真针必须**仍然可见**。
     // ⛔ 只验"被隐藏"那半边不完整 —— 掩码器若在末尾没有重新同步（例如块注释把该行剩下的
     // 一起抹掉），下面的计数会变成 0 而不是 1。
