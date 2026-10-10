@@ -995,6 +995,74 @@ fn elsewhere_bound(
     }
 }
 
+/// ⭐ R212②：把"非真空证据形态"写成**谓词函数**（每个形状一个函数）。
+/// 于是 (a) 每个函数都能被**正例／反例**各喂一次（有牙），(b) 两个计数能用**同一批函数**重算。
+fn shape1_len_ge(stmt: &str) -> bool {
+    stmt.contains(".len() >=")
+        || stmt.contains(".len() > ")
+        || stmt.contains(".count() >=")
+        || stmt.contains(".count() > ")
+}
+fn shape2_assert_eq_len(stmt: &str) -> bool {
+    stmt.contains("assert_eq!(") && stmt.contains(".len()")
+}
+fn shape3_not_is_empty(stmt: &str) -> bool {
+    stmt.contains("!.is_empty()") || non_empty_call(stmt)
+}
+fn shape6_positive_any(body: &str) -> bool {
+    positive_any(body)
+}
+fn shape7_literal_iteration(body: &str, root: &str) -> bool {
+    iterates_literal(body, root)
+}
+
+/// ⭐ R212②：**两个计数**用同一批形态函数算（定义写清，⛔ 不可混用）。
+/// 返回 `(站点去重总数, 形态归属之和)`。
+///
+/// - **站点去重总数**：含**任一**形态的函数**只数一次**；
+/// - **形态归属之和**：每处**形态命中**各计一次（同一函数可被多形态各数一次）。
+fn shape_counts(sources: &[(std::path::PathBuf, String)]) -> (usize, usize) {
+    let mut stations = std::collections::BTreeSet::new();
+    let mut attribution = 0usize;
+    for (path, text) in sources {
+        let masked = mask(text);
+        let cfg_test_at = masked.find("#[cfg(test)]");
+        let is_tests_file = path.components().any(|c| c.as_os_str() == "tests");
+        for (name, body, decl_start) in functions(text) {
+            let in_test = is_tests_file || cfg_test_at.is_some_and(|at| decl_start > at);
+            if !in_test {
+                continue;
+            }
+            let root = quantified_root(&body, in_test);
+            let mut hit = 0usize;
+            for stmt in statements(&body) {
+                if shape1_len_ge(stmt) {
+                    hit += 1;
+                }
+                if shape2_assert_eq_len(stmt) {
+                    hit += 1;
+                }
+                if shape3_not_is_empty(stmt) {
+                    hit += 1;
+                }
+            }
+            if shape6_positive_any(&body) {
+                hit += 1;
+            }
+            if let Some(r) = root.as_deref()
+                && shape7_literal_iteration(&body, r)
+            {
+                hit += 1;
+            }
+            if hit > 0 {
+                stations.insert((path.display().to_string(), name));
+                attribution += hit;
+            }
+        }
+    }
+    (stations.len(), attribution)
+}
+
 #[test]
 fn no_unbounded_all_any_assertion_in_this_crate() {
     self_test_classifier();
@@ -1051,12 +1119,81 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         sources.len()
     );
 
+    // ⭐ R212② 自测：**每个形态谓词喂 正例／反例 各一**（证明它有牙）。
+    /// 一个形态谓词的**正例／反例**臂（`(名字, 谓词, 正例, 反例)`）。
+    type ShapeArm = (&'static str, fn(&str) -> bool, &'static str, &'static str);
+    let shape_arms: [ShapeArm; 3] = [
+        (
+            "shape1",
+            shape1_len_ge,
+            "assert!(v.len() >= 3);",
+            "let n = v.len();",
+        ),
+        (
+            "shape2",
+            shape2_assert_eq_len,
+            "assert_eq!(v.len(), 3);",
+            "assert_eq!(v.first(), None);",
+        ),
+        (
+            "shape3",
+            shape3_not_is_empty,
+            "assert!(!v.is_empty());",
+            "let empty = v.len() == 0;",
+        ),
+    ];
+    for (name, predicate, positive, negative) in shape_arms {
+        assert!(predicate(positive), "R212② {name} must accept: {positive}");
+        assert!(!predicate(negative), "R212② {name} must reject: {negative}");
+    }
+    assert!(
+        shape6_positive_any("assert!(v.iter().any(|x| *x > 0));"),
+        "R212② shape6 must accept a positive any"
+    );
+    assert!(
+        !shape6_positive_any("assert!(!v.iter().any(|x| *x > 0));"),
+        "R212② shape6 must reject a negated any"
+    );
+    // ⑦ 的**严格**契约：迭代表达式既要是**字面量形态**，又要**提到该根**。
+    assert!(
+        shape7_literal_iteration("{ for x in [v] { assert!(x > 0); } }", "v"),
+        "R212② shape7 must accept a literal head that mentions the root"
+    );
+    assert!(
+        !shape7_literal_iteration("{ for x in [w] { assert!(x > 0); } }", "v"),
+        "R212② shape7 is ROOT-BOUND: a literal head over another name must not count"
+    );
+    assert!(
+        !shape7_literal_iteration("{ for x in v { assert!(x > 0); } }", "v"),
+        "R212② shape7 requires a LITERAL head (a bare variable head must not count)"
+    );
+    // ⭐ R212② 两个计数（同一批形态函数重算 ⇒ 口径可复现）
+    let (stations, attribution) = shape_counts(&sources);
+    eprintln!(
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R212② 口径：站点去重总数 = {stations}；形态归属之和 = {attribution}（定义：前者每个判据只数一次，后者每处形态命中各计一次）"
+    );
+
     // ⭐ R213：**保留** R212① 的"别处 ≥ N 个文件"界（裁定指定的例外），并**配行为臂**。
     //   界**根绑定到被搜集合自己**（"别处"那个集合）；行为臂把集合**缩到只剩定义文件自己** ⇒
     //   必须**恰好 1 条**红（`midi` 的 `b25:EXISTBOUND` 范本）。
     const ELSEWHERE_FLOOR: usize = 16;
     let here = elsewhere_bound(&sources, "assertion_discipline.rs", ELSEWHERE_FLOOR);
     assert!(here.is_empty(), "R213: {here:?}");
+    // ⭐ R215①：把**余量**做成读数（下一个人⛔ 不会把"合法删文件"当回归）。
+    let elsewhere = sources
+        .iter()
+        .filter(|(path, _)| {
+            path.file_name().and_then(|n| n.to_str()) != Some("assertion_discipline.rs")
+        })
+        .count();
+    eprintln!(
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R215① 余量：别处 = {elsewhere}，地板 = {ELSEWHERE_FLOOR}，余量 = {}（0 = 恰好在下界上：删除任一个被搜文件都会按设计变红）",
+        elsewhere as i64 - ELSEWHERE_FLOOR as i64
+    );
+    assert!(
+        elsewhere >= ELSEWHERE_FLOOR,
+        "R215①: the margin must not be negative"
+    );
     let self_only: Vec<(std::path::PathBuf, String)> = sources
         .iter()
         .filter(|(path, _)| {
