@@ -696,7 +696,11 @@ fn every_recognised_bound_form_has_a_paired_known_red() {
             "\n    fn t() {\n        assert!(!v.iter().any(|x| *x == 1));\n    }",
         ),
     ];
-    assert_eq!(pairs.len(), 5, "五种被认的界形态各一对（计数下限, R93）");
+    assert_eq!(
+        pairs.len(),
+        REGISTERED_BOUND_FORMS.len(),
+        "已注册形态各一对（⛔ 不写死条数）"
+    );
     // **R191/R194: 两个配对, 各只差**一个维度**, 方向相反**:
     // 配对一（维度 = **界在不在**）: 同一根上有界 ⇒ 绿; 去掉界 ⇒ 红（上面的 pairs）。
     // 配对二（维度 = **界挂在哪**，界的**存在性固定为"有"**）: 界挂在**被量词的根**上 ⇒ 绿;
@@ -991,6 +995,154 @@ fn assert_site_floor(sources: &[String]) -> Result<usize, String> {
     Ok(total)
 }
 
+/// 判据 (**R227②/③ ＋ R215①**): 计数类守卫的**两个盲区各一例**, 且**双向常驻**
+/// （每一步都同时断言「**旧守卫判真**」＋「**新谓词抓到缺陷**」）。
+#[test]
+fn count_floors_cannot_see_defects_in_either_direction() {
+    let count = |src: &str| unbounded_quantifiers_with(&[], src).len();
+    let defect = |src: &str| !unbounded_quantifiers(src).is_empty();
+    // 盲区 ① **计数不变**: 同一段源码, 只把**界**去掉 ⇒ 计数一字不变, 而缺陷出现（R225③ 的常驻形态）
+    let with_bound =
+        "\n    fn t() {\n        assert!(v.len() >= 1 && v.iter().all(|x| *x == 0));\n    }";
+    let bound_removed = "\n    fn t() {\n        assert!(v.iter().all(|x| *x == 0));\n    }";
+    assert_eq!(
+        count(with_bound),
+        count(bound_removed),
+        "R227②①: 去掉界**不改变计数** ⇒ 计数类守卫看不见它"
+    );
+    assert!(!defect(with_bound), "有界 ⇒ 新谓词判无缺陷");
+    assert!(defect(bound_removed), "去掉界 ⇒ 新谓词必须抓到");
+    // 盲区 ② **计数大幅上升**: 大量**良构**站点 ＋ 1 个缺陷（`engine` 的 127 → 358 同构）
+    let mut inflated = String::new();
+    for i in 0..120 {
+        inflated.push_str(&format!(
+            "\n    fn f{i}() {{\n        assert!(v.len() >= 1 && v.iter().all(|x| *x == {i}));\n    }}"
+        ));
+    }
+    let honest = count(&inflated);
+    inflated.push_str("\n    fn bad() {\n        assert!(w.iter().all(|y| *y == 0));\n    }");
+    let polluted = count(&inflated);
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R227-INFLATE] 站点计数 {honest} → {polluted}（旧地板 >= 20 照样通过）"
+    );
+    assert!(polluted > honest, "② 计数必须**上升**");
+    assert!(polluted >= 20, "② 旧守卫（计数地板）**照样通过**");
+    assert!(defect(&inflated), "② 新谓词必须抓到那个缺陷");
+    // **R215①**: 逐地板**余量**（实测 − 下界）与**最小余量**, 全部**当场从源码算**（⛔ 不写死读数, R226②）
+    let floors: [(&str, usize); 5] = [
+        ("explicit-len-ge", 5),
+        ("macro-implicit-len-eq", 5),
+        ("not-is-empty", 10),
+        ("value-bound-len-eq", 1),
+        ("explicit-empty-table", 0),
+    ];
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sources: Vec<String> = std::fs::read_dir(root.join("src"))
+        .expect("读 src/")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .map(|path| std::fs::read_to_string(path).expect("读源文件"))
+        .collect();
+    let mut min_margin = usize::MAX;
+    let mut min_form = "";
+    for (form, floor) in floors {
+        let measured: usize = sources
+            .iter()
+            .map(|src| {
+                total_per_file_offenders(src) - unbounded_quantifiers_with(&[form], src).len()
+            })
+            .sum();
+        let margin = measured.saturating_sub(floor);
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R215-MARGINS] 形态 `{form}`: 实测 {measured} − 下界 {floor} = 余量 {margin}"
+        );
+        assert!(measured >= floor, "形态 `{form}` 实测低于下界");
+        if margin < min_margin {
+            min_margin = margin;
+            min_form = form;
+        }
+    }
+    eprintln!(
+        "[R187-PROBE render/tests/quantifier_lower_bounds R215-MARGINS] 最小余量 = {min_margin}（形态 `{min_form}`）"
+    );
+    assert!(min_margin < usize::MAX, "余量表必须非空");
+}
+
+/// 判据 (**R227①: 样本必须同时命中判别器的每一个正特征, 否则臂无牙**):
+/// 逐形态列出**它的正对照命中了哪些针**（`eprintln!` 可检索), 并断言:
+/// ① 该形态在自己的**每个路径**（condition/body）上至少命中一根针;
+/// ② 该样本**不得**命中**其它**形态的针（否则"只有它会红"就不是该形态的功劳）。
+#[test]
+fn every_form_control_hits_all_required_needles() {
+    let root = "v";
+    let controls: [(&str, &str); 5] = [
+        (
+            "explicit-len-ge",
+            "assert!({r}.len() >= 8 && {r}.iter().all(|x| *x == 0));",
+        ),
+        (
+            "macro-implicit-len-eq",
+            "assert_eq!({r}.len(), 16);\n    assert!({r}.iter().all(|x| *x == 0));",
+        ),
+        (
+            "not-is-empty",
+            "assert!(!{r}.is_empty() && {r}.iter().any(|x| *x == 1));",
+        ),
+        (
+            "value-bound-len-eq",
+            "assert!({r}.len() == 4 && {r}.iter().all(|x| *x == 0));",
+        ),
+        (
+            "explicit-empty-table",
+            "assert!({r}.is_empty(), \"对照\");\n    assert!(!{r}.iter().any(|x| *x == 1));",
+        ),
+    ];
+    assert_eq!(
+        controls.len(),
+        REGISTERED_BOUND_FORMS.len(),
+        "每个已注册形态各一个正对照"
+    );
+    for (form, template) in controls {
+        let body = template.replace("{r}", root);
+        let cond = strip_ws(&body);
+        // ① 逐针判定: 该形态的每根针**是否命中**
+        let mut hit_paths: Vec<&str> = Vec::new();
+        let mut required_paths: Vec<&str> = Vec::new();
+        for (path, needle) in form_needles(form, root) {
+            if !required_paths.contains(&path) {
+                required_paths.push(path);
+            }
+            // 正对照的文本已经把 condition 与 body 两段都写进来了 ⇒ 两条路径都在这段文本上判针。
+            let hay = &cond;
+            if contains_identifier(hay, &strip_ws(&needle)) {
+                hit_paths.push(path);
+            }
+        }
+        eprintln!(
+            "[R187-PROBE render/tests/quantifier_lower_bounds R227-NEEDLES] 形态 `{form}`: 路径 {required_paths:?} 命中 {hit_paths:?}"
+        );
+        for path in &required_paths {
+            assert!(
+                hit_paths.contains(path),
+                "R227①: 形态 `{form}` 的样本没有命中 `{path}` 路径的任何正特征 ⇒ 臂无牙"
+            );
+        }
+        // ② 交叉: 该样本不得命中**其它**形态的针（判别的功劳归属该形态）
+        for other in REGISTERED_BOUND_FORMS {
+            if other == form {
+                continue;
+            }
+            let cross = form_needles(other, root)
+                .iter()
+                .any(|(_, needle)| contains_identifier(&cond, &strip_ws(needle)));
+            assert!(
+                !cross,
+                "R227①: 形态 `{form}` 的样本**命中**了 `{other}` 的针 ⇒ 隔离性不成立"
+            );
+        }
+    }
+}
+
 /// 判据 (**R213 的行为臂**): 把**被搜集合**缩到界之下 ⇒ 必须红; 正常集合 ⇒ 绿。
 #[test]
 fn site_floor_reddens_when_the_searched_set_collapses() {
@@ -1002,10 +1154,13 @@ fn site_floor_reddens_when_the_searched_set_collapses() {
                 .to_owned()
         })
         .collect();
+    // R226②: 期望值**当场计算**（⛔ 不写死数字）
+    let expected_sites = real.len() * 3;
     assert_eq!(
         assert_site_floor(&real).expect("正常集合必须通过"),
-        21,
-        "7 个文件 × 3 个站点"
+        expected_sites,
+        "{} 个文件 × 3 个站点",
+        real.len()
     );
     // 行为臂: 集合塌缩 ⇒ 必须 `Err`（并且是**集合太小**这个理由）
     let collapsed: Vec<String> = vec!["fn t() {}".to_owned(); 2];
