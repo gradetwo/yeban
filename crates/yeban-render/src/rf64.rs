@@ -5045,4 +5045,179 @@ mod tests {
         );
         assert_eq!(names.iter().filter(|name| name[3] == b' ').count(), 1);
     }
+
+    /// 判据 (**trait impl 面**: `PartialEq`): [`PcmFormat`] 的 `==` 必须读**全部 5 个字段**。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// `PcmFormat` 的 `PartialEq` 是 `derive` 的。把它换成"只比 `channels`"的手写 impl
+    /// （保留 `Eq`）之后, 全量判据**全绿** —— 有 **5 条**判据用
+    /// `assert_eq!(parsed.format, expected)` 做**整结构**比较
+    /// （`every_container_kind_round_trips_through_our_reader` / `extensible_container_round_trips` /
+    /// `an_explicit_channel_mask_forces_extensible_on_a_stereo_format` /
+    /// `an_unimplemented_chunk_is_skipped_not_rejected` /
+    /// `every_unimplemented_chunk_shape_is_skipped`）, 而它们**全都只在正向**用 `==`
+    /// ⇒ 一个过于宽松的 `==` 会让这 5 条判据**一起变成空判据**（这正是 R52 的形态:
+    /// 判据名说"逐字段"、判据体却把逐字段交给了 `==`）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个基准 [`PcmFormat`] 与 5 个"只差一个字段"的副本（单位: 一个格式）。
+    /// 读数: `==` / `!=` 的判决（布尔 × 6）。
+    ///
+    /// # 非空证明
+    ///
+    /// 6 次比较里**既有** `==`（自身副本）**也有** `!=`（5 个单字段副本）⇒
+    /// "恒真"与"恒假"两种退化的 `==` 都会在这条判据下红。
+    #[test]
+    fn the_pcm_format_equality_reads_every_field() {
+        let base = PcmFormat {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 24,
+            is_float: false,
+            channel_mask: Some(0x3),
+        };
+        let copy = base;
+        assert_eq!(base, copy, "自反: 逐字段相同的两个格式必须相等");
+        let variants = [
+            (
+                "channels",
+                PcmFormat {
+                    channels: 4,
+                    ..base
+                },
+            ),
+            (
+                "sample_rate",
+                PcmFormat {
+                    sample_rate: 44_100,
+                    ..base
+                },
+            ),
+            (
+                "bits_per_sample",
+                PcmFormat {
+                    bits_per_sample: 16,
+                    ..base
+                },
+            ),
+            (
+                "is_float",
+                PcmFormat {
+                    is_float: true,
+                    ..base
+                },
+            ),
+            (
+                "channel_mask",
+                PcmFormat {
+                    channel_mask: None,
+                    ..base
+                },
+            ),
+        ];
+        assert_eq!(variants.len(), 5, "5 个字段各一个副本");
+        for (field, variant) in variants {
+            assert_ne!(base, variant, "只差 `{field}` 的两个格式必须不相等");
+            assert_ne!(variant, base, "`{field}`: 不等必须对称");
+        }
+    }
+
+    /// 判据 (**R52: 聚合判据要逐条点名**): 计划层的每个拒绝形状都必须断言它返回的
+    /// **具体变体**, 不能只断言"`validate` 与 `write_container` 互相一致"。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// `every_bext_shape_the_writer_accepts_the_reader_reads_back` 对 18 个
+    /// `version × loudness × 容器` 组合断言的是 `write_container == validate`（**互相一致**）
+    /// 与"0 字节"。两条路的错误都来自同一个 `ContainerPlan::validate`, 因此
+    /// **把两者一起换成同一个别的错误**它是抓不到的。本机实测: 把 `validate` 里的
+    /// `BextLoudnessVersionMismatch { .. }` 换成 `UnsupportedBextVersion(0)`
+    /// ⇒ 全量判据**全绿**（黄金表钉的是那个变体的**文案**, 不是它**被返回**这件事）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 3 个 `bext` 计划（单位: 一个计划）: 版本 3 / 版本 2 缺响度 / 版本 1 带响度。
+    /// 读数: `ContainerPlan::validate()` 与 `write_container` 返回的**变体**（3 × 2 个）。
+    ///
+    /// # 非空证明
+    ///
+    /// 三个形状给出**两种不同的变体**（`UnsupportedBextVersion` 与
+    /// `BextLoudnessVersionMismatch`, 后者还有 `has_loudness` 的两个取值）
+    /// ⇒ "所有拒绝都返回同一个变体"这种改法也会红（下面直接断言它们两两不等）。
+    #[test]
+    fn the_plan_rejection_family_names_its_variant_per_shape() {
+        let data = payload(4);
+        let unknown = Some(Loudness {
+            loudness_value: Loudness::UNKNOWN,
+            loudness_range: Loudness::UNKNOWN,
+            max_true_peak_level: Loudness::UNKNOWN,
+            max_momentary_loudness: Loudness::UNKNOWN,
+            max_short_term_loudness: Loudness::UNKNOWN,
+        });
+        let cases: [(&str, Bext, Rf64Error); 3] = [
+            (
+                "版本 3",
+                Bext {
+                    version: 3,
+                    loudness: unknown,
+                    ..Bext::default()
+                },
+                Rf64Error::UnsupportedBextVersion(3),
+            ),
+            (
+                "版本 2 缺响度字段",
+                Bext {
+                    version: 2,
+                    loudness: None,
+                    ..Bext::default()
+                },
+                Rf64Error::BextLoudnessVersionMismatch {
+                    version: 2,
+                    has_loudness: false,
+                },
+            ),
+            (
+                "版本 1 却带响度",
+                Bext {
+                    version: 1,
+                    loudness: unknown,
+                    ..Bext::default()
+                },
+                Rf64Error::BextLoudnessVersionMismatch {
+                    version: 1,
+                    has_loudness: true,
+                },
+            ),
+        ];
+        for (label, bext, expected) in &cases {
+            let plan = ContainerPlan::for_payload(
+                ContainerKind::Riff,
+                stereo_16bit(),
+                data.len() as u64,
+                4,
+                Some(bext.clone()),
+            );
+            assert_eq!(plan.validate(), Err(expected.clone()), "{label}: validate");
+            let mut file = Vec::new();
+            assert_eq!(
+                write_container(&mut file, &plan, &data),
+                Err(expected.clone()),
+                "{label}: write_container 必须给出同一个变体"
+            );
+            assert!(file.is_empty(), "{label}: 被拒的写入不得留下字节");
+        }
+        // 非空证明: 三个形状里有两种不同的变体。
+        assert!(matches!(cases[0].2, Rf64Error::UnsupportedBextVersion(3)));
+        assert!(matches!(
+            cases[1].2,
+            Rf64Error::BextLoudnessVersionMismatch {
+                version: 2,
+                has_loudness: false
+            }
+        ));
+        assert_ne!(cases[0].2, cases[1].2, "两种拒绝必须各自点名");
+        assert_ne!(cases[1].2, cases[2].2, "同一个变体的两个取值也必须分开");
+    }
 }

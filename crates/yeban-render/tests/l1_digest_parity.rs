@@ -856,3 +856,106 @@ fn the_record_parser_refuses_what_it_does_not_understand() {
         "原因必须点名缺失的字段: {error}"
     );
 }
+
+/// 异平台基准的路径（相对本 crate 根）。由**手动档** `gates-manual.yml` 消费。
+const FOREIGN_REFERENCE: &str = "tests/data/l1-digest-reference-linux.json";
+
+/// 读一份归档基准的**原始字节**（不改一个字节）。
+fn read_fixture(relative: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("读不到 {}: {error}", path.display()))
+}
+
+/// 判据 ⑯ (**逐字节样本表**): 归档参考摘要必须**恰好**等于它自己的规范形式。
+///
+/// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+///
+/// `the_archived_reference_is_self_consistent` 只把 `to_pretty_json(&reference)`
+/// **在内存里**生成一遍, 然后检查"每个字段名都出现在它里面" —— 它**从不与文件的字节比较**。
+/// 因此把归档 JSON 的空白/键顺序改掉（例如把 `"schema":"…"` 改成 `"schema": "…"`）
+/// 之后全量判据**全绿**（解析出来还是同一条记录）。
+///
+/// # 量的是什么（对象 + 单位）
+///
+/// 对象: `tests/data/l1-digest-reference.json` 的**原始字节**（单位: 字节/字符）与
+/// `to_pretty_json(parse(那串字节))`。读数: 两个字符串（是否逐字符相同）。
+///
+/// # 非空证明
+///
+/// 后半段用**同一个格式化器**制造一处最小差异（在 `"schema":` 后插入一个空格）并断言
+/// 它**不等于**原字节 ⇒ 上一条比较不是"两个恒等的东西比大小"。
+#[test]
+fn the_archived_reference_is_exactly_its_canonical_form() {
+    let raw = read_fixture(REFERENCE);
+    let record = parse(&raw).expect("归档参考摘要必须可解析");
+    let canonical = to_pretty_json(&record);
+    assert_eq!(
+        canonical, raw,
+        "归档文件必须恰好是 `to_pretty_json` 的规范形式（任何重排/空白改动都要显式改这一条判据）"
+    );
+    assert!(raw.ends_with("}\n"), "规范形式以 `}}` + 换行结尾");
+    // 非空证明: 一处最小差异就会被下面这条挡住。
+    let perturbed = raw.replacen("\"schema\":", "\"schema\": ", 1);
+    assert_ne!(perturbed, raw, "扰动必须真的改变字节");
+    assert_ne!(perturbed, canonical, "扰动后的文本不得等于规范形式");
+}
+
+/// 判据 ⑰ (**逐字节样本表的覆盖面**): 已提交的**异平台**基准也必须被
+/// **自动门禁**读一次。
+///
+/// # 为什么需要它（本机实测的覆盖面读数）
+///
+/// 本 crate 只有两份数据样本:
+///
+/// | 文件 | 谁读它 | 自动门禁里有判据? |
+/// | :--- | :--- | :--- |
+/// | `tests/data/l1-digest-reference.json` | `cargo test`（`reference()`） | ✅ |
+/// | `tests/data/l1-digest-reference-linux.json` | **只有** `gates-manual.yml:144`（手动档） | ❌ **此前没有** |
+///
+/// `grep -rn 'l1-digest-reference-linux'` 全库只命中那一条手动档 ⇒ 那份 1213 字节的
+/// Linux 基准在自动门禁里**没有任何判据**: 它可以被删、被改坏、被写成另一条记录,
+/// `cargo test` 全绿。本判据把它接进自动门禁。
+///
+/// # 量的是什么（对象 + 单位）
+///
+/// 对象: `tests/data/l1-digest-reference-linux.json`（单位: 一条 `DigestRecord`）。
+/// 读数: `parse` 的判决、`validate()` 的判决与 7 个字段值（schema / target_os /
+/// target_triple / digest == sample_digest / fixture / tracks / frames / channels /
+/// sample_rate / seed）。
+///
+/// # 非空证明
+///
+/// 断言里既有**平台专有**字段（`target_os == "linux"`、`target_triple`）也有**夹具形状**
+/// 字段（32 轨 / 8192 帧 / 48 kHz / 种子 `0x5EED`）⇒ "两份基准其实是同一条记录"
+/// 这种改法会红（本机基准的 `target_os` 是 `macos`）。
+#[test]
+fn the_foreign_baseline_is_read_by_the_automatic_gate_too() {
+    let raw = read_fixture(FOREIGN_REFERENCE);
+    let record = parse(&raw)
+        .unwrap_or_else(|error| panic!("Linux 基准必须能被本 crate 的严格解析器读进来: {error}"));
+    record.validate().expect("Linux 基准必须自洽");
+    assert_eq!(record.schema, SCHEMA);
+    assert_eq!(record.platform.target_os, "linux", "异平台基准的 OS");
+    assert_eq!(
+        record.platform.target_triple, "x86_64-unknown-linux-gnu",
+        "异平台基准的三元组"
+    );
+    assert_eq!(
+        record.digest, record.sample_digest,
+        "digest 与 sample_digest 必须一致"
+    );
+    assert_eq!(record.params.fixture, "reference-a");
+    assert_eq!(record.params.tracks, 32);
+    assert_eq!(record.params.frames, export_pipeline::DEFAULT_FRAMES);
+    assert_eq!(record.params.channels, 2);
+    assert_eq!(record.params.sample_rate, 48_000);
+    assert_eq!(record.params.seed, export_pipeline::SEED);
+    // 非空证明: 异平台基准与本地基准是**两条不同的记录**（本机实测: OS 不同）。
+    let local = reference();
+    assert_ne!(
+        record.platform.target_os, local.platform.target_os,
+        "两份基准必须真的是不同平台, 否则本判据测不到'异平台'这件事"
+    );
+    assert_ne!(record, local, "两条记录必须不同");
+}
