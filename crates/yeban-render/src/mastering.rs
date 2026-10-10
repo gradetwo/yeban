@@ -2432,7 +2432,11 @@ mod tests {
         let mut master = master_output(&tone, &tone);
         master.samples = samples;
 
-        for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
+        // ⚠ **R93**: 这个 `for` 遍历的是本地字面量数组（不会被环境过滤掉）, 但按纪律
+        // 仍显式断言下界 —— 将来若有人把它换成"按条件挑深度", 这条会立刻红。
+        let depths = [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32];
+        assert_eq!(depths.len(), 3, "三种位深都必须被扫到");
+        for depth in depths {
             let mut attempt = master.clone();
             let mut rng = seed_rng(1);
             let error = export_master(

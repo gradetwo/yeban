@@ -5655,6 +5655,28 @@ mod tests {
             "/Library/Application Support/Logic/Logic Pro X Demosongs/Swing!.logicx/Alternatives/004/ProjectData",
             "/Library/Application Support/Logic/Logic Pro X Demosongs/ocean eyes.logicx/Alternatives/001/ProjectData",
         ];
+        // ⚠ **R93（非真空断言）**: 这两个演示工程只存在于装了 Logic Pro 演示曲的机器上
+        // （绝对路径 `/Library/Application Support/Logic/...`）⇒ 文件不在时下面的
+        // `continue` 会让整条判据**一个核对都不做却通过**。处置:
+        // ① 断言"**要么全在要么全不在**"（半套夹具的结论不可用）;
+        // ② 空跑时打**机器可检索**的 `SKIP(vacuous)` 记号并**不计作覆盖**;
+        // ③ 有夹具时断言核对数**等于**夹具数（下界）。
+        let present = demos
+            .iter()
+            .filter(|demo| std::path::Path::new(demo).exists())
+            .count();
+        assert!(
+            present == 0 || present == demos.len(),
+            "演示工程必须全在或全不在: 现在 {present}/{}",
+            demos.len()
+        );
+        if present == 0 {
+            eprintln!(
+                "SKIP(vacuous): 0/{} 个 Logic 演示工程存在 ⇒ 本判据未做任何核对",
+                demos.len()
+            );
+            return;
+        }
         let mut checked = 0usize;
         for demo in demos {
             let Ok(bytes) = std::fs::read(demo) else {
@@ -5697,7 +5719,8 @@ mod tests {
             }
             checked += 1;
         }
-        eprintln!("可选演示工程核对：{checked} 个文件存在并核对通过（不存在 = skip）");
+        assert_eq!(checked, demos.len(), "存在就该全部核对过（下界 = 夹具数）");
+        eprintln!("可选演示工程核对：{checked}/{} 个文件核对通过", demos.len());
     }
 
     /// **可选**判据：本机存在 Apple 演示工程时，逐条核对**全部** `qeSM` 记录的名字字段就是
@@ -5996,12 +6019,25 @@ mod tests {
             unrecorded.is_empty(),
             "实测到未登记的 chunk 家族（必须补进 MEASURED_REAL_CHUNK_FAMILIES）: {unrecorded:?}"
         );
-        if present == demos.len() {
-            assert_eq!(
-                measured_refs, declared,
-                "两个演示工程都存在时，实测并集必须逐族等于声明的 27 个家族"
+        // ⚠ **R93**: 条件式断言 ⇒ 夹具不在时**静默空跑**。处置与上一条同:
+        // 全在/全不在 + `SKIP(vacuous)` 记号 + 有夹具时必须真的比过。
+        assert!(
+            present == 0 || present == demos.len(),
+            "演示工程必须全在或全不在: 现在 {present}/{}",
+            demos.len()
+        );
+        if present == 0 {
+            eprintln!(
+                "SKIP(vacuous): 0/{} 个 Logic 演示工程存在 ⇒ 本判据未做任何家族对账",
+                demos.len()
             );
+            return;
         }
+        assert_eq!(present, demos.len(), "走到这里说明都在");
+        assert_eq!(
+            measured_refs, declared,
+            "演示工程都在时，实测并集必须逐族等于声明的 27 个家族"
+        );
         let written: BTreeSet<&str> = WRITTEN_CHUNK_FAMILIES.into_iter().collect();
         let difference: BTreeSet<&str> = measured_refs.difference(&written).copied().collect();
         eprintln!(
