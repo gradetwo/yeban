@@ -100,24 +100,128 @@ fn mask(source: &str) -> String {
     String::from_utf8(out).expect("the mask is byte-wise and keeps ASCII/UTF-8 shape")
 }
 
-/// 7 种「非真空」迹象里，**有没有任何一种**出现在 `body` 里。
-fn has_non_vacuity_evidence(body: &str) -> bool {
-    let explicit = body.contains(".len() >=")
-        || body.contains(".len() > ")
-        || body.contains(".count() >=")
-        || body.contains(".count() > ");
-    let implicit = has_assert_eq_on_len(body);
-    let non_empty = body.contains("!.is_empty()") || non_empty_call(body);
-    let value_bound = has_value_bound(body);
-    let counter = [
+/// 量词断言里**被量化集合的根绑定**（`v.iter().all(..)` ⇒ `v`；`!c.iter().any(..)` ⇒ `c`）。
+fn quantified_root(body: &str) -> Option<String> {
+    let mut rest = body;
+    while let Some(index) = rest.find("assert!(") {
+        let tail = &rest[index..];
+        let end = tail.find(");").map(|e| e + 1).unwrap_or(tail.len());
+        let call = &tail[..end.min(tail.len())];
+        let after = call["assert!(".len()..].trim_start();
+        let quantified =
+            call.contains(".all(") || (after.starts_with('!') && call.contains(".any("));
+        if quantified {
+            // 接收者链的**根**：`v.iter().all(` ⇒ `v`；`instrument.warnings().iter().all(` ⇒ `instrument`。
+            let receiver = after.trim_start_matches('!').trim_start();
+            let root: String = receiver
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !root.is_empty() {
+                return Some(root);
+            }
+        }
+        rest = &tail[2..];
+    }
+    None
+}
+
+/// 把函数体粗切成语句（`;` 与花括号）。
+fn statements(body: &str) -> Vec<&str> {
+    body.split([';', '{', '}']).collect()
+}
+
+/// 7 种「非真空」迹象里有没有任何一种，**且必须与根绑定相关**（R114：⛔ 不许借用邻居）。
+///
+/// `root == None` 表示本体内根本没有量词断言 ⇒ 只按"有没有字面量／固定范围循环"判定。
+fn has_non_vacuity_evidence(body: &str, root: Option<&str>) -> bool {
+    let mentions_root = |stmt: &str| root.is_none_or(|r| stmt.contains(r));
+    for stmt in statements(body) {
+        if !mentions_root(stmt) {
+            continue;
+        }
+        // ① 显式 ② 宏隐式相等 ③ 非空 ④ 值界 ⑤ 运行期计数器
+        if stmt.contains(".len() >=")
+            || stmt.contains(".len() > ")
+            || stmt.contains(".count() >=")
+            || stmt.contains(".count() > ")
+            || stmt.contains(".len(),")
+            || stmt.contains("!.is_empty()")
+            || non_empty_call(stmt)
+            || has_value_bound(stmt)
+            || [
+                "seen", "count", "total", "scanned", "checked", "visited", "hits",
+            ]
+            .iter()
+            .any(|n| stmt.contains(&format!("{n} >=")) || stmt.contains(&format!("{n} > ")))
+        {
+            return true;
+        }
+    }
+    // ⑤ 运行期计数器：计数器语句本身不含根，但**循环必须遍历这个根**
+    if let Some(r) = root {
+        if iterates(body, r) && counter_bound(body) {
+            return true;
+        }
+    }
+    // ⑥ 正对照（R112）：正极性 `any`。⚠️ 登记局限：文本层核不到"同类型"。
+    if positive_any(body) {
+        return true;
+    }
+    // ⑦ 字面量集合：⛔ 必须**遍历这个根**（否则就是"借用邻居"）
+    match root {
+        Some(r) => iterates_literal(body, r),
+        None => literal_iteration(body),
+    }
+}
+
+/// 有没有 `for <pat> in <expr>` 且 `expr` 的根是 `root`。
+fn iterates(body: &str, root: &str) -> bool {
+    let mut rest = body;
+    while let Some(index) = rest.find("for ") {
+        if let Some(rel) = rest[index..].find(" in ") {
+            let after = rest[index + rel + " in ".len()..].trim_start();
+            if after.trim_start_matches('&').starts_with(root) {
+                return true;
+            }
+        }
+        rest = &rest[index + 4..];
+    }
+    false
+}
+
+/// 有没有 `for <pat> in <字面量/范围/常量>`，且**该迭代表达式的根是 `root`**。
+fn iterates_literal(body: &str, root: &str) -> bool {
+    let mut rest = body;
+    while let Some(index) = rest.find("for ") {
+        if let Some(rel) = rest[index..].find(" in ") {
+            let after = rest[index + rel + " in ".len()..].trim_start();
+            let head: String = after
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '{')
+                .collect();
+            let bare = head.trim_start_matches('&');
+            let first = bare.chars().next();
+            let looks_literal = bare.starts_with('[')
+                || bare.starts_with("vec![")
+                || first.is_some_and(|c| c.is_ascii_digit() || c == '-')
+                || first.is_some_and(|c| c.is_ascii_uppercase());
+            if looks_literal && bare.contains(root) {
+                return true;
+            }
+        }
+        rest = &rest[index + 4..];
+    }
+    false
+}
+
+/// 运行期计数器下界（`assert!(checked >= 3)` 之类）。
+fn counter_bound(body: &str) -> bool {
+    [
         "seen", "count", "total", "scanned", "checked", "visited", "hits",
     ]
     .iter()
-    .any(|name| body.contains(&format!("{name} >=")) || body.contains(&format!("{name} > ")));
-    let control = positive_any(body);
-    let literal_collection =
-        body.contains("for ") && (body.contains(" in [") || body.contains(".."));
-    explicit || implicit || non_empty || value_bound || counter || control || literal_collection
+    .any(|n| body.contains(&format!("{n} >=")) || body.contains(&format!("{n} > ")))
 }
 
 /// `assert_eq!(… .len(), N)` —— R111 的「宏隐式相等」形态。
@@ -175,6 +279,34 @@ fn has_value_bound(body: &str) -> bool {
             }
             rest = &tail[2..];
         }
+    }
+    false
+}
+
+/// ⑦ 字面量集合：`for <pat> in <expr>` 且 **`<expr>` 本身**是字面量数组／固定范围／全大写常量。
+///
+/// ⚠️ 必须**锚定到 `for` 的迭代表达式**：早先写成"body 里含 `..`"⇒ 几乎每个测试体
+/// 都因别处的 `0..3` 被判为"非真空" ⇒ 判据**形同虚设**（实测：删掉一处的 `len()` 下界后
+/// 判据仍全绿）。这正是 R108「每条分类路径都要喂已知红」的实例。
+fn literal_iteration(body: &str) -> bool {
+    let mut rest = body;
+    while let Some(index) = rest.find("for ") {
+        if let Some(rel) = rest[index..].find(" in ") {
+            let after = rest[index + rel + " in ".len()..].trim_start();
+            let head: String = after
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '{')
+                .collect();
+            let first = head.chars().next();
+            if head.starts_with('[')
+                || head.starts_with("vec![")
+                || first.is_some_and(|c| c.is_ascii_digit() || c == '-')
+                || first.is_some_and(|c| c.is_ascii_uppercase())
+            {
+                return true;
+            }
+        }
+        rest = &rest[index + 4..];
     }
     false
 }
@@ -275,11 +407,15 @@ fn self_test_classifier() {
     let reds = [
         "let v = f(); assert!(v.iter().all(|x| *x > 0));",
         "let v = f(); assert!(!v.iter().any(|x| *x > 0));",
+        // ⚠️ 专打 ⑦ 的过宽：别处有 `..`，但被量化的集合**不是**字面量
+        "let v = f(); for i in 0..3 { let _ = i; } assert!(v.iter().all(|x| *x > 0));",
+        // ⚠️ 同上：别处有 `for … in [..]`，但被量化的集合不是它
+        "let v = f(); let w = [1, 2]; for x in w { let _ = x; } assert!(v.iter().all(|x| *x > 0));",
     ];
     for (index, body) in greens.iter().enumerate() {
         // 绿夹具只要求「被判为非真空」（⑦ 那种是**循环**而不是量词断言，不适用量化检查）。
         assert!(
-            has_non_vacuity_evidence(body),
+            has_non_vacuity_evidence(body, quantified_root(body).as_deref()),
             "green {index} must be accepted as non-vacuous: {body}"
         );
     }
@@ -289,7 +425,7 @@ fn self_test_classifier() {
             "red {index} must be quantified"
         );
         assert!(
-            !has_non_vacuity_evidence(body),
+            !has_non_vacuity_evidence(body, quantified_root(body).as_deref()),
             "red {index} must be rejected: {body}"
         );
     }
@@ -327,7 +463,8 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
     for (path, text) in &sources {
         for (name, body) in functions(text) {
             scanned += 1;
-            if is_quantified_assertion(&body) && !has_non_vacuity_evidence(&body) {
+            let root = quantified_root(&body);
+            if is_quantified_assertion(&body) && !has_non_vacuity_evidence(&body, root.as_deref()) {
                 offenders.push(format!("{}::{name}", path.display()));
             }
         }
