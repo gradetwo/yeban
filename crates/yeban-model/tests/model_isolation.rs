@@ -44,15 +44,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::str::FromStr;
 use yeban_model::container::{
     ContainerLimits, HISTORY_DAG_NAME, PROJECT_JSON_NAME, read_container, read_project_container,
-    write_project_container,
+    write_project_container, write_project_container_borrowed,
 };
 use yeban_model::local_config::{
     AudioPortBinding, DEFAULT_SECRET_BACKEND, EditorRole, ExternalEditor, KNOWN_SECRET_BACKENDS,
     LOCAL_CONFIG_VERSION, LocalMachineConfig, MAX_SECRET_REF_LEN, SecretMaterial, SecretRef,
     SecretStore, SecretStoreError, UnavailableSecretStore, secret_store_for,
 };
+
+use yeban_model::commit::{CommitDraft, CommitGraph, encode_history_dag};
+use yeban_model::ids::AssetHash;
 use yeban_model::ops::{Op, StampedOp};
 use yeban_model::samples::{
     default_project, default_stamped_op, filled_project, filled_stamped_op,
@@ -1942,4 +1946,91 @@ fn session_writers_do_not_rewrite_the_payload_they_are_given() {
     );
     assert!(!state.plugin_processes[&instance].sandboxed);
     assert_eq!(state.plugin_processes[&instance].pid, 43);
+}
+
+/// `history.dag` 与容器 ZIP 的**逐字节冻结**（R70②：自比不是字节契约）。
+///
+/// 为什么需要（第九轮 · R70②）：这两个交付物此前**只有自比式判据** ——
+/// `commit::tests::history_dag_round_trips_and_is_byte_stable` 比的是"两次编码相等"、
+/// `container_roundtrip.rs` 比的是"两个写出入口相等"。**"两次运行相同"不是字节契约**：
+/// 任何**确定性**的改动（换 `to_vec_pretty`、改 ZIP 的 unix mode、改压缩级别）
+/// 都会让自比继续全绿而交付字节已经变了。
+///
+/// 本判据按与生产同形的调用路径取字节，冻结 **sha256 ＋ 长度**两张字面表，
+/// 并附"判据自身有牙"的 `assert_ne!`（R58：同一个 `==` 上成对）。
+/// 重新冻结：`cargo test -p yeban-model --test model_isolation -- --nocapture`。
+#[test]
+fn history_dag_and_container_zip_bytes_are_frozen() {
+    const DAG_SHA256: &str = "54c9212169a07d34e54ab58114090e88d86f06371c53002f91f3295e8c5cbc32";
+    const DAG_LEN: usize = 911;
+    const ZIP_SHA256: &str = "a025fdfe020d690e04d1221e5c0beef14c4cf6a16245f9db65a277c0db98f844";
+    const ZIP_LEN: usize = 5448;
+
+    let id1 = EntityId::from_str("01J8ZQ00000000000000000001").expect("id1");
+    let id2 = EntityId::from_str("01J8ZQ00000000000000000002").expect("id2");
+
+    // ---- `history.dag`：两个提交（固定身份 / 固定时间戳 / 固定种子）----
+    let canonical = |created_at: u64| {
+        let mut graph = CommitGraph::new();
+        graph
+            .genesis(
+                CommitDraft::new(id1, "main", "agent", "genesis")
+                    .with_created_at(1_760_000_000_000)
+                    .with_rng_seed(7),
+            )
+            .expect("genesis");
+        graph
+            .append(
+                CommitDraft::new(id2, "main", "agent", "step")
+                    .with_created_at(created_at)
+                    .with_rng_seed(8)
+                    .with_ops(vec![default_stamped_op()]),
+            )
+            .expect("append");
+        graph
+    };
+    let graph = canonical(1_760_000_000_001);
+    let dag = encode_history_dag(&graph);
+    assert_eq!(dag.len(), DAG_LEN, "history.dag 的长度变了（字面读数）");
+    assert_eq!(
+        sha256_hex(&dag),
+        DAG_SHA256,
+        "history.dag 的逐字节内容变了。自比式判据（两次编码相等）**拦不住**确定性改动, \
+         本表是那一侧唯一的字面契约；有意变更请重新冻结"
+    );
+    // 判据自身有牙：只改一个提交字段（时间戳 +1）⇒ 摘要必须变红。
+    assert_ne!(
+        sha256_hex(&encode_history_dag(&canonical(1_760_000_000_002))),
+        DAG_SHA256,
+        "只改一个提交的 created_at 后摘要必须变红 —— 否则这条冻结判据是空转的"
+    );
+
+    // ---- 容器 ZIP：`filled_project` ＋ 一条资产 ----
+    let asset = AssetHash::of_bytes(b"yeban-freeze-asset");
+    let zip = write_project_container_borrowed(
+        &filled_project(),
+        b"{\"commits\":[]}",
+        &[(&asset, b"yeban-freeze-asset")],
+    )
+    .expect("写容器");
+    assert_eq!(zip.len(), ZIP_LEN, "容器 ZIP 的长度变了（字面读数）");
+    assert_eq!(
+        sha256_hex(&zip),
+        ZIP_SHA256,
+        "容器 ZIP 的逐字节内容变了（换 pretty 序列化 / 改 unix mode / 改压缩级别都会命中这里）"
+    );
+    // 判据自身有牙：换一个字节的资产（连带它的 CAS 键）⇒ 摘要必须变红。
+    let other = AssetHash::of_bytes(b"yeban-freeze-asset!");
+    assert_ne!(
+        sha256_hex(
+            &write_project_container_borrowed(
+                &filled_project(),
+                b"{\"commits\":[]}",
+                &[(&other, b"yeban-freeze-asset!")],
+            )
+            .expect("写容器")
+        ),
+        ZIP_SHA256,
+        "只换一条资产的字节后摘要必须变红 —— 否则这条冻结判据是空转的"
+    );
 }

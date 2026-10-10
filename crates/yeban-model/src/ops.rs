@@ -5000,4 +5000,94 @@ mod tests {
             "不同变体必须判为不同"
         );
     }
+    /// **R48 两半 ＋ R51**：`AutomationTarget` 的 `validate_param_value` 分支必须**逐臂点名**。
+    ///
+    /// 为什么需要（第九轮 · 生产代码通配臂普查）：`ops.rs:1688` 的
+    /// `match target { … TrackPan … Macro … _ => Ok(()) }` 是**生产代码里唯一**一处覆盖
+    /// 公开枚举的通配兜底 —— 给 `AutomationTarget` 加第 6 个**有界**变体时，它会**默认通过**
+    /// （R48 的 fail-open 形态）。本判据给每个臂编号（无通配符 `match` 探针 ⇒ 加变体即编译错），
+    /// 并逐臂钉住 `validate_param_value` 在该臂上的判决。
+    #[test]
+    fn every_automation_target_arm_is_numbered_and_its_verdict_is_pinned() {
+        let track = fixture_id(2);
+        let edge = fixture_id(30);
+        let volume = AutomationTarget::TrackVolume { track_id: track };
+        let pan = AutomationTarget::TrackPan { track_id: track };
+        let send = AutomationTarget::SendGain {
+            track_id: track,
+            edge_id: edge,
+        };
+        let device = AutomationTarget::DeviceParam {
+            track_id: track,
+            slot_index: 0,
+            param_index: 0,
+        };
+        let mac = AutomationTarget::Macro {
+            track_id: track,
+            macro_index: 0,
+        };
+
+        /// R48 探针：**无通配符** `match`。加变体而不更新本函数 ⇒ 编译错。
+        const fn arm(target: AutomationTarget) -> usize {
+            match target {
+                AutomationTarget::TrackVolume { .. } => 0,
+                AutomationTarget::TrackPan { .. } => 1,
+                AutomationTarget::SendGain { .. } => 2,
+                AutomationTarget::DeviceParam { .. } => 3,
+                AutomationTarget::Macro { .. } => 4,
+            }
+        }
+
+        const ARM_COUNT: usize = 5;
+        // (编号, 目标, 该臂的判决：`true` = 取值域由本函数判, `false` = 本函数放行)
+        let table: [(usize, AutomationTarget, bool); ARM_COUNT] = [
+            (0, volume, false),
+            (1, pan, true),
+            (2, send, false),
+            (3, device, false),
+            (4, mac, true),
+        ];
+        let mut numbered: Vec<usize> = Vec::new();
+        for (index, target, bounded) in table {
+            assert_eq!(arm(target), index, "臂编号必须与表行一致");
+            // 无界臂：任意有限值都必须放行（它们的取值域由别处/界面负责）。
+            if !bounded {
+                assert_eq!(
+                    validate_param_value(target, 4_000.0),
+                    Ok(()),
+                    "臂 {index} 在模型层无固有界 ⇒ 有限值必须放行"
+                );
+            }
+            numbered.push(index);
+        }
+        assert_eq!(
+            numbered,
+            (0..ARM_COUNT).collect::<Vec<_>>(),
+            "臂编号必须恰好是 0..N（R48 的臂编号断言）"
+        );
+
+        // 有界两臂：两侧边界都要点名（拒绝侧 + 恰好到界）。
+        assert_eq!(
+            validate_param_value(pan, 1.0),
+            Ok(()),
+            "声相上界本身必须放行"
+        );
+        assert_eq!(
+            validate_param_value(pan, 2.0),
+            Err(ModelError::PanOutOfRange { value: 2.0 })
+        );
+        assert_eq!(validate_param_value(mac, 1.0), Ok(()), "宏上界本身必须放行");
+        assert_eq!(
+            validate_param_value(mac, 1.5),
+            Err(ModelError::MacroValueOutOfRange { value: 1.5 })
+        );
+        // 非有限值先于臂判定被拒（与臂无关的那条前置条件）。
+        assert_eq!(
+            validate_param_value(volume, f32::INFINITY),
+            Err(ModelError::NonFiniteValue {
+                field: "param.value",
+                value: f64::INFINITY,
+            })
+        );
+    }
 }

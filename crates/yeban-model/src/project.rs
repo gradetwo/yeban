@@ -5253,4 +5253,105 @@ mod tests {
             "validate 不得有通配兜底（fail-open 形态：新变体/新字段默认通过）"
         );
     }
+
+    /// **R58 单字段差异探针**：`RoutingGraph` 与 `ClipPlacement` 的 `==` 必须逐字段有牙。
+    ///
+    /// 为什么需要（第九轮 · R69 三形状）：本 crate 有**成批**依赖
+    /// `assert_eq!(back, graph)` / `assert_eq!(doc, before)` 的往返判据，
+    /// 靠的是 `derive PartialEq`。一旦某个字段的 `PartialEq` 被削弱成"该字段恒等"，
+    /// 那批判据会**同时变成空判据而无一变红**（第八轮 R58 对照实验已在 `Op` 上实测到）。
+    /// 本判据对每个字段各给一条"**只差这一个字段**"的 `assert_ne!`（形状③），并配正侧
+    /// `assert_eq!`；⛔ 不是"不同变体"那种假探针。
+    #[test]
+    fn routing_graph_and_clip_placement_equality_separate_every_field() {
+        let node_a = fixture_id(1);
+        let node_b = fixture_id(2);
+        let edge_id = fixture_id(10);
+        let edge = RoutingEdge {
+            id: edge_id,
+            source_node: node_a,
+            destination_node: node_b,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        };
+        let base = RoutingGraph {
+            nodes: vec![node_a, node_b],
+            edges: BTreeMap::from([(edge_id, edge)]),
+        };
+        assert_eq!(base, base.clone(), "同一值必须与自己相等（正侧）");
+        assert_ne!(
+            base,
+            RoutingGraph {
+                nodes: vec![node_a],
+                ..base.clone()
+            },
+            "只差 `nodes` 必须判为不同"
+        );
+        assert_ne!(
+            base,
+            RoutingGraph {
+                edges: BTreeMap::new(),
+                ..base.clone()
+            },
+            "只差 `edges` 必须判为不同"
+        );
+
+        let placement = ClipPlacement::default();
+        assert_eq!(
+            placement,
+            ClipPlacement::default(),
+            "同值必须相等（正侧；`ClipPlacement` 是 `Copy`, 不写 `.clone()`）"
+        );
+        assert_ne!(
+            placement,
+            ClipPlacement {
+                id: fixture_id(1),
+                ..placement
+            },
+            "只差 `id` 必须判为不同"
+        );
+        assert_ne!(
+            placement,
+            ClipPlacement {
+                clip_id: fixture_id(1),
+                ..placement
+            },
+            "只差 `clip_id` 必须判为不同"
+        );
+        assert_ne!(
+            placement,
+            ClipPlacement {
+                start_tick: 1,
+                ..placement
+            },
+            "只差 `start_tick` 必须判为不同"
+        );
+        assert_ne!(
+            placement,
+            ClipPlacement {
+                duration_ticks: 1,
+                ..placement
+            },
+            "只差 `duration_ticks` 必须判为不同"
+        );
+        assert_ne!(
+            placement,
+            ClipPlacement {
+                muted: true,
+                ..placement
+            },
+            "只差 `muted` 必须判为不同"
+        );
+        assert_ne!(
+            placement,
+            ClipPlacement {
+                loop_config: LoopConfig {
+                    enabled: true,
+                    ..placement.loop_config
+                },
+                ..placement
+            },
+            "只差 `loop_config.enabled` 必须判为不同"
+        );
+    }
 }
