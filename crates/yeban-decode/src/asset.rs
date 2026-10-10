@@ -1033,4 +1033,79 @@ mod tests {
             );
         }
     }
+
+    /// 判据（`PartialEq` 的**浮点面**）：[`DecodedAsset`] 的值相等与 [`DecodedAsset::pcm_hash`]
+    /// 相等**不是同一件事**，而且两个方向的差别**相反**。
+    ///
+    /// 量什么：三组"只差位型"的资产上，`==` 与 `pcm_hash()` 各自给出什么。
+    /// 怎么量：`DecodedAsset::new` 是 `pub(crate)`，本模块的判据可以直接构造资产（不经过解码，
+    /// 因为解码入口会拒掉非有限样本）。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 两份资产的差别 | `==` | `pcm_hash()` |
+    /// | :--- | :--- | :--- |
+    /// | `-0.0` vs `+0.0` | **相等**（IEEE 754：`-0.0 == 0.0`） | **不同**（摘要按位） |
+    /// | `NaN` vs `NaN`（同一位型） | **不等**（IEEE 754：`NaN != NaN`） | **相同**（同字节流） |
+    /// | `NaN` vs `NaN`（不同位型） | 不等 | 不同 |
+    ///
+    /// 结论：**内容寻址的键比 `PartialEq` 更严**（区分 `±0.0`），**同时在 NaN 上更宽**
+    /// （同一位型的 NaN 摘要相同，而值不相等）。两处都不是缺陷：
+    /// - 摘要的口径写死为"每个样本 `to_le_bytes()`"（见 [`DecodedAsset::pcm_hash`] 的文档），
+    ///   因此它必须区分 `±0.0`；
+    /// - `PartialEq` 派生自 `Vec<f32>`，因此继承 IEEE 的 `NaN != NaN`。
+    ///
+    /// ⚠ 使用建议（本判据顺带钉住）：**判断"两份资产是否同一份"要用 `pcm_hash()`，不要用
+    /// `==`** —— 前者与 CAS 的键同源。反过来，`==` 在含 NaN 的资产上连自反性都不成立，
+    /// 因此不能用于去重或缓存命中判定。
+    ///
+    /// 为什么需要它：`DecodedAsset` 是唯一**持有浮点样本且派生 `PartialEq`** 的公开类型
+    /// （其余派生 `PartialEq` 的类型只含整数/枚举字段）。本 crate 既有的判据全部用
+    /// `pcm_hash` 比较，因此这条不对称从来没有被写下来过。
+    ///
+    /// 注入（实测）：把 `pcm_hash` 里的 `sample.to_le_bytes()` 换成
+    /// `sample.abs().to_le_bytes()` ⇒ 本条的 `±0.0` 那一行红（两份资产的摘要变成相同）。
+    #[test]
+    fn asset_equality_and_the_content_hash_disagree_on_float_bit_patterns() {
+        let facts = DecodeFacts {
+            channels: 1,
+            sample_rate: 48_000,
+            pcm_format: PcmFormat::F32,
+            declared_bit_depth: Some(32),
+            declared_frames: Some(2),
+            encoder_delay_frames: None,
+            encoder_padding_frames: None,
+            duration: Reconciliation::Exact,
+        };
+        let signed_zero = DecodedAsset::new(facts.clone(), vec![0.0, -0.0]);
+        let flipped_zero = DecodedAsset::new(facts.clone(), vec![-0.0, 0.0]);
+        assert_eq!(
+            signed_zero, flipped_zero,
+            "IEEE 754 says -0.0 == 0.0, so the derived PartialEq must treat these as equal"
+        );
+        assert_ne!(
+            signed_zero.pcm_hash(),
+            flipped_zero.pcm_hash(),
+            "the content hash is defined over to_le_bytes(), so it MUST distinguish ±0.0"
+        );
+
+        let nan_a = DecodedAsset::new(facts.clone(), vec![f32::NAN, 0.5]);
+        let nan_b = DecodedAsset::new(facts.clone(), vec![f32::NAN, 0.5]);
+        assert_ne!(
+            nan_a, nan_b,
+            "IEEE 754 says NaN != NaN, so the derived PartialEq is not even reflexive here"
+        );
+        assert_eq!(
+            nan_a.pcm_hash(),
+            nan_b.pcm_hash(),
+            "the same NaN bit pattern is the same byte stream, so the hashes must agree"
+        );
+        // 不同位型的 NaN 是不同字节流，摘要必须不同（同一份资产里的"值相等"不参与摘要）。
+        let nan_other = DecodedAsset::new(facts, vec![f32::from_bits(f32::NAN.to_bits() | 1), 0.5]);
+        assert_ne!(
+            nan_a.pcm_hash(),
+            nan_other.pcm_hash(),
+            "a different NaN payload is a different byte stream"
+        );
+    }
 }
