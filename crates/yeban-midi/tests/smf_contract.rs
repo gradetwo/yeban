@@ -1484,6 +1484,14 @@ fn no_needle_is_bound_to_a_variable_before_being_searched() {
         1,
         "正对照：探针必须能发现已知坏样例"
     );
+    // ①′ R119 **near-miss 对照**：绑的名字是 `b`，真源码里只有 `contains(bb)` ⇒
+    // ⛔ 不许被误报（子串匹配的 `bb`/`b` 陷阱；本探针要求 `contains(<name>)` 整串含右括号）。
+    let near_miss = "let b = \"needdle\";\nassert!(doc.contains(bb));\n";
+    assert_eq!(
+        detector(near_miss).len(),
+        0,
+        "near-miss：`contains(bb)` 不许被 `contains(b)` 的探针误报（R119）"
+    );
     // ② 负对照：**已知不含**该形态的样例必须探不到。
     let known_good = "let n = 15;\nassert!(doc.contains(&format!(\"长度 {n}\")));\n";
     assert_eq!(detector(known_good).len(), 0, "负对照：不许误报");

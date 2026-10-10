@@ -549,7 +549,12 @@ mod tests {
             0..=143 => bits.code(0x30 + symbol, 8),
             144..=255 => bits.code(0x190 + (symbol - 144), 9),
             256..=279 => bits.code(symbol - 256, 7),
-            _ => bits.code(0xc0 + (symbol - 280), 8),
+            // ⭐ 固定表只定义到 **287**（RFC 1951 §3.2.6）。⛔ 不许用 `_` 兜底：
+            // `_ => bits.code(0xc0 + (symbol - 280), 8)` 会把 288..=u32::MAX **静默别名**
+            // 成 280..（例如 `fixed_symbol(b, 288)` 发的是 symbol **280** 的码），
+            // 于是"用这个助手写的判据"会**静默测错对象**。
+            280..=287 => bits.code(0xc0 + (symbol - 280), 8),
+            _ => panic!("fixed_symbol 只定义到 287，收到 {symbol}（会别名成别的符号）"),
         }
     }
 
@@ -1302,6 +1307,32 @@ mod tests {
                 "285 是合法长度码，⛔ 不许被这一支拒掉"
             ),
             other => panic!("285 之后缺距离码应当是另一个错误，得到 {other:?}"),
+        }
+    }
+
+    /// 判据 (类别: 测试助手的**上界守卫**): `fixed_symbol` 只定义到 **287**
+    /// （RFC 1951 §3.2.6 的固定表是 0..=287）⇒ **288 及以上必须立刻 panic**。
+    ///
+    /// 补的是哪个缺口（注入实测）：改前 `_ => bits.code(0xc0 + (symbol - 280), 8)`
+    /// 覆盖到 `u32::MAX` ⇒ `fixed_symbol(b, 288)` 发出的是 symbol **280** 的码 ⇒
+    /// ⭐ **用该助手写的判据会静默测错对象**（这正是本助手最危险的用法）。
+    /// ⚠️ 本判据自身是 `#[should_panic]`，其"已知红"＝**去掉那句 panic**
+    /// （此时本判据会因为"没有 panic"而变红）。
+    #[test]
+    #[should_panic(expected = "fixed_symbol 只定义到 287")]
+    fn fixed_symbol_rejects_symbols_above_the_fixed_table() {
+        let mut bits = BitWriter::new();
+        fixed_symbol(&mut bits, 288);
+    }
+
+    /// 判据 (R112 正对照): 上表的**最后一个**合法符号 **287** 必须**照常接受**
+    /// （⛔ 不许把守卫写成"把 280..=287 也一起拒掉"）。
+    #[test]
+    fn fixed_symbol_accepts_the_last_defined_symbol() {
+        for symbol in [280u32, 287] {
+            let mut bits = BitWriter::new();
+            fixed_symbol(&mut bits, symbol);
+            assert!(!bits.finish().is_empty(), "符号 {symbol} 必须被编码");
         }
     }
 }
