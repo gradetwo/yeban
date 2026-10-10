@@ -1427,11 +1427,14 @@ fn the_scanners_reject_bad_input_and_accept_good_input() {
         "扫描域里 ⛔ 不得包含 `tests/`（否则臂里的 token 会污染它自己检验的计数）"
     );
     // ⭐ **正对照（构造之后）**：扫描域必须**真的**含源文件，⛔ 否则上一条是真空的。
+    // ⚠ **P0 修复**：⛔ 不能对**原始**路径用 POSIX 后缀 —— Windows 上是 `…\src\lib.rs`，
+    // `ends_with("src/lib.rs")` 会**恒假** ⇒ 该正对照在 `windows` 腿上红（实测）。
+    // 修法：先走 `normalize_path`（POSIX 分隔符）再判后缀。
     assert!(
         scanned
             .iter()
-            .any(|p| p.to_string_lossy().ends_with("src/lib.rs")),
-        "扫描域必须包含 `src/lib.rs` ⇒ 上一条不是真空断言"
+            .any(|p| normalize_path(p, &root) == "src/lib.rs"),
+        "扫描域必须包含 `src/lib.rs` ⇒ 上一条不是真空断言（路径须先归一化）"
     );
 
     // ③ `has_integer_literal`：坏输入＝**浮点**字面量 ⇒ ⛔ 不得判为整数。
