@@ -842,13 +842,27 @@ mod tests {
             },
             "the payload participates in equality"
         );
+        // ⚠️ **判别式探针（假探针）**：只证明「不同变体不等」，**不**证明载荷参与比较
+        // （R58：`assert_ne!(Ok(()), Err(_))` 同形）。
         assert_ne!(
             SfzError::IncludeNotQuoted {
                 line: 1,
                 text: String::from("a")
             },
             SfzError::IncludeUnterminated { line: 1 },
-            "different variants must not compare equal"
+            "different variants differ (discriminant probe, not a payload probe)"
+        );
+        // ✅ 真探针（**同一变体、不同载荷**）：
+        assert_ne!(
+            SfzError::TooManyOpcodes {
+                scope: "region",
+                limit: 1
+            },
+            SfzError::TooManyOpcodes {
+                scope: "region",
+                limit: 2
+            },
+            "the limit payload participates in equality"
         );
         assert_ne!(
             SfzError::LineTooLong {

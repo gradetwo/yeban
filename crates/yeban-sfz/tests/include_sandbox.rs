@@ -1016,3 +1016,84 @@ fn source_and_payload_paths_are_the_display_relative_path() {
         "unexpected verdict: {error:?}"
     );
 }
+
+#[test]
+fn every_include_side_quota_at_zero_fires_its_own_check() {
+    // 与解析侧同一条纪律：6 个 include / glob 字段调到**极小（0）**时的可观测后果。
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "one.sfz", "x"); // 1 字节
+    write_file(root, "leaf.sfz", "<region>sample=a.wav\n");
+    write_file(root, "top.sfz", "#include \"leaf.sfz\"\n");
+    write_file(root, "parts/a.sfz", "<region>sample=a.wav\n");
+    write_file(root, "glob.sfz", "#include \"parts/*.sfz\"\n");
+    write_file(root, "kit/sub/deep.sfz", "<region>sample=deep.wav\n");
+    write_file(root, "deep.sfz", "#include \"kit/**/*.sfz\"\n");
+
+    let cases: &[(&str, ParseLimits, &str)] = &[
+        (
+            "one.sfz",
+            ParseLimits {
+                max_source_bytes: 0,
+                ..ParseLimits::default()
+            },
+            "source bytes",
+        ),
+        (
+            "top.sfz",
+            ParseLimits {
+                max_include_depth: 0,
+                ..ParseLimits::default()
+            },
+            "depth",
+        ),
+        (
+            "top.sfz",
+            ParseLimits {
+                max_include_files: 0,
+                ..ParseLimits::default()
+            },
+            "files",
+        ),
+        (
+            "glob.sfz",
+            ParseLimits {
+                max_glob_matches: 0,
+                ..ParseLimits::default()
+            },
+            "matches",
+        ),
+        (
+            "glob.sfz",
+            ParseLimits {
+                max_glob_scanned: 0,
+                ..ParseLimits::default()
+            },
+            "scanned",
+        ),
+        (
+            "deep.sfz",
+            ParseLimits {
+                max_glob_depth: 0,
+                ..ParseLimits::default()
+            },
+            "glob depth",
+        ),
+    ];
+    for (entry, limits, label) in cases {
+        let error = IncludeResolver::new(root, *limits)
+            .expect("base dir")
+            .resolve(entry)
+            .expect_err("a zero quota must be observable");
+        let matches_variant = match *label {
+            "source bytes" => matches!(error, SfzError::SourceTooLarge { limit: 0, .. }),
+            "depth" => matches!(error, SfzError::IncludeDepthExceeded { limit: 0 }),
+            "files" => matches!(error, SfzError::IncludeCountExceeded { limit: 0 }),
+            "matches" => matches!(error, SfzError::GlobMatchesExceeded { limit: 0, .. }),
+            "scanned" => matches!(error, SfzError::GlobScanExceeded { limit: 0, .. }),
+            // 唯一「静默」的限额：glob 深度 0 ⇒ 只剩基目录一层 ⇒ 变成无匹配。
+            _ => matches!(error, SfzError::IncludeNoMatch { .. }),
+        };
+        assert!(matches_variant, "{label}: unexpected verdict {error:?}");
+    }
+}

@@ -6128,4 +6128,42 @@ v127=1
             "a different note must not produce an equal spec"
         );
     }
+
+    #[test]
+    fn the_sample_path_matrix_covers_separators_dotdot_and_overlong_prefixes() {
+        // 第十一批的延伸（同一把尺子）：混合分隔符、多级 `..`、重复／尾随分隔符、
+        // UNC 形状前缀与**超长**前缀 —— 全部都是「原样拼接、不做规范化、不设长度上限」。
+        let long = "x".repeat(200);
+        let cases: Vec<(Option<&str>, &str, String)> = vec![
+            (Some("A/"), "sub\\k.wav", String::from("A/sub\\k.wav")),
+            (Some("A\\"), "sub/k.wav", String::from("A\\/sub/k.wav")),
+            (Some("A//B//"), "k.wav", String::from("A//B//k.wav")),
+            (Some("../../a"), "k.wav", String::from("../../a/k.wav")),
+            (Some(".."), "..", String::from("../..")),
+            (Some("a/b/c"), "d/e/f.wav", String::from("a/b/c/d/e/f.wav")),
+            (None, "a/../../b.wav", String::from("a/../../b.wav")),
+            (Some("/"), "/abs", String::from("/abs")),
+            (Some("A/"), "..", String::from("A/..")),
+            (Some("A/"), ".", String::from("A/.")),
+            (Some("A/"), "k.wav/", String::from("A/k.wav/")),
+            (
+                Some("\\\\srv\\share"),
+                "k.wav",
+                String::from("\\\\srv\\share/k.wav"),
+            ),
+            (Some(&long), "k.wav", format!("{long}/k.wav")),
+        ];
+        for (prefix, sample, expected) in &cases {
+            let mut region: Region<'_> = region(60, 1, 1);
+            region.default_path = (*prefix).map(Cow::Borrowed);
+            region.sample = Cow::Borrowed(sample);
+            assert_eq!(
+                region.sample_path(),
+                expected.as_str(),
+                "prefix={prefix:?} sample={sample:?}"
+            );
+        }
+        // 超长前缀不截断：200 字节前缀 + `/` + `k.wav`。
+        assert_eq!(cases[12].2.len(), long.len() + 6);
+    }
 }

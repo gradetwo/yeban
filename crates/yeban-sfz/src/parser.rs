@@ -2888,15 +2888,43 @@ mod tests {
             },
             "the payload participates in equality"
         );
+        // ⚠️ **判别式探针（假探针）**：`==` 先比变体判别式，所以这一条只证明「不同变体不等」，
+        // **不**证明载荷参与比较（R58 的 `assert_ne!(Ok(()), Err(_))` 同形）。保留它，
+        // 但**不能**把它算作载荷有牙的证据。
         assert_ne!(
             Warning::IncludeIgnored { line: 1 },
             Warning::RegionWithoutSample { line: 1 },
-            "different variants must not compare equal"
+            "different variants differ (discriminant probe, not a payload probe)"
         );
+        // ✅ 真探针（**同一变体、不同载荷**）—— 载荷参与比较的**唯一**证据：
         assert_ne!(
             Warning::IncludeIgnored { line: 1 },
             Warning::IncludeIgnored { line: 2 },
             "the line participates in equality"
+        );
+        assert_ne!(
+            Warning::MalformedSetCc {
+                line: 1,
+                opcode: String::from("set_cc7"),
+                value: String::from("1")
+            },
+            Warning::MalformedSetCc {
+                line: 1,
+                opcode: String::from("set_cc7"),
+                value: String::from("2")
+            },
+            "the value payload participates in equality"
+        );
+        assert_ne!(
+            Warning::IgnoredHeader {
+                line: 1,
+                name: String::from("sample")
+            },
+            Warning::IgnoredHeader {
+                line: 1,
+                name: String::from("other")
+            },
+            "the name payload participates in equality"
         );
     }
 
@@ -2945,6 +2973,145 @@ mod tests {
                 .warnings()
                 .iter()
                 .all(|warning| !matches!(warning, Warning::Truncated { .. }))
+        );
+    }
+
+    #[test]
+    fn every_parser_side_quota_at_zero_fires_its_own_check() {
+        // 第十一批的延伸：把每个限额**调到极小（0）**，逐字段钉住可观测后果。
+        // 0 是最极端的一侧（「关闭这一面的全部输入」），与第八批的「小值」层互补。
+        let error = parse_text(
+            "<region>sample=a.wav",
+            &ParseLimits {
+                max_line_bytes: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("line cap 0");
+        assert!(
+            matches!(error, SfzError::LineTooLong { limit: 0, .. }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "<region>sample=a.wav",
+            &ParseLimits {
+                max_regions: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("region cap 0");
+        assert!(
+            matches!(error, SfzError::TooManyRegions { limit: 0 }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "<region>sample=a.wav",
+            &ParseLimits {
+                max_opcodes_per_header: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("opcode cap 0");
+        assert!(
+            matches!(error, SfzError::TooManyOpcodes { limit: 0, .. }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "#define $A 1",
+            &ParseLimits {
+                max_defines: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("define cap 0");
+        assert!(
+            matches!(error, SfzError::TooManyDefines { limit: 0 }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "#define $A 1\n$A",
+            &ParseLimits {
+                max_macro_expansions_per_line: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("substitution cap 0");
+        assert!(
+            matches!(error, SfzError::MacroExpansionExceeded { limit: 0, .. }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "<curve>curve_index=7 v000=0",
+            &ParseLimits {
+                max_curves: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("curve cap 0");
+        assert!(
+            matches!(error, SfzError::TooManyCurves { limit: 0 }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "<effect>bus=main",
+            &ParseLimits {
+                max_effects: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("effect cap 0");
+        assert!(
+            matches!(error, SfzError::TooManyEffects { limit: 0 }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "<midi>",
+            &ParseLimits {
+                max_midi_sections: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("midi section cap 0");
+        assert!(
+            matches!(error, SfzError::TooManyMidiSections { limit: 0 }),
+            "{error:?}"
+        );
+
+        let error = parse_text(
+            "<midi>cc1=1",
+            &ParseLimits {
+                max_midi_opcodes: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect_err("midi opcode budget 0");
+        assert!(
+            matches!(error, SfzError::TooManyMidiOpcodes { limit: 0 }),
+            "{error:?}"
+        );
+
+        // `max_warnings = 0`：不是 `Err`，而是「一条实质告警都不留 + 标记」。
+        let instrument = parse_text(
+            "<x1>\n<region>sample=a.wav",
+            &ParseLimits {
+                max_warnings: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .expect("warnings never fail the parse");
+        assert_eq!(
+            instrument.warnings().to_vec(),
+            vec![Warning::Truncated {
+                kept: 0,
+                dropped: 1
+            }]
         );
     }
 }
