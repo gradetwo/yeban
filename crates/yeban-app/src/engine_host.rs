@@ -422,6 +422,14 @@ pub struct EngineHost {
     /// ⛔ 不许静默丢：没有写进去的值会在**下一跳**重算并重发（采样是幂等的：同一个
     /// `position_ticks` 给出同一批值），同时这里逐条计数 —— 控制面能看出"最近有没有丢"。
     automation_dropped: u64,
+    /// **最近一份工程**（R68 修的缓存）：自动化采样在"标记没变"的那些跳也要进行。
+    ///
+    /// 生产路径（`src/main.rs` 的 16 ms 定时器）只在**标记变了**的那一跳才
+    /// `try_project()`（那一跳的成本契约是"没改就不克隆工程"），其余各跳传给
+    /// [`Self::publish_automation`] 的是 `None`。因此采样不能挂在入参上 ——
+    /// 否则自动化**只在工程改动的那一跳生效**（静默丢失）。这里保留最近一份克隆，
+    /// 克隆次数与既有成本契约**完全相同**（还是只在那一跳）。
+    automation_project: Option<YebanProjectV1>,
     /// **设备腿**：已经交给真实声卡的那条流（[`EngineHost::open_device`]）。
     ///
     /// `Some` ⇒ `runtime` 是 `None`（`EngineRuntime` 已经 **move 进** cpal 的回调闭包，
@@ -821,7 +829,17 @@ impl EngineHost {
     ///
     /// 只处理 [`AutomationTarget::TrackVolume`]（音轨与主总线两个槽位）；
     /// `TrackPan` 由 P4 单独裁决（另票），这里**不**碰。
-    pub fn publish_automation(&mut self, project: &YebanProjectV1) -> usize {
+    pub fn publish_automation(&mut self, project: Option<&YebanProjectV1>) -> usize {
+        // **工程缓存（R68 修的那一处）**：生产路径只在"标记变了"的那一跳才 `try_project()`
+        // ⇒ 其余各跳传的是 `None`。若采样直接挂在入参上，自动化就**只在工程改动的那一跳
+        // 生效** —— 那不是"没采集"，是**静默丢失**。因此：`Some(..)` 时更新缓存，
+        // 之后每一跳都用缓存里的那一份采样（克隆仍只发生在本来就克隆的那一跳）。
+        if let Some(project) = project {
+            self.automation_project = Some(project.clone());
+        }
+        let Some(project) = self.automation_project.as_ref() else {
+            return 0;
+        };
         let tick = self.transport().position_ticks;
         let mut batch = [EngineEvent::Idle; PARAM_SLOTS];
         let mut len = 0usize;
@@ -1582,12 +1600,29 @@ mod tests {
             expected_tick,
             "采样时点必须由音频时钟（4 量子 = 512 帧 = 20 tick）给出"
         );
-        let written = host.publish_automation(&project);
+        // R58：等号判据要有一条 `assert_ne!` 落在**同一个**表达式上。这里它同时钉住一条
+        // **实测教训**：`reload` 之后 `position_ticks` **不是 0**（曾经的错误假设在 CI 上红过）。
+        assert_ne!(
+            host.transport().position_ticks,
+            0,
+            "时点不得是「停住不动」的 0（`reload` 会推量子 ⇒ 它必须前进）"
+        );
+        // 第 1 跳传 `Some`（= 生产在"标记变了"那一跳的形态）⇒ 更新缓存并下发。
+        let written = host.publish_automation(Some(&project));
         assert!(written >= 1, "开着的泳道必须至少下发一条（实得 {written}）");
-        let again = host.publish_automation(&project);
+        // ⭐ **R68：生产的常态是 `None`**（`src/main.rs` 的定时器只在标记变了时才
+        // `try_project()`）。若采样挂在入参上，这里会**静默返回 0** —— 那正是本判据要抓的
+        // 缺陷（自动化只在工程改动的那一跳生效）。有了工程缓存，`None` 跳必须给出**同一批**。
+        let again = host.publish_automation(None);
         assert_eq!(
             again, written,
-            "同一个采样时点重复采样必须给出同一批条数（幂等）"
+            "`None` 跳必须仍然从**缓存的工程**里采样并给出同一批条数（R68）"
+        );
+        // R58：同一条 `==` 上的 `assert_ne!` —— 同时钉住本票修的缺陷本身：
+        // `None` 跳**绝不允许**返回 0（那正是"采样挂在入参上"时的行为）。
+        assert_ne!(
+            again, 0,
+            "`None` 跳返回 0 就是 R68 修的静默丢失（自动化只在工程改动的那一跳生效）"
         );
         assert_eq!(
             host.automation_counts(),
@@ -1595,7 +1630,7 @@ mod tests {
             "计数必须逐条对得上，且这一路没有丢"
         );
 
-        // 关掉读开关 ⇒ 一条都不发，且不产生任何计数。
+        // 关掉读开关（同样用 `Some` 更新缓存）⇒ 一条都不发，且不产生任何计数。
         let before = host.automation_counts();
         project
             .tracks
@@ -1603,7 +1638,16 @@ mod tests {
             .expect("那条轨必须在")
             .automation_lanes
             .insert(target, lane(false));
-        assert_eq!(host.publish_automation(&project), 0, "关掉的泳道不得下发");
+        assert_eq!(
+            host.publish_automation(Some(&project)),
+            0,
+            "关掉的泳道不得下发"
+        );
+        assert_eq!(
+            host.publish_automation(None),
+            0,
+            "关掉的泳道在 `None` 跳也不得下发"
+        );
         assert_eq!(host.automation_counts(), before, "关掉的泳道不产生任何计数");
     }
 }

@@ -257,6 +257,12 @@ fn production_loop_start_adopts_the_engine_meter_consumer() {
         production.meters().has_collector(),
         "ProductionLoop::start 必须把 EngineRebuild::collector 采纳进来"
     );
+    // 与 `src/main.rs:253` **同一行**：开局把当前标记记下 ⇒ 之后"标记没变"的跳
+    // `should_publish` 为假（那条成本契约"没改就不克隆工程"的前提）。
+    production
+        .engine_handle()
+        .borrow_mut()
+        .mark_applied(EditMark::new(None, 0));
 
     let mut quanta = Vec::new();
     let mut label_rows: Vec<Vec<String>> = Vec::new();
@@ -264,15 +270,17 @@ fn production_loop_start_adopts_the_engine_meter_consumer() {
         // 设备回调那一侧的替身：真的推**一个**量子（`process_quantum` 就是 cpal 回调
         // 会调的那一个函数，只是这里由本线程显式驱动）。
         production.engine_handle().borrow_mut().drive_audio(1);
-        // ⭐ **R68：生产路径必须把工程传进去**（`run_gui` 走的就是 `Some(&project)`）。
-        // ⛔ 传 `None` 会让 `EngineHost::publish_automation` 整段不跑 ⇒ 自动化泳道被静默丢弃，
-        // 而那正是 R55 要修的东西。`Some` 之后 0 号轨的电平**会跟着泳道走**（本判据的
-        // 8 跳读数因此会变，字面值按 CI 重录，见模块文档）。
+        // ⭐ **R68：按生产路径的形态传工程**（`src/main.rs` 的 16 ms 定时器）：
+        // 只有"标记变了"的那一跳才 `try_project()` ⇒ 那一跳传 `Some`，其余各跳传 `None`。
+        // 第 0 跳传 `Some`（把工程交给 `EngineHost` 的缓存），之后 7 跳传 `None`
+        // —— **自动化必须仍然每一跳都生效**（采样用的是缓存里那一份）。
+        // ⛔ 若把采样挂在入参上，那 7 跳就会静默不下发（R68 修的正是这一处）。
+        let project_arg = if tick_no == 0 { Some(&project) } else { None };
         let tick = production.tick(
             window.ui(),
             &window.view,
             EditMark::new(None, 0),
-            Some(&project),
+            project_arg,
         );
         let MeterPump::Applied(snapshot) = &tick.meters else {
             panic!(

@@ -1972,8 +1972,9 @@ impl ProductionLoop {
         let readings = engine.heartbeat();
         // **④ R55：自动化泳道 → `SetParam`**（与前三步同一个 tick、同一个 UI 线程）。
         //
-        // 为什么在这里、而不是在 `EngineHost` 内部：泳道与"静态音量"都在**工程**里，
-        // 而工程由本循环持有（`EngineHost` 只持 `EditMark`）。
+        // 为什么在这里、而不是在 `EngineHost` 内部：采样必须是**每一跳**都发生的事，
+        // 而它需要工程；工程的克隆按成本契约只在"标记变了"的那一跳做 ⇒ 由 `EngineHost`
+        // 缓存最近一份（见下一段的 R68 说明）。
         //
         // 采样时点 = `EngineHost::transport().position_ticks`（RT→UI 镜面 = **音频时钟**）
         // ⇒ 同一个工程在同一条音频时间线上给出同一批值（⛔ 没有任何墙钟输入）；
@@ -1983,9 +1984,12 @@ impl ProductionLoop {
         //
         // 60 Hz 够不够：τ = 5 ms ⇒ 16.67 ms 心跳 = 3.33 τ ⇒ 每步收敛 ≈96.4 %；
         // 保真上限 ≈10–15 Hz（够推子/渐强，不够音频速率调制）。
-        if let Some(project) = project {
-            engine.publish_automation(project);
-        }
+        //
+        // ⚠ **R68**：把**入参原样**传进去，⛔ 不要写 `if let Some(p) { … }` —— 生产循环
+        // （`src/main.rs` 的 16 ms 定时器）只在"标记变了"的那一跳 `try_project()`，
+        // 其余各跳传的是 `None`；`EngineHost` 缓存最近一份工程 ⇒ 采样**每一跳都进行**。
+        // 在这里判 `Some` 会让自动化只在工程改动的那一跳生效（静默丢失）。
+        engine.publish_automation(project);
         drop(engine);
         ProductionTick {
             published_revision,
