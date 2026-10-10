@@ -23,8 +23,10 @@
 //!
 //! ## 已登记的局限（如实，⛔ 不假装能核）
 //! - 文本扫描器**无法**核实 ⑥ 的正对照与目标**同类型**（R104 同族）。
-//! - 本判据只覆盖 `assert!` 里**直接出现**的 `.all(`／`.any(` 形态；把量词结果先存进
-//!   变量再断言（`let ok = x.iter().all(..); assert!(ok);`）**绕过**本判据（R104）。
+//! - **绑变量绕过已收窄**（第二十批）：`let ok = x.iter().all(..); assert!(ok);` 这一形态
+//!   **现在会被追踪**（`bound_quantifier_root`），并且 `let w = v.regions();` 这类**简单绑定链**
+//!   会沿链**逐跳**寻找界（`resolve_one`）。仍然盲的形态：块绑定（`let ok = { .. };`）、
+//!   把量词结果**传出去**（返回 `bool` 的辅助函数）、以及运行期构造的集合名。
 //! - 只扫 `src/**`（`tests/**` 由同族判据在各自的库里覆盖）。
 
 use std::fs;
@@ -109,8 +111,13 @@ fn mask(source: &str) -> String {
 
 /// 量词断言里**被量化集合的根绑定**（`v.iter().all(..)` ⇒ `v`；`!c.iter().any(..)` ⇒ `c`）。
 fn quantified_root(body: &str) -> Option<String> {
+    // ① 绑定式（`let ok = x.iter().all(..); assert!(ok);`）—— 第十九批登记的盲区已收窄。
+    if let Some(root) = bound_quantifier_root(body) {
+        return Some(root);
+    }
+    // ② 直接式
     let mut rest = body;
-    while let Some(index) = rest.find("assert!(") {
+    while let Some(index) = find_token(rest, "assert!(") {
         let tail = &rest[index..];
         let end = tail.find(");").map(|e| e + 1).unwrap_or(tail.len());
         let call = &tail[..end.min(tail.len())];
@@ -129,6 +136,24 @@ fn quantified_root(body: &str) -> Option<String> {
             }
         }
         rest = &tail[2..];
+    }
+    None
+}
+
+/// R133：`find` 的**标识符边界**版本。
+///
+/// ⛔ `find("assert!(")` 会被 `my_assert!(` 骗到；`find("for ")` 会被 `before ` 骗到。
+/// 这里要求 token **左侧**不是标识符字符（token 自带 `!`／`(`／空格 ⇒ 右侧无需再判）。
+fn find_token(hay: &str, token: &str) -> Option<usize> {
+    let bytes = hay.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut from = 0usize;
+    while let Some(rel) = hay[from..].find(token) {
+        let start = from + rel;
+        if start == 0 || !is_word(bytes[start - 1]) {
+            return Some(start);
+        }
+        from = start + 1;
     }
     None
 }
@@ -153,6 +178,79 @@ fn mentions_ident(hay: &str, ident: &str) -> bool {
         from = start + 1;
     }
     false
+}
+
+/// 简单绑定表：`let <name> = <expr>;`（含类型标注）⇒ `name → expr`。
+///
+/// 只认**单语句、无块**的绑定；遇到块（`{`）或宏体就放弃该条（⛔ 不猜）。
+fn let_bindings(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for stmt in statements(body) {
+        let trimmed = stmt.trim_start();
+        let Some(rest) = trimmed.strip_prefix("let ") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let after_name = &rest[name.len()..];
+        let Some(eq) = after_name.find('=') else {
+            continue;
+        };
+        let rhs = after_name[eq + 1..].trim();
+        if rhs.starts_with('{') {
+            continue;
+        }
+        out.push((name, rhs.to_string()));
+    }
+    out
+}
+
+/// **一步**解析：`let <name> = <rhs>;` ⇒ `<rhs>` 的根（无绑定或自指 ⇒ `None`）。
+fn resolve_one(body: &str, name: &str) -> Option<String> {
+    let bindings = let_bindings(body);
+    let (_, rhs) = bindings.iter().find(|(n, _)| n == name)?;
+    let next: String = rhs
+        .trim_start_matches('&')
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if next.is_empty() || next == name {
+        None
+    } else {
+        Some(next)
+    }
+}
+
+/// 绑定式的量词断言：`let ok = <expr 含 .all(/.any(>;` 且本体内有 `assert!(ok`／`assert!(!ok`。
+///
+/// 这是第十九批登记的盲区（a）：**先把量词结果存进变量再断言**。
+/// 现在**追踪这一种简单绑定**（更复杂的形态仍盲，见模块文档）。
+fn bound_quantifier_root(body: &str) -> Option<String> {
+    for (name, rhs) in let_bindings(body) {
+        if !rhs.contains(".all(") && !rhs.contains(".any(") {
+            continue;
+        }
+        let asserted = body.contains(&format!("assert!({name}"))
+            || body.contains(&format!("assert!({name},"))
+            || body.contains(&format!("assert!(!{name}"));
+        if !asserted {
+            continue;
+        }
+        let root: String = rhs
+            .trim_start_matches('&')
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !root.is_empty() {
+            return Some(root);
+        }
+    }
+    None
 }
 
 /// 把函数体粗切成语句（`;` 与花括号）。
@@ -199,7 +297,7 @@ fn has_non_vacuity_evidence(body: &str, root: Option<&str>) -> bool {
 /// 有没有 `for <pat> in <字面量/范围/常量>`，且**该迭代表达式的根是 `root`**。
 fn iterates_literal(body: &str, root: &str) -> bool {
     let mut rest = body;
-    while let Some(index) = rest.find("for ") {
+    while let Some(index) = find_token(rest, "for ") {
         if let Some(rel) = rest[index..].find(" in ") {
             let after = rest[index + rel + " in ".len()..].trim_start();
             let head: String = after
@@ -245,12 +343,21 @@ fn non_empty_call(body: &str) -> bool {
 
 /// ⑦ 字面量集合：`for <pat> in <expr>` 且 **`<expr>` 本身**是字面量数组／固定范围／全大写常量。
 ///
-/// ⚠️ 必须**锚定到 `for` 的迭代表达式**：早先写成"body 里含 `..`"⇒ 几乎每个测试体
-/// 都因别处的 `0..3` 被判为"非真空" ⇒ 判据**形同虚设**（实测：删掉一处的 `len()` 下界后
-/// 判据仍全绿）。这正是 R108「每条分类路径都要喂已知红」的实例。
+/// ⚠️ 必须**锚定到 `for` 的迭代表达式**，⛔ 不能写成"body 里含 `..`"。
+/// **实测（R131：可证伪的推断先量再写）**：本 crate 448 个测试函数里**只有 33%** 的体内含 `..`；
+/// 含量词断言的 16 个里，旧宽写法会漏判 **2/16**（`r131_measure.py` 的读数）。
+/// 复核命令：`python3 -B .mod-sfz/r131_measure.py`。
+///
+/// ⚠️ **并更正一条我曾写错的根因**：第十八批我说"旧判据因 `..` 太宽而形同虚设"。
+/// 两次**受控实验**（把 `A1`＝删掉一句 `len()` 界注入进去）给出相反结论：
+/// - 把 **④ 值界**加回分类器 ⇒ **GREEN（1 passed）** ⇒ **④ 才是当时放行它的原因**；
+/// - 去掉 ④、只保留**旧宽 ⑦** ⇒ **RED** ⇒ 旧宽 ⑦ **不是**那次假绿的原因。
+///   复现命令：在证据判定里加回 `stmt.contains("vec![")` 那一支（或按 git 历史取 `dd1ed5b~1` 的版本），
+///   再施加 `A1` 后跑 `cargo test -p yeban-sfz --test assertion_discipline`。
+///   ⇒ R118（只认**界定集合大小**的界）**同时**修掉了这两处：去掉了 ④⑤，也锚定了 ⑦。
 fn literal_iteration(body: &str) -> bool {
     let mut rest = body;
-    while let Some(index) = rest.find("for ") {
+    while let Some(index) = find_token(rest, "for ") {
         if let Some(rel) = rest[index..].find(" in ") {
             let after = rest[index + rel + " in ".len()..].trim_start();
             let head: String = after
@@ -274,7 +381,7 @@ fn literal_iteration(body: &str) -> bool {
 /// 正对照：存在**正极性**的 `assert!(… any(`（R112）。
 fn positive_any(body: &str) -> bool {
     let mut rest = body;
-    while let Some(index) = rest.find("assert!(") {
+    while let Some(index) = find_token(rest, "assert!(") {
         let tail = &rest[index..];
         let end = tail.find(");").map(|e| e + 1).unwrap_or(tail.len());
         let call = &tail[..end.min(tail.len())];
@@ -293,7 +400,7 @@ fn functions(source: &str) -> Vec<(String, String)> {
     let bytes = masked.as_bytes();
     let mut out = Vec::new();
     let mut search = 0usize;
-    while let Some(rel) = masked[search..].find("fn ") {
+    while let Some(rel) = find_token(&masked[search..], "fn ") {
         let start = search + rel;
         let name_start = start + 3;
         let name_end = masked[name_start..]
@@ -327,10 +434,51 @@ fn functions(source: &str) -> Vec<(String, String)> {
     out
 }
 
+/// R131：把**缺界的那一句**摘出来（含量词断言的那条语句）。
+fn quantified_snippet(body: &str, root: Option<&str>) -> String {
+    for stmt in statements(body) {
+        if !stmt.contains(".all(") && !stmt.contains(".any(") {
+            continue;
+        }
+        if root.is_some_and(|r| !mentions_ident(stmt, r)) {
+            continue;
+        }
+        let trimmed = stmt.trim();
+        return if trimmed.len() > 160 {
+            format!("{}…", &trimmed[..160])
+        } else {
+            trimmed.to_string()
+        };
+    }
+    "<未定位到量词语句 —— 先怀疑检查器>".to_string()
+}
+
+/// 本函数体内的量词断言是否**有界**（先按原根，再按 `resolve_root` 回溯的根各试一次）。
+fn is_evidenced(body: &str) -> bool {
+    let Some(root) = quantified_root(body) else {
+        return has_non_vacuity_evidence(body, None);
+    };
+    // 沿绑定链**逐跳**都试一次（⛔ 不能只试链尾：`w → v → f` 里界常写在中途的 `v` 上）。
+    let mut current = root.clone();
+    for _ in 0..5 {
+        if has_non_vacuity_evidence(body, Some(current.as_str())) {
+            return true;
+        }
+        let Some(next) = resolve_one(body, &current) else {
+            break;
+        };
+        current = next;
+    }
+    has_non_vacuity_evidence(body, Some(root.as_str()))
+}
+
 /// 量化断言：`assert!( … .all(` 或 `assert!( ! … .any(`（两类真空面）。
 fn is_quantified_assertion(body: &str) -> bool {
+    if bound_quantifier_root(body).is_some() {
+        return true;
+    }
     let mut rest = body;
-    while let Some(index) = rest.find("assert!(") {
+    while let Some(index) = find_token(rest, "assert!(") {
         let tail = &rest[index..];
         let end = tail.find(");").map(|e| e + 1).unwrap_or(tail.len());
         let call = &tail[..end.min(tail.len())];
@@ -359,6 +507,10 @@ fn self_test_classifier() {
         "let v = f(); assert!(!v.iter().any(|x| *x > 0)); let c = g(); assert!(c.iter().any(|x| *x > 0));",
         // ⑦ 字面量集合
         "for x in [1, 2, 3] { assert!(x > 0); }",
+        // 绑定式（盲区收窄）：量词结果先存变量，但**界在同一函数里对同一根给出**
+        "let v = f(); let ok = v.iter().all(|x| *x > 0); assert!(ok); assert!(v.len() >= 3);",
+        // 绑定式且界指向**绑定的**那个集合（`w`）—— 通过 resolve_root 回溯
+        "let v = f(); let w = v.regions(); let ok = w.iter().all(|x| *x > 0); assert!(ok); assert_eq!(v.regions().len(), 3);",
         // ② 的**实参换序**（必须同样被接受）
         "let v = f(); assert_eq!(4, v.len()); assert!(v.iter().all(|x| *x > 0));",
     ];
@@ -371,6 +523,8 @@ fn self_test_classifier() {
         "let v = f(); let mut checked = 0; for x in &v { checked += 1; } assert!(checked >= 3); assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ R119：近名（`bb` 不得给 `b` 记界）
         "let v = f(); let bb = g(); assert!(bb.len() >= 2); assert!(v.iter().all(|x| *x > 0));",
+        // ⚠️ 绑定式但**没有界** ⇒ 必须报无界（这是第十九批的盲区，现已收窄）
+        "let v = f(); let ok = v.iter().all(|x| *x > 0); assert!(ok);",
         // ⚠️ 专打 ⑦ 的过宽：别处有 `..`，但被量化的集合**不是**字面量
         "let v = f(); for i in 0..3 { let _ = i; } assert!(v.iter().all(|x| *x > 0));",
         // ⚠️ 同上：别处有 `for … in [..]`，但被量化的集合不是它
@@ -379,7 +533,7 @@ fn self_test_classifier() {
     for (index, body) in greens.iter().enumerate() {
         // 绿夹具只要求「被判为非真空」（⑦ 那种是**循环**而不是量词断言，不适用量化检查）。
         assert!(
-            has_non_vacuity_evidence(body, quantified_root(body).as_deref()),
+            is_evidenced(body),
             "green {index} must be accepted as non-vacuous: {body}"
         );
     }
@@ -388,11 +542,32 @@ fn self_test_classifier() {
             is_quantified_assertion(body),
             "red {index} must be quantified"
         );
+        assert!(!is_evidenced(body), "red {index} must be rejected: {body}");
+    }
+    // R133：**近名对照** —— `my_assert!(` ⛔ 不得被当成 `assert!(`；`before ` ⛔ 不得被当成 `for `。
+    let decoys = [
+        "let v = f(); my_assert!(v.iter().all(|x| *x > 0));",
+        "let v = f(); x_assert!(v.iter().all(|x| *x > 0));",
+    ];
+    for (index, body) in decoys.iter().enumerate() {
         assert!(
-            !has_non_vacuity_evidence(body, quantified_root(body).as_deref()),
-            "red {index} must be rejected: {body}"
+            !is_quantified_assertion(body),
+            "decoy {index} must not be counted as a quantified assertion: {body}"
         );
     }
+    assert!(find_token("my_assert!(x)", "assert!(").is_none(), "R133");
+    assert_eq!(find_token("before x in y", "for "), None, "R133");
+    assert!(find_token("assert!(x)", "assert!(").is_some(), "R133 正例");
+
+    // R134：跨平台红的第一嫌疑是**行尾** —— 归一化后 CRLF 与 LF 的判读必须一致。
+    let lf = "let v = f();\nassert!(v.len() >= 2);\nassert!(v.iter().all(|x| *x > 0));\n";
+    let crlf = lf.replace('\n', "\r\n");
+    assert_eq!(
+        is_evidenced(&crlf.replace("\r\n", "\n")),
+        is_evidenced(lf),
+        "R134: CRLF must not change the verdict (normalize before scanning)"
+    );
+
     // R113：掩码逐字节等长（含多字节内容）
     let raw = "// 中文注释 assert_ne!(1, 2)\nlet a = \"中文\";\nlet b = 3;\n";
     assert_eq!(mask(raw).len(), raw.len(), "the mask must be byte-wise");
@@ -416,15 +591,23 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         root.join("tests").join("support"),
     ];
     let mut sources = Vec::new();
+    let mut crlf_files = 0usize;
     for dir in &dirs {
         for entry in fs::read_dir(dir).expect("read source dir") {
             let path = entry.expect("dir entry").path();
             if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                let text = fs::read_to_string(&path).expect("read source");
+                let raw = fs::read_to_string(&path).expect("read source");
+                // R134：跨平台红的第一嫌疑是**行尾**（内存 LF vs Windows 检出 CRLF）⇒
+                // 归一化后再扫描；把"有 CRLF 的文件数"作为**诊断**打印，⛔ 不作失败条件。
+                let text = raw.replace("\r\n", "\n");
+                if raw.len() != text.len() {
+                    crlf_files += 1;
+                }
                 sources.push((path, text));
             }
         }
     }
+    eprintln!("R134 诊断：含 CRLF 的源文件数 = {crlf_files}（归一化后扫描；⛔ 不是失败条件）");
     // ⭐ R93：先钉住被扫集合**非空且达下界** —— 否则本判据会随着"文件没读到"真空通过。
     assert!(
         sources.len() >= 12,
@@ -445,8 +628,15 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
         for (name, body) in functions(text) {
             scanned += 1;
             let root = quantified_root(&body);
-            if is_quantified_assertion(&body) && !has_non_vacuity_evidence(&body, root.as_deref()) {
-                offenders.push(format!("{}::{name}", path.display()));
+            if is_quantified_assertion(&body) && !is_evidenced(&body) {
+                // R131：报"缺界"时**必须能指出缺的是哪一句**（否则先怀疑检查器）。
+                // 这里把**量词断言那一句本身**摘出来（根绑定／提示根名），便于复核。
+                let snippet = quantified_snippet(&body, root.as_deref());
+                offenders.push(format!(
+                    "{}::{name}（根 = {:?}）缺界的那一句： {snippet}",
+                    path.display(),
+                    root.as_deref().unwrap_or("<无>")
+                ));
             }
         }
     }
