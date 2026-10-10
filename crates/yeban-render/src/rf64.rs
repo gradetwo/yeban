@@ -5465,6 +5465,8 @@ mod tests {
     /// 主判据（`the_written_container_bytes_are_pinned`）只钉 8 帧那一种形状。
     /// **零长度 `data`** 走的是"`data_size == 0`"的分支; **奇数长度**会多出 RIFF 的
     /// **补位字节**（这是写入器里唯一一处"长度不是 2 的倍数"的路径）。
+    /// ⚠ 夹具必须直接给**字节数**为奇数的载荷: `payload(frames)` 返回 `frames * 4` 字节,
+    /// 帧数为奇数**并不**让载荷变成奇数（本机第一次就踩了这个坑, 见判据内的注释）。
     /// 两端的字节流各自有独立的失败模式（漏写 `data` chunk / 漏写补位字节 / 补位写成非零）,
     /// 而语义判据只看"读回来是否相等"。
     ///
@@ -5474,7 +5476,7 @@ mod tests {
     ///
     /// # 量的是什么（对象 + 单位）
     ///
-    /// 对象: 2 个容器（`data` = 0 字节 / 3 字节，单位: 字节）。读数: 2 个字节数 ＋ 2 个 SHA-256。
+    /// 对象: 2 个容器（`data` = **0 字节** / **7 字节**，单位: 字节）。读数: 2 个字节数 ＋ 2 个 SHA-256。
     ///
     /// # 非空证明
     ///
@@ -5482,21 +5484,30 @@ mod tests {
     /// 或"零长度直接跳过"的改法会在这里分开。
     #[test]
     fn the_written_container_bytes_at_the_size_extremes_are_pinned() {
-        let cases: [(&str, usize, usize, &str); 2] = [
-            ("零字节载荷", 0, RIFF_EMPTY_BYTES, RIFF_EMPTY_SHA256),
-            ("奇数载荷（补位路径）", 3, RIFF_ODD_BYTES, RIFF_ODD_SHA256),
+        // ⚠ 本机实测教训: `payload(frames)` 返回的是 `frames * 4` 字节（立体声 16 位）
+        // ⇒ **帧数是奇数并不等于载荷字节数是奇数**。要真的走 RIFF 补位路径,
+        // 载荷**字节数**必须是奇数, 因此第二个夹具直接给 7 个字节。
+        let zero: Vec<u8> = Vec::new();
+        let odd: Vec<u8> = vec![0x11; 7];
+        let cases: [(&str, &[u8], usize, &str); 2] = [
+            ("零字节载荷", &zero, RIFF_EMPTY_BYTES, RIFF_EMPTY_SHA256),
+            (
+                "奇数载荷 7 字节（补位路径）",
+                &odd,
+                RIFF_ODD_BYTES,
+                RIFF_ODD_SHA256,
+            ),
         ];
-        for (label, frames, expected_len, expected_digest) in cases {
-            let data = payload(frames);
+        for (label, data, expected_len, expected_digest) in cases {
             let plan = ContainerPlan::for_payload(
                 ContainerKind::Riff,
                 stereo_16bit(),
                 data.len() as u64,
-                frames as u64,
+                8,
                 None,
             );
             let mut file = Vec::new();
-            write_container(&mut file, &plan, &data).expect("写入");
+            write_container(&mut file, &plan, data).expect("写入");
             assert_eq!(file.len(), expected_len, "{label}: 字节数");
             use sha2::{Digest, Sha256};
             let digest = Sha256::digest(&file)
@@ -5505,18 +5516,13 @@ mod tests {
                 .collect::<String>();
             assert_eq!(digest, expected_digest, "{label}: 字节流");
         }
-        // 非空证明: 两端的载荷长度不同, 且**一个偶数一个奇数**（奇数那一端会走补位路径）。
-        assert_ne!(cases[0].1, cases[1].1, "两端载荷长度必须不同");
-        let parities: Vec<usize> = cases.iter().map(|(_, frames, ..)| frames % 2).collect();
+        // 非空证明: 两端的**载荷字节数**不同, 且一个偶数一个奇数（奇数那一端真的走补位）。
+        assert_ne!(cases[0].1.len(), cases[1].1.len(), "两端载荷字节数必须不同");
+        let parities: Vec<usize> = cases.iter().map(|(_, data, ..)| data.len() % 2).collect();
+        assert_eq!(parities[0], 0, "一端是**偶数**字节（零长度也是偶数）");
         assert_eq!(
-            parities.iter().filter(|parity| **parity == 0).count(),
-            1,
-            "一端是偶数长度"
-        );
-        assert_eq!(
-            parities.iter().filter(|parity| **parity == 1).count(),
-            1,
-            "另一端是奇数长度（走 RIFF 补位）"
+            parities[1], 1,
+            "另一端是**奇数**字节（0x11 × 7 ⇒ 走 RIFF 补位）"
         );
     }
 
@@ -5526,8 +5532,8 @@ mod tests {
     const RIFF_EMPTY_SHA256: &str =
         "4872b61c768dff943f9e021453d816f06e35adc8edd88ef183301f03e31b94a5";
     /// 3 字节载荷的容器字节数（实测）。
-    const RIFF_ODD_BYTES: usize = 56;
+    const RIFF_ODD_BYTES: usize = 52;
     /// 3 字节载荷的 SHA-256（实测）。
     const RIFF_ODD_SHA256: &str =
-        "8452b884197a9cc2d68e2263e299f059104a99e786a9d2df17323a16d6d97c06";
+        "8fee97a841397fd063d7f0dcb928797c3a8c46967edd4b9b3aba55f117244ce2";
 }
