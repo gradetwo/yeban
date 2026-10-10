@@ -28,6 +28,7 @@
 //! 本文件的断言全部只走**公开 API ＋ 字面值**，不含超越函数的精确值钉法（裁决 R24/R25）。
 
 use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams, FilterParams};
+use yeban_dsp::comb::CombFilter;
 use yeban_dsp::compressor::{Compressor, CompressorParams};
 use yeban_dsp::convolution::Convolution;
 use yeban_dsp::convolution_reverb::ConvolutionReverbParams;
@@ -37,8 +38,15 @@ use yeban_dsp::drums::{
     ClapParams, DRUM_SLOTS, DrumHit, DrumKitParams, DrumMachine, DrumVoice, HiHatParams,
     KickParams, SnareParams,
 };
+use yeban_dsp::envelope::Adsr;
+use yeban_dsp::filter::LadderFilter;
+use yeban_dsp::limiter::Limiter;
+use yeban_dsp::loop_window::LoopWindow;
 use yeban_dsp::math::{db_to_gain, lerp};
+use yeban_dsp::meter::LevelDetector;
 use yeban_dsp::meter::{TruePeakDetector, dbfs};
+use yeban_dsp::noise::NoiseGen;
+use yeban_dsp::oscillator::LfoWave;
 use yeban_dsp::oversample::Oversampler2x;
 use yeban_dsp::polysynth::PolySynthParams;
 use yeban_dsp::polysynth::{NoteEvent, OscSettings, PolySynth, VOICES_PER_SLOT};
@@ -555,5 +563,218 @@ fn the_documented_defaults_are_pinned_by_literals() {
     assert_eq!(
         out_default, out_new,
         "`Oversampler2x::default()` 必须与 `new()` 逐位同解（历史必须归零）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 面 5：器件类的 `Default` 必须与 `new()` 同解（第十一批；对抗注入否证了
+//        "器件类＝非现实缺陷类"这个分类）
+// ---------------------------------------------------------------------------
+
+/// 量什么：**13 个器件类**的 `Default::default()` 与 `new()` 在同一条驱动下的
+/// 输出（`f32` 位型）。
+///
+/// 为什么需要它（本机注入读数）：第十批把 **28 个器件类**（`Default = Self::new()`）
+/// 登记为"非现实缺陷类"（理由是"改错默认需要凭空发明另一个构造器"）。
+/// ⭐ 第十一批用**合法替代状态**（`new()` ＋ setter）对抗注入，**3/3 全绿**：
+/// `NoiseGen::default` 返回粉噪声、`Adsr::default` 起振 500 ms、
+/// `LadderFilter::default` 预配置成 200 Hz／0.9／满驱动 —— 全库 490 条判据**一条都没红**
+/// ⇒ ⭐ **"非现实缺陷类"这个分类过于宽松**：`Default ≡ new()` 这条等价性**没有任何判据**。
+///
+/// 判据：对每个器件类，`default()` 与 `new()` 在同一驱动下必须给出**逐位相同**的结果。
+#[test]
+fn every_device_default_behaves_like_its_new_constructor() {
+    const N: usize = 64;
+
+    // 包络
+    let drive_env = |mut env: Adsr| -> Vec<u32> {
+        env.set_sample_rate(SR);
+        env.gate_on();
+        (0..N).map(|_| env.process(true).to_bits()).collect()
+    };
+    assert_eq!(drive_env(Adsr::default()), drive_env(Adsr::new()));
+
+    // 有色噪声：默认必须是**白**噪声
+    let drive_noise = |mut noise: NoiseGen| -> Vec<u32> {
+        (0..N).map(|_| noise.process(0.5, SR).to_bits()).collect()
+    };
+    assert_eq!(
+        drive_noise(NoiseGen::default()),
+        drive_noise(NoiseGen::new())
+    );
+
+    // 位深整形
+    let drive_crush = |mut crusher: yeban_dsp::shaping::BitCrusher| -> Vec<u32> {
+        let input = [0.5f32; N];
+        let mut out_l = [0.0f32; N];
+        let mut out_r = [0.0f32; N];
+        crusher.process(
+            &input,
+            &input,
+            &mut out_l,
+            &mut out_r,
+            yeban_dsp::shaping::CrushParams::default(),
+            SR,
+        );
+        out_l
+            .iter()
+            .chain(out_r.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_crush(yeban_dsp::shaping::BitCrusher::default()),
+        drive_crush(yeban_dsp::shaping::BitCrusher::new())
+    );
+
+    // 梳状滤波
+    // ⚠ **不再 `prepare`**：第一版在驱动里对两个实例都做了初始化，
+    // 于是"预配置过的 default"被覆盖 ⇒ 对该型改动**无判别力**（实测 J3 型仍绿）。
+    let drive_comb = |mut comb: CombFilter| -> Vec<u32> {
+        let input = [0.5f32; N];
+        let mut out = [0.0f32; N];
+        comb.process(&input, &mut out);
+        out.iter().map(|v| v.to_bits()).collect()
+    };
+    assert_eq!(
+        drive_comb(CombFilter::default()),
+        drive_comb(CombFilter::new())
+    );
+
+    // 延迟
+    // ⚠ **不再 `configure`**（同上）。
+    let drive_delay = |mut delay: yeban_dsp::delay::Delay| -> Vec<u32> {
+        let mut left = [0.5f32; N];
+        let mut right = [0.25f32; N];
+        delay.process(
+            yeban_dsp::delay::DelayParams::default(),
+            &mut left,
+            &mut right,
+        );
+        left.iter()
+            .chain(right.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_delay(yeban_dsp::delay::Delay::default()),
+        drive_delay(yeban_dsp::delay::Delay::new())
+    );
+
+    // 阶梯滤波器
+    // ⚠ **不再 `configure`**（同上）。
+    let drive_filter = |mut filter: LadderFilter| -> Vec<u32> {
+        (0..N)
+            .map(|i| filter.process(0.5 - i as f32 * 0.001).to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_filter(LadderFilter::default()),
+        drive_filter(LadderFilter::new())
+    );
+
+    // 限制器
+    let drive_limiter = |mut limiter: Limiter| -> Vec<u32> {
+        let mut left = [0.9f32; N];
+        let mut right = [0.9f32; N];
+        limiter.process_stereo(&mut left, &mut right);
+        left.iter()
+            .chain(right.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_limiter(Limiter::default()),
+        drive_limiter(Limiter::new())
+    );
+
+    // 循环微平滑窗
+    let drive_window = |window: LoopWindow| -> Vec<u32> {
+        let mut block = [1.0f32; N];
+        window.fade_in(&mut block);
+        window.fade_out(&mut block);
+        block.iter().map(|v| v.to_bits()).collect()
+    };
+    assert_eq!(
+        drive_window(LoopWindow::default()),
+        drive_window(LoopWindow::new())
+    );
+
+    // 电平表
+    let drive_level = |mut detector: LevelDetector| -> Vec<u32> {
+        let reading = detector.analyze(&[0.5f32; N]);
+        [
+            reading.peak.to_bits(),
+            reading.peak_hold.to_bits(),
+            reading.rms.to_bits(),
+        ]
+        .to_vec()
+    };
+    assert_eq!(
+        drive_level(LevelDetector::default()),
+        drive_level(LevelDetector::new())
+    );
+
+    // LFO
+    let drive_lfo = |mut lfo: yeban_dsp::oscillator::Lfo| -> Vec<u32> {
+        (0..N)
+            .map(|_| lfo.process(LfoWave::Triangle, 2.0, SR).to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_lfo(yeban_dsp::oscillator::Lfo::default()),
+        drive_lfo(yeban_dsp::oscillator::Lfo::new())
+    );
+
+    // 平滑器
+    let drive_smoother = |mut smoother: yeban_dsp::smoothing::ParamSmoother| -> Vec<u32> {
+        smoother.set_target(0.75);
+        (0..N).map(|_| smoother.process().to_bits()).collect()
+    };
+    assert_eq!(
+        drive_smoother(yeban_dsp::smoothing::ParamSmoother::default()),
+        drive_smoother(yeban_dsp::smoothing::ParamSmoother::new(
+            48_000.0,
+            yeban_dsp::smoothing::DEFAULT_TIME_CONSTANT_S
+        ))
+    );
+
+    // 过采样
+    let drive_os = |mut os: Oversampler2x| -> Vec<u32> {
+        let input = [0.5f32; N];
+        let mut out = [0.0f32; N];
+        let mut up = [0.0f32; 2 * N];
+        let mut scratch = [0.0f32; 1_024];
+        os.process_round_trip(&input, &mut out, &mut up, &mut scratch);
+        out.iter().map(|v| v.to_bits()).collect()
+    };
+    assert_eq!(
+        drive_os(Oversampler2x::default()),
+        drive_os(Oversampler2x::new())
+    );
+
+    // 真峰值
+    let drive_peak = |mut detector: TruePeakDetector| -> Vec<u32> {
+        let value = detector.process(&[0.5f32; N]);
+        [value.to_bits(), detector.true_peak().to_bits()].to_vec()
+    };
+    assert_eq!(
+        drive_peak(TruePeakDetector::default()),
+        drive_peak(TruePeakDetector::new())
+    );
+
+    // 通道条（端到端）
+    let drive_strip = |mut strip: ChannelStrip| -> Vec<u32> {
+        let mut left = [0.5f32; N];
+        let mut right = [0.25f32; N];
+        strip.process_stereo(&mut left, &mut right);
+        left.iter()
+            .chain(right.iter())
+            .map(|v| v.to_bits())
+            .collect()
+    };
+    assert_eq!(
+        drive_strip(ChannelStrip::default()),
+        drive_strip(ChannelStrip::new(ChannelStripParams::DEFAULT, SR))
     );
 }
