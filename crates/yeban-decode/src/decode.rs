@@ -4463,6 +4463,8 @@ mod tests {
         // ⚠ R119 的**规格**很关键：针只到 `.all`，**边界检查**才要求后面紧跟 `(`。
         // 若把 `(` 也放进针里、再要求后面还有 `(`，就会**一个都匹配不到**（假清洁）——
         // 本判据第一版就是这么写的，正是**已知红对照**把它抓出来的。
+        // R247①：臂计数**当场算**（循环驱动的臂在运行期累加；语句驱动的臂见函数尾部的**声明值**）。
+        let mut arms_ran = 0usize;
         let all_needle = concat!(".", "all");
         let temp_needle = concat!("env::", "temp_dir()");
         let bound_needles = ["frame_count", ".len()", ".count()", "is_empty", "!= 0"];
@@ -4775,6 +4777,7 @@ mod tests {
             ),
         ];
         for (name, sample, needle_survives) in adversarial {
+            arms_ran += 1;
             let masked = mask(sample);
             assert_eq!(
                 masked.chars().count(),
@@ -5085,6 +5088,9 @@ mod tests {
             "R220(1): the needle AFTER the nested block must stay visible (real resynchronisation)"
         );
 
+        // ⭐⭐ **R247①：臂计数必须当场算**（⛔ 不是写死的常量）。此前我报的"≈23"是**手数**出来的
+        // —— 按 R247① 那等于**把规则重述一遍**。现在：**循环驱动**的臂**运行期累加**；
+        // **语句驱动**的臂只能**按声明**计数，且**两部分必须分别打印**（⛔ 不合并成一个"of N"）。
         // ⭐⭐ **R225①：原始字符串／字符字面量／生命周期**（Rust 的四件套**不够**）。
         // 每条都同时看**长度等长**与**语义同步**（后面的针必须还看得见）。
         eprintln!("[R187-PROBE decode::mask-rust-lex] raw/char/lifetime arms");
@@ -5120,6 +5126,7 @@ mod tests {
             ),
         ];
         for (name, sample, survives) in rust_lex {
+            arms_ran += 1;
             let masked = mask(sample);
             assert_eq!(
                 masked.chars().count(),
@@ -5133,6 +5140,31 @@ mod tests {
                  real code - the dangerous direction)"
             );
         }
+
+        // ⭐⭐ **R247①／②：臂计数的**来源** ＋ **独立对账**。**
+        // ① 运行期累加的只有**循环驱动**的臂；**语句驱动**的臂是**声明值**（手数）⇒ 分别打印，⛔ 不合并。
+        // ② **独立来源**（⛔ 不与计数器互相自证）：`include_str!("decode.rs")` 里
+        //    `assert`／`assert_eq!`／`assert_ne!` 宏的**原文出现次数**，由**运行期谓词**数出来。
+        const DECLARED_STATEMENT_ARMS: usize = 13;
+        let own_source = include_str!("decode.rs");
+        let raw_assert_macros = own_source.matches("assert!").count()
+            + own_source.matches("assert_eq!").count()
+            + own_source.matches("assert_ne!").count();
+        eprintln!(
+            "[R187-PROBE decode::arms] loop-driven(runtime)={arms_ran} \
+             statement-driven(declared)={DECLARED_STATEMENT_ARMS} total={} \
+             independent-raw-assert-macros-in-file={raw_assert_macros}",
+            arms_ran + DECLARED_STATEMENT_ARMS
+        );
+        assert_eq!(
+            arms_ran, 10,
+            "the loop-driven arm count must be computed at run time"
+        );
+        assert!(
+            raw_assert_macros >= arms_ran + DECLARED_STATEMENT_ARMS,
+            "the independent source (raw macro count in this file) must be at least the declared \
+             total - otherwise the declared total is inflated"
+        );
 
         // ⭐⭐ **R242③：样本合法性由 `rustc` 一次性文件判定**（⛔ 不是靠猜）。
         // 读数（本轮实测，`rustc --edition 2024 --crate-type lib --emit=metadata`，文件建在私有目录、跑完即删）：
