@@ -68,11 +68,23 @@ fn mask_preserving_len(raw: &str) -> String {
             b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
                 let start = index;
                 index += 2;
-                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-                {
+                // ⭐ R220①：块注释必须**按嵌套深度**消费。只找**第一个** `*/` 会在
+                // `/* a /* b */ c */` 上提前收工，把 `c */ …` 留成"代码" ⇒ **假阳性**
+                // （而长度自检**照样通过** ⇒ 长度等长是**必要但不充分**的）。
+                let mut depth = 1usize;
+                while index + 1 < bytes.len() && depth > 0 {
+                    if bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                        depth += 1;
+                        index += 2;
+                        continue;
+                    }
+                    if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                        depth -= 1;
+                        index += 2;
+                        continue;
+                    }
                     index += 1;
                 }
-                index = (index + 2).min(bytes.len());
                 for byte in out.iter_mut().take(index).skip(start) {
                     if *byte != b'\n' {
                         *byte = b' ';
@@ -610,6 +622,34 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
         );
     }
 
+    // ⭐ R220① **嵌套块注释臂**（常驻）：`/* a /* b */ c */` 必须被**整段**消费。
+    // 两条读数同时给：① **长度仍等长**；② **语义同步** —— 注释里的针不可见，
+    // 注释**之后**的真针仍可见，且残留（`c */`）**不得**被当成代码。
+    for (label, sample, visible_needles) in [
+        (
+            "nested-residue",
+            "/* a /* b */ c */ assert_ne!(z, z);",
+            1usize,
+        ),
+        (
+            "nested-hidden",
+            "/* assert_ne!(x, x); /* inner */ assert_ne!(y, y); */ assert_ne!(z, z);",
+            1,
+        ),
+    ] {
+        let masked = mask_preserving_len(sample);
+        assert_eq!(masked.len(), sample.len(), "R220① length: {label}");
+        assert_eq!(
+            masked.matches("assert_ne!").count(),
+            visible_needles,
+            "R220① semantic sync: {label} (residue must NOT be treated as code)"
+        );
+        assert!(
+            !masked.contains("c */"),
+            "R220①: the residue `c */` must be masked, not left as code ({label})"
+        );
+    }
+
     // ---- R56/R112：五种形态**每种一条已知绿** ＋ **一条"无界"已知红** ----
     // (label, sample, expect_bound, expected form mask)
     let cases: [(&str, &str, bool, u8); 14] = [
@@ -972,10 +1012,15 @@ fn no_criterion_reads_a_runtime_external_resource() {
     eprintln!(
         "[R187-PROBE yeban-theory::tests::scan_guards::scan-external-resource] \
          files={scanned_files} lines={scanned_lines} elsewhere_files={elsewhere_files} \
-         elsewhere_margin={} bad_arm_hits={} good_arm_hits={} probes_in_this_file=2",
+         elsewhere_margin={} bad_arm_hits={} good_arm_hits={} markers_in_raw_source={}",
         elsewhere_files - 15,
         bad_arm.len(),
-        good_arm.len()
+        good_arm.len(),
+        // ⭐ R220②：数**标记**必须用 **raw** 源文本（标记正文就在字符串字面量里）；
+        // 数**代码站点**才用 masked。⛔ 不写死常量（R218①）。
+        include_str!("scan_guards.rs")
+            .matches("R187-PROBE yeban-theory::tests::scan_guards::")
+            .count()
     );
     assert_eq!(
         bad_arm.len(),
