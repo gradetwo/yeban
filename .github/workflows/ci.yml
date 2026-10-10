@@ -470,7 +470,7 @@ jobs:
         with:
           name: windows-gate-log
           path: /tmp/gate.log
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: 失败摘要
         if: failure()
