@@ -246,4 +246,30 @@ mod tests {
             }
         }
     }
+
+    /// 判据（诊断文案黄金表）：[`Mismatch`] 渲染出逐字固定的文案。
+    ///
+    /// 为什么需要它：注入普查把 `container declares {} frames but {} frames were decoded`
+    /// 改成 `... while ...`，**全部判据照旧通过** —— 对账失败的文案 template 此前没有判据。
+    /// 这句会随 [`crate::error::DecodeError::DurationMismatch`] 一路进 MCP 响应体。
+    ///
+    /// 注入（实测）：把 `but` 改成 `while` ⇒ 本条红。
+    #[test]
+    fn the_frame_mismatch_renders_its_documented_text() {
+        let mismatch = Mismatch {
+            declared: 768,
+            decoded: 512,
+            tolerance: 0,
+            delta: 256,
+        };
+        assert_eq!(
+            mismatch.to_string(),
+            "container declares 768 frames but 512 frames were decoded (delta 256, tolerance 0)"
+        );
+        // 四个字段都必须出现在文案里（漏一个就是"数字丢了"，而这正是该类型的职责）。
+        let rendered = mismatch.to_string();
+        for field in ["768", "512", "256", "0"] {
+            assert!(rendered.contains(field), "the rendering must keep {field}");
+        }
+    }
 }

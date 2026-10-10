@@ -174,4 +174,128 @@ mod tests {
         assert!(matches!(err, DecodeError::Budget(_)));
         assert!(err.to_string().contains("99"));
     }
+
+    /// 判据（诊断文案黄金表）：[`DecodeError`] 的**全部 15 个变体**逐个渲染出**逐字固定**
+    /// 的文案。
+    ///
+    /// 量什么：每个变体的 `Display` 输出（单位：字符），以及"上游原文是否被保留"。
+    /// 怎么量：**直接构造变体值**（不解码任何字节），逐个 `to_string()` 与黄金表比对。
+    ///
+    /// 为什么需要它：本批的**注入普查**逐条改了 15 个变体的文案字面量，结果是
+    /// **14 个 `ALL-GREEN`**（只有 `Malformed` 的改动被既有判据 `a_wave_fmt_…` 的
+    /// `contains("32769")` 之类间接碰到 —— 而那是判据在断言**上游原文**，不是断言本 crate
+    /// 的模板）。也就是说这 15 个变体的**模板**此前全部没有判据：改坏任何一句，CI 都不会红，
+    /// 但这些文案是要进 MCP 响应体（`decodeError` 分类）与用户诊断的。
+    ///
+    /// 注入（实测）：改任一臂的字面量（例如 `asset exceeds the decode budget: ` 改成
+    /// `decode budget exceeded: `）⇒ 本条红。
+    #[test]
+    fn every_decode_error_arm_renders_its_documented_text() {
+        let budget = LimitViolation::ZeroChannels;
+        let length = LenContractViolation::UndefinedRatio {
+            in_rate: 0,
+            out_rate: 48_000,
+        };
+        let mismatch = Mismatch {
+            declared: 768,
+            decoded: 512,
+            tolerance: 0,
+            delta: 256,
+        };
+        let io = std::io::Error::other("boom");
+        let cases: [(&str, DecodeError, String); 15] = [
+            ("Io", DecodeError::Io(io), "io error: boom".to_owned()),
+            (
+                "UnsupportedFormat",
+                DecodeError::UnsupportedFormat,
+                "unrecognised or unsupported container format".to_owned(),
+            ),
+            (
+                "NoAudioTrack",
+                DecodeError::NoAudioTrack,
+                "container has no decodable audio track".to_owned(),
+            ),
+            (
+                "MissingCodecParameters",
+                DecodeError::MissingCodecParameters,
+                "track is missing codec parameters".to_owned(),
+            ),
+            (
+                "UnsupportedCodec",
+                DecodeError::UnsupportedCodec {
+                    detail: "vorbis".to_owned(),
+                },
+                "codec not enabled in this build: vorbis".to_owned(),
+            ),
+            (
+                "MissingSampleRate",
+                DecodeError::MissingSampleRate,
+                "track does not report a sample rate".to_owned(),
+            ),
+            (
+                "ResetRequired",
+                DecodeError::ResetRequired,
+                "stream requires a decoder reset mid-decode (chained stream)".to_owned(),
+            ),
+            (
+                "Malformed",
+                DecodeError::Malformed {
+                    detail: "bad frame".to_owned(),
+                },
+                "malformed stream: bad frame".to_owned(),
+            ),
+            (
+                "Budget",
+                DecodeError::Budget(budget),
+                "asset exceeds the decode budget: stream declares zero channels".to_owned(),
+            ),
+            (
+                "InconsistentLayout",
+                DecodeError::InconsistentLayout {
+                    detail: "channel count changed mid-stream: 2 -> 1".to_owned(),
+                },
+                "stream layout is inconsistent: channel count changed mid-stream: 2 -> 1"
+                    .to_owned(),
+            ),
+            (
+                "EmptyStream",
+                DecodeError::EmptyStream,
+                "stream decoded to zero audio frames".to_owned(),
+            ),
+            (
+                "DurationMismatch",
+                DecodeError::DurationMismatch(mismatch),
+                "declared duration disagrees with decoded frames: container declares 768 frames \
+                 but 512 frames were decoded (delta 256, tolerance 0)"
+                    .to_owned(),
+            ),
+            (
+                "ResamplerConfiguration",
+                DecodeError::ResamplerConfiguration {
+                    detail: "channels".to_owned(),
+                },
+                "resampler could not be configured: channels".to_owned(),
+            ),
+            (
+                "Resampling",
+                DecodeError::Resampling {
+                    detail: "adapter".to_owned(),
+                },
+                "resampling failed: adapter".to_owned(),
+            ),
+            (
+                "LengthContract",
+                DecodeError::LengthContract(length),
+                "resampler violated the length contract: resample ratio undefined: 0 Hz -> \
+                 48000 Hz"
+                    .to_owned(),
+            ),
+        ];
+        // 15 是 `DecodeError` 的变体数：黄金表必须与枚举一样长（加一个变体而漏一行,
+        // 这里就会以"臂数不符"红）。
+        assert_eq!(cases.len(), 15, "the golden table must cover every arm");
+        for (arm, error, expected) in cases {
+            assert_eq!(error.to_string(), expected, "arm {arm}");
+        }
+    }
 }

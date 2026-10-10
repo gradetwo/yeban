@@ -1941,4 +1941,155 @@ mod tests {
             Ok(())
         );
     }
+
+    /// 判据（诊断文案黄金表）：[`LimitViolation`] 的**全部 10 个变体**逐个渲染出**逐字固定**
+    /// 的文案。
+    ///
+    /// 量什么：每个变体的 `Display` 输出（单位：字符）。怎么量：**直接构造变体值**，逐个
+    /// `to_string()` 与黄金表比对 —— 不需要解码任何字节。
+    ///
+    /// 为什么需要它：本批的注入普查逐条改了 10 个变体的文案字面量，结果是 **9 个
+    /// `ALL-GREEN`**（只有 `ZeroSampleRate` 被判据 `a_zero_sample_rate_stream_is_refused_not_a_panic`
+    /// 的 `contains("zero sample rate")` 碰到）。这 10 句是要进 MCP 响应体与用户诊断的，
+    /// 而它们的**模板**此前没有判据。
+    ///
+    /// 注入（实测）：改任一臂的字面量（例如 `input is {bytes} bytes` 改成 `input has ...`）
+    /// ⇒ 本条红。
+    #[test]
+    fn every_limit_violation_arm_renders_its_documented_text() {
+        let cases: [(&str, LimitViolation, &str); 10] = [
+            (
+                "InputTooLarge",
+                LimitViolation::InputTooLarge {
+                    bytes: 4_096,
+                    limit: 1_024,
+                },
+                "input is 4096 bytes, over the 1024-byte cap",
+            ),
+            (
+                "ZeroChannels",
+                LimitViolation::ZeroChannels,
+                "stream declares zero channels",
+            ),
+            (
+                "TooManyChannels",
+                LimitViolation::TooManyChannels {
+                    channels: 65,
+                    limit: 64,
+                },
+                "stream declares 65 channels, over the 64 cap",
+            ),
+            (
+                "ZeroSampleRate",
+                LimitViolation::ZeroSampleRate,
+                "stream declares a zero sample rate",
+            ),
+            (
+                "SampleRateTooHigh",
+                LimitViolation::SampleRateTooHigh {
+                    rate: 1_000_000,
+                    limit: 768_000,
+                },
+                "stream declares 1000000 Hz, over the 768000 Hz cap",
+            ),
+            (
+                "DurationTooLong",
+                LimitViolation::DurationTooLong {
+                    frames: 60_000,
+                    sample_rate: 8_000,
+                    seconds: 7,
+                    limit_secs: 6,
+                },
+                "60000 frames at 8000 Hz is 7 s of audio, over the 6-second duration cap",
+            ),
+            (
+                "PcmBudgetExceeded",
+                LimitViolation::PcmBudgetExceeded {
+                    frames: 3,
+                    channels: 2,
+                    samples: 6,
+                    limit_samples: 0,
+                },
+                "3 frames x 2 channels = 6 interleaved samples (24 bytes of f32 PCM), over the \
+                 0-sample / 0-byte PCM budget",
+            ),
+            (
+                "LayoutOverflow",
+                LimitViolation::LayoutOverflow {
+                    frames: u64::MAX,
+                    channels: 2,
+                },
+                "frame/channel product overflows: 18446744073709551615 frames x 2 channels",
+            ),
+            (
+                "ResampleRatioTooHigh",
+                LimitViolation::ResampleRatioTooHigh {
+                    in_rate: 1,
+                    out_rate: 768_000,
+                    limit: 1_000,
+                },
+                "resampling 1 Hz to 768000 Hz is over the 1000x output/input sample-rate ratio cap",
+            ),
+            (
+                "AllocationRefused",
+                LimitViolation::AllocationRefused { samples: 4_096 },
+                "allocator refused a buffer for 4096 more samples",
+            ),
+        ];
+        assert_eq!(cases.len(), 10, "the golden table must cover every arm");
+        for (arm, violation, expected) in cases {
+            assert_eq!(violation.to_string(), expected, "arm {arm}");
+        }
+    }
+
+    /// 判据（诊断文案黄金表）：[`LenContractViolation`] 的**全部 3 个变体**逐个渲染出逐字
+    /// 固定的文案。
+    ///
+    /// 为什么需要它：注入普查里 `OutsideBounds` 与 `UndefinedRatio` 两条改动全绿（只有
+    /// `Unrepresentable` 被 `an_unrepresentable_contract_is_not_reported_as_an_undefined_ratio`
+    /// 碰到）。三个变体的**区分**（"比例无定义" vs "契约放不进 u64"）正是那条既有判据的
+    /// 要点，而三句模板本身没有判据。
+    ///
+    /// 注入（实测）：把 `resampler produced` 改成 `resampler emitted` ⇒ 本条红。
+    #[test]
+    fn every_length_contract_violation_arm_renders_its_documented_text() {
+        let contract = LenContract {
+            min: 0,
+            max: 0,
+            ideal_floor: 0,
+            ideal_ceil: 0,
+        };
+        let cases: [(&str, LenContractViolation, &str); 3] = [
+            (
+                "UndefinedRatio",
+                LenContractViolation::UndefinedRatio {
+                    in_rate: 0,
+                    out_rate: 48_000,
+                },
+                "resample ratio undefined: 0 Hz -> 48000 Hz",
+            ),
+            (
+                "Unrepresentable",
+                LenContractViolation::Unrepresentable {
+                    input_frames: u64::MAX,
+                    in_rate: 1,
+                    out_rate: u32::MAX,
+                },
+                "resample length contract for 18446744073709551615 frames (1 Hz -> 4294967295 \
+                 Hz) does not fit in u64 frames",
+            ),
+            (
+                "OutsideBounds",
+                LenContractViolation::OutsideBounds {
+                    produced: 1,
+                    contract,
+                },
+                "resampler produced 1 frames, outside the contract 0..=0 (ideal 0..=0)",
+            ),
+        ];
+        assert_eq!(cases.len(), 3, "the golden table must cover every arm");
+        for (arm, violation, expected) in cases {
+            assert_eq!(violation.to_string(), expected, "arm {arm}");
+        }
+    }
 }
