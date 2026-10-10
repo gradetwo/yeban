@@ -482,8 +482,18 @@ mod tests {
         assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
         filter.configure(48_000.0, 1_000.0, 0.0, f32::NAN);
         assert_eq!(filter.drive().to_bits(), 1.0f32.to_bits());
-        // 非空证明：两端必须真的不同。
-        assert_ne!(1.0f32.to_bits(), 1.8f32.to_bits());
+        // 非空证明：两端必须真的不同 —— 比的是**两次观测到的读数**，
+        // ⛔ 不是两个字面量（`assert_ne!(1.0f32.to_bits(), 1.8f32.to_bits())` 是
+        // 编译期恒真、不涉及被测对象 ⇒ 按裁决 R69 属**假探针**，已替换）。
+        filter.configure(48_000.0, 1_000.0, 0.0, 1.0);
+        let top = filter.drive();
+        filter.configure(48_000.0, 1_000.0, 0.0, 0.0);
+        let bottom = filter.drive();
+        assert_ne!(
+            top.to_bits(),
+            bottom.to_bits(),
+            "驱动旋钮的两端必须给出不同的读数（{top} vs {bottom}）"
+        );
     }
 
     #[test]

@@ -471,6 +471,17 @@ pub struct WavetableOscillator {
     frequency: f32,
     level: usize,
     sample_rate: f32,
+    /// 级号是否**至少选过一次**。
+    ///
+    /// ⚠ 这个标志是必需的：`level` 在 [`WavetableOscillator::new`] 里是**占位值 `0`**
+    /// （＝**最长表**，谐波最多），因为选级需要波表而构造时拿不到。若两个 setter 的
+    /// 去抖门限只比较"请求值 vs 已存值"，那么**第一次就请求构造器里那个值**
+    /// （`new()` 的 `frequency = 440.0`）时 `reselect_level` 会被跳过 ⇒ 实例停在
+    /// 占位级 `0` ⇒ **高次谐波越过 Nyquist 折叠、反走样保证失效**（[ARCH-DSP-001]）。
+    /// 这与 `Adsr`（裁决 R45）是**同一个缺陷类**：占位系数 ＋ 去抖门限。
+    /// 判据：`oscillator::tests::the_first_frequency_request_always_reselects_the_level`
+    /// （修复前实测为红：`level = 0`，而 `level_for(440 Hz, 48 kHz) = 5`）。
+    computed: bool,
 }
 
 impl WavetableOscillator {
@@ -483,13 +494,14 @@ impl WavetableOscillator {
             frequency: 440.0,
             level: 0,
             sample_rate,
+            computed: false,
         }
     }
 
     /// 设置采样率（级号随之重算）。
     pub fn set_sample_rate(&mut self, sample_rate: f32, table: &Wavetable) {
         let sample_rate = sanitise_sample_rate(sample_rate);
-        if sample_rate != self.sample_rate {
+        if !self.computed || sample_rate != self.sample_rate {
             self.sample_rate = sample_rate;
             self.reselect_level(table);
         }
@@ -505,7 +517,7 @@ impl WavetableOscillator {
         } else {
             0.0
         };
-        if frequency != self.frequency {
+        if !self.computed || frequency != self.frequency {
             self.frequency = frequency;
             self.reselect_level(table);
         }
@@ -573,6 +585,7 @@ impl WavetableOscillator {
 
     fn reselect_level(&mut self, table: &Wavetable) {
         self.level = table.level_for(self.frequency, self.sample_rate);
+        self.computed = true;
     }
 }
 
@@ -1213,5 +1226,54 @@ mod tests {
                 assert!(lfo.process(LfoWave::Sine, rate, sr).is_finite());
             }
         }
+    }
+
+    /// **判据（新写，可红）**：`WavetableOscillator` 的**第一次**频率／采样率请求必须
+    /// 真的**选级**（`level` 不得停在构造器里的占位值 `0`）。
+    ///
+    /// 量什么：`level`（级号，0 = **最长表** ＝ 谐波最多）与独立参照
+    /// [`Wavetable::level_for`] / 自由函数 [`level_for_freq`] 的读数。
+    ///
+    /// 为什么需要它（本机探针读数，修复前）：
+    /// `level_for(440 Hz, 48 kHz) = 5`，而
+    /// `WavetableOscillator::new(48_000.0)` ＋ `set_sample_rate(48_000.0, &table)` ＋
+    /// `set_frequency(&table, 440.0)` 之后 `level = 0` —— `new()` 把 `level` 留成
+    /// **占位值 `0`**，而两个 setter 都有"值没变就不重算"的去抖门限，`new()` 里存的
+    /// `frequency` 恰好是 `440.0` ⇒ 第一次请求 A4 时 `reselect_level` 被跳过。
+    /// 先设 441 Hz 再回到 440 Hz 则得 `level = 5`（正确）⇒ **只有"第一次就请求
+    /// 构造器里那个值"这一条路会停在占位级**。
+    ///
+    /// ⚠ 这是与 `Adsr`（裁决 R45）**同一个缺陷类**：占位系数 ＋ 去抖门限。
+    /// 级 `0` 是最长表 ⇒ 高次谐波越过 Nyquist 折叠 ⇒ 反走样保证失效 [ARCH-DSP-001]。
+    #[test]
+    fn the_first_frequency_request_always_reselects_the_level() {
+        let recipe: WaveRecipe = &[(1, 1.0)];
+        let table = Wavetable::from_recipe(recipe);
+        let correct = table.level_for(440.0, 48_000.0);
+        assert_eq!(
+            correct,
+            level_for_freq(440.0, 48_000.0),
+            "两张独立参照（表方法 vs 自由函数）必须同解"
+        );
+        assert_ne!(
+            correct, 0,
+            "夹具：440 Hz 的正确级不是 0 ⇒ 占位级与正确级可区分（本判据有判别力）"
+        );
+
+        // 路径 A：构造（默认 frequency = 440.0）⇒ 设采样率 ⇒ 请求**恰好 440.0**
+        let mut first = WavetableOscillator::new(48_000.0);
+        first.set_sample_rate(48_000.0, &table);
+        first.set_frequency(&table, 440.0);
+        assert_eq!(
+            first.level, correct,
+            "第一次 `set_frequency(440.0)` 被去抖跳过 ⇒ 停在占位级 0（最长表，会走样）"
+        );
+
+        // 路径 B（对照）：经一个不同频率再回来
+        let mut via = WavetableOscillator::new(48_000.0);
+        via.set_sample_rate(48_000.0, &table);
+        via.set_frequency(&table, 441.0);
+        via.set_frequency(&table, 440.0);
+        assert_eq!(via.level, correct, "经 441 Hz 回到 440 Hz 也必须给出正确级");
     }
 }
