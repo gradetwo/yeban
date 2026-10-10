@@ -1028,4 +1028,20 @@ fn the_configuring_drives_are_sensitive_to_their_parameters() {
         drive_eq(12.0),
         "换 EQ 低架增益后输出没变 ⇒ 该驱动看不见参数"
     );
+
+    // ⚠⚠ **实测登记（弱驱动，R148 形态）**：`GatedLoudness` 的等价性驱动对**采样率**不敏感 ——
+    // 用 `new_48k()` 与 `for_sample_rate(44_100.0)` 构造的两个实例，在本窗口内输出**逐位相同**
+    // （本机注入实测：改 `Default` 为 44.1 kHz 构造 ⇒ 等价性判据**仍绿**）。
+    // ⇒ 上一条等价性判据对 `GatedLoudness` **看不见采样率差异** ⇒ **没有牙**。
+    // 本断言是**绊线**：⛔ 不是把它当"通过"，而是把"驱动不敏感"这件事钉住（实现一变就红）。
+    let drive_gated_sr = |mut meter: GatedLoudness| -> Vec<u32> {
+        let block: Vec<f32> = (0..N).map(|index| (index % 5) as f32 / 5.0 - 0.3).collect();
+        meter.add_mono(&block);
+        vec![meter.momentary_lufs().to_bits()]
+    };
+    assert_eq!(
+        drive_gated_sr(GatedLoudness::new_48k()),
+        drive_gated_sr(GatedLoudness::for_sample_rate(44_100.0).expect("44.1k")),
+        "实测：该驱动对采样率不敏感（若此处变红 ⇒ 实现改了，请重跑注入并更新本条登记）"
+    );
 }
