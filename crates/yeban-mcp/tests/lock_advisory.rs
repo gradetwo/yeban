@@ -833,3 +833,118 @@ fn an_unsupported_platform_is_refused_through_the_implementation_exit() {
     assert_eq!(data["specId"], "ARCH-SEC-001/MUST-GATE-008");
     assert_eq!(data["lockFile"], lock_path(path).display().to_string());
 }
+
+/// **两个接管者争同一个陈旧锁文件：恰好一个赢，输的那个不删文件。**
+///
+/// 为什么需要这一条：既有判据覆盖了"独占持有者与第二个打开者"（同进程/跨进程）与
+/// "**单个**接管陈旧锁"，但没有一条把**两个接管者**放在同一个陈旧锁文件上。
+/// 这一格是危险的方向：如果输的那个也去 `remove_file`，赢的那个的锁文件会被删掉，
+/// 第三个打开者就能创建**新 inode** 并同时"持锁" ⇒ 两个独占持有者。
+///
+/// 单位 = 一次 `yeban_open_project` 的响应（`status` 与 `data.tookOverStaleLock`）。
+/// 判据**不依赖墙钟**：只比 `tookOverStaleLock` 布尔与文件在不在。
+///
+/// 注入（实测红）：把 `open_lock_file` 失败分支里的"不删锁文件"改成删 ⇒ 第 3 条红；
+/// 把 `took_over_stale_lock` 的 `!created` 去掉 ⇒ 第 1 条红。
+#[test]
+fn only_one_of_two_contenders_takes_over_a_stale_lock() {
+    let scratch = Scratch::new("takeover-contended");
+    let project = scratch.project("demo.yeban");
+    let lock = lock_path(&project);
+    // 一个**没有持有者**的陈旧锁文件（无建议锁 ⇒ 可接管）。
+    fs::write(&lock, "{\"pid\": 4242, \"started_at\": 1}\n").expect("造陈旧锁");
+
+    let (mut first, auth_first) = dispatcher();
+    let won = open(&mut first, &auth_first, &project, false);
+    assert_eq!(won["status"], "success", "{won}");
+    assert_eq!(
+        won["data"]["tookOverStaleLock"], true,
+        "第一个接管者必须如实上报 `tookOverStaleLock = true`: {won}"
+    );
+    assert!(lock.is_file(), "赢家持锁期间锁文件必须在");
+
+    // 第二个接管者：同一个陈旧文件、另一个 `Domain`（另一个 `File` 句柄）。
+    let (mut second, auth_second) = dispatcher();
+    let lost = open(&mut second, &auth_second, &project, false);
+    assert_eq!(lost["status"], "error", "{lost}");
+    assert_eq!(lost["error"]["code"], "PROJECT_LOCKED", "{lost}");
+    assert!(
+        lock.is_file(),
+        "**输的那个不得删锁文件** —— 否则第三个打开者会拿到新 inode 并同时持锁"
+    );
+
+    // 赢家仍是唯一持有者：它的元数据还在，且第三个打开者仍然被拦。
+    let (mut third, auth_third) = dispatcher();
+    let still_locked = open(&mut third, &auth_third, &project, false);
+    assert_eq!(
+        still_locked["error"]["code"], "PROJECT_LOCKED",
+        "{still_locked}"
+    );
+
+    // 赢家关闭（释放建议锁 + 删文件）之后，下一个打开者是**新建**而不是接管。
+    let closed = call_tool(
+        &mut first,
+        &auth_first,
+        "yeban_close_project",
+        json!({ "saveFirst": false }),
+    );
+    assert_eq!(closed["status"], "success", "{closed}");
+    assert!(!lock.exists(), "释放后锁文件必须被删除");
+    let (mut fourth, auth_fourth) = dispatcher();
+    let fresh = open(&mut fourth, &auth_fourth, &project, false);
+    assert_eq!(fresh["status"], "success", "{fresh}");
+    assert_eq!(
+        fresh["data"]["tookOverStaleLock"], false,
+        "文件已不存在 ⇒ 这是新建，不是接管: {fresh}"
+    );
+}
+
+/// **活着的持有者即使心跳陈旧、PID 也不存在，也不得被接管**（抢锁只看 OS 建议锁）。
+///
+/// 为什么需要这一条：规范原文写的是"超过 15 秒**或** `kill(pid, 0)` 失败则允许接管"
+/// —— 那是一条**能把活锁抢走**的规则（心跳落后 15 秒是正常抖动，PID 复用也发生过）。
+/// 本实现把它换成"只看 `flock`/`LockFileEx`"，本判据把那件事钉住：
+/// 判据把**活着的**持有者的锁文件内容改成一个古老的心跳 + 一个不存在的 PID，
+/// 第二个打开者**仍然**必须拿到 `PROJECT_LOCKED`。
+///
+/// ⚠ `#[cfg(unix)]`：这一步要在别人持锁时**写**锁文件，而 Windows 的 `LockFileEx`
+/// 是强制锁 ⇒ 写入会被 OS 拒绝（不是实现的问题）。Unix 的 `flock` 是建议锁 ⇒ 写得进去。
+///
+/// 单位 = 一次 `yeban_open_project` 的响应。判据**不依赖墙钟**（不比较秒数，
+/// 只看成功/失败；写进去的心跳值是一个**固定**的古老常量）。
+#[cfg(unix)]
+#[test]
+fn a_stale_heartbeat_on_a_live_holder_does_not_allow_takeover() {
+    use yeban_mcp::domain::lock::{LockMode, acquire};
+
+    let scratch = Scratch::new("heartbeat-ignored");
+    let project = scratch.project("demo.yeban");
+    let lock = lock_path(&project);
+    let guard = acquire(&project, LockMode::ExclusiveWrite).expect("直接拿锁");
+    assert!(lock.is_file());
+    // 把**活着的**持有者的内容改旧：心跳 = 1（Unix 纪元），PID = 一个几乎不可能存在的值。
+    // 规范那条"15 秒或 kill 失败即接管"的规则在这里**必须不生效**。
+    fs::write(
+        &lock,
+        "{\"pid\": 1, \"lock_mode\": \"ExclusiveWrite\", \"last_heartbeat\": 1, \"started_at\": 1}\n",
+    )
+    .expect("写活持有者的锁文件（Unix 建议锁允许）");
+
+    let (mut other, auth) = dispatcher();
+    let refused = open(&mut other, &auth, &project, false);
+    assert_eq!(
+        refused["status"], "error",
+        "活着的持有者即使心跳陈旧也不得被接管: {refused}"
+    );
+    assert_eq!(refused["error"]["code"], "PROJECT_LOCKED", "{refused}");
+    assert!(lock.is_file(), "被拒的调用不得删锁文件");
+
+    // 阴性对照：守卫释放之后同一个调用成功（证明上面红的是"锁还在"，不是别的）。
+    drop(guard);
+    assert!(!lock.exists(), "排他守卫 Drop 后锁文件被删除");
+    let (mut third, auth_third) = dispatcher();
+    assert_eq!(
+        open(&mut third, &auth_third, &project, false)["status"],
+        "success"
+    );
+}

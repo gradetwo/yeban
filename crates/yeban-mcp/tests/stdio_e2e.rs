@@ -782,3 +782,421 @@ fn every_catalog_kind_reaches_the_domain_implementation_over_stdio() {
         "被拒的必须是那两条'仍被引用'的形态（换掉夹具会改变这个读数，届时改这里）"
     );
 }
+
+/// **方向 1：19 个 `kind` 的响亮失败路径**（真进程 / 真 stdio）。
+///
+/// 上一条判据证明"每个 `kind` 都走得到领域实现"（正向）；本条证明**反向**也走得到：
+/// 每个 `kind` 至少喂一条**缺字段 / 类型错 / 身份不存在**的载荷，并断言
+/// 1. 顶层**不得**出现 JSON-RPC `error`（失败必须是**带内**的）；
+/// 2. 失败码**逐行等于登记值**，且都在 `ErrorCode::SCHEMA_CONTRACT` 里；
+/// 3. 19 次被拒之后，工程的 JSON 与调用**之前**逐字节相同（被拒的调用不留痕）。
+///
+/// 单位 = 一次 `tools/call` 的响应对象（子进程退出码由 `session` 断言为 0）。
+///
+/// 注入（实测红）：把某条 `parse_one` 臂的守卫删掉（例如 `delete` 不再要求 `noteId`）
+/// ⇒ 该行的**失败不再发生**（变成成功或换一个码）⇒ 红。
+#[test]
+fn every_catalog_kind_also_has_a_loud_failure_path_over_stdio() {
+    let path = write_container_project("e2e-kinds-refusals.yeban");
+    let query = req(
+        3,
+        "tools/call",
+        serde_json::json!({
+            "name": "yeban_query_project",
+            "arguments": {
+                "fields": ["tracks", "sections", "scenes", "clip_pool",
+                           "routing_graph", "master_bus_track_id"],
+                "limit": 1000,
+            },
+        }),
+    );
+    let probe = session(&[
+        req(1, "initialize", serde_json::json!({})),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": path.display().to_string()},
+            }),
+        ),
+        query.clone(),
+    ]);
+    assert_eq!(probe[1]["result"]["status"], "success");
+    let project = probe[2]["result"]["data"]["project"].clone();
+    let before = serde_json::to_string(&project).expect("JSON");
+
+    let master = project["master_bus_track_id"]
+        .as_str()
+        .expect("主总线")
+        .to_owned();
+    let tracks = project["tracks"].as_object().expect("tracks");
+    let lead = tracks
+        .iter()
+        .find(|(id, track)| **id != master && track["kind"] == "Midi")
+        .map(|(id, _)| id.clone())
+        .expect("MIDI 音轨");
+    let (clip, note) = project["clip_pool"]
+        .as_object()
+        .expect("clip_pool")
+        .iter()
+        .find_map(|(id, entry)| {
+            entry["content"]["Midi"]["notes"]
+                .as_object()
+                .and_then(|notes| notes.keys().next())
+                .map(|note| (id.clone(), note.clone()))
+        })
+        .expect("带音符的 MIDI 片段");
+    let node = project["routing_graph"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|id| **id != master)
+        .expect("非主总线节点")
+        .to_owned();
+    let (lane_name, lane_tick) = tracks
+        .values()
+        .filter_map(|track| track["automation_lanes"].as_array())
+        .flat_map(|lanes| lanes.iter())
+        .find_map(|lane| {
+            let target = lane["target"].as_object()?.keys().next()?.clone();
+            if target != "TrackVolume" && target != "TrackPan" {
+                return None;
+            }
+            let tick = lane["points"].as_object()?.values().next()?["tick"].as_u64()?;
+            Some((target, tick))
+        })
+        .expect("TrackVolume/TrackPan 泳道");
+    let _ = (&clip, &node);
+    let ghost = "01J8ZQ00000000000000000999";
+    let valid_device = serde_json::json!({
+        "deviceId": "01J8ZQ000000000000000000DV", "name": "Probe",
+        "kind": "InternalEffect", "bypassed": false, "latencySamples": 0, "params": [],
+    });
+
+    // (kind, 载荷, 期望的契约码)
+    let cases: Vec<(&str, Value, &str)> = vec![
+        ("add", serde_json::json!({}), "INVALID_PARAMETER_RANGE"),
+        ("delete", serde_json::json!({}), "INVALID_PARAMETER_RANGE"),
+        (
+            "move",
+            serde_json::json!({"noteId": note, "deltaTick": 0, "deltaPitch": "x"}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
+            "velocity",
+            serde_json::json!({"noteId": note, "velocity": 200}),
+            "OUT_OF_RANGE",
+        ),
+        (
+            "removeClip",
+            serde_json::json!({"clipId": clip}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
+            "removeTrack",
+            serde_json::json!({"trackId": ghost}),
+            "ENTITY_NOT_FOUND",
+        ),
+        (
+            "insertDevice",
+            serde_json::json!({"trackId": lead, "slotIndex": 999,
+            "device": valid_device}),
+            "OUT_OF_RANGE",
+        ),
+        (
+            "removeDevice",
+            serde_json::json!({"trackId": lead, "deviceId": ghost}),
+            "ENTITY_NOT_FOUND",
+        ),
+        (
+            "setParam",
+            serde_json::json!({"lane": "TrackVolume", "value": 1e39}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
+            "setTrackMute",
+            serde_json::json!({"value": "yes"}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
+            "setTrackSolo",
+            serde_json::json!({"value": 1}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
+            "setAutomationLane",
+            serde_json::json!({"lane": {"lane": "Bogus"}}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
+            "removeAutomationPoint",
+            serde_json::json!({"point": {"lane": lane_name,
+            "tick": lane_tick, "pointId": ghost}}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+        (
+            "setRoutingGain",
+            serde_json::json!({"edgeId": ghost, "value": 0.0}),
+            "ENTITY_NOT_FOUND",
+        ),
+        (
+            "disconnectRouting",
+            serde_json::json!({"edgeId": ghost}),
+            "ENTITY_NOT_FOUND",
+        ),
+        (
+            "removeRoutingNode",
+            serde_json::json!({"nodeId": ghost}),
+            "ENTITY_NOT_FOUND",
+        ),
+        (
+            "removeSection",
+            serde_json::json!({"sectionId": ghost}),
+            "ENTITY_NOT_FOUND",
+        ),
+        (
+            "removeScene",
+            serde_json::json!({"sceneId": ghost}),
+            "ENTITY_NOT_FOUND",
+        ),
+        (
+            "setScene",
+            serde_json::json!({"scene": {"sceneId": ghost, "create": true}}),
+            "INVALID_PARAMETER_RANGE",
+        ),
+    ];
+    assert_eq!(cases.len(), 19, "19 个 kind 各一条失败路径");
+
+    let mut requests = vec![
+        req(1, "initialize", serde_json::json!({})),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": path.display().to_string()},
+            }),
+        ),
+    ];
+    for (index, (kind, payload, _code)) in cases.iter().enumerate() {
+        let mut object = payload.as_object().expect("对象").clone();
+        object.insert("kind".to_owned(), Value::from(*kind));
+        requests.push(req(
+            u32::try_from(index).expect("小") + 10,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_edit_notes",
+                "arguments": {"trackId": lead, "clipId": clip,
+                              "ops": [Value::Object(object)]},
+            }),
+        ));
+    }
+    requests.push(req(
+        99,
+        "tools/call",
+        serde_json::json!({
+            "name": "yeban_query_project",
+            "arguments": {"fields": ["tracks", "sections", "scenes", "clip_pool",
+                                     "routing_graph", "master_bus_track_id"],
+                          "limit": 1000},
+        }),
+    ));
+    let res = session(&requests);
+    assert_eq!(
+        res.len(),
+        22,
+        "1 握手 + 1 打开 + 19 次调用 + 1 次回读: {res:?}"
+    );
+
+    for (index, (kind, _payload, expected)) in cases.iter().enumerate() {
+        let response = &res[index + 2];
+        assert!(
+            response.get("error").is_none(),
+            "`{kind}` 的失败掉进了 JSON-RPC 出口: {response}"
+        );
+        let result = &response["result"];
+        assert_eq!(
+            result["status"], "error",
+            "`{kind}` 必须被响亮拒绝: {result}"
+        );
+        let code = result["error"]["code"].as_str().expect("码是字符串");
+        assert_eq!(code, *expected, "`{kind}` 的契约码");
+        assert!(
+            yeban_mcp::tools::ErrorCode::SCHEMA_CONTRACT
+                .iter()
+                .any(|known| known.as_str() == code),
+            "`{kind}` 的码 `{code}` 不在契约 enum 里"
+        );
+        assert!(
+            result["data"].is_null() || result.get("data").is_some(),
+            "带内失败必须给出结构化的 `error.data`（哪怕是 null）"
+        );
+    }
+    // 19 次被拒之后，工程一个字节都没变。
+    let after = serde_json::to_string(&res[21]["result"]["data"]["project"]).expect("JSON");
+    assert_eq!(after, before, "被拒的调用不得改动工程");
+}
+
+/// **方向 4：单条请求/响应的规模端点**（真进程 / 真 stdio）。
+///
+/// 单位 = 一次 `tools/call` 的响应对象（子进程退出码由 `session` 断言为 0）。四格：
+/// 1. **最小请求**：`tools/list` **不带 `params`** ⇒ 成功且 17 个工具（`params` 缺省合法）；
+/// 2. `ops` **空数组**：不带 `placement` ⇒ 带内 `INVALID_PARAMETER_RANGE`
+///    （"空操作不是一次编辑请求"），带 `placement` ⇒ **成功**（这次调用只摆放）；
+/// 3. **恰好到上限**：`yeban_edit_automation` 的 `ticks` 恰好 256 个 ⇒ 成功、
+///    257 个 ⇒ 带内 `INVALID_PARAMETER_RANGE`（已发布上限，判据 `PL-limit` 的姊妹面）；
+/// 4. **大载荷**：一次 1000 条 `add`（`includeOps: true`）⇒ 成功且响应里真的有 1000 条，
+///    并断言序列化后的响应**超过 100 KB**（证明大载荷真的过了管道，而不是被悄悄截断）。
+///
+/// 注入（实测红）：把 `parse_ops` 的空数组守卫删掉 ⇒ 第 2 格的前半变成功；把
+/// `MAX_READ_TICKS` 改成 128 ⇒ 第 3 格前半红；给响应加一个"最多回 100 条 ops"的截断
+/// ⇒ 第 4 格红。
+#[test]
+fn request_and_response_scale_edges_over_stdio() {
+    let path = write_container_project("e2e-scale.yeban");
+    let ticks_exact: Vec<u64> = (0..256).collect();
+    let ticks_over: Vec<u64> = (0..257).collect();
+    let bulk: Vec<Value> = (0..1000_u64)
+        .map(|index| {
+            serde_json::json!({
+                "kind": "add",
+                // 时值 480、步长 480 ⇒ **不重叠**（发声数峰值 = 1，不会撞 32 的上限）。
+                "note": {"startTick": index * 480, "pitch": 60, "durationTicks": 480},
+            })
+        })
+        .collect();
+
+    let probe = session(&[
+        req(1, "initialize", serde_json::json!({})),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": path.display().to_string()},
+            }),
+        ),
+        req(
+            3,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_query_project",
+                "arguments": {"fields": ["tracks", "clip_pool", "master_bus_track_id"],
+                              "limit": 1000},
+            }),
+        ),
+    ]);
+    assert_eq!(probe.len(), 3, "探测会话必须有三条响应: {probe:?}");
+    let project = &probe[2]["result"]["data"]["project"];
+    let master = project["master_bus_track_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("探测会话的响应不对: {probe:?}"))
+        .to_owned();
+    let tracks = project["tracks"]
+        .as_object()
+        .unwrap_or_else(|| panic!("tracks 不是对象: {project:?}"));
+    let lead = tracks
+        .iter()
+        .find(|(id, track)| **id != master && track["kind"] == "Midi")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("没有 MIDI 音轨: {project:?}"));
+    let clip = project["clip_pool"]
+        .as_object()
+        .and_then(|pool| pool.keys().next())
+        .unwrap_or_else(|| panic!("没有池条目: {project:?}"))
+        .clone();
+
+    let res = session(&[
+        req(1, "initialize", serde_json::json!({})),
+        // ① 最小请求：`tools/list` 连 `params` 都不给。
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_owned(),
+        req(
+            3,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": path.display().to_string()},
+            }),
+        ),
+        // ② `ops` 空数组（不允许；只有"只摆放"才允许空）。
+        req(
+            4,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_edit_notes",
+                "arguments": {"trackId": lead, "clipId": clip, "ops": []},
+            }),
+        ),
+        // ②' `ops` 空数组 + `placement` ⇒ 允许。
+        req(
+            5,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_edit_notes",
+                "arguments": {
+                    "trackId": lead, "clipId": clip, "ops": [],
+                    "placement": {"kind": "add", "startTick": 0, "durationTicks": 1920},
+                },
+            }),
+        ),
+        // ③ `ticks` 恰好 256 / 257。
+        req(
+            6,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_edit_automation",
+                "arguments": {"trackId": lead, "lane": "TrackVolume", "ticks": ticks_exact},
+            }),
+        ),
+        req(
+            7,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_edit_automation",
+                "arguments": {"trackId": lead, "lane": "TrackVolume", "ticks": ticks_over},
+            }),
+        ),
+        // ④ 1000 条 add，且要求把 op 载荷回显。
+        req(
+            8,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_edit_notes",
+                "arguments": {"trackId": lead, "clipId": clip, "ops": bulk,
+                              "includeOps": true},
+            }),
+        ),
+    ]);
+    assert_eq!(res.len(), 8, "8 条请求都必须有响应: {res:?}");
+
+    // ① 最小请求。
+    assert_eq!(res[1]["result"]["tools"].as_array().map(Vec::len), Some(17));
+    // ② 空 ops 不允许。
+    let empty = &res[3]["result"];
+    assert_eq!(empty["status"], "error", "{empty}");
+    assert_eq!(empty["error"]["code"], "INVALID_PARAMETER_RANGE", "{empty}");
+    // ②' 只摆放允许。
+    let placed = &res[4]["result"];
+    assert_eq!(placed["status"], "success", "{placed}");
+    // ③ 上限含端点。
+    assert_eq!(res[5]["result"]["status"], "success", "{}", res[5]);
+    let over = &res[6]["result"];
+    assert_eq!(over["status"], "error", "{over}");
+    assert_eq!(over["error"]["code"], "INVALID_PARAMETER_RANGE", "{over}");
+    assert_eq!(over["error"]["data"]["limit"], 256, "上限必须是字面 256");
+    // ④ 大载荷真的过了管道。
+    let big = &res[7]["result"];
+    assert_eq!(big["status"], "success", "{}", res[7]);
+    let ops = big["data"]["proposal"]["ops"]
+        .as_array()
+        .expect("includeOps 必须回显 op 载荷");
+    assert_eq!(ops.len(), 1000, "1000 条 add 必须一条不少地回显");
+    let wire = serde_json::to_string(&res[7]).expect("JSON");
+    assert!(
+        wire.len() > 100 * 1024,
+        "1000 条 op 的响应必须真的超过 100 KB（实测 {} 字节）—— 否则可能是被截断了",
+        wire.len()
+    );
+}

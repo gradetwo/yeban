@@ -11225,4 +11225,261 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
         assert_eq!(lane_fault_data(&fault)["reason"], "invalidDeviceDefinition");
     }
+    /// **方向 3：`kind`（＋载荷分支）→ 恰好一个 `Op` 变体**（第三口径的另一半）。
+    ///
+    /// 上一批证明了"31 个 `Op` 变体都有构造点"，也证明了"`OP_KINDS` 与 `parse_one` 的臂
+    /// 逐字双射"，但**没有**证明"每个 `kind` 落到哪个 `Op` 变体"。本判据把这条补齐：
+    /// 对 19 个 `kind`（其中 `setAutomationLane` 有**两个**载荷分支，因此共 20 行）
+    /// 真的 `parse_ops` + `compile`，并断言 `Op::name()` **逐行等于登记值**。
+    ///
+    /// ⚠ 精确措辞：`kind → Op` 不是"一一对应" —— `setAutomationLane` 的 `remove` 分支产出
+    /// **另一个**变体（`SetAutomationLane` vs `RemoveAutomationLane`）。因此登记的单位是
+    /// **(kind, 载荷分支)**；20 行 → **20 个互不相同的变体**（末条断言钉住单射）。
+    ///
+    /// 注入（实测红）：把 `parse_one` 的某个臂换成产出另一个 `NoteOp` ⇒ 该行期望变体不符，红；
+    /// 把两行登记成同一个变体 ⇒ 末条单射断言红。
+    #[test]
+    fn every_catalog_kind_compiles_to_exactly_one_op_variant() {
+        let project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        let note = *project.clip_pool[&clip]
+            .content
+            .notes()
+            .expect("MIDI 片段")
+            .keys()
+            .next()
+            .expect("样本音符");
+        let device_track_id = device_track(&project);
+        let device = project.tracks[&device_track_id].devices[0].id;
+        let (node, _referencing) = a_non_master_node(&project);
+        let edge = *project
+            .routing_graph
+            .edges
+            .keys()
+            .next()
+            .expect("样本路由边");
+        let scene = *project.scenes.keys().next().expect("样本场景");
+        let section = *project.sections.keys().next().expect("样本段落");
+        let target_track = project
+            .tracks
+            .values()
+            .find(|track| track.id != project.master_bus_track_id)
+            .expect("非主总线音轨")
+            .id;
+        let (lane_name, lane_tick) = project
+            .tracks
+            .values()
+            .flat_map(|track| track.automation_lanes.values())
+            .find_map(|lane| {
+                let name = match lane.target {
+                    AutomationTarget::TrackVolume { .. } => "TrackVolume",
+                    AutomationTarget::TrackPan { .. } => "TrackPan",
+                    _ => return None,
+                };
+                let tick = lane.points.values().next()?.tick;
+                let unique = lane
+                    .points
+                    .values()
+                    .filter(|point| point.tick == tick)
+                    .count()
+                    == 1;
+                unique.then_some((name, tick))
+            })
+            .expect("样本里必须有一条 TrackVolume/TrackPan 泳道且带唯一 tick 的采样点");
+        // `removeClip` 的目标必须**没有任何摆放引用**，而样本里每条池条目都被引用 ⇒ 在克隆体上
+        // 加一条新的池条目（内容抄自样本第一条），只给这一行用。
+        let spare_entry = {
+            let mut entry = project.clip_pool.values().next().expect("池条目").clone();
+            entry.id = EntityId::from_str("01J8ZQ00000000000000000CP1").expect("ULID");
+            entry
+        };
+        let unplaced = spare_entry.id;
+        let ghost = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        let new_scene = EntityId::from_str("01J8ZQ00000000000000000SC1").expect("ULID");
+
+        // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
+        #[allow(clippy::type_complexity)]
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 20] = [
+            (
+                "add",
+                None,
+                None,
+                serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
+                "AddNote",
+            ),
+            (
+                "delete",
+                None,
+                None,
+                serde_json::json!({"noteId": note}),
+                "DeleteNote",
+            ),
+            (
+                "move",
+                None,
+                None,
+                serde_json::json!({"noteId": note, "deltaTick": 0, "deltaPitch": 0}),
+                "MoveNote",
+            ),
+            (
+                "velocity",
+                None,
+                None,
+                serde_json::json!({"noteId": note, "velocity": 64}),
+                "ModifyNoteVelocity",
+            ),
+            (
+                "removeClip",
+                Some(unplaced),
+                Some(spare_entry),
+                serde_json::json!({}),
+                "RemoveClip",
+            ),
+            (
+                "removeTrack",
+                None,
+                None,
+                serde_json::json!({"trackId": target_track}),
+                "RemoveTrack",
+            ),
+            (
+                "insertDevice",
+                None,
+                None,
+                serde_json::json!({"trackId": device_track_id,
+                "device": {"deviceId": ghost, "name": "Probe", "kind": "InternalEffect",
+                           "bypassed": false, "latencySamples": 0, "params": []}}),
+                "InsertDevice",
+            ),
+            (
+                "removeDevice",
+                None,
+                None,
+                serde_json::json!({"trackId": device_track_id, "deviceId": device}),
+                "RemoveDevice",
+            ),
+            (
+                "setParam",
+                None,
+                None,
+                serde_json::json!({"lane": "TrackVolume", "value": -3.0}),
+                "SetParam",
+            ),
+            (
+                "setTrackMute",
+                None,
+                None,
+                serde_json::json!({"value": true}),
+                "SetTrackMute",
+            ),
+            (
+                "setTrackSolo",
+                None,
+                None,
+                serde_json::json!({"value": false}),
+                "SetTrackSolo",
+            ),
+            (
+                "setAutomationLane#patch",
+                None,
+                None,
+                serde_json::json!({"lane": {"lane": lane_name, "readEnabled": true}}),
+                "SetAutomationLane",
+            ),
+            (
+                "setAutomationLane#remove",
+                None,
+                None,
+                serde_json::json!({"lane": {"lane": lane_name, "remove": true}}),
+                "RemoveAutomationLane",
+            ),
+            (
+                "removeAutomationPoint",
+                None,
+                None,
+                serde_json::json!({"point": {"lane": lane_name, "tick": lane_tick}}),
+                "RemoveAutomationPoint",
+            ),
+            (
+                "setRoutingGain",
+                None,
+                None,
+                serde_json::json!({"edgeId": edge, "value": -3.0}),
+                "SetRoutingGain",
+            ),
+            (
+                "disconnectRouting",
+                None,
+                None,
+                serde_json::json!({"edgeId": edge}),
+                "DisconnectRouting",
+            ),
+            (
+                "removeRoutingNode",
+                None,
+                None,
+                serde_json::json!({"nodeId": node}),
+                "RemoveRoutingNode",
+            ),
+            (
+                "removeSection",
+                None,
+                None,
+                serde_json::json!({"sectionId": section}),
+                "RemoveSection",
+            ),
+            (
+                "removeScene",
+                None,
+                None,
+                serde_json::json!({"sceneId": scene}),
+                "RemoveScene",
+            ),
+            (
+                "setScene",
+                None,
+                None,
+                serde_json::json!({"scene": {"sceneId": new_scene, "create": true,
+                                          "name": "Probe"}}),
+                "SetScene",
+            ),
+        ];
+        assert_eq!(
+            rows.len(),
+            OP_KINDS.len() + 1,
+            "19 个 kind ＋ 1 个额外载荷分支"
+        );
+
+        let mut seen: Vec<&str> = Vec::new();
+        for (label, clip_override, preset, payload, expected) in rows {
+            let mut object = payload.as_object().expect("对象").clone();
+            let kind = label.split('#').next().expect("标签有 kind 前缀");
+            object.insert("kind".to_owned(), Value::from(kind));
+            let ops = parse_ops(&serde_json::json!([Value::Object(object)]))
+                .unwrap_or_else(|fault| panic!("`{label}` 的规范形状必须能解析: {fault:?}"));
+            let use_clip = clip_override.unwrap_or(clip);
+            let document = preset.map_or_else(
+                || project.clone(),
+                |entry| {
+                    let mut modified = project.clone();
+                    modified.clip_pool.insert(entry.id, entry);
+                    modified
+                },
+            );
+            let compiled = compile(&document, &track, &use_clip, &ops)
+                .unwrap_or_else(|fault| panic!("`{label}` 必须能编译: {fault:?}"));
+            assert_eq!(compiled.len(), 1, "`{label}` 应恰好产出一条 `Op`");
+            assert_eq!(
+                compiled[0].name(),
+                expected,
+                "`{label}` 必须落到登记的 `Op` 变体"
+            );
+            assert!(
+                !seen.contains(&expected),
+                "`{label}` 的变体 `{expected}` 与别的行重复 —— (kind, 分支) → 变体必须是单射"
+            );
+            seen.push(expected);
+        }
+        assert_eq!(seen.len(), 20);
+    }
 }

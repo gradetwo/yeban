@@ -481,4 +481,88 @@ mod tests {
         assert_eq!(clamped.limit, 1000);
         assert!(clamped.limit_clamped);
     }
+    /// **方向 5：分页的两个端点与两个极值**。
+    ///
+    /// 既有判据 `pagination_is_deterministic_and_bounded` 只打到"offset 越界 ⇒ 空页"。
+    /// 本判据把四格补齐（注入都能红）：
+    /// 1. `offset == total`（恰好最后一页之后）⇒ `returned == 0`、`hasMore == false`、**不是**错误；
+    /// 2. `limit == 剩余条数` 与 `limit == 剩余 + 1` ⇒ 两者 `returned` 相同、都 `hasMore == false`；
+    /// 3. `offset == u64::MAX` ⇒ 走 `usize::try_from(..).unwrap_or(usize::MAX)` 的饱和路径，
+    ///    不得 panic、不得算错（`end` 不得回绕）；
+    /// 4. `limit > MAX_LIMIT` ⇒ 夹紧到 `MAX_LIMIT` 且 `limitClamped == true`，而
+    ///    `page.limit` 报的仍是**调用方给的值**（夹紧是**上报**，不是改写）。
+    ///
+    /// 注入（实测红）：把 `let start = …min(total)` 的 `.min(total)` 去掉 ⇒ 第 1 条红
+    /// （`get(start..end)` 拿到 `None` ⇒ 空页仍然对，但 `offset == total` 时 `end < start`
+    /// 会让 `returned` 饱和成 0 —— 第 1 条因此专打 `hasMore` 与 `total`）；
+    /// 把 `end.saturating_add(limit)` 换成 `start + limit` ⇒ 第 3 条在 debug 下 panic。
+    #[test]
+    fn pagination_extremes_are_exact_at_the_edges() {
+        let project = filled_project();
+        let all = data(&project, &Query::default()).expect("全量");
+        let total = all["page"]["total"].as_u64().expect("total");
+        assert!(total >= 4, "样本的实体索引必须够大: {total}");
+
+        // ① 恰好 `offset == total`。
+        let end_page = data(
+            &project,
+            &Query {
+                offset: total,
+                ..Query::default()
+            },
+        )
+        .expect("offset == total 不是错误");
+        assert_eq!(end_page["page"]["returned"], 0);
+        assert_eq!(end_page["page"]["hasMore"], false);
+        assert_eq!(end_page["page"]["total"], total);
+        assert_eq!(end_page["entities"].as_array().map(Vec::len), Some(0));
+
+        // ② `limit == 剩余` 与 `limit == 剩余 + 1`。
+        let remaining = total - 1;
+        let exact = data(
+            &project,
+            &Query {
+                limit: remaining,
+                offset: 1,
+                ..Query::default()
+            },
+        )
+        .expect("恰好剩余");
+        let one_more = data(
+            &project,
+            &Query {
+                limit: remaining + 1,
+                offset: 1,
+                ..Query::default()
+            },
+        )
+        .expect("剩余 + 1");
+        assert_eq!(exact["page"]["returned"], remaining);
+        assert_eq!(one_more["page"]["returned"], remaining);
+        assert_eq!(exact["page"]["hasMore"], false);
+        assert_eq!(one_more["page"]["hasMore"], false);
+
+        // ③ `offset == u64::MAX`：饱和路径，不 panic、不回绕。
+        let huge = data(
+            &project,
+            &Query {
+                offset: u64::MAX,
+                limit: MAX_LIMIT,
+                ..Query::default()
+            },
+        )
+        .expect("极大 offset 不是错误");
+        assert_eq!(huge["page"]["returned"], 0);
+        assert_eq!(huge["page"]["hasMore"], false);
+        assert_eq!(huge["page"]["offset"], u64::MAX, "上报原样");
+
+        // ④ 夹紧：`limit` 报原值，`page.limit` 报原值，只有 `limitClamped` 说明被夹。
+        let clamped = parse(&args(serde_json::json!({"limit": MAX_LIMIT + 7}))).expect("夹紧");
+        assert_eq!(clamped.limit, MAX_LIMIT);
+        assert!(clamped.limit_clamped);
+        let page = data(&project, &clamped).expect("夹紧后的页");
+        assert_eq!(page["page"]["limit"], MAX_LIMIT, "夹紧后按上界报");
+        assert_eq!(page["page"]["limitClamped"], true);
+        assert!(page["page"]["returned"].as_u64().expect("returned") <= MAX_LIMIT);
+    }
 }
