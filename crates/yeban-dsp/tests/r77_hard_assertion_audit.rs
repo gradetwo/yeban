@@ -863,7 +863,10 @@ fn identifier_matching_has_near_miss_controls() {
         declares_platform_dependence(self_marked, "foo"),
         "紧邻 `fn foo()` 上方的标记必须算作它已标注"
     );
+}
 
+#[test]
+fn the_call_matching_has_near_miss_controls() {
     // ② 调用匹配：标识符边界。
     assert!(
         !calls_function("fn user() { my_bar() }", "bar"),
@@ -1681,6 +1684,88 @@ fn the_count_register_carries_a_class_and_a_basis_for_every_number() {
         assert!(
             row.contains("grep") || row.contains("掩码"),
             "外部口径必须写明命令或掩码器：{row}"
+        );
+    }
+}
+
+/// 提交在仓库里的臂覆盖读数表。
+const ARM_COVERAGE_PATH: &str = "tests/data/arm_coverage.txt";
+
+/// ⭐ **E2／E3**：把"1/N"做成**可见读数**（本判据扫描**自己的源码**，按判据分区计 `assert*!`）。
+///
+/// ⚠ **口径与偏置（A2／A5）**：计数**当场算**（⛔ 非手数）；**按分区**报（⛔ 不跨区相加）；
+/// 覆盖列必须**要么**是 `1/N`（同体内首败即停）**要么**是 `N/N`（独立判据）。
+/// ⚠ **本装置的能力边界**：这是**静态**臂数，⛔ 不是运行期 `arms_ran` ——
+/// "本轮实际跑到第几条"仍只能由**失败日志**给出（登记为欠项，⛔ 不冒充运行期计数器）。
+#[test]
+fn the_arm_coverage_register_matches_the_source() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let this_file = normalize_source(
+        &fs::read_to_string(root.join("tests/r77_hard_assertion_audit.rs")).expect("读自身"),
+    );
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut current = String::new();
+    for line in this_file.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("fn ") {
+            // ⚠ **实测抓到的缺陷**：宏体里也有 `fn $name() {`，若不过滤会把 `$name` 当成判据起点、
+            // 截断其后所有判据的计数（表 10 vs 实测 7）。只接受**合法标识符**名。
+            if let Some(name) = rest.split('(').next() {
+                let ident = !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+                if ident {
+                    current = name.to_string();
+                    counts.entry(current.clone()).or_insert(0);
+                }
+            }
+        }
+        if !current.is_empty()
+            && (line.contains("assert!")
+                || line.contains("assert_eq!")
+                || line.contains("assert_ne!"))
+        {
+            *counts.entry(current.clone()).or_insert(0) += 1;
+        }
+    }
+    let (text, _) = read_evidence_text(&root.join(ARM_COVERAGE_PATH));
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect();
+    assert!(rows.len() >= 5, "臂覆盖表太小：{} 行（地板 5）", rows.len());
+    for row in &rows {
+        let cols: Vec<&str> = row.split('|').collect();
+        assert_eq!(
+            cols.len(),
+            4,
+            "每行必须 4 列（region|criterion|arms|coverage）：{row}"
+        );
+        assert_eq!(
+            cols[0], "r77_hard_assertion_audit",
+            "分区列必须点名区域：{row}"
+        );
+        let arms: usize = cols[2].parse().expect("arms 必须是数字");
+        if cols[1].starts_with("device_injection_row") {
+            assert_eq!(arms, 13, "13 条独立判据的臂数必须是 13：{row}");
+            assert_eq!(
+                cols[3], "13/13（每条注入 = 一条独立 #[test]）",
+                "覆盖列必须是 N/N：{row}"
+            );
+            continue;
+        }
+        let fresh = *counts
+            .get(cols[1])
+            .unwrap_or_else(|| panic!("源码里找不到判据 {}（表不得凭空写）", cols[1]));
+        assert_eq!(
+            arms, fresh,
+            "臂数必须与**当场扫描**一致（判据 {}：表 {arms} vs 实测 {fresh}）",
+            cols[1]
+        );
+        assert!(
+            cols[3].starts_with("1/N") || cols[3].starts_with("N/N"),
+            "覆盖列必须明确 1/N 或 N/N：{row}"
         );
     }
 }
