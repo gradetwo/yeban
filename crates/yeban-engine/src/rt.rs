@@ -3728,5 +3728,14 @@ mod tests {
             2,
             "measure_latency.rs 的 device 门数"
         );
+        // R58：`==` 的判据必须另有一条 `assert_ne!` 落在**同一个**表达式上 ——
+        // 这里证明这个计数器**真的能区分不同的文件**（1 vs 4），不是恒等于同一个值。
+        assert_ne!(
+            lib.matches(needle.as_str()).count(),
+            include_str!("../tests/rt_zero_alloc.rs")
+                .matches(needle.as_str())
+                .count(),
+            "lib.rs(1) 与 rt_zero_alloc.rs(4) 的门数必须不同（否则计数器没有区分力）"
+        );
     }
 }

@@ -815,5 +815,12 @@ mod tests {
             text.contains("slots: 1"),
             "槽位数必须跟着状态走（1 个在册槽位 ⇒ `slots: 1`，实得 {text}）"
         );
+        // R58：等号/包含式的判据必须另有一条 `assert_ne!` 落在**同一个**表达式上 ——
+        // 证明 Debug 文本**真的随状态变**，而不是恒等于同一个常量。
+        assert_ne!(
+            text,
+            format!("{:?}", ParamTable::new(SR)),
+            "有 1 个在册槽位的 Debug 文本必须与空表不同（否则 `slots` 没被打印成读数）"
+        );
     }
 }

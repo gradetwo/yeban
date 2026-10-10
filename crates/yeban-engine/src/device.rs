@@ -894,6 +894,12 @@ mod tests {
             DeviceError::ExclusiveModeUnsupported.to_string(),
             "exclusive (non-shared) mode is not supported by this backend"
         );
+        // R58：`==` 的判据必须另有一条 `assert_ne!` 落在**同一个**表达式上。
+        assert_ne!(
+            DeviceError::NoDefaultOutputDevice.to_string(),
+            DeviceError::NoSupportedConfigs.to_string(),
+            "两个变体的文案必须不同（否则上面的等号可能是'两边同一个常量'）"
+        );
     }
 
     /// 判据：`NullBackend` 的**手写 `Debug` 形状**（结构体名 + 字段名）是契约。

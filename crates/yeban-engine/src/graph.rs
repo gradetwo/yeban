@@ -1551,5 +1551,15 @@ mod tests {
             "PDC: routing graph contains a cycle (2 unresolved nodes)",
             "文案里的读数必须跟着状态走（不是常量）"
         );
+        // R58：`==` 的判据必须另有一条 `assert_ne!` 落在**同一个**表达式上 ——
+        // 否则"两边都退化成同一个常量"也能让上面的等号成立。
+        assert_ne!(
+            PdcError::Cycle { nodes: Vec::new() }.to_string(),
+            PdcError::Cycle {
+                nodes: vec![EntityId::default()],
+            }
+            .to_string(),
+            "0 与 1 个未消化节点的文案必须不同（否则上面的等号可能是'两边同一个常量'）"
+        );
     }
 }
