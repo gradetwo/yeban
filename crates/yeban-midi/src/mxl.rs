@@ -943,6 +943,8 @@ mod tests {
 
     /// **编译期穷举探针**：`MxlError` 的每个变体一个唯一编号 ⇒ 新增变体会让这个 `match`
     /// 非穷举、**编译失败**（`cases.len() == 14` 只自校验表的长度）。
+    /// ⛔ **不许给这个 `match` 加 `_ =>` 通配臂**（R51）：加了以后新增变体也能编译过，
+    /// 探针立刻**静默失效**，而**所有判据仍然全绿**。
     fn mxl_error_arm(error: &MxlError) -> u8 {
         match error {
             MxlError::NotZip => 0,
@@ -973,6 +975,63 @@ mod tests {
             arms,
             (0..14).collect::<Vec<u8>>(),
             "黄金表必须逐臂恰好一次（缺一臂或重复都红）"
+        );
+    }
+
+    /// 判据 (类别: 公开 `Debug` 形状，续): 两个**错误枚举**的派生 `Debug` 输出逐字面钉住
+    /// （`MxlError` / `MusicXmlError`）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把这两个枚举的 `#[derive(Debug)]` 各顶成一个写死的
+    /// 手写 `impl Debug`（注入 `b9:DBG13` / `b9:DBG14`）后全部判据**保持绿**
+    /// —— 这两个类型是 `assert_eq!` 失败消息里最常出现的两个，而它们的 `Debug` 形状
+    /// 此前没有判据（第八批钉的是**结果**类型，本批补**错误**类型）。
+    #[test]
+    fn error_enum_debug_shapes_are_pinned() {
+        assert_eq!(format!("{:?}", MxlError::NotZip), "NotZip");
+        assert_eq!(
+            format!("{:?}", MxlError::UnsupportedZip64),
+            "UnsupportedZip64"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                MxlError::Malformed {
+                    offset: 4,
+                    detail: "x",
+                }
+            ),
+            "Malformed { offset: 4, detail: \"x\" }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                MxlError::LimitExceeded {
+                    limit: "entries",
+                    value: 2,
+                    max: 1,
+                }
+            ),
+            "LimitExceeded { limit: \"entries\", value: 2, max: 1 }"
+        );
+        assert_eq!(
+            format!("{:?}", crate::musicxml::MusicXmlError::Empty),
+            "Empty"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                crate::musicxml::MusicXmlError::InvalidUtf8 { offset: 17 }
+            ),
+            "InvalidUtf8 { offset: 17 }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                crate::musicxml::MusicXmlError::UnsupportedRoot {
+                    root: "score-timewise".to_owned(),
+                }
+            ),
+            "UnsupportedRoot { root: \"score-timewise\" }"
         );
     }
 }

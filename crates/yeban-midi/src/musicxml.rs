@@ -2152,6 +2152,8 @@ mod tests {
 
     /// **编译期穷举探针**：`MusicXmlError` 的每个变体一个唯一编号 ⇒ 新增变体会让这个
     /// `match` 非穷举、**编译失败**（`cases.len() == 15` 只自校验表的长度）。
+    /// ⛔ **不许给这个 `match` 加 `_ =>` 通配臂**（R51）：加了以后新增变体也能编译过，
+    /// 探针立刻**静默失效**，而**所有判据仍然全绿**。
     fn music_xml_error_arm(error: &MusicXmlError) -> u8 {
         match error {
             MusicXmlError::InvalidUtf8 { .. } => 0,

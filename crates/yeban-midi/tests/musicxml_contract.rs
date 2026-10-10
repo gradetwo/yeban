@@ -2769,3 +2769,36 @@ fn the_encryption_flag_is_reported_before_the_declared_length_limit() {
         "加密位必须先于声明长度上界开火"
     );
 }
+/// 判据 (类别: 核对次序 —— `read_entry` 三对里的**最后一对**): 声明的未压缩长度上界
+/// 先于**压缩法**检查开火。
+///
+/// 补的是哪个缺口（本票注入实测）：在声明长度检查**之前**插入一个早期压缩法检查
+/// （注入 `b9:ORD15`）后全部判据**保持绿** —— 第七批打了"加密位 vs **压缩法**"、
+/// 第八批打了"加密位 vs **声明长度**"，**"压缩法 vs 声明长度"这一对**此前没有判据。
+#[test]
+fn the_declared_length_limit_fires_before_the_compression_method() {
+    let container = container_xml("score.xml");
+    let mut spec = ZipEntrySpec::stored("score.xml", HANDMADE_MVP);
+    spec.method = 12; // bzip2：本模块只认 0 与 8
+    spec.uncompressed = 1_000_000; // 同时远超上界
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            spec,
+        ],
+        None,
+    );
+    let limits = MxlLimits {
+        max_entry_bytes: 200_000,
+        ..MxlLimits::default()
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &limits),
+        Err(MxlError::LimitExceeded {
+            limit: "entry_bytes",
+            value: 1_000_000,
+            max: 200_000,
+        }),
+        "声明长度上界先于压缩法检查开火（⛔ 不是 UnsupportedCompression）"
+    );
+}

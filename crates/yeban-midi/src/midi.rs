@@ -1823,6 +1823,8 @@ mod tests {
     /// 长度，⛔ 读不到枚举本身 —— "加了变体、也加了产线 `Display` 臂、却忘了往表里加
     /// 一行"这种情形它抓不到（表长仍是 14）。下面的
     /// `assert_every_midi_error_arm_is_covered` 把表与穷举探针绑在一起。
+    /// ⛔ **不许给这个 `match` 加 `_ =>` 通配臂**（R51）：加了以后新增变体也能编译过，
+    /// 探针立刻**静默失效**，而**所有判据仍然全绿**。
     fn midi_error_arm(error: &MidiError) -> u8 {
         match error {
             MidiError::InvalidPpq(_) => 0,
