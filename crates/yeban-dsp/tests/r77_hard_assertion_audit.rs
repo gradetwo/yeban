@@ -592,9 +592,14 @@ fn the_hard_assertion_table_matches_the_committed_evidence() {
         assert_eq!(back, rendered, "证据表写入后回读不一致");
         return;
     }
-    let committed = fs::read_to_string(&table_path).unwrap_or_else(|e| {
+    let committed_raw = fs::read_to_string(&table_path).unwrap_or_else(|e| {
         panic!("读不到证据表 {TABLE_PATH}：{e}（用 R77_WRITE=1 生成，⛔ 仅在 cargo fmt 之后）")
     });
+    // ⚠ **行尾归一化**：本判据在内存里渲染的是 `\n`，而 Windows 检出可能把仓库里的文本
+    // 变成 `\r\n` ⇒ 不归一化就会**只因为行尾**在 windows 腿上报红
+    // （实测：`fd54598` 的 `windows` 作业正是这样红的）。
+    // 归一化后比较的是**内容**，而行尾是版本控制的职责（`.gitattributes`）。
+    let committed = committed_raw.replace("\r\n", "\n");
     if committed != rendered {
         let committed_lines: Vec<&str> = committed.lines().collect();
         let rendered_lines: Vec<&str> = rendered.lines().collect();
@@ -602,9 +607,28 @@ fn the_hard_assertion_table_matches_the_committed_evidence() {
             .iter()
             .zip(rendered_lines.iter())
             .position(|(a, b)| a != b);
-        panic!(
-            "证据表与当前源码不一致（首个差异行 {:?}）：先跑 cargo fmt，再用 R77_WRITE=1 重生成",
-            first
+        let detail = first.map_or_else(
+            || {
+                format!(
+                    "前 {} 行相同，长度不同（表 {} 行 / 渲染 {} 行）",
+                    committed_lines.len().min(rendered_lines.len()),
+                    committed_lines.len(),
+                    rendered_lines.len()
+                )
+            },
+            |i| {
+                format!(
+                    "首个差异行 {}：表={:?} 渲染={:?}",
+                    i + 1,
+                    committed_lines.get(i).unwrap_or(&"<缺失>"),
+                    rendered_lines.get(i).unwrap_or(&"<缺失>")
+                )
+            },
         );
+        panic!("证据表与当前源码不一致（{detail}）：先跑 cargo fmt，再用 R77_WRITE=1 重生成");
+    }
+    // ⭐ 报告原始行尾（诊断用；⛔ 不作为失败条件）。
+    if committed_raw.contains('\r') {
+        eprintln!("[r77] 注意：证据表在盘上是 CRLF（已在比较前归一化）");
     }
 }
