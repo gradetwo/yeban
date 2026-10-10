@@ -232,6 +232,63 @@ fn all_sources() -> Vec<(String, String)> {
     files
 }
 
+/// 逐文件算出**跨行 raw 字符串的内部行**行号集合（真状态机，⛔ 不用引号奇偶猜）。
+///
+/// ⚠ 为什么必须这样：第一版用"引号个数为奇数"当豁免条件 ⇒ 它**吞掉**了真的假阴性
+/// （第十批实测：把"第一个 `;` 之后"整行掩掉的注入下，新判据**绿**，因为受害行被豁免了）。
+fn cross_line_raw_interior_lines(text: &str) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut open: Option<String> = None;
+    for (index, line) in text.lines().enumerate() {
+        let number = index + 1;
+        if let Some(close) = open.clone() {
+            if line.contains(&close) {
+                open = None;
+            } else {
+                out.insert(number);
+            }
+            if open.is_none() {
+                continue;
+            }
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut cursor = 0usize;
+        while cursor < chars.len() {
+            if chars[cursor] == 'r' || chars[cursor] == 'b' {
+                let mut probe = cursor;
+                if chars[probe] == 'b' {
+                    probe += 1;
+                }
+                if chars.get(probe) == Some(&'r') {
+                    probe += 1;
+                    let mut hashes = 0usize;
+                    while chars.get(probe) == Some(&'#') {
+                        hashes += 1;
+                        probe += 1;
+                    }
+                    if chars.get(probe) == Some(&'"') {
+                        let close = format!("\"{}", "#".repeat(hashes));
+                        if !line[char_indices_at(line, probe + 1)..].contains(&close) {
+                            open = Some(close);
+                            break;
+                        }
+                    }
+                }
+            }
+            cursor += 1;
+        }
+    }
+    out
+}
+
+/// 第 `chars_index` 个**字符**在 `line` 里的字节下标。
+fn char_indices_at(line: &str, chars_index: usize) -> usize {
+    line.char_indices()
+        .nth(chars_index)
+        .map_or(line.len(), |(at, _)| at)
+}
+
 /// **R228①/R253③：masked 与 raw 的差异必须**先分型**，且差异本身不是缺陷信号。**
 ///
 /// 口径（单位与区域都写在这里）：
@@ -275,6 +332,7 @@ fn masked_versus_raw_differences_are_typed_and_never_hide_code() {
         if !path.contains("src") || path.contains("tests") {
             continue;
         }
+        let raw_interior = cross_line_raw_interior_lines(&text);
         for (index, line) in text.lines().enumerate() {
             scanned_lines += 1;
             if line.trim_start().starts_with("//") {
@@ -291,7 +349,7 @@ fn masked_versus_raw_differences_are_typed_and_never_hide_code() {
                 } else {
                     other += 1;
                 }
-                if !is_inside_string_literal(line, needle) && !inside_cross_line_raw(line) {
+                if !is_inside_string_literal(line, needle) && !raw_interior.contains(&(index + 1)) {
                     hidden_in_code.push(format!("{path}:{}", index + 1));
                 }
                 // 词边界口径：只在针的两侧都不是标识符字符时计入。
@@ -349,12 +407,4 @@ fn is_inside_string_literal(line: &str, needle: &str) -> bool {
         }
     }
     inside
-}
-
-/// 粗略判定：该行是否可能是**跨行 raw 字符串的内部行**（已知限制的承载体）。
-///
-/// 口径：行内出现裸的 `value_at(` 这类针、且**不在**字符串里、且该行**没有**引号配对
-/// ⇒ 最可能的解释是"上一行开了 raw 字符串"（逐行助手看不见那个上下文）。
-fn inside_cross_line_raw(line: &str) -> bool {
-    !is_inside_string_literal(line, "value_at(") && line.matches('"').count() % 2 == 1
 }
