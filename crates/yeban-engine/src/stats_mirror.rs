@@ -696,4 +696,29 @@ mod tests {
         // 0xFF 不在编码表里 ⇒ 回落 `Stopped`（而不是 panic 或发明第四种状态）。
         assert_eq!(decode_transport(0xFF), TransportState::Stopped);
     }
+
+    /// 判据：镜像的手写 `Debug` 必须打印**读出来的那一份读数**，不是常量。
+    ///
+    /// `EngineStatsMirror` 的 `Debug` 是手写的：它刻意只打印 `stats: <读出来的 EngineStats>`，
+    /// 而不是 59 个原子量的内部状态。人工排障读到的就是这份文本 ⇒ 结构体名、字段名、
+    /// **且"里面真的是读数"**三者都是契约。
+    ///
+    /// **量什么**：`format!("{mirror:?}")` 的文本（单位：字符）。
+    /// 注入实测（第四批）：`.field("stats", &self.read())` → `&0` ⇒ 本判据实测变红
+    /// （文本退化成 `EngineStatsMirror { stats: 0 }`，`quanta` 不再出现）。
+    #[test]
+    fn the_mirror_debug_prints_the_read_stats_not_a_constant() {
+        let mirror = EngineStatsMirror::new();
+        mirror.publish(&sentinel_stats());
+        let text = format!("{mirror:?}");
+        assert!(
+            text.starts_with("EngineStatsMirror {"),
+            "结构体名是契约（实得 {text}）"
+        );
+        assert!(text.contains("stats:"), "字段名是契约（实得 {text}）");
+        assert!(
+            text.contains("quanta"),
+            "必须打印**读数**（至少含 `quanta`），不是常量（实得 {text}）"
+        );
+    }
 }

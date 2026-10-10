@@ -871,4 +871,52 @@ mod tests {
             );
         }
     }
+
+    /// 判据：device 侧错误的 **Display 文案**是公开面，必须逐字钉住。
+    ///
+    /// 文案经 `EngineHostError::Device` 原样交给界面与日志 ⇒ 它是契约的一部分。
+    ///
+    /// **量什么**：三个变体的 `to_string()` 文本（单位：字符）。
+    /// 注入实测（第四批）：`#[error("no default output device available")]` →
+    /// `#[error("no device")]` ⇒ 本判据实测变红。⚠ 本判据**只在 `--features device` 档
+    /// 存在**：默认档下 `device.rs` 整个模块被 `#[cfg]` 关掉（R50②）。
+    #[test]
+    fn device_error_messages_are_the_documented_text() {
+        assert_eq!(
+            DeviceError::NoDefaultOutputDevice.to_string(),
+            "no default output device available"
+        );
+        assert_eq!(
+            DeviceError::NoSupportedConfigs.to_string(),
+            "device reports no supported output configuration"
+        );
+        assert_eq!(
+            DeviceError::ExclusiveModeUnsupported.to_string(),
+            "exclusive (non-shared) mode is not supported by this backend"
+        );
+    }
+
+    /// 判据：`NullBackend` 的**手写 `Debug` 形状**（结构体名 + 字段名）是契约。
+    ///
+    /// 它与 [`crate::rt::EngineStats::ftz`] 的诊断输出同源，人工排障读到的就是这份文本。
+    ///
+    /// **量什么**：`format!("{backend:?}")` 的文本（单位：字符）。
+    /// 注入实测（第四批）：`f.debug_struct("NullBackend")` → `"NullBackendX"` ⇒
+    /// 本判据实测变红（同样只在 device 档可见）。
+    #[test]
+    fn null_backend_debug_shape_names_the_type_and_fields() {
+        let runtime = default_runtime();
+        let backend = NullBackend::with_default_config(runtime);
+        let text = format!("{backend:?}");
+        assert!(
+            text.starts_with("NullBackend {"),
+            "结构体名是契约（实得 {text}）"
+        );
+        for field in ["negotiated", "frames_rendered", "stats"] {
+            assert!(
+                text.contains(&format!("{field}:")),
+                "缺字段 `{field}`（实得 {text}）"
+            );
+        }
+    }
 }

@@ -2617,4 +2617,33 @@ mod tests {
         assert!(accounting.pushed() >= pushed_total);
         assert!(accounting.drained() > 0, "一次都没出队 ⇒ 并发交错没被覆盖");
     }
+
+    /// 判据：`RetireProducer` 的手写 `Debug` 必须是 **non_exhaustive** 形状，
+    /// 且**不**暴露环的内部。
+    ///
+    /// 该 `Debug` 是手写的，理由写在实现旁：`rtrb::Producer` 的可调试性**不构成本模块的
+    /// 契约**，这里只暴露记账句柄 ⇒ 输出的末尾必须是 `.. }`（`finish_non_exhaustive`），
+    /// 而且不得出现环的类型名。
+    ///
+    /// **量什么**：`format!("{producer:?}")` 的文本（单位：字符）。
+    /// 注入实测（第四批）：`.finish_non_exhaustive()` → `.finish()` ⇒ 本判据实测变红
+    /// （末尾从 `.. }` 变成 `}`）。
+    #[test]
+    fn the_retire_producer_debug_is_non_exhaustive_and_hides_the_ring() {
+        let (producer, _queue) = retire_channel(4);
+        let text = format!("{producer:?}");
+        assert!(
+            text.starts_with("RetireProducer {"),
+            "结构体名是契约（实得 {text}）"
+        );
+        assert!(text.contains("accounting:"), "字段名是契约（实得 {text}）");
+        assert!(
+            text.trim_end().ends_with(".. }"),
+            "必须是 non_exhaustive 形状（末尾 `.. }}`，实得 {text}）"
+        );
+        assert!(
+            !text.contains("rtrb"),
+            "不得暴露环的内部类型（实得 {text}）"
+        );
+    }
 }

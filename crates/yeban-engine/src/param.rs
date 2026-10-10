@@ -775,4 +775,45 @@ mod tests {
         assert_eq!(table.apply(track, &mut out), 12_000, "槽位必须真的乘过样本");
         assert_eq!(out[11_999], 0.0, "静音目标必须让样本吸附到 0.0");
     }
+
+    /// 判据：手写 `Debug` 的**形状与读数**必须被钉住（它是诊断面的一部分）。
+    ///
+    /// `ParamTable` 的 `Debug` 是**手写**的（不是 derive）：它刻意只打印 8 个可读读数，
+    /// 不为 [`PARAM_SLOTS`] 个平滑器刷屏。人工排障与 MCP 的引擎状态查询读到的就是这份
+    /// 文本，因此**结构体名、字段名、字段值**三者都是契约。
+    ///
+    /// **量什么**：`format!("{table:?}")` 的文本（单位：字符）。
+    /// 注入实测（第四批）：
+    /// * `.debug_struct("ParamTable")` → `"ParamTableX"` ⇒ 本判据实测变红；
+    /// * `.field("slots", &self.len)` → `&0` ⇒ 本判据实测变红（`slots: 0` vs `slots: 1`）。
+    #[test]
+    fn the_hand_written_debug_shape_reports_the_readouts() {
+        let mut table = ParamTable::new(SR);
+        let track = EntityId::new();
+        table.accept(address(track, TRACK_GAIN_SLOT), 0.5, EntityId::new());
+        let text = format!("{table:?}");
+        assert!(
+            text.starts_with("ParamTable {"),
+            "结构体名是契约（实得 {text}）"
+        );
+        for field in [
+            "slots",
+            "gain_frames",
+            "master_armed",
+            "master_gain",
+            "master_gain_frames",
+            "rejections",
+            "unmapped",
+            "capacity_drops",
+        ] {
+            assert!(
+                text.contains(&format!("{field}:")),
+                "缺字段 `{field}`（实得 {text}）"
+            );
+        }
+        assert!(
+            text.contains("slots: 1"),
+            "槽位数必须跟着状态走（1 个在册槽位 ⇒ `slots: 1`，实得 {text}）"
+        );
+    }
 }

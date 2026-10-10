@@ -1513,4 +1513,43 @@ mod tests {
             assert!(delay <= 4, "任何延迟都不得越过线容量");
         }
     }
+
+    /// 判据：`PdcError` 的 **Display 文案**是公开面，必须逐字钉住。
+    ///
+    /// `thiserror` 的 `#[error("…")]` 同时定义 `Display` 与"结构化错误"。文案会被
+    /// 控制面/CLI/MCP 原样交给用户与日志，因此它是**契约的一部分**，而不是实现细节。
+    /// `Cycle` 的文案里还带一个**读数**（未消化节点数）⇒ 那个读数必须跟着状态走。
+    ///
+    /// **量什么**：三个变体的 `to_string()` 文本（单位：字符），以及 `Cycle` 里那个计数。
+    /// 注入实测（第四批）：`#[error("PDC: master node is not present in routing graph nodes")]`
+    /// → `#[error("PDC: master missing")]` ⇒ 本判据实测变红。
+    #[test]
+    fn pdc_error_messages_are_the_documented_text() {
+        assert_eq!(
+            PdcError::UnknownMaster {
+                master: EntityId::default(),
+            }
+            .to_string(),
+            "PDC: master node is not present in routing graph nodes"
+        );
+        assert_eq!(
+            PdcError::DanglingEdge {
+                node: EntityId::default(),
+            }
+            .to_string(),
+            "PDC: routing edge endpoint is not present in routing graph nodes"
+        );
+        assert_eq!(
+            PdcError::Cycle { nodes: Vec::new() }.to_string(),
+            "PDC: routing graph contains a cycle (0 unresolved nodes)"
+        );
+        assert_eq!(
+            PdcError::Cycle {
+                nodes: vec![EntityId::default(), EntityId::default()],
+            }
+            .to_string(),
+            "PDC: routing graph contains a cycle (2 unresolved nodes)",
+            "文案里的读数必须跟着状态走（不是常量）"
+        );
+    }
 }

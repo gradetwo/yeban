@@ -3679,4 +3679,54 @@ mod tests {
             after_drain.snapshot_stash_events - idle.snapshot_stash_events
         );
     }
+
+    /// 判据（R50②）：`--no-default-features` 下**因 feature 门不参与编译**的清单必须显式。
+    ///
+    /// 本 crate 只有一条 feature 链：`device = ["dep:cpal"]`，且 `default = ["device"]`。
+    /// **关掉之后**：`src/device.rs` **整个模块**不编译（⇒ 它的 `mod tests` 也不存在，
+    /// 本模块 3 条判据所在的文件整体缺席）、`src/rt.rs` 有 1 段 device 专属代码不编译、
+    /// `tests/rt_zero_alloc.rs` 有 4 条 device 专属判据不编译、
+    /// `examples/measure_latency.rs` 有 2 段不编译。
+    /// 这张清单任何一处被**静默**改动（例如 `#[cfg]` 拼错成恒假），都会让"四道闸门
+    /// 全绿"这句话的覆盖面缩水而**不报红** —— 本判据把它变成机械读数。
+    ///
+    /// ⚠ **针由运行时拼出**（不是字面量）：否则 `include_str!("rt.rs")` 会把本判据
+    /// **自己源码里的那一段字面量**也算进去（"黄金表让被钉文本出现两次"，硬规则 4）。
+    ///
+    /// **量什么**：四个文件里 feature 门出现的**次数**（单位：处）。
+    /// 注入实测（第四批）：把 `src/rt.rs` 的门改成 `device_gate_probe` ⇒
+    /// *默认档*下全绿，*device 档*下本判据实测变红。
+    #[test]
+    fn the_default_off_build_has_an_explicit_feature_gate_inventory() {
+        let needle = ["#[cfg(feature = ", "\"device\")]"].concat();
+        let lib = include_str!("lib.rs");
+        assert!(
+            lib.contains(&format!("{needle}\npub mod device;")),
+            "`device` 模块必须仍然被门控"
+        );
+        assert_eq!(
+            lib.matches(needle.as_str()).count(),
+            1,
+            "lib.rs 的 device 门数"
+        );
+        assert_eq!(
+            include_str!("rt.rs").matches(needle.as_str()).count(),
+            1,
+            "rt.rs 的 device 门数"
+        );
+        assert_eq!(
+            include_str!("../tests/rt_zero_alloc.rs")
+                .matches(needle.as_str())
+                .count(),
+            4,
+            "rt_zero_alloc.rs 的 device 门数"
+        );
+        assert_eq!(
+            include_str!("../examples/measure_latency.rs")
+                .matches(needle.as_str())
+                .count(),
+            2,
+            "measure_latency.rs 的 device 门数"
+        );
+    }
 }
