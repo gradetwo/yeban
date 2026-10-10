@@ -793,7 +793,7 @@ fn scan_loops_are_bound_and_the_classifier_has_positive_and_negative_controls() 
     }
     // ⭐ R203 探针：通过的断言不打印 ⇒ 用显式 `eprintln!` 才能检索到"这一轮真的跑了"。
     eprintln!(
-        "[R187-PROBE scan-loop-bounds] loops={total_loops} rooted={total_rooted} \
+        "[R187-PROBE yeban-theory::tests::scan_guards::scan-loop-bounds] loops={total_loops} rooted={total_rooted} \
          counter={total_counter} residual={}",
         residual.len()
     );
@@ -936,8 +936,17 @@ fn no_criterion_reads_a_runtime_external_resource() {
     let good_arm = hits_in("let total = 1 + 1;");
     // ⭐ R203：探针必须**显式打印** —— `assert!(.., "msg")` 的 msg **只在失败时出现**，
     // 通过的断言什么都不打印 ⇒ 标记**不可检索**。本探针在 `--nocapture` 下 CI 可见。
+    // ⭐ R212① 分类：本判据是 **(a) 存在性主张**（"没有任何判据读运行期外部资源"）。
+    // 按裁定：存在性主张要**排除定义针的文件**，并对"别处"给**根绑定下界**；
+    // 该下界是 R212①(a)/R213 指定的**例外**，它的牙**不来自计数**，而来自下面两条
+    // **配对行为臂**（喂坏输入必红 / 喂好输入必净）。
+    let elsewhere_files = SOURCES
+        .iter()
+        .filter(|(name, _)| *name != "tests/scan_guards.rs")
+        .count();
     eprintln!(
-        "[R187-PROBE scan-external-resource] files={scanned_files} lines={scanned_lines} \
+        "[R187-PROBE yeban-theory::tests::scan_guards::scan-external-resource] \
+         files={scanned_files} lines={scanned_lines} elsewhere_files={elsewhere_files} \
          bad_arm_hits={} good_arm_hits={}",
         bad_arm.len(),
         good_arm.len()
@@ -946,6 +955,12 @@ fn no_criterion_reads_a_runtime_external_resource() {
         bad_arm.len(),
         1,
         "R199 red arm: a violation must be detected"
+    );
+    // ⭐ R212①(a)：**定义针的文件（本文件）本来就不在 SOURCES 里** ⇒ 存在性主张
+    // 结构上不扫自己的针；这条断言把"别处语料"钉死（R213 的例外界，牙在行为臂）。
+    assert_eq!(
+        elsewhere_files, 15,
+        "R212①(a): the non-defining corpus is exactly these 15 files"
     );
     assert!(
         good_arm.is_empty(),
