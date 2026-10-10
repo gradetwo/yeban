@@ -386,14 +386,18 @@ mod tests {
     #[test]
     fn an_inactive_range_never_changes_the_volume() {
         // 长度 0 与“倒置”的区间都恒返回 1.0（工程裁决 + sfizz 的 length <= 0 分支）。
-        for range in [
+        // R93：把夹具绑成具名数组并**先钉住长度** —— 内联字面量虽然非空，
+        // 但显式下界让「夹具被清空」这件事变成红，而不是静默真空通过。
+        let ranges = [
             XfRange { low: 0, high: 0 },
             XfRange {
                 low: 127,
                 high: 127,
             },
             XfRange { low: 100, high: 20 },
-        ] {
+        ];
+        assert_eq!(ranges.len(), 3, "the fixture list must not shrink (R93)");
+        for range in ranges {
             assert!(!range.is_active(), "{range:?} must be inactive");
             for value in [0u8, 1, 63, 100, 126, 127] {
                 for curve in [XfCurve::Gain, XfCurve::Power] {

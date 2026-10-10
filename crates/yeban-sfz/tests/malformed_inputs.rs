@@ -247,6 +247,13 @@ const MALFORMED_SAMPLES: &[&str] = &[
 #[test]
 fn fixed_malformed_corpus_never_panics() {
     let limits = ParseLimits::default();
+    // R93（非真空断言）：这一条**遍历固定语料**并只断言「不 panic」——
+    // 若语料被清空，循环体一次都不跑，判据会**真空通过**。下界把这件事钉住。
+    assert!(
+        MALFORMED_SAMPLES.len() >= 20,
+        "the malformed corpus must stay populated (R93), got {}",
+        MALFORMED_SAMPLES.len()
+    );
     for sample in MALFORMED_SAMPLES {
         // 只关心「不 panic」；Ok / Err 都合法。
         let first = parse_text(sample, &limits);
@@ -800,6 +807,21 @@ fn include_resolution_is_deterministic_and_its_digest_is_pinned() {
     // R70②：**两次运行相同是自比，⛔ 不是契约**。这里把归约结果写成规范摘要，
     // 钉它的 `sha256`（**字面常量**），并要求同一份摘要出现在仓库的文档表里
     // （`include_str!` ⇒ 两个方向都会红）。
+    let (paths_probe, _) = run();
+    // R93（非真空断言）：被扫集合必须**非空且达下界** —— 否则摘要是对空集合算的，判据真空。
+    assert!(
+        paths_probe.len() >= 3,
+        "the glob must keep matching the fixture (R93), got {}",
+        paths_probe.len()
+    );
+    // R60／R93：路径必须是**归一化**形态（`check_relative` 把 `\\` 换成 `/`、`join_prefix` 用 `/`）
+    // ⇒ 摘要与平台无关；这一条把「Windows 腿根本不跑、Linux 腿看不见」的形态钉住。
+    for path in &paths_probe {
+        assert!(
+            !path.contains('\\'),
+            "paths must be normalized to `/` before hashing: {path}"
+        );
+    }
     let canonical = || {
         let (paths, samples) = run();
         format!(
@@ -1085,6 +1107,11 @@ fn bend_range_is_modeled_and_range_checked_explicitly() {
             ][..],
         ),
     ] {
+        // R93：具名切片必须有下界，否则整批可以真空通过。
+        assert!(
+            !literals.is_empty(),
+            "the corpus slice for {opcode} must stay populated (R93)"
+        );
         for literal in literals {
             let source = format!("<region>sample=a.wav {opcode}={literal}");
             let instrument = parse_text(&source, &limits).expect("parses");

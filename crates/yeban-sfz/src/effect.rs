@@ -346,6 +346,7 @@ mod tests {
             "aux 1",
             "aux\u{0000}",
         ];
+        assert_eq!(cases.len(), 8, "the fixture list must not shrink (R93)");
         for text in cases {
             let parsed = EffectBus::from_value(text);
             assert_eq!(parsed, EffectBus::Main, "bus={text:?}");

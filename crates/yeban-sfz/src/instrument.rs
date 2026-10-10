@@ -3513,6 +3513,11 @@ mod tests {
                 ][..],
             ),
         ] {
+            // R93：`literals` 是**具名切片**，先钉住非空，避免整批真空通过。
+            assert!(
+                !literals.is_empty(),
+                "the corpus slice for {opcode} must stay populated (R93)"
+            );
             for literal in literals {
                 let source = format!("<region>sample=a.wav {opcode}={literal}");
                 let instrument = parse_text(&source, &Default::default()).expect("parses");
@@ -5189,6 +5194,11 @@ type=com.mda.Limiter
             &Default::default(),
         )
         .expect("parses");
+        // R93：先钉住被扫集合**非空**，否则下面四层循环可以整体真空通过。
+        assert!(
+            instrument.regions().len() >= 2,
+            "the crossfade fixture must keep its regions (R93)"
+        );
         for region in instrument.regions() {
             for note in [0u8, 1, 60, 127] {
                 for velocity in [0u8, 1, 64, 127] {

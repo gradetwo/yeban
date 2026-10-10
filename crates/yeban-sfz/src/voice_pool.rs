@@ -1682,6 +1682,8 @@ mod tests {
             "the fixture must start from a full pool"
         );
 
+        // R93：`handles` 是运行时收集的 ⇒ 先钉住条数。
+        assert_eq!(handles.len(), 4, "the fixture must keep its handles (R93)");
         for handle in handles {
             used.note_off(handle).expect("live handle");
             used.retire(handle).expect("live handle");
@@ -1768,6 +1770,8 @@ mod tests {
         let stale: Vec<VoiceHandle> = (100..104u8)
             .map(|note| reused.note_on(note, 100, -6.0).started())
             .collect();
+        // R93：先钉住这一批替身的条数（两个 `for handle in &stale` 都靠它）。
+        assert_eq!(stale.len(), 4, "the stale batch must not shrink (R93)");
         for handle in &stale {
             reused.retire(*handle).expect("live handle");
         }
