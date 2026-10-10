@@ -1519,12 +1519,30 @@ mod tests {
     /// 3. `read_enabled = false` ⇒ **一条都不发**（关掉的泳道是"没有值"，不是"值等于 0"）。
     ///
     /// 采样时点是 `EngineHost::transport().position_ticks`（RT→UI 镜面 = 音频时钟）；
-    /// 本判据**不注入任何时钟**：`reload` 之后走带停住 ⇒ tick = 0（可复现）。
+    /// 本判据**不注入任何时钟**（`reload` 推 4 个量子 ⇒ 手算得 20 tick）。
     /// ⚠ 本判据**只能由 CI 执行**（`yeban-app` 依赖 Slint，`AGENTS.md §5` 禁止本机编译）。
     #[test]
     fn automation_lanes_are_sampled_from_the_audio_clock_and_published() {
         let mut project = demo_project();
-        let track = *project.tracks.keys().next().expect("demo 工程必须有轨");
+        // **机械找出**那条带着"开着的 TrackVolume 泳道"的轨（⛔ 不用 `keys().next()`：
+        // `BTreeMap` 的首键可能是主总线，而 demo 夹具的 TrackVolume 泳道挂在 slot 0 那条轨上）。
+        let mut enabled: Vec<EntityId> = project
+            .tracks
+            .iter()
+            .filter(|(_, track)| {
+                track.automation_lanes.values().any(|lane| {
+                    lane.read_enabled && matches!(lane.target, AutomationTarget::TrackVolume { .. })
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(
+            enabled.len(),
+            1,
+            "夹具前提：demo 工程恰好有一条**开着的** TrackVolume 泳道（实得 {}）",
+            enabled.len()
+        );
+        let track = enabled.remove(0);
         let target = AutomationTarget::TrackVolume { track_id: track };
         let point = |tick: u64, value: f32| AutomationPoint {
             id: EntityId::new(),
@@ -1551,10 +1569,14 @@ mod tests {
 
         let mut host = EngineHost::new();
         host.reload(&project, 4).expect("重建");
+        // 采样时点来自 **RT→UI 镜面**（音频时钟），不是墙钟：`reload` 推 4 个量子
+        // = 512 帧；120 BPM / 960 PPQ / 48 kHz 下 **1 tick = 25 帧** ⇒ **20 tick**
+        // （可手算、与机器速度无关）。这条断言同时是"时点真的来自音频时钟"的证据。
+        let expected_tick = (4 * DEFAULT_BLOCK_FRAMES / 25) as u64;
         assert_eq!(
             host.transport().position_ticks,
-            0,
-            "停住的走带 ⇒ 采样时点是 tick 0"
+            expected_tick,
+            "采样时点必须由音频时钟（4 量子 = 512 帧 = 20 tick）给出"
         );
         let written = host.publish_automation(&project);
         assert!(written >= 1, "开着的泳道必须至少下发一条（实得 {written}）");
