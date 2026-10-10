@@ -2115,6 +2115,7 @@ mod tests {
             (MusicXmlError::TickOverflow, "tick 加法溢出 u64"),
         ];
         assert_eq!(cases.len(), 15, "MusicXmlError 的变体数");
+        assert_every_music_xml_error_arm_is_covered(&cases);
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
         }
@@ -2125,6 +2126,63 @@ mod tests {
         assert!(
             std::error::Error::source(&MusicXmlError::Empty).is_none(),
             "MusicXmlError 没有内层错误 ⇒ source() 必须是 std 的默认 None"
+        );
+    }
+
+    /// 判据 (类别: 核对次序): **装饰音在时值换算之前短路** —— 一颗 `grace` 音符即使带着
+    /// 会溢出 `u64` 的 `duration`，整个文档也照常解析（不报 `TickOverflow`）。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `ticks_from_units(note.duration, divisions)?`
+    /// 挪到 `if note.grace { return Ok(()) }` **之前**（注入 ORD10）后全部判据**保持绿**
+    /// —— 既有装饰音夹具的 `duration` 都是小值 ⇒ 短路与换算的**先后**不可观测。
+    #[test]
+    fn a_grace_note_does_not_pay_for_its_duration() {
+        // `divisions` 缺省 1；`duration` = u64::MAX ⇒ `ticks_from_units` 会 TickOverflow。
+        let xml = format!(
+            "<score-partwise><part id=\"P1\"><measure>\
+             <note><grace/><pitch><step>C</step><octave>4</octave></pitch>\
+             <duration>{}</duration></note>\
+             </measure></part></score-partwise>",
+            u64::MAX
+        );
+        let parsed = score(&xml);
+        assert_eq!(parsed.note_count(), 0, "装饰音不发声");
+        assert_eq!(parsed.tick_range(), None, "装饰音也不推进 cursor");
+    }
+
+    /// **编译期穷举探针**：`MusicXmlError` 的每个变体一个唯一编号 ⇒ 新增变体会让这个
+    /// `match` 非穷举、**编译失败**（`cases.len() == 15` 只自校验表的长度）。
+    fn music_xml_error_arm(error: &MusicXmlError) -> u8 {
+        match error {
+            MusicXmlError::InvalidUtf8 { .. } => 0,
+            MusicXmlError::Empty => 1,
+            MusicXmlError::UnsupportedRoot { .. } => 2,
+            MusicXmlError::Malformed { .. } => 3,
+            MusicXmlError::DepthExceeded { .. } => 4,
+            MusicXmlError::UnknownEntity { .. } => 5,
+            MusicXmlError::InvalidNumber { .. } => 6,
+            MusicXmlError::DivisionsNotPositive => 7,
+            MusicXmlError::UnsupportedAlter { .. } => 8,
+            MusicXmlError::UnsupportedBeatType { .. } => 9,
+            MusicXmlError::InvalidTempo { .. } => 10,
+            MusicXmlError::PitchOutOfRange { .. } => 11,
+            MusicXmlError::NoteOutsidePart => 12,
+            MusicXmlError::BackupUnderflow { .. } => 13,
+            MusicXmlError::TickOverflow => 14,
+        }
+    }
+
+    /// 黄金表必须**逐臂恰好一次**。
+    fn assert_every_music_xml_error_arm_is_covered(cases: &[(MusicXmlError, &str)]) {
+        let mut arms: Vec<u8> = cases
+            .iter()
+            .map(|(error, _)| music_xml_error_arm(error))
+            .collect();
+        arms.sort_unstable();
+        assert_eq!(
+            arms,
+            (0..15).collect::<Vec<u8>>(),
+            "黄金表必须逐臂恰好一次（缺一臂或重复都红）"
         );
     }
 }

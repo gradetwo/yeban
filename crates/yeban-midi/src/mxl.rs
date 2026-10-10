@@ -903,6 +903,7 @@ mod tests {
             ),
         ];
         assert_eq!(cases.len(), 14, "MxlError 的变体数");
+        assert_every_mxl_error_arm_is_covered(&cases);
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
         }
@@ -931,5 +932,40 @@ mod tests {
         );
         assert_eq!(limits.max_entries, 1024, "默认条目数（字面值）");
         assert_eq!(limits.max_name_bytes, 4096, "默认条目名上界（字面值）");
+    }
+
+    /// **编译期穷举探针**：`MxlError` 的每个变体一个唯一编号 ⇒ 新增变体会让这个 `match`
+    /// 非穷举、**编译失败**（`cases.len() == 14` 只自校验表的长度）。
+    fn mxl_error_arm(error: &MxlError) -> u8 {
+        match error {
+            MxlError::NotZip => 0,
+            MxlError::Malformed { .. } => 1,
+            MxlError::LimitExceeded { .. } => 2,
+            MxlError::InflatedTooLarge { .. } => 3,
+            MxlError::UnsupportedZip64 => 4,
+            MxlError::UnsupportedCompression { .. } => 5,
+            MxlError::Encrypted { .. } => 6,
+            MxlError::NoContainer => 7,
+            MxlError::NoRootFile => 8,
+            MxlError::MissingRootFile { .. } => 9,
+            MxlError::InvalidDeflate { .. } => 10,
+            MxlError::SizeMismatch { .. } => 11,
+            MxlError::CrcMismatch { .. } => 12,
+            MxlError::MusicXml(_) => 13,
+        }
+    }
+
+    /// 黄金表必须**逐臂恰好一次**。
+    fn assert_every_mxl_error_arm_is_covered(cases: &[(MxlError, &str)]) {
+        let mut arms: Vec<u8> = cases
+            .iter()
+            .map(|(error, _)| mxl_error_arm(error))
+            .collect();
+        arms.sort_unstable();
+        assert_eq!(
+            arms,
+            (0..14).collect::<Vec<u8>>(),
+            "黄金表必须逐臂恰好一次（缺一臂或重复都红）"
+        );
     }
 }

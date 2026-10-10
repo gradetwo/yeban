@@ -1656,6 +1656,7 @@ mod tests {
             ),
         ];
         assert_eq!(cases.len(), 14, "MidiError 的变体数");
+        assert_every_midi_error_arm_is_covered(&cases);
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
         }
@@ -1706,5 +1707,152 @@ mod tests {
             ),
             other => panic!("期望 Decode, 得到 {other:?}"),
         }
+    }
+
+    /// 判据 (类别: 公开 **`Debug` 形状** —— `Display` 之后的第二族诊断面):
+    /// 四个公开结果类型的派生 `Debug` 输出**逐字面**钉住。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `TrackChunk` / `MidiTempo` / `ParsedNote` /
+    /// `MusicXmlNote` 的 `#[derive(Debug)]` 各顶成一个写死的手写 `impl Debug`
+    /// （注入 DBG01..DBG04）后全部判据**保持绿** —— `{x:?}` 被大量 `assert_eq!` 的
+    /// **失败消息**用到，但**没有任何判据断言过它的形状**。
+    ///
+    /// ⚠️ 派生 `Debug` 的形状由**类型定义**决定 ⇒ 单点字面替换打不到它；要打就必须像
+    /// 本批那样**插入一个手写 `impl Debug` 顶掉 derive**。
+    #[test]
+    fn public_result_debug_shapes_are_pinned() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        let chunks = track_chunks(&bytes).expect("chunk 布局");
+        assert_eq!(
+            format!("{:?}", chunks[0]),
+            "TrackChunk { fourcc: [77, 84, 104, 100], payload: 8..8 }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                MidiTempo {
+                    tick: 0,
+                    microseconds_per_quarter: Some(500000),
+                    numerator: Some(4),
+                    denominator_pow2: Some(2),
+                }
+            ),
+            "MidiTempo { tick: 0, microseconds_per_quarter: Some(500000), \
+             numerator: Some(4), denominator_pow2: Some(2) }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                ParsedNote {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                    start_tick: 0,
+                    end_tick: 480,
+                }
+            ),
+            "ParsedNote { channel: 0, key: 60, velocity: 100, start_tick: 0, end_tick: 480 }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                crate::musicxml::MusicXmlNote {
+                    key: 60,
+                    velocity: 80,
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    voice: 1,
+                    staff: 1,
+                }
+            ),
+            "MusicXmlNote { key: 60, velocity: 80, start_tick: 0, \
+             duration_ticks: 480, voice: 1, staff: 1 }"
+        );
+    }
+
+    /// 判据 (类别: **核对次序** —— 本批新开的一族契约): `validate_note` 的四条检查有
+    /// **固定优先级**，通道在最前。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把通道检查与音高检查**对调**（注入 ORD01）后
+    /// 全部判据**保持绿** —— 既有判据每次只弄坏**一个**字段 ⇒ "两个都坏时报哪一条"
+    /// 此前没有判据（与 `the_length_check_runs_before_the_crc_check` 同一族）。
+    #[test]
+    fn the_note_validation_order_is_pinned() {
+        let source = MidiExport {
+            format: MidiFormat::SingleTrack,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            tracks: vec![MidiExportTrack {
+                name: String::new(),
+                channel: 16,
+                notes: vec![note(0, 200, 480, 100)],
+            }],
+        };
+        assert_eq!(
+            source.to_smf_bytes(),
+            Err(MidiError::ChannelOutOfRange(16)),
+            "通道与音高同时越界 ⇒ 必须先报通道"
+        );
+    }
+
+    /// 判据 (类别: 核对次序): `to_smf_bytes` 先查**时间分度**、再查**轨道表**。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把两条对调（注入 ORD02）后全部判据**保持绿**
+    /// —— 既有判据分别构造 `ppq = 0` 与空轨道，从不同时给两个坏条件。
+    #[test]
+    fn a_zero_ppq_is_reported_before_an_empty_track_list() {
+        let source = MidiExport {
+            format: MidiFormat::SingleTrack,
+            ppq: 0,
+            tempos: Vec::new(),
+            tracks: Vec::new(),
+        };
+        assert_eq!(
+            source.to_smf_bytes(),
+            Err(MidiError::InvalidPpq(0)),
+            "分度 0 与空轨道同时成立 ⇒ 必须先报 InvalidPpq"
+        );
+    }
+
+    /// **编译期穷举探针**：给 `MidiError` 的每个变体一个唯一编号 ⇒ **新增一个变体**
+    /// 就让这个 `match` 变成非穷举、**编译失败**。
+    ///
+    /// ⚠️ 为什么需要它：黄金表里的 `assert_eq!(cases.len(), 14, …)` 只自校验**表**的
+    /// 长度，⛔ 读不到枚举本身 —— "加了变体、也加了产线 `Display` 臂、却忘了往表里加
+    /// 一行"这种情形它抓不到（表长仍是 14）。下面的
+    /// `assert_every_midi_error_arm_is_covered` 把表与穷举探针绑在一起。
+    fn midi_error_arm(error: &MidiError) -> u8 {
+        match error {
+            MidiError::InvalidPpq(_) => 0,
+            MidiError::ChannelOutOfRange(_) => 1,
+            MidiError::PitchOutOfRange(_) => 2,
+            MidiError::VelocityOutOfRange(_) => 3,
+            MidiError::ZeroDuration { .. } => 4,
+            MidiError::DeltaOverflow { .. } => 5,
+            MidiError::NoTracks => 6,
+            MidiError::Encode(_) => 7,
+            MidiError::Decode(_) => 8,
+            MidiError::UnsupportedTimecode => 9,
+            MidiError::UnsupportedFormat(_) => 10,
+            MidiError::UnclosedNote { .. } => 11,
+            MidiError::UnmatchedNoteOff { .. } => 12,
+            MidiError::HalfTimeSignature { .. } => 13,
+        }
+    }
+
+    /// 黄金表必须**逐臂恰好一次**（缺一臂 ⇒ 编号集合不完整 ⇒ 红）。
+    fn assert_every_midi_error_arm_is_covered(cases: &[(MidiError, &str)]) {
+        let mut arms: Vec<u8> = cases
+            .iter()
+            .map(|(error, _)| midi_error_arm(error))
+            .collect();
+        arms.sort_unstable();
+        assert_eq!(
+            arms,
+            (0..14).collect::<Vec<u8>>(),
+            "黄金表必须逐臂恰好一次（缺一臂或不重复都红）"
+        );
     }
 }

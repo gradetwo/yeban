@@ -2620,3 +2620,87 @@ fn the_length_check_runs_before_the_crc_check() {
         other => panic!("只坏 CRC 时必须报 CrcMismatch，得到 {other:?}"),
     }
 }
+/// 判据 (类别: 核对次序): `read_entry` **先查声明的未压缩长度上界、再切本地数据区**。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `entry_data(bytes, entry)?` 挪到声明长度检查
+/// **之前**（注入 ORD06）后全部判据**保持绿** —— 既有判据分别构造"声明超界"与
+/// "本地头坏掉"两种容器，从不同时给两个条件。
+///
+/// ⚠️ 本判据同时把两条防线钉在一起：本地头签名被写坏（若先切数据区必报 `Malformed`）
+/// **且**声明长度超过上界 ⇒ 报的必须是 `LimitExceeded`。
+#[test]
+fn the_declared_length_limit_fires_before_the_local_header_is_read() {
+    let container = container_xml("score.xml");
+    let mut spec = ZipEntrySpec::stored("score.xml", HANDMADE_MVP);
+    spec.uncompressed = 1_000_000; // 声明得远大于上界
+    let mut zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            spec,
+        ],
+        None,
+    );
+    // 把 `score.xml` 的本地头签名打掉：先切数据区就会报 Malformed。
+    let entries = central_entries(&zip);
+    let offset = entries[1].local_offset as usize;
+    assert_eq!(&zip[offset..offset + 4], b"PK\x03\x04");
+    zip[offset..offset + 4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+    let limits = MxlLimits {
+        max_entry_bytes: 200_000,
+        ..MxlLimits::default()
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &limits),
+        Err(MxlError::LimitExceeded {
+            limit: "entry_bytes",
+            value: 1_000_000,
+            max: 200_000,
+        }),
+        "声明长度上界必须先于数据区切分开火（⛔ 不是 Malformed）"
+    );
+}
+
+/// 判据 (类别: 核对次序 ＋ **登记在案的现状**): 中央目录的**条目名上界**先于该条目的
+/// **ZIP64 标记**开火 —— 两者同时成立时报 `LimitExceeded { limit: "name_bytes" }`。
+///
+/// 补的是哪个缺口（本票注入实测）：把每个条目的 ZIP64 标记检查**提前**到条目名上界
+/// 之前（注入 ORD08）后全部判据**保持绿** ⇒ 这个**先后**此前没有判据。
+///
+/// ⚠️ **登记在案的现状，不是被认可的契约**：`mxl_zip64_markers_are_named_not_blamed_on_the_limit`
+/// 的文档写明"⛔ 不许把**格式**问题说成**策略**问题"，而本判据钉住的正是这样一个
+/// **例外**（条目名超上界是**策略**问题，却压过了 ZIP64 这个**格式**问题）。
+/// 本票**不擅自改产线**，只把它登记下来供裁决。
+#[test]
+fn the_entry_name_limit_fires_before_the_zip64_marker() {
+    let container = container_xml("score.xml");
+    let mut zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+    let eocd = zip.len() - 22;
+    assert_eq!(&zip[eocd..eocd + 4], b"PK\x05\x06");
+    let central = le32(&zip, eocd + 16) as usize;
+    // 第一条中央目录记录：条目名长度抬到 0xFFFF（超过默认 4096），
+    // 同时把"压缩后长度"写成 ZIP64 标记 0xFFFFFFFF。
+    zip[central + 28..central + 30].copy_from_slice(&0xffffu16.to_le_bytes());
+    zip[central + 20..central + 24].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+
+    let limits = MxlLimits {
+        max_name_bytes: 4096,
+        ..MxlLimits::default()
+    };
+    match parse_mxl_with_limits(&zip, &limits) {
+        Err(MxlError::LimitExceeded { limit, value, max }) => {
+            assert_eq!(
+                (limit, value, max),
+                ("name_bytes", 65535, 4096),
+                "条目名上界先开火（登记在案的现状）"
+            );
+        }
+        other => panic!("期望 name_bytes 的 LimitExceeded，得到 {other:?}"),
+    }
+}

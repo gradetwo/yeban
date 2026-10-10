@@ -1065,6 +1065,7 @@ mod tests {
             ),
         ];
         assert_eq!(cases.len(), 6, "MidiExportError 的变体数");
+        assert_every_midi_export_error_arm_is_covered(&cases);
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
         }
@@ -1108,5 +1109,113 @@ mod tests {
                 "{error:?} 没有内层错误 ⇒ source() 必须是 None"
             );
         }
+    }
+
+    /// 判据 (类别: 核对次序): `track_notes` **先跳过静音摆放、再查悬空片段引用** ⇒
+    /// 一个静音的悬空摆放**不报** `DanglingClip`。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把两条对调（注入 ORD03）后全部判据**保持绿**
+    /// —— 既有判据的静音摆放都引用**存在**的片段、悬空引用都是**非静音**的
+    /// ⇒ 两个条件同时成立时的读数此前没有判据。
+    #[test]
+    fn a_muted_placement_with_a_dangling_clip_is_skipped_not_reported() {
+        let mut project = YebanProjectV1::default();
+        let track_id = EntityId::new();
+        let missing = crate::midi::entity_id("00000000000000000000000000").expect("ULID");
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "Muted".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        let placement_id = EntityId::new();
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id: missing,
+                start_tick: 0,
+                duration_ticks: 960,
+                muted: true,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+        assert!(
+            matches!(
+                export_from_project(&project),
+                Err(MidiExportError::NoMidiContent)
+            ),
+            "静音先被跳过 ⇒ 悬空的片段引用不报 DanglingClip（工程里没有可导出内容）"
+        );
+
+        // 对照臂：把静音摘掉 ⇒ 同一个悬空引用必须报 DanglingClip。
+        let track_id = project.tracks.keys().next().copied().expect("轨道");
+        let placement_id = project.tracks[&track_id]
+            .clips
+            .keys()
+            .next()
+            .copied()
+            .expect("摆放");
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨道在")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放在")
+            .muted = false;
+        match export_from_project(&project) {
+            Err(MidiExportError::DanglingClip { track, clip }) => {
+                assert_eq!((track, clip), (track_id, missing));
+            }
+            other => panic!("非静音的悬空引用必须报 DanglingClip，得到 {other:?}"),
+        }
+    }
+
+    /// 判据 (类别: 核对次序): `export_from_project` 先报**拍号不可表达**、再报
+    /// **没有 MIDI 内容**。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `tempo_map(project)?` 从函数开头挪到
+    /// `NoMidiContent` 判据之后（注入 ORD04，合并两处）后全部判据**保持绿** ——
+    /// 既有判据分别构造"只有坏拍号"与"只有空内容"，从不同时给两个条件。
+    #[test]
+    fn an_unrepresentable_time_signature_is_reported_before_empty_content() {
+        let mut project = YebanProjectV1::default();
+        project.time_signature.denominator = 3;
+        match export_from_project(&project) {
+            Err(MidiExportError::UnsupportedTimeSignature { denominator }) => {
+                assert_eq!(denominator, 3);
+            }
+            other => {
+                panic!("坏拍号与空内容同时成立 ⇒ 必须先报 UnsupportedTimeSignature，得到 {other:?}")
+            }
+        }
+    }
+
+    /// **编译期穷举探针**：`MidiExportError` 的每个变体一个唯一编号 ⇒ 新增变体会让这个
+    /// `match` 非穷举、**编译失败**（`cases.len() == 6` 只自校验表的长度）。
+    fn midi_export_error_arm(error: &MidiExportError) -> u8 {
+        match error {
+            MidiExportError::NoMidiContent => 0,
+            MidiExportError::DanglingClip { .. } => 1,
+            MidiExportError::UnsupportedTimeSignature { .. } => 2,
+            MidiExportError::PpqUnrepresentable { .. } => 3,
+            MidiExportError::PpqMismatch { .. } => 4,
+            MidiExportError::Encode(_) => 5,
+        }
+    }
+
+    /// 黄金表必须**逐臂恰好一次**。
+    fn assert_every_midi_export_error_arm_is_covered(cases: &[(MidiExportError, &str)]) {
+        let mut arms: Vec<u8> = cases
+            .iter()
+            .map(|(error, _)| midi_export_error_arm(error))
+            .collect();
+        arms.sort_unstable();
+        assert_eq!(
+            arms,
+            (0..6).collect::<Vec<u8>>(),
+            "黄金表必须逐臂恰好一次（缺一臂或重复都红）"
+        );
     }
 }
