@@ -7,7 +7,7 @@
 //!   ⇒ 量词断言在空集合上会**真空通过**。
 //! - **R111**: "界"有**五种形态** —— ①显式 `x.len() >= N` ②宏隐式相等 `assert_eq!(x.len(), N)`
 //!   ③`!x.is_empty()` ④值界（`match x { .. }` 或 `x == N` 这类把取值钉住的断言）
-//!   ⑤运行期计数器（`count += 1` ＋ `assert_eq!(count, N)`）。**只认一种会漏掉大多数**。
+//!   ⑤**值界** `x.len() == N`。⚠ **R118**: **运行期计数器不算** —— 它数迭代次数, 不界定被遍历的集合。
 //! - **R114**: 界必须**根绑定** —— 同一个根表达式的界, ⛔ 不许"借用邻居"（别的集合有界不算）。
 //! - **R113**: 静态扫描的掩码必须**逐字节等长**（按 `len_utf8()` 补空格）并**保留换行**,
 //!   否则行号/偏移会漂移。
@@ -230,13 +230,15 @@ fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
         format!("{root}.is_empty() =="),
         format!("!{root}.is_empty() &&"),
     ] {
-        if condition.replace(' ', "").contains(&form.replace(' ', "")) {
+        // R119: 子串匹配必须带**标识符边界** —— 否则根 `b` 会被同一条条件里的 `ab.len() >= 4`
+        // 满足（near-miss），于是无界的量词被误判为"有界"。
+        if contains_identifier(&condition.replace(' ', ""), &form.replace(' ', "")) {
             return true;
         }
     }
-    // ②⑤: 界在**同一个函数体**里, 且**同一个根**上（宏隐式相等 / 运行期计数器）。
+    // ②: 界在**同一个函数体**里, 且**同一个根**上（宏隐式相等 / 值界）。
     // ⚠ **R118**: 只有"**界定集合大小**"的界作数 —— `x.len() == N` / `x.len() >= N` /
-    // `!x.is_empty()` / 计数器; **元素值界**（`assert_eq!(x[0], 5)`）**不算**, 它不保证集合非空。
+    // `!x.is_empty()` **算**; **元素值界**（`assert_eq!(x[0], 5)`）与**运行期计数器****不算**。
     // ⚠ **R119**: 子串匹配必须带**标识符边界** —— 否则根 `b` 会被 `bb.len()` 满足（near-miss）。
     let compact = function_body.replace(' ', "");
     // ⚠ 这些形态**不能要求右括号紧跟** —— 真实断言后面还有 `, "消息"`（本机实测的假阴性）。
@@ -251,10 +253,9 @@ fn has_root_bound(function_body: &str, condition: &str, root: &str) -> bool {
             return true;
         }
     }
-    // ⑤ 运行期计数器: 同一个函数体里既有 `let mut count`/`+= 1` 又有 `assert_eq!(count,`
-    if compact.contains("letmutcount") && compact.contains("assert_eq!(count,") {
-        return true;
-    }
+    // ⚠ **R118**: "运行期计数器"（`let mut count` / `+= 1` / `assert_eq!(count, N)`）**不算**
+    // 界定集合大小 —— 它数的是**迭代次数/处理过的元素**，与"被遍历的那个集合是否非空"
+    // 是两件事。⇒ 本判据**不认**这个形态；`checker_has_teeth` 里有一条**已知红**专门喂它。
     false
 }
 
@@ -413,8 +414,8 @@ fn checker_has_teeth() {
         .is_empty(),
         "③is_empty 必须被认"
     );
-    // ⑤ 运行期计数器
-    assert!(
+    // 已知红（R118）: **只有运行期计数器** ⇒ 被遍历的集合仍未被界定 ⇒ 必须被抓住
+    assert_eq!(
         unbounded_quantifiers(
             r#"
     fn t() {
@@ -423,9 +424,20 @@ fn checker_has_teeth() {
         assert_eq!(count, 4);
         assert!(v.iter().all(|y| *y == 0));
     }"#
-        )
-        .is_empty(),
-        "⑤计数器必须被认"
+        ),
+        vec![(6usize, "v".to_owned())],
+        "R118: 计数器数的是迭代次数, 不界定被遍历的集合"
+    );
+    // 已知红（R119, 条件内 near-miss）: `ab.len()` 不得被当成根 `b` 的界
+    assert_eq!(
+        unbounded_quantifiers(
+            r#"
+    fn t() {
+        assert!(ab.len() >= 4 && b.iter().all(|x| *x == 0));
+    }"#
+        ),
+        vec![(3usize, "b".to_owned())],
+        "R119: 条件内的子串匹配也必须带标识符边界"
     );
     // 已知红 ①: 完全没有界
     assert_eq!(
