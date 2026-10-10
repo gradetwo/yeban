@@ -5124,10 +5124,98 @@ mod tests {
             "主总线是**跨集合**条件（`YebanProjectV1` 才看得到），不在本判定里"
         );
 
-        // R58：边界断言也要有 `assert_ne!` 落在同一个 `==` 上。
+        // R58：边界断言也要有 `assert_ne!` 落在**同一个** `==` 上。
+        // ⚠️ 探针必须是"**同一** `ModelError` 变体、**不同**载荷"：`Ok(())` vs `Err(_)`
+        // 由 `Result` 的判别式就判完了，`ModelError::PartialEq` 被削弱时它照样通过。
         assert_ne!(
-            self_loop.validate(),
-            Err(ModelError::RoutingNodeNotFound { id: node_a })
+            Err::<(), ModelError>(ModelError::RoutingNodeNotFound { id: node_a }),
+            Err::<(), ModelError>(ModelError::RoutingNodeNotFound { id: node_b }),
+            "同一变体、不同载荷必须判为不同（R58：这一条才是 ModelError::PartialEq 的探针）"
+        );
+        assert_eq!(
+            Err::<(), ModelError>(ModelError::RoutingNodeNotFound { id: node_a }),
+            Err::<(), ModelError>(ModelError::RoutingNodeNotFound { id: node_a }),
+            "载荷相同必须判为相同（与上一条成对）"
+        );
+    }
+
+    /// 从 `project.rs` 的源码文本里抽出 `pub struct RoutingGraph { … }` 的字段名。
+    ///
+    /// R51 探针注释：**入口先规范化换行**（`\r\n` 与孤立 `\r` 都折成 `\n`）。
+    /// 为什么：CI 的 windows 腿检出的是 **CRLF**，而本函数按**文本锚点**切片
+    /// （`find("\n}")`）—— 不规范化时 Windows 上找不到锚点而 panic。
+    /// 第八轮实测：`windows (yeban-mcp / yeban-model 的平台分支)` 只红这一条判据
+    /// （`option::expect_failed`，`project.rs:5172`）。契约由
+    /// `routing_graph_source_scan_pins_both_line_ending_contracts` 逐条钉住。
+    fn routing_graph_fields_in_source(text: &str) -> Vec<String> {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let struct_at = text.find("pub struct RoutingGraph {").expect("结构体定义");
+        let struct_body = &text[struct_at..];
+        let struct_end = struct_body.find("\n}").expect("结构体结束");
+        struct_body[..struct_end]
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("pub ")?;
+                let (name, _) = rest.split_once(':')?;
+                Some(name.trim().to_owned())
+            })
+            .collect()
+    }
+
+    /// 从 `project.rs` 的源码文本里抽出 `impl RoutingGraph` 里 `validate` 的正文。
+    ///
+    /// R51 探针注释：与上一条同因 —— **入口先规范化换行**，否则 `find("\n    }\n")`
+    /// 在 CRLF 工作区上 panic。`RoutingGraph` 在文件里只有一个 `impl` 块，故锚点唯一。
+    fn routing_graph_validate_body_in_source(text: &str) -> String {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let impl_at = text.find("impl RoutingGraph {").expect("impl 定义");
+        let impl_body = &text[impl_at..];
+        let fn_at = impl_body
+            .find("pub fn validate(&self) -> Result<(), ModelError> {")
+            .expect("validate 定义");
+        let fn_body = &impl_body[fn_at..];
+        let fn_end = fn_body.find("\n    }\n").expect("validate 结束");
+        fn_body[..fn_end].to_owned()
+    }
+
+    /// **R60 的两条契约**：换行是 LF 还是 CRLF，识别器必须给出**同一个**答案。
+    ///
+    /// 为什么需要（第八轮事故）：只把 `find("\n…")` 改成"先规范化"是不够的 ——
+    /// 那样只是修好了**本机**跑得到的那一侧，Windows 侧的行为仍然只能靠 CI 才发现。
+    /// 本判据在**同一台机器上**同时喂 LF 与 CRLF 两种文本，逐条断言同一结果
+    /// ⇒ 两条契约都被钉住（⛔ 不是 `cfg` 掉某一侧）。
+    #[test]
+    fn routing_graph_source_scan_pins_both_line_ending_contracts() {
+        let raw = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project.rs"),
+        )
+        .expect("读取 project.rs");
+        let lf = raw.replace("\r\n", "\n").replace('\r', "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        assert_ne!(lf, crlf, "两种换行形态必须真的不同，否则本判据是空转的");
+
+        for (name, text) in [("LF", &lf), ("CRLF", &crlf)] {
+            assert_eq!(
+                routing_graph_fields_in_source(text),
+                vec!["nodes".to_owned(), "edges".to_owned()],
+                "{name}: 字段抽取必须与换行形态无关"
+            );
+            let body = routing_graph_validate_body_in_source(text);
+            assert!(
+                body.contains("self.nodes"),
+                "{name}: 正文抽取必须与换行无关"
+            );
+            assert!(
+                body.contains("self.edges"),
+                "{name}: 正文抽取必须与换行无关"
+            );
+            assert!(!body.contains("_ =>"), "{name}: 不得出现通配兜底");
+        }
+        // R58：同一个 `==` 上补 `assert_ne!`。
+        assert_ne!(
+            routing_graph_fields_in_source(&lf),
+            vec!["edges".to_owned(), "nodes".to_owned()],
+            "字段顺序也有意义"
         );
     }
 
@@ -5143,38 +5231,16 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project.rs"),
         )
         .expect("读取 project.rs");
-        // ⚠️ 平台差异（CI 的 windows 腿实测换行是 CRLF）：本判据按**文本锚点**切片，
-        // 因此必须先把换行规范化成 `\n`，否则 `find("\n}")` 在 Windows 上找不到锚点
-        // 而 panic（实测：`windows (yeban-mcp / yeban-model 的平台分支)` 只红这一条）。
+        // 换行规范化在**识别器里**（见两个 helper 的文档）；这里只负责读字节。
         let text = raw.replace("\r\n", "\n").replace('\r', "\n");
 
-        // 结构体字段：`pub struct RoutingGraph {` 到下一个顶层 `}` 之间。
-        let struct_at = text.find("pub struct RoutingGraph {").expect("结构体定义");
-        let struct_body = &text[struct_at..];
-        let struct_end = struct_body.find("\n}").expect("结构体结束");
-        let fields: Vec<String> = struct_body[..struct_end]
-            .lines()
-            .filter_map(|line| {
-                let rest = line.trim().strip_prefix("pub ")?;
-                let (name, _) = rest.split_once(':')?;
-                Some(name.trim().to_owned())
-            })
-            .collect();
+        let fields = routing_graph_fields_in_source(&text);
         assert_eq!(
             fields,
             vec!["nodes".to_owned(), "edges".to_owned()],
             "字段集合变了 ⇒ 本判据与 validate 都必须跟着改（R58：不得留下默认通过的字段）"
         );
-
-        // `impl RoutingGraph` 里的 `validate` 正文。
-        let impl_at = text.find("impl RoutingGraph {").expect("impl 定义");
-        let impl_body = &text[impl_at..];
-        let fn_at = impl_body
-            .find("pub fn validate(&self) -> Result<(), ModelError> {")
-            .expect("validate 定义");
-        let fn_body = &impl_body[fn_at..];
-        let fn_end = fn_body.find("\n    }\n").expect("validate 结束");
-        let body = &fn_body[..fn_end];
+        let body = routing_graph_validate_body_in_source(&text);
 
         for field in &fields {
             assert!(

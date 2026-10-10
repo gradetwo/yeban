@@ -4921,6 +4921,22 @@ mod tests {
         assert_eq!(doc, before, "先加后删必须回到原状");
         assert_eq!(doc.validate(), Ok(()), "批次结束后文档必须自洽");
 
+        // R58：上面两条 `assert_eq!` 依赖 `YebanProjectV1::PartialEq` —— 同一个 `==` 上
+        // 必须有一条 `assert_ne!`，否则 `derive PartialEq` 被削弱成"恒等"时它们全部变成
+        // 空判据而**没有一条变红**。
+        {
+            let mut only_added = fixture_document();
+            Op::AddNote {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note: note.clone(),
+            }
+            .apply(&mut only_added)
+            .expect("只加音符必须通过");
+            assert_ne!(only_added, before, "只加音符的文档必须与原件不同");
+            assert_eq!(only_added, only_added.clone());
+        }
+
         // 顺序**有**意义：倒过来（先删后加）时内层的前置条件不成立。
         let reversed = Op::Batch {
             ops: vec![
