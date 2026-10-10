@@ -2000,4 +2000,46 @@ mod tests {
             "预算超出历史长度时必须封顶在历史长度"
         );
     }
+
+    /// `Commit` 的**四个"只写不读"持久化字段**必须经草稿 → 提交 → `history.dag` 往返存活。
+    ///
+    /// 为什么需要（第八轮 · 按**类型**消歧的读点普查）：`Commit` 的 9 个字段里
+    /// `branch_id` / `author` / `created_at` / `rng_seed` 在全仓**没有任何读点**
+    /// —— 本仓所有 `.author` / `.created_at` / `.branch_id` / `.rng_seed` 的接收者都是
+    /// `CommitDraft`、`YebanProjectV1`、`RenderOptions` 或别处同名字段（这正是按**名字**
+    /// 索引的普查会漏掉它们的机制）。它们是写进 `history.dag` 的**审计字段**：
+    /// 没有任何消费者读 ⇒ 读点判据抓不到，只能靠"往返逐字段相等"钉住。
+    #[test]
+    fn every_write_only_commit_field_survives_the_draft_to_dag_round_trip() {
+        let mut graph = CommitGraph::new();
+        let root = graph
+            .genesis(
+                CommitDraft::new(fixture_id(1), "main", "gradetwo", "genesis")
+                    .with_created_at(1_760_000_000_777)
+                    .with_rng_seed(0xDEAD_BEEF_DEAD_BEEF)
+                    .with_ops(vec![add_section_op(11)]),
+            )
+            .expect("genesis");
+
+        let commit = graph.commit(&root).expect("commit");
+        assert_eq!(commit.branch_id, "main");
+        assert_eq!(commit.author, "gradetwo");
+        assert_eq!(commit.created_at, 1_760_000_000_777);
+        assert_eq!(commit.rng_seed, 0xDEAD_BEEF_DEAD_BEEF);
+
+        let decoded = decode_history_dag(&encode_history_dag(&graph))
+            .expect("解码")
+            .expect("非空图谱");
+        let back = decoded.commit(&root).expect("commit");
+        assert_eq!(back.branch_id, "main");
+        assert_eq!(back.author, "gradetwo");
+        assert_eq!(back.created_at, 1_760_000_000_777);
+        assert_eq!(back.rng_seed, 0xDEAD_BEEF_DEAD_BEEF);
+
+        // R58：同一个 `==` 上补一条 `assert_ne!`（`PartialEq` 被削弱时上面全变空判据）。
+        assert_ne!(back.author, "other-agent");
+        assert_ne!(back.branch_id, "other");
+        assert_ne!(back.created_at, 0_u64);
+        assert_ne!(back.rng_seed, 0_u64);
+    }
 }
