@@ -823,6 +823,31 @@ mod tests {
             .map(|(error, _)| sfz_error_arm(error))
             .collect();
         assert_eq!(arms, (0..cases.len() as u8).collect::<Vec<u8>>());
+        // ⭐ R183 判据内红臂：**内部**挖掉一臂 ⇒ 臂序列不再连续 ⇒ 同一个比较**必须拒绝**。
+        let mut holed = cases.clone();
+        holed.remove(1);
+        let holed_arms: Vec<u8> = holed
+            .iter()
+            .map(|(error, _)| sfz_error_arm(error))
+            .collect();
+        assert_ne!(
+            holed_arms,
+            (0..holed_arms.len() as u8).collect::<Vec<u8>>(),
+            "red arm: an interior missing arm must be rejected"
+        );
+        // 登记（如实）：⛔ 去掉**最后一臂**时，连续性检查**检测不到**（序列仍连续）
+        // —— 这条由 `the_error_arm_numbers_are_pinned` 之类的臂编号表判据兜住。
+        let mut truncated = cases.clone();
+        truncated.pop();
+        let truncated_arms: Vec<u8> = truncated
+            .iter()
+            .map(|(error, _)| sfz_error_arm(error))
+            .collect();
+        assert_eq!(
+            truncated_arms,
+            (0..truncated_arms.len() as u8).collect::<Vec<u8>>(),
+            "documented limitation: dropping the LAST arm is not detectable by contiguity"
+        );
     }
 
     #[test]

@@ -2789,6 +2789,26 @@ mod tests {
         let cases = warning_display_cases();
         let arms: Vec<u8> = cases.iter().map(|(w, _)| warning_arm(w)).collect();
         assert_eq!(arms, (0..cases.len() as u8).collect::<Vec<u8>>());
+        // ⭐ R183 判据内红臂（⚠️ R160：本表是**定长数组** ⇒ 只能**替换**，⛔ 不能增删）。
+        // **内部**把一个位置换成**下一个**位置的值 ⇒ 臂序列出现重复/缺号 ⇒ 必须拒绝。
+        let mut holed = cases.clone();
+        holed[1] = cases[2].clone();
+        let holed_arms: Vec<u8> = holed.iter().map(|(w, _)| warning_arm(w)).collect();
+        assert_ne!(
+            holed_arms,
+            (0..holed_arms.len() as u8).collect::<Vec<u8>>(),
+            "red arm: an interior duplicated arm must be rejected"
+        );
+        // 绿对照：**同值替换**（`cases[3]` 换成它自己）⇒ 序列不变 ⇒ 比较仍然接受
+        // （证明上面的红不是"随便改一处就红"）。
+        let mut same = cases.clone();
+        same[3] = cases[3].clone();
+        let same_arms: Vec<u8> = same.iter().map(|(w, _)| warning_arm(w)).collect();
+        assert_eq!(
+            same_arms,
+            (0..same_arms.len() as u8).collect::<Vec<u8>>(),
+            "green arm: a same-value replacement must still be accepted"
+        );
     }
 
     #[test]

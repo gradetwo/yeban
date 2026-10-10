@@ -2698,9 +2698,18 @@ mod tests {
         assert_eq!(instrument.cc_default(8), None);
         assert_eq!(instrument.cc_defaults().len(), 3);
         // 确定性：表的迭代顺序由 CC 下标唯一确定（BTreeMap），不是文件出现顺序。
-        assert_eq!(
-            instrument.cc_defaults().keys().copied().collect::<Vec<_>>(),
-            vec![7, 101, 400]
+        let cc_keys: Vec<u16> = instrument.cc_defaults().keys().copied().collect();
+        assert_eq!(cc_keys, vec![7, 101, 400]);
+        // ⭐ R183 判据内红臂：把期望值**改坏** ⇒ 同一个比较必须拒绝。
+        assert_ne!(
+            cc_keys,
+            vec![7, 101, 401],
+            "red arm: a mutated expectation must be rejected"
+        );
+        assert_ne!(
+            cc_keys,
+            vec![7, 101],
+            "red arm: a shortened expectation must be rejected"
         );
         // `<control>` 不是继承链的一环：region 上不带初值，region 选择也不看它。
         assert_eq!(instrument.regions().len(), 1);

@@ -472,10 +472,17 @@ mod tests {
         assert_eq!(two[0], two[1], "both sections carry the same value");
         assert_eq!(two[0].sends(), one[0].sends());
         assert_eq!(two[0].bus(), one[0].bus());
+        let orders: Vec<Option<u16>> = two.iter().map(Effect::dsp_order).collect();
         assert_eq!(
-            two.iter().map(Effect::dsp_order).collect::<Vec<_>>(),
+            orders,
             vec![None, None],
             "no per-section counter leaks between sections"
+        );
+        // ⭐ R183 判据内红臂：改坏期望值 ⇒ 同一个比较必须拒绝。
+        assert_ne!(
+            orders,
+            vec![None, Some(1)],
+            "red arm: a mutated expectation must be rejected"
         );
     }
 
