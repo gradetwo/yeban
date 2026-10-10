@@ -1845,4 +1845,43 @@ mod tests {
             strip.output_rms()
         );
     }
+
+    /// **判据（新写，可红）**：两条声道必须各自处理**自己**的输入。
+    ///
+    /// 量什么：一段只在**左**路有脉冲的输入经 `process_stereo` 之后的
+    /// 两条输出切片（`f32` 位型，帧数）。
+    ///
+    /// 为什么需要它（机械读数）：链上唯一的跨声道耦合是**共享增益**
+    ///（压缩器的 `gain`，两侧同乘）；滤波级与 EQ 级都是**每声道一份状态**
+    ///（`filter_l`／`filter_r`、`eq` 的两组双二阶）。既有判据的夹具几乎都用
+    /// **左右相同**的输入（`mono_path_matches_a_duplicated_stereo_pair`、
+    /// `the_same_input_twice_is_bit_identical`），因此"滤波级的输入被互换"
+    /// 这类改动**不可观测**。把
+    /// `(self.filter_l.process(left), self.filter_r.process(right))`
+    /// 改成 `(self.filter_l.process(right), self.filter_r.process(left))` 时，
+    /// 全库 457 条判据**全绿**（第四批注入表的 C04）。
+    ///
+    /// 注入实测：滤波级左右输入互换 ⇒ 本判据变红（左路恒为 0）。
+    #[test]
+    fn the_two_channels_keep_their_own_input() {
+        /// 观测帧数：够长，让滤波级的瞬态完全走出。
+        const FRAMES: usize = 512;
+        let mut strip = ChannelStrip::new(ChannelStripParams::DEFAULT, SR);
+        let mut left = vec![0.0f32; FRAMES];
+        let mut right = vec![0.0f32; FRAMES];
+        left[0] = 1.0;
+        strip.process_stereo(&mut left, &mut right);
+        assert!(
+            left.iter().any(|sample| sample.abs() > 1e-6),
+            "左路脉冲必须真的穿过链路（否则本判据测的是空壳）"
+        );
+        for (frame, sample) in right.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.0f32.to_bits(),
+                "第 {frame} 帧右路不是逐位静音（幅度 {}）⇒ 另一路的样本串过来了",
+                sample
+            );
+        }
+    }
 }

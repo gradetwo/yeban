@@ -1033,4 +1033,53 @@ mod tests {
             );
         }
     }
+
+    /// **判据（新写，可红）**：任一声道超阈值都必须驱动那个**共享**增益。
+    ///
+    /// 量什么：`engaged()`（布尔）、`reduction_count()`（个样本）、被延迟的尖峰输出
+    /// （线性幅度）、静音那一侧的输出切片（`f32` 位型，帧数）。
+    ///
+    /// 为什么需要它（机械读数）：限制器是立体声**联动**的 —— 两条环装样本、
+    /// 一个增益同时作用在两侧。既有判据的夹具要么左右相同、要么把尖峰放在**左**路
+    /// （`a_silent_channel_stays_bit_silent` 是"左响右静"，那里右侧恒 `0`
+    /// ⇒ 只看左环也能得到同一个峰值）。把检波器的峰值改成**只看左环**
+    /// （`peak.max(self.ring[0][index].abs().max(self.ring[0][index].abs()))`）时，
+    /// 全库 457 条判据**全绿**（第四批注入表的 C02）⇒ 一条**只出现在右路**的
+    /// 过载会不被限制、直接冲过天花板。
+    ///
+    /// 注入实测：检波只看左环 ⇒ 本判据变红（`engaged()` 为假、右路尖峰未被限制）。
+    #[test]
+    fn a_loud_right_channel_drives_the_shared_gain() {
+        /// 观测帧数。
+        const FRAMES: usize = 512;
+        /// 尖峰位置（与 `a_single_spike_is_exactly_limited_and_the_tail_is_bit_silent` 同口径）。
+        const SPIKE_AT: usize = 40;
+        let mut limiter = Limiter::new();
+        let mut left = vec![0.0f32; FRAMES];
+        let mut right: Vec<f32> = (0..FRAMES)
+            .map(|frame| if frame == SPIKE_AT { 1.2 } else { 0.0 })
+            .collect();
+        limiter.process_stereo(&mut left, &mut right);
+        assert!(
+            limiter.engaged(),
+            "只有右路有过载，限制器却没有驱动 ⇒ 检波器只看了一条环"
+        );
+        assert!(limiter.reduction_count() > 0, "被压样本数必须 > 0");
+        // 被延迟的尖峰必须落在 (阈值, 天花板] 区间。
+        let delayed = SPIKE_AT + LOOKAHEAD_SAMPLES;
+        let limited = right[delayed];
+        assert!(
+            limited > LIMITER_THRESHOLD && limited <= LIMITER_CEILING,
+            "右路尖峰未被限制：{limited}（阈值 {LIMITER_THRESHOLD}、天花板 {LIMITER_CEILING}）"
+        );
+        assert!(limited < 1.2, "右路尖峰没有被压：{limited}");
+        // 静音那一侧仍然逐位静音（共享增益乘 0 仍是 0）。
+        for (frame, sample) in left.iter().enumerate() {
+            assert_eq!(
+                sample.to_bits(),
+                0.0f32.to_bits(),
+                "第 {frame} 帧左路应为逐位静音"
+            );
+        }
+    }
 }
