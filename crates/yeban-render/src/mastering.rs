@@ -3137,4 +3137,60 @@ mod tests {
             "普通目标必须真的改掉样本"
         );
     }
+
+    /// 判据 (**类别 4: 极值**): 次正规（subnormal）幅度**不是**"测不出" ——
+    /// [`amplitude_to_dbtp`] 的契约是"幅度 ≤ 0 ⇒ `NEG_INFINITY`", 而次正规数是 **> 0**。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `if amplitude > 0.0` 换成 `if amplitude >= f32::MIN_POSITIVE`（即把次正规数
+    /// 当成 0）之后, 全量判据**全绿** —— 既有的每一处真峰值夹具的幅度都在 `1e-1` 量级,
+    /// 没有一格落在次正规区。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 3 个正的线性幅度（单位: 满量程的线性倍数）: `f32::MIN_POSITIVE`（最小的
+    /// **正规**数）、`f32::MIN_POSITIVE / 2.0` 与 `f32::from_bits(1)`（两者都是次正规数）。
+    /// 读数: [`amplitude_to_dbtp`] 的返回（单位: dBTP）。
+    ///
+    /// # 运算类别（ADR-0001 的 D32）
+    ///
+    /// `libm::log10f` 是超越函数 ⇒ 按 4096 ulp 预算**只断言性质**（有限、单调、
+    /// 落在一个宽区间内）, **不钉精确值**。
+    ///
+    /// # 非空证明
+    ///
+    /// 三个正幅度的读数**互不相同**且随幅度单调下降（下面直接断言两条严格不等）;
+    /// 而 `0.0` / `-0.0` / 负数必须给 `NEG_INFINITY` —— 两半一起, 才区分得开
+    /// "把正数当 0"与"把 0 当正数"。
+    #[test]
+    fn a_subnormal_amplitude_is_a_measurement_not_silence() {
+        let smallest_normal = f32::MIN_POSITIVE;
+        let half_normal = smallest_normal / 2.0;
+        let smallest_subnormal = f32::from_bits(1);
+        assert!(
+            half_normal > 0.0 && half_normal < smallest_normal,
+            "夹具必须是次正规数"
+        );
+        assert!(smallest_subnormal > 0.0 && smallest_subnormal < half_normal);
+
+        for amplitude in [smallest_normal, half_normal, smallest_subnormal] {
+            let reading = amplitude_to_dbtp(amplitude);
+            assert!(
+                reading.is_finite(),
+                "幅度 {amplitude:e} 是一个真实读数, 不能是 {reading}"
+            );
+            assert!(
+                (-920.0..-700.0).contains(&reading),
+                "幅度 {amplitude:e} 的 dBTP 应落在 (−920, −700) 内, 实际 {reading}"
+            );
+        }
+        // 单调: 幅度越小, 读数越低。
+        assert!(amplitude_to_dbtp(smallest_normal) > amplitude_to_dbtp(half_normal));
+        assert!(amplitude_to_dbtp(half_normal) > amplitude_to_dbtp(smallest_subnormal));
+        // 恰好为零（含 `-0.0`）与负数才是"测不出"。
+        assert_eq!(amplitude_to_dbtp(0.0), f32::NEG_INFINITY);
+        assert_eq!(amplitude_to_dbtp(-0.0), f32::NEG_INFINITY);
+        assert_eq!(amplitude_to_dbtp(-1.0e-30), f32::NEG_INFINITY);
+    }
 }

@@ -421,4 +421,458 @@ mod contract_tests {
             loudness.max_true_peak_level
         );
     }
+
+    /// 判据 (**诊断文案黄金表**): 本 crate 默认构建里 5 个错误枚举的**全部 45 个变体**
+    /// 的 `Display` 文案, 逐条钉死在同一张表里。
+    ///
+    /// # 为什么是一张**表**（本机实测的缺口）
+    ///
+    /// `grep -rn 'to_string()' crates/yeban-render/src/{rf64,wav,render,pdc,mastering}.rs`
+    /// 只命中**产线**代码: 5 个 `Display` 实现的文案在判据里**零断言**。因此
+    /// `Display` 可以整段改坏而全量判据全绿 —— 这是 `mod-theory` 的实测同款
+    /// （5 条 `Display` 改坏, 一条判据都不红）。文案是**调用方读到的唯一诊断信息**,
+    /// 也是 `yeban-mcp` 工具面返回给调用方的文本, 因此它是对外契约。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 5 个枚举的**全部**变体（单位: 一个变体）, 每个给一个固定的构造值。
+    /// 读数: 对该值 `to_string()` 得到的字符串（单位: 一个 UTF-8 字符串）。
+    /// 覆盖面由数组长度 `45` 与下面那条去重断言一起守住。
+    ///
+    /// # 表的来源
+    ///
+    /// 右列是**本机实测读数**（一个临时探针在 `469cedd` 上打印全部 45 条, 探针已删）,
+    /// 不是从实现里抄的表达式。表的用途正是: **以后任何一字改动都必须显式改这张表**。
+    ///
+    /// # 非空证明
+    ///
+    /// ① 45 条文案里**恰有一对相同** —— `Rf64Error::ZeroChannels` 与
+    /// `RenderError::ZeroChannels` 都是 `声道数为 0` ⇒ 去重后是 **44** 条
+    /// （下面把这两个数与那一对一起断言）;
+    /// ② 五个枚举各自的变体数必须是 **18 / 4 / 12 / 3 / 8** —— 哪个枚举少一个变体进表就红;
+    /// ③ 其中 6 条带运行时参数（`Truncated` / `DataSizeMismatch` /
+    /// `UnrepresentableBlockAlign` / `UnsupportedFormatTag` / `BadStartTimecode` /
+    /// `NonFiniteSamples`）⇒ 改插值而不是改字面量也会红。
+    #[test]
+    fn every_diagnostic_message_is_pinned_in_one_golden_table() {
+        use crate::mastering::MasterExportError;
+        use crate::pdc::PdcError;
+        use crate::rf64::Rf64Error;
+        use crate::wav::WavError;
+
+        let cases: [(&str, String, &str); 45] = [
+            (
+                "Rf64::Io",
+                Rf64Error::Io("磁盘满了".to_owned()).to_string(),
+                r#"I/O 失败: 磁盘满了"#,
+            ),
+            (
+                "Rf64::NotWaveContainer",
+                Rf64Error::NotWaveContainer.to_string(),
+                r#"不是 RIFF/RF64/BW64 的 WAVE 容器"#,
+            ),
+            (
+                "Rf64::Truncated",
+                Rf64Error::Truncated {
+                    what: "data 负载",
+                    got: 7,
+                }
+                .to_string(),
+                r#"data 负载 被截断 (只有 7 字节)"#,
+            ),
+            (
+                "Rf64::BadDs64Len",
+                Rf64Error::BadDs64Len(12).to_string(),
+                r#"ds64 chunk 长度应为 28, 实际 12"#,
+            ),
+            (
+                "Rf64::MissingDs64",
+                Rf64Error::MissingDs64.to_string(),
+                r#"RF64/BW64 文件缺少 ds64 chunk"#,
+            ),
+            (
+                "Rf64::MissingFmt",
+                Rf64Error::MissingFmt.to_string(),
+                r#"缺少 fmt chunk"#,
+            ),
+            (
+                "Rf64::MissingData",
+                Rf64Error::MissingData.to_string(),
+                r#"缺少 data chunk"#,
+            ),
+            (
+                "Rf64::BadFmtLen",
+                Rf64Error::BadFmtLen(40).to_string(),
+                r#"fmt chunk 长度不受支持: 40"#,
+            ),
+            (
+                "Rf64::UnsupportedFormatTag",
+                Rf64Error::UnsupportedFormatTag(0x0002).to_string(),
+                r#"不受支持的格式标签: 0x0002"#,
+            ),
+            (
+                "Rf64::ZeroChannels",
+                Rf64Error::ZeroChannels.to_string(),
+                r#"声道数为 0"#,
+            ),
+            (
+                "Rf64::ZeroSampleRate",
+                Rf64Error::ZeroSampleRate.to_string(),
+                r#"采样率为 0"#,
+            ),
+            (
+                "Rf64::ZeroBitsPerSample",
+                Rf64Error::ZeroBitsPerSample.to_string(),
+                r#"位深为 0"#,
+            ),
+            (
+                "Rf64::DataSizeMismatch",
+                Rf64Error::DataSizeMismatch {
+                    declared: 8,
+                    actual: 4,
+                }
+                .to_string(),
+                r#"声明的 data 负载长度是 8 字节, 实际交进来的是 4 字节"#,
+            ),
+            (
+                "Rf64::UnrepresentableBlockAlign",
+                Rf64Error::UnrepresentableBlockAlign {
+                    channels: 21_846,
+                    bytes_per_sample: 3,
+                }
+                .to_string(),
+                r#"声道布局无法表示: 21846 声道 × 3 字节/样本 超过 nBlockAlign 的 u16 上限"#,
+            ),
+            (
+                "Rf64::UnsupportedBextVersion",
+                Rf64Error::UnsupportedBextVersion(3).to_string(),
+                r#"不受支持的 bext 版本: 3"#,
+            ),
+            (
+                "Rf64::BextLoudnessVersionMismatch",
+                Rf64Error::BextLoudnessVersionMismatch {
+                    version: 2,
+                    has_loudness: false,
+                }
+                .to_string(),
+                r#"bext 版本 2 必须带 EBU R128 响度字段, 实际却没有: 读取器对这个版本恒给出同一个取值, 写出去就是一个往返不等的容器"#,
+            ),
+            (
+                "Rf64::UnrepresentableBextField",
+                Rf64Error::UnrepresentableBextField {
+                    field: "Description",
+                }
+                .to_string(),
+                r#"bext 的 Description 字段取值含 NUL: 读取器在 NUL 处停止（或裁掉尾随 NUL）, 写出去的值与读回来的值不是同一个字符串"#,
+            ),
+            (
+                "Rf64::BadStartTimecode",
+                Rf64Error::BadStartTimecode("25:00:00".to_owned()).to_string(),
+                r#"起始时间码 "25:00:00" 不是 HH:MM:SS（时分秒必须各自在合法范围内）"#,
+            ),
+            (
+                "Wav::Hound",
+                WavError::Hound("hound 说不行".to_owned()).to_string(),
+                r#"hound 失败: hound 说不行"#,
+            ),
+            (
+                "Wav::FormatMismatch",
+                WavError::FormatMismatch {
+                    expected: "Float32 (32 位)".to_owned(),
+                    got: "16 位, 整数".to_owned(),
+                }
+                .to_string(),
+                r#"格式不匹配: 期望 Float32 (32 位), 实际 16 位, 整数"#,
+            ),
+            (
+                "Wav::UnsupportedDepth",
+                WavError::UnsupportedDepth(8).to_string(),
+                r#"不支持的位深: 8"#,
+            ),
+            (
+                "Wav::RejectedFormat",
+                WavError::RejectedFormat {
+                    field: "channels",
+                    detail: "0".to_owned(),
+                }
+                .to_string(),
+                r#"格式不可用: channels = 0"#,
+            ),
+            (
+                "Render::InvalidGraph",
+                RenderError::InvalidGraph("环".to_owned()).to_string(),
+                r#"路由图非法: 环"#,
+            ),
+            (
+                "Render::MasterNotInGraph",
+                RenderError::MasterNotInGraph(ulid(0xFFFF)).to_string(),
+                r#"Master 节点不在路由图里: 00000000000000000000001ZZZ"#,
+            ),
+            (
+                "Render::Pdc",
+                RenderError::Pdc("有环".to_owned()).to_string(),
+                r#"PDC 分析失败: 有环"#,
+            ),
+            (
+                "Render::ZeroChannels",
+                RenderError::ZeroChannels.to_string(),
+                r#"声道数为 0"#,
+            ),
+            (
+                "Render::ZeroBlockSize",
+                RenderError::ZeroBlockSize.to_string(),
+                r#"块大小为 0"#,
+            ),
+            (
+                "Render::ZeroFrames",
+                RenderError::ZeroFrames.to_string(),
+                r#"总帧数为 0"#,
+            ),
+            (
+                "Render::SizeOverflow",
+                RenderError::SizeOverflow {
+                    what: "block_size * channels",
+                }
+                .to_string(),
+                r#"block_size * channels 溢出 usize"#,
+            ),
+            (
+                "Render::MissingSource",
+                RenderError::MissingSource(ulid(0xFFFF)).to_string(),
+                r#"节点 00000000000000000000001ZZZ 没有注册样本源"#,
+            ),
+            (
+                "Render::SourceOnBusNode",
+                RenderError::SourceOnBusNode(ulid(0xFFFF)).to_string(),
+                r#"节点 00000000000000000000001ZZZ 有入边, 不能注册样本源"#,
+            ),
+            (
+                "Render::UnknownNode",
+                RenderError::UnknownNode(ulid(0xFFFF)).to_string(),
+                r#"节点 00000000000000000000001ZZZ 不在渲染计划里（未知或被剪枝）"#,
+            ),
+            (
+                "Render::ThreadPool",
+                RenderError::ThreadPool("线程池炸了".to_owned()).to_string(),
+                r#"线程池构建失败: 线程池炸了"#,
+            ),
+            (
+                "Render::Source",
+                RenderError::Source {
+                    node: ulid(0xFFFF),
+                    message: "音源炸了".to_owned(),
+                }
+                .to_string(),
+                r#"样本源 00000000000000000000001ZZZ 失败: 音源炸了"#,
+            ),
+            (
+                "Pdc::Cycle",
+                PdcError::Cycle {
+                    remaining: vec!["a".to_owned(), "b".to_owned()],
+                }
+                .to_string(),
+                r#"路由图有环, 剩余节点: ["a", "b"]"#,
+            ),
+            (
+                "Pdc::UnknownNode",
+                PdcError::UnknownNode {
+                    node: "ghost".to_owned(),
+                }
+                .to_string(),
+                r#"边的端点不在节点表里: ghost"#,
+            ),
+            (
+                "Pdc::MasterNotInGraph",
+                PdcError::MasterNotInGraph {
+                    master: "nowhere".to_owned(),
+                }
+                .to_string(),
+                r#"Master 节点不在图里: nowhere"#,
+            ),
+            (
+                "Mst::UnsupportedSampleRate",
+                MasterExportError::UnsupportedSampleRate(22_050).to_string(),
+                r#"响度计量不支持 22050 Hz（内置档位: 44.1/48/88.2/96 kHz）"#,
+            ),
+            (
+                "Mst::NotStereo",
+                MasterExportError::NotStereo(4).to_string(),
+                r#"母带导出只支持立体声, 实际 4 声道"#,
+            ),
+            (
+                "Mst::RaggedInterleavedBuffer",
+                MasterExportError::RaggedInterleavedBuffer(7).to_string(),
+                r#"交错缓冲长度 7 不是偶数（立体声的帧必须成对）"#,
+            ),
+            (
+                "Mst::UnsupportedBextVersion",
+                MasterExportError::UnsupportedBextVersion(3).to_string(),
+                r#"bext 版本 3 的字段表未核验（读取器只接受 1 与 2）; 写出去就会产出一个本 crate 读不回来的容器"#,
+            ),
+            (
+                "Mst::UnrepresentableBextField",
+                MasterExportError::UnrepresentableBextField {
+                    field: "Originator",
+                }
+                .to_string(),
+                r#"bext 的 Originator 字段取值含 NUL: 读取器在 NUL 处停止（或裁掉尾随 NUL）, 写出去的元数据与请求的不是同一个值"#,
+            ),
+            (
+                "Mst::BextCannotCarryLoudness",
+                MasterExportError::BextCannotCarryLoudness(1).to_string(),
+                r#"bext 版本 1 没有 EBU R128 响度字段, 无法承载实测响度 [ARCH-FMT-001]"#,
+            ),
+            (
+                "Mst::NonFiniteSamples",
+                MasterExportError::NonFiniteSamples {
+                    index: 3,
+                    value: f32::NAN,
+                }
+                .to_string(),
+                r#"母带缓冲的第 3 个样本是 NaN（非有限）; 导出会静默丢弃它, 因此拒绝"#,
+            ),
+            (
+                "Mst::Container",
+                MasterExportError::Container(Rf64Error::ZeroChannels).to_string(),
+                r#"容器写入失败: 声道数为 0"#,
+            ),
+        ];
+        for (label, actual, golden) in &cases {
+            assert_eq!(actual.as_str(), *golden, "诊断文案变了: {label}");
+        }
+
+        // 覆盖面: 45 个变体, 按枚举分别是 18 / 4 / 12 / 3 / 8。
+        assert_eq!(cases.len(), 45, "黄金表必须覆盖全部 45 个变体");
+        for (prefix, expected) in [
+            ("Rf64::", 18usize),
+            ("Wav::", 4),
+            ("Render::", 12),
+            ("Pdc::", 3),
+            ("Mst::", 8),
+        ] {
+            assert_eq!(
+                cases
+                    .iter()
+                    .filter(|(label, _, _)| label.starts_with(prefix))
+                    .count(),
+                expected,
+                "{prefix} 的变体数（表里少了一个变体）"
+            );
+        }
+
+        // 文案的唯一一处重合: 两个不同的枚举都用了 `声道数为 0` ⇒ 去重后 44 条。
+        let mut golden_texts: Vec<&str> = cases.iter().map(|(_, _, golden)| *golden).collect();
+        golden_texts.sort_unstable();
+        golden_texts.dedup();
+        assert_eq!(
+            golden_texts.len(),
+            44,
+            "45 条文案里恰有一对相同 ⇒ 去重后必须是 44"
+        );
+        assert_eq!(
+            Rf64Error::ZeroChannels.to_string(),
+            RenderError::ZeroChannels.to_string(),
+            "唯一的重合就是这两个枚举的 `声道数为 0`"
+        );
+    }
+
+    /// 判据 (**错误链与三条 `From` 转换**): `source()` 只有一条边, 三条转换必须**原样
+    /// 保留**内层文案。
+    ///
+    /// # 为什么需要它（与上一条同族的缺口）
+    ///
+    /// `Display` 有表之后, 仍然有两类"改坏了没人管"的形态:
+    /// ① `source()` —— 把它从 `Some` 改成 `None`（或反过来）会让错误链断掉, 而
+    /// `Display` 一字不变; ② `From` 转换 —— 把内层文案丢掉（例如换成一句 "转换失败"）
+    /// 同样不动任何既有判据。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 8 个错误值（单位: 一个值）。读数: `source()` 是否 `Some`（布尔）、
+    /// `source()` 的文案（字符串）与三条转换后的**完整**文案（字符串）。
+    ///
+    /// # 非空证明
+    ///
+    /// 8 个值里**恰有 1 个** `source()` 是 `Some`（`Container`）, 其余 7 个是 `None`
+    /// —— 因此"一律 `Some`"与"一律 `None`"两种改法都能被这条判据分开。
+    #[test]
+    fn error_source_chains_and_conversions_are_pinned() {
+        use crate::mastering::MasterExportError;
+        use crate::pdc::PdcError;
+        use crate::render::RenderError;
+        use crate::rf64::Rf64Error as F;
+        use crate::wav::WavError;
+        use std::error::Error as _;
+
+        // ① source() 的唯一一条边。
+        let chained = MasterExportError::Container(F::MissingFmt);
+        assert_eq!(
+            chained.source().map(ToString::to_string),
+            Some("缺少 fmt chunk".to_owned()),
+            "Container 变体必须把内层错误挂在错误链上"
+        );
+        let no_chain = [
+            MasterExportError::UnsupportedSampleRate(22_050),
+            MasterExportError::NotStereo(4),
+            MasterExportError::RaggedInterleavedBuffer(7),
+            MasterExportError::UnsupportedBextVersion(3),
+            MasterExportError::UnrepresentableBextField {
+                field: "Originator",
+            },
+            MasterExportError::BextCannotCarryLoudness(1),
+            MasterExportError::NonFiniteSamples {
+                index: 3,
+                value: f32::NAN,
+            },
+        ];
+        assert_eq!(no_chain.len(), 7);
+        for error in &no_chain {
+            assert!(error.source().is_none(), "{error} 不该有错误链");
+        }
+        // 另外四个枚举的错误链**全部**为空（它们只实现 Display）。
+        assert!(F::Io("x".to_owned()).source().is_none());
+        assert!(F::MissingFmt.source().is_none());
+        assert!(WavError::UnsupportedDepth(8).source().is_none());
+        assert!(RenderError::ZeroChannels.source().is_none());
+        assert!(
+            PdcError::UnknownNode {
+                node: "g".to_owned()
+            }
+            .source()
+            .is_none()
+        );
+
+        // ② From<io::Error> for Rf64Error: 内层文案原样保留。
+        let io_error = std::io::Error::other("boom");
+        assert_eq!(
+            F::from(io_error).to_string(),
+            "I/O 失败: boom",
+            "From<io::Error> 必须保留内层文案"
+        );
+
+        // ③ From<PdcError> for RenderError: 内层 Display 原样接到前缀后面。
+        let pdc = PdcError::UnknownNode {
+            node: "ghost".to_owned(),
+        };
+        assert_eq!(pdc.to_string(), "边的端点不在节点表里: ghost");
+        assert_eq!(
+            RenderError::from(pdc).to_string(),
+            "PDC 分析失败: 边的端点不在节点表里: ghost",
+            "From<PdcError> 必须保留内层文案"
+        );
+
+        // ④ From<hound::Error> for WavError: 前缀 + 第三方自己的 Display（内层不许丢）。
+        let hound_error = hound::Error::FormatError("坏格式");
+        let inner = hound_error.to_string();
+        let converted = WavError::from(hound_error).to_string();
+        assert_eq!(
+            converted,
+            format!("hound 失败: {inner}"),
+            "From<hound::Error> 必须原样保留第三方的 Display"
+        );
+        assert!(
+            !inner.is_empty(),
+            "第三方 Display 不能是空串, 否则上面那条是空判据"
+        );
+    }
 }

@@ -4837,4 +4837,54 @@ mod tests {
         assert_eq!(plain.format_tag(), 0x0001);
         assert_eq!(plain.fmt_payload().len(), 16);
     }
+
+    /// 判据 (**公开 `Default` 的字段普查**): [`Bext::default`] 的 **10 个字段**逐个钉死。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `origination_date: "1970-01-01"` 改成 `"1970-01-02"`、或把 `umid: [0u8; 64]`
+    /// 改成 `[1u8; 64]` 之后, 全量判据**全绿** —— 既有的 `Bext` 夹具要么**显式覆盖**
+    /// 这些字段（构造字面量写了它们）, 要么只做**往返**比较（读回来的就是写出去的,
+    /// 改了默认值两边同时变, 因此自洽）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: [`Bext::default`] 的返回值（单位: 一个 `bext` 块）。读数: 5 个字符串字段
+    /// （字符）、`time_reference`（采样数）、`version`（版本号）、`umid`（64 字节）、
+    /// `loudness`（`Option`）、`coding_history`（字符）, 加上编码长度（字节）。
+    ///
+    /// # 非空证明
+    ///
+    /// 10 个字段里有 3 格是**非空字面量**（`"1970-01-01"` / `"00:00:00"` / `version = 1`）,
+    /// 与另外 7 格的"空/零"可区分; 而且那两个日期字段的长度是 `bext` 定长字段的宽度
+    /// （10 / 8 字节）—— 一句 `assert_eq!` 同时钉住"内容"与"字段宽"。
+    #[test]
+    fn the_public_bext_default_is_pinned_field_by_field() {
+        let default = Bext::default();
+        assert_eq!(default.description, "");
+        assert_eq!(default.originator, "");
+        assert_eq!(default.originator_reference, "");
+        assert_eq!(default.origination_date, "1970-01-01");
+        assert_eq!(default.origination_time, "00:00:00");
+        assert_eq!(default.time_reference, 0);
+        assert_eq!(default.version, 1, "默认版本是 1（版本 2 必须有响度块）");
+        assert_eq!(default.umid, [0u8; 64]);
+        assert_eq!(default.loudness, None);
+        assert_eq!(default.coding_history, "");
+
+        // 定长字段的宽度: 一句断言同时钉住内容与字段宽。
+        assert_eq!(
+            default.origination_date.len(),
+            10,
+            "OriginationDate 宽 10 字节"
+        );
+        assert_eq!(
+            default.origination_time.len(),
+            8,
+            "OriginationTime 宽 8 字节"
+        );
+        // 没有编码历史 ⇒ 编码长度恰好是固定前缀。
+        assert_eq!(default.encoded_len(), BEXT_FIXED_LEN);
+        assert_eq!(default.to_bytes().len(), BEXT_FIXED_LEN);
+    }
 }
