@@ -3927,7 +3927,7 @@ mod tests {
             48_000.0,
         );
         schedules.insert(track, crate::synth::NoteSchedule::from_sorted(vec![note]));
-        let snapshot = EngineSnapshot::from_parts(
+        EngineSnapshot::from_parts(
             revision,
             48_000,
             DEFAULT_BLOCK_FRAMES,
@@ -3938,8 +3938,7 @@ mod tests {
             &LatencyTable::new(),
         )
         .expect("合法图")
-        .with_schedules(schedules, 0);
-        snapshot
+        .with_schedules(schedules, 0)
     }
 
     /// 从一个给定快照装一台运行时（事件通道容量 64）。

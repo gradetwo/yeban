@@ -846,6 +846,18 @@ impl EngineHost {
         PARAM_SLOTS * 3
     }
 
+    /// **把工程里的自动化泳道采样成 `SetParam` 事件并下发**（裁决 R55／R68／P4=(b)）。
+    ///
+    /// * **采样时点** = [`Self::transport`] 的 `position_ticks`（RT→UI 镜面 = **音频时钟**）
+    ///   ⇒ 没有任何墙钟输入，同一个时点给出同一批值（幂等）；
+    /// * **工程缓存**：`Some(project)` 更新缓存，`None` 跳用缓存 —— 生产的 16 ms 定时器
+    ///   只在"标记变了"的那一跳才 `try_project()`（成本契约），⛔ 采样**不得**挂在入参上；
+    /// * 一条轨最多 **3** 条事件：音量 1 条 + 声相 2 条（左/右**绝对**增益，语义是**替换**）；
+    /// * 声相值由引擎公开的 [`pan_gains`] 与 [`PanLaw::from_model`] 在**控制侧**算好
+    ///   （超越函数⛔ 不进音频线程），并 `max(0.0)` 钳位（硬右的左增益实测是负的）；
+    /// * 返回**实际写入**的事件条数（没写进去的记进 [`Self::automation_counts`] 的第二个数）。
+    ///   ⛔ **不加 `#[must_use]`**：生产调用点（`host.rs` 的 `tick`）刻意忽略返回值，
+    ///   加了会在 `-D warnings` 下把整条腿弄红。
     pub fn publish_automation(&mut self, project: Option<&YebanProjectV1>) -> usize {
         // **工程缓存（R68 修的那一处）**：生产路径只在"标记变了"的那一跳才 `try_project()`
         // ⇒ 其余各跳传的是 `None`。若采样直接挂在入参上，自动化就**只在工程改动的那一跳
