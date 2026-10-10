@@ -1379,4 +1379,50 @@ mod tests {
             "臂码必须恰好 `0..2`（缺一臂 ⇒ 集合不完整）"
         );
     }
+
+    /// 判据 (头号项② **选项② —— 如实登记"`kind` 不在 Display 里"**):
+    /// 两个**只差 `kind`** 的 `InflateError` 必须产生**完全相同**的 `Display` 文案。
+    ///
+    /// ⭐ **登记读数**，⛔ 不是缺陷断言：`Display` 的模板是
+    /// `"偏移 {} 处 DEFLATE 流非法: {}"`（只吃 `offset` 与 `detail`）⇒ `kind` 不在文案里。
+    /// ⭐ **R189 机械形态**：把"不可见"写成**可判定的等价断言**（只差 `kind` ⇒ 文案相等），
+    /// 并配**配对对照**（只差 `detail` ⇒ 文案必须**不同**；否则上面的相等是平凡的）。
+    /// ⭐ **已知红 ＝ 把 `kind` 加进 `Display` 模板**（外部注入；按 **R187** 打 `SELFTEST` 标记）。
+    /// ⭐ **R188**：规模/成本面读数降级为 `eprintln!`（诊断），⛔ 不当自检判据。
+    #[test]
+    fn two_inflate_errors_differing_only_in_kind_have_the_same_display_text() {
+        let malformed = InflateError {
+            offset: 7,
+            detail: "同一个说明",
+            kind: InflateErrorKind::Malformed,
+        };
+        let limit = InflateError {
+            offset: 7,
+            detail: "同一个说明",
+            kind: InflateErrorKind::Limit,
+        };
+        assert_eq!(
+            malformed.to_string(),
+            limit.to_string(),
+            "`kind` 不在 `Display` 模板里 ⇒ 只差 kind 的两条错误文案必须逐字相同"
+        );
+
+        // ⭐ 配对对照（R189）：只差 `detail` 的两条 ⇒ 文案必须**不同**。
+        let other_detail = InflateError {
+            offset: 7,
+            detail: "另一个说明",
+            kind: InflateErrorKind::Malformed,
+        };
+        assert_ne!(
+            malformed.to_string(),
+            other_detail.to_string(),
+            "配对对照：只差 detail 的两条文案必须不同（否则上面的相等是平凡的）"
+        );
+
+        // ⭐ R188：规模/成本面只做**诊断**（⛔ 不用集合大小界当判据）。
+        eprintln!(
+            "DIAGNOSTIC two_inflate_errors_differing_only_in_kind: display_len={} template_fields=offset+detail",
+            malformed.to_string().len()
+        );
+    }
 }
