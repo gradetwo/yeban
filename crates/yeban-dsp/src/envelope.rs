@@ -60,6 +60,17 @@ pub struct Adsr {
     sustain: f32,
     release_s: f32,
     sample_rate: f32,
+    /// 三段系数是否**至少算过一次**。
+    ///
+    /// ⚠ 这个标志是必需的：`Adsr::new()` 的三个系数是**占位值**（`attack_inc = 1.0`、
+    /// `decay_coef = 0.0`、`release_coef = 0.0`），要等一次**真的**参数变更才由
+    /// [`Adsr::recompute`] 算出来。若去抖门限只比较"请求值 vs 已存值"，那么
+    /// **恰好等于构造器里那四个秒值**的请求会被跳过 ⇒ 实例永远停在占位系数上
+    ///（10 ms 的起振退化成 1 个样本）。因此第一次入口**无条件**重算，
+    /// 之后才走去抖。判据：`envelope::tests::the_first_parameter_request_always_recomputes_the_coefficients`
+    /// 与 `polysynth_render::p11_the_four_default_envelope_values_reach_a_new_voice`
+    ///（两条都在修复前实测为红）。
+    computed: bool,
 }
 
 impl Adsr {
@@ -77,13 +88,14 @@ impl Adsr {
             sustain: 0.8,
             release_s: 0.3,
             sample_rate: 48_000.0,
+            computed: false,
         }
     }
 
     /// 设置采样率并重算系数。
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         let sample_rate = crate::math::sanitise_sample_rate(sample_rate);
-        if sample_rate != self.sample_rate {
+        if !self.computed || sample_rate != self.sample_rate {
             self.sample_rate = sample_rate;
             self.recompute();
         }
@@ -120,7 +132,8 @@ impl Adsr {
         } else {
             0.0
         };
-        if (attack_s - self.attack_s).abs() > 1e-9
+        if !self.computed
+            || (attack_s - self.attack_s).abs() > 1e-9
             || (decay_s - self.decay_s).abs() > 1e-9
             || (sustain - self.sustain).abs() > 1e-9
             || (release_s - self.release_s).abs() > 1e-9
@@ -140,7 +153,7 @@ impl Adsr {
         } else {
             0.0
         };
-        if (release_s - self.release_s).abs() > 1e-9 {
+        if !self.computed || (release_s - self.release_s).abs() > 1e-9 {
             self.release_s = release_s;
             self.recompute();
         }
@@ -162,6 +175,7 @@ impl Adsr {
         };
         self.decay_coef = time_coefficient(self.decay_s, sample_rate);
         self.release_coef = time_coefficient(self.release_s, sample_rate);
+        self.computed = true;
     }
 
     /// 从静默重新开始（声部回收时调用）。
@@ -491,5 +505,50 @@ mod tests {
         let expected = render(&mut reference, true, 240);
         assert_eq!(value, expected, "重复设参改变了包络轨迹");
         assert_eq!(env.stage(), reference.stage());
+    }
+
+    /// **判据（新写，可红）**：`Adsr` 的**第一次**参数请求必须真的重算系数。
+    ///
+    /// 量什么：构造 ⇒ `set_sample_rate(48 kHz)` ⇒ `set_params(0.01, 0.2, 0.8, 0.3)`
+    ///（**恰好等于 `Adsr::new()` 里存的四个秒值**）⇒ `gate_on()` ⇒ 推进 `120` 帧之后的
+    /// `value()`（线性电平）。
+    ///
+    /// 为什么需要它（本机探针读数，第四批登记为待裁决、本轮按 R45 = (a) 修）：
+    /// `Adsr::new()` 的三个系数是**占位值**（`attack_inc = 1.0`、`decay_coef = 0.0`、
+    /// `release_coef = 0.0`），而 `set_params` 有"值没变就不重算"的去抖门限
+    /// ⇒ 请求**恰好等于构造器里那四个值**时整段重算被跳过 ⇒ 实例永远停在
+    /// "1 个样本完成起振、瞬间衰到 sustain"（探针实测：`v128 = 0.8`，而 10 ms 起振
+    /// 在第 120 帧只应到 `120 / 480 = 0.25`）。
+    ///
+    /// 判据：`value()` 必须 `> 0.1`（起振真的在推进）且 `< 0.4`（不是 1 个样本就完事）；
+    /// 另加对照——请求 `20 ms`（**不等于**占位值）的实例在同一点必须**更低**。
+    #[test]
+    fn the_first_parameter_request_always_recomputes_the_coefficients() {
+        let mut env = Adsr::new();
+        env.set_sample_rate(48_000.0);
+        env.set_params(0.01, 0.2, 0.8, 0.3);
+        env.gate_on();
+        for _ in 0..120 {
+            let _ = env.process(true);
+        }
+        let short = env.value();
+        assert!(short > 0.1, "起振必须真的在推进（实得 {short}）");
+        assert!(
+            short < 0.4,
+            "请求 10 ms 起振，第 120 帧却到了 {short} ⇒ 起振被当成了 1 个样本"
+        );
+
+        let mut other = Adsr::new();
+        other.set_sample_rate(48_000.0);
+        other.set_params(0.02, 0.2, 0.8, 0.3);
+        other.gate_on();
+        for _ in 0..120 {
+            let _ = other.process(true);
+        }
+        assert!(
+            other.value() < short,
+            "更长的起振在同一个位置必须更低：20 ms = {} 对 10 ms = {short}",
+            other.value()
+        );
     }
 }

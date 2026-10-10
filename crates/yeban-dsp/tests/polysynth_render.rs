@@ -743,3 +743,59 @@ fn p10_a_sample_rate_change_keeps_the_sounding_pitch() {
         "换采样率改变了在鸣音符的音高: {before:.4} Hz → {after:.4} Hz"
     );
 }
+
+/// **判据（新写，可红）**：`PolySynthParams::with_envelope(0.01, 0.2, 0.8, 0.3)`
+/// 之后，**每个新音符**的包络必须真的按请求的 `10 ms` 起振。
+///
+/// 量什么：把同一段单音渲染成 `12` 帧一块，取每块峰值、按全局峰值归一化成包络，
+/// 再数"第一次 `>= 0.99` 的块"到"第一个非零块"之间的帧数（单位：帧）。
+///
+/// 为什么需要它：`PolySynth::env_for()`（逐音符调用）走的就是
+/// `Adsr::new(); set_sample_rate(); set_params(attack, decay, sustain, release)`，
+/// 而 `0.01 / 0.2 / 0.8 / 0.3` **恰好等于** `Adsr::new()` 里存的四个秒值
+/// ⇒ 去抖门限让 `recompute()` 被跳过（第四批探针登记、本轮按 R45 = (a) 修）。
+/// 修复前：起振 = 1 个样本（实测 `12` 帧，即一个块）；修复后必须 ≈ `480` 帧。
+///
+/// 牙（对照）：同一夹具请求 `20 ms` 时必须得到约两倍的起振帧数 ——
+/// 否则"起振 480 帧"可能只是夹具的常数偏移。
+#[test]
+fn p11_the_four_default_envelope_values_reach_a_new_voice() {
+    let tables = PolySynthTables::from_recipes(&[PURE]);
+    let attack_frames = |attack_s: f32| -> usize {
+        let params = PolySynthParams::new().with_envelope(attack_s, 0.2, 0.8, 0.3);
+        let rendered = render_single(&tables, params, 4_000.0, 24_000, 24_000);
+        let blocks: Vec<f32> = rendered
+            .chunks(12)
+            .map(|block| block.iter().fold(0.0f32, |peak, s| peak.max(s.abs())))
+            .collect();
+        let maximum = blocks.iter().fold(0.0f32, |peak, b| peak.max(*b));
+        assert!(maximum > 0.5, "夹具必须真的到达满幅（实测 {maximum}）");
+        let envelope: Vec<f32> = blocks.iter().map(|b| b / maximum).collect();
+        let first_nonzero = envelope
+            .iter()
+            .position(|value| *value > 0.0)
+            .expect("必须有一个非零块");
+        let attack_block = envelope
+            .iter()
+            .position(|value| *value >= 0.99)
+            .expect("包络必须到达 0.99");
+        (attack_block - first_nonzero + 1) * 12
+    };
+
+    let ten_ms = attack_frames(0.01);
+    let twenty_ms = attack_frames(0.02);
+    let closed_form = 0.01 * SR; // 480 帧
+    println!(
+        "[yeban-dsp/polysynth] P11 四个默认包络值：10 ms 起振 = {ten_ms} 帧 \
+         （闭式 {closed_form:.0} 帧）；20 ms = {twenty_ms} 帧"
+    );
+    assert!(
+        (ten_ms as f64 - closed_form).abs() <= 24.0,
+        "请求 10 ms 的起振，实测 {ten_ms} 帧（闭式 {closed_form:.0} 帧）⇒ 请求没有到达新声部"
+    );
+    assert!(
+        (twenty_ms as f64 - 2.0 * closed_form).abs() <= 24.0,
+        "请求 20 ms 的起振，实测 {twenty_ms} 帧（闭式 {:.0} 帧）⇒ 夹具没有随请求变化",
+        2.0 * closed_form
+    );
+}
