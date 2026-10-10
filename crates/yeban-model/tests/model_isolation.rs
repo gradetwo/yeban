@@ -2166,6 +2166,19 @@ fn mask_rust_source(text: &str) -> String {
 /// ① 显式（`.len() >= N`、计数器 `ident >= N`、`!x.is_empty()`）；
 /// ② 宏隐式相等（`assert_eq!(x.len(), N|CONST)`）。**两种都认**，否则会给假阳性。
 fn unbounded_all_any_sites(relative: &str, raw: &str) -> Vec<String> {
+    unbounded_all_any_sites_with(enclosing_fn_body, relative, raw)
+}
+
+/// 与 `unbounded_all_any_sites` 相同，但**搜索域规则可插拔**。
+///
+/// 为什么需要（第十七轮）：要把"只取最近的一个 `fn `"这条**错误规则**做成判据的**证伪臂** ——
+/// 只有让两种规则跑同一批夹具、并断言它们的结论**不同**，才能证明这条修法是**承重**的，
+/// 而不是"看起来更绕"。
+fn unbounded_all_any_sites_with(
+    scope: fn(&str, usize) -> &str,
+    relative: &str,
+    raw: &str,
+) -> Vec<String> {
     let masked = mask_rust_source(raw);
     let mut found = Vec::new();
     let mut search = 0_usize;
@@ -2189,7 +2202,7 @@ fn unbounded_all_any_sites(relative: &str, raw: &str) -> Vec<String> {
         // R140：搜索域 = **本函数体**（⛔ 不是固定宽度窗口）。
         // R144：派生"根"之前先 `trim_start()`（下面 `collection_root` 的实参已 trim；
         // 若根派生成空串，`has_root_bound` 返回 false ⇒ **报无界**，⛔ 绝不静默漏判）。
-        let window = enclosing_fn_body(&masked, start);
+        let window = scope(&masked, start);
         // 只看**本断言自己的实参**（⛔ 否则会把下一条断言的 `.all(` 算到自己头上）。
         let Some(body) = paren_body(&masked, start + "assert!".len()) else {
             continue;
@@ -2575,6 +2588,40 @@ fn bounds_must_be_root_bound_not_borrowed_from_a_neighbour() {
     );
 }
 
+/// **错误规则**（第十七轮的证伪臂）：只取"最近的一个 `fn `"，**不检查它是否包含站点**。
+///
+/// 本函数**故意**保留这个错误实现。判据用它证明: 在"嵌套函数之后的站点"这种输入上，
+/// 错误规则与正确规则的结论**不同**（错误规则报无界 ⇒ 假阳性）。
+fn nearest_fn_body_only(masked: &str, at: usize) -> &str {
+    let mut best: Option<usize> = None;
+    let mut cursor = 0_usize;
+    while let Some(found) = masked[cursor..].find("fn ") {
+        let start = cursor + found;
+        cursor = start + 1;
+        if start >= at {
+            break;
+        }
+        let boundary_ok = start == 0
+            || !masked[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if boundary_ok {
+            best = Some(start);
+        }
+    }
+    let Some(fn_start) = best else {
+        return &masked[..at.min(masked.len())];
+    };
+    let Some(brace) = masked[fn_start..].find('{') else {
+        return &masked[..at.min(masked.len())];
+    };
+    match brace_body(masked, fn_start + brace) {
+        Some(body) => body,
+        None => &masked[..at.min(masked.len())],
+    }
+}
+
 /// **R119 常驻判据**：根的匹配必须落在**标识符边界**上（⛔ 不得子串匹配）。
 ///
 /// 为什么需要（第十二轮实测的**假阴性**）：`has_root_bound` 原来用
@@ -2798,7 +2845,11 @@ fn the_shape_table_is_the_single_source_of_truth() {
         ),
     ];
     // 绿色形态（不产生站点的"非断言"与"跨行接收者 + 有界"）
+    let declared = table.len();
     let mut checked = 0_usize;
+    let mut accepts = 0_usize;
+    let mut rejects = 0_usize;
+    let mut labels: Vec<&str> = Vec::new();
     for (label, snippet, expected) in table {
         let got = unbounded_all_any_sites(label, snippet).len();
         assert_eq!(
@@ -2806,10 +2857,34 @@ fn the_shape_table_is_the_single_source_of_truth() {
             "R150 形状表：`{label}` 期望 {expected} 个无界站点，实得 {got}"
         );
         checked += 1;
+        labels.push(label);
+        if expected == 0 {
+            accepts += 1;
+        } else {
+            rejects += 1;
+        }
     }
+    // ---- R160 双向归零（两条机械断言一起）----
+    // 方向一：**每一行**都被求值（声明长度 == 实际求值次数）。
+    assert_eq!(
+        checked, declared,
+        "R160 双向①：表有 {declared} 行，实际只求值 {checked} 次"
+    );
+    // 方向二：**标签唯一**（重复标签 ⇒ 某行被悄悄覆盖，表会变短却仍"看起来通过"）。
+    let unique: std::collections::BTreeSet<&str> = labels.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        labels.len(),
+        "R160 双向②：标签必须唯一（重复 ⇒ 有行被覆盖）"
+    );
     assert!(
-        checked >= 14,
-        "R150：形状表必须至少 14 行（实际 {checked}）"
+        declared >= 14,
+        "R150：形状表必须至少 14 行（实际 {declared}）"
+    );
+    // 方向二（续）：认/拒两类都必须足量 —— ⛔ 防"表漂移成只认不拒"或反之。
+    assert!(
+        accepts >= 5 && rejects >= 8,
+        "R160 双向②：认臂 {accepts} 条 / 拒臂 {rejects} 条，两类都必须足量"
     );
     // 非断言与跨行形态（单列，避免把"认"的臂与它们混在一张表里）
     let macro_tail = "fn f() { my_assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
@@ -2845,5 +2920,71 @@ fn the_shape_table_is_the_single_source_of_truth() {
         unbounded_all_any_sites("site_inside_inner", site_inside_inner).len(),
         1,
         "内层函数之内的站点不得借用外层函数的界（保守方向：多报）"
+    );
+}
+
+/// **第十七轮常驻判据**：搜索域 = **真正包含站点的最内层函数体**。
+///
+/// 本判据把第十六轮的**真缺陷**做成常驻对照。该缺陷是：`enclosing_fn_body` 只取
+/// "最近的一个 `fn `"。那个 `fn` 可能是**不包含站点的内层函数**。此时作用域是错的。
+/// 本判据带**证伪臂**：用 `nearest_fn_body_only`（故意保留的错误规则）跑同一批夹具。
+/// 判据断言两种规则的结论**不同**。⛔ 没有证伪臂，这条修法就无法证明是**承重**的。
+#[test]
+fn the_scope_rule_uses_the_innermost_enclosing_function() {
+    // (标签, 片段, 正确规则期望, 错误规则期望)
+    let arms: [(&str, &str, usize, usize); 4] = [
+        // 绿臂 + 证伪臂：内层 `fn` 在站点**之前**，但站点在它**外面**。
+        (
+            "nested_then_site",
+            "fn outer() {\n    fn inner() { let _ = 1; }\n    assert!(v.len() >= 2);\n    assert!(v.windows(2).all(|p| p[0] < p[1]));\n}\n",
+            0,
+            1,
+        ),
+        // 绿臂：内层 `fn` 在站点**之后** ⇒ 两种规则都取宿主 ⇒ 结论相同（非证伪臂）。
+        (
+            "site_then_nested",
+            "fn outer() {\n    assert!(v.len() >= 2);\n    assert!(v.windows(2).all(|p| p[0] < p[1]));\n    fn inner() { let _ = 1; }\n}\n",
+            0,
+            0,
+        ),
+        // 红臂（保守方向）：站点在**内层函数之内**、界在外层 ⇒ 正确规则报无界（多报，安全方向）。
+        (
+            "site_inside_inner",
+            "fn outer() {\n    assert!(v.len() >= 2);\n    fn inner() { assert!(v.windows(2).all(|p| p[0] < p[1])); }\n}\n",
+            1,
+            1,
+        ),
+        // 红臂 + 证伪臂：双层嵌套，内层 `fn` 在站点**之前**但站点在外层。
+        (
+            "two_levels",
+            "fn outer() {\n    assert!(v.len() >= 2);\n    fn mid() {\n        fn inner() { let _ = 1; }\n    }\n    assert!(v.windows(2).all(|p| p[0] < p[1]));\n}\n",
+            0,
+            1,
+        ),
+    ];
+    let declared = arms.len();
+    let mut checked = 0_usize;
+    let mut disagreed = 0_usize;
+    for (label, snippet, correct_expect, wrong_expect) in arms {
+        let correct = unbounded_all_any_sites(label, snippet).len();
+        let wrong = unbounded_all_any_sites_with(nearest_fn_body_only, label, snippet).len();
+        assert_eq!(
+            correct, correct_expect,
+            "正确规则（最内层宿主函数）在 `{label}` 上期望 {correct_expect}，实得 {correct}"
+        );
+        assert_eq!(
+            wrong, wrong_expect,
+            "错误规则（只取最近 `fn `）在 `{label}` 上期望 {wrong_expect}，实得 {wrong}"
+        );
+        if correct != wrong {
+            disagreed += 1;
+        }
+        checked += 1;
+    }
+    // R160 双向：每臂都求值 ＋ 必须有**证伪臂**（两规则结论不同）⇒ 修法是承重的。
+    assert_eq!(checked, declared, "R160 双向①：{declared} 臂必须全部求值");
+    assert!(
+        disagreed >= 2,
+        "证伪臂不足：只有 {disagreed} 条夹具能区分两种规则（需要 >= 2）"
     );
 }
