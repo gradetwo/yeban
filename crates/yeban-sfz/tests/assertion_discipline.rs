@@ -1122,6 +1122,50 @@ fn shape_counts(sources: &[(std::path::PathBuf, String)]) -> (usize, usize) {
     (stations.len(), attribution)
 }
 
+/// ⭐ R247①：**臂计数器**（⛔ 不写死）—— 从**本文件自己的文本**当场数 `self_test_classifier` 体内的臂。
+///
+/// 返回 `(规则A, 规则B)`，`规则A` = 断言**宏出现次数**，`规则B` = **含断言宏的行数**。
+/// ⭐ 两条规则**独立**（一个按宏、一个按行）⇒ 二者之差就是"**跨行的宏**"这个缺口读数；
+/// ⛔ 若把计数点按"4 空格缩进"插入，就会漏掉嵌套块里的臂（这正是 `midi` 的缺陷）。
+fn count_self_test_arms(source: &str) -> (usize, usize) {
+    let masked = mask(source);
+    let start = match masked.find("fn self_test_classifier()") {
+        Some(index) => index,
+        None => return (0, 0),
+    };
+    let Some(brace) = masked[start..].find('{').map(|rel| start + rel) else {
+        return (0, 0);
+    };
+    let mut depth = 0i32;
+    let mut end = brace;
+    for (offset, byte) in masked.as_bytes()[brace..].iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = brace + offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &masked[brace..=end];
+    let macros = body.matches("assert!(").count()
+        + body.matches("assert_eq!(").count()
+        + body.matches("assert_ne!(").count();
+    let lines = body
+        .lines()
+        .filter(|line| {
+            line.contains("assert!(")
+                || line.contains("assert_eq!(")
+                || line.contains("assert_ne!(")
+        })
+        .count();
+    (macros, lines)
+}
+
 #[test]
 fn no_unbounded_all_any_assertion_in_this_crate() {
     self_test_classifier();
@@ -1176,6 +1220,25 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
     eprintln!(
         "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R183 诊断：源文件 = {}（仅供阅读）",
         sources.len()
+    );
+
+    // ⭐ R247①：**臂计数器当场算**（⛔ 不用我手数的"≈38"）。
+    // ⚠️  是**相对 crate 根**的路径，测试的 CWD 是工作区根 ⇒ 必须锚在 。
+    let own_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assertion_discipline.rs");
+    let own_source = fs::read_to_string(&own_path).expect("read this criterion's own source");
+    let (arms_by_macro, arms_by_line) = count_self_test_arms(&own_source);
+    eprintln!(
+        "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R247① 臂计数：规则A（按宏）= {arms_by_macro}；规则B（按行）= {arms_by_line}；差 = {}（差 = 跨行书写的宏；两条规则独立 ⇒ 这是**交叉对账**）",
+        arms_by_macro as i64 - arms_by_line as i64
+    );
+    assert!(
+        arms_by_macro > 0 && arms_by_line > 0,
+        "R247①: the arm counter must not be vacuous"
+    );
+    assert!(
+        arms_by_macro >= arms_by_line,
+        "R247①: the macro rule can never count fewer arms than the line rule"
     );
 
     // ⭐ R241①／R242③：**夹具必须能自证其形状**（否则"臂没抓到"与"夹具不是那个形状"不可分）。
