@@ -1604,4 +1604,107 @@ mod tests {
         assert!(chunks[1].is_empty());
         assert_eq!(chunks[1].payload, 22..22, "空负载的范围是空的");
     }
+
+    /// 判据 (类别③ 静默丢弃 vs 明确 Err / 错误文案): `MidiError` 的 **14** 个变体
+    /// 各有一个**字面** `Display` 读数。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把每一个变体的文案各改坏一次（注入
+    /// A01..A14），**14 次全部全绿** ⇒ 本 crate 的 `tests/` 里对 `MidiError` 的
+    /// `to_string()` / `Display` 引用次数此前是 **0**。
+    ///
+    /// ⚠️ 期望值一律是**字面字符串**（⛔ 不与 `DEFAULT_PPQ` / `VLQ_MAX` 之类的常量自比：
+    /// 那样在常量被改时恒真）。
+    #[test]
+    fn midi_error_display_text_is_pinned_for_every_variant() {
+        let zero = entity_id("00000000000000000000000000").expect("ULID");
+        let cases: Vec<(MidiError, &str)> = vec![
+            (MidiError::InvalidPpq(0), "PPQ 非法: 0"),
+            (MidiError::ChannelOutOfRange(16), "通道号越界: 16"),
+            (MidiError::PitchOutOfRange(128), "音高越界: 128"),
+            (MidiError::VelocityOutOfRange(200), "力度越界: 200"),
+            (
+                MidiError::ZeroDuration { note: zero },
+                "音符 00000000000000000000000000 的时值为 0",
+            ),
+            (
+                MidiError::DeltaOverflow { tick: 7, delta: 9 },
+                "tick 7 处的 delta 9 超过 VLQ 的 28 位上限",
+            ),
+            (MidiError::NoTracks, "没有可导出的轨道"),
+            (MidiError::Encode("boom".to_owned()), "SMF 编码失败: boom"),
+            (MidiError::Decode("bad".to_owned()), "SMF 解析失败: bad"),
+            (MidiError::UnsupportedTimecode, "不支持 SMPTE 时间码分度"),
+            (MidiError::UnsupportedFormat(2), "不支持的 SMF 格式号: 2"),
+            (
+                MidiError::UnclosedNote {
+                    start_tick: 480,
+                    key: 60,
+                },
+                "tick 480 的音符 (key 60) 没有 NoteOff",
+            ),
+            (
+                MidiError::UnmatchedNoteOff { tick: 960, key: 61 },
+                "tick 960 的 NoteOff (key 61) 没有对应 NoteOn",
+            ),
+            (
+                MidiError::HalfTimeSignature {
+                    tick: 0,
+                    numerator: Some(4),
+                    denominator_pow2: None,
+                },
+                "tick 0 的拍号只给了一半: numerator = Some(4), denominator_pow2 = None",
+            ),
+        ];
+        assert_eq!(cases.len(), 14, "MidiError 的变体数");
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
+        }
+
+        // ⚠️ **登记（未被注入验证）**：`MidiError` 的 `Error::source()` 恒为 `None`。
+        // 那是 std 默认实现的默认行为，而 `impl std::error::Error for MidiError {}`
+        // 里没有可做字面替换的臂 ⇒ 本票**没有**能打它的注入。这一句是
+        // **依赖/默认行为钉子**，⛔ 不计入"已注入验证"。
+        assert!(
+            std::error::Error::source(&MidiError::NoTracks).is_none(),
+            "MidiError 没有内层错误 ⇒ source() 必须是 std 的默认 None"
+        );
+    }
+
+    /// 判据 (类别① 越界输入 / 块布局): `track_chunks` **如实**返回任何 fourcc
+    /// （⛔ 不按 `MThd`/`MTrk` 白名单过滤），越界时错误文案**点名**那个 fourcc。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：① 只保留 `MThd`/`MTrk`、丢掉其它 fourcc
+    /// （注入 C01）与 ② 文案里少一个逗号（注入 C03）**都全绿** —— 已提交的判据只在
+    /// `fourcc` 上断言过 `MThd` 与 `MTrk` 两个值，越界文案只被 `contains("声明 999 字节")`
+    /// 这种**片段**断言碰过。
+    #[test]
+    fn track_chunks_keeps_unknown_fourcc_bytes_verbatim() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x03, 0xC0]);
+        bytes.extend_from_slice(b"XxXx");
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&[0xAB, 0xCD]);
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        assert_eq!(bytes.len(), 32, "14 + (8 + 2) + 8");
+
+        let chunks = track_chunks(&bytes).expect("三个 chunk 都必须被列出");
+        assert_eq!(chunks.len(), 3, "未知 fourcc 的 chunk 不许被过滤掉");
+        assert_eq!(&chunks[1].fourcc, b"XxXx");
+        assert_eq!(chunks[1].len(), 2);
+        assert_eq!(&bytes[chunks[1].payload.clone()], &[0xAB, 0xCD]);
+
+        // 越界：`XxXx` 声明 2 字节，文件在它之后只剩 1 字节。
+        let mut lying = bytes.clone();
+        lying.truncate(23);
+        match track_chunks(&lying) {
+            Err(MidiError::Decode(message)) => assert_eq!(
+                message, "chunk XxXx 声明 2 字节, 但文件只剩 1 字节",
+                "错误文案必须点名 fourcc 与两个长度（字面读数）"
+            ),
+            other => panic!("期望 Decode, 得到 {other:?}"),
+        }
+    }
 }

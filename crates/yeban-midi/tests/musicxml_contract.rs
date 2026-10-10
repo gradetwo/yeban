@@ -2488,3 +2488,87 @@ fn two_score_parts_with_the_same_id_take_the_last_part_name() {
         "重复 id 时以最后一条 <part-name> 为准"
     );
 }
+/// 判据 (类别④ 参数极值 / 上界的**恰好到限放行**侧): `.mxl` 的 **deflate** 条目的
+/// 上界是**闭区间** —— 声明的未压缩长度与 inflate 的**实际输出**恰好等于
+/// `max_entry_bytes` 时必须接受。
+///
+/// 补的是哪个缺口（本票注入实测）：把 `read_entry` 里 deflate 那一步的
+/// `inflate::inflate_raw(data, limits.max_entry_bytes)` 改成 `max_entry_bytes - 1`
+/// （注入 D04）后全部判据**保持绿** —— 既有的
+/// `mxl_limits_accept_a_reading_equal_to_the_limit` 用的两条条目都是 **stored**
+/// （`ZipEntrySpec::stored`）⇒ 它只钉住了 `declared > limits.max_entry_bytes`
+/// 那条**声明侧**检查；`inflate` 自己那条上界的**恰好到限**那一侧没有判据。
+#[test]
+fn mxl_deflate_entry_accepts_a_reading_exactly_equal_to_the_limit() {
+    let container = container_xml("score.xml");
+    let zip = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            ZipEntrySpec::deflate_stored("score.xml", HANDMADE_MVP),
+        ],
+        None,
+    );
+
+    // 前提（字面读数）：deflate 条目的压缩后长度 = 未压缩 + 5 字节 stored 头
+    // ⇒ 它**确实**走 inflate 那条路径，不是 stored。
+    let entries = central_entries(&zip);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].uncompressed, 2716, "声明的未压缩长度");
+    assert_eq!(
+        entries[1].compressed, 2721,
+        "deflate 后 = 2716 + 5 字节块头"
+    );
+
+    let expected = parse("handmade_mvp_partwise", HANDMADE_MVP);
+    let exact = MxlLimits {
+        max_entry_bytes: 2716,
+        max_entries: 2,
+        max_name_bytes: 22,
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &exact),
+        Ok(expected),
+        "deflate 条目的读数 == 上界必须接受（⛔ 不是 InflatedTooLarge）"
+    );
+
+    // 少 1 字节：**声明侧**先开火 ⇒ LimitExceeded（不是 InflatedTooLarge）。
+    let less = MxlLimits {
+        max_entry_bytes: 2715,
+        ..exact
+    };
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &less),
+        Err(MxlError::LimitExceeded {
+            limit: "entry_bytes",
+            value: 2716,
+            max: 2715,
+        })
+    );
+
+    // 声明撒谎（2716 → 100）而上界仍是 2716 ⇒ inflate 必须**读满** 2716 字节，
+    // 随后由长度核对报 SizeMismatch。若 inflate 的上界少算 1 字节，这里会变成
+    // InflatedTooLarge ⇒ 本臂把"恰好到限"钉在 **inflate 自己**那条上界上。
+    let mut lying = ZipEntrySpec::deflate_stored("score.xml", HANDMADE_MVP);
+    lying.uncompressed = 100;
+    let zip_lying = build_zip(
+        &[
+            ZipEntrySpec::stored("META-INF/container.xml", &container),
+            lying,
+        ],
+        None,
+    );
+    match parse_mxl_with_limits(&zip_lying, &exact) {
+        Err(MxlError::SizeMismatch {
+            name,
+            declared,
+            actual,
+        }) => {
+            assert_eq!(name, "score.xml");
+            assert_eq!(declared, 100);
+            assert_eq!(actual, 2716);
+        }
+        other => {
+            panic!("声明撒谎时必须是 SizeMismatch（说明 inflate 读满了 2716），得到 {other:?}")
+        }
+    }
+}

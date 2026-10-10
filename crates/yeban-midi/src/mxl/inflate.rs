@@ -1070,4 +1070,51 @@ mod tests {
             other => panic!("少一个字节的上界必须报 Limit，得到 {other:?}"),
         }
     }
+
+    /// 判据: 输出上界横跨**整条流**（不是逐块重置）—— 两个 `stored` 块各 4 字节、
+    /// 上界 6 时，第二块必须在上界处被拒。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `stored` 的 `out.len() + length > max_output`
+    /// 换成 `length > max_output`（注入 E01，即把累计上界改成**逐块**上界）后全部判据
+    /// **保持绿** —— 已提交的多块判据（`mxl_multiblock_deflate_stream_is_read_to_its_last_block`）
+    /// 只证明"块链被读到最后"，它的上界给得很宽；而三条上界判据用的都是**单块**流
+    /// ⇒ "上界跨块累计"这一步此前没有判据。
+    #[test]
+    fn the_output_limit_spans_every_block_of_a_multi_block_stream() {
+        /// 两个 stored 块：第一个 `BFINAL=0`、第二个 `BFINAL=1`，载荷相同。
+        fn two_stored_blocks(payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![0x00u8]; // BFINAL=0, BTYPE=00（低位先出）
+            let length = payload.len() as u16;
+            out.extend_from_slice(&length.to_le_bytes());
+            out.extend_from_slice(&(!length).to_le_bytes());
+            out.extend_from_slice(payload);
+            out.push(0x01u8); // BFINAL=1, BTYPE=00
+            out.extend_from_slice(&length.to_le_bytes());
+            out.extend_from_slice(&(!length).to_le_bytes());
+            out.extend_from_slice(payload);
+            out
+        }
+
+        let stream = two_stored_blocks(b"abcd");
+        assert_eq!(
+            stream.len(),
+            18,
+            "两个 stored 块各 (1 位头 + 2 + 2 + 4) = 9 字节"
+        );
+
+        // 对照臂：上界恰好等于输出总长 ⇒ 接受。
+        assert_eq!(
+            inflate_raw(&stream, 8).as_deref(),
+            Ok(&b"abcdabcd"[..]),
+            "上界 8 = 8 字节输出 ⇒ 必须接受"
+        );
+        // 上界 6：第一块（4 字节）通过，第二块把它累计推过界 ⇒ 必须报 Limit。
+        match inflate_raw(&stream, 6) {
+            Err(InflateError { detail, kind, .. }) => {
+                assert_eq!(detail, "输出超过上界");
+                assert_eq!(kind, InflateErrorKind::Limit);
+            }
+            other => panic!("累计输出越过上界必须报 Limit，得到 {other:?}"),
+        }
+    }
 }

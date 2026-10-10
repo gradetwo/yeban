@@ -1023,4 +1023,90 @@ mod tests {
             "音频摆放只是被跳过（continue），排在它后面的 MIDI 摆放必须照旧导出"
         );
     }
+
+    /// 判据 (类别③ 静默丢弃 vs 明确 Err / 错误文案): `MidiExportError` 的 **6** 个变体
+    /// 各有一个**字面** `Display` 读数。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：`PpqMismatch` 之外 **5** 个变体的文案各改坏一次
+    /// （注入 A15..A19），**5 次全部全绿** ⇒ 此前只有 `PpqMismatch` 被
+    /// `ppq_drift_between_model_and_encoder_is_rejected_by_construction` 钉过，
+    /// 而且那条的期望值是用 `format!` 与常量拼的（⛔ 不是字面值）。
+    #[test]
+    fn midi_export_error_display_text_is_pinned_for_every_variant() {
+        let track = crate::midi::entity_id("00000000000000000000000000").expect("ULID");
+        let clip = crate::midi::entity_id("00000000000000000000000001").expect("ULID");
+        let cases: Vec<(MidiExportError, &str)> = vec![
+            (
+                MidiExportError::NoMidiContent,
+                "工程里没有任何可导出的 MIDI 音符 (没有非主总线轨道含非静音 MIDI 摆放)",
+            ),
+            (
+                MidiExportError::DanglingClip { track, clip },
+                "轨道 00000000000000000000000000 的摆放引用了不存在的片段 00000000000000000000000001 (工程不合法)",
+            ),
+            (
+                MidiExportError::UnsupportedTimeSignature { denominator: 3 },
+                "拍号分母 3 不是 2 的幂, SMF 的拍号元事件表达不出来",
+            ),
+            (
+                MidiExportError::PpqUnrepresentable { ppq: 70000 },
+                "工程的 PPQ 70000 装不进 SMF 的时间分度字段",
+            ),
+            (
+                MidiExportError::PpqMismatch {
+                    project: 480,
+                    encoder: 960,
+                },
+                "工程 PPQ 480 与编码器默认 PPQ 960 不一致 —— 拒绝导出 (不许偷偷换算)",
+            ),
+            (
+                MidiExportError::Encode(MidiError::NoTracks),
+                "SMF 编码被拒绝: 没有可导出的轨道",
+            ),
+        ];
+        assert_eq!(cases.len(), 6, "MidiExportError 的变体数");
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected, "{error:?} 的 Display 文案");
+        }
+    }
+
+    /// 判据 (类别③ 明确 Err / 错误链): `MidiExportError::source()` **只**为
+    /// `Encode` 挂内层 `MidiError`，其余 5 个变体一律 `None`。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `Self::Encode(error) => Some(error)`
+    /// 改成 `None`（注入 A20）后全部判据**保持绿** ⇒ `source()` 此前没有判据
+    /// （`Error::source` 的默认实现也是 `None` ⇒ "忘了挂链"与"正确地没有内层"
+    /// 在本 crate 的判据面里此前不可区分）。
+    #[test]
+    fn midi_export_error_source_is_the_encode_payload_only() {
+        use std::error::Error as _;
+
+        let encoded = MidiExportError::Encode(MidiError::NoTracks);
+        let inner = encoded.source().expect("Encode 必须挂上内层 MidiError");
+        assert_eq!(inner.to_string(), "没有可导出的轨道");
+        assert_eq!(
+            inner.downcast_ref::<MidiError>(),
+            Some(&MidiError::NoTracks),
+            "内层错误的类型必须是 MidiError，且是同一个值"
+        );
+
+        for error in [
+            MidiExportError::NoMidiContent,
+            MidiExportError::DanglingClip {
+                track: EntityId::new(),
+                clip: EntityId::new(),
+            },
+            MidiExportError::UnsupportedTimeSignature { denominator: 3 },
+            MidiExportError::PpqUnrepresentable { ppq: 70000 },
+            MidiExportError::PpqMismatch {
+                project: 480,
+                encoder: 960,
+            },
+        ] {
+            assert!(
+                error.source().is_none(),
+                "{error:?} 没有内层错误 ⇒ source() 必须是 None"
+            );
+        }
+    }
 }

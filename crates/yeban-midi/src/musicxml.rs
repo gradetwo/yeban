@@ -1983,4 +1983,54 @@ mod tests {
             "两颗重叠（不是恰好相接）⇒ 必须如实落成两颗，⛔ 不许并成一颗"
         );
     }
+
+    /// 判据 (类别② 掩码／回绕 + 类别⑦ 累加溢出): 音符的结束 tick 在 `u64` 上界处
+    /// **饱和**，`tick_range()` 的右端点如实取到那个上界。
+    ///
+    /// 补的是哪个缺口（本票注入实测）：把 `MusicXmlNote::end_tick` 的
+    /// `saturating_add` 换成 `wrapping_add`（注入 B01）后全部判据**保持绿** ——
+    /// 解析器自己产出的音符永远够不到上界，而已有的 `tick_range` 判据用的都是小 tick
+    /// ⇒ 饱和那一步此前不可观测。
+    ///
+    /// ⚠️ 期望值一律是**十进制字面值**（⛔ 不用 `u64::MAX` 之类的名字，更不与本 crate
+    /// 的常量自比）。
+    #[test]
+    fn tick_range_saturates_instead_of_wrapping() {
+        let saturated = MusicXmlNote {
+            key: 60,
+            velocity: DEFAULT_VELOCITY,
+            start_tick: 18446744073709551605, // u64::MAX - 10
+            duration_ticks: 100,
+            voice: 1,
+            staff: 1,
+        };
+        // 18446744073709551605 + 100 超出 u64 ⇒ 必须停在 18446744073709551615，⛔ 不是 89。
+        assert_eq!(saturated.end_tick(), 18446744073709551615);
+
+        let score = MusicXmlScore {
+            divisions: 1,
+            ppq: DEFAULT_PPQ,
+            tempos: Vec::new(),
+            parts: vec![MusicXmlPart {
+                id: "P".to_owned(),
+                name: "Saturated".to_owned(),
+                notes: vec![saturated],
+            }],
+            ignored_elements: BTreeMap::new(),
+            unsupported_elements: BTreeMap::new(),
+        };
+        assert_eq!(score.note_count(), 1);
+        assert_eq!(
+            score.tick_range(),
+            Some((18446744073709551605, 18446744073709551615))
+        );
+
+        // 对照臂：空集 ⇒ `note_count` 是 0、`tick_range` 是 `None`（⛔ 不是 Some((0, 0))）。
+        let empty = MusicXmlScore {
+            parts: Vec::new(),
+            ..score
+        };
+        assert_eq!(empty.note_count(), 0);
+        assert_eq!(empty.tick_range(), None);
+    }
 }
