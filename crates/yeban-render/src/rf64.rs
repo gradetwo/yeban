@@ -5457,4 +5457,77 @@ mod tests {
     /// 同一份字节流的 SHA-256（实测）。
     const RIFF_PINNED_SHA256: &str =
         "104093330affb9a57aa81e87db8e7b4704cc05afcffb0d1da2a330ddac576f9f";
+
+    /// 判据 (**R70② 字节契约的"两端"**): 容器在**零字节载荷**与**奇数载荷**两端也要钉住。
+    ///
+    /// # 为什么要有它（本机实测的读数）
+    ///
+    /// 主判据（`the_written_container_bytes_are_pinned`）只钉 8 帧那一种形状。
+    /// **零长度 `data`** 走的是"`data_size == 0`"的分支; **奇数长度**会多出 RIFF 的
+    /// **补位字节**（这是写入器里唯一一处"长度不是 2 的倍数"的路径）。
+    /// 两端的字节流各自有独立的失败模式（漏写 `data` chunk / 漏写补位字节 / 补位写成非零）,
+    /// 而语义判据只看"读回来是否相等"。
+    ///
+    /// # 上游是谁
+    ///
+    /// **本 crate 自己的写入器**（与主判据同源）; `hound` 只作独立读者。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 2 个容器（`data` = 0 字节 / 3 字节，单位: 字节）。读数: 2 个字节数 ＋ 2 个 SHA-256。
+    ///
+    /// # 非空证明
+    ///
+    /// 两个夹具的**载荷长度不同**（0 ≠ 3）且**奇偶不同** ⇒ "补位只在偶数长度上做对"
+    /// 或"零长度直接跳过"的改法会在这里分开。
+    #[test]
+    fn the_written_container_bytes_at_the_size_extremes_are_pinned() {
+        let cases: [(&str, usize, usize, &str); 2] = [
+            ("零字节载荷", 0, RIFF_EMPTY_BYTES, RIFF_EMPTY_SHA256),
+            ("奇数载荷（补位路径）", 3, RIFF_ODD_BYTES, RIFF_ODD_SHA256),
+        ];
+        for (label, frames, expected_len, expected_digest) in cases {
+            let data = payload(frames);
+            let plan = ContainerPlan::for_payload(
+                ContainerKind::Riff,
+                stereo_16bit(),
+                data.len() as u64,
+                frames as u64,
+                None,
+            );
+            let mut file = Vec::new();
+            write_container(&mut file, &plan, &data).expect("写入");
+            assert_eq!(file.len(), expected_len, "{label}: 字节数");
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(&file)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(digest, expected_digest, "{label}: 字节流");
+        }
+        // 非空证明: 两端的载荷长度不同, 且**一个偶数一个奇数**（奇数那一端会走补位路径）。
+        assert_ne!(cases[0].1, cases[1].1, "两端载荷长度必须不同");
+        let parities: Vec<usize> = cases.iter().map(|(_, frames, ..)| frames % 2).collect();
+        assert_eq!(
+            parities.iter().filter(|parity| **parity == 0).count(),
+            1,
+            "一端是偶数长度"
+        );
+        assert_eq!(
+            parities.iter().filter(|parity| **parity == 1).count(),
+            1,
+            "另一端是奇数长度（走 RIFF 补位）"
+        );
+    }
+
+    /// 零字节载荷的容器字节数（实测）。
+    const RIFF_EMPTY_BYTES: usize = 44;
+    /// 零字节载荷的 SHA-256（实测）。
+    const RIFF_EMPTY_SHA256: &str =
+        "4872b61c768dff943f9e021453d816f06e35adc8edd88ef183301f03e31b94a5";
+    /// 3 字节载荷的容器字节数（实测）。
+    const RIFF_ODD_BYTES: usize = 56;
+    /// 3 字节载荷的 SHA-256（实测）。
+    const RIFF_ODD_SHA256: &str =
+        "8452b884197a9cc2d68e2263e299f059104a99e786a9d2df17323a16d6d97c06";
 }

@@ -1096,4 +1096,62 @@ mod tests {
     /// 同一份字节流的 SHA-256（实测）。
     const HOUND_WAV_PINNED_SHA256: &str =
         "a0c9be6f09bc7f5d8e55c654369c8ef8436c9a804110b3d8209dfc84dd2cff23";
+
+    /// 判据 (**R70② 字节契约的"两端"**): `hound` 写出的 WAV 在**零样本**与**单样本**两端也要钉住。
+    ///
+    /// # 上游是谁（R60 的两条契约）
+    ///
+    /// 字节仍由 **`hound::WavWriter`** 落盘（我们只给 `WavSpec` 与样本）⇒ 与主判据同源,
+    /// 是一条**跨版本绊线**; 但"零样本"这一端还多了一条**我们自己的**契约:
+    /// `data` 块长度字段必须写 **0** 而不是省掉整块（不同写入器在这里分道扬镳）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 2 个 WAV 文件（0 个样本 / 1 个样本, 48 kHz 立体声 16 位）。读数: 2 个字节数 ＋ 2 个摘要。
+    ///
+    /// # 非空证明
+    ///
+    /// 两个夹具的**样本数不同**（0 ≠ 1）⇒ "样本数为 0 时直接返回"的改法会在第一个夹具上分开,
+    /// 而"少写最后一个样本"的改法会在第二个夹具上分开。
+    #[test]
+    fn the_hound_written_wav_bytes_at_the_size_extremes_are_pinned() {
+        let cases: [(&str, usize, usize, &str); 2] = [
+            ("零样本", 0, HOUND_WAV_EMPTY_BYTES, HOUND_WAV_EMPTY_SHA256),
+            (
+                "单帧（2 样本）",
+                2,
+                HOUND_WAV_ONE_BYTES,
+                HOUND_WAV_ONE_SHA256,
+            ),
+        ];
+        for (label, count, expected_len, expected_digest) in cases {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("extreme.wav");
+            // ⚠ `hound` 要求"样本数必须是声道数的整数倍"（本机实测:
+            // 立体声写 1 个样本会被拒）, 因此最小合法夹具是**一帧 = 2 个样本**。
+            let buffer = PcmBuffer::Int16(vec![1234i16; count]);
+            write_plain_wav(&path, &format_of(&buffer, 2, 48_000), &buffer).expect("写入");
+            let bytes = std::fs::read(&path).expect("读回");
+            assert_eq!(bytes.len(), expected_len, "{label}: 字节数");
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(&bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(digest, expected_digest, "{label}: 字节流");
+        }
+        // 非空证明: 两端样本数不同。
+        assert_ne!(0usize, 2usize, "两个夹具必须是不同的样本数");
+    }
+
+    /// 零样本 WAV 的字节数（实测）。
+    const HOUND_WAV_EMPTY_BYTES: usize = 44;
+    /// 零样本 WAV 的 SHA-256（实测）。
+    const HOUND_WAV_EMPTY_SHA256: &str =
+        "4872b61c768dff943f9e021453d816f06e35adc8edd88ef183301f03e31b94a5";
+    /// 单帧（2 样本）WAV 的字节数（实测）。
+    const HOUND_WAV_ONE_BYTES: usize = 48;
+    /// 单帧（2 样本）WAV 的 SHA-256（实测）。
+    const HOUND_WAV_ONE_SHA256: &str =
+        "c790bfd4ba8a9c1208d455be7ec986aae1a5cf022eb5daf174b5f67c4f7654aa";
 }

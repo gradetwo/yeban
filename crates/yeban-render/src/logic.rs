@@ -8249,4 +8249,112 @@ mod tests {
         );
         assert_eq!(donor.len(), output.len(), "记录条数");
     }
+
+    /// 判据 (**R70② 第三种处理**: 上游定输入字节 ⇒ **必须重算哈希**):
+    /// 每一份 `include_bytes!` 原样复制的供体字节, 都要与**代码常量**和**文档表**同时对上。
+    ///
+    /// # 两条契约（R60）
+    ///
+    /// ① **字节契约**: `sha256(嵌入字节)` == 代码里的常量。字节是 vendored 副本, 因此这条
+    ///    与**平台无关**; 但本模块**只在 `experimental-logic-export` 档编译**
+    ///    ⇒ 它的证据只可能出现在特性档那条腿上（R70③ 的三层）。
+    /// ② **文档契约**: 常量 == `README.md` / `PROVENANCE.md` 表里写的那个值 ——
+    ///    **表与代码不许各说各话**。此前四个 sha256 **只活在文档与消息断言里**,
+    ///    没有任何判据重算过它们。
+    ///
+    /// # 真探针（R69）
+    ///
+    /// - **两两不同**: 5 条记录的摘要成对 `assert_ne!` ⇒ "恒返回同一个串"的假实现必红;
+    /// - **单字节差异**: 复制 1 轨 `ProjectData` 并翻转**一个字节**（长度不变）⇒
+    ///   摘要必须与记录值不同 ⇒ "只看长度/只看前几字节"的实现必红。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 5 份嵌入字节（MIT 供体的 `ProjectData`／负责人 1 轨与 2 轨的 `ProjectData`
+    /// ／两份 Logic 自己导出的 `.mid`）。读数: 5 个 SHA-256 串 ＋ 5 个字节数 ＋
+    /// 两份文档里出现的对应串。
+    #[test]
+    fn every_embedded_donor_byte_block_matches_its_recorded_sha256() {
+        let provenance = include_str!("../assets/logic-donor-owner/PROVENANCE.md");
+        let readme = include_str!("../assets/logic-donor/README.md");
+        let cases: [(&str, &[u8], &str, usize, &str); 5] = [
+            (
+                "MIT 供体 ProjectData",
+                LOGIC_DONOR_PROJECT_DATA,
+                LOGIC_DONOR_SHA256,
+                LOGIC_DONOR_PROJECT_DATA_BYTES,
+                readme,
+            ),
+            (
+                "1 轨 ProjectData",
+                LOGIC_OWNER_DONOR_1T_PROJECT_DATA,
+                LOGIC_OWNER_DONOR_1T_SHA256,
+                LOGIC_OWNER_DONOR_1T_BYTES,
+                provenance,
+            ),
+            (
+                "2 轨 ProjectData",
+                LOGIC_OWNER_DONOR_2T_PROJECT_DATA,
+                LOGIC_OWNER_DONOR_2T_SHA256,
+                LOGIC_OWNER_DONOR_2T_BYTES,
+                provenance,
+            ),
+            (
+                "1 轨 export.mid",
+                LOGIC_OWNER_DONOR_1T_EXPORT_MID,
+                LOGIC_OWNER_DONOR_1T_MID_SHA256,
+                3_822,
+                provenance,
+            ),
+            (
+                "2 轨 export.mid",
+                LOGIC_OWNER_DONOR_2T_EXPORT_MID,
+                LOGIC_OWNER_DONOR_2T_MID_SHA256,
+                6_687,
+                provenance,
+            ),
+        ];
+        let mut digests: Vec<(&str, String)> = Vec::new();
+        for (label, bytes, recorded, expected_len, doc) in cases {
+            assert_eq!(bytes.len(), expected_len, "{label}: 字节数");
+            let digest = sha256_hex(bytes);
+            assert_eq!(
+                digest, recorded,
+                "{label}: 嵌入字节必须等于代码常量（①字节契约）"
+            );
+            assert!(
+                doc.contains(recorded),
+                "{label}: 文档表里必须写着同一个值（②文档契约）"
+            );
+            digests.push((label, digest));
+        }
+        assert_eq!(digests.len(), 5, "5 份嵌入字节");
+        // 真探针 ①: 五条记录两两不同。
+        for (index, (left_label, left)) in digests.iter().enumerate() {
+            for (right_label, right) in &digests[index + 1..] {
+                assert_ne!(
+                    left, right,
+                    "{left_label} 与 {right_label} 的摘要必须不同（否则摘要没在读字节）"
+                );
+            }
+        }
+        // 真探针 ②: 翻转一个字节（长度不变）必须改变摘要。
+        let mut flipped = LOGIC_OWNER_DONOR_1T_PROJECT_DATA.to_vec();
+        assert!(flipped.len() > 1, "夹具必须非空");
+        let victim = flipped.len() / 2;
+        flipped[victim] ^= 0x01;
+        assert_eq!(
+            flipped.len(),
+            LOGIC_OWNER_DONOR_1T_PROJECT_DATA.len(),
+            "只翻转一个字节, 长度不变"
+        );
+        assert_ne!(
+            sha256_hex(&flipped),
+            LOGIC_OWNER_DONOR_1T_SHA256,
+            "翻转一个字节后摘要必须变 ⇒ 本判据的摘要真的读了全部字节"
+        );
+        // 文档契约的反向自证: 两份文档确实各自含表（不是空文件）。
+        assert!(readme.contains("sha256"), "README 必须含哈希表");
+        assert!(provenance.contains("sha256"), "PROVENANCE 必须含哈希表");
+    }
 }
