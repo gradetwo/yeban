@@ -1027,6 +1027,16 @@ mod tests {
             PcmFormat::F32,
             PcmFormat::F64,
         ];
+        // R177：数表按**变体名**定位 —— 名字表显式写出，并逐条核对"名字 == 变体自己的名字"。
+        let names = [
+            "U8", "U16", "U24", "U32", "S8", "S16", "S24", "S32", "F32", "F64",
+        ];
+        let name_pairs: Vec<(&str, String)> = names
+            .iter()
+            .copied()
+            .zip(variants.iter().map(|variant| format!("{variant:?}")))
+            .collect();
+        crate::testfix::assert_rows_are_name_located(&name_pairs);
         assert_eq!(variants.len(), 10, "the table must cover every arm");
         for format in variants {
             let (depth, is_float, model) = read(&format);

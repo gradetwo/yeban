@@ -2036,6 +2036,12 @@ mod tests {
                 "allocator refused a buffer for 4096 more samples",
             ),
         ];
+        // R177：按**变体名**定位。
+        let name_pairs: Vec<(&str, String)> = cases
+            .iter()
+            .map(|(name, violation, _)| (*name, format!("{violation:?}")))
+            .collect();
+        crate::testfix::assert_rows_are_name_located(&name_pairs);
         assert_eq!(cases.len(), 10, "the golden table must cover every arm");
         for (arm, violation, expected) in cases {
             assert_eq!(limit_violation_arm(&violation), arm, "arm label {arm}");
@@ -2113,6 +2119,12 @@ mod tests {
                 "resampler produced 1 frames, outside the contract 0..=0 (ideal 0..=0)",
             ),
         ];
+        // R177：按**变体名**定位。
+        let name_pairs: Vec<(&str, String)> = cases
+            .iter()
+            .map(|(name, violation, _)| (*name, format!("{violation:?}")))
+            .collect();
+        crate::testfix::assert_rows_are_name_located(&name_pairs);
         assert_eq!(cases.len(), 3, "the golden table must cover every arm");
         for (arm, violation, expected) in cases {
             assert_eq!(

@@ -4552,14 +4552,28 @@ mod tests {
         /// `format!`）⇒ 产生**假违规**。⇒ 正解是"找窗口里**第一条写入语句**，要求**它自己**带响亮失败"。
         fn scan_temp_dir(
             source: &str,
+            raw: &str,
             temp_needle: &str,
             loud_needles: &[&str],
             write_needles: &[&str],
+            allow_markers: &[&str],
         ) -> Vec<(usize, String)> {
             let lines: Vec<&str> = source.lines().collect();
             let mut findings = Vec::new();
             for (index, line) in lines.iter().enumerate() {
                 if !line.contains(temp_needle) {
+                    continue;
+                }
+                // R174/R160：**已注册**的合法豁免（例如将来的"只读 temp_dir"用法）由源码里的
+                // 标记字符串声明；⛔ 表外不存在任何豁免路径。
+                // ⚠ R113：**针**用掩码文本（防字符串里的针），**豁免声明**必须用**原文**
+                // —— 因为它天然写在注释里，而掩码会把注释抹掉。
+                let raw_lines: Vec<&str> = raw.lines().collect();
+                let last_raw = (index + 3).min(raw_lines.len());
+                if raw_lines[index..last_raw]
+                    .iter()
+                    .any(|near| allow_markers.iter().any(|marker| near.contains(marker)))
+                {
                     continue;
                 }
                 // ⭐ **R174（根绑定）**：⛔ 不再用"窗口内某处有响亮失败"，而是**不限距离**地向下找
@@ -4607,7 +4621,15 @@ mod tests {
             "known-red: an `.all(` with no set-size bound in its window must be reported"
         );
         assert_eq!(
-            scan_temp_dir(&mask(red), temp_needle, &loud_needles, &write_needles).len(),
+            scan_temp_dir(
+                &mask(red),
+                red,
+                temp_needle,
+                &loud_needles,
+                &write_needles,
+                &[]
+            )
+            .len(),
             1,
             "known-red: a temp_dir without a later .expect( must be reported"
         );
@@ -4616,7 +4638,15 @@ mod tests {
             "known-green: a `.all(` preceded by `.len()` must not be reported"
         );
         assert!(
-            scan_temp_dir(&mask(green), temp_needle, &loud_needles, &write_needles).is_empty(),
+            scan_temp_dir(
+                &mask(green),
+                green,
+                temp_needle,
+                &loud_needles,
+                &write_needles,
+                &[]
+            )
+            .is_empty(),
             "known-green: a temp_dir followed by .expect( must not be reported"
         );
         // R113③：掩码**必须保字节数**（否则行号/偏移错位 ⇒ 真违规会静默跳过）。
@@ -4648,9 +4678,11 @@ mod tests {
         assert_eq!(
             scan_temp_dir(
                 &mask(red_silent_write),
+                red_silent_write,
                 temp_needle,
                 &loud_needles,
                 &write_needles,
+                &[],
             )
             .len(),
             1,
@@ -4675,15 +4707,25 @@ mod tests {
         assert!(
             scan_temp_dir(
                 &mask(&far_green),
+                &far_green,
                 temp_needle,
                 &loud_needles,
-                &write_needles
+                &write_needles,
+                &[],
             )
             .is_empty(),
             "a loud write 80 lines below temp_dir must satisfy the guard"
         );
         assert_eq!(
-            scan_temp_dir(&mask(&far_red), temp_needle, &loud_needles, &write_needles).len(),
+            scan_temp_dir(
+                &mask(&far_red),
+                &far_red,
+                temp_needle,
+                &loud_needles,
+                &write_needles,
+                &[]
+            )
+            .len(),
             1,
             "a swallowed write 80 lines below temp_dir must be reported"
         );
@@ -4727,6 +4769,64 @@ mod tests {
         assert_eq!(no_needle_at_all.matches(all_needle).count(), 0);
         assert_eq!(no_needle_at_all.matches(temp_needle).count(), 0);
 
+        // ⭐ **R160 双向归零的注册表**（R174）：合法豁免只能由这里的标记字符串声明。
+        // 目前**为空** —— 本 crate 没有"只读 `temp_dir`"用法。若将来出现，必须**先**登记标记，
+        // 再在源码里写该标记；否则扫描器会把它判为违规（收紧）。
+        const READONLY_TEMP_DIR_ALLOWLIST: [&str; 0] = [];
+        let allow_marker = concat!("R174-allow-", "readonly-temp-dir");
+
+        // 统计**真的被用到**的注册标记（用于"陈旧条目 = 0"的那一向）。
+        fn markers_used<'a>(source: &str, markers: &[&'a str]) -> Vec<&'a str> {
+            markers
+                .iter()
+                .copied()
+                .filter(|marker| source.contains(marker))
+                .collect()
+        }
+
+        // ⭐ 注册表机制的**常驻对照**（R183 绿/红两臂）：带标记的样本必须被**豁免**（绿），
+        // 不带标记的同一形态必须被**报**（红）；并且标记必须被 `markers_used` 看见。
+        let marked = concat!(
+            "fn m() {\n",
+            "    let mut p = ",
+            "env::temp_dir();\n",
+            "    // R174-allow-",
+            "readonly-temp-dir\n",
+            "    let _ = std::fs::metadata(&p);\n",
+            "}\n",
+        );
+        assert!(
+            scan_temp_dir(
+                &mask(marked),
+                marked,
+                temp_needle,
+                &loud_needles,
+                &write_needles,
+                &[allow_marker]
+            )
+            .is_empty(),
+            "a registered read-only temp_dir must be exempt"
+        );
+        let unmarked = marked.replace(allow_marker, "not-registered");
+        assert_eq!(
+            scan_temp_dir(
+                &mask(&unmarked),
+                &unmarked,
+                temp_needle,
+                &loud_needles,
+                &write_needles,
+                &[allow_marker]
+            )
+            .len(),
+            1,
+            "the same shape WITHOUT the registry marker must still be reported"
+        );
+        assert_eq!(
+            markers_used(marked, &[allow_marker]),
+            vec![allow_marker],
+            "the registry marker must actually be seen by the scanner"
+        );
+
         // ---- 真扫本 crate 的四个源文件（`include_str!` 的路径相对本文件所在目录）----
         let sources = [
             ("decode.rs", include_str!("decode.rs")),
@@ -4746,7 +4846,14 @@ mod tests {
                 "{name}: every `.all(` must have a set-size bound within 40 lines, offenders: \
                  {offenders:?}"
             );
-            let temp_offenders = scan_temp_dir(&masked, temp_needle, &loud_needles, &write_needles);
+            let temp_offenders = scan_temp_dir(
+                &masked,
+                source,
+                temp_needle,
+                &loud_needles,
+                &write_needles,
+                &READONLY_TEMP_DIR_ALLOWLIST,
+            );
             temp_sites += masked.matches(temp_needle).count();
             assert!(
                 temp_offenders.is_empty(),
@@ -4791,6 +4898,23 @@ mod tests {
             scan_all(&mask(&mutated), all_needle, &bound_needles, 12).len(),
             scan_all(&mask(real), all_needle, &bound_needles, 12).len() + 1,
             "the synthetic injection must make the scanner report exactly one more offender"
+        );
+
+        // ⭐ **R160 双向归零**：① 注册表里每一条都必须**真的被用到**（⛔ 不许有陈旧条目）
+        // ② 被豁免的站点必须**全部**来自注册表（⛔ 不许有表外豁免）。
+        for marker in READONLY_TEMP_DIR_ALLOWLIST {
+            let used_anywhere = sources
+                .iter()
+                .any(|(_, source)| !markers_used(source, &[marker]).is_empty());
+            assert!(
+                used_anywhere,
+                "stale allowlist entry `{marker}`: it is registered but used nowhere"
+            );
+        }
+        assert_eq!(
+            READONLY_TEMP_DIR_ALLOWLIST.len(),
+            0,
+            "this crate currently needs no exemption; adding one requires a marker in the source"
         );
 
         // R122：证明扫描器**不是惰性的** —— 命中点数必须达到下界。

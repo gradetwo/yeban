@@ -360,6 +360,42 @@ impl LsbBits {
     }
 }
 
+/// **R177**：数表必须**按变体名定位**（⛔ 不按位置对齐）。
+///
+/// `pairs` 是（表里**声明的**名字，该值自己的 `Debug` 呈现）。断言两件事：
+/// ① 第 `i` 行声明的名字 == 第 `i` 个值**自己的**变体名（`Debug` 的前缀，去掉尾部空格）；
+/// ② 名字互不重复。
+///
+/// 调用方**另外**断言行数（`cases.len() == N`）⇒ 合起来是**双向**的：
+/// 表必须覆盖每个变体，且每一行都必须靠**名字**对上号，而不是靠顺序。
+///
+/// # Panics
+///
+/// 名字与变体名不符、或出现重复名字时 panic。
+pub(crate) fn assert_rows_are_name_located(pairs: &[(&str, String)]) {
+    let mut seen = std::collections::BTreeSet::new();
+    for (index, (declared, debug)) in pairs.iter().enumerate() {
+        let actual = debug
+            .split(['(', '{'])
+            .next()
+            .unwrap_or(debug.as_str())
+            .trim();
+        assert_eq!(
+            *declared, actual,
+            "row {index}: the table's declared name must be the variant's own name"
+        );
+        assert!(
+            seen.insert(*declared),
+            "row {index}: duplicate variant name `{declared}`"
+        );
+    }
+    assert_eq!(
+        seen.len(),
+        pairs.len(),
+        "every row must carry a distinct variant name"
+    );
+}
+
 /// Ogg 页 CRC-32：多项式 `0x04C11DB7`、初值 0、**不反射**、不异或输出；CRC 字段先置零。
 #[must_use]
 pub fn ogg_crc32(data: &[u8]) -> u32 {

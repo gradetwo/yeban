@@ -293,6 +293,12 @@ mod tests {
         ];
         // 15 是 `DecodeError` 的变体数：黄金表必须与枚举一样长（加一个变体而漏一行,
         // 这里就会以"臂数不符"红）。
+        // R177：数表按**变体名**定位（⛔ 不按位置）—— 逐行核对"声明的名字"== "值自己的变体名"。
+        let name_pairs: Vec<(&str, String)> = cases
+            .iter()
+            .map(|(name, error, _)| (*name, format!("{error:?}")))
+            .collect();
+        crate::testfix::assert_rows_are_name_located(&name_pairs);
         assert_eq!(cases.len(), 15, "the golden table must cover every arm");
         for (arm, error, expected) in cases {
             assert_eq!(decode_error_arm(&error), arm, "arm label {arm}");

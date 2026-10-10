@@ -316,6 +316,19 @@ mod tests {
                 delta: 256,
             },
         ];
+        // R177：数表按**变体名**定位 —— 名字表是**显式**写的，⛔ 不由位置推出来。
+        let names = [
+            "DeclaredUnknown",
+            "Exact",
+            "WithinTolerance",
+            "OutsideTolerance",
+        ];
+        let name_pairs: Vec<(&str, String)> = names
+            .iter()
+            .copied()
+            .zip(cases.iter().map(|case| format!("{case:?}")))
+            .collect();
+        crate::testfix::assert_rows_are_name_located(&name_pairs);
         assert_eq!(cases.len(), 4, "the table must cover every arm");
         for outcome in cases {
             let expected = reconciled(&outcome);
