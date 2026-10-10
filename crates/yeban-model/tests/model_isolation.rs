@@ -2172,6 +2172,16 @@ fn unbounded_all_any_sites(relative: &str, raw: &str) -> Vec<String> {
     while let Some(position) = masked[search..].find("assert!(") {
         let start = search + position;
         search = start + 1;
+        // R119 孪生点①：`find("assert!(")` 也会命中 `my_assert!(` 这种**更长标识符的尾巴**
+        // ⇒ 要求前一个字符不是标识符字符（第十一轮修的是"根"，本轮补的是"宏名"这条并列路径）。
+        if start > 0
+            && masked[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
         // 掩码里是空白、原文里不是空白 ⇒ 这一处落在注释/字符串里（假断言），跳过。
         if masked.as_bytes()[start] != raw.as_bytes()[start] {
             continue;
@@ -2292,7 +2302,14 @@ fn has_root_bound(window: &str, root: &str) -> bool {
             return true;
         }
         // 宏隐式相等（R102 写法②）：`assert_eq!(<root>.len(), N|CONST)`
-        if window[..at].trim_end().ends_with("assert_eq!(") {
+        // R119 孪生点②：同样要求 `assert_eq!(` 落在标识符边界上（⛔ `my_assert_eq!(` 不算）。
+        let before = window[..at].trim_end();
+        if before.ends_with("assert_eq!(")
+            && !before[..before.len() - "assert_eq!(".len()]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
             return true;
         }
     }
@@ -2537,5 +2554,46 @@ fn bounds_must_match_the_root_at_a_token_boundary() {
         unbounded_all_any_sites("synthetic", element_value).len(),
         1,
         "R118：`assert_eq!(x[0], N)` 是**元素值界**，不界定集合 ⇒ 必须报无界（prefix near-miss）"
+    );
+
+    // ---- R119 孪生点：`find`/`contains` 的**每一条并列路径**都要审（不止"根"那一条）----
+    // 孪生①：`find("assert!(")` 不得命中 `my_assert!(` 的尾巴（那不是本仓的断言宏）。
+    let macro_tail = "fn f() { my_assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", macro_tail).len(),
+        0,
+        "R119 孪生点①：`my_assert!(` 不是 `assert!(` ⇒ 不得被当成断言站点"
+    );
+    // 孪生②：宏隐式相等必须要求 `assert_eq!(` 落在标识符边界上 ⇒ `my_assert_eq!(` 不算界。
+    let macro_eq_tail =
+        "fn f() { my_assert_eq!(x.len(), 3); assert!(x.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", macro_eq_tail).len(),
+        1,
+        "R119 孪生点②：`my_assert_eq!(x.len(), 3)` 不得被当成集合下界"
+    );
+
+    // ---- R126 自审：本扫描器用的是**固定窗口** ⇒ 必须用**已知红定标宽度**并登记安全方向 ----
+    // 近距（≈1 KB，窗口内）⇒ 认；远距（≈3.3 KB，超出 ±2500）⇒ **报无界**。
+    // 安全方向：窗口过窄只会**多报**（假阳性），⛔ 不会漏报（假清洁）——
+    // 这正是 R126 允许的方向；本判据把这两个读数钉住，窗口宽度一旦被改小/改大都必须重新定标。
+    let filler_near = "let _ = 0;\n".repeat(90); // ≈ 990 B < 2500
+    let near = format!(
+        "fn f() {{\n{filler_near}assert!(x.len() >= 2);\nassert!(x.windows(2).all(|p| p[0] < p[1]));\n}}\n"
+    );
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", &near).len(),
+        0,
+        "R126 定标：窗口**内**的同根下界必须被认到（≈1 KB）"
+    );
+    let filler_far = "let _ = 0;\n".repeat(300); // ≈ 3300 B > 2500
+    let far = format!(
+        "fn f() {{\n{}{}assert!(x.windows(2).all(|p| p[0] < p[1]));\n}}\n",
+        "assert!(x.len() >= 2);\n", filler_far
+    );
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", &far).len(),
+        1,
+        "R126 定标：超出 ±2500 窗口的同根下界会被**多报**（安全方向，已登记）"
     );
 }
