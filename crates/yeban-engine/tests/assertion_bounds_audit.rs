@@ -1157,6 +1157,26 @@ fn integer_count_sites_are_classified_into_four_classes() {
         "[assertion-bounds] R118 整数计数四类：{report}（合计 {}）",
         counts.iter().sum::<usize>()
     );
+    // ⭐ **R215①**：把**余量**做成读数（⛔ 不是只写"非零"）—— `当前值 − 地板`，**报数值**。
+    const MARGIN_FLOOR: usize = 1;
+    let mut zero_margin: Vec<&str> = Vec::new();
+    for (index, name) in COUNT_CLASSES.iter().enumerate() {
+        let margin = counts[index].saturating_sub(MARGIN_FLOOR);
+        eprintln!(
+            "[assertion-bounds][margin] {name}: 当前={} 地板={MARGIN_FLOOR} **余量={margin}**",
+            counts[index]
+        );
+        if margin == 0 {
+            zero_margin.push(name);
+        }
+    }
+    // 余量 > 0 正常；**为 0 必须显式注明**（⛔ 不静默）—— 免得"合法删除"被误判为回归。
+    if !zero_margin.is_empty() {
+        eprintln!(
+            "[assertion-bounds][margin] ⚠ 余量为 0 的类（恰好落在下界上）：{zero_margin:?} ⇒ 请显式复核"
+        );
+    }
+
     // ⭐ **R199**：**规模地板是反向指标** —— 缺陷会把计数**抬高** ⇒ 地板照样通过。
     // ⛔ 因此不把"≥ 地板"当主守卫：它只作**规模读数**，跌破时**降级为 `eprintln!` 告警**。
     const SCALE_FLOOR: usize = 1;
