@@ -2263,6 +2263,18 @@ mod tests {
     /// 与"频率 1 kHz 应产生的次数"比较。
     /// 怎么量：手写正弦 ＋ 数相邻样本的符号变化。1 kHz 在 `t` 秒内过零 `2 × 1000 × t` 次。
     ///
+    /// ⚠ **R77 硬断言普查（本 crate 的机械读数）**：`grep -rnE '\.(sin|cos|exp|ln|log10|powf|powi|tan|sqrt)\('`
+    /// 在本 crate 的**全部源码**里只有 **2 处**命中，且都在 `resample.rs` 的**判据辅助函数**里
+    /// （`sine()` 的 `.sin()`、`rms()` 的 `.sqrt()`）；`asset.rs` / `decode.rs` / `testfix.rs` /
+    /// `limits.rs` / `duration.rs` / `error.rs` / `propcheck.rs` **各 0 处**。
+    ///
+    /// 但**被调用的依赖**里有超越函数：`resample` 走 rubato 的 sinc 卷积、`decode` 走
+    /// symphonia 的 floor0 与 IMDCT（都用 `cos`）。⇒ 本判据断言的是**幅度/次数**，只能
+    /// **容差式**（见下），⛔ 不得把任何 DSP 输出的浮点值写成精确相等。
+    /// 例外的两类仍然可硬断言：**字节级**夹具（本条不涉及）与**整数计数**
+    /// （如 `a_nonzero_residue_spectrum_decodes_to_nonzero_samples` 里的 `nonzero == 128`）——
+    /// 计数是精确的，即使算它的路径用了超越函数。**本地全绿不是证据**（冻结架构必然全绿）。
+    ///
     /// 读数（本机、debug 构建、4800 帧输入 = 0.1 s）：
     ///
     /// | 转换 | 中段时长 | 过零次数（实测 / 期望） |

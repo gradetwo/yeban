@@ -1108,4 +1108,101 @@ mod tests {
             "a different NaN payload is a different byte stream"
         );
     }
+
+    /// FNV-1a 64：判据自己实现的**独立摘要**（⛔ 不复用产线的 `pcm_hash`）。
+    fn fnv1a64(samples: &[f32]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+        hash
+    }
+
+    /// 把 64 位摘要渲染成文档表里的形态：`0x` ＋ 每 4 个十六进制位插一个 `_`。
+    fn digest_text(value: u64) -> String {
+        let hex = format!("{value:016X}");
+        let mut out = String::from("0x");
+        for (index, digit) in hex.chars().enumerate() {
+            if index > 0 && index % 4 == 0 {
+                out.push('_');
+            }
+            out.push(digit);
+        }
+        out
+    }
+
+    /// 判据（R70②：**"两次运行相同"不是覆盖面**）：导入结果的样本摘要必须是**字面量**，
+    /// 而且要**两个方向**都钉住 —— ① 重算摘要并与字面量比较；② 本文件的**源码文本**里必须
+    /// 含这个字面量（`include_str!(file!())`）。
+    ///
+    /// 量什么：`import_bytes` 解出的样本序列的 FNV-1a 64（单位：1 个 u64）与样本个数。
+    /// 怎么量：判据**自己实现** FNV-1a 64（⛔ 不用产线的 `pcm_hash`），期望值由 Python
+    /// `struct.pack('<f', …)` ＋ 同一个 FNV-1a 64 **独立算出**，两侧都是 2 的幂/整数
+    /// （在 `f32` 里无舍入）。
+    ///
+    /// 读数（本机、debug 构建）：
+    ///
+    /// | 夹具 | 样本数 | FNV-1a 64 |
+    /// | :--- | ---: | :--- |
+    /// | `[100, -100, 200, -200]`（16 位整数 ⇒ 样本归一化 `/32768`） | 4 | `0xF854_CE87_79E2_41C5` |
+    /// | `[100, -100, 200, -201]`（同上） | 4 | `0xF857_4E87_79E3_9E1C` |
+    ///
+    /// 为什么需要它：既有判据 `importing_the_same_bytes_twice_yields_the_same_keys` 是
+    /// **对同一条代码路径跑两次再互比**（`first` / `second` 都是 `import_bytes` 的同一次调用的
+    /// 复制）——那只能发现**不确定性**，永远发现不了**算错**（两次一起错）。本条把**值本身**
+    /// 钉成字面量，因此"改一个采样点的比例"这类错误会红。
+    ///
+    /// 两个方向（缺一不可）：
+    /// - `assert_eq!(fnv1a64(...), 0xF854_CE87_79E2_41C5)` —— 重算摘要；
+    /// - `assert!(include_str!(file!()).contains("0xF854_CE87_79E2_41C5"))` —— **文档表**
+    ///   （本文件文本）里必须真的写着这个常量，防止"把断言改成 `== fnv1a64(...)`"这种回退。
+    ///
+    /// 注入（实测）：把 `fnv1a64` 的 `hash ^= u64::from(byte)` 改成 `hash ^= 1` ⇒ 本条红；
+    /// 把字面量改成第二个夹具的值 ⇒ 本条红且**只有这一条**红（独有牙）。
+    #[test]
+    fn the_imported_pcm_digest_is_a_literal_not_a_second_run() {
+        let bytes = fixture(&[100, -100, 200, -200], 2);
+        let imported =
+            import_bytes(&bytes, "a.wav", "CC0-1.0", &DecodeOptions::default()).expect("import");
+
+        // ① 重算：样本摘要必须等于 Python 独立算出的字面量。
+        // 2 声道 × 2 帧 = 4 个样本（`frame_count` 是帧数，不是样本数）。
+        assert_eq!(imported.decoded.frame_count(), 2);
+        assert_eq!(imported.decoded.samples().len(), 4);
+        assert_eq!(fnv1a64(imported.decoded.samples()), 0xF854_CE87_79E2_41C5);
+
+        // ② 文档表：本文件的源码文本里必须真的含这个常量，而且要找**文档表格那一行**的形态
+        // （反引号包裹）。
+        // ⚠ `include_str!` 的路径是**相对本文件所在目录**的，`file!()` 给的是相对 crate 根的
+        // 路径 ⇒ 两者不通用。这里写同目录下的文件名，读到的就是本文件。
+        // ⚠⚠ 这里必须找**带反引号**的形态：裸字面量在**本判据的断言行里就有**（见 ①）⇒
+        // 若找裸形态，这个检查恒真（R80 形状）。下面两条断言把"两者不等价"写进判据：
+        // 带反引号 ⇒ 只有文档表格能满足；裸形态 ⇒ 断言行自己就能满足。
+        let source = include_str!("asset.rs");
+        // ⚠⚠ **不能**写成 `source.contains("0x…")`：那个字面量**就写在实参里**，
+        // 而 `include_str!` 读的正是这份文件 ⇒ 该检查**恒真**（R80 形状；加不加反引号都一样，
+        // 因为实参自身也会出现在源码里）。正确做法：**运行时构造**针（由算出的摘要渲染），
+        // 再在一个**按描述定位**的文档表格行里找它 ⇒ 针不在源码里，检查才有牙。
+        let needle = digest_text(fnv1a64(imported.decoded.samples()));
+        let row = source
+            .lines()
+            .find(|line| line.contains("样本归一化") && line.contains("[100, -100, 200, -200]"))
+            .expect("the documented table row for this fixture must exist");
+        assert!(
+            row.contains(&needle),
+            "the documented table row must carry the computed digest {needle}, got: {row}"
+        );
+
+        // R58：同一个摘要函数上必须有**真探针** —— 改一个采样点，摘要必须变。
+        let other = fixture(&[100, -100, 200, -201], 2);
+        let changed =
+            import_bytes(&other, "a.wav", "CC0-1.0", &DecodeOptions::default()).expect("import");
+        assert_eq!(fnv1a64(changed.decoded.samples()), 0xF857_4E87_79E3_9E1C);
+        assert_ne!(
+            fnv1a64(imported.decoded.samples()),
+            fnv1a64(changed.decoded.samples()),
+            "one sample changed by one unit must change the digest"
+        );
+    }
 }
