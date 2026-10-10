@@ -32,13 +32,18 @@
 //! - **引擎在合成**（2026-10-08 就地改正）：轨道渲染**不再**是占位静音 ——
 //!   `project_schedules` 真的按摆放生成调度表、`synth.render_track` 真的渲染，
 //!   因此 `process_quantum` 发布的电平**不是**恒为静音。
-//!   ⚠ **R68：下面这一行读数正在重录。** 旧值（`-17.3 / … / -8.5` 与
-//!   `-20.4 / … / -11.5`）测于判据把**工程参数传成 `None`** 时 ⇒ 那一跳
-//!   `publish_automation` 整段不跑（自动化泳道被静默丢弃）。R68 把判据改成生产路径的
-//!   `Some(&project)` ⇒ 0 号轨的电平跟着泳道走，8 跳读数**必然改变**（语义变更，⛔ 不是漂移）。
+//!   实测（**CI 作业 `rust (yeban-app)` 的 `test` 步，run `38037793136`**；判据
+//!   `production_meter_leg::production_loop_start_adopts_the_engine_meter_consumer` 按**生产形态**
+//!   传工程 ⇒ **自动化生效**）：0 号轨峰值
+//!   `-17.3 / -7.1 / -6.8 / -7.4 / -7.7 / -7.9 / -8.4 / -8.6` dBFS，
+//!   主总线 `-20.4 / -13.1 / -9.8 / -10.0 / -10.7 / -10.9 / -11.2 / -11.6` dBFS。
+//!   ⚠ 这 8 对数值**取代**了 R68 之前的 `-17.3 / -7.1 / -6.8 / -7.3 / -7.6 / -7.9 / -8.3 / -8.5`
+//!   与 `-20.4 / -13.1 / -9.8 / -10.0 / -10.6 / -10.9 / -11.1 / -11.5`：后者测于判据把
+//!   **工程参数传成 `None`** 时 ⇒ 那一跳 `publish_automation` 整段不跑（自动化泳道被静默丢弃）。
+//!   这是**施加曲线**这个语义本身（裁决 R55/R68），⛔ 不是漂移；前 3 跳未动是因为平滑器
+//!   （τ ≈ 5 ms）在这几跳里还没走起来。
 //!   出处 = `cargo test -p yeban-app --test production_meter_leg production_loop_start -- --nocapture`
-//!   的 `[meter-leg] tick #0‥#7` 行（CI 作业 `rust (yeban-app)` 的 `test` 步；测试写 stderr
-//!   ⇒ libtest 不吞，因此 CI 日志里读得到）。
+//!   的 `[meter-leg] tick #0‥#7` 行（测试写 stderr ⇒ libtest 不吞 ⇒ CI 日志里读得到）。
 //!   同 crate 的判据 `production_loop_start_adopts_the_engine_meter_consumer` 正是断言
 //!   "至少一条轨的读数必须离开显示下限"。
 //!   ⚠ 本行原文写「**引擎仍然不发声**：轨道渲染是占位静音，因此引擎实际发布的电平恒为静音
