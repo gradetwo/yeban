@@ -37,11 +37,15 @@
 //!   完成（上游 `i-slint-core-1.18.1/timers.rs:253` 的 `impl Drop for Timer` 把槽从
 //!   定时器表摘掉并 drop 回调），而本文件的窗口不进事件循环 ⇒ 定时器根本不跳。
 //! - ✅ **引擎真的在合成**（轨道渲染**不再**是占位静音）⇒ 走真引擎的那条判据读到的
-//!   **不只是**量子序号：它读到引擎自己发布的**非注入**电平（本机实测 8 跳，出处 =
-//!   `cargo test -p yeban-app --test production_meter_leg production_loop_start -- --nocapture`
-//!   的 `[meter-leg] tick #0‥#7` 行，2026-10-08：0 号轨 `-17.3 / -7.1 / -6.8 / -7.3 / -7.6 /
-//!   -7.9 / -8.3 / -8.5` dBFS，主总线 `-20.4 / -13.1 / -9.8 / -10.0 / -10.6 / -10.9 /
-//!   -11.1 / -11.5` dBFS）。这里原先写「引擎仍然**不发声**（轨道渲染是占位静音）⇒ 走真
+//!   **不只是**量子序号：它读到引擎自己发布的**非注入**电平。
+//!   ⚠ **R68：下面这两行读数正在重录。** 旧值（`-17.3 / … / -8.5` 与
+//!   `-20.4 / … / -11.5`）是在判据把**工程参数传成 `None`** 时测到的 —— 那时
+//!   `EngineHost::publish_automation` 整段不跑 ⇒ **自动化泳道被静默丢弃**。
+//!   R68 把那一跳改成生产路径的 `Some(&project)` ⇒ 0 号轨的电平**跟着泳道走**，
+//!   8 跳读数**必然改变**（这是"施加曲线"这个语义本身，⛔ 不是漂移）。
+//!   出处 = `cargo test -p yeban-app --test production_meter_leg production_loop_start -- --nocapture`
+//!   的 `[meter-leg] tick #0‥#7` 行（CI 作业 `rust (yeban-app)` 的 `test` 步，
+//!   写 stderr ⇒ libtest 不吞）。这里原先写「引擎仍然**不发声**（轨道渲染是占位静音）⇒ 走真
 //!   引擎的那条判据读到的是**量子序号**在前进，不是"真的有声音"」—— 那句话与本文件判据
 //!   `production_loop_start_adopts_the_engine_meter_consumer`（断言"至少一条轨的读数必须
 //!   离开显示下限"）**矛盾**，因此**就地改正**。判据 2 仍靠**注入**已知帧：它证明的是
@@ -61,6 +65,7 @@ use yeban_app::engine_host::EditMark;
 use yeban_app::host::{self, MeterPump, ProductionLoop};
 use yeban_app::scene::DemoScene;
 use yeban_engine::meter::{MeterFrame, MeterPublisher, meter_channel};
+use yeban_model::AutomationTarget;
 use yeban_model::ids::EntityId;
 use yeban_model::project::YebanProjectV1;
 use yeban_ui_test_port::LivePort;
@@ -203,6 +208,48 @@ fn production_loop_start_adopts_the_engine_meter_consumer() {
     let window = Window::new(&project);
     let expected_nodes = window.view.tracks.len() + 1;
 
+    // ⭐ **夹具前提（R68 条件 3+4，机械断言，⛔ 不用 `keys().next()`）**：
+    // `demo_project()` 的自动化泳道分布是 `samples.rs::demo_automation_lanes` 定义的
+    // —— slot 0 = `TrackVolume` + `read_enabled`，slot 1 = `TrackPan` + `read_enabled`，
+    // 其余为空。本判据把这一点写出来，是因为**下面 8 跳的读数会随自动化生效而变**：
+    // 夹具一旦改动（例如把 slot 0 的开关关掉），这里必须先红，而不是让读数悄悄回到旧值。
+    let enabled_track_volume: Vec<EntityId> = project
+        .tracks
+        .iter()
+        .filter(|(_, track)| {
+            track.automation_lanes.values().any(|lane| {
+                lane.read_enabled && matches!(lane.target, AutomationTarget::TrackVolume { .. })
+            })
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    let enabled_track_pan: Vec<EntityId> = project
+        .tracks
+        .iter()
+        .filter(|(_, track)| {
+            track.automation_lanes.values().any(|lane| {
+                lane.read_enabled && matches!(lane.target, AutomationTarget::TrackPan { .. })
+            })
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(
+        enabled_track_volume.len(),
+        1,
+        "夹具前提：demo 工程恰好一条开着的 TrackVolume 泳道（slot 0；实得 {enabled_track_volume:?}）"
+    );
+    assert_eq!(
+        enabled_track_pan.len(),
+        1,
+        "夹具前提：demo 工程恰好一条开着的 TrackPan 泳道（slot 1；实得 {enabled_track_pan:?}）"
+    );
+    // R58：等号判据必须另有一条 `assert_ne!` 落在**同一个**表达式上 —— 这里证明
+    // "按目标筛选"真的区分了两种目标（两种泳道挂在**不同**轨上），而不是两次都返回同一批轨。
+    assert_ne!(
+        enabled_track_volume, enabled_track_pan,
+        "TrackVolume 与 TrackPan 必须挂在不同轨上（否则筛选没有按目标区分）"
+    );
+
     // 与 `src/main.rs` **同一行**装配：真的建一代引擎，并由它把消费端交给 UI 线程。
     let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
     assert!(production.has_engine(), "引擎应当活着");
@@ -217,7 +264,16 @@ fn production_loop_start_adopts_the_engine_meter_consumer() {
         // 设备回调那一侧的替身：真的推**一个**量子（`process_quantum` 就是 cpal 回调
         // 会调的那一个函数，只是这里由本线程显式驱动）。
         production.engine_handle().borrow_mut().drive_audio(1);
-        let tick = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
+        // ⭐ **R68：生产路径必须把工程传进去**（`run_gui` 走的就是 `Some(&project)`）。
+        // ⛔ 传 `None` 会让 `EngineHost::publish_automation` 整段不跑 ⇒ 自动化泳道被静默丢弃，
+        // 而那正是 R55 要修的东西。`Some` 之后 0 号轨的电平**会跟着泳道走**（本判据的
+        // 8 跳读数因此会变，字面值按 CI 重录，见模块文档）。
+        let tick = production.tick(
+            window.ui(),
+            &window.view,
+            EditMark::new(None, 0),
+            Some(&project),
+        );
         let MeterPump::Applied(snapshot) = &tick.meters else {
             panic!(
                 "第 {tick_no} 跳必须真的把电平写进界面, 实际 {:?}",
