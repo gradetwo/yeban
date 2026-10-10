@@ -309,10 +309,33 @@ impl Tonality {
     }
 
     /// 依据根音文本的写法推断调性：`Bb…` → 降号侧，`F#…` → 升号侧。
+    ///
+    /// ## 口径（裁决 R42：文档是规范）
+    ///
+    /// **根音字母**与**它之后的变音记号**必须分开：先取根音字母，再看字母**之后**
+    /// 的记号。因此：
+    ///
+    /// - `B` / `b` / `B#` / `B##` / `B♯` ⇒ [`Tonality::SharpMajor`]
+    ///   （字母 `B` 本身**不是**降号记号）；
+    /// - `Bb` / `bb` / `Bbb` / `Cb` / `C♭` ⇒ [`Tonality::FlatMajor`]。
+    ///
+    /// 变音记号集合与 [`crate::pitch::parse_pitch_class`] **完全一致**
+    /// （降号 = `b` / `B` / `♭`，升号 = `#` / `♯`）：两个函数吃的是
+    /// [`Chord::from_symbol`] 切出来的**同一段根音文本**，口径必须相同。
+    ///
+    /// 旧口径先 `to_ascii_lowercase()` 再 `contains('b')`，于是大小写字母 `B`/`b`
+    /// 被当成了降号记号，且 Unicode `♭` 完全没被认出来（判据
+    /// `infer_from_root_text_separates_the_letter_from_the_accidental` 钉住修复后的表）。
     #[must_use]
     pub fn infer_from_root_text(text: &str) -> Self {
-        // 只看根音文本里的变音记号：带 `b` 走降号侧，其余（含 `#` 与无记号）走升号侧。
-        if text.to_ascii_lowercase().contains('b') {
+        // 首字符是根音字母，其余字符是变音记号（与 `parse_pitch_class` 同一切法）。
+        let mut chars = text.chars();
+        chars.next();
+        let accidental = chars.as_str();
+        if accidental
+            .chars()
+            .any(|ch| matches!(ch, 'b' | 'B' | '\u{266d}'))
+        {
             Self::FlatMajor
         } else {
             Self::SharpMajor
