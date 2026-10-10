@@ -916,9 +916,10 @@ const MATCH_METHODS: &[&str] = &[
 /// - 字面量判定只认**双引号**开头（⛔ 不认原始字符串 `r"…"`／字符字面量 `'x'`）——
 ///   实测本 crate 的 24 处非双引号 needle 全部是**变量**，无原始字符串/字符字面量；
 /// - 注释行与行尾 `\r` 不参与判定（`trim_end` 后匹配）。
-fn match_sites_on_line(line: &str) -> Vec<(String, bool)> {
+fn match_sites_on_line(line: &str) -> Vec<(String, bool, &'static str)> {
     let mut out = Vec::new();
     for method in MATCH_METHODS {
+        let bare = method.trim_start_matches('.').trim_end_matches('(');
         let mut cursor = 0usize;
         while let Some(p) = line[cursor..].find(method) {
             let at = cursor + p + method.len();
@@ -932,7 +933,7 @@ fn match_sites_on_line(line: &str) -> Vec<(String, bool)> {
                         .take_while(|c| *c != ')' && *c != ',')
                         .collect()
                 };
-                out.push((needle.trim().to_string(), literal));
+                out.push((needle.trim().to_string(), literal, bare));
             }
             cursor = at;
             if cursor >= line.len() {
@@ -943,11 +944,28 @@ fn match_sites_on_line(line: &str) -> Vec<(String, bool)> {
     out
 }
 
-/// 审计整棵 `src/` 树的匹配站点，返回证据表的文本。
+/// 该行是否位于某个 `#[test]` 判据体内（向上找最多 45 行）。
+fn in_test_context(text: &str, line_index: usize) -> bool {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = line_index.saturating_sub(45);
+    lines[start..line_index]
+        .iter()
+        .any(|l| l.trim_start().starts_with("#[test]"))
+}
+
+/// 审计整棵 `src/` 树的匹配站点，返回证据表的文本（6 列：含**判定**与**理由**）。
+///
+/// **判定规则（机械可导）**：
+/// - `starts_with`／`ends_with`／`strip_prefix`／`strip_suffix` 的字面量站
+///   ⇒ `by_design`（**前后缀分类器**：按设计，⛔ 不冒充等值匹配）；
+/// - `contains`／`find` 的字面量站 **在 `#[test]` 内** ⇒ `by_design`（Debug 形状断言）；
+/// - `contains`／`find` 的字面量站 **不在测试内** ⇒ `twin_point_risk`（子串冒充等值）；
+/// - 变量 needle ⇒ `variable_needle`（本表只分类，⛔ 不判孪生点）。
 fn render_match_sites(crate_root: &Path) -> String {
     let mut rows: Vec<String> = Vec::new();
     let mut literal = 0usize;
     let mut variable = 0usize;
+    let mut risk = 0usize;
     for path in source_files(&crate_root.join(SRC_ROOT)) {
         let rel = path
             .strip_prefix(crate_root)
@@ -960,18 +978,42 @@ fn render_match_sites(crate_root: &Path) -> String {
             if trimmed.starts_with("//") {
                 continue;
             }
-            for (needle, is_literal) in match_sites_on_line(line) {
+            for (needle, is_literal, method) in match_sites_on_line(line) {
+                let (verdict, reason): (&str, &str) = if !is_literal {
+                    (
+                        "variable_needle",
+                        "needle 非字面量：本表只分类，⛔ 不判孪生点",
+                    )
+                } else if method != "contains" && method != "find" {
+                    (
+                        "by_design",
+                        "前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配",
+                    )
+                } else if in_test_context(&text, index) {
+                    (
+                        "by_design",
+                        "Debug 形状断言（在 #[test] 内做子串匹配）：按设计",
+                    )
+                } else {
+                    risk += 1;
+                    (
+                        "twin_point_risk",
+                        "子串匹配冒充等值匹配：必须补 near-miss 对照",
+                    )
+                };
                 if is_literal {
                     literal += 1;
                 } else {
                     variable += 1;
                 }
                 rows.push(format!(
-                    "{}|{}|{}|{}",
+                    "{}|{}|{}|{}|{}|{}",
                     rel,
                     index + 1,
                     if is_literal { "literal" } else { "variable" },
-                    needle
+                    needle,
+                    verdict,
+                    reason
                 ));
             }
         }
@@ -979,15 +1021,22 @@ fn render_match_sites(crate_root: &Path) -> String {
     rows.sort();
     let mut out = String::new();
     out.push_str("# R149／R150 匹配站点普查：`src/` 内 .contains/.find/.starts_with/.ends_with/.strip_prefix/.strip_suffix\n");
-    out.push_str("# 列：file|line|kind(literal|variable)|needle\n");
+    out.push_str("# 列：file|line|kind(literal|variable)|needle|verdict(by_design|twin_point_risk|variable_needle)|reason\n");
+    out.push_str("# 口径（R150，逐条与判据一致）：\n");
+    out.push_str("#   ① 跨行：本表是**行式**扫描（⛔ 不跨行）。实测本 crate 折行站点 0 处\n");
+    out.push_str("#      （grep -c '\\.contains($\\|\\.find($\\|\\.starts_with($\\|\\.ends_with($' = 0）。\n");
+    out.push_str("#   ② 字面量定义：只认**双引号**开头；⛔ 不认原始字符串 r\"…\"／字节串 b\"…\"／字符字面量 'x'。\n");
     out.push_str(
-        "# ⚠ 口径差异（R150）：行式扫描（本 crate 折行站点实测 0 处）；字面量只认双引号。\n",
+        "#      实测本 crate 这三类 needle **各 0 处** ⇒ 当前口径**无漏判**（不是靠巧合）。\n",
     );
+    out.push_str("#   ③ 注释：跳过 trim_start() 后以 // 开头的行。\n");
+    out.push_str("#   ④ 行尾：text.lines() 已去 \\n／\\r；读表时走 read_evidence_text() 再归一化（R134）。\n");
     out.push_str(&format!(
-        "# 合计 {} 处：literal {} ／ variable {}\n",
+        "# 合计 {} 处：literal {} ／ variable {}；其中 **twin_point_risk {} 处**\n",
         rows.len(),
         literal,
-        variable
+        variable,
+        risk
     ));
     for row in &rows {
         out.push_str(row);

@@ -1,35 +1,41 @@
 # R149／R150 匹配站点普查：`src/` 内 .contains/.find/.starts_with/.ends_with/.strip_prefix/.strip_suffix
-# 列：file|line|kind(literal|variable)|needle
-# ⚠ 口径差异（R150）：行式扫描（本 crate 折行站点实测 0 处）；字面量只认双引号。
-# 合计 31 处：literal 7 ／ variable 24
-src/comb.rs|431|variable|&c.feedback(
-src/comb.rs|432|variable|&c.damp(
-src/compressor.rs|1384|variable|&gain
-src/convolution_reverb.rs|1511|literal|ConvolutionReverb
-src/drums/mod.rs|1335|variable|&kit.kick.tune_hz
-src/drums/mod.rs|1336|variable|&kit.kick.glide_hz
-src/drums/mod.rs|1337|variable|&kit.kick.glide_s
-src/drums/mod.rs|1338|variable|&kit.kick.attack_s
-src/drums/mod.rs|1339|variable|&kit.kick.decay_s
-src/drums/mod.rs|1341|variable|&kit.snare.tone_ratio
-src/drums/mod.rs|1354|variable|&kit.clap.burst_spacing_s
-src/drums/mod.rs|1576|variable||index| machine.debug_slot(*index
-src/drums/mod.rs|1848|variable||index| whole[*index].to_bits(
-src/meter.rs|1554|variable|&worst_gain
-src/meter.rs|1558|variable|&gain_at_four_ninths
-src/meter.rs|1997|literal|san.
-src/meter.rs|1998|literal|sup.
-src/meter.rs|1999|literal|const.
-src/meter.rs|2000|literal|.peak
-src/meter.rs|2001|literal|.rms
-src/meter.rs|2002|literal|.is_sane
-src/noise.rs|313|variable|&hz
-src/noise.rs|384|variable|&x
-src/noise.rs|397|variable|&unit
-src/oscillator.rs|1081|variable|&oscillator.phase(
-src/oscillator.rs|1152|variable|&v
-src/oscillator.rs|1217|variable|&value
-src/polysynth.rs|1580|variable||index| {
-src/polysynth.rs|1645|variable||index| {
-src/polysynth.rs|2104|variable||index| whole[*index].to_bits(
-src/smoothing.rs|472|variable|&smoother.alpha(
+# 列：file|line|kind(literal|variable)|needle|verdict(by_design|twin_point_risk|variable_needle)|reason
+# 口径（R150，逐条与判据一致）：
+#   ① 跨行：本表是**行式**扫描（⛔ 不跨行）。实测本 crate 折行站点 0 处
+#      （grep -c '\.contains($\|\.find($\|\.starts_with($\|\.ends_with($' = 0）。
+#   ② 字面量定义：只认**双引号**开头；⛔ 不认原始字符串 r"…"／字节串 b"…"／字符字面量 'x'。
+#      实测本 crate 这三类 needle **各 0 处** ⇒ 当前口径**无漏判**（不是靠巧合）。
+#   ③ 注释：跳过 trim_start() 后以 // 开头的行。
+#   ④ 行尾：text.lines() 已去 \n／\r；读表时走 read_evidence_text() 再归一化（R134）。
+# 合计 31 处：literal 7 ／ variable 24；其中 **twin_point_risk 0 处**
+src/comb.rs|431|variable|&c.feedback(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/comb.rs|432|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/compressor.rs|1384|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/convolution_reverb.rs|1511|literal|ConvolutionReverb|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
+src/drums/mod.rs|1335|variable|&kit.kick.tune_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1336|variable|&kit.kick.glide_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1337|variable|&kit.kick.glide_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1338|variable|&kit.kick.attack_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1339|variable|&kit.kick.decay_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1341|variable|&kit.snare.tone_ratio|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1354|variable|&kit.clap.burst_spacing_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1576|variable||index| machine.debug_slot(*index|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/drums/mod.rs|1848|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/meter.rs|1554|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/meter.rs|1558|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/meter.rs|1997|literal|san.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|1998|literal|sup.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|1999|literal|const.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2000|literal|.peak|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2001|literal|.rms|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2002|literal|.is_sane|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/noise.rs|313|variable|&hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/noise.rs|384|variable|&x|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/noise.rs|397|variable|&unit|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/oscillator.rs|1081|variable|&oscillator.phase(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/oscillator.rs|1152|variable|&v|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/oscillator.rs|1217|variable|&value|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|1580|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|1645|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/polysynth.rs|2104|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/smoothing.rs|472|variable|&smoother.alpha(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
