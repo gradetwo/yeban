@@ -185,11 +185,20 @@ fn the_gated_loudness_digest_is_frozen_on_the_frozen_architecture() {
     assert_frozen("loudness", digest, 0x851e_31a9_f14c_3fc7, FRAMES);
 }
 
-/// 量什么：`Wavetable::from_recipe` 的表位型摘要（补一句：**表本身**也是交付物）。
+/// 量什么：`Wavetable::from_recipe` 的表位型摘要（**表本身**也是交付物）。
 ///
-/// **类别 ③**：表由配方经**整数索引与实数算术**生成，无超越函数 ⇒ 硬断言。
+/// **类别 ①（上游定运算）** —— ⚠ **这一条的分类被 CI 当场否证过**：
+/// 第一版把它归为"类别 ③（无超越函数）"并**硬断言**，结果 `rust (yeban-dsp)`（Linux x86_64）
+/// 与 `windows` 两个作业都在 `the_factory_wavetable_digest_is_frozen` 上红
+/// （`工厂波表的表位型摘要漂移了（9 级）`）。
+/// 复盘：第一版只 `grep` 了 `from_recipe` 的**本体**，漏了它调用的 helper `render_level`
+/// —— 后者对**每个表项**算 `phase.sin()`（`core::f32::consts::TAU * h * i / len`），
+/// 而 `sin` 走**宿主 libm** ⇒ 属 4096 ulp 预算类（裁决 R24）。
+/// ⇒ 改为平台感知：冻结架构硬断言，其它架构**点名跳过并打印**（跳过不是通过）。
+///
+/// （同批的 `oversample` 硬断言**通过了**两个平台 ⇒ 那个"类别 ③"的判定成立。）
 #[test]
-fn the_factory_wavetable_digest_is_frozen() {
+fn the_factory_wavetable_digest_is_frozen_on_the_frozen_architecture() {
     let table = Wavetable::from_recipe(HOLLOW);
     let mut bits: Vec<f32> = Vec::new();
     for level in 0..table.level_count() {
@@ -197,10 +206,10 @@ fn the_factory_wavetable_digest_is_frozen() {
     }
     let digest = fnv1a64(&bits);
     assert!(!bits.is_empty(), "夹具必须取到非空的表数据");
-    assert_eq!(
+    assert_frozen(
+        "wavetable",
         digest,
         0x3ece_b129_9f3a_6006,
-        "工厂波表的表位型摘要漂移了（{count} 级）",
-        count = table.level_count()
+        table.level_count(),
     );
 }
