@@ -2056,3 +2056,310 @@ fn history_dag_and_container_zip_bytes_are_frozen() {
         "只换一条资产的字节后摘要必须变红 —— 否则这条冻结判据是空转的"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R93 / R102 / R106 的**常驻**机械化：本 crate 不得出现"无下界的 `.all(…)` 断言"。
+// ---------------------------------------------------------------------------
+
+/// R94 掩码：注释与字符串 → 空格，**保留换行**（行号不漂）。
+///
+/// 字符字面量只认闭合形态 `'x'`：⛔ 否则 `'"'`（内含双引号的字符字面量）会让掩码器
+/// 从这里启一段假字符串，把后面的代码整段吞掉 —— 第十一轮实测到的**工具自身**缺陷。
+fn mask_rust_source(text: &str) -> String {
+    // ⭐ **保字节数**：被掩掉的字符按它的 `len_utf8()` 补空格（`\n` 原样保留）。
+    // 为什么必须保字节数：本判据要拿**掩码的偏移**回原文里判定"这一处是否落在
+    // 注释/字符串里"。若每个字符只补 1 个空格，含中文注释的文件里 `masked` 会比 `raw` 短
+    // ⇒ 偏移**错位** ⇒ 真断言会被误判成"在注释里"而**静默跳过**（第十一轮实测到的**假阴性**：
+    // 删掉一处显式下界后常驻判据仍是 GREEN）。
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    fn blank(out: &mut String, c: char) {
+        if c == '\n' {
+            out.push('\n');
+        } else {
+            for _ in 0..c.len_utf8() {
+                out.push(' ');
+            }
+        }
+    }
+    let mut i = 0_usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            while i < chars.len() && chars[i] != '\n' {
+                blank(&mut out, chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            let mut depth = 0_usize;
+            while i < chars.len() {
+                if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                    depth += 1;
+                    blank(&mut out, chars[i]);
+                    blank(&mut out, chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                    depth -= 1;
+                    blank(&mut out, chars[i]);
+                    blank(&mut out, chars[i + 1]);
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                    continue;
+                }
+                blank(&mut out, chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if c == '"' {
+            blank(&mut out, c);
+            i += 1;
+            while i < chars.len() {
+                let d = chars[i];
+                if d == '\\' {
+                    blank(&mut out, d);
+                    i += 1;
+                    if i < chars.len() {
+                        blank(&mut out, chars[i]);
+                        i += 1;
+                    }
+                    continue;
+                }
+                if d == '"' {
+                    blank(&mut out, d);
+                    i += 1;
+                    break;
+                }
+                blank(&mut out, d);
+                i += 1;
+            }
+            continue;
+        }
+        if c == '\'' {
+            let escaped = i + 3 < chars.len() && chars[i + 1] == '\\' && chars[i + 3] == '\'';
+            let plain = i + 2 < chars.len() && chars[i + 2] == '\'';
+            if escaped || plain {
+                let take = if escaped { 4 } else { 3 };
+                for _ in 0..take {
+                    blank(&mut out, chars[i]);
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// 找出**没有下界**的 `.all(…)` / `.any(…)` 断言，返回 `文件:行 集合` 列表。
+///
+/// 为什么需要（R93/R102/R106）：`assert!(x.windows(2).all(|p| p[0] < p[1]))` 在 `x.len() < 2`
+/// 时**恒真**；`x` 若是 `filter(...)` 的结果，`[] == []` 同样真空。下界有**两种写法**（R102）：
+/// ① 显式（`.len() >= N`、计数器 `ident >= N`、`!x.is_empty()`）；
+/// ② 宏隐式相等（`assert_eq!(x.len(), N|CONST)`）。**两种都认**，否则会给假阳性。
+fn unbounded_all_any_sites(relative: &str, raw: &str) -> Vec<String> {
+    let masked = mask_rust_source(raw);
+    let mut found = Vec::new();
+    let mut search = 0_usize;
+    while let Some(position) = masked[search..].find("assert!(") {
+        let start = search + position;
+        search = start + 1;
+        // 掩码里是空白、原文里不是空白 ⇒ 这一处落在注释/字符串里（假断言），跳过。
+        if masked.as_bytes()[start] != raw.as_bytes()[start] {
+            continue;
+        }
+        let hi = (start + 2500).min(raw.len());
+        let lo = start.saturating_sub(2500);
+        // 前后都看（下界常写在断言**之前**），但下界必须挂在**同一个集合根**上（见 `has_root_bound`）。
+        let window = &masked[lo..hi];
+        // 只看**本断言自己的实参**（⛔ 否则会把下一条断言的 `.all(` 算到自己头上）。
+        let Some(body) = paren_body(&masked, start + "assert!".len()) else {
+            continue;
+        };
+        let Some(call) = body.find(".all(").or_else(|| body.find(".any(")) else {
+            continue;
+        };
+        if !body[call..].contains('|') {
+            continue;
+        }
+        let root = collection_root(body[..call].trim());
+        if !has_root_bound(&compact(window), &root) {
+            let line = raw[..start].matches('\n').count() + 1;
+            found.push(format!("{relative}:{line} 集合根=`{root}`"));
+        }
+    }
+    found
+}
+
+/// `open` 是 `(` 的位置（在**已掩码**文本里）⇒ 返回配对括号之间的正文。
+///
+/// 为什么需要（第十一轮的第二个假阳性）：`assert!(v.len() >= 2); assert!(v.windows(2).all(…))`
+/// 里，第一处 `assert!` **没有** `.all(`；若直接向后 find 下一个 `.all(`，就会把**下一条断言**
+/// 的 `.all(` 记到它头上，于是"下界缺失"被误报。必须按**本断言的实参**解析。
+fn paren_body(text: &str, open: usize) -> Option<&str> {
+    let bytes = text.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0_i32;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[open + 1..i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 去掉**全部空白**：集合表达式与下界都可能跨行（rustfmt 会把长链折行），
+/// 因此比较前必须归一化 —— 否则 `doc.routing_graph\n .nodes` 与
+/// `doc.routing_graph.nodes.len() >= 3` 匹配不上（第十一轮实测的**假阳性**）。
+fn compact(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 集合的**根表达式**：剥掉尾部的"视图方法"链（`.windows(…)` / `.iter()` / `.chars()` …）。
+///
+/// 为什么需要（第十一轮的假阴性）：第一版在**±900 字符窗口**里找任何 `>=` 就认下有界 ⇒
+/// 一旦按 R56 删掉某一处**显式下界**，它会拿**邻近另一条断言**的下界当自己的 ⇒ 判据变绿
+/// （假阴性）。改成"下界必须挂在**同一个集合根**上"才是真的在查这一条断言。
+fn collection_root(expr: &str) -> String {
+    const VIEWS: [&str; 9] = [
+        ".windows(",
+        ".iter(",
+        ".chars(",
+        ".bytes(",
+        ".values(",
+        ".keys(",
+        ".copied(",
+        ".rev(",
+        ".enumerate(",
+    ];
+    let mut cut = expr.len();
+    for marker in VIEWS {
+        if let Some(at) = expr.find(marker)
+            && at < cut
+        {
+            cut = at;
+        }
+    }
+    compact(&expr[..cut])
+}
+
+/// 该集合的**根**上有没有下界 —— 两种写法都认（R102）：
+/// ① 显式：`<root>.len() >= N` / `> N` / `!<root>.is_empty()`；
+/// ② 宏隐式相等：`assert_eq!(<root>.len(), N|CONST)`。
+fn has_root_bound(window: &str, root: &str) -> bool {
+    if root.is_empty() {
+        return false;
+    }
+    let len = format!("{root}.len()");
+    let mut search = 0_usize;
+    while let Some(at) = window[search..].find(&len) {
+        let after = search + at + len.len();
+        let rest = window[after..].trim_start();
+        if rest.starts_with(">=") || rest.starts_with('>') {
+            return true;
+        }
+        search = search + at + 1;
+    }
+    window.contains(&format!("!{root}.is_empty()"))
+        || window.contains(&format!("assert_eq!({len},"))
+}
+
+/// **R93/R102/R106 常驻判据**：本 crate 的 `src/**` 与 `tests/**` 里不得出现"无下界的
+/// `.all(…)`/`.any(…)`"断言。一次性审计不会随代码演进复跑；本判据把它机械化。
+///
+/// R100 的非真空三件套：① 被扫文件数有下界（`>= 30`）；② 扫描器先掩码注释与字符串
+/// （R94）⇒ 本判据**自己的源码**里作为示例出现的 `.all(` 不会被自己命中；
+/// ③ 扫描器的正/负对照用**合成输入**逐条钉住（R56：已知红 ＋ 已知绿）。
+#[test]
+fn no_unbounded_all_any_assertion_in_this_crate() {
+    // ---- R56 已知红 / 已知绿（合成输入，不依赖仓库内容）----
+    let red = "fn f() { assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", red).len(),
+        1,
+        "无下界的 `.all(…)` 必须被扫出来（R56 已知红）"
+    );
+    let green_explicit =
+        "fn f() { assert!(v.len() >= 2); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", green_explicit).len(),
+        0,
+        "显式下界（写法①）必须被认到（R56 已知绿）"
+    );
+    let green_macro =
+        "fn f() { assert_eq!(v.len(), 4); assert!(v.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", green_macro).len(),
+        0,
+        "宏隐式相等（写法②）必须被认到（R102：只认一种写法会给假阳性）"
+    );
+    let in_comment = "fn f() { /* assert!(v.windows(2).all(|p| p[0] < p[1])); */ }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", in_comment).len(),
+        0,
+        "注释里的示例不得被当真（R94）"
+    );
+
+    // ---- 真源码扫描（R100：被扫文件数必须有下界）----
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("读取 {} 失败: {error}", dir.display()))
+            .map(|entry| entry.expect("目录项").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    walk(&root.join("src"), &mut files);
+    walk(&root.join("tests"), &mut files);
+    // R100 的下界用**带余量的地板**（与 `no_hash_containers_anywhere_in_src` 的
+    // `files.len() >= 16` 同口径），不是精确冻结 —— 别的线加测试文件不该把本判据弄红，
+    // 但"扫描域塌成空/个位数"必须红。当前实际 **26** 个（第十一轮读数）。
+    assert!(
+        files.len() >= 20,
+        "必须真的扫完 src/** 与 tests/**（至少 20 个 *.rs），实际 {} —— 否则本判据空转",
+        files.len()
+    );
+
+    let mut offenders: Vec<String> = Vec::new();
+    for path in &files {
+        let relative = path
+            .strip_prefix(root)
+            .expect("crate 根之下")
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(path).expect("读取源文件");
+        offenders.extend(unbounded_all_any_sites(&relative, &text));
+    }
+    assert!(
+        offenders.is_empty(),
+        "发现无下界的 `.all(…)`/`.any(…)` 断言（len<2 时恒真 / `[] == []` 真空）：\n{}",
+        offenders.join("\n")
+    );
+}
