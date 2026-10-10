@@ -2483,3 +2483,59 @@ fn bounds_must_be_root_bound_not_borrowed_from_a_neighbour() {
         "R114：根必须精确匹配，⛔ 不得前缀匹配"
     );
 }
+
+/// **R119 常驻判据**：根的匹配必须落在**标识符边界**上（⛔ 不得子串匹配）。
+///
+/// 为什么需要（第十二轮实测的**假阴性**）：`has_root_bound` 原来用
+/// `window.find("{root}.len()")` ⇒ `bb.len()` 里**含有** `b.len()` 子串 ⇒ `b` 被误判为有界，
+/// 于是"删掉 `b` 的显式下界"这种坏改动可以溜过常驻判据。本判据用合成输入钉死该形态
+/// （R56：known-red ＋ known-green 各若干条）。
+#[test]
+fn bounds_must_match_the_root_at_a_token_boundary() {
+    // ⛔ 已知红（near-miss，R119）：界挂在 `bb` 上 ⇒ **不得**记到 `b` 头上。
+    let near_miss =
+        "fn f() { assert!(bb.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", near_miss).len(),
+        1,
+        "R119：`bb.len()` 不得被当成 `b` 的下界（子串匹配 = 假阴性）"
+    );
+    // ✅ 已知绿：同一根 `b` ⇒ 认。
+    let same_root =
+        "fn f() { assert!(b.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", same_root).len(),
+        0,
+        "R119：同根且落在标识符边界上必须被认到"
+    );
+    // ⛔ 已知红：字段访问形态 `outer.b` 与独立变量 `b` 是**不同根**。
+    let field_root =
+        "fn f() { assert!(outer.b.len() >= 2); assert!(b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", field_root).len(),
+        1,
+        "R119：`outer.b.len()` 不得记到独立变量 `b` 头上"
+    );
+    // ✅ 已知绿：同一字段根 `outer.b` ⇒ 认。
+    let field_same = "fn f() { assert!(outer.b.len() >= 2); assert!(outer.b.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", field_same).len(),
+        0,
+        "R119：同一字段根必须被认到"
+    );
+
+    // ---- R118：`x.len() == N`（界定**集合**⇒ 认）vs `x[0] == N`（**元素值界** ⇒ 不认）----
+    let len_eq = "fn f() { assert_eq!(x.len(), 3); assert!(x.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", len_eq).len(),
+        0,
+        "R118：`assert_eq!(x.len(), N)` 界定集合 ⇒ 必须认（宏隐式相等）"
+    );
+    let element_value =
+        "fn f() { assert_eq!(x[0], 3); assert!(x.windows(2).all(|p| p[0] < p[1])); }\n";
+    assert_eq!(
+        unbounded_all_any_sites("synthetic", element_value).len(),
+        1,
+        "R118：`assert_eq!(x[0], N)` 是**元素值界**，不界定集合 ⇒ 必须报无界（prefix near-miss）"
+    );
+}
