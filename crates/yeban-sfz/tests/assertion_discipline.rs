@@ -56,6 +56,34 @@
 
 use std::fs;
 
+/// ⭐ R225①：识别**原始字符串的开头** —— `r"`／`r#"…`／`br#"…`。
+/// 返回 `(引号下标, # 个数)`；⛔ 不是原始字符串就返回 `None`（例如标识符 `rust`）。
+fn raw_string_hashes(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+    let mut index = start;
+    if bytes.get(index) == Some(&b'b') {
+        index += 1;
+    }
+    if bytes.get(index) != Some(&b'r') {
+        return None;
+    }
+    index += 1;
+    let mut hashes = 0usize;
+    while bytes.get(index) == Some(&b'#') {
+        hashes += 1;
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b'"') {
+        Some((index, hashes))
+    } else {
+        None
+    }
+}
+
+/// ⭐ R225①：原始字符串在 `"` ＋ **同样个数**的 `#` 处结束（跨度必须精确，⛔ 不能 off-by-one）。
+fn raw_string_terminates(bytes: &[u8], quote: usize, hashes: usize) -> bool {
+    (0..hashes).all(|k| bytes.get(quote + 1 + k) == Some(&b'#'))
+}
+
 /// 区分**字符字面量**与**生命周期**：`'x'`／`'\\n'`／`'\\''` 是字面量，`'a`（后无引号）是生命周期。
 fn is_char_literal(bytes: &[u8], index: usize) -> bool {
     let Some(&next) = bytes.get(index + 1) else {
@@ -95,6 +123,8 @@ fn mask_impl(source: &str, mask_char_literals: bool) -> String {
         Block,
         Str,
         Char,
+        /// ⭐ R225①：**原始字符串** —— 载荷是 `#` 的个数（`r"` ⇒ 0，`r#"` ⇒ 1 …）。
+        RawStr(usize),
     }
     let mut state = State::Code;
     while i < bytes.len() {
@@ -115,6 +145,16 @@ fn mask_impl(source: &str, mask_char_literals: bool) -> String {
                 } else if c == b'"' {
                     state = State::Str;
                     i += 1;
+                } else if (c == b'r' || (c == b'b' && bytes.get(i + 1) == Some(&b'r')))
+                    && raw_string_hashes(bytes, i).is_some()
+                {
+                    // ⭐ R225①：`r"…"`／`r#"…"#`／`br#"…"#` —— ⛔ 按普通标识符处理会**失同步**（假阴性）。
+                    let (quote_at, hashes) = raw_string_hashes(bytes, i).expect("checked");
+                    for byte in out.iter_mut().take(quote_at).skip(i) {
+                        *byte = b' ';
+                    }
+                    state = State::RawStr(hashes);
+                    i = quote_at + 1;
                 } else if mask_char_literals && c == b'\'' && is_char_literal(bytes, i) {
                     // ⚠️ 第十九/二十二批实测：**字符字面量**里的 `{`／`}`／`"` 会破坏花括号配对
                     // （`statements()` 里的 `split([';', '{', '}'])` 就是活例）⇒ 必须与字符串同样掩码。
@@ -138,6 +178,20 @@ fn mask_impl(source: &str, mask_char_literals: bool) -> String {
                     out[i + 1] = b' ';
                     state = State::Code;
                     i += 2;
+                } else {
+                    if c != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            State::RawStr(hashes) => {
+                if c == b'"' && raw_string_terminates(bytes, i, hashes) {
+                    for byte in out.iter_mut().take(i + 1 + hashes).skip(i) {
+                        *byte = b' ';
+                    }
+                    state = State::Code;
+                    i += 1 + hashes;
                 } else {
                     if c != b'\n' {
                         out[i] = b' ';
@@ -1117,6 +1171,46 @@ fn no_unbounded_all_any_assertion_in_this_crate() {
     eprintln!(
         "[R187-PROBE assertion_discipline::no_unbounded_all_any_assertion_in_this_crate] R183 诊断：源文件 = {}（仅供阅读）",
         sources.len()
+    );
+
+    // ⭐ R225①：**三类语言特性**各一条臂（⛔ 四件套**不够**；Rust 的额外陷阱）。
+    //  ① 字符字面量的三种形态（含**转义引号**）⇒ 掩码后不该再有杂散引号。
+    let char_forms = mask("let a = 'x'; let b = '\\n'; let c = '\\\'';");
+    // 掩码保**定界符**、只抹**内容** ⇒ 断言内容是空格（⛔ 不是"引号消失"）。
+    assert!(
+        !char_forms.contains("'x'") && !char_forms.contains("\\n"),
+        "R225① char-literal CONTENT (incl. an escaped quote/newline) must be blanked: {char_forms:?}"
+    );
+    assert!(
+        char_forms.matches('\'').count() == 6,
+        "R225① the six delimiters must remain (byte-length preserving): {char_forms:?}"
+    );
+    //  ② **生命周期** `'a` 必须当**普通字节**（⛔ 不能进字符字面量态而吞掉后面的代码）。
+    let lifetime = mask("fn f<'a>(x: &'a str) -> &'a str { x }");
+    assert!(
+        lifetime.contains("str { x }"),
+        "R225① lifetimes must be ordinary bytes, not char-literal starts: {lifetime:?}"
+    );
+    //  ③ **原始字符串**（跨度 off-by-`i` 是已知陷阱）⇒ 整段掩码，且其后代码**仍可见**。
+    let raw =
+        mask("let s = r#\"assert!(v.iter().all(..)) { }\"#; assert!(v.iter().all(|x| *x > 0));");
+    assert!(
+        !raw.contains("r#\""),
+        "R225① a raw string must be masked as a whole: {raw:?}"
+    );
+    assert!(
+        raw.contains(".all(|x| *x > 0)"),
+        "R225① code AFTER a raw string must still be visible: {raw:?}"
+    );
+    let byte_raw = mask("let b = br#\"}\"#; let c = 2;");
+    assert!(
+        byte_raw.contains("let c = 2;"),
+        "R225① a byte raw string must end exactly at `\"#`: {byte_raw:?}"
+    );
+    //  正对照：普通标识符 `rust` ⛔ 不得被当成原始字符串。
+    assert!(
+        mask("let rust = 1;").contains("rust = 1;"),
+        "R225① an identifier starting with r must NOT be treated as a raw string"
     );
 
     // ⭐ R217① 掩码的**正对照臂**（我的掩码属**假阴性**侧 ⇒ 必须证明"构造之后真代码仍可见"）：
