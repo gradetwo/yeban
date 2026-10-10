@@ -313,6 +313,7 @@ mod tests {
     #[test]
     fn point_label_is_stable_and_tick_sensitive() {
         let target = target_label(LaneKind::TrackVolume, "T1", None, 0, 0, 0);
+        // R75: 纯函数自比（同输入两次必须同值）—— 牙长在**确定性**上：函数若不纯它就会红。
         assert_eq!(point_label(&target, 960), point_label(&target, 960));
         assert_ne!(point_label(&target, 960), point_label(&target, 961));
         assert_eq!(point_label(&target, 0), "automation-point:T1:0");
@@ -354,6 +355,7 @@ mod tests {
 
     #[test]
     fn clip_label_is_a_pure_function_of_its_inputs() {
+        // R75: 纯函数自比（同输入两次必须同值）—— 牙长在**确定性**上。
         assert_eq!(
             clip_label("disk:/tmp/a.wav", "Kick", 0.0),
             clip_label("disk:/tmp/a.wav", "Kick", 0.0)
@@ -371,6 +373,7 @@ mod tests {
 
     #[test]
     fn placement_label_is_a_pure_function_of_clip_track_and_start() {
+        // R75: 纯函数自比（同输入两次必须同值）—— 牙长在**确定性**上。
         assert_eq!(
             placement_label("clip-a", "track-1", 0),
             placement_label("clip-a", "track-1", 0)

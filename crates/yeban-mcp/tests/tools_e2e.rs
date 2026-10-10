@@ -6441,3 +6441,158 @@ fn closing_without_the_flag_saves_first_by_default() {
         "`saveFirst: false` 不得把第二次改动写盘"
     );
 }
+
+/// **缺省值语义的黄金表**（`saveFirst` 那一课的其余实例，方向 6）。
+///
+/// 为什么需要它：第四批发现"关掉工程时缺省会不会丢改动"这一位**从未进判据**；
+/// 同一形状的风险在工具面上有多处 —— 每个可选实参的缺省都决定"不给它时会发生什么"，
+/// 而**既有用例普遍显式给值**，于是缺省本身没人管。本判据逐个**不给**它们并断言行为。
+///
+/// 单位 = 一次 `tools/call` 的响应 ＋ 文件系统。判据**不依赖墙钟**。
+///
+/// 注入（实测红）：把任一缺省翻过来（`readOnly`→true、`create`→true、`limit`→1）
+/// ⇒ 对应的那一行红。
+#[test]
+fn every_documented_tool_default_is_the_value_the_tool_uses() {
+    use yeban_mcp::domain::notes::DEFAULT_NEW_CLIP_NAME;
+    use yeban_mcp::domain::view::DEFAULT_LIMIT;
+
+    let scratch = Scratch::new("defaults");
+    let (mut first, auth) = dispatcher();
+
+    // ① `readOnly` 缺省 = false：拿到的是**排他**锁，且响应如实上报。
+    //    （`open` 助手会先把夹具工程写盘，然后**不带任何可选实参**打开它。）
+    let (_path, opened) = open(&scratch, &mut first, &auth);
+    assert_eq!(opened["status"], "success", "{opened}");
+    assert_eq!(
+        opened["data"]["readOnly"], false,
+        "`readOnly` 缺省必须 false"
+    );
+    assert_eq!(
+        opened["data"]["lockMode"], "ExclusiveWrite",
+        "缺省必须是写锁（不是共享读锁）: {opened}"
+    );
+
+    // ② `create` 缺省 = false：不存在的路径 ⇒ `FILE_NOT_FOUND`，**绝不静默新建**。
+    let (mut second, auth_second) = dispatcher();
+    let missing = scratch.join("absent.yeban");
+    let refused = call(
+        &mut second,
+        &auth_second,
+        "yeban_open_project",
+        json!({ "path": missing.display().to_string() }),
+    );
+    assert_eq!(refused["status"], "error", "{refused}");
+    assert_eq!(refused["error"]["code"], "FILE_NOT_FOUND", "{refused}");
+    assert!(!missing.exists(), "`create` 缺省不得静默新建工程文件");
+
+    // ③ `limit`/`offset` 缺省 = `DEFAULT_LIMIT`(=100) / 0，且**没有**被夹紧。
+    let query = call(&mut first, &auth, "yeban_query_project", json!({}));
+    assert_eq!(query["status"], "success", "{query}");
+    assert_eq!(query["data"]["page"]["limit"], DEFAULT_LIMIT);
+    assert_eq!(query["data"]["page"]["offset"], 0);
+    assert_eq!(query["data"]["page"]["limitClamped"], false);
+    assert_eq!(DEFAULT_LIMIT, 100, "缺省页大小是已发布的字面量");
+
+    // ④ `open(create:true)` 模板的缺省：`trackCount` = 2（主总线 ＋ 1 条 MIDI）、
+    //    种子音符 4 个、模板片段名是 **`"Motif"`**。
+    let (mut third, auth_third) = dispatcher();
+    let fresh = scratch.join("fresh.yeban");
+    let created = call(
+        &mut third,
+        &auth_third,
+        "yeban_open_project",
+        json!({ "path": fresh.display().to_string(), "create": true }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    assert_eq!(
+        created["data"]["project"]["noteCount"].as_u64(),
+        Some(yeban_mcp::domain::project_create::DEFAULT_SEED_NOTES.len() as u64),
+        "种子音符数必须等于登记表长度（⛔ 不靠名字推）: {created}"
+    );
+    assert_eq!(
+        created["data"]["project"]["trackCount"], 2,
+        "缺省 = 主总线 ＋ 1 条 MIDI 轨: {created}"
+    );
+    let pool = call(
+        &mut third,
+        &auth_third,
+        "yeban_query_project",
+        json!({ "fields": ["clip_pool"] }),
+    );
+    let created_names: Vec<&str> = pool["data"]["project"]["clip_pool"]
+        .as_object()
+        .expect("clip_pool")
+        .values()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(
+        created_names.contains(&"Motif"),
+        "`create:true` 模板的片段名必须是 `Motif`: {created_names:?}"
+    );
+    // ⚠ **两个缺省片段名不是同一个字面量**（⛔ 不靠名字推，R78①）：
+    //   模板 = `"Motif"`，而 `yeban_edit_notes(create:true)` 的缺省 = `DEFAULT_NEW_CLIP_NAME`。
+    assert_ne!(
+        "Motif", DEFAULT_NEW_CLIP_NAME,
+        "模板片段名与 edit_notes 的缺省片段名是两个字面量（混用会让判据指错东西）"
+    );
+
+    // ⑤ `yeban_edit_notes(create:true)` 的 `clipName` 缺省 = `DEFAULT_NEW_CLIP_NAME`（`"Clip"`）。
+    let (track, _clip) = {
+        let project = third.domain().active_project().expect("工程").clone();
+        let track = project
+            .tracks
+            .values()
+            .find(|track| track.id != project.master_bus_track_id)
+            .expect("非主总线音轨")
+            .id
+            .to_canonical_string();
+        (track, ())
+    };
+    let draft = call(
+        &mut third,
+        &auth_third,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track,
+            // `clipId` 是本工具签名的**必填**实参（`create:true` 时它是"将要新建的"身份）。
+            "clipId": yeban_model::EntityId::new().to_canonical_string(),
+            "create": true,
+            "ops": [{"kind": "add",
+                     "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}],
+        }),
+    );
+    assert_eq!(draft["status"], "success", "{draft}");
+    // 两方向：**合并前**池里没有 `DEFAULT_NEW_CLIP_NAME`（模板给的是 `Motif`），
+    // **合并后**它出现了 ⇒ 这个名字只能来自 `clipName` 的缺省。
+    assert!(
+        !created_names.contains(&DEFAULT_NEW_CLIP_NAME),
+        "合并前池里不得已有 `{DEFAULT_NEW_CLIP_NAME}`（否则下面那条断言是空的）: {created_names:?}"
+    );
+    let proposal_id = draft["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id");
+    let merged = call(
+        &mut third,
+        &auth_third,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "缺省片段名" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let pool = call(
+        &mut third,
+        &auth_third,
+        "yeban_query_project",
+        json!({ "fields": ["clip_pool"] }),
+    );
+    let final_names: Vec<&str> = pool["data"]["project"]["clip_pool"]
+        .as_object()
+        .expect("clip_pool")
+        .values()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(
+        final_names.contains(&DEFAULT_NEW_CLIP_NAME),
+        "缺省片段名必须是 `{DEFAULT_NEW_CLIP_NAME}`: {final_names:?}"
+    );
+}

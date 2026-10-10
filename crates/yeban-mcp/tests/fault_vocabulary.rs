@@ -24,6 +24,17 @@
 //! （`read_usize` 做 `usize::try_from(u64)`；64 位平台上这一步**永不失败**）。
 //! 因此它在本机与 CI 的 64 位腿上不可观测，**如实登记**而不是硬造一条假判据。
 
+//! ## 冻结摘要与文档表（R70②/R78④：两方向）
+//!
+//! `reason` 面的**规范文本**（文件按路径排序 → reason 按首次出现顺序 → 键按源码顺序）
+//! 的 SHA-256 是下面这个字面量。判据 `the_reason_surface_digest_is_frozen_and_documented`
+//! 同时核对**两个方向**：`sha256(规范文本) == 常量` **且** 本表 `contains(常量)`
+//! （用 `include_str!` 把本文件读回来）—— 表与代码不许各说各话。
+//!
+//! | 面 | reason 数 | 规范行数 | SHA-256 |
+//! | :--- | ---: | ---: | :--- |
+//! | `reason`（字面 `json!` 第一层键，含顺序） | 88 | 405 | `9e0024ffd74194b5377462c276647a5be735023b20e3582835ce792dde453ed2` |
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -856,4 +867,239 @@ fn the_reason_payload_shape_is_the_published_table() {
         found.len(),
         "两张载荷表必须**恰好**覆盖生产区的全部 `reason`"
     );
+}
+
+/// **`reason` 面的冻结摘要**（R70②：`assert_eq!(第一次, 第二次)` 是**自比**，
+/// 不是字节契约 —— 字节契约必须钉**字面摘要**）。
+///
+/// ⚠ 文档表（两方向之二）：本字面量必须同时出现在**本文件的模块文档表**里，
+/// 判据用 `include_str!` 把本文件读回来核对（表与代码不许各说各话）。
+/// 规范形式：**文件按路径排序** → 每个 `reason` 按**首次出现**顺序 →
+/// 每个键按**源码顺序**（只收字面 `json!` 对象第一层的键）。
+pub const FROZEN_REASON_SURFACE_SHA256: &str =
+    "9e0024ffd74194b5377462c276647a5be735023b20e3582835ce792dde453ed2";
+
+/// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
+pub const REASON_SURFACE_REASONS: usize = 88;
+/// 规范行数（每个 reason 一行 ＋ 每个键一行）。
+pub const REASON_SURFACE_LINES: usize = 405;
+
+/// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
+///
+/// 与 [`reason_payloads`] 的唯一区别是"顺序"：那个返回 `BTreeMap`（排序 ⇒
+/// 对键序不敏感），这个保留源码顺序 ⇒ 对**键序**敏感（摘要要的就是这一位）。
+fn reason_surface_in(text: &str) -> Vec<(String, Vec<String>)> {
+    let region = production_region(text);
+    let mut order: Vec<(String, Vec<String>)> = Vec::new();
+    let mut line_start = 0usize;
+    while line_start < region.len() {
+        let line_end = region[line_start..]
+            .find('\n')
+            .map_or(region.len(), |skip| line_start + skip);
+        let line = &region[line_start..line_end];
+        if !line.trim_start().starts_with("//") {
+            let mut cursor = 0usize;
+            while let Some(offset) = find(&line.as_bytes()[cursor..], b"\"reason\"") {
+                let at = cursor + offset;
+                let mut index = at + b"\"reason\"".len();
+                while index < line.len()
+                    && (line.as_bytes()[index] == b' ' || line.as_bytes()[index] == b':')
+                {
+                    index += 1;
+                }
+                if index < line.len() && line.as_bytes()[index] == b'"' {
+                    let value_start = index + 1;
+                    if let Some(len) = line.as_bytes()[value_start..]
+                        .iter()
+                        .position(|byte| *byte == b'"')
+                    {
+                        let reason = line[value_start..value_start + len].to_owned();
+                        let absolute = line_start + at;
+                        let mut keys: Vec<String> = Vec::new();
+                        if let Some(open) = region[..absolute].rfind("json!(") {
+                            keys = json_object_key_order(&region[open + "json!".len()..]);
+                        }
+                        match order.iter_mut().find(|(name, _keys)| *name == reason) {
+                            Some((_name, merged)) => {
+                                for key in keys {
+                                    if !merged.contains(&key) {
+                                        merged.push(key);
+                                    }
+                                }
+                            }
+                            None => order.push((reason, keys)),
+                        }
+                    }
+                }
+                cursor = at + 1;
+            }
+        }
+        if line_end >= region.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+    order
+}
+
+/// 与 [`json_object_keys`] 同一条括号配对／字符串状态机，但**保留顺序与重复**。
+fn json_object_key_order(from_open_paren: &str) -> Vec<String> {
+    let bytes = from_open_paren.as_bytes();
+    let mut keys: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut index = 0usize;
+    let mut current: Option<String> = None;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+                if let Some(text) = current.as_mut() {
+                    text.push(char::from(byte));
+                }
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+                let mut next = index + 1;
+                while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                    next += 1;
+                }
+                if depth == 2
+                    && next < bytes.len()
+                    && bytes[next] == b':'
+                    && let Some(text) = current.take()
+                {
+                    keys.push(text);
+                }
+                current = None;
+            } else if let Some(text) = current.as_mut() {
+                text.push(char::from(byte));
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                current = Some(String::new());
+            }
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    keys
+}
+
+/// 把整个生产区折成**规范文本**（跨文件按路径排序，键序保留）。
+fn reason_surface(files: &[(String, String)]) -> String {
+    let mut order: Vec<(String, Vec<String>)> = Vec::new();
+    let mut sorted: Vec<&(String, String)> = files.iter().collect();
+    sorted.sort_by(|left, right| left.0.cmp(&right.0));
+    for (_path, text) in sorted {
+        for (reason, keys) in reason_surface_in(text) {
+            match order.iter_mut().find(|(name, _keys)| *name == reason) {
+                Some((_name, merged)) => {
+                    for key in keys {
+                        if !merged.contains(&key) {
+                            merged.push(key);
+                        }
+                    }
+                }
+                None => order.push((reason, keys)),
+            }
+        }
+    }
+    let mut lines: Vec<String> = Vec::new();
+    for (reason, keys) in order {
+        lines.push(reason);
+        for key in keys {
+            lines.push(format!("  {key}"));
+        }
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// **R70②/R78④ 两端判据**：`sha256(规范文本) == 字面常量` **且** `文档表.contains(常量)`。
+///
+/// 为什么需要它：上一批的 `reason` 两张黄金表是**集合/载荷**契约（`BTreeMap` 排序），
+/// 它们对**键序**不敏感 —— 把 `json!` 里两个键换个位置，语义表全绿而交付字节已经变了。
+/// 本判据把整个 `reason` 面的规范文本（含**键序**）冻成字面摘要。
+///
+/// R56（先喂已知红＋已知绿）写在判据体内：① 同一份文本算两次必须相同（已知绿）；
+/// ② 改 1 个字符 ⇒ 摘要必变（已知红）；③ 交换一个三行块的顺序 ⇒ 摘要必变（已知红，
+/// 且证明摘要对键序敏感 —— 这正是语义表抓不到的那一位）。
+///
+/// 注入（实测红）：① 把某个 `json!` 里两个键**换个位置** ⇒ **只有本条红**
+/// （语义两张表全绿）＝ 独有牙；② 改一个 reason 字面量 ⇒ 本条 ＋ 两张语义表红。
+#[test]
+fn the_reason_surface_digest_is_frozen_and_documented() {
+    let files: Vec<(String, String)> = read_rust_sources(&[manifest_dir().join("src")]);
+    assert_eq!(files.len(), 35, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    let canonical = reason_surface(&files);
+    let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
+        .as_str()
+        .to_owned();
+
+    // ① 已知绿：真源码的规范文本必须等于冻结的字面摘要。
+    assert_eq!(
+        digest, FROZEN_REASON_SURFACE_SHA256,
+        "`reason` 面的规范文本摘要漂移了（改判据前先把新摘要写进常量**和**文档表）"
+    );
+    // ② 两方向之二：本文件的**文档表**必须包含同一个字面摘要。
+    let own_source = include_str!("fault_vocabulary.rs");
+    assert!(
+        own_source.contains(FROZEN_REASON_SURFACE_SHA256),
+        "文档表里没有这个摘要（表与代码各说各话）"
+    );
+    // ③ 已知绿（幂等）：同一份文本算两次必须相同。
+    assert_eq!(
+        digest,
+        yeban_model::AssetHash::of_bytes(canonical.as_bytes()).as_str()
+    );
+    // ④ 已知红（1 个字符）：摘要必须变。
+    let mut flipped = canonical.clone();
+    flipped.replace_range(0..1, "X");
+    assert_ne!(flipped, canonical, "翻转必须真的改了文本");
+    assert_ne!(
+        digest,
+        yeban_model::AssetHash::of_bytes(flipped.as_bytes()).as_str(),
+        "摘要对 1 个字符的改动必须敏感"
+    );
+    // ⑤ 已知红（键序）：交换一个真实存在的三行块 ⇒ 摘要必须变。
+    let swapped = canonical.replacen(
+        "  field\n  value\n  reason\n",
+        "  value\n  field\n  reason\n",
+        1,
+    );
+    assert_ne!(
+        swapped, canonical,
+        "规范文本里必须真有那个可交换的三行块（否则这条自证是空的）"
+    );
+    assert_ne!(
+        digest,
+        yeban_model::AssetHash::of_bytes(swapped.as_bytes()).as_str(),
+        "摘要必须对**键序**敏感（语义表抓不到的那一位）"
+    );
+    // ⑥ 规范形式的两个规模读数。
+    assert_eq!(
+        canonical
+            .lines()
+            .filter(|line| !line.starts_with("  "))
+            .count(),
+        REASON_SURFACE_REASONS,
+        "reason 数"
+    );
+    assert_eq!(canonical.lines().count(), REASON_SURFACE_LINES, "规范行数");
 }
