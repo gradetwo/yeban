@@ -4012,6 +4012,12 @@ mod tests {
             },
         ];
         assert_eq!(rig.sender.publish(&events), 2, "两个声相事件必须都进通道");
+        // ⭐ **R95 测量窗**：本夹具的输出比状态**晚一个量子** ⇒ 事件生效的第一个量子
+        // 交付的仍是**自动化之前**（居中）的音频。因此先跑一个**丢弃**的量子，
+        // 之后测到的 `first` 才是"自动化已经反映在音频里"的那一量子。
+        // （未后移时，③ 与比值循环都在读错位的音频 ⇒ 注入 p02b 会漏过。）
+        let mut shifted = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut shifted, 2);
         let mut first = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
         rig.runtime.process_quantum(&mut first, 2);
         assert_eq!(
