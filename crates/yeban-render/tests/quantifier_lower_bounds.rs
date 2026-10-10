@@ -362,7 +362,13 @@ fn no_unbounded_quantifier_assertion_in_this_crate() {
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .collect();
     files.sort();
-    assert!(files.len() >= 7, "至少扫到 7 个源文件（R93: 下界）");
+    // **R196 的实验读数（[R187-PROBE R196-FLOORS]）**: 取消"至少 7 个源文件"这一行,
+    // **受害清单为空** ⇒ 这个约束**从未提供过证据**（真正的下界在 `scan_reached` 里, 那条有受害清单）
+    // ⇒ 按 R196 **降级为诊断**（打印, 不判红）。⛔ 这不是说"放宽更好"。
+    println!(
+        "[R187-PROBE R196-FLOORS] src 文件数 = {}（诊断, 非断言; 下界由 scan_reached 承担）",
+        files.len()
+    );
     let mut scanned = 0usize;
     // R132: 入口表**保留但恒空**（入口数 = 未修缺口数 = 0）—— 双向相等断言仍在下文。
     let skipped: Vec<String> = Vec::new();
@@ -638,6 +644,47 @@ fn every_recognised_bound_form_has_a_paired_known_red() {
         ),
     ];
     assert_eq!(pairs.len(), 5, "五种被认的界形态各一对（计数下限, R93）");
+    // **R191/R194: 两个配对, 各只差**一个维度**, 方向相反**:
+    // 配对一（维度 = **界在不在**）: 同一根上有界 ⇒ 绿; 去掉界 ⇒ 红（上面的 pairs）。
+    // 配对二（维度 = **界挂在哪**，界的**存在性固定为"有"**）: 界挂在**被量词的根**上 ⇒ 绿;
+    // 把同一个界**搬到邻居根** `w` 上（只差"根的身份"这一个维度）⇒ 必须红。
+    let neighbour: [(&str, &str, &str); 5] = [
+        (
+            "explicit-len-ge",
+            "\n    fn t() {\n        assert!(v.len() >= 8 && v.iter().all(|x| *x == 0));\n    }",
+            "\n    fn t() {\n        assert!(w.len() >= 8 && v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "macro-implicit-len-eq",
+            "\n    fn t() {\n        assert_eq!(v.len(), 16);\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+            "\n    fn t() {\n        assert_eq!(w.len(), 16);\n        assert!(v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "not-is-empty",
+            "\n    fn t() {\n        assert!(!v.is_empty() && v.iter().any(|x| *x == 1));\n    }",
+            "\n    fn t() {\n        assert!(!w.is_empty() && v.iter().any(|x| *x == 1));\n    }",
+        ),
+        (
+            "value-bound-len-eq",
+            "\n    fn t() {\n        assert!(v.len() == 4 && v.iter().all(|x| *x == 0));\n    }",
+            "\n    fn t() {\n        assert!(w.len() == 4 && v.iter().all(|x| *x == 0));\n    }",
+        ),
+        (
+            "explicit-empty-table",
+            "\n    fn t() {\n        assert!(v.is_empty(), \"对照\");\n        assert!(!v.iter().any(|x| *x == 1));\n    }",
+            "\n    fn t() {\n        assert!(w.is_empty(), \"对照\");\n        assert!(!v.iter().any(|x| *x == 1));\n    }",
+        ),
+    ];
+    for (form, on_root, on_neighbour) in neighbour {
+        assert!(
+            unbounded_quantifiers(on_root).is_empty(),
+            "{form}: 界挂在被量词的根上 ⇒ 绿"
+        );
+        assert!(
+            !unbounded_quantifiers(on_neighbour).is_empty(),
+            "{form}/R191: 同一个界搬到**邻居根**上（只差根的身份）⇒ 必须红"
+        );
+    }
     for (form, with_bound, without_bound) in pairs {
         assert!(
             unbounded_quantifiers(with_bound).is_empty(),
