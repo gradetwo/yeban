@@ -379,6 +379,25 @@ fn central_directory<'a>(
         let name_len = usize::from(u16_at(bytes, pos + 28)?);
         let extra_len = usize::from(u16_at(bytes, pos + 30)?);
         let comment_len = usize::from(u16_at(bytes, pos + 32)?);
+        // APPNOTE 4.4.8 / 4.4.9 / 4.4.16：这三条 32 位字段取 `0xFFFFFFFF` 是 **ZIP64 标记**，
+        // 真值在 ZIP64 扩展信息 extra field（APPNOTE 4.5.3，ID `0x0001`）里 ⇒ 本模块不支持。
+        // ⛔ 若不在这里点名，同一个容器会按调用方给的 `max_entry_bytes` / `max_name_bytes`
+        // 报出**不同**的读数（默认上界 ⇒ `LimitExceeded`，上界放到 `usize::MAX` ⇒
+        // `SizeMismatch` / `Malformed`）⇒ 那是"把**格式**问题说成**策略**问题"。
+        //
+        // ⭐ [R54] 这三条读取的偏移（`pos + 20` / `pos + 24` / `pos + 42`）与 `name_len`
+        // **无关** ⇒ 必须放在**任何**基于调用方上界的检查（含 `max_name_bytes`）**之前**：
+        // 格式问题优先于策略问题。连带效果：一个**被截断**的中央目录条目（`pos + 46`
+        // 越过文件尾）现在先在这里报 `Malformed`（越界读 32 位字段），⛔ 不再是
+        // `LimitExceeded { limit: "name_bytes" }` —— 截断是格式问题，这个读数更诚实。
+        // 判据 `mxl_zip64_markers_are_named_not_blamed_on_the_limit` 与
+        // `the_zip64_marker_fires_before_the_entry_name_limit` 钉住这条。
+        let compressed = u32_at(bytes, pos + 20)?;
+        let uncompressed = u32_at(bytes, pos + 24)?;
+        let local_offset = u32_at(bytes, pos + 42)?;
+        if compressed == u32::MAX || uncompressed == u32::MAX || local_offset == u32::MAX {
+            return Err(MxlError::UnsupportedZip64);
+        }
         if name_len > limits.max_name_bytes {
             return Err(MxlError::LimitExceeded {
                 limit: "name_bytes",
@@ -396,18 +415,6 @@ fn central_directory<'a>(
         let flags = u16_at(bytes, pos + 8)?;
         let method = u16_at(bytes, pos + 10)?;
         let crc32 = u32_at(bytes, pos + 16)?;
-        let compressed = u32_at(bytes, pos + 20)?;
-        let uncompressed = u32_at(bytes, pos + 24)?;
-        let local_offset = u32_at(bytes, pos + 42)?;
-        // APPNOTE 4.4.8 / 4.4.9 / 4.4.16：这三条 32 位字段取 `0xFFFFFFFF` 是 **ZIP64 标记**，
-        // 真值在 ZIP64 扩展信息 extra field（APPNOTE 4.5.3，ID `0x0001`）里 ⇒ 本模块不支持。
-        // ⛔ 若不在这里点名，同一个容器会按调用方给的 `max_entry_bytes` 报出**不同**的读数
-        // （默认上界 ⇒ `LimitExceeded`，上界放到 `usize::MAX` ⇒ `SizeMismatch` / `Malformed`）
-        // ⇒ 那是"把**格式**问题说成**策略**问题"。判据
-        // `mxl_zip64_markers_are_named_not_blamed_on_the_limit` 钉住这条。
-        if compressed == u32::MAX || uncompressed == u32::MAX || local_offset == u32::MAX {
-            return Err(MxlError::UnsupportedZip64);
-        }
         entries.push(CentralEntry {
             name,
             flags,

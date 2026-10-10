@@ -2661,18 +2661,27 @@ fn the_declared_length_limit_fires_before_the_local_header_is_read() {
     );
 }
 
-/// 判据 (类别: 核对次序 ＋ **登记在案的现状**): 中央目录的**条目名上界**先于该条目的
-/// **ZIP64 标记**开火 —— 两者同时成立时报 `LimitExceeded { limit: "name_bytes" }`。
+/// 判据 (类别: 核对次序 ＋ **按裁决 R54 反向**): 中央目录里每个条目的 **ZIP64 标记**
+/// 先于**条目名上界**开火 —— 两者同时成立时报 `UnsupportedZip64`（**格式**问题优先）。
 ///
-/// 补的是哪个缺口（本票注入实测）：把每个条目的 ZIP64 标记检查**提前**到条目名上界
-/// 之前（注入 ORD08）后全部判据**保持绿** ⇒ 这个**先后**此前没有判据。
+/// ## ⚠️ 这条判据是**按裁决反向**的，⛔ 不是"改判据迁就实现"
 ///
-/// ⚠️ **登记在案的现状，不是被认可的契约**：`mxl_zip64_markers_are_named_not_blamed_on_the_limit`
-/// 的文档写明"⛔ 不许把**格式**问题说成**策略**问题"，而本判据钉住的正是这样一个
-/// **例外**（条目名超上界是**策略**问题，却压过了 ZIP64 这个**格式**问题）。
-/// 本票**不擅自改产线**，只把它登记下来供裁决。
+/// 逐行说明这次的语义反转（裁决 **R54**：文档是规范、实现是错的）：
+/// 1. **旧语义**（第七批，sha `0cafc95`）：`mxl.rs` 把三条 ZIP64 标记检查放在
+///    `name_len > limits.max_name_bytes` **之后** ⇒ 两者同时成立时报
+///    `LimitExceeded { limit: "name_bytes" }`，判据名 `the_entry_name_limit_fires_before_the_zip64_marker`。
+/// 2. **发现的冲突**：`mxl.rs` 的模块文档写明「⛔ 不许把**格式**问题说成**策略**问题」
+///    ⇒ `LimitExceeded`（策略）压过 `UnsupportedZip64`（格式）**违反了该设计不变式**。
+/// 3. **裁决**：**改实现**（把三条 `u32_at(pos + 20/24/42)` 的读取与检查整体提到
+///    `name_len` 上界检查之前 —— 这三条偏移与 `name_len` 无关 ⇒ 移动安全）。
+/// 4. **连带改行为**：一个**被截断**的中央目录条目（`pos + 46` 越过文件尾）从
+///    `LimitExceeded { limit: "name_bytes" }` 变成 `Malformed`（越界读 32 位字段）
+///    —— 截断是格式问题，这个读数**更诚实**。
+/// 5. **本判据**因此把期望值从 `LimitExceeded{name_bytes}` 改成 `UnsupportedZip64`，
+///    并**改名**为 `the_zip64_marker_fires_before_the_entry_name_limit`（旧名断言的事
+///    已经为假）。第二条断言（截断条目）是**新增**的，钉住第 4 点的连带读数。
 #[test]
-fn the_entry_name_limit_fires_before_the_zip64_marker() {
+fn the_zip64_marker_fires_before_the_entry_name_limit() {
     let container = container_xml("score.xml");
     let mut zip = build_zip(
         &[
@@ -2693,17 +2702,43 @@ fn the_entry_name_limit_fires_before_the_zip64_marker() {
         max_name_bytes: 4096,
         ..MxlLimits::default()
     };
-    match parse_mxl_with_limits(&zip, &limits) {
-        Err(MxlError::LimitExceeded { limit, value, max }) => {
-            assert_eq!(
-                (limit, value, max),
-                ("name_bytes", 65535, 4096),
-                "条目名上界先开火（登记在案的现状）"
-            );
+    assert_eq!(
+        parse_mxl_with_limits(&zip, &limits),
+        Err(MxlError::UnsupportedZip64),
+        "ZIP64 标记（格式问题）必须先于条目名上界（策略问题）开火"
+    );
+
+    // 第二条（R54 的**连带**效果）：把中央目录**截短到读不出那三条 32 位字段**
+    // （`pos + 46` 越过文件尾），同时补一个**合法**的 EOCD。
+    // 旧次序在这里会先读到 `name_len = 60000 > max_name_bytes = 4096`
+    // ⇒ 报 `LimitExceeded { limit: "name_bytes" }`；新次序先读 `u32_at(pos + 42)`
+    // ⇒ 报 `Malformed`（截断是格式问题，这个读数更诚实）。
+    let kept = 20usize;
+    let declared_entries = 60000u16;
+    let mut truncated = zip[..central + kept].to_vec();
+    truncated.extend_from_slice(b"PK\x05\x06");
+    truncated.extend_from_slice(&0u16.to_le_bytes()); // 本盘号
+    truncated.extend_from_slice(&0u16.to_le_bytes()); // 中央目录所在盘
+    truncated.extend_from_slice(&declared_entries.to_le_bytes()); // 本盘条目数
+    truncated.extend_from_slice(&declared_entries.to_le_bytes()); // 总条目数
+    truncated.extend_from_slice(&(kept as u32).to_le_bytes()); // 中央目录尺寸
+    truncated.extend_from_slice(&(central as u32).to_le_bytes()); // 中央目录偏移
+    truncated.extend_from_slice(&0u16.to_le_bytes()); // 注释长度
+    assert_eq!(truncated.len(), central + 42, "保留 20 字节 + 22 字节 EOCD");
+
+    let wide = MxlLimits {
+        max_entries: 100_000,
+        ..limits
+    };
+    match parse_mxl_with_limits(&truncated, &wide) {
+        Err(MxlError::Malformed { offset, detail }) => {
+            assert_eq!(offset, central + 42);
+            assert_eq!(detail, "读 32 位字段时越过文件尾");
         }
-        other => panic!("期望 name_bytes 的 LimitExceeded，得到 {other:?}"),
+        other => panic!("截断的中央目录条目必须报 Malformed（格式问题），得到 {other:?}"),
     }
 }
+
 /// 判据 (类别: 核对次序): `read_entry` **先查加密位、再查声明的未压缩长度上界**。
 ///
 /// 补的是哪个缺口（本票注入实测）：把加密位检查挪到声明长度检查**之后**（注入 ORD13）
