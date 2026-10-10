@@ -31,6 +31,11 @@ fn every_handwritten_default_is_the_documented_state() {
     assert!(!state.can_redo(), "没有历史 ⇒ 不可重做");
 
     // ② `CreateConfig::default()`：轨数、种子音符、片段名。
+    // ⭐ R119/R120：下面拿 `DEFAULT_SEED_NOTES.len()` 当分母 ⇒ **分母必须非空**。
+    assert!(
+        !DEFAULT_SEED_NOTES.is_empty(),
+        "登记表不得为空（否则'音符数等于登记表长度'是空断言）"
+    );
     let config = CreateConfig::default();
     assert_eq!(config.track_count, DEFAULT_TRACK_COUNT);
     assert_eq!(DEFAULT_TRACK_COUNT, 1);

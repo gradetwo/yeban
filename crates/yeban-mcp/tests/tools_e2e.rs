@@ -6461,8 +6461,15 @@ fn every_documented_tool_default_is_the_value_the_tool_uses() {
     let (mut first, auth) = dispatcher();
 
     // ① `readOnly` 缺省 = false：拿到的是**排他**锁，且响应如实上报。
-    //    （`open` 助手会先把夹具工程写盘，然后**不带任何可选实参**打开它。）
-    let (_path, opened) = open(&scratch, &mut first, &auth);
+    //    ⭐ R148/R154：这一行**声称**测缺省 ⇒ 它**不得**自己把 `readOnly`/`create` 传进去。
+    let (path, _bytes) = scratch.write_project("demo.yeban");
+    let arguments = json!({ "path": path.display().to_string() });
+    assert_eq!(
+        arguments.as_object().expect("对象").len(),
+        1,
+        "只设必要输入（`path`）—— 多设一个键就会遮蔽缺省：{arguments}"
+    );
+    let opened = call(&mut first, &auth, "yeban_open_project", arguments);
     assert_eq!(opened["status"], "success", "{opened}");
     assert_eq!(
         opened["data"]["readOnly"], false,
@@ -6487,7 +6494,13 @@ fn every_documented_tool_default_is_the_value_the_tool_uses() {
     assert!(!missing.exists(), "`create` 缺省不得静默新建工程文件");
 
     // ③ `limit`/`offset` 缺省 = `DEFAULT_LIMIT`(=100) / 0，且**没有**被夹紧。
-    let query = call(&mut first, &auth, "yeban_query_project", json!({}));
+    // ⭐ R148/R154：`limit`/`offset` 的缺省行同理 —— 一个键都不设。
+    let query_arguments = json!({});
+    assert!(
+        query_arguments.as_object().expect("对象").is_empty(),
+        "只设必要输入（`yeban_query_project` 没有必填实参）"
+    );
+    let query = call(&mut first, &auth, "yeban_query_project", query_arguments);
     assert_eq!(query["status"], "success", "{query}");
     assert_eq!(query["data"]["page"]["limit"], DEFAULT_LIMIT);
     assert_eq!(query["data"]["page"]["offset"], 0);
