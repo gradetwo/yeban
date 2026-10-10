@@ -2019,4 +2019,24 @@ mod tests {
         pitches.sort_unstable();
         pitches
     }
+    /// `bars` 的已发布上限是 **64**，且 `bars == 64` **放行**（闸门含端点）。
+    ///
+    /// 第二轮注入实测：`SB-maxbars`（64 → 65）与 `SB-barsgate`（`>` → `>=`）
+    /// **双双全绿** —— 既有判据只喂 `0` 与 `MAX_BARS + 1`（常量当输入），
+    /// 既没钉住字面值，也没喂过端点。
+    #[test]
+    fn the_published_bar_ceiling_is_64_and_includes_the_boundary() {
+        // 字面值（不是常量自比）。
+        assert_eq!(MAX_BARS, 64);
+        let project = filled_project();
+        let accepted = plan(&project, "Chorus", "lo_fi_hip_hop", 64, None)
+            .expect("bars == 64 必须放行 (闸门含端点)");
+        assert!(!accepted.ops.is_empty(), "放行的那一次必须真的产出骨架");
+        let fault = plan(&project, "Chorus", "lo_fi_hip_hop", 65, None).expect_err("bars=65");
+        assert_eq!(fault.domain_code(), Some(BuildCode::OutOfRange));
+        let BuildFault::Domain { data, .. } = &fault else {
+            panic!("应当是本模块判定的领域失败, 实际 {fault:?}");
+        };
+        assert_eq!(data["maxBars"], serde_json::json!(64), "上限必须是字面 64");
+    }
 }

@@ -638,7 +638,15 @@ fn parse_point(
         return Err(Fault::domain_with_data(
             ErrorCode::OutOfRange,
             format!("`point.value` 必须有限, 实际 {value}"),
-            serde_json::json!({ "field": "point.value", "value": value }),
+            // `reason` 与本仓库其余闸门同一条口径：让"是**哪一道**闸门拒的"机器可读。
+            // 这一道与下面那道值域闸门的契约码**相同**（都是 `OUT_OF_RANGE`），
+            // 只有 `reason` / `domainMin` 能区分它们 —— 没有 `reason` 时判据只能去
+            // 比错误文案（脆），而"非有限"与"越界"是两件不同的事。
+            serde_json::json!({
+                "field": "point.value",
+                "value": value,
+                "reason": "nonFiniteValue",
+            }),
         ));
     }
     if let Some((min, max)) = domain
@@ -1031,5 +1039,148 @@ mod tests {
             Ok(CurveType::Linear),
             "缺省是模型的默认曲线"
         );
+    }
+    /// 读 tick 的**已发布上限是 256**，且闸门**含端点**（256 个放行、257 个拒绝）。
+    ///
+    /// 为什么单列这一条：既有判据 `read_ticks_are_bounded_and_ordered` 喂的是
+    /// `0..=MAX_READ_TICKS`（257 个）—— 它同时用**常量**当输入，于是
+    /// ① 把常量改小（256 → 128）读数照样红，常量本身从没进过判据；
+    /// ② `== 上限` 这个**端点**从来没有被喂过，`>` 改成 `>=` 也照样绿。
+    /// 第二轮注入实测：`AU-maxticks`（256 → 128）与 `AU-ticksgate`（`>` → `>=`）
+    /// **双双全绿** —— 本判据就是为这两条写的（两条注入下本判据都变红）。
+    #[test]
+    fn the_read_tick_ceiling_is_256_and_includes_the_boundary() {
+        // 字面值，不是常量自比：常量被改时本行必须红。
+        assert_eq!(MAX_READ_TICKS, 256);
+        let project = filled_project();
+        let track = lead(&project);
+        // 恰好 256 个 ⇒ 放行（端点在内）。
+        let exactly: Vec<u64> = (0..256_u64).collect();
+        let planned = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("TrackVolume")),
+                ("ticks", serde_json::json!(exactly)),
+            ]),
+            track,
+        )
+        .expect("恰好 256 个 tick 必须放行 (闸门含端点)");
+        assert_eq!(planned.read_ticks.len(), 256);
+        // 257 个 ⇒ 响亮拒绝，且报文里报出**字面**上限。
+        let too_many: Vec<u64> = (0..257_u64).collect();
+        let fault = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("TrackVolume")),
+                ("ticks", serde_json::json!(too_many)),
+            ]),
+            track,
+        )
+        .expect_err("257 个 tick 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        // 本文件没有公用的"取 data"助手，就在本判据里取（不改产线 API）。
+        fn data_of(fault: &Fault) -> &Value {
+            match fault {
+                Fault::Domain { data, .. } => data.as_ref().expect("本形态的失败必须带 data"),
+                Fault::Impl { error } => panic!("应当是领域失败, 实际是 {error:?}"),
+            }
+        }
+        let data = data_of(&fault);
+        assert_eq!(data["limit"], serde_json::json!(256), "上限必须是字面 256");
+        assert_eq!(data["actual"], serde_json::json!(257));
+    }
+
+    /// 采样点值域的闸门**含两个端点**（`value == max` 与 `value == min` 都放行）。
+    ///
+    /// 第二轮注入实测：`AU-domain`（`value > max` → `value >= max`）**全绿** ——
+    /// 既有判据只喂过 99.0（远在上界 12.0 之上），端点从未被喂过。端点是有意义的
+    /// 一等输入（"把音量推到标称上限"是常见请求），因此本判据把它钉住。
+    #[test]
+    fn the_point_domain_gate_includes_both_end_points() {
+        let project = filled_project();
+        let track = lead(&project);
+        // 音量的标称域 = [-60, 12]（同文件另一条判据已用字面值钉住）。
+        for value in [-60.0_f64, 12.0] {
+            let planned = plan(
+                &project,
+                &args(&[
+                    ("lane", Value::from("TrackVolume")),
+                    ("point", serde_json::json!({"tick": 0, "value": value})),
+                ]),
+                track,
+            )
+            .unwrap_or_else(|fault| panic!("端点 {value} 必须被接受, 实际 {fault:?}"));
+            assert_eq!(planned.domain, Some((-60.0, 12.0)));
+            let write = planned
+                .write
+                .as_ref()
+                .expect("给了 `point` ⇒ 必然有写入载荷");
+            assert_eq!(write.value, value as f32, "端点必须原样进写入载荷");
+            assert_eq!(write.tick, 0);
+        }
+        // 端点之外一格 ⇒ OUT_OF_RANGE，报文报出**字面**端点。
+        let fault = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("TrackVolume")),
+                ("point", serde_json::json!({"tick": 0, "value": 12.5})),
+            ]),
+            track,
+        )
+        .expect_err("12.5 dB 超过标称上界");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        let data = data.as_ref().expect("本形态的失败必须带 data");
+        assert_eq!(data["domainMin"], serde_json::json!(-60.0));
+        assert_eq!(data["domainMax"], serde_json::json!(12.0));
+    }
+    /// 非有限值在 **f64 → f32 收窄之后**被判，且这一道闸门与值域闸门**分得开**。
+    ///
+    /// 第二轮注入实测：`AU-finite`（把 `if !value.is_finite()` 换成 `if false`）
+    /// **全绿** —— 没有任何判据喂过"JSON 文本层合法、收窄到 f32 之后是 `inf`"的输入。
+    /// 机械前提（本机真跑过的探针）：`serde_json` 拒绝文本里的越界浮点
+    /// （`"1e400"` / `"NaN"` 都是解析期错误，见 `serde_json-1.0.151/src/de.rs` 的
+    /// `NumberOutOfRange`），但 **`1e39` 在 f64 里是有限数**、收窄到 `f32` 之后是 `inf`
+    /// ⇒ 这一道闸门是**活的**，不是防御性死码（与 `ef459f9` 同一族）。
+    #[test]
+    fn a_point_value_that_only_overflows_after_narrowing_is_refused_as_non_finite() {
+        let project = filled_project();
+        let track = lead(&project);
+        let fault = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("TrackVolume")),
+                ("point", serde_json::json!({"tick": 0, "value": 1e39})),
+            ]),
+            track,
+        )
+        .expect_err("1e39 收窄到 f32 之后是 inf, 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        let data = data.as_ref().expect("本形态的失败必须带 data");
+        assert_eq!(
+            data["reason"], "nonFiniteValue",
+            "必须是**非有限**那一道闸门拒的, 而不是值域闸门: {data}"
+        );
+        // 阴性对照: 值域闸门拒的报文**没有**这个 reason（两道闸门因此分得开）。
+        let out_of_domain = plan(
+            &project,
+            &args(&[
+                ("lane", Value::from("TrackVolume")),
+                ("point", serde_json::json!({"tick": 0, "value": 12.5})),
+            ]),
+            track,
+        )
+        .expect_err("12.5 dB 越界");
+        let Fault::Domain { data, .. } = &out_of_domain else {
+            panic!("应当是领域失败, 实际 {out_of_domain:?}");
+        };
+        let data = data.as_ref().expect("带 data");
+        assert!(data.get("reason").is_none(), "值域闸门不带这个 reason");
+        assert_eq!(data["domainMax"], serde_json::json!(12.0));
     }
 }

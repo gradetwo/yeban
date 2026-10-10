@@ -316,4 +316,33 @@ mod tests {
         );
         assert!(!Violation::SecondEvaluation.message().is_empty());
     }
+    /// `interpolate` 那条针**真的会咬人**（不是死条目）。
+    ///
+    /// 第二轮注入实测：`AA-interp`（把 [`INTERPOLATION_NEEDLES`] 的第二项改成
+    /// `"interpolateX"`）**全绿** —— 既有判据只喂过 `.ease(`（`low.curve.ease(t)`），
+    /// 第二项从来没有被任何输入触发过。一个从没被触发过的针等于没有针：
+    /// 谁把插值函数命名成 `interpolate`，审计**不会**红。
+    #[test]
+    fn the_interpolate_needle_really_bites() {
+        // 只含 `interpolate`、**不含** `.ease(` —— 恰好把两条针分开。
+        let batch = sources(&[(
+            "crates/yeban-mcp/src/domain/rogue.rs",
+            "fn interpolate(low: f32, high: f32, t: f32) -> f32 {\n    \
+             low + (high - low) * t\n}\n",
+        )]);
+        let found = scan_second_automation_evaluations(&batch);
+        assert_eq!(found.len(), 1, "`interpolate` 必须被抓到: {found:?}");
+        assert!(found[0].contains("[secondInterpolation]"), "{found:?}");
+        assert!(found[0].contains("rogue.rs:1"), "{found:?}");
+        // 阴性对照: 把同一个词切掉一个字母 ⇒ 干净（证明上面红的是那个**词**）。
+        let clean = sources(&[(
+            "crates/yeban-mcp/src/domain/rogue.rs",
+            "fn interpolat(low: f32, high: f32, t: f32) -> f32 {\n    \
+             low + (high - low) * t\n}\n",
+        )]);
+        assert_eq!(
+            scan_second_automation_evaluations(&clean),
+            Vec::<String>::new()
+        );
+    }
 }

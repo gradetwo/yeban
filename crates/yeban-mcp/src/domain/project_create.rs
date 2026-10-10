@@ -775,4 +775,87 @@ mod tests {
             );
         }
     }
+    /// 种子音轨数的已发布上限是 **8**（= `section_build::MAX_PARTS`），且
+    /// `trackCount == 8` 放行、`9` 拒绝。
+    ///
+    /// 第二轮注入实测：`SB-maxparts`（`MAX_PARTS` 8 → 7）与 `PC-count`
+    /// 之外的边界从未被喂过。上限**不是**可以随手改的一个数：它同时是
+    /// `section_build` 的声部上限，而两处共用同一个常量 ⇒ 本判据也把那条耦合钉住。
+    #[test]
+    fn the_seed_track_count_ceiling_is_the_published_eight() {
+        assert_eq!(MAX_TRACK_COUNT, 8);
+        let eight = parse_config(None, None, None, Some(&serde_json::json!(8)), None, None)
+            .expect("trackCount == 8 必须放行");
+        assert_eq!(eight.track_count, 8);
+        let nine = parse_config(None, None, None, Some(&serde_json::json!(9)), None, None)
+            .expect_err("trackCount == 9 必须被拒");
+        assert_eq!(nine.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        // 合法上界的那一次真的建得出 8 条内容轨 + 主总线。
+        let created = build(&eight, &path()).expect("建工程");
+        assert_eq!(created.project.tracks.len(), 9);
+        created.project.validate().expect("自校验");
+    }
+
+    /// 种子音高的已发布上限是 **127**，且 `pitch == 127` 放行、`128` 拒绝。
+    ///
+    /// 第二轮注入实测：`PC-pitch`（`> 127` → `> 126`）**全绿** —— 既有判据只喂
+    /// 过 `pitch = 200`。哨兵值 127 是 MIDI 的合法最高音，把它误拒是听得出来的缺陷。
+    #[test]
+    fn the_seed_pitch_ceiling_is_127_and_includes_the_boundary() {
+        let top = parse_config(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&serde_json::json!([{"pitch": 127, "startTick": 0, "durationTicks": 960}])),
+        )
+        .expect("pitch == 127 必须放行");
+        assert_eq!(top.notes[0].0, 127, "种子音符是 (音高, 时值) 二元组");
+        let too_high = parse_config(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&serde_json::json!([{"pitch": 128, "startTick": 0, "durationTicks": 960}])),
+        )
+        .expect_err("pitch == 128 必须被拒");
+        assert_eq!(
+            too_high.domain_code(),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+    }
+
+    /// `bpm` 的已发布上限是 **999**，且 `bpm == 999` 放行。
+    ///
+    /// 第二轮注入实测：`PC-bpm`（`..=MAX_BPM` → `..MAX_BPM`）**全绿** —— 既有判据
+    /// 只喂过 5000.0。排除上端点会把一份合法工程变成"参数越界"。
+    #[test]
+    fn the_bpm_ceiling_includes_the_published_maximum() {
+        assert_eq!(MAX_BPM, 999.0);
+        let fastest = parse_config(
+            None,
+            Some(&serde_json::json!(999.0)),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("bpm == 999 必须放行");
+        assert_eq!(fastest.bpm, Some(999.0));
+        let too_fast = parse_config(
+            None,
+            Some(&serde_json::json!(999.5)),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("bpm == 999.5 必须被拒");
+        assert_eq!(
+            too_fast.domain_code(),
+            Some(ErrorCode::InvalidParameterRange)
+        );
+    }
 }

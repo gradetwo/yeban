@@ -739,7 +739,13 @@ fn parse_gain(arguments: &Map<String, Value>) -> Result<f32, Fault> {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!("`gainDb` 必须有限, 实际 {value}"),
-            serde_json::json!({ "field": "gainDb", "value": value }),
+            // 与 `automation::parse_point` 同一口径：`reason` 让"是**哪一道**闸门拒的"
+            // 机器可读（`InvalidParameterRange` 还被别的闸门共用）。
+            serde_json::json!({
+                "field": "gainDb",
+                "value": value,
+                "reason": "nonFiniteValue",
+            }),
         ));
     }
     Ok(value)
@@ -1437,5 +1443,47 @@ mod tests {
                     .is_some_and(|text| text.contains("Op::AddClipPlacement"))),
             "必须说明片段真的落轨了: {data}"
         );
+    }
+    /// `gainDb` 的非有限闸门判在 **f64 → f32 收窄之后**，且与别的闸门分得开。
+    ///
+    /// 第二轮注入实测：`IA-gainfinite`（`if !value.is_finite()` → `if false`）
+    /// **全绿**。机械前提：`serde_json` 在**文本层**就拒绝越界浮点（`"1e400"` 是解析期
+    /// 错误），但 **`1e39` 在 f64 里有限**、收窄到 `f32` 之后是 `inf` ⇒ 这一道闸门
+    /// 是活的（与 `ef459f9` 修掉的是同一类缺陷：`setParam` 的有限性判在收窄之后）。
+    #[test]
+    fn a_gain_that_only_overflows_after_narrowing_is_refused_as_non_finite() {
+        let project = filled_project();
+        let bytes = wav_s16(48_000, &[0, 1_000, -1_000, 0]);
+        let hash = AssetHash::of_bytes(&bytes);
+        let pool = pool_of(&bytes);
+        let fault = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Loud",
+                "assetHash": hash.as_str(),
+                "gainDb": 1e39,
+            })),
+        )
+        .expect_err("1e39 收窄到 f32 之后是 inf, 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        let data = data.as_ref().expect("本形态的失败必须带 data");
+        assert_eq!(data["field"], "gainDb");
+        assert_eq!(data["reason"], "nonFiniteValue", "{data}");
+        // 阴性对照: 正常增益照旧放行（上面红的不是"什么都拒"）。
+        let ok = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Loud",
+                "assetHash": hash.as_str(),
+                "gainDb": -1.5,
+            })),
+        )
+        .expect("普通增益必须放行");
+        assert!(!ok.ops.is_empty());
     }
 }
