@@ -310,6 +310,31 @@ fn char_indices_at(line: &str, chars_index: usize) -> usize {
 /// * 针在**块注释**里 ⇒ **修复前非 0**（那是真的假阴性，第九批实测红）、**修复后 0**
 ///   ⇒ 它**依赖掩码器实现**，⛔ 不是恒等式；
 /// * 针在**单行字符串/单行 raw** 里 ⇒ 恒等式 0；针在**跨行 raw 的内部行** ⇒ **非 0**（已知限制）。
+///
+/// ## 跨行 raw 已知限制：**已降级登记**（R190）＋ 逐行清单 ＋ 触发条件
+///
+/// **为什么仅诊断可接受**：造成危害需要一个**追加条件** —— 对应扫描器要求**同一行**上
+/// 还有第二个针（`scan_dry_run_entry_points` 要 `fn plan_` ＋ `&mut Domain` 同行；
+/// `scan_second_automation_evaluations` 要 `value_at(`／`.ease(` 同行且不在唯一的合规入口内）。
+/// 清单里的 production 命中**都不满足**该追加条件（实测：六道门全绿）。
+///
+/// **逐行清单**（区域 = `crates/yeban-mcp/src/**`；口径 = 逐行本地掩码；命令 = 本判据的诊断输出）：
+///
+/// | 文件:行 | 该行含哪个针 | 区域 |
+/// | :--- | :--- | :--- |
+/// | `src/dispatch.rs:424` | `dryRun` | production |
+/// | `src/domain/mod.rs:2684` | `&mut Domain` | production |
+/// | `src/domain/mod.rs:2783` | `&mut Domain` | production |
+/// | `src/domain/mod.rs:2832` | `&mut Domain` | production |
+/// | `src/domain/mod.rs:3336` | `&mut Domain` | production |
+/// | `src/domain/mod.rs:3347` | `dryRun` | production |
+/// | `src/domain/mod.rs:3350` | `dryRun` | production |
+/// | `src/transport/http.rs:1177` | `dryRun` | test 区（⛔ 不在生产区） |
+///
+/// **若要触发**（从"仅诊断"升级为真违规）：某个**生产区**的跨行 raw 内部行上同时出现**两个**针
+/// （例如 `fn plan_x(&mut Domain)`）⇒ 那时 `hidden_in_code` 会非空、本判据变红。
+/// **落地代价**：把 `code_without_literals` 从"逐行"改成"带跨行 raw 状态的流式掩码器"，
+/// 全部调用方改为按文件喂入（本 crate 内的中等改动，已登记为候选）。
 #[test]
 fn masked_versus_raw_differences_are_typed_and_never_hide_code() {
     const NEEDLES: [&str; 8] = [
