@@ -2045,9 +2045,11 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .get("ops")
         .ok_or_else(|| Fault::domain(ErrorCode::InvalidParameterRange, "缺少 `ops`"))?;
     // `ops` 先解析（一次），因此"这一批到底要做什么"在**任何寻址之前**就已知：
-    // 音轨实体级形态（`removeTrack`）自带 `trackId`，它不需要顶层 `trackId` / `clipId`
-    // —— 那两个实参的语义是"目标片段（及其音轨）"，本形态一个音符都不读、也不碰片段池。
-    // 与三个路由级形态、段落形态、场景形态同一纪律（它们的寻址也在操作对象里）。
+    // 寻址自带的形态（`removeTrack` 与设备形态 `insertDevice` / `removeDevice`）
+    // 自带 `trackId`，它们不需要顶层 `trackId` / `clipId` —— 那两个实参的语义是
+    // "目标片段（及其音轨）"，这些形态一个音符都不读、也不碰片段池。
+    // 与三个路由级形态、段落形态、场景形态同一纪律（它们的寻址也在操作对象里，
+    // 但**仍然**要求顶层两个身份合法 —— 那是本工具既有的入口口径，本票不放松）。
     //
     // ⚠ 空 `ops` 的**唯一**合法情形是"只摆放"（见下面那条口径），因此这里先放行空的那
     // 一格，再对非空数组调 `parse_ops` —— 后者自己的空数组守卫**没有**放松。
@@ -2058,12 +2060,13 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     } else {
         notes::parse_ops(raw_ops)?
     };
-    let track_entity_only = notes::NoteOp::all_track_entity_level(&note_ops);
-    let (track_id, clip_id) = if track_entity_only {
+    let self_addressed_only = notes::NoteOp::all_self_addressed(&note_ops);
+    let (track_id, clip_id) = if self_addressed_only {
         // 缺省的两个身份在这里取**占位**的 nil 身份：本分支下它们一个都不会被读
         // （`compile` 走的是"不查音轨与片段池"的那条路），而且它们**不**参与
         // `ops[].kind` 的任何判定。判据
-        // `remove_track_does_not_need_the_envelope_ids_or_midi` 钉住这条。
+        // `remove_track_does_not_need_the_envelope_ids_or_midi` 与
+        // `device_ops_do_not_need_the_envelope_ids_or_midi` 钉住这条。
         (EntityId::default(), EntityId::default())
     } else {
         (arg_id(call, "trackId")?, arg_id(call, "clipId")?)
@@ -2174,8 +2177,9 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     }
     // 描述按**实际内容**报（不把一次纯音轨级写入说成"音符编辑"，把池级取走说成
     // "音轨级编辑"，不把一次纯路由边增益写入说成"音轨级编辑"，不把一次纯段落取走
-    // 说成"音轨级编辑"，也不把一次纯场景取走说成"段落级编辑" —— 那是七个不同的
-    // 对象）。六个非音符的桶各自计数，混合调用只报**真的出现过**的那些桶。
+    // 说成"音轨级编辑"，也不把一次纯场景取走说成"段落级编辑"，更不把一次纯设备链
+    // 编辑说成"音轨级编辑" —— 那是**八个**不同的对象）。七个非音符的桶各自计数，
+    // 混合调用只报**真的出现过**的那些桶。
     let note_level = note_ops.iter().filter(|op| op.is_note_level()).count();
     let routing_level = note_ops.iter().filter(|op| op.is_routing_level()).count();
     let section_level = note_ops.iter().filter(|op| op.is_section_level()).count();
@@ -2184,14 +2188,17 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         .iter()
         .filter(|op| op.is_track_entity_level())
         .count();
+    let device_level = note_ops.iter().filter(|op| op.is_device_level()).count();
     // "音轨级"= 写一条音轨的**属性**（那些形态的目标是顶层 `trackId`），
-    // 因此要把音轨实体级那一条**减掉** —— 取走音轨不是"改音轨属性"。
+    // 因此要把音轨实体级与设备级那两条**减掉** —— 取走音轨不是"改音轨属性"，
+    // 设备链编辑也不是（它的目标是操作对象自带的 `trackId`）。
     let track_level = note_ops.len()
         - note_level
         - routing_level
         - section_level
         - scene_level
-        - track_entity_level;
+        - track_entity_level
+        - device_level;
     let description = if removing_clip {
         format!("取走片段池条目: {clip_id}")
     } else if removing_track {
@@ -2209,17 +2216,25 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         format!("段落级编辑: {section_level} 步")
     } else if scene_level == note_ops.len() {
         format!("场景级编辑: {scene_level} 步")
-    } else if note_level == 0 && routing_level == 0 && section_level == 0 && scene_level == 0 {
+    } else if device_level == note_ops.len() {
+        format!("设备链编辑: {device_level} 步")
+    } else if note_level == 0
+        && routing_level == 0
+        && section_level == 0
+        && scene_level == 0
+        && device_level == 0
+    {
         format!("音轨级编辑: {track_level} 步")
     } else if track_level == 0
         && track_entity_level == 0
+        && device_level == 0
         && routing_level == 0
         && section_level == 0
         && scene_level == 0
     {
         format!("音符编辑: {note_level} 步")
     } else {
-        let mut parts: Vec<String> = Vec::with_capacity(6);
+        let mut parts: Vec<String> = Vec::with_capacity(7);
         if note_level > 0 {
             parts.push(format!("音符编辑: {note_level} 步"));
         }
@@ -2228,6 +2243,9 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         }
         if track_entity_level > 0 {
             parts.push(format!("音轨实体级编辑: {track_entity_level} 步"));
+        }
+        if device_level > 0 {
+            parts.push(format!("设备链编辑: {device_level} 步"));
         }
         if section_level > 0 {
             parts.push(format!("段落级编辑: {section_level} 步"));
@@ -4588,5 +4606,31 @@ mod tests {
             bytes_before,
             "修订号动了 ⇒ 工程字节必须真的变了"
         );
+    }
+    /// 引擎读数尾部窗口的已发布容量是 **64**，并且 `set_engine_readings` 真的按它裁剪。
+    ///
+    /// 第二轮注入实测：`ES-tail`（`READINGS_TAIL_CAPACITY` 64 → 63）**全绿** ——
+    /// 常量此前只出现在文档与实现里，没有任何判据喂过**超过窗口**的注入序列。
+    /// 窗口是可观测的契约：注入 65 条之后尾部必须恰好剩 64 条，且最旧的那条已出窗
+    /// （游标比它更旧时客户端会看到 `agedOut`）。
+    #[test]
+    fn the_readings_tail_window_is_the_published_64() {
+        use engine_state::EngineReadings;
+        assert_eq!(engine_state::READINGS_TAIL_CAPACITY, 64);
+        let mut domain = Domain::new();
+        for index in 0..65_u32 {
+            // 每次读数都不同 ⇒ 每次注入都推进修订号。
+            domain.set_engine_readings(Some(EngineReadings {
+                sample_rate: 48_000 + index,
+                ..EngineReadings::default()
+            }));
+        }
+        let tail = domain.readings_tail();
+        assert_eq!(tail.len(), 64, "窗口必须恰好保留 64 条");
+        assert_eq!(domain.readings_revision(), 65, "修订号按注入次数递增");
+        // 最旧的一条是第 2 次注入（修订 2）；第 1 次（修订 1）已出窗。
+        assert_eq!(tail[0].0, 2, "最旧的一条必须是第 2 条");
+        assert_eq!(tail[63].0, 65, "最新的一条必须是第 65 条");
+        assert_eq!(tail[0].1.sample_rate, 48_001);
     }
 }

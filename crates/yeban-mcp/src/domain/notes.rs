@@ -582,6 +582,21 @@
 //! 行文也算在内**（每一行都写了变体名），因此 ② 是"这份文件此刻的命中数"，不是"功能代码里的
 //! 引用数"。① 列不受行文影响（模式要求变体名后跟 `{`），因此它是**只由构造点决定**的读数。
 //!
+//! ⚠ **就地更正（设备 CRUD 那一票之后）**：上表的 `Op::InsertDevice` / `Op::RemoveDevice`
+//! 两行是**那一票之前**的读数，**不改写**（带 ref 的历史读数只标注不改写）。设备 CRUD
+//! 落地之后，那两个变体各有了一个真的构造点（[`compile`] 里的两条 match 臂），
+//! 因此 ① 列不再是 0；那一票的判据是
+//! `device_field_names_are_pinned`／`device_kinds_match_the_model_variant_names`／
+//! `insert_device_appends_or_lands_at_the_given_slot_and_is_reversible`／
+//! `insert_device_refuses_an_out_of_range_slot_instead_of_clamping`／
+//! `insert_device_refuses_a_duplicate_id_and_a_missing_track`／
+//! `remove_device_addresses_by_identity_and_reads_the_document`／
+//! `device_payload_shapes_fail_loudly`／`device_ops_do_not_need_the_envelope_ids_or_midi`
+//! （模块级）与 `edit_notes_device_crud_reaches_the_engine_state_reading_and_undo_restores_it`／
+//! `edit_notes_insert_device_refuses_an_out_of_range_slot`（端到端）。
+//! 于是 [`OP_KINDS`] 从 17 同步到 19；`Op::RemoveTrack` 那一行**仍然**是 0（上一票之后
+//! 它已由另一个形态接上，见该形态自己的小节）。
+//!
 //! 本票对上一节登记的**三个自由度**逐条裁决（每条都给理由，不冒充规范）：
 //!
 //! | 自由度 | 本票的决定 | 理由 |
@@ -678,6 +693,50 @@
 //! `folder_id`**（`YebanProjectV1::validate` 自己会报悬空引用，而且工具面没有任何形态
 //! 能设置 `folder_id`）。
 
+//! ## 设备链形态（`ops[].kind == "insertDevice"` / `"removeDevice"`）
+//! —— 关闭"工具面看得见设备链、一台都动不了"这条缺口
+//!
+//! 与前面几节**同型**，但缺口的后果更重：`Op::InsertDevice` / `Op::RemoveDevice` 在
+//! `crates/yeban-mcp/src` 里的**构造点**实测都是 **0**（两口径普查见上一节的表），
+//! 而读侧一直在报设备链（`yeban_query_engine_state` 的 `tracks[].devices[]`，逐槽带
+//! `slotIndex` / `deviceId` / `latencySamples` / `params`）。`DeviceDefinition::
+//! latency_samples` 是 PDC 的**唯一**延迟来源（`ARCH-PDC-001`，见 `domain/render.rs`
+//! 的 `track_latencies`）⇒ 一台延迟非零的外部设备此前只能**存在于文档里**，
+//! 在 MCP 会话里无法被表达。
+//!
+//! 两个形态都**自带寻址**（操作对象自己的 `trackId`），因此与 [`NoteOp::RemoveTrack`]
+//! 同一条纪律：[`NoteOp::is_self_addressed`] 为真时 [`compile`] 与
+//! `domain::plan_edit_notes` 不读工具顶层的 `trackId` / `clipId`，也不要求片段是 MIDI。
+//! 两条设备形态**允许**同批（换一台设备本来就是两条操作），取走按**身份**（`deviceId`）
+//! 而不是按下标（下标会随同批的其它插入 / 取走漂移，身份不会）。
+//!
+//! `device` 载荷的字段名取**工具面**的 camelCase（[`DEVICE_FIELDS`]），而 `.yeban`
+//! 容器里的 `project.json` 用模型 serde 的 snake_case（`latency_samples`）——
+//! 这是一处**有自由度**的裁决，理由写在 [`parse_device`] 的文档上，不静默。
+//! `device.kind` 的取值则逐字等于模型 serde 的变体名（[`DEVICE_KINDS`]）。
+//!
+//! 六条刻意设成**响亮失败**的口径（绝不静默降级）：
+//!
+//! | 情形 | 结果 |
+//! | :--- | :--- |
+//! | 操作对象里有支持集合之外的键 | `INVALID_PARAMETER_RANGE`（`unknownInsertDeviceField` / `unknownRemoveDeviceField`） |
+//! | `device` 里有支持集合之外的键（含 snake_case 拼写） | `INVALID_PARAMETER_RANGE`（`unknownDeviceField`） |
+//! | `device.params[]` 里有支持集合之外的键 | `INVALID_PARAMETER_RANGE`（`unknownDeviceParamField`） |
+//! | `device.kind` 不是 [`DEVICE_KINDS`] 里的名字 | `INVALID_PARAMETER_RANGE`（`unknownDeviceKind`） |
+//! | `device.latencySamples` 超出 `u32` | `OUT_OF_RANGE`（`latencyOutOfRange`） |
+//! | 参数值在收窄到 `f32` **之后**非有限 | `INVALID_PARAMETER_RANGE`（`nonFiniteValue`） |
+//! | `device.name` 是空串 | `INVALID_PARAMETER_RANGE`（`deviceNameRequired`） |
+//! | `slotIndex` 越界（`> devices.len()`） | `OUT_OF_RANGE`（`deviceSlotOutOfRange`，不夹紧） |
+//! | 设备身份在同一条音轨上已存在 | `CONFLICT`（`deviceIdAlreadyInTrack`） |
+//! | 目标音轨不存在 | `ENTITY_NOT_FOUND`（`deviceTrackNotFound`） |
+//! | `removeDevice` 的身份不在链上 | `ENTITY_NOT_FOUND`（`deviceNotFound`） |
+//!
+//! 不碰的东西（逐条给理由，不冒充已完成）：**不改设备参数**（`setParam` 的目标
+//! `DeviceParam` 走的是自动化那条线，本形态只增删整台设备）；**不校验设备链的 DSP 语义**
+//! （渲染器对设备链只有延迟进 PDC，参数求值没有实现 —— 那是 `domain/render.rs` 的
+//! `unsupported` 登记面）；**不允许插入重复身份**（模型 `Op::validate` 的
+//! `DuplicateEntityId`，本层提前报 `deviceIdAlreadyInTrack`）。
+
 use std::collections::BTreeMap;
 use std::str::FromStr as _;
 
@@ -686,8 +745,8 @@ use serde_json::{Map, Value};
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
-    ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, Op, SceneV3, TrackV3,
-    YebanProjectV1,
+    ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig, MidiNote, Op,
+    ParameterValue, SceneV3, TrackV3, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -867,20 +926,23 @@ pub const TRACK_FLAG_VALUE_FIELD: &str = "value";
 /// 多写一个键（尤其是嵌套的 `trackId`）是**响亮失败**，不静默丢弃。
 pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 
-/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 音轨级 / 摆放形态在前，
+/// `ops[].kind` 的**全集**（规范顺序：四个音符 / 池级 / 音轨级 / 设备级 / 摆放形态在前，
 /// 音轨属性级、路由级、段落级与场景级形态在后）。
 ///
 /// 错误信息（[`parse_one`] 的未知 `kind`）与判据共用这一份真相。
 /// ⚠ 两个"音轨"词面的键分属两个不同的桶：`REMOVE_TRACK_KIND`（`removeTrack`）
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
-pub const OP_KINDS: [&str; 17] = [
+/// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
+pub const OP_KINDS: [&str; 19] = [
     "add",
     "delete",
     "move",
     "velocity",
     REMOVE_CLIP_KIND,
     REMOVE_TRACK_KIND,
+    INSERT_DEVICE_KIND,
+    REMOVE_DEVICE_KIND,
     SET_PARAM_KIND,
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
@@ -1375,6 +1437,96 @@ pub const REMOVE_TRACK_FIELD: &str = "trackId";
 /// 而撤销载荷 `previous_track` 由 [`compile`] 从**当前文档**读。
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const REMOVE_TRACK_FIELDS: [&str; 2] = ["kind", REMOVE_TRACK_FIELD];
+
+/// `ops[].kind` 的**插入设备**形态名（写 [`Op::InsertDevice`]）。
+///
+/// 与模型 `Op` 变体名同词（`InsertDevice` 的小驼峰），与 [`REMOVE_DEVICE_KIND`]
+/// 同一条命名规则。
+///
+/// 为什么需要它：`Op::InsertDevice` / `Op::RemoveDevice` 在 `crates/yeban-mcp/src` 里的
+/// **构造点**实测是 **0**（两口径普查见本文件的模块头表）⇒ 设备链在工具面上
+/// **只读**（`yeban_query_engine_state` 的 `tracks[].devices[]`）而**不可写**，
+/// 可是设备链的 `latency_samples` 是 PDC 的**唯一**延迟来源（`ARCH-PDC-001`）：
+/// 一台外部设备装了却报不出来，延迟补偿就没有输入。
+pub const INSERT_DEVICE_KIND: &str = "insertDevice";
+
+/// `ops[].kind` 的**取走设备**形态名（写 [`Op::RemoveDevice`]）。
+pub const REMOVE_DEVICE_KIND: &str = "removeDevice";
+
+/// 设备形态的**目标音轨**字段名（`ops[].trackId`，两个设备形态都必填）。
+///
+/// 与 [`REMOVE_TRACK_FIELD`] 逐字同词：那个实参的语义就是"哪一条音轨"，而设备链
+/// 挂在音轨上 —— 这是本文件里**唯一**两处共用同一个寻址字段名的形态，因为两处指的
+/// 是同一个对象（音轨），而 [`ROUTING_NODE_FIELD`] / [`SECTION_FIELD`] /
+/// [`SCENE_FIELD`] 指的是**别的**实体（因此各有各的字面量）。
+///
+/// ⚠ 它**不是**工具顶层的 `trackId`（那是"目标片段所在的音轨"，[`compile`] 的入口
+/// 用它查音轨与片段池）：设备形态**自带寻址**，与 [`REMOVE_TRACK_KIND`] 同一纪律。
+pub const DEVICE_TRACK_FIELD: &str = "trackId";
+
+/// 插入设备形态的**插槽下标**字段名（`ops[].slotIndex`，可选）。
+///
+/// 缺省 = **追加到链尾**（模型允许 `slot_index == devices.len()`）。给出的值必须
+/// `<= devices.len()`；`> len` 是响亮失败（`OUT_OF_RANGE`，`deviceSlotOutOfRange`），
+/// 不静默夹紧 —— 夹紧会让"插到第 7 槽"变成"插到链尾"，而调用方以为插在中间
+/// （PDC 的关键路径按链上位置算，位置错了相位就错了）。
+pub const DEVICE_SLOT_FIELD: &str = "slotIndex";
+
+/// 插入设备形态的**设备载荷**字段名（`ops[].device`，必填对象）。
+pub const DEVICE_PAYLOAD_FIELD: &str = "device";
+
+/// 取走设备形态的**目标设备身份**字段名（`ops[].deviceId`，必填）。
+///
+/// 取走按**身份**寻址（与 `removeClip` / `removeScene` / `removeRoutingNode` 同一
+/// 纪律），不按下标：模型在**同一条音轨上**拒绝重复的设备身份
+/// （`Op::validate` 的 `DuplicateEntityId`），因此 `(trackId, deviceId)` 唯一确定一格。
+/// 下标会随同批的其它插入 / 取走而漂移，身份不会。
+pub const DEVICE_ID_FIELD: &str = "deviceId";
+
+/// 插入设备形态允许出现的**全部**键（判别键 + 寻址键 + 载荷键 + 可选的槽位键）。
+pub const INSERT_DEVICE_FIELDS: [&str; 4] = [
+    "kind",
+    DEVICE_TRACK_FIELD,
+    DEVICE_PAYLOAD_FIELD,
+    DEVICE_SLOT_FIELD,
+];
+
+/// 取走设备形态允许出现的**全部**键（判别键 + 寻址键）。
+///
+/// 被取走设备的旧状态**不在**这里：撤销载荷 `previous_device` 由 [`compile`] 从
+/// **当前文档**读。多写一个键是**响亮失败**，不静默丢弃。
+pub const REMOVE_DEVICE_FIELDS: [&str; 3] = ["kind", DEVICE_TRACK_FIELD, DEVICE_ID_FIELD];
+
+/// `device` 载荷对象允许出现的**全部**键（camelCase，与本 crate 的工具体一致）。
+///
+/// ⚠ 这是**有自由度**的一处裁决，理由逐条写在 [`parse_device`]：`.yeban` 容器里的
+/// `project.json` 用的是模型 serde 的 snake_case（`latency_samples`），而 MCP 工具面
+/// 通篇 camelCase（`clipId` / `startTick` / `microTimingTicks`）。本形态取工具面的口径。
+pub const DEVICE_FIELDS: [&str; 6] = [
+    DEVICE_ID_FIELD,
+    "name",
+    "kind",
+    "bypassed",
+    "latencySamples",
+    "params",
+];
+
+/// `device.params[]` 每个元素允许出现的**全部**键。
+///
+/// `unit` 是 [`ParameterValue::unit`] 的对应物，**可省**（`None` 是一等状态
+/// "无量纲/未标注"，模型对 `Option<T>` 有明确豁免，见 `ADR-0001` D43 第 2 条）。
+pub const DEVICE_PARAM_FIELDS: [&str; 3] = ["name", "value", "unit"];
+
+/// [`DeviceKind`] 在 `device.kind` 位置接受的**全部**字面量。
+///
+/// 逐字等于模型 serde 的变体名（`DeviceKind` 没有 `rename_all`），因此同一个字面量
+/// 在 `.yeban` 的 `project.json` 里与在工具体里是**同一个词**（`ADR-0001` D48）。
+pub const DEVICE_KINDS: [&str; 4] = [
+    "InternalInstrument",
+    "InternalEffect",
+    "ExternalInstrument",
+    "ExternalEffect",
+];
 
 /// 泳道目标在**解析期**的形态：变体 + 额外分量（**不含**音轨身份）。
 ///
@@ -1873,6 +2025,48 @@ pub enum NoteOp {
         /// 音轨身份（本形态自带寻址）。
         track_id: EntityId,
     },
+    /// 在一条音轨的设备链里**插入**一台设备（[`Op::InsertDevice`]）。
+    ///
+    /// 这是本枚举里第一个**设备级**形态。写侧在它之前**一处都没有**：`Op::InsertDevice`
+    /// 与 `Op::RemoveDevice` 在 `crates/yeban-mcp/src` 里的**构造点**实测是 **0**
+    /// （两口径普查见本文件的模块头表）⇒ 工具面能**看见**设备链
+    /// （`yeban_query_engine_state` 的 `tracks[].devices[]`，含 `slotIndex` /
+    /// `deviceId` / `latencySamples`）却**造不出、也取不走**任何一台设备。
+    ///
+    /// 为什么这不是"可有可无的补充"：`DeviceDefinition::latency_samples` 是 PDC 的
+    /// **唯一**延迟来源（`ARCH-PDC-001`，见 `domain/render.rs` 的 `track_latencies`），
+    /// 而一台延迟非零的外部设备只能在文档里表示、不能在工具面里表示 ⇒ 外部设备的
+    /// 相位对齐在 MCP 会话里**无法被表达**。
+    ///
+    /// 目标由**自带的** [`DEVICE_TRACK_FIELD`] 给出，与顶层 `trackId` / `clipId` 无关
+    /// （后者是"目标片段所在的音轨"）。与 [`Self::RemoveTrack`] 同一纪律：本形态
+    /// 一个音符都不读，也不要求片段是 MIDI。
+    ///
+    /// 载荷是 [`DeviceDefinition`]，字段与 [`DEVICE_FIELDS`] 逐条对应；`slot_index`
+    /// 是 [`Option`]：`None` = **追加到链尾**（模型允许 `slot_index == devices.len()`），
+    /// `Some(n)` 的 `n > devices.len()` 是响亮失败（不夹紧）。
+    InsertDevice {
+        /// 目标音轨身份（本形态自带寻址）。
+        track_id: EntityId,
+        /// 插槽下标；`None` = 追加到链尾。
+        slot_index: Option<usize>,
+        /// 被插入的完整设备定义。
+        device: DeviceDefinition,
+    },
+    /// 从一条音轨的设备链里**取走**一台设备（[`Op::RemoveDevice`]）。
+    ///
+    /// 与 [`Self::InsertDevice`] 同族。按**身份**寻址（[`DEVICE_ID_FIELD`]）而不是按
+    /// 下标：模型在**同一条音轨上**拒绝重复的设备身份，因此 `(trackId, deviceId)`
+    /// 唯一确定一格；下标会随同批的其它插入 / 取走而漂移，身份不会。
+    ///
+    /// 撤销载荷 `previous_device` 由 [`compile`] 从**当前文档**读（模型的前置条件
+    /// 要求它逐字段等于文档现值，因此本层不采信调用方声明的旧状态）。
+    RemoveDevice {
+        /// 目标音轨身份（本形态自带寻址）。
+        track_id: EntityId,
+        /// 被取走的设备身份。
+        device_id: EntityId,
+    },
 }
 
 impl NoteOp {
@@ -1896,6 +2090,8 @@ impl NoteOp {
             Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
             Self::SetScene { .. } => SET_SCENE_KIND,
             Self::RemoveTrack { .. } => REMOVE_TRACK_KIND,
+            Self::InsertDevice { .. } => INSERT_DEVICE_KIND,
+            Self::RemoveDevice { .. } => REMOVE_DEVICE_KIND,
         }
     }
 
@@ -1905,7 +2101,8 @@ impl NoteOp {
     /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
     /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] / [`Self::RemoveRoutingNode`]
     /// 是**路由级**的、[`Self::RemoveSection`] 是**段落级**的、[`Self::RemoveScene`]
-    /// 是**场景级**的、[`Self::RemoveTrack`] 是**音轨实体级**的：它们跟片段内容无关。
+    /// 是**场景级**的、[`Self::RemoveTrack`] 是**音轨实体级**的、
+    /// [`Self::InsertDevice`] / [`Self::RemoveDevice`] 是**设备级**的：它们跟片段内容无关。
     /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
     /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
     #[must_use]
@@ -1924,6 +2121,8 @@ impl NoteOp {
                 | Self::RemoveScene { .. }
                 | Self::SetScene { .. }
                 | Self::RemoveTrack { .. }
+                | Self::InsertDevice { .. }
+                | Self::RemoveDevice { .. }
         )
     }
 
@@ -1940,6 +2139,34 @@ impl NoteOp {
         matches!(self, Self::RemoveTrack { .. })
     }
 
+    /// 该形态改的是**一条音轨的设备链**（而不是音符 / 片段池 / 摆放 / 路由图 / 段落 /
+    /// 场景 / 音轨属性）。
+    ///
+    /// 与 [`Self::is_routing_level`] 同因（`domain::plan_edit_notes` 的分类）：
+    /// 设备链不是音轨属性，一次纯 `insertDevice` 的调用不能被报成"音轨级编辑"
+    /// （那是不同的对象 —— 属性级形态的目标是工具顶层的 `trackId`，本形态的目标是
+    /// 操作对象**自带**的 `trackId`）。
+    #[must_use]
+    pub const fn is_device_level(&self) -> bool {
+        matches!(self, Self::InsertDevice { .. } | Self::RemoveDevice { .. })
+    }
+
+    /// 该形态的寻址**全部**在操作对象自己身上（不读工具顶层的 `trackId` / `clipId`）。
+    ///
+    /// 两种形态：音轨实体级（[`Self::RemoveTrack`]）与设备级
+    /// （[`Self::InsertDevice`] / [`Self::RemoveDevice`]）。它们的寻址都在操作对象里
+    /// 自带的 `trackId`（设备形态还有 `deviceId` / `slotIndex`），因此 [`compile`]
+    /// 与 `domain::plan_edit_notes` **不必**先取顶层那两个身份，也不必要求片段是 MIDI。
+    ///
+    /// ⚠ 与 [`Self::is_self_addressed`] 的**区别**要写清：路由级 / 段落级 / 场景级形态
+    /// 的寻址**也**在操作对象里（`edgeId` / `nodeId` / `sectionId` / `sceneId`），但它们
+    /// **仍然**要求顶层 `trackId` / `clipId` 是合法身份 —— 那是本工具既有的入口口径，
+    /// 本方法**不**替它们放松（放松会改变既有调用的可接受集合）。
+    #[must_use]
+    pub const fn is_self_addressed(&self) -> bool {
+        self.is_track_entity_level() || self.is_device_level()
+    }
+
     /// 批内**每一条**都是音轨实体级形态（[`Op::RemoveTrack`] 的写侧）。
     ///
     /// 这一问只用于[`compile`]（以及它上游的 `domain::plan_edit_notes`）决定
@@ -1952,6 +2179,23 @@ impl NoteOp {
     #[must_use]
     pub fn all_track_entity_level(ops: &[Self]) -> bool {
         !ops.is_empty() && ops.iter().all(Self::is_track_entity_level)
+    }
+
+    /// 批内**每一条**的寻址都在操作对象自己身上（[`Self::is_self_addressed`]）。
+    ///
+    /// 这一问只用于 [`compile`]（以及它上游的 `domain::plan_edit_notes`）决定
+    /// "要不要先取顶层 `trackId` / `clipId`"。它对**两种**形态为真：取走音轨，以及
+    /// 设备链形态（`insertDevice` / `removeDevice` —— 它们的寻址是自带的 `trackId`）。
+    /// **空批不算**（`false`）—— 与 [`Self::all_track_entity_level`] 同一理由：
+    /// 空 `ops` 本来就被 [`parse_ops`] 挡掉，把它算成"全是"会让一条错误路径变成另一条。
+    ///
+    /// ⚠ 混批（取走音轨 + 别的形态）在 [`reject_remove_track_conflicts`] 里**响亮拒绝**，
+    /// 因此"全是音轨实体级"与"批里只有一条 `removeTrack`"是同一个答案；设备形态之间
+    /// （以及 `insertDevice` + `removeDevice` 的混批）**允许**同批 —— 换一台设备本来
+    /// 就是两条操作。
+    #[must_use]
+    pub fn all_self_addressed(ops: &[Self]) -> bool {
+        !ops.is_empty() && ops.iter().all(Self::is_self_addressed)
     }
 
     /// 该形态改的是**路由图**（而不是音符 / 音轨 / 泳道 / 片段池 / 段落）。
@@ -2181,6 +2425,30 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             reject_remove_track_fields(object)?;
             Ok(NoteOp::RemoveTrack {
                 track_id: read_id(object, REMOVE_TRACK_FIELD)?,
+            })
+        }
+        INSERT_DEVICE_KIND => {
+            reject_insert_device_fields(object)?;
+            let payload = object
+                .get(DEVICE_PAYLOAD_FIELD)
+                .and_then(Value::as_object)
+                .ok_or_else(|| missing(DEVICE_PAYLOAD_FIELD, "对象"))?;
+            let device = parse_device(payload)?;
+            let slot_index = match object.get(DEVICE_SLOT_FIELD) {
+                None => None,
+                Some(_) => Some(read_usize(object, DEVICE_SLOT_FIELD)?),
+            };
+            Ok(NoteOp::InsertDevice {
+                track_id: read_id(object, DEVICE_TRACK_FIELD)?,
+                slot_index,
+                device,
+            })
+        }
+        REMOVE_DEVICE_KIND => {
+            reject_remove_device_fields(object)?;
+            Ok(NoteOp::RemoveDevice {
+                track_id: read_id(object, DEVICE_TRACK_FIELD)?,
+                device_id: read_id(object, DEVICE_ID_FIELD)?,
             })
         }
         SET_ROUTING_GAIN_KIND => {
@@ -2493,6 +2761,315 @@ fn reject_remove_track_fields(object: &Map<String, Value>) -> Result<(), Fault> 
                      由服务端从当前文档读 (不接受调用方声明)",
         }),
     ))
+}
+
+/// 拒绝 `insertDevice` 操作对象里 [`INSERT_DEVICE_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_track_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：
+/// 最像"写对了"的几种错法是给一个**别的实体**的寻址（`nodeId` / `edgeId` / `sectionId`）、
+/// 把设备身份直接写在顶层（`deviceId` —— 它在 `device` 载荷里）、或把 `slot` / `index`
+/// 当成 [`DEVICE_SLOT_FIELD`] 的别名 —— 都会被静默忽略，而调用方以为设备已经插上。
+///
+/// # Errors
+///
+/// 出现 `kind` / `trackId` / `device` / `slotIndex` 之外的键 →
+/// `INVALID_PARAMETER_RANGE`（`data.reason = "unknownInsertDeviceField"`）。
+fn reject_insert_device_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !INSERT_DEVICE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{INSERT_DEVICE_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {INSERT_DEVICE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownInsertDeviceField",
+            "unsupportedFields": unknown,
+            "supportedInsertDeviceFields": INSERT_DEVICE_FIELDS,
+            "hint": "目标音轨在操作对象自带的 `trackId` 上; 设备定义在 `device` 对象里 \
+                     (字段集合见 `supportedDeviceFields`); `slotIndex` 可省 (缺省 = 追加到链尾)",
+            "supportedDeviceFields": DEVICE_FIELDS,
+        }),
+    ))
+}
+
+/// 拒绝 `removeDevice` 操作对象里 [`REMOVE_DEVICE_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_track_fields`] 同一口径：最像"写对了"的错法是把设备定义整份
+/// 搬过来（`device` —— 那是 `insertDevice` 的形状）、或以为要报告"取走前的状态"而多写
+/// `previousDevice` —— 两者都会被静默忽略，而调用方以为设备已经取走。
+///
+/// # Errors
+///
+/// 出现 `kind` / `trackId` / `deviceId` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownRemoveDeviceField"`）。
+fn reject_remove_device_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_DEVICE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_DEVICE_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_DEVICE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRemoveDeviceField",
+            "unsupportedFields": unknown,
+            "supportedRemoveDeviceFields": REMOVE_DEVICE_FIELDS,
+            "hint": "本形态只认 `kind` / `trackId` / `deviceId`; 设备身份取自 \
+                     `yeban_query_engine_state` 的 `tracks[].devices[].deviceId`, \
+                     撤销载荷 `previousDevice` 由服务端从当前文档读 (不接受调用方声明)",
+        }),
+    ))
+}
+
+/// 把 `device` 载荷对象解析成 [`DeviceDefinition`]。
+///
+/// **有自由度的一处裁决（逐条给理由，不冒充规范）**：`.yeban` 容器里的 `project.json`
+/// 用的是模型 serde 的字段名（`DeviceDefinition` 没有 `rename_all` ⇒ `latency_samples`
+/// 是 snake_case），而 MCP 工具面通篇 camelCase（`clipId` / `startTick` /
+/// `microTimingTicks` / 读侧的 `latencySamples`）。本形态取**工具面**的口径：
+/// `deviceId` / `name` / `kind` / `bypassed` / `latencySamples` / `params`，
+/// 其中 `kind` 的取值逐字等于模型 serde 的变体名（[`DEVICE_KINDS`]）。
+/// 于是同一个词在工具面与容器里对**枚举**是同一个字面量，对**字段名**差一个大写分界
+/// —— 这条差异写在 [`DEVICE_FIELDS`] 的文档上，不静默。
+///
+/// 为什么用具名读取而不是 `serde_json::from_value::<DeviceDefinition>`：
+/// serde 会**静默忽略**未知键（拼错的 `latencySample` 会被当成"零延迟设备"读进来，
+/// 而 PDC 的正确性完全依赖这个数字），因此"响亮拒绝未知键"这条本 crate 的一贯口径
+/// 必须由本函数自己执行。
+///
+/// # Errors
+///
+/// - 出现 [`DEVICE_FIELDS`] 之外的键 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "unknownDeviceField"`）；
+/// - 缺字段 / 类型不对 → `INVALID_PARAMETER_RANGE`（缺字段走统一的 [`missing`]）；
+/// - `kind` 不在 [`DEVICE_KINDS`] 里 → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "unknownDeviceKind"`）；
+/// - `latencySamples` 不是 `u32` → `INVALID_PARAMETER_RANGE`
+///   （`data.reason = "latencyOutOfRange"`）；
+/// - `params[]` 的 `value` 在收窄到 `f32` 之后不是有限数 →
+///   `INVALID_PARAMETER_RANGE`（`data.reason = "nonFiniteValue"`）；
+/// - `name` 是空串 → `INVALID_PARAMETER_RANGE`（`data.reason = "deviceNameRequired"`）。
+fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault> {
+    let mut unknown: Vec<&str> = payload
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !DEVICE_FIELDS.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort_unstable();
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{DEVICE_PAYLOAD_FIELD}` 里有不支持的键: {} \
+                 (支持集合只有 {DEVICE_FIELDS:?})",
+                unknown.join(", ")
+            ),
+            serde_json::json!({
+                "reason": "unknownDeviceField",
+                "unsupportedFields": unknown,
+                "supportedDeviceFields": DEVICE_FIELDS,
+                "hint": "字段名用工具面的 camelCase (`deviceId` / `latencySamples`) —— \
+                         `.yeban` 容器里的 `project.json` 用模型 serde 的 snake_case \
+                         (`latency_samples`), 两者不是同一份拼写",
+            }),
+        ));
+    }
+    let id = read_id(payload, DEVICE_ID_FIELD)?;
+    let name = match payload.get("name") {
+        Some(Value::String(text)) if !text.is_empty() => text.clone(),
+        Some(Value::String(_)) => {
+            return Err(Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                "`device.name` 不得为空串".to_owned(),
+                serde_json::json!({
+                    "field": format!("{DEVICE_PAYLOAD_FIELD}.name"),
+                    "reason": "deviceNameRequired",
+                }),
+            ));
+        }
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`device.name` 必须是字符串, 实际收到 {other}"),
+            ));
+        }
+        None => return Err(missing("device.name", "非空字符串")),
+    };
+    let kind = {
+        let raw = payload
+            .get("kind")
+            .ok_or_else(|| missing("device.kind", "设备类型字符串"))?;
+        let text = raw.as_str().ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`device.kind` 必须是字符串, 实际收到 {raw}"),
+            )
+        })?;
+        match text {
+            "InternalInstrument" => DeviceKind::InternalInstrument,
+            "InternalEffect" => DeviceKind::InternalEffect,
+            "ExternalInstrument" => DeviceKind::ExternalInstrument,
+            "ExternalEffect" => DeviceKind::ExternalEffect,
+            other => {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!("未知 `device.kind`: `{other}`"),
+                    serde_json::json!({
+                        "reason": "unknownDeviceKind",
+                        "supportedDeviceKinds": DEVICE_KINDS,
+                    }),
+                ));
+            }
+        }
+    };
+    let bypassed = payload.get("bypassed").map_or_else(
+        || Err(missing("device.bypassed", "布尔值")),
+        |raw| {
+            raw.as_bool().ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`device.bypassed` 必须是布尔值, 实际收到 {raw}"),
+                )
+            })
+        },
+    )?;
+    let latency_samples = {
+        let raw = payload
+            .get("latencySamples")
+            .ok_or_else(|| missing("device.latencySamples", "u32 整数"))?;
+        let number = raw.as_u64().ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`device.latencySamples` 必须是非负整数, 实际收到 {raw}"),
+            )
+        })?;
+        u32::try_from(number).map_err(|_| {
+            Fault::domain_with_data(
+                ErrorCode::OutOfRange,
+                format!("`device.latencySamples` 越界: {number} 不在 0..=4294967295"),
+                serde_json::json!({
+                    "field": "device.latencySamples",
+                    "reason": "latencyOutOfRange",
+                    "value": number,
+                    "max": u32::MAX,
+                }),
+            )
+        })?
+    };
+    let params = {
+        let raw = payload
+            .get("params")
+            .ok_or_else(|| missing("device.params", "数组"))?;
+        let items = raw.as_array().ok_or_else(|| {
+            Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`device.params` 必须是数组, 实际收到 {raw}"),
+            )
+        })?;
+        let mut parsed = Vec::with_capacity(items.len());
+        for item in items {
+            parsed.push(parse_device_param(item)?);
+        }
+        parsed
+    };
+    Ok(DeviceDefinition {
+        id,
+        name,
+        kind,
+        bypassed,
+        params,
+        latency_samples,
+    })
+}
+
+/// 解析 `device.params[]` 的一个元素。
+///
+/// 与 [`parse_device`] 同一口径（用具名读取而不是 serde，未知键响亮拒绝）。
+/// `value` 走 [`read_number`]：它在 f64 → f32 收窄之后判有限性，
+/// 与 `setParam` / `probability` 逐字同一口径（收窄**之前**有限、之后溢出成 `inf`
+/// 的输入也必须被拒 —— 那正是 `ef459f9` 修掉的那类缺陷）。
+///
+/// # Errors
+///
+/// - 元素不是对象 / 出现 [`DEVICE_PARAM_FIELDS`] 之外的键 →
+///   `INVALID_PARAMETER_RANGE`（`data.reason = "unknownDeviceParamField"`）；
+/// - `name` 缺 / 不是字符串 → `INVALID_PARAMETER_RANGE`；
+/// - `value` 缺 / 不是有限数 → `INVALID_PARAMETER_RANGE`
+///   （非有限走 `data.reason = "nonFiniteValue"`）；
+/// - `unit` 给了但不是字符串也不是 `null` → `INVALID_PARAMETER_RANGE`。
+fn parse_device_param(item: &Value) -> Result<ParameterValue, Fault> {
+    let object = item.as_object().ok_or_else(|| {
+        Fault::domain(
+            ErrorCode::InvalidParameterRange,
+            format!("`device.params` 的元素必须是对象, 实际收到 {item}"),
+        )
+    })?;
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !DEVICE_PARAM_FIELDS.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort_unstable();
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`device.params` 的元素里有不支持的键: {} \
+                 (支持集合只有 {DEVICE_PARAM_FIELDS:?})",
+                unknown.join(", ")
+            ),
+            serde_json::json!({
+                "reason": "unknownDeviceParamField",
+                "unsupportedFields": unknown,
+                "supportedDeviceParamFields": DEVICE_PARAM_FIELDS,
+                "hint": "参数只认 `name` / `value` / `unit`; `unit` 可省 (缺省 = 无量纲)",
+            }),
+        ));
+    }
+    let name = {
+        let raw = object
+            .get("name")
+            .ok_or_else(|| missing("device.params[].name", "字符串"))?;
+        raw.as_str()
+            .ok_or_else(|| {
+                Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`device.params[].name` 必须是字符串, 实际收到 {raw}"),
+                )
+            })?
+            .to_owned()
+    };
+    let value = read_number(object, "value")?;
+    let unit = match object.get("unit") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`device.params[].unit` 必须是字符串或 null, 实际收到 {other}"),
+            ));
+        }
+    };
+    Ok(ParameterValue { name, value, unit })
 }
 
 /// 拒绝 `setScene` **操作对象**里 [`SET_SCENE_OP_FIELDS`] 之外的键。
@@ -3490,8 +4067,13 @@ pub fn compile(
     // `trackId` / `clipId`（那两个是"目标片段所在的音轨"的寻址）。判据
     // `remove_track_does_not_need_midi_and_ignores_the_envelope` 钉住这条。
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
-    let track_entity_only = NoteOp::all_track_entity_level(ops);
-    let track = if track_entity_only {
+    // 寻址自带的形态（`removeTrack` 与两个设备形态）不读工具顶层的 `trackId` /
+    // `clipId`：它们的寻址在操作对象自己身上。判据
+    // `remove_track_does_not_need_midi_and_ignores_the_envelope` 与
+    // `device_ops_do_not_need_the_envelope_ids_or_midi` 钉住这条。
+    // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
+    let self_addressed_only = NoteOp::all_self_addressed(ops);
+    let track = if self_addressed_only {
         None
     } else {
         Some(
@@ -3500,7 +4082,7 @@ pub fn compile(
                 .map_err(|error| from_model("音轨查找", &error))?,
         )
     };
-    let entry = if track_entity_only {
+    let entry = if self_addressed_only {
         None
     } else {
         Some(project.clip_pool.get(clip_id).ok_or_else(|| {
@@ -3980,6 +4562,127 @@ pub fn compile(
                 Op::RemoveTrack {
                     track_id: *target,
                     previous_track,
+                }
+            }
+            NoteOp::InsertDevice {
+                track_id: target,
+                slot_index,
+                device,
+            } => {
+                // 撤销载荷由模型从**这一条** op 自己反转（`Op::invert` 把 `InsertDevice`
+                // 换成 `RemoveDevice`，两个载荷本来就都在插入这一条上），因此本层
+                // 不需要从文档读任何"旧状态"；要读的是**前**置条件。
+                let track = project.track(target).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {target} 的音轨, 没有设备链可以插入"),
+                        serde_json::json!({
+                            "trackId": target.to_canonical_string(),
+                            "reason": "deviceTrackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                // 槽位：缺省 = 追加到链尾。给出的值 `> len` 是**响亮**失败，不夹紧
+                // —— 夹紧会让"插到第 7 槽"变成"插到链尾"，而 PDC 的关键路径按链上
+                // 位置算，位置错了相位就错了。
+                let resolved = slot_index.unwrap_or(track.devices.len());
+                if resolved > track.devices.len() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::OutOfRange,
+                        format!(
+                            "`{DEVICE_SLOT_FIELD}` 越界: {resolved} 不在 0..={} (链长)",
+                            track.devices.len()
+                        ),
+                        serde_json::json!({
+                            "field": DEVICE_SLOT_FIELD,
+                            "reason": "deviceSlotOutOfRange",
+                            "value": resolved,
+                            "len": track.devices.len(),
+                            "hint": "缺省 (不给 `slotIndex`) 就等于追加到链尾 (= len)",
+                        }),
+                    ));
+                }
+                // 同一条音轨上设备身份不得重复（模型 `Op::validate` 的
+                // `DuplicateEntityId`）。提前报，让调用方拿到 `reason` 与现成的位置。
+                if let Some(existing) = track.devices.iter().position(|it| it.id == device.id) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!(
+                            "音轨 {target} 的第 {existing} 槽已经有身份 {} 的设备",
+                            device.id
+                        ),
+                        serde_json::json!({
+                            "trackId": target.to_canonical_string(),
+                            "deviceId": device.id.to_canonical_string(),
+                            "existingSlotIndex": existing,
+                            "reason": "deviceIdAlreadyInTrack",
+                            "hint": "想改现有设备的参数请用 `setParam` (目标 `DeviceParam`); \
+                                     想换一台请先 `removeDevice`",
+                        }),
+                    ));
+                }
+                // 参数值的有限性（模型 `DeviceDefinition::validate` 的
+                // `NonFiniteValue`）。解析期已经逐条判过收窄后的 f32，
+                // 这里再判一次是因为**设备对象也可能由别的路径构造**，
+                // 而这条闸门是"进提案之前"的最后一道。
+                device.validate().map_err(|error| {
+                    Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!("设备定义不合法: {error}"),
+                        serde_json::json!({
+                            "reason": "invalidDeviceDefinition",
+                            "deviceId": device.id.to_canonical_string(),
+                        }),
+                    )
+                })?;
+                Op::InsertDevice {
+                    track_id: *target,
+                    slot_index: resolved,
+                    device: device.clone(),
+                }
+            }
+            NoteOp::RemoveDevice {
+                track_id: target,
+                device_id,
+            } => {
+                let track = project.track(target).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {target} 的音轨, 没有设备链可以取走"),
+                        serde_json::json!({
+                            "trackId": target.to_canonical_string(),
+                            "reason": "deviceTrackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                // 撤销载荷来自**当前文档**的那一台设备：模型 `RemoveDevice` 的前置条件
+                // 要求 `previous_device` 逐字段等于文档现值，因此本层不采信调用方
+                // 声明的旧状态（`reject_remove_device_fields` 也不接受 `device` 键）。
+                let (slot_index, previous_device) = track
+                    .devices
+                    .iter()
+                    .enumerate()
+                    .find(|(_slot, device)| device.id == *device_id)
+                    .map(|(slot, device)| (slot, device.clone()))
+                    .ok_or_else(|| {
+                        Fault::domain_with_data(
+                            ErrorCode::EntityNotFound,
+                            format!("音轨 {target} 的设备链里没有身份 {device_id} 的设备"),
+                            serde_json::json!({
+                                "trackId": target.to_canonical_string(),
+                                "deviceId": device_id.to_canonical_string(),
+                                "reason": "deviceNotFound",
+                                "hint": "`yeban_query_engine_state` 的 \
+                                         `tracks[].devices[]` 逐槽报出 `deviceId`",
+                            }),
+                        )
+                    })?;
+                Op::RemoveDevice {
+                    track_id: *target,
+                    slot_index,
+                    previous_device,
                 }
             }
         });
@@ -5459,7 +6162,9 @@ mod tests {
         // 与 `removeScene` 共用场景级那个桶）后为 16；本票再新增 `removeTrack`
         // （唯一的音轨实体级形态）后为 17 —— 这是**同步**计数
         // （多了一个真存在的 `kind`），不是弱化判据。
-        assert_eq!(OP_KINDS.len(), 17);
+        // 本票（设备 CRUD）再新增两个**设备级**形态（`insertDevice` / `removeDevice`）
+        // 后为 19 —— 同样是与真实的 `kind` 同步，字面值不是常量自比。
+        assert_eq!(OP_KINDS.len(), 19);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -5467,6 +6172,8 @@ mod tests {
         assert!(OP_KINDS.contains(&REMOVE_AUTOMATION_POINT_KIND));
         assert!(OP_KINDS.contains(&REMOVE_CLIP_KIND));
         assert!(OP_KINDS.contains(&REMOVE_TRACK_KIND));
+        assert!(OP_KINDS.contains(&INSERT_DEVICE_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_DEVICE_KIND));
         assert!(OP_KINDS.contains(&SET_ROUTING_GAIN_KIND));
         assert!(OP_KINDS.contains(&DISCONNECT_ROUTING_KIND));
         assert!(OP_KINDS.contains(&REMOVE_ROUTING_NODE_KIND));
@@ -8324,6 +9031,526 @@ mod tests {
             reject_remove_track_conflicts(&note_ops, true).is_ok(),
             "别的形态不受这两条规则影响"
         );
+    }
+
+    /// 一条**带设备链**的音轨（夹具里那条 `lead`）。
+    ///
+    /// 设备级判据的公共前置：没有设备的音轨量不出"插入 / 取走"，而用一条空链做夹具
+    /// 会让"追加到链尾"与"插到第 0 槽"变成同一件事。
+    fn device_track(project: &YebanProjectV1) -> EntityId {
+        project
+            .tracks
+            .values()
+            .find(|track| !track.devices.is_empty())
+            .expect("样本里必须有带设备链的音轨")
+            .id
+    }
+
+    /// 设备级形态的**字段名与支持集合**被钉住（不多报一个键，也不少报一个键）。
+    ///
+    /// 注入（实测红）：把 [`DEVICE_SLOT_FIELD`] 改成 `"slot"` ⇒ 本判据红；
+    /// 把 `device.kind` 的取值表改成模型没有的名字（[`DEVICE_KINDS`] 少一项）⇒
+    /// `device_kinds_match_the_model_variant_names` 红。
+    #[test]
+    fn device_field_names_are_pinned() {
+        assert_eq!(INSERT_DEVICE_KIND, "insertDevice");
+        assert_eq!(REMOVE_DEVICE_KIND, "removeDevice");
+        assert_eq!(DEVICE_TRACK_FIELD, "trackId");
+        assert_eq!(DEVICE_SLOT_FIELD, "slotIndex");
+        assert_eq!(DEVICE_PAYLOAD_FIELD, "device");
+        assert_eq!(DEVICE_ID_FIELD, "deviceId");
+        assert_ne!(DEVICE_ID_FIELD, SCENE_FIELD, "设备不是场景");
+        assert_ne!(DEVICE_ID_FIELD, SECTION_FIELD, "设备不是曲式段落");
+        assert_ne!(DEVICE_ID_FIELD, ROUTING_NODE_FIELD, "设备不是路由节点");
+        assert_ne!(DEVICE_ID_FIELD, ROUTING_EDGE_FIELD, "设备不是路由边");
+        assert_eq!(
+            INSERT_DEVICE_FIELDS,
+            ["kind", "trackId", "device", "slotIndex"]
+        );
+        assert_eq!(REMOVE_DEVICE_FIELDS, ["kind", "trackId", "deviceId"]);
+        assert_eq!(
+            DEVICE_FIELDS,
+            [
+                "deviceId",
+                "name",
+                "kind",
+                "bypassed",
+                "latencySamples",
+                "params"
+            ]
+        );
+        assert_eq!(DEVICE_PARAM_FIELDS, ["name", "value", "unit"]);
+        assert!(OP_KINDS.contains(&INSERT_DEVICE_KIND));
+        assert!(OP_KINDS.contains(&REMOVE_DEVICE_KIND));
+    }
+
+    /// `device.kind` 的词表与**模型自己的变体名**同源（不手写第二张会漂移的表）。
+    ///
+    /// 注入（实测红）：把 [`DEVICE_KINDS`] 的任一元素改成模型没有的拼写 ⇒ 本判据红；
+    /// 删掉一项 ⇒ 本判据红（模型有四个变体）。
+    #[test]
+    fn device_kinds_match_the_model_variant_names() {
+        let model_names = [
+            DeviceKind::InternalInstrument,
+            DeviceKind::InternalEffect,
+            DeviceKind::ExternalInstrument,
+            DeviceKind::ExternalEffect,
+        ];
+        assert_eq!(DEVICE_KINDS.len(), model_names.len());
+        for (index, kind) in model_names.iter().enumerate() {
+            let name = serde_json::to_value(kind).expect("枚举序列化");
+            assert_eq!(
+                name,
+                serde_json::json!(DEVICE_KINDS[index]),
+                "工具面的 `device.kind` 必须逐字等于模型 serde 的变体名"
+            );
+        }
+        // 四个名字互不相同（否则"词表四项"这个计数会骗人）。
+        let mut sorted: Vec<&str> = DEVICE_KINDS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), DEVICE_KINDS.len());
+    }
+
+    /// `insertDevice` 缺省**追加到链尾**；给了 `slotIndex` 就落在那一格；
+    /// 逆操作把文档逐字节还原。
+    ///
+    /// 注入（实测红）：把 `slot_index.unwrap_or(track.devices.len())` 改成
+    /// `unwrap_or(0)` ⇒ 第一条红（缺省落到了 0 槽）；把 `Op::InsertDevice` 的
+    /// `slot_index: resolved` 改成 `0` ⇒ 第二条红。
+    #[test]
+    fn insert_device_appends_or_lands_at_the_given_slot_and_is_reversible() {
+        let mut project = filled_project();
+        let track = device_track(&project);
+        let length_before = project.tracks[&track].devices.len();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000DEV").expect("ULID");
+        let (_, clip_id) = lead_clip(&project);
+
+        // ① 不给 `slotIndex` ⇒ 追加到链尾 (= 当前链长)。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "device": {
+                "deviceId": fresh.to_canonical_string(),
+                "name": "Probe Effect",
+                "kind": "InternalEffect",
+                "bypassed": true,
+                "latencySamples": 64,
+                "params": [
+                    {"name": "mix", "value": 0.5},
+                    {"name": "tone", "value": 2200.0, "unit": "Hz"}
+                ]
+            }
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip_id, &ops).expect("插入必须被接受");
+        assert_eq!(compiled.len(), 1);
+        let Op::InsertDevice {
+            track_id,
+            slot_index,
+            device,
+        } = &compiled[0]
+        else {
+            panic!("必须是 Op::InsertDevice, 实际 {:?}", compiled[0]);
+        };
+        assert_eq!(*track_id, track);
+        assert_eq!(*slot_index, length_before, "缺省 = 追加到链尾");
+        assert_eq!(device.id, fresh);
+        assert_eq!(device.name, "Probe Effect");
+        assert_eq!(device.kind, DeviceKind::InternalEffect);
+        assert!(device.bypassed, "旁通位必须真的搬进模型 (ADR-0001 D43)");
+        assert_eq!(device.latency_samples, 64, "PDC 的唯一延迟来源");
+        assert_eq!(device.params.len(), 2);
+        assert_eq!(device.params[0].unit, None, "缺 `unit` = 无量纲 (一等状态)");
+        assert_eq!(device.params[1].unit.as_deref(), Some("Hz"));
+
+        compiled[0].apply(&mut project).expect("施加");
+        assert_eq!(
+            project.tracks[&track].devices.len(),
+            length_before + 1,
+            "链上必须真的多了一台"
+        );
+        assert_eq!(
+            project.tracks[&track].devices[length_before].id, fresh,
+            "必须落在链尾"
+        );
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到插入之前的文档"
+        );
+
+        // ② 给 `slotIndex: 0` ⇒ 落在第 0 格（而不是链尾）。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "slotIndex": 0,
+            "device": {
+                "deviceId": fresh.to_canonical_string(),
+                "name": "Probe Effect",
+                "kind": "ExternalEffect",
+                "bypassed": false,
+                "latencySamples": 0,
+                "params": []
+            }
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip_id, &ops).expect("插入必须被接受");
+        let Op::InsertDevice { slot_index, .. } = &compiled[0] else {
+            panic!("必须是 Op::InsertDevice");
+        };
+        assert_eq!(*slot_index, 0, "给了 `slotIndex` 就必须落在那一格");
+        compiled[0].apply(&mut project).expect("施加");
+        assert_eq!(project.tracks[&track].devices[0].id, fresh);
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "换一台设备插到第 0 槽之后, 逆操作同样必须逐字节还原"
+        );
+    }
+
+    /// 槽位越界**响亮失败**（不静默夹紧），且 `slotIndex == 链长` 是放行的边界。
+    ///
+    /// 注入（实测红）：把 `if resolved > track.devices.len()` 改成 `>=` ⇒ 第一条红
+    /// （合法的链尾追加被拒）；删掉这条闸门 ⇒ 第二条红（越界一路走到模型层，
+    /// `reason` 不再是 `deviceSlotOutOfRange`）。
+    #[test]
+    fn insert_device_refuses_an_out_of_range_slot_instead_of_clamping() {
+        let project = filled_project();
+        let track = device_track(&project);
+        let length = project.tracks[&track].devices.len();
+        let (_, clip_id) = lead_clip(&project);
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000DEV").expect("ULID");
+        let device = serde_json::json!({
+            "deviceId": fresh.to_canonical_string(),
+            "name": "Probe",
+            "kind": "InternalEffect",
+            "bypassed": false,
+            "latencySamples": 0,
+            "params": []
+        });
+
+        // 边界: `slotIndex == len` 就是追加, 必须放行。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "slotIndex": length,
+            "device": device.clone()
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip_id, &ops).expect("链尾是合法边界");
+        assert!(matches!(
+            compiled[0],
+            Op::InsertDevice { slot_index, .. } if slot_index == length
+        ));
+
+        // 越界一格: 响亮拒绝, 且报文里带上链长。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "slotIndex": length + 1,
+            "device": device
+        }]))
+        .expect("解析");
+        let fault = compile(&project, &track, &clip_id, &ops).expect_err("越界必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        assert_eq!(lane_fault_data(&fault)["reason"], "deviceSlotOutOfRange");
+        assert_eq!(
+            lane_fault_data(&fault)["len"],
+            serde_json::json!(length),
+            "报文必须报出链长 (调用方才知道合法的上界)"
+        );
+    }
+
+    /// 设备身份在**同一条音轨**上不得重复；音轨必须存在。两条都提前报 `reason`。
+    ///
+    /// 注入（实测红）：删掉 `track.devices.iter().position(...)` 那段 ⇒ 第一条红
+    /// （重复身份被接受, 直到提案模拟才以泛化消息冒出）；把 `project.track(target)` 的
+    /// 错误映射改掉 ⇒ 第二条红。
+    #[test]
+    fn insert_device_refuses_a_duplicate_id_and_a_missing_track() {
+        let project = filled_project();
+        let track = device_track(&project);
+        let existing = project.tracks[&track].devices[0].id;
+        let (_, clip_id) = lead_clip(&project);
+        let device = serde_json::json!({
+            "deviceId": existing.to_canonical_string(),
+            "name": "Duplicate",
+            "kind": "InternalEffect",
+            "bypassed": false,
+            "latencySamples": 0,
+            "params": []
+        });
+
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "device": device.clone()
+        }]))
+        .expect("解析");
+        let fault = compile(&project, &track, &clip_id, &ops).expect_err("重复身份必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        assert_eq!(lane_fault_data(&fault)["reason"], "deviceIdAlreadyInTrack");
+        assert_eq!(
+            lane_fault_data(&fault)["existingSlotIndex"],
+            serde_json::json!(0)
+        );
+
+        // 音轨不存在（自带寻址的那条 `trackId` 打错了）。
+        let missing = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": missing.to_canonical_string(),
+            "device": device
+        }]))
+        .expect("解析");
+        let fault = compile(&project, &track, &clip_id, &ops).expect_err("音轨不存在必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "deviceTrackNotFound");
+    }
+
+    /// `removeDevice` 按**身份**寻址，撤销载荷从**当前文档**读；不存在则响亮失败。
+    ///
+    /// 注入（实测红）：把 `previous_device: device.clone()` 改成
+    /// `DeviceDefinition::default()` ⇒ 第一条红（模型的 `OpStateMismatch` 前置条件
+    /// 会在施加时报错, 而判据直接比字段）；把按身份查找改成按槽位 0 ⇒ 第二条红。
+    #[test]
+    fn remove_device_addresses_by_identity_and_reads_the_document() {
+        let mut project = filled_project();
+        let track = device_track(&project);
+        let expected = project.tracks[&track].devices[0].clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+        let (_, clip_id) = lead_clip(&project);
+
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "deviceId": expected.id.to_canonical_string()
+        }]))
+        .expect("解析");
+        let compiled = compile(&project, &track, &clip_id, &ops).expect("取走必须被接受");
+        let Op::RemoveDevice {
+            track_id,
+            slot_index,
+            previous_device,
+        } = &compiled[0]
+        else {
+            panic!("必须是 Op::RemoveDevice, 实际 {:?}", compiled[0]);
+        };
+        assert_eq!(*track_id, track);
+        assert_eq!(*slot_index, 0, "身份必须被翻译成它**当前**所在的槽位");
+        assert_eq!(
+            previous_device, &expected,
+            "撤销载荷必须是文档里那一台 (整份, 不是调用方声明的)"
+        );
+
+        compiled[0].apply(&mut project).expect("施加");
+        assert!(
+            !project.tracks[&track]
+                .devices
+                .iter()
+                .any(|it| it.id == expected.id),
+            "合并之后那台设备必须真的从设备链里消失"
+        );
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节还原 (设备随 Op::RemoveDevice 的逆 InsertDevice 回来)"
+        );
+
+        // 身份不存在 ⇒ ENTITY_NOT_FOUND（`deviceNotFound`）。
+        let missing = EntityId::from_str("01J8ZQ00000000000000000ZZZ").expect("ULID");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "deviceId": missing.to_canonical_string()
+        }]))
+        .expect("解析");
+        let fault = compile(&project, &track, &clip_id, &ops).expect_err("不存在的设备必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::EntityNotFound));
+        assert_eq!(lane_fault_data(&fault)["reason"], "deviceNotFound");
+    }
+
+    /// `device` 载荷与两个操作对象的**形状错误**响亮失败（绝不静默丢弃）。
+    ///
+    /// 注入（实测红）：去掉 [`parse_device`] 里那段未知键检查 ⇒ 第一条红；去掉
+    /// `read_number`（改用 `as_f64`）⇒ 非有限那一条红；把 `latencySamples` 的
+    /// `u32::try_from` 换成 `as u32` ⇒ 溢出那一条红。
+    #[test]
+    fn device_payload_shapes_fail_loudly() {
+        let project = filled_project();
+        let track = device_track(&project);
+        let (_, clip_id) = lead_clip(&project);
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000DEV").expect("ULID");
+        let base = serde_json::json!({
+            "deviceId": fresh.to_canonical_string(),
+            "name": "Probe",
+            "kind": "InternalEffect",
+            "bypassed": false,
+            "latencySamples": 0,
+            "params": []
+        });
+        let with_device = |patch: &serde_json::Value| {
+            let mut device = base.clone();
+            if let (Some(target), Some(source)) = (device.as_object_mut(), patch.as_object()) {
+                for (key, value) in source {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+            serde_json::json!([{
+                "kind": INSERT_DEVICE_KIND,
+                "trackId": track.to_canonical_string(),
+                "device": device
+            }])
+        };
+        // 形状错误可能在**解析期**（`parse_device` 自己的未知键 / 类型 / 值域闸门）
+        // 或**编译期**（`compile` 的前置条件）报出。两者都是"本层响亮拒绝、带 `reason`"，
+        // 因此本判据只看"最终报出来的那一条"，不钉它出自哪一步 —— 钉那一步会让判据
+        // 在把闸门搬位置时无意义地变红。
+        let expect_domain = |raw: &serde_json::Value, code: ErrorCode, reason: &str| {
+            let fault = match parse_ops(raw) {
+                Err(fault) => fault,
+                Ok(ops) => compile(&project, &track, &clip_id, &ops).expect_err("必须被拒"),
+            };
+            assert_eq!(fault.domain_code(), Some(code), "报文 {fault:?}");
+            assert_eq!(lane_fault_data(&fault)["reason"], serde_json::json!(reason));
+        };
+
+        // ① 操作对象里的未知键（把设备身份错写在顶层 —— 它属于 `device` 载荷）。
+        // 解析期就拒（`reject_insert_device_fields`），因此这里读的是 `parse_ops` 的失败。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": INSERT_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "deviceId": fresh.to_canonical_string(),
+            "device": base.clone()
+        }]))
+        .expect_err("顶层多写 `deviceId` 必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownInsertDeviceField"
+        );
+
+        // ② `device` 里的未知键（把 snake_case 的容器拼写搬进工具面）。
+        expect_domain(
+            &with_device(&serde_json::json!({"latency_samples": 32})),
+            ErrorCode::InvalidParameterRange,
+            "unknownDeviceField",
+        );
+        // ③ `params[]` 里的未知键。
+        expect_domain(
+            &with_device(
+                &serde_json::json!({"params": [{"name": "a", "value": 1.0, "unitX": "dB"}]}),
+            ),
+            ErrorCode::InvalidParameterRange,
+            "unknownDeviceParamField",
+        );
+        // ④ 未知的设备类型名。
+        expect_domain(
+            &with_device(&serde_json::json!({"kind": "SfzSampler"})),
+            ErrorCode::InvalidParameterRange,
+            "unknownDeviceKind",
+        );
+        // ⑤ `latencySamples` 超出 u32。
+        expect_domain(
+            &with_device(&serde_json::json!({"latencySamples": 4_294_967_296u64})),
+            ErrorCode::OutOfRange,
+            "latencyOutOfRange",
+        );
+        // ⑥ 空设备名（模型对 `DeviceDefinition::name` 没有校验 ⇒ 本层必须拦）。
+        expect_domain(
+            &with_device(&serde_json::json!({"name": ""})),
+            ErrorCode::InvalidParameterRange,
+            "deviceNameRequired",
+        );
+        // ⑦ 参数值在 f64 → f32 收窄**之后**非有限（`1e39` 在 f64 里有限、在 f32 里是
+        // `inf` ⇒ 正是 `ef459f9` 修掉的那一类；`read_number` 判的是收窄之后的值）。
+        expect_domain(
+            &with_device(&serde_json::json!({"params": [{"name": "a", "value": 1e39}]})),
+            ErrorCode::InvalidParameterRange,
+            "nonFiniteValue",
+        );
+        // ⑧ `removeDevice` 上的 `device` 键（那是 `insertDevice` 的形状）。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_DEVICE_KIND,
+            "trackId": track.to_canonical_string(),
+            "deviceId": fresh.to_canonical_string(),
+            "device": base
+        }]))
+        .expect_err("`removeDevice` 多写 `device` 必须被拒");
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownRemoveDeviceField"
+        );
+    }
+
+    /// 设备形态**自带寻址**：顶层 `trackId` / `clipId` 是 nil 占位也照样编译，
+    /// 而且不要求片段是 MIDI；阴性对照是音符级形态必须响亮失败。
+    ///
+    /// 注入（实测红）：把 [`compile`] 入口的 `self_addressed_only` 分支换回
+    /// `all_track_entity_level` ⇒ 本判据红（nil 顶层身份查不到音轨），
+    /// 而 `remove_track_does_not_need_the_envelope_ids_or_midi` 仍绿。
+    #[test]
+    fn device_ops_do_not_need_the_envelope_ids_or_midi() {
+        let project = filled_project();
+        let track = device_track(&project);
+        let existing = project.tracks[&track].devices[0].id;
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000DEV").expect("ULID");
+        let audio_clip = project
+            .clip_pool
+            .values()
+            .find(|entry| entry.content.notes().is_none())
+            .expect("样本里必须有非 MIDI 片段")
+            .id;
+
+        let ops = parse_ops(&serde_json::json!([
+            {
+                "kind": INSERT_DEVICE_KIND,
+                "trackId": track.to_canonical_string(),
+                "device": {
+                    "deviceId": fresh.to_canonical_string(),
+                    "name": "Probe",
+                    "kind": "InternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 0,
+                    "params": []
+                }
+            },
+            {
+                "kind": REMOVE_DEVICE_KIND,
+                "trackId": track.to_canonical_string(),
+                "deviceId": existing.to_canonical_string()
+            }
+        ]))
+        .expect("解析");
+        // 两条设备形态**允许**同批（换一台设备本来就是两条操作）。
+        let compiled = compile(&project, &track, &audio_clip, &ops)
+            .expect("设备形态不读片段内容, 非 MIDI 片段也必须被接受");
+        assert_eq!(compiled.len(), 2);
+
+        // 顶层两个身份是 nil 占位 ⇒ 仍然编译（`all_self_addressed` 走的那条路）。
+        let nil = EntityId::default();
+        let compiled = compile(&project, &nil, &nil, &ops)
+            .expect("设备形态自带寻址, 顶层 trackId / clipId 不被读取");
+        assert_eq!(compiled.len(), 2);
+        assert!(ops.iter().all(NoteOp::is_device_level));
+        assert!(NoteOp::all_self_addressed(&ops));
+        assert!(
+            !NoteOp::all_track_entity_level(&ops),
+            "设备形态**不是**音轨实体级 (那是取走整条音轨), 两个桶必须分得开"
+        );
+
+        // 阴性对照: 音符级形态 + nil 顶层身份必须响亮失败。
+        let note_ops = parse_ops(&serde_json::json!([
+            {"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}
+        ]))
+        .expect("解析");
+        let fault = compile(&project, &nil, &nil, &note_ops).expect_err("音符级必须要音轨");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::TrackNotFound));
     }
 
     #[test]

@@ -4232,6 +4232,277 @@ fn edit_notes_remove_track_refuses_the_master_bus() {
     assert_eq!(accepted["status"], "success", "{accepted}");
 }
 
+/// **工具面真的能改设备链**：`ops[].kind == "insertDevice"` / `"removeDevice"` 走完
+/// `tools/call` → 提案 → 合并 →（读侧）→ 撤销 的整条管线。
+///
+/// 这条判据对着一处**实测缺口**：模型有 `Op::InsertDevice` / `Op::RemoveDevice`
+/// （各带自包含 / 从文档读的撤销载荷，`Op::validate` 已经管住槽位越界、设备身份重复与
+/// 参数有限性），而这两个变体在整个 `crates/yeban-mcp/src` 里**一次都没有被构造过**
+/// （两口径普查见 `domain/notes.rs` 模块头的表）⇒ 工具面能**看见**设备链
+/// （`yeban_query_engine_state` 的 `tracks[].devices[]`，含 `latencySamples`）却
+/// **造不出、也取不走**任何一台设备，而 `latency_samples` 是 PDC 的**唯一**延迟来源
+/// （`ARCH-PDC-001`）。
+///
+/// 判据的**牙齿**：① 顶层 `trackId` / `clipId` 传的是**别的**实体（另一条音轨 + 一个
+/// 合法片段身份），实现若读顶层身份就会取错对象；② 新设备的 `latencySamples` 必须
+/// 出现在读侧的 `totalLatencySamples` 上（PDC 的输入真的变了，不只是形状变了）；
+/// ③ 取走之后链上少一台且总延迟**回落**（阴性对照防"读侧永远报同一份"）；
+/// ④ 两次撤销逐字节复原。
+#[test]
+fn edit_notes_device_crud_reaches_the_engine_state_reading_and_undo_restores_it() {
+    let scratch = Scratch::new("device-crud-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let (track, chain_len, total_before) = project
+        .tracks
+        .values()
+        .find(|track| !track.devices.is_empty())
+        .map(|track| {
+            let total: u64 = track
+                .devices
+                .iter()
+                .map(|device| u64::from(device.latency_samples))
+                .sum();
+            (track.id, track.devices.len(), total)
+        })
+        .expect("样本里必须有带设备链的音轨");
+    let track_text = track.to_canonical_string();
+    // 顶层两个实参传**别的**实体：两个设备形态一个都不读。
+    let envelope_track = project
+        .tracks
+        .values()
+        .find(|candidate| candidate.id != track)
+        .expect("样本里必须不止一条音轨")
+        .id
+        .to_canonical_string();
+    let envelope_clip = project
+        .clip_pool
+        .values()
+        .next()
+        .expect("样本里必须有片段池条目")
+        .id
+        .to_canonical_string();
+    let bytes_before = project_bytes(&dispatcher);
+    let fresh = "01J8ZQ00000000000000000DEV";
+
+    // ---- 插入：缺省 `slotIndex` ⇒ 追加到链尾 ----
+    let proposed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": envelope_track,
+            "clipId": envelope_clip,
+            "ops": [{
+                "kind": "insertDevice",
+                "trackId": track_text,
+                "device": {
+                    "deviceId": fresh,
+                    "name": "Probe Effect",
+                    "kind": "ExternalEffect",
+                    "bypassed": false,
+                    "latencySamples": 64,
+                    "params": [{"name": "mix", "value": 0.5}],
+                },
+            }],
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+    let ops = &proposed["data"]["proposal"]["ops"];
+    assert_eq!(ops.as_array().map(Vec::len), Some(1), "{proposed}");
+    assert_eq!(
+        ops[0]["op"]["InsertDevice"]["slot_index"], chain_len,
+        "缺省 = 追加到链尾: {proposed}"
+    );
+    assert_eq!(
+        ops[0]["op"]["InsertDevice"]["device"]["latency_samples"], 64,
+        "PDC 的唯一延迟来源必须真的进载荷: {proposed}"
+    );
+    assert_eq!(project_bytes(&dispatcher), bytes_before, "提案不得改工程");
+
+    let proposal_id = proposed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "插一台设备" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+
+    // 读侧（`yeban_query_engine_state` 的 `track.devices[]`）必须逐槽报出它，
+    // 而且链的总延迟必须真的涨了 64。
+    let reading = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_engine_state",
+        json!({ "trackId": track_text }),
+    );
+    assert_eq!(reading["status"], "success", "{reading}");
+    let devices = &reading["data"]["track"]["devices"];
+    assert_eq!(
+        devices[chain_len]["deviceId"], fresh,
+        "读侧必须在新槽位报出这台设备: {reading}"
+    );
+    assert_eq!(devices[chain_len]["latencySamples"], 64, "{reading}");
+    assert_eq!(
+        reading["data"]["track"]["deviceCount"],
+        chain_len + 1,
+        "{reading}"
+    );
+    assert_eq!(
+        reading["data"]["track"]["totalLatencySamples"],
+        total_before + 64,
+        "PDC 的输入必须真的变了 (不只是形状): {reading}"
+    );
+
+    // ---- 取走：按**身份**寻址（不是下标）----
+    let removed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": envelope_track,
+            "clipId": envelope_clip,
+            "ops": [{"kind": "removeDevice", "trackId": track_text, "deviceId": fresh}],
+            "includeOps": true,
+        }),
+    );
+    assert_eq!(removed["status"], "success", "{removed}");
+    assert_eq!(
+        removed["data"]["proposal"]["ops"][0]["op"]["RemoveDevice"]["slot_index"], chain_len,
+        "身份必须被翻译成它**当前**所在的槽位: {removed}"
+    );
+    assert_eq!(
+        removed["data"]["proposal"]["ops"][0]["op"]["RemoveDevice"]["previous_device"]["latency_samples"],
+        64,
+        "撤销载荷必须是文档里那一台: {removed}"
+    );
+    let removed_id = removed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let merged = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": removed_id, "commitMessage": "取走一台设备" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let reading = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_engine_state",
+        json!({ "trackId": track_text }),
+    );
+    assert_eq!(
+        reading["data"]["track"]["deviceCount"], chain_len,
+        "取走之后链上必须少一台: {reading}"
+    );
+    assert_eq!(
+        reading["data"]["track"]["totalLatencySamples"], total_before,
+        "总延迟必须回落到原值 (阴性对照): {reading}"
+    );
+
+    // ---- 可回退：两次撤销 ⇒ 逐字节回到两次合并之前的工程 ----
+    for _ in 0..2 {
+        let undone = call(&mut dispatcher, &auth, "yeban_undo", json!({}));
+        assert_eq!(undone["status"], "success", "{undone}");
+    }
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "两次撤销必须逐字节复原 (设备随逆操作回来又走掉)"
+    );
+}
+
+/// **插入设备的槽位越界是带内的 `OUT_OF_RANGE`**（不是夹紧、也不是实现级出口），
+/// 且被拒的调用一个字节都不改工程；阴性对照是合法的链尾追加被放行。
+#[test]
+fn edit_notes_insert_device_refuses_an_out_of_range_slot() {
+    let scratch = Scratch::new("device-slot-e2e");
+    let (mut dispatcher, auth) = dispatcher();
+    open(&scratch, &mut dispatcher, &auth);
+
+    let project = dispatcher.domain().active_project().expect("工程");
+    let track = project
+        .tracks
+        .values()
+        .find(|track| !track.devices.is_empty())
+        .expect("样本里必须有带设备链的音轨");
+    let chain_len = track.devices.len();
+    let track_text = track.id.to_canonical_string();
+    let envelope_clip = project
+        .clip_pool
+        .values()
+        .next()
+        .expect("样本里必须有片段池条目")
+        .id
+        .to_canonical_string();
+    let bytes_before = project_bytes(&dispatcher);
+    let device = json!({
+        "deviceId": "01J8ZQ00000000000000000DEV",
+        "name": "Probe",
+        "kind": "InternalEffect",
+        "bypassed": false,
+        "latencySamples": 0,
+        "params": [],
+    });
+
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text,
+            "clipId": envelope_clip,
+            "ops": [{
+                "kind": "insertDevice",
+                "trackId": track_text,
+                "slotIndex": chain_len + 1,
+                "device": device,
+            }],
+        }),
+    );
+    assert_domain_error(&refused, "OUT_OF_RANGE", "槽位越界必须被拒");
+    assert_eq!(
+        refused["error"]["data"]["reason"], "deviceSlotOutOfRange",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["len"], chain_len,
+        "报文必须报出链长: {refused}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒的调用不得改工程"
+    );
+
+    // 阴性对照: 同一份形状, `slotIndex == 链长` (合法边界) ⇒ 建得出提案。
+    let accepted = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track_text,
+            "clipId": envelope_clip,
+            "ops": [{
+                "kind": "insertDevice",
+                "trackId": track_text,
+                "slotIndex": chain_len,
+                "device": device,
+            }],
+        }),
+    );
+    assert_eq!(accepted["status"], "success", "{accepted}");
+}
+
 /// **工具面真的能写自动化泳道自己的属性**：`ops[].kind == "setAutomationLane"` 走完
 /// `tools/call` → 提案 → 合并 → 撤销 的整条管线，并且关掉读开关之后**唯一求值入口**
 /// 真的返回"无自动化值"。
