@@ -30,11 +30,17 @@
 use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams};
 use yeban_dsp::compressor::{Compressor, CompressorParams};
 use yeban_dsp::convolution::Convolution;
+use yeban_dsp::convolution_reverb::ConvolutionReverbParams;
 use yeban_dsp::convolution_stereo::TrueStereoConvolution;
+use yeban_dsp::delay::DelayParams;
 use yeban_dsp::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumVoice};
 use yeban_dsp::math::{db_to_gain, lerp};
-use yeban_dsp::meter::dbfs;
+use yeban_dsp::meter::{TruePeakDetector, dbfs};
+use yeban_dsp::oversample::Oversampler2x;
+use yeban_dsp::polysynth::PolySynthParams;
 use yeban_dsp::polysynth::{NoteEvent, OscSettings, PolySynth, VOICES_PER_SLOT};
+use yeban_dsp::reverb::ReverbParams;
+use yeban_dsp::shaping::EqParams;
 use yeban_dsp::smoothing::ParamSmoother;
 
 /// 判据用的采样率（Hz）。
@@ -368,5 +374,103 @@ fn true_stereo_convolution_debug_prints_only_scalars() {
         text.len() < 400,
         "Debug 输出过长（{} 字节）⇒ 内部核被打印了: {text}",
         text.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 面 4：手写 `Default` 的取值（第六批；`Default` 不在 `pub fn` 扫描面内）
+// ---------------------------------------------------------------------------
+
+/// 量什么：`impl Default` 的**取值**（`Default` 是 trait impl，不在 `pub fn` 普查面内）。
+///
+/// 为什么需要它：本 crate 有 **43** 个手写 trait impl（其中 **40** 个是 `Default`，
+/// 另 3 个是 `Debug`）。对 10 个文档化的 `Default` 逐个改一个字段，
+/// **9 个全库 481 条判据全绿**（第六批注入表 D1–D5、D7–D10）：
+/// 混响湿路 `0.25→0.5`、`size 0.45→0.9`、`predelay 0.012→0.0`、
+/// EQ `low_freq 200→100`、`mid_q 0.9→0.5`、**振荡器默认电平 `1.0→0.0`（默认变静音）**、
+/// `DelayParams.time_s 0.3→0.0`、`TruePeakDetector` 的峰值初值 `0→1.0`、
+/// `Oversampler2x` 的历史初值 `0→1.0`。
+///
+/// 只有 `TransientParams::default().attack_amt 0→1` 被抓（D6，3 条既有判据）。
+///
+/// ⛔ 断言一律写**字面值**（不写常量名、不与 `new()` 互比），否则就是"常量自比"。
+#[test]
+fn the_documented_defaults_are_pinned_by_literals() {
+    // 卷积混响参数：无预延迟、干路单位增益、湿路 0.25、IR 增益 0 dB。
+    let shell = ConvolutionReverbParams::default();
+    assert_eq!(shell.pre_delay_s.to_bits(), 0.0f32.to_bits());
+    assert_eq!(shell.dry.to_bits(), 1.0f32.to_bits());
+    assert_eq!(shell.wet.to_bits(), 0.25f32.to_bits(), "湿路默认 0.25");
+    assert_eq!(shell.ir_gain_db.to_bits(), 0.0f32.to_bits());
+
+    // Freeverb 参数。
+    let verb = ReverbParams::default();
+    assert_eq!(verb.size.to_bits(), 0.45f32.to_bits());
+    assert_eq!(verb.damp.to_bits(), 0.35f32.to_bits());
+    assert_eq!(verb.mix.to_bits(), 0.25f32.to_bits());
+    assert_eq!(verb.width.to_bits(), 0.8f32.to_bits());
+    assert_eq!(verb.predelay.to_bits(), 0.012f32.to_bits());
+
+    // 平坦 EQ（数学恒等）。
+    let eq = EqParams::default();
+    assert_eq!(eq.low_gain.to_bits(), 0.0f32.to_bits());
+    assert_eq!(eq.low_freq.to_bits(), 200.0f32.to_bits());
+    assert_eq!(eq.mid_gain.to_bits(), 0.0f32.to_bits());
+    assert_eq!(eq.mid_freq.to_bits(), 1_000.0f32.to_bits());
+    assert_eq!(eq.mid_q.to_bits(), 0.9f32.to_bits());
+    assert_eq!(eq.high_gain.to_bits(), 0.0f32.to_bits());
+    assert_eq!(eq.high_freq.to_bits(), 4_000.0f32.to_bits());
+
+    // 振荡器支路缺省：table 0、**满电平**、不失谐。
+    let osc = OscSettings::default();
+    assert_eq!(osc.table(), 0);
+    assert_eq!(osc.level().to_bits(), 1.0f32.to_bits(), "默认不能是静音");
+    assert_eq!(osc.detune_cents().to_bits(), 0.0f32.to_bits());
+
+    // 延迟参数缺省：300 ms、反馈 0.3、湿 0.2、无阻尼、不交叉。
+    let delay = DelayParams::default();
+    assert_eq!(delay.time_s.to_bits(), 0.3f32.to_bits());
+    assert_eq!(delay.feedback.to_bits(), 0.3f32.to_bits());
+    assert_eq!(delay.mix.to_bits(), 0.2f32.to_bits());
+    assert_eq!(delay.damp.to_bits(), 0.0f32.to_bits());
+    assert!(!delay.ping_pong);
+
+    // 复音合成器参数缺省：起振 5 ms、衰减 80 ms、sustain 0.7、释放 50 ms。
+    let poly = PolySynthParams::default();
+    assert_eq!(poly.attack_s().to_bits(), 0.005f32.to_bits());
+    assert_eq!(poly.decay_s().to_bits(), 0.08f32.to_bits());
+    assert_eq!(poly.sustain().to_bits(), 0.7f32.to_bits());
+    assert_eq!(poly.release_s().to_bits(), 0.05f32.to_bits());
+
+    // 两个"行为等价于 new()"的缺省：逐位对照（不是字段对照）。
+    let mut by_default = TruePeakDetector::default();
+    assert_eq!(by_default.true_peak().to_bits(), 0.0f32.to_bits());
+    let block = [0.5f32; 128];
+    let a = by_default.process(&block);
+    let mut by_new = TruePeakDetector::new();
+    let b = by_new.process(&block);
+    assert_eq!(
+        a.to_bits(),
+        b.to_bits(),
+        "`Default` 必须与 `new()` 逐位同解"
+    );
+    assert_eq!(
+        by_default.true_peak().to_bits(),
+        by_new.true_peak().to_bits()
+    );
+
+    let mut os_default = Oversampler2x::default();
+    let mut os_new = Oversampler2x::new();
+    let input = [1.0f32; 32];
+    let mut out_default = [0.0f32; 32];
+    let mut out_new = [0.0f32; 32];
+    let mut up_default = [0.0f32; 64];
+    let mut up_new = [0.0f32; 64];
+    let mut scratch = [0.0f32; 1_024];
+    os_default.process_round_trip(&input, &mut out_default, &mut up_default, &mut scratch);
+    os_new.process_round_trip(&input, &mut out_new, &mut up_new, &mut scratch);
+    assert_eq!(
+        out_default, out_new,
+        "`Oversampler2x::default()` 必须与 `new()` 逐位同解（历史必须归零）"
     );
 }

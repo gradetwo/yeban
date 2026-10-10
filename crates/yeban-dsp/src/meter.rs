@@ -2382,4 +2382,76 @@ mod tests {
         detector.reset();
         assert_eq!(detector.latency_samples(), TRUE_PEAK_LATENCY_SAMPLES);
     }
+
+    /// **判据（新写，可红）**：真峰值读数**恒有限**（`+inf` 不可达）。
+    ///
+    /// 量什么：`TruePeakDetector`（默认 8×）对四种常量输入各喂 `4 096` 帧之后
+    /// `true_peak()` 的读数（线性幅度），以及 `±inf` / `NaN` / 静音的**位型相等性**。
+    ///
+    /// 为什么需要它：⭐ **本 crate 唯一的"契约在别处被依赖"项**。
+    /// `yeban-render` 的 `ExportPreset::apply_at` 里有一行
+    /// `before.true_peak_dbtp.is_finite()`；那一行**是真守卫还是文档**，
+    /// 完全取决于本判据钉住的性质：
+    ///
+    /// - 若 `true_peak()` 能取到 `+inf` ⇒ `allowed_db = ceiling − (+inf) = −inf` ⇒
+    ///   `−inf < gain_db` 为真 ⇒ 真的进入上限分支 ⇒ 那行是**真守卫**；
+    /// - 若恒有限（本判据钉住）⇒ `allowed_db` 只可能是有限值或 `+inf` ⇒
+    ///   `+inf < gain_db` 恒假 ⇒ 那行**冗余**（文档价值 > 防线价值）。
+    ///
+    /// 机理：`sanitize_sample` 把 `NaN → 0`、`±inf → ±MAX_LINEAR_MAGNITUDE`、
+    /// 有限值钳进 `±16`；核系数是定长有限表（最大 `0.41999155`、`32` 个抽头）
+    /// ⇒ `acc` 的绝对值有界 ⇒ `peak` 恒有限。
+    ///
+    /// 注入实测（第四批／本批）：把 `process` 里的
+    /// `let sample = sanitize_sample(raw);` 换成 `let sample = raw;`
+    /// ⇒ 本判据变红（`±inf` 输入给出 `+inf` 读数）。
+    #[test]
+    fn the_true_peak_reading_is_always_finite() {
+        /// 观测帧数。
+        const FRAMES: usize = 4_096;
+        /// 每次 `process` 的块长。
+        const CHUNK: usize = 128;
+        let measure = |sample: f32| -> f32 {
+            let mut detector = TruePeakDetector::new();
+            let block = vec![sample; FRAMES];
+            for chunk in block.chunks(CHUNK) {
+                let _ = detector.process(chunk);
+            }
+            detector.true_peak()
+        };
+        let positive_infinity = measure(f32::INFINITY);
+        let negative_infinity = measure(f32::NEG_INFINITY);
+        let not_a_number = measure(f32::NAN);
+        let silence = measure(0.0);
+        for (label, value) in [
+            ("+inf", positive_infinity),
+            ("-inf", negative_infinity),
+            ("NaN", not_a_number),
+            ("0.0", silence),
+        ] {
+            assert!(
+                value.is_finite(),
+                "{label} 输入给出了非有限的真峰值 {value} ⇒ `+inf` 可达"
+            );
+            assert!(value >= 0.0, "{label} 输入给出了负的真峰值 {value}");
+        }
+        assert_eq!(
+            positive_infinity.to_bits(),
+            negative_infinity.to_bits(),
+            "`±inf` 必须给出同一个读数（`sanitize_sample` 把它们钳到 `±MAX_LINEAR_MAGNITUDE`）"
+        );
+        assert_eq!(
+            not_a_number.to_bits(),
+            0.0f32.to_bits(),
+            "`NaN` 必须钳到 `0.0`"
+        );
+        assert_eq!(silence.to_bits(), 0.0f32.to_bits(), "静音必须是 `0.0`");
+        // 非空证明：±inf 的读数必须**超过**钳位幅度本身（插值核有增益），
+        // 否则"恒有限"可能只是"钳到 16 拉倒"。
+        assert!(
+            positive_infinity >= MAX_LINEAR_MAGNITUDE,
+            "±inf 的真峰值 {} 低于钳位幅度 {MAX_LINEAR_MAGNITUDE}",
+            positive_infinity
+        );
+    }
 }
