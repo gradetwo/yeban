@@ -1491,4 +1491,53 @@ mod tests {
         let name = NoteName::new(6, 1).unwrap();
         assert_eq!(name.to_string(), format!("B{}", name.accidental_text()));
     }
+
+    /// 形态 D 注入实测（第五批）：`impl FromStr for SpelledPitch` 的**长度上界**
+    /// `trimmed.len() > MAX_NOTE_TEXT_LEN`（= 5）没有判据 —— 把这一半条件去掉
+    /// 时四道闸门**全绿**。
+    ///
+    /// 可观测性：变音记号是**可抵消**的，因此一个很长的输入可以净出一个合法的
+    /// `alter`。守卫移除后 `"C#b#b4"`（6 字符）与
+    /// `"C" + "#b"×50 + "4"`（105 字符）都会被解析成 `C4`；
+    /// 文档口径是"超过 [`MAX_NOTE_TEXT_LEN`] 个字符 ⇒ `NoteNameUnknown`"。
+    #[test]
+    fn fromstr_for_spelled_pitch_enforces_the_text_length_bound() {
+        use core::str::FromStr;
+        // 两个入口（`FromStr::from_str` 与 `.parse()`）必须同判。
+        assert_eq!(
+            SpelledPitch::from_str("C#4").unwrap(),
+            "C#4".parse::<SpelledPitch>().unwrap()
+        );
+        // 5 个字符是上界：两个合法的 5 字符写法必须**被接受**（不许 off-by-one）。
+        assert_eq!(
+            SpelledPitch::from_str("C##-1").unwrap().to_string(),
+            "C##-1"
+        );
+        assert_eq!("Bbb9".parse::<SpelledPitch>().unwrap().to_string(), "Bbb9");
+        // 6 个字符：即使变音记号互相抵消成一个合法音名，也必须按长度拒绝。
+        assert_eq!(
+            SpelledPitch::from_str("C#b#b4").unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        // 极长的抵消式输入同理（这正是守卫移除后会被静默接受的形状）。
+        let mut long = String::from("C");
+        long.push_str(&"#b".repeat(50));
+        long.push('4');
+        assert!(long.len() > 5);
+        assert_eq!(
+            SpelledPitch::from_str(&long).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        // 空串与超长但**不**抵消的输入同样拒绝。
+        assert_eq!(
+            SpelledPitch::from_str("").unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        assert_eq!(
+            SpelledPitch::from_str(&"C".repeat(6)).unwrap_err(),
+            TheoryError::NoteNameUnknown
+        );
+        // 与 `Display` 往返一致（4 字符的正常写法）。
+        assert_eq!("C#4".parse::<SpelledPitch>().unwrap().to_string(), "C#4");
+    }
 }

@@ -1499,4 +1499,40 @@ mod tests {
             );
         }
     }
+
+    /// 形态 D 注入实测（第五批）：`DrumVoice::name` 的**取值**没有判据 ——
+    /// 既有判据只钉"四个名字**两两不同**"。把四个名字做一次**置换**
+    /// （kick→snare、snare→kick、hihat→ride、ride→hihat）仍然两两不同，
+    /// 于是四道闸门**全绿**（单改一个名字会撞名，因而是 RED）。
+    ///
+    /// 同一条判据钉住两个 `ALL` 表的**顺序**：把 `DrumStyle::ALL` 的两个元素
+    /// 互换时四道闸门同样全绿（既有直方图判据只数个数，与顺序无关）。
+    #[test]
+    fn enum_readouts_pin_names_ordinals_and_all_order() {
+        assert_eq!(DrumVoice::Kick.name(), "kick");
+        assert_eq!(DrumVoice::Snare.name(), "snare");
+        assert_eq!(DrumVoice::HiHat.name(), "hihat");
+        assert_eq!(DrumVoice::Ride.name(), "ride");
+        assert_eq!(
+            DrumVoice::ALL.map(DrumVoice::name),
+            ["kick", "snare", "hihat", "ride"]
+        );
+        assert_eq!(
+            DrumVoice::ALL.map(DrumVoice::ordinal),
+            [0, 1, 2, 3],
+            "`ALL` must be listed in ordinal order"
+        );
+        for (index, voice) in DrumVoice::ALL.iter().enumerate() {
+            assert_eq!(voice.ordinal(), index, "ordinal of {voice:?}");
+        }
+        assert_eq!(DrumStyle::Metric.name(), "metric");
+        assert_eq!(DrumStyle::FourOnTheFloor.name(), "four-on-the-floor");
+        assert_eq!(
+            DrumStyle::ALL.map(DrumStyle::name),
+            ["metric", "four-on-the-floor"]
+        );
+        assert_eq!(DrumStyle::ALL.len(), 2);
+        // 两个 `ALL` 表的长度常量与数组长度一致。
+        assert_eq!(DrumVoice::ALL.len(), DRUM_VOICE_COUNT);
+    }
 }

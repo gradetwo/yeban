@@ -1306,4 +1306,36 @@ mod tests {
             "Bbm7"
         );
     }
+
+    /// 形态 D 注入实测（第五批）：全 crate **13 条手写 trait impl** 逐个注入。
+    /// `impl FromStr for Chord` 是其中一条 —— 把 `from_str` 的实现换成一个
+    /// 常量 `C` 大三和弦（**忽略输入**）时四道闸门**全绿**：既有判据全部走
+    /// `Chord::from_symbol`，没有任何判据用过 `"…".parse::<Chord>()`。
+    ///
+    /// 口径：`FromStr` 与 `from_symbol` 是同一个解析器的两个出口，必须逐个
+    /// 输入同判（含成功读数与错误变体）。
+    #[test]
+    fn fromstr_for_chord_delegates_to_from_symbol() {
+        use core::str::FromStr;
+        for text in [
+            "C", "Cm7", "F#m7b5", "Bbmaj7", "C6/9", "C/E", "G7sus4", "A#dim7", "Db13",
+        ] {
+            let via_trait = Chord::from_str(text).unwrap();
+            let via_ctor = Chord::from_symbol(text).unwrap();
+            assert_eq!(via_trait, via_ctor, "{text}");
+            assert_eq!(via_trait.symbol(), via_ctor.symbol(), "{text}");
+            assert_eq!(text.parse::<Chord>().unwrap(), via_ctor, "{text}");
+            // `FromStr` 的结果必须真的取决于输入。
+            if text != "C" {
+                assert_ne!(via_trait.symbol(), "C", "{text} collapsed onto the root");
+            }
+        }
+        for bad in ["", "H", "Cxyz", "Cmaj9#11"] {
+            assert_eq!(
+                Chord::from_str(bad).unwrap_err(),
+                Chord::from_symbol(bad).unwrap_err(),
+                "{bad:?}"
+            );
+        }
+    }
 }

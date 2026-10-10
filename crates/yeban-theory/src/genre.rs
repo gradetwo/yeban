@@ -4276,4 +4276,61 @@ mod tests {
         assert_eq!(swing_some, 34, "rules with a registered swing");
         assert_eq!(non_common, 28, "rules whose meter is not 4/4");
     }
+
+    /// 形态 D 注入实测（第五批）：上一条聚合读数**故意**只钉"求和"，因此一次
+    /// **抵消式**改动（一条 +1、另一条 -1）能让所有求和不变而四道闸门全绿。
+    /// 本批实测了两次这样的注入，两次都**全绿**：
+    ///
+    /// * `default_bpm_range` 下限：546 行 `50 → 49`、715 行 `50 → 51`；
+    /// * `note_density_hint` 下限：811 行 `4 → 3`、1141 行 `4 → 5`。
+    ///
+    /// 这条判据补一层**多重集**读数（`BTreeMap` 直方图）：它抓得住任何
+    /// "单条改动"与"抵消式改动"，因为两者都会改变多重集。
+    ///
+    /// ⚠ 局限如实登记：纯粹**互换两条**登记值的改动不改多重集，仍能躲过这一层
+    /// （那需要逐条钉死 182 条，会把数据表的每次有意扩充都变成改判据）。
+    #[test]
+    fn registry_numeric_multisets_are_pinned_to_the_measured_readings() {
+        use std::collections::BTreeMap;
+        fn histogram(value_of: impl Fn(&GenreRule) -> (u32, u32)) -> BTreeMap<(u32, u32), usize> {
+            let mut map: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+            for rule in GenreLibrary::all() {
+                *map.entry(value_of(rule)).or_insert(0) += 1;
+            }
+            map
+        }
+        let bpm = histogram(|rule| {
+            (
+                u32::from(rule.default_bpm_range.0),
+                u32::from(rule.default_bpm_range.1),
+            )
+        });
+        let density = histogram(|rule| {
+            (
+                u32::from(rule.note_density_hint.0),
+                u32::from(rule.note_density_hint.1),
+            )
+        });
+        let meter = histogram(|rule| (u32::from(rule.meter.0), u32::from(rule.meter.1)));
+        // 多重集的形状（不同取值对的个数）与规模（条目总数）。
+        assert_eq!(bpm.len(), 131, "distinct BPM ranges");
+        assert_eq!(density.len(), 35, "distinct density ranges");
+        assert_eq!(meter.len(), 5, "distinct meters");
+        assert_eq!(bpm.values().sum::<usize>(), 182);
+        assert_eq!(density.values().sum::<usize>(), 182);
+        assert_eq!(meter.values().sum::<usize>(), 182);
+        // 抵消式改动会改这些**计数**：先把两个被改的区间钉住。
+        assert_eq!(bpm.get(&(50, 76)), Some(&1));
+        assert_eq!(bpm.get(&(50, 88)), Some(&1));
+        assert_eq!(bpm.get(&(49, 76)), None);
+        assert_eq!(bpm.get(&(51, 88)), None);
+        assert_eq!(density.get(&(4, 16)), Some(&3));
+        assert_eq!(density.get(&(3, 16)), None);
+        assert_eq!(density.get(&(5, 16)), None);
+        assert_eq!(meter.get(&(4, 4)), Some(&154));
+        assert_eq!(meter.get(&(3, 4)), Some(&13));
+        assert_eq!(meter.get(&(2, 4)), Some(&8));
+        assert_eq!(meter.get(&(6, 8)), Some(&3));
+        assert_eq!(meter.get(&(7, 8)), Some(&4));
+    }
 }
