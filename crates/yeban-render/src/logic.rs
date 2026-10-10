@@ -8295,7 +8295,11 @@ mod tests {
     fn every_embedded_donor_byte_block_matches_its_recorded_sha256() {
         let provenance = include_str!("../assets/logic-donor-owner/PROVENANCE.md");
         let readme = include_str!("../assets/logic-donor/README.md");
-        let cases: [(&str, &[u8], &str, usize, &str, &str); 5] = [
+        // 6 元组会触发 `clippy::type_complexity`（本项目 `clippy::all` 是 `deny`）;
+        // 与文件里既有的做法一致: **用别名把类型写清楚**, 而不是加 `#[allow]` 弱化门禁。
+        /// 一行夹具: (标签, 嵌入字节, 记录的 sha256, 期望字节数, 文档正文, 表里的路径描述)。
+        type Case<'a> = (&'a str, &'a [u8], &'a str, usize, &'a str, &'a str);
+        let cases: [Case<'_>; 5] = [
             (
                 "MIT 供体 ProjectData",
                 LOGIC_DONOR_PROJECT_DATA,
