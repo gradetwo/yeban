@@ -941,3 +941,63 @@ fn the_stale_entry_case_is_built_by_replacement_not_by_growing_a_fixed_array() {
         "⛔ 真缺口上的入口不是陈旧入口（替换造法的反向对照）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ **推广（本批 #4）**：把"注入 ＝ **合成源字符串的替换**"这一形态推广到**更多规则** ⇒
+//    每条规则自带绿/红两臂（⛔ 不靠一次性进程级注入）⇒ 计数可与 R146 的 5/5 合并。
+//    ⭐ **R163**：每个注入都**必须带一句"自身会通过"的断言** ⇒ 才能区分"被抓到"与"注入写错"。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_synthetic_replacement_pattern_covers_three_more_rules() {
+    let mut matched = 0usize;
+
+    // 规则 A：**注释里的界不算界**（`mask_noncode`）。绿 = 不认；注入 = 把注释**变成真代码** ⇒ 认。
+    let commented =
+        "fn t() {\n    // assert!(xs.len() >= 3);\n    assert!(xs.iter().all(|x| *x > 0));\n}\n";
+    let site = sites(commented);
+    assert_eq!(site.len(), 1);
+    assert!(
+        !has_size_bound(commented, site[0]),
+        "规则 A 绿：注释里的界不得被认成界（R96）"
+    );
+    let unmasked = commented.replace("// assert!(xs.len() >= 3);", "assert!(xs.len() >= 3);");
+    assert_ne!(unmasked, commented, "规则 A 注入必须真的改掉源");
+    assert!(
+        has_size_bound(&unmasked, site[0]),
+        "规则 A 红：同一句话变成**真代码**后必须被认成界（否则掩码把代码也掩了）"
+    );
+    matched += 1;
+
+    // 规则 B：**函数定义行的通用判定**（`is_fn_definition`）。绿 = 认；注入 = 把 `fn ` 改成 `fnx ` ⇒ 不认。
+    let def = "pub const fn public_const(";
+    assert!(
+        is_fn_definition(def),
+        "规则 B 绿：`pub const fn` 必须被认成定义行（R143）"
+    );
+    let not_def = def.replace("fn ", "fnx ");
+    assert_ne!(not_def, def, "规则 B 注入必须真的改掉源");
+    assert!(
+        !is_fn_definition(&not_def),
+        "规则 B 红：`fnx ` 不是 `fn ` ⇒ 不得被认成定义行"
+    );
+    matched += 1;
+
+    // 规则 C：**站点根派生**（`site_root`）。绿 = 派生得出；注入 = 破坏 `.iter()` ⇒ 派生不出。
+    let site_text = "    assert!(v.iter().all(|x| *x > 0));";
+    assert_eq!(
+        site_root(site_text).as_deref(),
+        Some("v"),
+        "规则 C 绿：根必须能派生（R153）"
+    );
+    let broken = site_text.replace(".iter()", ".iterx()");
+    assert_ne!(broken, site_text, "规则 C 注入必须真的改掉源");
+    assert!(
+        site_root(&broken).is_none(),
+        "规则 C 红：`.iter()` 被破坏后必须派生不出根（⛔ 不得编造）"
+    );
+    matched += 1;
+
+    println!("[assertion-bounds] 形态推广：本轮新增 **{matched}/3** 条规则自带绿/红两臂");
+    assert_eq!(matched, 3, "三条规则必须各配一条（实得 {matched}/3）");
+}
