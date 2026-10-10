@@ -5373,4 +5373,88 @@ mod tests {
         }
         assert_eq!(kinds.len(), 3, "三种容器");
     }
+
+    /// 判据 (**R70② 字节契约**): 写出的容器**整体**必须钉在一个**字面摘要**上。
+    ///
+    /// # 上游是谁（R60 的两条契约）
+    ///
+    /// 这里的字节**完全由本 crate 决定**（`write_container` 逐字节自己拼）, 因此"上游"
+    /// 就是本文件的写入逻辑本身; `hound` 只作**独立读者**（另有判据让它读回同样的样本）。
+    /// 与 `.als` 那条对比: 那条的 deflate 流由 `flate2` 决定, 所以它写明了依赖哪个上游。
+    ///
+    /// # 与既有判据的关系（本机注入实测: ⚠ **我最初写下的假设被否证, 如实登记**）
+    ///
+    /// 我最初以为 `bext` 的两段保留区**没有判据读它们** —— **实测是错的**:
+    /// 把 `[0u8; 190]` 改成 `[1u8; 190]` 之后有 **2 条**既有判据立刻红
+    /// （`bext_version_one_has_602_byte_prefix` 断言 `&bytes[412..602] == &[0u8; 190]`,
+    /// `bext_version_two_round_trips` 断言 `&bytes[422..602] == &[0u8; 180]`）。
+    /// ⇒ 两段保留区**都被语义判据覆盖**。
+    ///
+    /// 那么这条判据的增量是什么: 它是一条**整体绊线** —— 任何**将来**新增的字节
+    /// （还没有人为它写语义断言的那些）会在这里红, 而不必等某条语义判据恰好读到它。
+    /// **它今天不是"独有的牙"**: 我试过的每一处字节改动都已被既有判据覆盖（见报告 §2）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个 `Riff` 容器（v2 `bext`: 描述/发起者/日期/UMID/响度/编码历史 ＋ 8 帧载荷）。
+    /// 读数: 字节数（一个整数）＋ SHA-256 十六进制串（64 字符）。
+    ///
+    /// # 非空证明
+    ///
+    /// ① **两个独立读数**（长度 ＋ 摘要）都要对得上;
+    /// ② 夹具**真的含 bext**（下面断言保留区在文件里出现 190 个零字节）⇒
+    /// "夹具其实没有 bext"这种空夹具会被本判据自己挡住。
+    #[test]
+    fn the_written_container_bytes_are_pinned() {
+        let block = Bext {
+            description: "Yeban reference project A master".to_owned(),
+            originator: "Yeban DAW".to_owned(),
+            originator_reference: "01J8ZK9WQ7F5N2V4B6C8D0E1F2".to_owned(),
+            origination_date: "2026-10-05".to_owned(),
+            origination_time: "13:37:00".to_owned(),
+            time_reference: 48_000 * 3600,
+            version: 2,
+            umid: [0xAB; 64],
+            loudness: Some(Loudness {
+                loudness_value: Loudness::from_lufs(-14.0),
+                loudness_range: Loudness::from_lufs(7.5),
+                max_true_peak_level: Loudness::from_dbtp(-1.0),
+                max_momentary_loudness: Loudness::from_lufs(-12.25),
+                max_short_term_loudness: Loudness::UNKNOWN,
+            }),
+            coding_history: "A=PCM,F=48000,W=24,M=stereo".to_owned(),
+        };
+        let data = payload(8);
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            stereo_16bit(),
+            data.len() as u64,
+            8,
+            Some(block),
+        );
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("写入");
+        // 非空证明 ②: 夹具真的含 bext 的保留区（190 个零字节里至少有一段）。
+        assert!(
+            file.windows(190)
+                .any(|window| window.iter().all(|byte| *byte == 0)),
+            "夹具必须真的写出 bext 的保留区, 否则本判据测不到它"
+        );
+        assert_eq!(file.len(), RIFF_PINNED_BYTES, "字节数");
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&file)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            digest, RIFF_PINNED_SHA256,
+            "容器字节流必须就是钉住的那一份（改任何一个字节都要显式更新这里）"
+        );
+    }
+
+    /// 上面那个容器的**字节数**（实测）。
+    const RIFF_PINNED_BYTES: usize = 714;
+    /// 同一份字节流的 SHA-256（实测）。
+    const RIFF_PINNED_SHA256: &str =
+        "104093330affb9a57aa81e87db8e7b4704cc05afcffb0d1da2a330ddac576f9f";
 }

@@ -1043,4 +1043,57 @@ mod tests {
             "至少 3 对同变体不同载荷, 实际 {same_variant}"
         );
     }
+
+    /// 判据 (**R70② 字节契约: 上游决定字节**): `hound` 写出的 WAV **整体**必须钉在字面摘要上。
+    ///
+    /// # 上游是谁
+    ///
+    /// [`write_plain_wav`] **一个字节都不自己拼**: `WavSpec` 由我们给,
+    /// 头部与样本由 **`hound::WavWriter`** 落盘。因此这条判据的"上游"是 `hound`,
+    /// 它是一条**跨版本绊线**: `hound` 升级会红, 那正是要人显式复核一次的地方
+    /// （与 `.als` 那条依赖 `flate2` 同理; `Cargo.lock` 钉住版本）。
+    ///
+    /// # 为什么既有判据测不到（本机复核的结论, 如实登记）
+    ///
+    /// 既有判据把 `hound` **当读者**（写出去、读回来比样本）与**当裁判**（它能读我们的
+    /// `rf64` 容器）, 没有任何一条读**文件字节**。本判据的牙**无法用 in-crate 注入证明**:
+    /// 四个 spec 字段（位深/样本格式/声道/采样率）全都有语义判据, 而字节层面的自由度
+    /// **属于 `hound`** —— 换句话说, 它是"上游决定字节"这一类里最纯的一个, 只能靠版本绊线。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 48 kHz 立体声、16 位、8 个样本的 WAV 文件（单位: 字节）。
+    /// 读数: 字节数 ＋ SHA-256 十六进制串。
+    ///
+    /// # 非空证明
+    ///
+    /// ① 两个独立读数（长度 ＋ 摘要）;
+    /// ② 夹具**真的写了样本**（下面断言文件长度 > 44 字节的规范头）。
+    #[test]
+    fn the_hound_written_wav_bytes_are_pinned() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("pinned.wav");
+        let samples: Vec<i16> = vec![0, 1, -1, 32_767, -32_768, 1234, -4321, 7];
+        let buffer = PcmBuffer::Int16(samples.clone());
+        write_plain_wav(&path, &format_of(&buffer, 2, 48_000), &buffer).expect("写入");
+        let bytes = std::fs::read(&path).expect("读回");
+        // 非空证明 ②: 规范头 44 字节之外必须有载荷。
+        assert!(bytes.len() > 44 + samples.len(), "夹具必须真的写了样本载荷");
+        assert_eq!(bytes.len(), HOUND_WAV_PINNED_BYTES, "字节数");
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            digest, HOUND_WAV_PINNED_SHA256,
+            "hound 写出的 WAV 字节流必须就是钉住的那一份"
+        );
+    }
+
+    /// `hound` 写出的 WAV 字节数（实测）。
+    const HOUND_WAV_PINNED_BYTES: usize = 60;
+    /// 同一份字节流的 SHA-256（实测）。
+    const HOUND_WAV_PINNED_SHA256: &str =
+        "a0c9be6f09bc7f5d8e55c654369c8ef8436c9a804110b3d8209dfc84dd2cff23";
 }
