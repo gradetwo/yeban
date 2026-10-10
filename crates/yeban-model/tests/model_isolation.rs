@@ -2965,6 +2965,7 @@ fn the_scope_rule_uses_the_innermost_enclosing_function() {
     let declared = arms.len();
     let mut checked = 0_usize;
     let mut disagreed = 0_usize;
+    let mut labels: Vec<&str> = Vec::new();
     for (label, snippet, correct_expect, wrong_expect) in arms {
         let correct = unbounded_all_any_sites(label, snippet).len();
         let wrong = unbounded_all_any_sites_with(nearest_fn_body_only, label, snippet).len();
@@ -2979,12 +2980,147 @@ fn the_scope_rule_uses_the_innermost_enclosing_function() {
         if correct != wrong {
             disagreed += 1;
         }
+        labels.push(label);
         checked += 1;
     }
-    // R160 双向：每臂都求值 ＋ 必须有**证伪臂**（两规则结论不同）⇒ 修法是承重的。
+    // R160 双向：每臂都求值 ＋ 标签唯一 ＋ 必须有**证伪臂**（两规则结论不同）⇒ 修法是承重的。
     assert_eq!(checked, declared, "R160 双向①：{declared} 臂必须全部求值");
+    let unique: std::collections::BTreeSet<&str> = labels.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        labels.len(),
+        "R160 双向②：臂标签必须唯一（重复 ⇒ 有臂被覆盖）"
+    );
     assert!(
         disagreed >= 2,
         "证伪臂不足：只有 {disagreed} 条夹具能区分两种规则（需要 >= 2）"
+    );
+}
+
+/// **错误规则②**（证伪臂）：根的匹配**不带标识符边界**（旧的子串规则）。
+fn substring_root_bound_only(scope: &str, root: &str) -> bool {
+    if root.is_empty() {
+        return false;
+    }
+    let len = format!("{root}.len()");
+    scope.contains(&len)
+}
+
+/// **错误规则③**（证伪臂）：掩码**每个字符补 1 个空格**（不保字节数）。
+///
+/// 它和正确规则一样掩注释与字符串，但**按字符**补空格。多字节字符下两者长度不同。
+fn char_width_mask_only(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0_usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+        if c == '"' {
+            out.push(' ');
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    out.push(' ');
+                    i += 1;
+                    if i < chars.len() {
+                        out.push(' ');
+                        i += 1;
+                    }
+                    continue;
+                }
+                if chars[i] == '"' {
+                    out.push(' ');
+                    i += 1;
+                    break;
+                }
+                out.push(if chars[i] == '\n' { '\n' } else { ' ' });
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// **错误规则④**（证伪臂）：任何比较都当成界（含 `len() < N` 这种**上界**）。
+fn lenient_bound_only(scope: &str, root: &str) -> bool {
+    let len = format!("{root}.len()");
+    scope.contains(&len)
+}
+
+/// **第十七轮常驻判据**：每条"认"的规则都要有**证伪臂**。
+///
+/// 做法：**故意保留**每条规则的错误实现，然后断言"正确规则与错误规则在同一夹具上结论不同"。
+/// ⛔ 只断言"正确规则给出期望值"是不够的 —— 那样无法证明这条规则是**承重**的。
+/// 本判据只读两个实现，不改变生产代码（R181②：改探针本身的注入不会自伤）。
+#[test]
+fn the_bound_rules_have_falsification_arms() {
+    let mut arms = 0_usize;
+    let mut disagreed = 0_usize;
+
+    // 臂①：标识符边界（R114/R119）——`bb.len()` 不得记到根 `b`。
+    let near_miss = "assert!(bb.len() >= 2);";
+    let correct_1 = has_root_bound(&compact(near_miss), "b");
+    let wrong_1 = substring_root_bound_only(near_miss, "b");
+    assert!(!correct_1, "正确规则：`bb.len()` 不得给根 `b` 记界");
+    assert!(
+        wrong_1,
+        "错误规则（子串）必须给根 `b` 记界 —— 否则这条臂无效"
+    );
+    if correct_1 != wrong_1 {
+        disagreed += 1;
+    }
+    arms += 1;
+
+    // 臂②：`outer.b.len()` 同样不得记到独立变量 `b`。
+    let field = "assert!(outer.b.len() >= 2);";
+    let correct_2 = has_root_bound(&compact(field), "b");
+    let wrong_2 = substring_root_bound_only(field, "b");
+    assert!(!correct_2 && wrong_2, "字段访问也必须被边界规则挡住");
+    if correct_2 != wrong_2 {
+        disagreed += 1;
+    }
+    arms += 1;
+
+    // 臂③：掩码必须**保字节数**（R113）——多字节注释下两条规则给出不同长度。
+    let multibyte = "// 中文注释\nfn f() {}\n";
+    let good_len = mask_rust_source(multibyte).len();
+    let bad_len = char_width_mask_only(multibyte).len();
+    assert_eq!(good_len, multibyte.len(), "正确规则：掩码必须保字节数");
+    assert_ne!(
+        bad_len,
+        multibyte.len(),
+        "错误规则（每字符 1 空格）必须在多字节输入上给出不同长度"
+    );
+    if good_len != bad_len {
+        disagreed += 1;
+    }
+    arms += 1;
+
+    // 臂④：**方向**（R142）——`len() < N` 是上界，⛔ 不得当成下界。
+    let upper = "assert!(v.len() < 2);";
+    let correct_4 = has_root_bound(&compact(upper), "v");
+    let wrong_4 = lenient_bound_only(upper, "v");
+    assert!(!correct_4, "正确规则：`len() < N` 不是下界");
+    assert!(wrong_4, "错误规则（宽松）必须把它当界 —— 否则这条臂无效");
+    if correct_4 != wrong_4 {
+        disagreed += 1;
+    }
+    arms += 1;
+
+    // R160 双向：每臂都求值 ＋ 每臂都必须真的**区分**两种规则。
+    assert_eq!(arms, 4, "R160 双向①：{arms} 条臂必须全部求值");
+    assert_eq!(
+        disagreed, arms,
+        "证伪臂不足：只有 {disagreed}/{arms} 条臂能区分正确与错误规则"
     );
 }
