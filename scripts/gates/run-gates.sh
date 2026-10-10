@@ -81,6 +81,15 @@ gate_docs() {
   run "golden-manifest(linux)" python3 scripts/gates/check_golden_manifest.py
   # `yeban-mcp` 的依赖方向规则（它自己的 Cargo.toml 写着"不拖音频栈进 MCP"）。
   run "mcp-dependency-direction" python3 scripts/gates/check_mcp_dependency_direction.py
+  # 纪律检查表门（账本 R261「五组」里**可无歧义机械化**的 3 条）:
+  #   C1  `scripts/**` 里真代码含 `git commit` 的脚本必须由显式开关（--commit / DRY_RUN）把关
+  #   C3  ci.yml 的上传步必须保留 `if-no-files-found: error`（⛔ 退回 `warn` 会让"没产出"变成绿）
+  #   E1  ci.yml 按 crate 拆的 test 步必须带 `--no-fail-fast`（判据内部首败仍即停 ⇒ 拆分才是 N/N 的唯一机制）
+  # 其余 24 条**如实登记为 non-mechanical**（需人读 + 各线自证），⛔ 不假装能机械化。
+  # ⚠ 为什么只收 3 条: **门一旦误红就会被忽略** ⇒ 只收零假阳性的判据。这条纪律当场兑现过:
+  # 该门首版直接在原文上 grep, 把 `worktree.sh` heredoc 里的**提示文字**当成真调用 ⇒
+  # 已知绿喂变红（= A5/R264① 的"语料太宽"）⇒ 修法是扫前剥 heredoc 正文与整行注释。
+  run "discipline-checklist" python3 scripts/gates/check_discipline_checklist.py
 }
 
 gate_schemas() {
