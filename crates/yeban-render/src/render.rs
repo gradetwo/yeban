@@ -1881,4 +1881,75 @@ mod tests {
         assert_eq!(explicit.threads, None);
         assert_eq!(explicit.with_threads(3).threads, Some(3));
     }
+
+    /// 判据 (**手写 `Debug` 的形状普查**): [`RenderPlan`] 的 `Debug` 输出是
+    /// **本 crate 默认构建里唯一的手写 `Debug`**（`grep 'impl Debug for'` 只命中它）,
+    /// 而 `assert_eq!` 的失败消息用的正是 `{:?}` ⇒ 它的形状是诊断面的一部分。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `.field("layers", …)` 改名成 `.field("layer_count", …)`（或整条删掉）之后,
+    /// 全量判据**全绿** —— 没有任何判据读过 `format!("{plan:?}")`。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个 4 节点 / 3 层的图（`a → b → master` 与 `c → master`）编译出的计划,
+    /// `a` 自身延迟 **100** 帧。读数: `format!("{plan:?}")` 的字符串（字符）,
+    /// 加上三个计数（节点数 / 层数 / `L_max`, 单位分别是节点、层、帧）。
+    ///
+    /// # 非空证明
+    ///
+    /// 三个数字**互不相同**（4 / 3 / 100）⇒ "把三个字段写成同一个读数"也会红;
+    /// 后半段断言首尾括号与四个字段名 ⇒ 改名、删字段、换成 derive 都会红。
+    #[test]
+    fn the_hand_written_render_plan_debug_shape_is_pinned() {
+        let master = ulid(0xFFFF);
+        let a = ulid(1);
+        let b = ulid(2);
+        let c = ulid(3);
+        let routing = graph(
+            &[master, a, b, c],
+            vec![
+                edge(a, b, None),
+                edge(b, master, None),
+                edge(c, master, None),
+            ],
+        );
+        let mut latencies = BTreeMap::new();
+        latencies.insert(a, 100u32);
+        let plan = RenderPlan::compile_with_latencies(
+            &routing,
+            master,
+            RenderOptions::l1(128, 1, 48_000, 0),
+            &latencies,
+        )
+        .expect("编译");
+
+        let nodes = plan.nodes().len();
+        let layers = plan
+            .node_levels()
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |max| max + 1);
+        assert_eq!((nodes, layers, plan.longest_path_frames()), (4, 3, 100));
+        assert_ne!(nodes, layers, "本判据要求三个数字互不相同");
+
+        let text = format!("{plan:?}");
+        assert!(text.starts_with("RenderPlan { "), "实际 {text}");
+        assert!(text.ends_with(" }"), "实际 {text}");
+        for field in [
+            "nodes: ",
+            "layers: ",
+            "longest_path_frames: ",
+            "options: RenderOptions {",
+        ] {
+            assert!(text.contains(field), "`Debug` 少了字段 {field:?}: {text}");
+        }
+        assert!(text.contains("nodes: 4"), "实际 {text}");
+        assert!(text.contains("layers: 3"), "实际 {text}");
+        assert!(text.contains("longest_path_frames: 100"), "实际 {text}");
+        // 非空证明的后半: 三个数字确实互不相同, 因此上面三条断言各自都有射程。
+        assert_ne!(plan.longest_path_frames() as usize, nodes);
+    }
 }

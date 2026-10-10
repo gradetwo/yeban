@@ -3193,4 +3193,52 @@ mod tests {
         assert_eq!(amplitude_to_dbtp(-0.0), f32::NEG_INFINITY);
         assert_eq!(amplitude_to_dbtp(-1.0e-30), f32::NEG_INFINITY);
     }
+
+    /// 判据 (**静音 + 只给上限**): 一个测不出真峰值的母带**不得**因为"上限"而被算出
+    /// 一个无穷增益。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 既有的 `silence_is_never_normalized_and_never_becomes_nan` 用的是
+    /// **流媒体预设**（目标 + 上限）: 目标那一支因为"响度测不出"被跳过, 上限那一支
+    /// 也只有一个 `Some(-1.0)`。把上限那一支的 `if allowed_db < gain_db` 改成
+    /// `if true`（无条件采用上限给出的增益）之后, 静音的 `allowed_db =
+    /// ceiling − (−inf) = +inf` ⇒ `gain_db = +inf`、`bound = TruePeakCeiling`,
+    /// 而**既有那条判据仍然全绿**（它不带上限单独出现的这一格）。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 1 s 的数字静音立体声（单位: 线性样本）与预设 `(None, Some(-1.0))`
+    /// （单位: dBTP）。读数: [`NormalizeOutcome::bound`]、`gain_db`（dB）、
+    /// `before.true_peak_dbtp`（dBTP）与两侧样本的位型（`u32`）。
+    ///
+    /// # 非空证明
+    ///
+    /// 后半段用**非静音**的同一结构作对照: 它必须真的有动作（`bound` 不是
+    /// `NothingToDo`, 或样本真的被改）—— 少了这一半, "把整个上限分支关掉"也会让前半段全绿。
+    #[test]
+    fn a_silent_master_with_only_a_ceiling_stays_untouched() {
+        let mut left = vec![0.0f32; 48_000];
+        let mut right = vec![0.0f32; 48_000];
+        let outcome = ExportPreset::new(None, Some(-1.0))
+            .apply(48_000, &mut left, &mut right)
+            .expect("48 kHz");
+        assert_eq!(outcome.bound, GainBound::NothingToDo);
+        assert_eq!(outcome.gain_db, 0.0, "静音上不许算出一个无穷增益");
+        assert!(
+            !outcome.before.true_peak_dbtp.is_finite(),
+            "静音的真峰值就是「测不出」"
+        );
+        assert!(left.iter().all(|sample| sample.to_bits() == 0));
+        assert!(right.iter().all(|sample| sample.to_bits() == 0));
+
+        // 对照: 非静音 + 同一个上限 ⇒ 这一支必须真的有动作。
+        let tone = sine_997(0.5, 48_000);
+        let (mut loud_left, mut loud_right) = (tone.clone(), tone);
+        let loud = ExportPreset::new(None, Some(-20.0))
+            .apply(48_000, &mut loud_left, &mut loud_right)
+            .expect("48 kHz");
+        assert_eq!(loud.bound, GainBound::TruePeakCeiling);
+        assert!(loud.gain_db < 0.0, "实际 {} dB", loud.gain_db);
+    }
 }

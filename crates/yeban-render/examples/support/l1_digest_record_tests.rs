@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 
 use l1_digest_record::{
     CrossPlatform, DigestEnvelope, DigestRecord, DigestScope, JudgeError, Participation,
-    PlatformIdentity, RenderParams, SCHEMA, WAV_HEADER_BYTES, Verdict, compared_fields,
+    PlatformIdentity, RenderParams, SCHEMA, Verdict, WAV_HEADER_BYTES, compared_fields,
     encode_wav_f32_le, format_utc, hex_lower, judge, judge_policy, latency_token, parse,
     participation_of, pcm_bits_bytes, recorded_only_fields, report, same_platform,
     sample_digest_of, sha256, split_rustc_version, to_json, to_json_line, to_pretty_json,
@@ -131,7 +131,7 @@ fn synthetic_master() -> Vec<f32> {
         let unit = state as f32 / u32::MAX as f32;
         let value = match index % 8 {
             0 => -0.0,
-            1 => f32::from_bits(1),        // 最小次正规
+            1 => f32::from_bits(1), // 最小次正规
             2 => f32::MAX,
             3 => f32::MIN_POSITIVE,
             4 => 1.0,
@@ -453,8 +453,15 @@ fn generation_is_byte_identical_for_the_same_input() {
     // 两种形态必须是**同一份数据**（多行只是排版，不许改变读数）。
     assert_eq!(parse(&to_json_line(&first)).unwrap(), first);
     assert_eq!(parse(&to_pretty_json(&first)).unwrap(), first);
-    assert_eq!(to_json_line(&first).lines().count(), 1, "单行形态必须真的只有一行");
-    assert!(to_pretty_json(&first).lines().count() > 10, "多行形态必须真的多行");
+    assert_eq!(
+        to_json_line(&first).lines().count(),
+        1,
+        "单行形态必须真的只有一行"
+    );
+    assert!(
+        to_pretty_json(&first).lines().count() > 10,
+        "多行形态必须真的多行"
+    );
     // 注入一个仅记录字段 ⇒ 单行文本**必须**变化（证明它不是"文本恒定"的假绿），
     // 但逐字段比对仍然 PASS（判据 ⑥ 的另一半，在同一个夹具上被证明）。
     let touched = build(&samples, |record| {
@@ -562,8 +569,9 @@ fn utc_formatting_matches_known_instants() {
 /// 与 CI 归档日志里的 `1.99.0 (b940084d7 2026-09-28)`（同一个 commit 的**短写**）。
 #[test]
 fn rustc_version_splitting_never_invents_fields() {
-    let (release, commit, date) =
-        split_rustc_version(Some("1.99.0 (b940084d7eb6a299eb4bfeb8e34901bc051e7ac4 2026-09-28)"));
+    let (release, commit, date) = split_rustc_version(Some(
+        "1.99.0 (b940084d7eb6a299eb4bfeb8e34901bc051e7ac4 2026-09-28)",
+    ));
     assert_eq!(release, "1.99.0");
     assert_eq!(commit, "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4");
     assert_eq!(date, "2026-09-28");

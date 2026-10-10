@@ -4887,4 +4887,69 @@ mod tests {
         assert_eq!(default.encoded_len(), BEXT_FIXED_LEN);
         assert_eq!(default.to_bytes().len(), BEXT_FIXED_LEN);
     }
+
+    /// 判据 (**未实现的 chunk 族**): 读取器对**不认识的** chunk 是**跳过**, 不是报错,
+    /// 而且跳过之后后面的 chunk 仍要正确解析（含奇数负载的补位字节）。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `parse_container` 的 `_ => {}` 换成 `_ => return Err(Rf64Error::NotWaveContainer)`
+    /// 之后, 全量判据**全绿** —— 既有的每一个夹具只写 `ds64`/`fmt `/`fact`/`bext`/`data`,
+    /// **没有一格带未知 chunk**。而模块头的"已知边界"写明 BW64 的
+    /// `axml`/`bxml`/`sxml`/`chna` 未实现 ⇒ 真实 BW64 交付物**必然**带这些 chunk。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: 一个 BW64 容器, 在 `fmt ` 与 `data` 之间插入两个未实现的 chunk:
+    /// `axml`（18 字节负载）与 `JUNK`（**3** 字节负载 ⇒ 需要 1 字节补位）。
+    /// 读数: `parse_container` 的判决、`chunk_order` 的 fourcc 序列（4 字节 × N）、
+    /// `chunk_lengths` 的两个负载长度（字节）与 `chunks.len()`。
+    ///
+    /// # 非空证明
+    ///
+    /// `axml` 与 `JUNK` 的**负载长度不同**（18 与 3）且都非零, 其中 `JUNK` 是奇数
+    /// ⇒ "补位没跳过"会让后面的 `data` 解析失败; 而 `chunks.len()` 必须恰好 +2。
+    #[test]
+    fn an_unimplemented_chunk_is_skipped_not_rejected() {
+        let data = payload(4);
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Bw64,
+            stereo_16bit(),
+            data.len() as u64,
+            4,
+            None,
+        );
+        let mut file = plan.header_bytes();
+        file.extend_from_slice(&data);
+        let before = chunk_order(&file).expect("原始容器可解析").len();
+        assert_eq!(before, 3, "BW64 无 bext 时是 ds64 / fmt / data");
+
+        // 插在 `data` 的 chunk 头**之前**。
+        let data_header_at = file.len() - data.len() - 8;
+        let mut inserted = Vec::new();
+        let axml = b"<ebucore:coreMetadata/>";
+        push_chunk(&mut inserted, b"axml", axml);
+        push_chunk(&mut inserted, b"JUNK", &[0xAB; 3]);
+        file.splice(data_header_at..data_header_at, inserted);
+
+        let parsed = parse_container(&file).expect("未实现的 chunk 不得让解析失败");
+        assert_eq!(
+            &file[parsed.data.clone()],
+            data.as_slice(),
+            "data 负载仍要读对"
+        );
+        assert_eq!(parsed.format, stereo_16bit());
+        assert_eq!(parsed.sizes.sample_count, 4);
+        assert_eq!(
+            chunk_order(&file).expect("解析"),
+            vec![*b"ds64", *b"fmt ", *b"axml", *b"JUNK", *b"data"],
+            "未实现的 chunk 必须出现在 chunk 序列里, 而且顺序不变"
+        );
+        assert_eq!(parsed.chunks.len(), before + 2, "恰好多了两个 chunk");
+        let lengths = chunk_lengths(&parsed.chunks);
+        assert_eq!(lengths.get("axml"), Some(&axml.len()), "axml 负载长度");
+        assert_eq!(lengths.get("JUNK"), Some(&3usize), "JUNK 负载长度（奇数）");
+        // 非空证明: `JUNK` 的负载是奇数 ⇒ 少了补位 `data` 就会错位。
+        assert_eq!(3 % 2, 1, "JUNK 必须是奇数负载");
+    }
 }

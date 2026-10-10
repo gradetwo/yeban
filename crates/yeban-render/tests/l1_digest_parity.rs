@@ -805,6 +805,12 @@ fn an_internally_inconsistent_record_is_not_a_usable_baseline() {
 /// 本机实测**两条**注入让 192 条判据全绿: 删掉未知字段那个循环、以及关掉未知 schema 的
 /// 判定。因此这两条契约在**自动化门禁里此前没有判据**, 本判据是它们的门禁落点。
 ///
+/// ⚠️ **2026-10-10 补记（形态 D 第六批）**: `tests/support_scaffolds.rs` 现在用 `#[path]`
+/// 把 `l1_digest_record_tests.rs` 与 `l1_receipt_tests.rs` **原样**接成了 cargo 测试目标
+/// ⇒ 那 38 条判据已经进 `cargo test --tests`（本机实测 `38 passed`）。**本判据保留**:
+/// 它是对同一条契约的**第二份**独立判据, 不是重复。
+/// `verify/pure_modules.rs` 那 115 条**仍未进**门禁（它把 `src/` 的模块树再引入一遍）。
+///
 /// # 量的是什么（对象 + 单位）
 ///
 /// 对象: 参考摘要的多行 JSON 文本, 以及只改一处（插入一行 / 换一个 schema 值 / 删掉一行）

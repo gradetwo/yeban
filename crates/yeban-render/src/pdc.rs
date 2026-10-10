@@ -1067,4 +1067,89 @@ mod tests {
             "信号在延迟之后必须出现, 否则本判据是空的"
         );
     }
+
+    /// 判据 (**类别 4/7: 多级饱和**): 饱和**之后还要继续累加** —— 一条链上连续两次
+    /// 饱和的结果必须仍是 `u32::MAX`, 不能"停在饱和前的那一格"。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// 把 `arrives.saturating_add(own)` 换成"溢出就保留 `arrives`"
+    /// （`arrives.checked_add(own).unwrap_or(arrives)`）之后, **既有的
+    /// `accumulated_latency_saturates_at_u32_max_instead_of_wrapping` 仍然全绿** ——
+    /// 它那一格是 `u32::MAX + 5`, 饱和发生在**最后一次**加法上, `unwrap_or(arrives)`
+    /// 恰好给出 `u32::MAX`。只有"第一个节点已经把和顶到 MAX 附近、第二个节点再顶一次"
+    /// 的链才能把两种写法分开。
+    ///
+    /// # 量的是什么（对象 + 单位）
+    ///
+    /// 对象: `a → b → master` 的串链, `a` 与 `b` 的自身延迟都是 `u32::MAX / 2 + 1`
+    /// （单位: 采样帧）。读数: `arrival[b]`、`output_latency[b]`、`arrival[master]`、
+    /// `longest_path`（都是帧）与两条边的 `delay_of`。
+    ///
+    /// # 非空证明
+    ///
+    /// `(u32::MAX / 2 + 1) × 2 = u32::MAX + 1`（下面用 `u64` 直接断言）⇒ 第一次加法就
+    /// 溢出; 而 `arrival[b]` 本身**没有**饱和（等于 `u32::MAX / 2 + 1`）⇒ "停住"与
+    /// "饱和"两个读数在这一格上必然不同。
+    #[test]
+    fn saturation_keeps_saturating_on_a_longer_chain() {
+        let half = u32::MAX / 2 + 1;
+        let g = graph(
+            &["a", "b", "master"],
+            &[("a", "b"), ("b", "master")],
+            &[("a", half), ("b", half)],
+        );
+        let plan = plan(&g, "master").expect("无环");
+        assert_eq!(
+            u64::from(half) * 2,
+            u64::from(u32::MAX) + 1,
+            "第一次加法必须真的溢出 u32"
+        );
+        assert_eq!(plan.arrival["b"], half, "到达 b 的和还没有饱和");
+        assert_eq!(plan.output_latency["b"], u32::MAX, "第一次饱和（帧）");
+        assert_eq!(plan.arrival["master"], u32::MAX);
+        assert_eq!(plan.longest_path, u32::MAX, "第二次加法必须继续饱和");
+        assert_eq!(plan.delay_of("a", "b"), Some(0), "单入边不补");
+        assert_eq!(plan.delay_of("b", "master"), Some(0));
+    }
+
+    /// 判据 (**自环是环, 不是零补偿边**): 一个指向自己的边必须让整个图被判为
+    /// [`PdcError::Cycle`], **不得**进入补偿计算。
+    ///
+    /// # 这条判据同时是 `edge_delay` 那次 `saturating_sub` 的**代数前提**
+    ///
+    /// `D(s → d) = arrival[d] − output_latency[s]` 之所以恒不下溢, 靠的是
+    /// `arrival[d] = max(d 的全部入边 output_latency) ≥ output_latency[s]`。
+    /// 自环会让这个不等式**反向**: `arrival[a] ≥ output_latency[a] = arrival[a] + own(a)`,
+    /// 于是 `arrival[a]` 无解。Kahn 排序把自环留在 `order` 之外 ⇒ 先返回 `Cycle`,
+    /// 补偿那一遍根本不会跑。本判据钉住这个前提; 少了它, 那次 `saturating_sub` 就有唯一
+    /// 一条可达的下溢路径（见报告里"3 处数学上不可达的 `saturating_*`"一节）。
+    ///
+    /// # 为什么既有判据测不到（本机注入实测的读数, `--no-fail-fast`）
+    ///
+    /// `cycles_are_rejected` 用的是 `a ↔ b` 的**二环**。把入度那一遍改成"自环不加度数"
+    /// （`if source != destination { … += 1 }`）之后, `a ↔ b` 仍然是环 ⇒ 那条判据全绿;
+    /// 而自环节点会变成入度 0 的源节点, 于是本判据拿到 `Ok(plan)`。
+    ///
+    /// # 非空证明
+    ///
+    /// 图上**同时**有 `a → a` 与 `a → master` 两条边 ⇒ "把自环当普通边"与"把自环当环"
+    /// 的两种判决必然不同（前者给 `Ok`, 后者给 `Err(Cycle)`）。
+    #[test]
+    fn a_self_loop_is_a_cycle_not_a_zero_compensation_edge() {
+        let g = graph(
+            &["a", "master"],
+            &[("a", "a"), ("a", "master")],
+            &[("a", 3)],
+        );
+        match plan(&g, "master") {
+            Err(PdcError::Cycle { remaining }) => {
+                assert!(
+                    remaining.iter().any(|node| node.contains('a')),
+                    "自环节点必须留在残留集里: {remaining:?}"
+                );
+            }
+            other => panic!("自环必须被拒绝为 Cycle, 得到 {other:?}"),
+        }
+    }
 }
