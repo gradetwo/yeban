@@ -70,10 +70,28 @@ pub struct ProbeRequest {
 /// 探针的产物（只读；`apply` 原样回传，一位都不改）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbeReport {
+    /// ⚠ **私有**字段：本 crate 之外**构造不出** `ProbeReport`（⛔ 不能自己编一份载荷）。
     data: Value,
 }
 
 impl ProbeReport {
+    /// 由**纯读数**组装载荷（**唯一**的构造入口）。
+    ///
+    /// 把载荷组装收在这一个函数里是**结构性**的保证，不是措辞：
+    /// [`ProbeReport::data`] 的字段私有 ⇒ 本模块之外无法构造本类型；
+    /// 本模块内**只有这一处**给它赋值。于是"判据判的那条载荷路径"
+    /// **必然**就是线上那条路径，不会出现第二份 `json!` 让判据空转。
+    ///
+    /// 判据 `the_payload_is_built_in_exactly_one_place` 用源码扫描把
+    /// "生产区里 `unsupportedMessages` 这个键**恰好出现一次**且落在
+    /// [`probe_payload`] 体内"钉住 —— 挡住"日后有人再加一处 `json!`"。
+    #[must_use]
+    pub fn from_reading(reading: &ProbeReading) -> Self {
+        Self {
+            data: probe_payload(reading),
+        }
+    }
+
     /// 工具结果的 JSON 载荷（`dryRun` 预览与真调用**共用**这一个函数）。
     #[must_use]
     pub fn data(&self) -> Value {
@@ -152,6 +170,146 @@ pub fn parse_arguments(arguments: &Map<String, Value>) -> Result<ProbeRequest, F
         ));
     }
     Ok(ProbeRequest { port, seconds })
+}
+
+// ---------------------------------------------------------------------------
+// 纯读数 → 载荷：**与硬件完全解耦**的那一层
+// ---------------------------------------------------------------------------
+
+/// `unsupportedMessages` 的**口径文案**（单一事实源：载荷与判据都读它）。
+///
+/// ⭐ 口径 = "会话连接之后到本工具读它的那一刻，回调内核登记的**不承载**消息条数"
+/// （系统专用 / 可变长 / 长度不符 ⇒ 计数登记，⛔ 不静默丢弃）。
+/// ⇒ 它**不是**"本机一共遇到过多少条"，也**不是**"本次窗口内有多少条"。
+pub const UNSUPPORTED_MESSAGES_CALIBER: &str = "unsupported_messages: 会话连接之后到本工具读它的那一刻, 回调内核登记的不承载消息条数 (系统专用/可变长/长度不符 ⇒ 不静默丢弃)";
+
+/// `jitter` 的单位口径文案（单一事实源）。
+pub const JITTER_CALIBER: &str = "interArrivalUs";
+
+/// 一个 MIDI 输入端口的**纯数据**形状（⛔ 不含 `yeban_midi_io` 类型）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortEntry {
+    /// `midir` 端口列表里的下标。
+    pub index: usize,
+    /// 端口名。
+    pub name: String,
+}
+
+/// 一条 MIDI 事件的**纯数据**形状（⛔ 不含 `yeban_midi_io::MidiEvent`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeEvent {
+    /// `midir` 的原始时间戳（微秒）。
+    pub timestamp_us: u64,
+    /// 状态字节。
+    pub status: u8,
+    /// 第一个数据字节。
+    pub data1: u8,
+    /// 第二个数据字节。
+    pub data2: u8,
+}
+
+/// 抖动读数的**纯数据**形状（⛔ 不含 `yeban_midi_io::JitterReading`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JitterNumbers {
+    /// 样本量（条）。
+    pub n: usize,
+    /// 中位偏差（微秒）。
+    pub p50: u64,
+    /// 99 分位偏差（微秒）。
+    pub p99: u64,
+    /// 最大偏差（微秒）。
+    pub max: u64,
+}
+
+/// 一次探针的**纯读数**：全部字段都是"**已经量到的数**"。
+///
+/// ## 为什么要有这个类型（这是本轮的核心结构决定）
+///
+/// 原先"量数"与"拼载荷"是**同一个函数**（`plan()` 里的一个巨型 `json!`），
+/// 而那个函数要 `open_input` ⇒ **没有 MIDI 硬件的机器（含 CI）根本走不到**，
+/// 于是载荷这一层（含 `unsupportedMessages` 的**类型**与**取值口径**）
+/// **从未被任何判据碰过** —— 一处"继承来的零覆盖"。
+///
+/// 把读数组装抽成 [`ProbeReading`] + [`probe_payload`] 之后：
+///
+/// - 本类型与 [`probe_payload`] **⛔ 不挂任何 feature**（始终编译）⇒ 默认档的 CI 腿
+///   也会编译并执行针对它的判据（⛔ 不会"绿着跳过"）；
+/// - 它们**⛔ 不含句柄、⛔ 不含 `Instant`、⛔ 不含任何设备类型** ⇒ 判据可**直接构造**
+///   任意读数，含"计数器等于 `u64::MAX`"这种真机上要跑几百年才可能出现的输入；
+/// - 设备那一层（枚举 / 连接 / 收窗口）**留在 [`plan`] 里**，它"无硬件不可判"这件事
+///   照旧**如实登记**（见本模块头与 `tests/midi_input_probe.rs`）。
+///
+/// ⚠ 这**不是**"为了测试而造假"：`plan()` 量完数之后**只**通过本类型过一手，
+/// 由 [`ProbeReport::from_reading`] 组装载荷 ⇒ 判据判的就是线上那条路径。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeReading {
+    /// 被选中的端口下标。
+    pub port_index: usize,
+    /// 被选中的端口名。
+    pub port_name: String,
+    /// 枚举到的全部端口（顺序 = 枚举顺序）。
+    pub ports: Vec<PortEntry>,
+    /// 收取窗口（秒）。
+    pub seconds: f64,
+    /// 收到的事件**总数**（⛔ 不是 `firstEvents` 的长度）。
+    pub events: u64,
+    /// 回传的前几条事件（最多 [`PROBE_FIRST_EVENTS`] 条）。
+    pub first_events: Vec<ProbeEvent>,
+    /// 因超出回传上限而**只计数不回传**的条数。
+    pub dropped_by_probe: u64,
+    /// 相邻到达间隔的分位数读数。
+    pub jitter: JitterNumbers,
+    /// ⭐ 回调内核登记的**不承载消息条数**（与生产端**同一个**共享计数）。
+    ///
+    /// ⚠ 类型是 `u64`：它是 `AtomicU64` 的累加值，**不会**为负、**不截断**。
+    pub unsupported_messages: u64,
+}
+
+/// **纯函数**：把一次探针的读数组装成工具载荷。
+///
+/// ⛔ 不碰 `open_input`、⛔ 不碰 `midir`、⛔ 不读时钟、⛔ 不读环境变量、
+/// ⛔ 不分配端口 ⇒ 因此它在**没有 MIDI 硬件**的机器上也能被完整判据覆盖。
+///
+/// 这是本工具"可判的那一层"：**序列化**本身是一个能被独立验证的真实单元。
+/// 反过来，"端口枚举 / 连接 / 收窗口"那一层无硬件不可判，**如实登记**、⛔ 不假装。
+#[must_use]
+pub fn probe_payload(reading: &ProbeReading) -> Value {
+    json!({
+        "port": { "index": reading.port_index, "name": reading.port_name },
+        "ports": reading
+            .ports
+            .iter()
+            .map(|port| json!({ "index": port.index, "name": port.name }))
+            .collect::<Vec<_>>(),
+        "seconds": reading.seconds,
+        "events": reading.events,
+        "firstEvents": reading
+            .first_events
+            .iter()
+            .map(|event| {
+                json!({
+                    "timestamp_us": event.timestamp_us,
+                    "status": event.status,
+                    "data1": event.data1,
+                    "data2": event.data2,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "droppedByProbe": reading.dropped_by_probe,
+        "jitter": {
+            "n": reading.jitter.n,
+            "p50": reading.jitter.p50,
+            "p99": reading.jitter.p99,
+            "max": reading.jitter.max,
+            "caliber": JITTER_CALIBER,
+        },
+        // ⭐ **真读数**：与生产端同一个共享计数（回调内核里一次 `fetch_add`）。
+        // ⛔ 既不是 `0` 的占位、⛔ 也不是 `null` —— 判据
+        // `unsupported_messages_is_a_number_equal_to_the_input` 钉住这两条。
+        "unsupportedMessages": reading.unsupported_messages,
+        "unsupportedMessagesCaliber": UNSUPPORTED_MESSAGES_CALIBER,
+        "readOnly": true,
+    })
 }
 
 /// 端口选择（**只用枚举结果**，⛔ 不打开端口 ⇒ 纯函数，可判据）。
@@ -333,40 +491,40 @@ pub fn plan(request: &ProbeRequest) -> Result<ProbeReport, Fault> {
         .map(|pair| pair[1].saturating_sub(pair[0]))
         .collect();
     let jitter = yeban_midi_io::jitter_reading(&deltas);
-    let first: Vec<Value> = events
-        .iter()
-        .map(|event| {
-            json!({
-                "timestamp_us": event.timestamp_us,
-                "status": event.status,
-                "data1": event.data1,
-                "data2": event.data2,
+    // ⭐ 本函数**只负责"量数"**：把量到的东西装进【纯读数】。
+    // ⭐ 载荷组装在 `ProbeReport::from_reading` → `probe_payload`（纯函数、无硬件可判）。
+    // ⛔ 这里**不再**出现任何 `json!` —— 否则就会出现第二份载荷让判据空转。
+    Ok(ProbeReport::from_reading(&ProbeReading {
+        port_index: resolved.index,
+        port_name: resolved.name.clone(),
+        ports: ports
+            .iter()
+            .map(|port| PortEntry {
+                index: port.index,
+                name: port.name.clone(),
             })
-        })
-        .collect();
-    Ok(ProbeReport {
-        data: json!({
-            "port": { "index": resolved.index, "name": resolved.name },
-            "ports": ports
-                .iter()
-                .map(|port| json!({ "index": port.index, "name": port.name }))
-                .collect::<Vec<_>>(),
-            "seconds": request.seconds,
-            "events": total,
-            "firstEvents": first,
-            "droppedByProbe": dropped_by_probe,
-            "jitter": {
-                "n": jitter.n,
-                "p50": jitter.p50,
-                "p99": jitter.p99,
-                "max": jitter.max,
-                "caliber": "interArrivalUs",
-            },
-            // ⚠ 诚实登记：会话句柄没暴露生产端的未承载计数 ⇒ `null`，⛔ 不假装 0。
-            "unsupportedMessages": session.receiver().unsupported_messages(),
-            "unsupportedMessagesCaliber":
-                "unsupported_messages: 会话连接之后到本工具读它的那一刻, 回调内核登记的不承载消息条数 (系统专用/可变长/长度不符 ⇒ 不静默丢弃)",
-            "readOnly": true,
-        }),
-    })
+            .collect(),
+        seconds: request.seconds,
+        events: total as u64,
+        first_events: events
+            .iter()
+            .map(|event| ProbeEvent {
+                timestamp_us: event.timestamp_us,
+                status: event.status,
+                data1: event.data1,
+                data2: event.data2,
+            })
+            .collect(),
+        dropped_by_probe: dropped_by_probe as u64,
+        jitter: JitterNumbers {
+            n: jitter.n,
+            p50: jitter.p50,
+            p99: jitter.p99,
+            max: jitter.max,
+        },
+        // ⭐ 真读数：会话句柄暴露的、与**生产端同一个**共享计数
+        //（`MidiInputSession::unsupported_messages()` → `MidiEventReceiver` 的 `AtomicU64`）。
+        // ⛔ 不是 `null`、⛔ 不是 `0` 的占位。
+        unsupported_messages: session.unsupported_messages(),
+    }))
 }

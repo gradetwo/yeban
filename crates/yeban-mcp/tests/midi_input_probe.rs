@@ -2,14 +2,25 @@
 //!
 //! ## 为什么这份判据在**没有 MIDI 硬件**的机器上（含 CI）也成立
 //!
-//! 工具面被刻意切成两半：
+//! 工具面被刻意切成**三层**，前两层本文件完整覆盖，第三层如实登记"无硬件不可判"：
 //!
-//! * **与硬件无关**的那一半（实参形状：空端口名、`seconds` 区间、类型）在
-//!   `domain::midi_input::parse_arguments` 里 ⇒ **纯函数**，本文件完整覆盖；
-//! * **与硬件有关**的那一半（枚举 / 打开 / 收窗口）只能在这台机器**有**端口时跑到，
+//! * **与硬件无关的实参形状**（空端口名、`seconds` 区间、类型）在
+//!   `domain::midi_input::parse_arguments` 里 ⇒ **纯函数**；
+//! * **与硬件无关的载荷组装**（`ProbeReading` → `probe_payload` →
+//!   `ProbeReport::from_reading`）⇒ **纯函数**，⛔ 不挂 feature、⛔ 不碰 `open_input`。
+//!   判据 ⑤⑥ 直接构造任意读数（含 `u64::MAX` 这种真机跑不到的输入）调它
+//!   ⇒ 把此前**零覆盖**的 `unsupportedMessages`（类型 + 取值口径）真正钉住；
+//! * **与硬件有关的那一半**（枚举 / 打开 / 收窗口）只能在这台机器**有**端口时跑到，
 //!   因此本文件对它只断言**结构性质**：要么是结构化不可用（`CONFLICT` ＋ 固定
 //!   `data.reason`），要么是结构化参数错误 ⇒ ⛔ **永远不会**是
 //!   "成功但 `events: 0`"（那会把"这台机器没有 MIDI 输入"谎报成"有端口但静默"）。
+//!
+//! ## 为什么"载荷层"值得单独判（这是本轮补的那处零覆盖）
+//!
+//! 载荷原先与"收窗口"写在**同一个** `plan()` 里 ⇒ 那个函数要 `open_input` ⇒
+//! 无硬件的 CI 根本走不到 ⇒ `unsupportedMessages` 的**类型**（数字 vs `null`）与
+//! **取值口径**（等于传入值 vs 写死 0）此前**没有任何判据**。
+//! 解耦之后，"序列化这一层"成为一个可被独立验证的真实单元。
 //!
 //! ## 两档（`--no-default-features` 与 `--features midi-input`）都必须绿
 //!
@@ -17,12 +28,22 @@
 //! —— 默认档必须**恰好**是 `midiInputFeatureDisabled`；特性档必须是
 //! `midiInputNoPorts` 或 `midiInputHostUnavailable`（两者都说明"这台机器现在
 //! 收不到硬件事件"，而后者是宿主自身不可用）。
+//!
+//! ⚠ 判据 ⑤⑥ 的期望值与 feature **无关**（载荷函数两档都编译）⇒ 它们在任何一档
+//! CI 腿里都会真的执行，⛔ 不会"绿着跳过"。
+
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
+use yeban_mcp::domain::midi_input::{
+    JITTER_CALIBER, JitterNumbers, PortEntry, ProbeEvent, ProbeReading, ProbeReport,
+    UNSUPPORTED_MESSAGES_CALIBER, probe_payload,
+};
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{self, ErrorCode, SideEffect, TOOL_COUNT};
+use yeban_mcp::undo_session::{production_region, read_rust_sources};
 
 /// 无工程的**新分发器**：本工具不要求活跃工程（硬件探测与工程状态无关）。
 fn dispatcher() -> Dispatcher {
@@ -269,4 +290,226 @@ fn an_unknown_port_name_never_panics_and_stays_structured() {
             "reason `{reason}` 不在登记集合里"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 判据 ⑤：载荷组装是**纯函数** ⇒ `unsupportedMessages` **无声卡可判**
+// ---------------------------------------------------------------------------
+
+/// 构造一个"除 `unsupportedMessages` 以外全部固定"的**纯读数**。
+///
+/// ⛔ 不碰 `open_input`、⛔ 不碰 `midir`、⛔ 不读时钟、⛔ 不读环境 ⇒ 因此在
+/// **没有 MIDI 硬件**的机器上（含 CI）也能构造出任意输入，包括真机上要跑
+/// 几百年才可能出现的 `u64::MAX`。
+fn reading_with_unsupported(unsupported_messages: u64) -> ProbeReading {
+    ProbeReading {
+        port_index: 3,
+        port_name: "Yeban Test Port".to_owned(),
+        ports: vec![
+            PortEntry {
+                index: 3,
+                name: "Yeban Test Port".to_owned(),
+            },
+            PortEntry {
+                index: 5,
+                name: "Other Port".to_owned(),
+            },
+        ],
+        seconds: 1.5,
+        events: 4,
+        first_events: vec![ProbeEvent {
+            timestamp_us: 1_000,
+            status: 0x90,
+            data1: 60,
+            data2: 100,
+        }],
+        dropped_by_probe: 3,
+        jitter: JitterNumbers {
+            n: 3,
+            p50: 900,
+            p99: 1_200,
+            max: 1_200,
+        },
+        unsupported_messages,
+    }
+}
+
+/// 判据 ⑤-1（**这一条正是那处零覆盖的空格**）：`unsupportedMessages` 是**数字**，
+/// ⛔ **不是** `null`、⛔ 也不是"缺字段"。
+///
+/// ⚠ 断言的是 `Value::Number` 这个**类型**，不是"值不为 null"这种可以被
+/// 别的类型（字符串 `"7"`、布尔 `true`）蒙混过去的性质 —— 契约之外的类型会让
+/// 调用方在解析时才发现问题。
+#[test]
+fn unsupported_messages_is_a_number_and_never_null() {
+    for input in [0_u64, 7, u64::MAX] {
+        let payload = probe_payload(&reading_with_unsupported(input));
+        let field = payload
+            .get("unsupportedMessages")
+            .unwrap_or_else(|| panic!("字段必须存在（⛔ 不许缺字段）: {payload}"));
+        assert!(
+            matches!(field, Value::Number(_)),
+            "必须是 `Value::Number`（输入 {input}），实际 `{field}`（{}）",
+            match field {
+                Value::Null => "null",
+                Value::Bool(_) => "bool",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+                Value::Number(_) => "number",
+            }
+        );
+        assert!(field.is_number(), "`is_number()` 必须为真: {field}");
+        assert_ne!(
+            field,
+            &Value::Null,
+            "⛔ 不得是 null（这是真读数，不是占位）"
+        );
+        assert!(!field.is_null(), "⛔ 不得是 null");
+        // 与生产端**同一条**载荷路径（`ProbeReport` 的唯一构造入口）。
+        let via_report = ProbeReport::from_reading(&reading_with_unsupported(input)).data();
+        assert_eq!(
+            via_report["unsupportedMessages"], *field,
+            "`probe_payload` 与 `ProbeReport::from_reading` 必须是同一条路径"
+        );
+    }
+}
+
+/// 判据 ⑤-2 ＋ ⑤-3：**等于传入值**（不是写死 `0`／`1`），且**跟着输入变**。
+///
+/// 三组输入都要断言（`0` / `7` / `u64::MAX`），因为"非 null"单独成立只能说明
+/// "不再是 null"，说不出它是不是**真的数** —— 反向对照必须证明它随输入变。
+///
+/// ⚠ **数值口径（如实断言，⛔ 不假设会被截断）**：生产端的计数器是 `AtomicU64`
+/// ⇒ 载荷里的 `unsupportedMessages` 一路走 `u64`，**全宽、不截断**。
+/// 因此 `u64::MAX` 的序列化文本是 `18446744073709551615`（20 位）。
+#[test]
+fn unsupported_messages_equals_the_input_value() {
+    let cases: [(u64, &str); 3] = [(0, "0"), (7, "7"), (u64::MAX, "18446744073709551615")];
+    let mut observed: Vec<u64> = Vec::new();
+    for (input, expected_text) in cases {
+        let payload = probe_payload(&reading_with_unsupported(input));
+        let field = &payload["unsupportedMessages"];
+        assert_eq!(
+            field.as_u64(),
+            Some(input),
+            "必须等于**传入值本身**（⛔ 不是写死的常量）: 输入 {input} ⇒ {field}"
+        );
+        assert_eq!(field, &Value::from(input), "必须等于 `Value::from(输入)`");
+        assert_eq!(
+            field.to_string(),
+            expected_text,
+            "序列化文本口径（u64 全宽, ⛔ 不截断）: 输入 {input}"
+        );
+        // 口径文案必须与常量**同源**（⛔ 不是判据里手抄的第二份）。
+        assert_eq!(
+            payload["unsupportedMessagesCaliber"], UNSUPPORTED_MESSAGES_CALIBER,
+            "口径文案必须来自 `UNSUPPORTED_MESSAGES_CALIBER`"
+        );
+        assert_eq!(payload["jitter"]["caliber"], JITTER_CALIBER);
+        observed.push(field.as_u64().expect("u64"));
+    }
+    // ③ 反向对照：三组不同输入必须得到三个**不同**输出。
+    //    若实现把该字段写死（例如恒 `0`、恒 `1`、或仍是 `null`），这条会红。
+    let mut distinct = observed.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        cases.len(),
+        "输出必须**跟着输入变**（写死值 / 恒 null 会在这里被抓到）: {observed:?}"
+    );
+}
+
+/// 判据 ⑤ 的**整条载荷**复核（同一层里的其它字段也一并钉住，证明这一层真的被判了）。
+#[test]
+fn the_whole_payload_shape_is_judged_without_hardware() {
+    let payload = probe_payload(&reading_with_unsupported(7));
+    assert_eq!(payload["port"]["index"], 3);
+    assert_eq!(payload["port"]["name"], "Yeban Test Port");
+    assert_eq!(payload["ports"].as_array().expect("ports").len(), 2);
+    assert_eq!(payload["ports"][1]["name"], "Other Port");
+    assert_eq!(payload["seconds"], 1.5);
+    assert_eq!(
+        payload["events"], 4,
+        "`events` 是总数, ⛔ 不是 firstEvents 的长度"
+    );
+    assert_eq!(payload["firstEvents"][0]["status"], 0x90);
+    assert_eq!(payload["firstEvents"][0]["data2"], 100);
+    assert_eq!(payload["droppedByProbe"], 3);
+    assert_eq!(payload["jitter"]["n"], 3);
+    assert_eq!(payload["jitter"]["p99"], 1_200);
+    assert_eq!(payload["readOnly"], true);
+    // `dryRun` 与真调用共用这一份载荷（`apply` 原样回传），因此把构造入口也钉一下。
+    assert_eq!(
+        ProbeReport::from_reading(&reading_with_unsupported(7)).data(),
+        payload
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 ⑥：**非真空守卫** —— 载荷只在**一个**地方组装
+// ---------------------------------------------------------------------------
+
+/// 判据 ⑥：生产区里 `"unsupportedMessages"` 这个 JSON 键**恰好出现一次**，
+/// 且那一处落在 [`probe_payload`] 体内。
+///
+/// 为什么需要它：判据 ⑤ 直接调 `probe_payload`。若日后有人在别处**再**拼一份
+/// 带这个键的 `json!`（例如把 `plan()` 改回自己拼），判据 ⑤ 会**继续绿**
+/// 但线上走的是**另一份**载荷 ⇒ 判据变成空转。
+/// 这条守卫把"载荷只在一处组装"变成机械可判的事实。
+///
+/// [`probe_payload`]: yeban_mcp::domain::midi_input::probe_payload
+#[test]
+fn the_payload_is_built_in_exactly_one_place() {
+    // 先命名指标：数的是 `crates/yeban-mcp/src/` 下**几个 `.rs` 文件**（单位 = 文件数）。
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sources = read_rust_sources(&[manifest_dir.join("src")]);
+    assert!(
+        sources.len() >= 20,
+        "扫描面太小（单位 = 文件数）: {} —— 说明扫描没生效",
+        sources.len()
+    );
+
+    let target = "domain/midi_input.rs";
+    let (_, text) = sources
+        .iter()
+        .find(|(path, _)| path.ends_with(target))
+        .unwrap_or_else(|| {
+            panic!(
+                "必须扫到 `{target}`（扫描到 {} 个 .rs 文件）",
+                sources.len()
+            )
+        });
+    let production = production_region(text);
+    let key = "\"unsupportedMessages\"";
+    let occurrences = production.matches(key).count();
+    assert_eq!(
+        occurrences, 1,
+        "生产区里 `{key}` 这个 JSON 键必须**恰好出现一次**（实际 {occurrences} 次）—— \
+         多一处就意味着可能存在第二份载荷、判据 ⑤ 会空转"
+    );
+
+    // 且那一处必须落在 `probe_payload` 的**函数体内**（不是被搬到别处）。
+    let fn_start = production
+        .find("pub fn probe_payload")
+        .expect("`probe_payload` 必须在生产区里");
+    let body_end = production[fn_start..]
+        .find("\n}\n")
+        .map(|offset| fn_start + offset + 1)
+        .expect("必须能找到 `probe_payload` 的函数体结束（列 0 的 `}}`）");
+    let key_at = production.find(key).expect("键的那一处出现");
+    assert!(
+        key_at > fn_start && key_at < body_end,
+        "键必须落在 `probe_payload` 体内（偏移 {key_at} 不在 ({fn_start}, {body_end}) 之间）\
+         —— 否则载荷是在别处拼的, 判据 ⑤ 判的不是线上那条路径"
+    );
+
+    // 反向对照：这个扫描器**真的**会数（把键塞进一段合成文本 ⇒ 计数变 2）。
+    let synthetic = format!("{production}\nfn extra() {{ let _ = json!({{ {key}: 1 }}); }}\n");
+    assert_eq!(
+        synthetic.matches(key).count(),
+        2,
+        "扫描器必须能数出第二处（否则上面的 `== 1` 是恒真的空判据）"
+    );
 }
