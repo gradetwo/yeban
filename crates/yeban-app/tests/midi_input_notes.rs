@@ -14,24 +14,31 @@
 //! | 半 | 断言 |
 //! | :-- | :--- |
 //! | ① 谱面有反应 | 从**工程里读回**音符：条数 0 → 2、音高 `{60, 64}`、力度、起止 tick 逐项对得上；`midi-notes:` 行带 `origin=midi-input` |
-//! | ② 声音有反应 | 渲染**写完音符的工程**：原始样本**非静音**（非零样本 > 0）＋ 与"同一个工程但**没有这批音符**"的 WAV **逐字节不同** |
+//! | ② 声音有反应 | ⭐ **事件进环**后离线渲染：原始样本**非静音**（非零样本 > 0）＋ **合成器器件侧计数增长**（`poly-notes-triggered > 0`，即"事件真的到了合成器"）＋ 与"**不推任何事件**"档的 WAV **逐字节不同** |
 //!
-//! ⚠ 反向对照（"没有这批音符"档）用**同一个工程**、**同一次装配**渲染 ⇒ 两档唯一的差别是
-//! 那批音符，因此"字节不同"只能归因于它们（⛔ 不是"反正都有声音"）。
+//! ⚠ 反向对照（"不推事件"档）用**同一个工程**、**同一次装配**渲染 ⇒ 两档唯一的差别是
+//! 那批事件，因此"字节不同"只能归因于它们（⛔ 不是"反正都有声音"）。
 //!
-//! ⚠ ② 走的是**引擎今天唯一有消费者的音符路径**（快照排程 →
-//! `SynthEngine::arm_from_snapshot` + `render_track`），⛔ 不是 `EngineEvent` 环 ——
-//! 那条路的断点登记（含实测：4/4 事件进环 ⇒ 全静音）在 `yeban_app::midi_notes` 的模块文档里。
+//! ⚠ ② 走的是 **`EngineEvent` 环**（`EngineHost::send_engine_events` ⇒ `process_quantum`，
+//! 与设备回调同一条渲染路径）：引擎自 `eca718ab` 起**真的消费** `NoteOn`/`NoteOff`
+//! （`SynthEngine::note_on/note_off`）。这条路径的登记判据在
+//! `yeban_app::midi_notes::tests::the_engine_event_note_path_is_wired_to_the_synth`。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use yeban_app::cli::{self, Options};
-use yeban_app::export_wav::{WavExportOptions, export_wav};
+use yeban_app::engine_host::EngineHost;
+use yeban_app::export_wav::{WavExportOptions, write_interleaved_wav};
 use yeban_app::midi_in::CapturedMessages;
 use yeban_app::midi_notes;
 use yeban_model::container::ProjectArchive;
 use yeban_model::project::{ClipContent, YebanProjectV1};
+
+/// 渲染窗口（2 秒）与声道数 —— 两条判据共用，⛔ 不各写一份。
+const FRAMES: u64 = 2 * 48_000;
+const CHANNELS: u16 = 2;
+const SAMPLE_RATE: u32 = 48_000;
 
 /// 一次性的临时目录（**不用外部 crate**）。
 fn scratch_dir(tag: &str) -> PathBuf {
@@ -185,97 +192,133 @@ fn writing_notes_puts_the_injected_notes_into_the_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 判据 ②（**声音有反应 ＋ 反向对照**）：⭐ 渲染**写完音符的工程** ⇒ 原始样本非静音；
-/// ⭐ 同一个工程**去掉这批音符** ⇒ 全零；两档的 WAV **逐字节不同**。
+/// 判据 ②（**声音有反应 ＋ 反向对照**）：⭐ **事件进环** ⇒ 渲染非静音 ＋
+/// **合成器器件侧计数增长**（事件真的到了合成器）＋ 与"不推事件"档的 WAV **逐字节不同**；
+/// 反向对照档必须**全零**（那条对照的牙）。
 #[test]
-fn the_same_notes_make_the_render_sound_and_differ_from_the_note_less_render() {
+fn the_ring_events_make_the_engine_sound_and_differ_from_the_no_event_render() {
     let dir = scratch_dir("render");
     let baseline_project = without_notes();
 
-    // ---- 反向对照：同一个工程、同一次装配、**没有这批音符** ----
-    let baseline_path = dir.join("baseline.wav");
-    let baseline_report = export_wav(
+    // ---- 反向对照：同一个工程、同一次装配、**不推任何事件** ----
+    let mut baseline_host = EngineHost::new();
+    baseline_host
+        .reload(&baseline_project, 0)
+        .expect("空调度也要能建引擎");
+    let block = EngineHost::quantum_frames();
+    let channels = CHANNELS;
+    let quanta = FRAMES.div_ceil(u64::try_from(block).expect("块长"));
+    let mut baseline = vec![0.0_f32; usize::try_from(quanta).expect("量子数") * block * 2];
+    let driven = baseline_host.render_into(&mut baseline, channels, quanta);
+    assert_eq!(driven, quanta, "必须真的推进了全部量子");
+    let nonzero = |samples: &[f32]| samples.iter().filter(|s| **s != 0.0).count();
+
+    // ---- 事件档：注入消息 ⇒ 成对音符 ⇒ **推进环** ⇒ 离线渲染 ----
+    let pairing = midi_notes::pair_notes(&injected().messages, 0, midi_notes::UNCLOSED_TAIL_TICKS);
+    assert_eq!(pairing.notes.len(), 2, "{}", pairing.summary());
+    let track_id = midi_notes::default_track(&baseline_project).expect("有音轨");
+    let mut host = EngineHost::new();
+    host.reload(&baseline_project, 0).expect("引擎必须能建起来");
+    let wav = dir.join("ring.wav");
+    let report = midi_notes::render_notes_to_wav(
+        &mut host,
+        &pairing.notes,
+        track_id,
+        &wav,
+        FRAMES,
+        channels,
+        SAMPLE_RATE,
+        midi_notes::bpm_millis(baseline_project.bpm),
+        1,
+    )
+    .expect("环路径渲染必须成功");
+    let (samples, _, _, _) = yeban_app::render_core::render_project_f32(
         &baseline_project,
-        &baseline_path,
-        WavExportOptions::default(),
-    )
-    .expect("没有音符的工程也要能导出（空的 8 秒）");
-
-    // ---- 事件档：把注入的消息变成音符（走**生产同一条**落地路径）----
-    let container = write_container(&dir, baseline_project);
-    let mut loaded = open_container(&container);
-    let options = Options {
-        midi_in: Some("0".to_owned()),
-        midi_in_write_notes: true,
-        ..Options::default()
-    };
-    let mut lines: Vec<String> = Vec::new();
-    cli::apply_captured_midi(&mut loaded, &options, &injected(), &mut lines).expect("写音符");
-
-    let with_notes_path = dir.join("with-notes.wav");
-    let with_notes_report = export_wav(
-        &loaded.archive.project,
-        &with_notes_path,
-        WavExportOptions::default(),
-    )
-    .expect("写完音符的工程必须能导出");
-
-    // ⭐ 原始样本（量化前）：静音是**精确的 0.0**，所以"非静音"可以在这一层无歧义地判。
-    let (baseline_samples, _, _, _) = yeban_app::render_core::render_project_f32(
-        &without_notes(),
         WavExportOptions::default(),
         None,
     )
-    .expect("对照档渲染");
-    let (with_samples, _, _, _) = yeban_app::render_core::render_project_f32(
-        &loaded.archive.project,
-        WavExportOptions::default(),
-        None,
-    )
-    .expect("事件档渲染");
-    let nonzero = |samples: &[f32]| samples.iter().filter(|sample| **sample != 0.0).count();
-    let peak = |samples: &[f32]| samples.iter().fold(0.0_f32, |acc, s| acc.max(s.abs()));
+    .expect("对照档（同一次装配的独立读数）");
+
+    if let Some(stats) = host.engine_stats() {
+        println!(
+            "[midi-notes] 引擎读数: events_applied={} notes_triggered={} poly={} drum_hits={} \
+             drum_triggers={} note_steals={} voice_steals={} orphan_note_offs={}",
+            stats.events_applied,
+            stats.notes_triggered,
+            stats.poly_notes_triggered,
+            stats.drum_hits,
+            stats.drum_triggers,
+            stats.note_steals,
+            stats.voice_steals,
+            stats.orphan_note_offs,
+        );
+    }
     println!(
-        "[midi-notes] 原始样本: 带音符 nonzero={} peak={:.6} | 无音符 nonzero={} peak={:.6}",
-        nonzero(&with_samples),
-        peak(&with_samples),
-        nonzero(&baseline_samples),
-        peak(&baseline_samples)
+        "[midi-notes] 环路径: live-notes={} events={}/{} poly-notes-triggered={} \
+         nonzero-samples={} peak={:.6} | 原始样本对照 nonzero={}",
+        report.notes,
+        report.events_sent,
+        report.events_scheduled,
+        report.poly_notes_triggered,
+        report.nonzero_samples,
+        report.peak,
+        nonzero(&baseline),
     );
+    let _ = samples;
 
+    assert_eq!(report.notes, 2, "报告必须说清这次声音里有几条**现场**音符");
+    assert_eq!(report.events_scheduled, 4, "两条音符 ⇒ 4 条事件");
+    assert_eq!(
+        report.events_sent, report.events_scheduled,
+        "全部事件都必须真的进环（容量远大于 4）"
+    );
     assert!(
-        nonzero(&with_samples) > 0 && peak(&with_samples) > 0.0,
+        report.nonzero_samples > 0 && report.peak > 0.0,
         "⭐ 弹一下必须**有声音**（非零样本 {} / 峰值 {}）",
-        nonzero(&with_samples),
-        peak(&with_samples)
+        report.nonzero_samples,
+        report.peak
     );
     assert_eq!(
-        nonzero(&baseline_samples),
+        report.poly_notes_triggered, 2,
+        "⭐ 见证：**两条**音符必须各触发一次合成器器件（`poly_notes_triggered` 增量 = {}）\
+         —— ⚠ 若这里是 1, 说明有一条音符没到器件（本机踩过: tick 0 的环音符在**没有预热量子**时\
+         会因为引擎'先出队事件、再武装快照'的步骤顺序被丢掉）",
+        report.poly_notes_triggered
+    );
+    assert_eq!(
+        nonzero(&baseline),
         0,
-        "⭐ 反向对照必须**全零**（没有这批音符就没有声音）—— 否则'音符造成了声音'不可判"
+        "⭐ 反向对照必须**全零**（不推事件就没有声音）—— 否则'事件造成了声音'不可判"
+    );
+    assert!(
+        report.summary(Some(&wav)).contains("live-notes=2"),
+        "报告行必须说清现场音符数: {}",
+        report.summary(Some(&wav))
     );
 
     // ---- 产物层：两档 WAV 逐字节不同 ----
-    let with_file = std::fs::read(&with_notes_path).expect("读带音符档");
-    let baseline_file = std::fs::read(&baseline_path).expect("读对照档");
+    let baseline_wav = dir.join("baseline.wav");
+    let (baseline_bytes, _) =
+        write_interleaved_wav(&baseline_wav, &baseline, channels, SAMPLE_RATE, 1)
+            .expect("写对照档");
+    let ring_file = std::fs::read(&wav).expect("读环档");
+    let baseline_file = std::fs::read(&baseline_wav).expect("读对照档");
     println!(
-        "[midi-notes] WAV: 带音符 {} 字节 ({} 帧) / 对照 {} 字节 ({} 帧)",
-        with_notes_report.bytes,
-        with_notes_report.frames,
-        baseline_report.bytes,
-        baseline_report.frames
+        "[midi-notes] WAV: 环档 {} 字节 / 对照档 {baseline_bytes} 字节",
+        report.bytes.unwrap_or(0)
     );
     assert_ne!(
-        with_file, baseline_file,
-        "⭐ 带音符与不带音符的 WAV 必须**逐字节不同**"
+        ring_file, baseline_file,
+        "⭐ 环档与不推事件档的 WAV 必须**逐字节不同**"
     );
-    assert!(with_notes_report.bytes > 44, "必须超过一个 WAV 头");
+    assert!(report.bytes.unwrap_or(0) > 44, "必须超过一个 WAV 头");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 ③（**接线**）：`--midi-in-write-notes` ＋ `--midi-in-render` 一次给 ⇒
-/// 工程里有音符、磁盘上有 WAV，且报告行齐全（谱面 → 声音的顺序）。
+/// **谱面**（工程里有音符, `midi-notes:` 行）与**声音**（磁盘上有 WAV, `midi-render:` 行）
+/// **两件事各自有读数**（⛔ 不是一句话糊在一起）。
 #[test]
 fn both_landing_switches_together_write_notes_and_a_wav() {
     let dir = scratch_dir("both");
@@ -292,15 +335,22 @@ fn both_landing_switches_together_write_notes_and_a_wav() {
     let mut lines: Vec<String> = Vec::new();
     cli::apply_captured_midi(&mut loaded, &options, &injected(), &mut lines).expect("两条路径");
     let text = lines.join("\n");
-    assert!(text.contains("midi-notes: notes=2"), "{text}");
+    assert!(
+        text.contains("midi-notes: notes=2"),
+        "谱面侧必须有读数:\n{text}"
+    );
     let render_line = lines
         .iter()
         .find(|line| line.starts_with("midi-render:"))
         .unwrap_or_else(|| panic!("必须有 midi-render: 行:\n{text}"));
-    assert!(render_line.contains("notes=2"), "{render_line}");
+    assert!(render_line.contains("live-notes=2"), "{render_line}");
     assert!(
-        render_line.contains("source="),
-        "渲染行必须明说音源: {render_line}"
+        render_line.contains("source=engine(EngineEvent 环"),
+        "渲染行必须明说声音来自**环**: {render_line}"
+    );
+    assert!(
+        !render_line.contains("poly-notes-triggered=0"),
+        "⭐ 见证: 事件必须到了合成器: {render_line}"
     );
 
     let bytes = std::fs::metadata(&wav).expect("WAV 必须真的落盘").len();
@@ -343,22 +393,17 @@ fn the_landing_switches_require_midi_in_and_the_track_selector_is_precise() {
         );
     }
 
-    // (b) 渲染而不写音符 ⇒ 产物里没有本次弹的音符 ⇒ 用法错误（明说，⛔ 不偷偷替用户打开写音符）。
-    let error = cli::run_batch(
-        &cli::parse(&[
-            "--midi-in".to_owned(),
-            "0".to_owned(),
-            "--midi-in-render".to_owned(),
-            "/tmp/x.wav".to_owned(),
-        ])
-        .expect("解析"),
-    )
-    .expect_err("必须是用例错误");
-    assert_eq!(error.exit_code(), cli::EXIT_USAGE, "{error}");
-    assert!(
-        error.to_string().contains("--midi-in-write-notes"),
-        "必须点名该与谁一起给: {error}"
-    );
+    // (b) ⭐ `--midi-in-render` **不再**要求与 `--midi-in-write-notes` 一起给：
+    // 声音来自**环**、谱面来自**写工程**，两者可以一有一无（约束已被批准取消）。
+    // ⇒ 这里只断言"解析能过、组合性检查不再拦它"，⛔ 不假装它必须成对。
+    let options = cli::parse(&[
+        "--midi-in".to_owned(),
+        "0".to_owned(),
+        "--midi-in-render".to_owned(),
+        "/tmp/x.wav".to_owned(),
+    ])
+    .expect("解析必须通过");
+    assert!(options.midi_in_render.is_some() && !options.midi_in_write_notes);
 
     // (c) 音轨选择器：选不中 ⇒ 精确错误（列出可用音轨），⛔ 不是"随便写一条"。
     let dir = scratch_dir("selector");

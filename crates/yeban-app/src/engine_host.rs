@@ -1148,6 +1148,59 @@ impl EngineHost {
         self.send_transport(&[TransportCommand::Play])
     }
 
+    /// ⭐ 把**任意引擎事件**（音符开/关、参数、走带）写进**既有的** UI→引擎通道。
+    ///
+    /// ⛔ 本函数**不新建通道**、⛔ 不新造第二条路径：[`Self::send_transport`] 用的就是这一条
+    /// SPSC（[`ARCH-RT-001`] 的"UI/模型线程 → 音频线程"唯一通路）。音符走同一个环 ⇒
+    /// "弹一下键盘"与"按一下播放"在引擎侧是**同一种东西**。
+    ///
+    /// ⭐ 引擎侧自 `eca718ab` 起**真的消费** `NoteOn` / `NoteOff`
+    /// （`rt.rs` 的两条分支 + `SynthEngine::note_on/note_off`）⇒ 写进去就会**作用到合成**。
+    ///
+    /// 返回**真正写进环**的条数（环满时少写 ⇒ 调用方能看出"没全进去"，⛔ 不假装成功）。
+    pub fn send_engine_events(&mut self, events: &[EngineEvent]) -> usize {
+        match self.events.as_mut() {
+            Some(sender) => sender.publish(events),
+            None => 0,
+        }
+    }
+
+    /// ⭐ **离线渲染**：把 `quanta` 个量子推进运行时，并把**真实输出**取回来。
+    ///
+    /// 与 [`Self::drive_audio`] 的关系：那一个把输出**丢掉**（它只回答"推了多少步"）；
+    /// 本函数把输出交回调用方 ⇒ 控制侧（离线导出 / 判据）能听见引擎**真的**发出了什么。
+    /// 两者走**同一个** `EngineRuntime::process_quantum`，⛔ 不存在第二条渲染路径。
+    ///
+    /// `out` 按交错 `channels` 声道解释；实际推进的量子数取
+    /// `min(quanta, out.len() / (channels * DEFAULT_BLOCK_FRAMES))` ⇒ 缓冲不足时**少推**，
+    /// ⛔ 不 panic、⛔ 不越界。
+    ///
+    /// ⚠ 只允许**控制侧**（离线导出 / 判据）调用；⛔ 设备腿活跃时恒返回 0
+    /// （那一代的运行时在 cpal 回调线程手里，控制面推不了、也不许推）。
+    pub fn render_into(&mut self, out: &mut [f32], channels: u16, quanta: u64) -> u64 {
+        let channels = channels.max(1);
+        let block = DEFAULT_BLOCK_FRAMES * usize::from(channels);
+        let capacity = u64::try_from(out.len() / block).unwrap_or(0);
+        let quanta = quanta.min(capacity);
+        let Some(runtime) = self.runtime.as_mut() else {
+            return 0;
+        };
+        for index in 0..quanta {
+            let start = usize::try_from(index).unwrap_or(0) * block;
+            let end = start + block;
+            runtime.process_quantum(&mut out[start..end], channels);
+        }
+        quanta
+    }
+
+    /// 离线渲染时一个量子对应的**帧数**（`DEFAULT_BLOCK_FRAMES`）。
+    ///
+    /// 交给调用方（[`crate::midi_notes`]）用**同一把尺子**算"第几个量子"，⛔ 不让它猜常量。
+    #[must_use]
+    pub const fn quantum_frames() -> usize {
+        DEFAULT_BLOCK_FRAMES
+    }
+
     /// 停住（**位置保留**）。"回到起始点"用 [`Self::stop_and_rewind`]。
     pub fn stop(&mut self) -> TransportReading {
         self.send_transport(&[TransportCommand::Stop])

@@ -259,13 +259,14 @@ pub fn usage_text() -> String {
   --midi-in-write-notes    把这次采到的音符**写进工程** (谱面有反应): 每个音符一次
                            Op::AddNote, 来源标记 `OpOrigin::MidiInput`, **一次**提交
                            (可撤销、进提交史); 同一命令里的导出 / --save-as 能看到它们
-  --midi-in-render <path>  把**写完本次音符之后**的工程**离线渲染**成 24-bit WAV
-                           (声音有反应): 与 --export-wav 同一条渲染核心 (引擎快照 +
-                           SynthEngine::render_track) 与同一个量化实现 ⇒ 产物可比;
-                           **必须**与 --midi-in-write-notes 一起给 (否则产物里没有本次弹的音符);
-                           帧数/采样率/声道/种子取 --export-wav 的默认 (8 秒 48 kHz 立体声)
-                           ⚠ 引擎的 EngineEvent 环今天**不消费** NoteOn/NoteOff ⇒ 本开关
-                           刻意不走那条路 (断点登记见 src/midi_notes.rs 的模块文档)
+  --midi-in-render <path>  把**同一批事件**推进 `EngineEvent` 环并**离线渲染**成
+                           24-bit WAV (声音有反应): 事件经既有的 UI→引擎 SPSC
+                           (EngineHost::send_engine_events), 由**与设备回调同一个**
+                           `process_quantum` 渲染 ⇒ 产物是「事件真的作用到合成器」的声音;
+                           报告行 `poly-notes-triggered=` 是「事件到了器件」的见证;
+                           **不需要**先写工程 (谱面与声音是两件事, 见下);
+                           帧数/采样率/声道/种子取 --export-wav 的默认 (8 秒 48 kHz 立体声);
+                           与 --export-wav 共用同一个量化实现 ⇒ 产物可比
   --midi-in-track <序号|名字子串>
                            音符写进哪条 / 事件发往哪条音轨; 规则与 --midi-in 的**端口**选择
                            同一套 (全十进制 ⇒ 序号; 否则名字子串, 大小写敏感; 命中 0 个 ⇒
@@ -395,7 +396,11 @@ pub fn usage_text() -> String {
   --midi-in-write-notes / --midi-in-render / --midi-in-track
                                **必须**与 --midi-in 一起给 (单独给 = 用法错误, 退出码 {usage})
                                —— 否则它们会被静默忽略, 而**静默忽略**正是本仓最忌讳的形态
-  --midi-in 三条落地开关的顺序 先写音符 (改工程) → 再离线渲染 (用同一批事件发声);
+  --midi-in 两条落地路径        谱面: --midi-in-write-notes (音符进工程, 可撤销/可导出)
+                               声音: --midi-in-render <path> (事件进环 ⇒ 离线渲染)
+                               两者**互相独立**、可单给、可同给 (同给时都生效)
+  两条同给时的顺序              **先声音 → 再谱面**: 先渲染的是**还没写进工程**的那一份
+                               ⇒ 每条音符只被触发一次 (否则环与快照排程会各触发一次 = 双触发)
                                两者都不给时 --midi-in 仍是**只读**诊断 (⛔ 不建会话、⛔ 不写盘)
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
@@ -460,7 +465,7 @@ pub fn usage_text() -> String {
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
   {open} --midi-in 失败 (端口不存在或名字有歧义 / 宿主不可用 / 本次构建未编译 `midi-input` 特性)
   {open} --midi-in-write-notes / --midi-in-render 失败 (一条音符都没有 / 没有可写目标 /
-     音轨选择器命中 0 或多条 / 提交被拒 / 引擎重建失败)
+     没有可发声的目标音轨 / 音轨选择器命中 0 或多条 / 提交被拒 / 引擎重建失败)
   {export} --midi-in-render 的 WAV 落盘失败 (与 --export-wav 同一档)
   {usage} --record-seconds 没和 --record-wav 一起给
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
@@ -2757,16 +2762,6 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             )));
         }
     }
-    // ⭐ 渲染的必须是**这次弹出来的音符**：给了 `--midi-in-render` 却不写音符 ⇒ 渲染的是
-    // "没有本次音符"的工程（对没有音符的工程就是一段静音 WAV）⇒ 与其让人拿到一个静音产物，
-    // 不如**明说**这两条开关的关系（⛔ 不偷偷替用户打开写音符 —— 那是隐式改工程）。
-    if options.midi_in_render.is_some() && !options.midi_in_write_notes {
-        return Err(CliError::Usage(
-            "`--midi-in-render` 必须与 `--midi-in-write-notes` 一起给：渲染的是**写完音符之后**的工程，\
-             否则产物里没有这次弹的东西（只导出工程本身请用 `--export-wav`）"
-                .to_owned(),
-        ));
-    }
 
     // ⭐ `--midi-in`：⭐ 采集**一次**，然后按开关走两条落地路径（⭐ 顺序 = 谱面 → 声音）。
     if let Some(wanted) = options.midi_in.as_ref() {
@@ -2928,6 +2923,43 @@ pub fn apply_captured_midi(
         None => None,
     };
 
+    // ---- ② 声音：**同一批事件 ⇒ `EngineEvent` 环 ⇒ 离线渲染**（引擎已接线 `eca718ab`）----
+    //
+    // ⭐ 这条是"弹一下 ⇒ 有声音"的**实质**：事件进**既有**的 UI→引擎 SPSC
+    // （`EngineHost::send_engine_events`），由**与设备回调同一个** `process_quantum` 渲染
+    // ⇒ 产物里是**事件真的作用到合成器**的声音（报告行的 `poly-notes-triggered=` 是见证）。
+    //
+    // ⚠ **顺序**：声音在**谱面之前**做。原因不是偏好：⭐ 若先把音符写进工程，⚠ 同一批音符会
+    // 被**两条路**各触发一次 —— 环里的 `NoteOn` **与** 快照排程（`render_track`）
+    // ⇒ 双触发（更响/相位差）。先渲染（基于**未写**这批音符的工程）⇒ 每条音符只触发一次，
+    // 而工程**原有**的内容照旧由快照排程发声 ✓。
+    if let Some(path) = options.midi_in_render.as_ref() {
+        let track_id = match selected {
+            Some(explicit) => explicit,
+            None => crate::midi_notes::default_track(&loaded.archive.project)
+                .map_err(|source| CliError::MidiNotes { source })?,
+        };
+        let defaults = crate::export_wav::WavExportOptions::default();
+        let mut host = crate::engine_host::EngineHost::new();
+        host.reload(&loaded.archive.project, 0)
+            .map_err(|error| CliError::MidiNotes {
+                source: crate::midi_notes::MidiNoteError::Engine(error.to_string()),
+            })?;
+        let report = crate::midi_notes::render_notes_to_wav(
+            &mut host,
+            &pairing.notes,
+            track_id,
+            path,
+            defaults.frames,
+            u16::try_from(defaults.channels).unwrap_or(2),
+            defaults.sample_rate,
+            crate::midi_notes::bpm_millis(loaded.archive.project.bpm),
+            defaults.seed,
+        )
+        .map_err(|source| CliError::MidiNotes { source })?;
+        lines.push(report.summary(Some(path)));
+    }
+
     // ---- ① 谱面：把音符写进工程（走既有 Op + 一次带来源的提交）----
     if options.midi_in_write_notes {
         let session = crate::undo::UndoSession::open(
@@ -2953,36 +2985,6 @@ pub fn apply_captured_midi(
         lines.push(report.summary());
     }
 
-    // ---- ② 声音：把**带音符的工程**交给**既有**导出器离线渲染（见 `midi_notes.rs` 的断点登记）----
-    //
-    // ⚠ 为什么不推 `EngineEvent` 环：引擎的事件出队闭包**今天只认 SetParam / Transport**
-    // （`yeban-engine/src/rt.rs`），`NoteOn` / `NoteOff` 被计数却没有任何效果 —— 实测
-    // "4/4 事件进环 ⇒ 全静音"。因此本切片的声音走**引擎真正在用的**音符路径：
-    // 快照排程（`SynthEngine::arm_from_snapshot` + `render_track`），也就是 `--export-wav` 的那条。
-    if let Some(path) = options.midi_in_render.as_ref() {
-        let report = crate::export_wav::export_wav(
-            &loaded.archive.project,
-            path,
-            crate::export_wav::WavExportOptions::default(),
-        )
-        .map_err(|source| CliError::ExportWav {
-            path: path.clone(),
-            source,
-        })?;
-        lines.push(format!(
-            "midi-render: path={} notes={} frames={} sample_rate={} channels={} bits={} bytes={} \
-             source={} digest={}",
-            report.path.display(),
-            pairing.notes.len(),
-            report.frames,
-            report.sample_rate,
-            report.channels,
-            report.bits,
-            report.bytes,
-            report.source,
-            report.digest,
-        ));
-    }
     Ok(())
 }
 

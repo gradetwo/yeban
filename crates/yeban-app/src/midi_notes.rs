@@ -18,30 +18,47 @@
 //! ⚠ ⭐ 声音那一半**必须**经工程：引擎今天唯一有消费者的音符入口是
 //! `SynthEngine::render_track(track, schedule, …)`（**排程驱动**，`--export-wav` 走的就是它）。
 //!
-//! ## ⚠ 断点登记（⭐ 实测，⛔ 不是猜测）：`EngineEvent::NoteOn` / `NoteOff` **今天没有消费者**
+//! ## ⭐ 声音那一半走**环**（引擎已接线，`eca718ab`）
 //!
-//! 任务书设想的第二条路径（"把同一批事件推进 `EngineEvent` 环 ⇒ 离线渲染"）**今天不通**，
-//! 证据（本机实测，2026-10-12）：
+//! 采集来的事件推 [`yeban_engine::ring::EngineEvent::NoteOn`] / `NoteOff` 进**既有**的
+//! UI→引擎 SPSC（[`crate::engine_host::EngineHost::send_engine_events`]），再离线渲染
+//! （[`render_engine_offline`] → [`crate::engine_host::EngineHost::render_into`]，
+//! 与设备回调**同一个** `EngineRuntime::process_quantum`）⇒ 产物是**事件真的作用到合成器**
+//! 的声音（判据用 [`yeban_engine::rt::EngineStats::poly_notes_triggered`] 作见证）。
 //!
-//! 1. `crates/yeban-engine/src/ring.rs` 里 `NoteOn` / `NoteOff` **只有定义与判据在造它们**
-//!    （`grep -rn "EngineEvent::NoteOn" crates/`：除 `ring.rs` 的测试外只剩
-//!    `crates/yeban-engine/tests/rt_zero_alloc.rs`）；
-//! 2. `crates/yeban-engine/src/rt.rs` 的事件出队闭包只匹配 **`SetParam`** 与 **`Transport`**
-//!    （`grep -n "if let EngineEvent" rt.rs` ⇒ 两处）⇒ 音符事件被 `events_applied` **计数**
-//!    却**没有任何效果**；
-//! 3. `SynthEngine` **没有** `note_on` / `note_off` 之类的公开触发入口（公开音符入口只有
-//!    `render_track`），因此引擎侧**连被调用的方法都还不存在**；
-//! 4. 实测：把 4 条事件（两条 NoteOn + 两条 NoteOff）推进环后离线渲染
-//!    （`EngineRuntime::process_quantum`，48 kHz 立体声 2 秒）⇒ `events_sent=4/4`、
-//!    **非零样本 = 0、峰值 = 0.000000**（全静音）。
+//! ⚠ **历史（这条登记的价值就在这里）**：`eca718ab` 之前，`EngineEvent::NoteOn` / `NoteOff`
+//! 在引擎里**没有消费者**（出队闭包只认 `SetParam` / `Transport`；`SynthEngine` 连
+//! `note_on`/`note_off` 都没有）⇒ 当时把事件推进环**只会得到全静音**（实测 4/4 事件进环、
+//! 非零样本 0）。那时本模块的登记判据把这件事**钉在源码文本上**，并在引擎接线的那一刻
+//! **变红提醒**（实测：`eca718ab` 落地后该判据 panic 在 `src/midi_notes.rs:625`）。
+//! 现在它翻成"**已接线**"的形态（[`tests::the_engine_event_note_path_is_wired_to_the_synth`]），
+//! 继续钉住**当前事实**：引擎确有那两条分支 ＋ app 侧**走的是它**。
 //!
-//! ⇒ ⭐ 那条路径需要**先给 `yeban-engine` 接线**（`SynthEngine` 的音符触发 API ＋ 出队闭包里
-//! 的一个 `if let EngineEvent::NoteOn/NoteOff` 分支）—— 那是**别的工作线的面**，本切片
-//! **不碰**（⛔ 也不留"看起来接好了"的空管线）。本切片的"声音有反应"因此走**工程排程路径**：
-//! 音符先真的落进工程（①），再由既有导出器渲染（②）⇒ 两步都能判、也都不需要声卡。
+//! ### ⚠ 离线渲染必须先**预热一个量子**（本机实测的引擎行为，已登记）
 //!
-//! 判据 [`tests::the_engine_event_note_path_is_registered_as_unwired`] 把这条断点**钉在
-//! 源码文本上**：引擎一旦接线，它会红 ⇒ 那时请更新本节的登记与 `--midi-in-render` 的路径。
+//! `EngineRuntime::render_block` 的步骤顺序是「**① 出队并应用事件 → ② `snapshot.begin_block()`
+//! 武装快照/槽位**」⇒ 在**第一个**块里事件到达时槽位**还没武装** ⇒ `SynthEngine::note_on`
+//! 早退返回 `false` ⇒ ⭐ **tick 0 的环音符会被丢掉**（实测：`C4@tick0` 单独渲染 ⇒
+//! `poly_notes_triggered=0`、`nonzero=0`、它的 `NoteOff` 被记成 `orphan_note_offs=1`；
+//! 同一条音符放在 tick 960 就正常发声）。
+//!
+//! [`render_engine_offline`] 因此**先推一个空量子**（输出丢弃）把快照武装好再开始记账
+//! ⇒ 加了之后 `C4@tick0` 与 `E4@tick960` 两条都发声（`poly_notes_triggered=2`、
+//! `nonzero_samples=62032`）。
+//!
+//! ⚠ 这是**绕行**：缺陷本体在引擎的步骤顺序（真机现场不受影响 —— 用户弹第一个音之前引擎
+//! 早已跑过许多块），受影响的是"离线渲染从第 0 帧就推事件"这条用法。已在回报里作为
+//! **跨线发现**登记给引擎线，⛔ 本切片不改 `yeban-engine`。
+//!
+//! ## 两条路并存（开关区分，⛔ 不是二选一）
+//!
+//! | 路 | 开关 | 产物 / 性质 |
+//! | :--- | :--- | :--- |
+//! | **谱面** | `--midi-in-write-notes` | 音符经 `Op::AddNote` 进工程（可撤销、进提交史、可 `--save-as` / 导出） |
+//! | **声音** | `--midi-in-render <path>` | 同一批事件 ⇒ `EngineEvent` 环 ⇒ 离线渲染 24-bit WAV（**不需要**先写工程） |
+//!
+//! ⭐ 声音**不必**经工程：音符落不落进模型是**产品的另一件事**（可编辑性），而"弹一下有没有
+//! 声音"由环负责。两者可以同给（报告行分别说明各自的结果）。
 //!
 //! ## 时间口径
 //!
@@ -54,8 +71,10 @@
 
 use std::collections::BTreeMap;
 
+use yeban_engine::ring::EngineEvent;
 use yeban_model::{EntityId, MidiNote, Op, OpOrigin, YebanProjectV1};
 
+use crate::engine_host::EngineHost;
 use crate::import_midi::{MidiImportOptions, destination};
 use crate::undo::UndoPort;
 
@@ -312,6 +331,331 @@ pub fn default_track(project: &YebanProjectV1) -> Result<EntityId, MidiNoteError
         .ok_or_else(|| MidiNoteError::Destination("工程里没有非 master 的音轨".to_owned()))
 }
 
+/// ⭐ 一个 tick 等于多少帧（整数算式；`bpm_millis = 0` 时按 120 BPM 兜底）。
+///
+/// 口诀：`帧/tick = 采样率 × 60_000 / (bpm_millis × 960)` —— 48000 Hz / 120 BPM ⇒ **25 帧/tick**。
+#[must_use]
+pub fn frames_per_tick(sample_rate: u32, bpm_millis: u32) -> u64 {
+    let bpm_millis = u64::from(if bpm_millis == 0 { 120_000 } else { bpm_millis });
+    u64::from(sample_rate)
+        .saturating_mul(60_000)
+        .checked_div(bpm_millis.saturating_mul(MODEL_PPQ))
+        .unwrap_or(0)
+}
+
+/// tick ⇒ 帧（整数乘法 + 整数除法 ⇒ 确定性，⛔ 不引入浮点漂移）。
+#[must_use]
+pub fn ticks_to_frames(tick: u64, sample_rate: u32, bpm_millis: u32) -> u64 {
+    tick.saturating_mul(frames_per_tick(sample_rate, bpm_millis))
+}
+
+/// 帧 ⇒ tick（[`ticks_to_frames`] 的逆式；整数算式）。
+#[must_use]
+pub fn frames_to_ticks(frame: u64, sample_rate: u32, bpm_millis: u32) -> u64 {
+    let bpm_millis = u64::from(if bpm_millis == 0 { 120_000 } else { bpm_millis });
+    let denominator = u64::from(sample_rate).saturating_mul(60_000);
+    frame
+        .saturating_mul(bpm_millis.saturating_mul(MODEL_PPQ))
+        .checked_div(denominator)
+        .unwrap_or(0)
+}
+
+/// ⭐ 把速度折算成**千分之一 BPM 的整数**（与 `bridge` 的 `bpm_millis` 同口径）。
+///
+/// 为什么不用浮点算帧：`[ARCH-DET-001]` 要求"同一输入 ⇒ 同一产物"，而浮点在两架构上可能
+/// 差 1 ULP（`ADR-0001 D32`）⇒ tick↔帧一律**整数**算。
+#[must_use]
+pub fn bpm_millis(bpm: f64) -> u32 {
+    let millis = (bpm * 1000.0).round();
+    if millis.is_finite() && millis > 0.0 && millis <= f64::from(u32::MAX) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            millis as u32
+        }
+    } else {
+        120_000
+    }
+}
+
+/// ⭐ 音符 ⇒ **引擎事件调度表**（按 tick 升序；⛔ `EngineEvent` 本身不带时间戳）。
+///
+/// 同一 tick 上 **NoteOff 先于 NoteOn**（`kind` 0 < 1）：重触发时先关旧声部再开新的，
+/// ⛔ 不会让两个声部在同一 tick 上打架。
+#[must_use]
+pub fn engine_schedule(notes: &[CapturedNote], track: EntityId) -> Vec<(u64, EngineEvent)> {
+    let mut schedule: Vec<(u64, u8, EngineEvent)> = Vec::with_capacity(notes.len() * 2);
+    for note in notes {
+        schedule.push((
+            note.start_tick,
+            1,
+            EngineEvent::NoteOn {
+                track,
+                pitch: note.pitch,
+                velocity: note.velocity,
+            },
+        ));
+        schedule.push((
+            note.end_tick.max(note.start_tick + 1),
+            0,
+            EngineEvent::NoteOff {
+                track,
+                pitch: note.pitch,
+            },
+        ));
+    }
+    schedule.sort_by_key(|(tick, kind, _)| (*tick, *kind));
+    schedule
+        .into_iter()
+        .map(|(tick, _kind, event)| (tick, event))
+        .collect()
+}
+
+/// ⭐ 离线渲染的读数（每个数字都来自**真的**跑过的那一次）。
+///
+/// ⚠ 不是 `Eq`：`peak: f32`（浮点没有全序，⛔ 不假装有）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct OfflineRenderReport {
+    /// 渲染的帧数。
+    pub frames: u64,
+    /// 声道数。
+    pub channels: u16,
+    /// 采样率（Hz）。
+    pub sample_rate: u32,
+    /// **真正写进环**的事件条数（环满时会少）。
+    pub events_sent: usize,
+    /// 调度表里的**全部**事件条数（与 `events_sent` 不等 ⇒ 有事件没进环）。
+    pub events_scheduled: usize,
+    /// 非零样本个数（交错样本计 **个**，⛔ 不是帧、⛔ 不是字节）。
+    pub nonzero_samples: usize,
+    /// 峰值绝对值（`0.0` = 全静音）。
+    pub peak: f32,
+    /// ⭐ 本次渲染里**现场的**音符条数（＝这次弹的音符；⛔ 不含工程自己排程里的）。
+    ///
+    /// ⚠ 它是"谱面"与"声音"两条路**在报告里可区分**的一半：⭐ `midi-notes:` 行说的是
+    /// "**写进工程**了几条"（可撤销 / 进提交史），本字段说的是"**这次声音里有几条现场音符**"
+    /// —— 两者可以一有一无（只渲染不写谱面 / 只写谱面不渲染）⇒ ⛔ 报告必须说清。
+    pub notes: usize,
+    /// **合成器器件侧**累计触发的音符数（`EngineStats::poly_notes_triggered` 的**增量**）。
+    ///
+    /// ⚠ 它是"事件**真的**到了合成器"的见证：⛔ 不拿它单独举证发声（发声由
+    /// `nonzero_samples`/`peak` 举证），但**两者一起**才排除"有声音但不是这些事件造成的"。
+    pub poly_notes_triggered: u64,
+    /// 落盘字节数（`None` = 只渲染没落盘）。
+    pub bytes: Option<u64>,
+}
+
+impl OfflineRenderReport {
+    /// 一行可读摘要（CLI 打印它；`source=` 明说声音来自哪条路径）。
+    #[must_use]
+    pub fn summary(&self, path: Option<&std::path::Path>) -> String {
+        let target = path.map_or_else(|| "<内存>".to_owned(), |path| path.display().to_string());
+        let silence = if self.nonzero_samples == 0 {
+            " ⚠ 全零: 引擎没有发出任何声音 (目标音轨可能没有可发声的乐器 / 被静音)"
+        } else {
+            ""
+        };
+        format!(
+            "midi-render: path={target} live-notes={} frames={} channels={} sample_rate={} \
+             events={}/{} poly-notes-triggered={} nonzero-samples={} peak={:.6} bytes={} \
+             source=engine(EngineEvent 环 + process_quantum){silence}",
+            self.notes,
+            self.frames,
+            self.channels,
+            self.sample_rate,
+            self.events_sent,
+            self.events_scheduled,
+            self.poly_notes_triggered,
+            self.nonzero_samples,
+            self.peak,
+            self.bytes
+                .map_or_else(|| "<未落盘>".to_owned(), |bytes| bytes.to_string()),
+        )
+    }
+}
+
+/// ⭐ **离线渲染**调度表：把事件按量子边界推进引擎环，并把真实输出取回（交错 `f32`）。
+///
+/// ⚠ 定时精度 = **一个量子**（`DEFAULT_BLOCK_FRAMES` = 128 帧 ≈ 2.7 ms @48 kHz）：
+/// 第 `q` 个量子渲染**之前**，把 tick 落在该量子**末尾之前**的事件整批写进环
+/// ⇒ 事件在块边界生效。`EngineEvent` 本来就不带时间戳，这是引擎事件模型的既有边界。
+///
+/// # Errors
+///
+/// [`MidiNoteError::Empty`]（`frames == 0`）、[`MidiNoteError::NoNotes`]（调度表为空 ⇒
+/// 必然静音 ⇒ 如实拒绝，⛔ 不写一个空 WAV 冒充成功）。
+pub fn render_engine_offline(
+    host: &mut EngineHost,
+    schedule: &[(u64, EngineEvent)],
+    frames: u64,
+    channels: u16,
+    sample_rate: u32,
+    bpm_millis: u32,
+) -> Result<(Vec<f32>, OfflineRenderReport), MidiNoteError> {
+    if frames == 0 {
+        return Err(MidiNoteError::Empty("请求的帧数为 0".to_owned()));
+    }
+    if schedule.is_empty() {
+        return Err(MidiNoteError::NoNotes);
+    }
+    let channels = channels.max(1);
+    let block = EngineHost::quantum_frames();
+    let quantum_frames = u64::try_from(block).unwrap_or(128);
+    let quanta = frames.div_ceil(quantum_frames);
+    let capacity = usize::try_from(
+        quanta
+            .saturating_mul(quantum_frames)
+            .saturating_mul(u64::from(channels)),
+    )
+    .unwrap_or(0);
+    let mut samples = vec![0.0_f32; capacity];
+
+    // ⭐ **预热一个量子**（本机实测的必要步骤，⛔ 不是保险）：`EngineRuntime::render_block`
+    // 的步骤顺序是「**① 出队并应用事件 → ② `snapshot.begin_block()` 武装快照/槽位」⇒
+    // 在**第一个**块里，事件到达时槽位**还没武装** ⇒ `SynthEngine::note_on` 早退返回 false
+    // ⇒ ⭐ **tick 0 的环音符会被丢掉**（实测：C4@tick0 不发声、它的 NoteOff 被记成
+    // `orphan_note_offs`；E4@tick960 正常发声）。因为本函数是**离线**渲染 ⇒
+    // 先推一个**空量子**（输出丢弃）把快照武装好，再开始记账 ⇒ tick 0 的音符也能发声。
+    //
+    // ⚠ 这是**绕行**，缺陷本体在引擎的步骤顺序（已作为发现登记在回报里）：
+    // 真机（设备回调）里引擎在用户弹第一个音之前早就跑过许多块，因此现场不受影响；
+    // 受影响的是"离线渲染从第 0 帧开始就推事件"这条用法。
+    if !schedule.is_empty() {
+        let mut warmup = vec![0.0_f32; block * usize::from(channels)];
+        host.render_into(&mut warmup, channels, 1);
+    }
+
+    // ⭐ 见证的**基线**：读数取"推事件之前"的器件计数 ⇒ 报告的增量只归因于**本次推的事件**。
+    let before = host
+        .engine_stats()
+        .map_or(0, |stats| stats.poly_notes_triggered);
+
+    let mut cursor = 0_usize;
+    let mut events_sent = 0_usize;
+    for index in 0..quanta {
+        let block_end_frame = (index + 1).saturating_mul(quantum_frames);
+        let block_end_tick = frames_to_ticks(block_end_frame, sample_rate, bpm_millis);
+        let mut batch: Vec<EngineEvent> = Vec::new();
+        while cursor < schedule.len() && schedule[cursor].0 <= block_end_tick {
+            batch.push(schedule[cursor].1);
+            cursor += 1;
+        }
+        events_sent = events_sent.saturating_add(host.send_engine_events(&batch));
+        let start = usize::try_from(
+            index
+                .saturating_mul(quantum_frames)
+                .saturating_mul(u64::from(channels)),
+        )
+        .unwrap_or(0);
+        let end = start + block * usize::from(channels);
+        if end <= samples.len() {
+            host.render_into(&mut samples[start..end], channels, 1);
+        }
+    }
+
+    let after = host
+        .engine_stats()
+        .map_or(before, |stats| stats.poly_notes_triggered);
+
+    let keep = usize::try_from(frames.saturating_mul(u64::from(channels)))
+        .unwrap_or(samples.len())
+        .min(samples.len());
+    samples.truncate(keep);
+
+    let mut nonzero_samples = 0_usize;
+    let mut peak = 0.0_f32;
+    for sample in &samples {
+        if *sample != 0.0 {
+            nonzero_samples += 1;
+        }
+        peak = peak.max(sample.abs());
+    }
+
+    Ok((
+        samples,
+        OfflineRenderReport {
+            notes: 0,
+            frames,
+            channels,
+            sample_rate,
+            events_sent,
+            events_scheduled: schedule.len(),
+            nonzero_samples,
+            peak,
+            poly_notes_triggered: after.saturating_sub(before),
+            bytes: None,
+        },
+    ))
+}
+
+/// ⭐ **离线渲染并落盘**：渲染 ⇒ 量化（与 `--export-wav` **同一条**）⇒ 一次写成 WAV。
+///
+/// 量化与落盘走 [`crate::export_wav::write_interleaved_wav`]（`--export-wav` 的唯一实现），
+/// 因此"同一个渲染结果"在两个导出器里是**同一串字节**。
+///
+/// # Errors
+///
+/// 见 [`render_engine_offline`]；外加 [`MidiNoteError::Wav`]（量化/落盘被拒，⛔ 不留半成品）。
+#[allow(clippy::too_many_arguments)]
+pub fn render_to_wav(
+    host: &mut EngineHost,
+    schedule: &[(u64, EngineEvent)],
+    path: &std::path::Path,
+    frames: u64,
+    channels: u16,
+    sample_rate: u32,
+    bpm_millis: u32,
+    seed: u64,
+) -> Result<OfflineRenderReport, MidiNoteError> {
+    let (samples, mut report) =
+        render_engine_offline(host, schedule, frames, channels, sample_rate, bpm_millis)?;
+    let (bytes, _bits) = crate::export_wav::write_interleaved_wav(
+        path,
+        &samples,
+        channels.max(1),
+        sample_rate,
+        seed,
+    )
+    .map_err(MidiNoteError::Wav)?;
+    report.bytes = Some(bytes);
+    Ok(report)
+}
+
+/// ⭐ **音符 ⇒ 环 ⇒ WAV**（"声音"那一半的一次做完的入口；CLI 的 `--midi-in-render` 走它）。
+///
+/// ⭐ 为什么要有 notes 级的入口（而不是让调用方自己拼 `engine_schedule` + `render_to_wav`）：
+/// 报告必须能说清"**这次声音里有几条现场音符**"（[`OfflineRenderReport::notes`]）——
+/// 那是"谱面"与"声音"两条路在输出里**可区分**的一半（两者可以一有一无）。
+///
+/// # Errors
+///
+/// 见 [`render_engine_offline`] 与 [`render_to_wav`]。
+#[allow(clippy::too_many_arguments)]
+pub fn render_notes_to_wav(
+    host: &mut EngineHost,
+    notes: &[CapturedNote],
+    track: EntityId,
+    path: &std::path::Path,
+    frames: u64,
+    channels: u16,
+    sample_rate: u32,
+    bpm_millis: u32,
+    seed: u64,
+) -> Result<OfflineRenderReport, MidiNoteError> {
+    let schedule = engine_schedule(notes, track);
+    let mut report = render_to_wav(
+        host,
+        &schedule,
+        path,
+        frames,
+        channels,
+        sample_rate,
+        bpm_millis,
+        seed,
+    )?;
+    report.notes = notes.len();
+    Ok(report)
+}
+
 /// ⭐ `--midi-in-track` 的选择器 ⇒ 音轨身份。
 ///
 /// ## 规则（与 `--midi-in` 的**端口**选择同一套 ⇒ 用户只学一次）
@@ -386,7 +730,7 @@ fn render_track_list(available: &[String]) -> String {
 }
 
 /// ⭐ 本模块的失败面（每一种都带**精确**原因，⛔ 不 panic）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MidiNoteError {
     /// 一条音符都没有（采到 0 条 / 全是非音符消息）。
     NoNotes,
@@ -408,13 +752,23 @@ pub enum MidiNoteError {
     },
     /// 撤销端口拒绝了这次提交。
     Refused(String),
+    /// 离线渲染的参数非法（`frames == 0`）。
+    Empty(String),
+    /// 引擎重建失败（`EngineHost::reload`）。
+    Engine(String),
+    /// WAV 量化 / 落盘失败（原样携带 `export_wav` 的裁决）。
+    Wav(crate::export_wav::WavExportError),
 }
 
 impl MidiNoteError {
     /// 这一档失败的退出码（与 `--midi-in` / `--import-midi` 同一桶 = [`crate::cli::EXIT_OPEN`]）。
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
-        crate::cli::EXIT_OPEN
+        match self {
+            // ⭐ 落盘类 ⇒ 与 `--export-wav` 同一档；其余 ⇒ 与 `--midi-in` / `--import-midi` 同一桶。
+            Self::Wav(_) => crate::cli::EXIT_EXPORT,
+            _ => crate::cli::EXIT_OPEN,
+        }
     }
 }
 
@@ -438,11 +792,21 @@ impl core::fmt::Display for MidiNoteError {
                 matches.join(" / ")
             ),
             Self::Refused(detail) => write!(formatter, "提交被撤销端口拒绝: {detail}"),
+            Self::Empty(detail) => write!(formatter, "离线渲染的参数非法: {detail}"),
+            Self::Engine(detail) => write!(formatter, "引擎重建失败: {detail}"),
+            Self::Wav(error) => write!(formatter, "WAV 写出失败: {error}"),
         }
     }
 }
 
-impl core::error::Error for MidiNoteError {}
+impl core::error::Error for MidiNoteError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Wav(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -600,36 +964,147 @@ mod tests {
         assert_eq!(error.exit_code(), crate::cli::EXIT_OPEN);
     }
 
-    /// 判据 ④（**断点登记**）：⭐ 任务书设想的 `EngineEvent` 音符路径**今天没有消费者** ——
-    /// 这条判据把那个事实**钉在源码文本上**，因此它不会随着口头约定漂走。
+    /// 判据 ④（**接线登记**，**文本钉住**）：⭐ 引擎侧**确有**两条 `EngineEvent` 音符分支 ＋
+    /// `SynthEngine::note_on/note_off`，⭐ 且 **app 侧走的是它**（`--midi-in-render` 经
+    /// [`render_to_wav`]）。
     ///
-    /// ⚠ 本判据**红了意味着引擎线接线了**（`rt.rs` 的出队闭包里多了 `NoteOn`/`NoteOff` 分支，
-    /// 或 `SynthEngine` 多了音符触发入口）⇒ 那时应当把本模块头部的"断点登记"改成"已接线"，
-    /// 并重新评估 `--midi-in-render` 走**事件环路径**是否比工程排程路径更合适。
-    /// ⛔ 本切片不替引擎线做那件事（那是别的工作线的面）。
+    /// ⚠ **这条判据的历史价值**：`eca718ab` 之前它钉的是"**未**接线"（事件进环只会全静音），
+    /// 并在引擎接线的那一刻**变红提醒**（实测 panic 在 `src/midi_notes.rs:625`）；
+    /// 现在翻成"**已**接线"，继续钉住**当前事实** —— 引擎把两条分支摘掉、或 app 侧把
+    /// `--midi-in-render` 改回**不经环**的路径，本判据都会红。
     #[test]
-    fn the_engine_event_note_path_is_registered_as_unwired() {
-        let ring = include_str!("../../yeban-engine/src/ring.rs");
+    fn the_engine_event_note_path_is_wired_to_the_synth() {
         let runtime = include_str!("../../yeban-engine/src/rt.rs");
         let synth = include_str!("../../yeban-engine/src/synth.rs");
 
-        // 定义还在（⛔ 不是"变体被删了"）。
-        assert!(ring.contains("NoteOn {"), "EngineEvent::NoteOn 必须仍在");
-        assert!(ring.contains("NoteOff {"), "EngineEvent::NoteOff 必须仍在");
-        // 出队闭包里**没有**音符分支 ⇒ 事件被计数但无声。
+        // (a) 出队闭包里**确有**音符分支。
         let drain = runtime
             .split("events.drain_with(")
             .nth(1)
             .and_then(|rest| rest.split("});").next())
             .expect("必须能找到事件出队闭包");
         assert!(
-            !drain.contains("NoteOn") && !drain.contains("NoteOff"),
-            "引擎接线了音符事件 ⇒ 请更新本判据与 `midi_notes.rs` 的断点登记"
+            drain.contains("EngineEvent::NoteOn") && drain.contains("EngineEvent::NoteOff"),
+            "引擎的出队闭包必须消费音符事件（⛔ 否则环里的音符不会发声）"
         );
-        // 合成器没有音符触发入口（只有排程驱动的 `render_track`）。
+        // (b) 合成器确有音符触发入口。
         assert!(
-            !synth.contains("pub fn note_on") && !synth.contains("pub fn note_off"),
-            "SynthEngine 接线了音符触发 ⇒ 请更新本判据与断点登记"
+            synth.contains("pub fn note_on") && synth.contains("pub fn note_off"),
+            "`SynthEngine` 必须提供 `note_on` / `note_off`"
         );
+        // (c) ⭐ **app 侧走的是它**：本模块的渲染入口把事件写进环并推进引擎。
+        let mine = include_str!("midi_notes.rs");
+        assert!(
+            mine.contains("host.send_engine_events(&batch)") && mine.contains("host.render_into("),
+            "离线渲染必须经 `EngineHost::send_engine_events` + `render_into`（环 ⇒ 引擎）"
+        );
+        // (d) ⭐ CLI 的 `--midi-in-render` 走的是本模块的环路径（⛔ 不是别的路）。
+        assert!(
+            include_str!("cli.rs").contains("crate::midi_notes::render_notes_to_wav("),
+            "`--midi-in-render` 必须经 `midi_notes::render_notes_to_wav()`（环路径）"
+        );
+    }
+
+    /// 判据 ⑤（**调度表**）：⭐ 音符 ⇒ 事件表：每个音符两条，按 tick 升序，
+    /// 同一 tick 上 **NoteOff 先于 NoteOn**（重触发不允许两个声部打架）。
+    #[test]
+    fn the_engine_schedule_orders_offs_before_ons_at_the_same_tick() {
+        let track = EntityId::new();
+        let notes = vec![
+            CapturedNote {
+                pitch: 60,
+                velocity: 100,
+                start_tick: 0,
+                end_tick: 480,
+            },
+            CapturedNote {
+                pitch: 60,
+                velocity: 90,
+                start_tick: 480,
+                end_tick: 960,
+            },
+        ];
+        let schedule = engine_schedule(&notes, track);
+        assert_eq!(schedule.len(), 4, "两条音符 ⇒ 4 条事件");
+        assert_eq!(schedule[0].0, 0);
+        assert!(matches!(
+            schedule[0].1,
+            EngineEvent::NoteOn {
+                pitch: 60,
+                velocity: 100,
+                ..
+            }
+        ));
+        assert_eq!(schedule[1].0, 480);
+        assert!(
+            matches!(schedule[1].1, EngineEvent::NoteOff { pitch: 60, .. }),
+            "同一 tick 必须先关旧声部: {:?}",
+            schedule[1]
+        );
+        assert!(
+            matches!(schedule[2].1, EngineEvent::NoteOn { velocity: 90, .. }),
+            "再开新声部: {:?}",
+            schedule[2]
+        );
+        assert_eq!(schedule[3].0, 960);
+        assert!(matches!(schedule[3].1, EngineEvent::NoteOff { .. }));
+    }
+
+    /// 判据 ⑥（**时间口径**）：⭐ tick↔帧换算是**整数**且互为逆式；速度变了帧/tick 跟着变。
+    #[test]
+    fn the_tick_frame_conversion_is_integer_and_round_trips() {
+        // 48 kHz / 120 BPM ⇒ 一个 4 分音符（960 tick）= 0.5 s = 24000 帧 ⇒ 25 帧/tick。
+        assert_eq!(frames_per_tick(48_000, 120_000), 25);
+        assert_eq!(ticks_to_frames(960, 48_000, 120_000), 24_000);
+        assert_eq!(frames_to_ticks(24_000, 48_000, 120_000), 960);
+        for tick in [0_u64, 1, 7, 960, 3_840] {
+            let frames = ticks_to_frames(tick, 48_000, 120_000);
+            assert_eq!(frames_to_ticks(frames, 48_000, 120_000), tick, "往返一致");
+        }
+        assert_eq!(frames_per_tick(48_000, 240_000), 12, "240 BPM 是一半");
+        assert_eq!(frames_per_tick(48_000, 0), 25, "坏输入兜底 120 BPM");
+        assert_eq!(frames_per_tick(0, 120_000), 0);
+    }
+
+    /// 判据 ⑦（**时间口径**）：⭐ 本模块的 `bpm_millis` 与 `bridge` 投影**逐值相同**
+    /// （⛔ 不许两个模块各写一份速度口径）。
+    #[test]
+    fn bpm_millis_agrees_with_the_bridge_projection() {
+        for bpm in [60.0_f64, 120.0, 128.5, 174.999] {
+            let project = YebanProjectV1 {
+                bpm,
+                ..yeban_model::samples::filled_project()
+            };
+            let view = crate::bridge::ViewState::from_project(&project).expect("投影");
+            assert_eq!(bpm_millis(bpm), view.bpm_millis, "bpm={bpm} 口径必须一致");
+        }
+        assert_eq!(bpm_millis(f64::NAN), 120_000);
+        assert_eq!(bpm_millis(0.0), 120_000);
+    }
+
+    /// 判据 ⑧（**声音那一半的反向对照**）：⭐ 空调度表 / 0 帧必须**如实拒绝**
+    /// （⛔ 不渲染一个空 WAV 冒充成功）。
+    #[test]
+    fn an_empty_schedule_is_refused_instead_of_rendering_silence() {
+        let mut host = EngineHost::new();
+        assert_eq!(
+            render_engine_offline(&mut host, &[], 256, 2, 48_000, 120_000).unwrap_err(),
+            MidiNoteError::NoNotes
+        );
+        let track = EntityId::new();
+        let schedule = engine_schedule(
+            &[CapturedNote {
+                pitch: 60,
+                velocity: 100,
+                start_tick: 0,
+                end_tick: 480,
+            }],
+            track,
+        );
+        assert!(matches!(
+            render_engine_offline(&mut host, &schedule, 0, 2, 48_000, 120_000).unwrap_err(),
+            MidiNoteError::Empty(_)
+        ));
+        assert_eq!(MidiNoteError::NoNotes.exit_code(), crate::cli::EXIT_OPEN);
     }
 }
