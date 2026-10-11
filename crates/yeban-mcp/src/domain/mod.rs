@@ -46,6 +46,7 @@
 //! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
 //! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
 //! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
+//! | [`record_wav`] | `yeban_record_wav`：`ARCH-REC-001` 三段（无锁环 + 后台抽干）→ 24-bit WAV |
 
 pub mod automation;
 pub mod automation_audit;
@@ -62,6 +63,7 @@ pub mod macros;
 pub mod notes;
 pub mod project_create;
 pub mod proposal;
+pub mod record_wav;
 pub mod render;
 pub mod render_clip_math;
 pub mod render_math;
@@ -911,6 +913,11 @@ pub enum Plan {
         /// 已经渲染并编码好的产物（`apply` 只落盘）。
         artifact: Box<sfz::SfzWavArtifact>,
     },
+    /// `yeban_record_wav`：录一段测试音（`ARCH-REC-001` 三段）并编码成 WAV。
+    RecordWav {
+        /// 已经录完并编码好的产物（`apply` 只落盘）。
+        artifact: Box<record_wav::RecordArtifact>,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -941,6 +948,7 @@ impl Plan {
             Self::ExportMidi { .. } => "export_midi",
             Self::LoadSfz { .. } => "load_sfz",
             Self::RenderSfzWav { .. } => "render_sfz_wav",
+            Self::RecordWav { .. } => "record_wav",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -974,9 +982,10 @@ impl Plan {
             | Self::EngineState { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
-            // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出只写盘。
+            // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出与录音只写盘。
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
+            | Self::RecordWav { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
             | Self::Undo { .. }
             | Self::Redo { .. } => 0,
@@ -1035,9 +1044,10 @@ impl Plan {
             | Self::EngineState { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
-            // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出只写盘。
+            // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出与录音只写盘。
             | Self::LoadSfz { .. }
-            | Self::RenderSfzWav { .. } => false,
+            | Self::RenderSfzWav { .. }
+            | Self::RecordWav { .. } => false,
         }
     }
 
@@ -1164,7 +1174,8 @@ impl Plan {
             | Self::EngineState { .. }
             | Self::ExportMidi { .. }
             | Self::LoadSfz { .. }
-            | Self::RenderSfzWav { .. } => Ok(None),
+            | Self::RenderSfzWav { .. }
+            | Self::RecordWav { .. } => Ok(None),
         }
     }
 
@@ -1323,6 +1334,15 @@ impl Plan {
             }
             Self::RenderSfzWav { artifact } => {
                 // 渲染与编码在 `plan`（只读）里就完成了: 帧数 / 字节数 / SHA-256
+                // 都是实测值。落盘只发生在 `apply`。
+                if let Value::Object(details) = artifact.preview() {
+                    for (key, value) in details {
+                        preview.insert(key, value);
+                    }
+                }
+            }
+            Self::RecordWav { artifact } => {
+                // 录制与编码同样在 `plan`（只读）里完成: 帧数 / 丢弃 / 字节数 / SHA-256
                 // 都是实测值。落盘只发生在 `apply`。
                 if let Value::Object(details) = artifact.preview() {
                     for (key, value) in details {
@@ -1650,6 +1670,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_export_midi" => plan_export_midi(domain, call),
         "yeban_load_sfz" => plan_load_sfz(domain, call),
         "yeban_render_sfz_wav" => plan_render_sfz_wav(domain, call),
+        "yeban_record_wav" => plan_record_wav(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -2921,6 +2942,7 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::ExportMidi { export } => Ok(ToolResponse::success(export.data())),
         Plan::LoadSfz { load } => apply_load_sfz(domain, *load),
         Plan::RenderSfzWav { artifact } => apply_render_sfz_wav(&artifact),
+        Plan::RecordWav { artifact } => apply_record_wav(&artifact),
     }
 }
 
@@ -3057,6 +3079,34 @@ fn apply_load_sfz(domain: &mut Domain, load: sfz::SfzLoad) -> Result<ToolRespons
 fn apply_render_sfz_wav(artifact: &sfz::SfzWavArtifact) -> Result<ToolResponse, Fault> {
     store::write_project_atomic(&artifact.path, &artifact.bytes)?;
     Ok(ToolResponse::success(artifact.response_data()))
+}
+
+/// `yeban_record_wav` 的施加：把**已经录好并编码好**的 WAV 字节原子落盘。
+///
+/// 与前两条导出共用 [`store::write_project_atomic`]（`ARCH-SEC-004`）。
+fn apply_record_wav(artifact: &record_wav::RecordArtifact) -> Result<ToolResponse, Fault> {
+    store::write_project_atomic(&artifact.path, &artifact.bytes)?;
+    Ok(ToolResponse::success(artifact.response_data()))
+}
+
+/// `yeban_record_wav`：录一段测试音（`ARCH-REC-001` 三段）并编码成 24-bit WAV。
+///
+/// **录制 + 编码都在 `plan` 里完成**（与 `yeban_render_master` 同一条切分）：
+/// 因此 `dryRun` 拿到的是实测的帧数 / 丢弃 / 字节数 / SHA-256，且一个字节都不写盘。
+/// 落盘是 `apply` 的事。
+///
+/// ⚠ 它**不要求**活跃工程：录音是"采集"，与工程内容无关（路径护栏只在**有工程**时
+/// 才有对象：不得覆盖工程文件或它的锁文件）。
+fn plan_record_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let (path, request) = record_wav::validate(&call.arguments)?;
+    if let Some(project_path) = domain.active_path() {
+        record_wav::guard_output_path(&path, project_path)?;
+    }
+    let mut artifact = record_wav::record(&request)?;
+    artifact.path = path;
+    Ok(Plan::RecordWav {
+        artifact: Box::new(artifact),
+    })
 }
 
 /// `yeban_open_project` 的施加。
@@ -3796,6 +3846,14 @@ mod tests {
                     "instrumentId": 1,
                     "frames": 64,
                     "path": std::env::temp_dir().join("yeban-mcp-unit-sfz-out.wav").display().to_string(),
+                }),
+            ),
+            // 录音：**不要求**活跃工程, 且 `plan` 真的把三段跑完（只碰内存）⇒ 规划成功。
+            (
+                "yeban_record_wav",
+                serde_json::json!({
+                    "path": std::env::temp_dir().join("yeban-mcp-unit-take.wav").display().to_string(),
+                    "seconds": 0.01,
                 }),
             ),
         ];

@@ -33,7 +33,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（字面 `json!` 第一层键，含顺序） | 94 | 427 | `bf5fd38144ce640644db5d75c3c3fe378514b450b35445d376e5edec5b957423` |
+//! | `reason`（字面 `json!` 第一层键，含顺序） | 96 | 434 | `05ddbc1dda952de973801c7b96262dba5e51b99b74f3d7b0b95d1baf070834ef` |
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -42,7 +42,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 
 /// 本轮开工基线上**生产区**里出现的全部 `reason` 字面量（排序）。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 90] = [
+pub const GOLDEN_REASONS: [&str; 92] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -94,12 +94,14 @@ pub const GOLDEN_REASONS: [&str; 90] = [
     "removeTrackIsNotPlacement",
     "removeTrackTakesNoOtherOps",
     "routingEdgeNotFound",
+    "recordDrainFailed",
     "routingNodeNotFound",
     "sceneAlreadyExists",
     "sceneNameRequiredWhenCreating",
     "sceneNotFound",
     "sceneTempoMustBeNumberOrNull",
     "sectionNotFound",
+    "secondsExceedCap",
     "sfzInstrumentNotFound",
     "sfzNotUtf8",
     "sfzParseFailed",
@@ -282,7 +284,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 90] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 92] = [
     (
         "assetChannelLayout",
         &[
@@ -459,6 +461,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 90] = [
         "removeTrackTakesNoOtherOps",
         &["hint", "opKinds", "reason", "trackId"],
     ),
+    ("recordDrainFailed", &["ioError", "reason"]),
     ("routingEdgeNotFound", &["edgeId", "hint", "reason"]),
     ("routingNodeNotFound", &["hint", "nodeId", "reason"]),
     ("sceneAlreadyExists", &["hint", "reason", "sceneId"]),
@@ -472,6 +475,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 90] = [
         &["field", "reason", "received"],
     ),
     ("sectionNotFound", &["hint", "reason", "sectionId"]),
+    ("secondsExceedCap", &["maxSeconds", "reason", "seconds"]),
     (
         "sfzInstrumentNotFound",
         &["instrumentId", "loadedInstruments", "reason"],
@@ -957,12 +961,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 规范形式：**文件按路径排序** → 每个 `reason` 按**首次出现**顺序 →
 /// 每个键按**源码顺序**（只收字面 `json!` 对象第一层的键）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "bf5fd38144ce640644db5d75c3c3fe378514b450b35445d376e5edec5b957423";
+    "05ddbc1dda952de973801c7b96262dba5e51b99b74f3d7b0b95d1baf070834ef";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 94;
+pub const REASON_SURFACE_REASONS: usize = 96;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 427;
+pub const REASON_SURFACE_LINES: usize = 434;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
@@ -1131,7 +1135,7 @@ fn reason_surface(files: &[(String, String)]) -> String {
 #[test]
 fn the_reason_surface_digest_is_frozen_and_documented() {
     let files: Vec<(String, String)> = read_rust_sources(&[manifest_dir().join("src")]);
-    assert_eq!(files.len(), 36, "生产区 `.rs` 文件数（规范形式的分母之一）");
+    assert_eq!(files.len(), 37, "生产区 `.rs` 文件数（规范形式的分母之一）");
     let canonical = reason_surface(&files);
     let digest = yeban_model::AssetHash::of_bytes(canonical.as_bytes())
         .as_str()

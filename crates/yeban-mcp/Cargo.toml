@@ -94,6 +94,17 @@ yeban-decode.workspace = true
 # 只多一条成员间的依赖边。逐样本内插与"读到样本末尾就停"这两条语义与引擎那一个一致
 # （`domain/sfz.rs` 的 `render_region_into` 文档写明了两者同源）。
 yeban-sfz.workspace = true
+# 录音侧的**无锁环 + 后台抽干**（`ARCH-REC-001` 的前两段）。它原来住在
+# `yeban-engine/src/record.rs`，由集成者提交 `f90a7609` 下移成**独立轻量 crate**
+# `crates/yeban-record`（`git mv` + 零行为改动；`yeban-engine` 保留 `pub use` 再导出）。
+#
+# 为什么是正确的形态：`scripts/gates/check_mcp_dependency_direction.py` 的 `FORBIDDEN`
+# 逐字含 `yeban-engine`（"带 GUI / 音频栈 / 渲染栈的 crate"），而该门禁的取向就是
+# "把共享件**下移到轻量 crate**，而不是加依赖"。`yeban-record` 的唯一第三方依赖是
+# `rtrb`（已在树里）⇒ `Cargo.lock` 的包集合不变、⛔ 无新许可、⛔ 不拖 `cpal`。
+# 机械证据：`cargo tree -p yeban-mcp -e normal | grep -c cpal` == 0，
+# `cargo tree -p yeban-mcp -i cpal` ⇒ `did not match any packages`。
+yeban-record.workspace = true
 # 母带合成里的超越函数 (正弦振荡器 / 等程律频率 / 等功率声相) [ARCH-DET-001]:
 # 规范要求"统一启用纯 Rust libm", 禁止落到宿主 libm —— 否则同一工程的母带会随平台差 LSB。
 libm.workspace = true

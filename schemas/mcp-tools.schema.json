@@ -32,7 +32,8 @@
             "yeban_export_diagnostics",
             "yeban_export_midi",
             "yeban_load_sfz",
-            "yeban_render_sfz_wav"
+            "yeban_render_sfz_wav",
+            "yeban_record_wav"
           ]
         },
         "arguments": {
@@ -219,6 +220,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_render_sfz_wav"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_record_wav"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_record_wav"
               }
             }
           }
@@ -672,6 +692,57 @@
           "required": [
             "instrumentId",
             "frames",
+            "path"
+          ]
+        },
+        "yeban_record_wav": {
+          "title": "yeban_record_wav",
+          "type": "object",
+          "description": "按 ARCH-REC-001 的三段（构造期预分配无锁环 + 整帧原子推送 + 后台抽干）录一段内存测试音（440 Hz 正弦，⛔ 不是声卡）成 24-bit RIFF WAV 并原子落盘。 dropped 是帧级读数（引擎的 dropped_frames 是样本级）。",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "输出 WAV 路径（**必填**；空串/撞工程文件/撞 <工程>.lock ⇒ INVALID_PARAMETER_RANGE）。长度界与其他工具的 path 一致（无界）。"
+            },
+            "seconds": {
+              "type": "number",
+              "description": "录制秒数（> 0；上限 3600）；缺省 2.0。实际写出帧数由环与抽干决定，响应分列 requestedFrames / framesWritten / dropped。"
+            },
+            "sampleRate": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "采样率 (Hz, > 0)；缺省 48000。"
+            },
+            "channels": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2,
+              "description": "声道数：只接受 1 或 2；缺省 2。"
+            },
+            "capacityFrames": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "无锁环容量（帧，> 0）；缺省 = 1 秒的帧数。给小的值可观测到 dropped。"
+            },
+            "drainBatch": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "抽取批大小（帧/次 pump，> 0）；缺省 4096。生产与消费按它交错。"
+            },
+            "toneHz": {
+              "type": "number",
+              "description": "内存测试音频率 (Hz, > 0)；缺省 440。⛔ 不是声卡输入。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
             "path"
           ]
         }

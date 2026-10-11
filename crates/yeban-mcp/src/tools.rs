@@ -10,10 +10,10 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
-//! ## 十九个工具 = 规范表格的十个 + 九条**扩展**（ADR-0001 D45 / D46 + 后续线）
+//! ## 二十个工具 = 规范表格的十个 + 十条**扩展**（ADR-0001 D45 / D46 + 后续线）
 //!
 //! 扩展段的**唯一清单**是 [`EXTENSION_NAMES`]：D45 的撤销 / 重做 2 条、D46 的三类能力 3 条、
-//! D56 的诊断包 1 条、SMF 导出 1 条、SFZ 装载与 SFZ 音色导出 2 条 = **9** 条。
+//! D56 的诊断包 1 条、SMF 导出 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条 = **10** 条。
 //!
 //! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
 //! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
@@ -30,6 +30,7 @@
 //! | `yeban_export_midi` | 共享 SMF 映射导出（base64 回传，只读） | `MCP-TOOL-EXT-EXPORT-MIDI` |
 //! | `yeban_load_sfz` | 装载 SFZ 乐器进会话 registry（读盘 + 解析 + 区域摘要） | `MCP-TOOL-EXT-SFZ-LOAD` |
 //! | `yeban_render_sfz_wav` | 用已装载的 SFZ 区域把活跃工程的 MIDI 音符导出成 24-bit WAV | `MCP-TOOL-EXT-SFZ-WAV` |
+//! | `yeban_record_wav` | `ARCH-REC-001` 三段（无锁环 + 后台抽干）录一段测试音成 24-bit WAV | `MCP-TOOL-EXT-RECORD-WAV` |
 //!
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -89,14 +90,15 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 19;
+pub const TOOL_COUNT: usize = 20;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 
 /// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条
-/// + D56 的诊断包 1 条 + SMF 导出 1 条 + 本线的 SFZ 装载 / SFZ 音色导出 2 条。
-pub const EXTENSION_TOOL_COUNT: usize = 9;
+/// + D56 的诊断包 1 条 + SMF 导出 1 条 + SFZ 装载 / SFZ 音色导出 2 条
+/// + 录音导出 1 条。
+pub const EXTENSION_TOOL_COUNT: usize = 10;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -119,6 +121,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_export_midi",
     "yeban_load_sfz",
     "yeban_render_sfz_wav",
+    "yeban_record_wav",
 ];
 
 /// 规范 ID 前缀。
@@ -1190,6 +1193,65 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         ],
         errors: &[
             ErrorCode::NoActiveProject,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::IoError,
+            ErrorCode::RenderFailed,
+        ],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-RECORD-WAV",
+        name: "yeban_record_wav",
+        summary: "按 ARCH-REC-001 的三段 (预分配无锁环 + 整帧原子推送 + 后台抽干) 录一段内存测试音成 24-bit WAV",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::Disk,
+        params: &[
+            // ⚠ 与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_record_wav` 逐字段一致。
+            param(
+                "path",
+                "string",
+                true,
+                "输出 WAV 路径 (空串/撞工程文件/撞 .yeban.lock ⇒ `INVALID_PARAMETER_RANGE`; 长度界与其他工具的 path 一致 = 无界)",
+            ),
+            param(
+                "seconds",
+                "number",
+                false,
+                "录制秒数 (> 0; 上限 3600 秒); 缺省 2.0。实际写出帧数由环与抽干决定, 响应分列 `requestedFrames` / `framesWritten` / `dropped`",
+            ),
+            param(
+                "sampleRate",
+                "integer",
+                false,
+                "采样率 (Hz, > 0); 缺省 48000",
+            ),
+            param(
+                "channels",
+                "integer",
+                false,
+                "声道数: 只接受 1 (单声道) 或 2 (立体声); 缺省 2",
+            ),
+            param(
+                "capacityFrames",
+                "integer",
+                false,
+                "无锁环容量 (帧, > 0); 缺省 = 采样率 × 1000ms / 1000 (即 1 秒的环)。故意给小的值可观测到 `dropped`",
+            ),
+            param(
+                "drainBatch",
+                "integer",
+                false,
+                "抽取批大小 (帧/次 `pump`, > 0); 缺省 4096。生产与消费按它**交错**",
+            ),
+            param(
+                "toneHz",
+                "number",
+                false,
+                "内存测试音的频率 (Hz, > 0); 缺省 440。⛔ 不是声卡输入",
+            ),
+        ],
+        errors: &[
+            // 路径护栏 / 参数越界 ⇒ `INVALID_PARAMETER_RANGE`；抽干 I/O ⇒ `IO_ERROR`；
+            // 容器编码被拒 ⇒ `RENDER_FAILED`。全部取自 D25 的 20 值联集, ⛔ 不发明新码。
             ErrorCode::InvalidParameterRange,
             ErrorCode::IoError,
             ErrorCode::RenderFailed,

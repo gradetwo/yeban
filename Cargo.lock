@@ -6399,6 +6399,7 @@ dependencies = [
  "yeban-diagnostics",
  "yeban-midi",
  "yeban-model",
+ "yeban-record",
  "yeban-render",
  "yeban-sfz",
  "yeban-theory",

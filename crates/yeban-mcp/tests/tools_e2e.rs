@@ -1429,6 +1429,11 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_render_sfz_wav",
             json!({ "instrumentId": 1, "frames": 4096, "path": scratch.text("sfz-out.wav") }),
         ),
+        // 录音：ARCH-REC-001 三段真的跑一遍 ⇒ 带内成功（0.05 秒, 免得拖长用例）。
+        (
+            "yeban_record_wav",
+            json!({ "path": scratch.text("take.wav"), "seconds": 0.05 }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

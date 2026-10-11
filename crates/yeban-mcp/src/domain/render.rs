@@ -279,7 +279,7 @@ use yeban_render::render::{
 // （"不拖音频栈进 MCP"），而 `yeban-mcp -> yeban-render` 这条边早已存在。
 use yeban_render::loudness::GatedLoudness;
 use yeban_render::rf64::{Bext, ContainerKind, ContainerPlan, PcmFormat, write_container};
-use yeban_render::rng::dither_rng_for;
+use yeban_render::rng::{DeterministicDitherRng, dither_rng_for};
 
 use super::error::Fault;
 use super::render_clip_math as clip_math;
@@ -1514,6 +1514,35 @@ pub(super) fn write_master_container(
         bext.coding_history.clone_from(&coding_history);
         bext
     });
+    let (bytes, kind, header_bytes, payload_bytes) =
+        encode_interleaved_container(samples, sample_rate, format, &payload, bext)?;
+    Ok((
+        bytes,
+        kind,
+        header_bytes,
+        payload_bytes,
+        origination_date,
+        origination_time,
+        originator_reference,
+        coding_history,
+    ))
+}
+
+/// **容器写入器本体**（唯一）：交织 `f32` ⇒ 24-bit 容器字节。
+///
+/// 三个调用方共用它：`yeban_render_master`（带 `bext`）、`yeban_render_sfz_wav`
+/// 与 `yeban_record_wav`（都 `None`）。⛔ 全仓只有这一个函数写 RIFF/RF64/BW64 头。
+///
+/// # Errors
+///
+/// 容器编码失败 ⇒ `RENDER_FAILED`。
+fn encode_interleaved_container(
+    samples: &[f32],
+    sample_rate: u32,
+    format: &str,
+    payload: &[u8],
+    bext: Option<Bext>,
+) -> Result<(Vec<u8>, ContainerKind, usize, usize), Fault> {
     let preferred = match format {
         "rf64" => ContainerKind::Rf64,
         "bw64" => ContainerKind::Bw64,
@@ -1534,22 +1563,35 @@ pub(super) fn write_master_container(
     let header_bytes = container_plan.header_bytes().len();
     let payload_bytes = payload.len();
     let mut bytes = Vec::with_capacity(header_bytes + payload_bytes + 1);
-    write_container(&mut bytes, &container_plan, &payload).map_err(|error| {
+    write_container(&mut bytes, &container_plan, payload).map_err(|error| {
         render_failed(
             "容器编码失败",
             serde_json::json!({ "rf64Error": format!("{error:?}") }),
         )
     })?;
-    Ok((
-        bytes,
-        container_plan.kind,
-        header_bytes,
-        payload_bytes,
-        origination_date,
-        origination_time,
-        originator_reference,
-        coding_history,
-    ))
+    Ok((bytes, container_plan.kind, header_bytes, payload_bytes))
+}
+
+/// **无 `bext`** 的交织 `f32` ⇒ 24-bit 容器字节（录音工具用）。
+///
+/// 与 [`write_master_container`] 共用 [`encode_interleaved_container`] ⇒ 容器头不可能
+/// 有两份实现。抖动种子由调用方给（录音侧用固定 `1`：录音没有"工程种子"，
+/// 与 `crates/yeban-app/src/record_wav.rs` 的 `DeterministicDitherRng::new(1)` 同一口径）。
+///
+/// # Errors
+///
+/// 容器编码失败 ⇒ `RENDER_FAILED`。
+pub(super) fn encode_container_without_bext(
+    samples: &[f32],
+    sample_rate: u32,
+    dither_seed: u32,
+) -> Result<(Vec<u8>, usize, usize), Fault> {
+    let mut rng = DeterministicDitherRng::new(dither_seed);
+    let pcm = quantize(samples, BitDepth::Int24, &mut rng);
+    let payload = pcm.to_le_bytes();
+    let (bytes, _kind, header_bytes, payload_bytes) =
+        encode_interleaved_container(samples, sample_rate, "wav", &payload, None)?;
+    Ok((bytes, header_bytes, payload_bytes))
 }
 
 /// 一个保留节点是不是**源节点**（没有入边）。
