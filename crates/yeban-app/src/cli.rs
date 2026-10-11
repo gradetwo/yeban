@@ -233,6 +233,9 @@ pub fn usage_text() -> String {
   --dump-elements          把语义元素注册表打印到 stdout (每行一个元素, 稳定顺序) [UI-TEST-001]
   --export-elements <path> 把同一份元素注册表**原子**写到文件, 便于脚本 / AI 消费;
                            与 --dump-elements 同时给 = 既打印又落盘
+  --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
+                           来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
+                           (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
   --export-wav <path>      把当前工程**离线渲染**成 24-bit WAV (48 kHz 立体声 8 秒): 音源是
                            最小音源 (**方波 + 首尾包络**, ⛔ 非引擎乐器, 见 `export_wav.rs` 的
                            诚实登记); 与 --export-midi 同族: 不给 --open 时导出演示工程
@@ -410,6 +413,7 @@ pub fn usage_text() -> String {
       {ui_mcp_switch} 与不该组合的开关同给或本次构建未编译 `{ui_mcp_feature}` /
       --export-als 在本次构建未编译 `{als_feature}` /
       --export-logic 在本次构建未编译 `{logic_feature}`)
+  {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
@@ -427,6 +431,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
+  yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
   yeban-app --open song.yeban --export-wav song.wav
   yeban-app --open song.yeban --export-logic out/Song.logicx
@@ -808,6 +813,14 @@ pub struct Options {
     pub print_shortcuts: bool,
     /// `--export-elements <path>`：元素注册表原子写到文件。
     pub export_elements: Option<PathBuf>,
+    /// `--import-midi <path>`：把一段标准 MIDI 文件（SMF）里的音符**导入**当前工程的
+    /// 第一条非 master 音轨，每个音符的来源标记是 `OpOrigin::MidiInput`
+    /// （⛔ 不是 `UserUi` —— 来源是一等公民元数据）。
+    ///
+    /// **执行顺序**：导入是**编辑**，所以在导出与 `--save-as` **之前**执行
+    /// ⇒ 同一命令里的 `--export-midi` / `--export-wav` / `--save-as` 都能看到导入的音符。
+    /// 解析与映射全部完成后**才**发出一次提交 ⇒ 非法输入不会改坏工程。
+    pub import_midi: Option<PathBuf>,
     /// `--export-midi <path>`：当前工程导出成标准 MIDI 文件（SMF 1）[ADR-0001 **D47**]。
     pub export_midi: Option<PathBuf>,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 24-bit WAV（导出族）。
@@ -1207,6 +1220,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--import-midi" => {
+                let value = take_value("--import-midi", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.import_midi,
+                    "--import-midi",
+                    PathBuf::from(value),
+                )?;
+            }
             "--export-midi" => {
                 let value = take_value("--export-midi", inline, args, &mut cursor)?;
                 set_once(
@@ -1297,6 +1318,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.dump_elements, "--dump-elements"),
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
+            (options.import_midi.is_some(), "--import-midi"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
@@ -1327,6 +1349,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.dump_elements, "--dump-elements"),
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
+            (options.import_midi.is_some(), "--import-midi"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
@@ -1351,6 +1374,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.dump_elements, "--dump-elements"),
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
+            (options.import_midi.is_some(), "--import-midi"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
@@ -1563,6 +1587,13 @@ pub enum CliError {
         /// 落盘层的原样裁决。
         source: SaveError,
     },
+    /// `--import-midi` 失败（读文件 / 解析 / 没有目标 / 提交被拒）。
+    ImportMidi {
+        /// 源文件路径。
+        path: PathBuf,
+        /// 导入层的原样裁决（含 `yeban-midi` 解析器的拒绝原因）。
+        source: crate::import_midi::MidiImportError,
+    },
     /// `--export-midi` 失败（投影 / 编码 / 落盘）。
     ExportMidi {
         /// 目标路径。
@@ -1635,7 +1666,7 @@ impl CliError {
             | Self::McpHttpNotBatch => EXIT_UI,
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
-            Self::Open { .. } => EXIT_OPEN,
+            Self::Open { .. } | Self::ImportMidi { .. } => EXIT_OPEN,
             Self::Save { .. } => EXIT_SAVE,
             Self::Export { .. }
             | Self::ExportMidi { .. }
@@ -1664,6 +1695,13 @@ impl fmt::Display for CliError {
                 "导出元素清单到 `{}` 失败: {source}",
                 path.display()
             ),
+            Self::ImportMidi { path, source } => {
+                write!(
+                    formatter,
+                    "从 `{}` 导入 MIDI 失败: {source}",
+                    path.display()
+                )
+            }
             Self::ExportMidi { path, source } => {
                 write!(
                     formatter,
@@ -1722,6 +1760,7 @@ impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Open { source, .. } => Some(source),
+            Self::ImportMidi { source, .. } => Some(source),
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
@@ -2377,7 +2416,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         return Err(CliError::LogicNotCompiled);
     }
 
-    let loaded = load_project(options)?;
+    let mut loaded = load_project(options)?;
     let mut lines: Vec<String> = Vec::new();
 
     // 需要投影的命令先投影：投影失败要**在**任何写盘动作之前失败。
@@ -2404,6 +2443,36 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         lines.extend(view_report(view));
     }
     lines.push(HEADLESS_BOUNDARY.to_owned());
+
+    // 顺序契约（`--help` 的组合语义一节）：**导入 → 导出 → 保存工程**。
+    // 导入是编辑，所以它先发生，同一命令里的导出与保存都能看到导入的音符。
+    if let Some(path) = options.import_midi.as_ref() {
+        let session = crate::undo::UndoSession::open(
+            "<cli:import-midi>",
+            "yeban-app",
+            loaded.archive.project.clone(),
+            crate::host::now_ms(),
+        )
+        .map_err(|error| CliError::ImportMidi {
+            path: path.clone(),
+            source: crate::import_midi::MidiImportError::Refused(error.to_string()),
+        })?;
+        let port = crate::undo::UndoPort::new(session);
+        let report = crate::import_midi::import_midi_file(
+            &port,
+            &loaded.archive.project,
+            path,
+            &crate::import_midi::MidiImportOptions::default(),
+            crate::host::now_ms(),
+        )
+        .map_err(|source| CliError::ImportMidi {
+            path: path.clone(),
+            source,
+        })?;
+        // 会话是权威 ⇒ 把导入后的工程落回归档，后续导出/保存看的是这一份。
+        loaded.archive.project = port.project();
+        lines.push(report.summary());
+    }
 
     if let Some(path) = options.export_elements.as_ref() {
         let view = view.as_ref().expect("needs_projection 保证视图已构造");
@@ -4254,6 +4323,121 @@ mod tests {
         (74, 1920),
         (76, 2400),
     ];
+
+    /// `--import-midi`：导入一段真 SMF（由 `--export-midi` 现造）⇒ 音符数按文件增加，
+    /// **来源标记是 `midi-input`**（本切片的核心语义），且 `--save-as` 保存的是**导入后**的工程。
+    #[test]
+    fn import_midi_adds_the_notes_and_marks_the_origin_as_midi_input() {
+        let dir = scratch_dir("import-midi");
+        let (source, project) = write_container_file(&dir, "song.yeban");
+        let mid = dir.join("take.mid");
+        run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-midi".to_owned(),
+                mid.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("先导出一份 SMF 当输入");
+
+        let before: usize = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .map(std::collections::BTreeMap::len)
+            .sum();
+        assert!(before > 0, "夹具必须有音符（实际 {before}）");
+
+        let saved = dir.join("imported.yeban");
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--import-midi".to_owned(),
+                mid.display().to_string(),
+                "--save-as".to_owned(),
+                saved.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("导入必须成功");
+
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("imported-midi:"))
+            .expect("必须有 imported-midi 报告行");
+        assert!(
+            line.contains(&format!("notes={before}")),
+            "导入条数必须等于文件里的音符数（期望 {before}）: {line}"
+        );
+        assert!(
+            line.contains("origin=midi-input"),
+            "来源标记必须是 `MidiInput`（⛔ 不是 `UserUi`）: {line}"
+        );
+        assert!(
+            line.contains(&format!("path={}", mid.display())),
+            "报告行必须写出来源文件: {line}"
+        );
+
+        // `--save-as` 保存的必须是**导入后**的工程：把保存的文件重新导出成 SMF，
+        // 数它里面的音符 —— 期望 = 原来的 ＋ 导入的（走**公开入口**回读，⛔ 不碰内部字段）。
+        let probe = dir.join("probe.mid");
+        run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                saved.display().to_string(),
+                "--export-midi".to_owned(),
+                probe.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("保存的工程必须能重新打开并导出");
+        let after = yeban_render::midi::parse_smf(&std::fs::read(&probe).expect("读"))
+            .expect("回读")
+            .notes
+            .len();
+        assert_eq!(
+            after,
+            before * 2,
+            "保存的工程里音符数必须是原来的两倍（原 {before}）"
+        );
+    }
+
+    /// `--import-midi` 的**拒绝不留半成品**：非 SMF 字节 ⇒ 与 `--open` 同族的退出码，
+    /// 且 `--save-as` 的目标**一个字节都不写**。
+    #[test]
+    fn import_midi_refuses_a_bad_file_without_writing_or_editing_anything() {
+        let dir = scratch_dir("import-midi-bad");
+        let (source, _project) = write_container_file(&dir, "song.yeban");
+        let junk = dir.join("junk.mid");
+        std::fs::write(&junk, b"not a midi file at all").expect("写垃圾");
+        let target = dir.join("never.yeban");
+
+        let error = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--import-midi".to_owned(),
+                junk.display().to_string(),
+                "--save-as".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect_err("非 SMF 必须失败");
+        assert_eq!(
+            error.exit_code(),
+            EXIT_OPEN,
+            "与 `--open` 同族：输入文件被拒"
+        );
+        assert!(
+            error.to_string().contains("解析 MIDI 失败"),
+            "必须转达解析器的精确裁决: {error}"
+        );
+        assert!(!target.exists(), "失败 ⇒ 一个字节都不许写出去");
+    }
 
     /// `--export-wav`：写出的 WAV 可被 `read_plain_wav` **读回**，且帧数/采样率/声道与请求一致，
     /// 样本非全零（真的有声音），报告行的数字与回读一致，两次导出**逐字节相同**（`ARCH-DET-*`）。

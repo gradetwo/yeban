@@ -262,6 +262,12 @@ pub struct UndoPort {
     session: RefCell<UndoBackend>,
     actions: RefCell<Vec<UiActionRecord>>,
     open: Cell<bool>,
+    /// **最近一次提交的来源标记**（`OpOrigin`）。
+    ///
+    /// 为什么需要它：`OpOrigin` 是编辑的**一等公民元数据**（例如 `OpOrigin::MidiInput` 表示
+    /// "这段编辑来自 MIDI 文件导入"），但 `Commit`（模型层）**不持久化**它 —— 提交请求带过去后
+    /// 就没有读数了。导入这类"非界面来源"的判据必须能**读回**这个标记 ⇒ 端口把它记在最近一次提交上。
+    last_origin: RefCell<Option<OpOrigin>>,
 }
 
 impl UndoPort {
@@ -272,6 +278,7 @@ impl UndoPort {
             session: RefCell::new(UndoBackend::Local(Box::new(session))),
             actions: RefCell::new(Vec::new()),
             open: Cell::new(false),
+            last_origin: RefCell::new(None),
         }
     }
 
@@ -289,6 +296,7 @@ impl UndoPort {
             session: RefCell::new(UndoBackend::Authority(authority)),
             actions: RefCell::new(Vec::new()),
             open: Cell::new(false),
+            last_origin: RefCell::new(None),
         }
     }
 
@@ -383,10 +391,38 @@ impl UndoPort {
         message: &str,
         ops: Vec<Op>,
     ) -> Result<EntityId, UndoRefusal> {
+        // 界面来的编辑一律 `UserUi`；带其它来源的调用走 [`Self::commit_ops_with_origin`]。
+        self.commit_ops_with_origin(now_ms, OpOrigin::UserUi, message, ops)
+    }
+
+    /// **最近一次提交的来源标记**（`None` = 本端口还没提交过）。
+    #[must_use]
+    pub fn last_commit_origin(&self) -> Option<OpOrigin> {
+        self.last_origin.borrow().clone()
+    }
+
+    /// 与 [`Self::commit_ops`] 相同, 但**显式指定来源标记**（`OpOrigin`）。
+    ///
+    /// 为什么需要它：来源标记是**一等公民**（`OpOrigin::MidiInput` 等），而 `commit_ops`
+    /// 把来源写死成 `UserUi`。导入这类"非界面"编辑必须如实标自己的来源,
+    /// ⛔ 不能借用 `UserUi`（那会让"这段编辑从哪来"不可追溯）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::commit_ops`] 相同（会话拒绝 / 权威拒绝）。
+    pub fn commit_ops_with_origin(
+        &self,
+        now_ms: u64,
+        origin: OpOrigin,
+        message: &str,
+        ops: Vec<Op>,
+    ) -> Result<EntityId, UndoRefusal> {
+        // `OpOrigin` 不是 `Copy`（它还带载荷）⇒ 记一份克隆，原值继续交给提交请求。
+        *self.last_origin.borrow_mut() = Some(origin.clone());
         match &mut *self.session.borrow_mut() {
             UndoBackend::Local(session) => session.commit(CommitRequest {
                 now_ms,
-                origin: OpOrigin::UserUi,
+                origin,
                 message: message.to_owned(),
                 ops,
             }),
@@ -394,7 +430,7 @@ impl UndoPort {
             UndoBackend::Authority(authority) => authority
                 .apply_host(HostAction::Commit {
                     now_ms,
-                    origin: OpOrigin::UserUi,
+                    origin,
                     message: message.to_owned(),
                     ops,
                 })

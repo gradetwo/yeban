@@ -2981,7 +2981,7 @@ pub const ROLL_SNAP_GRID_TICKS: u64 = 240;
 /// 当前 UNIX 毫秒（提交时间戳）。溢出与时钟倒退都夹到 `0` / `u64::MAX`，**不 panic**。
 ///
 /// 抽出来是因为它有两个调用点（铅笔与删除）：两处各写一遍 `SystemTime` 就是第二个真相源。
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

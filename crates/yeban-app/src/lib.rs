@@ -82,6 +82,7 @@ pub mod export_midi;
 pub mod export_wav;
 pub mod headless_idle;
 pub mod host;
+pub mod import_midi;
 pub mod input;
 pub mod meters;
 pub mod open;
