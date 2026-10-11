@@ -17,6 +17,7 @@ name = "yeban-mcp"
 path = "src/bin/yeban-mcp.rs"
 
 [features]
+midi-input = ["dep:yeban-midi-io", "yeban-midi-io/midi-input"]
 # 红线 [AGENTS.md §2 红线 6 / MUST-GATE-009]: `mcp-http` **绝不**进 default。
 # 默认构建里不会链接任何网络监听代码; 要开必须显式 `--features mcp-http`,
 # 并且运行时**再**给一次 `--enable-mcp-http` —— 两道开关, 见 src/transport/mod.rs。
@@ -104,6 +105,7 @@ yeban-sfz.workspace = true
 # `rtrb`（已在树里）⇒ `Cargo.lock` 的包集合不变、⛔ 无新许可、⛔ 不拖 `cpal`。
 # 机械证据：`cargo tree -p yeban-mcp -e normal | grep -c cpal` == 0，
 # `cargo tree -p yeban-mcp -i cpal` ⇒ `did not match any packages`。
+yeban-midi-io = { workspace = true, optional = true }
 yeban-record.workspace = true
 # 母带合成里的超越函数 (正弦振荡器 / 等程律频率 / 等功率声相) [ARCH-DET-001]:
 # 规范要求"统一启用纯 Rust libm", 禁止落到宿主 libm —— 否则同一工程的母带会随平台差 LSB。

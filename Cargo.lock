@@ -6626,6 +6626,7 @@ dependencies = [
  "yeban-decode",
  "yeban-diagnostics",
  "yeban-midi",
+ "yeban-midi-io",
  "yeban-model",
  "yeban-record",
  "yeban-render",
