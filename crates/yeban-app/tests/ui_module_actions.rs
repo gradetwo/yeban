@@ -600,6 +600,19 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
             "默认档的措辞必须点名 feature 并给出**怎么开**: {message}"
         );
     }
+    // ⭐ 把这一档**实际**给出的说法写进 CI 日志（`report_line` 直写 `/dev/stderr` ⇒
+    // 绕过 libtest 的捕获 ⇒ 两档各自在日志里留下**可复核**的那一串字节）。
+    // 为什么需要它：回执原文是**环境相关**的（开档在无端口机器上是
+    // `midi-port-not-found`，在有端口的机器上会是 `ok`）⇒ 只报"断言通过"不够，
+    // 读日志的人要能看见**这一档到底说了什么**。
+    report_line(&format!(
+        "[ui-modules] midi-in feature={} receipt={receipt}",
+        if cfg!(feature = "midi-input") {
+            "on"
+        } else {
+            "off"
+        }
+    ));
 
     // =====================================================================
     // 判据 ③：错误路径 ⇒ UI 显示结构化错误而 **不 panic**
