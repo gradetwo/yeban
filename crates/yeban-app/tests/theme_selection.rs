@@ -413,7 +413,7 @@ fn the_default_theme_is_the_slint_initial_value() {
     let sources = all_ui_sources();
     let (_, tokens_slint) = sources
         .iter()
-        .find(|(path, _)| path.ends_with("ui/tokens.slint"))
+        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
         .expect("必须存在 ui/tokens.slint");
 
     let line = tokens_slint
@@ -1242,7 +1242,41 @@ fn wcag_cases(tokens: &Tokens<'_>) -> [(&'static str, Color, Color, f64); 18] {
 /// `ui/` 的绝对路径（`CARGO_MANIFEST_DIR` 由 Cargo 注入, 与 `BIN` 同款）。
 const UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
 
-/// 把 `ui/` 下所有 `.slint`（含子目录）读成 `(相对路径, 全文)`。
+/// ⭐ **平台无关的"路径末段"匹配**（判据不许依赖分隔符）。
+///
+/// ## 为什么不能把**正斜杠字面量**直接喂给裸 `ends_with`
+///
+/// （下面用 `SUFFIX` 代指那个后缀字面量，例如 `ui/tokens.slint`。）
+///
+/// [`all_ui_sources`] 交给判据的是 **`Path::display()` 的文本**（它按**本机**分隔符渲染），
+/// 而字面量用的是**正斜杠** ⇒ ⭐ **Windows 上是反斜杠**（`...\ui\tokens.slint`）⇒ 比较**恒 false**
+/// ⇒ ⭐ `the_default_theme_is_the_slint_initial_value` 那类 `.expect("必须存在 ui/tokens.slint")`
+/// 会 **panic**。
+///
+/// ⚠ ⭐ 这个缺陷在本仓**从未被任何 Windows runner 执行过**：CI 的 Windows 腿只跑
+/// `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp`，**不含 `yeban-app`** ⇒ 这正是本文件
+/// 里那条"喂合成路径"的判据存在的理由（覆盖面缺口已如实登记在报告里，⛔ 本切片不改 CI）。
+///
+/// ## 口径（两件事都写明，⛔ 不靠"看起来对"）
+///
+/// 1. ⭐ **两侧都归一化**：`\` → `/` 之后再比 ⇒ 正斜杠 / 反斜杠 / **混合**三种形态都成立；
+/// 2. ⛔ **不用 `std::path::Path::components()` 那条路**：在 **Unix** 上反斜杠**不是**分隔符，
+///    于是 `Path::new(r"C:\x\ui\tokens.slint")` 对同一个后缀判 **false**
+///    ⇒ 那条路**修不了**这个缺陷（判据 `the_path_suffix_helper_accepts_both_separators` 里
+///    有一条 `#[cfg(unix)]` 的钉子把这条差异钉住）。
+fn path_ends_with(path: &str, suffix: &str) -> bool {
+    // 归一化路径分隔符（只做这一件事，⛔ 不动大小写、⛔ 不解析 `.`/`..`）。
+    fn normalize(text: &str) -> String {
+        text.replace('\\', "/")
+    }
+    normalize(path).ends_with(&normalize(suffix))
+}
+
+/// 把 `ui/` 下所有 `.slint`（含子目录）读成 `(路径文本, 源码)`。
+///
+/// ⚠ ⭐ 路径文本是 `Path::display()` 的**原样**（平台相关：Windows 反斜杠、Unix 正斜杠）——
+/// 本函数**刻意不**在这里归一化：那样只会把平台假设藏起来。判据侧一律用
+/// [`path_ends_with`]（⛔ 不许裸 `ends_with`）。
 fn all_ui_sources() -> Vec<(String, String)> {
     fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).expect("读 ui/ 目录") {
@@ -1302,7 +1336,7 @@ fn the_theme_palette_literals_in_the_source_are_the_measured_ones() {
     let sources = all_ui_sources();
     let (_, tokens_slint) = sources
         .iter()
-        .find(|(path, _)| path.ends_with("ui/tokens.slint"))
+        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
         .expect("必须存在 ui/tokens.slint");
 
     // (token, brand, yeban, inkmoor, plume) —— 四支自绘调色板各一列。
@@ -1433,7 +1467,7 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     );
     let (path, line_no, line, enclosing) = &hits[0];
     assert!(
-        path.ends_with("ui/transport.slint"),
+        path_ends_with(path, "ui/transport.slint"),
         "唯一那一处必须仍住在顶栏 `transport.slint`（录音键与 AI 徽章都在那里）; \
          实际 {path}:{line_no}"
     );
@@ -1454,7 +1488,7 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     // "恰好一次", 再撞这一条。
     let (_, transport) = sources
         .iter()
-        .find(|(p, _)| p.ends_with("ui/transport.slint"))
+        .find(|(p, _)| path_ends_with(p, "ui/transport.slint"))
         .expect("必须存在 ui/transport.slint");
     let badge = transport
         .lines()
@@ -1530,7 +1564,7 @@ fn the_single_warm_accent_is_yuhuo_and_the_other_accents_are_cool() {
     let sources = all_ui_sources();
     let (_, tokens_slint) = sources
         .iter()
-        .find(|(path, _)| path.ends_with("ui/tokens.slint"))
+        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
         .expect("必须存在 ui/tokens.slint");
 
     let yeban_of = |token: &str| token_literals(tokens_slint, token)[1].clone();
@@ -1606,7 +1640,7 @@ fn the_two_new_skins_keep_one_warm_accent_and_cool_counterparts() {
     let sources = all_ui_sources();
     let (_, tokens_slint) = sources
         .iter()
-        .find(|(path, _)| path.ends_with("ui/tokens.slint"))
+        .find(|(path, _)| path_ends_with(path, "ui/tokens.slint"))
         .expect("必须存在 ui/tokens.slint");
 
     // (皮肤, `token_literals` 里该皮肤的下标, 负责人下发的暖强调)
@@ -1819,4 +1853,90 @@ fn strip_slint_comments(text: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// 判据（**平台无关性**）：⭐ 路径末段匹配必须对**反斜杠**与**正斜杠**（含混合）都成立。
+///
+/// ⚠ 这是本文件里**唯一能在 Linux 上守住"Windows 假设"**的判据：CI 的 Windows 腿不跑
+/// `yeban-app` ⇒ 裸 `ends_with` 的缺陷在 Linux 上**永远不会红**（Linux 的路径本来就是正斜杠）。
+/// 喂**合成路径**即可在本机 / Linux CI 上判它 —— 这正是"把平台假设本身变成判据"。
+///
+/// ⭐ 反例臂（三条 `!`）同样是判据的一部分：⛔ 不许把"任何 `.slint`"都算命中，
+/// 否则"修好"会退化成"永远返回 true"。
+#[test]
+fn the_path_suffix_helper_accepts_both_separators() {
+    // ---- 正斜杠（Unix 的 `Path::display()`）----
+    assert!(path_ends_with(
+        "/repo/crates/yeban-app/ui/tokens.slint",
+        "ui/tokens.slint"
+    ));
+    // ---- 反斜杠（Windows 的 `Path::display()` —— 就是这个缺陷的现场）----
+    assert!(path_ends_with(
+        r"C:\repo\crates\yeban-app\ui\tokens.slint",
+        "ui/tokens.slint"
+    ));
+    // ---- 混合（不排除有人拼出这种形态；归一化两侧才盖得住）----
+    assert!(path_ends_with(
+        r"C:\repo/crates\yeban-app/ui/tokens.slint",
+        "ui/tokens.slint"
+    ));
+    // ---- 相对形态（`all_ui_sources()` 用 `UI_DIR` 相对路径 walk 时就是这种）----
+    assert!(path_ends_with("ui/tokens.slint", "ui/tokens.slint"));
+    // ---- 第二个后缀（`ui/transport.slint`，本文件另有两处用它）----
+    assert!(path_ends_with(
+        r"C:\repo\ui\transport.slint",
+        "ui/transport.slint"
+    ));
+    assert!(path_ends_with(
+        "/repo/ui/transport.slint",
+        "ui/transport.slint"
+    ));
+
+    // ---- 反面：⛔ 不能"什么都命中"----
+    assert!(
+        !path_ends_with(r"C:\repo\ui\other.slint", "ui/tokens.slint"),
+        "别的 .slint 不算命中"
+    );
+    assert!(
+        !path_ends_with(r"C:\repo\ui\tokens.slint.bak", "ui/tokens.slint"),
+        "后缀多一段不算命中"
+    );
+    assert!(
+        !path_ends_with(r"C:\repo\tokens.slint", "ui/tokens.slint"),
+        "少了 `ui/` 那一段不算命中"
+    );
+
+    // ⚠ 与 `Path::components()` 那条路的**实测差异**（钉子，只在 Unix 成立）：
+    // Unix 上反斜杠不是分隔符 ⇒ std 的路径 API 在这里判 false —— 这正是不能用它的理由。
+    // （Windows 上反斜杠是分隔符、那条反而为 true，所以本行只在 Unix 编译。）
+    #[cfg(unix)]
+    assert!(
+        !std::path::Path::new(r"C:\repo\ui\tokens.slint").ends_with(concat!("ui/", "tokens.slint")),
+        "如果这条变成 true, 说明平台语义变了 ⇒ 可以重新评估 `path_ends_with` 是否还需要"
+    );
+}
+
+/// 判据（**结构**：钉住**调用点**，而不只是助手）：⭐ 本文件里不许再出现裸的
+/// 把**正斜杠后缀字面量**直接喂给裸 `ends_with` 的写法（本判据用 `concat!` 拼出那个针脚，
+/// 因此它不会命中自己），且 6 个调用点必须真的走助手。
+///
+/// ⚠ 为什么必须有它（两条线各栽一次的教训）：**助手修好了、调用点没改** ⇒ ⭐ **Linux 上依然全绿**
+/// （Linux 的路径本来就是正斜杠）⇒ 光钉助手是**假修法**。只有把"调用点的写法"钉成判据，
+/// 这个缺陷才在 Linux 上有守卫；而 Windows 腿不跑 `yeban-app` ⇒ 这是**唯一**的守卫。
+#[test]
+fn no_call_site_compares_ui_paths_with_a_bare_separator_literal() {
+    let source = include_str!("theme_selection.rs");
+    // ⚠ 自指陷阱：针脚不能以**字面形式**出现在本文件里（否则它会命中自己）⇒ 用 `concat!` 拼开。
+    let bare = concat!(".ends_with(", "\"ui/");
+    assert!(
+        !source.contains(bare),
+        "⛔ 又出现了带点的裸 `{bare}…` 调用（Windows 上是反斜杠 ⇒ 恒 false）: 请改用 `path_ends_with()`"
+    );
+    // 助手必须真的被用：定义 1 处 + 6 个调用点（本判据自己的字符串字面量不计入判断，
+    // 所以这里取下界而不是精确值 —— 尖锐的那一臂是上面的"不许裸字面量"）。
+    let uses = source.matches("path_ends_with(").count();
+    assert!(
+        uses >= 7,
+        "`path_ends_with(` 至少要有 1 处定义 + 6 处调用, 实际 {uses} 处"
+    );
 }
