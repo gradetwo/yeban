@@ -29,6 +29,7 @@ use yeban_sfz::instrument::Instrument;
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
+use yeban_sfz::playback::RenderRates;
 
 /// 已加载的 SFZ 乐器：**文本 + 元数据**（⛔ 不含借用式解析结果）。
 #[derive(Debug, Clone)]
@@ -91,6 +92,86 @@ impl SfzInstrument {
                 .filter(|(_, region)| region.matches_key(note) && region.matches_velocity(velocity))
                 .map(|(index, _)| index)
                 .collect::<Vec<usize>>()
+        })
+    }
+}
+
+/// **只在内存里的样本源**（本切片的"样本源"）。
+///
+/// ⚠ 本仓目前**没有**采样文件读取/解码 ⇒ 样本数据必须由**调用方**提供；
+/// 本类型是离线/控制侧的最小载体（构造期分配，⛔ 不用于实时回调）。
+#[derive(Debug, Clone)]
+pub struct InMemorySample {
+    /// 单声道 PCM（归一化到 `[-1, 1]`）。
+    pub pcm: Vec<f32>,
+    /// 该 PCM 的原始采样率（Hz）—— 换算交给 `yeban-sfz` 的 `RenderRates`。
+    pub sample_hz: f32,
+}
+
+impl InMemorySample {
+    /// 造一条**极短正弦**（判据/体验用的最小样本源）：`cycles` 个周期 @ `sample_hz`。
+    #[must_use]
+    pub fn sine(freq_hz: f32, sample_hz: f32, frames: usize) -> Self {
+        let pcm = (0..frames)
+            .map(|index| {
+                let phase = core::f32::consts::TAU * freq_hz * (index as f32) / sample_hz;
+                phase.sin() * 0.5
+            })
+            .collect();
+        Self { pcm, sample_hz }
+    }
+}
+
+impl SfzInstrument {
+    /// **离线**渲染一个音符到 `out`（`+=` 叠加），返回写入的帧数。
+    ///
+    /// ⭐ 复用 `yeban-sfz` 自己的口径：区域选择用 `Region::matches_key/matches_velocity`、
+    /// 播放速率用 `Region::playback_rate`、总增益用 `RegionPlay::total_gain`（⛔ 引擎不重写这些规则）。
+    /// 样本数据来自调用方给的 [`InMemorySample`]（本仓尚无采样文件读取）。
+    ///
+    /// ⚠ **只覆盖离线**：本函数在调用时**解析**（⇒ 分配）⇒ ⛔ 不得在音频回调里调用（红线 7）。
+    /// 实时侧需要把区域表与样本**在构造期摊平**成只读数据 —— **本切片尚未做**，如实登记。
+    ///
+    /// # Errors
+    /// 文本非法 ⇒ [`SfzError`]；没有匹配区域 ⇒ 返回 `Ok(0)`（合法：该音符不发声）。
+    pub fn render_note_into(
+        &self,
+        source: &InMemorySample,
+        note: u8,
+        velocity: u8,
+        out: &mut [f32],
+        engine_hz: f32,
+    ) -> Result<usize, SfzError> {
+        let rates = RenderRates::new(source.sample_hz, engine_hz);
+        self.with_instrument(|instrument| {
+            let Some(region) = instrument
+                .regions()
+                .iter()
+                .find(|region| region.matches_key(note) && region.matches_velocity(velocity))
+            else {
+                return 0;
+            };
+            // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`
+            // （`RegionPlay` 是同一信息的**播放态**包装，等实时侧摊平时再引入）。
+            let rate = region.playback_rate(note, rates);
+            let gain = region.playback_spec(note, velocity, rates).total_gain();
+            if !(rate.is_finite() && rate > 0.0) || source.pcm.is_empty() {
+                return 0;
+            }
+            let mut position = 0.0f32;
+            let mut written = 0usize;
+            for slot in out.iter_mut() {
+                let index = position as usize;
+                if index + 1 >= source.pcm.len() {
+                    break;
+                }
+                let frac = position - index as f32;
+                let sample = source.pcm[index] * (1.0 - frac) + source.pcm[index + 1] * frac;
+                *slot += sample * gain;
+                position += rate;
+                written += 1;
+            }
+            written
         })
     }
 }
@@ -199,6 +280,39 @@ mod tests {
             normal.is_ok(),
             "同一文本在默认 limits 下必须成功（否则上面的 Err 另有原因）"
         );
+    }
+
+    /// ⭐ 本任务的核心判据 a：**某音符触发 ⇒ 输出非静音**，并且与"不触发"**可区分**。
+    ///
+    /// 样本源是**内存里的极短正弦**（本仓尚无采样文件读取 ⇒ 样本由调用方提供）。
+    /// 通路里的区域选择、播放速率、总增益**全部来自 `yeban-sfz`**（⛔ 引擎不重写）。
+    #[test]
+    fn triggering_a_region_produces_non_silence_and_is_distinguishable() {
+        const SFZ: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n";
+        let instrument = SfzInstrument::load(SFZ.to_owned(), &ParseLimits::default())
+            .expect("最小 SFZ 必须成功");
+        let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+
+        // ① 命中的音符（key=60）⇒ 非静音
+        let mut hit = vec![0.0f32; 512];
+        let written = instrument
+            .render_note_into(&sample, 60, 100, &mut hit, 48_000.0)
+            .expect("渲染不得报错");
+        let energy: f32 = hit.iter().map(|s| s * s).sum();
+        println!("[sfz] key=60: 写入 {written} 帧，能量 = {energy:.6}");
+        assert!(written > 0, "命中区域必须写入样本帧（实得 {written}）");
+        assert!(energy > 1e-6, "命中区域必须**非静音**（能量 {energy}）");
+
+        // ② 不命中的音符（key=72）⇒ 静音 ⇒ ⭐ 与①**可区分**
+        let mut miss = vec![0.0f32; 512];
+        let written_miss = instrument
+            .render_note_into(&sample, 72, 100, &mut miss, 48_000.0)
+            .expect("不命中也不得报错");
+        let energy_miss: f32 = miss.iter().map(|s| s * s).sum();
+        println!("[sfz] key=72: 写入 {written_miss} 帧，能量 = {energy_miss:.6}");
+        assert_eq!(written_miss, 0, "不命中的音符不得写入帧");
+        assert_eq!(energy_miss, 0.0, "不命中的音符必须是静音");
+        assert!(energy > energy_miss, "⭐ 可区分：命中的能量必须大于不命中");
     }
 
     /// [MUST-GATE-001] 判据 ④：**本类型不在实时路径上** —— 机械部分。

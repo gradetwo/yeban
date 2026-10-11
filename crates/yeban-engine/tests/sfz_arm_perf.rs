@@ -11,6 +11,8 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 use yeban_engine::graph::LatencyTable;
+use yeban_engine::sfz_instrument::InMemorySample;
+use yeban_engine::sfz_instrument::SfzInstrument;
 use yeban_engine::snapshot::{EngineSnapshot, TrackParams};
 use yeban_engine::synth::SynthEngine;
 use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
@@ -123,4 +125,56 @@ fn arm_from_snapshot_and_render_eight_seconds() {
         .arm_from_snapshot(&bare)
         .expect_err("无母线的快照必须报错");
     println!("[perf] 无母线快照的报错: {error:?}");
+}
+
+/// ⭐ 有**音符排程**的 8 秒渲染读数（"⛔ 不是下界"的那一版）：
+/// 每 12,000 帧（0.25 s）触发一次 SFZ 区域，样本是内存里的极短正弦；
+/// 与 `arm_from_snapshot_and_render_eight_seconds` 的静音通路读数**同口径**（8 秒、512 帧块）。
+#[test]
+fn sfz_note_render_eight_seconds() {
+    let sfz = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("最小 SFZ 必须成功");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+
+    const BLOCK: usize = 512;
+    const FIRE_EVERY: usize = 12_000; // 0.25 s @48k ⇒ 32 次触发
+    let frames = 48_000usize * 8;
+    let mut out = vec![0.0f32; BLOCK];
+    let mut total_energy = 0.0f64;
+    let mut voices = 0usize;
+    let start = Instant::now();
+    let mut rendered = 0usize;
+    while rendered < frames {
+        let step = BLOCK.min(frames - rendered);
+        out[..step].fill(0.0);
+        // ⚠ 触发条件必须与**块大小**对齐：`rendered % FIRE_EVERY == 0` 在 512 帧块下
+        // 只会在 12,000 的整数倍恰好等于某个块边界时命中（本批实测：8 秒只触发 **2** 次，
+        // 而预期是 32 次）⇒ 改成"落在下一段触发窗口内"。
+        if rendered % FIRE_EVERY < BLOCK {
+            let written = sfz
+                .render_note_into(&sample, 60, 100, &mut out[..step], 48_000.0)
+                .expect("渲染不得报错");
+            if written > 0 {
+                voices += 1;
+            }
+        }
+        total_energy += out[..step]
+            .iter()
+            .map(|s| (*s as f64) * (*s as f64))
+            .sum::<f64>();
+        rendered += step;
+    }
+    let wall_ms = start.elapsed().as_secs_f64() * 1e3;
+    println!(
+        "[perf] SFZ 有排程 8 秒（{frames} 帧、块 {BLOCK}、触发 {voices} 次）: 墙钟 = {wall_ms:.3} ms，总能量 = {total_energy:.3}"
+    );
+    assert_eq!(rendered, frames, "必须真正渲染 {frames} 帧");
+    assert!(voices > 0, "必须有区域被触发（否则这一版仍是'下界'）");
+    assert!(
+        total_energy > 0.0,
+        "⭐ 有排程的渲染必须**非静音**（能量 {total_energy}）"
+    );
 }
