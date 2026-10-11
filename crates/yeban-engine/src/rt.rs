@@ -4208,6 +4208,9 @@ mod tests {
         );
     }
 
+    /// 判据（⭐ **松键有效 —— 听觉口径**）：⭐ `NoteOff` 之后那一声必须**衰减到静音**，
+    /// ⭐ 而**不松键**的对照组在同一窗口里**仍在响** ⇒ ⭐ 成对 ⇒ ⭐ 排除"⭐ 挂音"与"⭐ 本来就静音"。
+    ///
     /// ⚠ ⭐ ⛔ **不拿 `active_voices() == 0` 当证据**：⭐ 裁定 (B) 下 `u64::MAX` 让
     /// [`yeban_dsp::polysynth::PolySynth::retire_finished`] 的谓词永不成立；⭐ 但 ⭐
     /// [`yeban_dsp::polysynth::PolySynth::render`] 会在包络回到 `Idle` 时**当场回收**声部
