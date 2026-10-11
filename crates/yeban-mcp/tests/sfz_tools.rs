@@ -217,8 +217,29 @@ fn render_sfz_wav_writes_a_non_silent_wav_through_a_real_mcp_call() {
     let data = &loaded["data"];
     assert_eq!(data["loaded"], true);
     assert_eq!(data["regions"], 2, "两条 `<region>` ⇒ 区域数 2: {data}");
-    assert_eq!(data["sampleSource"], "in-memory-sine");
-    assert_eq!(data["sampleFilesRead"], false, "本仓不读采样文件");
+    // ⚠ 本夹具的 `sample=a.wav` / `b.wav` **不存在** ⇒ 如实回退：来源文案带**回退原因**，
+    // 而 `sampleFilesRead` 是 `false`（⛔ 不假装读到）。真读到的情形见
+    // `tests/sfz_sample_files.rs`。
+    assert!(
+        data["sampleSource"]
+            .as_str()
+            .expect("sampleSource")
+            .starts_with("in-memory-sine"),
+        "读不到 ⇒ 必须回退到内存正弦: {data}"
+    );
+    assert_eq!(data["sampleFilesRead"], false, "读不到就不许说读到了");
+    assert_eq!(data["sampleFilesReadCount"], 0);
+    assert!(
+        data["sampleFilesFailedCount"].as_u64().unwrap_or(0) > 0,
+        "读不到的文件必须被如实记进 sampleFailures: {data}"
+    );
+    assert!(
+        data["sampleFailures"][0]
+            .as_str()
+            .expect("sampleFailures[0]")
+            .starts_with("unreadable("),
+        "失败项必须点名路径与原因: {data}"
+    );
     assert_eq!(data["sessionScoped"], true);
     let instrument_id = data["instrumentId"].as_u64().expect("instrumentId 是整数");
     assert!(instrument_id >= 1);
@@ -250,7 +271,14 @@ fn render_sfz_wav_writes_a_non_silent_wav_through_a_real_mcp_call() {
     assert_eq!(out["sampleRate"], 48_000);
     assert_eq!(out["bitDepth"], 24);
     assert_eq!(out["channels"], 2);
-    assert_eq!(out["sampleFilesRead"], false);
+    assert_eq!(
+        out["sampleFilesRead"], false,
+        "夹具的 sample= 文件不存在 ⇒ 回退正弦"
+    );
+    assert!(
+        out["notesUsingSineFallback"].as_u64().unwrap_or(0) > 0,
+        "回退必须被计数: {out}"
+    );
     assert!(
         out["notesScheduled"].as_u64().unwrap_or(0) > 0,
         "夹具工程必须有 MIDI 音符被排程: {out}"

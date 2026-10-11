@@ -54,10 +54,12 @@
 //! 本模块是**离线/控制侧**代码：`parse_text` 会分配 ⇒ ⛔ 不得在音频回调里调用
 //! （红线 7 / `MUST-GATE-001`）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yeban_model::{AssetHash, ClipContent, PPQ, YebanProjectV1};
+use yeban_render::wav::read_plain_wav_mono_f32;
 use yeban_sfz::instrument::{Instrument, Region};
 use yeban_sfz::parser::ParseLimits;
 use yeban_sfz::playback::RenderRates;
@@ -84,6 +86,193 @@ pub const SAMPLE_SOURCE: &str = "in-memory-sine";
 
 /// 每个音符末尾的淡出帧数（去咔哒；与 `render.rs` 的 `RELEASE_MS` 同族的最小实现）。
 const NOTE_FADE_FRAMES: u64 = 64;
+
+/// 单个样本文件的**读取上限**（字节）。
+///
+/// `read_plain_wav` 会把整份 PCM 读进内存 ⇒ 一个 10 分钟的立体声文件就是几百 MB。
+/// 因此先看 `metadata.len()`：**超过上限就拒绝读取**，并把原因写进来源文案 ——
+/// ⛔ **绝不静默截断**（截断会让"听到的"与"文件里的"不是同一段音频，且没人知道）。
+pub const MAX_SAMPLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// 一次调用最多读多少个**不同**样本文件（去重后）。
+pub const MAX_SAMPLE_FILES_READ: usize = 32;
+
+/// 一次调用最多读入多少帧（所有文件**合计**）——第二道上界，按**解码后**的规模算。
+pub const MAX_SAMPLE_FRAMES_TOTAL: u64 = 8_000_000;
+
+/// 内存正弦回退的频率（Hz）——与 `app` 侧 `region_sample_for` 的回退同值。
+pub const FALLBACK_SINE_HZ: f32 = 440.0;
+
+/// 内存正弦回退的采样率（Hz）——与 `app` 侧同值。
+pub const FALLBACK_SINE_HZ_RATE: f32 = 48_000.0;
+
+/// 读一个样本文件的结果（单声道，归一化到 `[-1, 1]`）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampleFileReading {
+    /// 单声道 PCM。
+    pub pcm: Arc<Vec<f32>>,
+    /// 文件自身的采样率（Hz）。
+    pub sample_hz: f32,
+    /// 帧数（= `pcm.len()`）。
+    pub frames: u64,
+    /// 如实描述（`file(<path> frames=N rate=R)`）。
+    pub describe: String,
+}
+
+/// 读一份 WAV 样本文件（先过**单文件字节上限**，再交给共享读取器）。
+///
+/// ⚠ 归一化**不在本函数里**：它调 `yeban_render::wav::read_plain_wav_mono_f32`
+/// （集成者裁决：归一化的**唯一**自然归属是 `yeban-render` —— `app` 与 `mcp`
+/// **都**依赖它，那不是新 crate、也不是第二份实现）。⇒ 全仓的"WAV → 单声道 f32"
+/// 只有一份口径。
+///
+/// 本函数只多做两件属于 MCP 侧的事：
+/// ① **先看 `metadata.len()`** 再决定读不读（`read_plain_wav` 会把整份 PCM 读进内存）；
+/// ② 把读数包成 [`SampleFileReading`]（`Arc` 让同一份样本被多个音符共享）。
+///
+/// # Errors
+///
+/// 返回**人话原因**（⛔ 不是 `Fault`）：调用方按"如实回退"处理，而不是让整次调用失败。
+pub fn read_sample_file(path: &Path) -> Result<SampleFileReading, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("{} ({})", path.display(), error.kind()))?;
+    if metadata.is_dir() {
+        return Err(format!("{} 是一个目录", path.display()));
+    }
+    if metadata.len() > MAX_SAMPLE_FILE_BYTES {
+        return Err(format!(
+            "{} 有 {} 字节, 超过单文件上限 {} 字节 (拒绝读取, ⛔ 不截断)",
+            path.display(),
+            metadata.len(),
+            MAX_SAMPLE_FILE_BYTES
+        ));
+    }
+    let (pcm, sample_rate, describe) =
+        read_plain_wav_mono_f32(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
+    Ok(SampleFileReading {
+        pcm: Arc::new(pcm),
+        sample_hz: sample_rate as f32,
+        frames,
+        describe,
+    })
+}
+
+/// `sample=` 的路径解析：绝对路径原样用；相对路径**相对 SFZ 文件所在目录**（SFZ 惯例）。
+#[must_use]
+pub fn resolve_sample_path(sfz_path: &Path, sample: &str) -> PathBuf {
+    let raw = Path::new(sample);
+    if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        sfz_path
+            .parent()
+            .map_or_else(|| raw.to_path_buf(), |parent| parent.join(raw))
+    }
+}
+
+/// 一次调用里的**样本文件缓存**（去重 + 上界 + 逐条如实记账）。
+///
+/// 上界三条（任一命中就**停止再读**并如实标注，⛔ 不静默丢弃）：
+/// ① 单个文件字节数 > [`MAX_SAMPLE_FILE_BYTES`]；② 不同文件数 > [`MAX_SAMPLE_FILES_READ`]；
+/// ③ 累计解码帧数 > [`MAX_SAMPLE_FRAMES_TOTAL`]。
+#[derive(Debug, Default)]
+pub struct SampleCache {
+    entries: BTreeMap<PathBuf, Result<SampleFileReading, String>>,
+    frames_loaded: u64,
+    truncated: bool,
+}
+
+impl SampleCache {
+    /// 空缓存。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 取一份样本（命中缓存则**不**重复读盘）。
+    ///
+    /// # Errors
+    ///
+    /// 返回**人话原因**：读盘失败、上界命中（含"已截断"）。
+    pub fn get(&mut self, path: &Path) -> Result<SampleFileReading, String> {
+        if let Some(hit) = self.entries.get(path) {
+            return hit.clone();
+        }
+        if self.entries.len() >= MAX_SAMPLE_FILES_READ {
+            self.truncated = true;
+            let reason = format!(
+                "已有 {} 个不同样本文件, 达到本次调用的上限 {} ⇒ 不再读盘 (⛔ 不静默截断)",
+                self.entries.len(),
+                MAX_SAMPLE_FILES_READ
+            );
+            self.entries.insert(path.to_path_buf(), Err(reason.clone()));
+            return Err(reason);
+        }
+        let outcome = match read_sample_file(path) {
+            Ok(reading) => {
+                if self.frames_loaded.saturating_add(reading.frames) > MAX_SAMPLE_FRAMES_TOTAL {
+                    self.truncated = true;
+                    Err(format!(
+                        "累计样本帧数会超过本次调用的上限 {} 帧 (已读 {}), 拒绝再读 {} (⛔ 不静默截断)",
+                        MAX_SAMPLE_FRAMES_TOTAL,
+                        self.frames_loaded,
+                        path.display()
+                    ))
+                } else {
+                    self.frames_loaded = self.frames_loaded.saturating_add(reading.frames);
+                    Ok(reading)
+                }
+            }
+            Err(reason) => Err(reason),
+        };
+        self.entries.insert(path.to_path_buf(), outcome.clone());
+        outcome
+    }
+
+    /// 读成功的**不同**文件数。
+    #[must_use]
+    pub fn files_read(&self) -> usize {
+        self.entries.values().filter(|entry| entry.is_ok()).count()
+    }
+
+    /// 读失败的**不同**文件数。
+    #[must_use]
+    pub fn files_failed(&self) -> usize {
+        self.entries.values().filter(|entry| entry.is_err()).count()
+    }
+
+    /// 是否命中过任何上界。
+    #[must_use]
+    pub const fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// 已解码的总帧数。
+    #[must_use]
+    pub const fn frames_loaded(&self) -> u64 {
+        self.frames_loaded
+    }
+
+    /// 逐条缓存项的只读迭代（路径 → 结果；`BTreeMap` ⇒ 路径字典序 ⇒ 确定性）。
+    pub fn entries_iter(
+        &self,
+    ) -> impl Iterator<Item = (&PathBuf, &Result<SampleFileReading, String>)> {
+        self.entries.iter()
+    }
+
+    /// 逐条来源描述（成功与失败都收；顺序 = 路径字典序 ⇒ 确定性）。
+    #[must_use]
+    pub fn descriptions(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|(path, entry)| match entry {
+                Ok(reading) => reading.describe.clone(),
+                Err(reason) => format!("unreadable({path}): {reason}", path = path.display()),
+            })
+            .collect()
+    }
+}
 
 /// SFZ 装载/导出的错误码（全部取自 `ADR-0001` D25 的 20 值联集，⛔ 不发明新码）。
 const CODE_IO: ErrorCode = ErrorCode::IoError;
@@ -115,6 +304,9 @@ pub struct RegionSummary {
     pub trigger_by_note: bool,
     /// 该区域是否要求循环（`loop_mode` 命中且窗口有效）——本实现**不**展开循环。
     pub loops: bool,
+    /// `sample=` 指向的文件的**读取真相**：`file(<path> frames=N rate=R)`（读到了）
+    /// 或 `unreadable(<path>): <原因>`（没读到 ⇒ 渲染时回退内存正弦）。
+    pub sample_file_state: String,
 }
 
 impl RegionSummary {
@@ -127,6 +319,7 @@ impl RegionSummary {
             "pitchKeycenter": self.pitch_keycenter,
             "triggerByNote": self.trigger_by_note,
             "loops": self.loops,
+            "sampleFileState": self.sample_file_state,
         })
     }
 }
@@ -148,11 +341,40 @@ pub struct SfzLoad {
     pub regions: Vec<RegionSummary>,
     /// 是否复用了已装载的同一份内容（内容寻址 ⇒ 同文本同一个 instrumentId）。
     pub reused: bool,
-    /// 请求的样本侧采样率（进报告；本仓不读采样文件）。
+    /// 请求的样本侧采样率（进报告；它只用于**回退正弦**与报告口径）。
     pub sample_hz: f32,
+    /// 本次装载**真的读到**的样本文件来源描述（升序；空 = 一个都没读到）。
+    pub sample_sources: Vec<String>,
+    /// 读失败的样本文件（`unreadable(...)` 摘要，升序）。
+    pub sample_failures: Vec<String>,
+    /// 是否命中过读盘上界（文件数 / 累计帧数）。
+    pub sample_reads_truncated: bool,
+    /// 累计解码帧数（所有读成功的文件之和）。
+    pub sample_frames_loaded: u64,
 }
 
 impl SfzLoad {
+    /// 装载的样本来源**汇总文案**（如实：读到就点名文件，读不到就说原因）。
+    ///
+    /// - 读到了至少一个文件 ⇒ `file(<第一个来源>)`（其余进 `sampleSources` 数组）；
+    /// - 一个都没读到 ⇒ [`SAMPLE_SOURCE`]（内存正弦）＋**回退原因**（若有区域声明了 `sample=`）。
+    #[must_use]
+    pub fn sample_source(&self) -> String {
+        match (self.sample_sources.first(), self.sample_failures.first()) {
+            // `describe` 自己就以 `file(` 开头 ⇒ ⛔ 不再包一层 `file(...)`。
+            (Some(first), _) => format!(
+                "{first}{}",
+                if self.sample_sources.len() > 1 {
+                    format!("; 另 {} 个见 sampleSources", self.sample_sources.len() - 1)
+                } else {
+                    String::new()
+                }
+            ),
+            (None, Some(reason)) => format!("{SAMPLE_SOURCE} (回退: {reason})"),
+            (None, None) => SAMPLE_SOURCE.to_owned(),
+        }
+    }
+
     /// **只读**地把原文交给 `yeban-sfz` 的解析器（`plan` 与 `apply` 共用一份口径）。
     ///
     /// # Errors
@@ -173,8 +395,14 @@ impl SfzLoad {
             "sha256": self.digest,
             "regions": self.regions.len(),
             "regionDetails": self.regions.iter().map(RegionSummary::to_value).collect::<Vec<_>>(),
-            "sampleSource": SAMPLE_SOURCE,
-            "sampleFilesRead": false,
+            "sampleSource": self.sample_source(),
+            "sampleFilesRead": !self.sample_sources.is_empty(),
+            "sampleFilesReadCount": self.sample_sources.len(),
+            "sampleFilesFailedCount": self.sample_failures.len(),
+            "sampleSources": self.sample_sources,
+            "sampleFailures": self.sample_failures,
+            "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleFramesLoaded": self.sample_frames_loaded,
             "sampleHz": self.sample_hz,
             "sessionScoped": true,
             "contentAddressed": true,
@@ -191,8 +419,14 @@ impl SfzLoad {
             "sha256": self.digest,
             "regions": self.regions.len(),
             "regionDetails": self.regions.iter().map(RegionSummary::to_value).collect::<Vec<_>>(),
-            "sampleSource": SAMPLE_SOURCE,
-            "sampleFilesRead": false,
+            "sampleSource": self.sample_source(),
+            "sampleFilesRead": !self.sample_sources.is_empty(),
+            "sampleFilesReadCount": self.sample_sources.len(),
+            "sampleFilesFailedCount": self.sample_failures.len(),
+            "sampleSources": self.sample_sources,
+            "sampleFailures": self.sample_failures,
+            "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleFramesLoaded": self.sample_frames_loaded,
             "wouldRegister": {
                 "instrumentId": self.id,
                 "sessionScoped": true,
@@ -312,12 +546,39 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
         )
     })?;
     let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
-    let regions = parse(&text)?
-        .regions()
-        .iter()
-        .enumerate()
-        .map(|(index, region)| summarize(index, region))
+    // ---- 逐区域**真读** `sample=<path>`（有界；读不到如实回退，⛔ 不让装载失败）----
+    let mut cache = SampleCache::new();
+    let mut regions: Vec<RegionSummary> = Vec::new();
+    for (index, region) in parse(&text)?.regions().iter().enumerate() {
+        let mut summary = summarize(index, region);
+        let sample = summary.sample.clone();
+        summary.sample_file_state = if sample.trim().is_empty() {
+            "noSampleOpcode".to_owned()
+        } else {
+            let resolved = resolve_sample_path(path, &sample);
+            match cache.get(&resolved) {
+                Ok(reading) => reading.describe,
+                Err(reason) => format!("unreadable({}): {reason}", resolved.display()),
+            }
+        };
+        regions.push(summary);
+    }
+    let mut sample_sources: Vec<String> = cache
+        .entries_iter()
+        .filter_map(|(_, entry)| entry.as_ref().ok().map(|reading| reading.describe.clone()))
         .collect();
+    sample_sources.sort_unstable();
+    let mut sample_failures: Vec<String> = cache
+        .entries_iter()
+        .filter_map(|(path, entry)| {
+            entry
+                .as_ref()
+                .err()
+                .map(|reason| format!("unreadable({}): {reason}", path.display()))
+        })
+        .collect();
+    sample_failures.sort_unstable();
+    let reuse_sample_hz = sample_hz;
     Ok(SfzLoad {
         id: assign_id,
         path: path.to_path_buf(),
@@ -326,7 +587,11 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
         text,
         regions,
         reused,
-        sample_hz,
+        sample_hz: reuse_sample_hz,
+        sample_sources,
+        sample_failures,
+        sample_reads_truncated: cache.truncated(),
+        sample_frames_loaded: cache.frames_loaded(),
     })
 }
 
@@ -348,6 +613,8 @@ fn summarize(index: usize, region: &Region<'_>) -> RegionSummary {
                 RenderRates::default(),
             )
             .loops(),
+        // 由 `load` 的读盘那一步填（`summarize` 只做纯解析摘要，⛔ 不碰文件系统）。
+        sample_file_state: "notProbed".to_owned(),
     }
 }
 
@@ -554,19 +821,68 @@ pub struct SfzWavArtifact {
     pub notes_silenced: u64,
     /// 是否有音符落在要求的循环区域上（本实现**不**展开循环 ⇒ 该音符只响一遍）。
     pub notes_looping: u64,
-    /// 音源文案（如实说明样本是内存正弦）。
-    pub sample_source: String,
+    /// 用**文件样本**发声的音符数。
+    pub notes_using_file_sample: u64,
+    /// 回退到**内存正弦**的音符数。
+    pub notes_using_sine_fallback: u64,
+    /// 真的读到的样本文件来源（升序去重）。
+    pub sample_sources: Vec<String>,
+    /// 读失败的样本文件（升序去重）。
+    pub sample_failures: Vec<String>,
+    /// 是否命中过读盘上界。
+    pub sample_reads_truncated: bool,
+    /// 累计解码帧数。
+    pub sample_frames_loaded: u64,
 }
 
 impl SfzWavArtifact {
+    /// 本次渲染**明确没做**的键（⛔ 不报已经做到的键）。
+    #[must_use]
+    pub fn unsupported_keys(&self) -> Vec<&'static str> {
+        let mut keys = vec!["sfzLoopExpansion", "deviceChainDsp", "automationLanes"];
+        // 只有**一个音符都没用上**文件样本时，才登记"样本文件解码没做"。
+        if self.notes_using_file_sample == 0 {
+            keys.insert(0, "samplerFileDecode");
+        }
+        keys
+    }
+
+    /// 音源**汇总文案**（如实：有文件样本就点名，全回退就说回退）。
+    #[must_use]
+    pub fn sample_source(&self) -> String {
+        match (self.sample_sources.first(), self.sample_failures.first()) {
+            (Some(first), _) => format!(
+                "{first}{}{}",
+                if self.sample_sources.len() > 1 {
+                    format!("; 另 {} 个见 sampleSources", self.sample_sources.len() - 1)
+                } else {
+                    String::new()
+                },
+                if self.notes_using_sine_fallback > 0 {
+                    format!("; {} 个音符回退内存正弦", self.notes_using_sine_fallback)
+                } else {
+                    String::new()
+                }
+            ),
+            (None, Some(reason)) => format!("{SAMPLE_SOURCE} (回退: {reason})"),
+            (None, None) => SAMPLE_SOURCE.to_owned(),
+        }
+    }
+
     /// `dryRun` 预览（同一批实测数字 + `wouldWrite`；**不落盘**）。
     #[must_use]
     pub fn preview(&self) -> serde_json::Value {
         serde_json::json!({
             "renderer": "yeban-render",
             "request": self.request.to_value(),
-            "sampleSource": self.sample_source,
-            "sampleFilesRead": false,
+            "sampleSource": self.sample_source(),
+            "sampleFilesRead": !self.sample_sources.is_empty(),
+            "sampleSources": self.sample_sources,
+            "sampleFailures": self.sample_failures,
+            "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleFramesLoaded": self.sample_frames_loaded,
+            "notesUsingFileSample": self.notes_using_file_sample,
+            "notesUsingSineFallback": self.notes_using_sine_fallback,
             "notesScheduled": self.notes_scheduled,
             "notesUnmatched": self.notes_unmatched,
             "notesSilenced": self.notes_silenced,
@@ -610,14 +926,22 @@ impl SfzWavArtifact {
             "notesSilenced": self.notes_silenced,
             "notesLooping": self.notes_looping,
             "regionsUsed": self.regions_used,
-            "sampleSource": self.sample_source,
-            "sampleFilesRead": false,
+            "sampleSource": self.sample_source(),
+            "sampleFilesRead": !self.sample_sources.is_empty(),
+            "sampleSources": self.sample_sources,
+            "sampleFailures": self.sample_failures,
+            "sampleReadsTruncated": self.sample_reads_truncated,
+            "sampleFramesLoaded": self.sample_frames_loaded,
+            "notesUsingFileSample": self.notes_using_file_sample,
+            "notesUsingSineFallback": self.notes_using_sine_fallback,
             "dither": "TPDF (ARCH-FMT-001)",
             "bwf": false,
             "bext": "none (本工具不写 bext/时间戳 ⇒ 同一请求逐字节可复现)",
             "atomic": true,
             "strategy": "同目录 .tmp-{ulid} + File::sync_all + rename (ARCH-SEC-004)",
-            "unsupported": ["samplerFileDecode", "sfzLoopExpansion", "deviceChainDsp", "automationLanes"],
+            // ⚠ `samplerFileDecode` **只在真的没有音符用上文件样本时**才登记 ——
+            // 报一个已经做到的键就是假话（与 `render.rs` 撤掉 `noteProbability` 同一条纪律）。
+            "unsupported": self.unsupported_keys(),
         })
     }
 }
@@ -781,6 +1105,18 @@ pub struct SfzRenderOutcome {
     pub regions_used: Vec<usize>,
     /// 落在**要求循环**的区域上的音符数（本实现不展开循环 ⇒ 只响一遍）。
     pub notes_looping: u64,
+    /// 用**文件样本**发声的音符数。
+    pub notes_using_file_sample: u64,
+    /// 回退到**内存正弦**的音符数。
+    pub notes_using_sine_fallback: u64,
+    /// 本次渲染**真的读到**的样本文件来源（升序去重）。
+    pub sample_sources: Vec<String>,
+    /// 读失败的样本文件（升序去重）。
+    pub sample_failures: Vec<String>,
+    /// 是否命中过读盘上界。
+    pub sample_reads_truncated: bool,
+    /// 累计解码帧数。
+    pub sample_frames_loaded: u64,
 }
 
 /// 把工程里的音符经一份**已解析**的 SFZ 渲染成交织立体声浮点母带。
@@ -802,6 +1138,7 @@ pub fn render(
     tone_hz: f32,
     frames: u64,
     sample_rate: u32,
+    sfz_path: Option<&Path>,
 ) -> Result<SfzRenderOutcome, Fault> {
     if sample_rate == 0 {
         return Err(Fault::domain(CODE_RENDER, "输出采样率不得为 0"));
@@ -816,6 +1153,9 @@ pub fn render(
     let mut regions_used: BTreeSet<usize> = BTreeSet::new();
     let mut notes_unmatched = 0u64;
     let mut notes_looping = 0u64;
+    let mut notes_using_file_sample = 0u64;
+    let mut notes_using_sine_fallback = 0u64;
+    let mut cache = SampleCache::new();
     for note in notes {
         let Some((region_index, region)) =
             instrument.regions().iter().enumerate().find(|(_, region)| {
@@ -840,23 +1180,35 @@ pub fn render(
             notes_unmatched = notes_unmatched.saturating_add(1);
             continue;
         }
-        // 样本长度 = 这个音符的时值（外加一个淡出尾巴）⇒ 内存正弦在整段时值里都有
-        // 数据可播。为什么按音符造：`render_note_into` 的语义是"读到样本末尾就停"，
-        // 用一个固定 1 秒的样本会让长音符在第 1 秒之后静音（那是**静默的错误音频**）。
-        let want = note.frames.saturating_add(NOTE_FADE_FRAMES).max(1);
-        let sample_frames = usize::try_from(want.min(8_000_000)).unwrap_or(0).max(2);
-        let sample = InMemorySfzSample::sine(tone_hz, engine_hz, sample_frames);
+        // ---- 样本来源：**能读文件就用文件**，否则回退内存正弦（如实记账）----
+        //
+        // ⚠ 区域选择 / 播放速率 / 总增益**一位不改**：它们仍全部来自 `yeban-sfz`
+        // 的公开读数（上面三行）。这里换的**只有样本数据**。
+        let file_sample = sfz_path.and_then(|sfz| {
+            let raw = region.sample_path();
+            if raw.trim().is_empty() {
+                return None;
+            }
+            let resolved = resolve_sample_path(sfz, &raw);
+            // 读不到 ⇒ `None` ⇒ 回退内存正弦（原因已进 cache，渲染完由
+            // `sample_failures` 如实报出）。
+            cache.get(&resolved).ok()
+        });
         let span = usize::try_from(note.frames.max(1)).unwrap_or(0);
         let mut mono = vec![0.0_f32; span];
-        let written = render_region_into(
-            region,
-            &sample,
-            note.pitch,
-            note.velocity,
-            rate,
-            gain,
-            &mut mono,
-        );
+        let written = if let Some(reading) = &file_sample {
+            notes_using_file_sample = notes_using_file_sample.saturating_add(1);
+            render_pcm_into(reading.pcm.as_slice(), rate, gain, &mut mono)
+        } else {
+            notes_using_sine_fallback = notes_using_sine_fallback.saturating_add(1);
+            // 样本长度 = 这个音符的时值（外加一个淡出尾巴）⇒ 内存正弦在整段时值里都有
+            // 数据可播。为什么按音符造：读到样本末尾就停的语义下，用一个固定 1 秒的
+            // 样本会让长音符在第 1 秒之后静音（那是**静默的错误音频**）。
+            let want = note.frames.saturating_add(NOTE_FADE_FRAMES).max(1);
+            let sample_frames = usize::try_from(want.min(8_000_000)).unwrap_or(0).max(2);
+            let sample = InMemorySfzSample::sine(tone_hz, engine_hz, sample_frames);
+            render_pcm_into(&sample.pcm, rate, gain, &mut mono)
+        };
         let start = usize::try_from(note.start_frame).unwrap_or(usize::MAX);
         if start >= samples.len() / channels {
             continue;
@@ -889,6 +1241,35 @@ pub fn render(
         notes_unmatched,
         regions_used: regions_used.into_iter().collect(),
         notes_looping,
+        notes_using_file_sample,
+        notes_using_sine_fallback,
+        sample_sources: {
+            let mut sources: Vec<String> = cache
+                .entries_iter()
+                .filter_map(|(_, entry)| {
+                    entry.as_ref().ok().map(|reading| reading.describe.clone())
+                })
+                .collect();
+            sources.sort_unstable();
+            sources.dedup();
+            sources
+        },
+        sample_failures: {
+            let mut failures: Vec<String> = cache
+                .entries_iter()
+                .filter_map(|(path, entry)| {
+                    entry
+                        .as_ref()
+                        .err()
+                        .map(|reason| format!("unreadable({}): {reason}", path.display()))
+                })
+                .collect();
+            failures.sort_unstable();
+            failures.dedup();
+            failures
+        },
+        sample_reads_truncated: cache.truncated(),
+        sample_frames_loaded: cache.frames_loaded(),
     })
 }
 
@@ -898,28 +1279,19 @@ pub fn render(
 /// 选好；线性插值；读到样本末尾就停）。为什么不直接调引擎那一个：那会把
 /// `yeban-engine`（默认带 `cpal`）拖进本 crate，而 `yeban-mcp` 的清单注释明文写着
 /// "轻量 crate：不拖音频栈进 MCP"。本函数只依赖 `yeban-sfz` 的公开读数。
-fn render_region_into(
-    region: &Region<'_>,
-    sample: &InMemorySfzSample,
-    note: u8,
-    velocity: u8,
-    rate: f32,
-    gain: f32,
-    out: &mut [f32],
-) -> usize {
-    let _ = (region, note, velocity); // 区域已经由调用方选好（matches_key/matches_velocity）
-    if sample.pcm.is_empty() {
+fn render_pcm_into(pcm: &[f32], rate: f32, gain: f32, out: &mut [f32]) -> usize {
+    if pcm.is_empty() {
         return 0;
     }
     let mut position = 0.0f32;
     let mut written = 0usize;
     for slot in out.iter_mut() {
         let index = position as usize;
-        if index + 1 >= sample.pcm.len() {
+        if index + 1 >= pcm.len() {
             break;
         }
         let frac = position - index as f32;
-        let value = sample.pcm[index] * (1.0 - frac) + sample.pcm[index + 1] * frac;
+        let value = pcm[index] * (1.0 - frac) + pcm[index + 1] * frac;
         *slot += value * gain;
         position += rate;
         written += 1;

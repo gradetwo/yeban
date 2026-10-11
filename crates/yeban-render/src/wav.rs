@@ -268,6 +268,62 @@ pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), 
     Ok((format, buffer))
 }
 
+/// 读一份普通 RIFF WAV 并折成**单声道 `f32`**（归一化到 `[-1, 1]`）。
+///
+/// 返回 `(单声道 PCM, 文件采样率 Hz, 如实描述)`；描述形如
+/// `file(<path> frames=N rate=R)`。
+///
+/// ## 归一化口径（**唯一一份**，`app` 与 `mcp` 共用）
+///
+/// | 输入 | 处理 |
+/// | :--- | :--- |
+/// | `Float32` | **直用**（`full_scale_max` 对浮点会 panic ⇒ 必须先分流） |
+/// | `Int16` / `Int24` | 除以 `BitDepth::full_scale_max().max(1)` |
+/// | 多声道 | 按声道数 `step_by(channels)` 取**第 0 声道**（⛔ 不做降混——本仓没有"怎么混"的裁决） |
+///
+/// ## 为什么这个函数住在 `yeban-render`
+///
+/// 归一化需要的三样东西（[`read_plain_wav`]、[`crate::dither::PcmBuffer`]、
+/// [`crate::dither::BitDepth`]）**都已经在本 crate 里**，而 `yeban-app` 与
+/// `yeban-mcp` **都**依赖本 crate。放在这里 ⇒ 两处调用方共用一份口径，
+/// ⛔ 不需要新 crate、⛔ 不需要新依赖。
+///
+/// # Errors
+///
+/// 与 [`read_plain_wav`] 同（位深不支持 / 格式整体不可用 / 样本越界 / I/O 失败）。
+pub fn read_plain_wav_mono_f32(
+    path: impl AsRef<Path>,
+) -> Result<(Vec<f32>, u32, String), WavError> {
+    let path = path.as_ref();
+    let (format, buffer) = read_plain_wav(path)?;
+    let channels = usize::from(format.channels.max(1));
+    // ⚠ 顺序**必须**先判浮点：`BitDepth::full_scale_max` 对 `Float32` 是 panic。
+    let scale = match buffer.depth() {
+        BitDepth::Float32 => 1.0_f32,
+        depth => 1.0_f32 / (depth.full_scale_max().max(1) as f32),
+    };
+    let samples: Vec<f32> = match &buffer {
+        PcmBuffer::Int16(values) => values
+            .iter()
+            .step_by(channels)
+            .map(|value| f32::from(*value) * scale)
+            .collect(),
+        PcmBuffer::Int24(values) => values
+            .iter()
+            .step_by(channels)
+            .map(|value| (*value as f32) * scale)
+            .collect(),
+        PcmBuffer::Float32(values) => values.iter().step_by(channels).copied().collect(),
+    };
+    let describe = format!(
+        "file({} frames={} rate={})",
+        path.display(),
+        samples.len(),
+        format.sample_rate
+    );
+    Ok((samples, format.sample_rate, describe))
+}
+
 /// WAV 里的 chunk 布局（fourcc + 负载长度, 按文件顺序）。
 ///
 /// 用 [`crate::rf64::chunk_order`] 与 [`crate::rf64::chunk_lengths`] 取得,
@@ -1159,4 +1215,80 @@ mod tests {
     /// 单帧（2 样本）WAV 的 SHA-256（实测）。
     const HOUND_WAV_ONE_SHA256: &str =
         "c790bfd4ba8a9c1208d455be7ec986aae1a5cf022eb5daf174b5f67c4f7654aa";
+
+    /// `read_plain_wav_mono_f32`：三种位深各自的归一化 + 多声道取第 0 声道。
+    ///
+    /// ⚠ 本判据是 `yeban-app::sfz_load::read_sample_file` 与
+    /// `yeban-mcp::domain::sfz::read_sample_file` **共同的**口径判据 —— 那两处
+    /// 现在都调本函数，因此这里钉的是**唯一一份**归一化。
+    #[test]
+    fn read_plain_wav_mono_f32_normalizes_each_depth_and_takes_the_first_channel() {
+        // ---- ① 24-bit 常量样本（0.25）：极差为 0、值等于 0.25（±1/2^23）----
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("const24.wav");
+            let format = PcmFormat::integer(1, 48_000, 24);
+            let quarter = (0.25_f32 * ((1 << 23) - 1) as f32).round() as i32;
+            let buffer = PcmBuffer::Int24(vec![quarter; 480]);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let (pcm, rate, describe) = read_plain_wav_mono_f32(&path).expect("读回必须成功");
+            assert_eq!(rate, 48_000, "采样率必须原样带出");
+            assert_eq!(pcm.len(), 480, "单声道 ⇒ 帧数 = 样本数");
+            let peak = pcm.iter().fold(0.0_f32, |acc, v| acc.max(v.abs()));
+            let min = pcm.iter().copied().fold(f32::INFINITY, f32::min);
+            let max = pcm.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            println!(
+                "[wav] 24-bit 常量样本: peak={peak:.6} 极差={:.6} len={}",
+                max - min,
+                pcm.len()
+            );
+            assert!(
+                (peak - 0.25).abs() < 1e-6,
+                "归一化后必须落在 0.25 附近（实得 {peak}）"
+            );
+            assert!(
+                (max - min).abs() < 1e-6,
+                "常量样本的极差必须是 0（实得 {}）",
+                max - min
+            );
+            assert!(
+                describe.starts_with("file("),
+                "描述必须点名文件: {describe}"
+            );
+        }
+        // ---- ② 16-bit 立体声：取第 0 声道（左），⛔ 不是两声道相加或右声道 ----
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("stereo16.wav");
+            let format = PcmFormat::integer(2, 44_100, 16);
+            // 交错的左右：左恒 +0.5、右恒 -0.5 ⇒ 取第 0 声道 ⇒ 全是 +0.5。
+            let left = (0.5_f32 * i16::MAX as f32) as i16;
+            let right = (-0.5_f32 * i16::MAX as f32) as i16;
+            let mut interleaved = Vec::new();
+            for _ in 0..64 {
+                interleaved.push(left);
+                interleaved.push(right);
+            }
+            let buffer = PcmBuffer::Int16(interleaved);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let (pcm, rate, _describe) = read_plain_wav_mono_f32(&path).expect("读回");
+            assert_eq!(rate, 44_100);
+            assert_eq!(pcm.len(), 64, "立体声 64 帧 ⇒ 单声道 64 个样本");
+            assert!(
+                pcm.iter().all(|value| *value > 0.4),
+                "必须全取**左**声道（正半轴），实得 {:?}",
+                &pcm[..4]
+            );
+        }
+        // ---- ③ 32-bit 浮点：**直用**（不能被当成整数满量程去缩放）----
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("float32.wav");
+            let format = PcmFormat::float(1, 48_000, 32);
+            let buffer = PcmBuffer::Float32(vec![0.125, -0.25, 0.5, -1.0]);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let (pcm, _rate, _describe) = read_plain_wav_mono_f32(&path).expect("读回");
+            assert_eq!(pcm, vec![0.125, -0.25, 0.5, -1.0], "浮点必须逐样本直用");
+        }
+    }
 }
