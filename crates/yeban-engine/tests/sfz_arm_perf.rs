@@ -246,10 +246,10 @@ fn prepare_and_callback_readings() {
     while rendered < frames {
         let step = BLOCK.min(frames - rendered);
         out[..step].fill(0.0);
-        if rendered % FIRE_EVERY < BLOCK {
-            if prepared.render_block_into(60, 100, &mut out[..step]) > 0 {
-                triggers += 1;
-            }
+        if rendered % FIRE_EVERY < BLOCK
+            && prepared.render_block_into(60, 100, &mut out[..step]) > 0
+        {
+            triggers += 1;
         }
         rendered += step;
     }
