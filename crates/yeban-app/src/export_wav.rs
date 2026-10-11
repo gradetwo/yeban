@@ -43,14 +43,13 @@
 //! `write_plain_wav` 自带该纪律（先 `check_match` 校验，再建文件）。本文件在**调用顺序**上
 //! 不破坏它：**全部渲染与量化都在内存里完成**，只在最后一步调用一次 `write_plain_wav`。
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
 use yeban_model::{EntityId, YebanProjectV1};
 use yeban_render::dither::{PcmBuffer, quantize_i24};
-use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
+use yeban_render::render::{AudioSource, BlockContext, RenderError};
 use yeban_render::rf64::PcmFormat;
 use yeban_render::rng::DeterministicDitherRng;
 use yeban_render::wav::write_plain_wav;
@@ -374,120 +373,18 @@ pub fn export_wav_with_sfz_file(
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
-    // ---- 0. 引擎装载（**慢路径校验先行**：引擎文档要求先做慢路径校验，再进入渲染循环）----
-    //
-    // 为什么提前：`arm_from_snapshot` 在**没有可武装的轨/音色/鼓**时返回 `NoMasterBus`；
-    // 它是"这个工程能不能用引擎渲染"的判定，理应在计划编译与任何 I/O 之前发生
-    // ⇒ 失败时一个字节都不会落盘，也不会先被计划层的次生错误（例如"没有注册样本源"）掩盖。
-    // 带 SFZ ⇒ 走 SFZ 音源（⛔ 不需要引擎快照；SFZ 自己的解析在离线路径里做）。
-    let snapshot = if options.use_engine_source && sfz.is_none() {
-        let snapshot = EngineSnapshot::from_project(project, 1)
-            .map_err(|error| WavExportError::Engine(error.to_string()))?;
-        // ⭐ **慢路径校验只做一次**，且必须在这里做：武装是**逐源**发生的，
-        // 而"没有任何可渲染轨"时一个源都不会被造出来 ⇒ 引擎的 `NoMasterBus` 裁决会被
-        // 计划层的次生错误（"没有注册样本源"）掩盖（本机实测：清空轨道表时正是这样）。
-        // ⇒ 用一个**探针引擎**先武装一次，让"能不能用引擎渲染这个工程"的判定发生在
-        //   计划编译与任何 I/O **之前**（引擎文档要求先做慢路径校验）。
-        let mut probe = SynthEngine::new(snapshot.sample_rate());
-        probe
-            .arm_from_snapshot(&snapshot)
-            .map_err(|error| WavExportError::Engine(error.to_string()))?;
-        Some(snapshot)
-    } else {
-        None
-    };
-
-    let options_render = RenderOptions {
-        frames: options.frames,
-        sample_rate: options.sample_rate,
-        channels: options.channels,
-        seed: options.seed,
-        ..RenderOptions::default()
-    };
-
-    // ---- 1. 编译计划（图与 master 都来自工程本身，⛔ 不猜）----
-    let mut plan = RenderPlan::compile(
-        &project.routing_graph,
-        project.master_bus_track_id,
-        options_render,
-    )
-    .map_err(|error| WavExportError::Render(error.to_string()))?;
-
-    // ---- 2. 每条非 master 轨道一个源 ----
-    //
-    // 默认走**引擎乐器**：先投影快照（`EngineSnapshot::from_project`），再按轨武装
-    // （`arm_from_snapshot`，与实时路径同一条装配序列）。任何一步失败都在**落盘之前**返回
-    // ⇒ 不留半成品。`use_engine_source = false` 时用最小音源（判据的对照 + 极端回退）。
-    // 计划**自己**的节点表是唯一权威：`RenderPlan::nodes()`（图里存在但不可达的节点会被剪枝，
-    // 给它塞源会得到"节点 … 不在渲染计划里（未知或被剪枝）" —— 本机实测踩过两次）。
-    let renderable: Vec<EntityId> = plan
-        .nodes()
-        .into_iter()
-        .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
-        .collect();
-    let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    let source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
-        let mut labels: Vec<String> = Vec::new();
-        for track_id in renderable.clone() {
-            let notes = track_notes_in_frames(project, track_id, options.sample_rate);
-            let track_source = match sfz_path {
-                Some(sfz_path) => crate::sfz_load::SfzTrackSource::new_from_sfz_path(
-                    instrument.clone(),
-                    sfz_path,
-                    &notes,
-                    options.sample_rate as f32,
-                    options.channels,
-                ),
-                None => crate::sfz_load::SfzTrackSource::new(
-                    instrument.clone(),
-                    &notes,
-                    options.sample_rate as f32,
-                    options.channels,
-                ),
-            };
-            labels.push(track_source.sample_source());
-            sources.insert(track_id, Box::new(track_source));
-        }
-        labels
-            .first()
-            .map_or_else(|| "sfz(无区域)".to_owned(), |label| format!("sfz({label})"))
-    } else if let Some(snapshot) = snapshot.as_ref() {
-        for track_id in renderable.clone() {
-            sources.insert(
-                track_id,
-                Box::new(EngineTrackSource::new(snapshot, track_id)?),
-            );
-        }
-        "引擎乐器（SynthEngine::arm_from_snapshot + render_track）".to_owned()
-    } else {
-        for track_id in renderable.clone() {
-            sources.insert(
-                track_id,
-                Box::new(NoteToneSource::from_track(
-                    project,
-                    track_id,
-                    options.sample_rate,
-                )),
-            );
-        }
-        "最小音源（方波 + 首尾包络；回退）".to_owned()
-    };
-
-    // ---- 3. 执行（全部在内存里）----
-    let output = plan
-        .execute(sources)
-        .map_err(|error| WavExportError::Render(error.to_string()))?;
-
-    // ---- 4. 逐个样本量化（TPDF 抖动；位深 24 bit 整数 PCM）----
+    // ⭐ **一条真源**：导出与录音都走 `render_core::render_project_f32`
+    // （慢路径校验 → 计划编译 → 音源装配 → 执行 → digest 全在那里）。
+    let (samples, frames, source_label, digest) =
+        crate::render_core::render_project_f32(project, options, sfz)?;
+    // 本函数只负责**量化 ＋ 一次落盘 ＋ 报告**（导出的出口）。
     let mut rng =
         DeterministicDitherRng::new(u32::try_from(options.seed & u64::from(u32::MAX)).unwrap_or(1));
-    let samples: Vec<i32> = output
-        .samples
+    let quantized: Vec<i32> = samples
         .iter()
         .map(|sample| quantize_i24(*sample, &mut rng))
         .collect();
-    let buffer = PcmBuffer::Int24(samples);
-    // 用**构造器**而不是逐字段字面量：`PcmFormat` 将来加字段时这里不会漏（本机实测踩过一次）。
+    let buffer = PcmBuffer::Int24(quantized);
     let format = PcmFormat::integer(
         u16::try_from(options.channels).unwrap_or(u16::MAX),
         options.sample_rate,
@@ -501,14 +398,9 @@ pub fn export_wav_with_sfz_file(
     let bytes = std::fs::metadata(path)
         .map_err(|error| WavExportError::Io(error.to_string()))?
         .len();
-    let digest = output
-        .digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
     Ok(WavExportReport {
         path: path.to_path_buf(),
-        frames: output.frames,
+        frames,
         sample_rate: format.sample_rate,
         channels: options.channels,
         bits: format.bits_per_sample,

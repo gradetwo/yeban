@@ -13,6 +13,12 @@
 //! `recording_the_project_is_bit_identical_to_exporting_it` 就是这条同步的**回归网**：
 //! 一旦两边漂移，该判据立刻红 ✓
 //!
+//! ## ⚠ 红线 7 与**调用方约束**
+//!
+//! 本函数**允许分配**（解析 SFZ／装载快照／建缓冲）⇒ ⭐ **两侧调用方（导出与录音）都必须是
+//! 离线／控制侧**：`--export-wav` 是离线批处理，`record_wav::record_project` 只在**喂环之前**
+//! 调它。⛔ **绝不可**在音频回调里调用；录音侧只有 `push_frame` 那一段是"禁止分配／加锁／I/O"的。
+//!
 //! # Errors
 //!
 //! 与 [`crate::export_wav::export_wav`] 相同（选项非法 / 计划编译 / 引擎装载 / 执行失败）。
