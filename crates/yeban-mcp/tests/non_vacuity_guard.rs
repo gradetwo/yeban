@@ -170,6 +170,140 @@ fn unnormalized_path_comparison(line: &str) -> Option<String> {
     None
 }
 
+/// 同文件里"被绑定到**含分隔符**字面量"的标识符 ⇒ `(标识符, 字面量)`。
+///
+/// 这是新臂 [`unnormalized_variable_path_comparison`] **唯一**的额外前提：
+/// 只有当某个标识符**确有**一个含 `/` 或 `\` 的字符串字面量绑定时，
+/// `x.ends_with(那个标识符)` 才算"路径比较"。⛔ 没有这个前提就会把
+/// 集合成员判定、源码文本包含、单分量常量一起误伤 —— 那四种形态的**逐字反例**
+/// 见 `variable_path_comparisons_are_normalized` 的已知绿样本。
+///
+/// ## 口径（刻意很窄，每条都是普查实测过的取舍）
+///
+/// - 只认 `let` / `const` / `static`，**只认同行赋值**，允许 `mut` 与 `: 类型`；
+/// - 字面量取"赋值号后第一个 `"` 到下一个 `"`"之间的文本（**不解析转义**）；
+/// - ⛔ 不跨文件、⛔ 不跨函数、⛔ 不追参数传入 —— 那些形态本臂**明确不覆盖**。
+///
+/// ## 为什么不用正则
+///
+/// 本文件是**零依赖**的判据（只用 `std` ＋ `yeban_mcp::undo_session`）：
+/// 引一个正则库会把依赖面扩大到一个连测试都不需要的第三方 crate。
+fn bindings_with_separator(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let Some(rest) = ["let ", "const ", "static "]
+            .into_iter()
+            .find_map(|keyword| trimmed.strip_prefix(keyword))
+        else {
+            continue;
+        };
+        let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+        let name: String = rest
+            .chars()
+            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let after_name = &rest[name.len()..];
+        let Some(equals) = after_name.find('=') else {
+            continue;
+        };
+        let value = &after_name[equals + 1..];
+        // `==` / `=>` 之类不是赋值。
+        if value.starts_with('=') || value.starts_with('>') {
+            continue;
+        }
+        let Some(open) = value.find('"') else {
+            continue;
+        };
+        let literal_start = open + 1;
+        let Some(length) = value[literal_start..].find('"') else {
+            continue;
+        };
+        let literal = &value[literal_start..literal_start + length];
+        if literal.contains('/') || literal.contains('\\') {
+            out.push((name, literal.to_owned()));
+        }
+    }
+    out
+}
+
+/// 新臂：**参数是标识符**的路径比较（R93 洞①：`.ends_with(变量)`）。
+///
+/// [`unnormalized_path_comparison`] 只认"方法名后**紧跟**的字面量"（`.ends_with("…"`），
+/// 因此 `let target = "domain/midi_input.rs";` ＋ `path.ends_with(target)` 这类**恒漏检**
+/// —— 2026-10-11 那次真实缺陷（Windows 腿红）正是从这个洞过去的。
+///
+/// 本臂开火需要**同时**满足：
+///
+/// 1. 同行出现 `.ends_with(` 或 `.starts_with(` —— **仅这两个方法**
+///    （⛔ 不含 `.contains`：它最常见的形态是集合成员判定，见已知绿样本 ①②④）；
+/// 2. 参数是**裸标识符**（可带一个 `&`）且**紧跟 `)`**；
+/// 3. 接收者沿用现有 [`PATHISH`] 口径（⛔ 不扩表）；
+/// 4. 同行**没有**现有那四种规范化证据 —— 口径与 [`unnormalized_path_comparison`] 一致，
+///    此处**刻意重复一遍**而不是抽公共函数：抽函数就要改动既有那一臂，
+///    而本票的边界是"**只加不改**"；
+/// 5. 该标识符 ∈ [`bindings_with_separator`]（**同文件**、且绑定的字面量**含分隔符**）。
+///
+/// 返回 `Some(诊断)`（含接收者、方法、标识符**及其绑定字面量**），否则 `None`。
+fn unnormalized_variable_path_comparison(
+    line: &str,
+    bindings: &[(String, String)],
+) -> Option<String> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") {
+        return None;
+    }
+    for method in [".ends_with(", ".starts_with("] {
+        let mut from = 0usize;
+        while let Some(offset) = line[from..].find(method) {
+            let at = from + offset;
+            let argument = &line[at + method.len()..];
+            let argument = argument.strip_prefix('&').unwrap_or(argument);
+            let name: String = argument
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect();
+            if !name.is_empty() && argument[name.len()..].starts_with(')') {
+                let receiver: String = line[..at]
+                    .chars()
+                    .rev()
+                    .take_while(|character| {
+                        character.is_ascii_alphanumeric() || *character == '_' || *character == '.'
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let pathish = PATHISH
+                    .iter()
+                    .any(|needle| receiver.to_ascii_lowercase().contains(needle));
+                let normalized = line.contains("path_ends_with(")
+                    || line.contains("normalized_path(")
+                    || line.contains("replace('\\\\'")
+                    || line.contains("replace(\"\\\\\"")
+                    || (line.contains('/') && line.contains('\\'));
+                if pathish
+                    && !normalized
+                    && let Some((_, literal)) = bindings.iter().find(|(known, _)| *known == name)
+                {
+                    let called = method.trim_start_matches('.').trim_end_matches('(');
+                    return Some(format!(
+                        "{receiver}.{called}({name}) —— 其中 {name} = \"{literal}\""
+                    ));
+                }
+            }
+            from = at + method.len();
+        }
+    }
+    None
+}
+
 #[test]
 fn dynamic_scans_declare_a_lower_bound() {
     // ⭐ R56：先喂**一条已知红**（用 read_dir 扫完直接断言，没有任何下界）与
@@ -266,6 +400,119 @@ fn path_comparisons_are_normalized() {
     assert!(
         offenders.is_empty(),
         "路径比较必须先规范化（`path_ends_with` / `normalized_path` / 显式替换 `\\\\`）：{offenders:#?}"
+    );
+}
+
+/// R93 洞①（新增臂）：**参数是变量**的路径比较也必须先规范化。
+///
+/// ## 这个洞是怎么被发现的
+///
+/// 2026-10-11：`the_payload_is_built_in_exactly_one_place` 在 **Windows** 腿上 panic
+/// （`path.ends_with("domain/midi_input.rs")` 在 `\` 分隔符下恒 false）。
+/// 修的时候顺手发现 [`unnormalized_path_comparison`] **抓不到**这一形态：
+/// 它要求方法名后**紧跟**字面量，而那一行写的是 `.ends_with(target)`（参数是变量）
+/// ⇒ 那处缺陷在本机（macOS/Linux）从头到尾**没有一个守卫看得见**。
+///
+/// ## 为什么这条判据**不能**靠"今天全仓 0 命中"来证明自己有效
+///
+/// 本臂在 `origin/main` 上的命中数**实测就是 0**（全仓普查，单位 = 调用点）。
+/// 0 命中**既可能**是"没人犯这个错"，**也可能**是"这一臂根本没接线"——
+/// 两者读数完全一样。所以下面先喂一条**内置已知红**（形状与那次真实缺陷**逐字同形**）
+/// 并要求它**必须被抓到**；⛔ 只有那条断言过了，"0 命中"才是有意义的读数。
+///
+/// ⚠ 这一课是今晚刚交的学费：修 `path_ends_with` 时我第一版"只钉住助手、没钉住调用点"，
+/// 注入验证是**全绿**的 —— "加了一条判据" ⛔ 不等于"这条判据真的在守"。
+#[test]
+fn variable_path_comparisons_are_normalized() {
+    // ⭐ 内置**已知红**：与 2026-10-11 那次真实缺陷逐字同形
+    //    （`let target = "domain/midi_input.rs";` ＋ `path.ends_with(target)`）。
+    //    ⚠ 刻意写成**一整行**字符串：若拆成多行物理行，本文件自己就会在
+    //    "真源码扫描"那一段里被自己抓到（那反而说明守卫是活的，但会让本判据自爆）。
+    let red = "let target = \"domain/midi_input.rs\";\nlet (_, text) = sources.iter().find(|(path, _)| path.ends_with(target)).expect(\"必须扫到\");\n";
+    let red_bindings = bindings_with_separator(red);
+    assert_eq!(
+        red_bindings.len(),
+        1,
+        "预扫必须抓到 `target` 的绑定（否则下面的'抓到'是假的）：{red_bindings:?}"
+    );
+    assert_eq!(red_bindings[0].0, "target");
+    assert_eq!(red_bindings[0].1, "domain/midi_input.rs");
+    let hit = red
+        .lines()
+        .find_map(|line| unnormalized_variable_path_comparison(line, &red_bindings))
+        .expect("已知红样本必须被新臂抓到 —— 抓不到就说明这一臂没接线（空转）");
+    assert!(
+        hit.contains("path.ends_with(target)"),
+        "诊断必须点名调用点：{hit}"
+    );
+    assert!(
+        hit.contains("domain/midi_input.rs"),
+        "诊断必须带出**绑定的字面量**，否则读的人无法判断它是不是路径：{hit}"
+    );
+
+    // ⭐ 已知绿：**(i)/(ii) 档那四种误报形态**，比较行**逐字取自全仓真实站点**
+    //    （`origin/main`；见 `docs/ledger/` 的 2026-10-11 普查报告）。
+    //    它们今天都必须**不被抓到**；将来若有人放宽 `PATHISH` 或把 `.contains` 也收进本臂，
+    //    这几条会**先红**。
+    let greens: [(&str, &str); 4] = [
+        (
+            "① const 数组的集合成员判定（extension_audit.rs:484）",
+            "const CRATE_ROOT_FILES: [&str; 3] = [\"lib.rs\", \"main.rs\", \"mod.rs\"];\nif CRATE_ROOT_FILES.contains(&file_name) || !file_name.ends_with(\".rs\") {\n",
+        ),
+        (
+            "② Vec<EntityId> 的集合成员判定（render.rs:1293）",
+            "let source_nodes: Vec<EntityId> = Vec::new();\nif source_nodes.contains(&node) {\n",
+        ),
+        (
+            "③ 单分量常量（samples.rs:987）",
+            "const SAMPLES_DIR_NAME: &str = \"schema-samples\";\nlet dir = default_out_dir();\nassert!(dir.ends_with(SAMPLES_DIR_NAME));\n",
+        ),
+        (
+            "④ 在源码文本里找一段摘要（fault_vocabulary.rs:1191）",
+            "let own_source = include_str!(\"fault_vocabulary.rs\");\nassert!(own_source.contains(FROZEN_REASON_SURFACE_SHA256));\n",
+        ),
+    ];
+    for (label, snippet) in greens {
+        let bindings = bindings_with_separator(snippet);
+        for line in snippet.lines() {
+            assert!(
+                unnormalized_variable_path_comparison(line, &bindings).is_none(),
+                "已知绿样本不得被**新臂**抓到（{label}）：{line}"
+            );
+            assert!(
+                unnormalized_path_comparison(line).is_none(),
+                "已知绿样本也不得被**既有臂**抓到（{label}）：{line}"
+            );
+        }
+    }
+
+    // 真源码：新臂在本 crate（`src` ＋ `tests`）的命中数 —— **这一项就是交付读数**。
+    let mut offenders: Vec<String> = Vec::new();
+    let mut scanned = 0usize;
+    let mut bound = 0usize;
+    for (path, text) in all_sources() {
+        let bindings = bindings_with_separator(&text);
+        bound += bindings.len();
+        for (index, line) in text.lines().enumerate() {
+            scanned += 1;
+            if let Some(hit) = unnormalized_variable_path_comparison(line, &bindings) {
+                offenders.push(format!("{path}:{} {hit}", index + 1));
+            }
+        }
+    }
+    // R93：被扫集合必须有下界（否则"0 命中"可能只是"什么都没扫"）。
+    assert!(
+        scanned >= 5_000,
+        "扫描面太小（{scanned} 行）—— 路径过滤/文件枚举可能错了"
+    );
+    // ⭐ **预扫自己也要非真空**：一个含分隔符的绑定都扫不到 ⇒ 新臂永远不会开火。
+    assert!(
+        bound >= 5,
+        "含分隔符的标识符绑定太少（{bound} 处）—— 预扫可能失效，新臂会退化成空转"
+    );
+    assert!(
+        offenders.is_empty(),
+        "参数是**变量**的路径比较也必须先规范化（洞①，2026-10-11 Windows 缺陷的形状）：{offenders:#?}"
     );
 }
 
