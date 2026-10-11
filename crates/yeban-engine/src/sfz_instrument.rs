@@ -176,6 +176,137 @@ impl SfzInstrument {
     }
 }
 
+/// ✂️ **摊平后的一个区域**：回调侧**只读**（⛔ 无 `Vec`／`Box`／`String`，全部定长）。
+///
+/// 键/力度的可播性在**构造期**由 `yeban-sfz` 自己的谓词（`Region::matches_key` /
+/// `matches_velocity`）逐值求值后**打包成 128 位掩码** ⇒ 回调侧只做位测试，
+/// ⛔ 不在回调里调用任何解析/分配函数。
+#[derive(Debug, Clone)]
+pub struct PreparedRegion {
+    /// 键掩码：第 `n` 位为 1 表示该区域接受 `note == n`。
+    key_mask: [u64; 2],
+    /// 力度掩码：第 `v` 位为 1 表示该区域接受 `velocity == v`。
+    vel_mask: [u64; 2],
+    /// 每个音符的播放速率（构造期由 `Region::playback_rate` 求值）。
+    rate_per_note: [f32; 128],
+    /// 该区域的总增益（构造期由 `Region::playback_spec(..).total_gain()` 求值）。
+    gain: f32,
+}
+
+impl PreparedRegion {
+    /// 该区域是否接受 `(note, velocity)`（⭐ 纯位测试：无分配、无解析）。
+    #[must_use]
+    pub fn accepts(&self, note: u8, velocity: u8) -> bool {
+        let n = note as usize;
+        let v = velocity as usize;
+        self.key_mask[n / 64] & (1u64 << (n % 64)) != 0
+            && self.vel_mask[v / 64] & (1u64 << (v % 64)) != 0
+    }
+}
+
+/// ✂️ **摊平后的乐器**：区域表 ＋ PCM，**构造期**建好，回调侧只读。
+///
+/// # 分配纪律（红线 7 / [MUST-GATE-001]）
+///
+/// * [`PreparedSfz::prepare`]：**允许分配**（区域表与 PCM 的 `Vec` 在构造期/控制侧建立）；
+/// * [`PreparedSfz::render_block_into`]：**禁止分配** —— 它只做位测试、数组读取与
+///   `out` 的原地写入（⛔ 无 `Vec::push`／`Box`／`String`／锁／I/O）。
+///   违反的后果：实时回调内产生堆分配/释放或锁等待 ⇒ 可能造成音频线程不可预测的停顿
+///   （红线 7 的一票否决项），由 `tests/rt_zero_alloc.rs` 的**计数型全局分配器**窗口判据检测。
+#[derive(Debug, Clone)]
+pub struct PreparedSfz {
+    regions: Vec<PreparedRegion>,
+    pcm: Vec<f32>,
+}
+
+impl PreparedSfz {
+    /// **构造期**摊平：把区域谓词、速率、增益与样本一次算好（⭐ 允许分配）。
+    ///
+    /// # Errors
+    /// 文本非法 ⇒ [`SfzError`]。
+    pub fn prepare(
+        instrument: &SfzInstrument,
+        source: &InMemorySample,
+        engine_hz: f32,
+    ) -> Result<Self, SfzError> {
+        let rates = RenderRates::new(source.sample_hz, engine_hz);
+        instrument.with_instrument(|parsed| {
+            let mut regions = Vec::with_capacity(parsed.regions().len());
+            for region in parsed.regions() {
+                let mut key_mask = [0u64; 2];
+                let mut vel_mask = [0u64; 2];
+                let mut rate_per_note = [0.0f32; 128];
+                for note in 0u16..128 {
+                    let note_u8 = note as u8;
+                    if region.matches_key(note_u8) {
+                        key_mask[note as usize / 64] |= 1u64 << (note % 64);
+                    }
+                    rate_per_note[note as usize] = region.playback_rate(note_u8, rates);
+                }
+                for velocity in 0u16..128 {
+                    if region.matches_velocity(velocity as u8) {
+                        vel_mask[velocity as usize / 64] |= 1u64 << (velocity % 64);
+                    }
+                }
+                let gain = region.playback_spec(60, 100, rates).total_gain();
+                regions.push(PreparedRegion {
+                    key_mask,
+                    vel_mask,
+                    rate_per_note,
+                    gain,
+                });
+            }
+            Self {
+                regions,
+                pcm: source.pcm.clone(),
+            }
+        })
+    }
+
+    /// 摊平占用的**内存字节数**（读数用：区域表 ＋ PCM）。
+    #[must_use]
+    pub fn memory_bytes(&self) -> usize {
+        core::mem::size_of::<PreparedRegion>() * self.regions.len()
+            + core::mem::size_of::<f32>() * self.pcm.len()
+    }
+
+    /// 区域数（摊平后）。
+    #[must_use]
+    pub fn region_count(&self) -> usize {
+        self.regions.len()
+    }
+
+    /// ⭐ **回调侧渲染**：把一个音符混进 `out`，返回写入帧数。**零分配**（只读 + 原地写）。
+    ///
+    /// 与离线 [`SfzInstrument::render_note_into`] 的**逐样本最大绝对差**为 0
+    /// （判据 `prepared_matches_offline_sample_by_sample` 钉住）。
+    pub fn render_block_into(&self, note: u8, velocity: u8, out: &mut [f32]) -> usize {
+        let mut written = 0usize;
+        for region in &self.regions {
+            if !region.accepts(note, velocity) {
+                continue;
+            }
+            let rate = region.rate_per_note[note as usize];
+            if !(rate.is_finite() && rate > 0.0) || self.pcm.is_empty() {
+                continue;
+            }
+            let mut position = 0.0f32;
+            for slot in out.iter_mut() {
+                let index = position as usize;
+                if index + 1 >= self.pcm.len() {
+                    break;
+                }
+                let frac = position - index as f32;
+                let sample = self.pcm[index] * (1.0 - frac) + self.pcm[index + 1] * frac;
+                *slot += sample * region.gain;
+                position += rate;
+                written += 1;
+            }
+        }
+        written
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

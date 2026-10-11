@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 use yeban_engine::graph::LatencyTable;
-use yeban_engine::sfz_instrument::InMemorySample;
 use yeban_engine::sfz_instrument::SfzInstrument;
+use yeban_engine::sfz_instrument::{InMemorySample, PreparedSfz};
 use yeban_engine::snapshot::{EngineSnapshot, TrackParams};
 use yeban_engine::synth::SynthEngine;
 use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
@@ -177,4 +177,87 @@ fn sfz_note_render_eight_seconds() {
         total_energy > 0.0,
         "⭐ 有排程的渲染必须**非静音**（能量 {total_energy}）"
     );
+}
+
+/// ⭐ 判据 a：**摊平后的回调路径与离线路径逐样本一致**。
+/// 判定量（已命名）：**逐样本最大绝对差** = `max_i |offline[i] − prepared[i]|`。
+#[test]
+fn prepared_matches_offline_sample_by_sample() {
+    let sfz = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("最小 SFZ 必须成功");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+
+    let mut offline = vec![0.0f32; 512];
+    sfz.render_note_into(&sample, 60, 100, &mut offline, 48_000.0)
+        .expect("离线渲染不得报错");
+
+    let prepared = PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平不得报错");
+    let mut flat = vec![0.0f32; 512];
+    prepared.render_block_into(60, 100, &mut flat);
+
+    let max_abs_diff = offline
+        .iter()
+        .zip(flat.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    println!(
+        "[perf] 逐样本最大绝对差 = {max_abs_diff:e}（摊平区域数 {}，内存 {} 字节）",
+        prepared.region_count(),
+        prepared.memory_bytes()
+    );
+    assert_eq!(max_abs_diff, 0.0, "⭐ 摊平路径必须与离线路径**逐样本相同**");
+    // 反向对照：不命中的音符两侧都必须是静音（⛔ 不能"两边都全零"也算一致）
+    assert!(offline.iter().any(|s| *s != 0.0), "离线路径必须真的出声");
+    assert!(flat.iter().any(|s| *s != 0.0), "摊平路径必须真的出声");
+}
+
+/// ⭐ 读数：摊平一次的耗时与内存 ＋ 回调侧每块（512 帧）耗时（8 秒、32 次触发，与 12.373 ms 同口径）。
+#[test]
+fn prepare_and_callback_readings() {
+    let sfz = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("最小 SFZ 必须成功");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+
+    let start = Instant::now();
+    let prepared = PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平不得报错");
+    let prepare_us = start.elapsed().as_micros();
+    println!(
+        "[perf] 摊平一次：{prepare_us} µs；内存 = {} 字节（区域 {} × 结构 {} B ＋ PCM {} 帧 × 4 B）",
+        prepared.memory_bytes(),
+        prepared.region_count(),
+        std::mem::size_of::<yeban_engine::sfz_instrument::PreparedRegion>(),
+        sample.pcm.len()
+    );
+
+    // 回调侧：8 秒、512 帧块、每 12,000 帧触发一次（与离线 12.373 ms 的口径可比）
+    const BLOCK: usize = 512;
+    const FIRE_EVERY: usize = 12_000;
+    let frames = 48_000usize * 8;
+    let mut out = vec![0.0f32; BLOCK];
+    let mut triggers = 0usize;
+    let start = Instant::now();
+    let mut rendered = 0usize;
+    while rendered < frames {
+        let step = BLOCK.min(frames - rendered);
+        out[..step].fill(0.0);
+        if rendered % FIRE_EVERY < BLOCK {
+            if prepared.render_block_into(60, 100, &mut out[..step]) > 0 {
+                triggers += 1;
+            }
+        }
+        rendered += step;
+    }
+    let wall_ms = start.elapsed().as_secs_f64() * 1e3;
+    let per_block_us = wall_ms * 1e3 / (frames as f64 / BLOCK as f64);
+    println!(
+        "[perf] 摊平回调侧 8 秒（{frames} 帧、块 {BLOCK}、触发 {triggers} 次）：墙钟 = {wall_ms:.3} ms ⇒ 每块 = {per_block_us:.3} µs"
+    );
+    assert_eq!(rendered, frames, "必须真正渲染 {frames} 帧");
+    assert!(triggers > 0, "必须有触发");
 }

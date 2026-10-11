@@ -3157,6 +3157,7 @@ fn main() -> ExitCode {
     scenario_metronome(&mut report);
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
+    prepared_sfz_callback_path_allocates_nothing();
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);
@@ -3165,4 +3166,46 @@ fn main() -> ExitCode {
     let _ = std::fs::remove_file(&witness.path);
 
     report.finish()
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ SFZ 摊平后的**回调路径**零分配判据（扩展本文件既有的"计数型全局分配器"窗口口径）
+// ---------------------------------------------------------------------------
+/// ⭐ SFZ 摊平后的**回调路径**零分配场景。
+///
+/// ⚠ 本 target 是 `harness = false`（见 `Cargo.toml`）⇒ **`#[test]` 不会被调用**，
+/// 场景必须由 `main` 显式调用（本批实测：加了 `#[test]` 的版本从未运行，
+/// `--list` 报 **0 条**、`--exact` 被自定义 `main` 忽略）。
+fn prepared_sfz_callback_path_allocates_nothing() {
+    use yeban_engine::sfz_instrument::{InMemorySample, PreparedSfz, SfzInstrument};
+
+    // ⭐ **构造期**（允许分配）：解析 + 摊平 —— 全部在窗口**之外**完成
+    let instrument = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("最小 SFZ 必须成功");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+    let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平不得报错");
+
+    // ⭐ 回调路径（禁止分配）：窗口内只做"触发 + 渲染"
+    let mut out = vec![0.0f32; DEFAULT_BLOCK_FRAMES];
+    let reading = window(|| {
+        for block in 0..64u32 {
+            out.fill(0.0);
+            // 每 8 块触发一次（与真实回调里"某拍上触发"同形）
+            if block % 8 == 0 {
+                let _ = prepared.render_block_into(60, 100, &mut out);
+            }
+        }
+    });
+    println!(
+        "[sfz] 回调窗口：allocations={} deallocations={} lock_blocking={} io_ops={}",
+        reading.quad.allocations,
+        reading.quad.deallocations,
+        reading.quad.lock_blocking,
+        reading.quad.io_ops
+    );
+    assert_eq!(reading.quad.allocations, 0, "⭐ 回调路径不得有任何堆分配");
+    assert_eq!(reading.quad.deallocations, 0, "⭐ 回调路径不得有任何堆释放");
 }
