@@ -733,3 +733,108 @@ mod tests {
         );
     }
 }
+
+/// ⭐ 守"⭐ 闸门**存在**"（⭐ ⛔ 不是再加一道闸门）＋ ⭐ `_bits` 命名规则。
+///
+/// ⚠ **为什么要有本模块**：⭐ 镜像的漂移防护由两道**现成**闸门提供 ——
+/// ① `sentinel_stats()` 用**完整**结构体字面量（⭐ 加字段 ⇒ **编译失败**）；
+/// ② 往返判据 `every_field_round_trips_through_the_mirror`（⭐ "逐字段互不相同"的哨兵值
+/// ⇒ ⭐ 漏存/漏读会**运行期**失败）。
+/// ⚠ ⭐ **但"闸门的存在"本身没有被守**：⭐ 若后人把 `sentinel_stats()` 改成
+/// `..Default::default()`、⭐ 或删掉往返判据 ⇒ ⭐ **闸门静默消失、⭐ 而没人知道**。
+/// ⇒ ⭐ 故本模块用**源码文本钉住**这两个形态（⭐ 本仓既有先例：⭐ `include_str!` ＋ 对形态断言）。
+#[cfg(test)]
+mod guard_tests {
+    const MIRROR_SRC: &str = include_str!("stats_mirror.rs");
+    const RT_SRC: &str = include_str!("rt.rs");
+
+    /// 取一个函数（⭐ 含签名）的**函数体**（⭐ 逐字符数花括号，⭐ ⛔ 不引正则依赖）。
+    fn function_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("找不到签名 `{signature}`"));
+        let rest = &src[start..];
+        let open = rest.find('{').expect("函数体没有起点");
+        let mut depth = 0usize;
+        for (offset, ch) in rest[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &rest[open..open + offset + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("函数体花括号没有配平");
+    }
+
+    /// 判据（⭐ 守闸门 ①）：⭐ `sentinel_stats()` 必须仍是**完整**结构体字面量。
+    ///
+    /// ⚠ ⭐ 一旦出现 `..Default::default()` / `..rest`，⭐ **编译期漂移闸门静默失效**
+    /// ⇒ ⭐ 加 `EngineStats` 字段不再编译失败 ⇒ ⭐ 镜像会悄悄缺字段。本判据就是守这个。
+    #[test]
+    fn the_sentinel_fixture_stays_a_complete_struct_literal() {
+        let body = function_body(MIRROR_SRC, "fn sentinel_stats() -> EngineStats {");
+        assert!(body.contains("EngineStats {"), "必须是 EngineStats 字面量");
+        let spread: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(".."))
+            .collect();
+        assert!(
+            spread.is_empty(),
+            "❌ sentinel_stats 里出现了 `..`（{spread:?}）⇒ 编译期漂移闸门**静默失效**：\
+             以后往 `EngineStats` 加字段不会编译失败 ⇒ 镜像可能悄悄缺字段"
+        );
+    }
+
+    /// 判据（⭐ 守闸门 ②）：⭐ 镜像的**逐字段往返判据**必须仍在（⭐ 运行期那一半闸门）。
+    #[test]
+    fn the_round_trip_criterion_is_still_present() {
+        assert!(
+            MIRROR_SRC.contains("fn every_field_round_trips_through_the_mirror()"),
+            "❌ 往返判据不见了 ⇒ 运行期那一半闸门消失（漏存/漏读将不再被发现）"
+        );
+    }
+
+    /// 判据（⭐ `_bits` 命名规则）：⭐ `EngineStats` 的每个 **`f32`** 字段，⭐ 在镜像里
+    /// **要么同名**、⭐ **要么**有 `<名>_bits`。
+    ///
+    /// ⚠ ⭐ 理由：⭐ 镜像是**逐字段一个原子量**，⭐ 而 `f32` 没有 `AtomicF32` ⇒ ⭐ 用
+    /// `AtomicU32` 存它的 **bits** ⇒ ⭐ 命名约定就是 `<名>_bits`。⭐ 这条规则**不在**
+    /// 类型系统覆盖内（⭐ 编译期闸门只管字段**个数**，⭐ 不管**名字**）⇒ ⭐ 故由本判据守。
+    #[test]
+    fn every_float_field_of_the_stats_has_a_mirror_slot() {
+        let stats_body = function_body(RT_SRC, "pub struct EngineStats {");
+        let mirror_body = function_body(MIRROR_SRC, "pub struct EngineStatsMirror {");
+        let mut checked = 0usize;
+        for line in stats_body.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("pub ") else {
+                continue;
+            };
+            let Some((name, ty)) = rest.split_once(':') else {
+                continue;
+            };
+            if ty.trim().trim_end_matches(',') != "f32" {
+                continue;
+            }
+            let name = name.trim();
+            checked += 1;
+            assert!(
+                mirror_body.contains(&format!("{name}:"))
+                    || mirror_body.contains(&format!("{name}_bits:")),
+                "❌ `EngineStats::{name}` 是 `f32`，⭐ 但镜像里既没有 `{name}:`、\
+                 也没有 `{name}_bits:`（⭐ `f32` ⇒ `AtomicU32` 的 bits 表示 ⇒ 命名约定 \
+                 `<名>_bits`）⇒ 请补齐镜像那一份"
+            );
+        }
+        assert!(
+            checked > 0,
+            "⭐ 一条 f32 字段都没扫到 ⇒ 解析退化了（不是通过）"
+        );
+    }
+}
