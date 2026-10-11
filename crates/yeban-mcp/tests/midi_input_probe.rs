@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
+use yeban_mcp::domain::extension_audit::path_ends_with;
 use yeban_mcp::domain::midi_input::{
     JITTER_CALIBER, JitterNumbers, PortEntry, ProbeEvent, ProbeReading, ProbeReport,
     UNSUPPORTED_MESSAGES_CALIBER, probe_payload,
@@ -451,6 +452,76 @@ fn the_whole_payload_shape_is_judged_without_hardware() {
 // 判据 ⑥：**非真空守卫** —— 载荷只在**一个**地方组装
 // ---------------------------------------------------------------------------
 
+/// 在源码清单里按后缀找文件。
+///
+/// ⚠ **归一化分隔符**是承重的：`read_rust_sources` 给的是 `Path::display()`，
+/// 在 Windows 上用 `\` 分隔 ⇒ 裸 `ends_with("domain/x.rs")` 会**恒 false**。
+/// 抽成函数是为了让它**可以被合成清单单独判**（见下一条判据）——
+/// 否则"查找点是否跨平台"只能靠 Windows 腿才发现（本轮就是这么红的）。
+fn find_source<'a>(sources: &'a [(String, String)], suffix: &str) -> Option<&'a (String, String)> {
+    sources
+        .iter()
+        .find(|(path, _)| path_ends_with(path, suffix))
+}
+
+/// 判据 ⑥ 的**跨平台臂**：查找函数对两种分隔符都必须命中。
+///
+/// 用**纯反斜杠的合成清单**（而不是直接调 `path_ends_with` 传字面量）审查查找点本身 ——
+/// 这是本轮从 `38153839076` 的 Windows 失败里学到的：
+/// 只钉助手不钉查找点，等于没钉（实测：把查找改回裸 `ends_with` 时，
+/// "只钉助手"的版本在 Linux 上**仍然 8 passed**）。
+#[test]
+fn the_source_lookup_is_separator_agnostic() {
+    let target = "domain/midi_input.rs";
+
+    // 合成清单：只有**反斜杠**路径（Windows 形态）。
+    let windows_style: Vec<(String, String)> = vec![
+        (
+            r"crates\yeban-mcp\src\domain\other.rs".to_owned(),
+            "other".to_owned(),
+        ),
+        (
+            r"crates\yeban-mcp\src\domain\midi_input.rs".to_owned(),
+            "midi_input".to_owned(),
+        ),
+    ];
+    assert_eq!(
+        find_source(&windows_style, target).map(|(_, text)| text.as_str()),
+        Some("midi_input"),
+        "反斜杠路径必须命中（Windows 腿的回归：裸 `ends_with` 在这里会返回 None）"
+    );
+
+    // 合成清单：只有**正斜杠**路径（Unix 形态）。
+    let unix_style: Vec<(String, String)> = vec![(
+        "crates/yeban-mcp/src/domain/midi_input.rs".to_owned(),
+        "midi_input".to_owned(),
+    )];
+    assert_eq!(
+        find_source(&unix_style, target).map(|(_, text)| text.as_str()),
+        Some("midi_input"),
+        "正斜杠路径必须命中"
+    );
+
+    // 反例：后缀相近的文件 ⛔ 不得命中（防止"匹配太宽"把判据变成空转）。
+    for other in [
+        r"crates\yeban-mcp\src\domain\midi_input.rs.bak",
+        "src/domain/midi_input_extra.rs",
+    ] {
+        assert!(
+            find_source(&[(other.to_owned(), "x".to_owned())], target).is_none(),
+            "`{other}` ⛔ 不得命中 `{target}`"
+        );
+    }
+
+    // 与真实清单对照（非真空：合成的两条臂都通过时，真清单也必须真的找得到）。
+    let real = read_rust_sources(&[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")]);
+    assert!(real.len() >= 20, "真实清单太小: {}", real.len());
+    assert!(
+        find_source(&real, target).is_some(),
+        "真实源码清单里必须能找到 `{target}`"
+    );
+}
+
 /// 判据 ⑥：生产区里 `"unsupportedMessages"` 这个 JSON 键**恰好出现一次**，
 /// 且那一处落在 [`probe_payload`] 体内。
 ///
@@ -459,7 +530,26 @@ fn the_whole_payload_shape_is_judged_without_hardware() {
 /// 但线上走的是**另一份**载荷 ⇒ 判据变成空转。
 /// 这条守卫把"载荷只在一处组装"变成机械可判的事实。
 ///
+/// ## ⚠ 跨平台（Windows 腿换来的教训）
+///
+/// 第一版写的是 `path.ends_with("domain/midi_input.rs")`。在 **Linux/macOS** 上绿，
+/// 在 **Windows** 上 `read_rust_sources` 给的路径用 `\` 分隔 ⇒ 该比较**恒 false** ⇒
+/// 判据 panic（实测：run `38153839076` 的 `windows` 腿，
+/// `panicked at ...: 必须扫到 domain/midi_input.rs（扫描到 38 个 .rs 文件）`）。
+/// 这与本仓库 `non_vacuity_guard` 记为 R93 的那条是同一个陷阱
+///（`path.contains("/src/")` 在 Windows 上恒 false）。
+///
+/// ⚠ **第一版"修法"是假的**：我把比较换成共享助手 [`path_ends_with`]，
+/// 又加了反斜杠正例 —— 但那些正例直接调**助手**，用的是**字面量**，
+/// 于是"把查找改回裸 `ends_with`"这个注入在 Linux 上**依然全绿**（实测：exit 0, 8 passed）。
+/// 也就是说那条对照只钉住了助手，**没有**钉住查找点。
+///
+/// 真正的修法是把查找本身变成**可测的单元**：见 [`find_source`] 与
+/// `the_source_lookup_is_separator_agnostic` —— 后者用**纯反斜杠的合成清单**调查找函数，
+/// 因此在 **Linux 上**把 `find_source` 改回裸 `ends_with` 就会红（已验证）。
+///
 /// [`probe_payload`]: yeban_mcp::domain::midi_input::probe_payload
+/// [`path_ends_with`]: yeban_mcp::domain::extension_audit::path_ends_with
 #[test]
 fn the_payload_is_built_in_exactly_one_place() {
     // 先命名指标：数的是 `crates/yeban-mcp/src/` 下**几个 `.rs` 文件**（单位 = 文件数）。
@@ -472,15 +562,12 @@ fn the_payload_is_built_in_exactly_one_place() {
     );
 
     let target = "domain/midi_input.rs";
-    let (_, text) = sources
-        .iter()
-        .find(|(path, _)| path.ends_with(target))
-        .unwrap_or_else(|| {
-            panic!(
-                "必须扫到 `{target}`（扫描到 {} 个 .rs 文件）",
-                sources.len()
-            )
-        });
+    let (_, text) = find_source(&sources, target).unwrap_or_else(|| {
+        panic!(
+            "必须扫到 `{target}`（扫描到 {} 个 .rs 文件）",
+            sources.len()
+        )
+    });
     let production = production_region(text);
     let key = "\"unsupportedMessages\"";
     let occurrences = production.matches(key).count();
