@@ -233,6 +233,9 @@ pub fn usage_text() -> String {
   --dump-elements          把语义元素注册表打印到 stdout (每行一个元素, 稳定顺序) [UI-TEST-001]
   --export-elements <path> 把同一份元素注册表**原子**写到文件, 便于脚本 / AI 消费;
                            与 --dump-elements 同时给 = 既打印又落盘
+  --export-wav <path>      把当前工程**离线渲染**成 24-bit WAV (48 kHz 立体声 8 秒): 音源是
+                           最小音源 (**方波 + 首尾包络**, ⛔ 非引擎乐器, 见 `export_wav.rs` 的
+                           诚实登记); 与 --export-midi 同族: 不给 --open 时导出演示工程
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
@@ -355,6 +358,7 @@ pub fn usage_text() -> String {
                                **再**导出 .logicx, **最后**保存工程; 任一导出失败 ⇒ 不写工程
                                (退出码 {export})
   --export-midi 不给 --open    导出的是演示工程, 输出 `exported-midi: ... from=sample=...` 明说
+  --export-wav 不给 --open    同上: 导出演示工程, 输出 `exported-wav: ... from=sample=...` 明说
   --export-als 不给 --open    导出的是演示工程, 输出 `exported-als: ... from=sample=...` 明说
   --export-logic 不给 --open  导出的是演示工程, 输出 `exported-logic: ... from=sample=...` 明说
   --help / -h, --version / -V  短路: 出现即打印并退出 {ok}, 其余参数(含未知参数)不再检查
@@ -409,7 +413,7 @@ pub fn usage_text() -> String {
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
-  {export} --export-elements 失败 / --export-midi 失败 / --export-als 失败 / --export-logic 失败
+  {export} --export-elements 失败 / --export-midi 失败 / --export-wav 失败 / --export-als 失败 / --export-logic 失败
       (I/O; 或工程里没有可导出的 MIDI 音符 / 拍号分母不是 2 的幂 /
       工程 PPQ 与编码器默认 PPQ 不一致 / 编码器拒绝越界的音高或力度 /
       .als 的映射或 Gzip 封装失败 / .logicx 的 bundle 目录建不出来)
@@ -424,6 +428,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
   yeban-app --open song.yeban --export-midi song.mid
+  yeban-app --open song.yeban --export-wav song.wav
   yeban-app --open song.yeban --export-logic out/Song.logicx
   yeban-app --print-theme
   yeban-app --theme material
@@ -805,6 +810,11 @@ pub struct Options {
     pub export_elements: Option<PathBuf>,
     /// `--export-midi <path>`：当前工程导出成标准 MIDI 文件（SMF 1）[ADR-0001 **D47**]。
     pub export_midi: Option<PathBuf>,
+    /// `--export-wav <path>`：把当前工程**离线渲染**成一段 24-bit WAV（导出族）。
+    ///
+    /// 与 `--export-midi` 同族：不给 `--open` 时导出**演示工程**并在输出里明说；
+    /// 渲染与量化全部在内存里完成，**最后一步**才落盘（拒绝时不留半成品）。
+    pub export_wav: Option<PathBuf>,
     /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
     /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
     ///
@@ -1205,6 +1215,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--export-wav" => {
+                let value = take_value("--export-wav", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.export_wav,
+                    "--export-wav",
+                    PathBuf::from(value),
+                )?;
+            }
             "--export-als" => {
                 let value = take_value("--export-als", inline, args, &mut cursor)?;
                 set_once(
@@ -1280,6 +1298,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.export_midi.is_some(), "--export-midi"),
+            (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -1309,6 +1328,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.export_midi.is_some(), "--export-midi"),
+            (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -1332,6 +1352,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.export_midi.is_some(), "--export-midi"),
+            (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
             (options.export_logic.is_some(), LOGIC_EXPORT_SWITCH),
             (options.save_as.is_some(), "--save-as"),
@@ -1549,6 +1570,13 @@ pub enum CliError {
         /// 导出层的原样裁决（含 `yeban-render` 编码器的拒绝原因）。
         source: MidiExportError,
     },
+    /// `--export-wav` 失败（渲染 / 量化 / 落盘）。
+    ExportWav {
+        /// 目标路径。
+        path: PathBuf,
+        /// 导出层的原样裁决（含 `yeban-render` 渲染器与 WAV 写出器的拒绝原因）。
+        source: crate::export_wav::WavExportError,
+    },
     /// `--export-als` 失败（映射 / Gzip 封装 / 落盘）。
     ExportAls {
         /// 目标路径。
@@ -1611,6 +1639,7 @@ impl CliError {
             Self::Save { .. } => EXIT_SAVE,
             Self::Export { .. }
             | Self::ExportMidi { .. }
+            | Self::ExportWav { .. }
             | Self::ExportAls { .. }
             | Self::ExportLogic { .. } => EXIT_EXPORT,
         }
@@ -1641,6 +1670,9 @@ impl fmt::Display for CliError {
                     "导出 MIDI 到 `{}` 失败: {source}",
                     path.display()
                 )
+            }
+            Self::ExportWav { path, source } => {
+                write!(formatter, "导出 WAV 到 `{}` 失败: {source}", path.display())
             }
             Self::ExportAls { path, source } => {
                 write!(
@@ -1693,6 +1725,7 @@ impl std::error::Error for CliError {
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
+            Self::ExportWav { source, .. } => Some(source),
             Self::ExportAls { source, .. } => Some(source),
             Self::ExportLogic { source, .. } => Some(source),
             Self::Ui { .. }
@@ -2399,6 +2432,20 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         lines.push(exported_midi_line(&report, &loaded));
     }
 
+    // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
+    if let Some(path) = options.export_wav.as_ref() {
+        let report = crate::export_wav::export_wav(
+            &loaded.archive.project,
+            path,
+            crate::export_wav::WavExportOptions::default(),
+        )
+        .map_err(|source| CliError::ExportWav {
+            path: path.clone(),
+            source,
+        })?;
+        lines.push(exported_wav_line(&report, &loaded));
+    }
+
     // 顺序契约（`--help` 的"组合语义"一节）：元素 → MIDI → .als → .logicx → 保存工程。
     // 与 `--export-midi` 一样, 导出失败 ⇒ 直接 `Err`, **不**继续保存。
     #[cfg(feature = "experimental-als-export")]
@@ -2462,6 +2509,22 @@ fn saved_line(report: &SaveReport, loaded: &Loaded) -> String {
 ///
 /// `ppq=` 是**从导出结果读回来的**事实（不是本文件里第二个 960 字面量）：
 /// 判据把这一行与文件头的大端字段逐字段对账。
+fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loaded) -> String {
+    format!(
+        "exported-wav: path={} bytes={} frames={} sample_rate={} channels={} bits={} digest={} \
+         source={} from={}",
+        report.path.display(),
+        report.bytes,
+        report.frames,
+        report.sample_rate,
+        report.channels,
+        report.bits,
+        report.digest,
+        report.source,
+        loaded.source.save_origin(),
+    )
+}
+
 fn exported_midi_line(report: &MidiExportReport, loaded: &Loaded) -> String {
     let format = match report.format {
         MidiFormat::SingleTrack => "single-track",
@@ -4191,6 +4254,112 @@ mod tests {
         (74, 1920),
         (76, 2400),
     ];
+
+    /// `--export-wav`：写出的 WAV 可被 `read_plain_wav` **读回**，且帧数/采样率/声道与请求一致，
+    /// 样本非全零（真的有声音），报告行的数字与回读一致，两次导出**逐字节相同**（`ARCH-DET-*`）。
+    #[test]
+    fn export_wav_writes_a_readable_wav_whose_shape_matches_the_request() {
+        use yeban_render::wav::read_plain_wav;
+
+        let dir = scratch_dir("export-wav");
+        let (source, project) = write_container_file(&dir, "song.yeban");
+        let target = dir.join("song.wav");
+
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-wav".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("导出必须成功");
+
+        // ① 报告行存在且带 `from=`（不给 --open 时那条"演示工程"的诚实口径同一处）。
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("exported-wav:"))
+            .expect("必须有 exported-wav 报告行");
+        assert!(line.contains("from="), "报告行必须明说来源: {line}");
+        assert!(line.contains("source="), "报告行必须登记音源: {line}");
+
+        // ② 回读：帧数 / 采样率 / 声道 与请求一致（24-bit 整数 PCM）。
+        let (format, buffer) = read_plain_wav(&target).expect("写出的 WAV 必须可回读");
+        assert_eq!(format.sample_rate, 48_000, "采样率");
+        assert_eq!(format.channels, 2, "声道");
+        assert_eq!(format.bits_per_sample, 24, "位深");
+        assert!(!format.is_float, "整数 PCM");
+        let frames = u64::try_from(buffer.len() / usize::from(format.channels)).expect("帧数");
+        assert_eq!(
+            frames,
+            48_000 * 8,
+            "帧数与 `WavExportOptions::default()` 一致"
+        );
+
+        // ③ 非全零：导出的是**有内容**的音频（这条防的是"静默 WAV"）。
+        let peak = match &buffer {
+            yeban_render::dither::PcmBuffer::Int24(samples) => samples
+                .iter()
+                .map(|sample| sample.unsigned_abs())
+                .max()
+                .unwrap_or(0),
+            other => panic!("默认导出必须是 24-bit 整数: {other:?}"),
+        };
+        assert!(peak > 0, "导出的 WAV 不能是静音（peak = {peak}）");
+
+        // ④ 同一工程两次导出 ⇒ 逐字节相同（确定性）。
+        let again = dir.join("song-again.wav");
+        run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--export-wav".to_owned(),
+                again.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("第二次导出必须成功");
+        assert_eq!(
+            std::fs::read(&target).expect("读第一次"),
+            std::fs::read(&again).expect("读第二次"),
+            "同一工程的两次导出必须逐字节相同"
+        );
+        // 演示工程的音符数（独立读一遍）必须非零，否则上面的"非静音"是运气。
+        let notes: usize = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .map(std::collections::BTreeMap::len)
+            .sum();
+        assert!(notes > 0, "夹具必须有音符（实际 {notes}）");
+    }
+
+    /// `--export-wav` 的**拒绝不留半成品**：目标目录不可写 / 目标不是容器 ⇒ 一个字节都不写。
+    #[test]
+    fn export_wav_refuses_without_leaving_a_half_file() {
+        let dir = scratch_dir("export-wav-bad");
+        let junk = dir.join("junk.bin");
+        std::fs::write(&junk, b"not a zip at all").expect("写垃圾");
+        let target = dir.join("never.wav");
+
+        let error = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                junk.display().to_string(),
+                "--export-wav".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect_err("非容器输入必须失败");
+        assert_eq!(
+            error.exit_code(),
+            EXIT_OPEN,
+            "与 `--export-midi` 同族：打开失败复用 --open 的退出码"
+        );
+        assert!(!target.exists(), "打开失败 ⇒ 一个字节都不许写出去");
+    }
 
     #[test]
     fn export_midi_writes_a_parseable_smf_whose_notes_match_the_project() {

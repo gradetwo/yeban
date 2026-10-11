@@ -79,6 +79,7 @@ pub mod engine_host;
 pub mod export_als;
 pub mod export_logic;
 pub mod export_midi;
+pub mod export_wav;
 pub mod headless_idle;
 pub mod host;
 pub mod input;
