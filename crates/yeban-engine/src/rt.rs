@@ -4050,6 +4050,63 @@ mod tests {
     }
 
     /// 从一个给定快照装一台运行时（事件通道容量 64）。
+    /// 判据（⭐ **首块 tick 0 的环音符必须发声**）[ARCH-RT-001]：⭐ 在**第一个量子之前**
+    /// 把一条 `NoteOn` 推进环 ⇒ ⭐ 它必须**真的触发**、⭐ **出声**、⭐ 且**不被记成孤儿松键**。
+    ///
+    /// ⚠ **前置事实（⭐ 不靠嘴说）**：⭐ 修法之前，⭐ 首块在快照武装**之前**出队 ⇒ ⭐ 声部槽
+    /// 还不存在 ⇒ ⭐ `SynthEngine::note_on` 早退返回 `false` ⇒ ⭐ 三个读数分别是
+    /// `poly_notes_triggered == 0`／⭐ 输出**全零**／⭐ `orphan_note_offs == 1`
+    /// （⭐ app 线三条探针实测：⭐ 单条 `C4@tick0`）。⭐ 故本判据就是那条缺陷的**正式证据**。
+    ///
+    /// ⚠ **为什么要**对照组****：⭐ 夹具的快照里**本来就有已调度音符** ⇒ ⭐ 只断言
+    /// `nonzero > 0` 会**靠已调度音符蒙过** ⇒ ⭐ 故本判据跑**同一夹具的两组**
+    /// （⭐ 不推事件 / 推一条 `NoteOn`）⭐ 并比较**增量**：⭐ 必须**恰好**多触发一条。
+    #[test]
+    fn a_note_on_in_the_first_block_actually_sounds() {
+        // 对照组：⭐ 同一夹具、⭐ **不**推事件。
+        let (control_snapshot, _) = note_snapshot_with_pan(1, 0.0);
+        let mut control = rig_with_snapshot(control_snapshot);
+        let mut control_out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        control.runtime.process_quantum(&mut control_out, 2);
+        let control_stats = control.runtime.stats();
+
+        // 实验组：⭐ 同一夹具、⭐ 在**首块之前**推一条 `NoteOn`。
+        let (snapshot, track) = note_snapshot_with_pan(1, 0.0);
+        let mut rig = rig_with_snapshot(snapshot);
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 60,
+                velocity: 100,
+            }]),
+            1,
+            "事件必须进环"
+        );
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut out, 2);
+        let stats = rig.runtime.stats();
+
+        assert_eq!(
+            stats.poly_notes_triggered,
+            control_stats.poly_notes_triggered + 1,
+            "⭐ 首块的 `NoteOn` 必须**恰好**多触发一条（⭐ 修法前它是 0 增量：`note_on` 早退）\
+             —— ⭐ 用增量而不是绝对量，⭐ 是为了排除'靠已调度音符蒙过'"
+        );
+        assert!(
+            out.iter().any(|value| *value != 0.0),
+            "⭐ 必须有非零输出（⭐ 修法前该量子的活音符是静音）"
+        );
+        assert_eq!(
+            stats.orphan_note_offs, control_stats.orphan_note_offs,
+            "⭐ 修法前这条 `NoteOn` 会被记成 1 个孤儿松键（`note_on` 早退、声部从未触发）"
+        );
+        assert_eq!(
+            stats.events_applied,
+            control_stats.events_applied + 1,
+            "事件必须被计入"
+        );
+    }
+
     fn rig_with_snapshot(snapshot: EngineSnapshot) -> Rig {
         let slot = SnapshotSlot::new(snapshot);
         let (retire, queue) = retire_channel(16);
