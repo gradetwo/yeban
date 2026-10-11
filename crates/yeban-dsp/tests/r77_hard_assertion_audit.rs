@@ -1555,7 +1555,16 @@ fn the_device_injection_evidence_is_complete_and_each_row_is_asserted() {
         header.contains(&format!("RED {reds}")),
         "表头 RED 计数必须等于按**同一谓词**数出的条数 {reds}：{header}"
     );
+}
 
+#[test]
+fn the_device_injection_rows_name_real_types() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let (text, _) = read_evidence_text(&root.join(DEVICE_INJECTION_PATH));
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect();
     // ⭐ 表不能凭空写：每行的类型必须在源码里有 `impl Default for <类型>`。
     let mut src = String::new();
     for path in source_files(&root.join(SRC_ROOT)) {
@@ -1647,6 +1656,16 @@ fn the_count_register_carries_a_class_and_a_basis_for_every_number() {
         assert!(!cols[3].trim().is_empty(), "每行必须给出**依据**：{row}");
         assert!(cols[1].parse::<u64>().is_ok(), "值必须是数字：{row}");
     }
+}
+
+#[test]
+fn the_count_register_numbers_are_recomputed_from_the_same_predicate() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let (text, _) = read_evidence_text(&root.join(COUNT_REGISTER_PATH));
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .collect();
     // ⭐ 同一谓词复算：结构性数字必须与源码/证据表逐字对齐。
     let mut impls = 0usize;
     for path in source_files(&root.join(SRC_ROOT)) {

@@ -1,14 +1,14 @@
 # 臂覆盖读数（E2/E3）：每个**分区**的臂数 N 与**失败日志覆盖**
 # 列：region|criterion|arms|coverage —— ⛔ 不跨区相加（A2）
 # 口径：arms = 对判据体内 `assert*!` 出现次数**当场**扫描计数（⛔ 非手数）
-# 合计 10 行（只列 arms >= 6 的分区）
-r77_hard_assertion_audit|the_device_injection_evidence_is_complete_and_each_row_is_asserted|10|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
+# 收益口径：拆臂的收益是**日志粒度**（一次失败只损失该分区），⛔ 不是"零失败"
+# 合计 9 行（只列 arms >= 6 的分区）
 r77_hard_assertion_audit|the_arm_coverage_register_matches_the_source|10|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
 r77_hard_assertion_audit|the_scanners_reject_bad_input_and_accept_good_input|9|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
 r77_hard_assertion_audit|an_integer_criterion|8|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
 r77_hard_assertion_audit|the_call_matching_has_near_miss_controls|8|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
-r77_hard_assertion_audit|the_count_register_carries_a_class_and_a_basis_for_every_number|7|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
 r77_hard_assertion_audit|normalisation_has_a_paired_control|6|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
 r77_hard_assertion_audit|the_integer_scanners_reject_bad_input_and_accept_good_input|6|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
 r77_hard_assertion_audit|the_integer_bound_classifier_separates_the_four_classes|6|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
+r77_hard_assertion_audit|the_device_injection_evidence_is_complete_and_each_row_is_asserted|6|1/N（同体内首败即停 ⇒ 失败日志只覆盖第一条）
 r77_hard_assertion_audit|device_injection_row! 生成的 13 条独立判据|13|13/13（每条注入 = 一条独立 #[test]）
