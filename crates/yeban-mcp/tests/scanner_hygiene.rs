@@ -433,3 +433,98 @@ fn is_inside_string_literal(line: &str, needle: &str) -> bool {
     }
     inside
 }
+
+// ---------------------------------------------------------------------------
+// R-new：**源码树里不得出现"身份形状"的条目**（实测事故换来的）
+// ---------------------------------------------------------------------------
+
+/// 一个条目名是否是**身份形状**（26 字符 ULID，与 `EntityId` 同一份词汇表）。
+///
+/// ⚠ 为什么用模型自己的解析器而不是自己写正则：`EntityId` 是身份形状的**唯一**
+/// 权威（`crates/yeban-model/src/ids.rs`）。本判据要抓的正是"某个文件名**长得像**
+/// 本仓的身份"，因此判据必须与被测形状用**同一份**定义 —— 自己写一条正则就是在
+/// 养第二份会漂移的真相。
+fn is_identity_shaped(name: &str) -> bool {
+    use std::str::FromStr as _;
+    yeban_model::EntityId::from_str(name).is_ok()
+}
+
+/// **本判据存在的理由（实测事故，2026-10-11）**：`crates/yeban-mcp/src/dispatch.rs` 的
+/// `all_ten_tools_reach_the_domain_and_no_blanket_not_implemented_remains` 对**每个注册
+/// 工具**做一次**真执行**，而它给的 `path` 曾是一个裸 ULID 字符串
+/// （`01J8ZQ00000000000000000001`）⇒ 新接的 `yeban_record_wav`（它**不需要活跃工程**）
+/// 就照实把默认 2 秒录成了 `crates/yeban-mcp/01J8ZQ00000000000000000001`
+/// （**576,044 字节**、未被 `git` 跟踪）。
+///
+/// **为什么那时没有任何判据变红**：`tests/scanner_hygiene.rs`（本文件）管的是**文本
+/// 扫描器的掩码口径**（注释/字符串），⛔ 不看文件系统；`scripts/guards/policy_check.py`
+/// 的仓库卫生档只看**大文件/工具缓存**一类，576 KB 的 ULID 名不在它的口径里。
+/// ⇒ 这一类"测试把产物写进源码树"是**零守卫**的。
+///
+/// **本判据的口径**：`crates/` 与 `spikes/` 下（递归）**不得**出现身份形状的条目名。
+/// 为什么这条口径是对的：源码树里的合法条目是 `*.rs` / `Cargo.toml` / 目录名等，
+/// **没有任何**合法条目需要一个 ULID 名字；而 CAS 资产、临时容器、录音落盘都会
+/// 用身份命名 ⇒ 一旦它出现在源码树里，就一定是"某个路径被解析成了源码目录"。
+///
+/// ⚠ 边界（如实登记）：本判据只认**身份形状**。一个随机名（`tmp-1234.wav`）的产物
+/// 落在源码树里它**抓不到** —— 那一半由 `dispatch.rs` 的
+/// `the_generic_execution_leaves_no_file_in_the_crate_dir`（对该测试自己而言）与
+/// `scripts/guards/policy_check.py` 的仓库卫生档承担。
+#[test]
+fn no_identity_shaped_entries_in_the_source_tree() {
+    // ⭐ R56：先喂**已知红**（真实事故里的那个名字）与**已知绿**（普通源码名）。
+    assert!(
+        is_identity_shaped("01J8ZQ00000000000000000001"),
+        "已知红：真实事故里的那个 ULID 名必须被判为身份形状"
+    );
+    assert!(is_identity_shaped("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+    assert!(!is_identity_shaped("lib.rs"), "已知绿：普通文件名不得误报");
+    assert!(!is_identity_shaped("Cargo.toml"));
+    assert!(!is_identity_shaped("01J8ZQ"), "截断的 ULID 不是身份");
+
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("仓库根 = crates/yeban-mcp/../..")
+        .to_path_buf();
+    let mut scanned = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for tree in ["crates", "spikes"] {
+        let root = repo.join(tree);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                scanned += 1;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if is_identity_shaped(&name) {
+                    offenders.push(
+                        entry
+                            .path()
+                            .strip_prefix(&repo)
+                            .unwrap_or(&entry.path())
+                            .display()
+                            .to_string(),
+                    );
+                }
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    stack.push(entry.path());
+                }
+            }
+        }
+    }
+    // ⭐ 非真空下界（R93）：扫描面太小说明仓库根解析错了 ⇒ 判据会恒绿。
+    assert!(
+        scanned >= 100,
+        "扫描面太小（{scanned} 个条目）—— 仓库根解析可能错了"
+    );
+    assert!(
+        offenders.is_empty(),
+        "源码树里出现了**身份形状**的条目（测试把产物写进了源码目录）：{offenders:?}"
+    );
+}

@@ -1,4 +1,4 @@
-# 三方对齐矩阵（系统 / UI / MCP，74 行）
+# 三方对齐矩阵（系统 / UI / MCP，76 行）
 
 > **一句话定位**：这份文件回答**唯一**一个问题 ——
 > **"某个功能在系统侧实现了没有、在 UI 侧暴露了没有、在 MCP 侧暴露了没有，三者错位在哪、为什么、谁来补、什么时候补"**。
@@ -32,11 +32,11 @@
 
 - 三方齐全：32 行
 - 系统+UI（MCP 无）：7 行
-- 系统+MCP（UI 无）：14 行
+- 系统+MCP（UI 无）：16 行
 - 仅系统：11 行
 - 仅计划（系统也未实现）：7 行
 - UI 或 MCP 独有（系统没有）：3 行
-- **合计：74 行**
+- **合计：76 行**
 
 > ⚠ 只改表格不改这一节 ⇒ `check_feature_alignment.py` 立刻变红（第 4 条判据）。数字要么能被命令复核，要么别写。
 
@@ -143,6 +143,8 @@
 | SFZ v2 零拷贝解析器（三级作用域 / `#define` / `#include` 沙箱） | 已实现｜`crates/yeban-sfz/src/parser.rs:1469,1482`（`parse_text` / `parse_sources`；**2026-10-09 第三次就地更正**：旧记 `:973,983`，一次更正为 `:1274,1286`，二次更正为 `:1404,1417`，行号再度漂移 ⇒ 二者**现位于第 1425 行 / 第 1438 行**，`crates/yeban-sfz` 线的后续提交在其之前插入代码；⚠ **2026-10-09 第四次就地更正**：旧记 `:1425,1438`，行号再度漂移 ⇒ 二者**现位于第 1469 行 / 第 1482 行** —— 基线提交 `cc16591`（`feat(sfz): 把 <control>set_ccN 建模成加载时的 MIDI CC 初值`）在本文件里插入 `+44` 行、全部落在这两个定义之前）；台账 `docs/ledger/sfz-core-notes.md`；`MUST-GATE-011`（已接线；2026-10-06 更正——本行旧记「（部分）」，该门禁已由 fuzz 达标转绿） | 无｜无乐器加载控件 | 无｜无工具 | 原因：`yeban-sfz` **没有任何工作区内消费者**（`grep -rn "yeban-sfz" crates/*/Cargo.toml` 只命中自身与根清单登记）；计划：engine 线在合成路径接入 `yeban-sfz`；状态：PENDING |
 | 固定容量声部池与确定性窃取（默认 512 声部） | 已实现｜`crates/yeban-sfz/src/voice_pool.rs:222`（`VoicePool`；**2026-10-09 就地更正**：旧记 `:214`，行号已漂移 ⇒ `pub struct VoicePool` **现位于第 222 行** —— 基线提交 `ec38f19` 的 `note_polyphony` 切片在其之前插入代码）；`ARCH-RT-004` | 无｜无 | 无｜无 | 原因：与上一条同一根因（无消费者）；计划：随 `yeban-sfz` 接线一起暴露；状态：PENDING |
 | 设备机架与设备链（`DeviceKind` / `TrackV3::devices`） | 部分｜`TrackV3::devices` 在 `crates/yeban-model/src/project.rs`；**没有** `DeviceKind` 的 SFZ 变体（`docs/ledger/mcp-render-notes.md` 的 pending 段） | 部分｜`crates/yeban-app/ui/console/device_rack.slint` 仍用 `scene::DEVICE_NAMES` 演示常量 + `device-plugin-host-placeholder-card` 占位卡 | 无｜无设备工具 | 原因：设备链 DSP / 自动化求值接口未落地（`docs/ledger/mcp-render-notes.md` needs-3）；计划：`[UI-NOTE-004]` 设备机架改由工程驱动 + engine 参数面；状态：PENDING |
+| SFZ 乐器装载（`yeban-sfz` 的 `parse_text` + 会话内 registry） | 已实现｜`crates/yeban-sfz/src/parser.rs:1556`（`parse_text`，唯一实现）；MCP 侧装载入口 `crates/yeban-mcp/src/domain/sfz.rs`（`load`：读盘 + SHA-256 + 区域摘要） | 无｜无乐器加载控件（`crates/yeban-app/ui/console/device_rack.slint` 仍是演示常量） | 有｜`yeban_load_sfz`（`path` / `sampleHz`；内容寻址 ⇒ 同一份文本复用同一个 `instrumentId`；`dryRun` 只报读数、不登记） | 原因：`yeban-sfz` 此前**没有任何工作区内消费者**（本组第 1 行）；计划：MCP 侧的装载入口已由本线落地（`ADR-0001` D46 的扩展路径 + `MCP-TOOL-EXT-SFZ-LOAD`），UI 侧的乐器面板仍属 `[UI-NOTE-004]`；状态：待接线 |
+| 用 SFZ 音色离线导出 WAV（`yeban_render_sfz_wav`） | 已实现｜区域选择 / 播放速率 / 总增益**全部**调用 `yeban-sfz`（`Region::matches_key` / `playback_rate` / `playback_spec(..).total_gain()`，见 `crates/yeban-mcp/src/domain/sfz.rs` 的 `render`）；容器编码与 TPDF 抖动**复用** `crates/yeban-mcp/src/domain/render.rs` 的 `write_master_container`；落盘走 `ARCH-SEC-004` 的 `store::write_project_atomic` | 无｜无 SFZ 导出控件 | 有｜`yeban_render_sfz_wav`（`instrumentId` / `velocity` / `frames` / `sampleRate` / `toneHz` / `path` / `note`；24-bit RIFF WAV） | 原因：此前工具面**没有**任何通路让 SFZ 音色参与导出 —— `yeban_render_master` 的 `unsupported` 明写 `sfzSampler`（`DeviceKind` 没有 SFZ 变体）；计划：MCP 侧的导出已由本线落地；**样本文件读取/解码**与**实时侧摊平**仍是欠件（`crates/yeban-app/src/sfz_load.rs` 的诚实登记、`docs/ledger/phase-status.md`）；状态：待接线 |
 | 外部插件宿主（CLAP / VST3 + 崩溃看门狗） | 无｜`crates/yeban-plugin-host/src/lib.rs` 是 12 行纯文档占位（`grep -c "pub fn\|pub struct"` 命中 0） | 部分｜`crates/yeban-app/ui/console/device_rack.slint` 的 `device-plugin-host-placeholder-card`（占位卡，不是真宿主） | 无｜无工具 | 原因：`[v2.0.0]` 范围；计划：v2.0.0 插件宿主线；状态：未到期 |
 
 ## 11. 分组 I —— 离线渲染

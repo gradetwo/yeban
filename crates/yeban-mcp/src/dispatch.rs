@@ -494,6 +494,7 @@ mod tests {
     use super::*;
     use crate::security::{Scope, ScopeSet};
     use crate::tools::ErrorCode;
+    use std::path::PathBuf;
 
     fn token() -> BearerToken {
         BearerToken::generate().token
@@ -920,6 +921,50 @@ mod tests {
         assert_eq!(dispatcher.replayed(), 1);
     }
 
+    /// **本判据存在的理由（实测事故）**：上面那条测试对**每个注册工具**做一次
+    /// **真执行**，而带输出文件面的工具会真的写盘。本线开发中 `yeban_record_wav`
+    /// 用默认 2 秒在 `crates/yeban-mcp/` 里留下了
+    /// `01J8ZQ00000000000000000001`（576,044 字节，未被 `git` 跟踪）——
+    /// 那是"测试把产物写进源码树"，必须机械钉住。
+    ///
+    /// 口径：**crate 根目录的条目集合**在通用执行前后必须**逐项相同**（新增或消失都算红）。
+    #[test]
+    fn the_generic_execution_leaves_no_file_in_the_crate_dir() {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let snapshot = |dir: &PathBuf| -> Vec<String> {
+            let mut entries: Vec<String> = std::fs::read_dir(dir)
+                .expect("读 crate 目录")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            entries.sort_unstable();
+            entries
+        };
+        let before = snapshot(&crate_dir);
+        // ⭐ 非真空下界（R93）：扫描面太小说明 `CARGO_MANIFEST_DIR` 解析错了 ⇒
+        // 上面的"前后相同"会**恒真**（空集 == 空集），判据变成一句注释。
+        assert!(
+            before.len() >= 3,
+            "crate 根至少应有 Cargo.toml / src / tests 三条, 实得 {}",
+            before.len()
+        );
+        let mut dispatcher = dispatcher();
+        let auth = bearer(&dispatcher);
+        for spec in &crate::tools::TOOLS {
+            let line = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": spec.name, "arguments": minimal_arguments(spec)}
+            })
+            .to_string();
+            let _ = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
+        }
+        let after = snapshot(&crate_dir);
+        assert_eq!(
+            before, after,
+            "通用执行不得在 crate 源码目录里留下任何条目（工具的输出路径必须在临时目录里）"
+        );
+    }
+
     #[test]
     fn empty_idempotency_key_is_treated_as_absent() {
         let mut dispatcher = dispatcher();
@@ -1029,6 +1074,14 @@ mod tests {
     }
 
     /// 为每个工具造一份最小合法实参（只为走到执行分支）。
+    ///
+    /// ⚠ `path` 必须落在**临时目录**里，⛔ 不能是一个裸相对文件名：本测试对
+    /// **每一个注册工具**做一次**真执行**，而带输出文件面的工具（
+    /// `yeban_record_wav` / `yeban_render_master` / `yeban_export_diagnostics`）
+    /// 会照实写盘 —— 一个相对路径会让它们写进 **crate 源码目录**。
+    /// 实测事故（本线开发中）：`yeban_record_wav` 用默认 2 秒在这里留下了
+    /// `crates/yeban-mcp/01J8ZQ00000000000000000001`（576,044 字节 WAV，未被跟踪）。
+    /// 同一条判据 `the_generic_execution_leaves_no_file_in_the_crate_dir` 现在把它钉住。
     fn minimal_arguments(spec: &crate::tools::ToolSpec) -> Value {
         let mut map = Map::new();
         for param in spec.all_params() {
@@ -1036,6 +1089,16 @@ mod tests {
                 continue;
             }
             let value = match param.json_type {
+                "string" if param.name == "path" => Value::from(
+                    std::env::temp_dir()
+                        .join(format!(
+                            "yeban-mcp-dispatch-{}-{}",
+                            std::process::id(),
+                            spec.name
+                        ))
+                        .display()
+                        .to_string(),
+                ),
                 "string" => Value::from("01J8ZQ00000000000000000001"),
                 "integer" => Value::from(1),
                 "number" => Value::from(1.0),

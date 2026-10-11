@@ -30,7 +30,9 @@
             "yeban_query_engine_state",
             "yeban_import_audio",
             "yeban_export_diagnostics",
-            "yeban_export_midi"
+            "yeban_export_midi",
+            "yeban_load_sfz",
+            "yeban_render_sfz_wav"
           ]
         },
         "arguments": {
@@ -179,6 +181,44 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_export_midi"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_load_sfz"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_load_sfz"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_render_sfz_wav"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_render_sfz_wav"
               }
             }
           }
@@ -553,6 +593,87 @@
               "maxLength": 256
             }
           }
+        },
+        "yeban_load_sfz": {
+          "title": "yeban_load_sfz",
+          "type": "object",
+          "description": "装载一份 SFZ v2 乐器（走 yeban-sfz 的 parse_text，唯一实现），会话内记住它并返回区域数与来源读数。 采样文件本体不参与：本仓没有采样文件读取/解码，region 的 sample= 只是路径字符串。",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "磁盘上的 .sfz 文件路径（**必填**；空串/目录/不存在 ⇒ IO_ERROR）。长度界与其他工具的 path 一致（无界，见 tests/param_bounds_guard.rs）。"
+            },
+            "sampleHz": {
+              "type": "number",
+              "description": "样本侧采样率 (Hz)，用于报告引擎率与样本率不一致时的播放速率比；缺省 48000。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "yeban_render_sfz_wav": {
+          "title": "yeban_render_sfz_wav",
+          "type": "object",
+          "description": "用一份已装载的 SFZ 乐器把活跃工程的 MIDI 音符离线渲染成 24-bit RIFF WAV 并落盘。 音源 = 该 SFZ 的区域（区域选择/播放速率/总增益全部来自 yeban-sfz），样本数据是内存正弦 440 Hz（本仓无采样文件读取）。 渲染路径复用 yeban_render_master 的容器编码 + TPDF 抖动 + 一次原子落盘（ARCH-SEC-004）。",
+          "properties": {
+            "instrumentId": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "yeban_load_sfz 返回的 instrumentId（**必填**）；未知取值 ⇒ INVALID_PARAMETER_RANGE。"
+            },
+            "velocity": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 127,
+              "description": "整段使用的力度 (0..=127)；缺省 100。"
+            },
+            "frames": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "输出总帧数（**必填**，> 0；上限 172800000 帧 = 1 小时 @48 kHz）。"
+            },
+            "sampleRate": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "输出采样率 (Hz)；缺省 48000。"
+            },
+            "toneHz": {
+              "type": "number",
+              "description": "内存正弦样本的频率 (Hz)；缺省 440。"
+            },
+            "path": {
+              "type": "string",
+              "description": "输出 WAV 路径（**必填**；空串/撞工程文件/撞 .yeban.lock ⇒ INVALID_PARAMETER_RANGE）。长度界与其他工具的 path 一致（无界）。"
+            },
+            "note": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 127,
+              "description": "只渲染这一个 MIDI 音高（0..=127）；不给则渲染活跃工程 MIDI 片段里的全部音符。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "instrumentId",
+            "frames",
+            "path"
+          ]
         }
       }
     }
