@@ -300,6 +300,28 @@ pub fn export_wav(
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
+    // ---- 0. 引擎装载（**慢路径校验先行**：引擎文档要求先做慢路径校验，再进入渲染循环）----
+    //
+    // 为什么提前：`arm_from_snapshot` 在**没有可武装的轨/音色/鼓**时返回 `NoMasterBus`；
+    // 它是"这个工程能不能用引擎渲染"的判定，理应在计划编译与任何 I/O 之前发生
+    // ⇒ 失败时一个字节都不会落盘，也不会先被计划层的次生错误（例如"没有注册样本源"）掩盖。
+    let snapshot = if options.use_engine_source {
+        let snapshot = EngineSnapshot::from_project(project, 1)
+            .map_err(|error| WavExportError::Engine(error.to_string()))?;
+        // ⭐ **慢路径校验只做一次**，且必须在这里做：武装是**逐源**发生的，
+        // 而"没有任何可渲染轨"时一个源都不会被造出来 ⇒ 引擎的 `NoMasterBus` 裁决会被
+        // 计划层的次生错误（"没有注册样本源"）掩盖（本机实测：清空轨道表时正是这样）。
+        // ⇒ 用一个**探针引擎**先武装一次，让"能不能用引擎渲染这个工程"的判定发生在
+        //   计划编译与任何 I/O **之前**（引擎文档要求先做慢路径校验）。
+        let mut probe = SynthEngine::new(snapshot.sample_rate());
+        probe
+            .arm_from_snapshot(&snapshot)
+            .map_err(|error| WavExportError::Engine(error.to_string()))?;
+        Some(snapshot)
+    } else {
+        None
+    };
+
     let options_render = RenderOptions {
         frames: options.frames,
         sample_rate: options.sample_rate,
@@ -329,13 +351,11 @@ pub fn export_wav(
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
         .collect();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    let source_label: &'static str = if options.use_engine_source {
-        let snapshot = EngineSnapshot::from_project(project, 1)
-            .map_err(|error| WavExportError::Engine(error.to_string()))?;
+    let source_label: &'static str = if let Some(snapshot) = snapshot.as_ref() {
         for track_id in renderable.clone() {
             sources.insert(
                 track_id,
-                Box::new(EngineTrackSource::new(&snapshot, track_id)?),
+                Box::new(EngineTrackSource::new(snapshot, track_id)?),
             );
         }
         "引擎乐器（SynthEngine::arm_from_snapshot + render_track）"
@@ -465,17 +485,67 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 判据 b（`NoMasterBus` ⇒ **失败且不留半成品**）：工程的主总线不在轨道表里时，
-    /// 引擎装载在**落盘之前**失败，目标文件**不存在**。
+    /// 判据 b（⭐ **语义已按引擎侧修复更新**）：主总线**不在轨道表**里、但工程**仍有可武装的轨道**
+    /// ⇒ 导出**应当成功**（⛔ 不再期望 `NoMasterBus`）。
+    ///
+    /// ## 为什么这条判据的期望被反转过（第 617 轮更正）
+    ///
+    /// 我最初把它写成"主总线不在 `tracks()` ⇒ `NoMasterBus` ⇒ 失败"。`mod-engine` 随后用一个
+    /// 最小夹具发现 `arm_from_snapshot` 的 master 守卫**与 `rt.rs` 的语义不一致**：实时侧只把 master
+    /// 当**过滤器**（`id != master`），所以"要求 master 出现在 `tracks()` 里"会**误拒一个合法的最小工程**；
+    /// 它已改成"只拒绝**没有可武装的轨/音色/鼓**的快照"（`6b0ef4f9`）。
+    /// ⇒ 本判据当时断言的是**被修掉的错误行为**，**它变红正是修复生效的证据**；现在把期望改成新语义。
     #[test]
-    fn a_project_without_a_master_bus_fails_before_any_byte_is_written() {
+    fn a_project_whose_master_is_absent_from_the_track_table_still_renders() {
         let mut project = yeban_model::samples::filled_project();
-        // ⚠ 必须让**计划编译通过**、而**引擎装载失败**：路由图里保留主总线节点，
-        // 但把主总线**轨道**从轨道表里删掉 ⇒ `arm_from_snapshot` 才会返回 `NoMasterBus`
-        // （若把 master 改成不存在的 id，先失败的是计划编译，测不到本判据要测的那条路 —— 本机实测）。
+        // 路由图里保留主总线节点（计划仍可编译），只把主总线**轨道**从轨道表里删掉。
         project.tracks.remove(&project.master_bus_track_id);
         let dir = std::env::temp_dir().join(format!(
-            "yeban-wav-nomaster-{}-{}",
+            "yeban-wav-nomaster-track-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let target = dir.join("still-renders.wav");
+
+        let report = export_wav(&project, &target, WavExportOptions::default())
+            .expect("仍有可武装的轨道 ⇒ 必须成功（新语义）");
+        assert!(
+            report.source.contains("引擎乐器"),
+            "音源: {}",
+            report.source
+        );
+        assert!(target.exists(), "成功 ⇒ 文件必须存在");
+        let (_, buffer) = yeban_render::wav::read_plain_wav(&target).expect("可回读");
+        let nonzero = match &buffer {
+            yeban_render::dither::PcmBuffer::Int24(samples) => {
+                samples.iter().filter(|sample| **sample != 0).count()
+            }
+            other => panic!("默认导出必须是 24-bit 整数: {other:?}"),
+        };
+        assert!(
+            nonzero > 0,
+            "仍有可武装的轨道 ⇒ 不许是静音（非零样本 {nonzero}）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据 c（**失败路径的正确触发条件** ⇒ 失败且不留半成品）：工程里**没有可武装的轨/音色/鼓**
+    /// 时，`arm_from_snapshot` 返回 `NoMasterBus`，导出在**落盘之前**失败，目标文件**不存在**。
+    ///
+    /// ⚠ **重叠声明**：`mod-engine` 的夹具已经断言过 `NoMasterBus` **返回值**本身；
+    /// 本判据保留的理由是它覆盖的是**导出这一侧的后果**（`WavExportError::Engine` ＋ **一个字节都不落盘**），
+    /// ⛔ 不是重复断言返回值。
+    #[test]
+    fn a_project_with_nothing_armable_reports_no_master_bus_and_writes_nothing() {
+        let mut project = yeban_model::samples::filled_project();
+        // 清空**全部**轨道（含主总线）：快照里没有任何可武装的轨/音色/鼓。
+        // ⚠ 实测更正：只留主总线**不够** —— 引擎的守卫把主总线自己也算"可武装"，
+        // 于是它不再拒绝（随后才在计划执行时因缺源而失败）⇒ 触发条件必须是"一个可武装项都没有"。
+        // 路由图保持原样 ⇒ 计划仍可编译（⛔ 不靠改坏图来制造失败）。
+        project.tracks.clear();
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-wav-nothing-armable-{}-{}",
             std::process::id(),
             EntityId::new().to_canonical_string()
         ));
@@ -483,7 +553,7 @@ mod tests {
         let target = dir.join("never.wav");
 
         let error = export_wav(&project, &target, WavExportOptions::default())
-            .expect_err("没有主总线必须失败");
+            .expect_err("没有可武装的轨 ⇒ 必须失败");
         assert!(
             matches!(error, WavExportError::Engine(_)),
             "必须是引擎装载失败（NoMasterBus）: {error:?}"
