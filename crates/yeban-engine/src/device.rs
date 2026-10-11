@@ -125,10 +125,22 @@ pub enum DeviceError {
     /// 系统上没有默认输出设备（CI 容器、无声卡服务器、设备被拔掉）。
     #[error("no default output device available")]
     NoDefaultOutputDevice,
+    /// 没有默认**输入**设备（录音侧）。[A④]
+    ///
+    /// ⚠ 与 [`DeviceError::NoDefaultOutputDevice`] **分开**：把"没有输入设备"报成 output
+    /// 是**错的话**，会把调用方引到错误的排查方向。
+    #[error("no default input device available")]
+    NoDefaultInputDevice,
 
     /// 设备没有报告任何输出配置。
     #[error("device reports no supported output configuration")]
     NoSupportedConfigs,
+    /// 设备没有报告任何**输入**配置（录音侧）。[A④]
+    ///
+    /// ⚠ 与 [`DeviceError::NoSupportedConfigs`] 分开：后者的文案含 "output" ⇒ 复用会把
+    /// "没有输入配置"报成输出侧的问题。
+    #[error("device reports no supported input configuration")]
+    NoSupportedInputConfigs,
 
     /// 请求的采样率/通道数在设备能力范围之外。
     #[error(
@@ -197,6 +209,30 @@ pub fn enumerate_output_devices() -> Result<Vec<DeviceInfo>, DeviceError> {
         });
     }
     Ok(out)
+}
+
+/// ⭐ **输入侧的格式协商**（[A④]）：**纯函数**，⛔ 不触碰真实设备 ⇒ CI/本机均可单测。
+///
+/// 与输出侧的 [`negotiate`] **同一份政策**：本函数**委托**给它，⛔ 不复制一份选择逻辑
+/// （否则两侧会漂移，正是"同类情形两处政策不同"的形态）。
+///
+/// 与输出侧唯一的差别是**错误措辞**：输入侧若需要报告"没有默认设备"，
+/// 调用方应当用 [`DeviceError::NoDefaultInputDevice`]（本函数自身**不会**产生它 ——
+/// 它只做"从已枚举到的配置里选择"）。
+///
+/// # Errors
+/// 与 [`negotiate`] 相同：`NoSupportedConfigs`／`UnsupportedSampleFormat`／
+/// `UnsupportedConfig`／`ExclusiveModeUnsupported`。
+pub fn negotiate_input(
+    supported: &[SupportedStreamConfigRange],
+    want: &EngineConfig,
+) -> Result<NegotiatedConfig, DeviceError> {
+    // ⭐ 唯一的输入侧差异：空范围报**输入专用**错误；其余一律委托给 `negotiate`
+    //（⛔ 不复制选择逻辑，免得两侧政策漂移 —— 那正是"同类情形两处政策不同"的形态）。
+    if supported.is_empty() {
+        return Err(DeviceError::NoSupportedInputConfigs);
+    }
+    negotiate(supported, want)
 }
 
 /// 设备能力与请求的协商（**纯函数**，不触碰真实设备 ⇒ CI 上可单测）。
@@ -924,5 +960,73 @@ mod tests {
                 "缺字段 `{field}`（实得 {text}）"
             );
         }
+    }
+
+    /// ⭐ [A④] 输入侧协商的**纯函数**判据（无声卡也能判）。
+    ///
+    /// 判定量（已命名）：**协商结果三元组** = `(channels, sample_rate, sample_format)`，
+    /// 以及失败时的**错误变体名**。
+
+    #[test]
+    fn negotiate_input_is_pure_and_reports_input_specific_errors() {
+        let want = EngineConfig::default();
+        // ① 空范围 ⇒ ⭐ **输入专用**错误（⛔ 不是输出侧那条）
+        let empty = negotiate_input(&[], &want).expect_err("空范围必须报错");
+        println!("[device] 空范围（输入侧）⇒ {empty}");
+        assert!(
+            matches!(empty, DeviceError::NoSupportedInputConfigs),
+            "空范围必须报 `NoSupportedInputConfigs`（实得 {empty}）"
+        );
+        // ② 只有 i16 ⇒ UnsupportedSampleFormat{I16}（与输出侧**同一条**规则）
+        let only_i16 = [fake_range(
+            2,
+            48_000,
+            48_000,
+            SupportedBufferSize::Range { min: 64, max: 4096 },
+            SampleFormat::I16,
+        )];
+        let err = negotiate_input(&only_i16, &want).expect_err("i16-only 必须报错");
+        assert!(
+            matches!(
+                err,
+                DeviceError::UnsupportedSampleFormat {
+                    format: SampleFormat::I16
+                }
+            ),
+            "i16-only ⇒ UnsupportedSampleFormat{{I16}}（实得 {err}）"
+        );
+        // ③ f32 可用 ⇒ 选中，且**如实回报**通道/采样率（判定量三元组）
+        let f32_ok = [fake_range(
+            2,
+            48_000,
+            48_000,
+            SupportedBufferSize::Range { min: 64, max: 4096 },
+            SampleFormat::F32,
+        )];
+        let got = negotiate_input(&f32_ok, &want).expect("f32 必须可协商");
+        let triple = (got.channels, got.sample_rate, got.sample_format);
+        println!("[device] f32 可用 ⇒ 协商三元组 = {triple:?}");
+        assert_eq!(triple, (2, 48_000, SampleFormat::F32), "必须如实回报三元组");
+        // ④ 非独占要求 ⇒ 与输出侧**同一条**规则（证明没有第二条政策）
+        let mut exclusive = want;
+        exclusive.share_mode = ShareMode::RequireExclusive;
+        let err = negotiate_input(&f32_ok, &exclusive).expect_err("独占必须被拒");
+        assert!(
+            matches!(err, DeviceError::ExclusiveModeUnsupported),
+            "独占 ⇒ ExclusiveModeUnsupported（实得 {err}）"
+        );
+        // ⑤ 两侧对**非空**输入的结论必须一致（对称性：⛔ 不是两套政策）
+        // ⚠ `DeviceError` 不是 `PartialEq` ⇒ 比 `Ok` 侧的三元组（`Option`），⛔ 不比 Result。
+        let input_ok = negotiate_input(&f32_ok, &want)
+            .map(|c| (c.channels, c.sample_rate, c.sample_format))
+            .ok();
+        let output_ok = negotiate(&f32_ok, &want)
+            .map(|c| (c.channels, c.sample_rate, c.sample_format))
+            .ok();
+        assert!(input_ok.is_some(), "输入侧必须协商成功");
+        assert_eq!(
+            input_ok, output_ok,
+            "非空输入下，输入侧与输出侧的协商结论必须一致"
+        );
     }
 }
