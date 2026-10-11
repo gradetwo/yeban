@@ -866,6 +866,10 @@ fn double_capture(
         events: 3,
         first_events: vec![(1, 0x90, 60, 100), (2, 0x90, 62, 100), (3, 0x80, 60, 0)],
         unsupported: 1,
+        // ⭐ 本字面量是**夹具**：`dropped_events` 目前**不进 UI 回执**（那要动 `src/host.rs`
+        // 的 `apply_pending_midi_in`，属 UI 的另一票）⇒ 这里给一个**非零**值，正好证明
+        // "回执不显示它"这件事没变（若哪天 UI 侧接上，这个夹具会立刻暴露口径问题）。
+        dropped_events: 4,
         jitter: Some(yeban_app::midi_in::Jitter {
             n: 2,
             p50: 1,

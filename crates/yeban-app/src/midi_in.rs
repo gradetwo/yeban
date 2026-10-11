@@ -202,6 +202,17 @@ pub struct MidiInReport {
     ///
     /// ⚠ ⭐ 它是**累计量** ⇒ ⭐ 读它**不消费**任何东西（⭐ 多次读得到同一个值）。
     pub unsupported: u64,
+    /// ⭐ **被丢弃的事件条数**（⭐ 单位 = **事件条数**，⛔ 不是字节、⛔ 不是"半条"）：⭐ 环满时
+    /// 事件**整体**没进环 ⇒ ⭐ 发送侧 +1（⭐ `[ARCH-RT-001]`：回调内⛔ 不阻塞 ⇒ 满了就丢并**计数**）。
+    ///
+    /// ⚠ ⭐ **口径（写进字段名旁边，⛔ 不靠读者猜）**：⭐ 它是**累计量** ——
+    /// **从 `event_channel` 建环那一刻起，到读它的那一刻为止**；⭐ 本报告的值是在
+    /// **采集循环结束之后读一次**得到的终态（⛔ 不是循环中间的中间值）。
+    ///
+    /// ⚠ ⭐ 为什么它要紧：⭐ 用户按了 3 秒而事件爆环时，⭐ 报告里必须**看得出丢了几条**
+    /// —— ⛔ 不许"悄悄少几条"。⭐ 它与 [`Self::unsupported`] 是**两个不同的失败面**：
+    /// 后者 = "消息不承载"（系统专用/可变长），前者 = "事件承载了但环满了"。
+    pub dropped_events: u64,
     /// ⭐ **临时**抖动读数（⭐ `RSK-22` 口径**待裁**）；⭐ 样本不足时为 `None`。
     pub jitter: Option<Jitter>,
 }
@@ -222,6 +233,11 @@ pub struct CapturedMessages {
     pub messages: Vec<(u64, u8, u8, u8)>,
     /// ⭐ **不承载**的条数（⭐ 真读数：生产者计数、接收侧读同一个共享原子）。
     pub unsupported: u64,
+    /// ⭐ **被丢弃的事件条数**（⭐ 真读数：发送侧在环满时计数、接收侧读**同一个**共享原子）。
+    ///
+    /// ⚠ 口径：**累计**（从建环那一刻到读它的那一刻）；⭐ 本字段由采集路径在**采集结束之后
+    /// 读一次**填充 ⇒ ⭐ 它是那次采集的**终态**（⛔ 不是循环中间值）。
+    pub dropped_events: u64,
 }
 
 impl CapturedMessages {
@@ -239,6 +255,7 @@ impl CapturedMessages {
                 .copied()
                 .collect(),
             self.unsupported,
+            self.dropped_events,
             &timestamps_us,
         )
     }
@@ -265,9 +282,11 @@ impl MidiInReport {
             .collect::<Vec<_>>()
             .join(" ");
         format!(
-            "midi-in: port_origin_us={} seconds={} events={} unsupported={} {jitter} first={head} \
+            "midi-in: port_origin_us={} seconds={} events={} unsupported={} dropped-events={} \
+             (口径: unsupported / dropped-events 都是**累计条数**; dropped-events = 环满丢弃的\
+             **事件**数, 从建环累计到**采集结束时那一次读**) {jitter} first={head} \
              负载=CLI 单进程采集(⛔ 无并发重活)",
-            self.origin_us, self.seconds, self.events, self.unsupported
+            self.origin_us, self.seconds, self.events, self.unsupported, self.dropped_events
         )
     }
 }
@@ -289,6 +308,7 @@ pub fn build_report(
     events: u64,
     first_events: Vec<(u64, u8, u8, u8)>,
     unsupported: u64,
+    dropped_events: u64,
     timestamps_us: &[u64],
 ) -> MidiInReport {
     MidiInReport {
@@ -297,6 +317,7 @@ pub fn build_report(
         events,
         first_events,
         unsupported,
+        dropped_events,
         jitter: Some(inter_onset_jitter_ticks(timestamps_us, origin_us)),
     }
 }
@@ -449,6 +470,12 @@ pub fn capture_messages(wanted: &str, seconds: f32) -> Result<CapturedMessages, 
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
+    // ⭐ **环满丢弃的事件数**：⭐ 口径是"**从建环那一刻累计到读它的那一刻**" ⇒ 因此**在采集
+    // 循环结束之后读一次**（⭐ 在循环里读只会拿到中间值，⭐ 那正是本字段最容易写错的地方）。
+    // ⚠ 与 `unsupported` 一样走**接收侧**（⭐ 判据能用同一个方法证明"报告值 = 接收侧读数"；
+    // 会话类型只能由真硬件构造）。
+    let dropped_events = session.receiver().dropped_events();
+
     // ⭐ **不承载的条数**：⭐ 生产侧（⭐ `midir` 回调体，⭐ 内核 = `MidiEventSender::handle_message`
     // 的 `None` 分支）在**与接收侧共享**的 `Arc<AtomicU64>` 上计数 ⇒ 这里从**接收侧**
     // 读**同一个**原子 ⇒ ⭐ 拿到的就是真读数。
@@ -466,6 +493,7 @@ pub fn capture_messages(wanted: &str, seconds: f32) -> Result<CapturedMessages, 
         seconds,
         messages,
         unsupported,
+        dropped_events,
     })
 }
 
@@ -726,7 +754,15 @@ mod tests {
         );
 
         // ⭐ 报告字段：⭐ 走 `capture()` **同一个**装配函数 ＋ **同一个**接收侧读取。
-        let report = build_report(0, 1.0, 1, Vec::new(), receiver.unsupported_messages(), &[0]);
+        let report = build_report(
+            0,
+            1.0,
+            1,
+            Vec::new(),
+            receiver.unsupported_messages(),
+            receiver.dropped_events(),
+            &[0],
+        );
         assert_eq!(report.unsupported, 3, "报告里必须是真读数（⛔ 不是 0）");
         assert!(
             report.summary().contains("unsupported=3"),
@@ -753,6 +789,7 @@ mod tests {
             2,
             Vec::new(),
             receiver.unsupported_messages(),
+            receiver.dropped_events(),
             &[0, 1],
         );
         assert_eq!(report.unsupported, 0, "无消息时必须是 0");
@@ -795,6 +832,87 @@ mod tests {
             source.matches(concat!("pub fn ", "build_report(")).count(),
             1,
             "build_report 只能有一个定义"
+        );
+    }
+
+    /// 判据 ⑮（⭐ **feature 档**，⭐ 行为判据 - **溢出侧**）：⭐ **环满 ⇒ 报告里的
+    /// `dropped_events` 等于接收侧读数、且 > 0**（⛔ 不是又一个写死的 0）。
+    ///
+    /// ⚠ ⭐ 手法与 io 侧那条判据**同一套**：⭐ **最小容量环 ＋ 注入足量事件** ⇒ ⛔ 不靠
+    /// "跑久一点看会不会丢"。⭐ 事件由 crate 的模拟回调体内核 `handle_message` 推进
+    /// （与真 `midir` 回调同一段代码）⇒ 本判据不需要任何 MIDI 硬件。
+    #[cfg(feature = "midi-input")]
+    #[test]
+    fn the_report_carries_the_dropped_count_when_the_ring_overflows() {
+        // ⭐ 容量 2 的环 + 7 条承载事件 ⇒ 进 2 条、丢 5 条。
+        let (mut sender, receiver) = yeban_midi_io::event_channel(2);
+        for _ in 0..7 {
+            sender.handle_message(0, &[0x90, 60, 100]);
+        }
+        assert_eq!(receiver.pending(), 2, "容量 2 ⇒ 只有 2 条进环");
+        let dropped = receiver.dropped_events();
+        assert_eq!(dropped, 5, "7 条推入容量 2 的环 ⇒ 丢 5 条");
+        assert!(dropped > 0);
+
+        // ⭐ 报告字段：⭐ 走 `capture()` **同一个**装配函数 ＋ **同一个**接收侧读取。
+        let report = build_report(0, 1.0, 7, Vec::new(), 0, receiver.dropped_events(), &[0]);
+        assert_eq!(
+            report.dropped_events, dropped,
+            "报告值必须等于接收侧读数（单位 = 事件条数）"
+        );
+        assert!(report.dropped_events > 0, "⛔ 爆环时不许报 0");
+        assert!(
+            report.summary().contains("dropped-events=5"),
+            "摘要必须打印真读数: {}",
+            report.summary()
+        );
+        // ⭐ 累计量 ⇒ 读它**不消费**任何东西（⛔ 不是"读一次清零"的队列）。
+        assert_eq!(receiver.dropped_events(), dropped, "读它不消费任何东西");
+    }
+
+    /// 判据 ⑯（⭐ **feature 档**，⭐ 行为判据 - **反向对照**）：⭐ **环不溢 ⇒ 报告里必须是 0**
+    /// （⭐ 与判据 ⑮ 成对 ⇒ ⭐ ⚠ **两条一起**才排除"换一种写死"）。
+    #[cfg(feature = "midi-input")]
+    #[test]
+    fn the_report_is_zero_when_the_ring_never_overflowed() {
+        let (mut sender, receiver) = yeban_midi_io::event_channel(8);
+        for _ in 0..3 {
+            sender.handle_message(0, &[0x90, 60, 100]);
+        }
+        assert_eq!(receiver.dropped_events(), 0, "容量 8 装 3 条 ⇒ 一条都不丢");
+
+        let report = build_report(0, 1.0, 3, Vec::new(), 0, receiver.dropped_events(), &[0]);
+        assert_eq!(report.dropped_events, 0, "不溢时必须是 0");
+        assert!(
+            report.summary().contains("dropped-events=0"),
+            "{}",
+            report.summary()
+        );
+    }
+
+    /// 判据 ⑰（⭐ **结构判据**）：⭐ 生产路径**在采集循环之后**读**恰好一次**丢弃计数。
+    ///
+    /// ⚠ ⭐ 为什么必须有它（否则口径只是注释）：`dropped_events` 的口径是
+    /// "**从建环那一刻累计到读它的那一刻**" ⇒ 在采集**循环里**读只会拿到**中间值**
+    /// （报告会少报）。这条判据把"读点在循环之后"与"只读一次"都钉住 —— 行号/顺序改了就会红。
+    #[cfg(feature = "midi-input")]
+    #[test]
+    fn the_capture_reads_the_dropped_counter_once_and_after_the_loop() {
+        let source = include_str!("midi_in.rs");
+        // ⚠ 自指陷阱：针脚不能以字面形式出现在本文件里（否则它会命中自己）⇒ `concat!` 拼开。
+        let needle = concat!("session.receiver().", "dropped_events()");
+        assert_eq!(
+            source.matches(needle).count(),
+            1,
+            "生产路径必须**恰好读一次** `{needle}`（在循环里读会得到中间值）"
+        );
+        let read_at = source.find(needle).expect("必须存在那一次读");
+        let loop_at = source
+            .find("while std::time::Instant::now() < deadline {")
+            .expect("必须能找到采集循环");
+        assert!(
+            read_at > loop_at,
+            "⭐ 口径: 丢弃数是**从建环累计到读它那一刻** ⇒ 必须在**采集结束之后**读"
         );
     }
 }

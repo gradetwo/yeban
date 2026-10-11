@@ -62,6 +62,10 @@ fn injected() -> CapturedMessages {
         seconds: 2.0,
         messages: injected_messages(),
         unsupported: 0,
+        // ⭐ 注入夹具**不经过环**（没有端口、没有回调）⇒ 丢弃数就是 0；
+        // ⭐ "环满 ⇒ 报告里的值 = 接收侧读数 且 > 0" 由 `midi_in.rs` 的成对判据覆盖
+        // （最小容量环 + 注入足量事件, 与 io 侧同一手法）。
+        dropped_events: 0,
     }
 }
 
