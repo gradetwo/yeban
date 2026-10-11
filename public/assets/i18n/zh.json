@@ -102,8 +102,9 @@
   "quickstart.req_macos": "macOS 构建依赖：Xcode Command Line Tools（xcode-select --install）",
   "quickstart.req_display": "打开主窗口需要真实显示器；--headless 不需要（CI 用的就是它）",
   "quickstart.note_title": "诚实状态",
-  "quickstart.note": "实时引擎还不能发声（Phase 2 进行中），主窗口启动时用的是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。",
+  "quickstart.note": "实时引擎现在已经能产生音频了（确定性地合成工程里的 MIDI 音符）。它还**不做**：滤波器/音色参数、母线限制器、声相定律、走带控制，这些判据里也还没有声卡路径；主窗口启动时用的仍是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。",
   "quickstart.build_title": "构建",
   "quickstart.run_title": "运行",
-  "quickstart.test_title": "测试"
+  "quickstart.test_title": "测试",
+  "quickstart.cli_note": "打不开时退出码 3 并给出容器的原始原因，绝不退化成\"打开成空工程\"；--save-as 是原子替换（临时文件 → fsync → rename），失败时旧文件一字未改；没有 --open 时存的是内置演示工程并在输出里明说；未知开关退出 2 并打印用法。"
 }

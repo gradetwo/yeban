@@ -139,7 +139,8 @@
         </article>
         <article class="card">
           <h3 data-i18n="quickstart.note_title">诚实状态</h3>
-          <p class="qs-note" data-i18n="quickstart.note">实时引擎还不能发声（Phase 2 进行中），主窗口启动时用的是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。</p>
+          <p class="qs-note" data-i18n="quickstart.cli_note">打不开时退出码 3 并给出容器的原始原因，绝不退化成"打开成空工程"；--save-as 是原子替换（临时文件 → fsync → rename），失败时旧文件一字未改；没有 --open 时存的是内置演示工程并在输出里明说；未知开关退出 2 并打印用法。</p>
+          <p class="qs-note" data-i18n="quickstart.note" style="margin-top:10px">实时引擎还不能发声（Phase 2 进行中），主窗口启动时用的是演示工程。什么算已验证、什么仍是 PENDING，见仓库里的 docs/ledger/gate-status.md。</p>
         </article>
       </div>
 
@@ -150,10 +151,16 @@ cargo build --release                     # 构建整个工作区（首次需要
 cargo build --release -p yeban-app        # 只构建桌面 GUI 二进制</code></pre>
 
       <h3 class="qs-sub" data-i18n="quickstart.run_title">运行</h3>
-      <pre class="code-block"><code>cargo run --release -p yeban-app                     # 打开桌面主窗口
-cargo run --release -p yeban-app -- --headless       # 无需显示器：打印 headless ok 后退出 0
-cargo run --release -p yeban-app -- --dump-elements  # 打印语义控件树，不建窗口
-cargo run --release -p yeban-mcp                     # Intent API v2 的 stdio 形态（MCP 服务）</code></pre>
+      <pre class="code-block"><code>cargo run --release -p yeban-app                  # 打开桌面主窗口（需要显示器）
+cargo run --release -p yeban-app -- --headless    # 无需显示器：打印 headless ok 后退出 0
+cargo run --release -p yeban-app -- --help        # 全部开关 + 组合语义 + 退出码
+
+# 下面这些都不需要显示器
+cargo run --release -p yeban-app -- --save-as demo.yeban                     # 把内置演示工程写成 .yeban
+cargo run --release -p yeban-app -- --open demo.yeban --headless             # 打开它并打印读到了什么
+cargo run --release -p yeban-app -- --open demo.yeban --export-elements e.txt # 导出语义元素清单
+
+cargo run --release -p yeban-mcp                  # Intent API v2 的 stdio 形态（MCP 服务）</code></pre>
 
       <h3 class="qs-sub" data-i18n="quickstart.test_title">测试</h3>
       <pre class="code-block"><code>cargo test --workspace

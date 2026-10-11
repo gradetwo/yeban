@@ -102,8 +102,9 @@
   "quickstart.req_macos": "macOS build deps: Xcode Command Line Tools (xcode-select --install)",
   "quickstart.req_display": "A real display is needed for the GUI window; --headless needs none (that is what CI uses)",
   "quickstart.note_title": "Honest status",
-  "quickstart.note": "The real-time engine does not make sound yet (Phase 2 in progress) and the app starts with a demo project. For what is verified and what is still PENDING, see docs/ledger/gate-status.md in the repository.",
+  "quickstart.note": "The real-time engine now does produce audio (it deterministically synthesises a project's MIDI notes). It still does NOT do: filter/timbre parameters, a bus limiter, a pan law, transport, and there is no sound-card path in these criteria; the app still starts with a demo project. For what is verified and what is still PENDING, see docs/ledger/gate-status.md in the repository.",
   "quickstart.build_title": "Build",
   "quickstart.run_title": "Run",
-  "quickstart.test_title": "Test"
+  "quickstart.test_title": "Test",
+  "quickstart.cli_note": "A failed --open exits 3 with the container's own reason and never degrades into an empty project; --save-as is an atomic replace (temp file to fsync to rename) and leaves the old file untouched on failure; with no --open it saves the built-in demo project and says so; unknown switches exit 2 with usage."
 }
