@@ -14,30 +14,25 @@
 //! ⛔ 本文件**不写 RIFF 头**（`write_plain_wav` 是唯一落盘点），⛔ 也**不另造渲染路径**
 //! （一律 `RenderPlan`，与 `yeban-render` 的基准/门禁同源）。
 //!
-//! ## ⚠ 诚实登记：音源是**最小音源**，⛔ 不是引擎乐器
+//! ## 音源：**引擎乐器**（默认），最小音源只作回退与对照
 //!
-//! 本切片之前 `yeban-app` **从未渲染过音频**（`RenderPlan`／`RenderOptions` 在 app 里 0 命中）。
-//! 而"设备 → `AudioSource`"这条桥今天**只能用最小音源**打通，理由是一条**实测**：
-//!
-//! - `yeban-engine` 的 `SynthEngine::render_track(track, schedule, out)` 虽是 `pub`，
-//!   但 `SynthEngine` 的**公开方法只有三个**（`new`／`voice_steals`／`set_steal_fade_frames`）
-//!   ⇒ **"把快照装进合成器"的 arming 是 crate 内部的** ⇒ app 侧**够不着**引擎乐器。
-//! - 引擎的**离线**入口（`device::render_callback` / `NullBackend::render`）确实与 cpal 同路径、
-//!   无需声卡，但它的构造要 engine-host 机制（快照槽 ＋ 退役队列 ＋ 事件通道），
-//!   且**样本只从回调缓冲取**（app 侧今天没有公开的取回路径）。
-//!
-//! ⇒ 本文件因此提供一个**确定性、按音符起止**的最小音源（廉价方波 ＋ 首尾线性包络，
-//! 相位由**整数帧号**派生，⛔ 不用浮点累加），把**导出管路**先打通；
-//! 引擎乐器的接入**另需一条引擎公开 API**，签名与理由写在下面（⛔ 本线不改 `yeban-engine`）：
+//! 默认路径是**引擎乐器**，与实时路径**同一条装配序列**：
 //!
 //! ```text
-//! // 写给 `mod-engine` 线：
-//! impl SynthEngine {
-//!     /// 用一份工程快照武装/更新本合成器（轨道槽、鼓机、参数、调度表）。
-//!     pub fn arm_from_snapshot(&mut self, snapshot: &EngineSnapshot) -> Result<(), SnapshotError>;
-//! }
-//! // `EngineSnapshot::from_project(&project, revision)` 已存在（`snapshot.rs:435`）。
+//! EngineSnapshot::from_project(&project, 1)        // 工程 ⇒ 快照（既有）
+//!       ⇒ SynthEngine::new(snapshot.sample_rate())
+//!       ⇒ engine.arm_from_snapshot(&snapshot)      // ⭐ `mod-engine` 新增的公开入口
+//!       ⇒ 每轨一个源：engine.render_track(track, snapshot.schedules().get(&track), &mut mono)
 //! ```
+//!
+//! ⚠ **红线 7**：`arm_from_snapshot` **会分配**（`begin_snapshot` 增长区间表）⇒ 它的允许调用点是
+//! **离线导出／控制线程装载工程／测试**，⛔ **绝不可**在音频回调里调用。本文件是离线路径 ✓。
+//! ⚠ 没有主总线时 `arm_from_snapshot` 返回 `SnapshotError::NoMasterBus` ⇒ 本文件在**落盘之前**
+//! 如实失败（⛔ 不 `unwrap`、⛔ 不留半成品）。
+//!
+//! `WavExportOptions::use_engine_source = false` 时才用**最小音源**（确定性方波 ＋ 首尾包络，
+//! 相位由整数帧号派生）：它是**判据的对照**与极端回退，报告行里的 `source=` 字段**明说用了哪一个**
+//! （⛔ 不让人误以为听到了乐器）。
 //!
 //! ## "拒绝时不留半成品"
 //!
@@ -47,6 +42,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use yeban_engine::snapshot::EngineSnapshot;
+use yeban_engine::synth::{NoteSchedule, SynthEngine};
 use yeban_model::{EntityId, YebanProjectV1};
 use yeban_render::dither::{PcmBuffer, quantize_i24};
 use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
@@ -65,6 +62,9 @@ pub struct WavExportOptions {
     pub channels: usize,
     /// 确定性种子（[`ARCH-DET-001]`：渲染不引入真熵源）。
     pub seed: u64,
+    /// `true`（默认）= 用**引擎乐器**（`SynthEngine::arm_from_snapshot`）；
+    /// `false` = 用**最小音源**回退（方波；判据用它做对照）。
+    pub use_engine_source: bool,
 }
 
 impl Default for WavExportOptions {
@@ -75,6 +75,7 @@ impl Default for WavExportOptions {
             sample_rate: 48_000,
             channels: 2,
             seed: 1,
+            use_engine_source: true,
         }
     }
 }
@@ -129,6 +130,8 @@ pub enum WavExportError {
     Io(String),
     /// 请求了 0 帧（没有可导出的内容）。
     Empty(String),
+    /// 引擎装载失败（快照投影 / `arm_from_snapshot`；例如工程没有主总线 ⇒ `NoMasterBus`）。
+    Engine(String),
 }
 
 impl core::fmt::Display for WavExportError {
@@ -138,6 +141,7 @@ impl core::fmt::Display for WavExportError {
             Self::Write(reason) => write!(formatter, "写出 WAV 失败: {reason}"),
             Self::Io(reason) => write!(formatter, "读取导出结果失败: {reason}"),
             Self::Empty(reason) => write!(formatter, "没有可导出的内容: {reason}"),
+            Self::Engine(reason) => write!(formatter, "引擎装载失败: {reason}"),
         }
     }
 }
@@ -205,6 +209,66 @@ impl NoteToneSource {
     }
 }
 
+/// **引擎乐器音源**：每条轨道一个 [`SynthEngine`]，用**同一条离线装配路径**
+/// （`SynthEngine::arm_from_snapshot`）武装，再按轨渲染（`render_track`）。
+///
+/// ⚠ 每个源持有**自己的**引擎：`RenderPlan::execute` 会把源分发到工作线程（`threads`），
+/// 共享一个 `&mut SynthEngine` 需要锁，而"一个源一个引擎"没有锁也没有跨线程共享。
+/// ⚠ 红线 7：`arm_from_snapshot` **会分配**（`begin_snapshot` 增长区间表）⇒ 只在**离线导出**
+/// 里调用，⛔ 绝不在音频回调里调用（本文件是离线路径）。
+struct EngineTrackSource {
+    /// 已武装的合成器（本源独占）。
+    engine: SynthEngine,
+    /// 本源负责的轨道。
+    track: EntityId,
+    /// 该轨的调度表（来自同一份快照；`None` ⇒ 该轨静音，与 `render_track` 的文档一致）。
+    schedule: Option<NoteSchedule>,
+    /// 单声道暂存（`render_track` 输出"声相之前"的单声道）。
+    mono: Vec<f32>,
+}
+
+impl EngineTrackSource {
+    /// 从快照武装一个轨道源。
+    ///
+    /// # Errors
+    ///
+    /// `arm_from_snapshot` 的拒绝（含 `NoMasterBus`）。
+    fn new(snapshot: &EngineSnapshot, track: EntityId) -> Result<Self, WavExportError> {
+        let mut engine = SynthEngine::new(snapshot.sample_rate());
+        // ⛔ 不 `unwrap`：没有主总线时如实失败（调用方据此在**落盘之前**退出）。
+        engine
+            .arm_from_snapshot(snapshot)
+            .map_err(|error| WavExportError::Engine(error.to_string()))?;
+        Ok(Self {
+            engine,
+            track,
+            schedule: snapshot.schedules().get(&track).cloned(),
+            mono: Vec::new(),
+        })
+    }
+}
+
+impl AudioSource for EngineTrackSource {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        let channels = context.channels.max(1);
+        let frames = context.frames.min(out.len() / channels);
+        if self.mono.len() < frames {
+            self.mono.resize(frames, 0.0);
+        }
+        // `render_track` 复用内部游标推进（与实时路径同一个函数）。
+        self.engine
+            .render_track(self.track, self.schedule.as_ref(), &mut self.mono[..frames]);
+        out.fill(0.0);
+        for index in 0..frames {
+            let value = self.mono[index];
+            for channel in 0..channels {
+                out[index * channels + channel] = value;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl AudioSource for NoteToneSource {
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         out.fill(0.0);
@@ -252,20 +316,42 @@ pub fn export_wav(
     )
     .map_err(|error| WavExportError::Render(error.to_string()))?;
 
-    // ---- 2. 每条非 master 轨道一个源（无音符的轨道 ⇒ 静音源，保证每节点都有源）----
+    // ---- 2. 每条非 master 轨道一个源 ----
+    //
+    // 默认走**引擎乐器**：先投影快照（`EngineSnapshot::from_project`），再按轨武装
+    // （`arm_from_snapshot`，与实时路径同一条装配序列）。任何一步失败都在**落盘之前**返回
+    // ⇒ 不留半成品。`use_engine_source = false` 时用最小音源（判据的对照 + 极端回退）。
+    // 计划**自己**的节点表是唯一权威：`RenderPlan::nodes()`（图里存在但不可达的节点会被剪枝，
+    // 给它塞源会得到"节点 … 不在渲染计划里（未知或被剪枝）" —— 本机实测踩过两次）。
+    let renderable: Vec<EntityId> = plan
+        .nodes()
+        .into_iter()
+        .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
+        .collect();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    for track_id in project.tracks.keys() {
-        if *track_id == project.master_bus_track_id {
-            continue;
+    let source_label: &'static str;
+    if options.use_engine_source {
+        let snapshot = EngineSnapshot::from_project(project, 1)
+            .map_err(|error| WavExportError::Engine(error.to_string()))?;
+        for track_id in renderable.clone() {
+            sources.insert(
+                track_id,
+                Box::new(EngineTrackSource::new(&snapshot, track_id)?),
+            );
         }
-        sources.insert(
-            *track_id,
-            Box::new(NoteToneSource::from_track(
-                project,
-                *track_id,
-                options.sample_rate,
-            )),
-        );
+        source_label = "引擎乐器（SynthEngine::arm_from_snapshot + render_track）";
+    } else {
+        for track_id in renderable.clone() {
+            sources.insert(
+                track_id,
+                Box::new(NoteToneSource::from_track(
+                    project,
+                    track_id,
+                    options.sample_rate,
+                )),
+            );
+        }
+        source_label = "最小音源（方波 + 首尾包络；回退）";
     }
 
     // ---- 3. 执行（全部在内存里）----
@@ -309,6 +395,101 @@ pub fn export_wav(
         bits: format.bits_per_sample,
         bytes,
         digest,
-        source: "最小音源（方波 + 首尾包络；⛔ 非引擎乐器，见模块文档）",
+        source: source_label,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 判据 a（**真的换了音源**）：引擎乐器路径非静音，且与最小音源路径**逐字节不同**。
+    ///
+    /// ⚠ 为什么断言"逐字节不同"而不是"更好听"：这是**可机械判定**的判别量；
+    /// 两个不同音源在同一工程上产出同一串 24-bit 抖动样本的概率可忽略（若真相同，判据会红并要求解释）。
+    #[test]
+    fn the_engine_source_is_not_silent_and_differs_from_the_fallback_tone() {
+        let project = yeban_model::samples::filled_project();
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-wav-engine-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let engine_path = dir.join("engine.wav");
+        let tone_path = dir.join("tone.wav");
+
+        let engine = export_wav(&project, &engine_path, WavExportOptions::default())
+            .expect("引擎乐器导出必须成功");
+        let fallback = export_wav(
+            &project,
+            &tone_path,
+            WavExportOptions {
+                use_engine_source: false,
+                ..WavExportOptions::default()
+            },
+        )
+        .expect("回退音源导出必须成功");
+
+        assert!(
+            engine.source.contains("引擎乐器"),
+            "报告必须明说音源: {}",
+            engine.source
+        );
+        assert!(
+            fallback.source.contains("最小音源"),
+            "报告必须明说回退: {}",
+            fallback.source
+        );
+
+        let (_, engine_buffer) =
+            yeban_render::wav::read_plain_wav(&engine_path).expect("引擎版可回读");
+        let engine_nonzero = match &engine_buffer {
+            yeban_render::dither::PcmBuffer::Int24(samples) => {
+                samples.iter().filter(|sample| **sample != 0).count()
+            }
+            other => panic!("默认导出必须是 24-bit 整数: {other:?}"),
+        };
+        assert!(
+            engine_nonzero > 0,
+            "引擎乐器路径必须非静音（非零样本数 = {engine_nonzero}）"
+        );
+        assert_ne!(
+            std::fs::read(&engine_path).expect("读引擎版"),
+            std::fs::read(&tone_path).expect("读回退版"),
+            "引擎乐器与最小音源必须产出不同的字节（否则本判据没有判别力）"
+        );
+        println!(
+            "[wav-engine] 引擎版非零样本 {engine_nonzero}；两版字节数 {} vs {}",
+            engine.bytes, fallback.bytes
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据 b（`NoMasterBus` ⇒ **失败且不留半成品**）：工程的主总线不在轨道表里时，
+    /// 引擎装载在**落盘之前**失败，目标文件**不存在**。
+    #[test]
+    fn a_project_without_a_master_bus_fails_before_any_byte_is_written() {
+        let mut project = yeban_model::samples::filled_project();
+        // ⚠ 必须让**计划编译通过**、而**引擎装载失败**：路由图里保留主总线节点，
+        // 但把主总线**轨道**从轨道表里删掉 ⇒ `arm_from_snapshot` 才会返回 `NoMasterBus`
+        // （若把 master 改成不存在的 id，先失败的是计划编译，测不到本判据要测的那条路 —— 本机实测）。
+        project.tracks.remove(&project.master_bus_track_id);
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-wav-nomaster-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let target = dir.join("never.wav");
+
+        let error = export_wav(&project, &target, WavExportOptions::default())
+            .expect_err("没有主总线必须失败");
+        assert!(
+            matches!(error, WavExportError::Engine(_)),
+            "必须是引擎装载失败（NoMasterBus）: {error:?}"
+        );
+        assert!(!target.exists(), "失败 ⇒ 一个字节都不许写出去");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
