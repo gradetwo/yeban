@@ -246,6 +246,9 @@ impl PdcPlan {
                 }
             }
             successors
+                // R215③（如实登记）：本函数内 insert（7 处，**单值存储** ⇒ 后者胜）与这里的
+                // entry(..).or_default().push(..)（2 处，**累积** ⇒ 两条都留、顺序保持）并存。
+                // 二者**不是同一情形的两种政策**，差异是**故意的**（遍历确定性依赖累积顺序）。
                 .entry(edge.source_node)
                 .or_default()
                 .push(edge.destination_node);
@@ -828,6 +831,34 @@ impl CompensationBank {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // R215③ 便宜臂：本文件 `.insert(`（单值存储）与 `.entry(..).or_default().push(..)`（累积）
+    // 并存；本臂断言**两侧政策各自正确且故意不同**（⛔ 不改语义，只增判据）。
+    #[test]
+    fn duplicate_identity_policies_are_deliberate_and_documented() {
+        use std::collections::HashMap;
+        // ① 单值存储：同键两次 insert ⇒ 后者胜、条数不增。
+        let mut single: HashMap<u32, u32> = HashMap::new();
+        single.insert(1, 10);
+        single.insert(1, 20);
+        assert_eq!(
+            single.len(),
+            1,
+            "单值存储：同键重复写不得增加条数（覆盖语义）"
+        );
+        assert_eq!(single[&1], 20, "单值存储：后者胜");
+        // ② 累积：同键两次 entry(..).or_default().push(..) ⇒ 两条都在、顺序保持。
+        let mut list: HashMap<u32, Vec<u32>> = HashMap::new();
+        for value in [7u32, 8u32] {
+            list.entry(1).or_default().push(value);
+        }
+        assert_eq!(
+            list[&1],
+            vec![7, 8],
+            "累积语义：同键重复 push 必须保留两条且顺序不变"
+        );
+        assert_eq!(list.len(), 1, "累积语义：键仍只有一个");
+    }
     use yeban_model::{RoutingEdge, RoutingKind};
 
     /// 用 (源, 目标) 列表构造一个合法的 `RoutingGraph`（自动补 `nodes` 与边身份）。
