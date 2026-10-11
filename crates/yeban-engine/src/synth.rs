@@ -1039,9 +1039,11 @@ impl SynthEngine {
     ///   ⇒ **抢占同一槽、⭐ 重触发**）⇒ ⭐ 返回值告诉调用方"⭐ 是否发生了抢占/重触发"；
     /// * ⭐ **实时路径**：零分配、零锁、零 I/O。
     ///
-    /// ⚠ ⭐ `u64::MAX` 的代价（⭐ 裁定 (B)）：⭐ [`PolySynth::retire_finished`] 的谓词要求
-    /// `end_sample <= position` ⇒ ⭐ 活音符**不会**被它回收 ⇒ ⭐ 声部由**池满窃取**回收
-    /// （⭐ 每槽 ≤ [`VOICES_PER_TRACK`] 个 ⇒ 有界）。⭐ 听觉上正确、⭐ 槽位回收延迟。
+    /// ⚠ ⭐ `u64::MAX` 的**准确**代价（⭐ 实测更正）：⭐ [`PolySynth::retire_finished`]
+    /// 的谓词要求 `end_sample <= position` ⇒ ⭐ 它**对活音符不适用**；⭐ 但 ⭐ [`PolySynth::render`]
+    /// 会在包络回到 `Idle` 时**当场回收**声部（⭐ `polysynth.rs:1273`／`:1281`，⭐ 与 `end_sample` 无关）
+    /// ⇒ ⭐ **松键的活音符照常回收** ✓；⭐ **未松键者持续占声部**（⭐ 这是对的），⭐ 直到池满被窃取
+    /// ⇒ ⭐ 有界（⭐ 每槽 ≤ [`VOICES_PER_TRACK`]）。
     pub fn note_on(&mut self, track: EntityId, pitch: u8, velocity: u8) -> bool {
         let Some(index) = self.slot_index(track) else {
             return false;
