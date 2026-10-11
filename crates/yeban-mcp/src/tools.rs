@@ -1,4 +1,4 @@
-//! `yeban_*` 意图工具的注册表 [MCP-TOOL-001..010 + `ADR-0001` D45/D46 的两条扩展, ROAD-M4-003]。
+//! `yeban_*` 意图工具的注册表 [MCP-TOOL-001..010 + `ADR-0001` D45/D46 及后续的九条扩展, ROAD-M4-003]。
 //!
 //! ## 权威契约
 //!
@@ -10,16 +10,26 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
-//! ## 十二个工具 = 规范表格的十个 + 两条**扩展**（ADR-0001 D45 / D46）
+//! ## 十九个工具 = 规范表格的十个 + 九条**扩展**（ADR-0001 D45 / D46 + 后续线）
+//!
+//! 扩展段的**唯一清单**是 [`EXTENSION_NAMES`]：D45 的撤销 / 重做 2 条、D46 的三类能力 3 条、
+//! D56 的诊断包 1 条、SMF 导出 1 条、SFZ 装载与 SFZ 音色导出 2 条 = **9** 条。
 //!
 //! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
 //! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
-//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出两条：
+//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出九条扩展：
 //!
 //! | 工具 | 作用 | 规范 ID |
 //! | :--- | :--- | :--- |
 //! | `yeban_undo` | 撤销最近 N 步（默认 1），走 [`crate::undo_session`] 的**唯一**实现 | `MCP-TOOL-EXT-UNDO` |
 //! | `yeban_redo` | 重做最近 N 步（默认 1），同一个实现 | `MCP-TOOL-EXT-REDO` |
+//! | `yeban_edit_automation` | 自动化泳道读（唯一求值入口）+ 写一个点 | `MCP-TOOL-EXT-AUTOMATION` |
+//! | `yeban_query_engine_state` | 设备链 + 引擎/会话读数（只读） | `MCP-TOOL-EXT-ENGINE-STATE` |
+//! | `yeban_import_audio` | 音频素材登记成 `clip_pool` 条目（`yeban-decode`） | `MCP-TOOL-EXT-IMPORT-AUDIO` |
+//! | `yeban_export_diagnostics` | 诊断包采集（zip） | `MCP-TOOL-EXT-DIAGNOSTICS` |
+//! | `yeban_export_midi` | 共享 SMF 映射导出（base64 回传，只读） | `MCP-TOOL-EXT-EXPORT-MIDI` |
+//! | `yeban_load_sfz` | 装载 SFZ 乐器进会话 registry（读盘 + 解析 + 区域摘要） | `MCP-TOOL-EXT-SFZ-LOAD` |
+//! | `yeban_render_sfz_wav` | 用已装载的 SFZ 区域把活跃工程的 MIDI 音符导出成 24-bit WAV | `MCP-TOOL-EXT-SFZ-WAV` |
 //!
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -79,14 +89,14 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 17;
+pub const TOOL_COUNT: usize = 19;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 
 /// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条
-/// + D56 的诊断包 1 条 + 本线的 SMF 导出 1 条。
-pub const EXTENSION_TOOL_COUNT: usize = 7;
+/// + D56 的诊断包 1 条 + SMF 导出 1 条 + 本线的 SFZ 装载 / SFZ 音色导出 2 条。
+pub const EXTENSION_TOOL_COUNT: usize = 9;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -107,6 +117,8 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_import_audio",
     "yeban_export_diagnostics",
     "yeban_export_midi",
+    "yeban_load_sfz",
+    "yeban_render_sfz_wav",
 ];
 
 /// 规范 ID 前缀。
@@ -538,7 +550,7 @@ const fn bounded_param(
     }
 }
 
-/// 十二个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45 的两条扩展在后）。
+/// 十九个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
@@ -1074,6 +1086,112 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::ClipNotFound,
             ErrorCode::InvalidParameterRange,
             ErrorCode::Conflict,
+            ErrorCode::RenderFailed,
+        ],
+    },
+    // ---- 本线的 SFZ 两条扩展（`crates/yeban-mcp/src/domain/sfz.rs`） ----
+    //
+    // 缺口是**实测**出来的，不是从词面推的（`AGENTS.md` §6.3）：`grep` 全仓
+    // `yeban-mcp` 的 17 个工具 ⇒ `yeban_load_sfz` / `yeban_render_sfz_wav` 一个都不存在，
+    // 而 `yeban_render_master` 的 `unsupported` 里**明写** `sfzSampler`
+    // （`domain/render.rs` 模块头："本模型版本（`DeviceKind`）里没有 SFZ 设备变体"）。
+    // 因此"用 SFZ 音色导出 WAV"在工具面**没有通路** —— 这两条补的就是它。
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SFZ-LOAD",
+        name: "yeban_load_sfz",
+        summary: "装载一份 SFZ v2 乐器 (走 yeban-sfz 的唯一解析实现) 并返回区域数与会话内 instrumentId",
+        scope: Scope::AppAdmin,
+        // 只读工程、不落盘：装载只把"文本 + 元数据"放进会话态（`MODEL-ISO-001` 第 2 层），
+        // 打开 / 关闭工程会整体重置它。`Op` 一位都不写 ⇒ 提交图谱不动。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 必须与 `schemas/mcp-tools.schema.json` 的 `$defs.yeban_load_sfz` 逐字段一致
+            // （判据 `tests/contract.rs::extension_argument_constraints_match_the_registry`
+            // 双向核对属性集合 / 类型 / 必填集合）。
+            // ⚠ `path` 的长度界**必须**与注册表里其他工具的 `path` 一致（都是无界）：
+            // `tests/param_bounds_guard.rs::every_string_params_bound_status_is_registered`
+            // 要求同名参数在不同工具里的界**逐值相同**（`seen.len() == 1`），而既有的
+            // `yeban_open_project` / `yeban_render_master` / `yeban_import_audio` 都声明
+            // `BoundStatus::Unbounded`。空串由**领域层**拒绝（`domain/sfz.rs` 的
+            // `parse_load_arguments`），这条拒绝不体现在 `ParamSpec` 上。
+            param(
+                "path",
+                "string",
+                true,
+                "磁盘上的 .sfz 文件路径 (空串/目录/不存在 ⇒ `IO_ERROR` 或 `INVALID_PARAMETER_RANGE`; 联集里没有专门的 SFZ 错误码, 且不许发明)",
+            ),
+            param(
+                "sampleHz",
+                "number",
+                false,
+                "样本侧采样率 (Hz); 缺省 48000。它只进报告里的播放速率比, 本仓不读采样文件",
+            ),
+        ],
+        errors: &[
+            // `IO_ERROR` 承担"读文件失败 / 路径是目录"；`INVALID_PARAMETER_RANGE` 承担
+            // 空串、非有限采样率、以及"这个路径根本不是音频样本"以外的形状错误。
+            // SFZ 文本非法 ⇒ 同样是 `INVALID_PARAMETER_RANGE`（联集里没有 `PARSE_ERROR`，
+            // 不许发明），并在 `data.reason = "sfzParseFailed"` 里如实说明来源。
+            ErrorCode::IoError,
+            ErrorCode::InvalidParameterRange,
+        ],
+    },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-SFZ-WAV",
+        name: "yeban_render_sfz_wav",
+        summary: "用已装载的 SFZ 乐器把活跃工程的 MIDI 音符离线渲染成 24-bit WAV 并原子落盘",
+        scope: Scope::AppAdmin,
+        side_effect: SideEffect::Disk,
+        params: &[
+            param(
+                "instrumentId",
+                "integer",
+                true,
+                "`yeban_load_sfz` 返回的会话内 instrumentId; 未知取值 ⇒ `INVALID_PARAMETER_RANGE` (`sfzInstrumentNotFound`)",
+            ),
+            param(
+                "velocity",
+                "integer",
+                false,
+                "整段使用的力度 (0..=127); 缺省 100",
+            ),
+            param(
+                "frames",
+                "integer",
+                true,
+                "输出总帧数 (> 0; 上限 172800000 帧 = 1 小时 @48 kHz); 它就是输出时长, 不是估算",
+            ),
+            param(
+                "sampleRate",
+                "integer",
+                false,
+                "输出采样率 (Hz); 缺省 48000",
+            ),
+            param(
+                "toneHz",
+                "number",
+                false,
+                "内存正弦样本的频率 (Hz); 缺省 440。样本数据来自它 (本仓无采样文件读取)",
+            ),
+            // ⚠ 同 `yeban_load_sfz` 的 `path`：界必须与既有工具逐值相同（无界）。
+            // 空串与"撞工程/锁文件"由领域层拒绝（`sfz::validate` + `render::guard_output_path`）。
+            param(
+                "path",
+                "string",
+                true,
+                "输出 WAV 路径 (空串/撞工程文件/撞 .yeban.lock ⇒ `INVALID_PARAMETER_RANGE`)",
+            ),
+            param(
+                "note",
+                "integer",
+                false,
+                "只渲染这一个 MIDI 音高 (0..=127); 不给 = 渲染活跃工程 MIDI 片段里的全部音符",
+            ),
+        ],
+        errors: &[
+            ErrorCode::NoActiveProject,
+            ErrorCode::InvalidParameterRange,
+            ErrorCode::IoError,
             ErrorCode::RenderFailed,
         ],
     },
@@ -1665,7 +1783,10 @@ mod tests {
                 "yeban_query_project",
                 "yeban_query_engine_state",
                 "yeban_export_diagnostics",
-                "yeban_export_midi"
+                "yeban_export_midi",
+                // 本线的 SFZ 装载：只把"文本 + 元数据"放进**会话态** registry，
+                // 不改工程、不落盘、不进提交图谱 ⇒ 显式分类为 read-only。
+                "yeban_load_sfz"
             ],
             "只读工具必须显式分类为 read-only"
         );

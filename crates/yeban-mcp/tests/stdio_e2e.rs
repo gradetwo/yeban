@@ -1172,7 +1172,11 @@ fn request_and_response_scale_edges_over_stdio() {
     assert_eq!(res.len(), 8, "8 条请求都必须有响应: {res:?}");
 
     // ① 最小请求。
-    assert_eq!(res[1]["result"]["tools"].as_array().map(Vec::len), Some(17));
+    // ⚠ 从**注册表**派生，不写死数字：新增工具时这条判据不该变成第二个会漂移的"口径"。
+    assert_eq!(
+        res[1]["result"]["tools"].as_array().map(Vec::len),
+        Some(yeban_mcp::tools::TOOL_COUNT)
+    );
     // ② 空 ops 不允许。
     let empty = &res[3]["result"];
     assert_eq!(empty["status"], "error", "{empty}");

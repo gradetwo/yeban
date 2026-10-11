@@ -6399,6 +6399,7 @@ dependencies = [
  "yeban-midi",
  "yeban-model",
  "yeban-render",
+ "yeban-sfz",
  "yeban-theory",
 ]
 

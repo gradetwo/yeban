@@ -1350,6 +1350,12 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         .expect("MIDI")
         .id
         .to_canonical_string();
+    // 一份**真 SFZ**（两条区域）写进 scratch：`yeban_load_sfz` 因此走成功路径。
+    fs::write(
+        scratch.join("no-blanket.sfz"),
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n<region> sample=b.wav key=64 pitch_keycenter=64\n",
+    )
+    .expect("写 SFZ 夹具");
     let arguments: Vec<(&str, Value)> = vec![
         (
             "yeban_open_project",
@@ -1412,6 +1418,17 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
         ),
         // SMF 导出：只读且无参数（活跃工程有 MIDI 内容 ⇒ 带内成功）。
         ("yeban_export_midi", json!({})),
+        // SFZ 装载：指向 scratch 里一份**真 SFZ** ⇒ 带内成功（真的读盘 + 解析）。
+        (
+            "yeban_load_sfz",
+            json!({ "path": scratch.text("no-blanket.sfz") }),
+        ),
+        // SFZ 导出：上一条已经把 scratch 里那份 SFZ 装成 instrumentId 1 ⇒ 这里
+        // 真的把活跃工程的 MIDI 音符渲染成 WAV 落盘（渲染器已接线, 因此必须成功）。
+        (
+            "yeban_render_sfz_wav",
+            json!({ "instrumentId": 1, "frames": 4096, "path": scratch.text("sfz-out.wav") }),
+        ),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];
