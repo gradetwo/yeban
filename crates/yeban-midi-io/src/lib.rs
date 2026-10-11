@@ -21,10 +21,20 @@
 //!
 //! # 当前进度（⭐ 如实登记，⛔ 不假装整条通）
 //!
-//! ⭐ 本文件目前只有**可本机判定**的那一层：[`ticks_from_origin_us`]（⭐ **纯函数** ⇒
-//! 无声卡也能判）。⚠ **尚未接线** —— ⭐ 依 **D8**：⭐ 根 `Cargo.toml` 登记 `midir` ⇒
-//! 重生成 `docs/ledger/dependency-licenses.md` ⇒ ⭐ **CI 的 `deny` 作业绿** ⇒ 才可写
-//! `midir` 的真实建流与回调接线。
+//! ⭐ **已接线**（⭐ 依 **D8**：⭐ 根 `Cargo.toml` 登记 `midir` ＋ ⭐ CI 的 `deny` 作业已绿
+//! ⇒ ⭐ `midir` 的真实建流与回调接线可以落）：
+//!
+//! * ⭐ [`ticks_from_origin_us`]（⭐ **纯函数** ⇒ 无声卡也能判）；
+//! * ⭐ [`input`] 模块：⭐ 端口枚举（[`input::enumerate_input_ports`]）＋ 定长事件
+//!   （[`input::MidiEvent`]）＋ 预分配无锁环（[`input::event_channel`]）＋
+//!   模拟回调体（[`input::MidiEventSender::handle_message`]）＋ 会话
+//!   （[`input::open_input`]／[`input::MidiInputSession`]）＋ `RSK-22` **临时**读数口径
+//!   （[`input::jitter_reading`]，⭐ 标注 `待裁`）。
+//!
+//! ⚠ ⭐ **仍然断的地方（⛔ 不假装整条通）**：⭐ `midir` 的**真回调线程**在**本机与 CI
+//! 都跑不到**（⭐ CI 容器无 MIDI 硬件）⇒ ⭐ 判据覆盖的是**回调体的内核**
+//! （[`input::MidiEventSender::handle_message`]），⭐ 真回调与它**走同一段代码**，
+//! ⭐ 但"⭐ OS 真的把字节送进来"这一层**只能在有声卡的机器上验**。
 //!
 //! ⚠ ⭐ **已登记的断点（与输出侧同款）**：⭐ `midir` 的
 //! `build_input_stream → play → 真回调线程` 在**本机与 CI 都无法覆盖**（⭐ 本机不编该依赖、
@@ -38,6 +48,16 @@
 //!    ⛔ 不得以"未裁"为由跳过读数。
 
 #![forbid(unsafe_code)]
+
+pub mod input;
+
+pub use input::{
+    DEFAULT_EVENT_CAPACITY, JitterReading, MidiEvent, MidiEventReceiver, MidiEventSender,
+    MidiInputError, MidiPortInfo, event_channel, jitter_reading,
+};
+
+#[cfg(feature = "midi-input")]
+pub use input::{MidiInputSession, enumerate_input_ports, open_input};
 
 /// 内部时间基准：**每四分音符 960 Tick**（[`MODEL-AST-001`]）。
 pub const PPQ: u32 = 960;
