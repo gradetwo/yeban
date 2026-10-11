@@ -45,7 +45,7 @@ mod live;
 
 use live::{LiveControlPlane, build_live_ui};
 use serde_json::json;
-use yeban_ui_mcp::live::request_line;
+use yeban_ui_mcp::live::{ProbeOptions, ScreenshotProbe, request_line};
 use yeban_ui_mcp::methods::{
     METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE, METHOD_DISPATCH_POINTER_UP,
     METHOD_NODE,
@@ -143,6 +143,18 @@ fn drag_delta(
     let before = window.get_roll_scroll_x();
     drag_by_id(plane, seq, SCROLL_AREA, dx, 4);
     window.get_roll_scroll_x() - before
+}
+
+/// 用**控制面自己的探针**抓一帧的像素证据（`[MUST-GATE-015]` / `[UI-MCP-003]`）。
+///
+/// ⚠ `capture()` 属于 **`LiveUi`**，⛔ 不属于 `LiveControlPlane`（CI 已判决过一次）；
+/// 探针这条路是 `live_ui_mcp.rs` 里**已在用**的读数（指纹 ＋ 遮罩证据）。
+fn probe_shot(plane: &mut LiveControlPlane) -> ScreenshotProbe {
+    plane
+        .plane()
+        .probe(&ProbeOptions::new(SCROLL_AREA, "卷帘拖动手势面"))
+        .expect("探针必须能读到拖动面并给出截图证据")
+        .screenshot
 }
 
 /// 判据 ①（§3.6 第一条）：拖动面有**稳定语义 ID**，且它在**控件树 JSON** 里可见。
@@ -245,32 +257,45 @@ fn the_drag_reports_exactly_the_delta_sum_in_both_directions() {
     );
 }
 
-/// 判据 ③（`[UI-MCP-003]`）：遮罩动态区域后的截图比对 —— 同一状态**稳定**，偏移改变后**必须变**。
+/// 判据 ③（`[UI-MCP-003]`）：**遮罩动态区域**后的像素证据 —— 同一状态**稳定**（指纹一致），偏移改变后**必须变**。
+///
+/// ⚠ 截图入口用**控制面自己的探针**（`ControlPlane::probe` 的 `screenshot` 证据链：指纹 / 遮罩字段）。
+/// `capture()` 属于 **`LiveUi`**（`live_surface.rs` 的 `impl LiveUi`，1282–1355），
+/// ⛔ **不属于** `LiveControlPlane`（impl 起于 1556）—— 本判据第一版正是在这里编译失败（CI 已判决）。
 #[test]
 fn the_roll_pixels_follow_the_offset_after_masking_dynamic_regions() {
     let (window, mut plane) = assemble();
     assert_eq!(window.get_console_tab(), 0, "默认底部标签是卷帘");
 
-    let rects = yeban_ui_test_port::mask::mask_rects_from_tree(plane.registry())
-        .expect("动态区域遮罩矩形必须可算（[UI-MCP-002]）");
-
-    let first = plane.capture().expect("偏移 0 的第一帧");
-    let again = plane.capture().expect("偏移 0 的第二帧");
-    let stable = yeban_ui_test_port::ssim::ssim(&first, &again).expect("SSIM 可算");
+    // 同一状态抓两次：指纹必须**逐字节一致**（渲染确定），且遮罩确实生效。
+    let first = probe_shot(&mut plane);
+    let again = probe_shot(&mut plane);
     report_line(&format!(
-        "[roll-drag] 同一状态两帧的 SSIM = {stable:.6}（≥ 0.98 才算稳定）；遮罩矩形 {} 个",
-        rects.len()
+        "[roll-drag] 同一状态两帧: 指纹 {} / {}；遮罩 {} 区 effective={}；非黑 {}；颜色 {} 种",
+        first.fingerprint,
+        again.fingerprint,
+        first.masked_regions,
+        first.mask_effective,
+        first.non_black_pixels,
+        first.distinct_colors
     ));
+    assert_eq!(
+        first.fingerprint, again.fingerprint,
+        "同一状态的两次抓帧必须**逐字节一致**（渲染确定）"
+    );
     assert!(
-        stable >= 0.98,
-        "同一状态的两次抓帧必须稳定（SSIM ≥ 0.98），实际 {stable}"
+        first.mask_dynamic && first.mask_effective && first.masked_regions > 0,
+        "[UI-MCP-002]: 动态区域必须被请求遮罩、**确实生效**且遮罩区数非 0（实际 dynamic={} effective={} regions={}）",
+        first.mask_dynamic,
+        first.mask_effective,
+        first.masked_regions
     );
 
     // 滚一段：两个方向各试一次，取**确实推动了偏移**的那一次（口径与判据 ② 相同，不猜符号）。
     let before = window.get_roll_scroll_x();
-    let left = drag_delta(&window, &mut plane, 70, -120.0);
+    let left = drag_delta(&window, &mut plane, 80, -120.0);
     if left.abs() < 0.5 {
-        let right = drag_delta(&window, &mut plane, 80, 120.0);
+        let right = drag_delta(&window, &mut plane, 90, 120.0);
         report_line(&format!(
             "[roll-drag] 视觉前置：向左 120px 被夹住（Δ={left}），改用向右 120px（Δ={right}）"
         ));
@@ -280,13 +305,13 @@ fn the_roll_pixels_follow_the_offset_after_masking_dynamic_regions() {
         (after - before).abs() >= 40.0,
         "本判据的视觉前置：偏移必须先真的滚起来（|Δ| ≥ 40）；实际 {before} ⇒ {after}"
     );
-    let scrolled = plane.capture().expect("滚动之后的帧");
-    let changed = yeban_ui_test_port::ssim::ssim(&first, &scrolled).expect("SSIM 可算");
+    let scrolled = probe_shot(&mut plane);
     report_line(&format!(
-        "[roll-drag] 偏移 {before} ⇒ {after} 两帧的 SSIM = {changed:.6}（< 0.98 才算真的滚了）"
+        "[roll-drag] 偏移 {before} ⇒ {after}: 指纹 {} ⇒ {}（必须不同，才算"真的滚了"）",
+        first.fingerprint, scrolled.fingerprint
     ));
-    assert!(
-        changed < 0.98,
-        "滚动之后画面必须改变（SSIM < 0.98），实际 {changed}"
+    assert_ne!(
+        first.fingerprint, scrolled.fingerprint,
+        "滚动之后像素指纹必须改变（否则滚动没有落到画面上）"
     );
 }
