@@ -126,6 +126,26 @@ fn declares_lower_bound(body: &str) -> bool {
     NON_VACUITY_FORMS.iter().any(|form| body.contains(form)) || has_comparison_bound(body)
 }
 
+/// **规范化证据**：同一行里是否出现了"这个路径比较已经处理过分隔符"的证据。
+///
+/// 四条（与 R93 落地时**逐字相同**）：
+///
+/// - (a) 走共享助手：`path_ends_with(` / `normalized_path(`；
+/// - (b) 显式替换分隔符：`replace('\\'` 或 `replace("\\"`；
+/// - (c) 同行**显式处理两种分隔符**（`a/b` 与 `a\b` 一起写）。
+///
+/// ⚠ 这是 [`unnormalized_path_comparison`] 与 [`unnormalized_variable_path_comparison`]
+/// **两条臂共用**的判定。2026-10-12 之前它在两处**逐字重复**；抽出来的这一票是**纯重构**，
+/// 行为不变的证据见 `docs/ledger/` 与本仓库的提交信息（前后观测台读数 `diff` 为空）。
+#[must_use]
+fn has_normalization_evidence(line: &str) -> bool {
+    line.contains("path_ends_with(")
+        || line.contains("normalized_path(")
+        || line.contains("replace('\\\\'")
+        || line.contains("replace(\"\\\\\"")
+        || (line.contains('/') && line.contains('\\'))
+}
+
 /// 一行里的"路径型比较"。返回 `Some(接收者)` 表示它**需要**规范化证据。
 fn unnormalized_path_comparison(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
@@ -152,17 +172,8 @@ fn unnormalized_path_comparison(line: &str) -> Option<String> {
             let lower = receiver.to_ascii_lowercase();
             let pathish = PATHISH.iter().any(|needle| lower.contains(needle));
             let has_separator = literal.contains('/') || literal.contains('\\');
-            if pathish && has_separator {
-                // 规范化证据：(a) 走共享助手；(b) 显式替换分隔符；(c) 同行给了**两种**分隔符的写法。
-                let normalized = line.contains("path_ends_with(")
-                    || line.contains("normalized_path(")
-                    || line.contains("replace('\\\\'")
-                    || line.contains("replace(\"\\\\\"")
-                    // (c) 同行**显式处理两种分隔符**（`a/b` 与 `a\\b` 一起写）也算规范化。
-                    || (line.contains('/') && line.contains('\\'));
-                if !normalized {
-                    return Some(receiver);
-                }
+            if pathish && has_separator && !has_normalization_evidence(line) {
+                return Some(receiver);
             }
             from = literal_start;
         }
@@ -283,13 +294,8 @@ fn unnormalized_variable_path_comparison(
                 let pathish = PATHISH
                     .iter()
                     .any(|needle| receiver.to_ascii_lowercase().contains(needle));
-                let normalized = line.contains("path_ends_with(")
-                    || line.contains("normalized_path(")
-                    || line.contains("replace('\\\\'")
-                    || line.contains("replace(\"\\\\\"")
-                    || (line.contains('/') && line.contains('\\'));
                 if pathish
-                    && !normalized
+                    && !has_normalization_evidence(line)
                     && let Some((_, literal)) = bindings.iter().find(|(known, _)| *known == name)
                 {
                     let called = method.trim_start_matches('.').trim_end_matches('(');
@@ -581,3 +587,5 @@ fn the_guard_registry_is_not_empty_and_each_needle_exists() {
         .collect();
     eprintln!("诊断（不参与判定）：防御性动态源命中数 = {defensive_hits:?}");
 }
+
+// ---------------------------------------------------------------------------
