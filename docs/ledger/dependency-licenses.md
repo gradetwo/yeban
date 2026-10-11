@@ -3,8 +3,8 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `c61b60f511d49142`
-- 外部依赖包数: **632**（不含 25 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `d4db1ce5a0593219`
+- 外部依赖包数: **632**（不含 26 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
@@ -451,7 +451,7 @@
 | `rowan` | `0.17.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `roxmltree` | `0.21.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `rspolib` | `0.1.2` | `MIT` | 传递 | — |
-| `rtrb` | `0.4.0` | `MIT OR Apache-2.0` | 直接 | `yeban-engine` |
+| `rtrb` | `0.4.0` | `MIT OR Apache-2.0` | 直接 | `yeban-engine`, `yeban-record` |
 | `rubato` | `5.0.1` | `MIT OR Apache-2.0` | 直接 | `yeban-decode` |
 | `rustc-hash` | `1.1.0` | `Apache-2.0/MIT` | 传递 | — |
 | `rustc-hash` | `2.1.3` | `Apache-2.0 OR MIT` | 传递 | — |

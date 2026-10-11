@@ -130,7 +130,7 @@ pub mod meter;
 pub mod metronome;
 pub mod mixer;
 pub mod param;
-pub mod record;
+pub use yeban_record as record;
 pub mod ring;
 pub mod rt;
 pub mod rt_probe;

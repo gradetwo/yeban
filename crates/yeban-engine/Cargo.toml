@@ -54,6 +54,7 @@ yeban-model.workspace = true
 # 引擎侧只做**适配层**（`src/sfz_instrument.rs`），⛔ 不复制它的实现。
 # 为何不重：`yeban-sfz` 的外部依赖只有 `thiserror`（见其 Cargo.toml）⇒ 不引入重依赖。
 yeban-sfz.workspace = true
+yeban-record.workspace = true
 
 [lints]
 workspace = true

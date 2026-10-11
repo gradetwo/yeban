@@ -1,0 +1,24 @@
+[package]
+name = "yeban-record"
+description = "录音侧的无锁 PCM 环形缓冲与后台落盘（ARCH-REC-001 的前两段）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_record"
+path = "src/lib.rs"
+
+[dependencies]
+# 唯一第三方依赖：已在根 [workspace.dependencies] 登记、且本仓多个 crate 已在用。
+# ⛔ 本 crate **刻意不依赖** `cpal` / Slint / `yeban-engine`：它只做"把已到手的 PCM
+# 从音频线程安全搬到 I/O 线程"这一件事 ⇒ 因此可被 `yeban-mcp` 这类"轻量 crate"直接依赖，
+# 而不违反 `scripts/gates/check_mcp_dependency_direction.py` 的依赖方向规则
+# （该规则禁止 MCP 依赖 `yeban-engine`，因为后者的默认特性 `device` 会拖入 `cpal`）。
+rtrb.workspace = true
+
+[lints]
+workspace = true

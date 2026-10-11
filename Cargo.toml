@@ -85,6 +85,7 @@ yeban-model = { path = "crates/yeban-model" }
 yeban-theory = { path = "crates/yeban-theory" }
 yeban-dsp = { path = "crates/yeban-dsp" }
 yeban-engine = { path = "crates/yeban-engine" }
+yeban-record = { path = "crates/yeban-record" }
 yeban-sfz = { path = "crates/yeban-sfz" }
 yeban-decode = { path = "crates/yeban-decode" }
 yeban-render = { path = "crates/yeban-render" }

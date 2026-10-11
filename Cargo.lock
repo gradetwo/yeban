@@ -6383,6 +6383,7 @@ dependencies = [
  "thiserror 2.0.21",
  "yeban-dsp",
  "yeban-model",
+ "yeban-record",
  "yeban-sfz",
 ]
 
@@ -6426,6 +6427,13 @@ dependencies = [
 [[package]]
 name = "yeban-plugin-host"
 version = "0.0.1"
+
+[[package]]
+name = "yeban-record"
+version = "0.0.1"
+dependencies = [
+ "rtrb",
+]
 
 [[package]]
 name = "yeban-render"

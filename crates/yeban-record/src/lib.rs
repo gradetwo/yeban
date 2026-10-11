@@ -267,8 +267,8 @@ pub fn push_input_block(sender: &mut RecordSender, block: &[f32], channels: u16)
 
 #[cfg(test)]
 mod tests {
-    use super::record_channel;
-    use crate::record::push_input_block;
+    use crate::push_input_block;
+    use crate::record_channel;
     use std::io::Cursor;
 
     /// 判据 ①：推入的帧能**整帧**取回，且**逐样本**一致（数量 + 值）。
@@ -317,7 +317,7 @@ mod tests {
         assert!(tx.push_frame(&[1.0, -1.0]));
         assert!(tx.push_frame(&[0.5, -0.5]));
         let sink = Cursor::new(Vec::new());
-        let mut drain = super::RecordDrain::new(rx, sink);
+        let mut drain = crate::RecordDrain::new(rx, sink);
         assert_eq!(drain.pump(8).expect("写"), 2);
         assert_eq!(drain.frames_written(), 2);
         let bytes = drain.into_inner().into_inner();
@@ -417,14 +417,14 @@ mod tests {
     fn input_block_degenerate_inputs_are_defined_not_panicking() {
         let (mut tx, mut rx) = record_channel(8, 2);
         assert_eq!(
-            crate::record::push_input_block(&mut tx, &[1.0, 2.0, 3.0], 0),
+            crate::push_input_block(&mut tx, &[1.0, 2.0, 3.0], 0),
             0,
             "channels=0 ⇒ 0 帧"
         );
         assert_eq!(rx.drain_frames(8, |_| {}), 0, "channels=0 不得写入任何帧");
         // 3 样本 / 2 通道 ⇒ 1 整帧，1 个残余样本被忽略
         assert_eq!(
-            crate::record::push_input_block(&mut tx, &[1.0, 2.0, 3.0], 2),
+            crate::push_input_block(&mut tx, &[1.0, 2.0, 3.0], 2),
             1,
             "整帧才推"
         );
