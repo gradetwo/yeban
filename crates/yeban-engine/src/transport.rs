@@ -196,6 +196,15 @@ impl Tempo {
     }
 }
 
+/// [ARCH-RT-005]：**下一拍**边界在 960 PPQ 栅格上的 tick（**严格大于** `position_ticks`）。
+///
+/// `next_beat_tick(k · PPQ) == (k + 1) · PPQ` —— 恰在拍点上也取**再下一拍**；
+/// 理由见 [`Transport::audition_switch_frame`] 的边界语义说明。
+#[must_use]
+pub const fn next_beat_tick(position_ticks: u64) -> u64 {
+    (position_ticks / PPQ + 1) * PPQ
+}
+
 /// `bpm` → 微 BPM 整数（非有限值退回 [`DEFAULT_BPM`]，越界钳到模型范围）。
 fn quantise_bpm(bpm: f64) -> u64 {
     let bpm = if bpm.is_finite() {
@@ -450,6 +459,30 @@ impl Transport {
         self.tempo.frames_for(tick)
     }
 
+    /// [ARCH-RT-005]：盲听切换的**生效帧**（"在**下一拍**精确下拍瞬切"）。
+    ///
+    /// 复用本文件的**同一份**拍口径与有理数换算：拍 = [`yeban_model::PPQ`] tick，
+    /// 帧由 [`Self::frames_for_tick`] 给出（⛔ 不新造第二套拍/速度换算）。
+    ///
+    /// **边界语义（⛔ 不含糊）**：请求**恰在拍点上**时，生效点是**该拍点之后的那一拍**
+    /// —— 即 [`next_beat_tick`] 严格大于当前位置：
+    ///   ① 规范原文是"下一拍"，不是"当前拍"；
+    ///   ② 控制线程的请求到达音频回调时**可能已在拍点之后**；若取"当前拍"，淡化会退化成
+    ///      零长度或跨拍，而取"下一拍"能保证整段 30 ms（48 kHz 下 1440 采样）落在新拍内。
+    #[must_use]
+    pub fn audition_switch_frame(&self) -> u64 {
+        self.frames_for_tick(next_beat_tick(self.position_ticks()))
+    }
+
+    /// [ARCH-RT-005]：从**现在**到生效帧还差多少帧（**向上取整**、整数精确、≥ 1）。
+    ///
+    /// 复用 [`Self::frames_until_tick`]（与 `advance_frames` 同一份有理数）⇒ 实时侧只需
+    /// 整数比较；⛔ 无浮点、无超越函数、无分配/锁/I-O [MUST-GATE-001]。
+    #[must_use]
+    pub fn frames_until_audition_switch(&self) -> u64 {
+        self.frames_until_tick(next_beat_tick(self.position_ticks()))
+    }
+
     /// 从当前位置到 `tick` **还差多少帧**（向上取整；整数精确）。
     ///
     /// 语义：这是 [`Self::advance_frames`] 的逆运算 —— 返回值是使
@@ -614,6 +647,128 @@ impl TransportMirror {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [ARCH-RT-005] 件 2：**下一拍对齐**必须是"严格大于当前位置"的那一拍。
+    ///
+    /// 表里**含边界**：`960`（恰在拍点上）⇒ 生效 `1920`（⭐ 再下一拍，语义已在
+    /// [`Transport::audition_switch_frame`] 的文档里写明理由）。
+    #[test]
+    fn next_beat_alignment_is_strictly_the_following_beat() {
+        // (当前 tick, 期望生效 tick)
+        let cases: [(u64, u64); 8] = [
+            (0, 960),
+            (1, 960),
+            (959, 960),
+            (960, 1920), // ⭐ 恰在拍点上 ⇒ 取**再下一拍**
+            (961, 1920),
+            (1919, 1920),
+            (1920, 2880),
+            (2880, 3840),
+        ];
+        let mut checked = 0usize;
+        for (position, expected) in cases {
+            let got = next_beat_tick(position);
+            assert_eq!(
+                got, expected,
+                "next_beat_tick({position}) 必须为 {expected}"
+            );
+            assert!(got > position, "⭐ 严格大于：{got} 必须 > {position}");
+            assert_eq!(got % PPQ, 0, "生效点必须落在拍边界上（tick % PPQ == 0）");
+            checked += 1;
+        }
+        println!("[transport] 下一拍对齐表：{checked}/8 通过");
+        assert_eq!(checked, 8, "八条边界用例必须全部覆盖");
+    }
+
+    /// [ARCH-RT-005] 件 2：**请求时刻 → 生效时刻**的帧换算（120 bpm、48 kHz ⇒ 1 拍 = 24000 帧）。
+    ///
+    /// ⭐ 这一条把"对齐"从 tick 栅格**落到采样点**：实时侧据此只需整数比较即可下拍。
+    #[test]
+    fn frames_until_audition_switch_matches_the_tick_grid() {
+        let mut transport = Transport::free_running(48_000, 120.0);
+        // 拍内任意位置请求 ⇒ 生效点 == 下一拍边界
+        let mut request_at = |ticks: u64, expected: u64, label: &str| {
+            transport.seek(ticks);
+            let got = transport.frames_until_audition_switch();
+            assert_eq!(
+                got, expected,
+                "{label}（tick={ticks}）⇒ 期望 {expected} 帧，实得 {got}"
+            );
+        };
+        request_at(0, 24_000, "拍点起请求");
+        request_at(480, 12_000, "半拍处请求");
+        // 1 tick = 24000 帧/拍 ÷ 960 tick = **25 帧**（整数精确）⇒ 拍前 1 tick 仍差 25 帧。
+        request_at(959, 25, "拍前 1 tick 请求");
+        request_at(
+            960,
+            24_000,
+            "⭐ 恰在拍点请求 ⇒ 再下一拍（24000 帧，⛔ 不是 0）",
+        );
+        request_at(1920, 24_000, "第二拍拍点请求");
+        // ⭐ 反例（防"永远返回 0"的假实现）：恰在拍点上的读数必须**非 0**
+        transport.seek(960);
+        assert_ne!(
+            transport.frames_until_audition_switch(),
+            0,
+            "恰在拍点不得返回 0 帧"
+        );
+        println!(
+            "[transport] 生效帧: tick0→{} tick480→{} tick960→{}",
+            {
+                transport.seek(0);
+                transport.audition_switch_frame()
+            },
+            {
+                transport.seek(480);
+                transport.audition_switch_frame()
+            },
+            {
+                transport.seek(960);
+                transport.audition_switch_frame()
+            }
+        );
+    }
+
+    /// [ARCH-RT-005] 件 2：**走带不停** —— 切换请求**不打断**位置推进，
+    /// 且播放头**恰好**在生效帧上第一次碰到下一拍（采样点精确下拍）。
+    #[test]
+    fn audition_switch_never_stops_the_transport() {
+        let mut transport = Transport::free_running(48_000, 120.0);
+        transport.advance_frames(1_000); // 先走一点（tick 40）
+        let switch_frame = transport.audition_switch_frame();
+        let frames_until = transport.frames_until_audition_switch();
+        println!(
+            "[transport] 请求帧={} 生效帧={switch_frame} 还差={frames_until}",
+            transport.position_frames()
+        );
+        // 分块推进到生效点，断言**每块之后位置严格增加**（走带连续、⛔ 不停）
+        let mut previous = transport.position_frames();
+        let mut remaining = frames_until;
+        while remaining > 0 {
+            let step = remaining.min(1_000);
+            transport.advance_frames(step);
+            let now = transport.position_frames();
+            assert!(
+                now > previous,
+                "⭐ 走带必须连续推进：{now} 必须 > {previous}"
+            );
+            previous = now;
+            remaining -= step;
+        }
+        // ⭐ 恰好落在生效帧（拍边界）上
+        assert_eq!(
+            transport.position_frames(),
+            switch_frame,
+            "推进到生效帧后位置必须**恰好**等于生效帧（采样点精确下拍）"
+        );
+        assert_eq!(transport.position_ticks() % PPQ, 0, "生效处必须在拍边界上");
+        // 再走一帧仍不回头
+        transport.advance_frames(1);
+        assert!(
+            transport.position_frames() > switch_frame,
+            "越过生效点后必须继续前进"
+        );
+    }
 
     /// 判据 ①：48 kHz、**每个量子 960 帧**下，播 N 个量子后的位置**恰等于**
     /// `floor(N × 960 × tick_num / tick_den)`（逐点断言，不是"约等于"）。
