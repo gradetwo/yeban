@@ -264,6 +264,35 @@ jobs:
             echo "::notice::${{ matrix.crate }} 未声明实验性导出特性, 本腿跳过"
           fi
 
+      # R335: `midi-input` 特性下的代码（`crates/yeban-midi-io/src/input.rs` 的 midir
+      # 面向部分：端口枚举 / 会话 / `open_input`，共 5 处 `#[cfg(feature = "midi-input")]`）
+      # 在**默认档下不编译** ⇒ 若没有带这个开关的步骤，那部分在自动 CI 里**从不编译**
+      # —— 与上面 R64 的实验性导出特性是**同一类陷阱**（"判据要真的被跑到, 必须同时满足
+      # 「目标被编进来」与「步骤带那个开关」两个条件"）。同样用 **Cargo.toml 守卫**而不是
+      # blanket flag：只有声明了该特性的 crate 才跑这一腿。
+      - name: clippy (midi-input 特性, -D warnings)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if grep -q '^midi-input' "crates/${{ matrix.crate }}/Cargo.toml"; then
+            cargo clippy -p "${{ matrix.crate }}" --all-targets --locked \
+              --features midi-input \
+              -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+          else
+            echo "::notice::${{ matrix.crate }} 未声明 midi-input 特性, 本腿跳过"
+          fi
+
+      - name: test (midi-input 特性)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if grep -q '^midi-input' "crates/${{ matrix.crate }}/Cargo.toml"; then
+            cargo test -p "${{ matrix.crate }}" --all-targets --locked \
+              --features midi-input \
+              2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+          else
+            echo "::notice::${{ matrix.crate }} 未声明 midi-input 特性, 本腿跳过"
+          fi
       - name: 上传无头 UI 截图 (若该 crate 产出了)
         if: always()
         uses: actions/upload-artifact@v4
