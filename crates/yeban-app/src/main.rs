@@ -432,6 +432,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 松手 / 点击才 `commit_ops` **一次**，因此一次拖动 = 一步可撤销的编辑。
     // 与 `wire_roll_edit` 共用同一个 `UndoPort`（唯一可变权威）。
     host::wire_mixer_edit(&ui, &undo_port);
+    // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与其余接线同款 ——
+    // `host::wire_module_actions` 是它们的**唯一**实现，无头端口的装配
+    // （`src/live_surface.rs` 的 `build_live_ui_with`）调的是**同一个**函数。
+    // 四条回调各自落到**已经存在**的模块（`export_wav` / `import_midi` / `sfz_load` /
+    // `record_wav`），⛔ 不另写一套。目标路径由宿主解析（`ModulePaths::from_env`）。
+    host::wire_module_actions(&ui, Some(Rc::clone(&undo_port)));
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
     host::apply_undo(&ui, &undo_port);
     let undo_display = undo_port.display();

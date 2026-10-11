@@ -1,0 +1,214 @@
+// 夜半 (Yeban) — 模块入口条: 导出 WAV / 导入 MIDI / 装载 SFZ / 录音
+//
+// 规范来源 (Normative):
+//   - [UI-TEST-001] §12.2「稳定语义元素寻址」: 本文件的四个入口各带一个稳定
+//     `accessible-id`（族 = `module-{动作}-button`），状态行 = `module-last-status`。
+//   - [UI-A11Y-003] §7.3：每个可交互节点都要有非空无障碍名称，并且
+//     `accessible-action-default` 与点击源落到**同一段代码**（屏读器与鼠标不可能分叉）。
+//
+// 数据流方向: 只读 + 通知。本组件**不**决定目标路径、**不**写盘、**不**改写任何
+// `module-status` —— 那是宿主 `src/host.rs` 的 `wire_module_actions` 的唯一职责。
+//
+// 为什么四个入口长在这里（而不是改 `transport.slint` 的录音键）:
+//   `crates/yeban-app/src/elements.rs` 的
+//   `the_record_button_has_no_click_handler_and_recording_is_unimplemented` 与
+//   `the_three_transport_document_actions_are_not_wired_today` 把顶栏那三个键
+//   （`transport-commit-button` / `transport-revert-button` / `transport-branch-button`）
+//   与录音键 `transport-record-button` 的**无点击处理器**钉成了机械事实。
+//   本票（四模块 UI 接线）**不**动那两个已登记的缺口：它给"录音成文件"这条**已有的**
+//   Rust 能力（`src/record_wav.rs`）开一个新的、独立的可见入口。既有的
+//   `transport-record-button` 保持原样（它承载的是 `[ARCH-REC-001]` 的声卡录音缺口，
+//   与"把控制侧测试音录成 WAV"不是同一件事）。
+//
+// 约束（本文件不许出现的东西）:
+//   ⛔ 任何 tick / 像素算术；⛔ 任何"我是不是正在录音"的本地状态
+//   （状态是宿主写进 `module-status` 的**读数**，界面只画它）。
+
+import { Tokens, UiText, UiTitleText } from "tokens.slint";
+
+export component ModuleActions inherits Rectangle {
+    // 最近一次模块动作的**回执原文**（`""` = 本次会话还没按过任何模块入口）。
+    // 唯一写者 = `src/host.rs` 的 `wire_module_actions`（成功与失败都写这一条）。
+    in property <string> status: "";
+    // 最近一次模块动作是否成功（`.slint` 用它选颜色；读数是宿主的，不是界面算的）。
+    in property <bool> status-succeeded: false;
+
+    // 四个入口各一条回调。**都不带参数**：目标路径由宿主解析
+    // （`YEBAN_UI_<动作>_PATH`，缺省在工作目录下），界面不猜路径、也不弹文件对话框
+    // —— 原生文件对话框是**另一票**（需要新的 platform 侧能力，见本票的 needs 登记）。
+    callback export-wav();
+    callback import-midi();
+    callback load-sfz();
+    callback record-wav();
+
+    // 几何：四行 28px 高、行距 32px（`y` = 236 / 268 / 300 / 332），按钮宽 = 面板宽 - 2 * space-4。
+    // 四个 `y` 是**常量**而不是算术：`app.slint` 的既有纪律是"组件内部一律绝对定位"，
+    // 且这四个入口的包围盒要能被元素树稳定读到（判据不读像素，只读 ID 与文本）。
+
+    background: transparent;
+
+    // ---------------------------------------------------------------- 小节标题
+    UiTitleText {
+        x: Tokens.space-4;
+        y: 212px;
+        width: parent.width - 8px;
+        height: 16px;
+        text: "模块入口";
+        color: Tokens.gold;
+        font-size: Tokens.font-size-sm;
+        accessible-id: "module-actions-title";
+        accessible-label: "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音";
+    }
+
+    // ------------------------------------------------------------- 导出 WAV
+    // `host::wire_module_actions` → `crate::export_wav::export_wav_with_sfz_file`
+    // （与 CLI 的 `--export-wav` 是**同一个**函数，⛔ 不另写一套）。
+    // 装载过 SFZ ⇒ 导出的音源就是那份 SFZ（与 `--sfz <f> --export-wav out.wav` 同款）。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 236px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "module-export-wav-button";
+        accessible-label: "导出 WAV（离线渲染当前工程）";
+        accessible-action-default => { root.export-wav(); }
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: "导出 WAV";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.export-wav(); }
+        }
+    }
+
+    // ------------------------------------------------------------- 导入 MIDI
+    // 落点是 `crate::import_midi::import_midi_file`：提交来源恒为
+    // `OpOrigin::MidiInput`，并且**真的进了** `UndoPort`（可撤销）。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 268px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "module-import-midi-button";
+        accessible-label: "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）";
+        accessible-action-default => { root.import-midi(); }
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: "导入 MIDI";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.import-midi(); }
+        }
+    }
+
+    // ----------------------------------------------------------------- 装载 SFZ
+    // 落点是 `crate::sfz_load::load_sfz_with_instrument`：报告区域数 + 一次音符探测，
+    // 并**记住**这份乐器 ⇒ 之后的"导出 WAV"用它发声（`wired_to_export=true` 如实报出）。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 300px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "module-load-sfz-button";
+        accessible-label: "装载 SFZ 乐器（报告区域数并探测一个音符）";
+        accessible-action-default => { root.load-sfz(); }
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: "装载 SFZ";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.load-sfz(); }
+        }
+    }
+
+    // ------------------------------------------------------------------- 录音
+    // 落点是 `crate::record_wav::record_test_tone`（三段式：构造期建环 ⇒ 逐帧推 ⇒
+    // 刷盘成可回放 WAV）。⚠ 诚实登记：音源是**内存正弦 440Hz**，⛔ 不是声卡
+    // （`ARCH-REC-001` 的声卡捕获在仓库里仍不存在，由 `elements.rs` 的那条判据钉着）。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 332px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "module-record-wav-button";
+        accessible-label: "录音（把控制侧测试音录成 24-bit WAV）";
+        accessible-action-default => { root.record-wav(); }
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: "录音（测试音）";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.record-wav(); }
+        }
+    }
+
+    // ------------------------------------------------------------- 回执行
+    // 回执（路径 / 帧数 / 区域数 / 来源 / 结构化错误码）**必须留在界面上**：
+    // 本仓库最忌讳"动作失败了而用户以为成功"。可见 `text` 取的就是宿主写的
+    // `root.status` ⇒ 人眼与判据（读 `MainWindow.module-status`）看到的是同一串字节。
+    UiText {
+        x: Tokens.space-4;
+        y: 368px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 16px;
+        text: root.status;
+        color: root.status-succeeded ? Tokens.ink-2 : Tokens.record-red;
+        font-size: Tokens.font-size-xs;
+        overflow: elide;
+        accessible-id: "module-last-status";
+        // ⚠ 标签是**静态**的，不绑 `root.status`：`[TEST-SPEC-005]` 要求"可见且可寻址的
+        // 节点必须有非空无障碍名"（`tests/a11y_screen_reader.rs` 遍历整棵树断言），
+        // 而回执在没人按之前是空串 ⇒ 绑上去会让这个节点**无名字**。
+        // 动态内容仍然可读：判据读 `MainWindow.module-status`，人手/屏读器读可见的 `text`。
+        // 这与同族的 `status-bar-save-status`（静态标签 + 动态可见文本）逐字同款。
+        accessible-label: "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）";
+    }
+}

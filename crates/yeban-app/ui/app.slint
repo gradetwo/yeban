@@ -46,6 +46,11 @@ import { ArrangementView } from "workspace/arrangement_view.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
+// 四个**模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
+// 它们住在右栏的下半区（`AiRail` 的 `ModuleActions` 实例），因此**不改**任何既有
+// 几何：顶栏 48 / 中段 / 4px splitter / 底部控制台 / 24px 状态栏一位未动，
+// 基准图上只有这一块新像素（见本票的 golden 影响登记）。
+import { ModuleActions } from "module_actions.slint";
 
 // 右侧 AI 协作栏 (280px) 的内容。被实例化两次 (常驻列 / compact 抽屉),
 // 两者的 visible 条件互斥, 因此无障碍树里同一时刻只有一个 `ai-rail`。
@@ -53,6 +58,17 @@ component AiRail inherits Rectangle {
     callback open-musical-pr();
     callback run-acoustic-diagnosis();
     callback export-diagnostics();
+    // ---- 四个**模块入口**（本票）------------------------------------------
+    // 与上面三条同款：`AiRail` 只**转发**，动作的语义、目标路径与回执全在宿主
+    // （`src/host.rs` 的 `wire_module_actions`）。界面不写盘、不猜路径、不存状态。
+    callback export-wav();
+    callback import-midi();
+    callback load-sfz();
+    callback record-wav();
+    // 模块入口的两条**只读**注入面（唯一写者 = `host::wire_module_actions`）。
+    // `status` 的默认值是空串 = "本次会话还没按过任何模块入口"，不是一个编造的读数。
+    in property <string> module-status: "";
+    in property <bool> module-status-succeeded: false;
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -205,6 +221,25 @@ component AiRail inherits Rectangle {
             clicked => { root.open-musical-pr(); }
         }
     }
+
+    // ---------------------------------------------------------- 四个模块入口
+    // 本票新增。它占据右栏 y=208..380 这一段**此前完全空白**的区域（既有三条
+    // 控件止于 y=204）⇒ 不改任何既有控件的坐标，也不改任何容器的尺寸。
+    // 四个回调与两条注入属性各自**原样**转给 `MainWindow`（与上面三条同款）。
+    ModuleActions {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 240px;
+
+        status: root.module-status;
+        status-succeeded: root.module-status-succeeded;
+
+        export-wav => { root.export-wav(); }
+        import-midi => { root.import-midi(); }
+        load-sfz => { root.load-sfz(); }
+        record-wav => { root.record-wav(); }
+    }
 }
 
 export component MainWindow inherits Window {
@@ -280,6 +315,30 @@ export component MainWindow inherits Window {
     in-out property <string> save-status: "";
     // 最近一次保存是否成功（`.slint` 用它选颜色；读数是宿主的，不是界面算的）。
     in-out property <bool> save-succeeded: false;
+    // =====================================================================
+    // 四个**模块入口**的宿主回执（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）
+    // =====================================================================
+    // 唯一写者 = `src/host.rs` 的 `wire_module_actions`。它是**成功与失败都在**的
+    // 一行结构化回执：形如
+    //   `module:action=export-wav:outcome=ok:path=…:frames=…:source=…`
+    //   `module:action=load-sfz:outcome=error:error=sfz-read:message="…"`
+    // 为什么进界面属性而不是只打日志：与 `save-status` 同款 —— "动作失败了而用户
+    // 以为成功"是本仓库最忌讳的失败模式。`module_actions.slint` 的
+    // `module-last-status` 把它同时放进可见 `text` 与 `accessible-label`。
+    // 默认空串 = "本次会话还没按过任何模块入口"，**不是**一个编造的读数。
+    in-out property <string> module-status: "";
+    in-out property <bool> module-status-succeeded: false;
+    // 四条入口回调（事件源 = `ui/module_actions.slint` 的四个 `TouchArea`）。
+    // 宿主 `host::wire_module_actions` 把它们落到**已经存在的**四个模块实现上：
+    //   导出 WAV  → `crate::export_wav::export_wav_with_sfz_file`
+    //   导入 MIDI → `crate::import_midi::import_midi_file`（经 `UndoPort`，来源 `MidiInput`）
+    //   装载 SFZ  → `crate::sfz_load::load_sfz_with_instrument`
+    //   录音      → `crate::record_wav::record_test_tone`
+    // ⛔ 界面不写盘、不猜路径、不自己判断成功与否（那是第二个真相源）。
+    callback export-wav();
+    callback import-midi();
+    callback load-sfz();
+    callback record-wav();
     // 状态栏「选区信息」那一格的**整串文本**（台账 R9）。
     //
     // 写者**只有一处**：`host::apply_view` 末尾的 `host::publish_status_bar`。
@@ -728,6 +787,14 @@ export component MainWindow inherits Window {
                 open-musical-pr => { root.open-musical-pr(); }
                 run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
                 export-diagnostics => { root.export-diagnostics(); }
+                // 四个模块入口：与上面三条同款 —— 原样上抛，界面不改任何状态。
+                // 两条注入属性由宿主单向写入（唯一写者 = `host::wire_module_actions`）。
+                module-status: root.module-status;
+                module-status-succeeded: root.module-status-succeeded;
+                export-wav => { root.export-wav(); }
+                import-midi => { root.import-midi(); }
+                load-sfz => { root.load-sfz(); }
+                record-wav => { root.record-wav(); }
             }
         }
 

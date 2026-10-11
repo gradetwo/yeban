@@ -401,6 +401,64 @@ impl ElementRegistry {
             false,
         );
 
+        // ------------------------------------------------- 四个**模块入口**（本票）
+        //
+        // 它们住在右栏的下半区（`ui/module_actions.slint` 的 `ModuleActions`，由
+        // `app.slint` 的 `AiRail` 实例化在 y=212..384 —— 既有三条控件止于 y=204，
+        // 因此本票**没有**移动任何既有控件）。
+        //
+        // 标签必须与 `.slint` 的 `accessible-label` **逐字相同**：`test_port_adapter`
+        // 的运行时树对账会断言 label 相等。四条回调的宿主实现全在
+        // `host::wire_module_actions`（复用 `export_wav` / `import_midi` / `sfz_load` /
+        // `record_wav` 四个**已经存在**的模块，⛔ 不另写一套）。
+        //
+        // ⚠ `module-last-status` 是**动态**的（`dynamic = true`）：它的文本由
+        // 宿主写进 `MainWindow.module-status`，每次按下都可能不同
+        // ⇒ `[UI-MCP-002]` 的截图遮罩必须按元素包围盒置黑它。
+        // 它是 e2e「触发入口 ⇒ 状态文本按预期变化」的**可寻址**落点。
+        for (id, label) in [
+            ("module-export-wav-button", "导出 WAV（离线渲染当前工程）"),
+            (
+                "module-import-midi-button",
+                "导入 MIDI（把 SMF 的音符导入第一条非主总线音轨）",
+            ),
+            (
+                "module-load-sfz-button",
+                "装载 SFZ 乐器（报告区域数并探测一个音符）",
+            ),
+            (
+                "module-record-wav-button",
+                "录音（把控制侧测试音录成 24-bit WAV）",
+            ),
+        ] {
+            registry.add(
+                id,
+                ElementKind::Button,
+                "module_actions.slint",
+                label,
+                false,
+            );
+        }
+        registry.add(
+            "module-actions-title",
+            ElementKind::Text,
+            "module_actions.slint",
+            "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音",
+            false,
+        );
+        registry.add(
+            "module-last-status",
+            ElementKind::Text,
+            "module_actions.slint",
+            // 标签与 `.slint` 的 `accessible-label` **逐字相同**（`test_port_adapter`
+            // 的运行时对账断言 label 相等）。它是**静态**的：内容（回执原文）在可见
+            // `text` 与 `MainWindow.module-status` 上，不在无障碍名里 —— 同
+            // `status-bar-save-status`。
+            "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）",
+            // 动态区：回执每次按下都变 ⇒ 截图比对的遮罩要按它的包围盒置黑。
+            true,
+        );
+
         // ------------------------------------------------------------ Session View
         registry.add(
             "workspace-session-canvas",
@@ -1372,7 +1430,12 @@ mod tests {
 
     /// ADR-0001 D2 的 UI 文件清单。多一个/少一个都必须在这里显式改, 否则测试变红 ——
     /// 这样"UI/UX §8 的 11 个文件"就不是一句注释, 而是一条会被机械检查的约定。
-    const SLINT_MANIFEST: [&str; 13] = [
+    ///
+    /// `module_actions.slint`（14 号）是**四个模块入口**那一票加的：导出 WAV / 导入 MIDI /
+    /// 装载 SFZ / 录音。它是**新增的独立组件**（不是往 `transport.slint` 里塞）——
+    /// 理由是顶栏那三个文档键与录音键的"无点击处理器"被本文件自己的两条判据钉着
+    /// （承载 `[ARCH-REC-001]` 的声卡录音缺口），本票不动它们。
+    const SLINT_MANIFEST: [&str; 14] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -1387,6 +1450,8 @@ mod tests {
         "console/device_rack.slint",
         "dialogs/musical_pr_drawer.slint",
         "dialogs/undo_tree_modal.slint",
+        // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
+        "module_actions.slint",
     ];
 
     fn ui_dir() -> std::path::PathBuf {

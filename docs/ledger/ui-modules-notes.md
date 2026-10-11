@@ -1,0 +1,168 @@
+# UI 线 · `line/ui-modules` 笔记
+
+## 0. 这一票要补的口子（**先核查，后动**）
+
+用户的指认是：`ui/*.slint` 里已有 `export` / `open` / `save` 等回调，但**没有** SFZ 装载、
+录音、导入 MIDI 的入口。本票先按 `AGENTS.md` §6.3「不要用词面判断交付」核查已有的
+`export-*` 系列**实际**做了什么。
+
+### 核查结论（带证据）
+
+| 问题 | 实测证据 | 结论 |
+| :--- | :--- | :--- |
+| `ui/app.slint` 的 `export-diagnostics` 导出什么格式？ | `crates/yeban-app/src/host.rs:2869`（改前）`ui.on_export_diagnostics(move \|\| { port.perform(UiAction::ExportDiagnostics) })`；`crates/yeban-app/src/undo.rs:470` 落到 `yeban_diagnostics::export_diagnostics(&dir, inputs)` | **不是** WAV。是 env / git / 日志的诊断 **zip**（`[D56]`） |
+| 界面里有没有 WAV 导出？ | `grep -rn "wav\|WAV" crates/yeban-app/ui/` 只命中 `transport.slint` 的录音键注释与 `tokens.slint` 的 `record-red` 色标 —— **零** WAV 入口 | **没有**。`--export-wav` 只有 CLI |
+| 界面里有没有录音入口？ | `elements.rs` 的 `the_record_button_has_no_click_handler_and_recording_is_unimplemented` 把 `transport-record-button` 的**无点击处理器**钉成机械事实（`rec_area` 无 `clicked`、`transport.slint` 不声明 `callback record`、`app.slint` 不转发 `record =>`） | **没有**。而且既有的那个键承载的是 `[ARCH-REC-001]` 的**声卡**录音缺口，与 `record_wav.rs` 的"控制侧测试音录成 WAV"**不是同一件事** |
+| 界面里有没有 SFZ / MIDI 导入？ | `grep -rn "sfz\|midi" crates/yeban-app/ui/`：`sidebar.slint:29` 只有一条**演示字符串** `"SFZ · 323 款采样预置"`（不是入口）；`piano_roll.slint` 的注释提到 MIDI 只是"这是 MIDI 卷帘" | **没有** |
+
+⇒ 四个模块的 **Rust 侧实现都已存在**（`export_wav.rs` / `import_midi.rs` / `sfz_load.rs` /
+`record_wav.rs`），缺的只有**界面入口**。本票**不重做**已覆盖的部分，只补真缺的四条。
+
+### 边界的第二条：为什么**不改**顶栏的录音键
+
+`elements.rs` 的两条判据把顶栏的 `commit` / `revert` / `branch` / `record` 四个键的
+"无点击处理器"钉住了。本票**不**动它们（动它们 = 改 `[ARCH-REC-001]` 的能力裁决 +
+改判据 + 可能重录基准），而是给**已有的** `record_wav.rs` 能力开一个**新的、独立的**
+可见入口。两条各自留痕。
+
+## 1. 新增入口与 Element ID 清单
+
+| 入口（可见文案） | Element ID | 角色 | 落点（Rust） |
+| :--- | :--- | :--- | :--- |
+| 小节标题「模块入口」 | `module-actions-title` | text | —— |
+| 导出 WAV | `module-export-wav-button` | button | `export_wav::export_wav_with_sfz_file` |
+| 导入 MIDI | `module-import-midi-button` | button | `import_midi::import_midi_file`（经 `UndoPort`） |
+| 装载 SFZ | `module-load-sfz-button` | button | `sfz_load::load_sfz_with_instrument` |
+| 录音（测试音） | `module-record-wav-button` | button | `record_wav::record_test_tone` |
+| 回执行 | `module-last-status` | text（动态区） | 宿主写 `MainWindow.module-status` |
+
+**新增入口数 = 4**（按钮）；新增语义 ID = **6**。
+
+新增文件：`crates/yeban-app/ui/module_actions.slint`（组件 `ModuleActions`）。
+它在 `app.slint` 的 `AiRail` 里实例化于 **y = 212..384** —— 既有三条控件止于 y = 204，
+因此**没有移动任何既有控件**（golden 的差异因此只应落在这一块新像素上）。
+
+## 2. 目标路径从哪来（本票的**边界**）
+
+宿主侧唯一解析点 = `host::ModulePaths::from_env()`，四个环境变量：
+`YEBAN_UI_EXPORT_WAV_PATH` / `YEBAN_UI_IMPORT_MIDI_PATH` / `YEBAN_UI_LOAD_SFZ_PATH` /
+`YEBAN_UI_RECORD_WAV_PATH`，秒数 = `YEBAN_UI_RECORD_SECONDS`（默认 8.0）。
+缺省值落在**当前工作目录**下（`ui-export.wav` 等）—— ⛔ 不落系统临时目录
+（那里的随机分量会让回执不可复现，而回执里的路径正是判据要断言的东西）。
+
+⛔ **没有**原生文件对话框：用户不能在这里挑文件。那是**另一票**（需要 platform 侧的新能力）。
+
+## 3. 回执格式（成功与失败**同一条**路径）
+
+```text
+module:action=export-wav:outcome=ok:path=…:frames=384000:sample_rate=48000:channels=2:bits=24:bytes=…:source=…:digest=…
+module:action=load-sfz:outcome=error:error=sfz-load:message="读 SFZ 失败: …"
+```
+
+错误码是稳定的：`export-wav` / `import-midi` / `sfz-load` / `record-wav`（模块自身拒绝）、
+`no-project`（没有工程读数）、`no-undo-port`（没有撤销会话，导入拒绝执行）。
+
+## 4. golden 影响（**本票未重录，交人/CI 判决**）
+
+`crates/yeban-app/tests/golden/linux/` 的 5 张 PNG **已经**与源码不一致（台账 R9 的状态栏
+文本改动，MANIFEST 第 49-68 行有登记，重录走手动档 `gates-manual.yml` 的 `gate=goldens`）。
+本票在其上**再加**一处会改默认帧像素的改动：右栏 y=212..384 新增的 6 个语义节点。
+⇒ 重录时这 5 张都要重录；复核口径见下面的**实测包围盒**。
+本机是 macOS（`PlatformTag::current()` 指向仓库里**不存在**的 `golden/macos/`），
+且 `AGENTS.md` §5.2 禁止在本机编译 slint ⇒ **本票不重录**。
+
+### 4.1 新增控件的**实测**包围盒（判据自己打印的，⛔ 不是手算）
+
+来源：`tests/ui_module_actions.rs` 的 `report_line`（`--nocapture` 可读；
+默认帧尺寸 1920×1080，右栏起于 x = 1640）：
+
+```text
+[ui-modules] 运行时控件树 92 条；新入口 6 条如下:
+[ui-modules]   module-actions-title        role=text   bounds=x 1648 y 260 w 272 h 16
+[ui-modules]   module-export-wav-button    role=button bounds=x 1648 y 284 w 264 h 28
+[ui-modules]   module-import-midi-button   role=button bounds=x 1648 y 316 w 264 h 28
+[ui-modules]   module-load-sfz-button      role=button bounds=x 1648 y 348 w 264 h 28
+[ui-modules]   module-record-wav-button    role=button bounds=x 1648 y 380 w 264 h 28
+[ui-modules]   module-last-status          role=text   bounds=x 1648 y 416 w 264 h 16
+```
+
+⇒ **重录后的复核口径**：5 张基准与旧图的差异必须**全部落在 `x ∈ [1648, 1912)`、
+`y ∈ [260, 432)`** 这一个矩形内，矩形之外**逐字节相同**。
+（`AiRail` 的画布起于 `y = 252`：顶栏 48 + 中段第一个子控件 204。）
+
+## 5. 读数（本机 macOS / Apple M2，debug 构建，命令可复跑）
+
+指标口径（先说单位）：**每一次动作在 UI 线程回调里的墙钟毫秒**，取 `Instant::now()`
+与动作返回之间的差；由 `host::module_trace` 在 `YEBAN_UI_MODULE_TRACE=1` 时打到 stderr。
+它**只**在打开该变量时执行，默认关闭 ⇒ 产品与既有判据的确定性不受影响。
+
+```bash
+cd .worktrees/ui-modules
+BIN=$(ls target/debug/deps/ | grep -E '^ui_module_actions-[0-9a-f]+$' | head -1)
+for i in 1 2 3 4 5; do
+  YEBAN_UI_MODULE_TRACE=1 RUST_MIN_STACK=16777216 target/debug/deps/$BIN --nocapture
+done 2>&1 | grep -o 'action=[a-z-]* elapsed_ms=[0-9.]*'
+```
+
+**5 次实测（毫秒）**：
+
+| 动作 | 5 次读数 | 中位数 |
+| :--- | :--- | ---: |
+| `export-wav`（引擎乐器，8 秒 / 48 kHz / 24-bit） | 346.360 / 340.018 / 351.218 / 341.469 / 345.426 | **345.426** |
+| `export-wav`（**已装载 SFZ** 之后的同一次导出） | 177.433 / 180.492 / 179.381 / 182.374 / 178.263 | **179.381** |
+| `import-midi`（最小 SMF，1 个音符） | 0.294 / 0.301 / 0.305 / 0.335 / 0.234 | **0.301** |
+| `record-wav`（1 秒 / 48 kHz / 24-bit） | 27.144 / 27.000 / 28.215 / 27.340 / 26.002 | **27.144** |
+| `load-sfz`（最小 SFZ，1 个区域 + 1 次探测） | 1.757 / 1.329 / 1.426 / 1.427 / 1.319 | **1.427** |
+| `load-sfz`（源不存在 ⇒ 错误臂） | 0.037 / 0.056 / 0.088 / 0.047 / 0.024 | **0.047** |
+
+**对照**（用户给的 CLI 读数，同一台机器）：`--export-wav` = **261.4 ms**；
+`--sfz <f> --export-wav` = **138.4 ms**。⇒ 经 UI 触发的那两次导出**都慢约 30%**
+（345.4 vs 261.4；179.4 vs 138.4）。本报告**不解释**这个差值（可能是 GUI 进程的
+实时引擎线程、心跳定时器与 Slint 事件循环在同一进程里争 CPU），只报数。
+
+### 5.1 峰值 RSS（口径见 `scripts/gates/measure_rss.py` 的文件头）
+
+对象 = **一个进程**从启动到退出期间被 `wait()` 到的峰值 RSS（`ru_maxrss` 高水位；
+macOS 报字节，脚本已归一到 MB）。它**不是**稳态空闲值，也**不是**"这四个动作的增量成本"
+—— 进程地板（Slint + 引擎 + 字体）占大头。同二进制内消融（本仓既有方法）：
+
+```bash
+python3 scripts/gates/measure_rss.py --label ui-module-actions-4entries \
+  -- target/debug/deps/ui_module_actions-<hash> --nocapture
+python3 scripts/gates/measure_rss.py --label ui-module-actions-floor-no-render \
+  -- target/debug/deps/ui_module_actions_no_port-<hash> --nocapture
+```
+
+| 消融档 | 这个进程做了什么 | 峰值 RSS |
+| :--- | :--- | ---: |
+| `ui-module-actions-4entries` | 活窗口 + 撤销会话 + **四个动作全跑**（含两次 8 秒 WAV 导出） | **65.12 MB** |
+| `ui-module-actions-floor-no-render` | 活窗口 + **没有**撤销会话、**没有** WAV 导出（只做装载 / 录音 / 两条拒绝臂） | **56.11 MB** |
+
+⇒ 差值 **9.01 MB** 是"撤销会话 + 两次 8 秒离线渲染（含 2.3 MB 输出缓冲两次）"这一块。
+⚠ 两个档都不是 `BASELINE-002` 的对象（那是**空工程空闲**常驻内存，目标 ≤ 35 MB）
+⇒ 这两行**不得**读成"BASELINE-002 达标/未达标"，脚本诚实地打了 `over-target` 只因为
+它按那个阈值判。
+
+## 6. needs / pending（如实登记，⛔ 不假装整条通）
+
+1. **没有原生文件对话框**：四个入口的目标路径只能由宿主的环境变量给出
+   （`YEBAN_UI_*_PATH`）。用户**不能**在界面上挑文件 / 挑目录。这是**另一票**
+   （需要新的 platform 侧能力；本票的边界）。
+2. **`record-wav` 是"控制侧测试音录成 WAV"**，⛔ **不是**声卡录音。
+   `[ARCH-REC-001]` 要求的"点击录音 Arm 后从声卡物理输入捕获 PCM"在仓库里**仍不存在**，
+   由 `elements.rs` 的 `the_record_button_has_no_click_handler_and_recording_is_unimplemented`
+   继续钉着（顶栏 `transport-record-button` 本票**一位未改**）。
+3. **本机 macOS 的 `engine_device_leg` 栈溢出**（既有测试，与本票改动无因果关系证据）：
+   `cargo test -p yeban-app --all-targets` 在默认 8 MiB 线程栈下，
+   `the_device_leg_carries_the_transport_position_of_the_control_driven_engine`
+   报 `has overflowed its stack`（SIGABRT）。加 `RUST_MIN_STACK=16777216` 后
+   **同一条测试通过**（5 passed）。本票**没有**验证"基线（未含本票改动）是否同样溢出"
+   （那需要另一次全量构建）⇒ 登记为**未判定**，⛔ 不声称是本票引入的、也不声称不是。
+   本票的四门因此用 `RUST_MIN_STACK=16777216` 跑（见 §5 的命令）。
+4. **golden 未重录**（见 §4）：5 张 Linux 基准仍需按手动档 `gates-manual.yml` 的
+   `gate=goldens` 重录 + 人工复核。
+5. **`ui-mcp` 的 `module-*` ID 未进 `VISIBLE_SINGLETONS`**：那是 `src/test_port_adapter.rs`
+   的一份分母清单（判别"整块面板被裁掉"）。本票**没有**动它 —— 新入口的"可寻址"由
+   `tests/ui_module_actions.rs` 自己断言（点名的 6 个 ID + 运行时树对注册表的双向覆盖）。
+   不把它塞进那份分母的理由：那份分母的缺失容忍度是 10%（39 × 10%），加 6 条会把
+   容忍度摊薄到 13%；而本票的 6 条**已经被**更强的判据（精确点名）覆盖。

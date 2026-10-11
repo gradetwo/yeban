@@ -2381,6 +2381,424 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
     ui.set_save_succeeded(ok);
 }
 
+/// **四个模块入口的目标路径／参数** —— `host::wire_module_actions` 的唯一装配输入。
+///
+/// 为什么目标路径由**宿主**给出而不是界面：
+/// 1. `[MODEL-AST-002]` / `ADR-0005` 的方向是"界面只报事件、宿主决定语义"；
+/// 2. 文件系统路径是**宿主**的知识（工作目录、环境、未来的配置层），放进 `.slint`
+///    只会多一个真相源；
+/// 3. 判据因此可以**确定性地**驱动整条链（把四条路径指向 `tempfile` 那样的临时目录），
+///    而不需要模拟原生文件对话框。
+///
+/// 覆盖方式（每一条都独立）：`YEBAN_UI_EXPORT_WAV_PATH` / `YEBAN_UI_IMPORT_MIDI_PATH` /
+/// `YEBAN_UI_LOAD_SFZ_PATH` / `YEBAN_UI_RECORD_WAV_PATH`，秒数用
+/// `YEBAN_UI_RECORD_SECONDS`（默认 8.0 —— 与 CLI 的 `--export-wav` 默认 8 秒同档）。
+///
+/// 缺省值落在**当前工作目录**下（`ui-export.wav` / `ui-import.mid` / `ui-instrument.sfz` /
+/// `ui-record.wav`），⛔ **不**落到系统临时目录：后者的路径里带随机分量，会让回执行
+/// 不可复现，而"回执里的路径"正是判据要断言的东西。
+///
+/// ⚠ 边界（如实登记）：本票**没有**原生文件对话框 —— 用户不能在这里挑文件，
+/// 只能走上面那四个环境变量。那是**另一票**（需要 platform 侧的新能力）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModulePaths {
+    /// `导出 WAV` 的落盘路径。
+    pub export_wav: std::path::PathBuf,
+    /// `导入 MIDI` 的来源文件。
+    pub import_midi: std::path::PathBuf,
+    /// `装载 SFZ` 的来源文件。
+    pub load_sfz: std::path::PathBuf,
+    /// `录音` 的落盘路径。
+    pub record_wav: std::path::PathBuf,
+    /// `录音` 的秒数（`record_wav::RecordOptions::seconds`）。
+    pub record_seconds: f32,
+}
+
+impl Default for ModulePaths {
+    fn default() -> Self {
+        Self {
+            export_wav: std::path::PathBuf::from("ui-export.wav"),
+            import_midi: std::path::PathBuf::from("ui-import.mid"),
+            load_sfz: std::path::PathBuf::from("ui-instrument.sfz"),
+            record_wav: std::path::PathBuf::from("ui-record.wav"),
+            record_seconds: 8.0,
+        }
+    }
+}
+
+impl ModulePaths {
+    /// 从环境变量读覆盖值；未设的项用 [`ModulePaths::default`]。
+    ///
+    /// 为什么放 `host` 而不是 `cli`：这四条路径**只在 GUI 回调里**被用，CLI 的
+    /// `--export-wav` 等开关走的是 `cli.rs` 自己的那一份（两者共用的是**模块实现**，
+    /// 不是路径解析），因此这里不制造第二个 CLI 面。
+    #[must_use]
+    pub fn from_env() -> Self {
+        let defaults = Self::default();
+        let read = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+        };
+        let record_seconds = std::env::var("YEBAN_UI_RECORD_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| *value > 0.0)
+            .unwrap_or(defaults.record_seconds);
+        Self {
+            export_wav: read("YEBAN_UI_EXPORT_WAV_PATH").unwrap_or(defaults.export_wav),
+            import_midi: read("YEBAN_UI_IMPORT_MIDI_PATH").unwrap_or(defaults.import_midi),
+            load_sfz: read("YEBAN_UI_LOAD_SFZ_PATH").unwrap_or(defaults.load_sfz),
+            record_wav: read("YEBAN_UI_RECORD_WAV_PATH").unwrap_or(defaults.record_wav),
+            record_seconds,
+        }
+    }
+}
+
+/// 模块入口的回执前缀 —— 成功与失败**共用**，因此"这一次是谁的回执"永远可判。
+const MODULE_RECEIPT_PREFIX: &str = "module";
+
+/// 已装载的 SFZ 乐器（`load-sfz` 写、`export-wav` 读）。
+///
+/// 形状与 `cli.rs` 的 `loaded_sfz` 同：`(乐器, 文件路径)`。路径**必须**一起留着 ——
+/// `export_wav_with_sfz_file` 的第二个元素是 `Option<PathBuf>`，给了它 `sample=` 指向的
+/// wav 才会被**真读**（`export_wav.rs` 的接线语义）。
+///
+/// 单独起别名是 clippy 的要求（`clippy::type_complexity`，`-D warnings` 下是硬错误）：
+/// 一个内联的四层泛型（`Rc<RefCell<Option<(Arc<..>, PathBuf)>>>`）读不出意图。
+type LoadedSfz = Rc<
+    RefCell<
+        Option<(
+            std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+            std::path::PathBuf,
+        )>,
+    >,
+>;
+
+/// 一行回执：`module:action=<动作>:outcome=ok:…` 或
+/// `module:action=<动作>:outcome=error:error=<码>:message="<原文>"`。
+///
+/// 为什么**成功与失败都走这一条**：与 `apply_save_outcome` 同款 —— "失败时忘了刷新
+/// 界面"这种错法在构造上不存在；而"失败了却看起来像成功"是本仓库最忌讳的失败模式。
+/// 为什么错误要带一个**码**：调用方（判据 / 未来的调用面）不该去解析中文原文，
+/// 码是稳定的，原文是给人看的。
+fn module_receipt(action: &str, fields: &[String]) -> String {
+    let mut out = format!("{MODULE_RECEIPT_PREFIX}:action={action}");
+    for field in fields {
+        out.push(':');
+        out.push_str(field);
+    }
+    out
+}
+
+/// 失败回执的字段（`outcome=error` + 稳定码 + 原文）。
+fn module_error_fields(code: &str, message: &str) -> Vec<String> {
+    vec![
+        "outcome=error".to_owned(),
+        format!("error={code}"),
+        format!("message=\"{message}\""),
+    ]
+}
+
+/// 把一条回执写进界面（**唯一**的写入点：成功与失败都从这里过）。
+fn apply_module_receipt(ui: &MainWindow, receipt: &str, ok: bool) {
+    ui.set_module_status(receipt.into());
+    ui.set_module_status_succeeded(ok);
+}
+
+/// `YEBAN_UI_MODULE_TRACE=1` 时把每一步的墙钟读数打到 stderr。
+///
+/// 为什么要有它：本机纪律禁止在这里跑基准，而"经 UI 触发一次动作要多久"是交付读数。
+/// 它**默认关闭**，因此判据与产品行为的确定性不受影响 —— 打开时只多两行 stderr
+/// （`eprintln!` 在 UI 线程上，触碰不到音频线程的红线 7）。
+fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
+    if std::env::var_os("YEBAN_UI_MODULE_TRACE").is_none() {
+        return;
+    }
+    eprintln!(
+        "[yeban-app] ui-module-trace: action={action} elapsed_ms={:.3} receipt={receipt}",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+}
+
+/// **四个模块入口的接线**（本票）：`.slint` 的按钮 → 已经存在的四个模块实现。
+///
+/// | 界面回调 | 落点（**复用**，⛔ 不另写一套） | 会不会改工程 |
+/// | :--- | :--- | :--- |
+/// | `export-wav` | [`crate::export_wav::export_wav_with_sfz_file`] | 不会（只写目标 WAV） |
+/// | `import-midi` | [`crate::import_midi::import_midi_file`]（经 `UndoPort`） | **会**（`OpOrigin::MidiInput`，可撤销） |
+/// | `load-sfz` | [`crate::sfz_load::load_sfz_with_instrument`] | 不会（只读 SFZ；之后给导出用） |
+/// | `record-wav` | [`crate::record_wav::record_test_tone`] | 不会（只写目标 WAV） |
+///
+/// ## 工程从哪来（唯一权威）
+///
+/// 四条里只有 `import-midi` 改工程，它走的是装配给的那个 [`UndoPort`] —— 与
+/// `Cmd+Z` / `yeban_undo` **同一个**端口，因此"界面导入的音符"与"撤销栈"不可能分叉。
+/// 另外三条读工程时用 `port.project()`（端口的当前读数），**不**用装配时的快照
+/// ⇒ 撤销之后按导出，导出的是撤销之后的那一版。
+///
+/// ## `port` 为 `None` 时
+///
+/// 装配方没有撤销会话（若干既有判据就是这种形态）⇒ 三条只读动作照常可用，
+/// `import-midi` **如实拒绝**（`outcome=error:error=no-undo-port`），⛔ 不静默用一个
+/// 临时会话把编辑吞掉（那会让"可撤销"变成假话）。
+///
+/// ## 装载过的 SFZ 会真的被导出用上
+///
+/// `load-sfz` 成功 ⇒ 乐器存进本闭包的共享槽（`Rc<RefCell<Option<…>>>`），
+/// 之后的 `export-wav` 把它交给 `export_wav_with_sfz_file` 的第四个参数
+/// ⇒ 与 CLI 的 `--sfz <f> --export-wav out.wav` 是**同一条**音源路径。
+pub fn wire_module_actions(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
+    wire_module_actions_with(ui, port, ModulePaths::from_env());
+}
+
+/// 与 [`wire_module_actions`] 相同，但路径／参数由调用方**显式**给出（判据用）。
+pub fn wire_module_actions_with(ui: &MainWindow, port: Option<Rc<UndoPort>>, paths: ModulePaths) {
+    // 已装载的 SFZ 乐器（`load-sfz` 写、`export-wav` 读）—— 与 CLI 的 `loaded_sfz` 同角色。
+    let loaded_sfz: LoadedSfz = Rc::new(RefCell::new(None));
+
+    // ------------------------------------------------------------ 导出 WAV
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        let loaded_sfz = Rc::clone(&loaded_sfz);
+        let target = paths.export_wav.clone();
+        ui.on_export_wav(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            // 工程读数来自端口（撤销之后按导出 ⇒ 导出的是撤销之后那一版）。
+            // 没有端口时退回**这一次装配**能看到的界面态：没有工程可导出 ⇒ 如实拒绝。
+            let Some(port) = port.as_ref() else {
+                let receipt = module_receipt(
+                    "export-wav",
+                    &module_error_fields("no-project", "没有撤销端口 ⇒ 拿不到当前工程的权威读数"),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("export-wav", started, &receipt);
+                return;
+            };
+            let project = port.project();
+            // 装载过 SFZ ⇒ 连**文件路径**一起交下去，于是 `sample=` 指向的 wav 会被**真读**
+            // （与 CLI 的 `--sfz <f> --export-wav out.wav` 是同一个参数形态）。
+            let sfz = loaded_sfz
+                .borrow()
+                .clone()
+                .map(|(instrument, path)| (instrument, Some(path)));
+            let (receipt, ok) = match crate::export_wav::export_wav_with_sfz_file(
+                &project,
+                &target,
+                crate::export_wav::WavExportOptions::default(),
+                sfz,
+            ) {
+                Ok(report) => (
+                    module_receipt(
+                        "export-wav",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!("path={}", report.path.display()),
+                            format!("frames={}", report.frames),
+                            format!("sample_rate={}", report.sample_rate),
+                            format!("channels={}", report.channels),
+                            format!("bits={}", report.bits),
+                            format!("bytes={}", report.bytes),
+                            format!("source={}", report.source),
+                            format!("digest={}", report.digest),
+                        ],
+                    ),
+                    true,
+                ),
+                Err(error) => (
+                    module_receipt(
+                        "export-wav",
+                        &module_error_fields("export-wav", &error.to_string()),
+                    ),
+                    false,
+                ),
+            };
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("export-wav", started, &receipt);
+        });
+    }
+
+    // ------------------------------------------------------------ 导入 MIDI
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        let source = paths.import_midi.clone();
+        ui.on_import_midi(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let Some(port) = port.as_ref() else {
+                let receipt = module_receipt(
+                    "import-midi",
+                    &module_error_fields(
+                        "no-undo-port",
+                        "没有撤销会话 ⇒ 拒绝导入（编辑必须可撤销，⛔ 不静默吞掉）",
+                    ),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("import-midi", started, &receipt);
+                return;
+            };
+            let project = port.project();
+            let (receipt, ok) = match crate::import_midi::import_midi_file(
+                port,
+                &project,
+                &source,
+                &crate::import_midi::MidiImportOptions::default(),
+                now_ms(),
+            ) {
+                Ok(report) => (
+                    module_receipt(
+                        "import-midi",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!(
+                                "path={}",
+                                report.path.as_ref().map_or_else(
+                                    || "<bytes>".to_owned(),
+                                    |path| path.display().to_string()
+                                )
+                            ),
+                            format!("notes={}", report.notes),
+                            format!("track={}", report.track_id.to_canonical_string()),
+                            format!("clip={}", report.clip_id.to_canonical_string()),
+                            format!("commit={}", report.commit.to_canonical_string()),
+                            format!(
+                                "origin={}",
+                                match report.origin {
+                                    yeban_model::OpOrigin::MidiInput => "midi-input",
+                                    yeban_model::OpOrigin::UserUi => "user-ui",
+                                    _ => "other",
+                                }
+                            ),
+                        ],
+                    ),
+                    true,
+                ),
+                Err(error) => (
+                    module_receipt(
+                        "import-midi",
+                        &module_error_fields("import-midi", &error.to_string()),
+                    ),
+                    false,
+                ),
+            };
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("import-midi", started, &receipt);
+        });
+    }
+
+    // ------------------------------------------------------------- 装载 SFZ
+    {
+        let weak = ui.as_weak();
+        let loaded_sfz = Rc::clone(&loaded_sfz);
+        let source = paths.load_sfz.clone();
+        ui.on_load_sfz(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let (receipt, ok) = match crate::sfz_load::load_sfz_with_instrument(
+                &source,
+                Some(crate::sfz_load::DEFAULT_PROBE_NOTE),
+                48_000.0,
+            ) {
+                Ok((report, instrument)) => {
+                    // 记住这份乐器：之后的"导出 WAV"用它发声（与 CLI 的同一语义）。
+                    *loaded_sfz.borrow_mut() =
+                        Some((std::sync::Arc::new(instrument), report.path.clone()));
+                    let fields = vec![
+                        "outcome=ok".to_owned(),
+                        format!("path={}", report.path.display()),
+                        format!("bytes={}", report.bytes),
+                        format!("regions={}", report.regions),
+                        format!("sample_source={}", report.sample_source),
+                        format!(
+                            "probe={}",
+                            report.probe.as_ref().map_or_else(
+                                || "-".to_owned(),
+                                |reading| format!(
+                                    "{}:{}:{}:{}",
+                                    reading.note, reading.velocity, reading.frames, reading.energy
+                                )
+                            )
+                        ),
+                        // 接上之后**一定会**被导出用（下一次 export-wav），如实报 yes。
+                        "wired_to_export=yes".to_owned(),
+                    ];
+                    (module_receipt("load-sfz", &fields), true)
+                }
+                Err(error) => (
+                    module_receipt(
+                        "load-sfz",
+                        &module_error_fields("sfz-load", &error.to_string()),
+                    ),
+                    false,
+                ),
+            };
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("load-sfz", started, &receipt);
+        });
+    }
+
+    // ---------------------------------------------------------------- 录音
+    {
+        let weak = ui.as_weak();
+        let target = paths.record_wav.clone();
+        let seconds = paths.record_seconds;
+        ui.on_record_wav(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let mut options = crate::record_wav::RecordOptions {
+                seconds,
+                ..crate::record_wav::RecordOptions::default()
+            };
+            // 环容量跟着时长走：默认的 1 秒环在 8 秒请求下会**故意**丢帧（`record_wav.rs`
+            // 的实测教训），而界面入口的语义是"把这段录完"，不是"演示丢弃"。
+            options.capacity_frames = ((seconds * options.sample_rate as f32) as usize).max(1);
+            let (receipt, ok) = match crate::record_wav::record_test_tone(&target, &options) {
+                Ok(report) => (
+                    module_receipt(
+                        "record-wav",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!("path={}", report.path.display()),
+                            format!("frames={}", report.frames),
+                            format!("pushed={}", report.pushed),
+                            format!("dropped={}", report.dropped),
+                            format!("bytes={}", report.bytes),
+                            format!("bits={}", report.bits),
+                            format!("source={}", report.source),
+                        ],
+                    ),
+                    true,
+                ),
+                Err(error) => (
+                    module_receipt(
+                        "record-wav",
+                        &module_error_fields("record-wav", &error.to_string()),
+                    ),
+                    false,
+                ),
+            };
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("record-wav", started, &receipt);
+        });
+    }
+}
+
 /// `Action` 是否有**可作用的实现** —— 宿主对此的**唯一**陈述。
 ///
 /// 这张名单回答的是"按下去会不会真的发生一件事", 因此它是**用户可见承诺**的事实源：

@@ -1751,6 +1751,12 @@ pub fn build_live_ui_with(
     if let Some(undo) = options.undo.as_ref() {
         host::wire_mixer_edit(&window, undo);
     }
+    // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与产品进程
+    // （`main.rs` 的 `run_gui`）调的是**同一个** `host::wire_module_actions`。
+    // 它**总是**接：三条只读动作（导出 / 装载 / 录音）在 `options.undo` 为 `None` 时
+    // 照常可用，只有 `import-midi` 会如实拒绝（`error=no-undo-port`）——
+    // ⛔ 不静默用一个临时会话把编辑吞掉。
+    host::wire_module_actions(&window, options.undo.clone());
     let admin = LiveAdminSurface {
         inner: surface,
         window,
