@@ -6566,6 +6566,7 @@ dependencies = [
  "yeban-engine",
  "yeban-mcp",
  "yeban-midi",
+ "yeban-midi-io",
  "yeban-model",
  "yeban-render",
  "yeban-sfz",

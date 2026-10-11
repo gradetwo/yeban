@@ -125,6 +125,9 @@ serde_json = { workspace = true }
 # 这条现在由 ADR-0001 **D21** 的 `[bans] allow-wildcard-paths = true` 豁免 ——
 # 该豁免只放行"带 path 的 `*`", registry 依赖仍必须写真实版本。需要真正发布本 crate 时,
 # 再由集成者把它连同版本一起登记进根 `[workspace.dependencies]`。
+# ADR-0006 D2/D5: 物理 MIDI 输入的宿主 crate。**可选** —— 只有在 `midi-input` feature 下
+# 才进依赖树（`dep:` 语法, 不产生同名隐式 feature）⇒ 默认构建与 release 默认都不含它。
+yeban-midi-io = { workspace = true, optional = true }
 yeban-ui-test-port = { path = "../yeban-ui-test-port", optional = true }
 
 # ---------------------------------------------------------------------------
@@ -179,6 +182,13 @@ yeban-ui-mcp = { path = "../yeban-ui-mcp", optional = true }
 [features]
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
 ui-test-port = ["dep:yeban-ui-test-port"]
+
+# `midi-input`: ⭐ **物理 MIDI 输入的产品入口**（`--midi-in <端口> [--midi-in-seconds N]`,
+# 见 `src/midi_in.rs`）。⭐ 依 ADR-0006 **D5** 与人类裁决（2026-10-11）：feature 名 `midi-input`、
+# ⭐ **默认关**（即 `default` 不含它）。⚠ 负责人同次指示："产品和模块全部完整后要改为**默认开**"
+# ⇒ 那是**阶段性**的、⛔ 不是终态 ⇒ 届时把它移进 `default` 并**单独登记**。
+# 它**转发**到 `yeban-midi-io/midi-input` —— 那边才是 `midir` 的实际宿主（FFI 面收在一处）。
+midi-input = ["dep:yeban-midi-io", "yeban-midi-io/midi-input"]
 
 # `in-process-mcp`: 形态 A 的运行态挂载 (见上面的长注释与 `src/mcp_mount.rs`)。
 # **不在 `default` 里** —— 这是 MUST-GATE-009 的第一道开关, 不是可选的便利。
