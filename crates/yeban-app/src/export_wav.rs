@@ -101,8 +101,8 @@ pub struct WavExportReport {
     pub bytes: u64,
     /// 渲染输出的位级摘要（十六进制；来自 `RenderOutput::digest`）。
     pub digest: String,
-    /// 本次导出用的音源名（如实登记，⛔ 不假装是引擎乐器）。
-    pub source: &'static str,
+    /// 本次导出用的音源名（如实登记；文件样本会写出路径／帧数／采样率）。
+    pub source: String,
 }
 
 impl WavExportReport {
@@ -346,6 +346,27 @@ pub fn export_wav_with_sfz(
     options: WavExportOptions,
     sfz: Option<std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>>,
 ) -> Result<WavExportReport, WavExportError> {
+    export_wav_with_sfz_file(project, path, options, sfz.map(|i| (i, None)))
+}
+
+/// 与 [`export_wav_with_sfz`] 相同，但可同时给出 **SFZ 文件路径** ⇒ `sample=` 会被**真读**。
+///
+/// 给了路径 ⇒ 每条音符按它的区域解析 `sample=`（**只支持 `read_plain_wav` 能读的 PCM WAV**）；
+/// 读不到 ⇒ 如实回退到内存正弦并把原因写进 `source=`。⛔ 给 `None` 时与
+/// [`export_wav_with_sfz`] 逐位相同（内存正弦）。
+///
+/// # Errors
+///
+/// 与 [`export_wav`] 相同。
+pub fn export_wav_with_sfz_file(
+    project: &YebanProjectV1,
+    path: &Path,
+    options: WavExportOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+) -> Result<WavExportReport, WavExportError> {
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
@@ -401,20 +422,31 @@ pub fn export_wav_with_sfz(
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
         .collect();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    let source_label: &'static str = if let Some(instrument) = sfz.as_ref() {
+    let source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
+        let mut labels: Vec<String> = Vec::new();
         for track_id in renderable.clone() {
             let notes = track_notes_in_frames(project, track_id, options.sample_rate);
-            sources.insert(
-                track_id,
-                Box::new(crate::sfz_load::SfzTrackSource::new(
+            let track_source = match sfz_path {
+                Some(sfz_path) => crate::sfz_load::SfzTrackSource::new_from_sfz_path(
+                    instrument.clone(),
+                    sfz_path,
+                    &notes,
+                    options.sample_rate as f32,
+                    options.channels,
+                ),
+                None => crate::sfz_load::SfzTrackSource::new(
                     instrument.clone(),
                     &notes,
                     options.sample_rate as f32,
                     options.channels,
-                )),
-            );
+                ),
+            };
+            labels.push(track_source.sample_source());
+            sources.insert(track_id, Box::new(track_source));
         }
-        "sfz(内存正弦样本；⛔ 不是 sample= 指向的 wav)"
+        labels
+            .first()
+            .map_or_else(|| "sfz(无区域)".to_owned(), |label| format!("sfz({label})"))
     } else if let Some(snapshot) = snapshot.as_ref() {
         for track_id in renderable.clone() {
             sources.insert(
@@ -422,7 +454,7 @@ pub fn export_wav_with_sfz(
                 Box::new(EngineTrackSource::new(snapshot, track_id)?),
             );
         }
-        "引擎乐器（SynthEngine::arm_from_snapshot + render_track）"
+        "引擎乐器（SynthEngine::arm_from_snapshot + render_track）".to_owned()
     } else {
         for track_id in renderable.clone() {
             sources.insert(
@@ -434,7 +466,7 @@ pub fn export_wav_with_sfz(
                 )),
             );
         }
-        "最小音源（方波 + 首尾包络；回退）"
+        "最小音源（方波 + 首尾包络；回退）".to_owned()
     };
 
     // ---- 3. 执行（全部在内存里）----
@@ -549,6 +581,124 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 判据（`sample=` **真读文件**）：把一条**常量**样本（`0.25` 的 24-bit PCM）当区域样本，
+    /// 导出的声音**确实来自该文件** —— 判定量 = 该音符前 2048 个样本的**极差**（max−min）：
+    /// 常量样本 ⇒ 极差**极小**；内存正弦 ⇒ 极差**大**。
+    ///
+    /// ⚠ 这样命名判定量，是为了同时排除"换了但没声音"（极差为 0 且全 0 ⇒ 另断言峰值 > 0）
+    /// 与"其实还是正弦"（极差会大）两种假象。
+    #[test]
+    fn a_sample_file_named_by_the_region_is_really_read_and_drives_the_output() {
+        let project = yeban_model::samples::filled_project();
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-wav-sample-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        // ① 造一条**常量** 24-bit 单声道样本（值 = 满量程的 1/4 ⇒ 归一化 0.25）
+        let scale = yeban_render::dither::BitDepth::Int24.full_scale_max() / 4;
+        let sample_path = dir.join("const.wav");
+        let buffer = yeban_render::dither::PcmBuffer::Int24(vec![scale; 4_800]);
+        let format = yeban_render::rf64::PcmFormat::integer(1, 48_000, 24);
+        yeban_render::wav::write_plain_wav(&sample_path, &format, &buffer).expect("写样本");
+        // ② SFZ：每个音高一条区域，sample 指向该文件
+        let mut pitches: Vec<u8> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.values().map(|note| note.pitch))
+            .collect();
+        pitches.sort_unstable();
+        pitches.dedup();
+        let text: String = pitches
+            .iter()
+            .map(|pitch| format!("<region> sample=const.wav key={pitch}\n"))
+            .collect();
+        let sfz_path = dir.join("keys.sfz");
+        std::fs::write(&sfz_path, &text).expect("写 SFZ");
+        let instrument = yeban_engine::sfz_instrument::SfzInstrument::load(
+            text,
+            &yeban_sfz::parser::ParseLimits::default(),
+        )
+        .expect("装载");
+        // ③ 导两次：带文件样本 vs 只有内存正弦
+        let file_path = dir.join("file.wav");
+        let memory_path = dir.join("memory.wav");
+        let with_file = export_wav_with_sfz_file(
+            &project,
+            &file_path,
+            WavExportOptions::default(),
+            Some((
+                std::sync::Arc::new(instrument.clone()),
+                Some(sfz_path.clone()),
+            )),
+        )
+        .expect("带文件样本的导出");
+        let with_memory = export_wav_with_sfz(
+            &project,
+            &memory_path,
+            WavExportOptions::default(),
+            Some(std::sync::Arc::new(instrument)),
+        )
+        .expect("内存正弦的导出");
+        println!(
+            "[wav-file-sample] file source={} / memory source={}",
+            with_file.source, with_memory.source
+        );
+        assert!(
+            with_file.source.contains("file("),
+            "来源必须写出文件路径与帧数: {}",
+            with_file.source
+        );
+        assert!(
+            with_memory.source.contains("in-memory-sine"),
+            "内存版来源必须明说: {}",
+            with_memory.source
+        );
+
+        let spread_of = |path: &std::path::Path| -> (f32, f32) {
+            let (format, buffer) = yeban_render::wav::read_plain_wav(path).expect("可回读");
+            let channels = usize::from(format.channels.max(1));
+            let samples: Vec<f32> = match &buffer {
+                yeban_render::dither::PcmBuffer::Int24(values) => values
+                    .iter()
+                    .step_by(channels)
+                    .map(|value| (*value as f32) / 8_388_608.0)
+                    .collect(),
+                other => panic!("24-bit 整数: {other:?}"),
+            };
+            let window = &samples[..samples.len().min(2048)];
+            let peak = window
+                .iter()
+                .fold(0.0_f32, |acc, value| acc.max(value.abs()));
+            let (min, max) = window.iter().fold((f32::MAX, f32::MIN), |(lo, hi), value| {
+                (lo.min(*value), hi.max(*value))
+            });
+            (max - min, peak)
+        };
+        let (file_spread, file_peak) = spread_of(&file_path);
+        let (memory_spread, _) = spread_of(&memory_path);
+        println!(
+            "[wav-file-sample] 文件样本极差 {file_spread:.6}（峰值 {file_peak:.6}）ｖｓ 内存正弦极差 {memory_spread:.6}"
+        );
+        assert!(file_peak > 0.0, "文件样本版不许是静音（峰值 {file_peak}）");
+        assert!(
+            file_spread < 0.01,
+            "常量样本 ⇒ 前 2048 样本极差必须极小（实际 {file_spread}）"
+        );
+        assert!(
+            memory_spread > file_spread * 10.0,
+            "内存正弦的极差必须显著更大（正弦 {memory_spread} ｖｓ 常量 {file_spread}）"
+        );
+        assert_ne!(
+            std::fs::read(&file_path).expect("读文件版"),
+            std::fs::read(&memory_path).expect("读内存版"),
+            "文件样本与内存正弦必须逐字节不同"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 判据（`--sfz` 接线）：**同一工程**带 SFZ 与不带 SFZ 导出的 WAV **逐字节不同**，
     /// 且 SFZ 版**非静音**（⛔ 不是"换了但没声音"）。
     ///
@@ -605,8 +755,8 @@ mod tests {
             with_sfz.source
         );
         assert!(
-            with_sfz.source.contains("内存正弦"),
-            "必须明说样本是内存正弦: {}",
+            with_sfz.source.contains("in-memory-sine"),
+            "必须明说样本来源（内存正弦）: {}",
             with_sfz.source
         );
         let (_, buffer) = yeban_render::wav::read_plain_wav(&sfz_path).expect("可回读");

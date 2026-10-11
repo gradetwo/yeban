@@ -238,8 +238,9 @@ pub fn usage_text() -> String {
                            输出行 recorded-wav: path=… frames=… dropped=… bytes=… source=…
   --record-seconds <n>     --record-wav 的秒数 (默认 2.0)
   --sfz <path>             装载一份 SFZ 乐器: 报告区域数 + 一次音符探测(帧数与能量);
-                           与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ** 的区域/样本
-                           (样本数据是**内存正弦**, ⛔ 不是 sample= 指向的 wav; 输出行明说)
+                           与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ**;
+                           `sample=<path>` 会被**真读** (只支持本仓 read_plain_wav 能读的
+                           PCM WAV; 读不到 ⇒ 如实回退到内存正弦并把原因写进 source=)
   --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
                            来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
                            (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
@@ -2542,7 +2543,10 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     // SFZ 装载 ＋ 音符探测：**只读**（不改工程、不写文件），所以它只影响输出行。
     // ⭐ 与 `--export-wav` 同时给 ⇒ 导出的音源就是这份 SFZ（见下面的导出块）。
     // ⚠ 诚实登记：样本数据是**内存正弦**（⛔ 不是 `sample=` 指向的 wav）。
-    let mut loaded_sfz: Option<std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>> = None;
+    let mut loaded_sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        std::path::PathBuf,
+    )> = None;
     if let Some(path) = options.sfz.as_ref() {
         let (mut report, instrument) = crate::sfz_load::load_sfz_with_instrument(
             path,
@@ -2556,7 +2560,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // 只有真的会给导出用，才报 `wired_to_export=yes`（⛔ 不夸大）。
         report.wired_to_export = options.export_wav.is_some();
         lines.push(report.summary());
-        loaded_sfz = Some(std::sync::Arc::new(instrument));
+        loaded_sfz = Some((std::sync::Arc::new(instrument), path.clone()));
     }
 
     // 顺序契约（`--help` 的组合语义一节）：**导入 → 导出 → 保存工程**。
@@ -2618,11 +2622,13 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
     if let Some(path) = options.export_wav.as_ref() {
-        let report = crate::export_wav::export_wav_with_sfz(
+        let report = crate::export_wav::export_wav_with_sfz_file(
             &loaded.archive.project,
             path,
             crate::export_wav::WavExportOptions::default(),
-            loaded_sfz.clone(),
+            loaded_sfz
+                .clone()
+                .map(|(instrument, sfz_path)| (instrument, Some(sfz_path))),
         )
         .map_err(|source| CliError::ExportWav {
             path: path.clone(),
@@ -4590,9 +4596,15 @@ mod tests {
             exported.contains("source=sfz"),
             "导出行必须明说走了 SFZ: {exported}"
         );
+        // ⭐ 判据 b 的证据：本夹具的 `sample=a.wav` **不存在**（相对 SFZ 目录）⇒ 必须**如实回退**，
+        // 且把原因写进来源文案（⛔ 不假装读到了文件、⛔ 不 panic）。
         assert!(
-            exported.contains("内存正弦"),
-            "导出行必须明说样本是内存正弦（⛔ 不是 sample= 指向的 wav）: {exported}"
+            exported.contains("in-memory-sine"),
+            "读不到样本文件时必须如实回退到内存正弦: {exported}"
+        );
+        assert!(
+            exported.contains("回退"),
+            "回退必须把原因写进来源文案: {exported}"
         );
         assert!(target.exists(), "导出必须真的落盘");
         std::fs::remove_dir_all(&dir).ok();

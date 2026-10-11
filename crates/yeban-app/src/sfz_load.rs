@@ -41,6 +41,8 @@ pub enum SfzLoadError {
     Read(String),
     /// SFZ 文本非法（语法/超限）—— 引擎原样透出的裁决。
     Parse(String),
+    /// 样本文件读取/解码失败（本仓只支持 `read_plain_wav` 能读的 PCM WAV）。
+    Sample(String),
 }
 
 impl core::fmt::Display for SfzLoadError {
@@ -48,6 +50,7 @@ impl core::fmt::Display for SfzLoadError {
         match self {
             Self::Read(reason) => write!(formatter, "读 SFZ 失败: {reason}"),
             Self::Parse(reason) => write!(formatter, "SFZ 非法: {reason}"),
+            Self::Sample(reason) => write!(formatter, "样本读取失败: {reason}"),
         }
     }
 }
@@ -86,8 +89,8 @@ pub struct SfzLoadReport {
     pub regions: usize,
     /// 探测读数（`probe_note = None` 时为 `None`）。
     pub probe: Option<SfzProbeReading>,
-    /// 样本数据来源的**如实**文案（⛔ 不是 wav 文件名）。
-    pub sample_source: &'static str,
+    /// 样本数据来源的**如实**文案（文件样本会写出路径／帧数／采样率；否则写明是内存正弦）。
+    pub sample_source: String,
     /// 是否已经接到 `--export-wav` 的音源上（今天恒为 `false`，见模块文档 ③）。
     pub wired_to_export: bool,
 }
@@ -152,7 +155,7 @@ pub fn load_sfz_with_instrument(
             bytes,
             regions: instrument.region_count(),
             probe,
-            sample_source: SAMPLE_SOURCE,
+            sample_source: SAMPLE_SOURCE.to_owned(),
             // 默认如实报"未接到导出"；真正接到导出时由调用方（CLI）改写为 `true`。
             wired_to_export: false,
         },
@@ -188,6 +191,100 @@ pub fn probe_note_energy(
     })
 }
 
+/// 把一个 PCM WAV 读成 [`InMemorySample`]（**只支持 `read_plain_wav` 能读的格式**）。
+///
+/// 多声道样本取**声道 0**（本仓的 SFZ 播放按单声道叠加；⛔ 不自己发明下混规则，文档写明）。
+///
+/// # Errors
+///
+/// 读文件 / 解码失败 ⇒ [`SfzLoadError::Sample`]。
+pub fn read_sample_file(path: &Path) -> Result<(InMemorySample, u64, String), SfzLoadError> {
+    let (format, buffer) = yeban_render::wav::read_plain_wav(path)
+        .map_err(|error| SfzLoadError::Sample(format!("`{}`: {error}", path.display())))?;
+    let channels = usize::from(format.channels.max(1));
+    let scale = match buffer.depth() {
+        yeban_render::dither::BitDepth::Float32 => 1.0_f32,
+        depth => 1.0_f32 / (depth.full_scale_max().max(1) as f32),
+    };
+    let samples: Vec<f32> = match &buffer {
+        yeban_render::dither::PcmBuffer::Int16(values) => values
+            .iter()
+            .step_by(channels)
+            .map(|value| f32::from(*value) * scale)
+            .collect(),
+        yeban_render::dither::PcmBuffer::Int24(values) => values
+            .iter()
+            .step_by(channels)
+            .map(|value| (*value as f32) * scale)
+            .collect(),
+        yeban_render::dither::PcmBuffer::Float32(values) => {
+            values.iter().step_by(channels).copied().collect()
+        }
+    };
+    let frames = u64::try_from(samples.len()).unwrap_or(u64::MAX);
+    let describe = format!(
+        "file({} frames={} rate={})",
+        path.display(),
+        frames,
+        format.sample_rate
+    );
+    Ok((
+        InMemorySample {
+            pcm: samples,
+            sample_hz: format.sample_rate as f32,
+        },
+        frames,
+        describe,
+    ))
+}
+
+/// 为一个音符**解析它的区域样本**：优先读 `sample=` 指到的文件，读不到则**如实回退**到内存正弦。
+///
+/// ⚠ 路径语义：`sample=` 相对路径按 SFZ 惯例**相对 SFZ 文件所在目录**解析（`sample_path()`
+/// 已含 `default_path` 前缀）；绝对路径原样使用。
+///
+/// 返回 `(样本, 来源文案)`；`None` = 该音符没有匹配区域（合法：不发声）。
+///
+/// # Errors
+///
+/// 只在该音符**有**匹配区域且样本文件**存在但读不了**时返回错误？⛔ 不 —— 本函数**不**返回错误：
+/// 读不到就回退（并要求调用方把回退写进输出行）。⇒ 实际上返回 `Result` 是为了**路径不可解析**这类
+/// 需要调用方知道的失败；样本不可读按"回退"处理。
+#[must_use]
+pub fn region_sample_for(
+    instrument: &SfzInstrument,
+    sfz_path: &Path,
+    note: u8,
+    velocity: u8,
+) -> Option<(InMemorySample, String)> {
+    let sample = instrument
+        .with_instrument(|parsed| {
+            parsed
+                .regions()
+                .iter()
+                .find(|region| region.matches_key(note) && region.matches_velocity(velocity))
+                .map(|region| region.sample_path().into_owned())
+        })
+        .ok()
+        .flatten()?;
+    let raw = Path::new(&sample);
+    let resolved = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        sfz_path
+            .parent()
+            .map_or_else(|| raw.to_path_buf(), |parent| parent.join(raw))
+    };
+    match read_sample_file(&resolved) {
+        Ok((in_memory, _frames, describe)) => Some((in_memory, describe)),
+        Err(error) => {
+            // 如实回退：读不到 ⇒ 内存正弦，并把原因写进来源文案（⛔ 不假装读到了文件）。
+            let in_memory = InMemorySample::sine(440.0, 48_000.0, 48_000);
+            Some((in_memory, format!("in-memory-sine(440Hz, 回退: {error})")))
+        }
+    }
+}
+
 /// **SFZ 音源**：让 `--export-wav` 用 SFZ 的区域/样本发声（**离线**路径）。
 ///
 /// ## 怎么发声（复用既有设施，⛔ 无旁路）
@@ -203,8 +300,10 @@ pub fn probe_note_energy(
 pub struct SfzTrackSource {
     /// 已装载的 SFZ（多轨可共享同一份 ⇒ 用 `Arc`，⛔ 不重复解析文本）。
     instrument: std::sync::Arc<SfzInstrument>,
-    /// 共享的样本数据（内存正弦；⛔ 不是 `sample=` 指向的 wav 文件）。
+    /// 共享的样本数据（**未指定 SFZ 路径**时的回退：内存正弦）。
     sample: InMemorySample,
+    /// 每个音符自己的样本与来源文案（`None` = 用共享的内存正弦）。
+    per_note: Vec<Option<(InMemorySample, String)>>,
     /// 引擎采样率。
     engine_hz: f32,
     /// 声道数。
@@ -259,7 +358,41 @@ impl SfzTrackSource {
                     rendered: 0,
                 })
                 .collect(),
+            per_note: Vec::new(),
         }
+    }
+
+    /// 与 [`Self::new`] 相同，但**按 SFZ 文件路径解析每条音符的区域样本**（`sample=` 真读文件）。
+    ///
+    /// ⚠ 读不到（不存在／截断／非 PCM WAV）⇒ **如实回退**到内存正弦，并把原因写进来源文案
+    /// （⛔ 不假装读到了文件）。⚠ 红线 7：读文件与解析都发生在**构造期**（离线/控制侧）。
+    #[must_use]
+    pub fn new_from_sfz_path(
+        instrument: std::sync::Arc<SfzInstrument>,
+        sfz_path: &Path,
+        notes: &[(u64, u64, u8, u8)],
+        engine_hz: f32,
+        channels: usize,
+    ) -> Self {
+        let mut source = Self::new(instrument.clone(), notes, engine_hz, channels);
+        source.per_note = notes
+            .iter()
+            .map(|(_, _, pitch, velocity)| {
+                region_sample_for(&instrument, sfz_path, *pitch, *velocity)
+            })
+            .collect();
+        source
+    }
+
+    /// 本次导出用的样本来源文案（**文件样本优先**，取第一条；否则内存正弦）。
+    #[must_use]
+    pub fn sample_source(&self) -> String {
+        self.per_note
+            .iter()
+            .flatten()
+            .map(|(_, describe)| describe.clone())
+            .next()
+            .unwrap_or_else(|| SAMPLE_SOURCE.to_owned())
     }
 
     /// 保证第 `index` 个音符**整段**渲染完成（只做一次）。
@@ -271,9 +404,15 @@ impl SfzTrackSource {
         let pitch = self.notes[index].pitch;
         let velocity = self.notes[index].velocity;
         let mut scratch = vec![0.0_f32; target.max(1)];
+        // 该音符的区域样本（文件样本或回退的内存正弦）。
+        let sample = self
+            .per_note
+            .get(index)
+            .and_then(|entry| entry.as_ref())
+            .map_or(&self.sample, |(in_memory, _)| in_memory);
         let written = self
             .instrument
-            .render_note_into(&self.sample, pitch, velocity, &mut scratch, self.engine_hz)
+            .render_note_into(sample, pitch, velocity, &mut scratch, self.engine_hz)
             .unwrap_or(0);
         let state = &mut self.notes[index];
         state.scratch = scratch;
