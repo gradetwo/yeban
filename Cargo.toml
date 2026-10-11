@@ -73,7 +73,10 @@ symphonia = { version = "0.6.1", default-features = false }
 rubato = { version = "5.0.1", default-features = false }
 hound = { version = "3.5.1", default-features = false }
 midly = { version = "0.5.3", default-features = false }
-midir = { version = "0.11.0", default-features = false }
+# ADR-0006 (Accepted 2026-10-11): hardware MIDI input. Version pinned exactly to 0.11.1;
+# licence MIT => already inside deny.toml allow. The `jack` feature is deliberately NOT
+# enabled (D6). Consumed only behind the `midi-input` feature of crates/yeban-midi-io.
+midir = { version = "=0.11.1", default-features = false }
 notify = { version = "8.2.0", default-features = false }
 zip = { version = "8.6.0", default-features = false }
 flate2 = { version = "1.1.10", default-features = false }

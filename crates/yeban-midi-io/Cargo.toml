@@ -1,0 +1,29 @@
+[package]
+name = "yeban-midi-io"
+description = "物理 MIDI 输入接入（`midir` 宿主 + 预分配无锁事件环 + 960 PPQ 时间戳换算）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yeban_midi_io"
+path = "src/lib.rs"
+
+[features]
+# ⭐ 依 ADR-0006 D5 与人类裁决（2026-10-11）：feature 名 = `midi-input`，**默认关**
+# ⇒ `default` **不含**它 ⇒ release 默认构建不启用（与红线 6 的 `mcp-http`/`ui-mcp`/
+# `asio`/`experimental-*` 同族处理）。
+default = []
+midi-input = ["dep:midir"]
+
+[dependencies]
+# ⭐ ADR-0006 D1/D6：版本**钉死** `0.11.1`（写进根 `[workspace.dependencies]`）；许可证 MIT
+# ⇒ 已在 `deny.toml` 的 `allow` 内。⛔ **不开** `jack` feature（D6：会让 `jack-sys` 进树）。
+# 平台后端跟随 midir 默认：macOS `coremidi` / Linux `alsa` / Windows `windows`+`parking_lot`。
+midir = { workspace = true, optional = true }
+
+[lints]
+workspace = true
