@@ -179,7 +179,11 @@ impl<W: Write> RecordDrain<W> {
     /// 用一条已建立的接收端与一个写入器构造。
     #[must_use]
     pub fn new(receiver: RecordReceiver, sink: W) -> Self {
-        Self { receiver, sink, frames_written: 0 }
+        Self {
+            receiver,
+            sink,
+            frames_written: 0,
+        }
     }
 
     /// 已写出的帧数。
