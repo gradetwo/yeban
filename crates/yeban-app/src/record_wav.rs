@@ -182,12 +182,17 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
     // ---- ① 构造期：**唯一分配点** ----
     let (mut sender, receiver) = record_channel(options.capacity_frames, options.channels);
 
-    // ---- ② 生产端：整帧原子地推（红线 7 安全：不分配、不加锁、不 I/O）----
+    // ---- ② 生产端 ＋ ③ 消费端**交错**（贴近真实双线程拓扑：录的同时后台抽干）----
+    //
+    // ⚠ 为什么必须交错（本机实测的教训）：若"先全推、再抽干"，一条 1 秒的环在 8 秒请求下只能
+    // 留下 1 秒（实测 `frames=48000 / dropped=336000`）⇒ 用户拿到的文件比请求短得多。
+    // 交错之后环只需容纳**一个批**，丢弃只在"批比环还大"或真的跟不上时才发生（正是要被观测的场景）。
+    let mut drain = RecordDrain::new(receiver, SampleSink::default());
     let mut frame = vec![0.0_f32; usize::from(options.channels)];
     let mut phase = 0.0_f32;
     let step = core::f32::consts::TAU * options.tone_hz / options.sample_rate as f32;
     let mut dropped_frames = 0u64;
-    for _ in 0..total_frames {
+    for index in 0..total_frames {
         let value = phase.sin() * TEST_TONE_AMPLITUDE;
         // clippy 要求用 `fill` 而不是手写循环。
         frame.fill(value);
@@ -200,12 +205,20 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
             dropped_frames += 1;
         }
         phase = (phase + step) % core::f32::consts::TAU;
+        // 每 `drain_batch` 帧抽干一次（与生产交替）。
+        // ⚠ 用**循环下标**判断（不是总帧数 —— 常量条件会让交错永不触发：本机实测踩过）。
+        if (index + 1) % u64::try_from(options.drain_batch.max(1)).unwrap_or(1) == 0 {
+            while drain
+                .pump(options.drain_batch)
+                .map_err(|error| RecordError::Io(error.to_string()))?
+                > 0
+            {}
+        }
     }
     let pushed = sender.pushed_frames();
     let dropped = dropped_frames;
 
     // ---- ③ 消费端：抽干（引擎写小端 f32）----
-    let mut drain = RecordDrain::new(receiver, SampleSink::default());
     loop {
         let written = drain
             .pump(options.drain_batch)
