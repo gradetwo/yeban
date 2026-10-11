@@ -975,10 +975,14 @@ impl SynthEngine {
     /// 调用方应先做**慢路径**校验，再进入渲染循环（⛔ 不要边渲染边试错）。
     pub fn arm_from_snapshot(&mut self, snapshot: &EngineSnapshot) -> Result<(), SnapshotError> {
         let master = snapshot.master();
-        let has_master = snapshot.tracks().contains_key(&master)
-            || snapshot.tones().contains_key(&master)
-            || snapshot.drums().contains_key(&master);
-        if !has_master {
+        // ⚠ master 是**母线 id**，实时侧只把它当过滤器用（`rt.rs` 的 `.filter(|id| **id != master)`）：
+        // ⛔ 不要求它出现在 `tracks()` 表里 —— 本批实测过一次：要求"master 必须在 tracks 表内"
+        // 会让**合法**的最小工程（一条轨道 → master）被误判为无母线。
+        // 因此这里只拦"**没有任何可武装的轨道/音色/鼓**"的快照（空快照 ⇒ 谈不上武装）。
+        if snapshot.tracks().is_empty()
+            && snapshot.tones().is_empty()
+            && snapshot.drums().is_empty()
+        {
             return Err(SnapshotError::NoMasterBus);
         }
         self.begin_snapshot(
