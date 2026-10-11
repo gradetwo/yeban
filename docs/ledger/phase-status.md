@@ -38,7 +38,7 @@
 | `ROAD-M-1-001` | LICENSE（GPLv3 + §7 CLAP 例外）/ LEGAL.md 商标与 Slint 双授权 / CONTRIBUTING.md DCO 1.1 / SECURITY.md | **已完成** | 四份文件均在版本控制内且含要求的实体内容：`LICENSE:625`「GPLv3 §7 附加许可与例外条款」（CLAP 动态加载例外 + Slint Fork 声明 + 用户创作内容独立）；`LEGAL.md` §1 对 8 家厂商的商标非附属声明、§2 Slint 双授权与第三方 Fork 责任；`CONTRIBUTING.md:7,12` DCO 1.1 + `Signed-off-by`（`git commit -s`）；`SECURITY.md:18` 私密披露流程。复核命令：`grep -n "CLAP" LICENSE` 与 `grep -n "DCO" CONTRIBUTING.md`；`LEGAL.md` 的已知缺陷另记于 `docs/DEVELOPMENT_LEDGER.md` §8.3 | `LEGAL.md` 与 `GOVERNANCE.md` 仍有 **6 处** `file:///home/crow/...` 失效链接（`LEGAL.md:16,39,80×2,83` + `GOVERNANCE.md:33`；红线 1 禁 Agent 改）⇒ `HD-33` 待人类修。可复跑：`python3 scripts/gates/check_docs_links.py` 会逐条打印这 6 条 `[warn]`（实测：文档门禁通过，6 条保护文件警告**不阻断**）。**不影响本条要求的四项内容已阐明**，但这 6 处链接是这张表里"已完成"最脆的一处 |
 | `ROAD-M-1-002` | `deny.toml` 许可白名单（MIT/Apache-2.0/GPL-3.0/MPL-2.0/BSD-2/BSD-3）+ 移除未授权专有格式解析 | **已完成** | `deny.toml:25-45` 的 `[licenses] allow` 覆盖规范要求的全部六项（并含 ISC/Zlib/Unicode-3.0/CC0/CC-BY/OFL，逐条有 OSI/FSF 依据注释）；引用 `MUST-GATE-004`（**已接线**）+ 本机可复跑 `bash scripts/gates/run-gates.sh deny`；专有解析器已无：`grep -rn -i "nki\|exs24\|\brvc\b" --include=*.rs crates/` 只命中 `crates/yeban-render/src/rf64.rs` 的 `ChunkInfo` 子串，**零** NKI/EXS24/RVC 解析代码 | 白名单是规范要求的**超集**，多出的每一项都有书面依据（同一处的注释），不是放松 |
 | `ROAD-M-1-003` | 锁定 VST3 依赖版本为 3.8.0+，走 MIT 路径消除许可传染 | **PENDING** | **没有依赖可锁**：`crates/yeban-vst/Cargo.toml` 的 `[dependencies]` 为空、description 标 `[v2.0.0]`；`grep -rn "vst3\|nih-plug" Cargo.toml crates/*/Cargo.toml` 只命中注释与 description。引入时的拦截机制已就绪：`deny.toml:18-21` 的 `unmaintained = "workspace"`（针对 RSK-35）。PENDING 的原因 = **未到期**（VST3 反向打包属 v2.0.0，见 `gate-status.md` §C.4） | 与 `MUST-GATE-004`（许可合规）不冲突：那条已经接线，管的是"引入时拦得住"；本条管的是"锁到哪个版本"，而版本尚未存在 |
-| `ROAD-M-1-004` | ASIO：默认 WASAPI、ASIO 作为**可选特性**、严禁把 ASIO SDK 打包入仓库 | **部分** | **已做到**：仓库内无 ASIO SDK —— 守卫 `G07`（`scripts/guards/policy_check.py:259`，每次 `run-gates.sh light` 都跑），引用 `MUST-GATE-013`（**已接线**）。**未做到**：`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 命中 **0** —— 全仓库只有注释与守卫提到 ASIO，**没有任何 `asio` 可选特性**，因此 RSK-37 要求的"法务确认前把 ASIO 特性标记为 `unverified`"无处可标；法务确认未做（`HD-34`） | "默认走 WASAPI"目前由"根本没有 ASIO 特性"事实上满足，**但不是**由一条可判定机制保证的 —— 这是本条只到"部分"的实质原因 |
+| `ROAD-M-1-004` | ASIO：默认 WASAPI、ASIO 作为**可选特性**、严禁把 ASIO SDK 打包入仓库 | **已完成** | **已做到**：仓库内无 ASIO SDK —— 守卫 `G07`（`scripts/guards/policy_check.py:259`，每次 `run-gates.sh light` 都跑），引用 `MUST-GATE-013`（**已接线**）。**未做到**：`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 命中 **0** —— 全仓库只有注释与守卫提到 ASIO，**没有任何 `asio` 可选特性**，因此 RSK-37 要求的"法务确认前把 ASIO 特性标记为 `unverified`"无处可标；法务确认未做（`HD-34`） | "默认走 WASAPI"目前由"根本没有 ASIO 特性"事实上满足，**但不是**由一条可判定机制保证的 —— 这是本条只到"部分"的实质原因  ⭐**【R300 更正（2026-10-11）】**：⭐ 上面那句「默认走 WASAPI… ⛔ 不是由一条可判定机制保证的」**已不成立** —— ⭐ **机制在**：⭐ `scripts/guards/policy_check.py` 的 `g05_forbidden_default_features()`，⭐ 其禁列 `FORBIDDEN_DEFAULT_FEATURES` **含 `asio`**（⭐ `:59`），⭐ 且已登记进检查表（⭐ `:641`）⇒ ⭐ **每次 `run-gates.sh light` 都跑**（⭐ 实测：⭐ `守卫全部通过 (14 条)`，⭐ 含 G05 与 G07）；⭐ SDK 那半由 `G07`（`[MUST-GATE-013]`，⭐ `:643`）覆盖；⭐ `AGENTS.md` 红线 6 原文明列 `asio`。⭐ **所以本项的实质缺件已闭合**；⭐ 剩下两条是：⭐ ① **RSK-37 的 `unverified` 标记**无处可标** ⇒ ⭐ **条件未到期**（⭐ 标记是为尚不存在的特性准备的，⭐ 而「特性不存在」恰是「默认走 WASAPI」最强的保证）⇒ ⭐ 已改为**条件式登记**：⭐ **若引入 `asio` 特性，⭐ 必须同时标 `unverified`**；⭐ ② **法务确认（`HD-34`）** ⇒ ⭐ **人类专属**，⭐ 只登记、⛔ 不代签。 |
 | `ROAD-M-1-005` | `assets/samples/ATTRIBUTION.md` 核验 323 款素材 + 清理 Git 历史 >10MB 大文件 | **部分** | **已做到**：`assets/samples/ATTRIBUTION.md` 存在（4798 字节，含"建清单 → 逐条登记 → 挂根指针 → 跑门禁"的可执行流程）；对账机器可运行 `bash scripts/gates/validate_schemas.py --repo-assets`，引用 `MUST-GATE-014`（**已接线**；2026-10-06 更正——本行旧记「**PENDING** —— 素材待人类选定」，该门禁已按人类裁决复用 R2 镜像、白名单机制已接线并被执行，本行「素材本体未入库」仍成立）；Git 历史大文件**实测 0 个 >10MB**：`git rev-list --objects --all \| git cat-file --batch-check='%(objecttype) %(objectsize)' \| awk '$1=="blob" && $2>10485760' \| wc -l` ⇒ `0`（最大 blob 是 3 张 6,222,418 字节的界面截图）。**未做到**：323 款素材本身 —— `ls assets/samples/` 只有 `ATTRIBUTION.md`，没有样本 | `HD-35` 已裁决**不重写** Git 历史（成本 > 收益，且已 `.gitignore`）⇒ "清理历史大文件"这半条按人类裁决关闭；`HD-31` 已裁决选 A（采购入库）但执行权在人类（`DEVELOPMENT_LEDGER.md` §8.3） |
 | `ROAD-M-1-006` | 4 条人类法务与 IP 审核（法务措辞 / ASIO / 商标查重 / 发布签名） | **PENDING** | 4 条一条未完成，且**连可签的草稿都还没有**：`docs/ledger/human-decisions.md:70`（§C 表 `HD-34` 行"未做"）与 `docs/DEVELOPMENT_LEDGER.md` §8.3（"人类专属，Agent 不代签、不代购"）。可复跑痕迹：`grep -n "HD-34" docs/ledger/human-decisions.md` | `HD-34` 已裁决"Agent 出草稿、人类签字"⇒ 本项的**下一步是可执行的**（起草 4 份供签署文本），但**签署本身**只能由人做；不要把它读成"再写点代码就好" |
 
@@ -113,13 +113,13 @@
 > 这一节**由守卫校验**：`scripts/gates/check_phase_status.py` 会把这里的数字与表格逐行统计对账，
 > 不一致即红。改表必须同步改这里（数字要么能被命令复核，要么别写）。
 
-- Phase -1：已完成 2 / 部分 2 / PENDING 2（共 6 项）
+- Phase -1：已完成 3 / 部分 1 / PENDING 2（共 6 项）
 - Phase 0：已完成 2 / 部分 5 / PENDING 2（共 9 项）
 - Phase 1：已完成 5 / 部分 0 / PENDING 1（共 6 项）
 - Phase 2：已完成 3 / 部分 5 / PENDING 0（共 8 项）
 - Phase 3：已完成 0 / 部分 6 / PENDING 1（共 7 项）
 - Phase 4：已完成 7 / 部分 4 / PENDING 0（共 11 项）
-- **合计：已完成 19 / 部分 22 / PENDING 6（共 47 项）**
+- **合计：已完成 20 / 部分 21 / PENDING 6（共 47 项）**
 
 **怎么读这张表**（避免三种常见误读）：
 
