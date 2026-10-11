@@ -131,6 +131,7 @@ pub mod metronome;
 pub mod mixer;
 pub mod param;
 pub mod ring;
+pub mod record;
 pub mod rt;
 pub mod rt_probe;
 pub mod sfz_instrument;
