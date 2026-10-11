@@ -86,6 +86,7 @@ pub mod import_midi;
 pub mod input;
 pub mod meters;
 pub mod midi_in;
+pub mod midi_notes;
 pub mod open;
 pub mod record_wav;
 pub mod render_core;

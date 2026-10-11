@@ -377,37 +377,60 @@ pub fn export_wav_with_sfz_file(
     // （慢路径校验 → 计划编译 → 音源装配 → 执行 → digest 全在那里）。
     let (samples, frames, source_label, digest) =
         crate::render_core::render_project_f32(project, options, sfz)?;
-    // 本函数只负责**量化 ＋ 一次落盘 ＋ 报告**（导出的出口）。
+    // 本函数只负责**报告**：量化 ＋ 一次落盘走 [`write_interleaved_wav`]（唯一实现）。
+    let (bytes, bits) = write_interleaved_wav(
+        path,
+        &samples,
+        u16::try_from(options.channels).unwrap_or(u16::MAX),
+        options.sample_rate,
+        options.seed,
+    )?;
+    Ok(WavExportReport {
+        path: path.to_path_buf(),
+        frames,
+        sample_rate: options.sample_rate,
+        channels: options.channels,
+        bits,
+        bytes,
+        digest,
+        source: source_label,
+    })
+}
+
+/// ⭐ **把交错 `f32` 量化并落成一个 WAV**（`[ARCH-SEC-004]` 的"拒绝 ⇒ 不留半成品"
+/// 由 `write_plain_wav` 保证：它先校验再建文件）。
+///
+/// ⚠ ⭐ 为什么它必须是一个**共享**函数（⛔ 不是复制一份）：`--export-wav` 与
+/// `--midi-in-render` 都要把"内存里的 f32"变成"同一个格式的 24-bit 抖动 PCM"。
+/// 两份实现迟早会漂移（位深 / 抖动种子 / 量化取整任一处不同，产物就不再可比）——
+/// 那正是"同一份渲染、两种字节"这类最难查的缺陷。⇒ ⭐ **唯一实现**在这里。
+///
+/// 返回 `(文件字节数, 位深)`：字节数取自**落盘后的 `metadata`**（⛔ 不是推算值）。
+///
+/// # Errors
+///
+/// [`WavExportError::Write`]（WAV 头/缓冲被拒）或 [`WavExportError::Io`]（读回尺寸失败）。
+pub fn write_interleaved_wav(
+    path: &Path,
+    samples: &[f32],
+    channels: u16,
+    sample_rate: u32,
+    seed: u64,
+) -> Result<(u64, u16), WavExportError> {
     let mut rng =
-        DeterministicDitherRng::new(u32::try_from(options.seed & u64::from(u32::MAX)).unwrap_or(1));
+        DeterministicDitherRng::new(u32::try_from(seed & u64::from(u32::MAX)).unwrap_or(1));
     let quantized: Vec<i32> = samples
         .iter()
         .map(|sample| quantize_i24(*sample, &mut rng))
         .collect();
     let buffer = PcmBuffer::Int24(quantized);
-    let format = PcmFormat::integer(
-        u16::try_from(options.channels).unwrap_or(u16::MAX),
-        options.sample_rate,
-        24,
-    );
-
-    // ---- 5. 最后一步：一次落盘（拒绝 ⇒ 不留半成品）----
+    let format = PcmFormat::integer(channels.max(1), sample_rate, 24);
     write_plain_wav(path, &format, &buffer)
         .map_err(|error| WavExportError::Write(error.to_string()))?;
-
     let bytes = std::fs::metadata(path)
         .map_err(|error| WavExportError::Io(error.to_string()))?
         .len();
-    Ok(WavExportReport {
-        path: path.to_path_buf(),
-        frames,
-        sample_rate: format.sample_rate,
-        channels: options.channels,
-        bits: format.bits_per_sample,
-        bytes,
-        digest,
-        source: source_label,
-    })
+    Ok((bytes, format.bits_per_sample))
 }
 
 #[cfg(test)]

@@ -8,6 +8,16 @@
 //! * ⭐ **时间戳只消费**（⭐ `MidiEvent::timestamp_us` 来自 `midir` 原始值）⇒
 //!   ⛔ app 侧不自造时间戳。
 //!
+//! # 两条入口（⭐ 用途不同、⛔ 不是两条实现）
+//!
+//! | 入口 | 返回 | 谁用 |
+//! | :--- | :--- | :--- |
+//! | [`capture`] | [`MidiInReport`]（**给人看的报告**：前 8 条 + 抖动 + 真读数） | `--midi-in` 的诊断输出 |
+//! | [`capture_messages`] | [`CapturedMessages`]（**全部**消息 + 真读数） | `--midi-in-write-notes` / `--midi-in-render`（把消息变成音乐） |
+//!
+//! ⭐ 两者共用**同一次**采集循环与**同一个**装配点（[`build_report`]）⇒ ⛔ 不存在"报告说的事件数"
+//! 与"配对看到的消息数"两个事实源。
+//!
 //! # 端口匹配规则（⭐ 可判定，⛔ 不猜）
 //!
 //! 1. ⭐ `--midi-in` 的取值**全是十进制数字** ⇒ 按**端口序号**匹配（⭐ `0` 起）；
@@ -196,6 +206,44 @@ pub struct MidiInReport {
     pub jitter: Option<Jitter>,
 }
 
+/// ⭐ 一次采集的**全部原始消息** ＋ 真读数（⭐ 音符配对与引擎调度的输入）。
+///
+/// ⚠ ⭐ 为什么需要它（⭐ 而不是把 `MidiInReport` 撑大）：`MidiInReport` 是**给人看的报告**
+/// （只留前 [`MidiInReport::FIRST_EVENTS`] 条 + 抖动读数），而"把这次采到的东西变成音乐"
+/// 需要**每一条**消息。两个消费者要的东西不同 ⇒ 两个类型，⛔ 不用一个类型兼职
+/// （兼职的那一天，"报告"与"素材"就会开始互相将就）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapturedMessages {
+    /// ⭐ 会话起点（微秒）—— tick 换算的零点参照。
+    pub origin_us: u64,
+    /// ⭐ 实际采集时长（秒）。
+    pub seconds: f32,
+    /// ⭐ **全部**承载的消息 `(timestamp_us, status, data1, data2)`（按到达顺序）。
+    pub messages: Vec<(u64, u8, u8, u8)>,
+    /// ⭐ **不承载**的条数（⭐ 真读数：生产者计数、接收侧读同一个共享原子）。
+    pub unsupported: u64,
+}
+
+impl CapturedMessages {
+    /// ⭐ 装配成给人看的报告（⭐ **唯一**装配点是 [`build_report`]）。
+    #[must_use]
+    pub fn report(&self) -> MidiInReport {
+        let timestamps_us: Vec<u64> = self.messages.iter().map(|row| row.0).collect();
+        build_report(
+            self.origin_us,
+            self.seconds,
+            u64::try_from(self.messages.len()).unwrap_or(u64::MAX),
+            self.messages
+                .iter()
+                .take(MidiInReport::FIRST_EVENTS)
+                .copied()
+                .collect(),
+            self.unsupported,
+            &timestamps_us,
+        )
+    }
+}
+
 impl MidiInReport {
     /// ⭐ 打印前几条事件的条数上限。
     pub const FIRST_EVENTS: usize = 8;
@@ -324,6 +372,18 @@ pub fn resolve_port(ports: &[PortInfo], wanted: &str) -> Result<usize, MidiInErr
 ///
 /// ⭐ 恒 [`MidiInError::FeatureDisabled`]（⭐ 但**先校验秒数**，⭐ 让参数错误在两种档里一致）。
 #[cfg(not(feature = "midi-input"))]
+pub fn capture_messages(wanted: &str, seconds: f32) -> Result<CapturedMessages, MidiInError> {
+    let _ = wanted;
+    validate_seconds(seconds)?;
+    Err(MidiInError::FeatureDisabled)
+}
+
+/// ⭐ **`midi-input` 关**：⭐ 立刻给出结构化错误（⭐ 因此**默认档**也有证据）。
+///
+/// # Errors
+///
+/// ⭐ 恒 [`MidiInError::FeatureDisabled`]（⭐ 但**先校验秒数**，⭐ 让参数错误在两种档里一致）。
+#[cfg(not(feature = "midi-input"))]
 pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> {
     let _ = wanted;
     validate_seconds(seconds)?;
@@ -332,14 +392,17 @@ pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> 
 
 /// ⭐ **`midi-input` 开**：⭐ 打开端口、采集 `seconds` 秒、**到点必然返回**。
 ///
+/// ⭐ 返回**全部**消息（⛔ 不再只留前 8 条）—— 音符配对（[`crate::midi_notes`]）要看到每一条；
+/// 给人看的报告由 [`CapturedMessages::report`] 从同一批数据装配（⛔ 不二次采集、⛔ 不双份解析）。
+///
 /// ⭐ **`origin_us` = 0** 是**显式**选择：⭐ 会话起点就是 `midir` 时间戳的零点参照
-/// ⇒ ⭐ 记进 [`MidiInReport::origin_us`]（⛔ 不用"回调到达时刻"当基准）。
+/// ⇒ ⭐ 记进 [`CapturedMessages::origin_us`]（⛔ 不用"回调到达时刻"当基准）。
 ///
 /// # Errors
 ///
 /// ⭐ 见 [`MidiInError`] 的六个变体（⭐ 端口不存在时**立刻返回**、⛔ 不进入采集循环）。
 #[cfg(feature = "midi-input")]
-pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> {
+pub fn capture_messages(wanted: &str, seconds: f32) -> Result<CapturedMessages, MidiInError> {
     let seconds = validate_seconds(seconds)?;
     let crate_ports = yeban_midi_io::enumerate_input_ports()
         .map_err(|error| MidiInError::HostUnavailable(error.to_string()))?;
@@ -369,13 +432,18 @@ pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> 
     let mut events: u64 = 0;
     let mut first_events: Vec<(u64, u8, u8, u8)> = Vec::new();
     let mut timestamps_us: Vec<u64> = Vec::new();
+    // ⭐ **全部**消息（⭐ 不再只留前 8 条）：⭐ 音符配对（`crate::midi_notes`）要看到**每一条**。
+    // ⚠ 这是"内存里的消息表"，⭐ 采集期分配不违反红线 7（⭐ 本函数是控制侧，不是回调体）。
+    let mut messages: Vec<(u64, u8, u8, u8)> = Vec::new();
     while std::time::Instant::now() < deadline {
         while let Some(event) = session.pop() {
             events = events.saturating_add(1);
+            let row = (event.timestamp_us, event.status, event.data1, event.data2);
             if first_events.len() < MidiInReport::FIRST_EVENTS {
-                first_events.push((event.timestamp_us, event.status, event.data1, event.data2));
+                first_events.push(row);
             }
             timestamps_us.push(event.timestamp_us);
+            messages.push(row);
         }
         // ⭐ 控制侧（⭐ 非实时）⇒ 短睡不违反红线 7。
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -392,14 +460,26 @@ pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> 
     // 那个方法**（⭐ `MidiInputSession::unsupported_messages()` 本身也只是转发到它）。
     let unsupported = session.receiver().unsupported_messages();
 
-    Ok(build_report(
+    let _ = (events, first_events);
+    Ok(CapturedMessages {
         origin_us,
         seconds,
-        events,
-        first_events,
+        messages,
         unsupported,
-        &timestamps_us,
-    ))
+    })
+}
+
+/// ⭐ **`midi-input` 开**：⭐ 打开端口、采集 `seconds` 秒、**到点必然返回**（⭐ 报告形态）。
+///
+/// ⭐ 本函数是 [`capture_messages`] ＋ [`MidiInReport`] 装配（⭐ 装配只在 [`build_report`] 一处）。
+///
+/// # Errors
+///
+/// ⭐ 见 [`MidiInError`] 的六个变体（⭐ 端口不存在时**立刻返回**、⛔ 不进入采集循环）。
+#[cfg(feature = "midi-input")]
+pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> {
+    let captured = capture_messages(wanted, seconds)?;
+    Ok(captured.report())
 }
 
 /// ⭐ **临时**抖动口径（⭐ `RSK-22` **待裁**）：⭐ 以**相邻事件间隔的中位数**为名义网格，

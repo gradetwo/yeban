@@ -175,7 +175,10 @@ pub fn plan_midi_import(
 }
 
 /// 选目标：第一条非 master 的音轨 ＋ 它的第一个摆放。
-fn destination(
+///
+/// ⚠ `pub(crate)`：`crate::midi_notes` 的 `--midi-in` 写音符走**同一条**规则
+/// （⛔ 不许两处各写一份"第一条非 master 音轨"）。
+pub(crate) fn destination(
     project: &YebanProjectV1,
     options: &MidiImportOptions,
 ) -> Result<(EntityId, EntityId), MidiImportError> {

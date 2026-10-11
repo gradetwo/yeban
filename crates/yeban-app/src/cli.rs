@@ -249,6 +249,21 @@ pub fn usage_text() -> String {
                            <port> = 端口序号 (全十进制) 或端口名**子串** (大小写敏感);
                            子串命中多于一个 ⇒ 报错并**列出候选** (不猜)
   --midi-in-seconds <n>    采集时长 (默认 3; 上限 600 秒) —— 到点**必然退出**
+  --midi-in-write-notes    把这次采到的音符**写进工程** (谱面有反应): 每个音符一次
+                           Op::AddNote, 来源标记 `OpOrigin::MidiInput`, **一次**提交
+                           (可撤销、进提交史); 同一命令里的导出 / --save-as 能看到它们
+  --midi-in-render <path>  把**写完本次音符之后**的工程**离线渲染**成 24-bit WAV
+                           (声音有反应): 与 --export-wav 同一条渲染核心 (引擎快照 +
+                           SynthEngine::render_track) 与同一个量化实现 ⇒ 产物可比;
+                           **必须**与 --midi-in-write-notes 一起给 (否则产物里没有本次弹的音符);
+                           帧数/采样率/声道/种子取 --export-wav 的默认 (8 秒 48 kHz 立体声)
+                           ⚠ 引擎的 EngineEvent 环今天**不消费** NoteOn/NoteOff ⇒ 本开关
+                           刻意不走那条路 (断点登记见 src/midi_notes.rs 的模块文档)
+  --midi-in-track <序号|名字子串>
+                           音符写进哪条 / 事件发往哪条音轨; 规则与 --midi-in 的**端口**选择
+                           同一套 (全十进制 ⇒ 序号; 否则名字子串, 大小写敏感; 命中 0 个 ⇒
+                           列出可用音轨; 命中 >1 个 ⇒ 列出候选, 不猜);
+                           缺省 = **第一条非 master 音轨**
   --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
                            来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
                            (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
@@ -370,6 +385,11 @@ pub fn usage_text() -> String {
                                ⇒ 无显示器环境下的\"打开这个工程\"自检
   --headless 单独给            不打开任何文件, 用演示工程自检
                                (输出里 `project-source:` 会说明)
+  --midi-in-write-notes / --midi-in-render / --midi-in-track
+                               **必须**与 --midi-in 一起给 (单独给 = 用法错误, 退出码 {usage})
+                               —— 否则它们会被静默忽略, 而**静默忽略**正是本仓最忌讳的形态
+  --midi-in 三条落地开关的顺序 先写音符 (改工程) → 再离线渲染 (用同一批事件发声);
+                               两者都不给时 --midi-in 仍是**只读**诊断 (⛔ 不建会话、⛔ 不写盘)
   --save-as 不给 --open        保存的是演示工程, 输出 `saved: ... from=sample=default` 明说
   --save-as 与 --headless      两者都是无窗口路径, 可以一起给 (保存不需要窗口)
   --export-elements 与 --export-midi 与 --export-als 与 --export-logic 与 --save-as 任意组合
@@ -431,6 +451,10 @@ pub fn usage_text() -> String {
       --export-logic 在本次构建未编译 `{logic_feature}`)
   {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
+  {open} --midi-in 失败 (端口不存在或名字有歧义 / 宿主不可用 / 本次构建未编译 `midi-input` 特性)
+  {open} --midi-in-write-notes / --midi-in-render 失败 (一条音符都没有 / 没有可写目标 /
+     音轨选择器命中 0 或多条 / 提交被拒 / 引擎重建失败)
+  {export} --midi-in-render 的 WAV 落盘失败 (与 --export-wav 同一档)
   {usage} --record-seconds 没和 --record-wav 一起给
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
@@ -875,6 +899,28 @@ pub struct Options {
     /// ⭐ **到点必然退出**（⛔ 永不无限阻塞）＋ ⭐ 上限
     /// [`crate::midi_in::MAX_SECONDS`]（⭐ 防止误敲一个巨大的数让命令卡住）。
     pub midi_in_seconds: Option<f32>,
+    /// `--midi-in-write-notes`：⭐ 把这次采到的音符**写进工程**（谱面有反应）。
+    ///
+    /// 走**既有**的 `Op::AddNote` ＋ 一次带 [`yeban_model::OpOrigin::MidiInput`] 的提交
+    /// （与 `--import-midi` 同一条）⇒ 可以撤销、进提交史，并且同一命令里的
+    /// 导出 / `--save-as` 都能看到这些音符。
+    pub midi_in_write_notes: bool,
+    /// `--midi-in-render <path.wav>`：⭐ 把**写完音符之后**的工程**离线渲染**成 24-bit WAV
+    /// （声音有反应）。**必须**与 [`Self::midi_in_write_notes`] 一起给。
+    ///
+    /// ⛔ 不新建第二条音频路径：走的就是 `--export-wav` 那条
+    /// （`SynthEngine::arm_from_snapshot` + `render_track` ＋ 同一个量化实现）。
+    ///
+    /// ⚠ 为什么不是"把事件推进 `EngineEvent` 环再渲染"：那条路今天不通 —— 引擎的出队闭包
+    /// 只认 `SetParam` / `Transport`，`NoteOn` / `NoteOff` **没有消费者**（实测 4/4 事件进环
+    /// ⇒ 全静音）。断点登记与证据在 [`crate::midi_notes`] 的模块文档里。
+    pub midi_in_render: Option<PathBuf>,
+    /// `--midi-in-track <序号|名字子串>`：音符写进哪条音轨 / 事件发往哪条音轨。
+    ///
+    /// ⭐ 规则与 `--midi-in` 的端口选择**同一套**：全十进制 ⇒ 按**序号**（非 master 音轨的
+    /// 身份序）；否则按**名字子串**（大小写敏感）；命中 0 个 ⇒ 列出可用音轨；
+    /// 命中 >1 个 ⇒ 列出候选（⛔ 不猜）。缺省 = **第一条非 master 音轨**。
+    pub midi_in_track: Option<String>,
     /// `--export-midi <path>`：当前工程导出成标准 MIDI 文件（SMF 1）[ADR-0001 **D47**]。
     pub export_midi: Option<PathBuf>,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 24-bit WAV（导出族）。
@@ -1317,6 +1363,23 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     .map_err(|_| ParseError::MidiInSecondsInvalid(value.clone()))?;
                 set_once_seconds(&mut options.midi_in_seconds, "--midi-in-seconds", seconds)?;
             }
+            "--midi-in-write-notes" => {
+                reject_inline("--midi-in-write-notes", inline)?;
+                options.midi_in_write_notes = true;
+                cursor += 1;
+            }
+            "--midi-in-render" => {
+                let value = take_value("--midi-in-render", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.midi_in_render,
+                    "--midi-in-render",
+                    PathBuf::from(value),
+                )?;
+            }
+            "--midi-in-track" => {
+                let value = take_value("--midi-in-track", inline, args, &mut cursor)?;
+                set_once_string(&mut options.midi_in_track, "--midi-in-track", value)?;
+            }
             "--import-midi" => {
                 let value = take_value("--import-midi", inline, args, &mut cursor)?;
                 set_once(
@@ -1716,6 +1779,12 @@ pub enum CliError {
         /// `midi-in` 层的原样裁决。
         source: crate::midi_in::MidiInError,
     },
+    /// `--midi-in-write-notes` / `--midi-in-render` 失败（没有音符 / 没有目标音轨 /
+    /// 提交被拒 / 引擎重建失败 / WAV 写出失败）。
+    MidiNotes {
+        /// `midi_notes` 层的原样裁决。
+        source: crate::midi_notes::MidiNoteError,
+    },
     /// `--record-wav` 失败（抽干 I/O / WAV 写出被拒 / 参数非法）。
     Record {
         /// 目标路径。
@@ -1815,6 +1884,9 @@ impl CliError {
             | Self::ImportMidi { .. }
             | Self::Sfz { .. }
             | Self::MidiIn { .. } => EXIT_OPEN,
+            // ⭐ `--midi-in-*` 的写音符 / 渲染：退出码由 `MidiNoteError` 自己按变体给
+            //（WAV 落盘失败 ⇒ `EXIT_EXPORT`，其余 ⇒ `EXIT_OPEN`）⇒ ⛔ 不在这里再写第二张表。
+            Self::MidiNotes { source } => source.exit_code(),
             Self::Usage(_) => EXIT_USAGE,
             Self::Save { .. } => EXIT_SAVE,
             Self::Record { .. } => EXIT_EXPORT,
@@ -1831,6 +1903,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MidiIn { source } => write!(formatter, "--midi-in 失败: {source}"),
+            Self::MidiNotes { source } => write!(formatter, "--midi-in 音符路径失败: {source}"),
             Self::Open { path, source } => {
                 write!(formatter, "打开 `{}` 失败: {source}", path.display())
             }
@@ -1921,6 +1994,7 @@ impl std::error::Error for CliError {
             Self::ImportMidi { source, .. } => Some(source),
             Self::Sfz { source, .. } => Some(source),
             Self::MidiIn { source } => Some(source),
+            Self::MidiNotes { source } => Some(source),
             Self::Record { source, .. } => Some(source),
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
@@ -2662,19 +2736,41 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         ));
     }
 
-    // ⭐ `--midi-in`：⭐ **只读**（不建会话、不改工程）⇒ 采集完就打印。
+    // ⚠ 组合性/用法检查**先于**任何工作：默认档下 `capture_messages()` 会先撞
+    // `FeatureDisabled`，若把用法错误放在它之后，用户永远看不到那条用法提示。
+    for (given, name) in [
+        (options.midi_in_seconds.is_some(), "--midi-in-seconds"),
+        (options.midi_in_write_notes, "--midi-in-write-notes"),
+        (options.midi_in_render.is_some(), "--midi-in-render"),
+        (options.midi_in_track.is_some(), "--midi-in-track"),
+    ] {
+        if given && options.midi_in.is_none() {
+            return Err(CliError::Usage(format!(
+                "`{name}` 必须与 `--midi-in` 一起给（⛔ 单独给会被静默忽略）"
+            )));
+        }
+    }
+    // ⭐ 渲染的必须是**这次弹出来的音符**：给了 `--midi-in-render` 却不写音符 ⇒ 渲染的是
+    // "没有本次音符"的工程（对没有音符的工程就是一段静音 WAV）⇒ 与其让人拿到一个静音产物，
+    // 不如**明说**这两条开关的关系（⛔ 不偷偷替用户打开写音符 —— 那是隐式改工程）。
+    if options.midi_in_render.is_some() && !options.midi_in_write_notes {
+        return Err(CliError::Usage(
+            "`--midi-in-render` 必须与 `--midi-in-write-notes` 一起给：渲染的是**写完音符之后**的工程，\
+             否则产物里没有这次弹的东西（只导出工程本身请用 `--export-wav`）"
+                .to_owned(),
+        ));
+    }
+
+    // ⭐ `--midi-in`：⭐ 采集**一次**，然后按开关走两条落地路径（⭐ 顺序 = 谱面 → 声音）。
     if let Some(wanted) = options.midi_in.as_ref() {
         let seconds = options
             .midi_in_seconds
             .unwrap_or(crate::midi_in::DEFAULT_SECONDS);
-        let report = crate::midi_in::capture(wanted, seconds)
+        // ⭐ **同一次**采集既喂报告、也喂音符路径（⛔ 不采两遍、⛔ 不用两份解析）。
+        let captured = crate::midi_in::capture_messages(wanted, seconds)
             .map_err(|source| CliError::MidiIn { source })?;
-        lines.push(report.summary());
-    }
-    if options.midi_in_seconds.is_some() && options.midi_in.is_none() {
-        return Err(CliError::Usage(
-            "`--midi-in-seconds` 必须与 `--midi-in` 一起给".to_owned(),
-        ));
+        lines.push(captured.report().summary());
+        apply_captured_midi(&mut loaded, options, &captured, &mut lines)?;
     }
 
     // 顺序契约（`--help` 的组合语义一节）：**导入 → 导出 → 保存工程**。
@@ -2784,6 +2880,103 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     }
 
     Ok(lines)
+}
+
+/// ⭐ **采集之后的落地步骤**（谱面 → 声音）。
+///
+/// ⚠ ⭐ **为什么这一步要单独存在**：真 MIDI 端口只在本机／真设备上存在
+/// （`capture_messages()` 必须 `midir` 真的连上端口）⇒ ⭐ 若把"写音符 / 离线渲染"写死在
+/// 采集调用之后，⭐ 判据就**永远只能断言采集本身**。把它拆出来之后，判据可以喂一批
+/// **注入**的消息（与 `yeban-midi-io` 的模拟回调体 `MidiEventSender::handle_message`
+/// 同手法）走**同一条**落地路径 —— 这正是"真设备那层不可覆盖、但可判的那层做干净"的落点。
+///
+/// 顺序（`--help` 的"组合语义"一节）：**先谱面（写工程）→ 再声音（离线渲染）**。
+/// ⛔ 两个开关都不给时本函数**什么都不做**（`--midi-in` 单独给仍然是只读诊断）。
+///
+/// # Errors
+///
+/// [`CliError::MidiNotes`]：一条音符都没有 / 没有目标音轨 / 提交被拒 / 引擎重建失败 /
+/// WAV 落盘失败（退出码见 [`crate::midi_notes::MidiNoteError::exit_code`]）。
+pub fn apply_captured_midi(
+    loaded: &mut Loaded,
+    options: &Options,
+    captured: &crate::midi_in::CapturedMessages,
+    lines: &mut Vec<String>,
+) -> Result<(), CliError> {
+    if !options.midi_in_write_notes && options.midi_in_render.is_none() {
+        return Ok(());
+    }
+    let pairing = crate::midi_notes::pair_notes(
+        &captured.messages,
+        captured.origin_us,
+        crate::midi_notes::UNCLOSED_TAIL_TICKS,
+    );
+    lines.push(pairing.summary());
+
+    let selected = match options.midi_in_track.as_deref() {
+        Some(selector) => Some(
+            crate::midi_notes::resolve_track(&loaded.archive.project, selector)
+                .map_err(|source| CliError::MidiNotes { source })?,
+        ),
+        None => None,
+    };
+
+    // ---- ① 谱面：把音符写进工程（走既有 Op + 一次带来源的提交）----
+    if options.midi_in_write_notes {
+        let session = crate::undo::UndoSession::open(
+            "<cli:midi-in>",
+            "yeban-app",
+            loaded.archive.project.clone(),
+            crate::host::now_ms(),
+        )
+        .map_err(|error| CliError::MidiNotes {
+            source: crate::midi_notes::MidiNoteError::Refused(error.to_string()),
+        })?;
+        let port = crate::undo::UndoPort::new(session);
+        let report = crate::midi_notes::write_notes(
+            &port,
+            &loaded.archive.project,
+            &pairing,
+            selected,
+            crate::host::now_ms(),
+        )
+        .map_err(|source| CliError::MidiNotes { source })?;
+        // 会话是权威 ⇒ 落回归档，后续 `--save-as` / 导出看到的是**带音符的那一份**。
+        loaded.archive.project = port.project();
+        lines.push(report.summary());
+    }
+
+    // ---- ② 声音：把**带音符的工程**交给**既有**导出器离线渲染（见 `midi_notes.rs` 的断点登记）----
+    //
+    // ⚠ 为什么不推 `EngineEvent` 环：引擎的事件出队闭包**今天只认 SetParam / Transport**
+    // （`yeban-engine/src/rt.rs`），`NoteOn` / `NoteOff` 被计数却没有任何效果 —— 实测
+    // "4/4 事件进环 ⇒ 全静音"。因此本切片的声音走**引擎真正在用的**音符路径：
+    // 快照排程（`SynthEngine::arm_from_snapshot` + `render_track`），也就是 `--export-wav` 的那条。
+    if let Some(path) = options.midi_in_render.as_ref() {
+        let report = crate::export_wav::export_wav(
+            &loaded.archive.project,
+            path,
+            crate::export_wav::WavExportOptions::default(),
+        )
+        .map_err(|source| CliError::ExportWav {
+            path: path.clone(),
+            source,
+        })?;
+        lines.push(format!(
+            "midi-render: path={} notes={} frames={} sample_rate={} channels={} bits={} bytes={} \
+             source={} digest={}",
+            report.path.display(),
+            pairing.notes.len(),
+            report.frames,
+            report.sample_rate,
+            report.channels,
+            report.bits,
+            report.bytes,
+            report.source,
+            report.digest,
+        ));
+    }
+    Ok(())
 }
 
 /// `--export-elements` 的字节内容：与 `--dump-elements` 打到 stdout 的**同一份**行。
