@@ -239,7 +239,7 @@ pub fn usage_text() -> String {
   --record-seconds <n>     --record-wav 的秒数 (默认 2.0)
   --record-source <s>      project (默认) = 录**工程离线渲染的声音** (与 --export-wav 同一条
                            核心 ＋ 同一种子 ⇒ **逐位一致**); tone = 内存正弦测试音
-                           ⚠ 本轮录音⛔不接 --sfz (如实登记)
+                           与 --sfz 同时给 ⇒ 录的就是**该 SFZ 音色**的声音
   --sfz <path>             装载一份 SFZ 乐器: 报告区域数 + 一次音符探测(帧数与能量);
                            与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ**;
                            `sample=<path>` 会被**真读** (只支持本仓 read_plain_wav 能读的
@@ -446,6 +446,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-elements elements.txt
   yeban-app --open song.yeban --record-wav take.wav --record-seconds 8
   yeban-app --record-wav tone.wav --record-seconds 3 --record-source tone
+  yeban-app --open p.yeban --sfz strings.sfz --record-wav take.wav --record-seconds 8
   yeban-app --sfz strings.sfz --export-wav out.wav   # 导出的音源 = 该 SFZ
   yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
@@ -2534,30 +2535,6 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     lines.push(HEADLESS_BOUNDARY.to_owned());
 
     // 录音：把一段测试音录成 WAV（三段见 `record_wav.rs`）。它只写**目标文件**，不改工程。
-    if let Some(path) = options.record_wav.as_ref() {
-        let mut record_options = crate::record_wav::RecordOptions::default();
-        if let Some(seconds) = options.record_seconds {
-            record_options.seconds = seconds;
-        }
-        // 默认录**工程**（与 `--export-wav` 同一条渲染核心 ＋ 同一种子 ⇒ 逐位一致，判据断言）；
-        // `--record-source tone` 才录内存正弦测试音。⚠ 本轮⛔不接 `--sfz`（如实登记）。
-        let report = if options.record_source.as_deref() == Some("tone") {
-            crate::record_wav::record_test_tone(path, &record_options)
-        } else {
-            crate::record_wav::record_project(&loaded.archive.project, path, &record_options, None)
-        }
-        .map_err(|source| CliError::Record {
-            path: path.clone(),
-            source,
-        })?;
-        lines.push(report.summary());
-    }
-    if options.record_seconds.is_some() && options.record_wav.is_none() {
-        return Err(CliError::Usage(
-            "`--record-seconds` 必须与 `--record-wav` 一起给".to_owned(),
-        ));
-    }
-
     // SFZ 装载 ＋ 音符探测：**只读**（不改工程、不写文件），所以它只影响输出行。
     // ⭐ 与 `--export-wav` 同时给 ⇒ 导出的音源就是这份 SFZ（见下面的导出块）。
     // ⚠ 诚实登记：样本数据是**内存正弦**（⛔ 不是 `sample=` 指向的 wav）。
@@ -2576,9 +2553,41 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             source,
         })?;
         // 只有真的会给导出用，才报 `wired_to_export=yes`（⛔ 不夸大）。
-        report.wired_to_export = options.export_wav.is_some();
+        // 导出**或录音**真的会用到它，才报 `wired_to_export=yes`（⛔ 不夸大）。
+        report.wired_to_export = options.export_wav.is_some() || options.record_wav.is_some();
         lines.push(report.summary());
         loaded_sfz = Some((std::sync::Arc::new(instrument), path.clone()));
+    }
+
+    if let Some(path) = options.record_wav.as_ref() {
+        let mut record_options = crate::record_wav::RecordOptions::default();
+        if let Some(seconds) = options.record_seconds {
+            record_options.seconds = seconds;
+        }
+        // 默认录**工程**（与 `--export-wav` 同一条渲染核心 ＋ 同一种子 ⇒ 逐位一致，判据断言）；
+        // `--record-source tone` 才录内存正弦测试音。⚠ 本轮⛔不接 `--sfz`（如实登记）。
+        let report = if options.record_source.as_deref() == Some("tone") {
+            crate::record_wav::record_test_tone(path, &record_options)
+        } else {
+            crate::record_wav::record_project(
+                &loaded.archive.project,
+                path,
+                &record_options,
+                loaded_sfz
+                    .clone()
+                    .map(|(instrument, sfz_path)| (instrument, Some(sfz_path))),
+            )
+        }
+        .map_err(|source| CliError::Record {
+            path: path.clone(),
+            source,
+        })?;
+        lines.push(report.summary());
+    }
+    if options.record_seconds.is_some() && options.record_wav.is_none() {
+        return Err(CliError::Usage(
+            "`--record-seconds` 必须与 `--record-wav` 一起给".to_owned(),
+        ));
     }
 
     // 顺序契约（`--help` 的组合语义一节）：**导入 → 导出 → 保存工程**。

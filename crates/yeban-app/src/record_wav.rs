@@ -579,4 +579,147 @@ mod tests {
         assert!(!target.exists(), "失败 ⇒ 目标文件不许存在");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// 造一份"按工程音高逐键写区域"的 SFZ（＋可选 `sample=`），返回 `(instrument, sfz 路径)`。
+    fn sfz_for(
+        project: &yeban_model::YebanProjectV1,
+        dir: &Path,
+        sample: Option<&str>,
+    ) -> (
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        PathBuf,
+    ) {
+        let mut pitches: Vec<u8> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.values().map(|note| note.pitch))
+            .collect();
+        pitches.sort_unstable();
+        pitches.dedup();
+        let text: String = pitches
+            .iter()
+            .map(|pitch| match sample {
+                Some(sample) => format!("<region> sample={sample} key={pitch}\n"),
+                None => format!("<region> sample=a.wav key={pitch}\n"),
+            })
+            .collect();
+        let path = dir.join("keys.sfz");
+        std::fs::write(&path, &text).expect("写 SFZ");
+        let instrument = yeban_engine::sfz_instrument::SfzInstrument::load(
+            text,
+            &yeban_sfz::parser::ParseLimits::default(),
+        )
+        .expect("装载");
+        (std::sync::Arc::new(instrument), path)
+    }
+
+    /// 判据 a：**带 SFZ 与不带 SFZ 录同一工程 ⇒ 可区分**（判定量＝**逐字节不同**），
+    /// 且**两侧都非静音**（反向对照，⛔ 排除"都全零也算相等"）。
+    #[test]
+    fn recording_with_an_sfz_differs_from_recording_without_one() {
+        let dir = temp_dir("record-sfz-differs");
+        let project = yeban_model::samples::filled_project();
+        let (instrument, sfz_path) = sfz_for(&project, &dir, None);
+        let with_sfz = dir.join("with-sfz.wav");
+        let without = dir.join("without.wav");
+        let options = RecordOptions {
+            seconds: 2.0,
+            ..RecordOptions::default()
+        };
+        let a = record_project(
+            &project,
+            &with_sfz,
+            &options,
+            Some((instrument, Some(sfz_path))),
+        )
+        .expect("带 SFZ 录制");
+        let b = record_project(&project, &without, &options, None).expect("不带 SFZ 录制");
+        println!(
+            "[record-sfz] 带 SFZ source={} / 字节 {}；不带 source={} / 字节 {}",
+            a.source, a.bytes, b.source, b.bytes
+        );
+        assert!(
+            a.source.contains("sfz"),
+            "来源必须明说走了 SFZ: {}",
+            a.source
+        );
+        assert!(
+            b.source.contains("引擎乐器"),
+            "不带 SFZ 时来源是引擎乐器: {}",
+            b.source
+        );
+        for path in [&with_sfz, &without] {
+            let (format, buffer) = yeban_render::wav::read_plain_wav(path).expect("可回读");
+            assert_eq!(format.channels, 2);
+            let nonzero = match &buffer {
+                PcmBuffer::Int24(samples) => samples.iter().filter(|sample| **sample != 0).count(),
+                other => panic!("24-bit 整数: {other:?}"),
+            };
+            assert!(
+                nonzero > 0,
+                "{} 必须非静音（非零样本 {nonzero}）",
+                path.display()
+            );
+        }
+        assert_ne!(
+            std::fs::read(&with_sfz).expect("读带 SFZ"),
+            std::fs::read(&without).expect("读不带 SFZ"),
+            "判定量：带 SFZ 与不带 SFZ 录出的 WAV 必须逐字节不同"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据 b：**带同一 SFZ ⇒ 录制与导出逐位一致**（两条路共享 `render_core` ⇒ 应当成立）。
+    #[test]
+    fn recording_with_an_sfz_is_bit_identical_to_exporting_with_the_same_sfz() {
+        let dir = temp_dir("record-sfz-bitexact");
+        let project = yeban_model::samples::filled_project();
+        // 用一条**常量样本文件**，让"真的走了 SFZ 区域"也可从来源文案看出来。
+        let scale = yeban_render::dither::BitDepth::Int24.full_scale_max() / 4;
+        let sample_path = dir.join("const.wav");
+        yeban_render::wav::write_plain_wav(
+            &sample_path,
+            &yeban_render::rf64::PcmFormat::integer(1, 48_000, 24),
+            &PcmBuffer::Int24(vec![scale; 4_800]),
+        )
+        .expect("写样本");
+        let (instrument, sfz_path) = sfz_for(&project, &dir, Some("const.wav"));
+        let exported = dir.join("exported.wav");
+        let recorded = dir.join("recorded.wav");
+        let export_report = crate::export_wav::export_wav_with_sfz_file(
+            &project,
+            &exported,
+            crate::export_wav::WavExportOptions::default(),
+            Some((instrument.clone(), Some(sfz_path.clone()))),
+        )
+        .expect("带 SFZ 导出");
+        let record_report = record_project(
+            &project,
+            &recorded,
+            &RecordOptions {
+                seconds: 8.0,
+                ..RecordOptions::default()
+            },
+            Some((instrument, Some(sfz_path))),
+        )
+        .expect("带 SFZ 录制");
+        println!(
+            "[record-sfz] 导出 source={} / 字节 {}；录制 source={} / 帧 {} / 丢弃 {} / 字节 {}",
+            export_report.source,
+            export_report.bytes,
+            record_report.source,
+            record_report.frames,
+            record_report.dropped,
+            record_report.bytes
+        );
+        assert_eq!(record_report.frames, 384_000);
+        assert_eq!(record_report.dropped, 0);
+        assert_eq!(
+            std::fs::read(&exported).expect("读导出"),
+            std::fs::read(&recorded).expect("读录制"),
+            "判定量：带同一 SFZ ⇒ 录制与导出必须逐位一致"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
