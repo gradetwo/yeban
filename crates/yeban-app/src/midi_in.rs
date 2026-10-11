@@ -182,7 +182,15 @@ pub struct MidiInReport {
     pub events: u64,
     /// ⭐ 前几条事件的 `(timestamp_us, status, data1, data2)`。
     pub first_events: Vec<(u64, u8, u8, u8)>,
-    /// ⭐ **不承载**的消息条数（⭐ 系统专用/可变长 ⇒ ⭐ 登记口径）。
+    /// ⭐ **不承载**的消息条数（⭐ 单位 = **条**，⛔ 不是字节）：⭐ 系统专用（`F0`…`F7`）／
+    /// 可变长／长度不符的消息**被计数登记**（⛔ 不静默丢弃）。
+    ///
+    /// ⚠ ⭐ **口径**：⭐ 由**生产者**（⭐ `midir` 回调体；⭐ 内核即
+    /// `yeban_midi_io::MidiEventSender::handle_message` 的 `None` 分支）在**共享原子**
+    /// 上计数，⭐ 接收侧读**同一个**原子 ⇒ ⭐ 本字段是**真读数**（⭐ 不是 app 自己重新数的、
+    /// ⭐ 也不是占位常量）。
+    ///
+    /// ⚠ ⭐ 它是**累计量** ⇒ ⭐ 读它**不消费**任何东西（⭐ 多次读得到同一个值）。
     pub unsupported: u64,
     /// ⭐ **临时**抖动读数（⭐ `RSK-22` 口径**待裁**）；⭐ 样本不足时为 `None`。
     pub jitter: Option<Jitter>,
@@ -213,6 +221,35 @@ impl MidiInReport {
              负载=CLI 单进程采集(⛔ 无并发重活)",
             self.origin_us, self.seconds, self.events, self.unsupported
         )
+    }
+}
+
+/// ⭐ **装配报告**（⭐ 纯函数：⭐ [`capture`] 与判据**共用**它）。
+///
+/// ⚠ ⭐ 为什么它是一个独立函数（⭐ 不是为了测试而测试）：⭐ `unsupported` 的**真读数**
+/// 只有在 `capture()` 里才拿得到，而 `capture()` 必须**先连上一个真端口**才会走到那里
+/// ⇒ ⭐ 若把这段装配写在 `capture()` 体内，⭐ 判据就**永远断言不到报告字段**，⭐ 只能
+/// 断言计数器本身。⭐ 抽出来之后，⭐ 判据可以喂一个**真的**接收侧
+/// （⭐ `yeban_midi_io::MidiEventReceiver`，⭐ 用 crate 的**模拟回调体** `handle_message`
+/// 推消息 ⇒ ⭐ 与真 `midir` 回调走同一段内核）＋ ⭐ 真的计数值，⭐ 从而断言**报告字段**。
+///
+/// ⭐ 这也是"⭐ 无声卡也能判"的关键：⭐ 本函数零 I/O、零硬件、零时间依赖。
+#[must_use]
+pub fn build_report(
+    origin_us: u64,
+    seconds: f32,
+    events: u64,
+    first_events: Vec<(u64, u8, u8, u8)>,
+    unsupported: u64,
+    timestamps_us: &[u64],
+) -> MidiInReport {
+    MidiInReport {
+        origin_us,
+        seconds,
+        events,
+        first_events,
+        unsupported,
+        jitter: Some(inter_onset_jitter_ticks(timestamps_us, origin_us)),
     }
 }
 
@@ -344,17 +381,25 @@ pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> 
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 
-    Ok(MidiInReport {
+    // ⭐ **不承载的条数**：⭐ 生产侧（⭐ `midir` 回调体，⭐ 内核 = `MidiEventSender::handle_message`
+    // 的 `None` 分支）在**与接收侧共享**的 `Arc<AtomicU64>` 上计数 ⇒ 这里从**接收侧**
+    // 读**同一个**原子 ⇒ ⭐ 拿到的就是真读数。
+    //
+    // ⚠ ⭐ 为什么写成 `session.receiver().unsupported_messages()`（⭐ 而不是更短的
+    // `session.unsupported_messages()` 转发）：⭐ 判据要用**同一个方法**证明"报告里的值
+    // = 生产侧数到的值"，而会话类型只能由**真硬件**构造（`open_input`）⇒ 判据构造不出它。
+    // 走接收侧之后，判据喂一个 `event_channel` 造的真接收侧，⭐ 调用的就是**这一行调用的
+    // 那个方法**（⭐ `MidiInputSession::unsupported_messages()` 本身也只是转发到它）。
+    let unsupported = session.receiver().unsupported_messages();
+
+    Ok(build_report(
         origin_us,
         seconds,
         events,
         first_events,
-        // ⚠ ⭐ `unsupported_messages` 由**生产者**计数（⭐ 只有回调体看得到原始字节）
-        // ⇒ ⭐ 通道留给调用方持有生产端的场景；⭐ CLI 单连接路径下拿不到它 ⇒ 记 0 并在
-        // 报告里如实说明（⛔ 不假装有值）。
-        unsupported: 0,
-        jitter: Some(inter_onset_jitter_ticks(&timestamps_us, origin_us)),
-    })
+        unsupported,
+        &timestamps_us,
+    ))
 }
 
 /// ⭐ **临时**抖动口径（⭐ `RSK-22` **待裁**）：⭐ 以**相邻事件间隔的中位数**为名义网格，
@@ -576,5 +621,100 @@ mod tests {
             capture("IAC", -1.0),
             Err(MidiInError::InvalidSeconds { .. })
         ));
+    }
+
+    /// 判据 ⑫（⭐ **feature 档**，⭐ 行为判据）：⭐ **生产侧数到 N 条不承载消息 ⇒ 报告字段就是 N**
+    /// （⭐ ⛔ 不是 0）。
+    ///
+    /// ⭐ 消息由 crate 的**模拟回调体**推进（⭐ `MidiEventSender::handle_message` 与真
+    /// `midir` 回调**走同一段内核**）⇒ ⭐ 本判据**不需要任何 MIDI 硬件**。
+    #[cfg(feature = "midi-input")]
+    #[test]
+    fn the_report_carries_the_unsupported_count_the_producer_saw() {
+        let (mut sender, receiver) = yeban_midi_io::event_channel(8);
+        // ⭐ 三条**系统专用**消息（`F0` … `F7`，可变长）⇒ 生产者按**条**计数 3。
+        for _ in 0..3 {
+            sender.handle_message(0, &[0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7]);
+        }
+        // ⭐ 一条**承载**的消息（NoteOn）⇒ 它进环、⛔ 不进"不承载"计数。
+        sender.handle_message(0, &[0x90, 60, 100]);
+        assert_eq!(receiver.pending(), 1, "承载的那一条必须进环");
+        assert_eq!(
+            receiver.unsupported_messages(),
+            3,
+            "生产者只数不承载的那三条"
+        );
+
+        // ⭐ 报告字段：⭐ 走 `capture()` **同一个**装配函数 ＋ **同一个**接收侧读取。
+        let report = build_report(0, 1.0, 1, Vec::new(), receiver.unsupported_messages(), &[0]);
+        assert_eq!(report.unsupported, 3, "报告里必须是真读数（⛔ 不是 0）");
+        assert!(
+            report.summary().contains("unsupported=3"),
+            "摘要必须打印真读数: {}",
+            report.summary()
+        );
+        // ⭐ 读它**不消费**：⭐ 累计量 ⇒ 再读还是 3（⛔ 不是"读一次清零"的队列）。
+        assert_eq!(receiver.unsupported_messages(), 3, "读它不消费任何东西");
+    }
+
+    /// 判据 ⑬（⭐ **feature 档**，⭐ 行为判据）：⭐ **没有任何不承载消息 ⇒ 确实是 0**
+    /// （⭐ 与判据 ⑫ 成对 ⇒ ⭐ ⚠ **两条一起**才证明"不是把写死换成了另一种写死"）。
+    #[cfg(feature = "midi-input")]
+    #[test]
+    fn the_report_is_zero_when_the_producer_saw_nothing_unsupported() {
+        let (mut sender, receiver) = yeban_midi_io::event_channel(8);
+        sender.handle_message(0, &[0x90, 60, 100]);
+        sender.handle_message(1, &[0x80, 60, 0]);
+        assert_eq!(receiver.unsupported_messages(), 0, "两条都承载 ⇒ 计数为 0");
+
+        let report = build_report(
+            0,
+            1.0,
+            2,
+            Vec::new(),
+            receiver.unsupported_messages(),
+            &[0, 1],
+        );
+        assert_eq!(report.unsupported, 0, "无消息时必须是 0");
+        assert!(
+            report.summary().contains("unsupported=0"),
+            "{}",
+            report.summary()
+        );
+    }
+
+    /// 判据 ⑭（⭐ **结构判据**，⭐ feature 档）：⭐ 生产路径**确实**从接收侧读那个共享计数，
+    /// ⭐ 而文件里**不存在**写死的 `unsupported` 常量。
+    ///
+    /// ⚠ ⭐ 为什么需要它（⭐ 而不是纯行为判据就够了）：⭐ 判据 ⑫/⑬ 覆盖"装配 + 接收侧读取"，
+    /// 但**覆盖不到** `capture()` 体内那一行（⭐ 它只有连上真端口才会执行，⭐ CI 无 MIDI 硬件）
+    /// ⇒ ⭐ 若有人把那行改回常量，⭐ ⑫/⑬ 仍会全绿。⭐ 本判据把那一行的**文本**钉住
+    /// （⭐ 手法沿用 `elements.rs` 对 `.slint` / `host.rs` 的文本契约判据）。
+    #[cfg(feature = "midi-input")]
+    #[test]
+    fn the_capture_path_reads_the_shared_counter_and_has_no_placeholder() {
+        let source = include_str!("midi_in.rs");
+        assert!(
+            source.contains("session.receiver().unsupported_messages()"),
+            "生产路径必须从接收侧读共享计数"
+        );
+        // ⚠ ⭐ 自指陷阱：⭐ 本断言想要的那个字符串**不能**以字面形式出现在本文件里
+        // （⭐ 否则它自己就会命中）⇒ ⭐ 用 `concat!` 拆开拼出来。
+        let placeholder = concat!("unsupported", ": 0");
+        assert!(
+            !source.contains(placeholder),
+            "⛔ 报告里不许再有写死的 {placeholder}"
+        );
+        // ⭐ 装配只有一个入口：⭐ feature 档的 `capture()` **经** `build_report` 装配
+        // （⛔ 不许在别处再造一份报告）。
+        assert!(
+            source.contains("Ok(build_report("),
+            "capture 必须经 build_report 装配报告"
+        );
+        assert_eq!(
+            source.matches(concat!("pub fn ", "build_report(")).count(),
+            1,
+            "build_report 只能有一个定义"
+        );
     }
 }
