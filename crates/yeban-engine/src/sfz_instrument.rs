@@ -26,8 +26,8 @@
 
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::Instrument;
-// `Region` 仅在判据里出现（非测试构建不引入）—— 这是为了让零警告的 clippy 门也能过。
-#[cfg(test)]
+// ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
+// 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
 
 /// 已加载的 SFZ 乐器：**文本 + 元数据**（⛔ 不含借用式解析结果）。
