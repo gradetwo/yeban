@@ -1434,6 +1434,9 @@ fn no_tool_answers_with_a_blanket_not_implemented() {
             "yeban_record_wav",
             json!({ "path": scratch.text("take.wav"), "seconds": 0.05 }),
         ),
+        // 物理 MIDI 探针：**不要求**活跃工程；本机/CI 通常没有 MIDI 输入端口
+        // ⇒ 带内 `CONFLICT`（结构化不可用），⛔ 不是实现级出口、⛔ 不 panic。
+        ("yeban_midi_input_probe", json!({})),
         // 关闭放最后: 前面的用例都要有活跃工程。
         ("yeban_close_project", json!({ "saveFirst": false })),
     ];

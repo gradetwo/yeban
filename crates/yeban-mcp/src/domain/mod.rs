@@ -60,6 +60,7 @@ pub mod ids;
 pub mod import_audio;
 pub mod lock;
 pub mod macros;
+pub mod midi_input;
 pub mod notes;
 pub mod project_create;
 pub mod proposal;
@@ -918,6 +919,15 @@ pub enum Plan {
         /// 已经录完并编码好的产物（`apply` 只落盘）。
         artifact: Box<record_wav::RecordArtifact>,
     },
+    /// `yeban_midi_input_probe`（**只读**）：物理 MIDI 输入端口的一段事件窗口。
+    ///
+    /// ⚠ 与 `ExportMidi` 一样**不改工程、不落盘**：`plan` 里已经收完那段窗口，
+    /// `apply` 只原样回传读数。**不可用**（未启用 `midi-input`／零端口／宿主不可用）
+    /// 与**端口选择非法**都在 `plan` 里变成结构化 `Fault`，⛔ 不会走到这里。
+    MidiInputProbe {
+        /// 已经收完并算好的读数（`apply` 原样回传，一位都不改）。
+        report: Box<midi_input::ProbeReport>,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -949,6 +959,7 @@ impl Plan {
             Self::LoadSfz { .. } => "load_sfz",
             Self::RenderSfzWav { .. } => "render_sfz_wav",
             Self::RecordWav { .. } => "record_wav",
+            Self::MidiInputProbe { .. } => "midi_input_probe",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -986,6 +997,8 @@ impl Plan {
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
             | Self::RecordWav { .. }
+            // 物理 MIDI 探针只读硬件端口，⛔ 不碰工程文档、⛔ 不落盘。
+            | Self::MidiInputProbe { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
             | Self::Undo { .. }
             | Self::Redo { .. } => 0,
@@ -1047,7 +1060,9 @@ impl Plan {
             // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出与录音只写盘。
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
-            | Self::RecordWav { .. } => false,
+            | Self::RecordWav { .. }
+            // 物理 MIDI 探针只读硬件端口（连工程都不要求活跃）。
+            | Self::MidiInputProbe { .. } => false,
         }
     }
 
@@ -1175,7 +1190,9 @@ impl Plan {
             | Self::ExportMidi { .. }
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
-            | Self::RecordWav { .. } => Ok(None),
+            | Self::RecordWav { .. }
+            // 探针不改工程内容（连工程都不要求活跃）。
+            | Self::MidiInputProbe { .. } => Ok(None),
         }
     }
 
@@ -1451,6 +1468,15 @@ impl Plan {
             }
             // SMF 导出：**只读**且不做差异模拟 —— 与引擎读数同一个做法
             // （共用 `MidiExportArtifact::data()`，于是预览与真做逐字段一致）。
+            Self::MidiInputProbe { report } => {
+                // 读数（端口 / 条数 / 分位数 / 前几条）在 `plan` 里就是实测值 ⇒
+                // 预览与真调用**逐字段相同**（`apply` 原样回传同一份载荷）。
+                if let Value::Object(fields) = report.data() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+            }
             Self::ExportMidi { export } => {
                 let data = export.data();
                 if let Value::Object(fields) = data.clone() {
@@ -1671,6 +1697,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_load_sfz" => plan_load_sfz(domain, call),
         "yeban_render_sfz_wav" => plan_render_sfz_wav(domain, call),
         "yeban_record_wav" => plan_record_wav(domain, call),
+        "yeban_midi_input_probe" => plan_midi_input_probe(call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -2949,6 +2976,8 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
         Plan::ExportMidi { export } => Ok(ToolResponse::success(export.data())),
+        // 只读：读数在 `plan` 里就收完了，`apply` 原样回传（一位都不改、不落盘）。
+        Plan::MidiInputProbe { report } => Ok(ToolResponse::success(report.data())),
         Plan::LoadSfz { load } => apply_load_sfz(domain, *load),
         Plan::RenderSfzWav { artifact } => apply_render_sfz_wav(&artifact),
         Plan::RecordWav { artifact } => apply_record_wav(&artifact),
@@ -3115,6 +3144,26 @@ fn plan_record_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     artifact.path = path;
     Ok(Plan::RecordWav {
         artifact: Box::new(artifact),
+    })
+}
+
+/// `yeban_midi_input_probe`（**只读**）：真的打开一个物理 MIDI 输入端口，收一段窗口。
+///
+/// ⚠ **不要求活跃工程**：这是**硬件**探测，与工程状态无关（`domain` 参数刻意不取 ——
+/// 借用检查器因此也保证了它**动不了**任何会话/文档状态）。
+///
+/// **不可用**与**端口选择非法**都在这里变成结构化 `Fault`（`CONFLICT` /
+/// `INVALID_PARAMETER_RANGE`）⇒ 调用方**区分得出**"本机没有 MIDI 输入"与
+/// "有端口但这段窗口里静默"（后者才是 `events: 0` 的成功响应）。
+///
+/// # Errors
+///
+/// 见 [`midi_input::plan`] 与 [`midi_input::parse_arguments`]。
+fn plan_midi_input_probe(call: &ToolCall) -> Result<Plan, Fault> {
+    let request = midi_input::parse_arguments(&call.arguments)?;
+    let report = midi_input::plan(&request)?;
+    Ok(Plan::MidiInputProbe {
+        report: Box::new(report),
     })
 }
 
@@ -3865,6 +3914,9 @@ mod tests {
                     "seconds": 0.01,
                 }),
             ),
+            // 物理 MIDI 探针：**不要求**活跃工程；本机（与 CI）通常没有 MIDI 输入端口
+            // ⇒ 预期是**结构化不可用**（`CONFLICT`），⛔ 不是"规划成功"、⛔ 也不是 `-32005`。
+            ("yeban_midi_input_probe", serde_json::json!({})),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
@@ -3895,6 +3947,22 @@ mod tests {
                 "yeban_undo" | "yeban_redo" => {
                     let fault = outcome.expect_err("没有历史");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::IndexOutOfBounds));
+                }
+                "yeban_midi_input_probe" => {
+                    // 无特征 / 无端口 / 宿主不可用 ⇒ 结构化 `CONFLICT`（带 reason）。
+                    // ⚠ 这台机器**有**端口时规划会成功 ⇒ 两种结果都接受，但**共同**的
+                    // 断言是：绝不 `-32005`、绝不 panic，且**不可用**时一定带 reason。
+                    match outcome {
+                        Ok(_) => {}
+                        Err(fault) => {
+                            assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+                            let rendered = format!("{fault:?}");
+                            assert!(
+                                rendered.contains("reason"),
+                                "不可用必须带结构化 reason: {rendered}"
+                            );
+                        }
+                    }
                 }
                 "yeban_render_sfz_wav" => {
                     // 这个夹具**没有**装载过乐器 ⇒ 规划阶段响亮拒绝（不是 -32005，

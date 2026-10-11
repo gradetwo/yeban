@@ -33,7 +33,8 @@
             "yeban_export_midi",
             "yeban_load_sfz",
             "yeban_render_sfz_wav",
-            "yeban_record_wav"
+            "yeban_record_wav",
+            "yeban_midi_input_probe"
           ]
         },
         "arguments": {
@@ -239,6 +240,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_record_wav"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_midi_input_probe"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_midi_input_probe"
               }
             }
           }
@@ -745,6 +765,29 @@
           "required": [
             "path"
           ]
+        },
+        "yeban_midi_input_probe": {
+          "title": "yeban_midi_input_probe",
+          "type": "object",
+          "description": "打开一个物理 MIDI 输入端口并收一段事件窗口（ADR-0006；yeban-midi-io 的 enumerate_input_ports/open_input，feature `midi-input` 默认关）。只读：不改工程、不落盘。不可用（未启用 midi-input / 枚举到 0 个端口 / 宿主不可用 / 连接失败）⇒ CONFLICT + data.reason；端口选择（下标越界 / 名字未知 / 名字歧义 / 未点名）与 seconds 越界 ⇒ INVALID_PARAMETER_RANGE + data.reason。",
+          "properties": {
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "port": {
+              "type": "string",
+              "description": "端口选择：全十进制字符串（如 \"0\"）按端口下标；否则按大小写不敏感的名字子串匹配。缺省仅在恰好一个端口时合法。"
+            },
+            "seconds": {
+              "type": "number",
+              "description": "收取窗口秒数（0 < seconds <= 60）；缺省 3。本工具在请求线程上真的等这段窗口。"
+            }
+          }
         }
       }
     }

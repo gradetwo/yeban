@@ -83,7 +83,7 @@ enum BoundStatus {
 }
 
 /// 21 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 21] = [
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 22] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("trackId", BoundStatus::Identity),
@@ -109,6 +109,12 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 21] = [
         "outDir",
         BoundStatus::Unbounded(
             "同 `path`：诊断包的输出目录，操作员自选。后果限于该次调用的目录创建与报文长度。\n收口面：`schemas/**`。",
+        ),
+    ),
+    (
+        "port",
+        BoundStatus::Unbounded(
+            "MIDI 端口选择（十进制下标或名字子串）：操作员自选的硬件端口标识 ⇒ 长度维无界。\n后果：只影响该次探测报文长度与**匹配歧义**（歧义本身已由 `midiInputAmbiguousPort` 结构化拒绝）。\n收口面：`schemas/**` 的 `maxLength`（集成者独占）。",
         ),
     ),
     (

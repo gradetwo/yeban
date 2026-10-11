@@ -31,6 +31,7 @@
 //! | `yeban_load_sfz` | 装载 SFZ 乐器进会话 registry（读盘 + 解析 + 区域摘要） | `MCP-TOOL-EXT-SFZ-LOAD` |
 //! | `yeban_render_sfz_wav` | 用已装载的 SFZ 区域把活跃工程的 MIDI 音符导出成 24-bit WAV | `MCP-TOOL-EXT-SFZ-WAV` |
 //! | `yeban_record_wav` | `ARCH-REC-001` 三段（无锁环 + 后台抽干）录一段测试音成 24-bit WAV | `MCP-TOOL-EXT-RECORD-WAV` |
+//! | `yeban_midi_input_probe` | 物理 MIDI 输入端口的一段事件窗口（`ADR-0006`，feature `midi-input` 默认关） | `MCP-TOOL-EXT-MIDI-INPUT` |
 //!
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -90,15 +91,15 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 20;
+pub const TOOL_COUNT: usize = 21;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 
 /// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条
 /// + D56 的诊断包 1 条 + SMF 导出 1 条 + SFZ 装载 / SFZ 音色导出 2 条
-/// + 录音导出 1 条。
-pub const EXTENSION_TOOL_COUNT: usize = 10;
+/// + 录音导出 1 条 + **物理 MIDI 输入探针 1 条**（`ADR-0006`，`midi-input` 默认关）。
+pub const EXTENSION_TOOL_COUNT: usize = 11;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -122,6 +123,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_load_sfz",
     "yeban_render_sfz_wav",
     "yeban_record_wav",
+    "yeban_midi_input_probe",
 ];
 
 /// 规范 ID 前缀。
@@ -1257,6 +1259,35 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::RenderFailed,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-MIDI-INPUT",
+        name: "yeban_midi_input_probe",
+        summary: "打开一个物理 MIDI 输入端口并收一段事件窗口 (只读; 未启用 `midi-input` 或无端口时如实报结构化不可用)",
+        scope: Scope::AppAdmin,
+        // 只读：读硬件端口、不改工程、不落盘（`Plan::MidiInputProbe` 的 `apply` 原样回传）。
+        side_effect: SideEffect::ReadOnly,
+        params: &[
+            // ⚠ 与 `schemas/mcp-tools.schema.json` 的 name enum 同名登记一致（契约只冻结工具名）。
+            param(
+                "port",
+                "string",
+                false,
+                "端口选择: 全十进制字符串 (如 \"0\") 按端口下标; 否则按**大小写不敏感的名字子串**匹配。缺省仅在**恰好一个**端口时合法 (两个同型号设备时\"默认挑第一个\"会让调用方以为在跟另一台说话) ⇒ 否则 `INVALID_PARAMETER_RANGE` (reason: midiInputPortRequired / midiInputNoSuchPortIndex / midiInputUnknownPort / midiInputAmbiguousPort); 空串按歧义拒绝",
+            ),
+            param(
+                "seconds",
+                "number",
+                false,
+                "收取窗口秒数 (0 < seconds <= 60); 缺省 3。⚠ 本工具在请求线程上**真的等**这段窗口",
+            ),
+        ],
+        errors: &[
+            // 不可用 (feature 未启用 / 零端口 / 宿主不可用 / 连接失败) ⇒ `CONFLICT`;
+            // 端口选择与 `seconds` 越界 ⇒ `INVALID_PARAMETER_RANGE`。全部取自 D25 的 20 值联集。
+            ErrorCode::Conflict,
+            ErrorCode::InvalidParameterRange,
+        ],
+    },
 ];
 
 /// 按名查找工具（`const` 数组上的线性查找；10 个元素，无需哈希表）。
@@ -1848,7 +1879,9 @@ mod tests {
                 "yeban_export_midi",
                 // 本线的 SFZ 装载：只把"文本 + 元数据"放进**会话态** registry，
                 // 不改工程、不落盘、不进提交图谱 ⇒ 显式分类为 read-only。
-                "yeban_load_sfz"
+                "yeban_load_sfz",
+                // 物理 MIDI 输入探针：只读硬件端口的事件窗口；连活跃工程都不要求。
+                "yeban_midi_input_probe"
             ],
             "只读工具必须显式分类为 read-only"
         );
