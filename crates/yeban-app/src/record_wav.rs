@@ -88,8 +88,8 @@ pub struct RecordReport {
     pub bytes: u64,
     /// 位深。
     pub bits: u16,
-    /// 样本来源的**如实**文案（⛔ 不是声卡）。
-    pub source: &'static str,
+    /// 样本来源的**如实**文案（工程渲染／内存正弦；⛔ 不是声卡）。
+    pub source: String,
 }
 
 impl RecordReport {
@@ -116,6 +116,8 @@ pub enum RecordError {
     Write(String),
     /// 参数非法（0 秒 / 0 声道 / 0 容量）。
     Invalid(String),
+    /// 工程渲染失败（空工程 / 计划编译 / 引擎装载）。
+    Render(String),
 }
 
 impl core::fmt::Display for RecordError {
@@ -124,6 +126,7 @@ impl core::fmt::Display for RecordError {
             Self::Io(reason) => write!(formatter, "录音抽干失败: {reason}"),
             Self::Write(reason) => write!(formatter, "写出 WAV 失败: {reason}"),
             Self::Invalid(reason) => write!(formatter, "录音参数非法: {reason}"),
+            Self::Render(reason) => write!(formatter, "工程渲染失败: {reason}"),
         }
     }
 }
@@ -191,19 +194,13 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
     let mut frame = vec![0.0_f32; usize::from(options.channels)];
     let mut phase = 0.0_f32;
     let step = core::f32::consts::TAU * options.tone_hz / options.sample_rate as f32;
-    let mut dropped_frames = 0u64;
     for index in 0..total_frames {
         let value = phase.sin() * TEST_TONE_AMPLITUDE;
         // clippy 要求用 `fill` 而不是手写循环。
         frame.fill(value);
-        // ⚠ 引擎文档的契约（`RecordSender::spare_frames`）：推之前先问"还放得下整帧吗"。
-        // 为什么不能盲推：`push_frame` 环满时**无法回滚** `rtrb` 已接受的样本 ⇒ 会留下**半帧**
-        // ⇒ 声道错位（引擎源码里的注释也说要用前置检查替代）。
-        if sender.spare_frames() >= 1 {
-            let _ = sender.push_frame(&frame);
-        } else {
-            dropped_frames += 1;
-        }
+        // ⚠ 引擎已把 `push_frame` 修成**整帧原子**（`faaa7240`）⇒ ⛔ 不再需要自己先问
+        // `spare_frames()`；环满由**引擎**丢弃并计**帧**数（下面直接读 `dropped_frames()`）。
+        let _ = sender.push_frame(&frame);
         phase = (phase + step) % core::f32::consts::TAU;
         // 每 `drain_batch` 帧抽干一次（与生产交替）。
         // ⚠ 用**循环下标**判断（不是总帧数 —— 常量条件会让交错永不触发：本机实测踩过）。
@@ -216,7 +213,8 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
         }
     }
     let pushed = sender.pushed_frames();
-    let dropped = dropped_frames;
+    // 引擎的 `dropped_frames()` 在整帧原子化之后计的是**帧**（与 `pushed_frames` 同口径）。
+    let dropped = sender.dropped_frames();
 
     // ---- ③ 消费端：抽干（引擎写小端 f32）----
     loop {
@@ -252,7 +250,106 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
         dropped,
         bytes,
         bits: 24,
-        source: SOURCE_LABEL,
+        source: SOURCE_LABEL.to_owned(),
+    })
+}
+
+/// **录"工程的声音"**：用**同一条**渲染核心（[`crate::render_core::render_project_f32`]）拿交错 `f32`
+/// ⇒ 建环 ⇒ `push_frame` ⇒ `RecordDrain::pump` ⇒ **同一 `DeterministicDitherRng` 种子**量化
+/// ⇒ `write_plain_wav`。
+///
+/// ## ⚠ 红线 7 的**分侧**（必须明白）
+///
+/// - **渲染/解析侧（前半）**：会解析 SFZ／装载快照／分配缓冲 ⇒ **允许**，但**只准在离线/控制侧**跑。
+/// - **生产端（`push_frame`）**：⛔ **不得分配／加锁／做 I/O**（引擎已保证）——若违反，实时录音线程会
+///   爆音、丢帧、甚至优先级反转（这就是红线 7 的后果）。
+///
+/// # Errors
+///
+/// 渲染失败（空工程／计划编译／引擎装载）／抽干 I/O 失败／WAV 写出被拒。⛔ 失败时不写任何文件。
+pub fn record_project(
+    project: &yeban_model::YebanProjectV1,
+    path: &Path,
+    options: &RecordOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+) -> Result<RecordReport, RecordError> {
+    if options.seconds <= 0.0 {
+        return Err(RecordError::Invalid("录制秒数必须大于 0".to_owned()));
+    }
+    if options.channels == 0 || options.capacity_frames == 0 || options.drain_batch == 0 {
+        return Err(RecordError::Invalid(
+            "声道数 / 环容量 / 抽取批大小都必须大于 0".to_owned(),
+        ));
+    }
+    // ---- 渲染侧（离线；允许分配）----
+    let wav_options = crate::export_wav::WavExportOptions {
+        frames: (options.seconds * options.sample_rate as f32) as u64,
+        sample_rate: options.sample_rate,
+        channels: usize::from(options.channels),
+        seed: 1,
+        use_engine_source: true,
+    };
+    let (samples, _frames, source_label, _digest) =
+        crate::render_core::render_project_f32(project, wav_options, sfz)
+            .map_err(|error| RecordError::Render(error.to_string()))?;
+    // ---- 构造期：唯一分配点 ----
+    let (mut sender, receiver) = record_channel(options.capacity_frames, options.channels);
+    // ---- 生产端（逐帧推；红线 7 安全）＋ 消费端**交错抽干** ----
+    //
+    // ⚠ 必须交错（与 `record_test_tone` 同一条教训）：若"先全推、再抽干"，一条 1 秒的环在 8 秒请求下
+    // 只能留下 1 秒（实测 `帧 48000 / 丢弃 336000`）⇒ 录音比工程短、⛔ 更谈不上逐位一致。
+    let mut drain = RecordDrain::new(receiver, SampleSink::default());
+    let channels = usize::from(options.channels);
+    let mut frame = vec![0.0_f32; channels];
+    let batch = options.drain_batch.max(1);
+    for (index, chunk) in samples.chunks_exact(channels).enumerate() {
+        frame.copy_from_slice(chunk);
+        let _ = sender.push_frame(&frame);
+        if (index + 1) % batch == 0 {
+            while drain
+                .pump(batch)
+                .map_err(|error| RecordError::Io(error.to_string()))?
+                > 0
+            {}
+        }
+    }
+    let pushed = sender.pushed_frames();
+    let dropped = sender.dropped_frames();
+    // ---- 消费端：把剩下的抽干 ----
+    loop {
+        let written = drain
+            .pump(options.drain_batch)
+            .map_err(|error| RecordError::Io(error.to_string()))?;
+        if written == 0 {
+            break;
+        }
+    }
+    let frames_written = drain.frames_written();
+    let sink = drain.into_inner();
+    let mut rng = DeterministicDitherRng::new(1);
+    let quantized: Vec<i32> = sink
+        .samples
+        .iter()
+        .map(|sample| quantize_i24(*sample, &mut rng))
+        .collect();
+    let buffer = PcmBuffer::Int24(quantized);
+    let format = PcmFormat::integer(options.channels, options.sample_rate, 24);
+    write_plain_wav(path, &format, &buffer)
+        .map_err(|error| RecordError::Write(error.to_string()))?;
+    let bytes = std::fs::metadata(path)
+        .map_err(|error| RecordError::Io(error.to_string()))?
+        .len();
+    Ok(RecordReport {
+        path: path.to_path_buf(),
+        frames: frames_written,
+        pushed,
+        dropped,
+        bytes,
+        bits: 24,
+        source: source_label,
     })
 }
 
@@ -370,6 +467,116 @@ mod tests {
             vec!["a-directory.wav".to_owned()],
             "⛔ 不许留下半成品"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据 a：**同一工程、同一 8 秒 ⇒ 录音与 `--export-wav` 导出**逐位一致****（判定量＝字节全等），
+    /// 并配**反向对照**（两侧都非静音，⛔ 排除"都全零也算相等"）。
+    #[test]
+    fn recording_the_project_is_bit_identical_to_exporting_it() {
+        let dir = temp_dir("project-bitexact");
+        let project = yeban_model::samples::filled_project();
+        let exported = dir.join("exported.wav");
+        let recorded = dir.join("recorded.wav");
+        let export_report = crate::export_wav::export_wav_with_sfz_file(
+            &project,
+            &exported,
+            crate::export_wav::WavExportOptions::default(),
+            None,
+        )
+        .expect("导出必须成功");
+        let options = RecordOptions {
+            seconds: 8.0,
+            ..RecordOptions::default()
+        };
+        let record_report =
+            record_project(&project, &recorded, &options, None).expect("录制必须成功");
+        println!(
+            "[record-project] 导出 source={} / 字节 {}；录制 source={} / 帧 {} / 丢弃 {} / 字节 {}",
+            export_report.source,
+            export_report.bytes,
+            record_report.source,
+            record_report.frames,
+            record_report.dropped,
+            record_report.bytes
+        );
+        assert_eq!(
+            record_report.dropped, 0,
+            "默认 1 秒环 ＋ 交错抽干 ⇒ 不该丢弃"
+        );
+        assert_eq!(record_report.frames, 384_000, "8 秒 @48kHz = 384000 帧");
+        for path in [&exported, &recorded] {
+            let (format, buffer) = yeban_render::wav::read_plain_wav(path).expect("可回读");
+            assert_eq!(format.channels, 2);
+            let nonzero = match &buffer {
+                PcmBuffer::Int24(samples) => samples.iter().filter(|sample| **sample != 0).count(),
+                other => panic!("24-bit 整数: {other:?}"),
+            };
+            assert!(
+                nonzero > 0,
+                "{} 必须非静音（非零样本 {nonzero}）",
+                path.display()
+            );
+        }
+        assert_eq!(
+            std::fs::read(&exported).expect("读导出"),
+            std::fs::read(&recorded).expect("读录音"),
+            "同一工程同一 8 秒 ⇒ 录音与导出必须逐位一致"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据 b：录工程时**环满** ⇒ 丢弃被计数（帧级）、⛔ 不 panic、文件仍合法可回读。
+    #[test]
+    fn recording_the_project_with_a_full_ring_counts_drops_and_still_writes_a_valid_wav() {
+        let dir = temp_dir("project-overflow");
+        let project = yeban_model::samples::filled_project();
+        let path = dir.join("overflow.wav");
+        let options = RecordOptions {
+            seconds: 2.0,
+            capacity_frames: 160,
+            drain_batch: 4096,
+            ..RecordOptions::default()
+        };
+        let report = record_project(&project, &path, &options, None).expect("环满不是错误");
+        println!(
+            "[record-project] 小环：推入 {} / 写出 {} / 丢弃 {}",
+            report.pushed, report.frames, report.dropped
+        );
+        assert!(
+            report.dropped > 0,
+            "小环必须观察到丢弃（实际 {}）",
+            report.dropped
+        );
+        assert_eq!(
+            report.frames, report.pushed,
+            "整帧契约：写出帧 == 成功推入帧"
+        );
+        assert_eq!(
+            report.pushed + report.dropped,
+            96_000,
+            "框架不变量：成功推入 ＋ 丢弃 == 尝试次数（2 秒 @48kHz）"
+        );
+        let (format, buffer) = yeban_render::wav::read_plain_wav(&path).expect("仍然可回读");
+        let frames = u64::try_from(buffer.len() / usize::from(format.channels)).expect("帧数");
+        assert_eq!(frames, report.frames, "回读帧数 == 写出帧数");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据 c：**空工程（没有轨道）** ⇒ 报错而⛔ 不 panic ＋ **不留半成品目标文件**。
+    #[test]
+    fn recording_an_empty_project_fails_without_leaving_a_target() {
+        let dir = temp_dir("project-empty");
+        let mut project = yeban_model::samples::filled_project();
+        project.tracks.clear();
+        let target = dir.join("never.wav");
+        let error = record_project(&project, &target, &RecordOptions::default(), None)
+            .expect_err("空工程必须失败");
+        assert!(
+            matches!(error, RecordError::Render(_)),
+            "必须是渲染失败: {error:?}"
+        );
+        assert!(!target.exists(), "失败 ⇒ 目标文件不许存在");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

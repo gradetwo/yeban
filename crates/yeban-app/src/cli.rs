@@ -237,6 +237,9 @@ pub fn usage_text() -> String {
                            三段走 ARCH-REC-001: 构造期建环 -> 逐帧推 -> 抽干落盘;
                            输出行 recorded-wav: path=… frames=… dropped=… bytes=… source=…
   --record-seconds <n>     --record-wav 的秒数 (默认 2.0)
+  --record-source <s>      project (默认) = 录**工程离线渲染的声音** (与 --export-wav 同一条
+                           核心 ＋ 同一种子 ⇒ **逐位一致**); tone = 内存正弦测试音
+                           ⚠ 本轮录音⛔不接 --sfz (如实登记)
   --sfz <path>             装载一份 SFZ 乐器: 报告区域数 + 一次音符探测(帧数与能量);
                            与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ**;
                            `sample=<path>` 会被**真读** (只支持本仓 read_plain_wav 能读的
@@ -441,7 +444,8 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
-  yeban-app --record-wav take.wav --record-seconds 3
+  yeban-app --open song.yeban --record-wav take.wav --record-seconds 8
+  yeban-app --record-wav tone.wav --record-seconds 3 --record-source tone
   yeban-app --sfz strings.sfz --export-wav out.wav   # 导出的音源 = 该 SFZ
   yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
@@ -842,6 +846,9 @@ pub struct Options {
     pub record_wav: Option<PathBuf>,
     /// `--record-seconds <n>`：`--record-wav` 的录制秒数（默认 2.0）。
     pub record_seconds: Option<f32>,
+    /// `--record-source <project|tone>`：录什么（默认 **project** = 工程离线渲染的声音；
+    /// `tone` = 内存正弦测试音）。⚠ 本轮录音**不接 `--sfz`**（如实登记）。
+    pub record_source: Option<String>,
     /// `--sfz <path>`：**装载**一份 SFZ 乐器并报告区域数与一次音符探测读数。
     ///
     /// ⚠ 今天只到"装载 ＋ 探测"这一层：SFZ 音色**尚未**接到 `--export-wav` 的音源链
@@ -1255,6 +1262,13 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     "--record-wav",
                     PathBuf::from(value),
                 )?;
+            }
+            "--record-source" => {
+                let value = take_value("--record-source", inline, args, &mut cursor)?;
+                if value != "project" && value != "tone" {
+                    return Err(ParseError::UnexpectedValue("--record-source"));
+                }
+                options.record_source = Some(value.to_owned());
             }
             "--record-seconds" => {
                 let value = take_value("--record-seconds", inline, args, &mut cursor)?;
@@ -2525,13 +2539,17 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         if let Some(seconds) = options.record_seconds {
             record_options.seconds = seconds;
         }
-        let report =
-            crate::record_wav::record_test_tone(path, &record_options).map_err(|source| {
-                CliError::Record {
-                    path: path.clone(),
-                    source,
-                }
-            })?;
+        // 默认录**工程**（与 `--export-wav` 同一条渲染核心 ＋ 同一种子 ⇒ 逐位一致，判据断言）；
+        // `--record-source tone` 才录内存正弦测试音。⚠ 本轮⛔不接 `--sfz`（如实登记）。
+        let report = if options.record_source.as_deref() == Some("tone") {
+            crate::record_wav::record_test_tone(path, &record_options)
+        } else {
+            crate::record_wav::record_project(&loaded.archive.project, path, &record_options, None)
+        }
+        .map_err(|source| CliError::Record {
+            path: path.clone(),
+            source,
+        })?;
         lines.push(report.summary());
     }
     if options.record_seconds.is_some() && options.record_wav.is_none() {
@@ -4457,6 +4475,8 @@ mod tests {
                 target.display().to_string(),
                 "--record-seconds".to_owned(),
                 "0.5".to_owned(),
+                "--record-source".to_owned(),
+                "tone".to_owned(),
             ])
             .expect("解析"),
         )

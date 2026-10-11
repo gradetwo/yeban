@@ -156,7 +156,7 @@ impl core::error::Error for WavExportError {}
 ///
 /// ⛔ 这不是引擎乐器（见模块文档的诚实登记）；它的职责是"把导出管路打通且**可听**"，
 /// 并保持确定性：同一工程 ＋ 同一选项 ⇒ 逐位相同的输出。
-struct NoteToneSource {
+pub(crate) struct NoteToneSource {
     /// `(绝对起始帧, 时值帧, 音高, 力度 0..=127)`。
     notes: Vec<(u64, u64, u8, u8)>,
     sample_rate: u32,
@@ -167,7 +167,11 @@ const TONE_FADE_FRAMES: u64 = 64;
 
 impl NoteToneSource {
     /// 从一条轨道的全部片段收集音符（绝对帧 = 片段起点 ＋ 音符起点，960 PPQ 换算）。
-    fn from_track(project: &YebanProjectV1, track_id: EntityId, sample_rate: u32) -> Self {
+    pub(crate) fn from_track(
+        project: &YebanProjectV1,
+        track_id: EntityId,
+        sample_rate: u32,
+    ) -> Self {
         let mut notes = Vec::new();
         if let Some(track) = project.tracks.get(&track_id) {
             for placement in track.clips.values() {
@@ -220,7 +224,7 @@ impl NoteToneSource {
 /// 共享一个 `&mut SynthEngine` 需要锁，而"一个源一个引擎"没有锁也没有跨线程共享。
 /// ⚠ 红线 7：`arm_from_snapshot` **会分配**（`begin_snapshot` 增长区间表）⇒ 只在**离线导出**
 /// 里调用，⛔ 绝不在音频回调里调用（本文件是离线路径）。
-struct EngineTrackSource {
+pub(crate) struct EngineTrackSource {
     /// 已武装的合成器（本源独占）。
     engine: SynthEngine,
     /// 本源负责的轨道。
@@ -237,7 +241,7 @@ impl EngineTrackSource {
     /// # Errors
     ///
     /// `arm_from_snapshot` 的拒绝（含 `NoMasterBus`）。
-    fn new(snapshot: &EngineSnapshot, track: EntityId) -> Result<Self, WavExportError> {
+    pub(crate) fn new(snapshot: &EngineSnapshot, track: EntityId) -> Result<Self, WavExportError> {
         let mut engine = SynthEngine::new(snapshot.sample_rate());
         // ⛔ 不 `unwrap`：没有主总线时如实失败（调用方据此在**落盘之前**退出）。
         engine
@@ -290,7 +294,7 @@ impl AudioSource for NoteToneSource {
 }
 
 /// 一条轨道的音符，按 960 PPQ 换算成 `(起始帧, 时值帧, 音高, 力度)`（⛔ 与最小音源同一口径）。
-fn track_notes_in_frames(
+pub(crate) fn track_notes_in_frames(
     project: &YebanProjectV1,
     track_id: EntityId,
     sample_rate: u32,
