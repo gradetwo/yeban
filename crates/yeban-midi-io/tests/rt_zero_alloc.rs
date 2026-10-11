@@ -66,7 +66,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 /// ⭐ 窗口内实测的 `(allocations, deallocations)`。
-fn measure_window<F: FnOnce() -> u64>(body: F) -> (u64, u64, u64) {
+fn measure_window<F: FnOnce() -> T, T>(body: F) -> (u64, u64, T) {
     // ⭐ 先把计数清零**再**武装（⭐ 清零动作本身在窗口之外）。
     ALLOCS.with(|c| c.set(0));
     DEALLOCS.with(|c| c.set(0));
@@ -107,9 +107,13 @@ fn the_callback_body_never_allocates_inside_the_window() {
 }
 
 /// 判据 ②：⭐ **环满时**的丢弃路径也**零分配**（⭐ 且**立刻返回**，⭐ ⛔ 不阻塞）。
+///
+/// ⚠ ⭐ **本窗口覆盖"环满分支里的 `fetch_add`"**：⭐ 该分支在既有 `u64` 自增之外，还会把
+/// 丢弃计数**镜像**到接收侧的共享原子（⭐ `MidiEventReceiver::dropped_events`）
+/// ⇒ ⭐ 下面的断言**同时读接收侧** ⇒ ⭐ 窗口**可证**覆盖到了那次原子写。
 #[test]
 fn the_full_ring_drop_path_never_allocates() {
-    let (mut sender, _receiver) = event_channel(4);
+    let (mut sender, receiver) = event_channel(4);
     let event = MidiEvent {
         timestamp_us: 7,
         status: 0x90,
@@ -120,20 +124,26 @@ fn the_full_ring_drop_path_never_allocates() {
     for _ in 0..4 {
         assert!(sender.push(event));
     }
-    let (allocs, deallocs, dropped_before) = measure_window(|| {
+    // ⭐ 窗口内**也读接收侧** ⇒ 证明镜像那次 `fetch_add` 真的在窗口里。
+    let (allocs, deallocs, (dropped_sender, dropped_receiver)) = measure_window(|| {
         // ⭐ 这 100 次全部走"环满 ⇒ 计数丢弃"的分支。
         for _ in 0..100 {
             assert!(!sender.push(event), "环满 ⇒ 必须返回 false（⛔ 不阻塞）");
         }
-        sender.dropped_events()
+        (sender.dropped_events(), receiver.dropped_events())
     });
     assert_eq!(allocs, 0, "丢弃路径分配了 {allocs} 次");
     assert_eq!(deallocs, 0, "丢弃路径释放了 {deallocs} 次");
     // ⭐ **只数失败的那 100 次**：⭐ 前 4 次是**被接受**的推送，⛔ 不是丢弃
     // （⭐ 我第一版写 104 是**我自己算错**；⭐ 这条断言当场把它抓住了）。
     assert_eq!(
-        dropped_before, 100,
+        dropped_sender, 100,
         "容量 4 ⇒ 满环之后那 100 次按事件计丢弃"
+    );
+    // ⭐ 镜像的那一侧：⭐ 窗口内读**接收侧** ⇒ 证明那次 `fetch_add` 在窗口里被走到。
+    assert_eq!(
+        dropped_receiver, 100,
+        "⭐ 接收侧必须读到同一个 100（⭐ 证明镜像的 fetch_add 在窗口内）"
     );
 }
 

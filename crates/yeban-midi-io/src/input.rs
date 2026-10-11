@@ -116,6 +116,8 @@ pub struct MidiEventSender {
     unsupported_messages: u64,
     /// ⭐ 与**接收侧共享**的不承载计数（⭐ 回调里只做一次 `fetch_add` ⇒ 零分配/无锁/无 I/O）。
     unsupported_shared: Arc<AtomicU64>,
+    /// ⭐ 与**接收侧共享**的**环满丢弃**计数（⭐ 同一形状：⭐ 一次 `fetch_add`）。
+    dropped_shared: Arc<AtomicU64>,
 }
 
 impl MidiEventSender {
@@ -140,6 +142,8 @@ impl MidiEventSender {
             Err(_full) => {
                 // ⭐ 环满：⭐ 事件**整体**没进去 ⇒ ⭐ 按**事件**计数丢弃，⭐ ⛔ 不阻塞、⛔ 不分配。
                 self.dropped_events = self.dropped_events.saturating_add(1);
+                // ⭐ 同一个事实**再过一次桥**到接收侧（⭐ `Relaxed` 足够 —— 只求最终计数）。
+                let _ = self.dropped_shared.fetch_add(1, Ordering::Relaxed);
                 false
             }
         }
@@ -183,6 +187,8 @@ pub struct MidiEventReceiver {
     consumer: rtrb::Consumer<MidiEvent>,
     /// ⭐ 与**发送侧共享**的不承载计数（⭐ 建在 `event_channel`，⭐ 见上）。
     unsupported_shared: Arc<AtomicU64>,
+    /// ⭐ 与**发送侧共享**的**环满丢弃**计数（⭐ 同一形状）。
+    dropped_shared: Arc<AtomicU64>,
 }
 
 impl MidiEventReceiver {
@@ -207,6 +213,15 @@ impl MidiEventReceiver {
         self.unsupported_shared.load(Ordering::Relaxed)
     }
 
+    /// ⭐ **被丢弃的事件条数**（⭐ 由发送侧在**环满**时 `fetch_add` 累加 ⇒ ⭐ **控制侧可读**）。
+    ///
+    /// ⚠ ⭐ 口径与 [`MidiEventSender::dropped_events`] **同一个事实**：⭐ 单位 = **事件条数**
+    /// （⛔ 不是字节、⛔ 不是"半条"）；⭐ 环满时事件**整体**没进去 ⇒ ⭐ 这里 +1。
+    #[must_use]
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped_shared.load(Ordering::Relaxed)
+    }
+
     /// ⭐ 弹出**一条完整**事件（⭐ 整事件原子 ⇒ ⛔ 看不到半条）。
     pub fn pop(&mut self) -> Option<MidiEvent> {
         self.consumer.pop().ok()
@@ -219,16 +234,19 @@ pub fn event_channel(capacity: usize) -> (MidiEventSender, MidiEventReceiver) {
     let (producer, consumer) = rtrb::RingBuffer::new(capacity);
     // ⚠ ⭐ `Arc` 的分配发生在**这里**（⭐ 构造期）⇒ ⭐ 回调路径上只剩 `fetch_add` ✓
     let unsupported_shared = Arc::new(AtomicU64::new(0));
+    let dropped_shared = Arc::new(AtomicU64::new(0));
     (
         MidiEventSender {
             producer,
             dropped_events: 0,
             unsupported_messages: 0,
             unsupported_shared: Arc::clone(&unsupported_shared),
+            dropped_shared: Arc::clone(&dropped_shared),
         },
         MidiEventReceiver {
             consumer,
             unsupported_shared,
+            dropped_shared,
         },
     )
 }
@@ -373,6 +391,13 @@ impl MidiInputSession {
     #[must_use]
     pub fn unsupported_messages(&self) -> u64 {
         self.receiver.unsupported_messages()
+    }
+
+    /// ⭐ **被丢弃的事件条数**（⭐ 转发到接收侧的共享计数；⭐ 与
+    /// [`MidiEventSender::dropped_events`] **同一个事实**）。
+    #[must_use]
+    pub fn dropped_events(&self) -> u64 {
+        self.receiver.dropped_events()
     }
 }
 
@@ -805,5 +830,41 @@ mod tests {
         sender.handle_message(2, &[0xF1, 0x00]);
         assert_eq!(receiver.unsupported_messages(), 8);
         assert_eq!(sender.unsupported_messages(), 8);
+    }
+
+    /// 判据 ⑫（⭐ **丢弃计数过桥 ＋ 反向对照成对**）：
+    /// ⭐ ① 用小容量环**灌满**它 ⇒ ⭐ **接收侧读到的丢弃数 = 发送侧读到的，且 > 0**；
+    /// ⭐ ② **反向对照**：⭐ 环**不溢**时 ⇒ ⭐ 读数 = **0**（⭐ 排除"换一种写死"）。
+    #[test]
+    fn the_dropped_event_count_crosses_to_the_receiver() {
+        // ① 溢出的那一侧。
+        let (mut sender, receiver) = event_channel(2);
+        let event = MidiEvent {
+            timestamp_us: 1,
+            status: 0x90,
+            data1: 60,
+            data2: 100,
+        };
+        assert_eq!(receiver.dropped_events(), 0, "初始为 0");
+        assert!(sender.push(event));
+        assert!(sender.push(event));
+        for _ in 0..5 {
+            assert!(!sender.push(event), "环满 ⇒ 必须返回 false");
+        }
+        assert_eq!(receiver.dropped_events(), 5, "⭐ 丢弃计数必须过桥到接收侧");
+        assert_eq!(sender.dropped_events(), 5, "⭐ 两侧读数必须一致");
+        assert!(receiver.dropped_events() > 0);
+
+        // ② 不溢的那一侧（⭐ 反向对照）。
+        let (mut calm_sender, calm_receiver) = event_channel(8);
+        for _ in 0..3 {
+            assert!(calm_sender.push(event));
+        }
+        assert_eq!(
+            calm_receiver.dropped_events(),
+            0,
+            "⭐ 环不溢 ⇒ 丢弃数必须是 0（⭐ 否则上面那个数可能是写死的）"
+        );
+        assert_eq!(calm_sender.dropped_events(), 0);
     }
 }
