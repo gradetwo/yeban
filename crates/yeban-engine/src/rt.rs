@@ -4289,6 +4289,92 @@ mod tests {
         );
     }
 
+    /// 判据（⭐ **窃取读数** ＋ ⭐ "⭐ 被窃取的是**未松键**者"）：
+    /// ⭐ 灌满池（16 条，⭐ pitch 互不相同 ⇒ ⛔ 不触发"同 pitch 重触发"）⇒ ⭐ `note_steals == 0`；
+    /// ⭐ 第 17 条 ⇒ ⭐ **池满 ⇒ 必然窃取**；⭐ ⭐ **对照组**：⭐ 把全部音符**松键**、⭐ 等 release
+    /// 走完（`PolySynth::render` 会在包络 `Idle` 时当场回收）⇒ ⭐ 再推一条 ⇒ ⭐ **不得**再窃取
+    /// ⇒ ⭐ 即"⭐ 被窃取的是未松键者"这条预期**由读数核对**（⭐ ⛔ 不是靠推理）。
+    #[test]
+    fn stealing_only_happens_while_the_voices_are_still_held() {
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut rig = rig_with_snapshot(snapshot);
+        let mut out = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+
+        // ⭐ 16 条正好填满池。
+        for step in 0..16u8 {
+            assert_eq!(
+                rig.sender.publish(&[EngineEvent::NoteOn {
+                    track,
+                    pitch: 60 + step,
+                    velocity: 100,
+                }]),
+                1
+            );
+        }
+        rig.runtime.process_quantum(&mut out, 2);
+        let filled = rig.runtime.stats();
+        assert_eq!(filled.note_steals, 0, "⭐ 恰好填满 ⇒ 还不到窃取");
+        assert_eq!(filled.poly_active_voices, 16, "⭐ 池应当是满的");
+
+        // ⭐ 第 17 条 ⇒ ⭐ 池满 ⇒ ⭐ 必须窃取。
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 80,
+                velocity: 100,
+            }]),
+            1
+        );
+        rig.runtime.process_quantum(&mut out, 2);
+        let stolen = rig.runtime.stats();
+        assert!(
+            stolen.note_steals > 0,
+            "⭐ 第 17 条必须触发窃取（⭐ 读数 note_steals={}）",
+            stolen.note_steals
+        );
+
+        // ⭐ 对照组：⭐ 全部松键 ⇒ ⭐ release 走完 ⇒ ⭐ `render` 回收 ⇒ ⭐ 再推一条**不该**窃取。
+        let mut released = 0usize;
+        for step in 0..16u8 {
+            released += rig.sender.publish(&[EngineEvent::NoteOff {
+                track,
+                pitch: 60 + step,
+            }]);
+        }
+        released += rig
+            .sender
+            .publish(&[EngineEvent::NoteOff { track, pitch: 80 }]);
+        assert_eq!(released, 17, "⭐ 17 条松键都必须进环");
+        let steals_before = rig.runtime.stats().note_steals;
+        for _ in 0..64 {
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let after_release = rig.runtime.stats();
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 81,
+                velocity: 100,
+            }]),
+            1
+        );
+        rig.runtime.process_quantum(&mut out, 2);
+        let final_stats = rig.runtime.stats();
+        eprintln!(
+            "DIAGNOSTIC 窃取: 池满时 note_steals={} 回收后声部数={} 回收后再推一条 note_steals={} \
+             孤儿松键={}",
+            stolen.note_steals,
+            after_release.poly_active_voices,
+            final_stats.note_steals,
+            final_stats.orphan_note_offs
+        );
+        assert_eq!(
+            final_stats.note_steals, steals_before,
+            "⭐ 已松键的声部被 `render` 回收 ⇒ ⭐ 新音符⛔ 不该再窃取（⭐ 这就是\
+             '被窃取的是未松键者'的对照读数）"
+        );
+    }
+
     fn rig_with_snapshot(snapshot: EngineSnapshot) -> Rig {
         let slot = SnapshotSlot::new(snapshot);
         let (retire, queue) = retire_channel(16);
