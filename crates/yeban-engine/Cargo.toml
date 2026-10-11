@@ -50,6 +50,10 @@ libm.workspace = true
 # 在 `deny.toml` 里放行了"带 path 的通配版本"(`allow-wildcard-paths = true`)。
 # 在此之前（D21 落地前），本 crate 作为第一个跨成员依赖被迫写过显式 `version = "0.0.1"`。
 yeban-model.workspace = true
+# SFZ v2 采样器（ROAD-M2-005）：零拷贝解析器 + 区域/曲线/力度/交叉淡化/声部池的**唯一实现**。
+# 引擎侧只做**适配层**（`src/sfz_instrument.rs`），⛔ 不复制它的实现。
+# 为何不重：`yeban-sfz` 的外部依赖只有 `thiserror`（见其 Cargo.toml）⇒ 不引入重依赖。
+yeban-sfz.workspace = true
 
 [lints]
 workspace = true

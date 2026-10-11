@@ -133,6 +133,7 @@ pub mod param;
 pub mod ring;
 pub mod rt;
 pub mod rt_probe;
+pub mod sfz_instrument;
 pub mod snapshot;
 pub mod stats_mirror;
 pub mod synth;
