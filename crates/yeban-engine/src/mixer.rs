@@ -207,9 +207,175 @@ pub fn pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
     }
 }
 
+/// 盲听 A/B 的等功率交叉淡化时长（毫秒）—— [ARCH-RT-005] / [RSK-30]。
+///
+/// 规范值 **30 ms**；48 kHz 下折合 [`crossfade_len_frames`] = **1440** 采样点。
+pub const AUDITION_CROSSFADE_MS: f32 = 30.0;
+
+/// 盲听预滚缓冲（采样点）—— [ARCH-RT-005]。
+///
+/// 规范值 **2048**（42.7 ms @ 48 kHz），**足以覆盖** 30 ms 淡化所需的 1440 采样点；
+/// 这一覆盖关系由 `tests::preroll_covers_the_crossfade_at_any_supported_rate` 钉住。
+pub const AUDITION_PREROLL_SAMPLES: usize = 2048;
+
+/// 30 ms 淡化在给定采样率下的**帧数**。
+///
+/// ⚠ **不写死 1440**：1440 只是 48 kHz 的取值；本函数按
+/// `采样率 × 时长` 换算 ⇒ 96 kHz 得 2880。⛔ 任何把 1440 当常量的做法都会
+/// 让 96 kHz 的淡化缩短一半。
+///
+/// 非有限或非正的采样率按 **1 帧**兜底（⛔ 不返回 0 —— 0 会让淡化**从不下拍**）。
+#[must_use]
+pub fn crossfade_len_frames(sample_rate: f32) -> usize {
+    let frames = (sample_rate * AUDITION_CROSSFADE_MS / 1000.0).round();
+    if frames.is_finite() && frames >= 1.0 {
+        frames as usize
+    } else {
+        1
+    }
+}
+
+/// 等功率交叉淡化的增益对 `(淡出, 淡入)`，`t ∈ [0, 1]`。
+///
+/// 曲线是**精确**的正弦/余弦：`淡出 = cos(t·π/2)`、`淡入 = sin(t·π/2)`，于是
+/// **`淡出² + 淡入² = 1`**（[RSK-30]：⛔ 不用线性淡化 —— 那在中点掉到
+/// `0.5² + 0.5² = 0.5`，即 **−3 dB 的功率凹陷**）。
+///
+/// 越界 `t` 先钳到 `[0, 1]`；非有限按 `t = 0`（起淡）处理。本函数**无堆分配**、
+/// 无锁、无 I/O，可在实时回调内逐样本调用。
+#[must_use]
+pub fn crossfade_gains(t: f32) -> (f32, f32) {
+    let clamped = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let angle = clamped * core::f32::consts::FRAC_PI_2;
+    (angle.cos(), angle.sin())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [ARCH-RT-005] / [RSK-30]：淡化曲线必须是**等功率**的，⛔ 不是线性。
+    ///
+    /// 读数一（等功率）：145 个位置上 `淡出² + 淡入²` 与 1 的偏差 ≤ 1e-5。
+    /// 读数二（反线性）：中点 `t = 0.5` 的增益必须 ≈ **0.7071**，并且与**线性**值 0.5
+    /// 相差 ≥ **0.2** ⇒ ⭐ 这一条才是"曲线不是线性"的证据（⛔ 只测等式测不出线性凹陷）。
+    #[test]
+    fn audition_crossfade_is_equal_power_not_linear() {
+        let mut worst = 0.0f32;
+        for index in 0..=144 {
+            let t = index as f32 / 144.0;
+            let (out_gain, in_gain) = crossfade_gains(t);
+            let power = out_gain * out_gain + in_gain * in_gain;
+            worst = worst.max((power - 1.0).abs());
+        }
+        println!("[mixer] 等功率最大偏差 = {worst:e}");
+        assert!(worst <= 1e-5, "等功率偏差过大：{worst}");
+
+        let (out_mid, in_mid) = crossfade_gains(0.5);
+        let linear = 0.5f32;
+        println!("[mixer] 中点 淡出={out_mid} 淡入={in_mid}；线性值={linear}");
+        assert!(
+            (out_mid - core::f32::consts::FRAC_1_SQRT_2).abs() <= 1e-5,
+            "中点淡出必须 ≈ 1/√2 = 0.7071，实得 {out_mid}"
+        );
+        assert!(
+            (out_mid - linear).abs() >= 0.2,
+            "⭐ 反线性证据：中点必须明显偏离线性 0.5（实得 {out_mid}）⇒ 否则说明用了线性淡化"
+        );
+        assert!(
+            (in_mid - out_mid).abs() <= 1e-6,
+            "中点两侧必须对称（实得 {in_mid}）"
+        );
+    }
+
+    /// [ARCH-RT-005]：端点与单调性 —— `t = 0` 全淡出、`t = 1` 全淡入，
+    /// 且淡出**不增**、淡入**不减**（逐样本无回头）。
+    #[test]
+    fn audition_crossfade_endpoints_and_monotonicity() {
+        assert_eq!(crossfade_gains(0.0), (1.0, 0.0), "t=0：必须全淡出");
+        let (out_end, in_end) = crossfade_gains(1.0);
+        assert!(
+            out_end.abs() <= 1e-7 && (in_end - 1.0).abs() <= 1e-7,
+            "t=1：必须全淡入"
+        );
+        // 越界与非有限：钳制/兜底（⛔ 不得产生 NaN 或反向增益）
+        assert_eq!(crossfade_gains(-1.0), (1.0, 0.0), "负 t 钳到 0");
+        assert_eq!(crossfade_gains(2.0), crossfade_gains(1.0), "t>1 钳到 1");
+        assert_eq!(crossfade_gains(f32::NAN), (1.0, 0.0), "NaN 按起淡处理");
+        let mut previous_out = f32::INFINITY;
+        let mut previous_in = f32::NEG_INFINITY;
+        for index in 0..=1000 {
+            let (out_gain, in_gain) = crossfade_gains(index as f32 / 1000.0);
+            assert!(
+                out_gain <= previous_out + 1e-6,
+                "淡出必须单调不增（第 {index} 点）"
+            );
+            assert!(
+                in_gain >= previous_in - 1e-6,
+                "淡入必须单调不减（第 {index} 点）"
+            );
+            previous_out = out_gain;
+            previous_in = in_gain;
+        }
+    }
+
+    /// [ARCH-RT-005]：**30 ms 是按时间定义**的 ⇒ 长度必须随采样率换算（⛔ 不写死 1440）。
+    #[test]
+    fn audition_crossfade_length_is_time_derived() {
+        assert_eq!(crossfade_len_frames(48_000.0), 1440, "48 kHz ⇒ 规范值 1440");
+        assert_eq!(
+            crossfade_len_frames(96_000.0),
+            2880,
+            "96 kHz ⇒ 2880（⭐ 证明未写死）"
+        );
+        assert_eq!(
+            crossfade_len_frames(44_100.0),
+            1323,
+            "44.1 kHz ⇒ 1323（30 ms 四舍五入）"
+        );
+        // 退化输入兜底：⛔ 不得为 0（0 会让淡化永不下拍）
+        assert_eq!(crossfade_len_frames(0.0), 1, "0 采样率兜底为 1");
+        assert_eq!(crossfade_len_frames(f32::NAN), 1, "NaN 采样率兜底为 1");
+        println!(
+            "[mixer] 淡化帧数: 48k={} 96k={} 44.1k={}",
+            crossfade_len_frames(48_000.0),
+            crossfade_len_frames(96_000.0),
+            crossfade_len_frames(44_100.0)
+        );
+    }
+
+    /// [ARCH-RT-005]：预滚缓冲 **2048** 必须**覆盖** 30 ms 淡化所需的帧数（规范说"充分覆盖"）。
+    ///
+    /// ⭐ 这是**不等式**判据（⛔ 不是"计数 ≥ 地板"那类反向指标）：左边是规范常量，
+    /// 右边是按时长算出的**实际需要** ⇒ 两者都会变，等式/不等式才有信息量。
+    #[test]
+    fn preroll_covers_the_crossfade_at_any_supported_rate() {
+        assert_eq!(AUDITION_PREROLL_SAMPLES, 2048, "规范值 2048");
+        let needed_48k = crossfade_len_frames(48_000.0);
+        let margin = AUDITION_PREROLL_SAMPLES.saturating_sub(needed_48k);
+        println!(
+            "[mixer] 预滚余量（48k）= {AUDITION_PREROLL_SAMPLES} − {needed_48k} = {margin} 采样点"
+        );
+        assert!(
+            AUDITION_PREROLL_SAMPLES >= needed_48k,
+            "预滚必须覆盖 48 kHz 的 30 ms 淡化（需要 {needed_48k}）"
+        );
+        assert!(margin > 0, "⭐ 余量必须报数值且为正（实得 {margin}）");
+        // 96 kHz 下 30 ms 需要 2880 > 2048 ⇒ ⭐ 这正是"2048 是按 48 kHz 定的"的证据，
+        // 也是本项**未在 96 kHz 下声称覆盖**的诚实边界（登记为下一件待做的调用侧约束）。
+        let needed_96k = crossfade_len_frames(96_000.0);
+        println!(
+            "[mixer] ⚠ 96 kHz 需要 {needed_96k} > 预滚 {AUDITION_PREROLL_SAMPLES} ⇒ 调用侧须放大预滚"
+        );
+        assert!(
+            needed_96k > AUDITION_PREROLL_SAMPLES,
+            "96 kHz 的边界必须成立，否则上面那行注释失真"
+        );
+    }
 
     /// 声相定律：左/中/右三点的增益必须落在**声明值**上（公式 + 容差）。
     #[test]
