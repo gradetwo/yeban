@@ -718,6 +718,9 @@ struct PendingNote {
     start_sample: u64,
     end_sample: u64,
     gain: f32,
+    /// ⭐ **请求频率**（＝ `NoteEvent::freq_hz`，⭐ 不带失谐）⇒ 供 [`PolySynth::note_off`]
+    /// **精确**配对（⛔ 不用 `osc1.freq`，⭐ 那一支路带失谐 ⇒ 反查有歧义）。
+    freq_hz: f32,
     osc1: OscState,
     osc2: OscState,
     /// 新音符的包络：由 [`PolySynth::env_for`] 在 `note_on` 里造好（已 `gate_on`、
@@ -733,6 +736,8 @@ struct PolyVoice {
     osc2: OscState,
     /// 逐样本增益（力度 × 轨道音量，构造期算好）。
     gain: f32,
+    /// ⭐ **请求频率**（触发时记下）⇒ [`PolySynth::note_off`] 按它配对。
+    freq_hz: f32,
     /// 起点（绝对样本位置）。
     start_sample: u64,
     /// 终点（绝对样本位置）。
@@ -752,6 +757,7 @@ impl PolyVoice {
         osc1: OscState::IDLE,
         osc2: OscState::IDLE,
         gain: 0.0,
+        freq_hz: 0.0,
         start_sample: 0,
         end_sample: 0,
         env: Adsr::new(),
@@ -1063,6 +1069,33 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// 回收"已过终点且包络已静音"的声部（快照边界的游标校正一并做）。
     ///
     /// 仍在释放段的声部**保留** —— 快照切换不得切断在鸣的音符。
+    /// ⭐ **松开**某个频率上的音符：把**请求频率等于 `freq_hz`** 的活跃声部送进 release
+    /// （⭐ 器件里"松键"的既有入口是 [`Adsr::gate_off`]）。
+    ///
+    /// ⚠ **口径（合并，⛔ 不区分原因）**：返回"⭐ 被送进 release 的声部数"；返回 `0`
+    /// 表示**没有匹配的活跃声部** —— 本方法**不区分**"⭐ 从未存在过"与"⭐ 已被窃取/⭐ 已换音"；
+    /// 调用方（引擎的 `orphan_note_offs`）按这个**合并口径**登记。
+    ///
+    /// ⚠ 配对用**请求频率**（触发时记下的 `NoteEvent::freq_hz`）⇒ ⭐ 两侧是**同一个算式**
+    /// 的同一个值 ⇒ ⭐ **精确相等是有意的**（⛔ 近似匹配会让两条不同的音互相误松）。
+    ///
+    /// ⚠ **逐位不变**：本方法**只**调 `env.gate_off()`；⭐ 既有渲染路径**不调用**它
+    /// ⇒ ⭐ 老的触发/渲染路径逐位不变（新入口的唯一调用者是引擎的新分支）。
+    ///
+    /// **实时路径**：零分配、零锁、零 I/O。
+    pub fn note_off(&mut self, freq_hz: f32) -> u32 {
+        let mut released = 0u32;
+        for voice in &mut self.voices {
+            if voice.active && voice.freq_hz == freq_hz {
+                voice.env.gate_off();
+                released = released.saturating_add(1);
+            }
+        }
+        released
+    }
+
+    /// 回收**已结束**的声部：包络已回到 `Idle` 且 `end_sample <= position` 的声部空槽化
+    /// ⇒ 空槽可被下一次 `note_on` 复用（零分配）。
     pub fn retire_finished(&mut self, position: u64) {
         for voice in &mut self.voices {
             if voice.active && voice.end_sample <= position && !voice.env.is_active() {
@@ -1116,6 +1149,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             start_sample: note.start_sample,
             end_sample: note.end_sample,
             gain: note.gain,
+            freq_hz: note.freq_hz,
             osc1,
             osc2,
             env: self.env_for(),
@@ -1292,6 +1326,7 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             osc1: pending.osc1,
             osc2: pending.osc2,
             gain: pending.gain,
+            freq_hz: pending.freq_hz,
             start_sample: pending.start_sample,
             end_sample: pending.end_sample,
             env: pending.env,
