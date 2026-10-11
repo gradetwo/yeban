@@ -230,9 +230,45 @@ impl<W: Write> RecordDrain<W> {
     }
 }
 
+/// ⭐ **音频输入回调的"回调体"**（cpal 数据回调里**唯一**允许调用的函数）。
+///
+/// 把一块**交错（interleaved）**输入切成整帧，逐帧交给 [`RecordSender::push_frame`]。
+///
+/// # 红线 7（[MUST-GATE-001]）—— 回调内禁令与后果
+/// 纯函数：只读 `block`、只写环。**⛔ 不分配**（无 `Vec::push`／`Box`／`String`）、**⛔ 不加锁**、
+/// **⛔ 无任何 I/O**。违反后果：音频线程不可预测停顿（分配可能 `malloc`、锁可能被控制线程
+/// 长持、I/O 直接阻塞采样时钟）⇒ 由 `tests/rt_zero_alloc.rs` 的计数型全局分配器窗口检测
+/// （⚠ 该 target 是 `harness = false`，场景必须由它的 `main` 显式调用）。
+///
+/// # 语义（可判定）
+/// * **整帧才推**：末尾不足一帧的**残余样本被忽略**；返回值按**帧**计（⛔ 不按样本）；
+/// * `channels == 0` ⇒ 返回 0（⛔ 不 panic、⛔ 不写环）；
+/// * 环满 ⇒ `push_frame` 返回 `false` 并把 `dropped_frames` **按帧**加一（⛔ 不阻塞、⛔ 不分配）；
+/// * ⚠ `frame.len() != channels` 的帧**不计入丢弃**（`push_frame` 的既有语义）——
+///   因此**本函数的 `channels` 必须与建环时的 `channels` 一致**，否则会出现"看似丢弃为 0"的假象。
+///
+/// 返回：**被接受的帧数**（⛔ 不含丢弃；丢弃读 [`RecordSender::dropped_frames`]）。
+#[must_use]
+pub fn push_input_block(sender: &mut RecordSender, block: &[f32], channels: u16) -> usize {
+    if channels == 0 {
+        return 0;
+    }
+    let width = usize::from(channels);
+    let frames = block.len() / width;
+    let mut accepted = 0usize;
+    for index in 0..frames {
+        let start = index * width;
+        if sender.push_frame(&block[start..start + width]) {
+            accepted += 1;
+        }
+    }
+    accepted
+}
+
 #[cfg(test)]
 mod tests {
     use super::record_channel;
+    use crate::record::push_input_block;
     use std::io::Cursor;
 
     /// 判据 ①：推入的帧能**整帧**取回，且**逐样本**一致（数量 + 值）。
@@ -290,5 +326,111 @@ mod tests {
         assert_eq!(&bytes[4..8], &(-1.0f32).to_le_bytes());
         assert_eq!(&bytes[8..12], &0.5f32.to_le_bytes());
         assert_eq!(&bytes[12..16], &(-0.5f32).to_le_bytes());
+    }
+
+    /// ⭐ 判据（容量口径，**机械**）：建环后**立刻**读 `spare_frames()`。
+    ///
+    /// 这条把"环容量是**样本**、业务口径是**帧**"钉死：`record_channel(n, ch)` 的 `n`
+    /// **就是帧数**（实现里 `samples = n × ch`、`spare_frames() = slots() / ch`）。
+    #[test]
+    fn record_channel_capacity_is_in_frames_right_after_creation() {
+        for (capacity_frames, channels) in [(2usize, 2u16), (16, 2), (8, 1), (7, 4)] {
+            let (tx, _rx) = record_channel(capacity_frames, channels);
+            println!(
+                "[record] 建环(capacity_frames={capacity_frames}, channels={channels}) ⇒ 立刻 spare_frames={}",
+                tx.spare_frames()
+            );
+            assert_eq!(
+                tx.spare_frames(),
+                capacity_frames,
+                "⭐ 建环后立刻 spare_frames() 必须**等于 capacity_frames**（容量口径 = 帧）"
+            );
+            assert_eq!(tx.channels(), channels, "通道数必须原样保留");
+        }
+    }
+
+    /// ⭐ 判据（喂 k 帧、容量 n ⇒ `pushed == min(k, n)`、`dropped == max(0, k − n)`）。
+    ///
+    /// 期望值**由上面那条读数直接给出**，⛔ 不推断。
+    #[test]
+    fn feeding_k_frames_into_capacity_n_pushes_min_and_drops_the_rest() {
+        for (capacity_frames, channels, k) in
+            [(2usize, 2u16, 5usize), (4, 2, 4), (4, 2, 9), (0, 2, 3)]
+        {
+            let (mut tx, mut rx) = record_channel(capacity_frames, channels);
+            let block: Vec<f32> = (0..k)
+                .flat_map(|i| (0..usize::from(channels)).map(move |c| (i * 10 + c) as f32))
+                .collect();
+            let accepted = push_input_block(&mut tx, &block, channels);
+            let expected_pushed = k.min(capacity_frames);
+            let expected_dropped = k.saturating_sub(capacity_frames);
+            let mut drained = 0usize;
+            rx.drain_frames(usize::MAX, |_| drained += 1);
+            println!(
+                "[record] capacity={capacity_frames} channels={channels} k={k} ⇒ accepted={accepted} dropped={} drained={drained}",
+                tx.dropped_frames()
+            );
+            assert_eq!(accepted, expected_pushed, "接受帧数必须 == min(k, n)");
+            assert_eq!(
+                tx.dropped_frames(),
+                u64::try_from(expected_dropped).expect("小整数"),
+                "⭐ 丢弃帧数必须 == max(0, k − n)（帧级）"
+            );
+            assert_eq!(
+                drained, expected_pushed,
+                "环里能被整帧取回的条数 == 接受帧数"
+            );
+        }
+    }
+
+    /// ⭐ 判据 a：喂入的块 ⇒ 环里能被 `drain_frames` 整帧取回，且**逐样本一致**。
+    /// 判定量（已命名）：**逐样本最大绝对差**（按**样本**计，通道交错）。
+    #[test]
+    fn input_block_round_trips_sample_for_sample() {
+        let channels = 2u16;
+        let (mut tx, mut rx) = record_channel(64, channels);
+        let block: Vec<f32> = (0..16u32)
+            .flat_map(|i| [i as f32 / 10.0, 1.0 + i as f32 / 10.0])
+            .collect(); // 32 样本 = 16 帧
+        let accepted = push_input_block(&mut tx, &block, channels);
+        assert_eq!(accepted, 16, "32 样本 / 2 通道 ⇒ 16 帧");
+        let mut got = Vec::new();
+        let drained = rx.drain_frames(64, |frame| got.extend_from_slice(frame));
+        assert_eq!(drained, 16, "环里应有 16 整帧");
+        let max_abs_diff = block
+            .iter()
+            .zip(got.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        println!(
+            "[record] 逐样本最大绝对差 = {max_abs_diff:e}（喂入 {} 样本，取回 {} 样本）",
+            block.len(),
+            got.len()
+        );
+        assert_eq!(got.len(), block.len(), "取回样本数必须与喂入一致");
+        assert_eq!(max_abs_diff, 0.0, "⭐ 逐样本最大绝对差必须为 0");
+        assert_eq!(tx.dropped_frames(), 0, "容量足够 ⇒ 不得丢帧");
+    }
+
+    /// ⭐ 判据（退化输入不 panic，语义可判定）：`channels == 0`、残余样本、通道不匹配。
+    #[test]
+    fn input_block_degenerate_inputs_are_defined_not_panicking() {
+        let (mut tx, mut rx) = record_channel(8, 2);
+        assert_eq!(
+            crate::record::push_input_block(&mut tx, &[1.0, 2.0, 3.0], 0),
+            0,
+            "channels=0 ⇒ 0 帧"
+        );
+        assert_eq!(rx.drain_frames(8, |_| {}), 0, "channels=0 不得写入任何帧");
+        // 3 样本 / 2 通道 ⇒ 1 整帧，1 个残余样本被忽略
+        assert_eq!(
+            crate::record::push_input_block(&mut tx, &[1.0, 2.0, 3.0], 2),
+            1,
+            "整帧才推"
+        );
+        let mut frames = 0usize;
+        rx.drain_frames(8, |_| frames += 1);
+        assert_eq!(frames, 1, "只应有 1 帧");
+        assert_eq!(tx.dropped_frames(), 0, "残余样本⛔ 不计入丢弃");
     }
 }
