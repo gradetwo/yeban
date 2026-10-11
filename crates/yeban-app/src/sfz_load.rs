@@ -199,39 +199,17 @@ pub fn probe_note_energy(
 ///
 /// 读文件 / 解码失败 ⇒ [`SfzLoadError::Sample`]。
 pub fn read_sample_file(path: &Path) -> Result<(InMemorySample, u64, String), SfzLoadError> {
-    let (format, buffer) = yeban_render::wav::read_plain_wav(path)
+    // ⭐ **共享实现**（`yeban-render`；MCP 线把它唯一化了）与本地那份**逐行同口径**：
+    // `Float32` 直用、`Int16`/`Int24` 除 `full_scale_max().max(1)`、`step_by(channels)` 取单声道，
+    // 且它的 `describe` 文案与本函数原来**一字不差**（`file(<path> frames=… rate=…)`）。
+    // ⇒ 适配只做**形状转换**（`InMemorySample` ＋ `u64` 帧数），⛔ 不隐藏任何语义差异。
+    let (pcm, sample_rate, describe) = yeban_render::wav::read_plain_wav_mono_f32(path)
         .map_err(|error| SfzLoadError::Sample(format!("`{}`: {error}", path.display())))?;
-    let channels = usize::from(format.channels.max(1));
-    let scale = match buffer.depth() {
-        yeban_render::dither::BitDepth::Float32 => 1.0_f32,
-        depth => 1.0_f32 / (depth.full_scale_max().max(1) as f32),
-    };
-    let samples: Vec<f32> = match &buffer {
-        yeban_render::dither::PcmBuffer::Int16(values) => values
-            .iter()
-            .step_by(channels)
-            .map(|value| f32::from(*value) * scale)
-            .collect(),
-        yeban_render::dither::PcmBuffer::Int24(values) => values
-            .iter()
-            .step_by(channels)
-            .map(|value| (*value as f32) * scale)
-            .collect(),
-        yeban_render::dither::PcmBuffer::Float32(values) => {
-            values.iter().step_by(channels).copied().collect()
-        }
-    };
-    let frames = u64::try_from(samples.len()).unwrap_or(u64::MAX);
-    let describe = format!(
-        "file({} frames={} rate={})",
-        path.display(),
-        frames,
-        format.sample_rate
-    );
+    let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
     Ok((
         InMemorySample {
-            pcm: samples,
-            sample_hz: format.sample_rate as f32,
+            pcm,
+            sample_hz: sample_rate as f32,
         },
         frames,
         describe,
