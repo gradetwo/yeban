@@ -233,6 +233,10 @@ pub fn usage_text() -> String {
   --dump-elements          把语义元素注册表打印到 stdout (每行一个元素, 稳定顺序) [UI-TEST-001]
   --export-elements <path> 把同一份元素注册表**原子**写到文件, 便于脚本 / AI 消费;
                            与 --dump-elements 同时给 = 既打印又落盘
+  --record-wav <path>      录一段**测试音**成 24-bit WAV (音源 = 内存正弦 440Hz, ⛔ 不是声卡);
+                           三段走 ARCH-REC-001: 构造期建环 -> 逐帧推 -> 抽干落盘;
+                           输出行 recorded-wav: path=… frames=… dropped=… bytes=… source=…
+  --record-seconds <n>     --record-wav 的秒数 (默认 2.0)
   --sfz <path>             装载一份 SFZ 乐器: 报告区域数 + 一次音符探测(帧数与能量);
                            ⚠ 今天只到装载层: SFZ 音色**尚未**接进 --export-wav 的音源链
                            (输出行 wired_to_export=no), 样本数据是**内存正弦**而⛔非 wav
@@ -418,6 +422,7 @@ pub fn usage_text() -> String {
       --export-logic 在本次构建未编译 `{logic_feature}`)
   {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
+  {usage} --record-seconds 没和 --record-wav 一起给
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
@@ -435,6 +440,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
+  yeban-app --record-wav take.wav --record-seconds 3
   yeban-app --sfz strings.sfz --export-wav out.wav
   yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
@@ -804,7 +810,7 @@ impl Theme {
 ///
 /// 字段全公开是为了让判据能直接构造组合（例如只给 `save_as` 而不给 `open`），
 /// 而不是靠解析字符串去间接构造。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Options {
     /// `--help` / `-h`：短路命令。
     pub help: bool,
@@ -826,6 +832,15 @@ pub struct Options {
     /// ⇒ 同一命令里的 `--export-midi` / `--export-wav` / `--save-as` 都能看到导入的音符。
     /// 解析与映射全部完成后**才**发出一次提交 ⇒ 非法输入不会改坏工程。
     pub import_midi: Option<PathBuf>,
+    /// `--record-wav <path>`：录一段**测试音**并落成 24-bit WAV（`[ARCH-REC-001]` 三段：
+    /// 构造期建环 ⇒ 生产端逐帧推 ⇒ 消费端抽干落盘）。
+    ///
+    /// ⚠ 本切片**不碰声卡**（cpal 输入流不在本轮）⇒ 数据来源是一条**内存正弦测试音**
+    /// （报告行 `source=in-memory-sine(440Hz)`）；`--record-seconds` 给秒数（默认 2.0）。
+    /// 环满 ⇒ 丢弃并计数（输出行 `dropped=`），⛔ 不阻塞、⛔ 不 panic。
+    pub record_wav: Option<PathBuf>,
+    /// `--record-seconds <n>`：`--record-wav` 的录制秒数（默认 2.0）。
+    pub record_seconds: Option<f32>,
     /// `--sfz <path>`：**装载**一份 SFZ 乐器并报告区域数与一次音符探测读数。
     ///
     /// ⚠ 今天只到"装载 ＋ 探测"这一层：SFZ 音色**尚未**接到 `--export-wav` 的音源链
@@ -1232,6 +1247,21 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--record-wav" => {
+                let value = take_value("--record-wav", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.record_wav,
+                    "--record-wav",
+                    PathBuf::from(value),
+                )?;
+            }
+            "--record-seconds" => {
+                let value = take_value("--record-seconds", inline, args, &mut cursor)?;
+                let seconds: f32 = value
+                    .parse()
+                    .map_err(|_| ParseError::UnexpectedValue("--record-seconds"))?;
+                options.record_seconds = Some(seconds);
+            }
             "--sfz" => {
                 let value = take_value("--sfz", inline, args, &mut cursor)?;
                 set_once(&mut options.sfz, "--sfz", PathBuf::from(value))?;
@@ -1603,6 +1633,15 @@ pub enum CliError {
         /// 落盘层的原样裁决。
         source: SaveError,
     },
+    /// `--record-wav` 失败（抽干 I/O / WAV 写出被拒 / 参数非法）。
+    Record {
+        /// 目标路径。
+        path: PathBuf,
+        /// 录音层的原样裁决。
+        source: crate::record_wav::RecordError,
+    },
+    /// 用法错误（带说明）。
+    Usage(String),
     /// `--sfz` 失败（读文件 / SFZ 文本非法）。
     Sfz {
         /// SFZ 文件路径。
@@ -1690,7 +1729,9 @@ impl CliError {
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
             Self::Open { .. } | Self::ImportMidi { .. } | Self::Sfz { .. } => EXIT_OPEN,
+            Self::Usage(_) => EXIT_USAGE,
             Self::Save { .. } => EXIT_SAVE,
+            Self::Record { .. } => EXIT_EXPORT,
             Self::Export { .. }
             | Self::ExportMidi { .. }
             | Self::ExportWav { .. }
@@ -1718,6 +1759,10 @@ impl fmt::Display for CliError {
                 "导出元素清单到 `{}` 失败: {source}",
                 path.display()
             ),
+            Self::Record { path, source } => {
+                write!(formatter, "录音到 `{}` 失败: {source}", path.display())
+            }
+            Self::Usage(reason) => write!(formatter, "用法错误: {reason}"),
             Self::Sfz { path, source } => {
                 write!(formatter, "装载 SFZ `{}` 失败: {source}", path.display())
             }
@@ -1788,13 +1833,15 @@ impl std::error::Error for CliError {
             Self::Open { source, .. } => Some(source),
             Self::ImportMidi { source, .. } => Some(source),
             Self::Sfz { source, .. } => Some(source),
+            Self::Record { source, .. } => Some(source),
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
             Self::ExportWav { source, .. } => Some(source),
             Self::ExportAls { source, .. } => Some(source),
             Self::ExportLogic { source, .. } => Some(source),
-            Self::Ui { .. }
+            Self::Usage(_)
+            | Self::Ui { .. }
             | Self::HeadlessIdleNotBatch
             | Self::UiMcpHttpNotBatch
             | Self::McpHttpNotBatch
@@ -2470,6 +2517,27 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         lines.extend(view_report(view));
     }
     lines.push(HEADLESS_BOUNDARY.to_owned());
+
+    // 录音：把一段测试音录成 WAV（三段见 `record_wav.rs`）。它只写**目标文件**，不改工程。
+    if let Some(path) = options.record_wav.as_ref() {
+        let mut record_options = crate::record_wav::RecordOptions::default();
+        if let Some(seconds) = options.record_seconds {
+            record_options.seconds = seconds;
+        }
+        let report =
+            crate::record_wav::record_test_tone(path, &record_options).map_err(|source| {
+                CliError::Record {
+                    path: path.clone(),
+                    source,
+                }
+            })?;
+        lines.push(report.summary());
+    }
+    if options.record_seconds.is_some() && options.record_wav.is_none() {
+        return Err(CliError::Usage(
+            "`--record-seconds` 必须与 `--record-wav` 一起给".to_owned(),
+        ));
+    }
 
     // SFZ 装载 ＋ 音符探测：**只读**（不改工程、不写文件），所以它只影响输出行。
     // ⚠ 诚实登记：SFZ 音色**尚未**接进导出音源链（报告行 `wired_to_export=no`）。
@@ -4362,6 +4430,72 @@ mod tests {
         (74, 1920),
         (76, 2400),
     ];
+
+    /// `--record-wav`：录一段测试音 ⇒ 输出行报 `frames`／`dropped`／`source`，文件可回读且非静音。
+    #[test]
+    fn record_wav_writes_a_readable_take_and_says_where_the_samples_came_from() {
+        let dir = scratch_dir("record-wav");
+        let target = dir.join("take.wav");
+        let lines = run_batch(
+            &parse(&[
+                "--record-wav".to_owned(),
+                target.display().to_string(),
+                "--record-seconds".to_owned(),
+                "0.5".to_owned(),
+            ])
+            .expect("解析"),
+        )
+        .expect("录音必须成功");
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("recorded-wav:"))
+            .expect("必须有 recorded-wav 报告行");
+        assert!(
+            line.contains("frames=24000"),
+            "0.5 秒 @48kHz = 24000 帧: {line}"
+        );
+        assert!(line.contains("dropped=0"), "默认环足够大 ⇒ 不丢弃: {line}");
+        assert!(
+            line.contains("source=in-memory-sine(440Hz)"),
+            "必须如实说明样本来源（⛔ 不是声卡）: {line}"
+        );
+        let (format, buffer) = yeban_render::wav::read_plain_wav(&target).expect("可回读");
+        let frames = u64::try_from(buffer.len() / usize::from(format.channels)).expect("帧数");
+        assert_eq!(frames, 24_000);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `--record-seconds` 单独给 ⇒ **用法错误**（⛔ 不静默忽略）。
+    #[test]
+    fn record_seconds_without_record_wav_is_a_usage_error() {
+        let error =
+            run_batch(&parse(&["--record-seconds".to_owned(), "3".to_owned()]).expect("解析"))
+                .expect_err("单独给 --record-seconds 必须报用法错误");
+        assert_eq!(error.exit_code(), EXIT_USAGE);
+    }
+
+    /// `--record-wav` 的**拒绝不留半成品**：目标是目录 ⇒ 失败且不新增文件。
+    #[test]
+    fn record_wav_refuses_an_unwritable_target_without_a_half_file() {
+        let dir = scratch_dir("record-bad");
+        let target = dir.join("a-directory.wav");
+        std::fs::create_dir_all(&target).expect("建目录");
+        let error = run_batch(
+            &parse(&["--record-wav".to_owned(), target.display().to_string()]).expect("解析"),
+        )
+        .expect_err("目录不可作为目标");
+        assert!(
+            error.to_string().contains("录音"),
+            "必须转达录音层裁决: {error}"
+        );
+        let entries: Vec<String> = std::fs::read_dir(&dir)
+            .expect("列目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["a-directory.wav".to_owned()], "⛔ 不留半成品");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// `--sfz`：装载一份最小 SFZ ⇒ 报告里的区域数与文件内容一致，且输出行**如实**说明
     /// 样本来源与"尚未接到导出"。
