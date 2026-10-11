@@ -401,11 +401,12 @@ impl ElementRegistry {
             false,
         );
 
-        // ------------------------------------------------- 四个**模块入口**（本票）
+        // ------------------------------------------------- **模块入口**（五个）
         //
         // 它们住在右栏的下半区（`ui/module_actions.slint` 的 `ModuleActions`，由
-        // `app.slint` 的 `AiRail` 实例化在 y=212..384 —— 既有三条控件止于 y=204，
-        // 因此本票**没有**移动任何既有控件）。
+        // `app.slint` 的 `AiRail` 实例化 —— 既有三条控件止于 y=204，
+        // 因此这些入口**没有**移动任何**更早**的控件；第五条（硬件 MIDI 输入）追加在
+        // 四个入口之后，只把两条**空文本**状态行往下让位（空 Text 不产像素）。
         //
         // 标签必须与 `.slint` 的 `accessible-label` **逐字相同**：`test_port_adapter`
         // 的运行时树对账会断言 label 相等。四条回调的宿主实现全在
@@ -430,6 +431,13 @@ impl ElementRegistry {
                 "module-record-wav-button",
                 "录音（把控制侧测试音录成 24-bit WAV）",
             ),
+            // ⭐ 第五条：**硬件** MIDI 输入（`crate::midi_in::capture`）。
+            // ⚠ 它与 `module-import-midi-button` 不是同一件事：那条读**文件**（SMF），
+            // 这条读**物理端口**（`[ADR-0006]`）。
+            (
+                "module-midi-in-button",
+                "硬件 MIDI 输入（打开一个物理端口并采集事件与抖动）",
+            ),
         ] {
             registry.add(
                 id,
@@ -443,8 +451,18 @@ impl ElementRegistry {
             "module-actions-title",
             ElementKind::Text,
             "module_actions.slint",
-            "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音",
+            "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入",
             false,
+        );
+        // ⭐ 硬件 MIDI 输入的**专属**结果行（与 `module-last-status` 是同一串字节、
+        // 同一个写者 ⇒ 两个可寻址的显示位，不是一个第二真相源）。
+        // ⚠ 动态区：每次按下都变 ⇒ 截图遮罩要按它的包围盒置黑。
+        registry.add(
+            "module-midi-in-status",
+            ElementKind::Text,
+            "module_actions.slint",
+            "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 抖动 / 错误码）",
+            true,
         );
         registry.add(
             "module-last-status",

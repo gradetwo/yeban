@@ -14,6 +14,7 @@
 //! | ①（可寻址） | 四个入口按钮 + 小节标题 + 状态行共 6 个语义 ID 都**在运行时控件树里**，角色符合登记；初始回执是**空**（不是一个编造的读数） |
 //! | ②（状态按预期变） | 按下入口 ⇒ `MainWindow.module-status` 变成结构化回执，字段（路径 / 帧数 / 采样率 / 区域数 / 来源 / `origin=midi-input`）逐条对上；目标文件真的落盘、字节数与回执一致 |
 //! | ③（错误路径不 panic） | SFZ 源不存在 ⇒ 回执是 `outcome=error` + 稳定错误码，进程**不** panic，**不留半成品** |
+//! | ④（**硬件 MIDI 输入**，第五条入口） | 默认档 ⇒ 回执点名 `feature-disabled` 且措辞里带 `cargo build … --features midi-input`；`midi-input` 档 ⇒ 回执**结构化**（`ok` 或非 `feature-disabled` 的错误码）、进程**不** panic。⭐ 同一份判据在**两条 CI 腿**上各跑一次（`test` 与 `test (midi-input 特性)`）|
 //!
 //! ## 判据 ② 的核心断言：装载过的 SFZ 真的改变了导出的音源
 //!
@@ -263,6 +264,11 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         std::env::set_var("YEBAN_UI_LOAD_SFZ_PATH", &sfz);
         std::env::set_var("YEBAN_UI_RECORD_WAV_PATH", &record);
         std::env::set_var("YEBAN_UI_RECORD_SECONDS", "1.0");
+        // ⭐ 硬件 MIDI 输入：端口 `0`；⭐ 秒数取一个**很小**的值 —— 有端口的机器上
+        // 采集也立刻返回（CI 无端口 ⇒ 根本进不了采集循环）。⚠ 上下限仍由
+        // `midi_in::capture` 判（⛔ 判据不绕过那条规则）。
+        std::env::set_var("YEBAN_UI_MIDI_IN_PORT", "0");
+        std::env::set_var("YEBAN_UI_MIDI_IN_SECONDS", "0.05");
     }
 
     let options = LiveWiringOptions {
@@ -304,6 +310,8 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         "module-load-sfz-button",
         "module-record-wav-button",
         "module-last-status",
+        "module-midi-in-button",
+        "module-midi-in-status",
     ] {
         // 静态注册表（`elements.rs`）与运行时树**两侧**都要有：前者 = "登记了"，
         // 后者 = "真的画出来了"。只查一侧都会漏掉一半缺陷。
@@ -317,13 +325,14 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         "module-import-midi-button",
         "module-load-sfz-button",
         "module-record-wav-button",
+        "module-midi-in-button",
     ] {
         assert_addressable(&runtime_tree, id, ElementKind::Button);
     }
     // 把这次寻址的**实测读数**打出来（`--nocapture` / CI 日志里能看到具体是哪几个节点，
     // ⛔ 不是只留一个"断言通过"）：运行时树规模 + 6 个 ID 的角色/标签/包围盒。
     report_line(&format!(
-        "[ui-modules] 运行时控件树 {} 条；新入口 6 条如下:",
+        "[ui-modules] 运行时控件树 {} 条；新入口 8 条如下:",
         runtime_tree.len()
     ));
     for id in [
@@ -333,6 +342,8 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         "module-load-sfz-button",
         "module-record-wav-button",
         "module-last-status",
+        "module-midi-in-button",
+        "module-midi-in-status",
     ] {
         let node = runtime_tree.find_by_id(id).expect("上面刚断言过");
         report_line(&format!(
@@ -344,6 +355,7 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     }
     assert_addressable(&runtime_tree, "module-actions-title", ElementKind::Text);
     assert_addressable(&runtime_tree, "module-last-status", ElementKind::Text);
+    assert_addressable(&runtime_tree, "module-midi-in-status", ElementKind::Text);
 
     // 初始态 = **空回执**（"本次会话还没按过任何模块入口"），不是编造的读数。
     assert_eq!(
@@ -352,6 +364,12 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         "刚装配的状态行必须是空的 —— 任何非空值都意味着宿主在没人按之前就写了回执"
     );
     assert!(!ui.get_module_status_succeeded());
+    assert_eq!(
+        ui.get_module_midi_in_status(),
+        "",
+        "硬件 MIDI 输入的专属结果行初始也必须是空的"
+    );
+    assert!(!ui.get_module_midi_in_status_succeeded());
 
     // =====================================================================
     // 判据 ②：触发入口 ⇒ UI 状态/输出文本按预期变化
@@ -509,6 +527,81 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     );
 
     // =====================================================================
+    // 判据 ④：**硬件 MIDI 输入**（第五条入口）
+    // =====================================================================
+    //
+    // ⭐ 这条判据在**两条 CI 腿**上各跑一次（`test` 与 `test (midi-input 特性)`），
+    // 用 `cfg!` 分别要求各自的形态 ⇒ 两个 feature 档都有**自己的**判据，
+    // ⛔ 不会出现"特征门把判据藏起来"（默认档也必须给出**结构化**说法）。
+    ui.invoke_midi_in();
+    let receipt = ui.get_module_status().to_string();
+    let midi_receipt = ui.get_module_midi_in_status().to_string();
+    assert_eq!(
+        midi_receipt, receipt,
+        "两条状态行必须是**同一串字节**（同一个写者写一次、写两处）"
+    );
+    assert_eq!(field_of(&receipt, "action"), "midi-in", "{receipt}");
+    assert_eq!(
+        ui.get_module_midi_in_status_succeeded(),
+        ui.get_module_status_succeeded(),
+        "两条状态行的成功位也必须一致"
+    );
+    if cfg!(feature = "midi-input") {
+        // ⭐ 开档：⭐ 端口解析 / 宿主可用性由 `midi_in` 决定 ⇒ 这里只要求
+        // "结构化 + 不是那个 feature 的说法 + 码在闭集里"。
+        // ⚠ 有端口的机器上允许 `ok`（真采集到事件）⇒ 判据不对硬件做假设。
+        let outcome = field_of(&receipt, "outcome");
+        assert!(
+            outcome == "ok" || outcome == "error",
+            "开档也必须给出结构化结果: {receipt}"
+        );
+        if outcome == "error" {
+            let code = field_of(&receipt, "error");
+            assert_ne!(
+                code, "feature-disabled",
+                "⭐ `midi-input` 档**不该**报 feature 未启用（那说明 cfg 接线反了）: {receipt}"
+            );
+            assert!(
+                [
+                    "midi-invalid-seconds",
+                    "midi-port-not-found",
+                    "midi-ambiguous-port",
+                    "midi-host-unavailable",
+                    "midi-connect-failed",
+                ]
+                .contains(&code.as_str()),
+                "错误码必须在闭集里（⛔ 不是「未知操作」）: {receipt}"
+            );
+            // ⭐ 无端口时**必须列出端口清单**（空清单也要说出来）—— CI 就是这一形态。
+            if code == "midi-port-not-found" {
+                let message = field_of(&receipt, "message");
+                assert!(
+                    message.contains("没有匹配") && message.contains("MIDI 输入端口"),
+                    "无端口时必须给出「无端口 + 端口清单」的结构化说法: {receipt}"
+                );
+            }
+        }
+    } else {
+        // ⭐ 默认档（`midi-input` 关）：⭐ 必须点名 feature ＋ **一句怎么开**，
+        // ⛔ 不许退化成"未知操作"。
+        assert!(
+            !ui.get_module_status_succeeded(),
+            "默认档下这个入口**不该**报成功: {receipt}"
+        );
+        assert_eq!(field_of(&receipt, "outcome"), "error", "{receipt}");
+        assert_eq!(
+            field_of(&receipt, "error"),
+            "feature-disabled",
+            "默认档必须给出**结构化**的 feature 说法: {receipt}"
+        );
+        let message = field_of(&receipt, "message");
+        assert!(
+            message.contains("midi-input") && message.contains("--features midi-input"),
+            "默认档的措辞必须点名 feature 并给出**怎么开**: {message}"
+        );
+    }
+
+    // =====================================================================
     // 判据 ③：错误路径 ⇒ UI 显示结构化错误而 **不 panic**
     // =====================================================================
     // SFZ 源**不存在**：走**同一个**活窗口，换一条不存在的来源
@@ -523,6 +616,8 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
             load_sfz: missing.clone(),
             record_wav: scratch.join("never-recorded.wav"),
             record_seconds: 1.0,
+            midi_in_port: "0".to_owned(),
+            midi_in_seconds: 0.05,
         },
     );
     ui.invoke_load_sfz();
@@ -567,6 +662,8 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
             "YEBAN_UI_LOAD_SFZ_PATH",
             "YEBAN_UI_RECORD_WAV_PATH",
             "YEBAN_UI_RECORD_SECONDS",
+            "YEBAN_UI_MIDI_IN_PORT",
+            "YEBAN_UI_MIDI_IN_SECONDS",
         ] {
             std::env::remove_var(key);
         }

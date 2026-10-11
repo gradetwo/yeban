@@ -46,7 +46,7 @@ import { ArrangementView } from "workspace/arrangement_view.slint";
 import { ConsoleTabs } from "console/console_tabs.slint";
 import { MusicalPrDrawer } from "dialogs/musical_pr_drawer.slint";
 import { UndoTreeModal } from "dialogs/undo_tree_modal.slint";
-// 四个**模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。
+// 五个**模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入）。
 // 它们住在右栏的下半区（`AiRail` 的 `ModuleActions` 实例），因此**不改**任何既有
 // 几何：顶栏 48 / 中段 / 4px splitter / 底部控制台 / 24px 状态栏一位未动，
 // 基准图上只有这一块新像素（见本票的 golden 影响登记）。
@@ -58,17 +58,23 @@ component AiRail inherits Rectangle {
     callback open-musical-pr();
     callback run-acoustic-diagnosis();
     callback export-diagnostics();
-    // ---- 四个**模块入口**（本票）------------------------------------------
+    // ---- 模块入口（本票起五条）--------------------------------------------
     // 与上面三条同款：`AiRail` 只**转发**，动作的语义、目标路径与回执全在宿主
     // （`src/host.rs` 的 `wire_module_actions`）。界面不写盘、不猜路径、不存状态。
     callback export-wav();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
-    // 模块入口的两条**只读**注入面（唯一写者 = `host::wire_module_actions`）。
+    // ⭐ 第五条：**硬件** MIDI 输入（`crate::midi_in::capture`，与 CLI `--midi-in` 同一个函数）。
+    // 它与 `import-midi` **不是**同一件事：那条读的是**文件**（SMF），这条读的是**物理端口**。
+    callback midi-in();
+    // 模块入口的**只读**注入面（唯一写者 = `host::wire_module_actions`）。
     // `status` 的默认值是空串 = "本次会话还没按过任何模块入口"，不是一个编造的读数。
     in property <string> module-status: "";
     in property <bool> module-status-succeeded: false;
+    // MIDI 输入的**专属**结果行（同一串字节、同一个写者 ⇒ ⛔ 不是第二个真相源）。
+    in property <string> module-midi-in-status: "";
+    in property <bool> module-midi-in-status-succeeded: false;
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -234,11 +240,14 @@ component AiRail inherits Rectangle {
 
         status: root.module-status;
         status-succeeded: root.module-status-succeeded;
+        midi-in-status: root.module-midi-in-status;
+        midi-in-status-succeeded: root.module-midi-in-status-succeeded;
 
         export-wav => { root.export-wav(); }
         import-midi => { root.import-midi(); }
         load-sfz => { root.load-sfz(); }
         record-wav => { root.record-wav(); }
+        midi-in => { root.midi-in(); }
     }
 }
 
@@ -316,7 +325,7 @@ export component MainWindow inherits Window {
     // 最近一次保存是否成功（`.slint` 用它选颜色；读数是宿主的，不是界面算的）。
     in-out property <bool> save-succeeded: false;
     // =====================================================================
-    // 四个**模块入口**的宿主回执（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）
+    // 五个**模块入口**的宿主回执（导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入）
     // =====================================================================
     // 唯一写者 = `src/host.rs` 的 `wire_module_actions`。它是**成功与失败都在**的
     // 一行结构化回执：形如
@@ -328,17 +337,28 @@ export component MainWindow inherits Window {
     // 默认空串 = "本次会话还没按过任何模块入口"，**不是**一个编造的读数。
     in-out property <string> module-status: "";
     in-out property <bool> module-status-succeeded: false;
-    // 四条入口回调（事件源 = `ui/module_actions.slint` 的四个 `TouchArea`）。
-    // 宿主 `host::wire_module_actions` 把它们落到**已经存在的**四个模块实现上：
-    //   导出 WAV  → `crate::export_wav::export_wav_with_sfz_file`
-    //   导入 MIDI → `crate::import_midi::import_midi_file`（经 `UndoPort`，来源 `MidiInput`）
-    //   装载 SFZ  → `crate::sfz_load::load_sfz_with_instrument`
-    //   录音      → `crate::record_wav::record_test_tone`
+    // ⭐ **硬件 MIDI 输入**的专属结果行（`ui/module_actions.slint` 的
+    // `module-midi-in-status`）。⭐ 与上面那条**同一串字节、同一个写者**
+    // （`host::wire_module_actions` 的 `midi-in` 分支只写一次、写两处）
+    // ⇒ ⛔ 不是第二个真相源；分成两格只是为了让"最近一次动作"与"这次采集的读数"
+    // 各自能被语义 ID 寻址（`[UI-TEST-001]`）。
+    // 默认空串 = "还没按过这个入口"，**不是**一个编造的读数。
+    in-out property <string> module-midi-in-status: "";
+    in-out property <bool> module-midi-in-status-succeeded: false;
+    // 五条入口回调（事件源 = `ui/module_actions.slint` 的五个 `TouchArea`）。
+    // 宿主 `host::wire_module_actions` 把它们落到**已经存在的**五个模块实现上：
+    //   导出 WAV    → `crate::export_wav::export_wav_with_sfz_file`
+    //   导入 MIDI   → `crate::import_midi::import_midi_file`（经 `UndoPort`，来源 `MidiInput`）
+    //   装载 SFZ    → `crate::sfz_load::load_sfz_with_instrument`
+    //   录音        → `crate::record_wav::record_test_tone`
+    //   硬件 MIDI 入 → `crate::midi_in::capture`（与 CLI `--midi-in` **同一个**函数）
+    // ⚠ `import-midi` 读的是**文件**（SMF）；`midi-in` 读的是**物理端口** ⇒ 两条不是一件事。
     // ⛔ 界面不写盘、不猜路径、不自己判断成功与否（那是第二个真相源）。
     callback export-wav();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
+    callback midi-in();
     // 状态栏「选区信息」那一格的**整串文本**（台账 R9）。
     //
     // 写者**只有一处**：`host::apply_view` 末尾的 `host::publish_status_bar`。
@@ -791,10 +811,13 @@ export component MainWindow inherits Window {
                 // 两条注入属性由宿主单向写入（唯一写者 = `host::wire_module_actions`）。
                 module-status: root.module-status;
                 module-status-succeeded: root.module-status-succeeded;
+                module-midi-in-status: root.module-midi-in-status;
+                module-midi-in-status-succeeded: root.module-midi-in-status-succeeded;
                 export-wav => { root.export-wav(); }
                 import-midi => { root.import-midi(); }
                 load-sfz => { root.load-sfz(); }
                 record-wav => { root.record-wav(); }
+                midi-in => { root.midi-in(); }
             }
         }
 

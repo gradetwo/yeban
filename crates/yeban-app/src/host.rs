@@ -2394,6 +2394,11 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// `YEBAN_UI_LOAD_SFZ_PATH` / `YEBAN_UI_RECORD_WAV_PATH`，秒数用
 /// `YEBAN_UI_RECORD_SECONDS`（默认 8.0 —— 与 CLI 的 `--export-wav` 默认 8 秒同档）。
 ///
+/// ⭐ **硬件 MIDI 输入**（第五条入口）另有两个：`YEBAN_UI_MIDI_IN_PORT`（默认 `"0"`，
+/// 取值口径与 CLI 的 `--midi-in` **逐字相同**）与 `YEBAN_UI_MIDI_IN_SECONDS`
+/// （缺省 = `crate::midi_in::DEFAULT_SECONDS`；上下限仍由 `midi_in::capture` 判定）。
+/// ⚠ 这一条**没有**路径参数 —— 它读的是**物理端口**，不是文件。
+///
 /// 缺省值落在**当前工作目录**下（`ui-export.wav` / `ui-import.mid` / `ui-instrument.sfz` /
 /// `ui-record.wav`），⛔ **不**落到系统临时目录：后者的路径里带随机分量，会让回执行
 /// 不可复现，而"回执里的路径"正是判据要断言的东西。
@@ -2412,6 +2417,13 @@ pub struct ModulePaths {
     pub record_wav: std::path::PathBuf,
     /// `录音` 的秒数（`record_wav::RecordOptions::seconds`）。
     pub record_seconds: f32,
+    /// ⭐ `硬件 MIDI 输入` 的目标端口（`midi_in::capture` 的第一个参数）。
+    ///
+    /// 取值口径与 CLI 的 `--midi-in` **逐字相同**（由 `midi_in::resolve_port` 判定）：
+    /// 全十进制 ⇒ 端口序号；否则 ⇒ 端口名的**大小写敏感**子串。
+    pub midi_in_port: String,
+    /// ⭐ `硬件 MIDI 输入` 的采集时长（秒；`midi_in::capture` 的第二个参数）。
+    pub midi_in_seconds: f32,
 }
 
 impl Default for ModulePaths {
@@ -2422,6 +2434,11 @@ impl Default for ModulePaths {
             load_sfz: std::path::PathBuf::from("ui-instrument.sfz"),
             record_wav: std::path::PathBuf::from("ui-record.wav"),
             record_seconds: 8.0,
+            // ⭐ 缺省 = 端口序号 `0`。⚠ 一个端口都没有时 `capture` 会给出
+            // `PortNotFound` 并**列出可用端口**（空清单也会说出来）—— 这正是 CI 的形态。
+            midi_in_port: "0".to_owned(),
+            // ⭐ 与 CLI 的 `--midi-in` 缺省**同一个常量**（⛔ 不另写一个数）。
+            midi_in_seconds: crate::midi_in::DEFAULT_SECONDS,
         }
     }
 }
@@ -2441,17 +2458,29 @@ impl ModulePaths {
                 .filter(|value| !value.is_empty())
                 .map(std::path::PathBuf::from)
         };
-        let record_seconds = std::env::var("YEBAN_UI_RECORD_SECONDS")
-            .ok()
-            .and_then(|value| value.parse::<f32>().ok())
-            .filter(|value| *value > 0.0)
-            .unwrap_or(defaults.record_seconds);
+        let seconds_from = |name: &str, fallback: f32| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok())
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(fallback)
+        };
+        let record_seconds = seconds_from("YEBAN_UI_RECORD_SECONDS", defaults.record_seconds);
+        // ⚠ MIDI 的上下限仍由 `midi_in::capture` 自己校验（⛔ 这里不复制那份规则）：
+        // 本函数只做"读环境变量 / 给缺省值"，超出 `MAX_SECONDS` 的值会让那条路
+        // 如实返回 `InvalidSeconds`（⭐ 与 CLI 完全同一条判定）。
+        let midi_in_seconds = seconds_from("YEBAN_UI_MIDI_IN_SECONDS", defaults.midi_in_seconds);
         Self {
             export_wav: read("YEBAN_UI_EXPORT_WAV_PATH").unwrap_or(defaults.export_wav),
             import_midi: read("YEBAN_UI_IMPORT_MIDI_PATH").unwrap_or(defaults.import_midi),
             load_sfz: read("YEBAN_UI_LOAD_SFZ_PATH").unwrap_or(defaults.load_sfz),
             record_wav: read("YEBAN_UI_RECORD_WAV_PATH").unwrap_or(defaults.record_wav),
             record_seconds,
+            midi_in_port: std::env::var("YEBAN_UI_MIDI_IN_PORT")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(defaults.midi_in_port),
+            midi_in_seconds,
         }
     }
 }
@@ -2796,6 +2825,79 @@ pub fn wire_module_actions_with(ui: &MainWindow, port: Option<Rc<UndoPort>>, pat
             apply_module_receipt(&ui, &receipt, ok);
             module_trace("record-wav", started, &receipt);
         });
+    }
+
+    // ------------------------------------------------------- 硬件 MIDI 输入
+    {
+        let weak = ui.as_weak();
+        let wanted = paths.midi_in_port.clone();
+        let seconds = paths.midi_in_seconds;
+        ui.on_midi_in(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let (receipt, ok) = match crate::midi_in::capture(&wanted, seconds) {
+                Ok(report) => (
+                    module_receipt(
+                        "midi-in",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!("port={wanted}"),
+                            format!("seconds={}", report.seconds),
+                            format!("events={}", report.events),
+                            format!("unsupported={}", report.unsupported),
+                            format!(
+                                "jitter={}",
+                                report.jitter.map_or_else(
+                                    || "n=0".to_owned(),
+                                    |reading| format!(
+                                        "n={}:p50={}:p99={}:max={}",
+                                        reading.n, reading.p50, reading.p99, reading.max
+                                    )
+                                )
+                            ),
+                            format!("first={}", report.first_events.len()),
+                        ],
+                    ),
+                    true,
+                ),
+                Err(error) => (
+                    module_receipt(
+                        "midi-in",
+                        &module_error_fields(midi_in_error_code(&error), &error.to_string()),
+                    ),
+                    false,
+                ),
+            };
+            // ⭐ 两条状态行写的是**同一串字节**（不是两次独立计算）⇒ 不可能分叉。
+            ui.set_module_midi_in_status(receipt.clone().into());
+            ui.set_module_midi_in_status_succeeded(ok);
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("midi-in", started, &receipt);
+        });
+    }
+}
+
+/// ⭐ **稳定错误码**：把 [`crate::midi_in::MidiInError`] 的六个变体映成一个可断言的码。
+///
+/// 为什么需要它（而不是只留 `Display` 的原文）：回执的 `message="…"` 是**人话**、会随措辞
+/// 变化；判据（与未来的调用面）要的是**稳定**的判别式。⛔ 这里不复制任何判定逻辑 ——
+/// 端口解析 / 秒数校验 / 宿主可用性**全部**由 `midi_in` 那条路决定，本函数只做**分类**。
+///
+/// ⚠ 本函数**不改** `midi_in.rs`：它是对既有公开枚举的一次 `match`（那个文件正在
+/// 另一条线上被改，本票按纪律不碰它）。
+fn midi_in_error_code(error: &crate::midi_in::MidiInError) -> &'static str {
+    use crate::midi_in::MidiInError;
+    match error {
+        // ⭐ 默认档（feature 关）走这条：⭐ 措辞由 `Display` 给出（点名 feature + 怎么开）。
+        MidiInError::FeatureDisabled => "feature-disabled",
+        MidiInError::InvalidSeconds { .. } => "midi-invalid-seconds",
+        MidiInError::PortNotFound { .. } => "midi-port-not-found",
+        MidiInError::AmbiguousPort { .. } => "midi-ambiguous-port",
+        MidiInError::HostUnavailable(_) => "midi-host-unavailable",
+        MidiInError::ConnectFailed { .. } => "midi-connect-failed",
     }
 }
 

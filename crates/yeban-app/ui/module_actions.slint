@@ -32,18 +32,31 @@ export component ModuleActions inherits Rectangle {
     in property <string> status: "";
     // 最近一次模块动作是否成功（`.slint` 用它选颜色；读数是宿主的，不是界面算的）。
     in property <bool> status-succeeded: false;
+    // ⭐ **硬件 MIDI 输入**（`--midi-in` 的界面入口）的**专属**结果行。
+    //
+    // 为什么另起一条而不是复用上面那条：MIDI 输入的读数比别的入口长得多
+    // （端口 / 事件数 / `unsupported` / 抖动 p50·p99·max / 前几条事件），而上面那条
+    // 是"最近一次动作"的**通用**回执 ⇒ 两条各自可寻址、各自可断言（`[UI-TEST-001]`）。
+    // ⚠ 两条写的是**同一串字节**（唯一写者 = `host::wire_module_actions` 的同一个分支）
+    // ⇒ ⛔ 不是第二个真相源。
+    in property <string> midi-in-status: "";
+    in property <bool> midi-in-status-succeeded: false;
 
-    // 四个入口各一条回调。**都不带参数**：目标路径由宿主解析
-    // （`YEBAN_UI_<动作>_PATH`，缺省在工作目录下），界面不猜路径、也不弹文件对话框
-    // —— 原生文件对话框是**另一票**（需要新的 platform 侧能力，见本票的 needs 登记）。
+    // 五个入口各一条回调。**都不带参数**：目标路径 / 端口由宿主解析
+    // （`YEBAN_UI_<动作>_PATH`、`YEBAN_UI_MIDI_IN_PORT`，缺省在工作目录 / 端口 `0`），
+    // 界面不猜路径也不弹文件对话框 —— 原生文件对话框是**另一票**（见 notes 的 needs 登记）。
     callback export-wav();
     callback import-midi();
     callback load-sfz();
     callback record-wav();
+    // ⭐ 硬件 MIDI 输入：⭐ 采集 `YEBAN_UI_MIDI_IN_SECONDS` 秒（默认
+    // `midi_in::DEFAULT_SECONDS`）。⚠ 默认档（`midi-input` 关）下按下它会得到
+    // **结构化**的"本构建未启用该 feature"（⭐ 措辞来自 `MidiInError` 的 `Display`）。
+    callback midi-in();
 
-    // 几何：四行 28px 高、行距 32px（`y` = 236 / 268 / 300 / 332），按钮宽 = 面板宽 - 2 * space-4。
-    // 四个 `y` 是**常量**而不是算术：`app.slint` 的既有纪律是"组件内部一律绝对定位"，
-    // 且这四个入口的包围盒要能被元素树稳定读到（判据不读像素，只读 ID 与文本）。
+    // 几何：五行 28px 高、行距 32px（`y` = 236 / 268 / 300 / 332 / 364），按钮宽 = 面板宽 - 2 * space-4。
+    // 五个 `y` 是**常量**而不是算术：`app.slint` 的既有纪律是"组件内部一律绝对定位"，
+    // 且这五个入口的包围盒要能被元素树稳定读到（判据不读像素，只读 ID 与文本）。
 
     background: transparent;
 
@@ -57,7 +70,7 @@ export component ModuleActions inherits Rectangle {
         color: Tokens.gold;
         font-size: Tokens.font-size-sm;
         accessible-id: "module-actions-title";
-        accessible-label: "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音";
+        accessible-label: "模块入口：导出 WAV / 导入 MIDI / 装载 SFZ / 录音 / 硬件 MIDI 输入";
     }
 
     // ------------------------------------------------------------- 导出 WAV
@@ -190,13 +203,66 @@ export component ModuleActions inherits Rectangle {
         }
     }
 
+    // --------------------------------------------------------- 硬件 MIDI 输入
+    // 落点是 `crate::midi_in::capture`（与 CLI 的 `--midi-in` 是**同一个**函数，⛔ 不另写一套）。
+    // ⚠ 默认档（`midi-input` 关）下它**照样可点**，给出的是**结构化**的
+    // "本构建未启用 `midi-input` feature ⇒ … `cargo build -p yeban-app --features midi-input`"
+    // —— ⛔ 不是"未知操作"、⛔ 不是 panic。
+    // ⚠ 昂贵动作：采集期间它在 **UI 线程**上同步跑（默认 3 秒）⇒ 那几秒事件循环被占住。
+    // 这是**如实登记**的代价（异步化是另一票）。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 364px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 28px;
+        background: Tokens.bg-panel-alt;
+        border-radius: Tokens.radius-md;
+        accessible-role: button;
+        accessible-id: "module-midi-in-button";
+        accessible-label: "硬件 MIDI 输入（打开一个物理端口并采集事件与抖动）";
+        accessible-action-default => { root.midi-in(); }
+
+        UiText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 12px;
+            height: parent.height;
+            text: "MIDI 输入（硬件）";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.midi-in(); }
+        }
+    }
+
+    // ------------------------------------------------- MIDI 输入的**专属**结果行
+    // 读数是宿主写的 `root.midi-in-status`（与上面那条通用回执是**同一串字节**）。
+    UiText {
+        x: Tokens.space-4;
+        y: 400px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 16px;
+        text: root.midi-in-status;
+        color: root.midi-in-status-succeeded ? Tokens.ink-2 : Tokens.record-red;
+        font-size: Tokens.font-size-xs;
+        overflow: elide;
+        accessible-id: "module-midi-in-status";
+        // ⚠ 标签**静态**（与 `module-last-status` 同款理由：`[TEST-SPEC-005]` 要求
+        // 可见且可寻址的节点必须有非空无障碍名，而默认是空串）。
+        accessible-label: "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 抖动 / 错误码）";
+    }
+
     // ------------------------------------------------------------- 回执行
     // 回执（路径 / 帧数 / 区域数 / 来源 / 结构化错误码）**必须留在界面上**：
     // 本仓库最忌讳"动作失败了而用户以为成功"。可见 `text` 取的就是宿主写的
     // `root.status` ⇒ 人眼与判据（读 `MainWindow.module-status`）看到的是同一串字节。
     UiText {
         x: Tokens.space-4;
-        y: 368px;
+        y: 424px;
         width: parent.width - 2 * Tokens.space-4;
         height: 16px;
         text: root.status;
