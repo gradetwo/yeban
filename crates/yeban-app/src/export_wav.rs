@@ -329,8 +329,7 @@ pub fn export_wav(
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
         .collect();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    let source_label: &'static str;
-    if options.use_engine_source {
+    let source_label: &'static str = if options.use_engine_source {
         let snapshot = EngineSnapshot::from_project(project, 1)
             .map_err(|error| WavExportError::Engine(error.to_string()))?;
         for track_id in renderable.clone() {
@@ -339,7 +338,7 @@ pub fn export_wav(
                 Box::new(EngineTrackSource::new(&snapshot, track_id)?),
             );
         }
-        source_label = "引擎乐器（SynthEngine::arm_from_snapshot + render_track）";
+        "引擎乐器（SynthEngine::arm_from_snapshot + render_track）"
     } else {
         for track_id in renderable.clone() {
             sources.insert(
@@ -351,8 +350,8 @@ pub fn export_wav(
                 )),
             );
         }
-        source_label = "最小音源（方波 + 首尾包络；回退）";
-    }
+        "最小音源（方波 + 首尾包络；回退）"
+    };
 
     // ---- 3. 执行（全部在内存里）----
     let output = plan
