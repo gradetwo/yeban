@@ -41,6 +41,9 @@
 //! `rust (yeban-app)` / `ui-mcp` 腿为准。
 
 #[path = "../src/live_surface.rs"]
+// 本判据只用到 `live_surface.rs` 的一部分（与 `live_ui_mcp.rs` 的全量用法不同）⇒ 其余项
+// 在本测试目标里是 dead_code，而 `-D warnings` 会把它判红（本机 clippy 实测）。
+#[allow(dead_code)]
 mod live;
 
 use live::{LiveControlPlane, build_live_ui};
@@ -198,8 +201,7 @@ fn the_drag_reports_exactly_the_delta_sum_in_both_directions() {
         let magnitude = delta.abs();
         assert!(
             magnitude < 0.5 || (magnitude - 40.0).abs() < 0.5,
-            "{label} 拖 40px 的偏移变化只能是 0（被 0 下限夹住）或 ±40；实际 {delta} \
-             —— ⛔ ±80 表示 Slint 增量与宿主偏移被双重计数"
+            "{label} 拖 40px 的偏移变化只能是 0（被 0 下限夹住）或 ±40；实际 {delta} —— ⛔ ±80 表示 Slint 增量与宿主偏移被双重计数"
         );
     }
     assert!(
@@ -232,7 +234,7 @@ fn the_drag_reports_exactly_the_delta_sum_in_both_directions() {
         let magnitude = step.abs();
         assert!(
             magnitude < 0.5 || (magnitude - 40.0).abs() < 0.5,
-            "{label} 同向拖动只许记一次 40（或 0）;  实际 {step}"
+            "{label} 同向拖动只许记一次 40（或 0）；实际 {step}"
         );
     }
 
@@ -307,7 +309,7 @@ fn the_roll_pixels_follow_the_offset_after_masking_dynamic_regions() {
     );
     let scrolled = probe_shot(&mut plane);
     report_line(&format!(
-        "[roll-drag] 偏移 {before} ⇒ {after}: 指纹 {} ⇒ {}（必须不同，才算"真的滚了"）",
+        "[roll-drag] 偏移 {before} ⇒ {after}: 指纹 {} ⇒ {}（必须不同，才算「真的滚了」）",
         first.fingerprint, scrolled.fingerprint
     ));
     assert_ne!(
