@@ -631,4 +631,48 @@ mod tests {
             }
         }
     }
+
+    /// 判据 ⑩（⭐ **`RSK-22` 临时读数**）：⭐ 用**模拟**事件序列量"⭐ 相对名义网格的 Tick 偏差"，
+    /// ⭐ 只**打印**读数（p50／p99／max ＋ 样本量 N），⭐ **不作为达标断据**。
+    ///
+    /// ⚠ ⭐ 人类裁决：⭐ `RSK-22` 的口径**留待实现期再裁** ⇒ ⭐ 本判据**只钉口径与可读性**，
+    /// ⛔ **不**声称"⭐ 抖动 > 5 Ticks 不可接受"那条线已达标（⭐ 也 ⛔ 不声称未达标）。
+    #[test]
+    fn a_provisional_jitter_reading_is_printed_for_rsk22() {
+        let origin = 1_000_000_u64;
+        // ⭐ 名义网格：⭐ 每 62.5 ms（1/16 拍 = 60 Tick）一条 ⇒ 1000 条事件。
+        let nominal_step_us = 62_500_u64;
+        let mut state = 0x1234_5678_u64;
+        let (mut sender, mut receiver) = event_channel(4096);
+        for step in 0..1000_u64 {
+            // ⭐ 线性同余（⛔ 不引 `rand` 依赖）：⭐ 抖动落 0..=4 ms（⭐ 即 0..≈4 Tick）。
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let jitter_us = (state >> 33) % 4_001;
+            sender.handle_message(
+                origin + step * nominal_step_us + jitter_us,
+                &[0x90, 60, 100],
+            );
+        }
+        let deviations: Vec<u64> = core::iter::from_fn(|| receiver.pop())
+            .enumerate()
+            .map(|(step, event)| {
+                let nominal = origin + step as u64 * nominal_step_us;
+                // ⭐ 偏差用**同一个**换算函数 ⇒ 口径一致（⭐ 单位 = Tick）。
+                ticks_from_origin_us(origin + event.timestamp_us.abs_diff(nominal), origin)
+            })
+            .collect();
+        let reading = jitter_reading(&deviations);
+        eprintln!(
+            "DIAGNOSTIC RSK-22（临时口径，★待裁★）: n={} p50={} p99={} max={} 单位=Tick；\
+             负载=cargo test 单进程本机、无并发重活",
+            reading.n, reading.p50, reading.p99, reading.max
+        );
+        assert_eq!(reading.n, 1000, "样本量必须是 1000（⭐ 读数才有分母）");
+        assert!(
+            reading.p50 <= reading.p99 && reading.p99 <= reading.max,
+            "序统计量必须有序：{reading:?}"
+        );
+    }
 }

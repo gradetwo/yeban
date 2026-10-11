@@ -13,6 +13,17 @@
 //! **本线程**上计数（⭐ `thread_local!` ＋ `const` 初始化 ⇒ ⛔ 计数本身不分配）。
 //!
 //! [`ARCH-RT-001`]: ../../docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md
+//!
+//! # ⚠ ⭐ 为什么本探针只统计**两项**（⭐ 不是漏测）
+//!
+//! ⭐ 引擎侧的零分配探针报**四元组**（⭐ `allocations`／`deallocations`／`lock_blocking`／`io_ops`）。
+//! ⚠ ⭐ **本 crate 的推送路径结构上不含互斥锁与 I/O 调用** —— ⭐ 它只有一次
+//! `rtrb::Producer::push` ＋ ⭐ 一次 `saturating_add`（⭐ 见 `MidiEventSender::push` 与
+//! `MidiEventSender::handle_message`）⇒ ⭐ **那两个计数器在这里没有对应对象**。
+//! ⭐ 故本探针只统计**分配/释放**两项：⭐ **这不是漏测，⭐ 而是被测对象里没有那两类操作**。
+//! ⛔ 本文件**刻意不**放一个恒为 0 的 `lock_blocking` 计数器 —— ⭐ 没有真的 instrument
+//! 锁的话，⭐ 那就是**假证据**。
+//!
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -80,8 +91,14 @@ fn the_callback_body_never_allocates_inside_the_window() {
         window
     });
 
-    assert_eq!(allocs, 0, "推送路径分配了 {allocs} 次（红线 7）");
-    assert_eq!(deallocs, 0, "推送路径释放了 {deallocs} 次（红线 7）");
+    assert_eq!(
+        allocs, 0,
+        "推送路径分配了 {allocs} 次（红线 7）（⭐ 红色原因提示：推送路径只有一次 rtrb 推送 ＋ 一次 saturating_add ⇒ 不含锁与 I/O ⇒ 本探针只统计分配/释放两项，⭐ 见模块文档）"
+    );
+    assert_eq!(
+        deallocs, 0,
+        "推送路径释放了 {deallocs} 次（红线 7）（⭐ 红色原因提示：推送路径只有一次 rtrb 推送 ＋ 一次 saturating_add ⇒ 不含锁与 I/O ⇒ 本探针只统计分配/释放两项，⭐ 见模块文档）"
+    );
     assert_eq!(produced, window);
     // ⭐ 反向对照：⭐ 窗口**真的跑了**（⭐ 环里有事件、⭐ 读者能读到完整事件）。
     assert!(receiver.pending() > 0, "窗口必须真的推进了环");
