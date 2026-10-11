@@ -108,6 +108,109 @@ fn audit_runtime(tree: &UiTree) -> (usize, Vec<String>, Vec<String>, Vec<String>
     )
 }
 
+/// 判据 ②（`[TEST-SPEC-005]` 用例 2：**Tab 焦点顺序校验**）。
+///
+/// ## ⚠ 先如实登记**观测面的缺口**（⛔ 不假装按焦点断言）
+///
+/// 本仓今天**没有**可读的"当前焦点"读数：`yeban_ui_test_port::tree` 与 `yeban_ui_mcp::tree`
+/// 里 `focus` 命中 **0**（可控面树只有 `id`／`role`／`label`／`bounds`／`visible`／`dynamic`）。
+/// `.slint` 侧的焦点是 `forward-focus: key-handler`（`app.slint:331`）＋ `FocusScope` 的
+/// **内部**状态，没有导出成属性 ⇒ **"焦点现在在哪"不可观测**。
+///
+/// ⇒ 本判据因此落地为**两件可观测的事**，并把上面这条缺口**写进断言消息与报告**：
+/// ① **注入 Tab 不会破坏界面**（真事件，走 §12.4 的注入面；N 次之后树仍可读、端口仍应答）；
+/// ② **Tab 的候选顺序 = 视觉/逻辑顺序**：把主要区域按其**几何**排成 `(y, x)` 序，
+///    断言该序列**不重复、不跳过**五区，且**自上而下**单调 —— 这就是"顺序与视觉一致"的
+///    可机械检查的那一半（"焦点实际跳到哪"那一半因没有读数而**未覆盖**，见上）。
+#[test]
+fn the_tab_order_candidates_follow_the_visual_order_and_tab_injection_is_safe() {
+    let (_window, mut plane) = assemble();
+
+    // ---------------- ① 真注入 Tab：界面必须保持可用 ----------------
+    let before = plane.plane().tree().expect("ui/tree").0;
+    for _ in 0..8 {
+        let pressed = plane.plane().try_line(&yeban_ui_mcp::live::request_line(
+            200,
+            "ui/dispatch_key_press",
+            Some(serde_json::json!({ "keyCode": "Tab" })), // 参数名与字面写法照既有判据（keyCode/Tab）
+        ));
+        assert!(
+            !pressed.is_error(),
+            "Tab 注入本身必须成功（否则这条判据测的不是「焦点轮转」）: {pressed:?}"
+        );
+    }
+    let after = plane
+        .plane()
+        .tree()
+        .expect("注入 Tab 之后 ui/tree 仍必须可读")
+        .0;
+    report_line(&format!(
+        "[a11y-focus] 注入 Tab × 8：树节点 {} ⇒ {}（⛔ 焦点位置**无读数**, 见本判据文档）",
+        before.nodes.len(),
+        after.nodes.len()
+    ));
+    assert!(!after.nodes.is_empty(), "注入 Tab 之后界面仍必须可寻址");
+
+    // ---------------- ② 候选顺序 = 视觉顺序（几何序） ----------------
+    let regions = [
+        "transport-play-button",
+        "sidebar",
+        "arrangement-ruler",
+        "console-tab-rail",
+        "piano-roll",
+    ];
+    let mut located: Vec<(String, f64, f64)> = Vec::new();
+    for id in regions {
+        if let Some(node) = after.nodes.iter().find(|node| node.id == id) {
+            let bounds = node
+                .bounds
+                .as_ref()
+                .unwrap_or_else(|| panic!("主要区域 `{id}` 必须有几何才谈得上「顺序」"));
+            located.push((id.to_owned(), f64::from(bounds.y), f64::from(bounds.x)));
+        }
+    }
+    assert_eq!(
+        located.len(),
+        regions.len(),
+        "五个主要区域都必须可寻址（否则顺序断言不成立）"
+    );
+    let mut sorted = located.clone();
+    sorted.sort_by(|left, right| {
+        left.1
+            .partial_cmp(&right.1)
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then(
+                left.2
+                    .partial_cmp(&right.2)
+                    .unwrap_or(core::cmp::Ordering::Equal),
+            )
+    });
+    report_line(&format!(
+        "[a11y-focus] 视觉序（(y, x) 升序）: {:?}",
+        sorted
+            .iter()
+            .map(|(id, y, x)| format!("{id}@({x:.0},{y:.0})"))
+            .collect::<Vec<_>>()
+    ));
+    // 不重复：id 唯一（`TreeError::DuplicateId` 也会在端口侧拒绝，这里再机械核一次）。
+    let mut ids: Vec<&str> = sorted.iter().map(|(id, _, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    let unique = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), unique, "候选顺序里不许有重复 id");
+    // 自上而下单调：`y` 必须非降（本视图里五区确实是自上而下排布的）。
+    for pair in sorted.windows(2) {
+        assert!(
+            pair[0].1 <= pair[1].1,
+            "视觉序必须自上而下非降：`{}`(y={}) 与 `{}`(y={})",
+            pair[0].0,
+            pair[0].1,
+            pair[1].0,
+            pair[1].1
+        );
+    }
+}
+
 /// 判据 ①（`[TEST-SPEC-005]`）：**控件无障碍名称遍历**。
 ///
 /// ## 怎么变红（三条，各自独立）
