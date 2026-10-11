@@ -2,7 +2,7 @@
 # 列：file|test|category|首条整数断言的证据（截断 90 字符）
 # 口径（R118）：只有 collection_size **界定集合大小** ⇒ 才算非真空下界；
 #   值界／元素值界／条件计数器 **⛔ 不算**。分类优先级：condition_counter > collection_size > element_value_bound > value_bound。
-# 合计 198 条：collection_size 33 ／ value_bound 156 ／ element_value_bound 5 ／ condition_counter 4
+# 合计 200 条：collection_size 33 ／ value_bound 158 ／ element_value_bound 5 ／ condition_counter 4
 src/block.rs|accumulate_matches_scalar_reference|value_bound|assert!((out[i] - expect[i]).abs() < 1e-6, "mismatch at {i}"
 src/block.rs|mismatched_lengths_are_truncated_instead_of_panicking|value_bound|assert_eq!(out[..4], [1.0, 1.0, 1.0, 0.0]
 src/block.rs|mix2_handles_non_multiple_of_four|value_bound|assert!((v - 1.0).abs() < 1e-6
@@ -179,10 +179,12 @@ src/polysynth.rs|an_empty_recipe_list_still_yields_one_table|collection_size|ass
 src/polysynth.rs|an_off_second_oscillator_is_bit_identical|value_bound|assert_eq!(a_bits, b_bits, "level = 0 的支路必须完全不参与"
 src/polysynth.rs|default_params_match_the_moved_engine_tone|value_bound|assert_eq!(params.osc1(), OscSettings::new(0, 1.0, 0.0)
 src/polysynth.rs|hard_stealing_jumps_more_than_soft_stealing|value_bound|assert!(             hard > soft,             "硬窃取的样本跳变必须更大: 硬 {hard:.6} / 软 {soft:.6}"
+src/polysynth.rs|note_off_releases_only_the_matching_requested_frequency|value_bound|assert_eq!(synth.active_voices(), 1, "前置：一个活跃声部"
 src/polysynth.rs|render_is_bit_identical_under_any_block_split|value_bound|assert!(                 mismatch.is_none(),                 "块长 {split} 帧的切分在第 {} 个样本上与整块
 src/polysynth.rs|stealing_is_deterministic|value_bound|assert_eq!(synth.voice_steals(), 1
 src/polysynth.rs|the_earliest_voice_is_stolen_first|value_bound|assert_eq!(synth.voice_steals(), 1
 src/polysynth.rs|the_second_oscillator_adds_its_own_fundamental|value_bound|assert!(             dual_220 > 20.0 * single_220,             "第二条振荡器必须带来它自己的基频: 单 {singl
+src/polysynth.rs|the_voice_size_is_pinned_after_adding_the_requested_frequency|value_bound|assert_eq!(             size, 296,             "size_of::<PolyVoice>() = {size}（⭐ 预期 296 =
 src/polysynth.rs|ties_on_start_sample_are_broken_by_the_smallest_index|value_bound|assert_eq!(synth.voice_steals(), 1
 src/reverb.rs|an_unconfigured_reverb_is_a_passthrough|value_bound|assert!(             (verb.params().mix - 0.5).abs() < 1e-6,             "the finite knob 
 src/reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             stale_peak,             0.0,             "预延迟变长后湿路重放了旧长度下写进缓冲的音频：峰

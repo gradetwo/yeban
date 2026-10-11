@@ -1444,6 +1444,62 @@ mod tests {
         (re * re + im * im).sqrt() / samples.len() as f64 * 2.0
     }
 
+    /// 判据（⭐ `note_off`）：⭐ **命中** ⇒ 返回 `1` 且声部进入 `Release`；⭐ **不命中** ⇒ 返回 `0`
+    /// 且**不动**任何声部；⭐ 最后演示"⭐ **松键后声部真能被回收**"（⛔ 不是挂音）。
+    ///
+    /// ⚠ 本判据的 `end_sample` 取**有限值**：⭐ `retire_finished` 的谓词是
+    /// `end_sample <= position && !env.is_active()` ⇒ ⭐ **活音符若用 `u64::MAX` 则永不回收**
+    /// （⭐ 这一点已上报待裁，⛔ 本判据不冒充那条口径）。
+    #[test]
+    fn note_off_releases_only_the_matching_requested_frequency() {
+        let tables = tables();
+        let mut synth = PolySynth::<VOICES_PER_SLOT>::new(48_000);
+        synth.set_params(PolySynthParams::new(), &tables);
+        synth.note_on(NoteEvent::new(0, 96_000, 440.0, 1.0), &tables);
+        assert_eq!(synth.active_voices(), 1, "前置：一个活跃声部");
+
+        // ⭐ 不命中：⭐ 换一个频率 ⇒ 必须报 0，⛔ 且不许动声部。
+        assert_eq!(synth.note_off(441.0), 0, "⭐ 频率不匹配 ⇒ 必须报 0");
+        assert_eq!(synth.active_voices(), 1, "⭐ 不命中⛔ 不许动声部");
+
+        // ⭐ 命中：⭐ 报 1，⭐ 且包络进 `Release`。
+        assert_eq!(synth.note_off(440.0), 1, "⭐ 命中必须报 1");
+        assert_eq!(
+            synth.debug_voice(0).map(|voice| voice.2),
+            Some(AdsrStage::Release),
+            "⭐ 命中后声部必须在 release 段"
+        );
+
+        // ⭐ 松键有效：⭐ 默认 release 50 ms（48 kHz ⇒ 2400 帧）⇒ 给 3 倍余量再渲染 + 回收。
+        let mut out = [0.0f32; 1];
+        for frame in 0..7_200u64 {
+            synth.render(&tables, frame, &mut out);
+        }
+        synth.retire_finished(7_200);
+        assert_eq!(
+            synth.active_voices(),
+            0,
+            "⭐ 松键后声部必须能被回收（⛔ 不是挂音）"
+        );
+    }
+
+    /// 判据（⭐ `size_of` **实测并钉死**，⛔ 不写在注释里）：⭐ `PolyVoice` 的字节数。
+    ///
+    /// ⚠ 口径：⭐ `note_off` 的配对字段 `freq_hz: f32` 是本票新增的**唯一**字段
+    /// ⇒ ⭐ 本判据把它钉住；⭐ 若未来有人再加字段，⭐ 这条会红并提示重新测量。
+    #[test]
+    fn the_voice_size_is_pinned_after_adding_the_requested_frequency() {
+        let size = core::mem::size_of::<PolyVoice>();
+        eprintln!("DIAGNOSTIC PolyVoice size_of = {size}");
+        // ⭐ **实测值**（本机 48 kHz 构建，⭐ 2026-10-12 取的读数）：⭐ `296` 字节。
+        // ⭐ 加 `freq_hz: f32` 之前是 `292`（⭐ 296 − 4；⭐ 本判据就是钉住这次增量）。
+        assert_eq!(
+            size, 296,
+            "size_of::<PolyVoice>() = {size}（⭐ 预期 296 = 加 freq_hz 之前的 292 + 4）\
+             ⇒ 布局变了 ⇒ 重新测量并把新值钉在这里"
+        );
+    }
+
     fn tables() -> PolySynthTables {
         PolySynthTables::from_recipes(&[HOLLOW, ORGAN])
     }

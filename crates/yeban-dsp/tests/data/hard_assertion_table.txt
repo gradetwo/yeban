@@ -2,7 +2,7 @@
 # 分类口径：float_bits ＝ 判据体内有 to_bits()；integer_count ＝ 只比整数/长度
 # class：hard ＝ 产线可达集无宿主 libm 超越函数；platform ＝ 有（只在本架构有意义）
 #        no_callee ＝ 不调用本 crate 产线函数
-# 合计 267 条：float_bits 69 ／ integer_count 198；其中 hard 34 ／ platform 32
+# 合计 269 条：float_bits 69 ／ integer_count 200；其中 hard 34 ／ platform 32
 # 列：kind | class | reach | host | file | test
 integer_count | no_callee | 0 | - | src/block.rs | accumulate_matches_scalar_reference
 integer_count | no_callee | 0 | - | src/block.rs | mismatched_lengths_are_truncated_instead_of_panicking
@@ -240,11 +240,13 @@ integer_count | no_callee | 0 | - | src/polysynth.rs | an_off_second_oscillator_
 float_bits | hard | 2 | - | src/polysynth.rs | bypass_is_not_a_transparent_filter
 integer_count | no_callee | 0 | - | src/polysynth.rs | default_params_match_the_moved_engine_tone
 integer_count | no_callee | 0 | - | src/polysynth.rs | hard_stealing_jumps_more_than_soft_stealing
+integer_count | no_callee | 0 | - | src/polysynth.rs | note_off_releases_only_the_matching_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | render_is_bit_identical_under_any_block_split
 integer_count | no_callee | 0 | - | src/polysynth.rs | stealing_is_deterministic
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_earliest_voice_is_stolen_first
 float_bits | hard | 28 | - | src/polysynth.rs | the_playhead_saturates_at_the_end_of_the_timeline
 integer_count | no_callee | 0 | - | src/polysynth.rs | the_second_oscillator_adds_its_own_fundamental
+integer_count | no_callee | 0 | - | src/polysynth.rs | the_voice_size_is_pinned_after_adding_the_requested_frequency
 integer_count | no_callee | 0 | - | src/polysynth.rs | ties_on_start_sample_are_broken_by_the_smallest_index
 integer_count | no_callee | 0 | - | src/reverb.rs | an_unconfigured_reverb_is_a_passthrough
 float_bits | hard | 5 | - | src/reverb.rs | calling_set_sample_rate_again_drops_the_predelay_history
