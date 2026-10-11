@@ -26,10 +26,10 @@
 //! | 绝对 tick 的**取值** | ✅ 保真（960 PPQ 下 `scale_ticks` 是恒等） | ① 的相等式 + ③ 的 `1920 / 2160 / 2868` |
 //! | PPQ | ✅ 保真（工程=文件=960） | ② `ppq == 960` 且 `MThd` 头 `03 C0` |
 //! | 拍号 / tempo | ⚠ **由工程携带，而非由文件导入**：导入**不读**文件的 conductor | ④ 6/8 的文件导入 3/4 的工程后，重导出**仍是 3/4** |
-//! | **轨归属**（哪条轨） | ❌ **丢失**：全部音符落到"第一条非 master 音轨的第一个摆放" | ② `MTrk` 数 4 → 3；③ 目标片段 `+N1` 颗、别的轨一颗不变 |
-//! | **MIDI 通道** | ❌ **丢失**：`MidiNote` 没有通道字段 | ② 重导出后**全部**音符 `channel == 0` |
-//! | `micro_timing_ticks` | ❌ 字段丢失，但**微时值已并入 tick** ⇒ 位置不丢 | ③ `start_tick == 2868` 且 `micro_timing_ticks == None` |
-//! | `probability` / `ratchet` / 歌词 / 弯音 / 滑音 | ❌ SMF 里没有载体（导出侧也从不写） | ③ 目标片段里这些字段全为 `None` / 空 |
+//! | **轨归属**（哪条轨） | ❌ **丢失**（只对**导入的副本**）：副本一律落到"第一条非 master 音轨的第一个摆放"；原有轨道各自的音符**一颗不动** | ② `MTrk` 数**仍是 4**、通道 1 仍是 3 颗/通道 0 变 15 颗；③ 目标片段 6 + 9 颗、别的轨一颗不变；③b **按身份**挑出的 9 颗副本正是"落点轨"里的新音符 |
+//! | **MIDI 通道** | ❌ **丢失**（只对副本）：`MidiNote` 没有通道字段 ⇒ 副本一律落在通道 0；原件保留各自通道 | ② 副本 `(0, …)` 与原件 `(1, …)` 同时存在且通道集合恰为 `{0, 1}`；③b 身份切分 |
+//! | `micro_timing_ticks` | ❌ 字段丢失，但**微时值已并入 tick** ⇒ 位置不丢 | ③ `start_tick == 2868` 且 `micro_timing_ticks == None`；③b 副本逐颗 `micro == None` |
+//! | `probability` / `ratchet` / 歌词 / 弯音 / 滑音 | ❌ SMF 里没有载体（导出侧也从不写） | ③b：夹具里那颗**确实** `expressive == true`（先断言，否则该行空转），而 9 颗副本逐颗 `expressive == false` |
 //! | 非 960 PPQ 的文件 | ⚠ 按整数比例换算到 960（`scale_ticks`），不能整除时**截断** | 由 `import_midi.rs` 的单元判据覆盖（480 ⇒ ×2），本文件不重复 |
 //!
 //! ## 规范来源 (Normative)
@@ -202,6 +202,32 @@ fn round_trip_fixture() -> (YebanProjectV1, EntityId, EntityId) {
             },
         );
     assert_eq!(project.validate(), Ok(()), "夹具必须是合法工程");
+
+    // 给**落点片段**里的一颗音符挂上 SMF **载不下**的表现力字段：
+    // 这样"往返后它们为空"就不是空转的断言（夹具侧会先断言它确实是 `true`）。
+    let destination_track = *project
+        .tracks
+        .keys()
+        .find(|id| **id != project.master_bus_track_id)
+        .expect("有一条非 master 音轨");
+    let destination_clip = project.tracks[&destination_track]
+        .clips
+        .values()
+        .next()
+        .expect("落点轨道有摆放")
+        .clip_id;
+    if let Some(entry) = project.clip_pool.get_mut(&destination_clip)
+        && let ClipContent::Midi { notes } = &mut entry.content
+    {
+        let note = notes
+            .values_mut()
+            .next()
+            .expect("落点片段必须有音符（演示夹具）");
+        note.probability = Some(0.5);
+        note.ratchet = Some(2);
+        note.syllable = Some("la".to_owned());
+    }
+    assert_eq!(project.validate(), Ok(()), "加了表现力字段后仍必须合法");
     (project, target, clip_id)
 }
 
@@ -229,6 +255,56 @@ fn clip_notes(project: &YebanProjectV1, track: EntityId, clip: EntityId) -> Vec<
         .collect();
     out.sort_unstable();
     out
+}
+
+/// 模型侧一颗音符的完整可观测行（**含身份** —— 用它把"原有的"与"导入的副本"分开）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NoteRow {
+    id: EntityId,
+    pitch: u8,
+    velocity: u8,
+    start: u64,
+    duration: u64,
+    micro: Option<i16>,
+    /// SMF **载不下**的表现力字段（概率 / 连击 / 歌词 / 弯音 / 滑音：任一非默认即 `true`）。
+    expressive: bool,
+}
+
+/// 一条轨道上某个片段里的音符行（按 `(pitch, start)` 排序）。
+fn clip_rows(project: &YebanProjectV1, track: EntityId, clip: EntityId) -> Vec<NoteRow> {
+    let mut rows: Vec<NoteRow> = project.tracks[&track]
+        .clips
+        .values()
+        .filter(|placement| placement.clip_id == clip)
+        .filter_map(|placement| project.clip_pool.get(&placement.clip_id))
+        .filter_map(|entry| entry.content.notes())
+        .flat_map(|notes| notes.values())
+        .map(|note| NoteRow {
+            id: note.id,
+            pitch: note.pitch,
+            velocity: note.velocity,
+            start: note.start_tick,
+            duration: note.duration_ticks,
+            micro: note.micro_timing_ticks,
+            expressive: note.probability.is_some()
+                || note.ratchet.is_some()
+                || note.slide.is_some()
+                || !note.pitch_bend_curve.is_empty()
+                || note.syllable.is_some()
+                || !note.phonemes.is_empty(),
+        })
+        .collect();
+    rows.sort_unstable_by_key(|row| (row.pitch, row.start));
+    rows
+}
+
+/// `after` 里**身份不在** `before` 中的那些行 —— 即本次导入**新建**的音符。
+fn imported_rows(before: &[NoteRow], after: &[NoteRow]) -> Vec<NoteRow> {
+    after
+        .iter()
+        .filter(|row| !before.iter().any(|known| known.id == row.id))
+        .cloned()
+        .collect()
 }
 
 /// 回读一个 SMF 的音符多重集 `(channel, key, velocity, start, duration)`（升序）。
@@ -463,8 +539,53 @@ fn export_import_export_round_trips_every_note_item_by_item() {
         "导入不许改写输入容器"
     );
 
+    // ── ③b 按**身份**把导入的副本挑出来，逐项对比（比 SMF 层的多重集更直接） ──
+    let before_rows = clip_rows(&project, destination_track, destination_clip);
+    assert!(
+        before_rows.iter().any(|row| row.expressive),
+        "夹具必须带一颗 SMF 载不下的表现力音符（否则下面那条损耗断言是空转的）: {before_rows:?}"
+    );
+    let after_rows = clip_rows(&after, destination_track, destination_clip);
+    let imported = imported_rows(&before_rows, &after_rows);
+    assert_eq!(
+        imported.len(),
+        n1.len(),
+        "按身份认出的副本必须恰好是文件里的 {} 颗（⛔ 不是按数值猜的）",
+        n1.len()
+    );
+    let mut copy_tuples: Vec<(u8, u8, u64, u64)> = imported
+        .iter()
+        .map(|row| (row.pitch, row.velocity, row.start, row.duration))
+        .collect();
+    copy_tuples.sort_unstable();
+    let mut file_tuples: Vec<(u8, u8, u64, u64)> = n1
+        .iter()
+        .map(|&(_, key, velocity, start, duration)| (key, velocity, start, duration))
+        .collect();
+    file_tuples.sort_unstable();
+    assert_eq!(
+        copy_tuples, file_tuples,
+        "逐项：副本的音高/力度/起止/时值必须与文件逐颗相同"
+    );
+    assert!(
+        imported.iter().all(|row| row.micro.is_none()),
+        "SMF 没有微时值字段 ⇒ 副本的 `micro_timing_ticks` 恒为 None: {imported:?}"
+    );
+    assert!(
+        imported.iter().all(|row| !row.expressive),
+        "SMF 没有载体的表现力字段在副本上必须为空（概率/连击/歌词/弯音/滑音）: {imported:?}"
+    );
+    // 对照：原有那颗**带**表现力字段的音符必须原样还在（⛔ 导入不是"把整个工程洗一遍"）。
+    assert!(
+        after_rows
+            .iter()
+            .any(|row| row.expressive && before_rows.iter().any(|before| before.id == row.id)),
+        "原有的表现力音符必须原样保留: {after_rows:?}"
+    );
+
     eprintln!(
-        "[midi-round-trip] n1={} n2={} ppq={}/*{}*/ 头={:02X}{:02X} channels={:?} 落点={} 颗",
+        "[midi-round-trip] n1={} n2={} ppq={}/*{}*/ 头={:02X}{:02X} channels={:?} 落点={} 颗 \
+         （按身份认出的副本={} 颗，全部 micro=None 且 expressive=false；原有表现力音符 {} 颗仍在）",
         n1.len(),
         n2.len(),
         p1.ppq,
@@ -472,7 +593,9 @@ fn export_import_export_round_trips_every_note_item_by_item() {
         bytes2[12],
         bytes2[13],
         channels,
-        landed.len()
+        landed.len(),
+        imported.len(),
+        after_rows.iter().filter(|row| row.expressive).count()
     );
 
     let _ = std::fs::remove_dir_all(&dir);
