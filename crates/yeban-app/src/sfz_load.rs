@@ -124,6 +124,19 @@ pub fn load_sfz(
     probe_note: Option<u8>,
     engine_hz: f32,
 ) -> Result<SfzLoadReport, SfzLoadError> {
+    load_sfz_with_instrument(path, probe_note, engine_hz).map(|(report, _instrument)| report)
+}
+
+/// 与 [`load_sfz`] 相同，但**同时交出乐器本体**（`--sfz` ＋ `--export-wav` 接线要用它发声）。
+///
+/// # Errors
+///
+/// 与 [`load_sfz`] 相同。
+pub fn load_sfz_with_instrument(
+    path: &Path,
+    probe_note: Option<u8>,
+    engine_hz: f32,
+) -> Result<(SfzLoadReport, SfzInstrument), SfzLoadError> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| SfzLoadError::Read(format!("读 `{}` 失败: {error}", path.display())))?;
     let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
@@ -133,15 +146,18 @@ pub fn load_sfz(
     let probe = probe_note
         .map(|note| probe_note_energy(&instrument, note, engine_hz))
         .transpose()?;
-    Ok(SfzLoadReport {
-        path: path.to_path_buf(),
-        bytes,
-        regions: instrument.region_count(),
-        probe,
-        sample_source: SAMPLE_SOURCE,
-        // 如实：SFZ 音色今天**没有**接进 `--export-wav` 的音源链。
-        wired_to_export: false,
-    })
+    Ok((
+        SfzLoadReport {
+            path: path.to_path_buf(),
+            bytes,
+            regions: instrument.region_count(),
+            probe,
+            sample_source: SAMPLE_SOURCE,
+            // 默认如实报"未接到导出"；真正接到导出时由调用方（CLI）改写为 `true`。
+            wired_to_export: false,
+        },
+        instrument,
+    ))
 }
 
 /// 用一个内存正弦样本触发 `note`，返回帧数与能量（离线/控制侧）。
@@ -170,6 +186,145 @@ pub fn probe_note_energy(
         frames: written,
         energy,
     })
+}
+
+/// **SFZ 音源**：让 `--export-wav` 用 SFZ 的区域/样本发声（**离线**路径）。
+///
+/// ## 怎么发声（复用既有设施，⛔ 无旁路）
+///
+/// 每个音符在**第一次需要时整段渲染一次**（`SfzInstrument::render_note_into`）到自己的 scratch，
+/// 之后按块把该块对应的窗口**叠加**进 `out` ⇒ 音符可以跨块延续，且每条音符只解析渲染一次。
+/// 样本数据是**共享的一份内存正弦**（[`InMemorySample::sine`]；⛔ 本仓没有采样文件读取/解码）。
+///
+/// ## ⚠ 红线 7
+///
+/// `render_note_into` **每次调用都解析（⇒ 分配）** ⇒ 本类型**只**用于**离线导出**，
+/// ⛔ 绝不进音频回调（与 `arm_from_snapshot` 同一条边）。
+pub struct SfzTrackSource {
+    /// 已装载的 SFZ（多轨可共享同一份 ⇒ 用 `Arc`，⛔ 不重复解析文本）。
+    instrument: std::sync::Arc<SfzInstrument>,
+    /// 共享的样本数据（内存正弦；⛔ 不是 `sample=` 指向的 wav 文件）。
+    sample: InMemorySample,
+    /// 引擎采样率。
+    engine_hz: f32,
+    /// 声道数。
+    channels: usize,
+    /// 每个音符的渲染状态。
+    notes: Vec<SfzNoteState>,
+}
+
+/// 一个音符的离线渲染状态。
+struct SfzNoteState {
+    /// 起始帧。
+    start_frame: u64,
+    /// 时值（帧；上限）。
+    target_frames: u64,
+    /// 音高。
+    pitch: u8,
+    /// 力度。
+    velocity: u8,
+    /// 整段渲染结果（单声道）。
+    scratch: Vec<f32>,
+    /// `scratch` 里有效样本数（`render_note_into` 的返回值）。
+    rendered: usize,
+}
+
+impl SfzTrackSource {
+    /// 用一份已装载的 SFZ 造一条轨道源。
+    ///
+    /// `notes` 为 `(起始帧, 时值帧, 音高, 力度)`；帧由调用方按 960 PPQ 换算好。
+    #[must_use]
+    pub fn new(
+        instrument: std::sync::Arc<SfzInstrument>,
+        notes: &[(u64, u64, u8, u8)],
+        engine_hz: f32,
+        channels: usize,
+    ) -> Self {
+        let sample_frames = usize::try_from(engine_hz.max(1.0) as u64)
+            .unwrap_or(48_000)
+            .max(1);
+        Self {
+            instrument,
+            sample: InMemorySample::sine(440.0, engine_hz, sample_frames),
+            engine_hz,
+            channels: channels.max(1),
+            notes: notes
+                .iter()
+                .map(|(start, duration, pitch, velocity)| SfzNoteState {
+                    start_frame: *start,
+                    target_frames: (*duration).max(1),
+                    pitch: *pitch,
+                    velocity: *velocity,
+                    scratch: Vec::new(),
+                    rendered: 0,
+                })
+                .collect(),
+        }
+    }
+
+    /// 保证第 `index` 个音符**整段**渲染完成（只做一次）。
+    fn ensure_rendered(&mut self, index: usize) {
+        if self.notes[index].rendered > 0 {
+            return;
+        }
+        let target = usize::try_from(self.notes[index].target_frames).unwrap_or(usize::MAX);
+        let pitch = self.notes[index].pitch;
+        let velocity = self.notes[index].velocity;
+        let mut scratch = vec![0.0_f32; target.max(1)];
+        let written = self
+            .instrument
+            .render_note_into(&self.sample, pitch, velocity, &mut scratch, self.engine_hz)
+            .unwrap_or(0);
+        let state = &mut self.notes[index];
+        state.scratch = scratch;
+        state.rendered = written;
+    }
+}
+
+impl yeban_render::render::AudioSource for SfzTrackSource {
+    fn render_block(
+        &mut self,
+        context: yeban_render::render::BlockContext,
+        out: &mut [f32],
+    ) -> Result<(), yeban_render::render::RenderError> {
+        out.fill(0.0);
+        let channels = self.channels;
+        let frames = context.frames.min(out.len() / channels);
+        let block_start = context.first_frame;
+        let block_end = block_start + frames as u64;
+        for index in 0..self.notes.len() {
+            let note_start = self.notes[index].start_frame;
+            if block_end <= note_start {
+                continue;
+            }
+            let window_start = block_start.saturating_sub(note_start);
+            let window_end = ((block_end - note_start).min(self.notes[index].target_frames))
+                .min(u64::from(u32::MAX));
+            if window_end <= window_start {
+                continue;
+            }
+            self.ensure_rendered(index);
+            let state = &self.notes[index];
+            let limit = state.rendered.min(state.scratch.len());
+            let lo = usize::try_from(window_start).unwrap_or(usize::MAX);
+            let hi = usize::try_from(window_end).unwrap_or(usize::MAX).min(limit);
+            for offset in lo..hi {
+                let frame_in_block = if note_start >= block_start {
+                    usize::try_from(note_start - block_start).unwrap_or(usize::MAX) + offset
+                } else {
+                    offset - lo
+                };
+                if frame_in_block >= frames {
+                    break;
+                }
+                let value = state.scratch[offset];
+                for channel in 0..channels {
+                    out[frame_in_block * channels + channel] += value;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

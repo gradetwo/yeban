@@ -238,8 +238,8 @@ pub fn usage_text() -> String {
                            输出行 recorded-wav: path=… frames=… dropped=… bytes=… source=…
   --record-seconds <n>     --record-wav 的秒数 (默认 2.0)
   --sfz <path>             装载一份 SFZ 乐器: 报告区域数 + 一次音符探测(帧数与能量);
-                           ⚠ 今天只到装载层: SFZ 音色**尚未**接进 --export-wav 的音源链
-                           (输出行 wired_to_export=no), 样本数据是**内存正弦**而⛔非 wav
+                           与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ** 的区域/样本
+                           (样本数据是**内存正弦**, ⛔ 不是 sample= 指向的 wav; 输出行明说)
   --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
                            来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
                            (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
@@ -441,7 +441,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
   yeban-app --record-wav take.wav --record-seconds 3
-  yeban-app --sfz strings.sfz --export-wav out.wav
+  yeban-app --sfz strings.sfz --export-wav out.wav   # 导出的音源 = 该 SFZ
   yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
   yeban-app --open song.yeban --export-wav song.wav
@@ -2540,15 +2540,23 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     }
 
     // SFZ 装载 ＋ 音符探测：**只读**（不改工程、不写文件），所以它只影响输出行。
-    // ⚠ 诚实登记：SFZ 音色**尚未**接进导出音源链（报告行 `wired_to_export=no`）。
+    // ⭐ 与 `--export-wav` 同时给 ⇒ 导出的音源就是这份 SFZ（见下面的导出块）。
+    // ⚠ 诚实登记：样本数据是**内存正弦**（⛔ 不是 `sample=` 指向的 wav）。
+    let mut loaded_sfz: Option<std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>> = None;
     if let Some(path) = options.sfz.as_ref() {
-        let report =
-            crate::sfz_load::load_sfz(path, Some(crate::sfz_load::DEFAULT_PROBE_NOTE), 48_000.0)
-                .map_err(|source| CliError::Sfz {
-                    path: path.clone(),
-                    source,
-                })?;
+        let (mut report, instrument) = crate::sfz_load::load_sfz_with_instrument(
+            path,
+            Some(crate::sfz_load::DEFAULT_PROBE_NOTE),
+            48_000.0,
+        )
+        .map_err(|source| CliError::Sfz {
+            path: path.clone(),
+            source,
+        })?;
+        // 只有真的会给导出用，才报 `wired_to_export=yes`（⛔ 不夸大）。
+        report.wired_to_export = options.export_wav.is_some();
         lines.push(report.summary());
+        loaded_sfz = Some(std::sync::Arc::new(instrument));
     }
 
     // 顺序契约（`--help` 的组合语义一节）：**导入 → 导出 → 保存工程**。
@@ -2610,10 +2618,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
     if let Some(path) = options.export_wav.as_ref() {
-        let report = crate::export_wav::export_wav(
+        let report = crate::export_wav::export_wav_with_sfz(
             &loaded.archive.project,
             path,
             crate::export_wav::WavExportOptions::default(),
+            loaded_sfz.clone(),
         )
         .map_err(|source| CliError::ExportWav {
             path: path.clone(),
@@ -4525,6 +4534,95 @@ mod tests {
             "必须如实说明尚未接到导出: {line}"
         );
         assert!(line.contains("bytes="), "必须报告字节数: {line}");
+    }
+
+    /// `--sfz` ＋ `--export-wav`：两行都在（`loaded-sfz` 报 `wired_to_export=yes`、
+    /// `exported-wav` 报 `source=sfz(…)` 且**明说内存正弦**），并且导出**真的**成功。
+    #[test]
+    fn sfz_plus_export_wav_wires_the_instrument_into_the_export_and_says_so() {
+        let dir = scratch_dir("sfz-export");
+        let (container, project) = write_container_file(&dir, "song.yeban");
+        // 按工程里的音高逐键写区域 ⇒ SFZ 一定匹配得上（否则只会得到静音）。
+        let mut pitches: Vec<u8> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.values().map(|note| note.pitch))
+            .collect();
+        pitches.sort_unstable();
+        pitches.dedup();
+        let sfz = dir.join("keys.sfz");
+        let text: String = pitches
+            .iter()
+            .map(|pitch| format!("<region> sample=a.wav key={pitch}\n"))
+            .collect();
+        std::fs::write(&sfz, text).expect("写夹具");
+        let target = dir.join("with-sfz.wav");
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                container.display().to_string(),
+                "--sfz".to_owned(),
+                sfz.display().to_string(),
+                "--export-wav".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("带 SFZ 的导出必须成功");
+        let loaded = lines
+            .iter()
+            .find(|line| line.starts_with("loaded-sfz:"))
+            .expect("必须有 loaded-sfz 行");
+        assert!(
+            loaded.contains("wired_to_export=yes"),
+            "接到导出时必须如实报 yes: {loaded}"
+        );
+        assert!(
+            loaded.contains("sample_source=in-memory-sine(440Hz)"),
+            "必须明说样本来源: {loaded}"
+        );
+        let exported = lines
+            .iter()
+            .find(|line| line.starts_with("exported-wav:"))
+            .expect("必须有 exported-wav 行");
+        assert!(
+            exported.contains("source=sfz"),
+            "导出行必须明说走了 SFZ: {exported}"
+        );
+        assert!(
+            exported.contains("内存正弦"),
+            "导出行必须明说样本是内存正弦（⛔ 不是 sample= 指向的 wav）: {exported}"
+        );
+        assert!(target.exists(), "导出必须真的落盘");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `--sfz` 指向不存在的文件 ⇒ **报错、⛔ 不 panic、且导出目标不存在**（不留半成品）。
+    #[test]
+    fn a_missing_sfz_prevents_the_export_and_leaves_no_target() {
+        let dir = scratch_dir("sfz-export-bad");
+        let (container, _project) = write_container_file(&dir, "song.yeban");
+        let target = dir.join("never.wav");
+        let error = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                container.display().to_string(),
+                "--sfz".to_owned(),
+                dir.join("missing.sfz").display().to_string(),
+                "--export-wav".to_owned(),
+                target.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect_err("SFZ 不存在必须失败");
+        assert_eq!(
+            error.exit_code(),
+            EXIT_OPEN,
+            "与 `--open` 同族：输入文件不可用"
+        );
+        assert!(!target.exists(), "失败 ⇒ 导出目标一个字节都不许有");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `--sfz` 的**失败路径**：文件不存在 ⇒ 与 `--open` 同族退出码，⛔ 不 panic，且**不新增任何文件**。

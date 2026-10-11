@@ -30,6 +30,10 @@
 //! ⚠ 没有主总线时 `arm_from_snapshot` 返回 `SnapshotError::NoMasterBus` ⇒ 本文件在**落盘之前**
 //! 如实失败（⛔ 不 `unwrap`、⛔ 不留半成品）。
 //!
+//! ⭐ **SFZ 音源**（`export_wav_with_sfz` 的 `Some(sfz)`）：带 `--sfz` 时每条可渲染轨用
+//! [`crate::sfz_load::SfzTrackSource`] ⇒ 导出的声音来自该 SFZ 的区域；样本数据是**内存正弦**
+//! （⛔ 本仓无采样文件读取）⇒ 报告行 `source=` 明说。
+//!
 //! `WavExportOptions::use_engine_source = false` 时才用**最小音源**（确定性方波 ＋ 首尾包络，
 //! 相位由整数帧号派生）：它是**判据的对照**与极端回退，报告行里的 `source=` 字段**明说用了哪一个**
 //! （⛔ 不让人误以为听到了乐器）。
@@ -285,6 +289,34 @@ impl AudioSource for NoteToneSource {
     }
 }
 
+/// 一条轨道的音符，按 960 PPQ 换算成 `(起始帧, 时值帧, 音高, 力度)`（⛔ 与最小音源同一口径）。
+fn track_notes_in_frames(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    sample_rate: u32,
+) -> Vec<(u64, u64, u8, u8)> {
+    let mut notes = Vec::new();
+    if let Some(track) = project.tracks.get(&track_id) {
+        for placement in track.clips.values() {
+            let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+                continue;
+            };
+            let Some(map) = entry.content.notes() else {
+                continue;
+            };
+            for note in map.values() {
+                let start_tick = placement.start_tick + note.start_tick;
+                let start = start_tick.saturating_mul(u64::from(sample_rate)) / 960;
+                let duration =
+                    (note.duration_ticks.max(1)).saturating_mul(u64::from(sample_rate)) / 960;
+                notes.push((start, duration.max(1), note.pitch, note.velocity));
+            }
+        }
+    }
+    notes.sort_unstable();
+    notes
+}
+
 /// 把工程离线渲染成 WAV（**先全量渲染与量化，最后一步才落盘**）。
 ///
 /// # Errors
@@ -297,6 +329,23 @@ pub fn export_wav(
     path: &Path,
     options: WavExportOptions,
 ) -> Result<WavExportReport, WavExportError> {
+    export_wav_with_sfz(project, path, options, None)
+}
+
+/// 与 [`export_wav`] 相同，但可以指定一份**已装载的 SFZ 乐器**（`--sfz <path>` 的接线）。
+///
+/// 给了 SFZ ⇒ 每条**可渲染**轨用 [`crate::sfz_load::SfzTrackSource`]（SFZ 区域发声，
+/// 样本是内存正弦）；⛔ 否则与 [`export_wav`] 逐位相同。
+///
+/// # Errors
+///
+/// 与 [`export_wav`] 相同。
+pub fn export_wav_with_sfz(
+    project: &YebanProjectV1,
+    path: &Path,
+    options: WavExportOptions,
+    sfz: Option<std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>>,
+) -> Result<WavExportReport, WavExportError> {
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
@@ -305,7 +354,8 @@ pub fn export_wav(
     // 为什么提前：`arm_from_snapshot` 在**没有可武装的轨/音色/鼓**时返回 `NoMasterBus`；
     // 它是"这个工程能不能用引擎渲染"的判定，理应在计划编译与任何 I/O 之前发生
     // ⇒ 失败时一个字节都不会落盘，也不会先被计划层的次生错误（例如"没有注册样本源"）掩盖。
-    let snapshot = if options.use_engine_source {
+    // 带 SFZ ⇒ 走 SFZ 音源（⛔ 不需要引擎快照；SFZ 自己的解析在离线路径里做）。
+    let snapshot = if options.use_engine_source && sfz.is_none() {
         let snapshot = EngineSnapshot::from_project(project, 1)
             .map_err(|error| WavExportError::Engine(error.to_string()))?;
         // ⭐ **慢路径校验只做一次**，且必须在这里做：武装是**逐源**发生的，
@@ -351,7 +401,21 @@ pub fn export_wav(
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
         .collect();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    let source_label: &'static str = if let Some(snapshot) = snapshot.as_ref() {
+    let source_label: &'static str = if let Some(instrument) = sfz.as_ref() {
+        for track_id in renderable.clone() {
+            let notes = track_notes_in_frames(project, track_id, options.sample_rate);
+            sources.insert(
+                track_id,
+                Box::new(crate::sfz_load::SfzTrackSource::new(
+                    instrument.clone(),
+                    &notes,
+                    options.sample_rate as f32,
+                    options.channels,
+                )),
+            );
+        }
+        "sfz(内存正弦样本；⛔ 不是 sample= 指向的 wav)"
+    } else if let Some(snapshot) = snapshot.as_ref() {
         for track_id in renderable.clone() {
             sources.insert(
                 track_id,
@@ -481,6 +545,82 @@ mod tests {
         println!(
             "[wav-engine] 引擎版非零样本 {engine_nonzero}；两版字节数 {} vs {}",
             engine.bytes, fallback.bytes
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 判据（`--sfz` 接线）：**同一工程**带 SFZ 与不带 SFZ 导出的 WAV **逐字节不同**，
+    /// 且 SFZ 版**非静音**（⛔ 不是"换了但没声音"）。
+    ///
+    /// ⚠ 为什么这份 SFZ 按**工程里实际出现的音高**逐键写区域：区域不匹配就会是静音，
+    /// 那样"可区分"就变成"一个响一个哑"，测不出"真的用 SFZ 发声"（本机刻意这样构造）。
+    #[test]
+    fn an_sfz_export_differs_from_the_default_export_and_is_not_silent() {
+        let project = yeban_model::samples::filled_project();
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-wav-sfz-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        // 工程里的每个音高一条区域 ⇒ 保证 SFZ 真的会发声。
+        let mut pitches: Vec<u8> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.values().map(|note| note.pitch))
+            .collect();
+        pitches.sort_unstable();
+        pitches.dedup();
+        assert!(!pitches.is_empty(), "夹具必须有音符");
+        let text: String = pitches
+            .iter()
+            .map(|pitch| format!("<region> sample=a.wav key={pitch}\n"))
+            .collect();
+        let instrument = yeban_engine::sfz_instrument::SfzInstrument::load(
+            text,
+            &yeban_sfz::parser::ParseLimits::default(),
+        )
+        .expect("夹具 SFZ 必须可装载");
+        assert_eq!(instrument.region_count(), pitches.len(), "区域数 == 音高数");
+
+        let plain_path = dir.join("plain.wav");
+        let sfz_path = dir.join("sfz.wav");
+        let plain =
+            export_wav(&project, &plain_path, WavExportOptions::default()).expect("默认导出");
+        let with_sfz = export_wav_with_sfz(
+            &project,
+            &sfz_path,
+            WavExportOptions::default(),
+            Some(std::sync::Arc::new(instrument)),
+        )
+        .expect("带 SFZ 导出");
+        println!(
+            "[wav-sfz] 默认 source={} / 字节 {}；SFZ source={} / 字节 {}",
+            plain.source, plain.bytes, with_sfz.source, with_sfz.bytes
+        );
+        assert!(
+            with_sfz.source.contains("sfz"),
+            "报告必须明说走了 SFZ: {}",
+            with_sfz.source
+        );
+        assert!(
+            with_sfz.source.contains("内存正弦"),
+            "必须明说样本是内存正弦: {}",
+            with_sfz.source
+        );
+        let (_, buffer) = yeban_render::wav::read_plain_wav(&sfz_path).expect("可回读");
+        let nonzero = match &buffer {
+            yeban_render::dither::PcmBuffer::Int24(samples) => {
+                samples.iter().filter(|sample| **sample != 0).count()
+            }
+            other => panic!("24-bit 整数: {other:?}"),
+        };
+        assert!(nonzero > 0, "SFZ 版必须非静音（非零样本 {nonzero}）");
+        assert_ne!(
+            std::fs::read(&plain_path).expect("读默认版"),
+            std::fs::read(&sfz_path).expect("读 SFZ 版"),
+            "带 SFZ 与不带 SFZ 必须逐字节不同（否则接线没生效）"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
