@@ -67,9 +67,28 @@ run **37874676733** 在 Linux 上重录了这 5 张，并以提交 **`a062c38`**
 ⇒ 上文"逐字节比对**会红**"这一条至此**已解除**。下面这张表里的 5 行现在就是重录后的新哈希
 （该表由 `--write-table` 从磁盘重写；本段与上文的手写区块逐字节保留）。
 
+**⚠ 2026-10-11 再录一次（`line/ui-modules`，提交 `4f6cdfec`）**: 本票给四个模块能力加了可见入口 ——
+新增 `ui/module_actions.slint`（`AiRail` 内部右栏下半区，6 个语义节点：4 个按钮 + 小标题 + 回执行）。
+它们是**静态**控件（不是 `[UI-MCP-002]` 该遮罩的动态区）⇒ 默认帧像素改变 ⇒ 5 张基准确定性过期。
+生成方式与地点同上：手动档 `gates-manual.yml` 的 `gate=goldens`，run id **38135994642**（conclusion=success，
+job `goldens (生成分平台基准图集)` success，8 步，11:33:27Z–11:36:15Z），该步 `YEBAN_WRITE_GOLDEN=1 cargo
+test -p yeban-app --locked --test real_ui_tier1` 报 `22 passed; 0 failed; 1 ignored`，artifact `golden-linux`
+（id 11701170437，476540 字节）由集成者复核后入库（入库时间 UTC 2026-10-11T11:4x）。
+**入库前的复核（⚖ 判定量 = 矩形外不一致像素数）**: 把提交 `4f6cdfec` 的 5 张（旧）与 artifact 的 5 张（新）
+都用 Pillow 解码成 1920 × 1080 的 RGB 帧逐像素比较（numpy，逐通道）+ 用判据自己打印的实测包围盒
+`x ∈ [1648, 1912) × y ∈ [260, 432)` 分内外：
+- `app-main-window-arrangement-full` / `-session-full` / `app-model-driven-demo-project` /
+  `app-model-driven-filled-project`：**各 29,849 个差异像素**，差异包围盒**四张全为** `(1648, 263)..(1911, 407)`
+  ⇒ **完全落在上述矩形之内**，**矩形外不一致像素数 = 0**；
+- `app-main-window-arrangement-compact`：**零差异像素（逐字节相同）** —— compact 断点下右栏宽 0（改由抽屉承担）
+  ⇒ 新入口**不画** ⇒ 该张的 sha256 与本表上一版**一位未改**（因此 `--write-table` 只改写了 4 行，⛔ 不是漏改）。
+⚠ 两张的**字节数相同**（6222418）**不构成任何证据**（本仓 PNG 是存储式 deflate，1920×1080 恒为该长度）——
+判内容的是上面的 sha256 与逐像素读数。**artifact 自带的那份 `MANIFEST.txt` 是本次改动前的仓库副本（含旧哈希），
+未被采用**；本段与表由集成者在本机用 `--write-table` 重写。
+
 文件	sha256	字节
 app-main-window-arrangement-compact-1920x1080.png	fcdf6571e4b89e968c2abc408e0661a53929b4b8212bb492c5a75d20dcae90e5	6222418
-app-main-window-arrangement-full-1920x1080.png	251e90875c3e4979e0600fddcb8fddd9696a9631df94aa66e549947db452994b	6222418
-app-main-window-session-full-1920x1080.png	07acfae7e96139baf717361213655255a1297d346bfc62dfb5dbeeb093693ce3	6222418
-app-model-driven-demo-project-1920x1080.png	251e90875c3e4979e0600fddcb8fddd9696a9631df94aa66e549947db452994b	6222418
-app-model-driven-filled-project-1920x1080.png	08ee9253d573d0dee79883de93f316ac180a6392a4a3fc145f3cb876b8d31109	6222418
+app-main-window-arrangement-full-1920x1080.png	a7d562f799fbd9cd9a5a25a997bbf2fdcad025529598e138a00516db550b2b48	6222418
+app-main-window-session-full-1920x1080.png	9355651c2cb24e59cb4a7c1ba816c40e750aa84d5e49eefb8c3d2d30e3feb122	6222418
+app-model-driven-demo-project-1920x1080.png	a7d562f799fbd9cd9a5a25a997bbf2fdcad025529598e138a00516db550b2b48	6222418
+app-model-driven-filled-project-1920x1080.png	2b9fc7d518cfd946f5aeaf476898f7a0524653a8a6356c56d0728edb47b4bb65	6222418

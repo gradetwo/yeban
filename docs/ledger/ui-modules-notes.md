@@ -62,14 +62,14 @@ module:action=load-sfz:outcome=error:error=sfz-load:message="读 SFZ 失败: …
 错误码是稳定的：`export-wav` / `import-midi` / `sfz-load` / `record-wav`（模块自身拒绝）、
 `no-project`（没有工程读数）、`no-undo-port`（没有撤销会话，导入拒绝执行）。
 
-## 4. golden 影响（**本票未重录，交人/CI 判决**）
+## 4. golden 影响（**已按裁决重录**，见 §4.2）
 
-`crates/yeban-app/tests/golden/linux/` 的 5 张 PNG **已经**与源码不一致（台账 R9 的状态栏
-文本改动，MANIFEST 第 49-68 行有登记，重录走手动档 `gates-manual.yml` 的 `gate=goldens`）。
-本票在其上**再加**一处会改默认帧像素的改动：右栏 y=212..384 新增的 6 个语义节点。
-⇒ 重录时这 5 张都要重录；复核口径见下面的**实测包围盒**。
+本票给右栏下半区加了 6 个**静态**语义节点（4 个按钮 + 小标题 + 回执行）⇒ 默认帧像素改变
+⇒ 5 张 Linux 基准**确定性过期**。R9 的状态栏那一笔已在 `a062c38` 重录过（MANIFEST 第 60-68 行），
+所以本次的不一致**不是**继承的旧漂移 —— 归属由父提交的判决钉住：
+**父提交 `b3f9f805` 自己的 run `38134313408` 的 `rust (yeban-app)` = success（steps=12，test 步跑过且绿）**。
 本机是 macOS（`PlatformTag::current()` 指向仓库里**不存在**的 `golden/macos/`），
-且 `AGENTS.md` §5.2 禁止在本机编译 slint ⇒ **本票不重录**。
+且 `AGENTS.md` §5.2 禁止在本机编译 slint ⇒ **生成只能在 CI（Linux）**。
 
 ### 4.1 新增控件的**实测**包围盒（判据自己打印的，⛔ 不是手算）
 
@@ -87,8 +87,34 @@ module:action=load-sfz:outcome=error:error=sfz-load:message="读 SFZ 失败: …
 ```
 
 ⇒ **重录后的复核口径**：5 张基准与旧图的差异必须**全部落在 `x ∈ [1648, 1912)`、
-`y ∈ [260, 432)`** 这一个矩形内，矩形之外**逐字节相同**。
+`y ∈ [260, 432)`** 这一个矩形内，矩形之外**逐像素相同**。
 （`AiRail` 的画布起于 `y = 252`：顶栏 48 + 中段第一个子控件 204。）
+
+### 4.2 重录与复核（**已做**，2026-10-11）
+
+- 生成：手动档 `gates-manual.yml` 的 `gate=goldens`，**run `38135994642`**（conclusion=success；
+  job `goldens (生成分平台基准图集)` success steps=8，11:33:27Z–11:36:15Z；该步
+  `YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test real_ui_tier1` 报
+  `22 passed; 0 failed; 1 ignored`）。artifact `golden-linux`（id 11701170437，476540 字节）。
+- 入库：5 张 PNG 覆盖 `crates/yeban-app/tests/golden/linux/`，表由
+  `python3 scripts/gates/check_golden_manifest.py --write-table` 从磁盘重写。
+  **artifact 自带的那份 `MANIFEST.txt` 与仓库副本逐字节相同**（= 改动前的旧哈希）⇒ **未采用**。
+- 复核（判定量 = **矩形外不一致像素数**；量法 = Pillow 解码成 1920×1080 RGB 后 numpy 逐通道比较）：
+
+| 基准 | 差异像素 | 差异包围盒 | 矩形外 |
+| :--- | ---: | :--- | ---: |
+| `app-main-window-arrangement-compact-1920x1080.png` | **0**（逐字节相同） | —— | **0** |
+| `app-main-window-arrangement-full-1920x1080.png` | 29,849 | (1648, 263)..(1911, 407) | **0** |
+| `app-main-window-session-full-1920x1080.png` | 29,849 | (1648, 263)..(1911, 407) | **0** |
+| `app-model-driven-demo-project-1920x1080.png` | 29,849 | (1648, 263)..(1911, 407) | **0** |
+| `app-model-driven-filled-project-1920x1080.png` | 29,849 | (1648, 263)..(1911, 407) | **0** |
+
+⇒ **`RECT_OUTSIDE_DIFF_TOTAL = 0`**。compact 那张**零差异**是预期的：compact 断点下右栏宽 0
+（改由抽屉承担）⇒ 新入口不画 ⇒ 它的 sha256 与上一版**一位未改**（所以 `--write-table` 只改写了 **4** 行）。
+⚠ 5 张的**字节数全等**（6,222,418）**不构成证据**（本仓 PNG 用存储式 deflate，1920×1080 恒为该长度）
+—— 判内容的是 sha256 与上面的逐像素读数。
+- 脚本：`/tmp/verify_rect.py <old_dir> <new_dir> 1648 1912 260 432`（旧图由
+  `git show <重录前提交>:crates/yeban-app/tests/golden/linux/<name>.png` 导出）。
 
 ## 5. 读数（本机 macOS / Apple M2，debug 构建，命令可复跑）
 
@@ -159,8 +185,9 @@ python3 scripts/gates/measure_rss.py --label ui-module-actions-floor-no-render \
    **同一条测试通过**（5 passed）。本票**没有**验证"基线（未含本票改动）是否同样溢出"
    （那需要另一次全量构建）⇒ 登记为**未判定**，⛔ 不声称是本票引入的、也不声称不是。
    本票的四门因此用 `RUST_MIN_STACK=16777216` 跑（见 §5 的命令）。
-4. **golden 未重录**（见 §4）：5 张 Linux 基准仍需按手动档 `gates-manual.yml` 的
-   `gate=goldens` 重录 + 人工复核。
+4. ~~**golden 未重录**（见 §4）：5 张 Linux 基准仍需按手动档 `gates-manual.yml` 的
+   `gate=goldens` 重录 + 人工复核。~~ ⇒ **2026-10-11 已结清**：run `38135994642` 重录、
+   逐像素复核矩形外 = 0（见 §4.2）。
 5. **`ui-mcp` 的 `module-*` ID 未进 `VISIBLE_SINGLETONS`**：那是 `src/test_port_adapter.rs`
    的一份分母清单（判别"整块面板被裁掉"）。本票**没有**动它 —— 新入口的"可寻址"由
    `tests/ui_module_actions.rs` 自己断言（点名的 6 个 ID + 运行时树对注册表的双向覆盖）。
