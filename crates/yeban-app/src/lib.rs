@@ -86,6 +86,7 @@ pub mod import_midi;
 pub mod input;
 pub mod meters;
 pub mod open;
+pub mod sfz_load;
 // 工程文件的 `.yeban.lock` —— **与 `yeban-mcp` 字面上同一份源码**（`#[path]` 共享）。
 // `ROAD-M4-008` 选项 (a) 第三片：GUI 的保存路径与领域 MCP 参与**同一把**建议锁。
 // 它没有 feature 门：`--save-as` 在**默认构建**里也是写路径（见该模块的文档）。

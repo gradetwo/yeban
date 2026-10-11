@@ -47,6 +47,11 @@ slint = { workspace = true, features = [
 # 事实源 (ADR-0001 D5); 成员间 path 依赖的通配豁免见 ADR-0001 **D21**。
 # 红线 3 不受影响: 它约束的是**引擎层** crate 不得引入 GUI; 反向 (GUI 依赖模型) 正是规范要求的形态。
 yeban-model = { workspace = true }
+# SFZ 乐器装载（`SfzInstrument::load` 需要 `yeban_sfz::parser::ParseLimits`，而引擎**没有**把它
+# re-export ⇒ 从 app 侧够不着）⇒ 加一条**工作区内部**依赖边。⛔ 不是新的外部 crate
+# （`Cargo.lock` 里本来就有 `yeban-sfz`）⇒ `cargo deny` 的许可面不变；依赖图变了 ⇒ 按纪律
+# 重生成 `docs/ledger/dependency-licenses.md` 并一起提交。
+yeban-sfz = { workspace = true }
 
 # ---------------------------------------------------------------------------
 # yeban-render: SMF (MIDI) 导出的**唯一**编码器, app-export-midi 工作线

@@ -233,6 +233,9 @@ pub fn usage_text() -> String {
   --dump-elements          把语义元素注册表打印到 stdout (每行一个元素, 稳定顺序) [UI-TEST-001]
   --export-elements <path> 把同一份元素注册表**原子**写到文件, 便于脚本 / AI 消费;
                            与 --dump-elements 同时给 = 既打印又落盘
+  --sfz <path>             装载一份 SFZ 乐器: 报告区域数 + 一次音符探测(帧数与能量);
+                           ⚠ 今天只到装载层: SFZ 音色**尚未**接进 --export-wav 的音源链
+                           (输出行 wired_to_export=no), 样本数据是**内存正弦**而⛔非 wav
   --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
                            来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
                            (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
@@ -414,6 +417,7 @@ pub fn usage_text() -> String {
       --export-als 在本次构建未编译 `{als_feature}` /
       --export-logic 在本次构建未编译 `{logic_feature}`)
   {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
+  {open} --sfz 失败 (读文件 / SFZ 文本非法)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
@@ -431,6 +435,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --save-as copy.yeban
   yeban-app --open song.yeban --dump-elements
   yeban-app --open song.yeban --export-elements elements.txt
+  yeban-app --sfz strings.sfz --export-wav out.wav
   yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
   yeban-app --open song.yeban --export-wav song.wav
@@ -821,6 +826,13 @@ pub struct Options {
     /// ⇒ 同一命令里的 `--export-midi` / `--export-wav` / `--save-as` 都能看到导入的音符。
     /// 解析与映射全部完成后**才**发出一次提交 ⇒ 非法输入不会改坏工程。
     pub import_midi: Option<PathBuf>,
+    /// `--sfz <path>`：**装载**一份 SFZ 乐器并报告区域数与一次音符探测读数。
+    ///
+    /// ⚠ 今天只到"装载 ＋ 探测"这一层：SFZ 音色**尚未**接到 `--export-wav` 的音源链
+    /// （报告行里 `wired_to_export=no` 如实说明）。样本数据用**内存正弦**，
+    /// ⛔ 不是 SFZ 里 `sample=` 指到的 wav（本仓尚无采样文件读取/解码）。
+    /// 本开关**只读**（不建会话、不改工程）⇒ 与导出/保存可以任意组合。
+    pub sfz: Option<PathBuf>,
     /// `--export-midi <path>`：当前工程导出成标准 MIDI 文件（SMF 1）[ADR-0001 **D47**]。
     pub export_midi: Option<PathBuf>,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 24-bit WAV（导出族）。
@@ -1220,6 +1232,10 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--sfz" => {
+                let value = take_value("--sfz", inline, args, &mut cursor)?;
+                set_once(&mut options.sfz, "--sfz", PathBuf::from(value))?;
+            }
             "--import-midi" => {
                 let value = take_value("--import-midi", inline, args, &mut cursor)?;
                 set_once(
@@ -1587,6 +1603,13 @@ pub enum CliError {
         /// 落盘层的原样裁决。
         source: SaveError,
     },
+    /// `--sfz` 失败（读文件 / SFZ 文本非法）。
+    Sfz {
+        /// SFZ 文件路径。
+        path: PathBuf,
+        /// 装载层的原样裁决。
+        source: crate::sfz_load::SfzLoadError,
+    },
     /// `--import-midi` 失败（读文件 / 解析 / 没有目标 / 提交被拒）。
     ImportMidi {
         /// 源文件路径。
@@ -1666,7 +1689,7 @@ impl CliError {
             | Self::McpHttpNotBatch => EXIT_UI,
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
-            Self::Open { .. } | Self::ImportMidi { .. } => EXIT_OPEN,
+            Self::Open { .. } | Self::ImportMidi { .. } | Self::Sfz { .. } => EXIT_OPEN,
             Self::Save { .. } => EXIT_SAVE,
             Self::Export { .. }
             | Self::ExportMidi { .. }
@@ -1695,6 +1718,9 @@ impl fmt::Display for CliError {
                 "导出元素清单到 `{}` 失败: {source}",
                 path.display()
             ),
+            Self::Sfz { path, source } => {
+                write!(formatter, "装载 SFZ `{}` 失败: {source}", path.display())
+            }
             Self::ImportMidi { path, source } => {
                 write!(
                     formatter,
@@ -1761,6 +1787,7 @@ impl std::error::Error for CliError {
         match self {
             Self::Open { source, .. } => Some(source),
             Self::ImportMidi { source, .. } => Some(source),
+            Self::Sfz { source, .. } => Some(source),
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
             Self::ExportMidi { source, .. } => Some(source),
@@ -2443,6 +2470,18 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         lines.extend(view_report(view));
     }
     lines.push(HEADLESS_BOUNDARY.to_owned());
+
+    // SFZ 装载 ＋ 音符探测：**只读**（不改工程、不写文件），所以它只影响输出行。
+    // ⚠ 诚实登记：SFZ 音色**尚未**接进导出音源链（报告行 `wired_to_export=no`）。
+    if let Some(path) = options.sfz.as_ref() {
+        let report =
+            crate::sfz_load::load_sfz(path, Some(crate::sfz_load::DEFAULT_PROBE_NOTE), 48_000.0)
+                .map_err(|source| CliError::Sfz {
+                    path: path.clone(),
+                    source,
+                })?;
+        lines.push(report.summary());
+    }
 
     // 顺序契约（`--help` 的组合语义一节）：**导入 → 导出 → 保存工程**。
     // 导入是编辑，所以它先发生，同一命令里的导出与保存都能看到导入的音符。
@@ -4323,6 +4362,93 @@ mod tests {
         (74, 1920),
         (76, 2400),
     ];
+
+    /// `--sfz`：装载一份最小 SFZ ⇒ 报告里的区域数与文件内容一致，且输出行**如实**说明
+    /// 样本来源与"尚未接到导出"。
+    #[test]
+    fn sfz_load_reports_the_region_count_and_says_what_is_not_wired() {
+        let dir = scratch_dir("sfz-load");
+        let sfz = dir.join("two-regions.sfz");
+        std::fs::write(
+            &sfz,
+            "<region> sample=a.wav key=60\n<region> sample=b.wav key=64\n",
+        )
+        .expect("写夹具");
+        let lines =
+            run_batch(&parse(&["--sfz".to_owned(), sfz.display().to_string()]).expect("解析"))
+                .expect("装载必须成功");
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("loaded-sfz:"))
+            .expect("必须有 loaded-sfz 报告行");
+        assert!(line.contains("regions=2"), "区域数必须与文件一致: {line}");
+        assert!(
+            line.contains("sample_source=in-memory-sine(440Hz)"),
+            "必须如实说明样本来源（⛔ 不是 wav）: {line}"
+        );
+        assert!(
+            line.contains("wired_to_export=no"),
+            "必须如实说明尚未接到导出: {line}"
+        );
+        assert!(line.contains("bytes="), "必须报告字节数: {line}");
+    }
+
+    /// `--sfz` 的**失败路径**：文件不存在 ⇒ 与 `--open` 同族退出码，⛔ 不 panic，且**不新增任何文件**。
+    #[test]
+    fn sfz_load_refuses_a_missing_file_without_writing_anything() {
+        let dir = scratch_dir("sfz-missing");
+        let missing = dir.join("nope.sfz");
+        let before: Vec<String> = std::fs::read_dir(&dir)
+            .expect("列目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let error =
+            run_batch(&parse(&["--sfz".to_owned(), missing.display().to_string()]).expect("解析"))
+                .expect_err("文件不存在必须失败");
+        assert_eq!(
+            error.exit_code(),
+            EXIT_OPEN,
+            "与 `--open` 同族：输入文件不可用"
+        );
+        assert!(
+            error.to_string().contains("装载 SFZ"),
+            "必须转达装载层的精确裁决: {error}"
+        );
+        let after: Vec<String> = std::fs::read_dir(&dir)
+            .expect("列目录")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(after, before, "失败 ⇒ 一个文件都不许新增（⛔ 不留半成品）");
+    }
+
+    /// `--sfz` 的**实测登记（一个真缺口）**：SFZ 解析器**容忍**自由文本 ⇒ 垃圾输入**不报错**，
+    /// 而是被当作**零区域**文件接受（`regions=0`）⇒ 用户不会得到"这份 SFZ 不对"的提示。
+    ///
+    /// ⚠ 本判据**钉住今天的事实**并把缺口写进输出行；它变红之日 = 解析器开始拒绝垃圾输入之时，
+    /// 届时更新本判据（⛔ 不是删掉它）。⛔ 本判据不声称"零区域 = 合法乐器"。
+    #[test]
+    fn sfz_load_registers_that_free_text_is_accepted_as_zero_regions() {
+        let dir = scratch_dir("sfz-garbage");
+        let junk = dir.join("junk.sfz");
+        std::fs::write(&junk, "this is not sfz at all").expect("写垃圾");
+        let lines =
+            run_batch(&parse(&["--sfz".to_owned(), junk.display().to_string()]).expect("解析"))
+                .expect("引擎的解析器容忍自由文本（本机实测）");
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("loaded-sfz:"))
+            .expect("必须有报告行");
+        assert!(
+            line.contains("regions=0"),
+            "垃圾输入今天被当成零区域（缺口登记）: {line}"
+        );
+        assert!(
+            line.contains("wired_to_export=no"),
+            "必须继续如实说明未接到导出: {line}"
+        );
+    }
 
     /// `--import-midi`：导入一段真 SMF（由 `--export-midi` 现造）⇒ 音符数按文件增加，
     /// **来源标记是 `midi-input`**（本切片的核心语义），且 `--save-as` 保存的是**导入后**的工程。
