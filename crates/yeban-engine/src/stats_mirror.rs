@@ -149,6 +149,8 @@ const fn decode_transport(code: u8) -> TransportState {
 pub struct EngineStatsMirror {
     quanta: AtomicU64,
     events_applied: AtomicU64,
+    note_steals: AtomicU64,
+    orphan_note_offs: AtomicU64,
     snapshot_switches: AtomicU64,
     event_bulk_pops: AtomicU64,
     meter_frames: AtomicU64,
@@ -217,6 +219,8 @@ impl EngineStatsMirror {
         Self {
             quanta: AtomicU64::new(0),
             events_applied: AtomicU64::new(0),
+            note_steals: AtomicU64::new(0),
+            orphan_note_offs: AtomicU64::new(0),
             snapshot_switches: AtomicU64::new(0),
             event_bulk_pops: AtomicU64::new(0),
             meter_frames: AtomicU64::new(0),
@@ -289,6 +293,9 @@ impl EngineStatsMirror {
         self.quanta.store(stats.quanta, Ordering::Relaxed);
         self.events_applied
             .store(stats.events_applied, Ordering::Relaxed);
+        self.note_steals.store(stats.note_steals, Ordering::Relaxed);
+        self.orphan_note_offs
+            .store(stats.orphan_note_offs, Ordering::Relaxed);
         self.snapshot_switches
             .store(stats.snapshot_switches, Ordering::Relaxed);
         self.event_bulk_pops
@@ -419,6 +426,8 @@ impl EngineStatsMirror {
         EngineStats {
             quanta: self.quanta.load(Ordering::Relaxed),
             events_applied: self.events_applied.load(Ordering::Relaxed),
+            note_steals: self.note_steals.load(Ordering::Relaxed),
+            orphan_note_offs: self.orphan_note_offs.load(Ordering::Relaxed),
             snapshot_switches: self.snapshot_switches.load(Ordering::Relaxed),
             event_bulk_pops: self.event_bulk_pops.load(Ordering::Relaxed),
             meter_frames: self.meter_frames.load(Ordering::Relaxed),
@@ -525,6 +534,8 @@ mod tests {
         EngineStats {
             quanta: 1,
             events_applied: 2,
+            note_steals: 60,
+            orphan_note_offs: 61,
             snapshot_switches: 3,
             event_bulk_pops: 4,
             meter_frames: 5,

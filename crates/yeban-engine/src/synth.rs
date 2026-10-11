@@ -1029,6 +1029,52 @@ impl SynthEngine {
         }
     }
 
+    /// ⭐ **推一个活音符**（环事件 `EngineEvent::NoteOn` 的落地）。
+    ///
+    /// * ⭐ `gain = velocity_gain(velocity) * slot.gain_scale` ⇒ ⭐ 与**已调度**音符
+    ///   **同一个来源**（⭐ 见 [`track_gain_scale`] 与 [`SynthEngine::set_track_gain_scales`]）；
+    /// * ⭐ `start_sample = position`（⭐ 现在），⭐ `end_sample = u64::MAX`（⭐ **开区间**：
+    ///   活音符由 `NoteOff` 结束，⛔ 不靠定时）；
+    /// * ⭐ **先**对同一频率做一次 [`PolySynth::note_off`]（⭐ 裁定：⭐ 同 pitch 未松键又按
+    ///   ⇒ **抢占同一槽、⭐ 重触发**）⇒ ⭐ 返回值告诉调用方"⭐ 是否发生了抢占/重触发"；
+    /// * ⭐ **实时路径**：零分配、零锁、零 I/O。
+    ///
+    /// ⚠ ⭐ `u64::MAX` 的代价（⭐ 裁定 (B)）：⭐ [`PolySynth::retire_finished`] 的谓词要求
+    /// `end_sample <= position` ⇒ ⭐ 活音符**不会**被它回收 ⇒ ⭐ 声部由**池满窃取**回收
+    /// （⭐ 每槽 ≤ [`VOICES_PER_TRACK`] 个 ⇒ 有界）。⭐ 听觉上正确、⭐ 槽位回收延迟。
+    pub fn note_on(&mut self, track: EntityId, pitch: u8, velocity: u8) -> bool {
+        let Some(index) = self.slot_index(track) else {
+            return false;
+        };
+        if !self.slots[index].present {
+            return false;
+        }
+        let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
+        // ⭐ 池满 ⇒ 这一次会走窃取路径（⭐ 触发**之前**量，⭐ 触发之后就不是"满"了）。
+        let pool_full = self.slots[index].synth.active_voices() >= VOICES_PER_TRACK;
+        // ⭐ 同 pitch 重触发：⭐ 先松、⭐ 再触发（⭐ 裁定：⭐ 抢占同一槽）。
+        let retriggered = self.slots[index].synth.note_off(freq_hz) > 0;
+        let gain = velocity_gain(velocity) * self.slots[index].gain_scale;
+        self.slots[index].synth.note_on(
+            NoteEvent::new(self.position, u64::MAX, freq_hz, gain),
+            &self.tables,
+        );
+        pool_full || retriggered
+    }
+
+    /// ⭐ **松一个活音符**（环事件 `EngineEvent::NoteOff` 的落地）。
+    ///
+    /// 返回"⭐ 是否找到了匹配的活跃声部"：⭐ `false` ⇒ ⭐ 调用方按**合并口径**登记
+    /// （⭐ 不区分"⭐ 从未存在"／"⭐ 已被窃取或换音"）。
+    /// ⭐ **实时路径**：零分配、零锁、零 I/O。
+    pub fn note_off(&mut self, track: EntityId, pitch: u8) -> bool {
+        let Some(index) = self.slot_index(track) else {
+            return false;
+        };
+        let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
+        self.slots[index].synth.note_off(freq_hz) > 0
+    }
+
     /// 因 [`MAX_TRACK_SLOTS`] 耗尽而未获槽位的轨道次数。
     #[must_use]
     pub const fn track_drops(&self) -> u64 {

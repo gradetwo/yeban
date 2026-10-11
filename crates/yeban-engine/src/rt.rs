@@ -171,6 +171,16 @@ pub struct EngineStats {
     pub quanta: u64,
     /// 累计应用的事件条数（不含 `Idle` 填充）。
     pub events_applied: u64,
+    /// ⭐ 环音符事件触发时的**窃取/重触发**次数（⭐ 与 `events_applied` **分开**）。
+    ///
+    /// ⚠ 口径：⭐ 池满（`active_voices == VOICES_PER_TRACK`）或"⭐ 同 pitch 未松键又按"
+    /// ⇒ ⭐ +1。⚠ ⭐ **不区分**被窃取者是否已 `Idle`（⭐ 器件内部状态，⭐ 这里看不到）。
+    pub note_steals: u64,
+    /// ⭐ `NoteOff` **找不到匹配活跃声部**的次数（⭐ 与 `events_applied` **分开**）。
+    ///
+    /// ⚠ **合并口径**：⭐ 本计数**不区分**"⭐ 从未存在过"与"⭐ 已被窃取/⭐ 已换音"
+    /// （⭐ 因为不记槽位 ⇒ ⭐ 两者无法区分）。⭐ ⛔ 别读成"⭐ 从未存在"。
+    pub orphan_note_offs: u64,
     /// 累计快照切换次数。
     pub snapshot_switches: u64,
     /// 累计批量出队调用次数（结构性判据：应等于 `quanta`）。
@@ -963,6 +973,10 @@ pub struct EngineRuntime {
     armed_revision: Option<u64>,
     quanta: u64,
     events_applied: u64,
+    /// ⭐ 环音符事件的窃取/重触发次数（⭐ 与 `events_applied` 分开；⭐ 见 `EngineStats`）。
+    note_steals: u64,
+    /// ⭐ `NoteOff` 找不到匹配声部的次数（⭐ 合并口径；⭐ 见 `EngineStats`）。
+    orphan_note_offs: u64,
     event_bulk_pops: u64,
     meter_frames: u64,
     meter_bulk_publishes: u64,
@@ -1128,6 +1142,8 @@ impl EngineRuntime {
             armed_revision: None,
             quanta: 0,
             events_applied: 0,
+            note_steals: 0,
+            orphan_note_offs: 0,
             event_bulk_pops: 0,
             meter_frames: 0,
             meter_bulk_publishes: 0,
@@ -1228,6 +1244,8 @@ impl EngineRuntime {
         EngineStats {
             quanta: self.quanta,
             events_applied: self.events_applied,
+            note_steals: self.note_steals,
+            orphan_note_offs: self.orphan_note_offs,
             snapshot_switches: self.snapshot.switches(),
             event_bulk_pops: self.event_bulk_pops,
             meter_frames: self.meter_frames,
@@ -1784,6 +1802,8 @@ impl EngineRuntime {
             armed_note_schedule_drops,
             quanta,
             events_applied,
+            note_steals,
+            orphan_note_offs,
             event_bulk_pops,
             meter_frames,
             meter_bulk_publishes,
@@ -1864,6 +1884,23 @@ impl EngineRuntime {
                 // 新位置之后的拍栅格上，而不是继续等第 9 小节的强拍（`ticks_per_beat`
                 // 为 0 = 还没有任何快照被武装 ⇒ `resync` 不发明栅格）。
                 metronome.resync(transport.position_ticks(), *armed_metronome_ticks_per_beat);
+            }
+            // ⭐ 环音符事件：⭐ `NoteOn` ⇒ 推活音符；⭐ `NoteOff` ⇒ 松它。
+            // ⚠ ⭐ 计数与 `events_applied` **分开**：⭐ `events_applied` 只数"⭐ 事件到了"，
+            // ⭐ 这两个数"⭐ 窃取了"与"⭐ 松键没找到"（⭐ 判据⛔ 不许拿它们单独举证发声）。
+            if let EngineEvent::NoteOn {
+                track,
+                pitch,
+                velocity,
+            } = event
+                && synth.note_on(track, pitch, velocity)
+            {
+                *note_steals = note_steals.wrapping_add(1);
+            }
+            if let EngineEvent::NoteOff { track, pitch } = event
+                && !synth.note_off(track, pitch)
+            {
+                *orphan_note_offs = orphan_note_offs.wrapping_add(1);
             }
         });
         *event_bulk_pops = event_bulk_pops.wrapping_add(1);
