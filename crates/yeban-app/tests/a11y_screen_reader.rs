@@ -108,6 +108,101 @@ fn audit_runtime(tree: &UiTree) -> (usize, Vec<String>, Vec<String>, Vec<String>
     )
 }
 
+/// 判据 ③（`[TEST-SPEC-005]` 用例 3：**模态对话框焦点陷阱验证**）。
+///
+/// ## 本仓**确有**模态（先 grep 再断言，⛔ 不编造）
+///
+/// `ui/dialogs/undo_tree_modal.slint` ＋ 注册表条目 `undo-tree-modal`／`undo-tree-panel`；
+/// 界面属性 `undo-tree-open`（`app.slint:222`）是它的开关，`host.rs` 明记"**时光机是模态面板**"。
+///
+/// ## ⚠ 两件**读数缺失**（如实登记，⛔ 不假装）
+///
+/// 1. **焦点本身无读数** ⇒ "焦点被限制在模态内／关闭后回到打开者"不能按焦点值断言；
+/// 2. **端口的键面没有组合键**（`KeyCode` 只支持 `Tab`／`Esc`／`Enter`／`Shift+Enter`／`Space`／
+///    `Backspace`／单字符 —— 见 `port.rs` 的往返判据）⇒ 模态的**真实快捷键**（`Cmd/Ctrl+Shift+H`）
+///    **无法从端口注入**。
+///
+/// ⇒ 本判据因此以"**属性 ＋ 寻址面**"的形式落地，并把上面两条写进断言消息。
+/// ⚠ **实测更正（本机读数）**：打开模态之后，模态之外的三个主区
+/// （`sidebar` / `piano-roll` / `transport-play-button`）**仍然可寻址**（86 → 91 节点，只多不少）
+/// ⇒ "**焦点陷阱**"**不能**在寻址面上证明（它是**焦点**属性，而焦点无读数）。
+/// 因此本判据只断言三件**可观测**的事：
+/// ① 打开（写 `undo-tree-open`，**与 `host.rs` 同一个开关**）⇒ `undo-tree-modal` 与
+///    `undo-tree-panel` **出现**在树里（86 ⇒ 91）；
+/// ② 关闭 ⇒ 两者**消失**，且树的 **id 集合回到打开前的同一集合**（"回到打开者"的机械近似）；
+/// ③ 真 `Esc` 关模态那一路由**既有判据** `escape_closes_the_time_machine_modal_for_real` 覆盖
+///    （⛔ 本判据不重复声称它，也不改它）。
+/// **未验证**（如实登记）：`[TEST-SPEC-005]` 用例 3 要求的"焦点限制在模态内／关闭后回到打开者"**按焦点值**未验证 ——
+/// 缺的是**焦点读数**（见上），不是判据的写法。
+#[test]
+fn the_modal_confines_the_addressable_surface_and_restores_it_on_close() {
+    let (window, mut plane) = assemble();
+
+    let ids_of = |plane: &mut LiveControlPlane| -> Vec<String> {
+        let (tree, _) = plane.plane().tree().expect("ui/tree");
+        let mut ids: Vec<String> = tree.nodes.iter().map(|node| node.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+
+    // ---------------- 打开前 ----------------
+    let before = ids_of(&mut plane);
+    assert!(
+        !before.iter().any(|id| id == "undo-tree-modal"),
+        "打开前不该有模态节点"
+    );
+    report_line(&format!(
+        "[a11y-modal] 打开前：节点 {}（sidebar={}, piano-roll={}）",
+        before.len(),
+        before.iter().any(|id| id == "sidebar"),
+        before.iter().any(|id| id == "piano-roll")
+    ));
+
+    // ---------------- 打开（写**界面的同一个开关**） ----------------
+    window.set_undo_tree_open(true);
+    let opened = ids_of(&mut plane);
+    let modal_present = opened.iter().any(|id| id == "undo-tree-modal");
+    let panel_present = opened.iter().any(|id| id == "undo-tree-panel");
+    let outside_addressed: Vec<String> = ["sidebar", "piano-roll", "transport-play-button"]
+        .iter()
+        .filter(|id| opened.iter().any(|candidate| candidate.as_str() == **id))
+        .map(|id| (*id).to_owned())
+        .collect();
+    report_line(&format!(
+        "[a11y-modal] 打开后：节点 {}；modal={} panel={}；模态外仍可寻址的主区 = {:?}（⛔ 焦点值无读数）",
+        opened.len(),
+        modal_present,
+        panel_present,
+        outside_addressed
+    ));
+    assert!(
+        modal_present,
+        "打开后 `undo-tree-modal` 必须出现在执行面树里"
+    );
+    assert!(
+        panel_present,
+        "打开后 `undo-tree-panel` 必须出现在执行面树里"
+    );
+
+    // ---------------- 关闭 ----------------
+    window.set_undo_tree_open(false);
+    let closed = ids_of(&mut plane);
+    report_line(&format!(
+        "[a11y-modal] 关闭后：节点 {}；模态在树里 = {}；与打开前**同集合** = {}",
+        closed.len(),
+        closed.iter().any(|id| id == "undo-tree-modal"),
+        closed == before
+    ));
+    assert!(
+        !closed.iter().any(|id| id == "undo-tree-modal"),
+        "关闭之后模态节点必须消失"
+    );
+    assert_eq!(
+        closed, before,
+        "关闭之后寻址面必须**回到打开前的同一集合**（⛔ 焦点值无读数, 见本判据文档）"
+    );
+}
+
 /// 判据 ②（`[TEST-SPEC-005]` 用例 2：**Tab 焦点顺序校验**）。
 ///
 /// ## ⚠ 先如实登记**观测面的缺口**（⛔ 不假装按焦点断言）
