@@ -45,6 +45,7 @@
 //! | [`export_midi`] | `yeban_export_midi`：`yeban-midi` 共享映射 → SMF 字节（base64 回传，只读） |
 //! | [`extension_pure`] | 三个扩展工具的**零第三方依赖**纯逻辑（词表 / 来源二选一 / 确定性标签），本机可单独验证 |
 //! | [`extension_audit`] | **零依赖**文本守卫：写路径 / `dryRun` 入口 / 错误码词表 / 无孤儿模块，本机可单独验证 |
+//! | [`sfz`] | `yeban_load_sfz` / `yeban_render_sfz_wav`：`yeban-sfz` 装载 + 用 SFZ 区域离线导出 WAV |
 
 pub mod automation;
 pub mod automation_audit;
@@ -66,6 +67,7 @@ pub mod render_clip_math;
 pub mod render_math;
 pub mod section;
 pub mod section_build;
+pub mod sfz;
 pub mod store;
 pub mod view;
 
@@ -193,6 +195,17 @@ pub struct Domain {
     /// 不进 `project.json` 也不进 `history.dag`。
     readings_tail: Vec<(u64, engine_state::EngineReadings)>,
     now_ms: u64,
+    /// **会话内已装载的 SFZ 乐器**（`yeban_load_sfz` 的登记表），键 = instrumentId。
+    ///
+    /// `BTreeMap` 而不是 `HashMap`：红线 4 的确定性精神（响应里的 `instrumentId`
+    /// 分配与列举都必须跨进程、跨重启稳定）。
+    ///
+    /// 它是**会话运行态**（`MODEL-ISO-001` 第 2 层）：打开 / 关闭工程整体重置，
+    /// 不进 `project.json`、不进 `history.dag`，也不进任何落盘路径 ——
+    /// 因此"装载一份 SFZ"**不是**一个 `Op`，提交图谱一位都不动。
+    sfz_instruments: BTreeMap<u64, sfz::SfzLoad>,
+    /// 下一个 `instrumentId`（单调；从 1 开始，`0` 从不出现 ⇒ 客户端可把它当"未提供"）。
+    sfz_next_id: u64,
     /// **施加修订号**：每施加一个**可能改工程**的计划就 +1（只读计划不推进）。
     ///
     /// 它是**宿主投影刷新的触发口径**（`ROAD-M4-008` 选项 (a)）：形态 A 的
@@ -225,8 +238,42 @@ impl Domain {
             readings_revision: 0,
             readings_tail: Vec::new(),
             now_ms: 0,
+            sfz_instruments: BTreeMap::new(),
+            sfz_next_id: 1,
             apply_revision: 0,
         }
+    }
+
+    /// 会话内已装载的 SFZ 乐器数。
+    #[must_use]
+    pub fn sfz_instrument_count(&self) -> usize {
+        self.sfz_instruments.len()
+    }
+
+    /// 按 `instrumentId` 取一份已装载的 SFZ（只读；`yeban_render_sfz_wav` 的唯一来源）。
+    #[must_use]
+    pub fn sfz_instrument(&self, id: u64) -> Option<&sfz::SfzLoad> {
+        self.sfz_instruments.get(&id)
+    }
+
+    /// 已装载的 `instrumentId`（升序）。
+    #[must_use]
+    pub fn sfz_instrument_ids(&self) -> Vec<u64> {
+        self.sfz_instruments.keys().copied().collect()
+    }
+
+    /// 按**内容摘要**找一份已装载的 SFZ（内容寻址：同一份文本只登记一次）。
+    #[must_use]
+    pub fn sfz_instrument_by_digest(&self, digest: &str) -> Option<&sfz::SfzLoad> {
+        self.sfz_instruments
+            .values()
+            .find(|instrument| instrument.digest == digest)
+    }
+
+    /// 下一个 `instrumentId`（`yeban_load_sfz` 的 `plan` 用它给出**确定性**身份）。
+    #[must_use]
+    pub const fn sfz_next_id(&self) -> u64 {
+        self.sfz_next_id
     }
 
     /// **施加修订号**（`0` = 从未施加过任何可能改工程的计划）。
@@ -550,6 +597,11 @@ impl Domain {
     fn reset_history(&mut self, seed: SessionSeed) -> Result<(), Fault> {
         self.graph = CommitGraph::new();
         self.proposals.clear();
+        // 已装载的 SFZ 乐器是**会话运行态**（[MODEL-ISO-001] 第 2 层）：
+        // 换一个工程之后旧乐器的 instrumentId 不该还能用（那会让"上一份工程的
+        // 乐器"悄悄参与这一份工程的导出）。
+        self.sfz_instruments.clear();
+        self.sfz_next_id = 1;
         self.undo = undo_session::UndoState::new(AGENT_NAME);
         if let Some(history) = seed.history {
             self.graph = history;
@@ -849,6 +901,16 @@ pub enum Plan {
         /// 只读规划的产物（SMF 字节 + 计数 + SHA-256）。
         export: Box<export_midi::MidiExportArtifact>,
     },
+    /// `yeban_load_sfz`：装载一份 SFZ 乐器进**会话态**（不改工程、不落盘）。
+    LoadSfz {
+        /// 已经解析好的装载产物（`apply` 把它登记进会话 registry）。
+        load: Box<sfz::SfzLoad>,
+    },
+    /// `yeban_render_sfz_wav`：用已装载的 SFZ 音色导出 WAV（渲染 + 编码都在 `plan` 里）。
+    RenderSfzWav {
+        /// 已经渲染并编码好的产物（`apply` 只落盘）。
+        artifact: Box<sfz::SfzWavArtifact>,
+    },
     /// **宿主动作**（形态 A 的 GUI 经唯一可变权威写入；`ROAD-M4-008` 选项 (a) 第二片）。
     ///
     /// 工具面的 [`plan`] **永远不产出**这个变体（它不是任何一个 `yeban_*` 工具）；
@@ -877,6 +939,8 @@ impl Plan {
             Self::EngineState { .. } => "engine_state",
             Self::ImportAudio { .. } => "import_audio",
             Self::ExportMidi { .. } => "export_midi",
+            Self::LoadSfz { .. } => "load_sfz",
+            Self::RenderSfzWav { .. } => "render_sfz_wav",
             // 宿主动作不是工具（`plan` 不产出它）；名字只用于留痕与判据点名。
             Self::Host(_) => "host_action",
         }
@@ -910,6 +974,9 @@ impl Plan {
             | Self::EngineState { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
+            // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出只写盘。
+            | Self::LoadSfz { .. }
+            | Self::RenderSfzWav { .. }
             // 撤销 / 重做**不动提交图谱**（只动文档与游标）⇒ 提交数不变。
             | Self::Undo { .. }
             | Self::Redo { .. } => 0,
@@ -967,7 +1034,10 @@ impl Plan {
             // 引擎/会话读数是**只读**的。
             | Self::EngineState { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
-            | Self::ExportMidi { .. } => false,
+            | Self::ExportMidi { .. }
+            // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出只写盘。
+            | Self::LoadSfz { .. }
+            | Self::RenderSfzWav { .. } => false,
         }
     }
 
@@ -1092,7 +1162,9 @@ impl Plan {
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
             | Self::EngineState { .. }
-            | Self::ExportMidi { .. } => Ok(None),
+            | Self::ExportMidi { .. }
+            | Self::LoadSfz { .. }
+            | Self::RenderSfzWav { .. } => Ok(None),
         }
     }
 
@@ -1239,6 +1311,24 @@ impl Plan {
                 );
                 preview.insert("reason".to_owned(), Value::from(reason.clone()));
                 preview.insert("proposal".to_owned(), snapshot.summary());
+            }
+            Self::LoadSfz { load } => {
+                // 装载在 `plan`（只读）里就完成了: 因此预览里的区域数与 SHA-256
+                // 都是**实测值**。登记（拿 instrumentId）只发生在 `apply`。
+                if let Value::Object(details) = load.preview() {
+                    for (key, value) in details {
+                        preview.insert(key, value);
+                    }
+                }
+            }
+            Self::RenderSfzWav { artifact } => {
+                // 渲染与编码在 `plan`（只读）里就完成了: 帧数 / 字节数 / SHA-256
+                // 都是实测值。落盘只发生在 `apply`。
+                if let Value::Object(details) = artifact.preview() {
+                    for (key, value) in details {
+                        preview.insert(key, value);
+                    }
+                }
             }
             Self::RenderMaster { artifact } => {
                 // 渲染在 `plan`（只读）里就完成了: 因此预览里的字节数、SHA-256、帧数
@@ -1558,6 +1648,8 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
         "yeban_export_midi" => plan_export_midi(domain, call),
+        "yeban_load_sfz" => plan_load_sfz(domain, call),
+        "yeban_render_sfz_wav" => plan_render_sfz_wav(domain, call),
         // `ToolCall::from_params` 已按契约枚举把关, 因此这里不可达;
         // 用 CONFLICT 而不是 panic: 未知工具名不该让服务进程倒下。
         other => Err(Fault::domain(
@@ -2450,6 +2542,111 @@ fn plan_export_midi(domain: &Domain, _call: &ToolCall) -> Result<Plan, Fault> {
 }
 
 // ---------------------------------------------------------------------------
+// 本线的 SFZ 两条扩展的 plan（`domain/sfz.rs`）
+// ---------------------------------------------------------------------------
+
+/// `yeban_load_sfz`（**只读**）：读文件 + 解析 + 算摘要。
+///
+/// 身份分配是**内容寻址**的：同一份文本（同一个 SHA-256）已经在会话里装载过
+/// ⇒ 复用它的 `instrumentId` 并如实标 `reused: true`。这样"同一次会话里
+/// 反复装载同一份 SFZ"不会把 registry 撑大，也不会让此前引用该 id 的调用失效。
+///
+/// **不碰工程状态**、**不落盘**。读盘是"装载"这件事本身的语义（与
+/// `yeban_open_project` 的 `plan` 真的读盘同一条口径）。
+fn plan_load_sfz(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let (path, sample_hz) = sfz::parse_load_arguments(&call.arguments)?;
+    // 先算内容摘要（`load` 内部会算），因此这里先用文件字节判重用。
+    let bytes = std::fs::read(&path).map_err(|error| {
+        Fault::domain_with_data(
+            ErrorCode::IoError,
+            format!("读 SFZ 文件失败: {} ({error})", path.display()),
+            serde_json::json!({
+                "reason": "sfzReadFailed",
+                "path": path.display().to_string(),
+                "ioError": error.kind().to_string(),
+            }),
+        )
+    })?;
+    let digest = AssetHash::of_bytes(&bytes).as_str().to_owned();
+    let existing = domain.sfz_instrument_by_digest(&digest);
+    let (assign_id, reused) = match existing {
+        Some(instrument) => (instrument.id, true),
+        None => (domain.sfz_next_id(), false),
+    };
+    let load = sfz::load(&path, sample_hz, assign_id, reused)?;
+    Ok(Plan::LoadSfz {
+        load: Box::new(load),
+    })
+}
+
+/// `yeban_render_sfz_wav`：用**已装载**的 SFZ 音色把活跃工程的 MIDI 音符导出成 WAV。
+///
+/// **渲染 + 编码都在 `plan` 里完成**（与 `yeban_render_master` 同一条切分）：
+/// 因此 `dryRun` 拿到的是实测帧数 / 字节数 / SHA-256，且一个字节都不写盘。
+/// 落盘是 `apply` 的事。
+fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    let project = require_active(domain)?;
+    let project_path = domain.active_path().ok_or_else(no_active_project)?;
+    let request = sfz::validate(&call.arguments)?;
+    let instrument = domain.sfz_instrument(request.instrument_id).ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "会话里没有 instrumentId = {} 的 SFZ 乐器 (先调 yeban_load_sfz; 打开/关闭工程会清空会话 registry)",
+                request.instrument_id
+            ),
+            serde_json::json!({
+                "reason": "sfzInstrumentNotFound",
+                "instrumentId": request.instrument_id,
+                "loadedInstruments": domain.sfz_instrument_ids(),
+            }),
+        )
+    })?;
+    // 输出路径的两条安全护栏与 `yeban_render_master` **同一条**（不许覆盖工程或锁文件）。
+    render::guard_output_path(&request.path, project_path)?;
+    let (notes, notes_silenced) = sfz::collect_notes(project, request.sample_rate, request.note);
+    let outcome = instrument.with_instrument(|parsed| {
+        sfz::render(
+            parsed,
+            &notes,
+            request.tone_hz,
+            request.frames,
+            request.sample_rate,
+        )
+    })??;
+    // 编码**复用**与 `yeban_render_master` 同一份实现（`write_master_container`）：
+    // 24-bit PCM + 同一份 TPDF 抖动 + 同一个容器写入器。`with_bext = false` 是
+    // 两者唯一刻意的差别 —— 本工具不写 `bext`（无时间戳）⇒ 同一请求逐字节可复现。
+    let (bytes, _container, header_bytes, payload_bytes, _date, _time, _reference, _history) =
+        render::write_master_container(
+            &outcome.samples,
+            request.sample_rate,
+            project,
+            domain.now_ms(),
+            "wav",
+            false,
+        )?;
+    let path = request.path.clone();
+    Ok(Plan::RenderSfzWav {
+        artifact: Box::new(sfz::SfzWavArtifact {
+            request,
+            path,
+            bytes,
+            header_bytes,
+            payload_bytes,
+            frames: outcome.frames,
+            peak: outcome.peak,
+            notes_scheduled: outcome.notes_scheduled,
+            notes_unmatched: outcome.notes_unmatched,
+            regions_used: outcome.regions_used,
+            notes_silenced,
+            notes_looping: outcome.notes_looping,
+            sample_source: sfz::SAMPLE_SOURCE.to_owned(),
+        }),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // apply：可变
 // ---------------------------------------------------------------------------
 
@@ -2722,6 +2919,8 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
         Plan::ExportMidi { export } => Ok(ToolResponse::success(export.data())),
+        Plan::LoadSfz { load } => apply_load_sfz(domain, *load),
+        Plan::RenderSfzWav { artifact } => apply_render_sfz_wav(&artifact),
     }
 }
 
@@ -2821,6 +3020,41 @@ fn apply_redo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> 
 /// 即 `ARCH-SEC-004` 的同目录临时文件 + `fsync` + `rename`。失败时原文件不受影响、
 /// 临时文件被清理，**不会留下半个母带**。
 fn apply_render(artifact: render::RenderArtifact) -> Result<ToolResponse, Fault> {
+    store::write_project_atomic(&artifact.path, &artifact.bytes)?;
+    Ok(ToolResponse::success(artifact.response_data()))
+}
+
+/// `yeban_load_sfz` 的施加：把**已经解析好**的装载产物登记进会话 registry。
+///
+/// 内容寻址：同一份文本（同一个 SHA-256）已经在 registry 里时**不重复插入**
+/// （`plan` 已经把 `instrumentId` 定成那一份的 id），响应里的 `reused` 如实说明。
+fn apply_load_sfz(domain: &mut Domain, load: sfz::SfzLoad) -> Result<ToolResponse, Fault> {
+    let id = load.id;
+    let digest = load.digest.clone();
+    if let Some(existing) = domain.sfz_instrument_by_digest(&digest) {
+        // 同一份内容：不覆盖旧条目（旧条目的路径可能来自另一个位置，覆盖会让
+        // 调用方看到的 `path` 与它装载时的路径不一致）。
+        let mut response = existing.response_data();
+        if let Value::Object(map) = &mut response
+            && let Some(Value::Bool(reused)) = map.get_mut("reused")
+        {
+            *reused = true;
+        }
+        return Ok(ToolResponse::success(response));
+    }
+    let response = load.response_data();
+    domain.sfz_instruments.insert(id, load);
+    // 单调推进下一个 id：只在**真的登记**了新条目时前进（复用不消耗 id）。
+    domain.sfz_next_id = domain.sfz_next_id.max(id.saturating_add(1));
+    Ok(ToolResponse::success(response))
+}
+
+/// `yeban_render_sfz_wav` 的施加：把**已经渲染并编码好**的 WAV 字节原子落盘。
+///
+/// 与 `yeban_render_master` 共用 [`store::write_project_atomic`]：
+/// `ARCH-SEC-004` 的同目录临时文件 + `fsync` + `rename`。失败时原文件不受影响、
+/// 临时文件被清理 —— **不会留下半个母带**。
+fn apply_render_sfz_wav(artifact: &sfz::SfzWavArtifact) -> Result<ToolResponse, Fault> {
     store::write_project_atomic(&artifact.path, &artifact.bytes)?;
     Ok(ToolResponse::success(artifact.response_data()))
 }
@@ -3439,6 +3673,26 @@ mod tests {
         path
     }
 
+    /// 一份**最小真 SFZ**（两条区域，键范围不同）—— `yeban_load_sfz` 会真的解析它。
+    ///
+    /// 与 `wav_fixture()` 同一条教训：用**自己的独占临时目录**，⛔ 不碰别的判据
+    /// 依赖的路径前提（尤其 `unique_path()` 的父目录必须保持不存在）。
+    fn sfz_fixture() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-unit-sfz-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("two-regions.sfz");
+        std::fs::write(
+            &path,
+            "<region> sample=a.wav key=60 pitch_keycenter=60\n<region> sample=b.wav key=64 pitch_keycenter=64\n",
+        )
+        .expect("写 SFZ 夹具");
+        path
+    }
+
     fn domain() -> Domain {
         let mut domain = Domain::new();
         domain.set_now_ms(1_760_000_000_000);
@@ -3529,6 +3783,21 @@ mod tests {
             ("yeban_export_diagnostics", serde_json::json!({})),
             // SMF 导出：**只读**且没有可调参数 —— `filled_project` 有 MIDI 内容 ⇒ 规划成功。
             ("yeban_export_midi", serde_json::json!({})),
+            // SFZ 装载：指向一份**真 SFZ 文件** ⇒ 规划成功（真的读盘 + 解析）。
+            (
+                "yeban_load_sfz",
+                serde_json::json!({"path": sfz_fixture().display().to_string()}),
+            ),
+            // SFZ 导出：这个会话**没有**装载过任何乐器 ⇒ 规划阶段就报
+            // `INVALID_PARAMETER_RANGE`（`sfzInstrumentNotFound`，见下面的 match 分支）。
+            (
+                "yeban_render_sfz_wav",
+                serde_json::json!({
+                    "instrumentId": 1,
+                    "frames": 64,
+                    "path": std::env::temp_dir().join("yeban-mcp-unit-sfz-out.wav").display().to_string(),
+                }),
+            ),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(
@@ -3559,6 +3828,13 @@ mod tests {
                 "yeban_undo" | "yeban_redo" => {
                     let fault = outcome.expect_err("没有历史");
                     assert_eq!(fault.domain_code(), Some(ErrorCode::IndexOutOfBounds));
+                }
+                "yeban_render_sfz_wav" => {
+                    // 这个夹具**没有**装载过乐器 ⇒ 规划阶段响亮拒绝（不是 -32005，
+                    // 也不是 panic）。装载之后的那条正向通路由
+                    // `sfz_load_then_render_writes_a_non_silent_wav` 覆盖。
+                    let fault = outcome.expect_err("会话里没有已装载的 SFZ");
+                    assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
                 }
                 _ => {
                     outcome.unwrap_or_else(|fault| panic!("{name} 规划失败: {fault:?}"));

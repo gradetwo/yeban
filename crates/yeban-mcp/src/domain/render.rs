@@ -1384,41 +1384,25 @@ pub fn build(
     if matches!(loudness.verdict, VERDICT_FAIL | VERDICT_UNMEASURABLE) {
         return Err(loudness.failure());
     }
-    // 11. TPDF 抖动 → 24-bit PCM → 容器。
-    let mut rng = dither_rng_for(project.rng_seed, project.master_bus_track_id);
-    let pcm = quantize(&output.samples, BitDepth::Int24, &mut rng);
-    let payload = pcm.to_le_bytes();
-    let (origination_date, origination_time) = math::bext_stamp(now_ms);
-    let originator_reference = project.id.to_canonical_string();
-    let coding_history = format!("A=PCM,F={sample_rate},W={OUTPUT_BIT_DEPTH},M=stereo,T=Yeban-MCP");
-    let mut bext = Bext::for_project(&originator_reference, &origination_date, &origination_time);
-    // `Bext::for_project` 的 coding history 是模板字符串(带 `<sample_rate>` 字面量);
-    // 母带导出必须写**真实**参数, 否则那是文件里的假元数据。
-    bext.coding_history.clone_from(&coding_history);
-    let preferred = match request.format() {
-        "rf64" => ContainerKind::Rf64,
-        "bw64" => ContainerKind::Bw64,
-        _ => ContainerKind::Riff,
-    };
-    let container_plan = ContainerPlan::for_payload(
-        preferred,
-        PcmFormat::integer(
-            u16::try_from(MASTER_CHANNELS).unwrap_or(u16::MAX),
-            sample_rate,
-            OUTPUT_BIT_DEPTH,
-        ),
-        payload.len() as u64,
-        frames,
-        Some(bext),
-    );
-    let header_bytes = container_plan.header_bytes().len();
-    let mut bytes = Vec::with_capacity(header_bytes + payload.len() + 1);
-    write_container(&mut bytes, &container_plan, &payload).map_err(|error| {
-        render_failed(
-            "容器编码失败",
-            serde_json::json!({ "rf64Error": format!("{error:?}") }),
-        )
-    })?;
+    // 11. TPDF 抖动 → 24-bit PCM → 容器（与 `yeban_render_sfz_wav` **同一份**实现）。
+    let (
+        bytes,
+        container_kind,
+        header_bytes,
+        payload_bytes,
+        origination_date,
+        origination_time,
+        originator_reference,
+        coding_history,
+    ) = write_master_container(
+        &output.samples,
+        sample_rate,
+        project,
+        now_ms,
+        request.format(),
+        // 母带导出写 BWF 元数据（与 SFZ 导出刻意不同的**唯一**一处，见该函数的表）。
+        true,
+    )?;
     let project_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     let audio_clips: u64 = reports.iter().map(|report| report.audio_clips).sum();
     let notes_silenced: u64 = reports.iter().map(|report| report.notes_silenced).sum();
@@ -1427,7 +1411,7 @@ pub fn build(
     Ok(RenderArtifact {
         request: request.clone(),
         path,
-        container: container_plan.kind,
+        container: container_kind,
         sample_rate,
         channels: MASTER_CHANNELS,
         bit_depth: OUTPUT_BIT_DEPTH,
@@ -1435,7 +1419,7 @@ pub fn build(
         blocks: output.blocks,
         block_size: L1_BLOCK_SIZE,
         header_bytes,
-        payload_bytes: payload.len(),
+        payload_bytes,
         sha256: AssetHash::of_bytes(&bytes).as_str().to_owned(),
         master_digest: hex(&output.digest),
         longest_path_frames: output.longest_path_frames,
@@ -1465,10 +1449,113 @@ pub fn build(
     })
 }
 
+/// **落盘字节的唯一编码器**：TPDF 抖动 → 24-bit PCM → RIFF/RF64/BW64 容器（+ 可选 `bext`）。
+///
+/// `yeban_render_master` 与 `yeban_render_sfz_wav` **共用**本函数 —— 两条路径的
+/// 位深、抖动与容器选择因此不可能漂移（"两份编码器必然漂移"是本仓的既有教训）。
+///
+/// `with_bext` 是两者**刻意**的唯一差别：
+///
+/// | 调用方 | `with_bext` | 为什么 |
+/// | :--- | :--- | :--- |
+/// | `yeban_render_master` | `true` | 广播级母带要 BWF 元数据（`bext`：originatorReference / 日期 / coding history） |
+/// | `yeban_render_sfz_wav` | `false` | 它**不写** `bext` ⇒ 输出不含时间戳 ⇒ 同一个请求**逐字节可复现**（判据 `tests/sfz_tools.rs::dry_run_writes_nothing_and_matches_the_real_call` 用同一份 SHA-256 钉住这一点） |
+///
+/// 返回 `(容器字节, 容器种类, 头部字节数, 载荷字节数, bext 日期, bext 时间,
+/// originatorReference, codingHistory)`；`with_bext == false` 时后四项为空串。
+///
+/// # Errors
+///
+/// 容器编码失败 ⇒ `RENDER_FAILED`（与调用方原来的出口同一个码）。
+#[allow(clippy::type_complexity)]
+pub(super) fn write_master_container(
+    samples: &[f32],
+    sample_rate: u32,
+    project: &YebanProjectV1,
+    now_ms: u64,
+    format: &str,
+    with_bext: bool,
+) -> Result<
+    (
+        Vec<u8>,
+        ContainerKind,
+        usize,
+        usize,
+        String,
+        String,
+        String,
+        String,
+    ),
+    Fault,
+> {
+    let mut rng = dither_rng_for(project.rng_seed, project.master_bus_track_id);
+    let pcm = quantize(samples, BitDepth::Int24, &mut rng);
+    let payload = pcm.to_le_bytes();
+    let (origination_date, origination_time) = if with_bext {
+        math::bext_stamp(now_ms)
+    } else {
+        (String::new(), String::new())
+    };
+    let originator_reference = if with_bext {
+        project.id.to_canonical_string()
+    } else {
+        String::new()
+    };
+    let coding_history = if with_bext {
+        format!("A=PCM,F={sample_rate},W={OUTPUT_BIT_DEPTH},M=stereo,T=Yeban-MCP")
+    } else {
+        String::new()
+    };
+    let bext = with_bext.then(|| {
+        let mut bext =
+            Bext::for_project(&originator_reference, &origination_date, &origination_time);
+        // `Bext::for_project` 的 coding history 是模板字符串(带 `<sample_rate>` 字面量);
+        // 母带导出必须写**真实**参数, 否则那是文件里的假元数据。
+        bext.coding_history.clone_from(&coding_history);
+        bext
+    });
+    let preferred = match format {
+        "rf64" => ContainerKind::Rf64,
+        "bw64" => ContainerKind::Bw64,
+        _ => ContainerKind::Riff,
+    };
+    let frames = u64::try_from(samples.len() / MASTER_CHANNELS).unwrap_or(0);
+    let container_plan = ContainerPlan::for_payload(
+        preferred,
+        PcmFormat::integer(
+            u16::try_from(MASTER_CHANNELS).unwrap_or(u16::MAX),
+            sample_rate,
+            OUTPUT_BIT_DEPTH,
+        ),
+        payload.len() as u64,
+        frames,
+        bext,
+    );
+    let header_bytes = container_plan.header_bytes().len();
+    let payload_bytes = payload.len();
+    let mut bytes = Vec::with_capacity(header_bytes + payload_bytes + 1);
+    write_container(&mut bytes, &container_plan, &payload).map_err(|error| {
+        render_failed(
+            "容器编码失败",
+            serde_json::json!({ "rf64Error": format!("{error:?}") }),
+        )
+    })?;
+    Ok((
+        bytes,
+        container_plan.kind,
+        header_bytes,
+        payload_bytes,
+        origination_date,
+        origination_time,
+        originator_reference,
+        coding_history,
+    ))
+}
+
 /// 一个保留节点是不是**源节点**（没有入边）。
 ///
 /// `bus_reduction_order` 对源节点返回 `Some(vec![])`（空入边列表），对总线返回非空列表。
-fn is_source_node(plan: &RenderPlan, node: EntityId) -> bool {
+pub(super) fn is_source_node(plan: &RenderPlan, node: EntityId) -> bool {
     plan.bus_reduction_order(node)
         .is_none_or(|inputs| inputs.is_empty())
 }
@@ -2270,7 +2357,7 @@ fn build_source(
 }
 
 /// 等程律频率：`440 * 2^((pitch - 69) / 12)`，走 `libm::powf` [ARCH-DET-001]。
-fn pitch_to_hz(pitch: u8) -> f32 {
+pub(super) fn pitch_to_hz(pitch: u8) -> f32 {
     440.0 * libm::powf(2.0, (f32::from(pitch) - 69.0) / 12.0)
 }
 
@@ -2278,7 +2365,7 @@ fn pitch_to_hz(pitch: u8) -> f32 {
 ///
 /// 与模型层 `PanLaw::ConstantPowerMinus3dB` 的口径一致：居中的 `pan = 0`
 /// 给出 `(√2/2, √2/2)`（即每个声道 −3 dB）。
-fn pan_gains(pan: f32) -> (f32, f32) {
+pub(super) fn pan_gains(pan: f32) -> (f32, f32) {
     let clamped = pan.clamp(-1.0, 1.0);
     let angle = (clamped + 1.0) * core::f32::consts::FRAC_PI_4;
     (libm::cosf(angle), libm::sinf(angle))
@@ -2322,7 +2409,7 @@ fn render_error(context: &str, error: &RenderError) -> Fault {
 }
 
 /// 输出路径的两条安全护栏：不得是工程文件本身、不得是 `.yeban.lock`。
-fn guard_output_path(output: &Path, project_path: &Path) -> Result<(), Fault> {
+pub(super) fn guard_output_path(output: &Path, project_path: &Path) -> Result<(), Fault> {
     if same_path(output, project_path) {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,

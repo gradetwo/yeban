@@ -552,6 +552,10 @@ fn fixture_argument(param: &ParamSpec) -> Value {
         "gainDb" => Value::from(-1.5),
         "slotIndex" | "paramIndex" => Value::from(0),
         "point" => serde_json::json!({"tick": 0, "value": -6.0, "curve": "Linear"}),
+        // 本线的 SFZ 导出：`instrumentId` 是**整数**，而下面的兜底会把任何 `*Id`
+        // 变成 ULID **字符串** ⇒ 契约（`"type": "integer", "minimum": 1`）会拒它。
+        // 显式给一个整数，样本才与契约同形。
+        "instrumentId" => Value::from(1),
         other if other.ends_with("Id") => Value::from("01J8ZQ00000000000000000001"),
         _ => match param.json_type {
             "string" => Value::from("01J8ZQ00000000000000000001"),

@@ -82,6 +82,18 @@ yeban-render.workspace = true
 # 这条边复用根 `[workspace.dependencies]` 里**已登记**的 `yeban-decode`,
 # 因此 `Cargo.lock` 的包集合不变 (没有新的第三方包), 只有一条成员间的依赖边新增。
 yeban-decode.workspace = true
+# SFZ v2 采样器（ROAD-M2-005）：零拷贝解析器 + 区域/曲线/力度/交叉淡化/声部池的**唯一实现**。
+# `yeban_load_sfz`（装载 + 区域摘要）与 `yeban_render_sfz_wav`（用区域渲染音符）都只调用
+# 它的**公开**读数（`Region::matches_key` / `Region::playback_rate` /
+# `Region::playback_spec(..).total_gain()`），⛔ 本 crate 不复制区域选择规则。
+#
+# 为什么**不**依赖 `yeban-engine`（那里已经有一个 `SfzInstrument` 适配层）：
+# `yeban-engine` 的默认 feature 是 `device` ⇒ 会把 `cpal` 拖进本 crate，而本文件的规则是
+# "轻量 crate：不拖音频栈进 MCP"（见上面 `yeban-midi` 那一段）。`yeban-sfz` 的第三方依赖
+# **只有** `thiserror`（已在根清单登记、且本 crate 已经在用）⇒ `Cargo.lock` 的**包集合不变**，
+# 只多一条成员间的依赖边。逐样本内插与"读到样本末尾就停"这两条语义与引擎那一个一致
+# （`domain/sfz.rs` 的 `render_region_into` 文档写明了两者同源）。
+yeban-sfz.workspace = true
 # 母带合成里的超越函数 (正弦振荡器 / 等程律频率 / 等功率声相) [ARCH-DET-001]:
 # 规范要求"统一启用纯 Rust libm", 禁止落到宿主 libm —— 否则同一工程的母带会随平台差 LSB。
 libm.workspace = true
