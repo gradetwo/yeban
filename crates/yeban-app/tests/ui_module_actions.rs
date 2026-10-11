@@ -134,7 +134,7 @@ const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keyc
 /// 回执的字段名闭集（唯一的一份：名字在这里，切分就按这里）。
 ///
 /// 加一个字段就加一行 —— 漏加不会静默：那个字段取不到值，判据会失败并打印整条回执。
-const RECEIPT_KEYS: [&str; 22] = [
+const RECEIPT_KEYS: [&str; 28] = [
     "action",
     "outcome",
     "error",
@@ -157,6 +157,13 @@ const RECEIPT_KEYS: [&str; 22] = [
     "source",
     "wired_to_export",
     "probe",
+    // ⭐ 硬件 MIDI 输入那一条自己的字段（`midi-in` 回执）。
+    "port",
+    "seconds",
+    "events",
+    "unsupported",
+    "jitter",
+    "first",
 ];
 
 /// 一条回执里，从 `at` 起**第一个** `:<已知字段名>=` 的冒号位置。
@@ -287,10 +294,10 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     //      再 `into_control_plane`（它按值消费 `LiveUi`）。这样"控制面的注册表"与
     //      "生成组件上的属性"两侧都读得到 —— 与 `tests/a11y_screen_reader.rs` 同款。
     let live_ui = build_live_ui_with(&project, &options).expect("Tier-1 平台 + 活窗口 + 四条接线");
-    yeban_app::host::wire_module_actions(live_ui.ui(), Some(Rc::clone(&port)));
+    let midi_state = yeban_app::host::wire_module_actions(live_ui.ui(), Some(Rc::clone(&port)));
     let window = slint::ComponentHandle::clone_strong(live_ui.ui());
     let runtime_tree = live_ui.tree_snapshot();
-    let plane = live_ui.into_control_plane(Permission::Interactive);
+    let mut plane = live_ui.into_control_plane(Permission::Interactive);
     let ui = &window;
 
     // =====================================================================
@@ -534,6 +541,12 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     // 用 `cfg!` 分别要求各自的形态 ⇒ 两个 feature 档都有**自己的**判据，
     // ⛔ 不会出现"特征门把判据藏起来"（默认档也必须给出**结构化**说法）。
     ui.invoke_midi_in();
+    // ---- ④-a **中间态**（`outcome=pending`）：⭐ 确定性，⛔ 不靠竞态 ----
+    //
+    // 为什么确定：`pending` 是在 `thread::spawn` **之前**由 UI 线程同步写下的；
+    // 而"落终态"只有两条路 —— ① 生产路径的 `upgrade_in_event_loop`（**Tier-1 平台没有
+    // event loop proxy ⇒ 必然返回 Err**）② 调用方显式 [`apply_pending_midi_in`]。
+    // 于是在本判据里，触发之后、排空之前，状态**不可能**被别人改掉。
     let receipt = ui.get_module_status().to_string();
     let midi_receipt = ui.get_module_midi_in_status().to_string();
     assert_eq!(
@@ -542,9 +555,56 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     );
     assert_eq!(field_of(&receipt, "action"), "midi-in", "{receipt}");
     assert_eq!(
+        field_of(&receipt, "outcome"),
+        "pending",
+        "触发后必须**立刻**进入已声明的中间态: {receipt}"
+    );
+    assert_eq!(field_of(&receipt, "port"), "0", "{receipt}");
+    assert!(
+        !ui.get_module_midi_in_status_succeeded(),
+        "中间态不是成功态: {receipt}"
+    );
+    assert_eq!(
         ui.get_module_midi_in_status_succeeded(),
         ui.get_module_status_succeeded(),
         "两条状态行的成功位也必须一致"
+    );
+    // ---- ④-b **不阻塞**的结构证据：中间态窗口内控件树仍可查询 ----
+    //
+    // ⚠ 这一条证的是"采集进行中时 UI 线程仍能响应查询"，⛔ 不是"事件循环没被占住"
+    // 的直接证据（后者在无头环境里不可确定性判定，见文件头的登记）。
+    {
+        let (fresh, _json) = plane.plane().tree().expect("采集中控件树必须仍可读");
+        for id in ["module-midi-in-button", "module-midi-in-status"] {
+            assert!(
+                fresh.find(id).is_some(),
+                "采集中 `{id}` 必须仍在运行时树里（共 {} 条节点）",
+                fresh.count
+            );
+        }
+    }
+    assert_eq!(
+        ui.get_module_midi_in_status(),
+        pending_snapshot(&receipt),
+        "没人排空时状态行不得自己变（⇒ 中间态是一个**稳定**的窗口）"
+    );
+    // ---- ④-c 终态：**确定性等待**（join）＋显式排空 ----
+    assert!(
+        yeban_app::host::wait_for_pending_midi_in(&midi_state),
+        "必须真的 join 到一个工作线程（否则这条判据的前提不成立）"
+    );
+    assert!(
+        yeban_app::host::apply_pending_midi_in(ui, &midi_state),
+        "join 之后槽里必须有一个结果可落界面"
+    );
+    let receipt = ui.get_module_status().to_string();
+    let midi_receipt = ui.get_module_midi_in_status().to_string();
+    assert_eq!(midi_receipt, receipt, "排空后两条状态行仍是同一串字节");
+    assert_eq!(field_of(&receipt, "action"), "midi-in", "{receipt}");
+    assert_ne!(
+        field_of(&receipt, "outcome"),
+        "pending",
+        "排空后必须不再是中间态: {receipt}"
     );
     if cfg!(feature = "midi-input") {
         // ⭐ 开档：⭐ 端口解析 / 宿主可用性由 `midi_in` 决定 ⇒ 这里只要求
@@ -600,6 +660,92 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
             "默认档的措辞必须点名 feature 并给出**怎么开**: {message}"
         );
     }
+    // =====================================================================
+    // 判据 ⑤：**注入替身**把"采集进行中"窗口**拉住** ⇒ 在飞期间的三件事都可确定判定
+    // =====================================================================
+    //
+    // 为什么必须用替身：真入口在**无端口**的机器（CI 就是）上会**立刻**返回
+    // （`PortNotFound` 在进入采集循环之前发生）⇒ "在飞"只有微秒级。
+    // ⭐ 替身把窗口拉住（判据放行它才返回），于是"第二次触发被拒"这一条**不靠竞态**。
+    // ⚠ 替身证的是**接线**，⛔ 不证"硬件 MIDI 能收事件"（边界写在 `MidiInCapture` 的文档里）。
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    DOUBLE
+        .set(DoubleGate {
+            entered: std::sync::Mutex::new(entered_tx),
+            release: std::sync::Mutex::new(release_rx),
+        })
+        .expect("本判据只装一次门");
+    let double_paths = yeban_app::host::ModulePaths {
+        export_wav: scratch.join("double-never-written.wav"),
+        import_midi: import.clone(),
+        load_sfz: scratch.join("double-never-loaded.sfz"),
+        record_wav: scratch.join("double-never-recorded.wav"),
+        record_seconds: 1.0,
+        midi_in_port: "double".to_owned(),
+        midi_in_seconds: 0.05,
+    };
+    let double_state = yeban_app::host::wire_module_actions_with_capture(
+        ui,
+        Some(Rc::clone(&port)),
+        double_paths,
+        Some(double_capture),
+    );
+
+    ui.invoke_midi_in();
+    // ⭐ 阻塞式等待"工作线程已进入替身"——⛔ 无 sleep、⛔ 无轮询、⛔ 无超时。
+    entered_rx
+        .recv()
+        .expect("注入替身之后，工作线程**一定**会进入它");
+    assert!(double_state.is_in_flight(), "替身还没放行 ⇒ 必须处于在飞态");
+    // ① 在飞期间：第二次触发被**明确拒绝**（⛔ 不排队、⛔ 不并发）
+    ui.invoke_midi_in();
+    let rejected = ui.get_module_status().to_string();
+    assert_eq!(field_of(&rejected, "action"), "midi-in", "{rejected}");
+    assert_eq!(field_of(&rejected, "outcome"), "error", "{rejected}");
+    assert_eq!(
+        field_of(&rejected, "error"),
+        "capture-in-progress",
+        "在飞期间的第二次触发必须被明确拒绝: {rejected}"
+    );
+    // ② 在飞期间：控件树仍可查询（这一条与 ④-b 一起构成"UI 线程没被占死"的结构证据）
+    {
+        let (fresh, _json) = plane
+            .plane()
+            .tree()
+            .expect("在飞期间控件树必须仍可读（UI 线程没被采集占死）");
+        assert!(
+            fresh.find("module-midi-in-button").is_some(),
+            "在飞期间那个按钮必须仍在运行时树里（共 {} 条节点）",
+            fresh.count
+        );
+    }
+    // ③ 放行替身 ⇒ 结果落槽 ⇒ 确定性 join ⇒ 排空 ⇒ 断言**成功分支**的字段
+    release_tx.send(()).expect("放行替身");
+    assert!(
+        yeban_app::host::wait_for_pending_midi_in(&double_state),
+        "放行后必须能 join 到工作线程"
+    );
+    assert!(yeban_app::host::apply_pending_midi_in(ui, &double_state));
+    let done = ui.get_module_status().to_string();
+    assert_eq!(field_of(&done, "action"), "midi-in", "{done}");
+    assert_eq!(
+        field_of(&done, "outcome"),
+        "ok",
+        "替身返回 Ok ⇒ 排空后必须是成功态: {done}"
+    );
+    assert_eq!(field_of(&done, "events"), "3", "替身报的事件数: {done}");
+    assert_eq!(field_of(&done, "unsupported"), "1", "{done}");
+    assert_eq!(
+        field_of(&done, "jitter"),
+        "n=2:p50=1:p99=2:max=2",
+        "抖动读数必须逐字段来自替身: {done}"
+    );
+    assert_eq!(field_of(&done, "first"), "3", "{done}");
+    assert!(ui.get_module_midi_in_status_succeeded(), "{done}");
+    // ⭐ 成功分支的**可见**终态也写进 CI 日志（与 ④ 的那一行同款理由）。
+    report_line(&format!("[ui-modules] midi-in double-path receipt={done}"));
+
     // ⭐ 把这一档**实际**给出的说法写进 CI 日志（`report_line` 直写 `/dev/stderr` ⇒
     // 绕过 libtest 的捕获 ⇒ 两档各自在日志里留下**可复核**的那一串字节）。
     // 为什么需要它：回执原文是**环境相关**的（开档在无端口机器上是
@@ -681,4 +827,55 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
             std::env::remove_var(key);
         }
     }
+}
+
+/// ⭐ 判据用**替身**的两道门（通道同步 ⇒ ⛔ 无 sleep、⛔ 无轮询、⛔ 无超时）。
+#[derive(Debug)]
+struct DoubleGate {
+    /// 工作线程进入替身时发一条。
+    entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+    /// 判据放行时收一条（替身阻塞在这里）。
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+/// ⭐ 判据只装一次门（本文件只有一个 `#[test]`）。
+static DOUBLE: std::sync::OnceLock<DoubleGate> = std::sync::OnceLock::new();
+
+/// ⭐ **受判据控制**的采集入口：进来先报到，再等放行，然后返回一份**已知**的读数。
+///
+/// ⚠ 它是 [`yeban_app::host::MidiInCapture`] 的一个实现 —— 与真入口**同一个签名**，
+/// ⛔ 不是第二份采集实现（它一行采集逻辑都没有）。
+fn double_capture(
+    _port: &str,
+    _seconds: f32,
+) -> Result<yeban_app::midi_in::MidiInReport, yeban_app::midi_in::MidiInError> {
+    let gate = DOUBLE.get().expect("判据必须先装门");
+    gate.entered
+        .lock()
+        .expect("entered 锁")
+        .send(())
+        .expect("报到");
+    gate.release
+        .lock()
+        .expect("release 锁")
+        .recv()
+        .expect("等放行");
+    Ok(yeban_app::midi_in::MidiInReport {
+        origin_us: 7,
+        seconds: 0.05,
+        events: 3,
+        first_events: vec![(1, 0x90, 60, 100), (2, 0x90, 62, 100), (3, 0x80, 60, 0)],
+        unsupported: 1,
+        jitter: Some(yeban_app::midi_in::Jitter {
+            n: 2,
+            p50: 1,
+            p99: 2,
+            max: 2,
+        }),
+    })
+}
+
+/// 把已经写下的那一串回执**原样**取回来（用于断言"没人排空时它不得自己变"）。
+fn pending_snapshot(receipt: &str) -> slint::SharedString {
+    slint::SharedString::from(receipt.to_owned())
 }

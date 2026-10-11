@@ -59,7 +59,7 @@ impl Drop for Scratch {
 const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keycenter=60\n";
 
 /// 回执的字段名闭集（与 `tests/ui_module_actions.rs` 同一个口径；本文件只用到几个）。
-const RECEIPT_KEYS: [&str; 22] = [
+const RECEIPT_KEYS: [&str; 28] = [
     "action",
     "outcome",
     "error",
@@ -82,6 +82,13 @@ const RECEIPT_KEYS: [&str; 22] = [
     "source",
     "wired_to_export",
     "probe",
+    // ⭐ 硬件 MIDI 输入那一条自己的字段（`midi-in` 回执）。
+    "port",
+    "seconds",
+    "events",
+    "unsupported",
+    "jitter",
+    "first",
 ];
 
 /// 见 `tests/ui_module_actions.rs` 的 `receipt_field_end` —— 值里带冒号（`probe=1:2:3:4`）

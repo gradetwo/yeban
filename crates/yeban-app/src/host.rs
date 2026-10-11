@@ -2578,12 +2578,45 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
 /// `load-sfz` 成功 ⇒ 乐器存进本闭包的共享槽（`Rc<RefCell<Option<…>>>`），
 /// 之后的 `export-wav` 把它交给 `export_wav_with_sfz_file` 的第四个参数
 /// ⇒ 与 CLI 的 `--sfz <f> --export-wav out.wav` 是**同一条**音源路径。
-pub fn wire_module_actions(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
-    wire_module_actions_with(ui, port, ModulePaths::from_env());
+pub fn wire_module_actions(ui: &MainWindow, port: Option<Rc<UndoPort>>) -> MidiInState {
+    wire_module_actions_with(ui, port, ModulePaths::from_env())
 }
 
 /// 与 [`wire_module_actions`] 相同，但路径／参数由调用方**显式**给出（判据用）。
-pub fn wire_module_actions_with(ui: &MainWindow, port: Option<Rc<UndoPort>>, paths: ModulePaths) {
+pub fn wire_module_actions_with(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    paths: ModulePaths,
+) -> MidiInState {
+    wire_module_actions_with_capture(ui, port, paths, None)
+}
+
+/// ⭐ **硬件 MIDI 采集入口**的签名（默认 = [`crate::midi_in::capture`]）。
+///
+/// 为什么要有这个类型：判据必须**确定性地**观察"采集进行中"那个窗口。真入口在**无端口**
+/// 的机器（= CI）上会**立刻**返回（`PortNotFound` 在进入采集循环之前），因此那个窗口只有
+/// 微秒级 —— 靠它写判据必然抖，或者变成假绿（本仓明令禁止时序脆弱的判据）。
+/// ⇒ 允许调用方注入一个**替身**：替身把窗口拉住，判据就能确定地断言
+/// "在飞期间：① 界面处于 `outcome=pending` ② 控件树仍可读 ③ 第二次触发被拒"。
+///
+/// ⚠ 边界（如实登记）：替身证的是**接线**（工作线程 → 通道 → UI 线程 → 两条状态行），
+/// ⛔ **不**证"硬件 MIDI 真的能收事件"。后者由 `--features midi-input` 那条腿上的
+/// **真**入口判据（结构化 + 不 panic）与 CLI 的 `--midi-in` 覆盖。
+pub type MidiInCapture =
+    fn(&str, f32) -> Result<crate::midi_in::MidiInReport, crate::midi_in::MidiInError>;
+
+/// 与 [`wire_module_actions_with`] 相同，但可注入采集入口（`None` ⇒ 用真入口）。
+///
+/// 返回**跨线程状态句柄**：[`MidiInState`]。调用方（判据）用
+/// [`wait_for_pending_midi_in`] ＋ [`apply_pending_midi_in`] 确定性地排空；
+/// 生产路径（`main.rs` / `live_surface.rs`）忽略返回值 —— 那一跳由
+/// `Weak::upgrade_in_event_loop` 完成。
+pub fn wire_module_actions_with_capture(
+    ui: &MainWindow,
+    port: Option<Rc<UndoPort>>,
+    paths: ModulePaths,
+    capture: Option<MidiInCapture>,
+) -> MidiInState {
     // 已装载的 SFZ 乐器（`load-sfz` 写、`export-wav` 读）—— 与 CLI 的 `loaded_sfz` 同角色。
     let loaded_sfz: LoadedSfz = Rc::new(RefCell::new(None));
 
@@ -2828,56 +2861,253 @@ pub fn wire_module_actions_with(ui: &MainWindow, port: Option<Rc<UndoPort>>, pat
     }
 
     // ------------------------------------------------------- 硬件 MIDI 输入
+    //
+    // ⭐ **这一条不在 UI 线程上跑采集**（用户可感知的缺陷：同步采集那 3 秒里界面卡死）。
+    // 形态是"起工作线程 ⇒ 结果经安全通道回来 ⇒ 在 **UI 线程**上落界面"：
+    //
+    // ```text
+    //   UI 线程: on_midi_in
+    //     ├─ 已有一次在飞 ⇒ 结构化拒绝（⛔ 不排队、⛔ 不开第二个线程）
+    //     ├─ 写 "outcome=pending" 回执（**同步**写 ⇒ 中间态一定可观察）
+    //     └─ thread::spawn { crate::midi_in::capture(...) → 存进 Arc<Mutex<…>>
+    //                                                     → invoke_from_event_loop(排空) }
+    //   工作线程: ⛔ 不碰任何 Slint 对象（只写 Send 的共享槽）
+    //   UI 线程: apply_pending_midi_in（**唯一**把结果写进界面的地方）
+    // ```
+    //
+    // ## 为什么"排空"是**一个函数**、而不是散在两处
+    //
+    // `Tier1Platform`（`crates/yeban-ui-test-port`）**只**实现 `create_window_adapter`，
+    // **没有** `new_event_loop_proxy` ⇒ 在 Tier-1 平台上 `slint::invoke_from_event_loop`
+    // **必然失败**。若"落界面"只挂在事件循环上，那个平台上的结果会**永远停在 pending**。
+    // ⇒ 于是把落界面收成 [`apply_pending_midi_in`] 这一个纯函数：生产路径由
+    // `invoke_from_event_loop` 调它，没有事件循环的环境由调用方（判据 / 下一个动作）调它。
+    // ⛔ 两条路走的是**同一段**代码 ⇒ 界面上的终态不可能因"谁排空的"而不同。
+    let midi_state = MidiInState::new();
     {
         let weak = ui.as_weak();
         let wanted = paths.midi_in_port.clone();
         let seconds = paths.midi_in_seconds;
+        let state = midi_state.clone();
+        // ⭐ 真入口（与 CLI 的 `--midi-in` 同一个函数）—— 除非调用方注入了替身。
+        let capture: MidiInCapture = capture.unwrap_or(crate::midi_in::capture);
         ui.on_midi_in(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
             let started = std::time::Instant::now();
-            let (receipt, ok) = match crate::midi_in::capture(&wanted, seconds) {
-                Ok(report) => (
-                    module_receipt(
-                        "midi-in",
-                        &[
-                            "outcome=ok".to_owned(),
-                            format!("port={wanted}"),
-                            format!("seconds={}", report.seconds),
-                            format!("events={}", report.events),
-                            format!("unsupported={}", report.unsupported),
-                            format!(
-                                "jitter={}",
-                                report.jitter.map_or_else(
-                                    || "n=0".to_owned(),
-                                    |reading| format!(
-                                        "n={}:p50={}:p99={}:max={}",
-                                        reading.n, reading.p50, reading.p99, reading.max
-                                    )
-                                )
-                            ),
-                            format!("first={}", report.first_events.len()),
-                        ],
+            // ⭐ 先排空上一次的结果（自愈：即使没有事件循环，下一次交互也会把终态落下来）。
+            apply_pending_midi_in(&ui, &state);
+            if state.is_in_flight() {
+                // ⭐ 在飞期间的第二次触发：**明确拒绝**（⛔ 不排队、⛔ 不并发）。
+                let receipt = module_receipt(
+                    "midi-in",
+                    &module_error_fields(
+                        "capture-in-progress",
+                        "上一次硬件 MIDI 采集还没结束 —— 本次点击被拒绝（⛔ 不排队、⛔ 不并发）",
                     ),
-                    true,
-                ),
-                Err(error) => (
-                    module_receipt(
-                        "midi-in",
-                        &module_error_fields(midi_in_error_code(&error), &error.to_string()),
-                    ),
-                    false,
-                ),
-            };
-            // ⭐ 两条状态行写的是**同一串字节**（不是两次独立计算）⇒ 不可能分叉。
-            ui.set_module_midi_in_status(receipt.clone().into());
-            ui.set_module_midi_in_status_succeeded(ok);
-            apply_module_receipt(&ui, &receipt, ok);
-            module_trace("midi-in", started, &receipt);
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("midi-in", started, &receipt);
+                return;
+            }
+            // ⭐ **中间态**：在 spawn **之前**同步写 ⇒ 触发后立刻可观察，⛔ 不靠竞态。
+            let pending = module_receipt(
+                "midi-in",
+                &[
+                    "outcome=pending".to_owned(),
+                    format!("port={wanted}"),
+                    format!("seconds={seconds}"),
+                ],
+            );
+            ui.set_module_midi_in_status(pending.clone().into());
+            ui.set_module_midi_in_status_succeeded(false);
+            apply_module_receipt(&ui, &pending, false);
+            state.begin();
+
+            let worker_state = state.clone();
+            let worker_wanted = wanted.clone();
+            let worker_weak = weak.clone();
+            // ⭐ 工作线程**只**做三件事：跑采集、把结果放进 Send 的槽、**请求** UI 线程排空。
+            // ⛔ 它一个 Slint 对象都不碰（UI 对象只许在 UI 线程上碰）。
+            let handle = std::thread::spawn(move || {
+                let result = capture(&worker_wanted, seconds);
+                worker_state.finish(result);
+                // ⭐ **唯一**跨线程的一跳：`Weak` 是 `Send`（上游 `api.rs:1247` 的
+                // `unsafe impl<T: StrongHandle> Send for Weak<T>`），
+                // `upgrade_in_event_loop` 在 **UI 线程**上升级句柄并执行闭包 ⇒
+                // 界面的写入仍然只发生在 UI 线程上。
+                // ⚠ 没有事件循环的平台（Tier-1 判据）这里返回 `Err` —— **不是错误**：
+                // 结果仍在槽里，调用方用 [`wait_for_pending_midi_in`] ＋
+                // [`apply_pending_midi_in`] 排空即可。⛔ 因此这里**不** panic、不报错。
+                let pending_state = worker_state.clone();
+                let _ = worker_weak.upgrade_in_event_loop(move |ui| {
+                    apply_pending_midi_in(&ui, &pending_state);
+                });
+            });
+            state.set_worker(handle);
+            module_trace("midi-in", started, &pending);
         });
     }
+
+    // ⭐ 把跨线程状态交出去：判据用它做**确定性**排空（join + apply）。
+    // 生产路径忽略它 —— 那一跳由工作线程里的 `upgrade_in_event_loop` 完成。
+    midi_state
+}
+
+/// ⭐ **硬件 MIDI 采集的跨线程状态**（`Arc` ⇒ UI 线程与工作线程各持一份句柄）。
+///
+/// ## 为什么是 `Arc<Mutex<…>>` / `Arc<AtomicBool>` 而不是 `Rc<RefCell<…>>`
+///
+/// 工作线程**必须**能把结果放进来 ⇒ 这三个字段都要 `Send + Sync`。
+/// ⚠ 槽里装的是**纯数据**（[`crate::midi_in::MidiInReport`] / [`crate::midi_in::MidiInError`]）
+/// ⇒ ⛔ 没有任何 Slint 对象跨线程。
+///
+/// ## 生命周期
+///
+/// `begin` → （工作线程）`finish` → （UI 线程）`apply_pending_midi_in` 取走并落界面。
+/// `is_in_flight` 在 `finish` 那一刻就为 `false`，因此"在飞"的窗口 = "已 begin、还没 finish"。
+#[derive(Clone)]
+pub struct MidiInState {
+    /// 在飞标志（`begin` 置真、`finish` 置假）。
+    in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 工作线程交回的结果槽（`Some` ⇒ 有未落界面的结果）。
+    slot: std::sync::Arc<
+        std::sync::Mutex<Option<Result<crate::midi_in::MidiInReport, crate::midi_in::MidiInError>>>,
+    >,
+    /// 当前工作线程的句柄（`wait_for_pending_midi_in` 用它做**确定性**等待）。
+    worker: std::sync::Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
+}
+
+impl core::fmt::Debug for MidiInState {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("MidiInState")
+            .field("in_flight", &self.is_in_flight())
+            .field("has_pending", &self.has_pending())
+            .finish()
+    }
+}
+
+impl MidiInState {
+    /// 新建空状态（⛔ 不启动任何线程）。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            slot: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            worker: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// ⭐ 是否**已有一次采集在飞**（界面的"重复触发"闸门读它）。
+    #[must_use]
+    pub fn is_in_flight(&self) -> bool {
+        self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// ⭐ 槽里是否有**还没落到界面**的结果。
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        self.slot.lock().is_ok_and(|slot| slot.is_some())
+    }
+
+    /// 标记"一次采集开始"（由 `midi-in` 回调在 spawn 前调用）。
+    fn begin(&self) {
+        self.in_flight
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 工作线程交回结果（⛔ 只有工作线程调它）。
+    fn finish(&self, result: Result<crate::midi_in::MidiInReport, crate::midi_in::MidiInError>) {
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = Some(result);
+        }
+        self.in_flight
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 记下当前工作线程（UI 线程调；随后 `wait_for_pending_midi_in` 用它 join）。
+    fn set_worker(&self, handle: std::thread::JoinHandle<()>) {
+        if let Ok(mut worker) = self.worker.lock() {
+            *worker = Some(handle);
+        }
+    }
+}
+
+impl Default for MidiInState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// ⭐ **确定性等待**：等当前工作线程**真的结束**（join），⛔ 不用 sleep、⛔ 不用轮询。
+///
+/// 返回 `true` = 这一次真的 join 了一个线程。⭐ 判据在"中间态"窗口之后调它，
+/// 于是接下来的排空**一定**能拿到结果（时序由调用方控制，不是由调度器决定）。
+pub fn wait_for_pending_midi_in(state: &MidiInState) -> bool {
+    let handle = state
+        .worker
+        .lock()
+        .ok()
+        .and_then(|mut worker| worker.take());
+    handle.is_some_and(|handle| {
+        // ⚠ join 的**唯一**后果是"等它跑完"；工作线程自己不做任何 UI 操作，
+        // 因此这里不会与 UI 线程互相等待（⛔ 无死锁环）。
+        handle.join().is_ok()
+    })
+}
+
+/// ⭐ **把已交回的结果落到界面上** —— 唯一写 `module-midi-in-status` 的地方。
+///
+/// ⚠ **必须**在 UI 线程上调用（它写 Slint 属性）。
+/// 返回 `true` = 这一次真的落了一个结果（调用方据此知道状态变了）。
+///
+/// 生产路径：工作线程完成 ⇒ `invoke_from_event_loop` ⇒ 在 UI 线程上执行本函数。
+/// 判据路径：`wait_for_pending_midi_in` ⇒ 在 UI 线程上执行本函数。
+/// ⇒ ⭐ 两条路是**同一段**代码（终态不可能因"谁排空的"而不同）。
+pub fn apply_pending_midi_in(ui: &MainWindow, state: &MidiInState) -> bool {
+    let Some(result) = state.slot.lock().ok().and_then(|mut slot| slot.take()) else {
+        return false;
+    };
+    let (receipt, ok) = match result {
+        Ok(report) => (
+            module_receipt(
+                "midi-in",
+                &[
+                    "outcome=ok".to_owned(),
+                    format!("seconds={}", report.seconds),
+                    format!("events={}", report.events),
+                    format!("unsupported={}", report.unsupported),
+                    format!(
+                        "jitter={}",
+                        report.jitter.map_or_else(
+                            || "n=0".to_owned(),
+                            |reading| format!(
+                                "n={}:p50={}:p99={}:max={}",
+                                reading.n, reading.p50, reading.p99, reading.max
+                            )
+                        )
+                    ),
+                    format!("first={}", report.first_events.len()),
+                ],
+            ),
+            true,
+        ),
+        Err(error) => (
+            module_receipt(
+                "midi-in",
+                &module_error_fields(midi_in_error_code(&error), &error.to_string()),
+            ),
+            false,
+        ),
+    };
+    // ⭐ 两条状态行写的是**同一串字节**（一次计算、写两处）⇒ 不可能分叉。
+    ui.set_module_midi_in_status(receipt.clone().into());
+    ui.set_module_midi_in_status_succeeded(ok);
+    apply_module_receipt(ui, &receipt, ok);
+    true
 }
 
 /// ⭐ **稳定错误码**：把 [`crate::midi_in::MidiInError`] 的六个变体映成一个可断言的码。
