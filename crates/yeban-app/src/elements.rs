@@ -614,6 +614,16 @@ impl ElementRegistry {
             "音符网格画布",
             false,
         );
+        // `[ROAD-M3-002]` 拖动滚动手势的**输入面**（`[UI-TEST-001]` §12.2 语义 ID）：
+        // 它是"Slint 发增量、宿主拥有偏移"那条链的**起点**，无头判据靠这个 ID 按语义寻址注入
+        // （`crates/yeban-app/tests/piano_roll_drag_scroll.rs`）。
+        registry.add(
+            "piano-roll-scroll-area",
+            ElementKind::Region,
+            "console/piano_roll.slint",
+            "卷帘拖动手势面（按住并水平拖动 ⇒ 报告增量）",
+            false,
+        );
         for (note_index, ulid) in view.note_ulids.iter().enumerate() {
             registry.add(
                 &format!("note-{ulid}-rect"),

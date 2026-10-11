@@ -288,6 +288,11 @@ export component PianoRoll inherits Rectangle {
     property <length> drag-last-x: 0px;
     property <bool> dragging: false;
     TouchArea {
+        // `[UI-TEST-001]` §12.2 稳定语义元素寻址：拖动滚动手势面必须有 `accessible-id`
+        // （与 `ui/` 下其它关键节点同一族），否则无头注入只能靠像素坐标 —— 那正是被禁的做法。
+        accessible-role: region;
+        accessible-id: "piano-roll-scroll-area";
+        accessible-label: "卷帘拖动手势面";
         // 本版本 `PointerEvent` **没有** `delta-x`（编译期报 "Cannot access the field 'delta-x'"），
         // 本版本的 `PointerEvent` 也**没有** `position`，位置只能取 `TouchArea` 自己的 `mouse-x`。用 `last - now` 表示"向右拖 ⇒ 内容左移 ⇒ 偏移增加"。
         pointer-event(event) => {
