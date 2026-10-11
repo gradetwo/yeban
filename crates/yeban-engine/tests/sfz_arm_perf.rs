@@ -261,3 +261,41 @@ fn prepare_and_callback_readings() {
     assert_eq!(rendered, frames, "必须真正渲染 {frames} 帧");
     assert!(triggers > 0, "必须有触发");
 }
+
+/// ⭐ A④ 剩余件 2：**输入回调体每块耗时**。
+///
+/// 口径（写明）：块 = **512 帧 × 2 声道**（1,024 个 `f32`）；迭代 **N = 1000**；
+/// 计时用 `std::time::Instant`；报**最小值与中位数**（µs/块），⛔ 不写"A 比 B 快"
+/// （与摊平回调侧的口径各自独立）。
+#[test]
+fn input_callback_body_per_block_cost() {
+    use yeban_engine::record::{push_input_block, record_channel};
+    const BLOCK_FRAMES: usize = 512;
+    const CHANNELS: u16 = 2;
+    const ITERATIONS: usize = 1000;
+    let (mut sender, mut receiver) = record_channel(4096, CHANNELS);
+    let block: Vec<f32> = (0..BLOCK_FRAMES * usize::from(CHANNELS))
+        .map(|i| (i % 61) as f32 / 61.0)
+        .collect();
+
+    let mut samples_us: Vec<f64> = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        // 每轮先排空，保证测的是"整帧入环"而不是"环满即丢"
+        let _ = receiver.drain_frames(BLOCK_FRAMES, |_| {});
+        let start = Instant::now();
+        let accepted = push_input_block(&mut sender, &block, CHANNELS);
+        let elapsed = start.elapsed().as_secs_f64() * 1e6;
+        assert_eq!(accepted, BLOCK_FRAMES, "空环必须整块接受");
+        samples_us.push(elapsed);
+    }
+    samples_us.sort_by(|a, b| a.partial_cmp(b).expect("有限值"));
+    let min_us = samples_us[0];
+    let median_us = samples_us[samples_us.len() / 2];
+    println!(
+        "[perf] 输入回调体：块 = {BLOCK_FRAMES} 帧 × {CHANNELS} 声道，N = {ITERATIONS}，Instant，\
+         最小 = {min_us:.3} µs/块，中位数 = {median_us:.3} µs/块（丢弃 = {} 帧）",
+        sender.dropped_frames()
+    );
+    assert!(min_us > 0.0, "计时必须为正（否则说明块没被处理）");
+    assert_eq!(sender.dropped_frames(), 0, "每轮排空后不得丢帧");
+}

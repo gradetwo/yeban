@@ -3129,6 +3129,44 @@ fn instrument_self_check(report: &mut Report) {
 // main
 // ---------------------------------------------------------------------------
 
+/// ⭐ A④ 剩余件 1：**输入回调体**（`push_input_block`）的零分配窗口。
+///
+/// ⚠ 本 target 是 `harness = false`（`Cargo.toml`）⇒ `#[test]` **惰性**、`--list` 报 **0 条**
+/// ⇒ 本场景**必须由 `main` 显式调用**（这正是本会话查出的机械指纹）。
+///
+/// 口径：建环（构造期，**窗口之外**，允许分配）⇒ 窗口之内**只**做
+/// `push_input_block`（512 帧块 × 64 次）与 `dropped_frames()` 读取 ⇒ 断言四元组全 0。
+fn scenario_input_callback_body(report: &mut Report) {
+    use yeban_engine::record::{push_input_block, record_channel};
+
+    // ⭐ 构造期：建环 + 造一个 512 帧 × 2 声道的交错块（都在窗口之外）
+    let (mut sender, _receiver) = record_channel(64, 2);
+    let block: Vec<f32> = (0..512 * 2).map(|i| (i % 61) as f32 / 61.0).collect();
+
+    let mut scenario = Scenario::new("㉔输入回调体");
+    // ⭐ 窗口之内：只做"整帧入环"与"读丢弃计数"
+    let reading = window(|| {
+        for _ in 0..64 {
+            let accepted = push_input_block(&mut sender, &block, 2);
+            assert!(accepted <= 512, "接受帧数不得超过块内帧数");
+            let _ = sender.dropped_frames();
+        }
+    });
+    println!(
+        "[record] 输入回调体窗口：allocations={} deallocations={} lock_blocking={} io_ops={}",
+        reading.quad.allocations,
+        reading.quad.deallocations,
+        reading.quad.lock_blocking,
+        reading.quad.io_ops
+    );
+    scenario.absorb(0, &reading);
+    report.scenario(
+        "㉔",
+        "输入回调体（push_input_block）：四元组全 0",
+        &scenario,
+    );
+}
+
 fn main() -> ExitCode {
     let mut report = Report::new();
 
@@ -3157,6 +3195,7 @@ fn main() -> ExitCode {
     scenario_metronome(&mut report);
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
+    scenario_input_callback_body(&mut report);
     prepared_sfz_callback_path_allocates_nothing();
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
