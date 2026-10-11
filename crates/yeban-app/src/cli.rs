@@ -244,6 +244,11 @@ pub fn usage_text() -> String {
                            与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ**;
                            `sample=<path>` 会被**真读** (只支持本仓 read_plain_wav 能读的
                            PCM WAV; 读不到 ⇒ 如实回退到内存正弦并把原因写进 source=)
+  --midi-in <port>         打开一个**物理 MIDI 输入端口**并采集 (**需要** midi-input 特性;
+                           默认构建会给出结构化错误并说明怎么开)
+                           <port> = 端口序号 (全十进制) 或端口名**子串** (大小写敏感);
+                           子串命中多于一个 ⇒ 报错并**列出候选** (不猜)
+  --midi-in-seconds <n>    采集时长 (默认 3; 上限 600 秒) —— 到点**必然退出**
   --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
                            来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
                            (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
@@ -857,6 +862,19 @@ pub struct Options {
     /// ⛔ 不是 SFZ 里 `sample=` 指到的 wav（本仓尚无采样文件读取/解码）。
     /// 本开关**只读**（不建会话、不改工程）⇒ 与导出/保存可以任意组合。
     pub sfz: Option<PathBuf>,
+    /// `--midi-in <端口>`：⭐ **打开一个物理 MIDI 输入端口并采集**（⭐ 本仓第一条
+    /// **用户可触发**的硬件 MIDI 入口）。
+    ///
+    /// ⭐ 取值接受**端口序号**（全十进制）或**端口名子串**（⭐ 大小写敏感）⇒
+    /// ⭐ 命中 0 个 ⇒ 结构化错误**列出可用端口**；⭐ 命中 >1 个 ⇒ 结构化错误**列出候选**
+    /// （⛔ 不猜）。⚠ 本开关**只在** `midi-input` feature 下可用；⭐ 默认档给的是
+    /// **结构化错误**（⭐ 点名 feature ＋ 一句怎么开），⛔ 不是"未知参数"。
+    pub midi_in: Option<String>,
+    /// `--midi-in-seconds <n>`：`--midi-in` 的采集时长（秒；默认 [`crate::midi_in::DEFAULT_SECONDS`]）。
+    ///
+    /// ⭐ **到点必然退出**（⛔ 永不无限阻塞）＋ ⭐ 上限
+    /// [`crate::midi_in::MAX_SECONDS`]（⭐ 防止误敲一个巨大的数让命令卡住）。
+    pub midi_in_seconds: Option<f32>,
     /// `--export-midi <path>`：当前工程导出成标准 MIDI 文件（SMF 1）[ADR-0001 **D47**]。
     pub export_midi: Option<PathBuf>,
     /// `--export-wav <path>`：把当前工程**离线渲染**成一段 24-bit WAV（导出族）。
@@ -1028,6 +1046,8 @@ pub enum ParseError {
     /// "我选了 material"与"其实渲染的是 `default`(yeban 调色板)"长得一模一样，而本仓库最忌讳
     /// 的就是这一类"以为生效了"的假绿。
     UnknownTheme(String),
+    /// `--midi-in-seconds` 的取值不是十进制数。
+    MidiInSecondsInvalid(String),
     /// `--headless-idle` 没配 `--idle-seconds`。
     ///
     /// 为什么是错误而不是"默认空闲 1 秒"：默认值会让"参数没生效"与"空闲 0 秒"长得一样，
@@ -1094,6 +1114,10 @@ impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownArgument(argument) => write!(formatter, "无法识别的参数 `{argument}`"),
+            Self::MidiInSecondsInvalid(value) => write!(
+                formatter,
+                "`--midi-in-seconds` 的取值 `{value}` 不是十进制秒数"
+            ),
             Self::MissingValue(option) => write!(formatter, "`{option}` 需要一个取值"),
             Self::UnexpectedValue(option) => write!(formatter, "`{option}` 不接受取值"),
             Self::DuplicateOption(option) => {
@@ -1282,6 +1306,17 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 let value = take_value("--sfz", inline, args, &mut cursor)?;
                 set_once(&mut options.sfz, "--sfz", PathBuf::from(value))?;
             }
+            "--midi-in" => {
+                let value = take_value("--midi-in", inline, args, &mut cursor)?;
+                set_once_string(&mut options.midi_in, "--midi-in", value)?;
+            }
+            "--midi-in-seconds" => {
+                let value = take_value("--midi-in-seconds", inline, args, &mut cursor)?;
+                let seconds = value
+                    .parse::<f32>()
+                    .map_err(|_| ParseError::MidiInSecondsInvalid(value.clone()))?;
+                set_once_seconds(&mut options.midi_in_seconds, "--midi-in-seconds", seconds)?;
+            }
             "--import-midi" => {
                 let value = take_value("--import-midi", inline, args, &mut cursor)?;
                 set_once(
@@ -1381,6 +1416,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.import_midi.is_some(), "--import-midi"),
+            (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
@@ -1412,6 +1448,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.import_midi.is_some(), "--import-midi"),
+            (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
@@ -1437,6 +1474,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.import_midi.is_some(), "--import-midi"),
+            (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
             (options.export_als.is_some(), ALS_EXPORT_SWITCH),
@@ -1487,6 +1525,30 @@ fn reject_inline(name: &'static str, inline: Option<String>) -> Result<(), Parse
 }
 
 /// 取一个带取值开关的值（`--opt value` / `--opt=value`），并推进游标。
+fn set_once_string(
+    slot: &mut Option<String>,
+    name: &'static str,
+    value: String,
+) -> Result<(), ParseError> {
+    if slot.is_some() {
+        return Err(ParseError::DuplicateOption(name));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+fn set_once_seconds(
+    slot: &mut Option<f32>,
+    name: &'static str,
+    value: f32,
+) -> Result<(), ParseError> {
+    if slot.is_some() {
+        return Err(ParseError::DuplicateOption(name));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
 fn take_value(
     name: &'static str,
     inline: Option<String>,
@@ -1649,6 +1711,11 @@ pub enum CliError {
         /// 落盘层的原样裁决。
         source: SaveError,
     },
+    /// `--midi-in` 失败（无端口 / 歧义 / 宿主不可用 / 未启用 feature）。
+    MidiIn {
+        /// `midi-in` 层的原样裁决。
+        source: crate::midi_in::MidiInError,
+    },
     /// `--record-wav` 失败（抽干 I/O / WAV 写出被拒 / 参数非法）。
     Record {
         /// 目标路径。
@@ -1744,7 +1811,10 @@ impl CliError {
             | Self::McpHttpNotBatch => EXIT_UI,
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
-            Self::Open { .. } | Self::ImportMidi { .. } | Self::Sfz { .. } => EXIT_OPEN,
+            Self::Open { .. }
+            | Self::ImportMidi { .. }
+            | Self::Sfz { .. }
+            | Self::MidiIn { .. } => EXIT_OPEN,
             Self::Usage(_) => EXIT_USAGE,
             Self::Save { .. } => EXIT_SAVE,
             Self::Record { .. } => EXIT_EXPORT,
@@ -1760,6 +1830,7 @@ impl CliError {
 impl fmt::Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MidiIn { source } => write!(formatter, "--midi-in 失败: {source}"),
             Self::Open { path, source } => {
                 write!(formatter, "打开 `{}` 失败: {source}", path.display())
             }
@@ -1849,6 +1920,7 @@ impl std::error::Error for CliError {
             Self::Open { source, .. } => Some(source),
             Self::ImportMidi { source, .. } => Some(source),
             Self::Sfz { source, .. } => Some(source),
+            Self::MidiIn { source } => Some(source),
             Self::Record { source, .. } => Some(source),
             Self::Projection { source } => Some(source),
             Self::Save { source, .. } | Self::Export { source, .. } => Some(source),
@@ -2587,6 +2659,21 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
     if options.record_seconds.is_some() && options.record_wav.is_none() {
         return Err(CliError::Usage(
             "`--record-seconds` 必须与 `--record-wav` 一起给".to_owned(),
+        ));
+    }
+
+    // ⭐ `--midi-in`：⭐ **只读**（不建会话、不改工程）⇒ 采集完就打印。
+    if let Some(wanted) = options.midi_in.as_ref() {
+        let seconds = options
+            .midi_in_seconds
+            .unwrap_or(crate::midi_in::DEFAULT_SECONDS);
+        let report = crate::midi_in::capture(wanted, seconds)
+            .map_err(|source| CliError::MidiIn { source })?;
+        lines.push(report.summary());
+    }
+    if options.midi_in_seconds.is_some() && options.midi_in.is_none() {
+        return Err(CliError::Usage(
+            "`--midi-in-seconds` 必须与 `--midi-in` 一起给".to_owned(),
         ));
     }
 
