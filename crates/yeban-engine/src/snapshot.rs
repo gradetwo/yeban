@@ -851,13 +851,15 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
     let mut dropped = 0u64;
 
     for (id, track) in &project.tracks {
-        let audible =
-            crate::synth::track_is_audible(track.mute, track.solo, track.solo_safe, any_solo);
-        let gain = if audible {
-            crate::synth::track_gain(track.volume_db)
-        } else {
-            0.0
-        };
+        // ⭐ **单一来源**：⭐ 与声部槽（`SynthEngine::set_track_gain_scales`）调**同一个**
+        // 函数 ⇒ ⭐ 两条路按构造一致（⛔ 不在这里各写一遍）。
+        let gain = crate::synth::track_gain_scale(
+            track.mute,
+            track.solo,
+            track.solo_safe,
+            any_solo,
+            track.volume_db,
+        );
         let mut notes: Vec<ScheduledNote> = Vec::new();
 
         for placement in track.clips.values() {

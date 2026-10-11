@@ -1909,6 +1909,9 @@ impl EngineRuntime {
                     current.drums().iter().filter(|(id, _)| **id != master),
                 );
                 synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+                // ⭐ 逐轨增益门（与 `begin_snapshot` 同一处边界；⭐ 顺序：**先槽位对齐、后增益**）
+                // ⇒ ⭐ 活音符的 gain 与已调度音符同源（⛔ 不是两处各算一遍）。
+                synth.set_track_gain_scales(current);
                 // --- 2b') 走带武装：采样率与 BPM 必须来自**同一份快照**（见快照的 `bpm` 字段）。
                 // 位置与状态都不动 ⇒ 换快照 / 改速度不跳变 [ARCH-DET-001]。
                 transport.arm(current.sample_rate(), current.bpm());

@@ -810,6 +810,12 @@ struct TrackSlot {
     tone: ToneParams,
     /// 本轨的合成器器件：定长声部池 + 本轨音色（**实时侧唯一的状态拥有者**）。
     synth: PolySynth<VOICES_PER_TRACK>,
+    /// ⭐ **与力度无关**的增益门（可闻门 × 推子）⇒ 活音符的
+    /// `gain = velocity_gain(velocity) * gain_scale`（⭐ 与已调度音符同一个来源）。
+    ///
+    /// ⚠ 槽**未占用**或**释放后**时必须是 `0.0`（⭐ 见 [`TrackSlot::empty`] 与
+    /// [`SynthEngine::set_track_gain_scales`]）⇒ ⛔ 不留上一次的残值。
+    gain_scale: f32,
 }
 
 impl TrackSlot {
@@ -822,6 +828,8 @@ impl TrackSlot {
             cursor: 0,
             tone: ToneParams::bypass(),
             synth: PolySynth::new(sample_rate),
+            // ⭐ 空槽/释放后的**归零**（⛔ 不是残值）。
+            gain_scale: 0.0,
         }
     }
 }
@@ -992,7 +1000,33 @@ impl SynthEngine {
             snapshot.drums().iter().filter(|(id, _)| **id != master),
         );
         self.align_cursors(snapshot.schedules().iter().filter(|(id, _)| **id != master));
+        // ⭐ 第三条快照派生状态：⭐ 逐轨增益门（⭐ 与投影同一个 [`track_gain_scale`]）。
+        self.set_track_gain_scales(snapshot);
         Ok(())
+    }
+
+    /// ⭐ 把每条轨"与力度无关"的增益门投影进槽位（**快照边界**调用）。
+    ///
+    /// ⚠ **超越函数留在边界**：本函数里的 `exp2`（经 [`track_gain`]）与既有
+    /// `set_params` 的 `tan`/`exp` **同一类** ⇒ ⛔ 不进逐样本路径。
+    /// ⚠ 未占用的槽显式归 `0.0` ⇒ ⭐ 槽释放/重用时⛔ 不留残值。
+    pub fn set_track_gain_scales(&mut self, snapshot: &EngineSnapshot) {
+        let any_solo = snapshot.tracks().values().any(|params| params.is_soloed());
+        for slot in &mut self.slots {
+            slot.gain_scale = if slot.assigned {
+                snapshot.tracks().get(&slot.id).map_or(0.0, |params| {
+                    track_gain_scale(
+                        params.is_muted(),
+                        params.is_soloed(),
+                        params.is_solo_safe(),
+                        any_solo,
+                        params.volume_db(),
+                    )
+                })
+            } else {
+                0.0
+            };
+        }
     }
 
     /// 因 [`MAX_TRACK_SLOTS`] 耗尽而未获槽位的轨道次数。
@@ -1709,6 +1743,25 @@ pub fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool)
 pub fn track_gain(volume_db: f32) -> f32 {
     if volume_db.is_finite() {
         db_to_gain(volume_db)
+    } else {
+        0.0
+    }
+}
+/// ⭐ **单一来源**：一条轨"与力度无关"的增益门 ＝ **可闻门 × 推子**。
+///
+/// ⚠ 本函数是那段组合的**唯一**实现：⭐ 快照投影（`snapshot.rs`）与声部槽
+/// （[`SynthEngine::set_track_gain_scales`]）**都调它** ⇒ ⭐ 两条路按**构造**一致，
+/// ⛔ 不是靠两处各写一遍再对齐。
+#[must_use]
+pub fn track_gain_scale(
+    mute: bool,
+    solo: bool,
+    solo_safe: bool,
+    any_solo: bool,
+    volume_db: f32,
+) -> f32 {
+    if track_is_audible(mute, solo, solo_safe, any_solo) {
+        track_gain(volume_db)
     } else {
         0.0
     }
