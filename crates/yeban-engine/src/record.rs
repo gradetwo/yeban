@@ -96,29 +96,41 @@ impl RecordSender {
 
     /// 推入**一帧**（`frame.len()` 必须等于声道数）。
     ///
-    /// ⛔ **不分配／不加锁／不做 I/O**（红线 7）。环满 ⇒ **丢弃该帧**并让
+    /// ⛔ **不分配／不加锁／不做 I/O**（红线 7）。空间不足 ⇒ **丢弃该帧**并让
     /// [`RecordSender::dropped_frames`] 加一，**⛔ 不阻塞**。
+    ///
+    /// # 整帧原子（这条是**必需**的，不是优化）
+    ///
+    /// 本函数**先**检查整帧是否放得下，**再**写样本。若改成"边写边试"，
+    /// 一个写了一半才失败的帧会**留在环里** —— 而 `rtrb` 的 `push` 一旦接受就无法回滚
+    /// ⇒ 下一个帧的样本会接在**半帧**后面 ⇒ **声道错位**（左声道的数据出现在右声道位置）。
+    /// 所以"先问后写"是**正确性**要求。（此前的实现只做了逐样本试推并在失败处返回，
+    /// 会把半帧留在环里 —— 由 `yeban-app` 侧的读数暴露，本版修掉。）
+    ///
+    /// # 计数口径
+    ///
+    /// [`RecordSender::dropped_frames`] 计的是**帧**，⛔ 不是样本。调用方**无需**
+    /// 自己再判一次 `spare_frames()`；直接调用本函数即可（[`spare_frames`] 仍公开，
+    /// 供需要预知剩余空间的调用方使用）。
+    ///
+    /// [`spare_frames`]: RecordSender::spare_frames
     ///
     /// 返回 `true` 表示整帧都进去了。
     pub fn push_frame(&mut self, frame: &[f32]) -> bool {
-        if frame.len() != usize::from(self.channels) {
+        let channels = usize::from(self.channels);
+        if frame.len() != channels {
             return false;
         }
-        // 先试推：`rtrb` 在空间不足时返回 `Err`，此时**已经**推入的部分必须回滚，
-        // 否则帧会被切开（下一帧的样本会接在半帧后面 ⇒ 声道错位）。
-        let mut staged = 0usize;
-        for &sample in frame {
-            match self.inner.push(sample) {
-                Ok(()) => staged += 1,
-                Err(_) => {
-                    self.dropped_frames += 1;
-                    // 无法回滚 `rtrb` 已接受的样本 ⇒ 用"只接受整帧"的前置检查替代：
-                    // 见 `spare_capacity` 守卫。
-                    return false;
-                }
-            }
+        // 前置检查：整帧原子。`rtrb` 的 `slots()` 是**样本**数 ⇒ 除以声道数得帧数。
+        if self.inner.slots() < channels {
+            self.dropped_frames += 1;
+            return false;
         }
-        debug_assert_eq!(staged, frame.len());
+        // 到这里整帧必然放得下（单生产者 ⇒ 不会与本函数自身竞争）。
+        for &sample in frame {
+            let pushed = self.inner.push(sample);
+            debug_assert!(pushed.is_ok(), "前置检查已保证整帧放得下");
+        }
         self.pushed_frames += 1;
         true
     }
