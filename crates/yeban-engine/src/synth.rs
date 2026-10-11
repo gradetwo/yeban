@@ -1075,6 +1075,16 @@ impl SynthEngine {
         self.slots[index].synth.note_off(freq_hz) > 0
     }
 
+    /// ⭐ **是否已经有轨道占过槽位**（⭐ 即"⭐ 本运行时至少武装过一次快照"）。
+    ///
+    /// ⚠ 用途：⭐ 首块的环音符事件在**快照武装之前**出队 ⇒ ⭐ 槽位还没影 ⇒
+    /// `note_on` 早退、⭐ tick 0 的音符被丢。⭐ 本探针**不新增状态**：⭐ 槽位只会被
+    /// `begin_snapshot` 占用 ⇒ ⭐ "⭐ 有槽位 ≠ 空"就是"⭐ 武装过"的见证。
+    #[must_use]
+    pub fn has_armed_tracks(&self) -> bool {
+        self.slots.iter().any(|slot| slot.assigned)
+    }
+
     /// 因 [`MAX_TRACK_SLOTS`] 耗尽而未获槽位的轨道次数。
     #[must_use]
     pub const fn track_drops(&self) -> u64 {

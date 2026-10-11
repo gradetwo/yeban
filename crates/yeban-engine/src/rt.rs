@@ -1811,6 +1811,49 @@ impl EngineRuntime {
             ..
         } = self;
 
+        // --- ⭐ 首块修正：⭐ 让 tick 0 的环音符**不再被丢** [ARCH-RT-001] ---
+        //
+        // 症状：⭐ 本函数的顺序是「⭐ 出队并应用事件 → ⭐ 武装快照」，⭐ 而声部槽要**武装**
+        // 时才占用 ⇒ ⭐ **首块**里事件到达时槽位还没影 ⇒ ⭐ `SynthEngine::note_on` 早退
+        // 返回 `false` ⇒ ⭐ **tick 0 的音符静默消失**（⭐ app 线三探针实测：⭐ 单条
+        // `C4@tick0` ⇒ `poly_notes_triggered=0`／`nonzero=0`／`orphan_note_offs=1`）。
+        //
+        // 修法：⭐ **只把"⭐ 音符路径需要的那三样"提前**（⭐ 槽位对齐 ＋ 增益门）⇒
+        // ⚠ **参数/走带/PDC/节拍器/声相那一段仍留在出队之后的原处**（⭐ 见下），
+        // ⭐ 因为 `SetParam`／`Transport` 需要的是"⭐ **上一份**已武装的参数"
+        // ⇒ ⭐ 提前它们会把参数/走带语义**平移一个量子**。
+        //
+        // ⚠ **语义影响的准确表述**：⭐ **除首块外每量子逐位不变**；⭐ **首块在旧行为下
+        // 输出为空**（⭐ 槽位没武装 ⇒ ⭐ 无输出可被改变）；⭐ 首块的事件**现在看到真实快照**
+        // —— ⭐ 那是**更正确**的行为（⭐ 而不是看到过期默认值）。⭐ 参数/走带/声相那一段
+        // **位置与取值都没动** ⇒ ⭐ ⭐ **本次改动的语义影响只剩音符路径**。
+        //
+        // ⚠ **必须有 skip 机制**：⭐ 实测（⭐ 判据 `insert_slot_exhaustion_is_counted_and_never_panics`
+        // 抓到 `left: 2, right: 1`）`begin_block()` 在**同一量子第二次并不返回 `None`**
+        // ⇒ ⭐ 不守就会把武装**跑两遍**（⭐ `track_drops` 由 1 变 2）⇒ ⭐ 故下面原处那三个
+        // `synth.` 调用必须用 `early_armed` 守住。
+        //
+        // ⚠ **借用为什么合法**：⭐ `snapshot` 是上面 `let EngineRuntime { … } = self;` 解构出的
+        // **字段之一** ⇒ ⭐ 它与下面闭包捕获的 `params`／`synth`／`transport`／`metronome`
+        // 是**不相交的 `&mut`** ⇒ ⭐ `current: &Arc<EngineSnapshot>` 在本 `if let` 内、
+        // **闭包之前**存活是合法的（⭐ 闭包从不碰 `snapshot`；⭐ 借用在此 `if let` 结束即止）。
+        let mut early_armed = false;
+        if !synth.has_armed_tracks()
+            && let Some(current) = snapshot.begin_block()
+        {
+            // ⭐ 与后一个块各自取一次（⭐ 那个块里也是这么绑的）。
+            let master = current.master();
+            synth.begin_snapshot(
+                current.sample_rate(),
+                current.tracks().keys().filter(|id| **id != master),
+                current.tones().iter().filter(|(id, _)| **id != master),
+                current.drums().iter().filter(|(id, _)| **id != master),
+            );
+            synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+            synth.set_track_gain_scales(current);
+            early_armed = true;
+        }
+
         // 本量子的声相增益表（栈上定长；在下面的分支里可能被本次武装刷新）。
         // 只拷**已武装的**那几项 ⇒ 未武装的槽位保持"查不到 ⇒ 居中"的语义，
         // 同时避免把上一份快照的残留增益带进来。
@@ -1939,16 +1982,21 @@ impl EngineRuntime {
                 // --- 2b) 声部池对齐到新快照的轨道集合（每修订一次, 非逐样本）---
                 // 新轨道占槽、消失的轨道标记 absent（状态保留）、游标**只增不减**地校正
                 // ⇒ 已触发过的音符绝不重复触发，在鸣的音符不被快照切换切断。
-                synth.begin_snapshot(
-                    current.sample_rate(),
-                    current.tracks().keys().filter(|id| **id != master),
-                    current.tones().iter().filter(|(id, _)| **id != master),
-                    current.drums().iter().filter(|(id, _)| **id != master),
-                );
-                synth.align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
-                // ⭐ 逐轨增益门（与 `begin_snapshot` 同一处边界；⭐ 顺序：**先槽位对齐、后增益**）
-                // ⇒ ⭐ 活音符的 gain 与已调度音符同源（⛔ 不是两处各算一遍）。
-                synth.set_track_gain_scales(current);
+                // ⭐ 首块已提前做过这三件 ⇒ ⭐ 这里守住（⭐ 否则武装跑两遍：⭐ `begin_block()`
+                // 同一量子第二次**不返回 `None`**，⭐ 由 `track_drops` 判据实测）。
+                if !early_armed {
+                    synth.begin_snapshot(
+                        current.sample_rate(),
+                        current.tracks().keys().filter(|id| **id != master),
+                        current.tones().iter().filter(|(id, _)| **id != master),
+                        current.drums().iter().filter(|(id, _)| **id != master),
+                    );
+                    synth
+                        .align_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+                    // ⭐ 逐轨增益门（与 `begin_snapshot` 同一处边界；⭐ 顺序：**先槽位对齐、后增益**）
+                    // ⇒ ⭐ 活音符的 gain 与已调度音符同源（⛔ 不是两处各算一遍）。
+                    synth.set_track_gain_scales(current);
+                }
                 // --- 2b') 走带武装：采样率与 BPM 必须来自**同一份快照**（见快照的 `bpm` 字段）。
                 // 位置与状态都不动 ⇒ 换快照 / 改速度不跳变 [ARCH-DET-001]。
                 transport.arm(current.sample_rate(), current.bpm());
