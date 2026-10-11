@@ -18,10 +18,11 @@
 //! 2. **无端口 ⇒ 结构化不可用，⛔ 不是"收到 0 条事件"**：枚举回空表时回
 //!    `CONFLICT` ＋ `data.reason = "midiInputNoPorts"` ⇒ 调用方**区分得出**
 //!    "这台机器没有 MIDI 输入"与"有端口但这段窗口里静默"（后者才是 `events: 0`）。
-//! 3. **`unsupportedMessages` 如实报 `null`**：`yeban-midi-io` 的
-//!    [`MidiInputSession`] 只暴露 `receiver` / `pop`，**没有**暴露生产端的
-//!    `MidiEventSender::unsupported_messages` ⇒ 本工具**不猜、不假装 0**，
-//!    字段给 `null` 并把口径写在 `unsupportedMessagesCaliber` 里。
+//! 3. **`unsupportedMessages` 是**真读数****：`yeban-midi-io` 的
+//!    `MidiEventReceiver::unsupported_messages()`（⭐ 经 `MidiInputSession::receiver()` 可达）
+//!    暴露了**与生产端同一个**共享计数（⭐ 回调内核里一次 `fetch_add`）⇒ 本字段报**数字**，
+//!    ⛔ 既不是 `0` 的占位、⛔ 也不是 `null`。口径写在 `unsupportedMessagesCaliber` 里
+//!    （⭐ 读的是"连接之后到读它的那一刻"这段窗口内的登记数）。
 //! 4. **`jitter` 的口径是"相邻事件到达间隔（微秒）"**：本工具**不知道**输入源的
 //!    tempo/PPQ ⇒ ⛔ 不把 `ADR-0006` D4 的"相对会话起点的 960 PPQ 偏差"谎报成读数；
 //!    字段名带 `caliber`，逐字写 `interArrivalUs`，分位数由
@@ -362,9 +363,9 @@ pub fn plan(request: &ProbeRequest) -> Result<ProbeReport, Fault> {
                 "caliber": "interArrivalUs",
             },
             // ⚠ 诚实登记：会话句柄没暴露生产端的未承载计数 ⇒ `null`，⛔ 不假装 0。
-            "unsupportedMessages": Value::Null,
+            "unsupportedMessages": session.receiver().unsupported_messages(),
             "unsupportedMessagesCaliber":
-                "yeban-midi-io 的 MidiInputSession 只暴露 receiver/pop, 没有暴露 MidiEventSender::unsupported_messages ⇒ 本工具如实报 null",
+                "unsupported_messages: 会话连接之后到本工具读它的那一刻, 回调内核登记的不承载消息条数 (系统专用/可变长/长度不符 ⇒ 不静默丢弃)",
             "readOnly": true,
         }),
     })

@@ -29,6 +29,8 @@
 //! [`ARCH-RT-001`]: ../../docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md
 
 use crate::ticks_from_origin_us;
+use core::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// ⭐ 环的默认容量（⭐ 事件条数，⭐ 与 `ring.rs::DEFAULT_EVENT_CAPACITY` 同量级）。
 pub const DEFAULT_EVENT_CAPACITY: usize = 1024;
@@ -112,6 +114,8 @@ pub struct MidiEventSender {
     producer: rtrb::Producer<MidiEvent>,
     dropped_events: u64,
     unsupported_messages: u64,
+    /// ⭐ 与**接收侧共享**的不承载计数（⭐ 回调里只做一次 `fetch_add` ⇒ 零分配/无锁/无 I/O）。
+    unsupported_shared: Arc<AtomicU64>,
 }
 
 impl MidiEventSender {
@@ -166,6 +170,9 @@ impl MidiEventSender {
             }
             None => {
                 self.unsupported_messages = self.unsupported_messages.saturating_add(1);
+                // ⭐ 同一个事实**再过一次桥**：⭐ 接收侧只能读这个原子
+                // （⭐ `Relaxed` 足够 —— 只求最终计数，⛔ 不拿它排序任何别的写入）。
+                let _ = self.unsupported_shared.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -174,6 +181,8 @@ impl MidiEventSender {
 /// ⭐ 消费者侧（⭐ **控制侧线程**持有；⭐ 非实时路径）。
 pub struct MidiEventReceiver {
     consumer: rtrb::Consumer<MidiEvent>,
+    /// ⭐ 与**发送侧共享**的不承载计数（⭐ 建在 `event_channel`，⭐ 见上）。
+    unsupported_shared: Arc<AtomicU64>,
 }
 
 impl MidiEventReceiver {
@@ -189,6 +198,15 @@ impl MidiEventReceiver {
         self.consumer.slots()
     }
 
+    /// ⭐ **不承载的消息条数**（⭐ 由回调侧 `fetch_add` 累加 ⇒ ⭐ **控制侧可读**）。
+    ///
+    /// ⚠ ⭐ 口径与 [`MidiEventSender::unsupported_messages`] **同一个事实**：
+    /// ⭐ 系统专用/可变长/长度不符的消息**被计数登记**，⛔ 不静默丢弃。
+    #[must_use]
+    pub fn unsupported_messages(&self) -> u64 {
+        self.unsupported_shared.load(Ordering::Relaxed)
+    }
+
     /// ⭐ 弹出**一条完整**事件（⭐ 整事件原子 ⇒ ⛔ 看不到半条）。
     pub fn pop(&mut self) -> Option<MidiEvent> {
         self.consumer.pop().ok()
@@ -199,13 +217,19 @@ impl MidiEventReceiver {
 #[must_use]
 pub fn event_channel(capacity: usize) -> (MidiEventSender, MidiEventReceiver) {
     let (producer, consumer) = rtrb::RingBuffer::new(capacity);
+    // ⚠ ⭐ `Arc` 的分配发生在**这里**（⭐ 构造期）⇒ ⭐ 回调路径上只剩 `fetch_add` ✓
+    let unsupported_shared = Arc::new(AtomicU64::new(0));
     (
         MidiEventSender {
             producer,
             dropped_events: 0,
             unsupported_messages: 0,
+            unsupported_shared: Arc::clone(&unsupported_shared),
         },
-        MidiEventReceiver { consumer },
+        MidiEventReceiver {
+            consumer,
+            unsupported_shared,
+        },
     )
 }
 
@@ -340,6 +364,15 @@ impl MidiInputSession {
     /// ⭐ 弹出**一条完整**事件（⭐ 便捷转发）。
     pub fn pop(&mut self) -> Option<MidiEvent> {
         self.receiver.pop()
+    }
+
+    /// ⭐ **不承载的消息条数**（⭐ 转发到接收侧的共享计数）。
+    ///
+    /// ⚠ ⭐ 与 [`MidiEventSender::unsupported_messages`] **同一个事实**：⭐ 回调内核里
+    /// 一次 `fetch_add` ⇒ ⭐ 控制侧（⭐ app／MCP）都能读到它。
+    #[must_use]
+    pub fn unsupported_messages(&self) -> u64 {
+        self.receiver.unsupported_messages()
     }
 }
 
@@ -741,5 +774,36 @@ mod tests {
                 "max ⛔ 不得随逐点增量变小：{before:?} ⇒ {after:?}"
             );
         }
+    }
+
+    /// 判据 ⑪（⭐ **计数过桥**）：⭐ 送 **N** 条**不承载**的消息 ⇒ ⭐ **接收侧读到的计数必须 = N**；
+    /// ⭐ 之后再送几条**可承载**的 ⇒ ⭐ 计数**不变**（⭐ 反向对照：⭐ 计数器不是"来了就加"）。
+    #[test]
+    fn the_unsupported_count_crosses_to_the_receiver() {
+        let (mut sender, receiver) = event_channel(64);
+        assert_eq!(receiver.unsupported_messages(), 0, "初始为 0");
+        for _ in 0..7 {
+            // ⭐ 系统专用（0xF0）⇒ 本模块不承载。
+            sender.handle_message(1, &[0xF0, 0x7E, 0x00, 0xF7]);
+        }
+        assert_eq!(
+            receiver.unsupported_messages(),
+            7,
+            "⭐ 计数必须过桥到接收侧"
+        );
+        assert_eq!(sender.unsupported_messages(), 7, "⭐ 两侧读数必须一致");
+        // ⭐ 反向对照：⭐ 可承载的消息**不得**抬高这个计数。
+        for step in 0..5 {
+            sender.handle_message(step, &[0x90, 60, 100]);
+        }
+        assert_eq!(
+            receiver.unsupported_messages(),
+            7,
+            "⭐ 可承载的消息⛔ 不许抬高不承载计数"
+        );
+        // ⭐ 再补一条不承载的 ⇒ 两侧同步 +1。
+        sender.handle_message(2, &[0xF1, 0x00]);
+        assert_eq!(receiver.unsupported_messages(), 8);
+        assert_eq!(sender.unsupported_messages(), 8);
     }
 }

@@ -136,3 +136,27 @@ fn the_full_ring_drop_path_never_allocates() {
         "容量 4 ⇒ 满环之后那 100 次按事件计丢弃"
     );
 }
+
+/// 判据 ③：⭐ **不承载消息**的那条路径（含 `fetch_add`）也**零分配**。
+///
+/// ⚠ ⭐ 为什么必须有这一条：⭐ 判据 ① 送的是**可承载**的消息（⭐ 走 `push`），
+/// 判据 ② 走的是**环满丢弃**；⭐ ⭐ **两者都不碰 `fetch_add`** ⇒
+/// ⭐ 若不补这一条，⭐ "⭐ 共享计数"那一次原子写**从未落在零分配窗口里**。
+#[test]
+fn the_unsupported_counting_path_never_allocates() {
+    let (mut sender, receiver) = event_channel(8);
+    let window = 10_000u64;
+    let (allocs, deallocs, counted) = measure_window(|| {
+        for _ in 0..window {
+            // ⭐ 系统专用 ⇒ 走 `None` 分支 ⇒ ⭐ `saturating_add` ＋ ⭐ `fetch_add`。
+            sender.handle_message(1, &[0xF0, 0x7E, 0x00, 0xF7]);
+        }
+        receiver.unsupported_messages()
+    });
+    assert_eq!(allocs, 0, "不承载计数路径分配了 {allocs} 次（红线 7）");
+    assert_eq!(deallocs, 0, "不承载计数路径释放了 {deallocs} 次（红线 7）");
+    assert_eq!(
+        counted, window,
+        "窗口内计数必须 = {window}（⭐ 证明路径真的被走到）"
+    );
+}
