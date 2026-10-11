@@ -121,6 +121,7 @@ use yeban_dsp::polysynth::{
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, PPQ};
 
 use crate::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumsParams};
+use crate::snapshot::{EngineSnapshot, SnapshotError};
 
 /// 每个轨道槽的声部数（复音上限）。
 ///
@@ -950,6 +951,44 @@ impl SynthEngine {
         for slot in &mut self.slots {
             slot.synth.set_steal_fade_frames(frames);
         }
+    }
+
+    /// **离线/控制侧的武装入口**：从快照把工程里的乐器装进合成器。
+    ///
+    /// 镜像实时侧的武装序列（`rt.rs` 的 `begin_snapshot` ＋ `align_cursors`），并**排除 master**，
+    /// 使离线渲染（`yeban-app --export-wav`）能与实时播放走**同一条**乐器装载路径。
+    ///
+    /// # ⚠ 谁在何时调用它（红线纪律，[MUST-GATE-001]）
+    ///
+    /// * ⛔ **不得在音频回调里调用**：`begin_snapshot` 会按新快照**增长区间表**、
+    ///   `align_cursors` 会校正游标表 ⇒ **会分配** ⇒ 违反**红线 7**（实时回调内禁堆分配/释放、
+    ///   禁锁等待、禁阻塞 I/O）。
+    /// * ✅ **允许的调用点**：离线导出（`yeban-app --export-wav`）、控制线程加载/换工程、
+    ///   以及测试。实时线换快照走的是 `rt.rs` 的 `SnapshotSlot` 中转（那是**预分配**路径），
+    ///   ⛔ 与本函数不是同一条边。
+    ///
+    /// 幂等：同一快照重复调用只做区间对齐与游标校正（游标**只增不减** ⇒ 已触发过的音符
+    /// 不会重复触发，在鸣的音符不被切断）。
+    ///
+    /// # Errors
+    /// 快照里找不到 master 母线（`NoMasterBus`）⇒ 返回 [`SnapshotError`]。
+    /// 调用方应先做**慢路径**校验，再进入渲染循环（⛔ 不要边渲染边试错）。
+    pub fn arm_from_snapshot(&mut self, snapshot: &EngineSnapshot) -> Result<(), SnapshotError> {
+        let master = snapshot.master();
+        let has_master = snapshot.tracks().contains_key(&master)
+            || snapshot.tones().contains_key(&master)
+            || snapshot.drums().contains_key(&master);
+        if !has_master {
+            return Err(SnapshotError::NoMasterBus);
+        }
+        self.begin_snapshot(
+            snapshot.sample_rate(),
+            snapshot.tracks().keys().filter(|id| **id != master),
+            snapshot.tones().iter().filter(|(id, _)| **id != master),
+            snapshot.drums().iter().filter(|(id, _)| **id != master),
+        );
+        self.align_cursors(snapshot.schedules().iter().filter(|(id, _)| **id != master));
+        Ok(())
     }
 
     /// 因 [`MAX_TRACK_SLOTS`] 耗尽而未获槽位的轨道次数。
