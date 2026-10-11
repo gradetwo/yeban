@@ -675,4 +675,71 @@ mod tests {
             "序统计量必须有序：{reading:?}"
         );
     }
+
+    /// 判据 ⑪（⭐ **`jitter_reading` 的三条结构性质**）：⭐ 判据 ⑧／⑩ 已在**它们的**输入上
+    /// 断言过序关系（⭐ 也断言了空集不 panic）⇒ ⭐ 本条补的是**别处没有的两条**，⭐ 并把序关系
+    /// 扩到**形状各异**的输入：
+    ///
+    /// 1. ⭐ **序关系（⭐ 扩展）**：⭐ `p50 ≤ p99 ≤ max`，⭐ 对**空集／单点／全等／含 `u64::MAX`／逆序**都成立；
+    /// 2. ⭐ ⭐ **不发明数字**：⭐ 报出的 `p50`／`p99`／`max` **每一个都必须是输入里的某个样本**
+    ///    （⭐ 反伪造：⭐ 若将来有人改成插值、取上界或四舍五入 ⛔ 本判据会红）；
+    /// 3. ⭐ ⭐ **逐点占优 ⇒ 单调**：⭐ 若 `b[i] ≥ a[i]` 对每个 `i` 成立，⭐ 则三个统计量
+    ///    ⛔ **都不得变小**（⭐ 序统计量必须忠实于"⭐ 偏差整体变大"这件事）。
+    #[test]
+    fn the_jitter_reading_is_ordered_and_never_invents_numbers() {
+        // ⭐ 形状各异的输入（⭐ 含空集与极值 ⇒ ⭐ 覆盖 `rank.min(n)` 与 `div_ceil` 的边界）。
+        let shapes: [&[u64]; 6] = [
+            &[],
+            &[7],
+            &[5, 9],
+            &[4, 4, 4, 4, 4],
+            &[0, u64::MAX],
+            &[9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+        ];
+        for shape in shapes {
+            let reading = jitter_reading(shape);
+            assert_eq!(reading.n, shape.len(), "n 必须等于样本数：{shape:?}");
+            assert!(
+                reading.p50 <= reading.p99 && reading.p99 <= reading.max,
+                "序关系对任意形状都必须成立：{shape:?} ⇒ {reading:?}"
+            );
+            if shape.is_empty() {
+                assert_eq!(
+                    (reading.p50, reading.p99, reading.max),
+                    (0, 0, 0),
+                    "空集 ⇒ 三个统计量都是 0（⛔ 不 panic）"
+                );
+                continue;
+            }
+            for (name, value) in [
+                ("p50", reading.p50),
+                ("p99", reading.p99),
+                ("max", reading.max),
+            ] {
+                assert!(
+                    shape.contains(&value),
+                    "报出的 {name} = {value} 必须是输入里的某个样本（⛔ 不发明数字）：{shape:?}"
+                );
+            }
+        }
+
+        // ⭐ 逐点占优 ⇒ 单调：⭐ 给每个样本加一个**非负**增量（⭐ 含饱和边界），⭐ 三个统计量 ⛔ 不得变小。
+        let base: Vec<u64> = (0_u64..97).map(|i| (i * 37) % 101).collect();
+        for bump in [0_u64, 1, 3, 250, u64::MAX / 2] {
+            let raised: Vec<u64> = base.iter().map(|v| v.saturating_add(bump)).collect();
+            let (before, after) = (jitter_reading(&base), jitter_reading(&raised));
+            assert!(
+                after.p50 >= before.p50,
+                "p50 ⛔ 不得随逐点增量变小：{before:?} ⇒ {after:?}"
+            );
+            assert!(
+                after.p99 >= before.p99,
+                "p99 ⛔ 不得随逐点增量变小：{before:?} ⇒ {after:?}"
+            );
+            assert!(
+                after.max >= before.max,
+                "max ⛔ 不得随逐点增量变小：{before:?} ⇒ {after:?}"
+            );
+        }
+    }
 }
