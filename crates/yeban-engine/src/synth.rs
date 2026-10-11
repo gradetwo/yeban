@@ -1382,6 +1382,26 @@ impl SynthEngine {
             .map_or(0, |slot| slot.synth.active_voices())
     }
 
+    /// ⭐ **只读取值器**（⛔ 不改行为、⛔ 不加字段、⛔ 不进逐样本路径）：某个
+    /// `(track, pitch)` 当前活跃声部**真正落地**的逐样本增益
+    /// （＝ `PolyVoice.gain`，经 [`yeban_dsp::polysynth::PolySynth::debug_gain_for_freq`]）。
+    ///
+    /// 为什么需要它：两条触发路径 —— 环音符（[`Self::note_on`]：
+    /// `velocity_gain(velocity) × slot.gain_scale`）与已调度音符（快照投影
+    /// `snapshot.rs`：`velocity_gain(velocity) × track_gain_scale(...)` → 游标 →
+    /// [`Self::render_track`]）—— 的**输入公式**由构造保证同源，但"同源"只是
+    /// **源码形状**；判据要能读**器件里那一份**并逐位比较（`tests/two_path_gain.rs`）。
+    ///
+    /// ⚠ 与 [`Self::debug_voice_state`] 不同，本方法**不做** `debug_assertions` 门控：
+    /// 它只读一个 `f32`、不分配（与 `PolySynth::debug_voice` 同一条纪律），
+    /// 因此 release 档判据也能编译。
+    #[must_use]
+    pub fn debug_gain_for(&self, track: EntityId, pitch: u8) -> Option<f32> {
+        let index = self.slot_index(track)?;
+        let freq_hz = yeban_dsp::math::note_to_hz(f32::from(pitch));
+        self.slots[index].synth.debug_gain_for_freq(freq_hz)
+    }
+
     /// 波形库第一张表的 mip 级数（诊断用）。
     #[must_use]
     pub fn table_levels(&self) -> usize {

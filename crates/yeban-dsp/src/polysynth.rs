@@ -1372,6 +1372,26 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         })
     }
 
+    /// ⭐ **只读取值器**（⛔ 不改行为、⛔ 不加字段）：当前活跃声部里
+    /// **请求频率等于 `freq_hz`** 的那一只的**逐样本增益**（＝ [`PolyVoice::gain`]）。
+    ///
+    /// 它存在的唯一理由是**判据可读性**：引擎侧要能对同一个
+    /// `(track, pitch, velocity)` 把"**环音符路径**真正写进声部的那一份增益"与
+    /// "**已调度路径**投进器件的那一份增益"**逐位**比一次（判据
+    /// `tests/two_path_gain.rs`）。两条路各自都调 `velocity_gain × track_gain_scale`，
+    /// 但那只证明"构造上同源"；本取值器让判据能读**落地**的那一份。
+    ///
+    /// ⚠ 语义与 [`Self::debug_voice`] 同族：不分配、不改状态、不参与产物路径。
+    /// ⚠ 淡出窗口里 `voice.freq_hz` **仍是被窃取者的频率**（见 [`PolyVoice::freq_hz`]）
+    /// ⇒ 本取值器在那段时间里**按槽位宣称的频率**找，这是有意的。
+    #[must_use]
+    pub fn debug_gain_for_freq(&self, freq_hz: f32) -> Option<f32> {
+        self.voices
+            .iter()
+            .find(|voice| voice.active && voice.freq_hz == freq_hz)
+            .map(|voice| voice.gain)
+    }
+
     /// 新建一个"刚起音"的声部（空槽路径与硬窃取路径用）。
     ///
     /// 包络取 [`PendingNote::env`] —— 它在 `note_on` 里由 [`Self::env_for`] 造好

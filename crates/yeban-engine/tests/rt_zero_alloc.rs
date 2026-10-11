@@ -58,6 +58,7 @@
 //! | ㉑ | 节拍器 2 000 量子全程打拍（`transport.metronome_enabled = true`；关闭侧另 200 量子） | `render_block` 的 3a'（`metronome::render_quantum`）：每拍帧位置反算（`Transport::frames_until_tick` 的整数 `div_ceil`）、强弱拍增益选择、逐样本"比对 + 一次乘 + 两次加"、**跨量子延续**的游标；关闭侧覆盖"整段跳过"分支。行为判据在 `tests/metronome_render.rs` |
 //! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
 //! | ㉓ | 每轨**鼓机音源** 10 000 量子（两条轨：一条鼓机、一条复音）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz）＋ **1 次换回复音合成器** | `SynthEngine::render_track` 的鼓机分支（`DrumNoteMap::voice_for` → `DrumMachine::trigger` → `DrumMachine::render`）与快照边界的 `DrumMachine::set_params` / `set_sample_rate`。⚠ 与 ㉒ **相反**：鼓机没有延迟线 ⇒ 换采样率**照常武装**（不分配），因此本场景是「换采样率也必须零分配」的唯一判据。行为判据在 `tests/drums_instrument.rs` |
+//! | ㉔ | 环音符**窃取淡出窗口**：16 条 `NoteOn` **先走一个量子**灌满池（⚠ 触发量子与窃取量子必须错开，否则被窃取者电平 ≈ 0 ⇒ 3 ms release 立刻 Idle、`pending` 被回收丢掉）＋ 第 17 条**软窃取** ＋ **窗口内**推新音符自己的 `NoteOff`（3 个窗口：窃取量子 / 松键量子 / 64 量子回收），全部走 `note_project(&[])`（**零**已调度音符 ⇒ 声音只可能来自环音符） | `rt.rs::render_block` 的 `EngineEvent::NoteOn` 分支（灌满 + 软窃取，`pending` 挂起）＋ `EngineEvent::NoteOff` 分支 ＋ ⭐ `polysynth.rs::PolySynth::note_off` 的**挂起匹配**支路（`pending.is_some() && pending_freq_hz == freq_hz` ⇒ `pending_released = true`）与提升点的 `Adsr::gate_off()`。⚠ ⭐ 本行曾写"既有场景没有一条走到这条支路"—— **注入实测证否**：在挂起支路注入一次 `Vec::with_capacity(1)` 时 ⑯ 也红（`alloc=15`）⇒ ⑯ **偶然**覆盖 15 次，但⛔ 不断言、⛔ 不确定、且池里混着已调度音符 ⇒ ㉔ 把它做成**确定性 + 带断言**的覆盖。行为判据在 `rt.rs` 的 `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion` 与 `tests/two_path_gain.rs` |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -592,9 +593,10 @@ impl Report {
         println!("[MUST-GATE-001] 判据汇总: {passed} / {total} 通过");
         if self.failures() == 0 {
             println!(
-                "[MUST-GATE-001] ok: 十七场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
+                "[MUST-GATE-001] ok: 全部场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
                  回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰 / \
-                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器 / 每轨插入混响 / 每轨鼓机音源）四元组全 0；两条溢出路径（N6 选项 A）\
+                 PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器 / 每轨插入混响 / 每轨鼓机音源 / \
+                 环音符窃取淡出窗口）四元组全 0；两条溢出路径（N6 选项 A）\
                  走纯计数出口而**仍然** io_requests==0 && io_ops==0（且 suppressed_diag_events>0 ⇒ \
                  真的跑到了溢出）；控制面读取 EngineStats 的读取路径同样全 0；\
                  探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
@@ -1349,6 +1351,159 @@ fn scenario_mix_chain(report: &mut Report) {
 }
 
 // ---------------------------------------------------------------------------
+// 场景 ㉔ 环音符的窃取淡出窗口（`(β)` 之后新增：三条实时分支同窗覆盖）
+// ---------------------------------------------------------------------------
+
+/// ㉔：**环音符**（`EngineEvent::NoteOn` / `NoteOff`）把复音池灌满 ⇒ 第 17 条触发
+/// **软窃取**（新音符挂起）⇒ 在 3 ms 淡出窗口**内**推**新音符自己的** `NoteOff`
+/// ⇒ 提升点补 `Adsr::gate_off()`。
+///
+/// # 为什么需要它（本场景存在的唯一理由）
+///
+/// `(β)` 把一个声部改成"记两个频率"之后，实时侧多了一条**分支**：
+/// `polysynth.rs::PolySynth::note_off` 的**挂起匹配**支路
+/// （`pending.is_some() && pending_freq_hz == freq_hz` ⇒ `pending_released = true`）。
+///
+/// ⚠ ⭐ **本条曾写"既有场景里没有一条走到它"—— 被本场景的注入实测证否**：
+/// 在挂起支路里注入一次 `Vec::<u8>::with_capacity(1)` 之后，⭐ **⑯ 也红了**
+/// （实测 `alloc=15 dealloc=15`）⇒ ⭐ ⑯ 的满批事件流**偶然**走到了这条支路 **15** 次。
+/// 机理：⑯ 的 `NoteOn`/`NoteOff` 混排、且 `NoteOff` 的音高取自**它自己那个槽**的
+/// `slot % 12`（与刚发的 `NoteOn` 不同高）⇒ 一部分 `NoteOff` 找不到声部、声部逐量子
+/// 累积 ⇒ 池满窃取 ⇒ 此后再来的同高 `NoteOff` 落进挂起支路。
+///
+/// ⭐ 但"⑯ 偶然覆盖 15 次"**不是**这条契约的判据：
+/// * ⑯ **不**断言"窗口内的释放被挂起音符接住"（⛔ 它不看 `orphan_note_offs`）；
+/// * ⑯ 的次数取决于事件流巧合，⭐ ⛔ 不是确定性的覆盖（读数是 15，不是"必然 ≥ 1"）；
+/// * ⑯ 的池是**混着已调度音符**灌满的（它用 `note_project(&saturated_notes())`），
+///   ⛔ 分不清"环音符自己灌满的池"。
+///
+/// ㉔ 因此把三件事做成**确定性**的：⭐ 零已调度音符的夹具（`note_project(&[])`）、
+/// ⭐ 16 条环音符**自己**灌满池、⭐ 一条**指名的**窗口内释放，⭐ 并用 `orphan_note_offs == 0`
+/// 与 `poly_active_voices == 15` **断言**这条支路真的被走到。
+///
+/// 本场景把三条分支框进分配计数（**触发量子与窃取量子必须错开**，见下）：
+///
+/// | 窗口 | 窗口内执行的分支 |
+/// | :--- | :--- |
+/// | 预热量子（**窗口之外**） | `rt.rs` 的 `EngineEvent::NoteOn` 分支 ×16 ⇒ 空槽路径 ×16（让 16 条走到 Attack 中段，电平 ≈ 0.53） |
+/// | A（1 量子） | `rt.rs` 的 `EngineEvent::NoteOn` 分支 ×1 ⇒ **软窃取**（`pending` 被挂起），并走完 128/144 帧淡出 |
+/// | B（1 量子） | `rt.rs` 的 `EngineEvent::NoteOff` 分支 ×1 ⇒ ⭐ `polysynth::note_off` 的**挂起匹配**支路（`pending_released = true`）＋ 提升点的 `gate_off()` |
+/// | C（64 量子） | release 走完 ⇒ `render` 在包络 `Idle` 时回收声部（器件路径） |
+///
+/// ⚠ ⭐ **为什么触发与窃取不能同量子**（本判据第一版实测红）：⭐ 同量子的话被窃取者
+/// 刚 `gate_on`、⭐ 包络电平 ≈ 0，⭐ `start_steal_fade` 覆盖出来的 3 ms release
+/// **立刻**掉到 `Idle` ⇒ ⭐ `render` 的淡出分支当场 `*voice = PolyVoice::IDLE`
+/// ⇒ ⭐ `pending` 被丢掉、⭐ 挂起匹配支路**永远走不到**。
+/// ⭐ 先让灌池的 16 条走一个量子（Attack 128/240 帧、⭐ 电平 ≈ 0.53）⇒ ⭐ 3 ms release
+/// 要 ~213 帧才到 `Idle`，⭐ 因此 144 帧的淡出窗口里 `pending` 活着。
+///
+/// # 怎么变红（⭐ 实测）
+///
+/// 在 `polysynth.rs::note_off` 的挂起匹配支路里加一次 `Vec::<u8>::with_capacity(1)`：
+/// * ⭐ **㉔ 变红**：`㉔ FAIL … 四元组[alloc=1 dealloc=1 …]` ⇒ 汇总 `55 / 57`；
+/// * ⭐ **⑯ 也变红**：`alloc=15 dealloc=15`（⭐ 见上：它偶然走到这条支路 15 次）；
+/// * 其余场景不动（它们不进这条支路）。
+///
+/// ⭐ 还原之后：`57 / 57`。㉔c 同时钉住"这条支路**真的被走到**"
+/// （`orphan_note_offs == 0`：窗口内的释放被挂起音符接住了；
+/// ⛔ 旧行为下它是 1，且被窃取的槽会一直响 ⇒ `poly_active_voices` 停在 16）。
+fn scenario_ring_note_steal_fade(report: &mut Report) {
+    // ⭐ 夹具：一条 MIDI 轨 + **零**已调度音符 ⇒ ⭐ 窗口内的声音**只可能**来自环音符。
+    let fixture = note_project(&[]);
+    let track = fixture.track;
+    let project = fixture.project;
+    let mut rig = Rig::new(&project, 1, 8192);
+    rig.preheat();
+
+    // ⭐ 控制侧（窗口之外）先推满池（16 条，pitch 互不相同）。
+    for step in 0..16u8 {
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 60 + step,
+                velocity: 100,
+            }]),
+            1,
+            "灌池的每一条 NoteOn 都必须被通道接受"
+        );
+    }
+    // ⚠ ⭐ **关键时序**：灌池与窃取必须在**不同**量子 —— 同量子的话被窃取者刚起音
+    // （包络电平 ≈ 0），`start_steal_fade` 的 release 会**立刻**掉到 `Idle`，
+    // 器件在淡出分支里当场回收声部、把 `pending` 丢掉 ⇒ ⛔ 走不到挂起匹配支路
+    //（本判据第一版就是这样测出 `声部=15` 的）。⭐ 先让 16 条走到 Attack 中段
+    //（128/240 帧 ⇒ 电平 ≈ 0.53），⭐ 再窃取。
+    rig.step();
+    assert_eq!(
+        rig.stats().poly_active_voices,
+        16,
+        "⭐ 前置：16 条环音符必须先真的占满池"
+    );
+
+    // ⭐ 第 17 条 ⇒ ⭐ 池满 ⇒ ⭐ 在窗口 A 里软窃取。
+    assert_eq!(
+        rig.sender.publish(&[EngineEvent::NoteOn {
+            track,
+            pitch: 80,
+            velocity: 100,
+        }]),
+        1
+    );
+
+    let mut scenario = Scenario::new("㉔环音符窃取淡出窗口");
+
+    // ---- 窗口 A：出队第 17 条 NoteOn ⇒ 软窃取（pending 挂起），并走完 128/144 帧淡出 ----
+    scenario.absorb(1, &rig.pump(1));
+    let after_steal = rig.stats();
+
+    // ⭐ 窗口之外：推**新音符自己的** NoteOff —— 此刻淡出还剩 144 − 128 = 16 帧 > 0
+    // ⇒ ⭐ 这一条在量子**开头**被应用，⭐ 时间上**先于**提升点（提升发生在渲染循环里）。
+    assert_eq!(
+        rig.sender
+            .publish(&[EngineEvent::NoteOff { track, pitch: 80 }]),
+        1
+    );
+    // ---- 窗口 B：出队 NoteOff ⇒ ⭐ 走 polysynth::note_off 的**挂起匹配**支路；⭐ 渲染到第 16 帧提升 ----
+    scenario.absorb(1, &rig.pump(1));
+    // ---- 窗口 C：release(50 ms = 2400 帧) 走完 ⇒ 回收 ----
+    scenario.absorb(64, &rig.pump(64));
+
+    let stats = rig.stats();
+    scenario.note(format!(
+        "窃取={}（要求 > 0）松键孤儿={}（要求 0）器件触发={} 收尾声部={}（要求 15 = 仍按住的 15 条）\
+         淡出窗口内被接住的释放＝窗口 B（触发量子与窃取量子已错开 ⇒ pending 不会被回收丢掉）",
+        stats.note_steals,
+        stats.orphan_note_offs,
+        stats.poly_notes_triggered,
+        stats.poly_active_voices
+    ));
+    report.scenario(
+        "㉔",
+        "[MUST-GATE-001] 环音符窃取淡出窗口（NoteOn 分支 / NoteOff 分支 / 挂起匹配支路）：四元组全 0",
+        &scenario,
+    );
+
+    report.assert(
+        "㉔c",
+        "覆盖度：池真的被环音符灌满并窃取、窗口内的释放真的被挂起音符接住（孤儿 0）、\
+         被窃取的那一个槽真的回收（15 条仍按住）",
+        after_steal.note_steals > 0
+            && after_steal.poly_active_voices == 16
+            && stats.note_steals > 0
+            && stats.orphan_note_offs == 0
+            && stats.poly_active_voices == 15,
+        format!(
+            "窃取后 note_steals={} 声部={}（要求 16，即淡出窗口里被窃取者仍占着槽）；\
+             收尾 note_steals={} orphan_note_offs={}（要求 0）声部={}（要求 15）",
+            after_steal.note_steals,
+            after_steal.poly_active_voices,
+            stats.note_steals,
+            stats.orphan_note_offs,
+            stats.poly_active_voices
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 场景 ⑬ 回调缓冲长度边界（cpal 协商出来的长度不保证是 128 的倍数）
 // ---------------------------------------------------------------------------
 
@@ -1644,10 +1799,13 @@ fn scenario_undo_churn_while_playing(report: &mut Report) {
 /// `Vec::from_iter`/`extend`，或在"批比缓冲大"时分配溢出缓冲。
 /// 既有场景⑤每量子只发 **1** 条 ⇒ 满块边界从未被覆盖。
 ///
-/// **诚实边界（与场景⑤同一条，必须一起读）**：实时侧目前**只把
-/// `EngineEvent::Transport` 应用到状态机**；`SetParam` / `NoteOn` / `NoteOff`
-/// 走到"出队 + 计数"为止，**没有**作用于 DSP。因此本场景证明的是
-/// "满批出队与计数这条路径零分配"，**不是**"128 个参数变化都影响了声音"。
+/// **诚实边界（⭐ 2026-10-12 更正：⭐ 本条曾写"NoteOn/NoteOff 没有作用于 DSP"）**：
+/// 环音符接线落地之后，`EngineEvent::NoteOn` / `NoteOff` **确实**会经
+/// `SynthEngine::note_on` / `note_off` 作用于复音器件（`rt.rs::render_block` 的
+/// 音符分支）；`SetParam` 作用于参数目标表；`Transport` 作用于走带状态机。
+/// 因此本场景证明的是"满批出队 + 这些应用路径零分配"。
+/// ⚠ 它仍**不**证明"128 个参数变化都影响了声音"（那是行为判据的事），
+/// 也**不**覆盖窃取淡出窗口里那条**挂起匹配**支路 —— 那条由 ㉔ 专门覆盖。
 fn scenario_event_flood(report: &mut Report) {
     let fixture = note_project(&saturated_notes());
     let track = fixture.track;
@@ -3195,6 +3353,7 @@ fn main() -> ExitCode {
     scenario_metronome(&mut report);
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
+    scenario_ring_note_steal_fade(&mut report);
     scenario_input_callback_body(&mut report);
     prepared_sfz_callback_path_allocates_nothing();
     probe_teeth(&mut report, &witness);

@@ -4535,6 +4535,80 @@ mod tests {
         );
     }
 
+    /// 判据（⭐ **镜像过桥**，⛔ 不是"接线"）：⭐ 环音符路径上那两个计数
+    /// （[`EngineStats::note_steals`] / [`EngineStats::orphan_note_offs`]）必须**经**
+    /// [`EngineRuntime::stats_mirror`] 的跨线程只读镜像**读得回来**，⭐ 且与引擎侧
+    /// [`EngineRuntime::stats`] 的读数**逐值一致**。
+    ///
+    /// ⚠ 为什么这条与"结构体里有个字段"不同：⭐ 设备腿上运行时归**音频回调线程**所有
+    /// ⇒ ⭐ 控制面**只能**读镜像（[`EngineRuntime::stats`] 拿不到）。⭐ 一个字段写对了、
+    /// 但 `publish` 漏存（或漏读了 `EngineStats`）⭐ 在直读路径上**看不出来** ——
+    /// ⭐ 只有从镜像读、⭐ 与引擎侧对照，⭐ 才证明它**过了桥**。
+    ///
+    /// ⚠ 两个读数都必须在**本判据里被驱动成非 0**（⭐ 窃取一次 ＋ ⭐ 一次找不到声部的松键）
+    /// ⇒ ⭐ 否则 `0 == 0` 的相等什么都证明不了（⭐ 本判据因此与"冷值相等"那条区分开）。
+    #[test]
+    fn the_ring_note_counters_cross_the_stats_mirror() {
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut rig = rig_with_snapshot(snapshot);
+        let mut out = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+
+        // ⭐ 填满 16 个声部（⭐ pitch 互不相同 ⇒ ⛔ 不触发同 pitch 重触发）。
+        for step in 0..16u8 {
+            assert_eq!(
+                rig.sender.publish(&[EngineEvent::NoteOn {
+                    track,
+                    pitch: 60 + step,
+                    velocity: 100,
+                }]),
+                1
+            );
+        }
+        rig.runtime.process_quantum(&mut out, 2);
+        // ⭐ 第 17 条 ⇒ ⭐ 池满 ⇒ ⭐ 窃取 ⇒ ⭐ `note_steals` 非 0。
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 80,
+                velocity: 100,
+            }]),
+            1
+        );
+        rig.runtime.process_quantum(&mut out, 2);
+        // ⭐ 一条指向**从未存在过**的音的松键 ⇒ ⭐ `orphan_note_offs` 非 0。
+        assert_eq!(
+            rig.sender
+                .publish(&[EngineEvent::NoteOff { track, pitch: 90 }]),
+            1
+        );
+        rig.runtime.process_quantum(&mut out, 2);
+
+        let engine = rig.runtime.stats();
+        let mirror = rig.runtime.stats_mirror().read();
+        assert!(
+            engine.note_steals > 0 && engine.orphan_note_offs > 0,
+            "⭐ 前置：两个计数都必须在本判据里被驱动成非 0（⭐ 否则 0 == 0 什么都证明不了；\
+             ⭐ note_steals={} orphan_note_offs={}）",
+            engine.note_steals,
+            engine.orphan_note_offs
+        );
+        eprintln!(
+            "DIAGNOSTIC 镜像过桥: 引擎 note_steals={} 镜像={} / 引擎 orphan_note_offs={} 镜像={}",
+            engine.note_steals,
+            mirror.note_steals,
+            engine.orphan_note_offs,
+            mirror.orphan_note_offs
+        );
+        assert_eq!(
+            mirror.note_steals, engine.note_steals,
+            "⭐ `note_steals` 必须过桥：⭐ 镜像读数与引擎侧逐值一致"
+        );
+        assert_eq!(
+            mirror.orphan_note_offs, engine.orphan_note_offs,
+            "⭐ `orphan_note_offs` 必须过桥：⭐ 镜像读数与引擎侧逐值一致"
+        );
+    }
+
     fn rig_with_snapshot(snapshot: EngineSnapshot) -> Rig {
         let slot = SnapshotSlot::new(snapshot);
         let (retire, queue) = retire_channel(16);
