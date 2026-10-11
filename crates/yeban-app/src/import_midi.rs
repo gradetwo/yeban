@@ -343,6 +343,101 @@ mod tests {
         );
     }
 
+    /// 一段**最小合法 SMF**（格式 0、960 PPQ、一个 C4 音符）。
+    ///
+    /// 手写字节而不是借用导出器：本判据要独立于"导出"那条路（否则来源判据会随导出器一起漂移）。
+    fn minimal_smf() -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // 格式 0
+        bytes.extend_from_slice(&1u16.to_be_bytes()); // 1 条轨
+        bytes.extend_from_slice(&960u16.to_be_bytes()); // 960 PPQ
+        let mut track: Vec<u8> = Vec::new();
+        track.extend_from_slice(&[0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20]); // tempo 500000
+        track.extend_from_slice(&[0x00, 0x90, 0x3C, 0x64]); // note on C4 vel 100
+        track.extend_from_slice(&[0x87, 0x40, 0x80, 0x3C, 0x40]); // delta 960: note off
+        track.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]); // end of track
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&u32::try_from(track.len()).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&track);
+        bytes
+    }
+
+    /// 判据（父单：**钉住来源标记**，⛔ 不靠代码写法保证）。
+    ///
+    /// ## 这条判据在什么条件下会红（**有牙**）
+    ///
+    /// 把 `import_midi_bytes` 里的
+    /// `commit_ops_with_origin(now_ms, OpOrigin::MidiInput, …)` 换成 `commit_ops(now_ms, …)`
+    /// ⇒ 端口记下的来源变成 `UserUi` ⇒ 第一条断言红。**已实测注入**（临时改一次、观察变红、再改回）。
+    ///
+    /// ## 为什么还带一个**负对照**
+    ///
+    /// 只断言 `== Some(MidiInput)` 不足以证明这个读数**有判别力**（万一 `last_commit_origin`
+    /// 恒返回 `MidiInput` 呢）⇒ 同一条判据里再用**界面入口**提交一次，要求它记成 `UserUi`。
+    #[test]
+    fn the_import_commit_is_stamped_midi_input_and_the_ui_entry_still_reads_user_ui() {
+        let project = yeban_model::samples::filled_project();
+        let session =
+            crate::undo::UndoSession::open("<判据:导入来源>", "yeban-app", project.clone(), 1)
+                .expect("打开会话");
+        let port = crate::undo::UndoPort::new(session);
+        assert_eq!(port.last_commit_origin(), None, "还没提交过 ⇒ 无来源读数");
+
+        let notes_before: usize = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .map(std::collections::BTreeMap::len)
+            .sum();
+        let report = import_midi_bytes(
+            &port,
+            &project,
+            &minimal_smf(),
+            &MidiImportOptions::default(),
+            10,
+        )
+        .expect("最小 SMF 必须能导入");
+        assert_eq!(report.notes, 1, "只导入了文件里的那一个音符");
+        // ① 核心语义：这次提交的来源是 `MidiInput`。
+        assert_eq!(
+            port.last_commit_origin(),
+            Some(OpOrigin::MidiInput),
+            "导入提交必须被标成 `MidiInput`（⛔ 不是 `UserUi`）"
+        );
+        assert_eq!(report.origin, OpOrigin::MidiInput, "报告与端口读数必须一致");
+        let notes_after: usize = port
+            .project()
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .map(std::collections::BTreeMap::len)
+            .sum();
+        assert_eq!(
+            notes_after,
+            notes_before + report.notes,
+            "这次提交必须真的带上全部导入 op"
+        );
+
+        // ② 负对照：界面入口仍记成 `UserUi` ⇒ 来源读数**有判别力**。
+        // （只关心来源标记，所以这个 op 的坐标取固定值即可，⛔ 不需要走铅笔换算。）
+        let (track_id, clip_id) =
+            destination(&project, &MidiImportOptions::default()).expect("必须能找到目标");
+        let op = Op::AddNote {
+            track_id,
+            clip_id,
+            note: MidiNote::new(EntityId::new(), 0, 60, 240),
+        };
+        port.commit_ops(11, "ui: add note", vec![op])
+            .expect("界面入口提交");
+        assert_eq!(
+            port.last_commit_origin(),
+            Some(OpOrigin::UserUi),
+            "界面入口必须记成 `UserUi`（否则上面那条断言没有判别力）"
+        );
+    }
+
     /// 判据 c（拒绝非法字节）：真的喂一段非 SMF 字节 ⇒ `Parse`，且**不产生任何操作**。
     #[test]
     fn invalid_bytes_are_refused_before_any_operation_is_built() {
