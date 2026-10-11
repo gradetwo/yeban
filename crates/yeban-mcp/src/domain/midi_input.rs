@@ -7,7 +7,9 @@
 //! yeban_midi_input_probe { "port": <十进制下标 或 名字子串>, "seconds": <可选, 缺省 3> }
 //!   ⇒ { port: {index,name}, ports: [...], seconds, events,
 //!        firstEvents: [{ timestamp_us, status, data1, data2 }],
-//!        jitter: { n, p50, p99, max, caliber }, unsupportedMessages, readOnly: true }
+//!        jitter: { n, p50, p99, max, caliber },
+//!        unsupportedMessages, unsupportedMessagesCaliber,
+//!        droppedEvents, droppedEventsCaliber, readOnly: true }
 //! ```
 //!
 //! ## 五条诚实登记（⛔ 不假装）
@@ -18,11 +20,16 @@
 //! 2. **无端口 ⇒ 结构化不可用，⛔ 不是"收到 0 条事件"**：枚举回空表时回
 //!    `CONFLICT` ＋ `data.reason = "midiInputNoPorts"` ⇒ 调用方**区分得出**
 //!    "这台机器没有 MIDI 输入"与"有端口但这段窗口里静默"（后者才是 `events: 0`）。
-//! 3. **`unsupportedMessages` 是**真读数****：`yeban-midi-io` 的
-//!    `MidiEventReceiver::unsupported_messages()`（⭐ 经 `MidiInputSession::receiver()` 可达）
-//!    暴露了**与生产端同一个**共享计数（⭐ 回调内核里一次 `fetch_add`）⇒ 本字段报**数字**，
-//!    ⛔ 既不是 `0` 的占位、⛔ 也不是 `null`。口径写在 `unsupportedMessagesCaliber` 里
-//!    （⭐ 读的是"连接之后到读它的那一刻"这段窗口内的登记数）。
+//! 3. **两个计数器都是**真读数****（⛔ 既不是 `0` 的占位、⛔ 也不是 `null`）：
+//!    `yeban-midi-io` 把回调内核的**两个**计数镜像到了接收侧/会话侧
+//!    （⭐ `MidiEventReceiver::unsupported_messages()` / `dropped_events()`，
+//!    经 `MidiInputSession` 同名方法与 `receiver()` 可达）⇒ 本工具报**数字**：
+//!    `unsupportedMessages` 登记**不承载**的消息（系统专用 / 可变长 / 长度不符）；
+//!    `droppedEvents` 是 ⭐ **环满丢弃**的事件条数（⭐ 采集很要紧的那个数）。
+//!
+//!    两者的口径都写在同名的 `…Caliber` 字段里；`droppedEvents` 的口径逐字含三件事：
+//!    **单位 = 事件条数**、**累计量（读它不消费）**、**窗口 = 从建环到读它的那一刻**
+//!    （即采集窗口结束时的值）。
 //! 4. **`jitter` 的口径是"相邻事件到达间隔（微秒）"**：本工具**不知道**输入源的
 //!    tempo/PPQ ⇒ ⛔ 不把 `ADR-0006` D4 的"相对会话起点的 960 PPQ 偏差"谎报成读数；
 //!    字段名带 `caliber`，逐字写 `interArrivalUs`，分位数由
@@ -83,8 +90,8 @@ impl ProbeReport {
     /// **必然**就是线上那条路径，不会出现第二份 `json!` 让判据空转。
     ///
     /// 判据 `the_payload_is_built_in_exactly_one_place` 用源码扫描把
-    /// "生产区里 `unsupportedMessages` 这个键**恰好出现一次**且落在
-    /// [`probe_payload`] 体内"钉住 —— 挡住"日后有人再加一处 `json!`"。
+    /// "生产区里 `unsupportedMessages` **与** `droppedEvents` 这两个键各**恰好出现一次**
+    /// 且都落在 [`probe_payload`] 体内"钉住 —— 挡住"日后有人再加一处 `json!`"。
     #[must_use]
     pub fn from_reading(reading: &ProbeReading) -> Self {
         Self {
@@ -183,6 +190,19 @@ pub fn parse_arguments(arguments: &Map<String, Value>) -> Result<ProbeRequest, F
 /// ⇒ 它**不是**"本机一共遇到过多少条"，也**不是**"本次窗口内有多少条"。
 pub const UNSUPPORTED_MESSAGES_CALIBER: &str = "unsupported_messages: 会话连接之后到本工具读它的那一刻, 回调内核登记的不承载消息条数 (系统专用/可变长/长度不符 ⇒ 不静默丢弃)";
 
+/// `droppedEvents` 的**口径文案**（单一事实源：载荷与判据都读它）。
+///
+/// ⭐ 三件事逐字写在这里，⛔ 不留给调用方猜：
+/// **① 单位 = 事件条数**；**② 累计量**（⭐ 读它**不消费** —— 与 `pop()` 不同，
+/// 读一次不会让下一次读数变小）；**③ 窗口 = 从建环那一刻到本工具读它的那一刻**
+/// （即本次采集窗口结束时的值）。
+///
+/// ⚠ 与 `droppedByProbe` 的**分工**（两个数不是一回事）：
+/// `droppedByProbe` 是**本工具自己**为了限制回传条数而没放进 `firstEvents` 的条数
+/// （探针侧，窗口内）；`droppedEvents` 是**环**因为满而丢弃的条数
+/// （生产侧，建环起累计）⇒ 前者恒 ≤ `events`，后者与 `events` 无固定大小关系。
+pub const DROPPED_EVENTS_CALIBER: &str = "droppedEvents: 单位 = 事件条数; 累计量 (读它不消费); 窗口 = 从建环那一刻到本工具读它的那一刻 (即采集窗口结束时的值) —— 环满丢弃的事件条数, 与 droppedByProbe (本工具为限制回传条数而没放进 firstEvents 的条数) 不是一回事";
+
 /// `jitter` 的单位口径文案（单一事实源）。
 pub const JITTER_CALIBER: &str = "interArrivalUs";
 
@@ -263,6 +283,11 @@ pub struct ProbeReading {
     ///
     /// ⚠ 类型是 `u64`：它是 `AtomicU64` 的累加值，**不会**为负、**不截断**。
     pub unsupported_messages: u64,
+    /// ⭐ **环满丢弃**的事件条数（与生产端**同一个**共享计数，⭐ 读它不消费）。
+    ///
+    /// ⚠ 类型同样是 `u64`（`AtomicU64` 的累加值）；口径见
+    /// [`DROPPED_EVENTS_CALIBER`]（单位 = 事件条数／累计量／窗口 = 建环→读它的那一刻）。
+    pub dropped_events: u64,
 }
 
 /// **纯函数**：把一次探针的读数组装成工具载荷。
@@ -308,6 +333,12 @@ pub fn probe_payload(reading: &ProbeReading) -> Value {
         // `unsupported_messages_is_a_number_equal_to_the_input` 钉住这两条。
         "unsupportedMessages": reading.unsupported_messages,
         "unsupportedMessagesCaliber": UNSUPPORTED_MESSAGES_CALIBER,
+        // ⭐ **真读数**：环满丢弃的条数（同样是与生产端共享的那个计数）。
+        // ⛔ 不是 `null`、⛔ 不是 `0` 的占位 —— 判据
+        // `dropped_events_is_a_number_and_never_null` /
+        // `dropped_events_equals_the_input_value` 钉住这两条。
+        "droppedEvents": reading.dropped_events,
+        "droppedEventsCaliber": DROPPED_EVENTS_CALIBER,
         "readOnly": true,
     })
 }
@@ -526,5 +557,8 @@ pub fn plan(request: &ProbeRequest) -> Result<ProbeReport, Fault> {
         //（`MidiInputSession::unsupported_messages()` → `MidiEventReceiver` 的 `AtomicU64`）。
         // ⛔ 不是 `null`、⛔ 不是 `0` 的占位。
         unsupported_messages: session.unsupported_messages(),
+        // ⭐ 环满丢弃数（`MidiInputSession::dropped_events()` → `MidiEventReceiver` 的
+        // `AtomicU64`）⇒ 与 `unsupportedMessages` **同一条**镜像路径、同一个组装点。
+        dropped_events: session.dropped_events(),
     }))
 }

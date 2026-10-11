@@ -39,8 +39,8 @@ use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::domain::extension_audit::path_ends_with;
 use yeban_mcp::domain::midi_input::{
-    JITTER_CALIBER, JitterNumbers, PortEntry, ProbeEvent, ProbeReading, ProbeReport,
-    UNSUPPORTED_MESSAGES_CALIBER, probe_payload,
+    DROPPED_EVENTS_CALIBER, JITTER_CALIBER, JitterNumbers, PortEntry, ProbeEvent, ProbeReading,
+    ProbeReport, UNSUPPORTED_MESSAGES_CALIBER, probe_payload,
 };
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::{self, ErrorCode, SideEffect, TOOL_COUNT};
@@ -332,7 +332,20 @@ fn reading_with_unsupported(unsupported_messages: u64) -> ProbeReading {
             max: 1_200,
         },
         unsupported_messages,
+        // ⚠ 与 `droppedEvents` 无关的**另一个**数（分工见 `DROPPED_EVENTS_CALIBER`）：
+        // 这里给 5 是为了让"把 droppedEvents 误接到 droppedByProbe 上"会红。
+        dropped_events: 5,
     }
+}
+
+/// 构造一个"除 `droppedEvents` 以外全部固定"的**纯读数**（与上一条同形）。
+///
+/// ⛔ 同样不碰任何设备类型 ⇒ 无声卡的机器（含 CI）也能构造任意输入，
+/// 含 `u64::MAX` 这种真机上要跑几百年才可能出现的值。
+fn reading_with_dropped(dropped_events: u64) -> ProbeReading {
+    let mut reading = reading_with_unsupported(7);
+    reading.dropped_events = dropped_events;
+    reading
 }
 
 /// 判据 ⑤-1（**这一条正是那处零覆盖的空格**）：`unsupportedMessages` 是**数字**，
@@ -422,11 +435,102 @@ fn unsupported_messages_equals_the_input_value() {
     );
 }
 
+/// 判据 ⑥-1（与 ⑤-1 同形）：`droppedEvents` 是**数字**，⛔ 不是 `null`、⛔ 不是缺字段。
+///
+/// ⚠ 断言的是 `Value::Number` 这个**类型**；"非 null"单独成立太弱（字符串 `"7"`、
+/// 布尔 `true` 都能蒙混过去）⇒ 本判据同时断 `is_number()` 且与
+/// [`ProbeReport::from_reading`]（线上那条路径）逐值一致。
+#[test]
+fn dropped_events_is_a_number_and_never_null() {
+    for input in [0_u64, 7, u64::MAX] {
+        let payload = probe_payload(&reading_with_dropped(input));
+        let field = payload
+            .get("droppedEvents")
+            .unwrap_or_else(|| panic!("字段必须存在（⛔ 不许缺字段）: {payload}"));
+        assert!(
+            matches!(field, Value::Number(_)),
+            "必须是 `Value::Number`（输入 {input}），实际 `{field}`"
+        );
+        assert!(field.is_number(), "`is_number()` 必须为真: {field}");
+        assert!(!field.is_null(), "⛔ 不得是 null（这是真读数，不是占位）");
+        // 与生产端**同一条**载荷路径（`ProbeReport` 的唯一构造入口）。
+        let via_report = ProbeReport::from_reading(&reading_with_dropped(input)).data();
+        assert_eq!(
+            via_report["droppedEvents"], *field,
+            "`probe_payload` 与 `ProbeReport::from_reading` 必须是同一条路径"
+        );
+        // 口径文案必须与常量**同源**（⛔ 不是判据里手抄的第二份）。
+        assert_eq!(
+            payload["droppedEventsCaliber"], DROPPED_EVENTS_CALIBER,
+            "口径文案必须来自 `DROPPED_EVENTS_CALIBER`"
+        );
+        // ⚠ 分工：⛔ 不得把 `droppedEvents` 接到 `droppedByProbe` 上
+        //（助手固定 `dropped_by_probe = 3`，输入是 0/7/u64::MAX ⇒ 相等即接错）。
+        if input != 3 {
+            assert_ne!(
+                payload["droppedEvents"], payload["droppedByProbe"],
+                "`droppedEvents` 与 `droppedByProbe` 是两个不同的数（分工见口径文案）"
+            );
+        }
+    }
+}
+
+/// 判据 ⑥-2 ＋ ⑥-3：**等于传入值**（⛔ 不是写死的常量）、**跟着输入变**、
+/// **传入 0 ⇒ 报 0**（反向对照）。
+///
+/// ⚠ **数值口径（如实断言，⛔ 不假设会被截断）**：生产端的计数器是 `AtomicU64`
+/// ⇒ 全宽、不截断；`u64::MAX` 的序列化文本是 `18446744073709551615`（20 位）。
+#[test]
+fn dropped_events_equals_the_input_value() {
+    let cases: [(u64, &str); 3] = [(0, "0"), (7, "7"), (u64::MAX, "18446744073709551615")];
+    let mut observed: Vec<u64> = Vec::new();
+    for (input, expected_text) in cases {
+        let payload = probe_payload(&reading_with_dropped(input));
+        let field = &payload["droppedEvents"];
+        assert_eq!(
+            field.as_u64(),
+            Some(input),
+            "必须等于**传入值本身**（⛔ 不是写死的常量）: 输入 {input} ⇒ {field}"
+        );
+        assert_eq!(field, &Value::from(input), "必须等于 `Value::from(输入)`");
+        assert_eq!(
+            field.to_string(),
+            expected_text,
+            "序列化文本口径（u64 全宽, ⛔ 不截断）: 输入 {input}"
+        );
+        observed.push(field.as_u64().expect("u64"));
+    }
+    // ③ 反向对照之一：三组不同输入 ⇒ 三个**不同**输出（写死值会在这里被抓到）。
+    let mut distinct = observed.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        cases.len(),
+        "输出必须**跟着输入变**: {observed:?}"
+    );
+    // ③ 反向对照之二：**传入 0 ⇒ 恰好报 0**（且仍是数字，⛔ 不是 `null`）。
+    let zero = probe_payload(&reading_with_dropped(0));
+    assert_eq!(zero["droppedEvents"], Value::from(0_u64), "传入 0 ⇒ 报 0");
+    assert!(
+        zero["droppedEvents"].is_number(),
+        "0 也必须是数字（⛔ 不许把 0 写成 null/缺字段）: {zero}"
+    );
+    assert!(
+        !zero["droppedEvents"].is_null(),
+        "0 不是 null（⛔ 不许用 null 表示「没有丢弃」）"
+    );
+}
+
 /// 判据 ⑤ 的**整条载荷**复核（同一层里的其它字段也一并钉住，证明这一层真的被判了）。
 #[test]
 fn the_whole_payload_shape_is_judged_without_hardware() {
     let payload = probe_payload(&reading_with_unsupported(7));
     assert_eq!(payload["port"]["index"], 3);
+    // ⭐ 本次新增的两个键也在这一层被复核（同一层里的字段一并钉住）。
+    assert_eq!(payload["unsupportedMessages"], Value::from(7_u64));
+    assert_eq!(payload["droppedEvents"], Value::from(5_u64));
+    assert_eq!(payload["droppedEventsCaliber"], DROPPED_EVENTS_CALIBER);
     assert_eq!(payload["port"]["name"], "Yeban Test Port");
     assert_eq!(payload["ports"].as_array().expect("ports").len(), 2);
     assert_eq!(payload["ports"][1]["name"], "Other Port");
@@ -569,13 +673,16 @@ fn the_payload_is_built_in_exactly_one_place() {
         )
     });
     let production = production_region(text);
+    // ⭐ 两个计数器键**各**恰好一次（`droppedEvents` 与 `unsupportedMessages` 同形）。
+    for key in ["\"unsupportedMessages\"", "\"droppedEvents\""] {
+        let occurrences = production.matches(key).count();
+        assert_eq!(
+            occurrences, 1,
+            "生产区里 `{key}` 这个 JSON 键必须**恰好出现一次**（实际 {occurrences} 次）—— \
+             多一处就意味着可能存在第二份载荷、判据 ⑤/⑥ 会空转"
+        );
+    }
     let key = "\"unsupportedMessages\"";
-    let occurrences = production.matches(key).count();
-    assert_eq!(
-        occurrences, 1,
-        "生产区里 `{key}` 这个 JSON 键必须**恰好出现一次**（实际 {occurrences} 次）—— \
-         多一处就意味着可能存在第二份载荷、判据 ⑤ 会空转"
-    );
 
     // 且那一处必须落在 `probe_payload` 的**函数体内**（不是被搬到别处）。
     let fn_start = production
@@ -594,6 +701,14 @@ fn the_payload_is_built_in_exactly_one_place() {
 
     // 反向对照：这个扫描器**真的**会数（把键塞进一段合成文本 ⇒ 计数变 2）。
     let synthetic = format!("{production}\nfn extra() {{ let _ = json!({{ {key}: 1 }}); }}\n");
+    // 同一个扫描器对 `droppedEvents` 也要能数出第二处。
+    let key2 = "\"droppedEvents\"";
+    let synthetic2 = format!("{production}\nfn extra2() {{ let _ = json!({{ {key2}: 1 }}); }}\n");
+    assert_eq!(
+        synthetic2.matches(key2).count(),
+        2,
+        "扫描器必须能数出 `droppedEvents` 的第二处"
+    );
     assert_eq!(
         synthetic.matches(key).count(),
         2,
