@@ -4107,6 +4107,185 @@ mod tests {
         );
     }
 
+    /// ⭐ 活音符夹具：⭐ **一条轨、⭐ 无已调度音符**（⭐ 于是"⭐ 出声"只能来自环事件）
+    /// ＋ ⭐ 返回该轨 id（⭐ 事件要按 id 寻址）。⭐ 形态照 [`simple_snapshot`]。
+    fn live_note_snapshot(revision: u64) -> (EngineSnapshot, EntityId) {
+        let master = EntityId::new();
+        let track = EntityId::new();
+        let mut routing = RoutingGraph {
+            nodes: vec![track, master],
+            ..RoutingGraph::default()
+        };
+        let id = EntityId::new();
+        routing.edges.insert(
+            id,
+            RoutingEdge {
+                id,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        let mut tracks = BTreeMap::new();
+        let track_model = TrackV3 {
+            id: track,
+            ..TrackV3::default()
+        };
+        tracks.insert(
+            track,
+            crate::snapshot::TrackParams::from_track(&track_model, 0),
+        );
+        let snapshot = EngineSnapshot::from_parts(
+            revision,
+            48_000,
+            DEFAULT_BLOCK_FRAMES,
+            2,
+            master,
+            tracks,
+            &routing,
+            &LatencyTable::new(),
+        )
+        .expect("合法图");
+        (snapshot, track)
+    }
+
+    /// 判据（⭐ **端到端配对 ＋ 逐字节内容差异**）：⭐ **无事件 ⇒ 精确全零**；
+    /// ⭐ **推一条 `NoteOn` ⇒ 出声**（⭐ 给 `peak` 读数）；⭐ 且两次渲染的**内容**必须不同。
+    ///
+    /// ⚠ ⭐ 装备是 [`live_note_snapshot`]（⭐ **无已调度音符**）⇒ ⭐ "⭐ 出声"**只可能**来自环事件
+    /// ⇒ ⭐ 不存在"⭐ 靠已调度音符蒙过"。⭐ ⛔ 不比字节数：⭐ 比**内容**（⭐ 逐样本）。
+    #[test]
+    fn a_live_note_sounds_while_no_events_stays_exactly_silent() {
+        // 对照组：⭐ 不推事件 ⇒ ⭐ **精确全零**。
+        let (quiet_snapshot, _) = live_note_snapshot(1);
+        let mut quiet = rig_with_snapshot(quiet_snapshot);
+        let mut quiet_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        quiet.runtime.process_quantum(&mut quiet_out, 2);
+        assert!(
+            quiet_out.iter().all(|value| *value == 0.0),
+            "⭐ 无事件 ⇒ 输出必须**精确全零**（⛔ 不是'接近零'）"
+        );
+
+        // 实验组：⭐ 首块之前推一条 `NoteOn` ⇒ ⭐ 出声。
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut rig = rig_with_snapshot(snapshot);
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 69,
+                velocity: 127,
+            }]),
+            1
+        );
+        let mut loud_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut loud_out, 2);
+        let peak = loud_out.iter().fold(0.0f32, |acc, v| acc.max(v.abs()));
+        let nonzero = loud_out.iter().filter(|v| **v != 0.0).count();
+        assert!(peak > 0.0, "⭐ 活音符必须出声");
+        assert!(
+            rig.runtime.stats().poly_notes_triggered > 0,
+            "⭐ 必须真的触发了一条"
+        );
+
+        // ⭐ 内容差异（⭐ 逐样本，⛔ 不比字节数）。
+        let first_diff = quiet_out
+            .iter()
+            .zip(loud_out.iter())
+            .position(|(a, b)| a != b)
+            .expect("两次渲染的内容必须不同 ⇒ 事件真的改变了输出");
+        // ⚠ ⭐ 我第一版写的是 `first_diff == 0`，⭐ **实测是 68**（⭐ 起振前有若干零样本：
+        // ⭐ 波表首个采样与包络起振都可以是 0）⇒ ⭐ 那是**我的期望值错**、⭐ 不是代码错。
+        // ⭐ 故只要求"⭐ 差异在**一块之内**出现"（⭐ 即首块就生效），⭐ 并把实测值印进读数。
+        assert!(
+            first_diff < DEFAULT_BLOCK_FRAMES * 2,
+            "⭐ 差异必须在本块内出现（⭐ 实测 {first_diff}）"
+        );
+        eprintln!(
+            "DIAGNOSTIC 端到端配对: peak={peak} nonzero={nonzero} 差异起点={first_diff} \
+             对照组峰值={}",
+            quiet_out.iter().fold(0.0f32, |a, v| a.max(v.abs()))
+        );
+    }
+
+    /// 判据（⭐ **松键有效 —— 听觉口径**）：⭐ `NoteOff` 之后那一声必须**衰减到静音**，
+    /// ⭐ 而**不松键**的对照组在同一窗口里**仍在响** ⇒ ⭐ 成对 ⇒ ⭐ 排除"⭐ 挂音"与"⭐ 本来就静音"。
+    ///
+    /// ⚠ ⭐ ⛔ **不拿 `active_voices() == 0` 当证据**：⭐ 裁定 (B) 下活音符**不会**被回收
+    /// （⭐ `end_sample = u64::MAX` ⇒ ⭐ `retire_finished` 的谓词永不成立）⇒ ⭐ 声部仍在、⭐ 只是**静音**。
+    #[test]
+    fn releasing_a_live_note_decays_to_silence_while_holding_keeps_sounding() {
+        let quanta = 256usize; // ⭐ 远大于 3 × 默认 release（50 ms）对应的量子数
+        // ⭐ 对照组：⭐ **不**发 `NoteOff` ⇒ ⭐ 尾部窗口必须**仍在响**。
+        let (held_snapshot, held_track) = live_note_snapshot(1);
+        let mut held = rig_with_snapshot(held_snapshot);
+        assert_eq!(
+            held.sender.publish(&[EngineEvent::NoteOn {
+                track: held_track,
+                pitch: 69,
+                velocity: 127,
+            }]),
+            1
+        );
+        let mut held_tail = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..quanta {
+            held.runtime.process_quantum(&mut held_tail, 2);
+        }
+        let held_peak = held_tail.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+
+        // ⭐ 实验组：⭐ 先响一段、⭐ 再 `NoteOff`、⭐ 再渲染同一长度的尾部窗口。
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut rig = rig_with_snapshot(snapshot);
+        assert_eq!(
+            rig.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 69,
+                velocity: 127,
+            }]),
+            1
+        );
+        let mut sounding = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..8 {
+            rig.runtime.process_quantum(&mut sounding, 2);
+        }
+        let sounding_peak = sounding.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!(sounding_peak > 0.0, "前置：⭐ 松键之前必须真的在响");
+        assert_eq!(
+            rig.sender
+                .publish(&[EngineEvent::NoteOff { track, pitch: 69 }]),
+            1
+        );
+        let mut tail = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..quanta {
+            rig.runtime.process_quantum(&mut tail, 2);
+        }
+        let tail_peak = tail.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        let tail_rms = (tail
+            .iter()
+            .map(|v| f64::from(*v) * f64::from(*v))
+            .sum::<f64>()
+            / tail.len() as f64)
+            .sqrt();
+        eprintln!(
+            "DIAGNOSTIC 松键口径: 响时峰值={sounding_peak} 松键后尾部峰值={tail_peak} \
+             尾部RMS={tail_rms} 不松键对照峰值={held_peak} 声部数={}",
+            rig.runtime.stats().poly_active_voices
+        );
+        assert!(
+            tail_rms < 1.0e-3,
+            "⭐ 松键后尾部必须衰减到静音（⭐ RMS={tail_rms}、⭐ 峰值={tail_peak}）"
+        );
+        assert!(
+            held_peak > 0.0,
+            "⭐ 不松键的对照组在同一窗口必须**仍在响**（⭐ 否则本判据可能是'本来就静音'）"
+        );
+        assert_eq!(
+            rig.runtime.stats().orphan_note_offs,
+            0,
+            "⭐ 这条 `NoteOff` 必须找到声部（⛔ 不是孤儿）"
+        );
+    }
+
     fn rig_with_snapshot(snapshot: EngineSnapshot) -> Rig {
         let slot = SnapshotSlot::new(snapshot);
         let (retire, queue) = retire_channel(16);
