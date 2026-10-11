@@ -184,7 +184,7 @@ src/polysynth.rs|render_is_bit_identical_under_any_block_split|value_bound|asser
 src/polysynth.rs|stealing_is_deterministic|value_bound|assert_eq!(synth.voice_steals(), 1
 src/polysynth.rs|the_earliest_voice_is_stolen_first|value_bound|assert_eq!(synth.voice_steals(), 1
 src/polysynth.rs|the_second_oscillator_adds_its_own_fundamental|value_bound|assert!(             dual_220 > 20.0 * single_220,             "第二条振荡器必须带来它自己的基频: 单 {singl
-src/polysynth.rs|the_voice_size_is_pinned_after_adding_the_requested_frequency|value_bound|assert_eq!(             size, 296,             "size_of::<PolyVoice>() = {size}（⭐ 预期 296 =
+src/polysynth.rs|the_voice_size_is_pinned_after_adding_the_requested_frequency|value_bound|assert_eq!(             size, 296,             "size_of::<PolyVoice>() = {size}（⭐ 实测 296；⭐
 src/polysynth.rs|ties_on_start_sample_are_broken_by_the_smallest_index|value_bound|assert_eq!(synth.voice_steals(), 1
 src/reverb.rs|an_unconfigured_reverb_is_a_passthrough|value_bound|assert!(             (verb.params().mix - 0.5).abs() < 1e-6,             "the finite knob 
 src/reverb.rs|changing_the_pre_delay_length_never_replays_stale_audio|value_bound|assert_eq!(             stale_peak,             0.0,             "预延迟变长后湿路重放了旧长度下写进缓冲的音频：峰

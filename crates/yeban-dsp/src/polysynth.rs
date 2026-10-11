@@ -737,6 +737,11 @@ struct PolyVoice {
     /// 逐样本增益（力度 × 轨道音量，构造期算好）。
     gain: f32,
     /// ⭐ **请求频率**（触发时记下）⇒ [`PolySynth::note_off`] 按它配对。
+    ///
+    /// ⚠ 淡出窗口内它**仍然是**被窃取者的频率（⭐ 触发时写下、⭐ 窃取时**不**改写、
+    /// ⭐ 直到提升点才换成新音符的）—— ⭐ 这是**有意的**：⭐ 窗口里"⭐ 指向旧频率的
+    /// 释放"必须照旧作用于**被窃取者**（⭐ 槽位此刻宣称的就是它）；⭐ 指向**新**频率
+    /// 的释放走 [`Self::pending_freq_hz`] 那一支路。
     freq_hz: f32,
     /// 起点（绝对样本位置）。
     start_sample: u64,
@@ -749,6 +754,20 @@ struct PolyVoice {
     fade_remaining: u32,
     /// 是否有**已挂起的新音符**（淡出走完立刻起音）。
     pending: Option<PendingNote>,
+    /// ⭐ 挂起音符的**请求频率**（＝ [`PendingNote::freq_hz`]）：窃取那一刻从
+    /// `pending` 抄一份到声部上，⭐ 让淡出窗口内到达的 `NoteOff` 能**在提升之前**
+    /// 就认出挂起音符（见 [`PolySynth::note_off`] 的第二支路）。
+    ///
+    /// ⚠ **哨兵是 `f32::NAN`**：空槽、[`Self::IDLE`]、以及空槽路径
+    /// （[`PolySynth::fresh_voice`]）装的声部都用它。⭐ 与 `NaN` 的 `==` **恒为假**
+    /// （IEEE 754 的 `NaN != NaN`）⇒ ⭐ 这些声部的 `pending_freq_hz == freq_hz`
+    /// 永远不成立 ⇒ ⛔ 不会被第二支路误命中（⭐ 即使 `freq_hz` 本身也是 `NaN`）。
+    pending_freq_hz: f32,
+    /// ⭐ **挂起音符已经收到过指向它的释放**：⭐ 淡出窗口内来的 `NoteOff` 落在
+    /// `pending` 上（⭐ 此刻槽位仍宣称**被窃取者**的频率 ⇒ `note_off` 的第一支路
+    /// 匹配不到它），⭐ 记在这里；⭐ 提升点见它为 `true` 就补一次
+    /// [`Adsr::gate_off`] ⇒ ⭐ 新音符不会带着 `gate` 一直发声。
+    pending_released: bool,
 }
 
 impl PolyVoice {
@@ -764,6 +783,8 @@ impl PolyVoice {
         filter: LadderFilter::new(),
         fade_remaining: 0,
         pending: None,
+        pending_freq_hz: f32::NAN,
+        pending_released: false,
     };
 
     /// 推进两条在用的振荡器支路的相位。
@@ -1079,15 +1100,34 @@ impl<const VOICES: usize> PolySynth<VOICES> {
     /// ⚠ 配对用**请求频率**（触发时记下的 `NoteEvent::freq_hz`）⇒ ⭐ 两侧是**同一个算式**
     /// 的同一个值 ⇒ ⭐ **精确相等是有意的**（⛔ 近似匹配会让两条不同的音互相误松）。
     ///
-    /// ⚠ **逐位不变**：本方法**只**调 `env.gate_off()`；⭐ 既有渲染路径**不调用**它
-    /// ⇒ ⭐ 老的触发/渲染路径逐位不变（新入口的唯一调用者是引擎的新分支）。
+    /// ⚠ **双支路匹配（⭐ 现频率优先）**：⭐ 第一支路按 `voice.freq_hz`（⭐ 槽位**此刻
+    /// 宣称**的频率）；⭐ **否则**（`else if`）在 `pending.is_some()` 时按
+    /// [`PolyVoice::pending_freq_hz`]（⭐ 挂起音符自己的请求频率）⇒ ⭐ 置
+    /// [`PolyVoice::pending_released`]（⭐ 由提升点补 `gate_off`）。
+    ///
+    /// ⚠ ⭐ **为什么现频率优先**：⭐ 淡出窗口里槽位**仍宣称被窃取者**的频率（⭐ 见
+    /// [`PolyVoice::freq_hz`]）⇒ ⭐ 一条指向**旧频率**的释放必须照旧落在被窃取者身上
+    ///（⭐ 那正是"⭐ 槽位说它是谁"的语义）；⭐ 指向**新频率**的释放才走第二支路。
+    /// ⭐ 两条支路是 `else if` ⇒ ⭐ 同一个声部**最多计一次**（⛔ 不会重复 `released`）。
+    ///
+    /// ⚠ **逐位不变**：本方法**只**调 `env.gate_off()` / 写两个新字段；⭐ 既有渲染路径
+    /// **不调用**它 ⇒ ⭐ 老的触发/渲染路径逐位不变（新入口的唯一调用者是引擎的新分支）。
     ///
     /// **实时路径**：零分配、零锁、零 I/O。
     pub fn note_off(&mut self, freq_hz: f32) -> u32 {
         let mut released = 0u32;
         for voice in &mut self.voices {
-            if voice.active && voice.freq_hz == freq_hz {
+            if !voice.active {
+                continue;
+            }
+            if voice.freq_hz == freq_hz {
                 voice.env.gate_off();
+                released = released.saturating_add(1);
+            } else if voice.pending.is_some() && voice.pending_freq_hz == freq_hz {
+                // ⭐ 挂起音符自己的释放：⭐ 声部还没提升 ⇒ ⭐ 现在 `gate_off` 会打在
+                // 被窃取者那只 3 ms 的淡出包络上（⭐ 语义错），⭐ 所以只**记下**，
+                // 由提升点在新包络上补。
+                voice.pending_released = true;
                 released = released.saturating_add(1);
             }
         }
@@ -1198,6 +1238,11 @@ impl<const VOICES: usize> PolySynth<VOICES> {
         // 挂起新音符：淡出走完的那一帧换成它（起音从 0 开始）。
         victim.end_sample = pending.end_sample;
         victim.pending = Some(pending);
+        // ⭐ 挂起音符的请求频率 ＋ 释放标记：⭐ `freq_hz` **不动** —— 淡出窗口里
+        // 槽位必须继续宣称**被窃取者**的频率（⭐ 口径见 [`PolySynth::note_off`]）；
+        // 指向新音符的释放走 `pending_freq_hz` 那一支路。
+        victim.pending_freq_hz = pending.freq_hz;
+        victim.pending_released = false;
     }
 
     /// 渲染本器件的下一个块（**实时路径**）。`out.len()` 就是本块的有效帧数。
@@ -1260,6 +1305,20 @@ impl<const VOICES: usize> PolySynth<VOICES> {
                             // 释放变成 3 ms。新包络与 `fresh_voice`（空槽路径）装的
                             // 是同一份构造 ⇒ 两条窃取路径与空槽路径给出同一条释放。
                             voice.env = pending.env;
+                            // ⭐ 提升点补齐**请求频率**：⭐ 在此之前槽位宣称的是
+                            // 被窃取者的频率 ⇒ ⭐ 新音符自己的 `NoteOff` 配不上
+                            //（⭐ 旧行为漏了这一笔 ⇒ 被窃取过的音符自己松不掉、
+                            // ⭐ 一直响到池满再被窃取）。
+                            voice.freq_hz = pending.freq_hz;
+                            // ⭐ 淡出窗口里**已经**来过指向新音符的释放：⭐ 那只
+                            // `NoteOff` 打在 `pending` 上、只记了标记（⭐ 当时
+                            // `gate_off` 会误伤被窃取者的 3 ms 淡出包络）⇒ ⭐ 现在
+                            // 在新包络上补上，否则新音符从 `gate_on` 起振后不会进
+                            // release。
+                            if voice.pending_released {
+                                voice.env.gate_off();
+                            }
+                            voice.pending_released = false;
                         }
                     } else {
                         let mut sample =
@@ -1333,6 +1392,10 @@ impl<const VOICES: usize> PolySynth<VOICES> {
             filter: self.filter_template,
             fade_remaining: 0,
             pending: None,
+            // ⭐ 空槽 / 硬窃取路径**没有**挂起音符 ⇒ ⭐ 频率哨兵取 `NaN`
+            //（⭐ 与 `NaN` 的 `==` 恒为假 ⇒ `note_off` 的第二支路永不命中）。
+            pending_freq_hz: f32::NAN,
+            pending_released: false,
         }
     }
 
@@ -1485,17 +1548,27 @@ mod tests {
 
     /// 判据（⭐ `size_of` **实测并钉死**，⛔ 不写在注释里）：⭐ `PolyVoice` 的字节数。
     ///
-    /// ⚠ 口径：⭐ `note_off` 的配对字段 `freq_hz: f32` 是本票新增的**唯一**字段
-    /// ⇒ ⭐ 本判据把它钉住；⭐ 若未来有人再加字段，⭐ 这条会红并提示重新测量。
+    /// ⚠ 口径：⭐ `note_off` 的配对字段 `freq_hz: f32`、⭐ 挂起音符两支路的新字段
+    /// `pending_freq_hz: f32` ＋ `pending_released: bool` 都长在 `PolyVoice` 上
+    /// ⇒ ⭐ 本判据把它们一起钉住；⭐ 若未来有人再加字段，⭐ 这条会红并提示重新测量。
+    ///
+    /// ⚠ ⭐ **加字段不一定改 `size_of`**：⭐ `PolyVoice` 是默认 `repr(Rust)` ⇒ ⭐ 编译器
+    /// **可以重排字段**填进对内部的填充字节 ⇒ ⭐ 本次加 `pending_freq_hz`（4 B）＋
+    /// `pending_released`（1 B）之后实测**仍是 `296`**（⭐ 增量被既有填充吞掉 ⇒
+    /// ⭐ 每个声部 `0` 字节净增；⭐ 对内部字节布局的断言见本判据的实测值，⛔ 不是推算）。
+    ///
+    /// ⚠ **每槽成本**：⭐ `VOICES_PER_TRACK = 16` ⇒ ⭐ 一个轨道槽的声部池 = `296 × 16`
+    /// = **`4736`** 字节（⭐ 跨 16 个音轨 = `75776` 字节；⭐ 本判据钉住单声部这一格）。
     #[test]
     fn the_voice_size_is_pinned_after_adding_the_requested_frequency() {
         let size = core::mem::size_of::<PolyVoice>();
         eprintln!("DIAGNOSTIC PolyVoice size_of = {size}");
-        // ⭐ **实测值**（本机 48 kHz 构建，⭐ 2026-10-12 取的读数）：⭐ `296` 字节。
-        // ⭐ 加 `freq_hz: f32` 之前是 `292`（⭐ 296 − 4；⭐ 本判据就是钉住这次增量）。
+        // ⭐ **实测值**（本机 48 kHz 构建，⭐ 2026-10-12 加的 `pending_*` 两字段之后重取）：⭐ `296` 字节。
+        // ⭐ 加 `freq_hz: f32` 之前是 `292`；⭐ `pending_freq_hz` ＋ `pending_released`
+        // 两字段实测落进既有填充 ⇒ ⭐ 读数**不动**（⭐ 每个声部净增 0 字节）。
         assert_eq!(
             size, 296,
-            "size_of::<PolyVoice>() = {size}（⭐ 预期 296 = 加 freq_hz 之前的 292 + 4）\
+            "size_of::<PolyVoice>() = {size}（⭐ 实测 296；⭐ 上一票 296 = 加 freq_hz 之前的 292 + 4）\
              ⇒ 布局变了 ⇒ 重新测量并把新值钉在这里"
         );
     }

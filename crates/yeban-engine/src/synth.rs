@@ -1039,11 +1039,18 @@ impl SynthEngine {
     //   1. ⭐ "活音符永不被回收" —— **被实测证否**：[`PolySynth::render`] 在包络 `Idle` 时
     //      当场回收声部（`polysynth.rs` 里 `!voice.env.is_active()` 那两处），⭐ 与
     //      `end_sample` 无关 ⇒ ⭐ `retire_finished` 只是**另一条**路径。
-    //   2. ⭐ **提升点漏写 `freq_hz`**：⭐ 被窃取过的音符**自己松不掉**（⭐ 待修）。
+    //   2. ⭐ **提升点漏写 `freq_hz`**：⭐ 被窃取过的音符**自己松不掉** ⇒ ⭐ 挂音。
+    //      ⭐ **(β) 已修**：⭐ `PolySynth` 的提升点现在写 `voice.freq_hz = pending.freq_hz;`
+    //      （⭐ 缺陷 1）。
     //   3. ⭐ **淡出窗口盲区**：⭐ 窃取后的 3 ms 淡出窗口内到达的 `NoteOff` 只作用于
     //      **被窃取者**（⭐ 槽仍宣称旧频率）⇒ ⭐ 新音符此后只能由**后续**松键结束 ⇒
-    //      ⭐ **用户可见的挂音**（⭐ 待修：⭐ 一个声部记两个频率 ＋ 提升时补 `gate_off`）。
-    // * ⭐ **`size_of::<PolyVoice>()` = 296**（⭐ 加 `freq_hz` 之前是 292）⇒ ⭐ 判据钉住了它；
+    //      ⭐ **用户可见的挂音**。⭐ **(β) 已修**：⭐ 一个声部记两个频率
+    //      （`freq_hz` ＋ `pending_freq_hz`）、⭐ `note_off` 双支路、⭐ 提升点按
+    //      `pending_released` 补 `gate_off`；⭐ 判据
+    //      `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion`
+    //      （⭐ 缺陷 2）。
+    // * ⭐ **`size_of::<PolyVoice>()` = 296**（⭐ 加 `freq_hz` 之前是 292；⭐ 加 `pending_*`
+    //   两字段之后**实测仍是** 296 —— 增量落进既有填充）⇒ ⭐ 判据钉住了它；
     //   ⭐ 若将来再加字段，⭐ 那条判据会红。
     // * ⭐ **作业纪律**（⭐ 本路径三次停手换来的）：⭐ ① 文本替换**改前看 / 两端定界 / 改后看**；
     //   ⭐ ② **按所有构造点 grep**；⭐ ③ **未证明不说证明**；⭐ ④ ⭐ **一组自洽读数 ≠ 解释正确**

@@ -178,8 +178,19 @@ pub struct EngineStats {
     pub note_steals: u64,
     /// ⭐ `NoteOff` **找不到匹配活跃声部**的次数（⭐ 与 `events_applied` **分开**）。
     ///
-    /// ⚠ **合并口径**：⭐ 本计数**不区分**"⭐ 从未存在过"与"⭐ 已被窃取/⭐ 已换音"
-    /// （⭐ 因为不记槽位 ⇒ ⭐ 两者无法区分）。⭐ ⛔ 别读成"⭐ 从未存在"。
+    /// ⚠ **合并口径（⭐ 三条，⭐ 与器件 `PolySynth::note_off` 的双支路一起读）**：
+    /// ① ⭐ 本计数**不区分**"⭐ 从未存在过"与"⭐ 已被窃取/⭐ 已换音"
+    /// （⭐ 因为不记槽位 ⇒ ⭐ 两者无法区分）。⭐ ⛔ 别读成"⭐ 从未存在"；
+    /// ② ⭐ **被窃取音符的释放必然变成孤儿**：⭐ 窃取那一刻槽位改宣称**新**频率
+    /// （⭐ 这正是被窃取者"⭐ 不再存在"的形态）⇒ ⭐ 指向**旧**频率的 `NoteOff`
+    /// 配不上任何声部；
+    /// ③ ⭐ **淡出窗口内**（⭐ 提升之前）槽位**仍宣称被窃取者的频率** ⇒ ⭐ 指向**旧**
+    /// 频率的释放**仍然作用在被窃取者身上**（⭐ 不是孤儿）；⭐ 指向**新**频率的释放
+    /// 在 (β) 之前**既配不上旧频率、⭐ 又还没有新频率** ⇒ ⭐ 被记成孤儿、⭐ 新音符此后
+    /// **只能由后续松键**结束（⭐ 用户可见的挂音）。⭐ **(β) 之后**新音符自己的释放
+    /// **在窗口内也能生效**（⭐ 器件用 `pending_released` 记下、⭐ 提升点补 `gate_off`）
+    /// ⇒ ⭐ 这一类孤儿不再产生（⭐ 判据：
+    /// `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion`）。
     pub orphan_note_offs: u64,
     /// 累计快照切换次数。
     pub snapshot_switches: u64,
@@ -4372,6 +4383,155 @@ mod tests {
             final_stats.note_steals, steals_before,
             "⭐ 已松键的声部被 `render` 回收 ⇒ ⭐ 新音符⛔ 不该再窃取（⭐ 这就是\
              '被窃取的是未松键者'的对照读数）"
+        );
+    }
+
+    /// 判据（⭐ **淡出窗口内的释放** ＋ ⭐ **提升之后的释放**，⭐ 两半各自成对）：
+    /// ⭐ 第 17 条窃取第 1 条之后，⭐ **在提升点之前**把**新音符自己的** `NoteOff`
+    /// 推进环 ⇒ ⭐ 提升完成、⭐ release 走完之后 ⭐ 被窃取的那个槽必须**不再发声**
+    /// （⭐ `poly_active_voices` 从 16 回到 15：⭐ 被窃取者那条已回收，⭐ 其余 15 条
+    /// 仍按住）；⭐ 后半把同一件事放在**提升点之后**再做一遍（⭐ 走 `note_off` 的
+    /// **现频率**支路）。
+    ///
+    /// ## 合并口径（⭐ 与 [`EngineStats::orphan_note_offs`] 的字段文档同一条）
+    ///
+    /// ① ⭐ 合并计数**不区分**"⭐ 从未存在过"与"⭐ 已被窃取/⭐ 已换音"；
+    /// ② ⭐ **被窃取音符的释放必然变成孤儿**：⭐ 窃取那一刻槽位改宣称新频率 ⇒
+    ///    ⭐ 指向旧频率的 `NoteOff` 配不上任何声部；
+    /// ③ ⭐ **淡出窗口内**槽位**仍宣称被窃取者的频率** ⇒ ⭐ 指向**旧**频率的释放
+    ///    **仍然作用在被窃取者身上**（⭐ 不是孤儿）；⭐ 指向**新**频率的释放（⭐ (β)
+    ///    之前）⭐ 既配不上旧频率、⭐ 又还没有新频率 ⇒ ⭐ 被记成孤儿、⭐ 新音符此后
+    ///    **只能由后续松键**结束（⭐ 用户可见的挂音）。⭐ **(β) 之后**新音符自己的释放
+    ///    **在窗口内也生效**（⭐ 器件把它记进 `pending_released`、⭐ 提升点补 `gate_off`）
+    ///    ⇒ ⭐ 这类孤儿不再产生。
+    ///
+    /// ## 两半各自红在哪（⭐ 旧行为下的读数）
+    ///
+    /// * **前半（窗口内）**：⭐ 窃取量子之后 `fade_remaining = 144 − 128 = 16` 帧
+    ///   （⭐ `steal_fade_frames_for(48_000) = 3 ms × 48 kHz = 144`、⭐ 量子 = 128 帧
+    ///   ⇒ ⭐ 提升点落在**下一量子**第 16 帧）⇒ ⭐ 事件在量子**开头**应用、⭐ 提升发生在
+    ///   渲染循环里 ⇒ ⭐ 此刻推的 `NoteOff` 在时间上**先于**提升点。⭐ 旧行为：
+    ///   ⭐ 孤儿 +1、⭐ 声部**不**进 release ⇒ ⭐ 收尾时 `poly_active_voices = 16`
+    ///   （⭐ 下面第一组收尾断言因此会红）。⭐ 新行为：⭐ 孤儿 +0、⭐ 收尾时 = 15。
+    /// * **后半（提升之后）**：⭐ 窃取后**先空跑**两个量子让提升点走完，⭐ **再**推新音符
+    ///   自己的 `NoteOff`。⭐ 旧行为：⭐ `freq_hz` 在提升点**没被写过**（⭐ 缺陷 1）⇒
+    ///   ⭐ 槽位仍宣称**被窃取者**的频率 ⇒ ⭐ 孤儿 +1、⭐ 挂音（⭐ `poly_active_voices
+    ///   = 16`）；⭐ 新行为：⭐ 现频率支路命中 ⇒ ⭐ 孤儿 +0、⭐ 收尾时 = 15。
+    #[test]
+    fn a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion() {
+        // ⭐ 夹具：16 条**互不相同**的 pitch（⭐ 60..=75 ⇒ ⛔ 不触发"同 pitch 重触发"）。
+        let fill = |rig: &mut Rig, track: EntityId| {
+            for step in 0..16u8 {
+                assert_eq!(
+                    rig.sender.publish(&[EngineEvent::NoteOn {
+                        track,
+                        pitch: 60 + step,
+                        velocity: 100,
+                    }]),
+                    1
+                );
+            }
+        };
+        let mut out = vec![0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+
+        // ---- 前半：指向**新音符**的释放落在淡出窗口**内**（⭐ 提升之前） ----
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut in_window = rig_with_snapshot(snapshot);
+        fill(&mut in_window, track);
+        in_window.runtime.process_quantum(&mut out, 2);
+        assert_eq!(
+            in_window.runtime.stats().poly_active_voices,
+            16,
+            "⭐ 前置：池必须刚好满"
+        );
+        // ⭐ 第 17 条 ⇒ 窃取；本量子只走完 128/144 帧淡出 ⇒ 还剩 16 帧。
+        assert_eq!(
+            in_window.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 80,
+                velocity: 100,
+            }]),
+            1
+        );
+        in_window.runtime.process_quantum(&mut out, 2);
+        let window_stolen = in_window.runtime.stats();
+        assert!(
+            window_stolen.note_steals > 0,
+            "⭐ 第 17 条必须触发窃取（⭐ note_steals={}）",
+            window_stolen.note_steals
+        );
+        assert_eq!(
+            window_stolen.poly_active_voices, 16,
+            "⭐ 淡出窗口里被窃取者仍占着槽（⭐ 新音符还没提升）"
+        );
+        // ⭐ 窗口内推**新音符自己的**释放。
+        assert_eq!(
+            in_window
+                .sender
+                .publish(&[EngineEvent::NoteOff { track, pitch: 80 }]),
+            1
+        );
+        in_window.runtime.process_quantum(&mut out, 2);
+        assert_eq!(
+            in_window.runtime.stats().orphan_note_offs,
+            0,
+            "⭐ 窗口内的释放必须被挂起音符接住（⛔ 不是孤儿）"
+        );
+        // ⭐ 提升点在上一量子第 16 帧已经走过 ⇒ 再跑 release(50 ms = 2400 帧) 的余量。
+        for _ in 0..64 {
+            in_window.runtime.process_quantum(&mut out, 2);
+        }
+        let window_settled = in_window.runtime.stats();
+        assert_eq!(
+            window_settled.poly_active_voices, 15,
+            "⭐ 被窃取的那一个槽必须已经回收（⭐ 15 = 仍按住的 15 条）"
+        );
+        assert_eq!(window_settled.orphan_note_offs, 0);
+
+        // ---- 后半：同一件事放在提升点**之后**（⭐ 走现频率支路） ----
+        let (snapshot, track) = live_note_snapshot(1);
+        let mut after_promotion = rig_with_snapshot(snapshot);
+        fill(&mut after_promotion, track);
+        after_promotion.runtime.process_quantum(&mut out, 2);
+        assert_eq!(
+            after_promotion.sender.publish(&[EngineEvent::NoteOn {
+                track,
+                pitch: 80,
+                velocity: 100,
+            }]),
+            1
+        );
+        after_promotion.runtime.process_quantum(&mut out, 2);
+        // ⭐ 空跑两个量子：144 帧淡出走完（⭐ 提升点已过），⭐ 且**没有**窗口内的释放。
+        for _ in 0..2 {
+            after_promotion.runtime.process_quantum(&mut out, 2);
+        }
+        assert_eq!(
+            after_promotion.runtime.stats().poly_active_voices,
+            16,
+            "⭐ 提升之后、松键之前新音符应当**在响**（⭐ 覆盖度自检：⛔ 不是早已静音）"
+        );
+        assert_eq!(
+            after_promotion
+                .sender
+                .publish(&[EngineEvent::NoteOff { track, pitch: 80 }]),
+            1
+        );
+        for _ in 0..64 {
+            after_promotion.runtime.process_quantum(&mut out, 2);
+        }
+        let after_settled = after_promotion.runtime.stats();
+        assert_eq!(
+            after_settled.poly_active_voices, 15,
+            "⭐ 提升之后的释放也必须能回收声部（⭐ 15 = 仍按住的 15 条）"
+        );
+        assert_eq!(after_settled.orphan_note_offs, 0);
+        eprintln!(
+            "DIAGNOSTIC 淡出窗口释放: 窗口内 孤儿={} 收尾声部={} / 提升后 孤儿={} 收尾声部={}",
+            window_settled.orphan_note_offs,
+            window_settled.poly_active_voices,
+            after_settled.orphan_note_offs,
+            after_settled.poly_active_voices
         );
     }
 
