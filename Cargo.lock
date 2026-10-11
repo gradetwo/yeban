@@ -6645,6 +6645,7 @@ name = "yeban-midi-io"
 version = "0.0.1"
 dependencies = [
  "midir",
+ "rtrb",
 ]
 
 [[package]]

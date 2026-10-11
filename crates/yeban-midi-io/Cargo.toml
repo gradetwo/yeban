@@ -25,5 +25,13 @@ midi-input = ["dep:midir"]
 # 平台后端跟随 midir 默认：macOS `coremidi` / Linux `alsa` / Windows `windows`+`parking_lot`。
 midir = { workspace = true, optional = true }
 
+# ⭐ ADR-0006 D3：MIDI 回调（OS 线程）**按红线 7 对待** ⇒ 只把**定长事件**写进
+# **构造期预分配**的无锁 SPSC 环。⚠ 环**建在 `rtrb` 上**（⭐ `ring.rs::event_channel` /
+# `record.rs::record_channel` **也是**建在它上面 ⇒ ⭐ **同一套语义、⭐ 同一条依赖**），
+# ⭐ ⛔ **刻意**不依赖 `yeban-engine`** —— 那会把 `cpal`／声卡后端拖进本 crate，
+#     也会触犯依赖方向守卫。⭐ 语义照抄：**整事件原子**（⛔ 不暴露半条事件）、
+#     环满 ⇒ **按事件计数丢弃、⭐ ⛔ 永不阻塞**、⭐ 推送路径 **⛔ 零分配／零锁**。
+rtrb = { workspace = true }
+
 [lints]
 workspace = true
