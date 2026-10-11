@@ -134,7 +134,7 @@ const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keyc
 /// 回执的字段名闭集（唯一的一份：名字在这里，切分就按这里）。
 ///
 /// 加一个字段就加一行 —— 漏加不会静默：那个字段取不到值，判据会失败并打印整条回执。
-const RECEIPT_KEYS: [&str; 28] = [
+const RECEIPT_KEYS: [&str; 29] = [
     "action",
     "outcome",
     "error",
@@ -162,6 +162,7 @@ const RECEIPT_KEYS: [&str; 28] = [
     "seconds",
     "events",
     "unsupported",
+    "dropped-events",
     "jitter",
     "first",
 ];
@@ -737,11 +738,29 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     assert_eq!(field_of(&done, "events"), "3", "替身报的事件数: {done}");
     assert_eq!(field_of(&done, "unsupported"), "1", "{done}");
     assert_eq!(
+        field_of(&done, "dropped-events"),
+        "4",
+        "丢弃事件数必须**逐字段**来自替身读数（单位 = 事件条数、累计）: {done}"
+    );
+    assert_eq!(
         field_of(&done, "jitter"),
         "n=2:p50=1:p99=2:max=2",
         "抖动读数必须逐字段来自替身: {done}"
     );
     assert_eq!(field_of(&done, "first"), "3", "{done}");
+    // ⭐ **界面侧**（判据要证的那句话）：`module_actions.slint` 的
+    // `module-midi-in-status` 那一行的 `text` 绑定的就是 `root.module-midi-in-status`
+    // ⇒ 下面断言的是"丢弃事件数**真的**出现在界面状态行要画的字节里"，
+    // ⛔ 不是只把读数留在 Rust 结构体 / `MidiInReport` 字段上。
+    let midi_line = ui.get_module_midi_in_status().to_string();
+    assert_eq!(
+        midi_line, done,
+        "两条状态行（通用回执与 MIDI 输入专属行）必须是同一串字节"
+    );
+    assert!(
+        midi_line.contains("dropped-events=4"),
+        "界面状态行必须渲染出丢弃事件数: {midi_line}"
+    );
     assert!(ui.get_module_midi_in_status_succeeded(), "{done}");
     // ⭐ 成功分支的**可见**终态也写进 CI 日志（与 ④ 的那一行同款理由）。
     report_line(&format!("[ui-modules] midi-in double-path receipt={done}"));
@@ -866,9 +885,11 @@ fn double_capture(
         events: 3,
         first_events: vec![(1, 0x90, 60, 100), (2, 0x90, 62, 100), (3, 0x80, 60, 0)],
         unsupported: 1,
-        // ⭐ 本字面量是**夹具**：`dropped_events` 目前**不进 UI 回执**（那要动 `src/host.rs`
-        // 的 `apply_pending_midi_in`，属 UI 的另一票）⇒ 这里给一个**非零**值，正好证明
-        // "回执不显示它"这件事没变（若哪天 UI 侧接上，这个夹具会立刻暴露口径问题）。
+        // ⭐ 本字面量是**夹具**：`dropped_events` 的读数必须**真的进 UI 回执**
+        // （`src/host.rs` 的 `apply_pending_midi_in` 把它写成 `dropped-events=`，
+        // 界面状态行的 `text` 直接画那一串）⇒ 这里给一个**非零、且与
+        // `events`(3) / `unsupported`(1) / `first`(3) 都不同**的值：
+        // 一旦把它误接到别的读数上，上面的 `dropped-events` 断言立刻变红。
         dropped_events: 4,
         jitter: Some(yeban_app::midi_in::Jitter {
             n: 2,

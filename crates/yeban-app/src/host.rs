@@ -3080,6 +3080,9 @@ pub fn apply_pending_midi_in(ui: &MainWindow, state: &MidiInState) -> bool {
                     format!("seconds={}", report.seconds),
                     format!("events={}", report.events),
                     format!("unsupported={}", report.unsupported),
+                    // ⭐ 与 CLI（`midi_in.rs` 的 `summary()`）**同名同口径**：单位 = 事件条数、
+                    // **累计**量（从建环那一刻到采集结束时那一次读，读它不消费）。
+                    format!("dropped-events={}", report.dropped_events),
                     format!(
                         "jitter={}",
                         report.jitter.map_or_else(

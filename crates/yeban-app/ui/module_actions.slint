@@ -35,7 +35,7 @@ export component ModuleActions inherits Rectangle {
     // ⭐ **硬件 MIDI 输入**（`--midi-in` 的界面入口）的**专属**结果行。
     //
     // 为什么另起一条而不是复用上面那条：MIDI 输入的读数比别的入口长得多
-    // （端口 / 事件数 / `unsupported` / 抖动 p50·p99·max / 前几条事件），而上面那条
+    // （端口 / 事件数 / `unsupported` / `dropped-events` / 抖动 p50·p99·max / 前几条事件），而上面那条
     // 是"最近一次动作"的**通用**回执 ⇒ 两条各自可寻址、各自可断言（`[UI-TEST-001]`）。
     // ⚠ 两条写的是**同一串字节**（唯一写者 = `host::wire_module_actions` 的同一个分支）
     // ⇒ ⛔ 不是第二个真相源。
@@ -253,7 +253,7 @@ export component ModuleActions inherits Rectangle {
         accessible-id: "module-midi-in-status";
         // ⚠ 标签**静态**（与 `module-last-status` 同款理由：`[TEST-SPEC-005]` 要求
         // 可见且可寻址的节点必须有非空无障碍名，而默认是空串）。
-        accessible-label: "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 抖动 / 错误码）";
+        accessible-label: "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）";
     }
 
     // ------------------------------------------------------------- 回执行

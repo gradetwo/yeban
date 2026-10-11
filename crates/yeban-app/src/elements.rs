@@ -461,7 +461,7 @@ impl ElementRegistry {
             "module-midi-in-status",
             ElementKind::Text,
             "module_actions.slint",
-            "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 抖动 / 错误码）",
+            "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）",
             true,
         );
         registry.add(

@@ -59,7 +59,7 @@ impl Drop for Scratch {
 const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keycenter=60\n";
 
 /// 回执的字段名闭集（与 `tests/ui_module_actions.rs` 同一个口径；本文件只用到几个）。
-const RECEIPT_KEYS: [&str; 28] = [
+const RECEIPT_KEYS: [&str; 29] = [
     "action",
     "outcome",
     "error",
@@ -87,6 +87,7 @@ const RECEIPT_KEYS: [&str; 28] = [
     "seconds",
     "events",
     "unsupported",
+    "dropped-events",
     "jitter",
     "first",
 ];
