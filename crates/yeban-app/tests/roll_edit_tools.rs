@@ -1971,3 +1971,302 @@ fn a_blank_drag_longer_than_the_threshold_does_not_clear_the_selection() {
         "保住的必须还是原来那个身份 `{expected_ulid}`"
     );
 }
+
+// ===========================================================================
+// `[UI-NOTE-003]` §3.3 力度工具 aux 列：**双击恢复默认力度 100**
+// ===========================================================================
+//
+// ## 它补的是哪一个缺口（两条都是机械读数，不是转述）
+//
+// 规范 §3.3 的力度行写着「双击恢复默认力度 100」
+// （`docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:200`），而本切片之前
+// **`grep -rn "double-clicked" crates/yeban-app/ui/ crates/yeban-app/src/` = 0** ——
+// 不是"Slint 不提供"（`TouchArea` 确实暴露 `double-clicked`，
+// `i-slint-compiler-1.18.1/builtin_elements.rs`），是**没接**。
+//
+// 为什么这不止是"少一个快捷键"：一颗 **0 力度**音符的柱高是 `28px * 0 = 0px`
+// （`ui/console/piano_roll.slint` 的 `height: 28px * velocity_reading`）⇒ 屏幕上**不可抓取**，
+// 而力度臂的命中函数 `host::velocity_bar_at` 也**如实拒绝**它
+// （`(view.notes[index].velocity > 0).then_some(index)`）⇒ 0 力度音符在**拖拽**这条路上
+// **不可达**。双击是规范指定的恢复路径 ⇒ 它正是为"拖拽够不着的那一部分"存在的。
+//
+// ## 手势范围：**音符**，不是力度柱（这是决定，理由在下一行）
+//
+// 双击走的是**单击那一个** `view.hit_test_visible(...)` 命中（音符矩形），⛔ 不是力度柱命中。
+// 理由只有一个：最需要恢复的那颗音符力度为 0 ⇒ 柱高 0px ⇒ **柱范围的手势永远够不着它**。
+// ⛔ 本切片不给柱体加最小高度、⛔ 不放宽 `velocity_bar_at` 的 `velocity > 0` 门 ——
+// 那些都会发明新的 affordance；双击覆盖它够不着的那一部分。
+//
+// ## 判据各自证明什么 / 不证明什么
+//
+// | 判据 | 证明 | ⛔ 不证明 |
+// | :--- | :--- | :--- |
+// | (a) `velocity_double_click_a_...` | 0 力度音符上 `down/up × 2` ⇒ 权威力度 **100**，且 tick / pitch / duration 一位不动 | 像素（没有截图）；"人手也是这样"（注入的是控制面指针，不是真人鼠标） |
+// | (b) `velocity_double_click_b_...` | 一次双击 = **恰好一个**提交 / **恰好一步**撤销；已是 100 的第二次双击 = **0** 个 op | op 的**类型**是 `ModifyNoteVelocity`（判据读的是力度结果；构造点在 `host::velocity_op_for`，由源码读） |
+// | (c1) `velocity_double_click_c1_...` | 力度工具**单击**不改力度、不提交 | 规范里"单击选中力度柱"的语义（仍未接线，如实不做） |
+// | (c2) `velocity_double_click_c2_...` | 工具门真的在：**选择工具**双击不改力度 | 选择工具双击的其它语义（"创建默认音符"仍未接线） |
+//
+// ⚠ **(c1)/(c2) 在修复前的代码上也是绿的** —— 它们断言"不变"，而旧代码正好也不变。
+// 这是控制臂的**性质**（它们只能排除假阳性），不是本切片能改的；能力那一半由 (a)/(b) 管。
+//
+// ## 怎么变红（**行为**红，不是编译红）
+//
+// 把 `host.rs` 的 `ToolClick::SelectVelocity` 臂改回 `{}`（= 本切片之前那行
+// `SplitNote | SelectVelocity => {}`）⇒ (a) 的力度停在 **0**、(b) 的提交增量 = **0**；
+// (c1)/(c2) 仍然绿（见上面那条 ⚠）。
+
+/// 判据夹具：靶子音符的身份解析 —— ULID ⇒ `(clip_id, track_id, 当前力度)`。
+///
+/// 口径与 `host::note_identity_for` 的**文档**一致（音符住片段池；`track_id` 取摆放了该
+/// 片段的第一条轨道；未摆放则回退第一条轨道），但这是**判据自己的**一份遍历
+/// （⛔ 不调 `host::velocity_op_for` / `note_identity_for`）⇒ 期望值不来自被测代码。
+fn identity_by_ulid(
+    project: &yeban_model::YebanProjectV1,
+    ulid: &str,
+) -> (yeban_model::EntityId, yeban_model::EntityId, u8) {
+    use std::collections::BTreeMap;
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback = project
+        .tracks
+        .keys()
+        .next()
+        .copied()
+        .expect("夹具工程必须有轨道");
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (id, note) in notes {
+            if id.to_canonical_string() == ulid {
+                let track_id = owner.get(clip_id).copied().unwrap_or(fallback);
+                return (*clip_id, track_id, note.velocity);
+            }
+        }
+    }
+    panic!("权威工程里必须有身份 `{ulid}`");
+}
+
+/// 判据夹具：把一个音符的权威力度**经 `Op::ModifyNoteVelocity`** 写成 0。
+///
+/// 为什么需要它：`filled_project()` 的每颗音符都是 `music::DEFAULT_VELOCITY`（100）
+/// ⇒ 夹具里没有"柱高 0px、拖拽臂够不着"的靶子，判据必须自己造一个。造法走的是
+/// **产品同一条 op 通道**（[`UndoPort::commit_ops`] ＋ 模型自己的前置条件），
+/// 因此这不是"往模型里塞私货"。
+fn zero_velocity_via_authority(port: &Rc<UndoPort>, ulid: &str) {
+    let (clip_id, track_id, old_vel) = identity_by_ulid(&port.project(), ulid);
+    assert!(
+        old_vel > 0,
+        "夹具自证：起点力度必须 > 0（否则这一写什么都没改，靶子还没造出来）"
+    );
+    let op = yeban_model::ops::Op::ModifyNoteVelocity {
+        track_id,
+        clip_id,
+        note_id: ulid.parse::<yeban_model::EntityId>().expect("ULID"),
+        old_vel,
+        new_vel: 0,
+    };
+    port.commit_ops(NOW_MS, "fixture: zero the velocity", vec![op])
+        .expect("把靶子降到 0 力度必须被权威接受");
+    assert_eq!(
+        velocity_of(&port.project(), ulid),
+        0,
+        "夹具：靶子力度必须已经是 0（此时柱高 0px，`velocity_bar_at` 拒绝它）"
+    );
+}
+
+/// 判据夹具：在**同一个绘制点**上注入 `down → up → down → up`（两次单击）。
+///
+/// 为什么两对按下 / 抬起**就是**一次双击（⇒ ⛔ 不需要新 MCP 方法）：
+/// - Slint 在**释放**时按 `click_count % 2 == 1` 触发 `double-clicked`
+///   （`i-slint-core-1.18.1/items/input_items.rs`）；
+/// - `ClickState::check_repeat` 只在**两次按下**间隔 < `click_interval`（默认 500ms）且
+///   按下点位移 < 10 逻辑像素时递增 `click_count`（`i-slint-core-1.18.1/input.rs`）。
+///   注入的两对相隔微秒、位移 0px（同一个 `from`）⇒ 必然触发。
+fn double_click_in_roll(plane: &mut LiveControlPlane, seq: i64, from: (f32, f32)) {
+    let _first_origin = pointer_down_in_roll(plane, seq, from);
+    pointer_up_in_roll(plane, seq + 2);
+    let _second_origin = pointer_down_in_roll(plane, seq + 3, from);
+    pointer_up_in_roll(plane, seq + 5);
+}
+
+/// 判据夹具：找一个"人真的点得到"的可见音符 ⇒ `(ULID, 绘制帧中心)`。
+fn painted_target_note(
+    plane: &mut LiveControlPlane,
+    project: &yeban_model::YebanProjectV1,
+    seq: i64,
+) -> (String, (f32, f32)) {
+    let bounds = element_bounds(plane, seq, SCROLL_AREA);
+    let viewport_width = bound_f32(&bounds, "width");
+    let viewport_height = bound_f32(&bounds, "height");
+    let view = yeban_app::bridge::ViewState::from_project(project).expect("投影");
+    let index = a_painted_note(&view, viewport_width, viewport_height, 0.0);
+    (
+        view.notes[index].id.clone(),
+        note_center_in_painted_view(&view, index, 0.0),
+    )
+}
+
+/// 判据 (a)：**力度工具**在一颗 **0 力度**音符上双击 ⇒ 权威力度 = 默认 **100**，
+/// 且 tick / pitch / duration 一位不动。
+///
+/// 为什么靶子必须是 0 力度：那颗音符的柱高是 0px、`velocity_bar_at` 也拒绝它
+/// ⇒ 拖拽臂**够不着**；双击是规范给它的恢复路径。100 力度音符上的双击由 (b) 的第二拍管。
+#[test]
+fn velocity_double_click_a_restores_default_velocity_on_a_zero_velocity_note() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let (ulid, point) = painted_target_note(&mut plane, &project_before, 1);
+    let geometry_before = note_by_ulid(&project_before, &ulid);
+
+    // ---- 前置：把它降到 0（柱高 0px ⇒ 力度臂的 `velocity_bar_at` 如实拒绝它）----
+    zero_velocity_via_authority(&port, &ulid);
+    let commits_before = port.display().commit_count;
+
+    double_click_in_roll(&mut plane, 10, point);
+
+    let after = velocity_of(&port.project(), &ulid);
+    let geometry_after = note_by_ulid(&port.project(), &ulid);
+    report_line(&format!(
+        "[roll-velocity-dc-a] 靶 `{ulid}`（绘制帧中心 {:.2},{:.2}、权威力度 0）双击后力度 = {after}；\
+         提交数 {commits_before} ⇒ {}；tick/pitch/duration {geometry_before:?} ⇒ {geometry_after:?}",
+        point.0,
+        point.1,
+        port.display().commit_count
+    ));
+    assert_eq!(
+        after, 100,
+        "力度工具在**0 力度音符**上双击必须把权威力度恢复成默认 100 —— 本切片之前这条路径\
+         不存在（柱高 0px ⇒ 拖不动），力度会停在 0"
+    );
+    assert_eq!(
+        geometry_after, geometry_before,
+        "双击**只**改力度：tick / pitch / duration 必须一位不动"
+    );
+}
+
+/// 判据 (b)：一次双击 = **恰好一个**原子 op（一次提交 / 一步撤销），
+/// 而**已经是 100** 的音符上再双击 = **0** 个 op（⛔ 不写空编辑）。
+#[test]
+fn velocity_double_click_b_is_exactly_one_undo_step_and_idempotent() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let (ulid, point) = painted_target_note(&mut plane, &project_before, 1);
+    zero_velocity_via_authority(&port, &ulid);
+
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+
+    double_click_in_roll(&mut plane, 10, point);
+    let velocity_first = velocity_of(&port.project(), &ulid);
+    let commits_first = port.display().commit_count;
+    let undoable_first = port.display().undoable;
+
+    double_click_in_roll(&mut plane, 30, point);
+    let velocity_second = velocity_of(&port.project(), &ulid);
+    let commits_second = port.display().commit_count;
+    let undoable_second = port.display().undoable;
+
+    report_line(&format!(
+        "[roll-velocity-dc-b] 靶 `{ulid}`：力度 0 ⇒ {velocity_first} ⇒ {velocity_second}；\
+         提交数 {commits_before} ⇒ {commits_first} ⇒ {commits_second}；\
+         可撤销步数 {undoable_before} ⇒ {undoable_first} ⇒ {undoable_second}"
+    ));
+    assert_eq!(velocity_first, 100, "第一次双击必须恢复 100");
+    assert_eq!(
+        commits_first - commits_before,
+        1,
+        "一次双击 = **恰好一个**原子 op（⛔ 不是两个：那会让撤销要按两次）"
+    );
+    assert_eq!(
+        undoable_first - undoable_before,
+        1,
+        "一次双击 = **恰好一步**撤销"
+    );
+    assert_eq!(velocity_second, 100, "第二次双击时力度已经是 100");
+    assert_eq!(
+        commits_second, commits_first,
+        "已经是 100 的双击必须**一个 op 都不写** —— 模型**不会**拒绝空 op，\
+         所以'不提交'必须在宿主那一侧短路"
+    );
+    assert_eq!(
+        undoable_second, undoable_first,
+        "已经是 100 的双击不得在撤销栈上留一步空编辑"
+    );
+}
+
+/// 判据 (c1) **控制臂**：力度工具的**单击**不得改力度、不得提交。
+///
+/// ⚠ 它在**修复前的代码上也是绿的**（旧代码什么都不做）—— 控制臂证明的是"没有假阳性"，
+/// 不是"能力存在"。能力由 (a)/(b) 管。
+#[test]
+fn velocity_double_click_c1_a_single_velocity_click_leaves_velocity_unchanged() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let (ulid, point) = painted_target_note(&mut plane, &project_before, 1);
+    zero_velocity_via_authority(&port, &ulid);
+    let commits_before = port.display().commit_count;
+
+    // **单击**：一对 `down/up`（⛔ 不是两对）。
+    let _origin = pointer_down_in_roll(&mut plane, 10, point);
+    pointer_up_in_roll(&mut plane, 12);
+
+    let after = velocity_of(&port.project(), &ulid);
+    report_line(&format!(
+        "[roll-velocity-dc-c1] 力度工具**单击**靶 `{ulid}`（力度 0）：力度 = {after}；\
+         提交数 {commits_before} ⇒ {}",
+        port.display().commit_count
+    ));
+    assert_eq!(
+        after, 0,
+        "力度工具的**单击**语义（选中力度柱）仍未接线 ⇒ 单击必须**如实什么都不做**\
+         （⛔ 不能顺手恢复成 100 —— 那会把'双击'变成'单击也能改'）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "单击不得提交任何 op"
+    );
+}
+
+/// 判据 (c2) **工具门控制臂**：**选择工具**下双击不得改力度。
+///
+/// ⚠ 与 (c1) 同款：它在**修复前的代码上也是绿的** —— 控制臂只排除假阳性。
+#[test]
+fn velocity_double_click_c2_a_select_tool_double_click_leaves_velocity_unchanged() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    assert_eq!(
+        window.get_active_tool(),
+        i32::from(Tool::Select.digit()),
+        "夹具前提：默认工具就是选择箭头（本判据不设工具 ⇒ 走默认）"
+    );
+    let (ulid, point) = painted_target_note(&mut plane, &project_before, 1);
+    zero_velocity_via_authority(&port, &ulid);
+    let commits_before = port.display().commit_count;
+
+    double_click_in_roll(&mut plane, 10, point);
+
+    let after = velocity_of(&port.project(), &ulid);
+    report_line(&format!(
+        "[roll-velocity-dc-c2] **选择工具**双击靶 `{ulid}`（力度 0）：力度 = {after}；\
+         提交数 {commits_before} ⇒ {}",
+        port.display().commit_count
+    ));
+    assert_eq!(
+        after, 0,
+        "双击恢复力度必须**只在力度工具下**发生（工具门）—— 选择工具双击不改力度"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "选择工具双击不得提交任何 op"
+    );
+}

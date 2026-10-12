@@ -40,6 +40,10 @@ export component PianoRoll inherits Rectangle {
     callback scroll-requested(length);
     // `[UI-NOTE-003]` 左键单击：只**报告坐标**, 命中与选区由 Rust 侧决定（账本第 495/496 轮）。
     callback clicked(length, length);
+    // `[UI-NOTE-003]` §3.3 工具矩阵 aux 列的**双击**入口（力度工具 = "双击恢复默认力度 100"）。
+    // 与 `clicked` **同一绘制帧、同一个命中面**：界面只报告坐标；工具门 / 命中测试 /
+    // "恰好一个原子 `Op::ModifyNoteVelocity`"全在宿主派发器里（⛔ 界面不判断工具）。
+    callback double-clicked(length, length);
     // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口：工具行号（1..5，与 `Tool::digit` 同一口径）。
     // 界面只上报"点了哪一行"; `active-tool` 的写入与动作日志由宿主唯一落点
     // (`host::wire_tool_select` → `host::apply_action` 的 `Action::SelectTool` 臂) 完成。
@@ -412,6 +416,15 @@ export component PianoRoll inherits Rectangle {
                     root.note-drag-cancel();
                 }
             }
+        }
+        // `[UI-NOTE-003]` 力度工具的**双击**：Slint 在**第二次**抬起时触发它
+        // （`i-slint-core-1.18.1/items/input_items.rs`：`click_count % 2 == 1`；`check_repeat`
+        // 只在**两次按下**间隔 < `click_interval` 且位移 < 10 逻辑像素时递增 `click_count`），
+        // 且它在 `clicked` **之后**触发。落点与上面 `pointer-event` 里的
+        // `root.clicked(...)` 逐字同一帧（同一个 `self.mouse-x/y`）—— 界面只报坐标，
+        // 工具门 / 命中 / 提交全在宿主派发器里。
+        double-clicked => {
+            root.double-clicked(self.mouse-x, self.mouse-y);
         }
     }
 }

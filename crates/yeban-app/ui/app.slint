@@ -559,6 +559,10 @@ export component MainWindow inherits Window {
     callback scroll-requested(length);
     /// `[UI-NOTE-003]` 卷帘左键单击（坐标由界面报告, 语义由宿主决定）。
     callback clicked(length, length);
+    /// `[UI-NOTE-003]` §3.3 aux 列的**双击**（力度工具 = "双击恢复默认力度 100"）。
+    /// 与 `clicked` 逐字同一帧、同一个宿主派发器（`host::install_roll_click`）——
+    /// 界面只报告"第二拍落在哪"，工具门 / 命中 / 一个原子 `Op` 全在宿主。
+    callback double-clicked(length, length);
     /// `[UI-NOTE-003]` §3.3 工具矩阵的点击（工具行号 1..5）。
     /// 唯一落点是 `host::wire_tool_select` → `host::apply_action` 的
     /// `Action::SelectTool` 臂 —— 与 `1`..`5` 数字键**同一条**链。
@@ -897,6 +901,7 @@ export component MainWindow inherits Window {
             active-tool: root.active-tool;
             scroll-requested(d) => { root.scroll-requested(d); }
             clicked(x, y) => { root.clicked(x, y); }
+            double-clicked(x, y) => { root.double-clicked(x, y); }
             tool-selected(tool) => { root.tool-selected(tool); }
             note-drag-grab(x, y) => { root.note-drag-grab(x, y); }
             note-drag-move(x, y) => { root.note-drag-move(x, y); }
