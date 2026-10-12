@@ -563,6 +563,31 @@ export component MainWindow inherits Window {
     /// 唯一落点是 `host::wire_tool_select` → `host::apply_action` 的
     /// `Action::SelectTool` 臂 —— 与 `1`..`5` 数字键**同一条**链。
     callback tool-selected(int);
+    /// `[UI-NOTE-003]` 卷帘左键**拖拽**的手势通道（工具矩阵"左键拖拽"列；本切片只接
+    /// 选择工具的移动臂）。四条与 `track-height-*` / `mixer-*` 逐条同形：`.slint` 只报
+    /// "指针在哪、按下了 / 移动了 / 抬起了 / 被取消了"，工具门、命中、草稿与"抬起恰好一个
+    /// 原子 `Op`"全在宿主（`host::wire_roll_edit` → `install_roll_note_drag`）。
+    /// `grab` 返回 `true` = 宿主**接管**这次手势 ⇒ 本组件不把它当滚动。
+    callback note-drag-grab(length, length) -> bool;
+    /// 接管后的拖动（绘制帧坐标）⇒ 宿主只更新**草稿**，⛔ 不写工程。
+    callback note-drag-move(length, length);
+    /// 松手（绘制帧坐标）⇒ 宿主至多提交**一个**原子 `Op`。
+    callback note-drag-release(length, length);
+    /// 指针离开窗口 / 控件被禁用（`PointerEventKind.cancel`）⇒ 丢弃草稿。
+    callback note-drag-cancel();
+    /// 被拖音符的身份（空 = 没有手势）与拖动期的草稿预览位移（逻辑像素，宿主算好注入）。
+    /// 它们住在窗口上的理由与 `roll-scroll-x` 相同：宿主要在 `grab` / `move` / `release`
+    /// 三条回调之间记住"这一拖从哪个音符、哪个指针位置开始"，而 `Escape`
+    /// （`Action::Cancel` → `host::cancel_note_drag`）也必须能读到同一份状态去收尾。
+    /// `note-drag-active` 是"手势是否还没结束"的唯一读数：松手 / 离开窗口 / `Escape`
+    /// 三条收尾路径都必须把它写回 `false`（判据钉住"不留粘住的拖拽态"）。
+    in-out property <bool> note-drag-active: false;
+    in-out property <string> note-drag-note: "";
+    in-out property <float> note-drag-origin-x: 0.0;
+    in-out property <float> note-drag-origin-y: 0.0;
+    in-out property <string> note-drag-ulid: "";
+    in-out property <float> note-drag-preview-dx: 0.0;
+    in-out property <float> note-drag-preview-dy: 0.0;
     /// `[ROAD-M3-002]` 卷帘当前水平偏移（逻辑像素）。
     /// 用 `<float>` 而非 `<length>`：宿主只需读写一个数，避免 `f32 -> Length` 转换与组件链转发。
     in-out property <float> roll-scroll-x: 0.0;
@@ -862,6 +887,13 @@ export component MainWindow inherits Window {
             scroll-requested(d) => { root.scroll-requested(d); }
             clicked(x, y) => { root.clicked(x, y); }
             tool-selected(tool) => { root.tool-selected(tool); }
+            note-drag-grab(x, y) => { root.note-drag-grab(x, y); }
+            note-drag-move(x, y) => { root.note-drag-move(x, y); }
+            note-drag-release(x, y) => { root.note-drag-release(x, y); }
+            note-drag-cancel() => { root.note-drag-cancel(); }
+            note-drag-ulid: root.note-drag-ulid;
+            note-drag-preview-dx: root.note-drag-preview-dx;
+            note-drag-preview-dy: root.note-drag-preview-dy;
             note-ys: root.note-ys;
             note-widths: root.note-widths;
             // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。

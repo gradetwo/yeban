@@ -63,8 +63,8 @@ use yeban_app::input::Tool;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_ui_mcp::live::request_line;
 use yeban_ui_mcp::methods::{
-    METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE, METHOD_DISPATCH_POINTER_UP,
-    METHOD_NODE,
+    METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE,
+    METHOD_DISPATCH_POINTER_UP, METHOD_NODE,
 };
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::report_line;
@@ -571,5 +571,648 @@ fn the_eraser_click_deletes_the_note_under_the_cursor() {
         window.get_selected_note_count(),
         0,
         "被删身份不得留在选区里（与键盘 `Delete` 同一取向）"
+    );
+}
+
+// ===========================================================================
+// 本切片：`[UI-NOTE-003]` 左键拖拽的**移动臂**（选择工具）
+// ===========================================================================
+//
+// ## 接了哪一格、⛔ 明确不接哪几格
+//
+// | 格 | 决定 |
+// | :--- | :--- |
+// | 移动臂（选择工具按在**音符**上拖 ⇒ 松手一次原子 `Op::MoveNote`） | **本切片接上** |
+// | 空白处拖动 | ⛔ **语义一位不改**（仍是滚动；marquee 属规范 mermaid 与 aux 列，未裁决） |
+// | 辅助键（`Shift` 微移 / `Alt` 复制） | ⛔ 不接（与 `[UI-NOTE-005]` 有未裁决冲突） |
+// | 力度臂（`ToolDrag::AdjustVelocity`） | ⛔ 不接（四条子裁决未定，登记在交付报告） |
+// | 键盘半场（`[UI-NOTE-005]`） | ⛔ 不接（`Space` / `Shift+Enter` 两处绑定冲突，登记在交付报告） |
+//
+// ## 每条判据证明什么 / ⛔ 不证明什么
+//
+// | 判据 | 证明 | ⛔ 不证明 |
+// | :--- | :--- | :--- |
+// | `move_arm_a_...` | 选择工具在音符上拖 ⇒ 权威工程的 `start_tick` / `pitch` 按**吸附后的指针位移**改变，且时值一位不动 | 拖动期的**画面**（草稿预览的像素）—— ⛔ 没有截图判据 |
+// | `move_arm_b_...` | 音符拖动**不**顺带滚动（捕获）；并带一条**空白处拖动照旧滚动**的控制臂 | 空白处的 marquee 语义（本切片不实现，仍是滚动） |
+// | `move_arm_c_...` | `Escape` 插在拖动中途 ⇒ 工程**逐字节不变**、提交 **0** 次 | 「必须有东西可取消」—— 未接移动臂时本判据**空转绿**（见文件末"怎么变红"） |
+// | `move_arm_d_...` | 一次拖动（4 步 move）= **恰好一步**撤销；第二次手势再 +1 | 撤销**内容**的正确性（由 `move_arm_a` 与模型层判据管） |
+// | `move_arm_e_...` | 结构防漂移：字面 `Op::MoveNote` 进 `crates/yeban-app/src` 生产区、`ToolDrag` 有 `src/input.rs` **之外**的消费者 | 行为（字面计数可被一行注释满足 ⇒ 行为由 a–d 管） |
+//
+// ## 夹具口径（与既有判据同一套）
+//
+// 指针一律注入**绘制帧**（人看得见的矩形）坐标，宿主回调再经**唯一**的
+// `bridge::painted_to_host` 搬回宿主帧；期望值从**投影 / 权威工程**读（⛔ 不从被测代码读）。
+
+/// 指针位移（**宿主帧**逻辑像素；两帧只差常量原点 ⇒ 位移在两帧里同值）。
+///
+/// 方向是**决定**，不是随便挑的：
+/// - **向右 `+16px`**：默认 `30 tick/px` 下是 `+480 tick` = 恰好 **2 × 240** 吸附网格。
+///   吸附对网格的整数倍平移是**不变**的 ⇒ 两端吸附点之差**恒等于 480**，与音符落在
+///   网格的哪一侧无关。⛔ 向左则会被 `snapped_tick_at` 的 `x.max(0.0)` 在视口左缘夹住
+///   （实测：宿主 x≈8 的音符向左拖 16px 被夹到 0 ⇒ 吸附增量变成 `−240`）——
+///   那是**夹具**的性质，不是被测语义的性质；
+/// - **向上 `−28px`**：恰好 **2 条 14px 泳道** ⇒ 音高增量与小数无关，恒为 `+2`。
+const DRAG_HOST_DX: f32 = 16.0;
+const DRAG_HOST_DY: f32 = -28.0;
+
+/// 拖动**分几步**注入（`move` 的步数）。判据 (d) 靠它区分"一次拖动一步撤销"与"每步一次"。
+const DRAG_STEPS: usize = 4;
+
+/// 按语义 ID 在**绘制帧** `from` 处按下；返回 `piano-roll-scroll-area` 的绝对窗口原点
+/// （后续 `move` 用绝对坐标注入，与既有 [`click_in_roll_by_id_at`] 同一手法）。
+fn pointer_down_in_roll(plane: &mut LiveControlPlane, seq: i64, from: (f32, f32)) -> (f32, f32) {
+    let bounds = element_bounds(plane, seq, SCROLL_AREA);
+    let origin_x = bounds["x"].as_f64().expect("x") as f32;
+    let origin_y = bounds["y"].as_f64().expect("y") as f32;
+    let down = plane.plane().try_line(&request_line(
+        seq + 1,
+        METHOD_DISPATCH_POINTER_DOWN,
+        Some(json!({
+            "elementId": SCROLL_AREA,
+            "xOffset": f64::from(from.0),
+            "yOffset": f64::from(from.1),
+            "button": "left"
+        })),
+    ));
+    assert!(!down.is_error(), "按下必须落到真实窗口: {down:?}");
+    (origin_x, origin_y)
+}
+
+/// 从按下点分 `steps` 步拖到 `from + (host_dx, host_dy)`（**绝对窗口坐标**注入）。
+fn pointer_drag_steps_in_roll(
+    plane: &mut LiveControlPlane,
+    seq: i64,
+    element_origin: (f32, f32),
+    from: (f32, f32),
+    host_dx: f32,
+    host_dy: f32,
+    steps: usize,
+) {
+    assert!(steps >= 1, "至少要一步移动，否则越不过规范的 4px 阈值");
+    for step in 1..=steps {
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = step as f32 / steps as f32;
+        let x = element_origin.0 + from.0 + host_dx * fraction;
+        let y = element_origin.1 + from.1 + host_dy * fraction;
+        let moved = plane.plane().try_line(&request_line(
+            seq + 1 + i64::try_from(step).expect("步号"),
+            METHOD_DISPATCH_POINTER_MOVE,
+            Some(json!({ "x": f64::from(x), "y": f64::from(y) })),
+        ));
+        assert!(
+            !moved.is_error(),
+            "第 {step} 步移动必须落到真实窗口: {moved:?}"
+        );
+    }
+}
+
+/// 松手（位置复用最后一次按下 / 移动，`[UI-TEST-002]` §12.4 的口径）。
+fn pointer_up_in_roll(plane: &mut LiveControlPlane, seq: i64) {
+    let up = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_DISPATCH_POINTER_UP,
+        Some(json!({ "button": "left" })),
+    ));
+    assert!(!up.is_error(), "松手必须落到真实窗口: {up:?}");
+}
+
+/// 按下 → 分步拖动 → 松手（一次完整手势）。
+fn drag_in_roll_by_id_at(
+    plane: &mut LiveControlPlane,
+    seq: i64,
+    from: (f32, f32),
+    host_dx: f32,
+    host_dy: f32,
+    steps: usize,
+) {
+    let origin = pointer_down_in_roll(plane, seq, from);
+    pointer_drag_steps_in_roll(plane, seq + 1, origin, from, host_dx, host_dy, steps);
+    pointer_up_in_roll(plane, seq + 1 + i64::try_from(steps).expect("步数") + 1);
+}
+
+/// 注入一次 `Escape`（`Action::Cancel` 的唯一键盘入口）。
+fn press_escape(plane: &mut LiveControlPlane, seq: i64) {
+    let pressed = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Escape" })),
+    ));
+    assert!(!pressed.is_error(), "`Escape` 注入必须成功: {pressed:?}");
+}
+
+/// 按 ULID 从**权威工程**读一个音符的 `(start_tick, pitch, duration_ticks)`。
+fn note_by_ulid(project: &yeban_model::YebanProjectV1, ulid: &str) -> (u64, u8, u64) {
+    for entry in project.clip_pool.values() {
+        let Some(map) = entry.content.notes() else {
+            continue;
+        };
+        for (id, note) in map {
+            if id.to_canonical_string() == ulid {
+                return (note.start_tick, note.pitch, note.duration_ticks);
+            }
+        }
+    }
+    panic!("权威工程里必须有音符 `{ulid}`");
+}
+
+/// 找一个**空白网格**点（宿主帧）：`hit_test_visible` 在那里解析不到任何音符，
+/// 且它的绘制帧仍落在卷帘元素矩形内。用于"滚动没有被音符手势接管"的**控制臂**。
+fn a_blank_point(
+    view: &yeban_app::bridge::ViewState,
+    viewport_width: f32,
+    viewport_height: f32,
+    scroll: f32,
+) -> (f32, f32) {
+    let mut y = 8.0_f32;
+    while y < viewport_height {
+        let mut x = 1.0_f32;
+        while x < viewport_width {
+            if view
+                .hit_test_visible(scroll, viewport_width, x, y, NOTE_HEIGHT)
+                .is_none()
+            {
+                let (painted_x, painted_y) = host_to_painted(x, y);
+                if (0.0..=viewport_width).contains(&painted_x)
+                    && (0.0..=viewport_height).contains(&painted_y)
+                {
+                    return (x, y);
+                }
+            }
+            x += 7.0;
+        }
+        y += 7.0;
+    }
+    panic!("夹具里必须存在一个宿主帧空白点，其绘制帧也落在卷帘元素矩形内")
+}
+
+/// 靶子音符的一切读数（判据共用的装配段）。
+struct RollTarget {
+    ulid: String,
+    host_center: (f32, f32),
+    painted_center: (f32, f32),
+    before: (u64, u8, u64),
+}
+
+/// 装配一个"人真的拖得动"的靶子音符（见 [`a_painted_note`] 的两个条件）。
+fn target_note(
+    window: &yeban_app::ui::MainWindow,
+    plane: &mut LiveControlPlane,
+    project: &yeban_model::YebanProjectV1,
+    seq: i64,
+    scroll: f32,
+) -> RollTarget {
+    let view = yeban_app::bridge::ViewState::from_project(project).expect("投影");
+    assert_eq!(
+        view.ticks_per_pixel,
+        yeban_app::bridge::DEFAULT_TICKS_PER_PIXEL,
+        "夹具前提：窗口的缩放就是投影的默认缩放（否则吸附期望值不是界面那一套）"
+    );
+    assert_eq!(
+        window.get_active_tool(),
+        i32::from(Tool::Select.digit()),
+        "夹具前提：默认工具必须是选择箭头（本切片只接选择工具的拖拽臂）"
+    );
+    let bounds = element_bounds(plane, seq, SCROLL_AREA);
+    let viewport_width = bounds["width"].as_f64().expect("width") as f32;
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+    let index = a_painted_note(&view, viewport_width, viewport_height, scroll);
+    let ulid = view.notes[index].id.clone();
+    RollTarget {
+        before: note_by_ulid(project, &ulid),
+        host_center: note_center_in_host_view(&view, index, scroll),
+        painted_center: note_center_in_painted_view(&view, index, scroll),
+        ulid,
+    }
+}
+
+/// 判据 (a)：选择工具在音符上拖动 ⇒ 权威工程的 `start_tick` 与 `pitch` 按**吸附后的
+/// 指针位移**改变，且**时值一位不动**（是"移动"不是"改时值"）。
+#[test]
+fn move_arm_a_a_note_drag_moves_the_note_by_the_grid_snapped_pointer_delta() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let target = target_note(&window, &mut plane, &project_before, 1, 0.0);
+    assert_eq!(window.get_roll_scroll_x(), 0.0, "夹具前提：起点偏移为 0");
+    // ---- 独立期望值（⛔ 不读被测的拖拽代码）----
+    //
+    // ① tick：用**投影自己的吸附口径**（`snapped_tick_at`，唯一真相源）算两端之差；
+    let view_before = yeban_app::bridge::ViewState::from_project(&project_before).expect("投影");
+    let origin_tick = view_before.snapped_tick_at(0.0, target.host_center.0, ROLL_SNAP_GRID_TICKS);
+    let current_tick = view_before.snapped_tick_at(
+        0.0,
+        target.host_center.0 + DRAG_HOST_DX,
+        ROLL_SNAP_GRID_TICKS,
+    );
+    let expected_delta_tick = i64::try_from(current_tick).expect("tick 适配 i64")
+        - i64::try_from(origin_tick).expect("tick 适配 i64");
+    // ② 音高：**手算** 14px 泳道几何 —— `-28px` 恰好两条泳道 ⇒ `+2` 半音（与小数无关）。
+    #[allow(clippy::cast_possible_truncation)]
+    let expected_delta_pitch = (-DRAG_HOST_DY / 14.0) as i32;
+    assert_eq!(
+        expected_delta_pitch, 2,
+        "夹具自证：28px 恰好是 2 条 14px 泳道"
+    );
+    // ③ 位移必须可解释为"指针动了多少 tick"：吸附增量与原始位移之差 ≤ 半个网格。
+    #[allow(clippy::cast_precision_loss)]
+    let raw_tick_delta = f64::from(DRAG_HOST_DX) * view_before.ticks_per_pixel as f64;
+    assert!(
+        (expected_delta_tick as f64 - raw_tick_delta).abs() <= ROLL_SNAP_GRID_TICKS as f64 / 2.0,
+        "吸附后的 tick 增量必须落在原始指针位移的半个网格内：吸附 {expected_delta_tick} vs 原始 {raw_tick_delta}"
+    );
+    assert_eq!(
+        expected_delta_tick,
+        2 * i64::try_from(ROLL_SNAP_GRID_TICKS).expect("网格"),
+        "夹具自证：16px 在 30tpp 下是 480 tick = 恰好 2 个 240 网格（吸附对网格整数倍平移不变）"
+    );
+    assert_ne!(expected_delta_tick, 0, "夹具前提：这一拖必须真的跨过网格");
+    assert_eq!(
+        expected_delta_tick % i64::try_from(ROLL_SNAP_GRID_TICKS).expect("网格"),
+        0,
+        "吸附后的位移必须是整格"
+    );
+
+    drag_in_roll_by_id_at(
+        &mut plane,
+        10,
+        target.painted_center,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
+    );
+
+    let project_after = port.project();
+    let after = note_by_ulid(&project_after, &target.ulid);
+    report_line(&format!(
+        "[roll-move-a] `{}` 绘制帧 ({:.1},{:.1}) 拖 ({DRAG_HOST_DX},{DRAG_HOST_DY})px × {DRAG_STEPS} 步 ⇒ \
+         start_tick {} ⇒ {}（期望 {:+}）; pitch {} ⇒ {}（期望 {:+}）; duration {} ⇒ {}",
+        target.ulid,
+        target.painted_center.0,
+        target.painted_center.1,
+        target.before.0,
+        after.0,
+        expected_delta_tick,
+        target.before.1,
+        after.1,
+        expected_delta_pitch,
+        target.before.2,
+        after.2
+    ));
+    assert_eq!(
+        i64::try_from(after.0).expect("tick") - i64::try_from(target.before.0).expect("tick"),
+        expected_delta_tick,
+        "`start_tick` 必须按 `snapped_tick_at` 算出的吸附位移改变"
+    );
+    assert_eq!(
+        i32::from(after.1) - i32::from(target.before.1),
+        expected_delta_pitch,
+        "`pitch` 必须按 14px 泳道几何改变（-28px ⇒ +2 半音）"
+    );
+    assert_eq!(
+        after.2, target.before.2,
+        "移动**不得**改时值（那是铅笔的拖拽臂，本切片 ⛔ 不接）"
+    );
+}
+
+/// 判据 (b)：音符拖动**不**顺带滚动；控制臂 = **同一次装配里**的空白处拖动照旧滚动。
+#[test]
+fn move_arm_b_a_note_drag_does_not_scroll_the_roll() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let view_before = yeban_app::bridge::ViewState::from_project(&project_before).expect("投影");
+    assert_eq!(window.get_roll_scroll_x(), 0.0, "夹具前提：起点偏移为 0");
+
+    // ---- 控制臂 + 前置：先把视图滚到**非零**偏移 ----
+    // 为什么要预滚（这是一条**防假绿**的决定）：向右拖在**零偏移**下会被宿主
+    // `advance_scroll` 的 `0.0` 下限夹住 ⇒ **未修复**的代码也会"看起来没滚动"。
+    // 预滚之后，未被捕获的手势会把偏移从 40 改成 24（可观测），被捕获的则一位不变。
+    // 同一条空白处拖动本身就是控制臂：它证明"滚动这条路"在同一份代码上仍然通。
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bounds["width"].as_f64().expect("width") as f32;
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+    let (blank_x, blank_y) = a_blank_point(&view_before, viewport_width, viewport_height, 0.0);
+    let (blank_painted_x, blank_painted_y) = host_to_painted(blank_x, blank_y);
+    drag_in_roll_by_id_at(
+        &mut plane,
+        10,
+        (blank_painted_x, blank_painted_y),
+        -40.0,
+        0.0,
+        DRAG_STEPS,
+    );
+    let scroll_base = window.get_roll_scroll_x();
+    assert!(
+        scroll_base > 0.5,
+        "控制臂：空白处拖动必须把偏移推到非零（否则本判据证明不了\"捕获\"）—— 实测 {scroll_base}"
+    );
+
+    // ---- 在**新偏移**下取靶 ----
+    let target = target_note(&window, &mut plane, &project_before, 40, scroll_base);
+    let scroll_before = window.get_roll_scroll_x();
+    assert!(
+        (scroll_before - scroll_base).abs() < 0.001,
+        "夹具前提：取靶本身不得改变偏移"
+    );
+
+    drag_in_roll_by_id_at(
+        &mut plane,
+        60,
+        target.painted_center,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
+    );
+    let scroll_after = window.get_roll_scroll_x();
+    // 非空转：这一拖必须真的移动了模型（否则"没滚动"可能只是"什么都没发生"）。
+    let moved = note_by_ulid(&port.project(), &target.ulid).0 != target.before.0;
+    report_line(&format!(
+        "[roll-move-b] 预滚偏移 {scroll_base}；音符（宿主帧中心 {:.1},{:.1}）向右拖 \
+         ({DRAG_HOST_DX},{DRAG_HOST_DY})px × {DRAG_STEPS} 步 ⇒ `roll-scroll-x` {scroll_before} ⇒ \
+         {scroll_after}（必须一位不变）；同一拖里音符真的移动了 = {moved}",
+        target.host_center.0, target.host_center.1
+    ));
+    assert!(
+        (scroll_after - scroll_before).abs() < 0.001,
+        "音符拖动**不得**同时滚动（手势已被捕获）：{scroll_before} ⇒ {scroll_after}"
+    );
+    assert!(
+        moved,
+        "非空转前提：这一拖必须真的改变 `start_tick`（判据 (a) 的内容）"
+    );
+}
+
+/// 判据 (c)：`Escape` 插在拖动中途 ⇒ 工程**逐字节不变**、提交 **0** 次。
+///
+/// ⚠ 本判据在**未接移动臂**的代码上**空转绿**（选择工具本来就不写工程）—— 它的对照
+/// 不在"修复前 / 修复后"，而在"**取消这条收尾路径**在不在"（见文件末"怎么变红"）。
+#[test]
+fn move_arm_c_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    let target = target_note(&window, &mut plane, &project_before, 1, 0.0);
+    let commits_before = port.display().commit_count;
+
+    let element_origin = pointer_down_in_roll(&mut plane, 10, target.painted_center);
+    pointer_drag_steps_in_roll(
+        &mut plane,
+        20,
+        element_origin,
+        target.painted_center,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
+    );
+    // 拖到一半：`Escape`（`Action::Cancel` 的唯一键盘入口）⇒ 丢弃草稿、⛔ 不提交。
+    press_escape(&mut plane, 30);
+    pointer_up_in_roll(&mut plane, 40);
+
+    let project_after = port.project();
+    let after_bytes = serde_json::to_vec(&project_after).expect("序列化终点工程");
+    let commits_after = port.display().commit_count;
+    report_line(&format!(
+        "[roll-move-c] 拖动中途 `Escape` 后松手：工程字节 {} ⇒ {}（逐字节相同 = {}）；\
+         提交数 {} ⇒ {}；undoable={}",
+        before_bytes.len(),
+        after_bytes.len(),
+        before_bytes == after_bytes,
+        commits_before,
+        commits_after,
+        port.display().undoable
+    ));
+    assert_eq!(
+        before_bytes, after_bytes,
+        "`Escape` 取消后工程必须**逐字节**不变（草稿从未写进工程，收尾后也不许补写）"
+    );
+    assert_eq!(
+        commits_after, commits_before,
+        "`Escape` 取消不得提交任何 op"
+    );
+    assert_eq!(port.display().undoable, 0, "取消之后不得有可撤销的编辑");
+}
+
+/// 判据 (d)：一次拖动（`DRAG_STEPS` 步 `move`）= **恰好一步**撤销；第二次手势再 +1。
+///
+/// 这正是"草稿在手、松手才提交"设计的意义：⛔ 不是每个 `move` 提交一次。
+#[test]
+fn move_arm_d_exactly_one_history_entry_per_gesture() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let target = target_note(&window, &mut plane, &project_before, 1, 0.0);
+    assert_eq!(port.display().undoable, 0, "起点不该有可撤销的编辑");
+    let commits_before = port.display().commit_count;
+
+    // ---- 第一次手势 ----
+    drag_in_roll_by_id_at(
+        &mut plane,
+        10,
+        target.painted_center,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
+    );
+    let undoable_first = port.display().undoable;
+    let commits_first = port.display().commit_count;
+    let after_first = note_by_ulid(&port.project(), &target.ulid);
+
+    // ---- 第二次手势：从**工程读回的**新位置重新取靶（顺带见证重投影没把画面落下）----
+    let view_second = yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
+    let index_second = view_second
+        .notes
+        .iter()
+        .position(|note| note.id == target.ulid)
+        .expect("被移动的音符必须仍在投影里");
+    let painted_second = note_center_in_painted_view(&view_second, index_second, 0.0);
+    // 第二次也**向右 / 向上**：`Op::MoveNote` 的前置条件只拒绝"结果越界"
+    // （`shifted_tick` / `shifted_pitch` 为 `None`）⇒ 反向拖回可能因越下界被模型拒绝，
+    // 那样"撤销步数 = 2"就会因**模型拒绝**而假红。同向两次 ⇒ 结果必然合法。
+    drag_in_roll_by_id_at(
+        &mut plane,
+        50,
+        painted_second,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
+    );
+    let undoable_second = port.display().undoable;
+    let commits_second = port.display().commit_count;
+    let after_second = note_by_ulid(&port.project(), &target.ulid);
+    report_line(&format!(
+        "[roll-move-d] 每次手势 {DRAG_STEPS} 步 move：撤销步数 0 ⇒ {undoable_first} ⇒ {undoable_second}；\
+         提交数 {commits_before} ⇒ {commits_first} ⇒ {commits_second}；\
+         起点 tick {}，第一次后 {}，第二次后 {}",
+        target.before.0, after_first.0, after_second.0
+    ));
+    assert_eq!(
+        undoable_first, 1,
+        "一次拖动 = **恰好一步**撤销（若每个 `move` 都提交，这里会是 {DRAG_STEPS}）"
+    );
+    assert_eq!(
+        commits_first - commits_before,
+        1,
+        "一次拖动恰好**一次**提交"
+    );
+    assert_ne!(
+        after_first.0, target.before.0,
+        "非空转前提：第一次手势必须真的移动音符（否则上面的计数可能只是\"什么都没发生\"）"
+    );
+    assert_eq!(undoable_second, 2, "第二次手势再 +1（不是一次性的效果）");
+    assert_eq!(commits_second - commits_before, 2, "两次手势恰好两次提交");
+}
+
+/// 判据 (e)：**结构防漂移**。计数规则（逐条写明，单位 = **字面出现次数**）：
+///
+/// ① 单位 = `str::matches(needle).count()` 的**子串出现次数**（⛔ 不是行数、⛔ 不是"消费者个数"）；
+/// ② 目录 = `<crate>/src` **递归**，只收 `*.rs`（`CARGO_MANIFEST_DIR` 起算）；
+/// ③ `crates/yeban-app/tests/**` **不在**扫描范围（本函数只走 `src`）；
+/// ④ 每个文件只取**第一个 `#[cfg(test)]` 之前**的文本 = 该文件的生产区
+///    ⇒ `src/**` 内联 `#[cfg(test)] mod tests` 里的字面**不计**；
+/// ⑤ "消费者"那一条把 `src/input.rs` 整个**排除**（那是拖拽分类自己的定义处）。
+///
+/// **它证明什么**：本切片之后，`Op::MoveNote` 在 app 层有一个生产写者、`ToolDrag` 有一个
+/// `input.rs` 之外的消费者 —— 两处今天都是 **0**。
+/// **它不证明什么**：行为（一行注释就能让字面计数 ≥1）⇒ 行为由 (a)–(d) 管；也不证明
+/// 每条 `ToolDrag` 变体都被消费（`AdjustVelocity` **故意**仍未被消费，见交付报告）。
+#[test]
+fn move_arm_e_the_drag_taxonomy_gains_a_production_consumer() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rs_files(&root, &mut files);
+    files.sort();
+    // 走查自证：路径错了会让计数恒 0（判据会红），但也可能"恰好"命中别的文件 ⇒ 先把两个
+    // 必在场的源文件钉住。
+    let names: Vec<String> = files
+        .iter()
+        .filter_map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "input.rs"),
+        "走查自证：`src/input.rs` 必须在扫描集里，实际 {names:?}"
+    );
+    assert!(
+        names.iter().any(|name| name == "host.rs"),
+        "走查自证：`src/host.rs` 必须在扫描集里，实际 {names:?}"
+    );
+
+    let mut move_note = 0_usize;
+    let mut tool_drag_outside_input = 0_usize;
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("读源文件");
+        let end = text.find("#[cfg(test)]").unwrap_or(text.len());
+        let production = &text[..end];
+        move_note += production.matches("Op::MoveNote").count();
+        if path.file_name().is_some_and(|name| name != "input.rs") {
+            tool_drag_outside_input += production.matches("ToolDrag").count();
+        }
+    }
+    report_line(&format!(
+        "[roll-move-e] 生产区（`src/**` 首个 `#[cfg(test)]` 之前）字面计数：\
+         `Op::MoveNote` = {move_note}（本切片之前 0）；`ToolDrag` 在 `src/input.rs` 之外 = \
+         {tool_drag_outside_input}（本切片之前 0）；扫描 {} 个 `.rs` 文件",
+        files.len()
+    ));
+    assert!(
+        move_note >= 1,
+        "字面 `Op::MoveNote` 必须在 `crates/yeban-app/src` 的生产区出现 ≥1 次（本切片之前 = 0）"
+    );
+    assert!(
+        tool_drag_outside_input >= 1,
+        "`ToolDrag` 必须在 `src/input.rs` **之外**有 ≥1 个生产消费者（本切片之前 = 0）"
+    );
+}
+
+/// 递归收集 `dir` 下的 `*.rs`。
+fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("读源码目录") {
+        let path = entry.expect("目录项").path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// **相邻缺陷**的判据（与本切片同一条通道 `[UI-NOTE-003]`）：铅笔工具下的**滚动拖拽**
+/// 不得在松手处插入音符。
+///
+/// ## 缺陷（本判据在修复前**红**）
+///
+/// `piano_roll.slint` 的 `up` 曾经**无条件** fired 一次 `clicked` ⇒ 一次"滚动拖动"在松手时
+/// 被当成一次单击，铅笔于是把音符插在松手处。根因与移动臂**同一条通道**：`up` 没有区分
+/// "位移越过 4px 的**拖拽**"与"没越过的**单击**"（规范 §6 的 4px 距离定义）。
+///
+/// 靶点必须**同时**满足两个条件，才保证修复前的代码**真的**会插进一个音符：
+/// ① 该点在**空白**网格上（`hit_test_visible` 无命中）；② 该点落在片段内（`pencil_op_for`
+/// 有解）。⛔ 少任何一条，修复前也可能"恰好没插"，判据就成了空转绿。
+///
+/// **它证明什么**：`up` 的单击 / 拖拽分流真的生效于**所有工具**（不只是被接管的移动臂），
+/// 因此"滚动一下 = 插入一个音符"这条缺陷路径不再存在。
+/// **它不证明什么**：其它工具（剪刀 / 橡皮擦 / 力度）的**拖拽**语义 —— 那些仍未接线。
+#[test]
+fn a_scroll_drag_with_the_pencil_tool_does_not_insert_a_note() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before = note_count(&project_before);
+    let view = yeban_app::bridge::ViewState::from_project(&project_before).expect("投影");
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bounds["width"].as_f64().expect("width") as f32;
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+
+    // 靶点：空白 **且** 铅笔画得出来。
+    let mut target = None;
+    let mut y = 8.0_f32;
+    while y < viewport_height && target.is_none() {
+        let mut x = 1.0_f32;
+        while x < viewport_width {
+            if view
+                .hit_test_visible(0.0, viewport_width, x, y, NOTE_HEIGHT)
+                .is_none()
+                && pencil_op_for(
+                    &project_before,
+                    0.0,
+                    x,
+                    y,
+                    ROLL_SNAP_GRID_TICKS,
+                    i32::from(PENCIL_TOOL_DIGIT),
+                )
+                .is_some()
+            {
+                target = Some((x, y));
+                break;
+            }
+            x += 7.0;
+        }
+        y += 7.0;
+    }
+    let (host_x, host_y) = target.expect("夹具里必须存在一个既空白又在片段内的点");
+    let (painted_x, painted_y) = host_to_painted(host_x, host_y);
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    let scroll_before = window.get_roll_scroll_x();
+
+    drag_in_roll_by_id_at(
+        &mut plane,
+        10,
+        (painted_x, painted_y),
+        -40.0,
+        0.0,
+        DRAG_STEPS,
+    );
+
+    let after = note_count(&port.project());
+    let scroll_after = window.get_roll_scroll_x();
+    report_line(&format!(
+        "[roll-scroll-defect] 铅笔下的**滚动拖拽**（空白且在片段内的点 宿主帧 {host_x},{host_y}，左拖 40px）⇒ \
+         音符数 {before} ⇒ {after}（必须不变）；`roll-scroll-x` {scroll_before} ⇒ {scroll_after}（必须照旧滚动）"
+    ));
+    assert!(
+        (scroll_after - scroll_before).abs() > 0.5,
+        "非空转前提：这一拖必须真的滚动了（否则测的不是\"滚动拖拽\"）"
+    );
+    assert_eq!(
+        after, before,
+        "滚动拖拽**不得**在松手处插入音符（`up` 只在位移未越 4px 阈值时才算一次单击）"
     );
 }

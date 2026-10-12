@@ -44,6 +44,23 @@ export component PianoRoll inherits Rectangle {
     // 界面只上报"点了哪一行"; `active-tool` 的写入与动作日志由宿主唯一落点
     // (`host::wire_tool_select` → `host::apply_action` 的 `Action::SelectTool` 臂) 完成。
     callback tool-selected(int);
+    // `[UI-NOTE-003]` 左键**拖拽**的手势通道（工具矩阵"左键拖拽"列；本切片接的是选择工具的
+    // 移动臂 `Tool::drag() == ToolDrag::MoveNote`）。界面只**报告指针位置**（绘制帧）；
+    // 工具门、命中、草稿与"抬起恰好一个原子 `Op::MoveNote`"全在宿主
+    // （`host::wire_roll_edit` → `install_roll_note_drag`）。
+    // 返回 `true` = 宿主**接管**这次手势 ⇒ 本组件不再把它当滚动 / 单击（⛔ 不双重处理）。
+    callback note-drag-grab(length, length) -> bool;
+    // 接管后的每次指针移动（绘制帧坐标）⇒ 宿主**只**更新草稿，⛔ 不写工程、⛔ 不进撤销栈。
+    callback note-drag-move(length, length);
+    // 松手（绘制帧坐标）⇒ 宿主**至多提交一个**原子 `Op`。
+    callback note-drag-release(length, length);
+    // 指针离开窗口 / 控件被禁用（上游导出成 `PointerEventKind.cancel`）⇒ **丢弃**草稿。
+    callback note-drag-cancel();
+    // 被拖音符的身份（空 = 没有手势）与拖动期的**草稿预览位移**（逻辑像素，由宿主算好注入）。
+    // 只有身份相等的那个音符矩形跟着偏移 —— 界面不做位置算术（`[UI-NOTE-002]`）。
+    in property <string> note-drag-ulid: "";
+    in property <float> note-drag-preview-dx: 0.0;
+    in property <float> note-drag-preview-dy: 0.0;
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
@@ -202,8 +219,14 @@ export component PianoRoll inherits Rectangle {
         // ------------------------------------------------------------ 音符图元
         // [UI-TEST-001] `note-{ulid}-rect`
         for note_ulid[note_index] in root.note-ulids : Rectangle {
-            x: Tokens.space-5 + root.note-positions[note_index];
-            y: root.note-ys[note_index];
+            // 拖动期的**草稿预览**：只有被拖的那一个身份跟着宿主算好的位移走。
+            // ⛔ 界面不做位置算术 —— `note-drag-preview-*` 是宿主用既有的
+            // `tick_to_px` / `PITCH_LANE_HEIGHT_PX` 算好的逻辑像素；没有手势时两项恒为 0
+            // ⇒ 未拖动时与旧基准**逐像素相同**（避免无谓的基准重生成）。
+            x: Tokens.space-5 + root.note-positions[note_index]
+                + (note_ulid == root.note-drag-ulid ? root.note-drag-preview-dx * 1px : 0px);
+            y: root.note-ys[note_index]
+                + (note_ulid == root.note-drag-ulid ? root.note-drag-preview-dy * 1px : 0px);
             width: root.note-widths[note_index];
             height: 12px;
             background: Tokens.gold;
@@ -293,6 +316,14 @@ export component PianoRoll inherits Rectangle {
     // 覆盖泳道的输入面：按住并水平拖动 ⇒ 报告水平增量（向右拖 ⇒ 内容左移 ⇒ 偏移增加）。
     property <length> drag-last-x: 0px;
     property <bool> dragging: false;
+    // `[UI-NOTE-003]` 手势分类的四个**界面本地**读数（都不进模型）：
+    //   `drag-origin-*` = 按下时的指针位置（绘制帧）；
+    //   `drag-moved`    = 位移是否越过了规范的 **4px** 阈值（越过 = 拖拽，没越过 = 单击）；
+    //   `note-dragging` = 宿主已**接管**这一拖（选择工具 + 按在音符上）。
+    property <length> drag-origin-x: 0px;
+    property <length> drag-origin-y: 0px;
+    property <bool> drag-moved: false;
+    property <bool> note-dragging: false;
     TouchArea {
         // `[UI-TEST-001]` §12.2 稳定语义元素寻址：拖动滚动手势面必须有 `accessible-id`
         // （与 `ui/` 下其它关键节点同一族），否则无头注入只能靠像素坐标 —— 那正是被禁的做法。
@@ -301,17 +332,64 @@ export component PianoRoll inherits Rectangle {
         accessible-label: "卷帘拖动手势面";
         // 本版本 `PointerEvent` **没有** `delta-x`（编译期报 "Cannot access the field 'delta-x'"），
         // 本版本的 `PointerEvent` 也**没有** `position`，位置只能取 `TouchArea` 自己的 `mouse-x`。用 `last - now` 表示"向右拖 ⇒ 内容左移 ⇒ 偏移增加"。
+        //
+        // ⚠ 这里有一条**判定顺序**上的契约（本切片新增）：`up` **只在位移未越 4px 阈值时**
+        // 才 fired 一次 `clicked`。在此之前 `up` 无条件 fired `clicked` ⇒ 用铅笔（或橡皮擦）
+        // 在空白处滚动一下，松手处就会**插进一个音符** —— 滚动手势被当成了单击。
         pointer-event(event) => {
             if event.kind == PointerEventKind.down {
-                root.dragging = true;
+                root.drag-origin-x = self.mouse-x;
+                root.drag-origin-y = self.mouse-y;
+                root.drag-moved = false;
                 root.drag-last-x = self.mouse-x;
+                // 先问宿主"这一按是不是**移动音符**"（选择工具 + 命中音符）。
+                // 接管 ⇒ ⛔ 不滚动（两条手势通道互斥，⛔ 不双重处理）。
+                root.note-dragging = root.note-drag-grab(self.mouse-x, self.mouse-y);
+                root.dragging = !root.note-dragging;
             } else if event.kind == PointerEventKind.up {
                 root.dragging = false;
-                // 抬起即视为一次单击（拖拽手势已在 move 里报告过增量）。
-                root.clicked(self.mouse-x, self.mouse-y);
-            } else if event.kind == PointerEventKind.move && root.dragging {
-                root.scroll-requested(root.drag-last-x - self.mouse-x);
-                root.drag-last-x = self.mouse-x;
+                if root.note-dragging {
+                    root.note-dragging = false;
+                    if root.drag-moved {
+                        // 越了 4px ⇒ 这一抬是**拖拽**的收尾（提交恰好一个原子 Op）。
+                        root.note-drag-release(self.mouse-x, self.mouse-y);
+                    } else {
+                        // 没越阈值 ⇒ 这一抬是一次**单击**（选择工具点音符 = 选中它）。
+                        root.clicked(self.mouse-x, self.mouse-y);
+                    }
+                } else if !root.drag-moved {
+                    // 空白处：只有**没越阈值**的抬起才算一次单击（选中 / 清除选区）。
+                    root.clicked(self.mouse-x, self.mouse-y);
+                }
+                root.drag-moved = false;
+            } else if event.kind == PointerEventKind.move {
+                // 阈值判定用**两个方向各自比较**而不是 `abs(...)`：Slint 的 `length`
+                // 绝对值函数在这里没有必要，比较是纯量运算、无歧义。
+                if !root.drag-moved
+                    && ((self.mouse-x - root.drag-origin-x) > 4px
+                        || (root.drag-origin-x - self.mouse-x) > 4px
+                        || (self.mouse-y - root.drag-origin-y) > 4px
+                        || (root.drag-origin-y - self.mouse-y) > 4px) {
+                    root.drag-moved = true;
+                }
+                if root.note-dragging {
+                    // 拖拽臂：越阈值之后才更新草稿（小抖动不改草稿）。
+                    if root.drag-moved {
+                        root.note-drag-move(self.mouse-x, self.mouse-y);
+                    }
+                } else if root.dragging {
+                    root.scroll-requested(root.drag-last-x - self.mouse-x);
+                    root.drag-last-x = self.mouse-x;
+                }
+            } else {
+                // `cancel`（指针离开窗口 / 控件被禁用）：与 `up` 一样是收尾，
+                // 但这一拖**不算数** ⇒ 丢弃草稿、⛔ 不提交。
+                root.dragging = false;
+                root.drag-moved = false;
+                if root.note-dragging {
+                    root.note-dragging = false;
+                    root.note-drag-cancel();
+                }
             }
         }
     }

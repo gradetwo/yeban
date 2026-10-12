@@ -4015,10 +4015,48 @@ mod tests {
             !code.contains("76px * note_index"),
             "音符位置不得再退回索引布局（`76px * note_index`）"
         );
-        assert!(
-            code.contains("x: Tokens.space-5 + root.note-positions[note_index];"),
-            "音符 x 必须直接取投影数组"
-        );
+        // `[UI-NOTE-003]` 拖动期的**草稿预览**给音符 x / y 各加了一个位移项（由宿主算好注入的
+        // 逻辑像素；没有手势时恒为 0）。因此这里从"整行必须逐字相等"改成三条**合起来更强**的
+        // 断言：① x / y **必须从投影数组起算**；② 那条赋值**唯一的**加项只能是草稿位移属性；
+        // ③ 那条赋值里**不得**出现下标算术（`* note_index`）。
+        // ⛔ 原本要挡的东西仍然是红的：`76px * note_index` 那一类索引布局过不了 ① 与 ③
+        // （上面逐字那条负向断言也照旧在）。
+        //
+        // ⚠ `.slint` 的一条赋值可以**跨行**（本切片的草稿位移就写在续行上）⇒ 先把整条
+        // 语句拼到分号为止再判，而不是只看一行。
+        for (axis, projection, draft) in [
+            (
+                "x",
+                "x: Tokens.space-5 + root.note-positions[note_index]",
+                "root.note-drag-preview-dx",
+            ),
+            (
+                "y",
+                "y: root.note-ys[note_index]",
+                "root.note-drag-preview-dy",
+            ),
+        ] {
+            let start = code
+                .lines()
+                .position(|line| line.trim_start().starts_with(projection))
+                .unwrap_or_else(|| panic!("音符 {axis} 必须**从投影数组起算**（`{projection}`）"));
+            let mut statement = String::new();
+            for line in code.lines().skip(start) {
+                statement.push_str(line);
+                statement.push('\n');
+                if line.contains(';') {
+                    break;
+                }
+            }
+            assert!(
+                statement.contains(draft),
+                "音符 {axis} 上唯一的加项必须是拖动草稿位移 `{draft}`；实际那条赋值是 `{statement}`"
+            );
+            assert!(
+                !statement.contains("* note_index"),
+                "音符 {axis} 不得出现下标算术（`* note_index`）：`{statement}`"
+            );
+        }
         assert_eq!(PITCH_LANE_COUNT, 16, "车道数必须与 .slint 的 16 条一致");
         assert_eq!(
             PITCH_LANE_HEIGHT_PX, 14.0,

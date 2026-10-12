@@ -412,11 +412,43 @@ fn roll_click_has_exactly_one_dispatcher_writer() {
         "派发器必须用唯一的帧换算 `bridge::painted_to_host` 把绘制坐标搬进宿主坐标 —— \
          这是\"人手点得到的矩形\"与\"命中测试\"之间的单一真相源\n{dispatcher}"
     );
-    assert_eq!(
-        count(&host, "painted_to_host("),
-        1,
-        "`painted_to_host(` 在 `src/host.rs` 里必须恰好出现一次（唯一派发器里的唯一换算点），\
-         实际 {} 次 —— 多处换算就是多个真相源，迟早有一处漏减 (68, 28)",
-        count(&host, "painted_to_host(")
+    // 帧换算的**唯一实现**是 `bridge::painted_to_host`。
+    //
+    // ⚠ 本判据原本钉的是"在 `src/host.rs` 里**恰好出现一次**" —— 那是"只有一个实现"的
+    // **代理**。`[UI-NOTE-003]` 的移动臂给 `host.rs` 添了三个新调用点（移动手势的
+    // grab / move / release 各自收到一次**绘制坐标**），它们**都**调那**同一个**函数
+    // ⇒ 代理失效，而**真正的不变量仍然成立**。
+    //
+    // ⛔ 把"恰好一次"简单放宽成"至少一次"会**削弱**这条守卫，所以改为直接判不变量：
+    //   ① 至少有一次换算；
+    //   ② 每一次都必须走**限定路径**（`crate::bridge::painted_to_host`，唯一实现）；
+    //   ③ `host.rs` **不得**引用帧原点的三个常量 —— 任何"自己减 56+12 / 28"的绕过写法
+    //      都必然要用到它们，因此 ③ 比"数调用次数"**更强**，而不只是更宽松。
+    let conversions = count(&host, "painted_to_host(");
+    assert!(
+        conversions >= 1,
+        "`src/host.rs` 必须至少有一次帧换算（唯一的 `bridge::painted_to_host`），实际 0 次"
     );
+    let qualified = count(&host, "crate::bridge::painted_to_host(");
+    assert_eq!(
+        qualified, conversions,
+        "`src/host.rs` 里的**每一次**帧换算都必须走限定路径 `crate::bridge::painted_to_host`\
+         （唯一实现）：{conversions} 次调用里只有 {qualified} 次是限定调用 —— 其余的是别的东西\
+         冒充帧换算，正是本判据要挡的第二个真相源"
+    );
+    for forbidden in [
+        "ROLL_KEY_COLUMN_WIDTH_PX",
+        "NOTE_INSET_X_PX",
+        "ROLL_HEADER_HEIGHT_PX",
+        "- 56.0 - 12.0",
+        "- 68.0",
+        "- 28.0",
+    ] {
+        assert!(
+            !host.contains(forbidden),
+            "`src/host.rs` 不得出现帧原点的常量或手写偏移 `{forbidden}` —— 那意味着有人在这里\
+             **手写**了绘制帧 → 宿主帧的换算（自己减 56+12 / 28），绕过了唯一的\
+             `bridge::painted_to_host`"
+        );
+    }
 }
