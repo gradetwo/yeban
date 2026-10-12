@@ -431,12 +431,14 @@ impl ElementRegistry {
                 "module-record-wav-button",
                 "录音（把控制侧测试音录成 24-bit WAV）",
             ),
-            // ⭐ 第五条：**硬件** MIDI 输入（`crate::midi_in::capture`）。
+            // ⭐ 第五条：**硬件** MIDI 输入（`crate::midi_in::capture_messages`）。
             // ⚠ 它与 `module-import-midi-button` 不是同一件事：那条读**文件**（SMF），
             // 这条读**物理端口**（`[ADR-0006]`）。
+            // ⭐ 落点 = CLI 的 `--midi-in` **＋** `--midi-in-write-notes`：采集完成后，
+            // 配对出的音符写进**第一条非主总线音轨**（规则在 `crate::import_midi::destination`）。
             (
                 "module-midi-in-button",
-                "硬件 MIDI 输入（打开一个物理端口并采集事件与抖动）",
+                "硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）",
             ),
         ] {
             registry.add(

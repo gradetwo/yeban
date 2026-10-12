@@ -2396,8 +2396,13 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 ///
 /// ⭐ **硬件 MIDI 输入**（第五条入口）另有两个：`YEBAN_UI_MIDI_IN_PORT`（默认 `"0"`，
 /// 取值口径与 CLI 的 `--midi-in` **逐字相同**）与 `YEBAN_UI_MIDI_IN_SECONDS`
-/// （缺省 = `crate::midi_in::DEFAULT_SECONDS`；上下限仍由 `midi_in::capture` 判定）。
+/// （缺省 = `crate::midi_in::DEFAULT_SECONDS`；上下限仍由 `midi_in::capture_messages` 判定）。
 /// ⚠ 这一条**没有**路径参数 —— 它读的是**物理端口**，不是文件。
+/// ⭐ 这一条的语义（**字段文档就是这条映射的唯一出处**）：界面那个按钮 = CLI 的
+/// `--midi-in` **＋** `--midi-in-write-notes`。⇒ 采到的消息经 `pair_notes` 配对后，
+/// 由 `midi_notes` 的写入原语写进**第一条非主总线音轨**（规则在
+/// `crate::import_midi::destination`）。⚠ 界面**没有**开关、**没有**轨道选择器；
+/// ⛔ CLI 自己的默认值一位不动（`--midi-in` 单给仍然是只读诊断）。
 ///
 /// 缺省值落在**当前工作目录**下（`ui-export.wav` / `ui-import.mid` / `ui-instrument.sfz` /
 /// `ui-record.wav`），⛔ **不**落到系统临时目录：后者的路径里带随机分量，会让回执行
@@ -2417,12 +2422,12 @@ pub struct ModulePaths {
     pub record_wav: std::path::PathBuf,
     /// `录音` 的秒数（`record_wav::RecordOptions::seconds`）。
     pub record_seconds: f32,
-    /// ⭐ `硬件 MIDI 输入` 的目标端口（`midi_in::capture` 的第一个参数）。
+    /// ⭐ `硬件 MIDI 输入` 的目标端口（`midi_in::capture_messages` 的第一个参数）。
     ///
     /// 取值口径与 CLI 的 `--midi-in` **逐字相同**（由 `midi_in::resolve_port` 判定）：
     /// 全十进制 ⇒ 端口序号；否则 ⇒ 端口名的**大小写敏感**子串。
     pub midi_in_port: String,
-    /// ⭐ `硬件 MIDI 输入` 的采集时长（秒；`midi_in::capture` 的第二个参数）。
+    /// ⭐ `硬件 MIDI 输入` 的采集时长（秒；`midi_in::capture_messages` 的第二个参数）。
     pub midi_in_seconds: f32,
 }
 
@@ -2434,7 +2439,7 @@ impl Default for ModulePaths {
             load_sfz: std::path::PathBuf::from("ui-instrument.sfz"),
             record_wav: std::path::PathBuf::from("ui-record.wav"),
             record_seconds: 8.0,
-            // ⭐ 缺省 = 端口序号 `0`。⚠ 一个端口都没有时 `capture` 会给出
+            // ⭐ 缺省 = 端口序号 `0`。⚠ 一个端口都没有时 `capture_messages` 会给出
             // `PortNotFound` 并**列出可用端口**（空清单也会说出来）—— 这正是 CI 的形态。
             midi_in_port: "0".to_owned(),
             // ⭐ 与 CLI 的 `--midi-in` 缺省**同一个常量**（⛔ 不另写一个数）。
@@ -2551,7 +2556,7 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
     );
 }
 
-/// **四个模块入口的接线**（本票）：`.slint` 的按钮 → 已经存在的四个模块实现。
+/// **五个模块入口的接线**：`.slint` 的按钮 → 已经存在的模块实现。
 ///
 /// | 界面回调 | 落点（**复用**，⛔ 不另写一套） | 会不会改工程 |
 /// | :--- | :--- | :--- |
@@ -2559,19 +2564,21 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
 /// | `import-midi` | [`crate::import_midi::import_midi_file`]（经 `UndoPort`） | **会**（`OpOrigin::MidiInput`，可撤销） |
 /// | `load-sfz` | [`crate::sfz_load::load_sfz_with_instrument`] | 不会（只读 SFZ；之后给导出用） |
 /// | `record-wav` | [`crate::record_wav::record_test_tone`] | 不会（只写目标 WAV） |
+/// | `midi-in` | [`crate::midi_in::capture_messages`] ＋ `midi_notes` 的配对/写入原语 | **会**（`OpOrigin::MidiInput`，可撤销；= CLI `--midi-in` **＋** `--midi-in-write-notes`） |
 ///
 /// ## 工程从哪来（唯一权威）
 ///
-/// 四条里只有 `import-midi` 改工程，它走的是装配给的那个 [`UndoPort`] —— 与
-/// `Cmd+Z` / `yeban_undo` **同一个**端口，因此"界面导入的音符"与"撤销栈"不可能分叉。
+/// 五条里 `import-midi` 与 `midi-in` 改工程，两条走的都是装配给的那个 [`UndoPort`] —— 与
+/// `Cmd+Z` / `yeban_undo` **同一个**端口，因此"界面上弹/导入出来的音符"与"撤销栈"不可能分叉。
 /// 另外三条读工程时用 `port.project()`（端口的当前读数），**不**用装配时的快照
 /// ⇒ 撤销之后按导出，导出的是撤销之后的那一版。
 ///
 /// ## `port` 为 `None` 时
 ///
 /// 装配方没有撤销会话（若干既有判据就是这种形态）⇒ 三条只读动作照常可用，
-/// `import-midi` **如实拒绝**（`outcome=error:error=no-undo-port`），⛔ 不静默用一个
-/// 临时会话把编辑吞掉（那会让"可撤销"变成假话）。
+/// `import-midi` 与 `midi-in` 的**落地**那一半**如实拒绝**
+/// （`outcome=error:error=no-undo-port`），⛔ 不静默用一个临时会话把编辑吞掉
+/// （那会让"可撤销"变成假话）。
 ///
 /// ## 装载过的 SFZ 会真的被导出用上
 ///
@@ -2591,7 +2598,7 @@ pub fn wire_module_actions_with(
     wire_module_actions_with_capture(ui, port, paths, None)
 }
 
-/// ⭐ **硬件 MIDI 采集入口**的签名（默认 = [`crate::midi_in::capture`]）。
+/// ⭐ **硬件 MIDI 采集入口**的签名（默认 = [`crate::midi_in::capture_messages`]）。
 ///
 /// 为什么要有这个类型：判据必须**确定性地**观察"采集进行中"那个窗口。真入口在**无端口**
 /// 的机器（= CI）上会**立刻**返回（`PortNotFound` 在进入采集循环之前），因此那个窗口只有
@@ -2602,8 +2609,18 @@ pub fn wire_module_actions_with(
 /// ⚠ 边界（如实登记）：替身证的是**接线**（工作线程 → 通道 → UI 线程 → 两条状态行），
 /// ⛔ **不**证"硬件 MIDI 真的能收事件"。后者由 `--features midi-input` 那条腿上的
 /// **真**入口判据（结构化 + 不 panic）与 CLI 的 `--midi-in` 覆盖。
+///
+/// ## 返回**全量**消息（⛔ 不是给人看的报告）
+///
+/// 界面这一条与 CLI `--midi-in` 走的是**同一个**函数（[`crate::midi_in::capture_messages`]），
+/// 因此拿到的是 [`CapturedMessages`](crate::midi_in::CapturedMessages)：**每一条**原始消息
+/// ＋ 真读数。原因是"把这次采到的东西变成音乐"必须看得到每一条 —— 而给人看的
+/// `MidiInReport` 只留前 8 条（`FIRST_EVENTS`）。给人看的那一份由
+/// [`CapturedMessages::report`](crate::midi_in::CapturedMessages::report) 从**同一批数据**
+/// 装配（唯一装配点 [`crate::midi_in::build_report`]），⇒ ⛔ 不二次采集、⛔ 不双份解析，
+/// 报告字段一个都不少。
 pub type MidiInCapture =
-    fn(&str, f32) -> Result<crate::midi_in::MidiInReport, crate::midi_in::MidiInError>;
+    fn(&str, f32) -> Result<crate::midi_in::CapturedMessages, crate::midi_in::MidiInError>;
 
 /// 与 [`wire_module_actions_with`] 相同，但可注入采集入口（`None` ⇒ 用真入口）。
 ///
@@ -2863,16 +2880,17 @@ pub fn wire_module_actions_with_capture(
     // ------------------------------------------------------- 硬件 MIDI 输入
     //
     // ⭐ **这一条不在 UI 线程上跑采集**（用户可感知的缺陷：同步采集那 3 秒里界面卡死）。
-    // 形态是"起工作线程 ⇒ 结果经安全通道回来 ⇒ 在 **UI 线程**上落界面"：
+    // 形态是"起工作线程 ⇒ 结果经安全通道回来 ⇒ 在 **UI 线程**上落界面 **并写进谱面**"：
     //
     // ```text
     //   UI 线程: on_midi_in
     //     ├─ 已有一次在飞 ⇒ 结构化拒绝（⛔ 不排队、⛔ 不开第二个线程）
     //     ├─ 写 "outcome=pending" 回执（**同步**写 ⇒ 中间态一定可观察）
-    //     └─ thread::spawn { crate::midi_in::capture(...) → 存进 Arc<Mutex<…>>
-    //                                                     → invoke_from_event_loop(排空) }
+    //     └─ thread::spawn { crate::midi_in::capture_messages(...) → 存进 Arc<Mutex<…>>
+    //                                    → upgrade_in_event_loop { invoke_midi_in_drain_requested() } }
     //   工作线程: ⛔ 不碰任何 Slint 对象（只写 Send 的共享槽）
-    //   UI 线程: apply_pending_midi_in（**唯一**把结果写进界面的地方）
+    //   UI 线程: midi-in-drain-requested handler → apply_pending_midi_in
+    //            （**唯一**把结果写进界面、也**唯一**把音符写进工程的地方）
     // ```
     //
     // ## 为什么"排空"是**一个函数**、而不是散在两处
@@ -2889,8 +2907,28 @@ pub fn wire_module_actions_with_capture(
         let wanted = paths.midi_in_port.clone();
         let seconds = paths.midi_in_seconds;
         let state = midi_state.clone();
+        // ⭐ 落地端口：与其余模块入口**同一个** `Rc`（唯一可变权威 ⇒ 可撤销是构造上的）。
+        //
+        // ⚠ 它 **⛔ 不能**被工作线程的 marshal 闭包捕获：`Rc` 不是 `Send`，而
+        // `upgrade_in_event_loop` 的闭包**必须** `Send`。⇒ 跨线程只传**一句"请排空"**：
+        // 工作线程调 `invoke_midi_in_drain_requested()`，由下面这个在 **UI 线程**上注册的
+        // handler（手里握着端口与状态）去调 [`apply_pending_midi_in`]。
+        // ⛔ 不引入 `thread_local`、⛔ 不引入 `unsafe`：落地仍然只发生在 UI 线程上。
+        let port = port.clone();
         // ⭐ 真入口（与 CLI 的 `--midi-in` 同一个函数）—— 除非调用方注入了替身。
-        let capture: MidiInCapture = capture.unwrap_or(crate::midi_in::capture);
+        let capture: MidiInCapture = capture.unwrap_or(crate::midi_in::capture_messages);
+        {
+            let weak = weak.clone();
+            let state = state.clone();
+            let port = port.clone();
+            ui.on_midi_in_drain_requested(move || {
+                let Some(ui) = weak.upgrade() else {
+                    debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                    return;
+                };
+                apply_pending_midi_in(&ui, &state, port.as_deref());
+            });
+        }
         ui.on_midi_in(move || {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -2898,7 +2936,7 @@ pub fn wire_module_actions_with_capture(
             };
             let started = std::time::Instant::now();
             // ⭐ 先排空上一次的结果（自愈：即使没有事件循环，下一次交互也会把终态落下来）。
-            apply_pending_midi_in(&ui, &state);
+            apply_pending_midi_in(&ui, &state, port.as_deref());
             if state.is_in_flight() {
                 // ⭐ 在飞期间的第二次触发：**明确拒绝**（⛔ 不排队、⛔ 不并发）。
                 let receipt = module_receipt(
@@ -2938,12 +2976,13 @@ pub fn wire_module_actions_with_capture(
                 // `unsafe impl<T: StrongHandle> Send for Weak<T>`），
                 // `upgrade_in_event_loop` 在 **UI 线程**上升级句柄并执行闭包 ⇒
                 // 界面的写入仍然只发生在 UI 线程上。
+                // ⚠ 这一跳搬的**只有一句"请排空"** —— 端口（`Rc`，⛔ 不 `Send`）留在 UI 线程上，
+                // 由注册好的 `midi-in-drain-requested` handler 使用（见本段开头的注释）。
                 // ⚠ 没有事件循环的平台（Tier-1 判据）这里返回 `Err` —— **不是错误**：
                 // 结果仍在槽里，调用方用 [`wait_for_pending_midi_in`] ＋
                 // [`apply_pending_midi_in`] 排空即可。⛔ 因此这里**不** panic、不报错。
-                let pending_state = worker_state.clone();
                 let _ = worker_weak.upgrade_in_event_loop(move |ui| {
-                    apply_pending_midi_in(&ui, &pending_state);
+                    ui.invoke_midi_in_drain_requested();
                 });
             });
             state.set_worker(handle);
@@ -2961,8 +3000,10 @@ pub fn wire_module_actions_with_capture(
 /// ## 为什么是 `Arc<Mutex<…>>` / `Arc<AtomicBool>` 而不是 `Rc<RefCell<…>>`
 ///
 /// 工作线程**必须**能把结果放进来 ⇒ 这三个字段都要 `Send + Sync`。
-/// ⚠ 槽里装的是**纯数据**（[`crate::midi_in::MidiInReport`] / [`crate::midi_in::MidiInError`]）
-/// ⇒ ⛔ 没有任何 Slint 对象跨线程。
+/// ⚠ 槽里装的是**纯数据**（[`crate::midi_in::CapturedMessages`] /
+/// [`crate::midi_in::MidiInError`]）⇒ ⛔ 没有任何 Slint 对象跨线程。
+/// ⚠ 也**不装**落地端口（`Rc<UndoPort>`，UI 线程独占）：它与结果槽分开，由 UI 线程上的
+/// `midi-in-drain-requested` handler 持有（见 [`wire_module_actions_with_capture`] 的注释）。
 ///
 /// ## 生命周期
 ///
@@ -2974,7 +3015,9 @@ pub struct MidiInState {
     in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 工作线程交回的结果槽（`Some` ⇒ 有未落界面的结果）。
     slot: std::sync::Arc<
-        std::sync::Mutex<Option<Result<crate::midi_in::MidiInReport, crate::midi_in::MidiInError>>>,
+        std::sync::Mutex<
+            Option<Result<crate::midi_in::CapturedMessages, crate::midi_in::MidiInError>>,
+        >,
     >,
     /// 当前工作线程的句柄（`wait_for_pending_midi_in` 用它做**确定性**等待）。
     worker: std::sync::Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
@@ -3020,7 +3063,10 @@ impl MidiInState {
     }
 
     /// 工作线程交回结果（⛔ 只有工作线程调它）。
-    fn finish(&self, result: Result<crate::midi_in::MidiInReport, crate::midi_in::MidiInError>) {
+    fn finish(
+        &self,
+        result: Result<crate::midi_in::CapturedMessages, crate::midi_in::MidiInError>,
+    ) {
         if let Ok(mut slot) = self.slot.lock() {
             *slot = Some(result);
         }
@@ -3067,37 +3113,55 @@ pub fn wait_for_pending_midi_in(state: &MidiInState) -> bool {
 /// 生产路径：工作线程完成 ⇒ `invoke_from_event_loop` ⇒ 在 UI 线程上执行本函数。
 /// 判据路径：`wait_for_pending_midi_in` ⇒ 在 UI 线程上执行本函数。
 /// ⇒ ⭐ 两条路是**同一段**代码（终态不可能因"谁排空的"而不同）。
-pub fn apply_pending_midi_in(ui: &MainWindow, state: &MidiInState) -> bool {
+///
+/// ## 落地（写音符）
+///
+/// `port = Some(_)` ⇒ 这一次排空**同时**把采到的音符写进工程（[`land_captured_notes`]）：
+/// 界面那个按钮的语义 = CLI 的 `--midi-in` **＋** `--midi-in-write-notes`（见
+/// [`ModulePaths`] 的字段文档；界面⛔ 不加开关）。
+/// `port = None` ⇒ 落地**结构上**做不了，回执如实给 `error=no-undo-port`
+/// （与 `import-midi` 同一道门：⛔ 不静默用一个临时会话把编辑吞掉）。
+pub fn apply_pending_midi_in(
+    ui: &MainWindow,
+    state: &MidiInState,
+    port: Option<&UndoPort>,
+) -> bool {
     let Some(result) = state.slot.lock().ok().and_then(|mut slot| slot.take()) else {
         return false;
     };
     let (receipt, ok) = match result {
-        Ok(report) => (
-            module_receipt(
-                "midi-in",
-                &[
-                    "outcome=ok".to_owned(),
-                    format!("seconds={}", report.seconds),
-                    format!("events={}", report.events),
-                    format!("unsupported={}", report.unsupported),
-                    // ⭐ 与 CLI（`midi_in.rs` 的 `summary()`）**同名同口径**：单位 = 事件条数、
-                    // **累计**量（从建环那一刻到采集结束时那一次读，读它不消费）。
-                    format!("dropped-events={}", report.dropped_events),
-                    format!(
-                        "jitter={}",
-                        report.jitter.map_or_else(
-                            || "n=0".to_owned(),
-                            |reading| format!(
-                                "n={}:p50={}:p99={}:max={}",
-                                reading.n, reading.p50, reading.p99, reading.max
-                            )
-                        )
+        Ok(captured) => {
+            let report = captured.report();
+            match land_captured_notes(port, &captured) {
+                Ok(landing) => {
+                    let mut fields = midi_in_ok_fields(&report);
+                    match landing {
+                        // ⭐ 采到的东西里**一条音符都配不出来**（例：只采到 CC）——
+                        // 这不是错误（采集本身成功了），但也⛔ 不产生任何提交。
+                        None => {
+                            fields.push("notes=0".to_owned());
+                            fields.push("landing=nothing-to-write".to_owned());
+                        }
+                        Some(written) => {
+                            fields.push(format!("notes={}", written.notes));
+                            fields.push(format!("unclosed={}", written.unclosed));
+                            fields
+                                .push(format!("track={}", written.track_id.to_canonical_string()));
+                            fields.push("landing=written".to_owned());
+                        }
+                    }
+                    (module_receipt("midi-in", &fields), true)
+                }
+                // ⭐ 有音符但落不了地 ⇒ **如实报错**（⛔ 不把"没写进去"说成成功）。
+                Err(error) => (
+                    module_receipt(
+                        "midi-in",
+                        &module_error_fields(error.code(), &error.to_string()),
                     ),
-                    format!("first={}", report.first_events.len()),
-                ],
-            ),
-            true,
-        ),
+                    false,
+                ),
+            }
+        }
         Err(error) => (
             module_receipt(
                 "midi-in",
@@ -3111,6 +3175,104 @@ pub fn apply_pending_midi_in(ui: &MainWindow, state: &MidiInState) -> bool {
     ui.set_module_midi_in_status_succeeded(ok);
     apply_module_receipt(ui, &receipt, ok);
     true
+}
+
+/// 成功档回执的**读数**字段（`outcome=ok` ＋ 采集侧六项）—— ⛔ 不含落地读数（调用方按分支追加）。
+///
+/// `outcome=ok` 在这里：采集**本身**成功。落地失败会走 [`module_error_fields`] 那条分支
+/// （那时⛔ 不带这一串，否则回执里会出现两个 `outcome=`）。
+fn midi_in_ok_fields(report: &crate::midi_in::MidiInReport) -> Vec<String> {
+    vec![
+        "outcome=ok".to_owned(),
+        format!("seconds={}", report.seconds),
+        format!("events={}", report.events),
+        format!("unsupported={}", report.unsupported),
+        // ⭐ 与 CLI（`midi_in.rs` 的 `summary()`）**同名同口径**：单位 = 事件条数、
+        // **累计**量（从建环那一刻到采集结束时那一次读，读它不消费）。
+        format!("dropped-events={}", report.dropped_events),
+        format!(
+            "jitter={}",
+            report.jitter.map_or_else(
+                || "n=0".to_owned(),
+                |reading| format!(
+                    "n={}:p50={}:p99={}:max={}",
+                    reading.n, reading.p50, reading.p99, reading.max
+                )
+            )
+        ),
+        format!("first={}", report.first_events.len()),
+    ]
+}
+
+/// ⭐ **把一次采集真的变成谱面** —— 与 CLI `--midi-in-write-notes` 走**同一批原语**。
+///
+/// 顺序与 [`crate::cli::apply_captured_midi`] 的**谱面那一半**逐字相同：
+/// [`crate::midi_notes::pair_notes`] ⇒ `midi_notes` 的写入原语（`write_notes`）。
+/// ⛔ 这里**不**写第二份配对 / 写音符实现（那正是本仓最忌讳的第二个真相源）。
+///
+/// ## 目标（与 CLI 同一条规则）
+///
+/// `track = None` ⇒ **第一条非 master 音轨 ＋ 它的第一个摆放**。规则**不在本函数**：
+/// 它住在 [`crate::import_midi::destination`]（`midi_notes` 的写入原语转调它，
+/// 与 `--import-midi` / `--midi-in-write-notes` 共用）。本函数**只传 `None`**，
+/// ⇒ "界面选哪条轨"这件事在界面这一侧根本没有第二个说法（界面**没有**轨道选择器）。
+///
+/// ## 返回
+///
+/// * `Ok(None)`：配对结果里**一条音符都没有**（例：只采到 CC / 空窗口）⇒ 无话可写；
+/// * `Ok(Some(_))`：真的写进去了（读数带出去，`origin = OpOrigin::MidiInput`）；
+/// * `Err(_)`：有音符但落不了地（没有端口 / 没有目标 / 提交被拒）。
+fn land_captured_notes(
+    port: Option<&UndoPort>,
+    captured: &crate::midi_in::CapturedMessages,
+) -> Result<Option<crate::midi_notes::NoteWriteReport>, MidiInLandingError> {
+    let Some(port) = port else {
+        return Err(MidiInLandingError::NoPort);
+    };
+    let pairing = crate::midi_notes::pair_notes(
+        &captured.messages,
+        captured.origin_us,
+        crate::midi_notes::UNCLOSED_TAIL_TICKS,
+    );
+    if pairing.notes.is_empty() {
+        return Ok(None);
+    }
+    let project = port.project();
+    crate::midi_notes::write_notes(port, &project, &pairing, None, now_ms())
+        .map(Some)
+        .map_err(MidiInLandingError::Notes)
+}
+
+/// ⭐ 落地失败的**两种**原因（稳定码由 [`Self::code`] 给出，⛔ 不用 `Display` 原文当判别式）。
+#[derive(Debug)]
+enum MidiInLandingError {
+    /// 这一次装配没有撤销端口 ⇒ 谱面那一半**结构上**做不了（与 `import-midi` **同码**）。
+    NoPort,
+    /// 有音符，但写不进工程（没有目标音轨 / 摆放，或提交被撤销端口拒绝）。
+    Notes(crate::midi_notes::MidiNoteError),
+}
+
+impl MidiInLandingError {
+    /// 回执里的稳定错误码。
+    fn code(&self) -> &'static str {
+        match self {
+            Self::NoPort => "no-undo-port",
+            Self::Notes(_) => "midi-notes",
+        }
+    }
+}
+
+impl core::fmt::Display for MidiInLandingError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoPort => write!(
+                formatter,
+                "这一次装配没有撤销端口 ⇒ 采到的音符写不进工程（与 `import-midi` 同一道门：\
+                 ⛔ 不静默用一个临时会话把编辑吞掉）"
+            ),
+            Self::Notes(error) => write!(formatter, "{error}"),
+        }
+    }
 }
 
 /// ⭐ **稳定错误码**：把 [`crate::midi_in::MidiInError`] 的六个变体映成一个可断言的码。

@@ -7,7 +7,7 @@
 //! `export_wav` / `import_midi` / `sfz_load` / `record_wav` 四个**已经存在**的模块实现，
 //! 并把**结构化回执**写回界面（成功与失败都写）。
 //!
-//! ## 三条判据（对应交付要求的 a / b / c）
+//! ## 判据（对应交付要求的 a / b / c）
 //!
 //! | 判据 | 证的事 |
 //! | :--- | :--- |
@@ -15,6 +15,8 @@
 //! | ②（状态按预期变） | 按下入口 ⇒ `MainWindow.module-status` 变成结构化回执，字段（路径 / 帧数 / 采样率 / 区域数 / 来源 / `origin=midi-input`）逐条对上；目标文件真的落盘、字节数与回执一致 |
 //! | ③（错误路径不 panic） | SFZ 源不存在 ⇒ 回执是 `outcome=error` + 稳定错误码，进程**不** panic，**不留半成品** |
 //! | ④（**硬件 MIDI 输入**，第五条入口） | 默认档 ⇒ 回执点名 `feature-disabled` 且措辞里带 `cargo build … --features midi-input`；`midi-input` 档 ⇒ 回执**结构化**（`ok` 或非 `feature-disabled` 的错误码）、进程**不** panic。⭐ 同一份判据在**两条 CI 腿**上各跑一次（`test` 与 `test (midi-input 特性)`）|
+//! | ⑤（跨线程那一跳） | 注入替身把"采集在飞"窗口拉住 ⇒ 中间态可观察、第二次触发被拒、替身读数逐字段进界面 |
+//! | ⑥（**采到的音符真的进谱面**） | `the_gui_midi_in_entry_writes_the_captured_notes_into_the_score`：注入一对 note-on / note-off ⇒ 工程音符数 +1、key = 60、`start_tick`/时值按 960PPQ 对得上、`OpOrigin::MidiInput`、状态行报出写入条数；**负臂**：零条消息 ⇒ 计数不变且不产生提交 |
 //!
 //! ## 判据 ② 的核心断言：装载过的 SFZ 真的改变了导出的音源
 //!
@@ -65,7 +67,7 @@ use std::rc::Rc;
 use live::{LiveWiringOptions, build_live_ui_with};
 use yeban_app::elements::{ElementKind, ElementRegistry};
 use yeban_app::undo::{UndoPort, UndoSession};
-use yeban_model::YebanProjectV1;
+use yeban_model::{OpOrigin, YebanProjectV1};
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::report_line;
 use yeban_ui_test_port::tree::ControlTree;
@@ -134,7 +136,7 @@ const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keyc
 /// 回执的字段名闭集（唯一的一份：名字在这里，切分就按这里）。
 ///
 /// 加一个字段就加一行 —— 漏加不会静默：那个字段取不到值，判据会失败并打印整条回执。
-const RECEIPT_KEYS: [&str; 29] = [
+const RECEIPT_KEYS: [&str; 31] = [
     "action",
     "outcome",
     "error",
@@ -165,6 +167,11 @@ const RECEIPT_KEYS: [&str; 29] = [
     "dropped-events",
     "jitter",
     "first",
+    // ⭐ 判据 ⑥ 起：落地（把采到的音符写进谱面）那一步的读数。
+    // ⚠ 它们**必须**在这里：`receipt_field_end` 只认"已知名 + `=`"作边界 ⇒ 漏一个，
+    // `field_of(&receipt, "first")` 这类取值会**静默多带一截**（与本注释记录的两种错法同族）。
+    "landing",
+    "unclosed",
 ];
 
 /// 一条回执里，从 `at` 起**第一个** `:<已知字段名>=` 的冒号位置。
@@ -274,7 +281,7 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         std::env::set_var("YEBAN_UI_RECORD_SECONDS", "1.0");
         // ⭐ 硬件 MIDI 输入：端口 `0`；⭐ 秒数取一个**很小**的值 —— 有端口的机器上
         // 采集也立刻返回（CI 无端口 ⇒ 根本进不了采集循环）。⚠ 上下限仍由
-        // `midi_in::capture` 判（⛔ 判据不绕过那条规则）。
+        // `midi_in::capture_messages` 判（⛔ 判据不绕过那条规则）。
         std::env::set_var("YEBAN_UI_MIDI_IN_PORT", "0");
         std::env::set_var("YEBAN_UI_MIDI_IN_SECONDS", "0.05");
     }
@@ -595,7 +602,7 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         "必须真的 join 到一个工作线程（否则这条判据的前提不成立）"
     );
     assert!(
-        yeban_app::host::apply_pending_midi_in(ui, &midi_state),
+        yeban_app::host::apply_pending_midi_in(ui, &midi_state, Some(&*port)),
         "join 之后槽里必须有一个结果可落界面"
     );
     let receipt = ui.get_module_status().to_string();
@@ -727,7 +734,11 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         yeban_app::host::wait_for_pending_midi_in(&double_state),
         "放行后必须能 join 到工作线程"
     );
-    assert!(yeban_app::host::apply_pending_midi_in(ui, &double_state));
+    assert!(yeban_app::host::apply_pending_midi_in(
+        ui,
+        &double_state,
+        Some(&*port)
+    ));
     let done = ui.get_module_status().to_string();
     assert_eq!(field_of(&done, "action"), "midi-in", "{done}");
     assert_eq!(
@@ -744,8 +755,8 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     );
     assert_eq!(
         field_of(&done, "jitter"),
-        "n=2:p50=1:p99=2:max=2",
-        "抖动读数必须逐字段来自替身: {done}"
+        "n=2:p50=0:p99=1:max=1",
+        "抖动读数必须逐字段来自替身的**时间戳**（`CapturedMessages::report()` 是唯一装配点）: {done}"
     );
     assert_eq!(field_of(&done, "first"), "3", "{done}");
     // ⭐ **界面侧**（判据要证的那句话）：`module_actions.slint` 的
@@ -777,6 +788,142 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         } else {
             "off"
         }
+    ));
+
+    // =====================================================================
+    // 判据 ⑥：**硬件 MIDI 输入把采到的音符写进谱面**
+    //         `the_gui_midi_in_entry_writes_the_captured_notes_into_the_score`
+    // =====================================================================
+    //
+    // ⚠ 本文件只有一个 `#[test]`（Tier-1 平台每进程只能装一次）⇒ 判据就是**这一段**，
+    // 名字经 `report_line` 与断言消息带出去（与 ④ / ⑤ 同款）。
+    //
+    // ⭐ 设计映射（本票的裁决；同时写进 `host::wire_module_actions` 的字段文档与提交信息）：
+    //   **界面那个按钮 = CLI 的 `--midi-in` ＋ `--midi-in-write-notes`。**
+    //   ⛔ 界面不加任何开关；⛔ CLI 自己的默认值一位不动（`--midi-in` 单给仍是只读诊断）。
+    //
+    // 采集入口用**注入替身**（与 ⑤ 同款）：无硬件也能判，且"采到什么"由判据说了算。
+    // 目标音轨规则与 CLI 的 `--midi-in-write-notes` **同一条**（第一条非 master 音轨）：
+    // 它住在 `crate::import_midi::destination`（`midi_notes` 的写入原语转调它）。
+    let landing_paths = yeban_app::host::ModulePaths {
+        export_wav: scratch.join("landing-never-written.wav"),
+        import_midi: import.clone(),
+        load_sfz: scratch.join("landing-never-loaded.sfz"),
+        record_wav: scratch.join("landing-never-recorded.wav"),
+        record_seconds: 1.0,
+        midi_in_port: "landing".to_owned(),
+        midi_in_seconds: 0.05,
+    };
+    let landing_state = yeban_app::host::wire_module_actions_with_capture(
+        ui,
+        Some(Rc::clone(&port)),
+        landing_paths.clone(),
+        Some(landing_capture),
+    );
+    let count_of_pitch = |project: &YebanProjectV1, pitch: u8| -> usize {
+        project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.values())
+            .filter(|note| note.pitch == pitch)
+            .count()
+    };
+    let notes_60 = |project: &YebanProjectV1| -> Vec<(u64, u64)> {
+        project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.values())
+            .filter(|note| note.pitch == 60)
+            .map(|note| (note.start_tick, note.duration_ticks))
+            .collect()
+    };
+    let before_notes = note_count(&port.project());
+    let before_60 = count_of_pitch(&port.project(), 60);
+    ui.invoke_midi_in();
+    assert!(
+        yeban_app::host::wait_for_pending_midi_in(&landing_state),
+        "必须真的 join 到采集替身（否则这一条的前提不成立）"
+    );
+    assert!(
+        yeban_app::host::apply_pending_midi_in(ui, &landing_state, Some(&*port)),
+        "join 之后槽里必须有一个结果可落界面"
+    );
+    let after_landing = port.project();
+    assert_eq!(
+        note_count(&after_landing),
+        before_notes + 1,
+        "判据 the_gui_midi_in_entry_writes_the_captured_notes_into_the_score: \
+         按一下界面上的硬件 MIDI 输入，采到的 note-on / note-off 必须**真的**变成谱面上的一条音符"
+    );
+    assert_eq!(
+        count_of_pitch(&after_landing, 60),
+        before_60 + 1,
+        "新增的那一条必须是 key 60"
+    );
+    assert!(
+        notes_60(&after_landing).contains(&(0, 480)),
+        "note-on(t=0) + note-off(t=500ms) ⇒ start_tick=0、duration=480 tick\
+         （500ms @960PPQ = 480）；实得 {:?}",
+        notes_60(&after_landing)
+    );
+    assert_eq!(
+        port.last_commit_origin(),
+        Some(OpOrigin::MidiInput),
+        "这一次写入的来源标记必须是 MidiInput（⛔ 不是 UserUi）"
+    );
+    let landing_receipt = ui.get_module_status().to_string();
+    assert!(
+        landing_receipt.contains("notes=1"),
+        "状态行必须报出**写进去的条数**: {landing_receipt}"
+    );
+    assert_eq!(
+        ui.get_module_midi_in_status(),
+        slint::SharedString::from(landing_receipt.clone()),
+        "两条状态行仍是同一串字节"
+    );
+    report_line(&format!(
+        "[ui-modules] criterion=the_gui_midi_in_entry_writes_the_captured_notes_into_the_score \
+         receipt={landing_receipt}"
+    ));
+
+    // ---- 负臂：注入**零条**消息 ⇒ 音符条数一位不变（也⛔ 不产生提交）----
+    let zero_state = yeban_app::host::wire_module_actions_with_capture(
+        ui,
+        Some(Rc::clone(&port)),
+        landing_paths,
+        Some(empty_capture),
+    );
+    let before_zero = note_count(&port.project());
+    let commits_before_zero = port.display().undoable;
+    ui.invoke_midi_in();
+    assert!(
+        yeban_app::host::wait_for_pending_midi_in(&zero_state),
+        "负臂也必须有工作线程可 join"
+    );
+    assert!(
+        yeban_app::host::apply_pending_midi_in(ui, &zero_state, Some(&*port)),
+        "负臂的结果同样必须落到界面"
+    );
+    assert_eq!(
+        note_count(&port.project()),
+        before_zero,
+        "零条消息 ⇒ 一个音符都不得写（负臂）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        commits_before_zero,
+        "零条消息 ⇒ 不得产生撤销提交（负臂）"
+    );
+    let zero_receipt = ui.get_module_status().to_string();
+    assert!(
+        zero_receipt.contains("notes=0"),
+        "负臂的状态行必须如实报 0 条: {zero_receipt}"
+    );
+    report_line(&format!(
+        "[ui-modules] criterion=the_gui_midi_in_entry_writes_the_captured_notes_into_the_score \
+         negative-arm receipt={zero_receipt}"
     ));
 
     // =====================================================================
@@ -867,7 +1014,7 @@ static DOUBLE: std::sync::OnceLock<DoubleGate> = std::sync::OnceLock::new();
 fn double_capture(
     _port: &str,
     _seconds: f32,
-) -> Result<yeban_app::midi_in::MidiInReport, yeban_app::midi_in::MidiInError> {
+) -> Result<yeban_app::midi_in::CapturedMessages, yeban_app::midi_in::MidiInError> {
     let gate = DOUBLE.get().expect("判据必须先装门");
     gate.entered
         .lock()
@@ -879,11 +1026,20 @@ fn double_capture(
         .expect("release 锁")
         .recv()
         .expect("等放行");
-    Ok(yeban_app::midi_in::MidiInReport {
-        origin_us: 7,
+    // ⚠ 夹具的形状从"报告"换成了**全量消息**（`apply_pending_midi_in` 现在经
+    // `CapturedMessages::report()` 装配那一行状态文本）：⭐ `events` / `first` /
+    // `jitter` **全部**由这一批消息推出 ⇒ 时间戳在这里是**承重**的（选 [0,3000,8000]
+    // 微秒 ⇒ 间隔 [3000,5000] ⇒ 中位 5000 ⇒ 偏差 [2000→1 tick, 0] ⇒ `n=2:p50=0:p99=1:max=1`）。
+    // ⭐ 3 条消息里有**一对音符** ⇒ 这一次排空**也**会真的写 2 条音符进工程
+    // （落地路径与判据 ⑥ 同一条；⑤ 只断言读数与接线，落地的结构证据在 ⑥）。
+    Ok(yeban_app::midi_in::CapturedMessages {
+        origin_us: 0,
         seconds: 0.05,
-        events: 3,
-        first_events: vec![(1, 0x90, 60, 100), (2, 0x90, 62, 100), (3, 0x80, 60, 0)],
+        messages: vec![
+            (0, 0x90, 60, 100),
+            (3_000, 0x90, 62, 100),
+            (8_000, 0x80, 60, 0),
+        ],
         unsupported: 1,
         // ⭐ 本字面量是**夹具**：`dropped_events` 的读数必须**真的进 UI 回执**
         // （`src/host.rs` 的 `apply_pending_midi_in` 把它写成 `dropped-events=`，
@@ -891,12 +1047,37 @@ fn double_capture(
         // `events`(3) / `unsupported`(1) / `first`(3) 都不同**的值：
         // 一旦把它误接到别的读数上，上面的 `dropped-events` 断言立刻变红。
         dropped_events: 4,
-        jitter: Some(yeban_app::midi_in::Jitter {
-            n: 2,
-            p50: 1,
-            p99: 2,
-            max: 2,
-        }),
+    })
+}
+
+/// ⭐ 判据 ⑥ 的注入替身：一次**已知**的采集 —— 一个 C4 按下（t=0）＋ 500ms 后松开。
+///
+/// ⚠ 它与 [`double_capture`] 同款：是 `MidiInCapture` 的一个实现（⛔ 不是第二份采集逻辑），
+/// 只是**不拉门**（这一条不要"在飞"窗口，要的是采到的东西真的落进谱面）。
+fn landing_capture(
+    _port: &str,
+    _seconds: f32,
+) -> Result<yeban_app::midi_in::CapturedMessages, yeban_app::midi_in::MidiInError> {
+    Ok(yeban_app::midi_in::CapturedMessages {
+        origin_us: 0,
+        seconds: 0.5,
+        messages: vec![(0, 0x90, 60, 100), (500_000, 0x80, 60, 0)],
+        unsupported: 0,
+        dropped_events: 0,
+    })
+}
+
+/// ⭐ 判据 ⑥ **负臂**的注入替身：采集成功，但**一条消息都没有**。
+fn empty_capture(
+    _port: &str,
+    _seconds: f32,
+) -> Result<yeban_app::midi_in::CapturedMessages, yeban_app::midi_in::MidiInError> {
+    Ok(yeban_app::midi_in::CapturedMessages {
+        origin_us: 0,
+        seconds: 0.05,
+        messages: Vec::new(),
+        unsupported: 0,
+        dropped_events: 0,
     })
 }
 

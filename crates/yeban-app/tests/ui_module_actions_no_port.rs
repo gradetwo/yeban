@@ -59,7 +59,7 @@ impl Drop for Scratch {
 const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keycenter=60\n";
 
 /// 回执的字段名闭集（与 `tests/ui_module_actions.rs` 同一个口径；本文件只用到几个）。
-const RECEIPT_KEYS: [&str; 29] = [
+const RECEIPT_KEYS: [&str; 31] = [
     "action",
     "outcome",
     "error",
@@ -90,6 +90,11 @@ const RECEIPT_KEYS: [&str; 29] = [
     "dropped-events",
     "jitter",
     "first",
+    // ⭐ 判据 ⑥ 起：落地（把采到的音符写进谱面）那一步的读数。
+    // ⚠ 它们**必须**在这里：`receipt_field_end` 只认"已知名 + `=`"作边界 ⇒ 漏一个，
+    // `field_of(&receipt, "first")` 这类取值会**静默多带一截**（与本注释记录的两种错法同族）。
+    "landing",
+    "unclosed",
 ];
 
 /// 见 `tests/ui_module_actions.rs` 的 `receipt_field_end` —— 值里带冒号（`probe=1:2:3:4`）

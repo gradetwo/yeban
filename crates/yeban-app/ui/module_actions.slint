@@ -204,12 +204,16 @@ export component ModuleActions inherits Rectangle {
     }
 
     // --------------------------------------------------------- 硬件 MIDI 输入
-    // 落点是 `crate::midi_in::capture`（与 CLI 的 `--midi-in` 是**同一个**函数，⛔ 不另写一套）。
+    // 落点是 `crate::midi_in::capture_messages`（与 CLI 的 `--midi-in` 是**同一个**函数，⛔ 不另写一套）
+    // **加上** `crate::midi_notes` 的 `pair_notes` ＋ `write_notes`（= CLI 的 `--midi-in-write-notes`）。
+    // ⭐ 因此**界面那个按钮 = CLI 的 `--midi-in` ＋ `--midi-in-write-notes`**：
+    //   采集完成后，配对出的音符会写进**第一条非主总线音轨**（规则由宿主决定，
+    //   见 `crate::import_midi::destination`）。⚠ 界面上**没有**轨道选择器，也**没有**新开关。
     // ⚠ 默认档（`midi-input` 关）下它**照样可点**，给出的是**结构化**的
     // "本构建未启用 `midi-input` feature ⇒ … `cargo build -p yeban-app --features midi-input`"
     // —— ⛔ 不是"未知操作"、⛔ 不是 panic。
-    // ⚠ 昂贵动作：采集期间它在 **UI 线程**上同步跑（默认 3 秒）⇒ 那几秒事件循环被占住。
-    // 这是**如实登记**的代价（异步化是另一票）。
+    // ⚠ 昂贵动作：采集在**工作线程**上跑（默认 3 秒；结果经事件循环回到 UI 线程落地）
+    // ⇒ 采集期间界面仍可查询（`host::wire_module_actions_with_capture` 的注释登记了那一跳）。
     Rectangle {
         x: Tokens.space-4;
         y: 364px;
@@ -219,7 +223,7 @@ export component ModuleActions inherits Rectangle {
         border-radius: Tokens.radius-md;
         accessible-role: button;
         accessible-id: "module-midi-in-button";
-        accessible-label: "硬件 MIDI 输入（打开一个物理端口并采集事件与抖动）";
+        accessible-label: "硬件 MIDI 输入（采集物理端口事件，并把配对出的音符写进第一条非主总线音轨）";
         accessible-action-default => { root.midi-in(); }
 
         UiText {

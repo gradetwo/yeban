@@ -351,7 +351,8 @@ export component MainWindow inherits Window {
     //   导入 MIDI   → `crate::import_midi::import_midi_file`（经 `UndoPort`，来源 `MidiInput`）
     //   装载 SFZ    → `crate::sfz_load::load_sfz_with_instrument`
     //   录音        → `crate::record_wav::record_test_tone`
-    //   硬件 MIDI 入 → `crate::midi_in::capture`（与 CLI `--midi-in` **同一个**函数）
+    //   硬件 MIDI 入 → `crate::midi_in::capture_messages`（与 CLI `--midi-in` **同一个**函数）
+    //                  ＋ `crate::midi_notes::write_notes`（= CLI 的 `--midi-in-write-notes`）
     // ⚠ `import-midi` 读的是**文件**（SMF）；`midi-in` 读的是**物理端口** ⇒ 两条不是一件事。
     // ⛔ 界面不写盘、不猜路径、不自己判断成功与否（那是第二个真相源）。
     callback export-wav();
@@ -359,6 +360,16 @@ export component MainWindow inherits Window {
     callback load-sfz();
     callback record-wav();
     callback midi-in();
+    // ⭐ **只给宿主用**：硬件 MIDI 采集完成 ⇒ 请 UI 线程排空（并在有端口时把音符写进谱面）。
+    //
+    // 为什么需要一个"空"的 callback（它**不**被 `.slint` 里的任何控件调用）：工作线程做完采集后
+    // 要把结果交回 **UI 线程**，而 `slint::Weak::upgrade_in_event_loop` 的闭包**必须** `Send`
+    // （上游 `i-slint-core` 的 `api.rs:1227-1230`）—— 落地端口是 `Rc<UndoPort>`（UI 线程独占，
+    // ⛔ 不 `Send`）⇒ **不能**由工作线程的闭包直接搬运。⇒ 跨线程只传**这一句"请排空"**：
+    // 工作线程调 `invoke_midi_in_drain_requested()`，本窗口上由 `host::wire_module_actions` 注册的
+    // handler（它握着端口与状态）在 UI 线程上执行排空。
+    // ⛔ 它不画任何像素（⛔ 不是控件、⛔ 不改几何）⇒ 金标截图不受影响。
+    callback midi-in-drain-requested();
     // 状态栏「选区信息」那一格的**整串文本**（台账 R9）。
     //
     // 写者**只有一处**：`host::apply_view` 末尾的 `host::publish_status_bar`。
