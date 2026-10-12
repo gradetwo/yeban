@@ -49,6 +49,12 @@ export component PianoRoll inherits Rectangle {
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
     in property <[string]> tool-labels: ["选择", "铅笔", "剪刀", "力度", "橡皮"];
     in property <int> active-tool: 1;
+    // `[UI-NOTE-003]` **工具行号口径的唯一转换点**（台账 R372）: `active-tool` 是 `1`..`5`
+    // （`Tool::digit()` 与数字键 `1`..`5` 同一口径），而工具矩阵那圈 `for` 的下标是 `0`..`4`。
+    // 底色 / `accessible-checked` / 字色三条绑定**只许读这一个属性** —— 直接拿 `active-tool`
+    // 去比下标，启动默认（`1`）会勾中「2 铅笔」、按 `5` 还会一格都不勾（判据
+    // `tests/live_ui_mcp.rs` 的 `the_tool_matrix_checked_state_tracks_the_active_tool_for_every_digit`）。
+    property <int> active-tool-index: root.active-tool - 1;
 
     in property <bool> show-velocity-lane: true;
     // 十二平均律一个八度里的白键位置 (C C# D D# E F F# G G# A A# B)。
@@ -86,7 +92,7 @@ export component PianoRoll inherits Rectangle {
         y: Tokens.space-2;
         width: 48px;
         height: 20px;
-        background: root.active-tool == tool_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
+        background: root.active-tool-index == tool_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
         // 最前: 本组件末尾那条覆盖全高的滚动手势 `TouchArea` 也是 `root` 的兄弟,
         // 且声明在更后面。这条 `z` 让工具行**确定**先被本节点接住
@@ -98,7 +104,7 @@ export component PianoRoll inherits Rectangle {
         accessible-item-index: tool_index;
         accessible-item-count: 5;
         accessible-checkable: true;
-        accessible-checked: root.active-tool == tool_index;
+        accessible-checked: root.active-tool-index == tool_index;
         // `[UI-A11Y-003]` §7.3：无障碍动作，落点与下面 `TouchArea` 的 `clicked` 逐字相同
         // （同一个 `Tool::from_digit` 数字口径）。
         accessible-action-default => { root.tool-selected(tool_index + 1); }
@@ -110,7 +116,7 @@ export component PianoRoll inherits Rectangle {
             height: parent.height;
             text: "" + (tool_index + 1) + " " + root.tool-labels[tool_index];
             // 选中/激活 = 负责人的 愁眠 (`selection`); 播放头/读数才是 月华 (`gold-bright`)。
-            color: root.active-tool == tool_index ? Tokens.selection : Tokens.ink-2;
+            color: root.active-tool-index == tool_index ? Tokens.selection : Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
             overflow: elide;

@@ -7413,6 +7413,99 @@ fn the_piano_roll_tool_buttons_change_the_active_tool_at_runtime() {
 }
 
 // =====================================================================================
+// 判据：工具矩阵的勾选态必须与**真正生效的工具**逐格一致（台账 R372）
+// =====================================================================================
+
+/// 读回工具矩阵五格的 `accessible-checked`（`ui/tree` 的活控件投影）。
+///
+/// 返回顺序 = `scene::TOOL_NAMES`（= `Tool::digit()` 的 `1`..`5`），每项是
+/// `(语义 ID, checked)`；`None` = 该元素没声明勾选态（由调用方判红，不静默放过）。
+fn tool_matrix_checked(plane: &mut LiveControlPlane) -> Vec<(String, Option<bool>)> {
+    let (tree, _raw) = plane.plane().tree().expect("ui/tree");
+    yeban_app::scene::TOOL_NAMES
+        .iter()
+        .map(|name| {
+            let id = format!("piano-roll-tool-{name}-button");
+            let checked = checked_in(&tree, &id);
+            (id, checked)
+        })
+        .collect()
+}
+
+/// 判据：工具矩阵的**勾选态**必须跟**真正生效的工具**一格不差 —— 五个数字口径全查，含启动默认。
+///
+/// ## 缺陷的形状（为什么这条判据有判别力）
+///
+/// `active-tool` 是 **1 基**（`Tool::digit()` 的 `1`..`5`；`app.slint` 的默认值是 `1`），
+/// 而矩阵的 `for tool_index in 5` 是 **0 基**。改动前三条绑定（底色 / `accessible-checked` /
+/// 字色）都写 `root.active-tool == tool_index`：启动时 `active-tool == 1` 勾的是下标 `1`
+/// 的 **「2 铅笔」**（真正生效的是箭头），而按 `5` 选橡皮时 `active-tool == 5` 对不上
+/// 任何下标 ⇒ **一格都不勾**。把错口径写回三条绑定里任意一条，本条都会红。
+///
+/// ## 证明什么 / 不证明什么
+///
+/// 证明：逻辑键注入（`ui/dispatch_key_press`，真事件源）→ 宿主 `Action::SelectTool` 臂写
+/// `active-tool` → `.slint` 绑定 → **活控件**的 `accessible-checked`（经 `ui/tree` 读回
+/// `UiNode::checked`）这一整条链对 `1`..`5` 逐个成立，且**恰好一格**为 `true`。
+/// 不证明：像素长什么样 —— 底色 / 字色那两条绑定与 `accessible-checked` 共用同一个
+/// `tool_index` 比较，但本机不重录分平台 Golden（像素判据在 Linux 的 `real_ui_tier1.rs` 上跑）。
+#[test]
+fn the_tool_matrix_checked_state_tracks_the_active_tool_for_every_digit() {
+    let project = demo_project();
+    let ui = build_live_ui(&project, Permission::Interactive).expect("装配");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let mut plane = ui.into_control_plane(Permission::Interactive);
+
+    /// 对一份五格读数断言：`active-tool == digit` 时，**只有**第 `digit` 格为 `true`。
+    fn assert_mapping(observed: &[(String, Option<bool>)], digit: i32, stage: &str) {
+        assert_eq!(observed.len(), 5, "{stage}: 工具矩阵必须读回五格");
+        for (index, (id, checked)) in observed.iter().enumerate() {
+            let expected = i32::try_from(index).expect("下标") + 1 == digit;
+            assert_eq!(
+                *checked,
+                Some(expected),
+                "{stage}: `active-tool = {digit}`（工具「{}」）时 `{id}` 的 \
+                 `accessible-checked` 必须是 {expected}，实际 {checked:?}；\
+                 五格读数 {observed:?}",
+                yeban_app::scene::TOOL_NAMES[index]
+            );
+        }
+    }
+
+    // ① 启动默认（一格键都还没注入）：默认工具是选择（第 1 行）⇒ 只有「选择」勾上。
+    assert_eq!(window.get_active_tool(), 1, "默认工具是选择（矩阵第 1 行）");
+    let startup = tool_matrix_checked(&mut plane);
+    assert_mapping(&startup, 1, "启动默认");
+
+    // ② 逐个数字口径：注入 `1`..`5`（真事件源），每次都必须**恰好**勾中对应那一格。
+    let mut read_back: Vec<String> = Vec::new();
+    for digit in 1..=5 {
+        let injected = plane.plane().try_line(&format!(
+            r#"{{"jsonrpc":"2.0","id":{},"method":"ui/dispatch_key_press","params":{{"keyCode":"{digit}"}}}}"#,
+            300 + digit
+        ));
+        assert!(
+            !injected.is_error(),
+            "逻辑键 `{digit}` 注入必须成功: {injected:?}"
+        );
+        assert_eq!(
+            window.get_active_tool(),
+            digit,
+            "逻辑键 `{digit}` 必须真的切到矩阵第 {digit} 行"
+        );
+        let observed = tool_matrix_checked(&mut plane);
+        assert_mapping(&observed, digit, &format!("注入逻辑键 `{digit}` 之后"));
+        read_back.push(format!("`{digit}` → {observed:?}"));
+    }
+
+    report_line(&format!(
+        "[piano-roll-tool-checked] 启动默认五格读数={startup:?}；逐键注入 `1`..`5` 之后=[{}]\
+         （每步**恰好一格**为 true，且与 `Tool::digit()` / `scene::TOOL_NAMES` 同行）",
+        read_back.join("；")
+    ));
+}
+
+// =====================================================================================
 // 判据：在**编曲视图**点静音 ⇒ 撤销树的节点标签必须如实（台账 R17）
 // =====================================================================================
 
