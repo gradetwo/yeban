@@ -133,6 +133,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ⚠ 与 `save.rs:596` / `cli.rs:3568` 同一条判据**同款**，那两处一直带 `#[cfg(unix)]`，
+    // 本处漏了 ⇒ 它的 `use std::os::unix::…` 与 `set_mode` 在 **Windows 上编译不过**
+    // （2026-10-12 实测：`windows` 腿的 clippy 步红在 `export_midi.rs:138/146/169`，
+    // E0433 + E0599 ×2）。该判据的构造本身依赖 Unix 权限位，Windows 上无对应物 ⇒
+    // 按仓库既有写法整条 `#[cfg(unix)]`（**不是**把它改写成永不失败的形状）。
+    #[cfg(unix)]
     #[test]
     fn a_read_only_directory_never_touches_the_existing_file() {
         use std::os::unix::fs::PermissionsExt as _;
