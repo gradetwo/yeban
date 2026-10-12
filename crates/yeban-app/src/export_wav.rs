@@ -156,9 +156,8 @@ impl core::error::Error for WavExportError {}
 /// ⛔ 这不是引擎乐器（见模块文档的诚实登记）；它的职责是"把导出管路打通且**可听**"，
 /// 并保持确定性：同一工程 ＋ 同一选项 ⇒ 逐位相同的输出。
 pub(crate) struct NoteToneSource {
-    /// `(绝对起始帧, 时值帧, 音高, 力度 0..=127)`。
-    notes: Vec<(u64, u64, u8, u8)>,
-    sample_rate: u32,
+    /// `(绝对起始帧, 结束帧, 2 * freq / sample_rate, 幅度)`。
+    notes: Vec<(u64, u64, f64, f32)>,
 }
 
 /// 首尾包络长度（帧）：避免方波起止的爆音。
@@ -186,31 +185,37 @@ impl NoteToneSource {
                     let start = start_tick.saturating_mul(u64::from(sample_rate)) / 960;
                     let duration =
                         (note.duration_ticks.max(1)).saturating_mul(u64::from(sample_rate)) / 960;
-                    notes.push((start, duration.max(1), note.pitch, note.velocity));
+                    let end = start + duration.max(1);
+                    // 预先计算频率及 `2 * f / fs`（供渲染循环廉价算相位），以及幅度。
+                    let frequency = 440.0_f64 * 2.0_f64.powf((f64::from(note.pitch) - 69.0) / 12.0);
+                    let phase_step = frequency / (sample_rate as f64) * 2.0;
+                    let amp = (f32::from(note.velocity) / 127.0) * 0.2;
+                    notes.push((start, end, phase_step, amp));
                 }
             }
         }
-        notes.sort_unstable();
-        Self { notes, sample_rate }
+        notes.sort_unstable_by_key(|n| n.0);
+        Self { notes }
     }
 
     /// 该帧上所有正在发声的音符之和（`[-1, 1]` 之外的削波交给渲染层的母线）。
     fn sample_at(&self, frame: u64) -> f32 {
         let mut value = 0.0_f32;
-        for (start, duration, pitch, velocity) in &self.notes {
-            let end = start + duration;
-            if frame < *start || frame >= end {
+        for &(start, end, phase_step, amp) in &self.notes {
+            if frame < start || frame >= end {
                 continue;
             }
             let offset = frame - start;
-            // 十二平均律：一个八度 12 半音，A4 = 69 = 440 Hz（幂运算只算一次/音符/帧）。
-            let frequency = 440.0_f32 * 2.0_f32.powf((f32::from(*pitch) - 69.0) / 12.0);
-            let period = (f64::from(self.sample_rate) / f64::from(frequency)).max(2.0);
-            let phase = (offset as f64 % period) / period;
-            let square = if phase < 0.5 { 1.0_f32 } else { -1.0_f32 };
+            // 通过整数取模判定方波正负半周，免去 `f64 % f64` 的浮点求余与 `powf`。
+            let half_cycles = (offset as f64 * phase_step) as u64;
+            let square = if half_cycles.is_multiple_of(2) {
+                1.0_f32
+            } else {
+                -1.0_f32
+            };
             let fade_in = offset.min(TONE_FADE_FRAMES) as f32 / TONE_FADE_FRAMES as f32;
             let fade_out = (end - frame).min(TONE_FADE_FRAMES) as f32 / TONE_FADE_FRAMES as f32;
-            value += square * fade_in.min(fade_out) * (f32::from(*velocity) / 127.0) * 0.2;
+            value += square * fade_in.min(fade_out) * amp;
         }
         value
     }

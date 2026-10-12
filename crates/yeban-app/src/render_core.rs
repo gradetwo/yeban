@@ -153,10 +153,10 @@ pub fn render_project_f32(
         .map_err(|error| WavExportError::Render(error.to_string()))?;
 
     // ---- 4. 逐个样本量化（TPDF 抖动；位深 24 bit 整数 PCM）----
-    let digest = output
-        .digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let mut digest = String::with_capacity(output.digest.len() * 2);
+    for byte in &output.digest {
+        use core::fmt::Write;
+        let _ = write!(digest, "{byte:02x}");
+    }
     Ok((output.samples, output.frames, source_label, digest))
 }

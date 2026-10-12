@@ -548,7 +548,8 @@ fn sample_vertices(
 /// 而 `{}` 的浮点最短表示依赖平台库。坐标不带单位 —— `Path` 的坐标就在逻辑像素里
 /// （上游语言参考：SVG 命令的坐标"operate within the imaginary coordinate system"）。
 fn path_commands(samples: &[AutomationVertex]) -> String {
-    let mut text = String::new();
+    // 预分配容量，避免大量节点拖动/缩放时产生 O(N) 次的内存重分配。
+    let mut text = String::with_capacity(samples.len() * 18);
     for (index, sample) in samples.iter().enumerate() {
         let command = if index == 0 { 'M' } else { 'L' };
         let _ = write!(text, "{command} {:.2} {:.2} ", sample.x, sample.y);
