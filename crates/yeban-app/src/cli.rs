@@ -275,6 +275,16 @@ pub fn usage_text() -> String {
   --import-midi <path>     把标准 MIDI 文件里的音符导入**第一条非 master 音轨**, 每个音符的
                            来源标记是 `OpOrigin::MidiInput`; 在导出与 --save-as **之前**执行
                            (同一命令里的导出/保存都能看到导入的音符); 非法输入不改坏工程
+  --import-audio <path>    把一份音频文件导入工程的片段池 (clip_pool), 来源标记是
+                           `OpOrigin::Import`; 字节按内容寻址 (源字节的 SHA-256) 落进
+                           --save-as 容器的 `assets/{{sha256}}`; 与 --import-midi 同位置
+                           (在导出与 --save-as **之前**执行); 非法/非音频输入不改坏工程;
+                           ⚠ 只吃 PCM/float **WAV** (16/24-bit 整数、32-bit 浮点 —— 本仓
+                           `read_plain_wav` 能读的集合; FLAC/OGG 在本入口被明确拒绝);
+                           ⚠ 只**登记片段**、不摆放 (摆放见台账的下一片);
+                           ⚠ 只在**无窗口路径**上执行: 只给本开关 (不给 --save-as /
+                           --export-* / --headless 等) 会进 GUI 路径, 导入**不会发生**
+                           (与 --import-midi 同一条既存口径)
   --export-wav <path>      把当前工程**离线渲染**成 24-bit WAV (48 kHz 立体声 8 秒): 音源是
                            最小音源 (**方波 + 首尾包络**, ⛔ 非引擎乐器, 见 `export_wav.rs` 的
                            诚实登记); 与 --export-midi 同族: 不给 --open 时导出演示工程
@@ -462,6 +472,7 @@ pub fn usage_text() -> String {
       --export-als 在本次构建未编译 `{als_feature}` /
       --export-logic 在本次构建未编译 `{logic_feature}`)
   {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
+  {open} --import-audio 失败 (读文件 / 超过 64 MiB 单文件上限 / 非 PCM-float WAV / 提交被拒)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
   {open} --midi-in 失败 (端口不存在或名字有歧义 / 宿主不可用 / 本次构建未编译 `midi-input` 特性)
   {open} --midi-in-write-notes / --midi-in-render 失败 (一条音符都没有 / 没有可写目标 /
@@ -490,6 +501,7 @@ pub fn usage_text() -> String {
   yeban-app --open p.yeban --sfz strings.sfz --record-wav take.wav --record-seconds 8
   yeban-app --sfz strings.sfz --export-wav out.wav   # 导出的音源 = 该 SFZ
   yeban-app --import-midi take.mid --save-as song.yeban
+  yeban-app --open song.yeban --import-audio kick.wav --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
   yeban-app --open song.yeban --export-wav song.wav
   yeban-app --open song.yeban --export-logic out/Song.logicx
@@ -879,6 +891,29 @@ pub struct Options {
     /// ⇒ 同一命令里的 `--export-midi` / `--export-wav` / `--save-as` 都能看到导入的音符。
     /// 解析与映射全部完成后**才**发出一次提交 ⇒ 非法输入不会改坏工程。
     pub import_midi: Option<PathBuf>,
+    /// `--import-audio <path>`：把一份音频文件**导入**当前工程的 `clip_pool`（音频片段），
+    /// 来源标记是 `OpOrigin::Import`（⛔ 不是 `UserUi` —— 来源是一等公民元数据）。
+    ///
+    /// **执行顺序**：与 `--import-midi` 同一条契约（导入是**编辑**，在导出与 `--save-as`
+    /// **之前**执行）⇒ 同一命令里的 `--save-as` 保存的是**导入后**的工程。
+    /// 解码与派生全部完成后**才**发出一次提交 ⇒ 非音频输入不会改坏工程。
+    ///
+    /// ⚠ 两条**如实登记**的边界（见 `crate::import_audio` 的模块文档）：
+    /// ① 格式面 = `yeban_render::wav::read_plain_wav` 能读的 **PCM／float WAV**
+    /// （16/24-bit 整数、32-bit 浮点）；MCP 的 `yeban_import_audio` 走 `yeban-decode`
+    /// 还能吃 FLAC／OGG，那需要一条本切片**没有加**的依赖边；
+    /// ② 只登记 `clip_pool`、**不摆放**（`Op::AddClipPlacement` 留作下一片）。
+    ///
+    /// ⚠ 第 3 条边界（**路径**）：本开关只在**无窗口（批处理）路径**上执行，而那条路径由
+    /// `--save-as` / `--export-elements` / `--export-midi` / `--headless` 等开关选中。
+    /// 只给 `--import-audio`（一个批处理开关都不给）⇒ `Options::batch()` 为假 ⇒ 进程进
+    /// GUI 路径（`run_gui` **不消费**本字段）⇒ **导入不会发生**。这是 `--import-midi` 早就
+    /// 存在的**同一条口径**（两者都没有"静默忽略"守卫），本切片**如实登记**它、⛔ 不假装
+    /// 它不存在，也⛔ 不在这里单独发明一条只约束本开关的守卫（那会让两条导入的语义分叉）。
+    ///
+    /// ⚠ 字节落在 `--save-as` 容器的 `assets/{sha256}`；没给 `--save-as` 时编辑只存在于
+    /// 内存（同一命令里的 `--export-*` 看得见它）。
+    pub import_audio: Option<PathBuf>,
     /// `--record-wav <path>`：录一段**测试音**并落成 24-bit WAV（`[ARCH-REC-001]` 三段：
     /// 构造期建环 ⇒ 生产端逐帧推 ⇒ 消费端抽干落盘）。
     ///
@@ -1400,6 +1435,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                     PathBuf::from(value),
                 )?;
             }
+            "--import-audio" => {
+                let value = take_value("--import-audio", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.import_audio,
+                    "--import-audio",
+                    PathBuf::from(value),
+                )?;
+            }
             "--export-midi" => {
                 let value = take_value("--export-midi", inline, args, &mut cursor)?;
                 set_once(
@@ -1491,6 +1534,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.import_midi.is_some(), "--import-midi"),
+            (options.import_audio.is_some(), "--import-audio"),
             (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
@@ -1523,6 +1567,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.import_midi.is_some(), "--import-midi"),
+            (options.import_audio.is_some(), "--import-audio"),
             (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
@@ -1549,6 +1594,7 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             (options.print_shortcuts, "--print-shortcuts"),
             (options.export_elements.is_some(), "--export-elements"),
             (options.import_midi.is_some(), "--import-midi"),
+            (options.import_audio.is_some(), "--import-audio"),
             (options.midi_in.is_some(), "--midi-in"),
             (options.export_midi.is_some(), "--export-midi"),
             (options.export_wav.is_some(), "--export-wav"),
@@ -1820,6 +1866,13 @@ pub enum CliError {
         /// 导入层的原样裁决（含 `yeban-midi` 解析器的拒绝原因）。
         source: crate::import_midi::MidiImportError,
     },
+    /// `--import-audio` 失败（读文件 / 超上限 / 解码 / 提交被拒）。
+    ImportAudio {
+        /// 源文件路径。
+        path: PathBuf,
+        /// 导入层的原样裁决（含 `yeban-render` WAV 读取器的拒绝原因）。
+        source: crate::import_audio::AudioImportError,
+    },
     /// `--export-midi` 失败（投影 / 编码 / 落盘）。
     ExportMidi {
         /// 目标路径。
@@ -1894,6 +1947,7 @@ impl CliError {
             Self::LogicNotCompiled => EXIT_USAGE,
             Self::Open { .. }
             | Self::ImportMidi { .. }
+            | Self::ImportAudio { .. }
             | Self::Sfz { .. }
             | Self::MidiIn { .. } => EXIT_OPEN,
             // ⭐ `--midi-in-*` 的写音符 / 渲染：退出码由 `MidiNoteError` 自己按变体给
@@ -1944,6 +1998,9 @@ impl fmt::Display for CliError {
                     "从 `{}` 导入 MIDI 失败: {source}",
                     path.display()
                 )
+            }
+            Self::ImportAudio { path, source } => {
+                write!(formatter, "从 `{}` 导入音频失败: {source}", path.display())
             }
             Self::ExportMidi { path, source } => {
                 write!(
@@ -2004,6 +2061,7 @@ impl std::error::Error for CliError {
         match self {
             Self::Open { source, .. } => Some(source),
             Self::ImportMidi { source, .. } => Some(source),
+            Self::ImportAudio { source, .. } => Some(source),
             Self::Sfz { source, .. } => Some(source),
             Self::MidiIn { source } => Some(source),
             Self::MidiNotes { source } => Some(source),
@@ -2616,6 +2674,9 @@ pub fn theme_lines(theme: Theme) -> Vec<String> {
 /// 3. 握手行 [`HEADLESS_HANDSHAKE`]（无窗口路径**一定**打印它）;
 /// 4. 来源行 / `project:` / `project-counts:`（需要投影时再加 `view-counts:`）;
 /// 5. 边界声明行（`headless:` 开头，说清这一版无头**没有**验证什么）;
+///    ⚠ **导入（编辑）先于一切导出与保存**：`--import-midi` / `--import-audio` 的
+///    `imported-midi:` / `imported-audio:` 报告行落在这里（顺序契约 —— 同一命令里的
+///    `--export-*` 与 `--save-as` 看到的必须是**导入后**的工程）;
 /// 6. `--export-elements` 的 `exported:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
 /// 7. `--export-midi` 的 `exported-midi:`（失败 ⇒ 直接 `Err`，**不**继续保存）;
 /// 8. `--export-als` 的 `exported-als:` + 损失表行（同样失败即止）;
@@ -2802,6 +2863,39 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         })?;
         // 会话是权威 ⇒ 把导入后的工程落回归档，后续导出/保存看的是这一份。
         loaded.archive.project = port.project();
+        lines.push(report.summary());
+    }
+
+    // `--import-audio`：与 `--import-midi` **同一条**位置与失败语义（导入是编辑 ⇒ 先于
+    // 导出与保存；失败 ⇒ 直接 `Err`，⛔ 不继续保存）。
+    if let Some(path) = options.import_audio.as_ref() {
+        let session = crate::undo::UndoSession::open(
+            "<cli:import-audio>",
+            "yeban-app",
+            loaded.archive.project.clone(),
+            crate::host::now_ms(),
+        )
+        .map_err(|error| CliError::ImportAudio {
+            path: path.clone(),
+            source: crate::import_audio::AudioImportError::Refused(error.to_string()),
+        })?;
+        let port = crate::undo::UndoPort::new(session);
+        let report = crate::import_audio::import_audio_file(
+            &port,
+            path,
+            &loaded.archive.project,
+            &crate::import_audio::AudioImportOptions::default(),
+            crate::host::now_ms(),
+        )
+        .map_err(|source| CliError::ImportAudio {
+            path: path.clone(),
+            source,
+        })?;
+        // 会话是权威 ⇒ 把导入后的工程落回归档，后续保存看的是这一份。
+        loaded.archive.project = port.project();
+        // ⚠ CAS 字节**不是** `Op` 的载荷（模型的 `Op` 全集没有资产变体）⇒ 由**这里**
+        // 登记进归档的资产池，`--save-as` 才会把它写成 `assets/{sha256}`。
+        register_audio_asset(&mut loaded.archive, &report);
         lines.push(report.summary());
     }
 
@@ -3167,6 +3261,33 @@ fn logic_loss_lines(losses: &[yeban_render::logic::LogicLoss]) -> Vec<String> {
         ));
     }
     lines
+}
+
+/// 把 `--import-audio` 得到的**容器字节**登记进归档的 CAS 资产池（`assets/{sha256}`）。
+///
+/// 为什么由 CLI 这一层做（而不是 `crate::import_audio`）：CAS 池的字节**不是** `Op` 的
+/// 载荷（模型的 `Op` 全集没有资产变体），导入层只负责"解码 ＋ 登记片段 ＋ 把字节交回来"
+/// —— 字节落在**哪一个归档**上，是持有归档的调用方的事（这里是 `loaded.archive`）。
+///
+/// 幂等：同一哈希已在池里就**不重复登记**（内容寻址 ⇒ 同键必同值）。
+/// [`ProjectArchive::assets`] 的文档要求"按哈希升序"，因此用**二分插入**而不是 `push`
+/// （`save_archive_file` 内部会重建成 `BTreeMap`，但归档自身的形态要守住它声明的不变式）。
+fn register_audio_asset(
+    archive: &mut ProjectArchive,
+    report: &crate::import_audio::AudioImportReport,
+) {
+    if archive.assets.iter().any(|(hash, _)| *hash == report.asset) {
+        return;
+    }
+    let index = match archive
+        .assets
+        .binary_search_by(|(hash, _)| hash.as_str().cmp(report.asset.as_str()))
+    {
+        Ok(index) | Err(index) => index,
+    };
+    archive
+        .assets
+        .insert(index, (report.asset.clone(), report.bytes.clone()));
 }
 
 /// 把行打到 stdout（唯一打印点，保证"返回的"与"打印的"逐行一致）。
@@ -5125,6 +5246,172 @@ mod tests {
             "必须转达解析器的精确裁决: {error}"
         );
         assert!(!target.exists(), "失败 ⇒ 一个字节都不许写出去");
+    }
+
+    /// `--import-audio`：把一份**真 WAV** 导入工程 ⇒ 工程真的拿到**解码后的音频**，
+    /// ⛔ 而不是只证明"开关能解析"。
+    ///
+    /// ## 证明什么 / 不证明什么
+    ///
+    /// 证明：`--import-audio <wav> --save-as <容器>` 这一条路真的①读了文件、②过了字节
+    /// 闸门、③用本仓**唯一**的 WAV 读取器解码出**事实**（帧数／采样率／声道）、
+    /// ④按**内容寻址**（源字节的真 SHA-256）在 `clip_pool` 登记一条音频片段、
+    /// ⑤把**逐字节相同**的字节落进容器的 `assets/{sha256}`、⑥让 `--save-as` 把这条片段
+    /// 带进工程文档 —— 回读走公开入口 `open_project_archive_file`，且从容器里取回的字节
+    /// **再解码一次**得到同样的帧数／采样率／声道。
+    ///
+    /// 不证明：①**格式面** —— 本路径只吃 `read_plain_wav` 能读的 PCM／float WAV
+    /// （16/24-bit 整数、32-bit 浮点）；MCP 那份走 `yeban-decode`(symphonia) 的
+    /// FLAC／OGG／Vorbis **不在**覆盖内（见 `crate::import_audio` 的模块文档）。
+    /// ②**摆放／可听** —— 本片只登记 `clip_pool`、⛔ 不摆放（`frames_to_ticks_ceil` 的
+    /// 唯一实现在 `yeban-mcp/src/domain/render_math.rs`，app 够不着）。
+    /// ③ **重复导入同一份字节的幂等**（由 `crate::import_audio` 的模块内判据覆盖）。
+    #[test]
+    fn import_audio_puts_the_decoded_wav_bytes_into_the_project_and_the_saved_container() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+
+        let dir = scratch_dir("import-audio");
+        let (source, project) = write_container_file(&dir, "song.yeban");
+
+        // 夹具：**真 WAV**，由本仓唯一写出器现造；100 帧单声道 16-bit，样本非全零。
+        let wav = dir.join("take.wav");
+        let samples: Vec<i16> = (0..100_i16).map(|index| index * 100 - 5_000).collect();
+        yeban_render::wav::write_plain_wav(
+            &wav,
+            &PcmFormat::integer(1, 48_000, 16),
+            &PcmBuffer::Int16(samples),
+        )
+        .expect("写夹具 WAV");
+        let wav_bytes = std::fs::read(&wav).expect("读夹具 WAV");
+        let expected = AssetHash::of_bytes(&wav_bytes);
+
+        // ⚠ 夹具工程**自己**带一条音频片段（`demo_project` 的假哈希，见
+        // `yeban-model/src/samples.rs:876`）⇒ 判据必须按**这份字节的哈希**找，
+        // ⛔ 不能按"工程里有没有音频片段"找（那会与夹具的假片段混淆）。
+        assert!(
+            !project
+                .clip_pool
+                .values()
+                .any(|entry| match &entry.content {
+                    yeban_model::ClipContent::Audio { asset, .. } =>
+                        asset.as_str() == expected.as_str(),
+                    _ => false,
+                }),
+            "夹具工程初始不该已有**这份字节**的片段（否则'新增了一条'无从判定）"
+        );
+
+        let saved = dir.join("imported.yeban");
+        let lines = run_batch(
+            &parse(&[
+                "--open".to_owned(),
+                source.display().to_string(),
+                "--import-audio".to_owned(),
+                wav.display().to_string(),
+                "--save-as".to_owned(),
+                saved.display().to_string(),
+            ])
+            .expect("解析"),
+        )
+        .expect("音频导入必须成功（未修码上这里就是红的第一现场）");
+
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("imported-audio:"))
+            .unwrap_or_else(|| panic!("必须有 imported-audio 报告行: {lines:?}"));
+        assert_eq!(
+            field(line, "asset").as_deref(),
+            Some(expected.as_str()),
+            "报告行的资产哈希必须是**源字节**的 SHA-256: {line}"
+        );
+        assert_eq!(
+            field(line, "frames").as_deref(),
+            Some("100"),
+            "解码事实：帧数: {line}"
+        );
+        assert_eq!(
+            field(line, "rate").as_deref(),
+            Some("48000"),
+            "解码事实：采样率: {line}"
+        );
+        assert_eq!(
+            field(line, "channels").as_deref(),
+            Some("1"),
+            "解码事实：声道数: {line}"
+        );
+        assert_eq!(
+            field(line, "origin").as_deref(),
+            Some("import"),
+            "来源标记必须是 `OpOrigin::Import`: {line}"
+        );
+
+        // 公开入口回读 `--save-as` 写出的容器：工程拿到音频条目 ＋ 资产池拿到同一份字节。
+        let reopened = crate::open::open_project_archive_file(
+            &saved,
+            &crate::open::ProjectOpenOptions::default(),
+        )
+        .expect("回读保存的容器");
+        let entry = reopened
+            .project
+            .clip_pool
+            .values()
+            .find(|entry| match &entry.content {
+                yeban_model::ClipContent::Audio { asset, .. } => {
+                    asset.as_str() == expected.as_str()
+                }
+                _ => false,
+            })
+            .expect("保存的工程里必须多一条**这份字节**的音频片段");
+        match entry.content.clone() {
+            yeban_model::ClipContent::Audio { asset, gain_db } => {
+                assert_eq!(asset, expected, "片段必须指向源字节的 SHA-256");
+                assert_eq!(gain_db, 0.0, "本路径的片段增益是单位增益 0.0 dB");
+            }
+            other => panic!("必须是音频片段: {other:?}"),
+        }
+        let stored = reopened
+            .assets
+            .iter()
+            .find(|(hash, _)| *hash == expected)
+            .map(|(_, bytes)| bytes.clone())
+            .expect("容器的资产池必须有该 sha256 的字节");
+        assert_eq!(stored, wav_bytes, "容器里的字节必须与源文件**逐字节**相同");
+
+        // **解码**证据：从容器取回的字节再走同一个唯一读取器 ⇒ 帧数／采样率／声道不变。
+        let extracted = dir.join("extracted.wav");
+        std::fs::write(&extracted, &stored).expect("写出取回的资产");
+        let (back, buffer) =
+            yeban_render::wav::read_plain_wav(&extracted).expect("取回的资产必须可解码");
+        assert_eq!(back.sample_rate, 48_000);
+        assert_eq!(back.channels, 1);
+        assert_eq!(buffer.len(), 100, "帧数 = 100（单声道）");
+    }
+
+    /// **边界钉**（⛔ 不是能力判据、⛔ 不是"静默忽略是好事"）：`--import-audio` **单独**给
+    /// （一个批处理开关都不给）⇒ `Options::batch()` 为假 ⇒ 进程走 GUI 路径，而 `run_gui`
+    /// **不消费**本字段 ⇒ **导入不会发生**。
+    ///
+    /// 这是 `--import-midi` 早就存在的**同一条口径**（两条导入都没有"静默忽略"守卫），
+    /// 本切片把它**如实登记**在 `Options::import_audio` 的文档与 `--help` 里。本条判据钉住
+    /// "文档说的"与"代码做的"不许漂移：将来若为两条导入加了"必须与批处理开关同给"的守卫，
+    /// 本条会红，届时应按**新语义**更新它（⛔ 不是删掉它）。
+    ///
+    /// ⚠ 本条**从未在未修码上跑红过**（它今天描述的就是代码本来的行为）⇒ 它是**钉子**，
+    /// ⛔ 不是"这段能力曾经缺失"的证据。能力判据是上面那条
+    /// `import_audio_puts_the_decoded_wav_bytes_into_the_project_and_the_saved_container`
+    /// （它在未修码上的红字是 `UnknownArgument("--import-audio")`）。
+    #[test]
+    fn a_lone_import_audio_flag_selects_the_gui_path_so_the_import_never_runs() {
+        let options = parse(&["--import-audio".to_owned(), "kick.wav".to_owned()]).expect("解析");
+        assert!(options.import_audio.is_some(), "字段必须被解析器填上");
+        assert!(
+            !options.batch(),
+            "批处理路径没被选中（与 `--import-midi` 同款：导入开关自己不选路径）"
+        );
+        assert!(
+            options.wants_gui(),
+            "⇒ 进程走 GUI 路径 ⇒ `run_batch` 根本不跑 ⇒ 导入不会发生"
+        );
     }
 
     /// `--export-wav`：写出的 WAV 可被 `read_plain_wav` **读回**，且帧数/采样率/声道与请求一致，
