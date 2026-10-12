@@ -293,6 +293,29 @@ jobs:
           else
             echo "::notice::${{ matrix.crate }} 未声明 midi-input 特性, 本腿跳过"
           fi
+
+      # `in-process-mcp`: app 进程内托管领域 MCP 的运行态挂载
+      # (`crates/yeban-app/Cargo.toml` 的 `in-process-mcp = ["dep:yeban-mcp", "yeban-mcp/mcp-http"]`)。
+      # 与 R64 / R335 **同一类陷阱, 但形式更隐蔽**: 5 个集成测试目标带的是**crate 根**
+      # `#![cfg(feature = "in-process-mcp")]`(`tests/in_process_mcp.rs` / `in_process_mcp_lock.rs` /
+      # `production_reprojection.rs` / `production_save_ui.rs` / `single_writer_session.rs`),
+      # 默认档下它们**编译成空测试目标** —— 不是"被跳过", 是"从未编译";
+      # `tests/live_ui_mcp.rs` 另有 13 处逐项 `#[cfg(feature = "in-process-mcp")]` 同样不编。
+      # 自动档此前没有任何步骤带这个开关(`grep -c "in-process-mcp" ci.yml` = 0), 手动档
+      # `gates-manual.yml` 的 `all-features` 只在 `inputs.gate == 'all-features'` 时跑
+      # (定时触发只跑 `inventory`) ⇒ 这一整类判据在自动 CI 里**从未执行**。
+      # 仍然用 **Cargo.toml 守卫**: 只有声明了该特性的 crate 才跑这一腿。
+      - name: test (in-process-mcp 特性)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if grep -q '^in-process-mcp' "crates/${{ matrix.crate }}/Cargo.toml"; then
+            cargo test -p "${{ matrix.crate }}" --all-targets --locked \
+              --features in-process-mcp \
+              2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+          else
+            echo "::notice::${{ matrix.crate }} 未声明 in-process-mcp 特性, 本腿跳过"
+          fi
       - name: 上传无头 UI 截图 (若该 crate 产出了)
         if: always()
         uses: actions/upload-artifact@v4
@@ -352,6 +375,23 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test --workspace --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # 同一条 `in-process-mcp` 缺口在**宽运行**这一侧也必须补: `plan` 判定根级文件
+      # (含 `.github/**` / `Cargo.toml` / `scripts/**` / `schemas/**`)被改动时, **矩阵腿整体被剪掉**
+      # (`rust.if: needs.plan.outputs.workspace_wide != 'true'`), 只剩这一条 `rust-workspace`。
+      # ⇒ 若只在矩阵腿里补, 那么"任何根级改动"的提交仍然一次都不会执行 in-process-mcp 判据
+      # (本次改动本身就是这种情况)。固定 `-p yeban-app`(本 job 没有矩阵变量), 守卫与矩阵腿同型。
+      - name: test (in-process-mcp 特性, yeban-app)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          if grep -q '^in-process-mcp' crates/yeban-app/Cargo.toml; then
+            cargo test -p yeban-app --all-targets --locked \
+              --features in-process-mcp \
+              2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+          else
+            echo "::notice::yeban-app 未声明 in-process-mcp 特性, 本腿跳过"
+          fi
 
       # ⚠ 这里**故意暂时没有**"真实界面的内省判据"这一步。
       # 它的首次执行(commit 66b002c, run 37223586792)证明: `crates/yeban-app/src/test_port_adapter.rs`
