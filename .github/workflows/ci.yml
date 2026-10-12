@@ -409,20 +409,17 @@ jobs:
   # 开源合规: cargo-deny (MUST-GATE-004)
   # ---------------------------------------------------------------------------
   # ---------------------------------------------------------------------------
-  # Windows: 验证**有平台分支/平台构建面**的四个 crate（`yeban-mcp` 的 `.yeban.lock` 走 LockFileEx、
-  # `yeban-app` 的 Slint/cpal/symphonia 在 Windows 上的编译面）。
+  # Windows: 只验证**有平台分支**的那两个轻依赖 crate（`yeban-mcp` 的 `.yeban.lock` 走 LockFileEx）。
   #
   # 为什么放进自动档（它原本只是手动档 `windows`）: 实测三次红各抓到一类真问题
   # （强制锁语义 / 判据对 jsonschema 的环境假设 / 平台相关的未使用 import），
   # 而那三条**都只有真在 Windows 上编译才会暴露**。只在手动档跑 = 不防回归。
   #
-  # 成本控制: 只在 `plan` 判定这几个 crate 之一受影响时运行；矩阵里没有的 crate 不在这里跑。
-  # ⚠ `yeban-app` 带来 Slint/cpal/symphonia 三个重依赖 —— 它**不是**零系统库的一跳,
-  # Windows runner 上的首次构建因此明显变慢; 本节原先那句「不需要 Slint/cpal」已随
-  # 这次扩面作废（保留在 `HD-37` 的裁决记录里, 那是当时的读数）。
+  # 成本控制: 只在 `plan` 判定 `yeban-mcp` 或 `yeban-model` 受影响时运行；
+  # 只跑这两个 crate（零系统库依赖，不需要 Slint/cpal/ALSA），因此不会把 Windows runner 拖满。
   # ---------------------------------------------------------------------------
   windows:
-    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-app 的平台分支)
+    name: windows (yeban-mcp / yeban-model 的平台分支)
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
@@ -461,16 +458,14 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-app --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
 
-      # 为什么把四个 crate 拆成四步（实测代价换来）:
+      # 为什么把三个 crate 拆成三步（实测代价换来）:
       # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
       # 实测一次 `windows` 红: 红的是 `yeban-dsp` 的判据, 而**同一条命令**在第一步失败后就停了,
       # 于是 `yeban-mcp` / `yeban-model` 的读数**根本没产生** —— 失败归属因此**不可读**
       # (日志只覆盖 1/N, 且无法从日志区分"这个 crate 过了"与"这个 crate 没跑")。
-      # 拆成四步 + `--no-fail-fast` 之后: 每个 crate 各自出结论, 一个红不再截断其余的读数。
-      # ⚠ 扩到四个 crate 后这条纪律更重要: `yeban-app`（Slint/cpal）是最可能首红的一个,
-      # 若它与其余三个挤在同一条命令里, 一次红就把另外三个读数一起吞掉。
+      # 拆成三步 + `--no-fail-fast` 之后: 每个 crate 各自出结论, 一个红不再截断另两个的读数。
       # 注意 `--no-fail-fast` 只跨**判据**生效; 同一个判据**内部**的臂首败仍即停
       # (因此判据内的臂必须各自独立, 或由 crate 内的臂计数器报告 N 与跑到第几条)。
       - name: test (yeban-model 的平台分支)
@@ -493,16 +488,6 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test -p yeban-dsp --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-
-      # 为什么加这一条: 本 crate（Slint/cpal/symphonia）此前**只**在 Linux 上编译过,
-      # 而连续多个提交只碰了 `yeban-app` ⇒ 它的 Windows 分支从未被任何 runner 执行过
-      # （覆盖面缺口由 `crates/yeban-app/tests/theme_selection.rs` 的注释如实登记过）。
-      - name: test (yeban-app 的 Slint/cpal Windows 分支)
-        shell: bash
-        run: |
-          set -euo pipefail
-          set -o pipefail
-          cargo test -p yeban-app --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
       # 为什么加这一步体检: 上传步的「绿而无效」实测过一次 —— 它报 success 而 artifacts 为空。
       # 本步把「文件是否存在」与「多少字节」打印出来 ⇒ 缺失或空文件当场可见,

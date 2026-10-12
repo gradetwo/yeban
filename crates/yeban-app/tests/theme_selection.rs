@@ -1253,15 +1253,9 @@ const UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
 /// ⇒ ⭐ `the_default_theme_is_the_slint_initial_value` 那类 `.expect("必须存在 ui/tokens.slint")`
 /// 会 **panic**。
 ///
-/// ⚠ ⭐ 写这段时这个缺陷**从未被任何 Windows runner 执行过** —— 当时的 Windows 腿只跑
+/// ⚠ ⭐ 这个缺陷在本仓**从未被任何 Windows runner 执行过**：CI 的 Windows 腿只跑
 /// `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp`，**不含 `yeban-app`** ⇒ 这正是本文件
-/// 里那条"喂合成路径"的判据存在的理由（覆盖面缺口当时已如实登记在报告里）。
-///
-/// ⭐ **更新**：该缺口已由 CI 侧关闭 —— `ci.yml` 的 `windows` 腿现在多一条
-/// `cargo test -p yeban-app --all-targets --locked --no-fail-fast`（clippy 步同样带上 `-p yeban-app`）。
-/// ⇒ 上面那条合成路径判据不再是**唯一**的观测面（它仍保留：合成路径与真实路径是两条判据）。
-/// ⚠ 但"腿被接线"不等于"腿已绿"：这条判据在 Windows 上的**首份真实读数**只能从该腿的
-/// `test result:` 行读回；在那之前不得声称它在 Windows 上通过。
+/// 里那条"喂合成路径"的判据存在的理由（覆盖面缺口已如实登记在报告里，⛔ 本切片不改 CI）。
 ///
 /// ## 口径（两件事都写明，⛔ 不靠"看起来对"）
 ///
