@@ -390,8 +390,10 @@ pub fn usage_text() -> String {
 运行形态:
   yeban-app                启动 GUI (需要显示器; 进入阻塞事件循环)
   yeban-app --open a.yeban 用打开的那个工程启动 GUI
-  任一\"无窗口开关\"(--headless / --dump-elements / --export-elements /
-  --export-midi / --export-als / --export-logic / --print-shortcuts / --save-as)
+  任一\"无窗口开关\"(--headless / --dump-elements / --print-shortcuts /
+  --print-theme / --export-elements / --export-midi / --export-wav /
+  --export-als / --export-logic / --save-as / --record-wav / --sfz /
+  --midi-in / --midi-in-render / --midi-in-write-notes)
   都不构造窗口、不进事件循环, 并打印握手行 `{handshake}`。
   `--headless-idle` 是**另一档**: 它同样不创建 OS 窗口、不进阻塞事件循环, 但它**会**
   构造一个软件窗口 + 真控件树并光栅化一帧, 因此握手行是 `{idle_handshake}`
@@ -4695,6 +4697,76 @@ mod tests {
                 .unwrap_or_else(|| panic!("`{name}` 必须在唯一事实源表里"));
             assert!(entry.selects_batch(), "`{name}` 必须自己就选无窗口路径");
         }
+    }
+
+    /// 判据 E: `usage_text()` 的 `运行形态:` 块里那份"无窗口开关"名单必须**恰好**
+    /// 等于共享表 [`ACTION_SWITCHES`] 里 `path == Batch` 的动作开关，减去四条
+    /// **在别处单独讲了**的开关：
+    ///
+    /// - `--help` / `--version`：短路命令，`运行形态:` 块自己的末句就点明了它们
+    ///   "不打印握手行"；
+    /// - `--headless-idle` / `--enable-ui-mcp-http`：同一档"会构造软件窗口"的形态
+    ///   （`--headless-idle` 在名单下一句里被点名为**另一档**，UI 控制面在它自己的
+    ///   条目里单讲），因此**不**属于那句"并打印握手行 {handshake}"的名单。
+    ///
+    /// 判据拿**渲染后的文本**（`usage_text()` 的返回值）与**共享表**对账 ⇒
+    /// 名单无论是手写还是派生，只要与表漂移就会红。
+    ///
+    /// **它证明什么**：名单里每一条都是表里 `Batch` 的动作开关，且表里每一条
+    /// `Batch`（除上述四条）都在名单里 —— 名单不会再"只报旧子集"。
+    /// **它不证明什么**：四条被排除的开关**在别处**的措辞仍可能单独漂移（本判据只认
+    /// "它们不在名单里"这个事实，不读它们各自的段落）；也不检查名单的**顺序**、
+    /// 不检查句式（自由文本）。
+    ///
+    /// 红字（修复前）: 漏 7 条 —— `--print-theme` / `--export-wav` / `--record-wav` /
+    /// `--sfz` / `--midi-in` / `--midi-in-render` / `--midi-in-write-notes`。
+    #[test]
+    fn the_running_form_prose_names_exactly_the_windowless_action_switches() {
+        // 名单的边界标记：夹在 `(` 与 `)` 之间，锚在 `运行形态:` 块那句定义上。
+        const OPEN: &str = "任一\"无窗口开关\"(";
+        // 单位 = **表项条数**（`Options::action_switches()`），⛔ 不是源码行数。
+        const SPOKEN_FOR_ELSEWHERE: [&str; 4] =
+            ["--help", "--version", "--headless-idle", UI_MCP_HTTP_SWITCH];
+
+        let usage = usage_text();
+        let start = usage
+            .find(OPEN)
+            .unwrap_or_else(|| panic!("`运行形态:` 块里必须有 `{OPEN}` 这份名单"))
+            + OPEN.len();
+        let end = usage[start..]
+            .find(')')
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("名单必须用 `)` 收尾"));
+        let named: Vec<&str> = usage[start..end]
+            .split('/')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        let expected: Vec<&str> = Options::action_switches()
+            .iter()
+            .filter(|switch| switch.selects_batch() && !SPOKEN_FOR_ELSEWHERE.contains(&switch.name))
+            .map(|switch| switch.name)
+            .collect();
+
+        let missing: Vec<&str> = expected
+            .iter()
+            .copied()
+            .filter(|name| !named.contains(name))
+            .collect();
+        let unexpected: Vec<&str> = named
+            .iter()
+            .copied()
+            .filter(|name| !expected.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty() && unexpected.is_empty(),
+            "`运行形态:` 的名单与唯一事实源 (`ACTION_SWITCHES`) 漂移:\n\
+             漏掉 (表里有、名单没有，{} 条): {missing:?}\n\
+             多出/错名 (名单有、表里没有或不在本档，{} 条): {unexpected:?}",
+            missing.len(),
+            unexpected.len()
+        );
     }
 
     // ------------------------------------------------------------------
