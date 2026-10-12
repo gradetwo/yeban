@@ -3341,7 +3341,11 @@ mod tests {
         let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
         let geometry = VelocityLaneGeometry {
             lane_height: 44.0,
-            offset_x: 56.0 + 8.0 + 30.0,
+            // 与 `piano_roll.slint` 的 `x: 56px + Tokens.space-5 + … + 30px` 同源。
+            // 旧值写 `8.0`（应为 `NOTE_INSET_X_PX` = 12）⇒ 偏左 4px；而本判据的探针
+            // 横坐标也由 `offset_x` 推出 ⇒ 它结构上看不见那 4px，故一直绿。
+            // ⚠ 尾部的 `30.0` 至今两处都没有命名常量（`.slint` 亦然）⇒ 仍是手抄值。
+            offset_x: ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 30.0,
             bar_width: 6.0,
             bar_max_height: 28.0,
         };
