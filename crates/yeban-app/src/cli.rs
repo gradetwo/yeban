@@ -2928,13 +2928,17 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     // `--export-wav`：与 `--export-midi` 同一位置与同一失败语义（失败 ⇒ 直接 `Err`, ⛔ 不继续保存）。
     if let Some(path) = options.export_wav.as_ref() {
-        let report = crate::export_wav::export_wav_with_sfz_file(
+        // ⭐ `&loaded.archive.assets` 是**归档资产池**（`--open` 读进来的 `assets/{sha256}`）：
+        // 没有它，工程里摆放的 `ClipContent::Audio` 会静音 —— 引擎快照把音频片段当静音，
+        // 见 `crate::audio_clip` 的模块文档。
+        let report = crate::export_wav::export_wav_with_sfz_file_and_assets(
             &loaded.archive.project,
             path,
             crate::export_wav::WavExportOptions::default(),
             loaded_sfz
                 .clone()
                 .map(|(instrument, sfz_path)| (instrument, Some(sfz_path))),
+            &loaded.archive.assets,
         )
         .map_err(|source| CliError::ExportWav {
             path: path.clone(),

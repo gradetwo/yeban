@@ -38,6 +38,13 @@
 //! 相位由整数帧号派生）：它是**判据的对照**与极端回退，报告行里的 `source=` 字段**明说用了哪一个**
 //! （⛔ 不让人误以为听到了乐器）。
 //!
+//! ⭐ **音频片段**（`ClipContent::Audio`）：引擎快照把音频摆放当静音（`snapshot.rs` 的登记），
+//! 因此它们由 [`crate::render_core`] 在 MIDI 基座之上**叠加**（[`crate::audio_clip`]，
+//! 语义逐条对齐 MCP 的 `AudioClipSource`）。资产字节来自调用方给的**归档资产池**
+//! （[`export_wav_with_sfz_file_and_assets`] 的第五个参数 = `ProjectArchive.assets`）⇒
+//! `--export-wav` 真的渲染音频摆放。⛔ 没有资产池的入口（本文件的旧签名 / `record_wav`）
+//! 会**如实跳过**并计数，⛔ 不是静默。
+//!
 //! ## "拒绝时不留半成品"
 //!
 //! `write_plain_wav` 自带该纪律（先 `check_match` 校验，再建文件）。本文件在**调用顺序**上
@@ -102,6 +109,10 @@ pub struct WavExportReport {
     pub digest: String,
     /// 本次导出用的音源名（如实登记；文件样本会写出路径／帧数／采样率）。
     pub source: String,
+    /// 真的进了母带的**音频摆放个数**（`ClipContent::Audio`；0 = 没有音频片段发声）。
+    pub audio_clips_rendered: u64,
+    /// 被**如实跳过**的音频片段原因（例如素材采样率 ≠ 导出采样率 ⇒ 不重采样、不误放音高）。
+    pub audio_clips_skipped: Vec<String>,
 }
 
 impl WavExportReport {
@@ -375,13 +386,41 @@ pub fn export_wav_with_sfz_file(
         Option<PathBuf>,
     )>,
 ) -> Result<WavExportReport, WavExportError> {
+    export_wav_with_sfz_file_and_assets(project, path, options, sfz, &[])
+}
+
+/// 与 [`export_wav_with_sfz_file`] 相同，但**带上归档资产池** ⇒ `ClipContent::Audio`
+/// （工程里摆放的音频片段）真的被渲染。
+///
+/// `assets` 的形状就是 `ProjectArchive.assets`（`&[(AssetHash, Vec<u8>)]`）。给空切片时
+/// 与 [`export_wav_with_sfz_file`] 逐位相同（音频片段被**如实跳过**并计数，⛔ 不是静默）。
+///
+/// # Errors
+///
+/// 与 [`export_wav`] 相同。
+pub fn export_wav_with_sfz_file_and_assets(
+    project: &YebanProjectV1,
+    path: &Path,
+    options: WavExportOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+    assets: &[(yeban_model::AssetHash, Vec<u8>)],
+) -> Result<WavExportReport, WavExportError> {
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
     // ⭐ **一条真源**：导出与录音都走 `render_core::render_project_f32`
     // （慢路径校验 → 计划编译 → 音源装配 → 执行 → digest 全在那里）。
-    let (samples, frames, source_label, digest) =
-        crate::render_core::render_project_f32(project, options, sfz)?;
+    let rendered =
+        crate::render_core::render_project_f32_with_assets(project, options, sfz, assets)?;
+    let (samples, frames, source_label, digest) = (
+        rendered.samples,
+        rendered.frames,
+        rendered.source_label,
+        rendered.digest,
+    );
     // 本函数只负责**报告**：量化 ＋ 一次落盘走 [`write_interleaved_wav`]（唯一实现）。
     let (bytes, bits) = write_interleaved_wav(
         path,
@@ -399,6 +438,8 @@ pub fn export_wav_with_sfz_file(
         bytes,
         digest,
         source: source_label,
+        audio_clips_rendered: rendered.audio_clips_rendered,
+        audio_clips_skipped: rendered.audio_clips_skipped,
     })
 }
 

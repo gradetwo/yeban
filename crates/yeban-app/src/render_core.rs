@@ -26,17 +26,58 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use yeban_model::{EntityId, YebanProjectV1};
-use yeban_render::render::{AudioSource, RenderOptions, RenderPlan};
+use yeban_model::{AssetHash, EntityId, YebanProjectV1};
+use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
 
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::SynthEngine;
 
+use crate::audio_clip;
 use crate::export_wav::{
     EngineTrackSource, NoteToneSource, WavExportError, WavExportOptions, track_notes_in_frames,
 };
 
+/// 一条轨的复合源：**先 MIDI 基座、后音频片段**（顺序与 MCP 的 `TrackSource` 相同，
+/// 且与块边界无关 ⇒ 逐位可复现）。
+struct TrackSource {
+    /// 既有音源（引擎乐器 / SFZ / 最小音源）。
+    base: Box<dyn AudioSource>,
+    /// 音频片段源（按资产哈希升序，每个素材一个）。
+    clips: Vec<audio_clip::AudioClipSource>,
+}
+
+impl AudioSource for TrackSource {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        // 基座会清零（三个既有源都 `out.fill(0.0)`）；音频片段只**累加**。
+        self.base.render_block(context, out)?;
+        for clip in &mut self.clips {
+            clip.render_block(context, out)?;
+        }
+        Ok(())
+    }
+}
+
+/// 一次离线渲染的**全部读数**（含音频片段的渲染 / 跳过计数）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderProjectOutput {
+    /// 交错 `f32` 样本。
+    pub samples: Vec<f32>,
+    /// 帧数。
+    pub frames: u64,
+    /// 音源文案（含音频片段计数）。
+    pub source_label: String,
+    /// 渲染输出的位级摘要（十六进制）。
+    pub digest: String,
+    /// 真的进了母带的音频摆放**个数**（不是素材个数）。
+    pub audio_clips_rendered: u64,
+    /// 被**如实跳过**的音频片段原因（例如采样率不匹配）。
+    pub audio_clips_skipped: Vec<String>,
+}
+
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
+///
+/// ⚠ 本入口**没有**资产池 ⇒ 音频片段被如实跳过并计数（`record_wav` 与既有判据仍用它）。
+/// 生产导出（`--export-wav`）走 [`render_project_f32_with_assets`]。
 pub fn render_project_f32(
     project: &YebanProjectV1,
     options: WavExportOptions,
@@ -45,6 +86,32 @@ pub fn render_project_f32(
         Option<PathBuf>,
     )>,
 ) -> Result<(Vec<f32>, u64, String, String), WavExportError> {
+    let output = render_project_f32_with_assets(project, options, sfz, &[])?;
+    Ok((
+        output.samples,
+        output.frames,
+        output.source_label,
+        output.digest,
+    ))
+}
+
+/// 与 [`render_project_f32`] 相同，但**带上归档资产池** ⇒ `ClipContent::Audio` 真的发声。
+///
+/// `assets` 的形状就是 `ProjectArchive.assets`。给空切片时与 [`render_project_f32`]
+/// 逐位相同（音频片段被跳过并计数）。
+///
+/// # Errors
+///
+/// 与 [`render_project_f32`] 相同。
+pub fn render_project_f32_with_assets(
+    project: &YebanProjectV1,
+    options: WavExportOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+    assets: &[(AssetHash, Vec<u8>)],
+) -> Result<RenderProjectOutput, WavExportError> {
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
@@ -100,7 +167,7 @@ pub fn render_project_f32(
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
         .collect();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-    let source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
+    let mut source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
         let mut labels: Vec<String> = Vec::new();
         for track_id in renderable.clone() {
             let notes = track_notes_in_frames(project, track_id, options.sample_rate);
@@ -147,6 +214,45 @@ pub fn render_project_f32(
         "最小音源（方波 + 首尾包络；回退）".to_owned()
     };
 
+    // ---- 2b. 音频片段（`ClipContent::Audio`）叠加 ----
+    //
+    // 引擎快照把音频片段当静音（`snapshot.rs` 的 `project_schedules` 第 5 条登记），
+    // 因此音频摆放必须由**本层**叠加；语义与 MCP 的 `AudioClipSource` 逐条对齐
+    // （见 `crate::audio_clip` 的模块文档：帧区间 / 硬切 / 累加 / 增益 / 声道布局）。
+    let mut audio_cache = BTreeMap::new();
+    let mut audio_skipped: Vec<String> = Vec::new();
+    let mut audio_rendered = 0_u64;
+    for track_id in renderable.clone() {
+        let clips = audio_clip::resolve_track_clips(
+            project,
+            track_id,
+            options.sample_rate,
+            options.channels,
+            assets,
+            &mut audio_cache,
+            &mut audio_skipped,
+        );
+        if clips.sources.is_empty() {
+            continue;
+        }
+        audio_rendered = audio_rendered.saturating_add(clips.spans);
+        if let Some(base) = sources.remove(&track_id) {
+            sources.insert(
+                track_id,
+                Box::new(TrackSource {
+                    base,
+                    clips: clips.sources,
+                }),
+            );
+        }
+    }
+    if audio_rendered > 0 || !audio_skipped.is_empty() {
+        source_label.push_str(&format!(
+            " + audio-clips(rendered={audio_rendered} skipped={})",
+            audio_skipped.len()
+        ));
+    }
+
     // ---- 3. 执行（全部在内存里）----
     let output = plan
         .execute(sources)
@@ -158,5 +264,12 @@ pub fn render_project_f32(
         use core::fmt::Write;
         let _ = write!(digest, "{byte:02x}");
     }
-    Ok((output.samples, output.frames, source_label, digest))
+    Ok(RenderProjectOutput {
+        samples: output.samples,
+        frames: output.frames,
+        source_label,
+        digest,
+        audio_clips_rendered: audio_rendered,
+        audio_clips_skipped: audio_skipped,
+    })
 }

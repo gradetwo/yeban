@@ -71,6 +71,7 @@
 //! 的未实现项里；命令行的边界与未实现项记在 `docs/ledger/app-cli-notes.md`。
 #![deny(missing_docs)]
 
+pub mod audio_clip;
 pub mod automation;
 pub mod bridge;
 pub mod cli;
