@@ -1063,34 +1063,234 @@ pub struct Options {
     pub print_theme: bool,
 }
 
+/// 一个动作开关在**进程形态**上的归属。
+///
+/// 本类型是"哪些开关自己就把进程推离 GUI 路径"的**唯一事实源**的一半
+/// （另一半是 [`ACTION_SWITCHES`]）：[`Options::batch()`] 与 [`Options::wants_gui()`]
+/// 都从那张表派生，判据也遍历它 —— ⛔ 不再手抄第二张会漂移的清单
+/// （本仓已经漂移过两张：`batch()` 曾漏掉 `--export-wav` 等六个动作开关，
+/// 于是它们"文档写着跑过、真二进制上却开窗口什么都不做"）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchPath {
+    /// 给出这个开关 ⇒ 进程走**无窗口（批处理）路径**。
+    Batch,
+    /// 给出这个开关**自己**不选路径（进程仍走 GUI ⇒ 它的动作不会发生），
+    /// 但动作只能在**无窗口路径**上执行 —— 由别的批处理开关（如 `--save-as`）带进去。
+    ///
+    /// ⭐ 今天**恰好**是两条导入（`--import-midi` / `--import-audio`），而这是**有意的
+    /// 既存口径**：它**已经**写在 `--help`（`--import-audio` 那条"⚠ 只在**无窗口路径**
+    /// 上执行"）里，并被单元判据
+    /// `a_lone_import_audio_flag_selects_the_gui_path_so_the_import_never_runs` 钉住
+    /// （`src/cli.rs` 判据区）。本枚举把这条例外**点名**在代码里，于是判据可以断言
+    /// "例外就是这两条、且只有这两条"，而不是让它**静默缺席**在表外。
+    WindowlessOnly,
+}
+
+/// [`ACTION_SWITCHES`] 表里的一项。
+#[derive(Debug, Clone, Copy)]
+pub struct ActionSwitch {
+    /// 开关字面值（含前导 `--`），必须与 `--help` 里印的**逐字**相同
+    /// （判据 B 用它去认示例行里"点了名"的动作开关）。
+    pub name: &'static str,
+    /// 这个开关在 [`Options`] 里"给了"吗。
+    ///
+    /// 用谓词而不是字段名，是因为两类字段的判法不同（`bool` 看真假、
+    /// `Option` 看 `is_some`）—— 表只暴露一个统一形状。
+    pub present: fn(&Options) -> bool,
+    /// 判据用它把开关**设到**一份 `Options` 上：这样才能绕过 `parse()` 里的
+    /// **编译期门禁**（`--export-als` / `--export-logic` / `--enable-ui-mcp-http`
+    /// 在默认构建里解析不成），单独验证它们的**路由**归属。
+    /// ⛔ 生产代码不用它：`parse()` 仍是唯一的用户入口。
+    pub grant: fn(&mut Options),
+    /// 给出这个开关时进程的路径归属。
+    pub path: SwitchPath,
+}
+
+impl ActionSwitch {
+    /// 给出本开关 ⇒ 是否走**无窗口（批处理）路径**。
+    #[must_use]
+    pub const fn selects_batch(&self) -> bool {
+        matches!(self.path, SwitchPath::Batch)
+    }
+}
+
+/// **动作开关**的唯一直表（名字 / 在场谓词 / 设置器 / 路径归属）。
+///
+/// 动作开关 = "给出它就点了一次名"的开关 ⇒ 它**自己**决定（或对两条导入明确
+/// **不**决定）进程形态。修饰性开关（`--record-seconds` / `--record-source` /
+/// `--midi-in-seconds` / `--midi-in-track` / `--project-sample` / `--theme` /
+/// `--idle-seconds` / `--open`）不在表里：它们不点名动作，只给表里的动作补参数。
+/// `--enable-mcp-http` 也**不在**表里：它要求**正在跑的 GUI 事件循环**（形态 A），
+/// 与"选无窗口路径"是相反的一档。
+///
+/// ⛔ 加一个"自己决定进程形态"的开关 = 加一行这里。[`Options::batch()`] 只认这张表。
+pub const ACTION_SWITCHES: &[ActionSwitch] = &[
+    ActionSwitch {
+        name: "--help",
+        present: |options| options.help,
+        grant: |options| options.help = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--version",
+        present: |options| options.version,
+        grant: |options| options.version = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--headless",
+        present: |options| options.headless,
+        grant: |options| options.headless = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--dump-elements",
+        present: |options| options.dump_elements,
+        grant: |options| options.dump_elements = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--print-shortcuts",
+        present: |options| options.print_shortcuts,
+        grant: |options| options.print_shortcuts = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: PRINT_THEME_SWITCH,
+        present: |options| options.print_theme,
+        grant: |options| options.print_theme = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--export-elements",
+        present: |options| options.export_elements.is_some(),
+        grant: |options| options.export_elements = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--export-midi",
+        present: |options| options.export_midi.is_some(),
+        grant: |options| options.export_midi = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // `--export-wav` 与 `--export-midi` **同族**（`--help` 的 `--export-wav` 一条逐字
+    // 写着"与 --export-midi 同族"）：它当然自己就能把进程推离 GUI 路径。
+    ActionSwitch {
+        name: "--export-wav",
+        present: |options| options.export_wav.is_some(),
+        grant: |options| options.export_wav = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: ALS_EXPORT_SWITCH,
+        present: |options| options.export_als.is_some(),
+        grant: |options| options.export_als = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: LOGIC_EXPORT_SWITCH,
+        present: |options| options.export_logic.is_some(),
+        grant: |options| options.export_logic = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--save-as",
+        present: |options| options.save_as.is_some(),
+        grant: |options| options.save_as = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // 下面这些（`--record-wav` / `--sfz` / `--midi-in*`）的动作与守卫都住在
+    // [`run_batch`] 里（`--midi-in*` 的"必须与 `--midi-in` 一起给"四条守卫见
+    // `run_batch` 的组合性检查块）⇒ 它们单独给时**必须**走到 `run_batch`，
+    // 否则那些守卫在 GUI 路径上根本不存在。
+    ActionSwitch {
+        name: "--record-wav",
+        present: |options| options.record_wav.is_some(),
+        grant: |options| options.record_wav = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--sfz",
+        present: |options| options.sfz.is_some(),
+        grant: |options| options.sfz = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--midi-in",
+        present: |options| options.midi_in.is_some(),
+        grant: |options| options.midi_in = Some("probe".to_owned()),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--midi-in-render",
+        present: |options| options.midi_in_render.is_some(),
+        grant: |options| options.midi_in_render = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--midi-in-write-notes",
+        present: |options| options.midi_in_write_notes,
+        grant: |options| options.midi_in_write_notes = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: "--headless-idle",
+        present: |options| options.headless_idle,
+        grant: |options| options.headless_idle = true,
+        path: SwitchPath::Batch,
+    },
+    ActionSwitch {
+        name: UI_MCP_HTTP_SWITCH,
+        present: |options| options.ui_mcp_http,
+        grant: |options| options.ui_mcp_http = true,
+        path: SwitchPath::Batch,
+    },
+    // ⭐ **点名**的例外（`SwitchPath::WindowlessOnly`）：给出它们**自己**不选路径，
+    // 但动作只在无窗口路径上执行。这条口径已经在 `--help` 与既有判据里。
+    ActionSwitch {
+        name: "--import-midi",
+        present: |options| options.import_midi.is_some(),
+        grant: |options| options.import_midi = Some(PathBuf::from("probe")),
+        path: SwitchPath::WindowlessOnly,
+    },
+    ActionSwitch {
+        name: "--import-audio",
+        present: |options| options.import_audio.is_some(),
+        grant: |options| options.import_audio = Some(PathBuf::from("probe")),
+        path: SwitchPath::WindowlessOnly,
+    },
+];
+
 impl Options {
+    /// 动作开关的唯一直表（见 [`ACTION_SWITCHES`] / [`ActionSwitch`]）。
+    ///
+    /// [`Self::batch()`] 与判据都遍历它；⛔ 不要再手抄第二份会漂移的清单。
+    #[must_use]
+    pub const fn action_switches() -> &'static [ActionSwitch] {
+        ACTION_SWITCHES
+    }
+
     /// 是否是**无窗口**路径（不创建 OS 窗口、不进事件循环）。
     ///
-    /// 语义表（`--help` 的"组合语义"一节与判据都按这张表）：
-    /// `--help` / `--version` / `--headless` / `--dump-elements` / `--print-shortcuts` /
-    /// `--export-elements` / `--export-midi` / `--export-als` / `--save-as`
-    /// 各自都能单独把进程推离 GUI 路径。
+    /// **唯一事实源**是 [`ACTION_SWITCHES`]（见 [`Self::action_switches()`]）：
+    /// 本函数 = "表里有没有一项 `path == Batch` 且**在场**"。
+    /// ⛔ 这里**不再**手抄任何开关名 —— 手抄的那一份曾经漏掉 `--export-wav` /
+    /// `--record-wav` / `--sfz` / `--midi-in` / `--midi-in-render` /
+    /// `--midi-in-write-notes` 六个动作开关（它们的动作与守卫都住在 [`run_batch`] 里，
+    /// 于是"单独给 = 开窗口什么都不做"）。加开关只改那张表。
+    ///
+    /// 两条导入（`--import-midi` / `--import-audio`）在表里被**点名**为
+    /// [`SwitchPath::WindowlessOnly`]：它们**自己**不选路径（这是 `--help` 与既有判据
+    /// 钉住的既存口径），必须由别的批处理开关（如 `--save-as`）带进无窗口路径。
     ///
     /// `--headless-idle` **也**在这一档里（它确实不建 OS 窗口），但它是**唯一**
     /// 会构造 Slint 对象的无窗口开关 ⇒ `main.rs` 必须在 `wants_gui()` 之前先看它，
     /// 而 [`run_batch`] 见到它会明确报错而不是静默降级（见那里的守卫）。
     #[must_use]
     pub fn batch(&self) -> bool {
-        self.help
-            || self.version
-            || self.headless
-            || self.dump_elements
-            || self.print_shortcuts
-            || self.print_theme
-            || self.export_elements.is_some()
-            || self.export_midi.is_some()
-            || self.export_als.is_some()
-            || self.export_logic.is_some()
-            || self.save_as.is_some()
-            || self.headless_idle
-            // `--enable-ui-mcp-http` 也**自己**就是一条无窗口路径（软件平台上的活控件树，
-            // 见 `Options::ui_mcp_http` 的文档）⇒ `main.rs` 必须在 `run_batch` 之前分流它。
-            || self.ui_mcp_http
+        Self::action_switches()
+            .iter()
+            .any(|switch| switch.selects_batch() && (switch.present)(self))
     }
 
     /// 是否要真的开窗口。
@@ -4214,6 +4414,286 @@ mod tests {
         for (options, gui, projection) in cases {
             assert_eq!(options.wants_gui(), gui, "{options:?}");
             assert_eq!(options.needs_projection(), projection, "{options:?}");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 40b: 动作开关路由的**唯一事实源**
+    //           (`ACTION_SWITCHES` / `Options::batch()` / `Options::wants_gui()`)
+    //
+    // 本切片修的缺陷: `batch()` 曾是一张手抄清单, 漏掉了 `--export-wav` /
+    // `--record-wav` / `--sfz` / `--midi-in` / `--midi-in-render` /
+    // `--midi-in-write-notes` 六个动作开关 ⇒ 它们"文档说在真二进制上跑过、
+    // 实际却开窗口什么都不做". 修法 = 让 `batch()` 从这一张表派生
+    // (⛔ 不是补第二张清单).
+    // ------------------------------------------------------------------
+
+    /// 把参数折成 `Vec<String>`（判据里反复用）。
+    fn argv(raw: &[&str]) -> Vec<String> {
+        raw.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    /// 单独解析一个动作开关；需要取值的开关补一个**探针值**。
+    fn parse_lone_switch(name: &str) -> Result<Options, ParseError> {
+        match parse(&argv(&[name])) {
+            Err(ParseError::MissingValue(_)) => parse(&argv(&[name, "probe"])),
+            other => other,
+        }
+    }
+
+    /// 本构建里由**编译期门禁**（feature 没开）拒绝的解析错误。
+    ///
+    /// 它们在默认构建里"解析不成"是"这段代码没编进来"，⛔ 不是"路由错了"
+    /// ⇒ 判据用 [`ActionSwitch::grant`] 直接设字段来单独证明这些开关的**路由**归属。
+    fn is_compile_time_gate(error: &ParseError) -> bool {
+        matches!(
+            error,
+            ParseError::AlsNotCompiled
+                | ParseError::LogicNotCompiled
+                | ParseError::UiMcpHttpNotCompiled
+                | ParseError::McpHttpNotCompiled
+        )
+    }
+
+    /// 判据 A: 表里**每一个**动作开关单独给出时，`batch()` 的取值必须与它在表里的
+    /// `path` 一致；两条导入是**点名**的 `WindowlessOnly` 例外。
+    ///
+    /// 红字（修复前）: `--export-wav` / `--record-wav` / `--sfz` / `--midi-in` /
+    /// `--midi-in-render` / `--midi-in-write-notes` 六条 —— 表说 `Batch`，`batch()` 说 `false`。
+    #[test]
+    fn every_action_switch_routes_exactly_as_the_shared_table_says() {
+        let mut failures: Vec<String> = Vec::new();
+        for switch in Options::action_switches() {
+            // ① 直接设字段（绕过编译期门禁）: `present` / `grant` / 路由必须三方一致。
+            let mut granted = Options::default();
+            (switch.grant)(&mut granted);
+            if !(switch.present)(&granted) {
+                failures.push(format!(
+                    "`{}`: grant 设了字段, present 却说没给",
+                    switch.name
+                ));
+            }
+            if granted.batch() != switch.selects_batch() {
+                failures.push(format!(
+                    "`{}`: batch()={} 但表说 {}",
+                    switch.name,
+                    granted.batch(),
+                    switch.selects_batch()
+                ));
+            }
+            if granted.wants_gui() != !switch.selects_batch() {
+                failures.push(format!(
+                    "`{}`: wants_gui()={} 必须是 batch() 的取反",
+                    switch.name,
+                    granted.wants_gui()
+                ));
+            }
+
+            // ② 走**解析器**（用户真正的入口）: 能解析的必须选对路径。
+            match parse_lone_switch(switch.name) {
+                Ok(parsed) => {
+                    if parsed.batch() != switch.selects_batch() {
+                        failures.push(format!(
+                            "`{}`: 解析后 batch()={} 但表说 {}",
+                            switch.name,
+                            parsed.batch(),
+                            switch.selects_batch()
+                        ));
+                    }
+                }
+                // `--headless-idle` 单独给是**成对性**用法错误（必须配 `--idle-seconds`），
+                // 三条编译期门禁开关在默认构建里也解析不成 —— 两者的**路由**归属
+                // 都已由 ① 证明，这里只登记"解析不成"的原因。
+                Err(error)
+                    if is_compile_time_gate(&error)
+                        || matches!(error, ParseError::IdleSecondsMissing) => {}
+                Err(other) => failures.push(format!(
+                    "`{}`: 单独解析失败 (不该是这个原因): {other}",
+                    switch.name
+                )),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "动作开关路由与唯一事实源 (`ACTION_SWITCHES`) 漂移 ({} 条):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// 判据 A 的**例外**（`SwitchPath::WindowlessOnly`）: 例外必须**恰好**是
+    /// 两条导入，且"只给导入 = 走 GUI ⇒ 导入不会发生"的既存口径仍然成立
+    /// （⛔ 本切片**不改**这两条的路径: 它们的行为已被 `--help` 与既有判据钉住）。
+    #[test]
+    fn the_two_imports_are_the_only_named_windowless_only_exception() {
+        let exceptions: Vec<&str> = Options::action_switches()
+            .iter()
+            .filter(|switch| !switch.selects_batch())
+            .map(|switch| switch.name)
+            .collect();
+        assert_eq!(
+            exceptions,
+            vec!["--import-midi", "--import-audio"],
+            "⛔ 例外必须**恰好**是两条导入: 多一条 = 悄悄少了一条无窗口动作; 少一条 = 悄悄换了例外"
+        );
+
+        // 只给导入: 不选批处理路径 ⇒ 进程走 GUI ⇒ 导入不会发生（既存口径）。
+        for name in ["--import-midi", "--import-audio"] {
+            let entry = Options::action_switches()
+                .iter()
+                .find(|switch| switch.name == name)
+                .expect("例外必须在表里被点名");
+            let mut options = Options::default();
+            (entry.grant)(&mut options);
+            assert!(!options.batch(), "`{name}` 自己**不**选批处理路径");
+            assert!(options.wants_gui(), "`{name}` ⇒ 进程走 GUI ⇒ 导入不会发生");
+        }
+
+        // 无窗口路径上的**执行**仍然成立: 导入 + `--save-as` = 批处理路径。
+        for name in ["--import-midi", "--import-audio"] {
+            let parsed = parse(&argv(&[name, "take.bin", "--save-as", "song.yeban"]))
+                .expect("导入 + --save-as 是合法组合");
+            assert!(
+                parsed.batch() && !parsed.wants_gui(),
+                "`{name}` + `--save-as`: 导入必须在无窗口路径上真的执行\n{parsed:?}"
+            );
+        }
+    }
+
+    /// 判据 A 的**后果**: `--midi-in-write-notes` 单独给现在会**到达** `run_batch` 里的
+    /// 用法守卫（它必须与 `--midi-in` 一起给）。修路由之前，这条守卫住在 GUI 路径
+    /// 到不了的 `run_batch` 里 —— 用户连那条用法错误都看不到。
+    #[test]
+    fn a_lone_midi_in_modifier_now_reaches_its_usage_guard_instead_of_the_gui() {
+        let options = parse(&argv(&["--midi-in-write-notes"])).expect("解析");
+        assert!(options.batch(), "⇒ `run_batch` 会被调用（守卫才存在）");
+        let error = run_batch(&options).expect_err("单独给必须是用法错误");
+        assert!(
+            matches!(error, CliError::Usage(_)),
+            "必须是用法错误而不是别的: {error:?}"
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("--midi-in-write-notes") && text.contains("--midi-in"),
+            "错误信息必须点名两个开关: {text}"
+        );
+    }
+
+    /// 判据 B: `usage_text()` 的**示例块**里每一条点了动作开关的 `yeban-app …` 行，
+    /// 解析后都必须选无窗口路径。⛔ 不许出现"帮助说在真二进制上跑过、其实开窗口"的行。
+    ///
+    /// 红字（修复前）: 5 条 —— `:499` / `:500` / `:501` / `:502` / `:506`
+    /// （`--record-wav` / `--sfz` / `--export-wav` 的组合）。
+    #[test]
+    fn every_usage_example_that_names_an_action_switch_selects_batch() {
+        const HEADING: &str = "示例 (全部已在真二进制上跑过):";
+        let usage = usage_text();
+        let lines: Vec<&str> = usage
+            .lines()
+            .skip_while(|line| line.trim() != HEADING)
+            .skip(1)
+            .filter(|line| line.trim_start().starts_with("yeban-app"))
+            .collect();
+        assert!(!lines.is_empty(), "示例块必须存在");
+
+        let action_names: Vec<&str> = Options::action_switches()
+            .iter()
+            .map(|switch| switch.name)
+            .collect();
+        let mut checked = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        for line in lines {
+            // 去掉 `# 注释` 与 `yeban-app` 这个词，得到真正的 argv。
+            let args: Vec<String> = line
+                .split('#')
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter(|token| *token != "yeban-app")
+                .map(str::to_owned)
+                .collect();
+            let named: Vec<&str> = args
+                .iter()
+                .filter(|token| action_names.contains(&token.as_str()))
+                .map(String::as_str)
+                .collect();
+            if named.is_empty() {
+                // 纯展示行（例如只给 `--theme`）: 不点名动作，不受本判据约束。
+                continue;
+            }
+            match parse(&args) {
+                Ok(parsed) => {
+                    if !parsed.batch() {
+                        failures.push(format!(
+                            "`yeban-app {}` 点了动作开关 {} 却进 GUI 路径",
+                            args.join(" "),
+                            named.join(" / ")
+                        ));
+                    }
+                }
+                Err(error) if is_compile_time_gate(&error) => {
+                    // 默认构建里 `--enable-ui-mcp-http` / `--export-logic` 示例行本来
+                    // 就被编译期门禁拒; 它们的路由归属由判据 A 的表覆盖。
+                }
+                Err(other) => {
+                    failures.push(format!("`yeban-app {}` 解析失败: {other}", args.join(" ")))
+                }
+            }
+            checked += 1;
+        }
+        assert!(
+            failures.is_empty(),
+            "示例块里有 {} 条点了动作开关却选 GUI 路径的行:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+        assert!(
+            checked >= 5,
+            "至少必须真的检查到 5 条点名动作开关的示例行 (实得 {checked})"
+        );
+    }
+
+    /// 判据 D（结构性）: 表里 `Batch` 的条数 = 单独给出后真的选 `batch()` 的动作开关条数；
+    /// `wants_gui()` 仍是 `batch()` 的取反。
+    ///
+    /// **计数规则**（单位 = [`Options::action_switches()`] 里的**表项条数**，
+    /// ⛔ 不是 `--help` 文本的行数、⛔ 不是源码里的条件数）:
+    /// `table_batch` = 表里 `path == Batch` 的条数;
+    /// `measured` = 对表里每一项各构造一份 `Options`、只 `grant` 那一个开关后
+    /// `batch() && !wants_gui()` 为真的条数。两者必须相等。
+    #[test]
+    fn the_number_of_action_switches_selecting_batch_equals_the_table() {
+        let table_batch = Options::action_switches()
+            .iter()
+            .filter(|switch| switch.selects_batch())
+            .count();
+        let table_exceptions = Options::action_switches().len() - table_batch;
+        let measured = Options::action_switches()
+            .iter()
+            .filter(|switch| {
+                let mut options = Options::default();
+                (switch.grant)(&mut options);
+                options.batch() && !options.wants_gui()
+            })
+            .count();
+        assert_eq!(
+            measured, table_batch,
+            "表里 Batch={table_batch} / 例外={table_exceptions} / 实测选 batch 的={measured}"
+        );
+        // 本切片明确要求新增的六条必须在 Batch 档（⛔ 少一条 = 能力仍然缺失）。
+        for name in [
+            "--export-wav",
+            "--record-wav",
+            "--sfz",
+            "--midi-in",
+            "--midi-in-render",
+            "--midi-in-write-notes",
+        ] {
+            let entry = Options::action_switches()
+                .iter()
+                .find(|switch| switch.name == name)
+                .unwrap_or_else(|| panic!("`{name}` 必须在唯一事实源表里"));
+            assert!(entry.selects_batch(), "`{name}` 必须自己就选无窗口路径");
         }
     }
 

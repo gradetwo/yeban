@@ -16,7 +16,13 @@
 //!
 //! 本文件**绝不**调用不带无窗口开关的命令：那会构造真窗口并进入阻塞事件循环，把 CI 挂死。
 //! 每条调用都带 `--headless` / `--headless-idle` / `--dump-elements` / `--export-elements` /
-//! `--export-midi` / `--save-as` / `--print-shortcuts` / `--help` / `--version` 之一。
+//! `--export-midi` / `--export-wav` / `--save-as` / `--print-shortcuts` / `--help` /
+//! `--version` 之一。
+//!
+//! ⚠ 上面那句曾经**漏掉 `--export-wav`**（它当时不在 `Options::batch()` 里 ⇒
+//! 不带 `--headless` 时走的是 GUI 路径）：本文件的
+//! `export_wav_runs_on_the_windowless_path_from_the_real_binary` 就是那条缺口的
+//! 回归判据 —— 它**刻意不带** `--headless`，钉的是"路由谓词自己"。
 //!
 //! `--headless-idle` 属于允许集合：它**不创建 OS 窗口**（平台是自研的
 //! `MinimalSoftwareWindow` + `SoftwareRenderer`），而且空闲秒数上限（`MAX_IDLE_SECONDS`
@@ -1551,6 +1557,65 @@ fn export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary() {
         .filter(|name| name.contains(".tmp-"))
         .collect();
     assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据 C（回归）: `--export-wav` **单独**（不给 `--headless`，也不给
+/// `SLINT_BACKEND=headless`）就必须走无窗口路径：真二进制在 [`RUN_TIMEOUT`] 内退出 0、
+/// 打印握手行 `headless ok` 与 `exported-wav:`、并真的写出可读的 WAV。
+///
+/// 为什么它**刻意不带**无窗口开关: 本切片修复前 `--export-wav` **不在**
+/// `Options::batch()` 里 ⇒ `main.rs` 把它当 GUI 调用（`main.rs` 里
+/// **0** 处 `options.export_wav`，`run_gui` 结构上不可能消费这个字段）
+/// ⇒ 进程进阻塞事件循环、既不打印 `exported-wav:` 也不写文件（本判据在修复前
+/// 会挂在 [`RUN_TIMEOUT`] 上并被 kill）。因此本判据钉的是**路由谓词**本身，
+/// 而不是导出实现（实现早有 `--headless` 下的正面判据）。
+#[test]
+fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
+    let dir = scratch_dir("export-wav-routing");
+    let source = write_real_container(&dir, "probe.yeban");
+    let out = dir.join("probe.wav");
+
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        out.to_str().expect("utf8"),
+    ]);
+    assert_eq!(
+        run.code, 0,
+        "`--export-wav` 单独给必须自己选无窗口路径; stderr={}",
+        run.stderr
+    );
+    assert!(
+        run.stdout.lines().any(|line| line == "headless ok"),
+        "⇒ 真的走了 `run_batch`（握手行是那条路径的契约）:\n{}",
+        run.stdout
+    );
+    let line = line_with(&run.stdout, "exported-wav:").expect("必须有 exported-wav: 行");
+    assert!(
+        line.contains("from=") && line.contains("probe.yeban"),
+        "来源必须明写: {line}"
+    );
+    let bytes = std::fs::metadata(&out).expect("WAV 必须真的落盘").len();
+    assert!(bytes > 0, "WAV 不能是空文件");
+    assert_eq!(
+        field(line, "bytes").as_deref(),
+        Some(bytes.to_string().as_str()),
+        "打印的字节数必须是实际落盘字节数: {line}"
+    );
+
+    // 回读: 真的是 WAV，且形状 = 导出契约（48 kHz / 立体声 / 24-bit / 8 秒）。
+    let (format, buffer) = yeban_render::wav::read_plain_wav(&out).expect("回读导出的 WAV");
+    assert_eq!(format.sample_rate, 48_000);
+    assert_eq!(format.channels, 2);
+    assert_eq!(format.bits_per_sample, 24);
+    assert_eq!(
+        buffer.len(),
+        384_000 * 2,
+        "8 秒 @ 48 kHz 立体声的帧数 × 声道"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
