@@ -3880,14 +3880,64 @@ pub fn duplicate_ops_for(
     ops
 }
 
-/// `[UI-NOTE-003]` 把卷帘的点击接到**撤销端口**上（目前只接铅笔的工具语义）。
+/// `[UI-NOTE-003]` 把卷帘的点击接到**撤销端口**上（工具矩阵的编辑语义）。
 ///
-/// 解析本身在 [`pencil_op_for`] 里（纯函数, 有判据）；这里只做三件事: 读界面状态、
-/// 交给端口提交（`commit_ops` ⇒ 撤销与提交图随之而来）、重新投影让新音符出现。
-/// **拒绝**的情形（工具不对 / 吸附不出计划 / 位置不在任何片段内）在这里就是"什么都不做"。
+/// 它**不**自己注册回调：唯一注册点是 [`install_roll_click`]（`ui.on_clicked(` 在 `src/**`
+/// 只允许一个写者）。本函数只做一件事 —— 把端口交给**同一个**派发器**重新**装一次。
+/// 因为派发器**总是**先做命中与选区更新，这次重装是"铅笔/橡皮擦到位"的**超集**，
+/// 而不是覆盖掉选区。
+///
+/// ## 它修掉的缺陷（为什么必须是一个派发器）
+///
+/// Slint 的一个 `callback` **只留一个 handler**（`i-slint-core-1.18.1/src/callbacks.rs`：
+/// "There can only be one single handler per callback."）。旧实现有两个写者：
+/// `build_main_window_with_console_tab` 注册选区、本函数再注册一个**只认铅笔**的 handler
+/// ⇒ 后者把前者整个换掉。于是默认选择工具下点音符**没有任何反应**，全部依赖选区的动作
+/// （`Delete` / `Cmd+D` / `Z`）在人手这一侧不可达。
+///
+/// 端口此刻没有活跃工程（`try_project` 如实返回 `None`）时**不重装**：
+/// `build_main_window*` 装好的只做选区的派发器不需要端口，保留它比装一个连命中视图都没有的
+/// 回调更诚实。
 pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let Some(project) = port.try_project() else {
+        return;
+    };
+    let Ok(view) = ViewState::from_project(&project) else {
+        return;
+    };
+    install_roll_click(ui, Rc::new(view), Some(Rc::clone(port)));
+}
+
+/// `[UI-NOTE-003]` 卷帘点击的**唯一派发器**（`src/**` 里 `ui.on_clicked(` 只有这一处写者）。
+///
+/// # 派发顺序（顺序本身是契约）
+///
+/// 1. **总是**命中测试并更新选区（写 `selected-note-count` / `selected-ulids` /
+///    `note-selected`，并同步状态栏）—— 无论当前是哪个工具。选择工具到此为止；
+/// 2. 再按 `Tool::click()` 落编辑：
+///    - `DrawNote` ⇒ [`pencil_op_for`] + `commit_ops`（`pencil: add note`）；
+///    - `DeleteNote` ⇒ 用刚命中的身份经 [`delete_ops_for`] + `commit_ops`
+///      （`eraser: delete note`，与键盘 `DeleteSelection` **同一个**批解析点），
+///      并清空已不存在的选区；
+///    - `SelectOrClear` 与尚未接线的剪刀 / 力度 ⇒ 什么都不做。
+///
+/// 端口是**可选**的：`None` 时（判据侧没有撤销会话、或窗口还没接端口）派发器照旧做选区，
+/// 只是铅笔 / 橡皮擦如实什么都不做 —— 与"没有撤销会话就没有编辑写入面"同一取向。
+///
+/// `fallback_view` 只在端口缺席或它此刻没有工程时用于命中测试；端口在场时每次点击都从
+/// **当前**工程重新投影，因此铅笔刚写下的音符也能立刻被点中（不拿一份过期视图做命中）。
+fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Option<Rc<UndoPort>>) {
+    // 选区的事实源是界面属性 `selected-ulids`（`apply_view` 由它重算标志）⇒ 重装派发器时
+    // 从它把内存镜像播种回来，免得"重新接线"把已有选区丢成空集。
+    let selection = Rc::new(RefCell::new(crate::input::Selection::new()));
+    {
+        use slint::Model as _;
+        let mut sel = selection.borrow_mut();
+        for id in ui.get_selected_ulids().iter() {
+            sel.insert(id.as_str());
+        }
+    }
     let weak = ui.as_weak();
-    let port = Rc::clone(port);
     ui.on_clicked(move |x, y| {
         let Some(ui) = weak.upgrade() else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -3896,38 +3946,105 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
         let scroll = ui.get_roll_scroll_x();
         let width = slint::ComponentHandle::window(&ui).size().width as f32;
         // 权威会话可能被控制面关掉工程（`try_project` 如实返回 `None`）——
-        // 那时**什么都不做**，而不是在一个 Slint 回调里 panic。
-        let Some(project) = port.try_project() else {
-            return;
-        };
-        let Some(op) = pencil_op_for(
-            &project,
-            scroll,
-            x,
-            y,
-            ROLL_SNAP_GRID_TICKS,
-            ui.get_active_tool(),
-        ) else {
-            // 工具不对、吸附不出计划、或位置不在任何片段内 ⇒ **拒绝**（第 234 轮的决定）。
-            return;
-        };
-        let now_ms = now_ms();
-        if port
-            .commit_ops(now_ms, "pencil: add note", vec![op])
-            .is_err()
+        // 那时退回装配时的视图，而不是在一个 Slint 回调里 panic。
+        let project = port.as_ref().and_then(|port| port.try_project());
+        let fresh = project
+            .as_ref()
+            .and_then(|project| ViewState::from_project(project).ok());
+        let view: &ViewState = fresh.as_ref().unwrap_or(&fallback_view);
+        // ---- 第一段：命中 + 选区（**总是**执行）----
+        // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
+        let hit = view.hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX);
         {
-            return;
+            let mut sel = selection.borrow_mut();
+            match hit {
+                Some(index) => sel.select_only(&view.notes[index].id),
+                None => sel.clear(),
+            }
+            ui.set_selected_note_count(i32::try_from(sel.len()).unwrap_or(i32::MAX));
+            // 把选中 id 写回界面属性 —— `apply_view` 由它重算标志, 保证重注入后仍对齐。
+            let ids: Vec<slint::SharedString> = sel.iter().map(|id| id.as_str().into()).collect();
+            ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(ids)));
+            let visible = view.visible_notes(scroll, width);
+            let flags = crate::input::flags_for_ids(
+                &sel.iter().cloned().collect::<Vec<_>>(),
+                &visible.ulids,
+            );
+            ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
         }
-        // 重新投影, 让新音符出现在界面上（与 `refresh_undo` 同一手法）。
-        // 行高布局与横向缩放（`ADR-0004` S1 / Q5）都是视图态 ⇒ 重投影必须从窗口读回来，
-        // 否则"调过缩放之后用铅笔写一个音符"会把缩放静默清零。
-        if let Some(refreshed) = port
-            .try_project()
-            .and_then(|project| project_with_view_state(&project, &ui).ok())
-        {
-            apply_view(&ui, &refreshed, width, scroll);
+        // 台账 R9：这一次点击**改的就是** `selected-ulids`，而这条回调**不**重投影
+        // ⇒ 状态栏那一格必须在这里同步刷新，否则点击之后它停在旧选区上（= 新的假话）。
+        publish_status_bar(&ui, view);
+        // ---- 第二段：按工具落编辑 ----
+        let active_tool = ui.get_active_tool();
+        let Some(tool) = u8::try_from(active_tool)
+            .ok()
+            .and_then(crate::input::Tool::from_digit)
+        else {
+            return;
+        };
+        match tool.click() {
+            // 选择工具的全部语义就是上面那一段（命中 ⇒ 单选 / 空白 ⇒ 清除）。
+            crate::input::ToolClick::SelectOrClear => {}
+            crate::input::ToolClick::DrawNote => {
+                let (Some(project), Some(port)) = (project.as_ref(), port.as_ref()) else {
+                    return;
+                };
+                let Some(op) =
+                    pencil_op_for(project, scroll, x, y, ROLL_SNAP_GRID_TICKS, active_tool)
+                else {
+                    // 吸附不出计划、或位置不在任何片段内 ⇒ **拒绝**（第 234 轮的决定）。
+                    return;
+                };
+                if port
+                    .commit_ops(now_ms(), "pencil: add note", vec![op])
+                    .is_err()
+                {
+                    return;
+                }
+                reproject_roll(&ui, port, width, scroll);
+            }
+            crate::input::ToolClick::DeleteNote => {
+                let (Some(project), Some(port), Some(index)) =
+                    (project.as_ref(), port.as_ref(), hit)
+                else {
+                    return;
+                };
+                let ops = delete_ops_for(project, &[view.notes[index].id.clone()]);
+                if ops.is_empty() {
+                    return;
+                }
+                if port
+                    .commit_ops(now_ms(), "eraser: delete note", ops)
+                    .is_err()
+                {
+                    return;
+                }
+                // 被删的身份已经不存在 ⇒ 选区必须清空（与键盘 `DeleteSelection` 同一取向，
+                // 否则 `selected-note-count` 停在旧值上、与重算出来的标志分叉）。
+                ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(Vec::<
+                    slint::SharedString,
+                >::new(
+                ))));
+                ui.set_selected_note_count(0);
+                reproject_roll(&ui, port, width, scroll);
+            }
+            // 剪刀 / 力度工具的点击语义尚未接线（与铅笔接上之前的状态同款：如实不做）。
+            crate::input::ToolClick::SplitNote | crate::input::ToolClick::SelectVelocity => {}
         }
     });
+}
+
+/// 卷帘编辑（铅笔 / 橡皮擦）提交之后的**重投影**：视图态从窗口读回来，
+/// 因此"调过行高 / 缩放之后编辑一个音符"不会把那些视图态静默清零
+/// （与 [`wire_roll_edit`] 旧实现的两处逐字同一手法）。
+fn reproject_roll(ui: &MainWindow, port: &UndoPort, width: f32, scroll: f32) {
+    if let Some(refreshed) = port
+        .try_project()
+        .and_then(|project| project_with_view_state(&project, ui).ok())
+    {
+        apply_view(ui, &refreshed, width, scroll);
+    }
 }
 
 /// 撤销动作之后把界面拉回**模型读数**（显示态）+ **投影**（工程画面）。
@@ -4156,9 +4273,12 @@ pub fn build_main_window_with_console_tab(
     // `[ROAD-M3-002]` 滚动手势（账本第 199 轮）：偏移由**宿主**拥有 —— 因为裁剪也在宿主侧。
     // 卷帘只报告增量, 宿主 clamp + 累加后**重新注入**；不用 `Flickable`, 否则会与宿主偏移双重计算。
     let scroll = std::rc::Rc::new(std::cell::RefCell::new(0.0_f32));
-    // `[UI-NOTE-003]` 选区：点击的**命中与语义**都在 Rust 侧（账本第 495/496 轮），界面只报坐标。
-    let selection = std::rc::Rc::new(std::cell::RefCell::new(crate::input::Selection::new()));
+    // `[UI-NOTE-003]` 选区与工具派发共用**唯一**的点击派发器 `install_roll_click`：
+    // 这里先装"只做选区"的形态（此刻还没有撤销端口），`wire_roll_edit` 随后用**同一个**
+    // 派发器重装一次把铅笔/橡皮擦接上。两次装的是同一份实现 ⇒ 重装是超集而不是覆盖
+    // （旧实现两个写者各写一半，后装的铅笔派发器把选区写者挤掉 —— 缺陷见 `wire_roll_edit`）。
     let view_snapshot = std::rc::Rc::new(view.clone());
+    install_roll_click(&ui, std::rc::Rc::clone(&view_snapshot), None);
     {
         let weak = ui.as_weak();
         let scroll = std::rc::Rc::clone(&scroll);
@@ -4179,39 +4299,6 @@ pub fn build_main_window_with_console_tab(
         });
     }
 
-    {
-        let weak = ui.as_weak();
-        let selection = std::rc::Rc::clone(&selection);
-        let view_snapshot = std::rc::Rc::clone(&view_snapshot);
-        ui.on_clicked(move |x, y| {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            let scroll = ui.get_roll_scroll_x();
-            let width = slint::ComponentHandle::window(&ui).size().width as f32;
-            // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
-            let hit = view_snapshot.hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX);
-            let mut sel = selection.borrow_mut();
-            match hit {
-                Some(index) => sel.select_only(&view_snapshot.notes[index].id),
-                None => sel.clear(),
-            }
-            ui.set_selected_note_count(i32::try_from(sel.len()).unwrap_or(i32::MAX));
-            // 把选中 id 写回界面属性 —— `apply_view` 由它重算标志, 保证重注入后仍对齐。
-            let ids: Vec<slint::SharedString> = sel.iter().map(|id| id.as_str().into()).collect();
-            ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(ids)));
-            let visible = view_snapshot.visible_notes(scroll, width);
-            let flags = crate::input::flags_for_ids(
-                &sel.iter().cloned().collect::<Vec<_>>(),
-                &visible.ulids,
-            );
-            ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
-            // 台账 R9：这一次点击**改的就是** `selected-ulids`，而这条回调**不**重投影
-            // ⇒ 状态栏那一格必须在这里同步刷新，否则点击之后它停在旧选区上（= 新的假话）。
-            publish_status_bar(&ui, &view_snapshot);
-        });
-    }
     Ok(ui)
 }
 

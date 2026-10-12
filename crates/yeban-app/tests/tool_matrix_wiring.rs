@@ -354,3 +354,54 @@ fn active_tool_still_has_exactly_the_two_host_writers() {
         "撤销端口在场时，工具选择臂必须同时记一条 `UiAction::SelectTool` 动作日志\n{tool_arm}"
     );
 }
+
+// =========================================================================
+// ④ 点击派发器的写者计数：选区与工具语义共用**同一个** handler
+// =========================================================================
+
+/// 判据（**写者计数 + 两段语义在同一个闭包里**）。
+///
+/// ## 缺陷（本判据钉住的就是它）
+///
+/// Slint 的一个 `callback` **只留一个 handler**（`i-slint-core-1.18.1/src/callbacks.rs`：
+/// "There can only be one single handler per callback."）。旧实现有两个 `ui.on_clicked(` 写者：
+/// `build_main_window_with_console_tab` 注册选区、`wire_roll_edit` 再注册一个**只认铅笔**的
+/// handler ⇒ 后者把前者整个换掉，默认选择工具下点音符没有任何反应，全部依赖选区的动作
+/// （`Delete` / `Cmd+D` / `Z`）在人手这一侧不可达。机械读数：修复前 `src/**` 里
+/// `ui.on_clicked(` 出现 **2** 次。
+///
+/// 唯一正确的接法是**一个**派发器：先做命中 + 选区，再按 `Tool::click()` 落编辑。
+/// 本判据把"只有一个写者"和"两段都在同一个闭包里"都钉死；第二条防止有人把它拆回两个写者
+/// （拆开就必然把选区或工具语义中的一半挤掉）。
+#[test]
+fn roll_click_has_exactly_one_dispatcher_writer() {
+    let src = all_src_rs();
+    assert_eq!(
+        count(&src, "ui.on_clicked("),
+        1,
+        "`ui.on_clicked(` 在 `src/**` 里必须恰好出现一次（唯一派发器 \
+         `host::install_roll_click`），实际 {} 次 —— 多出来的那一次会用后装 handler 覆盖先装的 \
+         （Slint 一个回调只留一个 handler），选区与工具语义必然丢掉一个",
+        count(&src, "ui.on_clicked(")
+    );
+
+    let host = code_only(&read("src/host.rs"));
+    let dispatcher = block(&host, "fn install_roll_click(", "fn reproject_roll(");
+    assert!(
+        dispatcher.contains("hit_test_visible"),
+        "派发器必须**总是**做命中测试（选择工具的全部语义依赖它）\n{dispatcher}"
+    );
+    assert!(
+        dispatcher.contains("set_selected_ulids"),
+        "派发器必须写 `selected-ulids`（选区的唯一事实源），否则点音符仍然没有选区\n{dispatcher}"
+    );
+    assert!(
+        dispatcher.contains("Tool::from_digit") && dispatcher.contains("tool.click()"),
+        "派发器必须按**同一个** `Tool` 口径（`Tool::from_digit` ⇒ `Tool::click()`）分派，\
+         而不是把铅笔的数字硬编码成第二个工具真相源\n{dispatcher}"
+    );
+    assert!(
+        dispatcher.contains("pencil_op_for") && dispatcher.contains("delete_ops_for"),
+        "派发器必须把铅笔接 `pencil_op_for`、橡皮擦接 `delete_ops_for`\n{dispatcher}"
+    );
+}

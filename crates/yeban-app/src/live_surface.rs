@@ -1750,6 +1750,13 @@ pub fn build_live_ui_with(
     // 端口时接上；`options.undo` 为 `None` 的既有判据因此照旧"没有写入面"，行为一位不变。
     if let Some(undo) = options.undo.as_ref() {
         host::wire_mixer_edit(&window, undo);
+        // `[UI-NOTE-003]` 卷帘的工具派发（铅笔 / 橡皮擦）与产品进程
+        // （`main.rs` 的 `host::wire_roll_edit`）调的是**同一个**函数。
+        //
+        // 选区的点击派发器**已经**由 `host::build_main_window_with_console_tab` 装好
+        // （`install_roll_click` 的唯一注册点）⇒ 无头面与生产面从此不再分叉：
+        // 有端口时两边都"选区 + 铅笔 + 橡皮擦"，没端口时两边都只做选区。
+        host::wire_roll_edit(&window, undo);
     }
     // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与产品进程
     // （`main.rs` 的 `run_gui`）调的是**同一个** `host::wire_module_actions`。
