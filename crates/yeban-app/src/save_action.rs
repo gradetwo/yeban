@@ -8,7 +8,7 @@
 //! > `#[path]` 装入 ⇒ 产品二进制里没有 `ui/force_save` 这条 UI 命令）
 //!
 //! 那是一处"**保存 UI**"的缺口，不是写者边界的缺口：能力（`ProjectAuthorityHandle::save_to`、
-//! [`save_project_file`]）早已判据化，只是**用户够不到**。本模块把"保存"从测试目标的装配里
+//! [`crate::save::save_project_file`]）早已判据化，只是**用户够不到**。本模块把"保存"从测试目标的装配里
 //! 拿出来，变成一个**产品路径上的普通函数**（[`dispatch_save`]），由生产窗口的回调
 //! （[`crate::host::wire_save`]）调用。
 //!
@@ -20,7 +20,7 @@
 //! 一个非默认 feature**，并把整套 `LivePort` / `PortAdapter` / `ControlPlane` 装配拉进
 //! 发行图 —— 那是一个大重构，而它换来的能力（"按一下保存"）只需要下面这几十行。
 //! 因此选**小**：产品路径自己拿 [`dispatch_save`]，落点与测试装配**逐字相同**
-//! （同一个 `save_to`、同一个 [`save_project_file`]），依赖图一位不变。
+//! （同一个 `save_to`、同一个 [`crate::save::save_project_file`]），依赖图一位不变。
 //!
 //! ## 三个情形的落点（这就是本模块的全部策略）
 //!
@@ -28,7 +28,7 @@
 //! | :--- | :--- | :--- |
 //! | 挂了控制面且会话**可写**（生产 `SessionSource::WritableFile`） | `ProjectAuthorityHandle::save_to` —— 字节由那个 `Domain` 自己产出（工程 + 提交图谱 + 资产池），走唯一原子入口 | 那份会话是这份文档的**唯一**磁盘写者；宿主的本地路径在它持排他锁期间**必然**被拒，所以本地**不能**是这里的落点 |
 //! | 挂了控制面但会话**只读**（`SessionSource::File` / 内存样本） | **拒绝**（[`SaveOutcome::Failed`]），**不回退**本地路径 | 回退会把"权威说不能写"偷偷换成一个仍在写的分支（选项 (c) 被拒的形态）。诚实做法是如实报出原因 |
-//! | **没有**控制面（默认构建 / 运行期开关关着 / 拿不到锁没挂上） | [`save_project_file`]（本地原子写 + 取 `.yeban.lock` 的排他写建议锁） | 进程里只有它一个写者，本地路径就是那条路；`--save-as` 今天就走它 |
+//! | **没有**控制面（默认构建 / 运行期开关关着 / 拿不到锁没挂上） | [`crate::save::save_archive_file`]（本地原子写 + 取 `.yeban.lock` 的排他写建议锁；`history.dag` 空时与 [`crate::save::save_project_file`] 逐字节相同） | 进程里只有它一个写者，本地路径就是那条路，因此本地路径必须把**活会话的图谱**写出去；`--save-as` 今天就走它 |
 //!
 //! 三条都由**同一个函数**给出，因此不存在"某条保存路径忘了走权威"的形态：
 //! 只要 `authority` 是 `Some`，本地路径那里就**不可达**（不是"也调一下"）。
@@ -43,9 +43,10 @@
 
 use std::path::PathBuf;
 
+use yeban_model::container::ProjectArchive;
 use yeban_model::project::YebanProjectV1;
 
-use crate::save::{SaveError, save_project_file};
+use crate::save::{SaveError, save_archive_file};
 
 #[cfg(feature = "in-process-mcp")]
 use crate::mcp_mount::ProjectAuthorityHandle;
@@ -66,26 +67,52 @@ type AuthorityParam<'a> = Option<&'a ProjectAuthorityHandle>;
 #[cfg(not(feature = "in-process-mcp"))]
 type AuthorityParam<'a> = Option<&'a AuthorityHandle>;
 
-/// 一次保存请求：**目标路径** + "若没有权威时用哪一份工程"。
+/// 一次保存请求：**目标路径** + "若没有权威时写哪一份归档"。
 ///
 /// 为什么目标路径是 `Option<PathBuf>` 而不是 `PathBuf`：`.yeban` 的"内存样本"
 /// （`--project-sample`，或没给 `--open`）**没有磁盘对应物**，因此它没有"保存到哪"。
 /// 那时如实报 [`SaveOutcome::Failed`]（"未配置保存路径"），而不是猜一个文件名。
+///
+/// 为什么是**归档**（`project` + `history.dag` + 资产池）而不是一个裸工程：本地路径
+/// 就是 `.yeban` 的磁盘写者，而 `.yeban` 的第二层状态就是提交图谱。只拿得到一个
+/// `YebanProjectV1` 的调用方把图谱留空（[`SaveRequest::new`]），于是写出的容器是
+/// "空历史"——那是**如实**的空（样本没有历史），不是保存丢掉的。界面路径拿得到活会话的
+/// 图谱 ⇒ 用 [`SaveRequest::with_history_dag`] 把它一起交出去。
 #[derive(Debug, Clone)]
 pub struct SaveRequest {
     /// 保存目标。`None` = 这个会话没有磁盘对应物。
     pub target: Option<PathBuf>,
-    /// GUI 当前持有的工程 —— **只在没有权威时**使用（有权威时字节由权威自己产出）。
-    pub project: YebanProjectV1,
+    /// 要写出的一份归档 —— **只在没有权威时**使用（有权威时字节由权威自己产出）。
+    pub archive: ProjectArchive,
 }
 
 impl SaveRequest {
-    /// 有目标路径的请求。
+    /// 有目标路径的请求：图谱与资产池留空。
+    ///
+    /// 空图谱 = "这份文档没有历史"，与本入口此前的行为逐字相同（
+    /// [`crate::save::save_project_file`] 就是把容器写成"空历史 / 空资产"）。
     #[must_use]
     pub fn new(target: PathBuf, project: YebanProjectV1) -> Self {
+        Self::with_history_dag(target, project, Vec::new())
+    }
+
+    /// 有目标路径、且**带着提交图谱**（`history.dag` 的字节）的请求。
+    ///
+    /// 调用方只能用它交出**已经编码好**的图谱字节，编码口径仍只有
+    /// `yeban_model::commit::encode_history_dag` 一份（本模块不认识 JSON）。
+    #[must_use]
+    pub fn with_history_dag(
+        target: PathBuf,
+        project: YebanProjectV1,
+        history_dag: Vec<u8>,
+    ) -> Self {
         Self {
             target: Some(target),
-            project,
+            archive: ProjectArchive {
+                project,
+                history_dag,
+                assets: Vec::new(),
+            },
         }
     }
 }
@@ -190,7 +217,11 @@ pub fn dispatch_save(request: &SaveRequest, authority: AuthorityParam<'_>) -> Sa
         };
     }
     // 没有权威 ⇒ 本地原子写（唯一写者的本地形态）。它自己取 `.yeban.lock` 排他写建议锁。
-    match save_project_file(&request.project, target) {
+    //
+    // 落点用**归档**入口而不是裸工程入口：GUI 的活会话既有工程也有提交图谱，而
+    // `.yeban` 的第二层状态就是图谱。`history.dag` 为空时两个入口写出的字节**逐字节相同**
+    // （见 `save::save_archive_file` 的文档），因此这是一条落点，不是两条会漂移的路。
+    match save_archive_file(&request.archive, target) {
         Ok(report) => SaveOutcome::Saved {
             path: report.path,
             bytes: report.bytes,

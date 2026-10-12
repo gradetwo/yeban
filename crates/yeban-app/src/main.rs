@@ -394,12 +394,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     //
     // 目标路径由 [`yeban_app::cli::ProjectSource::save_target`] 从 `--open` 的那个文件给出；
     // 样本形态没有磁盘对应物 ⇒ 保存会**如实报错**（不是假成功，也不是猜一个文件名）。
+    //
+    // 第三个参数是**活会话**：保存按钮每次点击都从它现读"工程 + 提交图谱"，因此写出去的
+    // 是此刻的那一版（`SaveStatus.project` 只是拿不到活会话时的兜底快照）。默认构建里
+    // 这个端口就是 `open_undo_session` 建的那一个；挂了控制面时它是权威端口的委派者。
     host::wire_save(
         &ui,
         host::SaveStatus {
             target: loaded.source.save_target(),
             project: loaded.archive.project.clone(),
         },
+        Some(Rc::clone(&undo_port)),
         #[cfg(feature = "in-process-mcp")]
         in_process_mcp
             .as_ref()
@@ -493,19 +498,47 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
 /// 因此模型侧的提交 / 逆操作只有一份实现；差别只在"谁是权威"：
 /// 挂上了控制面时权威是那个 `Domain`（[`UndoPort::from_authority`]），没有时是这一份。
 ///
+/// ## `history.dag`：读的一侧（与保存那一侧成对）
+///
+/// 保存路径把活会话的图谱写进容器（`host::wire_save`），因此打开必须把它**读回来**，
+/// 否则"撤销 → 保存 → 重开"之后历史就断了 —— 这正是本函数此前只接工程、不接图谱
+/// 留下的缺口（`--open` 的容器层已经保真读出 `archive.history_dag`）。
+///
+/// 判定用与 `yeban-mcp` 同一份口径（[`yeban_model::decode_history_dag`]）：
+/// 空条目 ⇒ 新会话（一条根提交）；合法图谱 ⇒ `open_with_graph`（它自己再拒"没有 `main`
+/// 分支"的半个历史）；非法 JSON / 不自洽的图谱 ⇒ **如实报错**，⛔ 不降级成空历史
+/// （降级等于把用户的历史悄悄丢掉 —— 与 `store.rs` 的拒绝口径一致）。
+///
 /// # Errors
 ///
-/// 根提交被模型拒绝（容器版本门 / 结构校验不通过）。
+/// 根提交被模型拒绝（容器版本门 / 结构校验不通过），或 `history.dag` 不是合法的
+/// `CommitGraph`（`ARCH-OPS-002`）。
 fn open_undo_session(
     source: &str,
     loaded: &cli::Loaded,
     now_ms: u64,
 ) -> Result<UndoSession, cli::CliError> {
-    UndoSession::open(source, "yeban-app", loaded.archive.project.clone(), now_ms).map_err(
-        |error| cli::CliError::Ui {
-            detail: format!("撤销会话无法初始化: {error}"),
-        },
-    )
+    let graph = yeban_model::decode_history_dag(&loaded.archive.history_dag).map_err(|error| {
+        cli::CliError::Ui {
+            detail: format!(
+                "`{}` 的 `history.dag` 无法恢复（{error}）—— 拒绝猜一个空历史",
+                source
+            ),
+        }
+    })?;
+    match graph {
+        Some(graph) => UndoSession::open_with_graph(
+            source,
+            "yeban-app",
+            loaded.archive.project.clone(),
+            graph,
+            now_ms,
+        ),
+        None => UndoSession::open(source, "yeban-app", loaded.archive.project.clone(), now_ms),
+    }
+    .map_err(|error| cli::CliError::Ui {
+        detail: format!("撤销会话无法初始化: {error}"),
+    })
 }
 
 /// `[ROAD-M4-001]` 形态 A 的运行态挂载（**只在 `--features in-process-mcp` 下存在**）。

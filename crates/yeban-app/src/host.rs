@@ -54,16 +54,21 @@ use crate::scene::DemoScene;
 use crate::ui::{MainWindow, ThemeState, YebanTheme};
 use crate::undo::{UiAction, UndoPort};
 
-/// [`wire_save`] 的**装配输入**：保存到哪 + 没有权威时用哪一份工程。
+/// [`wire_save`] 的**装配输入**：保存到哪 + 拿不到活会话时用哪一份工程。
 ///
-/// 为什么把这两样捆成一个结构体：它们是"保存这个动作"在界面这一侧的全部输入，
-/// 而**权威**（有的话）由 `wire_save` 的第二个参数单独给 —— 于是"有权威时
-/// `project` 字段不被使用"这件事在签名上是可见的，而不是埋在函数体里。
+/// 为什么把这两样捆成一个结构体：它们是"保存这个动作"在界面这一侧**只来自装配期**的
+/// 全部输入，而运行期的两样（活会话 / 控制面权威）由 `wire_save` 的另外两个参数单独给
+/// —— 于是"有权威时 `project` 字段不被使用"这件事在签名上是可见的，而不是埋在函数体里。
+///
+/// ⚠ 这里的那一份工程是**装配时刻的快照**，⛔ 不是"界面此刻的工程"。界面上的保存
+/// 每次都优先从**活会话**（[`wire_save`] 的 `live_port`）现读工程与提交图谱，只有
+/// 拿不到活会话时才退回这个快照（见 [`wire_save`] 的回调体）。
 #[derive(Debug, Clone)]
 pub struct SaveStatus {
     /// 保存目标（`None` = 这个会话没有磁盘对应物，保存会从此如实报错）。
     pub target: Option<std::path::PathBuf>,
-    /// GUI 当前持有的工程（**只在没有控制面权威时**被 `dispatch_save` 使用）。
+    /// **装配时刻**的那一份工程（只在没有活会话可读、且没有控制面权威时被
+    /// `dispatch_save` 使用）。
     pub project: yeban_model::YebanProjectV1,
 }
 
@@ -2320,11 +2325,17 @@ pub fn wire_keys(ui: &MainWindow, context: Rc<RefCell<InputContext>>, undo: Opti
 /// 拒绝的原因（谁占着 `.yeban.lock`、会话是不是只读）由
 /// [`crate::save_action::dispatch_save`] 写在消息里，这里**不再做第二次分类**。
 ///
-/// 工程从哪来：[`SaveRequest::project`]。有权威时它**不被使用**（字节由权威自己产出，
-/// 见 `save_action` 模块文档），因此"界面缓存陈旧 ⇒ 写错内容"不可能发生。
+/// 工程从哪来：[`SaveRequest::archive`]。有权威时它**不被使用**（字节由权威自己产出，
+/// 见 `save_action` 模块文档）。**没有**权威时它从 `live_port` **现读** —— 因此
+/// "界面缓存陈旧 ⇒ 写错内容"不可能发生：写出去的工程与提交图谱就是活会话此刻持有的
+/// 那一份，不是装配时刻的快照。
+///
+/// `live_port` 为 `None`（判据侧没有撤销会话 / 窗口还没接端口）时退回 `port.project`
+/// 那份快照，并按"没有历史"写出空 `history.dag`（与此前行为逐字相同）。
 pub fn wire_save(
     ui: &MainWindow,
     port: SaveStatus,
+    live_port: Option<Rc<UndoPort>>,
     #[cfg(feature = "in-process-mcp")] authority: Option<crate::mcp_mount::ProjectAuthorityHandle>,
     #[cfg(not(feature = "in-process-mcp"))]
     #[cfg_attr(not(feature = "in-process-mcp"), allow(unused_variables))]
@@ -2342,9 +2353,30 @@ pub fn wire_save(
         let authority = authority.as_ref();
         #[cfg(not(feature = "in-process-mcp"))]
         let authority = None;
+        // 保存的是**此刻**的活会话：工程 + 提交图谱。编码口径只有
+        // `yeban_model::commit::encode_history_dag` 一份（本处不写第二份序列化）。
+        // 目标路径是**装配期**的知识（`--open` 的那个文件），不随会话变；它保持
+        // `Option`，于是"没有磁盘对应物"仍然如实报 `SaveStage::NoTarget`。
+        //
+        // ⚠ 工程与图谱**一次**从同一个端口读出（同一个 binding）：分两次读会给
+        // "保存的那一版"与"图谱的那一版"留下漂移的余地。
+        let live = live_port
+            .as_ref()
+            .and_then(|live| live.try_project().map(|project| (project, live.graph())));
         let request = crate::save_action::SaveRequest {
             target: port.target.clone(),
-            project: port.project.clone(),
+            archive: match live {
+                Some((project, graph)) => yeban_model::container::ProjectArchive {
+                    project,
+                    history_dag: yeban_model::commit::encode_history_dag(&graph),
+                    assets: Vec::new(),
+                },
+                None => yeban_model::container::ProjectArchive {
+                    project: port.project.clone(),
+                    history_dag: Vec::new(),
+                    assets: Vec::new(),
+                },
+            },
         };
         let outcome = crate::save_action::dispatch_save(&request, authority);
         apply_save_outcome(&ui, &outcome);

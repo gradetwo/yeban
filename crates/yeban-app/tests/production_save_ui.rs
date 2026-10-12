@@ -174,12 +174,18 @@ fn the_production_window_save_entry_writes_through_the_mounted_authority() {
         .expect("窗口尺寸定下来之后再注入一次布局");
 
     // 生产装配（与 `run_gui` 同一条）：目标路径来自 `--open` 的那个文件。
+    //
+    // 第三参数 = **活会话**。这里刻意用**装配时刻**的那一份工程（`before`，正是
+    // `run_gui` 交给 `SaveStatus.project` 的那个快照），而不是"权威此刻那一版" ——
+    // 这样"步 3 写出来的必须是权威的当前版、不是快照版"这件事才有承重的判据地位。
+    let live_port = std::rc::Rc::new(yeban_app::undo::UndoPort::from_authority(authority.clone()));
     host::wire_save(
         &ui,
         host::SaveStatus {
             target: Some(project_path.clone()),
-            project: authority.project().expect("权威有活跃工程"),
+            project: before.clone(),
         },
+        Some(live_port),
         Some(authority.clone()),
     );
     assert_eq!(
