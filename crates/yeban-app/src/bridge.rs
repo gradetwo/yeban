@@ -441,6 +441,30 @@ pub fn clip_at_tick(
     hit
 }
 
+/// `[UI-NOTE-003]` 力度车道容器的高度（`.slint` 的 `y: parent.height - 44px; height: 44px;`）。
+///
+/// 与 [`PITCH_LANE_HEIGHT_PX`] 一样, 这是"界面画多少 / 宿主算多少"的**两处真相**候选 ⇒
+/// 值集中在这里, 并由 `slint_text_contracts_for_colors_and_pitch_lanes` 对账（改任一处都变红）。
+pub const VELOCITY_LANE_HEIGHT_PX: f32 = 44.0;
+
+/// `[UI-NOTE-003]` 满力度（127）时的力度柱高（`.slint` 的 `28px * velocity` 里的 28）。
+pub const VELOCITY_BAR_MAX_HEIGHT_PX: f32 = 28.0;
+
+/// `[UI-NOTE-003]` 力度车道底沿留白（`.slint` 的 `parent.height - 4px - …` 里的 4）。
+///
+/// 口径：**力度 0** 的柱底沿就在 `车道高 - 4`，力度 127 的柱顶沿在 `车道高 - 4 - 28`
+/// （见 [`VelocityLaneGeometry::velocity_at_lane_y`]）。
+pub const VELOCITY_LANE_BOTTOM_MARGIN_PX: f32 = 4.0;
+
+/// `[UI-NOTE-003]` 力度柱宽（`.slint` 的 `width: 6px`）。
+pub const VELOCITY_BAR_WIDTH_PX: f32 = 6.0;
+
+/// `[UI-NOTE-003]` 力度柱左沿相对"琴键列 + 内缩"的偏移（`.slint` 的 `+ 30px`）。
+///
+/// ⚠ 这个 `30` 此前**两处都没有名字**（`bridge.rs` 的自判据里是手抄值，`.slint` 里是字面量）；
+/// 本切片给它一个名字，宿主侧因此不再需要手抄。
+pub const VELOCITY_BAR_OFFSET_X_PX: f32 = 30.0;
+
 /// `[UI-NOTE-003]` 力度车道的**几何**（界面侧的值集中在这里, 免得命中测试去猜）。
 ///
 /// 数值来自 `piano_roll.slint` 的柱体：`x: 56px + Tokens.space-5 + note-positions[i] + 30px`、
@@ -456,6 +480,41 @@ pub struct VelocityLaneGeometry {
     pub bar_width: f32,
     /// 满力度时的柱高（28px）。
     pub bar_max_height: f32,
+}
+
+impl VelocityLaneGeometry {
+    /// `.slint` 的**唯一**一份力度车道几何（生产唯一构造点；⛔ 调用方不得各写一份字面量）。
+    #[must_use]
+    pub const fn roll_velocity_lane() -> Self {
+        Self {
+            lane_height: VELOCITY_LANE_HEIGHT_PX,
+            offset_x: ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + VELOCITY_BAR_OFFSET_X_PX,
+            bar_width: VELOCITY_BAR_WIDTH_PX,
+            bar_max_height: VELOCITY_BAR_MAX_HEIGHT_PX,
+        }
+    }
+
+    /// `[UI-NOTE-003]` **车道内 y → 绝对力度**（`0..=127`）—— `.slint` 画柱的那个映射的反函数。
+    ///
+    /// 口径（三条都是决定）：
+    /// - **绝对**：指针的 y 决定力度本身，⛔ 不是"相对起点的增量"（那正是 `[UI-NOTE-003]`
+    ///   力度臂的子裁决 ③：力度车道就是这个意思）；
+    /// - 柱底沿（`lane_height - bottom_margin`）= 0，往上 `bar_max_height` 像素 = 127；
+    ///   区间**外**一律**夹紧**（拖到车道上方 ⇒ 127，下方 ⇒ 0）；
+    /// - 非有限 y ⇒ `None`（调用方**什么都不做** —— 与 `note_move_delta_for` 对非有限输入的取向相同，
+    ///   ⛔ 不把 NaN 静默当成 0）。
+    #[must_use]
+    pub fn velocity_at_lane_y(self, lane_y: f32) -> Option<u8> {
+        if !lane_y.is_finite() {
+            return None;
+        }
+        let bottom = self.lane_height - VELOCITY_LANE_BOTTOM_MARGIN_PX;
+        let fraction = ((bottom - lane_y) / self.bar_max_height).clamp(0.0, 1.0);
+        // 127 是 `yeban_model::music::MIDI_VELOCITY_MAX`（模型层唯一真相源）。
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let velocity = (fraction * f32::from(yeban_model::music::MIDI_VELOCITY_MAX)).round() as u8;
+        Some(velocity.min(yeban_model::music::MIDI_VELOCITY_MAX))
+    }
 }
 
 impl ViewState {
@@ -3337,29 +3396,33 @@ mod tests {
     fn velocity_bar_hit_test_finds_the_bar_and_ignores_zero_velocity() {
         // 判据: ① 落在某根柱上 ⇒ 返回该音符; ② 车道内空白 ⇒ None;
         // ③ 力度 0 的音符**没有可见柱**（高 0）⇒ 点在它该在的横坐标上也不得命中;
-        // ④ 与音符命中同一口径: 重叠取最后绘制者（此处只断言"返回可见集合里的下标"）。
+        // ④ 与音符命中同一口径: 重叠取最后绘制者（此处只断言"返回可见集合里的下标"）;
+        // ⑤ 本切片：柱高映射的**反函数** `velocity_at_lane_y` 与投影口径互逆。
         let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
-        let geometry = VelocityLaneGeometry {
-            lane_height: 44.0,
-            // 与 `piano_roll.slint` 的 `x: 56px + Tokens.space-5 + … + 30px` 同源。
-            // 旧值写 `8.0`（应为 `NOTE_INSET_X_PX` = 12）⇒ 偏左 4px；而本判据的探针
-            // 横坐标也由 `offset_x` 推出 ⇒ 它结构上看不见那 4px，故一直绿。
-            // ⚠ 尾部的 `30.0` 至今两处都没有命名常量（`.slint` 亦然）⇒ 仍是手抄值。
-            offset_x: ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX + 30.0,
-            bar_width: 6.0,
-            bar_max_height: 28.0,
-        };
+        // 几何走**生产唯一构造点**（`30.0` 现在有名字了：`VELOCITY_BAR_OFFSET_X_PX`）。
+        let geometry = VelocityLaneGeometry::roll_velocity_lane();
         let width = 1920.0_f32;
         let mut hit_count = 0_usize;
+        let mut zero_velocity_probed = 0_usize;
         for index in view.notes_visible_in(0.0, width) {
             let note = &view.notes[index];
             let v = note.velocity_normalized;
             let left = geometry.offset_x + note.x + geometry.bar_width / 2.0;
-            let top = geometry.lane_height - 4.0 - geometry.bar_max_height * v;
+            let top =
+                geometry.lane_height - VELOCITY_LANE_BOTTOM_MARGIN_PX - geometry.bar_max_height * v;
             if v <= 0.0 {
-                // ③ 零力度: 该横坐标上**不应**命中这根柱（高度为 0）。
+                // ③ 零力度：柱高为 0，而命中测试的**两端都是闭区间** ⇒ 只有恰好落在 `top`
+                //    这**一条线**上才命中。⚠ 夹具（`filled_project`）里**没有**零力度音符
+                //    ⇒ 本分支从不执行（`zero_velocity_probed` 把它机械地报出来，而不是让读者
+                //    以为这条路径被覆盖了）。生产侧因此**显式排除**力度 0
+                //    （`host::velocity_bar_at`），⛔ 不依赖这条 1px 线。
+                zero_velocity_probed += 1;
                 let got = view.velocity_bar_hit_test(0.0, width, left, top, geometry);
-                assert_ne!(got, Some(index), "零力度的音符不该有可命中的柱");
+                assert_eq!(
+                    got,
+                    Some(index),
+                    "零力度柱的命中区间退化成 `y == top` 这一条线（闭区间）—— 这里如实钉住它"
+                );
                 continue;
             }
             let got = view.velocity_bar_hit_test(0.0, width, left, top + 1.0, geometry);
@@ -3375,11 +3438,48 @@ mod tests {
             hit_count > 0,
             "夹具至少要有一个非零力度的可见音符, 否则判据空转"
         );
+        assert_eq!(
+            zero_velocity_probed, 0,
+            "本夹具**没有**零力度音符 ⇒ 上面那条分支不执行；若有人往夹具里加了零力度音符，\
+             这里会立刻说出来（那条断言钉的是既有的 1px 线行为）"
+        );
         // ② 车道底部空白（所有柱都在其上）⇒ 不命中。
         assert_eq!(
             view.velocity_bar_hit_test(0.0, width, geometry.offset_x, 999.0, geometry),
             None
         );
+        // ⑤ 柱高映射的反函数（力度臂用的就是它）。
+        let bottom = geometry.lane_height - VELOCITY_LANE_BOTTOM_MARGIN_PX;
+        assert_eq!(geometry.velocity_at_lane_y(bottom), Some(0), "柱底沿 = 0");
+        assert_eq!(
+            geometry.velocity_at_lane_y(bottom - geometry.bar_max_height),
+            Some(127),
+            "满柱顶沿 = 127"
+        );
+        assert_eq!(
+            geometry.velocity_at_lane_y(-999.0),
+            Some(127),
+            "上方越界夹到 127"
+        );
+        assert_eq!(
+            geometry.velocity_at_lane_y(999.0),
+            Some(0),
+            "下方越界夹到 0"
+        );
+        assert_eq!(
+            geometry.velocity_at_lane_y(f32::NAN),
+            None,
+            "非有限 y ⇒ None（⛔ 不静默当成 0）"
+        );
+        for index in view.notes_visible_in(0.0, width) {
+            let note = &view.notes[index];
+            let top = bottom - geometry.bar_max_height * note.velocity_normalized;
+            assert_eq!(
+                geometry.velocity_at_lane_y(top),
+                Some(note.velocity),
+                "每个音符自己那根柱的顶沿必须反解回它自己的力度（与投影的归一化口径互逆）"
+            );
+        }
     }
 
     #[test]
@@ -4062,6 +4162,45 @@ mod tests {
             PITCH_LANE_HEIGHT_PX, 14.0,
             "车道高必须与 .slint 的 14px 一致"
         );
+        // `[UI-NOTE-003]` **力度车道几何**：宿主侧四个常量（本切片给它们命名）必须与 `.slint`
+        // 逐值一致 —— 力度臂用它们把指针 y 反解成**绝对**力度，两处一旦分叉，
+        // "拖到哪里 = 多少力度"就与画出来的柱各说各话（与帧原点同一类缺陷）。
+        assert_eq!(
+            VELOCITY_LANE_HEIGHT_PX, 44.0,
+            "力度车道高必须与 .slint 的 44px 一致"
+        );
+        assert_eq!(
+            VELOCITY_BAR_MAX_HEIGHT_PX, 28.0,
+            "满力度柱高必须与 .slint 的 28px 一致"
+        );
+        assert_eq!(
+            VELOCITY_LANE_BOTTOM_MARGIN_PX, 4.0,
+            "力度车道底沿留白必须与 .slint 的 4px 一致"
+        );
+        assert_eq!(
+            VELOCITY_BAR_WIDTH_PX, 6.0,
+            "力度柱宽必须与 .slint 的 6px 一致"
+        );
+        assert_eq!(
+            VELOCITY_BAR_OFFSET_X_PX, 30.0,
+            "力度柱左沿偏移必须与 .slint 的 30px 一致（此前两处都是手抄值）"
+        );
+        for literal in [
+            "velocity-lane := Rectangle {",
+            "y: parent.height - 44px;",
+            "height: 44px;",
+            "y: parent.height - 4px - 28px * velocity_reading;",
+            "height: 28px * velocity_reading;",
+            "56px + Tokens.space-5 + root.note-positions[velocity_index] + 30px",
+            "width: 6px;",
+            "out property <length> velocity-lane-top: velocity-lane.y;",
+        ] {
+            assert!(
+                code.contains(literal),
+                "`piano_roll.slint` 必须包含 `{literal}`（力度车道几何 / 顶沿上报是宿主反解\
+                 绝对力度的唯一依据）"
+            );
+        }
         // 帧原点（`painted_to_host` / `host_to_painted`）：琴键列宽 + 音符横向内缩 + 表头高
         // 必须与 `.slint` 画出的几何逐值一致 —— 否则宿主命中测试又会与人看得见的矩形分叉
         // （本票的缺陷：纵向 28px 偏移超过音符高 12px ⇒ 点可见音符恒不中）。

@@ -318,16 +318,17 @@ impl LogicalKey {
 /// | 变体 | 生产消费者 |
 /// | :--- | :--- |
 /// | [`ToolDrag::MoveNote`] | **已接线**：`host::begin_note_drag` 的工具门（`crates/yeban-app/src/host.rs`）—— `Tool::drag()` 的第一个生产调用点 |
-/// | 其余四个 | **仍未消费**（各自的裁决未定，见各变体的说明） |
+/// | [`ToolDrag::AdjustVelocity`] | **已接线**：`host::begin_velocity_drag` 的工具门 + `host::commit_velocity_drag`（松手**一个** `Op::ModifyNoteVelocity`） |
+/// | [`ToolDrag::ResizeDuration`] / [`ToolDrag::SliceAcross`] / [`ToolDrag::EraseSweep`] | **仍未消费**（各自的裁决未定，见各变体的说明） |
 ///
-/// ⇒ "左键拖拽列整列都是死代码"这句话在本切片之后**只对其余四个变体成立**；
-/// `move_arm_e_the_drag_taxonomy_gains_a_production_consumer` 钉住 `MoveNote` 那一格，
-/// 但它**不**证明其余四个没被误接（要另立判据）。
+/// ⇒ "左键拖拽列整列都是死代码"这句话现在**只对剩下三个变体成立**；
+/// 判据 `move_arm_e_...`（在 `tests/roll_edit_tools.rs`）钉住前两格在 `src/input.rs`
+/// **之外**各有生产消费者，但它**不**证明其余三个没被误接（要另立判据）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolDrag {
     /// 移动音符位置与音高（选择工具；Shift 微移 / Alt 复制是**辅助键**列的事）。
     ///
-    /// **唯一已接线的变体**：`host::begin_note_drag`（工具门）+ `host::commit_note_drag`
+    /// **已接线**：`host::begin_note_drag`（工具门）+ `host::commit_note_drag`
     /// （松手恰好一个原子 `Op::MoveNote`）。辅助键**故意不读** —— `Shift` / `Alt` 的语义
     /// 与 `[UI-NOTE-005]` 冲突未裁决（`Alt` = 1 tick vs `Alt` = 复制）。
     MoveNote,
@@ -341,13 +342,15 @@ pub enum ToolDrag {
     SliceAcross,
     /// 纵向拖拽力度线（力度编辑）。
     ///
-    /// ⛔ **未消费**：四条子裁决未定，缺一条都会做出错误交互：
-    /// ① **多选作用域**（拖一根力度柱是否带动整个选区）；
-    /// ② **零力度音符的柱高为 0**（`piano_roll.slint` 的 `28px * velocities[i]`）
-    ///    ⇒ 那个音符的力度柱**不可命中**，而它恰恰是最需要被拖起来的；
-    /// ③ **拖到即赋值的口径**（按 y 反解力度 vs 按位移增量）；
-    /// ④ **双击到 100**（`[UI-NOTE-003]` 的 aux 列）。
-    /// ⇒ 登记为 pending（交付报告），⛔ 不接线。
+    /// **已接线**：`host::begin_velocity_drag`（工具门 + 力度柱命中）+ `host::commit_velocity_drag`
+    /// （松手**恰好一个**原子 `Op::ModifyNoteVelocity`；拖动期只写 Slint 草稿）。
+    /// 四条子裁决在本切片的落点（逐条）：
+    /// ① **作用域 = 指针下那**一个**音符**（⛔ 不带动多选选区；多选力度编辑登记为 pending）；
+    /// ② **零力度音符**（柱高为 0 ⇒ 不可命中）：本臂只处理可达情形（`velocity > 0`），
+    ///    ⛔ 不给柱体加最小高度、⛔ 不发明新 affordance；恢复 0 的规范路径是下方 ④，登记为 pending；
+    /// ③ **绝对赋值**：指针的 y 决定力度本身（[`crate::bridge::VelocityLaneGeometry::velocity_at_lane_y`]），
+    ///    ⛔ 不是增量；夹紧到 `0..=127`；
+    /// ④ **双击到 100**（`[UI-NOTE-003]` aux 列）：⛔ **本切片不实现**，登记为 pending。
     AdjustVelocity,
     /// 划动连续批量消除（橡皮擦）。
     ///

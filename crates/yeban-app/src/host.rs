@@ -3437,20 +3437,22 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
         // `Escape` = **收尾**：取消当前手势（`ADR-0004` S1 的纵向拖拽 / `ADR-0005` 的
         // 推子与声相），或关闭全屏时光机（`[UI-A11Y-003]` §7.3）。
         //
-        // 四个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
+        // 五个来源各自独立、各自有唯一清零点，因此这里**都问一遍**（任一命中即消费）：
         // 1. 时光机开着 ⇒ 落 [`UiAction::CloseUndoTree`]（**只改界面运行态**，不碰工程）；
         // 2. 纵向拖拽在手 ⇒ 落 [`cancel_track_height_drag`]（写回起点高度）；
         // 3. 混音手势在手 ⇒ 落窗口回调 `mixer-cancel-gesture` → [`cancel_mixer_gesture`]
         //    （写回起点音量 / 声相）；
         // 4. `[UI-NOTE-003]` 卷帘音符移动手势在手 ⇒ 落 [`cancel_note_drag`]
-        //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）。
+        //    （**丢弃草稿**；拖动期从未写进工程 ⇒ ⛔ 不提交、⛔ 不重投影）；
+        // 5. `[UI-NOTE-003]` 卷帘**力度**手势在手 ⇒ 落 [`cancel_velocity_drag`]
+        //    （同上：只丢弃草稿；两个卷帘手势互斥，但两条清零各自独立 ⇒ 谁也不会漏收尾）。
         //
         // 顺序是**决定**，不是巧合：模态面板在最前面，因此"手势还在手"时按 `Escape`
-        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。四条各自独立：关掉时光机
+        // 先关时光机（与 `[UI-A11Y-003]` 的模态语义同向）。五条各自独立：关掉时光机
         // **不会**顺带取消手势（用户还要按第二次 `Escape`），没有手势在手也不会把
         // 关闭动作算作"已收尾"。
         //
-        // 四条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
+        // 五条都没有命中时返回 `false`（照旧放行给焦点系统）—— 与 `Escape` 接线之前
         // 的行为逐位相同。这里**没有**新增 `Action` 变体：`Action::Cancel` 本来就在
         // 策略表里（`input.rs` 的 `Key::Escape => Resolution::Action(Action::Cancel)`），
         // 它此前只是没有落地实现（`action_has_implementation` 把它列在未实现里）。
@@ -3473,7 +3475,8 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             let height = cancel_track_height_drag(ui, undo);
             let mixer = ui.invoke_mixer_cancel_gesture();
             let note = cancel_note_drag(ui);
-            height || mixer || note
+            let velocity = cancel_velocity_drag(ui);
+            height || mixer || note || velocity
         }
         // 双视图：`Tab` 是切换，`F5`/`F6`/`Alt+1`/`Alt+2` 是直达。写的是**界面属性**，
         // 与 `ui/switch_main_view` 走的是同一个属性（管理动作那边有回读判据）。
@@ -4108,8 +4111,9 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     };
     let view = Rc::new(view);
     install_roll_click(ui, Rc::clone(&view), Some(Rc::clone(port)));
-    // `[UI-NOTE-003]` 左键**拖拽**的移动臂：与点击**同一个**装配点（本函数是卷帘编辑面
-    // 唯一的接线函数）⇒ 产品进程（`main.rs`）与无头面（`live_surface.rs`）不可能只接一半。
+    // `[UI-NOTE-003]` 左键**拖拽**的两条臂（移动 / 力度）：与点击**同一个**装配点
+    // （本函数是卷帘编辑面唯一的接线函数）⇒ 产品进程（`main.rs`）与无头面
+    // （`live_surface.rs`）不可能只接一半。
     install_roll_note_drag(ui, view, Some(Rc::clone(port)));
 }
 
@@ -4249,44 +4253,56 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
 }
 
 // ===========================================================================
-// `[UI-NOTE-003]` 卷帘左键**拖拽**的移动臂（选择工具）
+// `[UI-NOTE-003]` 卷帘左键**拖拽**的两条臂（选择工具的移动 / 力度工具的力度）
 // ===========================================================================
 //
-// 本切片补的是工具矩阵"左键拖拽"列里**选择工具那一格**（`Tool::drag() == ToolDrag::MoveNote`）。
-// 在此之前整条拖拽列都是死代码：`ToolDrag` 在 `crates/yeban-app/` 的 12 次出现**全部**在
-// `src/input.rs` 里（分类定义 + 它自己的自判据）⇒ **0 个生产消费者**，`Tool::drag()` 没有
-// 生产调用点（判据 `move_arm_e_the_drag_taxonomy_gains_a_production_consumer` 钉住这件事）。
+// 工具矩阵"左键拖拽"列的五格里有**两格**已接线，共用**同一条**手势通道
+// （`note-drag-grab/move/release/cancel` 四条回调 + `note-drag-*` 草稿读数）：
+//
+// | 格 | 变体 | 工具门 | 松手提交的 op |
+// | :--- | :--- | :--- | :--- |
+// | 选择工具 | `ToolDrag::MoveNote` | [`begin_note_drag`] | **一个** `Op::MoveNote`（相对位移） |
+// | 力度工具 | `ToolDrag::AdjustVelocity` | [`begin_velocity_drag`] | **一个** `Op::ModifyNoteVelocity`（绝对赋值） |
+//
+// 其余三格（`ResizeDuration` / `SliceAcross` / `EraseSweep`）**仍未消费**，各自的裁决见
+// `src/input.rs` 的逐变体说明；结构上由判据 `move_arm_e_...` 与
+// `velocity_arm_e_...` 分别钉住"这两格在 `src/input.rs` 之外真的有生产消费者"。
 //
 // ## 数据流（形状照抄 [`wire_track_height_drag`] / [`wire_mixer_edit`]）
 //
 // ```text
 // piano_roll.slint 的拖动 TouchArea
-//   --note-drag-grab(x, y) -> bool----+ 工具门（只认 Select）+ 命中音符
+//   --note-drag-grab(x, y) -> bool----+ 工具门（`Tool::drag()`）+ 命中
 //                                     |   ⇒ true = **接管**这一拖（⛔ 本组件不滚动）
-//   --note-drag-move(x, y)------------+ 只写**草稿**：界面上的预览位移
+//   --note-drag-move(x, y)------------+ 只写**草稿**：预览位移 / 预览力度
 //                                     |   （⛔ 不碰工程、⛔ 不进撤销栈）
-//   --note-drag-release(x, y)---------+ [`move_note_op_for`] + `commit_ops` —— **恰一次**
+//   --note-drag-release(x, y)---------+ 至多**一个**原子 `Op` —— **恰一次**
 //   --note-drag-cancel()--------------+ `PointerEventKind.cancel` ⇒ 丢弃草稿
-//   Escape（`Action::Cancel`）--------+ [`cancel_note_drag`] ⇒ 丢弃草稿
+//   Escape（`Action::Cancel`）--------+ [`cancel_note_drag`] / [`cancel_velocity_drag`] ⇒ 丢弃草稿
 // ```
 //
 // ## 一次拖动 = 一次提交（为什么草稿必须在手）
 //
-// 每个 `move` 都提交会把"拖一个音符"碎成几百步撤销（判据
-// `move_arm_d_exactly_one_history_entry_per_gesture` 量这件事）。因此拖动期**只**写
-// `.slint` 的 `note-drag-preview-*` 属性，`release` 才把**合计位移**包成**一个**
-// `Op::MoveNote` 提交一次 —— 规范 §6.1「拖拽过程仅在 Slint 本地维护瞬态草稿…绝不记录任何
-// 撤销记录；松开瞬间严格仅向数据核心提交 1 个原子 Op」的落点。
+// 每个 `move` 都提交会把"拖一个音符 / 一根力度柱"碎成几百步撤销（判据
+// `move_arm_d_...` / `velocity_arm_c_...` 量这件事）。因此拖动期**只**写 `.slint` 的
+// `note-drag-preview-*` 属性，`release` 才把**最终位置**包成**一个** op 提交一次 ——
+// 规范 §6.1「拖拽过程仅在 Slint 本地维护瞬态草稿…绝不记录任何撤销记录；松开瞬间严格
+// 仅向数据核心提交 1 个原子 Op」的落点。
 //
-// ## 为什么是**增量**而不是绝对位置
+// ## 两条臂的语义差别（都是决定，不是巧合）
 //
-// `Op::MoveNote` 的载荷是**相对**增量（`crates/yeban-model/src/ops.rs` 的变体文档：集合里
-// 唯一的相对变换，重放会把增量**再加一次**）⇒ 这里**只**提交一次，⛔ 不重试、⛔ 不循环提交。
+// - 移动臂的 `Op::MoveNote` 载荷是**相对**增量（`crates/yeban-model/src/ops.rs` 的变体文档：
+//   集合里唯一的相对变换，重放会把增量**再加一次**）⇒ 这里**只**提交一次，⛔ 不重试；
+// - 力度臂的 `Op::ModifyNoteVelocity` 载荷是 `old_vel` / `new_vel` 的**绝对**赋值 ⇒
+//   指针的 y **决定**新力度本身（拖到哪就是哪），⛔ 不是"从按下点算增量"。`old_vel` 从
+//   **松手那一刻的权威工程**读（拖动期没写过工程 ⇒ 它就是按下时的值），⛔ 不从草稿倒推。
 //
 // ## ⛔ 本切片**不**接的部分（如实登记，见交付报告）
 //
-// - **力度臂**（`ToolDrag::AdjustVelocity`）：四条子裁决未定（多选作用域 / 零力度柱不可命中 /
-//   拖到即赋值 / 双击到 100）⇒ 保持**未消费**；
+// - **力度臂的多选作用域**：只作用**指针下那一个音符**（拖一根柱**不**带动选区）；
+// - **零力度音符**：柱高为 0（`piano_roll.slint` 的 `28px * velocity`）⇒ 不可命中；
+//   恢复它的**规范路径**是 `[UI-NOTE-003]` aux 列的**双击到 100**（本切片 ⛔ 不实现，
+//   也不给柱体加最小高度 ⇒ ⛔ 不发明新 affordance）；
 // - **辅助键**（`Shift` 微移 / `Alt` 复制）：与 `[UI-NOTE-005]` 有未裁决冲突 ⇒ ⛔ 不读修饰键；
 // - **空白处拖拽**：语义一位不改（仍是滚动；marquee 未裁决）⇒ ⛔ 不做框选。
 
@@ -4330,24 +4346,19 @@ pub fn note_move_delta_for(
     Some((delta_tick, delta_pitch))
 }
 
-/// `[UI-NOTE-003]` 把"被拖动音符的身份 + 位移"解析成**待提交的 `Op::MoveNote`**（纯函数）。
+/// `[UI-NOTE-003]` 音符身份 ⇒ `(clip_id, track_id, 该音符**当前**力度)`（**唯一**的身份解析，
+/// 移动臂与力度臂共用）。
 ///
-/// 身份解析与 [`delete_ops_for`] **同一口径**：音符住在**片段池**里（`clip_pool`），
-/// `track_id` 取**摆放了该片段的第一条轨道**（`BTreeMap` 键序确定）；一个谁都没摆放的
-/// 片段池条目回退到工程的第一条轨道。音符不在工程里 / 工程没有轨道 / 身份文本非法 ⇒ `None`
-/// （调用方**什么都不做** —— 与 [`delete_ops_for`] 返回空集同一取向）。
+/// 口径与 [`delete_ops_for`] **逐条相同**（那里是批量版）：音符住在**片段池**里
+/// （`clip_pool`），`track_id` 取**摆放了该片段的第一条轨道**（`BTreeMap` 键序确定）；
+/// 一个谁都没摆放的片段池条目回退到工程的第一条轨道。身份不在任何片段 / 工程没有轨道 ⇒ `None`。
 ///
-/// ⛔ 这里**不**自己判越界：`Op::MoveNote` 的前置条件（`crates/yeban-model/src/ops.rs`）
-/// 已经拒绝 `shifted_tick` / `shifted_pitch` 为 `None` 的情形，越界的提交会被端口**如实拒绝**。
-/// 在这里再算一遍就是第二个真相源（也就多一处会与模型漂移的代码）。
-#[must_use]
-pub fn move_note_op_for(
+/// 为什么力度读数也从这里取：`Op::ModifyNoteVelocity` 的 `old_vel` 必须与**权威工程**
+/// 逐值相同（模型前置条件），从同一份遍历里带出来就不可能拿到第二份读数。
+fn note_identity_for(
     project: &yeban_model::YebanProjectV1,
-    note_ulid: &str,
-    delta_tick: i64,
-    delta_pitch: i8,
-) -> Option<yeban_model::ops::Op> {
-    let note_id = note_ulid.parse::<yeban_model::EntityId>().ok()?;
+    note_id: yeban_model::EntityId,
+) -> Option<(yeban_model::EntityId, yeban_model::EntityId, u8)> {
     let mut owner: std::collections::BTreeMap<yeban_model::EntityId, yeban_model::EntityId> =
         std::collections::BTreeMap::new();
     for (track_id, track) in &project.tracks {
@@ -4360,19 +4371,70 @@ pub fn move_note_op_for(
         let Some(notes) = entry.content.notes() else {
             continue;
         };
-        if !notes.contains_key(&note_id) {
+        let Some(note) = notes.get(&note_id) else {
             continue;
-        }
+        };
         let track_id = owner.get(clip_id).copied().or(fallback_track)?;
-        return Some(yeban_model::ops::Op::MoveNote {
-            track_id,
-            clip_id: *clip_id,
-            note_id,
-            delta_tick,
-            delta_pitch,
-        });
+        return Some((*clip_id, track_id, note.velocity));
     }
     None
+}
+
+/// `[UI-NOTE-003]` 把"被拖动音符的身份 + 位移"解析成**待提交的 `Op::MoveNote`**（纯函数）。
+///
+/// 身份解析走 [`note_identity_for`]（与 [`delete_ops_for`] 同一口径）。音符不在工程里 /
+/// 工程没有轨道 / 身份文本非法 ⇒ `None`（调用方**什么都不做** —— 与 [`delete_ops_for`]
+/// 返回空集同一取向）。
+///
+/// ⛔ 这里**不**自己判越界：`Op::MoveNote` 的前置条件（`crates/yeban-model/src/ops.rs`）
+/// 已经拒绝 `shifted_tick` / `shifted_pitch` 为 `None` 的情形，越界的提交会被端口**如实拒绝**。
+/// 在这里再算一遍就是第二个真相源（也就多一处会与模型漂移的代码）。
+#[must_use]
+pub fn move_note_op_for(
+    project: &yeban_model::YebanProjectV1,
+    note_ulid: &str,
+    delta_tick: i64,
+    delta_pitch: i8,
+) -> Option<yeban_model::ops::Op> {
+    let note_id = note_ulid.parse::<yeban_model::EntityId>().ok()?;
+    let (clip_id, track_id, _velocity) = note_identity_for(project, note_id)?;
+    Some(yeban_model::ops::Op::MoveNote {
+        track_id,
+        clip_id,
+        note_id,
+        delta_tick,
+        delta_pitch,
+    })
+}
+
+/// `[UI-NOTE-003]` 把"被拖动音符的身份 + **目标力度**"解析成**待提交的
+/// `Op::ModifyNoteVelocity`**（纯函数，力度臂的唯一构造点）。
+///
+/// 语义（三条都是决定）：
+/// - **绝对赋值**：`new_vel` 就是结果，`old_vel` 从权威工程读 —— 载荷形状（`old_vel` /
+///   `new_vel` 成对）本身就是这个口径的表达，⛔ 不是增量；
+/// - **没变 ⇒ `None`**：`old_vel == new_vel` 时**不提交空 op**（模型**不会**拒绝这种 op ——
+///   前置条件只比对 `old_vel` —— 所以"不提交"必须在这里决定，否则一次没改变任何东西的
+///   手势会在撤销栈上留一步）；
+/// - 身份解析走 [`note_identity_for`]；身份非法 / 不在工程里 ⇒ `None`。
+#[must_use]
+pub fn velocity_op_for(
+    project: &yeban_model::YebanProjectV1,
+    note_ulid: &str,
+    new_vel: u8,
+) -> Option<yeban_model::ops::Op> {
+    let note_id = note_ulid.parse::<yeban_model::EntityId>().ok()?;
+    let (clip_id, track_id, old_vel) = note_identity_for(project, note_id)?;
+    if old_vel == new_vel {
+        return None;
+    }
+    Some(yeban_model::ops::Op::ModifyNoteVelocity {
+        track_id,
+        clip_id,
+        note_id,
+        old_vel,
+        new_vel,
+    })
 }
 
 /// 移动手势的**草稿清零**（松手提交之后 / `Escape` / 指针离开窗口三条路径共用）。
@@ -4381,7 +4443,7 @@ pub fn move_note_op_for(
 /// 粘住的状态（与 [`end_track_height_drag`] 同一取向）。
 fn clear_note_drag(ui: &MainWindow) {
     ui.set_note_drag_active(false);
-    ui.set_note_drag_note("".into());
+    ui.set_note_drag_ulid("".into());
     ui.set_note_drag_origin_x(0.0);
     ui.set_note_drag_origin_y(0.0);
     ui.set_note_drag_preview_dx(0.0);
@@ -4424,7 +4486,10 @@ fn begin_note_drag(
         return false;
     };
     let note = &view.notes[index];
-    ui.set_note_drag_note(note.id.as_str().into());
+    // 身份写进 `note-drag-ulid`：它**同时**是宿主的"这一拖是哪个音符"读数与界面的
+    // 草稿预览选择器（`piano_roll.slint` 按 `note_ulid == root.note-drag-ulid` 选中被拖的
+    // 那一个音符矩形 / 那一根力度柱）。⛔ 不另开第二个同义字符串属性。
+    ui.set_note_drag_ulid(note.id.as_str().into());
     ui.set_note_drag_origin_x(x);
     ui.set_note_drag_origin_y(y);
     ui.set_note_drag_preview_dx(0.0);
@@ -4476,7 +4541,7 @@ fn commit_note_drag(
     if !ui.get_note_drag_active() {
         return;
     }
-    let note = ui.get_note_drag_note().to_string();
+    let note = ui.get_note_drag_ulid().to_string();
     let origin = (ui.get_note_drag_origin_x(), ui.get_note_drag_origin_y());
     clear_note_drag(ui);
     let (x, y) = crate::bridge::painted_to_host(x, y);
@@ -4530,7 +4595,191 @@ pub fn cancel_note_drag(ui: &MainWindow) -> bool {
     true
 }
 
-/// `[UI-NOTE-003]` 移动手势的四条回调接线（本文件是唯一实现）。
+// ===========================================================================
+// `[UI-NOTE-003]` 力度臂（力度工具；与移动臂共用 `note-drag-*` 手势通道）
+// ===========================================================================
+
+/// 指针的**绘制帧** y ⇒ **车道内** y（0 = 力度车道顶沿）。
+///
+/// 车道顶沿由 `.slint` **上报**（`MainWindow::roll-velocity-lane-top` ← `PianoRoll` 的
+/// `velocity-lane.y`）；⛔ 宿主**不**在这里写 `height - 44` —— 那会是第二份布局算术，正是
+/// `tool_matrix_wiring::roll_click_has_exactly_one_dispatcher_writer` 的禁用常量表要挡的东西
+/// （`host.rs` 里不许出现帧原点常量或手写偏移）。
+///
+/// 非有限 y ⇒ `None`（调用方什么都不做：⛔ 不把 NaN 静默当成"拖到最低 = 0"）。
+fn velocity_lane_y(ui: &MainWindow, painted_y: f32) -> Option<f32> {
+    let lane_y = painted_y - ui.get_roll_velocity_lane_top();
+    lane_y.is_finite().then_some(lane_y)
+}
+
+/// 力度臂的**唯一命中口径**：`(x, y)`（**绘制帧**）落在哪一根可拖的力度柱上。
+///
+/// 两条坐标口径**不同源**，这里写明（这正是力度臂最容易接错的地方）：
+/// - **x 用绘制帧原样**：[`ViewState::velocity_bar_hit_test`] 自己就按 `.slint` 的
+///   `56px + Tokens.space-5 + note-positions[i] + 30px` 算柱体左沿，而 `note.x - scroll`
+///   恰好就是绘制帧的 `note-positions[i]` ⇒ ⛔ **不**做 `painted_to_host`（做了反而偏 68px）；
+/// - **y 先换算成车道内 y**（[`velocity_lane_y`]），因为命中测试的 y 以车道顶沿为 0。
+///
+/// 零力度音符**显式排除**：柱高为 0（`.slint` 的 `28px * velocity`）⇒ 命中区间退化成
+/// 车道底沿往上 4px 处的**一条线**（闭区间），那不是可用的 affordance。本切片按裁决
+/// **处理可达情形（velocity > 0）**：⛔ 不给柱体加最小高度、⛔ 不发明新交互；
+/// 把 0 提起来的规范路径是 `[UI-NOTE-003]` aux 列的**双击到 100**（⛔ 本切片不实现，
+/// 登记为 pending）。
+fn velocity_bar_at(ui: &MainWindow, view: &ViewState, x: f32, y: f32) -> Option<usize> {
+    let scroll = ui.get_roll_scroll_x();
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    let lane_y = velocity_lane_y(ui, y)?;
+    let index = view.velocity_bar_hit_test(
+        scroll,
+        width,
+        x,
+        lane_y,
+        crate::bridge::VelocityLaneGeometry::roll_velocity_lane(),
+    )?;
+    (view.notes[index].velocity > 0).then_some(index)
+}
+
+/// 力度手势的**草稿清零**（松手提交之后 / `Escape` / 指针离开窗口三条路径共用）。
+///
+/// 与 [`clear_note_drag`] 同一取向：**所有**力度手势读数在这一次清零 ⇒ 不留粘住的状态。
+/// 身份 `note-drag-ulid` 也一并清（它同时是界面预览的选择器）。
+fn clear_velocity_drag(ui: &MainWindow) {
+    ui.set_velocity_drag_active(false);
+    ui.set_note_drag_ulid("".into());
+    ui.set_note_drag_preview_velocity(0.0);
+}
+
+/// 指针按下：判断这一按**是不是**拖力度柱（工具门 + 柱命中），是则**接管**并写下草稿起点。
+///
+/// 返回 `true` = 接管（`.slint` 因此不滚动、抬起时也不顺带 fired 一次 `clicked`）。
+/// 五种情况返回 `false`：当前工具的拖拽语义不是 [`crate::input::ToolDrag::AdjustVelocity`]、
+/// `active-tool` 不是合法数字、这一点没命中任何**可拖**的力度柱（含零力度柱）、
+/// 命中测试所需的车道顶沿不是有限数、以及没有工程可投影。
+///
+/// 草稿起点 = 该音符**当前**力度的归一化值（界面按它画柱）⇒ 松手前画面就是"现在这样"，
+/// 第一次 `move` 才动。
+fn begin_velocity_drag(
+    ui: &MainWindow,
+    fallback_view: &ViewState,
+    port: Option<&Rc<UndoPort>>,
+    x: f32,
+    y: f32,
+) -> bool {
+    let project = port.and_then(|port| port.try_project());
+    let fresh = project
+        .as_ref()
+        .and_then(|project| ViewState::from_project(project).ok());
+    let view: &ViewState = fresh.as_ref().unwrap_or(fallback_view);
+    // ---- 工具门：`Tool::drag()` 的**第二个**生产消费者（第一格是移动臂）----
+    let Some(tool) = u8::try_from(ui.get_active_tool())
+        .ok()
+        .and_then(crate::input::Tool::from_digit)
+    else {
+        return false;
+    };
+    if tool.drag() != crate::input::ToolDrag::AdjustVelocity {
+        return false;
+    }
+    let Some(index) = velocity_bar_at(ui, view, x, y) else {
+        return false;
+    };
+    let note = &view.notes[index];
+    // 身份与预览：与移动臂**共用** `note-drag-ulid`（界面只按它选被拖的那一个）。
+    ui.set_note_drag_ulid(note.id.as_str().into());
+    ui.set_note_drag_preview_velocity(note.velocity_normalized);
+    // `active` **最后**写：读者要么看到"还没开始"，要么看到一份**完整**的起点状态。
+    ui.set_velocity_drag_active(true);
+    true
+}
+
+/// 拖动中的**草稿**：把指针 y 换算成界面上的柱高（宿主算，界面只取归一化值）。
+///
+/// ⛔ 这里**不碰工程、不碰撤销栈** —— "拖动期不记录任何撤销记录"的落点。
+/// 没有进行中的手势时**什么都不做**：一个孤立的 `move` 改不动任何东西。
+fn preview_velocity_drag(ui: &MainWindow, y: f32) {
+    if !ui.get_velocity_drag_active() {
+        return;
+    }
+    let Some(lane_y) = velocity_lane_y(ui, y) else {
+        return;
+    };
+    let Some(velocity) =
+        crate::bridge::VelocityLaneGeometry::roll_velocity_lane().velocity_at_lane_y(lane_y)
+    else {
+        return;
+    };
+    ui.set_note_drag_preview_velocity(
+        f32::from(velocity) / f32::from(yeban_model::music::MIDI_VELOCITY_MAX),
+    );
+}
+
+/// 松手：**至多一次**原子 `Op::ModifyNoteVelocity`（结果与按下时的力度相同 ⇒ 一次都没有）。
+///
+/// 手势读数在函数**入口处**无条件清零（先取出、再清零）：无论下面走哪条出口，
+/// 手势都不留在手上。`x` 用不到（力度只由 y 决定）—— 签名与另外三条回调同形，
+/// 因此这里显式 `_x` 而不是换一个形状。
+///
+/// `old_vel` 在**这里**从权威工程读（[`velocity_op_for`]），⛔ 不从草稿倒推：
+/// 拖动期没写过工程 ⇒ 读到的一定是按下时那个值；万一真的不是，模型的前置条件会如实拒绝
+/// （`ModelError::OpStateMismatch`），那就什么都不做 —— 与移动臂同一取向。
+fn commit_velocity_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, _x: f32, y: f32) {
+    if !ui.get_velocity_drag_active() {
+        return;
+    }
+    let note = ui.get_note_drag_ulid().to_string();
+    clear_velocity_drag(ui);
+    let Some(lane_y) = velocity_lane_y(ui, y) else {
+        return;
+    };
+    let Some(new_vel) =
+        crate::bridge::VelocityLaneGeometry::roll_velocity_lane().velocity_at_lane_y(lane_y)
+    else {
+        return;
+    };
+    let Some(port) = port else {
+        return;
+    };
+    if note.is_empty() {
+        return;
+    }
+    let Some(project) = port.try_project() else {
+        return;
+    };
+    // `None` = 身份解析不出**或**力度没变（后者不提交空 op —— 模型不会拒绝它，
+    // 所以必须在这里决定，否则一次"什么都没改"的手势会留一步撤销）。
+    let Some(op) = velocity_op_for(&project, &note, new_vel) else {
+        return;
+    };
+    if port
+        .commit_ops(now_ms(), "velocity: set note velocity", vec![op])
+        .is_err()
+    {
+        return;
+    }
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    let scroll = ui.get_roll_scroll_x();
+    reproject_roll(ui, port, width, scroll);
+}
+
+/// `Escape` / `PointerEventKind.cancel` 的收尾：**丢弃**力度草稿（⛔ 不提交）。
+///
+/// 返回 `true` = 确实有力度手势在手、已经收尾；`false` = 此刻没有 ⇒ 这一键与 DAW 无关，
+/// 照旧放行（`apply_action` 的 `Action::Cancel` 链靠它决定要不要消费这一键）。
+///
+/// ⚠ 与 [`cancel_note_drag`] 一样**不重投影**：拖动期改的只有 `note-drag-preview-velocity`
+/// （与身份 `note-drag-ulid`），清零它们就是"还原画面"。
+pub fn cancel_velocity_drag(ui: &MainWindow) -> bool {
+    if !ui.get_velocity_drag_active() {
+        return false;
+    }
+    clear_velocity_drag(ui);
+    true
+}
+
+/// `[UI-NOTE-003]` 卷帘拖拽四条回调的接线（本文件是唯一实现，**两条臂共用**）。
+///
+/// 分派按工具门：每条回调都把两条臂**各问一遍**（两条臂各自门自己的 `ToolDrag` 变体 ⇒
+/// 互斥）。⛔ 不在这里读 `active-tool` 再 `match` —— 那样工具门就有两处（这里与各臂内部）。
 fn install_roll_note_drag(
     ui: &MainWindow,
     fallback_view: Rc<ViewState>,
@@ -4547,6 +4796,7 @@ fn install_roll_note_drag(
                 return false;
             };
             begin_note_drag(&ui, &view, port.as_ref(), x, y)
+                || begin_velocity_drag(&ui, &view, port.as_ref(), x, y)
         }
     });
     ui.on_note_drag_move({
@@ -4558,6 +4808,7 @@ fn install_roll_note_drag(
                 return;
             };
             preview_note_drag(&ui, &view, x, y);
+            preview_velocity_drag(&ui, y);
         }
     });
     ui.on_note_drag_release({
@@ -4570,6 +4821,7 @@ fn install_roll_note_drag(
                 return;
             };
             commit_note_drag(&ui, &view, port.as_ref(), x, y);
+            commit_velocity_drag(&ui, port.as_ref(), x, y);
         }
     });
     ui.on_note_drag_cancel({
@@ -4580,6 +4832,7 @@ fn install_roll_note_drag(
                 return;
             };
             cancel_note_drag(&ui);
+            cancel_velocity_drag(&ui);
         }
     });
 }

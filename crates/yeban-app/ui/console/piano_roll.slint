@@ -61,6 +61,16 @@ export component PianoRoll inherits Rectangle {
     in property <string> note-drag-ulid: "";
     in property <float> note-drag-preview-dx: 0.0;
     in property <float> note-drag-preview-dy: 0.0;
+    // `[UI-NOTE-003]` 力度臂的**草稿预览**（0.0–1.0 的归一化力度，宿主算好注入）：
+    // 只有身份等于 `note-drag-ulid` 的那一根力度柱按它画高（拖动期 ⛔ 不写工程）。
+    // 没有手势时 `note-drag-ulid` 是空串 ⇒ 这一项**不被任何柱读到**（未拖动时逐像素不变）。
+    in property <float> note-drag-preview-velocity: 0.0;
+    // `[UI-NOTE-003]` 力度车道在**本组件局部坐标系**里的顶沿（逻辑像素）。
+    //
+    // 宿主必须知道它才能把指针的 y 反解成"车道内 y"（= 绝对力度）。这个读数由**界面**
+    // 上报（`velocity-lane.y`），⛔ 宿主不在自己那边手写 `height - 44` —— 那会变成第二份
+    // 布局算术（帧原点那一族，见 `tests/tool_matrix_wiring.rs` 的禁用常量表）。
+    out property <length> velocity-lane-top: velocity-lane.y;
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     in property <[string]> tool-names: ["select", "pencil", "knife", "velocity", "eraser"];
@@ -268,7 +278,9 @@ export component PianoRoll inherits Rectangle {
     }
 
     // ---------------------------------------------------------------- 力度泳道 (§3.3 力度工具)
-    Rectangle {
+    // `[UI-NOTE-003]` 力度臂需要"车道顶沿在本组件局部坐标系里的位置"（指针 y 的零点）。
+    // 由本元素**上报**（`velocity-lane-top`），而不是让宿主再算一次 `height - 44px`。
+    velocity-lane := Rectangle {
         x: 0;
         y: parent.height - 44px;
         width: parent.width;
@@ -279,12 +291,21 @@ export component PianoRoll inherits Rectangle {
         accessible-id: "piano-roll-velocity-lane";
         accessible-label: "力度泳道";
 
-        // `for _[i] in <model>` 必须带声明标识符（`_` 即可）—— 见 arrangement_view.slint 的注释。
-        for _[velocity_index] in root.note-ulids : Rectangle {
+        // `for <标识符>[i] in <model>` 必须带声明标识符；本切片把它从 `_` 换成 `note_ulid`，
+        // 因为力度臂的草稿预览要按**身份**选中被拖的那一根柱（见 arrangement_view.slint 的注释）。
+        for note_ulid[velocity_index] in root.note-ulids : Rectangle {
+            // 被拖的那一根柱按**草稿**画，其余按投影注入的 `velocities[i]`。
+            // 没有手势时 `note-drag-ulid` 是空串 ⇒ 恒取投影值 ⇒ 未拖动时与旧基准逐像素相同。
+            // 写成一个局部属性而不是把三元式抄两遍：`y` 与 `height` 必须来自**同一个**读数，
+            // 抄两遍就可能让柱顶与柱高各说各话。
+            property <float> velocity_reading:
+                note_ulid == root.note-drag-ulid
+                    ? root.note-drag-preview-velocity
+                    : root.velocities[velocity_index];
             x: 56px + Tokens.space-5 + root.note-positions[velocity_index] + 30px;
-            y: parent.height - 4px - 28px * root.velocities[velocity_index];
+            y: parent.height - 4px - 28px * velocity_reading;
             width: 6px;
-            height: 28px * root.velocities[velocity_index];
+            height: 28px * velocity_reading;
             background: Tokens.gold-deep;
             border-radius: Tokens.radius-sm;
             accessible-role: slider;

@@ -1852,19 +1852,35 @@ mod tests {
         name.starts_with("track-") || name.starts_with("master-")
     }
 
-    /// 读出 `Component { … }` 块里**第一层**的属性赋值名（跳过嵌套元素与回调）。
+    /// 读出实例化块里**第一层**的属性赋值名（跳过嵌套元素与回调）。
     ///
     /// 只做一层缩进无关的花括号深度计数：本仓库这几个实例化块里没有同名嵌套组件，
     /// 因此"深度 1 上的 `name:`"就是该组件的属性/回调赋值。
+    ///
+    /// ## 实例化行的形状（本切片收紧了这条**代理**，不变量本身没变）
+    ///
+    /// 原先只认 `Component {` 这一种写法。`[UI-NOTE-003]` 的力度臂给 `ConsoleTabs` 起了
+    /// 元素名以便从子组件**上报**车道顶沿（`console-tabs := ConsoleTabs {`）⇒ 旧代理
+    /// 一行都匹配不到，于是返回**空列表**、让调用方的 `assert!(!forwarded.is_empty())` 以
+    /// 一句"app.slint 里必须真的转发注入属性"报出来（实测：本切片第一次全量测试就是这样红的）。
+    ///
+    /// ⛔ 这里**不**把断言放宽：改为①两种写法都认；②**恰好一次**实例化（0 次 = 代理瞎了，
+    /// 2 次 = 第二份实例，两者都必须当场说出来，而不是静默返回残缺列表）。
     fn assigned_properties(source: &str, component: &str) -> Vec<String> {
         let header = format!("{component} {{");
         let mut out = Vec::new();
+        let mut instantiated = 0_usize;
         let mut inside = false;
         let mut depth = 0_i32;
         for line in source.lines() {
             let trimmed = line.trim();
             if !inside {
-                if trimmed == header {
+                // `Component {` 或 `<id> := Component {`。
+                let named = trimmed
+                    .split_once(":=")
+                    .is_some_and(|(_, rest)| rest.trim() == header);
+                if trimmed == header || named {
+                    instantiated += 1;
                     inside = true;
                     depth = 1;
                 }
@@ -1884,6 +1900,11 @@ mod tests {
                 break;
             }
         }
+        assert_eq!(
+            instantiated, 1,
+            "`{component}` 必须**恰好实例化一次**（0 次 = 匹配代理失效，2 次 = 第二份实例）—— \
+             本判据靠它读出转发面，读到空列表会让下游断言失去意义"
+        );
         out
     }
 

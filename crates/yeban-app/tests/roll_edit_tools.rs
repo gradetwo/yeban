@@ -1216,3 +1216,758 @@ fn a_scroll_drag_with_the_pencil_tool_does_not_insert_a_note() {
         "滚动拖拽**不得**在松手处插入音符（`up` 只在位移未越 4px 阈值时才算一次单击）"
     );
 }
+
+// ===========================================================================
+// 本切片：`[UI-NOTE-003]` 左键拖拽的**力度臂**（力度工具，工具行 4）
+// ===========================================================================
+//
+// ## 接了哪一格、⛔ 明确不接哪几格
+//
+// | 格 | 决定 |
+// | :--- | :--- |
+// | 力度臂（力度工具按在**力度柱**上竖直拖 ⇒ 松手一个原子 `Op::ModifyNoteVelocity`） | **本切片接上** |
+// | 多选作用域（拖一根柱是否带动整个选区） | ⛔ 只作用**指针下那一个**音符（登记为 pending） |
+// | 零力度音符（柱高 0 ⇒ 不可命中） | ⛔ 不给柱体加最小高度、⛔ 不发明 affordance（登记为 pending） |
+// | 双击到 100（`[UI-NOTE-003]` aux 列 —— 把零力度音符提起来的**规范路径**） | ⛔ 本切片**不实现**（登记为 pending） |
+// | 空白处拖动 | ⛔ 语义一位不改（仍是滚动）—— 判据 (f) 是兄弟臂行为改变的**回归钉** |
+//
+// ## 每条判据证明什么 / ⛔ 不证明什么
+//
+// | 判据 | 证明 | ⛔ 不证明 |
+// | :--- | :--- | :--- |
+// | `velocity_arm_a_...` | 拖到某条车道内 y ⇒ 权威工程力度 = **判据自己按车道几何算出的绝对数** | 拖动期的**画面**（草稿柱高）—— ⛔ 无截图判据 |
+// | `velocity_arm_b_...` | 拖到车道上 / 下沿之外 ⇒ **恰好** 127 / 0（夹紧，⛔ 不越界） | 区间内的取值（由 (a) 管） |
+// | `velocity_arm_c_...` | 一次手势（4 步 move）= **恰好一步**撤销；第二次手势再 +1 | 撤销**内容**的正确性（由 (a) 与模型层管） |
+// | `velocity_arm_d_...` | `Escape` 插在拖动中途 ⇒ 工程**逐字节不变**、提交 **0** 次 | 未接力度臂的代码上它**空转绿**（同一条臂的兄弟判据踩过这个坑）—— 红必须靠**变异**挣（见该判据） |
+// | `velocity_arm_e_...` | 结构防漂移：**去注释后** `ToolDrag::AdjustVelocity` 在 `src/input.rs` 之外 ≥1 次；且枚举**每个变体**都标了「已接线 / 未消费」 | 可达性（字面出现也可能是死分支）⇒ 行为由 (a)–(d) 管 |
+// | `a_blank_drag_...`（(f)） | 选择工具下空白处 > 4px 拖动**不清空选区** | 它**不是**本切片修的行为：兄弟臂（`ac2c72f1`）已经把无条件的 `up ⇒ clicked` 改成分流 ⇒ 在本切片之前的代码上它也**不能**变红（回归钉，红靠变异挣） |
+//
+// ## 期望值的来源（为什么不是"把被测代码读回来"）
+//
+// 力度期望值由判据**自己**按 `piano_roll.slint` 的几何（`44` / `28` / `4` / `127`）与注入的
+// **车道内 y** 算出（见 [`expected_velocity_at_lane_y`]）。那三个数与 `.slint` 的一致性由
+// **运行时树**里的真实包围盒在 [`velocity_target`] 里交叉核对（车道高 44、柱高 `28 * v/127`、
+// 柱顶沿 `40 - 28 * v/127`）—— 若判据的几何假设与界面不符，夹具自己先红。
+
+/// 力度车道的几何（**判据侧独立的**手抄值，与 `piano_roll.slint` 的
+/// `y: parent.height - 44px` / `28px * velocity` / `- 4px` / `+ 30px` / `6px` 同源）。
+const VELOCITY_LANE_HEIGHT: f32 = 44.0;
+const VELOCITY_BAR_MAX_HEIGHT: f32 = 28.0;
+const VELOCITY_LANE_BOTTOM_MARGIN: f32 = 4.0;
+const VELOCITY_BAR_OFFSET_X: f32 = 30.0;
+const VELOCITY_BAR_WIDTH: f32 = 6.0;
+
+/// 车道内 y ⇒ 期望的**绝对**力度（**判据自己**算，⛔ 不读被测代码）。
+///
+/// 口径：柱底沿（`44 - 4`）= 0，往上 `28px` = 127，区间外**夹紧**，四舍五入到整数。
+fn expected_velocity_at_lane_y(lane_y: f32) -> u8 {
+    let fraction = ((VELOCITY_LANE_HEIGHT - VELOCITY_LANE_BOTTOM_MARGIN - lane_y)
+        / VELOCITY_BAR_MAX_HEIGHT)
+        .clamp(0.0, 1.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let velocity = (fraction * 127.0).round() as u8;
+    velocity.min(127)
+}
+
+/// 力度 `velocity` 的柱**顶沿**（车道内 y，0 = 车道顶沿）——"把这个力度拖出来"要落的 y。
+fn velocity_bar_top_lane_y(velocity: u8) -> f32 {
+    (VELOCITY_LANE_HEIGHT - VELOCITY_LANE_BOTTOM_MARGIN)
+        - VELOCITY_BAR_MAX_HEIGHT * (f32::from(velocity) / 127.0)
+}
+
+/// 包围盒里的一个 f32 分量（缺键 / 非数 ⇒ panic：静默 0 会让判据"看起来有"）。
+#[allow(clippy::cast_possible_truncation)]
+fn bound_f32(bounds: &serde_json::Value, key: &str) -> f32 {
+    bounds[key]
+        .as_f64()
+        .unwrap_or_else(|| panic!("包围盒必须有 `{key}`: {bounds}")) as f32
+}
+
+/// 语义 ID 的包围盒，**不存在时返回 `None`**（[`element_bounds`] 是"必须存在"版）。
+fn try_element_bounds(
+    plane: &mut LiveControlPlane,
+    seq: i64,
+    element_id: &str,
+) -> Option<serde_json::Value> {
+    let node = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_NODE,
+        Some(json!({ "elementId": element_id })),
+    ));
+    if node.is_error() {
+        return None;
+    }
+    let bounds = node.result.expect("有 result")["node"]["bounds"].clone();
+    if bounds.is_null() { None } else { Some(bounds) }
+}
+
+/// 工程里某个音符的**权威力度**（0–127）。
+fn velocity_of(project: &yeban_model::YebanProjectV1, ulid: &str) -> u8 {
+    for entry in project.clip_pool.values() {
+        let Some(map) = entry.content.notes() else {
+            continue;
+        };
+        for (id, note) in map {
+            if id.to_canonical_string() == ulid {
+                return note.velocity;
+            }
+        }
+    }
+    panic!("权威工程里必须有音符 `{ulid}`");
+}
+
+/// 一个"人真的抓得到"的力度柱靶子（判据共用的装配段）。
+struct VelocityTarget {
+    ulid: String,
+    /// 按下前的权威力度（> 0 ⇒ 柱高 > 0 ⇒ 可命中；零力度柱不在本臂的作用域内）。
+    before: u8,
+    /// 抓取点（**绘制帧**，即 `piano-roll-scroll-area` 的偏移）：柱内 1px。
+    grab: (f32, f32),
+    /// 车道顶沿在**卷帘局部坐标系**里的 y（= 车道内 y 的零点）。
+    lane_top_local: f32,
+}
+
+/// 装配力度柱靶子：找第一个"有运行时力度柱节点、且柱完全落在视口内"的可见音符。
+///
+/// 顺带**交叉核对**判据自己的几何假设（车道高 / 柱高 / 柱顶沿）与界面真实包围盒。
+fn velocity_target(
+    window: &yeban_app::ui::MainWindow,
+    plane: &mut LiveControlPlane,
+    project: &yeban_model::YebanProjectV1,
+    seq: i64,
+    scroll: f32,
+) -> VelocityTarget {
+    let view = yeban_app::bridge::ViewState::from_project(project).expect("投影");
+    assert_eq!(
+        window.get_active_tool(),
+        i32::from(Tool::Velocity.digit()),
+        "夹具前提：力度臂只认力度工具（工具行 4）"
+    );
+    assert_eq!(
+        window.get_roll_scroll_x(),
+        scroll,
+        "夹具前提：偏移与调用方给的一致"
+    );
+    let bounds = element_bounds(plane, seq, SCROLL_AREA);
+    let origin_x = bound_f32(&bounds, "x");
+    let origin_y = bound_f32(&bounds, "y");
+    let viewport_width = bound_f32(&bounds, "width");
+    let viewport_height = bound_f32(&bounds, "height");
+
+    // ---- 车道元素自证：高 44、顶沿落在 `H - 44`（判据的常数就是从这里核对的）----
+    let lane = element_bounds(plane, seq + 1, "piano-roll-velocity-lane");
+    let lane_height = bound_f32(&lane, "height");
+    let lane_top_local = bound_f32(&lane, "y") - origin_y;
+    assert!(
+        (lane_height - VELOCITY_LANE_HEIGHT).abs() <= 1.0,
+        "判据前提：力度车道高必须是 {VELOCITY_LANE_HEIGHT}px（实测 {lane_height}）"
+    );
+    assert!(
+        (lane_top_local - (viewport_height - VELOCITY_LANE_HEIGHT)).abs() <= 1.0,
+        "判据前提：车道顶沿必须落在卷帘底往上 {VELOCITY_LANE_HEIGHT}px（实测车道内 y0 = {lane_top_local}，卷帘高 {viewport_height}）"
+    );
+
+    // ---- 找靶：运行时树里真的有它的力度柱，且用**判据自己的**柱左沿能对上 ----
+    for candidate in 0..view.notes.len() {
+        let node_id = format!("velocity-{candidate}-bar");
+        let Some(bar) = try_element_bounds(
+            plane,
+            seq + 2 + i64::try_from(candidate).expect("下标"),
+            &node_id,
+        ) else {
+            continue;
+        };
+        let bar_left = bound_f32(&bar, "x") - origin_x;
+        let bar_width = bound_f32(&bar, "width");
+        let bar_height = bound_f32(&bar, "height");
+        let bar_top_local = bound_f32(&bar, "y") - origin_y - lane_top_local;
+        // 判据自己的柱左沿：`host_to_painted(note.x - scroll)` ＋ `.slint` 的 `+ 30px`。
+        let index = view.notes.iter().position(|note| {
+            let (painted_x, _) = host_to_painted(note.x - scroll, 0.0);
+            (painted_x + VELOCITY_BAR_OFFSET_X - bar_left).abs() <= 1.0
+        });
+        let Some(index) = index else {
+            panic!(
+                "`{node_id}` 的柱左沿 {bar_left}（绘制帧）对不上任何音符（判据的 `.slint` 几何假设错了？）"
+            );
+        };
+        let note = &view.notes[index];
+        if note.velocity == 0 {
+            continue;
+        }
+        if bar_left < 0.0 || bar_left + bar_width > viewport_width {
+            continue;
+        }
+        // 交叉核对柱宽 / 柱高 / 柱顶沿：`6px`、`28px * v/127` 与 `40 - 28px * v/127`。
+        assert!(
+            (bar_width - VELOCITY_BAR_WIDTH).abs() <= 1.0,
+            "判据前提：`{node_id}` 的柱宽必须是 {VELOCITY_BAR_WIDTH}px（实测 {bar_width}）"
+        );
+        let fraction = f32::from(note.velocity) / 127.0;
+        let expected_height = VELOCITY_BAR_MAX_HEIGHT * fraction;
+        let expected_top = (VELOCITY_LANE_HEIGHT - VELOCITY_LANE_BOTTOM_MARGIN) - expected_height;
+        assert!(
+            (bar_height - expected_height).abs() <= 1.0,
+            "判据前提：`{node_id}`（力度 {}）的柱高必须是 {expected_height}px（实测 {bar_height}）—— \
+             `.slint` 的 `28px * velocity` 或归一化口径变了",
+            note.velocity
+        );
+        assert!(
+            (bar_top_local - expected_top).abs() <= 1.0,
+            "判据前提：`{node_id}`（力度 {}）的柱顶沿（车道内 y）必须是 {expected_top}（实测 {bar_top_local}）—— \
+             `.slint` 的 `parent.height - 4px - 28px * velocity` 变了",
+            note.velocity
+        );
+        // 抓取点：柱内 1px（柱高 > 0 已由 `velocity > 0` 保证）。
+        let grab_lane_y = bar_top_local + 1.0;
+        return VelocityTarget {
+            ulid: note.id.clone(),
+            before: note.velocity,
+            grab: (bar_left + bar_width / 2.0, lane_top_local + grab_lane_y),
+            lane_top_local,
+        };
+    }
+    panic!("夹具里必须有一个可见、非零力度、柱完全落在视口内的音符");
+}
+
+/// 力度臂的一次完整手势：从 `target.grab`（**绘制帧**）竖直拖到**车道内** y = `target_lane_y`。
+///
+/// 返回注入的 `dy`（必须 > 4px，否则 `.slint` 会把它当**单击**而不是拖拽）与**判据算出的**
+/// 期望力度。
+fn drag_velocity_to_lane_y(
+    plane: &mut LiveControlPlane,
+    seq: i64,
+    target: &VelocityTarget,
+    target_lane_y: f32,
+) -> (f32, u8) {
+    let target_painted_y = target.lane_top_local + target_lane_y;
+    let dy = target_painted_y - target.grab.1;
+    assert!(
+        dy.abs() > 4.0,
+        "夹具前提：这一拖必须越过规范的 4px 阈值（否则 `.slint` 把它当单击，判据测不到拖拽）：dy = {dy}"
+    );
+    drag_in_roll_by_id_at(plane, seq, target.grab, 0.0, dy, DRAG_STEPS);
+    (dy, expected_velocity_at_lane_y(target_lane_y))
+}
+
+/// 判据 (a)：力度工具把某根柱竖直拖到一条车道内 y ⇒ 权威工程的力度 = **判据自己按车道几何
+/// 算出的绝对数**（不是"起点加增量"，也不是从被测代码读回来的数）。
+#[test]
+fn velocity_arm_a_a_velocity_drag_sets_the_absolute_velocity_from_the_lane_y() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let target = velocity_target(&window, &mut plane, &project_before, 1, 0.0);
+    assert!(
+        target.before > 0,
+        "夹具前提：靶子的柱高必须 > 0（零力度柱不可命中）"
+    );
+
+    // ---- 独立期望值：把指针拖到"力度 32 的柱顶沿"这条 y 上 ----
+    // 32 与 100 差得足够远（> 4px 阈值），且 `32/127` 远离 .5 ⇒ 四舍五入无歧义。
+    let wanted = 32_u8;
+    let target_lane_y = velocity_bar_top_lane_y(wanted);
+    let (dy, expected) = {
+        // 先自证：判据的"柱顶沿"反函数与"车道内 y → 力度"正函数互逆。
+        assert_eq!(
+            expected_velocity_at_lane_y(target_lane_y),
+            wanted,
+            "夹具自证：判据自己的两个几何函数必须互逆"
+        );
+        (
+            target.lane_top_local + target_lane_y - target.grab.1,
+            wanted,
+        )
+    };
+    assert_ne!(expected, target.before, "夹具前提：这一拖必须改变力度");
+    report_line(&format!(
+        "[roll-velocity-a] 靶 `{}` 力度 {}，抓取点（绘制帧）({:.2},{:.2})，目标力度 {wanted} ⇒ \
+         车道内 y = {target_lane_y:.3}（车道顶沿局部 y = {:.3}）；注入 dy = {dy:.3}px × {DRAG_STEPS} 步",
+        target.ulid, target.before, target.grab.0, target.grab.1, target.lane_top_local
+    ));
+
+    drag_velocity_to_lane_y(&mut plane, 10, &target, target_lane_y);
+
+    let after = velocity_of(&port.project(), &target.ulid);
+    let (start_tick, pitch, duration) = note_by_ulid(&port.project(), &target.ulid);
+    let (start_tick_before, pitch_before, duration_before) =
+        note_by_ulid(&project_before, &target.ulid);
+    report_line(&format!(
+        "[roll-velocity-a] 权威工程力度 {} ⇒ {after}（期望 {expected}）；\
+         tick/pitch/duration 必须一位不动：({start_tick_before},{pitch_before},{duration_before}) ⇒ \
+         ({start_tick},{pitch},{duration})",
+        target.before
+    ));
+    assert_eq!(
+        after, expected,
+        "拖到车道内 y = {target_lane_y:.3} 必须把力度**绝对**设成判据按车道几何算出的 {expected}"
+    );
+    assert_eq!(
+        (start_tick, pitch, duration),
+        (start_tick_before, pitch_before, duration_before),
+        "力度臂**不得**改 tick / 音高 / 时值（那是移动臂与铅笔的事）"
+    );
+}
+
+/// 判据 (a-2)：拖动期的**草稿**真的在窗口上、**按音符身份**键控，而工程**一位不动**。
+///
+/// ## 为什么值得单列一条
+///
+/// "拖动期只写 Slint 草稿、松手才提交"这条设计有两个可观察面：(a)/(c) 覆盖的是**提交**那一面
+/// （松手恰好一个 op、一步撤销），本条覆盖**拖动期**那一面：
+/// - 宿主必须在 `move` 时把草稿写进窗口（`note-drag-preview-velocity`）—— 否则界面上那根柱
+///   在整个拖动过程里不会动，"拖到哪就是哪"只是松手之后才发生的跳变；
+/// - 草稿必须**按身份**（`note-drag-ulid`）选中被拖的那一个音符 —— 兄弟臂把身份写在
+///   `note-drag-note`（界面从不读它）⇒ 它的草稿预览**从来没有显示过**；本切片把身份统一到
+///   界面真正比较的那个属性上，这条把它钉住；
+/// - 拖动期工程必须**逐字节不变**、提交 **0** 次（草稿不是把工程改小步）。
+///
+/// ⛔ 它**不证明**像素：读的是窗口上的草稿属性，不是截图。柱高与草稿值的关系由
+/// `piano_roll.slint` 的 `28px * velocity_reading` 表达（由 `bridge.rs` 的文本守卫对账）。
+#[test]
+fn velocity_arm_a2_the_draft_is_keyed_by_the_note_identity_and_writes_nothing() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let target = velocity_target(&window, &mut plane, &project_before, 1, 0.0);
+
+    // ---- 按下：身份与草稿起点必须在窗口上 ----
+    let origin = pointer_down_in_roll(&mut plane, 10, target.grab);
+    assert_eq!(
+        window.get_note_drag_ulid().to_string(),
+        target.ulid,
+        "按下之后被拖音符的身份必须在窗口上（界面按它选被拖的那一根柱；兄弟臂写在界面\
+         从不读的 `note-drag-note` ⇒ 草稿预览从不显示）"
+    );
+    let draft_at_grab = window.get_note_drag_preview_velocity();
+    let before_normalized = f32::from(target.before) / 127.0;
+    assert!(
+        (draft_at_grab - before_normalized).abs() < 1e-6,
+        "按下的草稿起点必须是该音符**当前**力度（实测 {draft_at_grab}，期望 {before_normalized}）"
+    );
+
+    // ---- 拖到"力度 32"：草稿跟着走，工程一位不动 ----
+    let target_lane_y = velocity_bar_top_lane_y(32);
+    let dy = target.lane_top_local + target_lane_y - target.grab.1;
+    pointer_drag_steps_in_roll(&mut plane, 20, origin, target.grab, 0.0, dy, DRAG_STEPS);
+    let draft_mid = window.get_note_drag_preview_velocity();
+    let mid_bytes = serde_json::to_vec(&port.project()).expect("序列化拖动中工程");
+    let commits_mid = port.display().commit_count;
+    let expected_normalized = 32.0_f32 / 127.0;
+    report_line(&format!(
+        "[roll-velocity-a2] 按下时身份 = `{}`、草稿 = {draft_at_grab:.6}；拖到车道内 y = \
+         {target_lane_y:.3}（dy = {dy:.3}px）后草稿 = {draft_mid:.6}（期望 {expected_normalized:.6}）；\
+         拖动期工程字节不变 = {}、提交数 {commits_before} ⇒ {commits_mid}、undoable = {}",
+        window.get_note_drag_ulid(),
+        mid_bytes == before_bytes,
+        port.display().undoable
+    ));
+    assert!(
+        (draft_mid - expected_normalized).abs() < 1e-6,
+        "拖动期草稿必须等于 y 派生的**绝对**力度（实测 {draft_mid}，期望 {expected_normalized}）"
+    );
+    assert_eq!(
+        mid_bytes, before_bytes,
+        "拖动期工程必须**逐字节**不变（草稿只在 Slint 本地）"
+    );
+    assert_eq!(commits_mid, commits_before, "拖动期不得提交任何 op");
+    assert_eq!(port.display().undoable, 0, "拖动期不得有可撤销的编辑");
+
+    // ---- 松手：恰好一步，且手势读数清零（不留粘住的拖拽态）----
+    pointer_up_in_roll(&mut plane, 40);
+    assert_eq!(
+        velocity_of(&port.project(), &target.ulid),
+        32,
+        "松手才把草稿落成**一个**原子 op"
+    );
+    assert_eq!(port.display().undoable, 1, "松手恰好一步撤销");
+    assert!(
+        !window.get_velocity_drag_active(),
+        "松手之后手势必须不在手（`velocity-drag-active` 是唯一读数）"
+    );
+    assert_eq!(
+        window.get_note_drag_ulid().to_string(),
+        "",
+        "松手之后身份必须清空（否则下一根柱会拿旧身份画草稿）"
+    );
+    assert!(
+        window.get_note_drag_preview_velocity().abs() < 1e-6,
+        "松手之后草稿必须清零"
+    );
+}
+
+/// 判据 (b)：拖到车道上沿之外 ⇒ **恰好 127**；拖到下沿之下 ⇒ **恰好 0**（夹紧，⛔ 不越界）。
+#[test]
+fn velocity_arm_b_a_velocity_drag_clamps_to_127_and_0() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let target = velocity_target(&window, &mut plane, &project_before, 1, 0.0);
+
+    // ---- 非空转前提：这两个 y 对应的**未夹紧**值真的在区间外 ----
+    let raw_up = (VELOCITY_LANE_HEIGHT - VELOCITY_LANE_BOTTOM_MARGIN - 0.0)
+        / VELOCITY_BAR_MAX_HEIGHT
+        * 127.0;
+    let raw_down = (VELOCITY_LANE_HEIGHT - VELOCITY_LANE_BOTTOM_MARGIN - 43.0)
+        / VELOCITY_BAR_MAX_HEIGHT
+        * 127.0;
+    assert!(
+        raw_up > 127.0,
+        "夹具自证：上沿那个 y 的原始值必须 > 127（实测 {raw_up}）"
+    );
+    assert!(
+        raw_down < 0.0,
+        "夹具自证：下沿那个 y 的原始值必须 < 0（实测 {raw_down}）"
+    );
+
+    // ---- ① 拖到车道顶沿（车道内 y = 0）：原始 181.4 ⇒ 夹到 127 ----
+    drag_velocity_to_lane_y(&mut plane, 10, &target, 0.0);
+    let after_up = velocity_of(&port.project(), &target.ulid);
+    // ⚠ 这条断言**紧跟在第一次手势之后**（而不是留到两次之后一起断）：未夹紧的实现会把
+    //    181 交给模型 ⇒ 前置条件以 `VelocityOutOfRange` **拒绝** ⇒ 读数停在 100。
+    //    放在这里，红就直接落在"夹到 127"这句话上，而不是落在一个夹具前提上。
+    assert_eq!(
+        after_up, 127,
+        "拖到上沿之外必须夹到 **恰好** 127（⛔ 不得更大；未夹紧时模型会拒绝 181 ⇒ 停在上一个值）"
+    );
+    assert!(after_up <= 127, "力度不可能超过 127");
+
+    // ---- ② 换个靶（同一个音符，柱现在顶到 127 ⇒ 顶沿 = 40 - 28 = 12），拖到 y = 43 ⇒ 0 ----
+    let retarget = velocity_target(&window, &mut plane, &port.project(), 40, 0.0);
+    assert_eq!(
+        retarget.ulid, target.ulid,
+        "夹具前提：① 之后还是同一个音符可拖"
+    );
+    assert_eq!(
+        retarget.before, 127,
+        "夹具前提：① 的结果必须已经写进投影（重投影生效）"
+    );
+    drag_velocity_to_lane_y(&mut plane, 60, &retarget, 43.0);
+    let after_down = velocity_of(&port.project(), &target.ulid);
+
+    report_line(&format!(
+        "[roll-velocity-b] 抓取点车道内 y ≈ {:.2}；拖到 y = 0（原始 {raw_up:.2}）⇒ 力度 {after_up}；\
+         再拖到 y = 43（原始 {raw_down:.2}）⇒ 力度 {after_down}",
+        target.grab.1 - target.lane_top_local
+    ));
+    assert_eq!(
+        after_down, 0,
+        "拖到下沿之下必须夹到 **恰好** 0（⛔ 不得更小 / 不得回弹）"
+    );
+}
+
+/// 判据 (c)：一次力度手势（`DRAG_STEPS` 步 move）= **恰好一步**撤销；第二次手势再 +1。
+///
+/// 这正是"草稿在手、松手才提交"设计的意义：⛔ 不是每个 `move` 提交一次。
+#[test]
+fn velocity_arm_c_exactly_one_history_entry_per_gesture() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let target = velocity_target(&window, &mut plane, &project_before, 1, 0.0);
+    assert_eq!(port.display().undoable, 0, "起点不该有可撤销的编辑");
+    let commits_before = port.display().commit_count;
+
+    // ---- 第一次手势：100 ⇒ 32 ----
+    drag_velocity_to_lane_y(&mut plane, 10, &target, velocity_bar_top_lane_y(32));
+    let undoable_first = port.display().undoable;
+    let commits_first = port.display().commit_count;
+    let after_first = velocity_of(&port.project(), &target.ulid);
+
+    // ---- 第二次手势：从**工程读回的**新柱高重新取靶（顺带见证重投影没把画面落下）----
+    let second = velocity_target(&window, &mut plane, &port.project(), 40, 0.0);
+    assert_eq!(
+        second.ulid, target.ulid,
+        "夹具前提：第二次拖的还是同一个音符"
+    );
+    drag_velocity_to_lane_y(&mut plane, 60, &second, velocity_bar_top_lane_y(96));
+    let undoable_second = port.display().undoable;
+    let commits_second = port.display().commit_count;
+    let after_second = velocity_of(&port.project(), &target.ulid);
+
+    report_line(&format!(
+        "[roll-velocity-c] 每次手势 {DRAG_STEPS} 步 move：撤销步数 0 ⇒ {undoable_first} ⇒ {undoable_second}；\
+         提交数 {commits_before} ⇒ {commits_first} ⇒ {commits_second}；力度 {} ⇒ {after_first} ⇒ {after_second}",
+        target.before
+    ));
+    assert_eq!(
+        undoable_first, 1,
+        "一次拖动 = **恰好一步**撤销（⛔ 不是每个 `move` 一次：本判据的 {DRAG_STEPS} 步里有 3 步\
+         越过了 4px 阈值 ⇒ 那 3 步会各提交一次；变异实测 undoable = 3）"
+    );
+    assert_eq!(
+        commits_first - commits_before,
+        1,
+        "一次拖动恰好**一次**提交"
+    );
+    assert_ne!(
+        after_first, target.before,
+        "非空转前提：第一次手势必须真的改了力度（否则上面的计数可能只是\"什么都没发生\"）"
+    );
+    assert_eq!(after_first, 32, "第一次手势的落点由判据独立算出");
+    assert_eq!(after_second, 96, "第二次手势的落点由判据独立算出");
+    assert_eq!(undoable_second, 2, "第二次手势再 +1（不是一次性的效果）");
+    assert_eq!(commits_second - commits_before, 2, "两次手势恰好两次提交");
+}
+
+/// 判据 (d)：`Escape` 插在力度拖动中途 ⇒ 工程**逐字节不变**、提交 **0** 次。
+///
+/// ⚠ **本判据在"力度臂未接线"的代码上会空转绿**（力度工具本来就不写工程）—— 这正是兄弟
+/// 判据 `move_arm_c_...` 踩过的坑（它自己在文档里如实登记了）。因此本判据的**红**不是来自
+/// "未修复的代码"，而是来自一个**变异**：把 `Action::Cancel` 里的
+/// `cancel_velocity_drag(ui)` 那一句删掉 ⇒ 松手时宿主的手势标志还在手，
+/// `note-drag-release` 会把最后一次 `move` 的位置提交成一步 ⇒ 工程变、`undoable` 变 1，
+/// 三条断言同时红（实测读数见交付报告）。它证明的是**这条收尾路径真的在链上**，
+/// ⛔ 不证明"取消在任何夹具下都能还原"（草稿从未进过工程，见判据 (c) 的提交计数）。
+#[test]
+fn velocity_arm_d_escape_mid_drag_leaves_the_project_byte_identical_and_commits_nothing() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+    let target = velocity_target(&window, &mut plane, &project_before, 1, 0.0);
+    let commits_before = port.display().commit_count;
+
+    let element_origin = pointer_down_in_roll(&mut plane, 10, target.grab);
+    // 拖到"力度 32"那条 y（> 4px 阈值 ⇒ `.slint` 认它是拖拽，抬起会 fire `release`）。
+    let target_lane_y = velocity_bar_top_lane_y(32);
+    pointer_drag_steps_in_roll(
+        &mut plane,
+        20,
+        element_origin,
+        target.grab,
+        0.0,
+        target.lane_top_local + target_lane_y - target.grab.1,
+        DRAG_STEPS,
+    );
+    // 拖到一半：`Escape`（`Action::Cancel` 的唯一键盘入口）⇒ 丢弃草稿、⛔ 不提交。
+    press_escape(&mut plane, 30);
+    pointer_up_in_roll(&mut plane, 40);
+
+    let project_after = port.project();
+    let after_bytes = serde_json::to_vec(&project_after).expect("序列化终点工程");
+    let commits_after = port.display().commit_count;
+    report_line(&format!(
+        "[roll-velocity-d] 拖动中途 `Escape` 后松手：工程字节 {} ⇒ {}（逐字节相同 = {}）；\
+         提交数 {} ⇒ {}；undoable={}；力度 {} ⇒ {}",
+        before_bytes.len(),
+        after_bytes.len(),
+        before_bytes == after_bytes,
+        commits_before,
+        commits_after,
+        port.display().undoable,
+        target.before,
+        velocity_of(&project_after, &target.ulid)
+    ));
+    assert_eq!(
+        before_bytes, after_bytes,
+        "`Escape` 取消后工程必须**逐字节**不变（草稿从未写进工程，收尾后也不许补写）"
+    );
+    assert_eq!(
+        commits_after, commits_before,
+        "`Escape` 取消不得提交任何 op"
+    );
+    assert_eq!(port.display().undoable, 0, "取消之后不得有可撤销的编辑");
+}
+
+/// 去掉 `//` 注释（含行尾注释）之后的**代码文本**（与 `tests/tool_matrix_wiring.rs` 的
+/// `code_only` 同一口径）。
+///
+/// ⚠ 它按**字符串**切 `//` ⇒ 字符串字面量里的 `//` 也会被切掉。本判据只数
+/// `ToolDrag::AdjustVelocity` 这种标识符，被测源文件里没有含 `//` 的字面量。
+fn code_only(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| match line.split_once("//") {
+            Some((code, _comment)) => code,
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 判据 (e)：**结构防漂移**。计数规则（逐条写明）：
+///
+/// ① 单位 = `str::matches(needle).count()` 的**子串出现次数**（⛔ 不是行数、⛔ 不是"消费者个数"）；
+/// ② **先去掉 `//` 注释**（含 `///` 文档注释）再数 —— 兄弟臂的判据自曝"它的计数大部分是
+///    文档注释"；本判据的针是 `ToolDrag::AdjustVelocity`，去注释后**文档里的引用一律不算**；
+/// ③ 目录 = `<crate>/src` **递归**，只收 `*.rs`（`CARGO_MANIFEST_DIR` 起算）；
+/// ④ `crates/yeban-app/tests/**` **不在**扫描范围（本函数只走 `src`）⇒ 判据自己写的字面
+///    **不算**；
+/// ⑤ 每个文件只取**第一个 `#[cfg(test)]` 之前**的文本（该文件的生产区）⇒ `src/**` 内联
+///    `mod tests` 里的字面不计；
+/// ⑥ `src/input.rs` **整个排除**（那是变体自己的定义处，必然出现）。
+///
+/// 另加一条**不成对的**检查（用**原始**文本，注释**不**去掉）：`input.rs` 的 `ToolDrag`
+/// 五个变体里，每一个的文档必须逐字包含「已接线」或「未消费」，且**恰好两**个说已接线 ——
+/// 这条钉的是"消费现状表不许漂"（把未接的写成已接会立刻红）。
+///
+/// **它证明什么**：去注释后 `ToolDrag::AdjustVelocity` 在 `src/input.rs` 之外有一个**代码**
+/// 出现（本切片之前 = 0）——移动臂的判据数的是 `ToolDrag` 这个宽针，本判据数的是**这一格**。
+/// **它不证明什么**：可达性 —— 一个 `if false { ToolDrag::AdjustVelocity }` 也能让它绿；
+/// 真正"拖得动"由 (a)–(d) 用真实指针注入管。也**不证明**其余三个变体没被误接。
+#[test]
+fn velocity_arm_e_the_velocity_drag_variant_gains_a_commented_out_consumer() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rs_files(&root, &mut files);
+    files.sort();
+    assert!(
+        files
+            .iter()
+            .any(|path| path.file_name().is_some_and(|name| name == "input.rs")),
+        "走查自证：`src/input.rs` 必须在扫描集里"
+    );
+
+    let needle = "ToolDrag::AdjustVelocity";
+    let mut occurrences = 0_usize;
+    let mut hits: Vec<String> = Vec::new();
+    for path in &files {
+        if path.file_name().is_some_and(|name| name == "input.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(path).expect("读源文件");
+        let end = text.find("#[cfg(test)]").unwrap_or(text.len());
+        let production = code_only(&text[..end]);
+        let count = production.matches(needle).count();
+        if count > 0 {
+            hits.push(format!(
+                "{}×{}",
+                path.file_name().expect("文件名").to_string_lossy(),
+                count
+            ));
+            occurrences += count;
+        }
+    }
+    report_line(&format!(
+        "[roll-velocity-e] 去注释后 `{needle}` 在 `src/input.rs` **之外**的生产区出现 {occurrences} 次\
+         （本切片之前 0）：{hits:?}；扫描 {} 个 `.rs` 文件",
+        files.len()
+    ));
+    assert!(
+        occurrences >= 1,
+        "去注释后字面 `{needle}` 必须在 `crates/yeban-app/src` 的生产区（`input.rs` 之外）出现 ≥1 次\
+         （本切片之前 = 0）"
+    );
+
+    // ---- 消费现状表：每个变体都必须自报「已接线 / 未消费」，且恰好两个说已接线 ----
+    let input = std::fs::read_to_string(root.join("input.rs")).expect("读 input.rs");
+    let enum_start = input
+        .find("pub enum ToolDrag {")
+        .expect("`input.rs` 必须有 `pub enum ToolDrag {`");
+    let body = &input[enum_start..];
+    let variants = [
+        "MoveNote",
+        "ResizeDuration",
+        "SliceAcross",
+        "AdjustVelocity",
+        "EraseSweep",
+    ];
+    let mut consumed = 0_usize;
+    let mut previous = 0_usize;
+    for name in variants {
+        let declaration = format!("\n    {name},");
+        let at = body
+            .find(&declaration)
+            .unwrap_or_else(|| panic!("`ToolDrag` 里找不到变体 `{name}`"));
+        assert!(at > previous, "变体 `{name}` 的声明必须按枚举顺序出现");
+        let doc = &body[previous..at];
+        let says_consumed = doc.contains("已接线");
+        let says_unconsumed = doc.contains("未消费");
+        assert!(
+            says_consumed ^ says_unconsumed,
+            "变体 `{name}` 的文档必须**恰好**说一种（已接线 / 未消费），实际[已接线]={says_consumed} \
+             [未消费]={says_unconsumed}；两边都不说或都说会让人读不出它的接线现状"
+        );
+        if says_consumed {
+            consumed += 1;
+        }
+        previous = at;
+    }
+    assert_eq!(
+        consumed, 2,
+        "消费现状表必须**恰好两个**变体说已接线（移动臂 + 力度臂）—— 把未接的写成已接会在这里红"
+    );
+}
+
+/// 判据 (f)：选择工具下**空白处**拖动超过 4px **不得**清空选区（**回归钉**）。
+///
+/// ## 这是什么行为、为什么它在本切片之前的代码上**不能**变红
+///
+/// `.slint` 的 `up` 原先**无条件** fire `clicked` ⇒ 空白处一次滚动拖拽在松手时被当成
+/// 单击 ⇒ 派发器按"点空白 = 清除选区"把选区清掉。兄弟臂（`ac2c72f1`）把它改成按规范 §6 的
+/// **4px 阈值分流**：越阈值的抬起是**拖拽**（不发 `clicked`），没越的才是单击。
+///
+/// ⇒ 本判据是**兄弟臂行为改变的回归钉**，不是本切片修的东西：在**现行**代码上它绿，
+/// 在"把 `up` 改回无条件 `clicked`"的**变异**上它红（实测读数见交付报告）。
+/// 兄弟臂在交付时**披露了这个行为改变、但没有加断言** —— 这条把那个缺口补上。
+///
+/// **它证明什么**：空白处 > 4px 的拖动不会经由 `clicked` 清空选区，而且这一拖真的滚动了
+/// （非空转）。
+/// **它不证明什么**：空白处的 marquee / 框选语义（仍未裁决，本切片不实现）；
+/// 也不证明"单击空白仍然清空选区"（那是另一条判据的事，本文件不重复）。
+#[test]
+fn a_blank_drag_longer_than_the_threshold_does_not_clear_the_selection() {
+    let (window, port, mut plane) = assemble();
+    use slint::Model as _;
+    let project = port.project();
+    let view = yeban_app::bridge::ViewState::from_project(&project).expect("投影");
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bound_f32(&bounds, "width");
+    let viewport_height = bound_f32(&bounds, "height");
+    assert_eq!(
+        window.get_active_tool(),
+        i32::from(Tool::Select.digit()),
+        "夹具前提：本判据走默认选择工具"
+    );
+
+    // ---- 前置：先用一次**真单击**选中一个音符（没越阈值 ⇒ 抬起算单击）----
+    let index = a_painted_note(&view, viewport_width, viewport_height, 0.0);
+    let expected_ulid = view.notes[index].id.clone();
+    let (painted_x, painted_y) = note_center_in_painted_view(&view, index, 0.0);
+    click_in_roll_by_id_at(&mut plane, 10, painted_x, painted_y);
+    assert_eq!(
+        window.get_selected_note_count(),
+        1,
+        "前置：单击必须选中一个音符"
+    );
+
+    // ---- 空白处拖动 > 4px（左拖 40px ⇒ 滚动）----
+    let (blank_x, blank_y) = a_blank_point(&view, viewport_width, viewport_height, 0.0);
+    let (blank_painted_x, blank_painted_y) = host_to_painted(blank_x, blank_y);
+    let scroll_before = window.get_roll_scroll_x();
+    drag_in_roll_by_id_at(
+        &mut plane,
+        20,
+        (blank_painted_x, blank_painted_y),
+        -40.0,
+        0.0,
+        DRAG_STEPS,
+    );
+    let scroll_after = window.get_roll_scroll_x();
+    let count = window.get_selected_note_count();
+    let selected: Vec<String> = window
+        .get_selected_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    report_line(&format!(
+        "[roll-velocity-f] 先单击选中 `{expected_ulid}`；再在空白处（宿主帧 {blank_x},{blank_y}）\
+         左拖 40px × {DRAG_STEPS} 步：`roll-scroll-x` {scroll_before} ⇒ {scroll_after}；\
+         selected-note-count = {count}，selected-ulids = {selected:?}"
+    ));
+    assert!(
+        (scroll_after - scroll_before).abs() > 0.5,
+        "非空转前提：空白处拖动必须真的滚动（否则这一拖可能根本没被送达）"
+    );
+    assert_eq!(
+        count, 1,
+        "空白处 > 4px 的拖动**不得**把抬起当单击 ⇒ 选区必须还在（旧行为：`up` 无条件 fire `clicked` ⇒ 0）"
+    );
+    assert!(
+        selected.iter().any(|id| id == &expected_ulid),
+        "保住的必须还是原来那个身份 `{expected_ulid}`"
+    );
+}

@@ -45,6 +45,9 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> note-drag-ulid: "";
     in property <float> note-drag-preview-dx: 0.0;
     in property <float> note-drag-preview-dy: 0.0;
+    // `[UI-NOTE-003]` 力度臂的草稿预览 + 车道顶沿上报：本组件**只透传**（同 `note-drag-*`）。
+    in property <float> note-drag-preview-velocity: 0.0;
+    out property <length> velocity-lane-top: piano-roll.velocity-lane-top;
     in property <[length]> note-ys: [];
     in property <[length]> note-widths: [];
     // 调音台通道条（Tab 2）的**透传**属性 —— 本组件不解释它们：
@@ -191,7 +194,7 @@ export component ConsoleTabs inherits Rectangle {
 
     // ---------------------------------------------------------------- Tab 内容
     // 三个页面同尺寸叠放, 靠 visible 切换 (父级不是布局, 所以隐藏不影响排版)。
-    PianoRoll {
+    piano-roll := PianoRoll {
         x: 0;
         y: 28px;
         width: parent.width;
@@ -212,6 +215,7 @@ export component ConsoleTabs inherits Rectangle {
         note-drag-ulid: root.note-drag-ulid;
         note-drag-preview-dx: root.note-drag-preview-dx;
         note-drag-preview-dy: root.note-drag-preview-dy;
+        note-drag-preview-velocity: root.note-drag-preview-velocity;
         note-ys: root.note-ys;
         note-widths: root.note-widths;
     }

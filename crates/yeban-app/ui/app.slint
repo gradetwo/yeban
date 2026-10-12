@@ -582,12 +582,23 @@ export component MainWindow inherits Window {
     /// `note-drag-active` 是"手势是否还没结束"的唯一读数：松手 / 离开窗口 / `Escape`
     /// 三条收尾路径都必须把它写回 `false`（判据钉住"不留粘住的拖拽态"）。
     in-out property <bool> note-drag-active: false;
-    in-out property <string> note-drag-note: "";
     in-out property <float> note-drag-origin-x: 0.0;
     in-out property <float> note-drag-origin-y: 0.0;
     in-out property <string> note-drag-ulid: "";
     in-out property <float> note-drag-preview-dx: 0.0;
     in-out property <float> note-drag-preview-dy: 0.0;
+    /// `[UI-NOTE-003]` **力度臂**的两个读数（与移动臂共用同一条手势通道 `note-drag-*`）：
+    /// `note-drag-preview-velocity` = 拖动期的草稿力度（0.0–1.0 归一化，宿主算好注入）；
+    /// `velocity-drag-active` = "力度手势是否还没结束"的唯一读数（松手 / 离开窗口 / `Escape`
+    /// 三条收尾路径都必须写回 `false`）。
+    /// ⚠ 身份**不另开一个属性**：被拖的是哪一个音符只有 `note-drag-ulid` 一个读数
+    /// （两个同义字符串属性 = 第二个真相源，而且界面只可能按其中一个画预览）。
+    in-out property <float> note-drag-preview-velocity: 0.0;
+    in-out property <bool> velocity-drag-active: false;
+    /// `[UI-NOTE-003]` 力度车道顶沿在**卷帘局部坐标系**里的位置（逻辑像素）。
+    /// 由 `.slint` 从车道元素**上报**（`ConsoleTabs` → `PianoRoll` 的 `velocity-lane.y`）；
+    /// 宿主读它把指针 y 反解成"车道内 y"（= 绝对力度）—— ⛔ 宿主那边没有第二份 `height - 44`。
+    out property <length> roll-velocity-lane-top: console-tabs.velocity-lane-top;
     /// `[ROAD-M3-002]` 卷帘当前水平偏移（逻辑像素）。
     /// 用 `<float>` 而非 `<length>`：宿主只需读写一个数，避免 `f32 -> Length` 转换与组件链转发。
     in-out property <float> roll-scroll-x: 0.0;
@@ -876,7 +887,7 @@ export component MainWindow inherits Window {
         }
 
         // --------------------------------------- 底部控制台 (弹性区的 40%)
-        ConsoleTabs {
+        console-tabs := ConsoleTabs {
             vertical-stretch: Tokens.console-stretch;
             active-tab: root.console-tab;
             note-ulids: root.note-ulids;
@@ -894,6 +905,7 @@ export component MainWindow inherits Window {
             note-drag-ulid: root.note-drag-ulid;
             note-drag-preview-dx: root.note-drag-preview-dx;
             note-drag-preview-dy: root.note-drag-preview-dy;
+            note-drag-preview-velocity: root.note-drag-preview-velocity;
             note-ys: root.note-ys;
             note-widths: root.note-widths;
             // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。
