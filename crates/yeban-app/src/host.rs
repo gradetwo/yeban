@@ -3681,6 +3681,10 @@ pub fn wire_tool_select(ui: &MainWindow, undo: Option<Rc<UndoPort>>) {
 ///
 /// 返回 `None` 的三种情形都是**决定**而非意外（第 234/237 轮）：工具不是铅笔；点击处吸附不出计划；
 /// **位置不在任何片段内**（拒绝, 不新建片段）。返回 `Some(op)` 表示"应当提交这一个操作"。
+///
+/// **帧口径**：`x` / `y` 是**宿主帧**（网格局部，与 [`ViewState::hit_test_visible`] /
+/// `lane_at_y` 同一口径）。界面回调报的是**绘制帧** ⇒ 唯一派发器先经
+/// [`crate::bridge::painted_to_host`] 换算再调这里（⛔ 本函数内部不再做第二次换算）。
 #[must_use]
 pub fn pencil_op_for(
     project: &yeban_model::YebanProjectV1,
@@ -3912,6 +3916,9 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///
 /// # 派发顺序（顺序本身是契约）
 ///
+/// 0. **先做一次帧换算**：界面报的是绘制坐标（相对 `PianoRoll` 根），宿主命中测试用的是
+///    网格局部坐标 ⇒ `bridge::painted_to_host`（唯一真相源）搬一次，下面的 `(x, y)` 全部是
+///    宿主帧；
 /// 1. **总是**命中测试并更新选区（写 `selected-note-count` / `selected-ulids` /
 ///    `note-selected`，并同步状态栏）—— 无论当前是哪个工具。选择工具到此为止；
 /// 2. 再按 `Tool::click()` 落编辑：
@@ -3945,6 +3952,11 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
         };
         let scroll = ui.get_roll_scroll_x();
         let width = slint::ComponentHandle::window(&ui).size().width as f32;
+        // 界面报的是**绘制坐标**（相对 `PianoRoll` 根：琴键列 56px ＋ 内缩 12px，表头 28px 之下），
+        // 而下面的命中测试 / 铅笔 / 橡皮擦用**网格局部**坐标。帧换算**只做这一次**
+        // （`bridge::painted_to_host` 是唯一真相源）—— 旧实现从不减这个偏移 ⇒ 人手点得到的
+        // 音符矩形纵向差 28px（超过音符高 12px），点可见音符恒不中（本票的缺陷）。
+        let (x, y) = crate::bridge::painted_to_host(x, y);
         // 权威会话可能被控制面关掉工程（`try_project` 如实返回 `None`）——
         // 那时退回装配时的视图，而不是在一个 Slint 回调里 panic。
         let project = port.as_ref().and_then(|port| port.try_project());

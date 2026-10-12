@@ -17,8 +17,9 @@
 //! | 判据 | 证明 |
 //! | :--- | :--- |
 //! | `a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch` | §3.6：**按语义 ID**（`piano-roll-scroll-area`）注入 `down → up` ⇒ 权威工程音符 **+1**，且新音符的 `start_tick` / `pitch` 与**坐标换算**（`snapped_tick_at` / `lane_at_y` ＋ `pitch_lane`）逐值一致；并给出**即时可视反馈**读数（新元素进运行时树） |
-//! | `clicking_a_note_with_the_select_tool_selects_it_in_production_order` | **本票修的缺陷的判据**：按**生产顺序**（`build_live_ui` ＋ `wire_roll_edit`）装配后，用**默认选择工具**点一个现成音符 ⇒ `selected-note-count == 1` 且该音符 ULID 进 `selected-ulids`（覆盖缺陷下这里恒为 0 —— 见文件末的"怎么变红"） |
-//! | `clicking_a_note_without_wire_roll_edit_still_selects_it` | **控制臂**：同样是 `build_live_ui` 但**不调** `wire_roll_edit`（= 覆盖发生前的形态）的同一个点击也选中它 ⇒ 把缺陷隔离到"后装 handler 覆盖"，并证明坐标 / 夹具本身是对的 |
+//! | `clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order` | **本票修的缺陷的判据**：按**生产顺序**（`build_live_ui` ＋ `wire_roll_edit`）装配后，用**默认选择工具**点一个现成音符的**绘制坐标**（= 人手真正点得到的矩形）⇒ `selected-note-count == 1` 且该音符 ULID 进 `selected-ulids`（宿主从不减 `(68, 28)` 帧原点时这里恒为 0 —— 见文件末的"怎么变红"） |
+//! | `a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note` | **帧控制臂**：把**宿主坐标数**原样当绘制坐标注入（= 旧判据的做法）⇒ 点不到靶子（预期 ULID 不得进选区）。它与上一条一起把两件事钉住：`hit_test_visible` 说**宿主帧**，界面回调报**绘制帧**，两者差 `bridge::painted_to_host` |
+//! | `clicking_a_note_without_wire_roll_edit_still_selects_it` | **覆盖控制臂**：同样是 `build_live_ui` 但**不调** `wire_roll_edit`（= 覆盖发生前的形态）的同一个**绘制坐标**点击也选中它 ⇒ 把上一轮的缺陷隔离到"后装 handler 覆盖"，并证明坐标 / 夹具本身是对的 |
 //! | `the_eraser_click_deletes_the_note_under_the_cursor` | 橡皮擦点击接上后：点光标下的音符 ⇒ 权威工程音符 **−1**，删掉的正是点中的那个身份，且选区被清空（与键盘 `Delete` 同一取向） |
 //!
 //! ## 未接的部分（如实登记，⛔ 不假装）
@@ -33,11 +34,16 @@
 //!
 //! 依赖已缓存 ⇒ 本判据在本机跑过 `cargo check` / `cargo clippy -D warnings` / `cargo test`（读数见交付报告）。
 //!
-//! ## 怎么变红（新增两条判据）
+//! ## 怎么变红（帧缺陷 + 两条旧缺陷各一条）
 //!
+//! - **本票（帧原点）**：让 `install_roll_click` 把界面报的 `(x, y)` 当宿主坐标用
+//!   （= 不在派发器里做 `bridge::painted_to_host`）⇒
+//!   `clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order`
+//!   的 `selected-note-count` 停在 0（实测断言：左 0、右 1），因为绘制坐标的 y 比音符顶沿
+//!   低 28px、超过音符高 12px。帧控制臂在**同一份代码**上**也红**（它断言宿主坐标数字点不到），
+//!   两条一起才说明"少了一次换算"而不是"坐标 / 夹具坏了"。
 //! - 让 `wire_roll_edit` 重新注册一个**只认铅笔**的 handler（即覆盖派发器里的选区那一段）
-//!   ⇒ `clicking_a_note_with_the_select_tool_selects_it_in_production_order` 的
-//!   `selected-note-count` 停在 0（实测断言：左 0、右 1）。控制臂**仍绿** ——
+//!   ⇒ 生产顺序那条判据的 `selected-note-count` 停在 0；**覆盖控制臂仍绿** ——
 //!   这正是"缺陷在覆盖、不在坐标"的证据。
 //! - 让橡皮擦分支重新什么都不做 ⇒ `the_eraser_click_deletes_the_note_under_the_cursor` 红。
 
@@ -51,6 +57,7 @@ use std::rc::Rc;
 
 use live::{LiveControlPlane, build_live_ui};
 use serde_json::json;
+use yeban_app::bridge::{host_to_painted, painted_to_host};
 use yeban_app::host::{PENCIL_TOOL_DIGIT, ROLL_SNAP_GRID_TICKS, pencil_op_for, wire_roll_edit};
 use yeban_app::input::Tool;
 use yeban_app::undo::{UndoPort, UndoSession};
@@ -65,7 +72,8 @@ use yeban_ui_test_port::render::report_line;
 /// 拖动面（点击源）的**稳定语义 ID**（`[UI-TEST-001]` §12.2）。
 const SCROLL_AREA: &str = "piano-roll-scroll-area";
 
-/// 卷帘内的点击高度（窗口 y = 包围盒 y ＋ 这个值）。取 100px：落在音高泳道带内。
+/// 卷帘内的点击高度，**宿主帧**（`hit_test_visible` / `pencil_op_for` / `lane_at_y` 那一套，
+/// 泳道顶 = y 0）。取 100px：落在音高泳道带内。注入指针时经 `host_to_painted` 搬成绘制坐标。
 const HIT_Y_IN_ROLL: f32 = 100.0;
 
 /// 提交时间戳（固定值 ⇒ 判据确定性）。
@@ -97,12 +105,13 @@ fn assemble_without_roll_edit() -> (yeban_app::ui::MainWindow, LiveControlPlane)
 /// 音符矩形的高度（与 `host::NOTE_HEIGHT_PX` / `piano_roll.slint` 的 `12px` 同一读数）。
 const NOTE_HEIGHT: f32 = 12.0;
 
-/// **宿主视口坐标**下"点在音符中心"：`(x, y)`。
+/// **宿主帧**下"点在音符中心"：`(x, y)`。
 ///
-/// ⚠ 这里是 `hit_test_visible` / `pencil_op_for` 用的那一套（tick 0 = x 0，泳道顶 = y 0），
+/// 这是 `hit_test_visible` / `pencil_op_for` 用的那一套（tick 0 = x 0，泳道顶 = y 0），
 /// **不是** `.slint` 里把音符层放在琴键列（56px）＋ 内缩（`Tokens.space-5` = 12px）＋
-/// 表头（28px）之后的绘制坐标。判据必须与宿主命中测试同一口径，否则命中测试自己都不认；
-/// 控制臂用**同一坐标**选中音符，就是这条口径正确的机械见证。
+/// 表头（28px）之后的**绘制坐标**。两帧的关系只有 `bridge::painted_to_host` 一处
+/// （它的反向是 `host_to_painted`）；本文件的 `a_painted_note` 用宿主帧做几何自证，
+/// 而真正注入的指针一律走下面 [`note_center_in_painted_view`]。
 fn note_center_in_host_view(
     view: &yeban_app::bridge::ViewState,
     index: usize,
@@ -115,16 +124,41 @@ fn note_center_in_host_view(
     )
 }
 
-/// 找一个**宿主命中测试真的能命中**的音符（返回它在 `view.notes` 里的下标）。
+/// **绘制帧**（人看得见的矩形）下"点在音符中心"：宿主中心经 [`host_to_painted`] 搬到绘制坐标。
+///
+/// 界面回调报的就是这一帧 ⇒ 注入指针必须用它，否则点的是"宿主以为的位置"而不是"人看到的位置"。
+fn note_center_in_painted_view(
+    view: &yeban_app::bridge::ViewState,
+    index: usize,
+    scroll: f32,
+) -> (f32, f32) {
+    let (x, y) = note_center_in_host_view(view, index, scroll);
+    host_to_painted(x, y)
+}
+
+/// 找一个**人真的点得到**的音符（返回它在 `view.notes` 里的下标）：两个条件都满足 ——
+///
+/// 1. **宿主帧**：它的宿主帧中心被 `hit_test_visible` 解析到它自己（帧的几何一侧正确）；
+/// 2. **绘制帧**：它的绘制帧中心还落在卷帘元素矩形内（否则指针根本到不了这个元素，
+///    判据会因"事件没送到"而不是"帧算错"变红 —— 那是一条假对照）。
 ///
 /// 用 `find` 而不是取第 0 个：夹具里未必每个音符都落在这一帧的可见窗口内。
-fn a_hittable_note(view: &yeban_app::bridge::ViewState, viewport_width: f32, scroll: f32) -> usize {
+fn a_painted_note(
+    view: &yeban_app::bridge::ViewState,
+    viewport_width: f32,
+    viewport_height: f32,
+    scroll: f32,
+) -> usize {
     (0..view.notes.len())
         .find(|&index| {
-            let (x, y) = note_center_in_host_view(view, index, scroll);
-            view.hit_test_visible(scroll, viewport_width, x, y, NOTE_HEIGHT) == Some(index)
+            let (hx, hy) = note_center_in_host_view(view, index, scroll);
+            if view.hit_test_visible(scroll, viewport_width, hx, hy, NOTE_HEIGHT) != Some(index) {
+                return false;
+            }
+            let (px, py) = note_center_in_painted_view(view, index, scroll);
+            (0.0..=viewport_width).contains(&px) && (0.0..=viewport_height).contains(&py)
         })
-        .expect("夹具里必须有一个宿主命中测试能命中的音符")
+        .expect("夹具里必须有一个宿主命中的音符，其绘制帧中心也落在卷帘元素矩形内")
 }
 
 /// 工程里的音符数（与 `live_ui_mcp.rs` 的 `model_note_count` 同一口径：`clip_pool` 的各段落音符之和）。
@@ -168,15 +202,20 @@ fn element_bounds(plane: &mut LiveControlPlane, seq: i64, element_id: &str) -> s
 }
 
 /// 按**语义 ID** 在卷帘内 `(hit_x, HIT_Y_IN_ROLL)` 处注入一次真实点击（`down → move → up`）。
+///
+/// 两个入参都是**宿主帧**；本函数用唯一的 [`host_to_painted`] 把它们搬到界面实际报上来的
+/// 绘制帧再注入（⛔ 不在这里另写 `+68` / `+28`）。
 fn click_in_roll_by_id(plane: &mut LiveControlPlane, seq: i64, hit_x: f32) {
-    click_in_roll_by_id_at(plane, seq, hit_x, HIT_Y_IN_ROLL);
+    let (painted_x, painted_y) = host_to_painted(hit_x, HIT_Y_IN_ROLL);
+    click_in_roll_by_id_at(plane, seq, painted_x, painted_y);
 }
 
-/// 按**语义 ID** 在卷帘内 `(hit_x, hit_y)`（宿主视口坐标）处注入一次真实点击。
+/// 按**语义 ID** 在卷帘内 `(hit_x, hit_y)`（**绘制帧**，即界面回调 `on_clicked` 收到的值）处
+/// 注入一次真实点击。
 ///
 /// `xOffset` / `yOffset` 是**相对 `piano-roll-scroll-area` 元素**的偏移；测试端口把它换成
 /// 绝对窗口坐标（`elementId` 的包围盒原点 ＋ 偏移）再交给 Slint，因此这里的 `(hit_x, hit_y)`
-/// 与宿主回调拿到的 `(x, y)` 逐值相同 —— 这就是"注入的是宿主那套命中测试坐标"的机械依据。
+/// 与宿主回调拿到的 `(x, y)` 逐值相同 —— 这就是"注入的是绘制帧坐标"的机械依据。
 fn click_in_roll_by_id_at(plane: &mut LiveControlPlane, seq: i64, hit_x: f32, hit_y: f32) {
     let bounds = element_bounds(plane, seq, SCROLL_AREA);
     let origin_x = bounds["x"].as_f64().expect("x") as f32;
@@ -239,8 +278,17 @@ fn a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
     let expected_pitch = (0u8..=127)
         .find(|pitch| yeban_app::bridge::pitch_lane(*pitch) == lane)
         .expect("泳道必须对应一个音高");
+    // 注入的是**绘制帧**：用唯一换算把宿主点搬过去；宿主收到后再由同一个 `painted_to_host`
+    // 搬回来 ⇒ 这里先证明往返回到原点（否则"注入的"与"期望的"不是同一个点）。
+    let (painted_x, painted_y) = host_to_painted(hit_x, HIT_Y_IN_ROLL);
+    assert_eq!(
+        painted_to_host(painted_x, painted_y),
+        (hit_x, HIT_Y_IN_ROLL),
+        "帧换算必须往返回到同一个宿主点"
+    );
     report_line(&format!(
-        "[roll-edit] 注入点 x={hit_x} y={HIT_Y_IN_ROLL} ⇒ 期望 tick={expected_tick} pitch={expected_pitch} lane={lane}"
+        "[roll-edit] 宿主点 x={hit_x} y={HIT_Y_IN_ROLL} ⇒ 绘制帧注入点 x={painted_x} y={painted_y}；\
+         期望 tick={expected_tick} pitch={expected_pitch} lane={lane}"
     ));
 
     // ---- 选铅笔（**工具状态机**）：走界面上的工具按钮语义 ID ----
@@ -298,16 +346,19 @@ fn a_pencil_click_by_semantic_id_adds_one_note_at_the_snapped_tick_and_pitch() {
     );
 }
 
-/// 判据 ②（**本票修的缺陷**）：生产顺序装配后，用默认选择工具点一个现成音符 ⇒ 选中它。
+/// 判据 ②（**本票修的帧缺陷**）：生产顺序装配后，用默认选择工具点一个现成音符
+/// **人看得见的矩形**（绘制帧中心）⇒ 选中它。
 ///
 /// ## 缺陷（本判据必须在修复前的代码上变红）
 ///
-/// Slint 一个 `callback` 只留一个 handler ⇒ 旧实现里 `wire_roll_edit` 那个**只认铅笔**的
-/// handler 把 `build_main_window_with_console_tab` 装的选区 handler **整个换掉**，
-/// 于是本判据的 `selected-note-count` 恒为 0（实测红：`assert_eq!(count, 1)` 左 0、右 1）。
-/// 控制臂（下一条判据）在同样代码上**仍然绿**，把缺陷隔离到"后装 handler 覆盖"这一点。
+/// `.slint` 把音符层画在琴键列（56px）＋ `Tokens.space-5`（12px）之后，并且在 28px 表头之下；
+/// 界面回调报的是这一套**绘制坐标**。旧宿主把它当**网格局部**坐标直接喂给 `hit_test_visible`
+/// ⇒ 命中点比人点的位置高 28px、左 68px，而音符框只有 12px 高 ⇒ 纵向必然落空。
+/// 实测红：本判据的 `selected-note-count` 停在 0（`assert_eq!(count, 1)` 左 0、右 1）。
+/// 帧控制臂（下一条判据）在**同一份旧代码**上**也红**（它断言宿主坐标数字点不到），
+/// 两条一起才把缺陷定位到"少了一次 `bridge::painted_to_host`"而不是坐标 / 夹具坏了。
 #[test]
-fn clicking_a_note_with_the_select_tool_selects_it_in_production_order() {
+fn clicking_the_painted_note_rect_with_the_select_tool_selects_it_in_production_order() {
     let (window, port, mut plane) = assemble();
     use slint::Model as _;
     // 默认工具就是选择箭头（`app.slint` 的 `active-tool: 1`）—— 本判据不切工具。
@@ -319,17 +370,20 @@ fn clicking_a_note_with_the_select_tool_selects_it_in_production_order() {
     let view = yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
     let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
     let viewport_width = bounds["width"].as_f64().expect("width") as f32;
-    let index = a_hittable_note(&view, viewport_width, 0.0);
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+    let index = a_painted_note(&view, viewport_width, viewport_height, 0.0);
     let expected_ulid = view.notes[index].id.clone();
-    let (x, y) = note_center_in_host_view(&view, index, 0.0);
-    // 夹具自证：宿主命中测试命中的**就是**这一个音符。
+    let (host_x, host_y) = note_center_in_host_view(&view, index, 0.0);
+    let (x, y) = note_center_in_painted_view(&view, index, 0.0);
+    // 夹具自证：宿主命中测试在**宿主帧**命中的**就是**这一个音符（帧的几何一侧）。
     assert_eq!(
-        view.hit_test_visible(0.0, viewport_width, x, y, NOTE_HEIGHT),
+        view.hit_test_visible(0.0, viewport_width, host_x, host_y, NOTE_HEIGHT),
         Some(index),
-        "夹具前提：注入点必须被宿主命中测试解析到这一个音符"
+        "夹具前提：宿主帧中心必须被宿主命中测试解析到这一个音符"
     );
     assert_eq!(window.get_selected_note_count(), 0, "起点不该已有选区");
 
+    // 注入的是**绘制帧**坐标（人看得见的矩形中心）—— 与界面 `on_clicked` 收到的同一帧。
     click_in_roll_by_id_at(&mut plane, 10, x, y);
 
     let count = window.get_selected_note_count();
@@ -339,12 +393,12 @@ fn clicking_a_note_with_the_select_tool_selects_it_in_production_order() {
         .map(|id| id.to_string())
         .collect();
     report_line(&format!(
-        "[roll-select] 生产顺序 + 选择工具点击 `{expected_ulid}` @({x},{y}) ⇒ \
-         selected-note-count={count} selected-ulids={selected:?}"
+        "[roll-select] 生产顺序 + 选择工具点击绘制帧 `{expected_ulid}` @({x},{y}) \
+         （宿主帧 ({host_x},{host_y})）⇒ selected-note-count={count} selected-ulids={selected:?}"
     ));
     assert_eq!(
         count, 1,
-        "选择工具点中一个音符必须恰好选中 1 个（覆盖缺陷下这里恒为 0）"
+        "选择工具点中**人看得见的**音符矩形必须恰好选中 1 个（宿主不减帧原点时这里恒为 0）"
     );
     assert!(
         selected.iter().any(|id| id == &expected_ulid),
@@ -352,11 +406,51 @@ fn clicking_a_note_with_the_select_tool_selects_it_in_production_order() {
     );
 }
 
-/// 判据 ③（**控制臂**）：同样 `build_live_ui` 但**不调** `wire_roll_edit` 时，
-/// 同一个点击也选中它 —— 覆盖发生前的形态。
+/// 判据 ②-b（**帧控制臂**）：把**宿主帧的数字**原样当绘制坐标注入（= 修复前判据的做法）
+/// ⇒ **点不到**靶子。
 ///
-/// 它隔离出缺陷的位置：不是坐标、不是命中测试、也不是"选区逻辑不存在"，而是
-/// `wire_roll_edit` 后装的 handler 把选区 handler 覆盖了。本判据在**修复前后都绿**。
+/// 它把"两帧不是同一个数"钉死：宿主帧中心 `(host_x, host_y)` 换算回宿主后是
+/// `(host_x − 68, host_y − 28)`，比音符框（12px 高）高了 28px ⇒ 靶子不可能被选中。
+/// 修复前这条判据红（旧宿主把数字当宿主帧用，于是选中了靶子），修复后绿。
+/// ⛔ 断言只看"靶子不在选区里"，不假定选区一定为空 —— 换回来的点可能压到别的音符上。
+#[test]
+fn a_click_at_the_host_frame_coordinates_does_not_select_the_painted_note() {
+    let (window, port, mut plane) = assemble();
+    use slint::Model as _;
+    let view = yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bounds["width"].as_f64().expect("width") as f32;
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+    let index = a_painted_note(&view, viewport_width, viewport_height, 0.0);
+    let expected_ulid = view.notes[index].id.clone();
+    let (host_x, host_y) = note_center_in_host_view(&view, index, 0.0);
+    assert_eq!(window.get_selected_note_count(), 0, "起点不该已有选区");
+
+    // 数字就是宿主帧中心；但注入面是绘制帧 ⇒ 宿主换算后会落到靶子左上方。
+    click_in_roll_by_id_at(&mut plane, 10, host_x, host_y);
+
+    let count = window.get_selected_note_count();
+    let selected: Vec<String> = window
+        .get_selected_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    report_line(&format!(
+        "[roll-frame] 把宿主帧数 ({host_x},{host_y}) 当绘制帧注入 ⇒ selected-note-count={count} \
+         selected-ulids={selected:?}；靶子 `{expected_ulid}` 必须**不在**选区里"
+    ));
+    assert!(
+        !selected.iter().any(|id| id == &expected_ulid),
+        "宿主帧数字不是绘制坐标：帧原点 (68, 28) 未减时才会选中 `{expected_ulid}`（旧代码的读数）"
+    );
+}
+
+/// 判据 ③（**覆盖控制臂**）：同样 `build_live_ui` 但**不调** `wire_roll_edit` 时，
+/// 同一个**绘制帧**点击也选中它 —— 覆盖发生前的形态。
+///
+/// 它隔离出上一轮缺陷的位置：不是坐标、不是命中测试、也不是"选区逻辑不存在"，而是
+/// `wire_roll_edit` 后装的 handler 把选区 handler 覆盖了。本判据在上一轮修复前后都绿；
+/// 在本票的帧修复前后也都绿（它走的是同一个派发器里的同一条换算）。
 #[test]
 fn clicking_a_note_without_wire_roll_edit_still_selects_it() {
     let (window, mut plane) = assemble_without_roll_edit();
@@ -365,13 +459,15 @@ fn clicking_a_note_without_wire_roll_edit_still_selects_it() {
     let view = yeban_app::bridge::ViewState::from_project(&project).expect("投影");
     let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
     let viewport_width = bounds["width"].as_f64().expect("width") as f32;
-    let index = a_hittable_note(&view, viewport_width, 0.0);
+    let viewport_height = bounds["height"].as_f64().expect("height") as f32;
+    let index = a_painted_note(&view, viewport_width, viewport_height, 0.0);
     let expected_ulid = view.notes[index].id.clone();
-    let (x, y) = note_center_in_host_view(&view, index, 0.0);
+    let (host_x, host_y) = note_center_in_host_view(&view, index, 0.0);
+    let (x, y) = note_center_in_painted_view(&view, index, 0.0);
     assert_eq!(
-        view.hit_test_visible(0.0, viewport_width, x, y, NOTE_HEIGHT),
+        view.hit_test_visible(0.0, viewport_width, host_x, host_y, NOTE_HEIGHT),
         Some(index),
-        "夹具前提：注入点必须被宿主命中测试解析到这一个音符"
+        "夹具前提：宿主帧中心必须被宿主命中测试解析到这一个音符"
     );
     assert_eq!(window.get_selected_note_count(), 0, "起点不该已有选区");
 
@@ -384,13 +480,16 @@ fn clicking_a_note_without_wire_roll_edit_still_selects_it() {
         .map(|id| id.to_string())
         .collect();
     report_line(&format!(
-        "[roll-select] 控制臂（不调 wire_roll_edit）点击 `{expected_ulid}` @({x},{y}) ⇒ \
+        "[roll-select] 覆盖控制臂（不调 wire_roll_edit）点击绘制帧 `{expected_ulid}` @({x},{y}) ⇒ \
          selected-note-count={count} selected-ulids={selected:?}"
     ));
-    assert_eq!(count, 1, "控制臂：覆盖发生前，选区 handler 必须选中一个");
+    assert_eq!(
+        count, 1,
+        "覆盖控制臂：覆盖发生前，选区 handler 必须选中一个"
+    );
     assert!(
         selected.iter().any(|id| id == &expected_ulid),
-        "控制臂选中的必须是点中的那个音符身份 `{expected_ulid}`"
+        "覆盖控制臂选中的必须是点中的那个音符身份 `{expected_ulid}`"
     );
 }
 
@@ -441,22 +540,24 @@ fn the_eraser_click_deletes_the_note_under_the_cursor() {
         .iter()
         .position(|note| note.id == new_id)
         .expect("新音符必须在投影里");
-    let (x, y) = note_center_in_host_view(&view, index, 0.0);
+    let (host_x, host_y) = note_center_in_host_view(&view, index, 0.0);
+    let (x, y) = note_center_in_painted_view(&view, index, 0.0);
     let bounds = element_bounds(&mut plane, 45, SCROLL_AREA);
     let viewport_width = bounds["width"].as_f64().expect("width") as f32;
     assert_eq!(
-        view.hit_test_visible(0.0, viewport_width, x, y, NOTE_HEIGHT),
+        view.hit_test_visible(0.0, viewport_width, host_x, host_y, NOTE_HEIGHT),
         Some(index),
-        "夹具前提：橡皮擦注入点必须被宿主命中测试解析到靶子"
+        "夹具前提：橡皮擦靶子的宿主帧中心必须被宿主命中测试解析到它"
     );
 
     window.set_active_tool(i32::from(Tool::Eraser.digit()));
+    // 橡皮擦也点**人看得见的**矩形（绘制帧），与选择 / 铅笔同一条 `painted_to_host`。
     click_in_roll_by_id_at(&mut plane, 50, x, y);
 
     let after = note_count(&port.project());
     report_line(&format!(
-        "[roll-edit] 橡皮擦点击 `{new_id}` @({x},{y}) ⇒ 音符数 {before}＋1 ⇒ {after}；\
-         selected-note-count={}",
+        "[roll-edit] 橡皮擦点击绘制帧 `{new_id}` @({x},{y})（宿主帧 ({host_x},{host_y})）\
+         ⇒ 音符数 {before}＋1 ⇒ {after}；selected-note-count={}",
         window.get_selected_note_count()
     ));
     assert_eq!(after, before, "橡皮擦点音符必须恰好删掉那一个");

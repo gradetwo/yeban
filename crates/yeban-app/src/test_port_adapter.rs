@@ -81,7 +81,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use yeban_app::bridge::ViewState;
+use yeban_app::bridge::{ViewState, host_to_painted};
 use yeban_app::elements::{ElementRegistry, is_model_driven_family};
 use yeban_app::engine_host::{EngineHost, TransportActionRecord};
 use yeban_app::host;
@@ -1342,27 +1342,32 @@ fn a_synthetic_click_selects_the_note_under_it_and_clears_on_empty_space() {
 
     assert_eq!(ui.get_selected_note_count(), 0, "初始必须无选中");
 
-    // 取一个可见音符, 在它的中心合成一次点击（位置是**相对视口**的, 与注入数组同一口径）。
+    // 取一个可见音符, 在它的中心合成一次点击。`invoke_clicked` 绕过 Slint 的坐标解析,
+    // 直接送进**与产品同一条** `on_clicked` ⇒ 送的必须是界面回调报的**绘制帧**坐标
+    // （`host_to_painted` 是唯一换算；宿主收到后由 `painted_to_host` 搬回）。
     let scroll = ui.get_roll_scroll_x();
     let width = slint::ComponentHandle::window(ui).size().width as f32;
     let visible = view.visible_notes(scroll, width);
     assert!(!visible.is_empty(), "夹具在初始窗口内必须有音符");
-    let cx = visible.positions[0] + visible.widths[0] / 2.0;
-    let cy = visible.ys[0] + 3.0;
+    let (cx, cy) = host_to_painted(
+        visible.positions[0] + visible.widths[0] / 2.0,
+        visible.ys[0] + 3.0,
+    );
     ui.invoke_clicked(cx, cy);
     assert_eq!(
         ui.get_selected_note_count(),
         1,
-        "点在音符上必须选中它（坐标 {cx},{cy}）"
+        "点在音符上必须选中它（绘制帧坐标 {cx},{cy}）"
     );
 
     // 牙: 点在音符**下半截**（相对顶部 +11px）也必须命中 —— 若宿主的高度常量小于 `.slint` 的
     // `height: 12px`, 这一条会红（第 501 轮我第一次写 6.0, 只有这条能抓到）。
     let bottom = view.visible_notes(scroll, width);
-    ui.invoke_clicked(
+    let (bx, by) = host_to_painted(
         bottom.positions[0] + bottom.widths[0] / 2.0,
         bottom.ys[0] + 11.0,
     );
+    ui.invoke_clicked(bx, by);
     assert_eq!(
         ui.get_selected_note_count(),
         1,

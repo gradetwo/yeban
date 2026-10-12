@@ -404,4 +404,19 @@ fn roll_click_has_exactly_one_dispatcher_writer() {
         dispatcher.contains("pencil_op_for") && dispatcher.contains("delete_ops_for"),
         "派发器必须把铅笔接 `pencil_op_for`、橡皮擦接 `delete_ops_for`\n{dispatcher}"
     );
+    // 帧换算的**唯一**落点：界面报的是绘制坐标（琴键列 56 ＋ 内缩 12，表头 28 之下），
+    // `hit_test_visible` / `pencil_op_for` 用的是网格局部坐标。少了这一步，人手点得到的
+    // 音符矩形纵向差 28px（超过音符高 12px）⇒ 点可见音符恒不中（本票的缺陷）。
+    assert!(
+        dispatcher.contains("painted_to_host"),
+        "派发器必须用唯一的帧换算 `bridge::painted_to_host` 把绘制坐标搬进宿主坐标 —— \
+         这是\"人手点得到的矩形\"与\"命中测试\"之间的单一真相源\n{dispatcher}"
+    );
+    assert_eq!(
+        count(&host, "painted_to_host("),
+        1,
+        "`painted_to_host(` 在 `src/host.rs` 里必须恰好出现一次（唯一派发器里的唯一换算点），\
+         实际 {} 次 —— 多处换算就是多个真相源，迟早有一处漏减 (68, 28)",
+        count(&host, "painted_to_host(")
+    );
 }

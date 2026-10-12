@@ -4812,7 +4812,10 @@ fn a_gui_pencil_edit_lands_in_the_same_authority_as_the_session() {
     let revision_before = authority.apply_revision();
 
     // ---- GUI 事件源：`app.slint` 的 `clicked` → `wire_roll_edit` → 端口 → 权威 ----
-    ui.ui().invoke_clicked(hit_x, y);
+    // `invoke_clicked` 直接送 `on_clicked`（绕过 Slint 的坐标解析）⇒ 必须送界面回调报的
+    // **绘制帧**坐标：唯一的帧换算 `host_to_painted` 与宿主里的 `painted_to_host` 互逆。
+    let (painted_x, painted_y) = yeban_app::bridge::host_to_painted(hit_x, y);
+    ui.ui().invoke_clicked(painted_x, painted_y);
 
     let project_after = authority.project().expect("权威有活跃工程");
     let notes_after: BTreeSet<String> = project_note_ids(&project_after).into_iter().collect();

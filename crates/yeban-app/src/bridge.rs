@@ -158,6 +158,50 @@ pub const PITCH_LANE_HEIGHT_PX: f32 = 14.0;
 /// 音符块在车道内的纵向内缩（与 `piano_roll.slint` 的 `+ 6px` 对齐）。
 pub const NOTE_INSET_Y_PX: f32 = 6.0;
 
+/// 卷帘左侧琴键列的宽度（逻辑像素）—— 与 `ui/console/piano_roll.slint` 里琴键列的
+/// `width: 56px` 及网格画布的 `x: 56px` 同一读数。
+pub const ROLL_KEY_COLUMN_WIDTH_PX: f32 = 56.0;
+
+/// 音符层在网格画布内的**横向**内缩（逻辑像素）—— 与 `piano_roll.slint` 音符的
+/// `x: Tokens.space-5 + …`（`Tokens.space-5` = 12px）同一读数。
+pub const NOTE_INSET_X_PX: f32 = 12.0;
+
+/// 卷帘表头（工具行）高度（逻辑像素）—— 与 `piano_roll.slint` 里琴键列 / 网格画布的
+/// `y: 28px` 同一读数。
+pub const ROLL_HEADER_HEIGHT_PX: f32 = 28.0;
+
+/// 卷帘**绘制坐标 → 宿主坐标**的**唯一**换算点。
+///
+/// 界面回调报上来的 `(x, y)` 是**相对 `PianoRoll` 根**的绘制坐标（`piano_roll.slint` 里
+/// 覆盖全组件的拖动手势面报 `self.mouse-x` / `self.mouse-y`）：音符层画在琴键列
+/// （[`ROLL_KEY_COLUMN_WIDTH_PX`]）之后、再内缩 [`NOTE_INSET_X_PX`]，并且整体在
+/// [`ROLL_HEADER_HEIGHT_PX`] 的表头之下。而 `hit_test_visible` / `pencil_op_for` /
+/// `lane_at_y` 用的是**网格画布局部**坐标（tick 0 = x 0，泳道顶 = y 0）。两者只差一个固定原点。
+///
+/// 本函数是这条原点换算的**单一真相源**：宿主侧只调用它一次（`host::install_roll_click`），
+/// 判据侧注入指针时调用它的反向 [`host_to_painted`] —— ⛔ 任何调用点都不得自己再写一次
+/// `- 56 - 12` / `- 28`（那正是本票的缺陷：宿主从不减这个偏移 ⇒ 人手点得到的音符矩形与
+/// 命中测试差 `(68, 28)`，纵向 28px 超过音符高 12px ⇒ 点可见音符恒不中）。
+#[must_use]
+pub fn painted_to_host(x: f32, y: f32) -> (f32, f32) {
+    (
+        x - ROLL_KEY_COLUMN_WIDTH_PX - NOTE_INSET_X_PX,
+        y - ROLL_HEADER_HEIGHT_PX,
+    )
+}
+
+/// [`painted_to_host`] 的反向：宿主坐标 → 绘制坐标。
+///
+/// 判据要用**人看得见**的矩形坐标注入指针，就必须是它的反向；同一份常量、同一条换算，
+/// 免得判据自己写 `+ 68` / `+ 28` 造出第三个数。
+#[must_use]
+pub fn host_to_painted(x: f32, y: f32) -> (f32, f32) {
+    (
+        x + ROLL_KEY_COLUMN_WIDTH_PX + NOTE_INSET_X_PX,
+        y + ROLL_HEADER_HEIGHT_PX,
+    )
+}
+
 /// 音高 → 车道索引：**整数**、钳制、上界 `0`（高音在上）。
 ///
 /// `pitch < PITCH_LANE_BASE` 落到最下面一条车道（索引 `PITCH_LANE_COUNT - 1`），
@@ -1775,6 +1819,11 @@ impl ViewState {
     ///
     /// 重叠时的取舍**写明**：返回**绘制顺序最后**（下标最大）的那个 —— 后画的在上层, 点到的就是它。
     /// 参数 `note_height` 由调用方给出（与 `.slint` 里音符框的高度一致）, 以免这里**猜**一个高度。
+    ///
+    /// **帧口径**：`x` / `y` 是**宿主帧**（网格画布局部：tick 0 = x 0，泳道顶 = y 0，见
+    /// [`visible_notes`]）。界面回调报的是**绘制帧**（琴键列 + `Tokens.space-5` + 表头之后的
+    /// 坐标）⇒ 调用方必须先经 [`painted_to_host`] 换算（唯一派发器 `host::install_roll_click`
+    /// 就是这么做的；不减这个原点就是"点可见音符恒不中"的缺陷）。
     #[must_use]
     pub fn hit_test_visible(
         &self,
@@ -3970,6 +4019,50 @@ mod tests {
         assert_eq!(
             PITCH_LANE_HEIGHT_PX, 14.0,
             "车道高必须与 .slint 的 14px 一致"
+        );
+        // 帧原点（`painted_to_host` / `host_to_painted`）：琴键列宽 + 音符横向内缩 + 表头高
+        // 必须与 `.slint` 画出的几何逐值一致 —— 否则宿主命中测试又会与人看得见的矩形分叉
+        // （本票的缺陷：纵向 28px 偏移超过音符高 12px ⇒ 点可见音符恒不中）。
+        assert_eq!(
+            ROLL_KEY_COLUMN_WIDTH_PX, 56.0,
+            "琴键列宽必须与 .slint 的 `width: 56px` / 网格 `x: 56px` 一致"
+        );
+        assert!(
+            code.contains("x: 56px;") && code.contains("width: parent.width - 56px;"),
+            "琴键列 / 网格必须仍从 x = 56px 起（`x: 56px;` 且网格宽 `parent.width - 56px`）"
+        );
+        assert_eq!(
+            ROLL_HEADER_HEIGHT_PX, 28.0,
+            "表头高必须与 .slint 的 `y: 28px` 一致"
+        );
+        assert!(
+            code.matches("y: 28px;").count() >= 2,
+            "琴键列与网格画布都必须仍在表头之下（`y: 28px;` 至少两处）"
+        );
+        let space5 = tokens
+            .lines()
+            .find(|line| line.contains("space-5:"))
+            .expect("tokens.slint 必须有 space-5");
+        let space5_px: f32 = space5
+            .split_once("space-5:")
+            .expect("space-5 有值")
+            .1
+            .trim()
+            .trim_end_matches(';')
+            .trim_end_matches("px")
+            .trim()
+            .parse()
+            .expect("space-5 必须是 px 字面量");
+        assert_eq!(
+            NOTE_INSET_X_PX, space5_px,
+            "音符横向内缩必须等于 `Tokens.space-5`（.slint 的音符 x 从它起算）"
+        );
+        // 唯一条换算的正反两向必须互逆：判据注入的"绘制坐标"与宿主读到的是同一点。
+        let (round_trip_x, round_trip_y) = host_to_painted(123.0, 456.0);
+        assert_eq!(
+            painted_to_host(round_trip_x, round_trip_y),
+            (123.0, 456.0),
+            "`painted_to_host` 必须是 `host_to_painted` 的反向"
         );
     }
 
