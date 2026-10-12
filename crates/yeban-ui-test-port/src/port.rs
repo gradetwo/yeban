@@ -375,6 +375,16 @@ pub trait UiTestPort {
     /// 注入指针释放（`Interactive`）。
     fn dispatch_pointer_up_impl(&mut self, button: PointerButton) -> Result<(), PortError>;
 
+    /// 注入指针**取消**（`Interactive`）。对应上游 `WindowEvent::PointerExited`
+    /// ⇒ `PointerEventKind::Cancel`（`i-slint-core-1.18.1/api.rs:709-714`）：指针离开窗口 /
+    /// 控件被禁用时，Slint 用它与 `up` 一样收尾，但**这一拖不算数**。
+    ///
+    /// ⚠ 它**没有坐标也没有按键**：`PointerExited` 变体本身不带二者
+    /// （`i-slint-core-1.18.1/platform.rs:395-399`，`pub enum WindowEvent` 的该分支无字段）。
+    /// 因此这里**不**照抄 `dispatch_pointer_up_impl(button)` 的形参 —— 一个被静默忽略的
+    /// `button` 会假称"取消与哪个键有关"，而它无关（仓库口径：⛔ 不静默忽略实参）。
+    fn dispatch_pointer_cancel_impl(&mut self) -> Result<(), PortError>;
+
     /// 注入键盘按下（`Interactive`）。
     fn dispatch_key_press_impl(&mut self, key: KeyCode) -> Result<(), PortError>;
 
@@ -453,6 +463,17 @@ pub trait UiTestPort {
     fn dispatch_pointer_up(&mut self, button: PointerButton) -> Result<(), PortError> {
         self.authorize_here(Operation::DispatchPointer)?;
         self.dispatch_pointer_up_impl(button)
+    }
+
+    /// 注入指针**取消**（`PointerEventKind.cancel`）。与 [`Self::dispatch_pointer_up`]
+    /// **同一道端口侧权限闸门**（[`Operation::DispatchPointer`]，`Interactive`）：
+    /// 先判权限，再落到实现 —— ⛔ 取消不是"可以少判一层"的捷径。
+    ///
+    /// ⚠ 规范 §12.4 点名的四条注入里**没有** cancel；名字与形状是本仓的工程裁决，
+    /// 因此控制面上那条方法的 `signature` 如实写明"规范里没有它"。
+    fn dispatch_pointer_cancel(&mut self) -> Result<(), PortError> {
+        self.authorize_here(Operation::DispatchPointer)?;
+        self.dispatch_pointer_cancel_impl()
     }
 
     /// 注入键盘按下。`[UI-TEST-002]` §12.4 的 `dispatch_key_press(key_code)`。
@@ -561,6 +582,10 @@ mod tests {
             self.calls.push("pointer_up");
             Ok(())
         }
+        fn dispatch_pointer_cancel_impl(&mut self) -> Result<(), PortError> {
+            self.calls.push("pointer_cancel");
+            Ok(())
+        }
         fn dispatch_key_press_impl(&mut self, _key: KeyCode) -> Result<(), PortError> {
             self.calls.push("key_press");
             Ok(())
@@ -652,6 +677,15 @@ mod tests {
                 actual: Permission::ReadOnly,
             })
         );
+        // 取消走的是**同一道** `DispatchPointer` 闸门（⛔ 不是少判一层的旁路）。
+        assert_eq!(
+            port.dispatch_pointer_cancel(),
+            Err(PortError::PermissionDenied {
+                operation: Operation::DispatchPointer,
+                required: Permission::Interactive,
+                actual: Permission::ReadOnly,
+            })
+        );
         assert_eq!(
             port.dispatch_key_press(KeyCode::Tab),
             Err(PortError::PermissionDenied {
@@ -697,6 +731,8 @@ mod tests {
             .expect("Interactive 应当允许指针移动");
         port.dispatch_pointer_up(PointerButton::Left)
             .expect("Interactive 应当允许指针释放");
+        port.dispatch_pointer_cancel()
+            .expect("Interactive 应当允许指针取消（与 up 同一道闸门）");
         port.dispatch_key_press(KeyCode::ShiftEnter)
             .expect("Interactive 应当允许键盘注入");
         port.set_track_height("track-0-header", 96)
@@ -707,6 +743,7 @@ mod tests {
                 "pointer_down",
                 "pointer_move",
                 "pointer_up",
+                "pointer_cancel",
                 "key_press",
                 "set_track_height"
             ]

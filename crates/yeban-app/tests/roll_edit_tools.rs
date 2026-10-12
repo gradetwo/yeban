@@ -63,8 +63,8 @@ use yeban_app::input::Tool;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_ui_mcp::live::request_line;
 use yeban_ui_mcp::methods::{
-    METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_DOWN, METHOD_DISPATCH_POINTER_MOVE,
-    METHOD_DISPATCH_POINTER_UP, METHOD_NODE,
+    METHOD_DISPATCH_KEY_PRESS, METHOD_DISPATCH_POINTER_CANCEL, METHOD_DISPATCH_POINTER_DOWN,
+    METHOD_DISPATCH_POINTER_MOVE, METHOD_DISPATCH_POINTER_UP, METHOD_NODE,
 };
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::report_line;
@@ -676,6 +676,28 @@ fn pointer_up_in_roll(plane: &mut LiveControlPlane, seq: i64) {
     assert!(!up.is_error(), "松手必须落到真实窗口: {up:?}");
 }
 
+/// 注入一次指针**取消**（`PointerEventKind.cancel`；`.slint` 侧由 `PointerExited` 送达）。
+///
+/// ⚠ 入参只有 `dryRun`（可选）：上游 `WindowEvent::PointerExited` 没有坐标也没有按键
+/// （`i-slint-core-1.18.1/platform.rs:395-399`）⇒ 这里**不**传 `button` / `x` / `y`
+/// （传了会被参数校验以 `-32602` 拒掉，而不是被静默忽略）。
+fn pointer_cancel_in_roll(plane: &mut LiveControlPlane, seq: i64) {
+    let cancelled = plane.plane().try_line(&request_line(
+        seq,
+        METHOD_DISPATCH_POINTER_CANCEL,
+        Some(json!({})),
+    ));
+    assert!(
+        !cancelled.is_error(),
+        "指针取消必须落到真实窗口: {cancelled:?}"
+    );
+    assert_eq!(
+        cancelled.result.expect("有 result")["dispatched"],
+        json!("pointer_cancel"),
+        "回执必须自证走的是取消分支"
+    );
+}
+
 /// 按下 → 分步拖动 → 松手（一次完整手势）。
 fn drag_in_roll_by_id_at(
     plane: &mut LiveControlPlane,
@@ -988,6 +1010,148 @@ fn move_arm_c_escape_mid_drag_leaves_the_project_byte_identical_and_commits_noth
         "`Escape` 取消不得提交任何 op"
     );
     assert_eq!(port.display().undoable, 0, "取消之后不得有可撤销的编辑");
+}
+
+/// 判据 (c2) 的**控制臂**：同一手势改用 `up` 收尾 ⇒ 音符真的移动、恰好提交 1 次。
+///
+/// 它与 [`pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing`] 是**一对**：
+/// 控制臂证明"按下 → 4 步 move → 收尾"这条路是**活的**，因此见证臂的"什么都没发生"
+/// 不是空转。
+///
+/// ⚠ 两条**必须**各自是一个 `#[test]`：Tier-1 平台每个线程只能 `set_platform` 一次
+/// （`crates/yeban-ui-test-port/src/render.rs` 的线程约束），一个测试里调两次 `assemble()`
+/// 会以 `PlatformUnavailable { "The platform has already been initialized." }` 红 —— 实测过。
+#[test]
+fn pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let target = target_note(&window, &mut plane, &project_before, 1, 0.0);
+    assert_eq!(port.display().undoable, 0, "控制臂：起点不该有可撤销的编辑");
+    let commits_before = port.display().commit_count;
+    let origin = pointer_down_in_roll(&mut plane, 10, target.painted_center);
+    assert!(
+        window.get_note_drag_active(),
+        "控制臂前提：选择工具按在音符上必须由宿主接管（`note-drag-active`）"
+    );
+    pointer_drag_steps_in_roll(
+        &mut plane,
+        20,
+        origin,
+        target.painted_center,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
+    );
+    pointer_up_in_roll(&mut plane, 40);
+    let (tick_after, _, _) = note_by_ulid(&port.project(), &target.ulid);
+    report_line(&format!(
+        "[roll-cancel-control] 同一手势改用 `up` 收尾：音符 tick {} ⇒ {tick_after}；\
+         提交数 {commits_before} ⇒ {}；undoable {}",
+        target.before.0,
+        port.display().commit_count,
+        port.display().undoable
+    ));
+    assert_ne!(
+        tick_after, target.before.0,
+        "控制臂：`up` 收尾必须真的移动音符（否则取消臂的『什么都没发生』证明不了任何事）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "控制臂：`up` 收尾必须恰好提交一个 op"
+    );
+}
+
+/// 判据 (c2)：**指针取消**（`PointerEventKind.cancel`）插在拖动中途 ⇒ 工程**逐字节不变**、
+/// 提交 **0** 次、可撤销步数不变，且收尾**真的跑了**（`note-drag-active` 归零）。
+///
+/// ## 这条判据补哪一个空格（本切片唯一的缺口）
+///
+/// `cancel_note_drag` / `cancel_velocity_drag` 两个**函数**本来就有 `Escape` 的证人
+/// （`move_arm_c_*` 与 `velocity_arm_d_*`）。无证人的是 `.slint` 的 **`cancel` 分支**
+/// （`ui/console/piano_roll.slint` 的 `else` 臂：`root.note-drag-cancel()`）与它的接线
+/// （`src/host.rs` 的 `ui.on_note_drag_cancel(...)`）—— 在控制面没有
+/// `ui/dispatch_pointer_cancel` 之前，**没有任何办法**把 `PointerEventKind.cancel` 注入进去。
+///
+/// ## 三件事一起才叫"取消被见证了"（防空转）
+///
+/// 1. **手势真的在手**：按下靶音符后 `note-drag-active == true`（宿主已接管），
+///    随后 4 步 `move` 越过规范的 `4px` 阈值 —— 同一个手势若走 `up` 会**提交**
+///    （兄弟判据 `pointer_up_mid_drag_is_the_control_arm_for_the_cancel_witness` 逐字证明）；
+/// 2. **取消后不提交**：工程字节 == 拖动前、`commit_count` 不变、`undoable` 不变；
+/// 3. **收尾真的跑了**：取消后 `note-drag-active == false`。它**只**由 `cancel_note_drag`
+///    （取消）或 `commit_note_drag`（提交）清零；既然 ② 证明没提交，归零就只能是
+///    `on_note_drag_cancel` → `cancel_note_drag` 这条线。
+///    ⚠ 再补一次 `up`：若那个 `cancel` **没送达** `TouchArea`，`.slint` 的 `note-dragging`
+///    与 `drag-moved` 仍为真 ⇒ 这一 `up` 会走 `note-drag-release` 提交一个 op；
+///    它仍报 0 才是"取消确实到达了控件的抓取通道"的机械证据。
+#[test]
+fn pointer_cancel_mid_drag_discards_the_draft_and_commits_nothing() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    let target = target_note(&window, &mut plane, &project_before, 1, 0.0);
+    assert_eq!(port.display().undoable, 0, "起点不该有可撤销的编辑");
+    let commits_before = port.display().commit_count;
+
+    let origin = pointer_down_in_roll(&mut plane, 10, target.painted_center);
+    assert!(
+        window.get_note_drag_active(),
+        "夹具前提：这一按必须由宿主接管（否则 `.slint` 的 cancel 分支根本不会被走到）"
+    );
+    pointer_drag_steps_in_roll(
+        &mut plane,
+        20,
+        origin,
+        target.painted_center,
+        DRAG_HOST_DX,
+        DRAG_HOST_DY,
+        DRAG_STEPS,
+    );
+    let active_at_cancel = window.get_note_drag_active();
+    assert!(
+        active_at_cancel,
+        "拖动中途手势必须仍在手（`note-drag-active`）—— 否则下面取消的是空气"
+    );
+
+    pointer_cancel_in_roll(&mut plane, 40);
+    let active_after_cancel = window.get_note_drag_active();
+    // 取消若没送达，这次 `up` 会补一次 `note-drag-release` 提交 ⇒ 它仍报 0 才是送达证据。
+    pointer_up_in_roll(&mut plane, 50);
+
+    let project_after = port.project();
+    let after_bytes = serde_json::to_vec(&project_after).expect("序列化终点工程");
+    report_line(&format!(
+        "[roll-cancel] 拖动中途 `PointerEventKind.cancel` 后松手：工程字节 {} ⇒ {}（逐字节相同 = {}）；\
+         提交数 {} ⇒ {}；undoable={}；`note-drag-active` {active_at_cancel} ⇒ {active_after_cancel}",
+        before_bytes.len(),
+        after_bytes.len(),
+        before_bytes == after_bytes,
+        commits_before,
+        port.display().commit_count,
+        port.display().undoable,
+    ));
+    assert_eq!(
+        before_bytes, after_bytes,
+        "指针取消后工程必须**逐字节**不变（草稿从未写进工程，收尾后也不许补写）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "指针取消不得提交任何 op（含随后那次 `up`）"
+    );
+    assert_eq!(port.display().undoable, 0, "取消之后不得有可撤销的编辑");
+    assert!(
+        !active_after_cancel,
+        "取消后 `note-drag-active` 必须归零 —— 它只由取消/提交两条收尾清零；\
+         既然提交数没动，归零就只能是 `on_note_drag_cancel` → `cancel_note_drag` 跑了"
+    );
+    let (tick_after, pitch_after, dur_after) = note_by_ulid(&port.project(), &target.ulid);
+    assert_eq!(
+        (tick_after, pitch_after, dur_after),
+        target.before,
+        "取消后靶音符必须一位不动（tick / pitch / 时值）"
+    );
 }
 
 /// 判据 (d)：一次拖动（`DRAG_STEPS` 步 `move`）= **恰好一步**撤销；第二次手势再 +1。

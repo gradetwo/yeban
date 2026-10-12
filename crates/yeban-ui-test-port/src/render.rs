@@ -25,7 +25,7 @@
 //! | `Rgb8Pixel` | `pub type Rgb8Pixel = Rgb<u8>`，**实现了 `TargetPixel`**，字段 `r/g/b` | <https://docs.rs/slint/1.18.1/slint/type.Rgb8Pixel.html> |
 //! | `SharedPixelBuffer::as_bytes` | `pub fn as_bytes(&self) -> &[u8]`（`Pixel: Pod + ComponentBytes<u8>`） | 上游源码 `i-slint-core-1.18.1/graphics/image.rs:100` |
 //! | `RepaintBufferType::NewBuffer` | 语义 = "The full window is always redrawn"（Golden 要的就是全量重绘） | <https://docs.rs/slint/1.18.1/slint/platform/software_renderer/enum.RepaintBufferType.html> |
-//! | `WindowEvent` | `PointerPressed{position,button}` / `PointerMoved{position}` / `PointerReleased{position,button}` / `KeyPressed{text}` / `KeyReleased{text}` | 上游源码 `i-slint-core-1.18.1/platform.rs:367` |
+//! | `WindowEvent` | `PointerPressed{position,button}` / `PointerMoved{position}` / `PointerReleased{position,button}` / `PointerExited` / `KeyPressed{text}` / `KeyReleased{text}` | 上游源码 `i-slint-core-1.18.1/platform.rs:367`（`PointerExited` 在 `:395-399`，无字段） |
 //! | `Window::dispatch_event` | `pub fn dispatch_event(&self, event: WindowEvent)`（出错时 panic；不要用已废弃的 `try_dispatch_event`） | 上游源码 `i-slint-core-1.18.1/api.rs:633` |
 //! | `Key::*` | `Tab` / `Return` / `Escape` / `Shift` / `Control` / `Space` / `Backspace`，且 `impl From<Key> for SharedString` | 上游源码 `i-slint-common-1.18.1/key_codes.rs:32-54` |
 //!
@@ -264,6 +264,16 @@ impl Tier1Window {
     /// 指针释放（窗口逻辑坐标）。
     pub fn pointer_up(&self, position: LogicalPosition, button: PointerEventButton) {
         self.dispatch(WindowEvent::PointerReleased { position, button });
+    }
+
+    /// 指针**取消**（`PointerEventKind.cancel` 的底层事件）。
+    ///
+    /// 上游把它建模成"指针离开了窗口"这个**没有坐标**的事件
+    /// （`i-slint-core-1.18.1/platform.rs:395-399` 的 `WindowEvent::PointerExited` 无字段），
+    /// 运行时在 `api.rs:709-714` 无条件把它转成 `MouseEvent::Exit` 并分发给**持有抓取**的
+    /// 控件 ⇒ `.slint` 侧看到的是 `PointerEventKind.cancel`，与 `up` 一样收尾但不算数。
+    pub fn pointer_cancel(&self) {
+        self.dispatch(WindowEvent::PointerExited);
     }
 
     /// 键盘按下。
@@ -578,6 +588,14 @@ impl<T: ComponentHandle> UiTestPort for LivePort<T> {
         // 释放复用最后一次按下/移动的位置（§12.4 的 `dispatch_pointer_up(button)` 没有坐标参数）。
         let position = self.pointer;
         self.window.pointer_up(position, slint_button(button));
+        Ok(())
+    }
+
+    fn dispatch_pointer_cancel_impl(&mut self) -> Result<(), PortError> {
+        // 取消**不**复用 `self.pointer`：上游的 `PointerExited` 没有坐标（且 `.slint` 的
+        // `cancel` 分支本就只用它清状态、不读位置）—— 传一个坐标会假装"取消发生在某点"。
+        // 位置读数保持不动，供后续 `up` 复用（与 §12.4 的 `dispatch_pointer_up` 同口径）。
+        self.window.pointer_cancel();
         Ok(())
     }
 

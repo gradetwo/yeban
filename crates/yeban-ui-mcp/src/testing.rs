@@ -484,6 +484,14 @@ impl yeban_ui_test_port::port::UiTestPort for FakeSurface {
             .push(format!("pointer_up:{}", button.as_str()));
         Ok(())
     }
+    fn dispatch_pointer_cancel_impl(&mut self) -> Result<(), PortError> {
+        // 取消没有按键也没有坐标 ⇒ 日志条目就是这一个词（`expected_call_entry` 逐字对齐）。
+        self.state
+            .borrow_mut()
+            .calls
+            .push("pointer_cancel".to_owned());
+        Ok(())
+    }
     fn dispatch_key_press_impl(&mut self, key: KeyCode) -> Result<(), PortError> {
         self.state
             .borrow_mut()

@@ -72,6 +72,11 @@ pub const METHOD_DISPATCH_POINTER_DOWN: &str = "ui/dispatch_pointer_down";
 pub const METHOD_DISPATCH_POINTER_MOVE: &str = "ui/dispatch_pointer_move";
 /// 方法名：§12.4 的 `dispatch_pointer_up`。
 pub const METHOD_DISPATCH_POINTER_UP: &str = "ui/dispatch_pointer_up";
+/// 方法名：`PointerEventKind.cancel` 的注入入口（`ui/dispatch_pointer_up` 的**取消孪生**）。
+///
+/// ⚠ 规范 §12.4 点名的四条注入里**没有** cancel —— 名字与形状是本仓的工程裁决
+/// （理由写在方法表的 `signature` 里），与 [`METHOD_SET_TRACK_HEIGHT`] 同一族。
+pub const METHOD_DISPATCH_POINTER_CANCEL: &str = "ui/dispatch_pointer_cancel";
 /// 方法名：§12.4 的 `dispatch_key_press`。
 pub const METHOD_DISPATCH_KEY_PRESS: &str = "ui/dispatch_key_press";
 /// 方法名：§12.3 `Administrative` 的"切换工作区主视图"。
@@ -287,7 +292,7 @@ const SAVE_FIRST: ParamSpec = ParamSpec {
 /// 默认 `false`，与领域侧逐字一致（判据 [crate::dry_run] 的
 /// `dry_run_defaults_to_false_exactly_like_the_domain`）。
 ///
-/// **只出现在会改状态的方法上**（`mutating == true` 的 9 条）：只读方法收到它会被
+/// **只出现在会改状态的方法上**（`mutating == true` 的 10 条）：只读方法收到它会被
 /// 未知参数规则**响亮拒绝**（`-32602`），而不是静默忽略 —— 理由见 [crate::dry_run] 的模块头。
 const DRY_RUN: ParamSpec = ParamSpec {
     name: DRY_RUN_PARAM,
@@ -299,7 +304,7 @@ const DRY_RUN: ParamSpec = ParamSpec {
 };
 
 /// 全部方法，**注册表顺序 = 文档顺序**（不依赖任何容器迭代顺序）。
-pub const METHODS: [MethodSpec; 16] = [
+pub const METHODS: [MethodSpec; 17] = [
     MethodSpec {
         name: METHOD_METHODS,
         spec_ids: &["ARCH-UI-004", "MCP-DUAL-001"],
@@ -403,6 +408,24 @@ pub const METHODS: [MethodSpec; 16] = [
         params: &[BUTTON, DRY_RUN],
         signature: "UI/UX §12.4: dispatch_pointer_up(button)",
         description: "注入鼠标释放（复用最后一次按下/移动的位置）",
+        mutating: true,
+    },
+    MethodSpec {
+        name: METHOD_DISPATCH_POINTER_CANCEL,
+        spec_ids: &["UI-TEST-002", "UI-MCP-001"],
+        scope: Scope::UiInject,
+        // 与 `dispatch_pointer_up` **同一道**端口操作（`Interactive`）：取消是收尾，
+        // 不是"少判一层"的旁路（端口侧 `UiTestPort::dispatch_pointer_cancel` 也再判一次）。
+        port_operation: Some(Operation::DispatchPointer),
+        // `cancel` 没有坐标也没有按键：上游是 `WindowEvent::PointerExited`
+        // （`i-slint-core-1.18.1/platform.rs:395-399` 该分支无字段）⇒ 参数只有公共的 `dryRun`。
+        params: &[DRY_RUN],
+        signature: "规范里没有这个方法名与签名 —— 它是 §12.4 `dispatch_pointer_up(button)` 的\
+                    **取消孪生**在控制面上的工程裁决：驱动 `.slint` 的 `PointerEventKind.cancel`\
+                    收尾分支（指针离开窗口 / 控件被禁用 ⇒ 与 `up` 一样结束手势，但这一拖**不算数**）。\
+                    上游事件无坐标无按键，故**不**照抄 `button`（一个被静默忽略的实参会假称\
+                    '取消与哪个键有关'）；权限落在 Interactive 层，与 `ui/dispatch_pointer_*` 逐字相同",
+        description: "注入指针取消（`PointerEventKind.cancel`）：与 `up` 一样收尾，但这一拖不算数",
         mutating: true,
     },
     MethodSpec {
@@ -738,7 +761,7 @@ mod tests {
     fn method_names_are_unique_and_well_formed() {
         let names = names();
         assert_eq!(names.len(), METHOD_COUNT);
-        assert_eq!(METHOD_COUNT, 16);
+        assert_eq!(METHOD_COUNT, 17);
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
         assert_eq!(unique.len(), names.len(), "方法名不得重复");
 
@@ -880,7 +903,7 @@ mod tests {
 
     /// 判据 6（**ADR-0001 D48**）: `dryRun` 的**可发现性**与**适用范围**。
     ///
-    /// - 会改状态的 8 条方法**全部**声明 `dryRun`，且它是**可选布尔**；
+    /// - 会改状态的 10 条方法**全部**声明 `dryRun`，且它是**可选布尔**；
     /// - 只读的 7 条方法**一条都不声明**（只读没有副作用可短路，见 [`crate::dry_run`]）；
     /// - `ui/methods` 的自描述里能**直接看出**哪些方法支持它（`dryRunSupported` +
     ///   顶层 `dryRunParam`），调用方不必读文档。
@@ -916,7 +939,7 @@ mod tests {
                 without.push(spec.name);
             }
         }
-        assert_eq!(with.len(), 9, "会改状态的方法: {with:?}");
+        assert_eq!(with.len(), 10, "会改状态的方法: {with:?}");
         assert_eq!(without.len(), 7, "只读方法: {without:?}");
         assert_eq!(with.len() + without.len(), METHOD_COUNT);
 

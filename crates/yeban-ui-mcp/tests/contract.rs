@@ -285,6 +285,9 @@ impl yeban_ui_test_port::port::UiTestPort for EmptySurface {
     ) -> Result<(), yeban_ui_test_port::port::PortError> {
         Ok(())
     }
+    fn dispatch_pointer_cancel_impl(&mut self) -> Result<(), yeban_ui_test_port::port::PortError> {
+        Ok(())
+    }
     fn dispatch_key_press_impl(
         &mut self,
         _key: yeban_ui_test_port::port::KeyCode,

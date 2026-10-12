@@ -543,6 +543,9 @@ where
     ) -> Result<(), PortError> {
         self.port.dispatch_pointer_up_impl(button)
     }
+    fn dispatch_pointer_cancel_impl(&mut self) -> Result<(), PortError> {
+        self.port.dispatch_pointer_cancel_impl()
+    }
     fn dispatch_key_press_impl(
         &mut self,
         key: yeban_ui_test_port::port::KeyCode,

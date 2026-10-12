@@ -38,7 +38,7 @@
 //! | [`dry_run`] | 否 | **`dryRun`（先问后做）** 的词表与语义（ADR-0001 **D48**），与领域侧 `yeban_*` 工具对齐 | `UI-MCP-001` |
 //! | [`ime`] | 否 | **`is_composing`（IME 合成态）** 的可观测位词表与只读读数 | `UI-A11Y-002` |
 //! | [`tree`] | 否 | 语义控件树的 **JSON 投影**（稳定键序 / `visible` 的证据语义 / 动态区矩形） | `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` |
-//! | [`methods`] | 否 | 14 条方法的名字 / 参数 / scope / 规范出处 | `UI-MCP-001` `UI-TEST-002` `ARCH-UI-004` |
+//! | [`methods`] | 否 | 17 条方法的名字 / 参数 / scope / 规范出处 | `UI-MCP-001` `UI-TEST-002` `ARCH-UI-004` |
 //! | [`service`] | 否 | 管线：方法解析 → 授权（硬禁→token→scope）→ 参数 → **dryRun 短路** → 执行 | `UI-MCP-001` `ARCH-SEC-002` `MUST-GATE-009` |
 //! | [`live`] | 否 | **真实界面上的控制面装配**（`ControlPlane`）与端到端读数（`ui/tree` → `ui/node` → `ui/screenshot`） | `ARCH-UI-004` `UI-TEST-001` `UI-MCP-001` `UI-MCP-002` `MUST-GATE-015` |
 //! | [`surface`] | 否 | 执行面 `UiSurface`（= `UiTestPort` + Tier-1 像素 + IME 状态 + dryRun 预览）、像素证据、`PortAdapter` | `MUST-GATE-015` `UI-A11Y-002` |
@@ -187,7 +187,7 @@ mod tests {
             [-32006, -32008, -32009]
         );
 
-        assert_eq!(METHOD_COUNT, 16);
+        assert_eq!(METHOD_COUNT, 17);
         assert_eq!(SERVICE_NAME, "yeban-ui-mcp");
         assert_eq!(ENABLE_HTTP_FLAG, "--enable-ui-mcp-http");
         assert_eq!(HTTP_FEATURE_NAME, "ui-mcp-http");

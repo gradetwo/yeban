@@ -278,7 +278,7 @@ impl UiService {
     ///
     /// ## `dryRun`（ADR-0001 **D48**）在这条函数里的位置
     ///
-    /// `dryRun=true` 时，**会改状态**的 7 条方法在**调用执行面之前**返回
+    /// `dryRun=true` 时，**会改状态**的 10 条方法在**调用执行面之前**返回
     /// [`dry_run::payload`]。计划（"将要落到哪个操作、带什么实参"）与真调用
     /// **共用同一段实参提取代码**，因此两者不可能描述出不同的东西
     /// —— 这是"同一个词同一个意思"在实现层的落点，不是靠两处各写一遍。
@@ -423,6 +423,19 @@ impl UiService {
                 let mut root = Map::new();
                 root.insert("dispatched".to_owned(), Value::from("pointer_up"));
                 root.insert("button".to_owned(), Value::from(button.as_str()));
+                Ok(Value::Object(root))
+            }
+            methods::METHOD_DISPATCH_POINTER_CANCEL => {
+                // 与 `up` 逐字同形：没有实参可提（上游 `PointerExited` 无坐标无按键），
+                // 因此 `dryRun` 的预览只有公共字段 —— 它⛔ 不编造"取消发生在某点"。
+                if dry_run {
+                    return self.preview(spec, params);
+                }
+                self.surface
+                    .dispatch_pointer_cancel()
+                    .map_err(|error| port_error(PortContext::Inject, error))?;
+                let mut root = Map::new();
+                root.insert("dispatched".to_owned(), Value::from("pointer_cancel"));
                 Ok(Value::Object(root))
             }
             methods::METHOD_DISPATCH_KEY_PRESS => {
@@ -1723,7 +1736,7 @@ mod tests {
     }
 
     /// 判据 ⑩: `ui/methods` 是能力发现 —— 生产模式下 `injectAllowed=false`，
-    /// 列出全部 14 条方法与各自的 scope。
+    /// 列出全部 17 条方法与各自的 scope。
     #[test]
     fn methods_discovery_reports_scopes_and_inject_availability() {
         let state = shared(Permission::ReadOnly);
@@ -1979,7 +1992,7 @@ mod tests {
     //   2. dryRun 说的"将要做的事"必须与真做之后的**实际变化**一致；
     //   3. 词表/默认值靠**跨 crate 的类型与真管线载荷**对齐，不靠人眼比对。
 
-    /// 9 条会改状态的方法 + 它们的一次**合法**调用（`dryRun` 由判据自己加）。
+    /// 10 条会改状态的方法 + 它们的一次**合法**调用（`dryRun` 由判据自己加）。
     ///
     /// `pointer_down` 用 `mixer-vu-track-0`（夹具里有几何）：`dryRun` 会做真校验，
     /// 而无几何的 `track-0-fader` 是既有判据用来钉 `visible: null` 的，见 `testing.rs`。
@@ -1999,6 +2012,10 @@ mod tests {
             (
                 methods::METHOD_DISPATCH_POINTER_UP,
                 serde_json::json!({"button": "right"}),
+            ),
+            (
+                methods::METHOD_DISPATCH_POINTER_CANCEL,
+                serde_json::json!({}),
             ),
             (
                 methods::METHOD_DISPATCH_KEY_PRESS,
@@ -2053,6 +2070,9 @@ mod tests {
                 format!("pointer_move:{}:{}", number("x"), number("y"))
             }
             methods::METHOD_DISPATCH_POINTER_UP => format!("pointer_up:{}", text("button")),
+            // 取消没有坐标也没有按键：执行面收到的日志条目就是这一个词
+            // （`FakeSurface::dispatch_pointer_cancel_impl` 逐字对齐）。
+            methods::METHOD_DISPATCH_POINTER_CANCEL => "pointer_cancel".to_owned(),
             methods::METHOD_DISPATCH_KEY_PRESS => format!("key_press:{}", text("keyCode")),
             methods::METHOD_SET_TRACK_HEIGHT => format!(
                 "set_track_height:{}:{}",
@@ -2572,7 +2592,7 @@ mod tests {
         );
     }
 
-    /// 判据 ⑧（D48）: `dryRun` **没有污染真调用的响应形状** —— 既有 14 条方法的线上
+    /// 判据 ⑧（D48）: `dryRun` **没有污染真调用的响应形状** —— 既有 17 条方法的线上
     /// 结果与从前逐字节相同（`dryRun` 的三个旗标只出现在 `dryRun=true` 的响应里）。
     #[test]
     fn dry_run_does_not_leak_into_the_real_response_shapes() {
@@ -2633,7 +2653,7 @@ mod tests {
             .filter(|entry| entry["dryRunSupported"].as_bool() == Some(true))
             .map(|entry| entry["name"].as_str().expect("字符串"))
             .collect();
-        assert_eq!(supporting.len(), 9, "支持 dryRun 的方法: {supporting:?}");
+        assert_eq!(supporting.len(), 10, "支持 dryRun 的方法: {supporting:?}");
         for method in supporting {
             assert!(
                 methods::method(method).expect("注册表里有").mutating,
