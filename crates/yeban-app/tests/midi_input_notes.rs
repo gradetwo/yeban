@@ -455,3 +455,220 @@ fn without_a_landing_switch_the_capture_stays_read_only() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 判据 ⑥–⑦（**连续性**：`midi_live` 泵）—— ⚠ 只在 `midi-input` 特性下存在
+// ---------------------------------------------------------------------------
+// ⚠ **为什么有 `cfg` 门**：`yeban-midi-io` 是 app 的**可选依赖**（`midi-input` 才拉进来）
+// ⇒ ⛔ 默认档里连这个 crate 都不在依赖图上 ⇒ 这些判据在默认档里**不存在**（⛔ 不是"被跳过"）。
+// ⇒ 必须显式 `cargo test -p yeban-app --features midi-input` 才跑到（见回报里的命令）。
+//
+// ⭐ 判据的**形状**：⭐ 真接收侧（`yeban_midi_io::event_channel` 建的环）＋ ⭐ **模拟回调体**
+// `MidiEventSender::handle_message`（＝真 `midir` 回调的**内核**）＋ ⭐ 真 `EngineHost`
+// ⇒ ⛔ 不需要 MIDI 端口、⛔ 不需要硬件。
+#[cfg(feature = "midi-input")]
+mod live {
+    use yeban_app::engine_host::EngineHost;
+    use yeban_app::midi_live;
+    use yeban_app::midi_notes;
+    use yeban_model::EntityId;
+
+    use super::{CHANNELS, FRAMES, SAMPLE_RATE, without_notes};
+
+    /// ⭐ **与 `injected_messages()` 同一批 ＋ 三处刻意的追加**的**字节形态**。
+    ///
+    /// * `0.0 s` C4 按下（力度 100）→ `0.5 s` 松开（`0x80`）；
+    /// * `0.7 s` **G4 与 B4** 同时按下（⭐ **同一个块**里的和弦 ⇒ 一次发布搬 2 条）
+    ///   → `0.9 s` G4 用 **`0x90` 力度 0** 松开（⭐ 经典 bug 点：这**必须**是 NoteOff）；
+    /// * `1.0 s` E4 按下（力度 90）→ `1.5 s` 松开；
+    /// * `1.2 s` 一条 CC7（**非音符** ⇒ 计数忽略）；
+    /// * `1.5 s` B4 松开（与 E4 松开同块）。
+    ///
+    /// ⚠ 为什么与批次判据的夹具**不完全相同**：端到端判据要**自己**钉住"力度 0 ⇒ NoteOff"
+    /// 与"一个块里的两条事件只发布一次"这两条 —— ⛔ 不能只把它们钉在纯函数判据上。
+    fn live_messages() -> Vec<(u64, [u8; 3])> {
+        vec![
+            (0, [0x90, 60, 100]),
+            (500_000, [0x80, 60, 0]),
+            (700_000, [0x90, 67, 110]),
+            (700_000, [0x90, 71, 100]),
+            (900_000, [0x90, 67, 0]),
+            (1_000_000, [0x90, 64, 90]),
+            (1_200_000, [0xB0, 7, 100]),
+            (1_500_000, [0x80, 64, 0]),
+            (1_500_000, [0x80, 71, 0]),
+        ]
+    }
+
+    /// 非零样本个数（交错样本计**个**，⛔ 不是帧、⛔ 不是字节）。
+    fn nonzero(samples: &[f32]) -> usize {
+        samples.iter().filter(|sample| **sample != 0.0).count()
+    }
+
+    /// 峰值绝对值。
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0_f32, |max, s| max.max(s.abs()))
+    }
+
+    /// ⭐ **实时形状的驱动**：每渲染**一个量子**之前 —— 先把到点的消息喂进环（模拟回调体），
+    /// 再泵**一次**（控制侧），然后渲染这**一个**量子。
+    ///
+    /// ⚠ 调用方必须**先预热一个量子**（见下面的判据）—— 那是
+    /// [`midi_notes::render_engine_offline`] 记的**同一条**引擎行为（"先出队事件、后武装快照"
+    /// ⇒ 冷引擎第一个块里的音符会被丢掉）。
+    ///
+    /// 返回（泵读数合计，渲染出的交错样本）。
+    fn drive_live(
+        host: &mut EngineHost,
+        track: EntityId,
+        quanta: u64,
+    ) -> (midi_live::LivePumpReport, Vec<f32>) {
+        let block = EngineHost::quantum_frames();
+        let channels = usize::from(CHANNELS);
+        let mut out = vec![0.0_f32; usize::try_from(quanta).expect("量子数") * block * channels];
+        let (mut sender, mut receiver) = midi_live::event_channel(64);
+        let messages = live_messages();
+        let mut cursor = 0_usize;
+        let mut total = midi_live::LivePumpReport::default();
+
+        for index in 0..quanta {
+            let block_end_frames = (index + 1).saturating_mul(u64::try_from(block).expect("块长"));
+            let block_end_us = block_end_frames.saturating_mul(1_000_000) / u64::from(SAMPLE_RATE);
+            while cursor < messages.len() && messages[cursor].0 <= block_end_us {
+                sender.handle_message(messages[cursor].0, &messages[cursor].1);
+                cursor += 1;
+            }
+            let step = midi_live::pump_once(&mut receiver, track, host);
+            total.merge(&step);
+
+            let start = usize::try_from(index).expect("下标") * block * channels;
+            let end = start + block * channels;
+            assert_eq!(
+                host.render_into(&mut out[start..end], CHANNELS, 1),
+                1,
+                "每个量子都必须真的推进"
+            );
+        }
+        assert_eq!(cursor, messages.len(), "全部消息都必须被喂进环");
+        (total, out)
+    }
+
+    /// 判据 ⑥（**连续性：真的到了合成器并发出声音，⛔ 不是等采集窗口结束**）：
+    ///
+    /// * ⭐ **控制臂先滚**：同一个工程、同一次装配、**一个事件都不喂** ⇒ 渲染**必须全零**
+    ///   （否则"泵进去的事件造成了声音"不可判 ⇒ 判据会 vacuous）；
+    /// * ⭐ 事件臂：**实时形状**（每量子：喂到点的消息 ⇒ 泵一次 ⇒ 渲染一个量子）⇒ 真引擎：
+    ///   `poly_notes_triggered` 增长 **4**（四条音符各触发一次器件）＋ 输出**非静音**，
+    ///   且音频侧 `event_bulk_pops` 的增量**恰好等于量子数**（pop-only）。
+    ///
+    /// ⚠ 判据**走的是 `EngineHost::reload` ＋ `send_engine_events`（经 `midi_live::pump_once`）
+    /// ＋ `render_into` ＋ `engine_stats`** —— 与 [`midi_notes::render_engine_offline`] 用的是
+    /// **同一套**底层；⛔ 本判据**不**走那个**批次**入口（它吃一张预先算好的调度表，
+    /// 正是本判据要区分的东西）。
+    #[test]
+    fn the_pumped_events_reach_the_synth_and_the_no_event_arm_is_silent() {
+        let project = without_notes();
+        let track = midi_notes::default_track(&project).expect("有音轨");
+        let block = EngineHost::quantum_frames();
+        let channels = usize::from(CHANNELS);
+        let quanta = FRAMES.div_ceil(u64::try_from(block).expect("块长"));
+
+        // ---- ① 先滚的控制臂：⛔ 一个事件都不喂 ----
+        let mut control = EngineHost::new();
+        control.reload(&project, 0).expect("对照档也要能建引擎");
+        let mut control_warmup = vec![0.0_f32; block * channels];
+        control.render_into(&mut control_warmup, CHANNELS, 1);
+        let control_frames = usize::try_from(quanta).expect("量子数") * block * channels;
+        let mut control_out = vec![0.0_f32; control_frames];
+        assert_eq!(
+            control.render_into(&mut control_out, CHANNELS, quanta),
+            quanta,
+            "对照档必须真的推进了全部量子"
+        );
+        assert_eq!(
+            nonzero(&control_out),
+            0,
+            "⭐ 控制臂必须**全零** —— 不喂事件就没有声音，否则'事件造成了声音'不可判"
+        );
+
+        // ---- ② 事件臂：同一批消息（＋ 和弦 / 力度 0 松开）⇒ 每量子泵一次 ----
+        let mut host = EngineHost::new();
+        host.reload(&project, 0).expect("引擎必须能建起来");
+        let mut warmup = vec![0.0_f32; block * channels];
+        host.render_into(&mut warmup, CHANNELS, 1); // ⭐ 预热量子（与批次路同一条引擎行为）
+        let stats = host.engine_stats().expect("有引擎");
+        let (poly_before, bulk_before) = (stats.poly_notes_triggered, stats.event_bulk_pops);
+
+        let (report, out) = drive_live(&mut host, track, quanta);
+        let stats = host.engine_stats().expect("有引擎");
+
+        println!(
+            "[midi-live] {} | poly-notes-triggered {}→{} | event-bulk-pops {}→{} | \
+             nonzero={} peak={:.6} | 控制臂 nonzero={} ({control_frames} 样本)",
+            report.summary(),
+            poly_before,
+            stats.poly_notes_triggered,
+            bulk_before,
+            stats.event_bulk_pops,
+            nonzero(&out),
+            peak(&out),
+            nonzero(&control_out),
+        );
+
+        // ---- (a) 映射：⭐ 力度 0 与 `0x80` 都是 NoteOff；CC7 **计数** ----
+        assert_eq!(report.drained, 9, "{}", report.summary());
+        assert_eq!(
+            report.note_ons,
+            4,
+            "C4 / G4 / B4 / E4 四条按下: {}",
+            report.summary()
+        );
+        assert_eq!(
+            report.note_offs,
+            4,
+            "⭐ 四条松开，其中一条是 `0x90` **力度 0**（经典 bug 点 ⇒ 它必须是 NoteOff，\
+             ⛔ 不是第四条 NoteOn）: {}",
+            report.summary()
+        );
+        assert_eq!(
+            report.ignored,
+            1,
+            "⭐ CC7 必须被**计数**，⛔ 不静默丢: {}",
+            report.summary()
+        );
+        // ---- (d) 批量：8 条事件分布在 6 个块（其中一块是**和弦**）⇒ 6 次批量发布 ----
+        assert_eq!(
+            report.publishes,
+            6,
+            "⭐ 每个有音符的块**恰好一次**批量发布（⛔ 不是每条事件一次，⛔ 空块不发布）: {}",
+            report.summary()
+        );
+        assert!(
+            report.publishes < report.mapped(),
+            "⭐ 和弦那一块必须**一次发布搬 2 条**（publishes={} < mapped={}）",
+            report.publishes,
+            report.mapped()
+        );
+        assert_eq!(report.published, 8, "环装得下 8 条: {}", report.summary());
+        assert_eq!(report.refused, 0, "环装得下: {}", report.summary());
+        // ---- (c) 真的到了合成器 ＋ 真的发出声音 ----
+        assert_eq!(
+            stats.poly_notes_triggered.saturating_sub(poly_before),
+            4,
+            "⭐ 见证：**四条**音符必须各触发一次合成器器件（⚠ 若为 5 ⇒ G4 的力度 0 松开被当成了\
+             又一次 NoteOn；若为 3 ⇒ 有一条没到器件）"
+        );
+        assert!(
+            nonzero(&out) > 0 && peak(&out) > 0.0,
+            "⭐ 弹一下必须**有声音**（非零样本 {} / 峰值 {}）",
+            nonzero(&out),
+            peak(&out)
+        );
+        // ---- (d) 音频侧 pop-only：每个量子**恰好一次**批量出队（⛔ 与事件条数无关）----
+        assert_eq!(
+            stats.event_bulk_pops.saturating_sub(bulk_before),
+            quanta,
+            "⭐ 音频侧结构性读数：{quanta} 个量子 ⇒ 恰好 {quanta} 次批量出队（pop-only）"
+        );
+    }
+}

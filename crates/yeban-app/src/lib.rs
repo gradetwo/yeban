@@ -88,6 +88,18 @@ pub mod import_midi;
 pub mod input;
 pub mod meters;
 pub mod midi_in;
+// ---------------------------------------------------------------------------
+// ⭐ **连续性**：`--midi-in` 收到的**已解析事件**在**到达时**泵进引擎的音符路径
+// （非默认 feature `midi-input`，ADR-0006 D5）`[ARCH-RT-001]`
+// ---------------------------------------------------------------------------
+// 单独一个 `cfg` 门而不是"模块里再判 feature"：默认构建**看不到**这个模块，也就看不到
+// `yeban-midi-io` 这个依赖（依赖边由 `[features]` 的 `dep:yeban-midi-io` 拉进来）——
+// 与 `mcp_mount` / `ui-test-port` 是同一套做法。
+// ⭐ 它补的**不是** "MIDI 输入"（那两条落地路已随 `386537db` / `e363105d` 在 `main` 上），
+// 而是**连续性**：既有的两条路都是**批次**的（采集窗口结束之后才作用），
+// 而"弹一下 ⇒ 声音有反应"要的是**到达即作用**。
+#[cfg(feature = "midi-input")]
+pub mod midi_live;
 pub mod midi_notes;
 pub mod open;
 pub mod record_wav;
