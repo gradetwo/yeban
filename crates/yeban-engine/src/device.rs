@@ -44,6 +44,7 @@ use thiserror::Error;
 use yeban_model::YebanProjectV1;
 
 use crate::block::DEFAULT_BLOCK_FRAMES;
+use crate::record::{RecordSender, push_input_block};
 use crate::rt::{EngineRuntime, EngineStats};
 
 /// 打开流的超时（cpal 0.18 的 `timeout` 参数）。避免设备被独占时无限等待。
@@ -478,6 +479,149 @@ pub fn open_output(
     })
 }
 
+/// **cpal 输入回调的完整负载** —— 本函数就是"录音回调体"本身。
+///
+/// 与 [`render_callback`] 同款理由：让这条路径**在不打开设备的前提下可被判据执行**。
+/// [`open_input`] 建流的闭包与判据调用**同一个**函数 ⇒ "往录音回调里多加了一点事"
+/// 不再是只能靠读源码发现的事。
+///
+/// # 实时约束（红线 7）
+///
+/// 只有一行：[`yeban_record::push_input_block`] 的**无锁推入**。
+/// ⛔ 零分配、零锁、零阻塞 I/O、零日志。环满时它**按帧计数丢弃**，⛔ 不阻塞、⛔ 不分配。
+pub fn capture_callback(sender: &mut RecordSender, data: &[f32], channels: u16) {
+    let _ = push_input_block(sender, data, channels);
+}
+
+/// 已打开的**输入**流句柄（录音侧）。
+///
+/// 与 [`OutputStreamHandle`] 同构：`stream` 一丢，回调就停 ⇒ "谁持有它"就是生命期事实。
+pub struct InputStreamHandle {
+    stream: cpal::Stream,
+    /// 打开时协商到的那台设备的显示名（控制面读，不在实时路径上）。
+    device_name: String,
+    negotiated: NegotiatedConfig,
+    backend_errors: Arc<AtomicU64>,
+}
+
+impl InputStreamHandle {
+    /// 协商到的配置。
+    #[must_use]
+    pub const fn negotiated(&self) -> &NegotiatedConfig {
+        &self.negotiated
+    }
+
+    /// 这台流的设备显示名。
+    #[must_use]
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// 后端错误回调的累计次数（只增的原子量）。
+    #[must_use]
+    pub fn backend_errors(&self) -> u64 {
+        self.backend_errors.load(Ordering::Relaxed)
+    }
+
+    /// 启动捕获。
+    ///
+    /// # Errors
+    ///
+    /// 设备消失 / 流失效 → [`DeviceError::Backend`]。
+    pub fn play(&self) -> Result<(), DeviceError> {
+        self.stream.play()?;
+        Ok(())
+    }
+
+    /// 暂停捕获。
+    ///
+    /// # Errors
+    ///
+    /// 后端不支持暂停 → [`DeviceError::Backend`]。
+    pub fn pause(&self) -> Result<(), DeviceError> {
+        self.stream.pause()?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for InputStreamHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InputStreamHandle")
+            .field("device_name", &self.device_name)
+            .field("negotiated", &self.negotiated)
+            .field("backend_errors", &self.backend_errors())
+            .finish()
+    }
+}
+
+/// 打开默认**输入**设备，并把捕获到的样本推进 [`RecordSender`]（录音侧）。
+///
+/// # 为什么单独一个函数而不是给 [`open_output`] 加参数
+///
+/// 输出与输入是**两条独立的流**：一台机器可以只有输出、只有输入、或都有；它们的
+/// 采样率/通道数也**可以不同**（`negotiate_input` 已单独存在）。塞进一个函数会让
+/// "没有输入设备"与"没有输出设备"这两种**排查方向完全不同**的失败混在一个错误里
+/// —— 那正是 [`DeviceError::NoDefaultInputDevice`] 文档点名要避免的。
+///
+/// # 失败要响亮（⛔ 不是静默静音）
+///
+/// 拿不到设备/拿不到配置/协商失败时**一律返回 `Result` 的 `Err`**，且理由**结构化**
+/// （见 [`DeviceError`]）。⛔ **绝不**"打不开就当录到静音"地返回成功 —— 那会让调用方
+/// 拿到一段静音却以为录音在跑。
+///
+/// # Errors
+///
+/// - [`DeviceError::ExclusiveModeUnsupported`]：要求了独占模式；
+/// - [`DeviceError::NoDefaultInputDevice`]：没有默认输入设备（本机常态）；
+/// - [`DeviceError::NoSupportedInputConfigs`] / [`DeviceError::UnsupportedConfig`] /
+///   [`DeviceError::UnsupportedSampleFormat`]：能力不匹配；
+/// - [`DeviceError::Backend`]：后端错误（设备忙、权限、配置失效……）。
+pub fn open_input(
+    want: &EngineConfig,
+    mut sender: RecordSender,
+) -> Result<InputStreamHandle, DeviceError> {
+    if want.share_mode == ShareMode::RequireExclusive {
+        return Err(DeviceError::ExclusiveModeUnsupported);
+    }
+    let host = cpal::default_host();
+    let device: Device = host
+        .default_input_device()
+        .ok_or(DeviceError::NoDefaultInputDevice)?;
+    let device_name = device.to_string();
+    let supported: Vec<SupportedStreamConfigRange> = device.supported_input_configs()?.collect();
+    let negotiated = negotiate_input(&supported, want)?;
+
+    let stream_config = StreamConfig {
+        channels: negotiated.channels,
+        sample_rate: negotiated.sample_rate,
+        buffer_size: negotiated.buffer_size,
+    };
+    let channels = negotiated.channels;
+    let backend_errors = Arc::new(AtomicU64::new(0));
+    let error_counter = Arc::clone(&backend_errors);
+
+    // 数据回调：只有 `capture_callback`（= 只有无锁推入）——
+    // 零分配 / 零锁 / 零 I/O / 零日志 [红线 7]。回调体是**具名函数**，见它的文档。
+    let stream = device.build_input_stream::<f32, _, _>(
+        stream_config,
+        move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+            capture_callback(&mut sender, data, channels);
+        },
+        // 错误回调：只自增原子计数器。打印/日志都在这里被禁止 [红线 7]。
+        move |_error: cpal::Error| {
+            error_counter.fetch_add(1, Ordering::Relaxed);
+        },
+        Some(STREAM_OPEN_TIMEOUT),
+    )?;
+
+    Ok(InputStreamHandle {
+        stream,
+        device_name,
+        negotiated,
+        backend_errors,
+    })
+}
+
 /// 不打开任何真实设备的宿主：用**同一份** [`EngineRuntime`] 在内存里推进渲染。
 ///
 /// 用途：
@@ -599,6 +743,7 @@ impl std::fmt::Debug for NullBackend {
 mod tests {
     use super::*;
     use crate::meter::meter_channel;
+    use crate::record::record_channel;
     use crate::ring::event_channel;
     use crate::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
     use std::collections::BTreeMap;
@@ -1028,5 +1173,97 @@ mod tests {
             input_ok, output_ok,
             "非空输入下，输入侧与输出侧的协商结论必须一致"
         );
+    }
+
+    /// ⭐ 判据（录音侧）：**注入一条已知斜坡 ⇒ 逐样本到达接收端**。
+    ///
+    /// ⚠ 本机**没有可用输入设备**，所以判据**不打开设备**：它直接喂
+    /// [`capture_callback`] —— 那正是 [`open_input`] 建流闭包调用的**同一个**函数
+    /// （与输出侧判据 ⑳ 对 [`render_callback`] 的做法同源）。
+    ///
+    /// ⛔ 断言是**逐样本相同**，⛔ 不是"有数据"：后者对"通道交错错位""只推了第一帧"
+    /// 这类缺陷**不敏感**。
+    #[test]
+    fn capture_callback_delivers_an_injected_ramp_sample_by_sample() {
+        const CHANNELS: u16 = 2;
+        const FRAMES: usize = 8;
+        let mut injected: Vec<f32> = Vec::new();
+        for frame in 0..FRAMES {
+            for channel in 0..usize::from(CHANNELS) {
+                #[allow(clippy::cast_precision_loss)]
+                injected.push((frame * 10 + channel) as f32);
+            }
+        }
+
+        // ① 注入臂：斜坡必须**逐样本**到达，且 ⛔ 不允许丢弃。
+        let (mut sender, mut receiver) = record_channel(64, CHANNELS);
+        capture_callback(&mut sender, &injected, CHANNELS);
+        let mut arrived: Vec<f32> = Vec::new();
+        let drained = receiver.drain_frames(FRAMES, |frame| arrived.extend_from_slice(frame));
+        assert_eq!(drained, FRAMES, "必须整帧到达（实得 {drained}）");
+        assert_eq!(
+            arrived, injected,
+            "⭐ 必须**逐样本**相同（⛔ 不是「有数据」）"
+        );
+        assert_eq!(sender.dropped_frames(), 0, "环够大 ⇒ ⛔ 不允许丢弃");
+    }
+
+    /// ⭐ 判据（录音侧）**控制臂**：**不注入** ⇒ 一个样本都不该有。
+    ///
+    /// ⚠ **为什么单独一条**：它与斜坡臂放在同一函数里时，斜坡一旦变红就**断不到**它
+    /// ⇒ "控制臂仍绿"这句就**无法被演示**。拆开之后，注入实测可以同时报出
+    /// "斜坡红、控制绿"这一对读数（那才是控制臂存在的意义）。
+    #[test]
+    fn capture_callback_control_arm_stays_empty() {
+        const CHANNELS: u16 = 2;
+        const FRAMES: usize = 8;
+        let (_sender, mut receiver) = record_channel(64, CHANNELS);
+        let mut nothing: Vec<f32> = Vec::new();
+        let drained = receiver.drain_frames(FRAMES, |frame| nothing.extend_from_slice(frame));
+        assert_eq!(drained, 0, "控制臂必须空（实得 {drained}）");
+        assert!(nothing.is_empty(), "控制臂不允许有样本");
+    }
+
+    /// 判据（录音侧）：**真实输入设备**在无设备环境下允许失败、但**绝不 panic**，
+    /// 且失败必须是**结构化**的一类。
+    ///
+    /// ⚠ 与输出侧同名判据同款：CI／无声卡机器上期望
+    /// [`DeviceError::NoDefaultInputDevice`]；有输入设备的机器上可能成功 ⇒
+    /// 立刻把流丢掉（**不调用 `play()`**，因此不会真的占用麦克风）。
+    /// ⛔ 两种结果都不许是"打不开就当录到静音"地返回成功 —— 见 [`open_input`] 文档。
+    #[test]
+    fn opening_the_default_input_device_never_panics() {
+        let (sender, _queue) = record_channel(64, 2);
+        match open_input(&EngineConfig::default(), sender) {
+            Ok(handle) => {
+                assert_eq!(handle.negotiated().sample_format, SampleFormat::F32);
+                assert_eq!(handle.backend_errors(), 0);
+                // 不 play(): 保持"不占用真实设备"的测试纪律。
+                eprintln!(
+                    "[录音侧] 真机输入设备：**打开成功** device_name={} negotiated={:?}",
+                    handle.device_name(),
+                    handle.negotiated()
+                );
+            }
+            Err(error) => {
+                // ⭐ 如实报：本机**没有**验证过真机输入（只验证了"结构化失败、不 panic"）。
+                eprintln!("[录音侧] 真机输入设备：**不可用** ⇒ {error}");
+                assert!(
+                    matches!(
+                        error,
+                        DeviceError::NoDefaultInputDevice
+                            | DeviceError::NoSupportedInputConfigs
+                            | DeviceError::UnsupportedConfig { .. }
+                            | DeviceError::UnsupportedSampleFormat { .. }
+                            | DeviceError::Backend(_)
+                    ),
+                    "错误必须是 DeviceError 的**明确变体**，实际 {error:?}"
+                );
+                assert!(
+                    !matches!(error, DeviceError::NoDefaultOutputDevice),
+                    "⛔ 输入侧的失败**不许**报成输出侧的错误（会把调用方引错方向）"
+                );
+            }
+        }
     }
 }
