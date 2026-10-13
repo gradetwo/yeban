@@ -134,7 +134,7 @@ use crate::snapshot::{EngineSnapshot, RetireProducer, SnapshotReader, SnapshotSl
 use crate::stats_mirror::EngineStatsMirror;
 use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
 use crate::transport::{
-    Transport, TransportEffect, TransportMirror, TransportReading, TransportState,
+    Transport, TransportEffect, TransportMirror, TransportReading, TransportState, next_beat_tick,
 };
 
 // 编译期钉住块长是规范允许的取值 [ARCH-DET-001, MODEL-AST-002]。
@@ -956,6 +956,12 @@ impl AuditionBranch {
     #[must_use]
     pub const fn switch_frame(&self) -> u64 {
         self.switch_frame
+    }
+
+    /// 已存下的切换倒计时（帧）。
+    #[must_use]
+    pub const fn frames_until_switch(&self) -> u64 {
+        self.frames_until_switch
     }
 
     /// 第二分支真的被渲染过的块数（空闲时必须是 `0`）。
@@ -1877,8 +1883,29 @@ impl EngineRuntime {
             return Err(reason);
         }
         let sample_rate = proposal.sample_rate();
-        let switch_frame = self.transport.audition_switch_frame();
         let position_frames = self.transport.position_frames();
+        // ---- [ARCH-RT-005] 片 3：**预滚 + 下一拍准备** ----
+        //
+        // ⭐ 语义：切换帧**永远不早于**"请求时刻 + 预滚帧数"。
+        //    切换帧仍然落在**拍点**上：预滚不够就**顺延到再下一拍**（⛔ 不是把切换
+        //    挪到拍与拍之间 —— 那会破坏"下一拍对齐"这条已钉住的语义）。
+        //
+        // ⚠ 预滚长度**按采样率缩放**（[`crate::mixer::audition_preroll_frames`]）：
+        //    裸 2048 在 96 kHz 下小于 30 ms 淡化所需的 2880。
+        //
+        // 全部是整数运算（⛔ 无浮点、无超越函数、无分配）⇒ 控制路径，允许取锁/分配，
+        // 但这里其实都不需要。
+        let preroll = crate::mixer::audition_preroll_frames(sample_rate as f32) as u64;
+        let mut tick = next_beat_tick(self.transport.position_ticks());
+        while self
+            .transport
+            .frames_for_tick(tick)
+            .saturating_sub(position_frames)
+            < preroll
+        {
+            tick = next_beat_tick(tick);
+        }
+        let switch_frame = self.transport.frames_for_tick(tick);
         if let Some(branch) = self.audition.as_mut() {
             branch.prepare(sample_rate, switch_frame, position_frames);
         }
@@ -1895,6 +1922,25 @@ impl EngineRuntime {
     #[must_use]
     pub const fn is_auditioning(&self) -> bool {
         self.audition_active
+    }
+
+    /// 走带口径：**距下一拍**还有多少帧（与试听是否已开始无关）。
+    ///
+    /// 判据用它把"预滚顺延"摆成可观测的：请求时刻到下一拍的距离**小于**预滚时，
+    /// [`Self::begin_audition`] 必须顺延到**再下一拍**。
+    #[must_use]
+    pub fn frames_until_audition_switch(&self) -> u64 {
+        self.transport.frames_until_audition_switch()
+    }
+
+    /// 本次试听**已存下的**倒计时（`None` ＝ 未挂第二分支）。
+    ///
+    /// ⭐ 挂上预滚之后它**必须 ≥ 预滚帧数**（否则第二分支的准备时间短于淡化）。
+    #[must_use]
+    pub fn audition_frames_until_switch(&self) -> Option<u64> {
+        self.audition
+            .as_ref()
+            .map(AuditionBranch::frames_until_switch)
     }
 
     /// 第二分支**真的被渲染过**的块数（`None` ＝ 未挂上）。空闲时必须恒为 `0`。
@@ -6480,5 +6526,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ⭐ [ARCH-RT-005] 片 3：**预滚** —— 切换帧永远**不早于**"请求 + 预滚帧数"，
+    /// 而且仍然落在**拍点**上（不够就顺延到**再下一拍**）。
+    ///
+    /// ⚠ 判据自己把走带**泵到预滚窗口内**（距下一拍 < 预滚），否则"顺延"永远不会被
+    /// 触发 ⇒ 判据会变成空转。
+    #[test]
+    fn audition_preroll_defers_the_switch_to_a_later_beat() {
+        let (snapshot, _) = note_snapshot_with_pan(1, 0.0);
+        // ⚠ **必须克隆**做提案：`note_snapshot_with_pan` 每次都生成新的 `EntityId`
+        //   ⇒ 两份独立构造的快照在**轨道集合**上就不同，会被判 `DeviceChain`
+        //   （拓扑检查是对的：受限版共用武装表 ⇒ 轨道集合必须一致）。
+        let proposal = snapshot.clone();
+        let proposal_arc = Arc::new(proposal.clone());
+        let mut rig = rig_with_snapshot(snapshot);
+        let slot = Arc::new(SnapshotSlot::new(proposal));
+        let (retire, queue) = retire_channel(8);
+        rig.runtime.attach_audition_branch(&slot, retire);
+
+        let preroll = crate::mixer::audition_preroll_frames(48_000.0) as u64;
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        let mut steps = 0u64;
+        while rig.runtime.frames_until_audition_switch() >= preroll {
+            rig.runtime.process_quantum(&mut out, 2);
+            steps += 1;
+            assert!(steps < 5_000, "夹具没能在合理步数内进入预滚窗口");
+        }
+        let until_before = rig.runtime.frames_until_audition_switch();
+        assert!(
+            until_before < preroll,
+            "夹具必须落在预滚窗口内（实得 {until_before}，预滚 {preroll}）"
+        );
+
+        rig.runtime
+            .begin_audition(
+                &proposal_arc,
+                AutomationTargets::empty(),
+                AutomationTargets::empty(),
+            )
+            .expect("同源提案必须被接受");
+        let stored = rig
+            .runtime
+            .audition_frames_until_switch()
+            .expect("已挂第二分支");
+        assert!(
+            stored >= preroll,
+            "切换必须**顺延**：存下的倒计时 {stored} 必须 ≥ 预滚 {preroll}（顺延前只有 {until_before}）"
+        );
+        assert_ne!(
+            stored, until_before,
+            "必须真的顺延到**再下一拍**，⛔ 不是把切换挪到拍与拍之间"
+        );
+        let _ = &queue;
     }
 }

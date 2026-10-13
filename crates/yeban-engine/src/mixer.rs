@@ -235,6 +235,33 @@ pub fn crossfade_len_frames(sample_rate: f32) -> usize {
     }
 }
 
+/// [ARCH-RT-005] 片 3：**按采样率放大后的**预滚帧数 —— 调用侧必须用它，
+/// ⛔ **不要**直接用 [`AUDITION_PREROLL_SAMPLES`]。
+///
+/// ## 为什么需要这个函数
+///
+/// [`AUDITION_PREROLL_SAMPLES`] = **2048** 是**按 48 kHz 定**的：它覆盖 48 kHz 的
+/// 30 ms 淡化（1440）绰绰有余。但 96 kHz 的 30 ms 淡化需要
+/// [`crossfade_len_frames`]`(96_000.0)` = **2880 > 2048** ⇒ 在那个采样率下，
+/// 用裸常量会让第二分支的**准备时间短于淡化本身**。
+/// 这条边界不是猜的：`tests::preroll_covers_the_crossfade_at_any_supported_rate`
+/// 里已经登记了它，并写着"调用侧须放大预滚" —— 本函数就是那个调用侧口径。
+///
+/// ## 口径
+///
+/// 1. **至少覆盖一整段淡化**（`crossfade_len_frames`）；
+/// 2. **不低于**规范下限 [`AUDITION_PREROLL_SAMPLES`]（48 kHz 下结果不变 ⇒ 零回退）；
+/// 3. 再**向上取到 2 的幂**：预滚环按位与取模（`& (len − 1)`），⛔ 回调里不做除法。
+///
+/// ⚠ 非有限 / 非正的采样率由 [`crossfade_len_frames`] 兜到 1，再被第 2 条抬到 2048
+/// ⇒ 结果永远 ≥ 2048 且是 2 的幂。
+#[must_use]
+pub fn audition_preroll_frames(sample_rate: f32) -> usize {
+    crossfade_len_frames(sample_rate)
+        .max(AUDITION_PREROLL_SAMPLES)
+        .next_power_of_two()
+}
+
 /// 等功率交叉淡化的增益对 `(淡出, 淡入)`，`t ∈ [0, 1]`。
 ///
 /// 曲线是**精确**的正弦/余弦：`淡出 = cos(t·π/2)`、`淡入 = sin(t·π/2)`，于是
@@ -586,5 +613,49 @@ mod tests {
         assert_eq!(right_r, 1.0, "硬右的右增益是 1.0");
         // R58：等号判据的 `assert_ne!` 落在同一个表达式上（两个端点必须真的不同）。
         assert_ne!(left_r, right_r, "硬左与硬右的右增益必须不同");
+    }
+
+    /// [ARCH-RT-005] 片 3：预滚**按采样率放大**，⛔ 不是裸常量。
+    ///
+    /// ⭐ **这条判据存在的理由**：`AUDITION_PREROLL_SAMPLES` = 2048 是按 48 kHz 定的，
+    /// 而 96 kHz 的 30 ms 淡化需要 2880 ⇒ 裸常量在那个采样率下**不够**。
+    #[test]
+    fn audition_preroll_scales_with_the_crossfade_length() {
+        // 48 kHz：等于规范下限 ⇒ 零回退。
+        assert_eq!(
+            audition_preroll_frames(48_000.0),
+            AUDITION_PREROLL_SAMPLES,
+            "48 kHz 下预滚必须仍等于规范下限（零回退）"
+        );
+        // 96 kHz：⭐ 本条的核心 —— 裸 2048 **不够**。
+        let needed_96k = crossfade_len_frames(96_000.0);
+        assert_eq!(needed_96k, 2880, "96 kHz 的 30 ms ⇒ 2880");
+        assert!(
+            AUDITION_PREROLL_SAMPLES < needed_96k,
+            "裸常量在 96 kHz 必须是不够的（否则本函数没有存在的理由）"
+        );
+        let preroll_96k = audition_preroll_frames(96_000.0);
+        assert!(
+            preroll_96k >= needed_96k,
+            "96 kHz 预滚必须覆盖淡化：需要 {needed_96k}，实得 {preroll_96k}"
+        );
+        assert_eq!(preroll_96k, 4096, "2880 向上取到 2 的幂 ⇒ 4096");
+        // 全部支持档位：覆盖淡化 + 2 的幂（预滚环按位与取模）+ 不低于下限。
+        for rate in [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0] {
+            let frames = audition_preroll_frames(rate);
+            assert!(
+                frames >= crossfade_len_frames(rate),
+                "{rate} ⇒ {frames} 必须覆盖淡化 {}",
+                crossfade_len_frames(rate)
+            );
+            assert!(frames.is_power_of_two(), "{rate} ⇒ {frames} 必须是 2 的幂");
+            assert!(
+                frames >= AUDITION_PREROLL_SAMPLES,
+                "{rate} ⇒ {frames} 不得低于规范下限"
+            );
+        }
+        // 退化输入：兜到下限（⛔ 不是 0）。
+        assert_eq!(audition_preroll_frames(0.0), AUDITION_PREROLL_SAMPLES);
+        assert_eq!(audition_preroll_frames(f32::NAN), AUDITION_PREROLL_SAMPLES);
     }
 }

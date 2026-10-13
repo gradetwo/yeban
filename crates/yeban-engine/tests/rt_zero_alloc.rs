@@ -184,6 +184,7 @@ use std::time::{Duration, Instant};
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::graph::{LatencyTable, PdcPlan};
 use yeban_engine::meter::{MeterCollector, MeterFrame, SCRATCH_METERS, meter_channel};
+use yeban_engine::mixer::audition_preroll_frames;
 use yeban_engine::param::{
     MASTER_GAIN_SLOT, TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
 };
@@ -3502,6 +3503,138 @@ fn scenario_audition_zero_alloc(report: &mut Report) {
     let _ = &proposal_queue;
 }
 
+// ---------------------------------------------------------------------------
+// 场景 ㉗／㉘ [ARCH-RT-005] 片 3：**跨淡化的窗口**与**预滚顺延的窗口**
+// ---------------------------------------------------------------------------
+
+/// 建好"已挂第二分支 + 已开始试听"的 rig，返回 rig 与预滚帧数。
+///
+/// ⚠ 提案用主线的**克隆**（同一批 `EntityId`）⇒ 拓扑逐字段一致 ⇒ 试听必须被接受。
+/// ⛔ 用两次 `from_project`/`note_snapshot_*` 独立构造会被判 `DeviceChain`
+/// （那是拓扑检查**正确**的行为，不是缺陷）。
+fn rig_in_audition(report: &mut Report, id: &'static str) -> (Rig, u64, Vec<u32>) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+    let proposal = Arc::new(EngineSnapshot::from_project(&project, 7).expect("提案快照"));
+    let slot = SnapshotSlot::new(EngineSnapshot::from_project(&project, 7).expect("提案快照"));
+    let (retire, queue) = retire_channel(8);
+    rig.runtime.attach_audition_branch(&slot, retire);
+    rig.preheat();
+    let rate = 48_000u32;
+    let preroll = audition_preroll_frames(rate as f32) as u64;
+    let admission = rig.runtime.begin_audition(
+        &proposal,
+        AutomationTargets::empty(),
+        AutomationTargets::empty(),
+    );
+    report.assert(
+        id,
+        "试听被接受（拓扑同源）",
+        admission.is_ok() && rig.runtime.is_auditioning(),
+        format!("begin_audition={admission:?}"),
+    );
+    let _keep = queue;
+    (rig, preroll, Vec::new())
+}
+
+/// ㉗：窗口**跨过切换帧** —— 淡化那一段本身也必须零分配。
+fn scenario_audition_crossfade_window(report: &mut Report) {
+    let (mut rig, _preroll, _) = rig_in_audition(report, "㉗a");
+    let mut sink = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+    // 泵到切换之前不远处（剩下的距离用**已存下的倒计时**读，⛔ 不猜拍长）。
+    while rig
+        .runtime
+        .audition_frames_until_switch()
+        .is_some_and(|until| until > 8 * DEFAULT_BLOCK_FRAMES as u64)
+    {
+        rig.runtime.process_quantum(&mut sink, 2);
+    }
+    let before = rig.runtime.audition_frames_until_switch();
+    let mut scenario = Scenario::new("㉗ 试听期**跨淡化**窗口");
+    scenario.absorb(
+        AUDITION_ZERO_ALLOC_QUANTA,
+        &rig.pump(AUDITION_ZERO_ALLOC_QUANTA),
+    );
+    let after = rig.runtime.audition_frames_until_switch();
+    scenario.note(format!(
+        "切换倒计时 before={before:?} after={after:?}（必须跨过 0 ⇒ 淡化真的发生在本窗口内）"
+    ));
+    report.scenario(
+        "㉗",
+        "[MUST-GATE-001] 跨淡化窗口 2 000 量子：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㉗b",
+        "覆盖率：窗口**跨过**切换帧（⛔ 不是整段都在淡化之前/之后）",
+        before.is_some_and(|until| until > 0) && after == Some(0),
+        format!("before={before:?} after={after:?}"),
+    );
+}
+
+/// ㉘：在**预滚窗口内**请求试听 ⇒ 切换**顺延到再下一拍**，且顺延后的窗口仍零分配。
+fn scenario_audition_preroll_window(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+    rig.preheat();
+    let preroll = audition_preroll_frames(48_000.0) as u64;
+    let mut sink = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+    // ⭐ 泵到"距下一拍 < 预滚" ⇒ **不**顺延的话切换会早于"请求 + 预滚"。
+    let mut steps = 0u64;
+    while rig.runtime.frames_until_audition_switch() >= preroll {
+        rig.runtime.process_quantum(&mut sink, 2);
+        steps += 1;
+        assert!(steps < 20_000, "夹具没能在合理步数内进入预滚窗口");
+    }
+    let raw = rig.runtime.frames_until_audition_switch();
+    let proposal = Arc::new(EngineSnapshot::from_project(&project, 7).expect("提案快照"));
+    let slot = SnapshotSlot::new(EngineSnapshot::from_project(&project, 7).expect("提案快照"));
+    let (retire, queue) = retire_channel(8);
+    rig.runtime.attach_audition_branch(&slot, retire);
+    let admission = rig.runtime.begin_audition(
+        &proposal,
+        AutomationTargets::empty(),
+        AutomationTargets::empty(),
+    );
+    report.assert(
+        "㉘a",
+        "预滚窗口内请求试听：被接受，且切换**顺延**到再下一拍",
+        admission.is_ok()
+            && rig
+                .runtime
+                .audition_frames_until_switch()
+                .is_some_and(|stored| stored >= preroll && stored != raw),
+        format!(
+            "raw={raw} 预滚={preroll} stored={:?}（stored 必须 ≥ 预滚且 ≠ raw）",
+            rig.runtime.audition_frames_until_switch()
+        ),
+    );
+    let mut scenario = Scenario::new("㉘ 试听期**预滚顺延**窗口");
+    scenario.absorb(
+        AUDITION_ZERO_ALLOC_QUANTA,
+        &rig.pump(AUDITION_ZERO_ALLOC_QUANTA),
+    );
+    scenario.note(format!(
+        "第二分支渲染块数={:?}（期望 Some({AUDITION_ZERO_ALLOC_QUANTA})）",
+        rig.runtime.audition_blocks_read()
+    ));
+    report.scenario(
+        "㉘",
+        "[MUST-GATE-001] 预滚顺延后 2 000 量子：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㉘b",
+        "覆盖率：顺延后第二分支**每块都被真的渲染**",
+        rig.runtime.audition_blocks_read() == Some(AUDITION_ZERO_ALLOC_QUANTA),
+        format!(
+            "audition_blocks_read={:?}（期望 Some({AUDITION_ZERO_ALLOC_QUANTA})）",
+            rig.runtime.audition_blocks_read()
+        ),
+    );
+    let _ = &queue;
+}
+
 fn main() -> ExitCode {
     let mut report = Report::new();
 
@@ -3532,6 +3665,8 @@ fn main() -> ExitCode {
     scenario_drum_instrument(&mut report);
     scenario_audition_branch(&mut report);
     scenario_audition_zero_alloc(&mut report);
+    scenario_audition_crossfade_window(&mut report);
+    scenario_audition_preroll_window(&mut report);
     scenario_ring_note_steal_fade(&mut report);
     scenario_input_callback_body(&mut report);
     prepared_sfz_callback_path_allocates_nothing();
