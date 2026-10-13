@@ -1119,7 +1119,8 @@
             ]
           },
           "license": {
-            "type": "string"
+            "type": "string",
+            "description": "资产许可的**声明式**记录（SPDX 标识）。⚠ 实测（2026-10-14）：本字段在**工程层没有任何执行** —— 引擎/app/模型都不读它，`MUST-GATE-014` 的白名单判定只作用于**仓库资产清单**（assets/manifest.json 的 allowed_licenses 与 assets/samples/manifest.json 的 licence_whitelist，由 scripts/gates/validate_schemas.py 强制）。⇒ 本字段**不构成合规检查**；工程文档里的资产是否合规，今天**没有任何门在看**。资产导入路径（decode/asset.rs 的 asset_index/import_bytes/import_path）在全仓生产代码**零调用** ⇒ 该缺口今天不可达，但接通导入后必须补工程层判定（已登记待做，台账 R436）。"
           }
         }
       }
