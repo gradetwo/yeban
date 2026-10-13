@@ -567,3 +567,26 @@
 ⭐ ⭐ **三、⭐ ⭐ 第 43 条（⭐ 本轮新立、⭐ 由上面那次红换来）**：⭐ ⭐ **"⭐ 我先前那条'⭐ 引擎禁本机 clippy'的禁令**过宽**了 —— ⭐ `clippy -p <crate> --lib --tests` **本机可跑**（⭐ 依赖已构建、⭐ 我实测 exit 0），⭐ 而它**正是会红的那一层**（⭐ CI 的 clippy 步骤就红在 `(lib test)`）⇒ ⭐ 故: ⭐ ⭐ **① 线的提交必须在 CI 上过 clippy 才算完；⭐ ② 集成者**合并前**应跑一次 `clippy -p <crate> --lib --tests -- -D warnings`（⭐ 尤其对**禁全量 clippy** 的 crate）"** ✓ ⭐ ⚠ **代价的实证**: ⭐ 该线只跑了 `check --lib` 与 `test --lib` ⇒ ⭐ **两个目标（⭐ clippy 与 lib-test）都没被本机覆盖** ⇒ ⭐ **红跑到主干上才被发现** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `2276eec4`／`2b7019b0`／`a12d0a89` 三条判决 ＋ ⭐ `SetTempo`／`SetAuthor` 的 MCP 通路 ＋ ⭐ 引擎片 3（⭐ 预滚／下一拍准备）✓
+
+---
+
+## R421 实测追加（2026-10-14）：⭐ ⭐ **两条显式欠账已关闭**（`SetTempo`＋`SetAuthor` 上工具面，`KNOWN_UNREACHABLE` **清空为 0 条**）＋ ⭐ **"⭐ 单向守卫／无对账"模式已是第二例**
+
+⭐ ⭐ **一、⭐ 两条欠账已落（⭐ `f76cd4de`，⭐ 4 文件、⭐ 全在 `crates/yeban-mcp/**`）**：⭐ ⭐ **`setTempo` ＋ `setAuthor` 两个 `kind` 已上工具面** ⇒ ⭐ ⭐ **`crates/yeban-mcp/tests/op_reachability.rs:130` 逐字 ⭐ `const KNOWN_UNREACHABLE: [(&str, &str); 0] = [`** ⇒ ⭐ **我上轮修的双向守卫登记的欠账**清零**** ✓
+⭐ **读数**: ⭐ **`cargo test -p yeban-mcp --all-targets --locked` ＝ 0** ⇒ ⭐ ⭐ **25 条 `test result: ok`／0 FAILED**（⭐ lib 483 判据）＋ ⭐ `fmt`／`check --all-targets`／⭐ **`clippy --all-targets -D warnings`** ／⭐ `light` 全 **0** ✓
+⭐ ⭐ **⭐ 清空是**证明过**的（⭐ 这条很要紧）**: ⭐ 它**临时加回一条** ⇒ ⭐ 反向断言逐字报 ⭐ ⭐ **"⭐ `SetTempo` 既在 `KNOWN_UNREACHABLE` 又在 `EXPECTED_SITES` ⇒ 两处矛盾，⭐ 请二选一"** ⇒ ⭐ **然后恢复** ✓ ⭐ ⭐ **即"⭐ 清单清空"⭐ 不是"⭐ 守卫被绕过"、⭐ 而是"⭐ 欠账真的还完了"** ✓
+⭐ **判据（⭐ 4 条）**: ⭐ `set_tempo_compiles_the_document_value_and_inverts_byte_for_byte` ＋ ⭐ `set_tempo_refuses_out_of_range_non_finite_and_stale_payloads` ＋ ⭐ `set_author_compiles_the_document_value_and_inverts_byte_for_byte` ＋ ⭐ `top_level_field_kinds_are_pinned` ✓
+⭐ **注入红（⭐ 3 条全真红、⭐ 逐字）**: ⭐ **①** `setTempo` 编译成 `SetAuthor` ⇒ ⭐ `应当是 SetTempo: SetAuthor { old_author: "Yeban Project Contributors", new_author: "x" }`；⭐ **②** 去掉区间前置条件 ⇒ ⭐ `区间外必须被拒: [SetTempo { old_bpm: 128.0, new_bpm: 19.999 }]`；⭐ **③** `setAuthor` 的 old 取**调用方**（⭐ 空串）⭐ 而非文档 ⇒ ⭐ `old 必须等于**文档现值**` ✓
+⭐ ⭐ **两处**诚实边界**（⭐ 它主动写清、⭐ 我照录）**：⭐ **① `bpm` 的非有限值在工具面**没有可表达入口**** —— ⭐ 逐字理由: ⭐ ⭐ **"⭐ JSON 没有 NaN / Infinity 字面量；⭐ 它们在线上是 `null` ⇒ ⭐ 这一类在**解析期**就报 `valueMustBeNumber`"** ⇒ ⭐ 区间 `20.0..=999.0` 与有限性仍由**前置条件**拒（⭐ `bpmOutOfRange`）、⭐ ⛔ **不靠 apply 后的 `validate` 兜底** ✓ ⭐ **② `author` 的**空串是合法明示值**** —— ⭐ 理由: ⭐ **模型只有"⭐ 陈旧载荷"一条校验、⭐ 而 `project.schema.json` 的 `author` 是裸 `{"type":"string"}`（⭐ 非必需、⭐ 无 `minLength`、⭐ 无 `pattern`）** ⇒ ⭐ ⭐ **故 ⛔ 本层**不发明**"⭐ 非空"／长度上限**（⭐ 对比 `setScene` 的 `name`：⭐ 那里是**模型不查而空名会静默落盘** ⇒ ⭐ 工具层才查）✓ ⭐ ⭐ **这两条正是本仓"⭐ 不为守卫发明规范"的口径** ✓
+
+⭐ ⭐ **二、⭐ ⭐ 一处**同型缺口**（⭐ 它的第二个发现、⭐ 我已修一半）**：⭐ ⭐ **`crates/yeban-mcp/src/tools.rs` 的 `yeban_edit_notes` **实参说明**的 `kind` 清单**漏列 `setTransportConfig`****（⭐ 而该 `kind` **已实现** —— ⭐ `OP_KINDS`、⭐ 解析臂、⭐ compile 臂都在）✓ ⭐ **逐字读数**: ⭐ `grep -c setTransportConfig crates/yeban-mcp/src/tools.rs` ＝ **0**（⭐ **主干上也是 0**）✓ ⭐ ⚠ ⭐ ⭐ **它的判断: ⭐ "⭐ 那是**上一轮描述改动在变基中丢失**、⭐ 且**没有守卫**把描述与 `OP_KINDS` 对账 ⇒ ⭐ **它绿着漏掉**"** ⇒ ⭐ ⭐ **与 `op_reachability` 的单向问题**同型**（⭐ 见 R418／R416）** ✓ ⭐ ⭐ **它**守住范围**没动它**（⭐ 只补 `setTempo`／`setAuthor`）⇒ ⭐ **这是我的活** ✓
+⭐ ⭐ **我的修复（⭐ `3ece8285`）**: ⭐ 把 `setTransportConfig` 补进那份清单（⭐ 锚点: ⭐ `` `setTrackSolo` / `setTempo` `` ⇒ ⭐ 插成 `` `setTrackSolo` / `setTransportConfig` / `setTempo` ``）⇒ ⭐ **`fmt --check` ＝ 0、⭐ `yeban-mcp --lib` ＝ 483 passed／0 failed** ✓ ⚠ ⭐ ⭐ **但我只治了标**: ⭐ **"⭐ 描述 ⊇ `OP_KINDS`"的对账守卫**仍然欠**** ⇒ ⭐ **不补它，⭐ 描述会**第三次**漂移** ✓
+
+⭐ ⭐ **三、⭐ ⭐ 一个**模式**（⭐ 本会话第二例、⭐ 值得单独记）**：⭐ ⭐ **"⭐ 守卫／对账**只做单向**"** ⇒ ⭐ **已出现**两例**:
+| 例 | 单向在哪 | 后果 | 现状 |
+| :--- | :--- | :--- | :--- |
+| **`op_reachability`** | ⭐ 只查"⭐ 已登记项有构造点" | ⭐ **绿着漏 2 个变体**（⭐ `SetTempo`／`SetTransportConfig`） | ⭐ ✅ **已修成双向**（⭐ `65e68fb6`） |
+| **`tools.rs` 的实参说明** | ⭐ **无任何对账** | ⭐ **静默漂移**、⭐ 漏列 1 个 `kind` | ⭐ ⚠ **只补了名字**（⭐ `3ece8285`）⇒ **守卫仍欠** |
+⇒ ⭐ ⭐ **故纪律（⭐ 第 44 条）**: ⭐ **"⭐ 一处'⭐ 手抄的清单'只要**没有对账守卫**，⭐ 它就会漂移；⭐ 修的时候⛔ **别只补名字** —— ⭐ 要**同时**加一条'⭐ 清单 ⊇ 权威来源'的断言"** ✓ ⭐ ⚠ **实证代价**: ⭐ 那条描述是**上一轮**改的、⭐ **在变基中丢了** ⇒ ⭐ **丢了整整一轮没人发现**（⭐ 直到 `mod-mcp` 顺手 `grep` 才发现）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `2b7019b0`／`a12d0a89`／`f76cd4de`／`3ece8285` 判决 ＋ ⭐ **"⭐ 描述 ⊇ `OP_KINDS`"对账守卫** ＋ ⭐ 引擎片 3（⭐ 预滚／下一拍准备）✓
