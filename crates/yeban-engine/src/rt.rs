@@ -745,9 +745,58 @@ impl EngineStats {
     }
 }
 
+/// A/B 盲听的**第二份可渲染版本**（[ARCH-RT-005]）。
+///
+/// ## 为什么是「再加一个 `SnapshotSlot`」，而不是给现有槽加第二指针
+///
+/// [`SnapshotSlot`] 的**纪元握手**（写者先 `ptr.store` 再 `epoch.fetch_add`，读者用
+/// `reader_done` 证明「我不会再碰被淘汰的快照」）是一条**已经证明过的协议**
+/// （`crate::snapshot` 的模块文档）。在同一个结构里再加一套指针/锚/纪元，就要把那条
+/// 证明**重做一遍**；而「再来一个 `SnapshotSlot`」是把同一条协议**原样复用**。
+///
+/// ⚠ 第二份槽的**创建**在宿主（`yeban-app`）：本模块只**接受**传入的槽与退役生产者
+/// ——「第二份版本从哪来」是投影/会话层的职责，⛔ 不是引擎的。
+///
+/// ## 片 1：只**持有**，⛔ 不渲染、⛔ 不淡化、⛔ 无预滚
+///
+/// 本片的渲染路径**一个字都没改**（[`EngineRuntime::render_block`] 的解构以 `..`
+/// 收尾 ⇒ `audition` 根本不被绑定）。第二读者要到**片 2** 才会被 `begin_block()`；
+/// 在此之前它只是「在册但从不读」⇒ **每量子 0 次原子操作、0 次分配**。
+pub struct AuditionBranch {
+    /// 第二份版本的读者。⚠ 在册化时它**立刻**锚住该槽当时的快照（见
+    /// [`SnapshotReader::attach`]）⇒「连到的是哪一份」从构造起就可观测。
+    reader: SnapshotReader,
+}
+
+impl AuditionBranch {
+    /// 在册化第二份版本。
+    ///
+    /// **必须在音频线程启动前调用**（与 [`SnapshotReader::attach`] 同一条纪律：
+    /// 它会取该槽的锚锁 ⇒ 不许发生在回调里）。
+    #[must_use]
+    pub fn attach(slot: &Arc<SnapshotSlot>, retire: RetireProducer) -> Self {
+        Self {
+            reader: SnapshotReader::attach(slot, retire),
+        }
+    }
+
+    /// 本分支当前持有的快照**修订号**（`None` ＝ 还没锚到过快照）。
+    ///
+    /// ⚠ `attach` 之后它**立刻**是 `Some(…)` ⇒ 判据用它证明「第二读者真的连到了
+    /// **第二份**槽」（连错槽会读到另一个修订号）。
+    #[must_use]
+    pub fn held_revision(&self) -> Option<u64> {
+        self.reader.held().map(|snapshot| snapshot.revision())
+    }
+}
+
 /// 渲染驱动：音频回调持有的全部可变状态。
 pub struct EngineRuntime {
     snapshot: SnapshotReader,
+    /// A/B 盲听的第二份可渲染版本（[ARCH-RT-005] 片 1：**持有**，⛔ 不参与渲染）。
+    ///
+    /// 未挂上时是 `None` ⇒ 渲染路径与「没有这个字段」**逐字节相同**。
+    audition: Option<AuditionBranch>,
     events: EventReceiver,
     meters: MeterPublisher,
     block: AudioBlock<DEFAULT_BLOCK_FRAMES>,
@@ -1066,6 +1115,7 @@ impl EngineRuntime {
         let armed_master = slot.current().master();
         let runtime = Self {
             snapshot: SnapshotReader::attach(slot, retire),
+            audition: None,
             events,
             meters,
             block: AudioBlock::new(),
@@ -1174,6 +1224,35 @@ impl EngineRuntime {
         let cold = runtime.stats();
         runtime.stats_mirror.publish(&cold);
         runtime
+    }
+
+    /// 挂上 A/B 盲听的**第二份可渲染版本**（[ARCH-RT-005] 片 1：**只持有**）。
+    ///
+    /// **只在音频线程启动前调用**（与 [`Self::new`] 同一条纪律；`attach` 会取槽的锚锁）。
+    ///
+    /// ⚠ 本方法刻意**追加**在 [`Self::new`] **之外** ⇒ `new` 的签名不变、既有调用点
+    /// （`yeban-app` 的设备腿与若干判据）一个字都不用改。
+    ///
+    /// 片 1 的语义：挂上之后**输出逐字节不变**，且音频回调**零分配**。
+    pub fn attach_audition_branch(&mut self, slot: &Arc<SnapshotSlot>, retire: RetireProducer) {
+        self.audition = Some(AuditionBranch::attach(slot, retire));
+    }
+
+    /// 是否已挂上第二份可渲染版本（判据用它证明「管道不是死代码」）。
+    #[must_use]
+    pub fn has_audition_branch(&self) -> bool {
+        self.audition.is_some()
+    }
+
+    /// 第二分支当前持有的快照修订号（`None` ＝ 未挂上）。
+    ///
+    /// 片 1 里第二读者**从不 `begin_block`** ⇒ 这个值是「`attach` 那一刻锚住的」那
+    /// 一份。它让「第二份版本真的在册且连对了槽」可被**观测**。
+    #[must_use]
+    pub fn audition_held_revision(&self) -> Option<u64> {
+        self.audition
+            .as_ref()
+            .and_then(AuditionBranch::held_revision)
     }
 
     /// 累计统计的**跨线程只读镜像**（构造期建好；`Arc` 的一份克隆）。
@@ -5086,5 +5165,79 @@ mod tests {
             ratio_zero < 0.1,
             "右目标改成 0.0 ⇒ 比值必须掉到 ≈0（实得 {ratio_zero}）"
         );
+    }
+
+    /// 片 1（[ARCH-RT-005]）的判据：**挂上第二份可渲染版本不改变任何输出**，
+    /// 且第二读者连着**对的槽**。
+    ///
+    /// 本判据在**库内**（`cargo test -p yeban-engine --lib`）⇒ 本机可跑、可注入。
+    /// ⚠ 零分配那一条**不在**这里：它需要计数型全局分配器，落在
+    /// `tests/rt_zero_alloc.rs` 的场景 ㉔。
+    #[test]
+    fn attaching_an_audition_branch_changes_no_output_byte() {
+        const QUANTA: u64 = 256;
+        const PROPOSAL_REVISION: u64 = 7;
+        let mut output = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+
+        // ---- 对照臂：完全不挂第二份版本 ----
+        let (main_snapshot, _) = note_snapshot_with_pan(1, 0.0);
+        let mut control = rig_with_snapshot(main_snapshot);
+        let mut control_samples: Vec<f32> = Vec::new();
+        for _ in 0..QUANTA {
+            control.runtime.process_quantum(&mut output, 2);
+            control_samples.extend_from_slice(&output);
+        }
+
+        // ---- 实验臂：挂上第二份版本（`attach` 是**非实时**路径：它会取锚锁）----
+        let (main_again, _) = note_snapshot_with_pan(1, 0.0);
+        let mut armed = rig_with_snapshot(main_again);
+        let (proposal, _) = note_snapshot_with_pan(PROPOSAL_REVISION, 0.0);
+        let proposal_slot = SnapshotSlot::new(proposal);
+        let (proposal_retire, _proposal_queue) = retire_channel(8);
+        armed
+            .runtime
+            .attach_audition_branch(&proposal_slot, proposal_retire);
+        let mut armed_samples: Vec<f32> = Vec::new();
+        for _ in 0..QUANTA {
+            armed.runtime.process_quantum(&mut output, 2);
+            armed_samples.extend_from_slice(&output);
+        }
+
+        // ① 逐字节相同 —— 本片的核心承诺。
+        assert_eq!(
+            armed_samples.len(),
+            control_samples.len(),
+            "两条路的样本数必须相同"
+        );
+        // ⚠ 用 `to_bits()` 比，⛔ 不用 `==`：`==` 会把 `NaN` 判成不等、把 `-0.0` 与
+        // `0.0` 判成相等 —— 两者都不是「逐字节」该有的语义。
+        // ⚠ 也⛔ 不用 `assert_eq!` 直接比两个 `Vec<f32>`：那会把 32 768 个浮点数全打出来，
+        // 失败信息反而不可读。这里只报**首个不同的样本下标**。
+        let first_diff = armed_samples
+            .iter()
+            .zip(control_samples.iter())
+            .position(|(armed, control)| armed.to_bits() != control.to_bits());
+        assert!(
+            first_diff.is_none(),
+            "挂上第二份可渲染版本后输出必须**逐字节相同**；首个不同的样本下标 = {first_diff:?}\
+             （已挂 {} 个样本 / 未挂 {} 个）",
+            armed_samples.len(),
+            control_samples.len()
+        );
+        // 冷对照：两条路都不是全零音频（否则「相同」什么也不证明）。
+        assert!(
+            control_samples.iter().any(|sample| *sample != 0.0),
+            "对照臂的输出不能是全零（本夹具本来就有已调度音符）"
+        );
+        // ③ 在册见证：第二读者连到的是**第二份**槽。
+        assert!(armed.runtime.has_audition_branch(), "第二份版本必须已在册");
+        assert_eq!(
+            armed.runtime.audition_held_revision(),
+            Some(PROPOSAL_REVISION),
+            "第二读者必须连着**第二份**快照（连错槽会读到别的修订号）"
+        );
+        // ⛔ 未挂的那条路必须如实报「没挂」。
+        assert!(!control.runtime.has_audition_branch());
+        assert_eq!(control.runtime.audition_held_revision(), None);
     }
 }

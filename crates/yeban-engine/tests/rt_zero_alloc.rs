@@ -3325,6 +3325,102 @@ fn scenario_input_callback_body(report: &mut Report) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 场景 ㉕ A/B 盲听的第二份可渲染版本（[ARCH-RT-005] 片 1：只持有）
+// ---------------------------------------------------------------------------
+
+/// ㉕ 的量子数（对照臂与已挂臂各跑这么多）。
+const AUDITION_QUANTA: u64 = 2_000;
+
+/// 第二份版本用的修订号。刻意与主快照的 `1` **不同** ⇒「连错槽」会在 ㉕b 上变红。
+const AUDITION_PROPOSAL_REVISION: u64 = 7;
+
+/// `[ARCH-RT-005]` 片 1：引擎能**持有**第二份可渲染版本，而**持有它不改变任何输出**。
+///
+/// 两个分量：
+/// * **㉕a 对照臂**：同一工程、同一修订号、同样 `AUDITION_QUANTA` 个量子 ⇒
+///   未挂 / 已挂两条路的交错输出**逐字节相同**（用 `to_bits()` 比，⛔ 不是 `==`）；
+/// * **㉕ 零分配**：已挂的那条路在**窗口内**再跑 `AUDITION_QUANTA` 个量子 ⇒
+///   四元组全 0 —— 第二读者在片 1 **从不 `begin_block`**。
+///
+/// ⚠ 行为侧的同一件事还有一条**库内**判据
+/// （`rt.rs::tests::attaching_an_audition_branch_changes_no_output_byte`）：那条能在
+/// `--lib` 下跑、也是注入取材处；本场景补的是**计数型分配器**这一面。
+///
+/// ㉕b 是在册见证：第二读者必须连着**第二份**槽（⛔ 不是只有一个 `bool` 可查）。
+/// 没有它的话，"两路输出相同"也可以由「第二份版本压根没接上」蒙过。
+fn scenario_audition_branch(report: &mut Report) {
+    let project = filled_project();
+
+    // ---- 对照臂：完全不挂第二份版本 ----
+    let mut control = Rig::new(&project, 1, 4096);
+    control.preheat();
+    let mut control_samples: Vec<f32> = Vec::new();
+    for _ in 0..AUDITION_QUANTA {
+        control.step();
+        control_samples.extend_from_slice(&control.output);
+    }
+
+    // ---- 已挂臂：挂上第二份版本（`attach` 在**窗口之外**：它会取锚锁、允许分配）----
+    let mut rig = Rig::new(&project, 1, 4096);
+    let proposal = EngineSnapshot::from_project(&project, AUDITION_PROPOSAL_REVISION)
+        .expect("第二份快照必须能建");
+    let proposal_slot = SnapshotSlot::new(proposal);
+    let (proposal_retire, _proposal_queue) = retire_channel(8);
+    rig.runtime
+        .attach_audition_branch(&proposal_slot, proposal_retire);
+    rig.preheat();
+    let mut armed_samples: Vec<f32> = Vec::new();
+    for _ in 0..AUDITION_QUANTA {
+        rig.step();
+        armed_samples.extend_from_slice(&rig.output);
+    }
+
+    // ㉕a 逐字节相同。⚠ `to_bits()`：`==` 会把 `NaN` 判成不等、把 `-0.0` 与 `0.0`
+    // 判成相等 —— 两者都不是「逐字节」该有的语义。只报**首个不同的下标**。
+    let first_diff = armed_samples
+        .iter()
+        .zip(control_samples.iter())
+        .position(|(armed, control)| armed.to_bits() != control.to_bits());
+    report.assert(
+        "㉕a",
+        "[ARCH-RT-005] 片 1 对照臂：挂上第二份版本后输出**逐字节不变**",
+        armed_samples.len() == control_samples.len() && first_diff.is_none(),
+        format!(
+            "已挂={} 样本 / 未挂={} 样本；首个不同的样本下标={first_diff:?}",
+            armed_samples.len(),
+            control_samples.len()
+        ),
+    );
+
+    // ㉕b 在册见证：第二读者连着**第二份**槽。
+    report.assert(
+        "㉕b",
+        "在册见证：第二读者持有的是**第二份**快照（修订号对得上）",
+        rig.runtime.has_audition_branch()
+            && rig.runtime.audition_held_revision() == Some(AUDITION_PROPOSAL_REVISION),
+        format!(
+            "has_branch={} held_revision={:?}（期望 Some({AUDITION_PROPOSAL_REVISION})）",
+            rig.runtime.has_audition_branch(),
+            rig.runtime.audition_held_revision()
+        ),
+    );
+
+    // ㉕ 零分配：已挂的那条路在窗口内再跑同样的量子数。
+    let mut scenario = Scenario::new("㉕ A/B 第二份版本（片 1：只持有）");
+    scenario.absorb(AUDITION_QUANTA, &rig.pump(AUDITION_QUANTA));
+    let stats = rig.stats();
+    scenario.note(format!(
+        "quanta={} event_bulk_pops={}（窗口内每量子一次批量出队）",
+        stats.quanta, stats.event_bulk_pops
+    ));
+    report.scenario(
+        "㉕",
+        "[MUST-GATE-001] 已挂第二份版本时 2 000 量子：四元组全 0（第二读者从不 begin_block）",
+        &scenario,
+    );
+}
+
 fn main() -> ExitCode {
     let mut report = Report::new();
 
@@ -3353,6 +3449,7 @@ fn main() -> ExitCode {
     scenario_metronome(&mut report);
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
+    scenario_audition_branch(&mut report);
     scenario_ring_note_steal_fade(&mut report);
     scenario_input_callback_body(&mut report);
     prepared_sfz_callback_path_allocates_nothing();
