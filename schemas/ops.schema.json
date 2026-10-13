@@ -142,6 +142,26 @@
         },
         {
           "required": [
+            "AddClip"
+          ],
+          "properties": {
+            "AddClip": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveClip"
+          ],
+          "properties": {
+            "RemoveClip": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "MoveClipPlacement"
           ],
           "properties": {
@@ -192,6 +212,26 @@
         },
         {
           "required": [
+            "AddRoutingNode"
+          ],
+          "properties": {
+            "AddRoutingNode": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveRoutingNode"
+          ],
+          "properties": {
+            "RemoveRoutingNode": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetRoutingGain"
           ],
           "properties": {
@@ -232,6 +272,56 @@
         },
         {
           "required": [
+            "SetTrackMute"
+          ],
+          "properties": {
+            "SetTrackMute": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTransportConfig"
+          ],
+          "properties": {
+            "SetTransportConfig": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTempo"
+          ],
+          "properties": {
+            "SetTempo": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetAuthor"
+          ],
+          "properties": {
+            "SetAuthor": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetTrackSolo"
+          ],
+          "properties": {
+            "SetTrackSolo": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetMacro"
           ],
           "properties": {
@@ -256,6 +346,26 @@
           ],
           "properties": {
             "RemoveAutomationPoint": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "SetAutomationLane"
+          ],
+          "properties": {
+            "SetAutomationLane": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveAutomationLane"
+          ],
+          "properties": {
+            "RemoveAutomationLane": {
               "type": "object"
             }
           }
@@ -306,117 +416,6 @@
           ],
           "properties": {
             "Batch": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "AddClip"
-          ],
-          "properties": {
-            "AddClip": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "RemoveClip"
-          ],
-          "properties": {
-            "RemoveClip": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "RemoveRoutingNode"
-          ],
-          "properties": {
-            "RemoveRoutingNode": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "AddRoutingNode"
-          ],
-          "properties": {
-            "AddRoutingNode": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "RemoveAutomationLane"
-          ],
-          "properties": {
-            "RemoveAutomationLane": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "SetAutomationLane"
-          ],
-          "properties": {
-            "SetAutomationLane": {
-              "type": "object"
-            }
-          }
-        }
-,
-        {
-          "required": [
-            "SetTrackMute"
-          ],
-          "properties": {
-            "SetTrackMute": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "SetTrackSolo"
-          ],
-          "properties": {
-            "SetTrackSolo": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "SetTransportConfig"
-          ],
-          "properties": {
-            "SetTransportConfig": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "SetTempo"
-          ],
-          "properties": {
-            "SetTempo": {
-              "type": "object"
-            }
-          }
-        },
-        {
-          "required": [
-            "SetAuthor"
-          ],
-          "properties": {
-            "SetAuthor": {
               "type": "object"
             }
           }
