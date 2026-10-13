@@ -5827,8 +5827,8 @@ mod tests {
                 Some(current) => current,
                 None => return Vec::new(),
             };
-            let master = current.master();
-            let mut produced = 0usize;
+            // ⚠ 本副本不使用主总线 id（另一同型副本用它）⇒ 不绑定，避免 `unused_variables`。
+            let produced = 0usize;
             // 与 `render_block` 同源：本量子的声相增益表是 `armed_pan_gains` 的副本。
             let mut pan_gains = [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS];
             pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
