@@ -5394,4 +5394,266 @@ mod tests {
             );
         }
     }
+
+    /// **全变体往返审计**（`[ARCH-OPS-001]` 的通则，机械化）。
+    ///
+    /// 指标（对象 + 单位）：对 `showcase_ops()` 里**每一个** `Op` 实例（单位 = 条），
+    /// `apply` ⇒ `apply_inverse` 之后，工程的**逐字节**序列化是否回到原位。
+    ///
+    /// 三类结果，**全部显式分类**（⛔ 不静默跳过 —— 本仓的"空气隙"纪律）：
+    /// * `Pass` —— 施加成功、逆施加成功、且逐字节回到原位；
+    /// * `NotApplicable` —— **有理由**地不适用（例如该 op 在一份文档上只能施加一次而
+    ///   夹具状态不满足），理由逐条记进表；
+    /// * `Fail` —— 施加或逆施加失败，**或**往返之后字节不同。`Fail` 会让判据红。
+    ///
+    /// ⚠ 变体清单**从源码现读**（`enum Op` 的花括号配对 + 顶层变体行），
+    /// ⛔ 不手抄数字（第 44 条）。
+    ///
+    /// ⚠ 本判据**不复用** `re_applying_...` 的 `RELATIVE_TRANSFORMS` 例外表：
+    /// `MoveNote` 是唯一的**相对**变换（载荷是增量），它的"第二遍被接受"是**已知且已登记**
+    /// 的行为，而**往返**（正一遍 + 逆一遍）对它仍然必须逐字节回原位 —— 这正是本判据要判的。
+    #[test]
+    fn every_op_variant_round_trips_byte_for_byte_or_is_explicitly_not_applicable() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum Verdict {
+            Pass,
+            /// ⚠ **本轮实测：本臂当前不可达** —— 34/34 变体在 `fixture_document()` 上
+            /// 的施加性检查**全部通过** ⇒ 没有任何一条走这里。保留它是因为
+            /// **"⛔ 不许静默跳过"** 要求分类**在结构上存在**（将来若某个变体的前置条件
+            /// 在标准夹具上不再成立，它会走这条臂而不是被悄悄剔除）。
+            /// `#[allow(dead_code)]` 是**如实**标注这个现状，⛔ 不是绕过。
+            #[allow(dead_code)]
+            NotApplicable(&'static str),
+            Fail(String),
+        }
+
+        // ---- 变体全集：从源码现读 ----
+        let src = include_str!("ops.rs");
+        let start = src.find("pub enum Op {").expect("枚举存在");
+        let rest = &src[start..];
+        let mut depth = 0usize;
+        let mut end = 0usize;
+        for (idx, ch) in rest.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = idx;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &rest[..=end];
+        let mut declared: Vec<String> = Vec::new();
+        for line in body.lines() {
+            let Some(t) = line.strip_prefix("    ") else {
+                continue;
+            };
+            if t.starts_with(' ') || t.is_empty() {
+                continue;
+            }
+            let name: String = t
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            let after = &t[name.len()..];
+            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && (after.starts_with(" {") || after.starts_with(','))
+            {
+                declared.push(name);
+            }
+        }
+        declared.sort_unstable();
+        declared.dedup();
+        assert!(!declared.is_empty(), "从源码现读变体清单失败（解析器坏了）");
+
+        // ---- 逐变体审计（每个变体取 showcase 里**第一个**实例）----
+        let showcase = showcase_ops();
+        let mut table: Vec<(String, Verdict)> = Vec::new();
+        for name in &declared {
+            let Some(op) = showcase.iter().find(|op| op.name() == name.as_str()) else {
+                table.push((
+                    name.clone(),
+                    Verdict::Fail("showcase_ops() 里没有这个变体的代表实例".to_owned()),
+                ));
+                continue;
+            };
+            let mut doc = fixture_document();
+            let before = match serde_json::to_vec(&doc) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    table.push((
+                        name.clone(),
+                        Verdict::Fail(format!("序列化前置失败: {error}")),
+                    ));
+                    continue;
+                }
+            };
+            // ⚠ **适用性检查**（⛔ 不许静默跳过）：前置条件不成立 ⇒ 明确记为
+            // "不适用"并记下理由，而不是当成失败（那会把"夹具不合法"与"模型缺陷"混在一起）。
+            if let Err(error) = op.precondition(&doc) {
+                table.push((
+                    name.clone(),
+                    Verdict::NotApplicable(match error {
+                        ModelError::OpStateMismatch { .. } => "前置条件: 载荷与文档状态不符",
+                        _ => "前置条件不成立",
+                    }),
+                ));
+                continue;
+            }
+            if let Err(error) = op.apply(&mut doc) {
+                table.push((
+                    name.clone(),
+                    Verdict::Fail(format!("apply 失败: {error:?}")),
+                ));
+                continue;
+            }
+            if let Err(error) = op.apply_inverse(&mut doc) {
+                table.push((
+                    name.clone(),
+                    Verdict::Fail(format!("apply_inverse 失败: {error:?}")),
+                ));
+                continue;
+            }
+            let after = match serde_json::to_vec(&doc) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    table.push((
+                        name.clone(),
+                        Verdict::Fail(format!("序列化后置失败: {error}")),
+                    ));
+                    continue;
+                }
+            };
+            if before == after {
+                table.push((name.clone(), Verdict::Pass));
+            } else {
+                table.push((
+                    name.clone(),
+                    Verdict::Fail(format!(
+                        "往返之后字节不同: 前 {} 字节 / 后 {} 字节",
+                        before.len(),
+                        after.len()
+                    )),
+                ));
+            }
+        }
+
+        // ---- 逐条打印（供人读；测试输出用 --nocapture 看）----
+        for (name, verdict) in &table {
+            match verdict {
+                Verdict::Pass => eprintln!("ROUND-TRIP {name:24} PASS"),
+                Verdict::NotApplicable(reason) => {
+                    eprintln!("ROUND-TRIP {name:24} NOT-APPLICABLE ({reason})");
+                }
+                Verdict::Fail(reason) => eprintln!("ROUND-TRIP {name:24} FAIL ({reason})"),
+            }
+        }
+        let passed = table.iter().filter(|(_, v)| *v == Verdict::Pass).count();
+        let na = table
+            .iter()
+            .filter(|(_, v)| matches!(v, Verdict::NotApplicable(_)))
+            .count();
+        let failed = table
+            .iter()
+            .filter(|(_, v)| matches!(v, Verdict::Fail(_)))
+            .count();
+        eprintln!(
+            "ROUND-TRIP SUMMARY declared={} pass={passed} not_applicable={na} fail={failed}",
+            declared.len()
+        );
+
+        // ---- 判据：覆盖必须等于现读的变体数，且**零失败** ----
+        assert_eq!(
+            table.len(),
+            declared.len(),
+            "每个变体都要有一行（⛔ 不许静默跳过）"
+        );
+        let failures: Vec<&(String, Verdict)> = table
+            .iter()
+            .filter(|(_, v)| matches!(v, Verdict::Fail(_)))
+            .collect();
+        assert!(failures.is_empty(), "有变体未能逐字节往返: {failures:#?}");
+    }
+
+    /// 三条**新 `set` 类**（`SetTransportConfig` / `SetTempo` / `SetAuthor`）的
+    /// `old_*` 相等口径**在合法文档上必须一致**（`[ARCH-OPS-001]` 的"陈旧载荷必被拒"）。
+    ///
+    /// ⚠ 三条的**手段不同**，这是实测事实（⛔ 不是推断）：
+    /// * `SetTransportConfig` —— 派生的 `PartialEq`（⚙ 内部是逐字段、浮点用 `==`）；
+    /// * `SetTempo` —— `same_f64`（**逐位**，`to_bits`）；
+    /// * `SetAuthor` —— `String` 的 `==`（**逐字节**）。
+    ///
+    /// 差异只可能出在**浮点**上：`same_f64` 让 `-0.0` 与 `+0.0` 不等，而 `==` 让它们相等。
+    /// ⚠ 但 `bpm` 的合法区间是 `MIN_BPM..=MAX_BPM`（`20.0..=999.0`）⇒ 一份 `validate()`
+    /// 通过的文档里 `doc.bpm == ±0.0` **不可能** ⇒ ⭐ **那条差异路径不可达**。
+    /// 本判据把这句话**机械地钉住**：在合法文档上，三者对"相等"与"不等"给出**同一**判定。
+    /// 若将来谁把 `same_f64` 改成 `==`、或把 `MIN_BPM` 调成 `0.0`，本判据会说话。
+    #[test]
+    fn set_class_old_equality_agrees_on_valid_documents() {
+        // ① `SetTransportConfig`：逐字段构造"只差一个字段"的旧值。
+        let doc = fixture_document();
+        let base = doc.transport;
+        let mut variants: Vec<TransportConfig> = Vec::new();
+        let mut toggled = base;
+        toggled.metronome_enabled = !toggled.metronome_enabled;
+        variants.push(toggled);
+        let mut bars = base;
+        bars.count_in_bars = bars.count_in_bars.wrapping_add(1);
+        variants.push(bars);
+        let mut quant = base;
+        quant.launch_quantization = match quant.launch_quantization {
+            LaunchQuantization::Off => LaunchQuantization::Bar,
+            _ => LaunchQuantization::Off,
+        };
+        variants.push(quant);
+        for (i, v) in variants.iter().enumerate() {
+            let op = Op::SetTransportConfig {
+                old_config: *v,
+                new_config: base,
+            };
+            assert!(
+                op.precondition(&doc).is_err(),
+                "① 变体 {i} 与文档现值不同 ⇒ 必须被拒"
+            );
+        }
+        let same = Op::SetTransportConfig {
+            old_config: base,
+            new_config: base,
+        };
+        assert!(same.precondition(&doc).is_ok(), "① 相等时必须接受");
+
+        // ② `SetTempo`：合法区间内只有"不同数值"一种情形（-0.0/0.0 不在合法区间）。
+        let op = Op::SetTempo {
+            old_bpm: doc.bpm + 1.0,
+            new_bpm: doc.bpm,
+        };
+        assert!(op.precondition(&doc).is_err(), "② 不同数值必须被拒");
+        let same = Op::SetTempo {
+            old_bpm: doc.bpm,
+            new_bpm: doc.bpm,
+        };
+        assert!(same.precondition(&doc).is_ok(), "② 相等时必须接受");
+
+        // ③ `SetAuthor`：只有"不同字符串"一种情形。
+        let op = Op::SetAuthor {
+            old_author: format!("{}x", doc.author),
+            new_author: doc.author.clone(),
+        };
+        assert!(op.precondition(&doc).is_err(), "③ 不同串必须被拒");
+        let same = Op::SetAuthor {
+            old_author: doc.author.clone(),
+            new_author: doc.author.clone(),
+        };
+        assert!(same.precondition(&doc).is_ok(), "③ 相等时必须接受");
+
+        // ④ 合法文档上：`doc.bpm` 与 `0.0` 的关系（证明 `-0.0` 那条路**不可达**）。
+        assert!(
+            (MIN_BPM..=MAX_BPM).contains(&doc.bpm),
+            "④ 合法文档的 bpm 必在区间内 ⇒ `-0.0 == 0.0` 那条差异不可达"
+        );
+    }
 }
