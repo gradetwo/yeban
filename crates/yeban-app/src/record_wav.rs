@@ -267,6 +267,77 @@ pub fn default_record_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ui-record.wav"))
 }
 
+/// ⭐ **设备输入源**（`[ARCH-REC-001]` 的"音频线程直接从声卡物理输入捕获 PCM 流"那一半）。
+///
+/// ⭐ **为什么是 trait**：真实现要 `cpal` 的 `default_input_device` ＋ `build_input_stream`，
+/// 而 ⚠ **本仓到今天为止没有输入流**（`crates/yeban-engine/src/device.rs` 只有纯函数
+/// [`negotiate_input`]；`grep -n 'default_input_device\|build_input_stream\|open_input'
+/// crates/yeban-engine/src/*.rs` 命中 **0**），且 `yeban-app` 不依赖 `cpal`。
+/// ⇒ 本 trait 就是**那个缺口的位置本身**：真实现到达时**只换一个实现**，⛔ 不改录音路径。
+///
+/// ⚠ **块语义**：`next_block(frames, out)` 填**交错**样本，填 `frames × channels` 个；
+/// 返回**真的填了几个帧**（0 ⇒ 暂时没有数据，调用方下一轮再问）。⛔ 不长阻塞。
+pub trait InputSource {
+    /// 声道数（⭐ 必须与 [`RecordOptions::channels`] 一致；不一致由调用方负责检出）。
+    fn channels(&self) -> u16;
+    /// 取下一块交错样本。返回填进去的**帧**数。
+    fn next_block(&mut self, frames: usize, out: &mut [f32]) -> usize;
+}
+
+/// ⭐ **静音源**：产品**今天的**默认（⭐ 它让"按按钮录到静音"这件事**有明确出处**，
+/// ⛔ 不是"没人喂"的偶然）。真设备源到达后，这里换成真实现即可。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SilenceSource {
+    /// 声道数。
+    pub channels: u16,
+}
+
+impl InputSource for SilenceSource {
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    fn next_block(&mut self, frames: usize, out: &mut [f32]) -> usize {
+        let want = frames.saturating_mul(usize::from(self.channels.max(1)));
+        let fill = want.min(out.len());
+        out[..fill].fill(0.0);
+        fill / usize::from(self.channels.max(1))
+    }
+}
+
+/// ⭐ **确定性斜坡源**（⭐ 判据用）：`sample[frame] = (frame - half) * step`，**居中**。
+///
+/// ⚠ 与 `record_frames` 的判据**同一口径**（同一个居中斜坡公式）⇒ 两条判据可比。
+#[derive(Debug, Clone, Copy)]
+pub struct RampSource {
+    /// 声道数。
+    pub channels: u16,
+    /// 归一化步长（⭐ 管道吃 `[-1, 1]`）。
+    pub step: f32,
+    /// 已产出的**帧**数（⭐ 让斜坡可复算：判据按同一个公式算预期）。
+    pub produced: u64,
+}
+
+impl InputSource for RampSource {
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    fn next_block(&mut self, frames: usize, out: &mut [f32]) -> usize {
+        let channels = usize::from(self.channels.max(1));
+        let want = frames.saturating_mul(channels);
+        let fill = want.min(out.len());
+        let whole = fill / channels;
+        for index in 0..whole {
+            let frame = self.produced + index as u64;
+            let value = frame as f32 * self.step;
+            out[index * channels..(index + 1) * channels].fill(value);
+        }
+        self.produced += whole as u64;
+        whole
+    }
+}
+
 /// ⭐ **一次录音会话**（⭐ 按钮背后的那一件事）。
 ///
 /// ## 形状（⭐ 为什么是"停录时才落盘"）
@@ -291,8 +362,12 @@ pub struct Recorder {
 
 #[derive(Debug)]
 struct RecorderSession {
-    /// 生产端（音频线程那一半）。
-    sender: yeban_engine::record::RecordSender,
+    /// 生产端（⭐ 共享：工人线程从**设备源**拉块喂它，`push_block` 也可直接推）。
+    ///
+    /// ⚠ `Mutex` 在这里**不违反红线 7**：本类型的推入点跑在**控制侧**（UI 线程 / 后台录音
+    /// 线程），⛔ **不是**音频回调。真设备源把回调搬进来时，那条路仍只用
+    /// `push_input_block`（它自己不分配、不加锁地写 `rtrb`）。
+    sender: std::sync::Arc<std::sync::Mutex<yeban_engine::record::RecordSender>>,
     /// 停止信号（工作线程每轮检查）。
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 工作线程（停录时收尸）。
@@ -323,7 +398,12 @@ impl Recorder {
     /// # Errors
     ///
     /// 参数非法，或**已经在录**。
-    pub fn start(&mut self, path: &Path, options: &RecordOptions) -> Result<(), RecordError> {
+    pub fn start(
+        &mut self,
+        path: &Path,
+        options: &RecordOptions,
+        mut source: Box<dyn InputSource + Send>,
+    ) -> Result<(), RecordError> {
         if self.session.is_some() {
             return Err(RecordError::Invalid("已经有一次录音在进行".to_owned()));
         }
@@ -333,14 +413,35 @@ impl Recorder {
             ));
         }
         let (sender, receiver) = record_channel(options.capacity_frames, options.channels);
+        let sender = std::sync::Arc::new(std::sync::Mutex::new(sender));
+        let sender_worker = std::sync::Arc::clone(&sender);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_worker = std::sync::Arc::clone(&stop);
         let batch = options.drain_batch.max(1);
+        // ⭐ **设备输入块的大小**（帧）：一个 `drain_batch` 那么多 —— 与抽干批同量级，
+        // 免得"生产远快于消费"而丢帧。⚠ 它**不是**音频回调的块长（真实现的块长由设备给）。
+        let block_frames = batch;
+        let channels = options.channels.max(1);
+        let mut block = vec![0.0_f32; block_frames.saturating_mul(usize::from(channels))];
         let worker = std::thread::spawn(move || {
             let mut drain = RecordDrain::new(receiver, SampleSink::default());
+            let sender = sender_worker;
             // ⚠ 轮询而非阻塞等待：`RecordDrain` 没有"等新数据"的接口，而停止必须**及时**
             // （⛔ 不能让按钮卡住）。1 ms 的休眠只在**后台线程**上，⛔ 不碰音频线程。
             while !stop_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                // ⭐ **从设备输入源拉一块**（⭐ 这就是"谁在喂它"的答案）⇒ 整帧推进环。
+                // ⚠ 真实现里这一拉发生在音频回调上；本片的产品默认是 [`SilenceSource`]。
+                let frames = source.next_block(block_frames, &mut block);
+                if frames > 0
+                    && let Ok(mut sender) = sender.lock()
+                {
+                    let samples = frames.saturating_mul(usize::from(channels));
+                    let _ = yeban_engine::record::push_input_block(
+                        &mut sender,
+                        &block[..samples],
+                        channels,
+                    );
+                }
                 let _ = drain.pump(batch);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -371,11 +472,11 @@ impl Recorder {
         let Some(session) = self.session.as_mut() else {
             return 0;
         };
-        let accepted = yeban_engine::record::push_input_block(
-            &mut session.sender,
-            block,
-            session.options.channels,
-        );
+        let Ok(mut sender) = session.sender.lock() else {
+            return 0;
+        };
+        let accepted =
+            yeban_engine::record::push_input_block(&mut sender, block, session.options.channels);
         session.pushed_frames = session.pushed_frames.saturating_add(accepted as u64);
         accepted
     }
@@ -1093,5 +1194,136 @@ mod injected_source_tests {
             peak <= TOLERANCE_LSB,
             "零注入 ⇒ 读回必须全静音（|峰值| ≤ 抖动上限），实测峰值 {peak} 个 LSB"
         );
+    }
+}
+
+#[cfg(test)]
+mod device_input_tests {
+    use super::*;
+
+    /// i24 满标（读回是归一化 `[-1, 1]`）。
+    const FULL_SCALE: f32 = 8_388_608.0;
+    /// ⚠ 与录音片同一条口径：管道**故意**带 TPDF 抖动（±1 LSB）⇒ 容差 2 LSB 是
+    /// "抖动不可能超过"的上界，⛔ 不是放松到看不出错。
+    const TOLERANCE_LSB: f32 = 2.0;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp/mod-app-device-input");
+        std::fs::create_dir_all(&dir).expect("建判据目录");
+        dir.join(format!("{name}-{}.wav", std::process::id()))
+    }
+
+    fn options() -> RecordOptions {
+        RecordOptions {
+            seconds: 0.05,
+            sample_rate: 48_000,
+            channels: 2,
+            capacity_frames: 48_000,
+            drain_batch: 256,
+            tone_hz: TEST_TONE_HZ,
+        }
+    }
+
+    /// ⭐ **判据 ①（正对照）**：把**设备输入源**接成确定性斜坡 ⇒ 落盘后**每一个**读回样本
+    /// 都等于那条斜坡（± 抖动上限）。
+    ///
+    /// ⚠ 走的是**产品路径**：`Recorder::start`（真 `RecordDrain` 线程）⇒ 停止 ⇒ 落盘
+    /// ⇒ `read_plain_wav_mono_f32`（单声道读回 = 每帧一个样本）。
+    #[test]
+    fn device_input_ramp_is_recorded_sample_by_sample() {
+        let opts = options();
+        let step = 0.25 / 48_000.0;
+        let path = scratch("ramp");
+        let _ = std::fs::remove_file(&path);
+
+        let mut recorder = Recorder::new();
+        recorder
+            .start(
+                &path,
+                &opts,
+                Box::new(RampSource {
+                    channels: opts.channels,
+                    step,
+                    produced: 0,
+                }),
+            )
+            .expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let report = recorder.stop().expect("停录并落盘");
+
+        let (samples, rate, _desc) =
+            yeban_render::wav::read_plain_wav_mono_f32(&path).expect("读回 WAV");
+        assert_eq!(rate, opts.sample_rate);
+        assert!(
+            samples.len() as u64 > 100,
+            "必须真的录到一批样本（实测 {}）",
+            samples.len()
+        );
+        assert_eq!(
+            samples.len() as u64,
+            report.frames,
+            "读回样本数必须等于报告的帧数（单声道读回）"
+        );
+
+        // ⭐ **逐样本**比对（⛔ 不是"文件非空"、⛔ 不是"长度对得上"）。
+        let mut worst = 0.0_f32;
+        for (frame, got) in samples.iter().enumerate() {
+            let want = frame as f32 * step;
+            let diff = (got - want).abs() * FULL_SCALE;
+            worst = worst.max(diff);
+            assert!(
+                diff <= TOLERANCE_LSB,
+                "第 {frame} 帧偏离设备源的斜坡 {diff} 个 LSB（> {TOLERANCE_LSB}）"
+            );
+        }
+        assert!(worst > 0.0, "抖动必须真的动过某个样本（否则容差没意义）");
+        // ⭐ 幅度尺度也对：相邻帧的差就是斜坡步长（± 抖动上限）。
+        let want_delta = step * FULL_SCALE;
+        // ⚠ 容差是 **2 ×** 逐样本容差：相邻两帧各带 ±1 LSB 的**独立**抖动 ⇒
+        // 差的误差上界是 4 LSB（不是 2）。实测踩过（第 397 帧差 2.3 LSB 被判红）。
+        let delta_tolerance = TOLERANCE_LSB * 2.0;
+        for frame in 10..(samples.len() - 10) {
+            let delta = (samples[frame + 1] - samples[frame]).abs() * FULL_SCALE;
+            assert!(
+                (delta - want_delta).abs() <= delta_tolerance,
+                "第 {frame} 帧的增量 {delta} 必须约等于步长 {want_delta}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⭐ **判据 ②（控制臂）**：把源接成**静音** ⇒ 落盘必须**全 0**。
+    ///
+    /// 没有这一条，判据 ① 可能只是"管道把噪声写成了斜坡"而恰好对上。
+    #[test]
+    fn device_input_silence_is_recorded_as_zero() {
+        let opts = options();
+        let path = scratch("silence");
+        let _ = std::fs::remove_file(&path);
+
+        let mut recorder = Recorder::new();
+        recorder
+            .start(
+                &path,
+                &opts,
+                Box::new(SilenceSource {
+                    channels: opts.channels,
+                }),
+            )
+            .expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let report = recorder.stop().expect("停录并落盘");
+
+        let (samples, _rate, _desc) =
+            yeban_render::wav::read_plain_wav_mono_f32(&path).expect("读回 WAV");
+        assert!(!samples.is_empty(), "控制臂必须真的录到一批样本");
+        assert_eq!(samples.len() as u64, report.frames);
+        let peak = samples.iter().fold(0.0_f32, |max, s| max.max(s.abs())) * FULL_SCALE;
+        assert!(
+            peak <= TOLERANCE_LSB,
+            "静音源 ⇒ 读回必须全 0（|峰值| ≤ 抖动上限），实测峰值 {peak} 个 LSB"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

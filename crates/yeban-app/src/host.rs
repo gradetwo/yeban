@@ -2151,7 +2151,13 @@ pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
         } else {
             let path = crate::record_wav::default_record_path();
             let options = crate::record_wav::RecordOptions::default();
-            let started = recorder.start(&path, &options);
+            // ⭐ **产品默认的设备输入源 = 静音**（⛔ 本机没有可用输入设备，且 `yeban-engine`
+            // 今天**没有**输入流 ⇒ 真设备源到达时**只换这一个实现**）。
+            // ⚠ 这不是"没人喂"的偶然：静音源让"按按钮录到静音"有**明确出处**。
+            let source = Box::new(crate::record_wav::SilenceSource {
+                channels: options.channels,
+            });
+            let started = recorder.start(&path, &options, source);
             match &started {
                 Ok(()) => eprintln!("[yeban-app] 开始录音 ⇒ {}", path.display()),
                 Err(error) => eprintln!("[yeban-app] 起录失败: {error}"),
