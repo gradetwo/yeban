@@ -45,7 +45,7 @@ pub const TOOL_MODULES: [&str; 7] = [
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 31] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 32] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -112,6 +112,28 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 31] = [
             "domain/project_create.rs",
             "domain/section_build.rs",
         ],
+    ),
+    // ⚠ 本轮补登记：它在 `domain/notes.rs` 的 `compile` 臂有构造点，
+    // 此前**只是漏登记**（由 `mod-mcp` 实测发现）。见本文件新增的反向断言。
+    ("SetTransportConfig", &["domain/notes.rs"]),
+];
+
+/// **模型里有、而工具面**确实**没有构造点**的 `Op` 变体（显式欠账清单）。
+///
+/// ⭐ 为什么要有它、而不是"把 `EXPECTED_SITES` 补齐到模型全集"：本仓的口径是
+/// **欠账要显式**（与 `PENDING_CONTRACT_OPS` 同型）—— 一个变体若真的不可达，
+/// 就要**如实登记**，⛔ 不许为了过判据而伪造一个构造点。
+///
+/// ⚠ 每一条都必须带理由；清空它意味着"工具面覆盖了模型全集"。
+const KNOWN_UNREACHABLE: [(&str, &str); 2] = [
+    (
+        "SetTempo",
+        "`bpm` 的编辑入口尚未上工具面（模型侧 `Op::SetTempo` 已落，见 `HD-63`）；补齐后请删掉本条",
+    ),
+    (
+        "SetAuthor",
+        "`author` 的编辑入口尚未上工具面（模型侧 `Op::SetAuthor` 已落，见 `HD-63` 同批的自行裁决）；\
+         补齐后请删掉本条",
     ),
 ];
 
@@ -349,7 +371,11 @@ fn every_op_variant_has_a_registered_construction_site() {
     // 登记表必须覆盖**恰好** 31 个变体，而且名字不重复。
     let names: BTreeSet<&str> = EXPECTED_SITES.iter().map(|(name, _)| *name).collect();
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
-    assert_eq!(names.len(), 31, "模型 `Op` 有 31 个变体");
+    assert_eq!(
+        names.len(),
+        32,
+        "登记表有 32 条（⭐ 它**不是**模型变体数 —— 模型全集由 `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
+    );
 }
 
 #[test]
@@ -428,4 +454,96 @@ fn the_classifier_tells_constructions_from_patterns() {
     );
     // 单元变体（后面不跟 `{`）算构造。
     assert!(constructed_variants("let x = Op::RemoveClip;").contains("RemoveClip"));
+}
+
+/// ⭐ **反向断言**：模型 `Op` 的**每一个**变体都必须在 `EXPECTED_SITES` 里登记，
+/// 或者出现在 `KNOWN_UNREACHABLE` 的显式欠账清单里。
+///
+/// ⭐ 为什么必须有它：`every_op_variant_has_a_registered_construction_site` 只对
+/// `EXPECTED_SITES` **里已有的项**遍历（"已登记项有构造点"）⇒ ⭐ **它是单向的**：
+/// 一个模型变体若**根本没被登记**，那条判据**看不见它**（实测：模型 33 变体而登记表
+/// 31 条，该判据仍然全绿 ⇒ 绿着漏掉 2 个）。
+///
+/// ⚠ 本判据**从模型源码现读**变体名（⛔ 不手抄数字）⇒ 模型加一个变体不登记就会红。
+/// ⚠ 抽取规则的两条教训（见台账 R417）：⛔ **不要用花括号配对**（模型的文档注释里
+/// 充满 `Op::X { .. }` 示例 ⇒ 会提前结束、静默读到 0 个）；并且"抽不到东西"必须
+/// **响亮失败**，否则抽取器失效时本判据会**永远绿**（又一个空绿）。
+#[test]
+fn every_model_op_variant_is_registered_or_declared_unreachable() {
+    let crates_dir = manifest_dir()
+        .parent()
+        .expect("crates/ 必须存在")
+        .to_path_buf();
+    let model_files = read_rust_sources(&[crates_dir.join("yeban-model/src")]);
+    let ops = module_text(&model_files, "/ops.rs").expect("读得到 yeban-model 的 ops.rs");
+
+    // 从 `pub enum Op {` 起、扫到**行首 `}`** 止（⛔ 不配对：注释里有 `{}` 示例）。
+    let start = ops.find("pub enum Op {").expect("找得到 `pub enum Op {`");
+    let mut body = String::new();
+    for line in ops[start..].lines().skip(1) {
+        if line == "}" {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+
+    let mut model: BTreeSet<String> = BTreeSet::new();
+    for line in body.lines() {
+        let Some(rest) = line.strip_prefix("    ") else {
+            continue;
+        };
+        if rest.starts_with(' ') {
+            continue; // 缩进更深 ⇒ 是字段，不是顶层变体
+        }
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        // ⚠ 变体行形如 `AddNote {` / `RemoveTrack {` ⇒ 名字之后是**空格 ＋ `{`**；
+        // 必须先 `trim_start()`（实测踩到：直接判 `starts_with('{')` 会永远不匹配 ⇒ 读到 0 个）。
+        let tail = rest[name.len()..].trim_start();
+        if tail.starts_with('{') || tail.starts_with(',') {
+            model.insert(name);
+        }
+    }
+    assert!(
+        model.len() > 20,
+        "从模型源码读出的变体数太少（{}）—— 抽取规则失效了，本判据**不可信**（⛔ 不许当绿）",
+        model.len()
+    );
+
+    let registered: BTreeSet<String> = EXPECTED_SITES
+        .iter()
+        .map(|(n, _)| (*n).to_owned())
+        .collect();
+    let declared: BTreeSet<String> = KNOWN_UNREACHABLE
+        .iter()
+        .map(|(n, _)| (*n).to_owned())
+        .collect();
+
+    let unregistered: Vec<&String> = model
+        .difference(&registered)
+        .filter(|name| !declared.contains(*name))
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "这些模型 `Op` 变体既没进 `EXPECTED_SITES`、也没进 `KNOWN_UNREACHABLE` \
+         ⇒ ⭐ 加变体的人必须二选一（登记构造点，或如实登记为不可达）: {unregistered:?}"
+    );
+
+    // 反向的另一半：欠账清单不许留**已登记**或**模型里已不存在**的陈旧条目。
+    for (name, reason) in KNOWN_UNREACHABLE {
+        assert!(
+            model.contains(name),
+            "`KNOWN_UNREACHABLE` 里的 `{name}` 在模型里已不存在 ⇒ 请删掉本条（原文理由: {reason}）"
+        );
+        assert!(
+            !registered.contains(name),
+            "`{name}` 既在 `KNOWN_UNREACHABLE` 又在 `EXPECTED_SITES` ⇒ 两处矛盾，请二选一"
+        );
+    }
 }
