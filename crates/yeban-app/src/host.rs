@@ -3378,8 +3378,8 @@ fn midi_in_error_code(error: &crate::midi_in::MidiInError) -> &'static str {
 /// `Play` / `Stop` / `Pause` / `SeekTicks`）—— **没有**"切到哪条分支"这一维；
 /// 引擎只持**一份**当前快照（`crates/yeban-engine/src/snapshot.rs:1140-1156` 的
 /// `SnapshotSlot` 是单个 `AtomicPtr` + 单个 `anchor`），`crates/yeban-engine/src/rt.rs`
-/// 的渲染循环只读那一份 ⇒ 没有"双分支并发"可言，也没有任何交叉淡化代码
-/// （`grep -rn -i 'crossfade\|equal-power\|pre-roll' crates/yeban-engine/src` 命中 0）；
+/// 的渲染循环只读那一份 ⇒ 没有"双分支并发"可言，也**没有任何接线到渲染循环的**交叉淡化代码（原语存在，见下）
+/// （⚠ **更正（2026-10-13）**：该 grep **不再命中 0** —— 原语已于 2026-10-11 落地（`683c72d7` / `4efc2bbf`）：`crates/yeban-engine/src/mixer.rs:213` `AUDITION_CROSSFADE_MS=30.0`、`:219` `AUDITION_PREROLL_SAMPLES=2048`、`:229` `crossfade_len_frames`、`:247` `crossfade_gains`（等功率），`crates/yeban-engine/src/transport.rs:473` `audition_switch_frame`、`:482` `frames_until_audition_switch`（下一拍对齐）。**但它们的**外部调用点为 0**（`crates/` 内 25 处出现全在 `mixer.rs` 与 `transport.rs` 的定义与自测里），且 `[ARCH-RT-005]` **仍不在** `IMPLEMENTED_SPEC_IDS` 里 ⇒ **故本函数的返回值不变**）；
 /// 界面侧也没有第二条工程版本：宿主播放的就是活跃工程（= 主线），
 /// `crates/yeban-app/src/engine_host.rs` 的 `publish_project` 换的是**那一份**快照。
 /// ⇒ 今天按 `[` 唯一能做的事是"播放"——那已经是 `Space`（`Action::PlayPause`），
