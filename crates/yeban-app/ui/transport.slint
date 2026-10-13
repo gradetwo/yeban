@@ -159,15 +159,14 @@ export component Transport inherits Rectangle {
         accessible-role: button;
         accessible-id: "transport-record-button";
         accessible-label: "录音";
-        // ⚠ **更正（本轮，`[ARCH-REC-001]` 接线之后）**：上面那段"录音今天没有任何状态"的
-        // 旧注释**已不再成立** —— 录音键现在有 `callback toggle-record`（`host::wire_transport`
-        // 接），且 `recording` 由宿主写。旧注释留在历史里会说话，故就地更正。
-        // ⚠ 仍**不**声明 `accessible-checkable`：本键的语义是**动作**（按下开始/停止），
-        // ⛔ 不是"可勾选的开关"—— 声明它会让屏读器把动作读成开关。
         // ⭐ 现在是**真实状态源**：`recording` 由宿主写（起录 ⇒ true、停录 ⇒ false）。
-        // ⚠ 仍**不**声明 `accessible-checkable`：那会把"可勾选"教给屏读器，而本键的语义是
-        // **动作**（按下开始/停止），⛔ 不是开关。
+        // ⚠ 仍**不**声明 `accessible-checkable`：本键的语义是**动作**（按下开始/停止），
+        // ⛔ 不是"可勾选的开关" —— 声明它会让屏读器把动作读成开关。
         accessible-checked: root.recording;
+        // ⭐ 无障碍动作必须与 `clicked` **同一个落点**（`[UI-A11Y-003]` §7.3 第 4 条 ①）：
+        // 上游只把 `accessible-action-*` 收进 `supported_accessibility_actions` ⇒ 少了这一行，
+        // OS 无障碍树里这个节点**读得到、按不动**。
+        accessible-action-default => { root.toggle-record(); }
 
         UiText {
             x: 0;

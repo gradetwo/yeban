@@ -2956,6 +2956,11 @@ mod tests {
     /// "今天确实没有动作"的控件**逐个点名** —— 清单外新增一个, 或者修好一个却忘了
     /// 从清单里删掉, 都会红。
     ///
+    /// ⭐ **更正（`[ARCH-REC-001]` 接线之后）**：`"transport-record-button"` **已从本清单移出** ——
+    /// 它现在**有**点击源（`rec_area` 的 `clicked` ＋ `accessible-action-default` 同一落点，
+    /// 见判据 `the_record_button_has_a_click_handler_and_a_wired_record_callback`）。
+    /// 移出它正是本判据文档要求的动作（"修好一个 ⇒ 从清单里删掉它"）。
+    ///
     /// 清单里每一条的现状（逐条核对过, 不是凭记忆）：
     ///
     /// | 语义 ID（`.slint` 右值） | 为什么今天没有动作 |
@@ -2966,7 +2971,6 @@ mod tests {
     /// | `"mixer-master-mute-button"` | 主控静音只有**显示**（`apply_mixer` 写 `master-mute`），没有 `mixer-master-mute-toggle` 回调 |
     /// | `"mixer-master-solo-button"` | 同上（`master-solo`） |
     /// | `"sidebar-category-" + i + "-button"` | 分类切换状态机不存在（只有静态选中态 `category_index == 0`） |
-    /// | `"transport-record-button"` | 录音能力不存在（判据 `the_record_button_has_no_click_handler_and_recording_is_unimplemented` 已钉） |
     /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
     /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
     /// | `"transport-revert-button"` | 同上（能力存在但未接线） |
@@ -3030,7 +3034,7 @@ mod tests {
     /// [`controls_without_any_click_source_are_exactly_the_known_empty_ones`] 的期望集合。
     ///
     /// 已排序（`BTreeMap` 口径的确定性: 判据的期望值不依赖文件系统迭代顺序）。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 11] = [
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 10] = [
         "app.slint :: \"ai-rail-intent-button\"",
         "console/console_tabs.slint :: \"console-maximize-button\"",
         "console/device_rack.slint :: \"device-\" + device_index + \"-bypass-switch\"",
@@ -3039,7 +3043,6 @@ mod tests {
         "sidebar.slint :: \"sidebar-category-\" + category_index + \"-button\"",
         "transport.slint :: \"transport-branch-button\"",
         "transport.slint :: \"transport-commit-button\"",
-        "transport.slint :: \"transport-record-button\"",
         "transport.slint :: \"transport-revert-button\"",
         "workspace/session_view.slint :: \"scene-launch-\" + scene_index + \"-button\"",
     ];
