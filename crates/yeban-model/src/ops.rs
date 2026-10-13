@@ -3302,8 +3302,8 @@ mod tests {
         );
         assert_eq!(
             contract.len(),
-            33,
-            "op.oneOf 必须覆盖 33 个变体, 实际 {}: {contract:?}",
+            34,
+            "op.oneOf 必须覆盖 34 个变体, 实际 {}: {contract:?}",
             contract.len()
         );
 
