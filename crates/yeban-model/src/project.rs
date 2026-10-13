@@ -4741,6 +4741,38 @@ mod tests {
             .map(|key| (*key).to_owned())
             .collect();
         expected.sort();
+
+        // ⭐ **正向哨兵**（第 41 条的加强版）：断言抽取器**确实看得见**一组已知的、
+        // 今天就在 `src/` 里的数值字段。
+        //
+        // ⚠ **它防的是"方向相反"那种失灵**：别名表目前只认 `type X = f32;` 与
+        // **行首** `use …::f32 as X;` 两种形态（见 `type_alias` / `use_alias`）。
+        // 实测（本次注入）：把某个已知字段的类型换成 `pub use … as ProbeF32;` 再导出
+        // 的别名 ⇒ ⭐ **抽取器看不见它** ⇒ `found` 少一条 ⇒ **集合相等那条判据确实会红**，
+        // ⚠ 但它报的是"**清单多了一条**"（`found` 少 ⇒ 站在 `expected` 的角度看是"多"）
+        // ⇒ ⭐ **方向相反，会把人引向去删冻结清单、而正解是修抽取器**。
+        //
+        // ⇒ 本哨兵把"抽少"变成**指名道姓**的响亮失败：**先**说是抽取器的错，
+        // 并且点名"这个字段今天确实存在、抽取器却看不见它"。
+        // ⛔ 它**不是**集合相等的重复：集合相等判"两边一样"，本哨兵判
+        // "抽取器对这几个字段有效"—— 前者红时给不出方向，后者红时直接指抽取器。
+        for sentinel in [
+            "src/project.rs::YebanProjectV1::bpm",
+            "src/project.rs::TrackV3::volume_db",
+            "src/project.rs::RoutingEdge::gain_db",
+            "src/project.rs::SceneV3::tempo",
+            "src/ops.rs::Op::SetParam.new_val",
+        ] {
+            assert!(
+                found.iter().any(|entry| entry == sentinel),
+                "⭐ 正向哨兵失败：抽取器**看不见**已知的数值字段 `{sentinel}`。\n\
+                 它今天确实在 `src/` 里 ⇒ 这是**抽取规则**的盲区（例如字段类型用了\
+                 `pub use … as X;` 再导出的别名 —— `use_alias` 只认**行首** `use `）。\n\
+                 ⚠ 正解是**修抽取规则**，⛔ 不是删冻结清单 `NUMERIC_FIELD_INVENTORY`。\n\
+                 本判据抽到的 {count} 条见下：\n{found:#?}",
+                count = found.len()
+            );
+        }
         assert_eq!(
             found, expected,
             "源码里的数值字段与冻结清单（NUMERIC_FIELD_INVENTORY）不一致;\n\
