@@ -5609,4 +5609,239 @@ mod tests {
             "正文抽取也不得被注释里的假锚点带偏"
         );
     }
+
+    /// **引用完整性审计**（`[MODEL-AST-004]` / `[ARCH-OPS-001]` 的通则）：
+    /// 逐类破坏一处引用 ⇒ 断言结果**等于**登记的**分类**。
+    ///
+    /// 指标（对象 + 单位）：**引用种类**（单位 = 类）。每一类做**一次**破坏，
+    /// 记录 `validate()` 是否拒绝，并与该类的**登记**比对 —— ⛔ 三类都可能：
+    ///
+    /// * `RejectedByValidate` —— 这一类的存在性由 `validate()` 强制；
+    /// * `ExistenceCheckedElsewhere` —— ⭐ **有意不进 `validate()`**：这一类的
+    ///   悬空是一份文档在**合法操作之后**的正常中间态，因此存在性由唯一**求值入口**
+    ///   （[`AutomationTarget::validate_against`]）负责。判据**同时**断言
+    ///   `validate()` 接受它**且** `validate_against` 拒绝它 ⇒ "有意"这句话是被证过的，
+    ///   ⛔ 不是口头声明。
+    ///
+    /// ⚠ **空跑防线**：每一类的变异都断言"真的改到了东西"—— 实测抓到过一次：
+    /// 夹具里**第一条音轨没有摆放**，于是 `placement→clip_pool` 那一行原先根本没改到，
+    /// 读数是一个**空转的 false**。修成"逐轨找第一个摆放"之后真读数才是 `true`。
+    ///
+    /// ⚠ ⭐ **一处比"有意"更强的证据**（本轮实测）：想在 `TrackV3::validate` 里做这条
+    /// 存在性检查是**结构上做不到的** —— 它的签名是 `fn validate(&self)`，
+    /// **拿不到工程文档**，因此 `target.validate_against(doc)` 在那里根本没有 `doc` 可传
+    /// （我按"注入"试过：`error[E0423]: cannot find value 'doc' in this scope`）。
+    /// 存在性检查**必须**落在拿得到文档的那一层（[`AutomationTarget::validate_against`]）。
+    /// ⚠ 如实登记：那次注入是**编译红、⛔ 不是行为红**，因此它**不**算本判据的牙
+    /// （牙由下面那次分类注入提供）。
+    ///
+    /// ⚠ 分类的**依据**（⛔ 不是本判据自创）：`tests/automation.rs` 的
+    /// `a_device_removal_legally_leaves_a_dangling_target_that_validate_still_accepts`
+    /// 的模块文档逐字写着"`validate()` **只强制位置，不强制存在性**……否则一次合法的
+    /// 设备移除就会造出一份自己校验不过的文档。存在性由唯一求值入口如实报具体错误"。
+    #[test]
+    fn every_reference_kind_is_either_validated_or_explicitly_existence_checked_elsewhere() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum Policy {
+            RejectedByValidate,
+            ExistenceCheckedElsewhere,
+        }
+
+        let base = crate::samples::filled_project();
+        base.validate().expect("基准样本必须合法");
+        let track_ids: Vec<EntityId> = base.tracks.keys().copied().collect();
+        let lead = *track_ids.first().expect("至少一条音轨");
+        let placements_total: usize = base.tracks.values().map(|track| track.clips.len()).sum();
+        assert!(placements_total > 0, "夹具必须有摆放，否则那一行是空跑");
+
+        // (标签, 登记分类, 破坏动作)
+        /// 一类引用：标签 + 登记分类 + 破坏动作。
+        type ReferenceKind<'a> = (&'a str, Policy, Box<dyn Fn(&mut YebanProjectV1)>);
+
+        let kinds: Vec<ReferenceKind<'_>> = vec![
+            (
+                "tracks↔master_bus_track_id",
+                Policy::RejectedByValidate,
+                Box::new(|doc: &mut YebanProjectV1| {
+                    doc.master_bus_track_id = fixture_id(9_999);
+                }),
+            ),
+            (
+                "tracks[].folder_id→tracks",
+                Policy::RejectedByValidate,
+                Box::new(|doc: &mut YebanProjectV1| {
+                    if let Some(track) = doc.tracks.values_mut().next() {
+                        track.folder_id = Some(fixture_id(9_999));
+                    }
+                }),
+            ),
+            (
+                "placement→clip_pool",
+                Policy::RejectedByValidate,
+                Box::new(|doc: &mut YebanProjectV1| {
+                    // ⚠ 必须**逐轨找第一个摆放**（第一条音轨可能一个都没有）。
+                    let mut touched = false;
+                    for track in doc.tracks.values_mut() {
+                        if let Some(placement) = track.clips.values_mut().next() {
+                            placement.clip_id = fixture_id(9_999);
+                            touched = true;
+                            break;
+                        }
+                    }
+                    assert!(touched, "变异必须真的生效（否则本行是空跑）");
+                }),
+            ),
+            (
+                "routing edges→nodes",
+                Policy::RejectedByValidate,
+                Box::new(|doc: &mut YebanProjectV1| {
+                    let edge = doc
+                        .routing_graph
+                        .edges
+                        .values_mut()
+                        .next()
+                        .expect("夹具必须有路由边");
+                    edge.source_node = fixture_id(9_999);
+                }),
+            ),
+            (
+                "master_bus∈routing.nodes",
+                Policy::RejectedByValidate,
+                Box::new(|doc: &mut YebanProjectV1| {
+                    let master = doc.master_bus_track_id;
+                    doc.routing_graph.nodes.retain(|node| *node != master);
+                }),
+            ),
+            (
+                "AutomationTarget::SendGain.edge_id",
+                Policy::ExistenceCheckedElsewhere,
+                Box::new(move |doc: &mut YebanProjectV1| {
+                    let target = crate::AutomationTarget::SendGain {
+                        track_id: lead,
+                        edge_id: fixture_id(9_999),
+                    };
+                    if let Some(track) = doc.tracks.get_mut(&lead) {
+                        track.automation_lanes.insert(
+                            target,
+                            crate::AutomationLane {
+                                points: std::collections::BTreeMap::new(),
+                                ..crate::AutomationLane::implicit(target)
+                            },
+                        );
+                    }
+                }),
+            ),
+            (
+                "AutomationTarget::DeviceParam.slot_index",
+                Policy::ExistenceCheckedElsewhere,
+                Box::new(move |doc: &mut YebanProjectV1| {
+                    let target = crate::AutomationTarget::DeviceParam {
+                        track_id: lead,
+                        slot_index: 99,
+                        param_index: 0,
+                    };
+                    if let Some(track) = doc.tracks.get_mut(&lead) {
+                        track.automation_lanes.insert(
+                            target,
+                            crate::AutomationLane {
+                                points: std::collections::BTreeMap::new(),
+                                ..crate::AutomationLane::implicit(target)
+                            },
+                        );
+                    }
+                }),
+            ),
+            (
+                "AutomationTarget::Macro.macro_index",
+                Policy::ExistenceCheckedElsewhere,
+                Box::new(move |doc: &mut YebanProjectV1| {
+                    let target = crate::AutomationTarget::Macro {
+                        track_id: lead,
+                        macro_index: 99,
+                    };
+                    if let Some(track) = doc.tracks.get_mut(&lead) {
+                        track.automation_lanes.insert(
+                            target,
+                            crate::AutomationLane {
+                                points: std::collections::BTreeMap::new(),
+                                ..crate::AutomationLane::implicit(target)
+                            },
+                        );
+                    }
+                }),
+            ),
+        ];
+
+        let mut rejected = 0_usize;
+        let mut elsewhere = 0_usize;
+        for (label, policy, mutate) in &kinds {
+            let mut doc = base.clone();
+            mutate(&mut doc);
+            assert_ne!(doc, base, "{label}: 变异必须真的改变了文档（防空跑）");
+            let outcome = doc.validate();
+            match policy {
+                Policy::RejectedByValidate => {
+                    assert!(
+                        outcome.is_err(),
+                        "{label}: 登记为 validate() 强制，实际却被接受"
+                    );
+                    rejected += 1;
+                }
+                Policy::ExistenceCheckedElsewhere => {
+                    assert!(
+                        outcome.is_ok(),
+                        "{label}: 登记为**有意不进 validate()**，实际却被拒 —— \
+                         分类与实现已经不一致，必须同步更新登记"
+                    );
+                    elsewhere += 1;
+                }
+            }
+            eprintln!(
+                "REF-INTEGRITY {label:42} policy={policy:?} validate={:?}",
+                outcome.as_ref().err().map(|_| "Err")
+            );
+        }
+
+        // ⭐ "存在性由求值入口负责"这句话必须**被证过**：三类逐条实测 `validate_against` 拒绝。
+        for (label, target) in [
+            (
+                "AutomationTarget::SendGain.edge_id",
+                crate::AutomationTarget::SendGain {
+                    track_id: lead,
+                    edge_id: fixture_id(9_999),
+                },
+            ),
+            (
+                "AutomationTarget::DeviceParam.slot_index",
+                crate::AutomationTarget::DeviceParam {
+                    track_id: lead,
+                    slot_index: 99,
+                    param_index: 0,
+                },
+            ),
+            (
+                "AutomationTarget::Macro.macro_index",
+                crate::AutomationTarget::Macro {
+                    track_id: lead,
+                    macro_index: 99,
+                },
+            ),
+        ] {
+            assert!(
+                target.validate_against(&base).is_err(),
+                "{label}: 登记为'存在性由求值入口负责'，但 `validate_against` 竟然接受了它"
+            );
+        }
+
+        eprintln!(
+            "REF-INTEGRITY SUMMARY kinds={} rejected_by_validate={rejected} \
+             existence_checked_elsewhere={elsewhere}",
+            kinds.len()
+        );
+        assert_eq!(
+            rejected + elsewhere,
+            kinds.len(),
+            "每一类都要有登记（⛔ 不许静默跳过）"
+        );
+    }
 }
