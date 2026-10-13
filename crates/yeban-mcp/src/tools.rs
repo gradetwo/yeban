@@ -1795,7 +1795,15 @@ mod tests {
             20,
             "ADR-0001 D25 的联集 20 值"
         );
-        assert_eq!(ErrorCode::DOCUMENTED_TOOL_CODES.len(), 16, "架构 §7.2 表格");
+        // ⚠ 这条只是"计数（防空）"：它数的是**常量自己**，⛔ 不读文档 ⇒
+        // 文档 §7.2 少一个码它**照样绿**。真正与文档对账的是
+        // `documented_tool_codes_match_the_architecture_section_seven_two`
+        // （它**现读** `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.2 并双向断言）。
+        assert_eq!(
+            ErrorCode::DOCUMENTED_TOOL_CODES.len(),
+            16,
+            "计数（防空）：常量自己的长度，文档对账见 `documented_tool_codes_match_…`"
+        );
         assert_eq!(ErrorCode::SCHEMA_ONLY.len(), 4);
 
         for code in ErrorCode::SCHEMA_CONTRACT {
@@ -1838,6 +1846,110 @@ mod tests {
         texts.sort_unstable();
         texts.dedup();
         assert_eq!(texts.len(), ErrorCode::ALL.len());
+    }
+
+    /// `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §7.2 的表格 ↔
+    /// [`ErrorCode::DOCUMENTED_TOOL_CODES`] 的**双向**对账。
+    ///
+    /// ## 为什么必须有它（第 44 条：手抄清单必须对账）
+    ///
+    /// `DOCUMENTED_TOOL_CODES` 是 §7.2 那张表里错误码的**手抄副本**。在它之前，
+    /// 唯一"看着像"守卫的是 `assert_eq!(…len(), 16, "架构 §7.2 表格")` —— ⚠
+    /// 那条**只数常量自己的长度**、⛔ **不读文档**：谁把 §7.2 的 `MCP-TOOL-008`
+    /// 那格从 `RENDER_FAILED, BUSY` 改成只留 `RENDER_FAILED`，
+    /// **长度 16 照样绿**，而规格表已经少了一个码。文档**加**一个码同理不会被发现。
+    ///
+    /// ## 抽取器的两条已知陷阱（⚠ 都是**实测**踩过的，⛔ 不许重犯）
+    ///
+    /// 1. `git grep -E` 用的是 **POSIX ERE**，⛔ **不支持 `\b`** —— 靠它写第一版
+    ///    扫描器会**全 0**（看起来像"文档里一个码都没有"）。
+    /// 2. **用长度过滤**（例如 `[A-Z_]{4,}`）会漏掉 4 个字符的 `BUSY` ⇒ 一度报出
+    ///    **假缺口**"文档缺 BUSY"。
+    ///
+    /// ⭐ **正解**：直接拿**实际存在的 code 名**去匹配（名字从 [`ErrorCode::ALL`]
+    /// **现读**，用 `as_str()` 取逐字文本），⛔ **不用长度、也不假设它在哪一列**。
+    ///
+    /// ## "抽不到东西"必须响亮失败（第 41 条）
+    ///
+    /// 一个**失灵的抽取器**（章节标题变了、文件被移动）会让"集合相等"变成
+    /// "空 == 空" ⇒ 判据**永远绿**。因此这里对**三个**空集各自断言：
+    /// 文档侧抽到 0 个码、常量侧为 0、以及 §7.2 段落找不到，都必须炸。
+    #[test]
+    fn documented_tool_codes_match_the_architecture_section_seven_two() {
+        // ---- ① 常量侧：`DOCUMENTED_TOOL_CODES` 的逐字 code 文本 ----
+        let constant: std::collections::BTreeSet<String> = ErrorCode::DOCUMENTED_TOOL_CODES
+            .iter()
+            .map(|code| code.as_str().to_owned())
+            .collect();
+        assert!(
+            !constant.is_empty(),
+            "`DOCUMENTED_TOOL_CODES` 抽出了 0 个码 —— ⛔ 不许静默通过"
+        );
+
+        // ---- ② 从**实际存在的** code 名里挑，用它们在文档里找（正解） ----
+        let doc = std::fs::read_to_string(architecture_doc_path())
+            .expect("读 docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md");
+        let section = architecture_section(&doc, "### 7.2 ", "### 7.3 ")
+            .expect("文档里必须找得到 §7.2 段落（标题 `### 7.2 ` 到 `### 7.3 ` 之间）");
+
+        // ⚠ 名字来源是**实现自己的** 21 个码（⛔ 不是任何手抄清单）；
+        // 直接子串匹配，⛔ 不用长度过滤、⛔ 不假设它在表格第几列。
+        let from_doc: std::collections::BTreeSet<String> = ErrorCode::ALL
+            .iter()
+            .map(|code| code.as_str().to_owned())
+            .filter(|name| section.contains(name.as_str()))
+            .collect();
+        assert!(
+            !from_doc.is_empty(),
+            "从 §7.2 抽出了 0 个 code —— 抽取路径已失灵, ⛔ 不许静默通过"
+        );
+
+        // ---- ③ 双向断言 ----
+        let missing_in_doc: Vec<&String> = constant.difference(&from_doc).collect();
+        assert!(
+            missing_in_doc.is_empty(),
+            "`DOCUMENTED_TOOL_CODES` 里这些码**没有出现在** §7.2 表格里: \
+             {missing_in_doc:?} ⇒ 要么补文档, 要么把常量里那一条删掉 \
+             (⛔ 不许把本判据放宽成单向)"
+        );
+        let missing_in_constant: Vec<&String> = from_doc.difference(&constant).collect();
+        assert!(
+            missing_in_constant.is_empty(),
+            "§7.2 表格里这些码**不在** `DOCUMENTED_TOOL_CODES` 里: \
+             {missing_in_constant:?} ⇒ 文档加了码而常量没跟 \
+             (这正是本判据要抓的那一半)"
+        );
+
+        // 逐条读数：双向相等 ⇒ 数量也必须相等。
+        assert_eq!(
+            constant.len(),
+            from_doc.len(),
+            "双向相等 ⇒ 数量必须相等 (现读: 常量 {} 个 / 文档 §7.2 {} 个)",
+            constant.len(),
+            from_doc.len()
+        );
+    }
+
+    /// `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` 的路径。
+    ///
+    /// 与 `tests/contract.rs` 的 `schema_path()` 同一条相对路径规则
+    /// （`<crate>/../../docs/...`）。
+    fn architecture_doc_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md")
+    }
+
+    /// 取 `start` 标题与 `end` 标题之间的那段文本（⛔ 不假设行号）。
+    ///
+    /// `None` ⇒ 两个标题之一找不到（调用方**必须**把它当失败，⛔ 不许当"没有内容"）。
+    fn architecture_section<'a>(doc: &'a str, start: &str, end: &str) -> Option<&'a str> {
+        let from = doc.find(start)?;
+        let rest = &doc[from + start.len()..];
+        let to = rest.find(end)?;
+        Some(&rest[..to])
     }
 
     #[test]
