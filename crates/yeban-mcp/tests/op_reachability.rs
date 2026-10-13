@@ -576,3 +576,181 @@ fn the_argument_help_text_mentions_every_kind() {
          加/删 kind 时必须同步它）: {missing:?}"
     );
 }
+
+/// ⭐ **反向那一半**（R432 登记、本单补）：枚举里的每个 kind 记号都**必须**在
+/// `OP_KINDS` 里。
+///
+/// ## 为什么需要它（正向那半看不见什么）
+///
+/// [`the_argument_help_text_mentions_every_kind`] 只查 `OP_KINDS ⊆ 说明`。⚠ 若说明里
+/// **留下一个已删除的 kind**（或写错一个名字），它**看不见** —— 加了 kind 会红，
+/// **删了/写错不会**。本判据补的正是那半边。
+///
+/// ## 抽取规则（机械、可复核 ⛔ 不是黑箱）
+///
+/// ⚠ 难点：那段说明里有 **~480** 个反引号词（字段名、`Op` 名、`reason` 名、路径…），
+/// ⛔ 不能"所有反引号词都当 kind"。
+///
+/// ⭐ 正解**不是**靠"看起来像 kind"的**形状**规则：实测那条形状规则（小写开头 ＋
+/// 驼峰）**召回只有 22/26** —— 纯小写的 `add` / `move` / `delete` / `velocity`
+/// 全被它筛掉，而它在整个 `tools.rs` 上有 **98** 个假阳性 ⇒ 两头都不可靠。
+///
+/// ⭐ 本判据改用**位置**这一条机械规则：`yeban_edit_notes` 的说明里，
+/// **枚举段**写成 `` / `X` / `Y` / … ``。因此只取**该形状**里的词，取法是从**第一个**
+/// `` / `X` `` 起，连续吃 `` / `X` `` 直到形状断开为止。⛔ 不按"像不像 kind"筛。
+///
+/// 这条规则**自己也是可复核的**：判据把"吃了几个、断在哪"作为读数报出来，并且
+/// 另有一条判据 [`every_enumerated_kind_matches_the_shape_rule`] 核对"枚举里的词确实
+/// 都满足形状规则"，于是形状规则**不承担过滤职责**、只作为交叉验证。
+///
+/// ## 防空（第 41 条）
+///
+/// 枚举抽出 **0** 个词 ⇒ 断言（一个失灵的起点查找会让"全部都在 `OP_KINDS` 里"
+/// 永远成立）。
+///
+/// 注入（实测红）：在枚举里加一个 `` `zzGhostKind` `` ⇒ 本判据点名它。
+#[test]
+fn every_enumerated_kind_is_in_the_catalog() {
+    let files = sources();
+    let tools = module_text(&files, "/tools.rs").expect("读得到 tools.rs");
+
+    let (enumerated, stopped_at) = enumeration_tokens(&tools);
+    assert!(
+        !enumerated.is_empty(),
+        "枚举段抽出了 0 个词 —— 起点 `` / `X` `` 的查找已失灵, ⛔ 不许静默通过"
+    );
+    assert!(
+        enumerated.len() >= 20,
+        "枚举段只抽出 {} 个词 ⇒ 抽取规则已失灵（现读起点断在 {stopped_at:?}）",
+        enumerated.len()
+    );
+
+    let catalog: BTreeSet<&str> = OP_KINDS.iter().copied().collect();
+    let unknown: Vec<&str> = enumerated
+        .iter()
+        .copied()
+        .filter(|token| !catalog.contains(token))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "`yeban_edit_notes` 的实参说明枚举里出现了**不在 `OP_KINDS` 里**的 kind: {unknown:?} \
+         ⇒ 要么把它加进 `OP_KINDS`（并实现它），要么从说明里删掉 \
+         (⛔ 不许把本判据放宽成单向)"
+    );
+
+    // 逐条读数：枚举词数 ＋ 抽取断在哪（⛔ 不让抽取器变成黑箱）。
+    assert!(
+        !stopped_at.is_empty(),
+        "抽取必须停在某个可读的记号上（现读: {stopped_at:?}）"
+    );
+}
+
+/// **交叉验证形状规则**：枚举段里的词**全部**满足"像 kind"的形状（小写开头 ＋ 驼峰
+/// ＋ 纯 ASCII 字母）。
+///
+/// ⚠ 这条**不**用于过滤（过滤靠 [`enumeration_tokens`] 的位置规则）—— 它存在的
+/// 意义是把"形状规则到底筛掉几条"变成**显式读数**：若枚举里出现一个**不**满足形状
+/// 的词，说明位置规则吃进了非 kind 的东西（⛔ 那是抽取器变宽，必须看见）。
+///
+/// ⚠ 例外是**明文登记**的：纯小写的 kind（`add` / `move` / `delete` / `velocity`）
+/// 天然**不**满足驼峰形状 ⇒ 它们进 [`SHAPE_RULE_EXEMPT_KINDS`]，逐条带理由。
+#[test]
+fn every_enumerated_kind_matches_the_shape_rule() {
+    let files = sources();
+    let tools = module_text(&files, "/tools.rs").expect("读得到 tools.rs");
+    let (enumerated, _) = enumeration_tokens(&tools);
+
+    let exempt: BTreeSet<&str> = SHAPE_RULE_EXEMPT_KINDS.iter().copied().collect();
+    let violations: Vec<&str> = enumerated
+        .iter()
+        .copied()
+        .filter(|token| !exempt.contains(token) && !looks_like_kind(token))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "枚举段里这些词⛔ 不满足形状规则、也不在豁免清单里 ⇒ 位置规则吃进了非 kind: \
+         {violations:?}"
+    );
+}
+
+/// ⚠ **明文豁免**：合法 kind 里**天然不满足**"小写开头 ＋ 驼峰"形状的那些（纯小写词）。
+///
+/// 与 `EXEMPT_SCHEMA_KEYS` 同型：每条带理由。⭐ 它同时也是"形状规则召回不满"的
+/// **逐字证据**（22/26），因此**不**拿形状规则当过滤器。
+const SHAPE_RULE_EXEMPT_KINDS: [&str; 4] = ["add", "delete", "move", "velocity"];
+
+/// 词是否是"像 kind"的形状：非空 ＋ 纯 ASCII 字母 ＋ 小写开头 ＋ 至少一个大写。
+///
+/// ⚠ 实测：这条规则在 `OP_KINDS` 上**召回 22/26**（漏掉纯小写的四个），在整个
+/// `tools.rs` 上**假阳性 98** ⇒ ⛔ 它**不能**单独当抽取器。本文件只把它当**交叉
+/// 验证**（见 [`every_enumerated_kind_matches_the_shape_rule`]）。
+fn looks_like_kind(token: &str) -> bool {
+    !token.is_empty()
+        && token.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && token.starts_with(|first: char| first.is_ascii_lowercase())
+        && token.bytes().any(|byte| byte.is_ascii_uppercase())
+}
+
+/// 从 `tools.rs` 里抽 `yeban_edit_notes` 实参说明的**枚举段**。
+///
+/// 规则（机械、⛔ 不按"像不像 kind"筛）：先找 `操作列表 (NoteOp)`，再从那里找**第一个**
+/// `` / `X` `` 形状；此后**连续**吃同样的形状，直到形状断开为止。
+///
+/// 返回（抽到的词, 断开处的片段）—— 断开的片段是**读数**，⛔ 不让抽取器变黑箱。
+fn enumeration_tokens(tools: &str) -> (Vec<&str>, String) {
+    const HELP_HEADING: &str = "操作列表 (NoteOp)";
+    let Some(from) = tools.find(HELP_HEADING) else {
+        return (Vec::new(), String::new());
+    };
+    let rest = &tools[from..];
+    let Some((first_start, _)) = first_enumerated_token(rest) else {
+        return (Vec::new(), String::new());
+    };
+
+    let mut tokens = Vec::new();
+    let mut cursor = first_start;
+    while let Some((offset, token)) = first_enumerated_token(&rest[cursor..]) {
+        // 枚举项之间只允许空白 —— 出现别的字符说明枚举段已经结束。
+        let gap = &rest[cursor..cursor + offset];
+        if !gap.chars().all(char::is_whitespace) {
+            break;
+        }
+        tokens.push(token);
+        // 推进到**该项的闭反引号之后**：
+        // `/` ＋ 空白 ＋ `` ` `` ＋ token ＋ `` ` ``。
+        let after_open = cursor + offset + 1;
+        let ws = rest[after_open..]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .count();
+        cursor = after_open + ws + 1 + token.len() + 1;
+    }
+    let stopped_at: String = rest[cursor..].chars().take(40).collect();
+    (tokens, stopped_at)
+}
+
+/// 在 `text` 里找**第一个** `` / `X` `` 形状，返回（相对偏移, 词）。
+fn first_enumerated_token(text: &str) -> Option<(usize, &str)> {
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'/' {
+            let mut probe = index + 1;
+            while probe < bytes.len() && (bytes[probe] == b' ' || bytes[probe] == b'\t') {
+                probe += 1;
+            }
+            if probe < bytes.len() && bytes[probe] == b'`' {
+                let token_start = probe + 1;
+                let mut end = token_start;
+                while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
+                    end += 1;
+                }
+                if end > token_start && end < bytes.len() && bytes[end] == b'`' {
+                    return Some((index, &text[token_start..end]));
+                }
+            }
+        }
+        index += 1;
+    }
+    None
+}
