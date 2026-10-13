@@ -44,10 +44,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::ModelError;
-use crate::ids::EntityId;
+use crate::ids::{AssetHash, EntityId};
 use crate::music::MidiNote;
 use crate::project::{
-    AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, ClipPoolEntry,
+    AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, ClipPoolEntry,
     DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SceneV3, SectionV3, TrackV3, TransportConfig,
     YebanProjectV1,
 };
@@ -396,6 +396,51 @@ pub enum Op {
         /// 修改后的署名。
         new_author: String,
     },
+    /// 声明（或更新）一条**资产索引**（`[MODEL-AST-007]` / `[MUST-GATE-014]`）。
+    ///
+    /// ⚠ 本变体是**三处已登记缺口的共同根**：在它之前，模型**没有任何 `Op` 能写
+    /// `YebanProjectV1::assets`** ⇒ 于是 ① 资产导入链零调用者、② **工程层**许可判定
+    /// 无落点、③ [`AssetMetadata::license`] / [`AssetMetadata::media_kind`] 只写不读。
+    /// `crates/yeban-mcp/src/domain/import_audio.rs` 的注释逐字记着这件事：
+    /// 「工程 assets 索引（许可/原路径/字节数）同样没有 `Op` ⇒ 本工具只登记 `clip_pool`
+    /// 条目，不写索引（needs-3）」。
+    ///
+    /// ## 形状：照 [`Op::SetScene`]（⛔ 不是照 `SetAuthor` / `SetTempo`）
+    ///
+    /// 三条先例里，`SetScene` / `SetSection` 用 `old_*: Option<T>` **同时编码"创建/更新"**，
+    /// 而 `SetAuthor` / `SetTempo` 的 `old_*` 是裸值（只编码"更新"）。本变体选前者，理由：
+    ///
+    /// - ⭐ **"声明"天然含创建**：资产是**内容寻址**的（键 = `AssetHash`），第一份声明就是
+    ///   创建，之后同哈希再声明就是更新（改许可/原路径）。若用裸值，就**没法表达创建**
+    ///   —— 而创建恰恰是今天最缺的那一步。
+    /// - ⭐ **身份与载荷分离**：`asset_hash` 是**键**（`BTreeMap` 的键），`AssetMetadata::hash`
+    ///   是载荷里的**同一身份**。与 `SetScene` 的 `scene_id` / `SceneV3::id` 完全同型 ⇒
+    ///   前置条件里要做一次"键 == 载荷身份"的一致性检查。
+    /// - ⚠ `SetAuthor` / `SetTempo` 那两个先例的载荷**没有内部身份**（`String` / `f64`），
+    ///   所以它们不需要这个检查 —— 它们不适用于本变体。
+    SetAsset {
+        /// 资产身份（内容寻址的 CAS 键，即 `assets` 映射的键）[MODEL-AST-007]。
+        asset_hash: AssetHash,
+        /// 声明**之前**该资产的索引项；`None` 表示**本工程尚未声明过**它（创建）。
+        old_asset: Option<AssetMetadata>,
+        /// 声明**之后**的索引项（含许可、原路径、字节数、介质种类）。
+        new_asset: AssetMetadata,
+    },
+    /// 删除一条资产索引（自带撤销载荷）。与 [`Op::RemoveScene`] 同因补齐。
+    ///
+    /// ⚠ 它**不是**可选件：[`Op::SetAsset`] 的 `old_asset: None` 编码"创建"，而创建态的
+    /// 逆操作**必须**是删除（见 `structural_inverse` 的说明）⇒ 少了本变体，
+    /// "创建一个资产"这件事就**撤销不了**。
+    ///
+    /// ⚠ 它**只**删除 `assets` 里的索引项，⛔ **不碰归档里的资产字节**（字节在
+    /// `ProjectArchive` 里，由容器层拥有）—— 与 [`Op::RemoveClip`] 只删 `clip_pool`
+    /// 条目同理。
+    RemoveAsset {
+        /// 资产身份（内容寻址的 CAS 键）。
+        asset_hash: AssetHash,
+        /// 删除**之前**的索引项（撤销用）。
+        previous_asset: AssetMetadata,
+    },
     /// 设置音轨**独奏**。
     ///
     /// 与 [`Op::SetTrackMute`] 同族：[`TrackV3::solo`] 也是 `bool`。
@@ -600,6 +645,8 @@ impl Op {
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
             Self::SetAuthor { .. } => "SetAuthor",
+            Self::SetAsset { .. } => "SetAsset",
+            Self::RemoveAsset { .. } => "RemoveAsset",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
@@ -944,6 +991,38 @@ impl Op {
                 }
                 // ② 文档现值必须逐位等于 `old_bpm`（⛔ 不信调用方声明的旧状态）。
                 if !same_f64(doc.bpm, *old_bpm) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::RemoveAsset {
+                asset_hash,
+                previous_asset,
+            } => {
+                // ⚠ `AssetHash` **不是** `Copy` ⇒ 用 `get` 的 `Option` 判定，⛔ 不移动它。
+                // ⚠ 引用缺失**复用** `OpStateMismatch`（与 `SetScene` 的"键 == 载荷身份"
+                // 失败同一口径）：新加一个 `ModelError` 变体会牵动 `yeban-mcp` 的
+                // `code_for_model` 穷举 match 与契约码表 —— 那是**另一条线**的范围。
+                let Some(current) = doc.assets.get(asset_hash) else {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                };
+                if current != previous_asset {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetAsset {
+                asset_hash,
+                old_asset,
+                new_asset,
+            } => {
+                // 身份一致性：键（`assets` 的键）必须等于载荷里的身份，与 `SetScene` 同型。
+                if new_asset.hash != *asset_hash {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // 陈旧载荷必被拒：文档现值必须**逐字段**等于声明的 `old_asset`
+                // （`None` = 本工程尚未声明过它）。
+                if doc.assets.get(asset_hash) != old_asset.as_ref() {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
@@ -1304,6 +1383,34 @@ impl Op {
                 old_author: new_author.clone(),
                 new_author: old_author.clone(),
             },
+            // ⭐ **照 [`Op::SetSection`] 的先例**（⛔ 不是纯交换）：`old_asset` 为 `None`
+            // 表示"创建"，而**创建态没有可交换的旧值** ⇒ 逆操作**必须是删除变体**。
+            // `SetScene`/`RemoveScene` 与 `SetSection`/`RemoveSection` 成对存在，正因为
+            // 同一条道理。⚠ 若在这里用"两个 `Some` 互绕"来凑一个纯交换，就会**伪造一份
+            // 载荷**（把"没有旧值"偷换成"旧值等于新值"）⇒ 撤销会把资产留在文档里。
+            Self::SetAsset {
+                asset_hash,
+                old_asset,
+                new_asset,
+            } => match old_asset {
+                Some(previous) => Self::SetAsset {
+                    asset_hash: asset_hash.clone(),
+                    old_asset: Some(new_asset.clone()),
+                    new_asset: previous.clone(),
+                },
+                None => Self::RemoveAsset {
+                    asset_hash: asset_hash.clone(),
+                    previous_asset: new_asset.clone(),
+                },
+            },
+            Self::RemoveAsset {
+                asset_hash,
+                previous_asset,
+            } => Self::SetAsset {
+                asset_hash: asset_hash.clone(),
+                old_asset: None,
+                new_asset: previous_asset.clone(),
+            },
             // 纯结构化取反：只交换"前 / 后"两个布尔。
             Self::SetTrackMute {
                 track_id,
@@ -1597,6 +1704,20 @@ impl Op {
                 doc.author = new_author.clone();
                 Ok(())
             }
+            // 只取走那**一个**索引项：⛔ 不碰 `clip_pool`、⛔ 不碰归档里的字节。
+            Self::RemoveAsset { asset_hash, .. } => {
+                doc.assets.remove(asset_hash);
+                Ok(())
+            }
+            // 只写那**一个**索引项：⛔ 不碰 `clip_pool`、⛔ 不碰资产字节（字节在归档里）。
+            Self::SetAsset {
+                asset_hash,
+                new_asset,
+                ..
+            } => {
+                doc.assets.insert(asset_hash.clone(), new_asset.clone());
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -1861,7 +1982,7 @@ mod tests {
     use super::*;
     use crate::music::splitmix64;
     use crate::project::{
-        ClipContent, ClipPoolEntry, LaunchQuantization, LoopConfig, ProjectAudioConfig,
+        ClipContent, ClipPoolEntry, LaunchQuantization, LoopConfig, MediaKind, ProjectAudioConfig,
         RoutingKind, TrackKind,
     };
     use proptest::prelude::*;
@@ -1955,6 +2076,11 @@ mod tests {
     }
 
     /// 一份"五脏俱全"但体积很小的文档，供属性测试与逐变体测试使用。
+    /// 夹具音频片段引用的资产身份（内容寻址键）。
+    fn kick_asset() -> crate::ids::AssetHash {
+        crate::ids::AssetHash::of_bytes(b"kick")
+    }
+
     fn fixture_document() -> YebanProjectV1 {
         let f = fixture();
         let mut lead = TrackV3 {
@@ -2045,6 +2171,18 @@ mod tests {
                 ),
             ]),
             master_bus_track_id: f.master,
+            // ⚠ 夹具的音频片段引用了 `b"kick"` 这份资产 ⇒ 它的**索引项**必须存在，
+            // 否则 `RemoveAsset` 的代表实例没有可删的对象（也让夹具更接近真实文档）。
+            assets: BTreeMap::from([(
+                kick_asset(),
+                AssetMetadata {
+                    hash: kick_asset(),
+                    original_path: "samples/kick.wav".to_owned(),
+                    byte_len: 1_024,
+                    media_kind: MediaKind::Audio,
+                    license: "CC0-1.0".to_owned(),
+                },
+            )]),
             routing_graph: crate::project::RoutingGraph {
                 nodes: vec![f.master, f.lead, f.bass],
                 edges: BTreeMap::from([(
@@ -2329,6 +2467,29 @@ mod tests {
             Op::SetAuthor {
                 old_author: String::new(),
                 new_author: "Yeban Author".to_owned(),
+            },
+            // 资产声明（**创建**：夹具里尚未声明过这份新哈希 ⇒ `old_asset: None`）。
+            Op::SetAsset {
+                asset_hash: crate::ids::AssetHash::of_bytes(b"snare"),
+                old_asset: None,
+                new_asset: AssetMetadata {
+                    hash: crate::ids::AssetHash::of_bytes(b"snare"),
+                    original_path: "samples/snare.wav".to_owned(),
+                    byte_len: 2_048,
+                    media_kind: MediaKind::Audio,
+                    license: "CC-BY-4.0".to_owned(),
+                },
+            },
+            // 资产删除（夹具里已登记的 `b"kick"`）。
+            Op::RemoveAsset {
+                asset_hash: kick_asset(),
+                previous_asset: AssetMetadata {
+                    hash: kick_asset(),
+                    original_path: "samples/kick.wav".to_owned(),
+                    byte_len: 1_024,
+                    media_kind: MediaKind::Audio,
+                    license: "CC0-1.0".to_owned(),
+                },
             },
             Op::SetMacro {
                 track_id: f.lead,
@@ -3281,7 +3442,11 @@ mod tests {
     /// `SetAutomationLane` / `RemoveAutomationLane`（27 → 29），欠账归零。
     /// 这份清单保留为空数组，是为了让"契约落后于枚举"这件事**仍有地方可登记**
     /// （下一次谁加了变体又来不及改契约，就往这里加一个名字，棘轮会替他记住）。
-    const PENDING_CONTRACT_OPS: [&str; 0] = [];
+    /// ⚠ **本轮非空**（第一次重新启用这份欠账）：新增的 `SetAsset` / `RemoveAsset`
+    /// 是**资产声明**那两个变体，集成者用 `scripts/dev/gen-ops-schema-branches.py`
+    /// 从枚举**现读**并重生成 `properties.op.oneOf` ⇒ 补齐后本清单**必须清空**，
+    /// 否则 `op_variants_match_ops_schema_exactly` 会一直红并指名"清空本清单"。
+    const PENDING_CONTRACT_OPS: [&str; 2] = ["SetAsset", "RemoveAsset"];
 
     /// [`PENDING_CONTRACT_OPS`] 的集合形态。
     fn pending_contract_ops() -> std::collections::BTreeSet<String> {
@@ -5664,5 +5829,150 @@ mod tests {
             (MIN_BPM..=MAX_BPM).contains(&doc.bpm),
             "④ 合法文档的 bpm 必在区间内 ⇒ `-0.0 == 0.0` 那条差异不可达"
         );
+    }
+
+    /// `[MODEL-AST-007]` / `[MUST-GATE-014]`：**资产声明可改、可删、可逆**。
+    ///
+    /// 五条读数：
+    /// ① **创建**（`old_asset: None`）只往 `assets` 加**一个**键，且⛔ 不碰 `clip_pool`；
+    /// ② 创建的**结构逆**必须是 `RemoveAsset`（⛔ 不是"两个 `Some` 互绕"）⇒ 撤销后键消失、
+    ///    文档**逐字节**回到创建前；
+    /// ③ **更新**（`old_asset: Some(现值)`）的结构逆是 `SetAsset` 本身（纯交换）⇒
+    ///    撤销后逐字节回原位；
+    /// ④ 陈旧的 `old_asset`（等于别的值 / 该有却没有）⇒ `OpStateMismatch`，且文档不动；
+    /// ⑤ `RemoveAsset`：现值不符、以及删一个**不存在**的键 ⇒ 都 `OpStateMismatch`。
+    ///
+    /// ⚠ 判据用 `structural_inverse()`（纯函数、⛔ 不读文档）来判"逆是哪个**变体**"，
+    /// 用 `apply_inverse(&doc)` 来判"往返逐字节"。两者**不能混**：`invert(&doc)` 会拿
+    /// **施加后**的文档去校验逆的前置条件（见 `invert` 的正文），因此它只适用于
+    /// "已经施加过"的时刻 —— 这与本判据"先看逆变体"的意图不同。
+    #[test]
+    fn set_asset_is_reversible_and_rejects_a_stale_old_value() {
+        let new_hash = crate::ids::AssetHash::of_bytes(b"snare");
+        let new_asset = AssetMetadata {
+            hash: new_hash.clone(),
+            original_path: "samples/snare.wav".to_owned(),
+            byte_len: 2_048,
+            media_kind: MediaKind::Audio,
+            license: "CC-BY-4.0".to_owned(),
+        };
+
+        // ① 创建：只加一个键，⛔ 不碰 clip_pool。
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let clips_before = doc.clip_pool.clone();
+        let create = Op::SetAsset {
+            asset_hash: new_hash.clone(),
+            old_asset: None,
+            new_asset: new_asset.clone(),
+        };
+        create.precondition(&doc).expect("创建的前置条件必须成立");
+
+        // ② 结构逆必须是 RemoveAsset。
+        let structural = create.structural_inverse().expect("创建必须有结构逆");
+        assert!(
+            matches!(structural, Op::RemoveAsset { .. }),
+            "创建的**结构逆**必须是 RemoveAsset（⛔ 不是两个 Some 互绕），实际 {structural:?}"
+        );
+
+        create.apply(&mut doc).expect("必须能创建");
+        assert_eq!(doc.assets.get(&new_hash), Some(&new_asset));
+        assert_eq!(doc.clip_pool, clips_before, "创建资产 ⛔ 不得碰 clip_pool");
+        assert_eq!(doc.assets.len(), 2, "夹具原有 1 条 + 新建 1 条");
+        create.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert!(!doc.assets.contains_key(&new_hash), "撤销后键必须消失");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "创建后撤销必须**逐字节**回到原位"
+        );
+
+        // ③ 更新：结构逆仍是 SetAsset；往返逐字节。
+        let original = doc
+            .assets
+            .get(&kick_asset())
+            .expect("夹具必须有 kick 资产")
+            .clone();
+        let mut updated = original.clone();
+        updated.license = "CC-BY-4.0".to_owned();
+        let before_update = serde_json::to_vec(&doc).expect("s");
+        let update = Op::SetAsset {
+            asset_hash: kick_asset(),
+            old_asset: Some(original.clone()),
+            new_asset: updated.clone(),
+        };
+        update.precondition(&doc).expect("更新的前置条件必须成立");
+        assert!(
+            matches!(update.structural_inverse(), Ok(Op::SetAsset { .. })),
+            "更新的结构逆仍是 SetAsset"
+        );
+        update.apply(&mut doc).expect("必须能更新");
+        assert_eq!(doc.assets.get(&kick_asset()), Some(&updated));
+        update.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before_update,
+            "更新后撤销必须**逐字节**回到原位"
+        );
+
+        // ④ 陈旧的 old_asset 被拒，且文档不动。
+        for stale in [
+            Op::SetAsset {
+                asset_hash: kick_asset(),
+                old_asset: Some(updated.clone()),
+                new_asset: new_asset.clone(),
+            },
+            Op::SetAsset {
+                asset_hash: new_hash.clone(),
+                old_asset: Some(new_asset.clone()),
+                new_asset: new_asset.clone(),
+            },
+        ] {
+            let snapshot = serde_json::to_vec(&doc).expect("s");
+            let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+            assert!(
+                matches!(error, ModelError::OpStateMismatch { .. }),
+                "必须报 OpStateMismatch, 实际 {error:?}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&doc).expect("s"),
+                snapshot,
+                "被拒之后文档必须逐字节不动"
+            );
+        }
+
+        // ⑤ RemoveAsset：键不存在、以及现值不符，都必须被拒。
+        let missing = Op::RemoveAsset {
+            asset_hash: new_hash.clone(),
+            previous_asset: new_asset.clone(),
+        };
+        assert!(
+            matches!(
+                missing.precondition(&doc),
+                Err(ModelError::OpStateMismatch { .. })
+            ),
+            "删除一个不存在的键必须被拒（⛔ 不静默成功）"
+        );
+        let wrong_previous = Op::RemoveAsset {
+            asset_hash: kick_asset(),
+            previous_asset: new_asset.clone(),
+        };
+        assert!(
+            matches!(
+                wrong_previous.precondition(&doc),
+                Err(ModelError::OpStateMismatch { .. })
+            ),
+            "previous_asset 与现值不符必须被拒"
+        );
+        let good = Op::RemoveAsset {
+            asset_hash: kick_asset(),
+            previous_asset: original.clone(),
+        };
+        good.precondition(&doc).expect("正确的删除必须成立");
+        let snapshot = serde_json::to_vec(&doc).expect("s");
+        good.apply(&mut doc).expect("必须能删除");
+        assert!(!doc.assets.contains_key(&kick_asset()));
+        good.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(serde_json::to_vec(&doc).expect("s"), snapshot);
     }
 }
