@@ -551,6 +551,11 @@
               "minLength": 1,
               "description": "片段显示名。**不得为空串**(D46 收口): 空名字会登记出一条无从辨认的 clip_pool 条目。"
             },
+            "license": {
+              "type": "string",
+              "minLength": 1,
+              "description": "资产许可标识 (逐条可查, MUST-GATE-014; 例如 CC0-1.0 或 CC-BY-4.0)。**必填** —— 索引是许可留痕, 缺它则导入被拒 (`licenseRequired`), 且拒绝发生在读盘之前。"
+            },
             "assetHash": {
               "type": "string",
               "description": "已在会话 CAS 池 (assets/{sha256}) 里的资产哈希; 与 path 恰好给一个"
@@ -597,7 +602,8 @@
             }
           },
           "required": [
-            "name"
+              "name",
+              "license"
           ]
         },
         "yeban_export_diagnostics": {
