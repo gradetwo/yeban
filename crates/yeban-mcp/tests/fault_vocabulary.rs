@@ -205,11 +205,32 @@ fn test_region(text: &str) -> String {
     out.join("\n")
 }
 
-/// 扫出 `"reason": "<字面量>"` 的全部字面量。
-fn reasons_in(text: &str) -> BTreeSet<String> {
+/// [`reasons_in`] 的一次扫描结果。
+///
+/// ⚠ 为什么**必须**把"拒掉"也报出来：字符集过滤（见下）是**静默**的 ——
+/// 一个带 `-` / `.` / `/` 的 reason 值会被**直接丢掉**，而不是变红。
+/// 今天之所以还不算事故，只因为那条判据是**双向**的（丢一条 ⇒ `removed` 非空）；
+/// 但"今天恰好被另一条判据兜住"⛔ 不等于"这里不静默"。
+///
+/// ⭐ 本仓口径：**代理失效 ⇒ 加强**（⛔ 不是放宽）。因此这里**保留**字符集，
+/// 只把"拒掉了几条、分别是什么"变成**显式读数**，由判据
+/// `the_reason_character_filter_rejects_nothing` 断言为 0。
+struct Reasons {
+    /// 通过字符集过滤的 reason（判据比对用的那个集合）。
+    accepted: BTreeSet<String>,
+    /// 被字符集**拒掉**的 reason 字面量（合法字母数字下划线之外）＋ 出处 ＋ 原因。
+    rejected: Vec<(String, String, &'static str)>,
+}
+
+/// 扫出 `"reason": "<字面量>"` 的全部字面量，并**分别**报出接受与拒掉的数量。
+///
+/// 过滤规则（**保留**，⛔ 不放宽）：值必须非空、且全部落在 `[A-Za-z0-9_]`。
+/// 被它拒掉的值进 [`Reasons::rejected`]，⛔ 不再静默丢弃。
+fn reasons_in(source: &str, text: &str) -> Reasons {
     let bytes = text.as_bytes();
     let needle = b"\"reason\"";
-    let mut out = BTreeSet::new();
+    let mut accepted = BTreeSet::new();
+    let mut rejected: Vec<(String, String, &'static str)> = Vec::new();
     let mask = skipped_offsets(text);
     let mut from = 0usize;
     while let Some(offset) = find(&bytes[from..], needle) {
@@ -234,13 +255,24 @@ fn reasons_in(text: &str) -> BTreeSet<String> {
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
                 {
-                    out.insert(value.to_owned());
+                    accepted.insert(value.to_owned());
+                } else {
+                    // ⚠ 这里曾经是**静默丢弃**。现在它进显式读数，由判据断言为 0。
+                    rejected.push((
+                        value.to_owned(),
+                        source.to_owned(),
+                        if value.is_empty() {
+                            "emptyReasonValue"
+                        } else {
+                            "reasonValueOutsideTheAlphanumericUnderscoreSet"
+                        },
+                    ));
                 }
             }
         }
         from = start;
     }
-    out
+    Reasons { accepted, rejected }
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -251,13 +283,137 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .find(|index| &haystack[*index..*index + needle.len()] == needle)
 }
 
+// ⭐ **显式豁免**：允许被字符集过滤**拒掉**的 reason 形态（每条带理由）。
+///
+/// 与 `EXEMPT_SCHEMA_KEYS` / `KNOWN_UNREACHABLE` 同型：⛔ 不许为了让判据变绿而
+/// **放宽** [`reasons_in`] 的字符集 —— 那是把守卫减弱。若将来真出现一种**合法**的
+/// 被拒形态（例如某个理由故意带 `.`），就在这里逐条登记并写明理由。
+///
+/// 今天**为空**：生产区与测试区的 reason 值全部落在 `[A-Za-z0-9_]`。
+const EXEMPT_REJECTED_REASONS: [(&str, &str); 6] = [
+    // ⚠ **实测是 6 条 distinct / 7 次出现**（`织体过密` 出现 2 次）—— 逐条带理由
+    // （读数是判据自己 `eprintln!` 报出来的，⛔ 不是我猜的）。
+    //
+    // ⭐ **它们全都不是故障词表里的词**，而是**另一个面**的数据；字符集把它们排除在
+    // 词表之外是**正确**的（若把它们塞进 `GOLDEN_REASONS`，那是把非词表字符串污染词表）。
+    // ⚠ 且其中 6 条**已经**落在**摘要面**里（`reason_surface_in` 不按字符集过滤）⇒
+    // 改它们会被摘要判据抓住；因此本清单**不是**唯一的保护。
+    (
+        "no-history",
+        "`yeban_undo` 的**响应数据** `reason`（`domain/mod.rs`）：这是「为什么不能撤销」的\
+         回答，⛔ 不是故障词表的词。它已在**摘要面**里。",
+    ),
+    (
+        "no-redo",
+        "`yeban_redo` 的**响应数据** `reason`（`domain/mod.rs`）：同上，⛔ 不是词表的词。\
+         它已在**摘要面**里。",
+    ),
+    (
+        "织体过密",
+        "**测试夹具**里 `yeban_reject_proposal` 的 `reason` **入参**（`domain/mod.rs` 的测试区）：\
+         这是调用方送进来的**数据**，不是本层产出的词。它已在**摘要面**里。",
+    ),
+    (
+        "反悔",
+        "同上的测试夹具数据（`domain/mod.rs` 的测试区）。它已在**摘要面**里。",
+    ),
+    (
+        "内存状态与磁盘一致; 传 force: true 可强制落盘",
+        "`yeban_save_project` 的一条**诊断人话**（`domain/mod.rs`）：它带 `;` 与空格 ⇒ \
+         落在字符集之外。⛔ 不是词表的词，但它已在**摘要面**里。",
+    ),
+    (
+        "低于 BS.1770 的绝对门限 Γa 的读数不可达; 高于 0 LUFS 在 PCM 里不可达",
+        "`domain/render.rs` 里一条**诊断人话**：带 `;` 与空格 ⇒ 落在字符集之外。\
+         ⛔ 不是词表的词，但它已在**摘要面**里。",
+    ),
+];
+
+/// ⭐ 字符集过滤**不允许**静默丢东西：被 [`reasons_in`] 拒掉的 reason 必须为 **0**。
+///
+/// ## 为什么必须有它
+///
+/// `reasons_in` 只接受"非空 ＋ 全在 `[A-Za-z0-9_]`"的值 —— 一个带 `-` / `.` / `/`
+/// 的 reason 会被**直接丢掉**。今天之所以没变成事故，只因为
+/// `the_reason_vocabulary_is_the_published_list` 是**双向**的（丢一条 ⇒ `removed`
+/// 非空）；⚠ 但"今天恰好被另一条判据兜住"⛔ 不等于"这里不静默"：本判据把
+/// **拒掉的数量**变成**显式读数**并断言为 0。
+///
+/// ⛔ 正解是把**静默**变**响亮**，⛔ 不是放宽字符集（那是减弱守卫）。
+///
+/// 注入（实测红）：在任意一条 reason 字面量里插一个 `.` ⇒ 这里报出那一条并变红。
+#[test]
+fn the_reason_character_filter_rejects_nothing() {
+    let files = read_rust_sources(&[manifest_dir().join("src")]);
+    assert!(!files.is_empty(), "必须真的读到源码");
+
+    let mut rejected: Vec<(String, String, &'static str)> = Vec::new();
+    let mut accepted_total = 0usize;
+    for (_path, text) in &files {
+        // ⚠ 生产区与测试区**都**要扫：过滤在两处是同一条代码路径。
+        for region in [production_region(text), test_region(text)] {
+            let scanned = reasons_in(_path, &region);
+            accepted_total += scanned.accepted.len();
+            rejected.extend(scanned.rejected);
+        }
+    }
+
+    // ⚠ "抽不到东西"必须响亮失败（第 41 条）：一个失灵的扫描器会让下面"拒掉 0 条"
+    // 永远成立。这里断言**接受侧**真的非空。
+    assert!(
+        accepted_total > 0,
+        "接受侧抽出了 0 条 reason —— 扫描路径已失灵, ⛔ 不许静默通过"
+    );
+
+    let exempt: std::collections::BTreeSet<&str> = EXEMPT_REJECTED_REASONS
+        .iter()
+        .map(|(value, _)| *value)
+        .collect();
+    for (value, reason) in EXEMPT_REJECTED_REASONS {
+        assert!(
+            !reason.trim().is_empty(),
+            "豁免项 `{value}` 必须带**非空**理由"
+        );
+    }
+    // 豁免清单自己不得重复（重复会让"实测 distinct 条数"与清单长度对不上）。
+    assert_eq!(
+        exempt.len(),
+        EXEMPT_REJECTED_REASONS.len(),
+        "豁免清单不得有重复项"
+    );
+    let unexplained: Vec<&(String, String, &'static str)> = rejected
+        .iter()
+        .filter(|(value, _, _)| !exempt.contains(value.as_str()))
+        .collect();
+    assert!(
+        unexplained.is_empty(),
+        "被**字符集**静默拒掉的 reason（⛔ 不是放宽字符集, 而是修值或显式豁免）: {unexplained:?} \
+         ⇒ 接受 {accepted_total} 条 / 拒掉 {} 条",
+        rejected.len()
+    );
+
+    // 逐条读数：实测被拒的 **distinct** 值必须**恰好**等于豁免清单（多一条少一条都红）。
+    let rejected_distinct: std::collections::BTreeSet<&str> = rejected
+        .iter()
+        .map(|(value, _, _)| value.as_str())
+        .collect();
+    assert_eq!(
+        rejected_distinct.len(),
+        EXEMPT_REJECTED_REASONS.len(),
+        "被字符集拒掉的 **distinct** 值必须恰好等于豁免清单 \
+         (接受 {accepted_total} 条 / 拒掉 {} 次出现 / {} 个 distinct)",
+        rejected.len(),
+        rejected_distinct.len()
+    );
+}
+
 #[test]
 fn the_reason_vocabulary_is_the_published_list() {
     let files = read_rust_sources(&[manifest_dir().join("src")]);
     assert!(!files.is_empty(), "必须真的读到源码");
     let mut found = BTreeSet::new();
-    for (_path, text) in &files {
-        found.extend(reasons_in(&production_region(text)));
+    for (path, text) in &files {
+        found.extend(reasons_in(path, &production_region(text)).accepted);
     }
     let golden: BTreeSet<String> = GOLDEN_REASONS.iter().map(|r| (*r).to_owned()).collect();
     let added: Vec<&String> = found.difference(&golden).collect();
@@ -276,8 +432,8 @@ fn every_reason_is_asserted_somewhere() {
     let tests = read_rust_sources(&[manifest_dir().join("tests")]);
     // 判据侧 = 单元判据区 + 集成判据文件（**宽松**：出现字面量即算"提到"）。
     let mut mentioned: BTreeSet<String> = BTreeSet::new();
-    for (_path, text) in &src {
-        mentioned.extend(reasons_in(&test_region(text)));
+    for (path, text) in &src {
+        mentioned.extend(reasons_in(path, &test_region(text)).accepted);
         for reason in GOLDEN_REASONS {
             if test_region(text).contains(&format!("\"{reason}\"")) {
                 mentioned.insert(reason.to_owned());
@@ -1335,7 +1491,13 @@ fn the_reason_scanners_skip_comments_and_string_intervals() {
     let sample = "fn f() {\n    // 文档里写 \"reason\": \"fakeInComment\",\n    \
                   let s = \"示例: \\\"reason\\\": \\\"fakeInString\\\"\";\n    \
                   let data = serde_json::json!({ \"reason\": \"realOne\" });\n}\n";
-    let found = reasons_in(sample);
+    let scanned = reasons_in("<sample>", sample);
+    assert!(
+        scanned.rejected.is_empty(),
+        "合成样本里的 reason 都落在字符集内, ⛔ 不该有被拒的: {:?}",
+        scanned.rejected
+    );
+    let found = scanned.accepted;
     assert_eq!(
         found.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["realOne"],
