@@ -2882,58 +2882,61 @@ fn shift_space_and_space_are_the_same_transport_path_today() {
     ));
 }
 
-/// 判据（**本票的端到端 ③：如实登记，不许假实现**）：录音键今天按下去**什么都不发生**。
+/// 判据（**本票的端到端 ③：录音键真的接线**）：真指针点录音键 ⇒ **起录**（`recording` 置位、
+/// 落盘路径被创建）⇒ 再点一次 ⇒ **停录**（`recording` 归零）；而**引擎读数一位不动**。
 ///
-/// ⚠ 这不是"忘了接线"，是**能力不存在**。逐条证据（本判据在运行时可观测的那一半 ＋
-/// `src/elements.rs` 的 `the_record_button_has_no_click_handler_and_recording_is_unimplemented`
-/// 在源码侧钉住另一半）：
+/// ## 为什么这条判据从"什么都不发生"改成了"真的接线"
 ///
-/// - **规范**：`docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md` §10.1 有**明文**要求
-///   `[ARCH-REC-001]`（"点击录音 Arm 按钮后，音频线程直接从声卡物理输入捕获 PCM 流
-///   并写入预分配的无锁环形缓冲区…"）—— 规范定义了它，实现一处都没有；
-/// - **引擎**：`crates/yeban-engine/src/transport.rs` 的 `TransportState::Recording`
-///   是**预留档**，注释逐字写着"`Recording` 已**预留**但本切片不产生它：录音路径
-///   （`ARCH-REC-*`）还没有实现…状态机里没有入口"；`yeban-engine/src/lib.rs` 同款
-///   （"录音（`TransportState::Recording` 已预留但没有入口）"）；
-/// - **模型**：`TrackV3`（`crates/yeban-model/src/project.rs`）没有"已挂载 / 输入源"字段，
-///   `grep -rn 'armed' crates/yeban-model/src` 命中 **0**；
-/// - **MCP**：`grep -n 'record\|Record' crates/yeban-mcp/src/tools.rs` 命中 **0**
-///   （17 个工具里没有录音工具）；
-/// - **界面**：`ui/transport.slint` 的 `rec_area` 是 `TouchArea`，**没有** `clicked`；
-///   该文件也**没有** `callback record`，`ui/app.slint` 也**不转发**它。
+/// 它的上一版（`pressing_the_record_button_today_changes_nothing`）逐字写着：**"谁真接了录音，
+/// 就把这行连同该判据一并改成真实状态源"**（`ui/transport.slint` 里那段注释也同款）。
+/// 本票按那句话的指示**改名 ＋ 反转断言**：⛔ 不是"把判据放松"，而是**能力真的到了**。
 ///
-/// **本判据不做的两件事**（刻意的）：① 不把录音键删掉、也不改它的像素 ——
-/// `transport-record-button` 同时在语义注册表、`DEFAULT_VIEW_MUST_HAVE` 与
-/// `VISIBLE_SINGLETONS` 里，删它要重录 5 张 Linux 基准（那是另一票）；
-/// ② 不写一条"点了会置位 `checked`"的假实现 —— 那是负责人明令禁止的假绿。
+/// ## 仍然成立的诚实边界（⛔ 不假装硬件已验证）
+///
+/// 引擎的 `TransportState::Recording` 仍**不可达**（本票⛔ 不碰 `yeban-engine`）：录音走的是
+/// [`crate::record_wav::Recorder`] 的**独立会话**，⛔ 不是引擎走带的一个档。而**真声卡输入
+/// 仍是欠件** —— 接收侧已接好，但今天**没有**设备输入在喂它 ⇒ 录到的是**静音**（一条合法的
+/// 24-bit WAV）。本判据只证明"按钮 ⇒ 会话 ⇒ 落盘"这一条链真的通了。
 ///
 /// ## 怎么变红
 ///
 /// | 注入 | 位置 | 现象 |
 /// | :--- | :--- | :--- |
-/// | 给 `rec_area` 加 `clicked` 并接一个空回调 | `ui/transport.slint` | 源码判据（`src/elements.rs`）红 |
+/// | 去掉 `rec_area` 的 `clicked` | `ui/transport.slint` | 本判据的"起录后 `checked` 必须为 `Some(true)`"红 ＋ 源码判据红 |
 /// | 让引擎真的能进 `Recording` | `crates/yeban-engine/**` | ② 步的"从没有 `Recording`"红 |
 #[test]
-fn pressing_the_record_button_today_changes_nothing() {
+fn pressing_the_record_button_starts_and_stops_a_session() {
     let mut harness = TransportHarness::new();
     let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+
+    // ⭐ 落盘路径走 `YEBAN_UI_RECORD_WAV_PATH`（本 crate 的既有环境变量族）。
+    let record_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/tmp/mod-app-record-button")
+        .join(format!("take-{}.wav", std::process::id()));
+    std::fs::create_dir_all(record_path.parent().expect("有父目录")).expect("建判据目录");
+    let _ = std::fs::remove_file(&record_path);
+    // SAFETY: 本判据进程里**只有这一组**测试读 `YEBAN_UI_RECORD_WAV_PATH`，且写入发生在
+    // 任何后台录音线程**之前**（录音线程只在按下按钮时起）；`set_var` 在 Rust 2024 起是
+    // `unsafe fn`（"改环境变量会和 `getenv` 竞态"），故此处显式声明安全前提。
+    unsafe {
+        std::env::set_var("YEBAN_UI_RECORD_WAV_PATH", &record_path);
+    }
 
     // ---- 起点读数：引擎 + 日志 + 控件**自己**的勾选位 ----
     let before = harness.reading();
     let journal_before = harness.journal().len();
+    // ⚠ `tree()` 是**快照** ⇒ 读数前必须 `refresh_tree`（否则永远读到构造时那一份，
+    // 那会让"必须有状态"的判据永远看 false）。
+    harness.port.refresh_tree(None).expect("刷树");
     let checked_before = harness
         .port
         .tree()
         .find_by_id("transport-record-button")
-        .expect("录音键必须在运行时控件树里（语义注册表与 DEFAULT_VIEW_MUST_HAVE 都要求它）")
+        .expect("录音键必须在运行时控件树里")
         .checked;
-    assert_eq!(
-        checked_before,
-        Some(false),
-        "录音键今天声明了 `accessible-checkable: true` 且宿主**没有**写者 ⇒ 恒为 `false`"
-    );
+    assert_eq!(checked_before, Some(false), "起录之前必须是未置位");
 
-    // ---- ① 真实指针事件：按下 + 抬起录音键 ----
+    // ---- ① 真实指针事件：按下 + 抬起录音键 ⇒ **起录** ----
     harness
         .port
         .dispatch_pointer_down(
@@ -2942,36 +2945,80 @@ fn pressing_the_record_button_today_changes_nothing() {
             16.0,
             yeban_ui_test_port::PointerButton::Left,
         )
-        .expect("真实指针按下录音键（控件在树里且几何非空）");
+        .expect("真实指针按下录音键");
     harness
         .port
         .dispatch_pointer_up(yeban_ui_test_port::PointerButton::Left)
         .expect("真实指针释放录音键");
 
-    // ---- ② 字面读数：一位都没动 ----
-    let after = harness.reading();
-    assert_eq!(
-        after, before,
-        "按下录音键**不得**改变引擎读数（今天没有任何录音能力）"
+    harness.port.refresh_tree(None).expect("刷树");
+    let recording_live = ui.get_recording();
+    let checked_recording = harness
+        .port
+        .tree()
+        .find_by_id("transport-record-button")
+        .expect("录音键仍在树里")
+        .checked;
+    assert!(
+        recording_live,
+        "⭐ 按下之后根属性 `recording` 必须为真（宿主是唯一写者）"
     );
     assert_eq!(
-        harness.journal().len(),
-        journal_before,
-        "按下录音键**不得**产生任何引擎命令"
+        checked_recording,
+        Some(true),
+        "⭐ 按下之后必须**置位** —— 宿主是 `recording` 的唯一写者"
     );
-    assert!(!ui.get_playing(), "录音键不得顺手改播放态");
+
+    // ---- ② 再按一次 ⇒ **停录**，且**落盘**了一个文件 ----
+    harness
+        .port
+        .dispatch_pointer_down(
+            "transport-record-button",
+            16.0,
+            16.0,
+            yeban_ui_test_port::PointerButton::Left,
+        )
+        .expect("第二次按下");
+    harness
+        .port
+        .dispatch_pointer_up(yeban_ui_test_port::PointerButton::Left)
+        .expect("第二次释放");
+
+    harness.port.refresh_tree(None).expect("刷树");
+    assert!(
+        !ui.get_recording(),
+        "⭐ 停录之后根属性 `recording` 必须为假"
+    );
     let checked_after = harness
         .port
         .tree()
         .find_by_id("transport-record-button")
         .expect("录音键仍在树里")
         .checked;
-    assert_eq!(
-        checked_after, checked_before,
-        "录音键的勾选位必须一动不动（没有宿主写者 ⇒ 不会因为点击而置位）"
+    assert_eq!(checked_after, Some(false), "⭐ 停录之后必须**归零**");
+    assert!(
+        record_path.is_file(),
+        "⭐ 停录必须**真的**在 {} 落一个文件",
+        record_path.display()
+    );
+    let bytes = std::fs::metadata(&record_path).expect("读文件").len();
+    assert!(
+        bytes > 44,
+        "落下的必须是一个有样本的 WAV（> 44 字节头），实测 {bytes}"
     );
 
-    // ---- ③ `Recording` 这一档今天**没有入口**：把 `EngineHost` 公开的走带命令全发一遍 ----
+    // ---- ③ 诚实边界：**引擎读数一位不动**（录音⛔ 不是引擎走带的一个档）----
+    let after = harness.reading();
+    assert_eq!(
+        after, before,
+        "录音键**不得**改变引擎读数（录音走独立会话，⛔ 不是 TransportState::Recording）"
+    );
+    assert_eq!(
+        harness.journal().len(),
+        journal_before,
+        "录音键**不得**产生任何引擎走带命令"
+    );
+    assert!(!ui.get_playing(), "录音键不得顺手改播放态");
     let observed: Vec<(&str, TransportState)> = {
         let mut engine = harness.engine.borrow_mut();
         vec![
@@ -2985,14 +3032,21 @@ fn pressing_the_record_button_today_changes_nothing() {
         observed
             .iter()
             .all(|(_, state)| *state != TransportState::Recording),
-        "`TransportState::Recording` 今天必须**不可达**（引擎没有任何录音入口）：{observed:?}"
+        "`TransportState::Recording` 今天必须**不可达**（本票⛔ 不碰引擎）：{observed:?}"
     );
     observe(&format!(
-        "[transport-e2e] ⑤ 真指针点击录音键 ⇒ 引擎读数一位未变（状态={:?} 位置={} tick，\
-         日志恒 {} 条），`accessible-checked` 恒 {:?}；`EngineHost` 四条公开走带命令的状态读数={:?} \
-         —— 没有一条是 `Recording`（能力不存在，如实登记，不假实现）",
-        after.state, after.position_ticks, journal_before, checked_after, observed,
+        "[transport-e2e] ③ 真指针点录音键 ⇒ 起录/停录各一次（`checked`: {:?} ⇒ {:?} ⇒ {:?}）；\
+         落盘 {} 字节于 {}；引擎读数一位未变（状态={:?}，日志恒 {} 条）\
+         —— 录音走独立会话，`TransportState::Recording` 仍不可达（真声卡输入仍是欠件）",
+        checked_before,
+        checked_recording,
+        checked_after,
+        bytes,
+        record_path.display(),
+        after.state,
+        journal_before,
     ));
+    let _ = std::fs::remove_file(&record_path);
 }
 
 /// 判据（`[UI-A11Y-003]` §7.3 第 4 条 ① / `TEST-SPEC-005` 用例 ①）：

@@ -2127,6 +2127,55 @@ pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
         }
     });
+
+    // ⭐ **录音键**（`[ARCH-REC-001]`）：起录 / 停录。会话状态**归这个闭包所有**
+    // （`Recorder` 持 `RecordSender`；⛔ `Rc` 不跨线程 ⇒ 不放进 `EngineHost`）。
+    //
+    // ⚠ **如实登记**：接收侧已经接好（建环 ⇒ `push_block` ⇒ `RecordDrain` ⇒ 落盘），
+    // 但今天**没有**设备输入在喂它 ⇒ 产品按下去录到的是**静音**（一条合法的 24-bit WAV），
+    // ⛔ **不是**"从声卡录到了声音"。设备输入流属 `[ARCH-REC-001]` 的下一片。
+    let recorder = Rc::new(RefCell::new(crate::record_wav::Recorder::new()));
+    let record_ui = slint::ComponentHandle::as_weak(ui);
+    ui.on_toggle_record(move || {
+        let mut recorder = recorder.borrow_mut();
+        if recorder.is_recording() {
+            let stopped = recorder.stop();
+            match &stopped {
+                Ok(report) => eprintln!("[yeban-app] {}", report.summary()),
+                Err(error) => eprintln!("[yeban-app] 停录失败: {error}"),
+            }
+            if let Some(ui) = record_ui.upgrade() {
+                ui.set_recording(false);
+                apply_record_outcome(&ui, stopped.err().map(|error| error.to_string()));
+            }
+        } else {
+            let path = crate::record_wav::default_record_path();
+            let options = crate::record_wav::RecordOptions::default();
+            let started = recorder.start(&path, &options);
+            match &started {
+                Ok(()) => eprintln!("[yeban-app] 开始录音 ⇒ {}", path.display()),
+                Err(error) => eprintln!("[yeban-app] 起录失败: {error}"),
+            }
+            if let Some(ui) = record_ui.upgrade() {
+                ui.set_recording(started.is_ok());
+                apply_record_outcome(&ui, started.err().map(|error| error.to_string()));
+            }
+        }
+    });
+}
+
+/// ⭐ 把录音结果写进界面（⭐ 失败**出声**：⛔ 不静默）。
+///
+/// ⚠ 界面今天**没有**录音状态文本控件 ⇒ 失败走 `stderr`（与 `host` 的其它模块回调同款：
+/// 一个"起录失败"的假成功按钮比没有按钮更糟）。成功不打印在这里 —— `stop` 的
+/// `RecordReport::summary` 已经打了一行。
+fn apply_record_outcome(ui: &MainWindow, error: Option<String>) {
+    if let Some(reason) = error {
+        eprintln!("[yeban-app] 录音: {reason}");
+    }
+    // ⚠ 界面侧现在只有 `recording` 一个录音属性；这里读一次，保证"写了就有读者"
+    // （⛔ 不让一个没人读的属性悄悄腐烂）。将来加状态文本时，落点在这里。
+    let _ = ui.get_recording();
 }
 
 /// 把**纯视图态**的四条界面回调接到宿主上（`ADR-0004` 同款口径：视图态、零 schema、重启即失）。

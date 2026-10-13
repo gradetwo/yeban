@@ -2390,35 +2390,49 @@ mod tests {
     /// 处置它（改成不可勾选，或真接录音）会动 `accessible-checkable` —— 那要么是**能力**裁决，
     /// 要么是**另一票**（可能连带重录基准），因此本票只如实登记。
     #[test]
-    fn the_record_button_has_no_click_handler_and_recording_is_unimplemented() {
+    fn the_record_button_has_a_click_handler_and_a_wired_record_callback() {
         let transport = code_only(
             &std::fs::read_to_string(ui_dir().join("transport.slint")).expect("读 transport.slint"),
         );
 
-        // ① `rec_area` 留在源文件里，而且**没有** `clicked`。
-        //    它今天只在按下时换底色（`background: rec_area.pressed ? …`），松手什么都不发生。
+        // ① `rec_area` 留在源文件里，**并且有** `clicked`（本轮接上了 `[ARCH-REC-001]`）。
+        //
+        // ⚠ 本条**从"不得有 `clicked`"反转成"必须有"**：上一版的注释逐字写着
+        // "谁真接了录音就一并更新本判据"（`ui/transport.slint` 同款）。反转的是**能力**，
+        // ⛔ 不是把判据放松。
         let body = touch_area_body(&transport, "rec_area").unwrap_or_else(|| {
             panic!("`rec_area` 必须留在源文件里（`ui/` ↔ 注册表的双向契约要它）")
         });
         assert!(
-            !body.contains("clicked"),
-            "`rec_area` 今天不得有 `clicked` —— 录音能力一处都不存在 \
-             （`[ARCH-REC-001]` 只有规范、没有实现）；谁真接了录音就一并更新本判据\n{body}"
+            body.contains("clicked"),
+            "`rec_area` 必须有 `clicked` —— 录音键是**动作**键，悬空就是假控件\n{body}"
+        );
+        assert!(
+            body.contains("toggle-record"),
+            "按下必须落到 `root.toggle-record()`（⛔ 不是空回调）\n{body}"
         );
 
-        // ② 回调**不声明**、也**不转发**。
+        // ② 回调**声明**且**转发**（缺一就是假契约）。
         assert!(
-            !transport.contains("callback record"),
-            "`transport.slint` 今天不得声明 `callback record` —— 声明了却接不上就是假契约"
+            transport.contains("callback toggle-record()"),
+            "`transport.slint` 必须声明 `callback toggle-record()`"
         );
         let app =
             code_only(&std::fs::read_to_string(ui_dir().join("app.slint")).expect("读 app.slint"));
-        for spelling in ["record =>", "record=>"] {
-            assert!(
-                !app.contains(spelling),
-                "`app.slint` 今天不得转发 `{spelling}` —— 谁接上了就一并更新本判据"
-            );
-        }
+        assert!(
+            app.contains("callback toggle-record()"),
+            "`app.slint` 必须声明 `callback toggle-record()`（根上的转发口）"
+        );
+        assert!(
+            app.contains("toggle-record =>"),
+            "`app.slint` 必须把 `toggle-record` 转给宿主（⛔ 不转发＝界面自己吃掉了按键）"
+        );
+        // ③ 落盘的路径只有一个真相源：`YEBAN_UI_RECORD_WAV_PATH` 环境变量族（见
+        //    `record_wav::default_record_path`）。⛔ 界面不许自己写死一个路径。
+        assert!(
+            !transport.contains(".wav"),
+            "`transport.slint` 不得出现 `.wav` —— 路径由宿主从环境变量族取，界面不认识文件"
+        );
 
         // ③ 语义 ID **仍然登记**：登记与接线是两件事。这样"顺手把控件删掉"也会走到这里，
         //    逼作者显式改判据（删或接，都要留痕；删还要重录 5 张 Linux 基准）。

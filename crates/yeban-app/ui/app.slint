@@ -257,6 +257,9 @@ export component MainWindow inherits Window {
     in property <bool> compact: false;
 
     in-out property <bool> playing: false;
+    /// ⭐ 录音键的显示态（`[ARCH-REC-001]`）：唯一写者 = `host::wire_transport`
+    /// （起录 ⇒ true、停录 ⇒ false）。⛔ 不是工程数据（`MODEL-ISO-001` 的挥发性层）。
+    in-out property <bool> recording: false;
     in-out property <bool> arrangement-view: true;
     in-out property <int> console-tab: 0;
     in-out property <bool> console-expanded: true;
@@ -303,6 +306,8 @@ export component MainWindow inherits Window {
 
     // 键盘/菜单入口: src/input.rs 判定后由宿主调用对应的 invoke_*。
     callback toggle-play();
+    /// ⭐ 录音键（`[ARCH-REC-001]`）：按下 ⇒ 起录 / 停录。
+    callback toggle-record();
     // 走带的"停止"（停住 + 回到起点）。它与 `toggle-play` 一样由 Rust 侧接线，
     // 界面**不自己翻转**任何走带状态 —— 见 `src/host.rs` 的 `wire_transport`。
     callback stop();
@@ -706,6 +711,11 @@ export component MainWindow inherits Window {
 
         // ---------------------------------------------------------- 48px 顶栏
         Transport {
+            // ⚠ 录音键是**子组件**上的控件 ⇒ `recording` 必须**双向绑**：宿主写的是
+            // `root.recording`，而 `accessible-checked` 读的是子组件里那一份。
+            // 单向（`recording: root.recording;`）会让宿主写的值**到不了**按钮 ⇒
+            // 那正是"控件存在 ≠ 回调接线"的同族假象。
+            recording <=> root.recording;
             playing: root.playing;
             timecode: root.timecode;
             bpm-display: root.bpm-display;
@@ -722,6 +732,10 @@ export component MainWindow inherits Window {
             }
             stop => {
                 root.stop();
+            }
+            // ⭐ 录音键：原样转给宿主（⛔ 界面不写 `recording` —— 那是宿主的状态）。
+            toggle-record => {
+                root.toggle-record();
             }
             // `ROAD-M4-008`：保存按钮**原样**转给宿主 —— 界面不写盘、不改 `save-status`
             // （那个属性只有宿主一个写者，见 `host::apply_save_outcome`）。
