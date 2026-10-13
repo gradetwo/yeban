@@ -238,6 +238,21 @@ impl Slot {
 #[derive(Debug, Clone)]
 pub struct VoicePool {
     slots: Vec<Slot>,
+    /// 空闲槽位下标，**降序**排列：`pop()` 以 O(1) 拿到最小下标，
+    /// 与原 `slots.iter().position(|slot| !slot.active)` 的「第一个空闲槽」语义
+    /// 在**所有**分配 / 回收序列下完全一致（不只是初始填充阶段）。
+    ///
+    /// 不变量：
+    /// - `free_list.len() + active_count() == capacity` 恒成立；
+    /// - 元素互不重复，且每个元素对应的槽位必为 `!active`；
+    /// - 容量在构造时 `with_capacity` 预留，`push` 永不重分配（实时安全），
+    ///   `release_slot` 的有序插入只有 `memmove`、不触碰堆。
+    ///
+    /// 唯一的 `pop` 点是 [`VoicePool::note_on_in_group`]；`push` 只发生在
+    /// slot 从 active → idle 的两条路径：[`VoicePool::finish`] 与
+    /// [`VoicePool::process`] 的淡出回收。steal 路径复用的是 active 槽位，
+    /// 不经过 free_list。
+    free_list: Vec<u32>,
     order_counter: u64,
     steal_count: u64,
     last_stolen: Option<VoiceHandle>,
@@ -265,8 +280,13 @@ impl VoicePool {
     /// 内部构造：容量已经过校验 / 夹取，**不会失败**（因此 `Default` 不需要 `unwrap`）。
     fn build(capacity: usize, sample_rate: f32) -> Self {
         let capacity = capacity.clamp(1, MAX_VOICE_CAPACITY);
+        // 降序：`pop()` 先拿到 0，再 1、2……，与原 `position(!active)` 的
+        // "第一个空闲槽"顺序一致。`with_capacity` 保证此后 `push` 永不重分配。
+        let mut free_list = Vec::with_capacity(capacity);
+        free_list.extend((0..capacity as u32).rev());
         Self {
             slots: (0..capacity).map(|_| Slot::free(1)).collect(),
+            free_list,
             order_counter: 0,
             steal_count: 0,
             last_stolen: None,
@@ -340,10 +360,21 @@ impl VoicePool {
         level_db: f32,
         group: u32,
     ) -> NoteOnOutcome {
-        if let Some(index) = self.slots.iter().position(|slot| !slot.active) {
-            return NoteOnOutcome::Started(
-                self.activate(index, note, velocity, level_db, group, 0),
+        if let Some(index) = self.free_list.pop() {
+            // 同步性哨兵（debug）：free_list 给出的槽位必须是 idle 的。
+            // 若触发，说明某条回收路径漏了 push / 重复 push。
+            debug_assert!(
+                !self.slots[index as usize].active,
+                "note_on: free_list gave active slot {index}"
             );
+            return NoteOnOutcome::Started(self.activate(
+                index as usize,
+                note,
+                velocity,
+                level_db,
+                group,
+                0,
+            ));
         }
         // 池已满：确定性窃取。（容量 ≥ 1 保证此处必然存在 active 槽位。）
         let index = self.select_victim();
@@ -551,28 +582,77 @@ impl VoicePool {
     }
 
     /// 立即释放槽位（渲染器确认包络已结束时使用）。槽位状态归零、代数递增。
+    ///
+    /// 释放的同时把下标推回 [`VoicePool::free_list`]（见 [`VoicePool::release_slot`]）。
+    /// [`VoicePool::slot_mut`] 要求槽位 active：已释放的句柄会拿到
+    /// `StaleVoiceHandle` 而**不会**重复 push，因此同一槽位不可能被 push 两次。
     pub fn finish(&mut self, handle: VoiceHandle) -> Result<(), SfzError> {
+        let index = handle.index;
         let slot = self.slot_mut(handle)?;
         let next = slot.generation.wrapping_add(1);
         *slot = Slot::free(next);
+        self.release_slot(index);
         Ok(())
+    }
+
+    /// 把刚变回 idle 的槽位下标推回空闲链表。
+    ///
+    /// 保持 [`VoicePool::free_list`] 降序（`pop()` 拿到最小下标），
+    /// 二分找插入点 + `memmove`：**无堆分配**（容量已在构造时预留）。
+    ///
+    /// 调用者必须保证：`index < capacity`、对应槽位已经是 `!active`、
+    /// 且该下标当前不在链表里（重复 push 会让同一槽位被分配两次）。
+    /// 前两条由调用点（`finish` / `process` 的回收分支）保证；
+    /// 第三条在 debug 构建中断言。
+    fn release_slot(&mut self, index: u32) {
+        debug_assert!(
+            (index as usize) < self.slots.len(),
+            "release_slot: index {index} out of bounds"
+        );
+        debug_assert!(
+            !self.slots[index as usize].active,
+            "release_slot: slot {index} is still active"
+        );
+        debug_assert!(
+            !self.free_list.contains(&index),
+            "release_slot: slot {index} pushed twice"
+        );
+        let pos = self.free_list.partition_point(|&x| x > index);
+        self.free_list.insert(pos, index);
     }
 
     /// 推进 `frames` 个采样：推进窃取淡入，并回收淡出已完成的槽位。
     ///
-    /// **零分配**，实时安全。
+    /// **零分配**，实时安全。淡出走完的槽位在此归零，
+    /// 其下标同步推回 [`VoicePool::free_list`]（见 [`VoicePool::release_slot`]）。
+    /// 归零后槽位即为 `!active`，后续 `process` 不会再次回收它，
+    /// 因此每个槽位每次 active 周期最多被 push 一次。
     pub fn process(&mut self, frames: u32) {
-        for slot in &mut self.slots {
-            if !slot.active {
-                continue;
-            }
-            slot.fade_in_remaining = slot.fade_in_remaining.saturating_sub(frames);
-            if slot.retiring {
-                slot.fade_remaining = slot.fade_remaining.saturating_sub(frames);
-                if slot.fade_remaining == 0 {
-                    let next = slot.generation.wrapping_add(1);
-                    *slot = Slot::free(next);
+        // 下标循环而非 `iter_mut`：回收分支要调 `&mut self` 的 `release_slot`，
+        // 每次迭代结束时当次借用即释放，无借用冲突。
+        for index in 0..self.slots.len() {
+            let reclaimed = {
+                let slot = &mut self.slots[index];
+                if !slot.active {
+                    false
+                } else {
+                    slot.fade_in_remaining = slot.fade_in_remaining.saturating_sub(frames);
+                    if slot.retiring {
+                        slot.fade_remaining = slot.fade_remaining.saturating_sub(frames);
+                        if slot.fade_remaining == 0 {
+                            let next = slot.generation.wrapping_add(1);
+                            *slot = Slot::free(next);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
                 }
+            };
+            if reclaimed {
+                self.release_slot(index as u32);
             }
         }
     }

@@ -10,7 +10,7 @@
 # 合计 32 处：literal 7 ／ variable 25；其中 **twin_point_risk 0 处**
 src/comb.rs|431|variable|&c.feedback(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/comb.rs|432|variable|&c.damp(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/compressor.rs|1384|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/compressor.rs|1398|variable|&gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/convolution_reverb.rs|1511|literal|ConvolutionReverb|by_design|Debug 形状断言（在 #[test] 内做子串匹配）：按设计
 src/drums/mod.rs|1335|variable|&kit.kick.tune_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1336|variable|&kit.kick.glide_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
@@ -21,14 +21,14 @@ src/drums/mod.rs|1341|variable|&kit.snare.tone_ratio|variable_needle|needle 非�
 src/drums/mod.rs|1354|variable|&kit.clap.burst_spacing_s|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1576|variable||index| machine.debug_slot(*index|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/drums/mod.rs|1848|variable||index| whole[*index].to_bits(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/meter.rs|1554|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/meter.rs|1558|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/meter.rs|1997|literal|san.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|1998|literal|sup.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|1999|literal|const.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2000|literal|.peak|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2001|literal|.rms|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
-src/meter.rs|2002|literal|.is_sane|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|1570|variable|&worst_gain|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/meter.rs|1574|variable|&gain_at_four_ninths|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/meter.rs|2013|literal|san.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2014|literal|sup.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2015|literal|const.|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2016|literal|.peak|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2017|literal|.rms|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
+src/meter.rs|2018|literal|.is_sane|by_design|前后缀分类器（starts_with/ends_with/strip_*）：按设计，⛔ 不冒充等值匹配
 src/noise.rs|313|variable|&hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/noise.rs|384|variable|&x|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/noise.rs|397|variable|&unit|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

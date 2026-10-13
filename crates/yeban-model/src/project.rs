@@ -54,7 +54,7 @@
 //! 文档（省略了默认值）会被本读取器拒绝 —— **宽容读与省略写必须成对取消**。
 //! 逐项复审表见 `docs/ledger/model-no-compat-notes.md`。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1410,12 +1410,11 @@ impl RoutingGraph {
     ///
     /// 违反上述任一条件即返回对应的 [`ModelError`]。
     pub fn validate(&self) -> Result<(), ModelError> {
-        let mut seen: Vec<&EntityId> = Vec::with_capacity(self.nodes.len());
+        let mut seen: BTreeSet<EntityId> = BTreeSet::new();
         for node in &self.nodes {
-            if seen.contains(&node) {
+            if !seen.insert(*node) {
                 return Err(ModelError::DuplicateEntityId { id: *node });
             }
-            seen.push(node);
         }
         for (key, edge) in &self.edges {
             if *key != edge.id {
@@ -1425,7 +1424,7 @@ impl RoutingGraph {
                 });
             }
             for endpoint in [edge.source_node, edge.destination_node] {
-                if !self.nodes.contains(&endpoint) {
+                if !seen.contains(&endpoint) {
                     return Err(ModelError::RoutingNodeNotFound { id: endpoint });
                 }
             }

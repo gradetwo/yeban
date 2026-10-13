@@ -345,6 +345,28 @@ pub fn assert_loopback_peer(address: SocketAddr) -> Result<(), HttpError> {
     }
 }
 
+/// 在累积的头字节中找**第一个**头终止符（[`HEAD_TERMINATOR`] 或 `b"\n\n"`），
+/// 返回终止符末尾（不含）的位置。
+///
+/// 与逐字节 `head.ends_with(…)` 判据等价：逐字节版在终止符的最后一个字节到达时停下，
+/// 也就是流中第一个完整终止符的末尾；两种终止符不会互相嵌套（`\r\n\r\n` 里没有相邻的 `\n\n`），
+/// 因此按位置取最早出现者即等价。
+fn find_head_terminator(head: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + 1 < head.len() {
+        if head[i] == b'\n' && head[i + 1] == b'\n' {
+            return Some(i + 2);
+        }
+        if i + HEAD_TERMINATOR.len() <= head.len()
+            && &head[i..i + HEAD_TERMINATOR.len()] == HEAD_TERMINATOR
+        {
+            return Some(i + HEAD_TERMINATOR.len());
+        }
+        i += 1;
+    }
+    None
+}
+
 /// 解析请求头（`head` 是分隔符之前的部分，允许 CRLF 或 LF 行尾）。
 ///
 /// # Errors
@@ -752,13 +774,13 @@ impl HttpServer {
         let response = match Self::read_head_request(stream) {
             // 方法与端点先判: 否则一个不带 `Content-Length` 的 `GET` 会先撞上 411,
             // 让人以为"服务器要求 body"而不是"服务器不接受这个方法"。
-            Ok(mut request) => {
+            Ok((mut request, leftover)) => {
                 if request.method != SUPPORTED_METHOD {
                     method_not_allowed(&request.method)
                 } else if !matches!(request.path(), MCP_PATH | "/") {
                     unknown_path(&request.target)
                 } else {
-                    match Self::read_body(stream, &mut request) {
+                    match Self::read_body(stream, &mut request, leftover) {
                         Ok(()) => self.respond(&request),
                         Err(error) => error.outcome(),
                     }
@@ -773,14 +795,22 @@ impl HttpServer {
     }
 
     /// 只读头并解析出请求行 / 头（体留空）。
-    fn read_head_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> {
-        let head_bytes = Self::read_head(stream)?;
+    ///
+    /// 一并返回读头时多读到的体字节（见 [`Self::read_head`]）：调用方必须先消费它们再读 socket。
+    fn read_head_request(stream: &mut TcpStream) -> Result<(HttpRequest, Vec<u8>), HttpError> {
+        let (head_bytes, leftover) = Self::read_head(&mut *stream)?;
         let head = String::from_utf8_lossy(&head_bytes).into_owned();
-        parse_head(&head)
+        parse_head(&head).map(|request| (request, leftover))
     }
 
     /// 按 `Content-Length` 读体（**先判长度再分配**）。
-    fn read_body(stream: &mut TcpStream, request: &mut HttpRequest) -> Result<(), HttpError> {
+    ///
+    /// `leftover` 是读头时同一批读到的体字节：先消费它们，不足的部分再从 socket 补。
+    fn read_body(
+        stream: &mut TcpStream,
+        request: &mut HttpRequest,
+        leftover: Vec<u8>,
+    ) -> Result<(), HttpError> {
         let length = request
             .parse_content_length()?
             .ok_or(HttpError::MissingContentLength)?;
@@ -792,33 +822,60 @@ impl HttpServer {
         }
         if length > 0 {
             let mut body = vec![0_u8; length];
-            stream
-                .read_exact(&mut body)
-                .map_err(|source| HttpError::Io { source })?;
+            let from_leftover = leftover.len().min(length);
+            body[..from_leftover].copy_from_slice(&leftover[..from_leftover]);
+            if from_leftover < length {
+                stream
+                    .read_exact(&mut body[from_leftover..])
+                    .map_err(|source| HttpError::Io { source })?;
+            }
             request.body = String::from_utf8_lossy(&body).into_owned();
         }
         Ok(())
     }
 
-    /// 逐字节读到头 / 体分隔符（上限 [`MAX_REQUEST_HEAD_BYTES`]）。
-    fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, HttpError> {
+    /// 批量读到头 / 体分隔符（上限 [`MAX_REQUEST_HEAD_BYTES`]）。
+    ///
+    /// 每次 `read` 取 4 KiB 以减少 syscall 次数；返回 `(head, leftover)`：
+    /// `head` 恰好截止于第一个头终止符末尾，`leftover` 是同一批读到的、
+    /// 终止符之后的字节（体），调用方必须先消费它，否则流水线写入的体会被吞掉。
+    /// 判据在累积 buffer 上检查，跨 read 边界的 [`HEAD_TERMINATOR`] 仍能识别，
+    /// 与逐字节版逐字节等价（见 [`find_head_terminator`]）。
+    ///
+    /// ⚠ 只要求 `Read`（⛔ 不要 `TcpStream`）：`read` 的**分片边界**是这条路径上
+    /// 唯一无法在集成测试里稳定复现的输入 ⇒ 判据用一个**桩 reader** 精确回放
+    /// 分片（见 `long_head_with_body_in_the_same_read_is_not_rejected_by_a_fake_reader`）。
+    fn read_head<R: std::io::Read + ?Sized>(
+        stream: &mut R,
+    ) -> Result<(Vec<u8>, Vec<u8>), HttpError> {
         let mut head: Vec<u8> = Vec::with_capacity(256);
-        let mut byte = [0_u8; 1];
+        let mut buf = [0_u8; 4096];
         loop {
-            match stream.read(&mut byte) {
-                Ok(0) => break,
-                Ok(_) => {
-                    head.push(byte[0]);
-                    if head.len() > MAX_REQUEST_HEAD_BYTES {
-                        return Err(HttpError::HeadTooLarge {
-                            limit: MAX_REQUEST_HEAD_BYTES,
-                        });
-                    }
-                    if head.ends_with(HEAD_TERMINATOR) || head.ends_with(b"\n\n") {
-                        break;
-                    }
+            let n = stream
+                .read(&mut buf)
+                .map_err(|source| HttpError::Io { source })?;
+            if n == 0 {
+                break;
+            }
+            head.extend_from_slice(&buf[..n]);
+            // ⚠ **先找终止符、再判上限**（与旧的逐字节版同序）：上限只管**头**。
+            // 一次读是 4 KiB，同一批里可能已经带上**体**的前缀 ⇒ 若先按
+            // `head.len()` 判上限，一个合法的长头会被 431 误拒（实测注入：头 13000
+            // 字节 + 体 5000 字节、读在最后一批把两者连续读回 ⇒ 旧版 200、先判上限的版本 431）。
+            if let Some(end) = find_head_terminator(&head) {
+                if end > MAX_REQUEST_HEAD_BYTES {
+                    return Err(HttpError::HeadTooLarge {
+                        limit: MAX_REQUEST_HEAD_BYTES,
+                    });
                 }
-                Err(source) => return Err(HttpError::Io { source }),
+                let leftover = head.split_off(end);
+                return Ok((head, leftover));
+            }
+            // 还没见到终止符 ⇒ 累积的每一个字节都是头字节，超出上限与旧的逐字节版同判。
+            if head.len() > MAX_REQUEST_HEAD_BYTES {
+                return Err(HttpError::HeadTooLarge {
+                    limit: MAX_REQUEST_HEAD_BYTES,
+                });
             }
         }
         if head.is_empty() {
@@ -826,7 +883,7 @@ impl HttpServer {
                 detail: "连接在收到任何字节之前就关闭了".to_owned(),
             });
         }
-        Ok(head)
+        Ok((head, Vec::new()))
     }
 
     /// 接受**一个**连接并处理它（判据与嵌入式用法；循环见 [`HttpServer::serve_forever`]）。
@@ -1304,6 +1361,123 @@ mod tests {
                 "要么回 431, 要么在对端停读后连接直接关闭: {raw}"
             );
         });
+    }
+
+    /// 头的上限只管**头**：一个**合法**的头，只因"体的前缀和它在同一批读里回来"
+    /// 就被判 `431`，是错的。
+    ///
+    /// ⭐ 判据用**桩 reader**精确回放分片 —— `read` 的分片边界是这条路径上唯一
+    /// 无法在集成测试里稳定复现的输入（真 socket 上"第 4 批恰好只回 1 字节"不可控）。
+    ///
+    /// 触发条件（三个都要满足，缺一不红）：
+    /// 1. 头**合法**：终止符落在 `(12_288, 16_384]`；
+    /// 2. 前 4 批累积 `12_289`（第 4 批只回 1 字节）⇒ 还没见到终止符、也没越上限；
+    /// 3. 第 5 批一次读回"终止符 + 体" ⇒ 累积 `16_385 > 16_384`。
+    ///
+    /// 注入（实测红）：把「找终止符」与「判上限」对调 ⇒ 本判据拿到 `431`。
+    /// 该注入**不会**让 `oversized_head_is_rejected_by_the_stream_reader` 变红 ——
+    /// 那条只喂"根本没有终止符"的头。
+    #[test]
+    fn long_head_with_body_in_the_same_read_is_not_rejected_by_a_fake_reader() {
+        /// 按**固定分片**回放字节的桩 reader（`read` 每次最多给一片）。
+        struct Chunked {
+            chunks: Vec<Vec<u8>>,
+            next: usize,
+            offset: usize,
+        }
+        impl std::io::Read for Chunked {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                // ⚠ 必须**结转**上一片没喂完的尾巴：`out` 可能比当前片小，
+                // 丢掉尾巴会让"不许吞字节"的对账假红（我踩过一次）。
+                while let Some(chunk) = self.chunks.get(self.next) {
+                    if self.offset < chunk.len() {
+                        let take = (chunk.len() - self.offset).min(out.len());
+                        out[..take].copy_from_slice(&chunk[self.offset..self.offset + take]);
+                        self.offset += take;
+                        return Ok(take);
+                    }
+                    self.next += 1;
+                    self.offset = 0;
+                }
+                Ok(0)
+            }
+        }
+
+        // ⚠ 先造出**真实**的头（token 长度随夹具变化 ⇒ 目标长度必须在替换之后按实测算）。
+        let body = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"pad\":\"{}\"}}",
+            "b".repeat(3_500)
+        );
+        let head_prefix = format!(
+            "POST {MCP_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: {}\r\n\
+             Content-Length: {}\r\nX-Pad: ",
+            bearer(&loopback_server()),
+            body.len()
+        );
+        // 头的终止符落在 `(12_288, 16_384]` 里：取 13_002。
+        const HEAD_END_TARGET: usize = 13_002;
+        let pad = HEAD_END_TARGET - head_prefix.len() - 4;
+        let head = format!("{head_prefix}{}\r\n\r\n", "a".repeat(pad));
+        let raw = format!("{head}{body}");
+        let head_end = raw.find("\r\n\r\n").expect("有终止符") + 4;
+        // 前置条件都**断言**出来（否则本判据会悄悄失去意义）。
+        assert!(
+            pad >= 1,
+            "⚠ token / 夹具长度变了 ⇒ pad 退化，本判据会失去意义（pad={pad}）"
+        );
+        assert_eq!(head_end, HEAD_END_TARGET, "① 头必须合法地落在上限之内");
+        assert!(
+            12_289 < head_end && head_end <= MAX_REQUEST_HEAD_BYTES,
+            "① 终止符必须落在 `(12288, 16384]`（{head_end}）"
+        );
+        assert!(
+            raw.len() > MAX_REQUEST_HEAD_BYTES,
+            "③ 头 + 体必须越过上限（{}）",
+            raw.len()
+        );
+        assert!(
+            raw.len() <= 5 * 4096,
+            "③ 但总长要落在第 5 批 4 KiB 之内（{}）",
+            raw.len()
+        );
+
+        let bytes = raw.as_bytes();
+        let mut chunks = vec![
+            bytes[..4096].to_vec(),
+            bytes[4096..8192].to_vec(),
+            bytes[8192..12288].to_vec(),
+            bytes[12288..12289].to_vec(),
+        ];
+        chunks.push(bytes[12289..].to_vec());
+        let mut reader = Chunked {
+            chunks,
+            next: 0,
+            offset: 0,
+        };
+
+        let (head_bytes, leftover) =
+            HttpServer::read_head(&mut reader).expect("合法的头必须被收下");
+        assert_eq!(head_bytes.len(), head_end, "头按终止符截止");
+        // ⚠ 桩源一次只给一片 ⇒ `read_head` 见到终止符就返回，**后面还没读的**要自己排空，
+        // 否则这条"不许吞字节"的对账会因为"根本没读"而假红。
+        let mut rest = Vec::new();
+        let mut scratch = [0_u8; 4096];
+        loop {
+            let n = std::io::Read::read(&mut reader, &mut scratch).expect("排空剩余分片");
+            if n == 0 {
+                break;
+            }
+            rest.extend_from_slice(&scratch[..n]);
+        }
+        let mut joined = head_bytes.clone();
+        joined.extend_from_slice(&leftover);
+        joined.extend_from_slice(&rest);
+        assert_eq!(joined.len(), raw.len(), "⛔ 不许吞字节");
+        assert_eq!(
+            &joined[..],
+            raw.as_bytes(),
+            "字节序列必须与输入逐字节相同（⛔ 不许错位）"
+        );
     }
 
     #[test]

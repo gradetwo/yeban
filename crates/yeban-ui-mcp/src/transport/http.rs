@@ -159,13 +159,13 @@ impl UiHttpServer {
         let response = match read_head_request(stream) {
             // 方法与端点先判: 否则一个不带 `Content-Length` 的 `GET` 会先撞上 411,
             // 让人以为"服务器要求 body"而不是"服务器不接受这个方法"。
-            Ok(mut request) => {
+            Ok((mut request, leftover)) => {
                 if request.method != SUPPORTED_METHOD {
                     method_not_allowed(&request.method)
                 } else if !matches!(request.path(), UI_MCP_PATH | "/") {
                     unknown_path(&request.target)
                 } else {
-                    match read_body(stream, &mut request) {
+                    match read_body(stream, &mut request, leftover) {
                         Ok(()) => self.respond(&request),
                         Err(error) => outcome_of(&error),
                     }
@@ -225,7 +225,7 @@ impl UiHttpServer {
     /// ## 连接上的两个超时（为什么必须有）
     ///
     /// 被接受的 stream 在 macOS/BSD 上会**继承**监听 socket 的非阻塞标志，而
-    /// [`Self::handle_stream`] 的读法（[`read_head`] 逐字节读到 `\r\n\r\n`）要求阻塞语义
+    /// [`Self::handle_stream`] 的读法（[`read_head`] 批量读到 `\r\n\r\n`）要求阻塞语义
     /// —— 于是这里显式把它切回阻塞，并给**读/写**各一个 [`CONNECTION_TIMEOUT`]。
     /// 没有超时的话，一个连上却不发请求的客户端会把宿主线程（也就是界面）永远卡住：
     /// 这是"泵"与"阻塞 accept"之间真正的差别，也是本方法相对 [`Self::serve_once`] 唯一
@@ -324,14 +324,22 @@ fn error_body(kind: &str, detail: &str) -> String {
 }
 
 /// 只读头并解析出请求行 / 头（体留空）。
-fn read_head_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> {
-    let head_bytes = read_head(stream)?;
+///
+/// 一并返回读头时多读到的体字节（见 [`read_head`]）：调用方必须先消费它们再读 socket。
+fn read_head_request(stream: &mut TcpStream) -> Result<(HttpRequest, Vec<u8>), HttpError> {
+    let (head_bytes, leftover) = read_head(stream)?;
     let head = String::from_utf8_lossy(&head_bytes).into_owned();
-    parse_head(&head)
+    parse_head(&head).map(|request| (request, leftover))
 }
 
 /// 按 `Content-Length` 读体（**先判长度再分配**）。
-fn read_body(stream: &mut TcpStream, request: &mut HttpRequest) -> Result<(), HttpError> {
+///
+/// `leftover` 是读头时同一批读到的体字节：先消费它们，不足的部分再从 socket 补。
+fn read_body(
+    stream: &mut TcpStream,
+    request: &mut HttpRequest,
+    leftover: Vec<u8>,
+) -> Result<(), HttpError> {
     let length = request
         .parse_content_length()?
         .ok_or(HttpError::MissingContentLength)?;
@@ -343,33 +351,76 @@ fn read_body(stream: &mut TcpStream, request: &mut HttpRequest) -> Result<(), Ht
     }
     if length > 0 {
         let mut body = vec![0_u8; length];
-        stream
-            .read_exact(&mut body)
-            .map_err(|source| HttpError::Io { source })?;
+        let from_leftover = leftover.len().min(length);
+        body[..from_leftover].copy_from_slice(&leftover[..from_leftover]);
+        if from_leftover < length {
+            stream
+                .read_exact(&mut body[from_leftover..])
+                .map_err(|source| HttpError::Io { source })?;
+        }
         request.body = String::from_utf8_lossy(&body).into_owned();
     }
     Ok(())
 }
 
-/// 逐字节读到头 / 体分隔符（上限 [`MAX_REQUEST_HEAD_BYTES`]）。
-fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, HttpError> {
+/// 在累积的头字节中找**第一个**头终止符（[`HEAD_TERMINATOR`] 或 `b"\n\n"`），
+/// 返回终止符末尾（不含）的位置。
+///
+/// 与逐字节 `head.ends_with(…)` 判据等价：逐字节版在终止符的最后一个字节到达时停下，
+/// 也就是流中第一个完整终止符的末尾；两种终止符不会互相嵌套（`\r\n\r\n` 里没有相邻的 `\n\n`），
+/// 因此按位置取最早出现者即等价。
+fn find_head_terminator(head: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + 1 < head.len() {
+        if head[i] == b'\n' && head[i + 1] == b'\n' {
+            return Some(i + 2);
+        }
+        if i + HEAD_TERMINATOR.len() <= head.len()
+            && &head[i..i + HEAD_TERMINATOR.len()] == HEAD_TERMINATOR
+        {
+            return Some(i + HEAD_TERMINATOR.len());
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 批量读到头 / 体分隔符（上限 [`MAX_REQUEST_HEAD_BYTES`]）。
+///
+/// 每次 `read` 取 4 KiB 以减少 syscall 次数；返回 `(head, leftover)`：
+/// `head` 恰好截止于第一个头终止符末尾，`leftover` 是同一批读到的、
+/// 终止符之后的字节（体），调用方必须先消费它，否则流水线写入的体会被吞掉。
+/// 判据在累积 buffer 上检查，跨 read 边界的 [`HEAD_TERMINATOR`] 仍能识别，
+/// 与逐字节版逐字节等价（见 [`find_head_terminator`]）。
+fn read_head(stream: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>), HttpError> {
     let mut head: Vec<u8> = Vec::with_capacity(256);
-    let mut byte = [0_u8; 1];
+    let mut buf = [0_u8; 4096];
     loop {
-        match stream.read(&mut byte) {
-            Ok(0) => break,
-            Ok(_) => {
-                head.push(byte[0]);
-                if head.len() > MAX_REQUEST_HEAD_BYTES {
-                    return Err(HttpError::HeadTooLarge {
-                        limit: MAX_REQUEST_HEAD_BYTES,
-                    });
-                }
-                if head.ends_with(HEAD_TERMINATOR) || head.ends_with(b"\n\n") {
-                    break;
-                }
+        let n = stream
+            .read(&mut buf)
+            .map_err(|source| HttpError::Io { source })?;
+        if n == 0 {
+            break;
+        }
+        head.extend_from_slice(&buf[..n]);
+        // ⚠ **先找终止符、再判上限**（与旧的逐字节版同序）：上限只管**头**。
+        // 一次读是 4 KiB，同一批里可能已经带上**体**的前缀 ⇒ 若先按
+        // `head.len()` 判上限，一个合法的长头会被 431 误拒（实测注入：头 13000
+        // 字节 + 体 5000 字节、读在最后一批把两者连续读回 ⇒ 旧版 200、先判上限的版本 431）。
+        if let Some(end) = find_head_terminator(&head) {
+            if end > MAX_REQUEST_HEAD_BYTES {
+                return Err(HttpError::HeadTooLarge {
+                    limit: MAX_REQUEST_HEAD_BYTES,
+                });
             }
-            Err(source) => return Err(HttpError::Io { source }),
+            let leftover = head.split_off(end);
+            return Ok((head, leftover));
+        }
+        // 还没见到终止符 ⇒ 累积的每一个字节都是头字节，超出上限与旧的逐字节版同判。
+        if head.len() > MAX_REQUEST_HEAD_BYTES {
+            return Err(HttpError::HeadTooLarge {
+                limit: MAX_REQUEST_HEAD_BYTES,
+            });
         }
     }
     if head.is_empty() {
@@ -377,7 +428,7 @@ fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, HttpError> {
             detail: "连接在收到任何字节之前就关闭了".to_owned(),
         });
     }
-    Ok(head)
+    Ok((head, Vec::new()))
 }
 
 #[cfg(test)]

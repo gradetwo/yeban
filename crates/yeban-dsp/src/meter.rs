@@ -388,7 +388,12 @@ pub const TRUE_PEAK_PHASES: usize = 8;
 pub const TRUE_PEAK_PHASES_HIGH: usize = 16;
 
 /// 每个相位的抽头数（原型总系数 = 相位数 × 本值）。
+///
+/// **必须是 2 的幂**：[`TruePeakDetector::process`] 用 `& (TRUE_PEAK_TAPS - 1)`
+/// 代替 `% TRUE_PEAK_TAPS`（编译期断言见下）。
 pub const TRUE_PEAK_TAPS: usize = 32;
+
+const _: () = assert!(TRUE_PEAK_TAPS.is_power_of_two());
 
 /// 多相核的 Kaiser 窗形状参数 β。
 pub const TRUE_PEAK_KAISER_BETA: f64 = 8.0;
@@ -646,8 +651,8 @@ const fn kernel_for(oversampling: usize) -> Option<&'static [[f32; TRUE_PEAK_TAP
 /// 4. 通道口径沿用调用方：本类型只处理**给定的一路样本流**，
 ///    多声道的联动/求和由调用方决定（与 [`LevelDetector`] 的分工一致）。
 ///
-/// **零分配**：状态是定长数组（`[f32; 32] + f32 + 一个 `'static` 表引用`），
-/// `process` 内只有乘加与移位 [ARCH-RT-001]。
+/// **零分配**：状态是定长数组（`[f32; 2 × 32]` 镜像环 + `head` + `f32` + 一个 `'static` 表引用`），
+/// `process` 内只有乘加与"写两个槽 + 一次按位与"（⛔ 不再整窗右移）[ARCH-RT-001]。
 ///
 /// ```
 /// use yeban_dsp::meter::TruePeakDetector;
@@ -666,8 +671,16 @@ const fn kernel_for(oversampling: usize) -> Option<&'static [[f32; TRUE_PEAK_TAP
 pub struct TruePeakDetector {
     /// 多相核（`'static` 表，按过采样倍数选）。
     kernel: &'static [[f32; TRUE_PEAK_TAPS]],
-    /// 最近 [`TRUE_PEAK_TAPS`] 个样本，`window[0]` 是最新。
-    window: [f32; TRUE_PEAK_TAPS],
+    /// 最近 [`TRUE_PEAK_TAPS`] 个样本的**环形窗**（镜像双写，`2 × 32` 槽）。
+    ///
+    /// 逻辑下标 `tap`（`tap = 0` 为最新样本）的物理下标是 `self.head + tap`
+    /// （**无需取模**：每样本同时写 `head` 与 `head + 32`，`[head, head+32)`
+    /// 恒是连续的最近 32 个样本）。`head` 每样本退一格（mod 32），等价于
+    /// 旧实现把整窗右移一格（`while index > 0` 的 31 次拷贝），但每样本
+    /// 只有 2 次写、内层 FIR 保持顺序访问。
+    window: [f32; 2 * TRUE_PEAK_TAPS],
+    /// 环形窗写头：**最新**样本的物理下标（`0..TRUE_PEAK_TAPS`）。
+    head: usize,
     /// 自上次 [`reset`](Self::reset) 以来的真峰值。
     peak: f32,
 }
@@ -684,7 +697,8 @@ impl TruePeakDetector {
     pub const fn new() -> Self {
         Self {
             kernel: &TRUE_PEAK_KERNEL_8X,
-            window: [0.0; TRUE_PEAK_TAPS],
+            window: [0.0; 2 * TRUE_PEAK_TAPS],
+            head: 0,
             peak: 0.0,
         }
     }
@@ -696,7 +710,8 @@ impl TruePeakDetector {
         match kernel_for(oversampling) {
             Some(kernel) => Some(Self {
                 kernel,
-                window: [0.0; TRUE_PEAK_TAPS],
+                window: [0.0; 2 * TRUE_PEAK_TAPS],
+                head: 0,
                 peak: 0.0,
             }),
             None => None,
@@ -711,7 +726,8 @@ impl TruePeakDetector {
 
     /// 丢弃历史与峰值（换流/关流时用）。
     pub fn reset(&mut self) {
-        self.window = [0.0; TRUE_PEAK_TAPS];
+        self.window = [0.0; 2 * TRUE_PEAK_TAPS];
+        self.head = 0;
         self.peak = 0.0;
     }
 
@@ -739,23 +755,23 @@ impl TruePeakDetector {
         let mut block_peak = 0.0f32;
         for &raw in samples {
             let sample = sanitize_sample(raw);
-            // 移位窗口: window[0] 是最新样本。
-            let mut index = TRUE_PEAK_TAPS - 1;
-            while index > 0 {
-                self.window[index] = self.window[index - 1];
-                index -= 1;
-            }
-            self.window[0] = sample;
+            // 镜像双写：`window[head..head+32)` 恒是连续的最近 32 个样本
+            //（`tap = 0` 为最新）。写头每样本退一格（mod 32）⇔ 旧实现把整窗
+            // 右移一格的 31 次拷贝；逻辑窗内容逐位不变（见字段 `head` 的文档）。
+            self.window[self.head] = sample;
+            self.window[self.head + TRUE_PEAK_TAPS] = sample;
+            let head = self.head;
             for kernel in self.kernel {
                 let mut acc = 0.0f32;
                 for (tap, coefficient) in kernel.iter().enumerate() {
-                    acc += coefficient * self.window[tap];
+                    acc += coefficient * self.window[head + tap];
                 }
                 let magnitude = acc.abs();
                 if magnitude > block_peak {
                     block_peak = magnitude;
                 }
             }
+            self.head = (head + TRUE_PEAK_TAPS - 1) & (TRUE_PEAK_TAPS - 1);
         }
         if block_peak > self.peak {
             self.peak = block_peak;

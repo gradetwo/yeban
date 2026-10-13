@@ -37,10 +37,10 @@
 //! ### 1.1 为什么它仍然满足"逐样本确定性"
 //!
 //! 限制器的全部状态都是**定长数组 + 标量**（`[f32; LOOKAHEAD_SAMPLES] × 2` +
-//! 读/写下标 + 增益），逐样本只做：
+//! 写下标 + 单调队列（`[(usize, f32); LOOKAHEAD_SAMPLES]` + 首/长下标）+ 增益），逐样本只做：
 //!
 //! ```text
-//! peak = max(|x[n-L+1]| … |x[n]|)          // 比较 + abs       → IEEE 精确类
+//! peak = max(|x[n-L+1]| … |x[n]|)          // 单调队列队首，O(1) 摊还 → IEEE 精确类
 //! target = min(1, threshold / peak)         // 除法 + min       → IEEE 精确类
 //! gain = max(ramp(gain, target), target)    // 乘 + max         → IEEE 精确类
 //! y[n-L] = x[n-L] * gain                    // 乘               → IEEE 精确类
@@ -109,6 +109,7 @@
 //! ## 5. 实时侧禁令自检（[AGENTS.md §2 红线 7] / `MUST-GATE-001`）
 //!
 //! 本器件的状态全部内联、无堆指针：两个 `[f32; LOOKAHEAD_SAMPLES]` 环、一个写下标、
+//! 一个 `[(usize, f32); LOOKAHEAD_SAMPLES]` 单调队列（+ 首/长两个下标）、
 //! 三个 `f32`（增益、阈值、释放量）、一个 `bool` 与一个 `u64` 计数；
 //! [`Limiter::process_stereo`] 里没有 `Vec`/`Box`/`format!`/`println!`/`Mutex`/I/O。
 //! 运行期由 `tests/limiter_rt_zero_alloc.rs`（计数型全局分配器）钉住。
@@ -200,6 +201,17 @@ pub struct Limiter {
     ring: [[f32; LOOKAHEAD_SAMPLES]; 2],
     /// 下一个写入位置。
     write: usize,
+    /// 前瞻窗口峰值的**单调双端队列**：存 `(环位置, 合并峰值)`，按值单调递减，
+    /// 队首即窗口峰值。定长数组 + 首/长索引，无堆分配（容量 = 窗口大小，天然有界）。
+    ///
+    /// 窗口语义与旧实现严格一致：旧代码每样本扫描 `read..read+LOOKAHEAD`，
+    /// 33 次步进恰好覆盖整个环 ⇒ 窗口恒 = 环上全部槽位。每帧恰好覆写 `write`
+    /// 位置 ⇒ 维护时先驱逐该位置的旧候选（若仍在队中必为队首），再插入新值。
+    peak_deque: [(usize, f32); LOOKAHEAD_SAMPLES],
+    /// 队首（最老候选）在 `peak_deque` 中的下标。
+    deque_head: usize,
+    /// 队中候选数（`≤ LOOKAHEAD_SAMPLES`；每帧更新后恒 `≥ 1`）。
+    deque_len: usize,
     /// 当前增益（1.0 = 完全透明）。
     gain: f32,
     /// 目标阈值。默认 [`LIMITER_THRESHOLD`]；可注入用于判据（**非**实时路径）。
@@ -219,6 +231,9 @@ impl Limiter {
         Self {
             ring: [[0.0; LOOKAHEAD_SAMPLES]; 2],
             write: 0,
+            peak_deque: [(0, 0.0); LOOKAHEAD_SAMPLES],
+            deque_head: 0,
+            deque_len: 0,
             gain: 1.0,
             threshold: LIMITER_THRESHOLD,
             release_per_sample: LIMITER_RELEASE_PER_SAMPLE,
@@ -231,6 +246,8 @@ impl Limiter {
     pub fn reset(&mut self) {
         self.ring = [[0.0; LOOKAHEAD_SAMPLES]; 2];
         self.write = 0;
+        self.deque_head = 0;
+        self.deque_len = 0;
         self.gain = 1.0;
         self.engaged = false;
         self.reductions = 0;
@@ -320,28 +337,48 @@ impl Limiter {
             self.ring[0][self.write] = input_l;
             self.ring[1][self.write] = input_r;
 
-            // 读位置：`L - 延迟` 个槽位"在前面"的环形下标，它此刻存的正是
-            // `x[n - 延迟]`（延迟帧之前写进去的）。
-            // 窗口 `[read ..= write]` 在环上按顺序前进恰好 `L` 步 ⇒ 覆盖
-            // `x[n-延迟] … x[n-延迟+L-1]`，即"被延迟的样本 + 它之后的 16 帧"。
-            let read = {
-                let step = LIMITER_LATENCY_FRAMES + 1;
-                let index = self.write + step;
-                if index >= LOOKAHEAD_SAMPLES {
-                    index - LOOKAHEAD_SAMPLES
-                } else {
-                    index
+            // ---- 前瞻窗口峰值：单调双端队列 ----
+            // 旧实现每样本扫描 `read..read+LOOKAHEAD`（33 槽 × 2 通道）；
+            // 33 次步进恰好覆盖整个环 ⇒ 窗口恒 = 环上全部槽位 = 最近 33 帧。
+            // 每帧恰好覆写 `write` 位置：先驱逐该位置的旧候选（若仍在队中，
+            // 它必是队首——插入顺序即覆写顺序，每位置在队中至多一项），
+            // 再把新样本的合并峰值 `max(|l|, |r|)` 按单调递减插入
+            // （`<=` 踢掉队尾：等值留新的，峰值读数逐位不变）。
+            // 环上值经 `nan_to_zero` 入环、`.abs()` 恒 `≥ 0` 非 NaN ⇒
+            // 比较是全序，`f32::max` 的 NaN/符号零分支永不可达，逐位一致。
+            let evict = self.write;
+            if self.deque_len > 0 && self.peak_deque[self.deque_head].0 == evict {
+                self.deque_head += 1;
+                if self.deque_head == LOOKAHEAD_SAMPLES {
+                    self.deque_head = 0;
                 }
-            };
-            let mut peak = 0.0f32;
-            let mut index = read;
-            for _ in 0..LOOKAHEAD_SAMPLES {
-                peak = peak.max(self.ring[0][index].abs().max(self.ring[1][index].abs()));
-                index += 1;
-                if index == LOOKAHEAD_SAMPLES {
-                    index = 0;
+                self.deque_len -= 1;
+            }
+            let fresh = input_l.abs().max(input_r.abs());
+            while self.deque_len > 0 {
+                let back = self.deque_head + self.deque_len - 1;
+                // `head + len - 1 < 2 * LOOKAHEAD_SAMPLES` 恒成立 ⇒ 减一次即取模。
+                let back = if back >= LOOKAHEAD_SAMPLES {
+                    back - LOOKAHEAD_SAMPLES
+                } else {
+                    back
+                };
+                if self.peak_deque[back].1 <= fresh {
+                    self.deque_len -= 1;
+                } else {
+                    break;
                 }
             }
+            let slot = self.deque_head + self.deque_len;
+            let slot = if slot >= LOOKAHEAD_SAMPLES {
+                slot - LOOKAHEAD_SAMPLES
+            } else {
+                slot
+            };
+            self.peak_deque[slot] = (self.write, fresh);
+            self.deque_len += 1;
+            // 刚插入一项 ⇒ 队非空，队首即窗口峰值。
+            let peak = self.peak_deque[self.deque_head].1;
 
             // ---- 目标增益：窗口峰值不超阈值时为 1.0（完全透明） ----
             // 窗口峰值 `W(n)` 一定 ≥ 被延迟的那个样本 `|x[n-d]|`（它就在窗口里），

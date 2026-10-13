@@ -2385,7 +2385,8 @@ impl EngineRuntime {
                         *insert_max_reduction_db = reduction_db;
                     }
                     // **当前**衰减（量规）：与上面两条计数**同一台器件、同一个瞬间**读出。
-                    // 它只读字段（`−compressor.gain_db()`），不碰样本、不分配、不加锁。
+                    // 它把线性增益按需换算成 dB（`−compressor.gain_db()` ⇒ 一次 `log2`），
+                    // 但不碰样本、不分配、不加锁（红线 7 不受影响）。
                     let current_db = strip.current_gain_reduction_db();
                     if current_db > insert_current_db {
                         insert_current_db = current_db;

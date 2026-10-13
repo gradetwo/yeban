@@ -198,8 +198,9 @@
 //! [`Compressor::new`] 与 [`Compressor::set_params`] 里没有分配，逐样本路径
 //! （`process_gain`）里没有 `Vec`/`Box`/`String`/`format!`/`println!`/锁/`exp`。
 //! `α` 与 `exp` 只在参数设置时算一次（与 [`crate::smoothing`] 同一纪律）；
-//! 逐样本路径只有两处比较、一次 `log10`、一次 `exp2`（[`crate::math::db_to_gain`]）、
-//! 一次 `log2`（[`crate::math::gain_to_db`]）与两次乘法。
+//! 逐样本路径只有两处比较、一次 `log10`、一次 `exp2`（[`crate::math::db_to_gain`]）
+//! 与两次乘法；`log2`（[`crate::math::gain_to_db`]）只在出现新的最小增益时跑一次
+//! （统计用），以及在 [`Compressor::gain_db`] 被调用方显式读取时跑一次。
 //!
 //! 块 API 的**写回**（`output_sample`）每个样本各多一次 `is_finite` 分支。
 //! 它不加分配、不加锁、不做 I/O ——
@@ -555,15 +556,21 @@ pub struct Compressor {
     mean_square: f32,
     /// 由 [`Self::mean_square`] 派生的输入电平（dBFS，`≥` [`MIN_LEVEL_DB`]）。
     level_db: f32,
-    /// 本帧的压缩增益（dB，`≤ 0`）。**不含** makeup。由 [`Self::gain_lin`] 派生。
-    gain_db: f32,
     /// 本帧的压缩增益（线性，`[0, 1]`）。**弹道状态在这一级**。
+    ///
+    /// dB 读数（[`Self::gain_db`]）由它**按需**派生（`gain_to_db` 的 `log2`
+    /// 只在 getter 里跑，不在逐样本路径上）。旧实现曾在这里存一份每样本
+    /// 更新的 `gain_db: f32`，那是逐样本一次 `log2` 的来源，已删除。
     gain_lin: f32,
+    /// 全程出现过的**最小**线性增益（`≤ 1`）。`max_reduction_db` 由它派生：
+    /// `-gain_to_db(x)` 关于 `x` 单调递减 ⇒
+    /// `max(-gain_db) = -gain_to_db(min_gain_lin)`，逐样本只需一次比较。
+    min_gain_lin: f32,
     /// makeup 的线性增益，由 `params.makeup_db` 派生（构造期算好）。
     makeup_gain: f32,
-    /// 全程出现过的最大增益衰减（dB，`≥ 0`）＝ `−min(gain_db)`。
+    /// 全程出现过的最大增益衰减（dB，`≥ 0`）＝ `-gain_to_db(min_gain_lin)`。
     max_reduction_db: f32,
-    /// 被压过的样本数（`gain_db < 0` 的样本）。
+    /// 被压过的样本数（`gain_lin < 1` 的样本）。
     reductions: u64,
     /// 已处理样本数（按声道计）。
     processed: u64,
@@ -586,8 +593,8 @@ impl Compressor {
             alpha_release: one_pole_alpha(params.release_s, sample_rate),
             mean_square: 0.0,
             level_db: MIN_LEVEL_DB,
-            gain_db: 0.0,
             gain_lin: 1.0,
+            min_gain_lin: 1.0,
             makeup_gain: db_to_gain(params.makeup_db),
             max_reduction_db: 0.0,
             reductions: 0,
@@ -597,7 +604,7 @@ impl Compressor {
 
     /// 换参数。参数经 [`CompressorParams::sanitised`] 钳制；`α` 在这里重算（`exp` **不在**逐样本路径上）。
     ///
-    /// ⚠ **弹道状态不重置**：`mean_square` / `level_db` / `gain_db` 保持原值，
+    /// ⚠ **弹道状态不重置**：`mean_square` / `level_db` / `gain_lin` 保持原值，
     /// 因此换阈值时不会出现阶跃。若新阈值低于当前 `level_db`，均方仍按原轨迹演化，
     /// 增益随之在**释放**时间常数内爬回 0（增益由均方**唯一**决定）。
     /// ⚠ makeup 是**立即**生效的乘数（没有 ramp）。实时改 makeup 会产生阶跃；
@@ -621,12 +628,12 @@ impl Compressor {
     }
 
     /// 清空弹道状态与统计（`mean_square` 回到 0、`level_db` 回到 [`MIN_LEVEL_DB`]、
-    /// `gain_db` 回到 0 dB）。
+    /// `gain_lin` 回到 1（⇒ [`Self::gain_db`] 回到 0 dB）。
     pub fn reset(&mut self) {
         self.mean_square = 0.0;
         self.level_db = MIN_LEVEL_DB;
-        self.gain_db = 0.0;
         self.gain_lin = 1.0;
+        self.min_gain_lin = 1.0;
         self.max_reduction_db = 0.0;
         self.reductions = 0;
         self.processed = 0;
@@ -665,9 +672,12 @@ impl Compressor {
     }
 
     /// 当前**压缩**增益（dB，`≤ 0`）。**不含** makeup。
+    ///
+    /// 由 [`Self::gain_lin`] **按需**换算（一次 `log2`）；逐样本路径不再为它
+    /// 付 `log2`（见 [`Self::process_gain`]）。
     #[must_use]
-    pub const fn gain_db(&self) -> f32 {
-        self.gain_db
+    pub fn gain_db(&self) -> f32 {
+        crate::math::gain_to_db(self.gain_lin)
     }
 
     /// 当前**总**增益（dB）＝ 压缩增益 + makeup。
@@ -714,7 +724,8 @@ impl Compressor {
     /// 立体声与单声道两条路径共用**同一个** `g`，从而逐位一致。
     ///
     /// `NaN`/`±∞` 输入被归零（见 [`finite_or_zero`]）⇒ 返回值恒有限。
-    /// **逐样本无分配**：里面只有乘、加、`log10` 与三处比较。
+    /// **逐样本无分配**：里面只有乘、加、`log10` 与比较；`log2` 只在出现新的
+    /// 最小增益时跑一次（[`Self::max_reduction_db`] 的统计用）。
     #[inline]
     pub fn process_gain(&mut self, left: f32, right: f32) -> f32 {
         let l = finite_or_zero(left);
@@ -754,14 +765,17 @@ impl Compressor {
         } else {
             0.0
         };
-        self.gain_db = crate::math::gain_to_db(self.gain_lin);
+        // 增益衰减统计（`max_reduction_db`）：`-gain_to_db(x)` 关于 `x` 单调递减 ⇒
+        // `max(-gain_db) = -gain_to_db(min gain_lin)`。逐样本只需一次比较，
+        // `log2` 只在出现**新的最小增益**时跑一次（与旧代码逐样本 `max` 的存值
+        // 逐位一致，含 `gain_lin = 0 ⇒ reduction = +inf` 的边界）。
+        if self.gain_lin < self.min_gain_lin {
+            self.min_gain_lin = self.gain_lin;
+            self.max_reduction_db = -crate::math::gain_to_db(self.gain_lin);
+        }
 
         if self.gain_lin < 1.0 {
             self.reductions = self.reductions.saturating_add(1);
-        }
-        let reduction = -self.gain_db;
-        if reduction > self.max_reduction_db {
-            self.max_reduction_db = reduction;
         }
         self.processed = self.processed.saturating_add(1);
 

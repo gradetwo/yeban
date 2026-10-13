@@ -1325,14 +1325,23 @@ pub fn tools_declaring(error: ErrorCode) -> Vec<&'static str> {
 }
 
 /// MCP `tools/list` 的结果：`{"tools":[…]}`（顺序 = 规范顺序，逐字节稳定）。
+///
+/// 结果缓存（[`OnceLock`]）：`TOOLS` 是编译期常量，描述符逐字节稳定，
+/// 每次重建只是重复分配。调用方只把返回值当作只读响应体使用，不修改。
 #[must_use]
 pub fn catalog() -> Value {
-    let mut map = Map::new();
-    map.insert(
-        "tools".to_owned(),
-        Value::Array(TOOLS.iter().map(ToolSpec::descriptor).collect()),
-    );
-    Value::Object(map)
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Value> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let mut map = Map::new();
+            map.insert(
+                "tools".to_owned(),
+                Value::Array(TOOLS.iter().map(ToolSpec::descriptor).collect()),
+            );
+            Value::Object(map)
+        })
+        .clone()
 }
 
 impl ToolSpec {

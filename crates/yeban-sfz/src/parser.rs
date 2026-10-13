@@ -2050,33 +2050,59 @@ fn has_sfz_extension(name: &str) -> bool {
 /// 单段 glob 匹配：`*` 匹配任意（含空）字符序列，`?` 匹配一个字符。
 ///
 /// 迭代实现（无递归），因此 `*****` 这类输入不会栈溢出。
+///
+/// 零堆分配：直接在 `Chars` 迭代器上跑经典的"星号回溯"算法 —— `Chars` 是 `Clone`
+/// 的（一次指针 + 长度拷贝），回溯锚点就是一次迭代器快照，不需要先把
+/// `pattern` / `name` 收进 `Vec<char>`。
+///
+/// 语义与原实现完全一致：`?` 匹配**一个 Unicode 标量**。注意不能把 `char` 比较
+/// 简单换成字节比较：按字节比时 `?` 会收窄成"一个字节"，对非 ASCII 文件名
+/// （`entries()` 用 `to_str()`，中文文件名可直达此处；`#include` 的 pattern 段
+/// 也是用户手写文本，同样可以是非 ASCII）会产生分歧
+/// （如 `glob_match("?.sfz", "鼓.sfz")` 原语义为 true，字节版为 false）。
 fn glob_match(pattern: &str, name: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let n: Vec<char> = name.chars().collect();
-    let (mut pi, mut ni) = (0usize, 0usize);
-    let mut star: Option<usize> = None;
-    let mut star_match = 0usize;
+    use std::iter::Peekable;
+    use std::str::Chars;
 
-    while ni < n.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
-            pi += 1;
-            ni += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            star_match = ni;
-            pi += 1;
-        } else if let Some(star_index) = star {
-            pi = star_index + 1;
-            star_match += 1;
-            ni = star_match;
-        } else {
-            return false;
+    let mut p: Peekable<Chars<'_>> = pattern.chars().peekable();
+    let mut n: Peekable<Chars<'_>> = name.chars().peekable();
+    // 回溯锚点：见到 `*` 时 pattern / name 迭代器的快照（只保留最后一个 `*`，
+    // 与原实现的 `star: Option<usize>` 一致）。
+    let mut star_p: Option<Peekable<Chars<'_>>> = None;
+    let mut star_n: Option<Peekable<Chars<'_>>> = None;
+
+    while n.peek().is_some() {
+        match (p.peek(), n.peek()) {
+            (Some('?'), Some(_)) => {
+                p.next();
+                n.next();
+            }
+            (Some(a), Some(b)) if a == b => {
+                p.next();
+                n.next();
+            }
+            (Some('*'), _) => {
+                star_p = Some(p.clone());
+                star_n = Some(n.clone());
+                p.next(); // 跳过 `*`
+            }
+            _ if star_p.is_some() => {
+                // 回溯：让 `*` 多吞掉 name 的一个字符，pattern 回到 `*` 之后。
+                let mut sn = star_n.clone().expect("star_n follows star_p");
+                sn.next();
+                star_n = Some(sn.clone());
+                let mut sp = star_p.clone().expect("star_p is some");
+                sp.next(); // 跳过 `*`
+                p = sp;
+                n = sn;
+            }
+            _ => return false,
         }
     }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
+    while p.peek() == Some(&'*') {
+        p.next();
     }
-    pi == p.len()
+    p.peek().is_none()
 }
 
 #[cfg(test)]

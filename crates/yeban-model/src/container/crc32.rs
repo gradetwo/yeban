@@ -43,12 +43,57 @@ const fn build_table() -> [u32; 256] {
 /// CRC-32 查表（编译期常量）。
 static TABLE: [u32; 256] = build_table();
 
+/// 生成 slice-by-8 的第 `n` 张辅助表：`TABLEn[i]` 是把字节 `i`
+/// 推入寄存器后再推 `n` 个零字节（`crc = (crc >> 8) ^ TABLE[crc & 0xFF]`）
+/// 得到的寄存器值。用 `const fn` 求值 ⇒ 运行期零初始化、零锁。
+const fn build_table_n(n: usize) -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let mut crc = TABLE[i];
+        let mut step = 0;
+        while step < n {
+            crc = (crc >> 8) ^ TABLE[(crc & 0xFF) as usize];
+            step += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+}
+
+static TABLE1: [u32; 256] = build_table_n(1);
+static TABLE2: [u32; 256] = build_table_n(2);
+static TABLE3: [u32; 256] = build_table_n(3);
+static TABLE4: [u32; 256] = build_table_n(4);
+static TABLE5: [u32; 256] = build_table_n(5);
+static TABLE6: [u32; 256] = build_table_n(6);
+static TABLE7: [u32; 256] = build_table_n(7);
+
 /// 计算 `bytes` 的 CRC-32/ISO-HDLC 摘要。
 ///
-/// 纯函数、无分配、可跨平台位级一致（无浮点、无端序依赖）。
+/// 纯函数、无分配、无 `unsafe`、可跨平台位级一致（无浮点、无端序依赖）。
+/// 主循环用 slice-by-8 一次推进 8 字节，尾部不足 8 字节的部分走原逐字节循环。
 pub(crate) fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
-    for &byte in bytes {
+    // workspace MSRV 是 1.92，`slice::as_chunks` 太新不可用；`chunks_exact(8)`
+    // 的等价写法，故此处按仓库惯例局部放行该 lint（见 music.rs 的同类 allow）。
+    #[allow(clippy::chunks_exact_to_as_chunks)]
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let lo = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let hi = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        crc ^= lo;
+        crc = TABLE7[(crc & 0xFF) as usize]
+            ^ TABLE6[((crc >> 8) & 0xFF) as usize]
+            ^ TABLE5[((crc >> 16) & 0xFF) as usize]
+            ^ TABLE4[((crc >> 24) & 0xFF) as usize]
+            ^ TABLE3[(hi & 0xFF) as usize]
+            ^ TABLE2[((hi >> 8) & 0xFF) as usize]
+            ^ TABLE1[((hi >> 16) & 0xFF) as usize]
+            ^ TABLE[((hi >> 24) & 0xFF) as usize];
+    }
+    for &byte in chunks.remainder() {
         let index = ((crc ^ u32::from(byte)) & 0xFF) as usize;
         crc = (crc >> 8) ^ TABLE[index];
     }

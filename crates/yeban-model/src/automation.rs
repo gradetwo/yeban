@@ -187,9 +187,9 @@ impl AutomationTarget {
 impl AutomationLane {
     /// 采样点按 `(tick, point_id)` 升序的确定序列。
     ///
-    /// 引擎/界面若要在热路径上反复求值，应当**缓存这一次排序的结果**并自己二分，
-    /// 而不是每次调用 [`AutomationLane::value_at`]（那个是 O(n log n) 的模型层实现，
-    /// 为的是"只有一个口径"，不是性能）。参见 `RSK-31`（自动化点密集轰炸）。
+    /// 引擎/界面若要批量求值，应当**缓存这一次排序的结果**并自己二分；
+    /// [`AutomationLane::value_at`] 自身已是 O(n) 零分配的单遍扫描
+    /// （与本函数的排序+二分逐位等价），单点查询无需再走"排序再二分"。
     #[must_use]
     pub fn points_in_tick_order(&self) -> Vec<AutomationPoint> {
         let mut ordered: Vec<AutomationPoint> = self.points.values().copied().collect();
@@ -201,10 +201,34 @@ impl AutomationLane {
     ///
     /// 口径（边界行为）见模块文档；纯函数、无分配之外的副作用、**确定性**：
     /// 同一泳道同一 tick 两次求值逐位相同。
+    ///
+    /// 实现上是**单遍线性扫描**（O(n)、零分配）：一次遍历同时确定
+    /// `(tick, point_id)` 全序下的首点、末点、`tick <= T` 的最大点 (low)
+    /// 与 `tick > T` 的最小点 (high)。选择键与 [`Self::points_in_tick_order`]
+    /// 的排序键完全一致（`(tick, id)` 全序、键唯一），因此与排序+二分版本
+    /// 逐位等价；热路径上不再需要"缓存排序结果再二分"。
     #[must_use]
     pub fn value_at(&self, tick: u64) -> Option<f32> {
-        let ordered = self.points_in_tick_order();
-        let (Some(first), Some(last)) = (ordered.first(), ordered.last()) else {
+        let mut first: Option<AutomationPoint> = None;
+        let mut last: Option<AutomationPoint> = None;
+        let mut low: Option<AutomationPoint> = None;
+        let mut high: Option<AutomationPoint> = None;
+        for &point in self.points.values() {
+            let key = (point.tick, point.id);
+            if first.is_none_or(|f| key < (f.tick, f.id)) {
+                first = Some(point);
+            }
+            if last.is_none_or(|l| key > (l.tick, l.id)) {
+                last = Some(point);
+            }
+            if point.tick <= tick && low.is_none_or(|l| key > (l.tick, l.id)) {
+                low = Some(point);
+            }
+            if point.tick > tick && high.is_none_or(|h| key < (h.tick, h.id)) {
+                high = Some(point);
+            }
+        }
+        let (Some(first), Some(last)) = (first, last) else {
             return None;
         };
         // 首点之前 / 末点之后：**保持**（不外推）。
@@ -214,12 +238,12 @@ impl AutomationLane {
         if tick >= last.tick {
             return Some(last.value);
         }
-        // `partition_point` 返回第一个 `tick > T` 的下标；因此 `low` 是最后一个
-        // `tick <= T` 的点（同 tick 时 `point_id` 最大者），`high` 严格在其后。
-        let upper = ordered.partition_point(|point| point.tick <= tick);
-        let low = &ordered[upper - 1];
-        let high = &ordered[upper];
-        Some(interpolate(low, high, tick))
+        // 能到这里 ⇒ `first.tick <= tick < last.tick` ⇒ low/high 必然存在
+        //（first 是 low 的候选，last 是 high 的候选）。
+        let (Some(low), Some(high)) = (low, high) else {
+            unreachable!("first.tick <= tick < last.tick 时 low/high 必存在");
+        };
+        Some(interpolate(&low, &high, tick))
     }
 
     /// 本泳道的**单位**（由目标派生，恒可判定）。
