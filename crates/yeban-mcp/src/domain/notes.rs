@@ -964,7 +964,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 20] = [
+pub const OP_KINDS: [&str; 21] = [
     "add",
     "delete",
     "move",
@@ -982,6 +982,7 @@ pub const OP_KINDS: [&str; 20] = [
     SET_ROUTING_GAIN_KIND,
     DISCONNECT_ROUTING_KIND,
     REMOVE_ROUTING_NODE_KIND,
+    ADD_ROUTING_NODE_KIND,
     REMOVE_SECTION_KIND,
     REMOVE_SCENE_KIND,
     SET_SCENE_KIND,
@@ -1335,6 +1336,24 @@ pub const DISCONNECT_ROUTING_KIND: &str = "disconnectRouting";
 /// 读（与 [`SET_ROUTING_GAIN_KIND`] 的 `old_gain_db` 同一条纪律）。
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const DISCONNECT_ROUTING_FIELDS: [&str; 2] = ["kind", ROUTING_EDGE_FIELD];
+
+/// `ops[].kind` 的**新建路由节点**形态名（写 [`Op::AddRoutingNode`]）。
+///
+/// 与模型 `Op` 变体名同词（`AddRoutingNode` 的小驼峰），与 [`REMOVE_ROUTING_NODE_KIND`]
+/// 同一条命名规则。
+///
+/// ⚠ 两个节点形态**互为逆操作**（`Op::invert` 把它们互相换成对方），且模型的两份载荷
+/// **都只有节点身份**（⛔ 没有撤销载荷）⇒ 因此它们共用同一个寻址字段
+/// [`ROUTING_NODE_FIELD`]。
+pub const ADD_ROUTING_NODE_KIND: &str = "addRoutingNode";
+
+/// 新建路由节点形态允许出现的**全部**键（判别键 + 寻址键）。
+///
+/// 目标音轨、目标片段与节点的旧状态**都不在**这里：本形态自带寻址
+/// （[`ROUTING_NODE_FIELD`]），而 `AddRoutingNode` 的模型载荷**只有**节点身份
+/// —— 它没有撤销载荷（与 [`REMOVE_ROUTING_NODE_KIND`] 互为逆操作）。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const ADD_ROUTING_NODE_FIELDS: [&str; 2] = ["kind", ROUTING_NODE_FIELD];
 
 /// `ops[].kind` 的**取走路由节点**形态名（写 [`Op::RemoveRoutingNode`]）。
 ///
@@ -1945,6 +1964,35 @@ pub enum NoteOp {
         /// 路由边身份（本形态自带寻址）。
         edge_id: EntityId,
     },
+    /// 新建**一个路由节点**（[`Op::AddRoutingNode`]，即把这个身份加进
+    /// `routing_graph.nodes`）。
+    ///
+    /// ⚠ **本形态是造节点的那一半**：此前工具面**造得出**节点的唯一通路是
+    /// `yeban_propose_section` 的建批（它构造 `Op::AddRoutingNode`），而
+    /// `yeban_edit_notes` 的目录里**没有**对应的 `kind` ⇒ 一张**空白**工程
+    /// （还没有任何路由节点）无法被**逐步**搭起来。本形态把那条通路补成"同一件事
+    /// 两种粒度"，⛔ 不去掉 propose 的建批。
+    ///
+    /// 与 [`Self::RemoveRoutingNode`] **严格互为逆**（`Op::invert` 把两者互换），
+    /// 因此载荷也**只有**节点身份：模型那两条 `Op` **都没有撤销载荷**
+    /// ⇒ 本形态既不读文档现值，也不接受调用方送来的旧状态
+    /// （[`reject_add_routing_node_fields`] 只认 `kind` 与 `nodeId`）。
+    ///
+    /// ⚠ **本形态⛔ 不要求这个身份是一条真实音轨** —— 那是**决定**不是疏忽：
+    /// 模型只做**数据层**的校验（[`RoutingGraph::validate`] 查节点重复、以及每条边的
+    /// 两端**都在** `nodes` 里），它⛔ **不**要求节点能对应到 `project.tracks` 的条目。
+    /// 同一族的先例: `addTrack` 同样只把一条新音轨加进 `tracks`、**不**自动把它的身份
+    /// 加进 `nodes`（两份集合各有自己的 `Op`）。本层照抄模型口径 ⇒ 一个**拼错**的
+    /// `nodeId` 会被接受并落地，且引擎侧看不到它所属的音轨 —— 这条边界**如实登记在
+    /// 本变体的文档里**，⛔ 不在此处发明一条模型没有的前置条件。
+    ///
+    /// 模型的前置条件是"这个身份**不在** `nodes` 里"（`DuplicateEntityId`）：
+    /// [`compile`] 提前报它（`routingNodeAlreadyExists`），与
+    /// [`Self::RemoveRoutingNode`] 提前报 `routingNodeNotFound` 同一条口径。
+    AddRoutingNode {
+        /// 路由节点身份（本形态自带寻址）。
+        node_id: EntityId,
+    },
     /// 取走**一个路由节点**（[`Op::RemoveRoutingNode`]，即把这个身份从
     /// `routing_graph.nodes` 取走）。
     ///
@@ -2130,6 +2178,7 @@ impl NoteOp {
             Self::RemoveClip => REMOVE_CLIP_KIND,
             Self::SetRoutingGain { .. } => SET_ROUTING_GAIN_KIND,
             Self::DisconnectRouting { .. } => DISCONNECT_ROUTING_KIND,
+            Self::AddRoutingNode { .. } => ADD_ROUTING_NODE_KIND,
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
             Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
@@ -2161,6 +2210,7 @@ impl NoteOp {
                 | Self::RemoveClip
                 | Self::SetRoutingGain { .. }
                 | Self::DisconnectRouting { .. }
+                | Self::AddRoutingNode { .. }
                 | Self::RemoveRoutingNode { .. }
                 | Self::RemoveSection { .. }
                 | Self::RemoveScene { .. }
@@ -2254,6 +2304,7 @@ impl NoteOp {
             self,
             Self::SetRoutingGain { .. }
                 | Self::DisconnectRouting { .. }
+                | Self::AddRoutingNode { .. }
                 | Self::RemoveRoutingNode { .. }
         )
     }
@@ -2512,6 +2563,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 edge_id: read_id(object, ROUTING_EDGE_FIELD)?,
             })
         }
+        ADD_ROUTING_NODE_KIND => {
+            reject_add_routing_node_fields(object)?;
+            Ok(NoteOp::AddRoutingNode {
+                node_id: read_id(object, ROUTING_NODE_FIELD)?,
+            })
+        }
         REMOVE_ROUTING_NODE_KIND => {
             reject_remove_routing_node_fields(object)?;
             Ok(NoteOp::RemoveRoutingNode {
@@ -2657,6 +2714,39 @@ fn reject_disconnect_routing_fields(object: &Map<String, Value>) -> Result<(), F
 ///
 /// 出现 `kind` / `nodeId` 之外的键 → `INVALID_PARAMETER_RANGE`
 /// （`data.reason = "unknownRemoveRoutingNodeField"`）。
+/// 拒绝 `addRoutingNode` 里 [`ADD_ROUTING_NODE_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_routing_node_fields`] 同形，但 `reason` **不同名**
+/// （`unknownAddRoutingNodeField`）：两条形态虽然载荷同型，但它们做的是**相反**的事，
+/// 共用一个 `reason` 会让"是哪一次调用被拒"从 `reason` 上读不出来。
+fn reject_add_routing_node_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !ADD_ROUTING_NODE_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{ADD_ROUTING_NODE_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {ADD_ROUTING_NODE_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownAddRoutingNodeField",
+            "unsupportedFields": unknown,
+            "supportedAddRoutingNodeFields": ADD_ROUTING_NODE_FIELDS,
+            "hint": "本形态的载荷是空的 (只认 `kind` 与 `nodeId`); 节点身份是一个音轨或\
+                     总线的身份, 由 `yeban_query_project` 的 `tracks` 报出; 边由 `edgeId` \
+                     寻址 (节点与边是两种实体)",
+        }),
+    ))
+}
+
 fn reject_remove_routing_node_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     let mut unknown: Vec<&str> = object
         .keys()
@@ -4538,6 +4628,39 @@ pub fn compile(
                     previous_edge,
                 }
             }
+            NoteOp::AddRoutingNode { node_id } => {
+                // 载荷是**空**的（模型 `AddRoutingNode` 只有节点身份，且它与
+                // `RemoveRoutingNode` 互为逆操作），因此这里没有撤销载荷可读。
+                //
+                // 一条提前拒绝（与 `removeRoutingNode` 的 `routingNodeNotFound` 同一
+                // 纪律 —— 让"身份打错"在**编译期**就带上 `reason` 与 `hint`，而不是在
+                // 提案模拟那一步冒出一个泛化消息）：这个身份**必须不在** `nodes` 里。
+                // 模型那条前置条件在 `Op::validate` 里报 `DuplicateEntityId`
+                // （`error.rs` 把它映射到 `CONFLICT`），但那条路径只在提案模拟里跑、
+                // 消息里没有本层的 `reason` / `hint`。
+                //
+                // ⚠ **⛔ 不**在这里要求"这个身份是一条真实音轨"：模型只做数据层校验
+                // （`RoutingGraph::validate` 查节点重复、以及每条边的两端都在 `nodes`
+                // 里），它⛔ 不要求节点能对应到 `project.tracks` —— 而同一族的先例是
+                // `addTrack` 只把音轨加进 `tracks`、**不**自动把身份加进 `nodes`。
+                // 本层照抄模型口径（见 `NoteOp::AddRoutingNode` 的文档）。
+                if project.routing_graph.nodes.contains(node_id) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!("工程的 routing_graph.nodes 里已经有身份 {node_id} 的节点"),
+                        serde_json::json!({
+                            "nodeId": node_id.to_canonical_string(),
+                            "reason": "routingNodeAlreadyExists",
+                            "hint": "新建节点是**幂等拒绝**的 (模型 `AddRoutingNode` 的前置\
+                                     条件是身份不在 `nodes` 里); 节点身份由 \
+                                     `yeban_query_project` 的 `routing_graph.nodes` 报出。\
+                                     若你以为它是一条还没进图的音轨, 请先确认 `tracks` 里\
+                                     确实有它 —— 模型**不**要求节点对应真实音轨",
+                        }),
+                    ));
+                }
+                Op::AddRoutingNode { node: *node_id }
+            }
             NoteOp::RemoveRoutingNode { node_id } => {
                 // 载荷是**空**的（模型 `RemoveRoutingNode` 只有节点身份，且它与
                 // `AddRoutingNode` 互为逆操作），因此这里没有撤销载荷可读。
@@ -6369,7 +6492,9 @@ mod tests {
         // 后为 19 —— 同样是与真实的 `kind` 同步，字面值不是常量自比。
         // 本轮（走带配置）新增 `setTransportConfig`（**不是**音轨实体级、也不寻址音轨）
         // 后为 20 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 20);
+        // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
+        // 后为 21 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 21);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -11117,7 +11242,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 20] = [
+        let table: [(&str, serde_json::Value); 21] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -11179,6 +11304,7 @@ mod tests {
             ),
             ("disconnectRouting", serde_json::json!({"edgeId": ulid})),
             ("removeRoutingNode", serde_json::json!({"nodeId": ulid})),
+            ("addRoutingNode", serde_json::json!({"nodeId": ulid})),
             ("removeSection", serde_json::json!({"sectionId": ulid})),
             ("removeScene", serde_json::json!({"sceneId": ulid})),
             ("setScene", serde_json::json!({"scene": {"sceneId": ulid}})),
@@ -11207,6 +11333,7 @@ mod tests {
                 "setRoutingGain",
                 "disconnectRouting",
                 "removeRoutingNode",
+                "addRoutingNode",
                 "removeSection",
                 "removeScene",
                 "setScene",
@@ -11514,7 +11641,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 21] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 22] = [
             (
                 "add",
                 None,
@@ -11641,6 +11768,15 @@ mod tests {
                 "DisconnectRouting",
             ),
             (
+                "addRoutingNode",
+                None,
+                None,
+                // ⚠ 必须用一个**不在** `routing_graph.nodes` 里的身份：`node` 那一行
+                // 已经被 `removeRoutingNode` 用掉了（它是**已有**节点）。
+                serde_json::json!({"nodeId": ghost}),
+                "AddRoutingNode",
+            ),
+            (
                 "removeRoutingNode",
                 None,
                 None,
@@ -11673,7 +11809,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "20 个 kind ＋ 1 个额外载荷分支"
+            "21 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -11709,7 +11845,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 21);
+        assert_eq!(seen.len(), 22);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
@@ -11788,6 +11924,116 @@ mod tests {
             }]))
             .is_err(),
             "❌ 拼错的大小写不许被静默接受"
+        );
+    }
+
+    /// `addRoutingNode`：解析 → 编译到**正是** `Op::AddRoutingNode` → 应用 → 逆操作
+    /// 逐字节回退；重复身份与未知键各自响亮失败。
+    ///
+    /// 注入（实测红）：① 把 [`ADD_ROUTING_NODE_KIND`] 指到 `Op::RemoveRoutingNode` ⇒
+    /// 节点数不减反增（`+1` 那条断言红）、逆操作也回不到原状；② 把
+    /// [`ROUTING_NODE_FIELD`] 由 `nodeId` 改成 `edgeId` ⇒ 解析那一步就红；
+    /// ③ 去掉 `routingNodeAlreadyExists` 那条提前拒绝 ⇒ "重复身份"那次调用会走到
+    /// 提案模拟才报错（`expect_err` 仍然成立、但 `reason` 断言红）。
+    #[test]
+    fn add_routing_node_adds_a_track_identity_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        // ⚠ 夹具前提：要用一个**还没在** `nodes` 里的身份 —— 样本的图很完整（每条音轨
+        // 都已在 `nodes` 里），所以这里取一个**新建音轨**那种"还没进图"的身份。
+        // 这正是本形态的**真实用途**：`addTrack` 只把音轨加进 `tracks`，⛔ **不**自动
+        // 把它的身份加进 `nodes`（两份集合各有自己的 `Op`）⇒ 没有本形态，这样一条
+        // 音轨**永远**不会成为路由节点。
+        let node = EntityId::from_str("01J8ZQ0000000000000000FR5H").expect("ULID");
+        assert!(
+            !project.routing_graph.nodes.contains(&node),
+            "夹具前提：这个身份不在 routing_graph.nodes 里"
+        );
+        let nodes_before = project.routing_graph.nodes.clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 规范形状能解析，且分类正确（路由级、不读不写音符） ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": ADD_ROUTING_NODE_KIND, "nodeId": node.to_canonical_string()}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(
+            ops[0].kind_name(),
+            ADD_ROUTING_NODE_KIND,
+            "kind 必须回环一致"
+        );
+        assert!(!ops[0].is_note_level(), "路由级不读不写音符");
+        assert!(ops[0].is_routing_level(), "必须落在路由级那个桶里");
+        assert_eq!(ops[0], NoteOp::AddRoutingNode { node_id: node });
+
+        // ---- ② 编译到**正是** `Op::AddRoutingNode` ----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::AddRoutingNode { node: target } => assert_eq!(*target, node),
+            other => panic!("应当是 AddRoutingNode: {other:?}"),
+        }
+
+        // ---- ③ 应用：节点真的进图，且工程仍然合法（那条不变式此前不可达） ----
+        compiled[0].apply(&mut project).expect("新建");
+        assert!(
+            project.routing_graph.nodes.contains(&node),
+            "节点必须真的进 `routing_graph.nodes`"
+        );
+        assert_eq!(project.routing_graph.nodes.len(), nodes_before.len() + 1);
+        assert!(
+            project.validate().is_ok(),
+            "新建节点之后工程必须仍然合法 —— 图校验要求每条边的两端都在 nodes 里, \
+             而那个不变式在工具面可达本形态之前**无法被建立**"
+        );
+
+        // ---- ④ 逆操作逐字节回退 ----
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.routing_graph.nodes, nodes_before, "节点必须被摘掉");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "逆操作必须逐字节回到原状"
+        );
+
+        // ---- ⑤ 重复身份：响亮拒绝（模型那条前置条件是"身份不在 nodes 里"） ----
+        let occupied = filled_project();
+        let existing = occupied.routing_graph.nodes[0];
+        let duplicate = parse_ops(&serde_json::json!([
+            {"kind": ADD_ROUTING_NODE_KIND, "nodeId": existing.to_canonical_string()}
+        ]))
+        .expect("解析不查文档");
+        let fault = compile(&occupied, &track_id, &clip_id, &duplicate)
+            .expect_err("已经在 nodes 里的身份必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("routingNodeAlreadyExists"),
+            "必须是**幂等拒绝**并报清楚理由"
+        );
+
+        // ---- ⑥ 未知键：响亮失败，⛔ 不静默丢弃 ----
+        let bad = parse_ops(&serde_json::json!([
+            {"kind": ADD_ROUTING_NODE_KIND, "nodeId": node.to_canonical_string(), "edgeId": node.to_canonical_string()}
+        ]))
+        .expect_err("嵌套的 edgeId 必须被拒不");
+        assert_eq!(
+            reason_of(&bad).as_deref(),
+            Some("unknownAddRoutingNodeField"),
+            "`nodeId` 之外的键必须点名"
+        );
+    }
+
+    /// `addRoutingNode` 的**字面名与支持集合**被钉住。
+    #[test]
+    fn add_routing_node_field_names_are_pinned() {
+        assert_eq!(ADD_ROUTING_NODE_KIND, "addRoutingNode");
+        assert_eq!(ADD_ROUTING_NODE_FIELDS, ["kind", ROUTING_NODE_FIELD]);
+        assert_eq!(ROUTING_NODE_FIELD, "nodeId");
+        // 两个节点形态**互为逆操作** ⇒ 共用同一个寻址字段（不是两个不同的字面量）。
+        assert_eq!(ADD_ROUTING_NODE_FIELDS, REMOVE_ROUTING_NODE_FIELDS);
+        assert_ne!(
+            ADD_ROUTING_NODE_KIND, REMOVE_ROUTING_NODE_KIND,
+            "两个节点形态做的是**相反**的事, 共用一个 kind 会让调用方分不开它们"
         );
     }
 }
