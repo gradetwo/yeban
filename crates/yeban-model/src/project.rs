@@ -3497,13 +3497,44 @@ mod tests {
     /// 实测（本次注入）：`use core::primitive::f32 as ProbeF32;` 之后的
     /// `pub probe_alias: ProbeF32` 对清单判据不可见 —— `type_alias` 只认 `type` 声明。
     fn use_alias(line: &str) -> Option<String> {
-        let rest = line.strip_prefix("use ")?;
+        // ⚠ **可见性前缀必须都认**（照 `extension_audit.rs` 的孤儿模块抽取器形状：
+        // 前缀并列，⛔ 不另发明一套正则）。
+        //
+        // 实测（本次注入前的真实读数）：只认**行首** `use ` 时，一个用
+        // `pub use core::primitive::f32 as MyF32;` 再导出的别名**看不见** ⇒
+        // 用该别名写的数值字段**整条漏扫**：判据仍会红，但报的是"清单多了一条"
+        // （方向相反 ⇒ 会把人引去删冻结清单，而正解是修这里）。
+        const VISIBILITY_PREFIXES: [&str; 4] =
+            ["use ", "pub use ", "pub(crate) use ", "pub(super) use "];
+        let rest = VISIBILITY_PREFIXES
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))?;
         let (path, alias) = rest.split_once(" as ")?;
         let alias = alias.trim().trim_end_matches(';').trim();
         if alias.is_empty() || !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return None;
         }
         is_numeric_type(path).then(|| alias.to_owned())
+    }
+
+    /// **别名表**的内存版：把一段源码文本喂进来，返回它声明的**全部数值别名**。
+    ///
+    /// ⚠ 为什么要它：别名表是抽取器**最容易失明**的一环（`type X = f32;` 与
+    /// `use …::f32 as X;` 两种形态、后者还有四种可见性前缀）。把这一环做成
+    /// **纯函数**，判据就能用**内存里的夹具文本**断言"抽取器看得见"，⛔ 而不必往
+    /// `src/` 里塞一个真字段（那会污染冻结清单 `NUMERIC_FIELD_INVENTORY`）。
+    fn numeric_aliases_in(text: &str) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for line in text.lines() {
+            let line = line.trim_start();
+            if let Some((name, true)) = type_alias(line) {
+                out.insert(name);
+            }
+            if let Some(name) = use_alias(line) {
+                out.insert(name);
+            }
+        }
+        out
     }
 
     /// 一行声明里的**全部**数值字段名。
@@ -4756,6 +4787,35 @@ mod tests {
         // 并且点名"这个字段今天确实存在、抽取器却看不见它"。
         // ⛔ 它**不是**集合相等的重复：集合相等判"两边一样"，本哨兵判
         // "抽取器对这几个字段有效"—— 前者红时给不出方向，后者红时直接指抽取器。
+        // ⭐ ⭐ **别名形态夹具**（内存文本 ⇒ ⛔ 不污染冻结清单 `NUMERIC_FIELD_INVENTORY`）。
+        //
+        // ⚠ 防的是"抽取器**看得见**哪些 `use` 写法"这件事本身：别名表是抽取器最容易
+        // 失明的一环，而失明的**后果是方向相反的红**（见下）。这里把四种可见性前缀
+        // **逐条**断言，于是今后谁收紧/回退 `use_alias`，本夹具**当场**红并指明抽取器。
+        //
+        // 注入验证（第二轮，2026-10-14）：把 `use_alias` 里 `pub use ` 这个前缀**删掉**
+        // （即回退到"只认行首 `use `"的旧形态）⇒ 本夹具必须红，且报"抽取器看不见"。
+        for (label, source) in [
+            ("行首 use", "use core::primitive::f32 as MyFloat;"),
+            ("pub use", "pub use core::primitive::f32 as MyFloat;"),
+            (
+                "pub(crate) use",
+                "pub(crate) use core::primitive::f32 as MyFloat;",
+            ),
+            (
+                "pub(super) use",
+                "pub(super) use core::primitive::f32 as MyFloat;",
+            ),
+            ("type 别名", "pub type MyFloat = f32;"),
+        ] {
+            let aliases = numeric_aliases_in(source);
+            assert!(
+                aliases.contains("MyFloat"),
+                "⭐ 别名形态夹具失败（{label}）：抽取器**看不见**这一段声明\n                   `{source}`\n                   它应被识别为数值别名 `MyFloat`，实际抽到 {aliases:?}。\n                   ⚠ 这是**抽取规则**的盲区（`use_alias` 的可见性前缀表），\
+                 ⛔ 不是冻结清单的问题。"
+            );
+        }
+
         for sentinel in [
             "src/project.rs::YebanProjectV1::bpm",
             "src/project.rs::TrackV3::volume_db",
