@@ -48,7 +48,7 @@ use crate::ids::EntityId;
 use crate::music::MidiNote;
 use crate::project::{
     AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, ClipPoolEntry,
-    DeviceDefinition, RoutingEdge, SceneV3, SectionV3, TrackV3, YebanProjectV1,
+    DeviceDefinition, RoutingEdge, SceneV3, SectionV3, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -345,6 +345,23 @@ pub enum Op {
         /// 修改后静音。
         new_mute: bool,
     },
+    /// 设置**走带配置**（[`TransportConfig`] 的三个字段整体替换）。
+    ///
+    /// 为什么必须有这个变体（而不是复用 [`Op::SetParam`]）：`SetParam` 的载荷是 `f32`
+    /// 与 [`AutomationTarget`]，而 [`TransportConfig`] 里是 `bool` / `u8` /
+    /// [`LaunchQuantization`] ⇒ 走带配置在操作日志层**不可表达**（与 `SetTrackMute`
+    /// 不得不用 `bool` 载荷、`D12` / `D27` / `D42` 补 `RemoveSection` / `AddClip` /
+    /// `SetAutomationLane` 的理由**同型**：载荷类型对不上，不是"懒得复用"）。
+    ///
+    /// ⚠ **整体替换而不是逐字段**：三个字段是**一个作者选择**（`ADR-0001 D43` 的
+    /// "必须被显式陈述"），拆成三条 `Op` 会让"撤销一步"只回退其中一个字段、
+    /// 留下一个作者从未选过的组合 ⇒ 故这里是**一条** `Op`。
+    SetTransportConfig {
+        /// 修改前的完整走带配置。
+        old_config: TransportConfig,
+        /// 修改后的完整走带配置。
+        new_config: TransportConfig,
+    },
     /// 设置音轨**独奏**。
     ///
     /// 与 [`Op::SetTrackMute`] 同族：[`TrackV3::solo`] 也是 `bool`。
@@ -536,6 +553,7 @@ impl Op {
             Self::RemoveDevice { .. } => "RemoveDevice",
             Self::SetParam { .. } => "SetParam",
             Self::SetTrackMute { .. } => "SetTrackMute",
+            Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
@@ -866,6 +884,12 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetTransportConfig { old_config, .. } => {
+                if doc.transport != *old_config {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -1190,6 +1214,14 @@ impl Op {
                 old_val: *new_val,
                 new_val: *old_val,
             },
+            // 纯结构化取反：只交换"前 / 后"两份配置（与 `SetTrackMute` 同型）。
+            Self::SetTransportConfig {
+                old_config,
+                new_config,
+            } => Self::SetTransportConfig {
+                old_config: *new_config,
+                new_config: *old_config,
+            },
             // 纯结构化取反：只交换"前 / 后"两个布尔。
             Self::SetTrackMute {
                 track_id,
@@ -1468,6 +1500,11 @@ impl Op {
                 doc.track_mut(track_id)?.solo = *new_solo;
                 Ok(())
             }
+            // 整体替换三个字段：⛔ 不逐字段写（见枚举文档：三个字段是一个作者选择）。
+            Self::SetTransportConfig { new_config, .. } => {
+                doc.transport = *new_config;
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -1732,7 +1769,8 @@ mod tests {
     use super::*;
     use crate::music::splitmix64;
     use crate::project::{
-        ClipContent, ClipPoolEntry, LoopConfig, ProjectAudioConfig, RoutingKind, TrackKind,
+        ClipContent, ClipPoolEntry, LaunchQuantization, LoopConfig, ProjectAudioConfig,
+        RoutingKind, TrackKind,
     };
     use proptest::prelude::*;
     use std::collections::BTreeMap;
@@ -2177,6 +2215,17 @@ mod tests {
                 track_id: f.bass,
                 old_solo: false,
                 new_solo: true,
+            },
+            // 走带配置：夹具的 `transport` 是 `TransportConfig::default()`
+            // （`metronome_enabled=false` / `count_in_bars=0` / `Bar`）⇒ `old_config`
+            // 取默认值，前置条件在 `fixture_document()` 上成立。
+            Op::SetTransportConfig {
+                old_config: TransportConfig::default(),
+                new_config: TransportConfig {
+                    metronome_enabled: true,
+                    count_in_bars: 2,
+                    launch_quantization: LaunchQuantization::TwoBars,
+                },
             },
             Op::SetMacro {
                 track_id: f.lead,
@@ -2966,7 +3015,7 @@ mod tests {
         );
         assert_eq!(
             all_ops.len(),
-            35,
+            36,
             "showcase 脚本的条数变了 —— 新变体必须同时进脚本与本判据的登记表"
         );
     }
@@ -3150,8 +3199,8 @@ mod tests {
         );
         assert_eq!(
             contract.len(),
-            31,
-            "op.oneOf 必须覆盖 31 个变体, 实际 {}: {contract:?}",
+            32,
+            "op.oneOf 必须覆盖 32 个变体, 实际 {}: {contract:?}",
             contract.len()
         );
 

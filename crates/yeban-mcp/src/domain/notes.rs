@@ -745,8 +745,8 @@ use serde_json::{Map, Value};
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
-    ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig, MidiNote, Op,
-    ParameterValue, SceneV3, TrackV3, YebanProjectV1,
+    ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LaunchQuantization,
+    LoopConfig, MidiNote, Op, ParameterValue, SceneV3, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -914,6 +914,36 @@ pub const SET_TRACK_MUTE_KIND: &str = "setTrackMute";
 /// `ops[].kind` 的**音轨独奏**形态名（写 [`Op::SetTrackSolo`]）。
 pub const SET_TRACK_SOLO_KIND: &str = "setTrackSolo";
 
+/// `ops[].kind` 的**走带配置**形态名（写 [`Op::SetTransportConfig`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetTransportConfig` 的小驼峰），与 [`SET_TRACK_MUTE_KIND`]
+/// 同一条规则。
+pub const SET_TRANSPORT_CONFIG_KIND: &str = "setTransportConfig";
+
+/// `setTransportConfig` 的**节拍器开关**字段名（`ops[].metronomeEnabled`，必填，布尔）。
+pub const TRANSPORT_METRONOME_FIELD: &str = "metronomeEnabled";
+
+/// `setTransportConfig` 的**预备小节数**字段名（`ops[].countInBars`，必填，整数 `0..=255`）。
+pub const TRANSPORT_COUNT_IN_FIELD: &str = "countInBars";
+
+/// `setTransportConfig` 的**启动量化**字段名（`ops[].launchQuantization`，必填，枚举串）。
+///
+/// ⚠ 取值与线协议**逐字相同**（`Off` / `Bar` / `TwoBars` / `FourBars` / `EightBars`）
+/// —— 那是 `schemas/project.schema.json` 的 `transport.launch_quantization.enum`
+/// 与模型 `LaunchQuantization` 的 `serde` 名，因此本层**不另发明**一套拼写。
+pub const TRANSPORT_LAUNCH_FIELD: &str = "launchQuantization";
+
+/// 走带配置形态允许出现的**全部**键（判别键 `kind` ＋ 三个字段，字段全部必填）。
+///
+/// ⚠ 与音轨开关形态同一条口径（`ADR-0001 D43` 的"必须被显式陈述"）：三个字段
+/// **一个都不能省**，多写一个键是**响亮失败**（⛔ 不静默丢弃、⛔ 不用 `Default` 补）。
+pub const TRANSPORT_CONFIG_FIELDS: [&str; 4] = [
+    "kind",
+    TRANSPORT_METRONOME_FIELD,
+    TRANSPORT_COUNT_IN_FIELD,
+    TRANSPORT_LAUNCH_FIELD,
+];
+
 /// 音轨开关形态的**新值**字段名（`ops[].value`，必填，布尔）。
 ///
 /// 与 [`SET_PARAM_VALUE_FIELD`] 逐字同词（`ADR-0001` D48：同一个词必须同一个意思 ——
@@ -934,7 +964,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 19] = [
+pub const OP_KINDS: [&str; 20] = [
     "add",
     "delete",
     "move",
@@ -946,6 +976,7 @@ pub const OP_KINDS: [&str; 19] = [
     SET_PARAM_KIND,
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
+    SET_TRANSPORT_CONFIG_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1837,6 +1868,19 @@ pub enum NoteOp {
         /// 目标态。
         value: bool,
     },
+    /// 设置**走带配置**（[`Op::SetTransportConfig`]）。
+    ///
+    /// 与 [`Self::SetTrackFlag`] 同族（不读不写音符），但载荷是**三个字段的整体**
+    /// —— 模型那一条 `Op` 也是整体替换（理由见 `Op::SetTransportConfig` 的文档）。
+    /// 撤销载荷 `old_config` 由 [`Self::read_transport`] 从**当前文档**读，
+    /// 不是调用方声明。
+    ///
+    /// ⚠ **目标不是音轨**：本形态不查顶层 `trackId`（与 `removeTrack` 同类，
+    /// 见 [`Self::is_track_entity_level`]）。
+    SetTransportConfig {
+        /// 目标态的三个字段。
+        new_config: TransportConfig,
+    },
     /// 写一条**自动化泳道自己的属性**（[`Op::SetAutomationLane`] /
     /// [`Op::RemoveAutomationLane`]）。
     ///
@@ -2080,6 +2124,7 @@ impl NoteOp {
             Self::Velocity { .. } => "velocity",
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
+            Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -2409,6 +2454,9 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         SET_TRACK_SOLO_KIND => Ok(NoteOp::SetTrackFlag {
             flag: TrackFlag::Solo,
             value: parse_track_flag_value(object)?,
+        }),
+        SET_TRANSPORT_CONFIG_KIND => Ok(NoteOp::SetTransportConfig {
+            new_config: parse_transport_config(object)?,
         }),
         SET_AUTOMATION_LANE_KIND => Ok(NoteOp::SetLane {
             edit: parse_lane_edit(object)?,
@@ -3424,6 +3472,142 @@ fn reject_track_flag_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     ))
 }
 
+/// 拒绝 `setTransportConfig` 里 [`TRANSPORT_CONFIG_FIELDS`] 之外的键。
+///
+/// 与 [`reject_track_flag_fields`] 同一条口径，但这里的三个字段**一个都不能省**：
+/// `ADR-0001 D43` 规定走带配置的三个字段都是必需陈述 —— 缺一个就会"静默伪造一个
+/// 作者从未做过的选择"（缺 `metronomeEnabled` 会静默关掉节拍器、缺 `countInBars`
+/// 会静默取消预备拍、缺 `launchQuantization` 会静默换成一小节量化）。
+fn reject_transport_config_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !TRANSPORT_CONFIG_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "走带配置操作里有不支持的键: {} (支持集合只有 {TRANSPORT_CONFIG_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownTransportConfigField",
+            "unsupportedFields": unknown,
+            "supportedTransportConfigFields": TRANSPORT_CONFIG_FIELDS,
+        }),
+    ))
+}
+
+/// 读一个**必填**布尔（⛔ 不做真假值强转：`1` / `"true"` 都不是布尔）。
+fn read_required_bool(object: &Map<String, Value>, field: &str) -> Result<bool, Fault> {
+    let raw = object.get(field).ok_or_else(|| missing(field, "布尔"))?;
+    raw.as_bool().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是布尔, 实际收到 {raw} (不做真假值强转)"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeBoolean",
+                "received": raw,
+            }),
+        )
+    })
+}
+
+/// 读一个**必填**的无符号字节（缺省/负/超 `255`/非整数一律响亮失败）。
+fn read_required_u8(object: &Map<String, Value>, field: &str) -> Result<u8, Fault> {
+    let raw = object
+        .get(field)
+        .ok_or_else(|| missing(field, "0..=255 的整数"))?;
+    let value = raw.as_u64().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是 0..=255 的整数, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeUnsignedInteger",
+                "received": raw,
+            }),
+        )
+    })?;
+    u8::try_from(value).map_err(|_| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 超出 0..=255, 实际收到 {value}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueOutOfRange",
+                "received": value,
+                "max": u8::MAX,
+            }),
+        )
+    })
+}
+
+/// 读一个**必填**的启动量化名（取值与线协议逐字相同，⛔ 不发明拼写）。
+fn read_required_launch_quantization(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<LaunchQuantization, Fault> {
+    let raw = object
+        .get(field)
+        .ok_or_else(|| missing(field, "启动量化名"))?;
+    let text = raw.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是字符串, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeString",
+                "received": raw,
+            }),
+        )
+    })?;
+    match text {
+        "Off" => Ok(LaunchQuantization::Off),
+        "Bar" => Ok(LaunchQuantization::Bar),
+        "TwoBars" => Ok(LaunchQuantization::TwoBars),
+        "FourBars" => Ok(LaunchQuantization::FourBars),
+        "EightBars" => Ok(LaunchQuantization::EightBars),
+        other => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{field}` 不是规范的启动量化名: {other}                  (规范名与线协议逐字相同: Off / Bar / TwoBars / FourBars / EightBars)"
+            ),
+            serde_json::json!({
+                "field": field,
+                "reason": "unknownLaunchQuantization",
+                "received": other,
+                "allowed": ["Off", "Bar", "TwoBars", "FourBars", "EightBars"],
+            }),
+        )),
+    }
+}
+
+/// 解析 `setTransportConfig` 的载荷对象（三个字段**全部必填**）。
+///
+/// 顺序刻意：**先拒绝未知键**，再逐个读必填字段 ⇒ 最危险的错键
+/// （`metronome_enabled` / `countInBars` 拼错）在任何"值看起来没问题"的路径之前点名。
+///
+/// # Errors
+///
+/// - 未知键 → `unknownTransportConfigField`；
+/// - 任一字段缺失 → `MISSING_PARAMETER`；
+/// - `metronomeEnabled` 非布尔 / `countInBars` 非 `0..=255` 整数 /
+///   `launchQuantization` 非规范名 → 各自的 `reason`，⛔ 绝不静默回退到默认值。
+fn parse_transport_config(object: &Map<String, Value>) -> Result<TransportConfig, Fault> {
+    reject_transport_config_fields(object)?;
+    Ok(TransportConfig {
+        metronome_enabled: read_required_bool(object, TRANSPORT_METRONOME_FIELD)?,
+        count_in_bars: read_required_u8(object, TRANSPORT_COUNT_IN_FIELD)?,
+        launch_quantization: read_required_launch_quantization(object, TRANSPORT_LAUNCH_FIELD)?,
+    })
+}
+
 /// 解析 `setAutomationLane` 的载荷对象（`ops[].lane`）。
 ///
 /// 顺序是刻意的：先拒绝未知键（`unknownLaneField`），再判"取走"与属性互斥
@@ -4191,6 +4375,15 @@ pub fn compile(
                 // `track` 在这里必然是 `Some`：本形态**不是**音轨实体级，因此上面那条
                 // "要不要查顶层 `trackId`"的分支一定取了音轨（见 `track_entity_only`）。
                 flag.compile(*track_id, flag.read(track.expect("非音轨实体级必查音轨")), *value)
+            }
+            NoteOp::SetTransportConfig { new_config } => {
+                // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
+                // 本层不自己写 `Op::invert`（那是模型的唯一事实源）。
+                // ⚠ 本形态**不是**音轨实体级、也不寻址音轨 ⇒ 只用 `project.transport`。
+                Op::SetTransportConfig {
+                    old_config: project.transport,
+                    new_config: *new_config,
+                }
             }
             NoteOp::SetLane { edit } => {
                 let target = edit.spec.target(*track_id);
@@ -5694,6 +5887,16 @@ mod tests {
         (track.id, clip.id)
     }
 
+    /// 取故障的 `reason`（公开的 `to_tool_response` 面 ⇒ ⛔ 不碰内部字段）。
+    fn reason_of(fault: &Fault) -> Option<String> {
+        let response = fault.to_tool_response()?;
+        // 响应形状：`{"error":{"data":{"reason": ...}}}`。
+        response
+            .pointer("/error/data/reason")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
     /// 取一个领域失败的 `data`（判据只关心结构化补充，不关心人话信息）。
     fn lane_fault_data(fault: &Fault) -> &Value {
         match fault {
@@ -6164,7 +6367,9 @@ mod tests {
         // （多了一个真存在的 `kind`），不是弱化判据。
         // 本票（设备 CRUD）再新增两个**设备级**形态（`insertDevice` / `removeDevice`）
         // 后为 19 —— 同样是与真实的 `kind` 同步，字面值不是常量自比。
-        assert_eq!(OP_KINDS.len(), 19);
+        // 本轮（走带配置）新增 `setTransportConfig`（**不是**音轨实体级、也不寻址音轨）
+        // 后为 20 —— 同样与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 20);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -10912,7 +11117,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 19] = [
+        let table: [(&str, serde_json::Value); 20] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -10953,6 +11158,14 @@ mod tests {
             ("setTrackMute", serde_json::json!({"value": true})),
             ("setTrackSolo", serde_json::json!({"value": false})),
             (
+                "setTransportConfig",
+                serde_json::json!({
+                    "metronomeEnabled": true,
+                    "countInBars": 2,
+                    "launchQuantization": "Bar",
+                }),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -10988,6 +11201,7 @@ mod tests {
                 "setParam",
                 "setTrackMute",
                 "setTrackSolo",
+                "setTransportConfig",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -11300,7 +11514,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 20] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 21] = [
             (
                 "add",
                 None,
@@ -11381,6 +11595,17 @@ mod tests {
                 "SetTrackSolo",
             ),
             (
+                "setTransportConfig",
+                None,
+                None,
+                serde_json::json!({
+                    "metronomeEnabled": true,
+                    "countInBars": 2,
+                    "launchQuantization": "Bar",
+                }),
+                "SetTransportConfig",
+            ),
+            (
                 "setAutomationLane#patch",
                 None,
                 None,
@@ -11448,7 +11673,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "19 个 kind ＋ 1 个额外载荷分支"
+            "20 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -11481,6 +11706,88 @@ mod tests {
             );
             seen.push(expected);
         }
-        assert_eq!(seen.len(), 20);
+        // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
+        // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
+        // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
+        assert_eq!(seen.len(), 21);
+    }
+
+    /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
+    /// 从**当前文档**读出来（⛔ 不是调用方声明）。
+    #[test]
+    fn set_transport_config_parses_and_reads_the_old_config_from_the_document() {
+        // ① 规范形状能解析，且回环到同一个 kind。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "setTransportConfig",
+            "metronomeEnabled": true,
+            "countInBars": 2,
+            "launchQuantization": "TwoBars",
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind_name(), SET_TRANSPORT_CONFIG_KIND);
+
+        // ② 未知键响亮失败（⛔ 不静默丢弃）。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "setTransportConfig",
+            "metronomeEnabled": true,
+            "countInBars": 2,
+            "launchQuantization": "Bar",
+            "tempo": 128,
+        }]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownTransportConfigField")
+        );
+
+        // ③ 三个字段**一个都不能省**（ADR-0001 D43：缺一个就是伪造作者的选择）。
+        for missing in [
+            TRANSPORT_METRONOME_FIELD,
+            TRANSPORT_COUNT_IN_FIELD,
+            TRANSPORT_LAUNCH_FIELD,
+        ] {
+            let mut object = serde_json::json!({
+                "kind": "setTransportConfig",
+                "metronomeEnabled": true,
+                "countInBars": 2,
+                "launchQuantization": "Bar",
+            });
+            object.as_object_mut().expect("对象").remove(missing);
+            assert!(
+                parse_ops(&serde_json::json!([object])).is_err(),
+                "缺 `{missing}` 必须响亮失败"
+            );
+        }
+
+        // ④ `compile` 的 `old_config` 来自**当前工程**（`filled_project` 的走带配置）。
+        let project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetTransportConfig {
+                old_config,
+                new_config,
+            } => {
+                assert_eq!(*old_config, project.transport, "old 必须等于文档现值");
+                assert!(new_config.metronome_enabled);
+                assert_eq!(new_config.count_in_bars, 2);
+                assert_eq!(new_config.launch_quantization, LaunchQuantization::TwoBars);
+            }
+            other => panic!("必须编译成 SetTransportConfig, 实际 {other:?}"),
+        }
+
+        // ⑤ 反向：非规范量化名响亮失败。
+        assert!(
+            parse_ops(&serde_json::json!([{
+                "kind": "setTransportConfig",
+                "metronomeEnabled": true,
+                "countInBars": 2,
+                "launchQuantization": "bar",
+            }]))
+            .is_err(),
+            "❌ 拼错的大小写不许被静默接受"
+        );
     }
 }

@@ -390,6 +390,16 @@
               "type": "object"
             }
           }
+        },
+        {
+          "required": [
+            "SetTransportConfig"
+          ],
+          "properties": {
+            "SetTransportConfig": {
+              "type": "object"
+            }
+          }
         }
       ],
       "description": "Domain reversible operation. oneOf must cover every Op variant: exactly one branch may match."
