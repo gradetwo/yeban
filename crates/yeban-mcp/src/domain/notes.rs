@@ -746,8 +746,8 @@ use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
     ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LaunchQuantization,
-    LoopConfig, MidiNote, Op, ParameterValue, SceneV3, TrackKind, TrackV3, TransportConfig,
-    YebanProjectV1,
+    LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind, SceneV3, TrackKind,
+    TrackV3, TransportConfig, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -965,7 +965,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 22] = [
+pub const OP_KINDS: [&str; 23] = [
     "add",
     "delete",
     "move",
@@ -982,6 +982,7 @@ pub const OP_KINDS: [&str; 22] = [
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
     DISCONNECT_ROUTING_KIND,
+    CONNECT_ROUTING_KIND,
     REMOVE_ROUTING_NODE_KIND,
     ADD_ROUTING_NODE_KIND,
     ADD_TRACK_KIND,
@@ -1397,6 +1398,66 @@ pub const ADD_ROUTING_NODE_KIND: &str = "addRoutingNode";
 /// —— 它没有撤销载荷（与 [`REMOVE_ROUTING_NODE_KIND`] 互为逆操作）。
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const ADD_ROUTING_NODE_FIELDS: [&str; 2] = ["kind", ROUTING_NODE_FIELD];
+
+/// `ops[].kind` 的**建立路由边**形态名（写 [`Op::ConnectRouting`]）。
+///
+/// 与模型 `Op` 变体名同词（`ConnectRouting` 的小驼峰），与
+/// [`DISCONNECT_ROUTING_KIND`] 同一条命名规则。
+///
+/// ⚠ **它是 [`DISCONNECT_ROUTING_KIND`] 的逆**，也是路由图可用性的**最后一环**：
+/// 在它之前工具面**建得起节点、连不起边**（边只在 `yeban_create_project` 的建批与
+/// `yeban_propose_section` 的声部连接里发生）。
+pub const CONNECT_ROUTING_KIND: &str = "connectRouting";
+
+/// 建立路由边形态的**边身份**字段名（`ops[].edgeId`，必填）。
+///
+/// 与 [`SET_ROUTING_GAIN_KIND`] / [`DISCONNECT_ROUTING_KIND`] 的 `edgeId` **逐字同词**
+/// （`ADR-0001` D48：同一个词必须同一个意思 —— 被寻址的那条**边**）。
+/// 建立路由边形态的**边身份**字段名（= [`ROUTING_EDGE_FIELD`]，同一个字面量）。
+///
+/// ⚠ 与 [`SET_ROUTING_GAIN_EDGE_FIELD`] 同一条做法：**不复制**那个字面量，而是
+/// 引用它 —— 两条形态寻址的是**同一种实体**（`routing_graph.edges` 里的那条边）。
+pub const CONNECT_EDGE_FIELD: &str = ROUTING_EDGE_FIELD;
+
+/// 建立路由边形态的**源节点**字段名（`ops[].sourceNode`，必填）。
+///
+/// ⚠ 两个端点都必须是 `routing_graph.nodes` 里**已有**的身份（模型 `ConnectRouting`
+/// 的前置条件）—— 因此正常的用法是**先**用 [`ADD_ROUTING_NODE_KIND`] 把节点加进图，
+/// **再**用本形态连边。
+pub const CONNECT_SOURCE_FIELD: &str = "sourceNode";
+
+/// 建立路由边形态的**目标节点**字段名（`ops[].destinationNode`，必填）。
+pub const CONNECT_DESTINATION_FIELD: &str = "destinationNode";
+
+/// 建立路由边形态的**路由类型**字段名（`ops[].edgeKind`，必填，规范枚举串）。
+///
+/// ⚠ 取值与线协议**逐字相同**（`TrackToBus` / `BusToMaster` / `SendToAux` /
+/// `Sidechain`）—— 那是模型 `RoutingKind` 的 `serde` 名，因此本层**不另发明**拼写。
+/// ⚠ 字段名**不叫** `kind`：那个词在本层是**判别键**（`ops[].kind`），复用会让
+/// "这一项是哪一形态"与"这条边是什么路由类型"混成一个词。
+pub const CONNECT_EDGE_KIND_FIELD: &str = "edgeKind";
+
+/// 建立路由边形态的**增益**字段名（`ops[].gainDb`，**可选**）。
+///
+/// ⚠ 它是 `Option<f32>` 的平铺写法，与 [`SET_ROUTING_GAIN_KIND`] 的 `value` **同口径**
+/// （⛔ 不造第二套）：`null` = `None` = **单位增益**；数字 = `Some`（必须有限）；
+/// **整键省略** = `None`（与 `null` 同义 —— 因为 `RoutingEdge::gain_db` 带
+/// `#[serde(default)]`，模型的"缺键"就是单位增益）。
+pub const CONNECT_GAIN_FIELD: &str = "gainDb";
+
+/// 建立路由边形态允许出现的**全部**键（判别键 + 四个必填 + 一个可选）。
+///
+/// ⚠ **平铺**：⛔ 不嵌套一个 `edge: {...}` 对象 —— 与 [`ADD_ROUTING_NODE_KIND`] /
+/// [`DISCONNECT_ROUTING_KIND`] 同一条形状（同族形态都平铺）。
+/// 多写一个键是**响亮失败**，不静默丢弃。
+pub const CONNECT_ROUTING_FIELDS: [&str; 6] = [
+    "kind",
+    CONNECT_EDGE_FIELD,
+    CONNECT_SOURCE_FIELD,
+    CONNECT_DESTINATION_FIELD,
+    CONNECT_EDGE_KIND_FIELD,
+    CONNECT_GAIN_FIELD,
+];
 
 /// `ops[].kind` 的**取走路由节点**形态名（写 [`Op::RemoveRoutingNode`]）。
 ///
@@ -2060,6 +2121,40 @@ pub enum NoteOp {
         /// 路由节点身份（本形态自带寻址）。
         node_id: EntityId,
     },
+    /// 建立**一条路由边**（[`Op::ConnectRouting`]，即把这条边加进
+    /// `routing_graph.edges`）。
+    ///
+    /// ⚠⭐ **本形态是路由图可用性的最后一环**：在它之前工具面**建得起节点、连不起边**
+    /// —— `Op::ConnectRouting` 在 MCP 侧只在 `yeban_create_project` 的建批与
+    /// `yeban_propose_section` 的声部连接里被构造 ⇒ 一个**已存在的**工程无法自己接线。
+    /// 它与 [`Self::DisconnectRouting`] **严格互为逆**。
+    ///
+    /// ⚠ **平铺形状**（⛔ 不嵌套 `edge: {...}`）：与 [`Self::AddRoutingNode`] /
+    /// [`Self::DisconnectRouting`] 同一条形状（同族形态都平铺）。
+    ///
+    /// 模型那条 `Op` **自带全部载荷**（撤销靠 `invert` 换成 `DisconnectRouting`，
+    /// 而后者也自带 `previous_edge`）⇒ 本形态**既不读文档现值、也不接受调用方声明的
+    /// 旧状态**（与 `removeSection` 那类"撤销载荷从当前文档读"的形态**不同**）。
+    ///
+    /// 模型的三条前置条件：① `edge.validate()`（增益必须有限）；② **两端都必须在
+    /// `routing_graph.nodes` 里**（`RoutingNodeNotFound`）；③ `edge.id` **不在**
+    /// `routing_graph.edges` 里（`DuplicateEntityId`）。
+    /// ⚠ 模型**没有**"节点类型与 `edgeKind` 必须匹配"这条约束（例如 `TrackToBus`
+    /// 的两端可以是任意身份）⇒ 本层⛔ **不发明**它，只提前报 ②③
+    /// （`routingNodeNotFound` / `routingEdgeAlreadyExists`），与
+    /// [`Self::RemoveRoutingNode`] 提前报 `routingNodeNotFound` 同一条纪律。
+    ConnectRouting {
+        /// 边身份（本形态自带寻址）。
+        edge_id: EntityId,
+        /// 源节点（必须已在 `routing_graph.nodes` 里）。
+        source_node: EntityId,
+        /// 目标节点（必须已在 `routing_graph.nodes` 里）。
+        destination_node: EntityId,
+        /// 路由类型。
+        kind: RoutingKind,
+        /// 该边的增益（dB）；`None` = 单位增益。
+        gain_db: Option<f32>,
+    },
     /// 取走**一个路由节点**（[`Op::RemoveRoutingNode`]，即把这个身份从
     /// `routing_graph.nodes` 取走）。
     ///
@@ -2244,6 +2339,7 @@ impl NoteOp {
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
             Self::SetRoutingGain { .. } => SET_ROUTING_GAIN_KIND,
+            Self::ConnectRouting { .. } => CONNECT_ROUTING_KIND,
             Self::DisconnectRouting { .. } => DISCONNECT_ROUTING_KIND,
             Self::AddTrack { .. } => ADD_TRACK_KIND,
             Self::AddRoutingNode { .. } => ADD_ROUTING_NODE_KIND,
@@ -2277,6 +2373,7 @@ impl NoteOp {
                 | Self::RemovePoint { .. }
                 | Self::RemoveClip
                 | Self::SetRoutingGain { .. }
+                | Self::ConnectRouting { .. }
                 | Self::DisconnectRouting { .. }
                 | Self::AddTrack { .. }
                 | Self::AddRoutingNode { .. }
@@ -2372,6 +2469,7 @@ impl NoteOp {
         matches!(
             self,
             Self::SetRoutingGain { .. }
+                | Self::ConnectRouting { .. }
                 | Self::DisconnectRouting { .. }
                 | Self::AddRoutingNode { .. }
                 | Self::RemoveRoutingNode { .. }
@@ -2626,6 +2724,16 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 gain_db: read_routing_gain(object)?,
             })
         }
+        CONNECT_ROUTING_KIND => {
+            reject_connect_routing_fields(object)?;
+            Ok(NoteOp::ConnectRouting {
+                edge_id: read_id(object, CONNECT_EDGE_FIELD)?,
+                source_node: read_id(object, CONNECT_SOURCE_FIELD)?,
+                destination_node: read_id(object, CONNECT_DESTINATION_FIELD)?,
+                kind: read_required_routing_kind(object, CONNECT_EDGE_KIND_FIELD)?,
+                gain_db: read_optional_finite_f32(object, CONNECT_GAIN_FIELD)?,
+            })
+        }
         DISCONNECT_ROUTING_KIND => {
             reject_disconnect_routing_fields(object)?;
             Ok(NoteOp::DisconnectRouting {
@@ -2786,6 +2894,118 @@ fn reject_disconnect_routing_fields(object: &Map<String, Value>) -> Result<(), F
 ///
 /// 出现 `kind` / `nodeId` 之外的键 → `INVALID_PARAMETER_RANGE`
 /// （`data.reason = "unknownRemoveRoutingNodeField"`）。
+/// 拒绝 `connectRouting` 里 [`CONNECT_ROUTING_FIELDS`] 之外的键。
+fn reject_connect_routing_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !CONNECT_ROUTING_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{CONNECT_ROUTING_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {CONNECT_ROUTING_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownConnectRoutingField",
+            "unsupportedFields": unknown,
+            "supportedConnectRoutingFields": CONNECT_ROUTING_FIELDS,
+            "hint": "本形态是**平铺**的 (⛔ 不嵌套 `edge: {{...}}` 对象): \
+                     `edgeId`/`sourceNode`/`destinationNode`/`edgeKind` 四个必填, \
+                     `gainDb` 可选 (`null` 或省略都 = 单位增益)",
+        }),
+    ))
+}
+
+/// 读一个**必填**的路由类型名（取值与线协议逐字相同，⛔ 不发明拼写）。
+fn read_required_routing_kind(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<RoutingKind, Fault> {
+    let raw = object
+        .get(field)
+        .ok_or_else(|| missing(field, "路由类型名"))?;
+    let text = raw.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是字符串, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeString",
+                "received": raw,
+            }),
+        )
+    })?;
+    match text {
+        "TrackToBus" => Ok(RoutingKind::TrackToBus),
+        "BusToMaster" => Ok(RoutingKind::BusToMaster),
+        "SendToAux" => Ok(RoutingKind::SendToAux),
+        "Sidechain" => Ok(RoutingKind::Sidechain),
+        other => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{field}` 不是规范的路由类型: {other} \
+                 (规范名与线协议逐字相同: TrackToBus / BusToMaster / SendToAux / Sidechain)"
+            ),
+            serde_json::json!({
+                "field": field,
+                "reason": "unknownRoutingKind",
+                "received": other,
+                "allowed": ["TrackToBus", "BusToMaster", "SendToAux", "Sidechain"],
+            }),
+        )),
+    }
+}
+
+/// 读一个**可选**的有限 `f32`（键**省略** 与 `null` **同义** ⇒ 都返回 `None`）。
+///
+/// ⚠ 与 [`SET_ROUTING_GAIN_KIND`] 的 `value` **同口径**（⛔ 不造第二套）：
+/// `null` = `None` = **单位增益**；数字 = `Some`（必须有限，否则 `nonFiniteValue`）。
+/// 省略整键 ⇒ `None`（因为 `RoutingEdge::gain_db` 带 `#[serde(default)]`，
+/// 模型里"缺键"就是单位增益）。
+fn read_optional_finite_f32(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<f32>, Fault> {
+    let Some(raw) = object.get(field) else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let number = raw.as_f64().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是数字或 null, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeNumberOrNull",
+                "received": raw,
+            }),
+        )
+    })?;
+    let narrowed = number as f32;
+    if !narrowed.is_finite() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 的增益必须有限, 实际收到 {number}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "nonFiniteValue",
+                "value": number,
+                "narrowedToF32": true,
+            }),
+        ));
+    }
+    Ok(Some(narrowed))
+}
+
 /// 拒绝 `addTrack` 里 [`ADD_TRACK_FIELDS`] 之外的键。
 ///
 /// ⚠ **四个集合与 `folderId`/`color`/五个混音标量都**不在**支持集合里** —— 那是
@@ -4793,6 +5013,61 @@ pub fn compile(
                     new_gain_db: *gain_db,
                 }
             }
+            NoteOp::ConnectRouting {
+                edge_id,
+                source_node,
+                destination_node,
+                kind,
+                gain_db,
+            } => {
+                // 载荷**自带**：模型 `ConnectRouting` 有全部字段，逆操作是
+                // `DisconnectRouting`（它也自带 `previous_edge`）⇒ 本层不读文档现值。
+                //
+                // 两条提前拒绝（与 `removeRoutingNode` 的 `routingNodeNotFound` 同一
+                // 纪律）：① 两端都必须在 `nodes` 里；② `edge.id` 不在 `edges` 里。
+                // ⚠ "增益有限"由模型 `edge.validate()` 报；"节点类型与 edgeKind 匹配"
+                // **模型没有**这条 ⇒ 本层不发明。
+                for endpoint in [*source_node, *destination_node] {
+                    if !project.routing_graph.nodes.contains(&endpoint) {
+                        return Err(Fault::domain_with_data(
+                            ErrorCode::EntityNotFound,
+                            format!(
+                                "工程的 routing_graph.nodes 里没有身份 {endpoint} 的节点, \
+                                 不能连边"
+                            ),
+                            serde_json::json!({
+                                "nodeId": endpoint.to_canonical_string(),
+                                "reason": "routingNodeNotFound",
+                                "hint": "连边之前两端都必须已经在 `nodes` 里 —— 先调 \
+                                         `addRoutingNode` 把节点加进图; 节点身份由 \
+                                         `yeban_query_project` 的 `routing_graph.nodes` 报出",
+                            }),
+                        ));
+                    }
+                }
+                if project.routing_graph.edges.contains_key(edge_id) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!("工程的 routing_graph.edges 里已经有身份 {edge_id} 的边"),
+                        serde_json::json!({
+                            "edgeId": edge_id.to_canonical_string(),
+                            "reason": "routingEdgeAlreadyExists",
+                            "hint": "建边是**幂等拒绝**的 (模型 `ConnectRouting` 的前置条件\
+                                     是 `edge.id` 不在 `edges` 里); 要改一条已有边的增益用 \
+                                     `setRoutingGain`, 要取走它用 `disconnectRouting`",
+                        }),
+                    ));
+                }
+                Op::ConnectRouting {
+                    edge: RoutingEdge {
+                        id: *edge_id,
+                        source_node: *source_node,
+                        destination_node: *destination_node,
+                        kind: *kind,
+                        gain_db: *gain_db,
+                    },
+                }
+            }
             NoteOp::DisconnectRouting { edge_id } => {
                 // 撤销载荷来自**当前文档**的**整条**边：模型 `DisconnectRouting` 的
                 // 前置条件要求 `previous_edge` 逐字段等于文档现值（`RoutingEdge` 是
@@ -6713,7 +6988,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 22);
+        assert_eq!(OP_KINDS.len(), 23);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -11461,7 +11736,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 22] = [
+        let table: [(&str, serde_json::Value); 23] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -11522,6 +11797,10 @@ mod tests {
                 serde_json::json!({"edgeId": ulid, "value": null}),
             ),
             ("disconnectRouting", serde_json::json!({"edgeId": ulid})),
+            (
+                "connectRouting",
+                serde_json::json!({"edgeId": ulid, "sourceNode": ulid, "destinationNode": ulid, "edgeKind": "TrackToBus"}),
+            ),
             ("removeRoutingNode", serde_json::json!({"nodeId": ulid})),
             ("addRoutingNode", serde_json::json!({"nodeId": ulid})),
             (
@@ -11555,6 +11834,7 @@ mod tests {
                 "removeAutomationPoint",
                 "setRoutingGain",
                 "disconnectRouting",
+                "connectRouting",
                 "removeRoutingNode",
                 "addRoutingNode",
                 "addTrack",
@@ -11865,7 +12145,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 23] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 24] = [
             (
                 "add",
                 None,
@@ -11985,6 +12265,13 @@ mod tests {
                 "SetRoutingGain",
             ),
             (
+                "connectRouting",
+                None,
+                None,
+                serde_json::json!({"edgeId": ghost, "sourceNode": node, "destinationNode": node, "edgeKind": "TrackToBus"}),
+                "ConnectRouting",
+            ),
+            (
                 "disconnectRouting",
                 None,
                 None,
@@ -12040,7 +12327,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "21 个 kind ＋ 1 个额外载荷分支"
+            "23 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -12076,7 +12363,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 23);
+        assert_eq!(seen.len(), 24);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
@@ -12445,6 +12732,227 @@ mod tests {
         assert_ne!(
             ADD_TRACK_KIND, REMOVE_TRACK_KIND,
             "新增与取走是**相反**的两件事, 共用一个 kind 会让调用方分不开"
+        );
+    }
+
+    /// `connectRouting`：解析 → 编译到**正是** `Op::ConnectRouting` → 边真的进图 →
+    /// **撤销一步**恢复原状；两端节点不存在 / 边身份重复各自**结构化拒绝**。
+    ///
+    /// 注入（实测红）：① 编译成 `DisconnectRouting` ⇒ "边必须真的进图"那条断言红；
+    /// ② 去掉节点存在性检查 ⇒ 那条 `routingNodeNotFound` 断言红；
+    /// ③ `edgeKind` 的四个规范名改成别的 ⇒ 解析那一步红。
+    #[test]
+    fn connect_routing_lands_an_edge_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        // 两端都取**已在** `nodes` 里的身份（夹具的图很完整）。
+        let source = project.routing_graph.nodes[0];
+        let destination = project
+            .routing_graph
+            .nodes
+            .iter()
+            .copied()
+            .find(|node| *node != source)
+            .expect("夹具至少两个节点");
+        let edge_id = EntityId::from_str("01J8ZQ00000000000000000EDG").expect("ULID");
+        assert!(
+            !project.routing_graph.edges.contains_key(&edge_id),
+            "夹具前提: 边身份是新的"
+        );
+        let edges_before = project.routing_graph.edges.len();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 平铺形状能解析，分类正确 ----
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND,
+            "edgeId": edge_id.to_canonical_string(),
+            "sourceNode": source.to_canonical_string(),
+            "destinationNode": destination.to_canonical_string(),
+            "edgeKind": "TrackToBus",
+            "gainDb": -3.0,
+        }]))
+        .expect("平铺形状必须被接受");
+        assert_eq!(
+            ops[0].kind_name(),
+            CONNECT_ROUTING_KIND,
+            "kind 必须回环一致"
+        );
+        assert!(ops[0].is_routing_level(), "必须落在路由级那个桶里");
+        assert!(!ops[0].is_note_level(), "路由级不读不写音符");
+        assert_eq!(
+            ops[0],
+            NoteOp::ConnectRouting {
+                edge_id,
+                source_node: source,
+                destination_node: destination,
+                kind: RoutingKind::TrackToBus,
+                gain_db: Some(-3.0),
+            }
+        );
+
+        // ---- ② 编译到**正是** `Op::ConnectRouting` ----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::ConnectRouting { edge } => {
+                assert_eq!(edge.id, edge_id);
+                assert_eq!(edge.source_node, source);
+                assert_eq!(edge.destination_node, destination);
+                assert_eq!(edge.kind, RoutingKind::TrackToBus);
+                assert_eq!(edge.gain_db, Some(-3.0));
+            }
+            other => panic!("应当是 ConnectRouting: {other:?}"),
+        }
+
+        // ---- ③ 应用：边真的进图，且工程仍然合法 ----
+        compiled[0].apply(&mut project).expect("建边");
+        assert!(
+            project.routing_graph.edges.contains_key(&edge_id),
+            "边必须真的进 `routing_graph.edges`"
+        );
+        assert_eq!(project.routing_graph.edges.len(), edges_before + 1);
+        assert!(project.validate().is_ok(), "建边之后工程必须仍然合法");
+
+        // ---- ④ **撤销一步**逐字节恢复 ----
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.routing_graph.edges.len(),
+            edges_before,
+            "边数回到原值"
+        );
+        assert!(
+            !project.routing_graph.edges.contains_key(&edge_id),
+            "边必须被摘掉"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// `connectRouting` 的两条前置条件各自**结构化拒绝**，且 `gainDb` 的
+    /// "省略 vs `null`" 与 `setRoutingGain` **同口径**（都 = 单位增益）。
+    #[test]
+    fn connect_routing_refuses_a_missing_node_and_a_duplicate_edge() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let source = project.routing_graph.nodes[0];
+        let existing_edge = *project.routing_graph.edges.keys().next().expect("样本边");
+
+        // ---- ① 两端节点必须已在 `nodes` 里 ----
+        let ghost = EntityId::from_str("01J8ZQ000000000000000000GH").expect("ULID");
+        assert!(
+            !project.routing_graph.nodes.contains(&ghost),
+            "夹具前提: 这个身份不在图里"
+        );
+        let dangling = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND,
+            "edgeId": "01J8ZQ00000000000000000EDG",
+            "sourceNode": source.to_canonical_string(),
+            "destinationNode": ghost.to_canonical_string(),
+            "edgeKind": "TrackToBus",
+        }]))
+        .expect("解析不查文档");
+        let fault =
+            compile(&project, &track_id, &clip_id, &dangling).expect_err("节点不在图里必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("routingNodeNotFound"));
+
+        // ---- ② 边身份不重复 ----
+        let duplicate = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND,
+            "edgeId": existing_edge.to_canonical_string(),
+            "sourceNode": source.to_canonical_string(),
+            "destinationNode": project.routing_graph.nodes[1].to_canonical_string(),
+            "edgeKind": "TrackToBus",
+        }]))
+        .expect("解析不查文档");
+        let fault = compile(&project, &track_id, &clip_id, &duplicate)
+            .expect_err("已在 edges 里的身份必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("routingEdgeAlreadyExists")
+        );
+
+        // ---- ③ `gainDb` 省略与 `null` **同口径** = 单位增益 ----
+        for payload in [
+            serde_json::json!({"kind": CONNECT_ROUTING_KIND, "edgeId": "01J8ZQ00000000000000000EDG",
+                "sourceNode": source.to_canonical_string(),
+                "destinationNode": project.routing_graph.nodes[1].to_canonical_string(),
+                "edgeKind": "TrackToBus"}),
+            serde_json::json!({"kind": CONNECT_ROUTING_KIND, "edgeId": "01J8ZQ00000000000000000EDG",
+                "sourceNode": source.to_canonical_string(),
+                "destinationNode": project.routing_graph.nodes[1].to_canonical_string(),
+                "edgeKind": "TrackToBus", "gainDb": null}),
+        ] {
+            let ops = parse_ops(&serde_json::json!([payload])).expect("解析");
+            match &ops[0] {
+                NoteOp::ConnectRouting { gain_db, .. } => {
+                    assert_eq!(*gain_db, None, "省略与 null 都必须 = 单位增益 (None)");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+
+        // ---- ④ 未知键 / 非规范类型名 / 非有限增益都响亮拒绝 ----
+        let unknown = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND, "edgeId": "01J8ZQ00000000000000000EDG",
+            "sourceNode": source.to_canonical_string(),
+            "destinationNode": source.to_canonical_string(),
+            "edgeKind": "TrackToBus", "edge": {"id": "x"},
+        }]))
+        .expect_err("嵌套的 edge 对象必须被拒");
+        assert_eq!(
+            reason_of(&unknown).as_deref(),
+            Some("unknownConnectRoutingField")
+        );
+
+        let bad_kind = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND, "edgeId": "01J8ZQ00000000000000000EDG",
+            "sourceNode": source.to_canonical_string(),
+            "destinationNode": source.to_canonical_string(),
+            "edgeKind": "trackToBus",
+        }]))
+        .expect_err("大小写拼错必须被拒");
+        assert_eq!(reason_of(&bad_kind).as_deref(), Some("unknownRoutingKind"));
+
+        let bad_gain = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND, "edgeId": "01J8ZQ00000000000000000EDG",
+            "sourceNode": source.to_canonical_string(),
+            "destinationNode": source.to_canonical_string(),
+            "edgeKind": "TrackToBus", "gainDb": 1.0e300,
+        }]))
+        .expect_err("增益必须有限（收窄到 f32 后）");
+        assert_eq!(reason_of(&bad_gain).as_deref(), Some("nonFiniteValue"));
+    }
+
+    /// `connectRouting` 的**字面名与支持集合**被钉住。
+    #[test]
+    fn connect_routing_field_names_are_pinned() {
+        assert_eq!(CONNECT_ROUTING_KIND, "connectRouting");
+        assert_eq!(CONNECT_EDGE_FIELD, "edgeId");
+        assert_eq!(
+            CONNECT_EDGE_FIELD, ROUTING_EDGE_FIELD,
+            "同一个字面量（同一种实体）"
+        );
+        assert_eq!(CONNECT_SOURCE_FIELD, "sourceNode");
+        assert_eq!(CONNECT_DESTINATION_FIELD, "destinationNode");
+        assert_eq!(CONNECT_EDGE_KIND_FIELD, "edgeKind");
+        assert_eq!(CONNECT_GAIN_FIELD, "gainDb");
+        assert_eq!(
+            CONNECT_ROUTING_FIELDS,
+            [
+                "kind",
+                "edgeId",
+                "sourceNode",
+                "destinationNode",
+                "edgeKind",
+                "gainDb"
+            ]
+        );
+        assert_ne!(
+            CONNECT_ROUTING_KIND, DISCONNECT_ROUTING_KIND,
+            "建边与断开是**相反**的两件事, 共用一个 kind 会让调用方分不开"
         );
     }
 }
