@@ -768,6 +768,145 @@ pub struct AuditionBranch {
     reader: SnapshotReader,
 }
 
+/// 试听被**拒绝**的原因（[ARCH-RT-005] 片 2b 的**受限版**口径）。
+///
+/// ⭐ **为什么要有这个枚举**：受限版让两条分支**共用同一套武装表**
+/// （逐轨增益/声相/通道条/混响/卷积/PDC 都是按**主线**那一份快照武装的）。
+/// ⇒ 一旦提案在这些**拓扑**上与主线不同，拿主线的武装表去渲染提案就会
+/// **静默地把 A 的参数套在 B 的材料上**。本枚举让那种情况**拒绝试听**、
+/// 并把「哪一类不一致」如实报出去。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditionRefusal {
+    /// 主线侧**还没有任何快照** ⇒ 无从保证"共用武装表" ⇒ 拒绝。
+    NoMainSnapshot,
+    /// **音频配置**不同：采样率 / 块长 / 声道数 / 声相律。
+    AudioConfig,
+    /// **设备链**不同：轨道集合、每轨混音参数（增益/声相/静音/独奏/器件数）或插入参数。
+    DeviceChain,
+    /// **自动化目标**不同（宿主投影的定长指纹）。
+    AutomationTargets,
+    /// **PDC 计划**不同（拓扑序 / 累积延迟 / 补偿延迟）。
+    PdcPlan,
+}
+
+impl AuditionRefusal {
+    /// 稳定短名（用于读数与错误报告；⛔ 不改语义）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoMainSnapshot => "no-main-snapshot",
+            Self::AudioConfig => "audio-config",
+            Self::DeviceChain => "device-chain",
+            Self::AutomationTargets => "automation-targets",
+            Self::PdcPlan => "pdc-plan",
+        }
+    }
+}
+
+/// **自动化目标的定长指纹**（[ARCH-RT-005] 片 2b）。
+///
+/// ⚠ **为什么不把自动化目标放进 [`EngineSnapshot`]**：快照是 `Arc` 共享的，
+/// 它的最后一次 `Drop` 可能落在**音频线程**上；往里放 `BTreeMap`/`Vec` 就等于
+/// 把一次释放搬进回调 —— [ARCH-RT-001] 正是为了这个才不让快照搬 `String`。
+/// ⇒ 指纹是**定长 + `Copy`** 的：无堆、无 `Drop`。
+///
+/// 语义：`entities[i]` 是被自动化寻址的实体，`counts[i]` 是它的目标条数。
+/// 它是**指纹**（足以发现不一致），⛔ 不是目标身份的完整表示。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutomationTargets {
+    entities: [EntityId; MAX_TRACK_SLOTS],
+    counts: [u16; MAX_TRACK_SLOTS],
+    len: usize,
+}
+
+impl AutomationTargets {
+    /// 没有任何自动化目标。
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            entities: [EntityId::default(); MAX_TRACK_SLOTS],
+            counts: [0; MAX_TRACK_SLOTS],
+            len: 0,
+        }
+    }
+
+    /// 从**已按实体升序去重**的 `(实体, 目标条数)` 序列投影（多余项被截断）。
+    ///
+    /// ⚠ 调用方负责升序去重：本类型**不排序、不分配**（定长写入）。
+    #[must_use]
+    pub fn from_sorted(pairs: &[(EntityId, u16)]) -> Self {
+        let mut out = Self::empty();
+        for (entity, count) in pairs.iter().take(MAX_TRACK_SLOTS) {
+            out.entities[out.len] = *entity;
+            out.counts[out.len] = *count;
+            out.len += 1;
+        }
+        out
+    }
+
+    /// 有效项数。
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// 是否为空。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// 两份版本的**拓扑**是否一致；不一致 ⇒ `Some(原因)`（[ARCH-RT-005] 片 2b）。
+///
+/// ## 判什么、为什么只判这些
+///
+/// 受限版让两条分支共用主线的武装表 ⇒ **凡是喂进武装表的快照事实都必须相等**：
+///
+/// | 检查 | 喂进哪张武装表 |
+/// | :--- | :--- |
+/// | 采样率 / 块长 / 声道数 / 声相律 | `ParamTable` 的采样率、`armed_pan_law`、PDC 的对齐 |
+/// | 轨道集合与每轨混音参数 | `armed_pan_gains`、`synth.set_track_gain_scales`、`armed_strips` 槽位 |
+/// | 插入参数 | `armed_insert_slots` / 混响 / 卷积池 |
+/// | 自动化目标指纹 | `ParamTable` 的槽位与 `armed_pan_*` |
+/// | PDC 计划 | `CompensationBank` 的逐节点延迟 |
+///
+/// ⛔ **刻意不判**的：音符/编排（`schedules`）、音色（`tones`）、鼓机（`drums`）、
+/// 走带位置 —— 那正是 A/B 要比较的**材料**，它们**允许**不同（分支 B 有自己的
+/// [`SynthEngine`]，按 B 自己的快照武装）。
+///
+/// ⚠ 已知**未覆盖**：节拍器计划（母线级信号，目前由宿主保证两份一致）。
+/// 这条局限是**明说的**，⛔ 不是遗漏。
+#[must_use]
+pub fn audition_topology_mismatch(
+    main: &EngineSnapshot,
+    proposal: &EngineSnapshot,
+    main_automation: AutomationTargets,
+    proposal_automation: AutomationTargets,
+) -> Option<AuditionRefusal> {
+    // ① 音频配置。
+    if main.sample_rate() != proposal.sample_rate()
+        || main.block_frames() != proposal.block_frames()
+        || main.channels() != proposal.channels()
+        || main.pan_law() != proposal.pan_law()
+    {
+        return Some(AuditionRefusal::AudioConfig);
+    }
+    // ② 设备链：轨道集合 + 每轨混音参数（⭐ 整体相等，见上表）。
+    if main.tracks() != proposal.tracks() || main.inserts() != proposal.inserts() {
+        return Some(AuditionRefusal::DeviceChain);
+    }
+    // ③ 自动化目标指纹。
+    if main_automation != proposal_automation {
+        return Some(AuditionRefusal::AutomationTargets);
+    }
+    // ④ PDC 计划。
+    if main.pdc() != proposal.pdc() {
+        return Some(AuditionRefusal::PdcPlan);
+    }
+    None
+}
+
 impl AuditionBranch {
     /// 在册化第二份版本。
     ///
@@ -1142,6 +1281,12 @@ pub struct EngineRuntime {
     ///
     /// 未挂上时是 `None` ⇒ 渲染路径与「没有这个字段」**逐字节相同**。
     audition: Option<AuditionBranch>,
+    /// 试听是否**已开始**（[ARCH-RT-005] 片 2b 的受限版）。
+    ///
+    /// ⚠ 片 2b 的这一步只做**准入判定**：拓扑不一致时拒绝（见
+    /// [`AuditionRefusal`]）。⛔ 渲染路径**一个字没改** ⇒ 未试听时输出
+    /// 仍逐字节不变、RT 成本仍为 0。
+    audition_active: bool,
     events: EventReceiver,
     meters: MeterPublisher,
     block: AudioBlock<DEFAULT_BLOCK_FRAMES>,
@@ -1461,6 +1606,7 @@ impl EngineRuntime {
         let runtime = Self {
             snapshot: SnapshotReader::attach(slot, retire),
             audition: None,
+            audition_active: false,
             events,
             meters,
             block: AudioBlock::new(),
@@ -1587,6 +1733,53 @@ impl EngineRuntime {
     #[must_use]
     pub fn has_audition_branch(&self) -> bool {
         self.audition.is_some()
+    }
+
+    /// **开始试听**（[ARCH-RT-005] 片 2b 的**准入判定**）。
+    ///
+    /// ## 受限版的口径（⭐ 本函数存在的理由）
+    ///
+    /// 两条分支**共用主线那一套武装表** ⇒ 凡喂进武装表的快照事实都必须一致。
+    /// 不一致时本函数**拒绝**并如实报出原因（[`AuditionRefusal`]），
+    /// ⛔ **绝不允许**「拿主线的武装表静默渲染提案」。
+    ///
+    /// ## 边界
+    ///
+    /// ⚠ 控制路径（会读 `held()` 与两次 `PartialEq`）⇒ **⛔ 不许在回调里调用**。
+    /// 本函数**不分配**（`Arc::clone` 只加一次引用计数；比较全是借用）。
+    ///
+    /// # Errors
+    ///
+    /// 拓扑不一致时返回具体原因；主线侧还没有快照时返回
+    /// [`AuditionRefusal::NoMainSnapshot`]。
+    pub fn begin_audition(
+        &mut self,
+        proposal: &Arc<EngineSnapshot>,
+        main_automation: AutomationTargets,
+        proposal_automation: AutomationTargets,
+    ) -> Result<(), AuditionRefusal> {
+        let main = match self.snapshot.held() {
+            Some(main) => Arc::clone(main),
+            None => return Err(AuditionRefusal::NoMainSnapshot),
+        };
+        if let Some(reason) =
+            audition_topology_mismatch(&main, proposal, main_automation, proposal_automation)
+        {
+            return Err(reason);
+        }
+        self.audition_active = true;
+        Ok(())
+    }
+
+    /// 结束试听（幂等；不分配）。
+    pub fn end_audition(&mut self) {
+        self.audition_active = false;
+    }
+
+    /// 试听是否已开始。
+    #[must_use]
+    pub const fn is_auditioning(&self) -> bool {
+        self.audition_active
     }
 
     /// 第二分支当前持有的快照修订号（`None` ＝ 未挂上）。
@@ -3093,6 +3286,59 @@ mod tests {
             &LatencyTable::new(),
         )
         .expect("合法图")
+    }
+
+    /// ⭐ **同源对**：两棵快照共用**同一批 `EntityId`**、同一份图与轨道，
+    /// 只有**延迟表**不同 ⇒ 只差 PDC 计划（⛔ 不是"两次随机生成"）。
+    ///
+    /// ⚠ 为什么必须同源：`EntityId::new()` 每次都不同 ⇒ 两次独立构造的快照
+    /// 会在**轨道集合**上就不同，那样测出来的原因是 `DeviceChain`，⛔ 不是 `PdcPlan`。
+    fn simple_pair_with_latency(
+        revision: u64,
+        latency_samples: u32,
+    ) -> (EngineSnapshot, EngineSnapshot) {
+        let master = EntityId::new();
+        let track = EntityId::new();
+        let mut routing = RoutingGraph {
+            nodes: vec![track, master],
+            ..RoutingGraph::default()
+        };
+        let id = EntityId::new();
+        routing.edges.insert(
+            id,
+            RoutingEdge {
+                id,
+                source_node: track,
+                destination_node: master,
+                kind: RoutingKind::TrackToBus,
+                gain_db: None,
+            },
+        );
+        let mut tracks = BTreeMap::new();
+        let track_model = TrackV3 {
+            id: track,
+            ..TrackV3::default()
+        };
+        tracks.insert(
+            track,
+            crate::snapshot::TrackParams::from_track(&track_model, 0),
+        );
+        let build = |latencies: &LatencyTable| {
+            EngineSnapshot::from_parts(
+                revision,
+                48_000,
+                DEFAULT_BLOCK_FRAMES,
+                2,
+                master,
+                tracks.clone(),
+                &routing,
+                latencies,
+            )
+            .expect("合法图")
+        };
+        let mut shifted = LatencyTable::new();
+        shifted.set(track, latency_samples);
+        (build(&LatencyTable::new()), build(&shifted))
     }
 
     /// 母线**也在** `tracks()` 里的快照（`from_project` 的常态）：
@@ -5830,5 +6076,105 @@ mod tests {
             .map(|bits| f32::from_bits(*bits).abs())
             .fold(0.0f32, f32::max);
         assert!(peak > 0.1, "夹具必须真的出声（峰值 {peak}）");
+    }
+
+    // -----------------------------------------------------------------------
+    // [ARCH-RT-005] 片 2b：**拓扑不一致必须拒绝试听**（受限版的硬附加条件）
+    // -----------------------------------------------------------------------
+
+    /// 共用的"两份版本 + 两个指纹"装配。
+    fn topology_case(main: EngineSnapshot, proposal: EngineSnapshot) -> Option<AuditionRefusal> {
+        audition_topology_mismatch(
+            &main,
+            &proposal,
+            AutomationTargets::empty(),
+            AutomationTargets::empty(),
+        )
+    }
+
+    /// ⭐ **正对照**：拓扑完全一致 ⇒ **不**拒绝。
+    ///
+    /// ⚠ 没有这一条，一个"永远返回 `Some(…)`"的实现在下面四条负判据上**全过**
+    /// ⇒ 那四条证明不了"拒绝是**有判断的**"。
+    #[test]
+    fn audition_accepts_identical_topology() {
+        let main = simple_snapshot(1);
+        let proposal = main.clone();
+        assert_eq!(topology_case(main, proposal), None);
+    }
+
+    /// ① **音频配置**不一致（这里用声相律）⇒ 拒绝。
+    #[test]
+    fn audition_refuses_when_audio_config_differs() {
+        let main = simple_snapshot(1);
+        let proposal = main.clone().with_pan_law(PanLaw::Linear);
+        // ⭐ 证明这条夹具**只**差音频配置（其余维度逐项相同）。
+        assert_eq!(main.tracks(), proposal.tracks());
+        assert_eq!(main.inserts(), proposal.inserts());
+        assert_eq!(main.pdc(), proposal.pdc());
+        assert_ne!(main.pan_law(), proposal.pan_law());
+        assert_eq!(
+            topology_case(main, proposal),
+            Some(AuditionRefusal::AudioConfig)
+        );
+    }
+
+    /// ② **设备链**不一致（这里用轨道集合：多一条轨）⇒ 拒绝。
+    #[test]
+    fn audition_refuses_when_device_chain_differs() {
+        let main = simple_snapshot(1);
+        let proposal = snapshot_with_master_track(1, 2);
+        // ⭐ 音频配置**相同** ⇒ 报出来的原因只可能是设备链。
+        assert_eq!(main.sample_rate(), proposal.sample_rate());
+        assert_eq!(main.channels(), proposal.channels());
+        assert_eq!(main.pan_law(), proposal.pan_law());
+        assert_ne!(main.tracks().len(), proposal.tracks().len());
+        assert_eq!(
+            topology_case(main, proposal),
+            Some(AuditionRefusal::DeviceChain)
+        );
+    }
+
+    /// ③ **自动化目标**指纹不一致 ⇒ 拒绝（快照本身完全相同）。
+    #[test]
+    fn audition_refuses_when_automation_targets_differ() {
+        let main = simple_snapshot(1);
+        // ⭐ 两份**快照完全相同**（只有指纹不同）⇒ 原因只能是自动化目标。
+        let proposal = main.clone();
+        let armed = AutomationTargets::from_sorted(&[(EntityId::new(), 1)]);
+        assert_eq!(
+            audition_topology_mismatch(&main, &proposal, AutomationTargets::empty(), armed),
+            Some(AuditionRefusal::AutomationTargets)
+        );
+        let same = simple_snapshot(1);
+        assert_eq!(topology_case(same.clone(), same), None);
+    }
+
+    /// ④ **PDC 计划**不一致（同一条轨多了延迟）⇒ 拒绝。
+    #[test]
+    fn audition_refuses_when_pdc_plan_differs() {
+        let (main, proposal) = simple_pair_with_latency(1, 64);
+        // ⚠ 先证明这条夹具**真的**只差 PDC（否则它可能先被别的检查拦住）。
+        assert_eq!(main.sample_rate(), proposal.sample_rate());
+        assert_eq!(main.channels(), proposal.channels());
+        assert_eq!(main.pan_law(), proposal.pan_law());
+        assert_ne!(main.pdc(), proposal.pdc(), "夹具必须真的差 PDC");
+        assert_eq!(
+            topology_case(main, proposal),
+            Some(AuditionRefusal::PdcPlan)
+        );
+    }
+
+    /// 拒绝原因有稳定短名（读数用）。
+    #[test]
+    fn audition_refusal_names_are_stable() {
+        assert_eq!(AuditionRefusal::AudioConfig.as_str(), "audio-config");
+        assert_eq!(AuditionRefusal::DeviceChain.as_str(), "device-chain");
+        assert_eq!(
+            AuditionRefusal::AutomationTargets.as_str(),
+            "automation-targets"
+        );
+        assert_eq!(AuditionRefusal::PdcPlan.as_str(), "pdc-plan");
+        assert_eq!(AuditionRefusal::NoMainSnapshot.as_str(), "no-main-snapshot");
     }
 }
