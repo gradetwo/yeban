@@ -20,7 +20,10 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-RUN_RE = re.compile(r"\brun\s+`?(\d{8,})`?")
+# ⚠ 必须挡住"更长的数字串里的尾巴"：`run 38036013500`（11 位）曾被 `\b` 从第 2 位
+# 起匹配成 `36013500`，于是审计对一个**不存在**的 id 报"读不到"（实测假阳性）。
+# 数字之间没有词边界 ⇒ 用后向断言挡住"前面还是数字"的情形。
+RUN_RE = re.compile(r"(?<!\d)run\s+`?(\d{8,})`?(?!\d)")
 DOCS = [REPO / "docs/DEVELOPMENT_LEDGER.md", *sorted((REPO / "docs/ledger").glob("*.md"))]
 REPO_SLUG = "gradetwo/yeban"
 
@@ -38,6 +41,23 @@ def cited_runs() -> dict[str, list[str]]:
             if where not in found[ident]:
                 found[ident].append(where)
     return found
+
+
+def annotated_unreadable(ident: str) -> bool:
+    """该 id 是否已在**它出现的同一行**上被如实登记为"不可读"（404 / run 不可检索）。
+
+    ⚠ 判法刻意收紧（防"无脑压制审计"）：必须在**同一行**内、且**紧跟在 id 之后**
+    出现 `不可读` 或 `404`（同一行 + 400 字符窗口）。仓库里"带日期的记录只标注不改写"
+    正是这种形态 —— 补一条就地更正，而不是删掉旧结论。
+    """
+    pattern = re.compile(ident + r"[^\n]{0,400}?(?:不可读|404)")
+    for path in DOCS:
+        if not path.is_file():
+            continue
+        if pattern.search(path.read_text(encoding="utf-8")):
+            return True
+    return False
+
 
 
 def run_info(ident: str) -> dict | None:
@@ -84,30 +104,44 @@ def main() -> int:
         print("[ok] 证据审计: 文档里没有引用任何 run id")
         return 0
     missing: list[str] = []
+    annotated: list[str] = []
     non_success: list[tuple[str, dict, list[str]]] = []
     ok = 0
     for ident in sorted(runs):
         info = run_info(ident)
         if info is None:
-            missing.append(ident)
+            # ⚠ 已**就地登记为不可读**的 id ⇒ 是"已标注的证据缺口"，不是"把不存在的 run
+            # 当证据"。两者都要打印，但只有**未标注**的那一类才判红。
+            (annotated if annotated_unreadable(ident) else missing).append(ident)
             continue
         if info["conclusion"] == "success":
             ok += 1
         else:
             non_success.append((ident, info, runs[ident]))
-    print(f"被引用的 run id: {len(runs)} 个（success {ok} / 非 success {len(non_success)} / 不可读 {len(missing)}）")
+    print(
+        f"被引用的 run id: {len(runs)} 个（success {ok} / 非 success {len(non_success)}"
+        f" / 不可读但已登记 {len(annotated)} / 不可读且未登记 {len(missing)}）"
+    )
     for ident, info, where in non_success:
         print(
             f"  ⚠ {ident} → {info['conclusion']} | {info['branch']} | {info['sha']} | {info['name']}"
             f"\n      引用处: {', '.join(where[:3])}"
             f"\n      ⇒ 请**人工确认**它在文中被如实表述为失败/取消，而不是被当成绿（L23/L26）"
         )
+    for ident in annotated:
+        print(
+            f"  · {ident} → 不可读，但文中已就地登记（带日期的更正）  引用处: {', '.join(runs[ident][:3])}"
+            f"\n      ⇒ 它**仍是**一个证据缺口：结论应读作「引用者当时读到的值」，⛔ 不是今天可复核的证据"
+        )
     for ident in missing:
         print(f"  ✗ {ident} → 无法读取（不存在? 权限? 网络?）  引用处: {', '.join(runs[ident][:3])}")
     if missing:
-        print("\n有**读不到**的 run id —— 那等同于【没有证据】（AGENTS.md §5.5）。")
+        print("\n有**未登记且读不到**的 run id —— 那等同于【没有证据】（AGENTS.md §5.5）。")
         return 1
-    print("\n[ok] 所有被引用的 run id 都存在; 非 success 的那些已逐条列出供人工核对措辞。")
+    print(
+        "\n[ok] 所有被引用的 run id 都存在，或已被**就地登记**为不可读"
+        "（已登记的那些已逐条列出，供人工核对措辞）; 非 success 的那些同样已列出。"
+    )
     return 0
 
 
