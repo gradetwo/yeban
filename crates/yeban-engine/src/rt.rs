@@ -130,7 +130,7 @@ use crate::mixer::{BusLimiter, PanLaw};
 use crate::param::{ParamTable, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::rt_probe::{self, RtDiagEvent};
-use crate::snapshot::{RetireProducer, SnapshotReader, SnapshotSlot};
+use crate::snapshot::{EngineSnapshot, RetireProducer, SnapshotReader, SnapshotSlot};
 use crate::stats_mirror::EngineStatsMirror;
 use crate::synth::{MAX_TRACK_SLOTS, SynthEngine};
 use crate::transport::{
@@ -788,6 +788,351 @@ impl AuditionBranch {
     pub fn held_revision(&self) -> Option<u64> {
         self.reader.held().map(|snapshot| snapshot.revision())
     }
+}
+
+/// **一条分支的共享混音状态**（[ARCH-RT-005] 片 2a 的借用视图）。
+///
+/// ⚠ **为什么是字段视图而不是 `&mut self`**：混音要同时持有 `current: &EngineSnapshot`
+/// （由 `self.snapshot.begin_block()` 借出）与一批 `&mut` 字段。把字段**逐个借出来**
+/// （`render_block` 顶部本来就 `let Self { … } = self;` 解构过一次）⇒ 两边的借用
+/// 互不相交，因此合法。本结构**只是借用视图**：不拥有状态、不分配、不引入新语义。
+struct BranchShare<'a> {
+    pdc: &'a mut CompensationBank,
+    params: &'a mut ParamTable,
+    bank: &'a mut MeterBank<SCRATCH_METERS>,
+    armed_strips: &'a mut [(EntityId, Option<ChannelStrip>); MAX_TRACK_SLOTS],
+    armed_insert_slots: &'a mut usize,
+    reverb_pool: &'a mut [Reverb; MAX_TRACK_SLOTS],
+    armed_reverbs: &'a mut [(EntityId, bool); MAX_TRACK_SLOTS],
+    armed_reverb_slots: &'a mut usize,
+    reverb_scratch: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]; 2],
+    conv_pool: &'a mut Box<[ConvolutionReverb]>,
+    armed_convs: &'a mut [(EntityId, bool); MAX_TRACK_SLOTS],
+    armed_conv_slots: &'a mut usize,
+    conv_scratch: &'a mut [f32; 2 * DEFAULT_BLOCK_FRAMES],
+    armed_pan_l: &'a mut [ParamSmoother; MAX_TRACK_SLOTS],
+    armed_pan_r: &'a mut [ParamSmoother; MAX_TRACK_SLOTS],
+    armed_pan_slots: &'a mut usize,
+    armed_pan_armed: &'a mut [bool; MAX_TRACK_SLOTS],
+    track_scratch: &'a mut [f32; DEFAULT_BLOCK_FRAMES],
+    scratch_meters: &'a mut [MeterFrame; SCRATCH_METERS],
+    insert_gain_reductions: &'a mut u64,
+    insert_max_reduction_db: &'a mut f32,
+    insert_current_reduction_db: &'a mut f32,
+    insert_detector_level_db: &'a mut Option<f32>,
+    insert_strip_frames: &'a mut u64,
+    insert_reverb_frames: &'a mut u64,
+    insert_convolution_frames: &'a mut u64,
+    pan_automation_frames: &'a mut u64,
+    meter_capacity_drops: &'a mut u64,
+    pan_gains: &'a mut [(EntityId, f32, f32); MAX_TRACK_SLOTS],
+}
+
+/// **渲染一条分支**的逐轨材料到 `out`（逐轨合成 → 电平 → PDC → 声相 → 汇入母线）。
+///
+/// [ARCH-RT-005] 片 2a：本函数是**纯抽取** —— 函数体逐字等于抽取前 `render_block` 里
+/// 的那一段，因此对同一条快照的输出**逐字节相同**（判据钉住这一点）。
+///
+/// 返回本量子产出的**逐轨电平帧数**（`produced`）。
+///
+/// ## 为什么边界停在"汇入母线"，⛔ 不含节拍器 / 主总线推子 / `apply_master`
+///
+/// 那三样是**母线级**信号：它们属于"这条总线"，⛔ 不属于 A/B 的任一份材料。
+/// 片 2b 会在**混合之后**再走那一段 ⇒ 节拍器**不会**被淡化两次
+/// （等功率淡化把同一个信号加两次会把它抬到 **+3 dB**）。
+///
+/// ## 实时约束
+///
+/// 零分配、零锁、零 I/O、零日志（[MUST-GATE-001] / 红线 7）：借用的字段全部
+/// **构造期预分配**，本函数只读写它们。
+fn render_branch(
+    share: &mut BranchShare<'_>,
+    synth: &mut SynthEngine,
+    out: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    current: &EngineSnapshot,
+    frames: usize,
+    running: bool,
+    quantum: u64,
+) -> usize {
+    let master = current.master();
+    let mut produced = 0usize;
+    out.silence();
+    out.set_frames(frames);
+    share.bank.begin_quantum();
+
+    // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
+    //
+    // **走带冻结 ⇒ 输出静音、且不触发任何音符**（`notes` 契约见
+    // `docs/ledger/engine-sound-notes.md` 的 needs N2）。电平仍然照常计量
+    // （静音的读数），因此"每量子恰好一次批量发布"这条结构性契约与走带状态无关。
+    let metered_tracks = current.tracks().keys().filter(|id| **id != master).count();
+    // 给母线留一个槽位, 保证母线永远有电平可发。
+    let track_budget = share.scratch_meters.len().saturating_sub(1);
+    if metered_tracks > track_budget {
+        *share.meter_capacity_drops = share
+            .meter_capacity_drops
+            .wrapping_add((metered_tracks - track_budget) as u64);
+        // [MUST-GATE-001, N6 选项 A] 诊断走 `rt_probe::note_suppressed` ——
+        // 它是**纯计数**出口（不读 sink、不分配、不加锁、不阻塞），
+        // 因为本函数就是音频回调：实时路径上不许有任何到 I/O 边界的调用。
+        rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
+    }
+    // 本量子插入链动态级的**当前**衰减与**检波器**电平（两者都跨轨取最大；量规）。
+    //
+    // 三个局部量只在**本量子**内有意义：`insert_current_db` / `insert_detector_db`
+    // 分别收集"本量子每条轨的通道条报出的瞬时衰减 / 检波器电平"的最大值，
+    // `insert_current_seen` 记下"本量子真的有一台武装通道条处理过帧"。循环之后
+    // 只在 `seen` 为真时**覆写**两个读数 —— 与 `limiter_current_reduction` 的
+    // "没有快照的量子不更新"同口径（见 [`EngineStats::share.insert_current_reduction_db`]
+    // 与 [`EngineStats::share.insert_detector_level_db`] 的口径第 3／4 条）。
+    //
+    // ⚠ 两条读数**共用**同一个 `seen` 标志：它们来自同一台器件、同一个瞬间
+    // （见下面对 `strip` 的那一段读），因此"本量子有没有器件工作过"是**同一个**
+    // 事实，分成两个标志只会给它们两个不同的更新口径。
+    //
+    // ⚠ 这三个局部量是**读数的搬运**，不参与任何样本计算 ⇒ 逐样本路径**一个字
+    // 都没动** ⇒ 渲染输出逐位不变（判据见 `tests/channel_strip_insert.rs` 的 C15/C16）。
+    let mut insert_current_db = 0.0f32;
+    // 初值取 `-∞`：任何一台真实器件的检波器电平都 `≥ MIN_LEVEL_DB`（−120 dBFS）
+    // ⇒ 它一定被第一次赋值覆盖（`seen` 为真时至少有一台器件报过数）。
+    let mut insert_detector_db = f32::NEG_INFINITY;
+    let mut insert_current_seen = false;
+    for id in current.tracks().keys() {
+        if *id == master || produced >= track_budget {
+            continue;
+        }
+        let track = *id;
+        if running {
+            // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
+            // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
+            // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
+            synth.render_track(
+                track,
+                current.schedule(&track),
+                &mut share.track_scratch[..frames],
+            );
+        } else {
+            // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
+            share.track_scratch[..frames].fill(0.0);
+        }
+        // --- 3a⁰) 参数目标表的**逐轨增益乘子**：逐样本 ---
+        // [crate::param]。位置：**声源之后、插入链之前** —— 与"在构造期把该轨
+        // 音量设成另一个值"同解（静态音量也是在插入链之前烧进声部增益的，
+        // 见 `crate::snapshot::project_schedules` 的 `track_gain`）。
+        //
+        // ⚠ 刻意**不**放在插入链之后：那样压缩器看到的是**未自动化**的电平，
+        // 是另一种（也不好听的）行为。理由写在 `crate::param` 模块文档 §2.2。
+        //
+        // **默认口径**：本表里没有这条轨的槽位、或它已吸附到 `1.0`（恒等）
+        // ⇒ `apply` **一个样本都不碰**并返回 0 ⇒ 没有 `SetParam` 的工程与
+        // 接线前**逐位相同**（模块文档 §5）。
+        //
+        // 逐样本只有一次乘加（平滑器）与一次乘；**零分配、零锁、零 I/O、
+        // 零日志** [MUST-GATE-001, ARCH-DSP-001]。
+        share
+            .params
+            .apply(track, &mut share.track_scratch[..frames]);
+        // --- 3a') 插入链：本轨的通道条（若有）**逐样本**处理 ---
+        // [crate::insert]。位置：**轨道自己的渲染之后、逐轨电平与 PDC 之前**
+        // ⇒ 电平读数（`EngineStats::meter_frames`）与汇入母线的信号都是
+        // "插入之后"的结果。
+        //
+        // **默认口径**：本轨没有插入器件（`share.armed_strips` 里查不到）⇒
+        // 这个分支**整段跳过**（不是"参数取成透明"）⇒ 这类轨的输出与接线前
+        // **逐位相同**（证据见 `tests/compressor_insert.rs` 的 C0）。
+        //
+        // 停住时喂的是静音：各级状态是**时间状态**（滤波器的积分器、压缩器的
+        // 增益弹道），喂静音让它们按各自的时间常数回到初值 —— 与 PDC 延迟线
+        // "停住也喂静音"是同一条纪律。
+        //
+        // 逐样本路径上只有器件的乘加与一阶递归（器件把 `exp` 全部留在
+        // `set_params` 里，EQ 的中间缓冲是**栈数组**）；这里**零分配、零锁、
+        // 零 I/O** [MUST-GATE-001]。
+        if let Some(index) = share.armed_strips[..*share.armed_insert_slots]
+            .iter()
+            .position(|(id, _)| id == &track)
+            && let (_, Some(strip)) = &mut share.armed_strips[index]
+        {
+            let before_reductions = strip.gain_reduction_count();
+            let before_frames = strip.processed_frames();
+            strip.process_mono(&mut share.track_scratch[..frames]);
+            let reduced = strip
+                .gain_reduction_count()
+                .saturating_sub(before_reductions);
+            *share.insert_gain_reductions = share.insert_gain_reductions.wrapping_add(reduced);
+            let processed = strip.processed_frames().saturating_sub(before_frames);
+            *share.insert_strip_frames = share.insert_strip_frames.wrapping_add(processed);
+            let reduction_db = strip.max_gain_reduction_db();
+            if reduction_db > *share.insert_max_reduction_db {
+                *share.insert_max_reduction_db = reduction_db;
+            }
+            // **当前**衰减（量规）：与上面两条计数**同一台器件、同一个瞬间**读出。
+            // 它把线性增益按需换算成 dB（`−compressor.gain_db()` ⇒ 一次 `log2`），
+            // 但不碰样本、不分配、不加锁（红线 7 不受影响）。
+            let current_db = strip.current_gain_reduction_db();
+            if current_db > insert_current_db {
+                insert_current_db = current_db;
+            }
+            // **检波器**电平（量规，单位 dBFS）：同一个器件、同一个瞬间的**输入**侧。
+            // 它同样只读一个字段（`compressor.level_db`，一个 `const fn`）
+            // ⇒ 不碰样本、不分配、不加锁 ⇒ 渲染输出逐位不变。
+            let detector_db = strip.detector_level_db();
+            if detector_db > insert_detector_db {
+                insert_detector_db = detector_db;
+            }
+            insert_current_seen = true;
+        }
+        // --- 3a''') 插入链的**混响级**：逐样本（器件的接口是立体声块）---
+        // [crate::insert] 模块文档 §8.3。位置与通道条**同一条链上的后一级**：
+        // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
+        //
+        // 单声道口径：把 `share.track_scratch` 同时喂给左右两路，取两路输出的中值
+        // `(out_l + out_r) · 0.5`。那是恒等式而不是近似（§8.3 给了代数证明）：
+        // 湿路径的输入与"单声道输入"同解，而宽度项在中值里恰好抵消。
+        //
+        // **默认口径**：本轨没有混响（`share.armed_reverbs` 里查不到武装项）⇒
+        // 整段跳过；`Reverb::is_active()`（`mix ≤ 1e-4`）为假时同样跳过 ⇒
+        // 这两种情形下器件的状态**不推进**（与器件自己的早返回守卫同口径）。
+        //
+        // 逐样本只有环形缓冲读写与乘加；**零分配、零锁、零 I/O、零日志**
+        // [MUST-GATE-001]。
+        if let Some(index) = share.armed_reverbs[..*share.armed_reverb_slots]
+            .iter()
+            .position(|(id, armed)| *armed && id == &track)
+        {
+            let reverb = &mut share.reverb_pool[index];
+            if reverb.is_active() {
+                let frames = frames.min(DEFAULT_BLOCK_FRAMES);
+                share.reverb_scratch[0][..frames].copy_from_slice(&share.track_scratch[..frames]);
+                share.reverb_scratch[1][..frames].copy_from_slice(&share.track_scratch[..frames]);
+                let (left, right) = share.reverb_scratch.split_at_mut(1);
+                reverb.process(&mut left[0][..frames], &mut right[0][..frames]);
+                for index in 0..frames {
+                    share.track_scratch[index] =
+                        (share.reverb_scratch[0][index] + share.reverb_scratch[1][index]) * 0.5;
+                }
+                *share.insert_reverb_frames =
+                    share.insert_reverb_frames.wrapping_add(frames as u64);
+            }
+        }
+        // --- 3a'''') 插入链的**卷积混响级**：逐样本（器件的接口是交错立体声块）---
+        // [crate::insert] 模块文档 §9.4。位置与混响**同一条链上的后一级**：
+        // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
+        //
+        // 单声道口径（与混响同款）：把 `share.track_scratch` **同时**写进左右两路，
+        // 取两路输出的中值 `(out_l + out_r) · 0.5`。那是恒等式而不是近似：
+        // 四条通路线性，中值 = `conv((h_LL + h_LR + h_RL + h_RR) / 2, m)`，
+        // 而投影交进去的是 `h_LL = h_RR = ir`、`h_LR = h_RL = 0` ⇒ 恰好是
+        // `conv(ir, m)`（§9.4 给了这段代数）。
+        //
+        // ⚠ IR 本身**不在**这条路径上：它只在快照边界换（且长度不变 ⇒ 零分配）。
+        //
+        // **默认口径**：本轨没有卷积混响（`share.armed_convs` 里查不到武装项）⇒
+        // 整段跳过；`ConvolutionReverb::is_active()`（`wet ≤ 1e-4` 或未配置）为假时
+        // 同样跳过 ⇒ 这两种情形下器件的状态**不推进**。
+        //
+        // 逐样本只有频域分块乘加与 256 点变换；**零分配、零锁、零 I/O、零日志**
+        // [MUST-GATE-001]。⚠ 它是 [ADR-0001 D32] 的**超越函数类**（旋转因子表由
+        // 宿主 libm 的 `f32::cos`/`f32::sin` 在构造期算出）⇒ 本票不声称跨架构逐位相同。
+        if let Some(index) = share.armed_convs[..*share.armed_conv_slots]
+            .iter()
+            .position(|(id, armed)| *armed && id == &track)
+        {
+            let conv = &mut share.conv_pool[index];
+            if conv.is_active() {
+                let frames = frames.min(DEFAULT_BLOCK_FRAMES);
+                for frame in 0..frames {
+                    let mono = share.track_scratch[frame];
+                    share.conv_scratch[2 * frame] = mono;
+                    share.conv_scratch[2 * frame + 1] = mono;
+                }
+                conv.process(&mut share.conv_scratch[..2 * frames]);
+                for frame in 0..frames {
+                    share.track_scratch[frame] =
+                        (share.conv_scratch[2 * frame] + share.conv_scratch[2 * frame + 1]) * 0.5;
+                }
+                *share.insert_convolution_frames =
+                    share.insert_convolution_frames.wrapping_add(frames as u64);
+            }
+        }
+        if let Some(frame) = share
+            .bank
+            .measure(track, quantum, &share.track_scratch[..frames])
+        {
+            share.scratch_meters[produced] = frame;
+            produced += 1;
+        } else {
+            *share.meter_capacity_drops = share.meter_capacity_drops.wrapping_add(1);
+            rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
+        }
+        // --- PDC：本轨输出 → 补偿延迟线 → 声相/母线求和 ---
+        // [ARCH-PDC-001, ROAD-M2-004] 位置就是规范 §3.4 第 3 条说的
+        // "在进入总线求和节点前"。延迟量在快照边界武装好（见 2b''），
+        // 这里只做环形读写：**零分配、逐样本无分支**（`delay == 0` 时输出
+        // 逐位等于输入，但延迟线**仍然记录** —— 见 `graph::DelayLine` 的
+        // "环的不变量"）。
+        //
+        // ⚠ 刻意放在 `share.bank.measure` **之后**：逐轨电平的取样点因此**一位没动**
+        // （仍是"该轨自己渲染出来的、声相之前的单声道结果"），PDC 是**求和节点
+        // 输入侧**的事 —— 这正是规范那句话的位置。放到电平之前也能对齐相位，
+        // 但那样会顺带改掉电平的读数口径。
+        //
+        // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
+        // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
+        share.pdc.apply(&track, &mut share.track_scratch[..frames]);
+        // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
+        // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
+        // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
+        // 而不是静音 —— 宁可声相不准，也不要一条轨无声。
+        //
+        // **声相自动化**（裁决 P4=(b)）只多一个分支：该槽位收到过被接受的
+        // 声相目标 ⇒ 走**平滑路径**（逐样本把两个增益收敛到目标，零分配）；
+        // 否则走**原来那条**常量路径 ⇒ 没有声相自动化的工程**逐位不变**。
+        let pan_index = share.pan_gains[..*share.armed_pan_slots]
+            .iter()
+            .position(|(id, _, _)| *id == track);
+        if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
+            sum_into_bus_smoothed(
+                out,
+                &share.track_scratch[..frames],
+                &mut share.armed_pan_l[index],
+                &mut share.armed_pan_r[index],
+            );
+            *share.pan_automation_frames = share.pan_automation_frames.wrapping_add(frames as u64);
+        } else {
+            let (gain_l, gain_r) = pan_index.map_or(
+                (
+                    core::f32::consts::FRAC_1_SQRT_2,
+                    core::f32::consts::FRAC_1_SQRT_2,
+                ),
+                |index| (share.pan_gains[index].1, share.pan_gains[index].2),
+            );
+            sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
+        }
+    }
+
+    // --- 插入链动态级的**当前**衰减与**检波器**电平读数（3a' 的收尾）：
+    //     逐轨循环之后覆写**一次** ---
+    //
+    // 读数的搬运（不是计算）：本量子至少有一台武装通道条处理过帧时，把
+    // `insert_current_db` 与 `insert_detector_db`（两者都是跨轨最大）覆写进统计。
+    // 放在循环**之后**而不是循环**之内**有两个理由：
+    //
+    // 1. 一个量子只有**一个**读数（与 `share.insert_max_reduction_db` 的跨轨口径相同）。
+    //    循环内每轨各写一次会让读数的终值取决于"最后一条轨是谁"（`BTreeMap`
+    //    的键序），那是把实现细节当成语义；
+    // 2. 它们是**量规**：一台都不工作时**不覆写**（保持上一次的值），
+    //    见 [`EngineStats::share.insert_current_reduction_db`] 的口径第 3 条与
+    //    [`EngineStats::share.insert_detector_level_db`] 的口径第 4 条。
+    //
+    // 零分配、零锁、零 I/O、零日志：一次 `f32` 字段写与一次 `Option<f32>` 字段写。
+    if insert_current_seen {
+        *share.insert_current_reduction_db = insert_current_db;
+        // `insert_detector_db` 此时必定已被至少一台器件赋值过（`seen` 的定义）
+        // ⇒ `Some(…)` 里不是 `NEG_INFINITY`。
+        *share.insert_detector_level_db = Some(insert_detector_db);
+    }
+    produced
 }
 
 /// 渲染驱动：音频回调持有的全部可变状态。
@@ -1878,6 +2223,7 @@ impl EngineRuntime {
             pan_automation_frames,
             pan_automation_value_rejects,
             pan_automation_resets,
+            pdc,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
             pdc_alignment_frames,
@@ -2100,7 +2446,7 @@ impl EngineRuntime {
                 // 计划在**控制线程**（`EngineSnapshot::from_project` → `PdcPlan::compute`）
                 // 算好，这里只做 `set_delay`：**零分配、零锁、零 I/O** [MUST-GATE-001]。
                 // 池装不下的部分不静默：记进两个累计读数（见 `RearmShortfall`）。
-                let shortfall = self.pdc.rearm(current.pdc());
+                let shortfall = pdc.rearm(current.pdc());
                 *pdc_unarmed_nodes = pdc_unarmed_nodes.wrapping_add(shortfall.unarmed_nodes as u64);
                 *pdc_clamped_frames = pdc_clamped_frames.wrapping_add(shortfall.clamped_frames);
 
@@ -2355,275 +2701,41 @@ impl EngineRuntime {
                 }
             }
 
-            block.silence();
-            block.set_frames(frames);
-            bank.begin_quantum();
-
-            // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
-            //
-            // **走带冻结 ⇒ 输出静音、且不触发任何音符**（`notes` 契约见
-            // `docs/ledger/engine-sound-notes.md` 的 needs N2）。电平仍然照常计量
-            // （静音的读数），因此"每量子恰好一次批量发布"这条结构性契约与走带状态无关。
             let running = transport.is_playing();
-            let metered_tracks = current.tracks().keys().filter(|id| **id != master).count();
-            // 给母线留一个槽位, 保证母线永远有电平可发。
-            let track_budget = scratch_meters.len().saturating_sub(1);
-            if metered_tracks > track_budget {
-                *meter_capacity_drops =
-                    meter_capacity_drops.wrapping_add((metered_tracks - track_budget) as u64);
-                // [MUST-GATE-001, N6 选项 A] 诊断走 `rt_probe::note_suppressed` ——
-                // 它是**纯计数**出口（不读 sink、不分配、不加锁、不阻塞），
-                // 因为本函数就是音频回调：实时路径上不许有任何到 I/O 边界的调用。
-                rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
-            }
-            // 本量子插入链动态级的**当前**衰减与**检波器**电平（两者都跨轨取最大；量规）。
-            //
-            // 三个局部量只在**本量子**内有意义：`insert_current_db` / `insert_detector_db`
-            // 分别收集"本量子每条轨的通道条报出的瞬时衰减 / 检波器电平"的最大值，
-            // `insert_current_seen` 记下"本量子真的有一台武装通道条处理过帧"。循环之后
-            // 只在 `seen` 为真时**覆写**两个读数 —— 与 `limiter_current_reduction` 的
-            // "没有快照的量子不更新"同口径（见 [`EngineStats::insert_current_reduction_db`]
-            // 与 [`EngineStats::insert_detector_level_db`] 的口径第 3／4 条）。
-            //
-            // ⚠ 两条读数**共用**同一个 `seen` 标志：它们来自同一台器件、同一个瞬间
-            // （见下面对 `strip` 的那一段读），因此"本量子有没有器件工作过"是**同一个**
-            // 事实，分成两个标志只会给它们两个不同的更新口径。
-            //
-            // ⚠ 这三个局部量是**读数的搬运**，不参与任何样本计算 ⇒ 逐样本路径**一个字
-            // 都没动** ⇒ 渲染输出逐位不变（判据见 `tests/channel_strip_insert.rs` 的 C15/C16）。
-            let mut insert_current_db = 0.0f32;
-            // 初值取 `-∞`：任何一台真实器件的检波器电平都 `≥ MIN_LEVEL_DB`（−120 dBFS）
-            // ⇒ 它一定被第一次赋值覆盖（`seen` 为真时至少有一台器件报过数）。
-            let mut insert_detector_db = f32::NEG_INFINITY;
-            let mut insert_current_seen = false;
-            for id in current.tracks().keys() {
-                if *id == master || produced >= track_budget {
-                    continue;
-                }
-                let track = *id;
-                if running {
-                    // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
-                    // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
-                    // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
-                    synth.render_track(
-                        track,
-                        current.schedule(&track),
-                        &mut track_scratch[..frames],
-                    );
-                } else {
-                    // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
-                    track_scratch[..frames].fill(0.0);
-                }
-                // --- 3a⁰) 参数目标表的**逐轨增益乘子**：逐样本 ---
-                // [crate::param]。位置：**声源之后、插入链之前** —— 与"在构造期把该轨
-                // 音量设成另一个值"同解（静态音量也是在插入链之前烧进声部增益的，
-                // 见 `crate::snapshot::project_schedules` 的 `track_gain`）。
-                //
-                // ⚠ 刻意**不**放在插入链之后：那样压缩器看到的是**未自动化**的电平，
-                // 是另一种（也不好听的）行为。理由写在 `crate::param` 模块文档 §2.2。
-                //
-                // **默认口径**：本表里没有这条轨的槽位、或它已吸附到 `1.0`（恒等）
-                // ⇒ `apply` **一个样本都不碰**并返回 0 ⇒ 没有 `SetParam` 的工程与
-                // 接线前**逐位相同**（模块文档 §5）。
-                //
-                // 逐样本只有一次乘加（平滑器）与一次乘；**零分配、零锁、零 I/O、
-                // 零日志** [MUST-GATE-001, ARCH-DSP-001]。
-                params.apply(track, &mut track_scratch[..frames]);
-                // --- 3a') 插入链：本轨的通道条（若有）**逐样本**处理 ---
-                // [crate::insert]。位置：**轨道自己的渲染之后、逐轨电平与 PDC 之前**
-                // ⇒ 电平读数（`EngineStats::meter_frames`）与汇入母线的信号都是
-                // "插入之后"的结果。
-                //
-                // **默认口径**：本轨没有插入器件（`armed_strips` 里查不到）⇒
-                // 这个分支**整段跳过**（不是"参数取成透明"）⇒ 这类轨的输出与接线前
-                // **逐位相同**（证据见 `tests/compressor_insert.rs` 的 C0）。
-                //
-                // 停住时喂的是静音：各级状态是**时间状态**（滤波器的积分器、压缩器的
-                // 增益弹道），喂静音让它们按各自的时间常数回到初值 —— 与 PDC 延迟线
-                // "停住也喂静音"是同一条纪律。
-                //
-                // 逐样本路径上只有器件的乘加与一阶递归（器件把 `exp` 全部留在
-                // `set_params` 里，EQ 的中间缓冲是**栈数组**）；这里**零分配、零锁、
-                // 零 I/O** [MUST-GATE-001]。
-                if let Some(index) = armed_strips[..*armed_insert_slots]
-                    .iter()
-                    .position(|(id, _)| id == &track)
-                    && let (_, Some(strip)) = &mut armed_strips[index]
-                {
-                    let before_reductions = strip.gain_reduction_count();
-                    let before_frames = strip.processed_frames();
-                    strip.process_mono(&mut track_scratch[..frames]);
-                    let reduced = strip
-                        .gain_reduction_count()
-                        .saturating_sub(before_reductions);
-                    *insert_gain_reductions = insert_gain_reductions.wrapping_add(reduced);
-                    let processed = strip.processed_frames().saturating_sub(before_frames);
-                    *insert_strip_frames = insert_strip_frames.wrapping_add(processed);
-                    let reduction_db = strip.max_gain_reduction_db();
-                    if reduction_db > *insert_max_reduction_db {
-                        *insert_max_reduction_db = reduction_db;
-                    }
-                    // **当前**衰减（量规）：与上面两条计数**同一台器件、同一个瞬间**读出。
-                    // 它把线性增益按需换算成 dB（`−compressor.gain_db()` ⇒ 一次 `log2`），
-                    // 但不碰样本、不分配、不加锁（红线 7 不受影响）。
-                    let current_db = strip.current_gain_reduction_db();
-                    if current_db > insert_current_db {
-                        insert_current_db = current_db;
-                    }
-                    // **检波器**电平（量规，单位 dBFS）：同一个器件、同一个瞬间的**输入**侧。
-                    // 它同样只读一个字段（`compressor.level_db`，一个 `const fn`）
-                    // ⇒ 不碰样本、不分配、不加锁 ⇒ 渲染输出逐位不变。
-                    let detector_db = strip.detector_level_db();
-                    if detector_db > insert_detector_db {
-                        insert_detector_db = detector_db;
-                    }
-                    insert_current_seen = true;
-                }
-                // --- 3a''') 插入链的**混响级**：逐样本（器件的接口是立体声块）---
-                // [crate::insert] 模块文档 §8.3。位置与通道条**同一条链上的后一级**：
-                // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
-                //
-                // 单声道口径：把 `track_scratch` 同时喂给左右两路，取两路输出的中值
-                // `(out_l + out_r) · 0.5`。那是恒等式而不是近似（§8.3 给了代数证明）：
-                // 湿路径的输入与"单声道输入"同解，而宽度项在中值里恰好抵消。
-                //
-                // **默认口径**：本轨没有混响（`armed_reverbs` 里查不到武装项）⇒
-                // 整段跳过；`Reverb::is_active()`（`mix ≤ 1e-4`）为假时同样跳过 ⇒
-                // 这两种情形下器件的状态**不推进**（与器件自己的早返回守卫同口径）。
-                //
-                // 逐样本只有环形缓冲读写与乘加；**零分配、零锁、零 I/O、零日志**
-                // [MUST-GATE-001]。
-                if let Some(index) = armed_reverbs[..*armed_reverb_slots]
-                    .iter()
-                    .position(|(id, armed)| *armed && id == &track)
-                {
-                    let reverb = &mut reverb_pool[index];
-                    if reverb.is_active() {
-                        let frames = frames.min(DEFAULT_BLOCK_FRAMES);
-                        reverb_scratch[0][..frames].copy_from_slice(&track_scratch[..frames]);
-                        reverb_scratch[1][..frames].copy_from_slice(&track_scratch[..frames]);
-                        let (left, right) = reverb_scratch.split_at_mut(1);
-                        reverb.process(&mut left[0][..frames], &mut right[0][..frames]);
-                        for index in 0..frames {
-                            track_scratch[index] =
-                                (reverb_scratch[0][index] + reverb_scratch[1][index]) * 0.5;
-                        }
-                        *insert_reverb_frames = insert_reverb_frames.wrapping_add(frames as u64);
-                    }
-                }
-                // --- 3a'''') 插入链的**卷积混响级**：逐样本（器件的接口是交错立体声块）---
-                // [crate::insert] 模块文档 §9.4。位置与混响**同一条链上的后一级**：
-                // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
-                //
-                // 单声道口径（与混响同款）：把 `track_scratch` **同时**写进左右两路，
-                // 取两路输出的中值 `(out_l + out_r) · 0.5`。那是恒等式而不是近似：
-                // 四条通路线性，中值 = `conv((h_LL + h_LR + h_RL + h_RR) / 2, m)`，
-                // 而投影交进去的是 `h_LL = h_RR = ir`、`h_LR = h_RL = 0` ⇒ 恰好是
-                // `conv(ir, m)`（§9.4 给了这段代数）。
-                //
-                // ⚠ IR 本身**不在**这条路径上：它只在快照边界换（且长度不变 ⇒ 零分配）。
-                //
-                // **默认口径**：本轨没有卷积混响（`armed_convs` 里查不到武装项）⇒
-                // 整段跳过；`ConvolutionReverb::is_active()`（`wet ≤ 1e-4` 或未配置）为假时
-                // 同样跳过 ⇒ 这两种情形下器件的状态**不推进**。
-                //
-                // 逐样本只有频域分块乘加与 256 点变换；**零分配、零锁、零 I/O、零日志**
-                // [MUST-GATE-001]。⚠ 它是 [ADR-0001 D32] 的**超越函数类**（旋转因子表由
-                // 宿主 libm 的 `f32::cos`/`f32::sin` 在构造期算出）⇒ 本票不声称跨架构逐位相同。
-                if let Some(index) = armed_convs[..*armed_conv_slots]
-                    .iter()
-                    .position(|(id, armed)| *armed && id == &track)
-                {
-                    let conv = &mut conv_pool[index];
-                    if conv.is_active() {
-                        let frames = frames.min(DEFAULT_BLOCK_FRAMES);
-                        for frame in 0..frames {
-                            let mono = track_scratch[frame];
-                            conv_scratch[2 * frame] = mono;
-                            conv_scratch[2 * frame + 1] = mono;
-                        }
-                        conv.process(&mut conv_scratch[..2 * frames]);
-                        for frame in 0..frames {
-                            track_scratch[frame] =
-                                (conv_scratch[2 * frame] + conv_scratch[2 * frame + 1]) * 0.5;
-                        }
-                        *insert_convolution_frames =
-                            insert_convolution_frames.wrapping_add(frames as u64);
-                    }
-                }
-                if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {
-                    scratch_meters[produced] = frame;
-                    produced += 1;
-                } else {
-                    *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
-                    rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
-                }
-                // --- PDC：本轨输出 → 补偿延迟线 → 声相/母线求和 ---
-                // [ARCH-PDC-001, ROAD-M2-004] 位置就是规范 §3.4 第 3 条说的
-                // "在进入总线求和节点前"。延迟量在快照边界武装好（见 2b''），
-                // 这里只做环形读写：**零分配、逐样本无分支**（`delay == 0` 时输出
-                // 逐位等于输入，但延迟线**仍然记录** —— 见 `graph::DelayLine` 的
-                // "环的不变量"）。
-                //
-                // ⚠ 刻意放在 `bank.measure` **之后**：逐轨电平的取样点因此**一位没动**
-                // （仍是"该轨自己渲染出来的、声相之前的单声道结果"），PDC 是**求和节点
-                // 输入侧**的事 —— 这正是规范那句话的位置。放到电平之前也能对齐相位，
-                // 但那样会顺带改掉电平的读数口径。
-                //
-                // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
-                // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
-                self.pdc.apply(&track, &mut track_scratch[..frames]);
-                // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
-                // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
-                // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
-                // 而不是静音 —— 宁可声相不准，也不要一条轨无声。
-                //
-                // **声相自动化**（裁决 P4=(b)）只多一个分支：该槽位收到过被接受的
-                // 声相目标 ⇒ 走**平滑路径**（逐样本把两个增益收敛到目标，零分配）；
-                // 否则走**原来那条**常量路径 ⇒ 没有声相自动化的工程**逐位不变**。
-                let pan_index = pan_gains[..*armed_pan_slots]
-                    .iter()
-                    .position(|(id, _, _)| *id == track);
-                if let Some(index) = pan_index.filter(|index| armed_pan_armed[*index]) {
-                    sum_into_bus_smoothed(
-                        block,
-                        &track_scratch[..frames],
-                        &mut armed_pan_l[index],
-                        &mut armed_pan_r[index],
-                    );
-                    *pan_automation_frames = pan_automation_frames.wrapping_add(frames as u64);
-                } else {
-                    let (gain_l, gain_r) = pan_index.map_or(
-                        (
-                            core::f32::consts::FRAC_1_SQRT_2,
-                            core::f32::consts::FRAC_1_SQRT_2,
-                        ),
-                        |index| (pan_gains[index].1, pan_gains[index].2),
-                    );
-                    sum_into_bus(block, &track_scratch[..frames], gain_l, gain_r);
-                }
-            }
-
-            // --- 插入链动态级的**当前**衰减与**检波器**电平读数（3a' 的收尾）：
-            //     逐轨循环之后覆写**一次** ---
-            //
-            // 读数的搬运（不是计算）：本量子至少有一台武装通道条处理过帧时，把
-            // `insert_current_db` 与 `insert_detector_db`（两者都是跨轨最大）覆写进统计。
-            // 放在循环**之后**而不是循环**之内**有两个理由：
-            //
-            // 1. 一个量子只有**一个**读数（与 `insert_max_reduction_db` 的跨轨口径相同）。
-            //    循环内每轨各写一次会让读数的终值取决于"最后一条轨是谁"（`BTreeMap`
-            //    的键序），那是把实现细节当成语义；
-            // 2. 它们是**量规**：一台都不工作时**不覆写**（保持上一次的值），
-            //    见 [`EngineStats::insert_current_reduction_db`] 的口径第 3 条与
-            //    [`EngineStats::insert_detector_level_db`] 的口径第 4 条。
-            //
-            // 零分配、零锁、零 I/O、零日志：一次 `f32` 字段写与一次 `Option<f32>` 字段写。
-            if insert_current_seen {
-                *insert_current_reduction_db = insert_current_db;
-                // `insert_detector_db` 此时必定已被至少一台器件赋值过（`seen` 的定义）
-                // ⇒ `Some(…)` 里不是 `NEG_INFINITY`。
-                *insert_detector_level_db = Some(insert_detector_db);
+            {
+                let mut share = BranchShare {
+                    pdc: &mut *pdc,
+                    params: &mut *params,
+                    bank: &mut *bank,
+                    armed_strips: &mut *armed_strips,
+                    armed_insert_slots: &mut *armed_insert_slots,
+                    reverb_pool: &mut *reverb_pool,
+                    armed_reverbs: &mut *armed_reverbs,
+                    armed_reverb_slots: &mut *armed_reverb_slots,
+                    reverb_scratch: &mut *reverb_scratch,
+                    conv_pool: &mut *conv_pool,
+                    armed_convs: &mut *armed_convs,
+                    armed_conv_slots: &mut *armed_conv_slots,
+                    conv_scratch: &mut *conv_scratch,
+                    armed_pan_l: &mut *armed_pan_l,
+                    armed_pan_r: &mut *armed_pan_r,
+                    armed_pan_slots: &mut *armed_pan_slots,
+                    armed_pan_armed: &mut *armed_pan_armed,
+                    track_scratch: &mut *track_scratch,
+                    scratch_meters: &mut *scratch_meters,
+                    insert_gain_reductions: &mut *insert_gain_reductions,
+                    insert_max_reduction_db: &mut *insert_max_reduction_db,
+                    insert_current_reduction_db: &mut *insert_current_reduction_db,
+                    insert_detector_level_db: &mut *insert_detector_level_db,
+                    insert_strip_frames: &mut *insert_strip_frames,
+                    insert_reverb_frames: &mut *insert_reverb_frames,
+                    insert_convolution_frames: &mut *insert_convolution_frames,
+                    pan_automation_frames: &mut *pan_automation_frames,
+                    meter_capacity_drops: &mut *meter_capacity_drops,
+                    pan_gains: &mut pan_gains,
+                };
+                produced =
+                    render_branch(&mut share, synth, block, current, frames, running, quantum);
             }
 
             // --- 3a') 节拍器咔哒声：**逐轨汇流之后、主总线推子与母线限制器之前** ---
@@ -5239,5 +5351,484 @@ mod tests {
         // ⛔ 未挂的那条路必须如实报「没挂」。
         assert!(!control.runtime.has_audition_branch());
         assert_eq!(control.runtime.audition_held_revision(), None);
+    }
+
+    /// [ARCH-RT-005] 片 2a 的**自校准参照**：新路径与旧内联路径各一次，
+    /// 供 `extracted_mix_path_matches_the_legacy_inline_path_bit_for_bit` 逐位比对。
+    impl EngineRuntime {
+        /// ⚠ **测试专用**：用**新路径**（`render_branch`）渲染**一个**量子，返回交错输出的**位**。
+        ///
+        /// 它只把 `render_block` 顶部的解构搬过来 + 调一次 `render_branch` ⇒ 与生产路径
+        /// **同一个函数**，⛔ 不是第二份实现。
+        #[cfg(test)]
+        #[must_use]
+        fn render_branch_once(&mut self, frames: usize, running: bool) -> Vec<u32> {
+            let Self {
+                snapshot,
+                quanta,
+                block,
+                synth,
+                armed_pan_gains,
+                pdc,
+                params,
+                bank,
+                armed_strips,
+                armed_insert_slots,
+                reverb_pool,
+                armed_reverbs,
+                armed_reverb_slots,
+                reverb_scratch,
+                conv_pool,
+                armed_convs,
+                armed_conv_slots,
+                conv_scratch,
+                armed_pan_l,
+                armed_pan_r,
+                armed_pan_slots,
+                armed_pan_armed,
+                track_scratch,
+                scratch_meters,
+                insert_gain_reductions,
+                insert_max_reduction_db,
+                insert_current_reduction_db,
+                insert_detector_level_db,
+                insert_strip_frames,
+                insert_reverb_frames,
+                insert_convolution_frames,
+                pan_automation_frames,
+                meter_capacity_drops,
+                ..
+            } = self;
+            let quantum = *quanta;
+            let out = block;
+            let current = match snapshot.begin_block() {
+                Some(current) => current,
+                None => return Vec::new(),
+            };
+            let master = current.master();
+            let mut produced = 0usize;
+            // 与 `render_block` 同源：本量子的声相增益表是 `armed_pan_gains` 的副本。
+            let mut pan_gains = [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS];
+            pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
+            let mut share = BranchShare {
+                pdc,
+                params,
+                bank,
+                armed_strips,
+                armed_insert_slots,
+                reverb_pool,
+                armed_reverbs,
+                armed_reverb_slots,
+                reverb_scratch,
+                conv_pool,
+                armed_convs,
+                armed_conv_slots,
+                conv_scratch,
+                armed_pan_l,
+                armed_pan_r,
+                armed_pan_slots,
+                armed_pan_armed,
+                track_scratch,
+                scratch_meters,
+                insert_gain_reductions,
+                insert_max_reduction_db,
+                insert_current_reduction_db,
+                insert_detector_level_db,
+                insert_strip_frames,
+                insert_reverb_frames,
+                insert_convolution_frames,
+                pan_automation_frames,
+                meter_capacity_drops,
+                pan_gains: &mut pan_gains,
+            };
+            let _ = render_branch(&mut share, synth, out, current, frames, running, quantum);
+            let _ = produced;
+            let (left, right) = out.stereo_mut();
+            left.iter()
+                .chain(right.iter())
+                .map(|sample| sample.to_bits())
+                .collect()
+        }
+
+        /// ⚠ **测试专用**：**抽取前**那条内联混音路径的**逐字副本** —— 自校准的**参照实现**。
+        ///
+        /// 只做了两处机械替换（`block` → `out`、`self.pdc` → `pdc`），其余与抽取前一字不差。
+        /// ⛔ 不进生产代码、⛔ 不替代 `render_branch`：唯一目的是让「抽取没有改变数值行为」
+        /// 这条断言**不依赖任何本机测得的常量**（否则判据会绑在**架构**上，而 `TEST-SPEC-003`
+        /// 正是跨架构确定性门）。先例：`crc32` 的逐位参照判据。
+        #[cfg(test)]
+        #[must_use]
+        #[allow(clippy::too_many_lines)]
+        fn legacy_mix_once(&mut self, frames: usize, running: bool) -> Vec<u32> {
+            let Self {
+                snapshot,
+                quanta,
+                block,
+                synth,
+                armed_pan_gains,
+                pdc,
+                params,
+                bank,
+                armed_strips,
+                armed_insert_slots,
+                reverb_pool,
+                armed_reverbs,
+                armed_reverb_slots,
+                reverb_scratch,
+                conv_pool,
+                armed_convs,
+                armed_conv_slots,
+                conv_scratch,
+                armed_pan_l,
+                armed_pan_r,
+                armed_pan_slots,
+                armed_pan_armed,
+                track_scratch,
+                scratch_meters,
+                insert_gain_reductions,
+                insert_max_reduction_db,
+                insert_current_reduction_db,
+                insert_detector_level_db,
+                insert_strip_frames,
+                insert_reverb_frames,
+                insert_convolution_frames,
+                pan_automation_frames,
+                meter_capacity_drops,
+                ..
+            } = self;
+            let quantum = *quanta;
+            let out = block;
+            let current = match snapshot.begin_block() {
+                Some(current) => current,
+                None => return Vec::new(),
+            };
+            let master = current.master();
+            let mut produced = 0usize;
+            // 与 `render_block` 同源：本量子的声相增益表是 `armed_pan_gains` 的副本。
+            let mut pan_gains = [(EntityId::default(), 1.0f32, 1.0f32); MAX_TRACK_SLOTS];
+            pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
+            out.silence();
+            out.set_frames(frames);
+            bank.begin_quantum();
+
+            // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
+            //
+            // **走带冻结 ⇒ 输出静音、且不触发任何音符**（`notes` 契约见
+            // `docs/ledger/engine-sound-notes.md` 的 needs N2）。电平仍然照常计量
+            // （静音的读数），因此"每量子恰好一次批量发布"这条结构性契约与走带状态无关。
+            let metered_tracks = current.tracks().keys().filter(|id| **id != master).count();
+            // 给母线留一个槽位, 保证母线永远有电平可发。
+            let track_budget = scratch_meters.len().saturating_sub(1);
+            if metered_tracks > track_budget {
+                *meter_capacity_drops =
+                    meter_capacity_drops.wrapping_add((metered_tracks - track_budget) as u64);
+                // [MUST-GATE-001, N6 选项 A] 诊断走 `rt_probe::note_suppressed` ——
+                // 它是**纯计数**出口（不读 sink、不分配、不加锁、不阻塞），
+                // 因为本函数就是音频回调：实时路径上不许有任何到 I/O 边界的调用。
+                rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
+            }
+            // 本量子插入链动态级的**当前**衰减与**检波器**电平（两者都跨轨取最大；量规）。
+            //
+            // 三个局部量只在**本量子**内有意义：`insert_current_db` / `insert_detector_db`
+            // 分别收集"本量子每条轨的通道条报出的瞬时衰减 / 检波器电平"的最大值，
+            // `insert_current_seen` 记下"本量子真的有一台武装通道条处理过帧"。循环之后
+            // 只在 `seen` 为真时**覆写**两个读数 —— 与 `limiter_current_reduction` 的
+            // "没有快照的量子不更新"同口径（见 [`EngineStats::insert_current_reduction_db`]
+            // 与 [`EngineStats::insert_detector_level_db`] 的口径第 3／4 条）。
+            //
+            // ⚠ 两条读数**共用**同一个 `seen` 标志：它们来自同一台器件、同一个瞬间
+            // （见下面对 `strip` 的那一段读），因此"本量子有没有器件工作过"是**同一个**
+            // 事实，分成两个标志只会给它们两个不同的更新口径。
+            //
+            // ⚠ 这三个局部量是**读数的搬运**，不参与任何样本计算 ⇒ 逐样本路径**一个字
+            // 都没动** ⇒ 渲染输出逐位不变（判据见 `tests/channel_strip_insert.rs` 的 C15/C16）。
+            let mut insert_current_db = 0.0f32;
+            // 初值取 `-∞`：任何一台真实器件的检波器电平都 `≥ MIN_LEVEL_DB`（−120 dBFS）
+            // ⇒ 它一定被第一次赋值覆盖（`seen` 为真时至少有一台器件报过数）。
+            let mut insert_detector_db = f32::NEG_INFINITY;
+            let mut insert_current_seen = false;
+            for id in current.tracks().keys() {
+                if *id == master || produced >= track_budget {
+                    continue;
+                }
+                let track = *id;
+                if running {
+                    // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
+                    // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
+                    // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
+                    synth.render_track(
+                        track,
+                        current.schedule(&track),
+                        &mut track_scratch[..frames],
+                    );
+                } else {
+                    // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
+                    track_scratch[..frames].fill(0.0);
+                }
+                // --- 3a⁰) 参数目标表的**逐轨增益乘子**：逐样本 ---
+                // [crate::param]。位置：**声源之后、插入链之前** —— 与"在构造期把该轨
+                // 音量设成另一个值"同解（静态音量也是在插入链之前烧进声部增益的，
+                // 见 `crate::snapshot::project_schedules` 的 `track_gain`）。
+                //
+                // ⚠ 刻意**不**放在插入链之后：那样压缩器看到的是**未自动化**的电平，
+                // 是另一种（也不好听的）行为。理由写在 `crate::param` 模块文档 §2.2。
+                //
+                // **默认口径**：本表里没有这条轨的槽位、或它已吸附到 `1.0`（恒等）
+                // ⇒ `apply` **一个样本都不碰**并返回 0 ⇒ 没有 `SetParam` 的工程与
+                // 接线前**逐位相同**（模块文档 §5）。
+                //
+                // 逐样本只有一次乘加（平滑器）与一次乘；**零分配、零锁、零 I/O、
+                // 零日志** [MUST-GATE-001, ARCH-DSP-001]。
+                params.apply(track, &mut track_scratch[..frames]);
+                // --- 3a') 插入链：本轨的通道条（若有）**逐样本**处理 ---
+                // [crate::insert]。位置：**轨道自己的渲染之后、逐轨电平与 PDC 之前**
+                // ⇒ 电平读数（`EngineStats::meter_frames`）与汇入母线的信号都是
+                // "插入之后"的结果。
+                //
+                // **默认口径**：本轨没有插入器件（`armed_strips` 里查不到）⇒
+                // 这个分支**整段跳过**（不是"参数取成透明"）⇒ 这类轨的输出与接线前
+                // **逐位相同**（证据见 `tests/compressor_insert.rs` 的 C0）。
+                //
+                // 停住时喂的是静音：各级状态是**时间状态**（滤波器的积分器、压缩器的
+                // 增益弹道），喂静音让它们按各自的时间常数回到初值 —— 与 PDC 延迟线
+                // "停住也喂静音"是同一条纪律。
+                //
+                // 逐样本路径上只有器件的乘加与一阶递归（器件把 `exp` 全部留在
+                // `set_params` 里，EQ 的中间缓冲是**栈数组**）；这里**零分配、零锁、
+                // 零 I/O** [MUST-GATE-001]。
+                if let Some(index) = armed_strips[..*armed_insert_slots]
+                    .iter()
+                    .position(|(id, _)| id == &track)
+                    && let (_, Some(strip)) = &mut armed_strips[index]
+                {
+                    let before_reductions = strip.gain_reduction_count();
+                    let before_frames = strip.processed_frames();
+                    strip.process_mono(&mut track_scratch[..frames]);
+                    let reduced = strip
+                        .gain_reduction_count()
+                        .saturating_sub(before_reductions);
+                    *insert_gain_reductions = insert_gain_reductions.wrapping_add(reduced);
+                    let processed = strip.processed_frames().saturating_sub(before_frames);
+                    *insert_strip_frames = insert_strip_frames.wrapping_add(processed);
+                    let reduction_db = strip.max_gain_reduction_db();
+                    if reduction_db > *insert_max_reduction_db {
+                        *insert_max_reduction_db = reduction_db;
+                    }
+                    // **当前**衰减（量规）：与上面两条计数**同一台器件、同一个瞬间**读出。
+                    // 它把线性增益按需换算成 dB（`−compressor.gain_db()` ⇒ 一次 `log2`），
+                    // 但不碰样本、不分配、不加锁（红线 7 不受影响）。
+                    let current_db = strip.current_gain_reduction_db();
+                    if current_db > insert_current_db {
+                        insert_current_db = current_db;
+                    }
+                    // **检波器**电平（量规，单位 dBFS）：同一个器件、同一个瞬间的**输入**侧。
+                    // 它同样只读一个字段（`compressor.level_db`，一个 `const fn`）
+                    // ⇒ 不碰样本、不分配、不加锁 ⇒ 渲染输出逐位不变。
+                    let detector_db = strip.detector_level_db();
+                    if detector_db > insert_detector_db {
+                        insert_detector_db = detector_db;
+                    }
+                    insert_current_seen = true;
+                }
+                // --- 3a''') 插入链的**混响级**：逐样本（器件的接口是立体声块）---
+                // [crate::insert] 模块文档 §8.3。位置与通道条**同一条链上的后一级**：
+                // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
+                //
+                // 单声道口径：把 `track_scratch` 同时喂给左右两路，取两路输出的中值
+                // `(out_l + out_r) · 0.5`。那是恒等式而不是近似（§8.3 给了代数证明）：
+                // 湿路径的输入与"单声道输入"同解，而宽度项在中值里恰好抵消。
+                //
+                // **默认口径**：本轨没有混响（`armed_reverbs` 里查不到武装项）⇒
+                // 整段跳过；`Reverb::is_active()`（`mix ≤ 1e-4`）为假时同样跳过 ⇒
+                // 这两种情形下器件的状态**不推进**（与器件自己的早返回守卫同口径）。
+                //
+                // 逐样本只有环形缓冲读写与乘加；**零分配、零锁、零 I/O、零日志**
+                // [MUST-GATE-001]。
+                if let Some(index) = armed_reverbs[..*armed_reverb_slots]
+                    .iter()
+                    .position(|(id, armed)| *armed && id == &track)
+                {
+                    let reverb = &mut reverb_pool[index];
+                    if reverb.is_active() {
+                        let frames = frames.min(DEFAULT_BLOCK_FRAMES);
+                        reverb_scratch[0][..frames].copy_from_slice(&track_scratch[..frames]);
+                        reverb_scratch[1][..frames].copy_from_slice(&track_scratch[..frames]);
+                        let (left, right) = reverb_scratch.split_at_mut(1);
+                        reverb.process(&mut left[0][..frames], &mut right[0][..frames]);
+                        for index in 0..frames {
+                            track_scratch[index] =
+                                (reverb_scratch[0][index] + reverb_scratch[1][index]) * 0.5;
+                        }
+                        *insert_reverb_frames = insert_reverb_frames.wrapping_add(frames as u64);
+                    }
+                }
+                // --- 3a'''') 插入链的**卷积混响级**：逐样本（器件的接口是交错立体声块）---
+                // [crate::insert] 模块文档 §9.4。位置与混响**同一条链上的后一级**：
+                // 轨道自己的渲染之后、逐轨电平与 PDC 之前。
+                //
+                // 单声道口径（与混响同款）：把 `track_scratch` **同时**写进左右两路，
+                // 取两路输出的中值 `(out_l + out_r) · 0.5`。那是恒等式而不是近似：
+                // 四条通路线性，中值 = `conv((h_LL + h_LR + h_RL + h_RR) / 2, m)`，
+                // 而投影交进去的是 `h_LL = h_RR = ir`、`h_LR = h_RL = 0` ⇒ 恰好是
+                // `conv(ir, m)`（§9.4 给了这段代数）。
+                //
+                // ⚠ IR 本身**不在**这条路径上：它只在快照边界换（且长度不变 ⇒ 零分配）。
+                //
+                // **默认口径**：本轨没有卷积混响（`armed_convs` 里查不到武装项）⇒
+                // 整段跳过；`ConvolutionReverb::is_active()`（`wet ≤ 1e-4` 或未配置）为假时
+                // 同样跳过 ⇒ 这两种情形下器件的状态**不推进**。
+                //
+                // 逐样本只有频域分块乘加与 256 点变换；**零分配、零锁、零 I/O、零日志**
+                // [MUST-GATE-001]。⚠ 它是 [ADR-0001 D32] 的**超越函数类**（旋转因子表由
+                // 宿主 libm 的 `f32::cos`/`f32::sin` 在构造期算出）⇒ 本票不声称跨架构逐位相同。
+                if let Some(index) = armed_convs[..*armed_conv_slots]
+                    .iter()
+                    .position(|(id, armed)| *armed && id == &track)
+                {
+                    let conv = &mut conv_pool[index];
+                    if conv.is_active() {
+                        let frames = frames.min(DEFAULT_BLOCK_FRAMES);
+                        for frame in 0..frames {
+                            let mono = track_scratch[frame];
+                            conv_scratch[2 * frame] = mono;
+                            conv_scratch[2 * frame + 1] = mono;
+                        }
+                        conv.process(&mut conv_scratch[..2 * frames]);
+                        for frame in 0..frames {
+                            track_scratch[frame] =
+                                (conv_scratch[2 * frame] + conv_scratch[2 * frame + 1]) * 0.5;
+                        }
+                        *insert_convolution_frames =
+                            insert_convolution_frames.wrapping_add(frames as u64);
+                    }
+                }
+                if let Some(frame) = bank.measure(track, quantum, &track_scratch[..frames]) {
+                    scratch_meters[produced] = frame;
+                    produced += 1;
+                } else {
+                    *meter_capacity_drops = meter_capacity_drops.wrapping_add(1);
+                    rt_probe::note_suppressed(RtDiagEvent::MeterCapacityDrop);
+                }
+                // --- PDC：本轨输出 → 补偿延迟线 → 声相/母线求和 ---
+                // [ARCH-PDC-001, ROAD-M2-004] 位置就是规范 §3.4 第 3 条说的
+                // "在进入总线求和节点前"。延迟量在快照边界武装好（见 2b''），
+                // 这里只做环形读写：**零分配、逐样本无分支**（`delay == 0` 时输出
+                // 逐位等于输入，但延迟线**仍然记录** —— 见 `graph::DelayLine` 的
+                // "环的不变量"）。
+                //
+                // ⚠ 刻意放在 `bank.measure` **之后**：逐轨电平的取样点因此**一位没动**
+                // （仍是"该轨自己渲染出来的、声相之前的单声道结果"），PDC 是**求和节点
+                // 输入侧**的事 —— 这正是规范那句话的位置。放到电平之前也能对齐相位，
+                // 但那样会顺带改掉电平的读数口径。
+                //
+                // 走带停住时**也**喂延迟线（喂的是静音）：延迟线是时间状态，
+                // 不推进它会让恢复播放时吐出上一次停住前的陈音频。
+                pdc.apply(&track, &mut track_scratch[..frames]);
+                // 汇入立体声母线：按本轨的**声相增益**分别写 L/R
+                // （构造期算好的 `cos/sin`，见 `mixer` 模块文档 §1）。
+                // 找不到该轨的增益（超出 `MAX_TRACK_SLOTS`）时按**居中**处理，
+                // 而不是静音 —— 宁可声相不准，也不要一条轨无声。
+                //
+                // **声相自动化**（裁决 P4=(b)）只多一个分支：该槽位收到过被接受的
+                // 声相目标 ⇒ 走**平滑路径**（逐样本把两个增益收敛到目标，零分配）；
+                // 否则走**原来那条**常量路径 ⇒ 没有声相自动化的工程**逐位不变**。
+                let pan_index = pan_gains[..*armed_pan_slots]
+                    .iter()
+                    .position(|(id, _, _)| *id == track);
+                if let Some(index) = pan_index.filter(|index| armed_pan_armed[*index]) {
+                    sum_into_bus_smoothed(
+                        out,
+                        &track_scratch[..frames],
+                        &mut armed_pan_l[index],
+                        &mut armed_pan_r[index],
+                    );
+                    *pan_automation_frames = pan_automation_frames.wrapping_add(frames as u64);
+                } else {
+                    let (gain_l, gain_r) = pan_index.map_or(
+                        (
+                            core::f32::consts::FRAC_1_SQRT_2,
+                            core::f32::consts::FRAC_1_SQRT_2,
+                        ),
+                        |index| (pan_gains[index].1, pan_gains[index].2),
+                    );
+                    sum_into_bus(out, &track_scratch[..frames], gain_l, gain_r);
+                }
+            }
+
+            // --- 插入链动态级的**当前**衰减与**检波器**电平读数（3a' 的收尾）：
+            //     逐轨循环之后覆写**一次** ---
+            //
+            // 读数的搬运（不是计算）：本量子至少有一台武装通道条处理过帧时，把
+            // `insert_current_db` 与 `insert_detector_db`（两者都是跨轨最大）覆写进统计。
+            // 放在循环**之后**而不是循环**之内**有两个理由：
+            //
+            // 1. 一个量子只有**一个**读数（与 `insert_max_reduction_db` 的跨轨口径相同）。
+            //    循环内每轨各写一次会让读数的终值取决于"最后一条轨是谁"（`BTreeMap`
+            //    的键序），那是把实现细节当成语义；
+            // 2. 它们是**量规**：一台都不工作时**不覆写**（保持上一次的值），
+            //    见 [`EngineStats::insert_current_reduction_db`] 的口径第 3 条与
+            //    [`EngineStats::insert_detector_level_db`] 的口径第 4 条。
+            //
+            // 零分配、零锁、零 I/O、零日志：一次 `f32` 字段写与一次 `Option<f32>` 字段写。
+            if insert_current_seen {
+                *insert_current_reduction_db = insert_current_db;
+                // `insert_detector_db` 此时必定已被至少一台器件赋值过（`seen` 的定义）
+                // ⇒ `Some(…)` 里不是 `NEG_INFINITY`。
+                *insert_detector_level_db = Some(insert_detector_db);
+            }
+            let _ = produced;
+            let (left, right) = out.stereo_mut();
+            left.iter()
+                .chain(right.iter())
+                .map(|sample| sample.to_bits())
+                .collect()
+        }
+    }
+
+    /// [ARCH-RT-005] 片 2a 的**自校准等价判据**：抽取后的 `render_branch` 与
+    /// **测试专用的旧内联参照**在同一次运行、同一条夹具、**同一量子号**上逐位产出相同输出。
+    ///
+    /// ⭐ **为什么不钉哈希常量**：常量会把判据绑在**架构**上（浮点/库函数差异），
+    /// 而 `TEST-SPEC-003` 是跨架构确定性门 ⇒ 参照必须在**运行内自算**。
+    ///
+    /// 两条路各跑在**同源** `EngineRuntime` 上（同一夹具、同样预热 ⇒ 武装状态与走带
+    /// 位置逐字段相同），因此比的是「同一个输入经两条实现」的结果。
+    ///
+    /// 注入实测：把 `legacy_mix_once` 的 `out` 收尾改成 `scale_bus(out, 0.5)` ⇒ 本判据变红。
+    #[test]
+    fn extracted_mix_path_matches_the_legacy_inline_path_bit_for_bit() {
+        const PREHEAT: u64 = 8;
+        let frames = DEFAULT_BLOCK_FRAMES;
+
+        let (new_snapshot, _) = note_snapshot_with_pan(1, 0.25);
+        let (old_snapshot, _) = note_snapshot_with_pan(1, 0.25);
+        let mut new_rig = rig_with_snapshot(new_snapshot);
+        let mut old_rig = rig_with_snapshot(old_snapshot);
+        let mut sink = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..PREHEAT {
+            new_rig.runtime.process_quantum(&mut sink, 2);
+            old_rig.runtime.process_quantum(&mut sink, 2);
+        }
+
+        let new_bits = new_rig.runtime.render_branch_once(frames, true);
+        let old_bits = old_rig.runtime.legacy_mix_once(frames, true);
+        assert_eq!(new_bits.len(), old_bits.len(), "两条路的样本数必须相同");
+        // ⚠ 按 `to_bits()` 逐位比：`==` 会把 `-0.0` 判等、把 `NaN` 判不等。
+        let first_diff = new_bits
+            .iter()
+            .zip(old_bits.iter())
+            .position(|(new, old)| new != old);
+        assert!(
+            first_diff.is_none(),
+            "抽取后的 `render_branch` 必须与旧内联参照**逐位相同**；\
+             首个不同的样本下标 = {first_diff:?}（共 {} 个样本）",
+            new_bits.len()
+        );
+        // 冷对照：⛔ 不能是「两边都是静音」的假相同。
+        let peak = new_bits
+            .iter()
+            .map(|bits| f32::from_bits(*bits).abs())
+            .fold(0.0f32, f32::max);
+        assert!(peak > 0.1, "夹具必须真的出声（峰值 {peak}）");
     }
 }
