@@ -94,10 +94,17 @@ for j in d.get('jobs',[]):
     c=j.get('conclusion') or '-'
     steps=len(j.get('steps',[]))
     print(f\"  腿={j['name']!r} 结论={c} 步数={steps} 时长={dur(j.get('startedAt'),j.get('completedAt'))}s\")
-    if c=='success' and steps>0:
-        real+=1
-    if c=='skipped' or steps==0:
+    # 只有 conclusion == 'skipped' 才算跳过。
+    # 不要用 steps==0 当跳过的信号：GitHub API 有时对真跑过的 job 也返回空 steps
+    # 数组（实测 run 38471600290：8 条腿全部 steps=0，而 yeban-engine 与 yeban-app
+    # 的结论是 success，那是真跑过）。用 steps==0 判定会把真绿误报成全跳过（空绿），
+    # 反过来也会掩盖真的跳过。
+    # 注意：本文件的 Python 内嵌在**双引号**里，注释里**不许出现反引号**（会被 shell
+    # 当命令替换执行 —— 这个 bug 我犯过一次）。
+    if c=='skipped':
         skipped.append(j['name'])
+    else:
+        real+=1
 print(f\"  实跑腿数={real} 跳过腿数={len(skipped)}\")
 print('  判定=' + ('有空绿风险（有腿被跳过）' if skipped else '全部腿都跑了'))
 "
