@@ -982,7 +982,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-IMPORT-AUDIO",
         name: "yeban_import_audio",
-        summary: "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目 (走 yeban-decode + Op); 给了 trackId 就在同一次调用里摆放 (Op::AddClipPlacement)",
+        summary: "把会话资产池里的哈希或磁盘音频文件登记成 clip_pool 音频条目, 并在**同一个 Op::Batch** 里用 Op::SetAsset 声明工程 assets 索引 (许可/原路径/字节数, 由 yeban-decode 的 asset_index 产出); 给了 trackId 就在同一次调用里摆放 (Op::AddClipPlacement)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -1007,6 +1007,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "string",
                 false,
                 "磁盘音频文件路径 (WAV/FLAC/OGG); 与 `assetHash` 恰好给一个",
+            ),
+            // ⭐ `MUST-GATE-014` 要求资产许可**逐条可查**，而
+            // `yeban_decode::asset_index` 的契约明文写着"本 crate 不会凭空编一个许可
+            // 字符串" ⇒ 这条值只能由调用方给 ⇒ **必填**且非空。
+            // ⛔ 本工具**不发明**默认许可（那会让每条导入都留一个假许可）。
+            bounded_param(
+                "license",
+                "string",
+                true,
+                "资产许可标识 (非空, 逐条可查; 例如 CC0-1.0 或 CC-BY-4.0)",
+                Some(1),
+                None,
             ),
             param("gainDb", "number", false, "片段增益 (dB); 默认 0.0"),
             param(

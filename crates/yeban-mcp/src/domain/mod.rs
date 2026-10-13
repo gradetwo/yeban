@@ -3885,6 +3885,8 @@ mod tests {
                 serde_json::json!({
                     "name": "Kick",
                     "path": wav_fixture().display().to_string(),
+                    // `license` 是**必填**（`MUST-GATE-014`：许可逐条可查）。
+                    "license": "CC0-1.0",
                 }),
             ),
             // [D56] 诊断导出：空参数合法（缺省写到当前目录），因此走 `_` 分支的"规划必须成功"。

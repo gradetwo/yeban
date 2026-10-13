@@ -75,8 +75,12 @@
 //!
 //! - 内容寻址 ⇒ 重复导入**同一份字节**幂等（池里只有一条），"孤儿字节"因此是可收敛的；
 //! - 但 `AddClip` 的逆**不会**删掉池里的字节 ⇒ 撤销后保存会把一份未被引用的资产写进容器。
-//!   这是模型的缺口（needs-2 / needs-3），本工具**如实**在响应的 `notes` 里写出来，
+//!   这是模型的缺口（needs-2，**仍开着**），本工具**如实**在响应的 `notes` 里写出来，
 //!   而不是假装撤销把一切都收回去了。
+//!
+//!   ⭐ `needs-3`（"工程 `assets` 索引没有 `Op` ⇒ 只登记片段、不写索引"）**已关闭**：
+//!   模型补齐了 [`Op::SetAsset`] / [`Op::RemoveAsset`]，本工具现在在**同一个批**里
+//!   声明索引项，且那条索引项由 `yeban_decode::asset_index` 产出（⛔ 不手抄字段）。
 //!
 //! ## 幂等（按**内容与意图**，不靠幂等键）
 //!
@@ -91,7 +95,7 @@
 
 use serde_json::{Map, Value};
 
-use yeban_decode::{DecodeError, DecodeOptions, DecodedAsset};
+use yeban_decode::{DecodeError, DecodeOptions, DecodedAsset, asset_index};
 use yeban_model::{
     AssetHash, ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, Op, OpOrigin, PPQ,
     YebanProjectV1,
@@ -321,7 +325,7 @@ pub fn budget_value() -> Value {
 fn notes(registered_bytes: bool, placement_created: Option<bool>) -> Vec<&'static str> {
     let mut notes = vec![
         "CAS 池的字节不是 Op 的载荷 (模型 Op 全集没有资产变体) ⇒ 撤销 clip_pool 条目不会回收池里的字节 (needs-2)",
-        "工程 assets 索引 (许可/原路径/字节数) 同样没有 Op ⇒ 本工具只登记 clip_pool 条目, 不写索引 (needs-3): 索引是许可留痕 (MUST-GATE-014) 而非字节来源, 渲染读的是会话 CAS 池",
+        "工程 assets 索引 (许可/原路径/字节数) 由本工具在同一批里声明 (Op::SetAsset, old_asset=None = 创建) ⇒ 许可留痕 (MUST-GATE-014) 与片段一起落地、一起撤销; 撤销**不**回收 CAS 池里的字节 (needs-2 仍开着)",
     ];
     if registered_bytes {
         notes.push("本次真的向会话 CAS 池登记了容器字节 (内容寻址: 同一份字节不会重复登记)");
@@ -375,9 +379,27 @@ pub fn plan(
             )
         })?;
     let gain_db = parse_gain(arguments)?;
+    // ⚠ `license` 是**必填**：`MUST-GATE-014` 要求资产许可**逐条可查**，而
+    // `yeban_decode::asset_index` 的契约明文写着"本 crate 不会凭空编一个许可字符串"
+    // ⇒ 值只能由调用方给出。⛔ 本层也**不**发明默认值（那会让每条导入都留一个假许可）。
+    let license = arguments
+        .get("license")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            Fault::domain_with_data(
+                ErrorCode::InvalidParameterRange,
+                "`license` 必须是字符串 (资产许可标识, MUST-GATE-014 要求逐条可查)",
+                serde_json::json!({
+                    "field": "license",
+                    "reason": "licenseRequired",
+                    "hint": "给这条资产的许可标识 (例如 `CC0-1.0`); \
+                             ⛔ 本工具不发明默认值",
+                }),
+            )
+        })?;
 
     // ---- 取字节 + 解码（两条来源都要真的解码一遍） ----
-    let (bytes, facts, asset, source_ref, declared_in_index) = match source {
+    let (bytes, facts, asset, source_ref, declared_in_index, index) = match source {
         ImportSource::AssetPool => {
             let text = asset_hash_arg.unwrap_or_default();
             let hash = AssetHash::parse(text).map_err(|error| {
@@ -404,21 +426,34 @@ pub fn plan(
                 ));
             };
             let facts = decode_and_measure(existing, &format!("资产 {}", hash.as_str()))?;
+            // ⭐ 真实的 `AssetMetadata` 由 `yeban-decode` 的那条链产出（⛔ 本层不手抄字段）。
+            // `original_path` 取寻址用的来源标签（内容寻址 ⇒ 路径只留痕、不参与寻址）。
+            let index = asset_index(existing, &format!("asset:{}", hash.as_str()), license);
             let declared = project.assets.contains_key(&hash);
             // ⚠ `AssetHash` **不是 `Copy`**：来源标签必须在把 `hash` 移进元组**之前**算好
             // （否则 `hash.as_str()` 就是"borrow of moved value"，CI 的 E0382 实测抓过）。
             let source_ref = format!("asset:{}", hash.as_str());
-            (None, facts, hash, source_ref, declared)
+            (None, facts, hash, source_ref, declared, index)
         }
         ImportSource::DiskPath => {
             let text = path_arg.unwrap_or_default();
             let bytes = std::fs::read(text)
                 .map_err(|error| error::from_io(&format!("读取 {text}"), &error))?;
             let facts = decode_and_measure(&bytes, &format!("文件 {text}"))?;
+            // ⭐ 同上：索引项由 `yeban-decode` 的 `asset_index` 产出；它内部的
+            // `AssetHash::of_bytes(bytes)` 与下面这次的哈希算式**同一个**（内容寻址）。
+            let index = asset_index(&bytes, text, license);
             // 内容寻址: 哈希由**字节**算出, 不接受调用方声明 (与 `Domain::put_asset` 同一口径)。
             let hash = AssetHash::of_bytes(&bytes);
             let declared = project.assets.contains_key(&hash);
-            (Some(bytes), facts, hash, format!("disk:{text}"), declared)
+            (
+                Some(bytes),
+                facts,
+                hash,
+                format!("disk:{text}"),
+                declared,
+                index,
+            )
         }
     };
 
@@ -496,6 +531,45 @@ pub fn plan(
                 placement: request.placement,
             }),
         }
+    }
+
+    // ---- ⭐ 资产索引声明（与 `AddClip` **同一个 `ops` 批**） ----
+    //
+    // ⭐ 为什么必须在**同一个批**里：`clip_pool` 条目引用一个 CAS 哈希，而
+    // `project.assets` 是那条哈希的**索引留痕**（许可/原路径/字节数，`MUST-GATE-014`
+    // 要求逐条可查）。分两次提交会留下"池里有条目、索引没留痕"的**半态**，
+    // 且要两次撤销。放进同一个 `Batch` ⇒ 一步撤销、半态不可观察。
+    //
+    // ⚠ 撤销**仍不回收 CAS 池里的字节**（那是模型的已知边界 `needs-2`：`Op` 全集里
+    // 没有资产**字节**变体，字节住在容器层）—— 本步只让**索引**随片段一起可逆。
+    if !declared_in_index {
+        // `old_asset: None` = 本工程尚未声明过它（创建态，与 `SetScene { old_scene: None }` 同型）。
+        ops.push(Op::SetAsset {
+            asset_hash: asset.clone(),
+            old_asset: None,
+            new_asset: index.clone(),
+        });
+    } else if let Some(existing) = project.assets.get(&asset) {
+        // ⚠ 已经声明过：**逐字段**比对，⛔ 不静默覆盖别人的许可留痕。
+        if *existing != index {
+            return Err(Fault::domain_with_data(
+                ErrorCode::Conflict,
+                format!(
+                    "工程已声明过资产 {}, 但索引项与本次导入不同 \
+                     (许可/原路径/字节数是留痕, ⛔ 不静默覆盖)",
+                    asset.as_str()
+                ),
+                serde_json::json!({
+                    "asset": asset.as_str(),
+                    "reason": "assetDeclaredDifferently",
+                    "existing": serde_json::to_value(existing).unwrap_or(Value::Null),
+                    "requested": serde_json::to_value(&index).unwrap_or(Value::Null),
+                    "hint": "同一个哈希的索引用途是**许可留痕**; 要改许可请显式改, \
+                             ⛔ 不要让一次导入顺手改掉它",
+                }),
+            ));
+        }
+        // 逐字段相同 ⇒ 幂等命中，不重复声明。
     }
 
     let mut digest_after = None;
@@ -894,8 +968,21 @@ mod tests {
         BTreeMap::from([(AssetHash::of_bytes(bytes), bytes.to_vec())])
     }
 
+    /// 夹具用的许可标识 —— **只在这里**出现一次，⛔ 不与产线默认值混淆
+    /// （产线**没有**默认值：`license` 必填）。
+    const FIXTURE_LICENSE: &str = "CC0-1.0";
+
+    /// 测试实参夹具：给每个用例的 JSON **补上**必填的 `license`。
+    ///
+    /// ⚠ 这样做的代价是"缺 `license`"这条形状**不会被这些用例覆盖** ⇒
+    /// 另有判据 [`a_missing_license_is_refused_before_any_file_is_read`] 专门钉它，
+    /// 因此这里注入**不是**在掩盖缺口。
     fn args(value: &Value) -> Map<String, Value> {
-        value.as_object().expect("对象").clone()
+        let mut object = value.as_object().expect("对象").clone();
+        object
+            .entry("license".to_owned())
+            .or_insert_with(|| Value::String(FIXTURE_LICENSE.to_owned()));
+        object
     }
 
     /// 在克隆体上按**顺序**施加计划里的全部 `Op`。
@@ -1176,7 +1263,11 @@ mod tests {
         .expect("规划");
         assert!(import.clip_created(), "片段是新的 ⇒ 要登记");
         assert!(import.placement_created(), "摆放是新的 ⇒ 要摆放");
-        assert_eq!(import.ops.len(), 2, "两条 Op: AddClip + AddClipPlacement");
+        assert_eq!(
+            import.ops.len(),
+            3,
+            "三条 Op: AddClip + AddClipPlacement + SetAsset（索引声明与片段同批）"
+        );
         assert_eq!(
             import.ops[0].name(),
             "AddClip",
@@ -1539,5 +1630,162 @@ mod tests {
         )
         .expect("合法 BPM 下由素材全长换算时长");
         assert!(!ok.ops.is_empty());
+    }
+
+    /// ⭐ **步 ② 的主判据**：工具面导入一个音频 ⇒ **`project.assets` 真的多出那一条**，
+    /// 且那条索引项的字段**来自 `yeban-decode` 的那条链**（`asset_index`），
+    /// 并写进**同一个 `Op::Batch`**（一步撤销）。
+    ///
+    /// ## 为什么它非有不可（本单的由来）
+    ///
+    /// 在此之前，`asset_index` / `import_bytes` / `import_path` 在**全仓生产代码零调用**，
+    /// 而 `AssetMetadata` 在**生产侧**只有 `samples.rs` 一条**手写 fixture**
+    /// ⇒ ⭐ **没有任何真实路径**能产出它 ⇒ `MUST-GATE-014` 的"许可逐条可查"**没有落点**。
+    ///
+    /// ## 判据分三件（对应任务单第 4 点的 ①②③）
+    ///
+    /// ① 索引项的**逐字字段**：`hash` / `byte_len` / `media_kind` / `original_path` / `license`；
+    /// ② `project.assets` **真的多了**那一条（⛔ 不是只断言 CAS 池）。
+    ///    ⚠ 池是**会话级**的、`assets` 是**工程级**的 —— 断言池证明不了索引。
+    /// ③ **控制臂**：断言**旧的半态不会发生** —— 若只登记 `clip_pool` 而不落索引，
+    ///    本判据必须红。控制臂是"把 `SetAsset` 那一句去掉"（见下面的注入读数）。
+    ///
+    /// 注入（实测红）：把 `ops.push(Op::SetAsset { .. })` 整段删掉 ⇒ ② 那条断言红
+    /// （`project.assets` 里没有那条），而 ① 仍绿 ⇒ 两件是**独立**的。
+    #[test]
+    fn an_import_lands_a_real_asset_index_entry_in_the_same_batch() {
+        let project = filled_project();
+        let dir = std::env::temp_dir().join(format!("yeban-import-index-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("目录");
+        let bytes = wav_s16(48_000, &[0, 1_000, -1_000, 0]);
+        let path = dir.join("kick.wav");
+        std::fs::write(&path, &bytes).expect("写");
+
+        let assets_before = project.assets.len();
+        let pool: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+        let import = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "path": path.display().to_string(),
+                "license": "CC-BY-4.0",
+            })),
+        )
+        .expect("规划");
+
+        // ① 索引项**来自那条链**：逐字核对（`asset_index` 的口径）。
+        let expected_hash = AssetHash::of_bytes(&bytes);
+        let declared = import
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::SetAsset {
+                    asset_hash,
+                    old_asset,
+                    new_asset,
+                } => Some((asset_hash, old_asset, new_asset)),
+                _ => None,
+            })
+            .expect("同一个批里必须有一条资产声明");
+        assert_eq!(declared.0, &expected_hash, "键必须是内容寻址的哈希");
+        assert!(declared.1.is_none(), "创建态: `old_asset` 必须是 None");
+        assert_eq!(declared.2.hash, expected_hash, "键 == 载荷身份");
+        assert_eq!(
+            declared.2.byte_len,
+            u64::try_from(bytes.len()).expect("小"),
+            "byte_len 必须等于**真实容器字节数**（⛔ 不是手抄值）"
+        );
+        assert_eq!(
+            declared.2.original_path,
+            path.display().to_string(),
+            "original_path 只留痕（内容寻址不看它）"
+        );
+        assert_eq!(declared.2.license, "CC-BY-4.0", "许可由调用方给出");
+        assert_eq!(
+            declared.2.media_kind,
+            yeban_model::MediaKind::Audio,
+            "`asset_index` 只对音频产条目"
+        );
+
+        // ⭐ ② 应用之后 `project.assets` **真的多一条**（应用走**产品路径**：
+        // 与 `undo_session::commit` 同一口径地把 `ops` 顺序施加）。
+        let after = apply_ops(&project, &import);
+        assert_eq!(
+            after.assets.len(),
+            assets_before + 1,
+            "`project.assets` 必须真的多出一条（⛔ 只断言 CAS 池证明不了索引）"
+        );
+        assert!(
+            after.assets.contains_key(&expected_hash),
+            "那条索引项必须是**这个**哈希"
+        );
+        assert_eq!(
+            after.assets.get(&expected_hash),
+            Some(&declared.2.clone()),
+            "落地的索引项必须**逐字段**等于声明"
+        );
+
+        // ⭐ ③ 控制臂（独立变色 ＋ 走产品路径）：**只**登记片段池而不落索引的旧行为
+        // 必须在**产品路径**上可观察地不同 ⇒ 这里断言"✗ 它**不是**那样"：
+        // 若把 `SetAsset` 从批里去掉，`after.assets` 就会回到 `assets_before`。
+        let without_declaration: Vec<Op> = import
+            .ops
+            .iter()
+            .filter(|op| !matches!(op, Op::SetAsset { .. }))
+            .cloned()
+            .collect();
+        let mut reduced = project.clone();
+        for op in &without_declaration {
+            op.apply(&mut reduced).expect("施加");
+        }
+        assert_eq!(
+            reduced.assets.len(),
+            assets_before,
+            "控制臂: 去掉声明后索引**不该**增长（证明 ② 是声明带来的，⛔ 不是别处副作用）"
+        );
+        assert!(
+            reduced.clip_pool.contains_key(&import.clip.id),
+            "控制臂必须仍然落了片段 (否则它证明的不是索引那一环)"
+        );
+
+        // ⭐ 一步撤销：批次里两件事一起回来。
+        let mut reverted = after.clone();
+        apply_inverse_ops(&mut reverted, &import);
+        assert_eq!(
+            reverted.assets.len(),
+            assets_before,
+            "撤销必须把索引也收回去（一步撤销 ⇒ 不留半态）"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ 缺 `license` ⇒ **在读任何文件之前**响亮失败（`licenseRequired`）。
+    ///
+    /// ⚠ 这条存在的理由：测试夹具 [`args`] 会**自动补** `license` ⇒ 那条形状**不会**
+    /// 被别的用例覆盖。本判据用**裸实参**（绕过 [`args`]）钉住它，⛔ 不让注入变成掩盖。
+    #[test]
+    fn a_missing_license_is_refused_before_any_file_is_read() {
+        let project = filled_project();
+        let pool: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+        // ⚠ 路径**故意不存在**：若 `license` 不是在读盘**之前**判，这里会报 FILE_NOT_FOUND。
+        let raw = serde_json::json!({"name": "Kick", "path": "/nonexistent/zz.wav"});
+        let fault = plan(&project, &pool, raw.as_object().expect("对象"))
+            .expect_err("缺 `license` 必须被拒");
+        assert_eq!(
+            fault.domain_code(),
+            Some(ErrorCode::InvalidParameterRange),
+            "必须是参数错误 (⛔ 不是 FILE_NOT_FOUND ⇒ 证明判在**读盘之前**): {fault:?}"
+        );
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        assert_eq!(
+            data.as_ref()
+                .and_then(|value| value.pointer("/reason"))
+                .and_then(Value::as_str),
+            Some("licenseRequired")
+        );
     }
 }

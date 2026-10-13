@@ -1305,7 +1305,7 @@ fn the_mcp_tools_alone_place_and_render_an_audio_clip_from_zero() {
         &mut dispatcher,
         &auth,
         "yeban_import_audio",
-        json!({
+        json!({ "license": "CC0-1.0",
             "name": "Kick",
             "path": wav.display().to_string(),
             "trackId": id(2).to_canonical_string(),
@@ -1342,9 +1342,17 @@ fn the_mcp_tools_alone_place_and_render_an_audio_clip_from_zero() {
         .get(&EntityId::from_str(&placement_id).expect("ULID"))
         .expect("摆放必须在音轨的 clips 上");
     assert_eq!(landed.duration_ticks, 192);
-    assert!(
-        project.assets.is_empty(),
-        "工程 assets 索引仍是空的 (needs-3)"
+    // ⭐ 步 ② 起：工具面导入**同时**声明工程索引（`Op::SetAsset`，与 `AddClip` 同批）
+    // ⇒ 这里断言**有**那一条，且它带着调用方给的许可。
+    assert_eq!(
+        project.assets.len(),
+        1,
+        "工程 assets 索引必须有那一条 (步 ② 起; 此前是 needs-3)"
+    );
+    assert_eq!(
+        project.assets.values().next().expect("一条索引项").license,
+        "CC0-1.0",
+        "许可来自调用方 (MUST-GATE-014)"
     );
 
     // ---- ② 渲染：片段真的进母带，且字节真的从会话 CAS 池里读到 ----
@@ -1410,14 +1418,16 @@ fn the_mcp_tools_alone_place_and_render_an_audio_clip_from_zero() {
 /// 判据 15 [端到端 + 确定性的载体]：导入 + 摆放 ⇒ 保存 ⇒ 关闭 ⇒ 重开 ⇒ 再渲染，
 /// **两处的事实与产物摘要必须一致**。
 ///
-/// 这条判据钉住的是"字节从哪来"的**结论**：`yeban_import_audio` **不写**
-/// `project.assets` 索引（`needs-3`），而容器的 `assets/{sha256}` 条目由会话 CAS 池写出，
-/// 与索引无关。因此重开之后渲染仍然读得到字节（`bytesPresent: true`）。
+/// 这条判据钉住的是"字节从哪来"的**结论**：容器的 `assets/{sha256}` 条目由会话 CAS 池
+/// 写出，**与索引无关** —— ⭐ 步 ② 起 `yeban_import_audio` **同时**声明了
+/// `project.assets` 索引（`Op::SetAsset`，`MUST-GATE-014` 的许可留痕），
+/// 而渲染读的**仍然**是池里的字节。因此重开之后渲染仍然读得到字节
+/// （`bytesPresent: true`），**且**索引项带着调用方给的许可一起往返（下面断言）。
 ///
 /// 牙齿：谁把"保存/打开"改成以 `project.assets` 索引为字节的准入条件，
 /// 这一条立刻红（重开之后 `bytesPresent` 变 `false`、`clipsRendered` 变 0）。
 #[test]
-fn a_placed_audio_clip_survives_save_close_reopen_without_an_assets_index() {
+fn a_placed_audio_clip_survives_save_close_reopen_with_its_assets_index() {
     let scratch = Scratch::new("tool-e2e-reopen");
     let samples = vec![0.5f32; 4_800];
     let bytes = wav_f32(1, 48_000, &samples);
@@ -1433,7 +1443,7 @@ fn a_placed_audio_clip_survives_save_close_reopen_without_an_assets_index() {
         &mut dispatcher,
         &auth,
         "yeban_import_audio",
-        json!({
+        json!({ "license": "CC0-1.0",
             "name": "Kick",
             "path": wav.display().to_string(),
             "trackId": id(2).to_canonical_string(),
@@ -1476,18 +1486,29 @@ fn a_placed_audio_clip_survives_save_close_reopen_without_an_assets_index() {
         reopened["data"]["project"]["clipCount"], 1,
         "片段池条目跨保存存活: {reopened}"
     );
-    // `project.assets` 索引**仍然**是空的：登记写入的是会话 CAS 池 + `clip_pool`，
-    // 索引由**没有任何工具**写入（`needs-3`）。这条断言刻意钉住现状 ——
-    // 若将来给索引补一条 `Op`（那是模型层 + 契约的改动），这里必须**显式**改，
-    // 而不是让"索引悄悄多了一条"在别处漂移。
-    assert!(
-        dispatcher
-            .domain()
-            .active_project()
-            .expect("活跃工程")
-            .assets
-            .is_empty(),
-        "重开之后 project.assets 索引仍然是空的 (needs-3)"
+    // ⭐ **本断言在步 ② 被显式改过**（正是上面那段注释要求的那一刻）：
+    // `yeban_import_audio` 现在在**同一个 `Op::Batch`** 里声明索引
+    // （`Op::SetAsset`，模型 `8bb21154` 补齐）⇒ 索引**跨保存/重开存活**，
+    // 且**带着调用方给的许可**（`MUST-GATE-014` 的"逐条可查"因此有了落点）。
+    let reopened_assets = &dispatcher
+        .domain()
+        .active_project()
+        .expect("活跃工程")
+        .assets;
+    assert_eq!(
+        reopened_assets.len(),
+        1,
+        "重开之后 project.assets 索引必须**有**那一条 (步 ② 起)"
+    );
+    let declared = reopened_assets.values().next().expect("一条索引项");
+    assert_eq!(
+        declared.license, "CC0-1.0",
+        "许可必须随容器往返 (MUST-GATE-014 要求逐条可查)"
+    );
+    assert_eq!(
+        declared.media_kind,
+        yeban_model::MediaKind::Audio,
+        "索引项的介质种类"
     );
 
     let second = call_named(

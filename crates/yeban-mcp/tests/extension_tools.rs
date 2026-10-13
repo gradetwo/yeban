@@ -475,7 +475,7 @@ fn direct_edits_are_authored_by_the_mcp_edit_origin_in_the_persisted_log() {
     let imported = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({
+        serde_json::json!({ "license": "CC0-1.0",
             "name": "Kick",
             "path": audio_path.display().to_string(),
         }),
@@ -587,7 +587,7 @@ fn import_audio_registers_a_clip_and_undo_restores_byte_for_byte() {
     let imported = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({
+        serde_json::json!({ "license": "CC0-1.0",
             "name": "Kick",
             "path": path.display().to_string(),
             "gainDb": -1.5,
@@ -672,7 +672,7 @@ fn import_audio_accepts_a_pool_asset_and_respects_the_pcm_budget() {
     let imported = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({"name": "Kick", "assetHash": hash.as_str()}),
+        serde_json::json!({ "license": "CC0-1.0", "name": "Kick", "assetHash": hash.as_str()}),
     );
     assert_eq!(imported["status"], "success", "{imported}");
     assert_eq!(imported["data"]["source"]["kind"], "assetPool");
@@ -699,7 +699,7 @@ fn import_audio_accepts_a_pool_asset_and_respects_the_pcm_budget() {
     let refused = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({
+        serde_json::json!({ "license": "CC0-1.0",
             "name": "Huge",
             "path": huge_path.display().to_string(),
         }),
@@ -861,7 +861,7 @@ fn dry_run_leaves_every_state_bit_identical() {
         ),
         (
             "yeban_import_audio",
-            serde_json::json!({"name": "Kick", "path": path.display().to_string()}),
+            serde_json::json!({ "license": "CC0-1.0", "name": "Kick", "path": path.display().to_string()}),
         ),
     ] {
         let mut arguments = arguments;
@@ -967,7 +967,7 @@ fn dry_run_preview_equals_the_real_call_for_all_three_tools() {
         ),
         (
             "yeban_import_audio",
-            serde_json::json!({
+            serde_json::json!({ "license": "CC0-1.0",
                 "name": "Kick",
                 "path": path.display().to_string(),
                 "gainDb": -2.0,
@@ -977,7 +977,7 @@ fn dry_run_preview_equals_the_real_call_for_all_three_tools() {
         // 时值缺省换算与确定性 `placementId` 都必须在 dryRun 与真做之间逐字段相同。
         (
             "yeban_import_audio",
-            serde_json::json!({
+            serde_json::json!({ "license": "CC0-1.0",
                 "name": "KickPlaced",
                 "path": path.display().to_string(),
                 "trackId": track.to_canonical_string(),
@@ -1112,7 +1112,7 @@ fn bad_and_unknown_parameters_only_use_codes_inside_d25() {
     let response = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({"name": "Kick", "assetHash": AssetHash::of_bytes(b"nope").as_str()}),
+        serde_json::json!({ "license": "CC0-1.0", "name": "Kick", "assetHash": AssetHash::of_bytes(b"nope").as_str()}),
     );
     let data = assert_in_band_code(&response, ErrorCode::EntityNotFound);
     assert_eq!(data["reason"], "assetNotInPool");
@@ -1121,7 +1121,7 @@ fn bad_and_unknown_parameters_only_use_codes_inside_d25() {
     let response = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({"name": "Kick"}),
+        serde_json::json!({ "license": "CC0-1.0", "name": "Kick"}),
     );
     assert_eq!(
         assert_in_band_code(&response, ErrorCode::InvalidParameterRange)["reason"],
@@ -1130,7 +1130,7 @@ fn bad_and_unknown_parameters_only_use_codes_inside_d25() {
     let response = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({"name": "Kick", "assetHash": "00".repeat(32), "path": "/tmp/x.wav"}),
+        serde_json::json!({ "license": "CC0-1.0", "name": "Kick", "assetHash": "00".repeat(32), "path": "/tmp/x.wav"}),
     );
     assert_eq!(
         assert_in_band_code(&response, ErrorCode::InvalidParameterRange)["reason"],
@@ -1141,7 +1141,7 @@ fn bad_and_unknown_parameters_only_use_codes_inside_d25() {
     let response = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({"name": "Kick", "path": "/definitely/not/here/kick.wav"}),
+        serde_json::json!({ "license": "CC0-1.0", "name": "Kick", "path": "/definitely/not/here/kick.wav"}),
     );
     let _ = assert_in_band_code(&response, ErrorCode::FileNotFound);
 
@@ -1149,7 +1149,7 @@ fn bad_and_unknown_parameters_only_use_codes_inside_d25() {
     let response = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({"name": "Kick", "path": not_audio.display().to_string()}),
+        serde_json::json!({ "license": "CC0-1.0", "name": "Kick", "path": not_audio.display().to_string()}),
     );
     let data = assert_in_band_code(&response, ErrorCode::RenderFailed);
     assert!(data["decodeError"].is_string(), "{data}");
@@ -1233,7 +1233,7 @@ fn the_same_idempotency_key_never_applies_twice() {
         ),
         (
             "yeban_import_audio",
-            serde_json::json!({
+            serde_json::json!({ "license": "CC0-1.0",
                 "name": "Kick",
                 "path": path.display().to_string(),
                 "idempotencyKey": "k-import",
@@ -1483,7 +1483,7 @@ fn the_session_mirror_never_drifts_from_the_undo_authority() {
     let _ = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({"name": "Kick", "assetHash": AssetHash::of_bytes(b"x").as_str()}),
+        serde_json::json!({ "license": "CC0-1.0", "name": "Kick", "assetHash": AssetHash::of_bytes(b"x").as_str()}),
     );
     assert_eq!(
         dispatcher.domain().session().undo_cursor.undone(),
@@ -1830,7 +1830,7 @@ fn an_empty_import_name_is_rejected_and_never_lands_in_the_document() {
     let (status, code) = call_tool_raw(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({ "name": "", "path": audio.display().to_string() }),
+        serde_json::json!({ "license": "CC0-1.0",  "name": "", "path": audio.display().to_string() }),
     );
     assert_eq!(status, 400, "空 `name` 必须是参数错误（HTTP 400）");
     assert_eq!(code, Some(-32602), "必须走既有的参数码");
@@ -1848,7 +1848,7 @@ fn an_empty_import_name_is_rejected_and_never_lands_in_the_document() {
     let imported = call_tool(
         &mut dispatcher,
         "yeban_import_audio",
-        serde_json::json!({ "name": "K", "path": audio.display().to_string() }),
+        serde_json::json!({ "license": "CC0-1.0",  "name": "K", "path": audio.display().to_string() }),
     );
     assert_eq!(imported["status"], "success", "{imported}");
     let pool = &dispatcher

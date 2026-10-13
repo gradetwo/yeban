@@ -28,7 +28,7 @@ use yeban_mcp::tools::{TOOLS, ToolSpec};
 /// **已被行为判据证明"真的判"**的受约束参数（R151：每个实例各配一条判据）。
 ///
 /// ⚠ **allowlist 必须归零**（R157）：注册表 = 全部受约束参数 ⇒ 多一个就红、少一个也红。
-const ENFORCED_BOUNDS: [(&str, &str); 2] = [
+const ENFORCED_BOUNDS: [(&str, &str); 3] = [
     (
         "idempotencyKey",
         "the_idempotency_key_boundary_is_emptiness_and_256_codepoints",
@@ -36,6 +36,10 @@ const ENFORCED_BOUNDS: [(&str, &str); 2] = [
     (
         "name",
         "an_empty_import_name_is_rejected_and_never_lands_in_the_document",
+    ),
+    (
+        "license",
+        "a_missing_license_is_refused_before_any_file_is_read",
     ),
 ];
 
@@ -83,9 +87,10 @@ enum BoundStatus {
 }
 
 /// 21 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 22] = [
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 23] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
+    ("license", BoundStatus::Length(Some(1), None)),
     ("trackId", BoundStatus::Identity),
     ("clipId", BoundStatus::Identity),
     ("edgeId", BoundStatus::Identity),
