@@ -191,7 +191,7 @@ use yeban_engine::ring::{
     DEFAULT_EVENT_CAPACITY, EngineEvent, EventSender, ParamAddress, SCRATCH_EVENTS,
     TransportCommand, event_channel,
 };
-use yeban_engine::rt::{EngineRuntime, EngineStats};
+use yeban_engine::rt::{AutomationTargets, EngineRuntime, EngineStats};
 use yeban_engine::rt_probe::{self, RtDiagEvent, RtDiagSink, RtLockProbe};
 use yeban_engine::snapshot::{
     EngineSnapshot, RetireQueue, SnapshotSlot, TrackParams, retire_channel,
@@ -3421,6 +3421,87 @@ fn scenario_audition_branch(report: &mut Report) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 场景 ㉖ A/B 试听的**回调路径**零分配（[ARCH-RT-005] 片 2b/2c）
+// ---------------------------------------------------------------------------
+
+/// ㉖ 的量子数。
+const AUDITION_ZERO_ALLOC_QUANTA: u64 = 2_000;
+
+/// `[ARCH-RT-005]` 片 2b/2c：**试听期的回调路径**四元组全 0。
+///
+/// ⭐ **为什么必须有这一条**：㉕ 只证明"挂了第二分支但**不试听**"时空闲路径不变；
+/// 它⛔ **不**覆盖试听路径。而试听路径上有一段**只在修订号变化时**才跑的代码 ——
+/// 第二 `SynthEngine` 的 `begin_snapshot` / `align_cursors` /
+/// `set_track_gain_scales` —— 它是**在实时回调里**执行的 ⇒ 它是否零分配
+/// 必须**实测**，⛔ 不能靠"主线那条也是零分配"类推。
+///
+/// ⚠ 本场景**真的进入试听**：`begin_audition` 被接受，且窗口内
+/// `audition_blocks_read()` 必须等于量子数（见 ㉖b）⇒ ⛔ 不是"空闲窗口里什么都没跑"。
+fn scenario_audition_zero_alloc(report: &mut Report) {
+    let project = filled_project();
+    let mut rig = Rig::new(&project, 1, 4096);
+
+    // 提案与主线**同源**（同一份工程文档）⇒ 拓扑逐字段一致 ⇒ 试听必须被接受。
+    // ⚠ 用两份独立构造的快照是有意的：它们各自带着**自己的修订号**，
+    //   而第二引擎的 `armed_revision` 从 `None` 起 ⇒ 窗口内的**第一块**
+    //   就会走到那段"修订号变化"的代码（这正是要测的东西）。
+    let proposal_for_reader =
+        Arc::new(EngineSnapshot::from_project(&project, 7).expect("提案快照必须能建"));
+    let proposal_for_slot = EngineSnapshot::from_project(&project, 7).expect("提案快照必须能建");
+    let proposal_slot = SnapshotSlot::new(proposal_for_slot);
+    let (retire, proposal_queue) = retire_channel(8);
+    rig.runtime.attach_audition_branch(&proposal_slot, retire);
+    rig.preheat();
+
+    let admission = rig.runtime.begin_audition(
+        &proposal_for_reader,
+        AutomationTargets::empty(),
+        AutomationTargets::empty(),
+    );
+    report.assert(
+        "㉖a",
+        "同源提案的试听**被接受**（拓扑一致 ⇒ ⛔ 不是被拒绝后测了个空闲窗口）",
+        admission.is_ok() && rig.runtime.is_auditioning(),
+        format!(
+            "begin_audition={admission:?} is_auditioning={}（拒绝原因会写在这里）",
+            rig.runtime.is_auditioning()
+        ),
+    );
+    report.assert(
+        "㉖b",
+        "切换帧来自走带（`audition_switch_frame()` 的读数）",
+        rig.runtime.audition_switch_frame().is_some(),
+        format!("switch_frame={:?}", rig.runtime.audition_switch_frame()),
+    );
+
+    let mut scenario = Scenario::new("㉖ A/B 试听（并发渲染 + 等功率混合）");
+    scenario.absorb(
+        AUDITION_ZERO_ALLOC_QUANTA,
+        &rig.pump(AUDITION_ZERO_ALLOC_QUANTA),
+    );
+    // ⭐ **覆盖度见证**：窗口内第二分支必须**每块都被渲染** —— 否则本场景可能
+    //    只是"试听被拒绝 / 读者没拿到快照"的假绿。
+    let rendered = rig.runtime.audition_blocks_read();
+    scenario.note(format!(
+        "第二分支渲染块数={rendered:?}（期望 Some({AUDITION_ZERO_ALLOC_QUANTA})）         switch_frame={:?}",
+        rig.runtime.audition_switch_frame()
+    ));
+    report.scenario(
+        "㉖",
+        "[MUST-GATE-001] 试听期 2 000 量子：四元组全 0（含第二分支的武装）",
+        &scenario,
+    );
+    report.assert(
+        "㉖c",
+        "覆盖率：窗口内第二分支**每块都被真的渲染**（⛔ 不是空闲窗口的假绿）",
+        rendered == Some(AUDITION_ZERO_ALLOC_QUANTA),
+        format!("audition_blocks_read={rendered:?}（期望 Some({AUDITION_ZERO_ALLOC_QUANTA})）"),
+    );
+    // 队列必须活到场景结束（退役通道的另一端）。
+    let _ = &proposal_queue;
+}
+
 fn main() -> ExitCode {
     let mut report = Report::new();
 
@@ -3450,6 +3531,7 @@ fn main() -> ExitCode {
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
     scenario_audition_branch(&mut report);
+    scenario_audition_zero_alloc(&mut report);
     scenario_ring_note_steal_fade(&mut report);
     scenario_input_callback_body(&mut report);
     prepared_sfz_callback_path_allocates_nothing();
