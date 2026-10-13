@@ -123,11 +123,23 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 34] = [
 /// 就要**如实登记**，⛔ 不许为了过判据而伪造一个构造点。
 ///
 /// ⚠ 每一条都必须带理由；清空它意味着"工具面覆盖了模型全集"。
-const KNOWN_UNREACHABLE: [(&str, &str); 0] = [
-    // ⭐ 本清单已**清空**：`SetTempo`（`setTempo`）与 `SetAuthor`（`setAuthor`）两条
-    // 欠账已由本线补齐（各加了 `kind`，构造点在 `domain/notes.rs`）。清空它意味着
-    // **工具面覆盖了模型全集** —— 那条反向判据现在会替我们守住这一点。
+const KNOWN_UNREACHABLE: [(&str, &str); 2] = [
+    // ⚠ 这两个变体是**集成者**并入模型侧时**漏做的 mcp 侧对应登记** ⇒ 本清单补上。
+    // 它们今天在 `yeban-mcp` 里**零构造点**（只有 `yeban-model` 的 `showcase_ops()`）⇒
+    // 属"完全无构造点"一类。⭐ 接线归**步 ②**（让 `yeban_import_audio` 走
+    // `decode::import_path`/`import_bytes` 并在同一次 `Op::Batch` 里落声明）
+    // ⇒ 接线后**删掉这两条**，反向断言会点名。
+    (
+        "SetAsset",
+        "工程资产声明尚未上工具面（模型侧 `Op::SetAsset` 已落）⇒ 步 ②（`yeban_import_audio` 接线）落地后删除本条",
+    ),
+    (
+        "RemoveAsset",
+        "同上（`Op::RemoveAsset` 是创建态的结构逆）⇒ 步 ② 落地后删除本条",
+    ),
 ];
+// ⭐ 历史: 本清单**曾经清空过一次**（`SetTempo` 与 `SetAuthor` 两条欠账由线补齐各加
+// `kind` 后删掉）。**清空**意味着"工具面覆盖了模型全集"，而那条反向判据会替我们守住它。
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
