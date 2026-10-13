@@ -209,7 +209,40 @@ impl LivePumpReport {
     }
 }
 
-/// ⭐ 泵的**核心**：搬运**一批**（至多 [`PUMP_CHUNK`] 条）并按到达顺序交给 `publish`。
+/// ⭐ **可泵的事件源**：泵只要求"能逐条弹出 + 两边的丢都读得到"。
+///
+/// ⭐ **为什么要这个缝**：产品的会话是**真硬件**会话（`MidiInputSession`，只有 `midir` 真的
+/// 连上端口才构造得出来）⇒ ⛔ 本机与 CI 都造不出它。把泵对源的要求收成这个 trait 之后，
+/// ⭐ **判据喂一个桩源**就能驱动**产品用的那一个**会话循环（[`crate::midi_in::monitor_session`]），
+/// 于是"到达即泵"这件事**不需要 MIDI 硬件也能判**。
+///
+/// ⚠ 它**不是**第二条通路：真实现只有 [`MidiEventReceiver`]（＝ `yeban-midi-io` 既有的
+/// 事件环接收侧），产品路径上那个实现就是**唯一**的生产者消费者配对。
+pub trait LiveEventSource {
+    /// ⭐ 弹出**此刻**已到达的下一条事件（`None` ＝ 现在没有）。
+    fn pop(&mut self) -> Option<MidiEvent>;
+    /// ⭐ 环满丢弃的事件条数（**累计**读数，⛔ 读它不消费）。
+    fn dropped_events(&self) -> u64;
+    /// ⭐ 本仓不承载的消息条数（**累计**读数）。
+    fn unsupported_messages(&self) -> u64;
+}
+
+impl LiveEventSource for MidiEventReceiver {
+    fn pop(&mut self) -> Option<MidiEvent> {
+        MidiEventReceiver::pop(self)
+    }
+
+    fn dropped_events(&self) -> u64 {
+        MidiEventReceiver::dropped_events(self)
+    }
+
+    fn unsupported_messages(&self) -> u64 {
+        MidiEventReceiver::unsupported_messages(self)
+    }
+}
+
+/// ⭐ 泵的**核心**：从 `source` 搬运**一批**（至多 [`PUMP_CHUNK`] 条）并按到达顺序交给
+/// `publish`。
 ///
 /// ⭐ 为什么核心是**泛型**的：泵的产物是"一串**按到达顺序**的事件"，把它交给谁（真的
 /// 引擎环 / 判据的记账闭包）是**调用方**的事 ⇒ 判据因此能**逐条读回**顺序与批边界。
@@ -220,19 +253,16 @@ impl LivePumpReport {
 ///
 /// ⭐ 本函数**零堆分配**（两个定长栈缓冲）、⛔ 不加锁、⛔ 不做 I/O。
 #[must_use]
-pub fn pump_once_with<F>(
-    receiver: &mut MidiEventReceiver,
-    track: EntityId,
-    mut publish: F,
-) -> LivePumpReport
+pub fn pump_once_with<S, F>(source: &mut S, track: EntityId, mut publish: F) -> LivePumpReport
 where
+    S: LiveEventSource,
     F: FnMut(&[EngineEvent]) -> usize,
 {
     // ---- ① 弹出至多 PUMP_CHUNK 条（FIFO ⇒ 顺序就是到达顺序）----
     let mut incoming = [EMPTY_MIDI_EVENT; PUMP_CHUNK];
     let mut popped = 0_usize;
     while popped < PUMP_CHUNK {
-        match receiver.pop() {
+        match source.pop() {
             Some(event) => {
                 incoming[popped] = event;
                 popped = popped.saturating_add(1);
@@ -279,8 +309,8 @@ where
     }
 
     // ---- ④ 两侧的"丢"都**如实读数**（累计值，⛔ 不静默）----
-    report.midi_dropped = receiver.dropped_events();
-    report.unsupported = receiver.unsupported_messages();
+    report.midi_dropped = source.dropped_events();
+    report.unsupported = source.unsupported_messages();
     report
 }
 
@@ -290,12 +320,12 @@ where
 /// ⇒ 控制侧不会被事件洪峰拖住）；⛔ 不要写成"等采集窗口结束再一次性处理" —— 那正是本模块
 /// 要补掉的形状。
 #[must_use]
-pub fn pump_once(
-    receiver: &mut MidiEventReceiver,
+pub fn pump_once<S: LiveEventSource>(
+    source: &mut S,
     track: EntityId,
     host: &mut EngineHost,
 ) -> LivePumpReport {
-    pump_once_with(receiver, track, |batch| host.send_engine_events(batch))
+    pump_once_with(source, track, |batch| host.send_engine_events(batch))
 }
 
 /// ⭐ **连续泵到（当下）环空**：反复 [`pump_once`] 直到一次都没弹出。

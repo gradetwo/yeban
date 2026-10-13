@@ -334,6 +334,15 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     let heartbeat = slint::Timer::default();
     // 长度契约被换工程打破时**只出声一次**（16 ms 一跳的 eprintln 会淹掉终端）。
     let meter_mismatch_warned = Rc::new(std::cell::Cell::new(false));
+    // ⭐ **硬件 MIDI 输入的实时腿**：`MidiInState` 由 `host::wire_module_actions` 建（在下面），
+    // 而本心跳闭包在这之前就建好了 ⇒ 先用一个共享槽把句柄交出去，装配完成后再填进去。
+    // ⛔ 不挪 `wire_module_actions` 的位置（那会改回调注册顺序 ⇒ 可能被后面的 wire_* 覆盖）。
+    //
+    // 实时腿的形状（见 `crate::midi_in` 的"实时会话"一节）：
+    //   工作线程: 会话开着 ⇒ 到达的事件 ⇒ `midi_in::LiveLane`（Send 的控制侧车厢）
+    //   UI 线程: 本心跳（60Hz）⇒ `MidiInState::publish_live` ⇒ `EngineHost::send_engine_events`
+    //           ⇒ 设备回调（或控制驱动）在下一个块边界让音符**发声**
+    let midi_live_state: Rc<RefCell<Option<host::MidiInState>>> = Rc::new(RefCell::new(None));
     // `ProductionLoop` 归心跳闭包所有（`Rc` +1）：闭包被 drop（窗口关闭）即释放，
     // 里面的电平消费端随之 drop ⇒ tick 停 ⇒ **不再 poll**。
     // 走带回调拿的是**同一个** `EngineHost`（`engine_handle()` 只是 `Rc` 计数 +1）。
@@ -344,6 +353,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         let ui_tick = slint::ComponentHandle::clone_strong(&ui);
         let view_tick = view.clone();
         let warned = Rc::clone(&meter_mismatch_warned);
+        let midi_live = Rc::clone(&midi_live_state);
         heartbeat.start(
             slint::TimerMode::Repeated,
             std::time::Duration::from_millis(HEARTBEAT_PERIOD_MS),
@@ -357,6 +367,14 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     None
                 };
                 let tick = production.tick(&ui_tick, &view_tick, mark, project.as_ref());
+                // ⭐ **实时腿的发布点**（⭐ 与"编辑 ⇒ 发声"共用同一个 60Hz 节拍、同一个
+                // `EngineHost`）：会话线程在窗口内采到的事件在这里进引擎的音符路径。
+                // ⚠ 车道空时是一次 `Mutex` 判空（⛔ 不进音频线程、⛔ 不加任何音频侧工作）；
+                // ⚠ 必须在 `tick` **之后**取引擎（`tick` 内部已经借用过它）。
+                if let Some(state) = midi_live.borrow().as_ref() {
+                    let engine = production.engine_handle();
+                    state.publish_live(&mut engine.borrow_mut());
+                }
                 if let host::MeterPump::LengthMismatch { rows, projected } = tick.meters
                     && !warned.get()
                 {
@@ -442,7 +460,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // （`src/live_surface.rs` 的 `build_live_ui_with`）调的是**同一个**函数。
     // 四条回调各自落到**已经存在**的模块（`export_wav` / `import_midi` / `sfz_load` /
     // `record_wav`），⛔ 不另写一套。目标路径由宿主解析（`ModulePaths::from_env`）。
-    host::wire_module_actions(&ui, Some(Rc::clone(&undo_port)));
+    let midi_state = host::wire_module_actions(&ui, Some(Rc::clone(&undo_port)));
+    // ⭐ 把刚建好的实时腿句柄填进心跳的共享槽（见上面 `midi_live_state` 的注释）：
+    // 从这一刻起，硬件 MIDI 会话在窗口内采到的事件就会在 60Hz 心跳里进引擎的音符路径。
+    *midi_live_state.borrow_mut() = Some(midi_state);
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
     host::apply_undo(&ui, &undo_port);
     let undo_display = undo_port.display();

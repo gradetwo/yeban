@@ -425,28 +425,9 @@ pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> 
 #[cfg(feature = "midi-input")]
 pub fn capture_messages(wanted: &str, seconds: f32) -> Result<CapturedMessages, MidiInError> {
     let seconds = validate_seconds(seconds)?;
-    let crate_ports = yeban_midi_io::enumerate_input_ports()
-        .map_err(|error| MidiInError::HostUnavailable(error.to_string()))?;
-    // ⭐ 只在这里出现可选依赖的类型 ⇒ 默认档完全不引用它。
-    let ports: Vec<PortInfo> = crate_ports
-        .iter()
-        .map(|port| PortInfo {
-            index: port.index,
-            name: port.name.clone(),
-        })
-        .collect();
-    let index = resolve_port(&ports, wanted)?;
-    let port_name = ports
-        .iter()
-        .find(|port| port.index == index)
-        .map_or_else(|| format!("#{index}"), |port| port.name.clone());
     let origin_us = 0_u64;
-    let mut session =
-        yeban_midi_io::open_input(index, origin_us, yeban_midi_io::DEFAULT_EVENT_CAPACITY)
-            .map_err(|error| MidiInError::ConnectFailed {
-                port: port_name,
-                detail: error.to_string(),
-            })?;
+    // ⭐ 端口装配只在 `open_session` 一处（⭐ 采集与实时会话共用**同一段** ⇒ 不可能分叉）。
+    let mut session = open_session(wanted, origin_us)?;
 
     // ⭐ 采集循环：⭐ **到点必然退出**（⛔ 不无限阻塞）。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(seconds);
@@ -508,6 +489,269 @@ pub fn capture_messages(wanted: &str, seconds: f32) -> Result<CapturedMessages, 
 pub fn capture(wanted: &str, seconds: f32) -> Result<MidiInReport, MidiInError> {
     let captured = capture_messages(wanted, seconds)?;
     Ok(captured.report())
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ **实时会话**（连续性）：会话**开着**的时候，到达的事件**当刻**进引擎的音符路径
+// ---------------------------------------------------------------------------
+//
+// ⚠ 与 `capture_messages` 的**唯一**差别是**时间形状**：那一条把事件**缓冲**到窗口结束才
+// 交给下游（批次），本段让每一条事件在**到达的那一刻**（至多一个控制 tick 之后）就进引擎。
+// ⛔ 不新建第二条 MIDI 通路：源仍是 `yeban-midi-io` 的**同一个**事件环，泵仍是
+// `midi_live::pump_once_with`，引擎仍是**同一个** `EngineEvent` 环。
+//
+// ⭐ **为什么中间还有一节车厢（[`LiveLane`]）**：会话**必须在工作线程上**（用户可感知的
+// 缺陷：同步采集那几秒界面卡死，见 `host.rs` 的注释），而 `EngineHost` 归 **UI 线程**
+// 所有（`Rc<RefCell<…>>`，⛔ 不是 `Send`）⇒ 工作线程够不着引擎。于是：工作线程把事件放进
+// **Send 的控制侧车厢**，UI 线程（`host::MidiInState::publish_live`，60Hz 心跳里）把它
+// 交给 `EngineHost::send_engine_events` —— 引擎侧一位不动，仍是**一条**环、**一个**发布点。
+
+/// ⭐ 控制侧一个 tick 的长度（毫秒）—— 与 [`capture_messages`] 的采集循环**同一个**节拍。
+///
+/// ⚠ 它**不是**音频块：音频块的粒度由设备回调决定（`DEFAULT_BLOCK_FRAMES` ≈ 2.7 ms @48 kHz）。
+/// 本常数是**控制侧**多久看一次环 ⇒ 它给出"一条事件最晚多久进引擎"的上界（＝一个 tick）。
+pub const LIVE_TICK_MS: u64 = 2;
+
+/// ⭐ 实时车道的**容量**（⭐ 单位 = 事件条数）。
+///
+/// ⚠ 它**不是**第二只 MIDI 环，只是"工作线程 ⇒ UI 线程"这一跳的车厢；满了就**如实计数**
+/// （[`crate::midi_live::LivePumpReport::refused`]），⛔ 不阻塞会话线程。
+pub const LIVE_LANE_CAPACITY: usize = 4096;
+
+/// ⭐ **实时车道**：会话线程（生产）⇒ UI 线程（发布）之间的 `Send` 中转。
+///
+/// ⭐ 两个方向都**不阻塞**、都只碰控制侧（红线 7 管的是**音频回调**，本类型⛔ 不进回调）。
+#[derive(Clone, Debug, Default)]
+pub struct LiveLane {
+    /// 还没交给引擎的事件（⭐ `Vec` 的分配发生在**控制侧**线程上）。
+    pending: std::sync::Arc<std::sync::Mutex<Vec<yeban_engine::ring::EngineEvent>>>,
+}
+
+impl LiveLane {
+    /// ⭐ 空车道（⛔ 不启动任何线程）。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// ⭐ 会话线程**发布**（＝ `pump_once` 的 `publish` 闭包）：返回**真的收下**的条数。
+    ///
+    /// ⚠ 收不下的部分**不静默丢**：它的条数由调用方记进
+    /// [`crate::midi_live::LivePumpReport::refused`]（`pump_once_with` 的既有口径）。
+    pub fn push(&self, batch: &[yeban_engine::ring::EngineEvent]) -> usize {
+        let Ok(mut pending) = self.pending.lock() else {
+            return 0;
+        };
+        let room = LIVE_LANE_CAPACITY.saturating_sub(pending.len());
+        let accepted = room.min(batch.len());
+        pending.extend_from_slice(&batch[..accepted]);
+        accepted
+    }
+
+    /// ⭐ 把一批**插回队首**（⭐ UI 线程被引擎环拒时用：顺序不许乱、事件不许丢）。
+    pub fn push_front(&self, batch: &[yeban_engine::ring::EngineEvent]) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        let room = LIVE_LANE_CAPACITY.saturating_sub(pending.len());
+        let keep = room.min(batch.len());
+        pending.splice(0..0, batch[..keep].iter().copied());
+        debug_assert_eq!(
+            keep,
+            batch.len(),
+            "放回车道的条数必须装得下（容量远大于一个子批）"
+        );
+    }
+
+    /// ⭐ 当前积压条数（⭐ 读数）。
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.pending.lock().map_or(0, |pending| pending.len())
+    }
+
+    /// ⭐ UI 线程**取走**全部积压（⭐ 移动，⛔ 不克隆）。
+    #[must_use]
+    pub fn take(&self) -> Vec<yeban_engine::ring::EngineEvent> {
+        self.pending
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut pending| std::mem::take(&mut *pending))
+    }
+}
+
+/// ⭐ **一次会话的 tick**：把**此刻**积压的事件泵进 `publish`（至多
+/// [`crate::midi_live::PUMP_CHUNK`] 条），然后**交还控制权**。
+///
+/// ⭐ **收尾**：`capture_messages` 的采集循环是"到点之前不停地弹"，本循环是"每个 tick 弹一批"
+/// ⇒ 必须在到点之后**再泵一次**，否则最后一个 tick 之内到达的事件会漏掉（⭐ 那会让谱面那一半
+/// 比 [`capture_messages`] 少几条 —— 是回归，不是"实时"的代价）。
+///
+/// ⭐ **为什么它是产品路径上的那一个函数**（⛔ 不是判据里的复刻）：产品的会话
+/// （[`monitor_messages_into`]，工作线程）调的就是它；判据改喂一个**桩源**
+/// （[`crate::midi_live::LiveEventSource`]）驱动**同一个**函数 ⇒ "到达即泵"在**没有 MIDI
+/// 硬件**的机器上也是可判的（源是缝，泵身与循环是产品的那一个）。
+#[cfg(feature = "midi-input")]
+#[must_use]
+pub fn monitor_session<S, P>(
+    source: &mut S,
+    track: yeban_model::EntityId,
+    seconds: f32,
+    mut publish: P,
+) -> (CapturedMessages, crate::midi_live::LivePumpReport)
+where
+    S: crate::midi_live::LiveEventSource,
+    P: FnMut(&[yeban_engine::ring::EngineEvent]) -> usize,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(seconds);
+    // ⭐ 谱面那一半要**每一条**原始消息 ⇒ 在**弹出那一刻**顺手记下来（⭐ 一次弹出、两处消费）。
+    let mut rows: Vec<(u64, u8, u8, u8)> = Vec::new();
+    let mut total = crate::midi_live::LivePumpReport::default();
+    {
+        let mut recording = RecordingSource {
+            inner: &mut *source,
+            rows: &mut rows,
+        };
+        while std::time::Instant::now() < deadline {
+            let step = crate::midi_live::pump_once_with(&mut recording, track, &mut publish);
+            total.merge(&step);
+            // ⭐ 控制侧（⛔ 非实时）⇒ 短睡不违反红线 7；这也把"到达时刻"让给生产者。
+            std::thread::sleep(std::time::Duration::from_millis(LIVE_TICK_MS));
+        }
+        // ⭐ 收尾一泵（见函数文档：⛔ 少了它，最后 2 ms 的事件进不了谱面）。
+        let step = crate::midi_live::pump_once_with(&mut recording, track, &mut publish);
+        total.merge(&step);
+    }
+    let captured = CapturedMessages {
+        // ⭐ 与 [`capture_messages`] **逐字相同**的口径：会话起点就是 `midir` 时间戳的零点参照。
+        origin_us: 0,
+        seconds,
+        messages: rows,
+        unsupported: source.unsupported_messages(),
+        dropped_events: source.dropped_events(),
+    };
+    (captured, total)
+}
+
+/// ⭐ **`midi-input` 开**：打开端口 ⇒ [`monitor_session`]（到达即泵进 [`LiveLane`]）⇒
+/// 全部消息 ＋ 供回执用的**紧凑读数**。
+///
+/// ⭐ 与 [`capture_messages`] 的差别只有**时间形状**（见本节开头的注释）；返回的
+/// [`CapturedMessages`] 与它**同口径** ⇒ 下游（报告 / 配对 / 写音符 / 渲染）一字不改。
+///
+/// # Errors
+///
+/// ⭐ 与 [`capture_messages`] 同一组（端口不存在 / 歧义 / 宿主不可用 / 连接失败）。
+#[cfg(feature = "midi-input")]
+pub fn monitor_messages_into(
+    wanted: &str,
+    seconds: f32,
+    track: yeban_model::EntityId,
+    lane: &LiveLane,
+) -> Result<(CapturedMessages, Vec<String>), MidiInError> {
+    let seconds = validate_seconds(seconds)?;
+    let mut session = open_session(wanted, 0)?;
+    let (captured, report) =
+        monitor_session(session.receiver(), track, seconds, |batch| lane.push(batch));
+    Ok((captured, live_receipt_fields(&report)))
+}
+
+/// ⭐ **`midi-input` 关**：⭐ 立刻给出结构化错误（⭐ 与 [`capture_messages`] 同一条：默认档
+/// 连 `yeban-midi-io` 都不在依赖图上 ⇒ ⛔ 没有实时会话可开）。
+///
+/// # Errors
+///
+/// ⭐ 恒 [`MidiInError::FeatureDisabled`]（⭐ 但**先校验秒数**，让参数错误在两种档里一致）。
+#[cfg(not(feature = "midi-input"))]
+pub fn monitor_messages_into(
+    wanted: &str,
+    seconds: f32,
+    _track: yeban_model::EntityId,
+    _lane: &LiveLane,
+) -> Result<(CapturedMessages, Vec<String>), MidiInError> {
+    // ⚠ 本档 `capture_messages` 恒 `Err` ⇒ 这里**不可能**返回 `Ok`（⛔ 不用 `unreachable!`
+    // 造 panic 路径：返回值类型就已经说清"默认档没有实时会话"）。
+    let captured = capture_messages(wanted, seconds)?;
+    Ok((captured, Vec::new()))
+}
+
+/// ⭐ 回执里的实时字段（⭐ 紧凑 `key=value`：回执是空格分隔的 ⇒ ⛔ 值里不许有空格）。
+#[cfg(feature = "midi-input")]
+#[must_use]
+pub fn live_receipt_fields(report: &crate::midi_live::LivePumpReport) -> Vec<String> {
+    vec![
+        format!("live-drained={}", report.drained),
+        format!("live-note-ons={}", report.note_ons),
+        format!("live-note-offs={}", report.note_offs),
+        format!("live-ignored={}", report.ignored),
+        format!("live-published={}/{}", report.published, report.mapped()),
+        format!("live-publishes={}", report.publishes),
+        format!("live-refused={}", report.refused),
+    ]
+}
+
+/// ⭐ 记录型事件源：**一次弹出、两处消费**（⭐ 谱面要原始行、引擎要映射后的事件）。
+///
+/// ⭐ 它就是"实时会话"能同时喂两条下游的原因 —— ⛔ 不是第二次弹出（环是 FIFO，弹两次会
+/// 丢掉一半）。
+#[cfg(feature = "midi-input")]
+struct RecordingSource<'a, S> {
+    /// 真源（⭐ 产品上是 `MidiInputSession::receiver()`）。
+    inner: &'a mut S,
+    /// 弹出的原始行（⭐ 与 `CapturedMessages::messages` 同口径）。
+    rows: &'a mut Vec<(u64, u8, u8, u8)>,
+}
+
+#[cfg(feature = "midi-input")]
+impl<S: crate::midi_live::LiveEventSource> crate::midi_live::LiveEventSource
+    for RecordingSource<'_, S>
+{
+    fn pop(&mut self) -> Option<crate::midi_live::MidiEvent> {
+        let event = self.inner.pop()?;
+        self.rows
+            .push((event.timestamp_us, event.status, event.data1, event.data2));
+        Some(event)
+    }
+
+    fn dropped_events(&self) -> u64 {
+        self.inner.dropped_events()
+    }
+
+    fn unsupported_messages(&self) -> u64 {
+        self.inner.unsupported_messages()
+    }
+}
+
+/// ⭐ **端口装配**（⭐ 唯一一处）：枚举 ⇒ 匹配（[`resolve_port`]）⇒ 连接。
+///
+/// # Errors
+///
+/// ⭐ [`MidiInError::HostUnavailable`] / [`MidiInError::PortNotFound`] /
+/// [`MidiInError::AmbiguousPort`] / [`MidiInError::ConnectFailed`]。
+#[cfg(feature = "midi-input")]
+fn open_session(
+    wanted: &str,
+    origin_us: u64,
+) -> Result<yeban_midi_io::MidiInputSession, MidiInError> {
+    let crate_ports = yeban_midi_io::enumerate_input_ports()
+        .map_err(|error| MidiInError::HostUnavailable(error.to_string()))?;
+    // ⭐ 只在这里出现可选依赖的类型 ⇒ 默认档完全不引用它。
+    let ports: Vec<PortInfo> = crate_ports
+        .iter()
+        .map(|port| PortInfo {
+            index: port.index,
+            name: port.name.clone(),
+        })
+        .collect();
+    let index = resolve_port(&ports, wanted)?;
+    let port_name = ports
+        .iter()
+        .find(|port| port.index == index)
+        .map_or_else(|| format!("#{index}"), |port| port.name.clone());
+    yeban_midi_io::open_input(index, origin_us, yeban_midi_io::DEFAULT_EVENT_CAPACITY).map_err(
+        |error| MidiInError::ConnectFailed {
+            port: port_name,
+            detail: error.to_string(),
+        },
+    )
 }
 
 /// ⭐ **临时**抖动口径（⭐ `RSK-22` **待裁**）：⭐ 以**相邻事件间隔的中位数**为名义网格，

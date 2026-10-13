@@ -2947,6 +2947,18 @@ pub fn wire_module_actions_with_capture(
         // handler（手里握着端口与状态）去调 [`apply_pending_midi_in`]。
         // ⛔ 不引入 `thread_local`、⛔ 不引入 `unsafe`：落地仍然只发生在 UI 线程上。
         let port = port.clone();
+        // ⭐ **实时腿的目标音轨**：与"写音符"那一半**同一条**规则（`midi_notes::default_track`）
+        // ⇒ 听到的音符与落进谱面的音符在**同一条轨**上。
+        //
+        // ⚠ `port`（`Rc<UndoPort>`）⛔ 不是 `Send` ⇒ 轨道 id 必须在 **UI 线程**上算好再交给
+        // 工作线程（`EntityId` 是纯数据）。⚠ 注入替身（`capture = Some(_)`）时**不走**实时腿：
+        // 判据钉住的接线不许被本票改掉（那些判据喂的是**批次**替身）。
+        let live_track: Option<yeban_model::EntityId> = if capture.is_none() {
+            port.as_ref()
+                .and_then(|port| crate::midi_notes::default_track(&port.project()).ok())
+        } else {
+            None
+        };
         // ⭐ 真入口（与 CLI 的 `--midi-in` 同一个函数）—— 除非调用方注入了替身。
         let capture: MidiInCapture = capture.unwrap_or(crate::midi_in::capture_messages);
         {
@@ -2999,10 +3011,30 @@ pub fn wire_module_actions_with_capture(
             let worker_state = state.clone();
             let worker_wanted = wanted.clone();
             let worker_weak = weak.clone();
-            // ⭐ 工作线程**只**做三件事：跑采集、把结果放进 Send 的槽、**请求** UI 线程排空。
+            // ⭐ 工作线程**只**做三件事：跑会话、把结果放进 Send 的槽、**请求** UI 线程排空。
             // ⛔ 它一个 Slint 对象都不碰（UI 对象只许在 UI 线程上碰）。
+            //
+            // ⭐ **实时腿**：会话**开着**的时候就把事件交给车道（`live_lane`），
+            // 由 UI 线程的心跳 `MidiInState::publish_live` 送进引擎的音符路径 ——
+            // ⛔ 不是"等采集窗口结束再一次性处理"（那正是本票要消灭的时间形状）。
+            let live_lane = state.live_lane();
             let handle = std::thread::spawn(move || {
-                let result = capture(&worker_wanted, seconds);
+                let result = match live_track {
+                    Some(track) => match crate::midi_in::monitor_messages_into(
+                        &worker_wanted,
+                        seconds,
+                        track,
+                        &live_lane,
+                    ) {
+                        Ok((captured, fields)) => {
+                            worker_state.finish_live(fields);
+                            Ok(captured)
+                        }
+                        Err(error) => Err(error),
+                    },
+                    // 没有权威工程（或调用方注入了替身）⇒ 保持**批次**形态，一位不变。
+                    None => capture(&worker_wanted, seconds),
+                };
                 worker_state.finish(result);
                 // ⭐ **唯一**跨线程的一跳：`Weak` 是 `Send`（上游 `api.rs:1247` 的
                 // `unsafe impl<T: StrongHandle> Send for Weak<T>`），
@@ -3053,6 +3085,13 @@ pub struct MidiInState {
     >,
     /// 当前工作线程的句柄（`wait_for_pending_midi_in` 用它做**确定性**等待）。
     worker: std::sync::Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
+    /// ⭐ **实时车道**（会话线程（工作线程）⇒ UI 线程）：见
+    /// [`crate::midi_in`] 的"实时会话"一节。它是本状态里**唯一**有实时读者的字段 ——
+    /// [`Self::publish_live`] 在 60Hz 心跳里把它交给引擎的音符路径。
+    live: crate::midi_in::LiveLane,
+    /// ⭐ 实时会话交回的**紧凑回执字段**（`Some` ⇒ 这一次会话真的走了实时腿；
+    /// ⛔ 注入替身的判据路径永远是 `None` ⇒ 回执不可能多出字段）。
+    live_fields: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
 }
 
 impl core::fmt::Debug for MidiInState {
@@ -3061,6 +3100,7 @@ impl core::fmt::Debug for MidiInState {
             .debug_struct("MidiInState")
             .field("in_flight", &self.is_in_flight())
             .field("has_pending", &self.has_pending())
+            .field("live_pending", &self.live.pending())
             .finish()
     }
 }
@@ -3073,7 +3113,50 @@ impl MidiInState {
             in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             slot: std::sync::Arc::new(std::sync::Mutex::new(None)),
             worker: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            live: crate::midi_in::LiveLane::new(),
+            live_fields: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// ⭐ **实时车道的句柄**（工作线程用它把会话的事件交给 UI 线程；容量与口径见
+    /// [`crate::midi_in::LiveLane`]）。
+    #[must_use]
+    pub fn live_lane(&self) -> crate::midi_in::LiveLane {
+        self.live.clone()
+    }
+
+    /// ⭐ **发布实时车道** —— 实时腿在**产品路径上**的落点。
+    ///
+    /// ⚠ **只在 UI 线程上调用**：`EngineHost` 是 `Rc<RefCell<…>>`（⛔ 不是 `Send`），
+    /// 而车道存在的**唯一**理由就是"会话线程够不着引擎"（见 [`crate::midi_in`] 的注释）。
+    ///
+    /// 返回真的写进引擎环的条数；⚠ 环满时没进去的那一段**放回车道**（下一次心跳重试），
+    /// ⛔ 不静默丢（口径与 [`crate::midi_live::pump_once_with`] 的 `refused` 一致）。
+    pub fn publish_live(&self, host: &mut crate::engine_host::EngineHost) -> usize {
+        let batch = self.live.take();
+        if batch.is_empty() {
+            return 0;
+        }
+        let accepted = host.send_engine_events(&batch);
+        if accepted < batch.len() {
+            self.live.push_front(&batch[accepted..]);
+        }
+        accepted
+    }
+
+    /// 工作线程交回实时腿的回执字段（⛔ 只有工作线程调它；`Ok` 才算"走过实时腿"）。
+    fn finish_live(&self, fields: Vec<String>) {
+        if let Ok(mut slot) = self.live_fields.lock() {
+            *slot = Some(fields);
+        }
+    }
+
+    /// ⭐ UI 线程**取走**实时腿的回执字段（⭐ `take` ⇒ 上一次会话的读数不会串到下一次）。
+    fn take_live_fields(&self) -> Option<Vec<String>> {
+        self.live_fields
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     /// ⭐ 是否**已有一次采集在飞**（界面的"重复触发"闸门读它）。
@@ -3161,12 +3244,20 @@ pub fn apply_pending_midi_in(
     let Some(result) = state.slot.lock().ok().and_then(|mut slot| slot.take()) else {
         return false;
     };
+    // ⭐ 实时腿的回执字段：**只在这一次会话真的走过实时腿时**才是 `Some`
+    // （`Some` 也就在这里被取走 ⇒ ⛔ 上一次的读数不会串到下一次）。
+    let live_fields = state.take_live_fields();
     let (receipt, ok) = match result {
         Ok(captured) => {
             let report = captured.report();
             match land_captured_notes(port, &captured) {
                 Ok(landing) => {
                     let mut fields = midi_in_ok_fields(&report);
+                    if let Some(live) = live_fields {
+                        // ⭐ 实时腿的读数（`live-*`）：说清"这一次有多少事件在**窗口内**
+                        // 就进了引擎的音符路径"，⛔ 不夸大（`live-refused` 也一并给）。
+                        fields.extend(live);
+                    }
                     match landing {
                         // ⭐ 采到的东西里**一条音符都配不出来**（例：只采到 CC）——
                         // 这不是错误（采集本身成功了），但也⛔ 不产生任何提交。
