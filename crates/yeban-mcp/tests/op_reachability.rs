@@ -544,3 +544,31 @@ fn every_model_op_variant_is_registered_or_declared_unreachable() {
         );
     }
 }
+
+/// ⭐ **对账守卫（第 44 条）**：`yeban_edit_notes` 的**实参说明**必须**逐个提到**
+/// `OP_KINDS` 里的每个 `kind`。
+///
+/// ⭐ 为什么需要它：那份说明是**手抄的清单**，⛔ 没有任何东西与 `OP_KINDS` 对账 ⇒
+/// 它会**静默漂移**。实证：`setTransportConfig` 已实现（`OP_KINDS`、解析臂、
+/// compile 臂都在），而说明里**一个字都没有** —— 那一轮描述改动**在变基中丢失**，
+/// **整整一轮无人发现**（⛔ 不是"跑一遍判据就能看出来"的那种）。
+///
+/// ⚠ 与 `every_model_op_variant_is_registered_or_declared_unreachable` **同法**：
+/// 清单必须覆盖**权威来源**（这里权威是 `OP_KINDS` 本身，⛔ 不是再手抄一份）。
+#[test]
+fn the_argument_help_text_mentions_every_kind() {
+    let files = sources();
+    let tools = module_text(&files, "/tools.rs").expect("读得到 tools.rs");
+
+    let missing: Vec<&str> = OP_KINDS
+        .iter()
+        .copied()
+        .filter(|kind| !tools.contains(kind))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "`yeban_edit_notes` 的实参说明漏列这些 kind（⭐ 说明是手抄清单，\
+         加/删 kind 时必须同步它）: {missing:?}"
+    );
+}
