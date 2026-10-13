@@ -965,7 +965,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 23] = [
+pub const OP_KINDS: [&str; 25] = [
     "add",
     "delete",
     "move",
@@ -978,6 +978,8 @@ pub const OP_KINDS: [&str; 23] = [
     SET_TRACK_MUTE_KIND,
     SET_TRACK_SOLO_KIND,
     SET_TRANSPORT_CONFIG_KIND,
+    SET_TEMPO_KIND,
+    SET_AUTHOR_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1339,6 +1341,39 @@ pub const DISCONNECT_ROUTING_KIND: &str = "disconnectRouting";
 /// 读（与 [`SET_ROUTING_GAIN_KIND`] 的 `old_gain_db` 同一条纪律）。
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const DISCONNECT_ROUTING_FIELDS: [&str; 2] = ["kind", ROUTING_EDGE_FIELD];
+
+/// `ops[].kind` 的**设置速度**形态名（写 [`Op::SetTempo`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetTempo` 的小驼峰）。
+///
+/// ⚠ 它是**顶层文档字段**形态（与 [`SET_TRANSPORT_CONFIG_KIND`] / [`SET_AUTHOR_KIND`]
+/// 同族）：不读不写音符，也不寻址音轨。
+pub const SET_TEMPO_KIND: &str = "setTempo";
+
+/// 设置速度形态的**新速度**字段名（`ops[].bpm`，必填，数字）。
+///
+/// ⚠ 区间与有限性由 `Op::SetTempo` 的前置条件拒（`MIN_BPM..=MAX_BPM` =
+/// `20.0..=999.0`）—— 本层**提前**报同一个区间（`bpmOutOfRange`），⛔ 不靠 apply 后的
+/// `YebanProjectV1::validate` 兜底。
+pub const SET_TEMPO_BPM_FIELD: &str = "bpm";
+
+/// 设置速度形态允许出现的**全部**键（判别键 + 一个必填）。
+pub const SET_TEMPO_FIELDS: [&str; 2] = ["kind", SET_TEMPO_BPM_FIELD];
+
+/// `ops[].kind` 的**设置署名**形态名（写 [`Op::SetAuthor`]）。
+pub const SET_AUTHOR_KIND: &str = "setAuthor";
+
+/// 设置署名形态的**新署名**字段名（`ops[].author`，必填，字符串）。
+///
+/// ⚠ **⛔ 本层不发明**"非空"或"长度上限"：模型 `Op::SetAuthor` 的校验**只有**
+/// "文档现值必须逐字等于 `old_author`"（陈旧载荷 ⇒ `OpStateMismatch`），而
+/// `schemas/project.schema.json` 的 `author` 是**裸 `{"type":"string"}`**（非必需、
+/// 无 `minLength`、无 `pattern`）⇒ 空串是一个**合法的明示值**（"显式清空署名"）。
+/// 故本形态**照抄模型口径**：收任意字符串。
+pub const SET_AUTHOR_AUTHOR_FIELD: &str = "author";
+
+/// 设置署名形态允许出现的**全部**键（判别键 + 一个必填）。
+pub const SET_AUTHOR_FIELDS: [&str; 2] = ["kind", SET_AUTHOR_AUTHOR_FIELD];
 
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
 ///
@@ -2000,6 +2035,45 @@ pub enum NoteOp {
     ///
     /// ⚠ **目标不是音轨**：本形态不查顶层 `trackId`（与 `removeTrack` 同类，
     /// 见 [`Self::is_track_entity_level`]）。
+    /// 设置**速度**（[`Op::SetTempo`]，顶层 `bpm`）。
+    ///
+    /// 与 [`Self::SetTransportConfig`] / [`Self::SetAuthor`] 同族（**顶层文档字段**、
+    /// 不读不写音符），载荷是一个 `f64`。
+    ///
+    /// ⚠ 模型的两条前置条件：① `new_bpm` **有限且在** `MIN_BPM..=MAX_BPM`
+    /// （`20.0..=999.0`，否则 `BpmOutOfRange`）；② 文档现值**逐位**等于 `old_bpm`
+    /// （否则 `OpStateMismatch`）。撤销载荷 `old_bpm` 由 [`compile`] 从**当前文档**读
+    /// （`project.bpm`），⛔ 不信调用方声明。
+    SetTempo {
+        /// 修改前的速度（BPM，来自当前文档）。
+        old_bpm: f64,
+        /// 修改后的速度（BPM）。
+        new_bpm: f64,
+    },
+    /// 设置**作者署名**（[`Op::SetAuthor`]，顶层 `author`）。
+    ///
+    /// 与 [`Self::SetTransportConfig`] / [`Self::SetTempo`] 同族（顶层文档字段），
+    /// 但载荷是 **`String`**（⛔ 不是 `Copy`）。
+    ///
+    /// ⚠ 模型**只有**一条前置条件：文档现值必须**逐字节**等于 `old_author`
+    /// （否则 `OpStateMismatch`）⇒ ⛔ **没有**空串/长度校验 ⇒ 本层也**不发明**它们
+    /// （见 [`SET_AUTHOR_AUTHOR_FIELD`] 的文档）。撤销载荷 `old_author` 由 [`compile`]
+    /// 从**当前文档**读（`project.author`）。
+    SetAuthor {
+        /// 修改前的署名（来自当前文档）。
+        old_author: String,
+        /// 修改后的署名。
+        new_author: String,
+    },
+    /// 设置**走带配置**（[`Op::SetTransportConfig`]）。
+    ///
+    /// 与 [`Self::SetTrackFlag`] 同族（不读不写音符），但载荷是**三个字段的整体**
+    /// —— 模型那一条 `Op` 也是整体替换（理由见 `Op::SetTransportConfig` 的文档）。
+    /// 撤销载荷 `old_config` 由 [`Self::read_transport`] 从**当前文档**读，
+    /// 不是调用方声明。
+    ///
+    /// ⚠ **目标不是音轨**：本形态不查顶层 `trackId`（与 `removeTrack` 同类，
+    /// 见 [`Self::is_track_entity_level`]）。
     SetTransportConfig {
         /// 目标态的三个字段。
         new_config: TransportConfig,
@@ -2335,6 +2409,8 @@ impl NoteOp {
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
+            Self::SetTempo { .. } => SET_TEMPO_KIND,
+            Self::SetAuthor { .. } => SET_AUTHOR_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -2368,6 +2444,9 @@ impl NoteOp {
         !matches!(
             self,
             Self::SetParam { .. }
+                | Self::SetTransportConfig { .. }
+                | Self::SetTempo { .. }
+                | Self::SetAuthor { .. }
                 | Self::SetTrackFlag { .. }
                 | Self::SetLane { .. }
                 | Self::RemovePoint { .. }
@@ -2673,6 +2752,22 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             flag: TrackFlag::Solo,
             value: parse_track_flag_value(object)?,
         }),
+        SET_TEMPO_KIND => {
+            reject_set_tempo_fields(object)?;
+            Ok(NoteOp::SetTempo {
+                // ⚠ `old_bpm` 是**占位**：真值由 `compile` 从当前文档读（⛔ 不信调用方）。
+                old_bpm: 0.0,
+                new_bpm: read_required_finite_f64(object, SET_TEMPO_BPM_FIELD)?,
+            })
+        }
+        SET_AUTHOR_KIND => {
+            reject_set_author_fields(object)?;
+            Ok(NoteOp::SetAuthor {
+                // ⚠ `old_author` 是**占位**：真值由 `compile` 从当前文档读。
+                old_author: String::new(),
+                new_author: read_required_string(object, SET_AUTHOR_AUTHOR_FIELD)?,
+            })
+        }
         SET_TRANSPORT_CONFIG_KIND => Ok(NoteOp::SetTransportConfig {
             new_config: parse_transport_config(object)?,
         }),
@@ -2894,6 +2989,97 @@ fn reject_disconnect_routing_fields(object: &Map<String, Value>) -> Result<(), F
 ///
 /// 出现 `kind` / `nodeId` 之外的键 → `INVALID_PARAMETER_RANGE`
 /// （`data.reason = "unknownRemoveRoutingNodeField"`）。
+/// 拒绝 `setTempo` 里 [`SET_TEMPO_FIELDS`] 之外的键。
+fn reject_set_tempo_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TEMPO_FIELDS,
+        SET_TEMPO_KIND,
+        "unknownSetTempoField",
+    )
+}
+
+/// 拒绝 `setAuthor` 里 [`SET_AUTHOR_FIELDS`] 之外的键。
+fn reject_set_author_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_AUTHOR_FIELDS,
+        SET_AUTHOR_KIND,
+        "unknownSetAuthorField",
+    )
+}
+
+/// 通用的"只认这几个键"检查（⛔ 多写一个键不静默丢弃）。
+fn reject_unknown_keys(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    kind: &str,
+    reason: &str,
+) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !allowed.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{kind}` 操作里有不支持的键: {} (支持集合只有 {allowed:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": reason,
+            "unsupportedFields": unknown,
+            "supportedFields": allowed,
+        }),
+    ))
+}
+
+/// 读一个**必填**的有限 `f64`（必须是 JSON 数字）。
+fn read_required_finite_f64(object: &Map<String, Value>, field: &str) -> Result<f64, Fault> {
+    let raw = object.get(field).ok_or_else(|| missing(field, "数字"))?;
+    let number = raw.as_f64().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是数字, 实际收到 {raw}"),
+            serde_json::json!({ "field": field, "reason": "valueMustBeNumber" }),
+        )
+    })?;
+    if !number.is_finite() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须有限, 实际收到 {number}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "nonFiniteValue",
+                "value": number,
+                "narrowedToF32": false,
+            }),
+        ));
+    }
+    Ok(number)
+}
+
+/// 读一个**必填**字符串（⛔ 不查空串、⛔ 不查长度 —— 模型与 schema 都没有这两条约束）。
+fn read_required_string(object: &Map<String, Value>, field: &str) -> Result<String, Fault> {
+    let raw = object.get(field).ok_or_else(|| missing(field, "字符串"))?;
+    raw.as_str().map(str::to_owned).ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是字符串, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeString",
+                "received": raw,
+            }),
+        )
+    })
+}
+
 /// 拒绝 `connectRouting` 里 [`CONNECT_ROUTING_FIELDS`] 之外的键。
 fn reject_connect_routing_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     let mut unknown: Vec<&str> = object
@@ -4878,6 +5064,43 @@ pub fn compile(
                 // `track` 在这里必然是 `Some`：本形态**不是**音轨实体级，因此上面那条
                 // "要不要查顶层 `trackId`"的分支一定取了音轨（见 `track_entity_only`）。
                 flag.compile(*track_id, flag.read(track.expect("非音轨实体级必查音轨")), *value)
+            }
+            NoteOp::SetTempo { new_bpm, .. } => {
+                // 撤销载荷来自**当前文档**（模型的前提条件读同一个字段、且是**逐位**比较）
+                // ⇒ 本层不采信调用方声明的旧状态。
+                //
+                // ⚠ 区间与有限性**在这里提前拒**（模型自己也会拒同一区间）：让越界在
+                // **编译期**就带上 `reason`，而不是在提案模拟那一步冒出一个泛化消息。
+                if !new_bpm.is_finite() || !(yeban_model::project::MIN_BPM..=yeban_model::project::MAX_BPM).contains(new_bpm) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!(
+                            "速度必须在 {}..={} BPM 且有限, 实际收到 {new_bpm}",
+                            yeban_model::project::MIN_BPM,
+                            yeban_model::project::MAX_BPM
+                        ),
+                        serde_json::json!({
+                            "reason": "bpmOutOfRange",
+                            "received": new_bpm,
+                            "min": yeban_model::project::MIN_BPM,
+                            "max": yeban_model::project::MAX_BPM,
+                        }),
+                    ));
+                }
+                // ⚠ 当前速度已是**合法文档**的一部分（`YebanProjectV1::validate` 早已
+                // 钉住同一区间）⇒ 这里只搬现值，⛔ 不再重复校验它。
+                Op::SetTempo {
+                    old_bpm: project.bpm,
+                    new_bpm: *new_bpm,
+                }
+            }
+            NoteOp::SetAuthor { new_author, .. } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，且是**逐字节**比较）。
+                // ⚠ 模型**没有**空串/长度校验 ⇒ 本层也⛔ 不发明（`new_author` 原样收下）。
+                Op::SetAuthor {
+                    old_author: project.author.clone(),
+                    new_author: new_author.clone(),
+                }
             }
             NoteOp::SetTransportConfig { new_config } => {
                 // 撤销载荷来自**当前文档**（模型 `apply` 的前置条件读同一个字段）；
@@ -6988,7 +7211,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 23);
+        assert_eq!(OP_KINDS.len(), 25);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -11736,7 +11959,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 23] = [
+        let table: [(&str, serde_json::Value); 25] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -11784,6 +12007,8 @@ mod tests {
                     "launchQuantization": "Bar",
                 }),
             ),
+            ("setTempo", serde_json::json!({"bpm": 140.0})),
+            ("setAuthor", serde_json::json!({"author": "A"})),
             (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
@@ -11830,6 +12055,8 @@ mod tests {
                 "setTrackMute",
                 "setTrackSolo",
                 "setTransportConfig",
+                "setTempo",
+                "setAuthor",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -12145,7 +12372,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 24] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 26] = [
             (
                 "add",
                 None,
@@ -12235,6 +12462,20 @@ mod tests {
                     "launchQuantization": "Bar",
                 }),
                 "SetTransportConfig",
+            ),
+            (
+                "setTempo",
+                None,
+                None,
+                serde_json::json!({"bpm": 140.0}),
+                "SetTempo",
+            ),
+            (
+                "setAuthor",
+                None,
+                None,
+                serde_json::json!({"author": "New Author"}),
+                "SetAuthor",
             ),
             (
                 "setAutomationLane#patch",
@@ -12327,7 +12568,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "23 个 kind ＋ 1 个额外载荷分支"
+            "25 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -12363,7 +12604,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 24);
+        assert_eq!(seen.len(), 26);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
@@ -12953,6 +13194,200 @@ mod tests {
         assert_ne!(
             CONNECT_ROUTING_KIND, DISCONNECT_ROUTING_KIND,
             "建边与断开是**相反**的两件事, 共用一个 kind 会让调用方分不开"
+        );
+    }
+
+    /// `setTempo`：解析 → 编译到**正是** `Op::SetTempo` → 撤销一步逐字节恢复；
+    /// 越界 / 非有限 / 陈旧 `old_bpm` 各自结构化拒绝。
+    ///
+    /// 注入（实测红）：① 编译成 `SetAuthor` ⇒ 那条 `Op::SetTempo` 匹配断言红；
+    /// ② 去掉区间前置条件 ⇒ 越界那条断言红；③ `old_bpm` 取自调用方而非文档 ⇒
+    /// 陈旧载荷那条断言红。
+    #[test]
+    fn set_tempo_compiles_the_document_value_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let bpm_before = project.bpm;
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 解析：`old_bpm` 是占位，真值在编译期读文档 ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_TEMPO_KIND, "bpm": 140.0}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_TEMPO_KIND, "kind 必须回环一致");
+        assert!(!ops[0].is_note_level(), "顶层文档字段不读不写音符");
+
+        // ---- ② 编译到**正是** `Op::SetTempo`，且 `old_bpm` == 文档现值 ----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetTempo { old_bpm, new_bpm } => {
+                assert_eq!(
+                    *old_bpm, bpm_before,
+                    "old 必须等于**文档现值**（⛔ 非调用方声明）"
+                );
+                assert_eq!(*new_bpm, 140.0);
+            }
+            other => panic!("应当是 SetTempo: {other:?}"),
+        }
+
+        // ---- ③ 应用 + **撤销一步**逐字节恢复 ----
+        compiled[0].apply(&mut project).expect("设置速度");
+        assert_eq!(project.bpm, 140.0, "速度必须真的变了");
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.bpm, bpm_before, "逆操作必须回到原速度");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// `setTempo` 的越界/非有限与陈旧载荷**分别**给出结构化理由。
+    #[test]
+    fn set_tempo_refuses_out_of_range_non_finite_and_stale_payloads() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+
+        // ---- 区间外（含端点外）：**前置条件**拒（⛔ 不靠 apply 后的 validate 兜底）----
+        for bad in [19.999_f64, 999.001] {
+            let ops = parse_ops(&serde_json::json!([{"kind": SET_TEMPO_KIND, "bpm": bad}]))
+                .expect("解析不查区间");
+            let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("区间外必须被拒");
+            assert_eq!(
+                reason_of(&fault).as_deref(),
+                Some("bpmOutOfRange"),
+                "{bad} 必须报区间理由"
+            );
+        }
+        // ⚠ JSON **没有** NaN / Infinity 字面量 —— 它们在 `serde_json` 里是 `null`，
+        //    因此非有限值的**可观测**入口是"`null`"与"极大数收窄"两条：
+        //    ① `null` ⇒ 解析期 `valueMustBeNumber`；② 超出 `f64` 的巨数 ⇒
+        //    `serde_json` 解析失败（在 `parse_ops` 之前）。这里钉住 ①，
+        //    并把"非有限"这一半**如实**说清：它在本工具面**不可表达**。
+        let from_null = parse_ops(&serde_json::json!([{"kind": SET_TEMPO_KIND, "bpm": null}]))
+            .expect_err("null 不是数字");
+        assert_eq!(
+            reason_of(&from_null).as_deref(),
+            Some("valueMustBeNumber"),
+            "JSON 的 null 不是非有限值的替身: 它在解析期就被拒, 理由必须点名"
+        );
+        // ---- 端点**含**在内：20.0 与 999.0 必须被接受 ----
+        for good in [20.0_f64, 999.0] {
+            let ops = parse_ops(&serde_json::json!([{"kind": SET_TEMPO_KIND, "bpm": good}]))
+                .expect("解析");
+            compile(&project, &track_id, &clip_id, &ops)
+                .unwrap_or_else(|e| panic!("{good} 在区间内必须被接受: {e:?}"));
+        }
+
+        // ---- 陈旧 `old_bpm`：模型 `validate` 逐位比较 ⇒ `OpStateMismatch` ----
+        let stale = Op::SetTempo {
+            old_bpm: project.bpm + 1.0,
+            new_bpm: 140.0,
+        };
+        let mut doc = project.clone();
+        assert!(
+            stale.apply(&mut doc).is_err(),
+            "陈旧 old_bpm 必须被模型拒 (OpStateMismatch)"
+        );
+        // 且**逐位**：`-0.0` 与 `0.0` 不是同一个值。
+        let mut zero = project.clone();
+        zero.bpm = 0.0;
+        let negative_zero = Op::SetTempo {
+            old_bpm: -0.0,
+            new_bpm: 140.0,
+        };
+        assert!(
+            negative_zero.apply(&mut zero).is_err(),
+            "-0.0 与 0.0 的**位**不同 ⇒ 必须被拒（逐位比较）"
+        );
+    }
+
+    /// `setAuthor`：解析 → 编译到**正是** `Op::SetAuthor` → 撤销一步逐字节恢复；
+    /// 陈旧 `old_author` 被拒；⛔ **不发明**空串/长度校验（模型没有）。
+    #[test]
+    fn set_author_compiles_the_document_value_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let author_before = project.author.clone();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": SET_AUTHOR_KIND, "author": "New Author"}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_AUTHOR_KIND, "kind 必须回环一致");
+        assert!(!ops[0].is_note_level(), "顶层文档字段不读不写音符");
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetAuthor {
+                old_author,
+                new_author,
+            } => {
+                assert_eq!(old_author, &author_before, "old 必须等于**文档现值**");
+                assert_eq!(new_author, "New Author");
+            }
+            other => panic!("应当是 SetAuthor: {other:?}"),
+        }
+
+        compiled[0].apply(&mut project).expect("设置署名");
+        assert_eq!(project.author, "New Author");
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.author, author_before, "逆操作必须回到原署名");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+
+        // ---- 空串是**合法的明示值**（模型与 schema 都没有"非空"约束）----
+        let empty = parse_ops(&serde_json::json!([{"kind": SET_AUTHOR_KIND, "author": ""}]))
+            .expect("空串必须被接受（⛔ 本层不发明模型没有的约束）");
+        let compiled_empty = compile(&project, &track_id, &clip_id, &empty).expect("编译");
+        let mut doc = project.clone();
+        compiled_empty[0].apply(&mut doc).expect("清空署名");
+        assert_eq!(doc.author, "", "空串必须如实落地");
+
+        // ---- 陈旧 `old_author` ⇒ `OpStateMismatch`（逐字节比较）----
+        let stale = Op::SetAuthor {
+            old_author: "Somebody Else".to_owned(),
+            new_author: "X".to_owned(),
+        };
+        let mut doc = project.clone();
+        assert!(stale.apply(&mut doc).is_err(), "陈旧署名必须被拒");
+
+        // ---- 未知键 / 非字符串 响亮拒绝 ----
+        let unknown = parse_ops(&serde_json::json!([
+            {"kind": SET_AUTHOR_KIND, "author": "A", "bpm": 140.0}
+        ]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            reason_of(&unknown).as_deref(),
+            Some("unknownSetAuthorField")
+        );
+
+        let not_string = parse_ops(&serde_json::json!([{"kind": SET_AUTHOR_KIND, "author": 3}]))
+            .expect_err("非字符串必须被拒");
+        assert_eq!(reason_of(&not_string).as_deref(), Some("valueMustBeString"));
+    }
+
+    /// 两个形态的**字面名与支持集合**被钉住。
+    #[test]
+    fn top_level_field_kinds_are_pinned() {
+        assert_eq!(SET_TEMPO_KIND, "setTempo");
+        assert_eq!(SET_TEMPO_FIELDS, ["kind", "bpm"]);
+        assert_eq!(SET_TEMPO_BPM_FIELD, "bpm");
+        assert_eq!(SET_AUTHOR_KIND, "setAuthor");
+        assert_eq!(SET_AUTHOR_FIELDS, ["kind", "author"]);
+        assert_eq!(SET_AUTHOR_AUTHOR_FIELD, "author");
+        assert_ne!(
+            SET_TEMPO_KIND, SET_AUTHOR_KIND,
+            "速度与署名是**两个不同**的顶层字段, 共用一个 kind 会让调用方分不开"
         );
     }
 }

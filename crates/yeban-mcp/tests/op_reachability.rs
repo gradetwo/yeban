@@ -45,7 +45,7 @@ pub const TOOL_MODULES: [&str; 7] = [
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 32] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 34] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -86,6 +86,8 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 32] = [
         &["domain/project_create.rs", "domain/section_build.rs"],
     ),
     ("DisconnectRouting", &["domain/notes.rs"]),
+    ("SetTempo", &["domain/notes.rs"]),
+    ("SetAuthor", &["domain/notes.rs"]),
     ("SetRoutingGain", &["domain/notes.rs"]),
     ("InsertDevice", &["domain/notes.rs"]),
     ("RemoveDevice", &["domain/notes.rs"]),
@@ -125,16 +127,10 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 32] = [
 /// 就要**如实登记**，⛔ 不许为了过判据而伪造一个构造点。
 ///
 /// ⚠ 每一条都必须带理由；清空它意味着"工具面覆盖了模型全集"。
-const KNOWN_UNREACHABLE: [(&str, &str); 2] = [
-    (
-        "SetTempo",
-        "`bpm` 的编辑入口尚未上工具面（模型侧 `Op::SetTempo` 已落，见 `HD-63`）；补齐后请删掉本条",
-    ),
-    (
-        "SetAuthor",
-        "`author` 的编辑入口尚未上工具面（模型侧 `Op::SetAuthor` 已落，见 `HD-63` 同批的自行裁决）；\
-         补齐后请删掉本条",
-    ),
+const KNOWN_UNREACHABLE: [(&str, &str); 0] = [
+    // ⭐ 本清单已**清空**：`SetTempo`（`setTempo`）与 `SetAuthor`（`setAuthor`）两条
+    // 欠账已由本线补齐（各加了 `kind`，构造点在 `domain/notes.rs`）。清空它意味着
+    // **工具面覆盖了模型全集** —— 那条反向判据现在会替我们守住这一点。
 ];
 
 fn manifest_dir() -> PathBuf {
@@ -368,13 +364,14 @@ fn every_op_variant_has_a_registered_construction_site() {
         missing.is_empty(),
         "这些 (变体, 模块) 的构造点不见了（工具面因此可能不可达）: {missing:#?}"
     );
-    // 登记表必须覆盖**恰好** 31 个变体，而且名字不重复。
+    // 登记表必须覆盖**恰好** N 个变体（N = 本表长度），而且名字不重复。
     let names: BTreeSet<&str> = EXPECTED_SITES.iter().map(|(name, _)| *name).collect();
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        32,
-        "登记表有 32 条（⭐ 它**不是**模型变体数 —— 模型全集由 `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
+        34,
+        "登记表有 34 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+         `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
     );
 }
 
