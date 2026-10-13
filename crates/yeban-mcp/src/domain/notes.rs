@@ -746,8 +746,8 @@ use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
     ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LaunchQuantization,
-    LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind, SceneV3, TrackKind,
-    TrackV3, TransportConfig, YebanProjectV1,
+    LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind, SceneV3, SectionV3,
+    TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -965,7 +965,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 25] = [
+pub const OP_KINDS: [&str; 26] = [
     "add",
     "delete",
     "move",
@@ -989,6 +989,7 @@ pub const OP_KINDS: [&str; 25] = [
     ADD_ROUTING_NODE_KIND,
     ADD_TRACK_KIND,
     REMOVE_SECTION_KIND,
+    SET_SECTION_KIND,
     REMOVE_SCENE_KIND,
     SET_SCENE_KIND,
 ];
@@ -1551,6 +1552,54 @@ pub const REMOVE_SCENE_FIELDS: [&str; 2] = ["kind", SCENE_FIELD];
 ///
 /// 与模型 `Op` 变体名同词（`SetScene` 的小驼峰），与 [`REMOVE_SCENE_KIND`] /
 /// [`SET_AUTOMATION_LANE_KIND`] 同一条命名规则。
+pub const SET_SECTION_KIND: &str = "setSection";
+
+/// `setSection` 的**自包含载荷**字段名（`ops[].section`，必填对象）。
+///
+/// ⚠ 与 [`SET_SCENE_KIND`] 同一条形状：四个属性都放在这个**嵌套对象**里，
+/// 操作对象顶层只认 `kind` 与它。
+pub const SECTION_PAYLOAD_FIELD: &str = "section";
+
+/// `setSection` 载荷里的**新建**判别键（`section.create`，可选布尔，缺省 = 更新）。
+///
+/// ⚠ 与 [`SET_SCENE_KIND`] 的 `create` **逐字同词**：新建与更新由**显式**的它区分，
+/// ⛔ 不靠「文档里没有这个身份就当作新建」—— 那会让一个打错的 `sectionId`
+/// 静默建出一个新段落。
+pub const SECTION_CREATE_FIELD: &str = "create";
+
+/// `setSection` 载荷里的**段落名**（`section.name`，非空字符串）。
+pub const SECTION_NAME_FIELD: &str = "name";
+
+/// `setSection` 载荷里的**起始 tick**（`section.startTick`，非负整数）。
+///
+/// ⚠ 与 [`SECTION_END_FIELD`] 一起构成段落的**区间**：模型 `SectionV3::validate`
+/// 要求 `end_tick > start_tick`（否则 `ZeroDuration`）⇒ 工具面照抄那条约束、⛔ 不发明第二套。
+pub const SECTION_START_FIELD: &str = "startTick";
+
+/// `setSection` 载荷里的**结束 tick**（`section.endTick`，非负整数）。
+pub const SECTION_END_FIELD: &str = "endTick";
+
+/// `setSection` 载荷里的**界面色标**（`section.color`，缺省 = 保留；字符串 = 覆盖；`null` = 清空）。
+///
+/// 三态与 [`SET_SCENE_KIND`] 的 `color` **逐条同口径**。
+pub const SECTION_COLOR_FIELD: &str = "color";
+
+/// `setSection` 载荷允许出现的**全部**键（新建判别 + 四个属性）。
+pub const SET_SECTION_FIELDS: [&str; 6] = [
+    SECTION_CREATE_FIELD,
+    SECTION_FIELD,
+    SECTION_START_FIELD,
+    SECTION_END_FIELD,
+    SECTION_NAME_FIELD,
+    SECTION_COLOR_FIELD,
+];
+
+/// `setSection` 操作对象顶层允许的**全部**键（判别键 + 载荷键）。
+pub const SET_SECTION_OP_FIELDS: [&str; 2] = ["kind", SECTION_PAYLOAD_FIELD];
+
+/// `ops[].kind` 的**设置场景**形态名（写 [`Op::SetScene`]）。
+///
+/// 与模型 `Op` 变体名同词（`SetScene` 的小驼峰），与 [`SET_SECTION_KIND`] 同一条命名规则。
 pub const SET_SCENE_KIND: &str = "setScene";
 
 /// 写入场景形态的**载荷**字段名（`ops[].scene`，必填，对象）。
@@ -1974,6 +2023,61 @@ impl ScenePatch {
     }
 }
 
+/// 一个段落的**逐键覆盖**（`None` = 调用方没提这个键 ⇒ 保留现值）。
+///
+/// 三态刻意不折叠（与 [`ScenePatch`] **逐条同口径**）：`color` 的 `Some(None)`
+/// （明写 `null` = 清掉色标）与 `None`（缺省 = 保留现值）是两件不同的事。
+/// `start_tick` / `end_tick` 同形 —— 它们**各自**可分，因此一次合并可以只移动起点。
+///
+/// ⚠ 区间约束（`end_tick > start_tick`）**不在这里**判：模型 `SectionV3::validate`
+/// 是唯一事实源（`ZeroDuration`），它由提案模拟那一步报。本层只负责把四个属性
+/// **如实合并**到基础上。
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SectionPatch {
+    /// 段落名（`None` = 保留现值）。
+    pub name: Option<String>,
+    /// 起始 tick（外层 `Option` = 调用方提没提；内层恒为 `Some` ⇒ 非空字段）。
+    pub start_tick: Option<u64>,
+    /// 结束 tick（同上）。
+    pub end_tick: Option<u64>,
+    /// 界面色标（外层 `Option` = 调用方提没提；内层 = 覆盖值还是"清掉"）。
+    pub color: Option<Option<String>>,
+}
+
+impl SectionPatch {
+    /// 该覆盖是否一个键都没提（`true` ⇒ 结果必然等于基础，是一次无操作）。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.start_tick.is_none()
+            && self.end_tick.is_none()
+            && self.color.is_none()
+    }
+
+    /// 把覆盖施加到一条**基础**段落上（基础 = 文档现值，或新建时的空形状）。
+    ///
+    /// 返回替换后的整条段落。`id` **不在**覆盖范围内（它是寻址，由
+    /// [`NoteOp::SetSection`] 的 `section_id` 给出）：这里原样保留，因此本形态不可能
+    /// 顺手改掉一个段落的身份。
+    #[must_use]
+    pub fn apply_to(&self, base: &SectionV3) -> SectionV3 {
+        let mut section = base.clone();
+        if let Some(name) = &self.name {
+            section.name.clone_from(name);
+        }
+        if let Some(start) = self.start_tick {
+            section.start_tick = start;
+        }
+        if let Some(end) = self.end_tick {
+            section.end_tick = end;
+        }
+        if let Some(color) = &self.color {
+            section.color.clone_from(color);
+        }
+        section
+    }
+}
+
 /// 一个音符编辑操作。
 #[derive(Clone, Debug, PartialEq)]
 pub enum NoteOp {
@@ -2296,6 +2400,30 @@ pub enum NoteOp {
         /// 场景身份（本形态自带寻址）。
         scene_id: EntityId,
     },
+    /// **写入一个曲式段落**（[`Op::SetSection`]，`project.sections`）：新建
+    /// （`create` 为真）或更新（合并）。
+    ///
+    /// ⚠⭐ **本形态补的是"段落建得出、删得掉、⛔ 改不了"** —— 在它之前
+    /// [`Op::SetSection`] 在 MCP 侧的**唯一**构造点是 `yeban_propose_section` 的
+    /// 内部建批（`section_build.rs`），而工具面只有 [`Self::RemoveSection`]
+    /// ⇒ 一个**已存在的**工程无法改段落名 / 区间 / 色标，也无法**逐个**加段落。
+    ///
+    /// 与 [`Self::SetScene`] **逐条同口径**：`create` 显式区分新建与更新
+    /// （⛔ 不靠"文档里没有这个身份就当作新建"）；`old_section` 由 [`compile`] 从
+    /// **当前文档**读（新建时 `None`），⛔ 不信调用方声明；载荷是一个
+    /// [`SectionPatch`]，四个属性键**各自可选**、按**合并**语义施加。
+    ///
+    /// ⚠ 区间约束（`end_tick > start_tick`）**不在这里**复制：模型
+    /// `SectionV3::validate` 是唯一事实源（`ZeroDuration`）。
+    SetSection {
+        /// 段落身份（本形态自带寻址；新建与更新都必须给出）。
+        section_id: EntityId,
+        /// `true` = 新建（身份必须**不在**文档里，否则 `CONFLICT`）；
+        /// `false` = 更新（身份必须**在**文档里，否则 `ENTITY_NOT_FOUND`）。
+        create: bool,
+        /// 属性覆盖（合并语义）。
+        patch: SectionPatch,
+    },
     /// **写入一个场景**（[`Op::SetScene`]）：新建（`create` 为真）或更新（合并）。
     ///
     /// 与 [`Self::RemoveScene`] **同族**（场景级、目标由自带的 `sceneId` 给出、
@@ -2422,6 +2550,7 @@ impl NoteOp {
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
             Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
+            Self::SetSection { .. } => SET_SECTION_KIND,
             Self::SetScene { .. } => SET_SCENE_KIND,
             Self::RemoveTrack { .. } => REMOVE_TRACK_KIND,
             Self::InsertDevice { .. } => INSERT_DEVICE_KIND,
@@ -2459,6 +2588,7 @@ impl NoteOp {
                 | Self::RemoveRoutingNode { .. }
                 | Self::RemoveSection { .. }
                 | Self::RemoveScene { .. }
+                | Self::SetSection { .. }
                 | Self::SetScene { .. }
                 | Self::RemoveTrack { .. }
                 | Self::InsertDevice { .. }
@@ -2563,7 +2693,7 @@ impl NoteOp {
     /// [`Self::is_routing_level`] 也为 `false`），因此必须有自己的桶。
     #[must_use]
     pub const fn is_section_level(&self) -> bool {
-        matches!(self, Self::RemoveSection { .. })
+        matches!(self, Self::RemoveSection { .. } | Self::SetSection { .. })
     }
 
     /// 该形态改的是**场景**（而不是音符 / 音轨 / 泳道 / 片段池 / 路由图 / 曲式段落）。
@@ -2860,6 +2990,40 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             reject_remove_scene_fields(object)?;
             Ok(NoteOp::RemoveScene {
                 scene_id: read_id(object, SCENE_FIELD)?,
+            })
+        }
+        SET_SECTION_KIND => {
+            reject_set_section_op_fields(object)?;
+            let payload = object
+                .get(SECTION_PAYLOAD_FIELD)
+                .and_then(Value::as_object)
+                .ok_or_else(|| missing(SECTION_PAYLOAD_FIELD, "对象"))?;
+            reject_set_section_fields(payload)?;
+            let section_id = read_id(payload, SECTION_FIELD)?;
+            let create = read_optional_scene_bool(payload, SECTION_CREATE_FIELD)?.unwrap_or(false);
+            let patch = parse_section_patch(payload)?;
+            // 与 `setScene` 的 `create` 分支**同一条理由**：模型的 `SectionV3::name`
+            // 没有校验, 空名会静默落盘 (而段落名是用户在编曲视图里唯一能读到的标签)。
+            if create && patch.name.is_none() {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{SET_SECTION_KIND}` 且 `{SECTION_CREATE_FIELD}: true` 时必须给出 \
+                         `{SECTION_NAME_FIELD}`: 模型的 `SectionV3::name` 没有校验, \
+                         空名会静默落盘"
+                    ),
+                    serde_json::json!({
+                        "field": format!("{SECTION_PAYLOAD_FIELD}.{SECTION_NAME_FIELD}"),
+                        "reason": "sectionNameRequiredWhenCreating",
+                        "hint": "新建段落必须有名 (`name` 是非空字符串); \
+                                 只想改名字/区间/色标就不要给 `create: true`",
+                    }),
+                ));
+            }
+            Ok(NoteOp::SetSection {
+                section_id,
+                create,
+                patch,
             })
         }
         SET_SCENE_KIND => {
@@ -3820,6 +3984,79 @@ fn parse_device_param(item: &Value) -> Result<ParameterValue, Fault> {
 ///
 /// 出现 `kind` / `scene` 之外的键 → `INVALID_PARAMETER_RANGE`
 /// （`data.reason = "unknownSetSceneOpField"`）。
+fn reject_set_section_op_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_SECTION_OP_FIELDS,
+        SET_SECTION_KIND,
+        "unknownSetSectionOpField",
+    )
+}
+
+/// 拒绝 `setSection` 载荷里 [`SET_SECTION_FIELDS`] 之外的键。
+fn reject_set_section_fields(payload: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        payload,
+        &SET_SECTION_FIELDS,
+        SET_SECTION_KIND,
+        "unknownSetSectionField",
+    )
+}
+
+/// 读一个**可选**的非负整数（缺省 = 保留现值）。
+fn read_optional_index(value: &Value, field: &str) -> Result<u64, Fault> {
+    value.as_u64().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{SECTION_PAYLOAD_FIELD}.{field}` 必须是非负整数, 实际收到 {value}"),
+            serde_json::json!({
+                "field": format!("{SECTION_PAYLOAD_FIELD}.{field}"),
+                "reason": "sectionTickMustBeUnsignedInteger",
+                "received": value,
+            }),
+        )
+    })
+}
+
+/// 解析 `setSection` 载荷的四个属性覆盖（照 [`parse_scene_patch`] 的形状）。
+fn parse_section_patch(payload: &Map<String, Value>) -> Result<SectionPatch, Fault> {
+    let name = match payload.get(SECTION_NAME_FIELD) {
+        None => None,
+        Some(value) => Some(read_non_empty_string(
+            SECTION_PAYLOAD_FIELD,
+            value,
+            SECTION_NAME_FIELD,
+            "sectionNameMustBeNonEmptyString",
+        )?),
+    };
+    let start_tick = match payload.get(SECTION_START_FIELD) {
+        None => None,
+        Some(value) => Some(read_optional_index(value, SECTION_START_FIELD)?),
+    };
+    let end_tick = match payload.get(SECTION_END_FIELD) {
+        None => None,
+        Some(value) => Some(read_optional_index(value, SECTION_END_FIELD)?),
+    };
+    // ⚠ 区间约束 (`end_tick > start_tick`) 与 `ScenePatch` 的速度值域同一条纪律:
+    // **不在这里**判 —— 模型 `SectionV3::validate` 是唯一事实源 (`ZeroDuration`)。
+    let color = match payload.get(SECTION_COLOR_FIELD) {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(value) => Some(Some(read_non_empty_string(
+            SECTION_PAYLOAD_FIELD,
+            value,
+            SECTION_COLOR_FIELD,
+            "sectionColorMustBeNonEmptyString",
+        )?)),
+    };
+    Ok(SectionPatch {
+        name,
+        start_tick,
+        end_tick,
+        color,
+    })
+}
+
 fn reject_set_scene_op_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     let mut unknown: Vec<&str> = object
         .keys()
@@ -3903,6 +4140,7 @@ fn parse_scene_patch(payload: &Map<String, Value>) -> Result<ScenePatch, Fault> 
     let name = match payload.get(SCENE_NAME_FIELD) {
         None => None,
         Some(value) => Some(read_non_empty_string(
+            SCENE_PAYLOAD_FIELD,
             value,
             SCENE_NAME_FIELD,
             "sceneNameMustBeNonEmptyString",
@@ -3933,6 +4171,7 @@ fn parse_scene_patch(payload: &Map<String, Value>) -> Result<ScenePatch, Fault> 
         None => None,
         Some(Value::Null) => Some(None),
         Some(value) => Some(Some(read_non_empty_string(
+            SCENE_PAYLOAD_FIELD,
             value,
             SCENE_COLOR_FIELD,
             "sceneColorMustBeNonEmptyString",
@@ -3951,16 +4190,22 @@ fn parse_scene_patch(payload: &Map<String, Value>) -> Result<ScenePatch, Fault> 
 ///
 /// 不是字符串 → `INVALID_PARAMETER_RANGE`（`data.reason = "{reason}MustBeString"`）；
 /// 是空串 → `INVALID_PARAMETER_RANGE`（`data.reason = reason`）。
-fn read_non_empty_string(value: &Value, field: &str, reason: &str) -> Result<String, Fault> {
+fn read_non_empty_string(
+    payload_field: &str,
+    value: &Value,
+    field: &str,
+    reason: &str,
+) -> Result<String, Fault> {
     let text = value.as_str().ok_or_else(|| {
         Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!(
-                "`{SCENE_PAYLOAD_FIELD}.{field}` 必须是字符串, 实际收到 {value} \
-                 (模型的 `SceneV3` 对文本字段没有校验, 因此本层不接受 null 或别的类型)"
+                "`{payload_field}.{field}` 必须是字符串, 实际收到 {value} \
+                 (模型的 `SceneV3` / `SectionV3` 对文本字段没有校验, \
+                 因此本层不接受 null 或别的类型)"
             ),
             serde_json::json!({
-                "field": format!("{SCENE_PAYLOAD_FIELD}.{field}"),
+                "field": format!("{payload_field}.{field}"),
                 "reason": format!("{reason}MustBeString"),
                 "received": value,
             }),
@@ -3969,9 +4214,9 @@ fn read_non_empty_string(value: &Value, field: &str, reason: &str) -> Result<Str
     if text.is_empty() {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
-            format!("`{SCENE_PAYLOAD_FIELD}.{field}` 不得为空串"),
+            format!("`{payload_field}.{field}` 不得为空串"),
             serde_json::json!({
-                "field": format!("{SCENE_PAYLOAD_FIELD}.{field}"),
+                "field": format!("{payload_field}.{field}"),
                 "reason": reason,
             }),
         ));
@@ -5479,6 +5724,66 @@ pub fn compile(
                 Op::RemoveScene {
                     scene_id: *scene_id,
                     previous_scene,
+                }
+            }
+            NoteOp::SetSection {
+                section_id,
+                create,
+                patch,
+            } => {
+                // 与 `setScene` **逐条同口径**: 新建与更新由**显式**的 `create` 区分
+                // (⛔ 不靠「文档里没有这个身份就当作新建」—— 那会让一个打错的
+                // `sectionId` 静默建出一个新段落); 两条前置条件都在这里提前报
+                // (模型 `Op::validate` 只在提案模拟那一步跑, 消息里没有本层的
+                // `reason` / `hint`)。
+                let current = project.sections.get(section_id).cloned();
+                if *create {
+                    if current.is_some() {
+                        return Err(Fault::domain_with_data(
+                            ErrorCode::Conflict,
+                            format!(
+                                "工程里已经有身份 {section_id} 的段落, \
+                                 `{SECTION_CREATE_FIELD}: true` 不覆盖既有段落"
+                            ),
+                            serde_json::json!({
+                                "sectionId": section_id.to_canonical_string(),
+                                "reason": "sectionAlreadyExists",
+                                "hint": "把 `create` 去掉就是一次普通更新; \
+                                         要新建请换一个 `sectionId`",
+                            }),
+                        ));
+                    }
+                } else if current.is_none() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!(
+                            "工程里没有身份 {section_id} 的段落, 没有段落可以更新 \
+                             (新建请给 `{SECTION_CREATE_FIELD}: true`)"
+                        ),
+                        serde_json::json!({
+                            "sectionId": section_id.to_canonical_string(),
+                            "reason": "sectionNotFound",
+                            "hint": "段落的身份由 `yeban_query_project` 的 `sections` \
+                                     字段报出",
+                        }),
+                    ));
+                }
+                // 撤销载荷来自**当前文档**: 模型 `SetSection` 的前置条件要求
+                // `old_section` **逐字段**等于文档现值 (`None` = 新建), 因此本层不采信
+                // 调用方声明的旧状态。基础 = 文档现值; 新建时用 `SectionV3` 的**空形状**
+                // (区间两端都是 0 ⇒ 不给合法区间时模型的 `ZeroDuration` 会拒;
+                // `name` 由 `create` 分支强制要求, 因此不可能落下一个空名)。
+                let base = current.clone().unwrap_or(SectionV3 {
+                    id: *section_id,
+                    name: String::new(),
+                    start_tick: 0,
+                    end_tick: 0,
+                    color: None,
+                });
+                Op::SetSection {
+                    section_id: *section_id,
+                    old_section: current,
+                    new_section: patch.apply_to(&base),
                 }
             }
             NoteOp::SetScene {
@@ -7211,7 +7516,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 25);
+        assert_eq!(OP_KINDS.len(), 26);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -11959,7 +12264,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 25] = [
+        let table: [(&str, serde_json::Value); 26] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -12033,6 +12338,10 @@ mod tests {
                 serde_json::json!({"trackId": ulid, "name": "New Track", "trackKind": "Midi"}),
             ),
             ("removeSection", serde_json::json!({"sectionId": ulid})),
+            (
+                "setSection",
+                serde_json::json!({"section": {"sectionId": ulid, "name": "Intro", "startTick": 0, "endTick": 960}}),
+            ),
             ("removeScene", serde_json::json!({"sceneId": ulid})),
             ("setScene", serde_json::json!({"scene": {"sceneId": ulid}})),
         ];
@@ -12066,6 +12375,7 @@ mod tests {
                 "addRoutingNode",
                 "addTrack",
                 "removeSection",
+                "setSection",
                 "removeScene",
                 "setScene",
             ],
@@ -12372,7 +12682,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 26] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 27] = [
             (
                 "add",
                 None,
@@ -12543,6 +12853,13 @@ mod tests {
                 "RemoveRoutingNode",
             ),
             (
+                "setSection",
+                None,
+                None,
+                serde_json::json!({"section": {"sectionId": section, "name": "Intro", "startTick": 0, "endTick": 960}}),
+                "SetSection",
+            ),
+            (
                 "removeSection",
                 None,
                 None,
@@ -12568,7 +12885,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "25 个 kind ＋ 1 个额外载荷分支"
+            "26 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -12604,7 +12921,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 26);
+        assert_eq!(seen.len(), 27);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
@@ -13388,6 +13705,340 @@ mod tests {
         assert_ne!(
             SET_TEMPO_KIND, SET_AUTHOR_KIND,
             "速度与署名是**两个不同**的顶层字段, 共用一个 kind 会让调用方分不开"
+        );
+    }
+
+    /// 段落**写入**形态（`setSection`）的两条路：新建（`create: true`）与更新
+    /// （缺省，撤销载荷是**文档现值**整条），两条都能被 `Op::invert` **逐字节**回退。
+    ///
+    /// 这一条对着"段落建得出、删得掉、⛔ 改不了"的缺口：`Op::SetSection` 在 MCP 侧
+    /// 此前**唯一**的构造点是 `yeban_propose_section` 的内部建批，而工具面只有
+    /// `removeSection`。
+    ///
+    /// 注入（实测红）：把 `old_section` 从 `current` 换成 `None`（把更新当成新建）
+    /// ⇒ 更新那条的 `old_section` 断言红，而且模型的前置条件会在 `apply` 时拒绝它。
+    #[test]
+    fn set_section_creates_and_updates_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+
+        // ---- 新建：身份**不在**文档里，四个属性一起给 ----
+        let fresh = EntityId::from_str("01J8ZQ00000000000000000SEC").expect("ULID");
+        assert!(
+            !project.sections.contains_key(&fresh),
+            "夹具前提: 身份是新的"
+        );
+        let bytes_before_create = serde_json::to_string(&project).expect("序列化");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_SECTION_KIND,
+            "section": {
+                "create": true,
+                "sectionId": fresh.to_canonical_string(),
+                "name": "Bridge",
+                "startTick": 1920,
+                "endTick": 3840,
+                "color": "#22AA88",
+            }
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_SECTION_KIND, "kind 必须回环一致");
+        assert!(ops[0].is_section_level(), "必须落在段落级那个桶里");
+        assert!(!ops[0].is_note_level(), "段落级不读不写音符");
+        assert!(!ops[0].is_routing_level(), "段落不是路由图的一部分");
+        assert!(!ops[0].is_scene_level(), "段落不是场景");
+        assert_eq!(
+            ops[0],
+            NoteOp::SetSection {
+                section_id: fresh,
+                create: true,
+                patch: SectionPatch {
+                    name: Some("Bridge".to_owned()),
+                    start_tick: Some(1920),
+                    end_tick: Some(3840),
+                    color: Some(Some("#22AA88".to_owned())),
+                },
+            }
+        );
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetSection {
+                section_id,
+                old_section,
+                new_section,
+            } => {
+                assert_eq!(*section_id, fresh);
+                assert!(old_section.is_none(), "新建时 old 必须是 None");
+                assert_eq!(new_section.id, fresh, "身份由寻址给出, 覆盖里没有它");
+                assert_eq!(new_section.name, "Bridge");
+                assert_eq!(new_section.start_tick, 1920);
+                assert_eq!(new_section.end_tick, 3840);
+                assert_eq!(new_section.color.as_deref(), Some("#22AA88"));
+            }
+            other => panic!("应当是 SetSection: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("新建段落");
+        assert!(
+            project.sections.contains_key(&fresh),
+            "段落必须真的进 sections"
+        );
+        assert!(project.validate().is_ok(), "新建之后工程必须仍然合法");
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert!(!project.sections.contains_key(&fresh), "逆操作必须摘掉它");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before_create,
+            "新建 + 一步撤销必须逐字节回到原状"
+        );
+
+        // ---- 更新：只改**区间与色标**（`name` 不给 ⇒ 保留现值, 是**合并**）----
+        let existing = *project.sections.keys().next().expect("样本段落");
+        let before = project.sections[&existing].clone();
+        let bytes_before_update = serde_json::to_string(&project).expect("序列化");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_SECTION_KIND,
+            "section": {
+                "sectionId": existing.to_canonical_string(),
+                "startTick": 60,
+                "endTick": 480,
+            }
+        }]))
+        .expect("更新形状必须被接受");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        match &compiled[0] {
+            Op::SetSection {
+                old_section,
+                new_section,
+                ..
+            } => {
+                assert_eq!(
+                    old_section.as_ref(),
+                    Some(&before),
+                    "old 必须等于**文档现值**（⛔ 非调用方声明）"
+                );
+                assert_eq!(new_section.start_tick, 60, "提了的键被覆盖");
+                assert_eq!(new_section.end_tick, 480);
+                assert_eq!(new_section.name, before.name, "没提的键保留现值（合并）");
+                assert_eq!(new_section.color, before.color, "没提的键保留现值（合并）");
+            }
+            other => panic!("应当是 SetSection: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("更新段落");
+        assert_eq!(project.sections[&existing].start_tick, 60);
+        assert_eq!(
+            project.sections[&existing].name, before.name,
+            "合并语义必须成立"
+        );
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before_update,
+            "更新 + 一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// `setSection` 的三条前置条件各自**结构化拒绝**：新建撞已有、更新找不到、
+    /// 陈旧 `old_section` 被模型拒（`OpStateMismatch`）。
+    ///
+    /// 注入（实测红）：① 去掉新建的冲突拒绝 ⇒ `sectionAlreadyExists` 断言红；
+    /// ② 去掉更新的存在性拒绝 ⇒ `sectionNotFound` 断言红；
+    /// ③ 把 `old_section` 换成 `Some(伪造值)` ⇒ 陈旧载荷那条断言红。
+    #[test]
+    fn set_section_refuses_existing_on_create_missing_on_update_and_stale_payloads() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let existing = *project.sections.keys().next().expect("样本段落");
+
+        // ---- 新建但身份已在 ⇒ CONFLICT / `sectionAlreadyExists` ----
+        let dup = parse_ops(&serde_json::json!([{
+            "kind": SET_SECTION_KIND,
+            "section": {
+                "create": true,
+                "sectionId": existing.to_canonical_string(),
+                "name": "Dup",
+                "startTick": 0,
+                "endTick": 960,
+            }
+        }]))
+        .expect("解析不查文档");
+        let fault =
+            compile(&project, &track_id, &clip_id, &dup).expect_err("已在文档里的身份必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("sectionAlreadyExists"));
+
+        // ---- 更新但身份不在 ⇒ ENTITY_NOT_FOUND / `sectionNotFound` ----
+        let ghost = EntityId::from_str("01J8ZQ000000000000000000GH").expect("ULID");
+        assert!(!project.sections.contains_key(&ghost), "夹具前提");
+        let dangling = parse_ops(&serde_json::json!([{
+            "kind": SET_SECTION_KIND,
+            "section": {"sectionId": ghost.to_canonical_string(), "name": "Nope"}
+        }]))
+        .expect("解析不查文档");
+        let fault = compile(&project, &track_id, &clip_id, &dangling)
+            .expect_err("不在文档里的身份必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("sectionNotFound"));
+
+        // ---- 新建却**没给** `name` ⇒ 响亮拒绝（模型不查空名）----
+        let unnamed = parse_ops(&serde_json::json!([{
+            "kind": SET_SECTION_KIND,
+            "section": {
+                "create": true,
+                "sectionId": "01J8ZQ00000000000000000SEC",
+                "startTick": 0,
+                "endTick": 960,
+            }
+        }]))
+        .expect_err("新建不给 name 必须被拒");
+        assert_eq!(
+            reason_of(&unnamed).as_deref(),
+            Some("sectionNameRequiredWhenCreating")
+        );
+
+        // ---- 陈旧 `old_section`：模型逐字段比较 ⇒ `OpStateMismatch` ----
+        let stale = Op::SetSection {
+            section_id: existing,
+            old_section: None, // 伪造: 文档里其实**有**这条段落
+            new_section: SectionV3 {
+                id: existing,
+                name: "Forged".to_owned(),
+                start_tick: 0,
+                end_tick: 960,
+                color: None,
+            },
+        };
+        let mut doc = project.clone();
+        assert!(
+            stale.apply(&mut doc).is_err(),
+            "陈旧 old_section 必须被模型拒 (OpStateMismatch)"
+        );
+
+        // ---- 区间反向（`endTick <= startTick`）由**模型**判（⛔ 本层不复制）----
+        let zero = Op::SetSection {
+            section_id: existing,
+            old_section: project.sections.get(&existing).cloned(),
+            new_section: SectionV3 {
+                id: existing,
+                name: "Zero".to_owned(),
+                start_tick: 960,
+                end_tick: 960,
+                color: None,
+            },
+        };
+        let mut doc = project.clone();
+        assert!(
+            zero.apply(&mut doc).is_err(),
+            "零长度区间必须被模型拒 (ZeroDuration)"
+        );
+    }
+
+    /// `setSection` 的形状拒绝：未知键、顶层嵌套错位、非整数 tick、空名、非字符串色标。
+    #[test]
+    fn set_section_shapes_fail_loudly() {
+        let base = serde_json::json!({
+            "create": true,
+            "sectionId": "01J8ZQ00000000000000000SEC",
+            "name": "Intro",
+            "startTick": 0,
+            "endTick": 960,
+        });
+
+        // 载荷里的未知键
+        let mut bad = base.clone();
+        bad["tempo"] = serde_json::json!(120.0);
+        let fault = parse_ops(&serde_json::json!([{"kind": SET_SECTION_KIND, "section": bad}]))
+            .expect_err("载荷里的未知键必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("unknownSetSectionField"));
+
+        // 操作对象顶层的未知键（把 `sectionId` 放到顶层是最像"写对了"的错法）
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_SECTION_KIND,
+            "sectionId": "01J8ZQ00000000000000000SEC",
+            "section": base.clone(),
+        }]))
+        .expect_err("顶层多写键必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownSetSectionOpField")
+        );
+
+        // 非整数 tick
+        let mut bad = base.clone();
+        bad["startTick"] = serde_json::json!("0");
+        let fault = parse_ops(&serde_json::json!([{"kind": SET_SECTION_KIND, "section": bad}]))
+            .expect_err("非整数 tick 必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("sectionTickMustBeUnsignedInteger")
+        );
+
+        // 空名
+        let mut bad = base.clone();
+        bad["name"] = serde_json::json!("");
+        let fault = parse_ops(&serde_json::json!([{"kind": SET_SECTION_KIND, "section": bad}]))
+            .expect_err("空名必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("sectionNameMustBeNonEmptyString")
+        );
+
+        // 非字符串色标
+        let mut bad = base.clone();
+        bad["color"] = serde_json::json!(3);
+        let fault = parse_ops(&serde_json::json!([{"kind": SET_SECTION_KIND, "section": bad}]))
+            .expect_err("非字符串色标必须被拒");
+        // ⚠ `read_non_empty_string` 对"类型不对"与"空串"给**两个**理由
+        // （与 `sceneColorMustBeNonEmptyString` / `…MustBeString` 同族）：
+        // 这里给的是**非字符串**，因此理由带 `MustBeString` 后缀。
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("sectionColorMustBeNonEmptyStringMustBeString")
+        );
+
+        // 缺 `section` 载荷 —— ⚠ `missing()` 这个既有辅助**不带** `reason`
+        // （与 `setScene` 缺载荷同一条路径），因此这里只断言"响亮失败"，
+        // 并**走既有读法**确认契约码是 `INVALID_PARAMETER_RANGE`，⛔ 不发明新理由。
+        let fault = parse_ops(&serde_json::json!([{"kind": SET_SECTION_KIND}]))
+            .expect_err("缺载荷必须被拒");
+        let response = fault.to_tool_response().expect("失败必须能变成工具响应");
+        assert_eq!(
+            response.pointer("/error/code").and_then(Value::as_str),
+            Some("INVALID_PARAMETER_RANGE")
+        );
+        assert!(
+            response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains(SECTION_PAYLOAD_FIELD)),
+            "缺失消息必须点名缺的是哪个键: {response}"
+        );
+    }
+
+    /// `setSection` 的**字面名与支持集合**被钉住。
+    #[test]
+    fn set_section_field_names_are_pinned() {
+        assert_eq!(SET_SECTION_KIND, "setSection");
+        assert_eq!(SECTION_PAYLOAD_FIELD, "section");
+        assert_eq!(SECTION_CREATE_FIELD, "create");
+        assert_eq!(SECTION_NAME_FIELD, "name");
+        assert_eq!(SECTION_START_FIELD, "startTick");
+        assert_eq!(SECTION_END_FIELD, "endTick");
+        assert_eq!(SECTION_COLOR_FIELD, "color");
+        assert_eq!(
+            SET_SECTION_FIELDS,
+            [
+                "create",
+                "sectionId",
+                "startTick",
+                "endTick",
+                "name",
+                "color"
+            ]
+        );
+        assert_eq!(SET_SECTION_OP_FIELDS, ["kind", "section"]);
+        assert_ne!(
+            SET_SECTION_KIND, REMOVE_SECTION_KIND,
+            "写入与取走是**相反**的两件事, 共用一个 kind 会让调用方分不开"
         );
     }
 }
