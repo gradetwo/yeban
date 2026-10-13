@@ -31,16 +31,12 @@ use std::path::PathBuf;
 use yeban_mcp::domain::notes::OP_KINDS;
 use yeban_mcp::undo_session::read_rust_sources;
 
-/// 工具实现模块（相对 `crates/yeban-mcp/src`）：只在这些文件的生产区里扫构造点。
-pub const TOOL_MODULES: [&str; 7] = [
-    "domain/notes.rs",
-    "domain/mod.rs",
-    "domain/macros.rs",
-    "domain/automation.rs",
-    "domain/import_audio.rs",
-    "domain/project_create.rs",
-    "domain/section_build.rs",
-];
+// ⚠ 这里**曾经**有一个 `TOOL_MODULES: [&str; 7]`（"只在列出的文件里扫构造点"）。
+// 它**从未被引用**，而且**已经过期**：真值 9 个模块，清单只列 7 个 ——
+// 缺 `domain/proposal.rs`（`Op::SetMacro`）与 `domain/section.rs`（`Op::Batch`）。
+// 本文件的 `sources()` 实际扫的是**整个 `src`**，所以那个常量既不生效、又会**误导后人**
+// 以为存在一份"工具实现模块"的权威清单。⇒ **删掉它，而不是修它**：没有对账守卫的
+// 手抄清单就是债（台账 R427／第 44 条）；真要一份清单，就该**从 `src` 现读**。
 
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
