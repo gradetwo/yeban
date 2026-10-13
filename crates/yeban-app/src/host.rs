@@ -45,6 +45,7 @@ use std::rc::Rc;
 
 use slint::{ModelRc, SharedString, VecModel};
 use yeban_engine::transport::TransportReading;
+use yeban_model::YebanProjectV1;
 
 use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
 use crate::engine_host::{DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings};
@@ -2337,7 +2338,17 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
 /// `true` = 这一键被 DAW 消费（`accept`，不再冒泡）；`false` = 放行给焦点系统 / 文本控件
 /// （`reject`）。`ConsumedByIme` 也返回 `true` —— §7.2 要求合成态下**彻底拦截**，
 /// 这是 GUI 侧的兜底（正常情况下敲入控件自己就会吃掉这些键）。
-pub fn wire_keys(ui: &MainWindow, context: Rc<RefCell<InputContext>>, undo: Option<Rc<UndoPort>>) {
+pub fn wire_keys(
+    ui: &MainWindow,
+    context: Rc<RefCell<InputContext>>,
+    undo: Option<Rc<UndoPort>>,
+    // ⭐ **引擎上下文**（⭐ 通行形状，与 `wire_transport(ui, engine)` **同款**的
+    // `Rc<RefCell<EngineHost>>` 范式；⛔ 零 `unsafe`、⛔ 不造借用延长）。
+    // ⚠ `None` ⇒ 那类"要动引擎"的动作**不消费**（照旧放行，⛔ 不假装成功）。
+    engine: Option<Rc<RefCell<EngineHost>>>,
+    // ⭐ **当前工程**（由装配层持有并传进来 —— `EngineHost` **没有**工程访问器）。
+    project: Option<Rc<YebanProjectV1>>,
+) {
     let weak = slint::ComponentHandle::as_weak(ui);
     ui.on_key_action(move |text, shift, ctrl, alt, meta| -> bool {
         let Some(ui) = weak.upgrade() else {
@@ -2358,7 +2369,23 @@ pub fn wire_keys(ui: &MainWindow, context: Rc<RefCell<InputContext>>, undo: Opti
         match context.borrow().resolve_logical(key, modifiers) {
             Resolution::PassThrough => false,
             Resolution::ConsumedByIme => true,
-            Resolution::Action(action) => apply_action(&ui, undo.as_ref(), action),
+            Resolution::Action(action) => {
+                // ⭐ 借用**只活在这条臂里**（⛔ 不跨回调、⛔ 不存起来）。
+                // ⚠ 已经在借用中就**不消费**（⛔ 不 panic）—— 控制线程上不会嵌套到同一份。
+                match (engine.as_ref(), project.as_ref()) {
+                    (Some(host), Some(project)) => match host.try_borrow_mut() {
+                        Ok(mut host) => {
+                            let mut context = EngineCommandContext {
+                                host: &mut host,
+                                project: project.as_ref(),
+                            };
+                            apply_action(&ui, undo.as_ref(), Some(&mut context), action)
+                        }
+                        Err(_) => false,
+                    },
+                    _ => apply_action(&ui, undo.as_ref(), None, action),
+                }
+            }
         }
     });
 }
@@ -3713,11 +3740,106 @@ pub fn action_has_implementation(action: Action) -> bool {
 ///
 /// 没有可作用实现的动作由 [`action_has_implementation`] **同一份陈述**在这里挡下，
 /// 返回 `false`（`reject`）。
-fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) -> bool {
+/// ⭐ **键盘动作可用的引擎/工程上下文**（⭐ **通行形状**，⛔ 不是为节拍器开的旁路）。
+///
+/// ## 为什么需要它（以及为什么是"通行"的）
+///
+/// `apply_action` 原先只拿得到 `ui` 与 `undo`，而有一类动作**必须**动引擎：凡是
+/// "改 `TransportConfig` 才生效"的开关（节拍器、预备拍，以及将来任何投影进快照的走带
+/// 设置）都要**换一代引擎**再恢复走带 ⇒ 那个落点需要 `host` ＋ 一份**工程**。
+///
+/// ⚠ **借用形状是借用、⛔ 不是拥有**：调用方（[`wire_keys`]）从既有的
+/// `Rc<RefCell<EngineHost>>` 现借（⭐ 与 `wire_transport(ui, engine)` **同款**范式）
+/// ⇒ ⛔ 零 `unsafe`、⛔ 不造借用延长。
+///
+/// ⚠ 工程由**调用方持有**并传进来：`EngineHost` **没有** `project` / `transport_config`
+/// 访问器（实测 `grep` 命中 0），"当前工程"的真相在装配它的那一层（`main.rs`）。
+pub struct EngineCommandContext<'a> {
+    /// 引擎宿主（换代与恢复走带都经它）。
+    pub host: &'a mut EngineHost,
+    /// **当前工程**（动作要基于它算"下一个值"）。
+    pub project: &'a YebanProjectV1,
+}
+
+/// ⭐ **"要动引擎"的动作的落点**（⭐ **不依赖界面** ⇒ 判据可无窗口地测它）。
+///
+/// ⚠ 这正是本切片要求的"**通行**形状"：凡是要改 `TransportConfig`（＝必须换一代引擎）
+/// 的开关都走这一处；⛔ 界面不参与，⛔ 不为节拍器开特例。
+///
+/// ⚠ `MainWindow` 需要 Tier-1 平台且 macOS 上 `EventLoop` 是**单例 + 必须主线程**
+/// ⇒ 若把这些臂写在 `apply_action` 里、只能经真窗口测，判据就建不出窗口（实测踩过：
+/// `EventLoop can't be recreated`）⇒ ⭐ 抽出来是**可测性**的直接要求，不是洁癖。
+///
+/// # Panics
+///
+/// ⛔ 不 panic（引擎拒绝 ⇒ 返回 `false`）。
+pub fn apply_engine_command(context: &mut EngineCommandContext<'_>, action: Action) -> bool {
+    match action {
+        // 拨**节拍器**开关：取反当前值。
+        Action::ToggleMetronome => {
+            let next = !context.project.transport.metronome_enabled;
+            crate::metronome::set_enabled(context.host, context.project, next).is_ok()
+        }
+        // 拨**预备拍**：`count_in_bars` 0 ⇄ 1。
+        Action::ToggleCountIn => {
+            let next = if context.project.transport.count_in_bars == 0 {
+                1
+            } else {
+                0
+            };
+            crate::metronome::set_count_in_bars(context.host, context.project, next).is_ok()
+        }
+        // ⚠ 其余动作**不**在这条链上（它们不动引擎）⇒ 如实返回 `false`。
+        _ => false,
+    }
+}
+
+/// ⭐ **判据用的落点入口**（`pub(crate)` ⇒ ⛔ 不进公共 API、⛔ 不需要文档）。
+///
+/// ⚠ **它为什么必须 `pub(crate)` 而不是 `pub`**：本仓的 missing-docs 是 `-D warnings`
+/// ⇒ 一个 `pub` 函数必须带文档；而 `tests/roll_edit_tools.rs:1231` 又把"**每个文件第一个
+/// "测试模块标记"之前的文本**"当作该文件的生产区 ⇒ ⭐ 文档注释**不能**用 `///`
+///（那会让它挤在生产区之外的位置上被当作生产代码）。
+///
+/// ⚠ 本函数**走与产品同一处落点**（[`apply_engine_command`]），⛔ 不是测试旁路。
+// ⚠ **不用测试模块标记、改用 `#[allow(dead_code)]`**：本仓的结构判据
+// `tests/roll_edit_tools.rs:1258` 在源码里**找那个标记的字面子串**来决定"每个文件的生产区"
+// ⇒ ⭐ 在这里写那个标记会**成为边界**、把 `host.rs` 后半段（`ToolDrag` 的真实消费者在
+// 5289/5487）划到区外 ⇒ 那两条判据会红（实测踩过，连**注释里的**该字面都会触发）。
+// ⚠ 用 `allow` 而**不是** `expect`：本函数只在判据里被调用，生产二进制里确实没有调用者，
+// 而 `expect` 在"没触发"时会报错（生产编不过）。
+#[allow(dead_code)]
+pub(crate) fn apply_action_for_criteria(
+    engine: &mut EngineHost,
+    project: &YebanProjectV1,
+    action: Action,
+) -> bool {
+    let mut context = EngineCommandContext {
+        host: engine,
+        project,
+    };
+    // ⭐ ⚠ **必须走与产品同一处落点**（`apply_engine_command`），⛔ 不是另写一条测试旁路；
+    // 界面参数**不参与**（那类臂不碰界面）⇒ 判据无需 Tier-1 窗口。
+    apply_engine_command(&mut context, action)
+}
+
+fn apply_action(
+    ui: &MainWindow,
+    undo: Option<&Rc<UndoPort>>,
+    context: Option<&mut EngineCommandContext<'_>>,
+    action: Action,
+) -> bool {
     if !action_has_implementation(action) {
         return false;
     }
     match action {
+        // 拨**节拍器**开关（`Cmd/Ctrl+Alt+N`）。⚠ 它更换一代引擎（计划在投影期进快照）
+        // ⇒ 走 `metronome::set_enabled` 的"先停 ⇒ 换 ⇒ 恢复位置与状态"。
+        // ⚠ 引擎/工程不在手（`context == None`）⇒ ⛔ 不消费（照旧放行，⛔ 不假装成功）。
+        Action::ToggleMetronome | Action::ToggleCountIn => {
+            let Some(context) = context else { return false };
+            apply_engine_command(context, action)
+        }
         // `[UI-NOTE-003]` 工具选择：数字键 → 矩阵行号 → `active-tool`（**单一数字口径**）。
         // 撤销端口在场时同时记一条动作日志（`UiAction::SelectTool` 只报显示态、不改工程）。
         Action::SelectTool(tool) => {
@@ -4214,7 +4336,7 @@ pub fn wire_tool_select(ui: &MainWindow, undo: Option<Rc<UndoPort>>) {
             return;
         };
         // 与键盘**同一个**臂（唯一写者）：不在这里复制 `set_active_tool` 或动作日志。
-        let _ = apply_action(&ui, undo.as_ref(), Action::SelectTool(tool));
+        let _ = apply_action(&ui, undo.as_ref(), None, Action::SelectTool(tool));
     });
 }
 

@@ -451,7 +451,17 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // `N2` 裁决 (1)：GUI 的逻辑键快捷键 → 界面动作。撤销族经 `undo::dispatch_key`
     // （唯一下发点）落到 `UndoPort`，因此 `Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`
     // 与时光机按钮是**同一条链**（ADR-0001 D45 的"人按 `Cmd+Z` 真的能撤销"）。
-    host::wire_keys(&ui, Rc::clone(&input), Some(Rc::clone(&undo_port)));
+    // ⭐ 引擎上下文（通行形状）：`engine_handle` 与走带回调拿的是**同一个**
+    // `Rc<RefCell<EngineHost>>`（`engine_handle()` 只是 `Rc` 计数 +1）；工程由本层持有
+    // （`EngineHost` 没有工程访问器）⇒ ⭐ `Cmd/Ctrl+Alt+N`／`+D` 这两个"要换一代引擎"的
+    // 动作才有落点（其它装配传 `None` ⇒ 如实不消费）。
+    host::wire_keys(
+        &ui,
+        Rc::clone(&input),
+        Some(Rc::clone(&undo_port)),
+        Some(Rc::clone(&engine_handle)),
+        Some(Rc::new(loaded.archive.project.clone())),
+    );
     // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口（台账 R16）：界面报行号，宿主把它送进
     // **同一个** `Action::SelectTool` 臂（与上面 `wire_keys` 的 `1`..`5` 数字键同一条链）。
     // 因此"点工具按钮"与"按数字键"不可能分叉。

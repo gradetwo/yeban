@@ -4989,7 +4989,13 @@ fn assemble_track_height_drag() -> (
         UndoSession::open("<判据>", "yeban-app", project, TRACK_HEIGHT_DRAG_NOW).expect("打开"),
     ));
     yeban_app::host::wire_track_height_drag(&window, &port);
-    yeban_app::host::wire_keys(&window, ui.input_context(), Some(Rc::clone(&port)));
+    yeban_app::host::wire_keys(
+        &window,
+        ui.input_context(),
+        Some(Rc::clone(&port)),
+        None,
+        None,
+    );
     let plane = ui.into_control_plane(Permission::Interactive);
     (window, port, plane)
 }

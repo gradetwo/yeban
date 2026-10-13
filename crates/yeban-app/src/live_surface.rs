@@ -1737,7 +1737,7 @@ pub fn build_live_ui_with(
     // 撤销端口来自装配选项：默认 `None`（判据侧没有撤销会话时，撤销族如实 `reject`，
     // 工具 / 视图 / 走带这类界面动作照常生效 —— 判据 16 判的就是它们）。判据用
     // [`LiveWiringOptions::undo`] 把它接上，从而见证"按键 → 撤销端口提交 → 重投影"整段。
-    host::wire_keys(&window, Rc::clone(&input), options.undo.clone());
+    host::wire_keys(&window, Rc::clone(&input), options.undo.clone(), None, None);
     // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口（台账 R16）：与产品进程
     // （`main.rs` 的 `run_gui`）调的是**同一个** `host::wire_tool_select`，因此无头端口注入的
     // 真实指针事件与用户点击走同一条链。它不改工程 ⇒ 只在装配给了端口时把端口一并交给

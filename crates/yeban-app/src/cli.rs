@@ -2601,7 +2601,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 26] = [
+const SHORTCUTS: [ShortcutRow; 28] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -2704,6 +2704,23 @@ const SHORTCUTS: [ShortcutRow; 26] = [
         label: "Cmd/Ctrl+Alt+M → 控制台最大化",
         action: Action::ToggleConsoleMaximize,
         key: PhysicalKey::KeyM,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    // ⭐ 节拍器族（`[ARCH-RT-001]`）：两条**加性**键，⛔ 不动既有键语义。
+    // ⚠ `implemented: true` 是**如实**的：两条都在 `apply_action` 里接了臂
+    // （产品装配 `main.rs` 传引擎上下文；其它装配传 `None` ⇒ 那一刻不消费，见臂上的注释）。
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+N → 节拍器开关",
+        action: Action::ToggleMetronome,
+        key: PhysicalKey::KeyN,
+        modifiers: Modifiers::ctrl_alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Cmd/Ctrl+Alt+D → 预备拍开关",
+        action: Action::ToggleCountIn,
+        key: PhysicalKey::KeyD,
         modifiers: Modifiers::ctrl_alt(),
         implemented: true,
     },

@@ -102,19 +102,50 @@ pub fn set_enabled(
     project: &YebanProjectV1,
     enabled: bool,
 ) -> Result<MetronomeOutcome, EngineHostError> {
+    apply_transport_config(host, project, |next| {
+        next.transport.metronome_enabled = enabled;
+    })
+}
+
+/// ⭐ 拨**预备拍**（`transport.count_in_bars`，`u8`）。
+///
+/// ⚠ 它与 `metronome_enabled` **同在 `TransportConfig` 里、同样投影进快照**
+/// ⇒ 走**同一个** [`apply_transport_config`] 内核与**同一套**走带恢复（⛔ 不复制一份）。
+///
+/// # Errors
+///
+/// 同 [`set_enabled`]（快照投影失败）。
+pub fn set_count_in_bars(
+    host: &mut EngineHost,
+    project: &YebanProjectV1,
+    bars: u8,
+) -> Result<MetronomeOutcome, EngineHostError> {
+    apply_transport_config(host, project, |next| {
+        next.transport.count_in_bars = bars;
+    })
+}
+
+/// ⭐ **改 `TransportConfig` 的通用内核**（⭐ 通行形状：任何"投影进快照的走带设置"都走它）。
+///
+/// 顺序（⭐ 负责人裁决 A 的 1–3 条）：① 抓现场 + **先 `stop`** ⇒ ② 改字段 + `reload`
+/// ⇒ ③ **先恢复状态、后恢复位置**（⚠ 顺序反了会破坏位置：`play()` 自己会推进；
+/// 早期版本把 tick 0 变成了 tick 10，实测踩过）。
+fn apply_transport_config(
+    host: &mut EngineHost,
+    project: &YebanProjectV1,
+    mutate: impl FnOnce(&mut YebanProjectV1),
+) -> Result<MetronomeOutcome, EngineHostError> {
     let before = TransportSnapshot::from_reading(&host.transport());
 
     // ① **先 stop**：⛔ 不从"跑"直接换一代。
     host.stop();
 
-    // ② 改字段 ⇒ 换一代引擎（节拍器计划在**投影期**进快照，§模块文档）。
+    // ② 改字段 ⇒ 换一代引擎（这类设置都在**投影期**进快照，§模块文档）。
     let mut next = project.clone();
-    next.transport.metronome_enabled = enabled;
+    mutate(&mut next);
     host.reload(&next, 0)?;
 
-    // ③ ⚠ **先恢复状态、后恢复位置** —— 顺序反了会破坏位置：`play()` 自己会推进
-    // （`send_transport` 要 pump 让命令生效）⇒ 先 `play` 再 `seek` 才能落在原位置。
-    // 早期版本先 `seek` 后 `play`，实测把 tick 0 变成了 tick 10。
+    // ③ **先恢复状态、后恢复位置**（见上）。
     match before.state {
         // ⭐ 原先在跑 ⇒ 还跑（位置马上在下一行拨回**原位置**）。
         TransportState::Playing => {
@@ -304,6 +335,150 @@ mod tests {
                 MAX_RESTORE_DRIFT_TICKS,
                 before.position_ticks,
                 outcome.after.position_ticks
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution};
+
+    fn fixture() -> YebanProjectV1 {
+        yeban_model::samples::filled_project()
+    }
+
+    fn clicks(host: &mut EngineHost) -> u64 {
+        host.runtime_for_criteria()
+            .map_or(0, |runtime| runtime.stats().metronome_clicks)
+    }
+
+    fn pump(host: &mut EngineHost, quanta: usize) {
+        let mut block = vec![0.0_f32; 128 * 2];
+        if let Some(runtime) = host.runtime_for_criteria() {
+            for _ in 0..quanta {
+                block.fill(0.0);
+                runtime.process_quantum(&mut block, 2);
+            }
+        }
+    }
+
+    /// ⭐ **判据 ①＋②**：`Cmd/Ctrl+Alt+N` 按下 ⇒ `metronome_clicks` 由 0 变 >0；
+    /// **再按一次** ⇒ 回 0（往返）。
+    ///
+    /// ⚠ 判据**必须**同时覆盖"键被解析成哪个动作"与"那个动作真的拨动了引擎"：
+    /// 只测前者 ⇒ 证明不了接线；只测后者 ⇒ 证明不了键。
+    #[test]
+    fn the_metronome_key_starts_and_stops_the_clicks() {
+        let project = fixture();
+        let mut host = EngineHost::new();
+        host.reload(&project, 0).expect("建引擎");
+        host.play();
+
+        // ---- ① 键按下（走**真** `InputContext::resolve`）----
+        let mut input = InputContext::default();
+        input.set_focus(Focus::MainCanvas);
+        assert_eq!(
+            input.resolve_logical(LogicalKey::Character('n'), Modifiers::ctrl_alt()),
+            Resolution::Action(Action::ToggleMetronome),
+            "⭐ `Cmd/Ctrl+Alt+N` 必须解析成 `ToggleMetronome`"
+        );
+        let applied =
+            crate::host::apply_action_for_criteria(&mut host, &project, Action::ToggleMetronome);
+        assert!(applied, "⭐ 键必须被**消费**（接线成功）");
+        pump(&mut host, 8);
+        let on = clicks(&mut host);
+        assert!(
+            on > 0,
+            "⭐ 判据 ①：按一次键之后 clicked 必须 >0（实测 {on}）"
+        );
+
+        // ---- ② 再按一次（往返，带回当前工程状态）----
+        let mut next = project.clone();
+        next.transport.metronome_enabled = true;
+        let applied =
+            crate::host::apply_action_for_criteria(&mut host, &next, Action::ToggleMetronome);
+        assert!(applied, "⭐ 第二次按也必须被消费");
+        let before = clicks(&mut host);
+        pump(&mut host, 16);
+        assert_eq!(
+            clicks(&mut host),
+            before,
+            "⭐ 判据 ②：关回去之后⛔ 不许再增咔哒声（往返）"
+        );
+    }
+
+    /// ⭐ **判据 ③（控制臂，走产品路径；第 46 条）**：⛔ **不按键** ⇒ 恒为 0。
+    ///
+    /// ⚠ 独立判据（⛔ 不与 ① 同条）：否则 ① 一红就**无法演示**"控制臂仍绿"。
+    #[test]
+    fn the_key_control_arm_never_clicks() {
+        let project = fixture();
+        let mut host = EngineHost::new();
+        host.reload(&project, 0).expect("建引擎");
+        host.play();
+        // ⭐ 走产品路径把开关**显式关掉**（⛔ 不能只 reload 原工程 —— 那样测的是引擎默认值，
+        // 注入"永远写 true"抓不到它；本仓已有过这个教训）。
+        assert!(
+            crate::host::apply_action_for_criteria(&mut host, &project, Action::ToggleMetronome),
+            "先开一次（走产品路径）"
+        );
+        // 再走产品路径关掉 ⇒ 之后⛔ 不许再有咔哒声。
+        let mut on = project.clone();
+        on.transport.metronome_enabled = true;
+        assert!(crate::host::apply_action_for_criteria(
+            &mut host,
+            &on,
+            Action::ToggleMetronome
+        ));
+        let before = clicks(&mut host);
+        // ⚠ **必须推进至少一整拍**：节拍器**在拍点立刻响一次**，而 960 tick/拍 ÷ ≈5 tick/量子
+        // ≈ **192 量子/拍** ⇒ 早期版本只 `pump(16)`，**根本覆盖不到第二拍**，
+        // 于是"注入永远开"也看不出差别（实测踩过）。
+        pump(&mut host, 400);
+        assert_eq!(
+            clicks(&mut host),
+            before,
+            "⭐ 控制臂：产品路径关掉之后，再推进 ≥2 拍也必须**不再**增咔哒声"
+        );
+    }
+
+    /// ⭐ **判据 ④**：按键拨动也必须**精确恢复走带状态**（位置按 16-tick 封顶如实报）。
+    #[test]
+    fn the_metronome_key_preserves_the_transport_state() {
+        let project = fixture();
+        for (label, start_tick, playing) in [
+            ("停在 0", 0_u64, false),
+            ("停在中间", 3_840, false),
+            ("跑在中间", 1_920, true),
+        ] {
+            let mut host = EngineHost::new();
+            host.reload(&project, 0).expect("建引擎");
+            if start_tick > 0 {
+                host.seek(start_tick);
+            }
+            if playing {
+                host.play();
+            }
+            let before = TransportSnapshot::from_reading(&host.transport());
+            assert!(
+                crate::host::apply_action_for_criteria(
+                    &mut host,
+                    &project,
+                    Action::ToggleMetronome
+                ),
+                "{label}：键必须被消费"
+            );
+            let after = TransportSnapshot::from_reading(&host.transport());
+            assert_eq!(
+                after.state, before.state,
+                "⭐ {label}：走带状态必须**精确**恢复（停还停、跑还跑）"
+            );
+            let drift = before.position_ticks.abs_diff(after.position_ticks);
+            assert!(
+                drift <= MAX_RESTORE_DRIFT_TICKS,
+                "⭐ {label}：位置漂移 {drift} tick 必须 ≤ {MAX_RESTORE_DRIFT_TICKS}"
             );
         }
     }

@@ -2106,7 +2106,7 @@ impl TransportHarness {
     fn wire_keyboard(&self) -> Rc<RefCell<yeban_app::input::InputContext>> {
         let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
         host::wire_input(self.port.ui(), Rc::clone(&context));
-        host::wire_keys(self.port.ui(), Rc::clone(&context), None);
+        host::wire_keys(self.port.ui(), Rc::clone(&context), None, None, None);
         context
     }
 

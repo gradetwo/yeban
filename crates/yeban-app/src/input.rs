@@ -189,6 +189,8 @@ pub enum PhysicalKey {
     KeyD,
     /// `M` —— 与 `Cmd/Ctrl+Alt` 组合最大化/还原底部控制台。
     KeyM,
+    /// `N` —— 与 `Cmd/Ctrl+Alt` 组合拨**节拍器**开关（`[ARCH-RT-001]`）。
+    KeyN,
     /// `1`–`5` —— 卷帘工具矩阵。
     Digit(u8),
     /// `[` —— 切到主线版本试听。
@@ -231,6 +233,7 @@ impl PhysicalKey {
             Self::KeyH => LogicalKey::Character('h'),
             Self::KeyD => LogicalKey::Character('d'),
             Self::KeyM => LogicalKey::Character('m'),
+            Self::KeyN => LogicalKey::Character('n'),
             Self::Digit(digit) => {
                 LogicalKey::Character(char::from_digit(u32::from(digit), 10).unwrap_or('\u{0}'))
             }
@@ -912,7 +915,7 @@ mod tests {
     use Focus::{MainCanvas, Other, TextInput};
     use PhysicalKey::{
         Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
-        KeyB, KeyD, KeyH, KeyM, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
+        KeyB, KeyD, KeyH, KeyM, KeyN, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1371,6 +1374,7 @@ mod tests {
             KeyH,
             KeyD,
             KeyM,
+            KeyN,
             Digit(0),
             Digit(1),
             Digit(5),
