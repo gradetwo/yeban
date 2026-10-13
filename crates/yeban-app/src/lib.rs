@@ -88,6 +88,7 @@ pub mod import_audio;
 pub mod import_midi;
 pub mod input;
 pub mod meters;
+pub mod metronome;
 pub mod midi_in;
 // ---------------------------------------------------------------------------
 // ⭐ **连续性**：`--midi-in` 收到的**已解析事件**在**到达时**泵进引擎的音符路径
