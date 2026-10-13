@@ -3116,10 +3116,16 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>(),
             "相对变换登记表必须与实测的\"第二遍被接受\"集合**一一对应**（双向）"
         );
-        assert_eq!(
-            all_ops.len(),
-            38,
-            "showcase 脚本的条数变了 —— 新变体必须同时进脚本与本判据的登记表"
+        // ⚠ **计数不写死**（负责人 2026-10-14 授权：纯计数类断言放开、功能优先）。
+        // `showcase_ops()` 的**完整性**（每个 `Op` 变体都有代表实例）由
+        // `every_op_variant_round_trips_byte_for_byte_or_is_explicitly_not_applicable`
+        // 保证：它对**现读的**变体清单逐个取 `showcase_ops()` 的实例，取不到记 `Fail`，
+        // 并断言 `table.len() == declared.len()` 且**零失败** ⇒ 少一条实例必红
+        // ⇒ 把 38 写在这里是**冗余**，而且每加一个 `Op` 就要改一次。
+        // 这里只留**防空**：脚本解析出 0 条必须**响亮失败**（台账第 41 条）。
+        assert!(
+            !all_ops.is_empty(),
+            "showcase_ops() 解析出 0 条 ⇒ 脚本失灵，判据必须响亮失败而不是空绿"
         );
     }
 
