@@ -3446,7 +3446,10 @@ mod tests {
     /// 是**资产声明**那两个变体，集成者用 `scripts/dev/gen-ops-schema-branches.py`
     /// 从枚举**现读**并重生成 `properties.op.oneOf` ⇒ 补齐后本清单**必须清空**，
     /// 否则 `op_variants_match_ops_schema_exactly` 会一直红并指名"清空本清单"。
-    const PENDING_CONTRACT_OPS: [&str; 2] = ["SetAsset", "RemoveAsset"];
+    // ⚠ 已清空（**集成者**在补完契约分支后清）：契约现在**含有** `SetAsset` / `RemoveAsset`
+    // ⇒ `enum − contract == ∅` ⇒ 若仍留着这两条，本清单会与差集不等并**指名"清空本清单"**
+    // （⭐ 这正是欠账机制的设计: ⭐ 补完即红、⭐ 不靠谁记得）。
+    const PENDING_CONTRACT_OPS: [&str; 0] = [];
 
     /// [`PENDING_CONTRACT_OPS`] 的集合形态。
     fn pending_contract_ops() -> std::collections::BTreeSet<String> {

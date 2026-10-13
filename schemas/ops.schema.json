@@ -312,6 +312,26 @@
         },
         {
           "required": [
+            "SetAsset"
+          ],
+          "properties": {
+            "SetAsset": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
+            "RemoveAsset"
+          ],
+          "properties": {
+            "RemoveAsset": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetTrackSolo"
           ],
           "properties": {
