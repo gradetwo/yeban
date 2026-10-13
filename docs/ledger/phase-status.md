@@ -139,3 +139,40 @@
 3. **"本地绿"不算绿**：只有 CI 判决算数（`docs/CI_CD.md` §3）。本表的 run id 全部经
    `gh run view <id>` 核实过 `conclusion`；其中 `run 37233109787` **是 failure**，
    已按同代码的净绿 run `37233532606` 引用（见 `ROAD-M0-007` 的备注）。
+
+---
+
+## R395 判决补录（2026-10-13）：run `38350318135` ＝ `15df4a15` 的判决
+
+（R395 原文把这一条记为待补；这是补上的读数，⛔ 不改动 R395 正文、⛔ 不动任何状态词。）
+
+- **提交** `15df4a15b288a8b0fa11789fa33b67a2813d4ae2`（`feat(app): --midi-in 的实时事件泵`）
+- **run** `38350318135` ⇒ run 级 `conclusion` ＝ **`success`**（`status` ＝ `completed`）
+- **逐腿（结论 ｜ 时长 ｜ 步数）**：`checks (fmt/红线守卫/schema)` ✓ 75s／13 ＋ `lockfile` ✓ 24s／6 ＋ `deny` ✓ 46s／6 ＋ `plan` ✓ 7s／5 ＋ **`rust (yeban-app)` ✓ 846s／15** ｜ ⚠ **`rust (workspace 全量)` skipped／0 步 ＋ `windows (yeban-mcp / yeban-model)` skipped／0 步** ⇒ ⛔ 不算绿，也不把它们当证据。
+- **腿级三态**：`rust (yeban-app)` 15 步里 **14 success ＋ 1 skipped**（`失败摘要` 在被判绿时按设计跳过）⇒ **耗时非 0** ⇒ ⛔ 不是 0s 空绿。
+- **本仓门（我本轮在 `yeban-wt-midilive-wire` 就地复跑，逐门单独取退出码）**：`cargo fmt -p yeban-app -- --check` ＝ **0**；`cargo check -p yeban-app --all-targets --locked` ＝ **0**；`cargo clippy -p yeban-app --all-targets --locked -- -D warnings` ＝ **0**；`test -p yeban-app --all-targets --locked`（默认档）＝ **0**、`--features midi-input` 档 ＝ **0** ⇒ **两档各 33 个 `test result:` 行、`0 FAILED`**（口径：每个 `test result:` 行算一次）。
+- ⚠ **一处过程更正（如实记）**：我第一次跑 fmt 时误写成 `cargo fmt -p yeban-app --locked -- --check`，`cargo fmt` **不接受** `--locked` ⇒ 拿到的是 `exit 2` 的**用法错误**、⛔ **不是格式红**；按交接文档的正确形式（`cargo fmt -p <crate> -- --check`）复跑 ⇒ **0**。教训：**先确认命令存在、再看它的退出码**。
+
+---
+
+## R396 实测追加（2026-10-13）：⭐ 队列「MIDI 泵接线」已落 —— ⭐ `76edb902` ＝ **把实时泵接进产品的会话路**（⭐ 填补 R395 记下的"零产品调用点"）＋ ⭐ 一次**交接文档失准**的实测纠正
+
+⭐ ⭐ **一、⭐ 这一片的来源（⭐ 如实记：它是在制工作，⛔ 不是本会话从零写的）**：⭐ 交接文档 `docs/ledger/handover-latest.md` §3 把在途工作记作 ⭐ **`cf0df5c3`**（⭐ 分支 `feat/midi-live-wire`、⭐ 新树 `yeban-wt-midilive-wire`）⇒ ⚠ ⭐ ⭐ **实测: ⭐ 该对象在本仓⛔ 不存在**（⭐ `git cat-file` 报 `Not a valid object name cf0df5c3`；⭐ `git log cf0df5c3` 报同样）⇒ ⭐ ⭐ **故"在途提交"这四个字在交接文档里是**失准**的**（⭐ 合理推测: ⭐ 交接写作时该 sha 未被提交或被 `rebase` 丢弃）✓ ⭐ ⭐ **而工作本身**还在**：⭐ 该 worktree 里有 ⭐ **未提交**的 ⭐ **+422／−36**（⭐ 4 个已跟踪文件）＋ ⭐ **1 个未跟踪新文件**（⭐ `crates/yeban-app/tests/midi_live_wire.rs`，⭐ 416 行）✓ ⇒ ⭐ ⭐ **故本条的做法是: ⭐ 逐文件核验该在制改动、⭐ 就地复跑四门、⭐ 提交、⭐ 快进合并、⭐ 推主干**（⭐ ⛔ 不重写它、⭐ ⛔ 不把它当成我写的）✓ ⭐ ⭐ **并记一条给后人的口径: ⭐ "⭐ 交接文档里的**sha**是**当时**的事实 ⇒ ⭐ 接手时**先 `git cat-file -e <sha>`**，⭐ ⛔ 不要拿它当分支存在性的依据"** ✓
+
+⭐ ⭐ **二、⭐ ⭐ 它补的正是 R395 点名的那个缺口**：⭐ R395 逐字记 ⭐ ⭐ **"⭐ `midi_live` **没有任何产品调用点****（⭐ `grep -rn 'pump_once|midi_live' crates/yeban-app/src/` 只命中 `lib.rs:102` 的模块声明）⇒ ⭐ **今天拿真键盘插上去跑 CLI、⭐ 看到的仍是**批次**行为**"** ✓ ⇒ ⭐ ⭐ **本轮我独立复核该前提仍然成立**（⭐ 在 `HEAD` 上跑同一个 `git grep` ⇒ ⭐ 仍只命中 `lib.rs:102` 的模块声明 ＋ ⭐ `midi_live.rs` 内部的定义与自测）⇒ ⭐ **故本片确实是那个缺口的第一条产品接线** ✓
+
+⭐ ⭐ **三、⭐ 接线形状（⭐ 三段，⭐ 都是既有部件的复用、⭐ ⛔ 不新建第二条通路）**：⭐ **① 工作线程（会话开着）** ⭐ `crates/yeban-app/src/midi_in.rs` 新增 ⭐ `monitor_session` ⭐ 每 **`LIVE_TICK_MS = 2`** ms 调一次 ⭐ `midi_live::pump_once_with` ⇒ ⭐ ⭐ **而泵的"源"被收成一个新 trait** ⭐ **`LiveEventSource`**（⭐ `pop`／`dropped_events`／`unsupported_messages` 三个必需方法、⭐ **真实现仍是 `yeban-midi-io` 的 `MidiEventReceiver`**）⇒ ⭐ ⭐ **理由（⭐ 逐字精神）: ⭐ 真硬件会话（⭐ `MidiInputSession`）只在 `midir` 真连上端口时才构造得出来 ⇒ ⭐ **本机与 CI 都造不出** ⇒ ⭐ **把源收成缝之后，⭐ 判据喂一个桩源就能驱动产品用的那一个会话循环** ✓ ⭐ **② 中转** ⭐ `LiveLane`（⭐ `Send`、⭐ 容量 ⭐ **`LIVE_LANE_CAPACITY = 4096`** 条**事件**）⇒ ⭐ 满了**如实计入 `refused`**、⭐ ⛔ 不阻塞会话线程 ✓ ⭐ **③ UI 线程** ⭐ `main.rs` 的 **60Hz 心跳**里 ⭐ `MidiInState::publish_live` ⭐ ⇒ `EngineHost::send_engine_events` ⇒ ⭐ ⭐ **引擎仍是同一个 `EngineEvent` 环、⭐ 同一个发布点**（⭐ ⚠ 被引擎环拒的那一段 ⭐ `push_front` **放回车道** ⇒ ⭐ **顺序不许乱、⭐ 事件不许丢**）✓
+
+⭐ ⭐ **四、⭐ 三条**防分叉**的设计（⭐ 我逐条核过、⭐ 值得后人照用）**：⭐ **① 端口装配收敛到 `open_session` 一处**（⭐ `capture_messages` 与 `monitor_messages_into` **共用同一段**）⇒ ⭐ ⭐ **采集路与实时路**不可能**在端口解析上分叉** ✓ ⭐ **② `RecordingSource` 让**一次弹出、两处消费****：⭐ 环是 FIFO ⇒ ⭐ **弹两次会丢掉一半** ⇒ ⭐ 它在 `pop` 里顺手把原始行记进谱面、⭐ 再把同一个事件交给引擎 ✓ ⭐ **③ 到点后**再泵一次**** ⇒ ⭐ ⭐ **函数文档明写理由: ⭐ 少了它，⭐ 最后 2 ms 的事件进不了谱面 ⇒ ⭐ ⭐ "⭐ 那会让谱面那一半比 `capture_messages` 少几条 —— ⭐ 是**回归**、⭐ ⛔ 不是'实时'的代价"** ✓ ⭐ ⭐ **并有一条**对既有判据的保护**：⭐ 注入采集替身（⭐ `capture = Some(_)`）时 ⭐ **不走实时腿**（⭐ `live_track = None`）⇒ ⭐ **既有的批次替身判据一位不改** ✓
+
+⭐ ⭐ **五、⭐ 判据（⭐ 新文件 `crates/yeban-app/tests/midi_live_wire.rs`，⭐ 416 行、⭐ 无硬件可跑）**：⭐ ⭐ **① `the_live_lane_publishes_into_the_engines_note_path`**（⭐ **默认档**就跑：⭐ 控制臂**先滚** ⇒ 车道空时发布 0 条、⭐ 合成器读数**一位不动** ⇒ ⭐ **"⭐ 事件造成了触发"才可判** ⟨⛔ 不空转⟩）＋ ⭐ ⭐ **② `session::the_session_reaches_the_synth_while_the_window_is_open`**（⭐ `midi-input` 档）＋ ⭐ ⭐ **③ `session::the_session_publishes_nothing_and_stays_silent_without_events`**（⭐ 控制臂）✓ ⭐ ⭐ **本地实测点名（⭐ 逐字）**：⭐ `test midi_live::tests::the_mapping_is_pinned_message_by_message ... ok`／⭐ `test midi_live::tests::the_pump_preserves_arrival_order_and_counts_non_notes ... ok`／⭐ `test midi_live::tests::the_pump_batches_and_counts_everything_it_cannot_carry ... ok`／⭐ `test the_live_lane_publishes_into_the_engines_note_path ... ok`／⭐ `test session::the_session_reaches_the_synth_while_the_window_is_open ... ok`／⭐ `test session::the_session_publishes_nothing_and_stays_silent_without_events ... ok` ✓
+
+⭐ ⭐ **六、⭐ 本机四门（⭐ 逐门单独取退出码、⭐ 日志落成文件、⭐ ⛔ 不经管道读码）**：⭐ `cargo fmt -p yeban-app -- --check` ＝ **0** ＋ ⭐ `cargo check -p yeban-app --all-targets --locked` ＝ **0** ＋ ⭐ `cargo clippy -p yeban-app --all-targets --locked -- -D warnings` ＝ **0** ＋ ⭐ `cargo test -p yeban-app --all-targets --locked`（默认档）＝ **0** ＋ ⭐ 同一命令加 `--features midi-input` ＝ **0** ⇒ ⭐ ⭐ **两档各 33 个 `test result:` 行、⭐ `FAILED` 行 0 条**（⭐ 单位 ＝ ⭐ 每次测试运行器调用算一行）✓
+
+⭐ ⭐ **七、⭐ 提交与合并（⭐ 逐条）**：⭐ 提交 ⭐ **`76edb902fc652e3f81e0b1ebe88212b22bef76c2`**（⭐ 5 文件 ＋838／−36: ⭐ `host.rs` ＋95、⭐ `main.rs` ＋23、⭐ `midi_in.rs` ＋286、⭐ `midi_live.rs` ＋54、⭐ **新 `tests/midi_live_wire.rs` ＋416**）⇒ ⭐ `git rebase --autostash origin/main` ⇒ ⭐ **`Successfully rebased`** ⇒ ⭐ 主树 ⭐ `git merge --ff-only feat/midi-live-wire` ⇒ ⭐ **快进**（⭐ 与 `15df4a15` 同一形状: ⭐ **无 merge 提交**）⇒ ⭐ `git push origin HEAD:main` ⇒ ⭐ **`f1ce7f60..76edb902  HEAD -> main`** ⇒ ⭐ 复核 ⭐ `HEAD == origin/main == 76edb902` ✓ ⭐ ⭐ **判决: ⭐ run `38351716127` ⇒ ⚠ 写就时 `in_progress` ⇒ 本行记 `pending`**（⭐ ⛔ 判决未读回前不许写成"通过"）✓ ⭐ ⚠ **待补（⭐ 留给下一轮或后人）**: ⭐ run `38351716127` 的 run 级 `conclusion`、⭐ 逐腿与步数、⭐ `plan` 的 `reason`、⭐ `rust (yeban-app)` 各档 `test result:` 行数 ✓
+
+⭐ ⭐ **八、⭐ ⭐ 一次**环境陷阱**的实测确认（⭐ 交接文档 §5 那条警告是对的）**：⭐ 我**在删除 worktree 前**读了它的上游配置 ⇒ ⭐ ⭐ **`branch.feat/midi-live-wire.merge == refs/heads/main`** ＋ ⭐ **`git rev-parse --abbrev-ref @{u}` ＝ `origin/main`** ⇒ ⭐ ⭐ **即"⭐ 在 worktree 里裸 `git push` 会**改主干**"在本树**可复现** ⇒ ⭐ 故我**全程只用显式 refspec**（⭐ `git push origin HEAD:main`），⭐ ⛔ 一次 `push -u` 都没用 ✓ ⭐ ⭐ **并且该配置在本仓是**普遍的****：⭐ `git config --get-regexp '^branch\.'` 里 ⭐ ⭐ **绝大多数 `line/*` 线的 `merge` 都指向 `refs/heads/main`**（⭐ 只有 `main`／`website`／`line/mcp-stdio-e2e`／`line/baseline-fps` 例外）⇒ ⭐ ⭐ **故第 33 条纪律应当读作"⭐ 本仓**默认**危险、⭐ 显式 refspec **才有**保护"** ✓
+
+⭐ ⭐ **九、⭐ 收尾（⭐ 第 31 条: ⭐ 一条线完了就拆）**：⭐ 该树三条判据**逐条实测**后才拆 —— ⭐ **① 已并入 `origin/main`**（⭐ `git merge-base --is-ancestor feat/midi-live-wire origin/main` ⇒ ⭐ true）＋ ⭐ ⭐ **② 无未推提交**（⭐ `origin/main..feat/midi-live-wire` ⇒ ⭐ 该分支 tip 就是已推的 `76edb902`）＋ ⭐ **③ 工作区**只脏我自己产出的**唯一命名**临时文件**（⭐ ⚠ 如实记: ⭐ **不是** `dirty=0` ⇒ ⭐ 故我先把它们删掉、⭐ 再按第 31 条拆树）✓ ⭐ **释放的磁盘**: ⭐ 盘前 **57Gi** 可用 ⇒ ⭐ 盘后见下一轮（⭐ 该树的 `target/` 是主要占用）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ `phase-status.md` 的项数与状态词一个字未动 ⇒ ⭐ **§7 逐阶段汇总与合计不受影响**、⭐ `handoff-snapshot.md` 不需重生成）✓ ⭐ ⚠ **仍待补**: ⭐ run `38351716127` 的判决 ＋ ⭐ `15df4a15` 那片的报告里仍缺的细节（⭐ R395 已记其判据读数，⭐ 本条只补判决）✓
