@@ -23,8 +23,11 @@
 
 | 模块线 | subagent id | 允许改 | 当前任务 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| `mod-app` | `b7e02ea1-6cb2-46c6-96d2-a7e7b195e1c9` | `crates/yeban-app/**` | 增量 MIDI 记录器接进会话循环（先设计后动手） | 进行中 |
-| `mod-engine` | `b4edf085-227e-456b-8e75-da121672159f` | `crates/yeban-engine/**` | `ARCH-RT-005` 第二快照分支的**设计度量**（⛔ 不实现） | 进行中 |
+| `mod-app` | `b7e02ea1-6cb2-46c6-96d2-a7e7b195e1c9` | `crates/yeban-app/**` | #1 已并入 `e48a631a`；#2 = 录音按钮 + 字节级判据 | 进行中 |
+| `mod-engine` | `b4edf085-227e-456b-8e75-da121672159f` | `crates/yeban-engine/**` | #1 度量已交（3 片／≈810 行）；#2 = 片 1（`80f1054f`，待补集成目标编译） | 进行中 |
+
+| `mod-mcp` | `0ac8a6e5-9454-4185-98b8-65c128d3dee2` | `crates/yeban-mcp/**` | #1 已并入 `25e9c843`；#2 = `addTrack`（形状按 A：必填 trackId/name/kind） | 进行中 |
+| `mod-model` | `64db2650-733c-4dad-afa4-eec1f59e2194` | `crates/yeban-model/**` | #2 集合差 = **空**；#4 = `Op::SetTempo`（`HD-63` 集成者自行裁决） | 进行中 |
 
 > ⚠ 表里的 id 是**长期句柄**：`send_message` 用它派下一件，`list_agents` 用来看它们是否还在跑。
 
