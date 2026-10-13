@@ -195,6 +195,14 @@ pub enum PhysicalKey {
     BracketLeft,
     /// `]` —— 切到 AI 提案分支试听。
     BracketRight,
+    /// `↑` —— `[UI-NOTE-005]` §3.5 项 2（半音 / `Shift` 八度移调）。
+    UpArrow,
+    /// `↓` —— 同上。
+    DownArrow,
+    /// `←` —— `[UI-NOTE-005]` §3.5 项 1（网格平移 / `Alt` 1 tick）。
+    LeftArrow,
+    /// `→` —— 同上。
+    RightArrow,
 }
 
 impl PhysicalKey {
@@ -228,6 +236,10 @@ impl PhysicalKey {
             }
             Self::BracketLeft => LogicalKey::Character('['),
             Self::BracketRight => LogicalKey::Character(']'),
+            Self::UpArrow => LogicalKey::UpArrow,
+            Self::DownArrow => LogicalKey::DownArrow,
+            Self::LeftArrow => LogicalKey::LeftArrow,
+            Self::RightArrow => LogicalKey::RightArrow,
         }
     }
 }
@@ -270,6 +282,14 @@ pub enum LogicalKey {
     F5,
     /// `F6`（`"\u{f709}"`）—— 直达 Arrangement 视图。
     F6,
+    /// `↑`（`"\u{f700}"`）—— `[UI-NOTE-005]` §3.5 项 2：半音移调 / `Shift` 八度。
+    UpArrow,
+    /// `↓`（`"\u{f701}"`）—— 同上，向下。
+    DownArrow,
+    /// `←`（`"\u{f702}"`）—— `[UI-NOTE-005]` §3.5 项 1：沿网格平移 / `Alt` 1 tick。
+    LeftArrow,
+    /// `→`（`"\u{f703}"`）—— 同上，向右。
+    RightArrow,
     /// 可打印键（**已小写化**；`[`/`]`/数字/字母都在这里）。
     Character(char),
 }
@@ -280,7 +300,11 @@ impl LogicalKey {
     /// 非打印键用 Slint 的私有区 / 控制字符表示，取值表在
     /// `i-slint-common-1.18.1/key_codes.rs` 的 `for_each_keys!`（`Space` 就是普通空格）。
     /// 返回 `None` = 这一串 `text` 不代表一次可绑定的按键（多字符文本、裸修饰键、
-    /// 方向键等尚未接线的键）⇒ 宿主**不消费**它，交给焦点系统。
+    /// 尚未接线的键）⇒ 宿主**不消费**它，交给焦点系统。
+    ///
+    /// `[UI-NOTE-005]` 的四条方向键**已接线**（2026-10-13）：Slint 用私有区
+    /// `\u{f700}`–`\u{f703}` 表示 `↑`/`↓`/`←`/`→`（`i-slint-common-1.18.1/key_codes.rs:56-59`），
+    /// 它们与可打印键一样只是 `event.text` 的一个取值，因此解析点仍然只有这里一处。
     ///
     /// 刻意**不**把 Shift 后的符号折回未 Shift 的键位：`"!"` 只可能是 `Character('!')`
     /// （策略表里没有它 ⇒ `PassThrough`），不会变成 `"1"`。理由见类型文档的残余说明。
@@ -298,6 +322,10 @@ impl LogicalKey {
             '\u{000a}' => Self::Enter,
             '\u{001b}' => Self::Escape,
             '\u{007f}' => Self::Delete,
+            '\u{f700}' => Self::UpArrow,
+            '\u{f701}' => Self::DownArrow,
+            '\u{f702}' => Self::LeftArrow,
+            '\u{f703}' => Self::RightArrow,
             '\u{f708}' => Self::F5,
             '\u{f709}' => Self::F6,
             ' ' => Self::Space,
@@ -564,6 +592,27 @@ pub enum View {
     Arrangement,
 }
 
+/// `[UI-NOTE-005]` §3.5 项 1–2 的**四档微调步长**（规范点名的四个修饰组合，逐条对应）。
+///
+/// 它是一个**枚举**而不是两个数字（tick / pitch 增量），理由是"哪四个组合是规范的、
+/// 哪些不是"这件事必须能被机械读出来：每个变体就是规范里的一格，因此
+/// `Shift+←`（规范项 3 的改时值，需要新的 duration `Op`）**不在**这里 ——
+/// 它落到 `PassThrough`，而不是被悄悄当成别的口径。
+///
+/// 轴与幅度由步长**唯一决定**（`Grid`/`Tick` 动 tick，`Semitone`/`Octave` 动音高）：
+/// 宿主侧因此不存在"tick 轴配八度步长"这种表达不出来的组合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NudgeStep {
+    /// `←` / `→`：沿时间轴平移**一个吸附网格**（`host::ROLL_SNAP_GRID_TICKS`）。
+    Grid,
+    /// `Alt+←` / `Alt+→`：**1 tick** 超精细微调。
+    Tick,
+    /// `↑` / `↓`：**一个半音**移调。
+    Semitone,
+    /// `Shift+↑` / `Shift+↓`：**整个八度**（±12 半音）瞬时移调。
+    Octave,
+}
+
 /// 一次按键解析出的**领域动作**。
 ///
 /// 刻意不是"直接改 UI 状态": 同一个动作在不同上下文 (例如正在播放 vs 暂停) 的结果不同,
@@ -588,6 +637,21 @@ pub enum Action {
     Duplicate,
     /// `Delete`/`Backspace`: 删除选中的音符 / 选区 / 音轨。
     DeleteSelection,
+    /// `[UI-NOTE-005]` §3.5 项 1–2：把**当前选区**的音符按一档步长平移。
+    ///
+    /// `step` 决定轴与幅度（见 [`NudgeStep`]），`direction` 是 `-1` / `+1`。
+    /// **不**在这里决定"选区为空怎么办"、"夹到哪里"与"要不要提交"：那些是宿主
+    /// （`host::apply_action` 的同一个臂）的事 —— 本状态机只回答"这一键代表哪个动作"。
+    ///
+    /// 与拖拽的 [`crate::input::ToolDrag::MoveNote`] 的区别是**作用域**：拖拽臂只动
+    /// 指针下的**一个**音符（`host::begin_note_drag` 只存一个 `note-drag-ulid`），
+    /// 本动作动**选区里的每一个**音符（规范 §3.5 逐字："平移**选区**音符"）。
+    NudgeSelection {
+        /// 规范点名的四档步长之一。
+        step: NudgeStep,
+        /// `-1` = 左 / 下；`+1` = 右 / 上。
+        direction: i8,
+    },
     /// `B`: 在箭头与铅笔之间快速切换。
     TogglePencilTool,
     /// `Cmd/Ctrl+Alt+B`: 展开 / 收起左侧资源抽屉。
@@ -610,7 +674,7 @@ pub enum Action {
     Cancel,
     /// `[`: 试听主线版本。⚠ **键已绑定、动作尚无落地实现**（与 [`Self::AcceptAiSuggestion`] 同款）：规范 `[ARCH-RT-005]` 要求"主线与提案分支并发渲染 + 30ms 等功率瞬切 + 2048 采样预滚", 这套机制在仓库里一处都不存在（证据见 `host.rs` 的 `action_has_implementation` 文档）⇒ 今天按 `[` 唯一能做的事是"播放", 而那是 `Space`（[`Self::PlayPause`]），因此**不消费**。
     AuditionMain,
-    /// `]`: 试听 AI 提案分支。⚠ **键已绑定、动作尚无落地实现**（同 [`Self::AuditionMain`]，两者是同一个 A/B 对的两半）。它**不在** `cli.rs` 的 `SHORTCUTS` 表里（表是 18 条, `]` 不在其中, 因此 `--print-shortcuts` 不打印它），但 `host::action_has_implementation` 同样如实返回 `false`。
+    /// `]`: 试听 AI 提案分支。⚠ **键已绑定、动作尚无落地实现**（同 [`Self::AuditionMain`]，两者是同一个 A/B 对的两半）。它**不在** `cli.rs` 的 `SHORTCUTS` 表里（表是 22 条, `]` 不在其中, 因此 `--print-shortcuts` 不打印它），但 `host::action_has_implementation` 同样如实返回 `false`。
     AuditionProposal,
 }
 
@@ -731,11 +795,20 @@ impl InputContext {
             };
         }
 
-        // 4. Alt 组合: 规范 §2.2 的 `Alt + 1` / `Alt + 2` 备选视图切换。
+        // 4. Alt 组合: 规范 §2.2 的 `Alt + 1` / `Alt + 2` 备选视图切换;
+        //    `[UI-NOTE-005]` §3.5 项 1 的 `Alt+←/→` —— **1 tick** 超精细微调。
         if modifiers.alt {
             return match key {
                 Key::Character('1') => Resolution::Action(Action::ShowView(View::Session)),
                 Key::Character('2') => Resolution::Action(Action::ShowView(View::Arrangement)),
+                Key::LeftArrow => Resolution::Action(Action::NudgeSelection {
+                    step: NudgeStep::Tick,
+                    direction: -1,
+                }),
+                Key::RightArrow => Resolution::Action(Action::NudgeSelection {
+                    step: NudgeStep::Tick,
+                    direction: 1,
+                }),
                 _ => Resolution::PassThrough,
             };
         }
@@ -746,6 +819,18 @@ impl InputContext {
                 Key::Space => Resolution::Action(Action::ResumeFromCursor),
                 Key::Enter => Resolution::Action(Action::AcceptAiSuggestion),
                 Key::Character('z') => Resolution::Action(Action::ZoomToFit),
+                // `[UI-NOTE-005]` §3.5 项 2：`Shift+↑/↓` = **整八度**（±12 半音）。
+                // ⚠ 规范项 3 的 `Shift+←/→`（步进改时值）**刻意不在这里**：它需要一个新的
+                // duration `Op`（`schemas/ops.schema.json` 是集成者文件）⇒ 如实落到
+                // `PassThrough`，而不是被猜成"整块平移"。
+                Key::UpArrow => Resolution::Action(Action::NudgeSelection {
+                    step: NudgeStep::Octave,
+                    direction: 1,
+                }),
+                Key::DownArrow => Resolution::Action(Action::NudgeSelection {
+                    step: NudgeStep::Octave,
+                    direction: -1,
+                }),
                 _ => Resolution::PassThrough,
             };
         }
@@ -764,6 +849,23 @@ impl InputContext {
             Key::Space => Resolution::Action(Action::PlayPause),
             Key::Escape => Resolution::Action(Action::Cancel),
             Key::Delete | Key::Backspace => Resolution::Action(Action::DeleteSelection),
+            // `[UI-NOTE-005]` §3.5 项 1：`←` / `→` = 一个吸附网格；项 2：`↑` / `↓` = 一个半音。
+            Key::LeftArrow => Resolution::Action(Action::NudgeSelection {
+                step: NudgeStep::Grid,
+                direction: -1,
+            }),
+            Key::RightArrow => Resolution::Action(Action::NudgeSelection {
+                step: NudgeStep::Grid,
+                direction: 1,
+            }),
+            Key::UpArrow => Resolution::Action(Action::NudgeSelection {
+                step: NudgeStep::Semitone,
+                direction: 1,
+            }),
+            Key::DownArrow => Resolution::Action(Action::NudgeSelection {
+                step: NudgeStep::Semitone,
+                direction: -1,
+            }),
             Key::Character('b') => Resolution::Action(Action::TogglePencilTool),
             Key::Character('z') => Resolution::Action(Action::ZoomToSelection),
             Key::Character('[') => Resolution::Action(Action::AuditionMain),
@@ -789,14 +891,14 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        OpenTimeMachine, PlayPause, Redo, ResumeFromCursor, SelectTool, ShowView,
+        NudgeSelection, OpenTimeMachine, PlayPause, Redo, ResumeFromCursor, SelectTool, ShowView,
         ToggleConsoleMaximize, TogglePencilTool, ToggleSidebar, ToggleView, Undo, ZoomToFit,
         ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use PhysicalKey::{
-        Backspace, BracketLeft, BracketRight, Delete, Digit, Enter, Escape, F5, F6, KeyB, KeyD,
-        KeyH, KeyM, KeyZ, Space, Tab,
+        Backspace, BracketLeft, BracketRight, Delete, Digit, DownArrow, Enter, Escape, F5, F6,
+        KeyB, KeyD, KeyH, KeyM, KeyZ, LeftArrow, RightArrow, Space, Tab, UpArrow,
     };
     use Resolution::{Action as Act, ConsumedByIme, PassThrough};
 
@@ -1261,6 +1363,10 @@ mod tests {
             Digit(9),
             BracketLeft,
             BracketRight,
+            UpArrow,
+            DownArrow,
+            LeftArrow,
+            RightArrow,
         ];
         for ctx in contexts {
             for key in keys {
@@ -1321,13 +1427,21 @@ mod tests {
             canvas().resolve_logical(LKey::Character('!'), Modifiers::none()),
             PassThrough
         );
-        // 非按键文本：多字符 / 空 / 裸修饰键 / 尚未接线（方向键是 `[UI-NOTE-005]` 的未实现项）。
+        // `[UI-NOTE-005]` 的四条方向键：Slint 的私有区码位 → 四个逻辑键（2026-10-13 接线）。
+        // 逐条（`i-slint-common-1.18.1/key_codes.rs:56-59`）：`f700` Up / `f701` Down /
+        // `f702` Left / `f703` Right —— 顺序**不是** `Up,Left,Down,Right`，写错会静默错位。
+        assert_eq!(LogicalKey::from_text("\u{f700}"), Some(LKey::UpArrow));
+        assert_eq!(LogicalKey::from_text("\u{f701}"), Some(LKey::DownArrow));
+        assert_eq!(LogicalKey::from_text("\u{f702}"), Some(LKey::LeftArrow));
+        assert_eq!(LogicalKey::from_text("\u{f703}"), Some(LKey::RightArrow));
+        // 非按键文本：多字符 / 空 / 裸修饰键。
         assert_eq!(LogicalKey::from_text(""), None);
         assert_eq!(LogicalKey::from_text("ab"), None);
         assert_eq!(LogicalKey::from_text("\u{10}"), None); // Shift 单键
         assert_eq!(LogicalKey::from_text("\u{11}"), None); // Ctrl 单键
         assert_eq!(LogicalKey::from_text("\u{17}"), None); // Meta 单键
-        assert_eq!(LogicalKey::from_text("\u{f700}"), None); // UpArrow
+        // 相邻码位**不被**猜成方向键：`f704` 是 `F1`（不是一条微调键）。
+        assert_eq!(LogicalKey::from_text("\u{f704}"), None);
     }
 
     /// 判据（**本裁决要交付的那一条**）：一个逻辑键快捷键**真的**解析出动作。
@@ -1370,6 +1484,129 @@ mod tests {
         assert_eq!(
             canvas().resolve_logical(LKey::Character('q'), Modifiers::none()),
             PassThrough
+        );
+    }
+
+    /// 判据（`[UI-NOTE-005]` §3.5 项 1–2，**策略表那一半**）：四条方向键在**四个**修饰组合
+    /// 下各自解析出规范点名的那一档步长，且方向位正确；规范**没**点名的组合如实放行。
+    ///
+    /// ## 量什么 / 怎么量 / 单位
+    ///
+    /// | 量 | 怎么量 | 单位 |
+    /// | :--- | :--- | :--- |
+    /// | 解析结果 | `InputContext::resolve_logical(LogicalKey, Modifiers)` | `Resolution` 枚举 |
+    /// | 步长 | `Action::NudgeSelection { step, .. }` 的 `step` | `NudgeStep` 四档之一 |
+    /// | 方向 | 同一个动作的 `direction` | `i8`，取值 `-1` / `+1` |
+    ///
+    /// ## ⛔ 它不证明什么
+    ///
+    /// - 它**不**证明任何一个音符真的动了（那是 `tests/roll_edit_tools.rs` 的 (a) 与
+    ///   `host::nudge_ops_for` 的判据的事）；
+    /// - 它**不**证明 Slint 焦点把方向键文本交到了 `key-handler`（那是
+    ///   `tests/roll_edit_tools.rs` 的真 `WindowEvent` 注入的事）；
+    /// - 幅度（网格 = 240 tick、八度 = 12 半音）**不在**这里断言 —— 宿主才是幅度的事实源，
+    ///   本状态机只搬"哪一档"。
+    #[test]
+    fn arrow_keys_resolve_to_the_four_spec_nudge_steps() {
+        // `[UI-NOTE-005]` §3.5 项 1：`←`/`→` 沿时间轴以**网格**步长平移。
+        assert_eq!(
+            canvas().resolve_logical(LKey::LeftArrow, Modifiers::none()),
+            Act(NudgeSelection {
+                step: NudgeStep::Grid,
+                direction: -1
+            })
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::RightArrow, Modifiers::none()),
+            Act(NudgeSelection {
+                step: NudgeStep::Grid,
+                direction: 1
+            })
+        );
+        // 项 1 后半：`Alt+←/→` = **1 tick** 超精细微调。
+        assert_eq!(
+            canvas().resolve_logical(LKey::LeftArrow, Modifiers::alt()),
+            Act(NudgeSelection {
+                step: NudgeStep::Tick,
+                direction: -1
+            })
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::RightArrow, Modifiers::alt()),
+            Act(NudgeSelection {
+                step: NudgeStep::Tick,
+                direction: 1
+            })
+        );
+        // 项 2：`↑`/`↓` = 半音；`Shift+↑/↓` = 整八度。
+        assert_eq!(
+            canvas().resolve_logical(LKey::UpArrow, Modifiers::none()),
+            Act(NudgeSelection {
+                step: NudgeStep::Semitone,
+                direction: 1
+            })
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::DownArrow, Modifiers::none()),
+            Act(NudgeSelection {
+                step: NudgeStep::Semitone,
+                direction: -1
+            })
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::UpArrow, Modifiers::shift()),
+            Act(NudgeSelection {
+                step: NudgeStep::Octave,
+                direction: 1
+            })
+        );
+        assert_eq!(
+            canvas().resolve_logical(LKey::DownArrow, Modifiers::shift()),
+            Act(NudgeSelection {
+                step: NudgeStep::Octave,
+                direction: -1
+            })
+        );
+        // 物理码入口与逻辑入口在四个组合上**同解**（`physical_and_logical_entries_resolve_identically`
+        // 只遍历到无修饰 / 单一修饰的七个集合，这里把四个规范组合逐条钉死）。
+        for (key, mods) in [
+            (UpArrow, Modifiers::none()),
+            (DownArrow, Modifiers::none()),
+            (LeftArrow, Modifiers::none()),
+            (RightArrow, Modifiers::none()),
+            (LeftArrow, Modifiers::alt()),
+            (RightArrow, Modifiers::alt()),
+            (UpArrow, Modifiers::shift()),
+            (DownArrow, Modifiers::shift()),
+        ] {
+            assert_eq!(
+                canvas().resolve(key, mods),
+                canvas().resolve_logical(key.logical(), mods),
+                "物理 `{key:?}` 与逻辑键在 {mods:?} 下必须同解"
+            );
+        }
+        // 规范**没**点名的组合必须如实放行（⛔ 不猜一个相近语义）：
+        // `Cmd/Ctrl+←/→`（文本/系统的 caret 语义）与 `Shift+←/→`（规范的**项 3** 改时值 ——
+        // 需要新的 duration `Op`，本切片不实现）。
+        for (key, mods) in [
+            (LKey::LeftArrow, Modifiers::ctrl()),
+            (LKey::RightArrow, Modifiers::meta()),
+            (LKey::LeftArrow, Modifiers::shift()),
+            (LKey::RightArrow, Modifiers::shift()),
+            (LKey::UpArrow, Modifiers::alt()),
+            (LKey::DownArrow, Modifiers::alt()),
+        ] {
+            assert_eq!(
+                canvas().resolve_logical(key, mods),
+                PassThrough,
+                "规范未点名的组合 `{key:?}` + {mods:?} 必须放行"
+            );
+        }
+        // 文本域聚焦时方向键归文本控件（§7.1/§7.2 的既有焦点语义，⛔ 不是缺口）。
+        assert_eq!(
+            text_field().resolve_logical(LKey::LeftArrow, Modifiers::none()),
+            PassThrough,
+            "文本框里的 `←` 是 caret 移动，不是微调音符"
         );
     }
 

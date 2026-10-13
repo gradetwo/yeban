@@ -3608,6 +3608,48 @@ fn apply_action(ui: &MainWindow, undo: Option<&Rc<UndoPort>>, action: Action) ->
             refresh_undo_window(ui, port, true);
             true
         }
+        // `[UI-NOTE-005]` §3.5 项 1–2：方向键把**当前选区**按一档步长平移 / 移调。
+        //
+        // 语义（五条都是决定, 不是意外）：
+        // 1. 选区是**视图态**，事实源是界面属性 `selected-ulids`（与 `DeleteSelection` /
+        //    `Duplicate` 同一个读点）—— 这里读它, 不读第二份状态；
+        // 2. 幅度由 [`nudge_delta_for`] **唯一**换算（`Grid` → `ROLL_SNAP_GRID_TICKS`、
+        //    `Tick` → 1、`Semitone` → 1、`Octave` → 12）；
+        // 3. 批解析走 [`nudge_ops_for`]（纯函数）：**组夹紧** + 整块平移；
+        // 4. **无选区 / 身份解析不到 / 夹紧后位移为 0 ⇒ 0 提交**，返回 `false`（不吞键）。
+        //    与 `DeleteSelection` / `Duplicate` / `ZoomToSelection` 的空前置条件同一取向；
+        // 5. 一次按键 = **一次** `commit_ops`。`undo_session::commit` 把整批包成**一个**
+        //    `Op::Batch` ⇒ 多音符选区也是一步撤销（`ARCH-OPS-002`）；键重复是**多个**离散
+        //    按键事件，因此每个事件各自一步 —— 与拖拽臂"一次手势一步"同构。
+        //
+        // 提交后必须重新投影：音符挪了位置，不重投影就是"模型动了、画面还在老地方"。
+        // 选区**不**改：`Op::MoveNote` 不改身份，因此 `selected-ulids` 仍然有效。
+        Action::NudgeSelection { step, direction } => {
+            let Some(port) = undo else {
+                return false;
+            };
+            let selected: Vec<String> = {
+                use slint::Model as _;
+                ui.get_selected_ulids()
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect()
+            };
+            let Some(project) = port.try_project() else {
+                return false;
+            };
+            let (delta_tick, delta_pitch) = nudge_delta_for(step, direction);
+            let ops = nudge_ops_for(&project, &selected, delta_tick, delta_pitch);
+            if ops.is_empty() {
+                // 没有选区 / 没有可平移的对象 / 整块已在边界上 ⇒ 没有可停靠的编辑, 如实不消费。
+                return false;
+            }
+            if port.commit_ops(now_ms(), "nudge selection", ops).is_err() {
+                return false;
+            }
+            refresh_undo_window(ui, port, true);
+            true
+        }
         // 横向缩放（`Z` / `Shift+Z`）：**视图态**，不碰 `Op`、不进撤销栈。
         //
         // 语义（三条都是决定）：
@@ -4163,6 +4205,181 @@ pub fn duplicate_ops_for(
         }
     }
     ops
+}
+
+/// `[UI-NOTE-005]` §3.5 项 1–2：一档**步长 + 方向** ⇒ `(delta_tick, delta_pitch)`（唯一换算）。
+///
+/// 幅度的事实源只有这一处：`Grid` 取 [`ROLL_SNAP_GRID_TICKS`]（与铅笔 / `Cmd+D` 同一个吸附网格
+/// 常量），`Octave` 取 12 —— 规范逐字写"±12 半音"，因此这里用**字面量 12** 而不是
+/// `bridge::PITCH_LANE_COUNT / 12` 之类的巧合等式（那会是第二个真相源）。
+///
+/// 步长决定**轴**：`Grid`/`Tick` 只动 tick，`Semitone`/`Octave` 只动音高 ⇒ 不存在
+/// "两边都改"的组合，也不存在 `direction` 之外的自由度。
+#[must_use]
+pub fn nudge_delta_for(step: crate::input::NudgeStep, direction: i8) -> (i64, i8) {
+    use crate::input::NudgeStep;
+    let sign = i64::from(direction.signum());
+    match step {
+        NudgeStep::Grid => (
+            sign * i64::try_from(ROLL_SNAP_GRID_TICKS).unwrap_or(i64::MAX),
+            0,
+        ),
+        NudgeStep::Tick => (sign, 0),
+        NudgeStep::Semitone => (0, direction.signum()),
+        NudgeStep::Octave => (0, direction.signum() * 12),
+    }
+}
+
+/// `[UI-NOTE-005]` §3.5 项 1–2：把"选中的音符身份 + 一档位移"解析成待提交的
+/// **`Op::MoveNote` 集合**（纯函数, 有判据）。
+///
+/// # 作用域 = **选区**（不是指针下的一个音符）
+///
+/// 规范项 1 逐字写"平移**选区**音符"。这与既有的拖拽臂是**两件事**：`begin_note_drag` /
+/// `commit_note_drag` 只持**一个** `note-drag-ulid`（指针下那一颗），所以键盘这一路
+/// 不可能复用拖拽臂的作用域 —— 它是本动作新增的那一半。身份解析与
+/// [`delete_ops_for`] / [`duplicate_ops_for`] **逐条同口径**（`clip_pool` → 摆放它的第一条轨道，
+/// 键序确定；选区为空 / 身份一个都解析不到 ⇒ 返回空 `Vec`）。
+///
+/// # 整块平移 + **组夹紧**（两条都是决定, 不是意外）
+///
+/// 1. **一个公共位移**：选区里所有音符用**同一对** `(delta_tick, delta_pitch)` ⇒ 选区保持
+///    内部相对形状（和弦不会散架）。口径与 [`duplicate_ops_for`] 的"取**一个网格**而不是
+///    一个时值 ⇒ 整块平移"是同一条理由；
+/// 2. **组夹紧**：公共位移先被**夹到所有目标音符都合法**的那个区间
+///    （`start_tick + Δ ≥ 0`；`0 ≤ pitch + Δ ≤ 127`）。⛔ 不是"逐个音符各自夹"——
+///    那会让碰到边界的音符留在原地、其余音符继续走，从而**改变选区的相对形状**。
+///    夹紧之后位移为 `(0, 0)`（例如整个选区的最左音符已在 tick 0 时按 `←`）⇒ 返回
+///    **空 `Vec`**：调用方什么都不做，**不写空 op**（与 `velocity_op_for` 的"没变 ⇒ `None`"
+///    同一取向）。
+///
+/// 夹紧是**必要**的：`Op::MoveNote` 的前置条件对越界是**拒绝**（`shifted_tick` / `shifted_pitch`
+/// 为 `None` ⇒ `ModelError::OpStateMismatch`），而 `undo_session::commit` 把整批包成
+/// **一个** `Op::Batch`、整批一起校验。逐音符各自算一份增量会让"有一个音符碰边界"变成
+/// 整批被拒（一次按键什么都不发生），组夹紧则让它变成"整块走不动那么远"—— 后者是语义，
+/// 前者是失败。
+///
+/// # 为什么一次返回一批
+///
+/// 与 [`delete_ops_for`] 逐字同理：`undo_session::commit` 把整批包成**一个** `Op::Batch`
+/// ⇒ "一次按键 = 一次提交 = 一步撤销"是构造上的（`ARCH-OPS-002`）。单音符选区时这一批里
+/// 就只有**一条** `Op::MoveNote`。
+///
+/// ⚠️ 本函数**不**改 `note.duration_ticks` / `velocity` / 身份：移动只动
+/// `start_tick` 与 `pitch`（`Op::MoveNote` 的载荷形状），因此
+/// "`MidiNote::duration_ticks != 0`" 这条模型不变量不受影响（本函数不碰时值）。
+#[must_use]
+pub fn nudge_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+    delta_tick: i64,
+    delta_pitch: i8,
+) -> Vec<yeban_model::ops::Op> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // 身份集合：`BTreeSet` 迭代确定（红线 4），顺带自动去重（与 `delete_ops_for` 同款）。
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    // "片段池条目 → 摆放它的第一条轨道"（`or_insert` ⇒ 第一次命中胜出, 键序确定）。
+    let mut owner: BTreeMap<yeban_model::EntityId, yeban_model::EntityId> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for placement in track.clips.values() {
+            owner.entry(placement.clip_id).or_insert(*track_id);
+        }
+    }
+    let fallback_track = project.tracks.keys().next().copied();
+    // 第一遍：把目标音符按**确定顺序**收集成 `(clip, track, note)`，并算组夹紧所需的极值。
+    let mut hits: Vec<(
+        yeban_model::EntityId,
+        yeban_model::EntityId,
+        yeban_model::EntityId,
+        u64,
+        u8,
+    )> = Vec::new();
+    let mut min_tick = u64::MAX;
+    let mut max_tick = 0_u64;
+    let mut min_pitch = u8::MAX;
+    let mut max_pitch = 0_u8;
+    for (clip_id, entry) in &project.clip_pool {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in notes {
+            if !targets.contains(note_id) {
+                continue;
+            }
+            let Some(track_id) = owner.get(clip_id).copied().or(fallback_track) else {
+                continue;
+            };
+            min_tick = min_tick.min(note.start_tick);
+            max_tick = max_tick.max(note.start_tick);
+            min_pitch = min_pitch.min(note.pitch);
+            max_pitch = max_pitch.max(note.pitch);
+            hits.push((*clip_id, track_id, *note_id, note.start_tick, note.pitch));
+        }
+    }
+    if hits.is_empty() {
+        return Vec::new();
+    }
+    // 第二遍：**组夹紧** —— 一个公共位移，夹到所有目标都合法的区间。
+    let feasible_tick = clamp_tick_delta(min_tick, max_tick, delta_tick);
+    let feasible_pitch = clamp_pitch_delta(min_pitch, max_pitch, delta_pitch);
+    if feasible_tick == 0 && feasible_pitch == 0 {
+        // 整块走不动 ⇒ **不提交空 op**（调用方据此返回 `false`, 不吞这一键）。
+        return Vec::new();
+    }
+    hits.into_iter()
+        .map(
+            |(clip_id, track_id, note_id, _, _)| yeban_model::ops::Op::MoveNote {
+                track_id,
+                clip_id,
+                note_id,
+                delta_tick: feasible_tick,
+                delta_pitch: feasible_pitch,
+            },
+        )
+        .collect()
+}
+
+/// tick 增量的**组夹紧**：把 `delta` 收到"`min_tick + Δ ≥ 0` 且 `max_tick + Δ ≤ u64::MAX`"。
+///
+/// `i128` 中间量 ⇒ 不依赖 `u64::MAX + 1` 之类的溢出行为（与 `ops.rs` 的 `shifted_tick`
+/// 同一手法）。结果为 0 = 这一档在 tick 轴上一步都走不动。
+#[must_use]
+fn clamp_tick_delta(min_tick: u64, max_tick: u64, delta: i64) -> i64 {
+    if delta < 0 {
+        // 下界：最左那个音符不许掉到 0 以下。
+        let lowest = i128::from(min_tick) + i128::from(delta);
+        if lowest >= 0 {
+            return delta;
+        }
+        // `min_tick < -delta ≤ i64::MAX` ⇒ 取负一定落在 `i64` 里。
+        return i64::try_from(-i128::from(min_tick)).unwrap_or(0);
+    }
+    if delta > 0 {
+        let room = u128::from(u64::MAX) - u128::from(max_tick);
+        let want = u128::try_from(delta).unwrap_or(u128::MAX);
+        if want <= room {
+            return delta;
+        }
+        return i64::try_from(room).unwrap_or(0);
+    }
+    0
+}
+
+/// 音高增量的**组夹紧**：把 `delta` 收到"`min_pitch + Δ ≥ 0` 且 `max_pitch + Δ ≤ 127`"。
+///
+/// 区间恒非空（`min_pitch ≤ max_pitch` 且都在 `0..=127`），且落在 `i8` 范围内。
+#[must_use]
+fn clamp_pitch_delta(min_pitch: u8, max_pitch: u8, delta: i8) -> i8 {
+    let lower = -i16::from(min_pitch);
+    let upper = 127 - i16::from(max_pitch);
+    let clamped = i16::from(delta).clamp(lower, upper);
+    i8::try_from(clamped).unwrap_or(0)
 }
 
 /// `[UI-NOTE-003]` 把卷帘的点击接到**撤销端口**上（工具矩阵的编辑语义）。
@@ -5723,5 +5940,174 @@ mod pencil_op_tests {
         assert_eq!(count(&doc), 2 * total, "复制后音符条目数必须翻倍");
         batch.apply_inverse(&mut doc).expect("一步撤销必须整批撤掉");
         assert_eq!(count(&doc), total, "撤销一次必须回到 N");
+    }
+
+    /// 判据：`nudge_ops_for` 的**组夹紧**（两条轴、两个方向、四个边界）与**空批拒绝**
+    /// —— `[UI-NOTE-005]` §3.5 项 1–2 在宿主侧的算术。
+    ///
+    /// ## 为什么需要纯函数这一条（端到端三条在 `tests/roll_edit_tools.rs`）
+    ///
+    /// 样本夹具里没有音高 127 / 0 的音符，也没有靠近 `u64::MAX` 的 tick ⇒ 端到端判据
+    /// 只能覆盖"时钟下界 + 组夹紧的全体拒绝"这一格。这里用手改字段的克隆把
+    /// **四个边界**都走到：`pitch = 127` 之上、`pitch = 0` 之下、`tick = 0` 之下、
+    /// `tick = u64::MAX` 之上。
+    ///
+    /// ## 它证明什么
+    ///
+    /// 1. 空选区 / 解析不出的身份 / **零位移** ⇒ 空 `Vec`（⛔ 不写空 op）；
+    /// 2. 位移是**一个公共量**（每条 `MoveNote` 的 `delta_tick` / `delta_pitch` 逐条相同）；
+    /// 3. 四个边界各自**只在那一侧**被夹掉：撞上界的组合返回空批，反方向仍照常产出
+    ///    —— 夹紧**不是**"越界的位移一律不用"；
+    /// 4. 产出的整批 `Op::Batch` 在真工程上**可应用**（夹过的位移必然满足 `MoveNote`
+    ///    的前置条件，⛔ 不靠模型去拒）。
+    ///
+    /// ## ⛔ 它不证明什么
+    ///
+    /// - ⛔ 不证明可达性（`apply_action` 那条臂由 `tests/roll_edit_tools.rs` 的真事件 / 回调注入管）；
+    /// - ⛔ 不证明幅度**常量**（那是 `nudge_delta_for` 的取值；本判据传的就是字面量 240 / 1 / 12）。
+    #[test]
+    fn nudge_ops_for_group_clamps_both_axes_and_refuses_no_ops() {
+        use yeban_model::ops::Op;
+
+        let project = filled_project();
+        let ids: Vec<String> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| entry.content.notes())
+            .flat_map(|notes| notes.keys().map(ToString::to_string))
+            .collect();
+        let total = ids.len();
+        assert!(total >= 4, "夹具至少有 4 个音符, 实际 {total}");
+
+        // ① 空选区 / 垃圾身份 / 零位移 ⇒ 空批（"什么都不做"是返回空, 不是猜一个对象去动）。
+        assert!(
+            nudge_ops_for(&project, &[], 240, 0).is_empty(),
+            "空选区 ⇒ 空批"
+        );
+        assert!(
+            nudge_ops_for(&project, &["not-a-ulid".to_owned()], 240, 0).is_empty(),
+            "解析不出的身份 ⇒ 空批"
+        );
+        assert!(
+            nudge_ops_for(&project, &ids, 0, 0).is_empty(),
+            "零位移 ⇒ 空批（⛔ 不许留下一条什么都不改的 op）"
+        );
+
+        // ② 全选右移一个网格：每个音符恰好一条 `MoveNote`，且**公共位移**逐条相同。
+        let ops = nudge_ops_for(&project, &ids, 240, 0);
+        assert_eq!(ops.len(), total, "每个选中的音符恰好一条 `MoveNote`");
+        for op in &ops {
+            let Op::MoveNote {
+                delta_tick,
+                delta_pitch,
+                ..
+            } = op
+            else {
+                panic!("只允许 `MoveNote`, 实际是 {op:?}");
+            };
+            assert_eq!(
+                (*delta_tick, *delta_pitch),
+                (240, 0),
+                "整块平移 ⇒ 每一颗的位移必须与公共位移逐值相同"
+            );
+        }
+        let batch = Op::Batch {
+            ops,
+            description: "nudge".to_owned(),
+        };
+        let mut doc = project.clone();
+        batch
+            .apply(&mut doc)
+            .expect("整批必须可应用（公共位移满足每一条 `MoveNote` 的前置条件）");
+
+        // 把**所有**音符的某个字段改掉（组夹紧的边界因此由**全体**决定, 不靠挑一颗）。
+        let all_notes = |mutate: &dyn Fn(&mut yeban_model::MidiNote)| {
+            let mut copy = project.clone();
+            for entry in copy.clip_pool.values_mut() {
+                let Some(notes) = entry.content.notes_mut() else {
+                    continue;
+                };
+                for note in notes.values_mut() {
+                    mutate(note);
+                }
+            }
+            copy
+        };
+
+        // ③ 音高**上界**：全体在 127 ⇒ `↑`/八度都空批；反方向的 `↓` 仍照常产出（夹紧不过度）。
+        let top = all_notes(&|note| note.pitch = 127);
+        assert!(
+            nudge_ops_for(&top, &ids, 0, 1).is_empty(),
+            "全体已在 127 ⇒ 上行半音必须空批"
+        );
+        assert!(
+            nudge_ops_for(&top, &ids, 0, 12).is_empty(),
+            "全体已在 127 ⇒ 上行八度必须空批"
+        );
+        let down = nudge_ops_for(&top, &ids, 0, -1);
+        assert_eq!(
+            down.len(),
+            total,
+            "反方向必须照常产出（夹紧只夹撞上界的那一侧）"
+        );
+        assert!(
+            down.iter().all(|op| matches!(
+                op,
+                Op::MoveNote {
+                    delta_tick: 0,
+                    delta_pitch: -1,
+                    ..
+                }
+            )),
+            "下行必须逐条是 `delta_pitch = -1`"
+        );
+
+        // ④ 音高**下界**：全体在 0 ⇒ 下行空批；上行照常。
+        let bottom = all_notes(&|note| note.pitch = 0);
+        assert!(
+            nudge_ops_for(&bottom, &ids, 0, -1).is_empty(),
+            "全体已在 0 ⇒ 下行半音必须空批"
+        );
+        assert!(
+            nudge_ops_for(&bottom, &ids, 0, -12).is_empty(),
+            "全体已在 0 ⇒ 下行八度必须空批"
+        );
+        assert_eq!(
+            nudge_ops_for(&bottom, &ids, 0, 1).len(),
+            total,
+            "反方向必须照常产出"
+        );
+
+        // ⑤ 时钟**下界**：全体在 tick 0 ⇒ 左移空批；右移照常。
+        let at_zero = all_notes(&|note| note.start_tick = 0);
+        assert!(
+            nudge_ops_for(&at_zero, &ids, -240, 0).is_empty(),
+            "全体已在 tick 0 ⇒ 左移必须空批"
+        );
+        assert!(
+            nudge_ops_for(&at_zero, &ids, -1, 0).is_empty(),
+            "全体已在 tick 0 ⇒ `Alt` 的 1 tick 左移也必须空批"
+        );
+        assert_eq!(
+            nudge_ops_for(&at_zero, &ids, 240, 0).len(),
+            total,
+            "反方向必须照常产出"
+        );
+
+        // ⑥ 时钟**上界**：全体在 `u64::MAX` ⇒ 右移空批；左移照常。
+        let at_top = all_notes(&|note| note.start_tick = u64::MAX);
+        assert!(
+            nudge_ops_for(&at_top, &ids, 240, 0).is_empty(),
+            "全体已在时钟顶端 ⇒ 右移必须空批"
+        );
+        assert!(
+            nudge_ops_for(&at_top, &ids, 1, 0).is_empty(),
+            "全体已在时钟顶端 ⇒ `Alt` 的 1 tick 右移也必须空批"
+        );
+        assert_eq!(
+            nudge_ops_for(&at_top, &ids, -240, 0).len(),
+            total,
+            "反方向必须照常产出"
+        );
     }
 }

@@ -55,7 +55,7 @@ use crate::elements::ElementRegistry;
 use crate::export_als::AlsExportError;
 use crate::export_logic::LogicExportError;
 use crate::export_midi::{MidiExportError, MidiExportReport, export_project_to_file};
-use crate::input::{Action, InputContext, Modifiers, PhysicalKey, Tool, View};
+use crate::input::{Action, InputContext, Modifiers, NudgeStep, PhysicalKey, Tool, View};
 use crate::open::{
     DOCUMENT_FORMAT, OpenError, OpenedProject, ProjectOpenOptions, open_project_document_file,
 };
@@ -2601,7 +2601,7 @@ pub struct ShortcutRow {
 /// 每一项把**规范写法**、**动作**、**键位**与**落地状态**放在一起。这张表的**意义**是
 /// 让策略表的判定结果可被人与 CI 直接阅读 —— 尤其是 `[UI-A11Y-002]` 的 IME 分支,
 /// 以及"规范点名了、本版本还没做"的那一列（见 [`UNIMPLEMENTED_MARKER`]）。
-const SHORTCUTS: [ShortcutRow; 18] = [
+const SHORTCUTS: [ShortcutRow; 26] = [
     ShortcutRow {
         label: "Space → 播放/暂停",
         action: Action::PlayPause,
@@ -2714,7 +2714,93 @@ const SHORTCUTS: [ShortcutRow; 18] = [
         modifiers: Modifiers::none(),
         implemented: true,
     },
-    // 以下**两条**是本版本仅剩的 `implemented: false` 条目（表共 18 条）。
+    // `[UI-NOTE-005]` §3.5 项 1–2 的八条方向键绑定（2026-10-13 接线；四个修饰组合 × 两个方向）。
+    //
+    // 为什么进这张表：`--print-shortcuts` 就是**用户可见的键位声明**，而本仓库的规矩是
+    // "表 / 解析 / 宿主逐行对账"（判据 B11b）—— 新键不写进表就等于让 `--print-shortcuts`
+    // 少报一个已经能用的键。用**物理码**行表达（`PhysicalKey::LeftArrow` 等）而不是只标逻辑键，
+    // 是为了让 `InputContext::resolve` 那条入口也在判据里被逐行对账。
+    ShortcutRow {
+        label: "← → 选区左移一个网格",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Grid,
+            direction: -1,
+        },
+        key: PhysicalKey::LeftArrow,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "→ → 选区右移一个网格",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Grid,
+            direction: 1,
+        },
+        key: PhysicalKey::RightArrow,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Alt+← → 选区左移 1 tick",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Tick,
+            direction: -1,
+        },
+        key: PhysicalKey::LeftArrow,
+        modifiers: Modifiers::alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Alt+→ → 选区右移 1 tick",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Tick,
+            direction: 1,
+        },
+        key: PhysicalKey::RightArrow,
+        modifiers: Modifiers::alt(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "↑ → 选区升一个半音",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Semitone,
+            direction: 1,
+        },
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "↓ → 选区降一个半音",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Semitone,
+            direction: -1,
+        },
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::none(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Shift+↑ → 选区升一个八度",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Octave,
+            direction: 1,
+        },
+        key: PhysicalKey::UpArrow,
+        modifiers: Modifiers::shift(),
+        implemented: true,
+    },
+    ShortcutRow {
+        label: "Shift+↓ → 选区降一个八度",
+        action: Action::NudgeSelection {
+            step: NudgeStep::Octave,
+            direction: -1,
+        },
+        key: PhysicalKey::DownArrow,
+        modifiers: Modifiers::shift(),
+        implemented: true,
+    },
+    // 以下**两条**是本版本仅剩的 `implemented: false` 条目（表共 26 条）。
     //
     // `implemented` 是"宿主会不会消费这一键"的主张，事实源是 `host::action_has_implementation`
     // （逐行对账见本文件 `ShortcutRow` 的文档与 `tests/cli_contract.rs` 的判据 B11b）。

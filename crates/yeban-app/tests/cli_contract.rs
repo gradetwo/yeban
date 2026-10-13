@@ -1135,7 +1135,12 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
     assert_eq!(run.code, 0, "stderr={}", run.stderr);
 
     let rows = shortcut_rows();
-    assert_eq!(rows.len(), 18, "快捷键表的**条目**数（不是行数）");
+    assert_eq!(
+        rows.len(),
+        26,
+        "快捷键表的**条目**数（不是行数）：18 条 §7.1 核心快捷键 ＋ `[UI-NOTE-005]` §3.5 项 1–2 的 \
+         8 条方向键微调（四个修饰组合 × 两个方向）"
+    );
     // 表头那三行 `# …` 是说明文字, 其中一行**定义**了标记; 数标记只数**条目行**。
     let printed_marks: usize = run
         .stdout

@@ -2911,3 +2911,780 @@ fn c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
     );
     assert_eq!(before_bytes, after_bytes, "退化切分不得改动工程一个字节");
 }
+
+// ===========================================================================
+// `[UI-NOTE-005]` §3.5 项 1–2：**方向键微调**（2026-10-13）
+// ===========================================================================
+//
+// ## 规范（`docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:213-215`，逐字）
+//
+// 1. `←` / `→` 沿时间轴以**网格步长**平移**选区**音符；`Alt + ←/→` 执行 **1 tick** 超精细微调；
+// 2. `↑` / `↓` 执行**半音**移调；`Shift + ↑/↓` 瞬时执行**整八度**（±12 半音）移调。
+//
+// （项 3 `Shift+←/→` 改时值需要一个新的 duration `Op`（`schemas/**` 是集成者文件）；
+// 项 4 `Space`/`Enter` 试听与既有的 `Space` = 播放冲突。两者都**不**在本切片里，见交付报告。）
+//
+// ## 这四条判据各自咬哪一格
+//
+// | 判据 | 咬住 |
+// | :--- | :--- |
+// | `arrow_nudge_a_...` | 四格位移**逐音符**等于**独立算出来**的幅度；选区外的音符一位不动；duration / velocity 不动 |
+// | `arrow_nudge_b_...` | N 次离散按键 ⇒ **N 次提交 / N 步撤销**；一次撤销回到**上一次按键之前**（不合并） |
+// | `arrow_nudge_c1_...` | 空选区 ⇒ 0 提交、不消费、逐字节不变（⚠ **未修复的代码上也是绿的**） |
+// | `arrow_nudge_c2_...` | 组夹紧：整块走不动 ⇒ 0 提交（⚠ **未修复的代码上也是绿的**，红要靠变异） |
+// | `arrow_nudge_d_focus_...` | ⭐ **焦点那一问**：经**真 `WindowEvent`** 注入 `\u{f703}`（= winit 给 `→` 的同一个文本）真的动了音符 |
+//
+// ## ⭐ 焦点那一问（本切片最重要的未知）
+//
+// `ui/app.slint` 的 `key-handler`（`forward-focus`）是**唯一**的键盘事件源；问题曾经是
+// "Slint 的焦点系统会不会在窗口键处理器之前把方向键文本吃掉"。`arrow_nudge_d_focus_*`
+// 给出**机械**答案：它不调 `.slint` 回调，而是经 `ui/dispatch_key_press` 送一个**真**
+// `WindowEvent::KeyPressed { text }`（`i-slint-core-1.18.1/api.rs:717` 那一条），
+// 文本取的是 `i-slint-common-1.18.1/key_codes.rs:59` 给 `→` 的**同一个** `\u{f703}`。
+// 它真的动了音符 ⇒ 焦点链把方向键文本交给了宿主（`i-slint-core` 只在 `Tab`/`Esc`/菜单
+// 快捷键上截键，方向键只在**真 `TextInput` 聚焦**时被 `text_shortcut` 消费）。
+//
+// ## ⛔ 本组判据**不**证明什么
+//
+// - ⛔ **不**证明真 GUI（winit 窗口）里手按方向键会有同样的结果 —— 全部证据是**无头注入**；
+// - ⛔ **不**证明像素（没有截图 / golden）：判据读的是**权威工程**的字段与提交计数；
+// - ⛔ **不**证明 `Shift+←` / `Shift+→`（规范项 3）与试听（项 4）—— 它们未实现；
+// - ⛔ **不**证明键重复的**平台**行为（本判据是"N 次离散按键"这一形态，不是一个 OS 自动重复流）。
+
+/// `[UI-NOTE-005]` §3.5 项 1–2 的**独立**幅度读数。
+///
+/// ⛔ **不读** `host::ROLL_SNAP_GRID_TICKS` / `host::nudge_delta_for`：网格由**模型**的
+/// PPQ 常量推导（960 ÷ 4 = 240 tick = 1/16 音符），其余三档是规范逐字（1 tick / 半音 / 八度 = 12）。
+const NUDGE_GRID_TICKS_EXPECTED: i64 = yeban_model::ids::PPQ as i64 / 4;
+/// `Alt+←/→` 的 1 tick（规范项 1 后半）。
+const NUDGE_FINE_TICKS_EXPECTED: i64 = 1;
+/// `↑`/`↓` 的一个半音（规范项 2）。
+const NUDGE_SEMITONE_EXPECTED: i8 = 1;
+/// `Shift+↑/↓` 的整八度（规范项 2 逐字"±12 半音"）。
+const NUDGE_OCTAVE_EXPECTED: i8 = 12;
+
+/// 音符读数：ULID → `(start_tick, pitch, duration_ticks, velocity)`（**模型**侧 oracle）。
+fn note_readings(
+    project: &yeban_model::YebanProjectV1,
+) -> std::collections::BTreeMap<String, (u64, u8, u64, u8)> {
+    let mut out = std::collections::BTreeMap::new();
+    for entry in project.clip_pool.values() {
+        let Some(map) = entry.content.notes() else {
+            continue;
+        };
+        for (id, note) in map {
+            out.insert(
+                id.to_canonical_string(),
+                (
+                    note.start_tick,
+                    note.pitch,
+                    note.duration_ticks,
+                    note.velocity,
+                ),
+            );
+        }
+    }
+    out
+}
+
+/// 按 `(start_tick, pitch)` **精确点名**夹具里的音符身份（确定顺序：ULID 键序）。
+///
+/// ⛔ 它按**输入数据**选靶子（模型里读出来的 tick / 音高），**不**按被测代码给出的期望值选。
+fn ulids_at(project: &yeban_model::YebanProjectV1, wanted: &[(u64, u8)]) -> Vec<String> {
+    note_readings(project)
+        .into_iter()
+        .filter(|(_, reading)| wanted.contains(&(reading.0, reading.1)))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// 把一批音符身份写进选区的**唯一事实源** `selected-ulids`（并同步计数）——
+/// 与 `tests/live_ui_mcp.rs` 的 `select_ulids` 同款（那个是那一个测试目标的局部 helper）。
+fn select_ulids(window: &yeban_app::ui::MainWindow, ids: &[String]) {
+    window.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(
+        ids.iter()
+            .map(|id| slint::SharedString::from(id.as_str()))
+            .collect::<Vec<_>>(),
+    )));
+    window.set_selected_note_count(i32::try_from(ids.len()).unwrap_or(i32::MAX));
+}
+
+/// 微调判据共用的装配：`build_live_ui_with` 把**撤销端口**当装配选项传进去
+/// （`live::LiveWiringOptions::undo`）⇒ `host::wire_keys` 从第一刻起就握着端口。
+///
+/// 为什么不用本文件既有的 [`assemble`]：那个走 `build_live_ui`（`undo: None`）+ 事后
+/// `wire_roll_edit`，键盘那条链**没有**撤销端口 ⇒ `Cmd+Z` 之外的编辑类动作会如实 `reject`
+/// （`NudgeSelection` 也会）。这里走生产形态（`main.rs` 也是把端口交给装配）。
+fn assemble_for_arrow_nudge() -> (
+    yeban_app::ui::MainWindow,
+    Rc<UndoPort>,
+    LiveControlPlane,
+    Rc<std::cell::RefCell<yeban_app::input::InputContext>>,
+) {
+    let project = yeban_model::samples::filled_project();
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<arrow-nudge>", "yeban-app", project.clone(), NOW_MS).expect("打开"),
+    ));
+    let ui = live::build_live_ui_with(
+        &project,
+        &live::LiveWiringOptions {
+            permission: Permission::Interactive,
+            undo: Some(Rc::clone(&port)),
+            ..live::LiveWiringOptions::default()
+        },
+    )
+    .expect("真实界面 + Tier-1 执行面");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let input = ui.input_context();
+    let plane = ui.into_control_plane(Permission::Interactive);
+    (window, port, plane, input)
+}
+
+/// 判据 (a)：规范 §3.5 项 1–2 的**四格**位移逐音符正确，且**只有选区在动**。
+///
+/// ## 量什么 / 怎么量 / 单位
+///
+/// | 量 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- |
+/// | 选区 | `MainWindow.selected-ulids`（写）+ `selected-note-count`（读） | 音符身份条数 |
+/// | 音符读数 | [`note_readings`]（**权威工程**） | `(tick, pitch, duration, velocity)` |
+/// | 期望位移 | [`NUDGE_GRID_TICKS_EXPECTED`] 等**四个独立常量** | tick / 半音 |
+/// | 提交 / 撤销 | `UndoPort::display().commit_count` / `.undoable` | 条 / 步 |
+///
+/// ## 它证明什么
+///
+/// 1. **四格都在**：网格 ±240（= 模型 PPQ/4）、`Alt` ±1 tick、半音 ±1、八度 ±12 —— 全部经
+///    `invoke_key_action`（= `key-handler` 调的那**一个**回调）走
+///    `wire_keys → from_text → resolve_logical → apply_action` 整条链；
+/// 2. **选区作用域**：选区里的**每一个**音符都按同一幅度动 —— 这是拖拽臂做不到的
+///    （`begin_note_drag` 只持**一个** `note-drag-ulid`）；
+/// 3. **只有选区在动**：选区之外每一个音符的**四个字段**都逐字节不变；
+/// 4. **时值 / 力度不动**：`Op::MoveNote` 只动 tick 与音高；
+/// 5. 每一格 = **一次**提交 / **一步**撤销，且一次撤销逐字节回到该格之前。
+///
+/// ## ⛔ 它不证明什么
+///
+/// - ⛔ 不证明真焦点链（那是 `arrow_nudge_d_focus_*` 的事）；
+/// - ⛔ 不证明像素 / 截图；
+/// - ⛔ 不证明 `Shift+←/→`（项 3）与试听（项 4）；
+/// - ⚠ 它用 `invoke_key_action` 注入**修饰组合**（端口表达不了 chord —— 仓库既有的
+///   `Shift+Space` 判据是同一格）。真实事件源那一半由 `arrow_nudge_d_focus_*` 补。
+#[test]
+fn arrow_nudge_a_the_four_spec_combinations_move_every_selected_note_by_the_spec_amount() {
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    // 夹具前提：应用的吸附网格与模型的 1/16 网格是**同一个**数（只用来说明耦合；
+    // 期望值本身来自上面那四个独立常量，⛔ 不来自这个常量）。
+    assert_eq!(
+        ROLL_SNAP_GRID_TICKS,
+        u64::try_from(NUDGE_GRID_TICKS_EXPECTED).expect("网格是正的"),
+        "夹具前提：`host::ROLL_SNAP_GRID_TICKS` 必须等于模型的 1/16 网格（960/4）"
+    );
+    let baseline = note_readings(&port.project());
+    // 按 (tick, pitch) 精确点名样本工程里已知的两颗音符。
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    assert_eq!(
+        targets.len(),
+        2,
+        "夹具前提：样本工程里恰好有 (960,64) 与 (1920,67) 两个音符"
+    );
+    select_ulids(&window, &targets);
+    assert_eq!(
+        window.get_selected_note_count(),
+        2,
+        "夹具前提：选区里有 2 条身份"
+    );
+
+    let bytes_baseline = serde_json::to_vec(&port.project()).expect("序列化基线");
+    // `(标签, 文本, shift, ctrl, alt, meta, 期望 tick 位移, 期望音高位移)`
+    let cases = [
+        (
+            "←（网格左移）",
+            "\u{f702}",
+            false,
+            false,
+            false,
+            false,
+            -NUDGE_GRID_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "→（网格右移）",
+            "\u{f703}",
+            false,
+            false,
+            false,
+            false,
+            NUDGE_GRID_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "Alt+←（1 tick）",
+            "\u{f702}",
+            false,
+            false,
+            true,
+            false,
+            -NUDGE_FINE_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "Alt+→（1 tick）",
+            "\u{f703}",
+            false,
+            false,
+            true,
+            false,
+            NUDGE_FINE_TICKS_EXPECTED,
+            0_i8,
+        ),
+        (
+            "↑（半音）",
+            "\u{f700}",
+            false,
+            false,
+            false,
+            false,
+            0_i64,
+            NUDGE_SEMITONE_EXPECTED,
+        ),
+        (
+            "↓（半音）",
+            "\u{f701}",
+            false,
+            false,
+            false,
+            false,
+            0_i64,
+            -NUDGE_SEMITONE_EXPECTED,
+        ),
+        (
+            "Shift+↑（八度）",
+            "\u{f700}",
+            true,
+            false,
+            false,
+            false,
+            0_i64,
+            NUDGE_OCTAVE_EXPECTED,
+        ),
+        (
+            "Shift+↓（八度）",
+            "\u{f701}",
+            true,
+            false,
+            false,
+            false,
+            0_i64,
+            -NUDGE_OCTAVE_EXPECTED,
+        ),
+    ];
+    for (label, text, shift, ctrl, alt, meta, dt, dp) in cases {
+        let commits_before = port.display().commit_count;
+        let undoable_before = port.display().undoable;
+        let consumed = window.invoke_key_action(text.into(), shift, ctrl, alt, meta);
+        assert!(
+            consumed,
+            "`{label}` 必须被消费（宿主必须真的接上这一档微调；未接线时这一步的差异见交付报告的逐字红）"
+        );
+        let after = note_readings(&port.project());
+        // ① 每一颗**选中**的音符都恰好移动了独立算出来的那一对位移。
+        for id in &targets {
+            let (t0, p0, duration0, velocity0) = baseline[id];
+            let expected_tick = u64::try_from(i64::try_from(t0).expect("tick 在 i64 内") + dt)
+                .expect("期望 tick 非负（夹具选的就是不碰边界的两颗）");
+            let expected_pitch =
+                u8::try_from(i16::from(p0) + i16::from(dp)).expect("期望音高在 0..=127");
+            assert_eq!(
+                after[id],
+                (expected_tick, expected_pitch, duration0, velocity0),
+                "`{label}`：音符 {id} 的读数必须是 ({expected_tick}, {expected_pitch}, \
+                 {duration0}, {velocity0})（时值 / 力度不许动）"
+            );
+        }
+        // ② 选区**之外**每一个音符的四个字段都不动。
+        for (id, reading) in &baseline {
+            if targets.contains(id) {
+                continue;
+            }
+            assert_eq!(after[id], *reading, "`{label}` 不得动到选区之外的音符 {id}");
+        }
+        // ③ 一次按键 = 一次提交 / 一步撤销。
+        assert_eq!(
+            port.display().commit_count,
+            commits_before + 1,
+            "`{label}`：一次按键恰好一次提交"
+        );
+        assert_eq!(
+            port.display().undoable,
+            undoable_before + 1,
+            "`{label}`：一次按键恰好一步撤销"
+        );
+        // ④ 回到基线，供下一格使用（顺带证明这一格真的可逆）。
+        let changed = port.perform(yeban_app::undo::UiAction::Undo).changed();
+        assert!(changed, "`{label}`：撤销必须真的改变了工程");
+        assert_eq!(
+            serde_json::to_vec(&port.project()).expect("序列化"),
+            bytes_baseline,
+            "`{label}`：一次撤销必须逐字节回到这一格之前，否则下一格的基线不成立"
+        );
+    }
+}
+
+/// 判据 (b)：**一次按键 = 一次提交 = 一步撤销**；N 次离散按键 ⇒ N 步，且撤销**不合并**。
+///
+/// ## 量什么 / 怎么量 / 单位
+///
+/// | 量 | 怎么量 | 单位 |
+/// | :--- | :--- | :--- |
+/// | 按键次数 | `invoke_key_action("\u{f703}", …)` 的调用次数 | 次 |
+/// | 提交 | `UndoPort::display().commit_count` | 条 |
+/// | 可撤销步数 | `UndoPort::display().undoable` | 步 |
+/// | 工程内容 | `serde_json::to_vec(&port.project())` | 字节 |
+///
+/// ## 它证明什么
+///
+/// 3 次按键 ⇒ 提交 +3、可撤销 +3；三次快照两两不同（不是同一个状态记了三次）；
+/// **一次**撤销回到**第 3 次按键之前**、再一次到第 2 次之前、再一次到起点 ——
+/// 每一步都逐字节相同。这同时排除了两种错误实现：把 N 次并成一步（第一次撤销就会回到
+/// 起点）与把一次拆成多步（`undoable` 会涨得比按键次数快）。
+///
+/// ## ⚠ 它不证明什么
+///
+/// - ⛔ 不证明 OS 的键重复流**真的**是"N 个离散 `KeyPressed`"（本判据注入的就是这个形态；
+///   `i-slint-core-1.18.1/api.rs:724-733` 的 `KeyPressRepeated` 走**同一条**
+///   `process_key_input`，但本判据没有注入 `repeat: true` 的变体）；
+/// - ⛔ 不证明提交里的 op **类型**（只证明历史前进一次 + 工程字节可逆）。
+#[test]
+fn arrow_nudge_b_each_key_press_is_exactly_one_commit_and_one_undo_step() {
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    select_ulids(&window, &targets);
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+    let mut snapshots = vec![serde_json::to_vec(&port.project()).expect("序列化 b0")];
+    // 3 次**离散**按键（键重复就是这样的序列，不是一次连续手势）。
+    for step in 0..3 {
+        let consumed = window.invoke_key_action("\u{f703}".into(), false, false, false, false);
+        assert!(consumed, "第 {step} 次按键必须被消费");
+        snapshots.push(serde_json::to_vec(&port.project()).expect("序列化"));
+        assert_eq!(
+            port.display().commit_count,
+            commits_before + step + 1,
+            "N 次按键 ⇒ 恰好 N 次提交"
+        );
+        assert_eq!(
+            port.display().undoable,
+            undoable_before + step + 1,
+            "N 次按键 ⇒ 恰好 N 步撤销"
+        );
+    }
+    // 三次快照两两不同：N 步必须真的是 N 个不同状态。
+    assert_ne!(snapshots[0], snapshots[1], "第 1 次按键必须真的改了工程");
+    assert_ne!(snapshots[1], snapshots[2], "第 2 次按键必须真的改了工程");
+    assert_ne!(snapshots[2], snapshots[3], "第 3 次按键必须真的改了工程");
+    assert_ne!(snapshots[0], snapshots[3], "起点与三次之后必须不同");
+    report_line(&format!(
+        "[roll-nudge-b] 3 次**离散**按键 ⇒ 提交数 {commits_before} ⇒ {}、可撤销步数 {undoable_before} ⇒ {}；\
+         四份快照的字节长度 {:?}（两两不同 ⇒ 3 个不同状态）；选区 {targets:?}",
+        port.display().commit_count,
+        port.display().undoable,
+        snapshots.iter().map(Vec::len).collect::<Vec<_>>(),
+    ));
+    // ---- 观测：这一步在提交图谱里写下的 **op 形状**（逐字），以及"一次按键 = 一条提交" ----
+    {
+        let graph = port.graph();
+        let display = port.display();
+        let head = display.head.expect("提交之后图谱必须有一个头提交");
+        let tip = graph.commit(&head).expect("头提交必须在图谱里");
+        let tip_ops: Vec<String> = tip
+            .ops
+            .iter()
+            .map(|stamped| format!("{:?}", stamped.op))
+            .collect();
+        report_line(&format!(
+            "[roll-nudge-b-ops] 第 3 次按键那次提交：message={:?}；图谱里的载荷 {} 条 = {tip_ops:?}",
+            tip.message,
+            tip_ops.len(),
+        ));
+        assert_eq!(
+            tip_ops.len(),
+            1,
+            "一次按键在图谱里必须**恰好一条** `StampedOp`（它的 `op` 是 `undo_session::commit` \
+             按契约包出来的那**一个** `Op::Batch`）"
+        );
+        assert!(
+            tip_ops[0].starts_with("Batch {"),
+            "那一条必须是 `Op::Batch`（`undo_session::commit` 对**每一批**都这样包），实际 {:?}",
+            tip_ops[0]
+        );
+        // 批里恰好每个选中音符一条 `MoveNote`，且位移是**一个公共量**。
+        assert_eq!(
+            tip_ops[0].matches("MoveNote {").count(),
+            targets.len(),
+            "批里必须每个选中音符恰好一条 `MoveNote`：{tip_ops:?}"
+        );
+        assert_eq!(
+            tip_ops[0]
+                .matches("delta_tick: 240, delta_pitch: 0")
+                .count(),
+            targets.len(),
+            "所有 `MoveNote` 必须共用同一个公共位移（`→` = +240 tick / 0 半音）：{tip_ops:?}"
+        );
+    }
+    // 逐次撤销：每一次都回到**上一次按键之前**（不是一口气回到起点）。
+    for step in (0..3).rev() {
+        let changed = port.perform(yeban_app::undo::UiAction::Undo).changed();
+        assert!(changed, "第 {} 次撤销必须真的改变了工程", 3 - step);
+        assert_eq!(
+            serde_json::to_vec(&port.project()).expect("序列化"),
+            snapshots[step],
+            "一次撤销必须逐字节回到第 {} 次按键**之前**（若 N 次被合并成一步，这里会直接回到 b0）",
+            step + 1
+        );
+    }
+    report_line(&format!(
+        "[roll-nudge-b] 三次撤销后：提交数 {}（撤销不减提交数）、可撤销步数 {} ⇒ 回到起点 {}；\
+         每一步 `project` 逐字节 == 对应快照 = true",
+        port.display().commit_count,
+        port.display().undoable,
+        undoable_before,
+    ));
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "三次撤销后可撤销步数必须回到起点"
+    );
+}
+
+/// 判据 (c1)：**空选区**下按方向键 ⇒ 0 提交、工程逐字节不变、**不消费**这一键。
+///
+/// ## ⚠ 它在**未修复**的代码上也是绿的（如实披露）
+///
+/// 未接线时 `LogicalKey::from_text("\u{f702}")` 返回 `None` ⇒ 什么都不发生 ⇒ 本判据当然绿。
+/// 它断言的是**没有假阳性**（空选区不许凭空改工程），**不是**能力存在 —— 能力由 (a) 管。
+/// 与剪刀 / 力度那两片的 `(c)` 控制臂同一性质。
+///
+/// ## 它证明什么
+///
+/// 四格都在空选区下**如实拒绝**（返回 `false`，让 `.slint` 走 `reject`）而不是写空 op
+/// 或猜一个对象去动 —— 与 `DeleteSelection` / `Duplicate` / `ZoomToSelection` 的空前置
+/// 条件同一取向。
+/// ## ⛔ 它不证明什么
+///
+/// ⛔ 不证明"有选区时会动"（那是 (a)）；⛔ 不证明夹紧（那是 (c2)）。
+#[test]
+fn arrow_nudge_c1_a_press_with_no_selection_commits_nothing() {
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    select_ulids(&window, &[]);
+    assert_eq!(
+        window.get_selected_note_count(),
+        0,
+        "夹具前提：选区必须是空的"
+    );
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+    for (label, text, shift, ctrl, alt, meta) in [
+        ("←", "\u{f702}", false, false, false, false),
+        ("→", "\u{f703}", false, false, false, false),
+        ("Alt+→", "\u{f703}", false, false, true, false),
+        ("↑", "\u{f700}", false, false, false, false),
+        ("↓", "\u{f701}", false, false, false, false),
+        ("Shift+↑", "\u{f700}", true, false, false, false),
+    ] {
+        let consumed = window.invoke_key_action(text.into(), shift, ctrl, alt, meta);
+        assert!(
+            !consumed,
+            "`{label}` 在空选区下不得被消费（吞掉一个没有对象的键，用户只会以为功能坏了）"
+        );
+    }
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "空选区下四档位移都不得留下任何提交（空批也不许）"
+    );
+    assert_eq!(port.display().undoable, undoable_before, "撤销栈不得增长");
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化终点工程"),
+        bytes_before,
+        "空选区下工程必须逐字节不变"
+    );
+}
+
+/// 判据 (c2)：**组夹紧** —— 选区里有一颗音符在 tick 0 时按 `←`，整块一步都走不动
+/// ⇒ 0 提交、工程逐字节不变；同一个选区按 `→` 必须真的动**两颗**（正控制）。
+///
+/// ## ⚠ 它在**未修复**的代码上也是绿的；它的红要靠**变异**
+///
+/// 未接线时同样"什么都不做"。它的牙咬的是**夹紧的粒度**：把 `host::nudge_ops_for` 的
+/// 组夹紧换成"逐音符各自夹"（或直接不夹、让模型拒）⇒ 那颗 tick 0 的音符留在原地、
+/// `(1920,67)` 那颗左移 240 ⇒ **提交数 0 ⇒ 1**，本判据在 `assert!(!consumed)` 与提交数上红。
+/// 实测变异读数见交付报告。
+///
+/// ## 它证明什么
+///
+/// 1. 位移是**一个公共量**（选区保持内部相对形状 —— 与 `duplicate_ops_for` 的"整块平移"
+///    同一条理由），⛔ 不是"能走的先走、走不动的留着"；
+/// 2. 走不动时**不写空 op**（`Op::MoveNote` 的越界是**拒绝**，组夹紧把它变成"不提交"）；
+/// 3. 正控制证明这个选区是**活的**：同一个身份集合按 `→` 确实两颗都动了 240。
+///
+/// ## ⛔ 它不证明什么
+///
+/// - ⛔ 不证明音高轴的夹紧（这里只走 tick 轴；音高轴的纯函数读数在 `host.rs` 的单元判据里）；
+/// - ⛔ 不证明"上界"（`u64::MAX`）那一半 —— 夹具里没有任何音符接近时钟顶端。
+#[test]
+fn arrow_nudge_c2_a_press_that_cannot_move_the_whole_selection_commits_nothing() {
+    let (window, port, _plane, _input) = assemble_for_arrow_nudge();
+    // 夹具前提：样本工程里有一颗 **tick 0** 的音符（`samples.rs` 的 (0,60)）——
+    // 整块左移一格时它无处可去。
+    let targets = ulids_at(&port.project(), &[(0, 60), (1920, 67)]);
+    assert_eq!(
+        targets.len(),
+        2,
+        "夹具前提：样本工程里恰好有 (0,60) 与 (1920,67) 两个音符"
+    );
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+
+    // ---- 左移：整块走不动 ⇒ 0 提交 ----
+    let consumed_left = window.invoke_key_action("\u{f702}".into(), false, false, false, false);
+    report_line(&format!(
+        "[roll-nudge-c2] 选区 {targets:?}（含 tick 0 的 (0,60)）按 `←`：被消费 = {consumed_left}；\
+         提交数 {commits_before} ⇒ {}；工程逐字节不变 = {}",
+        port.display().commit_count,
+        serde_json::to_vec(&port.project()).expect("序列化") == bytes_before,
+    ));
+    assert!(
+        !consumed_left,
+        "整块走不动时 `←` 不得被消费（吞掉一个什么都做不了的键 = 用户以为功能坏了）"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "组夹紧之后位移为 (0,0) ⇒ 不得提交任何 op（⛔ 不写空 op、⛔ 不让模型去拒）"
+    );
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化"),
+        bytes_before,
+        "被夹紧的那一按不得改动工程一个字节"
+    );
+
+    // ---- 正控制：同一个选区按 `→` ⇒ 两颗都真的动了 240 ----
+    let consumed_right = window.invoke_key_action("\u{f703}".into(), false, false, false, false);
+    assert!(consumed_right, "正控制：同一个选区按 `→` 必须被消费");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "正控制：右移必须真的产生**一次**提交"
+    );
+    let after = note_readings(&port.project());
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after[id],
+            (t0 + 240, p0, duration0, velocity0),
+            "正控制：音符 {id} 必须恰好右移 240 tick，其余字段不动"
+        );
+    }
+}
+
+/// ⭐ 判据 (d)：**焦点那一问的机械答案** —— 经**真 `WindowEvent`** 注入 `\u{f703}`
+/// （winit 给 `→` 的同一个文本）真的把选区移了一个网格。
+///
+/// ## 为什么这一条是本切片最重要的
+///
+/// `ui/app.slint` 的 `key-handler`（`forward-focus`）是唯一的键盘事件源；在它之下
+/// 是否还有东西先把方向键文本吃掉，**读代码读不出来**。本判据让 Slint 自己去走那条链：
+///
+/// ```text
+/// ui/dispatch_key_press(keyCode="\u{f703}")
+///   → yeban_ui_test_port 的 dispatch_key_press_impl（Character ⇒ type_char）
+///   → slint::platform::WindowEvent::KeyPressed { text: "\u{f703}" }   ← **真事件**
+///   → i-slint-core api.rs:717 的 process_key_input
+///   → 焦点项（key-handler，forward-focus）→ key-pressed → key-action
+///   → host::wire_keys → LogicalKey::from_text → resolve_logical → apply_action → commit
+/// ```
+///
+/// 音符真的动了 ⇒ 焦点系统**没有**在窗口键处理器之前把方向键文本消费掉。
+///
+/// ## 控制臂（排除"注入没生效"与"任何文本都能动音符"）
+///
+/// 0. 注入前断言 `input_context().focus() == MainCanvas` 且非合成态（否则"没反应"可能是
+///    IME / 焦点门控，而不是接线）；
+/// 1. 先注入真 `Tab`（**已绑定**键）⇒ `arrangement-view` 真的翻转 ⇒ "真事件源 →
+///    `key-handler` → `key-action` → `apply_action`"这条链在本装配里是**活的**；两次 `Tab`
+///    复原视图。这一臂是关键：没有它，下面 `→` 的失败无法排除"事件根本没送到"；
+/// 2. 注入 `\u{f704}`（= `F1`，**未绑定**）⇒ 0 提交、工程逐字节不变 —— 证明不是
+///    "随便什么文本都触发微调"。
+///
+/// ## ⛔ 它不证明什么
+///
+/// - ⛔ **不**证明真 winit 窗口里手按 `→` 有同样的结果：本判据的文本是**测试**按
+///   `key_codes.rs` 的表交给 `WindowEvent` 的（真平台那一半由 `i-slint-backend-winit` 的
+///   `for_each_keys!` 表把 `NamedKey::ArrowRight` 映到同一个码位 —— 那是**读**出来的，不是本判据观测的）；
+/// - ⛔ 不证明带修饰组合的真实事件（`Shift` 那一格由下一条判据观测；`Alt` 端口**表达不了**）。
+#[test]
+fn arrow_nudge_d_focus_a_real_window_key_event_moves_the_selection() {
+    use yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS;
+
+    let (window, port, mut plane, input) = assemble_for_arrow_nudge();
+    // ---- 前置条件：否则"没反应"会被误读成接线坏了 ----
+    assert_eq!(
+        input.borrow().focus(),
+        yeban_app::input::Focus::MainCanvas,
+        "注入前焦点必须在主画布（`forward-focus: key-handler` 的默认态）"
+    );
+    assert!(
+        !input.borrow().is_composing(),
+        "注入前必须是非合成态，否则 §7.2 会把整个键吞掉"
+    );
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let commits_before = port.display().commit_count;
+
+    // ---- 控制臂 ①：同一个装配里，真 `WindowEvent` 对**已绑定**的键真的到达宿主 ----
+    //
+    // `Tab`（画布聚焦）⇒ `Action::ToggleView` ⇒ `arrangement-view` 翻转。它把
+    // "真事件源 → key-handler → key-action → apply_action"这条链在本装配里证明为**活的**；
+    // 没有它，下面 `→` 的失败就无法排除"事件根本没送到"这一解释。
+    let arrangement_before = window.get_arrangement_view();
+    let tab = plane.plane().try_line(&request_line(
+        1,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Tab" })),
+    ));
+    assert!(!tab.is_error(), "`Tab` 注入必须落到真实窗口: {tab:?}");
+    assert_ne!(
+        window.get_arrangement_view(),
+        arrangement_before,
+        "真事件的 `Tab` 必须真的切了视图（否则本装配里的事件源链不活，下面的 `→` 说明不了焦点问题）"
+    );
+    // 切回原视图（`Tab` 是切换；两次 ⇒ 复原），免得把视图态带进下面的读数。
+    let tab_back = plane.plane().try_line(&request_line(
+        2,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Tab" })),
+    ));
+    assert!(
+        !tab_back.is_error(),
+        "第二次 `Tab` 注入必须成功: {tab_back:?}"
+    );
+    assert_eq!(
+        window.get_arrangement_view(),
+        arrangement_before,
+        "两次 `Tab` 必须回到原视图"
+    );
+
+    // ---- 控制臂 ②：未绑定的 `\u{f704}`（F1）必须一位不动 ----
+    let unbound = plane.plane().try_line(&request_line(
+        3,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f704}" })),
+    ));
+    assert!(!unbound.is_error(), "注入必须落到真实窗口: {unbound:?}");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "未绑定的键文本不得产生任何提交"
+    );
+    assert_eq!(
+        serde_json::to_vec(&port.project()).expect("序列化"),
+        bytes_before,
+        "未绑定的键文本不得改动工程"
+    );
+
+    // ---- 本判据：真 `WindowEvent` 的 `→` ----
+    let pressed = plane.plane().try_line(&request_line(
+        10,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f703}" })),
+    ));
+    assert!(!pressed.is_error(), "`→` 注入必须落到真实窗口: {pressed:?}");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "真 `WindowEvent` 的 `→` 必须产生**一次**提交 —— 焦点链必须把方向键文本交给宿主"
+    );
+    let after = note_readings(&port.project());
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after[id],
+            (t0 + 240, p0, duration0, velocity0),
+            "真事件源下音符 {id} 必须恰好右移 240 tick"
+        );
+    }
+    report_line(&format!(
+        "[roll-nudge-d-focus] 真 `WindowEvent::KeyPressed{{text:\"\\u{{f703}}\"}}`（`→`）⇒ \
+         提交数 {commits_before} ⇒ {}；选区 {targets:?} 全部 +240 tick；\
+         未绑定的 `\\u{{f704}}`（F1）⇒ 0 提交 ⇒ 焦点链**交付**了方向键文本",
+        port.display().commit_count,
+    ));
+}
+
+/// 判据 (d2)：**`Shift` 组合**经真事件源也通 —— 注入真 `Shift` 按下，再注入真 `↑`
+/// ⇒ 整八度（+12 半音），证明 Slint 的修饰位状态真的传到了宿主。
+///
+/// ## 为什么单独一条
+///
+/// `yeban_ui_test_port` 的 `KeyCode` 表达不了 `Alt`（所以 `Alt+←/→` 只能走 `.slint` 回调那一格），
+/// 但它**有** `Shift`（`port.rs` 的 `KeyCode::Shift` ⇒ `WindowEvent::KeyPressed{text:"\u{10}"}`
+/// ⇒ `i-slint-core` 的 `InternalKeyboardModifierState::state_update` 把 `left_shift` 置位）。
+/// `Shift` 在端口上**只按不放**，所以它必须在**自己的**装配里最后一个注入。
+///
+/// ## ⛔ 它不证明什么
+///
+/// - ⛔ 不证明 `Alt` 组合（端口表达不了 —— 那两格由判据 (a) 经回调那一格观测）；
+/// - ⛔ 不证明真实键盘的按下/释放顺序。
+#[test]
+fn arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_octave() {
+    use yeban_ui_mcp::methods::METHOD_DISPATCH_KEY_PRESS;
+
+    let (window, port, mut plane, _input) = assemble_for_arrow_nudge();
+    let targets = ulids_at(&port.project(), &[(960, 64), (1920, 67)]);
+    select_ulids(&window, &targets);
+    let baseline = note_readings(&port.project());
+    let commits_before = port.display().commit_count;
+
+    // ---- 真 `Shift` 按下（端口表达得了的那一个修饰位）----
+    let shift_down = plane.plane().try_line(&request_line(
+        1,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "Shift" })),
+    ));
+    assert!(
+        !shift_down.is_error(),
+        "`Shift` 注入必须落到真实窗口: {shift_down:?}"
+    );
+    // ---- 真 `↑` ----
+    let up = plane.plane().try_line(&request_line(
+        10,
+        METHOD_DISPATCH_KEY_PRESS,
+        Some(json!({ "keyCode": "\u{f700}" })),
+    ));
+    assert!(!up.is_error(), "`↑` 注入必须落到真实窗口: {up:?}");
+
+    assert_eq!(
+        port.display().commit_count,
+        commits_before + 1,
+        "`Shift+↑`（真事件源）必须产生一次提交"
+    );
+    let after = note_readings(&port.project());
+    for id in &targets {
+        let (t0, p0, duration0, velocity0) = baseline[id];
+        assert_eq!(
+            after[id],
+            (t0, p0 + 12, duration0, velocity0),
+            "真事件源下 `Shift+↑` 必须把音符 {id} 升**整八度**（+12 半音），tick 不许动"
+        );
+    }
+    report_line(&format!(
+        "[roll-nudge-d2-shift] 真 `Shift` 按下 + 真 `↑` ⇒ 提交数 {commits_before} ⇒ {}；\
+         选区 {targets:?} 全部 +12 半音（tick 不动）",
+        port.display().commit_count,
+    ));
+}
