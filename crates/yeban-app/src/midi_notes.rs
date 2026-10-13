@@ -215,6 +215,172 @@ pub fn pair_notes(
     report
 }
 
+/// ⭐ **增量**配对器（[`pair_notes`] 的流式对偶）。
+///
+/// ⭐ 为什么需要它：`pair_notes` 吃的是**全量消息表**，因此只有在采集窗口结束后
+/// 才能产出音符（这正是"批次"的时间形状）。真实录音要的是**到达即配对**：
+/// 一条 `NoteOff` 一到，那条音符就**当刻**可以落进谱面。
+///
+/// ⭐ **口径与 [`pair_notes`] 逐条一致**：本类型只是把同一个配对规则搬进"一条一条喂"
+/// 的形状，⛔ 不另立一套规则（判据
+/// `incremental_pairing_matches_the_batch_path_message_by_message` 逐条比对两者）。
+///
+/// ⚠ `open` 是 `BTreeMap<u8, (u64, u8)>`（与批次版同型）—— 按 pitch 唯一，
+/// 因此"同一 pitch 重触发"与批次版同判（前一条在新起点收尾）。
+#[derive(Debug, Clone, Default)]
+pub struct IncrementalNoteRecorder {
+    /// 已闭合（或重触发收尾）的音符，**按收尾顺序**追加。
+    notes: Vec<CapturedNote>,
+    /// 手上还开着的音符：`pitch ⇒ (start_tick, velocity)`。
+    open: BTreeMap<u8, (u64, u8)>,
+    /// 最近见过的 tick（收尾要用它 ＋ `tail`）。
+    last_tick: u64,
+    /// 被忽略的消息条数（⛔ 与批次版同口径：非音符消息与孤立的 `NoteOff`）。
+    ignored: u64,
+    /// 孤立的 `NoteOff` 条数（没有对应的开音符）。
+    orphan_offs: u64,
+    /// 重触发条数（同一 pitch 还没松开又按下）。
+    restarted: u64,
+    /// ⭐ **会话起点**（`midir` 时间戳的零点参照）—— ⚠ 与 [`pair_notes`] 的 `origin_us` 同义。
+    ///
+    /// ⚠ **必须有**：`midir` 的时间戳是**单调时钟**（零点是开机，不是会话开始）⇒
+    /// 直接拿它换算会得到巨大的 tick。批次版做的是 `timestamp_us - origin_us`。
+    origin_us: u64,
+}
+
+impl IncrementalNoteRecorder {
+    /// ⭐ 空记录器：`origin_us` 是会话起点（`midir` 时间戳的零点参照）。
+    ///
+    /// ⛔ 不启动任何线程、⛔ 不读时钟（起点由调用方给，与 CLI 的 `--midi-in` 同源）。
+    #[must_use]
+    pub fn new(origin_us: u64) -> Self {
+        Self {
+            origin_us,
+            ..Self::default()
+        }
+    }
+
+    /// ⭐ **喂一条**原始 MIDI 消息 ⇒ 返回**当刻闭合**的音符（通常 0 或 1 条）。
+    ///
+    /// 口径与 [`pair_notes`] 的循环体**逐条相同**：
+    /// * `0x9n` 且 `data2 > 0` ⇒ 开一条；同一 pitch 已有开着的 ⇒ 前一条在**新起点**收尾
+    ///   （时长至少 1 tick）并计入 `restarted`；
+    /// * `0x8n` **或** `0x9n` 且 `data2 == 0` ⇒ 闭合；
+    /// * 其它 ⇒ 计入 `ignored`。
+    pub fn consume(
+        &mut self,
+        timestamp_us: u64,
+        status: u8,
+        data1: u8,
+        data2: u8,
+    ) -> Option<CapturedNote> {
+        // ⚠ 与批次版同一句：先减会话起点，再换算（见 `origin_us` 的文档）。
+        let tick = crate::midi_in::ticks_from_gap_us(timestamp_us.saturating_sub(self.origin_us));
+        self.last_tick = self.last_tick.max(tick);
+        let pitch = data1 & 0x7F;
+        match status & 0xF0 {
+            0x90 if data2 > 0 => {
+                if let Some((start_tick, velocity)) = self.open.insert(pitch, (tick, data2)) {
+                    // ⭐ 重触发：前一条在**新起点**收尾（与批次版同一条注释与口径）。
+                    self.restarted = self.restarted.saturating_add(1);
+                    let note = CapturedNote {
+                        pitch,
+                        velocity,
+                        start_tick,
+                        end_tick: tick.max(start_tick + 1),
+                    };
+                    self.notes.push(note);
+                    return Some(note);
+                }
+                None
+            }
+            0x80 | 0x90 => {
+                if let Some((start_tick, velocity)) = self.open.remove(&pitch) {
+                    let note = CapturedNote {
+                        pitch,
+                        velocity,
+                        start_tick,
+                        end_tick: tick.max(start_tick + 1),
+                    };
+                    self.notes.push(note);
+                    Some(note)
+                } else {
+                    self.orphan_offs = self.orphan_offs.saturating_add(1);
+                    None
+                }
+            }
+            _ => {
+                self.ignored = self.ignored.saturating_add(1);
+                None
+            }
+        }
+    }
+
+    /// ⭐ **收尾**：把还开着的音符按 `last_tick + tail` 闭合（⛔ 不丢弃、⛔ 不留 0 时长）。
+    ///
+    /// 返回这一次收尾产出的音符条数（＝收尾前的开音符数）。
+    pub fn finish(&mut self, unclosed_tail_ticks: u64) -> usize {
+        let tail = self.last_tick.saturating_add(unclosed_tail_ticks);
+        let open = core::mem::take(&mut self.open);
+        let count = open.len();
+        for (pitch, (start_tick, velocity)) in open {
+            self.notes.push(CapturedNote {
+                pitch,
+                velocity,
+                start_tick,
+                end_tick: tail.max(start_tick + 1),
+            });
+        }
+        count
+    }
+
+    /// ⭐ 已产出的音符（⭐ 与 [`pair_notes`] 同口径：按 `(start_tick, pitch, end_tick)` 排序）。
+    #[must_use]
+    pub fn notes(&self) -> Vec<CapturedNote> {
+        let mut notes = self.notes.clone();
+        notes.sort_unstable_by_key(|note| (note.start_tick, note.pitch, note.end_tick));
+        notes
+    }
+
+    /// 手上还开着的音符条数。
+    #[must_use]
+    pub fn open_count(&self) -> usize {
+        self.open.len()
+    }
+
+    /// 被忽略的消息条数。
+    #[must_use]
+    pub fn ignored(&self) -> u64 {
+        self.ignored
+    }
+
+    /// 孤立的 `NoteOff` 条数。
+    #[must_use]
+    pub fn orphan_offs(&self) -> u64 {
+        self.orphan_offs
+    }
+
+    /// 重触发条数。
+    #[must_use]
+    pub fn restarted(&self) -> u64 {
+        self.restarted
+    }
+
+    /// ⭐ 转成批次版的读数形状（`unclosed` ＝ 收尾时还开着的条数）。
+    ///
+    /// ⚠ 必须在 [`Self::finish`] **之后**调用才有意义（否则 `unclosed` 记的是"此刻还开着"）。
+    #[must_use]
+    pub fn report(&self, unclosed: usize) -> PairingReport {
+        PairingReport {
+            notes: self.notes(),
+            unclosed,
+            orphan_offs: usize::try_from(self.orphan_offs).unwrap_or(usize::MAX),
+            restarted: usize::try_from(self.restarted).unwrap_or(usize::MAX),
+            ignored: usize::try_from(self.ignored).unwrap_or(usize::MAX),
+        }
+    }
+}
+
 /// ⭐ 一次"把音符写进工程"的读数（CLI 打印它；判据逐字段读）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteWriteReport {
@@ -811,6 +977,7 @@ impl core::error::Error for MidiNoteError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::undo::UndoSession;
 
     /// 一段**可判**的注入消息：C4 NoteOn → C4 NoteOff → E4 NoteOn（不闭合）＋ 一条 CC7。
     fn injected() -> Vec<(u64, u8, u8, u8)> {
@@ -1106,5 +1273,140 @@ mod tests {
             MidiNoteError::Empty(_)
         ));
         assert_eq!(MidiNoteError::NoNotes.exit_code(), crate::cli::EXIT_OPEN);
+    }
+
+    /// ⭐ 把工程里**所有 MIDI 音符**归一成可比的字段（`EntityId` 是随机的 ⇒ ⛔ 不比它）。
+    fn project_note_fields(project: &YebanProjectV1) -> Vec<(u64, u8, u64, u8)> {
+        let mut out: Vec<(u64, u8, u64, u8)> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| match &entry.content {
+                yeban_model::ClipContent::Midi { notes } => Some(notes.values()),
+                _ => None,
+            })
+            .flatten()
+            .map(|note| {
+                (
+                    note.start_tick,
+                    note.pitch,
+                    note.duration_ticks,
+                    note.velocity,
+                )
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// ⭐ **增量配对器与批次路径逐条一致**（这是本片最重要的判据）。
+    ///
+    /// 口径：同一条消息表分别喂给两条路 ⇒ 产出的音符**逐字段相同**，
+    /// 且 `Op::AddNote` 的**数量与字段**也相同（`EntityId` 除外，它是随机的）。
+    #[test]
+    fn incremental_pairing_matches_the_batch_path_message_by_message() {
+        // ⚠ 用**非零**会话起点：这能抓出"忘了减 origin_us"（那会让 tick 巨大）。
+        let origin_us = 7_000_000_u64;
+        let mut messages = injected();
+        for (t, _, _, _) in &mut messages {
+            *t = t.saturating_add(origin_us);
+        }
+        // 再补几条边界：重触发、力度 0 的 NoteOn、孤立 NoteOff、非音符消息。
+        messages.push((origin_us + 1_300_000, 0x90, 60, 110)); // 重触发 C4（还开着？已在上一条闭合）
+        messages.push((origin_us + 1_400_000, 0x90, 60, 0)); // 力度 0 的 NoteOn = NoteOff
+        messages.push((origin_us + 1_500_000, 0x80, 72, 0)); // 孤立 NoteOff
+        messages.push((origin_us + 1_600_000, 0xE0, 0, 0)); // 弯音（非音符）
+
+        let batch = pair_notes(&messages, origin_us, UNCLOSED_TAIL_TICKS);
+
+        let mut recorder = IncrementalNoteRecorder::new(origin_us);
+        let mut closed_on_arrival = 0_usize;
+        for (timestamp_us, status, data1, data2) in &messages {
+            if recorder
+                .consume(*timestamp_us, *status, *data1, *data2)
+                .is_some()
+            {
+                closed_on_arrival += 1;
+            }
+        }
+        let unclosed = recorder.finish(UNCLOSED_TAIL_TICKS);
+        let incremental = recorder.report(unclosed);
+
+        // ① 音符逐字段相同。
+        assert_eq!(
+            incremental.notes, batch.notes,
+            "增量的音符必须与批次逐字段相同"
+        );
+        // ② 计数读数相同。
+        assert_eq!(incremental.unclosed, batch.unclosed, "unclosed");
+        assert_eq!(incremental.orphan_offs, batch.orphan_offs, "orphan_offs");
+        assert_eq!(incremental.restarted, batch.restarted, "restarted");
+        assert_eq!(incremental.ignored, batch.ignored, "ignored");
+        assert_eq!(
+            closed_on_arrival,
+            batch.notes.len() - batch.unclosed,
+            "到达即闭合的条数"
+        );
+
+        // ③ tick 是**会话相对**的（⛔ 不是巨大值）⇒ 抓"忘了减 origin_us"。
+        assert!(
+            incremental.notes.iter().all(|n| n.end_tick < 10_000),
+            "tick 必须是会话相对的: {:?}",
+            incremental.notes
+        );
+    }
+
+    /// ⭐ 走到**落进工程**那一层：增量路与批次路写出的音符**逐字段相同**。
+    ///
+    /// ⚠ 比较的是**工程的音符**（可观察面），⛔ 不是 `Op` 列表 —— `UndoPort` 不暴露
+    /// 待提交的 op，而"音符有没有真的落进谱面"才是这条能力要的读数。
+    #[test]
+    fn incremental_recording_writes_the_same_notes_as_the_batch_path() {
+        const NOW: u64 = 0;
+        let origin_us = 1_000_000_u64;
+        let messages: Vec<(u64, u8, u8, u8)> = injected()
+            .iter()
+            .map(|(t, s, d1, d2)| (t + origin_us, *s, *d1, *d2))
+            .collect();
+
+        let project = crate::bridge::demo_project();
+        let track = project
+            .tracks
+            .values()
+            .find(|t| t.kind == yeban_model::TrackKind::Midi)
+            .expect("样本里必须有 MIDI 音轨")
+            .id;
+
+        // ---- 批次路 ----
+        let batch = pair_notes(&messages, origin_us, UNCLOSED_TAIL_TICKS);
+        let batch_port = UndoPort::new(
+            UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+        );
+        let batch_report =
+            write_notes(&batch_port, &project, &batch, Some(track), NOW).expect("批次落谱");
+
+        // ---- 增量路 ----
+        let mut recorder = IncrementalNoteRecorder::new(origin_us);
+        for (t, s, d1, d2) in &messages {
+            recorder.consume(*t, *s, *d1, *d2);
+        }
+        let unclosed = recorder.finish(UNCLOSED_TAIL_TICKS);
+        let incremental = recorder.report(unclosed);
+        let inc_port = UndoPort::new(
+            UndoSession::open("<判据>", "yeban-app", project.clone(), NOW).expect("打开"),
+        );
+        let inc_report =
+            write_notes(&inc_port, &project, &incremental, Some(track), NOW).expect("增量落谱");
+
+        assert_eq!(inc_report.notes, batch_report.notes, "写入条数");
+        assert_eq!(
+            project_note_fields(&inc_port.project()),
+            project_note_fields(&batch_port.project()),
+            "两条路写进工程的音符必须逐字段相同"
+        );
+        // 冷对照：工程里确实**多出了**音符（否则上面的相等可能是"两边都没写"）。
+        assert!(
+            !project_note_fields(&inc_port.project()).is_empty(),
+            "工程里必须真的多出音符"
+        );
     }
 }
