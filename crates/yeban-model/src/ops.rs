@@ -380,6 +380,22 @@ pub enum Op {
         /// 修改后的速度（BPM）。
         new_bpm: f64,
     },
+    /// 设置**作者署名**（顶层 `author`，`[MODEL-AST-002]`）。
+    ///
+    /// 为什么必须有这个变体：`author` 在 `project.schema.json` 里**有字段定义**
+    /// （非必需），而 `Op` 全集此前**没有任何变体写得进它** ⇒ ⭐ **打开一个作者写好的
+    /// 工程之后，⭐ 没有任何通路能改署名**。它与 [`Op::SetTransportConfig`] / [`Op::SetTempo`]
+    /// 同族（顶层文档字段），但载荷是 **`String`**（⛔ 不是 `Copy`）⇒ `apply` 与
+    /// `structural_inverse` 都必须**克隆**（照 `AddClip` 那类含 `String` 载荷的先例）。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类），⛔ **不是** `previous_*` —— 后者在本仓
+    /// 是 **delete / remove** 类的惯例（`RemoveClip` / `RemoveTrack`），那里的载荷只为撤销存在。
+    SetAuthor {
+        /// 修改前的署名。
+        old_author: String,
+        /// 修改后的署名。
+        new_author: String,
+    },
     /// 设置音轨**独奏**。
     ///
     /// 与 [`Op::SetTrackMute`] 同族：[`TrackV3::solo`] 也是 `bool`。
@@ -583,6 +599,7 @@ impl Op {
             Self::SetTrackMute { .. } => "SetTrackMute",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
+            Self::SetAuthor { .. } => "SetAuthor",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
@@ -931,6 +948,17 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetAuthor {
+                old_author,
+                new_author: _,
+            } => {
+                // ⚠ `String` 的相等是**逐字节**的（`str` 的 `PartialEq` 就是字节序比较）
+                // ⇒ 与数值字段的逐位比较同一条口径：陈旧载荷必被拒。
+                if doc.author != *old_author {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -1268,6 +1296,14 @@ impl Op {
                 old_bpm: *new_bpm,
                 new_bpm: *old_bpm,
             },
+            // `String` 不是 `Copy` ⇒ 必须克隆（与 `RemoveClip` 的 `previous_clip.clone()` 同理）。
+            Self::SetAuthor {
+                old_author,
+                new_author,
+            } => Self::SetAuthor {
+                old_author: new_author.clone(),
+                new_author: old_author.clone(),
+            },
             // 纯结构化取反：只交换"前 / 后"两个布尔。
             Self::SetTrackMute {
                 track_id,
@@ -1554,6 +1590,11 @@ impl Op {
             // 只写那**一个**顶层字段：⛔ 不碰 `time_signature`、⛔ 不碰 `TransportConfig`。
             Self::SetTempo { new_bpm, .. } => {
                 doc.bpm = *new_bpm;
+                Ok(())
+            }
+            // 只写那**一个**顶层字段：⛔ 不碰 `title`、⛔ 不碰 `bpm`。
+            Self::SetAuthor { new_author, .. } => {
+                doc.author = new_author.clone();
                 Ok(())
             }
             Self::SetMacro {
@@ -2283,6 +2324,11 @@ mod tests {
             Op::SetTempo {
                 old_bpm: crate::project::DEFAULT_BPM,
                 new_bpm: 140.0,
+            },
+            // 署名：夹具的 `author` 是空串（`YebanProjectV1::default()`）⇒ 前置条件成立。
+            Op::SetAuthor {
+                old_author: String::new(),
+                new_author: "Yeban Author".to_owned(),
             },
             Op::SetMacro {
                 track_id: f.lead,
@@ -3072,7 +3118,7 @@ mod tests {
         );
         assert_eq!(
             all_ops.len(),
-            37,
+            38,
             "showcase 脚本的条数变了 —— 新变体必须同时进脚本与本判据的登记表"
         );
     }
@@ -5275,6 +5321,76 @@ mod tests {
             assert!(
                 matches!(error, ModelError::BpmOutOfRange { .. }),
                 "new_bpm={bad} 必须报 BpmOutOfRange, 实际 {error:?}"
+            );
+        }
+    }
+
+    /// `[MODEL-AST-002]` / `[ARCH-OPS-001]`：**署名可改且可逆**。
+    ///
+    /// 四条读数：
+    /// ① 改动**只**落在 `author`（与"同工程只换 author"的克隆**逐字节**比较）；
+    /// ② `inverse` 应用之后**逐字节**回到原状（`String` 克隆往返不丢字节）；
+    /// ③ 陈旧的 `old_author`（不等于文档现值）必须报 `OpStateMismatch`，且文档逐字节不动；
+    /// ④ ⚠ **多字节 UTF-8** 也要逐字节往返（`String` 的相等是字节序比较，
+    ///    但这里仍显式用非 ASCII 证明"不是按字符数比较"）。
+    #[test]
+    fn set_author_is_reversible_and_rejects_a_stale_old_author() {
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let old_author = doc.author.clone();
+
+        // ① 改动只落在 author 上（用非 ASCII，证明逐字节而非逐字符）。
+        let new_author = "夜半 · Yeban".to_owned();
+        let op = Op::SetAuthor {
+            old_author: old_author.clone(),
+            new_author: new_author.clone(),
+        };
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+        assert_eq!(doc.author, new_author, "author 必须变成新值");
+        let mut expected = fixture_document();
+        expected.author = new_author.clone();
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            serde_json::to_vec(&expected).expect("s"),
+            "改动必须**只**落在 author 上"
+        );
+
+        // ② 逆操作逐字节回到原状。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 陈旧的 old_author 被拒，且文档逐字节不动。
+        let stale = Op::SetAuthor {
+            old_author: "别的人".to_owned(),
+            new_author: new_author.clone(),
+        };
+        let stale_before = serde_json::to_vec(&doc).expect("s");
+        let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+        assert!(
+            matches!(error, ModelError::OpStateMismatch { .. }),
+            "必须报 OpStateMismatch, 实际 {error:?}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            stale_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ④ 长度相同但内容不同的旧值也必须被拒（逐字节，不是"长度相同就算相等"）。
+        let same_len: String = "x".repeat(old_author.len().max(1));
+        if same_len != old_author {
+            let same_len_stale = Op::SetAuthor {
+                old_author: same_len,
+                new_author: new_author.clone(),
+            };
+            assert!(
+                same_len_stale.precondition(&doc).is_err(),
+                "等长但内容不同的旧值必须被拒"
             );
         }
     }
