@@ -2434,3 +2434,480 @@ fn velocity_double_click_c2_a_select_tool_double_click_leaves_velocity_unchanged
         "选择工具双击不得提交任何 op"
     );
 }
+
+// ===========================================================================
+// 本切片：`[UI-NOTE-003]` 剪刀（Knife）的**左键单击** —— 沿网格竖线切分指针下的音符
+// ===========================================================================
+//
+// ## 接了哪一格、⛔ 明确不接哪几格
+//
+// | 格 | 决定 |
+// | :--- | :--- |
+// | 剪刀单击（`ToolClick::SplitNote`） | **本切片接上**：`hit_test_visible` 那**一个**命中 ⇒ `split_ops_for` ⇒ `commit_ops`（一个 `Op::Batch`） |
+// | 手势范围 | **指针**（不是列）：只切指针下那一颗，⛔ 不建 tick-span 查询 / 第二条命中路径 |
+// | 切分身份 | 原文 `DeleteNote` ＋ 两个 `EntityId::new()` 的 `AddNote`（与 `duplicate_ops_for` 的副本形状同款）⇒ ⛔ 无新 `Op` 变体 |
+// | 退化切分（吸附点不严格落在音符内） | **拒绝**：`split_ops_for` 返回空 ⇒ 一个 op 都不写 |
+// | 剪刀拖拽（`ToolDrag::SliceAcross`） | ⛔ **不接**（本切片只接左键单击；规范矩阵的拖拽列仍未接） |
+//
+// ## 每条判据证明什么 / ⛔ 不证明什么
+//
+// | 判据 | 证明 | ⛔ 不证明 |
+// | :--- | :--- | :--- |
+// | `a_knife_click_splits_...` | 在音符**绘制帧中心**注入 `down → move → up` ⇒ 原文消失、恰两个同 `pitch`/`velocity` 的新音符、两半恰好铺满原文（左 `[start, split)` ＋ 右 `[split, end)`），且切分点 == 判据**自己**用 `snapped_tick_at` 算出的值 | 拖拽切分；跨片段 / 多选；切分期的画面（无截图判据） |
+// | `b_knife_split_...` | 一次手势 = 提交 **+1** / 可撤销步数 **+1**，且一次 `UiAction::Undo` 之后工程**逐字节**回到切分前 | 撤销**内容**之外的 UI 回写（由既有撤销判据管） |
+// | `c1_...`（控制臂） | 剪刀点**空白** ⇒ 0 提交、0 音符变化、字节不变 | 能力（未接线代码上它也绿 —— 控制臂只排除假阳性） |
+// | `c2_...`（控制臂） | 吸附 tick **不严格落在**音符内 ⇒ 0 提交、原文一位不动 | ⚠ 未接线代码上它**空转绿**；红靠**变异**挣（删掉宿主那侧的 `ops.is_empty()` 短路 ⇒ 空批也提交，判据在提交数上红） |
+//
+// ## 怎么变红（**行为**红，不是编译红）
+//
+// 把 `host.rs` 的 `ToolClick::SplitNote` 臂改回 `{}`（= 本切片之前那行）⇒ (a) 在**音符数**上红
+// （实测：切分前 5、切分后仍 5）、(b) 在提交数上红。变体与矩阵行早就在，缺的只是语义 ⇒ 这不是
+// 编译错误，而是"什么都没发生"的行为红。⚠️ 但若把**整个判据**放到未接线代码上，(c1)/(c2)
+// 仍绿（它们断言"什么都不做"）——那是控制臂的本分，不是能力。
+
+/// 剪刀判据共用的靶子（**铅笔**画出来、几何从**权威工程**读回的音符）。
+struct KnifeTarget {
+    ulid: String,
+    /// 宿主帧（`hit_test_visible` / `snapped_tick_at` 那一套）。
+    host_center: (f32, f32),
+    /// 绘制帧中心（界面 `on_clicked` 收到的那一帧）。
+    painted_center: (f32, f32),
+    /// 宿主帧：音符**右沿内** 2px（吸附向上取整到终点 ⇒ 不严格落在音符内）＋ 退化控制臂用它。
+    ///
+    /// ⚠️ 取**右**沿而不是左沿：左沿内 2px 与铅笔按下点只差 2px（< Slint 的 10px 重复点击
+    /// 阈值）⇒ 这一击会被 `ClickState::check_repeat` 当成**双击**、派发器被调用两次。
+    /// 右沿内 2px 距铅笔按下点约一个音符宽（> 10px）⇒ 是一次**真正单击**。
+    host_degenerate: (f32, f32),
+    /// 绘制帧：同上。
+    painted_degenerate: (f32, f32),
+    /// 切分前的 `(start_tick, pitch, duration_ticks)`。
+    before: (u64, u8, u64),
+    velocity: u8,
+    /// 判据**自己**用 `snapped_tick_at` 算出的切分 tick（⛔ 不读被测返回值）。
+    split_tick: u64,
+}
+
+/// 装配靶子：铅笔在片段内画一颗音符，再从**权威工程**读回几何与期望切分点。
+///
+/// 三条夹具自证（少任何一条，(a) 就可能测的是别的路径）：铅笔真的加了音符；宿主命中测试在
+/// **宿主帧中心**解析到的**就是**它自己；中心的吸附 tick **严格落在**音符内部。
+fn knife_target(
+    window: &yeban_app::ui::MainWindow,
+    port: &Rc<UndoPort>,
+    plane: &mut LiveControlPlane,
+    seq: i64,
+) -> KnifeTarget {
+    assert_eq!(window.get_roll_scroll_x(), 0.0, "夹具前提：起点滚动为 0");
+    // ① 一个**真的落在片段内**的点击 x（与铅笔 / 橡皮擦判据同一自证）。
+    let project_before = port.project();
+    let hit_x = (0..240)
+        .map(|step| 10.0 * f32::from(u8::try_from(step).unwrap_or(0)))
+        .find(|x| {
+            pencil_op_for(
+                &project_before,
+                0.0,
+                *x,
+                HIT_Y_IN_ROLL,
+                ROLL_SNAP_GRID_TICKS,
+                i32::from(PENCIL_TOOL_DIGIT),
+            )
+            .is_some()
+        })
+        .expect("夹具里必须存在落在片段内的点击位置");
+    let before_count = note_count(&project_before);
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    click_in_roll_by_id(plane, seq, hit_x);
+    assert_eq!(
+        note_count(&port.project()),
+        before_count + 1,
+        "夹具前置：铅笔必须先真的加出一个音符"
+    );
+    let ulid = notes(&port.project())
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .find(|id| !notes(&project_before).iter().any(|(old, _, _)| old == id))
+        .expect("必须能读出新增音符的身份");
+
+    // ② 几何从**权威工程**读回（⛔ 不猜坐标）。
+    let view = yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
+    let index = view
+        .notes
+        .iter()
+        .position(|note| note.id == ulid)
+        .expect("新音符必须在投影里");
+    let bounds = element_bounds(plane, seq + 10, SCROLL_AREA);
+    let viewport_width = bound_f32(&bounds, "width");
+    let host_center = note_center_in_host_view(&view, index, 0.0);
+    let painted_center = note_center_in_painted_view(&view, index, 0.0);
+    assert_eq!(
+        view.hit_test_visible(
+            0.0,
+            viewport_width,
+            host_center.0,
+            host_center.1,
+            NOTE_HEIGHT
+        ),
+        Some(index),
+        "夹具前提：靶子的宿主帧中心必须被宿主命中测试解析到它自己"
+    );
+    let before = note_by_ulid(&port.project(), &ulid);
+    let velocity = velocity_of(&port.project(), &ulid);
+    let split_tick = view.snapped_tick_at(0.0, host_center.0, ROLL_SNAP_GRID_TICKS);
+    assert!(
+        split_tick > before.0 && split_tick < before.0 + before.2,
+        "夹具前提：中心的吸附 tick {split_tick} 必须**严格**落在音符 [{}, {}) 内部",
+        before.0,
+        before.0 + before.2
+    );
+    // 右沿内 2px（宿主帧）⇒ 吸附**向上**取整到音符终点（不严格落在内部）。仍命中靶子 ⇒
+    // 控制臂测的是"拒绝退化切分"，不是"点了空白"。
+    //
+    // ⚠️ 为什么不是左沿：左沿内 2px 距铅笔按下点只差 2px（< 10px 的重复点击阈值）⇒ 这一击会被
+    // Slint 当成**双击**、派发器被调用**两次**（实测：未加 `ops.is_empty()` 短路时空批提交 +2）。
+    // 右沿内 2px 距铅笔按下点约一个音符宽 ⇒ 是**一次**真正单击（提交增量恒为 1）。
+    let host_degenerate = (
+        view.notes[index].x - 0.0 + view.notes[index].width - 2.0,
+        host_center.1,
+    );
+    assert_eq!(
+        view.hit_test_visible(
+            0.0,
+            viewport_width,
+            host_degenerate.0,
+            host_degenerate.1,
+            NOTE_HEIGHT
+        ),
+        Some(index),
+        "夹具前提：退化臂的点必须仍然命中靶子（否则测的是空白而不是拒绝）"
+    );
+    KnifeTarget {
+        ulid,
+        host_center,
+        painted_center,
+        host_degenerate,
+        painted_degenerate: host_to_painted(host_degenerate.0, host_degenerate.1),
+        before,
+        velocity,
+        split_tick,
+    }
+}
+
+/// 判据 (a)：剪刀在音符**绘制帧中心**单击 ⇒ 原文被切**成恰好两个**独立音符：
+/// `pitch` / `velocity` 逐值继承，左 `[start, split)` ＋ 右 `[split, end)` 恰好铺满原文，
+/// 且切分点 == 判据**自己**用 `snapped_tick_at` 算出的值。
+///
+/// ## 它证明什么
+///
+/// 一条**端到端**的链：界面工具属性（剪刀）→ 真实指针注入（`down → move → up`，绘制帧）→
+/// 宿主那**一个** `hit_test_visible` 命中 → `snapped_tick_at` → `split_ops_for`
+/// （`DeleteNote` ＋ 两个 `EntityId::new()` 的 `AddNote`）→ **权威工程**。
+///
+/// ## ⛔ 它不证明什么
+///
+/// - 剪刀的**拖拽**切分（`ToolDrag::SliceAcross` 仍未接线）；
+/// - 跨片段 / 跨轨 / 多选切分（本切片**只**切指针下那一颗）；
+/// - 切分**期**的画面（无截图判据）；
+/// - 网格竖线的**绘制**位置（本判据断言的是模型里的 tick，不是像素）。
+#[test]
+fn a_knife_click_splits_the_note_under_the_cursor_into_two_tiles() {
+    let (window, port, mut plane) = assemble();
+    let target = knife_target(&window, &port, &mut plane, 10);
+    let ids_before: std::collections::BTreeSet<String> = notes(&port.project())
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    let before = note_count(&port.project());
+    // 判据**自己**独立算一遍期望切分 tick（⛔ 不用被测臂的回读值）。
+    let view_before_knife =
+        yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
+    let expected_split =
+        view_before_knife.snapped_tick_at(0.0, target.host_center.0, ROLL_SNAP_GRID_TICKS);
+    assert_eq!(
+        expected_split, target.split_tick,
+        "夹具自证：判据独立算出的切分 tick 必须与装配期算的一致"
+    );
+
+    window.set_active_tool(i32::from(Tool::Knife.digit()));
+    assert_eq!(
+        window.get_active_tool(),
+        i32::from(Tool::Knife.digit()),
+        "工具状态机：`active-tool` 必须真的切到剪刀"
+    );
+    click_in_roll_by_id_at(
+        &mut plane,
+        30,
+        target.painted_center.0,
+        target.painted_center.1,
+    );
+
+    let project_after = port.project();
+    let after = note_count(&project_after);
+    let new_notes: Vec<(String, u64, u8, u64, u8)> = notes(&project_after)
+        .into_iter()
+        .filter(|(id, _, _)| !ids_before.contains(id))
+        .map(|(id, start, pitch)| {
+            let (_, _, duration) = note_by_ulid(&project_after, &id);
+            let velocity = velocity_of(&project_after, &id);
+            (id, start, pitch, duration, velocity)
+        })
+        .collect();
+    report_line(&format!(
+        "[roll-knife-a] 剪刀点绘制帧 {:?}（宿主帧 {:?}）⇒ 音符数 {before} ⇒ {after}；\
+         原文 `{}` 仍在 = {}；新增 {new_notes:?}；期望切分 tick {expected_split}",
+        target.painted_center,
+        target.host_center,
+        target.ulid,
+        notes(&project_after)
+            .iter()
+            .any(|(id, _, _)| id == &target.ulid),
+    ));
+    assert_eq!(
+        after,
+        before + 1,
+        "切分必须**删一加二** ⇒ 音符数 +1（未接线时这里停在 {before}）"
+    );
+    assert!(
+        !notes(&project_after)
+            .iter()
+            .any(|(id, _, _)| id == &target.ulid),
+        "原文的身份必须消失（两个新身份，原文不留给左半）"
+    );
+    assert_eq!(new_notes.len(), 2, "必须恰好两个新音符");
+    let mut sorted = new_notes.clone();
+    sorted.sort_by_key(|(_, start, _, _, _)| *start);
+    let (left_id, left_start, left_pitch, left_duration, left_velocity) = sorted[0].clone();
+    let (right_id, right_start, right_pitch, right_duration, right_velocity) = sorted[1].clone();
+    let old_end = target.before.0 + target.before.2;
+    assert_ne!(left_id, right_id, "两个新音符必须有不同身份");
+    assert_eq!(
+        (left_pitch, right_pitch),
+        (target.before.1, target.before.1),
+        "两半的音高必须逐值继承原文"
+    );
+    assert_eq!(
+        (left_velocity, right_velocity),
+        (target.velocity, target.velocity),
+        "两半的力度必须逐值继承原文"
+    );
+    assert_eq!(
+        left_start, target.before.0,
+        "左半必须从原文起点开始（`[start, split)`）"
+    );
+    assert_eq!(
+        left_start + left_duration,
+        expected_split,
+        "左半必须在切分 tick 结束（`left.start + left.duration == split`）"
+    );
+    assert_eq!(
+        right_start, expected_split,
+        "右半必须从切分 tick 开始（`[split, end)`）"
+    );
+    assert_eq!(
+        right_start + right_duration,
+        old_end,
+        "右半必须在原文终点结束（`right.start + right.duration == old.start + old.duration`）"
+    );
+    assert!(
+        left_duration > 0 && right_duration > 0,
+        "两半的时值都必须 > 0（退化切分应当在 `split_ops_for` 被拒）"
+    );
+    assert_eq!(
+        window.get_selected_note_count(),
+        0,
+        "原文身份已被删除 ⇒ 选区必须清空（与橡皮擦同一取向）"
+    );
+}
+
+/// 判据 (b)：一次剪刀手势 = **恰好一次**提交 / **一步**撤销；一次 `UiAction::Undo` 之后工程
+/// **逐字节**回到切分前（`serde_json::to_vec` 比较）。
+///
+/// ## 它证明什么
+///
+/// `split_ops_for` 返回的三条 op 被 `undo_session::commit` 包成**一条** `Op::Batch`
+/// （`ARCH-OPS-002`）—— ⛔ 不是三次提交（那要按三次 `Cmd+Z` 才回来）。
+///
+/// ## ⛔ 它不证明什么
+///
+/// - 撤销**之后**的重做（由既有撤销判据管）；
+/// - 界面在撤销后的重投影（本判据只读权威工程的字节）。
+#[test]
+fn b_knife_split_is_one_atomic_commit_and_one_undo_step() {
+    let (window, port, mut plane) = assemble();
+    let target = knife_target(&window, &port, &mut plane, 10);
+    let bytes_before = serde_json::to_vec(&port.project()).expect("序列化切分前工程");
+    let commits_before = port.display().commit_count;
+    let undoable_before = port.display().undoable;
+
+    window.set_active_tool(i32::from(Tool::Knife.digit()));
+    click_in_roll_by_id_at(
+        &mut plane,
+        30,
+        target.painted_center.0,
+        target.painted_center.1,
+    );
+
+    let commits_after = port.display().commit_count;
+    let undoable_after = port.display().undoable;
+    assert!(
+        !notes(&port.project())
+            .iter()
+            .any(|(id, _, _)| id == &target.ulid),
+        "非空转前提：这一击必须真的切了原文（否则下面的计数可能只是「什么都没发生」）"
+    );
+    assert_eq!(
+        commits_after,
+        commits_before + 1,
+        "一次切分 = **恰好一次**提交（三条子 op 包成一个 `Op::Batch`）"
+    );
+    assert_eq!(
+        undoable_after,
+        undoable_before + 1,
+        "一次切分 = **恰好一步**撤销"
+    );
+
+    let changed = port.perform(yeban_app::undo::UiAction::Undo).changed();
+    let bytes_after_undo = serde_json::to_vec(&port.project()).expect("序列化撤销后工程");
+    report_line(&format!(
+        "[roll-knife-b] 一次剪刀手势：提交数 {commits_before} ⇒ {commits_after}；\
+         可撤销步数 {undoable_before} ⇒ {undoable_after}；\
+         一次 Undo 后工程字节 {} ⇒ {}（逐字节相同 = {}）；Undo changed = {changed}",
+        bytes_before.len(),
+        bytes_after_undo.len(),
+        bytes_before == bytes_after_undo,
+    ));
+    assert!(
+        changed,
+        "撤销必须真的改变了工程（否则下面的字节比较没有对照）"
+    );
+    assert_eq!(
+        bytes_before, bytes_after_undo,
+        "一次撤销必须把工程**逐字节**带回切分前（三条 op 若分成三次提交，这里只回来 1/3）"
+    );
+    assert_eq!(
+        port.display().undoable,
+        undoable_before,
+        "撤销之后可撤销步数必须回到切分前"
+    );
+}
+
+/// 判据 (c1) **控制臂**：剪刀点**空白** ⇒ 0 提交、0 音符变化、工程逐字节不变。
+///
+/// ## ⚠️ 它在**未接线**的代码上也是绿的
+///
+/// 它断言的是"没有假阳性"（点了空白不该切任何东西），**不是**能力存在。能力由 (a)/(b) 管。
+#[test]
+fn c1_a_knife_click_on_blank_space_changes_nothing() {
+    let (window, port, mut plane) = assemble();
+    let project_before = port.project();
+    let before_bytes = serde_json::to_vec(&project_before).expect("序列化起点工程");
+    let before = note_count(&project_before);
+    let commits_before = port.display().commit_count;
+    let view = yeban_app::bridge::ViewState::from_project(&project_before).expect("投影");
+    let bounds = element_bounds(&mut plane, 1, SCROLL_AREA);
+    let viewport_width = bound_f32(&bounds, "width");
+    let viewport_height = bound_f32(&bounds, "height");
+    let (host_x, host_y) = a_blank_point(&view, viewport_width, viewport_height, 0.0);
+    assert_eq!(
+        view.hit_test_visible(0.0, viewport_width, host_x, host_y, NOTE_HEIGHT),
+        None,
+        "夹具前提：该点必须真的空白（`hit_test_visible` 无命中）"
+    );
+    let (painted_x, painted_y) = host_to_painted(host_x, host_y);
+
+    window.set_active_tool(i32::from(Tool::Knife.digit()));
+    click_in_roll_by_id_at(&mut plane, 10, painted_x, painted_y);
+
+    let after_bytes = serde_json::to_vec(&port.project()).expect("序列化终点工程");
+    report_line(&format!(
+        "[roll-knife-c1] 剪刀点空白（宿主帧 ({host_x},{host_y})）⇒ 音符数 {before} ⇒ {}；\
+         提交数 {commits_before} ⇒ {}；工程逐字节不变 = {}",
+        note_count(&port.project()),
+        port.display().commit_count,
+        before_bytes == after_bytes,
+    ));
+    assert_eq!(
+        note_count(&port.project()),
+        before,
+        "剪刀点空白不得改变音符数"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "剪刀点空白不得提交任何 op"
+    );
+    assert_eq!(before_bytes, after_bytes, "剪刀点空白不得改动工程一个字节");
+}
+
+/// 判据 (c2) **控制臂**：吸附 tick **不严格落在**音符内部（点在音符**右沿内** 2px ⇒ 吸附向上
+/// 取整到终点）⇒ **拒绝**切分：0 提交、原文一位不动、工程逐字节不变。
+///
+/// ## ⚠️ 它在**未接线**的代码上**空转绿**（同族判据反复踩过这个坑）
+///
+/// 未接线时"什么都不做"，本判据当然绿。它的红必须靠**变异**挣：删掉宿主那侧的
+/// `if ops.is_empty() { return; }` 短路 ⇒ 空 `Vec` 也会被 `commit_ops` 包成一条空
+/// `Op::Batch` 提交（模型**不**拒绝空批）⇒ 本判据在**提交数**上红。实测读数见交付报告。
+///
+/// ## 夹具只覆盖 `== end` 那一半
+///
+/// 铅笔画出的音符起止**必在**网格上、时值是网格的整数倍 ⇒ 右沿内 2px 的吸附恰好**等于**终点
+/// （不是严格大于）。`split_ops_for` 里的 `split_tick >= end` 用 `>=` 而不是 `==`：非网格对齐的
+/// 时值（例如导入的 MIDI）会让吸附点**落到终点之后**，那时若用减法算右半时值会 u64 下溢
+/// （debug 下 panic）；`split_tick <= start` 的 `<=` 同理守着左半。
+#[test]
+fn c2_a_knife_click_whose_snapped_tick_is_outside_the_note_is_a_no_op() {
+    let (window, port, mut plane) = assemble();
+    let target = knife_target(&window, &port, &mut plane, 10);
+    let before_bytes = serde_json::to_vec(&port.project()).expect("序列化起点工程");
+    let before = note_count(&port.project());
+    let commits_before = port.display().commit_count;
+    // 夹具自证：这一点的吸附 tick **不严格落在**音符内部。
+    let view = yeban_app::bridge::ViewState::from_project(&port.project()).expect("投影");
+    let degenerate_tick = view.snapped_tick_at(0.0, target.host_degenerate.0, ROLL_SNAP_GRID_TICKS);
+    assert!(
+        degenerate_tick <= target.before.0 || degenerate_tick >= target.before.0 + target.before.2,
+        "夹具前提：退化点的吸附 tick {degenerate_tick} 必须**不严格落在**音符 [{}, {}) 内部",
+        target.before.0,
+        target.before.0 + target.before.2
+    );
+
+    window.set_active_tool(i32::from(Tool::Knife.digit()));
+    click_in_roll_by_id_at(
+        &mut plane,
+        30,
+        target.painted_degenerate.0,
+        target.painted_degenerate.1,
+    );
+
+    let after_bytes = serde_json::to_vec(&port.project()).expect("序列化终点工程");
+    report_line(&format!(
+        "[roll-knife-c2] 剪刀点音符右沿内 2px（宿主帧 {:?}，吸附 tick {degenerate_tick}，\
+         音符 [{}, {})）⇒ 原文仍在 = {}；音符数 {before} ⇒ {}；提交数 {commits_before} ⇒ {}；\
+         工程逐字节不变 = {}",
+        target.host_degenerate,
+        target.before.0,
+        target.before.0 + target.before.2,
+        notes(&port.project())
+            .iter()
+            .any(|(id, _, _)| id == &target.ulid),
+        note_count(&port.project()),
+        port.display().commit_count,
+        before_bytes == after_bytes,
+    ));
+    assert!(
+        notes(&port.project())
+            .iter()
+            .any(|(id, _, _)| id == &target.ulid),
+        "退化切分必须被拒绝：原文必须一位不动地留着"
+    );
+    assert_eq!(
+        note_count(&port.project()),
+        before,
+        "退化切分不得增删任何音符"
+    );
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "退化切分不得提交任何 op（一个空批也不许留下）"
+    );
+    assert_eq!(before_bytes, after_bytes, "退化切分不得改动工程一个字节");
+}

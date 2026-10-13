@@ -4003,6 +4003,87 @@ pub fn delete_ops_for(
     ops
 }
 
+/// `[UI-NOTE-003]` 剪刀的**左键单击**：把指针下那**一颗**音符沿吸附网格竖线切成两半
+/// （纯函数, 有判据）。
+///
+/// # 形状（四条都是决定）
+///
+/// 1. **指针范围**：只切派发器**已经命中的那一颗**（`hit_test_visible`）—— ⛔ 不是"查询所有跨
+///    过某条网格竖线的音符"（那需要一条新的 tick-span 查询, 本切片不引入第二条命中路径）；
+/// 2. **吸附 tick 由调用方给**：它来自 [`crate::bridge::ViewState::snapped_tick_at`]（唯一真相源）,
+///    本函数⛔ 不自己再做一次像素 → tick 换算；
+/// 3. **两个新身份、原文被删**：与 [`duplicate_ops_for`] 的副本形状同款
+///    （`copy.id = EntityId::new()`）—— 原文的 id **不**留给左半, 因此本函数**不需要任何新
+///    `Op` 变体**（`DeleteNote` ＋ 两个 `AddNote` 已能表达）；
+/// 4. **一次提交 = 一步撤销**：返回 `DeleteNote` ＋ `AddNote(左)` ＋ `AddNote(右)` **一个批**,
+///    `undo_session::commit` 把整批包成一条 `Op::Batch`（`ARCH-OPS-002`）。
+///
+/// # 两半恰好铺满原文（`[start, split)` ＋ `[split, end)`）
+///
+/// 左半 `start_tick = 原文 start`、`duration_ticks = split − start`；右半 `start_tick = split`、
+/// `duration_ticks = end − split`。`pitch` / `velocity` 及其余表现力字段由 `clone` 逐位继承。
+///
+/// # 拒绝退化切分（返回**空 `Vec`** ⇒ 调用方什么都不做）
+///
+/// 吸附 tick **不严格落在**音符内部（`split <= start || split >= end`）时拒绝。这一条同时排除
+/// 了两个"零时长半边"：严格不等式保证 `duration_ticks > 0`, 而模型**只**拒绝零时长
+/// （`music.rs` 的 `ZeroDuration`）。身份非法 / 解析不到 / 工程无轨道 ⇒ 也返回空。
+///
+/// ⚠️ `AddNote` 的前置条件**没有**片段边界检查（`ops.rs` 只查轨道存在 ＋ `note.validate()` ＋
+/// 重复身份）—— 但本函数把两半都夹在**原文自己的跨度内**, 因此切分不会把音符送出新边界。
+#[must_use]
+pub fn split_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    note_ulid: &str,
+    split_tick: u64,
+) -> Vec<yeban_model::ops::Op> {
+    let Ok(note_id) = note_ulid.parse::<yeban_model::EntityId>() else {
+        return Vec::new();
+    };
+    // 身份解析走**唯一**的 [`note_identity_for`]（与移动 / 力度臂同一口径）。
+    let Some((clip_id, track_id, _velocity)) = note_identity_for(project, note_id) else {
+        return Vec::new();
+    };
+    let Ok(note) = project.note(&clip_id, &note_id) else {
+        return Vec::new();
+    };
+    let start = note.start_tick;
+    let Some(end) = start.checked_add(note.duration_ticks) else {
+        return Vec::new();
+    };
+    // 严格不等式：吸附点必须落在音符**内部** ⇒ 两半的时值都 > 0（模型只拒绝零时长）。
+    if split_tick <= start || split_tick >= end {
+        return Vec::new();
+    }
+    let mut left = note.clone();
+    left.id = yeban_model::EntityId::new();
+    left.start_tick = start;
+    left.duration_ticks = split_tick - start;
+    let mut right = note.clone();
+    right.id = yeban_model::EntityId::new();
+    right.start_tick = split_tick;
+    right.duration_ticks = end - split_tick;
+    vec![
+        yeban_model::ops::Op::DeleteNote {
+            track_id,
+            clip_id,
+            note_id,
+            // 自带撤销载荷：撤销不需要回放历史（`ops.rs` 的设计约束 2）。
+            previous_note: note.clone(),
+        },
+        yeban_model::ops::Op::AddNote {
+            track_id,
+            clip_id,
+            note: left,
+        },
+        yeban_model::ops::Op::AddNote {
+            track_id,
+            clip_id,
+            note: right,
+        },
+    ]
+}
+
 /// `[UI-NOTE-003]` 把"选中的音符身份"解析成待提交的 **`Op::AddNote` 副本集合**（纯函数, 有判据）。
 ///
 /// 返回**空 `Vec`** 的两种情形都是**决定**：选区为空；选中的身份在工程里一个都解析不到
@@ -4257,8 +4338,38 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     ui.set_selected_note_count(0);
                     reproject_roll(&ui, port, width, scroll);
                 }
-                // 剪刀工具的点击语义尚未接线（与铅笔接上之前的状态同款：如实不做）。
-                crate::input::ToolClick::SplitNote => {}
+                // `[UI-NOTE-003]` 剪刀的**左键单击**：沿吸附网格竖线把**指针下那一颗**音符
+                // 切成两个独立音符（规范 §3.3 的"沿网格竖线将穿过的音符切分为两个独立音符"）。
+                //
+                // 手势是**指针范围**的：用的正是上面那**一个** `hit_test_visible` 命中
+                // （⛔ 不新增 tick-span 查询、⛔ 不建第二条命中路径）。吸附 tick 来自唯一真相源
+                // [`crate::bridge::ViewState::snapped_tick_at`]；退化切分（吸附点不严格落在音符
+                // 内部）由 [`split_ops_for`] 返回空集 ⇒ **一个 op 都不写**。
+                //
+                // **一个原子批 = 一步撤销**（`DeleteNote` ＋ 两个 `AddNote` ⇒ `Op::Batch`）。
+                crate::input::ToolClick::SplitNote => {
+                    let (Some(project), Some(port), Some(index)) =
+                        (project.as_ref(), port.as_ref(), hit)
+                    else {
+                        return;
+                    };
+                    let split_tick = view.snapped_tick_at(scroll, x, ROLL_SNAP_GRID_TICKS);
+                    let ops = split_ops_for(project, &view.notes[index].id, split_tick);
+                    if ops.is_empty() {
+                        return;
+                    }
+                    if port.commit_ops(now_ms(), "knife: split note", ops).is_err() {
+                        return;
+                    }
+                    // 原文的身份已经不存在（被删了）⇒ 选区必须清空，与橡皮擦同一取向：
+                    // 否则 `selected-note-count` 停在旧值上、与重算出来的标志分叉。
+                    ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(Vec::<
+                        slint::SharedString,
+                    >::new(
+                    ))));
+                    ui.set_selected_note_count(0);
+                    reproject_roll(&ui, port, width, scroll);
+                }
                 // `[UI-NOTE-003]` **力度工具的单击 / 双击**。
                 //
                 // **单击**（规范 §3.3 的"选中对应音符的底部力度柱"）仍未接线 ⇒ 如实不做。
