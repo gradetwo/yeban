@@ -483,3 +483,71 @@ mod key_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::host::{EngineCommandContext, apply_engine_command};
+    use crate::input::Action;
+
+    fn fixture() -> YebanProjectV1 {
+        yeban_model::samples::filled_project()
+    }
+
+    /// ⭐ **判据（"臂被消费"的证明，走真分派函数）**：`apply_engine_command` 是本仓
+    /// **唯一**的"要动引擎的动作"的落点 ⇒ 直接问它，并**逐条**验证：
+    /// ① 支持的动作被消费（`true`）；② **不支持的动作被拒**（`false`，⛔ 不吞）；
+    /// ③ 拒绝时**不改工程**（⛔ 不半改）。
+    ///
+    /// ⚠ **它仍然不是"整条 `apply_action` 的臂"**：`apply_action` 需要 `MainWindow`，
+    /// 而 macOS 上 winit `EventLoop` 是单例＋必须主线程（实测：判据建窗会
+    /// `EventLoop can't be recreated`）⇒ ⭐ 本轮能证明到的是"**落点**被消费"，
+    /// ⛔ 不是"`match` 臂"被消费；这一条**如实登记**，⛔ 不假装覆盖。
+    #[test]
+    fn the_engine_command_landing_point_consumes_only_the_engine_actions() {
+        let project = fixture();
+        let mut host = EngineHost::new();
+        host.reload(&project, 0).expect("建引擎");
+
+        // ① 支持的两个动作 ⇒ 被消费。
+        for action in [Action::ToggleMetronome, Action::ToggleCountIn] {
+            let mut context = EngineCommandContext {
+                host: &mut host,
+                project: &project,
+            };
+            assert!(
+                apply_engine_command(&mut context, action),
+                "⭐ {action:?} 必须被**消费**（它是本落点支持的引擎动作）"
+            );
+        }
+
+        // ② ⛔ **不支持的动作必须被拒**（这正是原 `_ => false` 通配变成显式分支后的行为）。
+        for action in [
+            Action::Cancel,
+            Action::Undo,
+            Action::PlayPause,
+            Action::AcceptAiSuggestion,
+        ] {
+            let mut context = EngineCommandContext {
+                host: &mut host,
+                project: &project,
+            };
+            assert!(
+                !apply_engine_command(&mut context, action),
+                "⛔ {action:?} **不得**被本落点消费（它不在这条链上）"
+            );
+        }
+
+        // ③ 拒绝路径**不改工程**（⛔ 不半改）：拿一份快照比工程字段。
+        let before = project.transport.metronome_enabled;
+        let mut context = EngineCommandContext {
+            host: &mut host,
+            project: &project,
+        };
+        assert!(!apply_engine_command(&mut context, Action::Cancel));
+        assert_eq!(
+            project.transport.metronome_enabled, before,
+            "⭐ 被拒的动作⛔ 不许改工程"
+        );
+    }
+}

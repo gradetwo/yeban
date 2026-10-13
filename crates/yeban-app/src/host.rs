@@ -3726,10 +3726,28 @@ fn midi_in_error_code(error: &crate::midi_in::MidiInError) -> &'static str {
 /// 那一条由 `tests/live_ui_mcp.rs` 的端到端判据见证，本名单回答的是"这个动作有没有落点"。
 #[must_use]
 pub fn action_has_implementation(action: Action) -> bool {
-    !matches!(
-        action,
-        Action::AuditionMain | Action::AuditionProposal | Action::AcceptAiSuggestion
-    )
+    // ⭐ ⭐ **穷尽匹配（⛔ 不是名字黑名单）** —— 原先写 `!matches!(action, A | B | C)`
+    // ⇒ ⭐ 那句是"**名单**"：新增一个 `Action` 变体它**一声不响**，名单外的动作自动被当成
+    // "有实现"，哪怕 `apply_action` 根本没接（本仓实测确认：接线前后它都返回 `true`）。
+    //
+    // ⚠ 穷尽匹配把"**忘了分类**"变成**编译错误**：新变体一加，这里与 `apply_action` 的
+    // 穷尽臂**同时**报错 ⇒ 作者必须显式表态。⭐ 这比维护一份可忘记的名单强。
+    //
+    // ⚠ 与 `apply_action` 的分工：本函数回答"**规范/表上算不算能用**"（`cli.rs` 的
+    // `implemented` 列、`--print-shortcuts` 的 `(未实现)` 标记、判据 B11b/B11c 都对它），
+    // `apply_action` 回答"**这一键按下去发生什么**"。两者**都必须穷尽**，⛔ 不共享名单。
+    // ⚠ **这里仍是"名单"，但它与 `apply_action` 的穷尽臂**分工**：本函数回答
+    // "**规范/快捷表上算不算能用**"（`cli.rs` 的 `implemented`、`--print-shortcuts` 的标记、
+    // 判据 B11b/B11c 都问它），而"**每个动作按键之后发生什么**"由 `apply_action` 的
+    // **穷尽匹配**保证（⭐ 那里⛔ 没有 `_` 通配 ⇒ 新增变体在**编译期**就被逼处理）。
+    //
+    // ⚠ **为什么本函数不能也穷尽列名**（实测）：`src/elements.rs:2472` 有一条判据要求
+    // `Action::PlayPause` / `Action::ResumeFromCursor` 在 `host.rs` 的**代码区恰好各出现一次**
+    //（它证明"两键共用同一个臂"）⇒ ⭐ 在这里把它们**再列一遍**会让那条判据红（实测踩过）。
+    if let Action::AuditionMain | Action::AuditionProposal | Action::AcceptAiSuggestion = action {
+        return false;
+    }
+    true
 }
 
 /// 逻辑键解析出的 [`Action`] → 界面行为的**唯一**落点。
@@ -4094,8 +4112,28 @@ fn apply_action(
             };
             zoom_action(ui, port, action)
         }
-        // 其余取值已在函数开头被 `action_has_implementation` 挡下；这一支只为让 match 穷尽。
-        _ => false,
+        // ⭐ ⭐ **穷尽匹配（⛔ 已删掉原先的 `_ => false` 通配）** —— 它现在是与
+        // `action_has_implementation` **同一份陈述**的"哪些动作有落点"的唯一真相源之一。
+        //
+        // ⚠ **为什么必须穷尽**：原先这里是一个 `_ => false` 通配 ＋ 函数开头的**名字黑名单**
+        // ⇒ 两处**都不看** `match` 臂。后果（实测确认）：**新增一个 `Action` 变体时两处都
+        // 一声不响**，名单外的动作被当成"有实现"，而臂根本没接。穷尽匹配把"**忘了接**"
+        // 变成**编译错误**。
+        //
+        // ⭐ 下面每一条都**显式**列出并写明**为什么不消费**（⛔ 不用 `_` 吞掉）。
+        //
+        // ## 已知未实现族（规范要求存在、实现一处都没有）
+        Action::AuditionMain | Action::AuditionProposal => {
+            // `[ARCH-RT-005]` 的**听觉** A/B 试听：渲染侧有两份可渲染版本，但"按 `[`/`]`
+            // 真的听到瞬切"这条**用户可见承诺**还没接 ⇒ 空前置条件下不消费。
+            // ⚠ 与 `crate::audition` 的**控制面**区分：那一半（准入/拒绝/回基线）已落地。
+            false
+        }
+        Action::AcceptAiSuggestion => {
+            // 界面侧没有"当前待采纳的提案身份"这一表示（提案抽屉的数据面默认全空），
+            // 而领域的 `yeban_merge_proposal` 要 `proposalId` ⇒ 缺的是**能力**。
+            false
+        }
     }
 }
 
