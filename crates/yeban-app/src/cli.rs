@@ -2390,21 +2390,32 @@ pub fn project_counts(loaded: &Loaded) -> ProjectCounts {
 /// 当前工程的报告行（第一行说来源，后面两行说事实）。
 ///
 /// 格式是 `key=value` 的空格分隔串（稳定、可被脚本与 AI 直接消费）；
-/// 唯一的自由文本字段是行尾的 `title="…"`（最小转义：`\\` `\"` `\n` `\r` `\t`，
-/// 其余控制字符写作 `\u{…}`）。
+/// **两个**自由文本字段都是**引号包裹**的（最小转义：`\\` `\"` `\n` `\r` `\t`，
+/// 其余控制字符写作 `\u{…}`）：行内的 `title="…"`，以及 ⭐ 与它**并列**的 `author="…"`
+/// （署名此前没有任何展示通路，见 `project_report` 里那段说明）。
 #[must_use]
 pub fn project_report(loaded: &Loaded) -> Vec<String> {
     let counts = project_counts(loaded);
     let project = &loaded.archive.project;
     vec![
         loaded.source.report_line(),
+        // ⭐ `author` 与 `title` **并列**（同一条通路）：署名是自由文本注记，空串是
+        // "未署名"的确定编码（`YebanProjectV1::author` 的 `#[serde(default)]` 文档）。
+        //
+        // ⚠ **为什么落在这里**：`author` 此前**没有任何展示或导出通路**（UI 零命中、
+        // `export_logic` 不写它、`als.rs:482` 逐字写着 "author 不写入本子集"、
+        // `yeban-midi` 零命中）⇒ 用户改了署名**在任何界面、任何导出物里都看不到**，
+        // 而它**可写**（`setAuthor` 已在工具面）⇒ "写进去了但不可见"比"不能写"更误导。
+        // ⭐ 本行是**既有**的报告通路（与 `title` 同一个消费面），⛔ 不新造展示面、
+        // ⛔ 不动像素、⛔ 不需要新控件。
         format!(
-            "project: id={} bpm={:.2} ts={}/{} title={}",
+            "project: id={} bpm={:.2} ts={}/{} title={} author={}",
             project.id.to_canonical_string(),
             project.bpm,
             project.time_signature.numerator,
             project.time_signature.denominator,
             quoted(&project.title),
+            quoted(&project.author),
         ),
         format!(
             "project-counts: tracks-all={} master-track={} scenes={} sections={} clips-pool={} \
@@ -6513,6 +6524,10 @@ mod tests {
         assert_eq!(quoted("a\"b\\c"), "\"a\\\"b\\\\c\"");
         assert_eq!(quoted("a\nb"), "\"a\\nb\"");
 
+        // ⭐ 那一行**整行**由下面两条判据钉住（⛔ 不只断言"含 author="）：
+        // `report_author_column_is_pinned_field_by_field`（改 ⇒ 变）
+        // ＋ `report_author_column_is_stable_without_a_change`（⛔ 不改 ⇒ 不变）。
+
         let loaded = Loaded {
             archive: ProjectArchive {
                 project: crate::bridge::demo_project(),
@@ -6566,6 +6581,95 @@ mod tests {
             ProjectSource::Sample(Sample::Default).save_target(),
             None,
             "样本没有磁盘对应物 ⇒ 保存必须如实报\"未配置保存路径\""
+        );
+    }
+}
+
+#[cfg(test)]
+mod author_report_tests {
+    use super::*;
+
+    /// ⭐ 造一个**产品路径**的报告（`project_report` 是界面路径与批处理路径**共用**的那一份）。
+    fn loaded_with_author(author: &str) -> Loaded {
+        let mut project = crate::bridge::demo_project();
+        project.author = author.to_owned();
+        Loaded {
+            archive: ProjectArchive {
+                project,
+                history_dag: Vec::new(),
+                assets: Vec::new(),
+            },
+            source: ProjectSource::Sample(Sample::Default),
+        }
+    }
+
+    /// ⭐ **独立**拼出那一行的**期望**（⛔ 不调 `project_report`）⇒ 字段名、顺序、引号口径
+    /// 全部被钉住 ⇒ ⭐ **该行任何字段漂移都会红**（这正是"该行此前没有判据"的补课）。
+    fn expected_project_line(project: &YebanProjectV1) -> String {
+        format!(
+            "project: id={} bpm={:.2} ts={}/{} title={} author={}",
+            project.id.to_canonical_string(),
+            project.bpm,
+            project.time_signature.numerator,
+            project.time_signature.denominator,
+            quoted(&project.title),
+            quoted(&project.author),
+        )
+    }
+
+    fn line_for(loaded: &Loaded) -> String {
+        project_report(loaded)
+            .into_iter()
+            .find(|line| line.starts_with("project: id="))
+            .expect("报告里必须有那一行")
+    }
+
+    /// ⭐ **判据 ①**：改 `author` ⇒ 报告行**逐字**变，且与**独立拼出**的期望**逐字相等**。
+    #[test]
+    fn report_author_column_is_pinned_field_by_field() {
+        let loaded = loaded_with_author("夜半作者");
+        let line = line_for(&loaded);
+        assert_eq!(
+            line,
+            expected_project_line(&loaded.archive.project),
+            "⭐ 报告行必须与**独立拼出**的期望逐字相等（字段名/顺序/引号口径全钉住）"
+        );
+        assert!(
+            line.ends_with("author=\"夜半作者\""),
+            "⭐ 改 author ⇒ 行尾必须出现它（实测：{line}）"
+        );
+
+        // ⭐ 再改一次 ⇒ **整行**随之变（⛔ 不只是"含 author="）。
+        let other = loaded_with_author("another");
+        let other_line = line_for(&other);
+        assert_ne!(line, other_line, "⭐ 改 author ⇒ 整行必须变");
+        assert_eq!(other_line, expected_project_line(&other.archive.project));
+
+        // ⭐ 空串是"未署名"的确定编码 ⇒ 也必须**如实出现**在那一行里（⛔ 不省略字段）。
+        // ⚠ 这条断言**归 ①**（它依赖产品行为）⇒ ⛔ 不放进控制臂，否则控制臂会跟着 ① 一起红、
+        // 就**无法演示**"① 红而控制臂仍绿"（第 46/47 条；实测踩过）。
+        let empty = line_for(&loaded_with_author(""));
+        assert!(
+            empty.ends_with("author=\"\""),
+            "⭐ 未署名必须如实写成 author=\"\"（⛔ 不是省略字段）：{empty}"
+        );
+        assert_eq!(
+            empty,
+            expected_project_line(&loaded_with_author("").archive.project)
+        );
+    }
+
+    /// ⭐ **判据 ②（控制臂，独立判据、走产品路径）**：⛔ **不改** `author` ⇒ 报告行**逐字不变**。
+    ///
+    /// ⚠ **单独一条**（第 46/47 条）：若与 ① 同条，① 一红就**无法演示**"控制臂仍绿"。
+    /// ⚠ 它走的是**产品路径**（`project_report`，界面与批处理共用那一份），⛔ 不是另写旁路。
+    #[test]
+    fn report_author_column_is_stable_without_a_change() {
+        let first = line_for(&loaded_with_author("same"));
+        let second = line_for(&loaded_with_author("same"));
+        assert_eq!(
+            first, second,
+            "⭐ 控制臂：author 不变 ⇒ 报告行必须**逐字**不变"
         );
     }
 }
