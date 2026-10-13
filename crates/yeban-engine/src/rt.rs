@@ -766,6 +766,36 @@ pub struct AuditionBranch {
     /// 第二份版本的读者。⚠ 在册化时它**立刻**锚住该槽当时的快照（见
     /// [`SnapshotReader::attach`]）⇒「连到的是哪一份」从构造起就可观测。
     reader: SnapshotReader,
+    /// **第二个合成引擎**（[ARCH-RT-005] 片 2b）。
+    ///
+    /// ⚠ **必须在构造期建立**：`SynthEngine` 自带声部池与调度表，在回调里 `new`
+    /// 就是分配 ⇒ 违反红线 7。两条分支各自的声部必须**同时存活**（这正是不能用
+    /// 一个引擎先后渲染两份的原因：`begin_snapshot` 会重播声部）。
+    /// ⚠ **装箱**：`SynthEngine` 很大，直接内联会把 [`EngineRuntime`] 撑大，
+    /// 而它在栈上被构造 ⇒ 已实测到**栈溢出**（`device` 的判据）。
+    /// 装箱后运行时只多一个指针；堆分配发生在**控制路径**的 `attach`。
+    synth: Box<SynthEngine>,
+    /// 第二分支的**输出缓冲**（构造期预分配固定长度，⛔ 回调内不增长）。
+    block: Box<AudioBlock<DEFAULT_BLOCK_FRAMES>>,
+    /// 第二引擎已武装到哪个修订号（`None` ＝ 还没武装）。
+    armed_revision: Option<u64>,
+    /// **等功率淡化表**：`fade[k] = crossfade_gains(k / fade_len)`，长度 `fade_len + 1`。
+    ///
+    /// ⭐ **为什么是一张表**：[`crate::mixer::crossfade_gains`] 里有 `cos`/`sin`，
+    /// 属**超越函数** ⇒ ⛔ 不许出现在逐样本路径上（[MUST-GATE-001]）。
+    /// 控制路径算一次、实时侧只做**整数索引** ⇒ 逐样本只有"两次乘一次加"。
+    /// 它在控制路径分配、此后**不再增长**；`Drop` 只发生在运行时销毁时。
+    fade: Box<[(f32, f32)]>,
+    /// 距**切换帧**还剩多少帧（控制路径置入；回调内只减）。
+    frames_until_switch: u64,
+    /// 本次试听的**绝对切换帧**（来自 [`Transport::audition_switch_frame`]）。
+    switch_frame: u64,
+    /// 第二分支**真的被渲染过**的块数（[MUST-GATE-001] 的**覆盖度见证**）。
+    ///
+    /// ⭐ 没有它，"空闲时输出不变"那条判据可能是**空转**：只要淡化表还没算出来，
+    /// 混合函数就会提前返回、不改一个样本 —— 于是"误入试听路径"也测不出来。
+    /// 这个计数把"空闲时**一次都不该读**第二分支"变成**可观测**的。
+    blocks_read: u64,
 }
 
 /// 试听被**拒绝**的原因（[ARCH-RT-005] 片 2b 的**受限版**口径）。
@@ -908,6 +938,38 @@ pub fn audition_topology_mismatch(
 }
 
 impl AuditionBranch {
+    /// 控制路径：按采样率**预计算等功率淡化表**，并记下本次的**切换帧**。
+    ///
+    /// ⚠ 只许在控制路径调用（会分配）。同一个采样率下**只建一次**表。
+    pub fn prepare(&mut self, sample_rate: u32, switch_frame: u64, position_frames: u64) {
+        let len = crate::mixer::crossfade_len_frames(sample_rate as f32).max(1);
+        if self.fade.len() != len + 1 {
+            self.fade = (0..=len)
+                .map(|index| crate::mixer::crossfade_gains(index as f32 / len as f32))
+                .collect();
+        }
+        self.switch_frame = switch_frame;
+        self.frames_until_switch = switch_frame.saturating_sub(position_frames);
+    }
+
+    /// 本次试听的**绝对切换帧**（`0` ＝ 还没开始过）。
+    #[must_use]
+    pub const fn switch_frame(&self) -> u64 {
+        self.switch_frame
+    }
+
+    /// 第二分支真的被渲染过的块数（空闲时必须是 `0`）。
+    #[must_use]
+    pub const fn blocks_read(&self) -> u64 {
+        self.blocks_read
+    }
+
+    /// 淡化表（`fade[k] = crossfade_gains(k / fade_len)`）；空 ＝ 还没 prepare。
+    #[must_use]
+    pub fn fade_table(&self) -> &[(f32, f32)] {
+        &self.fade
+    }
+
     /// 在册化第二份版本。
     ///
     /// **必须在音频线程启动前调用**（与 [`SnapshotReader::attach`] 同一条纪律：
@@ -916,6 +978,13 @@ impl AuditionBranch {
     pub fn attach(slot: &Arc<SnapshotSlot>, retire: RetireProducer) -> Self {
         Self {
             reader: SnapshotReader::attach(slot, retire),
+            synth: Box::new(SynthEngine::new(48_000)),
+            block: Box::new(AudioBlock::new()),
+            armed_revision: None,
+            fade: Box::default(),
+            frames_until_switch: 0,
+            switch_frame: 0,
+            blocks_read: 0,
         }
     }
 
@@ -926,6 +995,46 @@ impl AuditionBranch {
     #[must_use]
     pub fn held_revision(&self) -> Option<u64> {
         self.reader.held().map(|snapshot| snapshot.revision())
+    }
+}
+
+/// **等功率混合**：`out = out·g_out + other·g_in`，逐样本（[ARCH-RT-005] 片 2c）。
+///
+/// ## 切换帧语义（⭐ 判据钉的就是这条）
+///
+/// `frames_until_switch` 是"本块内第几帧开始淡化"（0-based）。于是：
+/// * 帧 `i < frames_until_switch` ⇒ 表下标 `0` ⇒ `(1, 0)` ⇒ **纯 A**；
+/// * 帧 `i == frames_until_switch` ⇒ 下标 `0` ⇒ 仍然纯 A（切换帧本身还是 A）；
+/// * 帧 `i == frames_until_switch + fade_len` ⇒ 下标到顶 ⇒ `(0, 1)` ⇒ **纯 B**。
+///
+/// ⇒ 过渡**恰好从切换帧开始**、恰好 `fade_len` 帧后结束。
+///
+/// ## 实时约束
+///
+/// 零分配、零锁、零 I/O、**零超越函数** [MUST-GATE-001]：增益全部来自
+/// **控制期**算好的表（[`AuditionBranch::prepare`]），这里只有整数索引与乘加。
+fn blend_equal_power(
+    out: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    other: &AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    frames: usize,
+    frames_until_switch: u64,
+    fade: &[(f32, f32)],
+) {
+    if fade.is_empty() {
+        return;
+    }
+    let last = fade.len() - 1;
+    let frames = frames.min(out.frames()).min(other.frames());
+    let other_left = other.left();
+    let other_right = other.right();
+    let (out_left, out_right) = out.stereo_mut();
+    for index in 0..frames {
+        let offset = (index as u64).saturating_sub(frames_until_switch);
+        #[allow(clippy::cast_possible_truncation)]
+        let table_index = (offset as usize).min(last);
+        let (gain_out, gain_in) = fade[table_index];
+        out_left[index] = out_left[index] * gain_out + other_left[index] * gain_in;
+        out_right[index] = out_right[index] * gain_out + other_right[index] * gain_in;
     }
 }
 
@@ -1767,6 +1876,12 @@ impl EngineRuntime {
         {
             return Err(reason);
         }
+        let sample_rate = proposal.sample_rate();
+        let switch_frame = self.transport.audition_switch_frame();
+        let position_frames = self.transport.position_frames();
+        if let Some(branch) = self.audition.as_mut() {
+            branch.prepare(sample_rate, switch_frame, position_frames);
+        }
         self.audition_active = true;
         Ok(())
     }
@@ -1780,6 +1895,21 @@ impl EngineRuntime {
     #[must_use]
     pub const fn is_auditioning(&self) -> bool {
         self.audition_active
+    }
+
+    /// 第二分支**真的被渲染过**的块数（`None` ＝ 未挂上）。空闲时必须恒为 `0`。
+    #[must_use]
+    pub fn audition_blocks_read(&self) -> Option<u64> {
+        self.audition.as_ref().map(AuditionBranch::blocks_read)
+    }
+
+    /// 本次试听的**绝对切换帧**（`None` ＝ 还没挂第二分支；`0` ＝ 还没开始过）。
+    ///
+    /// 它来自 [`Transport::audition_switch_frame`]（"下一拍"的绝对帧）⇒ 判据用它
+    /// 证明"切换帧是由走带决定的"，⛔ 不是随手挑的常数。
+    #[must_use]
+    pub fn audition_switch_frame(&self) -> Option<u64> {
+        self.audition.as_ref().map(AuditionBranch::switch_frame)
     }
 
     /// 第二分支当前持有的快照修订号（`None` ＝ 未挂上）。
@@ -2369,6 +2499,8 @@ impl EngineRuntime {
         rt_probe::quantum_enter();
         let Self {
             snapshot,
+            audition,
+            audition_active,
             events,
             meters,
             block,
@@ -2929,6 +3061,50 @@ impl EngineRuntime {
                 };
                 produced =
                     render_branch(&mut share, synth, block, current, frames, running, quantum);
+
+                // ---- [ARCH-RT-005] 片 2b/2c：**并发渲染第二分支 + 等功率混合** ----
+                //
+                // ⚠ 未试听时**整段跳过** ⇒ 输出逐字节不变、RT 成本 0（片 1/2a 钉住的性质）。
+                // ⚠ 第二引擎的武装**零分配**（与主线同一条纪律：同采样率下只写预分配槽位）。
+                // ⚠ `begin_quantum()` 会被调用两次 ⇒ 试听期的电平读数是**后渲染那条**的
+                //    （分支 B）。这是**明说的**口径，⛔ 不是遗漏。
+                if *audition_active
+                    && let Some(branch) = audition.as_mut()
+                    && let Some(proposal) = branch.reader.begin_block()
+                {
+                    if branch.armed_revision != Some(proposal.revision()) {
+                        branch.synth.begin_snapshot(
+                            proposal.sample_rate(),
+                            proposal.tracks().keys().filter(|id| **id != master),
+                            proposal.tones().iter().filter(|(id, _)| **id != master),
+                            proposal.drums().iter().filter(|(id, _)| **id != master),
+                        );
+                        branch.synth.align_cursors(
+                            proposal.schedules().iter().filter(|(id, _)| **id != master),
+                        );
+                        branch.synth.set_track_gain_scales(proposal);
+                        branch.armed_revision = Some(proposal.revision());
+                    }
+                    let _ = render_branch(
+                        &mut share,
+                        &mut branch.synth,
+                        &mut branch.block,
+                        proposal,
+                        frames,
+                        running,
+                        quantum,
+                    );
+                    blend_equal_power(
+                        block,
+                        &branch.block,
+                        frames,
+                        branch.frames_until_switch,
+                        &branch.fade,
+                    );
+                    branch.blocks_read = branch.blocks_read.saturating_add(1);
+                    branch.frames_until_switch =
+                        branch.frames_until_switch.saturating_sub(frames as u64);
+                }
             }
 
             // --- 3a') 节拍器咔哒声：**逐轨汇流之后、主总线推子与母线限制器之前** ---
@@ -6176,5 +6352,133 @@ mod tests {
         );
         assert_eq!(AuditionRefusal::PdcPlan.as_str(), "pdc-plan");
         assert_eq!(AuditionRefusal::NoMainSnapshot.as_str(), "no-main-snapshot");
+    }
+
+    // -----------------------------------------------------------------------
+    // [ARCH-RT-005] 片 2b/2c：混合的**等功率**与**切换帧**，以及"空闲不变"
+    // -----------------------------------------------------------------------
+
+    /// ⚠ **未试听时输出逐字节不变**（防回退 2a / 2b-1 钉住的性质）。
+    ///
+    /// 两棵同源夹具：一棵**挂上**第二分支但**不开始试听**，一棵完全不挂。
+    /// 输出必须逐位相同（`to_bits()`；⛔ 不用 `==`）。
+    #[test]
+    fn audition_idle_output_is_byte_identical() {
+        const QUANTA: u64 = 64;
+        let render = |attach: bool| -> (Vec<u32>, Option<u64>) {
+            let (snapshot, _) = note_snapshot_with_pan(1, 0.0);
+            let mut rig = rig_with_snapshot(snapshot);
+            if attach {
+                let (proposal, _) = note_snapshot_with_pan(7, 0.0);
+                let slot = Arc::new(SnapshotSlot::new(proposal));
+                let (retire, queue) = retire_channel(8);
+                rig.runtime.attach_audition_branch(&slot, retire);
+                // 队列必须活到判据结束（退役通道的另一端）。
+                let _ = &queue;
+            }
+            let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+            let mut bits: Vec<u32> = Vec::new();
+            for _ in 0..QUANTA {
+                rig.runtime.process_quantum(&mut out, 2);
+                bits.extend(out.iter().map(|s| s.to_bits()));
+            }
+            (bits, rig.runtime.audition_blocks_read())
+        };
+        let (attached, reads) = render(true);
+        let (bare, _) = render(false);
+        // ⭐ **覆盖度见证**：空闲时第二分支必须**一次都没被读**。
+        //    没有这一条，本判据可能是空转：只要淡化表还没算出来，混合函数就会
+        //    提前返回、不改一个样本 ⇒ "误入试听路径"也测不出来。
+        assert_eq!(
+            reads,
+            Some(0),
+            "未试听时第二分支**一次都不该被 `begin_block()`**"
+        );
+        let first_diff = attached.iter().zip(bare.iter()).position(|(a, b)| a != b);
+        assert!(
+            first_diff.is_none(),
+            "未试听时输出必须逐字节不变；首个不同的样本下标 = {first_diff:?}"
+        );
+        // 冷对照：⛔ 不能是"两边都是静音"的假相同。
+        let peak = attached
+            .iter()
+            .map(|b| f32::from_bits(*b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(peak > 0.05, "夹具必须真的出声（峰值 {peak}）");
+    }
+
+    /// ⭐ **等功率**：淡化表逐项的 `淡出² + 淡入²` 与 1 的偏差 ≤ `1e-5`，**且不是线性**。
+    ///
+    /// ⚠ 只测等式**测不出线性**（线性曲线在中点也有 `0.5²+0.5²=0.5`，但那不是 1）
+    /// ⇒ 必须**外加**"中点 ≈ 0.7071 且与线性值 0.5 相差 ≥ 0.2"这条反线性读数。
+    #[test]
+    fn audition_fade_table_is_equal_power_not_linear() {
+        let (retire, _queue) = retire_channel(8);
+        let slot = Arc::new(SnapshotSlot::new(simple_snapshot(1)));
+        let mut branch = AuditionBranch::attach(&slot, retire);
+        branch.prepare(48_000, 1_440, 0);
+        let table = branch.fade_table();
+        assert_eq!(table.len(), 1_441, "48 kHz / 30 ms ⇒ 1440 + 1");
+        let mut worst = 0.0f32;
+        for (out_gain, in_gain) in table {
+            worst = worst.max((out_gain * out_gain + in_gain * in_gain - 1.0).abs());
+        }
+        assert!(worst <= 1e-5, "等功率偏差必须 ≤ 1e-5，实得 {worst}");
+        let midpoint = table[720].0;
+        assert!(
+            (midpoint - core::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,
+            "中点必须 ≈ 0.7071，实得 {midpoint}"
+        );
+        assert!(
+            (midpoint - 0.5).abs() >= 0.2,
+            "中点与**线性**值 0.5 必须差 ≥ 0.2（证曲线不是线性），实得 {midpoint}"
+        );
+    }
+
+    /// ⭐ **切换恰好发生在切换帧**：切换帧之前纯 A、之后按表过渡、`fade_len` 帧后纯 B。
+    #[test]
+    fn audition_blend_switches_exactly_at_the_switch_frame() {
+        const FRAMES: usize = 16;
+        let mut a = AudioBlock::new();
+        a.set_frames(FRAMES);
+        {
+            let (left, right) = a.stereo_mut();
+            for sample in left.iter_mut().chain(right.iter_mut()) {
+                *sample = 1.0;
+            }
+        }
+        let mut b = AudioBlock::new();
+        b.set_frames(FRAMES);
+        {
+            let (left, right) = b.stereo_mut();
+            for sample in left.iter_mut().chain(right.iter_mut()) {
+                *sample = -1.0;
+            }
+        }
+        // 长度为 5 的表（fade_len = 4）⇒ 切换帧 + 4 帧之后必须已经是纯 B。
+        let table: Vec<(f32, f32)> = (0..=4)
+            .map(|k| crate::mixer::crossfade_gains(k as f32 / 4.0))
+            .collect();
+        const UNTIL: u64 = 3;
+        blend_equal_power(&mut a, &b, FRAMES, UNTIL, &table);
+        let left: Vec<f32> = a.left()[..FRAMES].to_vec();
+        for (index, sample) in left.iter().enumerate() {
+            let index_u64 = index as u64;
+            if index_u64 < UNTIL {
+                assert_eq!(*sample, 1.0, "切换帧之前必须是纯 A（帧 {index}）");
+            }
+            if index_u64 == UNTIL {
+                assert_eq!(*sample, 1.0, "切换帧本身仍是 A（表下标 0）");
+            }
+            if index_u64 == UNTIL + 4 {
+                assert_eq!(*sample, -1.0, "`fade_len` 帧之后必须是纯 B（帧 {index}）");
+            }
+            if index_u64 > UNTIL && index_u64 < UNTIL + 4 {
+                assert!(
+                    *sample < 1.0 && *sample > -1.0,
+                    "过渡区必须严格夹在两者之间（帧 {index} ⇒ {sample}）"
+                );
+            }
+        }
     }
 }
