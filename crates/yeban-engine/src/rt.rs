@@ -1099,6 +1099,24 @@ struct BranchShare<'a> {
 ///
 /// 零分配、零锁、零 I/O、零日志（[MUST-GATE-001] / 红线 7）：借用的字段全部
 /// **构造期预分配**，本函数只读写它们。
+///
+/// ## ⚠ 试听期的**电平读数主语**（裁决 **(甲)** 下的**已知边界**）
+///
+/// 本函数每被调用一次就 `bank.begin_quantum()` 一次。试听期它被**调用两次**
+/// （先主线 A、后分支 B）⇒ **本量子已发布的电平读数，主语是"后渲染那条"，即 B**。
+///
+/// ⛔ 这**不是输出正确性问题**：音频输出另有逐字节判据守着（见
+/// `extracted_mix_path_matches_the_legacy_inline_path_bit_for_bit` 与集成场景 ㉗）。
+/// 它是一条**读数口径**的边界。
+///
+/// 口径**改**的话只有两条路，且都**不在本片范围**：
+/// * **(乙)** 把 `begin_quantum()` 提到两条分支**之前** ⇒ 读数归主线 A；
+///   代价是会动 2a 那条**逐位等价参照判据**；
+/// * **(丙)** 改读**混合之后**的母线 ⇒ 最贴听感，但 `bank` 是**按轨**的，
+///   需要一套**尚未规定**的新口径。
+///
+/// 现状由判据 `audition_meter_reading_belongs_to_the_last_branch_rendered` 钉住
+/// （⛔ 防静默漂移）。
 fn render_branch(
     share: &mut BranchShare<'_>,
     synth: &mut SynthEngine,
@@ -3466,6 +3484,7 @@ mod tests {
     use crate::meter::meter_channel;
     use crate::ring::event_channel;
     use crate::snapshot::{EngineSnapshot, TrackParams, retire_channel};
+    use crate::synth::NoteSchedule;
     use std::collections::BTreeMap;
     use yeban_model::{EntityId, RoutingEdge, RoutingGraph, RoutingKind, TrackV3};
 
@@ -6578,6 +6597,74 @@ mod tests {
         assert_ne!(
             stored, until_before,
             "必须真的顺延到**再下一拍**，⛔ 不是把切换挪到拍与拍之间"
+        );
+        let _ = &queue;
+    }
+
+    /// 试听期某条轨的**峰值**读数（取该轨在若干个量子里的最大 `peak`）。
+    fn run_and_peak(rig: &mut Rig, quanta: usize, track: EntityId) -> f32 {
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..quanta {
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        let mut scratch = [MeterFrame::default(); 64];
+        let drained = rig.collector.tick(&mut scratch);
+        scratch[..drained]
+            .iter()
+            .filter(|frame| frame.node == track)
+            .map(|frame| frame.peak)
+            .fold(0.0f32, f32::max)
+    }
+
+    /// ⭐ [ARCH-RT-005] 裁决 **(甲)** 的**钉住**判据：试听期的电平读数**主语是后渲染那条（B）**。
+    ///
+    /// ⚠ **为什么必须让 B 与 A 可分辨**：如果两条分支同源（材料一样），它们的电平读数
+    /// **逐位相同** ⇒ 这条判据**当前不可分辨**、就是一条空转判据。
+    /// ⇒ 本判据的提案与主线**拓扑同源**（否则会被准入判定拒绝），但把该轨的**谱清空**
+    /// ⇒ B 静音、A 有声 ⇒ 主语是谁**可观测**。
+    ///
+    /// ⛔ 若你要的是 (乙)/(丙) 的口径，先改那条裁决 —— 本判据会**如实变红**。
+    #[test]
+    fn audition_meter_reading_belongs_to_the_last_branch_rendered() {
+        const QUANTA: usize = 8;
+        let (main, track) = note_snapshot_with_pan(1, 0.0);
+
+        // ① 平时（单分支、不试听）：读数主语是 A。
+        let mut solo = rig_with_snapshot(main.clone());
+        let peak_solo = run_and_peak(&mut solo, QUANTA, track);
+
+        // ② 试听：拓扑同源 + **该轨谱清空** ⇒ B 静音。
+        let mut schedules = main.schedules().clone();
+        schedules.insert(track, NoteSchedule::from_sorted(Vec::new()));
+        // 第 2 个参数是"被丢弃的音符数"（0 ⇒ 没有溢出）。
+        let proposal = main.clone().with_schedules(schedules, 0);
+        let proposal_arc = Arc::new(proposal.clone());
+        let slot = Arc::new(SnapshotSlot::new(proposal));
+        let (retire, queue) = retire_channel(8);
+        let mut rig = rig_with_snapshot(main.clone());
+        rig.runtime.attach_audition_branch(&slot, retire);
+        rig.runtime
+            .begin_audition(
+                &proposal_arc,
+                AutomationTargets::empty(),
+                AutomationTargets::empty(),
+            )
+            .expect("拓扑同源（只差谱）⇒ 必须被接受");
+        let peak_audition = run_and_peak(&mut rig, QUANTA, track);
+        eprintln!(
+            "试听期电平读数：[单分支 A] peak={peak_solo} / [试听期] peak={peak_audition} / \
+             第二分支渲染块数={:?}",
+            rig.runtime.audition_blocks_read()
+        );
+
+        assert!(
+            peak_solo > 0.0,
+            "基线必须**真的有信号**，否则本判据不可分辨（实得 {peak_solo}）"
+        );
+        assert_eq!(
+            peak_audition, 0.0,
+            "试听期读数的主语必须是**后渲染的 B**（其谱已清空 ⇒ 峰值必须为 0）；\
+             实得 {peak_audition}（≠ 0 ⇒ 主语变成了 A，口径漂移了）"
         );
         let _ = &queue;
     }
