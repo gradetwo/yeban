@@ -488,6 +488,31 @@ pub fn write_notes(
 /// # Errors
 ///
 /// [`MidiNoteError::Destination`]：工程里没有非 master 音轨。
+/// ⭐ **实时腿的落点**：与 [`write_notes`] 的 `track = None` **同一条**规则
+/// （[`crate::import_midi::destination`]）⇒ 听到的音与落谱的音在**同一条轨、同一个片段**上。
+///
+/// ⚠ 与 [`default_track`] 的差别：它只给音轨，而**提交一条音符**还需要片段 id
+/// （`Op::AddNote` 的载荷要 `clip_id`）。两条规则必须同源，否则"听得到、写不进"。
+///
+/// # Errors
+///
+/// [`MidiNoteError::Destination`]（没有非 master 音轨，或那条音轨没有任何摆放）。
+pub fn live_destination(project: &YebanProjectV1) -> Result<(EntityId, EntityId), MidiNoteError> {
+    crate::import_midi::destination(
+        project,
+        &MidiImportOptions {
+            track_id: None,
+            clip_id: None,
+        },
+    )
+    .map_err(|error| MidiNoteError::Destination(error.to_string()))
+}
+
+/// 与 `--import-midi` 的缺省目标**同一条规则**（复用 `import_midi::destination` 的判定）。
+///
+/// # Errors
+///
+/// [`MidiNoteError::Destination`]：工程里没有非 master 音轨。
 pub fn default_track(project: &YebanProjectV1) -> Result<EntityId, MidiNoteError> {
     project
         .tracks
@@ -1057,7 +1082,7 @@ mod tests {
     /// **端口**规则同一套；⭐ 主总线**永远不可选**（它不是一个能收音符的目标）。
     #[test]
     fn the_track_selector_follows_the_same_rules_as_the_port_selector() {
-        let project = crate::bridge::demo_project();
+        let project = yeban_model::samples::demo_project();
         let ids: Vec<EntityId> = project
             .tracks
             .keys()
@@ -1368,7 +1393,7 @@ mod tests {
             .map(|(t, s, d1, d2)| (t + origin_us, *s, *d1, *d2))
             .collect();
 
-        let project = crate::bridge::demo_project();
+        let project = yeban_model::samples::demo_project();
         let track = project
             .tracks
             .values()
@@ -1408,5 +1433,127 @@ mod tests {
             !project_note_fields(&inc_port.project()).is_empty(),
             "工程里必须真的多出音符"
         );
+    }
+
+    /// ⭐ 一个真 `MidiInState` ＋ 真 `UndoPort` ＋ 真工程的组（提交路径的判据用）。
+    fn live_state_and_port() -> (crate::host::MidiInState, UndoPort, YebanProjectV1) {
+        use crate::undo::UndoSession;
+        let project = yeban_model::samples::filled_project();
+        let port = UndoPort::new(
+            UndoSession::open("<判据>", "yeban-app", project.clone(), 0).expect("打开"),
+        );
+        (crate::host::MidiInState::new(), port, project)
+    }
+
+    /// ⭐ 造一条要提交的音符（车道只装**已配对**的结果 ⇒ 判据直接造它）。
+    fn live_note(pitch: u8, start_tick: u64) -> CapturedNote {
+        CapturedNote {
+            pitch,
+            velocity: 100,
+            start_tick,
+            end_tick: start_tick + 240,
+        }
+    }
+
+    /// ⭐ **接线判据 ①**：车道里有**一条**已配对音符 ⇒ 心跳的一次提交**恰**落**一条**音符，
+    /// 且**恰一步**撤销就能把它拿掉（⭐ 这就是"弹一个音 = 一步撤销"）。
+    ///
+    /// 这一条读的是**产品路径上的那一个**函数（[`crate::host::MidiInState::commit_live_notes`]），
+    /// ⛔ 不是判据里另写一段。
+    #[test]
+    fn the_live_note_lane_commits_one_note_per_completion() {
+        use crate::host::LiveNoteCommit;
+        let (state, port, project) = live_state_and_port();
+        let (track, clip) = live_destination(&project).expect("样本工程有落点");
+        let before = project_note_fields(&port.project());
+
+        // 会话线程那一半：把**一条**已配对音符放进车道。
+        assert_eq!(state.note_lane().push(live_note(60, 0)), 1, "车道必须收下");
+        assert_eq!(state.note_lane_pending(), 1);
+
+        let target = LiveNoteCommit {
+            port: &port,
+            track_id: track,
+            clip_id: clip,
+            now_ms: || 0,
+        };
+        let report = state.commit_live_notes(&target);
+        assert_eq!(report.committed, 1, "本跳必须提交恰好一条");
+        assert_eq!(report.refused, 0);
+        assert_eq!(report.pending, 0, "提交后车道必须清空");
+
+        let after = project_note_fields(&port.project());
+        assert_eq!(after.len(), before.len() + 1, "工程必须恰多一条音符");
+        let added: Vec<_> = after
+            .iter()
+            .filter(|field| !before.contains(field))
+            .cloned()
+            .collect();
+        assert_eq!(
+            added,
+            vec![(0, 60, 240, 100)],
+            "落进去的必须是那一条: {added:?}"
+        );
+
+        // ⭐ **一步撤销就把它拿掉**（每条音符一次提交 ⇒ 一步撤销）。
+        port.perform(crate::undo::UiAction::Undo);
+        assert_eq!(
+            project_note_fields(&port.project()),
+            before,
+            "一步撤销必须**恰好**回到原状"
+        );
+    }
+
+    /// ⭐ **接线判据 ②（控制臂）**：车道**空**时，提交函数一位不动工程，且两边的读数都是零。
+    ///
+    /// 没有这条，判据 ① 的"多了一条音符"可能只是**别的东西**造成的。
+    #[test]
+    fn the_live_note_lane_is_silent_without_events() {
+        use crate::host::LiveNoteCommit;
+        let (state, port, project) = live_state_and_port();
+        let (track, clip) = live_destination(&project).expect("样本工程有落点");
+        let before = serde_json::to_vec(&port.project()).expect("序列化");
+
+        let target = LiveNoteCommit {
+            port: &port,
+            track_id: track,
+            clip_id: clip,
+            now_ms: || 0,
+        };
+        let report = state.commit_live_notes(&target);
+        assert_eq!(report.committed, 0, "空车道不许提交");
+        assert_eq!(report.pending, 0);
+        assert_eq!(
+            serde_json::to_vec(&port.project()).expect("序列化"),
+            before,
+            "控制臂：空车道时工程必须**逐字节不变**"
+        );
+        // ⚠ 用一次真提交证明这条控制臂不空转（否则"没变"可能是"根本没接线"）。
+        assert_eq!(state.note_lane().push(live_note(62, 480)), 1);
+        assert_eq!(
+            state.commit_live_notes(&target).committed,
+            1,
+            "同一条路必须能提交"
+        );
+    }
+
+    /// ⭐ **接线判据 ③**：车道**满了如实计数**（⭐ ⛔ 不静默丢），且积压**看得见**。
+    #[test]
+    fn the_live_note_lane_reports_overflow_instead_of_dropping_silently() {
+        use crate::midi_in::{LIVE_NOTE_LANE_CAPACITY, NoteLane};
+        let lane = NoteLane::new();
+        // 先塞满。
+        for index in 0..LIVE_NOTE_LANE_CAPACITY {
+            assert_eq!(
+                lane.push(live_note(60, index as u64)),
+                1,
+                "第 {index} 条必须收下"
+            );
+        }
+        assert_eq!(lane.pending(), LIVE_NOTE_LANE_CAPACITY, "积压看得见");
+        // 再塞一条 ⇒ 收不下、**如实计数**、且积压**不涨**。
+        assert_eq!(lane.push(live_note(72, 0)), 0, "满了必须如实拒绝");
+        assert_eq!(lane.refused(), 1, "收不下的条数必须被记下");
+        assert_eq!(lane.pending(), LIVE_NOTE_LANE_CAPACITY, "满了之后不许再涨");
     }
 }

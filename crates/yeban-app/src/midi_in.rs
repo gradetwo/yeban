@@ -518,6 +518,70 @@ pub const LIVE_TICK_MS: u64 = 2;
 /// （[`crate::midi_live::LivePumpReport::refused`]），⛔ 不阻塞会话线程。
 pub const LIVE_LANE_CAPACITY: usize = 4096;
 
+/// ⭐ **已配对音符的车道**容量（⭐ 单位 = **音符条数**，⛔ 不是原始事件）。
+///
+/// ⭐ **为什么是 512 而不是与 [`LIVE_LANE_CAPACITY`] 同为 4096**：两者装的东西不同。
+/// [`LiveLane`] 装**每一条原始事件**（⭐ 一个音 = 至少 2 条事件，⭐ 还含 CC / 时钟），
+/// 而本车道只装**已经成对的音符** —— 一次 `NoteOn` + 一次 `NoteOff` 才产出 1 条。
+/// 512 条音符按"一只手 10 指、每音约 0.5 s"的量级约合 **25 秒**的连续弹奏；
+/// 而 UI 线程每跳（16 ms）至少排空一条 ⇒ 正常弹奏下积压恒为 0。
+/// ⚠ 容量只是**兜底**：真打满时如实计数（[`NoteLane::refused`]），⛔ 不静默丢。
+pub const LIVE_NOTE_LANE_CAPACITY: usize = 512;
+
+/// ⭐ **已配对音符的车道**：会话线程（配对）⇒ UI 线程（提交）之间的 `Send` 中转。
+///
+/// ⭐ 与 [`LiveLane`] **同型同纪律**（两个方向都不阻塞、都只碰控制侧），但装的是
+/// **`CapturedNote`**（⭐ 已配对的结果）⇒ UI 线程可以"一条音符 = 一次提交"。
+#[derive(Clone, Debug, Default)]
+pub struct NoteLane {
+    /// 还没提交的音符。
+    pending: std::sync::Arc<std::sync::Mutex<Vec<crate::midi_notes::CapturedNote>>>,
+    /// ⭐ **收不下**的条数（⭐ 累计读数，⛔ 不静默丢 —— 与 `LivePumpReport::refused` 同纪律）。
+    refused: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl NoteLane {
+    /// ⭐ 空车道（⛔ 不启动任何线程）。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// ⭐ 会话线程**发布**一条已配对的音符：返回**真的收下**的条数（0 或 1）。
+    pub fn push(&self, note: crate::midi_notes::CapturedNote) -> usize {
+        let Ok(mut pending) = self.pending.lock() else {
+            self.refused
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return 0;
+        };
+        if pending.len() >= LIVE_NOTE_LANE_CAPACITY {
+            self.refused
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return 0;
+        }
+        pending.push(note);
+        1
+    }
+
+    /// ⭐ UI 线程**取走一条**（⭐ 一次一条 ⇒ "一条音符 = 一次提交"；⛔ 不整批取）。
+    #[must_use]
+    pub fn pop(&self) -> Option<crate::midi_notes::CapturedNote> {
+        self.pending.lock().ok()?.pop()
+    }
+
+    /// ⭐ 当前积压条数（⭐ 读数：限流必须**看得见**，否则"限流"就是静默丢弃的伪装）。
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.pending.lock().map_or(0, |pending| pending.len())
+    }
+
+    /// ⭐ 收不下的累计条数（⭐ 读数）。
+    #[must_use]
+    pub fn refused(&self) -> u64 {
+        self.refused.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// ⭐ **实时车道**：会话线程（生产）⇒ UI 线程（发布）之间的 `Send` 中转。
 ///
 /// ⭐ 两个方向都**不阻塞**、都只碰控制侧（红线 7 管的是**音频回调**，本类型⛔ 不进回调）。
@@ -591,15 +655,17 @@ impl LiveLane {
 /// 硬件**的机器上也是可判的（源是缝，泵身与循环是产品的那一个）。
 #[cfg(feature = "midi-input")]
 #[must_use]
-pub fn monitor_session<S, P>(
+pub fn monitor_session<S, P, F>(
     source: &mut S,
     track: yeban_model::EntityId,
     seconds: f32,
     mut publish: P,
+    mut bypass: F,
 ) -> (CapturedMessages, crate::midi_live::LivePumpReport)
 where
     S: crate::midi_live::LiveEventSource,
     P: FnMut(&[yeban_engine::ring::EngineEvent]) -> usize,
+    F: FnMut(u64, u8, u8, u8),
 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(seconds);
     // ⭐ 谱面那一半要**每一条**原始消息 ⇒ 在**弹出那一刻**顺手记下来（⭐ 一次弹出、两处消费）。
@@ -609,6 +675,7 @@ where
         let mut recording = RecordingSource {
             inner: &mut *source,
             rows: &mut rows,
+            bypass: &mut bypass,
         };
         while std::time::Instant::now() < deadline {
             let step = crate::midi_live::pump_once_with(&mut recording, track, &mut publish);
@@ -641,16 +708,31 @@ where
 ///
 /// ⭐ 与 [`capture_messages`] 同一组（端口不存在 / 歧义 / 宿主不可用 / 连接失败）。
 #[cfg(feature = "midi-input")]
-pub fn monitor_messages_into(
+pub fn monitor_messages_into<S>(
     wanted: &str,
     seconds: f32,
     track: yeban_model::EntityId,
     lane: &LiveLane,
-) -> Result<(CapturedMessages, Vec<String>), MidiInError> {
+    note_lane: &NoteLane,
+    mut consume: S,
+) -> Result<(CapturedMessages, Vec<String>), MidiInError>
+where
+    S: FnMut(u64, u8, u8, u8) -> Option<crate::midi_notes::CapturedNote>,
+{
     let seconds = validate_seconds(seconds)?;
     let mut session = open_session(wanted, 0)?;
-    let (captured, report) =
-        monitor_session(session.receiver(), track, seconds, |batch| lane.push(batch));
+    let (captured, report) = monitor_session(
+        session.receiver(),
+        track,
+        seconds,
+        |batch| lane.push(batch),
+        |timestamp_us, status, data1, data2| {
+            // ⭐ 旁路：配对结果**当刻**进音符车道（⭐ UI 线程下一次心跳就提交它）。
+            if let Some(note) = consume(timestamp_us, status, data1, data2) {
+                note_lane.push(note);
+            }
+        },
+    );
     Ok((captured, live_receipt_fields(&report)))
 }
 
@@ -661,12 +743,17 @@ pub fn monitor_messages_into(
 ///
 /// ⭐ 恒 [`MidiInError::FeatureDisabled`]（⭐ 但**先校验秒数**，让参数错误在两种档里一致）。
 #[cfg(not(feature = "midi-input"))]
-pub fn monitor_messages_into(
+pub fn monitor_messages_into<S>(
     wanted: &str,
     seconds: f32,
     _track: yeban_model::EntityId,
     _lane: &LiveLane,
-) -> Result<(CapturedMessages, Vec<String>), MidiInError> {
+    _note_lane: &NoteLane,
+    _consume: S,
+) -> Result<(CapturedMessages, Vec<String>), MidiInError>
+where
+    S: FnMut(u64, u8, u8, u8) -> Option<crate::midi_notes::CapturedNote>,
+{
     // ⚠ 本档 `capture_messages` 恒 `Err` ⇒ 这里**不可能**返回 `Ok`（⛔ 不用 `unreachable!`
     // 造 panic 路径：返回值类型就已经说清"默认档没有实时会话"）。
     let captured = capture_messages(wanted, seconds)?;
@@ -693,21 +780,32 @@ pub fn live_receipt_fields(report: &crate::midi_live::LivePumpReport) -> Vec<Str
 /// ⭐ 它就是"实时会话"能同时喂两条下游的原因 —— ⛔ 不是第二次弹出（环是 FIFO，弹两次会
 /// 丢掉一半）。
 #[cfg(feature = "midi-input")]
-struct RecordingSource<'a, S> {
+struct RecordingSource<'a, S, F> {
     /// 真源（⭐ 产品上是 `MidiInputSession::receiver()`）。
     inner: &'a mut S,
     /// 弹出的原始行（⭐ 与 `CapturedMessages::messages` 同口径）。
     rows: &'a mut Vec<(u64, u8, u8, u8)>,
+    /// ⭐ **旁路消费者**：每弹出一条原始消息就喂它一次（⭐ 产品的音符配对挂在这里）。
+    ///
+    /// ⚠ **泛型参数**（⛔ 不是 `Box<dyn FnMut>`）：本函数跑在**会话线程**上，
+    /// 动态派发要在那之前多一次分配 ⇒ 用泛型把它消掉。
+    /// ⚠ 旁路**不许影响主路**：它没有返回值，且 [`RecordingSource::pop`] 无论旁路
+    /// 做什么都照原样把消息交给泵 ⇒ 采集/泵那一半与接线前**逐字节相同**。
+    bypass: &'a mut F,
 }
 
 #[cfg(feature = "midi-input")]
-impl<S: crate::midi_live::LiveEventSource> crate::midi_live::LiveEventSource
-    for RecordingSource<'_, S>
+impl<S, F> crate::midi_live::LiveEventSource for RecordingSource<'_, S, F>
+where
+    S: crate::midi_live::LiveEventSource,
+    F: FnMut(u64, u8, u8, u8),
 {
     fn pop(&mut self) -> Option<crate::midi_live::MidiEvent> {
         let event = self.inner.pop()?;
-        self.rows
-            .push((event.timestamp_us, event.status, event.data1, event.data2));
+        let row = (event.timestamp_us, event.status, event.data1, event.data2);
+        self.rows.push(row);
+        // ⭐ 旁路消费（⭐ 产品的音符配对）：⭐ 主路的返回值**不受它影响**。
+        (self.bypass)(row.0, row.1, row.2, row.3);
         Some(event)
     }
 

@@ -372,6 +372,24 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 // ⚠ 车道空时是一次 `Mutex` 判空（⛔ 不进音频线程、⛔ 不加任何音频侧工作）；
                 // ⚠ 必须在 `tick` **之后**取引擎（`tick` 内部已经借用过它）。
                 if let Some(state) = midi_live.borrow().as_ref() {
+                    // ⭐ **已配对音符的提交点**（⭐ 每条音符 = 一次提交 = 一步撤销）。
+                    // ⚠ 只在**车道非空**时才动工程（车道空时这一跳的成本与接线前相同）。
+                    // ⚠ 判据路径（注入替身）`live_note_target` 是 `None` ⇒ 一位不改。
+                    if state.note_lane_pending() > 0
+                        && let Some((track_id, clip_id)) = state.note_target()
+                    {
+                        let target = host::LiveNoteCommit {
+                            port: &port,
+                            track_id,
+                            clip_id,
+                            now_ms: host::now_ms,
+                        };
+                        let _ = state.commit_live_notes(&target);
+                    }
+                    // ⭐ **实时腿的发布点**（⭐ 与"编辑 ⇒ 发声"共用同一个 60Hz 节拍、同一个
+                    // `EngineHost`）：会话线程在窗口内采到的事件在这里进引擎的音符路径。
+                    // ⚠ 车道空时是一次 `Mutex` 判空（⛔ 不进音频线程、⛔ 不加任何音频侧工作）；
+                    // ⚠ 必须在 `tick` **之后**取引擎（`tick` 内部已经借用过它）。
                     let engine = production.engine_handle();
                     state.publish_live(&mut engine.borrow_mut());
                 }
@@ -463,6 +481,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     let midi_state = host::wire_module_actions(&ui, Some(Rc::clone(&undo_port)));
     // ⭐ 把刚建好的实时腿句柄填进心跳的共享槽（见上面 `midi_live_state` 的注释）：
     // 从这一刻起，硬件 MIDI 会话在窗口内采到的事件就会在 60Hz 心跳里进引擎的音符路径。
+    // ⭐ 实时腿的落点（音轨 ＋ 片段）也一并记下：提交音符时按它构造 `Op::AddNote`。
+    // ⚠ 上面那一步已经解析过（`wire_module_actions_with_capture` 里同一处），这里只是取回。
     *midi_live_state.borrow_mut() = Some(midi_state);
     // 启动时先把**模型读数**注入一次（显示态的唯一来源）。
     host::apply_undo(&ui, &undo_port);

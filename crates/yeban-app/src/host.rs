@@ -2953,12 +2953,21 @@ pub fn wire_module_actions_with_capture(
         // ⚠ `port`（`Rc<UndoPort>`）⛔ 不是 `Send` ⇒ 轨道 id 必须在 **UI 线程**上算好再交给
         // 工作线程（`EntityId` 是纯数据）。⚠ 注入替身（`capture = Some(_)`）时**不走**实时腿：
         // 判据钉住的接线不许被本票改掉（那些判据喂的是**批次**替身）。
-        let live_track: Option<yeban_model::EntityId> = if capture.is_none() {
-            port.as_ref()
-                .and_then(|port| crate::midi_notes::default_track(&port.project()).ok())
-        } else {
-            None
-        };
+        // ⭐ **实时腿的目标**（⭐ **成对**：音轨 ＋ 片段 —— 提交一条音符两样都要）。
+        // 与"写音符"那一半**同一条**规则（`midi_notes::destination`：`track = None` ⇒
+        // 第一条非 master 音轨 ＋ 它的第一个摆放）⇒ 听到的音与落谱的音在同一条轨、
+        // 同一个片段上。⚠ 在 **UI 线程**上解析（`EntityId` 是纯数据，可 `Send`）。
+        let live_note_target: Option<(yeban_model::EntityId, yeban_model::EntityId)> =
+            if capture.is_none() {
+                port.as_ref()
+                    .and_then(|port| crate::midi_notes::live_destination(&port.project()).ok())
+            } else {
+                None
+            };
+        let live_track = live_note_target.map(|(track, _clip)| track);
+        // ⭐ 把落点**记在状态里**：提交点（UI 线程的心跳）从 `MidiInState` 读它
+        // （⚠ `EntityId` 是纯数据 ⇒ 可跨线程读；⛔ 不为此每跳克隆工程）。
+        state.set_note_target(live_note_target);
         // ⭐ 真入口（与 CLI 的 `--midi-in` 同一个函数）—— 除非调用方注入了替身。
         let capture: MidiInCapture = capture.unwrap_or(crate::midi_in::capture_messages);
         {
@@ -3018,20 +3027,51 @@ pub fn wire_module_actions_with_capture(
             // 由 UI 线程的心跳 `MidiInState::publish_live` 送进引擎的音符路径 ——
             // ⛔ 不是"等采集窗口结束再一次性处理"（那正是本票要消灭的时间形状）。
             let live_lane = state.live_lane();
+            // ⭐ **音符车道**（⭐ 第二个跨线程车厢）：已配对的音符 ⇒ UI 线程逐条提交。
+            let note_lane = state.note_lane();
+            // ⭐ 旁路配对器的**会话起点**：与 `monitor_messages_into` 内部 `open_session(wanted, 0)`
+            // 的 `origin_us = 0` **同值** ⇒ 两条路算出的 tick 逐位相同（⛔ 不许分叉）。
+            const LIVE_ORIGIN_US: u64 = 0;
             let handle = std::thread::spawn(move || {
                 let result = match live_track {
-                    Some(track) => match crate::midi_in::monitor_messages_into(
-                        &worker_wanted,
-                        seconds,
-                        track,
-                        &live_lane,
-                    ) {
-                        Ok((captured, fields)) => {
-                            worker_state.finish_live(fields);
-                            Ok(captured)
+                    Some(track) => {
+                        // ⭐ 记录器**归工作线程所有**（⭐ 它只在会话线程上被喂）。
+                        let mut recorder =
+                            crate::midi_notes::IncrementalNoteRecorder::new(LIVE_ORIGIN_US);
+                        match crate::midi_in::monitor_messages_into(
+                            &worker_wanted,
+                            seconds,
+                            track,
+                            &live_lane,
+                            &note_lane,
+                            |timestamp_us, status, data1, data2| {
+                                recorder.consume(timestamp_us, status, data1, data2)
+                            },
+                        ) {
+                            Ok((captured, mut fields)) => {
+                                // ⚠ 收尾：会话结束时还开着的音符**当刻**进车道
+                                // （⛔ 不丢：它们按 `last_tick + 尾巴` 闭合，与批次路同一口径）。
+                                let unclosed =
+                                    recorder.finish(crate::midi_notes::UNCLOSED_TAIL_TICKS);
+                                for note in recorder.notes() {
+                                    note_lane.push(note);
+                                }
+                                // ⭐ 积压**如实报出**（⭐ 限流不许变成静默丢弃的伪装）。
+                                fields.push(format!(
+                                    "live-note-lane-pending={}",
+                                    note_lane.pending()
+                                ));
+                                fields.push(format!(
+                                    "live-note-lane-refused={}",
+                                    note_lane.refused()
+                                ));
+                                fields.push(format!("live-note-lane-unclosed={unclosed}"));
+                                worker_state.finish_live(fields);
+                                Ok(captured)
+                            }
+                            Err(error) => Err(error),
                         }
-                        Err(error) => Err(error),
-                    },
+                    }
                     // 没有权威工程（或调用方注入了替身）⇒ 保持**批次**形态，一位不变。
                     None => capture(&worker_wanted, seconds),
                 };
@@ -3092,6 +3132,42 @@ pub struct MidiInState {
     /// ⭐ 实时会话交回的**紧凑回执字段**（`Some` ⇒ 这一次会话真的走了实时腿；
     /// ⛔ 注入替身的判据路径永远是 `None` ⇒ 回执不可能多出字段）。
     live_fields: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
+    /// ⭐ **已配对音符的车道**（会话线程配对 ⇒ UI 线程逐条提交）。
+    ///
+    /// 与 `live` 同型：它是**第二个**跨线程车厢，装的是 `CapturedNote`（已配对结果）
+    /// ⇒ UI 线程可以"一条音符 = 一次提交"（⭐ 弹一个音 = 一步撤销）。
+    /// ⚠ 容量与语义见 [`crate::midi_in::NoteLane`]（512 条，满则如实计数）。
+    note_lane: crate::midi_in::NoteLane,
+    /// ⭐ **实时腿的落点**（音轨 ＋ 片段）：由 UI 线程在装配时解析一次，
+    /// 提交音符时按它构造 `Op::AddNote`（⭐ `EntityId` 是纯数据 ⇒ 可跨线程读）。
+    /// ⚠ 注入采集替身的判据路径是 `None` ⇒ 实时腿整体不生效（既有判据一位不改）。
+    note_target:
+        std::sync::Arc<std::sync::Mutex<Option<(yeban_model::EntityId, yeban_model::EntityId)>>>,
+}
+
+/// ⭐ **已配对音符的提交目标**（见 [`MidiInState::commit_live_notes`]）。
+pub struct LiveNoteCommit<'a> {
+    /// 唯一写者（⭐ 提交必须经撤销图 ⇒ 音符合法可撤销）。
+    pub port: &'a crate::undo::UndoPort,
+    /// 目标音轨（⭐ 与配对时用的**同一对** id）。
+    pub track_id: yeban_model::EntityId,
+    /// 目标片段（⭐ 同上）。
+    pub clip_id: yeban_model::EntityId,
+    /// 提交时刻（⭐ 函数指针 ⇒ 判据可以喂一个**确定的**时钟）。
+    pub now_ms: fn() -> u64,
+}
+
+/// ⭐ 一次"提交已配对音符"的读数。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveNoteCommitReport {
+    /// 本跳真的提交的条数（0 或 1）。
+    pub committed: usize,
+    /// 本跳被撤销图拒绝的条数（0 或 1）。
+    pub refused: usize,
+    /// 提交之后车道的积压条数（⭐ 限流必须**看得见**）。
+    pub pending: usize,
+    /// 收不下的**累计**条数（⭐ ⛔ 不静默丢）。
+    pub refused_cumulative: u64,
 }
 
 impl core::fmt::Debug for MidiInState {
@@ -3101,6 +3177,7 @@ impl core::fmt::Debug for MidiInState {
             .field("in_flight", &self.is_in_flight())
             .field("has_pending", &self.has_pending())
             .field("live_pending", &self.live.pending())
+            .field("note_pending", &self.note_lane.pending())
             .finish()
     }
 }
@@ -3115,6 +3192,8 @@ impl MidiInState {
             worker: std::sync::Arc::new(std::sync::Mutex::new(None)),
             live: crate::midi_in::LiveLane::new(),
             live_fields: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            note_lane: crate::midi_in::NoteLane::new(),
+            note_target: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -3123,6 +3202,85 @@ impl MidiInState {
     #[must_use]
     pub fn live_lane(&self) -> crate::midi_in::LiveLane {
         self.live.clone()
+    }
+
+    /// ⭐ **音符车道的句柄**（工作线程把**已配对**的音符交给 UI 线程）。
+    ///
+    /// ⚠ 与 [`Self::live_lane`] 分开：两条车道装的东西不同（原始事件 ｖｓ 已配对音符），
+    /// 且各自的容量与读数独立（见 [`crate::midi_in::NoteLane`]）。
+    #[must_use]
+    pub fn note_lane(&self) -> crate::midi_in::NoteLane {
+        self.note_lane.clone()
+    }
+
+    /// ⭐ 音符车道此刻的积压条数（⭐ 读数：限流必须**看得见**）。
+    #[must_use]
+    pub fn note_lane_pending(&self) -> usize {
+        self.note_lane.pending()
+    }
+
+    /// ⭐ 音符车道**收不下**的累计条数（⭐ ⛔ 不静默丢）。
+    #[must_use]
+    pub fn note_lane_refused(&self) -> u64 {
+        self.note_lane.refused()
+    }
+
+    /// ⭐ 记下**实时腿的落点**（装配时由 UI 线程解析一次）。
+    pub fn set_note_target(&self, target: Option<(yeban_model::EntityId, yeban_model::EntityId)>) {
+        if let Ok(mut slot) = self.note_target.lock() {
+            *slot = target;
+        }
+    }
+
+    /// ⭐ 读回落点（⭐ 提交流程用；判据路径是 `None`）。
+    #[must_use]
+    pub fn note_target(&self) -> Option<(yeban_model::EntityId, yeban_model::EntityId)> {
+        self.note_target.lock().ok().and_then(|slot| *slot)
+    }
+
+    /// ⭐ **发布实时车道** —— 实时腿在**产品路径上**的落点。
+    ///
+    /// ⚠ **只在 UI 线程上调用**：`EngineHost` 是 `Rc<RefCell<…>>`（⛔ 不是 `Send`），
+    /// 而车道存在的**唯一**理由就是"会话线程够不着引擎"（见 [`crate::midi_in`] 的注释）。
+    ///
+    /// 返回真的写进引擎环的条数；⚠ 环满时没进去的那一段**放回车道**（下一次心跳重试），
+    /// ⛔ 不静默丢（口径与 [`crate::midi_live::pump_once_with`] 的 `refused` 一致）。
+    /// ⭐ **已配对音符的提交目标**（⭐ UI 线程才拿得到这些）。
+    ///
+    /// ⚠ 三个字段都是**构造时**要用的：`port` 是唯一写者（⭐ 提交必须经撤销图），
+    /// `track` / `clip` 是落点（⭐ 与会话线程配对时用的**同一对** id ⇒ 听到的音与
+    /// 落谱的音在同一条轨、同一个片段上）。
+    pub fn commit_live_notes(&self, target: &LiveNoteCommit<'_>) -> LiveNoteCommitReport {
+        let mut report = LiveNoteCommitReport::default();
+        // ⚠ **每跳最多提交一条**（⛔ 不在一个心跳里连打上百个 commit）：车道保留其余，
+        // 下一跳继续。⭐ 积压**看得见**（[`Self::note_lane_pending`]），⛔ 不是静默丢弃。
+        if let Some(note) = self.note_lane.pop() {
+            let mut model_note = yeban_model::MidiNote::new(
+                yeban_model::EntityId::new(),
+                note.start_tick,
+                note.pitch,
+                note.duration_ticks(),
+            );
+            model_note.velocity = note.velocity;
+            let op = yeban_model::Op::AddNote {
+                track_id: target.track_id,
+                clip_id: target.clip_id,
+                note: model_note,
+            };
+            match target.port.commit_ops_with_origin(
+                (target.now_ms)(),
+                yeban_model::OpOrigin::MidiInput,
+                "midi live note",
+                vec![op],
+            ) {
+                Ok(_) => report.committed = 1,
+                // ⚠ 拒绝 ⇒ 计数并**不再放回**（放回会让下一跳重试同一条而卡住心跳）。
+                Err(_) => report.refused = 1,
+            }
+        }
+        report.pending = self.note_lane.pending();
+        report.refused_cumulative = self.note_lane.refused();
+        report
     }
 
     /// ⭐ **发布实时车道** —— 实时腿在**产品路径上**的落点。

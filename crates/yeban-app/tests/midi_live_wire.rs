@@ -239,21 +239,29 @@ mod session {
         let mut scratch = vec![0.0_f32; block * usize::from(CHANNELS)];
         let log_sink = Rc::clone(&log);
         let peak_sink = Rc::clone(&peak);
-        let (captured, report) = midi_in::monitor_session(&mut source, track, seconds, |batch| {
-            let accepted = host.send_engine_events(batch);
-            // ⭐ 设备回调在本机不存在 ⇒ 控制侧推**一个**量子，让这一批在**这一拍**就作用到合成器
-            // （口径与 `midi_input_notes.rs` 的实时形状判据一致）。
-            let _ = host.render_into(&mut scratch, CHANNELS, 1);
-            let poly = host
-                .engine_stats()
-                .map_or(0, |stats| stats.poly_notes_triggered);
-            let local_peak = scratch.iter().fold(0.0_f32, |max, s| max.max(s.abs()));
-            peak_sink.set(peak_sink.get().max(local_peak));
-            log_sink
-                .borrow_mut()
-                .push((started.elapsed().as_millis(), batch.len(), poly));
-            accepted
-        });
+        let (captured, report) = midi_in::monitor_session(
+            &mut source,
+            track,
+            seconds,
+            |batch| {
+                let accepted = host.send_engine_events(batch);
+                // ⭐ 设备回调在本机不存在 ⇒ 控制侧推**一个**量子，让这一批在**这一拍**就作用到合成器
+                // （口径与 `midi_input_notes.rs` 的实时形状判据一致）。
+                let _ = host.render_into(&mut scratch, CHANNELS, 1);
+                let poly = host
+                    .engine_stats()
+                    .map_or(0, |stats| stats.poly_notes_triggered);
+                let local_peak = scratch.iter().fold(0.0_f32, |max, s| max.max(s.abs()));
+                peak_sink.set(peak_sink.get().max(local_peak));
+                log_sink
+                    .borrow_mut()
+                    .push((started.elapsed().as_millis(), batch.len(), poly));
+                accepted
+            },
+            |_timestamp_us, _status, _data1, _data2| {
+                // ⭐ 本判据只关心引擎那一半 ⇒ 旁路是**空**的（音符车道另有判据）。
+            },
+        );
         (captured, report, log.borrow().clone(), peak.get())
     }
 
@@ -412,5 +420,69 @@ mod session {
             "⭐ 对照档：合成器**一位不动**"
         );
         assert_eq!(peak, 0.0, "⭐ 对照档：输出必须**全零**");
+    }
+
+    /// ⭐ **收口判据**：走**产品的那一个**会话循环（`midi_in::monitor_session`），
+    /// 一条消息都**不漏**地喂给旁路，且**主路不变**。
+    ///
+    /// 为什么必须有：接线前的行为是"消息只进谱面/引擎"，接线后多了一个旁路消费者。
+    /// 本判据证明两件事：① 旁路**看到了每一条**（`drained` == 消息数）；
+    /// ② 主路（`messages`）与**不使用旁路**时的结果**逐条相同** ⇒ 旁路不影响主路。
+    ///
+    /// ⚠ 旁路是**泛型闭包**（⛔ 不是 `Box<dyn FnMut>`）⇒ 会话线程上不多一次分配。
+    #[test]
+    fn the_session_bypass_sees_every_message_and_does_not_change_the_main_path() {
+        use yeban_app::midi_notes::IncrementalNoteRecorder;
+
+        // ---- 参考臂：旁路是空的 ----
+        let project = super::without_notes();
+        let track = yeban_app::midi_notes::default_track(&project).expect("夹具必须有音轨");
+        let reference = {
+            let mut host = EngineHost::new();
+            host.reload(&project, 0).expect("引擎必须能建起来");
+            let started = Instant::now();
+            let mut source = ScriptedSource::new(started, script());
+            let (captured, _report) = midi_in::monitor_session(
+                &mut source,
+                track,
+                0.5,
+                |batch| host.send_engine_events(batch),
+                |_timestamp_us, _status, _data1, _data2| {},
+            );
+            captured.messages
+        };
+
+        // ---- 实测臂：旁路＝真记录器（产品的那一个） ----
+        let mut host = EngineHost::new();
+        host.reload(&project, 0).expect("引擎必须能建起来");
+        let started = Instant::now();
+        let mut source = ScriptedSource::new(started, script());
+        let drained = Rc::new(Cell::new(0_usize));
+        let sink = Rc::clone(&drained);
+        let mut recorder = IncrementalNoteRecorder::new(0);
+        let (captured, report) = midi_in::monitor_session(
+            &mut source,
+            track,
+            0.5,
+            |batch| host.send_engine_events(batch),
+            |timestamp_us, status, data1, data2| {
+                sink.set(sink.get() + 1);
+                let _ = recorder.consume(timestamp_us, status, data1, data2);
+            },
+        );
+
+        // ① 旁路看到了**每一条**（⭐ 与泵自己的 drained 逐数相同）。
+        assert_eq!(
+            drained.get(),
+            report.drained,
+            "旁路必须与泵看到同样多的消息"
+        );
+        assert!(drained.get() > 0, "本判据的脚本必须真的产出消息");
+        // ② 主路**逐条不变**（音符那半）。
+        assert_eq!(
+            captured.messages, reference,
+            "接线后 `CapturedMessages` 必须与不接线时逐条相同"
+        );
+        assert_eq!(captured.seconds, 0.5);
     }
 }
