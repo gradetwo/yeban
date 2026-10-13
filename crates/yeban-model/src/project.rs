@@ -5844,4 +5844,136 @@ mod tests {
             "每一类都要有登记（⛔ 不许静默跳过）"
         );
     }
+
+    /// **`ALL` 清单必须 `==` 它自己枚举的变体全集**（第 44 条：手抄清单要有对账）。
+    ///
+    /// 指标（对象 + 单位）：**每个"全集清单"**（单位 = 处）与其**枚举变体全集**的比对。
+    /// 覆盖、互异、顺序三项都要成立。
+    ///
+    /// ⚠ **为什么需要**：`SampleRate::ALL` / `BlockSize::ALL` 是**手抄**清单，权威来源是
+    /// 同一个文件里的枚举。枚举少一个变体 ⇒ `match` 编译不过；⭐ 但**清单少一个变体
+    /// 今天没有任何东西会说话**（实测：现读一致、无守卫）。
+    ///
+    /// ⚠ **双向**：既判"清单里有枚举没有的"，也判"枚举有清单没有的"。
+    /// ⚠ **抽取器失灵必须响亮失败**：抽不到变体即 panic（⛔ 不留永远绿的判据）。
+    /// ⚠ **反向对照**：本判据自带一个局部枚举 + 四种变异（少/多/换序/重复）逐条断言被拒。
+    #[test]
+    fn every_all_list_equals_its_enums_variant_set() {
+        fn declared_variants(src: &str, enum_name: &str) -> Vec<String> {
+            let needle = format!("pub enum {enum_name} ");
+            let Some(start) = src.find(&needle) else {
+                panic!("抽不到枚举 {enum_name}（抽取器或枚举名已变）");
+            };
+            let rest = &src[start..];
+            let mut depth = 0_usize;
+            let mut end = 0_usize;
+            for (idx, ch) in rest.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = idx;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(end > 0, "枚举 {enum_name} 的花括号没配上");
+            let body = &rest[..=end];
+            let mut out: Vec<String> = Vec::new();
+            for line in body.lines() {
+                let Some(t) = line.strip_prefix("    ") else {
+                    continue;
+                };
+                if t.starts_with(' ') || t.is_empty() {
+                    continue;
+                }
+                let name: String = t
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                let after = &t[name.len()..];
+                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && (after.starts_with(" {") || after.starts_with(','))
+                {
+                    out.push(name);
+                }
+            }
+            assert!(
+                !out.is_empty(),
+                "枚举 {enum_name} 抽到 0 个变体 ⇒ 抽取器失灵"
+            );
+            out
+        }
+
+        fn assert_all_covers(enum_name: &str, declared: &[String], list: &[String]) {
+            let declared_set: std::collections::BTreeSet<&String> = declared.iter().collect();
+            let list_set: std::collections::BTreeSet<&String> = list.iter().collect();
+            let extra: Vec<&&String> = list_set.difference(&declared_set).collect();
+            let missing: Vec<&&String> = declared_set.difference(&list_set).collect();
+            assert!(
+                extra.is_empty(),
+                "{enum_name}::ALL 里有枚举没有的名字: {extra:?}"
+            );
+            assert!(
+                missing.is_empty(),
+                "{enum_name}::ALL 漏了枚举里的变体: {missing:?}"
+            );
+            assert_eq!(list.len(), declared.len(), "{enum_name}::ALL 有重复项");
+            assert_eq!(
+                list, declared,
+                "{enum_name}::ALL 的顺序必须等于枚举声明顺序"
+            );
+        }
+
+        let src = include_str!("project.rs");
+
+        {
+            #[allow(dead_code)]
+            enum Probe {
+                A,
+                B,
+                C,
+            }
+            let declared = vec!["A".to_owned(), "B".to_owned(), "C".to_owned()];
+            assert_all_covers("Probe", &declared, &declared.clone());
+            for (label, mutated) in [
+                ("少一项", vec!["A".to_owned(), "B".to_owned()]),
+                (
+                    "多一项",
+                    vec![
+                        "A".to_owned(),
+                        "B".to_owned(),
+                        "C".to_owned(),
+                        "D".to_owned(),
+                    ],
+                ),
+                (
+                    "换顺序",
+                    vec!["B".to_owned(), "A".to_owned(), "C".to_owned()],
+                ),
+                (
+                    "重复项",
+                    vec!["A".to_owned(), "B".to_owned(), "B".to_owned()],
+                ),
+            ] {
+                let result = std::panic::catch_unwind(|| {
+                    assert_all_covers("Probe", &declared, &mutated);
+                });
+                assert!(result.is_err(), "反向对照“{label}”必须被拒");
+            }
+        }
+
+        let sample_rate_declared = declared_variants(src, "SampleRate");
+        let block_size_declared = declared_variants(src, "BlockSize");
+        let sample_rate_all: Vec<String> =
+            SampleRate::ALL.iter().map(|v| format!("{v:?}")).collect();
+        let block_size_all: Vec<String> = BlockSize::ALL.iter().map(|v| format!("{v:?}")).collect();
+        assert_all_covers("SampleRate", &sample_rate_declared, &sample_rate_all);
+        assert_all_covers("BlockSize", &block_size_declared, &block_size_all);
+        eprintln!("ALL-LIST SampleRate::ALL={sample_rate_all:?}");
+        eprintln!("ALL-LIST BlockSize::ALL={block_size_all:?}");
+    }
 }
