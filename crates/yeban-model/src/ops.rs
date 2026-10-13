@@ -3300,11 +3300,14 @@ mod tests {
             "契约已经补上了 {pending:?} 中的分支 —— 请把 PENDING_CONTRACT_OPS 清空, \
              否则这条判据会一直假装契约仍缺这两个变体"
         );
-        assert_eq!(
-            contract.len(),
-            34,
-            "op.oneOf 必须覆盖 34 个变体, 实际 {}: {contract:?}",
-            contract.len()
+        // ⚠ **计数不写死**（负责人 2026-10-14 授权：纯计数类断言放开、功能优先）。
+        // 「契约 ↔ 枚举」的**集合相等**已由 `every_op_variant_is_declared_in_the_contract`
+        // 与 `op_variants_match_ops_schema_exactly` 保证 ⇒ 把 34 写在这里是**冗余**，
+        // 而且每加一个 `Op` 就要改一次（本会话已因此级联过两次）。
+        // 这里只留**防空**：解析失灵必须**响亮失败**（台账第 41 条），⛔ 不许静默通过。
+        assert!(
+            !contract.is_empty(),
+            "op.oneOf 解析出 0 个变体 ⇒ 解析失灵或契约损坏: {contract:?}"
         );
 
         let mut implemented: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

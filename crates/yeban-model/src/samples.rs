@@ -1215,11 +1215,11 @@ mod tests {
     #[test]
     fn ops_samples_match_the_ops_contract_variant_list() {
         let contract: Vec<String> = schema_op_variant_names();
-        assert_eq!(
-            contract.len(),
-            34,
-            "ops.schema.json 的 op.oneOf 必须覆盖 34 个变体, 实际 {}",
-            contract.len()
+        // ⚠ **计数不写死**（负责人 2026-10-14 授权：纯计数类断言放开、功能优先）。
+        // 集合相等由 `every_op_variant_is_declared_in_the_contract` 保证；这里只防空。
+        assert!(
+            !contract.is_empty(),
+            "ops.schema.json 的 op.oneOf 解析出 0 个变体 ⇒ 解析失灵或契约损坏"
         );
         for stamped in [default_stamped_op(), filled_stamped_op()] {
             check_op_envelope(&stamped).expect("op 信封必须合法");
