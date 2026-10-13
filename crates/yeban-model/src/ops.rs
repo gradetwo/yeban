@@ -48,7 +48,8 @@ use crate::ids::EntityId;
 use crate::music::MidiNote;
 use crate::project::{
     AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, ClipPoolEntry,
-    DeviceDefinition, RoutingEdge, SceneV3, SectionV3, TrackV3, TransportConfig, YebanProjectV1,
+    DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SceneV3, SectionV3, TrackV3, TransportConfig,
+    YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -362,6 +363,23 @@ pub enum Op {
         /// 修改后的完整走带配置。
         new_config: TransportConfig,
     },
+    /// 设置**速度**（顶层 `bpm`，`[MODEL-AST-002]`）。
+    ///
+    /// 为什么必须有这个变体：`bpm` 是**顶层唯一权威**且 `TransportConfig` **有意不含它**
+    /// （见 `TransportConfig` 的文档）⇒ 在它之前，`Op` 全集**无法表达"改速度"** ——
+    /// 打开工程之后速度就固定了。契约 `schemas/project.schema.json` 早已给出合法区间
+    /// [`MIN_BPM`]..=[`MAX_BPM`]（`20.0..=999.0`）⇒ 数据层早就准备好被改。
+    ///
+    /// ⚠ `bpm` 是 **`f64`**：`validate` 的相等判定用**逐位**比较（`to_bits`），
+    /// 因此 `NaN` 的两个实例**不相等**，且 `NaN` 落在区间外 ⇒ 两条独立防线都拦住它。
+    /// 载荷与文档现值都必须是**有限且在区间内**的值（⛔ 不靠 `apply` 之后的
+    /// `YebanProjectV1::validate` 兜底 —— 那会让"施加成功但文档非法"成为可能）。
+    SetTempo {
+        /// 修改前的速度（BPM）。
+        old_bpm: f64,
+        /// 修改后的速度（BPM）。
+        new_bpm: f64,
+    },
     /// 设置音轨**独奏**。
     ///
     /// 与 [`Op::SetTrackMute`] 同族：[`TrackV3::solo`] 也是 `bool`。
@@ -481,6 +499,16 @@ fn same_f32(left: f32, right: f32) -> bool {
     left.to_bits() == right.to_bits()
 }
 
+/// 判断两个速度 `f64` 是否**逐位**相同（与 [`same_f32`] 同一条口径）。
+///
+/// ⚠ 逐位而不是 `==`：`NaN` 的两个实例用 `==` 比较**不相等**、而 `-0.0 == 0.0` 用 `==`
+/// 却**相等** ⇒ 逐位让"同一个 NaN 载荷"也被一致地判为不匹配（`NaN` 本来就不在
+/// [`MIN_BPM`]..=[`MAX_BPM`] 区间内，故两层防线各自独立）。
+#[must_use]
+fn same_f64(left: f64, right: f64) -> bool {
+    left.to_bits() == right.to_bits()
+}
+
 /// 判断两个增益 `Option<f32>` 是否逐位相同。
 #[must_use]
 fn same_gain(left: Option<f32>, right: Option<f32>) -> bool {
@@ -554,6 +582,7 @@ impl Op {
             Self::SetParam { .. } => "SetParam",
             Self::SetTrackMute { .. } => "SetTrackMute",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
+            Self::SetTempo { .. } => "SetTempo",
             Self::SetTrackSolo { .. } => "SetTrackSolo",
             Self::SetMacro { .. } => "SetMacro",
             Self::SetAutomationPoint { .. } => "SetAutomationPoint",
@@ -890,6 +919,18 @@ impl Op {
                 }
                 Ok(())
             }
+            Self::SetTempo { old_bpm, new_bpm } => {
+                // ① 载荷自身必须是**有限且在区间内**的值（⛔ 不靠 apply 之后的
+                //    `YebanProjectV1::validate` 兜底）。
+                if !new_bpm.is_finite() || !(MIN_BPM..=MAX_BPM).contains(new_bpm) {
+                    return Err(ModelError::BpmOutOfRange { value: *new_bpm });
+                }
+                // ② 文档现值必须逐位等于 `old_bpm`（⛔ 不信调用方声明的旧状态）。
+                if !same_f64(doc.bpm, *old_bpm) {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetMacro {
                 track_id,
                 macro_index,
@@ -1222,6 +1263,11 @@ impl Op {
                 old_config: *new_config,
                 new_config: *old_config,
             },
+            // 纯结构化取反：只交换"前 / 后"两个速度（与 `SetTransportConfig` 同型）。
+            Self::SetTempo { old_bpm, new_bpm } => Self::SetTempo {
+                old_bpm: *new_bpm,
+                new_bpm: *old_bpm,
+            },
             // 纯结构化取反：只交换"前 / 后"两个布尔。
             Self::SetTrackMute {
                 track_id,
@@ -1503,6 +1549,11 @@ impl Op {
             // 整体替换三个字段：⛔ 不逐字段写（见枚举文档：三个字段是一个作者选择）。
             Self::SetTransportConfig { new_config, .. } => {
                 doc.transport = *new_config;
+                Ok(())
+            }
+            // 只写那**一个**顶层字段：⛔ 不碰 `time_signature`、⛔ 不碰 `TransportConfig`。
+            Self::SetTempo { new_bpm, .. } => {
+                doc.bpm = *new_bpm;
                 Ok(())
             }
             Self::SetMacro {
@@ -2226,6 +2277,12 @@ mod tests {
                     count_in_bars: 2,
                     launch_quantization: LaunchQuantization::TwoBars,
                 },
+            },
+            // 速度：夹具的 `bpm` 是 `DEFAULT_BPM`（`YebanProjectV1::default()`）⇒
+            // `old_bpm` 取它，前置条件在 `fixture_document()` 上成立。
+            Op::SetTempo {
+                old_bpm: crate::project::DEFAULT_BPM,
+                new_bpm: 140.0,
             },
             Op::SetMacro {
                 track_id: f.lead,
@@ -3015,7 +3072,7 @@ mod tests {
         );
         assert_eq!(
             all_ops.len(),
-            36,
+            37,
             "showcase 脚本的条数变了 —— 新变体必须同时进脚本与本判据的登记表"
         );
     }
@@ -3199,8 +3256,8 @@ mod tests {
         );
         assert_eq!(
             contract.len(),
-            32,
-            "op.oneOf 必须覆盖 32 个变体, 实际 {}: {contract:?}",
+            33,
+            "op.oneOf 必须覆盖 33 个变体, 实际 {}: {contract:?}",
             contract.len()
         );
 
@@ -5148,5 +5205,77 @@ mod tests {
                 value: f64::INFINITY,
             })
         );
+    }
+
+    /// `[MODEL-AST-002]` / `[ARCH-OPS-001]`：**速度可改且可逆**。
+    ///
+    /// 三条读数：
+    /// ① 改速度 ⇒ `doc.bpm` 变成新值，且**只有它**变（⛔ 不碰 `time_signature`、
+    ///    ⛔ 不碰 `transport`）；
+    /// ② `inverse` 应用之后**逐字节**回到原状（`f64` 走逐位比较 ⇒ 连位型都不变）；
+    /// ③ 陈旧的 `old_bpm`（不等于文档现值）必须报 `OpStateMismatch`，且**文档逐字节不动**。
+    #[test]
+    fn set_tempo_is_reversible_and_rejects_a_stale_old_bpm() {
+        let mut doc = fixture_document();
+        let before = serde_json::to_vec(&doc).expect("序列化");
+        let old_bpm = doc.bpm;
+        assert_eq!(old_bpm, crate::project::DEFAULT_BPM, "夹具口径");
+
+        // ① 改动只落在 bpm 上。
+        let op = Op::SetTempo {
+            old_bpm,
+            new_bpm: 140.0,
+        };
+        op.precondition(&doc).expect("前置条件必须成立");
+        op.apply(&mut doc).expect("必须能应用");
+        assert_eq!(doc.bpm, 140.0, "bpm 必须变成新值");
+        let mut expected = fixture_document();
+        expected.bpm = 140.0;
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            serde_json::to_vec(&expected).expect("s"),
+            "改动必须**只**落在 bpm 上（⛔ 不碰 time_signature / transport）"
+        );
+
+        // ② 逆操作逐字节回到原状。
+        op.apply_inverse(&mut doc).expect("逆必须能应用");
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            before,
+            "逆操作之后必须逐字节回到原状"
+        );
+
+        // ③ 陈旧的 old_bpm 被拒，且文档逐字节不动。
+        let stale = Op::SetTempo {
+            old_bpm: old_bpm + 1.0,
+            new_bpm: 140.0,
+        };
+        let stale_before = serde_json::to_vec(&doc).expect("s");
+        let error = stale.apply(&mut doc).expect_err("陈旧旧值必须被拒");
+        assert!(
+            matches!(error, ModelError::OpStateMismatch { .. }),
+            "必须报 OpStateMismatch, 实际 {error:?}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&doc).expect("s"),
+            stale_before,
+            "被拒之后文档必须逐字节不动"
+        );
+
+        // ④ 非有限与越界的新值都必须被**前置条件**拒绝（⛔ 不靠 apply 之后的
+        //    `YebanProjectV1::validate` 兜底）。
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0] {
+            let op = Op::SetTempo {
+                old_bpm,
+                new_bpm: bad,
+            };
+            let error = op
+                .precondition(&doc)
+                .expect_err("非法新值必须被前置条件拒绝");
+            assert!(
+                matches!(error, ModelError::BpmOutOfRange { .. }),
+                "new_bpm={bad} 必须报 BpmOutOfRange, 实际 {error:?}"
+            );
+        }
     }
 }

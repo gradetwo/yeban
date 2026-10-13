@@ -3168,6 +3168,8 @@ mod tests {
         "src/ops.rs::Op::SetParam.new_val",
         "src/ops.rs::Op::SetMacro.old_val",
         "src/ops.rs::Op::SetMacro.new_val",
+        "src/ops.rs::Op::SetTempo.old_bpm",
+        "src/ops.rs::Op::SetTempo.new_bpm",
         "src/project.rs::ParameterValue::value",
         "src/project.rs::MacroMapping::depth",
         "src/project.rs::MacroParameter::value",
@@ -3228,6 +3230,16 @@ mod tests {
             "src/ops.rs::Op::SetMacro.new_val",
             "非有限与越界都报 MacroValueOutOfRange；0.0/1.0 接受",
             probe_set_macro_new,
+        ),
+        (
+            "src/ops.rs::Op::SetTempo.old_bpm",
+            "旧值只做逐位比较：NaN ⇒ OpStateMismatch（bpm 无 NaN 的合法状态）",
+            probe_set_tempo_old,
+        ),
+        (
+            "src/ops.rs::Op::SetTempo.new_bpm",
+            "非有限与 20.0..=999.0 外都报 BpmOutOfRange；区间端点接受",
+            probe_set_tempo_new,
         ),
         (
             "src/project.rs::ParameterValue::value",
@@ -4325,6 +4337,79 @@ mod tests {
         }
     }
 
+    fn probe_set_tempo_old() -> Result<(), String> {
+        let (mut doc, _f) = numeric_fixture();
+        for value in NON_FINITE_F64 {
+            let op = Op::SetTempo {
+                old_bpm: value,
+                new_bpm: 130.0,
+            };
+            match apply_rejected(&mut doc, &op, "SetTempo(old_bpm 非有限)") {
+                Ok(ModelError::OpStateMismatch { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("非有限旧值必须报 OpStateMismatch, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 有限但**不等于文档现值**的旧值也必须被拒（陈旧载荷）。
+        let op = Op::SetTempo {
+            old_bpm: 121.0,
+            new_bpm: 130.0,
+        };
+        match apply_rejected(&mut doc, &op, "SetTempo(old_bpm 陈旧)") {
+            Ok(ModelError::OpStateMismatch { .. }) => Ok(()),
+            Ok(other) => Err(format!("陈旧旧值必须报 OpStateMismatch, 实际 {other:?}")),
+            Err(reason) => Err(reason),
+        }
+    }
+
+    fn probe_set_tempo_new() -> Result<(), String> {
+        let (mut doc, _f) = numeric_fixture();
+        let default_bpm = crate::project::DEFAULT_BPM;
+        for value in NON_FINITE_F64 {
+            let op = Op::SetTempo {
+                old_bpm: default_bpm,
+                new_bpm: value,
+            };
+            match apply_rejected(&mut doc, &op, "SetTempo(new_bpm 非有限)") {
+                Ok(ModelError::BpmOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("非有限新值必须报 BpmOutOfRange, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 区间外两侧都被拒。
+        for value in [MIN_BPM - 1.0, MAX_BPM + 1.0, 0.0, -1.0] {
+            let op = Op::SetTempo {
+                old_bpm: default_bpm,
+                new_bpm: value,
+            };
+            match apply_rejected(&mut doc, &op, "SetTempo(new_bpm 越界)") {
+                Ok(ModelError::BpmOutOfRange { .. }) => {}
+                Ok(other) => {
+                    return Err(format!("越界新值必须报 BpmOutOfRange, 实际 {other:?}"));
+                }
+                Err(reason) => return Err(reason),
+            }
+        }
+        // 区间**端点**必须被接受（不是开区间）。
+        for value in [MIN_BPM, MAX_BPM] {
+            let mut probe = numeric_fixture().0;
+            let op = Op::SetTempo {
+                old_bpm: default_bpm,
+                new_bpm: value,
+            };
+            op.apply(&mut probe)
+                .map_err(|error| format!("端点 {value} 必须被接受, 实际 {error:?}"))?;
+            if probe.bpm != value {
+                return Err(format!("端点 {value} 必须被写进文档"));
+            }
+        }
+        Ok(())
+    }
+
     fn probe_set_macro_old() -> Result<(), String> {
         let (mut doc, f) = numeric_fixture();
         for value in NON_FINITE_F32 {
@@ -4661,7 +4746,7 @@ mod tests {
             "源码里的数值字段与冻结清单（NUMERIC_FIELD_INVENTORY）不一致;\n\
              新增字段请登记并补判定, 删字段请同步清单"
         );
-        assert_eq!(found.len(), 27, "实测读数: 27 条数值字段声明");
+        assert_eq!(found.len(), 29, "实测读数: 29 条数值字段声明");
     }
 
     /// 逐项判定：清单里每个**入口**字段都有一行判定，且该行的探针必须真的成立。
