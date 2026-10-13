@@ -410,6 +410,16 @@
               "type": "object"
             }
           }
+        },
+        {
+          "required": [
+            "SetAuthor"
+          ],
+          "properties": {
+            "SetAuthor": {
+              "type": "object"
+            }
+          }
         }
       ],
       "description": "Domain reversible operation. oneOf must cover every Op variant: exactly one branch may match."
