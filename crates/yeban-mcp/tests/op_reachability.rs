@@ -556,10 +556,18 @@ fn the_argument_help_text_mentions_every_kind() {
     let files = sources();
     let tools = module_text(&files, "/tools.rs").expect("读得到 tools.rs");
 
+    // ⚠ **不许用 `tools.contains(kind)`（裸子串）**：`add` 是 `addTrack`／`addRoutingNode`
+    // 的**子串** ⇒ 那种检查会被**蒙过**（实测：`add` 是全文唯一不以 `` `X` `` 形式列举的
+    // kind，裸子串检查却报绿）。只认**带定界的两种形态**：`` `kind` `` 或 `"kind"`。
+    // ⚠ 带引号的那半边能安全排除子串误命中：`"add"` 的闭引号不会出现在 `"addTrack"` 里。
     let missing: Vec<&str> = OP_KINDS
         .iter()
         .copied()
-        .filter(|kind| !tools.contains(kind))
+        .filter(|kind| {
+            let backticked = format!("`{kind}`");
+            let quoted = format!("\"{kind}\"");
+            !tools.contains(&backticked) && !tools.contains(&quoted)
+        })
         .collect();
 
     assert!(
