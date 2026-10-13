@@ -198,3 +198,11 @@
 ⭐ ⚠ ⭐ ⭐ **七、⭐ 一条**偶发**的如实登记（⭐ 与本次无关）**：⭐ 上一轮 `yeban-ui-mcp` 默认档出现过 **1 次** ⭐ `transport::mount::tests::pump_serves_a_real_request_and_reports_an_idle_queue` 失败（⭐ 逐字 `排队中的连接必须被服务`）⇒ ⭐ ⭐ **我在**干净主干**（⭐ `top12-base` 树）上探测该判据 ⇒ **0／8 次失败**、⭐ 本轮的干净跑也**未**复现** ⇒ ⭐ 判为 **TCP 连接到达竞态**（⭐ `try_serve_once` 的 `accept` 拿到 `WouldBlock` ⇒ ⭐ 返回 `false`）、⭐ ⛔ **不是**本补丁引入 ⇒ ⭐ **留作后续登记**（⭐ 若要根治: ⭐ 该判据应先等到连接真的进入 backlog 再 `pump`，⭐ 或把 `WouldBlock` 与"⭐ 没连上"分开）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动 ⇒ ⭐ **§7 汇总与合计不受影响**、⭐ `handoff-snapshot.md` 不需重生成）✓ ⚠ **待补**: ⭐ `cd879267` 的 run 判决 ✓
+
+---
+
+## R398 实测追加（2026-10-13）：⭐ 两条早先 run 的判决已读回 —— ⭐ `76edb902`（MIDI 接线）**真跑且绿**；⭐ `f3c4153e`（台账补录）**是空绿**
+
+- ⭐ **R396 的待补判决（⭐ `76edb902` ＝ MIDI 实时泵接线）**：⭐ **run `38351716127` ＝ `completed`／`success`** ⇒ ⭐ 逐腿（⭐ 结论｜⭐ 时长｜⭐ 步数）: ⭐ `checks (fmt/红线守卫/schema)` ✓ **68s／13** ＋ ⭐ `lockfile` ✓ 21s／6 ＋ ⭐ `deny` ✓ 50s／6 ＋ ⭐ `plan` ✓ 6s／5 ＋ ⭐ ⭐ **`rust (yeban-app)` ✓ **597s／15 步**（⭐ **真跑**）** ｜⭐ ⚠ **`rust (workspace 全量)` skipped／0 步 ＋ ⭐ `windows` skipped／0 步** ⇒ ⛔ **不算绿** ✓ ⭐ ⭐ **即 `plan` 判**逐 crate 路**、⭐ 而 `yeban-app` 那条腿**真的执行了 597 秒**（⭐ 15 步 > 0 ⇒ ⛔ 不是 0s 空绿）⇒ ⭐ **本次接线的**自动覆盖**成立** ✓
+- ⭐ **R396 的第二条（⭐ `f3c4153e` ＝ 台账补录）**：⭐ **run `38351877102` ＝ `completed`／`success`** ⇒ ⭐ 逐腿只跑了 ⭐ `checks` ✓ 76s／13 ＋ ⭐ `lockfile` ✓ 20s／6 ＋ ⭐ `deny` ✓ 67s／6 ＋ ⭐ `plan` ✓ 5s／5 ｜⭐ ⚠ ⭐ ⭐ **`rust (${{ matrix.crate }})` skipped／0 步 ＋ ⭐ `rust (workspace 全量)` skipped／0 步 ＋ ⭐ `windows` skipped／0 步** ⇒ ⭐ ⭐ **三条 rust 腿**全部 skipped、⭐ **一个 Rust 判据都没跑**** ⇒ ⭐ ⭐ **那条绿对代码**什么都不证明**（⭐ 它证明的只有: ⭐ schema／红线守卫／台账／lockfile／deny 过）** ⇒ ⭐ ⭐ **这正是"⭐ 空绿"判法的一个**实例**、⭐ 与 R393 记的 `c175aee5` 同款（⭐ 纯 `docs/ledger/**` 改动 ⇒ ⭐ `plan` 判"⭐ 不落在任何成员 crate 内"）** ✓ ⭐ ⚠ **故本条如实记: ⭐ `f3c4153e` 的 `success` ⛔ 不得当作"⭐ Rust 侧无恙"的证据** ✓
+- ⭐ ⚠ ⭐ ⭐ **本轮新推的两条（⭐ 待补）**: ⭐ **`22311a58`**（⭐ top12 补丁 ＋ 修复）⇒ ⭐ run `38353647478`（⭐ 写就时 `in_progress`）＋ ⭐ **`c7ccbe6c`**（⭐ R397 台账）⇒ ⭐ run `38353622889`（⭐ `in_progress`）⇒ ⭐ **判决未读回 ⇒ ⛔ 不写成"通过"** ✓ ⭐ ⚠ **预告（⭐ 供下轮对照）**: ⭐ `c7ccbe6c` 是纯 `docs/ledger/**` ⇒ ⭐ **大概率又是空绿**（⭐ 三条 rust 腿 skipped）⇒ ⭐ **判绿时必须明写"⭐ 无 rust 腿执行"**；⭐ 而 `22311a58` 动了 `crates/**`（⭐ 6 个成员 crate）⇒ ⭐ **应当走**逐 crate 矩阵腿**** ✓
