@@ -5604,48 +5604,8 @@ mod tests {
             Fail(String),
         }
 
-        // ---- 变体全集：从源码现读 ----
-        let src = include_str!("ops.rs");
-        let start = src.find("pub enum Op {").expect("枚举存在");
-        let rest = &src[start..];
-        let mut depth = 0usize;
-        let mut end = 0usize;
-        for (idx, ch) in rest.char_indices() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = idx;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let body = &rest[..=end];
-        let mut declared: Vec<String> = Vec::new();
-        for line in body.lines() {
-            let Some(t) = line.strip_prefix("    ") else {
-                continue;
-            };
-            if t.starts_with(' ') || t.is_empty() {
-                continue;
-            }
-            let name: String = t
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric())
-                .collect();
-            let after = &t[name.len()..];
-            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                && (after.starts_with(" {") || after.starts_with(','))
-            {
-                declared.push(name);
-            }
-        }
-        declared.sort_unstable();
-        declared.dedup();
-        assert!(!declared.is_empty(), "从源码现读变体清单失败（解析器坏了）");
+        // ---- 变体全集：从源码现读（**复用**模块级辅助）----
+        let declared = declared_op_variants();
 
         // ---- 逐变体审计（每个变体取 showcase 里**第一个**实例）----
         let showcase = showcase_ops();
@@ -5977,5 +5937,185 @@ mod tests {
         assert!(!doc.assets.contains_key(&kick_asset()));
         good.apply_inverse(&mut doc).expect("逆必须能应用");
         assert_eq!(serde_json::to_vec(&doc).expect("s"), snapshot);
+    }
+    /// `pub enum Op` 的**顶层变体名全集**，从源码**现读**（⛔ 不手抄）。
+    ///
+    /// ⚠ 这是**唯一**一份变体名抽取器：往返审计与 `Op::name()` 守卫**共用**它，
+    /// ⛔ 不许各写一份（第 44 条：手抄/复制的清单会漂移）。
+    /// ⚠ 抽不到东西 ⇒ `panic`（第 41 条：⛔ 不留永远绿的判据）。
+    fn declared_op_variants() -> Vec<String> {
+        let src = include_str!("ops.rs");
+        let start = src.find("pub enum Op {").expect("枚举存在");
+        let rest = &src[start..];
+        let mut depth = 0usize;
+        let mut end = 0usize;
+        for (idx, ch) in rest.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = idx;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &rest[..=end];
+        let mut declared: Vec<String> = Vec::new();
+        for line in body.lines() {
+            let Some(t) = line.strip_prefix("    ") else {
+                continue;
+            };
+            if t.starts_with(' ') || t.is_empty() {
+                continue;
+            }
+            let name: String = t
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            let after = &t[name.len()..];
+            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && (after.starts_with(" {") || after.starts_with(','))
+            {
+                declared.push(name);
+            }
+        }
+        declared.sort_unstable();
+        declared.dedup();
+        assert!(
+            !declared.is_empty(),
+            "从源码现读变体清单失败（解析器坏了）=> 响亮失败而不是空绿"
+        );
+        declared
+    }
+
+    /// 从 `Op::name()` 的**源码正文**现读 `Self::<变体> => "<字符串>"` 臂。
+    ///
+    /// ⚠ 这是本判据的**独立真相**：它**不调用** `name()`（那会自我确认），
+    /// 而是把**源码里写下的**映射读出来。
+    fn name_arms_from_source() -> (
+        std::collections::BTreeMap<String, String>,
+        Vec<String>,
+        Vec<String>,
+    ) {
+        let src = include_str!("ops.rs");
+        let start = src
+            .find("pub const fn name(&self) -> &'static str {")
+            .expect("找得到 name() 正文");
+        let rest = &src[start..];
+        let body = &rest[..rest.find("\n    }").expect("name() 有结尾")];
+        let mut map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut duplicate_strings: Vec<String> = Vec::new();
+        let mut duplicate_arms: Vec<String> = Vec::new();
+        for line in body.lines() {
+            let Some(at) = line.find("Self::") else {
+                continue;
+            };
+            let after = &line[at + "Self::".len()..];
+            let variant: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let Some(quote) = line.find('"') else {
+                continue;
+            };
+            let Some(close) = line[quote + 1..].find('"') else {
+                continue;
+            };
+            let value = line[quote + 1..quote + 1 + close].to_owned();
+            if variant.is_empty() || value.is_empty() {
+                continue;
+            }
+            if !seen.insert(value.clone()) {
+                duplicate_strings.push(value.clone());
+            }
+            if map.insert(variant.clone(), value).is_some() {
+                duplicate_arms.push(variant);
+            }
+        }
+        assert!(
+            !map.is_empty(),
+            "从 name() 源码抽到 0 条臂 => 抽取器失灵 => 响亮失败"
+        );
+        (map, duplicate_strings, duplicate_arms)
+    }
+
+    /// **`Op::name()` 的返回值内容必须有守**（`[ARCH-OPS-001]` / JSON 变体名）。
+    ///
+    /// ⚠ 它今天**唯一的**保护是**编译器**（漏臂 => `E0004`）。⭐ 但**两个变体返回同一
+    /// 字符串**编译得过、今天没有任何判据会红。
+    ///
+    /// ⭐ **第二重后果（实测）**：`name()` 在生产里被当**线上标识**用 ——
+    /// `yeban-mcp/src/domain/automation.rs:258` 把它序列化进 MCP 输出；
+    /// `yeban-mcp/src/domain/import_audio.rs:1185` 把它当契约字面量比对。
+    /// => 重名不是"不好看"，是线上载荷里的**歧义标识**。
+    #[test]
+    fn every_op_name_is_unique_and_equals_its_variant_name() {
+        let declared = declared_op_variants();
+        let showcase = showcase_ops();
+        assert!(
+            !showcase.is_empty(),
+            "showcase_ops() 为空 => 本判据会空绿 => 响亮失败"
+        );
+        let (arms, duplicate_strings, duplicate_arms) = name_arms_from_source();
+
+        assert!(
+            duplicate_strings.is_empty(),
+            "Op::name() 有**两个变体返回同一字符串** {duplicate_strings:?} => 它是 JSON \
+             变体名（线上载荷标识），重名会让载荷歧义"
+        );
+        assert!(
+            duplicate_arms.is_empty(),
+            "Op::name() 有变体出现**两条臂** {duplicate_arms:?} => 后一条覆盖前一条"
+        );
+
+        let mismatched: Vec<String> = arms
+            .iter()
+            .filter(|(variant, value)| variant != value)
+            .map(|(variant, value)| format!("{variant} => {value}"))
+            .collect();
+        assert!(
+            mismatched.is_empty(),
+            "Op::name() 的文档承诺值与**变体名**一致，但这些不一致: {mismatched:#?}"
+        );
+
+        let missing: Vec<&String> = declared
+            .iter()
+            .filter(|name| !arms.contains_key(name.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "这些变体在 Op::name() 里**没有臂** => 编译器本该拦住（E0004）: {missing:?}"
+        );
+
+        let covered: std::collections::BTreeSet<&str> = showcase
+            .iter()
+            .map(|op| {
+                let name = op.name().to_owned();
+                arms.iter()
+                    .find(|(_, value)| **value == name)
+                    .map(|(variant, _)| variant.as_str())
+                    .unwrap_or("<未登记>")
+            })
+            .collect();
+        let uncovered: Vec<&String> = declared
+            .iter()
+            .filter(|name| !covered.contains(name.as_str()))
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "这些变体没有 showcase 实例 => 运行期一侧漏判了它们: {uncovered:?}"
+        );
+
+        eprintln!(
+            "OP-NAME variants={} arms={} unique_strings={} equal_to_variant={}",
+            declared.len(),
+            arms.len(),
+            duplicate_strings.is_empty(),
+            mismatched.is_empty()
+        );
     }
 }
