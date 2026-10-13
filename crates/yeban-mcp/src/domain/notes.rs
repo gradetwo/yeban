@@ -746,7 +746,8 @@ use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
     AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
     ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LaunchQuantization,
-    LoopConfig, MidiNote, Op, ParameterValue, SceneV3, TrackV3, TransportConfig, YebanProjectV1,
+    LoopConfig, MidiNote, Op, ParameterValue, SceneV3, TrackKind, TrackV3, TransportConfig,
+    YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -964,7 +965,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 21] = [
+pub const OP_KINDS: [&str; 22] = [
     "add",
     "delete",
     "move",
@@ -983,6 +984,7 @@ pub const OP_KINDS: [&str; 21] = [
     DISCONNECT_ROUTING_KIND,
     REMOVE_ROUTING_NODE_KIND,
     ADD_ROUTING_NODE_KIND,
+    ADD_TRACK_KIND,
     REMOVE_SECTION_KIND,
     REMOVE_SCENE_KIND,
     SET_SCENE_KIND,
@@ -1336,6 +1338,47 @@ pub const DISCONNECT_ROUTING_KIND: &str = "disconnectRouting";
 /// 读（与 [`SET_ROUTING_GAIN_KIND`] 的 `old_gain_db` 同一条纪律）。
 /// 多写一个键是**响亮失败**，不静默丢弃。
 pub const DISCONNECT_ROUTING_FIELDS: [&str; 2] = ["kind", ROUTING_EDGE_FIELD];
+
+/// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
+///
+/// 与模型 `Op` 变体名同词（`AddTrack` 的小驼峰），与 [`REMOVE_TRACK_KIND`] 同一条
+/// 命名规则。
+///
+/// ⚠ **它与 [`REMOVE_TRACK_KIND`] 是一对**：在那个形态之前，工具面**删得到**音轨却
+/// ⛔ **加不到**（加音轨此前只在 `yeban_create_project` 的建批与 `yeban_propose_section`
+/// 的配器骨架里发生）⇒ 一个**已存在的**工程无法被逐步扩展。
+pub const ADD_TRACK_KIND: &str = "addTrack";
+
+/// 新增音轨形态的目标字段名（`ops[].trackId`，必填）。
+///
+/// ⚠ 这个名字与工具**顶层**的 `trackId` 逐字相同，但**不是**同一个东西：
+/// 顶层那个是"目标片段所在的音轨"，本形态这个是"**要新建**的那条音轨的身份"
+/// （与 [`REMOVE_TRACK_KIND`] 的自带 `trackId` 同一条口径）。
+pub const ADD_TRACK_TRACK_FIELD: &str = "trackId";
+
+/// 新增音轨形态的**显示名**字段名（`ops[].name`，必填，非空字符串）。
+pub const ADD_TRACK_NAME_FIELD: &str = "name";
+
+/// 新增音轨形态的**音轨类型**字段名（`ops[].trackKind`，必填，规范枚举串）。
+///
+/// ⚠ 取值与线协议**逐字相同**（`Midi` / `Audio` / `AuxReturn` / `Master`）——
+/// 那是 `schemas/project.schema.json` 的 `track.kind.enum` 与模型 `TrackKind` 的
+/// `serde` 名，因此本层**不另发明**一套拼写。
+pub const ADD_TRACK_KIND_FIELD: &str = "trackKind";
+
+/// 新增音轨形态允许出现的**全部**键（判别键 + 三个必填字段）。
+///
+/// ⚠⭐ **四个集合与 `folderId`/`color` 以及五个混音标量都**不在**这里** —— 那是
+/// **决定**，理由 = **新实体无内容可清**：`ADR-0001 D43` 的必需性立法理由是
+/// "缺键 = 静默清空**既有**内容"，而创建时没有既有内容。本层照抄同族创建先例
+/// （`project_create.rs:381` 的 `TrackV3 { id, name, kind, ..Default::default() }`
+/// 与 `setScene` 的 create 分支）⇒ 编译期用**空形状**。多写一个键是**响亮失败**。
+pub const ADD_TRACK_FIELDS: [&str; 4] = [
+    "kind",
+    ADD_TRACK_TRACK_FIELD,
+    ADD_TRACK_NAME_FIELD,
+    ADD_TRACK_KIND_FIELD,
+];
 
 /// `ops[].kind` 的**新建路由节点**形态名（写 [`Op::AddRoutingNode`]）。
 ///
@@ -1964,6 +2007,30 @@ pub enum NoteOp {
         /// 路由边身份（本形态自带寻址）。
         edge_id: EntityId,
     },
+    /// 新增**一条音轨**（[`Op::AddTrack`]，即把这条音轨加进 `project.tracks`）。
+    ///
+    /// ⚠ **本形态是"造音轨"的那一半**：此前工具面**删得到**音轨
+    /// （[`Self::RemoveTrack`]）却 ⛔ **加不到** —— 加音轨只在 `yeban_create_project`
+    /// 的建批与 `yeban_propose_section` 的配器骨架里发生 ⇒ 一个**已存在的**工程
+    /// 无法被**逐步**扩展。本形态把那条通路补成"同一件事两种粒度"。
+    ///
+    /// ⚠⭐ **四个集合（`devices`/`macros`/`automation_lanes`/`clips`）与
+    /// `folder_id`/`color` 以及五个混音标量都**不在**载荷里** —— 那是**决定**，
+    /// ⛔ 不是疏漏：`ADR-0001 D43` 的必需性立法理由是"**缺键 = 静默清空既有内容**"，
+    /// 而**创建**时没有内容可清 ⇒ 本层用**空形状**
+    /// （`TrackV3 { id, name, kind, ..TrackV3::default() }`），与
+    /// `project_create.rs:381` 和 `setScene` 的 create 分支**同一口径**。判据
+    /// `add_track_lands_an_empty_track_and_leaves_the_mix_alone` 钉住这一点。
+    ///
+    /// 模型的前置条件是"音轨自校验通过 + `id` 不重复"：`compile` 提前报"这个身份
+    /// 已经在 `tracks` 里"（`projectAlreadyExists`），与 [`Self::RemoveTrack`] 提前报
+    /// `trackNotFound` 同一条口径。
+    /// ⚠ 模型 `apply` 只 `insert_track` —— 它**不**自动把身份加进
+    /// `routing_graph.nodes`、也**不**建边（那是 [`Self::AddRoutingNode`] 的事）。
+    AddTrack {
+        /// 要新建的音轨（四个集合与两个可选字段已是空形状）。
+        track: TrackV3,
+    },
     /// 新建**一个路由节点**（[`Op::AddRoutingNode`]，即把这个身份加进
     /// `routing_graph.nodes`）。
     ///
@@ -2178,6 +2245,7 @@ impl NoteOp {
             Self::RemoveClip => REMOVE_CLIP_KIND,
             Self::SetRoutingGain { .. } => SET_ROUTING_GAIN_KIND,
             Self::DisconnectRouting { .. } => DISCONNECT_ROUTING_KIND,
+            Self::AddTrack { .. } => ADD_TRACK_KIND,
             Self::AddRoutingNode { .. } => ADD_ROUTING_NODE_KIND,
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
@@ -2210,6 +2278,7 @@ impl NoteOp {
                 | Self::RemoveClip
                 | Self::SetRoutingGain { .. }
                 | Self::DisconnectRouting { .. }
+                | Self::AddTrack { .. }
                 | Self::AddRoutingNode { .. }
                 | Self::RemoveRoutingNode { .. }
                 | Self::RemoveSection { .. }
@@ -2563,6 +2632,9 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 edge_id: read_id(object, ROUTING_EDGE_FIELD)?,
             })
         }
+        ADD_TRACK_KIND => Ok(NoteOp::AddTrack {
+            track: parse_new_track(object)?,
+        }),
         ADD_ROUTING_NODE_KIND => {
             reject_add_routing_node_fields(object)?;
             Ok(NoteOp::AddRoutingNode {
@@ -2714,6 +2786,127 @@ fn reject_disconnect_routing_fields(object: &Map<String, Value>) -> Result<(), F
 ///
 /// 出现 `kind` / `nodeId` 之外的键 → `INVALID_PARAMETER_RANGE`
 /// （`data.reason = "unknownRemoveRoutingNodeField"`）。
+/// 拒绝 `addTrack` 里 [`ADD_TRACK_FIELDS`] 之外的键。
+///
+/// ⚠ **四个集合与 `folderId`/`color`/五个混音标量都**不在**支持集合里** —— 那是
+/// **决定**（理由见 [`ADD_TRACK_FIELDS`] 与 [`NoteOp::AddTrack`] 的文档）：新实体
+/// 无内容可清。多写一个键是**响亮失败**，⛔ 不静默丢弃。
+fn reject_add_track_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !ADD_TRACK_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{ADD_TRACK_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {ADD_TRACK_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownAddTrackField",
+            "unsupportedFields": unknown,
+            "supportedAddTrackFields": ADD_TRACK_FIELDS,
+            "hint": "本形态只收 `kind`/`trackId`/`name`/`trackKind` 四个键; 四个集合 \
+                     (devices/macros/automationLanes/clips) 与 folderId/color 以及五个 \
+                     混音标量**不在**载荷里 —— 新实体用**空形状** (见本形态的文档)",
+        }),
+    ))
+}
+
+/// 读一个**必填**的非空字符串（⛔ 空串不做真值强转，直接拒绝）。
+fn read_required_non_empty_string(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<String, Fault> {
+    let raw = object
+        .get(field)
+        .ok_or_else(|| missing(field, "非空字符串"))?;
+    let text = raw.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是非空字符串, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeString",
+                "received": raw,
+            }),
+        )
+    })?;
+    if text.is_empty() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{field}` 不能是空字符串 (模型的 `TrackV3::validate` 不查空名 ⇒ 空名会静默落盘)"
+            ),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeNonEmptyString",
+                "received": text,
+            }),
+        ));
+    }
+    Ok(text.to_owned())
+}
+
+/// 读一个**必填**的音轨类型名（取值与线协议逐字相同，⛔ 不发明拼写）。
+fn read_required_track_kind(object: &Map<String, Value>, field: &str) -> Result<TrackKind, Fault> {
+    let raw = object
+        .get(field)
+        .ok_or_else(|| missing(field, "音轨类型名"))?;
+    let text = raw.as_str().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是字符串, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeString",
+                "received": raw,
+            }),
+        )
+    })?;
+    match text {
+        "Midi" => Ok(TrackKind::Midi),
+        "Audio" => Ok(TrackKind::Audio),
+        "AuxReturn" => Ok(TrackKind::AuxReturn),
+        "Master" => Ok(TrackKind::Master),
+        other => Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{field}` 不是规范的音轨类型: {other} \
+                 (规范名与线协议逐字相同: Midi / Audio / AuxReturn / Master)"
+            ),
+            serde_json::json!({
+                "field": field,
+                "reason": "unknownTrackKind",
+                "received": other,
+                "allowed": ["Midi", "Audio", "AuxReturn", "Master"],
+            }),
+        )),
+    }
+}
+
+/// 解析 `addTrack` 的载荷（三个字段**全部必填**）⇒ 一条**空形状**的音轨。
+///
+/// ⚠ **四个集合与 `folderId`/`color`/五个混音标量都取 `TrackV3::default()`** ——
+/// 那是**决定**（见 [`NoteOp::AddTrack`]）。因此一条"新建空轨"**不会**改动混音：
+/// `volume_db = 0.0`、`pan = 0.0`、`mute = solo = solo_safe = false`。
+fn parse_new_track(object: &Map<String, Value>) -> Result<TrackV3, Fault> {
+    reject_add_track_fields(object)?;
+    Ok(TrackV3 {
+        id: read_id(object, ADD_TRACK_TRACK_FIELD)?,
+        name: read_required_non_empty_string(object, ADD_TRACK_NAME_FIELD)?,
+        kind: read_required_track_kind(object, ADD_TRACK_KIND_FIELD)?,
+        // ⚠ 空形状：理由见本函数与 `NoteOp::AddTrack` 的文档。
+        ..TrackV3::default()
+    })
+}
+
 /// 拒绝 `addRoutingNode` 里 [`ADD_ROUTING_NODE_FIELDS`] 之外的键。
 ///
 /// 与 [`reject_remove_routing_node_fields`] 同形，但 `reason` **不同名**
@@ -4628,6 +4821,32 @@ pub fn compile(
                     previous_edge,
                 }
             }
+            NoteOp::AddTrack { track } => {
+                // 载荷就是整条 `TrackV3`（四个集合与两个可选字段已是空形状），
+                // 因此这里**没有**撤销载荷要读：`AddTrack` 的逆操作是 `RemoveTrack`
+                // （它自带整条 `previous_track`），模型那两条互为逆。
+                //
+                // 一条提前拒绝（与 `removeTrack` 的 `trackNotFound` 同一纪律 ——
+                // 让"身份打错 / 重复"在**编译期**就带上 `reason` 与 `hint`，而不是在
+                // 提案模拟那一步冒出一个泛化消息）：这个身份**必须不在** `tracks` 里。
+                if project.tracks.contains_key(&track.id) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!("工程的 tracks 里已经有身份 {} 的音轨", track.id),
+                        serde_json::json!({
+                            "trackId": track.id.to_canonical_string(),
+                            "reason": "trackAlreadyExists",
+                            "hint": "新建音轨是**幂等拒绝**的 (模型 `AddTrack` 的前置条件\
+                                     是身份不在 `tracks` 里); 已有的音轨身份由 \
+                                     `yeban_query_project` 的 `tracks` 报出。若你想改一条\
+                                     已有音轨, 用 `setParam`/`setTrackMute`/`setTrackSolo`",
+                        }),
+                    ));
+                }
+                Op::AddTrack {
+                    track: track.clone(),
+                }
+            }
             NoteOp::AddRoutingNode { node_id } => {
                 // 载荷是**空**的（模型 `AddRoutingNode` 只有节点身份，且它与
                 // `RemoveRoutingNode` 互为逆操作），因此这里没有撤销载荷可读。
@@ -6494,7 +6713,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 21);
+        assert_eq!(OP_KINDS.len(), 22);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -11242,7 +11461,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 21] = [
+        let table: [(&str, serde_json::Value); 22] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -11305,6 +11524,10 @@ mod tests {
             ("disconnectRouting", serde_json::json!({"edgeId": ulid})),
             ("removeRoutingNode", serde_json::json!({"nodeId": ulid})),
             ("addRoutingNode", serde_json::json!({"nodeId": ulid})),
+            (
+                "addTrack",
+                serde_json::json!({"trackId": ulid, "name": "New Track", "trackKind": "Midi"}),
+            ),
             ("removeSection", serde_json::json!({"sectionId": ulid})),
             ("removeScene", serde_json::json!({"sceneId": ulid})),
             ("setScene", serde_json::json!({"scene": {"sceneId": ulid}})),
@@ -11334,6 +11557,7 @@ mod tests {
                 "disconnectRouting",
                 "removeRoutingNode",
                 "addRoutingNode",
+                "addTrack",
                 "removeSection",
                 "removeScene",
                 "setScene",
@@ -11641,7 +11865,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 22] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 23] = [
             (
                 "add",
                 None,
@@ -11768,6 +11992,13 @@ mod tests {
                 "DisconnectRouting",
             ),
             (
+                "addTrack",
+                None,
+                None,
+                serde_json::json!({"trackId": ghost, "name": "New Track", "trackKind": "Midi"}),
+                "AddTrack",
+            ),
+            (
                 "addRoutingNode",
                 None,
                 None,
@@ -11845,7 +12076,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 22);
+        assert_eq!(seen.len(), 23);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
@@ -12034,6 +12265,186 @@ mod tests {
         assert_ne!(
             ADD_ROUTING_NODE_KIND, REMOVE_ROUTING_NODE_KIND,
             "两个节点形态做的是**相反**的事, 共用一个 kind 会让调用方分不开它们"
+        );
+    }
+
+    /// `addTrack`：解析 → 编译到**正是** `Op::AddTrack` → 撤销一步恢复原状；
+    /// 并钉住"空形状是**决定**"与"新轨不改混音"。
+    ///
+    /// 注入（实测红）：① 编译成 `RemoveTrack` ⇒ 音轨数不减反增那条断言红；
+    /// ② 把空形状换个非默认的 `volume_db`/`mute` ⇒ 第 ② 条判据红；
+    /// ③ 去掉 `trackAlreadyExists` 那条提前拒绝 ⇒ 重复身份那次调用的 `reason` 断言红。
+    #[test]
+    fn add_track_lands_an_empty_track_and_leaves_the_mix_alone() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let new_id = EntityId::from_str("01J8ZQ000000000000000000TR").expect("ULID");
+        assert!(
+            !project.tracks.contains_key(&new_id),
+            "夹具前提: 身份是新的"
+        );
+        let tracks_before = project.tracks.len();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        // ---- ① 规范形状能解析，kind 回环一致，分类正确 ----
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": ADD_TRACK_KIND, "trackId": new_id.to_canonical_string(),
+             "name": "New Track", "trackKind": "Audio"}
+        ]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), ADD_TRACK_KIND, "kind 必须回环一致");
+        assert!(!ops[0].is_note_level(), "音轨实体级不读不写音符");
+        assert!(!ops[0].is_routing_level(), "音轨**不是**路由图的一部分");
+        match &ops[0] {
+            NoteOp::AddTrack { track } => {
+                assert_eq!(track.id, new_id);
+                assert_eq!(track.name, "New Track");
+                assert_eq!(track.kind, TrackKind::Audio, "`trackKind` 必须逐字映射");
+            }
+            other => panic!("应当是 AddTrack: {other:?}"),
+        }
+
+        // ---- ②⭐ 空形状是**决定**：四个集合为空 + 两个可选字段为 None ----
+        let parsed_track = match &ops[0] {
+            NoteOp::AddTrack { track } => track.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(parsed_track.devices.is_empty(), "devices 必须是空形状");
+        assert!(parsed_track.macros.is_empty(), "macros 必须是空形状");
+        assert!(
+            parsed_track.automation_lanes.is_empty(),
+            "automation_lanes 必须是空形状"
+        );
+        assert!(parsed_track.clips.is_empty(), "clips 必须是空形状");
+        assert_eq!(parsed_track.folder_id, None, "folderId 不在载荷里 ⇒ None");
+        assert_eq!(parsed_track.color, None, "color 不在载荷里 ⇒ None");
+
+        // ---- ②⭐ 新建空轨**不改混音**：五个标量必须等于 `TrackV3::default()` ----
+        let defaults = TrackV3::default();
+        assert_eq!(
+            parsed_track.volume_db, defaults.volume_db,
+            "新建空轨的音量必须是默认值 (⛔ 不许静默改混音)"
+        );
+        assert_eq!(parsed_track.pan, defaults.pan, "声相必须是默认值");
+        assert!(!parsed_track.mute, "新轨不许默认静音");
+        assert!(!parsed_track.solo, "新轨不许默认独奏");
+        assert_eq!(
+            parsed_track.solo_safe, defaults.solo_safe,
+            "solo_safe 必须是默认值"
+        );
+
+        // ---- ③ 编译到**正是** `Op::AddTrack` ----
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::AddTrack { track } => assert_eq!(track, &parsed_track),
+            other => panic!("应当是 AddTrack: {other:?}"),
+        }
+
+        // ---- ④ 应用：音轨真的进 `tracks`，且工程仍然合法 ----
+        compiled[0].apply(&mut project).expect("新建");
+        assert!(
+            project.tracks.contains_key(&new_id),
+            "音轨必须真的进 tracks"
+        );
+        assert_eq!(project.tracks.len(), tracks_before + 1);
+        assert!(project.validate().is_ok(), "新建之后工程必须仍然合法");
+        // ⚠ 模型 `apply` **不**自动把身份加进 `nodes`（那是 addRoutingNode 的事）。
+        assert!(
+            !project.routing_graph.nodes.contains(&new_id),
+            "`addTrack` ⛔ 不自动把身份加进 routing_graph.nodes"
+        );
+
+        // ---- ⑤ **撤销一步**必须恢复原状（逐字节） ----
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.tracks.len(), tracks_before, "音轨数必须回到原值");
+        assert!(
+            !project.tracks.contains_key(&new_id),
+            "逆操作必须把这条音轨摘掉"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// 重复身份与未知键各自**响亮失败**（⛔ 不静默丢弃）。
+    #[test]
+    fn add_track_refuses_a_duplicate_identity_and_an_unknown_key() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let existing = *project.tracks.keys().next().expect("样本音轨");
+
+        // ---- 重复身份 ⇒ CONFLICT / `trackAlreadyExists` ----
+        let duplicate = parse_ops(&serde_json::json!([
+            {"kind": ADD_TRACK_KIND, "trackId": existing.to_canonical_string(),
+             "name": "Dup", "trackKind": "Midi"}
+        ]))
+        .expect("解析不查文档");
+        let fault = compile(&project, &track_id, &clip_id, &duplicate)
+            .expect_err("已在 tracks 里的身份必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("trackAlreadyExists"));
+
+        // ---- 未知键 ⇒ `unknownAddTrackField`（四个集合不在支持集合里）----
+        for extra in [
+            "devices",
+            "macros",
+            "automationLanes",
+            "clips",
+            "volumeDb",
+            "folderId",
+        ] {
+            let mut object = serde_json::json!({
+                "kind": ADD_TRACK_KIND,
+                "trackId": "01J8ZQ000000000000000000TR",
+                "name": "N",
+                "trackKind": "Midi",
+            });
+            object
+                .as_object_mut()
+                .expect("对象")
+                .insert(extra.to_owned(), serde_json::json!([]));
+            let fault =
+                parse_ops(&serde_json::json!([object])).expect_err("集合/混音标量都不在支持集合里");
+            assert_eq!(
+                reason_of(&fault).as_deref(),
+                Some("unknownAddTrackField"),
+                "`{extra}` 必须被点名拒绝 (空形状是**决定**)"
+            );
+        }
+
+        // ---- 空名 ⇒ 响亮拒绝（模型不查空名）----
+        let empty_name = parse_ops(&serde_json::json!([
+            {"kind": ADD_TRACK_KIND, "trackId": "01J8ZQ000000000000000000TR",
+             "name": "", "trackKind": "Midi"}
+        ]))
+        .expect_err("空名必须被拒");
+        assert_eq!(
+            reason_of(&empty_name).as_deref(),
+            Some("valueMustBeNonEmptyString")
+        );
+
+        // ---- 非规范类型名 ⇒ 响亮拒绝 ----
+        let bad_kind = parse_ops(&serde_json::json!([
+            {"kind": ADD_TRACK_KIND, "trackId": "01J8ZQ000000000000000000TR",
+             "name": "N", "trackKind": "midi"}
+        ]))
+        .expect_err("大小写拼错必须被拒");
+        assert_eq!(reason_of(&bad_kind).as_deref(), Some("unknownTrackKind"));
+    }
+
+    /// `addTrack` 的**字面名与支持集合**被钉住。
+    #[test]
+    fn add_track_field_names_are_pinned() {
+        assert_eq!(ADD_TRACK_KIND, "addTrack");
+        assert_eq!(ADD_TRACK_FIELDS, ["kind", "trackId", "name", "trackKind"]);
+        assert_eq!(ADD_TRACK_TRACK_FIELD, "trackId");
+        assert_eq!(ADD_TRACK_NAME_FIELD, "name");
+        assert_eq!(ADD_TRACK_KIND_FIELD, "trackKind");
+        assert_ne!(
+            ADD_TRACK_KIND, REMOVE_TRACK_KIND,
+            "新增与取走是**相反**的两件事, 共用一个 kind 会让调用方分不开"
         );
     }
 }

@@ -33,7 +33,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（字面 `json!` 第一层键，含顺序） | 115 | 514 | `284b3da94bea8cf61d1e2d1419d7587b3035b02b1c87c2d601d240c1a37aa0cd` |
+//! | `reason`（字面 `json!` 第一层键，含顺序） | 119 | 532 | `f37a16b013d66cd5386bd9af5f91d364968c73818df1263626fa9adb8576f41b` |
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -42,7 +42,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 
 /// 本轮开工基线上**生产区**里出现的全部 `reason` 字面量（排序）。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 111] = [
+pub const GOLDEN_REASONS: [&str; 115] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -123,6 +123,7 @@ pub const GOLDEN_REASONS: [&str; 111] = [
     "staticLaneNotApplicable",
     "tempoUnusable",
     "trackNotFound",
+    "unknownAddTrackField",
     "unknownAddRoutingNodeField",
     "unknownDeviceField",
     "unknownDeviceKind",
@@ -148,8 +149,11 @@ pub const GOLDEN_REASONS: [&str; 111] = [
     "unknownStaticLane",
     "unknownTransportConfigField",
     "unknownWriteMode",
+    "unknownTrackKind",
+    "trackAlreadyExists",
     "valueMustBeBoolean",
     "valueMustBeNumber",
+    "valueMustBeNonEmptyString",
     "valueMustBeString",
     "valueMustBeUnsignedInteger",
     "valueOutOfRange",
@@ -303,7 +307,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 111] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 115] = [
     (
         "assetChannelLayout",
         &[
@@ -558,6 +562,15 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 111] = [
             "unsupportedFields",
         ],
     ),
+    (
+        "unknownAddTrackField",
+        &[
+            "hint",
+            "reason",
+            "supportedAddTrackFields",
+            "unsupportedFields",
+        ],
+    ),
     ("unknownDeviceKind", &["reason", "supportedDeviceKinds"]),
     (
         "unknownDeviceParamField",
@@ -712,6 +725,10 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 111] = [
         &["allowed", "field", "note", "reason", "received"],
     ),
     (
+        "unknownTrackKind",
+        &["allowed", "field", "reason", "received"],
+    ),
+    (
         "unknownTransportConfigField",
         &[
             "reason",
@@ -723,8 +740,13 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 111] = [
         "unknownWriteMode",
         &["allowed", "field", "reason", "received"],
     ),
+    ("trackAlreadyExists", &["hint", "reason", "trackId"]),
     ("valueMustBeBoolean", &["field", "reason", "received"]),
     ("valueMustBeNumber", &["field", "reason"]),
+    (
+        "valueMustBeNonEmptyString",
+        &["field", "reason", "received"],
+    ),
     ("valueMustBeString", &["field", "reason", "received"]),
     (
         "valueMustBeUnsignedInteger",
@@ -1035,12 +1057,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 规范形式：**文件按路径排序** → 每个 `reason` 按**首次出现**顺序 →
 /// 每个键按**源码顺序**（只收字面 `json!` 对象第一层的键）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "284b3da94bea8cf61d1e2d1419d7587b3035b02b1c87c2d601d240c1a37aa0cd";
+    "f37a16b013d66cd5386bd9af5f91d364968c73818df1263626fa9adb8576f41b";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 115;
+pub const REASON_SURFACE_REASONS: usize = 119;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 514;
+pub const REASON_SURFACE_LINES: usize = 532;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
