@@ -255,10 +255,21 @@ mod tests {
         let mut stream = TcpStream::connect(address).expect("连环回");
         stream.write_all(raw.as_bytes()).expect("写请求");
         stream.flush().expect("刷");
-        assert!(
-            mount.pump().expect("服务一个连接"),
-            "排队中的连接必须被服务"
-        );
+        // ⚠ `accept` 与"连接真的排进 backlog"之间存在**瞬时竞态**：`connect` 返回
+        // 三次握手完成、而本进程的 `accept` 仍可能先看到 `WouldBlock`（实测：干净主
+        // 干上 8 次里出现过 1 次）。⇒ 这里**有界重试**（⛔ 不放松断言：仍然要求最终
+        // **真的**服务到一个连接；⛔ 也不改生产代码 —— 生产循环的"空队列 ⇒ `false`"
+        // 语义是对的）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut served = false;
+        while std::time::Instant::now() < deadline {
+            if mount.pump().expect("服务一个连接") {
+                served = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(served, "排队中的连接最终必须被服务");
         let mut response = String::new();
         stream.read_to_string(&mut response).expect("读响应");
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
