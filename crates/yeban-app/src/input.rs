@@ -666,6 +666,16 @@ pub enum Action {
     SelectTool(Tool),
     /// `Shift+Enter`: 原子采纳当前轨道浮现的 AI 建议。⚠ **键已绑定、动作尚无落地实现** —— 宿主 `host::action_has_implementation` 返回 `false`, 因此 `cli.rs` 的快捷表把它标成 `(未实现)` 且这里**不消费**：缺的是**能力**, 界面侧没有"当前待采纳的提案身份"这一表示 (`ui/dialogs/musical_pr_drawer.slint` 的四个数据面属性默认**全空**、没有任何宿主写它们; 2026-10-08 之前它们是内联演示常量, 本切片已清掉并加了一句用户可见的空态), 而领域的 `yeban_merge_proposal` 要 `proposalId`。逐条证据与最小代价见 `host.rs` 的 `action_has_implementation` 文档; 空前置条件 (＝今天任何装配) 下返回 `false`, 与 `DeleteSelection` / `ZoomToSelection` 空选区时同一取向。
     AcceptAiSuggestion,
+    /// `Cmd/Ctrl+Alt+N`：拨**节拍器**开关（`[ARCH-RT-001]` 的宿主侧落点）。
+    ///
+    /// ⚠ 它会**换一代引擎**（节拍器的计划在快照投影期进快照，见 `crate::metronome`）
+    /// ⇒ 实现必须**先停、再恢复位置与状态**（负责人裁决 A 的 1–3 条）。
+    ToggleMetronome,
+    /// `Cmd/Ctrl+Alt+D`：拨**预备拍**（`transport.count_in_bars` 0 ⇄ 1）。
+    ///
+    /// ⚠ 它与 `metronome_enabled` 同在 `TransportConfig` 里、同样投影进快照
+    /// ⇒ 走**同一条**服务、同一套恢复（`crate::metronome::set_count_in_bars`）。
+    ToggleCountIn,
     /// `Esc`：收尾 —— 关闭全屏时光机、取消进行中的拖拽手势。
     ///
     /// 三个落点各自独立（关弹窗 / 纵向拖拽 / 混音手势），任一命中即消费；都不在手时
@@ -791,6 +801,10 @@ impl InputContext {
                 (Key::Character('m'), false, true) => {
                     Resolution::Action(Action::ToggleConsoleMaximize)
                 }
+                // 加性新增（⛔ 不动既有键语义）：`Cmd/Ctrl+Alt+N` / `+D` 此前**未被占**
+                //（实测：本 `Cmd/Ctrl+Alt` 组合当时只有 `b` / `m` 两条）。
+                (Key::Character('n'), false, true) => Resolution::Action(Action::ToggleMetronome),
+                (Key::Character('d'), false, true) => Resolution::Action(Action::ToggleCountIn),
                 _ => Resolution::PassThrough,
             };
         }
