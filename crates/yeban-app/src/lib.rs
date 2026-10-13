@@ -72,6 +72,7 @@
 #![deny(missing_docs)]
 
 pub mod audio_clip;
+pub mod audition;
 pub mod automation;
 pub mod bridge;
 pub mod cli;

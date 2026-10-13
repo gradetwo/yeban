@@ -783,6 +783,21 @@ impl EngineHost {
     ///
     /// 两者都在**非实时线程**上做真正的 `dealloc`：音频线程只 `push`，从不 `drop`
     /// [ARCH-RT-002 / MUST-GATE-012]。没有引擎时返回全 0（不 panic）。
+    /// ⭐ **判据用**：当前这一代的 `EngineRuntime` 可变借用（⭐ 只给判据，⛔ 不给产品）。
+    ///
+    /// ⚠ **为什么必须有它**：`[ARCH-RT-005]` 的试听准入（`attach_audition_branch` /
+    /// `begin_audition`）住在 `EngineRuntime` 上，而宿主⛔ 不公开它的 runtime
+    /// （那是"换引擎只有一条路"的纪律）。判据要证"**产品的那一个** runtime 上真的能准入"
+    /// ⇒ 需要一个**显式标注为判据用**的借用点；⛔ 产品代码不得借它绕过本宿主的 API。
+    ///
+    /// ⚠ 没装引擎（`reload` 之前 / 失败之后）⇒ `None`（⛔ 不 panic）。
+    pub fn runtime_for_criteria(&mut self) -> Option<&mut yeban_engine::rt::EngineRuntime> {
+        self.runtime.as_mut()
+    }
+
+    /// 心跳：把**写者侧**要做的事做完（电平读数 ＋ 快照退役回收）。
+    ///
+    /// ⚠ **只在 UI / 主线程上调用**（它读通道、回收快照，都允许分配）。
     pub fn heartbeat(&mut self) -> HeartbeatReadings {
         let Some(slot) = self.slot.as_ref() else {
             return HeartbeatReadings {
