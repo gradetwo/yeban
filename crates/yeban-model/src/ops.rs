@@ -445,6 +445,29 @@ pub enum Op {
         /// 删除**之前**的索引项（撤销用）。
         previous_asset: AssetMetadata,
     },
+    /// 设置音轨**名字**（[`TrackV3::name`]）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`TrackV3::name` 在操作日志层
+    /// 不可表达** —— 唯一的入口是 [`Op::AddTrack`]（建轨时把整个 `TrackV3` 交进去），
+    /// 而它之后**没有任何 `Op` 能改名** ⇒ 改名只能"删轨 + 重建"，⭐ 那会**换掉
+    /// `EntityId`**、并连带丢掉该轨的设备链 / 自动化 / 路由边（⭐ 那些都以 `track_id` 为键）。
+    /// 这是 `ARCH-OPS-001` 那一族的又一处（与 `D27` 补 `AddClip`、`D42` 补
+    /// `SetAutomationLane`、以及 [`Op::SetAuthor`] / [`Op::SetTrackMute`] 的成因同型）。
+    ///
+    /// ⚠ `name` 是**纯展示注记**、⛔ 无身份语义（身份是 [`TrackV3::id`]）⇒ 改它
+    /// **不影响任何不变式**，所以本变体只写这一个字段：⛔ 不碰 `volume_db` / `pan` /
+    /// `mute` / `solo` / `solo_safe` / `folder_id`，也⛔ 不碰其它轨。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetAuthor`]），⛔ **不是**
+    /// `previous_*`（那是 delete/remove 类的惯例）。
+    SetTrackName {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的名字。
+        old_name: String,
+        /// 修改后的名字。
+        new_name: String,
+    },
     /// 设置音轨**独奏**。
     ///
     /// 与 [`Op::SetTrackMute`] 同族：[`TrackV3::solo`] 也是 `bool`。
@@ -646,6 +669,7 @@ impl Op {
             Self::RemoveDevice { .. } => "RemoveDevice",
             Self::SetParam { .. } => "SetParam",
             Self::SetTrackMute { .. } => "SetTrackMute",
+            Self::SetTrackName { .. } => "SetTrackName",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
             Self::SetAuthor { .. } => "SetAuthor",
@@ -965,6 +989,16 @@ impl Op {
             // 与 `SetParam` 同型：先校验"载荷里的旧值确实是文档现值"，否则 `OpStateMismatch`。
             // `new_* == old_*` 是**合法**的无操作（`SetParam` 也放行）—— 幂等由调用方决定
             // 是否要提交（GUI 侧在值没变时**不**提交，见 `host::end_mixer_drag`）。
+            Self::SetTrackName {
+                track_id, old_name, ..
+            } => {
+                // ⚠ `String` 的相等是**逐字节**的（与 [`Op::SetAuthor`] 同一口径）
+                // ⇒ 陈旧载荷必被拒。
+                if doc.track(track_id)?.name != *old_name {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetTrackMute {
                 track_id, old_mute, ..
             } => {
@@ -1416,6 +1450,15 @@ impl Op {
                 new_asset: previous_asset.clone(),
             },
             // 纯结构化取反：只交换"前 / 后"两个布尔。
+            Self::SetTrackName {
+                track_id,
+                old_name,
+                new_name,
+            } => Self::SetTrackName {
+                track_id: *track_id,
+                old_name: new_name.clone(),
+                new_name: old_name.clone(),
+            },
             Self::SetTrackMute {
                 track_id,
                 old_mute,
@@ -1680,6 +1723,14 @@ impl Op {
             Self::SetParam {
                 target, new_val, ..
             } => write_param(doc, *target, *new_val),
+            // 只写那**一个**名字字段：不碰 `volume_db` / `pan` / `mute` / `solo` /
+            // `solo_safe` / `folder_id`，也⛔ 不碰其它轨、⛔ 不碰 `id`。
+            Self::SetTrackName {
+                track_id, new_name, ..
+            } => {
+                doc.track_mut(track_id)?.name = new_name.clone();
+                Ok(())
+            }
             // 只写那**一个**布尔字段：不碰 `solo_safe`、不碰音量、不碰路由。
             Self::SetTrackMute {
                 track_id, new_mute, ..
