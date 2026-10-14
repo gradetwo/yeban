@@ -64,7 +64,15 @@ def strip_cfg_test_blocks(text: str) -> str:
 def count(needle: str, path: str) -> int:
     src = open(path, encoding="utf-8").read()
     body = strip_cfg_test_blocks(strip_comments(src))
-    return len(re.findall(r"\b" + re.escape(needle) + r"\b", body))
+    # ⚠ R573（mod-app 实测）：⛔ 不能无条件加**两侧** `\b` —— 若针脚以非词字符结尾
+    # （例 `.unwrap()`／`.expect(`），**尾随 `\b` 永远不匹配** ⇒ 静默报 0。
+    # 正解：只在针脚的**首/尾是词字符**那一侧加 `\b`。
+    pat = re.escape(needle)
+    if needle[:1].isalnum() or needle[:1] == "_":
+        pat = r"\b" + pat
+    if needle[-1:].isalnum() or needle[-1:] == "_":
+        pat = pat + r"\b"
+    return len(re.findall(pat, body))
 
 
 def non_production_rs_paths(crate_dir: str) -> set[str]:
@@ -143,6 +151,8 @@ def self_test() -> int:
         ("sync_all", "crates/yeban-model/src/local_config.rs", ">=2"),
         ("fs::write", "crates/yeban-mcp/src/domain/store.rs", "==0"),
         ("fs::write", "crates/yeban-mcp/src/security.rs", "==0"),
+        # ⭐ R573: 针脚以非词字符结尾时**必须仍能数到**（⛔ 不许静默 0）
+        ("write_all(", "crates/yeban-model/src/local_config.rs", ">=2"),
     ]
     bad = 0
     for needle, path, want in cases:
