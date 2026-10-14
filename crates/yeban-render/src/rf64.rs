@@ -1613,7 +1613,7 @@ pub fn parse_container(bytes: &[u8]) -> Result<ParsedContainer, Rf64Error> {
             got: bytes.len(),
         })?
         .try_into()
-        .expect("4 字节");
+        .expect("4 字节：上方 `.get(0..4).ok_or(Truncated)?` 已保证切片恰好 4 字节");
     let kind = ContainerKind::from_fourcc(fourcc).ok_or(Rf64Error::NotWaveContainer)?;
     if bytes.get(8..12) != Some(&b"WAVE"[..]) {
         return Err(Rf64Error::NotWaveContainer);
@@ -1765,7 +1765,10 @@ fn parse_fmt_payload(payload: &[u8], declared_len: u32) -> Result<PcmFormat, Rf6
                 return Err(Rf64Error::BadFmtLen(declared_len));
             }
             let mask = le::read_u32(payload, 20).ok_or(Rf64Error::BadFmtLen(declared_len))?;
-            let guid: [u8; 16] = payload[24..40].try_into().expect("16 字节");
+            // 依据在上方 :1765 的 `payload.len() < 40` 守卫 ⇒ `payload[24..40]` 恰好 16 字节。
+            let guid: [u8; 16] = payload[24..40].try_into().expect(
+                "16 字节：上方 `payload.len() < 40` 守卫已保证 `payload[24..40]` 恰好 16 字节",
+            );
             let is_float = if guid == subformat_guid(true) {
                 true
             } else if guid == subformat_guid(false) {

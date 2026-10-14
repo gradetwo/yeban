@@ -188,9 +188,9 @@ where
     for &(source, destination) in &graph.edges {
         incoming
             .get_mut(&destination)
-            .expect("端点已校验")
+            .expect("端点已校验：本函数上方 :173-181 的 `node_set.contains` 循环已确认每条边的两个端点都在集合里")
             .push(source);
-        *indegree.get_mut(&destination).expect("端点已校验") += 1;
+        *indegree.get_mut(&destination).expect("端点已校验：本函数上方 :173-181 的 `node_set.contains` 循环已确认每条边的两个端点都在集合里") += 1;
     }
 
     // Kahn 拓扑排序。就绪集合用 BTreeSet: 每一步取**最小键**, 因此拓扑序唯一。
@@ -222,7 +222,7 @@ where
             if source != node {
                 continue;
             }
-            let degree = indegree.get_mut(&destination).expect("端点已校验");
+            let degree = indegree.get_mut(&destination).expect("端点已校验：本函数上方 :173-181 的 `node_set.contains` 循环已确认每条边的两个端点都在集合里");
             *degree -= 1;
             if *degree == 0 {
                 ready.insert(destination);
