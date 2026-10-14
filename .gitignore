@@ -39,3 +39,9 @@ artifacts/
 # cargo 的沙箱兜底缓存目录（scripts/dev/local-env.sh）—— 同上，绝不入库。
 # 不带前导 `/`：worktree 布局下（`.worktrees/<line>/`）任意深度都拦得住。
 .cargo-home/
+# Python 脚本（守卫 / 门禁 / 工具）运行留下的字节码缓存 —— 同上，绝不入库；G12 会一票否决。
+# 为什么必须显式写: 本仓有 ~23 个 Python 脚本，跑一次就生成 `__pycache__/`；
+# 实测（R548）树里同时存在 13 个 `__pycache__` 目录，而此前**没有任何规则拦它们**
+# —— 即"靠记得别 add"在保护，而不是机械保护。同样不带前导 `/`，worktree 下任意深度都拦。
+__pycache__/
+*.pyc
