@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 35] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 36] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -102,6 +102,7 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 35] = [
     ("RemoveSection", &["domain/notes.rs"]),
     // ⭐ 步 ② 落地：`yeban_import_audio` 在同一个 `Op::Batch` 里构造它
     ("SetAsset", &["domain/import_audio.rs"]),
+    ("RemoveAsset", &["domain/notes.rs"]),
     ("SetScene", &["domain/notes.rs"]),
     ("RemoveScene", &["domain/notes.rs"]),
     (
@@ -125,16 +126,9 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 35] = [
 /// 就要**如实登记**，⛔ 不许为了过判据而伪造一个构造点。
 ///
 /// ⚠ 每一条都必须带理由；清空它意味着"工具面覆盖了模型全集"。
-const KNOWN_UNREACHABLE: [(&str, &str); 1] = [
-    // ⚠ 这两个变体是**集成者**并入模型侧时**漏做的 mcp 侧对应登记** ⇒ 本清单补上。
-    // 它们今天在 `yeban-mcp` 里**零构造点**（只有 `yeban-model` 的 `showcase_ops()`）⇒
-    // 属"完全无构造点"一类。⭐ 接线归**步 ②**（让 `yeban_import_audio` 走
-    // `decode::import_path`/`import_bytes` 并在同一次 `Op::Batch` 里落声明）
-    // ⇒ 接线后**删掉这两条**，反向断言会点名。
-    (
-        "RemoveAsset",
-        "同上（`Op::RemoveAsset` 是创建态的结构逆）⇒ 步 ② 落地后删除本条",
-    ),
+const KNOWN_UNREACHABLE: [(&str, &str); 0] = [
+    // ⭐ **已清空**：`SetAsset`（步 ②）与 `RemoveAsset`（步 ③）两条都由本线补上了
+    // 工具面通路 ⇒ 模型 `Op` 全集在工具面上**全覆盖**。清空它由那条反向判据守住。
 ];
 // ⭐ 历史: 本清单**曾经清空过一次**（`SetTempo` 与 `SetAuthor` 两条欠账由线补齐各加
 // `kind` 后删掉）。**清空**意味着"工具面覆盖了模型全集"，而那条反向判据会替我们守住它。
@@ -375,8 +369,8 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        35,
-        "登记表有 35 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+        36,
+        "登记表有 36 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
          `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
     );
 }

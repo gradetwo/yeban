@@ -744,10 +744,10 @@ use serde_json::{Map, Value};
 
 use yeban_model::music::{MICRO_TIMING_MAX_ABS, RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
-    AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode, ClipContent,
-    ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LaunchQuantization,
-    LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind, SceneV3, SectionV3,
-    TrackKind, TrackV3, TransportConfig, YebanProjectV1,
+    AssetHash, AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode,
+    ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId,
+    LaunchQuantization, LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind,
+    SceneV3, SectionV3, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -965,12 +965,13 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 26] = [
+pub const OP_KINDS: [&str; 27] = [
     "add",
     "delete",
     "move",
     "velocity",
     REMOVE_CLIP_KIND,
+    REMOVE_ASSET_KIND,
     REMOVE_TRACK_KIND,
     INSERT_DEVICE_KIND,
     REMOVE_DEVICE_KIND,
@@ -1273,6 +1274,31 @@ pub const REMOVE_POINT_OP_FIELDS: [&str; 2] = ["kind", REMOVE_POINT_FIELD];
 ///
 /// 与模型 `Op` 变体名同词（`RemoveClip` 的小驼峰），与 [`SET_PARAM_KIND`] /
 /// [`REMOVE_AUTOMATION_POINT_KIND`] 同一条命名规则。
+/// `ops[].kind` 的**取走资产索引项**形态名（写 [`Op::RemoveAsset`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveAsset` 的小驼峰），与 [`REMOVE_CLIP_KIND`] 同一条
+/// 命名规则。
+///
+/// ⚠⭐ **它是资产唯一的删除通路**：在它之前 `Op::RemoveAsset` 在 `yeban-mcp` 里
+/// **零构造点**（只由模型的 `structural_inverse` 产出 ⇒ 用户只能靠**撤销那次导入**
+/// 取走它）。本仓同族实体（音轨/场景/段落/片段/设备/路由节点/自动化点）**都有**
+/// 显式 `remove*` 形态 ⇒ 本形态补齐资产那一格。
+pub const REMOVE_ASSET_KIND: &str = "removeAsset";
+
+/// 取走资产索引项形态的**寻址**字段名（`ops[].assetHash`）。
+///
+/// ⚠ 与 `yeban_import_audio` 的实参同名，但**不是**同一条通路：本形态在
+/// `yeban_edit_notes` 上，该工具**没有**顶层 `assetHash` 实参 ⇒ ⛔ 必须**自带寻址**
+/// （与 [`REMOVE_SCENE_KIND`] / [`REMOVE_SECTION_KIND`] 的 `sceneId` / `sectionId` 同型）。
+pub const REMOVE_ASSET_HASH_FIELD: &str = "assetHash";
+
+/// 取走资产索引项形态允许出现的**全部**键（判别键 + 一个寻址）。
+pub const REMOVE_ASSET_FIELDS: [&str; 2] = ["kind", REMOVE_ASSET_HASH_FIELD];
+
+/// `ops[].kind` 的**取走片段池条目**形态名（写 [`Op::RemoveClip`]）。
+///
+/// 与模型 `Op` 变体名同词（`RemoveClip` 的小驼峰）⇒ 三个名字（工具 `kind`、
+/// 模型变体、契约分支）逐字一致。
 pub const REMOVE_CLIP_KIND: &str = "removeClip";
 
 /// 池级形态的**操作对象**允许出现的全部键（只有判别键 —— 载荷是**空**的）。
@@ -2424,6 +2450,28 @@ pub enum NoteOp {
         /// 属性覆盖（合并语义）。
         patch: SectionPatch,
     },
+    /// **取走一条资产索引项**（[`Op::RemoveAsset`]，`project.assets` 里那一格）。
+    ///
+    /// ⚠⭐ **资产唯一的显式删除通路**。在它之前 [`Op::RemoveAsset`] 只由模型的
+    /// `structural_inverse` 产出（`SetAsset { old_asset: None }` 的逆）⇒ 用户**只能靠
+    /// 撤销那次导入**取走索引项，没有一个"删掉这个资产"的形态 —— 与 [`Self::RemoveScene`]
+    /// 补齐之前"建得出、删不掉"的形状同族。
+    ///
+    /// ⚠ **自带寻址**（`ops[].assetHash`）：`yeban_edit_notes` **没有**顶层 `assetHash`
+    /// 实参，因此本形态⛔ 不能像 [`Self::RemoveTrack`] 那样借顶层实参（那个形态的
+    /// `trackId` 是工具签名的一部分）。
+    ///
+    /// ⚠ 撤销载荷 `previous_asset` 由 [`compile`] 从**当前文档**读（整条索引项，
+    /// 逐字段比较），⛔ 不信调用方声明。
+    ///
+    /// ⚠ **被引用则拒**：`project.assets` 是 `clip_pool` 里 `ClipContent::Audio` 的
+    /// **许可留痕** ⇒ 还有片段引用该哈希时取走它，会留下**指向不存在资产的片段**
+    /// （`YebanProjectV1::validate` **不查**这条 ⇒ 模型⛔ 不会替我们拦）⇒ 本层自己拒
+    /// （`assetInUse`，与 `removeClip` 报模型 `ClipInUse` 同一条纪律）。
+    RemoveAsset {
+        /// 资产身份（内容寻址的 CAS 键，本形态自带寻址）。
+        asset_hash: AssetHash,
+    },
     /// **写入一个场景**（[`Op::SetScene`]）：新建（`create` 为真）或更新（合并）。
     ///
     /// 与 [`Self::RemoveScene`] **同族**（场景级、目标由自带的 `sceneId` 给出、
@@ -2549,6 +2597,7 @@ impl NoteOp {
             Self::AddRoutingNode { .. } => ADD_ROUTING_NODE_KIND,
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
+            Self::RemoveAsset { .. } => REMOVE_ASSET_KIND,
             Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
             Self::SetSection { .. } => SET_SECTION_KIND,
             Self::SetScene { .. } => SET_SCENE_KIND,
@@ -2587,6 +2636,7 @@ impl NoteOp {
                 | Self::AddRoutingNode { .. }
                 | Self::RemoveRoutingNode { .. }
                 | Self::RemoveSection { .. }
+                | Self::RemoveAsset { .. }
                 | Self::RemoveScene { .. }
                 | Self::SetSection { .. }
                 | Self::SetScene { .. }
@@ -2705,6 +2755,17 @@ impl NoteOp {
     #[must_use]
     pub const fn is_scene_level(&self) -> bool {
         matches!(self, Self::RemoveScene { .. } | Self::SetScene { .. })
+    }
+
+    /// 该形态改的是**工程资产索引**（而不是音符 / 音轨 / 泳道 / 片段池 / 路由图 /
+    /// 曲式段落 / 场景）。
+    ///
+    /// 与 [`Self::is_scene_level`] / [`Self::is_section_level`] 同因
+    /// （`domain::plan_edit_notes` 的分类）：资产不是上面任何一个 ⇒ 它需要自己的桶，
+    /// ⛔ 否则一次纯 `removeAsset` 的调用会被报成别的层级的编辑。
+    #[must_use]
+    pub const fn is_asset_level(&self) -> bool {
+        matches!(self, Self::RemoveAsset { .. })
     }
 }
 
@@ -2907,6 +2968,24 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         REMOVE_AUTOMATION_POINT_KIND => {
             let (spec, address) = parse_point_removal(object)?;
             Ok(NoteOp::RemovePoint { spec, address })
+        }
+        REMOVE_ASSET_KIND => {
+            reject_remove_asset_fields(object)?;
+            Ok(NoteOp::RemoveAsset {
+                asset_hash: AssetHash::parse(
+                    object
+                        .get(REMOVE_ASSET_HASH_FIELD)
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| missing(REMOVE_ASSET_HASH_FIELD, "SHA-256 十六进制"))?,
+                )
+                .map_err(|error| {
+                    Fault::domain_with_data(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`{REMOVE_ASSET_HASH_FIELD}` 不是合法 SHA-256: {error}"),
+                        serde_json::json!({ "field": REMOVE_ASSET_HASH_FIELD }),
+                    )
+                })?,
+            })
         }
         REMOVE_CLIP_KIND => {
             reject_remove_clip_fields(object)?;
@@ -4730,6 +4809,43 @@ fn reject_point_removal_op_fields(object: &Map<String, Value>) -> Result<(), Fau
 /// 与 [`reject_point_removal_op_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：
 /// 本形态的载荷是**空**的，目标片段是工具顶层的 `clipId`；嵌套写一个 `clipId`
 /// （或任何别的键）若被静默忽略，调用方会以为取走的是另一个片段。
+/// 拒绝 `removeAsset` 操作对象里 [`REMOVE_ASSET_FIELDS`] 之外的键。
+///
+/// 与 [`reject_remove_clip_fields`] 同一口径：最像"写对了"的错法是把寻址写成
+/// 工具顶层的 `trackId`／`clipId`（那是别的形态的实参）—— 那会被静默忽略，
+/// 而调用方以为资产已经取走了。
+///
+/// # Errors
+///
+/// 出现 `kind` / `assetHash` 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownRemoveAssetField"`）。
+fn reject_remove_asset_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !REMOVE_ASSET_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{REMOVE_ASSET_KIND}` 操作里有不支持的键: {} \
+             (支持集合只有 {REMOVE_ASSET_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownRemoveAssetField",
+            "unsupportedFields": unknown,
+            "supportedRemoveAssetFields": REMOVE_ASSET_FIELDS,
+            "hint": "本形态**自带寻址**: 资产身份写在操作对象的 `assetHash` 上 \
+                     (⛔ 不是工具顶层的 `trackId`/`clipId`)",
+        }),
+    ))
+}
+
 fn reject_remove_clip_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     let mut unknown: Vec<&str> = object
         .keys()
@@ -5696,6 +5812,62 @@ pub fn compile(
                 Op::RemoveSection {
                     section_id: *section_id,
                     previous_section,
+                }
+            }
+            NoteOp::RemoveAsset { asset_hash } => {
+                // 撤销载荷来自**当前文档**（模型 `RemoveAsset` 的 `validate` 要求
+                // `previous_asset` 逐字段等于文档现值）⇒ 本层不采信调用方声明。
+                //
+                // 两条提前拒绝（与 `removeClip` 的 `CLIP_NOT_FOUND` / 模型
+                // `ClipInUse` 同一纪律 —— 让"哈希打错"与"资产还在被引用"在**编译期**
+                // 就带上 `reason`，而不是在提案模拟那一步冒出一个泛化消息）：
+                //
+                // 1. 该索引项必须在 `project.assets` 里（否则 `assetNotFound`）。
+                // 2. ⚠ **没有任何 `clip_pool` 条目引用它**（否则 `assetInUse`）。
+                //    `project.assets` 是 `ClipContent::Audio` 的许可留痕 ⇒ 取走一个
+                //    仍被引用的哈希会留下**指向不存在资产的片段**，而
+                //    `YebanProjectV1::validate` **不查**这条（实测：`project.rs` 里
+                //    `assets.get` / `assets.contains_key` 零命中）⇒ ⛔ 模型不会替我们拦。
+                let current = project.assets.get(asset_hash).cloned().ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程的 assets 索引里没有身份 {} 的资产", asset_hash.as_str()),
+                        serde_json::json!({
+                            "assetHash": asset_hash.as_str(),
+                            "reason": "assetNotFound",
+                            "hint": "资产身份由 `yeban_query_project` 的 `assets` 字段报出",
+                        }),
+                    )
+                })?;
+                let referencing: Vec<String> = project
+                    .clip_pool
+                    .values()
+                    .filter(|entry| match &entry.content {
+                        ClipContent::Audio { asset, .. } => asset == asset_hash,
+                        ClipContent::Midi { .. } => false,
+                    })
+                    .map(|entry| entry.id.to_canonical_string())
+                    .collect();
+                if !referencing.is_empty() {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!(
+                            "资产 {} 还被 {} 条片段引用, 不能取走它的索引项",
+                            asset_hash.as_str(),
+                            referencing.len()
+                        ),
+                        serde_json::json!({
+                            "assetHash": asset_hash.as_str(),
+                            "reason": "assetInUse",
+                            "clipCount": referencing.len(),
+                            "clipIds": referencing,
+                            "hint": "先取走引用它的片段 (`removeClip`), 再取走这条索引项                                      (与 `removeClip` 要求先取走摆放是同一条顺序纪律)",
+                        }),
+                    ));
+                }
+                Op::RemoveAsset {
+                    asset_hash: asset_hash.clone(),
+                    previous_asset: current,
                 }
             }
             NoteOp::RemoveScene { scene_id } => {
@@ -7516,7 +7688,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 26);
+        assert_eq!(OP_KINDS.len(), 27);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -12264,7 +12436,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 26] = [
+        let table: [(&str, serde_json::Value); 27] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -12279,6 +12451,10 @@ mod tests {
                 serde_json::json!({"noteId": ulid, "velocity": 64}),
             ),
             ("removeClip", serde_json::json!({})),
+            (
+                "removeAsset",
+                serde_json::json!({"assetHash": "00".repeat(32)}),
+            ),
             ("removeTrack", serde_json::json!({"trackId": ulid})),
             (
                 "insertDevice",
@@ -12357,6 +12533,7 @@ mod tests {
                 "move",
                 "velocity",
                 "removeClip",
+                "removeAsset",
                 "removeTrack",
                 "insertDevice",
                 "removeDevice",
@@ -12679,10 +12856,30 @@ mod tests {
         let unplaced = spare_entry.id;
         let ghost = EntityId::from_str("01J8ZQ00000000000000000999").expect("ULID");
         let new_scene = EntityId::from_str("01J8ZQ00000000000000000SC1").expect("ULID");
+        // ⭐ `removeAsset` 需要一条**真的在** `project.assets` 里的哈希（否则它会响亮
+        // 拒绝 `assetNotFound`），而它的前置还要求**没有片段引用**它 ⇒ 用夹具的音频片段
+        // 所引用的那个哈希作目标，并在那一行**预置**该片段。
+        let audio_entry = project
+            .clip_pool
+            .values()
+            .find(|entry| matches!(&entry.content, ClipContent::Audio { .. }))
+            .expect("夹具必须有音频片段")
+            .clone();
+        // ⚠ 目标**必须无引用**：`removeAsset` 的前置要求"没有任何 `clip_pool` 条目
+        // 引用它" ⇒ 夹具里那条音频片段引用的哈希**不能**当目标（那会红 `assetInUse`，
+        // 而那条拒绝路径由它自己的判据覆盖）。这里登记一条**没人引用**的合成资产。
+        let orphan_asset = AssetHash::of_bytes(b"orphan-asset-for-removeAsset-row");
+        let orphan_entry = yeban_model::AssetMetadata {
+            hash: orphan_asset.clone(),
+            original_path: "samples/orphan.wav".to_owned(),
+            byte_len: 64,
+            media_kind: yeban_model::MediaKind::Audio,
+            license: "CC0-1.0".to_owned(),
+        };
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 27] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 28] = [
             (
                 "add",
                 None,
@@ -12710,6 +12907,17 @@ mod tests {
                 None,
                 serde_json::json!({"noteId": note, "velocity": 64}),
                 "ModifyNoteVelocity",
+            ),
+            (
+                "removeAsset",
+                None,
+                Some({
+                    let mut entry = audio_entry.clone();
+                    entry.id = EntityId::from_str("01J8ZQ00000000000000000AS1").expect("ULID");
+                    entry
+                }),
+                serde_json::json!({"assetHash": orphan_asset.as_str()}),
+                "RemoveAsset",
             ),
             (
                 "removeClip",
@@ -12885,7 +13093,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "26 个 kind ＋ 1 个额外载荷分支"
+            "27 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -12896,14 +13104,15 @@ mod tests {
             let ops = parse_ops(&serde_json::json!([Value::Object(object)]))
                 .unwrap_or_else(|fault| panic!("`{label}` 的规范形状必须能解析: {fault:?}"));
             let use_clip = clip_override.unwrap_or(clip);
-            let document = preset.map_or_else(
-                || project.clone(),
-                |entry| {
-                    let mut modified = project.clone();
-                    modified.clip_pool.insert(entry.id, entry);
-                    modified
-                },
-            );
+            // ⭐ 每一行都注入那条**没人引用**的合成资产（`removeAsset` 的目标）；
+            // `preset` 再额外插一条片段池条目（有的行需要）。
+            let mut document = project.clone();
+            document
+                .assets
+                .insert(orphan_asset.clone(), orphan_entry.clone());
+            if let Some(entry) = preset {
+                document.clip_pool.insert(entry.id, entry);
+            }
             let compiled = compile(&document, &track, &use_clip, &ops)
                 .unwrap_or_else(|fault| panic!("`{label}` 必须能编译: {fault:?}"));
             assert_eq!(compiled.len(), 1, "`{label}` 应恰好产出一条 `Op`");
@@ -12921,7 +13130,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 27);
+        assert_eq!(seen.len(), 28);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
@@ -14039,6 +14248,200 @@ mod tests {
         assert_ne!(
             SET_SECTION_KIND, REMOVE_SECTION_KIND,
             "写入与取走是**相反**的两件事, 共用一个 kind 会让调用方分不开"
+        );
+    }
+
+    /// ⭐ **`removeAsset` 主判据**：取走一条**未被引用**的资产索引项 ⇒ 逐字节可逆
+    /// （**撤销一步**回原状）＋ 分类正确。
+    ///
+    /// ⚠ 为什么它非有不可：在它之前 `Op::RemoveAsset` 在 `yeban-mcp` 里**零构造点**
+    /// （只由模型的 `structural_inverse` 产出）⇒ 用户**只能靠撤销那次导入**取走索引项，
+    /// 没有一个"删掉这个资产"的形态 —— 与 `removeScene` 补齐前同族。
+    ///
+    /// 注入（实测红）：把 `previous_asset` 换成一份伪造值 ⇒ 撤销那条断言红
+    /// （而且模型的前置条件会在 `apply` 时拒它）。
+    #[test]
+    fn remove_asset_takes_an_unreferenced_asset_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        // 目标：一条**没人引用**的合成资产（夹具里那条音频片段引用的哈希不能当目标）。
+        let orphan = AssetHash::of_bytes(b"removeAsset-main-criterion");
+        project.assets.insert(
+            orphan.clone(),
+            yeban_model::AssetMetadata {
+                hash: orphan.clone(),
+                original_path: "samples/orphan.wav".to_owned(),
+                byte_len: 64,
+                media_kind: yeban_model::MediaKind::Audio,
+                license: "CC0-1.0".to_owned(),
+            },
+        );
+        let before = project.assets.len();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_ASSET_KIND,
+            "assetHash": orphan.as_str(),
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), REMOVE_ASSET_KIND, "kind 必须回环一致");
+        assert!(ops[0].is_asset_level(), "必须落在资产级那个桶里");
+        assert!(!ops[0].is_note_level(), "资产级不读不写音符");
+        assert!(!ops[0].is_routing_level(), "资产不是路由图的一部分");
+        assert!(!ops[0].is_section_level(), "资产不是曲段");
+        assert!(!ops[0].is_scene_level(), "资产不是场景");
+        assert_eq!(
+            ops[0],
+            NoteOp::RemoveAsset {
+                asset_hash: orphan.clone()
+            }
+        );
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::RemoveAsset {
+                asset_hash,
+                previous_asset,
+            } => {
+                assert_eq!(asset_hash, &orphan);
+                assert_eq!(
+                    previous_asset,
+                    project.assets.get(&orphan).expect("现值"),
+                    "撤销载荷必须**从当前文档读**（⛔ 非调用方声明）"
+                );
+            }
+            other => panic!("应当是 RemoveAsset: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("取走");
+        assert!(!project.assets.contains_key(&orphan), "索引项必须真的没了");
+        assert_eq!(project.assets.len(), before - 1);
+        assert!(project.validate().is_ok(), "取走之后工程必须仍然合法");
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(project.assets.len(), before, "撤销必须把它放回来");
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// ⭐ **控制臂**（第 46／47 条）：取一条**仍被引用**的资产 ⇒ **必须被拒**、
+    /// 且**文档一个字都不改**。此臂**独立变色**（只差目标哈希）。
+    ///
+    /// ⚠ 这条是本单的**关键安全属性**：`project.assets` 是 `ClipContent::Audio` 的
+    /// 许可留痕 ⇒ 取走一个仍被引用的哈希会留下**指向不存在资产的片段**，
+    /// 而 `YebanProjectV1::validate` **不查**这条（实测：`project.rs` 里
+    /// `assets.get` / `assets.contains_key` 零命中）⇒ ⛔ 模型不会替我们拦。
+    ///
+    /// 注入（实测红）：删掉 `assetInUse` 那段守卫 ⇒ 本判据红（它会把资产真的取走）。
+    #[test]
+    fn remove_asset_refuses_a_referenced_asset_and_leaves_the_document_untouched() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let referenced = project
+            .clip_pool
+            .values()
+            .find_map(|entry| match &entry.content {
+                ClipContent::Audio { asset, .. } => Some(asset.clone()),
+                ClipContent::Midi { .. } => None,
+            })
+            .expect("夹具必须有引用资产的音频片段");
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_ASSET_KIND,
+            "assetHash": referenced.as_str(),
+        }]))
+        .expect("解析不查文档");
+        let fault =
+            compile(&project, &track_id, &clip_id, &ops).expect_err("仍被引用的资产必须被拒");
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("应当是领域失败, 实际 {fault:?}");
+        };
+        let data = data.as_ref().expect("拒绝必须带 data");
+        assert_eq!(
+            data.pointer("/reason").and_then(Value::as_str),
+            Some("assetInUse"),
+            "理由必须点名 assetInUse: {data}"
+        );
+        assert!(
+            data.pointer("/clipIds")
+                .and_then(Value::as_array)
+                .is_some_and(|list| !list.is_empty()),
+            "必须回显引用它的片段身份: {data}"
+        );
+
+        // ⚠ 控制臂要证明"文档不动"：拒绝发生在构造 `Op` **之前** ⇒ 无从施加。
+        let untouched = project.clone();
+        assert_eq!(
+            serde_json::to_string(&untouched).expect("序列化"),
+            bytes_before,
+            "被拒的调用⛔ 不得改动文档"
+        );
+        // 并且同一份文档里那个哈希**仍然在**。
+        assert!(untouched.assets.contains_key(&referenced));
+    }
+
+    /// `removeAsset` 的形状拒绝：未知键（含工具顶层实参搬进来）、非法哈希、
+    /// 以及**不存在的哈希**（`assetNotFound`）。
+    ///
+    /// 注入（实测红）：把 `assetNotFound` 那条拒绝删掉 ⇒ 第二条断言红
+    /// （模型侧只会报一个泛化的 `OpStateMismatch`）。
+    #[test]
+    fn remove_asset_shapes_and_a_missing_hash_fail_loudly() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let orphan = AssetHash::of_bytes(b"removeAsset-shapes");
+        let exists = project.assets.contains_key(&orphan);
+
+        // 未知键：把**工具顶层**的 `trackId` 搬进操作对象（最像"写对了"的错法）。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_ASSET_KIND,
+            "assetHash": "00".repeat(32),
+            "trackId": "01J8ZQ00000000000000000001",
+        }]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("unknownRemoveAssetField")
+        );
+
+        // 非法哈希（长度不对）。
+        // ⚠ 哈希不合法 ⇒ 我的解析臂自己给 `INVALID_PARAMETER_RANGE`
+        // （`AssetHash::parse` 的失败**不**带 `reason`，因此那条判在解析臂里）。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_ASSET_KIND,
+            "assetHash": "not-a-hash",
+        }]))
+        .expect_err("非法哈希必须被拒");
+        assert_eq!(
+            fault.domain_code(),
+            Some(ErrorCode::InvalidParameterRange),
+            "非法哈希是参数错误: {fault:?}"
+        );
+
+        // 不存在的哈希 ⇒ `assetNotFound`（编译期，带 reason）。
+        assert!(!exists, "夹具前提");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": REMOVE_ASSET_KIND,
+            "assetHash": orphan.as_str(),
+        }]))
+        .expect("解析不查文档");
+        let fault =
+            compile(&project, &track_id, &clip_id, &ops).expect_err("文档里没有的哈希必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("assetNotFound"));
+    }
+
+    /// `removeAsset` 的**字面名与支持集合**被钉住。
+    #[test]
+    fn remove_asset_field_names_are_pinned() {
+        assert_eq!(REMOVE_ASSET_KIND, "removeAsset");
+        assert_eq!(REMOVE_ASSET_HASH_FIELD, "assetHash");
+        assert_eq!(REMOVE_ASSET_FIELDS, ["kind", "assetHash"]);
+        assert_ne!(
+            REMOVE_ASSET_KIND, REMOVE_CLIP_KIND,
+            "取走资产与取走片段是**两种不同的实体**, 共用一个 kind 会让调用方分不开"
         );
     }
 }
