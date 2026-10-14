@@ -2828,7 +2828,17 @@ const SHORTCUTS: [ShortcutRow; 28] = [
         modifiers: Modifiers::shift(),
         implemented: true,
     },
-    // 以下**两条**是本版本仅剩的 `implemented: false` 条目（表共 26 条）。
+    // 以下**两条**是本版本仅剩的 `implemented: false` 条目。
+    //
+    // ⭐ **两个数字都不在这里手抄**（此前这一行写着"表共 26 条"，而表的**总数**其实是 28 ——
+    // 26 是 `implemented: true` 的条数，被当成了总数 ⇒ 读的人按它对账会**差 2**，
+    // 而差的正是下面这两条 `false`）。⭐ 事实源是**类型标注**与**判据**，逐条复算：
+    //   - 表有多大 ⇒ `[ShortcutRow; 28]` 的**类型标注**（编译期）＋ 判据
+    //     `shortcut_table_status_matches_the_resolution_and_host_pipeline` 的 `rows.len() == 28`；
+    //   - 有几条未实现 ⇒ 同文件的 `delete_selection_is_implemented_in_the_host_table_and_rendered_output`
+    //     断言未实现条目**恰好**是 `[AcceptAiSuggestion, AuditionMain]`（精确到**是哪两条**，
+    //     比只数条数更强）＋ `printed_marks == 2`。
+    // ⇒ ⭐ 注释只负责**指路**，⛔ 不再复述数字（复述过的数字会陈旧，这一行就是实例）。
     //
     // `implemented` 是"宿主会不会消费这一键"的主张，事实源是 `host::action_has_implementation`
     // （逐行对账见本文件 `ShortcutRow` 的文档与 `tests/cli_contract.rs` 的判据 B11b）。
