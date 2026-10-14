@@ -901,7 +901,6 @@ fn judgement_body() -> ExitCode {
     }
 }
 
-
 /// 编译期提醒：消费端类型必须能在 UI 线程里独立存在（不借用音频线程状态）。
 const _: fn() = || {
     fn assert_send<T: Send>() {}
