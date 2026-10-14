@@ -666,7 +666,31 @@ fn osc_render_fingerprint(osc1_wave: f32, osc1_level: f32, quanta: usize) -> u64
     hash
 }
 
+/// 在**显式 8 MiB 栈**的线程里跑 `main` 主体，并把它的 [`ExitCode`] 原样传出去。
+///
+/// ⚠ **为什么需要**：本目标是 `harness = false` 的**自定义 `main`** ⇒ 它的栈由**链接器**
+/// 决定（`RUST_MIN_STACK` 只作用于 `std::thread` 起的线程，⛔ 对目标自己的 `main` 无效）。
+/// Windows 上主线程栈远小于 Linux/macOS ⇒ 本判据实测 `thread 'main' has overflowed its
+/// stack`，而其分配读数**全是 0** ⇒ ⛔ 不是零分配违规，⭐ 是执行环境的栈不够。
+///
+/// ⚠ **判据语义一字未改**：只换执行环境（线程栈）；`main` 主体原样搬进来。
+/// ⚠ **退出码不丢**：`ExitCode` 由 `join()` 取回并返回 ⇒ "失败"⛔ 不会变成"成功"。
+fn run_main_with_rt_stack(body: impl FnOnce() -> ExitCode + Send + 'static) -> ExitCode {
+    std::thread::Builder::new()
+        // 与 Linux/macOS 的主线程栈同量级 ⇒ 该判据在 Windows 上也获得相当栈。
+        .stack_size(8 * 1024 * 1024)
+        .spawn(body)
+        .expect("起判据线程")
+        .join()
+        .expect("判据线程不得 panic")
+}
+
 fn main() -> ExitCode {
+    run_main_with_rt_stack(judgement_body)
+}
+
+/// 判据主体（**原 `main` 的主体，逐行原样**）。
+fn judgement_body() -> ExitCode {
     let mut failures: Vec<String> = Vec::new();
 
     // ---- 装配（**允许分配**：全部发生在打开设备之前）----
@@ -3220,3 +3244,4 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     }
 }
+
