@@ -70,6 +70,19 @@
 | ⭐ | ⭐ **平台相关的字符串断言**（一整族）: `windows` 腿两次红各曝一族 —— ⭐ **CRLF**（判据读自己源码、锚点在 CRLF 检出下失配）与 ⭐ **路径分隔符**（实际由 `Path` 渲染给 `\\`、期望硬编码 `/`）| ⭐ 比 `Path` 而非比字符串（最强: 根本不渲染）；其次比 文件名；再次归一后比 ⛔ 别只把期望改成 `\\`（会在 Linux 上翻）|
 | ⭐ | ⭐ ⭐ **⛔ 不要用 `bash` 跑 `scripts/gates/*.py`** —— 那会让 bash 把 Python 当 shell 脚本执行、吐一大片 `Permission denied` 与 `command not found`、并以 **`RC=2`** 结束 ⇒ ⚠ 那是**用法错误**、⛔ 不是「门禁红」（本会话我踩过一次、差点误判主干红） | ⭐ ⭐ **用 `python3 scripts/gates/<name>.py`**；⭐ **先确认命令对、再看退出码**（与 `cargo fmt --locked` 同族） |
 
+## 3.6 ⭐ ⭐ ⚠ **文本即判据**: 改以下文件的**文本（含注释）**前必查（⭐ R587–R588）
+
+⭐ ⭐ 本仓有 **3 处** `include_str!(...)` + `contains(...)` 式的**文本判据**，⚠ **它们对注释也生效** —— 一个措辞就可能让一条**行为判据**翻，而代码行为没变（极难定位的假红）。
+
+| 要改的文件 | 先查这处判据 | 它读谁的文本 |
+| :--- | :--- | :--- |
+| ⭐ `crates/yeban-app/src/cli.rs` | `crates/yeban-app/src/midi_notes.rs:1195` | `include_str!("cli.rs")` |
+| ⭐ `crates/yeban-decode/src/limits.rs` | `crates/yeban-decode/src/limits.rs:1894` | `include_str!("limits.rs")`（**自指向**）|
+| —（仅供参考）| `crates/yeban-decode/src/asset.rs:1174` | 在**文档注释**里的示例（⛔ 非活判据）|
+
+⭐ **通用做法**: `grep -rn 'include_str!' crates/*/src/*.rs | grep contains` ⇒ 得全部文本判据，再把“我要改的文件”与它们的针脚对一遍。
+⭐ 同族提醒：第 41 条（静默兜底）／第 79 条（未登记的分歧）／第 136 条（文本判据）都是“一处改动在**看不见的另一处**生效”。
+
 ## 3.5 ⭐ ⭐ 本仓已有的**守卫网络**（⭐ R538–R539：先读这里、⭐ ⛔ 不要再自己发现一遍）
 
 ⭐ 本会话“本仓早已做对”**六次（六次全中）**，故先把已有的守卫列在这里。
