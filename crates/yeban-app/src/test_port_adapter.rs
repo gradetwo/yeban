@@ -2076,7 +2076,7 @@ impl TransportHarness {
         })
         .expect("Tier-1 平台 + 主窗口");
 
-        host::wire_transport(port.ui(), Rc::clone(&engine));
+        host::wire_transport(port.ui(), Rc::clone(&engine), None);
         // 接线之后先把引擎读数注入一次界面（`main.rs` 的 GUI 路径做的是同一件事）。
         host::apply_transport(port.ui(), engine.borrow().transport());
         Self { port, engine, view }

@@ -405,7 +405,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             },
         );
     }
-    wire_callbacks(&ui, &production.borrow().engine_handle());
+    wire_callbacks(
+        &ui,
+        &production.borrow().engine_handle(),
+        // ⭐ 当前工程（录音键用它算**预备拍**）。
+        Some(Rc::new(loaded.archive.project.clone())),
+    );
     // `[UI-A11Y-002]` §7.2 的**事件源**：BPM 敲入控件里真 `TextInput` 的
     // `preedit-text` / `has-focus` 变化 → `ime-composition-changed` / `ime-focus-changed`
     // → `InputContext`（合成态的唯一载体）。
@@ -731,8 +736,9 @@ fn mount_in_process_mcp(
 fn wire_callbacks(
     ui: &yeban_app::ui::MainWindow,
     engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
+    project: Option<Rc<yeban_model::YebanProjectV1>>,
 ) {
-    host::wire_transport(ui, Rc::clone(engine));
+    host::wire_transport(ui, Rc::clone(engine), project);
     host::wire_view_callbacks(ui);
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
     ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));

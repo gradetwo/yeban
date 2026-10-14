@@ -2100,7 +2100,14 @@ fn timecode_grid_of(ui: &MainWindow) -> Option<crate::bridge::TimecodeGrid> {
 /// - `toggle-play` 触发引擎状态变化，显示态跟着引擎走；
 /// - 直接改引擎状态（例如测试里的 `host.play()`）之后调用 [`apply_transport`]，
 ///   显示态同样跟着变 —— 显示态**没有**自己的状态机。
-pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
+pub fn wire_transport(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    // ⭐ **当前工程**（可选；⭐ 与 `wire_keys` 的 `project` 同款形状）：⭐ 录音键要读
+    // `transport.count_in_bars` 算**预备拍长度** ⇒ ⭐ 它是该字段的**第一个读者**。
+    // ⚠ `None` ⇒ 预备拍 0（⛔ 不假装知道工程）。
+    project: Option<Rc<YebanProjectV1>>,
+) {
     let toggle = Rc::clone(&engine);
     // UFCS（而不是 `ui.as_weak()`）：`slint::ComponentHandle` 不在本文件的 import 里，
     // 与 `main.rs` 的 `slint::ComponentHandle::run(&ui)` 是同一个理由 —— 既拿到方法，
@@ -2136,6 +2143,8 @@ pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
     // 但今天**没有**设备输入在喂它 ⇒ 产品按下去录到的是**静音**（一条合法的 24-bit WAV），
     // ⛔ **不是**"从声卡录到了声音"。设备输入流属 `[ARCH-REC-001]` 的下一片。
     let recorder = Rc::new(RefCell::new(crate::record_wav::Recorder::new()));
+    // ⭐ 闭包要读工程算预备拍 ⇒ 先克隆（`Rc` 计数 +1）。
+    let project_for_record = project.clone();
     let record_ui = slint::ComponentHandle::as_weak(ui);
     ui.on_toggle_record(move || {
         let mut recorder = recorder.borrow_mut();
@@ -2158,7 +2167,12 @@ pub fn wire_transport(ui: &MainWindow, engine: Rc<RefCell<EngineHost>>) {
             let source = Box::new(crate::record_wav::SilenceSource {
                 channels: options.channels,
             });
-            let started = recorder.start(&path, &options, source);
+            // ⭐ **预备拍**（`transport.count_in_bars`）：⭐ 长度由**工程**算出（⛔ 不靠墙钟）
+            // ⇒ 确定性、可本地验。⭐ 它的**第一个读者**就是这里。
+            let count_in = project_for_record.as_ref().map_or(0, |project| {
+                crate::record_wav::count_in_frames(project, options.sample_rate)
+            });
+            let started = recorder.start(&path, &options, source, count_in);
             match &started {
                 Ok(()) => eprintln!("[yeban-app] 开始录音 ⇒ {}", path.display()),
                 Err(error) => eprintln!("[yeban-app] 起录失败: {error}"),

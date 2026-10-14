@@ -338,6 +338,27 @@ impl InputSource for RampSource {
     }
 }
 
+/// ⭐ **预备拍长度（帧）** —— ⛔ 不靠墙钟，**算出**：
+/// `bars × 拍号分子 × (60 ÷ bpm) × 采样率`。
+///
+/// ⭐ 确定性 ⇒ 判据可**本地**断言它（见 `count_in_tests`）。`bpm` 非有限或非正 ⇒ 退回 120
+/// （⛔ 不 panic、⛔ 不产出荒谬值）。
+#[must_use]
+pub fn count_in_frames(project: &yeban_model::YebanProjectV1, sample_rate: u32) -> u64 {
+    let bars = u64::from(project.transport.count_in_bars);
+    if bars == 0 {
+        return 0;
+    }
+    let beats = bars.saturating_mul(u64::from(project.time_signature.numerator));
+    let bpm = if project.bpm.is_finite() && project.bpm > 0.0 {
+        project.bpm
+    } else {
+        120.0
+    };
+    let seconds = (beats as f64) * 60.0 / bpm;
+    (seconds * f64::from(sample_rate)) as u64
+}
+
 /// ⭐ **一次录音会话**（⭐ 按钮背后的那一件事）。
 ///
 /// ## 形状（⭐ 为什么是"停录时才落盘"）
@@ -358,6 +379,9 @@ impl InputSource for RampSource {
 pub struct Recorder {
     /// 当前会话（`None` ⇒ 没在录）。
     session: Option<RecorderSession>,
+    /// ⭐ **从设备源拉到的帧数**（⛔ 与"推入环的帧数"不同）：⭐ 预备拍期间**照拉**，故它
+    /// **大于 0** 而推入为 0 ⇒ ⭐ "照拉、只不推"这件事**可被观测**（见 `count_in_tests`）。
+    last_pulled: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -387,6 +411,12 @@ impl Recorder {
         Self::default()
     }
 
+    /// ⭐ **从设备源拉到的帧数**（⭐ 含预备拍期间拉的：那一段**只拉不推**）。
+    #[must_use]
+    pub fn pulled_frames(&self) -> u64 {
+        self.last_pulled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// 是否正在录。
     #[must_use]
     pub fn is_recording(&self) -> bool {
@@ -403,6 +433,7 @@ impl Recorder {
         path: &Path,
         options: &RecordOptions,
         mut source: Box<dyn InputSource + Send>,
+        count_in_frames: u64,
     ) -> Result<(), RecordError> {
         if self.session.is_some() {
             return Err(RecordError::Invalid("已经有一次录音在进行".to_owned()));
@@ -423,24 +454,40 @@ impl Recorder {
         let block_frames = batch;
         let channels = options.channels.max(1);
         let mut block = vec![0.0_f32; block_frames.saturating_mul(usize::from(channels))];
+        // ⭐ **预备拍计数器**：`Recorder` 与 worker 共享（⭐ 让"预备拍期间**照拉**"可被观测）。
+        let pulled = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let pulled_worker = std::sync::Arc::clone(&pulled);
+        self.last_pulled = std::sync::Arc::clone(&pulled);
         let worker = std::thread::spawn(move || {
             let mut drain = RecordDrain::new(receiver, SampleSink::default());
             let sender = sender_worker;
+            // ⭐ **已经开始录了没有**：预备拍走完之前为 `false`。
+            let mut recording = count_in_frames == 0;
+            let mut pulled_so_far: u64 = 0;
             // ⚠ 轮询而非阻塞等待：`RecordDrain` 没有"等新数据"的接口，而停止必须**及时**
             // （⛔ 不能让按钮卡住）。1 ms 的休眠只在**后台线程**上，⛔ 不碰音频线程。
             while !stop_worker.load(std::sync::atomic::Ordering::Relaxed) {
                 // ⭐ **从设备输入源拉一块**（⭐ 这就是"谁在喂它"的答案）⇒ 整帧推进环。
                 // ⚠ 真实现里这一拉发生在音频回调上；本片的产品默认是 [`SilenceSource`]。
                 let frames = source.next_block(block_frames, &mut block);
-                if frames > 0
-                    && let Ok(mut sender) = sender.lock()
-                {
-                    let samples = frames.saturating_mul(usize::from(channels));
-                    let _ = yeban_engine::record::push_input_block(
-                        &mut sender,
-                        &block[..samples],
-                        channels,
-                    );
+                if frames > 0 {
+                    // ⭐ ⭐ **照拉、只不推**：预备拍期间**照常**从源拉块（⛔ 不能停止拉取，
+                    // 否则真设备的回调会积压、甚至丢帧/溢出 —— 那会把"不录预备拍"变成
+                    // "录音整体出问题"），但**⛔ 不推入录音环** ⇒ **不产生任何录音内容**。
+                    pulled_so_far = pulled_so_far.saturating_add(frames as u64);
+                    pulled_worker.store(pulled_so_far, std::sync::atomic::Ordering::Relaxed);
+                    if !recording && pulled_so_far >= count_in_frames {
+                        // ⭐ 预备拍走完 ⇒ **从这一块起**开始录（⛔ 不追录预备拍期间的块）。
+                        recording = true;
+                    }
+                    if recording && let Ok(mut sender) = sender.lock() {
+                        let samples = frames.saturating_mul(usize::from(channels));
+                        let _ = yeban_engine::record::push_input_block(
+                            &mut sender,
+                            &block[..samples],
+                            channels,
+                        );
+                    }
                 }
                 let _ = drain.pump(batch);
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1247,6 +1294,7 @@ mod device_input_tests {
                     step,
                     produced: 0,
                 }),
+                0,
             )
             .expect("起录");
         std::thread::sleep(std::time::Duration::from_millis(400));
@@ -1310,6 +1358,7 @@ mod device_input_tests {
                 Box::new(SilenceSource {
                     channels: opts.channels,
                 }),
+                0,
             )
             .expect("起录");
         std::thread::sleep(std::time::Duration::from_millis(400));
@@ -1323,6 +1372,141 @@ mod device_input_tests {
         assert!(
             peak <= TOLERANCE_LSB,
             "静音源 ⇒ 读回必须全 0（|峰值| ≤ 抖动上限），实测峰值 {peak} 个 LSB"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod count_in_tests {
+    use super::*;
+
+    fn opts() -> RecordOptions {
+        RecordOptions {
+            seconds: 0.05,
+            sample_rate: 48_000,
+            channels: 2,
+            capacity_frames: 480_000,
+            drain_batch: 256,
+            tone_hz: TEST_TONE_HZ,
+        }
+    }
+
+    fn project_with_bars(bars: u8) -> yeban_model::YebanProjectV1 {
+        let mut project = yeban_model::samples::filled_project();
+        project.transport.count_in_bars = bars;
+        project.bpm = 120.0;
+        project.time_signature.numerator = 4;
+        project
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp/mod-app-count-in");
+        std::fs::create_dir_all(&dir).expect("建判据目录");
+        dir.join(format!("{name}-{}.wav", std::process::id()))
+    }
+
+    fn ramp() -> Box<dyn InputSource + Send> {
+        Box::new(RampSource {
+            channels: 2,
+            step: 0.0001,
+            produced: 0,
+        })
+    }
+
+    /// ⭐ **判据 ①（纯函数、确定性）**：预备拍长度**算出**，⛔ 不靠墙钟。
+    ///
+    /// 1 小节 4/4 @120bpm ⇒ 4 拍 × 0.5 s = **2 s** ⇒ 48kHz 下 **96_000 帧**。
+    #[test]
+    fn count_in_frames_is_computed_from_the_project() {
+        assert_eq!(
+            count_in_frames(&project_with_bars(0), 48_000),
+            0,
+            "0 小节 ⇒ 0"
+        );
+        assert_eq!(
+            count_in_frames(&project_with_bars(1), 48_000),
+            96_000,
+            "1 小节 4/4 @120bpm @48k ⇒ 96_000 帧"
+        );
+        assert_eq!(
+            count_in_frames(&project_with_bars(2), 48_000),
+            192_000,
+            "2 小节 ⇒ 翻倍（线性）"
+        );
+        // ⚠ 非有限 / 非正 bpm ⇒ 退回 120（⛔ 不 panic、⛔ 不产出荒谬值）。
+        let mut bad = project_with_bars(1);
+        bad.bpm = 0.0;
+        assert_eq!(count_in_frames(&bad, 48_000), 96_000, "bpm=0 ⇒ 退回 120");
+    }
+
+    /// ⭐ **判据 ②**：⭐ **预备拍期间⛔ 不产生录音内容** —— 且 ⭐ ⭐ **源仍被拉取**（"照拉、只不推"）。
+    #[test]
+    fn nothing_is_recorded_during_the_count_in_but_the_source_is_still_pulled() {
+        let path = scratch("during");
+        let _ = std::fs::remove_file(&path);
+        let mut recorder = Recorder::new();
+        // 预备拍长到本判据期间**走不完**（10 分钟）⇒ 全程处于预备拍。
+        recorder
+            .start(&path, &opts(), ramp(), 48_000 * 600)
+            .expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let pulled = recorder.pulled_frames();
+        assert!(
+            pulled > 0,
+            "⭐ “照拉、只不推”：预备拍期间**源必须仍被拉取**（实测 pulled={pulled}）"
+        );
+        let report = recorder.stop().expect("停录");
+        assert_eq!(
+            report.frames, 0,
+            "⭐ 判据 ②：预备拍期间⛔ 不许产生任何录音内容（实测 {} 帧）",
+            report.frames
+        );
+        assert_eq!(report.pushed, 0, "⛔ 不许推入任何帧");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⭐ **判据 ③**：预备拍**走完之后**按预期开始录。
+    #[test]
+    fn recording_starts_after_the_count_in_elapses() {
+        let path = scratch("after");
+        let _ = std::fs::remove_file(&path);
+        let mut recorder = Recorder::new();
+        // 预备拍很短（256 帧 ≈ 5.3 ms）⇒ 300 ms 之后必然已经在录。
+        recorder.start(&path, &opts(), ramp(), 256).expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let report = recorder.stop().expect("停录");
+        assert!(
+            report.frames > 0,
+            "⭐ 判据 ③：预备拍走完后必须**真的开始录**（实测 {} 帧）",
+            report.frames
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ⭐ **判据 ④（控制臂，独立判据、走产品路径）**：⭐ **`count_in_bars = 0` ⇒ 立即开始录**。
+    ///
+    /// ⚠ 单独一条（第 46/47 条）：没有它，判据 ② 的"0 帧"可能只是**别的原因**（例如源没喂上）。
+    #[test]
+    fn without_a_count_in_recording_starts_immediately() {
+        let path = scratch("nocountin");
+        let _ = std::fs::remove_file(&path);
+        let mut recorder = Recorder::new();
+        recorder.start(&path, &opts(), ramp(), 0).expect("起录");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let report = recorder.stop().expect("停录");
+        assert!(
+            report.frames > 0,
+            "⭐ 控制臂：预备拍=0 ⇒ 必须**立即**开始录（实测 {} 帧）⇒ 判据 ② 的 0 帧是**因为预备拍**",
+            report.frames
+        );
+        // ⚠ 同一条控制臂里的"纯函数"那一半：工程里 `count_in_bars = 0` ⇒ 算出的长度是 0。
+        assert_eq!(
+            count_in_frames(&project_with_bars(0), opts().sample_rate),
+            0,
+            "控制臂：工程 0 小节 ⇒ 长度 0"
         );
         let _ = std::fs::remove_file(&path);
     }
