@@ -497,3 +497,91 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tempo_pin_tests {
+    use super::*;
+    use crate::undo::UndoPort;
+
+    /// 造一份**只差 tempo** 的最小 SMF：1 条轨、960 PPQ、一个 C4 音符、⭐ 指定 tempo。
+    fn smf_with_tempo(micros: u32) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // 格式 0
+        bytes.extend_from_slice(&1u16.to_be_bytes()); // 1 条轨
+        bytes.extend_from_slice(&960u16.to_be_bytes()); // 960 PPQ
+        let mut track: Vec<u8> = Vec::new();
+        // `FF 51 03 <3 字节大端 µs/四分音符>`
+        track.extend_from_slice(&[0x00, 0xFF, 0x51, 0x03]);
+        track.extend_from_slice(&micros.to_be_bytes()[1..]);
+        track.extend_from_slice(&[0x00, 0x90, 0x3C, 0x64]); // note on C4 vel 100
+        track.extend_from_slice(&[0x87, 0x40, 0x80, 0x3C, 0x40]); // delta 960: note off
+        track.extend_from_slice(&[0x00, 0xFF, 0x2F, 0x00]); // end of track
+        bytes.extend_from_slice(b"MTrk");
+        bytes.extend_from_slice(&u32::try_from(track.len()).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&track);
+        bytes
+    }
+
+    /// ⭐ **D2 主判据**：⭐ **导入**一份带**极端**变速的 SMF ⇒ ⭐ **工程的 `bpm` 一字不变**。
+    ///
+    /// ## 这条判据在什么条件下会红（**有牙**）
+    ///
+    /// ⭐ ⭐ 有人让导入路径**消费 `parsed.tempos`**、并把值**真的写进** `project.bpm`
+    /// ⇒ ⭐ 第二条断言红。⭐ **已实测注入**（把 240 BPM 写进 `bpm` ⇒ 红；见交付报告）。
+    ///
+    /// ## ⭐ 控制臂（**在同一条判据里**，⛔ 不放别处）
+    ///
+    /// ⭐ 断言 **音符确实进来了**（`report.notes == 1`）＋ ⭐ **文件确实带的是那个极端 tempo**
+    /// （重新解析它读回 250_000）⇒ ⭐ 否则"`bpm` 没变"可能只是因为**导入压根没发生**（恒真）。
+    #[test]
+    fn importing_a_tempo_changing_smf_does_not_touch_the_projects_bpm() {
+        // ⭐ 极端值：250_000 µs/四分音符 = **240 BPM**（与工程侧 90 BPM 明显不同）。
+        const EXTREME_MICROS: u32 = 250_000;
+        let bytes = smf_with_tempo(EXTREME_MICROS);
+
+        // ⭐ 控制臂（前置）：文件**真的**携带 240 BPM，⛔ 不是"看起来极端"。
+        let parsed_file = yeban_midi::midi::parse_smf(&bytes).expect("解析自造 SMF");
+        assert_eq!(
+            parsed_file.tempos.len(),
+            1,
+            "⭐ 控制臂前置：文件必须真的带一条 tempo（⛔ 不然后面什么都没测）"
+        );
+        assert_eq!(
+            parsed_file.tempos[0].microseconds_per_quarter,
+            Some(EXTREME_MICROS),
+            "⭐ 控制臂前置：文件带的必须是那个**极端** tempo"
+        );
+
+        // 工程侧：`bpm = 90`（⭐ 与文件里的 240 明显不同 ⇒ 若被导入就会看得出来）。
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 90.0;
+        let session =
+            crate::undo::UndoSession::open("<判据:tempo 不导入>", "yeban-app", project.clone(), 1)
+                .expect("打开会话");
+        let port = UndoPort::new(session);
+
+        let report = import_midi_bytes(&port, &project, &bytes, &MidiImportOptions::default(), 10)
+            .expect("极端变速的 SMF 必须能导入");
+
+        // ⭐ 控制臂：导入**真的发生了**。
+        assert_eq!(
+            report.notes, 1,
+            "⭐ 控制臂：音符必须真的进来了（⛔ 否则'`bpm` 没变'可能只是没导入）"
+        );
+
+        // ⭐ **主断言**：权威工程的 `bpm` 一字不变。
+        assert_eq!(
+            port.project().bpm,
+            90.0,
+            "⭐ D2：导入⛔ 不许改工程的 `bpm`（工程的 tempo 是**单一标量** `project.bpm`，\
+             而 MIDI tempo map 可携带任意多条带 tick 的变速 ⇒ 若导入就会同时持有**两条真相**）"
+        );
+        assert_eq!(
+            port.project().transport.count_in_bars,
+            project.transport.count_in_bars,
+            "⭐ 相邻字段（同一 `TransportConfig`）也必须一字不变 —— 证明改的不是别处"
+        );
+    }
+}
