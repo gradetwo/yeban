@@ -459,7 +459,7 @@ jobs:
   # 只跑这两个 crate（零系统库依赖，不需要 Slint/cpal/ALSA），因此不会把 Windows runner 拖满。
   # ---------------------------------------------------------------------------
   windows:
-    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app 的平台分支)
+    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz 的平台分支)
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
@@ -467,7 +467,8 @@ jobs:
       contains(needs.plan.outputs.crates, 'yeban-dsp') ||
       contains(needs.plan.outputs.crates, 'yeban-render') ||
       contains(needs.plan.outputs.crates, 'yeban-decode') ||
-      contains(needs.plan.outputs.crates, 'yeban-app')
+      contains(needs.plan.outputs.crates, 'yeban-app') ||
+      contains(needs.plan.outputs.crates, 'yeban-sfz')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -501,7 +502,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render -p yeban-decode -p yeban-app --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render -p yeban-decode -p yeban-app -p yeban-sfz --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
 
       # 为什么把三个 crate 拆成三步（实测代价换来）:
       # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
@@ -568,6 +569,18 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test -p yeban-app --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # ⭐ 为什么加 `yeban-sfz`: 它的测试文件**曾在 Windows 上编不过**
+      # （`std::os::unix::fs::symlink` 未门控 ⇒ `E0433`），而那个缺陷**只有 windows 腿能捕到**。
+      # ⭐ 已修（逐处加门、测试未删）⇒ 现在加腿即把**这一类编译缺陷**变成可检测。
+      # ⚠ 其 symlink 判据在 Windows 上仍会被 `#[cfg(unix)]` 跳过（那是另一类：平台门控的覆盖缺口）。
+      # ⭐ 代价最低：零系统库依赖、本机全量 0.52s。
+      - name: test (yeban-sfz 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-sfz --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
       - name: 门日志体检 (存在性与字节数)
         if: always()
