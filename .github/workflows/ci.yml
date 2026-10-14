@@ -459,7 +459,7 @@ jobs:
   # 只跑这两个 crate（零系统库依赖，不需要 Slint/cpal/ALSA），因此不会把 Windows runner 拖满。
   # ---------------------------------------------------------------------------
   windows:
-    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz 的平台分支)
+    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine 的平台分支)
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
@@ -468,7 +468,8 @@ jobs:
       contains(needs.plan.outputs.crates, 'yeban-render') ||
       contains(needs.plan.outputs.crates, 'yeban-decode') ||
       contains(needs.plan.outputs.crates, 'yeban-app') ||
-      contains(needs.plan.outputs.crates, 'yeban-sfz')
+      contains(needs.plan.outputs.crates, 'yeban-sfz') ||
+      contains(needs.plan.outputs.crates, 'yeban-engine')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -502,7 +503,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render -p yeban-decode -p yeban-app -p yeban-sfz --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render -p yeban-decode -p yeban-app -p yeban-sfz -p yeban-engine --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
 
       # 为什么把三个 crate 拆成三步（实测代价换来）:
       # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
@@ -581,6 +582,19 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test -p yeban-sfz --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # ⭐ 为什么再次加 `yeban-engine`（第二次）: 上一次它真的红了，
+      # 真因是 **主线程栈溢出**（窗口 1 MiB vs Linux/macOS 8 MiB）。
+      # ⭐ 已修：那 4 个目标都自带 `fn main()`（自定义 harness）⇒
+      # 把主体搬进 `thread::Builder::new().stack_size(8 MiB)`。
+      # ⭐ 硬约束有**机械证据**：`100 insertions / 0 deletions` ⇒ 判据体逐行未改。
+      # ⚠ 本次是**验证修复**、⼌ 不是“发现缺陷”。
+      - name: test (yeban-engine 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-engine --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
       - name: 门日志体检 (存在性与字节数)
         if: always()
