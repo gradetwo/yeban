@@ -288,7 +288,23 @@ fn constructed_variants(text: &str) -> BTreeSet<String> {
 }
 
 /// 该文本里 `parse_one` 的 match 臂认得的 `kind`（把常量名解析成字面量）。
+///
+/// ## ⚠ 找不到锚点必须**响亮失败**，⛔ 不许静默返回空集（第 41 条）
+///
+/// 这里**曾经**是两处 `return BTreeSet::new()`。⚠ 消费判据
+/// [`the_catalog_kinds_are_exactly_the_parse_arms`] 做的是**双向差集** ⇒ 抽到空集时
+/// 它**仍会红**（⛔ 不假绿），⭐ 但报文是「只在目录里（没有解析臂）」——
+/// ⭐ **把「抽取器瞎了」报成「目录写错了」**，会把维护者引去改 `OP_KINDS`。
+/// ⭐ 即"红 ≠ 诊断正确" ⇒ 兜底必须是**防空**、不是**对账**。
+///
+/// 因此两处改 `.expect(...)`，并在报文里写明**找不到哪个锚点**、
+/// 且**指名是抽取规则失效（⛔ 不是目录的问题）**。
+///
+/// ⚠ 入口先**规范化换行**（与 `project.rs` 的 `routing_graph_fields_in_source`
+/// 同一条 R51 纪律）：CI 的 windows 腿检出的是 **CRLF**，而本函数按**文本锚点**
+/// 切片（`find("\n}\n")`）—— 不规范化时 Windows 上找不到锚点。
 fn kinds_in_parse_one(text: &str) -> BTreeSet<String> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     // 先建常量表：`pub const X_KIND: &str = "literal";`
     let mut constants: BTreeMap<String, String> = BTreeMap::new();
     for line in text.lines() {
@@ -300,13 +316,17 @@ fn kinds_in_parse_one(text: &str) -> BTreeSet<String> {
             constants.insert(name.trim().to_owned(), value.to_owned());
         }
     }
-    let Some(start) = text.find("fn parse_one(") else {
-        return BTreeSet::new();
-    };
+    let start = text.find("fn parse_one(").expect(
+        "⭐ 抽取规则失效（⛔ 不是目录的问题）: 在 notes.rs 里找不到锚点 `fn parse_one(`。\
+         若 `parse_one` 被改名/移位, 请**同时**改本函数与 `OP_KINDS` 的对账口径 —— \
+         ⛔ 不要靠「抽到空集」来兜底（那会把本判据的报文误导成「目录写错了」）",
+    );
     let body = &text[start..];
-    let Some(end) = body.find("\n}\n") else {
-        return BTreeSet::new();
-    };
+    let end = body.find("\n}\n").expect(
+        "⭐ 抽取规则失效（⛔ 不是目录的问题）: 从 `fn parse_one(` 起找不到结束锚点 `\n}\n`。\
+         若 `parse_one` 的函数体形状变了（例如尾随注释/换行风格变了）, 请改本函数 —— \
+         ⛔ 不要靠「抽到空集」来兜底",
+    );
     let body = &body[..end];
     let mut out = BTreeSet::new();
     for line in body.lines() {
@@ -372,6 +392,48 @@ fn every_op_variant_has_a_registered_construction_site() {
         36,
         "登记表有 36 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
          `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
+    );
+}
+
+/// ⭐ **正对照（第 42 条）＋ 防空**：抽取器必须**真的**抽到东西，且**至少**含一条
+/// **已知存在**的 kind。
+///
+/// ## 为什么必须有它（与 `the_catalog_kinds_are_exactly_the_parse_arms` 互补）
+///
+/// 那条判据是**双向差集** ⇒ 抽取器抽到**空集**时它**仍会红**（⛔ 不假绿）。⚠ 但它会红成
+/// 「只在目录里（没有解析臂）」—— ⭐ **把"抽取器瞎了"报成"目录写错了"**。
+/// 本判据把那个区分**显式**做出来：先证明"抽取器是活的"（非空 ＋ 含已知样例），
+/// 再让对账那条去判"两边是否相等"。
+///
+/// ⚠ 样例**从 [`OP_KINDS`] 现取**（⛔ 不写死一个可能被改名/删除的字面）：它是权威来源，
+/// 而"权威里的一条必须能被抽出"正是本条要钉的。
+///
+/// ⚠ 仓内范式同形：`project.rs` 的 `routing_graph_fields_in_source` 用 `.expect("结构体定义")`
+/// 让锚点缺失**响亮失败**；`determinism_digests.rs` 的 `identical_sides` 对已知样例做断言。
+///
+/// 注入（实测红）：把 `find("fn parse_one(")` 改成 `find("fn parse_one_XX(")` ⇒ 本条
+/// （与对账那条）**都**红，且报文**指名抽取规则失效**、⛔ 不是"只在目录里"。
+#[test]
+fn the_parse_arm_extractor_is_alive() {
+    let files = sources();
+    let notes = module_text(&files, "domain/notes.rs").expect("读得到 notes.rs");
+    let arms = kinds_in_parse_one(&notes);
+
+    assert!(
+        !arms.is_empty(),
+        "⭐ 抽取规则失效（⛔ 不是目录的问题）: `kinds_in_parse_one` 抽出了 **0** 条 —— \
+         锚点或函数体形状变了。⛔ 不要据此去改 `OP_KINDS`"
+    );
+    // ⭐ 正对照：权威里**每一条**都必须能被抽出（这不是对账，是"抽取器活着"的证明）。
+    let missing: Vec<&str> = OP_KINDS
+        .iter()
+        .copied()
+        .filter(|kind| !arms.contains(*kind))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "⭐ 抽取器漏掉了 `OP_KINDS` 里的这些 kind: {missing:?} —— \
+         先怀疑**抽取规则**（锚点/切片/换行），⛔ 不要先怀疑目录"
     );
 }
 
