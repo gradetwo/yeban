@@ -967,7 +967,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 28] = [
+pub const OP_KINDS: [&str; 29] = [
     "add",
     "delete",
     "move",
@@ -984,6 +984,7 @@ pub const OP_KINDS: [&str; 28] = [
     SET_TRANSPORT_CONFIG_KIND,
     SET_TEMPO_KIND,
     SET_AUTHOR_KIND,
+    SET_TRACK_NAME_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1473,6 +1474,28 @@ pub const SET_AUTHOR_AUTHOR_FIELD: &str = "author";
 
 /// 设置署名形态允许出现的**全部**键（判别键 + 一个必填）。
 pub const SET_AUTHOR_FIELDS: [&str; 2] = ["kind", SET_AUTHOR_AUTHOR_FIELD];
+
+/// `ops[].kind` 的**设置音轨名**形态名（写 [`Op::SetTrackName`]）。
+pub const SET_TRACK_NAME_KIND: &str = "setTrackName";
+
+/// 设置音轨名形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
+pub const SET_TRACK_NAME_TRACK_FIELD: &str = "trackId";
+
+/// 设置音轨名形态的**新名字**字段名（`ops[].name`，必填，字符串）。
+///
+/// ⚠ **⛔ 本层不发明**"非空"或长度上限：模型 [`Op::SetTrackName`] 的校验**只有**
+/// "文档现值必须逐字等于 `old_name`"（陈旧载荷 ⇒ `OpStateMismatch`），而
+/// `TrackV3::validate` **不查**空名（同 [`Op::AddTrack`] 那处的口径）⇒ 空串合法
+/// （"显式清空名字"）。⛔ 而 [`Op::AddTrack`] 的 `name` 走 `read_required_non_empty_string`
+/// 是因为**建轨**需要一个可寻址的展示名 —— 改名与建名不是同一条口径。
+pub const SET_TRACK_NAME_NAME_FIELD: &str = "name";
+
+/// 设置音轨名形态允许出现的**全部**键（判别键 + 一个必填）。
+pub const SET_TRACK_NAME_FIELDS: [&str; 3] = [
+    "kind",
+    SET_TRACK_NAME_TRACK_FIELD,
+    SET_TRACK_NAME_NAME_FIELD,
+];
 
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
 ///
@@ -2267,6 +2290,23 @@ pub enum NoteOp {
         /// 修改后的署名。
         new_author: String,
     },
+    /// 设置**音轨名字**（[`Op::SetTrackName`]，寻址到一条音轨）。
+    ///
+    /// ⭐ **本形态补上了什么**：⭐ 在它之前工具面**只有 [建轨][Self::AddTrack] 时能给名字**
+    /// ⇒ 改名只能"删轨 + 重建"，而那会**换掉 `track_id`** 并连带丢掉设备链 / 自动化 /
+    /// 路由边。⚠ `name` 是**纯展示注记**（身份是 `track_id`）⇒ 改它不影响任何不变式。
+    ///
+    /// ⚠ 模型**只有**一条前置条件：文档现值必须**逐字节**等于 `old_name` ⇒ ⛔ 本层
+    /// **不发明**空串/长度校验（见 [`SET_TRACK_NAME_NAME_FIELD`] 的文档）。
+    /// 撤销载荷 `old_name` 由 [`compile`] 从**当前文档**读（`project.track(...)?.name`）。
+    SetTrackName {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的名字（来自当前文档）。
+        old_name: String,
+        /// 修改后的名字。
+        new_name: String,
+    },
     /// 设置**走带配置**（[`Op::SetTransportConfig`]）。
     ///
     /// 与 [`Self::SetTrackFlag`] 同族（不读不写音符），但载荷是**三个字段的整体**
@@ -2680,6 +2720,7 @@ impl NoteOp {
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
             Self::SetTempo { .. } => SET_TEMPO_KIND,
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
+            Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -3046,6 +3087,15 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_bpm: read_required_finite_f64(object, SET_TEMPO_BPM_FIELD)?,
             })
         }
+        SET_TRACK_NAME_KIND => {
+            reject_set_track_name_fields(object)?;
+            Ok(NoteOp::SetTrackName {
+                track_id: read_id(object, SET_TRACK_NAME_TRACK_FIELD)?,
+                // ⚠ `old_name` 是**占位**：真值由 `compile` 从当前文档读。
+                old_name: String::new(),
+                new_name: read_required_string(object, SET_TRACK_NAME_NAME_FIELD)?,
+            })
+        }
         SET_AUTHOR_KIND => {
             reject_set_author_fields(object)?;
             Ok(NoteOp::SetAuthor {
@@ -3398,6 +3448,15 @@ fn reject_set_tempo_fields(object: &Map<String, Value>) -> Result<(), Fault> {
 }
 
 /// 拒绝 `setAuthor` 里 [`SET_AUTHOR_FIELDS`] 之外的键。
+fn reject_set_track_name_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TRACK_NAME_FIELDS,
+        SET_TRACK_NAME_KIND,
+        "unknownSetTrackNameField",
+    )
+}
+
 fn reject_set_author_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     reject_unknown_keys(
         object,
@@ -5643,6 +5702,27 @@ pub fn compile(
                 Op::SetTempo {
                     old_bpm: project.bpm,
                     new_bpm: *new_bpm,
+                }
+            }
+            NoteOp::SetTrackName {
+                track_id, new_name, ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，逐字节比较）。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有名字可以改"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "trackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                Op::SetTrackName {
+                    track_id: *track_id,
+                    old_name: track.name.clone(),
+                    new_name: new_name.clone(),
                 }
             }
             NoteOp::SetAuthor { new_author, .. } => {

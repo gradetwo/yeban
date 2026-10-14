@@ -2523,6 +2523,12 @@ mod tests {
                 old_author: String::new(),
                 new_author: "Yeban Author".to_owned(),
             },
+            // 改名：**唯一的名字通路**（此前只能删轨重建 ⇒ 换 `EntityId`）。
+            Op::SetTrackName {
+                track_id: f.lead,
+                old_name: "Lead".to_owned(),
+                new_name: "Lead (renamed)".to_owned(),
+            },
             // 资产声明（**创建**：夹具里尚未声明过这份新哈希 ⇒ `old_asset: None`）。
             Op::SetAsset {
                 asset_hash: crate::ids::AssetHash::of_bytes(b"snare"),
