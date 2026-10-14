@@ -46,6 +46,7 @@
 | ⭐ | ⭐ **`serde_json::json!` 会**移动**操作数** ⇒ 同一批 `Value` 跨两次 `json!` 复用拿到 `Null`（判据假红） | 用**独立字面构造** |
 | ⭐ | ⭐ **Python heredoc 里⛔ 别用直引号包裹中文引文**（`"今天为空"`）⇒ 字符串提前结束、`SyntaxError`、**补丁全部未落**（我犯过两次） | 用 **「」** |
 | ⭐ | ⭐ **`cargo fmt` ⛔ 不接受 `--locked`** | 写对命令再看退出码 |
+| ⭐ | ⭐ ⭐ **⛔ 不要用 `bash` 跑 `scripts/gates/*.py`** —— 那会让 bash 把 Python 当 shell 脚本执行、吐一大片 `Permission denied` 与 `command not found`、并以 **`RC=2`** 结束 ⇒ ⚠ 那是**用法错误**、⛔ 不是「门禁红」（本会话我踩过一次、差点误判主干红） | ⭐ ⭐ **用 `python3 scripts/gates/<name>.py`**；⭐ **先确认命令对、再看退出码**（与 `cargo fmt --locked` 同族） |
 
 ## 4. ⭐ 最要紧的纪律（完整 **37–55** 条在台账）
 
