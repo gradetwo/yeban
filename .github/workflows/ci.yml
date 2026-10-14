@@ -459,7 +459,7 @@ jobs:
   # 只跑这两个 crate（零系统库依赖，不需要 Slint/cpal/ALSA），因此不会把 Windows runner 拖满。
   # ---------------------------------------------------------------------------
   windows:
-    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz 的平台分支)
+    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine 的平台分支)
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
@@ -468,7 +468,8 @@ jobs:
       contains(needs.plan.outputs.crates, 'yeban-render') ||
       contains(needs.plan.outputs.crates, 'yeban-decode') ||
       contains(needs.plan.outputs.crates, 'yeban-app') ||
-      contains(needs.plan.outputs.crates, 'yeban-sfz')
+      contains(needs.plan.outputs.crates, 'yeban-sfz') ||
+      contains(needs.plan.outputs.crates, 'yeban-engine')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -502,7 +503,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render -p yeban-decode -p yeban-app -p yeban-sfz --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render -p yeban-decode -p yeban-app -p yeban-sfz -p yeban-engine --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
 
       # 为什么把三个 crate 拆成三步（实测代价换来）:
       # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
@@ -581,6 +582,18 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test -p yeban-sfz --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # ⭐ 为什么加 `yeban-engine`（**最后一个**）: 本会话 7 处 CRLF 修复里，
+      # `app` / `decode` / `model` 已经由这条腿验证，⭐ 只剩 `engine`（`rt.rs:4648`）**未验证**。
+      # 故加它不只是扩覆盖、而是**补上那一处修法的验证**。
+      # ⚠ `default = [device]` ⇒ 拉 `cpal`；Windows 上它走系统自带的 WASAPI、预计无需额外系统库。
+      # ⚠ 若该腿因此变红 ⇒ **回退本步**（保主干绿）。
+      - name: test (yeban-engine 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-engine --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
       - name: 门日志体检 (存在性与字节数)
         if: always()
