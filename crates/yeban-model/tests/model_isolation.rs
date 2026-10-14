@@ -1005,6 +1005,44 @@ fn local_config_permission_tightening_is_reported_as_unsupported() {
 }
 
 // ---------------------------------------------------------------------------
+// ⑨b 落盘序列：**两平台都 fsync**（形态判据；⛔ 不写"掉电会丢"那种不可构造的判据）
+// ---------------------------------------------------------------------------
+
+/// ⭐ **落盘序列的形态判据**（`[ARCH-SEC-004]` 的"落盘前 fsync"惯例）。
+///
+/// ⚠ **为什么是"形态"而不是"行为"**：⭐ "掉电后还在不在"要**真掉电/真内核崩溃**才能观测
+/// ⇒ 本机与 CI **都构造不出来** ⇒ ⭐ 那种判据写不出来（写了也是假的）。⭐ 能钉住的**最强形态**
+/// 就是**源码文本**：两条臂①都用 `write_all` ＋ `sync_all`、②都不退回 `fs::write`
+/// （⭐ `std::fs::write` **不调用 `sync_all`** ⇒ 它出现即意味着有一条臂丢了 fsync）。
+///
+/// ⭐ **独立变色**：把任一臂改回 `std::fs::write(path, &bytes)` ⇒ 本判据红。
+/// ⭐ **正对照**：`project.rs` 必然含 `fs::write(` 吗？⛔ 不必然 ⇒ 故正对照改用
+/// `local_config.rs` 自身的 `write_all(&bytes)`（两条臂都有）⇒ 证明扫描器没瞎。
+#[test]
+fn the_local_config_save_sequence_fsyncs_on_every_platform() {
+    const LOCAL_SRC: &str = include_str!("../src/local_config.rs");
+
+    // ---- 正对照：扫描器必须看得见已知存在的针 ----
+    assert!(
+        code_has(LOCAL_SRC, "write_all(&bytes)"),
+        "对照失败：local_config.rs 的两条落盘臂都必然含 `write_all(&bytes)` ⇒ 扫描器或 include_str! 有问题"
+    );
+
+    // ---- ① 不许退回 `std::fs::write`（它不 fsync）----
+    assert!(
+        !code_has(LOCAL_SRC, "fs::write("),
+        "落盘臂退回了 `std::fs::write` ⇒ 那条臂**不调用 `sync_all`**（数据只到页缓存）"
+    );
+
+    // ---- ② 两条臂都必须有 `sync_all()`（Unix 与非 Unix 各一次）----
+    let syncs = code_only(LOCAL_SRC).matches("sync_all()").count();
+    assert!(
+        syncs >= 2,
+        "落盘臂的 `sync_all()` 少于 2 次（实测 {syncs}）⇒ 有一条平台臂不再 fsync"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // ⑩ 本机配置往返 + 确定性
 // ---------------------------------------------------------------------------
 
