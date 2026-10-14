@@ -242,6 +242,22 @@
 记录／载荷／注记类的字段（`Commit.*`、元数据、会话状态、本机配置等）
 **本来就不该影响行为**。
 
+## 10.9 ⭐ 本机配置的**权限口径**（⭐ 集成者落笔、⭐ R507／R508）
+
+⭐ **本机配置**（`crates/yeban-model/src/local_config.rs`）在 Unix 上把文件收紧到 `0600`、目录 `0700`。
+⭐ ⭐ **⚠ `0600`／`0700` 是 **Unix 权限位**语义**；Windows 用 **ACL**、**不等价**，
+且本模块**⛔ 不提供**等价收紧（那需要 ACL＋**新依赖**，而仓内定调是**零新增依赖**）。
+⭐ **故非 Unix 上「保存成功」不等于「权限已收紧」**。
+
+⭐ ⭐ **如何自查**：调 `file_permission_tightening_is_supported()`（`#[must_use]`）——
+它是 `cfg!(unix)`，**如实上报**本编译目标上收紧是否真的被应用。
+⭐ **⛔ 不要把「权限已收紧」当成跨平台承诺**；若将来真要在 Windows 上收紧，
+那是**另开的票**（需 ACL 实现＋依赖决策）。
+
+⭐ 对照（仓内**正确形态**的四处，值得照抄）：`security.rs` 的三处
+`Err(UnsupportedPlatform)` 拒绝、`lock.rs` 第三臂「显式不支持、绝不静默放过并发写」、
+`fpu.rs` 的 `FtzDazOutcome::Unsupported`＋`supports_ftz_daz()` 自查、`golden.rs` 的 `Other` 兜底。
+
 ## 11. ⭐ 接手后的第一步（按序）
 
 1. ⭐ **核验**：`command git log --oneline -3`、`command git status --porcelain`（应空）、`command git rev-parse HEAD origin/main`（应相等）。⚠ 若 `main` 已前进，**先读那几条提交**。
