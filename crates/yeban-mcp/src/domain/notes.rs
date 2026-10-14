@@ -752,7 +752,9 @@ use yeban_model::{
 
 use super::error::{Fault, from_model};
 use super::extension_pure::LaneKind;
+// ⚠ `setAsset` 的许可判定**复用** `import_audio` 的那一份（⛔ 不复制第二套）。
 use super::ids::deterministic_id;
+use super::import_audio::require_allowed_licence;
 use crate::tools::ErrorCode;
 
 /// `create: true` 且没给 `clipName` 时的片段名（**不是**身份，只是给人看的标签）。
@@ -965,13 +967,14 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 27] = [
+pub const OP_KINDS: [&str; 28] = [
     "add",
     "delete",
     "move",
     "velocity",
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
+    SET_ASSET_KIND,
     REMOVE_TRACK_KIND,
     INSERT_DEVICE_KIND,
     REMOVE_DEVICE_KIND,
@@ -1294,6 +1297,75 @@ pub const REMOVE_ASSET_HASH_FIELD: &str = "assetHash";
 
 /// 取走资产索引项形态允许出现的**全部**键（判别键 + 一个寻址）。
 pub const REMOVE_ASSET_FIELDS: [&str; 2] = ["kind", REMOVE_ASSET_HASH_FIELD];
+
+/// `ops[].kind` 的**改资产索引项**形态名（写 [`Op::SetAsset`]，**更新**语义）。
+///
+/// ⚠ 与 [`REMOVE_ASSET_KIND`] 成对：那个删、这个改。⭐ 它补的是"**建得出、改不了**"
+/// —— 在它之前 `Op::SetAsset` 的唯一构造点写死 `old_asset: None`（创建），
+/// 而"同哈希换个 `license` 重导"被 `yeban_import_audio` 当**冲突**拒
+/// （`assetDeclaredDifferent`，那是**有意**的：⛔ 不许静默改写许可留痕）。
+/// 本形态给出一条**正门**：用户**明说**要改。
+pub const SET_ASSET_KIND: &str = "setAsset";
+
+/// 改资产形态的**可改字段**：许可标识（`ops[].license`）。
+///
+/// ⚠ 与 [`SET_ASSET_ORIGINAL_PATH_FIELD`] 同属**可改**；其余三字段**不可改**，
+/// 且有明文依据（模型 `Op::SetAsset` 的文档逐字："之后同哈希再声明就是**更新
+/// （改许可/原路径）**"）：
+/// - `hash` **是键**（内容身份）⇒ 改它等于换一个资产；
+/// - `byte_len` 是**内容事实**（容器字节数）⇒ 改它会与 CAS 池里的字节不符；
+/// - `media_kind` 由 `yeban-decode` 的 `asset_index` 按**内容**判定。
+pub const SET_ASSET_LICENSE_FIELD: &str = "license";
+
+/// 改资产形态的**可改字段**：原路径留痕（`ops[].originalPath`）。
+///
+/// ⚠ 它是**留痕**（只有归档用，不参与寻址）⇒ 可改；改它不会让寻址失效。
+/// 名字用线上的 camelCase（与 `project.schema.json` 的 `original_path` 同一字段）。
+pub const SET_ASSET_ORIGINAL_PATH_FIELD: &str = "originalPath";
+
+/// 改资产形态允许出现的**全部**键（判别键 + 寻址 + 两个可改字段）。
+pub const SET_ASSET_FIELDS: [&str; 4] = [
+    "kind",
+    REMOVE_ASSET_HASH_FIELD,
+    SET_ASSET_LICENSE_FIELD,
+    SET_ASSET_ORIGINAL_PATH_FIELD,
+];
+
+/// 一个资产索引项的**逐键覆盖**（`None` = 调用方没提这个键 ⇒ 保留现值）。
+///
+/// ⚠ 只覆盖**可改**的两个字段（见 [`SET_ASSET_LICENSE_FIELD`]）：
+/// `hash` / `byte_len` / `media_kind` **不在**覆盖范围内，因此本形态不可能
+/// 把一条索引项改成"另一个资产"。
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct AssetPatch {
+    /// 许可标识（`None` = 保留现值）。
+    pub license: Option<String>,
+    /// 原路径留痕（`None` = 保留现值）。
+    pub original_path: Option<String>,
+}
+
+impl AssetPatch {
+    /// 该覆盖是否一个键都没提（`true` ⇒ 结果必然等于基础，是一次无操作）。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.license.is_none() && self.original_path.is_none()
+    }
+
+    /// 把覆盖施加到一条**基础**索引项上。
+    ///
+    /// `hash` / `byte_len` / `media_kind` **原样保留**（⛔ 不可改）。
+    #[must_use]
+    pub fn apply_to(&self, base: &yeban_model::AssetMetadata) -> yeban_model::AssetMetadata {
+        let mut asset = base.clone();
+        if let Some(license) = &self.license {
+            asset.license.clone_from(license);
+        }
+        if let Some(path) = &self.original_path {
+            asset.original_path.clone_from(path);
+        }
+        asset
+    }
+}
 
 /// `ops[].kind` 的**取走片段池条目**形态名（写 [`Op::RemoveClip`]）。
 ///
@@ -2450,6 +2522,27 @@ pub enum NoteOp {
         /// 属性覆盖（合并语义）。
         patch: SectionPatch,
     },
+    /// **改一条资产索引项**（[`Op::SetAsset`]，**更新**语义；`old_asset` 为 `Some`）。
+    ///
+    /// ⚠⭐ 本形态补的是"**建得出、改不了**"：在它之前 [`Op::SetAsset`] 在 MCP 侧的
+    /// 唯一构造点写死 `old_asset: None`（创建），而"同哈希换个 `license` 重导"被
+    /// `yeban_import_audio` 当**冲突**拒（那是**有意**的 —— ⛔ 不许靠重导**静默**改写
+    /// 许可留痕）。本形态给出一条**正门**：用户**明说**要改。
+    ///
+    /// ⚠ **可改字段有明文**（模型 `Op::SetAsset` 的文档逐字："之后同哈希再声明就是
+    /// **更新（改许可/原路径）**"）：只有 `license` 与 `original_path`。
+    /// `hash`（内容身份）／`byte_len`（内容事实）／`media_kind`（按内容判定）
+    /// **不可改** —— 因此本形态⛔ 不可能把一条索引项改成"另一个资产"。
+    ///
+    /// ⚠ 自带寻址（`ops[].assetHash`，与 [`Self::RemoveAsset`] 同因）。
+    /// 撤销载荷 `old_asset` 由 [`compile`] 从**当前文档**读（整条），⛔ 不信调用方声明。
+    /// 至少给出一个可改字段（否则是一次无操作 ⇒ 响亮拒绝）。
+    SetAsset {
+        /// 资产身份（内容寻址的 CAS 键，本形态自带寻址）。
+        asset_hash: AssetHash,
+        /// 逐键覆盖（只含可改字段）。
+        patch: AssetPatch,
+    },
     /// **取走一条资产索引项**（[`Op::RemoveAsset`]，`project.assets` 里那一格）。
     ///
     /// ⚠⭐ **资产唯一的显式删除通路**。在它之前 [`Op::RemoveAsset`] 只由模型的
@@ -2597,6 +2690,7 @@ impl NoteOp {
             Self::AddRoutingNode { .. } => ADD_ROUTING_NODE_KIND,
             Self::RemoveRoutingNode { .. } => REMOVE_ROUTING_NODE_KIND,
             Self::RemoveSection { .. } => REMOVE_SECTION_KIND,
+            Self::SetAsset { .. } => SET_ASSET_KIND,
             Self::RemoveAsset { .. } => REMOVE_ASSET_KIND,
             Self::RemoveScene { .. } => REMOVE_SCENE_KIND,
             Self::SetSection { .. } => SET_SECTION_KIND,
@@ -2636,6 +2730,7 @@ impl NoteOp {
                 | Self::AddRoutingNode { .. }
                 | Self::RemoveRoutingNode { .. }
                 | Self::RemoveSection { .. }
+                | Self::SetAsset { .. }
                 | Self::RemoveAsset { .. }
                 | Self::RemoveScene { .. }
                 | Self::SetSection { .. }
@@ -2765,7 +2860,7 @@ impl NoteOp {
     /// ⛔ 否则一次纯 `removeAsset` 的调用会被报成别的层级的编辑。
     #[must_use]
     pub const fn is_asset_level(&self) -> bool {
-        matches!(self, Self::RemoveAsset { .. })
+        matches!(self, Self::RemoveAsset { .. } | Self::SetAsset { .. })
     }
 }
 
@@ -2968,6 +3063,66 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
         REMOVE_AUTOMATION_POINT_KIND => {
             let (spec, address) = parse_point_removal(object)?;
             Ok(NoteOp::RemovePoint { spec, address })
+        }
+        SET_ASSET_KIND => {
+            reject_set_asset_fields(object)?;
+            let asset_hash = AssetHash::parse(
+                object
+                    .get(REMOVE_ASSET_HASH_FIELD)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| missing(REMOVE_ASSET_HASH_FIELD, "SHA-256 十六进制"))?,
+            )
+            .map_err(|error| {
+                Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`{REMOVE_ASSET_HASH_FIELD}` 不是合法 SHA-256: {error}"),
+                    serde_json::json!({ "field": REMOVE_ASSET_HASH_FIELD }),
+                )
+            })?;
+            let license = match object.get(SET_ASSET_LICENSE_FIELD) {
+                None => None,
+                Some(value) => Some(read_non_empty_string(
+                    SET_ASSET_KIND,
+                    value,
+                    SET_ASSET_LICENSE_FIELD,
+                    "assetLicenseMustBeNonEmptyString",
+                )?),
+            };
+            let original_path = match object.get(SET_ASSET_ORIGINAL_PATH_FIELD) {
+                None => None,
+                Some(value) => Some(read_non_empty_string(
+                    SET_ASSET_KIND,
+                    value,
+                    SET_ASSET_ORIGINAL_PATH_FIELD,
+                    "assetOriginalPathMustBeNonEmptyString",
+                )?),
+            };
+            let patch = AssetPatch {
+                license,
+                original_path,
+            };
+            // ⚠ 至少给一个可改字段：一个字段都不给是一次**无操作** ⇒ 响亮拒绝
+            // （与 `setScene` 的 `sceneNameRequiredWhenCreating` 同一条纪律：
+            //  让"我以为我改了"在编译期就变成错误）。
+            if patch.is_empty() {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`{SET_ASSET_KIND}` 至少要给一个可改字段 \
+                         (`{SET_ASSET_LICENSE_FIELD}` 或 `{SET_ASSET_ORIGINAL_PATH_FIELD}`)"
+                    ),
+                    serde_json::json!({
+                        "reason": "assetPatchIsEmpty",
+                        "mutableFields": [
+                            SET_ASSET_LICENSE_FIELD,
+                            SET_ASSET_ORIGINAL_PATH_FIELD,
+                        ],
+                        "hint": "`hash`/`byteLen`/`mediaKind` 是**内容身份或内容事实**, \
+                                 ⛔ 不可改; 只想改许可就给 `license`",
+                    }),
+                ));
+            }
+            Ok(NoteOp::SetAsset { asset_hash, patch })
         }
         REMOVE_ASSET_KIND => {
             reject_remove_asset_fields(object)?;
@@ -4809,6 +4964,41 @@ fn reject_point_removal_op_fields(object: &Map<String, Value>) -> Result<(), Fau
 /// 与 [`reject_point_removal_op_fields`] 同一口径（"拼错的键必须被拒绝, 不能静默忽略"）：
 /// 本形态的载荷是**空**的，目标片段是工具顶层的 `clipId`；嵌套写一个 `clipId`
 /// （或任何别的键）若被静默忽略，调用方会以为取走的是另一个片段。
+/// 拒绝 `setAsset` 操作对象里 [`SET_ASSET_FIELDS`] 之外的键。
+///
+/// ⚠ 最像"写对了"的错法是给 `byteLen` / `mediaKind` / `hash` —— ⛔ 那三个**不可改**，
+/// 因此必须**响亮拒绝**（而不是静默忽略，让调用方以为改成了）。
+///
+/// # Errors
+///
+/// 出现 [`SET_ASSET_FIELDS`] 之外的键 → `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownSetAssetField"`）。
+fn reject_set_asset_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !SET_ASSET_FIELDS.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`{SET_ASSET_KIND}` 操作里有不支持的键: {} (支持集合只有 {SET_ASSET_FIELDS:?})",
+            unknown.join(", ")
+        ),
+        serde_json::json!({
+            "reason": "unknownSetAssetField",
+            "unsupportedFields": unknown,
+            "supportedSetAssetFields": SET_ASSET_FIELDS,
+            "hint": "可改的只有 `license` / `originalPath`; \
+                     `hash`/`byteLen`/`mediaKind` 是**内容身份或内容事实**, ⛔ 不可改",
+        }),
+    ))
+}
+
 /// 拒绝 `removeAsset` 操作对象里 [`REMOVE_ASSET_FIELDS`] 之外的键。
 ///
 /// 与 [`reject_remove_clip_fields`] 同一口径：最像"写对了"的错法是把寻址写成
@@ -5812,6 +6002,33 @@ pub fn compile(
                 Op::RemoveSection {
                     section_id: *section_id,
                     previous_section,
+                }
+            }
+            NoteOp::SetAsset { asset_hash, patch } => {
+                // 撤销载荷来自**当前文档**（模型 `SetAsset` 的前置条件要求
+                // `old_asset` 逐字段等于文档现值）⇒ 本层不采信调用方声明。
+                //
+                // ⚠⭐ **步 ③ 的许可判定必须同样适用于这条通路**：否则新增的"改"通路
+                // 会**绕过**刚建的工程层判定 ⇒ 一个非商用许可可以经 `setAsset` 写进去。
+                if let Some(license) = &patch.license {
+                    require_allowed_licence(license)?;
+                }
+                let current = project.assets.get(asset_hash).cloned().ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程的 assets 索引里没有身份 {} 的资产", asset_hash.as_str()),
+                        serde_json::json!({
+                            "assetHash": asset_hash.as_str(),
+                            "reason": "assetNotFound",
+                            "hint": "资产身份由 `yeban_query_project` 的 `assets` 字段报出; \
+                                     要**声明**一条新资产请用 `yeban_import_audio`",
+                        }),
+                    )
+                })?;
+                Op::SetAsset {
+                    asset_hash: asset_hash.clone(),
+                    old_asset: Some(current.clone()),
+                    new_asset: patch.apply_to(&current),
                 }
             }
             NoteOp::RemoveAsset { asset_hash } => {
@@ -7688,7 +7905,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 27);
+        assert_eq!(OP_KINDS.len(), 28);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -12436,7 +12653,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 27] = [
+        let table: [(&str, serde_json::Value); 28] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -12451,6 +12668,10 @@ mod tests {
                 serde_json::json!({"noteId": ulid, "velocity": 64}),
             ),
             ("removeClip", serde_json::json!({})),
+            (
+                "setAsset",
+                serde_json::json!({"assetHash": "00".repeat(32), "license": "CC0-1.0"}),
+            ),
             (
                 "removeAsset",
                 serde_json::json!({"assetHash": "00".repeat(32)}),
@@ -12534,6 +12755,7 @@ mod tests {
                 "velocity",
                 "removeClip",
                 "removeAsset",
+                "setAsset",
                 "removeTrack",
                 "insertDevice",
                 "removeDevice",
@@ -12879,7 +13101,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 28] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 29] = [
             (
                 "add",
                 None,
@@ -12907,6 +13129,17 @@ mod tests {
                 None,
                 serde_json::json!({"noteId": note, "velocity": 64}),
                 "ModifyNoteVelocity",
+            ),
+            (
+                "setAsset",
+                None,
+                Some({
+                    let mut entry = audio_entry.clone();
+                    entry.id = EntityId::from_str("01J8ZQ00000000000000000AS2").expect("ULID");
+                    entry
+                }),
+                serde_json::json!({"assetHash": orphan_asset.as_str(), "license": "CC-BY-4.0"}),
+                "SetAsset",
             ),
             (
                 "removeAsset",
@@ -13093,7 +13326,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "27 个 kind ＋ 1 个额外载荷分支"
+            "28 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -13130,7 +13363,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 28);
+        assert_eq!(seen.len(), 29);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
@@ -14442,6 +14675,220 @@ mod tests {
         assert_ne!(
             REMOVE_ASSET_KIND, REMOVE_CLIP_KIND,
             "取走资产与取走片段是**两种不同的实体**, 共用一个 kind 会让调用方分不开"
+        );
+    }
+
+    /// ⭐ **`setAsset` 主判据**：改一个**已存在**资产的 `license` ⇒ 逐字节可逆
+    /// （**撤销一步**回原值）＋ 分类正确 ＋ 只改可改字段。
+    ///
+    /// ⚠ 为什么它非有不可：在它之前 `Op::SetAsset` 的唯一构造点写死 `old_asset: None`
+    /// （创建）⇒ `old_asset: Some(..)` 的**更新**语义用户不可达 ⇒ "改不了 `license`"。
+    ///
+    /// 注入（实测红）：把 `old_asset` 换成 `None`（把更新当创建）⇒ 那条断言红，
+    /// 而且模型的前置条件会在 `apply` 时拒它。
+    #[test]
+    fn set_asset_updates_a_licence_and_inverts_byte_for_byte() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let target = project
+            .assets
+            .keys()
+            .next()
+            .expect("夹具必须有资产")
+            .clone();
+        let before = project.assets[&target].clone();
+        let total_before = project.assets.len();
+        let bytes_before = serde_json::to_string(&project).expect("序列化");
+
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_ASSET_KIND,
+            "assetHash": target.as_str(),
+            "license": "CC-BY-4.0",
+            "originalPath": "samples/renamed.wav",
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops[0].kind_name(), SET_ASSET_KIND, "kind 必须回环一致");
+        assert!(ops[0].is_asset_level(), "必须落在资产级那个桶里");
+        assert!(!ops[0].is_note_level(), "资产级不读不写音符");
+        assert_eq!(
+            ops[0],
+            NoteOp::SetAsset {
+                asset_hash: target.clone(),
+                patch: AssetPatch {
+                    license: Some("CC-BY-4.0".to_owned()),
+                    original_path: Some("samples/renamed.wav".to_owned()),
+                },
+            }
+        );
+
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetAsset {
+                asset_hash,
+                old_asset,
+                new_asset,
+            } => {
+                assert_eq!(asset_hash, &target);
+                assert_eq!(
+                    old_asset.as_ref(),
+                    Some(&before),
+                    "`old_asset` 必须从**当前文档读**（⛔ 非调用方声明）且是 `Some`（更新语义）"
+                );
+                assert_eq!(new_asset.license, "CC-BY-4.0", "许可被改了");
+                assert_eq!(
+                    new_asset.original_path, "samples/renamed.wav",
+                    "原路径被改了"
+                );
+                // ⚠ **不可改**的三字段必须**逐字保留**。
+                assert_eq!(new_asset.hash, before.hash, "`hash` 不可改");
+                assert_eq!(new_asset.byte_len, before.byte_len, "`byte_len` 不可改");
+                assert_eq!(
+                    new_asset.media_kind, before.media_kind,
+                    "`media_kind` 不可改"
+                );
+            }
+            other => panic!("应当是 SetAsset: {other:?}"),
+        }
+        compiled[0].apply(&mut project).expect("改");
+        assert_eq!(project.assets[&target].license, "CC-BY-4.0");
+        assert_eq!(
+            project.assets.len(),
+            total_before,
+            "改一条**不该**增减条目数"
+        );
+        assert!(project.validate().is_ok());
+        compiled[0].apply_inverse(&mut project).expect("逆操作");
+        assert_eq!(
+            project.assets[&target].license, before.license,
+            "撤销必须回原许可"
+        );
+        assert_eq!(
+            serde_json::to_string(&project).expect("序列化"),
+            bytes_before,
+            "一步撤销必须逐字节回到原状"
+        );
+    }
+
+    /// ⭐ **控制臂（第 46／47 条）＋ 第 4 点的关键读数**：`setAsset` ⛔ **不绕过**
+    /// 步 ③ 的工程层许可判定 —— 改成**白名单外**的值必须**被拦**。
+    ///
+    /// ⚠ 这条非有不可：`setAsset` 是**新增**的一条写 `project.assets` 的通路
+    /// ⇒ 若它不判许可，一个非商用许可可以经它写进去 ⇒ ⭐ **刚建的判定被绕过**。
+    ///
+    /// 走**产品路径**（同一个 `compile`），两臂只差 `license` 一个值；此臂**独立变色**。
+    ///
+    /// 注入（实测红）：删掉 `compile` 里的 `require_allowed_licence` 调用 ⇒ 本判据红
+    /// （`CC-BY-NC-SA` 会被放行）。
+    #[test]
+    fn set_asset_does_not_bypass_the_licence_whitelist() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let target = project
+            .assets
+            .keys()
+            .next()
+            .expect("夹具必须有资产")
+            .clone();
+        let make = |licence: &str| {
+            parse_ops(&serde_json::json!([{
+                "kind": SET_ASSET_KIND,
+                "assetHash": target.as_str(),
+                "license": licence,
+            }]))
+            .expect("解析不查白名单")
+        };
+
+        // 臂 A（正对照）：白名单内的新值被接受。
+        let allowed = compile(&project, &track_id, &clip_id, &make("CC-BY-4.0"))
+            .expect("白名单内的新许可必须被接受");
+        assert_eq!(allowed.len(), 1);
+
+        // 臂 B（控制臂）：白名单外的**新值**必须被拦 —— 这是"不绕过"的证明。
+        for bad in ["CC-BY-NC-SA", "Garbage-1.0"] {
+            let fault = compile(&project, &track_id, &clip_id, &make(bad))
+                .expect_err("白名单外的新许可必须被拦");
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("应当是领域失败, 实际 {fault:?}");
+            };
+            assert_eq!(
+                data.as_ref()
+                    .and_then(|value| value.pointer("/reason"))
+                    .and_then(Value::as_str),
+                Some("licenseNotAllowed"),
+                "`{bad}` 必须报 licenseNotAllowed（证明不绕过步 ③ 的判定）"
+            );
+        }
+    }
+
+    /// `setAsset` 的形状拒绝：不可改字段、非法哈希、空 patch、以及不存在的哈希。
+    ///
+    /// 注入（实测红）：删掉 `assetPatchIsEmpty` 那条 ⇒ 第三条断言红。
+    #[test]
+    fn set_asset_shapes_and_a_missing_hash_fail_loudly() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let target = project
+            .assets
+            .keys()
+            .next()
+            .expect("夹具必须有资产")
+            .clone();
+
+        // ⚠ 最像"写对了"的错法：给**不可改**的字段。
+        for forbidden in ["byteLen", "mediaKind", "hash"] {
+            let mut object = serde_json::json!({
+                "kind": SET_ASSET_KIND,
+                "assetHash": target.as_str(),
+                "license": "CC0-1.0",
+            });
+            object
+                .as_object_mut()
+                .expect("对象")
+                .insert(forbidden.to_owned(), serde_json::json!("x"));
+            let fault = parse_ops(&serde_json::json!([object])).expect_err("不可改字段必须被拒");
+            assert_eq!(
+                reason_of(&fault).as_deref(),
+                Some("unknownSetAssetField"),
+                "`{forbidden}` 必须被点名拒绝"
+            );
+        }
+
+        // 一个可改字段都不给 ⇒ 无操作 ⇒ 响亮拒绝。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": SET_ASSET_KIND,
+            "assetHash": target.as_str(),
+        }]))
+        .expect_err("空 patch 必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("assetPatchIsEmpty"));
+
+        // 文档里没有的哈希 ⇒ `assetNotFound`（编译期，带 reason）。
+        let ghost = AssetHash::of_bytes(b"setAsset-ghost");
+        assert!(!project.assets.contains_key(&ghost), "夹具前提");
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": SET_ASSET_KIND,
+            "assetHash": ghost.as_str(),
+            "license": "CC0-1.0",
+        }]))
+        .expect("解析不查文档");
+        let fault =
+            compile(&project, &track_id, &clip_id, &ops).expect_err("文档里没有的哈希必须被拒");
+        assert_eq!(reason_of(&fault).as_deref(), Some("assetNotFound"));
+    }
+
+    /// `setAsset` 的**字面名与支持集合**被钉住。
+    #[test]
+    fn set_asset_field_names_are_pinned() {
+        assert_eq!(SET_ASSET_KIND, "setAsset");
+        assert_eq!(SET_ASSET_LICENSE_FIELD, "license");
+        assert_eq!(SET_ASSET_ORIGINAL_PATH_FIELD, "originalPath");
+        assert_eq!(
+            SET_ASSET_FIELDS,
+            ["kind", "assetHash", "license", "originalPath"]
+        );
+        assert_ne!(
+            SET_ASSET_KIND, REMOVE_ASSET_KIND,
+            "改与取走是**相反**的两件事, 共用一个 kind 会让调用方分不开"
         );
     }
 }

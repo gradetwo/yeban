@@ -870,7 +870,10 @@ fn whitelist_unavailable(detail: &str) -> Fault {
 ///
 /// `MUST-GATE-014` 的规范逐字是"仅限 CC0/CC-BY/MIT 协议"——**"仅限"是限制**，
 /// ⛔ 不是"上报" ⇒ 不在白名单就拒。回显该值与白名单，便于调用方自纠。
-fn require_allowed_licence(licence: &str) -> Result<(), Fault> {
+/// ⚠ 它是**两处通路共用的唯一判定**（`yeban_import_audio` 的**创建/声明**
+/// 与 `yeban_edit_notes` 的 `setAsset` **更新**）⇒ 引成 `pub` 让后者复用，
+/// ⛔ **不复制第二份**（那会变成两套真相）。
+pub fn require_allowed_licence(licence: &str) -> Result<(), Fault> {
     let allowed = read_licence_whitelist()?;
     if allowed.iter().any(|entry| entry == licence) {
         return Ok(());
