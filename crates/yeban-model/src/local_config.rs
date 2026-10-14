@@ -13,7 +13,7 @@
 //! | :--- | :--- | :--- |
 //! | 落盘位置 | `~/.yeban/config.json`（[`LocalMachineConfig::default_path`]） | `.yeban` 容器 |
 //! | 是否随工程分发 | **否**（绝不进 Commit、绝不进容器） | 是（这是作品本体） |
-//! | 文件权限 | **`0600`**（[`LOCAL_CONFIG_FILE_MODE`]） | 由容器/仓库策略决定 |
+//! | 文件权限 | **Unix 权限位 `0600`**（[`LOCAL_CONFIG_FILE_MODE`]）；⚠ **非 Unix 上本模块不提供等价的收紧**，由 [`file_permission_tightening_is_supported`] **如实上报** | 由容器/仓库策略决定 |
 //! | 是否含凭据 | 只含**引用指针** [`SecretRef`] | 一格都不许有 |
 //!
 //! 判据 `crates/yeban-model/tests/model_isolation.rs` 逐个断言：
@@ -64,6 +64,20 @@ pub const LOCAL_CONFIG_FILE_MODE: u32 = 0o600;
 /// 本机配置目录权限（`0700`：仅属主可进入）—— **Unix 语义**。
 #[cfg(unix)]
 pub const LOCAL_CONFIG_DIR_MODE: u32 = 0o700;
+
+/// ⭐ 本编译目标上，**文件/目录权限收紧是否真的被应用**。
+///
+/// ⭐ **形状照 [`crate::local_config`] 的同族先例** —— `yeban-engine` 的
+/// `supports_ftz_daz()`：平台做不到的能力**必须能被消费方查到**，⛔ 不许静默。
+///
+/// ⚠ **口径（⛔ 不含糊）**：`0600`／`0700` 是 **Unix 权限位**语义。Windows 用的是 ACL，
+/// **与 0600 不等价**，且本模块**不提供**等价收紧（本仓口径：零新增依赖）⇒
+/// 非 Unix 上 [`LocalMachineConfig::save_to`] 会**照常写成功**，但**权限未被收紧**。
+/// 调用方若需要"仅属主可读"，**必须**先查本函数、⛔ 不许假定它成立。
+#[must_use]
+pub const fn file_permission_tightening_is_supported() -> bool {
+    cfg!(unix)
+}
 
 /// 密钥引用名长度上限（字节）。
 pub const MAX_SECRET_REF_LEN: usize = 128;
@@ -790,6 +804,18 @@ fn create_private_dir(dir: &Path, path: &Path) -> Result<(), LocalConfigError> {
             source,
         })
     }
+}
+
+/// ⭐ **非 Unix 臂**：本平台没有 POSIX 权限位 ⇒ **做不到收紧**。
+///
+/// ⚠ 这里与 Unix 臂**签名相同**（`Result`）⇒ 调用点无需 `cfg` 分支；⭐ 但语义**不同**：
+/// 它**什么都不做**并返回 `Ok(())`，⭐ 故它**必须**与
+/// [`file_permission_tightening_is_supported`] 一起读 —— 后者 `false` 就是
+/// "刚才那次收紧是空转"的**唯一权威读数**。
+/// ⚠ ⛔ 不静默成 `()`：保持 `Result` 让"这里会失败"在类型上可表达（写不进时能上报）。
+#[cfg(not(unix))]
+fn set_file_mode(_path: &Path, _mode: u32) -> Result<(), LocalConfigError> {
+    Ok(())
 }
 
 /// 显式收紧文件权限（Unix）。

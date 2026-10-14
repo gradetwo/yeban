@@ -975,12 +975,33 @@ fn editor_path_absoluteness_follows_platform_semantics() {
     }
 }
 
+/// ⭐ **非 Unix 臂**：⛔ 不断言"权限是 0600"（那在本平台**做不到**）。
+///
+/// ⭐ 断言的是**"未收紧"这件事被明确上报**：能力查询必须是 `false`，且保存**仍然成功**
+/// （本地配置是核心功能 ⇒ ⛔ 不许改成拒绝）。⭐ 这就是把**静默降级**换成**明示选择**。
+///
+/// ⭐ 独立变色：把 `file_permission_tightening_is_supported()` 改成 `true`
+/// ⇒ 第一条断言红；把 `save_to` 改成在非 Unix 上报错 ⇒ 第二条断言红。
 #[cfg(not(unix))]
 #[test]
-fn local_config_file_is_0600() {
-    // 非 Unix 平台没有 POSIX 权限位语义（Windows ACL 不等价于 0600）。
-    // 如实 SKIP，并声明这里**没有**被验证过 —— 不假装绿。
-    eprintln!("SKIP: 本平台不是 Unix ⇒ 0600 权限位判据未执行（Windows ACL 语义需另立判据）");
+fn local_config_permission_tightening_is_reported_as_unsupported() {
+    let home = TempDir::new("perm");
+    let config_path = LocalMachineConfig::path_for_home(&home.path);
+    let config = populated_config();
+
+    assert!(
+        !yeban_model::local_config::file_permission_tightening_is_supported(),
+        "⭐ 非 Unix 上必须如实上报"权限收紧不可用"（⛔ 不许静默声称已收紧）"
+    );
+
+    // ⭐ 保存**必须照常成功**：本地配置是每个平台的核心功能。
+    config
+        .save_to(&config_path)
+        .expect("非 Unix 上本机配置必须仍能保存（权限收紧不可用 ≠ 功能不可用）");
+
+    // ⭐ 往返仍逐字段相等 ⇒ "写成功"不是空话（读写走同一份数据）。
+    let back = LocalMachineConfig::load_from(&config_path).expect("读回本机配置");
+    assert_eq!(back, config, "非 Unix 上往返必须逐字段相等");
 }
 
 // ---------------------------------------------------------------------------
