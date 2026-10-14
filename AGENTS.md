@@ -31,7 +31,8 @@ AI Agent 严禁执行以下操作，违者将被自动化 CI 与代码审查机�
 3. **物理架构解耦红线**：严禁向 `yeban-model`、`yeban-dsp`、`yeban-theory`、`yeban-render`、`yeban-engine`、`yeban-sfz` 等引擎层 crate 引入任何 GUI（Slint/winit/OpenGL/Qt）相关依赖；
 4. **确定性状态红线**：严禁在持久化 AST 核心实体集合中使用 `HashMap` 或 `HashSet`，必须强制使用 `BTreeMap` 以保障跨进程、跨重启迭代顺序的一致性；
 5. **网络监听安全红线**：所有 MCP 及调试服务严禁绑定 `0.0.0.0`，必须且仅能绑定环回地址 `127.0.0.1`；
-6. **发行特性安全红线**：官方默认 release 构建中严禁默认开启 `mcp-http`、`ui-mcp`、`asio`、`experimental-vst3`、`experimental-als-export` 或 `experimental-logic-export`，上述特性仅限在特定开发或测试配置中按需开启；
+6. **发行特性安全红线**：官方默认 release 构建中严禁默认开启 `mcp-http`、`ui-mcp`、`experimental-vst3`、`experimental-als-export` 或 `experimental-logic-export`，上述特性仅限在特定开发或测试配置中按需开启；**`asio` 属另一类** —— 仓库内**绝不允许**出现 Steinberg ASIO SDK 头文件或专有代码（见 `crates/yeban-plugin-host` 的 `[MUST-GATE-013]`），即该特性**不定义、不引入**。
+   > ⚠ **本条措辞于 2026-10-15 经人类裁决分写为两句**（原句把「永不定义」与「将来定义」写成同一句）：前五个是**已定义、默认关闭**的特性；`asio` 是**永不定义**的禁止项。裁决留痕见 `docs/adr/`。机械防线 `scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES` 按名覆盖两者（一旦定义即禁入 `default`）。
 7. **实时音频安全红线**：实时音频回调函数内严禁出现任何堆内存分配（`malloc`/`Box::new`/`Vec::push` 等）、堆释放（`drop`/`dealloc`）、互斥锁等待（`Mutex::lock`）或阻塞式系统调用（文件/网络 I/O、控制台打印等）；
 8. **内存安全红线 (Safe-by-Default)**：在 `yeban-model`、`yeban-theory`、`yeban-dsp`、`yeban-render` 中强制启用 `#![forbid(unsafe_code)]`；`unsafe` 仅限出现在已审计的底层驱动与 FFI 边界中，且必须附带详尽的 `// SAFETY:` 注释证明；
 9. **资产与权重合规红线**：严禁提交任何大于 10MB 的未注册二进制文件，严禁提交任何未在 `assets/manifest.json` 或 `assets/models/MANIFEST.json` 中登记许可证与 SHA-256 的音频样本或神经网络权重。
