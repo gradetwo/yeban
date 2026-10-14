@@ -16,6 +16,13 @@
 //! | 文件权限 | **Unix 权限位 `0600`**（[`LOCAL_CONFIG_FILE_MODE`]）；⚠ **非 Unix 上本模块不提供等价的收紧**，由 [`file_permission_tightening_is_supported`] **如实上报** | 由容器/仓库策略决定 |
 //! | 是否含凭据 | 只含**引用指针** [`SecretRef`] | 一格都不许有 |
 //!
+//! ⭐ **落盘序列（两平台一致）**：`save_to` 在 **Unix 与非 Unix 上走同一条序列** ——
+//! `write_all` ⇒ **`sync_all`** ⇒ `drop`（"落盘前 fsync"，与 `[ARCH-SEC-004]` 的
+//! `store.rs` 原子写同惯例；⭐ `sync_all` 是跨平台 std API）。
+//! ⚠ 两平台的**唯一**差异是**权限收紧**：Unix 额外置 `0600`（并在已存在时显式
+//! `set_permissions`），非 Unix **不提供等价收紧**、由
+//! [`file_permission_tightening_is_supported`] **如实上报**。
+//!
 //! 判据 `crates/yeban-model/tests/model_isolation.rs` 逐个断言：
 //! 容器 `project.json` 的递归键集合里**没有**本模块的任何字段名、
 //! 容器字节里**没有**配置里的引用名、容器往返之后配置仍在 `~/.yeban/…` 那一侧。
@@ -738,10 +745,36 @@ impl LocalMachineConfig {
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(path, &bytes).map_err(|source| LocalConfigError::Io {
+            use std::io::Write as _;
+
+            // ⭐ 与 unix 臂**同一条落盘序列**（`[ARCH-SEC-004]` 的"落盘前 fsync"惯例）：
+            // `OpenOptions`（⛔ 不带 `mode` —— 非 Unix 没有 POSIX 权限位）⇒ `write_all`
+            // ⇒ ⭐ `sync_all()` ⇒ `drop`。
+            //
+            // ⚠ **为什么不用 `std::fs::write`**：它写完就返回、**⛔ 不调用 `sync_all`**
+            // ⇒ 数据只到内核页缓存 ⇒ 掉电可能丢。⭐ 而 `sync_all` 是**跨平台** std API
+            // （Windows 上是 `FlushFileBuffers`）⇒ 这里 ⛔ 不需要平台分支、⛔ 不需要新依赖。
+            // ⚠ 权限那一半与本序列**无关**：非 Unix 不提供等价收紧，由
+            // [`file_permission_tightening_is_supported`]（`false`）如实上报。
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+                .map_err(|source| LocalConfigError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            file.write_all(&bytes)
+                .map_err(|source| LocalConfigError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            file.sync_all().map_err(|source| LocalConfigError::Io {
                 path: path.to_path_buf(),
                 source,
             })?;
+            drop(file);
         }
         Ok(())
     }
