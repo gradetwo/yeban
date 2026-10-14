@@ -690,6 +690,51 @@ def g15_every_crate_is_classified() -> list[Violation]:
     return bad
 
 
+def g16_no_forbidden_feature_is_defined() -> list[Violation]:
+    """[红线 6 / MUST-GATE-013] `asio` 与 `experimental-vst3` **永不定义**该 feature 名。
+
+    ⭐ R591 的 ADR-0007 登记的限度：`asio` 的"不定义"原本**没有机械守卫**
+    —— 因为它没有 `Cargo.toml` 条目可判，`FORBIDDEN_DEFAULT_FEATURES` 只管
+    "一旦定义则禁进 default"，`G07` 只管"仓库内无 ASIO SDK 文件"。
+    ⇒ 于是"有人新加一个 `asio` feature 但不开默认"在两者下**都不会红**。
+
+    ⭐ 本条补上：任何 `Cargo.toml` 的 `[features]` 里**出现**这两个名字即红。
+    ⚠ 口径依据：`AGENTS.md` 红线 6（⭐ 经 2026-10-15 人类裁决分写为两句）明确
+    `asio` **不定义、不引入**；`experimental-vst3` 同属"尚未定义"类。
+    """
+    bad: list[Violation] = []
+    never_defined = ("asio", "experimental-vst3")
+    for crate in crates():
+        manifest_path = crate / "Cargo.toml"
+        if not manifest_path.is_file():
+            continue
+        manifest = read_manifest(crate)
+        feats = manifest.get("features", {}) or {}
+        if not isinstance(feats, dict):
+            continue
+        for name in never_defined:
+            if name in feats:
+                bad.append(
+                    (
+                        "G16",
+                        rel(manifest_path),
+                        f"红线 6：`{name}` 是**永不定义**的禁止项（见 docs/adr/ADR-0007）"
+                        f" ⇒ 不得在 `[features]` 里定义它",
+                    )
+                )
+            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                deps = manifest.get(section, {}) or {}
+                if isinstance(deps, dict) and name in deps:
+                    bad.append(
+                        (
+                            "G16",
+                            rel(manifest_path),
+                            f"红线 6：`{name}` 不得作为依赖出现（[{section}]）",
+                        )
+                    )
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -706,6 +751,7 @@ GUARDS = {
     "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
     "G14": ("[本地门禁可移植性] shell 脚本 bash 3.2 兼容(禁关联数组)且 bash -n 可解析", g14_shell_scripts_are_portable),
     "G15": ("[多线纪律/红线 3、8] crates/* 每个 crate 都必须被显式分类", g15_every_crate_is_classified),
+    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),
 }
 
 
@@ -723,7 +769,7 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 16)]
+    expected = [f"G{n:02d}" for n in range(1, 17)]
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")
