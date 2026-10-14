@@ -710,16 +710,23 @@ fn a_wildcard_glob_does_not_descend_into_a_symlinked_directory() {
 
 /// 在 `link` 处建一个指向 `target` 的**目录 junction**（免特权）。
 ///
-/// ⚠ **两次 CI 红的教训（都已记在这里，⛔ 不要再踩）**：
-/// 1. `cmd.args(["/C","mklink","/j", link, target])` ⇒ `Invalid switch - "linked"`
-///    —— Rust 的 `arg` 会**替 cmd 做引号转义**，而 `cmd.exe` **自己解析**它的命令串；
-/// 2. 把整串塞进 `args([...])` 的一个元素里 ⇒ `The filename, directory name, or volume
-///    label syntax is incorrect.`
+/// ⚠ **两次 CI 红的教训（都已记在这里，⛔ 不要再踩）**。
+///
+/// 第一次：`cmd.args(["/C","mklink","/j", link, target])` ⇒ `Invalid switch - "linked"` ——
+/// Rust 的 `arg` 会**替 cmd 做引号转义**，而 `cmd.exe` **自己解析**它的命令串。
+///
+/// 第二次：把整串塞进 `args([...])` 的一个元素里 ⇒ `The filename, directory name, or volume
+/// label syntax is incorrect.`
+///
 /// ⭐ 正解（照 `netsuke` 的开源先例 `configure_shell_command`）：把**命令文本**用
 /// `raw_arg` **原样**交给 cmd，并放进 `cmd /C` 要求的那**一对外层引号**里。
 ///
 /// ⚠ 另两条 `mklink /j` 的前提也必须满足（否则报的是**同一句** syntax 错）：
 /// **`target` 必须已存在** ＋ **`link` 的父目录必须已存在**。
+///
+/// ⚠ ⭐ **本文件在 `#[cfg(windows)]` 块里的注释，macOS 上的 clippy ⛔ 看不到**（该代码不参与
+/// 编译）⇒ 这类 **Windows 专属的 lint 错只能由 windows 腿发现**（实测：第三次 CI 因
+/// `clippy::doc_lazy_continuation` 编不过、而本机复合门全绿）。
 ///
 /// ⚠ 失败时**响亮 panic**，并把**实际命令行串**与 stderr 一起打出来（便于判因），
 /// ⛔ 不做静默跳过（永远跳过的臂零证据）。
