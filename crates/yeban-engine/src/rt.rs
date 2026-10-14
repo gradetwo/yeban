@@ -4643,7 +4643,17 @@ mod tests {
     #[test]
     fn the_default_off_build_has_an_explicit_feature_gate_inventory() {
         let needle = ["#[cfg(feature = ", "\"device\")]"].concat();
-        let lib = include_str!("lib.rs");
+        // ⚠ **CRLF 脆弱点**（`windows` 腿实测红过的一族）：`include_str!` 把文件**按字节
+        // 原样**嵌进来 ⇒ Windows runner 的 `core.autocrlf=true` 让工作树里 `lib.rs` 变成
+        // CRLF 时，嵌进来的也是 CRLF，而下面那根针里带的是 **LF** ⇒ `contains` 在 Windows 上
+        // **必然为假**（Linux 腿的工作树是 LF ⇒ 只有 `windows` 腿红）。
+        // ⇒ **读入后立刻按"两侧同口径"归一**，照 `yeban-model/src/project.rs` 的范式
+        // （`replace("\r\n", "\n")` 治成对 CRLF，`replace('\r', "\n")` 治**孤立 CR**）。
+        // ⚠ 归一必须做在**读入的文本**上，⛔ 不是做在**拼好的针**上 —— 针是运行期拼的，
+        // 只归一针会掩盖"文件里到底写了什么"。
+        let lib = include_str!("lib.rs")
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
         assert!(
             lib.contains(&format!("{needle}\npub mod device;")),
             "`device` 模块必须仍然被门控"
