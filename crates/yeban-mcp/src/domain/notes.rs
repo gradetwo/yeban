@@ -7985,7 +7985,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 28);
+        assert_eq!(OP_KINDS.len(), 29);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -12733,7 +12733,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 28] = [
+        let table: [(&str, serde_json::Value); 29] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -12792,6 +12792,10 @@ mod tests {
             ("setTempo", serde_json::json!({"bpm": 140.0})),
             ("setAuthor", serde_json::json!({"author": "A"})),
             (
+                "setTrackName",
+                serde_json::json!({"trackId": ulid, "name": "A"}),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -12845,6 +12849,7 @@ mod tests {
                 "setTransportConfig",
                 "setTempo",
                 "setAuthor",
+                "setTrackName",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -13181,7 +13186,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 29] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 30] = [
             (
                 "add",
                 None,
@@ -13307,6 +13312,13 @@ mod tests {
                 None,
                 serde_json::json!({"author": "New Author"}),
                 "SetAuthor",
+            ),
+            (
+                "setTrackName",
+                None,
+                None,
+                serde_json::json!({"trackId": device_track_id, "name": "Renamed"}),
+                "SetTrackName",
             ),
             (
                 "setAutomationLane#patch",
@@ -13443,7 +13455,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 29);
+        assert_eq!(seen.len(), 30);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
