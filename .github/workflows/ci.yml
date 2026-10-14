@@ -459,12 +459,13 @@ jobs:
   # 只跑这两个 crate（零系统库依赖，不需要 Slint/cpal/ALSA），因此不会把 Windows runner 拖满。
   # ---------------------------------------------------------------------------
   windows:
-    name: windows (yeban-mcp / yeban-model 的平台分支)
+    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-app 的平台分支)
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
       contains(needs.plan.outputs.crates, 'yeban-model') ||
       contains(needs.plan.outputs.crates, 'yeban-dsp')
+      || contains(needs.plan.outputs.crates, 'yeban-app')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -498,7 +499,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-app --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
 
       # 为什么把三个 crate 拆成三步（实测代价换来）:
       # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
@@ -533,6 +534,16 @@ jobs:
       # 本步把「文件是否存在」与「多少字节」打印出来 ⇒ 缺失或空文件当场可见,
       # 且与本改动**唯一**的另一点（`if-no-files-found: error`）互相印证:
       # 体检通过而上传空 ⇒ 故障在上传侧; 体检失败 ⇒ 故障在写入侧。
+      # ⭐ 为什么加 `yeban-app`: 实测 `windows` 腿**已证明自己会跑**（该腿跑过 1652 passed）
+      # ⇒ ⛔ 它不是空设; 而 `yeban-app` 的**平台分支在 Windows 上此前无人测**（台账 R463/C1）。
+      # ⚠ 仍照上面的口径: **一个 crate 一步**, 让失败归属可读（⛔ 不并进同一条命令）。
+      - name: test (yeban-app 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-app --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
       - name: 门日志体检 (存在性与字节数)
         if: always()
         shell: bash
