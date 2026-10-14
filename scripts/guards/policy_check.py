@@ -651,11 +651,72 @@ GUARDS = {
 }
 
 
+def self_test() -> int:
+    """守卫自检 —— 本仓的 14 条守卫**本来没有自检**（R546 的发现）。
+
+    ⚠ 为什么需要：CI 会跑守卫、**但没有任何注入／变异测试** ⇒ 一条守卫若因重构
+    或改错而**静默失效**（被从注册表里删掉、或函数抛异常／返回 None）、CI 会一直绿。
+    ⭐ 本自检能机械抓住的三件事：
+      ① **注册表完整性**：`G01`…`G14` 一个不缺、且没有空标题／非可调用项；
+      ② **可调用性**：每个 check 函数存在且可调用；
+      ③ **真的跑过并返回列表**：逐个调用，断言返回的是 `list`（不是 None、不抛异常）。
+    ⚠ 它**不**证明每条判据对**坏输入**会报红（那需要对每个判据构造变异输入）；
+    但那已强于"什么都没验"—— 至少"守卫被删掉／写坏"会立刻报出来。
+    """
+    fails: list[str] = []
+
+    expected = [f"G{n:02d}" for n in range(1, 15)]
+    missing = [g for g in expected if g not in GUARDS]
+    if missing:
+        fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")
+    extra = [g for g in GUARDS if g not in expected]
+    if extra:
+        # ⭐ 多出来的不算错（可能新增），只提示
+        print(f"[note] 注册表另有 {extra}")
+
+    if not GUARDS:
+        fails.append("注册表为空 ⇒ 本判据空转，不能当作「红线守卫在位」的证据")
+
+    for gid, entry in GUARDS.items():
+        if not (isinstance(entry, tuple) and len(entry) == 2):
+            fails.append(f"{gid} 的注册项不是 (说明, 函数) 二元组")
+            continue
+        desc, fn = entry
+        if not isinstance(desc, str) or not desc.strip():
+            fails.append(f"{gid} 缺少文字说明")
+        if not callable(fn):
+            fails.append(f"{gid} 的 check 不是可调用对象")
+            continue
+        try:
+            found = fn()
+        except Exception as exc:  # noqa: BLE001 —— 自检要如实报出任何异常
+            fails.append(f"{gid} 调用时抛异常: {exc!r}")
+            continue
+        if not isinstance(found, list):
+            fails.append(f"{gid} 返回了 {type(found).__name__} 而不是 list ⇒ 判据可能失效")
+
+    if fails:
+        for f in fails:
+            print(f"[FAIL] {f}", file=sys.stderr)
+        print(f"[FAIL] 守卫自检 {len(fails)} 项不符 ⇒ 守卫的绿不算证据", file=sys.stderr)
+        return 1
+    print(
+        f"[ok] 守卫自检通过：注册表 {len(GUARDS)} 条齐备（{expected[0]}–{expected[-1]}）、"
+        "逐条可调用且返回列表"
+    )
+    print("[note] ⚠ 本自检不构造变异输入 ⇒ 它证明「守卫都在且能跑」，⛔ 不证明「每条都能报红」")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="夜半机械红线守卫")
     parser.add_argument("--only", action="append", default=None, help="只运行指定守卫 ID")
     parser.add_argument("--list", action="store_true", help="列出全部守卫")
+    parser.add_argument("--self-test", action="store_true", help="自检：守卫是否齐备且可调用")
     args = parser.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     if args.list:
         for gid, (desc, _) in GUARDS.items():
