@@ -114,6 +114,12 @@ jobs:
       - name: 机械红线守卫
         run: python3 scripts/guards/policy_check.py
 
+      # R540: 九条红线里八条有机器守卫，**只剩红线 1（法务文件禁改）没有**。
+      # 它是流程规矩（不是代码属性），故用**内容基线**做机械守卫：六个法务文件
+      # 的 SHA-256 与基线一致才算过；⚠ 文件缺失或基线缺失**同样报红**（防空转）。
+      - name: 法务文件基线守卫 (红线 1)
+        run: python3 scripts/guards/check_legal_files_unchanged.py
+
       # R65: 工作流的改动永远不被工作流验证 —— 那次只改 `ci.yml` + 文档的推送
       # 让 `plan` 判出空 crate 集合, 于是 `rust` 矩阵腿**整体 skipped**, 新加的腿
       # 在它自己的提交上一次都没跑。因此加一条**不依赖 crate 集合**的结构自检:
