@@ -127,6 +127,23 @@
 ② ⭐ **该提交自己**的 run 判决（**完整 40 位 SHA** ＋ `conclusion` ＋ ⭐ **实际腿清单**（逐 crate ｖｓ 全量 ｖｓ 跳过 ＋ **说清 `plan` 为何那么判**）＋ **腿级三态**（耗时非 0 ＋ 日志里 `test result:` 行数））⛔ 不合成一个数、⛔ 不拿 skipped 当证据、⛔ 不拿空绿当验证
 ③ ⭐ **就地追加 `docs/ledger/phase-status.md`**（⛔ 不删旧文；状态词若动 ⇒ 一体同步汇总＋合计）
 
+## 10.5 ⭐ 平台覆盖工作流（⭐ 进行中、⭐ 接手者必读）
+
+⭐ ⭐ **背景**: ⭐ CI 的 `windows` 腿**只覆盖 `yeban-mcp`／⭐ `yeban-model`／⭐ `yeban-dsp`** ⇒ ⭐ ⚠ **另有 8 个 crate 无 Windows 覆盖**（⭐ `engine`／⭐ `decode`／⭐ `render`／⭐ `ui-mcp`／⭐ `midi`／⭐ `theory`／⭐ `sfz`／⭐ `record`）⇒ ⭐ ⚠ **而本会话发现"⭐ 平台相关断言"是一整族**（⭐ 两次各暴露一族: ⭐ **CRLF** 与 ⭐ **路径分隔符**）✓
+
+⭐ ⭐ **口径（第 56 条 / 交接 §4 第 13 条）**: ⭐ ⭐ **加平台腿前先**按类清扫**、⭐ 把腿当成"⭐ 验证已清扫干净"的手段、⭐ ⛔ 不是"⭐ 发现差异"的手段** ✓ ⭐ **由来: ⭐ 那条腿**两加两退**、⭐ 每次各暴露一族** ✓
+
+⭐ **全仓（⭐ 除 app）清扫已完成（⭐ R474）**: ⭐ ⭐ **甲 3 处、⭐ 全在 `crates/yeban-render/tests/l1_digest_parity.rs`**（⭐ `:607` 阳性臂／⭐ ⭐ **`:612` 阴性臂 ⇒ CRLF 下会变**假绿****／⭐ `:897` "⭐ 读原始字节"那处 ⚠ **不宜归一**）⇒ ⭐ **app 那侧已清扫并入**（⭐ `f61c4191`）✓
+
+⭐ **扩腿建议顺序（⭐ 按甲类收益与代价、⭐ 已量化）**：
+| 序 | crate | 甲 | sysdeps | 代价 |
+| :--- | :--- | :--- | :--- | :--- |
+| ⭐ 1 | ⭐ **`yeban-render`** | **3** | **0** | ⭐ **低**（⭐ 重依赖已被 `yeban-mcp` 拖进现腿）|
+| ⭐ 2 | `yeban-decode` | 0 | 1（纯 Rust） | 低-中 |
+| ⭐ 3 | ⭐ `yeban-engine` | 0 | ⭐ **`cpal`（optional）** | ⚠ **中-高** ⇒ ⭐ **必须显式关默认 feature**，否则 runner 会装音频栈 |
+
+⚠ ⭐ ⭐ **接手者的注意点**: ⭐ **平台差异**本机（⭐ macOS）**无法产生**（⭐ 既无 CRLF 工作树、⭐ 也无法让 `Path::display()` 产出 `\`）⇒ ⭐ ⭐ **强证据形态 ＝ ⭐ 把判定抽成**纯函数** ＋ ⭐ 用内存样例覆盖平台差异那一侧**（⭐ 两个样板: ⭐ `yeban-model` 的内存文本 CRLF 判据、⭐ `yeban-app` 的 `paths_are_equivalent`）⇒ ⭐ ⚠ **"⭐ 本机无法验证"是**弱证据**** ✓
+
 ## 11. ⭐ 接手后的第一步（按序）
 
 1. ⭐ **核验**：`command git log --oneline -3`、`command git status --porcelain`（应空）、`command git rev-parse HEAD origin/main`（应相等）。⚠ 若 `main` 已前进，**先读那几条提交**。
