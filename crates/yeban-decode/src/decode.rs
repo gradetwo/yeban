@@ -5168,12 +5168,24 @@ mod tests {
         // ⭐⭐ **R254②：让独立来源**覆盖**判据体**（⛔ 不是整文件），并报**三源是否一致**。
         // 源 A = 运行期循环计数（10）；源 B = 声明值（13）；源 C = **判据体内**的宏出现次数。
         // ⚠ 三者**单位不同** ⇒ "不一致"本身正是"该数**不是臂数**"的证据（R254②）。
-        let own_source = include_str!("decode.rs");
+        // ⭐ **行尾归一（CRLF 真缺陷）**：`include_str!` 读的是**编译时工作树里**的那份源码。
+        // ⚠ 锚点形如 `"\n    }\n"` —— **匹配点之后还要一个 `\n`**。
+        // CRLF 下 `}` 后面是 `\r`、不是 `\n` ⇒ **匹配不上** ⇒ 只有 windows 腿红。
+        // ⚠ 反例：锚点若**只在前面**要 `\n`（如 `"\n    }"`）则 CRLF **照样命中**（`\r\n` 里本就含 `\n`）
+        // —— 故判“行尾脆弱”必须看**匹配点之后**是否要 `\n`。
+        // 范式见 `project.rs` 的 `routing_graph_fields_in_source`。
+        let own_source = include_str!("decode.rs")
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
         let fn_start = own_source
             .find("fn the_crate_source_keeps_a_set_size_bound")
             .expect("the criterion must be present in its own file");
         let fn_body = &own_source[fn_start..];
-        let body_end = fn_body.find("\n    }\n").unwrap_or(fn_body.len());
+        // ⭐ **防空（第 41 条）**：原先用 `unwrap_or(fn_body.len())` ⇒ 锚点找不到时**静默**把
+        // **整段剩余文本**当成判据体 ⇒ 宏计数会**偏大**而判据仍绿。抽不到锚点必须**响亮失败**。
+        let body_end = fn_body
+            .find("\n    }\n")
+            .expect("抽取规则失效（⛔ 不是计数的问题）: 在 `decode.rs` 里找不到判据体结尾锚点");
         let body = &fn_body[..body_end];
         let body_macros = body.matches("assert!").count()
             + body.matches("assert_eq!").count()
@@ -5194,7 +5206,15 @@ mod tests {
         // ② **独立来源**（⛔ 不与计数器互相自证）：`include_str!("decode.rs")` 里
         //    `assert`／`assert_eq!`／`assert_ne!` 宏的**原文出现次数**，由**运行期谓词**数出来。
         const DECLARED_STATEMENT_ARMS: usize = 13;
-        let own_source = include_str!("decode.rs");
+        // ⭐ **行尾归一（CRLF 真缺陷）**：`include_str!` 读的是**编译时工作树里**的那份源码。
+        // ⚠ 锚点形如 `"\n    }\n"` —— **匹配点之后还要一个 `\n`**。
+        // CRLF 下 `}` 后面是 `\r`、不是 `\n` ⇒ **匹配不上** ⇒ 只有 windows 腿红。
+        // ⚠ 反例：锚点若**只在前面**要 `\n`（如 `"\n    }"`）则 CRLF **照样命中**（`\r\n` 里本就含 `\n`）
+        // —— 故判“行尾脆弱”必须看**匹配点之后**是否要 `\n`。
+        // 范式见 `project.rs` 的 `routing_graph_fields_in_source`。
+        let own_source = include_str!("decode.rs")
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
         let raw_assert_macros = own_source.matches("assert!").count()
             + own_source.matches("assert_eq!").count()
             + own_source.matches("assert_ne!").count();
