@@ -6400,3 +6400,27 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ **下一步的两条候选（⭐ 待判决后择一）**: ⭐ **①** ⭐ **裁决 `solo_safe`／⭐ `ClipPoolEntry.name`／⭐ `folder_id` 并据此派下一条落地单**；⭐ **②** ⭐ **(B) 场景快照票**（⭐ 需产品语义 ⇒ ⭐ 人类或另开票）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **功能交付的判决（⭐ `checks` 腿 ＋ ⭐ windows 腿）** ＋ ⭐ 三处待裁 ＋ ⭐ (B) 场景快照票 ✓
+
+---
+
+## R637 实测追加（2026-10-15）：⭐⭐⭐ **功能交付的 `checks` 腿已绿**（⭐ `fmt`／⭐ **红线守卫**／⭐ **schema**）⇒ ⭐ **`SetTrackName` 的 schema 一致性获 CI 确认**
+
+⭐ ⭐ ⭐ **一、⭐ 腿级读数（⭐ 逐字、⭐ 按第 141 条）**: ⭐ run `38656544118`（⭐ 即 ⭐ **`74eaecdf`**、⭐ 功能交付）、⭐ 状态 in_progress:
+| ⭐ 腿 | ⭐ 状态 | ⭐ 结论 |
+| :--- | :--- | :--- |
+| ⭐ ⭐ **`checks (fmt / 红线守卫 / schema)`** | ⭐ completed | ⭐ ⭐ **success** |
+| ⭐ ⚠ **`windows (yeban-mcp / yeban-model / …)`** | ⭐ in_progress | ⭐ ⚠ **本单最相关的那条**（⭐ 它含 model ＋ mcp 两者）|
+| ⭐ ⚠ **`rust (workspace 全量)`** | ⭐ in_progress | ⭐ ⚠ **覆盖 `--workspace` 全测** |
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 功能交付的**格式面、⭐ 红线守卫面、⭐ schema 面**三面已获 CI 确认**** ✓
+⭐ ⭐ **而这一点对本单**特别有意义****: ⭐ ⚠ **本单动了 `schemas/ops.schema.json`（⭐ `Op` 36 ⇒ 37）** ⇒ ⭐ ⭐ **`checks` 腿里的 schema 步骤绿 ⇒ ⭐ 说明那次"⭐ 由 `gen-ops-schema-branches.py` 生成"的改动**在 CI 上也被接受**** ✓
+
+⭐ ⭐ **二、⭐ 判决读数**: ⭐ ⭐ **`a05b45e5`（⭐ R634 台账）＝ completed ／ success** ⇒ ⭐ ⭐ **本窗口 **27** 个 run、⭐ **27** 个 success、⭐ 零非 success**** ✓ ⭐ **`74eaecdf`（⭐ 功能）与 ⭐ `88defbcf`（⭐ R636）in_progress** ⇒ ⭐ **记 `pending`** ✓
+
+⭐ ⚠ **三、⭐ 而**本单剩下的风险**只剩两条腿**（⭐ 如实）:
+| ⭐ 腿 | ⭐ 为什么它对本单重要 |
+| :--- | :--- |
+| ⭐ ⚠ **`windows`** | ⭐ ⭐ **它含 `yeban-model` 与 `yeban-mcp`** ⇒ ⭐ **而本单在两者都加了代码/⭐ 测试**（⭐ 尤其 `op_reachability.rs`／⭐ `fault_vocabulary.rs`）|
+| ⭐ ⚠ **`rust (workspace 全量)`** | ⭐ **`--workspace` 会把**所有 crate 的测试**一起跑** ⇒ ⭐ **若别的 crate 也硬编码了 `Op` 数（⭐ 36），⭐ 会在那里红**（⭐ 线的报告说它只改了 mcp 与 model）|
+⇒ ⭐ ⭐ **故下轮读回时要**专门看这两条**** ⇒ ⭐ **若其中一条红、⭐ 那就是"⭐ 还有别处的计数常量没同步"的信号** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`74eaecdf` 的 `windows` 与 ⭐ workspace 两腿** ＋ ⭐ 三处待裁 ＋ ⭐ (B) 场景快照票 ✓
