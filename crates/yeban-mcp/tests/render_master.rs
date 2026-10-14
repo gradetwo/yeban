@@ -24,6 +24,9 @@
 //! | 11 | `format` 只改容器字节，不改音频负载 | 在音频路径上按格式分叉 |
 //! | 12 | 实测数字自洽：frames/blocks/bytes/header/payload/sha256 | 报估算值 |
 //! | 12b | 循环区间短于摆放跨度 ⇒ 登记 `clipLoopRepetition`，且母带与"关循环"逐位相同 | 只在区间越过摆放末端时才报（静默丢掉重复） |
+//! | 13a | 音频导出的 `bext` **不含作者字段**（`bwf` **实测键名**里无 `author`/`artist`/`credit`/`copyright`），且 `originatorReference` == 工程 ULID | 往 `bwf` 加一个作者键 |
+//! | 13b | 工程作者（`setAuthor` 真的写进去的唯一标记）**不出现在音频产物字节里** | 把 `project.author` 写进 `bext` / `codingHistory` / 任何 chunk |
+//! | 13c | 同一标记**不出现在 MIDI 导出字节里**（解回真字节后 `windows(n)` 找） | 把 `project.author` 写进任何 SMF 元事件（轨道名/文本/版权） |
 //!
 //! ## 临时目录纪律
 //!
@@ -2698,5 +2701,272 @@ fn a_note_that_does_not_trigger_contributes_no_ratchet_pulses() {
         peak(&samples) <= DITHER_ONLY_PEAK,
         "被判为不触发的连击音符必须一点声音都不出 (只允许 TPDF 抖动): 实测峰值 {}",
         peak(&samples)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B1：导出物**不带作者**（口径裁定 = "维持现状"）
+// ---------------------------------------------------------------------------
+
+/// ⭐ **B1-a：音频导出的 `bext` 元数据**不含任何作者字段**。
+///
+/// ## 判据在设计上钉住的事实（裁定：音频/工程导出**不加**作者）
+///
+/// `RenderArtifact` 的 `bwf` 只写 `originator`（⭐ 字面量 `"Yeban DAW"` ＝ **软件名**，
+/// ⛔ 不是作者）／`originatorReference`（工程 ULID）／日期时刻／coding history／响度哨兵。
+/// ⭐ 给音频产物加作者会改**对外格式**（兼容/互操作成本）⇒ 裁定维持现状。
+///
+/// ## ✅ 正面锚点（防"导出成空 ⇒ 断言恒真"的假绿）
+///
+/// `originatorReference` 必须**等于夹具工程的 ULID** —— 没有这一条，一个把 `bwf` 写成
+/// 空对象甚至删掉的改动也会让"无作者键"通过。
+///
+/// ## 什么改动会让它红（注入）
+///
+/// 在 `render.rs` 的 `bwf` 里插一个作者键（例如
+/// `"author": project.author`、`"artist": …`、`"credit": …`、`"copyright": …`）
+/// ⇒ 键名遍历命中 ⇒ 红。⚠ 断言遍历的是**实测键名**（`as_object().keys()`），
+/// 不是手抄的键清单 ⇒ 加键必被抓。
+#[test]
+fn the_audio_export_carries_no_author_metadata() {
+    let scratch = Scratch::new("bwf-no-author");
+    let fixture = project(&Spec::default());
+    let project_id = fixture.id.to_canonical_string();
+    let (mut dispatcher, auth) = dispatcher_with(&fixture, &scratch.join("demo.yeban"));
+    let out = scratch.join("no-author.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+
+    let bwf = rendered["data"]["bwf"].as_object().expect("bwf 对象");
+    // ✅ 正面锚点：这一段真的写了元数据，而且写的是**这个工程**的 ULID。
+    assert_eq!(
+        bwf.get("originatorReference").and_then(Value::as_str),
+        Some(project_id.as_str()),
+        "`bext` 的 OriginatorReference 必须是工程的 ULID（`ARCH-FMT-001` 的映射）: {bwf:?}"
+    );
+    assert_eq!(
+        bwf.get("originator").and_then(Value::as_str),
+        Some("Yeban DAW"),
+        "`originator` 是**软件名**（BWF 语义），⛔ 不是作者: {bwf:?}"
+    );
+
+    // ⭐ 核心：**实测键名**里不得出现任何作者语义的键。
+    let forbidden = ["author", "artist", "credit", "copyright"];
+    let offenders: Vec<&String> = bwf
+        .keys()
+        .filter(|key| {
+            let lowered = key.to_ascii_lowercase();
+            forbidden.iter().any(|needle| lowered.contains(needle))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "音频导出的 `bext` ⛔ 不得携带作者字段（裁定：维持现状）; 命中: {offenders:?} \
+         (实测全部键: {:?})",
+        bwf.keys().collect::<Vec<_>>()
+    );
+}
+
+/// ⭐ **B1-a 的控制臂**：把**注入的工程作者**做成一个唯一标记，再渲染一次 ——
+/// 该标记⛔ **不得出现在产物字节里**。
+///
+/// 为什么需要它（与上一条的分工）：上一条枚举 `bwf` 的**键**；这一条抓的是
+/// "作者的值被塞进**别的**地方"（例如塞进 `codingHistory`、塞进一个自定义 chunk、
+/// 或塞进 BWF 的 `Description`）—— 那种改动不会新增键名，因此上一条抓不到。
+///
+/// ## 什么改动会让它红（注入）
+///
+/// 任何把 `project.author` 写进容器字节的改动（`coding_history(...)` 里拼作者、
+/// 新增一个带作者的 chunk、把 `Description` 填成作者）⇒ 标记出现在文件字节里 ⇒ 红。
+/// ⚠ **前提是标记真的进了工程**：先断言 `yeban_edit_notes` 的 `setAuthor` 真的改了它
+/// （否则这条判据会因为"作者压根没设置"而恒真 —— 那是本会话反复清的那一族）。
+#[test]
+fn the_audio_export_never_embeds_the_project_author_bytes() {
+    const AUTHOR_MARKER: &str = "yeban-author-probe-0123456789abcdef";
+    let scratch = Scratch::new("bwf-author-bytes");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+
+    let edited = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": id(1).to_canonical_string(),
+            "clipId": id(10).to_canonical_string(),
+            "ops": [{"kind": "setAuthor", "author": AUTHOR_MARKER}],
+        }),
+    );
+    assert_eq!(edited["status"], "success", "{edited}");
+    // ⚠ `yeban_edit_notes` **只建提案**（⛔ 不直接改工程）⇒ 必须再合并一次。
+    let proposal = edited["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("提案身份");
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal, "commitMessage": "设置作者（B1 判据夹具）" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    // ⭐ 前置：标记**真的**进了工程（否则下面的"字节里没有它"是恒真的空话）。
+    assert_eq!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("活跃工程")
+            .author,
+        AUTHOR_MARKER,
+        "`setAuthor` 必须真的把作者写进工程，否则本条判据没有前提"
+    );
+
+    let out = scratch.join("author-bytes.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+
+    let bytes = fs::read(&out).expect("读产物");
+    // ✅ 正面锚点：产物非空且是 RIFF 容器 ⇒ "标记不在"不是"文件是空的"。
+    assert!(bytes.len() > 1024, "产物必须有内容: {} 字节", bytes.len());
+    assert_eq!(&bytes[..4], b"RIFF", "WAV 必须以 RIFF 开头");
+    assert!(
+        !bytes
+            .windows(AUTHOR_MARKER.len())
+            .any(|window| window == AUTHOR_MARKER.as_bytes()),
+        "⭐ 工程作者 `{AUTHOR_MARKER}` 出现在音频产物字节里了 —— \
+         裁定是「音频/工程导出不加作者」; ⛔ 不要把它写进容器"
+    );
+}
+
+/// 本地 base64 解码（RFC 4648 §4，只做本文件用得到的那一面）。
+///
+/// ⚠ **为什么这是测试本地的一份**：MCP 只公开了**编码**侧
+/// （`yeban_mcp::domain::export_midi::base64_encode`），没有解码侧。
+/// ⚠ 我**实测否决**过一个"不解码"的替代方案：拿 `base64_encode(marker)` 的输出去
+/// 在返回的 `content` 里找子串 —— **base64 不是子串保序的**（实测：把标记前置
+/// 0/1/2 字节偏移后，编码片段**全部不命中**）⇒ 那种断言**无牙**。
+/// ⇒ 要抓"任意新元事件里塞了作者"，就必须**回到真字节**上找，
+/// 因此这里与 `tests/extension_tools.rs` 的 `decode_base64` 同源同职责（判据本地）。
+fn decode_base64_for_assertions(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut buffer = 0_u32;
+    let mut bits = 0_u32;
+    for byte in text.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            other => panic!("非法的 base64 字符: {other}"),
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from((buffer >> bits) & 0xFF).expect("一个字节"));
+        }
+    }
+    out
+}
+
+/// ⭐ **B1-b：MIDI 导出的字节**不含工程作者**。
+///
+/// ## 判据在设计上钉住的事实（裁定："若将来要加作者 ⇒ 只加在 MIDI" = **未来选项**）
+///
+/// ⭐ 今天 MIDI 导出**也不写作者**：`yeban-midi/src/export.rs` 只从工程取 `bpm` 与拍号
+/// 生成 conductor 轨（`tempo_map`），`author` 在 `export.rs`／`midi.rs`／
+/// `export_midi.rs` 三个文件里**零命中**。⭐ 本条把"今天不写"钉住 ⇒ 将来有人真去加，
+/// 会**先红**，从而被迫显式改这条判据（那正是"明示选择"的机制）。
+///
+/// ## 做法（为什么不是"编码标记再找子串"）
+///
+/// 返回的 `content` 是 base64 ⇒ 解回**真字节**（本地解码器，见其文档），
+/// 在真字节上找标记。⚠ 编码后再找子串的方案被我**实测否决**：base64 不保子串。
+///
+/// ## 什么改动会让它红（注入）
+///
+/// 在 SMF 里写任何携带 `project.author` 的元事件（`FF 01` 文本 / `FF 02` 版权 /
+/// 轨名 `FF 03`）⇒ 标记出现在字节里 ⇒ 红。⚠ **前提是标记真的进了工程**：
+/// 先断言 `setAuthor` ＋ 合并之后 `project.author` 就是标记（否则这条判据恒真）。
+#[test]
+fn the_midi_export_never_embeds_the_project_author_bytes() {
+    const AUTHOR_MARKER: &str = "yeban-author-probe-midi-0123456789abcdef";
+    let scratch = Scratch::new("midi-author-bytes");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+
+    let edited = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": id(1).to_canonical_string(),
+            "clipId": id(10).to_canonical_string(),
+            "ops": [{"kind": "setAuthor", "author": AUTHOR_MARKER}],
+        }),
+    );
+    assert_eq!(edited["status"], "success", "{edited}");
+    let proposal = edited["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("提案身份");
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal, "commitMessage": "设置作者（B1-b 判据夹具）" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    // ⭐ 前置：标记**真的**进了工程。
+    assert_eq!(
+        dispatcher
+            .domain()
+            .active_project()
+            .expect("活跃工程")
+            .author,
+        AUTHOR_MARKER,
+        "`setAuthor` 必须真的把作者写进工程，否则本条判据没有前提"
+    );
+
+    let exported = call_tool(&mut dispatcher, &auth, "yeban_export_midi", json!({}));
+    assert_eq!(exported["status"], "success", "{exported}");
+    let content = exported["data"]["content"].as_str().expect("base64 正文");
+    let bytes = decode_base64_for_assertions(content);
+    // ✅ 正面锚点：真字节非空、且是 SMF（`MThd`）⇒ "标记不在"不是"内容为空"。
+    assert!(
+        bytes.len() > 14,
+        "导出的 SMF 必须有内容: {} 字节",
+        bytes.len()
+    );
+    assert_eq!(&bytes[..4], b"MThd", "SMF 必须以 MThd 开头");
+    assert_eq!(
+        u64::try_from(bytes.len()).expect("尺寸"),
+        exported["data"]["bytes"].as_u64().expect("bytes"),
+        "解回来的长度必须等于报出的字节数（证明解码器与产出一致，不是空解）"
+    );
+    assert!(
+        !bytes
+            .windows(AUTHOR_MARKER.len())
+            .any(|window| window == AUTHOR_MARKER.as_bytes()),
+        "⭐ 工程作者 `{AUTHOR_MARKER}` 出现在 MIDI 导出字节里了 —— \
+         裁定是「维持现状（MIDI 也不写作者）」; 若要改，请**显式**改这条判据"
     );
 }
