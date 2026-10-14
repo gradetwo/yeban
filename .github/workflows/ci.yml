@@ -459,12 +459,13 @@ jobs:
   # 只跑这两个 crate（零系统库依赖，不需要 Slint/cpal/ALSA），因此不会把 Windows runner 拖满。
   # ---------------------------------------------------------------------------
   windows:
-    name: windows (yeban-mcp / yeban-model 的平台分支)
+    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render 的平台分支)
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
       contains(needs.plan.outputs.crates, 'yeban-model') ||
-      contains(needs.plan.outputs.crates, 'yeban-dsp')
+      contains(needs.plan.outputs.crates, 'yeban-dsp') ||
+      contains(needs.plan.outputs.crates, 'yeban-render')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -498,7 +499,7 @@ jobs:
         run: |
           set -euo pipefail
           set -o pipefail
-          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
 
       # 为什么把三个 crate 拆成三步（实测代价换来）:
       # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
@@ -533,6 +534,17 @@ jobs:
       # 本步把「文件是否存在」与「多少字节」打印出来 ⇒ 缺失或空文件当场可见,
       # 且与本改动**唯一**的另一点（`if-no-files-found: error`）互相印证:
       # 体检通过而上传空 ⇒ 故障在上传侧; 体检失败 ⇒ 故障在写入侧。
+      # ⭐ 为什么加 `yeban-render`: 该 crate 的测试**就是逐字节跨平台对账**，
+      # 而它此前从未在 Windows 上跑过（台账 R474）。其甲类站点已修：
+      # 对账夹具的行尾由根级 `.gitattributes` 钉住（`-text`），两侧来源一致。
+      # ⭐ 代价低：零系统库依赖，且其重依赖已由 `yeban-mcp` 拖进现腿 ⇒ 边际成本≈只多编它自己。
+      - name: test (yeban-render 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-render --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
       - name: 门日志体检 (存在性与字节数)
         if: always()
         shell: bash
