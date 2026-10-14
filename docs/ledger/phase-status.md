@@ -2949,3 +2949,52 @@ error: expected `,`, found `"（⛔ 不许静默声称已收紧）"`
 ⭐ **并附**: ⭐ ⭐ **发现"⭐ 未登记的分歧"的方法 ＝ 对照**本仓成文惯例**（⭐ 本例: ⭐ `ARCH-SEC-004` ＋ ⭐ `store.rs` 的自报策略）⇒ ⭐ ⚠ **故"⭐ 本仓有没有成文惯例"本身值得先查** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `#48` 落地（⭐ 在制）⇒ ⭐ **我落笔模块文档口径** ＋ ⭐ (B) 另开的票 ＋ ⭐ 红线 6 措辞分歧（⭐ 归人类）✓
+
+---
+
+## R518 实测追加（2026-10-15）：⭐⭐ **"⭐ 未登记的分歧"族第一例收口**（⭐ `local_config` 的 fsync）⇒ ⭐ 并入 `99f786aa` ＋ ⭐ **形态判据 ＋ ⭐ 正对照 ＋ ⭐ 注入验证** ＋ ⭐ **它主动规避了 R510 的坑**
+
+⭐ ⭐ **一、⭐ 落地内容（⭐ 逐字 diff 要点）**:
+```diff
+         #[cfg(not(unix))]
+         {
+-            std::fs::write(path, &bytes).map_err(…)?;
++            use std::io::Write as _;
++            let mut file = std::fs::OpenOptions::new()
++                .write(true).create(true).truncate(true)
++                .open(path).map_err(…)?;
++            file.write_all(&bytes).map_err(…)?;
++            file.sync_all().map_err(…)?;      // ⭐ 与 unix 臂同一条序列
++            drop(file);
+         }
+```
+⇒ ⭐ ⭐ **两平台现在走**同一条落盘序列（⭐ `write_all` ⇒ ⭐ **`sync_all`** ⇒ ⭐ `drop`）**、⭐ ⛔ **不带 `mode`**、⭐ ⛔ **不加 `set_file_mode`**** ✓
+⭐ ⭐ **模块头新增登记段（⭐ 逐字）**: ⭐ **"⭐ 落盘序列（⭐ 两平台一致）: ⭐ `save_to` 在 Unix 与非 Unix 上走同一条序列 —— `write_all` ⇒ ⭐ `sync_all` ⇒ ⭐ `drop`（⭐ '⭐ 落盘前 fsync'、⭐ 与 `[ARCH-SEC-004]` 的 `store.rs` 原子写同惯例；⭐ `sync_all` 是跨平台 std API）。⭐ ⚠ 两平台的**唯一**差异是**权限收紧**: ⭐ Unix 额外置 `0600`…⭐ 非 Unix **不提供等价收紧**、⭐ 由 `file_permission_tightening_is_supported` **如实上报**。"** ✓
+⇒ ⭐ ⭐ **即: ⭐ "⭐ 落盘"与"⭐ 权限"现在**各有明示**** ⇒ ⭐ **本单的第 2 条要求（⭐ 我增补的）被兑现** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 而它**主动规避了 R510 的坑****（⭐ 本条最值钱处）**: ⭐ ⭐ **它**刻意把新序列**内联在 `save_to` 里**、⭐ ⛔ **不抽一个"⭐ 非 Unix 私有函数"** ⇒ ⭐ ⚠ **因为那样会**再制造一个无调用者的臂****（⭐ 正是它在 `#36` 踩过的那次: ⭐ 非 Unix `set_file_mode` 臂被 `-D dead-code` 判死、⭐ 整个 crate 编不过、⭐ 见 `local_config.rs:812-815` 的逐字记录）** ✓
+⇒ ⭐ ⭐ **即: ⭐ 它把**上一轮的教训**用在了**本轮的设计**上** —— ⭐ **这正是"⭐ 入册教训"应有的效果** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 第 3 点（⭐ "⭐ 能钉住的最强形态"）: ⭐ 它给了**形态判据**、⭐ 且**诚实划界****:
+```rust
+#[test]
+fn the_local_config_save_sequence_fsyncs_on_every_platform() {
+    const LOCAL_SRC: &str = include_str!("../src/local_config.rs");
+    assert!(code_has(LOCAL_SRC, "write_all(&bytes)"), "对照失败：…扫描器或 include_str! 有问题");
+    assert!(!code_has(LOCAL_SRC, "fs::write("), "落盘臂退回了 `std::fs::write` ⇒ **不调用 `sync_all`**");
+    let syncs = code_only(LOCAL_SRC).matches("sync_all()").count();
+    assert!(syncs >= 2, "落盘臂的 `sync_all()` 少于 2 次（实测 {syncs}）⇒ 有一条平台臂不再 fsync");
+}
+```
+⇒ ⭐ ⭐ **三条**: ⭐ **①** ⭐ **不许退回 `fs::write(`**（⭐ 它不 fsync）＋ ⭐ **②** ⭐ **真代码里 `sync_all()` ≥ 2 次**（⭐ 两臂各一）＋ ⭐ ⭐ **③ 正对照 `write_all(&bytes)`**（⭐ 证明扫描器没瞎）✓
+⭐ ⭐ **注入验证（⭐ 它做的）**: ⭐ **把非 Unix 臂改回 `std::fs::write(path, &bytes)` ⇒ ⭐ **实测 `test result: FAILED. 0 passed; 1 failed`** ⇒ ⭐ **恢复后转绿** ✓
+⭐ ⚠ ⭐ ⭐ **而它**诚实划界****（⭐ 值得记）: ⭐ **"⭐ 它钉的是**形态**、⭐ ⛔ 不是**耐久性本身**；⭐ 且**只覆盖 `local_config.rs`**（⭐ ⛔ 不验证 `store.rs` 等别处）⇒ ⭐ **真正的耐久性保证仍是'⭐ 口径 ＋ ⭐ 形态'两层、⭐ ⛔ 不是行为证明"** ✓
+
+⭐ ⭐ **四、⭐ 它做的 R510 类自查（⭐ 典范）**: ⭐ ⭐ **新增的 `use std::io::Write as _;` 在 `#[cfg(not(unix))]` 块内**是该臂唯一使用者** ⇒ ⭐ **在 Windows 上**有用** ⇒ ⛔ 不会 `unused_imports`；⭐ **且未新增任何无调用者的函数 ⇒ ⛔ 不会 `dead_code`** ✓
+⇒ ⭐ ⭐ **即: ⭐ 它**预先**把两类 lint 都排除了** —— ⭐ **而这正是"⭐ 对本机不编译的段改动时、⭐ 该做的推理"** ✓
+
+⭐ **五、⭐ 我的复核读数**: ⭐ **2 文件、＋72／−1** ⇒ ⭐ **`model --all-targets` ＝ 12 条 `test result: ok`／FAILED ＝ 0** ＋ ⭐ **`premerge-gate.sh yeban-model` 全过** ＋ ⭐ `light` ＝ **0** ⇒ ⭐ **已推 `99f786aa`** ⇒ ⭐ **判决待读回** ✓
+
+⭐ ⚠ **六、⭐ 并记一处**范围**限制（⭐ 它如实说的、⭐ 我确认）**: ⭐ **那条形态判据**只覆盖 `local_config.rs`**** ⇒ ⭐ ⚠ **它不能保证别处（⭐ `store.rs`／⭐ `security.rs`／⭐ `record_wav.rs`／⭐ `render.rs`／⭐ `sfz.rs`）不退回 `fs::write`** ⇒ ⭐ ⭐ **故"⭐ 全仓落盘纪律"**仍是一个**未普查**的面**** ⇒ ⭐ **可作下一轮候选**（⭐ 但⭐ 先做那条能否推翻前提的读数: ⭐ **查那些文件里到底有没有 `fs::write` 落盘**）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `99f786aa` 判决（⭐ 待读回）＋ ⭐ 全仓落盘纪律（⭐ 候选）＋ ⭐ (B) 另开的票 ＋ ⭐ 红线 6 措辞分歧（⭐ 归人类）✓

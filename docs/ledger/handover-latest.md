@@ -260,6 +260,16 @@
 ⭐ **⛔ 不要把「权限已收紧」当成跨平台承诺**；若将来真要在 Windows 上收紧，
 那是**另开的票**（需 ACL 实现＋依赖决策）。
 
+### ⭐ 落盘序列（⭐ R517／R518）
+
+⭐ ⭐ **两平台走**同一条序列****：`write_all` ⇒ **`sync_all`** ⇒ `drop`。
+⭐ 这是仓内**成文惯例**（`[ARCH-SEC-004]`；`store.rs` 的原子写两平台都 fsync，
+并在三个 JSON 里**自报策略**）。
+⚠ ⭐ **两平台的唯一差异是「权限收紧」**：Unix 额外置 `0600`；非 Unix **不提供等价收紧**，
+由 `file_permission_tightening_is_supported()` 如实上报。⭐ **「落盘」与「权限」各有明示**。
+⭐ 判据：**形态判据**（不许退回 `fs::write(`；真代码里 `sync_all()` ≥ 2 次；正对照）——
+⚠ **「掉电会不会丢」不可构造**（本机与 CI 都不行）⇒ 只能靠**口径 ＋ 形态**，⛔ 不是行为证明。
+
 ⭐ 对照（仓内**正确形态**的四处，值得照抄）：`security.rs` 的三处
 `Err(UnsupportedPlatform)` 拒绝、`lock.rs` 第三臂「显式不支持、绝不静默放过并发写」、
 `fpu.rs` 的 `FtzDazOutcome::Unsupported`＋`supports_ftz_daz()` 自查、`golden.rs` 的 `Other` 兜底。
