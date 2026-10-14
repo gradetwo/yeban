@@ -104,6 +104,11 @@ def production_rs_files(root: str) -> list[pathlib.Path]:
     for f in sorted(pathlib.Path(root).rglob("*.rs")):
         if "/tests/" in str(f) or f.name == "build.rs":
             continue
+        # ⚠ 命名规则（⭐ 弱于 `Cargo.toml`、但覆盖它管不到的两类，见 R528）：
+        #   · `/verify/` —— 核验夹具目录（例：`yeban-mcp/verify/section_pure.rs`）
+        #   · `*testfix*` —— 名字即"测试夹具"（例：`yeban-decode/src/testfix.rs`）
+        if "/verify/" in str(f) or "testfix" in f.name:
+            continue
         if str(f.resolve()) in skip:
             continue
         files.append(f)
@@ -169,7 +174,14 @@ def self_test() -> int:
     if not ok2:
         print("[FAIL] 排除规则自检不符")
         return 1
-    print("[ok] 自检通过：生产命中可见、测试夹具已排除、字段三读数一致、[[test]] target 已排除")
+    # ⭐ 命名规则自检（R528 的剩余限度）：`verify/` 夹具与 `*testfix*` 也必须被排除。
+    allprod = {str(f) for f in production_rs_files("crates")}
+    ok3 = not any("/verify/" in p for p in allprod) and not any("testfix" in p for p in allprod)
+    print(f"[{'ok' if ok3 else 'FAIL'}] 命名规则自检: 生产清单里 verify/ 与 testfix 均为空（须 True）")
+    if not ok3:
+        print("[FAIL] 命名规则自检不符")
+        return 1
+    print("[ok] 自检通过：生产命中可见、测试夹具已排除、字段三读数一致、[[test]] 与 verify/testfix 已排除")
     return 0
 
 
