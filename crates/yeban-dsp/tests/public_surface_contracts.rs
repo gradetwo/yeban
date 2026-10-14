@@ -67,7 +67,8 @@ const SR: f32 = 48_000.0;
 /// `input_peak_dbfs()` 对 `dbfs(input_peak())`、`input_rms_dbfs()` 对 `dbfs(input_rms())`
 /// （`f32` 位型），以及 `detector_level_db()` 的**单位口径**（dB 读数必须 `<= 0`）。
 ///
-/// 为什么需要它：这四个访问器在**代码里零调用点**（普查读数）⇒ 没有任何判据读过它们。
+/// 为什么需要它：这四个访问器在**生产域**（`dsp/src`）零调用点（普查读数）⇒ 没有任何**生产**判据读过它们。
+/// ⚠ 措辞已消歧：本文件（tests）**自己**调用它们，故「代码里零调用点」会被读成「全仓无调用」。
 /// 注入实测：把 `input_peak_dbfs` 改成 `dbfs(self.output_peak())`、
 /// `input_rms_dbfs` 改成 `dbfs(self.output_rms())`、`detector_level_db` 改成
 /// `self.compressor.mean_square()`（线性功率，单位错）⇒ **全库 468 条判据全绿**
