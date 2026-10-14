@@ -1851,3 +1851,30 @@ right: ["D:\a\yeban\yeban\crates\yeban-app/ui/transport.slint"]    ← 期望
 ⭐ **六、⭐ 另核**: ⭐ **`yeban-render` 本地全量**（⭐ 新获 Windows 覆盖的 crate）⇒ ⭐ ⭐ **12 条 `test result: ok`／FAILED ＝ 0**（⭐ lib **222 passed**）⇒ ⭐ **Linux 侧也确认绿** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `section_build.rs:636` 修复（⭐ 在制）＋ ⭐ `engine` 扩腿（⚠ 需先定 feature 配置）＋ ⭐ 四件人类裁决 ✓
+
+---
+
+## R480 实测追加（2026-10-14）：⭐ **裁决: ⭐ 本轮**不**扩 `engine` 到 Windows 腿**（⭐ 附查证与理由）＋ ⭐ **其余 4 crate 的评估在制**
+
+⭐ **一、⭐ 前置查证（⭐ 逐字）**：
+| 查什么 | 读数 |
+| :--- | :--- |
+| ⭐ `--no-default-features` 在 CI／脚本里的用法 | ⭐ **零命中**（⭐ `grep` 过 `.github/workflows/*.yml`／⭐ `scripts/dev/*.sh`／⭐ `scripts/gates/*.py`）⇒ ⭐ **本仓没有这个约定** |
+| ⭐ `yeban-engine` 在 `ci.yml` 里被点名吗 | ⭐ **零命中**（⭐ 它走 `rust (${{ matrix.crate }})` 那种**列表式**腿）|
+| ⭐ `crates/yeban-engine/Cargo.toml` | ⭐ ⭐ **`default = ["device"]`、⭐ `device = ["dep:cpal"]`** ⇒ ⭐ **裸 `cargo test -p yeban-engine` **会拉 `cpal`**** |
+
+⭐ ⭐ **二、⭐ 裁决与理由（⭐ 三条）**：
+1. ⭐ ⚠ **风险不对称**: ⭐ ⭐ **那条 `windows` 腿刚刚**三加两退后转绿****（⭐ `render` 398s／⭐ `decode` 416s／⭐ `app` 891s ⇒ ⭐ 16 步、⭐ 891s）⇒ ⭐ **往它里加**最重的 crate**（⭐ engine 在 Linux 腿就要 171s／⭐ 且拉 `cpal`）⇒ ⭐ **一旦红、⭐ 又要回退、⭐ 而回退会丢掉刚拿到的 6-crate 覆盖** ✓
+2. ⭐ ⭐ **收益是**覆盖面**、⭐ ⛔ 不是**缺陷修复****: ⭐ `engine` 的**甲类 = 0**（⭐ `mod-mcp` 的读数）⇒ ⭐ **扩它是"⭐ 万一"**、⭐ 而**本会话已有 8 个 crate 的覆盖面空白**这个更大的画面（⭐ 正在按 crate 量化）✓
+3. ⭐ **前置未定**: ⭐ ⭐ **没有 `--no-default-features` 约定** ⇒ ⭐ **若要跑 feature-off 构建、⭐ 得先定"⭐ 怎么跑"**（⭐ 是加第二条命令、⭐ 还是让它走默认档）⇒ ⭐ ⚠ **那是一个需要**设计**的决定、⭐ ⛔ 不该顺手做** ✓
+
+⭐ ⭐ **三、⭐ 若将来要扩，⭐ 可选项（⭐ 留给接手者）**：
+| 选项 | 内容 | 代价／风险 |
+| :--- | :--- | :--- |
+| ⭐ **A** | ⭐ **只加默认档**（⭐ `cargo test -p yeban-engine --all-targets --locked`）⇒ ⭐ **含 `cpal`** | ⭐ cpal 的 Windows 后端是**系统自带**的 WASAPI ⇒ ⭐ 大概率**无需额外系统库**；⚠ 但**编译量大**、⭐ 腿会变长 |
+| ⭐ **B** | ⭐ **默认档 ＋ ⭐ 一条 `--no-default-features` 第二条命令** | ⭐ **覆盖更全**（⭐ 且能验证那条"⭐ default-off 门清单"判据）⇒ ⚠ 但**引入新约定**、⭐ **需先裁** |
+| ⭐ **C** | ⭐ **不扩** | ⭐ **零风险**；⭐ ⚠ 代价: ⭐ `engine` 的平台分支（⭐ `LockFileEx` 等）继续**无 Windows 覆盖** |
+
+⭐ **四、⭐ 状态**: ⭐ ⭐ **本轮裁决 ＝ ⭐ C（⭐ 暂不扩）** ⇒ ⭐ **并把 A／B 作为可选路径写在上面** ⇒ ⭐ **⛔ 不是"⭐ 忘了"、⭐ 而是"⭐ 有理由地推迟"** ✓ ⭐ ⚠ **并已写入交接 §10.5 的待办**（⭐ 它写着"⭐ `engine` 待办、⭐ 需先定 feature 配置"）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ 其余 4 crate 的平台评估（⭐ 在制）＋ ⭐ `section_build.rs:636`（⭐ 在制）＋ ⭐ 四件人类裁决 ✓
