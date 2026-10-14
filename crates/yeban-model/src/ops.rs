@@ -3545,17 +3545,16 @@ mod tests {
     /// 因此从源码里抽取 `Self::<Variant>` 就是枚举全集 —— 这是不用过程宏也能拿到全集的唯一办法。
     #[test]
     fn every_op_variant_is_declared_in_the_contract() {
-        let source = std::fs::read_to_string(
+        let raw = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ops.rs"),
         )
         .expect("读取 ops.rs");
-        let start = source
-            .find("pub const fn name(&self)")
-            .expect("找到 name()");
-        let body = &source[start..];
-        let end = body.find("\n    }").expect("name() 的结尾");
+        // ⚠ 读入后**立刻归一到 LF**（Windows 工作树是 CRLF ⇒ 多行锚点会找不到）。
+        let source = normalize_lf(&raw);
+        // ⭐ 用**花括号配对**取代 `find("\n    }")`：同时免疫 CRLF 与缩进。
+        let body = braced_body_after(&source, "pub const fn name(&self)");
         let mut declared: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for chunk in body[..end].split("Self::").skip(1) {
+        for chunk in body.split("Self::").skip(1) {
             let name: String = chunk
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric())
@@ -6026,6 +6025,47 @@ mod tests {
         good.apply_inverse(&mut doc).expect("逆必须能应用");
         assert_eq!(serde_json::to_vec(&doc).expect("s"), snapshot);
     }
+    /// 把源码文本**归一成 LF**（CRLF 与裸 CR 都变成 `\n`）。
+    ///
+    /// ⚠ 为什么需要：判据用**多行字面量**当锚点（`"\n    }"` 之类）。本仓 `.gitattributes`
+    /// 不存在、`core.autocrlf` 在 Windows runner 上默认为真 ⇒ ⭐ **同一个文件在 Windows 的
+    /// 工作树里是 CRLF** ⇒ 内嵌 `\n` 的锚点**找不到**，而 linux/macOS 腿全绿 ⇒
+    /// ⭐ **只有 windows 腿红**。照 `project.rs` 与 `model_isolation.rs` 已有的范式，读入后
+    /// **立刻**归一。
+    fn normalize_lf(text: &str) -> String {
+        text.replace("\r\n", "\n").replace('\r', "\n")
+    }
+
+    /// 取 `needle` **之后**第一个花括号块的内容（`needle` 必须在块之前）。
+    ///
+    /// ⚠ 为什么不用 `find("\n    }")` 这类**靠缩进的锚点**：那样的锚点同时受**行尾**
+    /// （CRLF）与**缩进**（rustfmt 变化）影响。花括号配对对两者都免疫。
+    /// ⚠ **找不到块 ⇒ `panic`**（第 41 条：⛔ 不许静默返回空串让判据空绿）。
+    fn braced_body_after<'a>(text: &'a str, needle: &str) -> &'a str {
+        let at = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("源码里找不到锚点 `{needle}`"));
+        let rest = &text[at..];
+        let open = rest
+            .find('{')
+            .unwrap_or_else(|| panic!("锚点 `{needle}` 之后没有花括号块"));
+        let body = &rest[open + 1..];
+        let mut depth = 1_i32;
+        for (idx, ch) in body.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &body[..idx];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("锚点 `{needle}` 的花括号块没有闭合");
+    }
+
     /// `pub enum Op` 的**顶层变体名全集**，从源码**现读**（⛔ 不手抄）。
     ///
     /// ⚠ 这是**唯一**一份变体名抽取器：往返审计与 `Op::name()` 守卫**共用**它，
@@ -6079,6 +6119,58 @@ mod tests {
         declared
     }
 
+    /// ⭐ **CRLF 回归判据**（内存文本 —— 本地无法造 CRLF 工作树，故用合成文本证明）。
+    ///
+    /// ⚠ **先纠正一条我自己的错误推断**：我早先以为"CRLF 会让 `find("\n    }")` 找不到锚点"。
+    /// ⭐ **实测不成立** —— CRLF 的 `...\r\n    }` **仍然含有**子串 `\n    }` ⇒ 那个 `find` 在
+    /// CRLF 上**照样命中**。所以本单在**这两处**的真正收益是**稳健性/一致性**（与仓内 6 处范式
+    /// 统一、且不再依赖缩进），⛔ **不是**修一个已证的 CRLF 缺陷。
+    ///
+    /// ⭐ 但归一**确实**有必要：一旦把 CRLF 文本交给**逐行**消费者（`split('\n')`／
+    /// `ends_with`／`==` 比较），⭐ **残留的 `\r` 会出现在每行末尾** ⇒ 那些比较会失败。
+    /// 本判据把"归一之后 `\r` 一个不剩"钉住。
+    #[test]
+    fn lf_normalisation_and_brace_matching_survive_a_crlf_working_tree() {
+        let lf = "pub const fn name(&self) -> &'static str {\n    match self {\n        Self::A { .. } => \"A\",\n        Self::B { .. } => \"B\",\n    }\n}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        assert!(crlf.contains("\r\n"), "夹具必须真的含 CRLF");
+        assert_ne!(lf, crlf, "两种行尾必须真的不同，否则本判据空转");
+        assert!(!lf.contains('\r'), "LF 版本不得含 CR");
+        assert!(crlf.contains('\r'), "CRLF 版本本来含 CR");
+
+        // ⭐ 归一之后：`\r` 一个都不剩（这是归一的**可判**收益）。
+        let normalised = normalize_lf(&crlf);
+        assert!(!normalised.contains('\r'), "归一之后不得再有 CR 残留");
+        assert_eq!(normalised, lf, "归一之后必须与 LF 版本逐字节相同");
+
+        let anchor = "pub const fn name(&self) -> &'static str {";
+        // ⭐ 归一 + 花括号配对 ⇒ **两种行尾给出同一段正文**。
+        let lf_normalised = normalize_lf(lf);
+        let from_lf = braced_body_after(&lf_normalised, anchor);
+        let from_crlf = braced_body_after(&normalised, anchor);
+        assert_eq!(from_lf, from_crlf, "归一之后两种行尾必须得到同一段正文");
+        assert!(from_lf.contains("Self::A") && from_lf.contains("Self::B"));
+
+        // ⚠ **记录实测事实（⛔ 不要重复我早先的错误推断）**：缩进锚点 `"\n    }"` 在
+        // **未归一的 CRLF** 文本上**仍然命中**（`\r\n    }` 含该子串）⇒ 它不是这两处的
+        // 真正脆弱点。本判据把它**钉成事实**，免得后人再据错因去做改动。
+        assert!(
+            crlf.find("\n    }").is_some(),
+            "实测：CRLF 文本仍含该子串 ⇒ 缩进锚点不是 CRLF 脆弱点（纠正早先推断）"
+        );
+
+        // ⭐ 第 41 条：锚点缺失／块未闭合必须**响亮失败**（⛔ 不返回空串）。
+        let missing =
+            std::panic::catch_unwind(|| braced_body_after(lf, "pub fn nonexistent(").len());
+        assert!(
+            missing.is_err(),
+            "锚点缺失必须 panic（⛔ 不许静默给空正文）"
+        );
+        let unclosed =
+            std::panic::catch_unwind(|| braced_body_after("fn f() { { ", "fn f()").len());
+        assert!(unclosed.is_err(), "花括号未闭合必须 panic");
+    }
+
     /// 从 `Op::name()` 的**源码正文**现读 `Self::<变体> => "<字符串>"` 臂。
     ///
     /// ⚠ 这是本判据的**独立真相**：它**不调用** `name()`（那会自我确认），
@@ -6088,12 +6180,9 @@ mod tests {
         Vec<String>,
         Vec<String>,
     ) {
-        let src = include_str!("ops.rs");
-        let start = src
-            .find("pub const fn name(&self) -> &'static str {")
-            .expect("找得到 name() 正文");
-        let rest = &src[start..];
-        let body = &rest[..rest.find("\n    }").expect("name() 有结尾")];
+        // ⚠ 同一个理由：归一 + 花括号配对（`include_str!` 把工作树里的行尾也编进来）。
+        let src = normalize_lf(include_str!("ops.rs"));
+        let body = braced_body_after(&src, "pub const fn name(&self) -> &'static str {");
         let mut map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
         let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut duplicate_strings: Vec<String> = Vec::new();
