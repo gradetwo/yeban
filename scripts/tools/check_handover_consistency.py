@@ -109,6 +109,23 @@ def actual_worktrees() -> set[str] | None:
         return None
 
 
+def section6_rows(text: str) -> tuple[int, int | None]:
+    """取 §6 待裁表的**数据行数**与标题声明的件数。数据行 = 以 `| **` 开头的行。"""
+    m = re.search(r"^## 6\..*?^## 7\.", text, re.S | re.M)
+    if not m:
+        return 0, None
+    body = m.group(0)
+    rows = len(re.findall(r"^\|\s*\*\*", body, re.M))
+    decl = re.search(r"\*\*(\d+)\s*件\*\*", body)
+    declared = int(decl.group(1)) if decl else None
+    # ⭐ 中文数字兜底：一/二/三/四/五/六
+    if declared is None:
+        cn = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6}
+        d2 = re.search(r"\*\*([一二三四五六])件\*\*", body)
+        declared = cn.get(d2.group(1)) if d2 else None
+    return rows, declared
+
+
 def check(handover_text: str, ledger_text: str) -> list[str]:
     bad: list[str] = []
     top = max_rule_number(ledger_text)
@@ -163,6 +180,17 @@ def check(handover_text: str, ledger_text: str) -> list[str]:
         if extra:
             bad.append(f"实际存在但交接 §5 未列的 worktree: {extra}")
 
+    # ⭐ §6 待裁表：行数与声明件数一致、且**不得残留"待裁"字样**（R594）
+    rows, declared = section6_rows(handover_text)
+    if rows == 0:
+        bad.append("交接 §6 里读不到任何待裁行 ⇒ 本判据可能空转")
+    else:
+        if declared is not None and declared != rows:
+            bad.append(f"交接 §6 声明 {declared} 件，而表里有 {rows} 行")
+        body6 = re.search(r"^## 6\..*?^## 7\.", handover_text, re.S | re.M)
+        if body6 and re.search(r"待裁|⏳|PENDING", body6.group(0)):
+            bad.append("交接 §6 里仍有「待裁」字样 ⇒ 要么已裁决、要么应显式标出")
+
     # ⭐ 交叉核对：台账里最新一条的编号应当等于上面的 top
     latest = re.findall(r"^## R(\d+)", ledger_text, re.M)
     if not latest:
@@ -173,8 +201,15 @@ def check(handover_text: str, ledger_text: str) -> list[str]:
 def self_test() -> int:
     """正/负对照：能发现"落后"、且**不**对一致文本误报。"""
     ledger = "第 37 条 …\n第 85 条 …\n## R540\n"
-    ok_text = "完整 **37–85** 条在台账；本会话新增 **56–85**\n"
-    bad_text = "完整 **37–71** 条在台账；本会话新增 **56–71**\n"
+    # ⭐ §6 用例（R594）：一致文本要有 §6、且件数与行数相符
+    sec6_ok = ("## 6. ⭐ ⭐ 待人类裁决（**一件**）\n\n"
+               "| # | 事项 | 选项 |\n| :--- | :--- | :--- |\n"
+               "| **A1** | 甲 | A/B |\n\n## 7. 下一节\n")
+    sec6_bad = ("## 6. ⭐ ⭐ 待人类裁决（**一件**）\n\n"
+                "| # | 事项 | 选项 |\n| :--- | :--- | :--- |\n"
+                "| **A1** | 甲 | A/B |\n| **A2** | 乙 | A/B |\n\n## 7. 下一节\n")
+    ok_text = sec6_ok + "完整 **37–85** 条在台账；本会话新增 **56–85**\n"
+    bad_text = sec6_bad + "完整 **37–71** 条在台账；本会话新增 **56–71**\n"
     wt_real = sorted(actual_worktrees() or set())
     wt_ok = "".join(f"| `{w}` | `line/x` | 保留 |\n" for w in wt_real)
     wt_bad = "| `.worktrees/does-not-exist-xyz` | `line/x` | 保留 |\n"

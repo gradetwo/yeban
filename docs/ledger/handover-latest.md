@@ -241,7 +241,7 @@
 ⚠ **worktree 的上游被普遍配成 `refs/heads/main`** ⇒ 裸 `git push` **默认会改主干** ⇒ ⭐ **一律写显式 refspec**（`command git push origin HEAD:main` 或 `origin <branch>:refs/heads/<branch>`）、**⛔ 永不用 `git push -u`**。
 ⚠ 删除前必验三条：`dirty=0` ＋ `unpushed=0` ＋ 已并入 `origin/main`。
 
-## 6. ⭐ ⭐ 待人类裁决（**四件**；R463 是一页汇总表、R467 加了第 4 件）
+## 6. ⭐ ⭐ 待人类裁决（**五件**；R463 是一页汇总表、R467 加了第 4 件、**R483 加了第 5 件 D3**）
 
 | # | 事项 | 选项 | ⭐ 我的建议 ＋ 依据 |
 | :--- | :--- | :--- | :--- |
