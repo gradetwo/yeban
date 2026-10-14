@@ -1253,9 +1253,10 @@ const UI_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
 /// ⇒ ⭐ `the_default_theme_is_the_slint_initial_value` 那类 `.expect("必须存在 ui/tokens.slint")`
 /// 会 **panic**。
 ///
-/// ⚠ ⭐ 这个缺陷在本仓**从未被任何 Windows runner 执行过**：CI 的 Windows 腿只跑
-/// `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp`，**不含 `yeban-app`** ⇒ 这正是本文件
-/// 里那条"喂合成路径"的判据存在的理由（覆盖面缺口已如实登记在报告里，⛔ 本切片不改 CI）。
+/// ⚠ ⭐ **本仓的 Windows 腿覆盖哪些 crate ⇒ 见 `.github/workflows/ci.yml` 的 windows job**
+/// （⭐ 此处**刻意不写死 crate 清单**：那是会腐烂的自述、而它读起来像保证）。
+/// ⭐ 正因为"app 是否被 Windows 覆盖"会**变**，本文件里那条"喂合成路径"的判据**无论覆盖如何
+/// 都必须存在**：它把平台假设本身变成判据，⛔ 不依赖任何一条腿是否跑 app。
 ///
 /// ## 口径（两件事都写明，⛔ 不靠"看起来对"）
 ///
@@ -1270,6 +1271,32 @@ fn path_ends_with(path: &str, suffix: &str) -> bool {
         text.replace('\\', "/")
     }
     normalize(path).ends_with(&normalize(suffix))
+}
+
+/// ⭐ **纯函数**：两条路径文本是否指**同一处** —— ⛔ 不渲染、⛔ 不看平台、⛔ 不碰文件系统。
+///
+/// ⚠ **为什么不能用 `Path::new(a) == Path::new(b)` 替代**：在 **Unix** 上反斜杠**不是**分隔符
+/// ⇒ `Path::new(r"C:\x\ui\t.slint") != Path::new("C:/x/ui/t.slint")` ⇒ 那条路**在本机测不了**
+/// 这个缺陷（与 [`path_ends_with`] 文档里记的是同一个坑）。归一化之后才**两侧同形**。
+///
+/// ⭐ 它存在的理由：**本机（macOS）无法让 `Path::display()` 产出反斜杠** ⇒ 唯一的承重证据是
+/// "把判定抽成纯函数、⭐ 再用**内存样例**（含反斜杠那侧）测它"。
+fn paths_are_equivalent(actual: &str, expected: &str) -> bool {
+    actual.replace('\\', "/") == expected.replace('\\', "/")
+}
+
+/// ⭐ **纯函数**：一段源文本里是否出现"把路径与**硬编码 `/`** 字面量相比"的写法。
+///
+/// 覆盖**两种**已知形状（⭐ 第二种是本族漏网的那一处）：
+/// 1. 裸的 `.ends_with(` 接 `"ui/…"`；
+/// 2. ⭐ `format!(` 接 `"{UI_DIR}/…"` 出现在 `assert_eq!` 的**期望侧**。
+///
+/// ⭐ 纯函数 ⇒ 可以用**内存样例**在 macOS 上做**正对照**（见判据）。
+fn has_bare_separator_path_literal(source: &str) -> bool {
+    // ⚠ 自指陷阱：针脚不能以**字面形式**出现在本文件里（否则它会命中自己）⇒ 用 `concat!` 拼开。
+    let bare_ends_with = concat!(".ends_with(", "\"ui/");
+    let bare_ui_dir = concat!("format!(", "\"{UI_DIR}/");
+    source.contains(bare_ends_with) || source.contains(bare_ui_dir)
 }
 
 /// 把 `ui/` 下所有 `.slint`（含子目录）读成 `(路径文本, 源码)`。
@@ -1510,10 +1537,23 @@ fn the_accent_appears_in_exactly_one_role_in_the_ui_sources() {
     );
 
     let control = files_with("Tokens.bg-control");
+    // ⭐ **不比渲染后的字符串**（`files_with` 给的是 `Path::display()` 文本 ⇒ Windows 是反斜杠），
+    // 而是走**纯函数** `paths_are_equivalent`（两侧归一化）⇒ 分隔符不再影响判定，
+    // 且该判定**可在本机用内存样例复现**（见 `the_path_helpers_are_separator_agnostic`）。
+    // ⚠ 期望值走 `Path::join`（⭐ 分隔符由**平台**给，⛔ 不由本行硬编码）⇒ 本行不含针脚；
+    // 再交给 `paths_are_equivalent` 归一比较 ⇒ 两侧同形。
+    let want = std::path::Path::new(UI_DIR)
+        .join("transport.slint")
+        .display()
+        .to_string();
     assert_eq!(
-        control,
-        vec![format!("{UI_DIR}/transport.slint")],
+        control.len(),
+        1,
         "`Tokens.bg-control` 必须**只**用在 transport.slint（保存键的板）; 实际 {control:#?}"
+    );
+    assert!(
+        paths_are_equivalent(&control[0], &want),
+        "`Tokens.bg-control` 的**唯一**落点必须是 {want}（⛔ 分隔符无关）; 实际 {control:#?}"
     );
 
     // 语义色不许被我们顺手删掉: `ai-suggestion` 仍必须按 §9.1 用在 AI 建议层上。
@@ -1857,8 +1897,10 @@ fn strip_slint_comments(text: &str) -> String {
 
 /// 判据（**平台无关性**）：⭐ 路径末段匹配必须对**反斜杠**与**正斜杠**（含混合）都成立。
 ///
-/// ⚠ 这是本文件里**唯一能在 Linux 上守住"Windows 假设"**的判据：CI 的 Windows 腿不跑
-/// `yeban-app` ⇒ 裸 `ends_with` 的缺陷在 Linux 上**永远不会红**（Linux 的路径本来就是正斜杠）。
+/// ⚠ 这是本文件里**唯一能在 Linux 上守住"Windows 假设"**的判据：⭐ **Windows 腿是否覆盖
+/// `yeban-app` ⇒ 见 `.github/workflows/ci.yml` 的 windows job**（⛔ 不在此写死清单）；
+/// ⭐ 只要那条腿**可能不跑** app，裸 `ends_with` 的缺陷在 Linux 上就**永远不会红**
+/// （Linux 的路径本来就是正斜杠）⇒ 本判据**不依赖腿的覆盖**。
 /// 喂**合成路径**即可在本机 / Linux CI 上判它 —— 这正是"把平台假设本身变成判据"。
 ///
 /// ⭐ 反例臂（三条 `!`）同样是判据的一部分：⛔ 不许把"任何 `.slint`"都算命中，
@@ -1922,15 +1964,84 @@ fn the_path_suffix_helper_accepts_both_separators() {
 ///
 /// ⚠ 为什么必须有它（两条线各栽一次的教训）：**助手修好了、调用点没改** ⇒ ⭐ **Linux 上依然全绿**
 /// （Linux 的路径本来就是正斜杠）⇒ 光钉助手是**假修法**。只有把"调用点的写法"钉成判据，
-/// 这个缺陷才在 Linux 上有守卫；而 Windows 腿不跑 `yeban-app` ⇒ 这是**唯一**的守卫。
+/// 这个缺陷才在 Linux 上有守卫；⭐ **Windows 腿是否跑 `yeban-app` ⇒ 见
+/// `.github/workflows/ci.yml` 的 windows job**（⛔ 不在此写死清单）⇒ ⭐ 本判据**不依赖**
+/// 那条腿的覆盖，因此**无论覆盖如何它都是守卫**。
+/// ⭐ **纯函数的内存样例判据（本单的承重证据）**：⭐ **本机（macOS）无法让 `Path::display()`
+/// 产出反斜杠** ⇒ "Windows 上真的会红"这条物理事实**本机验不了**；但"**判定本身与分隔符无关**"
+/// 可以用**内存样例**证明，⭐ 而样例**必须含反斜杠那侧**（否则它证明不了任何东西）。
+#[test]
+fn the_path_helpers_are_separator_agnostic() {
+    // ⭐ **反斜杠那侧**（Windows 的 `display()` 形态）与正斜杠那侧必须判为**同一处**。
+    assert!(
+        paths_are_equivalent(
+            r"D:\a\yeban\yeban\crates\yeban-app\ui\transport.slint",
+            "D:/a/yeban/yeban/crates/yeban-app/ui/transport.slint"
+        ),
+        "⭐ 反斜杠与正斜杠形态必须判为同一处（这正是本机原本验不了的那条）"
+    );
+    // 混合形态（Windows 的 `CARGO_MANIFEST_DIR` 是反斜杠、而 `concat!` 里的 `/ui` 是正斜杠）。
+    assert!(
+        paths_are_equivalent(
+            r"D:\a\yeban\crates\yeban-app/ui\transport.slint",
+            "D:/a/yeban/crates/yeban-app/ui/transport.slint"
+        ),
+        "混合分隔符也必须判为同一处"
+    );
+    // Unix 形态。
+    assert!(paths_are_equivalent(
+        "/home/ci/yeban/crates/yeban-app/ui/transport.slint",
+        "/home/ci/yeban/crates/yeban-app/ui/transport.slint"
+    ));
+    // ⭐ **负对照**：不同文件⛔ 不许判为同一处（否则上面全成了恒真）。
+    assert!(
+        !paths_are_equivalent(
+            "/home/ci/yeban/crates/yeban-app/ui/transport.slint",
+            "/home/ci/yeban/crates/yeban-app/ui/tokens.slint"
+        ),
+        "不同文件⛔ 不许判为同一处"
+    );
+    assert!(
+        !paths_are_equivalent(
+            r"D:\a\yeban\ui\transport.slint",
+            r"D:\a\yeban\ui\other.slint"
+        ),
+        "Windows 形态下的不同文件也⛔ 不许判为同一处"
+    );
+}
+
 #[test]
 fn no_call_site_compares_ui_paths_with_a_bare_separator_literal() {
     let source = include_str!("theme_selection.rs");
-    // ⚠ 自指陷阱：针脚不能以**字面形式**出现在本文件里（否则它会命中自己）⇒ 用 `concat!` 拼开。
-    let bare = concat!(".ends_with(", "\"ui/");
+
+    // ⭐ **正对照（本机可跑、⛔ 不依赖 windows 腿）**：两种已知形状都必须**被检出**，
+    // 而**已修好的**写法必须**不被检出** ⇒ 证明扫描器不是恒真也不是恒假。
+    // ⚠ 样例用 `concat!` 拼开（同上：⛔ 不让针脚以字面形式出现在本文件里）。
     assert!(
-        !source.contains(bare),
-        "⛔ 又出现了带点的裸 `{bare}…` 调用（Windows 上是反斜杠 ⇒ 恒 false）: 请改用 `path_ends_with()`"
+        has_bare_separator_path_literal(concat!("x.ends_with(", "\"ui/tokens.slint\")")),
+        "正对照①：裸 `.ends_with(\"ui/…\")` 必须被检出"
+    );
+    assert!(
+        has_bare_separator_path_literal(concat!("vec![format!(", "\"{UI_DIR}/transport.slint\")]")),
+        "正对照②：`format!(\"{{UI_DIR}}/…\")` 必须被检出（⭐ 本族漏网的那一种形状）"
+    );
+    assert!(
+        !has_bare_separator_path_literal("assert!(path_ends_with(&p, \"ui/tokens.slint\"));"),
+        "负对照：走 `path_ends_with` 的写法⛔ 不许被误报"
+    );
+
+    // ⭐ **防空**：抽到的文本必须**有内容**，否则下面的"没有命中"什么都不证明。
+    assert!(
+        source.len() > 50_000,
+        "防空：本文件必须真的被读到（实测 {} 字节）",
+        source.len()
+    );
+
+    // ⭐ **本体**：本文件的源文本里⛔ 不许再出现那两种形状。
+    assert!(
+        !has_bare_separator_path_literal(source),
+        "⛔ 又出现了“把路径与硬编码 `/` 相比”的写法（Windows 上是反斜杠 ⇒ 恒 false）：\
+         裸 `.ends_with` 请改用 `path_ends_with()`；`assert_eq!` 的期望侧请改用 `paths_are_equivalent()`"
     );
     // 助手必须真的被用：定义 1 处 + 6 个调用点（本判据自己的字符串字面量不计入判断，
     // 所以这里取下界而不是精确值 —— 尖锐的那一臂是上面的"不许裸字面量"）。
