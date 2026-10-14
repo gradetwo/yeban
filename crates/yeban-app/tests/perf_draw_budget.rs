@@ -316,8 +316,10 @@ fn per_frame_injection_does_not_grow() {
     use yeban_ui_test_port::render::LivePort;
 
     // ---- ③a：源码层的写入点预算 ----
-    let source = include_str!("../src/host.rs");
-    let apply_view = function_body(source, "pub fn apply_view(");
+    // ⚠ **行尾归一**：`function_body` 用多行字面量 `"\n}\n"` 找函数体结尾，而 Windows 工作树
+    // （无 `.gitattributes` ＋ `core.autocrlf=true`）里源码字节是 CRLF ⇒ ⛔ 匹配不上。
+    let source = include_str!("../src/host.rs").replace("\r\n", "\n");
+    let apply_view = function_body(&source, "pub fn apply_view(");
     let sites = write_sites(apply_view);
     assert_eq!(
         sites, APPLY_VIEW_WRITE_SITE_BUDGET,

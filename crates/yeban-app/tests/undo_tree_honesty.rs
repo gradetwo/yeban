@@ -308,7 +308,9 @@ fn the_undo_tree_node_properties_have_exactly_one_writer() {
 ///    把它转到**已存在**的那个宿主动作（`open-musical-pr`）。
 #[test]
 fn the_ai_badge_claims_no_pending_proposal_and_has_a_real_action() {
-    let transport = code_only(&read("ui/transport.slint"));
+    // ⚠ **行尾归一**：下面用多行字面量 `"\n    }\n"` 切徽章块，而 Windows 工作树
+    // （无 `.gitattributes` ＋ `core.autocrlf=true`）里源码字节是 CRLF ⇒ ⛔ 匹配不上。
+    let transport = code_only(&read("ui/transport.slint").replace("\r\n", "\n"));
 
     // ---- 路径 1：ui/ 代码文本
     for (rel, text) in all_slint() {

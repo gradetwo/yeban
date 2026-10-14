@@ -1992,7 +1992,11 @@ mod tests {
     #[test]
     fn the_mixer_input_surface_exists_and_matches_the_travel_constants() {
         let source = std::fs::read_to_string(ui_dir().join("console/mixer_console.slint"))
-            .expect("读 mixer_console.slint");
+            .expect("读 mixer_console.slint")
+            // ⚠ **行尾归一**：本判据下面的几何字面量内嵌 `\n`，而 Windows 工作树（无 `.gitattributes`
+            // ＋ `core.autocrlf=true`）里同一文件的字节是 CRLF ⇒ ⛔ 字面量匹配不上 ⇒ 只有 windows 腿红
+            // （实测根因）。⭐ 归一放在**读盘处**，判据钉的那几行几何**一个字都没改** ⇒ 牙原样保留。
+            .replace("\r\n", "\n");
 
         // ① 输入面：六个 `TouchArea`（通道条四个各是循环体里的一份；主控两个各出现一次）。
         assert!(

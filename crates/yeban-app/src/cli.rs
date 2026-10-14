@@ -3752,7 +3752,13 @@ mod tests {
         assert!(options.help);
         assert!(options.batch() && !options.wants_gui());
         let lines = run_batch(&options).expect("--help 必须成功");
-        assert_eq!(joined(&lines), usage.trim_end_matches('\n'));
+        // ⚠ **行尾归一**：`usage_text()` 是**源码里的多行字面量** ⇒ Windows 工作树（无
+        // `.gitattributes` ＋ `core.autocrlf=true`）里它是 CRLF，而 `joined` 产出 `\n`
+        // ⇒ ⛔ `trim_end_matches('\n')` 会留下尾随 `\r`。
+        assert_eq!(
+            joined(&lines),
+            usage.replace("\r\n", "\n").trim_end_matches('\n')
+        );
         assert_eq!(EXIT_OK, 0);
     }
 
