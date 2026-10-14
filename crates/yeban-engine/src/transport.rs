@@ -69,7 +69,7 @@
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use yeban_model::PPQ;
-use yeban_model::project::{DEFAULT_BPM, MAX_BPM, MIN_BPM};
+use yeban_model::project::{DEFAULT_BPM, MAX_BPM, MIN_BPM, TimeSignature};
 
 use crate::ring::TransportCommand;
 
@@ -203,6 +203,26 @@ impl Tempo {
 #[must_use]
 pub const fn next_beat_tick(position_ticks: u64) -> u64 {
     (position_ticks / PPQ + 1) * PPQ
+}
+
+/// [ARCH-RT-005 族]：**下一个小节**边界在 960 PPQ 栅格上的 tick（**严格大于** `position_ticks`）。
+///
+/// ⭐ **照 [`next_beat_tick`] 复刻**（同一份"严格大于"语义、同一份 PPQ 栅格）：恰在小节线上
+/// 时取**再下一个小节** —— 与 [`Transport::audition_switch_frame`] 的边界语义同源
+/// （请求到达音频回调时可能已越过边界；取"当前小节"会让生效点落在过去）。
+///
+/// ⚠ **小节长度从 `TimeSignature` 算、⛔ 不新造换算**：分母 `d` 表示"以 1/d 音符为一拍"，
+/// 故一拍 = `4·PPQ/d` tick、一小节 = `numerator` 拍。分母已由模型校验限制在
+/// `{1,2,4,8,16,32}` ⇒ 整除精确。
+/// ⚠ 全程**整数**：零浮点、零超越函数、零分配/锁/I-O ⇒ 实时侧可逐块直接调用 [MUST-GATE-001]。
+#[must_use]
+pub fn next_bar_tick(position_ticks: u64, time_signature: TimeSignature) -> u64 {
+    let numerator = u64::from(time_signature.numerator.max(1));
+    let denominator = u64::from(time_signature.denominator.max(1));
+    let ticks_per_bar = numerator.saturating_mul(4 * PPQ) / denominator;
+    // 退化输入（溢出把长度压成 0）退一步用"一拍"当小节，好过原地不动。
+    let ticks_per_bar = ticks_per_bar.max(PPQ);
+    (position_ticks / ticks_per_bar + 1) * ticks_per_bar
 }
 
 /// `bpm` → 微 BPM 整数（非有限值退回 [`DEFAULT_BPM`]，越界钳到模型范围）。
@@ -678,6 +698,79 @@ mod tests {
         }
         println!("[transport] 下一拍对齐表：{checked}/8 通过");
         assert_eq!(checked, 8, "八条边界用例必须全部覆盖");
+    }
+
+    /// [ARCH-RT-005 族]：**下一个小节**边界的对齐表 —— ⭐ 照 `next_beat_tick` 那条的形状。
+    ///
+    /// 三条读数：① 严格大于当前位置（恰在小节线上 ⇒ 取**再下一个小节**）；
+    /// ② 生效点落在**小节**边界上；③ 小节长度**随拍号变**（用公式算，⛔ 不手抄常量）。
+    #[test]
+    fn next_bar_alignment_is_strictly_the_following_bar() {
+        let common = TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        let cases: [(TimeSignature, [(u64, u64); 5]); 3] = [
+            (
+                common,
+                [
+                    (0, 3840),
+                    (1, 3840),
+                    (3839, 3840),
+                    (3840, 7680),
+                    (7681, 11_520),
+                ],
+            ),
+            (
+                TimeSignature {
+                    numerator: 3,
+                    denominator: 4,
+                },
+                [
+                    (0, 2880),
+                    (2879, 2880),
+                    (2880, 5760),
+                    (5761, 8640),
+                    (8640, 11_520),
+                ],
+            ),
+            (
+                TimeSignature {
+                    numerator: 6,
+                    denominator: 8,
+                },
+                [
+                    (0, 2880),
+                    (1, 2880),
+                    (2879, 2880),
+                    (2880, 5760),
+                    (5761, 8640),
+                ],
+            ),
+        ];
+        let mut checked = 0usize;
+        for (signature, rows) in cases {
+            let numerator = u64::from(signature.numerator);
+            let denominator = u64::from(signature.denominator);
+            // ⭐ 期望的小节长度**由公式算出**（⛔ 不是手抄常量）。
+            let ticks_per_bar = numerator * (4 * PPQ) / denominator;
+            for (position, expected) in rows {
+                let got = next_bar_tick(position, signature);
+                assert_eq!(
+                    got, expected,
+                    "next_bar_tick({position}, {numerator}/{denominator}) 必须为 {expected}"
+                );
+                assert!(got > position, "⭐ 严格大于：{got} 必须 > {position}");
+                assert_eq!(
+                    got % ticks_per_bar,
+                    0,
+                    "生效点必须落在小节边界上（tick % {ticks_per_bar} == 0）"
+                );
+                checked += 1;
+            }
+        }
+        println!("[transport] 下一小节对齐表：{checked}/15 通过");
+        assert_eq!(checked, 15, "十五条边界用例必须全部覆盖");
     }
 
     /// [ARCH-RT-005] 件 2：**请求时刻 → 生效时刻**的帧换算（120 bpm、48 kHz ⇒ 1 拍 = 24000 帧）。
