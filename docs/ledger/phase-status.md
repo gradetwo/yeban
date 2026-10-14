@@ -6305,3 +6305,57 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ **仍未闭合的**: ⭐ **`#54` 的回报与合入**、⭐ **三处待裁（⭐ `solo_safe`／⭐ `ClipPoolEntry.name`／⭐ `folder_id`）**、⭐ **(B) 场景快照票**、⭐ **可选: ⭐ 三条已取代分支的 `-D` 清理** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `#54` 回报 ＋ ⭐ 合入与判决 ＋ ⭐ 三处待裁 ＋ ⭐ (B) 场景快照票（⭐ 需产品语义）✓
+
+---
+
+## R634 实测追加（2026-10-15）：⭐⭐⭐ **`#54` 已并入 main —— ⭐ 本会话**第一个功能性交付****（⭐ `SetTrackName`、⭐ 6 文件、⭐ ＋171／−11）
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数（⭐ 逐字）**:
+| ⭐ 项 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **rebase** | ⭐ **4/4 干净**（⭐ `cb30c4e9`／⭐ `d13ecbc2`／⭐ `6b6fe517`／⭐ `06d466de`）|
+| ⭐ ⭐ **`merge --ff-only`** | ⭐ ⭐ **成功 ⇒ 6 files changed、＋171／−11** |
+| ⭐ **`HEAD`** | ⭐ **`74eaecdf`**（⭐ 合并后）|
+| ⭐ **工作树** | ⭐ **脏 ＝ 0** ✓
+⭐ ⭐ **四门复核（⭐ 我这一侧、⭐ 逐字）**:
+| ⭐ 门 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ ⭐ **`premerge-gate.sh yeban-model`** | ⭐ ⭐ **"⭐ 合并前复合门: 全过 ✓"** |
+| ⭐ ⭐ **`premerge-gate.sh yeban-mcp`** | ⭐ ⭐ **"⭐ 合并前复合门: 全过 ✓"** |
+| ⭐ ⭐ **`gen-ops-schema-branches.py --check`** | ⭐ ⭐ **"⭐ 已是最新（37 个分支）"** |
+| ⭐ `run-gates.sh light` | ⭐ **后台在跑**（⭐ `bash-1418`）|
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 功能（⭐ 轨道改名通路）已进 main、⭐ 且**我这一侧的门与线的读数一致**** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 交付的内容（⭐ 逐字、⭐ 6 文件）**:
+| ⭐ 文件 | ⭐ 行数 |
+| :--- | ---: |
+| ⭐ `crates/yeban-model/src/ops.rs` | ⭐ ＋57 |
+| ⭐ `crates/yeban-mcp/src/domain/notes.rs` | ⭐ ＋102／−5 |
+| ⭐ `crates/yeban-mcp/src/tools.rs` | ⭐ ±1 |
+| ⭐ `crates/yeban-mcp/tests/fault_vocabulary.rs` | ⭐ ±2 |
+| ⭐ `crates/yeban-mcp/tests/op_reachability.rs` | ⭐ ＋7／−1 |
+| ⭐ `schemas/ops.schema.json` | ⭐ ＋10 |
+⇒ ⭐ ⭐ **即: ⭐ `Op` 变体 **36 ⇒ 37**、⭐ schema 的 `oneOf` **37 分支**（⭐ 由脚本生成、⭐ ⛔ 非手写）** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 而它的变体定义值得逐字记（⭐ 这是"⭐ 补齐登记"的样板）**: ⭐ ⭐ **它在文档注释里写清了**四件事**: ⭐ **①** ⭐ **本变体补上了什么**（⭐ 逐字: ⭐ "⭐ **在它出现之前，`TrackV3::name` 在操作日志层不可表达**……⭐ 改名只能'⭐ 删轨 ＋ ⭐ 重建'、⭐ 那会**换掉 `EntityId`**、⭐ 并连带丢掉该轨的设备链/⭐ 自动化/⭐ 路由边"）；⭐ **②** ⭐ **它属哪一族**（⭐ `ARCH-OPS-001`、⭐ 并举 `D27` 补 `AddClip`、⭐ `D42` 补 `SetAutomationLane`、⭐ 以及 `SetAuthor`／⭐ `SetTrackMute` **同型**）；⭐ **③** ⭐ **为何安全**（⭐ `name` 是**纯展示注记**、⭐ ⛔ 无身份语义 ⇒ ⭐ **不影响任何不变式**）＋ ⭐ **明确列出**不碰**哪些字段**（⭐ `volume_db`／⭐ `pan`／⭐ `mute`／⭐ `solo`／⭐ `solo_safe`／⭐ `folder_id`）；⭐ **④** ⭐ **命名惯例的依据**（⭐ 用 `old_*`／⭐ `new_*` 照 `SetAuthor`、⭐ ⛔ 不是 `previous_*`（⭐ 那是 delete/remove 类））✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 那正是本会话第 161 条要求的"⭐ 无通路**且**无登记"的**对偶处置** —— ⭐ **补通路、⭐ 同时把登记写全、⭐ 并引族与先例** ✓
+
+⭐ ⭐ **四、⭐ 期望范围同步: ⭐ 共 **9** 处**（⭐ 每处都**响亮红**并点名要改什么）:
+| ⭐ # | ⭐ 位置 | ⭐ 红在哪 |
+| ---: | :--- | :--- |
+| ⭐ 1 | ⭐ `model` 的 `showcase_ops()`（⭐ ＋1 实例）| ⭐ **一次修掉 3 条红**（⭐ 覆盖度判据都从这张表取）|
+| ⭐ 2–3 | ⭐ `mcp` `OP_KINDS` 字面清单 ＋ ⭐ `table: [(&str, Value); 28 ⇒ 29]` | ⭐ `every_catalog_kind_parses_and_round_trips` |
+| ⭐ 4–5 | ⭐ `rows: […; 29 ⇒ 30]` ＋ ⭐ `assert_eq!(seen.len(), 29 ⇒ 30)` | ⭐ `every_catalog_kind_compiles_to_exactly_one_op_variant` |
+| ⭐ 6 | ⭐ `assert_eq!(OP_KINDS.len(), 28 ⇒ 29)` | ⭐ `track_flags_alone_do_not_require_a_midi_clip` |
+| ⭐ 7 | ⭐ `op_reachability.rs` 的 `EXPECTED_SITES`（⭐ ＋登记 ＋ ⭐ 表长 36 ⇒ 37 ＋ ⭐ 内部计数 36 ⇒ 37）| ⭐ `every_model_op_variant_is_registered_or_declared_unreachable` |
+| ⭐ 8 | ⭐ `mcp/src/tools.rs` 的实参说明（⭐ 自述"⭐ 说明是**手抄清单**"）| ⭐ `the_argument_help_text_mentions_every_kind` |
+| ⭐ ⭐ **9** | ⭐ ⭐ **`fault_vocabulary.rs` 的**冻结摘要****（⭐ `fd702ef5… ⇒ d1fa25d1…`、⭐ **两处都改**）| ⭐ 该摘要**有意对键序与重复敏感**；⭐ **而 `reason` 数 136 与行数 610 **未变**（⭐ 因为新对象**复用 `trackNotFound`** 且键与 `RemoveTrack` 逐字相同）|
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 第 165 条那条口径（⭐ "⭐ 跑全 crate 测试、⭐ 让失败给出受影响清单"）在本单得到**最完整的实证****（⭐ 9 处、⭐ 跨 5 文件）✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 它显式标注了一条**范围解读**并请我确认 ⇒ ⭐ ⭐ **我裁: ⭐ 确认**（⭐ 本条要点）**: ⭐ **冻结摘要与登记表住在 `crates/yeban-mcp/tests/**`** ⇒ ⭐ **它按我写的边界"⭐ `crates/yeban-mcp/**`"解读为**含该 crate 的 `tests/**`**** ⇒ ⭐ ⭐ **我的裁决: ⭐ **确认该解读** —— ⭐ `crates/yeban-mcp/**` 含其 `tests/**`** ✓
+⭐ **理由**: ⭐ **①** ⭐ **改了 `src/**` 而让**本 crate** 的测试红、⭐ ⛔ 不算完整交付** ⇒ ⭐ **边界的目的在于**防止碰别的 crate**、⭐ 而它逐字遵守了那一点**（⭐ "⭐ 未碰任何其它 crate 的 tests"）；⭐ **②** ⭐ ⭐ **它**先问再做**、⭐ 并说明"⭐ 否则本单无法绿"** ⇒ ⭐ **那是正确处置**（⭐ 若我本意更窄、⭐ 它可以交回）✓
+⭐ **并立一条口径（⭐ 第 166 条）**: ⭐ ⭐ **派单边界写 `crate/**` 时、⭐ 默认**含该 crate 的 `tests/**` 与 `benches/**`**** —— ⚠ **因为"⭐ 改源而让本 crate 测试红"是同一交付的一部分** ⇒ ⭐ **若确实只想改 `src/**`、⭐ 派单里应写明"⭐ 仅 `src/**`"** ✓
+
+⭐ ⚠ **六、⭐ 判决**: ⭐ **本单未读回**（⭐ 刚推送）⇒ ⭐ **记 `pending`、⭐ 下轮读** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ 判决读回（⭐ 关键: ⭐ windows 腿含 `yeban-model`／⭐ `yeban-mcp`）＋ ⭐ 三处待裁 ＋ ⭐ (B) 场景快照票（⭐ 需产品语义）✓
