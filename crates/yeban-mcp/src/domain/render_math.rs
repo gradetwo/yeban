@@ -50,6 +50,14 @@ pub fn ticks_to_frames(end_tick: u64, ppq: u64, bpm: f64, sample_rate: u32) -> u
 /// （`yeban_import_audio` 的 `durationTicks` 缺省值）：**向上**取整保证素材尾部的
 /// 不足一 tick 不会被切掉 —— 向下取整会让最后几帧永远听不到，那是一种静默的丢音。
 ///
+/// ⚠⭐ **作用对象: 本函数只影响**时值**（`duration_ticks`），⛔ 不影响摆放**起点****：
+/// 起点是 `yeban_import_audio` 的 `startTick`，由**调用方给出的整数 `u64`** 直接落成
+/// （`import_audio.rs` 的 `parse_optional_u64("startTick", …).unwrap_or(0)`）——
+/// 那条路上**没有任何取整**。⭐ 因此本处的 `ceil`/`floor` 取舍**只**作用于**尾部**：
+/// `ceil` 让边界不短于素材（保守），`floor` 会让尾部不足一 tick 的部分落在边界之外
+/// （**丢尾部**）。⚠ 裁这个取舍时**先量作用对象**，⛔ 别按"哪个名字听起来更保守"选 ——
+/// 以"`ceil` 会切掉开头"为由裁成 `floor` 会造出**静默丢音**。
+///
 /// `seconds = frames / sample_rate`，再换算成 tick：`frames * ppq * bpm / (sample_rate * 60)`。
 /// 病态输入（`ppq == 0`、`bpm <= 0`、非有限 `bpm`、采样率 0、非有限结果）返回 `None` ——
 /// 与 [`ticks_to_frames`] 返回 `0` 不同，这里**没有**一个安全的哨兵值：
