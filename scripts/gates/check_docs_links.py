@@ -165,7 +165,40 @@ def main() -> int:
     errors, warnings, checked = check_links()
     errors.extend(check_readme_pair())
 
-    files = len(markdown_files())
+    files_list = markdown_files()
+    files = len(files_list)
+
+    # ⭐ **防空（第 41 条）** —— ⚠ 本门原先的失效模式是**假绿**：
+    # `markdown_files()` 返回空（REPO 解析错、或 SKIP_DIRS 口径过期）时，
+    # `check_links()` 的循环一次都不进 ⇒ ⭐ **打印「文档检查通过（0 个文件）」并 return 0**
+    # ⇒ 本门**什么都没查**。⛔ 不要靠"没有 errors"来兜底 —— 没有遍历就没有 errors。
+    if files == 0:
+        print(
+            "抽取规则失效（⛔ 不是文档的问题）: 一个 markdown 文件都没扫到 —— "
+            "`REPO` 解析或 `SKIP_DIRS` 口径已过期 ⇒ 本门会以空集通过。",
+            file=sys.stderr,
+        )
+        return 1
+    # ⭐ **正对照（第 42 条）**：已知存在的文件必须出现在扫描集里。
+    # ⚠ 用 `README.md` 作样例是**安全的** —— `check_readme_pair()` 本来就要求它存在，
+    # 故这条断言不会随文档演进而腐烂（R456 口径：⛔ 不写会腐烂的自述）。
+    if not any(path.name == "README.md" for path in files_list):
+        print(
+            "抽取器看不见已知样例 `README.md` ⇒ 扫描口径有盲区（⛔ 不是文档的问题）。",
+            file=sys.stderr,
+        )
+        return 1
+    # ⭐ **防空（第 41 条）**：一条**非外链**都没抽到 ⇒ `LINK_RE` 或链接写法口径已过期。
+    # ⚠ `checked` 计的是**非外链**（排除 http/https/mailto/#/data，含 `file://`）⇒
+    # 本仓确有此类链接（`PROTECTED_LEGAL` 的 `file://` 警告处理就是为它们而设）。
+    if checked == 0:
+        print(
+            "抽取规则失效（⛔ 不是文档的问题）: 一条非外链都没抽到 ⇒ "
+            "`LINK_RE` 或链接写法口径已过期 ⇒ 本门会以空集通过。",
+            file=sys.stderr,
+        )
+        return 1
+
     if not args.quiet:
         for w in warnings:
             print(f"[warn] {w}")
