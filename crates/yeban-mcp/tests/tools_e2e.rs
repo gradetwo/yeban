@@ -876,6 +876,13 @@ fn save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original() 
 
 #[test]
 fn save_with_a_missing_parent_directory_is_an_io_error() {
+    // ⚠ 本判据测的是 `write_project_atomic` 的**第 ① 段**（`if !parent.is_dir()` 的
+    // 父目录检查），⛔ **不是**第 ②／③ 段（临时文件 `create_new` / `rename` 替换）。
+    // ⭐ 因此「不留 `.tmp-` 临时文件」这条不变式在此**结构性恒真**：第 ① 段就返回了，
+    // 临时文件还没被创建（`:714` 只是算出名字，`:719` 的 `create_new` 才建它）；
+    // ⚠ 而且即便去掉那道守卫，`create_new` 也会因父目录不存在而失败 ⇒ 同样不留残留。
+    // ⇒ ⛔ 这里**不**写那条断言（恒真的断言没有牙）。该不变式的**有牙**证明在
+    // `container_store.rs` / `tools_e2e.rs` 的只读目录判据里（旧文件逐字节不变）。
     let scratch = Scratch::new("missing-parent");
     // 直接注入一份"已经在内存里打开、但目标父目录不存在"的会话
     // （走 `yeban_open_project` 会先拿到 FILE_NOT_FOUND，那是另一条判据）。
