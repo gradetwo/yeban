@@ -803,6 +803,13 @@ fn pagination_is_bounded_and_validated() {
 // 判据 ④：保存失败不得破坏原文件
 // ---------------------------------------------------------------------------
 
+// ⚠ **本平台不可构造"只读目录"**（父目录权限位是 POSIX 语义）⇒ 本判据在
+// Windows 侧**未验证**：目录的 `read-only` 属性**不阻止**在其中创建/写文件。
+// ⛔ 这里**没有** `#[cfg(not(unix))]` 平行臂 —— 造不出来，硬写只能得到一条
+// "在 Windows 上永远为真"的**装饰判据**（看起来测过了，实际零验证力）。
+// 要补真覆盖必须换一个**失败发生在旧文件被碰之前**的失败源（见 `store.rs` 的
+// `write_project_atomic`：唯一写目标是临时文件，旧文件只在最后一步 `rename`
+// 才被替换）—— 那是**新增判据**，不是平行臂。
 #[cfg(unix)]
 #[test]
 fn save_into_a_read_only_directory_fails_with_io_error_and_keeps_the_original() {
