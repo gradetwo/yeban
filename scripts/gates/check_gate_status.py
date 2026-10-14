@@ -235,6 +235,28 @@ def main() -> int:
                 problems.append(f"{ident} 在表里出现了不止一次")
             rows[ident] = (cells[2], cells[3])
 
+    # ⭐ **防空（第 41 条）** —— ⚠ 本门原先的失效模式是**报文方向错**：
+    # 若上面那段内联解析失效（表格式变了、或 `fullmatch` 口径过期）⇒ `rows` 为空
+    # ⇒ ⭐ **每一条都报"不在表里 —— 有门禁没人管"**，把真因（解析器瞎了）误报成"表缺项"。
+    if not rows:
+        print(
+            "抽取规则失效（⛔ 不是表的问题）: 门禁状态表里一条 ID 都没解析出来 —— "
+            "表格式或 `fullmatch` 口径已过期。⛔ 不要让它以空 dict 通过，"
+            "否则下面会把**每一条**都报成『不在表里』。",
+            file=sys.stderr,
+        )
+        return 1
+    # ⭐ **正对照（第 42 条）**：表**原文**里出现已知 ID、而解析结果里没有 ⇒ 抽取器盲区。
+    #（用原文当独立真相，⛔ 不用 MUST_GATES —— 那会与下面的对账循环同源、成自我确认。）
+    _known = "MUST-GATE-001"
+    if _known in text and _known not in rows:
+        print(
+            f"抽取器看不见已知样例 `{_known}`（它确实出现在表原文里）⇒ 解析口径有盲区"
+            "（⛔ 不是表的问题）",
+            file=sys.stderr,
+        )
+        return 1
+
     for ident in MUST_GATES + BASELINES:
         if ident not in rows:
             problems.append(f"{ident} 不在表里 —— 有门禁没人管")
