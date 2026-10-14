@@ -16,7 +16,7 @@
 
 | 项目 | 读数 |
 | :--- | :--- |
-| `origin/main` | ⭐ **`e235a1f0`**（本地干净、`HEAD == origin/main`）|
+| `origin/main` | ⭐ **`31536b13`**（本地干净、`HEAD == origin/main`）|
 | ⭐ **`windows` 腿** | ⭐ ⭐ **8 个 crate、全绿**（`mcp`／`model`／`dsp`／`render`／`decode`／`app`／`sfz`／`engine`）—— ⭐ **18 步／1088s**（台账 R494）|
 | ⭐ **本会话 7 处 CRLF 修复** | ⭐ **全部获 Windows 验证**（`app` 4／`decode` 2／`engine` 1／`model` 2）|
 | 台账范围 | ⭐ **R307 – R467** |

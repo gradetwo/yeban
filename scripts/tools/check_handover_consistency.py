@@ -45,6 +45,22 @@ def declared_new_range(text: str) -> tuple[int, int] | None:
     return int(m.group(1)), int(m.group(2))
 
 
+def declared_main_sha(text: str) -> str | None:
+    """从交接 §1 的表里取它声明的 `origin/main` sha。"""
+    m = re.search(r"`origin/main`\s*\|\s*⭐\s*\*\*`([0-9a-f]{7,40})`", text)
+    return m.group(1) if m else None
+
+
+def actual_main_sha() -> str | None:
+    import subprocess
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "origin/main"],
+                             cwd=REPO, capture_output=True, text=True, timeout=30)
+        return out.stdout.strip() if out.returncode == 0 else None
+    except Exception:
+        return None
+
+
 def check(handover_text: str, ledger_text: str) -> list[str]:
     bad: list[str] = []
     top = max_rule_number(ledger_text)
@@ -67,6 +83,16 @@ def check(handover_text: str, ledger_text: str) -> list[str]:
         if new[1] != rng[1]:
             bad.append(f"交接里「本会话新增」到 {new[1]}、而「完整」到 {rng[1]} ⇒ 两处不一致")
 
+    # ⭐ §1 声明的 origin/main sha 应与实际一致（R556：本会话第二次手工发现的陈旧类）
+    claimed = declared_main_sha(handover_text)
+    real = actual_main_sha()
+    if claimed is None:
+        bad.append("交接 §1 里读不到声明的 `origin/main` sha")
+    elif real is None:
+        bad.append("读不到实际的 origin/main ⇒ 本判据可能空转")
+    elif not real.startswith(claimed) and not claimed.startswith(real):
+        bad.append(f"交接 §1 声明 origin/main = {claimed}，实际为 {real}")
+
     # ⭐ 交叉核对：台账里最新一条的编号应当等于上面的 top
     latest = re.findall(r"^## R(\d+)", ledger_text, re.M)
     if not latest:
@@ -79,9 +105,13 @@ def self_test() -> int:
     ledger = "第 37 条 …\n第 85 条 …\n## R540\n"
     ok_text = "完整 **37–85** 条在台账；本会话新增 **56–85**\n"
     bad_text = "完整 **37–71** 条在台账；本会话新增 **56–71**\n"
+    sha_ok = "| `origin/main` | ⭐ **`" + (actual_main_sha() or "0"*8) + "`** |\n"
+    sha_bad = "| `origin/main` | ⭐ **`deadbeef`** |\n"
     cases = [(ok_text, 0, "一致文本"), (bad_text, 1, "落后 14 条的文本")]
     fails = 0
     for text, want_min, label in cases:
+        # ⭐ §1 的 sha 用例：真 sha 必须不报、假 sha 必须报
+        text = text + sha_ok if want_min == 0 else text + sha_bad
         got = check(text, ledger)
         ok = (len(got) == 0) if want_min == 0 else (len(got) >= want_min)
         print(f"[{'ok' if ok else 'FAIL'}] {label}: 报出 {len(got)} 项 {got[:1]}")
