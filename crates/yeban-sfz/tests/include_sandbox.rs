@@ -695,6 +695,94 @@ fn a_wildcard_glob_does_not_descend_into_a_symlinked_directory() {
 }
 
 // ---------------------------------------------------------------------------
+// 第八批（Windows 侧）：**目录 symlink 的不下探语义**必须也在 Windows 上被验。
+//
+// 为什么用**目录 junction** 而不是 `symlink_dir`：Windows 的符号链接需要
+// `SeCreateSymbolicLinkPrivilege`（默认只给管理员、且受 UAC 约束），而
+// **目录 junction 免特权**（Git for Windows 的权威说明逐字：
+// "Directory junctions can be created by non-administrator users by default"）。
+// 生产侧的判据是 `parser.rs::is_symlink` → `fs::symlink_metadata(...).file_type().is_symlink()`，
+// 它看的是**重解析点**属性 ⇒ junction 与 symlink **走同一条生产语义**。
+//
+// ⚠ 这三条只在 Windows 编译/运行（`std::os::unix` 那三条是 unix 对偶，二者互不替代）。
+// ⚠ 本机（macOS）造不出 Windows junction ⇒ 其结论**只能由 windows 腿给出**。
+// ---------------------------------------------------------------------------
+
+/// 在 `link` 处建一个指向 `target` 的**目录 junction**（免特权）。
+///
+/// ⚠ Linux 的 `ln -s` 是系统调用、Windows 的 junction 只能经 `mklink /j`（cmd 内建）
+/// ⇒ 这里用 `cmd /C`。⭐ 建不出来时 `panic!` 并把 stderr 带上（**响亮**，⛔ 不静默跳过）。
+#[cfg(windows)]
+fn create_dir_junction(link: &Path, target: &Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/j"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("起 cmd 建目录 junction");
+    assert!(
+        output.status.success(),
+        "mklink /j 必须成功（否则本判据在 Windows 上不可构造）: status={:?} stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// ⭐ **极小探针**：先问 CI"能不能建目录 junction"，再谈大判据。
+///
+/// ⚠ 它的价值是**先解掉那个未知量**：`windows-latest` 是否允许非特权 junction。
+/// ⚠ 若这条红 ⇒ 下面两条形状 A 判据也必然红 ⇒ 作者会知道**是环境不允许、⛔ 不是语义错**。
+#[cfg(windows)]
+#[test]
+fn a_directory_junction_can_be_created_without_elevation() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "elsewhere/b.sfz", "<region>sample=x.wav\n");
+    fs::create_dir_all(root.join("kit")).expect("create kit dir");
+    create_dir_junction(&root.join("kit/linked"), &root.join("elsewhere"));
+    assert!(
+        root.join("kit/linked/b.sfz").is_file(),
+        "junction 必须能穿到目标 ⇒ 它确实是个目录链接（而不是普通目录）"
+    );
+}
+
+/// Windows 对偶：`**` 递归 glob ⛔ 不得下探进**链接目录**（与 `#[cfg(unix)]` 那条同语义）。
+#[cfg(windows)]
+#[test]
+fn a_recursive_glob_does_not_descend_into_a_junctioned_directory() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "kit/a.sfz", "<region>sample=direct.wav\n");
+    write_file(root, "elsewhere/b.sfz", "<region>sample=through_link.wav\n");
+    create_dir_junction(&root.join("kit/linked"), &root.join("elsewhere"));
+    write_file(root, "main.sfz", "#include \"kit/**/*.sfz\"\n");
+    let instrument = resolve_and_parse(root, "main.sfz").expect("resolves");
+    let samples: Vec<&str> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.sample.as_ref())
+        .collect();
+    assert_eq!(samples, vec!["direct.wav"]);
+}
+
+/// Windows 对偶：`kit/*/b.sfz` 的通配符非末段展开 ⛔ 不得穿过**链接目录**。
+#[cfg(windows)]
+#[test]
+fn a_wildcard_glob_does_not_descend_into_a_junctioned_directory() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "elsewhere/b.sfz", "<region>sample=through_link.wav\n");
+    fs::create_dir_all(root.join("kit")).expect("create kit dir");
+    create_dir_junction(&root.join("kit/linked"), &root.join("elsewhere"));
+    write_file(root, "main.sfz", "#include \"kit/*/b.sfz\"\n");
+    let error = resolve_and_parse(root, "main.sfz").expect_err("the link must not match");
+    assert!(
+        matches!(error, SfzError::IncludeNoMatch { .. }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 第七批：此前「测试 0 引用」的 include 诊断臂与 `base_dir()`
 // ---------------------------------------------------------------------------
 
