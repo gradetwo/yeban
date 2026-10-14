@@ -105,9 +105,10 @@ def production_rs_files(root: str) -> list[pathlib.Path]:
         if "/tests/" in str(f) or f.name == "build.rs":
             continue
         # ⚠ 命名规则（⭐ 弱于 `Cargo.toml`、但覆盖它管不到的两类，见 R528）：
+        #   · `/examples/` —— 示例/基准（R529：`Cargo.toml` 只排**显式声明**的 `[[example]]`）
         #   · `/verify/` —— 核验夹具目录（例：`yeban-mcp/verify/section_pure.rs`）
         #   · `*testfix*` —— 名字即"测试夹具"（例：`yeban-decode/src/testfix.rs`）
-        if "/verify/" in str(f) or "testfix" in f.name:
+        if "/verify/" in str(f) or "/examples/" in str(f) or "testfix" in f.name:
             continue
         if str(f.resolve()) in skip:
             continue
@@ -176,8 +177,10 @@ def self_test() -> int:
         return 1
     # ⭐ 命名规则自检（R528 的剩余限度）：`verify/` 夹具与 `*testfix*` 也必须被排除。
     allprod = {str(f) for f in production_rs_files("crates")}
-    ok3 = not any("/verify/" in p for p in allprod) and not any("testfix" in p for p in allprod)
-    print(f"[{'ok' if ok3 else 'FAIL'}] 命名规则自检: 生产清单里 verify/ 与 testfix 均为空（须 True）")
+    ok3 = (not any("/verify/" in p for p in allprod)
+           and not any("/examples/" in p for p in allprod)
+           and not any("testfix" in p for p in allprod))
+    print(f"[{'ok' if ok3 else 'FAIL'}] 命名规则自检: 生产清单里 verify/、examples/ 与 testfix 均为空（须 True）")
     if not ok3:
         print("[FAIL] 命名规则自检不符")
         return 1
