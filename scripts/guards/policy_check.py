@@ -52,6 +52,24 @@ SAFE_BY_DEFAULT_CRATES = (
 #: GUI 依赖黑名单 (出现即违规)
 GUI_DEP_PATTERNS = ("slint", "winit", "glutin", "egui", "qt_core", "gtk", "iced", "tao")
 
+#: ⭐ R567: **非引擎层** crate 的显式清单 —— 与 `ENGINE_CRATES_NO_GUI` 合起来构成
+#: "每个 crate 都必须被分类"的全集（`G15`）。⚠ 为什么需要：`G02`／`G03`／`G11` 都是
+#: **白名单式**（遍历名字列表）⇒ **新增一个 crate 会静默逃逸**（既不受 GUI 禁令、
+#: 也不必 `forbid(unsafe_code)`）—— 见 R566 的探针 crate 实测。
+NON_ENGINE_CRATES = (
+    "yeban-app",
+    "yeban-diagnostics",
+    "yeban-mcp",
+    "yeban-midi",
+    "yeban-midi-io",
+    "yeban-plugin-host",
+    "yeban-record",
+    "yeban-services",
+    "yeban-ui-mcp",
+    "yeban-ui-test-port",
+    "yeban-vst",
+)
+
 #: 官方默认 release 构建禁止默认开启的 feature [AGENTS.md 红线 6]
 FORBIDDEN_DEFAULT_FEATURES = (
     "mcp-http",
@@ -633,6 +651,45 @@ def g14_shell_scripts_are_portable() -> list[Violation]:
     return bad + _g14_python_syntax_ok()
 
 
+def g15_every_crate_is_classified() -> list[Violation]:
+    """[多线纪律 / 红线 3、8] `crates/*` 的每个 crate 都必须被显式分类。
+
+    ⭐ R566 实测的缺口：`G02`（引擎层禁 GUI）与 `G03`（强制 `forbid(unsafe_code)`）
+    都是**白名单式** —— 它们遍历 `ENGINE_CRATES_NO_GUI`／`SAFE_BY_DEFAULT_CRATES`
+    这些**硬编码名单**。于是**新增**一个引擎层 crate 会**静默逃逸**：它可以加 `slint`
+    依赖、也可以不写 `#![forbid(unsafe_code)]`，而两条守卫都不红。
+
+    ⭐ 本条补法：要求每个 `crates/*` 落在**引擎层**或**非引擎层**之一。新增 crate
+    ⇒ **立刻红** ⇒ 迫使人在**同一次提交里**分类它。
+    """
+    bad: list[Violation] = []
+    base = REPO / "crates"
+    if not base.is_dir():
+        bad.append(("G15", "crates", "目录 crates/ 不存在"))
+        return bad
+    known = set(ENGINE_CRATES_NO_GUI) | set(NON_ENGINE_CRATES)
+    if not known:
+        bad.append(("G15", "crates", "分类集合为空 ⇒ 判据空转，不能当作「已分类」的证据"))
+        return bad
+    seen = 0
+    for child in sorted(base.iterdir()):
+        if not child.is_dir():
+            continue
+        seen += 1
+        if child.name not in known:
+            bad.append(
+                (
+                    "G15",
+                    rel(child),
+                    f"crate `{child.name}` 未被分类 ⇒ 请把它加入 ENGINE_CRATES_NO_GUI"
+                    " 或 NON_ENGINE_CRATES（否则 G02/G03/G11 会静默漏掉它）",
+                )
+            )
+    if seen == 0:
+        bad.append(("G15", "crates", "crates/ 下没有任何 crate ⇒ 判据空转"))
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -648,6 +705,7 @@ GUARDS = {
     "G12": ("[仓库卫生] 工具缓存与 CI 日志 zip 不入库", g12_no_tool_cache_in_tree),
     "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
     "G14": ("[本地门禁可移植性] shell 脚本 bash 3.2 兼容(禁关联数组)且 bash -n 可解析", g14_shell_scripts_are_portable),
+    "G15": ("[多线纪律/红线 3、8] crates/* 每个 crate 都必须被显式分类", g15_every_crate_is_classified),
 }
 
 
@@ -665,7 +723,7 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 15)]
+    expected = [f"G{n:02d}" for n in range(1, 16)]
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")
