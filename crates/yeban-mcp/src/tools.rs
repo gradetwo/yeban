@@ -1016,7 +1016,10 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "license",
                 "string",
                 true,
-                "资产许可标识 (非空, 逐条可查; 例如 CC0-1.0 或 CC-BY-4.0)",
+                "资产许可标识 (非空, 逐条可查); ⚠ 必须在白名单里 \
+                 (现读 assets/samples/manifest.json 的 licence_whitelist)， \
+                 否则结构化拒绝 (licenseNotAllowed); 清单读不到也拒绝 \
+                 (licenseWhitelistUnavailable, ⛔ 绝不放行)",
                 Some(1),
                 None,
             ),

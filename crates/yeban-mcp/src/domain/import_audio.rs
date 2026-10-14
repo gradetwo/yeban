@@ -78,6 +78,21 @@
 //!   这是模型的缺口（needs-2，**仍开着**），本工具**如实**在响应的 `notes` 里写出来，
 //!   而不是假装撤销把一切都收回去了。
 //!
+//! ## ⭐ 工程层许可判定（`MUST-GATE-014` 的"仅限"在**工程文档层**的执行）
+//!
+//! `license` **不只是留痕**：它必须在白名单里，否则**结构化拒绝**
+//! （`licenseNotAllowed`，回显该值与白名单）。
+//!
+//! - 白名单**现读** `assets/samples/manifest.json` 的 `licence_whitelist`
+//!   （⛔ 本层**不手抄**：手抄清单会漂移，第 44 条）；
+//! - ⚠ **清单读不到／结构不对 ⇒ 结构化拒绝**（`licenseWhitelistUnavailable`），
+//!   ⛔ **绝不静默放行** —— 那会把"读不到"变成"全部合规"，是一处**静默的合规失效**；
+//! - 非商用许可（如 `CC-BY-NC-*`）一律不在白名单里 ⇒ 拒绝。
+//!
+//! 历史：清单层那个同型洞**曾经**存在（`scripts/gates/validate_schemas.py` 的注释
+//! 逐字记着"塞一条 `CC-BY-NC-SA` 仍 `EXIT=0`，因为当时全仓没有任何代码读它"）；
+//! 本形态把**工程层**那一半补上。
+//!
 //!   ⭐ `needs-3`（"工程 `assets` 索引没有 `Op` ⇒ 只登记片段、不写索引"）**已关闭**：
 //!   模型补齐了 [`Op::SetAsset`] / [`Op::RemoveAsset`]，本工具现在在**同一个批**里
 //!   声明索引项，且那条索引项由 `yeban_decode::asset_index` 产出（⛔ 不手抄字段）。
@@ -397,6 +412,14 @@ pub fn plan(
                 }),
             )
         })?;
+
+    // ⭐ **工程层许可判定**（`MUST-GATE-014` 的"仅限"在工程文档层的执行）。
+    //
+    // ⚠ 判定依据**现读**仓库清单（`assets/samples/manifest.json` 的 `licence_whitelist`），
+    // ⛔ 本层**不手抄**一份（第 44 条：手抄清单会漂移，本会话已抓过三处同类）。
+    // ⚠ 清单读不到／结构不对 ⇒ **结构化拒绝**（`licenseWhitelistUnavailable`），
+    // ⛔ **绝不静默放行** —— 那会把"读不到"变成"全部合规"。
+    require_allowed_licence(license)?;
 
     // ---- 取字节 + 解码（两条来源都要真的解码一遍） ----
     let (bytes, facts, asset, source_ref, declared_in_index, index) = match source {
@@ -760,6 +783,110 @@ fn parse_optional_bool(field: &str, raw: Option<&Value>) -> Result<Option<bool>,
 }
 
 /// 解码容器字节，并读回事实（**不**保留 PCM）。
+/// 读仓库许可白名单（`assets/samples/manifest.json` 的 `licence_whitelist`）。
+///
+/// ⭐ **现读**（⛔ 不手抄）：白名单的**唯一权威**是清单文件本身，
+/// `scripts/gates/validate_schemas.py:186-210` 已经强制它与根清单的
+/// `allowed_licenses` 一致或为其子集 ⇒ 读这一份**不新增歧义**。
+///
+/// ⚠ **任何失败路径都⛔ 不许放行**：路径不存在／读失败／不是合法 JSON／
+/// `licence_whitelist` 缺失或为空或含非字符串 ⇒ 一律 `Err`，
+/// 由调用方转成**结构化拒绝**（`licenseWhitelistUnavailable`）。
+fn read_licence_whitelist() -> Result<Vec<String>, Fault> {
+    read_licence_whitelist_from(&licence_manifest_path())
+}
+
+/// 资产清单的路径（`assets/samples/manifest.json`，由仓库根拼出）。
+fn licence_manifest_path() -> std::path::PathBuf {
+    repo_root()
+        .join("assets")
+        .join("samples")
+        .join("manifest.json")
+}
+
+/// [`read_licence_whitelist`] 的**可注入路径**版本（判据据此钉住全部失败路径）。
+///
+/// ⚠ 抽成独立函数**不是为了多一条代码路径**，而是为了让"读不到必须拒绝"这件事
+/// **可判**：产线入口 [`read_licence_whitelist`] 只是把真实路径传进来。
+fn read_licence_whitelist_from(manifest: &std::path::Path) -> Result<Vec<String>, Fault> {
+    let text = std::fs::read_to_string(manifest).map_err(|error| {
+        whitelist_unavailable(&format!("读不到资产清单 {}: {error}", manifest.display()))
+    })?;
+    let parsed: Value = serde_json::from_str(&text).map_err(|error| {
+        whitelist_unavailable(&format!(
+            "资产清单 {} 不是合法 JSON: {error}",
+            manifest.display()
+        ))
+    })?;
+    let list = parsed
+        .get("licence_whitelist")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            whitelist_unavailable(&format!(
+                "资产清单 {} 里没有 `licence_whitelist` 数组",
+                manifest.display()
+            ))
+        })?;
+    let mut out = Vec::with_capacity(list.len());
+    for entry in list {
+        let text = entry.as_str().ok_or_else(|| {
+            whitelist_unavailable(&format!(
+                "资产清单 {} 的 `licence_whitelist` 里有非字符串项",
+                manifest.display()
+            ))
+        })?;
+        out.push(text.to_owned());
+    }
+    if out.is_empty() {
+        return Err(whitelist_unavailable(&format!(
+            "资产清单 {} 的 `licence_whitelist` 是空数组",
+            manifest.display()
+        )));
+    }
+    Ok(out)
+}
+
+/// 仓库根：由 `CARGO_MANIFEST_DIR` 反推（与 `undo_session::production_source_roots` 同法）。
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+/// 白名单不可用（读不到／结构不对）⇒ **结构化拒绝**（⛔ 绝不放行）。
+fn whitelist_unavailable(detail: &str) -> Fault {
+    Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!("许可白名单不可用 ⇒ 拒绝本次导入: {detail}"),
+        serde_json::json!({
+            "reason": "licenseWhitelistUnavailable",
+            "detail": detail,
+            "hint": "白名单在 `assets/samples/manifest.json` 的 `licence_whitelist`;                      读不到它时**拒绝**而不是放行 (⛔ 不许把读不到变成全部合规)",
+        }),
+    )
+}
+
+/// 工程层许可判定：`licence` 必须在白名单里，否则**结构化拒绝**。
+///
+/// `MUST-GATE-014` 的规范逐字是"仅限 CC0/CC-BY/MIT 协议"——**"仅限"是限制**，
+/// ⛔ 不是"上报" ⇒ 不在白名单就拒。回显该值与白名单，便于调用方自纠。
+fn require_allowed_licence(licence: &str) -> Result<(), Fault> {
+    let allowed = read_licence_whitelist()?;
+    if allowed.iter().any(|entry| entry == licence) {
+        return Ok(());
+    }
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!("许可 `{licence}` 不在白名单里, 拒绝本次导入"),
+        serde_json::json!({
+            "reason": "licenseNotAllowed",
+            "license": licence,
+            "allowedLicenses": allowed,
+            "hint": "白名单是 `assets/samples/manifest.json` 的 `licence_whitelist` (MUST-GATE-014 的「仅限」在工程文档层的执行); ⚠ 非商用许可 (如 `CC-BY-NC-*`) 一律不在白名单里",
+        }),
+    ))
+}
+
 fn decode_and_measure(bytes: &[u8], context: &str) -> Result<DecodeFactsValue, Fault> {
     let decoded = yeban_decode::decode_bytes(bytes, &DecodeOptions::default())
         .map_err(|error| decode_fault(context, &error))?;
@@ -1787,5 +1914,204 @@ mod tests {
                 .and_then(Value::as_str),
             Some("licenseRequired")
         );
+    }
+
+    /// ⭐ **正对照（第 42 条）**：白名单里的许可**每一个**都必须被接受。
+    ///
+    /// ⚠ 名单**现读**（`read_licence_whitelist_from(真实路径)`），⛔ 不在判据里手抄
+    /// ⇒ 白名单将来加值，这条自动覆盖它；而"某个值被误拒"会立刻红。
+    ///
+    /// 注入（实测红）：把 `require_allowed_licence` 的判定反成 `!any` ⇒ 本判据红。
+    #[test]
+    fn every_whitelisted_licence_is_accepted() {
+        let manifest = licence_manifest_path();
+        let allowed = read_licence_whitelist_from(&manifest).expect("真清单必须读得到");
+        assert!(
+            !allowed.is_empty(),
+            "真清单的白名单不得为空（否则本判据是空转）"
+        );
+
+        let dir = std::env::temp_dir().join(format!("yeban-lic-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("目录");
+        let bytes = wav_s16(48_000, &[0, 1_000, -1_000, 0]);
+        let path = dir.join("kick.wav");
+        std::fs::write(&path, &bytes).expect("写");
+
+        for licence in &allowed {
+            require_allowed_licence(licence)
+                .unwrap_or_else(|fault| panic!("白名单内的 `{licence}` 必须被接受: {fault:?}"));
+        }
+        // 并且它真的走进计划并落到索引项上（不只是那个小函数说 OK）。
+        let project = filled_project();
+        let pool: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+        let import = plan(
+            &project,
+            &pool,
+            &args(&serde_json::json!({
+                "name": "Kick",
+                "path": path.display().to_string(),
+                "license": allowed.first().expect("名单非空"),
+            })),
+        )
+        .expect("白名单内的许可必须能规划");
+        let declared = import
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::SetAsset { new_asset, .. } => Some(new_asset),
+                _ => None,
+            })
+            .expect("索引声明");
+        assert_eq!(
+            declared.license,
+            *allowed.first().expect("名单非空"),
+            "落地的许可必须逐字等于调用方给的那个"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ **拒绝路径**：非商用许可（`CC-BY-NC-*`）、未知值、以及**白名单读不到**
+    /// 各自**结构化拒绝**并点名 reason。
+    ///
+    /// ⚠ 为什么非商用要单列：`validate_schemas.py` 自己的注释逐字记着那个先例 ——
+    /// "往 `items[]` 里塞一条 `CC-BY-NC-SA`，`--repo-assets` 仍然 EXIT=0，
+    /// 因为当时**全仓没有任何代码读它**"。本判据钉住"工程层不再重演它"。
+    ///
+    /// - `CC-BY-NC-SA` ／ 未知值 ⇒ `licenseNotAllowed`（回显该值与白名单）
+    /// - 清单不存在／非法 JSON／缺键／键非数组／空数组／含非字符串
+    ///   ⇒ `licenseWhitelistUnavailable`（⛔ **绝不放行** —— 否则"读不到"就变成"全部合规"）
+    ///
+    /// 注入（实测红）：把任一失败分支改成 `Ok(vec![...])` ⇒ 对应的那条断言红。
+    #[test]
+    fn a_licence_outside_the_whitelist_is_refused() {
+        // ---- 非商用 / 未知值 ⇒ `licenseNotAllowed` ----
+        for bad in ["CC-BY-NC-SA", "CC-BY-NC-4.0", "Garbage-1.0", ""] {
+            let fault = require_allowed_licence(bad).expect_err("白名单外必须被拒");
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("应当是领域失败, 实际 {fault:?}");
+            };
+            let data = data.as_ref().expect("拒绝必须带 data");
+            assert_eq!(
+                data.pointer("/reason").and_then(Value::as_str),
+                Some("licenseNotAllowed"),
+                "`{bad}` 的理由必须点名 licenseNotAllowed: {data}"
+            );
+            assert_eq!(
+                data.pointer("/license").and_then(Value::as_str),
+                Some(bad),
+                "必须回显被拒的值"
+            );
+            assert!(
+                data.pointer("/allowedLicenses")
+                    .and_then(Value::as_array)
+                    .is_some_and(|list| !list.is_empty()),
+                "必须回显白名单 (便于调用方自纠): {data}"
+            );
+        }
+    }
+
+    /// ⭐ **清单读不到（或结构不对）⇒ 结构化拒绝**（⛔ **绝不放行**）。
+    ///
+    /// ⚠ 这条是本单的**关键安全属性**：若任何失败路径**放行**，那"读不到白名单"
+    /// 就等价于"全部合规" —— 一个**静默的合规失效**。故这里逐条钉六种失败形态。
+    ///
+    /// 注入（实测红）：把任一失败分支改成返回一个非空 `Ok(vec![...])` ⇒ 对应断言红。
+    #[test]
+    fn an_unreadable_licence_manifest_is_refused() {
+        // ---- 清单不可用 ⇒ `licenseWhitelistUnavailable`（⛔ 绝不放行）----
+        let dir = std::env::temp_dir().join(format!("yeban-lic-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("目录");
+        let cases: Vec<(&str, std::path::PathBuf)> = vec![
+            ("不存在", dir.join("absent.json")),
+            ("非法 JSON", {
+                let p = dir.join("broken.json");
+                std::fs::write(&p, b"not json at all").expect("写");
+                p
+            }),
+            ("缺 licence_whitelist 键", {
+                let p = dir.join("nokey.json");
+                std::fs::write(&p, br#"{"other": 1}"#).expect("写");
+                p
+            }),
+            ("键不是数组", {
+                let p = dir.join("notarray.json");
+                std::fs::write(&p, br#"{"licence_whitelist": "CC0-1.0"}"#).expect("写");
+                p
+            }),
+            ("空数组", {
+                let p = dir.join("empty.json");
+                std::fs::write(&p, br#"{"licence_whitelist": []}"#).expect("写");
+                p
+            }),
+            ("含非字符串项", {
+                let p = dir.join("nonstring.json");
+                std::fs::write(&p, br#"{"licence_whitelist": ["CC0-1.0", 3]}"#).expect("写");
+                p
+            }),
+        ];
+        for (label, path) in &cases {
+            // ⚠ 断言**必须**是 Err：读到白名单**绝不放行**（否则"读不到"＝"全部合规"）。
+            let outcome = read_licence_whitelist_from(path);
+            let fault = match outcome {
+                Ok(list) => panic!("`{label}` 必须被拒, 实际成功并返回 {list:?}"),
+                Err(fault) => fault,
+            };
+            let Fault::Domain { data, .. } = &fault else {
+                panic!("`{label}` 应当是领域失败, 实际 {fault:?}");
+            };
+            let data = data.as_ref().expect("拒绝必须带 data");
+            assert_eq!(
+                data.pointer("/reason").and_then(Value::as_str),
+                Some("licenseWhitelistUnavailable"),
+                "`{label}` 的理由必须点名 licenseWhitelistUnavailable: {data}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ **控制臂**（第 46／47 条）：判定**真的**在**产品路径**上生效，且能**独立变色**。
+    ///
+    /// 走的是与真做相同的 `plan`（产品路径），两臂只差 `license` 这一个实参：
+    /// * 白名单内 ⇒ 规划成功、且批里**有**索引声明；
+    /// * 白名单外 ⇒ 规划**失败**，且失败发生在**批被构造之前**（`ops` 无从产生）
+    ///   ⇒ 因此"索引里留下一个未判定许可"这件事**在产品路径上不可达**。
+    ///
+    /// ⚠ "独立变色"的含义：这一条**只**因许可判定而变 —— 别的实参逐字相同。
+    #[test]
+    fn the_licence_decision_changes_independently_along_the_product_path() {
+        let project = filled_project();
+        let dir = std::env::temp_dir().join(format!("yeban-lic-arm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("目录");
+        let bytes = wav_s16(48_000, &[0, 1_000, -1_000, 0]);
+        let path = dir.join("kick.wav");
+        std::fs::write(&path, &bytes).expect("写");
+        let pool: BTreeMap<AssetHash, Vec<u8>> = BTreeMap::new();
+        let common = serde_json::json!({
+            "name": "Kick",
+            "path": path.display().to_string(),
+        });
+        let with = |licence: &str| {
+            let mut object = common.as_object().expect("对象").clone();
+            object.insert("license".to_owned(), Value::String(licence.to_owned()));
+            object
+        };
+
+        // 臂 A：白名单内 ⇒ 成功 + 有索引声明。
+        let accepted = plan(&project, &pool, &with("CC0-1.0")).expect("白名单内必须成功");
+        assert!(
+            accepted
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::SetAsset { .. })),
+            "成功那一臂必须**同时**落了索引声明"
+        );
+        // 臂 B：白名单外 ⇒ 失败（且`plan` 在构造 `ops` 之前就返回）。
+        let refused = plan(&project, &pool, &with("CC-BY-NC-SA")).expect_err("白名单外必须被拒");
+        assert_eq!(
+            refused.domain_code(),
+            Some(ErrorCode::InvalidParameterRange),
+            "拒绝的契约码"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
