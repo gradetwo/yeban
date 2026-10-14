@@ -633,7 +633,30 @@ pub fn detect_cycle(graph: &RoutingGraph) -> Option<Vec<EntityId>> {
             match colors.get(&next).copied().unwrap_or(Color::White) {
                 Color::Gray => {
                     // 找到回边：从栈里截出环。
-                    let start = stack.iter().position(|entry| *entry == next).unwrap_or(0);
+                    //
+                    // ## ⚠ 为什么这里的 `expect` 是安全的（不变式：**灰集 == 栈集**）
+                    //
+                    // 本函数只用**显式栈**迭代，且颜色转换只有三处：
+                    // * 根入栈时 `colors.insert(*root, Color::Gray); stack.push(*root)`；
+                    // * 走 `White` 邻边时 `colors.insert(next, Color::Gray); stack.push(next)`；
+                    // * 某节点的邻边耗尽时 `colors.insert(node, Color::Black); stack.pop()`。
+                    //
+                    // 因此任意时刻"标记为 `Gray` 的节点集合"**恰好**等于 `stack` 的内容：
+                    // 变灰与入栈、变黑与出栈各自成对，中间没有别的路径能改颜色。
+                    // `next` 在此处是 `Gray` ⇒ 它**必然**在栈上 ⇒ `position` 必然命中。
+                    //
+                    // ⚠⭐ 所以 `position` 落空**不可能是"输入有环/无环"的问题**，只能是
+                    // 上面那份不变式被**改坏**了（例如把 `stack.pop()` 挪到
+                    // `colors.insert(node, Color::Black)` 之前）。⚠ 那必须**响亮失败**：
+                    // 静默兜底（例如 `unwrap_or(0)`）会从**栈底**截环 ⇒ 返回一个**以
+                    // 遍历起点开头、而不是以 `next` 开头**的序列 —— 而"环闭合"这个
+                    // 性质它**仍然满足**，于是只断言 `first() == last()` 的判据会**继续绿**。
+                    let start = stack.iter().position(|entry| *entry == next).expect(
+                        "⭐ 不变式被破坏（⛔ 不是「输入有没有环」的问题）: 回边目标 next 是 Gray, \
+                             按「灰集 == 栈集」它**必然**在 stack 上, 但 position 没找到 —— \
+                             请检查 detect_cycle 里的颜色/栈配对（变灰↔入栈、变黑↔出栈）, \
+                             ⛔ 不要用 unwrap_or 兜底（那会从栈底截出一个仍然「闭合」的错环）",
+                    );
                     let mut cycle: Vec<EntityId> = stack
                         .get(start..)
                         .map_or_else(Vec::new, <[EntityId]>::to_vec);
@@ -1856,6 +1879,77 @@ mod tests {
         let cycle = detect_cycle(&graph).expect("必须找到环");
         assert_eq!(cycle.first(), cycle.last(), "环必须闭合");
         assert!(cycle.len() >= 4, "a->b->c->a: {cycle:?}");
+    }
+
+    /// ⭐ **环必须从**回边目标**起（⛔ 不是从遍历起点起）**。
+    ///
+    /// ## 为什么需要这条（它钉的是一处**假绿**）
+    ///
+    /// `detect_cycle` 用"从 `stack` 里 `position(|n| n == next)` 截到栈顶"来取环。
+    /// 如果这一处**落空后静默兜底**（曾写成 `.unwrap_or(0)`），截取会从**栈底**开始
+    /// ⇒ 返回的序列**以遍历起点开头**、而不是以回边目标 `next` 开头。⚠ 而它**仍然
+    /// 闭合**（`first() == last()`）⇒ 上面那条判据**照样绿**。
+    ///
+    /// ## ⚠⚠ 本判据的**区分力边界**（实测，⛔ 别误读）
+    ///
+    /// 本函数只用显式栈，因此「灰集 == 栈集」在**正确实现里恒成立**：`position`
+    /// 必然命中 ⇒ `unwrap_or(0)` 的兜底分支在**合法输入上不可达**。
+    /// ⭐ 实测：把本函数改回 `.unwrap_or(0)` 再跑本条 ⇒ **仍是 `ok`**（兜底值没被用到）。
+    /// ⇒ ⚠ **本判据在合法输入上区分不了那两个实现**；它区分的是"**不变式被改坏之后**"。
+    ///
+    /// ⭐ 那它仍然必须存在：它钉的是**返回值语义**（环从回边目标起），而这个语义
+    /// **今天没有任何判据在钉**（原有那条只断言 `first() == last()` + `len() >= 4`）。
+    /// 一旦有人破坏那份不变式，**正确的 `expect` 会响亮失败**，而 `unwrap_or(0)` 会
+    /// **继续产出"看起来合法"的错环**。
+    ///
+    /// ⚠ 本输入刻意让 **遍历起点不在环上**：`gate` 无入边 ⇒ 必然是遍历起点（必在栈底），
+    /// 且它指向环上的 `b`。⭐ **实测的遍历序是 `gate → b → c → a`，回边是 `a → b`**
+    /// ⇒ 回边目标是 **`b`**（⛔ 不是 `a`：`a` 是被 `c` 首次发现后才入栈的）⇒ 正确结果
+    /// `[b, c, a, b]`，而「从栈底截」会给出 `[gate, b, c, a, b]`：**长度 5 且环首是 `gate`**
+    /// —— 而 `first() == last()` 这条**仍然成立** ⇒ 只断言闭合的判据照样绿。
+    ///
+    /// 注入（实测读数）：
+    /// ① `unwrap_or(0)` ＋ **不破坏不变式** ⇒ 本条**仍 `ok`**（兜底不可达，见上）；
+    /// ② 把 `stack.pop()` 挪到 `colors.insert(node, Color::Black)` **之前** ⇒
+    ///    正确实现的 `expect` **命中**，报文指名「不变式被破坏」。
+    #[test]
+    fn a_cycle_is_reported_from_the_back_edge_target_not_the_traversal_entry() {
+        let a = deterministic_id("a");
+        let b = deterministic_id("b");
+        let c = deterministic_id("c");
+        // `gate` 只有出边、没有入边 ⇒ 必然是遍历起点（必在栈底），且指向**环上的 `b`**。
+        let gate = deterministic_id("gate");
+        let mut graph = RoutingGraph {
+            nodes: vec![gate, a, b, c],
+            edges: BTreeMap::new(),
+        };
+        // ⚠ 每条边给**不同**的标签：`routing_edge` 的 id 由标签决定，同标签会互相覆盖。
+        for (source, destination, label) in [
+            (gate, b, "gate-tail"),
+            (a, b, "a-b"),
+            (b, c, "b-c"),
+            (c, a, "back"),
+        ] {
+            let edge = routing_edge(source, destination, label);
+            graph.edges.insert(edge.id, edge);
+        }
+        let cycle = detect_cycle(&graph).expect("必须找到环");
+        // 实测遍历序 `gate → b → c → a`，回边 `a → b` ⇒ 回边目标是 `b`。
+        assert_eq!(
+            cycle.first(),
+            Some(&b),
+            "⭐ 环必须从**回边目标** `b` 起（⛔ 不是从遍历起点 `gate` 起 —— 那就是「从栈底截环」）: {cycle:?}"
+        );
+        assert_eq!(cycle.last(), Some(&b), "环必须闭合在 `b`: {cycle:?}");
+        assert_eq!(cycle.len(), 4, "`b->c->a->b` 恰好 4 项: {cycle:?}");
+        assert!(
+            !cycle.contains(&gate),
+            "⭐ 遍历起点 `gate` **不在环上** ⇒ ⛔ 不得出现在返回值里: {cycle:?}"
+        );
+        assert!(
+            cycle.contains(&a) && cycle.contains(&c),
+            "环上的其余节点 `a` / `c` 都必须在: {cycle:?}"
+        );
     }
 
     #[test]
