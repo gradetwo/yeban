@@ -695,6 +695,124 @@ fn a_wildcard_glob_does_not_descend_into_a_symlinked_directory() {
 }
 
 // ---------------------------------------------------------------------------
+// 第八批（Windows 侧）：**目录链接的不下探语义**必须也在 Windows 上被验。
+//
+// 为什么用**目录 junction** 而不是 `symlink_dir`：Windows 的符号链接需要
+// `SeCreateSymbolicLinkPrivilege`（默认只给管理员、且受 UAC 约束），而**目录 junction
+// 免特权**（Git for Windows 的权威说明逐字："Directory junctions can be created by
+// non-administrator users by default"）。⭐ 生产侧的判据是 `parser.rs::is_symlink` →
+// `fs::symlink_metadata(...).file_type().is_symlink()`，它看的是**重解析点**属性
+// ⇒ junction 与 symlink **走同一条生产语义**（`is_dir() && !is_symlink()` 那三处）。
+//
+// ⚠ 这三条只在 Windows 编译/运行；`#[cfg(unix)]` 那三条是 unix 对偶，二者互不替代。
+// ⚠ 本机（macOS）造不出 Windows junction ⇒ 其结论**只能由 windows 腿给出**。
+// ---------------------------------------------------------------------------
+
+/// 在 `link` 处建一个指向 `target` 的**目录 junction**（免特权）。
+///
+/// ⚠ **两次 CI 红的教训（都已记在这里，⛔ 不要再踩）**：
+/// 1. `cmd.args(["/C","mklink","/j", link, target])` ⇒ `Invalid switch - "linked"`
+///    —— Rust 的 `arg` 会**替 cmd 做引号转义**，而 `cmd.exe` **自己解析**它的命令串；
+/// 2. 把整串塞进 `args([...])` 的一个元素里 ⇒ `The filename, directory name, or volume
+///    label syntax is incorrect.`
+/// ⭐ 正解（照 `netsuke` 的开源先例 `configure_shell_command`）：把**命令文本**用
+/// `raw_arg` **原样**交给 cmd，并放进 `cmd /C` 要求的那**一对外层引号**里。
+///
+/// ⚠ 另两条 `mklink /j` 的前提也必须满足（否则报的是**同一句** syntax 错）：
+/// **`target` 必须已存在** ＋ **`link` 的父目录必须已存在**。
+///
+/// ⚠ 失败时**响亮 panic**，并把**实际命令行串**与 stderr 一起打出来（便于判因），
+/// ⛔ 不做静默跳过（永远跳过的臂零证据）。
+#[cfg(windows)]
+fn create_dir_junction(link: &Path, target: &Path) {
+    use std::os::windows::process::CommandExt;
+
+    assert!(
+        target.is_dir(),
+        "`mklink /j` 的前提：**目标目录必须已存在** ({})",
+        target.display()
+    );
+    if let Some(parent) = link.parent() {
+        assert!(
+            parent.is_dir(),
+            "`mklink /j` 的前提：**链接的父目录必须已存在** ({})",
+            parent.display()
+        );
+    }
+
+    // cmd 的**整段命令文本**（引号是 cmd 语法的一部分）。
+    let command = format!("mklink /j \"{}\" \"{}\"", link.display(), target.display());
+    // ⭐ `raw_arg("\"{command}\"")` = 把命令串放进 cmd /C 需要的外层引号里、**原样**交给它。
+    let output = std::process::Command::new("cmd")
+        .args(["/C"])
+        .raw_arg(format!("\"{command}\""))
+        .output()
+        .expect("起 cmd 建目录 junction");
+    assert!(
+        output.status.success(),
+        "mklink /j 必须成功（否则本判据在 Windows 上不可构造）\n  \
+         命令行: cmd /C \"{command}\"\n  status={:?}\n  stdout={}\n  stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// ⭐ **极小探针**：先问 CI"能不能建目录 junction"，再谈大判据。
+///
+/// ⚠ 价值是**先解掉那个未知量**：`windows-latest` 是否允许非特权 junction。
+/// ⚠ 若这条红 ⇒ 下面两条形状 A 判据也必然红 ⇒ 作者能一眼看出**是环境不允许、⛔ 不是语义错**。
+#[cfg(windows)]
+#[test]
+fn a_directory_junction_can_be_created_without_elevation() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "elsewhere/b.sfz", "<region>sample=x.wav\n");
+    fs::create_dir_all(root.join("kit")).expect("create kit dir");
+    create_dir_junction(&root.join("kit/linked"), &root.join("elsewhere"));
+    assert!(
+        root.join("kit/linked/b.sfz").is_file(),
+        "junction 必须能穿到目标 ⇒ 它确实是个目录链接（而不是普通目录）"
+    );
+}
+
+/// Windows 对偶：`**` 递归 glob ⛔ 不得下探进**链接目录**（与 `#[cfg(unix)]` 那条同语义）。
+#[cfg(windows)]
+#[test]
+fn a_recursive_glob_does_not_descend_into_a_junctioned_directory() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "kit/a.sfz", "<region>sample=direct.wav\n");
+    write_file(root, "elsewhere/b.sfz", "<region>sample=through_link.wav\n");
+    create_dir_junction(&root.join("kit/linked"), &root.join("elsewhere"));
+    write_file(root, "main.sfz", "#include \"kit/**/*.sfz\"\n");
+    let instrument = resolve_and_parse(root, "main.sfz").expect("resolves");
+    let samples: Vec<&str> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.sample.as_ref())
+        .collect();
+    assert_eq!(samples, vec!["direct.wav"]);
+}
+
+/// Windows 对偶：`kit/*/b.sfz` 的通配符非末段展开 ⛔ 不得穿过**链接目录**。
+#[cfg(windows)]
+#[test]
+fn a_wildcard_glob_does_not_descend_into_a_junctioned_directory() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "elsewhere/b.sfz", "<region>sample=through_link.wav\n");
+    fs::create_dir_all(root.join("kit")).expect("create kit dir");
+    create_dir_junction(&root.join("kit/linked"), &root.join("elsewhere"));
+    write_file(root, "main.sfz", "#include \"kit/*/b.sfz\"\n");
+    let error = resolve_and_parse(root, "main.sfz").expect_err("the link must not match");
+    assert!(
+        matches!(error, SfzError::IncludeNoMatch { .. }),
+        "unexpected verdict: {error:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 第七批：此前「测试 0 引用」的 include 诊断臂与 `base_dir()`
 // ---------------------------------------------------------------------------
 
