@@ -51,6 +51,26 @@ def declared_main_sha(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def is_ancestor_of_main(sha: str) -> bool | None:
+    """⭐ 声明的 sha 只要**是 origin/main 的祖先**即可 —— ⛔ 不要求等于 tip。
+
+    ⚠ 为什么（R557 的自纠）：若要求"等于当前 tip"，那么**修 §1 的那次提交本身就改了 tip**
+    ⇒ §1 **永远落后一个提交** ⇒ 检查**永远报红** ⇒ 而"永远报红的检查会被忽略"
+    （本会话第 104 条）。正确语义是：**它当时是真的**（即该 sha 在 main 的历史里）。
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["git", "merge-base", "--is-ancestor", sha, "origin/main"],
+                             cwd=REPO, capture_output=True, text=True, timeout=30)
+        if out.returncode == 0:
+            return True
+        if out.returncode == 1:
+            return False
+        return None
+    except Exception:
+        return None
+
+
 def actual_main_sha() -> str | None:
     import subprocess
     try:
@@ -90,8 +110,15 @@ def check(handover_text: str, ledger_text: str) -> list[str]:
         bad.append("交接 §1 里读不到声明的 `origin/main` sha")
     elif real is None:
         bad.append("读不到实际的 origin/main ⇒ 本判据可能空转")
-    elif not real.startswith(claimed) and not claimed.startswith(real):
-        bad.append(f"交接 §1 声明 origin/main = {claimed}，实际为 {real}")
+    else:
+        anc = is_ancestor_of_main(claimed)
+        if anc is False:
+            bad.append(
+                f"交接 §1 声明 origin/main = {claimed}，但它**不是** {real} 的祖先"
+                " ⇒ 该 sha 不在主干历史里"
+            )
+        elif anc is None:
+            bad.append(f"无法判定 {claimed} 是否为 {real} 的祖先 ⇒ 本判据可能空转")
 
     # ⭐ 交叉核对：台账里最新一条的编号应当等于上面的 top
     latest = re.findall(r"^## R(\d+)", ledger_text, re.M)
