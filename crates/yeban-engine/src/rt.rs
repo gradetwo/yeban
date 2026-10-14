@@ -194,6 +194,11 @@ pub struct EngineStats {
     pub orphan_note_offs: u64,
     /// 累计快照切换次数。
     pub snapshot_switches: u64,
+    /// ⭐ 累计**真的生效**过的量化场景启动次数（[ARCH-RT-005 族]；幂等见证）。
+    ///
+    /// ⚠ 没有它，"到点触发恰好一次"这条判据没有牙齿：计数缺席时 `== 1` 与
+    /// "重复触发"看起来一样。
+    pub scene_launches_applied: u64,
     /// 累计批量出队调用次数（结构性判据：应等于 `quanta`）。
     pub event_bulk_pops: u64,
     /// 累计上报的电平帧数。
@@ -937,6 +942,84 @@ pub fn audition_topology_mismatch(
     None
 }
 
+/// 量化档 → "**几个小节**"（⭐ `Off` 不走这里：它在控制面直接取当前帧）。
+///
+/// ⚠ 取值**只来自模型既有枚举**（[`yeban_model::LaunchQuantization`]）：小节整数倍，
+/// ⛔ 没有 1/16、1/4、单拍 ⇒ ⛔ 不发明新档位。
+const fn quantization_bars(quantization: yeban_model::LaunchQuantization) -> u64 {
+    use yeban_model::LaunchQuantization as Q;
+    match quantization {
+        Q::Off => 1, // ⚠ 不可达（调用点已把它分出去）；给 1 以免除零/空转。
+        Q::Bar => 1,
+        Q::TwoBars => 2,
+        Q::FourBars => 4,
+        Q::EightBars => 8,
+    }
+}
+
+/// 一次**排队等待量化点**的场景启动（[ARCH-RT-005 族]：⭐ 照 [`AuditionBranch`] 的形状）。
+///
+/// ⭐ **"何时开始"与"开始什么"共用同一个判定**：`switch_frame` 由 `Transport` 的
+/// [`next_bar_tick`](crate::transport::next_bar_tick) ＋ `frames_for_tick` 算出
+/// （量化档只有小节整数倍 ⇒ 与 `launch_quantization` 的现有取值一一对应），
+/// `tempo_bpm` 是**该场景自己的 tempo 覆盖**（[`yeban_model::SceneV3::tempo`]，
+/// ⛔ 场景不承载别的可执行状态 ⇒ 本机制只投射 tempo）。
+///
+/// ⚠ **实时侧只做整数比较**：`frames_until_switch` 在控制路径算好，回调内每块只减
+/// 一次、减到 0 才动作 ⇒ 零浮点、零分配、零锁、零 I-O（[MUST-GATE-001]）。
+/// ⚠ 触发**恰好一次**：`apply_launch` 之后状态机回到 `None`（幂等，⛔ 不重复触发）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PendingSceneLaunch {
+    /// 目标场景身份（⭐ 只作读数；引擎不认识场景实体）。
+    pub scene_id: Option<yeban_model::EntityId>,
+    /// 该场景的 **tempo 覆盖**（BPM）。
+    pub tempo_bpm: f64,
+    /// 生效的**绝对帧**（由 `switch_frame` 与当前位置在控制路径算好）。
+    pub switch_frame: u64,
+    /// 距生效帧还剩多少帧（控制路径置入；回调内只减）。
+    pub frames_until_switch: u64,
+}
+
+impl PendingSceneLaunch {
+    /// 控制路径：按**当前位置**与**生效帧**武装一次启动。
+    ///
+    /// ⚠ 只许在控制路径调用（不分配，但语义上是控制面的事）。
+    #[must_use]
+    pub fn arm(
+        scene_id: Option<yeban_model::EntityId>,
+        tempo_bpm: f64,
+        switch_frame: u64,
+        position_frames: u64,
+    ) -> Self {
+        Self {
+            scene_id,
+            tempo_bpm,
+            switch_frame,
+            frames_until_switch: switch_frame.saturating_sub(position_frames),
+        }
+    }
+
+    /// 本次启动的**绝对生效帧**。
+    #[must_use]
+    pub const fn switch_frame(&self) -> u64 {
+        self.switch_frame
+    }
+
+    /// 距生效还有多少帧（`0` ＝ 本块内就该生效）。
+    #[must_use]
+    pub const fn frames_until_switch(&self) -> u64 {
+        self.frames_until_switch
+    }
+
+    /// 实时路径：走完 `frames` 帧 ⇒ 若已跨过生效帧就返回 `true`（**恰好一次**）。
+    ///
+    /// ⚠ 只做整数减法与一次比较；⛔ 不改任何别的状态。
+    pub const fn advance(&mut self, frames: u64) -> bool {
+        self.frames_until_switch = self.frames_until_switch.saturating_sub(frames);
+        self.frames_until_switch == 0
+    }
+}
+
 impl AuditionBranch {
     /// 控制路径：按采样率**预计算等功率淡化表**，并记下本次的**切换帧**。
     ///
@@ -1420,6 +1503,13 @@ pub struct EngineRuntime {
     /// [`AuditionRefusal`]）。⛔ 渲染路径**一个字没改** ⇒ 未试听时输出
     /// 仍逐字节不变、RT 成本仍为 0。
     audition_active: bool,
+    /// ⭐ **排队等待量化点**的场景启动（`None` ＝ 没有排队的启动）。
+    ///
+    /// ⚠ `None` 时实时路径只多一次 `Option` 判别、⛔ 一个样本都不变 ⇒ 未排队时与
+    /// 「没有这个字段」逐字节相同。
+    pending_launch: Option<PendingSceneLaunch>,
+    /// ⭐ 累计**真的生效**过的场景启动次数（缺席见证 ⇒ `==` 计数没有牙齿）。
+    scene_launches_applied: u64,
     events: EventReceiver,
     meters: MeterPublisher,
     block: AudioBlock<DEFAULT_BLOCK_FRAMES>,
@@ -1740,6 +1830,8 @@ impl EngineRuntime {
             snapshot: SnapshotReader::attach(slot, retire),
             audition: None,
             audition_active: false,
+            pending_launch: None,
+            scene_launches_applied: 0,
             events,
             meters,
             block: AudioBlock::new(),
@@ -1931,6 +2023,63 @@ impl EngineRuntime {
         Ok(())
     }
 
+    /// ⭐ 控制路径：**武装一次量化场景启动**（照 [`Self::begin_audition`] 的形状）。
+    ///
+    /// ⭐ **"何时开始"由量化档决定**：`quantization` 只有小节整数倍
+    /// （[`yeban_model::LaunchQuantization`]）⇒ 生效帧 = 从当前位置算出的
+    /// **第 n 个小节线**，经 [`crate::transport::next_bar_tick`] ＋ `frames_for_tick` 落到采样点。
+    /// `Off` ⇒ 取**当前帧**（立即生效，⭐ 这就是"控制臂"：证明量化那条红是因为量化）。
+    ///
+    /// ⚠ `time_signature` 由控制面给出（引擎的快照里没有拍号 ⇒ ⛔ 不在这里发明）；
+    /// ⚠ 本函数不分配、不取锁。
+    pub fn queue_scene_launch(
+        &mut self,
+        scene_id: Option<yeban_model::EntityId>,
+        tempo_bpm: f64,
+        quantization: yeban_model::LaunchQuantization,
+        time_signature: yeban_model::TimeSignature,
+    ) {
+        let position_frames = self.transport.position_frames();
+        let switch_frame = match quantization {
+            yeban_model::LaunchQuantization::Off => position_frames,
+            other => {
+                let step = quantization_bars(other);
+                // 量化档是"1/2/4/8 小节"⇒ 从**下一个小节线**起再顺延 (step-1) 个小节。
+                let mut tick = crate::transport::next_bar_tick(
+                    self.transport.position_ticks(),
+                    time_signature,
+                );
+                for _ in 1..step {
+                    tick = crate::transport::next_bar_tick(tick, time_signature);
+                }
+                self.transport.frames_for_tick(tick)
+            }
+        };
+        self.pending_launch = Some(PendingSceneLaunch::arm(
+            scene_id,
+            tempo_bpm,
+            switch_frame,
+            position_frames,
+        ));
+    }
+
+    /// ⭐ 控制路径：**取消**尚未生效的启动（幂等；⛔ 已生效的不受影响）。
+    pub fn cancel_scene_launch(&mut self) {
+        self.pending_launch = None;
+    }
+
+    /// 当前是否有排队的场景启动。
+    #[must_use]
+    pub const fn has_pending_scene_launch(&self) -> bool {
+        self.pending_launch.is_some()
+    }
+
+    /// ⭐ 累计**真的生效**过的场景启动次数。
+    #[must_use]
+    pub const fn scene_launches_applied(&self) -> u64 {
+        self.scene_launches_applied
+    }
+
     /// 结束试听（幂等；不分配）。
     pub fn end_audition(&mut self) {
         self.audition_active = false;
@@ -2069,6 +2218,7 @@ impl EngineRuntime {
             note_steals: self.note_steals,
             orphan_note_offs: self.orphan_note_offs,
             snapshot_switches: self.snapshot.switches(),
+            scene_launches_applied: self.scene_launches_applied,
             event_bulk_pops: self.event_bulk_pops,
             meter_frames: self.meter_frames,
             meter_bulk_publishes: self.meter_bulk_publishes,
@@ -2633,6 +2783,8 @@ impl EngineRuntime {
             meter_frames,
             meter_bulk_publishes,
             meter_capacity_drops,
+            pending_launch,
+            scene_launches_applied,
             ..
         } = self;
 
@@ -3232,6 +3384,22 @@ impl EngineRuntime {
             if running {
                 transport.advance_frames(frames as u64);
                 synth.advance(frames);
+            }
+
+            // ⭐ 量化场景启动：**到点生效、恰好一次**。
+            //
+            // 走带是唯一时钟 ⇒ 生效判决放在推进之后：`frames_until_switch` 每块只减一次、
+            // 减到 0 才动作（整数减法＋一次比较，零分配）。触发后状态机回到 `None`
+            // ⇒ 幂等、⛔ 不重复触发。
+            if let Some(launch) = pending_launch
+                && launch.advance(frames as u64)
+            {
+                // tempo 覆盖：`arm` 保位置、只重算有理数（⛔ 不跳变）。
+                // ⚠ 采样率沿用走带**已武装**的值（上一次 `arm` 来自同一份快照）
+                // ⇒ `retune` 只换速度，⛔ 不在这里重新读快照（那要 `begin_block()` 借出）。
+                transport.retune(launch.tempo_bpm);
+                *pending_launch = None;
+                *scene_launches_applied = scene_launches_applied.saturating_add(1);
             }
 
             // --- 3b) 母线限制器（[ARCH-DSP-001]）：逐轨汇流之后、母线电平之前 ---
@@ -3944,6 +4112,167 @@ mod tests {
         assert_eq!(stats.meter_capacity_drops, 0);
         assert!(rig.runtime.ftz_armed());
         assert_eq!(rig.runtime.revision(), Some(1));
+    }
+
+    // -----------------------------------------------------------------------
+    // [ARCH-RT-005 族 / A2] 量化**场景启动**：`launch_quantization` ＋ 场景 tempo 覆盖。
+    //
+    // ⭐ 与试听（`AuditionBranch`）同一形状：控制路径武装"绝对生效帧"，实时路径每块只做
+    // 整数减法＋一次比较（零分配/零锁/零 I-O [MUST-GATE-001]）。
+    // ⭐ 四条判据**各自能独立变色**：① 到点生效 ② `Off` 立即（控制臂）③ 取消 ④ 恰好一次。
+    // -----------------------------------------------------------------------
+
+    /// 4/4 拍（测试用的拍号；引擎的快照里没有拍号 ⇒ 由控制面给）。
+    fn common_time() -> yeban_model::TimeSignature {
+        yeban_model::TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        }
+    }
+
+    /// 跑到 `pending_scene_launch` 生效（或量子预算耗尽）⇒ 返回实际用的量子数。
+    fn run_until_launch(rig: &mut Rig, budget: usize) -> usize {
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for used in 1..=budget {
+            rig.runtime.process_quantum(&mut out, 2);
+            if rig.runtime.stats().scene_launches_applied > 0 {
+                return used;
+            }
+        }
+        budget
+    }
+
+    /// ⭐ 判据 ①（**到点生效**）：排队后**不**立刻改速度；跨过生效帧后 tempo 变成该场景的。
+    ///
+    /// ⭐ 独立变色：把 `queue_scene_launch` 里的 `next_bar_tick` 换成"当前帧" ⇒ 第一条
+    /// 断言（排队后立刻仍是原速度）会红。
+    #[test]
+    fn a_queued_scene_launch_applies_its_tempo_at_the_bar_boundary() {
+        let mut rig = rig();
+        let before = rig.runtime.transport().bpm();
+        let scene = Some(EntityId::new());
+        // 场景的 tempo 覆盖与工程速度**明显不同** ⇒ 生效与否一眼可辨。
+        let scene_bpm = before + 40.0;
+        rig.runtime.queue_scene_launch(
+            scene,
+            scene_bpm,
+            yeban_model::LaunchQuantization::Bar,
+            common_time(),
+        );
+        assert!(
+            rig.runtime.has_pending_scene_launch(),
+            "排队后必须有待生效项"
+        );
+        assert_eq!(
+            rig.runtime.transport().bpm(),
+            before,
+            "⭐ 量化档不是 Off ⇒ 排队**不得**立刻改速度"
+        );
+        assert_eq!(rig.runtime.stats().scene_launches_applied, 0);
+
+        let used = run_until_launch(&mut rig, 2_000);
+        assert!(
+            used < 2_000,
+            "一小节（120 bpm、48 kHz ⇒ 96 000 帧 ≈ 750 块）内必须生效"
+        );
+        assert!(
+            (rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9,
+            "⭐ 到点后 tempo 必须变成该场景的 {}（实测 {}）",
+            scene_bpm,
+            rig.runtime.transport().bpm()
+        );
+        assert_eq!(rig.runtime.stats().scene_launches_applied, 1, "⭐ 恰好一次");
+        assert!(
+            !rig.runtime.has_pending_scene_launch(),
+            "⭐ 生效后状态机必须回到 None（幂等）"
+        );
+    }
+
+    /// ⭐ 判据 ②（**控制臂**）：`Off` 档 ⇒ **立即**生效（第一块内）。
+    ///
+    /// ⭐ 独立变色：若把 `Off` 也送进量化分支 ⇒ 这一条会红。它证明判据 ① 的红
+    /// **是因为量化**，⛔ 不是因为启动机制本身不工作。
+    #[test]
+    fn an_off_quantised_launch_takes_effect_immediately() {
+        let mut rig = rig();
+        let scene_bpm = rig.runtime.transport().bpm() + 25.0;
+        rig.runtime.queue_scene_launch(
+            Some(EntityId::new()),
+            scene_bpm,
+            yeban_model::LaunchQuantization::Off,
+            common_time(),
+        );
+        // ⭐ 一个量子就够（Off ⇒ 生效帧 = 当前帧 ⇒ 第一块内触发）。
+        let used = run_until_launch(&mut rig, 1);
+        assert_eq!(used, 1, "⭐ Off ⇒ 第一个量子内必须生效");
+        assert!((rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9);
+        assert_eq!(rig.runtime.stats().scene_launches_applied, 1);
+    }
+
+    /// ⭐ 判据 ③（**取消**）：排队后、**未到点**取消 ⇒ ⛔ 永不触发、tempo 不变。
+    ///
+    /// ⭐ 独立变色：删掉 `cancel_scene_launch` 的清零 ⇒ 这一条会红（会照常触发）。
+    #[test]
+    fn a_cancelled_scene_launch_never_fires() {
+        let mut rig = rig();
+        let before = rig.runtime.transport().bpm();
+        rig.runtime.queue_scene_launch(
+            Some(EntityId::new()),
+            before + 40.0,
+            yeban_model::LaunchQuantization::Bar,
+            common_time(),
+        );
+        assert!(rig.runtime.has_pending_scene_launch());
+        rig.runtime.cancel_scene_launch();
+        assert!(
+            !rig.runtime.has_pending_scene_launch(),
+            "⭐ 取消后不得再有待生效项"
+        );
+        // 跑够**两倍**小节长度（足以让未取消的那次生效两次）。
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..1_600 {
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        assert_eq!(
+            rig.runtime.stats().scene_launches_applied,
+            0,
+            "⭐ 取消过的启动⛔ 一次都不许触发"
+        );
+        assert_eq!(
+            rig.runtime.transport().bpm(),
+            before,
+            "⭐ 取消后 tempo 必须一字不变"
+        );
+    }
+
+    /// ⭐ 判据 ④（**恰好一次**）：跨过生效点后继续跑很久 ⇒ 计数仍是 1（⛔ 不重复触发）。
+    ///
+    /// ⭐ 独立变色：若触发后不清 `pending_launch` ⇒ 每块都会 `retune` 且计数暴涨。
+    #[test]
+    fn a_scene_launch_fires_exactly_once() {
+        let mut rig = rig();
+        let scene_bpm = rig.runtime.transport().bpm() + 30.0;
+        rig.runtime.queue_scene_launch(
+            Some(EntityId::new()),
+            scene_bpm,
+            yeban_model::LaunchQuantization::Bar,
+            common_time(),
+        );
+        let used = run_until_launch(&mut rig, 2_000);
+        assert!(used < 2_000);
+        let after_first = rig.runtime.stats().scene_launches_applied;
+        assert_eq!(after_first, 1);
+        // ⭐ 继续跑**再一个多小节** ⇒ 计数必须纹丝不动、tempo 不变。
+        let mut out = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        for _ in 0..1_200 {
+            rig.runtime.process_quantum(&mut out, 2);
+        }
+        assert_eq!(
+            rig.runtime.stats().scene_launches_applied,
+            1,
+            "⭐ 生效一次之后⛔ 不得再触发"
+        );
+        assert!((rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9);
     }
 
     /// 判据（`line/engine-26` 注入 R13 的处置）：`EngineRuntime` 每个量子开始都必须

@@ -337,6 +337,18 @@ impl Transport {
         self.sample_rate = sample_rate;
     }
 
+    /// ⭐ **只改速度、采样率沿用当前值**（实时路径：零分配、零锁、零 I-O）。
+    ///
+    /// ⭐ 用途：量化场景启动到点时应用该场景的 **tempo 覆盖**。⚠ 与 [`Self::arm`] 分开，
+    /// 是因为实时侧**拿不到**"当前快照的采样率"（那要 `begin_block()` 借出、[`Self::arm`] 的
+    /// 第二个参数需要它）；而 `sample_rate` 已被上一次 [`Self::arm`] 武装成**同一份快照**的值
+    /// ⇒ 沿用它是**同源**的，⛔ 不是猜。
+    /// ⚠ 位置与状态都不动（内部走 [`Self::arm`]）⇒ 改速度⛔ 不跳变。
+    pub fn retune(&mut self, bpm: f64) {
+        let sample_rate = self.sample_rate;
+        self.arm(sample_rate, bpm);
+    }
+
     /// 在量子边界应用一条走带命令（**实时路径**：只有分支与整数运算）。
     pub fn apply(&mut self, command: TransportCommand) -> TransportEffect {
         self.commands_applied = self.commands_applied.saturating_add(1);

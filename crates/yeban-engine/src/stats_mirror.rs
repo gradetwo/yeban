@@ -152,6 +152,8 @@ pub struct EngineStatsMirror {
     note_steals: AtomicU64,
     orphan_note_offs: AtomicU64,
     snapshot_switches: AtomicU64,
+    /// ⭐ 量化场景启动的生效次数（与 `rt.rs` 的 `EngineStats::scene_launches_applied` 同源）。
+    scene_launches_applied: AtomicU64,
     event_bulk_pops: AtomicU64,
     meter_frames: AtomicU64,
     meter_bulk_publishes: AtomicU64,
@@ -222,6 +224,7 @@ impl EngineStatsMirror {
             note_steals: AtomicU64::new(0),
             orphan_note_offs: AtomicU64::new(0),
             snapshot_switches: AtomicU64::new(0),
+            scene_launches_applied: AtomicU64::new(0),
             event_bulk_pops: AtomicU64::new(0),
             meter_frames: AtomicU64::new(0),
             meter_bulk_publishes: AtomicU64::new(0),
@@ -298,6 +301,8 @@ impl EngineStatsMirror {
             .store(stats.orphan_note_offs, Ordering::Relaxed);
         self.snapshot_switches
             .store(stats.snapshot_switches, Ordering::Relaxed);
+        self.scene_launches_applied
+            .store(stats.scene_launches_applied, Ordering::Relaxed);
         self.event_bulk_pops
             .store(stats.event_bulk_pops, Ordering::Relaxed);
         self.meter_frames
@@ -429,6 +434,7 @@ impl EngineStatsMirror {
             note_steals: self.note_steals.load(Ordering::Relaxed),
             orphan_note_offs: self.orphan_note_offs.load(Ordering::Relaxed),
             snapshot_switches: self.snapshot_switches.load(Ordering::Relaxed),
+            scene_launches_applied: self.scene_launches_applied.load(Ordering::Relaxed),
             event_bulk_pops: self.event_bulk_pops.load(Ordering::Relaxed),
             meter_frames: self.meter_frames.load(Ordering::Relaxed),
             meter_bulk_publishes: self.meter_bulk_publishes.load(Ordering::Relaxed),
@@ -537,6 +543,7 @@ mod tests {
             note_steals: 60,
             orphan_note_offs: 61,
             snapshot_switches: 3,
+            scene_launches_applied: 62,
             event_bulk_pops: 4,
             meter_frames: 5,
             meter_bulk_publishes: 6,
