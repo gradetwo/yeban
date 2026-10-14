@@ -3188,6 +3188,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             source,
         })?;
         // 会话是权威 ⇒ 把导入后的工程落回归档，后续导出/保存看的是这一份。
+        // ⭐ **此处的 `project()` ⛔ 不会 panic**：不变式是「**端口存在 ⇒ 权威会话必有一份
+        // 活跃工程**」，⭐ 出处是 `undo.rs:327-329` 的 `# Panics` 文档（逐字：「`main.rs` 的
+        // 装配路径保证端口存在时工程一定在」）＋ `main.rs` 的装配顺序：端口**由那一份工程
+        // 建起来**、此后不被置空。⚠ 若将来「端口在而工程不在」变成**可达**状态，那正是
+        // **新增 `CliError` 变体**的时机（本单⛔ 不加：那会牵动 `Display` 与退出码映射、
+        // 属**用户可见的 CLI 面变更**，应由一次产品决定带来）。
+        // ⭐ 同上：`project()` 在此⛔ 不会 panic（依据 `undo.rs:327-329` 的不变式）。
+        // ⭐ 同上：`project()` 在此⛔ 不会 panic（依据 `undo.rs:327-329` 的不变式）。
         loaded.archive.project = port.project();
         lines.push(report.summary());
     }
