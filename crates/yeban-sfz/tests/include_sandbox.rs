@@ -714,19 +714,15 @@ fn a_wildcard_glob_does_not_descend_into_a_symlinked_directory() {
 /// ⇒ 这里用 `cmd /C`。⭐ 建不出来时 `panic!` 并把 stderr 带上（**响亮**，⛔ 不静默跳过）。
 #[cfg(windows)]
 fn create_dir_junction(link: &Path, target: &Path) {
-    // ⚠ 必须把**整条命令**作为一个字符串交给 `cmd /C`：`cmd` 会**重新解析**它拿到的命令行，
-    // 而 `Command` 的逐参数引用是为 `CommandLineToArgvW` 转义的 ⇒ 分开传会被 cmd 拆错。
-    // 实测（windows 腿、run 38590855303）：分开传 ⇒ `Invalid switch - "linked"`。
-    let cmdline = format!("mklink /j \"{}\" \"{}\"", link.display(), target.display());
     let output = std::process::Command::new("cmd")
-        .args(["/C", &cmdline])
+        .args(["/C", "mklink", "/j"])
+        .arg(link)
+        .arg(target)
         .output()
         .expect("起 cmd 建目录 junction");
     assert!(
         output.status.success(),
-        "mklink /j 未成功 —— ⚠ 先分清两种成因（如实报、⛔ 别默认是环境不允许）：\
-         (甲) 调用写法错（如逐参数传导致 cmd 拆错；stderr 形如 `Invalid switch - …`）；\
-         (乙) 该环境真不许建 junction。status={:?} stderr={}",
+        "mklink /j 必须成功（否则本判据在 Windows 上不可构造）: status={:?} stderr={}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -735,9 +731,7 @@ fn create_dir_junction(link: &Path, target: &Path) {
 /// ⭐ **极小探针**：先问 CI"能不能建目录 junction"，再谈大判据。
 ///
 /// ⚠ 它的价值是**先解掉那个未知量**：`windows-latest` 是否允许非特权 junction。
-/// ⚠ ⭐ **实测更正（R497）**：这条第一次红**⛔ 不是**环境不允许，而是**调用写法错**
-/// （逐参数传 ⇒ cmd 拆成 `Invalid switch - "linked"`）。⇒ ⭐ **判红因时必须先读 stderr**：
-/// `Invalid switch - …` 是**调用错**、⛔ 不能据此断定"该平台不可构造"。
+/// ⚠ 若这条红 ⇒ 下面两条形状 A 判据也必然红 ⇒ 作者会知道**是环境不允许、⛔ 不是语义错**。
 #[cfg(windows)]
 #[test]
 fn a_directory_junction_can_be_created_without_elevation() {
