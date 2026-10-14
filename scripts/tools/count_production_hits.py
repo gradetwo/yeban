@@ -67,6 +67,49 @@ def count(needle: str, path: str) -> int:
     return len(re.findall(r"\b" + re.escape(needle) + r"\b", body))
 
 
+def non_production_rs_paths(crate_dir: str) -> set[str]:
+    """从 `<crate_dir>/Cargo.toml` 读出**不是交付产物**的 `.rs` 路径。
+
+    ⭐ 为什么需要它（R528 的教训）：`src/` 下的文件**不都是生产** ——
+      · `[[test]]` / `[[bench]]` 显式声明的 target（例：`yeban-app` 的 `src/test_port_adapter.rs`）
+      · `[[example]]`
+      · `build.rs`（构建脚本，不随产物运行）
+    ⚠ 只靠"在 src 里且不在 cfg(test) 里"会把它们算成生产 ⇒ 读数偏高。
+    """
+    cargo = pathlib.Path(crate_dir) / "Cargo.toml"
+    if not cargo.exists():
+        return set()
+    try:
+        import tomllib  # py3.11+
+        data = tomllib.loads(cargo.read_text(encoding="utf-8"))
+    except Exception:
+        # 退化路径：正则粗读（够用，因为只要 path = "…" 那些行）
+        data = {}
+    out: set[str] = set()
+    for kind in ("test", "bench", "example"):
+        for item in data.get(kind, []) or []:
+            p = (item or {}).get("path")
+            if p:
+                out.add(str((pathlib.Path(crate_dir) / p).resolve()))
+    out.add(str((pathlib.Path(crate_dir) / "build.rs").resolve()))
+    return out
+
+
+def production_rs_files(root: str) -> list[pathlib.Path]:
+    """枚举**生产** `.rs`：跳过 `/tests/`、`build.rs`、以及 `Cargo.toml` 声明的 test/bench/example target。"""
+    skip: set[str] = set()
+    for cargo in pathlib.Path(root).rglob("Cargo.toml"):
+        skip |= non_production_rs_paths(str(cargo.parent))
+    files = []
+    for f in sorted(pathlib.Path(root).rglob("*.rs")):
+        if "/tests/" in str(f) or f.name == "build.rs":
+            continue
+        if str(f.resolve()) in skip:
+            continue
+        files.append(f)
+    return files
+
+
 def field_stats(root: str) -> tuple[int, int, int]:
     """数 `pub` 字段：① 出现次数（含测试）② 去重后的字段**名**数 ③ 排除 `#[cfg(test)]` 的出现次数。
 
@@ -78,7 +121,7 @@ def field_stats(root: str) -> tuple[int, int, int]:
     occurrences = 0
     names: set[str] = set()
     prod = 0
-    for f in sorted(pathlib.Path(root).rglob("*.rs")):
+    for f in production_rs_files(root):
         src = f.read_text(encoding="utf-8")
         for name in pat.findall(src):
             occurrences += 1
@@ -115,7 +158,18 @@ def self_test() -> int:
     if not ok:
         print("[FAIL] 字段模式自检不符")
         return 1
-    print("[ok] 自检通过：生产命中可见、测试夹具已排除、字段三读数一致且非空转")
+    # ⭐ 排除规则自检（R528）：`[[test]]` target 必须**不在**生产清单里、而普通 src 文件必须在。
+    prod_names = {f.name for f in production_rs_files("crates/yeban-app")}
+    ok2 = "test_port_adapter.rs" not in prod_names and "lib.rs" in prod_names
+    print(
+        f"[{'ok' if ok2 else 'FAIL'}] 排除规则自检: yeban-app 生产文件 {len(prod_names)} 个；"
+        f"test_port_adapter.rs 在否={'test_port_adapter.rs' in prod_names}（须 False）、"
+        f"local_config.rs 在否={'local_config.rs' in prod_names}（须 True）"
+    )
+    if not ok2:
+        print("[FAIL] 排除规则自检不符")
+        return 1
+    print("[ok] 自检通过：生产命中可见、测试夹具已排除、字段三读数一致、[[test]] target 已排除")
     return 0
 
 
@@ -126,6 +180,12 @@ def main(argv: list[str]) -> int:
         occ, distinct, prod = field_stats(argv[2])
         print(f"{argv[2]}: 字段出现次数={occ}  去重后字段名数={distinct}  排除 cfg(test) 后={prod}")
         print("⚠ 引用时请说明用的是哪一个口径（三者含义不同，R524 的混淆就出在这里）")
+        return 0
+    if len(argv) >= 3 and argv[1] == "--list-production":
+        files = production_rs_files(argv[2])
+        for f in files:
+            print(f)
+        print(f"共 {len(files)} 个生产 .rs（已排除 /tests/、build.rs、Cargo.toml 声明的 test/bench/example）")
         return 0
     if len(argv) < 3:
         print(__doc__)
