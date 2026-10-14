@@ -2369,3 +2369,30 @@ let output = c.output()…;
 ⭐ ⚠ **三、⭐ 当前实质状态（⭐ 一句话）**: ⭐ ⭐ **`0cca542f` 是最后一次**实质**判决 ＝ ✅ success**（⭐ 8-crate windows 腿 ＋ ⭐ 全部 crate 腿绿）⇒ ⭐ **此后只有文档 ＋ ⭐ 两次已回退的实验** ⇒ ⭐ **故"⭐ 主干绿"的证据是 `0cca542f`** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `#35`（⭐ 在制）＋ ⭐ 原五件待裁 ＋ ⭐ 磁盘两件待裁 ✓
+
+---
+
+## R500 实测追加（2026-10-15）：⭐⭐⭐ **第三次实现（⭐ `raw_arg`）已并入**（⭐ `3f32f649`）＋ ⭐ **真因由开源先例定位**（⭐ `netsuke`）＋ ⭐ **线把"⭐ 能验的一半"验到了底**（⭐ mock `CommandExt` ＋ ⭐ `ln -s` 预热）
+
+⭐ ⭐ ⭐ **一、⭐ 前两次失败的真因（⭐ 线从开源先例找到、⭐ 逐字引用）**: ⭐ ⭐ **`netsuke` 的 `configure_shell_command` 注释**: ⭐ **"Windows `cmd.exe` parses its command argument itself, rather than using the usual C-runtime argument rules. Passing a quoted command through `Command::arg` would escape its quotes into literal backslashes"** ⇒ ⭐ ⭐ **即: ⭐ Rust 的 `arg` 替 cmd 转义、⭐ 而 cmd 自己解析 ⇒ ⭐ 两者规则不一致** ⇒ ⭐ **故前两次（⭐ 1 逐参数、⭐ 2 整串交 `arg`）都错在同一处** ✓
+⭐ ⭐ **正解（⭐ 线的实现）**: ⭐ ⭐ **`raw_arg` **原样**交出命令文本、⭐ 并套上 `cmd /C` 要求的**一对外层引号****:
+```rust
+let command = format!("mklink /j \"{}\" \"{}\"", link.display(), target.display());
+std::process::Command::new("cmd").args(["/C"]).raw_arg(format!("\"{command}\""))
+```
+⇒ ⭐ ⭐ **即 `cmd /C "mklink /j "<link>" "<target>""`** ⇒ ⭐ **这正是"⭐ 整条命令一个字符串"** ＋ ⭐ **绕开 Rust 引号处理** 的合体** ✓
+
+⭐ ⭐ **二、⭐ 线把"⭐ 能本地验的一半"验到了底（⭐ 三点，⭐ 值得学）**：
+1. ⭐ ⭐ **语义半**: ⭐ **本机用**真实 `ln -s`** 建**同一段夹具** ⇒ ⭐ **`kit/linked → elsewhere` 建成、⭐ `kit/linked/b.sfz` 穿透成立** ⇒ ⭐ **"⭐ 语义那半是对的"**已被证** —— ⭐ ⚠ **这样即使 Windows 调用第三次失败、⭐ 也能确定不是语义错** ✓ ⭐ **这正是我建议的"⭐ 低成本预热"** ✓
+2. ⭐ ⭐ **语法/类型半**: ⭐ ⚠ **`rustup target add x86_64-pc-windows-msvc` 装不上**（⭐ `component download failed … rolling back`）⇒ ⭐ ⭐ **它改用 **mock `CommandExt`** 对**同一段 `#[cfg(windows)]` 代码**做 `rustc` 类型检查** ⇒ ⭐ **通过（⭐ 仅 unused 警告、⭐ 零错误）** ⇒ ⭐ **`.args(["/C"]).raw_arg(format!(…))` 的语法与类型在本机已被验** ✓ ⭐ ⭐ **这是"⭐ 把不可验证的范围**缩小到最小**"的范例** ✓
+3. ⭐ **我点出的另两条同症前提**（⭐ `mklink /j` 要求目标已存在／⭐ 链接父目录须存在）⇒ ⭐ **它显式断言** `target.is_dir()` ＋ `parent.is_dir()`** ⇒ ⭐ **并让失败时 panic 打出**命令行 ＋ ⭐ stdout ＋ ⭐ stderr**** ⇒ ⭐ **便于一眼判因** ✓
+
+⭐ ⭐ **三、⭐ 线如实划出的"⭐ 唯一剩下的风险"**: ⭐ ⭐ **`cmd.exe` 在那台 runner 上对 `"\"…\""` 的解析结果**（⭐ 本机无 cmd、⭐ ⛔ 无法验）** ⇒ ⭐ ⚠ **这是唯一未验的偶然性** ✓
+⭐ ⭐ **并给出止损（⭐ 正是我要求的那条）**: ⭐ **"⭐ 若仍红 ⇒ ⭐ 建议就此登记'⭐ 该平台不可构造'（⭐ 第三类）、⭐ ⛔ 不再试第四种写法"** ✓
+
+⭐ **四、⭐ 我的核验**: ⭐ 1 文件、⭐ **+118（⭐ 无删除 ⇒ ⭐ unix 那 3 条一字未改）** ＋ ⭐ `raw_arg` 出现 **3 次** ＋ ⭐ `sfz --all-targets` ＝ ⭐ **4 条 ok／FAILED ＝ 0** ＋ ⭐ `light` ＝ **0** ⇒ ⭐ **已推 `3f32f649`** ✓
+
+⭐ ⭐ **五、⭐ 一条可复用口径（⭐ 第 69 条）**: ⭐ ⭐ **"⭐ 不可本地验证"应被**缩小到最小**、⭐ 而不是一句"⭐ 本机验不了"就交出去** —— ⭐ **做法: ⭐ 把结论拆成**几半**（⭐ 语义半／⭐ 语法类型半／⭐ 运行期解析半），⭐ 逐半找**本机可用的替代**去验**（⭐ 本例: ⭐ `ln -s` 替代 junction 验语义；⭐ mock `CommandExt` ＋ `rustc` 验语法类型）⇒ ⭐ ⭐ **最终只剩**真正不可替代的那一小处**（⭐ 本例: ⭐ `cmd.exe` 的引号解析）** ✓
+⭐ ⚠ **并附**: ⭐ **若装不上目标平台（⭐ `rustup target add` 失败）⇒ ⭐ 那**不是**"⭐ 只好不验"、⭐ 而是**换一种能验的方式****（⭐ 本例的 mock ＋ ⭐ `rustc`）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `3f32f649` 的 windows 腿判决（⭐ **第三次 ＝ 最后判定**）＋ ⭐ 原五件待裁 ＋ ⭐ 磁盘两件待裁 ✓
