@@ -410,6 +410,12 @@ fn globs_skip_dot_entries() {
     assert_eq!(samples, vec!["a.wav"]);
 }
 
+// ⚠ `std::os::unix::fs::symlink` 只在 unix 存在 ⇒ 本判据必须门控，
+// 否则**整个测试文件在 Windows 上编不过**（`std::os::unix` 不存在 ⇒ E0433），
+// 而 `yeban-sfz` 今天不在 windows 腿 ⇒ 该编译错**一直不可见**。
+// ⚠ 生产侧的 symlink 逃逸检查（`parser.rs::is_symlink` 用 std 的
+// `fs::symlink_metadata`）是**跨平台**的，⛔ 没有 unix 门 ⇒ 这不是"生产语义缺口"。
+#[cfg(unix)]
 #[test]
 fn a_recursive_glob_does_not_descend_into_a_symlinked_directory() {
     // 递归 glob 与单文件 include 同一条「不跟随符号链接」口径：链接目录里的匹配项
@@ -664,6 +670,12 @@ fn the_default_include_depth_is_the_registered_constant() {
     );
 }
 
+// ⚠ `std::os::unix::fs::symlink` 只在 unix 存在 ⇒ 本判据必须门控，
+// 否则**整个测试文件在 Windows 上编不过**（`std::os::unix` 不存在 ⇒ E0433），
+// 而 `yeban-sfz` 今天不在 windows 腿 ⇒ 该编译错**一直不可见**。
+// ⚠ 生产侧的 symlink 逃逸检查（`parser.rs::is_symlink` 用 std 的
+// `fs::symlink_metadata`）是**跨平台**的，⛔ 没有 unix 门 ⇒ 这不是"生产语义缺口"。
+#[cfg(unix)]
 #[test]
 fn a_wildcard_glob_does_not_descend_into_a_symlinked_directory() {
     // 通配符的「非末段」目录展开与递归 glob 是**两处**独立的 `is_symlink` 过滤，
