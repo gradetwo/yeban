@@ -991,7 +991,7 @@ fn local_config_permission_tightening_is_reported_as_unsupported() {
 
     assert!(
         !yeban_model::local_config::file_permission_tightening_is_supported(),
-        "⭐ 非 Unix 上必须如实上报"权限收紧不可用"（⛔ 不许静默声称已收紧）"
+        "⭐ 非 Unix 上必须如实上报「权限收紧不可用」（⛔ 不许静默声称已收紧）"
     );
 
     // ⭐ 保存**必须照常成功**：本地配置是每个平台的核心功能。
