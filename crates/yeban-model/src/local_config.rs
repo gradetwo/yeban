@@ -806,19 +806,17 @@ fn create_private_dir(dir: &Path, path: &Path) -> Result<(), LocalConfigError> {
     }
 }
 
-/// ⭐ **非 Unix 臂**：本平台没有 POSIX 权限位 ⇒ **做不到收紧**。
+/// ⚠ ⭐ **非 Unix 上本函数⛔ 不存在** —— 因为**调用点本身在 `#[cfg(unix)]` 块内**
+/// （见 `save_to`：收紧只在 Unix 代码路径上发生）。
 ///
-/// ⚠ 这里与 Unix 臂**签名相同**（`Result`）⇒ 调用点无需 `cfg` 分支；⭐ 但语义**不同**：
-/// 它**什么都不做**并返回 `Ok(())`，⭐ 故它**必须**与
-/// [`file_permission_tightening_is_supported`] 一起读 —— 后者 `false` 就是
-/// "刚才那次收紧是空转"的**唯一权威读数**。
-/// ⚠ ⛔ 不静默成 `()`：保持 `Result` 让"这里会失败"在类型上可表达（写不进时能上报）。
-#[cfg(not(unix))]
-fn set_file_mode(_path: &Path, _mode: u32) -> Result<(), LocalConfigError> {
-    Ok(())
-}
-
-/// 显式收紧文件权限（Unix）。
+/// ⚠ ⭐ **实测教训（windows 腿、R510）**：本函数**曾**有一个 `#[cfg(not(unix))]` 臂返回
+/// `Ok(())`，而它**永远没有调用者** ⇒ 在 Windows 上被 `-D dead-code` 判为**死代码**、
+/// 整个 `yeban-model` **编不过**。⭐ 故：**不要在非 Unix 侧为它加臂** ——
+/// **没有调用者的臂只会变成死代码**；⭐ 非 Unix 的"未收紧"由
+/// [`file_permission_tightening_is_supported`]（`false`）**如实上报**。
+/// ⚠ ⛔ 也别用 `#[allow(dead_code)]` 掩盖：那只是把死代码留下来（装饰）。
+///
+/// 保留下面这份 `#[cfg(unix)]` 实现即可。
 #[cfg(unix)]
 fn set_file_mode(path: &Path, mode: u32) -> Result<(), LocalConfigError> {
     use std::os::unix::fs::PermissionsExt as _;
