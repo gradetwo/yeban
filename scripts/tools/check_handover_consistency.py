@@ -81,6 +81,34 @@ def actual_main_sha() -> str | None:
         return None
 
 
+def declared_worktrees(text: str) -> set[str]:
+    """从交接 §5 的表里取出它列的 `.worktrees/*` 路径（取末两段，如 `.worktrees/mod-app`）。"""
+    out: set[str] = set()
+    for m in re.finditer(r"`?(\.worktrees/[A-Za-z0-9._-]+)`?", text):
+        out.add(m.group(1).rstrip("/"))
+    return out
+
+
+def actual_worktrees() -> set[str] | None:
+    """实际的 worktree 路径（同样取末两段），相对仓库根。"""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "worktree", "list", "--porcelain"],
+                             cwd=REPO, capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return None
+        found: set[str] = set()
+        for line in out.stdout.splitlines():
+            if line.startswith("worktree "):
+                p = line[len("worktree "):].strip()
+                parts = p.split("/")
+                if len(parts) >= 2 and parts[-2] == ".worktrees":
+                    found.add(f".worktrees/{parts[-1]}")
+        return found
+    except Exception:
+        return None
+
+
 def check(handover_text: str, ledger_text: str) -> list[str]:
     bad: list[str] = []
     top = max_rule_number(ledger_text)
@@ -120,6 +148,21 @@ def check(handover_text: str, ledger_text: str) -> list[str]:
         elif anc is None:
             bad.append(f"无法判定 {claimed} 是否为 {real} 的祖先 ⇒ 本判据可能空转")
 
+    # ⭐ §5 列的 worktree 应与实际一致（R560：§5 是第三类可能陈旧的节）
+    declared_wt = declared_worktrees(handover_text)
+    real_wt = actual_worktrees()
+    if not declared_wt:
+        bad.append("交接 §5 里读不到任何 `.worktrees/*` 路径 ⇒ 本判据可能空转")
+    elif real_wt is None:
+        bad.append("读不到实际 worktree 清单 ⇒ 本判据可能空转")
+    else:
+        missing = sorted(declared_wt - real_wt)
+        extra = sorted(real_wt - declared_wt)
+        if missing:
+            bad.append(f"交接 §5 列了但实际不存在的 worktree: {missing}")
+        if extra:
+            bad.append(f"实际存在但交接 §5 未列的 worktree: {extra}")
+
     # ⭐ 交叉核对：台账里最新一条的编号应当等于上面的 top
     latest = re.findall(r"^## R(\d+)", ledger_text, re.M)
     if not latest:
@@ -132,13 +175,16 @@ def self_test() -> int:
     ledger = "第 37 条 …\n第 85 条 …\n## R540\n"
     ok_text = "完整 **37–85** 条在台账；本会话新增 **56–85**\n"
     bad_text = "完整 **37–71** 条在台账；本会话新增 **56–71**\n"
+    wt_real = sorted(actual_worktrees() or set())
+    wt_ok = "".join(f"| `{w}` | `line/x` | 保留 |\n" for w in wt_real)
+    wt_bad = "| `.worktrees/does-not-exist-xyz` | `line/x` | 保留 |\n"
     sha_ok = "| `origin/main` | ⭐ **`" + (actual_main_sha() or "0"*8) + "`** |\n"
     sha_bad = "| `origin/main` | ⭐ **`deadbeef`** |\n"
     cases = [(ok_text, 0, "一致文本"), (bad_text, 1, "落后 14 条的文本")]
     fails = 0
     for text, want_min, label in cases:
         # ⭐ §1 的 sha 用例：真 sha 必须不报、假 sha 必须报
-        text = text + sha_ok if want_min == 0 else text + sha_bad
+        text = text + sha_ok + wt_ok if want_min == 0 else text + sha_bad + wt_bad
         got = check(text, ledger)
         ok = (len(got) == 0) if want_min == 0 else (len(got) >= want_min)
         print(f"[{'ok' if ok else 'FAIL'}] {label}: 报出 {len(got)} 项 {got[:1]}")
