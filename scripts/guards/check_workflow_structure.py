@@ -14,6 +14,7 @@ crate 集合, 于是 `rust` 矩阵腿**整体 skipped**, 新加的腿在它自�
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 
 import yaml
@@ -66,9 +67,22 @@ def main() -> int:
         )
     for step in legs:
         run = str(step.get("run", ""))
+        # ⭐ **只看真正的 `--features` 开关**，⛔ 不判 `needle in run`。
+        # ⚠ 澄清（R515）：**本守卫原本就有牙** —— 逐字复现"删掉 `--features` 行 ＋
+        # `if grep -q` 行"这种注入 ⇒ 旧谓词**照样变红**。故下面**不是缺陷修复**，
+        # 而是一次**收紧**：把判据从"子串出现在 run 的**任意位置**"改成"必须出现在
+        # `--features` 列表里"。⭐ 差别在于：run 里还有别处（注释、echo、grep 模式）
+        # 可能带同名子串 ⇒ 收紧后那些**不再能替**真正的开关。
+        # ⚠ 若将来有人往里加一行含同名的注释、而开关被删，旧谓词会放行、新谓词不会。
+        features: set[str] = set()
+        for seg in re.findall(r"--features[=\s]+([^\s\\]+)", run):
+            features.update(f.strip() for f in seg.split(",") if f.strip())
         for needle in REQUIRED_IN_RUN:
-            if needle not in run:
-                fail(f"腿 {step.get('name')!r} 的 run 里缺少 {needle!r}")
+            if needle not in features:
+                fail(
+                    f"腿 {step.get('name')!r} 的 **--features 开关**里缺少 {needle!r}"
+                    f"（已启用: {sorted(features)}）—— ⚠ 只在别处（注释/echo/grep 模式）出现不算"
+                )
 
     # 平台腿是 R60/R63 的受害面: 它必须存在且有自己的步骤, 否则换行锚点类缺陷
     # 只会在 Linux 检出上被验证。
