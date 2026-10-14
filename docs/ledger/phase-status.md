@@ -1688,3 +1688,12 @@ right: ["D:\a\yeban\yeban\crates\yeban-app/ui/transport.slint"]    ← 期望
 ⭐ ⭐ **并附一条证据形态的判准**: ⭐ ⭐ **"⭐ 本机无法验证"是**弱证据**；⭐ **强证据 ＝ ⭐ 把判定抽成**纯函数** ＋ ⭐ 用内存样例覆盖平台差异的那一侧**"** ✓ ⭐ **本会话两个正面样板**: ⭐ `mod-model` 的**内存文本 CRLF 判据** ＋ ⭐ `mod-engine` 的**临时转 CRLF 复现**（⭐ 它给出 `ok. 1 passed` vs `FAILED` 的**对照读数**）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `mod-app` 的平台相关断言清扫（⭐ 在制）⇒ ⭐ **修完后第三次加回 windows 腿** ＋ ⭐ 四件人类裁决（⭐ `handover` §6）✓
+
+---
+
+## R473 实测追加（2026-10-14）：⭐ **五个 CRLF 修复的判决 ＝ SUCCESS（⭐ 13 腿实跑）** ＋ ⚠ **但 windows 腿不在列 ⇒ 那两处仍待 Windows 验证**
+
+⭐ **判决**: ⭐ `9da40301`（⭐ 含 ⭐ `fd623d0d` app 4 处 ＋ ⭐ `b69a7029` decode 2 处 ＋ ⭐ `d9c2e68f` engine 1 处 ＋ ⭐ `9da40301` model 2 处）⇒ ⭐ ⭐ **SUCCESS、13 腿实跑** ⇒ ⭐ 逐腿: ⭐ `yeban-model` ✓ 84s／15 ＋ ⭐ `yeban-mcp` ✓ 180s／15 ＋ ⭐ `yeban-render` ✓ 285s／15 ＋ ⭐ `yeban-ui-mcp` ✓ 146s／15 ＋ ⭐ ⭐ **`yeban-engine` ✓ 171s／15** ＋ ⭐ ⭐ **`yeban-decode` ✓ 76s／15** ＋ ⭐ `yeban-midi` ✓ 64s／15 ｜⭐ `rust (workspace 全量)` skipped ⇒ ⭐ 记"⭐ 有空绿风险" ✓
+⇒ ⭐ ⭐ **即: ⭐ 那五处 CRLF 修法在 **Linux** 上全绿、⭐ ⛔ 没有回归**** ✓ ⚠ ⭐ ⭐ **但 `windows` 腿**不在该腿列表里**（⭐ 当时 C1 已回退）⇒ ⭐ ⚠ **即"⭐ decode／⭐ engine 那两处"**仍未获 Windows 验证**** ⇒ ⭐ ⭐ **这正是 R472 派单的由来: ⭐ 覆盖面本身有空白**（⭐ 8 个 crate 无 Windows 覆盖）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ C1 第三次加回 ＋ ⭐ 全仓平台差异清扫（⭐ 在制）＋ ⭐ 四件人类裁决 ✓
