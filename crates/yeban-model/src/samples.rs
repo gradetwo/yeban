@@ -1063,13 +1063,28 @@ mod tests {
             .collect()
     }
 
-    /// 读取 `schemas/ops.schema.json` 里 `origin.oneOf[0].enum` 的单元变体名。
+    /// 读取 `schemas/ops.schema.json` 里 `origin.oneOf` 的**单元变体** enum。
+    ///
+    /// ⭐ **按 `enum` 键定位分支，⛔ 不按下标**：`origin.oneOf` 的分支**顺序**不是契约的一部分
+    /// （历史实测：把 `McpEdit` 插到 `oneOf[0]` 会让按下标读的判据读到错的形状）。
+    /// ⚠ **找不到带 `enum` 的分支 ⇒ `panic`**（第 41 条），⛔ 不许静默返回空表。
     fn schema_origin_unit_names() -> Vec<String> {
         let text = std::fs::read_to_string(schema_path("ops.schema.json")).expect("read schema");
         let schema: serde_json::Value = serde_json::from_str(&text).expect("schema json");
-        schema["properties"]["origin"]["oneOf"][0]["enum"]
+        let branches = schema["properties"]["origin"]["oneOf"]
             .as_array()
-            .expect("origin.oneOf[0].enum 必须是数组")
+            .expect("origin.oneOf 必须是数组");
+        assert!(
+            !branches.is_empty(),
+            "origin.oneOf 是空数组 ⇒ 契约损坏或路径变了（⛔ 不静默跳过）"
+        );
+        let branch = branches
+            .iter()
+            .find(|branch| branch["enum"].is_array())
+            .expect("origin.oneOf 里必须有一个带 `enum` 的分支（单元变体）");
+        branch["enum"]
+            .as_array()
+            .expect("带 `enum` 的分支必须是数组")
             .iter()
             .map(|name| name.as_str().expect("enum 元素是字符串").to_owned())
             .collect()

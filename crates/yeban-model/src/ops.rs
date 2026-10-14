@@ -31,10 +31,14 @@
 //! 而那条线禁改 `schemas/**` ⇒ 漂移当时由测试里的 `PENDING_CONTRACT_ORIGINS` 机械钉住。
 //! 现在 `schemas/ops.schema.json` 的 `origin.oneOf` 已在**末尾**补上 `McpEdit` 对象分支
 //! （`additionalProperties: false`，只许 `agent_name`），该清单因此清空。
-//! 为什么必须"末尾"：两条判据按下标读契约 —— `oneOf[0]` 是单元枚举、`oneOf[1]` 是
-//! `McpProposal`（其载荷键在 `oneOf[1].properties.McpProposal.required` 硬编码核对）。
-//! 插到前面会让这两处读到错的形状（实测：106 passed / 3 failed）。追平原委与证据见
-//! `docs/ledger/origin-contract-notes.md`。
+//! **分支顺序不是契约**（⛔ 不要靠"必须放末尾"）：历史上两条判据曾**按下标**读 ——
+//! `origin.oneOf[0]` 当单元枚举；把 `McpEdit` 插到 `[0]` 会让它们读到**错的形状**
+//! （实测：106 passed / 3 failed）。⚠ 那个"挪动时要同步下标"的约定**⛔ 不是守卫**：
+//! 顺序一变，按下标读会**静默**取到 `McpProposal`／`McpEdit` 分支而判据仍绿。
+//! ⇒ 现已改成**按内容定位**（谁的 `enum` 是数组，谁就是单元分支；找不到即**响亮失败**），
+//! 由 `origin_unit_branch_is_found_regardless_of_branch_order` 钉住顺序无关性。
+//! ⚠ 唯一仍按**位置**读的是 `op.oneOf[*].required[0]`（每个分支只需一个变体键 ⇒ 与顺序无关）。
+//! 追平原委与证据见 `docs/ledger/origin-contract-notes.md`。
 //!
 //! 本模块的契约一致性有两条**直接读契约文件**的判据（不手抄第二份事实源）：
 //! `op_variants_match_ops_schema_exactly` 与
@@ -3399,6 +3403,25 @@ mod tests {
     }
 
     /// 解析 `schemas/ops.schema.json`。
+    /// ⭐ **按 `enum` 键**取 `origin.oneOf` 里的**单元变体**分支（⛔ **不按下标**）。
+    ///
+    /// ⚠ 为什么不能写 `oneOf[0]`：`origin.oneOf` 的分支**顺序**不是契约的一部分 ——
+    /// 实测（本仓历史）把 `McpEdit` 插到 `oneOf[0]` 位置会让按下标读的判据读到**错的形状**
+    /// （`106 passed / 3 failed`）。⭐ 而"挪动时要记得同步下标"**⛔ 不是守卫**：
+    /// 顺序一变，按下标读会**静默**取到 `McpProposal`／`McpEdit` 分支，判据却仍绿。
+    ///
+    /// ⭐ 现在改成**按内容定位**：谁的 `enum` 是数组，谁就是单元枚举分支。
+    /// ⚠ **找不到 ⇒ 返回 `None`，调用方必须响亮失败**（第 41 条）——
+    /// ⛔ 不许退回"找不到就跳过"，那会让判据永远绿。
+    fn origin_unit_enum_branch(schema: &serde_json::Value) -> Option<&serde_json::Value> {
+        let branches = schema["properties"]["origin"]["oneOf"].as_array()?;
+        assert!(
+            !branches.is_empty(),
+            "`origin.oneOf` 是空数组 ⇒ 契约损坏或路径变了（⛔ 不是静默跳过）"
+        );
+        branches.iter().find(|branch| branch["enum"].is_array())
+    }
+
     fn ops_schema() -> serde_json::Value {
         let path = schema_path("ops.schema.json");
         let text = std::fs::read_to_string(&path)
@@ -3729,17 +3752,82 @@ mod tests {
         );
     }
 
+    /// ⭐ **顺序无关的证明**（内存 JSON，⛔ 不碰 `schemas/**`）：把带 `enum` 的分支
+    /// **挪到末尾**（模拟"有人插一个分支到前面"）⇒ 按内容定位仍取到**同一批**单元变体，
+    /// ⭐ 而同一份内存文档若按**下标 `[0]`** 读会取到 `McpProposal`（⛔ 不是 enum）。
+    ///
+    /// ⚠ 存在理由：`origin.oneOf` 的分支顺序**不是契约**，而按下标读的那两处会**静默**
+    /// 取错分支（历史实测 `106 passed / 3 failed`）⇒ "挪动时记得同步下标"⛔ 不是守卫。
+    ///
+    /// ⚠ 实测教训（本判据第一版）：`serde_json::json!` 会**移动**它的操作数 ⇒ 同一批
+    /// `Value` 不能在两个 `json!` 之间复用（第二处会拿到 `Null`，让判据假红）。
+    /// 这里用**独立的字面构造**，⛔ 不共享变量。
+    #[test]
+    fn origin_unit_branch_is_found_regardless_of_branch_order() {
+        let wrap = |one_of: serde_json::Value| serde_json::json!({"properties": {"origin": {"oneOf": one_of}}});
+        let unit_literal = || serde_json::json!({"enum": ["UserUi", "MidiInput", "UndoRedo"]});
+        let proposal_literal = || serde_json::json!({"required": ["McpProposal"]});
+        let mcp_edit_literal = || serde_json::json!({"required": ["McpEdit"]});
+
+        // 契约现状：enum 分支在 `[0]`。
+        let as_declared = wrap(serde_json::json!([
+            unit_literal(),
+            proposal_literal(),
+            mcp_edit_literal()
+        ]));
+        // ⭐ 变异：把 enum 分支挪到**末尾**（= 有人插了一个分支到前面）。
+        let reordered = wrap(serde_json::json!([
+            proposal_literal(),
+            mcp_edit_literal(),
+            unit_literal()
+        ]));
+
+        let from_declared = origin_unit_enum_branch(&as_declared).expect("现状必须找得到");
+        let from_reordered = origin_unit_enum_branch(&reordered).expect("挪动后仍必须找得到");
+        assert_eq!(
+            from_declared["enum"], from_reordered["enum"],
+            "按**内容**定位必须与分支顺序无关"
+        );
+        assert_eq!(
+            from_reordered["enum"],
+            serde_json::json!(["UserUi", "MidiInput", "UndoRedo"]),
+            "挪动之后取到的必须仍是**单元变体**那一支"
+        );
+
+        // ⭐ 反证：同一份挪动后的文档，若按**下标 [0]** 读会取到 `McpProposal`（⛔ 不是 enum）。
+        let by_index = &reordered["properties"]["origin"]["oneOf"][0];
+        assert!(
+            by_index["enum"].is_null(),
+            "证明：按 `[0]` 读挪动后的文档取到的**不是** enum 分支（旧写法的失效形态）"
+        );
+        assert_eq!(
+            by_index["required"][0], "McpProposal",
+            "证明：按下标读到的确实是 `McpProposal` 分支"
+        );
+
+        // ⭐ 防空（第 41 条）：没有 enum 分支 ⇒ 返回 None（调用方随之响亮失败）。
+        let no_enum = wrap(serde_json::json!([proposal_literal(), mcp_edit_literal()]));
+        assert!(
+            origin_unit_enum_branch(&no_enum).is_none(),
+            "没有 enum 分支时必须返回 None（⛔ 不静默给空表）"
+        );
+        // 空 `oneOf` ⇒ 必须**响亮失败**（panic），⛔ 不是静默跳过。
+        let empty = wrap(serde_json::json!([]));
+        let panicked = std::panic::catch_unwind(|| origin_unit_enum_branch(&empty).is_some());
+        assert!(panicked.is_err(), "空 `oneOf` 必须响亮失败（第 41 条）");
+    }
+
     /// `OpOrigin` 的两种形状必须与契约的 `origin.oneOf` 对应（ADR-0001 D13）。
     #[test]
     fn origin_variants_match_ops_schema_origin_one_of() {
         let schema = ops_schema();
-        let unit_names: std::collections::BTreeSet<String> =
-            schema["properties"]["origin"]["oneOf"][0]["enum"]
-                .as_array()
-                .expect("origin.oneOf[0].enum 必须是数组")
-                .iter()
-                .map(|name| name.as_str().expect("enum 元素是字符串").to_owned())
-                .collect();
+        let unit_names: std::collections::BTreeSet<String> = origin_unit_enum_branch(&schema)
+            .expect("origin.oneOf 里必须有一个带 `enum` 的分支（单元变体）")["enum"]
+            .as_array()
+            .expect("带 `enum` 的那个 `origin.oneOf` 分支必须是数组")
+            .iter()
+            .map(|name| name.as_str().expect("enum 元素是字符串").to_owned())
+            .collect();
 
         let mut serialized_units: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
