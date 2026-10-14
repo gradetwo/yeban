@@ -184,7 +184,8 @@
 ⭐ ⭐ **该组已拆成**两类**并处置（⭐ R495／⭐ R497）**：
 - ⭐ **目录 symlink（`include_sandbox.rs` 的递归／通配符两条）⇒ 第一类**（应当有、只是没测）—— 因为
   **目录 junction 免特权**（`mklink /j`），而生产侧的 `is_symlink` 用 `symlink_metadata` 看**重解析点** ⇒ junction 也被判为真 ⇒ **同一条生产语义**。
-  ⭐ 已落地：一条**极小探针**（先问 CI“能否建 junction”）＋ 两条**逐字照 unix 原条**的对偶判据（`+88`）。
+  ⭐ ⭐ **已落地并经 windows 腿验证通过**（⭐ `61252dac`：腿 **18 步／600s 全绿**）⇒ ⭐ **两问都有答案**：⭐ **`windows-latest` 非特权**能**建目录 junction**（探针过）；⭐ **不下探语义**成立**（两条对偶过）。
+  ⭐ 一条**极小探针**（先问 CI“能否建 junction”）＋ 两条**逐字照 unix 原条**的对偶判据（`+88`）。
 - ⚠ **文件 symlink ⇒ 第三类**（触发不可构造）—— 需 `SeCreateSymbolicLinkPrivilege`（默认只给 Administrator）。
   ⭐ **未补、且不写永远跳过的臂**（那种臂**零证据**）；探针成功只证明 junction 可建、⛔ **不**证明 symlink 特权。
 
