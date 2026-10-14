@@ -52,6 +52,7 @@
 | ⭐ | ⭐ **`serde_json::json!` 会**移动**操作数** ⇒ 同一批 `Value` 跨两次 `json!` 复用拿到 `Null`（判据假红） | 用**独立字面构造** |
 | ⭐ | ⭐ **Python heredoc 里⛔ 别用直引号包裹中文引文**（`"今天为空"`）⇒ 字符串提前结束、`SyntaxError`、**补丁全部未落**（我犯过两次） | 用 **「」** |
 | ⭐ | ⭐ **`cargo fmt` ⛔ 不接受 `--locked`** | 写对命令再看退出码 |
+| ⭐ | ⭐ ⭐ **某腿红时、**第一步永远是取该腿产物**** —— `gh run download <run> -n <leg>-gate-log -D <dir>`（⚠ **须 `cd` 到仓库内跑**）⇒ 再 `grep` **失败步的正文**。⚠ **⛔ 别先 grep 通用错误词** —— 本会话两次都是产物直接给出答案（`sfz` 的 `E0433`；`engine` 的 `thread 'main' has overflowed its stack`），而 `error[`、`panicked`、`test result: FAILED` **全未命中** | ⭐ ⭐ **先读产物、再下结论**。⚠ **本会话两次都先得出了「需要另一平台迭代」的结论、而两次都是错的** |
 | ⭐ | ⭐ **平台相关的字符串断言**（一整族）: `windows` 腿两次红各曝一族 —— ⭐ **CRLF**（判据读自己源码、锚点在 CRLF 检出下失配）与 ⭐ **路径分隔符**（实际由 `Path` 渲染给 `\\`、期望硬编码 `/`）| ⭐ 比 `Path` 而非比字符串（最强: 根本不渲染）；其次比 文件名；再次归一后比 ⛔ 别只把期望改成 `\\`（会在 Linux 上翻）|
 | ⭐ | ⭐ ⭐ **⛔ 不要用 `bash` 跑 `scripts/gates/*.py`** —— 那会让 bash 把 Python 当 shell 脚本执行、吐一大片 `Permission denied` 与 `command not found`、并以 **`RC=2`** 结束 ⇒ ⚠ 那是**用法错误**、⛔ 不是「门禁红」（本会话我踩过一次、差点误判主干红） | ⭐ ⭐ **用 `python3 scripts/gates/<name>.py`**；⭐ **先确认命令对、再看退出码**（与 `cargo fmt --locked` 同族） |
 
@@ -168,6 +169,8 @@
 10. ⭐ **资产链 ①②③（模型声明 / 工具接线 / 工程层许可判定）** 均 CI 绿。
 11. ⭐ **两处假绿门禁已修**（`id_dictionary_audit` 抽空 ⇒ 反向差集平凡成立；`check_docs_links` 零文件 ⇒ 打印「通过」）。
 
+14. ⭐ ⭐ **加平台腿应把「可能红」当**默认预期**并预置回退** —— 产出不止是覆盖面，它会暴露**该 crate 上从未在另一平台跑过的判据**（本会话两例：`sfz` 的**编译**错、`engine` 的**运行期**主线程栈溢出）。
+15. ⭐ ⭐ **「需要另一平台才能判」之前、先读该腿**已上传的产物**（本会话两次都是产物直接给答案）。
 ## 11. ⭐ 接手后的第一步（按序）
 
 1. ⭐ **核验**：`command git log --oneline -3`、`command git status --porcelain`（应空）、`command git rev-parse HEAD origin/main`（应相等）。⚠ 若 `main` 已前进，**先读那几条提交**。
