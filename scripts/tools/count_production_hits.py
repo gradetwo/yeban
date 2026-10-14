@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import pathlib
 import re
 import sys
 
@@ -66,6 +67,26 @@ def count(needle: str, path: str) -> int:
     return len(re.findall(r"\b" + re.escape(needle) + r"\b", body))
 
 
+def field_stats(root: str) -> tuple[int, int, int]:
+    """数 `pub` 字段：① 出现次数（含测试）② 去重后的字段**名**数 ③ 排除 `#[cfg(test)]` 的出现次数。
+
+    ⭐ 为什么要三个数并列（R524 的教训）：我一度把"去重名数"（132）当成"字段数"、
+    又误以为它和另一个读数（179）的差来自"字段式样不同" —— 其实**两个数各自都对**，
+    差的是**同名字段**。⭐ 并列显示后这类混淆就不会再发生。
+    """
+    pat = re.compile(r"^\s*pub ([a-z_][a-z0-9_]*): ", re.M)  # ⚠ 必须 re.M（R524 的静默 0 就是漏了它）
+    occurrences = 0
+    names: set[str] = set()
+    prod = 0
+    for f in sorted(pathlib.Path(root).rglob("*.rs")):
+        src = f.read_text(encoding="utf-8")
+        for name in pat.findall(src):
+            occurrences += 1
+            names.add(name)
+        prod += len(pat.findall(strip_cfg_test_blocks(strip_comments(src))))
+    return occurrences, len(names), prod
+
+
 def self_test() -> int:
     """正对照 + 已知答案：能看见生产命中、看不见测试夹具。"""
     cases = [
@@ -83,13 +104,29 @@ def self_test() -> int:
     if bad:
         print(f"[FAIL] 自检 {bad} 项不符 —— 扫描器或口径有问题")
         return 1
-    print("[ok] 自检通过：生产命中可见、测试夹具已排除")
+    # ⭐ 字段模式的自检：必须能数到非零、且"去重名数"严格小于"出现次数"
+    #（二者相等 ⇒ 要么没数到、要么去重没生效）。
+    occ, distinct, prod = field_stats("crates/yeban-model/src")
+    ok = occ > 0 and 0 < distinct < occ and prod > 0
+    print(
+        f"[{'ok' if ok else 'FAIL'}] 字段模式自检: 出现={occ} 去重名={distinct} "
+        f"排除测试={prod}  (要求 出现>0、0<去重名<出现、排除测试>0)"
+    )
+    if not ok:
+        print("[FAIL] 字段模式自检不符")
+        return 1
+    print("[ok] 自检通过：生产命中可见、测试夹具已排除、字段三读数一致且非空转")
     return 0
 
 
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[1] == "--self-test":
         return self_test()
+    if len(argv) >= 3 and argv[1] == "--fields":
+        occ, distinct, prod = field_stats(argv[2])
+        print(f"{argv[2]}: 字段出现次数={occ}  去重后字段名数={distinct}  排除 cfg(test) 后={prod}")
+        print("⚠ 引用时请说明用的是哪一个口径（三者含义不同，R524 的混淆就出在这里）")
+        return 0
     if len(argv) < 3:
         print(__doc__)
         return 2
