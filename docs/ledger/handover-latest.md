@@ -265,6 +265,9 @@
   ⚠ 若接插件执行而忘读它 ⇒ 会变成**静默不隔离**（第 41 条那一族）。
 - ⭐ `TaskProgress.cancellable`（`session.rs:104`）—— 实现**任务层**时读它（“可取消”是行为承诺）。
 - ⭐ `ContainerLimits.max_ratio`（`container/mod.rs:95`）—— 实现**容器限额**时读它。
+- ⭐ **`AssetMetadata.media_kind`**（⭐ R527）—— 实现**按媒体类型分支的消费者**时读它。
+  ⭐ 它**有写者**（`yeban-decode` 的 `asset_index` 按**内容**判定）、⭐ 且与 `hash`／`byte_len` 并列被当作**不可改的事实**，
+  ⚠ 但生产代码里**没有任何读者**（工具复核：`notes.rs`／`import_audio.rs` 生产命中 = 0）。
 
 ⚠ ⭐ **另一半也要记**：**「无行为读者」⛔ 不等于「缺陷」** ——
 记录／载荷／注记类的字段（`Commit.*`、元数据、会话状态、本机配置等）
