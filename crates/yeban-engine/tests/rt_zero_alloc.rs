@@ -935,6 +935,26 @@ fn scenario_transport(report: &mut Report) {
         scenario.absorb(1, &rig.pump(1));
     }
 
+    // ⭐ **量化场景启动的生效路径也必须被本见证覆盖**（这是"放 RT 层"裁决的前提）：
+    // ⚠ 排队在窗口**之外**（控制面允许分配），生效发生在下面的 `pump` 窗口**之内**
+    // ⇒ 那一段实时路径上的任何分配都会被本场景的分配计数器抓到。
+    // ⚠ 用 `Bar` 档：位置在此处距下一个小节线不到 100 量子（远小于 2 000）⇒ 生效是
+    // **确定发生**的，`rig.stats().scene_launches_applied` 就是覆盖度证据。
+    let scene_bpm = rig.runtime.transport().bpm() + 17.0;
+    rig.runtime.queue_scene_launch(
+        None,
+        scene_bpm,
+        yeban_model::LaunchQuantization::Bar,
+        yeban_model::TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        },
+    );
+    assert!(
+        rig.runtime.has_pending_scene_launch(),
+        "覆盖度前提：排队必须成立（否则下面的生效读数恒 0）"
+    );
+
     // 稳定播放 2 000 量子（走带推进 + 声部合成 + 读数镜面）。
     rig.send_transport(TransportCommand::Play);
     scenario.absorb(TRANSPORT_PLAY_QUANTA, &rig.pump(TRANSPORT_PLAY_QUANTA));
@@ -957,6 +977,15 @@ fn scenario_transport(report: &mut Report) {
         &scenario,
     );
 
+    report.assert(
+        "③d",
+        "⭐ 覆盖度：量化场景启动在**本见证的窗口内**真的生效过（实时路径被走过）",
+        stats.scene_launches_applied >= 1,
+        format!(
+            "scene_launches_applied={}（要求 ≥ 1；否则新路径未被本见证覆盖）",
+            stats.scene_launches_applied
+        ),
+    );
     report.assert(
         "③c",
         "覆盖度：命令被应用、推进发生过、停住窗口时钟冻结",
