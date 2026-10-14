@@ -25,6 +25,26 @@
 //!
 //! 解析与映射**全部**在提交之前完成（纯函数 `plan_midi_import`）；只有全部成功才发出**一次**
 //! 提交请求 ⇒ 非法输入不会留下半个工程（与 `--export-wav` 的"不留半成品"同族）。
+//!
+//! ## 口径（⭐ 本导入**只**消费什么、**不**消费什么）
+//!
+//! ⚠ 本节是**读数**，⛔ 不是评判：每一条都由 `grep` / 类型可从本文件的实现复算。
+//!
+//! 1. **只消费 [`ParsedMidi::notes`] 与 [`ParsedMidi::ppq`]** —— 生产代码里出现的
+//!    `parsed.*` 字段**只有**这两个（见 [`plan_midi_import`]）。⭐ 由此可复算：
+//!    `grep -n 'parsed\.' crates/yeban-app/src/import_midi.rs` 的结果里⛔ 不出现
+//!    `parsed.tempos` / `parsed.format`。
+//! 2. **tempo map 不参与映射**：`ParsedMidi::tempos`（[`yeban_midi::midi::MidiTempo`]）
+//!    在本文件的**生产**代码里⛔ 一处都不出现；它只作为**判据夹具**出现在 `#[cfg(test)]` 里。
+//!    ⇒ 音符的**绝对 tick**（以及音符之间的相对 tick）按 `ppq` 换算后**原样**落到工程上，
+//!    ⛔ 不做任何与速度有关的换算。
+//! 3. **不量化**：[`scale_ticks`] 是**纯比例**换算（`tick × MODEL_PPQ ÷ ppq`），
+//!    ⛔ 不吸附到工程网格；`ppq` 除不尽时按整数除法**截断**。
+//! 4. **单一目标**：全部音符进**同一个**音轨与**同一个**片段 —— 目标由
+//!    [`MidiImportOptions`] 决定（`None` 时取第一条非 master 音轨、该轨的第一个摆放）。
+//!    ⛔ 不按通道 / ⛔ 不按文件里的轨道拆分。
+//! 5. **支持的输入范围**：⛔ 本文件不复述"支持哪些格式" —— 那是
+//!    [`yeban_midi::midi::parse_smf`] 及其错误变体的事（⭐ 指路，⛔ 不手抄）。
 
 use std::path::{Path, PathBuf};
 
@@ -133,6 +153,10 @@ pub fn scale_ticks(tick: u64, ppq: u16) -> u64 {
 }
 
 /// **纯映射**：`ParsedNote` ⇒ `Op::AddNote`（⛔ 不改工程、⛔ 不提交）。
+///
+/// ⚠ **只消费 `parsed.notes` 与 `parsed.ppq`**（⭐ 可由本函数体 `grep 'parsed\.'` 复算）；
+/// [`ParsedMidi::tempos`] 与 [`ParsedMidi::format`] ⛔ 不参与映射 ——
+/// 完整口径见本模块文档的"口径"一节。
 ///
 /// # Errors
 ///
