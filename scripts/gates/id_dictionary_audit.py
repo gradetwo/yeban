@@ -83,6 +83,36 @@ def _register(out: dict[str, list[int] | None], token: str) -> None:
 def main() -> int:
     specs = spec_families()
     dictionary = dictionary_families()
+    # ⭐ **防空（第 41 条）** —— ⚠ 本条是本门唯一会**假绿**的路径：
+    # 若 `spec_families()` 因正则过期而抽空，则"规范里多出来的族"（反向差集）**平凡成立**
+    # （∅ ⊆ 任何集合）⇒ ⭐ **门会 EXIT=0 而实际什么都没查**。
+    # ⛔ 不要靠"对账"兜底：对账只能发现**方向**问题，发现不了**抽取器瞎了**。
+    if not specs:
+        print(
+            "抽取规则失效（⛔ 不是对账失败）: `spec_families()` 一条 ID 都没抽到 —— "
+            "`ID_RE` 或 `SPECS` 已过期。若规范里确实没有 ID，请显式改本门的口径，"
+            "⛔ 不要让它以空集通过（空集会让反向差集平凡成立）。",
+            file=sys.stderr,
+        )
+        return 1
+    if not dictionary:
+        print(
+            "抽取规则失效（⛔ 不是对账失败）: `dictionary_families()` 一条族名都没抽到 —— "
+            "`AGENTS.md` 的小节标题或解析口径已变。⛔ 否则会报一片『字典里没有该族』，"
+            "把真因（抽取器瞎了）误报成字典缺项。",
+            file=sys.stderr,
+        )
+        return 1
+    # ⭐ **正对照（第 42 条）**：抽到的集合必须含一条**已知存在**的族
+    #（现取自规范侧，⛔ 不写死可能被改名的字面）。
+    sample = "ROAD"
+    if not any(name.startswith(sample) for name in specs):
+        print(
+            f"抽取器看不见已知样例 `{sample}-*` ⇒ 抽取规则有盲区（⛔ 不是对账失败）: "
+            f"抽到的族 = {sorted(specs)}",
+            file=sys.stderr,
+        )
+        return 1
     problems: list[str] = []
 
     for fam, numbers in sorted(specs.items()):
