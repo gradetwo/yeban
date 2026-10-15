@@ -338,7 +338,18 @@ impl NoteToneSource {
 /// 里调用，⛔ 绝不在音频回调里调用（本文件是离线路径）。
 pub(crate) struct EngineTrackSource {
     /// 已武装的合成器（本源独占）。
-    engine: SynthEngine,
+    ///
+    /// ⭐ **为什么是 `Box<SynthEngine>` 而不是内联的 `SynthEngine`**（本票 #72 的修法）：
+    /// `size_of::<SynthEngine>()` 实测 **109152 B**（`synth.rs` 的字段文档是同一读数）。
+    /// 内联时本结构体就是 `EngineTrackSource = 109232 B`，于是**每一次按值搬动**
+    /// （`new()` 的返回位、`?` 的中间位、`Box::new` 的装箱源、`Box<T> → Box<dyn Trait>`
+    /// 的 unsize 强制转换）都要在栈上留一份 10 万字节级的副本 —— 实测
+    /// `render_project_f32_with_assets` 的栈帧因此达 **582480 B**、
+    /// `EngineTrackSource::new` 达 **327904 B**。`Box` 之后本结构体只剩一个指针（8 B）
+    /// ＋轨道 ID ＋调度表 ＋暂存 `Vec`，搬动是**常数级**。
+    /// ⚠ 这只是**把大对象从栈挪到堆**：分配点仍只有"离线导出/录音的构造期"（[`Self::new`]），
+    /// ⛔ 不进实时路径（红线 7）。
+    engine: Box<SynthEngine>,
     /// 本源负责的轨道。
     track: EntityId,
     /// 该轨的调度表（来自同一份快照；`None` ⇒ 该轨静音，与 `render_track` 的文档一致）。
@@ -354,7 +365,10 @@ impl EngineTrackSource {
     ///
     /// `arm_from_snapshot` 的拒绝（含 `NoMasterBus`）。
     pub(crate) fn new(snapshot: &EngineSnapshot, track: EntityId) -> Result<Self, WavExportError> {
-        let mut engine = SynthEngine::new(snapshot.sample_rate());
+        // ⭐ 直接构造**在堆上**：`SynthEngine::new` 的 109152 B 返回位因此只在本帧
+        //    存在一次（随后 memcpy 进 `Box`），⛔ 不再有"返回位 ＋ 中间位 ＋ 装箱源"
+        //    三份 10 万字节级副本叠在同一帧里（见字段文档的尺寸对照）。
+        let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
         // ⛔ 不 `unwrap`：没有主总线时如实失败（调用方据此在**落盘之前**退出）。
         engine
             .arm_from_snapshot(snapshot)
