@@ -21,15 +21,20 @@
 //!
 //! ```text
 //! EngineSnapshot::from_project(&project, 1)        // 工程 ⇒ 快照（既有）
+//!       ⇒ arm_pending_sfz(&snapshot, hz, …)        // ⭐ #79：TrackV3.sampler ⇒ 控制侧解码 ⇒ with_sfz
 //!       ⇒ SynthEngine::new(snapshot.sample_rate())
 //!       ⇒ engine.arm_from_snapshot(&snapshot)      // ⭐ `mod-engine` 新增的公开入口
-//!       ⇒ 每轨一个源：engine.render_track(track, snapshot.schedules().get(&track), None, &mut mono)
+//!       ⇒ 每轨一个源：engine.render_track(track, snapshot.schedules().get(&track),
+//!                                        snapshot.sfz().get(&track).map(SfzPlan::prepared), &mut mono)
 //! ```
 //!
-//! ⚠ 第 3 个参数是 SFZ 音源（`Option<&PreparedSfz>`，`mod-engine` 的 `#66` 步 2 新增）。
-//! 本行给 `None`：app 的 `--sfz` 走的是 [`crate::sfz_load::SfzTrackSource`] **旁路**
-//! （它整个替换引擎音源），而"引擎侧 SFZ ↔ 轨"的**绑定注入**属 `#66` 的步 3 ⇒
-//! 这里的行为与接线前**逐位相同**。
+//! ⚠ 第 3 个参数是 SFZ 音源（`Option<&PreparedSfz>`）。⭐ **任务单 `#79` 起它从快照里读**
+//! （`EngineTrackSource` 持 `Arc<EngineSnapshot>`，⛔ 不 clone PCM）：
+//! `TrackV3.sampler` 指到的 SFZ ⇒ 控制侧解码 ⇒ 摊平表 ⇒ 该轨走引擎 SFZ 分支。
+//! `sampler = None` 的轨不在表里 ⇒ 那一参是 `None` ⇒ 退回复音合成器，输出与接线前**逐位相同**。
+//!
+//! ⚠ **`--sfz` 旁路仍在**（本文件下面那段）：它把**整工程**的音源替换成
+//! [`crate::sfz_load::SfzTrackSource`]，与按轨的模型链条是两条入口；同时给 ⇒ 旁路优先。
 //!
 //! ⚠ **红线 7**：`arm_from_snapshot` **会分配**（`begin_snapshot` 增长区间表）⇒ 它的允许调用点是
 //! **离线导出／控制线程装载工程／测试**，⛔ **绝不可**在音频回调里调用。本文件是离线路径 ✓。
@@ -170,6 +175,11 @@ pub struct WavExportReport {
     pub audio_clips_rendered: u64,
     /// 被**如实跳过**的音频片段原因（例如素材采样率 ≠ 导出采样率 ⇒ 不重采样、不误放音高）。
     pub audio_clips_skipped: Vec<String>,
+    /// ⭐ 控制侧 SFZ 解码读数（任务单 `#79`；键 = 轨）。空 = 本次导出没走模型 SFZ 链条
+    /// （没有 `TrackV3.sampler`，或走了 `--sfz` 旁路 / 最小音源）。
+    ///
+    /// ⚠ **缺样本在这里可见**（`missing_sample_paths` / `silent_region_count`）⇒ 报告⛔ 不静默。
+    pub sfz_decoded: Vec<(EntityId, crate::sfz_load::SfzDecodeReport)>,
 }
 
 impl WavExportReport {
@@ -203,6 +213,9 @@ pub enum WavExportError {
     Empty(String),
     /// 引擎装载失败（快照投影 / `arm_from_snapshot`；例如工程没有主总线 ⇒ `NoMasterBus`）。
     Engine(String),
+    /// ⭐ **模型 SFZ 链条解码失败**（任务单 `#79`）：`TrackV3.sampler` 指到的 SFZ 文件
+    /// 读不到 / 文本非法。⛔ 不静默回退到复音合成器（那会出一版**不是它**的声音）。
+    Sfz(String),
 }
 
 impl core::fmt::Display for WavExportError {
@@ -213,6 +226,7 @@ impl core::fmt::Display for WavExportError {
             Self::Io(reason) => write!(formatter, "读取导出结果失败: {reason}"),
             Self::Empty(reason) => write!(formatter, "没有可导出的内容: {reason}"),
             Self::Engine(reason) => write!(formatter, "引擎装载失败: {reason}"),
+            Self::Sfz(reason) => write!(formatter, "SFZ 解码失败: {reason}"),
         }
     }
 }
@@ -354,6 +368,14 @@ pub(crate) struct EngineTrackSource {
     track: EntityId,
     /// 该轨的调度表（来自同一份快照；`None` ⇒ 该轨静音，与 `render_track` 的文档一致）。
     schedule: Option<NoteSchedule>,
+    /// ⭐ **武装用的那份快照**（任务单 `#79`）：`render_block` 从它**借用**该轨的 SFZ 摊平表
+    /// （[`EngineSnapshot::sfz`]）交给 `render_track` 的第 3 参。
+    ///
+    /// ⭐ 为什么是 `Arc<EngineSnapshot>` 而**不是** clone 一份 `SfzPlan`：摊平表里带着**整段 PCM**
+    /// （[`yeban_engine::sfz_instrument::PreparedSample`]），clone 会把它按轨再复制一份。
+    /// `Arc` clone 只是**指针复制** ⇒ 与实时路径同一条纪律（"实时侧只**借用**快照，
+    /// ⛔ 不 clone 那些 `Vec`"，见 `sfz_instrument.rs` 的模块文档）。
+    snapshot: std::sync::Arc<EngineSnapshot>,
     /// 单声道暂存（`render_track` 输出"声相之前"的单声道）。
     mono: Vec<f32>,
 }
@@ -364,19 +386,23 @@ impl EngineTrackSource {
     /// # Errors
     ///
     /// `arm_from_snapshot` 的拒绝（含 `NoMasterBus`）。
-    pub(crate) fn new(snapshot: &EngineSnapshot, track: EntityId) -> Result<Self, WavExportError> {
+    pub(crate) fn new(
+        snapshot: std::sync::Arc<EngineSnapshot>,
+        track: EntityId,
+    ) -> Result<Self, WavExportError> {
         // ⭐ 直接构造**在堆上**：`SynthEngine::new` 的 109152 B 返回位因此只在本帧
         //    存在一次（随后 memcpy 进 `Box`），⛔ 不再有"返回位 ＋ 中间位 ＋ 装箱源"
         //    三份 10 万字节级副本叠在同一帧里（见字段文档的尺寸对照）。
         let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
         // ⛔ 不 `unwrap`：没有主总线时如实失败（调用方据此在**落盘之前**退出）。
         engine
-            .arm_from_snapshot(snapshot)
+            .arm_from_snapshot(&snapshot)
             .map_err(|error| WavExportError::Engine(error.to_string()))?;
         Ok(Self {
             engine,
             track,
             schedule: snapshot.schedules().get(&track).cloned(),
+            snapshot,
             mono: Vec::new(),
         })
     }
@@ -390,13 +416,19 @@ impl AudioSource for EngineTrackSource {
             self.mono.resize(frames, 0.0);
         }
         // `render_track` 复用内部游标推进（与实时路径同一个函数）。
-        // ⚠ 第 3 参（SFZ 摊平表）给 `None`：本 crate 的 `--sfz` 走 `SfzTrackSource`
-        // **旁路**，"引擎侧 SFZ ↔ 轨"的绑定注入属 `mod-engine` 的步 3。
-        // 给 `None` ⇒ 分派次序退回"复音"，输出与接线前**逐位相同**。
+        // ⭐ ⭐ 第 3 参（SFZ 摊平表）**从快照借用**（任务单 `#79`）：这条轨在快照 `sfz()` 表里
+        //    ⇒ 走引擎的第三条音源支路（鼓机 ＞ SFZ ＞ 复音）；不在表里 ⇒ `None` ⇒ 退回复音，
+        //    输出与接线前**逐位相同**（`TrackV3.sampler = None` 的反向对照）。
+        //    ⛔ 这里**不** clone 摊平表（见字段文档）：只把 `&PreparedSfz` 借出去。
+        let sfz = self
+            .snapshot
+            .sfz()
+            .get(&self.track)
+            .map(yeban_engine::sfz_instrument::SfzPlan::prepared);
         self.engine.render_track(
             self.track,
             self.schedule.as_ref(),
-            None,
+            sfz,
             &mut self.mono[..frames],
         );
         out.fill(0.0);
@@ -568,6 +600,7 @@ pub fn export_wav_with_sfz_file_and_assets(
         source: source_label,
         audio_clips_rendered: rendered.audio_clips_rendered,
         audio_clips_skipped: rendered.audio_clips_skipped,
+        sfz_decoded: rendered.sfz_decoded,
     })
 }
 

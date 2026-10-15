@@ -16,6 +16,21 @@
 //! 判据 `recording_the_project_is_bit_identical_to_exporting_it` 仍是这条"两侧逐位一致"契约的
 //! **回归网**：一旦漂移，该判据立刻红 ✓
 //!
+//! ## ⭐ 模型 SFZ 链条（任务单 `#79`）与 `--sfz` 旁路的关系
+//!
+//! | 入口 | 绑定范围 | 走哪条音源 | 谁读盘 |
+//! | :--- | :--- | :--- | :--- |
+//! | **`TrackV3.sampler`**（模型链条，本单接线） | **按轨** | 引擎 SFZ 分支（`render_track` 第 3 参 = 快照里的摊平表） | 本模块的构造期（[`crate::sfz_load::arm_pending_sfz`]） |
+//! | **`--sfz <文件>`**（旁路，保留） | **整工程** | [`crate::sfz_load::SfzTrackSource`]（整个替换引擎音源） | `sfz_load` 的 SFZ 源构造期 |
+//!
+//! 两者**同时给** ⇒ **旁路优先**（"整工程用这一份 SFZ 试听"是显式请求，本单⛔ 不改它的语义）；
+//! `plans` 注入与模型链条都只在**用引擎音源**时生效（见 [`render_project_f32_with_plans`]）。
+//! ⭐ 两条入口都**不**合并：旁路是"整工程试听一份 SFZ"的便捷路径，模型链条是"按轨绑定"的
+//! 产品语义（模型侧形状见 `TrackV3.sampler`，登记在 `R731`）。
+//!
+//! ⚠ **SFZ 文件缺失 ⇒ 明确错误**（[`WavExportError::Sfz`]），缺**样本** ⇒ 该区域静音 ＋ 计数
+//! （引擎口径；见 `sfz_load` 与台账 `R711`）—— 两者都**不静默**。
+//!
 //! ## ⭐ 轨增益（推子／静音／独奏）：三条支路**同径**（本单闭合 `R713` 登记的边界）
 //!
 //! | 支路 | 音源 | 轨增益从哪来 |
@@ -123,6 +138,11 @@ pub struct RenderProjectOutput {
     pub audio_clips_rendered: u64,
     /// 被**如实跳过**的音频片段原因（例如采样率不匹配）。
     pub audio_clips_skipped: Vec<String>,
+    /// ⭐ 控制侧 SFZ 解码读数（任务单 `#79`；键 = 轨）。
+    ///
+    /// 空 = 本次渲染**没有**走模型 SFZ 链条（没有 `TrackV3.sampler`，或走了 `--sfz` 旁路 /
+    /// 最小音源）。有内容 = 每条 `PendingSfz` 都真的读了盘并摊平（缺样本也**如实登记**）。
+    pub sfz_decoded: Vec<(EntityId, crate::sfz_load::SfzDecodeReport)>,
 }
 
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
@@ -153,7 +173,7 @@ pub fn render_project_f32(
 ///
 /// # Errors
 ///
-/// 与 [`render_project_f32`] 相同。
+/// 与 [`render_project_f32_with_plans`] 相同。
 pub fn render_project_f32_with_assets(
     project: &YebanProjectV1,
     options: WavExportOptions,
@@ -162,6 +182,37 @@ pub fn render_project_f32_with_assets(
         Option<PathBuf>,
     )>,
     assets: &[(AssetHash, Vec<u8>)],
+) -> Result<RenderProjectOutput, WavExportError> {
+    render_project_f32_with_plans(project, options, sfz, assets, BTreeMap::new())
+}
+
+/// 与 [`render_project_f32_with_assets`] 相同，但可**额外注入已摊平的 SFZ 表**（任务单 `#79`）。
+///
+/// ## 两个来源，同一个注入点
+///
+/// * ⭐ **模型链条**（`plans` 为空时的默认行为）：快照里每条 `PendingSfz` 由
+///   [`crate::sfz_load::arm_pending_sfz`] 走"读盘 → 解码 → `SfzPlan::prepare_with_samples` →
+///   [`EngineSnapshot::with_sfz`]"，然后交给 `render_track` 的第三条音源支路；
+/// * ⭐ **`plans`**：调用方**已经**持有摊平表（缓存/判据）时的注入入口 —— 与模型链条**同一个**
+///   `with_sfz`（因此也**取代**该轨的待摊平项，⛔ 不重复解码）。
+///
+/// ⚠ `plans` 只在"用引擎音源"（`options.use_engine_source` 且 `sfz = None`）时有效：
+/// `--sfz` 旁路与最小音源都**整个替换**引擎音源（见模块文档的音源表），与本入口无关。
+///
+/// # Errors
+///
+/// 与 [`render_project_f32`] 相同，外加：
+/// * [`WavExportError::Sfz`]：模型链条里某个 SFZ 文件**读不到 / 文本非法**（⛔ 不静默回退）。
+///   缺**样本**不算失败（该区域静音并计数，见 [`crate::sfz_load::decode_sfz_plan`]）。
+pub fn render_project_f32_with_plans(
+    project: &YebanProjectV1,
+    options: WavExportOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+    assets: &[(AssetHash, Vec<u8>)],
+    plans: BTreeMap<EntityId, yeban_engine::sfz_instrument::SfzPlan>,
 ) -> Result<RenderProjectOutput, WavExportError> {
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
@@ -172,9 +223,20 @@ pub fn render_project_f32_with_assets(
     // 它是"这个工程能不能用引擎渲染"的判定，理应在计划编译与任何 I/O 之前发生
     // ⇒ 失败时一个字节都不会落盘，也不会先被计划层的次生错误（例如"没有注册样本源"）掩盖。
     // 带 SFZ ⇒ 走 SFZ 音源（⛔ 不需要引擎快照；SFZ 自己的解析在离线路径里做）。
+    let mut sfz_decoded: Vec<(EntityId, crate::sfz_load::SfzDecodeReport)> = Vec::new();
     let snapshot = if options.use_engine_source && sfz.is_none() {
         let snapshot = EngineSnapshot::from_project(project, 1)
             .map_err(|error| WavExportError::Engine(error.to_string()))?;
+        // ⭐ ⭐ **本单接线（`#79`）**：`TrackV3.sampler` 已经在快照里是"待摊平项"
+        //    （`#78`，引擎⛔ 不读盘）⇒ 控制侧（**这里**，允许 I/O 与分配）把它走完六步，
+        //    `with_sfz` 注入摊平表（并取代待摊平项）。失败 ⇒ `Sfz` 错误（⛔ 不静默）。
+        let (snapshot, decoded) =
+            crate::sfz_load::arm_pending_sfz(snapshot, options.sample_rate as f32, plans)
+                .map_err(|error| WavExportError::Sfz(error.to_string()))?;
+        sfz_decoded = decoded;
+        // ⭐ 快照以 `Arc` 共享给逐轨音源：`render_track` 只**借用**里面的摊平表
+        //    （⛔ 不 clone PCM —— 与实时路径同一条纪律）。
+        let snapshot = std::sync::Arc::new(snapshot);
         // ⭐ **慢路径校验只做一次**，且必须在这里做：武装是**逐源**发生的，
         // 而"没有任何可渲染轨"时一个源都不会被造出来 ⇒ 引擎的 `NoMasterBus` 裁决会被
         // 计划层的次生错误（"没有注册样本源"）掩盖（本机实测：清空轨道表时正是这样）。
@@ -254,10 +316,19 @@ pub fn render_project_f32_with_assets(
         for track_id in renderable.clone() {
             sources.insert(
                 track_id,
-                Box::new(EngineTrackSource::new(snapshot, track_id)?),
+                // ⭐ `Arc::clone` 是**指针复制**（ADR：实时侧只借快照）：摊平表的 PCM 留在
+                //    快照里，⛔ 不按源再 clone 一份（见 `EngineTrackSource` 的字段文档）。
+                Box::new(EngineTrackSource::new(
+                    std::sync::Arc::clone(snapshot),
+                    track_id,
+                )?),
             );
         }
-        "引擎乐器（SynthEngine::arm_from_snapshot + render_track）".to_owned()
+        let mut label = "引擎乐器（SynthEngine::arm_from_snapshot + render_track）".to_owned();
+        if !sfz_decoded.is_empty() {
+            label.push_str(&format!(" + {}", sfz_decode_label(&sfz_decoded)));
+        }
+        label
     } else {
         // ⭐ **轨增益门**（推子 × 静音/独奏）：与 SFZ 分支**同一个** [`track_gain_of`]
         // （⇒ 同一个 `track_gain_scale`）。⚠ 这段必须在这里算：最小音源同样是**整体替换**
@@ -335,7 +406,31 @@ pub fn render_project_f32_with_assets(
         digest,
         audio_clips_rendered: audio_rendered,
         audio_clips_skipped: audio_skipped,
+        sfz_decoded,
     })
+}
+
+/// ⭐ 模型 SFZ 链条的**读数文案**（进 `source_label` ⇒ ⛔ 缺样本不静默）。
+///
+/// 形态：`sfz(tracks=1 regions=4 samples=1 silent=1 missing=["missing.wav"])`。
+fn sfz_decode_label(decoded: &[(EntityId, crate::sfz_load::SfzDecodeReport)]) -> String {
+    let regions: usize = decoded.iter().map(|(_, report)| report.regions).sum();
+    let samples: usize = decoded
+        .iter()
+        .map(|(_, report)| report.decoded_samples)
+        .sum();
+    let silent: usize = decoded
+        .iter()
+        .map(|(_, report)| report.silent_region_count)
+        .sum();
+    let missing: Vec<&str> = decoded
+        .iter()
+        .flat_map(|(_, report)| report.missing_sample_paths.iter().map(String::as_str))
+        .collect();
+    format!(
+        "sfz(tracks={} regions={regions} samples={samples} silent={silent} missing={missing:?})",
+        decoded.len()
+    )
 }
 
 #[cfg(test)]

@@ -3589,9 +3589,39 @@ fn saved_line(report: &SaveReport, loaded: &Loaded) -> String {
 /// `ppq=` 是**从导出结果读回来的**事实（不是本文件里第二个 960 字面量）：
 /// 判据把这一行与文件头的大端字段逐字段对账。
 fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loaded) -> String {
+    // ⭐ 模型 SFZ 链条的解码读数（任务单 `#79`）：有内容才追加 ⇒ ⛔ 缺样本不静默
+    //    （`sfz(... missing=[...] silent=N)`；没有模型 `sampler` 时本段为空，行不变）。
+    let sfz = if report.sfz_decoded.is_empty() {
+        String::new()
+    } else {
+        let regions: usize = report
+            .sfz_decoded
+            .iter()
+            .map(|(_, entry)| entry.regions)
+            .sum();
+        let samples: usize = report
+            .sfz_decoded
+            .iter()
+            .map(|(_, entry)| entry.decoded_samples)
+            .sum();
+        let silent: usize = report
+            .sfz_decoded
+            .iter()
+            .map(|(_, entry)| entry.silent_region_count)
+            .sum();
+        let missing: Vec<&str> = report
+            .sfz_decoded
+            .iter()
+            .flat_map(|(_, entry)| entry.missing_sample_paths.iter().map(String::as_str))
+            .collect();
+        format!(
+            " sfz(tracks={} regions={regions} samples={samples} silent={silent} missing={missing:?})",
+            report.sfz_decoded.len()
+        )
+    };
     format!(
         "exported-wav: path={} bytes={} frames={} sample_rate={} channels={} bits={} digest={} \
-         source={} from={}",
+         source={}{sfz} from={}",
         report.path.display(),
         report.bytes,
         report.frames,

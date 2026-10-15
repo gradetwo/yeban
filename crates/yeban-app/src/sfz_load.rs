@@ -20,6 +20,23 @@
 //!
 //! 值由 [`crate::render_core`] 逐轨算出（⛔ 本模块不写第二份 `volume_db ⇒ 线性` 换算）。
 //!
+//! ## ⭐ 模型链条：`TrackV3.sampler` ⇒ 真的发声的摊平表（任务单 `#79`）
+//!
+//! ```text
+//! EngineSnapshot::sfz_pending()   // ⭐ #78：引擎只带"这条轨有一份 SFZ"这一事实（⛔ 不读盘）
+//!    ──▶ decode_sfz_plan(path)    // ⭐ 本模块：读盘 → 解析 → 路径全集 → 逐个解码 → prepare_with_samples
+//!    ──▶ EngineSnapshot::with_sfz(track, plan)   // ⭐ 取代待摊平项（引擎侧既有入口）
+//!    ──▶ SynthEngine::render_track(…, Some(plan.prepared()), …)  // 实时侧第三条音源支路
+//! ```
+//!
+//! [`arm_pending_sfz`] 把这条链**一次走完**（`render_core` 在导出/录音的构造期调它）。
+//! ⚠ 它与 `--sfz` **旁路**（[`SfzTrackSource`]）是两条**不同**的入口，关系与理由见
+//! [`arm_pending_sfz`] 与 `render_core` 的模块文档：
+//!
+//! * **`--sfz <文件>`**：**整工程**用同一份 SFZ 替换引擎音源（旁路；不进引擎 SFZ 分支）；
+//! * **`TrackV3.sampler`**：**按轨**绑定（模型链条；引擎 SFZ 分支真的发声）。
+//!   两者同时给 ⇒ **旁路优先**（"整工程试听一份 SFZ"是显式请求）。
+//!
 //! ## ⚠ 三条诚实登记（⛔ 不假装）
 //!
 //! 1. **样本文件会被真读**：`sample=` 指到的文件经 [`read_sample_file`]（→
@@ -33,9 +50,12 @@
 //!    [`SfzTrackSource`] 进入音源链（报告里的 `wired_to_export=yes`）。单独给 `--sfz` 时仍是
 //!    `wired_to_export=false` —— 那是"**没请求**导出/录音"，⛔ 不是"没接线"。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument};
+use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
+use yeban_engine::snapshot::EngineSnapshot;
+use yeban_model::EntityId;
 use yeban_sfz::parser::ParseLimits;
 
 /// 探测用的样本源（440 Hz 内存正弦）的文案——报告行里逐字使用。
@@ -261,13 +281,7 @@ pub fn region_sample_for(
         .ok()
         .flatten()?;
     let raw = Path::new(&sample);
-    let resolved = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        sfz_path
-            .parent()
-            .map_or_else(|| raw.to_path_buf(), |parent| parent.join(raw))
-    };
+    let resolved = resolve_sample_path(sfz_path, raw);
     match read_sample_file(&resolved) {
         Ok((in_memory, _frames, describe)) => Some((in_memory, describe)),
         Err(error) => {
@@ -276,6 +290,173 @@ pub fn region_sample_for(
             Some((in_memory, format!("in-memory-sine(440Hz, 回退: {error})")))
         }
     }
+}
+
+/// 解析一个 `sample=` 的**真路径**（⛔ 唯一实现：新解码管线与 [`region_sample_for`] 共用）。
+///
+/// ⚠ 路径语义（SFZ 惯例）：相对路径**相对 SFZ 文件所在目录**；绝对路径原样使用。
+/// `sample=` 里已经带了 `default_path` 前缀（见 `Region::sample_path`）。
+fn resolve_sample_path(sfz_path: &Path, sample: &Path) -> PathBuf {
+    if sample.is_absolute() {
+        sample.to_path_buf()
+    } else {
+        sfz_path
+            .parent()
+            .map_or_else(|| sample.to_path_buf(), |parent| parent.join(sample))
+    }
+}
+
+/// ⭐ **一次控制侧解码的读数**（任务单 `#79`；形状照 [`SfzLoadReport`]：路径／字节／区域数／
+/// **诚实字段**）。
+///
+/// 它是"⭐ **缺样本要如实**"的载体：`decoded_samples` / `missing_sample_paths` /
+/// `silent_region_count` / `unreadable_samples` 四条一起回答"哪一份读了、哪一份没读、为什么"。
+/// ⚠ 三个缺样本字段都是**引擎口径**（直接读 [`yeban_engine::sfz_instrument::PreparedSfz`] 的
+/// 同名方法），⛔ 本层**不另定义**一套。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SfzDecodeReport {
+    /// SFZ 文件路径（逐字来自调用方；⛔ 不规范化）。
+    pub path: PathBuf,
+    /// 文件字节数。
+    pub bytes: u64,
+    /// 区域数（[`SfzInstrument::region_count`]）。
+    pub regions: usize,
+    /// ⭐ [`SfzInstrument::referenced_sample_paths`] 的读数（排序 ＋ 去重；`sample=` 原样字符串）。
+    pub referenced_sample_paths: Vec<String>,
+    /// 真的解码成功、进了提供表的样本**份数**。
+    pub decoded_samples: usize,
+    /// ⭐ 引擎口径的缺样本路径（[`yeban_engine::sfz_instrument::PreparedSfz::missing_sample_paths`]；
+    /// 排序 ＋ 去重，元素是 `sample=` 原样字符串）。
+    pub missing_sample_paths: Vec<String>,
+    /// ⭐ 缺样本 ⇒ `NO_SAMPLE`（**不产生采样输出**）的**区域数**（引擎口径）。
+    pub silent_region_count: usize,
+    /// 读盘失败的样本（`"<解析后路径>: <原因>"` 逐条登记；⛔ 不静默）。
+    pub unreadable_samples: Vec<String>,
+    /// 摊平表占用的字节数（[`SfzPlan::memory_bytes`]）。
+    pub plan_bytes: usize,
+}
+
+impl SfzDecodeReport {
+    /// 一行可读摘要（导出报告/SFZ 报告行直接用）。
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "path={} bytes={} regions={} samples={} silent={} missing={:?} unreadable={} plan_bytes={}",
+            self.path.display(),
+            self.bytes,
+            self.regions,
+            self.decoded_samples,
+            self.silent_region_count,
+            self.missing_sample_paths,
+            self.unreadable_samples.len(),
+            self.plan_bytes,
+        )
+    }
+}
+
+/// ⭐ ⭐ **控制侧解码管线**（任务单 `#79`）：SFZ 文件路径 ⇒ 可发声的 [`SfzPlan`]。
+///
+/// ## 六步（每一步都**复用既有形状**，⛔ 不另写一份解码）
+///
+/// ```text
+/// ① 读盘 ＋ 解析   load_sfz_with_instrument(path, None, hz)   // 与 --sfz 装载同一个函数
+/// ② 区域数/字节    ← 同一个 SfzLoadReport 的字段（⛔ 不再数一遍）
+/// ③ 路径全集       SfzInstrument::referenced_sample_paths()   // 引擎给的路径全集
+/// ④ 逐个解码       read_sample_file(resolve_sample_path(…))   // 与 region_sample_for 同一条解析
+/// ⑤ 摊平           SfzPlan::prepare_with_samples()            // 引擎口径：去重 ＋ 缺样本 NO_SAMPLE
+/// ⑥ 读数           plan.prepared() 的 missing/silent ＋ 本函数登记的 unreadable
+/// ```
+///
+/// ⚠ **缺样本 ⇒ 如实**：读不到的 `sample=` **⛔ 不放进提供表** ⇒
+/// [`yeban_engine::sfz_instrument::PreparedSfz::prepare_with_samples`] 把该区域标
+/// `NO_SAMPLE`（触发时**不建声部**）＋ 计数 ⇒ 路径进 `missing_sample_paths`。
+/// ⛔ 本函数**不发明替代内容**（不回退内存正弦、不去播别人的采样）—— 归属裁决见台账 `R711`。
+///
+/// ⚠ **红线 7**：本函数读盘 ＋ 分配（解析、PCM）⇒ **只**用于离线/控制侧（导出、装载、
+/// 判据），⛔ 绝不在音频回调里调用。
+///
+/// # Errors
+///
+/// * [`SfzLoadError::Read`]：SFZ 文件读不到（**明确错误**，⛔ 不静默回退）；
+/// * [`SfzLoadError::Parse`]：SFZ 文本非法，或区域表无法摊平。
+///   ⚠ 样本读不到**不是**错误（走"缺样本 ⇒ 静音 ＋ 计数"那条既有口径，见上）。
+pub fn decode_sfz_plan(
+    sfz_path: &Path,
+    engine_hz: f32,
+) -> Result<(SfzPlan, SfzDecodeReport), SfzLoadError> {
+    // ① ＋ ②：读盘与解析走 `--sfz` 装载的**同一个**函数（⛔ 不复制读文件/解析那两行）。
+    let (load, instrument) = load_sfz_with_instrument(sfz_path, None, engine_hz)?;
+    // ③：引擎给的路径全集（排序 ＋ 去重 ⇒ 确定性顺序）。
+    let referenced = instrument
+        .referenced_sample_paths()
+        .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
+    // ④：逐个真读（复用 `read_sample_file`；解析规则与 `region_sample_for` 共用）。
+    let mut provided: Vec<(String, InMemorySample)> = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
+    for raw in &referenced {
+        let resolved = resolve_sample_path(sfz_path, Path::new(raw));
+        match read_sample_file(&resolved) {
+            Ok((sample, _frames, _describe)) => provided.push((raw.clone(), sample)),
+            // ⭐ 读不到 ⇒ **不放进提供表**（⇒ 引擎按缺样本处理），但把原因**如实登记**。
+            Err(error) => unreadable.push(format!("{}: {error}", resolved.display())),
+        }
+    }
+    // ⑤：引擎口径的摊平（去重键 = `sample_path` 原样字符串；缺样本 ⇒ `NO_SAMPLE` ＋ 计数）。
+    let plan = SfzPlan::prepare_with_samples(&instrument, &provided, engine_hz)
+        .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
+    let prepared = plan.prepared();
+    let report = SfzDecodeReport {
+        path: sfz_path.to_path_buf(),
+        bytes: load.bytes,
+        regions: load.regions,
+        referenced_sample_paths: referenced,
+        decoded_samples: provided.len(),
+        missing_sample_paths: prepared.missing_sample_paths().to_vec(),
+        silent_region_count: prepared.silent_region_count(),
+        unreadable_samples: unreadable,
+        plan_bytes: plan.memory_bytes(),
+    };
+    Ok((plan, report))
+}
+
+/// ⭐ **把快照里的待摊平项全部变成摊平表**（任务单 `#79` 的接线：`PendingSfz` ⇒ `with_sfz`）。
+///
+/// 逐条（`BTreeMap` ⇒ 键升序、确定性）调 [`decode_sfz_plan`]，再用
+/// [`EngineSnapshot::with_sfz`] 注入 —— 后者会把该轨的待摊平项**移除**（"已经有摊平表了"）。
+///
+/// `prebuilt`：调用方**已经**持有摊平表时的注入入口（缓存/判据；⛔ 不重复解码该轨）。
+/// 它先注入，因此也享受 `with_sfz` 的"取代待摊平项"语义。
+///
+/// ⚠ **SFZ 文件本身缺失 ⇒ 明确错误**（`Err`，消息里带路径），⛔ 不静默回退到复音合成器：
+/// 模型说"这条轨用这份文件"，而文件读不到时仍出一版**不是它**的声音，是用户听不出、
+/// 报告里也看不见的内容错。缺**样本**（文件在、`sample=` 读不到）仍走既有口径
+/// （区域静音 ＋ 计数，见 [`decode_sfz_plan`]）。
+///
+/// # Errors
+///
+/// 任一 SFZ 文件读不到 / 文本非法 ⇒ 透出 [`SfzLoadError`]（消息含具体路径）。
+pub fn arm_pending_sfz(
+    snapshot: EngineSnapshot,
+    engine_hz: f32,
+    prebuilt: BTreeMap<EntityId, SfzPlan>,
+) -> Result<(EngineSnapshot, Vec<(EntityId, SfzDecodeReport)>), SfzLoadError> {
+    let mut snapshot = snapshot;
+    for (track, plan) in prebuilt {
+        snapshot = snapshot.with_sfz(track, plan);
+    }
+    // 先收集（键升序）再逐条解码：`with_sfz` 需要 `&mut self`，⛔ 不能边借边改。
+    let pending: Vec<(EntityId, String)> = snapshot
+        .sfz_pending()
+        .iter()
+        .map(|(track, entry)| (*track, entry.path().to_owned()))
+        .collect();
+    let mut reports = Vec::with_capacity(pending.len());
+    for (track, path) in pending {
+        let (plan, report) = decode_sfz_plan(Path::new(&path), engine_hz)?;
+        snapshot = snapshot.with_sfz(track, plan);
+        reports.push((track, report));
+    }
+    Ok((snapshot, reports))
 }
 
 /// **SFZ 音源**：让 `--export-wav` 用 SFZ 的区域/样本发声（**离线**路径）。
