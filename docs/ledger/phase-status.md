@@ -9432,3 +9432,67 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **九、⭐ 判决读数**: ⭐ **`2161255c`（⭐ 本轮）待查** ⇒ ⭐ ⚠ **而它改了 `yeban-engine` ⇒ ⭐ 平台腿应真跑** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `needs-3` 模型面 ＋ ⭐ `needs-5`（⭐ 模型绑定）／⭐ `needs-6`／⭐ `needs-8` ＋ ⭐ 其余队列项 ✓
+
+---
+
+## R731 实测追加（2026-10-16）：⭐⭐⭐ **`#76` 已并入**（⭐ SFZ 进模型的**最小可行入口**）⇒ ⭐ **`sfz-needs-5` 的**模型面**闭合**、⭐ **三条冻结读数逐字不变** ＋ ⭐ **两处注入红** ⚠ **而它引出两条跨线待办（⭐ 其一紧急）**
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **9 文件、＋356／−25** ⇒ ⭐ **完整 sha ＝ **`20b3987d13a5ef5d574008e3d18736fd58205c37`**** ✓ ⭐ **`premerge-gate yeban-model` ＝ 全过** ✓
+| ⭐ 文件 | ⭐ ± |
+| :--- | :--- |
+| ⭐ `model/src/project.rs` | ⭐ ＋127（⭐ 新结构 `SamplerBinding` ＋ ⭐ `TrackV3.sampler` ＋ ⭐ 2 条判据）|
+| ⭐ `model/src/ops.rs` | ⭐ ＋147（⭐ `Op::SetTrackSampler` 全臂 ＋ ⭐ showcase ＋ ⭐ 1 条判据）|
+| ⭐ `model/src/lib.rs`／⭐ `samples.rs` | ⭐ ＋4／−2、⭐ ＋1 |
+| ⭐ `model/tests/schema_ratchet.rs` | ⭐ ＋51／−24（⭐ D43 豁免集 18 ⇒ 19）|
+| ⭐ ⭐ **`schemas/project.schema.json`／⭐ `ops.schema.json`** | ⭐ ＋15／⭐ ＋10（⭐ 生成器产出）|
+| ⭐ `docs/ledger/model-no-compat-notes.md`／⭐ `schema-ratchet-notes.md` | ⭐ 各 ＋13 |
+
+⭐ ⭐ ⭐ **二、⭐ 所选形态（⭐ 候选 ②、⭐ 三条理由）**: ⭐ ⭐ **`TrackV3.sampler: Option<SamplerBinding>`**（⭐ `SamplerBinding { path: String }`、⭐ `#[serde(default, skip_serializing_if ＝ "Option::is_none")]`）✓
+| ⭐ ⛔ **不选候选 ①（⭐ `DeviceKind` 增档）的理由** | ⭐ 内容 |
+| :--- | :--- |
+| ⭐ **① 它是**规范枚举**** | ⭐ `[MODEL-AST-002]` **规范四档且 `Copy`** ⇒ ⭐ 带值档会**掉 `Copy`**（⭐ 全仓在用）＋ ⭐ **改规范枚举基数** ✓ |
+| ⭐ ⭐ **② 会**真的**打断另一条线** | ⭐ ⭐ **`yeban-mcp` 有 **4 处无通配符的穷举 match****（⭐ `tests/golden_table_probes.rs:125-131`、⭐ `src/domain/notes.rs:4532-4535`、⭐ `:11546-11549`、⭐ `DEVICE_KINDS` 目录）⇒ ⭐ **立刻失配** ✓ |
+| ⭐ **③ 形状与消费者对齐** | ⭐ **引擎注入路径以**轨 `EntityId` 为键****（⭐ `EngineSnapshot::with_sfz(track, plan)`、⭐ ⛔ 无设备槽维度）⇒ ⭐ **轨级字段才对** ✓
+⇒ ⭐ ⭐ **并附**: ⭐ **`path: String`（⭐ ⛔ 不是 `PathBuf`）** ⇒ ⭐ **跨平台确定性字节、⭐ 与 `AssetMetadata::original_path` 同型**；⭐ ⛔ **零运行时对象**（⭐ 无 `SfzInstrument`／⭐ PCM／⭐ `Vec<f32>`）；⭐ ⛔ **不发明路径校验**（⭐ 不查存在性／⭐ 扩展名／⭐ 规范化）✓
+
+⭐ ⭐ ⭐ **三、⭐ 而它纠正了我一处**前提**（⭐ 很值钱）**: ⭐ ⚠ **我在派单里写"⭐ 按本仓既有 `AssetRef` 那一族的形状做"** ⇒ ⭐ ⭐ **而它查明 **"⭐ 本仓**没有** `AssetRef` 这个类型"**** ✓
+| ⭐ 事实 | ⭐ 处 |
+| :--- | :--- |
+| ⭐ **外部文件引用只有一族** | ⭐ `ClipContent::Audio { asset: AssetHash, gain_db }`（⭐ `project.rs:991-1001`、⭐ `asset` 在 **993**）|
+| ⭐ **路径在哪** | ⭐ `AssetMetadata { …, original_path: String, … }`（⭐ `:1492-1505`、⭐ `original_path` 在 **1545**）|
+| ⭐ **表在哪** | ⭐ `YebanProjectV1.assets: BTreeMap<AssetHash, AssetMetadata>`（⭐ **1635**）|
+⭐ ⭐ **并做了一个很细的取舍**: ⭐ ⭐ **"⭐ SFZ 最好照它 —— ⛔ **只照'路径留痕'那一半、⭐ 不照 CAS 那一半**"** ⇒ ⭐ **理由: ⭐ 音频片段按 **CAS 键**引 `assets` 表（⭐ 路径"⭐ 仅留痕、⭐ 不参与寻址"）⇒ ⭐ ⭐ **而 SFZ 自己再用**相对路径**引一批样本、⭐ 必须**留在磁盘上**才解析得了 ⇒ ⭐ **归档进 CAS 无从解析**** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 它没有照抄那个模式的**全部**、⭐ 而是**分析出哪一半适用**** ✓
+
+⭐ ⭐ **四、⭐ `Op` 面（⭐ 加了、⭐ 有理由）**: ⭐ **`Op::SetTrackSampler { track_id, old_sampler, new_sampler }`**（⭐ `ops.rs:662`）⇒ ⭐ **单字段 setter、⭐ 形状逐字照 `SetTrackColor`**（⭐ `name()`／⭐ `precondition()`／⭐ `structural_inverse()`／⭐ `commit()` 四臂 ＋ ⭐ showcase 实例）✓ ⭐ **理由: ⭐ ⛔ 否则该字段只能在 `AddTrack` 时一次性给、⭐ 换 SFZ 只能"⭐ 删轨＋重建"（⭐ 换 `EntityId`、⭐ 丢设备链／⭐ 自动化／⭐ 路由边）** ⇒ ⭐ **本仓 `ARCH-OPS-001` 与 ⭐ `SetTrackColor` 文档的既有裁决** ✓
+
+⭐ ⭐ ⭐ **五、⭐ 序列化往返与默认不变（⭐ 三条冻结读数逐字相同）**: ⭐ **`project.default.json` `sha256 ＝ 6bd76fcb…30f0`；⭐ `project.filled.json` `sha256 ＝ 0218fa7d…265b`；⭐ 递归键路径 **223** 条、⭐ `sha256 ＝ 067b6c04…bfbc`** ⇒ ⭐ ⭐ **与改动前冻结常量**逐字相同**、⭐ `model_isolation.rs` 的常量**一个字节没动**** ✓ ⭐ **新增表达: ⭐ 带 `sampler` 的工程 `to_string ⇒ from_str ⇒ to_string` **逐字节相同**、⭐ 路径**原样**保留（⭐ 空串／⭐ 反斜杠／⭐ 前后空格都过）** ✓ ⭐ **schema 侧交叉验证（⭐ 一次性 python）: ⭐ 带 `"sampler":{"path":"instruments/lead.sfz"}` 的样本对 `project.schema.json` **0 错误**；⭐ `"sampler":{}` **被拒**（⭐ 嵌套 `required:[path]` 有牙）** ✓
+
+⭐ ⭐ ⭐ **六、⭐ 两处注入（⭐ 各按预期红）**:
+| ⭐ 注入 | ⭐ 红读数 |
+| :--- | :--- |
+| ⭐ **A: ⭐ 去掉 `skip_serializing_if`**（⭐ 默认值落盘成 `null`）| ⭐ **5 条红**: ⭐ `sampler_binding_is_absent_by_default_and_round_trips_verbatim`（⭐ "⭐ 默认音轨不得写出 `sampler` 键: `{…,"sampler":null,…}`"）、⭐ `project_json_byte_samples_are_frozen`、⭐ `project_json_recursive_key_paths_are_frozen`（⭐ "⭐ `left: 227`／⭐ `right: 223`"）、⭐ `history_dag_and_container_zip_bytes_are_frozen`、⭐ `schema_ratchet::direction_a_…`（⭐ "⭐ 形状分歧…: `{"#.tracks.*.sampler"}`"）✓ |
+| ⭐ **B: ⭐ `structural_inverse()` 忘记取反** | ⭐ **3 条红、⭐ 全部点名 `SetTrackSampler`**: ⭐ "⭐ `SetTrackSampler` 求逆失败"、⭐ "⭐ `OpStateMismatch { op: "SetTrackSampler" }`"、⭐ "⭐ 有变体未能逐字节往返" ✓
+⭐ ⭐ **并附（⭐ 一条**负结论**、⭐ 它如实登记了）**: ⭐ ⚠ **把 `#[serde(default)]` 去掉**不是可观测注入**** ⇒ ⭐ **serde 对缺席的 `Option<T>` 本来就取 `None`** ⇒ ⭐ **全仓判据仍全绿（⭐ EXIT=0）** ⇒ ⭐ ⭐ **故未把它当作守卫** ✓
+⇒ ⭐ ⭐ **即: ⭐ "⭐ 某处改了但判据不红"时、⭐ 它区分了"⭐ 该处真有影响"与"⭐ 该处本无影响"**（⭐ 第 216 条）✓
+
+⭐ ⭐ **七、⭐ 既有判据（⭐ 第 231 条）**: ⭐ **用 `cargo test -p yeban-model -- --list` 在注入前（⭐ `git stash` 到基线）与改动后各取一次** ⇒ ⭐ **二进制集合 **11／11** 完全相同；⭐ 测试名 **403 ⇒ 405**；⭐ `disappeared ＝ []`、⭐ `flipped ＝ 0`；⭐ **新增 2 条**** ✓ ⭐ **全套: ⭐ 12 个 result 行、⭐ **402 passed／⭐ 0 failed／⭐ 3 ignored**** ✓
+
+⭐ ⚠ **八、⭐ 而它提了**两条跨线待办**（⭐ 本条要点）**:
+| ⭐ # | ⭐ 内容 | ⭐ 紧急度 |
+| --: | :--- | :--- |
+| ⭐ ⭐ **1** | ⭐ ⭐ **`mod-mcp` 的 `tests/op_reachability.rs::every_model_op_variant_is_registered_or_declared_unreachable` 会因新变体**失败****（⭐ 它从模型源码现读枚举、⭐ 要求每个变体进 `EXPECTED_SITES` 或 ⭐ `KNOWN_UNREACHABLE`）** | ⭐ ⭐ **紧急** ⇒ ⭐ **我已派 `#77`** ✓ |
+| ⭐ **2** | ⭐ **`docs/ledger/sfz-core-notes.md` 的 `needs-5` 仍写"⭐ 未闭合（⭐ 模型面）"** ⇒ ⭐ **该表所有者（⭐ `mod-engine`）应更新状态词** | ⭐ 常规 ✓
+⇒ ⭐ ⭐ **并附（⭐ 它没有越线）**: ⭐ ⭐ **"⛔ 我没有为了让判据变绿而伪造构造点或改动该文件"** ⇒ ⭐ **那正是本会话反复强调的边界** ✓
+
+⭐ ⚠ **九、⭐ 而它如实登记一条**覆盖面缺口****: ⭐ ⚠ **"⭐ schema 的 `sampler` 分支**没有任何常驻判据触达**（⭐ 样本刻意不带它）⇒ ⭐ 这一段契约漂移今天 CI 抓不到，⭐ 只由我的一次性交叉验证覆盖"** ⇒ ⭐ ⭐ **故登记为待补判据** ✓
+
+⭐ ⚠ **十、⭐ 四门与附加门**: ⭐ `fmt` **0**／⭐ `check --all-targets --locked` **0**／⭐ `clippy -D warnings` **0**／⭐ `test -p yeban-model --locked` **0**（⭐ 402 passed／⭐ 0 failed／⭐ 3 ignored）／⭐ `premerge-gate.sh yeban-model` **全过**／⭐ `light` **门禁通过（⭐ 17 条 ok、⭐ G17 未触发）**／⭐ ⭐ **附加（⭐ 因动 `schemas/**`）: ⭐ `validate_schemas.py --samples-dir …` ⇒ 契约校验通过（⭐ 4 份 schema）；⭐ `gen-ops-schema-branches.py --check` ⇒ 已是最新（⭐ **44** 分支）** ✓
+
+⭐ ⚠ **十一、⭐ 一条可复用口径（⭐ 第 240 条）**: ⭐ ⭐ **新增枚举变体前、⭐ 先 grep 全仓的**无通配符穷举 match**** —— ⚠ **因为本仓多处用"⭐ 穷举 match 当守卫"的手法、⭐ 而加一档会**立刻打断**别的 crate** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **① `grep -rn "match .*kind" --include=*.rs` 找穷举点；⭐ ② 评估"⭐ 带值变体是否掉 `Copy`／⭐ 改基数"；⭐ ③ 若代价大 ⇒ ⭐ **改用**平行可选字段**（⭐ 本条就是）** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **它列出了 `yeban-mcp` 的 4 处穷举点（⭐ 带行号）⇒ ⭐ 从而选了候选 ②** ✓
+
+⭐ ⚠ **十二、⭐ 判决读数**: ⭐ **`20b3987d`（⭐ 本轮）待查**；⭐ ⚠ **而它动了 `yeban-model` ＋ ⭐ `schemas/**`** ⇒ ⭐ **平台腿与 schema 契约门应真跑** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#77`（⭐ mcp 登记新变体、⭐ 紧急）** ＋ ⭐ **`sfz-core-notes.md` 的 `needs-5` 状态词** ＋ ⭐ **schema `sampler` 分支的常驻判据** ＋ ⭐ **引擎消费 `TrackV3.sampler`** ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-8` ✓
