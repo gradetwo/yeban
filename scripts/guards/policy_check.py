@@ -755,6 +755,11 @@ def g17_hardware_markers_are_ignored() -> list[Violation]:
         for i, line in enumerate(lines):
             if "[HARDWARE]" not in line:
                 continue
+            # ⭐ 粒度：本守卫的本意是**标记级**（真正的 #[ignore] 标记），而注释里
+            # 引用该字面量是合法的（如"标记只写在 #[ignore] 的 reason 里"）。故跳过
+            # 整行以 `//` 开头的注释 —— 它们不可能是属性本身。
+            if line.strip().startswith("//"):
+                continue
             # 允许的形态：本行、或**紧邻的上/下一行**是 #[ignore …] 属性的一部分
             window = lines[max(0, i - 1): min(len(lines), i + 2)]
             if any("#[ignore" in w for w in window):
@@ -786,8 +791,8 @@ GUARDS = {
     "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
     "G14": ("[本地门禁可移植性] shell 脚本 bash 3.2 兼容(禁关联数组)且 bash -n 可解析", g14_shell_scripts_are_portable),
     "G15": ("[多线纪律/红线 3、8] crates/* 每个 crate 都必须被显式分类", g15_every_crate_is_classified),
-    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),    "G17": ("[人类裁决 R687] [HARDWARE] 标记必须落在 #[ignore] 里", g17_hardware_markers_are_ignored),
-}
+    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),    "G17": ("[人类裁决 R687] [HARDWARE] 标记必须落在 #[ignore] 里", g17_hardware_markers_are_ignored),}
+
 
 
 
