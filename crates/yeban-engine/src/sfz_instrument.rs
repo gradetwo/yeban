@@ -46,14 +46,15 @@
 //!
 //! | # | 局限 | 状态 |
 //! | :--- | :--- | :--- |
-//! | ① | 力度增益 | **本片已修**（每力度一张表，⛔ 不再冻结在 100） |
-//! | ② | `trigger` 门控 | **本片已修**（走 `matches_query`；门控不过的区域掩码全 0） |
-//! | ③ | 无 `offset`/`end` | **本片补了 `start`/`end`（`SampleSpan`）字段**，但渲染**仍未应用**它 —— 应用它必须**同时**改离线侧，否则两侧口径又会分叉（下一步） |
+//! | ① | 力度增益 | **已修**（步 1：每力度一张表，⛔ 不再冻结在 100） |
+//! | ② | `trigger` 门控 | **已修**（步 1：走 `matches_query`；门控不过的区域掩码全 0） |
+//! | ③ | `offset`/`end`（`SampleSpan`） | ⭐ **步 3 已闭合**：离线 `render_note_into`／摊平 `render_block_into`／实时声部三条路共用 [`reduce_span`] 的**一份**归约 ⇒ `start`（起点）与 `end`（终点）都**真正应用**，两侧逐样本差 ＝ 0 |
 //! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | 未做（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁 ⇒ 属步 2） |
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
-//! | ⑥ | 同内容不同路径重复解码 | 未做（每个 region / 每条路径各自解码，⛔ 无去重） |
+//! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
 //! | ⑧ | `loop_window` / `direction` / `pan` / `off_mode` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带） |
+//! | ⑨ | ⭐ **多 `sample=` 每区域各播自己** | ⭐ **步 3 已做**：摊平表持 `samples: Vec<PreparedSample>` ＋ [`PreparedRegion::sample_index`] 指路；⚠ 单样本重载 [`PreparedSfz::prepare`] **仍是广播**（键/力度映射对、**音色内容错** ⇒ 读数 `sample_content=broadcast(1)`） |
 //!
 //! # 引擎侧声部（任务 `#66` 的步 2：`SfzPlan` / `SfzVoicePool` / 分派次序）
 //!
@@ -85,8 +86,8 @@
 //!   即退休；
 //! * 音符先到 [`crate::synth::ScheduledNote::end_sample`] 也退休。
 //!
-//! ⚠ `span` 的**起点**（`offset`）与循环**本片都不做**（源位置从 `0.0` 起，
-//! 与摊平表的一次性调用同口径）。
+//! ⚠ `span` 的**起点**（`offset`）与**终点**（`end`）**步 3 已应用**：三条路都从
+//! `span.start` 起播、在 `span.end` 停（[`reduce_span`] 的唯一归约）。循环**仍不做**。
 //!
 //! ## 分配纪律（红线 7 / [MUST-GATE-001]）
 //!
@@ -105,25 +106,48 @@
 //!
 //! ## ⚠ 与摊平表 `render_block_into` 的**口径边界**（如实登记）
 //!
-//! `PreparedSfz::render_block_into` 是**无状态的一次性调用**（每次从源位置 `0.0` 起播），
-//! 且**尚未应用 `span`**（见上表 ③）。引擎声部是**有状态**的：它应用 `span` 终点、
-//! 播完即退休。因此"逐样本最大绝对差 ＝ 0"这条判据**只覆盖触发量子**，且夹具必须是
-//! **没有显式 `offset`/`end`** 的区域；两条的差别登记为 needs（见下表）。
+//! `PreparedSfz::render_block_into` 是**无状态的一次性调用**（每次从源位置 `span.start` 起播，
+//! 立即播完），引擎声部是**有状态**的（跨量子延续 `position`、播完即退休）。
+//! ⭐ 步 3 之后**两条路的数值口径完全相同**（`span` 起点/终点、样本、速率、增益都在
+//! [`reduce_span`] / `gain_at` / `rate_per_note` 上对齐）⇒ "逐样本最大绝对差 ＝ 0"覆盖
+//! **整段**（不再是"只覆盖触发量子"），判据见 `tests/sfz_instrument.rs` 的 S1/S1b/S3。
+//! 唯一的差别是**状态归属**（谁记住位置、谁负责退休），⛔ 不是数值口径。
 //!
-//! ## 本片新增的 needs（⛔ 不假装已有）
+//! # 任务 `#67` 的步 3：**多采样** ＋ ⭐ **绑定注入 API**（⭐ 控制侧；⛔ 不发明模型语义）
+//!
+//! | 件 | 形状 | 说明 |
+//! | :--- | :--- | :--- |
+//! | [`PreparedSample`] | 摊平表里的**一份**样本（`path` ＋ `pcm` ＋ `sample_hz`） | 去重键 ＝ `region.sample_path()`；容器 ＝ `BTreeMap` ⇒ 顺序确定 [MODEL-AST-003] |
+//! | [`PreparedRegion::sample_index`] | `u16` 指路 | `NO_SAMPLE` 哨兵 ＝ 该区域**不产生采样输出** |
+//! | [`PreparedSfz::prepare_with_samples`] | 控制侧构造 | 每区域**播自己**那份样本；同一路径**只 materialize 一次** |
+//! | [`PreparedSfz::prepare`] | 单样本**广播**（兼容重载，⛔ 未删） | 所有 `sample_index = 0`；⚠ **音色内容错**（各 region 播同一份）⇒ 读数 `sample_content=broadcast(1)` |
+//! | [`SfzPlan::prepare_with_samples`] | 快照投影 | 经 [`crate::snapshot::EngineSnapshot::with_sfz`] 注入 ⇒ **唯一**的公开绑定路径 |
+//!
+//! ⛔ **解码在控制侧**：引擎只接**已经解码**的 [`InMemorySample`]（⛔ 不引 `symphonia`/`rubato`）。
+//! 调用方先用 [`SfzInstrument::referenced_sample_paths`] 拿到"这条 SFZ 到底引用哪些路径"
+//! （排序去重），再按 `crates/yeban-app/src/sfz_load.rs` 的形状（真读 PCM WAV、读不到 ⇒
+//! 如实回退 ＋ 把原因写进来源文案）解码成 `&[(String, InMemorySample)]`。
+//! ⚠ 引擎侧对**没给**的路径只做一件事：**回退到 `samples[0]` ＋ 计数**（[`PreparedSfz::fallback_region_count`]
+//! ／[`PreparedSfz::missing_sample_paths`]），⛔ 不静默 —— 那是**内容错**，登记为 sfz-needs-7。
+//!
+//! ## needs 汇总（⭐ 本步闭合的标注"已闭合"，未闭合的说明卡在哪）
 //!
 //! | # | 缺口 | 为什么需要裁决 |
 //! | :--- | :--- | :--- |
-//! | sfz-needs-1 | **轨推子/静音没有乘到 SFZ 声部上** | 本片的逐样本对账口径是 `render_block_into(note, velocity)`（它**没有**轨增益参数）⇒ 声部增益＝`region.gain_at(...)`。接线轨增益要先裁"谁拥有力度增益"（SFZ 曲线的 vs `synth::velocity_gain`），否则会双重计力度。⚠ 与鼓机（乘 `ScheduledNote::gain`）**不对称** |
-//! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | `yeban-sfz` 的 `VoicePool` 有确定性窃取，但它是**全局 512 声部**、且 victim 选择是另一份口径 ⇒ 两套形状要一条 ADR（见 `docs/ledger/sfz-core-notes.md`） |
-//! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | 与 `crate::drums` 的 needs-3 同族：模型若禁止这种组合，本条删除 |
-//! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | 两侧口径分叉（离线 `render_note_into` / 摊平表 `render_block_into` 都仍从源 `0.0` 播到 PCM 末）⇒ 修它要**同时**改离线侧，属步 3 |
-//! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在** | `yeban-model` 里 SFZ 命中只有一行注释（`model/src/lib.rs:16`）、`DeviceKind` 四档没有 sampler ⇒ 今天只能由引擎 API（[`crate::snapshot::EngineSnapshot::with_sfz`]）显式注入 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / 多采样 / 每区域独立 PCM** | 完全未做：本片一条轨共用**一份** PCM（摊平表只有 `pcm` 一个 `Vec`）⇒ 多 `sample=` 的区域会播同一份数据（步 3） |
+//! | sfz-needs-1 | **轨推子/静音没有乘到 SFZ 声部上** | 本片的逐样本对账口径是 `render_block_into(note, velocity)`（它**没有**轨增益参数）⇒ 声部增益＝`region.gain_at(...)`。接线轨增益要先裁"谁拥有力度增益"（SFZ 曲线的 vs `synth::velocity_gain`），否则会双重计力度。⚠ 与鼓机（乘 `ScheduledNote::gain`）**不对称**（未闭合） |
+//! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | `yeban-sfz` 的 `VoicePool` 有确定性窃取，但它是**全局 512 声部**、且 victim 选择是另一份口径 ⇒ 两套形状要一条 ADR（未闭合） |
+//! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | 与 `crate::drums` 的 needs-3 同族：模型若禁止这种组合，本条删除（未闭合） |
+//! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
+//! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 本步只把它做成**可经公开路径调用的 API**） | `yeban-model` 里 SFZ 命中只有一行注释（`model/src/lib.rs:16`）、`DeviceKind` 四档没有 sampler ⇒ 今天只能由引擎 API（[`crate::snapshot::EngineSnapshot::with_sfz`] ＋ [`SfzPlan::prepare_with_samples`]）显式注入。**"SFZ 如何进 `YebanProjectV1`"仍未裁**（⛔ 不发明模型语义：本步不加 `DeviceKind` 档、不改 schema）（未闭合、属模型面） |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **步 3 只闭合了它的"多采样／每区域独立 PCM"那一半**；循环、`ampeg_*`、`off_mode`、`group`/`off_by` 仍完全未做（未闭合） |
+//! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | [`PreparedSfz::prepare_with_samples`] 对**调用方没给**的 `sample_path` 一律回退到 `samples[0]` 并计数（⛔ 不静默）；app 形状（`sfz_load.rs:264-267`：回退**内存正弦** ＋ 把原因写进来源文案）**没有**搬进引擎 ⇒ "回退内容归谁"要一条裁决（未闭合） |
+//! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | `prepare_with_samples` 把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无共享（`Arc`）口径（未闭合） |
+
+use std::collections::BTreeMap;
 
 use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
-use yeban_sfz::instrument::{Instrument, RegionQuery};
+use yeban_sfz::instrument::{Instrument, Region, RegionQuery};
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
@@ -196,6 +220,28 @@ impl SfzInstrument {
                 .collect::<Vec<usize>>()
         })
     }
+
+    /// ⭐ **这条 SFZ 到底引用哪些样本路径**（排序 ＋ 去重 ⇒ 确定性顺序）。
+    ///
+    /// 它是**控制侧解码**的入口：调用方拿这张表去真读 PCM WAV
+    /// （形状见 `crates/yeban-app/src/sfz_load.rs:238-269`），把结果整理成
+    /// `&[(String, InMemorySample)]` 再交给 [`PreparedSfz::prepare_with_samples`]。
+    /// ⚠ 路径是 [`yeban_sfz::instrument::Region::sample_path`] 的原样读数（含 `default_path`
+    /// 前缀、⛔ 不做任何规范化/存在性检查）。
+    ///
+    /// ⚠ **会分配**（重新解析 ＋ `BTreeSet`）⇒ 控制侧专用（见模块头文档 ①）。
+    ///
+    /// # Errors
+    /// 同 [`Self::with_instrument`]。
+    pub fn referenced_sample_paths(&self) -> Result<Vec<String>, SfzError> {
+        self.with_instrument(|instrument| {
+            let mut paths = std::collections::BTreeSet::new();
+            for region in instrument.regions() {
+                paths.insert(region.sample_path().into_owned());
+            }
+            paths.into_iter().collect::<Vec<String>>()
+        })
+    }
 }
 
 /// **只在内存里的样本源**（本切片的"样本源"）。
@@ -237,6 +283,10 @@ impl SfzInstrument {
     /// （⛔ 不是各区域之和；所有区域共享同一份 `source.pcm`，故它即最长那条的帧数）。
     /// [`PreparedSfz::render_block_into`] 用同一口径。
     ///
+    /// ⭐ **`offset`/`end` 已应用**（步 3）：源位置从 `span.start` 起、在
+    /// `min(span.end, PCM 长度)` 停 —— 与摊平表/实时声部共用 [`reduce_span`] 的**一份**归约。
+    /// `end=-1`（[`SampleEnd::Silent`](yeban_sfz::instrument::SampleEnd)）⇒ 该区域**不写任何帧**。
+    ///
     /// ⚠ **只覆盖离线**：本函数在调用时**解析**（⇒ 分配）⇒ ⛔ 不得在音频回调里调用（红线 7）。
     /// 实时侧用 [`PreparedSfz`]（构造期摊平）。
     ///
@@ -250,6 +300,7 @@ impl SfzInstrument {
         out: &mut [f32],
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
+        let pcm_len = source.pcm.len();
         let rates = RenderRates::new(source.sample_hz, engine_hz);
         let query = RegionQuery::new(note, velocity);
         self.with_instrument(|instrument| {
@@ -261,27 +312,49 @@ impl SfzInstrument {
                 // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`
                 let rate = region.playback_rate(note, rates);
                 let gain = region.playback_spec(note, velocity, rates).total_gain();
-                if !(rate.is_finite() && rate > 0.0) || source.pcm.is_empty() {
+                if !(rate.is_finite() && rate > 0.0) || pcm_len == 0 {
                     continue;
                 }
-                let mut position = 0.0f32;
-                let mut region_written = 0usize;
-                for slot in out.iter_mut() {
-                    let index = position as usize;
-                    if index + 1 >= source.pcm.len() {
-                        break;
-                    }
-                    let frac = position - index as f32;
-                    let sample = source.pcm[index] * (1.0 - frac) + source.pcm[index + 1] * frac;
-                    *slot += sample * gain;
-                    position += rate;
-                    region_written += 1;
-                }
+                // ⭐ `offset`/`end`：与摊平表、实时声部**同一份**归约（`None` ⇒ 不产生输出）。
+                let Some((start, source_end)) = reduce_span(region.playback_span(), pcm_len) else {
+                    continue;
+                };
+                let mut position = start;
+                let region_written =
+                    mix_span_into(&source.pcm, &mut position, rate, gain, source_end, out);
                 written = written.max(region_written);
             }
             written
         })
     }
+}
+
+/// ⭐ **`span`（`offset`/`end`）归约的唯一实现**：离线 [`SfzInstrument::render_note_into`]、
+/// 摊平 [`PreparedSfz::render_block_into`] 与实时声部（[`SfzVoicePool`]）三条路共用它
+/// ⇒ 两侧口径不会分叉（本仓"⛔ 不许两份实现"的机械纪律）。
+///
+/// 返回**半开区间** `[start, end)`（单位：源采样帧）的起点（`f32`，供逐样本位置使用）
+/// 与终点（`u64`）：
+///
+/// * `span == None`（`end=-1`，或显式区间落在 `offset` 之前）⇒ `None` ＝ **不产生采样输出**；
+/// * `span.end == None` ⇒ 终点取 `pcm_len`（"播到采样末尾"）；
+/// * 显式 `end` 超出 PCM ⇒ 夹到 `pcm_len`（⛔ 不越界读）；
+/// * 归约后**空区间**（`end <= start`，例如 `offset` 落在 PCM 之外）⇒ `None`
+///   （⛔ 不是"从 0 播一整份"）。
+///
+/// ⚠ `start as f32`：逐样本位置本来就是 `f32`（`mix_span_into` 的口径），
+/// 超过 2²⁴ 帧的 `offset` 会有位级舍入 —— 如实登记，⛔ 不假装是精确整数。
+///
+/// ⚠ **零分配、零锁、零 I/O**（纯整数/浮点比较）⇒ 可被实时声部在**触发期**调用 [MUST-GATE-001]。
+#[must_use]
+pub fn reduce_span(span: Option<SampleSpan>, pcm_len: usize) -> Option<(f32, u64)> {
+    let span = span?;
+    let pcm_len = pcm_len as u64;
+    let end = span.end.unwrap_or(pcm_len).min(pcm_len);
+    if end <= span.start {
+        return None;
+    }
+    Some((span.start as f32, end))
 }
 
 /// ✂️ **摊平后的一个区域**：回调侧**只读**（⛔ 无 `Vec`／`Box`／`String`，全部定长）。
@@ -318,15 +391,26 @@ pub struct PreparedRegion {
     volume_gain: f32,
     /// `PlaybackSpec::velocity_gain` 的**每力度**读数（⛔ 不再冻结在力度 100）。
     velocity_gain: [f32; 128],
+    /// ⭐ **该区域用哪一份摊平样本**（[`PreparedSfz::samples`] 的下标）。
+    ///
+    /// [`Self::NO_SAMPLE`] ＝ 该区域**不产生采样输出**（调用方没给它的 `sample_path`，且
+    /// 连回退用的 `samples[0]` 都没有）⇒ 渲染时整条跳过。
+    sample_index: u16,
     /// ⭐ `offset` / `end` 归约出的**源采样区间**（半开 `[start, end)`，单位源采样帧）。
     ///
     /// `None` 表示该区域**不产生采样输出**（`end=-1`，或显式区间落在 `offset` 之前）。
-    /// ⚠ **本片只把它摊平登记**，⛔ 渲染**尚未应用**（应用它必须同时改离线侧，
-    /// 否则两侧口径会再次分叉）。
+    /// ⭐ **步 3 起渲染真正应用它**（[`reduce_span`]）：起点从 `span.start` 开始、
+    /// 终点停在 `min(span.end, PCM 长度)` ⇒ 离线/摊平/实时三条路同口径。
     span: Option<SampleSpan>,
 }
 
 impl PreparedRegion {
+    /// ⭐ 「没有样本」哨兵（[`Self::sample_index`] 的取值）：该区域**不产生采样输出**。
+    ///
+    /// 出现条件只有一个：调用方给的样本表里**没有**该区域的 `sample_path`，**且**表本身为空
+    /// （连回退目标 `samples[0]` 都不存在）⇒ 如实登记 ＋ 计数（⛔ 不静默、⛔ 不 panic）。
+    pub const NO_SAMPLE: u16 = u16::MAX;
+
     /// 该区域是否接受 `(note, velocity)`（⭐ 纯位测试：无分配、无解析）。
     #[must_use]
     pub fn accepts(&self, note: u8, velocity: u8) -> bool {
@@ -354,20 +438,41 @@ impl PreparedRegion {
         self.span
     }
 
-    /// ⭐ **源采样终点（半开）**：`min(span 终点, 样本播完)`。
+    /// ⭐ 该区域**用哪一份摊平样本**（[`PreparedSfz::samples`] 的下标）。
+    #[must_use]
+    pub const fn sample_index(&self) -> u16 {
+        self.sample_index
+    }
+
+    /// ⭐ 该区域**有没有**样本可播（`false` ＝ [`Self::NO_SAMPLE`]）。
+    #[must_use]
+    pub const fn has_sample(&self) -> bool {
+        self.sample_index != Self::NO_SAMPLE
+    }
+
+    /// ⭐ **`span` 的归约结果**：`(源起点, 源终点)`（半开）；`None` ＝ 不产生采样输出。
     ///
-    /// * [`Self::span`] 为 `None` ⇒ `None`：该区域**不产生采样输出**（`end=-1` / 空区间）
-    ///   ⇒ 实时侧⛔ 不为它建声部；
+    /// 直接转交 [`reduce_span`]（⭐ **唯一**归约）⇒ 离线/摊平/实时三条路不可能分叉。
+    #[must_use]
+    pub fn span_bounds(&self, pcm_len: usize) -> Option<(f32, u64)> {
+        reduce_span(self.span, pcm_len)
+    }
+
+    /// ⭐ **源采样起点**（`offset`，已归约）；`None` ＝ 不产生采样输出。
+    #[must_use]
+    pub fn source_start(&self, pcm_len: usize) -> Option<f32> {
+        self.span_bounds(pcm_len).map(|(start, _)| start)
+    }
+
+    /// ⭐ **源采样终点（半开）**：`min(span 终点, 样本播完)`；`None` ＝ 不产生采样输出。
+    ///
+    /// * [`Self::span`] 为 `None` ⇒ `None`（`end=-1` / 空区间）⇒ 实时侧⛔ 不为它建声部；
     /// * `span.end` 未指定（`offset`/`end` 都没写）⇒ 取 `pcm_len`（"到采样末尾"）；
-    /// * 显式 `end` 超出 PCM ⇒ 夹到 `pcm_len`（⛔ 不越界读）。
-    ///
-    /// ⚠ **只算终点**：`span` 的起点（`offset`）本片不应用（声部从源位置 `0.0` 起），
-    /// 与 [`PreparedSfz::render_block_into`] 的起点口径一致。
+    /// * 显式 `end` 超出 PCM ⇒ 夹到 `pcm_len`（⛔ 不越界读）；
+    /// * 归约后空区间（`end <= start`）⇒ `None`（⛔ 不是"从 0 播"）。
     #[must_use]
     pub fn source_end(&self, pcm_len: usize) -> Option<u64> {
-        let pcm_len = pcm_len as u64;
-        self.span
-            .map(|span| span.end.unwrap_or(pcm_len).min(pcm_len))
+        self.span_bounds(pcm_len).map(|(_, end)| end)
     }
 
     /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
@@ -382,23 +487,98 @@ impl PreparedRegion {
     }
 }
 
-/// ✂️ **摊平后的乐器**：区域表 ＋ PCM，**构造期**建好，回调侧只读。
+/// ✂️ **摊平后的乐器**：区域表 ＋ **样本表**，**构造期**建好，回调侧只读。
+///
+/// # 样本形态（⭐ 任务 `#67` 的步 3）
+///
+/// * [`Self::prepare_with_samples`]：**每区域播自己**那份样本 —— 去重键 ＝ `region.sample_path()`
+///   字符串、容器 ＝ `BTreeMap`（确定性顺序 [MODEL-AST-003]）⇒ 同一路径**只 materialize 一份**
+///   [`PreparedSample`]；下标由 [`PreparedRegion::sample_index`] 指路；
+/// * [`Self::prepare`]：单样本**广播**（兼容重载，⛔ 未删）⇒ 所有 `sample_index = 0`：
+///   键/力度映射**对**、**音色内容错**（各 region 播同一份）⇒ 读数 `sample_content=broadcast(1)`。
 ///
 /// # 分配纪律（红线 7 / [MUST-GATE-001]）
 ///
-/// * [`PreparedSfz::prepare`]：**允许分配**（区域表与 PCM 的 `Vec` 在构造期/控制侧建立）；
-/// * [`PreparedSfz::render_block_into`]：**禁止分配** —— 它只做位测试、数组读取与
+/// * [`Self::prepare`] / [`Self::prepare_with_samples`]：**允许分配**（区域表与样本 PCM 的
+///   `Vec` 在构造期/控制侧建立）；
+/// * [`Self::render_block_into`]：**禁止分配** —— 它只做位测试、数组读取与
 ///   `out` 的原地写入（⛔ 无 `Vec::push`／`Box`／`String`／锁／I/O）。
 ///   违反的后果：实时回调内产生堆分配/释放或锁等待 ⇒ 可能造成音频线程不可预测的停顿
 ///   （红线 7 的一票否决项），由 `tests/rt_zero_alloc.rs` 的**计数型全局分配器**窗口判据检测。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedSfz {
     regions: Vec<PreparedRegion>,
+    /// ⭐ **去重后的样本表**：每个被区域引用的 `sample_path` 至多一份。
+    samples: Vec<PreparedSample>,
+    /// 建表口径：`true` ⇒ 单样本重载 [`Self::prepare`] 的**广播**路径（⛔ 内容错，已登记）。
+    broadcast: bool,
+    /// ⭐ 缺样本 ⇒ **回退到 `samples[0]`** 的区域数（**计数**，⛔ 不静默；内容错见 sfz-needs-7）。
+    fallback_regions: usize,
+    /// ⭐ 缺样本且**连回退目标都没有**（`samples` 为空）⇒ 标 `NO_SAMPLE` 的区域数（**计数**）。
+    silent_regions: usize,
+    /// ⭐ 缺样本的**路径**（排序 ＋ 去重 ⇒ 确定性顺序；报告/诊断用）。
+    missing_samples: Vec<String>,
+}
+
+/// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
+///
+/// ⚠ PCM 是**整段 clone** 进来的（构造期分配）：无字节预算、无流式、无 `Arc` 共享
+/// ⇒ 登记为 sfz-needs-8。回调侧只**借用**它（⛔ 不 clone、⛔ 不 `Arc` clone）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedSample {
+    /// 去重键 ＝ [`yeban_sfz::instrument::Region::sample_path`] 的字符串（⛔ 不规范化、⛔ 不查文件）。
+    ///
+    /// ⚠ [`PreparedSfz::prepare`] 的**广播**路径没有路径身份 ⇒ 它是**空串**。
+    path: String,
+    /// 单声道 PCM（归一化到 `[-1, 1]`）。
     pcm: Vec<f32>,
+    /// 该 PCM 的原始采样率（Hz；摊平期已在 `Region::playback_rate` 里换算过）。
+    sample_hz: f32,
+}
+
+impl PreparedSample {
+    /// 去重键（`region.sample_path()` 的原样字符串；广播路径为空串）。
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// ⭐ 只读 PCM（**实时侧借用它**，⛔ 不 clone 这个 `Vec`）。
+    #[must_use]
+    pub fn pcm(&self) -> &[f32] {
+        &self.pcm
+    }
+
+    /// 原始采样率（Hz）。
+    #[must_use]
+    pub const fn sample_hz(&self) -> f32 {
+        self.sample_hz
+    }
+
+    /// 帧数。
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.pcm.len()
+    }
+
+    /// PCM 字节数（⛔ 不含 `path` 文本）。
+    #[must_use]
+    pub fn pcm_bytes(&self) -> usize {
+        core::mem::size_of::<f32>() * self.pcm.len()
+    }
+
+    /// 从调用方给的 [`InMemorySample`] **clone** 一份（构造期；`path` 是去重键）。
+    fn from_in_memory(path: String, source: &InMemorySample) -> Self {
+        Self {
+            path,
+            pcm: source.pcm.clone(),
+            sample_hz: source.sample_hz,
+        }
+    }
 }
 
 impl PreparedSfz {
-    /// **构造期**摊平：把区域谓词、速率、增益与样本一次算好（⭐ 允许分配）。
+    /// **构造期**摊平（**单样本广播**）：把区域谓词、速率、增益与样本一次算好（⭐ 允许分配）。
     ///
     /// ⭐ **区域选择口径 = `Region::matches_query`**（与离线侧、与 `Instrument::region_for_with`
     /// 同一份谓词）。门控（通道 / `trigger` / keyswitch / CC / `held_notes`）在键与力度之外
@@ -409,6 +589,11 @@ impl PreparedSfz {
     /// ⭐ 增益按 `total_gain()` 的乘积结构摊平（⛔ 不再冻结在 `(60, 100)`）：见
     /// [`PreparedRegion`] 的字段文档与 [`PreparedRegion::gain_at`]。
     ///
+    /// ⚠ ⭐ **这是广播口径**（兼容重载）：**每一**个 region 的 `sample_index` 都是 `0`
+    /// —— 键/力度映射**对**，但**音色内容错**（多 `sample=` 的区域会播同一份 PCM）。
+    /// 读数 [`Self::sample_content_label`] 为 `broadcast(1)`。要"每区域各播自己"请用
+    /// [`Self::prepare_with_samples`]。⛔ 本函数**不**被删：既有调用方与步 2 的逐位读数靠它。
+    ///
     /// # Errors
     /// 文本非法 ⇒ [`SfzError`]。
     pub fn prepare(
@@ -416,94 +601,117 @@ impl PreparedSfz {
         source: &InMemorySample,
         engine_hz: f32,
     ) -> Result<Self, SfzError> {
-        let rates = RenderRates::new(source.sample_hz, engine_hz);
-        instrument.with_instrument(|parsed| {
-            let mut regions = Vec::with_capacity(parsed.regions().len());
-            for region in parsed.regions() {
-                let mut key_mask = [0u64; 2];
-                let mut vel_mask = [0u64; 2];
-                let mut rate_per_note = [0.0f32; 128];
-                for note in 0u16..128 {
-                    let note_u8 = note as u8;
-                    if region.matches_key(note_u8) {
-                        key_mask[note as usize / 64] |= 1u64 << (note % 64);
-                    }
-                    rate_per_note[note as usize] = region.playback_rate(note_u8, rates);
-                }
-                for velocity in 0u16..128 {
-                    if region.matches_velocity(velocity as u8) {
-                        vel_mask[velocity as usize / 64] |= 1u64 << (velocity % 64);
-                    }
-                }
-                // ⭐ 门控：取"键与力度都命中"的一个探测点 ⇒ `matches_query` 的答案只剩
-                // 通道 / trigger / keyswitch / CC 这些与 (note, velocity) 无关的门控。
-                // 门控不过 ⇒ 掩码清 0（`trigger=release` 的 region 因此不进 note-on 掩码）。
-                let probe = first_set_bit(&key_mask).zip(first_set_bit(&vel_mask));
-                let gate_open = probe.is_some_and(|(note, velocity)| {
-                    region.matches_query(&RegionQuery::new(note, velocity))
-                });
-                if !gate_open {
-                    key_mask = [0u64; 2];
-                    vel_mask = [0u64; 2];
-                }
-
-                // ⭐ 增益：`total_gain() = (volume × 力度) × 交叉淡化`，而交叉淡化是一条
-                // 从左到右的乘法链：键轴段（in/out）→ 力度轴段（in/out）→ CC 段（**跳过**，
-                // 因为回调侧没有 CC 状态，离线 `playback_spec` 也是 `cc = None`）。
-                // 分开摊平键轴、力度淡入、力度淡出三张表，回调侧就能**逐位**还原该链。
-                let mut key_crossfade = [1.0f32; 128];
-                let mut velocity_fade_in = [1.0f32; 128];
-                let mut velocity_fade_out = [1.0f32; 128];
-                for crossfade in &region.crossfades {
-                    match crossfade.axis {
-                        XfAxis::Key => {
-                            for (note, slot) in key_crossfade.iter_mut().enumerate() {
-                                *slot *= crossfade.gain_at(note as u8);
-                            }
-                        }
-                        XfAxis::Velocity => {
-                            let table = match crossfade.direction {
-                                XfDirection::In => &mut velocity_fade_in,
-                                XfDirection::Out => &mut velocity_fade_out,
-                            };
-                            for (velocity, slot) in table.iter_mut().enumerate() {
-                                *slot *= crossfade.gain_at(velocity as u8);
-                            }
-                        }
-                        // CC 轴：回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地跳过
-                        // （`Region::crossfade_gain` 对未提供状态的 CC 段就是 `continue`）。
-                        XfAxis::Cc(_) => {}
-                    }
-                }
-                let mut velocity_gain = [0.0f32; 128];
-                for (velocity, slot) in velocity_gain.iter_mut().enumerate() {
-                    *slot = region.velocity_gain(velocity as u8);
-                }
-
-                regions.push(PreparedRegion {
-                    key_mask,
-                    vel_mask,
-                    rate_per_note,
-                    key_crossfade,
-                    velocity_fade_in,
-                    velocity_fade_out,
-                    volume_gain: region.linear_gain(),
-                    velocity_gain,
-                    span: region.playback_span(),
-                });
-            }
-            Self {
-                regions,
-                pcm: source.pcm.clone(),
-            }
+        // 广播：只有**一份**样本（路径身份为空串），所有区域都指它。
+        let samples = vec![PreparedSample::from_in_memory(String::new(), source)];
+        let sample_hz = source.sample_hz;
+        let regions = flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
+        Ok(Self {
+            regions,
+            samples,
+            broadcast: true,
+            fallback_regions: 0,
+            silent_regions: 0,
+            missing_samples: Vec::new(),
         })
     }
 
-    /// 摊平占用的**内存字节数**（读数用：区域表 ＋ PCM）。
+    /// ⭐ **构造期**摊平（**多采样**）：每个区域播**它自己的** `sample=`。
+    ///
+    /// # 口径（三条，都可机械判定）
+    ///
+    /// 1. **去重键**＝[`yeban_sfz::instrument::Region::sample_path`] 的**字符串**原样
+    ///    （⛔ 不规范化、⛔ 不看文件内容）；容器 ＝ `BTreeMap` ⇒ 顺序确定 [MODEL-AST-003]。
+    ///    **同一样本引两次只 materialize 一份**（[`Self::sample_count`] ＝ 1、
+    ///    [`Self::pcm_bytes`] ＝ 一份的字节数）。提供表里同一路径出现两次时**首个为准**。
+    /// 2. **解码在控制侧**：本函数只接**已经解码**的 [`InMemorySample`] ⇒ 引擎⛔ 不引
+    ///    `symphonia`/`rubato`、⛔ 不做任何 I/O。调用方先用
+    ///    [`SfzInstrument::referenced_sample_paths`] 取路径全集，再按
+    ///    `crates/yeban-app/src/sfz_load.rs` 的形状真读 PCM WAV。
+    /// 3. ⭐ **缺样本如实回退 ＋ 计数**（⛔ 不静默）：`provided_samples` 里**没有**某个
+    ///    `sample_path` 时 —— 有替代样本 ⇒ 该区域回退到 `samples[0]`（＝调用方第一份，
+    ///    形如 `sfz_load.rs:264-267` 的"替代样本"）并计入 [`Self::fallback_region_count`]；
+    ///    提供表**为空** ⇒ 该区域标 [`PreparedRegion::NO_SAMPLE`]（不产生输出）并计入
+    ///    [`Self::silent_region_count`]。两条都把路径记进 [`Self::missing_sample_paths`]。
+    ///    ⚠ 回退到 `samples[0]` 是**内容错**（那个区域播别人的样本）⇒ 登记为 sfz-needs-7。
+    ///
+    /// ⚠ 样本数上限：`sample_index` 是 `u16` ⇒ 去重后至多 `65534` 份（超出时后续区域被记为
+    /// `NO_SAMPLE`，⛔ 不 panic、⛔ 不回绕）。
+    ///
+    /// # Errors
+    /// 文本非法 ⇒ [`SfzError`]。
+    pub fn prepare_with_samples(
+        instrument: &SfzInstrument,
+        provided_samples: &[(String, InMemorySample)],
+        engine_hz: f32,
+    ) -> Result<Self, SfzError> {
+        // ① 提供表的**确定性索引**（BTreeMap）：同一路径出现两次 ⇒ 首个为准。
+        let mut provided_index: BTreeMap<&str, usize> = BTreeMap::new();
+        for (index, (path, _sample)) in provided_samples.iter().enumerate() {
+            provided_index.entry(path.as_str()).or_insert(index);
+        }
+        // ② 回退目标 ＝ 调用方给的**第一份**样本（恒为 `samples[0]`；内容错，已计数登记）。
+        let mut samples: Vec<PreparedSample> = Vec::new();
+        let mut index_of: BTreeMap<String, u16> = BTreeMap::new();
+        let fallback_index: Option<u16> = provided_samples.first().map(|(path, source)| {
+            samples.push(PreparedSample::from_in_memory(path.clone(), source));
+            index_of.insert(path.clone(), 0);
+            0
+        });
+        let mut missing: Vec<String> = Vec::new();
+        let mut fallback_regions = 0usize;
+        let mut silent_regions = 0usize;
+        let regions = flatten_regions(instrument, engine_hz, |region| {
+            let path = region.sample_path();
+            // 已 materialize 过 ⇒ 直接复用（**去重**：同一路径只解码/只 clone 一次）。
+            if let Some(index) = index_of.get(path.as_ref()) {
+                return (*index, samples[usize::from(*index)].sample_hz);
+            }
+            // 提供表里有这份路径 ⇒ materialize 一份新的（按**首次引用顺序**编号）。
+            if let Some(provided) = provided_index.get(path.as_ref()).copied() {
+                let (path, source) = &provided_samples[provided];
+                let index = u16::try_from(samples.len()).unwrap_or(PreparedRegion::NO_SAMPLE - 1);
+                samples.push(PreparedSample::from_in_memory(path.clone(), source));
+                let sample_hz = samples[usize::from(index)].sample_hz;
+                index_of.insert(path.clone(), index);
+                return (index, sample_hz);
+            }
+            // ⭐ 缺样本：如实回退 ＋ 计数（⛔ 不静默）。
+            missing.push(path.clone().into_owned());
+            match fallback_index {
+                Some(index) => {
+                    fallback_regions += 1;
+                    (index, samples[usize::from(index)].sample_hz)
+                }
+                None => {
+                    silent_regions += 1;
+                    // 没有样本 ⇒ 速率表用引擎采样率（该区域**永不渲染**，读数不进结论）。
+                    (PreparedRegion::NO_SAMPLE, engine_hz)
+                }
+            }
+        })?;
+        missing.sort();
+        missing.dedup();
+        Ok(Self {
+            regions,
+            samples,
+            broadcast: false,
+            fallback_regions,
+            silent_regions,
+            missing_samples: missing,
+        })
+    }
+
+    /// 摊平占用的**内存字节数**（读数用：区域表 ＋ 样本 PCM ＋ 样本路径文本）。
+    ///
+    /// ⚠ `path` 只算 `len()`（⛔ 不含 `String` 的容量余量）；广播路径是空串 ⇒ 0。
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
         core::mem::size_of::<PreparedRegion>() * self.regions.len()
-            + core::mem::size_of::<f32>() * self.pcm.len()
+            + self
+                .samples
+                .iter()
+                .map(|sample| sample.pcm_bytes() + sample.path.len())
+                .sum::<usize>()
     }
 
     /// 区域数（摊平后）。
@@ -518,13 +726,77 @@ impl PreparedSfz {
         &self.regions
     }
 
-    /// ⭐ 摊平后的 PCM（**只读借用**：实时侧⛔ 不 clone、⛔ 不 `Arc` clone 这个 `Vec`）。
-    ///
-    /// 本切片一条轨共用**一份** PCM（多 `sample=` 的区域会播同一份数据 ⇒ 见模块头
-    /// sfz-needs-6）。
+    /// ⭐ 摊平后的**样本表**（去重后；**只读借用**：实时侧⛔ 不 clone）。
     #[must_use]
-    pub fn pcm(&self) -> &[f32] {
-        &self.pcm
+    pub fn samples(&self) -> &[PreparedSample] {
+        &self.samples
+    }
+
+    /// ⭐ 单份样本（`sample_index` 之外 / `NO_SAMPLE` ⇒ `None`）。
+    #[must_use]
+    pub fn sample(&self, index: u16) -> Option<&PreparedSample> {
+        if index == PreparedRegion::NO_SAMPLE {
+            return None;
+        }
+        self.samples.get(usize::from(index))
+    }
+
+    /// ⭐ **样本数（去重后）＝ 摊平期的样本 clone 次数**（"解码次数"的机械读数）：
+    /// 同一路径引两次 ⇒ `1`。
+    #[must_use]
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// ⭐ **全部样本的 PCM 字节数**（去重后；⛔ 不含路径文本）。
+    #[must_use]
+    pub fn pcm_bytes(&self) -> usize {
+        self.samples
+            .iter()
+            .map(PreparedSample::pcm_bytes)
+            .sum::<usize>()
+    }
+
+    /// ⭐ 是否走**单样本广播**重载（[`Self::prepare`]）⇒ ⛔ 音色内容错（模块头 ⑨）。
+    #[must_use]
+    pub const fn is_broadcast(&self) -> bool {
+        self.broadcast
+    }
+
+    /// ⭐ 缺样本 ⇒ 回退到 `samples[0]` 的**区域数**（累计；⛔ 不静默）。
+    #[must_use]
+    pub const fn fallback_region_count(&self) -> usize {
+        self.fallback_regions
+    }
+
+    /// ⭐ 缺样本且连回退目标都没有 ⇒ 标 `NO_SAMPLE`（不产生输出）的**区域数**。
+    #[must_use]
+    pub const fn silent_region_count(&self) -> usize {
+        self.silent_regions
+    }
+
+    /// ⭐ 缺样本的**路径**（排序 ＋ 去重）。
+    #[must_use]
+    pub fn missing_sample_paths(&self) -> &[String] {
+        &self.missing_samples
+    }
+
+    /// ⭐ **样本内容读数**（报告用）：
+    /// `broadcast(N)` / `distinct(N)`，缺样本时追加 `+fallback(N)` / `+silent(N)`。
+    #[must_use]
+    pub fn sample_content_label(&self) -> String {
+        let mut label = if self.broadcast {
+            format!("broadcast({})", self.samples.len())
+        } else {
+            format!("distinct({})", self.samples.len())
+        };
+        if self.fallback_regions > 0 {
+            label.push_str(&format!("+fallback({})", self.fallback_regions));
+        }
+        if self.silent_regions > 0 {
+            label.push_str(&format!("+silent({})", self.silent_regions));
+        }
+        label
     }
 
     /// ⭐ **回调侧渲染**：把一个音符混进 `out`，返回写入帧数。**零分配**（只读 + 原地写）。
@@ -533,14 +805,13 @@ impl PreparedSfz {
     /// [`SfzInstrument::render_note_into`] 同一口径）。返回值 = 各匹配区域写入帧数的
     /// **最大值**（⛔ 不是各区域之和）。
     ///
+    /// ⭐ **每区域播自己那份样本**（[`PreparedRegion::sample_index`]）；`NO_SAMPLE` 的区域跳过。
+    ///
     /// 增益的相乘顺序与离线 `PlaybackSpec::total_gain()` **逐位相同**：
     /// `(volume × 力度) × ((键轴 × 力度淡入) × 力度淡出)`。
-    /// 与离线侧的**逐样本最大绝对差**为 0（判据 `prepared_matches_offline_sample_by_sample`
-    /// 钉住；`trigger` 门控与多匹配两片另有判据）。
-    ///
-    /// ⚠ **本函数不应用 [`PreparedRegion::span`]**（步 1 的已知局限 ③）：源侧终点取 PCM
-    /// 长度 ⇒ 与接线前逐样本**逐位相同**。引擎实时声部**应用** `span` 终点
-    /// （见 [`SfzVoice`] 与模块头的口径边界）。
+    /// ⭐ **`span`（`offset`/`end`）已应用**（步 3）：源位置从 `span.start` 起、
+    /// 在 `min(span.end, PCM 长度)` 停（[`PreparedRegion::span_bounds`] ⇒ [`reduce_span`]）
+    /// ⇒ 与离线侧、与实时声部的**逐样本最大绝对差为 0**，且覆盖**整段**（含显式 `end`）。
     pub fn render_block_into(&self, note: u8, velocity: u8, out: &mut [f32]) -> usize {
         let n = note as usize;
         let mut written = 0usize;
@@ -548,24 +819,119 @@ impl PreparedSfz {
             if !region.accepts(note, velocity) {
                 continue;
             }
+            let Some(sample) = self.sample(region.sample_index) else {
+                continue;
+            };
+            let pcm = sample.pcm();
             let rate = region.rate_per_note[n];
-            if !(rate.is_finite() && rate > 0.0) || self.pcm.is_empty() {
+            if !(rate.is_finite() && rate > 0.0) || pcm.is_empty() {
                 continue;
             }
+            let Some((start, source_end)) = region.span_bounds(pcm.len()) else {
+                continue;
+            };
             let gain = region.gain_at(note, velocity);
-            let mut position = 0.0f32;
-            let region_written = mix_span_into(
-                &self.pcm,
-                &mut position,
-                rate,
-                gain,
-                self.pcm.len() as u64,
-                out,
-            );
+            let mut position = start;
+            let region_written = mix_span_into(pcm, &mut position, rate, gain, source_end, out);
             written = written.max(region_written);
         }
         written
     }
+}
+
+/// ⭐ **区域摊平的唯一实现**（构造期）：把一条 SFZ 的每条区域变成 [`PreparedRegion`]。
+///
+/// `resolve` 决定"这条区域用哪份样本"：
+/// * [`PreparedSfz::prepare`] 传常数 `(0, source.sample_hz)`（**广播**）；
+/// * [`PreparedSfz::prepare_with_samples`] 传路径查表（**多采样** ＋ 去重回退）。
+///
+/// ⭐ 每个区域的**速率表**用**它自己那份样本**的采样率换算（`RenderRates::new(sample_hz, engine_hz)`）
+/// ⇒ 多采样下不同源采样率的样本各自换算正确（⛔ 不是全表一个 rates）。
+fn flatten_regions(
+    instrument: &SfzInstrument,
+    engine_hz: f32,
+    mut resolve: impl FnMut(&Region<'_>) -> (u16, f32),
+) -> Result<Vec<PreparedRegion>, SfzError> {
+    instrument.with_instrument(|parsed| {
+        let mut regions = Vec::with_capacity(parsed.regions().len());
+        for region in parsed.regions() {
+            let (sample_index, sample_hz) = resolve(region);
+            let rates = RenderRates::new(sample_hz, engine_hz);
+            let mut key_mask = [0u64; 2];
+            let mut vel_mask = [0u64; 2];
+            let mut rate_per_note = [0.0f32; 128];
+            for note in 0u16..128 {
+                let note_u8 = note as u8;
+                if region.matches_key(note_u8) {
+                    key_mask[note as usize / 64] |= 1u64 << (note % 64);
+                }
+                rate_per_note[note as usize] = region.playback_rate(note_u8, rates);
+            }
+            for velocity in 0u16..128 {
+                if region.matches_velocity(velocity as u8) {
+                    vel_mask[velocity as usize / 64] |= 1u64 << (velocity % 64);
+                }
+            }
+            // ⭐ 门控：取"键与力度都命中"的一个探测点 ⇒ `matches_query` 的答案只剩
+            // 通道 / trigger / keyswitch / CC 这些与 (note, velocity) 无关的门控。
+            // 门控不过 ⇒ 掩码清 0（`trigger=release` 的 region 因此不进 note-on 掩码）。
+            let probe = first_set_bit(&key_mask).zip(first_set_bit(&vel_mask));
+            let gate_open = probe.is_some_and(|(note, velocity)| {
+                region.matches_query(&RegionQuery::new(note, velocity))
+            });
+            if !gate_open {
+                key_mask = [0u64; 2];
+                vel_mask = [0u64; 2];
+            }
+
+            // ⭐ 增益：`total_gain() = (volume × 力度) × 交叉淡化`，而交叉淡化是一条
+            // 从左到右的乘法链：键轴段（in/out）→ 力度轴段（in/out）→ CC 段（**跳过**，
+            // 因为回调侧没有 CC 状态，离线 `playback_spec` 也是 `cc = None`）。
+            // 分开摊平键轴、力度淡入、力度淡出三张表，回调侧就能**逐位**还原该链。
+            let mut key_crossfade = [1.0f32; 128];
+            let mut velocity_fade_in = [1.0f32; 128];
+            let mut velocity_fade_out = [1.0f32; 128];
+            for crossfade in &region.crossfades {
+                match crossfade.axis {
+                    XfAxis::Key => {
+                        for (note, slot) in key_crossfade.iter_mut().enumerate() {
+                            *slot *= crossfade.gain_at(note as u8);
+                        }
+                    }
+                    XfAxis::Velocity => {
+                        let table = match crossfade.direction {
+                            XfDirection::In => &mut velocity_fade_in,
+                            XfDirection::Out => &mut velocity_fade_out,
+                        };
+                        for (velocity, slot) in table.iter_mut().enumerate() {
+                            *slot *= crossfade.gain_at(velocity as u8);
+                        }
+                    }
+                    // CC 轴：回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地跳过
+                    // （`Region::crossfade_gain` 对未提供状态的 CC 段就是 `continue`）。
+                    XfAxis::Cc(_) => {}
+                }
+            }
+            let mut velocity_gain = [0.0f32; 128];
+            for (velocity, slot) in velocity_gain.iter_mut().enumerate() {
+                *slot = region.velocity_gain(velocity as u8);
+            }
+
+            regions.push(PreparedRegion {
+                key_mask,
+                vel_mask,
+                rate_per_note,
+                key_crossfade,
+                velocity_fade_in,
+                velocity_fade_out,
+                volume_gain: region.linear_gain(),
+                velocity_gain,
+                sample_index,
+                span: region.playback_span(),
+            });
+        }
+        regions
+    })
 }
 
 /// ⭐ **全仓唯一的逐样本混音循环**（线性插值 ＋ 增益乘加 ＋ 源采样终点）。
@@ -577,9 +943,10 @@ impl PreparedSfz {
 ///
 /// 停止条件（写每个样本**之前**）：`floor(position) + 1 >= source_end` ——
 /// 线性插值需要 `position` 与 `position + 1` 两个样本。
-/// `source_end` 由调用方给出：
-/// * 摊平表的一次性调用给 `pcm.len()`（⛔ 不看 `span`，保持接线前的口径）；
-/// * 实时声部给 [`PreparedRegion::source_end`]（`min(span 终点, pcm.len())`）。
+/// `source_end` 由调用方给出（⭐ 三条路都是 [`reduce_span`] 的归约结果）：
+/// * 摊平表的一次性调用给 [`PreparedRegion::span_bounds`] 的终点（`span` 已应用）；
+/// * 实时声部给同一个 [`PreparedRegion::span_bounds`]（触发期抄下）；
+/// * 离线 [`SfzInstrument::render_note_into`] 给同一份归约。
 ///
 /// ⚠ **零分配、零锁、零 I/O**：只读 `pcm`、原地写 `out` [MUST-GATE-001]。
 pub(crate) fn mix_span_into(
@@ -619,20 +986,25 @@ pub const SFZ_VOICES_PER_TRACK: usize = 16;
 ///
 /// * `rate` ＝ `region.rate_per_note[note]`（速率预计算 ⇒ ⛔ 逐样本不做除法/`exp`）；
 /// * `gain` ＝ `region.gain_at(note, velocity)`（与摊平口径**逐位相同**）；
-/// * `source_end` ＝ [`PreparedRegion::source_end`]（`min(span 终点, 样本播完)`）。
+/// * `sample_index` ＝ [`PreparedRegion::sample_index`]（⭐ 步 3：多采样下读**自己**那份 PCM）；
+/// * `source_start` / `source_end` ＝ [`PreparedRegion::span_bounds`] 的**同一份**归约
+///   （`offset` 起点与 `min(end, 样本播完)` 终点）。
 ///
 /// # 终点口径（**无包络时的诚实占位**）
 ///
-/// `stop = min(end_sample, 样本播完)`，其中
+/// `stop = min(end_sample, source_end, 样本播完)`，其中
 ///
 /// * ⛔ **跳过 `ampeg_*`**（ADSR / 力度包络本片不做）⇒ 音符**没有**包络收尾；
 /// * ⭐ **用样本自然结束**：源位置走到 `source_end` 即退休；
 /// * `end_sample`（音符的引擎终点）先到也退休。
 ///
-/// ⛔ 本片不做循环、不做 `off_mode`、不做多采样（模块头 sfz-needs-6）。
+/// ⛔ 本片不做循环、不做 `off_mode`（模块头 sfz-needs-6）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SfzVoice {
     /// 源采样位置（帧；浮点 ⇒ 分数速率与线性插值）。
+    ///
+    /// ⭐ 触发时初始化为 [`reduce_span`] 归约出的**源起点**（`offset`，步 3）
+    /// ⇒ `offset=N` 的声部从源采样 `N` 起播，⛔ 不是从 0。
     position: f32,
     /// 每样本的源位置增量（触发时从摊平表抄来）。
     rate: f32,
@@ -644,6 +1016,9 @@ pub struct SfzVoice {
     velocity: u8,
     /// 是否在发声（`false` ⇒ 逐样本循环整段跳过）。
     active: bool,
+    /// ⭐ **该声部播哪一份摊平样本**（[`PreparedSfz::samples`] 的下标；触发时抄自
+    /// [`PreparedRegion::sample_index`]）⇒ 多采样下各声部读**自己**那份 PCM。
+    sample_index: u16,
     /// **源采样终点（半开）**：见类型文档的"终点口径"。
     source_end: u64,
     /// **引擎侧终点**（绝对样本位置）：来自 [`crate::synth::ScheduledNote::end_sample`]。
@@ -659,27 +1034,35 @@ impl SfzVoice {
         note: 0,
         velocity: 0,
         active: false,
+        sample_index: PreparedRegion::NO_SAMPLE,
         source_end: 0,
         end_sample: 0,
     };
 
     /// 组装一个**在发声**的声部（**触发期**调用；⛔ 逐样本路径不调用）。
+    ///
+    /// `source_start` ＝ [`reduce_span`] 归约出的源起点（`offset`）；`source_end` ＝ 同一份
+    /// 归约的终点。两者与摊平表/离线侧**同源** ⇒ 两侧逐样本相同。
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         note: u8,
         velocity: u8,
         rate: f32,
         gain: f32,
+        sample_index: u16,
+        source_start: f32,
         source_end: u64,
         end_sample: u64,
     ) -> Self {
         Self {
-            position: 0.0,
+            position: source_start,
             rate,
             gain,
             note,
             velocity,
             active: true,
+            sample_index,
             source_end,
             end_sample,
         }
@@ -701,6 +1084,12 @@ impl SfzVoice {
     #[must_use]
     pub const fn velocity(&self) -> u8 {
         self.velocity
+    }
+
+    /// ⭐ 该声部播哪一份摊平样本（[`PreparedSfz::samples`] 的下标）。
+    #[must_use]
+    pub const fn sample_index(&self) -> u16 {
+        self.sample_index
     }
 
     /// 当前源采样位置（帧）。
@@ -759,6 +1148,9 @@ impl SfzVoicePool {
     ///
     /// 返回**新建的声部数**（0 ＝ 没有区域匹配，或匹配的区域不产生采样输出）。
     /// 覆盖度：池满时多出来的区域被丢弃并计入 [`Self::dropped`]。
+    ///
+    /// ⭐ 步 3：每个声部抄下**该区域自己**的 `sample_index`（多采样）与 `span` 归约出的
+    /// **源起点**（`offset`）；`NO_SAMPLE` 的区域⛔ 不建声部。
     pub fn trigger_note(
         &mut self,
         plan: &PreparedSfz,
@@ -766,19 +1158,22 @@ impl SfzVoicePool {
         velocity: u8,
         end_sample: u64,
     ) -> usize {
-        let pcm_len = plan.pcm().len();
         let n = note as usize;
         let mut created = 0usize;
         for region in plan.regions() {
             if !region.accepts(note, velocity) {
                 continue;
             }
+            let Some(sample) = plan.sample(region.sample_index) else {
+                continue;
+            };
+            let pcm_len = sample.pcm().len();
             let rate = region.rate_per_note[n];
             if !(rate.is_finite() && rate > 0.0) || pcm_len == 0 {
                 continue;
             }
-            // ⭐ 终点口径：`span() == None`（`end=-1` / 空区间）⇒ 不建声部。
-            let Some(source_end) = region.source_end(pcm_len) else {
+            // ⭐ 起点/终点口径：同一份归约（`span() == None` / 空区间 ⇒ 不建声部）。
+            let Some((source_start, source_end)) = region.span_bounds(pcm_len) else {
                 continue;
             };
             let voice = SfzVoice::new(
@@ -786,6 +1181,8 @@ impl SfzVoicePool {
                 velocity,
                 rate,
                 region.gain_at(note, velocity),
+                region.sample_index,
+                source_start,
                 source_end,
                 end_sample,
             );
@@ -802,9 +1199,9 @@ impl SfzVoicePool {
 
     /// 渲染本池的**全部活声部**到 `out`（`position` ＝ 本量子的**引擎绝对**起点）。
     ///
-    /// **零分配**：只读 `plan` 的 PCM 与已有数组、原地写 `out` [MUST-GATE-001]。
+    /// **零分配**：只读 `plan` 的样本 PCM 与已有数组、原地写 `out` [MUST-GATE-001]。
+    /// ⭐ 每个声部读**它自己**那份样本（[`SfzVoice::sample_index`]）。
     pub fn render_into(&mut self, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
-        let pcm = plan.pcm();
         for voice in &mut self.voices {
             if !voice.active {
                 continue;
@@ -818,8 +1215,13 @@ impl SfzVoicePool {
                 voice.silence();
                 continue;
             }
+            let Some(sample) = plan.sample(voice.sample_index) else {
+                // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休，⛔ 不静音地继续跑。
+                voice.silence();
+                continue;
+            };
             let written = mix_span_into(
-                pcm,
+                sample.pcm(),
                 &mut voice.position,
                 voice.rate,
                 voice.gain,
@@ -870,14 +1272,16 @@ impl SfzVoicePool {
 ///
 /// # 分配纪律（红线 7 / [MUST-GATE-001]）
 ///
-/// * [`Self::prepare`]：**允许分配**（它调 [`PreparedSfz::prepare`]，建区域表与 PCM）；
+/// * [`Self::prepare`] / [`Self::prepare_with_samples`]：**允许分配**（建区域表与样本 PCM）；
 /// * ⛔ **不在快照边界摊平**：快照边界（`SynthEngine::begin_snapshot` / `arm_from_snapshot`）
 ///   一个字都不碰它 —— 那两条路径会分配（见 `crate::synth::SynthEngine::arm_from_snapshot`）；
 /// * 实时侧只**借用** [`Self::prepared`] 的 `&PreparedSfz`（**PCM 借用快照**），
-///   ⛔ 不 clone、⛔ 不 `Arc` clone 那个 `Vec`。
+///   ⛔ 不 clone、⛔ 不 `Arc` clone 那些 `Vec`。
 ///
 /// ⚠ **轨↔SFZ 的绑定不由模型给**（模块头 sfz-needs-5）⇒ 只能由引擎 API 显式注入
-/// （[`crate::snapshot::EngineSnapshot::with_sfz`]）。
+/// （[`crate::snapshot::EngineSnapshot::with_sfz`]）。⭐ 步 3 起这条公开路径**可用多采样**
+/// 走通：`referenced_sample_paths` →（控制侧解码）→ [`Self::prepare_with_samples`] →
+/// `EngineSnapshot::with_sfz`（判据见 `tests/sfz_instrument.rs` 的 S11/S12）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct SfzPlan {
     /// 重数据：摊平后的区域表 ＋ PCM（控制侧构造、实时侧只读）。
@@ -885,7 +1289,7 @@ pub struct SfzPlan {
 }
 
 impl SfzPlan {
-    /// 控制侧摊平（**允许分配**）：见 [`PreparedSfz::prepare`] 的口径。
+    /// 控制侧摊平（**允许分配**）：见 [`PreparedSfz::prepare`] 的口径（**单样本广播**）。
     ///
     /// # Errors
     /// 文本非法 ⇒ [`SfzError`]（与 [`PreparedSfz::prepare`] 同）。
@@ -896,6 +1300,25 @@ impl SfzPlan {
     ) -> Result<Self, SfzError> {
         Ok(Self {
             prepared: PreparedSfz::prepare(instrument, source, engine_hz)?,
+        })
+    }
+
+    /// ⭐ **控制侧多采样摊平**：把 `[(sample_path, 已解码样本)]` 交给
+    /// [`PreparedSfz::prepare_with_samples`]（去重 ＋ 缺样本回退 ＋ 计数）。
+    ///
+    /// 这是**绑定注入 API 的公开入口**：调用方建好本 plan 之后，用
+    /// [`crate::snapshot::EngineSnapshot::with_sfz`] 把它注入某一条轨的快照 —— 全仓**唯一**
+    /// 的"轨↔SFZ"绑定路径（模型层今天仍**没有**这条语义 ⇒ sfz-needs-5）。
+    ///
+    /// # Errors
+    /// 文本非法 ⇒ [`SfzError`]（与 [`PreparedSfz::prepare_with_samples`] 同）。
+    pub fn prepare_with_samples(
+        instrument: &SfzInstrument,
+        samples: &[(String, InMemorySample)],
+        engine_hz: f32,
+    ) -> Result<Self, SfzError> {
+        Ok(Self {
+            prepared: PreparedSfz::prepare_with_samples(instrument, samples, engine_hz)?,
         })
     }
 
@@ -917,7 +1340,7 @@ impl SfzPlan {
         self.prepared.region_count()
     }
 
-    /// 摊平占用的**内存字节数**（读数用：区域表 ＋ PCM）。
+    /// 摊平占用的**内存字节数**（读数用：区域表 ＋ **全部**样本 PCM ＋ 样本路径文本）。
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
         self.prepared.memory_bytes()

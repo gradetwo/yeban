@@ -1,4 +1,5 @@
-//! SFZ 缺口 1 的**步 2**：引擎侧声部（[`SfzVoicePool`]）＋ 快照形状（[`SfzPlan`]）。
+//! SFZ 缺口 1 的**步 2／步 3**：引擎侧声部（[`SfzVoicePool`]）＋ 快照形状（[`SfzPlan`]）
+//! ＋ ⭐ **多采样 ＋ 绑定注入 API**。
 //!
 //! 设计裁决（`docs/ledger/phase-status.md` 的 R698「甲-1」）：`TrackSlot` 增
 //! `sfz: SfzVoicePool`（`[SfzVoice; 16]`、全 `Copy`）＋ 快照侧只读 [`PreparedSfz`]
@@ -12,14 +13,20 @@
 //! | S1 | 引擎声部路径 == 摊平表路径 | **逐样本最大绝对差**（`max_i |flat_i − engine_i|`）＝ **0**，并配"两侧都真的出声"的反向对照 |
 //! | S1b | ⭐ **逐块拼接的整音符**（`#66` 补做 2） | 8 × 128 帧拼接 vs 摊平表**一次性 1024 帧**：逐样本最大绝对差 ＝ **0**，且"有声块 ≥ 2"（跨块见证；⛔ 挡住"提前退休"注入） |
 //! | S2 | 终点口径 ＝ 样本自然结束 | 播完那一块之后 `sfz_active_voices == 0`（退休）＋ 下一块**逐位静音**，而摊平表**每一块都从源 0 重播**（≠ 0） |
-//! | S3 | 显式 `span` 终点 | 引擎在**第 `end` 帧**停、摊平表继续（已登记的口径分叉 sfz-needs-4） |
-//! | S4 | `end=-1`（`SampleEnd::Silent`） | 引擎**一帧不写**、池子 0 声部；摊平表仍出声（对照 ⇒ 引擎的静音不是"夹具坏了"） |
+//! | S3 | ⭐ **显式 `span` 终点**（步 3 后两侧同口径） | 引擎与摊平表**逐样本 0**、都写在 `end` 处停（**写入帧数 == 190/200**）；反向对照：改 `end` ⇒ 帧数变 |
+//! | S4 | ⭐ `end=-1`（`SampleEnd::Silent`） | 引擎**一帧不写**、池子 0 声部；摊平表**也**一帧不写（两侧同口径）；反向对照：去掉 `end=-1` ⇒ 摊平表出声 |
 //! | S5 | ⭐ **反向对照（关键）** | **不给 `sfz`** 时端到端输出的 **FNV-1a 指纹**（逐位）等于**接线前**实测值 |
 //! | S6 | 端到端非静音 ＋ 真的换了音源 | 非零样本数 `> 0` ＋ 指纹与"不给 SFZ"**不同** |
 //! | S7 | 分派次序 | 鼓机 ＋ SFZ 同轨的输出对"只有鼓机"**逐位相同**；而无鼓机时 SFZ 支路**真的出声** |
 //! | S8 | 池满（> 16 条匹配区域） | `created == 16` ＋ `dropped == 1`（⛔ 不静默） |
 //! | S9 | 尺寸 | `size_of` 读数 ＋ `EngineRuntime < 192 KiB`（与 `synth_rt_zero_alloc.rs:2570` 同一门槛） |
-//! | S10 | ⭐ **换音源 / 定位必须释放 SFZ 池**（`#66` 补做 2） | `sfz_active_voices`：触发后 **2** → 换音源后/`seek` 后 **0**；换音源那一块**复音非零 > 0**（真的换了音源）；切回 SFZ 那一块**非零 ＝ 0** |
+//! | S10 | ⭐ **换音源 / 定位必须释放 SFZ 池**（`#66` 补做 2） | `sfz_active_voices`：触发后 **2** → 换音源后/`seek` 后 **0**；换音源那一块**复音非零 > 0**；切回 SFZ 那一块**非零 ＝ 0** |
+//! | ⭐ S11 | **多采样各播自己**（步 3） | 两条区域两条不同 `.wav` ⇒ 两条各自与"单独一条 + 它自己那份样本"的**逐位相同**，且两条之间**指纹不同**；反向对照：**对调**提供表 ⇒ 指纹变；广播版在 key=64 上播的是 a 的内容（**内容错**的机械证据） |
+//! | ⭐ S12 | **同一样本引两次只解码一次**（步 3） | `sample_count() == 1` ＋ `pcm_bytes() == 1 × 480 × 4`；反向对照：两条**不同**路径 ⇒ `2` / `2 × 1920`；提供表同一路径两份 ⇒ 首个为准（内容仍是第一份） |
+//! | ⭐ S13 | **`start`/`end` 真正应用**（步 3） | 离线 vs 摊平**逐样本 0**；`offset=10` ⇒ 输出第 0 帧 **逐位等于** `源[10] × gain`；写入帧数 **190**；反向对照：`offset=50` ⇒ 指纹与波形都变 |
+//! | ⭐ S14 | **单样本重载的兼容性**（步 3） | `prepare`（广播）在 span-free 夹具上的 FNV-1a 指纹 ＝ **步 2 实测** `0xa933ddab286bdf5e`；`is_broadcast()` / `sample_content_label() == "broadcast(1)"` |
+//! | ⭐ S15 | **缺样本如实回退 ＋ 计数**（步 3） | 缺 `missing.wav` ⇒ `fallback_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、回退到 `samples[0]`（与"用 a 播 key=64"**逐位相同**）；空提供表 ⇒ `silent_region_count() == 2` ＋ `NO_SAMPLE` ＋ 一帧不写 |
+//! | ⭐ S16 | **绑定注入 API 经公开路径可用（多采样）**（步 3） | `SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz` → `render_snapshot`：非零 > 0、指纹 ≠ 不给 SFZ；反向对照：广播 plan 的端到端指纹与多采样版**不同** |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -48,6 +55,23 @@ use yeban_engine::sfz_instrument::{
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue};
+
+/// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
+/// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
+/// ⚠ 它的作用是**跨提交对账**（步 2 vs 步 3 的同一条广播路径逐位不变），⛔ 不是规范常数。
+const BROADCAST_STEP2_FINGERPRINT: u64 = 0xa933_ddab_286b_df5e;
+
+/// FNV-1a 64（逐位；把每个 `f32` 的 4 个字节按小端卷进哈希）。
+fn fnv1a_64(samples: &[f32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for sample in samples {
+        for byte in sample.to_bits().to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
 
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [
@@ -285,12 +309,14 @@ fn s2_the_voice_retires_when_the_sample_runs_out() {
     );
 }
 
-/// S3：**显式 `span` 终点**在引擎侧生效（摊平表尚未应用它 ⇒ 已登记的口径分叉）。
+/// S3：⭐ **显式 `span` 终点两侧同口径**（步 3 把离线/摊平侧补齐 ⇒ sfz-needs-4 **闭合**）。
 ///
-/// `end=200`（含端点）⇒ 半开区间 `[0, 201)` ⇒ 引擎写到 `floor(pos) + 1 >= 201` 为止
-/// ＝ **200 帧**；摊平表继续到样本末尾（478 帧）。
+/// `end=200`（含端点）⇒ 半开区间 `[0, 201)` ⇒ 三条路都写到 `floor(pos) + 1 >= 201`
+/// 为止 ＝ **200 帧**；摊平表**不再**继续到样本末尾（步 2 时它继续 ⇒ 那是已登记的口径分叉）。
+///
+/// 反向对照：把 `end` 改成 `400` ⇒ **写入帧数变**（证明不是"恒定截断在 200"这种假口径）。
 #[test]
-fn s3_an_explicit_span_end_stops_the_voice_earlier_than_the_sample_end() {
+fn s3_an_explicit_span_end_stops_the_voice_at_the_same_frame_on_both_sides() {
     let prepared = prepare("<region> sample=a.wav key=60 pitch_keycenter=60 end=200\n");
     let span = prepared.regions()[0].span().expect("span 必须已摊平");
     assert_eq!(
@@ -308,45 +334,62 @@ fn s3_an_explicit_span_end_stops_the_voice_earlier_than_the_sample_end() {
     engine.render_track(track, Some(&schedule), Some(&prepared), &mut engine_out);
 
     let mut flat = vec![0.0f32; BLOCK];
-    prepared.render_block_into(60, 127, &mut flat);
+    let flat_frames = prepared.render_block_into(60, 127, &mut flat);
 
     let engine_written = engine_out.iter().filter(|s| **s != 0.0).count();
     let flat_written = flat.iter().filter(|s| **s != 0.0).count();
     // ⭐ 判定量是**逐样本**而不是"数非零"：正弦在 0 相位处就是 0.0（夹具的第 0 个样本），
     // 数非零会把"写了 200 帧"读成 199。
-    let head_diff = engine_out[..200]
+    let max_abs_diff = engine_out
         .iter()
-        .zip(flat[..200].iter())
+        .zip(flat.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
     println!(
-        "[engine-sfz/S3] 引擎非零 = {engine_written}；摊平非零 = {flat_written}（479 帧里 478 个非零）；\
-         span 内逐样本最大绝对差 = {head_diff:e}"
+        "[engine-sfz/S3] 引擎非零 = {engine_written}；摊平非零 = {flat_written}；\
+         摊平写入帧数 = {flat_frames}；整块逐样本最大绝对差 = {max_abs_diff:e}"
     );
     assert_eq!(
-        head_diff, 0.0,
-        "⭐ span 终点**之前**两侧必须逐样本相同（引擎的口径就来自摊平表）"
+        max_abs_diff, 0.0,
+        "⭐ 步 3 之后：`span` 起点/终点两侧**逐样本相同**（不再是'只覆盖触发量子'）"
+    );
+    assert_eq!(
+        flat_frames, 200,
+        "⭐ `end=200`（半开 [0,201)）⇒ 摊平表必须也停在 **200** 帧（线性插值要两个样本）"
     );
     assert!(
         engine_out[..200].iter().any(|s| *s != 0.0),
-        "引擎在 span 内必须真的出声"
+        "两侧在 span 内必须真的出声"
     );
     assert!(
         engine_out[200..].iter().all(|s| *s == 0.0),
         "⭐ 引擎必须在 span 终点（第 200 帧）停：之后**一帧不出**"
     );
     assert!(
-        flat[200..].iter().any(|s| *s != 0.0),
-        "⚠ 反向对照（**已登记的口径分叉** sfz-needs-4）：摊平表还没应用 span ⇒ 它继续出声"
+        flat[200..].iter().all(|s| *s == 0.0),
+        "⭐ 摊平表**也**必须停在同一帧（步 2 时它继续出声 ⇒ 口径分叉已闭合）"
+    );
+
+    // --- 反向对照：改 `end` ⇒ 帧数必须跟着变（⛔ 挡"恒定截断"的假口径） ---
+    let longer = prepare("<region> sample=a.wav key=60 pitch_keycenter=60 end=400\n");
+    let mut longer_out = vec![0.0f32; BLOCK];
+    let longer_frames = longer.render_block_into(60, 127, &mut longer_out);
+    println!("[engine-sfz/S3] 反向对照 `end=400`：摊平写入帧数 = {longer_frames}");
+    assert_eq!(longer_frames, 400, "`end=400` ⇒ 写 400 帧（半开 [0,401)）");
+    assert_ne!(
+        longer_frames, flat_frames,
+        "⭐ 两个不同的 `end` 必须给出不同的写入帧数（否则上面的 200 可能是常数）"
     );
 }
 
-/// S4：`end=-1`（`SampleEnd::Silent`）的区域**不产生采样输出** ⇒ 引擎⛔ 不建声部。
+/// S4：⭐ `end=-1`（`SampleEnd::Silent`）的区域**不产生采样输出**（三条路同口径）。
 ///
-/// 反向对照：同一份摊平表用 `render_block_into` 仍然出声（它还没应用 `span`）
-/// ⇒ 引擎的静音只能来自"该区域不产生输出"这一条口径，⛔ 不是夹具整体坏了。
+/// 引擎⛔ 不建声部、一帧不写；⭐ **摊平表也一帧不写**（步 3 补齐；步 2 时它仍出声 —— 那是
+/// 已登记的口径分叉）。
+///
+/// 反向对照（关键）：去掉 `end=-1` 之后**同一份夹具**必须出声 ⇒ 上面的静音不是"夹具坏了"。
 #[test]
-fn s4_a_silent_span_never_gets_a_voice() {
+fn s4_a_silent_span_never_gets_a_voice_nor_any_sample() {
     let prepared = prepare("<region> sample=a.wav key=60 pitch_keycenter=60 end=-1\n");
     assert_eq!(
         prepared.regions()[0].span(),
@@ -354,6 +397,7 @@ fn s4_a_silent_span_never_gets_a_voice() {
         "`end=-1` ⇒ `SampleEnd::Silent` ⇒ 不产生采样输出"
     );
     assert_eq!(prepared.regions()[0].source_end(SAMPLE_FRAMES), None);
+    assert_eq!(prepared.regions()[0].source_start(SAMPLE_FRAMES), None);
 
     let track = EntityId::new();
     let mut engine = engine_with_track(track);
@@ -363,10 +407,10 @@ fn s4_a_silent_span_never_gets_a_voice() {
     engine.render_track(track, Some(&schedule), Some(&prepared), &mut engine_out);
 
     let mut flat = vec![0.0f32; BLOCK];
-    prepared.render_block_into(60, 127, &mut flat);
+    let flat_frames = prepared.render_block_into(60, 127, &mut flat);
 
     println!(
-        "[engine-sfz/S4] 引擎非零 = {}；活声部 = {:?}；摊平非零 = {}（对照：仍出声）",
+        "[engine-sfz/S4] 引擎非零 = {}；活声部 = {:?}；摊平非零 = {}；摊平写入 = {flat_frames}",
         engine_out.iter().filter(|s| **s != 0.0).count(),
         engine.sfz_active_voices(track),
         flat.iter().filter(|s| **s != 0.0).count(),
@@ -381,8 +425,19 @@ fn s4_a_silent_span_never_gets_a_voice() {
         "⭐ 一条声部都不该建出来"
     );
     assert!(
-        flat.iter().any(|s| *s != 0.0),
-        "反向对照：摊平表（尚未应用 span）仍然出声 ⇒ 引擎的静音有解释"
+        flat.iter().all(|s| *s == 0.0),
+        "⭐ 摊平表**也**必须静音（步 3：三条路共用 `reduce_span` 的 `None` 口径）"
+    );
+    assert_eq!(flat_frames, 0, "摊平表写入帧数必须是 0");
+
+    // --- 反向对照：去掉 `end=-1` ⇒ 同一夹具必须出声 ---
+    let normal = prepare("<region> sample=a.wav key=60 pitch_keycenter=60\n");
+    let mut normal_out = vec![0.0f32; BLOCK];
+    let normal_frames = normal.render_block_into(60, 127, &mut normal_out);
+    println!("[engine-sfz/S4] 反向对照（无 `end=-1`）：摊平写入帧数 = {normal_frames}");
+    assert!(
+        normal_frames > 0 && normal_out.iter().any(|s| *s != 0.0),
+        "⭐ 反向对照必须出声（否则上面的静音可能只是夹具坏了）"
     );
 }
 
@@ -629,12 +684,14 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
         core::mem::size_of::<EngineSnapshot>(),
         192 * 1024,
     );
-    // ⚠ 钉住声部的**定长**形状：16 通道 × 32 字节 ＋ 8 字节累计丢弃计数。
-    // （`SfzVoice` 只含 `f32`/`u8`/`bool`/`u64`，⛔ 无指针、⛔ 无 `Vec`。）
-    assert_eq!(voice, 32, "一个 SFZ 声部 = 32 字节（定长、全 `Copy`）");
+    // ⚠ 钉住声部的**定长**形状：16 通道 × 40 字节 ＋ 8 字节累计丢弃计数。
+    // （`SfzVoice` 只含 `f32`/`u8`/`bool`/`u16`/`u64`，⛔ 无指针、⛔ 无 `Vec`。）
+    // ⭐ 步 3 的代价：`sample_index: u16` 进了声部 ⇒ 32 B → **40 B**（对齐到 8）⇒ 池
+    // 520 B → **648 B**、`SynthEngine` ＋ 2048 B、`EngineRuntime` ＋ 2048 B。
+    assert_eq!(voice, 40, "一个 SFZ 声部 = 40 字节（定长、全 `Copy`）");
     assert_eq!(
         pool,
-        SFZ_VOICES_PER_TRACK * 32 + 8,
+        SFZ_VOICES_PER_TRACK * 40 + 8,
         "声部池 = 16 × 声部 ＋ 累计丢弃计数"
     );
     assert!(
@@ -729,5 +786,576 @@ fn s10_changing_the_source_or_seeking_releases_the_sfz_pool() {
         after_seek,
         Some(0),
         "⭐ `seek`（定位）⇒ SFZ 池必须被释放（⛔ 不留上一段采样）"
+    );
+}
+
+/// 用**一条区域**的 SFZ 离线渲染 `note`（参照臂：证明"某区域 + 某份样本"该出什么）。
+///
+/// ⚠ 它**解析**（⇒ 分配）⇒ 只用于判据的离线参照臂（与 `PreparedSfz` 的构造期同一条边）。
+fn offline_one(path: &str, key: u8, sample: &InMemorySample, note: u8, out: &mut [f32]) -> usize {
+    let sfz = SfzInstrument::load(
+        format!("<region> sample={path} key={key} pitch_keycenter=60\n"),
+        &Default::default(),
+    )
+    .expect("单区域 SFZ 必须解析成功");
+    sfz.render_note_into(sample, note, 127, out, 48_000.0)
+        .expect("离线渲染不得报错")
+}
+
+/// S11（步 3）：⭐ **多采样 —— 两条区域各播自己那份内容**。
+///
+/// # 判定量
+///
+/// * 每条区域的摊平输出与"**单独一条 SFZ ＋ 它自己那份样本**"的离线渲染**逐位相同**；
+/// * 两条之间**指纹不同**（⛔ 不是只断言"非静音"）；
+/// * 反向对照 1：把提供表里两份样本**对调** ⇒ 指纹变（证明真的按 `sample_path` 取内容）；
+/// * 反向对照 2：**广播**重载（`prepare`）在 key=64 上播的是 `a.wav` 的内容
+///   （与"`a.wav` 的 key=64 离线渲染"逐位相同）⇒ 这就是 `sample_content=broadcast(1)` 的
+///   **音色内容错**的机械证据。
+///
+/// ⚠ 本判据里的 "WAV" 是**已解码**的 [`InMemorySample`]（两条不同频率的正弦 ⇒ 内容不同）：
+/// 真读 PCM WAV 文件的那一步在控制侧（`crates/yeban-app/src/sfz_load.rs`），⛔ 引擎不做 I/O。
+#[test]
+fn s11_two_regions_with_two_samples_each_play_their_own_content() {
+    const TWO_KEYS: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                            <region> sample=b.wav key=64 pitch_keycenter=60\n";
+    let sfz = SfzInstrument::load(TWO_KEYS.to_owned(), &Default::default()).expect("解析必须成功");
+    let a = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let b = InMemorySample::sine(660.0, 48_000.0, SAMPLE_FRAMES);
+    let provided = vec![
+        ("a.wav".to_owned(), a.clone()),
+        ("b.wav".to_owned(), b.clone()),
+    ];
+    let prepared =
+        PreparedSfz::prepare_with_samples(&sfz, &provided, 48_000.0).expect("多采样摊平必须成功");
+
+    assert_eq!(prepared.region_count(), 2, "两条区域都要摊平进来");
+    assert!(!prepared.is_broadcast(), "多采样路径⛔ 不是广播");
+    assert_eq!(prepared.sample_count(), 2, "两条不同路径 ⇒ 两份样本");
+    assert_eq!(prepared.regions()[0].sample_index(), 0, "`a.wav` ⇒ 第 0 份");
+    assert_eq!(prepared.regions()[1].sample_index(), 1, "`b.wav` ⇒ 第 1 份");
+
+    // ① 各播自己：摊平输出 == "单独一条 + 它自己那份样本"的离线渲染（逐位）
+    let mut flat60 = vec![0.0f32; BLOCK];
+    prepared.render_block_into(60, 127, &mut flat60);
+    let mut ref60 = vec![0.0f32; BLOCK];
+    let ref60_frames = offline_one("a.wav", 60, &a, 60, &mut ref60);
+
+    let mut flat64 = vec![0.0f32; BLOCK];
+    prepared.render_block_into(64, 127, &mut flat64);
+    let mut ref64 = vec![0.0f32; BLOCK];
+    let ref64_frames = offline_one("b.wav", 64, &b, 64, &mut ref64);
+
+    println!(
+        "[engine-sfz/S11] key=60: 摊平指纹 = 0x{:016x}／离线(a) 指纹 = 0x{:016x}（帧 {ref60_frames}）；\
+         key=64: 摊平指纹 = 0x{:016x}／离线(b) 指纹 = 0x{:016x}（帧 {ref64_frames}）",
+        fnv1a_64(&flat60),
+        fnv1a_64(&ref60),
+        fnv1a_64(&flat64),
+        fnv1a_64(&ref64),
+    );
+    assert_eq!(
+        bits(&flat60),
+        bits(&ref60),
+        "⭐ `key=60` 的区域必须播 `a.wav` 那份内容（与离线参照**逐位相同**）"
+    );
+    assert_eq!(
+        bits(&flat64),
+        bits(&ref64),
+        "⭐ `key=64` 的区域必须播 `b.wav` 那份内容（与离线参照**逐位相同**）"
+    );
+    assert!(flat60.iter().any(|s| *s != 0.0), "key=60 必须真的出声");
+    assert!(flat64.iter().any(|s| *s != 0.0), "key=64 必须真的出声");
+    assert_ne!(
+        fnv1a_64(&flat60),
+        fnv1a_64(&flat64),
+        "⭐ 两份不同内容 ⇒ 两条区域的指纹必须**不同**（⛔ 不是只断言'非静音'）"
+    );
+
+    // ② 反向对照 1：对调提供表 ⇒ 内容跟着换（指纹变），且等于对调后的离线参照
+    let swapped = vec![
+        ("a.wav".to_owned(), b.clone()),
+        ("b.wav".to_owned(), a.clone()),
+    ];
+    let swapped_plan = PreparedSfz::prepare_with_samples(&sfz, &swapped, 48_000.0).expect("摊平");
+    let mut swapped60 = vec![0.0f32; BLOCK];
+    swapped_plan.render_block_into(60, 127, &mut swapped60);
+    let mut ref_swapped60 = vec![0.0f32; BLOCK];
+    offline_one("a.wav", 60, &b, 60, &mut ref_swapped60);
+    println!(
+        "[engine-sfz/S11] 对调提供表：key=60 指纹 = 0x{:016x}（原 = 0x{:016x}）",
+        fnv1a_64(&swapped60),
+        fnv1a_64(&flat60),
+    );
+    assert_eq!(
+        bits(&swapped60),
+        bits(&ref_swapped60),
+        "对调之后 `a.wav` 那份槽位里放的是 `b` 的内容 ⇒ 输出必须跟着换"
+    );
+    assert_ne!(
+        fnv1a_64(&swapped60),
+        fnv1a_64(&flat60),
+        "⭐ 对调提供表必须改变输出（否则'各播自己'可能是空转）"
+    );
+
+    // ③ 反向对照 2：**广播**重载在 key=64 上播的是 `a.wav` 的内容（内容错的机械证据）
+    let broadcast = PreparedSfz::prepare(&sfz, &a, 48_000.0).expect("广播摊平");
+    assert!(broadcast.is_broadcast());
+    assert_eq!(broadcast.sample_content_label(), "broadcast(1)");
+    assert_eq!(
+        broadcast.regions()[1].sample_index(),
+        0,
+        "广播 ⇒ 全指第 0 份"
+    );
+    let mut bcast64 = vec![0.0f32; BLOCK];
+    broadcast.render_block_into(64, 127, &mut bcast64);
+    let mut ref_a_at_64 = vec![0.0f32; BLOCK];
+    offline_one("a.wav", 64, &a, 64, &mut ref_a_at_64);
+    println!(
+        "[engine-sfz/S11] 广播在 key=64：指纹 = 0x{:016x}（多采样 = 0x{:016x}）",
+        fnv1a_64(&bcast64),
+        fnv1a_64(&flat64),
+    );
+    assert_eq!(
+        bits(&bcast64),
+        bits(&ref_a_at_64),
+        "⚠ 广播路径在 key=64 上播的是 `a.wav`（**音色内容错**）—— 这正是已登记的局限"
+    );
+    assert_ne!(
+        fnv1a_64(&bcast64),
+        fnv1a_64(&flat64),
+        "⭐ 广播与多采样在 key=64 上必须**不同**（否则多采样没生效）"
+    );
+}
+
+/// S12（步 3）：⭐ **同一样本引两次只 materialize／解码一次**。
+///
+/// # 判定量
+///
+/// * `sample_count()`（＝摊平期的样本 clone 次数，"解码次数"的机械读数）与
+///   `pcm_bytes()`（＝ PCM 字节数）；
+/// * 反向对照：两条**不同**路径 ⇒ 计数与字节都翻倍；
+/// * 提供表里同一路径出现**两份** ⇒ 首个为准（内容仍是第一份）。
+#[test]
+fn s12_the_same_sample_referenced_twice_is_materialized_once() {
+    const SAME_TWICE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                              <region> sample=a.wav key=64 pitch_keycenter=60\n";
+    const TWO_PATHS: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                             <region> sample=c.wav key=64 pitch_keycenter=60\n";
+    let a = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let c = InMemorySample::sine(660.0, 48_000.0, SAMPLE_FRAMES);
+    let provided = vec![("a.wav".to_owned(), a.clone())];
+    let once = SfzInstrument::load(SAME_TWICE.to_owned(), &Default::default()).expect("解析");
+    let twice = SfzInstrument::load(TWO_PATHS.to_owned(), &Default::default()).expect("解析");
+
+    let deduped =
+        PreparedSfz::prepare_with_samples(&once, &provided, 48_000.0).expect("摊平必须成功");
+    let two_provided = vec![
+        ("a.wav".to_owned(), a.clone()),
+        ("c.wav".to_owned(), c.clone()),
+    ];
+    let doubled =
+        PreparedSfz::prepare_with_samples(&twice, &two_provided, 48_000.0).expect("摊平必须成功");
+
+    let one_copy = SAMPLE_FRAMES * core::mem::size_of::<f32>();
+    println!(
+        "[engine-sfz/S12] 同一路径引两次：sample_count = {}、pcm_bytes = {}（一份 = {one_copy}）；\
+         两条不同路径：sample_count = {}、pcm_bytes = {}",
+        deduped.sample_count(),
+        deduped.pcm_bytes(),
+        doubled.sample_count(),
+        doubled.pcm_bytes(),
+    );
+    assert_eq!(
+        deduped.region_count(),
+        2,
+        "两条区域都在（去重的是**样本**，⛔ 不是区域）"
+    );
+    assert_eq!(deduped.regions()[0].sample_index(), 0);
+    assert_eq!(
+        deduped.regions()[1].sample_index(),
+        0,
+        "⭐ 同一路径引两次 ⇒ 两条区域都指第 0 份（**只解码一次**）"
+    );
+    assert_eq!(deduped.sample_count(), 1, "⭐ 解码次数 ＝ 1");
+    assert_eq!(
+        deduped.pcm_bytes(),
+        one_copy,
+        "⭐ PCM 字节 ＝ **一份**（480 × 4 = {one_copy}）"
+    );
+    assert_eq!(doubled.sample_count(), 2, "反向对照：两条不同路径 ⇒ 2");
+    assert_eq!(doubled.pcm_bytes(), 2 * one_copy, "反向对照：字节翻倍");
+    assert_ne!(doubled.sample_count(), deduped.sample_count());
+
+    // 提供表里同一路径两份（**内容不同**）⇒ 首个为准（⛔ 不静默合并内容）
+    let second_a = InMemorySample::sine(880.0, 48_000.0, SAMPLE_FRAMES);
+    let duplicated = vec![
+        ("a.wav".to_owned(), a.clone()),
+        ("a.wav".to_owned(), second_a),
+    ];
+    let first_wins =
+        PreparedSfz::prepare_with_samples(&once, &duplicated, 48_000.0).expect("摊平必须成功");
+    assert_eq!(
+        first_wins.sample_count(),
+        1,
+        "同一路径两份 ⇒ 仍只 materialize 一份"
+    );
+    let mut out = vec![0.0f32; BLOCK];
+    first_wins.render_block_into(60, 127, &mut out);
+    let mut reference = vec![0.0f32; BLOCK];
+    offline_one("a.wav", 60, &a, 60, &mut reference);
+    assert_eq!(
+        bits(&out),
+        bits(&reference),
+        "⭐ 提供表里同一路径出现两份时**首个为准**（内容不是第二份）"
+    );
+    // ⭐ 反向对照：第二份内容**确实不同**（否则上面的"首个为准"是空转）
+    let mut second_reference = vec![0.0f32; BLOCK];
+    offline_one(
+        "a.wav",
+        60,
+        &InMemorySample::sine(880.0, 48_000.0, SAMPLE_FRAMES),
+        60,
+        &mut second_reference,
+    );
+    assert_ne!(
+        fnv1a_64(&reference),
+        fnv1a_64(&second_reference),
+        "两份提供样本的内容必须真的不同（否则本条无鉴别力）"
+    );
+}
+
+/// S13（步 3）：⭐ **`start`（`offset`）与 `end` 真正应用** —— 离线/摊平/实时三条路逐样本 0。
+///
+/// # 判定量
+///
+/// * 离线 vs 摊平**整块逐样本最大绝对差 ＝ 0**；
+/// * `offset=10 end=200` ⇒ 写入帧数 **190**（半开 [10,201)），且输出第 0 帧
+///   **逐位等于** `源[10] × gain_at(60,127)`；
+/// * 反向对照：`offset=50` ⇒ 第 0 帧变成 `源[50] × gain` 且指纹不同（⛔ 证明起点真的进了循环）。
+#[test]
+fn s13_offset_and_end_are_applied_on_all_three_paths() {
+    let a = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let provided = vec![("a.wav".to_owned(), a.clone())];
+    let span_sfz = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 offset=10 end=200\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("解析必须成功");
+    let prepared =
+        PreparedSfz::prepare_with_samples(&span_sfz, &provided, 48_000.0).expect("摊平必须成功");
+    let region = &prepared.regions()[0];
+    let gain = region.gain_at(60, 127);
+
+    assert_eq!(
+        region.source_start(SAMPLE_FRAMES),
+        Some(10.0),
+        "起点＝`offset`"
+    );
+    assert_eq!(
+        region.source_end(SAMPLE_FRAMES),
+        Some(201),
+        "终点＝半开 [10,201)"
+    );
+
+    // ① 离线 vs 摊平：整块逐样本 0
+    let mut offline = vec![0.0f32; BLOCK];
+    span_sfz
+        .render_note_into(&a, 60, 127, &mut offline, 48_000.0)
+        .expect("离线渲染不得报错");
+    let mut flat = vec![0.0f32; BLOCK];
+    let flat_frames = prepared.render_block_into(60, 127, &mut flat);
+    let diff = offline
+        .iter()
+        .zip(flat.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+
+    // ② 实时声部也要在同一帧停、且与摊平逐样本 0
+    let track = EntityId::new();
+    let mut engine = engine_with_track(track);
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let mut engine_out = vec![0.0f32; BLOCK];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut engine_out);
+    let engine_diff = engine_out
+        .iter()
+        .zip(flat.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+
+    let expected_first = a.pcm[10] * gain;
+    println!(
+        "[engine-sfz/S13] offset=10 end=200：摊平写入 = {flat_frames} 帧；离线 vs 摊平差 = {diff:e}；\
+         引擎 vs 摊平差 = {engine_diff:e}；输出[0] = {}（源[10]×gain = {expected_first}）",
+        flat[0]
+    );
+    assert_eq!(diff, 0.0, "⭐ 离线 vs 摊平必须逐样本相同（`span` 同口径）");
+    assert_eq!(engine_diff, 0.0, "⭐ 引擎声部 vs 摊平必须逐样本相同");
+    assert_eq!(flat_frames, 190, "半开 [10,201) ⇒ 190 帧");
+    assert_eq!(
+        flat[0].to_bits(),
+        expected_first.to_bits(),
+        "⭐ **起点真正应用**：输出第 0 帧必须逐位等于 `源[10] × gain`"
+    );
+    assert!(
+        flat[190..].iter().all(|s| *s == 0.0),
+        "⭐ `end` 真正应用：第 190 帧之后一帧不出"
+    );
+
+    // ③ 反向对照：换一个 `offset` ⇒ 起点与指纹都变
+    let moved = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 offset=50 end=200\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("解析必须成功");
+    let moved_plan =
+        PreparedSfz::prepare_with_samples(&moved, &provided, 48_000.0).expect("摊平必须成功");
+    let mut moved_out = vec![0.0f32; BLOCK];
+    let moved_frames = moved_plan.render_block_into(60, 127, &mut moved_out);
+    let expected_moved = a.pcm[50] * moved_plan.regions()[0].gain_at(60, 127);
+    println!(
+        "[engine-sfz/S13] 反向对照 offset=50：写入 = {moved_frames} 帧、输出[0] = {}（期望 {expected_moved}）",
+        moved_out[0]
+    );
+    assert_eq!(
+        moved_frames, 150,
+        "半开 [50,201) ⇒ 151 个源采样 − 1（线性插值要两个样本）＝ 150 帧"
+    );
+    assert_eq!(
+        moved_out[0].to_bits(),
+        expected_moved.to_bits(),
+        "⭐ `offset=50` ⇒ 起点必须跟着换"
+    );
+    assert_ne!(
+        fnv1a_64(&moved_out),
+        fnv1a_64(&flat),
+        "⭐ 两个不同的 `offset` 必须给出不同波形（否则起点没进循环）"
+    );
+}
+
+/// S14（步 3）：⭐ **单样本重载（广播）与步 2 逐位相同**。
+///
+/// 判定量：span-free 夹具 [`TWO_MATCH_ONE_MISS`] 的 `prepare`（广播）输出在
+/// `(60, 127)`、512 帧上的 **FNV-1a 指纹** ＝ **步 2 实测** [`BROADCAST_STEP2_FINGERPRINT`]
+/// （本机 `aarch64/macos` 上硬判；异平台如实跳过并点名原因）。
+///
+/// ⭐ 另附读数：`is_broadcast()` / `sample_content_label() == "broadcast(1)"`
+/// ⇒ 报告里的 `sample_content=broadcast(1)` 有机械根据。
+#[test]
+fn s14_the_broadcast_overload_is_bit_identical_to_step_two() {
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let mut out = vec![0.0f32; BLOCK];
+    let frames = prepared.render_block_into(60, 127, &mut out);
+    println!(
+        "[engine-sfz/S14] 广播路径 512 帧 @ (60,127)：写入 = {frames}、非零 = {}、\
+         指纹 = 0x{:016x}（步 2 实测 = 0x{:016x}）、sample_content = {}",
+        out.iter().filter(|s| **s != 0.0).count(),
+        fnv1a_64(&out),
+        BROADCAST_STEP2_FINGERPRINT,
+        prepared.sample_content_label(),
+    );
+    assert!(out.iter().any(|s| *s != 0.0), "夹具必须真的出声");
+    let _checked = check_fingerprint(
+        "步 3 的广播重载 vs 步 2",
+        fnv1a_64(&out),
+        BROADCAST_STEP2_FINGERPRINT,
+    );
+    assert!(prepared.is_broadcast(), "`prepare` 必须标为广播");
+    assert_eq!(
+        prepared.sample_content_label(),
+        "broadcast(1)",
+        "⭐ 报告里的 `sample_content=broadcast(1)` 必须来自机械读数"
+    );
+    assert_eq!(prepared.sample_count(), 1);
+    assert_eq!(prepared.fallback_region_count(), 0);
+    assert_eq!(prepared.silent_region_count(), 0);
+    assert!(prepared.missing_sample_paths().is_empty());
+    assert!(prepared.regions().iter().all(|r| r.sample_index() == 0));
+}
+
+/// S15（步 3）：⭐ **缺样本如实回退 ＋ 计数**（⛔ 不静默）。
+///
+/// # 判定量（两条分支）
+///
+/// * 提供表**非空**但缺某个 `sample_path` ⇒ 该区域回退到 `samples[0]`：
+///   `fallback_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、
+///   `sample_content_label()` 含 `+fallback(1)`，且输出与"用 `a.wav` 播那个键"**逐位相同**
+///   （⇒ 回退**真的发生了**，⛔ 不是静音丢弃；⚠ 这是**内容错**，登记为 sfz-needs-7）；
+/// * 提供表**为空** ⇒ `silent_region_count() == 2`、全部 `NO_SAMPLE`、**一帧不写**；
+/// * 反向对照：把 `missing.wav` 补上 ⇒ `fallback == 0` 且输出**变**。
+#[test]
+fn s15_a_missing_sample_falls_back_and_is_counted() {
+    const ONE_MISSING: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                               <region> sample=missing.wav key=64 pitch_keycenter=60\n";
+    let sfz = SfzInstrument::load(ONE_MISSING.to_owned(), &Default::default()).expect("解析");
+    let a = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let b = InMemorySample::sine(660.0, 48_000.0, SAMPLE_FRAMES);
+
+    // ① 非空提供表 + 缺一份 ⇒ 回退到 samples[0] ＋ 计数
+    let fallback =
+        PreparedSfz::prepare_with_samples(&sfz, &[("a.wav".to_owned(), a.clone())], 48_000.0)
+            .expect("摊平必须成功");
+    assert_eq!(fallback.fallback_region_count(), 1, "⭐ 缺样本的计数");
+    assert_eq!(fallback.silent_region_count(), 0);
+    assert_eq!(
+        fallback.missing_sample_paths().to_vec(),
+        vec!["missing.wav".to_owned()],
+        "⭐ 缺失路径必须**具名**登记（⛔ 不静默）"
+    );
+    assert_eq!(
+        fallback.sample_content_label(),
+        "distinct(1)+fallback(1)",
+        "读数必须如实写出回退"
+    );
+    assert_eq!(
+        fallback.regions()[1].sample_index(),
+        0,
+        "缺样本 ⇒ 回退到 `samples[0]`（⚠ 内容错，已登记）"
+    );
+    let mut fallback_out = vec![0.0f32; BLOCK];
+    fallback.render_block_into(64, 127, &mut fallback_out);
+    let mut reference = vec![0.0f32; BLOCK];
+    offline_one("a.wav", 64, &a, 64, &mut reference);
+    println!(
+        "[engine-sfz/S15] 缺样本：fallback = {}、missing = {:?}、key=64 指纹 = 0x{:016x}\
+         （用 `a.wav` 播该键的离线参照 = 0x{:016x}）",
+        fallback.fallback_region_count(),
+        fallback.missing_sample_paths(),
+        fnv1a_64(&fallback_out),
+        fnv1a_64(&reference),
+    );
+    assert_eq!(
+        bits(&fallback_out),
+        bits(&reference),
+        "⭐ 回退**真的发生**（输出 ＝ 用 `a.wav` 播那个键），⛔ 不是静音丢弃"
+    );
+    assert!(fallback_out.iter().any(|s| *s != 0.0), "回退必须出声");
+
+    // ② 反向对照：把缺失那份补上 ⇒ fallback 归零、输出变
+    let complete = PreparedSfz::prepare_with_samples(
+        &sfz,
+        &[
+            ("a.wav".to_owned(), a.clone()),
+            ("missing.wav".to_owned(), b.clone()),
+        ],
+        48_000.0,
+    )
+    .expect("摊平必须成功");
+    let mut complete_out = vec![0.0f32; BLOCK];
+    complete.render_block_into(64, 127, &mut complete_out);
+    assert_eq!(complete.fallback_region_count(), 0, "补上之后不得再有回退");
+    assert!(complete.missing_sample_paths().is_empty());
+    assert_ne!(
+        fnv1a_64(&complete_out),
+        fnv1a_64(&fallback_out),
+        "⭐ 补上内容之后输出必须变（否则'回退'是空转）"
+    );
+
+    // ③ 空提供表 ⇒ NO_SAMPLE ＋ 计数 ＋ 一帧不写
+    let empty = PreparedSfz::prepare_with_samples(&sfz, &[], 48_000.0).expect("摊平必须成功");
+    let mut empty_out = vec![0.0f32; BLOCK];
+    let empty_frames = empty.render_block_into(64, 127, &mut empty_out);
+    println!(
+        "[engine-sfz/S15] 空提供表：silent = {}、missing = {:?}、写入帧数 = {empty_frames}、\
+         sample_content = {}",
+        empty.silent_region_count(),
+        empty.missing_sample_paths(),
+        empty.sample_content_label(),
+    );
+    assert_eq!(empty.silent_region_count(), 2);
+    assert_eq!(empty.fallback_region_count(), 0);
+    assert!(empty.regions().iter().all(|r| !r.has_sample()));
+    assert_eq!(empty_frames, 0, "没有样本 ⇒ 一帧不写");
+    assert!(empty_out.iter().all(|s| *s == 0.0));
+    assert_eq!(
+        empty.missing_sample_paths().to_vec(),
+        vec!["a.wav".to_owned(), "missing.wav".to_owned()],
+        "缺失路径排序 ＋ 去重（确定性顺序）"
+    );
+}
+
+/// S16（步 3）：⭐ **绑定注入 API 经公开路径可用（多采样）**。
+///
+/// 路径（全在集成测试里 ⇒ 只用 `pub` API）：
+/// `SfzInstrument::referenced_sample_paths` →（控制侧解码 ⇒ 调用方）→
+/// [`SfzPlan::prepare_with_samples`] → [`EngineSnapshot::with_sfz`] →
+/// `render_snapshot`（快照槽 → 量子 → 声相 → 母线）。
+///
+/// 判定量：SFZ 臂非静音 ＋ 指纹 ≠ "不给 SFZ"；反向对照：**广播** plan 的端到端指纹与
+/// 多采样版**不同**（⇒ 注入的多采样内容真的进了音频线程）。
+#[test]
+fn s16_the_multi_sample_binding_api_is_reachable_through_the_public_path() {
+    let fixture = note_project(&E2E_NOTES);
+    let track = fixture.track;
+    let sfz =
+        SfzInstrument::load(E2E_SFZ.to_owned(), &Default::default()).expect("SFZ 必须解析成功");
+
+    // ① 控制侧：先查引用路径，再"解码"（判据里用内存样本；真读文件在 app 侧）
+    let referenced = sfz.referenced_sample_paths().expect("路径查询");
+    println!("[engine-sfz/S16] 引用路径 = {referenced:?}");
+    assert_eq!(referenced, ["a.wav".to_owned(), "b.wav".to_owned()]);
+    let a = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let b = InMemorySample::sine(660.0, 48_000.0, SAMPLE_FRAMES);
+    let plan = SfzPlan::prepare_with_samples(
+        &sfz,
+        &[
+            ("a.wav".to_owned(), a.clone()),
+            ("b.wav".to_owned(), b.clone()),
+        ],
+        48_000.0,
+    )
+    .expect("多采样摊平必须成功");
+    assert_eq!(plan.prepared().sample_count(), 2);
+    assert!(!plan.prepared().is_broadcast());
+
+    // ② 注入（唯一公开绑定路径）＋ 端到端渲染
+    let bare = EngineSnapshot::from_project(&fixture.project, 1).expect("快照");
+    assert!(bare.sfz().is_empty(), "⛔ `from_project` 不得凭空绑 SFZ");
+    let armed = EngineSnapshot::from_project(&fixture.project, 1)
+        .expect("快照")
+        .with_sfz(track, plan);
+    let with_sfz = render_snapshot(armed, SFZ_QUANTA);
+    let without = render(&fixture.project, SFZ_QUANTA);
+    println!(
+        "[engine-sfz/S16] 多采样臂: 非零={} 峰值={} 指纹=0x{:016x}；对照臂（不给 SFZ）: \
+         非零={} 指纹=0x{:016x}",
+        with_sfz.nonzero(),
+        with_sfz.peak(),
+        with_sfz.fingerprint(),
+        without.nonzero(),
+        without.fingerprint(),
+    );
+    assert!(with_sfz.nonzero() > 0, "⭐ 端到端必须非静音");
+    assert_ne!(
+        with_sfz.fingerprint(),
+        without.fingerprint(),
+        "⭐ 注入之后指纹必须不同（否则 SFZ 支路没接上）"
+    );
+
+    // ③ 反向对照：**广播** plan（只给 `a.wav`）⇒ 端到端指纹必须不同
+    let broadcast_plan = SfzPlan::prepare(&sfz, &a, 48_000.0).expect("广播摊平");
+    assert_eq!(
+        broadcast_plan.prepared().sample_content_label(),
+        "broadcast(1)"
+    );
+    let armed_broadcast = EngineSnapshot::from_project(&fixture.project, 1)
+        .expect("快照")
+        .with_sfz(track, broadcast_plan);
+    let broadcast = render_snapshot(armed_broadcast, SFZ_QUANTA);
+    println!(
+        "[engine-sfz/S16] 广播臂: 非零={} 峰值={} 指纹=0x{:016x}",
+        broadcast.nonzero(),
+        broadcast.peak(),
+        broadcast.fingerprint(),
+    );
+    assert!(
+        broadcast.nonzero() > 0,
+        "广播臂也必须出声（否则②的比较是空转）"
+    );
+    assert_ne!(
+        broadcast.fingerprint(),
+        with_sfz.fingerprint(),
+        "⭐ 多采样 vs 广播的端到端指纹必须不同（`key=64` 那条区域换了内容）"
     );
 }

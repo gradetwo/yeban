@@ -423,30 +423,35 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 
 ### 本片读数（`cargo test -p yeban-engine`）
 
+> ⚠ 下表是**步 2** 当时的读数（历史留痕）；⭐ **尺寸**一行已被步 3 改写（见 §13.2），
+> `span`/`end=-1` 两行的"摊平表仍出声"也已被步 3 的**同口径**取代。
+
 | 判据 | 读数 |
 | :--- | :--- |
 | 引擎声部路径 vs `PreparedSfz::render_block_into`（两条 `key=60` 都匹配） | **逐样本最大绝对差 = 0e0**（两侧非零 478 / 478） |
 | 样本自然结束 ⇒ 退休 | 播完那一块后活声部 `Some(0)`，下一块**逐位静音**；反向对照：摊平表同一块仍写 479 帧 |
-| 显式 `span` 终点（`end=200`） | 引擎在**第 200 帧**停（span 内与摊平表**逐样本 0**）；摊平表继续到 478（已登记口径分叉） |
-| `end=-1`（`SampleEnd::Silent`） | 引擎 **0 帧**、0 声部；摊平表仍出声（对照） |
+| 显式 `span` 终点（`end=200`） | 步 2：引擎在**第 200 帧**停（span 内与摊平表**逐样本 0**）；摊平表继续到 478（当时的口径分叉）⇒ ⭐ **步 3 已同口径**（两侧都停在第 200 帧，见 §13.2） |
+| `end=-1`（`SampleEnd::Silent`） | 步 2：引擎 **0 帧**、0 声部；摊平表仍出声（对照）⇒ ⭐ **步 3 已同口径**（两侧都 0 帧，见 §13.2） |
 | ⭐ **反向对照（接线前）** | **不给 `sfz`** 的端到端指纹 == 改动源码前实测值：`0x71dca4dc55b44df5` / `0x6eee378072730521`（`tests/sfz_instrument.rs` 的 S5） |
 | 端到端（SFZ 臂） | 非零 1716、峰值 0.21920355、指纹 `0x5587041753dfe375` ≠ 对照臂 `0xd50d599c66c92565` |
 | 分派次序 | 鼓机＋SFZ 的输出对"只有鼓机"**逐位相同**；无鼓机时同一份 SFZ 非零 127 |
 | 池满（17 条匹配区域） | `created = 16`、`dropped = 1`（⛔ 不静默） |
-| 尺寸 | `SfzVoice = 32 B`、`SfzVoicePool = 520 B`、`SynthEngine = 89936`、`EngineRuntime = 160784 < 196608`（192 KiB） |
-| 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73** |
-| 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B** |
+| 尺寸（步 2） | `SfzVoice = 32 B`、`SfzVoicePool = 520 B`、`SynthEngine = 89936`、`EngineRuntime = 160784 < 196608`（192 KiB）⇒ ⭐ 步 3 改为 **40 / 648 / 91984 / 162832** |
+| 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73**（⭐ 步 3 后逐字不变） |
+| 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B**（广播路径；步 3 后逐字不变） |
 
-### 本片新增的 needs（`yeban-engine/src/sfz_instrument.rs` 模块头同表）
+### needs（⭐ 下表状态截至**步 3**，即 2026-10-16 的 `#67`；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
 
-| # | 缺口 | 为什么需要裁决 |
+| # | 缺口 | 状态 |
 | :--- | :--- | :--- |
-| sfz-needs-1 | **轨推子/静音未乘到 SFZ 声部** | 逐样本对账口径是 `render_block_into(note, velocity)`（无轨增益参数）⇒ 声部增益 ＝ `region.gain_at(...)`。接线要先裁"谁拥有力度增益"（SFZ 曲线 vs `synth::velocity_gain`），否则双重计力度。⚠ 与鼓机（乘 `ScheduledNote::gain`）**不对称** |
-| sfz-needs-2 | **池满只丢弃 ＋ 计数，无窃取口径** | `yeban-sfz` 的 `VoicePool` 是全局 512 声部、victim 选择是另一份口径 ⇒ 两套形状要一条 ADR |
-| sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（本片＝鼓机优先，SFZ 池被释放） | 与 `crate::drums` 的 needs-3 同族 |
-| sfz-needs-4 | **`span` 终点已在引擎侧应用、离线/摊平侧未应用** | 两侧口径分叉；修它要**同时**改离线侧（属步 3）。第 ③ 条局限因此**仍是部分** |
-| sfz-needs-5 | **轨↔SFZ 的模型绑定不存在** | `yeban-model` 里 SFZ 命中只有一行注释、`DeviceKind` 四档没有 sampler ⇒ 今天只能由 `with_sfz` 显式注入 |
-| sfz-needs-6 | **循环 / ADSR / `off_mode` / 多采样 / 每区域独立 PCM** | 完全未做；一条轨共用**一份** PCM ⇒ 多 `sample=` 的区域会播同一份数据 |
+| sfz-needs-1 | **轨推子/静音未乘到 SFZ 声部** | **未闭合**：逐样本对账口径是 `render_block_into(note, velocity)`（无轨增益参数）⇒ 声部增益 ＝ `region.gain_at(...)`。接线要先裁"谁拥有力度增益"（SFZ 曲线 vs `synth::velocity_gain`） |
+| sfz-needs-2 | **池满只丢弃 ＋ 计数，无窃取口径** | **未闭合**：`yeban-sfz` 的 `VoicePool` 是全局 512 声部、victim 选择是另一份口径 ⇒ 要一条 ADR |
+| sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（引擎＝鼓机优先，SFZ 池被释放） | **未闭合**：与 `crate::drums` 的 needs-3 同族（模型若禁止这种组合，本条删除） |
+| sfz-needs-4 | **`span` 终点引擎侧已应用、离线/摊平侧未应用** | ⭐ **已闭合（步 3）**：三条路共用 `reduce_span` 一份归约 ⇒ `start` ＋ `end` 都应用；S3/S13 逐样本差 **0e0**（读数见 §13.2） |
+| sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（**"SFZ 如何进 `YebanProjectV1`"未裁**） | **未闭合（模型面）**：本步只把它做成**可经公开路径调用的 API**（`SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz`，S16 端到端）；⛔ 不加 `DeviceKind` 档、⛔ 不改 schema |
+| sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by`** | **部分闭合**：步 3 只闭合了它的"多采样／每区域独立 PCM"那一半；其余仍完全未做 |
+| sfz-needs-7 | ⭐ **（步 3 新增）缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | **未闭合**：`prepare_with_samples` 对调用方没给的 `sample_path` 回退到 `samples[0]` ＋ **计数**（⛔ 不静默）；app 形状（`sfz_load.rs:264-267`：回退**内存正弦** ＋ 原因文案）**没有**搬进引擎 ⇒ "回退内容归谁"要裁决 |
+| sfz-needs-8 | ⭐ **（步 3 新增）摊平表不含样本字节预算 / 流式** | **未闭合**：每个被引用的样本 `pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无 `Arc` 共享口径 |
 
 ⚠ **换采样率的后果**（实测于 ㉙）：摊平表带着构造期的 `engine_hz` ⇒ 换采样率必须由
 **控制侧在窗口外重新摊平**并发布一份新快照；引擎⛔ 不在快照边界重算，**在飞的声部**
@@ -468,3 +473,61 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 2. **`written < remaining` → `<=`**（`sfz_instrument.rs:830`）⇒ **只有 S1b 变红**（差 `7.505936e-1`、有声块 1）；
    ⚠ 同一条判据的**单块**腿读数**一字不变**（`0e0` / 478 / 478）—— 那正是"单块尺度看不出来"的机械证据。
    （副作用：S10 的**前置见证**也会红：提前退休让"触发后必须有 2 个声部"不成立。）
+
+### 13.2 步 3：多采样 ＋ ⭐ 绑定注入 API（2026-10-16，任务 `#67`）
+
+设计来源：R698 的**步 3**（"多采样 ＋ 绑定注入（控制侧）"）＋ 本线自己登记的 `needs`。
+本步**只动控制侧**：⛔ 不加 `DeviceKind` 档、⛔ 不改 schema、⛔ 不碰 `yeban-model`／`yeban-sfz`／`yeban-app`。
+
+#### 交付形状（`crates/yeban-engine/src/sfz_instrument.rs`）
+
+| 件 | 形状 | 说明 |
+| :--- | :--- | :--- |
+| `PreparedSample` | `path` ＋ `pcm` ＋ `sample_hz` | 摊平表里的**一份**样本；`path` ＝ 去重键（`region.sample_path()` 原样字符串） |
+| `PreparedRegion::sample_index` | `u16` | 指到 `samples` 的下标；`NO_SAMPLE`（`u16::MAX`）＝ 不产生采样输出 |
+| `PreparedSfz::prepare_with_samples` | 控制侧构造 | **每区域播自己**那份；同一路径**只 materialize 一次**（`BTreeMap` 索引，⛔ 无 `HashMap`） |
+| `PreparedSfz::prepare` | 单样本**广播**（⛔ 未删） | 所有 `sample_index = 0`；键/力度映射对、**音色内容错** ⇒ `sample_content=broadcast(1)` |
+| `reduce_span` | **唯一**归约 | 离线 `render_note_into`／摊平 `render_block_into`／实时声部三条路共用 ⇒ `start`＋`end` 同口径 |
+| `SfzInstrument::referenced_sample_paths` | 控制侧查询 | 排序去重的路径全集（调用方据此解码；解码⛔ 不在引擎） |
+| `SfzPlan::prepare_with_samples` | 公开入口 | 经 `EngineSnapshot::with_sfz` 注入 ⇒ **唯一**的轨↔SFZ 绑定路径（模型语义⛔ 不发明） |
+
+#### 本步读数（`cargo test -p yeban-engine`；`sfz_instrument` 16 / 16，全套 296 + 各集成档全绿）
+
+| 判据 | 读数 |
+| :--- | :--- |
+| **S11 多采样各播自己** | `key=60` 摊平指纹 `0xd8710445ec5a5faf` ＝ 离线(`a.wav`) 指纹；`key=64` `0x29bc219a1b7a0b4b` ＝ 离线(`b.wav`)；⭐ 两条指纹**不同**。反向对照：**对调**提供表 ⇒ `0x28928510f012cb43` ≠ 原值；**广播**在 `key=64` ⇒ `0xb0d8460b4f0cf499` ＝ "用 `a.wav` 播 `key=64`"的离线渲染 ⇒ **音色内容错**的机械证据 |
+| **S12 同一样本引两次只解码一次** | 同一路径引两次：`sample_count = 1`、`pcm_bytes = 1920`（480 × 4，**一份**）；反向对照（两条不同路径）：`2` / `3840`。提供表同一路径两份 ⇒ 首个为准（输出 ＝ 第一份的离线参照，⛔ 不静默合并） |
+| **S13 `start`/`end` 真正应用** | `offset=10 end=200`：摊平写入 **190** 帧（半开 `[10,201)`）；**离线 vs 摊平差 `0e0`**；**引擎 vs 摊平差 `0e0`**；输出 `[0] = 0.27231953` **逐位等于** `源[10] × gain`；反向对照 `offset=50` ⇒ 写入 **150** 帧、输出 `[0] = 0.12940946`（起点真的进了循环） |
+| **S3 `end` 两侧同口径**（改写） | `end=200` ⇒ 引擎与摊平表都停在**第 200 帧**、整块**逐样本最大绝对差 `0e0`**、摊平写入 **200** 帧；反向对照 `end=400` ⇒ **400** 帧 |
+| **S4 `end=-1` 两侧同口径**（改写） | 引擎 **0** 帧 / `Some(0)` 声部；⭐ 摊平表**也** 0 帧（步 2 时它仍出声 ⇒ 分叉闭合）；反向对照（无 `end=-1`）⇒ 摊平写入 **479** 帧 |
+| **S14 广播重载与步 2 逐位相同** | span-free 夹具 `(60,127)`、512 帧：**FNV-1a `0xa933ddab286bdf5e` ＝ 本线在 HEAD `6ae70ef8`（改动前）实测值**；`is_broadcast()` ✓、`sample_content_label() = "broadcast(1)"`、写入 479 / 非零 478 |
+| **S15 缺样本如实回退 ＋ 计数** | 缺 `missing.wav`（提供表 `[a.wav]`）：`fallback_region_count = 1`、`missing_sample_paths = ["missing.wav"]`、`sample_content = distinct(1)+fallback(1)`，输出指纹 `0xb0d8460b4f0cf499` **逐位等于**"用 `a.wav` 播那个键" ⇒ 回退**真的发生**（⚠ 内容错，sfz-needs-7）。反向对照：补上 ⇒ `fallback = 0` 且指纹变。空提供表 ⇒ `silent = 2`、`sample_content = distinct(0)+silent(2)`、写入 **0** 帧、`missing = ["a.wav","missing.wav"]`（排序去重） |
+| **S16 绑定注入 API 经公开路径（多采样）** | `referenced_sample_paths = ["a.wav","b.wav"]` → `SfzPlan::prepare_with_samples`（`sample_count = 2`）→ `EngineSnapshot::with_sfz` → **端到端**非零 1716、峰值 0.21920355、指纹 `0x10e619a422b4b7dd` ≠ 不给 SFZ 的 `0xd50d599c66c92565`；反向对照：**广播** plan 的端到端指纹 `0x5587041753dfe375` ≠ 多采样版 |
+| **尺寸（照打）** | `SfzVoice = 40 B`（原 32：`sample_index: u16` ＋ 对齐）、`SfzVoicePool = 648 B`（16 × 40 ＋ 8）、`SfzPlan = 96`、`PreparedSfz = 96`、`SynthEngine = 91984`、`EngineSnapshot = 4480`、⭐ `EngineRuntime = 162832 < 196608`（192 KiB） |
+| **零分配（`rt_zero_alloc` ㉙，未改夹具）** | 10 001 量子（总能量 **2999.164**，与步 2 逐字相同）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73** |
+| **既有判据未回归** | S1/S1b/S2/S5/S6/S7/S8/S10 读数逐字不变（S5 两条接线前指纹仍是 `0x71dca4dc55b44df5` / `0x6eee378072730521`；S6 端到端仍是 `0x5587041753dfe375`） |
+
+#### ⭐ 注入打红（三处，各自的**红读数** ＋ 还原自证）
+
+还原自证：注入前记录 `sha256(sfz_instrument.rs) = 5fd478c52901937747376c3830db58b5d8590f46eeb8c9a4c984da51ff2ac35b`
+与 `git diff`（100111 字节）；每次还原后 `sha256sum -c` **OK**、`diff -q` 两次 `git diff` **逐字节相同**、
+文件里 `INJECT` 标记数 **0**。
+
+| # | 注入 | 红读数 | 变红的判据 |
+| ---: | :--- | :--- | :--- |
+| ① | `flatten_regions` 里 `sample_index` **恒置 0** | `s11`：`"b.wav" ⇒ 第 1 份` `left: 0 / right: 1`；`s15`：`补上内容之后输出必须变` `left: 12743012160029652121 / right: 12743012160029652121`；`s16`：`多采样 vs 广播的端到端指纹必须不同` `left: 6162899113317753717 / right: 6162899113317753717`；**13 passed / 3 failed** | S11、S15、S16 |
+| ② | `reduce_span` 里 `end` **恒取 `pcm_len`**（⛔ 不应用 `span.end`） | `s3`：`end=200（含端点）⇒ 半开 [0, 201)` `left: Some(480) / right: Some(201)`；`s13`：`终点＝半开 [10,201)` `left: Some(480) / right: Some(201)`；**14 passed / 2 failed**（S4 与 S14 仍绿 ⇒ 注入作用域只到 `end`，`end=-1` 走 `span == None` 的早退） | S3、S13（终点腿） |
+| ③ | `reduce_span` 里起点 **恒取 0.0**（⛔ 不应用 `span.start`） | `s13`：`起点＝offset` `left: Some(0.0) / right: Some(10.0)`；**15 passed / 1 failed**（S3 用 `offset=0` ⇒ 不受影响） | S13（起点腿） |
+
+⇒ ⭐ 三条注入分别**只**打红与它对应的判据 ⇒ 判据各自有牙（不是"一起红"的粗判据）。
+
+#### ⛔ 本步**不做**（如实登记）
+
+`loop_*`／`ampeg_*`／`off_mode`／`group`/`off_by`/`note_polyphony`／模型层绑定（只给 API）／
+`PolySynth` 逐位判据／新依赖（⛔ 未加任何依赖；`yeban-app` 的 `sfz_load.rs:238-269` **未动**）。
+
+#### ⭐ 口径分叉：无（本步闭合了 sfz-needs-4）
+
+步 2 的"引擎应用 `span`、离线/摊平不应用"在步 3 被 `reduce_span` 消除 ⇒
+S3/S13 的**逐样本最大绝对差 = 0e0** 覆盖**整段**（含显式 `offset`/`end`），
+不再是"只覆盖触发量子、夹具必须没有 `offset`/`end`"。
