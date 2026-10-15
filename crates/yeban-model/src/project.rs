@@ -1137,9 +1137,23 @@ impl ClipPlacement {
 /// 路径当**留痕字符串**收下，读到不存在的文件是**控制侧**要响亮的错（`yeban-sfz`
 /// 已经会对缺失样本计数并静音，见 `sfz-needs-7`）。
 ///
-/// ⚠ **今天没有任何引擎读它**：`EngineSnapshot::from_project` **不**消费本字段。
-/// 本结构是"模型能表达 + 能序列化 + 不改变旧工程"的**最小入口**
-/// （`sfz-needs-5` 的模型面那一半）。
+/// ## 引擎侧今天怎么用它（任务单 `#78` 之后；台账 `R734`）
+///
+/// ⭐ `EngineSnapshot::from_project` **消费**本字段：把 `path` **原样**投影成
+/// **待摊平项** `sfz_pending`（`yeban-engine` 的 `PendingSfz`）—— 快照携带的事实
+/// **到此为止**，它只是一个路径字符串。⛔ 引擎侧**不读盘**：控制侧的次序是
+/// `sfz_pending()` →（读盘／解析／解码）→ `SfzPlan::prepare_with_samples` →
+/// `EngineSnapshot::with_sfz`（后者**取代**待摊平项）。⭐ **摊平仍在控制侧**，
+/// 实时侧只读摊平后的表 ⇒ `sampler: Some(…)` 与 `None` 的渲染输出**逐位相同**
+/// （判据见 `yeban-engine` 的 `tests/sfz_instrument.rs` S21／S22／S23）。
+///
+/// ⇒ 本结构仍是"模型能表达 + 能序列化 + 不改变旧工程"的**最小入口**
+/// （`sfz-needs-5` 的模型面那一半）。⚠ 说"已全链打通"是**过头**的：
+/// 模型只负责陈述"哪条轨用哪份文件"，把路径变成声音的那一段**不在引擎里**。
+///
+/// ⚠ 契约侧覆盖（任务单 `#81`）：`schemas/project.schema.json` 的
+/// `tracks[*].sampler` 分支由 `tests/schema_sampler_branch.rs` 常驻钉住
+/// （形状与 `SamplerBinding` 一致 ＋ 正/反向实例）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SamplerBinding {
     /// 采样器定义文件路径（原样留痕，⛔ 模型不解析、不规范化、不查存在性）。
