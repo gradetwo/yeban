@@ -333,6 +333,44 @@ pub enum Op {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 设置摆放**长度**（[`ClipPlacement::duration_ticks`]）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`ClipPlacement::duration_ticks` **只在创建时**
+    /// 能给**（[`Op::AddClipPlacement`] 的载荷带它）⇒ ⭐ **创建之后改不了长度**（⭐ 修剪/拉伸
+    /// 都做不了）；⭐ 而 [`Op::MoveClipPlacement`] **只写 `start_tick`** ⇒ 想改长度只能
+    /// "删掉摆放再重建"，⭐ 那会**换掉摆放身份**。⚠ `ARCH-OPS-001` 那一族的又一处。
+    ///
+    /// ⚠ **为何安全（完全可逆）**：⭐ 长度是**标量窗口** ⇒ 存 `old_duration_ticks` 即完全复原。
+    /// ⭐ ⚠ **"改短再改长"⛔ 不丢音符**：⭐ 音符住在 [`ClipPoolEntry::content`] 里，⭐ 而
+    /// `duration_ticks` 只决定**播放窗口** —— ⭐ `yeban-engine` 的注释逐字「音符时值被
+    /// **裁剪到摆放区间** `[start_tick, start_tick + duration_ticks)`」，⭐ ⚠ **那个裁剪发生在
+    /// 快照/渲染构建期、⛔ 不是在 `apply` 时截断数据**。
+    ///
+    /// ⚠ ⭐ **与 `loop_config` 的关系（已核实、如实登记）**：⭐ **校验层**上两者**解耦** ——
+    /// [`ClipPlacement::validate`] 只做两件独立的事（`duration_ticks == 0 ⇒ ZeroDuration`
+    /// 与 `loop_config.validate()`），⭐ 而 [`LoopConfig`] 用的是它**自己的绝对 tick 区间**
+    /// （`{enabled, start_tick, end_tick}`）、⭐ **没有任何"必须与 `duration_ticks` 一致"的校验**
+    /// ⇒ ⭐ **本变体⛔ 不动 `loop_config`**。⚠ ⭐ **但有一处**判定关联**（仅登记）**：
+    /// `yeban-mcp` 的离线渲染把"循环重复未展开"登记为 `clipLoopRepetition`，⭐ 其口径是
+    /// 「**启用中**且**区间不是恰好 `0..duration_ticks`**」⇒ ⭐ **改长度会改变那个判定的结果**
+    /// （⭐ 那是**长度本来就该决定的量**、⭐ 两个字段改后仍各自自洽）。
+    ///
+    /// ⚠ **值域**：⭐ `new_duration_ticks` **必须 ≥ 1** ⇒ ⭐ `0` 复用既有
+    /// [`ModelError::ZeroDuration`]（⭐ 与 [`ClipPlacement::validate`] 同一口径、⛔ 不自造新错误）。
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `id` / `clip_id` / `start_tick` / `muted` / `loop_config`。
+    /// ⚠ **寻址用 `track_id` + `placement_id` 双定位**（`clips` 是 `BTreeMap`）。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::MoveClipPlacement`] 的同族），
+    /// ⛔ **不是** `previous_*`。
+    SetClipPlacementDuration {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份（即 `clips` 的键）。
+        placement_id: EntityId,
+        /// 修改前的长度（tick）。
+        old_duration_ticks: u64,
+        /// 修改后的长度（tick，**必须 ≥ 1**）。
+        new_duration_ticks: u64,
+    },
     /// 切换**摆放静音**（[`ClipPlacement::muted`]）。
     ///
     /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`ClipPlacement::muted` **只在创建时**能给
@@ -813,6 +851,7 @@ impl Op {
             Self::RemoveClipPlacement { .. } => "RemoveClipPlacement",
             Self::MoveClipPlacement { .. } => "MoveClipPlacement",
             Self::SetClipPlacementMuted { .. } => "SetClipPlacementMuted",
+            Self::SetClipPlacementDuration { .. } => "SetClipPlacementDuration",
             Self::AddTrack { .. } => "AddTrack",
             Self::RemoveTrack { .. } => "RemoveTrack",
             Self::ConnectRouting { .. } => "ConnectRouting",
@@ -946,6 +985,28 @@ impl Op {
                     .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
                 if current != previous_placement {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetClipPlacementDuration {
+                track_id,
+                placement_id,
+                old_duration_ticks,
+                new_duration_ticks,
+            } => {
+                let track = doc.track(track_id)?;
+                let current = track
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                // ⚠ `u64` 的比较是**值比较** ⇒ 陈旧载荷必被拒。
+                if current.duration_ticks != *old_duration_ticks {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // ⚠ **新值必须 ≥ 1**：⭐ 与 [`ClipPlacement::validate`] 同一条 `ZeroDuration`
+                // 口径（⭐ ⛔ 不自造新错误变体）。
+                if *new_duration_ticks == 0 {
+                    return Err(ModelError::ZeroDuration);
                 }
                 Ok(())
             }
@@ -1577,6 +1638,17 @@ impl Op {
                 track_id: *track_id,
                 placement: *previous_placement,
             },
+            Self::SetClipPlacementDuration {
+                track_id,
+                placement_id,
+                old_duration_ticks,
+                new_duration_ticks,
+            } => Self::SetClipPlacementDuration {
+                track_id: *track_id,
+                placement_id: *placement_id,
+                old_duration_ticks: *new_duration_ticks,
+                new_duration_ticks: *old_duration_ticks,
+            },
             Self::SetClipPlacementMuted {
                 track_id,
                 placement_id,
@@ -1977,6 +2049,19 @@ impl Op {
                 ..
             } => {
                 doc.track_mut(track_id)?.clips.remove(placement_id);
+                Ok(())
+            }
+            // 只写那**一个**长度字段：⛔ 不碰 `id` / `clip_id` / `start_tick` / `muted` /
+            // `loop_config`（⭐ 与 `loop_config` 的判定关联只**登记**、⛔ 不在此联动）。
+            Self::SetClipPlacementDuration {
+                track_id,
+                placement_id,
+                new_duration_ticks,
+                ..
+            } => {
+                if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
+                    placement.duration_ticks = *new_duration_ticks;
+                }
                 Ok(())
             }
             // 只写那**一个**静音开关：⛔ 不碰 `id` / `clip_id` / `start_tick` /
