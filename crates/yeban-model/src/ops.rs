@@ -269,6 +269,39 @@ pub enum Op {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 切换**设备旁通**（[`DeviceDefinition::bypassed`]）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`DeviceDefinition::bypassed` **只能**在
+    /// [`Op::InsertDevice`] 时由调用方给值**，而**它之后没有任何 `Op` 能改它** ⇒ ⭐ 今天
+    /// **连一次"旁通这台设备"都做不出来**（`Default` 与所有夹具都写死 `false`）。⚠ 这是
+    /// `ARCH-OPS-001` 那一族的又一处（与 `D27` 补 `AddClip`、[`Op::SetTrackName`]、
+    /// [`Op::SetClipName`]、[`Op::SetDeviceName`]、[`Op::SetAuthor`] 的成因同型）。
+    ///
+    /// ⚠ **为何安全（可逆）**：⭐ 旁通是**布尔开关** ⇒ 切回去**即完全复原**（无副作用、
+    /// 无丢失信息）。⚠ **它有真正的行为重量** —— [`DeviceDefinition::bypassed`] 的字段文档
+    /// 逐字写着「**必需** [ADR-0001 D43]：缺了它，一个被旁通的设备会被**静默接回信号链**
+    /// —— 这是"听得出、但读文件时看不见"的行为反转」，而下游确实读它：
+    /// [`crate::ops`] 之外，`yeban-engine` 的延迟汇总按它跳过该设备
+    /// （`LatencyTable::from_tracks`：**旁通设备不计入**，对相位没有贡献）、
+    /// `yeban-engine::drums` 对 `bypassed` 的设备**整体忽略**。
+    /// ⭐ ⚠ **PDC 无需联动**：延迟表是**从当前文档推导的投影** ⇒ 本变体改完文档之后，
+    /// 下次推导自然反映新旁通位（⭐ 该因果由 `latency_table_sums_model_device_latency_and_skips_bypassed` 守护）。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `id` / `name` / `kind` / `params` /
+    /// `latency_samples`（⭐ 延迟值**照旧保留**，只是旁通期间不计入相位）。
+    /// ⚠ **寻址用 `track_id` + `device_id` 两个身份、⛔ 不用下标**（`devices` 是 `Vec`，
+    /// 增删会移位下标）。⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetTrackMute`]），
+    /// ⛔ **不是** `previous_*`。
+    SetDeviceBypassed {
+        /// 目标音轨（设备的容器）。
+        track_id: EntityId,
+        /// 目标设备身份。
+        device_id: EntityId,
+        /// 修改前的旁通状态。
+        old_bypassed: bool,
+        /// 修改后的旁通状态。
+        new_bypassed: bool,
+    },
     /// 设置**设备显示名**（[`DeviceDefinition::name`]）。
     ///
     /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`DeviceDefinition::name` 在操作日志层
@@ -725,6 +758,7 @@ impl Op {
             Self::InsertDevice { .. } => "InsertDevice",
             Self::RemoveDevice { .. } => "RemoveDevice",
             Self::SetDeviceName { .. } => "SetDeviceName",
+            Self::SetDeviceBypassed { .. } => "SetDeviceBypassed",
             Self::SetParam { .. } => "SetParam",
             Self::SetTrackMute { .. } => "SetTrackMute",
             Self::SetTrackName { .. } => "SetTrackName",
@@ -1003,6 +1037,28 @@ impl Op {
                         field: "routing.edge.gain_db",
                         value: f64::from(*gain_db),
                     });
+                }
+                Ok(())
+            }
+            Self::SetDeviceBypassed {
+                track_id,
+                device_id,
+                old_bypassed,
+                ..
+            } => {
+                let track = doc.track(track_id)?;
+                // ⚠ **按身份找、不按下标**（`devices` 是 `Vec`，增删会移位下标）。
+                let index = track
+                    .devices
+                    .iter()
+                    .position(|existing| existing.id == *device_id)
+                    .ok_or(ModelError::DeviceSlotOutOfRange {
+                        index: track.devices.len(),
+                        len: track.devices.len(),
+                    })?;
+                // ⚠ `bool` 的比较是**值比较**（与 [`Op::SetTrackMute`] 同口径）⇒ 陈旧载荷必被拒。
+                if track.devices[index].bypassed != *old_bypassed {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
             }
@@ -1480,6 +1536,17 @@ impl Op {
                 old_gain_db: *new_gain_db,
                 new_gain_db: *old_gain_db,
             },
+            Self::SetDeviceBypassed {
+                track_id,
+                device_id,
+                old_bypassed,
+                new_bypassed,
+            } => Self::SetDeviceBypassed {
+                track_id: *track_id,
+                device_id: *device_id,
+                old_bypassed: *new_bypassed,
+                new_bypassed: *old_bypassed,
+            },
             Self::SetDeviceName {
                 track_id,
                 device_id,
@@ -1830,6 +1897,26 @@ impl Op {
                 if let Some(edge) = doc.routing_graph.edges.get_mut(edge_id) {
                     edge.gain_db = *new_gain_db;
                 }
+                Ok(())
+            }
+            // 只写那**一个**旁通开关：⛔ 不碰 `id` / `name` / `kind` / `params` /
+            // `latency_samples`（延迟值照旧保留，只是旁通期间不计入相位）。
+            Self::SetDeviceBypassed {
+                track_id,
+                device_id,
+                new_bypassed,
+                ..
+            } => {
+                let track = doc.track_mut(track_id)?;
+                let index = track
+                    .devices
+                    .iter()
+                    .position(|existing| existing.id == *device_id)
+                    .ok_or(ModelError::DeviceSlotOutOfRange {
+                        index: track.devices.len(),
+                        len: track.devices.len(),
+                    })?;
+                track.devices[index].bypassed = *new_bypassed;
                 Ok(())
             }
             // 只写那**一个**显示名字段：⛔ 不碰 `id` / `kind` / `params` /
