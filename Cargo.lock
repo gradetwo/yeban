@@ -6562,6 +6562,7 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "yeban-decode",
  "yeban-diagnostics",
  "yeban-engine",
  "yeban-mcp",

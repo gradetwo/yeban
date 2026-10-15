@@ -70,6 +70,29 @@ yeban-sfz = { workspace = true }
 yeban-render = { workspace = true }
 
 # ---------------------------------------------------------------------------
+# yeban-decode: SFZ 样本的**通用解码入口** (symphonia / rubato), 任务单 #85
+# ---------------------------------------------------------------------------
+# 为什么 app 需要它: SFZ v2 音色库里的样本**不只是 PCM WAV** —— FLAC / OGG 是常见形态
+# (规范 `ROAD-M-1-004` 点名 "标准 PCM WAV/FLAC")。`read_plain_wav_mono_f32` 只能读
+# PCM/float WAV, 因此非 WAV 样本过去一律落"格式不受支持"(`#83` 的乙口径读数)。
+# 本仓**已有**能解 FLAC/OGG 的唯一入口 —— `yeban-decode` 的 `decode_path`
+# (symphonia 显式启用 wav/ogg/flac/vorbis) ⇒ 接线**只**加这一条依赖边,
+# ⛔ 本 crate 不复制第二份解码器, 也不引入任何新的第三方包。
+#
+# 这是**工作区内部**依赖边 (ADR-0001 D21 的 `allow-wildcard-paths` 豁免):
+# `yeban-decode` 早已是 workspace 成员, 它的 `symphonia`/`rubato` 早已在 `Cargo.lock` 里
+# (由 `yeban-mcp` 那条边带进来) ⇒ `-e normal` 依赖图新增的**包**只有 `yeban-decode`
+# 自己; `Cargo.lock` 的变化只有 `yeban-app` 包条目里的一行依赖名。
+# 依赖图变了 ⇒ 按纪律重生成 `docs/ledger/dependency-licenses.md` 并一起提交。
+#
+# 口径差 (⚠ **必须显式折单声道**): `DecodedAsset::samples()` 是**交织**多声道, 而
+# `read_plain_wav_mono_f32` 的既有口径是按 `step_by(channels)` 取**声道 0** ⇒
+# 接线时按同一口径折单声道, ⛔ 不把交织数据当单声道用 (见 `src/sfz_load.rs` 的分派函数)。
+#
+# 只写 `{ workspace = true }`, 不写 version (ADR-0001 D5)。
+yeban-decode = { workspace = true }
+
+# ---------------------------------------------------------------------------
 # yeban-engine: 实时引擎的**只读消费面** (电平 SPSC + 快照), app-mixer 工作线
 # ---------------------------------------------------------------------------
 # 为什么 app 需要它: `[ARCH-UI-002]` 要求"实时线程以 60Hz 向无锁 Meter SPSC 压入真峰值
