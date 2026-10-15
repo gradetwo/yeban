@@ -9803,3 +9803,52 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **"⭐ rust 矩阵腿不装 `jsonschema`"＋"⭐ `checks` job 不跑 `cargo test`"** ⇒ ⭐ ⭐ **故两条互补** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **乙（⭐ UI 选择面）** ＋ ⭐ **`engine_tick` 吞错** ＋ ⭐ 非 PCM-WAV 支持 ＋ ⭐ `sfz-cache-needs-1`／⭐ 2 ＋ ⭐ `needs-3`／⭐ `needs-8` ✓
+
+---
+
+## R739 实测追加（2026-10-16）：⭐⭐⭐ **`#82` 已并入**（⭐ UI 选择面 ＋ ⭐ 修吞错）⇒ ⭐ **SFZ 链条的最后一环闭合**：⭐ **经 UI 提交 ⇒ 模型变 ⇒ 快照摊平表非空、待摊平表为空** ＋ ⭐ **默认帧逐像素不变**
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **10 文件、＋1185／−8**、⭐ ⭐ **两个提交**（⭐ `62409065…` 吞错可观测、⭐ `b94d80b8…` **HEAD** UI 选择面）⇒ ⭐ ⚠ **它解释了为何吞错在前**: ⭐ **"⭐ 吞错判据**经 UI** 提交坏路径、⭐ 与 UI 面耦合"** ✓ ⭐ **`premerge-gate yeban-app` ＝ 全过**（⭐ 后台收回 exit 0）✓ ⭐ **主树并入前 `git status` ＝ 0 行** ✓ ⭐ ⚠ **且⛔ 未碰 `Cargo.toml`／⭐ `Cargo.lock`（⭐ 无新依赖）** ✓
+
+⭐ ⭐ ⭐ **二、⭐ UI 做法（⭐ 很克制）**: ⭐ **在**既有**混音台通道条（⭐ Tab「⭐ 调音台」）里加 **3 个稳定 element-id／轨****:
+| ⭐ 元素 id | ⭐ 角色 |
+| :--- | :--- |
+| ⭐ **`track-{i}-sampler-path`** | ⭐ `text-input`（⭐ `accessible-value` 由 Slint 自动指向 `TextInput.text` ⇒ ⭐ 可读可写）|
+| ⭐ **`track-{i}-sampler-set`** | ⭐ `button`（⭐ `accessible-action-default` 与 ⭐ `TouchArea.clicked` **逐字同一段**、⭐ 回车走同一回调）|
+| ⭐ **`track-{i}-sampler-clear`** | ⭐ `button` ⇒ ⭐ `new_sampler ＝ None`（⭐ **解绑是一等状态**）|
+⇒ ⭐ ⭐ **并附**: ⭐ **三层 `.slint` 只透传、⭐ 宿主 `wire_mixer_sampler` ＋ ⭐ `commit_sampler_binding`（⭐ Set／Clear 共用）唯一提交 `Op::SetTrackSampler`**（⭐ 沿用 `SetTrackMute`／⭐ `SetTrackSolo` 形状）；⭐ **值没变不提交；⭐ 空文本 SET **不提交**并出声（⭐ `""` ≠ `None`）；⭐ 界面只做一处规范化 ＝ 去首尾空白** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 它把三态（⭐ 未绑定／⭐ 空文本／⭐ 有路径）分清了** ⇒ ⭐ **而"⭐ 空文本不提交"正是防"⭐ 误清绑定"的那一手** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 端到端（⭐ 本单最有价值）**: ⭐ **`[sfz-ui/e2e] 心跳: published＝Some(2) error＝None；⭐ 快照摊平表＝Some((4, 29705, [])) 待摊平＝Some(0)`** ✓
+⭐ ⭐ **对账（⭐ 它把"⭐ 发布点做了什么"变成**读数**）**: ⭐ **同一工程 `EngineSnapshot::from_project` ＝ `pending＝1 plan＝false`（⭐ 只 arm 待摊平、⭐ 不摊平）** ⇒ ⭐ **而快照里 `pending＝Some(0)`** ⇒ ⭐ ⭐ **即: ⭐ "⭐ 发布点多做的那一步 ＝ ⭐ 摊平"** ✓ ⭐ **三元组与 `#79` 的 `decode_sfz_plan` 一致（⭐ `regions＝4`／⭐ `memory＝29705`／⭐ `missing＝[]`）** ✓ ⭐ **探针经 `set_accessible_value`（⭐ 屏读器写值那条）＋ ⭐ `invoke_accessible_default_action`（⭐ SET 的默认动作）** ⇒ ⭐ **即它走的是**无障碍接口**、⭐ ⛔ 不是内部捷径** ✓
+
+⭐ ⭐ ⭐ **四、⭐ UI 判据（⭐ DoD §3.6）＋ ⭐ 而"⭐ 布局那一半"处理得很省**: ⭐ **`dump_json()` ⇒ ⭐ `from_json()` 往返：⭐ 节点 111 条（⭐ 基线 102）** ✓ ⭐ **`path: role＝text-input value＝Some("") bounds＝{x:14,y:879,88×16}`；⭐ `set`：`{x:14,y:899,40×16}`；⭐ `clear`：`{x:56,y:899,40×16}`** ⇒ ⭐ **三者都断言"⭐ 落在通道条内且非零"** ✓ ⭐ **内容随模型变：⭐ `Some("")` ⇒ ⭐ 敲入 ⇒ ⭐ 路径原文 ⇒ ⭐ SET（⭐ 模型变、⭐ 树里仍是路径、⭐ undoable 1）⇒ ⭐ CLR（⭐ 模型回 `None`、⭐ 树里回 `Some("")`、⭐ undoable 2）** ✓
+⭐ ⭐ **而布局变动那一半**: ⭐ **`console_tab＝0`（⭐ 5 张 Linux 基准渲染的那一帧）改动前后各测 ⇒ ⭐ ⭐ **PNG `sha256 ＝ e93ec5bc…6ba` **逐位不变**、⭐ 节点 94⇒94、⭐ sampler 相关 ID **0** 条**** ⇒ ⭐ ⭐ **故⛔ 不需要重录基准**（⭐ `golden-manifest(linux)` 也全过）✓ ⭐ **Tab 1（⭐ 不在任何基准里）: ⭐ `6f478d01…` ⇒ ⭐ `3ae6fec9…`、⭐ 节点 102⇒111** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 它**先测**再决定是否重录基准** ⇒ ⭐ **省下了重录、⭐ 又没跳过判据** ✓
+
+⭐ ⭐ **五、⭐ 吞错改法（⭐ 三档读数可分）**: ⭐ **`live_surface.rs::engine_tick` 的 `publish_project(...).ok()` ⇒ ⭐ `match`：⭐ 失败原文进 `EngineTick::publish_error`（⭐ `EngineHostError` 的 Display）＋ ⭐ `eprintln!`** ✓ ⭐ **三档: ⭐ `None`＋⭐`Some(rev)`（⭐ 发布了）／⭐ `None`＋⭐`None`（⭐ 没发布）／⭐ `Some(text)`（⭐ 发布了但失败）** ✓ ⭐ **`EngineTick` 因此不再 `Copy`（⭐ String 原文、⭐ ⛔ 不压成 bool 哨兵）** ✓ ⭐ ⚠ **并附（⭐ 一处准确的边界）**: ⭐ ⭐ **"⭐ 生产 GUI 那条腿（⭐ `host::ProductionLoop::tick`）**本来就有**这段 match、⭐ 本单修的是 **MCP／⭐无头执行面**那一份"** ✓
+⇒ ⭐ ⭐ **即: ⭐ 它没有把"⭐ 已有 match"说成"⭐ 新增 match"** ⇒ ⭐ **边界很准** ✓
+
+⭐ ⭐ ⭐ **六、⭐ 注入双向（⭐ 含应绿腿）**:
+| ⭐ 注入 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **① UI 不提交**（⭐ `wire_mixer_sampler(ui, port);` 注释掉）| ⭐ **`FAILED. 1 passed; 3 failed`**: ⭐ **UI 判据红（⭐ `left: None`／⭐ `right: Some(…keys.sfz)`）、⭐ e2e 红、⭐ 吞错判据红（⭐ **因它经 UI 提交坏路径 ⇒ 与 UI 面耦合、⭐ 已如实登记**）**；⭐ ⭐ **应绿腿 `an_unbound_sampler_stays_a_noop_through_the_ui` 照旧 ok** ✓ |
+| ⭐ **② 恢复 `.ok()`** | ⭐ **`FAILED. 3 passed; 1 failed`**: ⭐ **只有吞错判据红**、⭐ 读数行逐字 `published＝None error＝None；⭐ 快照摊平表＝None 待摊平＝Some(0)；⭐ 发布计数 1 -> Some(1)` ⇒ ⭐ ⭐ **即"⭐ 失败"与"⭐ 没改动"**不可分****；⭐ **其余三条（⭐ 含应绿腿）照旧 ok** ✓
+⭐ **并附（⭐ 还原自证）**: ⭐ **`host.rs`／⭐ `live_surface.rs` 的 `sha256` 与注入前逐位相同；⭐ 注入前整份 `git diff` ＝ `41fcb6c6…`／32309 字节、⭐ 还原后同值；⭐ `grep "§注入"` ＝ 0 条残留；⭐ 收工 `git status --porcelain` ＝ 0 字节** ✓
+⇒ ⭐ ⭐ **即: ⭐ 注入 ② 的读数尤其好** —— ⭐ **它直接展示"⭐ 吞错让失败与无操作不可分"** ⇒ ⭐ **那正是该判据要防的事** ✓
+
+⭐ ⚠ **七、⭐ 而它如实登记一处触及既有判据源码（⭐ 很诚实）**: ⭐ ⚠ **唯一被触及的既有判据源码是 `tests/perf_draw_budget.rs`**（⭐ `apply_view` 多一格必需注入点、⭐ 状态仍 ok）⇒ ⭐ **`APPLY_VIEW_WRITE_SITE_BUDGET 39 ⇒ 40`、⭐ `PER_FRAME_ARRAY_REWRITE_BUDGET 30 ⇒ 31`** ⇒ ⭐ **而它说明"⭐ 新数组已**计入** `array_instance_addrs` 清单、⭐ 否则漏数"** ✓
+⭐ ⚠ **并附（⭐ 一处很好的诚实）**: ⭐ ⭐ **"⭐ 判据文件本身要求'⭐ 先重新测量再改常量'：⭐ 给的是数量侧 ＋ ⭐ 逐像素读数；⭐ ⚠ **墙钟成本**本机没测**（⭐ 要 GPU 档、⭐ 纪律不允许）、⭐ 两个常量的注释里逐字写了这一点与'⭐ 已批准未落地'的优化落地后应如何收回"** ✓
+⇒ ⭐ ⭐ **即: ⭐ 它没有把"⭐ 没测的"说成"⭐ 测过"** ⇒ ⭐ **且把"⭐ 何时收回"也写进注释** ✓
+
+⭐ ⭐ **八、⭐ 状态差集（⭐ 第 241 条）**: ⭐ **基线 `2063996f` 工作树 vs 本单、⭐ 各 39 个测试目标** ⇒ ⭐ ⭐ **新增 4 条全 ok**（⭐ `the_sampler_selector_is_in_the_headless_control_tree_and_follows_the_model`／⭐ `a_ui_commit_arms_the_flattened_sfz_table_in_the_live_engine`／⭐ `a_missing_sfz_path_is_an_observable_publish_error`／⭐ `an_unbound_sampler_stays_a_noop_through_the_ui`）；⭐ ⭐ **既有判据状态变化 **0** 条**（⭐ 556 ⇒ 560；⭐ ignored 三条两边相同）⇒ ⭐ **`passed＝557 failed＝0`** ✓
+
+⭐ ⚠ **九、⭐ 四门读数**: ⭐ `fmt` **0**（⭐ HEAD 上复跑）／⭐ `check --all-targets --locked` **0**／⭐ `clippy -D warnings` **0**（⭐ 先红过一次: ⭐ 新读数口在 `live_ui_mcp` 目标里 `dead_code` ⇒ ⭐ 用真实消费者消掉）／⭐ `test -p yeban-app --locked` **0**（⭐ 39 目标全绿、⭐ **557 passed／⭐ 0 failed**）／⭐ `premerge-gate.sh yeban-app` **全过**／⭐ `light` **门禁通过**（⭐ 含 `golden-manifest(linux)` 5 行／⭐ 31112090 字节全对）✓
+
+⭐ ⚠ **十、⭐ 一条可复用口径（⭐ 第 247 条）**: ⭐ ⭐ **改既有 UI 前、⭐ 先测"⭐ 基准那一帧"是否逐像素不变 ⇒ ⭐ 不变就不必重录基准** —— ⚠ **因为重录基准会**掩盖**真实回归、⭐ 而"⭐ 不变"本身是更强的结论** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **① 找出"⭐ 被基准覆盖的那一帧／⭐那个 tab"；⭐ ② 改动前后各渲染一次、⭐ 比 `sha256`；⭐ ③ 逐位不变 ⇒ ⭐ ⛔ 不重录；⭐ 变了 ⇒ ⭐ 才走 masked golden／⭐ SSIM 重录流程** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **`console_tab＝0` 的 `sha256` 逐位不变、⭐ 节点 94⇒94、⭐ 新 ID 0 条** ⇒ ⭐ **故只需给不在基准里的 Tab 1 记新数** ✓
+
+⭐ ⚠ **十一、⭐ 一条流程读数**: ⭐ ⭐ **它把两个提交的**顺序**也论证了**（⭐ "⭐ 吞错判据经 UI 提交坏路径 ⇒ 与 UI 面耦合 ⇒ ⭐ 故吞错在前、⭐ 而其判据在 commit 2"）⇒ ⭐ **即: ⭐ 提交顺序不是随手、⭐ 而是按依赖** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **原生文件对话框**（⭐ 须先报批）＋ ⭐ **GUI 错误横幅**（⭐ 需"⭐ 引擎错误 ⇒ ⭐界面"投影通道）＋ ⭐ **绘制回调墙钟成本**（⭐ GPU 档）＋ ⭐ 非 PCM-WAV 支持 ＋ ⭐ `sfz-cache-needs-1`／⭐ 2 ＋ ⭐ `needs-3`／⭐ `needs-8` ✓
