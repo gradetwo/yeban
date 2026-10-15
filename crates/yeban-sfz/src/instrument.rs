@@ -691,6 +691,26 @@ impl<'a> Region<'a> {
         matches!(self.trigger, Trigger::First | Trigger::Legato)
     }
 
+    /// 该 region 是否满足一次**完整的**触发查询。
+    ///
+    /// 这是 [`Instrument::region_for_with`] 内部那个选择谓词的**公开薄包装**
+    /// （实现就是同一个 `region_matches`）：门控口径 = 键 ＋ 力度 ＋ 通道 ＋
+    /// `trigger` 事件（含 `held_notes`）＋ keyswitch ＋ CC，严格策略见 [`RegionQuery`]。
+    ///
+    /// # 为什么公开它
+    ///
+    /// 消费方（例如 `yeban-engine` 的**摊平表**）需要与 `region_for_with` **同一份**
+    /// 区域选择口径，但又不需要「轮替 / 只取第一条」那半边语义。此前消费方只能自己拼
+    /// `matches_key && matches_velocity`，于是**静默绕过**了 trigger / keyswitch /
+    /// channel / CC 门控 —— `trigger=release` 的 region 会在 note-on 时被选中。
+    /// 本方法是那条口径的**唯一出口**，消费方⛔ 不应再自拼谓词。
+    ///
+    /// 零分配、无锁、无 I/O（只读字段与调用方的探针闭包）。
+    #[must_use]
+    pub fn matches_query(&self, query: &RegionQuery<'_>) -> bool {
+        region_matches(self, query)
+    }
+
     /// `amp_veltrack` 标准曲线的力度 → 线性振幅（[`veltrack_gain`] 的绑定版）。
     ///
     /// 只在 [`Region::velocity_curve`] 为 `None` 时参与 [`Region::velocity_gain`]；
@@ -3781,6 +3801,44 @@ mod tests {
             .region_for_with(RegionQuery::note_off(60, 100, false))
             .expect("note-off selects the release region");
         assert_eq!(picked.sample, "release.wav");
+    }
+
+    #[test]
+    fn matches_query_is_the_same_predicate_as_region_selection() {
+        // `Region::matches_query` 是 `region_for_with` 内部谓词的**公开薄包装**：
+        // 二者必须对同一组输入给出同一答案（含 trigger 门控）。
+        let instrument = parse_text(
+            "<region>sample=attack.wav key=60\n<region>sample=release.wav key=60 trigger=release",
+            &Default::default(),
+        )
+        .expect("parses");
+        let note_on = RegionQuery::new(60, 100);
+        assert!(
+            instrument.regions()[0].matches_query(&note_on),
+            "the attack region matches a note-on"
+        );
+        assert!(
+            !instrument.regions()[1].matches_query(&note_on),
+            "a trigger=release region must not match a note-on query"
+        );
+        let note_off = RegionQuery::note_off(60, 100, false);
+        assert!(
+            instrument.regions()[1].matches_query(&note_off),
+            "the release region matches a note-off query"
+        );
+        assert!(
+            !instrument.regions()[0].matches_query(&note_off),
+            "the attack region must not match a note-off query"
+        );
+        // 与「选择」那一半逐条对账：只有 attack region 该在 note-on 上为真
+        for region in instrument.regions() {
+            assert_eq!(
+                region.matches_query(&note_on),
+                region.sample.as_ref() == "attack.wav",
+                "selection and matches_query must agree (note-on), sample={}",
+                region.sample
+            );
+        }
     }
 
     #[test]

@@ -179,17 +179,23 @@ fn sfz_note_render_eight_seconds() {
     );
 }
 
-/// ⭐ 判据 a：**摊平后的回调路径与离线路径逐样本一致**。
+/// ⭐ 判据 a：**摊平后的回调路径与离线路径逐样本一致** —— 场景是**两条区域都匹配**。
 /// 判定量（已命名）：**逐样本最大绝对差** = `max_i |offline[i] − prepared[i]|`。
+///
+/// ⭐ 本判据的 SFZ 刻意让**两条 `key=60` 的区域同时匹配**（第二条另有 `volume=-6`）：
+/// ① 若两侧的**多匹配语义**不一致（离线 `find` 只取第一条、摊平叠加所有条）⇒ 差值非 0；
+/// ② 若摊平的**增益**仍冻结在 `(60, 100)` 或漏掉某一条 ⇒ 差值非 0。
+/// 另有一条 `key=72` 的区域做**不命中**的反向对照。
 #[test]
 fn prepared_matches_offline_sample_by_sample() {
-    let sfz = SfzInstrument::load(
-        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
-        &Default::default(),
-    )
-    .expect("最小 SFZ 必须成功");
+    const TWO_MATCH_ONE_MISS: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                                      <region> sample=b.wav key=60 pitch_keycenter=60 volume=-6\n\
+                                      <region> sample=c.wav key=72 pitch_keycenter=60\n";
+    let sfz = SfzInstrument::load(TWO_MATCH_ONE_MISS.to_owned(), &Default::default())
+        .expect("SFZ 必须成功");
     let sample = InMemorySample::sine(440.0, 48_000.0, 480);
 
+    // ① 两条都匹配 ⇒ 两侧都必须叠加两条
     let mut offline = vec![0.0f32; 512];
     sfz.render_note_into(&sample, 60, 100, &mut offline, 48_000.0)
         .expect("离线渲染不得报错");
@@ -208,10 +214,49 @@ fn prepared_matches_offline_sample_by_sample() {
         prepared.region_count(),
         prepared.memory_bytes()
     );
-    assert_eq!(max_abs_diff, 0.0, "⭐ 摊平路径必须与离线路径**逐样本相同**");
-    // 反向对照：不命中的音符两侧都必须是静音（⛔ 不能"两边都全零"也算一致）
+    assert_eq!(
+        max_abs_diff, 0.0,
+        "⭐ 摊平路径必须与离线路径**逐样本相同**（两条都匹配的多匹配场景）"
+    );
+    // ② 反向对照 1：两侧都必须**真的出声**（⛔ 不能"两边都全零"也算一致）
     assert!(offline.iter().any(|s| *s != 0.0), "离线路径必须真的出声");
     assert!(flat.iter().any(|s| *s != 0.0), "摊平路径必须真的出声");
+
+    // ③ 反向对照 2：**"两条都匹配"真的叠加了两条** —— 只留一条的 SFZ 必须给出不同波形。
+    //    （若两侧都退化成"只取第一条"，offline 会与 one 逐位相同 ⇒ 本断言红。）
+    let single = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("单条 SFZ 必须成功");
+    let mut one = vec![0.0f32; 512];
+    single
+        .render_note_into(&sample, 60, 100, &mut one, 48_000.0)
+        .expect("离线渲染不得报错");
+    let layered_max_abs_diff = offline
+        .iter()
+        .zip(one.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        layered_max_abs_diff > 0.0,
+        "两条都匹配 ⇒ 叠加结果必须与单条不同（实得 {layered_max_abs_diff:e}）"
+    );
+
+    // ④ 反向对照 3：不命中的音符（key=64，三条区域都不覆盖）两侧都必须静音
+    let mut offline_miss = vec![0.0f32; 512];
+    sfz.render_note_into(&sample, 64, 100, &mut offline_miss, 48_000.0)
+        .expect("离线渲染不得报错");
+    let mut flat_miss = vec![0.0f32; 512];
+    prepared.render_block_into(64, 100, &mut flat_miss);
+    assert!(
+        offline_miss.iter().all(|s| *s == 0.0),
+        "不命中的音符离线侧必须静音"
+    );
+    assert!(
+        flat_miss.iter().all(|s| *s == 0.0),
+        "不命中的音符摊平侧必须静音"
+    );
 }
 
 /// ⭐ 读数：摊平一次的耗时与内存 ＋ 回调侧每块（512 帧）耗时（8 秒、32 次触发，与 12.373 ms 同口径）。

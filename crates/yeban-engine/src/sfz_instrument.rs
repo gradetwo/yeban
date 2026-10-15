@@ -23,13 +23,45 @@
 //!    **控制侧**（加载、校验、计数、选择区域）。
 //!
 //! 本模块**不新增任何所有权机制**：只包一层文本 + 元数据。
+//!
+//! # ✂️ 摊平表（[`PreparedSfz`]）的**口径**与已知局限
+//!
+//! 摊平表是实时回调唯一能读的形态。它必须与**离线**路径（[`SfzInstrument::render_note_into`]）
+//! 用**同一份**口径，否则同一条 SFZ 在导出与实时两条路上会发出不同的声音。
+//!
+//! ## 口径（本片修正后的三条）
+//!
+//! 1. **区域选择**：两侧都用 `yeban-sfz` 的 `Region::matches_query` —— 即
+//!    `Instrument::region_for_with` 内部那个谓词（键 ＋ 力度 ＋ 通道 ＋ `trigger` 事件 ＋
+//!    keyswitch ＋ CC，严格策略：门控没有外部状态 ⇒ **不匹配**）。
+//!    ⛔ 引擎**不再**自拼 `matches_key && matches_velocity`（那会静默绕过 `trigger=release`
+//!    一类的门控，把 release 采样在**按下**时打出来）。
+//! 2. **多匹配语义 = `all`（叠加）**：一次触发下**所有**匹配区域都发声并相加（SFZ 里每个
+//!    `region` 是独立声部），⛔ 不是「只取第一条」。两侧同此。
+//! 3. **增益**：按 `PlaybackSpec::total_gain()` 的乘积结构摊平成
+//!    `volume × 力度 × 键轴淡化 × 力度轴淡化(in/out 分开)`，相乘顺序与离线路径**逐位相同**
+//!    （见 [`PreparedSfz::render_block_into`]）。⛔ 不再冻结在 `(note, velocity) = (60, 100)`。
+//!
+//! ## 仍未摊平 / 仍未应用（如实登记，⛔ 不假装已有）
+//!
+//! | # | 局限 | 状态 |
+//! | :--- | :--- | :--- |
+//! | ① | 力度增益 | **本片已修**（每力度一张表，⛔ 不再冻结在 100） |
+//! | ② | `trigger` 门控 | **本片已修**（走 `matches_query`；门控不过的区域掩码全 0） |
+//! | ③ | 无 `offset`/`end` | **本片补了 `start`/`end`（`SampleSpan`）字段**，但渲染**仍未应用**它 —— 应用它必须**同时**改离线侧，否则两侧口径又会分叉（下一步） |
+//! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | 未做（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁 ⇒ 属步 2） |
+//! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
+//! | ⑥ | 同内容不同路径重复解码 | 未做（每个 region / 每条路径各自解码，⛔ 无去重） |
+//! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
+//! | ⑧ | `loop_window` / `direction` / `pan` / `off_mode` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带） |
 
+use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
-use yeban_sfz::instrument::Instrument;
+use yeban_sfz::instrument::{Instrument, RegionQuery};
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
-use yeban_sfz::playback::RenderRates;
+use yeban_sfz::playback::{RenderRates, SampleSpan};
 
 /// 已加载的 SFZ 乐器：**文本 + 元数据**（⛔ 不含借用式解析结果）。
 #[derive(Debug, Clone)]
@@ -78,18 +110,22 @@ impl SfzInstrument {
 
     /// 在给定 `note`/`velocity` 下**选中**的区域（控制侧的查询口径）。
     ///
-    /// 复用 `yeban-sfz` 自己的谓词（`Region::matches_key` / `matches_velocity`），
-    /// ⛔ 不在引擎里重写一套键/力度判定。
+    /// ⭐ 复用 `yeban-sfz` 的**唯一**选择谓词 `Region::matches_query`（即
+    /// `Instrument::region_for_with` 内部那个）：键/力度之外还包含通道、`trigger` 事件、
+    /// keyswitch 与 CC 门控（严格策略：没有外部门控状态 ⇒ 不匹配）。
+    /// ⛔ 不再自拼 `matches_key && matches_velocity` —— 那会绕过门控（`trigger=release`
+    /// 的 region 会进 note-on 的命中集）。
     ///
     /// # Errors
     /// 同 [`Self::with_instrument`]。
     pub fn regions_matching(&self, note: u8, velocity: u8) -> Result<Vec<usize>, SfzError> {
         self.with_instrument(|instrument| {
+            let query = RegionQuery::new(note, velocity);
             instrument
                 .regions()
                 .iter()
                 .enumerate()
-                .filter(|(_, region)| region.matches_key(note) && region.matches_velocity(velocity))
+                .filter(|(_, region)| region.matches_query(&query))
                 .map(|(index, _)| index)
                 .collect::<Vec<usize>>()
         })
@@ -125,12 +161,18 @@ impl InMemorySample {
 impl SfzInstrument {
     /// **离线**渲染一个音符到 `out`（`+=` 叠加），返回写入的帧数。
     ///
-    /// ⭐ 复用 `yeban-sfz` 自己的口径：区域选择用 `Region::matches_key/matches_velocity`、
-    /// 播放速率用 `Region::playback_rate`、总增益用 `RegionPlay::total_gain`（⛔ 引擎不重写这些规则）。
+    /// ⭐ 复用 `yeban-sfz` 自己的口径：区域选择用 `Region::matches_query`（含 trigger /
+    /// keyswitch / 通道 / CC 门控）、播放速率用 `Region::playback_rate`、总增益用
+    /// `PlaybackSpec::total_gain`（⛔ 引擎不重写这些规则）。
     /// 样本数据来自调用方给的 [`InMemorySample`]（本仓尚无采样文件读取）。
     ///
+    /// ⭐ **多匹配语义 = `all`**：匹配的**每一条**区域都渲染并叠加（SFZ 里每个 `region` 是
+    /// 独立声部），⛔ 不是「只取 `find` 的第一条」。返回值 = 各匹配区域写入帧数的**最大值**
+    /// （⛔ 不是各区域之和；所有区域共享同一份 `source.pcm`，故它即最长那条的帧数）。
+    /// [`PreparedSfz::render_block_into`] 用同一口径。
+    ///
     /// ⚠ **只覆盖离线**：本函数在调用时**解析**（⇒ 分配）⇒ ⛔ 不得在音频回调里调用（红线 7）。
-    /// 实时侧需要把区域表与样本**在构造期摊平**成只读数据 —— **本切片尚未做**，如实登记。
+    /// 实时侧用 [`PreparedSfz`]（构造期摊平）。
     ///
     /// # Errors
     /// 文本非法 ⇒ [`SfzError`]；没有匹配区域 ⇒ 返回 `Ok(0)`（合法：该音符不发声）。
@@ -143,33 +185,33 @@ impl SfzInstrument {
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
         let rates = RenderRates::new(source.sample_hz, engine_hz);
+        let query = RegionQuery::new(note, velocity);
         self.with_instrument(|instrument| {
-            let Some(region) = instrument
-                .regions()
-                .iter()
-                .find(|region| region.matches_key(note) && region.matches_velocity(velocity))
-            else {
-                return 0;
-            };
-            // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`
-            // （`RegionPlay` 是同一信息的**播放态**包装，等实时侧摊平时再引入）。
-            let rate = region.playback_rate(note, rates);
-            let gain = region.playback_spec(note, velocity, rates).total_gain();
-            if !(rate.is_finite() && rate > 0.0) || source.pcm.is_empty() {
-                return 0;
-            }
-            let mut position = 0.0f32;
             let mut written = 0usize;
-            for slot in out.iter_mut() {
-                let index = position as usize;
-                if index + 1 >= source.pcm.len() {
-                    break;
+            for region in instrument.regions() {
+                if !region.matches_query(&query) {
+                    continue;
                 }
-                let frac = position - index as f32;
-                let sample = source.pcm[index] * (1.0 - frac) + source.pcm[index + 1] * frac;
-                *slot += sample * gain;
-                position += rate;
-                written += 1;
+                // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`
+                let rate = region.playback_rate(note, rates);
+                let gain = region.playback_spec(note, velocity, rates).total_gain();
+                if !(rate.is_finite() && rate > 0.0) || source.pcm.is_empty() {
+                    continue;
+                }
+                let mut position = 0.0f32;
+                let mut region_written = 0usize;
+                for slot in out.iter_mut() {
+                    let index = position as usize;
+                    if index + 1 >= source.pcm.len() {
+                        break;
+                    }
+                    let frac = position - index as f32;
+                    let sample = source.pcm[index] * (1.0 - frac) + source.pcm[index + 1] * frac;
+                    *slot += sample * gain;
+                    position += rate;
+                    region_written += 1;
+                }
+                written = written.max(region_written);
             }
             written
         })
@@ -178,19 +220,44 @@ impl SfzInstrument {
 
 /// ✂️ **摊平后的一个区域**：回调侧**只读**（⛔ 无 `Vec`／`Box`／`String`，全部定长）。
 ///
-/// 键/力度的可播性在**构造期**由 `yeban-sfz` 自己的谓词（`Region::matches_key` /
-/// `matches_velocity`）逐值求值后**打包成 128 位掩码** ⇒ 回调侧只做位测试，
-/// ⛔ 不在回调里调用任何解析/分配函数。
+/// 键/力度的可播性、以及**全部静态门控**（通道 / `trigger` 事件 / keyswitch / CC）
+/// 在**构造期**由 `yeban-sfz` 的 `Region::matches_query` 求值后**打包成 128 位掩码** ⇒
+/// 回调侧只做位测试，⛔ 不在回调里调用任何解析/分配函数。
+/// 门控未通过的区域**两张掩码都清 0** ⇒ 它**永远不会**进回调的命中集
+/// （含 `trigger=release` 一类的 region）。
+///
+/// 增益按 `PlaybackSpec::total_gain()` 的乘积结构拆成四份（`volume`／力度／键轴淡化／
+/// 力度轴淡化），使回调侧的相乘顺序与离线路径**逐位相同**：
+/// `(volume × 力度) × ((键轴 × 力度淡入) × 力度淡出)`。
+/// 因此 `(note, velocity)` 的取值**不再冻结**在 `(60, 100)`。
 #[derive(Debug, Clone)]
 pub struct PreparedRegion {
-    /// 键掩码：第 `n` 位为 1 表示该区域接受 `note == n`。
+    /// 键掩码：第 `n` 位为 1 表示该区域接受 `note == n`（门控不过时全 0）。
     key_mask: [u64; 2],
-    /// 力度掩码：第 `v` 位为 1 表示该区域接受 `velocity == v`。
+    /// 力度掩码：第 `v` 位为 1 表示该区域接受 `velocity == v`（门控不过时全 0）。
     vel_mask: [u64; 2],
     /// 每个音符的播放速率（构造期由 `Region::playback_rate` 求值）。
     rate_per_note: [f32; 128],
-    /// 该区域的总增益（构造期由 `Region::playback_spec(..).total_gain()` 求值）。
-    gain: f32,
+    /// 键轴（`xf*_*key`）交叉淡化的每音符因子；无该轴时恒 `1.0`。
+    key_crossfade: [f32; 128],
+    /// 力度轴**淡入**（`xfin_*vel`）段的每力度因子；无该段时恒 `1.0`。
+    velocity_fade_in: [f32; 128],
+    /// 力度轴**淡出**（`xfout_*vel`）段的每力度因子；无该段时恒 `1.0`。
+    ///
+    /// 与 [`Self::velocity_fade_in`] **分开**存：`Region::crossfade_gain` 是一条
+    /// 从左到右的乘法链，`(K * 淡入) * 淡出` 与 `K * (淡入 * 淡出)` 在 binary32 下
+    /// 不一定同值 ⇒ 分开存才能逐位还原该链的结合序。
+    velocity_fade_out: [f32; 128],
+    /// `PlaybackSpec::gain`：`volume` 换算出的线性增益（与键/力度无关）。
+    volume_gain: f32,
+    /// `PlaybackSpec::velocity_gain` 的**每力度**读数（⛔ 不再冻结在力度 100）。
+    velocity_gain: [f32; 128],
+    /// ⭐ `offset` / `end` 归约出的**源采样区间**（半开 `[start, end)`，单位源采样帧）。
+    ///
+    /// `None` 表示该区域**不产生采样输出**（`end=-1`，或显式区间落在 `offset` 之前）。
+    /// ⚠ **本片只把它摊平登记**，⛔ 渲染**尚未应用**（应用它必须同时改离线侧，
+    /// 否则两侧口径会再次分叉）。
+    span: Option<SampleSpan>,
 }
 
 impl PreparedRegion {
@@ -201,6 +268,35 @@ impl PreparedRegion {
         let v = velocity as usize;
         self.key_mask[n / 64] & (1u64 << (n % 64)) != 0
             && self.vel_mask[v / 64] & (1u64 << (v % 64)) != 0
+    }
+
+    /// 键掩码的**只读副本**（判据用：`trigger=release` 的区域必须为 `[0, 0]`）。
+    #[must_use]
+    pub fn key_mask(&self) -> [u64; 2] {
+        self.key_mask
+    }
+
+    /// 力度掩码的**只读副本**（判据用）。
+    #[must_use]
+    pub fn velocity_mask(&self) -> [u64; 2] {
+        self.vel_mask
+    }
+
+    /// ⭐ 该区域的**源采样区间**（`offset`/`end` 归约；`None` ＝ 不产生采样输出）。
+    #[must_use]
+    pub fn span(&self) -> Option<SampleSpan> {
+        self.span
+    }
+
+    /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
+    #[must_use]
+    pub fn gain_at(&self, note: u8, velocity: u8) -> f32 {
+        let n = note as usize;
+        let v = velocity as usize;
+        let base = self.volume_gain * self.velocity_gain[v];
+        let crossfade =
+            (self.key_crossfade[n] * self.velocity_fade_in[v]) * self.velocity_fade_out[v];
+        base * crossfade
     }
 }
 
@@ -221,6 +317,15 @@ pub struct PreparedSfz {
 
 impl PreparedSfz {
     /// **构造期**摊平：把区域谓词、速率、增益与样本一次算好（⭐ 允许分配）。
+    ///
+    /// ⭐ **区域选择口径 = `Region::matches_query`**（与离线侧、与 `Instrument::region_for_with`
+    /// 同一份谓词）。门控（通道 / `trigger` / keyswitch / CC / `held_notes`）在键与力度之外
+    /// **独立于** `(note, velocity)`，因此它的结果可以压成一次布尔判断：
+    /// 取该区域键/力度两维**都命中**的一个探测点求 `matches_query`，答案就是门控本身；
+    /// 门控不过 ⇒ 两张掩码清 0，该区域**永不**进回调的命中集。
+    ///
+    /// ⭐ 增益按 `total_gain()` 的乘积结构摊平（⛔ 不再冻结在 `(60, 100)`）：见
+    /// [`PreparedRegion`] 的字段文档与 [`PreparedRegion::gain_at`]。
     ///
     /// # Errors
     /// 文本非法 ⇒ [`SfzError`]。
@@ -248,12 +353,61 @@ impl PreparedSfz {
                         vel_mask[velocity as usize / 64] |= 1u64 << (velocity % 64);
                     }
                 }
-                let gain = region.playback_spec(60, 100, rates).total_gain();
+                // ⭐ 门控：取"键与力度都命中"的一个探测点 ⇒ `matches_query` 的答案只剩
+                // 通道 / trigger / keyswitch / CC 这些与 (note, velocity) 无关的门控。
+                // 门控不过 ⇒ 掩码清 0（`trigger=release` 的 region 因此不进 note-on 掩码）。
+                let probe = first_set_bit(&key_mask).zip(first_set_bit(&vel_mask));
+                let gate_open = probe.is_some_and(|(note, velocity)| {
+                    region.matches_query(&RegionQuery::new(note, velocity))
+                });
+                if !gate_open {
+                    key_mask = [0u64; 2];
+                    vel_mask = [0u64; 2];
+                }
+
+                // ⭐ 增益：`total_gain() = (volume × 力度) × 交叉淡化`，而交叉淡化是一条
+                // 从左到右的乘法链：键轴段（in/out）→ 力度轴段（in/out）→ CC 段（**跳过**，
+                // 因为回调侧没有 CC 状态，离线 `playback_spec` 也是 `cc = None`）。
+                // 分开摊平键轴、力度淡入、力度淡出三张表，回调侧就能**逐位**还原该链。
+                let mut key_crossfade = [1.0f32; 128];
+                let mut velocity_fade_in = [1.0f32; 128];
+                let mut velocity_fade_out = [1.0f32; 128];
+                for crossfade in &region.crossfades {
+                    match crossfade.axis {
+                        XfAxis::Key => {
+                            for (note, slot) in key_crossfade.iter_mut().enumerate() {
+                                *slot *= crossfade.gain_at(note as u8);
+                            }
+                        }
+                        XfAxis::Velocity => {
+                            let table = match crossfade.direction {
+                                XfDirection::In => &mut velocity_fade_in,
+                                XfDirection::Out => &mut velocity_fade_out,
+                            };
+                            for (velocity, slot) in table.iter_mut().enumerate() {
+                                *slot *= crossfade.gain_at(velocity as u8);
+                            }
+                        }
+                        // CC 轴：回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地跳过
+                        // （`Region::crossfade_gain` 对未提供状态的 CC 段就是 `continue`）。
+                        XfAxis::Cc(_) => {}
+                    }
+                }
+                let mut velocity_gain = [0.0f32; 128];
+                for (velocity, slot) in velocity_gain.iter_mut().enumerate() {
+                    *slot = region.velocity_gain(velocity as u8);
+                }
+
                 regions.push(PreparedRegion {
                     key_mask,
                     vel_mask,
                     rate_per_note,
-                    gain,
+                    key_crossfade,
+                    velocity_fade_in,
+                    velocity_fade_out,
+                    volume_gain: region.linear_gain(),
+                    velocity_gain,
+                    span: region.playback_span(),
                 });
             }
             Self {
@@ -276,21 +430,36 @@ impl PreparedSfz {
         self.regions.len()
     }
 
+    /// 摊平后的区域表（**只读**；判据与控制侧读数用）。
+    #[must_use]
+    pub fn regions(&self) -> &[PreparedRegion] {
+        &self.regions
+    }
+
     /// ⭐ **回调侧渲染**：把一个音符混进 `out`，返回写入帧数。**零分配**（只读 + 原地写）。
     ///
-    /// 与离线 [`SfzInstrument::render_note_into`] 的**逐样本最大绝对差**为 0
-    /// （判据 `prepared_matches_offline_sample_by_sample` 钉住）。
+    /// ⭐ **多匹配语义 = `all`**：匹配的每条区域都叠加（与离线
+    /// [`SfzInstrument::render_note_into`] 同一口径）。返回值 = 各匹配区域写入帧数的
+    /// **最大值**（⛔ 不是各区域之和）。
+    ///
+    /// 增益的相乘顺序与离线 `PlaybackSpec::total_gain()` **逐位相同**：
+    /// `(volume × 力度) × ((键轴 × 力度淡入) × 力度淡出)`。
+    /// 与离线侧的**逐样本最大绝对差**为 0（判据 `prepared_matches_offline_sample_by_sample`
+    /// 钉住；`trigger` 门控与多匹配两片另有判据）。
     pub fn render_block_into(&self, note: u8, velocity: u8, out: &mut [f32]) -> usize {
+        let n = note as usize;
         let mut written = 0usize;
         for region in &self.regions {
             if !region.accepts(note, velocity) {
                 continue;
             }
-            let rate = region.rate_per_note[note as usize];
+            let rate = region.rate_per_note[n];
             if !(rate.is_finite() && rate > 0.0) || self.pcm.is_empty() {
                 continue;
             }
+            let gain = region.gain_at(note, velocity);
             let mut position = 0.0f32;
+            let mut region_written = 0usize;
             for slot in out.iter_mut() {
                 let index = position as usize;
                 if index + 1 >= self.pcm.len() {
@@ -298,13 +467,27 @@ impl PreparedSfz {
                 }
                 let frac = position - index as f32;
                 let sample = self.pcm[index] * (1.0 - frac) + self.pcm[index + 1] * frac;
-                *slot += sample * region.gain;
+                *slot += sample * gain;
                 position += rate;
-                written += 1;
+                region_written += 1;
             }
+            written = written.max(region_written);
         }
         written
     }
+}
+
+/// 掩码里**第一个置位**的下标（`[u64; 2]` 的低半在前）⇒ `0..=127`；全 0 时 `None`。
+///
+/// 只在构造期调用（`prepare`），⛔ 不在回调路径上。
+fn first_set_bit(mask: &[u64; 2]) -> Option<u8> {
+    for (half, word) in mask.iter().enumerate() {
+        if *word != 0 {
+            let bit = word.trailing_zeros() as usize;
+            return u8::try_from(half * 64 + bit).ok();
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -444,6 +627,176 @@ mod tests {
         assert_eq!(written_miss, 0, "不命中的音符不得写入帧");
         assert_eq!(energy_miss, 0.0, "不命中的音符必须是静音");
         assert!(energy > energy_miss, "⭐ 可区分：命中的能量必须大于不命中");
+    }
+
+    /// ⭐ 新判据：**`trigger=release` 的区域不进 `note-on` 掩码**。
+    ///
+    /// 口径：摊平表建表时用 `Region::matches_query`（与 `Instrument::region_for_with`
+    /// 同一个谓词）过门控；门控不过 ⇒ **两张掩码都清 0** ⇒ 回调侧的
+    /// [`PreparedRegion::accepts`] 永远为假。离线侧同此口径。
+    ///
+    /// 反向对照：该 release 区域在**键/力度**上确实匹配（用 `matches_key`/`matches_velocity`
+    /// 直接读回）⇒ 掩码全 0 只可能来自**门控**，⛔ 不是"它本来就不匹配"。
+    #[test]
+    fn trigger_release_never_enters_the_note_on_mask() {
+        const SFZ: &str = "<region> sample=attack.wav key=60 pitch_keycenter=60\n\
+                           <region> sample=release.wav key=60 pitch_keycenter=60 trigger=release\n";
+        let instrument =
+            SfzInstrument::load(SFZ.to_owned(), &ParseLimits::default()).expect("解析必须成功");
+        let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+        let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平");
+
+        assert_eq!(
+            prepared.region_count(),
+            2,
+            "两条区域都要摊平进来（⛔ 不是把 release 那条丢弃）"
+        );
+        let attack = &prepared.regions()[0];
+        let release = &prepared.regions()[1];
+        // ① 攻击区域：note-on 掩码里有键 60
+        assert!(attack.accepts(60, 100), "attack 区域必须在 note-on 掩码里");
+        assert_ne!(attack.key_mask(), [0u64; 2], "attack 的键掩码必须非空");
+        // ② release 区域：两张掩码**全 0** ⇒ 永不进 note-on 命中集
+        assert_eq!(
+            release.key_mask(),
+            [0u64; 2],
+            "⭐ trigger=release 的键掩码必须全 0（不进 note-on 掩码）"
+        );
+        assert_eq!(
+            release.velocity_mask(),
+            [0u64; 2],
+            "⭐ trigger=release 的力度掩码必须全 0"
+        );
+        assert!(
+            !release.accepts(60, 100),
+            "trigger=release 不得被 note-on 接受"
+        );
+
+        // ③ 反向对照：它**在键/力度上确实匹配** ⇒ 全 0 只能来自门控
+        let raw_match = instrument
+            .with_instrument(|parsed| {
+                let region = &parsed.regions()[1];
+                region.matches_key(60) && region.matches_velocity(100)
+            })
+            .expect("闭包式访问");
+        assert!(
+            raw_match,
+            "该 release 区域在键/力度上**确实**匹配 ⇒ 掩码清 0 只能来自 trigger 门控"
+        );
+
+        // ④ 离线侧同一口径：只剩 release 区域时 note-on 必须**一帧都不写**
+        let only_release = SfzInstrument::load(
+            "<region> sample=release.wav key=60 pitch_keycenter=60 trigger=release\n".to_owned(),
+            &ParseLimits::default(),
+        )
+        .expect("解析必须成功");
+        let mut out = vec![0.0f32; 64];
+        let written = only_release
+            .render_note_into(&sample, 60, 100, &mut out, 48_000.0)
+            .expect("渲染不得报错");
+        assert_eq!(written, 0, "只有 release 区域时 note-on 必须写 0 帧");
+        assert!(
+            out.iter().all(|s| *s == 0.0),
+            "只有 release 区域时 note-on 必须静音"
+        );
+        // 对照臂：同一份样本在 fixture（含 attack）里必须**非静音**，否则上面是空转
+        let mut both = vec![0.0f32; 64];
+        let written_both = instrument
+            .render_note_into(&sample, 60, 100, &mut both, 48_000.0)
+            .expect("渲染不得报错");
+        assert!(
+            written_both > 0 && both.iter().any(|s| *s != 0.0),
+            "含 attack 区域的 fixture 必须非静音（否则本判据是空转）"
+        );
+    }
+
+    /// ⭐ 判据（本片新增）：摊平增益 = `PlaybackSpec::total_gain`，**全 128×128 网格逐位相同**。
+    ///
+    /// 场景刻意同时给出**键轴**与**力度轴**的交叉淡化（in 与 out 都有），
+    /// 用来钉住"键轴 / 力度淡入 / 力度淡出分开摊平、回调侧按同一结合序相乘"这条口径：
+    /// 若把力度淡入与淡出并成一张表（`K * (in * out)`），binary32 下会与
+    /// `(K * in) * out` 不同值 ⇒ 本判据会红。
+    #[test]
+    fn flattened_gain_equals_total_gain_over_the_whole_grid() {
+        const XF: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 volume=-3 \
+             xfin_lokey=48 xfin_hikey=72 xfout_lokey=48 xfout_hikey=72 \
+             xfin_lovel=40 xfin_hivel=90 xfout_lovel=60 xfout_hivel=110\n";
+        let instrument =
+            SfzInstrument::load(XF.to_owned(), &ParseLimits::default()).expect("解析必须成功");
+        let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+        let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平");
+        let flat = &prepared.regions()[0];
+
+        // 鉴别力自检：至少有一个轴在网格上真的改变了增益（⛔ 否则本判据对结合序无话可说）
+        assert_ne!(
+            flat.gain_at(60, 100),
+            flat.gain_at(60, 40),
+            "力度轴交叉淡化必须在网格上生效"
+        );
+        assert_ne!(
+            flat.gain_at(60, 100),
+            flat.gain_at(72, 100),
+            "键轴交叉淡化必须在网格上生效"
+        );
+
+        let rates = RenderRates::new(48_000.0, 48_000.0);
+        let (mismatches, first) = instrument
+            .with_instrument(|parsed| {
+                let region = &parsed.regions()[0];
+                let mut mismatches = 0usize;
+                let mut first: Option<(u8, u8, u32, u32)> = None;
+                for n in 0u16..128 {
+                    for v in 0u16..128 {
+                        let want = region.playback_spec(n as u8, v as u8, rates).total_gain();
+                        let got = flat.gain_at(n as u8, v as u8);
+                        if want.to_bits() != got.to_bits() {
+                            mismatches += 1;
+                            if first.is_none() {
+                                first = Some((n as u8, v as u8, want.to_bits(), got.to_bits()));
+                            }
+                        }
+                    }
+                }
+                (mismatches, first)
+            })
+            .expect("闭包式访问");
+        println!(
+            "[sfz] 摊平增益 vs total_gain：128×128 网格里位型不同的点数 = {mismatches}（首个不同点 = {first:?}）"
+        );
+        assert_eq!(
+            mismatches, 0,
+            "⭐ 摊平增益必须与 total_gain **逐位相同**（首个不同点 = {first:?}）"
+        );
+    }
+
+    /// ⭐ 判据（本片新增）：`offset`/`end` 归约出的 `SampleSpan` 已进摊平表。
+    ///
+    /// ⚠ 本判据**只证明字段被摊平登记**，⛔ 不证明渲染应用了它 —— 渲染仍未应用
+    /// （见模块头文档的局限表第 ③ 条）。
+    #[test]
+    fn prepared_region_carries_the_source_span() {
+        let instrument = SfzInstrument::load(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 offset=10 end=200\n\
+             <region> sample=b.wav key=64 pitch_keycenter=60 end=-1\n"
+                .to_owned(),
+            &ParseLimits::default(),
+        )
+        .expect("解析必须成功");
+        let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+        let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平");
+        assert_eq!(
+            prepared.regions()[0].span(),
+            Some(SampleSpan {
+                start: 10,
+                end: Some(201)
+            }),
+            "offset=10 end=200（含端点）⇒ 半开区间 [10, 201)"
+        );
+        assert_eq!(
+            prepared.regions()[1].span(),
+            None,
+            "end=-1 ⇒ 不产生采样输出（`SampleEnd::Silent`）"
+        );
     }
 
     /// [MUST-GATE-001] 判据 ④：**本类型不在实时路径上** —— 机械部分。

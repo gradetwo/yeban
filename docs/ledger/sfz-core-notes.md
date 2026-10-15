@@ -344,3 +344,59 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 （258 次选中 / 2 个文件在无 `held_notes` 时不再匹配）。`trigger` 建模的主要价值在于
 **事件路由的正确性**（note-off 路径现能选中 21 个文件里的 release region），而不是修正
 本语料上的现存错音。
+
+## 12. 摊平表（`yeban-engine::sfz_instrument::PreparedSfz`）的口径修正与局限（2026-10-15，任务 `#65`）
+
+**驱动的真实缺陷（两处口径不一致）**：
+
+1. `PreparedSfz::prepare` 原先用 `Region::matches_key && matches_velocity` 自拼谓词，
+   **绕过**了 `Instrument::region_for_with` 内部的 `region_matches`
+   （`trigger` / keyswitch / channel / CC 门控）—— `crates/yeban-sfz/src/instrument.rs` 的
+   私有用例在语料里有 **21 个文件**带 release region ⇒ 直接接线会把 release 采样在**按下**时打出来。
+2. 离线 `render_note_into` 只取 `find` 的**第一条**匹配，摊平 `render_block_into` **叠加所有**条
+   ⇒ 同一份 SFZ 在离线导出与实时两条路上发不同的声音。
+
+**本片统一后的三条口径**：
+
+1. **区域选择**：`yeban-sfz` 公开 `Region::matches_query(&self, &RegionQuery<'_>) -> bool`
+   —— `region_matches` 的**公开薄包装**（就是 `region_for_with` 用的那个谓词）。
+   引擎的 `regions_matching` / `render_note_into` / `PreparedSfz::prepare` 全部改走它，
+   ⛔ 不再自拼谓词。门控不过的区域在摊平表里**两张掩码都清 0** ⇒ 永不进 note-on 命中集。
+   ⚠ 严格策略的后果如实登记：`sw_last`（无 `sw_default`）/ `sw_down` / `sw_up` / CC 门控 /
+   `trigger=first`/`legato` 的区域，因回调侧**没有**这些外部状态，**不匹配、不发声**
+   （与离线 `region_for` 一致；这是 yeban-sfz 既有的严格口径，不是本片发明的）。
+2. **多匹配语义 = `all`（叠加）**：两侧都渲染并相加**所有**匹配区域（SFZ 里每个 `region`
+   是独立声部）。返回值＝各区域写入帧数的**最大值**（⛔ 不是各区域之和）。
+   ⚠ **对既有 app 导出路径的影响**：`crates/yeban-app/src/sfz_load.rs` 的 `SfzTrackSource`
+   每条音符只给**一份**样本（`region_sample_for` 取第一条匹配区域的 `sample=`，且它仍自拼
+   `matches_key && matches_velocity` —— 第三处旧口径，属 app 面，本片未动）。于是"多匹配 ⇒ 叠加"
+   在该路径上表现为**同一份 PCM 按各区域的 rate/gain 叠加 N 次**：当某 `(note, velocity)`
+   命中多条 region 时，导出结果与改动前（只取第一条）**不同**。正确的修法是步 3 的
+   "每区域各自解码"；本片只统一口径并登记这一影响。
+3. **增益**：按 `PlaybackSpec::total_gain()` 的乘积结构摊平成
+   `volume × 力度 × 键轴淡化 × 力度轴淡化(in/out 分开)`，回调侧的相乘结合序与离线
+   `(volume × 力度) × ((键轴 × 淡入) × 淡出)` **逐位相同** ⇒ `(note, velocity)` 不再冻结在 `(60, 100)`。
+
+**局限登记（本片后仍成立）**：
+
+| # | 局限 | 状态 |
+| :--- | :--- | :--- |
+| ① | 力度增益 | **本片已修**（每力度一张表，⛔ 不再冻结在力度 100） |
+| ② | `trigger` 门控 | **本片已修**（走 `matches_query`；门控不过 ⇒ 掩码全 0） |
+| ③ | 无 `offset`/`end` | **本片补了 `SampleSpan`（`start`/`end`）字段**，但渲染**仍未应用**它（应用它必须同时改离线侧，否则两侧口径再次分叉） |
+| ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | 未做（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁 ⇒ 属步 2） |
+| ⑤ | 无字节预算、无流式 | 未做（PCM 整段 `clone` 进摊平表；无上限、无流式） |
+| ⑥ | 同内容不同路径重复解码 | 未做（每个 region / 每条路径各自解码，⛔ 无去重） |
+| ⑦ | CC 轴交叉淡化 | 未做（回调侧无 CC 状态 ⇒ 与离线 `playback_spec` 一致地跳过该轴） |
+| ⑧ | `loop_window` / `direction` / `pan` / `off_mode` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带） |
+
+**本片读数**（`cargo test -p yeban-engine`）：
+
+| 判据 | 读数 |
+| :--- | :--- |
+| 逐样本最大绝对差（**两条都匹配** + 一条不匹配；摊平 3 区域） | **0e0**（`sfz_arm_perf::prepared_matches_offline_sample_by_sample`） |
+| 摊平增益 vs `total_gain`（含键轴 ＋ 力度轴 in/out 交叉淡化） | **128×128 网格位型不同点数 = 0** |
+| `trigger=release` 的键/力度掩码 | 均 `[0, 0]`；`accepts(60, 100) == false`；离线只剩 release ⇒ 写 **0** 帧 |
+| 分配四元组（`rt_zero_alloc` 的 SFZ 回调窗口） | `allocations=0 deallocations=0 lock_blocking=0 io_ops=0`（71/71 场景通过） |
+| `PreparedRegion` 结构字节数 | **2624 B**（原 548 B；代价来自 5 张 128×`f32` 表 + `SampleSpan`） |
+
