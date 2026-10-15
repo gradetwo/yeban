@@ -8467,3 +8467,36 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **七、⭐ 判决读数**: ⭐ ⭐ **`6ae70ef8`（⭐ 含 `[HARDWARE]` 标记那次）的 macOS 腿**仍在 queued／⭐ in_progress** ⇒ ⭐ **它是决定性那次**（⭐ 一举验 `libclang` ＋ ⭐ `RUST_MIN_STACK` ＋ ⭐ 声卡测试跳过）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **macOS 腿真绿验证** ＋ ⭐ **`needs-7` 的裁决**（⭐ "⭐ 回退内容归谁"）＋ ⭐ `needs-1`／⭐ 2／⭐ 3／⭐ 5 ＋ ⭐ 循环／⭐ ADSR ＋ ⭐ 遗留 3 项 ✓
+
+---
+
+## R707 实测追加（2026-10-16）：⭐⭐⭐ **macOS 腿**已绿****（⭐ 三处修复全部生效）⚠ **而 `windows` 与 ⭐ `rust (workspace 全量)` 在 `yeban-app --lib` 上红**（⭐ Windows 特有、⭐ 本机复现不了）⇒ **登记待查**
+
+⭐ ⭐ ⭐ **一、⭐ 大成果: ⭐ macOS 腿 ＝ **success****（⭐ 本条要点）**: ⭐ ⭐ **`6ae70ef8`（⭐ 含 `[HARDWARE]` 标记那次）的 `macos (yeban-mcp / yeban-model / …)` 腿 ＝ **success**** ✓
+| ⭐ 腿 | ⭐ 结论 |
+| :--- | :--- |
+| ⭐ `plan`／⭐ `checks`／⭐ `deny`／⭐ `lockfile` | ⭐ **success** |
+| ⭐ ⭐ **`macos (…)`** | ⭐ ⭐ ****success**** ✓ |
+| ⭐ ⚠ **`windows (…)`** | ⭐ ⚠ **failure** ⇒ ⭐ **失败步 ＝ `test (yeban-app 的平台分支)`** |
+| ⭐ ⚠ **`rust (workspace 全量)`** | ⭐ ⚠ **failure** ⇒ ⭐ **`test --workspace`** |
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 三处修复（⭐ `libclang` 候选验证 ＋ ⭐ `RUST_MIN_STACK` ＋ ⭐ 声卡测试 `#[ignore]`）**全部生效**** ⇒ ⭐ **"⭐ macOS 先行"从"⭐ 一条红腿"变成"⭐ 一条绿腿"** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 而标记本身也被日志证实（⭐ 逐字）**: ⭐ ⭐ **`test the_device_leg_opens_the_sound_card_and_a_real_clock_advances_the_transport ... ignored, [HARDWARE] 需真人手工验证：真声卡 + 真设备时钟（CI 的虚拟设备行为不同）`** ⇒ ⭐ ⭐ **即: ⭐ `#[ignore]` 的 reason 原样出现在 CI 日志里** ⇒ ⭐ **真人看日志即可知道该跑哪条** ✓
+⭐ **并附**: ⭐ **同一段里 `engine_device_leg` 目标**通过****（⭐ `the_device_leg_carries_the_transport_position_of_the_control_driven_engine ... ok`）⇒ ⭐ **即"⭐ 忽略一条、⭐ 其余四条照跑"** ✓
+
+⭐ ⚠ **三、⭐ 而新红在别处、⭐ 且**本机复现不了****（⭐ 如实）**: ⭐ ⚠ **windows 腿的错误尾部逐字: ⭐ `error: 1 target failed: \`-p yeban-app --lib\``** ⇒ ⭐ ⭐ **即失败在 `yeban-app` 的 **lib 测试**里（⭐ ⛔ 不是集成测试）** ✓
+⭐ ⚠ **而本机（⭐ macOS）跑 `cargo test -p yeban-app --lib --locked` ＝ **318 passed ／ 0 failed**** ⇒ ⭐ ⭐ **故它**Windows 特有****、⭐ 或为**既有 flaky**（⭐ ⚠ **改动前 `79d490b7` 的 windows 腿是 success、⭐ 故与"⭐ 忽略一条测试"或 `#67` 的引擎改动**可能相关**）✓
+| ⭐ 假说 | ⭐ 待查方式 |
+| :--- | :--- |
+| ⭐ ⭐ **`yeban-app` 的某 lib 判据在 Windows 上本就 flaky**（⭐ 时序／⭐ 路径）| ⭐ 看该判据名与是否涉及时序／⭐ 路径分隔 |
+| ⭐ **`#[ignore]` 改变了某个"⭐ 计数／⭐ 清单"类判据** | ⭐ `grep` `ignored`／⭐ `ignore` 于 `yeban-app/src/**` 的判据 |
+| ⭐ **`#67` 的引擎改动**（⭐ ⚠ 但 `6ae70ef8` 在 `#67` **之前** ⇒ ⭐ 排除）| ⭐ 已排除 ✓
+⭐ ⚠ **并如实说**: ⭐ ⭐ **我只做到"⭐ 定位到 `--lib` 目标"、⭐ ⛔ 未定位到具体判据**（⭐ 日志筛法未命中、⭐ 本机不可复现）⇒ ⭐ **故本条**登记待查**、⭐ ⛔ 不宣称原因** ✓
+
+⭐ ⚠ **四、⭐ 一条可复用口径（⭐ 第 220 条）**: ⭐ ⭐ **"⭐ 本机过、⭐ CI 红"时、⭐ 应把"⭐ 到底是哪条判据红"**先钉住**、⭐ ⛔ 不要停在"⭐ 某个目标红了"** —— ⚠ **因为 `error: 1 target failed: -p <crate> --lib` 只给**目标级**信息、⭐ 而修它需要**判据级**信息** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **优先跑**本机同命令**（⭐ 能过滤掉多数假说）；⭐ 若本机过 ⇒ ⭐ 再去日志里**按目标名定位那一段**（⭐ 用 `Running unittests …` 起始行 + ⭐ 段内 `FAILED`）** ✓
+⭐ **并附**: ⭐ ⚠ **本条**卡在第二步**（⭐ 日志很长、⭐ 筛法未命中）⇒ ⭐ **下轮换法**: ⭐ 下载制品后按 `crates/yeban-app` 的 `--lib` 段**逐段 grep `FAILED`** ✓
+
+⭐ ⚠ **五、⭐ 巡检（⭐ 人类指令）**: ⭐ **`target/debug/incremental` ＝ **3.7 G**（⭐ 低于 10 G 阈值 ⇒ ⛔ 不清）**；⭐ **可用 **52 GiB**（⭐ 95%）**；⭐ ⚠ **`/tmp` 有 4 个线残留**（⭐ `commit_msg.txt`／⭐ `st.txt`／⭐ `crate_gate.txt`／⭐ `light.txt`）⇒ ⭐ ⭐ **已按显式名单清除** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **windows／⭐ workspace 腿在 `yeban-app --lib` 的红因**（⭐ 待查）＋ ⭐ **`needs-7` 裁决** ＋ ⭐ `needs-1`／⭐ 2／⭐ 3／⭐ 5 ＋ ⭐ 循环／⭐ ADSR ＋ ⭐ 遗留 3 项 ✓
