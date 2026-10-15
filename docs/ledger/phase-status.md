@@ -9299,3 +9299,54 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **五、⭐ 判决读数**: ⭐ **`7a7543b8`（⭐ R726）in_progress** ⇒ ⭐ **待查**；⭐ **`d47de656`（⭐ `#73` 功能提交）的判决归属 `7a7543b8` 的 run** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#74`（⭐ app 侧装箱 ＋ ⭐ GUI 1 MiB 判据）** ＋ ⭐ **G18 守卫（⭐ 字段数对账）** ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-5`／⭐ 6／⭐ 8 ✓
+
+---
+
+## R728 实测追加（2026-10-16）：⭐⭐⭐ **`#74` 已并入**（⭐ app 侧装箱 ＋ ⭐ GUI 1 MiB 判据）⇒ ⭐ **GUI 链峰值 1.88 MiB ⇒ 342 KiB**、⭐ **1 MiB 由红转绿** ＋ ⭐ ⭐ **G17 首次真实捕获**
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **2 文件、＋263／−7**（⭐ `app/src/engine_host.rs` ＋21／−7、⭐ **新增 `app/tests/gui_stack_budget.rs` 242 行**）⇒ ⭐ **完整 sha ＝ **`81c4871995a8550eac282ca655397c8cf820ce88`**** ✓ ⭐ **`premerge-gate yeban-app` ＝ 全过** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 逐帧表（⭐ `lldb` 量、⭐ 口径同 R725）**:
+| ⭐ 函数 | ⭐ 行号 | ⭐ 改前 | ⭐ 改后 |
+| :--- | :--- | ---: | ---: |
+| ⭐ ⭐ **`EngineHost` 值尺寸** | ⭐ `app/engine_host.rs:408` | ⭐ **180704 B** | ⭐ ⭐ ****704 B**** ✓ |
+| ⭐ ⭐ **`host::ProductionLoop::start`** | ⭐ `app/host.rs:1842` | ⭐ **543360 B** | ⭐ ⭐ **3344 B** ✓ |
+| ⭐ ⭐ **`EngineHost::reload`** | ⭐ `app/engine_host.rs:535` | ⭐ **744528 B** | ⭐ ⭐ **24544 B** ✓ |
+| ⭐ ⭐ **`EngineHost::open_device`** | ⭐ `app/engine_host.rs:653` | ⭐ **722912 B** | ⭐ ⭐ **182912 B** ✓ |
+| ⭐ ⭐ **`engine_host::fresh_runtime`** | ⭐ `app/engine_host.rs:369` | ⭐ **360992 B** | ⭐ ⭐ **1008 B** ✓ |
+| ⭐ `EngineRuntime::new`（⭐ 引擎侧） | ⭐ `engine/rt.rs:1807` | ⭐ 224 B（＋⭐ 调用点 180000 B 返回位）| ⭐ ⭐ **本 crate 不再引用 ⇒ 不链接** ✓ |
+| ⭐ `EngineRuntime::new_boxed` | ⭐ `engine/rt.rs:1866` | ⭐ 304 B | ⭐ 304 B |
+| ⭐ `EngineRuntime::write_into` | ⭐ `engine/rt.rs:1893` | ⭐ 176384 B | ⭐ 176384 B |
+| ⭐ `SynthEngine::new`（⭐ 未动） | ⭐ `engine/synth.rs:970` | ⭐ 129952 B | ⭐ 129952 B |
+| ⭐ `device::open_output`（⭐ 未动） | ⭐ `engine/device.rs:436` | ⭐ 181312 B | ⭐ 181312 B |
+| ⭐ `run_gui` | ⭐ `app/main.rs:145` | ⭐ 14336 B | ⭐ 14336 B |
+⇒ ⭐ ⭐ ⭐ **链峰值: ⭐ 改前 ≈ **1.88 MiB** ⇒ ⭐ 改后 pre-device ≈ **342 KiB**、⭐ device-leg entry ≈ **486 KiB**（＋⭐ 包装帧）** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 改法（⭐ 纯 app 侧、⭐ 五处）**: ⭐ **① `FreshRuntime.runtime: EngineRuntime ⇒ Box<EngineRuntime>`；⭐ ② `fresh_runtime` 改用 `EngineRuntime::new_boxed(...)`；⭐ ③ `EngineHost.runtime: Option<EngineRuntime> ⇒ Option<Box<EngineRuntime>>`（⭐ `size_of` 180704 ⇒ 704 B）；⭐ ④ `device::open_output(&config, *runtime)`；⭐ ⑤ `runtime_for_criteria` ⇒ `as_deref_mut`、⭐ `engine_stats` ⇒ `as_deref`（⭐ **签名与可观测输出不变**）** ✓
+
+⭐ ⭐ ⭐ **四、⭐ 1 MiB 判据（⭐ 新增 `gui_stack_budget.rs`、⭐ 两条链都在**子进程**里用 `Builder::stack_size(KiB)` 跑、⭐ 16 KiB 粒度二分）**:
+| ⭐ 态 | ⭐ 读数（⭐ 逐字）|
+| :--- | :--- |
+| ⭐ ⭐ **修复前** | ⭐ **`PreDevice: @1024 KiB ＝ 红（⭐ 栈溢出／abort）；⭐ 最小可跑栈 ＝ **1952 KiB**；⭐ 余量 ＝ 0 KiB`**；⭐ **`DeviceLegEntry: @1024 KiB ＝ 红；⭐ 最小可跑栈 ＝ 1952 KiB`** ⇒ ⭐ **`FAILED. 1 passed; 1 failed`** ✓ |
+| ⭐ ⭐ **修复后** | ⭐ **`PreDevice: @1024 KiB ＝ 绿（⭐ 整条链跑完）；⭐ 最小可跑栈 ＝ **368 KiB**；⭐ 余量 ＝ **656 KiB**`**；⭐ **`DeviceLegEntry: @1024 KiB ＝ 绿；⭐ 最小可跑栈 ＝ **528 KiB**；⭐ 余量 ＝ **496 KiB**`** ⇒ ⭐ **`ok. 2 passed; 0 failed`** ✓ |
+⇒ ⭐ ⭐ **即: ⭐ 阈值 **1952 KiB 红 ⇒ 368／⭐528 KiB 绿****、⭐ **@1024 KiB 由红转绿** ✓
+⭐ ⭐ **并附（⭐ 反向对照）**: ⭐ **`git checkout -- app/src/engine_host.rs` 后重建 ⇒ 判据重现 **1952 KiB 红****；⭐ **从备份还原后 `sha256` 与撤前**逐位相同**（⭐ `2ba0d9c3…b4fc`）** ⇒ ⭐ ⭐ **即: ⭐ 红／⭐绿的唯一变量就是本单装箱** ✓
+⭐ ⭐ **并附（⭐ 判据的诚实边界）**: ⭐ ⭐ **它明确说判据止于"⭐ 构造完运行时 ＋ ⭐ 进入设备腿"、⭐ ⛔ 不声明"⭐ 设备真的开了"** ⇒ ⭐ **因真开窗（⭐ Slint 无 headless 后端）与真开声卡（⭐ `RequireExclusive` 刻意在协商第一行失败）都跑不了** ⇒ ⭐ ⭐ **而"⭐ 进入设备腿"**正是 R725 指出的越限之处**** ✓
+
+⭐ ⭐ **五、⭐ 导出指纹对照（⭐ 产品行为逐位不变）**: ⭐ **改前／⭐改后同为 `sha256 ＝ 473c84be…f111`、⭐ `digest ＝ a12de92a…9b60`、⭐ `bytes ＝ 2304068`** ⇒ ⭐ ⭐ **与 R725 记录的三元组**逐位相同**** ✓
+
+⭐ ⭐ **六、⭐ 既有判据（⭐ 第 231 条）**: ⭐ **改前 36 桶／⭐ 540 passed／⭐ 1 failed／⭐ 3 ignored；⭐ 改后 36 桶／⭐ 541 passed／⭐ 0 failed／⭐ 3 ignored** ⇒ ⭐ **桶集合**逐字相同**；⭐ **唯一计数变化的是新增桶**（⭐ 1 failed ⇒ 2 passed）；⭐ ⭐ **既有 35 桶 **0 消失、⭐ 0 翻转****（⭐ 539 passed／⭐ 0 failed／⭐ 3 ignored 两次逐位相同）✓
+
+⭐ ⭐ ⭐ **七、⭐ 而 G17 **首次真实捕获**（⭐ 本条最值钱、⭐ 见 R705）**: ⭐ ⭐ **它第一次跑 `premerge-gate` 时**被 G17 拦下**** ⇒ ⭐ ⚠ **因它的文档注释里出现了字面量 `[HARDWARE]`** ⇒ ⭐ **它改写了措辞、⭐ 复跑 exit 0** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ R705 落的守卫**在真实作业中生效了**** ⇒ ⭐ ⭐ **而它拦的正是"⭐ 提到 `[HARDWARE]` 却没 `#[ignore]`"这一本来会**误导读者**的写法** ✓
+⭐ **并附（⭐ 一条值得记的副作用）**: ⭐ ⚠ **"⭐ 连文档里提一句 `[HARDWARE]` 都会被拦"** ⇒ ⭐ ⚠ **故守卫的粒度是**字符串级**、⭐ 而它的本意是**标记级**** ⇒ ⭐ **建议改进（⭐ 登记、⭐ 不阻塞）**: ⭐ **让 G17 只拦"⭐ 在 `#[ignore]` 之外的**独立标记**"、⭐ 或允许 `//` 注释里带引号提及** ✓
+
+⭐ ⚠ **八、⭐ 四门读数**: ⭐ `fmt --check` **0**／⭐ `check --all-targets --locked` **0**／⭐ `clippy --lib --tests -D warnings` **0**／⭐ `test -p yeban-app --locked` **541 passed／⭐ 0 failed／⭐ 3 ignored**（⭐ 36 桶、⭐ 无崩无超时）／⭐ `premerge-gate.sh yeban-app` **全过**（⭐ 复跑后）／⭐ `light` **门禁通过** ✓
+
+⭐ ⚠ **九、⭐ 一条可复用口径（⭐ 第 237 条）**: ⭐ ⭐ **"⭐ 栈预算"应做成一条**常驻判据**、⭐ 而不是一次性排查** —— ⚠ **因为平台默认栈不同、⭐ 而大对象按值交接会在**任何**平台漂移** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **在**子进程**里用 `Builder::stack_size(1 MiB)` 跑真实构造链 ⇒ ⭐ **打印"⭐ 最小可跑栈 ＋ ⭐ 余量"** ⇒ ⭐ **阈值就是预算的余额** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **两条链各自给出 `368／⭐528 KiB` 与 `656／⭐496 KiB` 余量** ⇒ ⭐ **将来谁把大对象搬回栈、⭐ 这两个数立刻掉** ✓
+
+⭐ ⚠ **十、⭐ 判决读数**: ⭐ **`7a7543b8`／⭐ `07356118` 待查** ⇒ ⭐ ⚠ **而本轮改了 `engine_host.rs` ＋ ⭐ 新增测试 ⇒ ⭐ 平台腿应真跑** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **G17 的粒度改进（⭐ 只拦独立标记、⭐ 允许注释里提及）** ＋ ⭐ **G18 守卫（⭐ `write_into` 字段数对账）** ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-5`／⭐ 6／⭐ 8 ✓
