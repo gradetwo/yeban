@@ -36,7 +36,7 @@ if [ "$ONLY" = "list" ]; then
 3  视觉基准   macOS golden 基准补录
 4  窗口帧率   fps_gpu example 的 p50/p99
 5  MIDI 键盘  实体键盘输入
-6  声学往返   回环线的往返时延
+6  声学往返   虚拟回环（BlackHole）的时延读数
 EOF
   exit 0
 fi
@@ -256,18 +256,58 @@ check_midi() {
 }
 
 check_acoustic() {
-  # 第 6 项：声学往返
-  section "6 声学往返时延"
-  say "前提：物理回环线，连接输出与输入。"
-  say "测量命令由集成者提供（见台账 BASELINE-005）。"
-  ask_yn "你接了回环线吗？" ACU_READY
-  if [ "${ANS_ACU_READY:-no}" = "yes" ]; then
-    say "请告诉集成者。他会给你确切命令。"
+  # 第 6 项：声学往返（虚拟回环）
+  section "6 声学往返时延（虚拟回环）"
+  say "方案：虚拟回环软件（BlackHole）。macOS 内部无损。"
+  say "好处：不要物理线。"
+  say "坏处：它没有 AD/DA 转换。它给的是下限。它不等于真硬件往返。"
+  blank
+  say "本仓的测量工具（crates/yeban-engine/examples/measure_latency.rs）今天不收集回环证据。"
+  say "所以它打印 measured_roundtrip_ms=none，verdict 不会是 within-target。"
+  say "它给两件有用的东西：标称时延与驱动侧时延。"
+  say "要判达标，还需要采集比对那一段。集成者已登记该单。"
+  blank
+  if need brew; then
+    if brew list --cask blackhole-2ch >/dev/null 2>&1; then
+      say "BlackHole 已安装。"
+      kv "BlackHole" "已安装"
+    else
+      say "BlackHole 没有安装。安装命令：brew install blackhole-2ch"
+      ask_yn "现在安装 BlackHole 吗？（可能要你的密码）" ACU_INSTALL
+      if [ "${ANS_ACU_INSTALL:-no}" = "yes" ]; then
+        brew install blackhole-2ch && say "安装完成。" || say "安装失败。"
+      fi
+    fi
+  else
+    say "找不到 brew。请先装 Homebrew，或手动装 BlackHole。"
   fi
-  ask_text "设备名称" ACU_DEV
-  ask_text "缓冲大小（如 128 / 256）" ACU_BUF
-  ask_text "往返毫秒数（测 3 次取中间值）" ACU_MS
-  note ACU "设备=${TXT_ACU_DEV:-} 缓冲=${TXT_ACU_BUF:-} 往返ms=${TXT_ACU_MS:-}"
+  blank
+  say "装好之后，在「音频 MIDI 设置」建一个多输出设备。"
+  say "多输出设备包含：扬声器 + BlackHole 2ch。"
+  say "系统输出切到该多输出设备。输入选 BlackHole 2ch。"
+  ask_pause "配置虚拟回环"
+  ask_yn "现在跑测量工具吗？（约 10 秒音频）" ACU_RUN
+  local log="/tmp/yeban-hc-latency.log"
+  if [ "${ANS_ACU_RUN:-no}" = "yes" ] && need cargo; then
+    say "命令：cargo run --release -p yeban-engine --features device --example measure_latency -- --label blackhole --frames 64 --seconds 2 --sample-rate 48000"
+    if ( cd "$REPO" && cargo run --release -p yeban-engine --locked --features device --example measure_latency -- --label blackhole --frames 64 --seconds 2 --sample-rate 48000 ) 2>&1 | tee "$log"; then
+      say "测量完成。"
+    else
+      say "命令退出码非 0。这可能正常：3 表示没有设备，4 表示没有回环证据。"
+    fi
+    say "读数行："
+    grep -E 'NOMINAL|DRIVER-LATENCY|BENCH|CALLBACK' "$log" 2>/dev/null | tail -30 | sed 's/^/  /'
+    grep -E 'NOMINAL|DRIVER-LATENCY|BENCH|CALLBACK' "$log" 2>/dev/null >>"$REPORT"
+  fi
+  blank
+  ask_yn "你装了 BlackHole 吗？" ACU_DEV
+  ask_yn "你建了多输出设备吗？" ACU_READY
+  ask_yn "测量工具跑完了吗？" ACU_DONE
+  ask_text "BENCH 行的完整内容（照抄）" ACU_BENCH
+  ask_text "NOMINAL 与 DRIVER-LATENCY 行的数字" ACU_NUM
+  ask_text "缓冲区帧数与采样率" ACU_BUF
+  ask_text "其他观察" ACU_MS
+  note ACU "装BlackHole=${ANS_ACU_DEV:-} 多输出=${ANS_ACU_READY:-} 跑完=${ANS_ACU_DONE:-}"
 }
 
 # ---------- 主流程 ----------
@@ -306,9 +346,10 @@ report_close() {
     say "golden 不对的图：${TXT_GOLD_BAD:-<空>}"
     say "帧率机型：${TXT_FPS_HW:-<空>}"
     say "MIDI 键盘：${TXT_MIDI_HW:-<空>}"
-    say "声学设备：${TXT_ACU_DEV:-<空>}"
-    say "声学缓冲：${TXT_ACU_BUF:-<空>}"
-    say "声学往返 ms：${TXT_ACU_MS:-<空>}"
+    say "声学 BENCH 行：${TXT_ACU_BENCH:-<空>}"
+    say "声学 NOMINAL/DRIVER 数字：${TXT_ACU_NUM:-<空>}"
+    say "声学缓冲/采样率：${TXT_ACU_BUF:-<空>}"
+    say "声学其他观察：${TXT_ACU_MS:-<空>}"
   } >>"$REPORT"
 }
 
