@@ -2848,6 +2848,15 @@ mod tests {
                 old_muted: false,
                 new_muted: true,
             },
+            // 摆放长度：**此前创建之后改不了**（`MoveClipPlacement` 只写 `start_tick`）。
+            // ⚠ 同样必须放在下面那条 `RemoveClipPlacement` **之前**（⭐ 它会把 `f.placement`
+            // 取走、⭐ 而本变体的前置条件要求摆放还在）。⭐ 3840 ⇒ 1920 = 修剪一半。
+            Op::SetClipPlacementDuration {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_duration_ticks: 3840,
+                new_duration_ticks: 1920,
+            },
             Op::RemoveClipPlacement {
                 track_id: f.lead,
                 placement_id: f.placement,
