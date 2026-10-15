@@ -669,13 +669,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || echo "")"
-          if [ -n "$LLVM_PREFIX" ] && [ -d "$LLVM_PREFIX/lib" ]; then
-            echo "LIBCLANG_PATH=$LLVM_PREFIX/lib" >> "$GITHUB_ENV"
-          else
-            SDK="$(xcrun --show-sdk-path)"
-            echo "LIBCLANG_PATH=$SDK/usr/lib" >> "$GITHUB_ENV"
+          # macOS 上 libclang 不在 SDK 里，逐个候选并**验证**它真含 libclang.dylib，
+          # 否则 bindgen 会在编译 signalsmith-stretch 时失败（曾因此让本腿红一次）。
+          cands=()
+          if command -v brew >/dev/null 2>&1; then
+            p="$(brew --prefix llvm 2>/dev/null || true)"; [ -n "$p" ] && cands+=("$p/lib")
+            p="$(brew --prefix llvm@18 2>/dev/null || true)"; [ -n "$p" ] && cands+=("$p/lib")
           fi
+          cands+=("$(xcode-select -p)/usr/lib")
+          cands+=("$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib")
+          cands+=("/opt/homebrew/opt/llvm/lib" "/usr/local/opt/llvm/lib")
+          found=""
+          for c in "${cands[@]}"; do
+            if [ -e "$c/libclang.dylib" ] || [ -e "$c/libclang.1.dylib" ]; then found="$c"; break; fi
+          done
+          if [ -z "$found" ]; then
+            echo "::error::找不到 libclang.dylib；已试: ${cands[*]}"
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$found" >> "$GITHUB_ENV"
+          echo "libclang: $found"
 
       - name: 工具链漂移断言 (与 Linux 腿同一个钉死版本)
         shell: bash

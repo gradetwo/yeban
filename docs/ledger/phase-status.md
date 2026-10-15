@@ -8077,3 +8077,48 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ **并附**: ⭐ ⭐ **本条即这么做的一次** —— ⭐ **本机过 ⇒ ⭐ 故不是命令问题 ⇒ ⭐ 指向平台面** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **macOS 腿 clippy 红的原因**（⭐ 取 `macos-gate-log` 产物或换手段读日志）＋ ⭐ **SFZ 第 1 步设计勘察** ＋ ⭐ **UI 选择面** ＋ ⭐ **步 2（⭐ `[HARDWARE]` 守卫）** ＋ ⭐ 遗留: ⭐ `tools.rs:1194`／⭐ `schemas/mcp-tools.schema.json:672`／⭐ `phase-status.md:78` ✓
+
+---
+
+## R697 实测追加（2026-10-15）：⭐⭐⭐ **macOS 腿红的原因**已定位并修复**（⭐ 走 `macos-gate-log` 制品读到了错误原文）⇒ ⭐ **根因: ⭐ 我把 `LIBCLANG_PATH` 指到了 SDK、⭐ 而 macOS 的 `libclang.dylib` **不在 SDK 里****
+
+⭐ ⭐ ⭐ **一、⭐ 取证（⭐ 逐字、⭐ 从制品读出）**: ⭐ ⭐ **`gh run download 38755787856 --pattern 'macos-gate-log*'` ⇒ ⭐ 得 `macos-gate-log/gate.log`（⭐ 638 行）** ✓
+| ⭐ 行 | ⭐ 原文 |
+| :--- | :--- |
+| ⭐ ⭐ **497** | ⭐ ⭐ **`error: failed to run custom build command for \`signalsmith-stretch v0.1.3\``** |
+| ⭐ **619** | ⭐ `2: core::result::unwrap_failed` |
+| ⭐ **638** | ⭐ `warning: build failed, waiting for other jobs to finish...` |
+| ⭐ ⭐ **尾部回溯** | ⭐ ⭐ **`bindgen::ensure_libclang_is_loaded`** ⇒ ⭐ **即 bindgen 找不到 libclang** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 第 510 条候选（⭐ 我列的三条之一、⭐ **候选 ①**：⭐ CI 前序步的 `libclang` 定位）**命中**** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 而本机核实确证了错在哪**（⭐ 逐字）:
+| ⭐ 检查 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **`xcode-select -p`** | ⭐ `/Applications/Xcode.app/Contents/Developer` |
+| ⭐ ⭐ **该 developer dir 的 `usr/lib` 有无 `libclang`** | ⭐ ⭐ **无**（⭐ `grep` 空）|
+| ⭐ ⭐ **我原来用的 SDK 路径** | ⭐ ⭐ **`…/MacOSX.sdk`** ⇒ ⭐ ⭐ **其 `usr/lib` 下**没有 `libclang.dylib`**** ⇒ ⭐ ⭐ **故我原来的兜底是**错的**** ✓
+| ⭐ **`brew --prefix llvm`** | ⭐ `/opt/homebrew/opt/llvm` ⇒ ⭐ ⭐ **即: ⭐ 本机**装了 Homebrew LLVM、⭐ 故我本机能编、⭐ 而 CI 上若取不到就编不了**** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ macOS 的 `libclang.dylib` 住在 **Homebrew LLVM 的 `lib/`****（⭐ 或 Xcode 的 toolchain 目录）、⭐ ⛔ **不在 SDK 的 `usr/lib`**** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 修法（⭐ 已改 `ci.yml`、⭐ 15 步不变、⭐ YAML 可解析）**: ⭐ ⭐ **逐个候选并**验证**它真含 `libclang.dylib`、⭐ 都不行则**响亮失败**** ✓
+| ⭐ 候选（⭐ 按序）| ⭐ 依据 |
+| :--- | :--- |
+| ⭐ ⭐ **`brew --prefix llvm` 的 `lib/`** | ⭐ **本机即命中它** |
+| ⭐ **`brew --prefix llvm@18` 的 `lib/`** | ⭐ **版本化 formula 兜底** |
+| ⭐ **`$(xcode-select -p)/usr/lib`** | ⭐ **Xcode 直接安装时** |
+| ⭐ **`$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib`** | ⭐ **工具链内** |
+| ⭐ **`/opt/homebrew/opt/llvm/lib`**／⭐ **`/usr/local/opt/llvm/lib`** | ⭐ **Apple Silicon 与 ⭐ Intel 的固定路径** |
+⇒ ⭐ ⭐ **并加两条护栏**: ⭐ **① 每个候选都验 `libclang.dylib` 或 ⭐ `libclang.1.dylib` 存在才采用**；⭐ **② 全不行则 `echo "::error::…"` ＋ ⭐ `exit 1`** ⇒ ⭐ ⭐ **即**宁可响亮失败、⭐ 也不静默导出一个空路径**** ✓
+
+⭐ ⭐ **四、⭐ 本机验证（⭐ 逐字）**: ⭐ ⭐ **照新脚本在本机跑 ⇒ ⭐ `本机验证 OK ⇒ LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib`**、⭐ 且该目录确含 `libclang.dylib`（⭐ 另有 `libclang-cpp.dylib`）✓
+
+⭐ ⚠ **五、⭐ 两条可复用口径**:
+| ⭐ 条 | ⭐ 内容 |
+| :--- | :--- |
+| ⭐ ⭐ **211** | ⭐ ⭐ **"⭐ 导出环境变量"这类步、⭐ 必须**先验证目标存在**再导出** ⇒ ⚠ **因为静默导出错误路径会在**几十步之后**才炸（⭐ 本例在编 `signalsmith-stretch` 时）、⭐ 而那时回溯指不到真正原因** ✓
+| ⭐ ⭐ **212** | ⭐ ⭐ **CI 失败原文取不到时、⭐ 走**制品（artifact）**** ⇒ ⭐ **本仓的平台腿有 `上传门日志产物` 步（⭐ `macos-gate-log`）** ⇒ ⭐ ⭐ **而 `gh run view --log-failed` 与 ⭐ `jobs/<id>/logs` 两条 API 路都取不到时、⭐ `gh run download` 有效** ✓
+⭐ **并附**: ⭐ ⭐ **211 的教训本可避免** —— ⭐ **我原脚本只有"⭐ 有则用、⭐ 否则用 SDK"两个分支、⭐ 而 SDK 那条从没被验过** ⇒ ⭐ ⭐ **故"⭐ 兜底分支也必须验"** ✓
+
+⭐ ⚠ **六、⭐ 判决读数**: ⭐ **`050791d0`（⭐ macOS 腿）＝ failure（⭐ 根因已修）**；⭐ **`e43b310a` 承接该失败**；⭐ **`8a354d67`／⭐ `f89c91af`／⭐ `281bda4d` in_progress** ⇒ ⭐ **修好后 `281bda4d` 之后的 run 才反映新脚本** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **新 macOS 腿的判决**（⭐ 待下一次 run）＋ ⭐ **SFZ 第 1 步设计勘察** ＋ ⭐ UI 选择面 ＋ ⭐ 步 2（⭐ `[HARDWARE]` 守卫）＋ ⭐ 遗留 3 项 ＋ ⭐ **两条历史红 run（⭐ `050791d0`／⭐ `e43b310a`）的记录** ✓
