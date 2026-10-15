@@ -16,6 +16,28 @@
 //! 判据 `recording_the_project_is_bit_identical_to_exporting_it` 仍是这条"两侧逐位一致"契约的
 //! **回归网**：一旦漂移，该判据立刻红 ✓
 //!
+//! ## ⭐ 轨增益（推子／静音／独奏）：三条支路**同径**（本单闭合 `R713` 登记的边界）
+//!
+//! | 支路 | 音源 | 轨增益从哪来 |
+//! | :--- | :--- | :--- |
+//! | 引擎乐器（默认） | [`EngineTrackSource`] → `SynthEngine::render_track` | ⭐ 引擎**内部**：鼓机读 `ScheduledNote::gain`、复音读同一个 `note.gain`、SFZ 声部读 `NoteSchedule::track_gain` —— 三者都来自 `snapshot::project_schedules` 里**同一次** [`yeban_engine::synth::track_gain_scale`] |
+//! | **SFZ 旁路**（`--sfz`） | [`crate::sfz_load::SfzTrackSource`] | ⭐ **本模块**在构造期逐轨调**同一个** [`track_gain_of`]（⇒ 同一个 `track_gain_scale`）再经 `with_track_gain` 注入 |
+//! | 最小音源（`use_engine_source = false`） | [`NoteToneSource`] | ⚠ **未接**（见下） |
+//!
+//! ⚠ **为什么 SFZ 旁路原先吃不到**：它**整个替换**引擎音源，且本模块在带 SFZ 时
+//! **不建引擎快照**（上面的 `snapshot` 判据）⇒ 那份"投影期已乘好的"轨增益不存在。
+//! 修法**不是**在这里写一份 `volume_db ⇒ 线性`（那会与引擎分叉），而是调引擎的
+//! **同一个**算子。
+//!
+//! ⚠ **仍然如实登记的缺口**：最小音源 [`NoteToneSource`] **没有**轨增益（它只作判据对照
+//! 与极端回退 —— 产品路径 `--export-wav` / `record_wav` 都给 `use_engine_source = true`）。
+//! ⛔ 本单**不动**它：它不属本单受理的那条边界（SFZ 旁路），且改它会让那条对照臂的产物
+//! 字节变化，需要单独一条判据与登记。
+//!
+//! ⚠ **音频片段**（[`crate::audio_clip`]）另有一套自己的"片段增益 ＋ 轨音量 ＋ 声相"
+//! 组合（`audio_clip.rs:282` 的 `db_to_linear(clip_gain_db + track_volume_db)`）——
+//! 它**不是** `track_gain_scale`，本单如实登记，⛔ 不在此处改（会动既有音频片段判据）。
+//!
 //! ## ⚠ 红线 7 与**调用方约束**
 //!
 //! 本函数**允许分配**（解析 SFZ／装载快照／建缓冲）⇒ ⭐ **两侧调用方（导出与录音）都必须是
@@ -58,6 +80,30 @@ impl AudioSource for TrackSource {
         }
         Ok(())
     }
+}
+
+/// 一条轨的**引擎层轨增益门**（可闻门 ＝ 静音/独奏 × 推子 × …）——⭐ **引擎的同一个算子**。
+///
+/// ⛔ 本函数**不**自己换算 dB：它只把工程的 `mute` / `solo` / `solo_safe` / `volume_db`
+/// 原样交给引擎的 [`yeban_engine::synth::track_gain_scale`] —— 那个函数是引擎快照投影
+/// （`snapshot::project_schedules`）与声部槽（`SynthEngine::set_track_gain_scales`）
+/// 共用的**唯一**实现（⛔ 不是"这里再写一遍再对齐"）。
+///
+/// ⚠ `any_solo` 与引擎**同口径**：扫**全部**轨道（含主总线那一份），见
+/// `crates/yeban-engine/src/snapshot.rs:907`。
+///
+/// ⚠ 找不到该轨（正常不会发生：`renderable` 已按 `project.tracks` 过滤）⇒ `0.0`
+/// （静音）—— 宁可无声，⛔ 不是"忘了乘 ⇒ 满增益"。
+fn track_gain_of(project: &YebanProjectV1, track_id: EntityId, any_solo: bool) -> f32 {
+    project.tracks.get(&track_id).map_or(0.0, |track| {
+        yeban_engine::synth::track_gain_scale(
+            track.mute,
+            track.solo,
+            track.solo_safe,
+            any_solo,
+            track.volume_db,
+        )
+    })
 }
 
 /// 一次离线渲染的**全部读数**（含音频片段的渲染 / 跳过计数）。
@@ -172,8 +218,13 @@ pub fn render_project_f32_with_assets(
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
         let mut labels: Vec<String> = Vec::new();
+        // ⭐ **轨增益门**（推子 × 静音/独奏）：`any_solo` 与引擎同口径（含主总线那一份）。
+        // ⚠ 这段必须在这里算：SFZ 分支**不建引擎快照**（见上面的 `snapshot` 判据），
+        // 因此拿不到 `NoteSchedule::track_gain`；改调**同一个** `track_gain_scale` 就不会分叉。
+        let any_solo = project.tracks.values().any(|track| track.solo);
         for track_id in renderable.clone() {
             let notes = track_notes_in_frames(project, track_id, options.sample_rate);
+            let track_gain = track_gain_of(project, track_id, any_solo);
             let track_source = match sfz_path {
                 Some(sfz_path) => crate::sfz_load::SfzTrackSource::new_from_sfz_path(
                     instrument.clone(),
@@ -188,7 +239,9 @@ pub fn render_project_f32_with_assets(
                     options.sample_rate as f32,
                     options.channels,
                 ),
-            };
+            }
+            // ⭐ 与引擎侧同形（`NoteSchedule::with_track_gain`）：轨增益乘在**乐器层输出之外**。
+            .with_track_gain(track_gain);
             labels.push(track_source.sample_source());
             sources.insert(track_id, Box::new(track_source));
         }
@@ -275,4 +328,103 @@ pub fn render_project_f32_with_assets(
         audio_clips_rendered: audio_rendered,
         audio_clips_skipped: audio_skipped,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yeban_model::TrackV3;
+
+    /// 夹具：`filled_project` 里那条**带 MIDI 音符**的非主总线轨（＝ 工程里唯一会发声的
+    /// 可渲染轨：另一条音频轨没有资产池 ⇒ 被如实跳过），把三个自变量写进去。
+    fn fixture(volume_db: f32, mute: bool, solo_elsewhere: bool) -> (YebanProjectV1, EntityId) {
+        let mut project = yeban_model::samples::filled_project();
+        let lead = *project
+            .tracks
+            .iter()
+            .find(|(id, track)| {
+                **id != project.master_bus_track_id
+                    && track.clips.values().any(|placement| {
+                        project
+                            .clip_pool
+                            .get(&placement.clip_id)
+                            .is_some_and(|entry| entry.content.notes().is_some())
+                    })
+            })
+            .map(|(id, _)| id)
+            .expect("filled_project 必须有一条带 MIDI 音符的非主总线轨");
+        {
+            let track = project.tracks.get_mut(&lead).expect("上面刚找到");
+            track.volume_db = volume_db;
+            track.mute = mute;
+        }
+        if solo_elsewhere {
+            let other = EntityId::new();
+            project.tracks.insert(
+                other,
+                TrackV3 {
+                    id: other,
+                    name: "Solo".to_owned(),
+                    solo: true,
+                    ..TrackV3::default()
+                },
+            );
+            project.routing_graph.nodes.push(other);
+        }
+        (project, lead)
+    }
+
+    /// ⭐ 判据（本单新增）：**同一个算子**。
+    ///
+    /// # 量什么（先说再跑）
+    ///
+    /// 同一份工程上，[`track_gain_of`]（＝ SFZ 旁路注入的那个标量）与引擎快照投影写进
+    /// `NoteSchedule::track_gain` 的那个标量，**逐位相同的 f32**（单位：线性增益）。
+    ///
+    /// * 对象 ＝ 一条轨的轨增益门（可闻门 × 推子）；
+    /// * 单位 ＝ 线性幅度倍数（无量纲，`1.0` ＝ 单位增益、`0.0` ＝ 静音）。
+    ///
+    /// # 为什么必须逐位比
+    ///
+    /// 判据是"**与引擎用同一个函数／同一套字段**，⛔ 不另写一份 `volume_db ⇒ 线性` 换算"。
+    /// 只比"接近"会放过"两份实现恰好都差不多"的情形；逐位比恰好就是"同一次调用的结果"
+    /// （引擎侧注释的原话：`slot.gain_scale` 与 `NoteSchedule::track_gain` **逐位相等**）。
+    ///
+    /// # 怎么变红
+    ///
+    /// 把 [`track_gain_of`] 改成自己换算（例如 `db_to_linear(volume_db)` 而丢掉
+    /// `track_is_audible` 门）⇒ 静音档 / 别轨独奏档当场不等；换成
+    /// `10f32.powf(db / 20.0)` ⇒ 末位与引擎的 `exp2` 口径不同，`to_bits()` 也当场不等。
+    #[test]
+    fn the_sfz_track_gain_is_bit_identical_to_the_engine_projection() {
+        for (volume_db, mute, solo_elsewhere) in [
+            (0.0_f32, false, false),
+            (-6.0, false, false),
+            (-3.5, false, false),
+            (0.0, true, false),
+            (0.0, false, true),
+        ] {
+            let (project, lead) = fixture(volume_db, mute, solo_elsewhere);
+            let any_solo = project.tracks.values().any(|track| track.solo);
+            let ours = track_gain_of(&project, lead, any_solo);
+            let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具工程必须成快照");
+            let theirs = snapshot
+                .schedules()
+                .get(&lead)
+                .expect("本轨必须有调度表")
+                .track_gain();
+            println!(
+                "[app-sfz-gain] volume_db={volume_db} mute={mute} solo_elsewhere={solo_elsewhere}: \
+                 app={ours:.9} ({:#010x}) vs 引擎投影={theirs:.9} ({:#010x})",
+                ours.to_bits(),
+                theirs.to_bits()
+            );
+            assert_eq!(
+                ours.to_bits(),
+                theirs.to_bits(),
+                "⭐ SFZ 旁路注入的轨增益必须与引擎投影 `NoteSchedule::track_gain` **逐位相同**\
+                 （volume_db={volume_db} mute={mute} solo_elsewhere={solo_elsewhere}）"
+            );
+        }
+    }
 }

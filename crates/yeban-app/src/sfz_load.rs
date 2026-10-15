@@ -10,6 +10,16 @@
 //!          ──▶ 帧数 ＋ 能量（Σx²）                        // 可机械判定的"非静音"证据
 //! ```
 //!
+//! ## ⭐ 导出音源上的**轨增益**（归属裁决 `R711`；⛔ 不重复计）
+//!
+//! ```text
+//! TrackV3{mute, solo, solo_safe, volume_db} ──▶ yeban_engine::synth::track_gain_scale(...)
+//!          ──▶ SfzTrackSource::with_track_gain(门)      // ⭐ 与引擎侧**同一个算子**
+//!          ──▶ 乘在 render_note_into 的输出之外          // 乐器层 × 轨增益，⛔ 不重复
+//! ```
+//!
+//! 值由 [`crate::render_core`] 逐轨算出（⛔ 本模块不写第二份 `volume_db ⇒ 线性` 换算）。
+//!
 //! ## ⚠ 三条诚实登记（⛔ 不假装）
 //!
 //! 1. **样本文件会被真读**：`sample=` 指到的文件经 [`read_sample_file`]（→
@@ -293,6 +303,25 @@ pub struct SfzTrackSource {
     engine_hz: f32,
     /// 声道数。
     channels: usize,
+    /// ⭐ **引擎层的轨增益门**（可闻门 ＝ 静音/独奏 × 推子；默认 **`1.0`＝单位增益**）。
+    ///
+    /// ## 归属裁决 `R711`（⛔ 不重复计）
+    ///
+    /// **乐器层**拥有乐器内增益（`volume_gain` / `velocity_gain[128]` / `key_crossfade` /
+    /// `velocity_fade_*` / `amp_veltrack`），**引擎层**拥有轨增益（推子 / 静音 / 独奏）⇒
+    /// ⭐ **两者相乘、⛔ 不重复**：`render_block` 把本标量乘在
+    /// [`SfzInstrument::render_note_into`] 的**输出之外** ⇒ 与引擎侧
+    /// （`synth::SfzVoicePool::trigger_note` 的 `region.gain_at(...) * track_gain`）
+    /// 同一个形状。⛔ 力度那一半属于乐器层，本类型**不碰**。
+    ///
+    /// ## 值从哪来（⭐ 同一个算子，⛔ 不是这里自己换算）
+    ///
+    /// 调用方（[`crate::render_core`]）用引擎的
+    /// [`yeban_engine::synth::track_gain_scale`] 逐轨算出同一个值再经
+    /// [`Self::with_track_gain`] 注入 —— 那个函数正是引擎快照投影
+    /// （`snapshot::project_schedules`）与声部槽（`SynthEngine::set_track_gain_scales`）
+    /// 共用的**唯一**实现。⛔ 本类型**不**自己写一份 `volume_db ⇒ 线性` 的换算。
+    track_gain: f32,
     /// 每个音符的渲染状态。
     notes: Vec<SfzNoteState>,
 }
@@ -332,6 +361,9 @@ impl SfzTrackSource {
             sample: InMemorySample::sine(440.0, engine_hz, sample_frames),
             engine_hz,
             channels: channels.max(1),
+            // ⭐ 默认**单位增益**（⛔ 不是 `0.0`：默认不是静音）—— 与引擎侧
+            // `NoteSchedule::from_sorted` 的默认 `track_gain = 1.0` 同口径。
+            track_gain: 1.0,
             notes: notes
                 .iter()
                 .map(|(start, duration, pitch, velocity)| SfzNoteState {
@@ -380,6 +412,26 @@ impl SfzTrackSource {
             .unwrap_or_else(|| SAMPLE_SOURCE.to_owned())
     }
 
+    /// ⭐ 写入**引擎层的轨增益门**（推子 × 静音/独奏；构造期一次）。
+    ///
+    /// ⚠ 值必须来自引擎的**同一个算子** [`yeban_engine::synth::track_gain_scale`]
+    /// （见字段文档）—— ⛔ 本类型不接受"这里自己换算"的第二份实现。
+    /// 与引擎侧 [`yeban_engine::synth::NoteSchedule::with_track_gain`] 同名同形。
+    #[must_use]
+    pub const fn with_track_gain(mut self, track_gain: f32) -> Self {
+        self.track_gain = track_gain;
+        self
+    }
+
+    /// ⭐ 本源的**轨增益门**（与力度无关：可闻门 × 推子）。
+    ///
+    /// 产品路径下它逐位等于引擎调度表上 [`yeban_engine::synth::NoteSchedule::track_gain`]
+    /// 的那一份（同一次 [`yeban_engine::synth::track_gain_scale`] 的值）。
+    #[must_use]
+    pub const fn track_gain(&self) -> f32 {
+        self.track_gain
+    }
+
     /// 保证第 `index` 个音符**整段**渲染完成（只做一次）。
     fn ensure_rendered(&mut self, index: usize) {
         if self.notes[index].rendered > 0 {
@@ -399,6 +451,17 @@ impl SfzTrackSource {
             .instrument
             .render_note_into(sample, pitch, velocity, &mut scratch, self.engine_hz)
             .unwrap_or(0);
+        // ⭐ **引擎层的轨增益门**乘在**乐器层输出之外**（归属裁决 `R711`：两者相乘、
+        //    ⛔ 不重复）。乐器层（`render_note_into`）已经含它自己的 `volume_gain` /
+        //    `velocity_gain` / 交叉淡化等 —— 这里**只**乘轨增益这一半。
+        //    `1.0` 是 IEEE 恒等 ⇒ 跳过乘法，让"调用方没给轨参数"的读数逐位不变。
+        let track_gain = self.track_gain;
+        if track_gain != 1.0 {
+            let limit = written.min(scratch.len());
+            for sample in &mut scratch[..limit] {
+                *sample *= track_gain;
+            }
+        }
         let state = &mut self.notes[index];
         state.scratch = scratch;
         state.rendered = written;
