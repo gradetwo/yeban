@@ -140,8 +140,8 @@
 //! | # | 缺口 | 为什么需要裁决 |
 //! | :--- | :--- | :--- |
 //! | sfz-needs-1 | **轨推子/静音没有乘到 SFZ 声部上** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**乐器层**拥有乐器内增益（`volume_gain`／`velocity_gain[128]`／`key_crossfade`／`velocity_fade_*`／`amp_veltrack`），**引擎层**拥有轨增益（推子＝音量、静音、独奏）⇒ ⭐ **两者相乘、⛔ 不重复**。落地口径：`snapshot::project_schedules` 把**同一个** `track_gain_scale(...)` 结果写进 [`crate::synth::NoteSchedule::track_gain`]（与鼓机/复音读的 `note.gain` **同源**）⇒ [`SfzVoicePool::trigger_note`] 把它乘在 `region.gain_at(...)` **之外** ⇒ ⭐ SFZ 与鼓机**同径**（判据：`tests/sfz_instrument.rs` 的 S17／S18）|
-//! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | `yeban-sfz` 的 `VoicePool` 有确定性窃取，但它是**全局 512 声部**、且 victim 选择是另一份口径 ⇒ 两套形状要一条 ADR（未闭合） |
-//! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | 与 `crate::drums` 的 needs-3 同族：模型若禁止这种组合，本条删除（未闭合） |
+//! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | ⭐ ⭐ **本单已闭合**：引擎侧 SFZ 池**采纳引擎既有那一套**（`yeban_dsp::polysynth::PolySynth` 的三段键 `(层级, 触发序号, 槽位下标)`，见 [`SfzVoicePool::select_victim`]）＋ 3 ms 指数淡出（`yeban-sfz` 的 `StealFade` 形状、**同一把** `steal_fade_frames` 舵）。`yeban_sfz::voice_pool::VoicePool::select_victim` 是**它自己那一份**（`(层级, 注入电平, 序号, 下标)` ＋ 立即接管），且那个池**不被引擎使用** ⇒ ⛔ 不构成"两份实现"。落地：池满走 `steal` —— victim 在自己槽里淡出、新声部**挂起在同一槽**（`pending`）⇒ 定容池⛔ 不需要额外 slack 槽；真丢弃只剩"挂起者还没发声就被再一次换掉"（计 `dropped`，⛔ 不静默），窃取计 `stolen`（判据 S8/S19）|
+//! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）仍挂在 [`crate::drums`] 的 `needs-3`（属模型面，本单⛔ 不动）|
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 本步只把它做成**可经公开路径调用的 API**） | `yeban-model` 里 SFZ 命中只有一行注释（`model/src/lib.rs:16`）、`DeviceKind` 四档没有 sampler ⇒ 今天只能由引擎 API（[`crate::snapshot::EngineSnapshot::with_sfz`] ＋ [`SfzPlan::prepare_with_samples`]）显式注入。**"SFZ 如何进 `YebanProjectV1`"仍未裁**（⛔ 不发明模型语义：本步不加 `DeviceKind` 档、不改 schema）（未闭合、属模型面） |
 //! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **步 3 只闭合了它的"多采样／每区域独立 PCM"那一半**；循环、`ampeg_*`、`off_mode`、`group`/`off_by` 仍完全未做（未闭合） |
@@ -150,6 +150,9 @@
 
 use std::collections::BTreeMap;
 
+// ⭐ 窃取淡出的**帧数口径**：引擎里 PolySynth 用的就是这一个（3 ms × 采样率，
+// 上限 0.5 s、下限 1 帧）⇒ SFZ 池与复音池共用**同一个**舵，⛔ 不是第二份常数。
+use yeban_dsp::polysynth::steal_fade_frames_for;
 use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{Instrument, Region, RegionQuery};
@@ -157,6 +160,10 @@ use yeban_sfz::instrument::{Instrument, Region, RegionQuery};
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
 use yeban_sfz::playback::{RenderRates, SampleSpan};
+// ⭐ 衰减底（−60 dBFS）取自 `yeban-sfz` 的 [`StealFade`](yeban_sfz::voice_pool::StealFade)：
+// 引擎侧的 SFZ 窃取淡出与该库的 3 ms 指数淡出**同形状**（`FLOOR^(n/N)`），
+// ⛔ 不是引擎自造的一条包络（victim **选择**口径则由引擎自己拥有，见 `SfzVoicePool::select_victim`）。
+use yeban_sfz::voice_pool::STEAL_FADE_FLOOR;
 
 /// 已加载的 SFZ 乐器：**文本 + 元数据**（⛔ 不含借用式解析结果）。
 #[derive(Debug, Clone)]
@@ -325,8 +332,18 @@ impl SfzInstrument {
                     continue;
                 };
                 let mut position = start;
-                let region_written =
-                    mix_span_into(&source.pcm, &mut position, rate, gain, source_end, out);
+                // 离线/摊平这条路**不窃取**：淡出状态恒为 [`FadeRamp::NONE`]
+                // （`gain == 1.0` ⇒ 那个逐帧乘法逐位不变）。
+                let mut fade = FadeRamp::NONE;
+                let region_written = mix_span_into(
+                    &source.pcm,
+                    &mut position,
+                    rate,
+                    gain,
+                    source_end,
+                    &mut fade,
+                    out,
+                );
                 written = written.max(region_written);
             }
             written
@@ -819,7 +836,10 @@ impl PreparedSfz {
             };
             let gain = region.gain_at(note, velocity);
             let mut position = start;
-            let region_written = mix_span_into(pcm, &mut position, rate, gain, source_end, out);
+            // 摊平表的一次性调用**不窃取**（与上一条路同款：`× 1.0` 逐位不变）。
+            let mut fade = FadeRamp::NONE;
+            let region_written =
+                mix_span_into(pcm, &mut position, rate, gain, source_end, &mut fade, out);
             written = written.max(region_written);
         }
         written
@@ -921,6 +941,79 @@ fn flatten_regions(
     })
 }
 
+/// ⭐ **窃取淡出的一段斜坡**（逐帧推进；`Copy`、定长、⛔ 无指针）。
+///
+/// 形状与 [`StealFade`](yeban_sfz::voice_pool::StealFade) 的 `gain_at` **同一条**
+/// （`FLOOR^(n/N)`，`−60 dBFS` 收底）：第 0 帧 `gain == 1.0`，第 `N−1` 帧约 `1.2e-3`，
+/// 走完 `N` 帧后归 `false` 并把 `gain` 置 `0.0`（⇒ 与接管者之间不留跃变）。
+///
+/// ⚠ **非淡出**用 [`FadeRamp::NONE`]（`decay == 1.0`）：逐帧那个乘法是 `× 1.0`，
+/// 在 binary32 下**逐位不变** ⇒ 离线/摊平那条路与接线前的读数一字不差。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FadeRamp {
+    /// 是否仍在淡出（`false` ⇒ [`Self::NONE`] 语义，逐帧增益恒 `1.0`）。
+    fading: bool,
+    /// 剩余淡出帧数（`fading == true` 时恒 `>= 1`）。
+    remaining: u32,
+    /// 当前逐帧增益（非淡出恒 `1.0`）。
+    gain: f32,
+    /// 每帧乘的衰减因子 `FLOOR^(1/N)`（触发期算好 ⇒ ⛔ 逐样本无 `powf`）。
+    decay: f32,
+}
+
+impl FadeRamp {
+    /// **不淡出**（`decay == 1.0` ⇒ 逐帧乘法是恒等）。
+    pub const NONE: Self = Self {
+        fading: false,
+        remaining: 0,
+        gain: 1.0,
+        decay: 1.0,
+    };
+
+    /// 按**帧数**构造一段 3 ms 指数淡出；`frames == 0` ⇒ [`Self::NONE`]（硬窃取）。
+    ///
+    /// `decay = STEAL_FADE_FLOOR^(1/frames)` 用 `f64` 算一次（**触发期**，
+    /// 与 PolySynth 的 `note_on` 允许 `exp` 同一条纪律）⇒ 逐样本只有一次乘法。
+    #[must_use]
+    pub fn new(frames: u32) -> Self {
+        if frames == 0 {
+            return Self::NONE;
+        }
+        let decay = f64::from(STEAL_FADE_FLOOR).powf(1.0 / f64::from(frames)) as f32;
+        Self {
+            fading: true,
+            remaining: frames,
+            gain: 1.0,
+            decay,
+        }
+    }
+
+    /// 是否仍在淡出（`false` ⇒ 未淡出**或**已走完）。
+    #[must_use]
+    pub const fn is_fading(&self) -> bool {
+        self.fading
+    }
+
+    /// 剩余淡出帧数（非淡出恒 `0`）。
+    #[must_use]
+    pub const fn remaining(&self) -> u32 {
+        self.remaining
+    }
+
+    /// 推进一帧；返回 `false` 表示**淡出已走完**（调用方应交出剩余帧）。
+    fn advance(&mut self) -> bool {
+        self.remaining = self.remaining.saturating_sub(1);
+        self.gain *= self.decay;
+        if self.remaining == 0 {
+            self.gain = 0.0;
+            self.fading = false;
+            false
+        } else {
+            true
+        }
+    }
+}
+
 /// ⭐ **全仓唯一的逐样本混音循环**（线性插值 ＋ 增益乘加 ＋ 源采样终点）。
 ///
 /// `position` 是**可变**的源采样位置 ⇒ 无状态的一次性调用
@@ -935,6 +1028,10 @@ fn flatten_regions(
 /// * 实时声部给同一个 [`PreparedRegion::span_bounds`]（触发期抄下）；
 /// * 离线 [`SfzInstrument::render_note_into`] 给同一份归约。
 ///
+/// ⭐ `fade` 是**窃取淡出**：非淡出传 [`FadeRamp::NONE`]（`× 1.0` 逐位不变）；
+/// 淡出中**写满 `remaining` 帧就返回**（`written == remaining`）⇒ 调用方可以就地
+/// 提升挂起声部、用**同一段**代码继续写剩下的帧。
+///
 /// ⚠ **零分配、零锁、零 I/O**：只读 `pcm`、原地写 `out` [MUST-GATE-001]。
 pub(crate) fn mix_span_into(
     pcm: &[f32],
@@ -942,6 +1039,7 @@ pub(crate) fn mix_span_into(
     rate: f32,
     gain: f32,
     source_end: u64,
+    fade: &mut FadeRamp,
     out: &mut [f32],
 ) -> usize {
     let mut written = 0usize;
@@ -952,9 +1050,13 @@ pub(crate) fn mix_span_into(
         }
         let frac = *position - index as f32;
         let sample = pcm[index] * (1.0 - frac) + pcm[index + 1] * frac;
-        *slot += sample * gain;
+        // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**。
+        *slot += sample * gain * fade.gain;
         *position += rate;
         written += 1;
+        if fade.fading && !fade.advance() {
+            break;
+        }
     }
     written
 }
@@ -962,8 +1064,11 @@ pub(crate) fn mix_span_into(
 /// 每轨的 **SFZ 声部数上限**（定长池）。
 ///
 /// ⚠ 与 `yeban-sfz` 的**全局 512 声部** `VoicePool` 是**两套形状**：那个池管
-/// `group`/`off_by`/`note_polyphony` 一类语义与它自己的 victim 选择，本池只管
-/// "本轨有哪几个采样在响" ⇒ 窃取口径要一条 ADR（模块头 sfz-needs-2）。
+/// `group`/`off_by`/`note_polyphony` 一类语义，且它的 `note_on` 走**立即接管**
+/// （把 victim 句柄交还调用方、由渲染器对残余输出淡出）；本池只管"本轨有哪几个
+/// 采样在响"，victim 选择与淡出都在池**内**（见 [`SfzVoicePool::select_victim`]）。
+/// ⚠ 那个池**不被引擎使用**（引擎只从 `yeban-sfz` 借区域选择/速率/增益/`StealFade`）
+/// ⇒ 它的 `select_victim` 是**它自己那一份**，⛔ 不构成"引擎里有两份实现"。
 pub const SFZ_VOICES_PER_TRACK: usize = 16;
 
 /// ✂️ **实时侧的一个 SFZ 声部**：定长、`Copy`、无指针 [ARCH-RT-001]。
@@ -1113,30 +1218,102 @@ impl SfzVoice {
 /// * **渲染**（[`Self::render_into`]）：只读 `&PreparedSfz`、原地写 `out` ⇒ 零分配；
 /// * **退休**是**池内**状态翻转（`active = false`）⇒ ⛔ 不碰快照退役队列
 ///   （退役归属不变：旧快照仍由 `crate::snapshot` 的 `RetireProducer` 交回控制线程）；
-/// * 池满（> [`SFZ_VOICES_PER_TRACK`] 条区域同时匹配）⇒ **丢弃并计数**
-///   （[`Self::dropped`]）；⛔ 不 panic、⛔ 不扩容、⛔ 不发明窃取口径（sfz-needs-2）。
+/// * 池满（> [`SFZ_VOICES_PER_TRACK`] 条区域同时匹配）⇒ ⭐ **窃取**（⛔ 不是丢弃）：
+///   按 [`Self::select_victim`] 的三段键选 victim，victim 在自己的槽里走
+///   [`FadeRamp`]（3 ms 指数淡出），新声部**挂起**在同一槽、淡出走完即接管
+///   （[`Self::pending_count`]）；⛔ 不 panic、⛔ 不扩容。
+///   ⭐ **真丢弃**只剩一种情形：某槽的挂起者还没轮到发声就被**再一次**窃取换掉
+///   ⇒ 计入 [`Self::dropped`]（累计、单调），⛔ 不静默。
+///
+/// # ⭐ victim 选择口径（**引擎既有那一套**，与 `yeban_dsp::polysynth::PolySynth` 同形）
+///
+/// 排序键（字典序，取最小者，见 [`Self::select_victim`]）：
+/// `(层级, 触发序号, 槽位下标)`。层级 `0` ＝ **正在淡出**（即 PolySynth 的"已在
+/// Release **或**电平 < −60 dBFS"那一档；本池⛔ 无包络、也⛔ 无电平注入 ⇒ 只剩
+/// "已在淡出"这一条可判），层级 `1` ＝ 其余在响的声部；同层级取**触发最早**者、
+/// 仍并列取**下标最小**者。三级合起来是全序 [ARCH-DET-001]。
+///
+/// ⚠ `yeban_sfz::voice_pool::VoicePool::select_victim` 是**另一份**（它自己那份：
+/// `(层级, 注入电平 dBFS, 触发序号, 下标)`，且走**立即接管**把 victim 句柄交还调用方）
+/// —— 那个池**不被引擎使用**（见 [`SFZ_VOICES_PER_TRACK`]）⇒ ⛔ 引擎里没有"两份实现"。
+///
+/// ⭐ 本条同时裁决了模块头登记的那处"立即接管 vs 额外 slack 槽"：**slack 就在槽内**
+/// （`pending` 与 victim 共用同一个槽，与 `PolySynth` 的 `PendingNote` 同款）
+/// ⇒ 定容池不需要第 17 个槽，⛔ 也不是"立即接管"。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SfzVoicePool {
     /// 定长声部表（下标稳定 ⇒ 触发分配是确定性的：取最低空闲槽 [ARCH-DET-001]）。
     voices: [SfzVoice; SFZ_VOICES_PER_TRACK],
-    /// 因池满被丢弃的声部数（**累计、单调递增**；与 [`Self::active_count`] 的量规配对）。
+    /// 每槽**挂起**的待接管声部（淡出窗口里与 victim 共用一个槽 ⇒ 定容池也能同时
+    /// 容纳"正在淡出的旧声部"与"刚开始的新声部"，⛔ 不需要额外的 slack 槽）。
+    pending: [SfzVoice; SFZ_VOICES_PER_TRACK],
+    /// 该槽是否有挂起声部。
+    pending_active: [bool; SFZ_VOICES_PER_TRACK],
+    /// 每槽的窃取淡出状态（非淡出恒 [`FadeRamp::NONE`]）。
+    fade: [FadeRamp; SFZ_VOICES_PER_TRACK],
+    /// 每槽最近一次触发的序号（越大越晚；victim 键的第二段）。
+    order: [u64; SFZ_VOICES_PER_TRACK],
+    /// 下一个触发序号（单调递增、`wrapping_add`）。
+    order_counter: u64,
+    /// 窃取淡出帧数（默认 3 ms × 采样率；`0` ＝ 硬窃取，判据可注入）。
+    steal_fade_frames: u32,
+    /// 因池满被**丢弃**的声部数（**累计、单调递增**；与 [`Self::active_count`] 的量规配对）。
     dropped: u64,
+    /// 池满时**窃取**（换掉别人）的声部数（**累计、单调递增**）。
+    stolen: u64,
 }
 
 impl SfzVoicePool {
-    /// 空池（⛔ 无分配：整个池是栈上/结构体内的定长数组）。
+    /// 空池（⛔ 无分配：整个池是栈上/结构体内的定长数组）；淡出帧数按 `sample_rate` 定。
     #[must_use]
-    pub const fn empty() -> Self {
+    pub fn new(sample_rate: f32) -> Self {
         Self {
             voices: [SfzVoice::EMPTY; SFZ_VOICES_PER_TRACK],
+            pending: [SfzVoice::EMPTY; SFZ_VOICES_PER_TRACK],
+            pending_active: [false; SFZ_VOICES_PER_TRACK],
+            fade: [FadeRamp::NONE; SFZ_VOICES_PER_TRACK],
+            order: [0; SFZ_VOICES_PER_TRACK],
+            order_counter: 0,
+            steal_fade_frames: steal_fade_frames_for(sample_rate),
             dropped: 0,
+            stolen: 0,
         }
+    }
+
+    /// 空池（48 kHz 的 3 ms 淡出）；引擎侧用 [`Self::new`] 传**真实采样率**。
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::new(48_000.0)
+    }
+
+    /// 采样率变化（快照边界）：重算 3 ms 的帧数。
+    ///
+    /// ⚠ **在响的淡出窗口不重算** —— 它的帧数在窃取那一刻就定下了
+    /// （与 `PolySynth` 的 `start_steal_fade` 同一条口径）。
+    pub fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.steal_fade_frames = steal_fade_frames_for(sample_rate);
+    }
+
+    /// 覆盖窃取淡出帧数（**判据/注入用**；`0` ＝ 硬窃取）。
+    ///
+    /// 产物路径由采样率决定；存在的理由是"淡出确实生效"这条判据必须能对着
+    /// **硬窃取**变红（与 `PolySynth::set_steal_fade_frames` 同款）。
+    pub fn set_steal_fade_frames(&mut self, frames: u32) {
+        self.steal_fade_frames = frames;
+    }
+
+    /// 当前窃取淡出帧数（默认 3 ms × 采样率）。
+    #[must_use]
+    pub const fn steal_fade_frames(&self) -> u32 {
+        self.steal_fade_frames
     }
 
     /// ⭐ **为一个音符建声部**：**每一条匹配区域**占一个槽（多匹配 ＝ 叠加）。
     ///
-    /// 返回**新建的声部数**（0 ＝ 没有区域匹配，或匹配的区域不产生采样输出）。
-    /// 覆盖度：池满时多出来的区域被丢弃并计入 [`Self::dropped`]。
+    /// 返回**本次占用空槽的声部数**（0 ＝ 没有区域匹配、匹配的区域不产生采样输出，
+    /// 或池满走了窃取 —— 窃取占的是**别人**的槽，⛔ 不计入"新建"）。
+    /// 覆盖度：池满时多出来的区域走 [`Self::steal`]（记 [`Self::stolen`]）；
+    /// 只有"挂起者被换掉"才是真丢弃（记 [`Self::dropped`]，⛔ 不静默）。
     ///
     /// ⭐ 步 3：每个声部抄下**该区域自己**的 `sample_index`（多采样）与 `span` 归约出的
     /// **源起点**（`offset`）；`NO_SAMPLE` 的区域⛔ 不建声部。
@@ -1189,73 +1366,231 @@ impl SfzVoicePool {
             );
             match self.voices.iter().position(|voice| !voice.active) {
                 Some(index) => {
+                    self.order_counter = self.order_counter.wrapping_add(1);
+                    self.order[index] = self.order_counter;
                     self.voices[index] = voice;
+                    self.pending_active[index] = false;
+                    self.fade[index] = FadeRamp::NONE;
                     created += 1;
                 }
-                None => self.dropped = self.dropped.saturating_add(1),
+                // ⭐ 池满 ⇒ **窃取**（sfz-needs-2 的落地点）；⛔ 不再丢弃。
+                None => self.steal(voice),
             }
         }
         created
+    }
+
+    /// ⭐ **池满时换掉一个声部**（`trigger_note` 的池满分支）。
+    ///
+    /// * **软窃取**（`steal_fade_frames > 0`，默认 3 ms）：victim 继续占着自己的槽、
+    ///   进入 [`FadeRamp`] 淡出；新声部**挂起**在同一槽的 `pending` 上，淡出走完
+    ///   由 [`Self::render_into`] 就地接管 ⇒ "旧声部淡出"与"新声部起音"**永不同时
+    ///   发声**（不可能叠加爆音），且定容池不需要额外的槽。
+    /// * **硬窃取**（帧数 `0`，仅注入路径）：立即接管，⛔ 不留淡出。
+    ///
+    /// ⚠ 若选中的 victim **已经有挂起者**（还没轮到发声），那个挂起者被换掉
+    /// ⇒ 它是一次**真丢弃**：计入 [`Self::dropped`]（⛔ 不静默）。
+    fn steal(&mut self, voice: SfzVoice) {
+        let Some(victim) = self.select_victim() else {
+            // 不可达：容量 ≥ 1 且"池满"意味至少一个槽 active。
+            self.dropped = self.dropped.saturating_add(1);
+            return;
+        };
+        self.order_counter = self.order_counter.wrapping_add(1);
+        let order = self.order_counter;
+        let fade = FadeRamp::new(self.steal_fade_frames);
+        self.stolen = self.stolen.saturating_add(1);
+        if !fade.is_fading() {
+            self.voices[victim] = voice;
+            self.order[victim] = order;
+            self.pending_active[victim] = false;
+            self.fade[victim] = FadeRamp::NONE;
+            return;
+        }
+        if self.pending_active[victim] {
+            // 上一位挂起者还没发声就被换掉 ⇒ 真丢弃（⛔ 不静默）。
+            self.dropped = self.dropped.saturating_add(1);
+        }
+        self.pending[victim] = voice;
+        self.pending_active[victim] = true;
+        self.order[victim] = order;
+        self.fade[victim] = fade;
+    }
+
+    /// ⭐ **确定性窃取目标**（同一输入序列永远同一结果 [ARCH-DET-001]）。
+    ///
+    /// 排序键（字典序，取最小者；见类型文档的"victim 选择口径"）：
+    /// `(层级, 触发序号, 槽位下标)`；层级 `0` ＝ 正在淡出，`1` ＝ 其余。
+    /// 全程线性扫描、零分配；池空 ⇒ `None`（调用方按"不可达"计数，⛔ 不 panic）。
+    #[must_use]
+    pub fn select_victim(&self) -> Option<usize> {
+        let mut best: Option<(u8, u64, u32)> = None;
+        let mut best_index = None;
+        for (index, voice) in self.voices.iter().enumerate() {
+            if !voice.active {
+                continue;
+            }
+            // `0` = 正在淡出（优先被换）；`1` = 其余在响的声部。
+            let key = (
+                u8::from(!self.fade[index].is_fading()),
+                self.order[index],
+                index as u32,
+            );
+            if best.is_none_or(|current| key < current) {
+                best = Some(key);
+                best_index = Some(index);
+            }
+        }
+        best_index
     }
 
     /// 渲染本池的**全部活声部**到 `out`（`position` ＝ 本量子的**引擎绝对**起点）。
     ///
     /// **零分配**：只读 `plan` 的样本 PCM 与已有数组、原地写 `out` [MUST-GATE-001]。
     /// ⭐ 每个声部读**它自己**那份样本（[`SfzVoice::sample_index`]）。
+    /// ⭐ 正在淡出的槽在**本块内**走完淡出时就地接管挂起者、用同一段
+    /// [`mix_span_into`] 继续写剩下的帧（帧精确、⛔ 不留一个量子的空档）。
     pub fn render_into(&mut self, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
-        for voice in &mut self.voices {
-            if !voice.active {
-                continue;
-            }
-            // 终点口径：音符先到终点 ⇒ 本量子只渲染到它为止。
-            let remaining = voice
+        for index in 0..SFZ_VOICES_PER_TRACK {
+            self.render_slot(index, plan, position, out);
+        }
+    }
+
+    /// 渲染**一个槽**（`render_into` 的逐槽体；拆出来是为了借用清晰）。
+    fn render_slot(&mut self, index: usize, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
+        let mut offset = 0usize;
+        let mut victim_stopped = false;
+        // --- 1) 淡出段：victim 在自己的窗口里继续发声，逐帧乘衰减增益 ---
+        if self.voices[index].active && self.fade[index].is_fading() {
+            let voice = self.voices[index];
+            let limit = voice
                 .end_sample
                 .saturating_sub(position)
                 .min(out.len() as u64) as usize;
-            if remaining == 0 {
-                voice.silence();
-                continue;
+            if limit == 0 {
+                // 引擎终点先到 ⇒ 本槽（含挂起者）退休，⛔ 不静默地继续跑。
+                self.silence_slot(index);
+                return;
             }
             let Some(sample) = plan.sample(voice.sample_index) else {
-                // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休，⛔ 不静音地继续跑。
-                voice.silence();
-                continue;
+                // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休。
+                self.silence_slot(index);
+                return;
             };
+            let mut local = voice.position;
+            let mut fade = self.fade[index];
             let written = mix_span_into(
                 sample.pcm(),
-                &mut voice.position,
+                &mut local,
                 voice.rate,
                 voice.gain,
                 voice.source_end,
-                &mut out[..remaining],
+                &mut fade,
+                &mut out[..limit],
             );
-            // ⭐ 用样本自然结束：源位置走完 ⇒ 退休（⛔ 无包络、⛔ 无循环）。
-            if written < remaining {
-                voice.silence();
-            }
+            self.voices[index].position = local;
+            self.fade[index] = fade;
+            offset = written;
+            // 源/引擎终点在淡出走完之前先到 ⇒ victim 已经静音（见下面第 2 步）。
+            victim_stopped = written < limit;
         }
+        // --- 2) 提升：淡出走完 **或** victim 提前静音 ⇒ 挂起者接管这一槽 ---
+        if self.pending_active[index] && (!self.fade[index].is_fading() || victim_stopped) {
+            self.voices[index] = self.pending[index];
+            self.pending_active[index] = false;
+            self.fade[index] = FadeRamp::NONE;
+        }
+        // --- 3) 正常段：本槽现在的声部写本块剩余帧 ---
+        let voice = self.voices[index];
+        if !voice.active {
+            return;
+        }
+        // 引擎终点（音符先到终点 ⇒ 本量子只渲染到它为止）。
+        if voice.end_sample <= position.saturating_add(offset as u64) {
+            self.silence_slot(index);
+            return;
+        }
+        let remaining = voice
+            .end_sample
+            .saturating_sub(position)
+            .min(out.len() as u64) as usize;
+        let Some(sample) = plan.sample(voice.sample_index) else {
+            self.silence_slot(index);
+            return;
+        };
+        let mut local = voice.position;
+        let mut fade = self.fade[index];
+        let written = mix_span_into(
+            sample.pcm(),
+            &mut local,
+            voice.rate,
+            voice.gain,
+            voice.source_end,
+            &mut fade,
+            &mut out[offset..remaining],
+        );
+        self.voices[index].position = local;
+        self.fade[index] = fade;
+        // ⭐ 用样本自然结束：源位置走完 ⇒ 退休（⛔ 无包络、⛔ 无循环）。
+        if written < remaining - offset {
+            self.silence_slot(index);
+        }
+    }
+
+    /// 释放**一个**槽：声部与挂起者一起退休（淡出状态归 [`FadeRamp::NONE`]）。
+    fn silence_slot(&mut self, index: usize) {
+        self.voices[index].silence();
+        self.pending_active[index] = false;
+        self.fade[index] = FadeRamp::NONE;
     }
 
     /// 释放**全部**声部（`seek` / 换音源 ⇒ ⛔ 不留上一件音源的尾巴）。
     ///
-    /// ⚠ 保留 [`Self::dropped`]：它是**累计**读数（与"活声部数"这张量规配对），
-    /// 与 `DrumMachine::reset` 保留 `drum_hits` 同口径。
+    /// ⚠ 保留 [`Self::dropped`] / [`Self::stolen`]：它们是**累计**读数（与"活声部数"
+    /// 这张量规配对），与 `DrumMachine::reset` 保留 `drum_hits` 同口径。
     pub fn silence(&mut self) {
-        for voice in &mut self.voices {
-            voice.silence();
+        for index in 0..SFZ_VOICES_PER_TRACK {
+            self.silence_slot(index);
         }
     }
 
-    /// 活声部数（**量规**：可升可降）。
+    /// 活声部数（**量规**：可升可降；淡出中的声部**仍计**）。
     #[must_use]
     pub fn active_count(&self) -> usize {
         self.voices.iter().filter(|voice| voice.active).count()
     }
 
+    /// 挂起声部数（**量规**：某个槽正在淡出、新声部等接管时的占用数）。
+    #[must_use]
+    pub fn pending_count(&self) -> usize {
+        self.pending_active.iter().filter(|active| **active).count()
+    }
+
     /// 因池满被丢弃的声部数（**累计**，单调递增）。
+    ///
+    /// ⚠ 窃取**不**计入这里（那是 [`Self::stolen`]）；只有"挂起者被换掉"这类
+    /// **真丢弃**才计入（⛔ 不静默）。
     #[must_use]
     pub const fn dropped(&self) -> u64 {
         self.dropped
+    }
+
+    /// 池满时**窃取**（换掉别人）的声部数（**累计**，单调递增）。
+    #[must_use]
+    pub const fn stolen(&self) -> u64 {
+        self.stolen
+    }
+
+    /// 某槽剩余的窃取淡出帧数（`0` ＝ 不在淡出；下标越界也返回 `0`）。
+    #[must_use]
+    pub fn fade_remaining_at(&self, index: usize) -> u32 {
+        self.fade.get(index).map_or(0, |fade| {
+            if fade.is_fading() {
+                fade.remaining()
+            } else {
+                0
+            }
+        })
     }
 
     /// 只读声部表（判据用）。

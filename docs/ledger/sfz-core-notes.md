@@ -413,7 +413,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 件 | 归属 | 说明 |
 | :--- | :--- | :--- |
 | `SfzPlan` | 快照（`BTreeMap<EntityId, SfzPlan>`） | 控制侧投影；重数据（区域表 ＋ PCM），与 `insert::ConvolutionPlan` 同族 |
-| `SfzVoice` / `SfzVoicePool` | `SynthEngine` 的轨道槽 | 定长 `[SfzVoice; 16]`，全 `Copy`；池满**丢弃 ＋ 计数**，⛔ 无窃取 |
+| `SfzVoice` / `SfzVoicePool` | `SynthEngine` 的轨道槽 | 定长 `[SfzVoice; 16]`，全 `Copy`；步 2 是池满**丢弃 ＋ 计数**、⛔ 无窃取 ⇒ ⭐ **任务单 `#70` 改为窃取口径**（见 §13.4） |
 | `render_track(track, schedule, sfz, out)` | 实时路径 | 第 3 参是**借用**的快照摊平表（PCM 借用快照，⛔ 不 clone `Vec`） |
 | `EngineSnapshot::with_sfz(track, plan)` | **唯一**绑定入口 | `from_project` 不填 ⇒ 产品路径默认空表 ⇒ 逐位不变 |
 
@@ -435,18 +435,18 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | ⭐ **反向对照（接线前）** | **不给 `sfz`** 的端到端指纹 == 改动源码前实测值：`0x71dca4dc55b44df5` / `0x6eee378072730521`（`tests/sfz_instrument.rs` 的 S5） |
 | 端到端（SFZ 臂） | 非零 1716、峰值 0.21920355、指纹 `0x5587041753dfe375` ≠ 对照臂 `0xd50d599c66c92565` |
 | 分派次序 | 鼓机＋SFZ 的输出对"只有鼓机"**逐位相同**；无鼓机时同一份 SFZ 非零 127 |
-| 池满（17 条匹配区域） | `created = 16`、`dropped = 1`（⛔ 不静默） |
-| 尺寸（步 2） | `SfzVoice = 32 B`、`SfzVoicePool = 520 B`、`SynthEngine = 89936`、`EngineRuntime = 160784 < 196608`（192 KiB）⇒ ⭐ 步 3 改为 **40 / 648 / 91984 / 162832** |
+| 池满（17 条匹配区域） | 步 2：`created = 16`、`dropped = 1`（⛔ 不静默）⇒ ⭐ **任务单 `#70` 已改为窃取口径**：`created = 16`、`stolen = 1`、`dropped = 0`（见 §13.4） |
+| 尺寸（步 2） | `SfzVoice = 32 B`、`SfzVoicePool = 520 B`、`SynthEngine = 89936`、`EngineRuntime = 160784 < 196608`（192 KiB）⇒ ⭐ 步 3 改为 **40 / 648 / 91984 / 162832** ⇒ ⭐ **任务单 `#70` 再改为 40 / 1712 / 109152 / 180000 < 196608**（见 §13.4） |
 | 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73**（⭐ 步 3 后逐字不变） |
 | 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B**（广播路径；步 3 后逐字不变） |
 
-### needs（⭐ 下表状态截至**任务单 `#68`**，即 2026-10-16 的 R711 落地；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
+### needs（⭐ 下表状态截至**任务单 `#70`**，即 2026-10-16 的窃取/同轨信号落地；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
 
 | # | 缺口 | 状态 |
 | :--- | :--- | :--- |
 | sfz-needs-1 | **轨推子/静音未乘到 SFZ 声部** | ⭐ ⭐ **已闭合（任务单 `#68`；裁决 R711）**：**乐器层**拥有乐器内增益（`volume_gain`／`velocity_gain[128]`／`key_crossfade`／`velocity_fade_*`／`amp_veltrack`）、**引擎层**拥有轨增益（推子／静音／独奏）⇒ **两者相乘、⛔ 不重复**。`snapshot::project_schedules` 把**同一个** `track_gain_scale(...)` 结果写进 `NoteSchedule::track_gain`，`SfzVoicePool::trigger_note` 乘在 `region.gain_at(...)` 之外 ⇒ ⭐ 与鼓机**同径**；S17／S18 钉住（读数见 §13.3） |
-| sfz-needs-2 | **池满只丢弃 ＋ 计数，无窃取口径** | **未闭合**：`yeban-sfz` 的 `VoicePool` 是全局 512 声部、victim 选择是另一份口径 ⇒ 要一条 ADR |
-| sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（引擎＝鼓机优先，SFZ 池被释放） | **未闭合**：与 `crate::drums` 的 needs-3 同族（模型若禁止这种组合，本条删除） |
+| sfz-needs-2 | **池满只丢弃 ＋ 计数，无窃取口径** | ⭐ ⭐ **已闭合（任务单 `#70`）**：引擎侧 SFZ 池**采纳引擎既有那一套**（`PolySynth` 的三段键 `(层级, 触发序号, 槽位下标)`）＋ 3 ms 指数淡出（`StealFade` 形状、**同一把** `steal_fade_frames` 舵）；`yeban-sfz::VoicePool::select_victim` 是**它自己那一份**且**不被引擎使用** ⇒ ⛔ 不是"两份实现"。落地：池满走 `steal`（victim 在自己槽里淡出、新声部**挂起在同一槽**）；真丢弃只剩"挂起者被再一次换掉"（计 `dropped`，⛔ 不静默）、窃取计 `stolen`；S8／S19 钉住（读数见 §13.4） |
+| sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（引擎＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **已闭合（信号腿；任务单 `#70`）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 `crate::drums` §4.1 一致 ⇒ ⛔ 不改叠加）；落地＝新增**投影读数** `SynthEngine::armed_sources`／`ignored_sources`（三件同轨 ⇒ 武装 `3`、被忽略 `2`）；S20 钉住（读数见 §13.4）。⚠ **模型面**那一半仍挂在 `crate::drums` 的 `needs-3` |
 | sfz-needs-4 | **`span` 终点引擎侧已应用、离线/摊平侧未应用** | ⭐ **已闭合（步 3）**：三条路共用 `reduce_span` 一份归约 ⇒ `start` ＋ `end` 都应用；S3/S13 逐样本差 **0e0**（读数见 §13.2） |
 | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（**"SFZ 如何进 `YebanProjectV1`"未裁**） | **未闭合（模型面）**：本步只把它做成**可经公开路径调用的 API**（`SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz`，S16 端到端）；⛔ 不加 `DeviceKind` 档、⛔ 不改 schema |
 | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by`** | **部分闭合**：步 3 只闭合了它的"多采样／每区域独立 PCM"那一半；其余仍完全未做 |
@@ -611,4 +611,104 @@ S3/S13 的**逐样本最大绝对差 = 0e0** 覆盖**整段**（含显式 `offse
 ⛔ **本步不做**（如实登记）：`loop_*`／`ampeg_*`／`off_mode`／`group`/`off_by`/`note_polyphony`／
 模型层绑定（`needs-5`）／池满窃取（`needs-2`，需 ADR）／鼓机＋SFZ 同轨（`needs-3`）／
 新依赖（⛔ 未加）／推远端。⚠ 边界：`yeban-sfz`／`yeban-app`／`yeban-model`／`schema` **一个字未动**
+⇒ 只跑 engine 四门（＋仓级 `light`）。
+
+### 13.4 两条同族缺口：池满**窃取**（`sfz-needs-2`）＋ 三件同轨的**可读信号**（`sfz-needs-3`）（2026-10-16，任务单 `#70`）
+
+本步只做这两条：⛔ 不碰循环／`ampeg`／`off_mode`／`group`/`off_by`／`note_polyphony`／
+模型层绑定（`needs-5`）／`needs-8`／新依赖。⚠ **`yeban-sfz` 一个字未动**（见下"裁定"）。
+
+#### 甲 · 勘察：三处窃取口径（逐条带 `文件:行号`）
+
+| # | 口径 | 位置 | victim 键 | 淡出 |
+| --: | :--- | :--- | :--- | :--- |
+| ① | `yeban_dsp::polysynth::PolySynth`（**引擎已用**） | `crates/yeban-dsp/src/polysynth.rs:804-811`（`steal_priority`）、`:1205-1217`（三级比较）、`:1218`（`voice_steals`）、`:1221-1245`（软窃取） | ⭐ **三段** `(层级, 触发序号, 下标)`：层级 `0` ＝ Release **或** 包络 < `0.001`（−60 dBFS）、`1` ＝ 其余；序号 ＝ `start_sample`（最早触发） | ⭐ **软窃取**：victim 在**自己的槽**里 `start_steal_fade`（3 ms）＋ 新音符 `pending` 挂同一槽，淡出走完就地起音 ⇒ 旧淡出与新起音**不同时发声** |
+| ② | `yeban_sfz::voice_pool::VoicePool`（**引擎不用它**） | `crates/yeban-sfz/src/voice_pool.rs:500-518`（`select_victim`）、`:741-750`（`victim_key`）、`:18-25`（自述偏离） | **四段** `(层级, 注入电平 dBFS, 触发序号, 下标)`：层级 `0` ＝ retiring **或** Release、`1` ＝ 电平 < −60 dBFS、`2` ＝ 其余 | ⚠ **立即接管**：`note_on` 超限时把 victim 的槽**直接**给新声部、把 victim 句柄**交还调用方**，由渲染器对残余输出淡出 |
+| ③ | 引擎每轨 SFZ 池（**本单改前**） | `crates/yeban-engine/src/sfz_instrument.rs`（旧 `trigger_note` 的 `None => self.dropped += 1`） | ⛔ **没有**（池满 ⇒ 丢弃 ＋ 计数） | ⛔ 没有 |
+
+⇒ ⭐ **① 与 ② 的差别不在"谁最该被窃"**（两边的第一段都是"已在释放/淡出者优先"），而在
+**淡出归谁执行**：① 池**内**（槽里同时放淡出者与挂起者）、② 池**外**（句柄交还调用方）。
+② 的那个池**不被引擎使用** —— 机械读数：`grep -rn "voice_pool::VoicePool\|yeban_sfz.*select_victim"
+crates/yeban-engine/` 在**改动后**命中 **2 条，且两条都是文字**（本节引用的
+`sfz_instrument.rs:143`／`:1236` 的说明），**代码引用 0 条**
+⇒ ⭐ **引擎里今天只有一份窃取实现（①）**，本单把它作为 SFZ 池的口径。
+
+#### 甲 · 裁定与做法（`sfz-needs-2` 闭合）
+
+**裁定**：引擎每轨 SFZ 池**采纳 ①（PolySynth 三段口径）**——它已经在实时路径上、已有判据
+（`tests/steal_fade.rs`）；② 的 `select_victim` 标为**它自己那一份**（那个池不被引擎使用
+⇒ ⛔ 不构成"两份实现"）。落地：
+
+| 件 | 位置 | 做法 |
+| :--- | :--- | :--- |
+| `FadeRamp` | `sfz_instrument.rs:960-1020` | 3 ms 指数淡出的一段斜坡（`FLOOR^(n/N)`，与 `yeban-sfz` 的 `StealFade` **同形状**）；`NONE` 的 `decay == 1.0` ⇒ 非淡出路径**逐位不变** |
+| `mix_span_into` | `sfz_instrument.rs:1043-1066` | **唯一**混音循环多收一个 `&mut FadeRamp`：`(sample × gain) × fade.gain`；淡出走完即 `break`（把剩余帧交还调用方） |
+| `SfzVoicePool` | `sfz_instrument.rs:1224-1600` | 每槽多：`pending`（挂起声部）＋ `pending_active` ＋ `fade` ＋ `order`；池多 `order_counter` / `steal_fade_frames` / `dropped` / `stolen` |
+| `select_victim` | `sfz_instrument.rs:1433` | ⭐ **三段键** `(层级, 触发序号, 槽位下标)`；层级 `0` ＝ 正在淡出（PolySynth 那一档里本池**可判**的那一条：本池⛔ 无包络、也⛔ 无电平注入） |
+| `steal` | `sfz_instrument.rs:1400` | 池满 ⇒ 软窃取（victim 淡出 ＋ 新声部挂同槽）；帧数 `0` ⇒ 硬窃取（注入用）；⭐ **挂起者被再一次换掉 ＝ 真丢弃**（计 `dropped`，⛔ 不静默） |
+| `render_slot` | `sfz_instrument.rs:1467` | **帧精确**提升：淡出在**本块内**走完 ⇒ 就地接管、用同一段循环继续写剩下的帧 |
+| 3 ms 舵 | `synth.rs:1045-1051`、`set_sample_rate` | 与复音**同一把** `steal_fade_frames`（默认 `steal_fade_frames_for(采样率)` ＝ 144 @ 48 kHz）⇒ ⛔ 不是第二份常数 |
+
+⭐ **同时裁掉模块头登记的那处"立即接管 vs 额外 slack 槽"**（`voice_pool.rs:18-25` 的自述偏离）：
+**slack 就在槽内**（`pending` 与 victim 共用一个槽，与 `PolySynth` 的 `PendingNote` 同款）
+⇒ 定容池不需要第 17 个槽、也不必"立即接管"。⚠ 该裁定**只落在引擎侧**：`yeban-sfz` 的
+那个池仍保留它的"立即接管 ＋ 句柄交还"（那是它与**自己的渲染器**的契约）⇒ 文件未动。
+
+#### 乙 · 勘察与裁定（`sfz-needs-3` 闭合）
+
+**勘察**：分派次序是 **鼓机 ＞ SFZ ＞ 复音**（`synth.rs:1894` 触发、`:1898`／`:1907`／
+`:1914` 一带渲染）⇒ 三件同轨时鼓机赢、SFZ 池被 `slot.sfz.silence()` **释放**
+（既有判据 S7 钉住"输出对只有鼓机**逐位相同**"）。
+
+**裁定**：**维持**该次序（与 `crates/yeban-engine/src/drums.rs` §4.1"一条轨至多一件音源"
+的既有裁决一致）⇒ ⛔ **不改成叠加**。真正缺的是"**用户看得出被忽略了**" ⇒ 落地为一个
+**投影读数**（⛔ 不改输出）：
+
+| 件 | 位置 | 做法 |
+| :--- | :--- | :--- |
+| `armed_sources: [u8; 16]` | `synth.rs:960` / `:987` / `:1889` | `render_track` 每量子写一次：复音**恒在场**（≥ 1）＋ 鼓机 `+1` ＋ SFZ `+1` |
+| `SynthEngine::armed_sources` | `synth.rs:1062` | `None` ＝ **还没渲染过**（⛔ 不是"0 件"） |
+| `SynthEngine::ignored_sources` | `synth.rs:1077` | ＝ `armed − 1` ⇒ 三件同轨 **`2`**、鼓机＋复音 `1`、只有复音 `0` |
+
+#### 本步读数（`cargo test -p yeban-engine --locked`；`sfz_instrument` **20 / 20**、全套 **501**、㉙ **73 / 73**）
+
+| 判据 | 读数 |
+| :--- | :--- |
+| ⭐ **S8 池满 ⇒ 窃取**（改写） | 17 条：`建出声部 = 16；活声部 = 16；窃取 = 1；真丢弃 = 0；挂起 = 1`；33 条：`建出声部 = 16；窃取 = 17；真丢弃 = 16；挂起 = 1`；反向对照 15 条 ⇒ `窃取 = 0`／`丢弃 = 0` |
+| ⭐ **S19 窃取最旧 ＋ 3 ms 淡出**（新增） | 池满触发：`新建 = 0；窃取 = 1；丢弃 = 0；挂起 = 1；槽 0 淡出剩余 = 144；槽 0 在场音高 = 60`；淡出：`out[0] = 0.620001256`、`out[143] = 0.000650469`（**逐位** ＝ `out[0] × FLOOR^(143/144)`）、比值 `0.001049142`；走完 144 帧 ⇒ 槽 0 音高 `60 → 64`（接管者**真的出声**）；硬窃取对照臂：槽 0 **立刻** `64`、`out[143]` **逐位** ＝ `out[0]`、指纹 `0x0309113d6b8cdef3`（软）vs `0xf3e3c6f4c00a9825`（硬）≠ |
+| ⭐ **S20 三件同轨的可读信号**（新增） | 三件同轨：`武装 = Some(3)；被忽略 = Some(2)`（输出对只有鼓机**逐位相同**）；反向对照：鼓机＋复音 `Some(2)／Some(1)`、只有复音 `Some(1)／Some(0)`、**没渲染过** `None` |
+| **尺寸（重打）** | `SfzVoice = 40 B`（未变）、`SfzVoicePool = 1712`（原 648）、`SfzPlan = 88`／`PreparedSfz = 88`（未变）、`SynthEngine = 109152`（原 91984）、`EngineSnapshot = 4480`（未变）、⭐ `EngineRuntime = 180000 < 196608`（余量 **16608** 字节） |
+| **零分配（`rt_zero_alloc` ㉙）** | 10 001 量子：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；⭐ 总能量 **2999.164**（与步 2／步 3／`#68` **逐字相同**）；该档 **73 / 73** |
+
+#### ⭐ 注入打红（两条，各**只**打红本单的判据）
+
+还原自证：注入前记录 `sha256`（`sfz_instrument.rs = 63156722…`、`synth.rs = 980a7759…`、
+test 档 `sfz_instrument.rs = 0d5bb69c…`；⭐ 均为 `cargo fmt -p yeban-engine` **之后**的读数）
+＋ `git diff -- <三个文件> | wc -c = 61172`；每次还原后 `sha256sum -c` **三行全 OK**、
+该字节数**回到 61172**、三个文件里 `INJECT` 标记数 **0**。
+
+| # | 注入 | 红读数 | 变红的判据 |
+| --: | :--- | :--- | :--- |
+| ①（甲）| `trigger_note` 的池满分支**改回丢弃**（`None => dropped += 1`） | `s8`：`⭐ 第 17 条区域必须**窃取**一个槽` ⇒ `left: 0 / right: 1`（打印 `窃取 = 0；真丢弃 = 1；挂起 = 0`）；`s19`：`left: 0 / right: 1`（打印 `槽 0 淡出剩余 = 0；槽 0 在场音高 = 60`）；**18 passed / 2 failed** | S8、S19（⭐ 只这两条） |
+| ②（乙）| `render_track` 里 `armed_sources[index] = 1`（取走信号） | `s20`：`⭐ 鼓机 ＋ SFZ ＋ 复音 ⇒ 武装 3 件` ⇒ `left: Some(1) / right: Some(3)`；**19 passed / 1 failed** | S20（⭐ 只这一条） |
+
+#### ⚠ 因本单改变／需解释的既有读数（其余逐字不变）
+
+`cargo test -p yeban-engine --locked -- --nocapture` 改动前后各跑一次 ⇒ **排序归一化 diff**
+（`sort` ＋ 折叠 `finished in …s`、`0x…` 字面量）共 **107 行**（`<` 31 / `>` 38；其中**内容行**
+**69**，其余 **38** 行是 diff 的 hunk 头/分隔线），逐条归类：
+
+| 类 | 行 | 处置 |
+| :--- | :--- | :--- |
+| ⭐ **本单应改** | **20 行**（`<` 7 / `>` 13）：`[engine-sfz/S8]`（1 行 → 2 行）、`[engine-sfz/S9]`（648 → 1712／91984 → 109152／162832 → 180000）、`[engine-7/J17]` 与 `[engine-osc] O2` 的 `EngineRuntime`（162832 → 180000）、`running 18 tests → 20`、`result 18 → 20 passed`、S8 测试名、新增 S19／S20 两行 | ⭐ 池满了多 16 槽的挂起/淡出/序号状态 ＋ 两条新判据 ⇒ 尺寸与条数**应当**变；已在 S9 里逐字钉住新值 |
+| 噪声·调度 | `[MUST-GATE-012]` 的 `quanta`／`drain_calls`／`drained/pruned`／`backlog`／`wall_ms`／`audio_s`、`[engine-stats-mirror/J15] 读次数 671043 → 672417` | ⭐ 窗口内并发读数（与 §13.3 记的 668719 → 669885 **同一类**）；与 SFZ 池无关 |
+| 噪声·墙钟 | `[perf]` 四行（如 `SFZ 有排程 8 秒：12.780 → 13.171 ms`、`渲染 8 秒音频：1.703 → 3.358 ms`）、`[device-clock] elapsed`、`all doctests ran in 0.48s/0.49s` | ⭐ 微基准/墙钟；⚠ **独立复跑 `sfz_arm_perf` 三次**得 `5.108 / ~13 / ~13 ms` 的散布 ⇒ 那 2× 摆动是**当时后台编译的负载**，不是回归；⭐ 能量 `748.967`、内存 `4544` **逐字不变** |
+| 噪声·地址 | `[sfz] 两次解析的区域表地址` | 堆地址随分配器布局变 |
+| 噪声·stdout 交错 | `[assertion-bounds]`／`[mixer] 淡化帧数` 等行与 `test … ok` 粘连（`entered`／`] entered`）、开头两个空行 | ⭐ 并行测试的 stdout 交错；内容本身未变（`淡化帧数 48k=1440 96k=2880 44.1k=1323` 逐字仍在） |
+
+⇒ ⭐ **没有"无法归类"的行**：`<`／`>` 的每一条都落在上表的**本单应改**或**已归类的噪声**里。
+
+⛔ **本步不做**（如实登记）：循环／`ampeg_*`／`off_mode`／`group`/`off_by`/`note_polyphony`／
+模型层绑定（`needs-5`）／字节预算与流式（`needs-8`）／新依赖／推远端。
+⚠ 边界：`yeban-dsp`／`yeban-sfz`／`yeban-model`／`yeban-app`／`schemas` **一个字未动**
 ⇒ 只跑 engine 四门（＋仓级 `light`）。

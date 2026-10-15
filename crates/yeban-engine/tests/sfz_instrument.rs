@@ -18,7 +18,7 @@
 //! | S5 | ⭐ **反向对照（关键）** | **不给 `sfz`** 时端到端输出的 **FNV-1a 指纹**（逐位）等于**接线前**实测值 |
 //! | S6 | 端到端非静音 ＋ 真的换了音源 | 非零样本数 `> 0` ＋ 指纹与"不给 SFZ"**不同** |
 //! | S7 | 分派次序 | 鼓机 ＋ SFZ 同轨的输出对"只有鼓机"**逐位相同**；而无鼓机时 SFZ 支路**真的出声** |
-//! | S8 | 池满（> 16 条匹配区域） | `created == 16` ＋ `dropped == 1`（⛔ 不静默） |
+//! | S8 | 池满（> 16 条匹配区域） | **窃取**（⛔ 不丢弃）：`created == 16` ＋ `stolen == 1` ＋ `dropped == 0`；33 条 ⇒ 挂起者被换掉 ＝ **真丢弃**（`stolen == 17` ＋ `dropped == 16`）；未满 ⇒ 两个计数都 0 |
 //! | S9 | 尺寸 | `size_of` 读数 ＋ `EngineRuntime < 192 KiB`（与 `synth_rt_zero_alloc.rs:2570` 同一门槛） |
 //! | S10 | ⭐ **换音源 / 定位必须释放 SFZ 池**（`#66` 补做 2） | `sfz_active_voices`：触发后 **2** → 换音源后/`seek` 后 **0**；换音源那一块**复音非零 > 0**；切回 SFZ 那一块**非零 ＝ 0** |
 //! | ⭐ S11 | **多采样各播自己**（步 3） | 两条区域两条不同 `.wav` ⇒ 两条各自与"单独一条 + 它自己那份样本"的**逐位相同**，且两条之间**指纹不同**；反向对照：**对调**提供表 ⇒ 指纹变；广播版在 key=64 上播的是 a 的内容（**内容错**的机械证据） |
@@ -29,6 +29,8 @@
 //! | ⭐ S16 | **绑定注入 API 经公开路径可用（多采样）**（步 3） | `SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz` → `render_snapshot`：非零 > 0、指纹 ≠ 不给 SFZ；反向对照：广播 plan 的端到端指纹与多采样版**不同** |
 //! | ⭐ S17 | ⭐ **轨推子变化 N dB ⇒ SFZ 与鼓机输出同比例变**（本单新增；`needs-1`） | 两臂（同一份工程、只差音源）`peak(−6 dB)/peak(0 dB)` 都等于 `track_gain(−6.0)`（相对误差 ≤ 1e-5）且**互相**相等；`mute = true` ⇒ 两臂**逐位** 0；另一条轨独奏 ⇒ 两臂**逐位** 0。⚠ 量的是 `render_track` 输出（母线限制器前）|
 //! | ⭐ S18 | ⭐ **引擎层⛔ 不乘第二次力度**（本单新增；`needs-1` 的防双重计腿） | `v ∈ {0,32,64,100,127}`：引擎声部路径与**乐器层**一次性渲染**逐位相同**（手工调度表的 `gain` 显式写成 `velocity_gain(v)`）；反向对照：`velocity_gain(127) == 1.0`（恒等）⇒ S1 的 127 那条腿**抓不住**双重计 |
+//! | ⭐ S19 | ⭐ **池满 ⇒ 窃取 ＋ 3 ms 淡出**（本单新增；`sfz-needs-2`） | 池满后再触发：`stolen == 1`、`dropped == 0`、`fade_remaining == 144`（3 ms @ 48 kHz）；淡出窗口里槽位仍宣称**被窃取者**、走完 144 帧后就地换成新声部（`note` 变）；输出读数：淡出臂的第 143 帧 / 第 0 帧 ＝ `FLOOR^(143/144)`；**硬窃取对照臂**（`steal_fade_frames = 0`）⇒ 即时换人、指纹不同 |
+//! | ⭐ S20 | ⭐ **三件同轨的可读信号**（本单新增；`sfz-needs-3`） | 鼓机 ＋ SFZ ＋ 复音同轨 ⇒ `armed_sources == 3` ＋ `ignored_sources == 2`（输出仍对"只有鼓机"**逐位相同**）；反向对照：鼓机＋复音 ⇒ `2 / 1`、只有复音 ⇒ `1 / 0` |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -623,10 +625,20 @@ fn s7_drums_win_over_sfz_which_wins_over_polyphony() {
     );
 }
 
-/// S8：池满（> [`SFZ_VOICES_PER_TRACK`] 条区域同时匹配）⇒ **丢弃 ＋ 计数**，
-/// ⛔ 不 panic、⛔ 不扩容、⛔ 不发明窃取口径（已登记为 sfz-needs-2）。
+/// S8：池满（> [`SFZ_VOICES_PER_TRACK`] 条区域同时匹配）⇒ ⭐ **窃取**（⛔ 不是丢弃）。
+///
+/// # 判定量（`sfz-needs-2` 的落地）
+///
+/// * 17 条**全部匹配** ⇒ `created == 16`（窃取占的是**别人**的槽，⛔ 不计入"新建"）、
+///   `stolen == 1`、`dropped == 0`（⭐ 池满不再是丢弃）；
+/// * 33 条 ⇒ 挂起者还没轮到发声就被**再一次**换掉 ⇒ 那是**真丢弃**：
+///   `stolen == 17` ＋ `dropped == 16`（⛔ 不静默 —— 这条腿保住"丢弃计数"的语义）；
+/// * 反向对照：15 条（未满）⇒ `stolen == 0` ＋ `dropped == 0`。
+///
+/// ⚠ 本判据的**旧期望**是 `dropped == 1`（丢弃口径）；本单把它改成窃取口径
+/// —— 注入"改回丢弃"时它当场变红（读数见提交报告）。
 #[test]
-fn s8_a_full_pool_counts_drops_instead_of_silently_dropping_them() {
+fn s8_a_full_pool_steals_instead_of_silently_dropping_the_overflow() {
     let mut text = String::new();
     for _ in 0..=SFZ_VOICES_PER_TRACK {
         text.push_str("<region> sample=a.wav key=60 pitch_keycenter=60\n");
@@ -642,18 +654,50 @@ fn s8_a_full_pool_counts_drops_instead_of_silently_dropping_them() {
     // ⭐ 轨增益门 = 1.0（单位）：本判据量的是**池容量**，⛔ 不掺轨增益。
     let created = pool.trigger_note(&prepared, 60, 100, 12_000, 1.0);
     println!(
-        "[engine-sfz/S8] 建出声部 = {created}；活声部 = {}；丢弃 = {}",
+        "[engine-sfz/S8] 17 条：建出声部 = {created}；活声部 = {}；窃取 = {}；真丢弃 = {}；挂起 = {}",
         pool.active_count(),
+        pool.stolen(),
         pool.dropped(),
+        pool.pending_count(),
     );
-    assert_eq!(created, SFZ_VOICES_PER_TRACK, "池只能装 16 个");
+    assert_eq!(created, SFZ_VOICES_PER_TRACK, "池只能装 16 个空槽");
     assert_eq!(pool.active_count(), SFZ_VOICES_PER_TRACK);
     assert_eq!(
-        pool.dropped(),
+        pool.stolen(),
         1,
-        "⭐ 第 17 条区域必须被**计数**（⛔ 不静默丢弃）"
+        "⭐ 第 17 条区域必须**窃取**一个槽（⛔ 不是丢弃）"
     );
-    // 反向对照：15 条区域时**不**该有丢弃（否则上面那个 1 可能是常数）。
+    assert_eq!(pool.dropped(), 0, "⭐ 窃取**不是**丢弃");
+    assert_eq!(pool.pending_count(), 1, "⭐ 新声部挂在 victim 的槽里等接管");
+
+    // ⭐ 33 条：挂起者被**再一次**窃取换掉 ⇒ 真丢弃（计数仍在，⛔ 不静默）。
+    let mut many = String::new();
+    for _ in 0..(2 * SFZ_VOICES_PER_TRACK + 1) {
+        many.push_str("<region> sample=a.wav key=60 pitch_keycenter=60\n");
+    }
+    let many_prepared = prepare(&many);
+    let mut many_pool = SfzVoicePool::empty();
+    let many_created = many_pool.trigger_note(&many_prepared, 60, 100, 12_000, 1.0);
+    println!(
+        "[engine-sfz/S8] 33 条：建出声部 = {many_created}；窃取 = {}；真丢弃 = {}；挂起 = {}",
+        many_pool.stolen(),
+        many_pool.dropped(),
+        many_pool.pending_count(),
+    );
+    assert_eq!(many_created, SFZ_VOICES_PER_TRACK);
+    assert_eq!(many_pool.active_count(), SFZ_VOICES_PER_TRACK);
+    assert_eq!(
+        many_pool.stolen(),
+        17,
+        "⭐ 33 条 ⇒ 17 次窃取（第 17..33 条各一次）"
+    );
+    assert_eq!(
+        many_pool.dropped(),
+        16,
+        "⭐ 被换掉的挂起者（第 17..32 条）是真丢弃 ⇒ 必须计数（⛔ 不静默）"
+    );
+
+    // 反向对照：15 条区域时**不**该有窃取或丢弃（否则上面那些数可能是常数）。
     let mut under = String::new();
     for _ in 0..(SFZ_VOICES_PER_TRACK - 1) {
         under.push_str("<region> sample=a.wav key=60 pitch_keycenter=60\n");
@@ -665,6 +709,7 @@ fn s8_a_full_pool_counts_drops_instead_of_silently_dropping_them() {
         SFZ_VOICES_PER_TRACK - 1
     );
     assert_eq!(under_pool.dropped(), 0, "未满时不得计数");
+    assert_eq!(under_pool.stolen(), 0, "未满时不得窃取");
 }
 
 /// S9：**尺寸照打** ＋ `EngineRuntime` 的 192 KiB 门槛（与
@@ -687,15 +732,18 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
         core::mem::size_of::<EngineSnapshot>(),
         192 * 1024,
     );
-    // ⚠ 钉住声部的**定长**形状：16 通道 × 40 字节 ＋ 8 字节累计丢弃计数。
-    // （`SfzVoice` 只含 `f32`/`u8`/`bool`/`u16`/`u64`，⛔ 无指针、⛔ 无 `Vec`。）
-    // ⭐ 步 3 的代价：`sample_index: u16` 进了声部 ⇒ 32 B → **40 B**（对齐到 8）⇒ 池
-    // 520 B → **648 B**、`SynthEngine` ＋ 2048 B、`EngineRuntime` ＋ 2048 B。
+    // ⚠ 钉住声部的**定长**形状：`SfzVoice` 只含 `f32`/`u8`/`bool`/`u16`/`u64`，
+    // ⛔ 无指针、⛔ 无 `Vec`。
+    // ⭐ 步 3 的代价：`sample_index: u16` 进了声部 ⇒ 32 B → **40 B**（对齐到 8）。
+    // ⭐ **本单（`sfz-needs-2`）的代价**：池里多了 16 槽 ×（挂起声部 40 ＋ 淡出 16 ＋
+    // 触发序号 8）＋ 挂起标志 16 ＋ 两个计数器（丢弃/窃取/序号舵）⇒ 池 648 → **1712**、
+    // `SynthEngine` 91984 → **109152**、`EngineRuntime` 162832 → **180000**
+    // （仍 < 192 KiB，余量 16608 字节）。
     assert_eq!(voice, 40, "一个 SFZ 声部 = 40 字节（定长、全 `Copy`）");
     assert_eq!(
-        pool,
-        SFZ_VOICES_PER_TRACK * 40 + 8,
-        "声部池 = 16 × 声部 ＋ 累计丢弃计数"
+        pool, 1712,
+        "声部池 = 16 槽 ×（声部 40 ＋ 挂起 40 ＋ 淡出 16 ＋ 序号 8）＋ 挂起标志 16 \
+         ＋ 计数器 28（序号舵 8 ＋ 丢弃 8 ＋ 窃取 8 ＋ 淡出帧数 4）⇒ 对齐到 1712"
     );
     assert!(
         runtime < 192 * 1024,
@@ -1660,5 +1708,261 @@ fn s18_the_engine_never_applies_a_second_velocity_gain() {
         velocity_gain(64),
         1.0,
         "⭐ 中段力度是**恒等**的话，本判据就没有鉴别力了"
+    );
+}
+
+/// ⭐ S19 的夹具：`regions` 条 `key` 的区域 ＋ 一份**常数 PCM**（全 `1.0`）。
+///
+/// 常数 PCM 的理由：淡出是**逐帧增益**，常数源 ⇒ 输出**就是那条增益曲线**
+/// （`out[k] == gain × fade_gain(k)`），读数可以直接与 `FLOOR^(n/N)` 对账。
+fn constant_plan(regions: usize, key: u8) -> PreparedSfz {
+    let mut text = String::new();
+    for _ in 0..regions {
+        text.push_str(&format!(
+            "<region> sample=a.wav key={key} pitch_keycenter=60\n"
+        ));
+    }
+    let sfz = SfzInstrument::load(text, &Default::default()).expect("SFZ 必须解析成功");
+    let sample = InMemorySample {
+        pcm: vec![1.0f32; SAMPLE_FRAMES],
+        sample_hz: 48_000.0,
+    };
+    PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平必须成功")
+}
+
+/// ⭐ S19（本单新增；`sfz-needs-2`）：⭐ **池满 ⇒ 窃取最旧的声部 ＋ 3 ms 指数淡出**。
+///
+/// # 夹具（为什么要三次触发）
+///
+/// * 第 1 次：**只**触发 1 条区域（`key=60`，终点 `LATE`）⇒ 槽 0、触发序号最小；
+/// * 第 2 次：触发 15 条区域（`key=60`，终点 `EARLY = 64`）⇒ 填满槽 1..15；
+/// * 第 3 次：触发 1 条区域（`key=64`）⇒ 池满 ⇒ **窃取最旧的**（槽 0）。
+///
+/// 从 `position = 64` 起只有槽 0 还在响（其余 15 个的引擎终点已过 ⇒ 渲染时如实退休）
+/// ⇒ 本判据量的**就是被窃取者那条淡出曲线**。
+///
+/// # 判定量
+///
+/// * 窃取读数：`created == 0`（没有空槽）、`stolen == 1`、`dropped == 0`；
+/// * `fade_remaining_at(0) == 144`（3 ms @ 48 kHz，与复音**同一把舵**）；
+/// * 淡出窗口里槽 0 仍宣称**被窃取者**（`note == 60`）；走完 144 帧后**就地换成**
+///   新声部（`note == 64`）且仍是活声部 ⇒ "被换掉"可读；
+/// * **输出读数**：`out[143] / out[0] == FLOOR^(143/144)`（逐位对账）；
+/// * **硬窃取对照臂**（`set_steal_fade_frames(0)`）：同一次触发 ⇒ 槽 0 **立刻**是
+///   `note == 64`、输出**无衰减**（`out[143] == out[0]` 逐位）⇒ 两条臂指纹不同
+///   （⇒ ②"淡出确实生效"不是空转）。
+///
+/// ⚠ 本判据的**旧行为**是"第 3 次直接丢弃"⇒ 池仍是 16 个 `note == 60` 的声部、
+/// `dropped == 1`、`stolen == 0` ⇒ 本判据当场变红（注入读数见提交报告）。
+#[test]
+fn s19_a_full_pool_steals_the_oldest_voice_behind_a_three_millisecond_fade() {
+    const LATE: u64 = 12_000;
+    const EARLY: u64 = 64;
+    let one = constant_plan(1, 60);
+    let fifteen = constant_plan(SFZ_VOICES_PER_TRACK - 1, 60);
+    let stealer = constant_plan(1, 64);
+
+    let mut pool = SfzVoicePool::empty();
+    assert_eq!(pool.steal_fade_frames(), 144, "3 ms @ 48 kHz");
+    assert_eq!(pool.trigger_note(&one, 60, 100, LATE, 1.0), 1, "槽 0");
+    assert_eq!(
+        pool.trigger_note(&fifteen, 60, 100, EARLY, 1.0),
+        SFZ_VOICES_PER_TRACK - 1,
+        "填满槽 1..15"
+    );
+    assert_eq!(pool.active_count(), SFZ_VOICES_PER_TRACK);
+
+    // ③ 池满 ⇒ 窃取最旧的（槽 0 的触发序号最小）。
+    let created = pool.trigger_note(&stealer, 64, 100, LATE, 1.0);
+    println!(
+        "[engine-sfz/S19] 池满触发：新建 = {created}；窃取 = {}；丢弃 = {}；挂起 = {}；\
+         槽 0 淡出剩余 = {}；槽 0 在场音高 = {}",
+        pool.stolen(),
+        pool.dropped(),
+        pool.pending_count(),
+        pool.fade_remaining_at(0),
+        pool.voices()[0].note(),
+    );
+    assert_eq!(created, 0, "池满 ⇒ 没有空槽可占（窃取占的是别人的槽）");
+    assert_eq!(pool.stolen(), 1);
+    assert_eq!(pool.dropped(), 0, "⭐ 窃取⛔ 不是丢弃");
+    assert_eq!(pool.pending_count(), 1, "新声部挂在槽 0 等接管");
+    assert_eq!(pool.fade_remaining_at(0), 144, "⭐ 3 ms ＝ 144 帧 @ 48 kHz");
+    assert_eq!(
+        pool.voices()[0].note(),
+        60,
+        "淡出窗口里槽位必须仍宣称**被窃取者**（口径与 PolySynth 同款）"
+    );
+    assert_eq!(pool.active_count(), SFZ_VOICES_PER_TRACK, "16 个槽一个不空");
+
+    // ④ 输出读数：从 position = 64 起只有槽 0 出声，144 帧正好走完淡出。
+    let mut out = vec![0.0f32; 144];
+    pool.render_into(&one, EARLY, &mut out);
+    // ⚠ 期望值写成**字面量** `1e-3`（−60 dBFS）而不是去读实现里的常量：
+    //    判据用实现自己的常量做期望值是自我确认（实现改错了也一起改"对"）。
+    let decay = 1.0e-3f64.powf(1.0 / 144.0) as f32;
+    let mut expected = 1.0f32;
+    for _ in 0..143 {
+        expected *= decay;
+    }
+    println!(
+        "[engine-sfz/S19] 淡出：out[0] = {:.9}；out[143] = {:.9}（期望 FLOOR^(143/144)·out[0] = {:.9}）；\
+         比值 = {:.9}",
+        out[0],
+        out[143],
+        out[0] * expected,
+        out[143] / out[0],
+    );
+    assert!(out[0] > 0.0, "淡出首帧必须出声（否则比值是 0/0）");
+    assert_eq!(
+        out[143].to_bits(),
+        (out[0] * expected).to_bits(),
+        "⭐ 第 143 帧必须逐位等于 `out[0] × FLOOR^(143/144)`（StealFade 的指数口径）"
+    );
+    assert!(
+        out[143] / out[0] < 0.002,
+        "⭐ 淡出末尾必须落到 −60 dBFS 一带（实得 {}）",
+        out[143] / out[0]
+    );
+
+    // ⑤ 走完 144 帧 ⇒ 挂起者**就地接管**（同一个槽），仍是活声部。
+    assert_eq!(
+        pool.voices()[0].note(),
+        64,
+        "⭐ 淡出走完 ⇒ 最旧的声部被换掉（槽 0 变成新声部）"
+    );
+    assert_eq!(pool.pending_count(), 0, "挂起者已经接管");
+    assert_eq!(pool.fade_remaining_at(0), 0);
+    assert!(pool.voices()[0].is_active(), "接管者必须开始发声");
+    let mut after = vec![0.0f32; 64];
+    pool.render_into(&one, EARLY + 144, &mut after);
+    assert!(
+        after.iter().any(|s| *s != 0.0),
+        "⭐ 接管者必须真的出声（⛔ 不是把槽弄哑）"
+    );
+
+    // ⑥ 硬窃取对照臂：同样的触发序列，淡出帧数 = 0 ⇒ 立刻换人、输出无衰减。
+    let mut hard = SfzVoicePool::empty();
+    hard.set_steal_fade_frames(0);
+    hard.trigger_note(&one, 60, 100, LATE, 1.0);
+    hard.trigger_note(&fifteen, 60, 100, EARLY, 1.0);
+    let hard_created = hard.trigger_note(&stealer, 64, 100, LATE, 1.0);
+    let mut hard_out = vec![0.0f32; 144];
+    hard.render_into(&one, EARLY, &mut hard_out);
+    println!(
+        "[engine-sfz/S19] 硬窃取对照：新建 = {hard_created}；槽 0 音高 = {}；淡出剩余 = {}；\
+         指纹 软 = 0x{:016x} / 硬 = 0x{:016x}",
+        hard.voices()[0].note(),
+        hard.fade_remaining_at(0),
+        fnv1a_64(&out),
+        fnv1a_64(&hard_out),
+    );
+    assert_eq!(hard.stolen(), 1, "硬窃取同样计一次窃取");
+    assert_eq!(hard.dropped(), 0);
+    assert_eq!(
+        hard.voices()[0].note(),
+        64,
+        "⭐ 硬窃取（帧数 0）⇒ **立刻**接管，没有淡出窗口"
+    );
+    assert_eq!(hard.fade_remaining_at(0), 0);
+    assert_eq!(
+        hard_out[143].to_bits(),
+        hard_out[0].to_bits(),
+        "硬窃取没有衰减（逐位相同）"
+    );
+    assert_ne!(
+        fnv1a_64(&out),
+        fnv1a_64(&hard_out),
+        "⭐ 软/硬两条臂的指纹必须不同（否则'淡出生效'可能是空转）"
+    );
+}
+
+/// ⭐ S20（本单新增；`sfz-needs-3`）：⭐ **三件同轨的可读信号**（⛔ 不改分派次序）。
+///
+/// # 裁决（本单）
+///
+/// 次序**维持** `鼓机 ＞ SFZ ＞ 复音`（与 `crates/yeban-engine/src/drums.rs` §4.1
+/// "一条轨至多一件音源"的既有裁决一致）⇒ ⛔ **不改成叠加**。真正缺的是
+/// "用户看得出被忽略了" ⇒ 新增**投影读数** [`SynthEngine::armed_sources`]
+/// ／ [`SynthEngine::ignored_sources`]（`render_track` 每量子写一个 `u8`）。
+///
+/// # 判定量
+///
+/// * 三件同轨（鼓机设备 ＋ 注入 SFZ ＋ **恒在场**的复音）⇒ `armed_sources == 3`
+///   ＋ `ignored_sources == 2`（⭐ 本单要求的"被忽略的音源计数 ＝ 2"）；
+/// * 输出仍对"只有鼓机"**逐位相同**（S7 的复核腿 ⇒ 信号⛔ 不改变输出）；
+/// * 反向对照：鼓机＋复音 ⇒ `2 / 1`；只有复音 ⇒ `1 / 0`；**没渲染过**的轨 ⇒ `None`。
+#[test]
+fn s20_three_sources_on_one_track_report_two_ignored() {
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let track = EntityId::new();
+    let params = DrumsParams::from_devices(&[drum_kit_device()]).expect("鼓机设备必须命中");
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+
+    let mut three = SynthEngine::new(48_000);
+    let mut drums_only = SynthEngine::new(48_000);
+    let mut poly_only = SynthEngine::new(48_000);
+    let mut never_rendered = SynthEngine::new(48_000);
+    three.begin_snapshot(48_000, &[track], [], [(&track, &params)]);
+    drums_only.begin_snapshot(48_000, &[track], [], [(&track, &params)]);
+    poly_only.begin_snapshot(48_000, &[track], [], []);
+    never_rendered.begin_snapshot(48_000, &[track], [], []);
+
+    let mut a = vec![0.0f32; 128];
+    let mut b = vec![0.0f32; 128];
+    let mut c = vec![0.0f32; 128];
+    three.render_track(track, Some(&schedule), Some(&prepared), &mut a);
+    drums_only.render_track(track, Some(&schedule), None, &mut b);
+    poly_only.render_track(track, Some(&schedule), None, &mut c);
+
+    println!(
+        "[engine-sfz/S20] 三件同轨：武装 = {:?}；被忽略 = {:?}（鼓机＋SFZ 非零 = {}）；\
+         鼓机＋复音：武装 = {:?}／被忽略 = {:?}；只有复音：武装 = {:?}／被忽略 = {:?}；\
+         没渲染过：武装 = {:?}",
+        three.armed_sources(track),
+        three.ignored_sources(track),
+        a.iter().filter(|s| **s != 0.0).count(),
+        drums_only.armed_sources(track),
+        drums_only.ignored_sources(track),
+        poly_only.armed_sources(track),
+        poly_only.ignored_sources(track),
+        never_rendered.armed_sources(track),
+    );
+    assert_eq!(
+        three.armed_sources(track),
+        Some(3),
+        "⭐ 鼓机 ＋ SFZ ＋ 复音 ⇒ 武装 3 件"
+    );
+    assert_eq!(
+        three.ignored_sources(track),
+        Some(2),
+        "⭐ 三件同轨 ⇒ **被忽略的音源计数 ＝ 2**（本单的可读信号）"
+    );
+    assert!(
+        b.iter().any(|s| *s != 0.0),
+        "反向对照：鼓机臂必须真的出声（否则下面的等号可能只是两边都哑）"
+    );
+    assert_eq!(
+        bits(&a),
+        bits(&b),
+        "⭐ 信号⛔ 不改变输出：三件同轨仍对'只有鼓机'**逐位相同**（S7 的复核腿）"
+    );
+    assert_eq!(
+        drums_only.armed_sources(track),
+        Some(2),
+        "反向对照：鼓机 ＋ 复音 ⇒ 武装 2 件"
+    );
+    assert_eq!(drums_only.ignored_sources(track), Some(1));
+    assert_eq!(
+        poly_only.armed_sources(track),
+        Some(1),
+        "反向对照：只有复音 ⇒ 武装 1 件、没有取舍"
+    );
+    assert_eq!(poly_only.ignored_sources(track), Some(0));
+    assert_eq!(
+        never_rendered.armed_sources(track),
+        None,
+        "⛔ 没渲染过的槽必须读 `None`（不是'0 件'）"
     );
 }

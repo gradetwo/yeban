@@ -889,7 +889,8 @@ impl TrackSlot {
             // ⭐ 空槽/释放后的**归零**（⛔ 不是残值）。
             gain_scale: 0.0,
             // ⭐ 空池（定长数组 ⇒ 零分配；`active` 全 `false` ⇒ 不产生任何样本）。
-            sfz: SfzVoicePool::empty(),
+            // 淡出帧数按本槽的采样率定（与 `PolySynth` 同一个 3 ms 口径）。
+            sfz: SfzVoicePool::new(sanitise_sample_rate(sample_rate)),
         }
     }
 }
@@ -949,6 +950,14 @@ pub struct SynthEngine {
     /// 它是"鼓机真的接在信号路径上"的覆盖度读数 —— 与 `EngineStats::metronome_clicks`
     /// 同族：`armed_drum_slots() > 0` 只说明"武装了"，这个数才说明"真的打了鼓"。
     drum_hits: u64,
+    /// ⭐ 每槽**最近一次** [`Self::render_track`] 里**武装的音源数**（`0` = 还没渲染过）。
+    ///
+    /// 复音合成器**恒在场**（每个槽都有一台 ⇒ 至少 `1`），鼓机 `+1`
+    /// （[`Self::drum_params`] 为 `Some`）、SFZ `+1`（`render_track` 收到 `Some(plan)`）。
+    /// ⇒ 三件同轨 = `3`，而分派次序（鼓机 ＞ SFZ ＞ 复音）只让**一件**发声
+    /// ⇒ [`Self::ignored_sources`] = `2`：这就是 `sfz-needs-3` 的**可读信号**
+    /// （⛔ 不是把三件叠加）。`u8` ⇒ 定长数组，⛔ 不分配、不进逐样本路径。
+    armed_sources: [u8; MAX_TRACK_SLOTS],
 }
 
 impl SynthEngine {
@@ -974,6 +983,8 @@ impl SynthEngine {
             drums: vec![DrumMachine::new(sample_rate); MAX_TRACK_SLOTS].into_boxed_slice(),
             drum_slots: [None; MAX_TRACK_SLOTS],
             drum_hits: 0,
+            // ⭐ `0` = 本槽还没渲染过（见字段文档）；渲染一次即写入真实件数。
+            armed_sources: [0; MAX_TRACK_SLOTS],
         }
     }
 
@@ -1003,15 +1014,27 @@ impl SynthEngine {
     }
 
     /// ⭐ 因 **SFZ 声部池满**（> [`SFZ_VOICES_PER_TRACK`](crate::sfz_instrument::SFZ_VOICES_PER_TRACK)
-    /// 条区域同时匹配）被丢弃的声部数（**累计**；各槽之和）。
+    /// 条区域同时匹配）而**真丢弃**的声部数（**累计**；各槽之和）。
     ///
-    /// ⚠ 本片**没有** SFZ 窃取口径（登记为 sfz-needs-2）⇒ 溢出只计数、不替换：
-    /// 这条读数存在的意义正是"⛔ 不让溢出静默"。
+    /// ⚠ 池满的常规出路现在是**窃取**（登记为 sfz-needs-2，已落地）⇒️ 本读数**不**计窃取：
+    /// 只有"挂起者还没轮到发声就被再一次窃取换掉"才计入（⛔ 不静默）。
+    /// 窃取数读 [`Self::sfz_voice_steals`]。
     #[must_use]
     pub fn sfz_voice_drops(&self) -> u64 {
         self.slots
             .iter()
             .fold(0u64, |total, slot| total.saturating_add(slot.sfz.dropped()))
+    }
+
+    /// ⭐ 因 **SFZ 声部池满**而**窃取**（换掉别人）的声部数（**累计**；各槽之和）。
+    ///
+    /// 与 [`Self::voice_steals`]（复音那条）**同一条口径**、同一把 3 ms 舵；
+    /// 与 [`Self::sfz_voice_drops`] 配对：`池满的溢出 = 窃取 + 真丢弃`。
+    #[must_use]
+    pub fn sfz_voice_steals(&self) -> u64 {
+        self.slots
+            .iter()
+            .fold(0u64, |total, slot| total.saturating_add(slot.sfz.stolen()))
     }
 
     /// ⭐ 某轨 SFZ 声部的**瞬时**占用（**量规**：可升可降）；`None` = 引擎里没有这条轨的槽。
@@ -1026,6 +1049,35 @@ impl SynthEngine {
             .map(|slot| slot.sfz.active_count())
     }
 
+    /// ⭐ **本槽最近一次渲染里武装的音源数**（`0..=3`；`None` = 该槽还没渲染过）。
+    ///
+    /// 口径：**复音合成器恒在场**（每个槽都有一台 ⇒ 至少 `1`）＋ 鼓机（
+    /// [`Self::drum_params`] 为 `Some`）`+1` ＋ SFZ（`render_track` 收到 `Some(plan)`）`+1`。
+    /// 它回答的是 `sfz-needs-3` 那个"用户看不出被忽略了"的问题：
+    /// 三件同轨（鼓机 ＋ SFZ ＋ 复音）时本读数是 **`3`** ⇒ 见 [`Self::ignored_sources`]。
+    ///
+    /// ⚠ 这是**投影读数**（"最近一次渲染"的快照）⇒ 渲染中按构造每量子刷新；
+    /// `None` 区分"还没渲染过"与"真的 0 件"（后者不可达：复音恒在场）。
+    #[must_use]
+    pub fn armed_sources(&self, track: EntityId) -> Option<usize> {
+        let index = self.slot_index(track)?;
+        match self.armed_sources[index] {
+            0 => None,
+            armed => Some(usize::from(armed)),
+        }
+    }
+
+    /// ⭐ 本槽**被分派次序忽略**的音源件数 ＝ [`Self::armed_sources`] `− 1`
+    /// （`0` = 只有一件音源，没有取舍）。
+    ///
+    /// 次序是**鼓机 ＞ SFZ ＞ 复音**（[`Self::render_track`]）：三件同轨 ⇒ **`2`**，
+    /// 鼓机＋复音 ⇒ `1`，SFZ＋复音 ⇒ `1`，只有复音 ⇒ `0`。
+    /// ⛔ 本读数**不**改变输出（那条口径另有 S7 逐位钉住）：它只让"被忽略"可见。
+    #[must_use]
+    pub fn ignored_sources(&self, track: EntityId) -> Option<usize> {
+        self.armed_sources(track).map(|armed| armed - 1)
+    }
+
     /// 当前窃取淡出帧数（默认 3 ms × 采样率）。
     #[must_use]
     pub const fn steal_fade_frames(&self) -> u32 {
@@ -1038,10 +1090,14 @@ impl SynthEngine {
     /// [`STEAL_RELEASE_SECONDS`](yeban_dsp::envelope::STEAL_RELEASE_SECONDS) 决定。
     /// 存在的理由是"淡出后无跳变"这条判据必须能对着**硬窃取**变红 ——
     /// 否则它可能在"根本没窃取"的夹具上永真。
+    ///
+    /// ⭐ **一条舵，两件器件**：同一个数同时下推给每个槽的复音合成器与
+    /// [`SfzVoicePool`]（SFZ 的池满窃取淡出与复音**同一条口径** ⇒ ⛔ 不是第二份常数）。
     pub fn set_steal_fade_frames(&mut self, frames: u32) {
         self.steal_fade_frames = frames;
         for slot in &mut self.slots {
             slot.synth.set_steal_fade_frames(frames);
+            slot.sfz.set_steal_fade_frames(frames);
         }
     }
 
@@ -1647,6 +1703,10 @@ impl SynthEngine {
             if sample_rate_changed {
                 slot.synth.set_sample_rate(sample_rate_u32);
                 slot.synth.set_steal_fade_frames(steal_fade_frames);
+                // ⭐ SFZ 池同一把 3 ms 舵：帧数按新采样率重算，再把引擎上那一份
+                // （可能被判据覆盖成 0 = 硬窃取）原样下推 ⇒ 两条音源**同一条口径**。
+                slot.sfz.set_sample_rate(sample_rate);
+                slot.sfz.set_steal_fade_frames(steal_fade_frames);
             }
             if sample_rate_changed || tone != slot.tone {
                 slot.tone = tone;
@@ -1769,9 +1829,16 @@ impl SynthEngine {
     ///
     /// | 鼓机键位映射 | `sfz` | 走哪条路 |
     /// | :---: | :---: | :--- |
-    /// | `Some` | 任意 | 鼓机（SFZ 池**被释放**；"鼓机＋SFZ 同轨"是引擎取舍，登记为 sfz-needs-3） |
+    /// | `Some` | 任意 | 鼓机（SFZ 池**被释放**；"鼓机＋SFZ 同轨"的裁决与信号见下） |
     /// | `None` | `Some` | SFZ 声部池（⛔ **不叠加**复音） |
     /// | `None` | `None` | 复音合成器（SFZ 池**被释放**） |
+    ///
+    /// ⭐ **`sfz-needs-3` 的裁决与落地（本单）**：次序**维持** `鼓机 ＞ SFZ ＞ 复音`
+    /// —— 它与 [`crate::drums`] §4.1"一条轨至多一件音源"的既有裁决一致
+    /// ⇒ ⛔ **不改成叠加**。真正缺的是"用户看得出被忽略了"：本函数把
+    /// **武装的音源件数**写进 [`SynthEngine::armed_sources`] 这张**投影读数**
+    /// （复音恒在场 ⇒ 三件同轨 = `3`）⇒ [`SynthEngine::ignored_sources`] = `2`。
+    /// ⛔ 这行只写一个 `u8`：不改输出（S7 逐位钉住）、不分配、不进逐样本路径。
     ///
     /// SFZ 分支的终点口径与分配纪律见 [`crate::sfz_instrument`] 模块头
     /// （`min(end_sample, span 终点, 样本播完)`；⛔ 跳过 `ampeg_*`、用样本自然结束）。
@@ -1810,11 +1877,18 @@ impl SynthEngine {
             drum_slots,
             notes_triggered,
             drum_hits,
+            armed_sources,
             ..
         } = self;
         let slot = &mut slots[index];
         // 本槽的音源：`Some(map)` = 鼓机（键位映射）。
         let drum_map: Option<DrumNoteMap> = drum_slots[index].map(|(_, params)| params.notes());
+        // ⭐ `sfz-needs-3` 的可读信号：把"本槽武装了几件音源"写成**投影读数**。
+        // 复音合成器恒在场（每个槽一台）⇒ 至少 1；鼓机 +1、SFZ +1。
+        // 三件同轨 = 3（被忽略 2 件，读 `ignored_sources`）；⛔ 本行不改任何输出。
+        armed_sources[index] = 1u8
+            .saturating_add(u8::from(drum_map.is_some()))
+            .saturating_add(u8::from(sfz.is_some()));
 
         // --- 1) 触发本量子窗口内起音、且尚未结束的音符 ---
         // 游标只增不减 ⇒ 已触发过的音符永远不会被再次触发。
