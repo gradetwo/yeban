@@ -566,6 +566,36 @@ pub enum Op {
         /// 删除**之前**的索引项（撤销用）。
         previous_asset: AssetMetadata,
     },
+    /// 设置音轨**色标**（[`TrackV3::color`]）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`TrackV3::color` 在操作日志层
+    /// 不可表达** —— 它只能在**建轨时**由 [`Op::AddTrack`] 的载荷给值，而它之后
+    /// **没有任何 `Op` 能改它** ⇒ ⭐ 改色标只能"删轨 + 重建"，⭐ 那会**换掉 `EntityId`**
+    /// 并连带丢掉该轨的设备链 / 自动化 / 路由边（⭐ 那些都以 `track_id` 为键）。
+    /// ⚠ ⭐ **与本族前三例的对照**：⭐ `SectionV3::color` 与 `SceneV3::color` **已有通路**
+    /// （⭐ 走 [`Op::SetSection`]／[`Op::SetScene`] 的"合并式 patch"：**缺省 = 保留现值、
+    /// `None` = 清空、`Some` = 设值**）⇒ ⭐ **只有音轨这一处缺**，⛔ 故本单只加这一个变体。
+    ///
+    /// ⚠ **为何安全**：⭐ `color` 是**纯展示注记**、⛔ 无身份语义（身份是 [`TrackV3::id`]）；
+    /// ⚠ 且 [`Option::None`] 是**一等状态**——字段文档逐字写着「`None` 是**一等状态**
+    /// （"用主题默认色"）」⇒ ⭐ 设成 `None` ⛔ 不是"丢失"，⭐ 而是"回到主题默认"。
+    /// ⭐ 消费者在 `yeban-app` 的 UI 投影（`track_colors()` / `track_color_labels()` /
+    /// `track_color_or_default`）⇒ ⭐ **有行为重量**；⚠ 而**非法色值的处理不在模型层**：
+    /// ⭐ `parse_hex_color` 返回 `Option`、非法即**回退默认**（⭐ ⛔ 不报错）⇒ ⭐ **本变体
+    /// 照 `SectionV3`／`SceneV3` 的既有口径收任意字符串、⛔ 不自造格式校验**。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `id` / `name` / `kind` / `devices` / `macros` /
+    /// `automation_lanes` / `clips` / `volume_db` / `pan` / `mute` / `solo` / `solo_safe` /
+    /// `folder_id`。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetTrackName`]），⛔ **不是** `previous_*`。
+    SetTrackColor {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的色标（`None` = 主题默认色）。
+        old_color: Option<String>,
+        /// 修改后的色标（`None` = 清除 = 回到主题默认色）。
+        new_color: Option<String>,
+    },
     /// 设置音轨**名字**（[`TrackV3::name`]）。
     ///
     /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`TrackV3::name` 在操作日志层
@@ -795,6 +825,7 @@ impl Op {
             Self::SetParam { .. } => "SetParam",
             Self::SetTrackMute { .. } => "SetTrackMute",
             Self::SetTrackName { .. } => "SetTrackName",
+            Self::SetTrackColor { .. } => "SetTrackColor",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
             Self::SetAuthor { .. } => "SetAuthor",
@@ -1195,6 +1226,16 @@ impl Op {
             // 与 `SetParam` 同型：先校验"载荷里的旧值确实是文档现值"，否则 `OpStateMismatch`。
             // `new_* == old_*` 是**合法**的无操作（`SetParam` 也放行）—— 幂等由调用方决定
             // 是否要提交（GUI 侧在值没变时**不**提交，见 `host::end_mixer_drag`）。
+            Self::SetTrackColor {
+                track_id, old_color, ..
+            } => {
+                // ⚠ `Option<String>` 的相等是**逐字节 + 同态**的（`None == None`、`Some(a) == Some(b)`
+                // 当且仅当 `a`/`b` 逐字节相等）⇒ 与 [`Op::SetTrackName`] 同一"陈旧载荷必被拒"口径。
+                if doc.track(track_id)?.color != *old_color {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
             Self::SetTrackName {
                 track_id, old_name, ..
             } => {
@@ -1698,6 +1739,15 @@ impl Op {
                 new_asset: previous_asset.clone(),
             },
             // 纯结构化取反：只交换"前 / 后"两个布尔。
+            Self::SetTrackColor {
+                track_id,
+                old_color,
+                new_color,
+            } => Self::SetTrackColor {
+                track_id: *track_id,
+                old_color: new_color.clone(),
+                new_color: old_color.clone(),
+            },
             Self::SetTrackName {
                 track_id,
                 old_name,
@@ -2036,6 +2086,14 @@ impl Op {
             Self::SetParam {
                 target, new_val, ..
             } => write_param(doc, *target, *new_val),
+            // 只写那**一个**色标字段：⛔ 不碰 `id` / `name` / `kind` / 集合 / 混音标量。
+            // ⚠ `new_color: None` = **清除**（回到主题默认色），⛔ 不是"丢失"。
+            Self::SetTrackColor {
+                track_id, new_color, ..
+            } => {
+                doc.track_mut(track_id)?.color = new_color.clone();
+                Ok(())
+            }
             // 只写那**一个**名字字段：不碰 `volume_db` / `pan` / `mute` / `solo` /
             // `solo_safe` / `folder_id`，也⛔ 不碰其它轨、⛔ 不碰 `id`。
             Self::SetTrackName {
