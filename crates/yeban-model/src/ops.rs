@@ -2692,6 +2692,15 @@ mod tests {
                 track_id: f.bass,
                 placement: new_placement,
             },
+            // 摆放静音切换：**此前创建之后改不了**（`MoveClipPlacement` 只写 `start_tick`）。
+            // ⚠ 必须放在下面那条 `RemoveClipPlacement` **之前** —— 那条会把 `f.placement`
+            // 从 lead 轨取走，而本变体的前置条件要求摆放**还在**。
+            Op::SetClipPlacementMuted {
+                track_id: f.lead,
+                placement_id: f.placement,
+                old_muted: false,
+                new_muted: true,
+            },
             Op::RemoveClipPlacement {
                 track_id: f.lead,
                 placement_id: f.placement,
