@@ -735,6 +735,41 @@ def g16_no_forbidden_feature_is_defined() -> list[Violation]:
     return bad
 
 
+def g17_hardware_markers_are_ignored() -> list[Violation]:
+    """[人类裁决 R687] `[HARDWARE]` 标记必须落在 `#[ignore = "..."]` 里。
+
+    ⚠ 为什么：真麦克风、实体 MIDI 键盘、真声卡这类判据在 CI 上跑不了。
+    人类裁决（2026-10-15，见台账 R687）定为：**代码里注明 `[HARDWARE] 需真人手工验证`**、
+    CI 跳过、不阻塞、由真人手工验证。
+
+    ⭐ 本守卫把"跳过"机械化：凡 `crates/**` 的 `.rs` 里出现 `[HARDWARE]`，
+    它必须位于一条 `#[ignore` 属性内 ⇒ 于是 `cargo test` 自然跳过它。
+    ⛔ 只写注释不 ignore 的，本守卫报红 —— 因为那在 CI 上仍然会跑并变红。
+    """
+    out: list[Violation] = []
+    for path in iter_source_files((".rs",)):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for i, line in enumerate(lines):
+            if "[HARDWARE]" not in line:
+                continue
+            # 允许的形态：本行、或**紧邻的上/下一行**是 #[ignore …] 属性的一部分
+            window = lines[max(0, i - 1): min(len(lines), i + 2)]
+            if any("#[ignore" in w for w in window):
+                continue
+            out.append(
+                (
+                    "G17",
+                    f"{rel(path)}:{i + 1}",
+                    "[HARDWARE] 不在 #[ignore] 内 ⇒ CI 上仍会跑（人类裁决 R687 要求 CI 跳过；"
+                    '应写 `#[ignore = "[HARDWARE] 需真人手工验证 …"]`）',
+                )
+            )
+    return out
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -751,8 +786,9 @@ GUARDS = {
     "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
     "G14": ("[本地门禁可移植性] shell 脚本 bash 3.2 兼容(禁关联数组)且 bash -n 可解析", g14_shell_scripts_are_portable),
     "G15": ("[多线纪律/红线 3、8] crates/* 每个 crate 都必须被显式分类", g15_every_crate_is_classified),
-    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),
+    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),    "G17": ("[人类裁决 R687] [HARDWARE] 标记必须落在 #[ignore] 里", g17_hardware_markers_are_ignored),
 }
+
 
 
 def self_test() -> int:
@@ -769,7 +805,7 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 17)]
+    expected = [f"G{n:02d}" for n in range(1, 18)]
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")

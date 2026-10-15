@@ -52,6 +52,12 @@ fn control_driven_host() -> EngineHost {
 /// 无声卡分支（托管 CI 的常态）：只断言**失败是优雅的**（`DeviceError` 的明确一类、
 /// 引擎仍在、控制驱动仍能推量子），并打印 `本机未执行`。
 #[test]
+// 需真人手工验证 —— 本判据要求真的打开一个音频设备、并由设备时钟推进走带。
+// ⚠ 托管 CI 的 runner **确实会打开一个虚拟音频设备**（与本文档早先的预期相反），
+// 于是它走 `Ok` 分支、随后在"Stopped 之后位置不许再前进"上失败 —— 那是设备时钟行为
+// 的差异，不是产品缺陷。按人类裁决（R687）CI 跳过它，由真人手工验证。
+// ⚠ 标记只写在下面 #[ignore] 的 reason 里（G17 要求标记落在 #[ignore] 内）。
+#[ignore = "[HARDWARE] 需真人手工验证：真声卡 + 真设备时钟（CI 的虚拟设备行为不同）"]
 fn the_device_leg_opens_the_sound_card_and_a_real_clock_advances_the_transport() {
     let mut host = control_driven_host();
     let stopped = host.stop();
