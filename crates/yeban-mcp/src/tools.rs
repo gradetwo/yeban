@@ -1191,7 +1191,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "toneHz",
                 "number",
                 false,
-                "内存正弦样本的频率 (Hz); 缺省 440。样本数据来自它 (本仓无采样文件读取)",
+                "内存正弦样本的频率 (Hz); 缺省 440。样本数据来自它（⚠ 仅当区域没有可用采样文件时才走这条内存正弦回退；调用方给了 samples 时按 SFZ 的 sample= 读文件）",
             ),
             // ⚠ 同 `yeban_load_sfz` 的 `path`：界必须与既有工具逐值相同（无界）。
             // 空串与"撞工程/锁文件"由领域层拒绝（`sfz::validate` + `render::guard_output_path`）。

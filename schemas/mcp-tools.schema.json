@@ -669,7 +669,7 @@
         "yeban_render_sfz_wav": {
           "title": "yeban_render_sfz_wav",
           "type": "object",
-          "description": "用一份已装载的 SFZ 乐器把活跃工程的 MIDI 音符离线渲染成 24-bit RIFF WAV 并落盘。 音源 = 该 SFZ 的区域（区域选择/播放速率/总增益全部来自 yeban-sfz），样本数据是内存正弦 440 Hz（本仓无采样文件读取）。 渲染路径复用 yeban_render_master 的容器编码 + TPDF 抖动 + 一次原子落盘（ARCH-SEC-004）。",
+          "description": "用一份已装载的 SFZ 乐器把活跃工程的 MIDI 音符离线渲染成 24-bit RIFF WAV 并落盘。 音源 = 该 SFZ 的区域（区域选择/播放速率/总增益全部来自 yeban-sfz），样本数据按 SFZ 的 sample= 读文件，缺失时才回退到内存正弦 440 Hz。 渲染路径复用 yeban_render_master 的容器编码 + TPDF 抖动 + 一次原子落盘（ARCH-SEC-004）。",
           "properties": {
             "instrumentId": {
               "type": "integer",
