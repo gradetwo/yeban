@@ -143,7 +143,7 @@ fn applied_gains(mute: bool, velocity: u8) -> (f32, f32) {
         "夹具必须真的投影出一条已调度音符（否则本档的'已调度'一侧是空壳）"
     );
     let mut out = vec![0.0f32; 512];
-    scheduled.render_track(track, schedule, &mut out);
+    scheduled.render_track(track, schedule, None, &mut out);
     let scheduled_gain = scheduled
         .debug_gain_for(track, PITCH)
         .expect("已调度路径必须已经占住一个声明该频率的声部");

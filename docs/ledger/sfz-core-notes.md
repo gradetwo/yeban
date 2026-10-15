@@ -400,3 +400,54 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 分配四元组（`rt_zero_alloc` 的 SFZ 回调窗口） | `allocations=0 deallocations=0 lock_blocking=0 io_ops=0`（71/71 场景通过） |
 | `PreparedRegion` 结构字节数 | **2624 B**（原 548 B；代价来自 5 张 128×`f32` 表 + `SampleSpan`） |
 
+
+## 13. 引擎侧声部 ＋ 快照形状（2026-10-15，任务 `#66` 的**步 2**）
+
+设计裁决见 `docs/ledger/phase-status.md` 的 R698（裁决 **甲-1**）：`TrackSlot` 增
+`sfz: SfzVoicePool`（`[SfzVoice; 16]`、全 `Copy`）＋ 快照侧只读 `PreparedSfz`
+＋ `render_track` 加第 3 参 `sfz: Option<&PreparedSfz>`（与既有 `Option<&NoteSchedule>` 对称）。
+本片＝**引擎侧发声器**那一半；**绑定来源**（轨↔SFZ 的模型语义）仍未做。
+
+### 交付形状
+
+| 件 | 归属 | 说明 |
+| :--- | :--- | :--- |
+| `SfzPlan` | 快照（`BTreeMap<EntityId, SfzPlan>`） | 控制侧投影；重数据（区域表 ＋ PCM），与 `insert::ConvolutionPlan` 同族 |
+| `SfzVoice` / `SfzVoicePool` | `SynthEngine` 的轨道槽 | 定长 `[SfzVoice; 16]`，全 `Copy`；池满**丢弃 ＋ 计数**，⛔ 无窃取 |
+| `render_track(track, schedule, sfz, out)` | 实时路径 | 第 3 参是**借用**的快照摊平表（PCM 借用快照，⛔ 不 clone `Vec`） |
+| `EngineSnapshot::with_sfz(track, plan)` | **唯一**绑定入口 | `from_project` 不填 ⇒ 产品路径默认空表 ⇒ 逐位不变 |
+
+**分派次序 ＝ 鼓机 ＞ SFZ ＞ 复音**（一条轨至多一件音源）。**终点口径**（无包络时的诚实占位）
+＝ `min(end_sample, span 终点, 样本播完)`：⛔ 跳过 `ampeg_*`，⭐ 用样本自然结束；播完即**池内退休**
+（`active = false`，⛔ 不碰快照退役队列）。
+
+### 本片读数（`cargo test -p yeban-engine`）
+
+| 判据 | 读数 |
+| :--- | :--- |
+| 引擎声部路径 vs `PreparedSfz::render_block_into`（两条 `key=60` 都匹配） | **逐样本最大绝对差 = 0e0**（两侧非零 478 / 478） |
+| 样本自然结束 ⇒ 退休 | 播完那一块后活声部 `Some(0)`，下一块**逐位静音**；反向对照：摊平表同一块仍写 479 帧 |
+| 显式 `span` 终点（`end=200`） | 引擎在**第 200 帧**停（span 内与摊平表**逐样本 0**）；摊平表继续到 478（已登记口径分叉） |
+| `end=-1`（`SampleEnd::Silent`） | 引擎 **0 帧**、0 声部；摊平表仍出声（对照） |
+| ⭐ **反向对照（接线前）** | **不给 `sfz`** 的端到端指纹 == 改动源码前实测值：`0x71dca4dc55b44df5` / `0x6eee378072730521`（`tests/sfz_instrument.rs` 的 S5） |
+| 端到端（SFZ 臂） | 非零 1716、峰值 0.21920355、指纹 `0x5587041753dfe375` ≠ 对照臂 `0xd50d599c66c92565` |
+| 分派次序 | 鼓机＋SFZ 的输出对"只有鼓机"**逐位相同**；无鼓机时同一份 SFZ 非零 127 |
+| 池满（17 条匹配区域） | `created = 16`、`dropped = 1`（⛔ 不静默） |
+| 尺寸 | `SfzVoice = 32 B`、`SfzVoicePool = 520 B`、`SynthEngine = 89936`、`EngineRuntime = 160784 < 196608`（192 KiB） |
+| 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73** |
+| 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B** |
+
+### 本片新增的 needs（`yeban-engine/src/sfz_instrument.rs` 模块头同表）
+
+| # | 缺口 | 为什么需要裁决 |
+| :--- | :--- | :--- |
+| sfz-needs-1 | **轨推子/静音未乘到 SFZ 声部** | 逐样本对账口径是 `render_block_into(note, velocity)`（无轨增益参数）⇒ 声部增益 ＝ `region.gain_at(...)`。接线要先裁"谁拥有力度增益"（SFZ 曲线 vs `synth::velocity_gain`），否则双重计力度。⚠ 与鼓机（乘 `ScheduledNote::gain`）**不对称** |
+| sfz-needs-2 | **池满只丢弃 ＋ 计数，无窃取口径** | `yeban-sfz` 的 `VoicePool` 是全局 512 声部、victim 选择是另一份口径 ⇒ 两套形状要一条 ADR |
+| sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（本片＝鼓机优先，SFZ 池被释放） | 与 `crate::drums` 的 needs-3 同族 |
+| sfz-needs-4 | **`span` 终点已在引擎侧应用、离线/摊平侧未应用** | 两侧口径分叉；修它要**同时**改离线侧（属步 3）。第 ③ 条局限因此**仍是部分** |
+| sfz-needs-5 | **轨↔SFZ 的模型绑定不存在** | `yeban-model` 里 SFZ 命中只有一行注释、`DeviceKind` 四档没有 sampler ⇒ 今天只能由 `with_sfz` 显式注入 |
+| sfz-needs-6 | **循环 / ADSR / `off_mode` / 多采样 / 每区域独立 PCM** | 完全未做；一条轨共用**一份** PCM ⇒ 多 `sample=` 的区域会播同一份数据 |
+
+⚠ **换采样率的后果**（实测于 ㉙）：摊平表带着构造期的 `engine_hz` ⇒ 换采样率必须由
+**控制侧在窗口外重新摊平**并发布一份新快照；引擎⛔ 不在快照边界重算，**在飞的声部**
+保留触发时抄下的 `rate`。

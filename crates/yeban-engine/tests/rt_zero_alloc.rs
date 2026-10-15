@@ -36,7 +36,7 @@
 //! 4. **注入**：④ 组注入（见模块文档末尾）各自把判据打红后**逐字节还原**。
 //!
 //! # 十七个场景（在既有 `harness = false` 风格上扩展；㉓ 由 `line/engine-drums` 追加；
-//! ⑲d 由 `line/engine-12` 追加在同一窗口里）
+//! ⑲d 由 `line/engine-12` 追加在同一窗口里；㉙ 由 `#66` 的步 2 追加）
 //!
 //! | # | 场景 | 覆盖的实时路径 |
 //! | :-: | :--- | :--- |
@@ -59,6 +59,7 @@
 //! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
 //! | ㉓ | 每轨**鼓机音源** 10 000 量子（两条轨：一条鼓机、一条复音）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz）＋ **1 次换回复音合成器** | `SynthEngine::render_track` 的鼓机分支（`DrumNoteMap::voice_for` → `DrumMachine::trigger` → `DrumMachine::render`）与快照边界的 `DrumMachine::set_params` / `set_sample_rate`。⚠ 与 ㉒ **相反**：鼓机没有延迟线 ⇒ 换采样率**照常武装**（不分配），因此本场景是「换采样率也必须零分配」的唯一判据。行为判据在 `tests/drums_instrument.rs` |
 //! | ㉔ | 环音符**窃取淡出窗口**：16 条 `NoteOn` **先走一个量子**灌满池（⚠ 触发量子与窃取量子必须错开，否则被窃取者电平 ≈ 0 ⇒ 3 ms release 立刻 Idle、`pending` 被回收丢掉）＋ 第 17 条**软窃取** ＋ **窗口内**推新音符自己的 `NoteOff`（3 个窗口：窃取量子 / 松键量子 / 64 量子回收），全部走 `note_project(&[])`（**零**已调度音符 ⇒ 声音只可能来自环音符） | `rt.rs::render_block` 的 `EngineEvent::NoteOn` 分支（灌满 + 软窃取，`pending` 挂起）＋ `EngineEvent::NoteOff` 分支 ＋ ⭐ `polysynth.rs::PolySynth::note_off` 的**挂起匹配**支路（`pending.is_some() && pending_freq_hz == freq_hz` ⇒ `pending_released = true`）与提升点的 `Adsr::gate_off()`。⚠ ⭐ 本行曾写"既有场景没有一条走到这条支路"—— **注入实测证否**：在挂起支路注入一次 `Vec::with_capacity(1)` 时 ⑯ 也红（`alloc=15`）⇒ ⑯ **偶然**覆盖 15 次，但⛔ 不断言、⛔ 不确定、且池里混着已调度音符 ⇒ ㉔ 把它做成**确定性 + 带断言**的覆盖。行为判据在 `rt.rs` 的 `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion` 与 `tests/two_path_gain.rs` |
+//! | ㉙ | 每轨 **SFZ 音源** 10 000 量子（一条轨、两条区域覆盖两个音高）＋ **1 次换采样率**（48 → 44.1 kHz） | `SynthEngine::render_track` 的 **SFZ 分支**（`SfzVoicePool::trigger_note` 的区域扫描 → `SfzVoicePool::render_into` 的逐声部线性插值＋增益乘加）与快照边界（`begin_snapshot` 的器件重武装；⛔ **不**重建摊平表 —— 那是控制侧、窗口外）。⚠ 与 ㉓ 的**结构差别**：鼓机是"触发一次、器件内部推进"，SFZ 是"**多声部**（每条匹配区域一个）＋**跨量子延续的源位置**" ⇒ 池的扫描与逐声部循环都要落在零分配量程内。覆盖度见证＝窗口内总能量 > 0。行为判据在 `tests/sfz_instrument.rs` |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -2751,6 +2752,101 @@ fn scenario_drum_instrument(report: &mut Report) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 场景 ㉙ 每轨 SFZ 音源（任务 `#66` 的步 2：`SfzPlan` / `SfzVoicePool` / 分派次序）
+// ---------------------------------------------------------------------------
+
+/// ㉙ 的量子数（与 ㉓ 同量级）。
+const SFZ_QUANTA: u64 = 10_000;
+
+/// ㉙ 的 SFZ 文本：两条区域各管一个音高（⛔ 不共用一条 ⇒ 每个音符都真的触发）。
+const SFZ_SCENE_TEXT: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                              <region> sample=b.wav key=64 pitch_keycenter=60 volume=-6\n";
+
+/// ㉙ 的 SFZ 音符：与 [`drum_scene_notes`] 同一个时间栅格（每 240 tick 起音），
+/// 音高轮流落在 60/64 两个**被区域覆盖**的音高上 ⇒ 每一记都建出声部。
+fn sfz_scene_notes() -> Vec<NoteSpec> {
+    (0..256u64)
+        .map(|index| NoteSpec::at(index * 240, 480, if index % 2 == 0 { 60 } else { 64 }, 100))
+        .collect()
+}
+
+/// ㉙：每轨 **SFZ 音源** —— 触发＋逐声部渲染 ＋ **1 次换采样率**，四元组全 0。
+///
+/// 为什么要这条场景（而不是只在 `tests/sfz_instrument.rs` 里判行为）：
+///
+/// * 逐样本路径上多了**一整个声部池**（`[SfzVoice; 16]`）：触发要扫池、渲染要
+///   逐声部做线性插值与增益乘加 ⇒ "会不会碰锁或 I/O"只有四元组量得出来；
+/// * ⭐ **换采样率那一段是本场景的核心**：SFZ 的摊平表带着构造期的 `engine_hz`
+///   （`rate_per_note`），而摊平**⛔ 不在快照边界**（`arm_from_snapshot` 会分配）
+///   ⇒ 换采样率时引擎**只换器件参数、不重建摊平表**（控制侧在窗口外重新摊平并
+///   发布一份新快照）⇒ 这一段必须零分配。
+///
+/// 夹具：一条轨（两条区域覆盖两个音高），音符铺满整个窗口。三段窗口：
+///
+/// ① 10 000 个量子 = 触发 ＋ 逐声部渲染（**覆盖度**：窗口内总能量 > 0 ⇒ 真的在发声，
+///    ⛔ 不是"SFZ 没武装、静默跳过"那条空转分支）；
+/// ② 换采样率（48 → 44.1 kHz）后的 **1 个量子**（边界重新武装）。
+fn scenario_sfz_instrument(report: &mut Report) {
+    use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
+
+    let fixture = note_project(&sfz_scene_notes());
+    let track = fixture.track;
+    let instrument =
+        SfzInstrument::load(SFZ_SCENE_TEXT.to_owned(), &Default::default()).expect("SFZ 必须成功");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+    // ⭐ **构造期**摊平（允许分配）—— **窗口之外**，⛔ 不在快照边界。
+    let plan = SfzPlan::prepare(&instrument, &sample, 48_000.0).expect("摊平不得报错");
+    let snapshot = EngineSnapshot::from_project(&fixture.project, 1)
+        .expect("快照")
+        .with_sfz(track, plan);
+
+    let mut rig = Rig::from_snapshot(snapshot, 4096, 64, 64);
+    rig.preheat();
+
+    let mut scenario = Scenario::new("㉙SFZ 音源");
+
+    // ① 10 000 量子（窗口内只累加一个 `f64`：⛔ 不分配、⛔ 不打印）。
+    let mut energy = 0.0f64;
+    let first = window(|| {
+        for _ in 0..SFZ_QUANTA {
+            rig.step();
+            energy += rig
+                .output
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+        }
+    });
+    scenario.absorb(SFZ_QUANTA, &first);
+
+    // ② **1 次换采样率**（44.1 kHz）：窗口**之外**重新摊平 ＋ 发布（控制侧允许分配）。
+    let mut shifted = fixture.project.clone();
+    shifted.audio_config.sample_rate = SampleRate::Hz44100;
+    let shifted_plan = SfzPlan::prepare(&instrument, &sample, 44_100.0).expect("摊平不得报错");
+    let shifted_snapshot = EngineSnapshot::from_project(&shifted, 2)
+        .expect("换采样率快照")
+        .with_sfz(track, shifted_plan);
+    rig.slot.publish(shifted_snapshot);
+    scenario.absorb(1, &rig.pump(1));
+
+    scenario.note(format!(
+        "① 10 000 量子总能量 = {energy:.3}（> 0 ⇒ SFZ 声部真的在发声）；\
+         ② 换 44.1 kHz 之后的 1 个量子：⛔ 未重建摊平表（控制侧在窗口外重摊平）"
+    ));
+    report.scenario(
+        "㉙",
+        "[MUST-GATE-001] 每轨 SFZ 音源 10 001 量子（含 1 次换采样率）：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㉙c",
+        "覆盖度：窗口内真的在发声（总能量 > 0 ⇒ 不是'SFZ 没武装、静默跳过'的空转分支）",
+        energy > 0.0,
+        format!("窗口内总能量 = {energy:.6}"),
+    );
+}
+
 /// 造一份**轨道数超过电平暂存容量**的快照：母线 + [`OVERSIZE_TRACKS`] 条普通轨。
 ///
 /// 走的是与真实投影**同一套**下层构造（`TrackParams::from_track` + `from_parts`），
@@ -3716,6 +3812,7 @@ fn judgement_body() -> ExitCode {
     scenario_metronome(&mut report);
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
+    scenario_sfz_instrument(&mut report);
     scenario_audition_branch(&mut report);
     scenario_audition_zero_alloc(&mut report);
     scenario_audition_crossfade_window(&mut report);

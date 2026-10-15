@@ -408,7 +408,7 @@ fn the_engine_drum_path_matches_a_hand_driven_machine_bit_for_bit() {
     let mut rendered = Vec::with_capacity(QUANTA * 128);
     let mut reference_samples = Vec::with_capacity(QUANTA * 128);
     for _ in 0..QUANTA {
-        engine.render_track(track, Some(&schedule), &mut out);
+        engine.render_track(track, Some(&schedule), None, &mut out);
         let position = engine.position();
         reference.render(position, &mut reference_block);
         rendered.extend_from_slice(&out);

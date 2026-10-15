@@ -1264,6 +1264,9 @@ fn render_branch(
             synth.render_track(
                 track,
                 current.schedule(&track),
+                // ⭐ SFZ 音源（任务 `#66` 的步 2）：**借用快照里那一份摊平表**
+                // （⛔ 不 clone 里面的 PCM `Vec`）。不在表里 ⇒ `None` ⇒ 逐位不变。
+                current.sfz_plan(&track).map(|plan| plan.prepared()),
                 &mut share.track_scratch[..frames],
             );
         } else {
@@ -6385,6 +6388,9 @@ mod tests {
                     synth.render_track(
                         track,
                         current.schedule(&track),
+                        // ⭐ 与 `render_branch` **同一份** SFZ 接线（片 2a 的抽取等价判据
+                        // 要求这条参照路径与抽取后的路径逐字节相同）。
+                        current.sfz_plan(&track).map(|plan| plan.prepared()),
                         &mut track_scratch[..frames],
                     );
                 } else {

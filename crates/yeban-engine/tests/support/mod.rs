@@ -875,7 +875,7 @@ impl SynthRig {
         let mut rendered = Vec::with_capacity(quanta * 128);
         for _ in 0..quanta {
             self.engine
-                .render_track(self.track, Some(schedule), &mut out);
+                .render_track(self.track, Some(schedule), None, &mut out);
             self.engine.advance(128);
             rendered.extend_from_slice(&out);
         }

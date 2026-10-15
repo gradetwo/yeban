@@ -88,6 +88,7 @@ use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
 use crate::metronome::MetronomePlan;
 use crate::mixer::{PanLaw, pan_gains};
+use crate::sfz_instrument::SfzPlan;
 use crate::synth::{
     MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, ToneParams, tick_to_sample, velocity_gain,
 };
@@ -365,6 +366,21 @@ pub struct EngineSnapshot {
     /// ⇒ 输出与接线前**逐位相同**（实测见 [`crate::drums`] 模块文档 §6）。
     /// **一台都没有时它是空表 ⇒ 实时侧整段跳过**。
     drums: BTreeMap<EntityId, DrumsParams>,
+    /// 每轨的 **SFZ 音源**（摊平后的区域表 ＋ PCM）[ARCH-RT-001, ROAD-M2-005]。
+    ///
+    /// ⚠ **重数据**（与 [`Self::inserts`] 里的 [`crate::insert::ConvolutionPlan`] 同族）：
+    /// 模型层放不下样本数组（`ParameterValue` 只有 `name`/`value`/`unit`），因此
+    /// "SFZ 文本 → 区域表 ＋ PCM"的摊平在**控制线程的构造期**完成，结果随快照共享给
+    /// 音频线程（[`crate::sfz_instrument::SfzPlan`]）。
+    ///
+    /// ⛔ **模型层今天没有轨↔SFZ 的绑定**（`yeban-model` 里 SFZ 命中只有一行注释、
+    /// `DeviceKind` 四档没有 sampler）⇒ 本表**只能**由引擎 API
+    /// [`Self::with_sfz`] 显式注入；`from_project` **不**填它 ⇒ 产品路径默认是空表
+    /// ⇒ 实时侧整段跳过 ⇒ 输出与接线前**逐位相同**（判据见
+    /// `tests/sfz_instrument.rs` 的反向对照指纹）。
+    ///
+    /// **一条都没有时它是空表 ⇒ 实时侧整段跳过**。
+    sfz: BTreeMap<EntityId, SfzPlan>,
     /// 声相衰减律（`audio_config.pan_law` 的投影）[MODEL-AST-002]。
     ///
     /// 模型层已有这个枚举，但**快照此前没有投影它**（`line/engine-sound` 的 needs N4）。
@@ -560,6 +576,9 @@ impl EngineSnapshot {
             tones: BTreeMap::new(),
             inserts: BTreeMap::new(),
             drums: BTreeMap::new(),
+            // ⛔ `from_parts` **不**填 SFZ：绑定只能由 [`Self::with_sfz`] 显式注入
+            // （模型层没有轨↔SFZ 绑定，见字段文档）。
+            sfz: BTreeMap::new(),
             pan_law: PanLaw::default(),
             master_gain,
             scheduled_notes: 0,
@@ -609,6 +628,26 @@ impl EngineSnapshot {
     #[must_use]
     pub fn with_drums(mut self, drums: BTreeMap<EntityId, DrumsParams>) -> Self {
         self.drums = drums;
+        self
+    }
+
+    /// ⭐ **给一条轨注入 SFZ 音源**（摊平后的区域表 ＋ PCM）。
+    ///
+    /// ⚠ 本函数是 **API**、⛔ 不是模型语义：`yeban-model` 今天**没有**轨↔SFZ 的绑定
+    /// （`DeviceKind` 四档没有 sampler、`from_project` 也**不**填 [`Self::sfz`]）⇒
+    /// "哪条轨用哪份 SFZ"这个问题由**调用方**决定，模型侧的形状登记为 needs
+    /// （见 [`crate::sfz_instrument`] 模块头的 sfz-needs-5）。
+    ///
+    /// 形状照 [`Self::with_tones`] / [`Self::with_drums`]：**消费式**构造器、返回 `Self`。
+    /// 多次调用**累加**（同一轨再调一次 ⇒ 覆盖该轨那一份）。
+    ///
+    /// ⛔ 本函数**不**摊平（那是 [`SfzPlan::prepare`]，控制线程的构造期）—— 它只把
+    /// 已经建好的摊平表**按值移进**本快照（快照自身由 `Arc` 共享）⇒ **边界零分配**（红线 7）。
+    ///
+    /// ⚠ 不在表里的轨道 ⇒ 音源照旧（鼓机优先，否则复音合成器）⇒ **逐位不变**。
+    #[must_use]
+    pub fn with_sfz(mut self, track: EntityId, plan: SfzPlan) -> Self {
+        self.sfz.insert(track, plan);
         self
     }
 
@@ -760,6 +799,23 @@ impl EngineSnapshot {
     #[must_use]
     pub fn drum_params(&self, id: &EntityId) -> Option<&DrumsParams> {
         self.drums.get(id)
+    }
+
+    /// ⭐ 全部音轨的 **SFZ 音源**（`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    ///
+    /// ⚠ **重数据**（带区域表与 PCM）：见 [`Self::sfz`] 的字段文档。
+    #[must_use]
+    pub const fn sfz(&self) -> &BTreeMap<EntityId, SfzPlan> {
+        &self.sfz
+    }
+
+    /// ⭐ 单轨的 SFZ 音源（没有该轨时为 `None` ⇒ 实时侧照旧：鼓机优先，否则复音）。
+    ///
+    /// 实时侧的唯一用途是把它投影成 `render_track` 的 `sfz` 参数
+    /// （[`SfzPlan::prepared`]），⛔ 不 clone 里面的 `Vec`。
+    #[must_use]
+    pub fn sfz_plan(&self, id: &EntityId) -> Option<&SfzPlan> {
+        self.sfz.get(id)
     }
 
     /// 声相衰减律（`audio_config.pan_law` 的投影）。

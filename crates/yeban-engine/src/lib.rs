@@ -20,6 +20,7 @@
 //! | [`level`] | **再导出** `yeban_dsp::meter` 的电平口径（峰值/峰值保持/RMS/平滑/dBFS/钳位/取最新/真峰值）——本 crate 不再持有实现 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`insert`] | **每轨插入器件**：`InternalEffect` 设备 → 通道条（`yeban_dsp::channel_strip` 的再导出 + 约定参数名投影；其动态级即 `yeban_dsp::compressor`）＋ 混响（`yeban_dsp::reverb` 的再导出；延迟线只在构造期分配） | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-006] |
 //! | [`drums`] | **每轨鼓机音源**：`InternalInstrument` 设备 + **写全的五个键位名** → `yeban_dsp::drums`（再导出 + 约定参数名投影）。驱动源是**轨道自己的音符调度表**，位置在插入链**之前**；映射不完整 ⇒ 不武装 ⇒ 逐位不变 | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DSP-001]、[ARCH-DET-001] |
+//! | [`sfz_instrument`] | **每轨 SFZ 音源**：`yeban-sfz` 的摊平表（`PreparedSfz`：区域位掩码 + 预计算速率/增益 + PCM 借用）＋ 定长声部池 `SfzVoicePool`；快照侧只读 `SfzPlan`、分派次序 **鼓机 ＞ SFZ ＞ 复音**；⛔ 无绑定来源（模型面待裁）、⛔ 无循环/包络 | [ARCH-RT-001]、[ROAD-M2-005]、[MUST-GATE-001] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`param`] | **实时侧参数目标表**：`SetParam` 事件 → 逐样本**平滑**的增益乘子（逐轨槽位 ＋ **主总线**槽位；`yeban_dsp::smoothing` 的消费者） | [ARCH-DSP-001]、[ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |

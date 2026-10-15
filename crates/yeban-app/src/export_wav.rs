@@ -23,8 +23,13 @@
 //! EngineSnapshot::from_project(&project, 1)        // 工程 ⇒ 快照（既有）
 //!       ⇒ SynthEngine::new(snapshot.sample_rate())
 //!       ⇒ engine.arm_from_snapshot(&snapshot)      // ⭐ `mod-engine` 新增的公开入口
-//!       ⇒ 每轨一个源：engine.render_track(track, snapshot.schedules().get(&track), &mut mono)
+//!       ⇒ 每轨一个源：engine.render_track(track, snapshot.schedules().get(&track), None, &mut mono)
 //! ```
+//!
+//! ⚠ 第 3 个参数是 SFZ 音源（`Option<&PreparedSfz>`，`mod-engine` 的 `#66` 步 2 新增）。
+//! 本行给 `None`：app 的 `--sfz` 走的是 [`crate::sfz_load::SfzTrackSource`] **旁路**
+//! （它整个替换引擎音源），而"引擎侧 SFZ ↔ 轨"的**绑定注入**属 `#66` 的步 3 ⇒
+//! 这里的行为与接线前**逐位相同**。
 //!
 //! ⚠ **红线 7**：`arm_from_snapshot` **会分配**（`begin_snapshot` 增长区间表）⇒ 它的允许调用点是
 //! **离线导出／控制线程装载工程／测试**，⛔ **绝不可**在音频回调里调用。本文件是离线路径 ✓。
@@ -328,8 +333,15 @@ impl AudioSource for EngineTrackSource {
             self.mono.resize(frames, 0.0);
         }
         // `render_track` 复用内部游标推进（与实时路径同一个函数）。
-        self.engine
-            .render_track(self.track, self.schedule.as_ref(), &mut self.mono[..frames]);
+        // ⚠ 第 3 参（SFZ 摊平表）给 `None`：本 crate 的 `--sfz` 走 `SfzTrackSource`
+        // **旁路**，"引擎侧 SFZ ↔ 轨"的绑定注入属 `mod-engine` 的步 3。
+        // 给 `None` ⇒ 分派次序退回"复音"，输出与接线前**逐位相同**。
+        self.engine.render_track(
+            self.track,
+            self.schedule.as_ref(),
+            None,
+            &mut self.mono[..frames],
+        );
         out.fill(0.0);
         for index in 0..frames {
             let value = self.mono[index];

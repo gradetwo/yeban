@@ -54,6 +54,72 @@
 //! | ⑥ | 同内容不同路径重复解码 | 未做（每个 region / 每条路径各自解码，⛔ 无去重） |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
 //! | ⑧ | `loop_window` / `direction` / `pan` / `off_mode` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带） |
+//!
+//! # 引擎侧声部（任务 `#66` 的步 2：`SfzPlan` / `SfzVoicePool` / 分派次序）
+//!
+//! 摊平表（[`PreparedSfz`]）此前**只被测试引用**（`engine/lib.rs` 的模块地图里
+//! `synth` 一节仍写"没有采样播放/SFZ"）。本片把它接进
+//! [`crate::synth::SynthEngine::render_track`] 的**第三条音源支路**：
+//!
+//! | 件 | 归属 | 形状 |
+//! | :--- | :--- | :--- |
+//! | [`SfzPlan`] | 快照（控制侧投影，随快照共享） | 一条轨的摊平表（重数据：区域表 ＋ PCM 的 `Vec`） |
+//! | [`SfzVoice`] / [`SfzVoicePool`] | [`crate::synth::SynthEngine`] 的轨道槽 | 定长 `[SfzVoice; 16]`，**全 `Copy`** |
+//! | `render_track` 的第 3 参 | 快照 → 实时 | `sfz: Option<&PreparedSfz>`（与既有 `Option<&NoteSchedule>` **对称**） |
+//!
+//! ## 分派次序（**鼓机 ＞ SFZ ＞ 复音**）
+//!
+//! 一条轨至多一件音源（[`crate::drums`] §4.1 的既有裁决）。三件同时在场时的次序是
+//! **鼓机 ＞ SFZ ＞ 复音**：`drum_note_map.is_some()` ⇒ 走鼓机（SFZ 池**被释放**）；
+//! 否则 `sfz.is_some()` ⇒ 走 SFZ（⛔ 不叠加复音）；否则走复音。
+//! ⚠ "鼓机 ＋ SFZ 同轨"是**引擎的取舍**、⛔ 不是模型语义 ⇒ 登记为 needs（见下表）。
+//!
+//! ## 终点口径（**无包络时的诚实占位**）
+//!
+//! 声部的停止条件是
+//! `stop = min(end_sample, span 终点 → 引擎帧, 样本播完)`：
+//!
+//! * ⛔ **跳过 `ampeg_*`**：ADSR / 力度包络**本片不做** ⇒ 音符**没有**包络收尾；
+//! * ⭐ **用样本自然结束**：源位置走到 [`PreparedRegion::source_end`]
+//!   （`min(span 终点, PCM 长度)`；线性插值需要 `position` 与 `position + 1` 两个样本）
+//!   即退休；
+//! * 音符先到 [`crate::synth::ScheduledNote::end_sample`] 也退休。
+//!
+//! ⚠ `span` 的**起点**（`offset`）与循环**本片都不做**（源位置从 `0.0` 起，
+//! 与摊平表的一次性调用同口径）。
+//!
+//! ## 分配纪律（红线 7 / [MUST-GATE-001]）
+//!
+//! * [`SfzPlan::prepare`]：**允许分配**（控制线程的构造期）；
+//! * **快照边界⛔ 不摊平**：`SynthEngine::begin_snapshot` **不**碰 SFZ
+//!   （`arm_from_snapshot` 会分配 ⇒ 它只能在**窗口外**被调用）；
+//! * 逐样本路径只读 `&PreparedSfz`、原地写 `out`：**零分配、零锁、零 I/O**；
+//! * ⭐ **PCM 借用快照**：`render_track` 收的是 `&PreparedSfz`（快照里那一份），
+//!   ⛔ 不 clone `Vec`、⛔ 不 `Arc` clone `Vec`；
+//! * ⚠ 摊平表带着**构造期的 `engine_hz`**（`rate_per_note`）⇒ **换采样率**必须由
+//!   **控制侧在窗口外重新摊平**并发布一份新快照；引擎⛔ 不在快照边界重算，
+//!   **在飞的声部**保留触发时抄下的 `rate`（实测见 `tests/rt_zero_alloc.rs` 的 ㉙）；
+//! * **退休归属不变**：SFZ 声部的退休是**池内状态翻转**（`active = false`），
+//!   ⛔ 不碰快照退役队列（旧快照仍由 `crate::snapshot` 的 `RetireProducer`
+//!   交回控制线程释放）。
+//!
+//! ## ⚠ 与摊平表 `render_block_into` 的**口径边界**（如实登记）
+//!
+//! `PreparedSfz::render_block_into` 是**无状态的一次性调用**（每次从源位置 `0.0` 起播），
+//! 且**尚未应用 `span`**（见上表 ③）。引擎声部是**有状态**的：它应用 `span` 终点、
+//! 播完即退休。因此"逐样本最大绝对差 ＝ 0"这条判据**只覆盖触发量子**，且夹具必须是
+//! **没有显式 `offset`/`end`** 的区域；两条的差别登记为 needs（见下表）。
+//!
+//! ## 本片新增的 needs（⛔ 不假装已有）
+//!
+//! | # | 缺口 | 为什么需要裁决 |
+//! | :--- | :--- | :--- |
+//! | sfz-needs-1 | **轨推子/静音没有乘到 SFZ 声部上** | 本片的逐样本对账口径是 `render_block_into(note, velocity)`（它**没有**轨增益参数）⇒ 声部增益＝`region.gain_at(...)`。接线轨增益要先裁"谁拥有力度增益"（SFZ 曲线的 vs `synth::velocity_gain`），否则会双重计力度。⚠ 与鼓机（乘 `ScheduledNote::gain`）**不对称** |
+//! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | `yeban-sfz` 的 `VoicePool` 有确定性窃取，但它是**全局 512 声部**、且 victim 选择是另一份口径 ⇒ 两套形状要一条 ADR（见 `docs/ledger/sfz-core-notes.md`） |
+//! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | 与 `crate::drums` 的 needs-3 同族：模型若禁止这种组合，本条删除 |
+//! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | 两侧口径分叉（离线 `render_note_into` / 摊平表 `render_block_into` 都仍从源 `0.0` 播到 PCM 末）⇒ 修它要**同时**改离线侧，属步 3 |
+//! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在** | `yeban-model` 里 SFZ 命中只有一行注释（`model/src/lib.rs:16`）、`DeviceKind` 四档没有 sampler ⇒ 今天只能由引擎 API（[`crate::snapshot::EngineSnapshot::with_sfz`]）显式注入 |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / 多采样 / 每区域独立 PCM** | 完全未做：本片一条轨共用**一份** PCM（摊平表只有 `pcm` 一个 `Vec`）⇒ 多 `sample=` 的区域会播同一份数据（步 3） |
 
 use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
@@ -230,7 +296,7 @@ impl SfzInstrument {
 /// 力度轴淡化），使回调侧的相乘顺序与离线路径**逐位相同**：
 /// `(volume × 力度) × ((键轴 × 力度淡入) × 力度淡出)`。
 /// 因此 `(note, velocity)` 的取值**不再冻结**在 `(60, 100)`。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreparedRegion {
     /// 键掩码：第 `n` 位为 1 表示该区域接受 `note == n`（门控不过时全 0）。
     key_mask: [u64; 2],
@@ -288,6 +354,22 @@ impl PreparedRegion {
         self.span
     }
 
+    /// ⭐ **源采样终点（半开）**：`min(span 终点, 样本播完)`。
+    ///
+    /// * [`Self::span`] 为 `None` ⇒ `None`：该区域**不产生采样输出**（`end=-1` / 空区间）
+    ///   ⇒ 实时侧⛔ 不为它建声部；
+    /// * `span.end` 未指定（`offset`/`end` 都没写）⇒ 取 `pcm_len`（"到采样末尾"）；
+    /// * 显式 `end` 超出 PCM ⇒ 夹到 `pcm_len`（⛔ 不越界读）。
+    ///
+    /// ⚠ **只算终点**：`span` 的起点（`offset`）本片不应用（声部从源位置 `0.0` 起），
+    /// 与 [`PreparedSfz::render_block_into`] 的起点口径一致。
+    #[must_use]
+    pub fn source_end(&self, pcm_len: usize) -> Option<u64> {
+        let pcm_len = pcm_len as u64;
+        self.span
+            .map(|span| span.end.unwrap_or(pcm_len).min(pcm_len))
+    }
+
     /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
     #[must_use]
     pub fn gain_at(&self, note: u8, velocity: u8) -> f32 {
@@ -309,7 +391,7 @@ impl PreparedRegion {
 ///   `out` 的原地写入（⛔ 无 `Vec::push`／`Box`／`String`／锁／I/O）。
 ///   违反的后果：实时回调内产生堆分配/释放或锁等待 ⇒ 可能造成音频线程不可预测的停顿
 ///   （红线 7 的一票否决项），由 `tests/rt_zero_alloc.rs` 的**计数型全局分配器**窗口判据检测。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreparedSfz {
     regions: Vec<PreparedRegion>,
     pcm: Vec<f32>,
@@ -436,6 +518,15 @@ impl PreparedSfz {
         &self.regions
     }
 
+    /// ⭐ 摊平后的 PCM（**只读借用**：实时侧⛔ 不 clone、⛔ 不 `Arc` clone 这个 `Vec`）。
+    ///
+    /// 本切片一条轨共用**一份** PCM（多 `sample=` 的区域会播同一份数据 ⇒ 见模块头
+    /// sfz-needs-6）。
+    #[must_use]
+    pub fn pcm(&self) -> &[f32] {
+        &self.pcm
+    }
+
     /// ⭐ **回调侧渲染**：把一个音符混进 `out`，返回写入帧数。**零分配**（只读 + 原地写）。
     ///
     /// ⭐ **多匹配语义 = `all`**：匹配的每条区域都叠加（与离线
@@ -446,6 +537,10 @@ impl PreparedSfz {
     /// `(volume × 力度) × ((键轴 × 力度淡入) × 力度淡出)`。
     /// 与离线侧的**逐样本最大绝对差**为 0（判据 `prepared_matches_offline_sample_by_sample`
     /// 钉住；`trigger` 门控与多匹配两片另有判据）。
+    ///
+    /// ⚠ **本函数不应用 [`PreparedRegion::span`]**（步 1 的已知局限 ③）：源侧终点取 PCM
+    /// 长度 ⇒ 与接线前逐样本**逐位相同**。引擎实时声部**应用** `span` 终点
+    /// （见 [`SfzVoice`] 与模块头的口径边界）。
     pub fn render_block_into(&self, note: u8, velocity: u8, out: &mut [f32]) -> usize {
         let n = note as usize;
         let mut written = 0usize;
@@ -459,21 +554,373 @@ impl PreparedSfz {
             }
             let gain = region.gain_at(note, velocity);
             let mut position = 0.0f32;
-            let mut region_written = 0usize;
-            for slot in out.iter_mut() {
-                let index = position as usize;
-                if index + 1 >= self.pcm.len() {
-                    break;
-                }
-                let frac = position - index as f32;
-                let sample = self.pcm[index] * (1.0 - frac) + self.pcm[index + 1] * frac;
-                *slot += sample * gain;
-                position += rate;
-                region_written += 1;
-            }
+            let region_written = mix_span_into(
+                &self.pcm,
+                &mut position,
+                rate,
+                gain,
+                self.pcm.len() as u64,
+                out,
+            );
             written = written.max(region_written);
         }
         written
+    }
+}
+
+/// ⭐ **全仓唯一的逐样本混音循环**（线性插值 ＋ 增益乘加 ＋ 源采样终点）。
+///
+/// `position` 是**可变**的源采样位置 ⇒ 无状态的一次性调用
+/// （[`PreparedSfz::render_block_into`]）与跨量子延续的实时声部
+/// （[`SfzVoicePool`]）走**同一段代码**（本仓"不许两份实现"的机械纪律；
+/// 两份实现在 binary32 下无法维持"逐位相同"）。
+///
+/// 停止条件（写每个样本**之前**）：`floor(position) + 1 >= source_end` ——
+/// 线性插值需要 `position` 与 `position + 1` 两个样本。
+/// `source_end` 由调用方给出：
+/// * 摊平表的一次性调用给 `pcm.len()`（⛔ 不看 `span`，保持接线前的口径）；
+/// * 实时声部给 [`PreparedRegion::source_end`]（`min(span 终点, pcm.len())`）。
+///
+/// ⚠ **零分配、零锁、零 I/O**：只读 `pcm`、原地写 `out` [MUST-GATE-001]。
+pub(crate) fn mix_span_into(
+    pcm: &[f32],
+    position: &mut f32,
+    rate: f32,
+    gain: f32,
+    source_end: u64,
+    out: &mut [f32],
+) -> usize {
+    let mut written = 0usize;
+    for slot in out.iter_mut() {
+        let index = *position as usize;
+        if index as u64 + 1 >= source_end || index + 1 >= pcm.len() {
+            break;
+        }
+        let frac = *position - index as f32;
+        let sample = pcm[index] * (1.0 - frac) + pcm[index + 1] * frac;
+        *slot += sample * gain;
+        *position += rate;
+        written += 1;
+    }
+    written
+}
+
+/// 每轨的 **SFZ 声部数上限**（定长池）。
+///
+/// ⚠ 与 `yeban-sfz` 的**全局 512 声部** `VoicePool` 是**两套形状**：那个池管
+/// `group`/`off_by`/`note_polyphony` 一类语义与它自己的 victim 选择，本池只管
+/// "本轨有哪几个采样在响" ⇒ 窃取口径要一条 ADR（模块头 sfz-needs-2）。
+pub const SFZ_VOICES_PER_TRACK: usize = 16;
+
+/// ✂️ **实时侧的一个 SFZ 声部**：定长、`Copy`、无指针 [ARCH-RT-001]。
+///
+/// 一个声部 ＝ **一条匹配区域**（SFZ 里每个 `region` 是一个独立声部 ⇒ 多匹配 ＝ 叠加）。
+/// 触发时（[`SfzVoicePool::trigger_note`]）把摊平表里的标量**预计算**进来：
+///
+/// * `rate` ＝ `region.rate_per_note[note]`（速率预计算 ⇒ ⛔ 逐样本不做除法/`exp`）；
+/// * `gain` ＝ `region.gain_at(note, velocity)`（与摊平口径**逐位相同**）；
+/// * `source_end` ＝ [`PreparedRegion::source_end`]（`min(span 终点, 样本播完)`）。
+///
+/// # 终点口径（**无包络时的诚实占位**）
+///
+/// `stop = min(end_sample, 样本播完)`，其中
+///
+/// * ⛔ **跳过 `ampeg_*`**（ADSR / 力度包络本片不做）⇒ 音符**没有**包络收尾；
+/// * ⭐ **用样本自然结束**：源位置走到 `source_end` 即退休；
+/// * `end_sample`（音符的引擎终点）先到也退休。
+///
+/// ⛔ 本片不做循环、不做 `off_mode`、不做多采样（模块头 sfz-needs-6）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SfzVoice {
+    /// 源采样位置（帧；浮点 ⇒ 分数速率与线性插值）。
+    position: f32,
+    /// 每样本的源位置增量（触发时从摊平表抄来）。
+    rate: f32,
+    /// 逐样本增益（触发时算好；见 [`PreparedRegion::gain_at`]）。
+    gain: f32,
+    /// 触发该声部的音高（诊断与判据用）。
+    note: u8,
+    /// 触发该声部的力度（诊断与判据用）。
+    velocity: u8,
+    /// 是否在发声（`false` ⇒ 逐样本循环整段跳过）。
+    active: bool,
+    /// **源采样终点（半开）**：见类型文档的"终点口径"。
+    source_end: u64,
+    /// **引擎侧终点**（绝对样本位置）：来自 [`crate::synth::ScheduledNote::end_sample`]。
+    end_sample: u64,
+}
+
+impl SfzVoice {
+    /// 空闲声部（哨兵；`active == false` ⇒ 不参与渲染）。
+    pub const EMPTY: Self = Self {
+        position: 0.0,
+        rate: 0.0,
+        gain: 0.0,
+        note: 0,
+        velocity: 0,
+        active: false,
+        source_end: 0,
+        end_sample: 0,
+    };
+
+    /// 组装一个**在发声**的声部（**触发期**调用；⛔ 逐样本路径不调用）。
+    #[must_use]
+    pub const fn new(
+        note: u8,
+        velocity: u8,
+        rate: f32,
+        gain: f32,
+        source_end: u64,
+        end_sample: u64,
+    ) -> Self {
+        Self {
+            position: 0.0,
+            rate,
+            gain,
+            note,
+            velocity,
+            active: true,
+            source_end,
+            end_sample,
+        }
+    }
+
+    /// 是否在发声。
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// 触发该声部的音高。
+    #[must_use]
+    pub const fn note(&self) -> u8 {
+        self.note
+    }
+
+    /// 触发该声部的力度。
+    #[must_use]
+    pub const fn velocity(&self) -> u8 {
+        self.velocity
+    }
+
+    /// 当前源采样位置（帧）。
+    #[must_use]
+    pub const fn source_position(&self) -> f32 {
+        self.position
+    }
+
+    /// 源采样终点（半开）。
+    #[must_use]
+    pub const fn source_end(&self) -> u64 {
+        self.source_end
+    }
+
+    /// 引擎侧终点（绝对样本位置）。
+    #[must_use]
+    pub const fn end_sample(&self) -> u64 {
+        self.end_sample
+    }
+
+    /// 释放（退休）。⛔ 不是堆释放：只是把状态翻回哨兵 [红线 7]。
+    pub(crate) fn silence(&mut self) {
+        *self = Self::EMPTY;
+    }
+}
+
+/// 每轨的 **SFZ 声部池**：定长 `[SfzVoice; 16]`，**全 `Copy`** [ARCH-RT-001]。
+///
+/// # 纪律（与红线 7 配套）
+///
+/// * **触发**（[`Self::trigger_note`]）：只在**已有数组**里找最低空闲槽 ⇒ 零分配；
+/// * **渲染**（[`Self::render_into`]）：只读 `&PreparedSfz`、原地写 `out` ⇒ 零分配；
+/// * **退休**是**池内**状态翻转（`active = false`）⇒ ⛔ 不碰快照退役队列
+///   （退役归属不变：旧快照仍由 `crate::snapshot` 的 `RetireProducer` 交回控制线程）；
+/// * 池满（> [`SFZ_VOICES_PER_TRACK`] 条区域同时匹配）⇒ **丢弃并计数**
+///   （[`Self::dropped`]）；⛔ 不 panic、⛔ 不扩容、⛔ 不发明窃取口径（sfz-needs-2）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SfzVoicePool {
+    /// 定长声部表（下标稳定 ⇒ 触发分配是确定性的：取最低空闲槽 [ARCH-DET-001]）。
+    voices: [SfzVoice; SFZ_VOICES_PER_TRACK],
+    /// 因池满被丢弃的声部数（**累计、单调递增**；与 [`Self::active_count`] 的量规配对）。
+    dropped: u64,
+}
+
+impl SfzVoicePool {
+    /// 空池（⛔ 无分配：整个池是栈上/结构体内的定长数组）。
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            voices: [SfzVoice::EMPTY; SFZ_VOICES_PER_TRACK],
+            dropped: 0,
+        }
+    }
+
+    /// ⭐ **为一个音符建声部**：**每一条匹配区域**占一个槽（多匹配 ＝ 叠加）。
+    ///
+    /// 返回**新建的声部数**（0 ＝ 没有区域匹配，或匹配的区域不产生采样输出）。
+    /// 覆盖度：池满时多出来的区域被丢弃并计入 [`Self::dropped`]。
+    pub fn trigger_note(
+        &mut self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        end_sample: u64,
+    ) -> usize {
+        let pcm_len = plan.pcm().len();
+        let n = note as usize;
+        let mut created = 0usize;
+        for region in plan.regions() {
+            if !region.accepts(note, velocity) {
+                continue;
+            }
+            let rate = region.rate_per_note[n];
+            if !(rate.is_finite() && rate > 0.0) || pcm_len == 0 {
+                continue;
+            }
+            // ⭐ 终点口径：`span() == None`（`end=-1` / 空区间）⇒ 不建声部。
+            let Some(source_end) = region.source_end(pcm_len) else {
+                continue;
+            };
+            let voice = SfzVoice::new(
+                note,
+                velocity,
+                rate,
+                region.gain_at(note, velocity),
+                source_end,
+                end_sample,
+            );
+            match self.voices.iter().position(|voice| !voice.active) {
+                Some(index) => {
+                    self.voices[index] = voice;
+                    created += 1;
+                }
+                None => self.dropped = self.dropped.saturating_add(1),
+            }
+        }
+        created
+    }
+
+    /// 渲染本池的**全部活声部**到 `out`（`position` ＝ 本量子的**引擎绝对**起点）。
+    ///
+    /// **零分配**：只读 `plan` 的 PCM 与已有数组、原地写 `out` [MUST-GATE-001]。
+    pub fn render_into(&mut self, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
+        let pcm = plan.pcm();
+        for voice in &mut self.voices {
+            if !voice.active {
+                continue;
+            }
+            // 终点口径：音符先到终点 ⇒ 本量子只渲染到它为止。
+            let remaining = voice
+                .end_sample
+                .saturating_sub(position)
+                .min(out.len() as u64) as usize;
+            if remaining == 0 {
+                voice.silence();
+                continue;
+            }
+            let written = mix_span_into(
+                pcm,
+                &mut voice.position,
+                voice.rate,
+                voice.gain,
+                voice.source_end,
+                &mut out[..remaining],
+            );
+            // ⭐ 用样本自然结束：源位置走完 ⇒ 退休（⛔ 无包络、⛔ 无循环）。
+            if written < remaining {
+                voice.silence();
+            }
+        }
+    }
+
+    /// 释放**全部**声部（`seek` / 换音源 ⇒ ⛔ 不留上一件音源的尾巴）。
+    ///
+    /// ⚠ 保留 [`Self::dropped`]：它是**累计**读数（与"活声部数"这张量规配对），
+    /// 与 `DrumMachine::reset` 保留 `drum_hits` 同口径。
+    pub fn silence(&mut self) {
+        for voice in &mut self.voices {
+            voice.silence();
+        }
+    }
+
+    /// 活声部数（**量规**：可升可降）。
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.voices.iter().filter(|voice| voice.active).count()
+    }
+
+    /// 因池满被丢弃的声部数（**累计**，单调递增）。
+    #[must_use]
+    pub const fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// 只读声部表（判据用）。
+    #[must_use]
+    pub const fn voices(&self) -> &[SfzVoice; SFZ_VOICES_PER_TRACK] {
+        &self.voices
+    }
+}
+
+/// ✂️ **一条轨的 SFZ 投影**：控制侧构造期建好、实时侧只读。
+///
+/// 它存在的理由与 [`crate::insert::ConvolutionPlan`] 同一句：**模型层放不下样本数组**
+/// （`ParameterValue` 只有 `name`/`value`/`unit` 三个字段）⇒ "SFZ 文本 → 区域表 ＋ PCM"
+/// 的摊平必须发生在**控制线程的构造期**，结果随快照一起送到音频线程。
+///
+/// # 分配纪律（红线 7 / [MUST-GATE-001]）
+///
+/// * [`Self::prepare`]：**允许分配**（它调 [`PreparedSfz::prepare`]，建区域表与 PCM）；
+/// * ⛔ **不在快照边界摊平**：快照边界（`SynthEngine::begin_snapshot` / `arm_from_snapshot`）
+///   一个字都不碰它 —— 那两条路径会分配（见 `crate::synth::SynthEngine::arm_from_snapshot`）；
+/// * 实时侧只**借用** [`Self::prepared`] 的 `&PreparedSfz`（**PCM 借用快照**），
+///   ⛔ 不 clone、⛔ 不 `Arc` clone 那个 `Vec`。
+///
+/// ⚠ **轨↔SFZ 的绑定不由模型给**（模块头 sfz-needs-5）⇒ 只能由引擎 API 显式注入
+/// （[`crate::snapshot::EngineSnapshot::with_sfz`]）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct SfzPlan {
+    /// 重数据：摊平后的区域表 ＋ PCM（控制侧构造、实时侧只读）。
+    prepared: PreparedSfz,
+}
+
+impl SfzPlan {
+    /// 控制侧摊平（**允许分配**）：见 [`PreparedSfz::prepare`] 的口径。
+    ///
+    /// # Errors
+    /// 文本非法 ⇒ [`SfzError`]（与 [`PreparedSfz::prepare`] 同）。
+    pub fn prepare(
+        instrument: &SfzInstrument,
+        source: &InMemorySample,
+        engine_hz: f32,
+    ) -> Result<Self, SfzError> {
+        Ok(Self {
+            prepared: PreparedSfz::prepare(instrument, source, engine_hz)?,
+        })
+    }
+
+    /// 从**已经摊平**的表直接建（控制侧；判据与"摊平与控制侧分离"的场景用）。
+    #[must_use]
+    pub const fn from_prepared(prepared: PreparedSfz) -> Self {
+        Self { prepared }
+    }
+
+    /// 实时侧只读的摊平表 —— `SynthEngine::render_track` 的 `sfz` 参数就是它。
+    #[must_use]
+    pub const fn prepared(&self) -> &PreparedSfz {
+        &self.prepared
+    }
+
+    /// 区域数（控制侧读数）。
+    #[must_use]
+    pub fn region_count(&self) -> usize {
+        self.prepared.region_count()
+    }
+
+    /// 摊平占用的**内存字节数**（读数用：区域表 ＋ PCM）。
+    #[must_use]
+    pub fn memory_bytes(&self) -> usize {
+        self.prepared.memory_bytes()
     }
 }
 

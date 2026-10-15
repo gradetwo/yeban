@@ -121,6 +121,7 @@ use yeban_dsp::polysynth::{
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, PPQ};
 
 use crate::drums::{DRUM_SLOTS, DrumHit, DrumMachine, DrumNoteMap, DrumsParams};
+use crate::sfz_instrument::{PreparedSfz, SfzVoicePool};
 use crate::snapshot::{EngineSnapshot, SnapshotError};
 
 /// 每个轨道槽的声部数（复音上限）。
@@ -816,6 +817,15 @@ struct TrackSlot {
     /// ⚠ 槽**未占用**或**释放后**时必须是 `0.0`（⭐ 见 [`TrackSlot::empty`] 与
     /// [`SynthEngine::set_track_gain_scales`]）⇒ ⛔ 不留上一次的残值。
     gain_scale: f32,
+    /// ⭐ **本轨的 SFZ 声部池**（`[SfzVoice; 16]`，定长全 `Copy`）。
+    ///
+    /// 音源分派次序是**鼓机 ＞ SFZ ＞ 复音**（见 [`SynthEngine::render_track`]）：
+    /// 只有本轨**是** SFZ 音源时它才发声；鼓机/复音分支会把整个池**释放**
+    /// （⛔ 不留上一件音源的尾巴 —— 与鼓机换回复音时的 `DrumMachine::reset` 同口径）。
+    ///
+    /// ⚠ 池里的声部状态**跨快照连续**（与复音声部池同口径）：本轨暂时不在快照里
+    /// 时不释放，等它回来接着响。
+    sfz: SfzVoicePool,
 }
 
 impl TrackSlot {
@@ -830,6 +840,8 @@ impl TrackSlot {
             synth: PolySynth::new(sample_rate),
             // ⭐ 空槽/释放后的**归零**（⛔ 不是残值）。
             gain_scale: 0.0,
+            // ⭐ 空池（定长数组 ⇒ 零分配；`active` 全 `false` ⇒ 不产生任何样本）。
+            sfz: SfzVoicePool::empty(),
         }
     }
 }
@@ -942,6 +954,30 @@ impl SynthEngine {
         })
     }
 
+    /// ⭐ 因 **SFZ 声部池满**（> [`SFZ_VOICES_PER_TRACK`](crate::sfz_instrument::SFZ_VOICES_PER_TRACK)
+    /// 条区域同时匹配）被丢弃的声部数（**累计**；各槽之和）。
+    ///
+    /// ⚠ 本片**没有** SFZ 窃取口径（登记为 sfz-needs-2）⇒ 溢出只计数、不替换：
+    /// 这条读数存在的意义正是"⛔ 不让溢出静默"。
+    #[must_use]
+    pub fn sfz_voice_drops(&self) -> u64 {
+        self.slots
+            .iter()
+            .fold(0u64, |total, slot| total.saturating_add(slot.sfz.dropped()))
+    }
+
+    /// ⭐ 某轨 SFZ 声部的**瞬时**占用（**量规**：可升可降）；`None` = 引擎里没有这条轨的槽。
+    ///
+    /// 与 [`Self::sfz_voice_drops`]（累计、单调）配对 —— 与鼓机的
+    /// `drum_active_slots` / `drum_hits` 同一条口径。
+    #[must_use]
+    pub fn sfz_active_voices(&self, track: EntityId) -> Option<usize> {
+        self.slots
+            .iter()
+            .find(|slot| slot.assigned && slot.id == track)
+            .map(|slot| slot.sfz.active_count())
+    }
+
     /// 当前窃取淡出帧数（默认 3 ms × 采样率）。
     #[must_use]
     pub const fn steal_fade_frames(&self) -> u32 {
@@ -986,10 +1022,11 @@ impl SynthEngine {
         // ⚠ master 是**母线 id**，实时侧只把它当过滤器用（`rt.rs` 的 `.filter(|id| **id != master)`）：
         // ⛔ 不要求它出现在 `tracks()` 表里 —— 本批实测过一次：要求"master 必须在 tracks 表内"
         // 会让**合法**的最小工程（一条轨道 → master）被误判为无母线。
-        // 因此这里只拦"**没有任何可武装的轨道/音色/鼓**"的快照（空快照 ⇒ 谈不上武装）。
+        // 因此这里只拦"**没有任何可武装的轨道/音色/鼓/SFZ**"的快照（空快照 ⇒ 谈不上武装）。
         if snapshot.tracks().is_empty()
             && snapshot.tones().is_empty()
             && snapshot.drums().is_empty()
+            && snapshot.sfz().is_empty()
         {
             return Err(SnapshotError::NoMasterBus);
         }
@@ -1436,10 +1473,14 @@ impl SynthEngine {
     /// ⚠ 鼓机也要释放：`DrumMachine::reset` 把槽位池清空（否则一次定位之后
     /// 旧的鼓声尾巴会继续从新位置响出来）。武装记录**保留**（配置没变，
     /// 下一个量子照旧是鼓机轨）。
+    ///
+    /// ⚠ **SFZ 声部池同办**（[`SfzVoicePool::silence`]）：定位后⛔ 不留上一段采样。
+    /// 累计读数（`dropped`）保留，与 `DrumMachine::reset` 保留 `drum_hits` 同口径。
     pub fn seek(&mut self, position: u64) {
         self.position = position;
         for slot in &mut self.slots {
             slot.synth.reset();
+            slot.sfz.silence();
         }
         for machine in &mut self.drums {
             machine.reset();
@@ -1669,10 +1710,28 @@ impl SynthEngine {
     /// [`DrumMachine::trigger`] / [`DrumMachine::render`]；否则走复音合成器。
     /// 两条路都只用"整数比较 + 器件内的乘加"，**零分配、零锁、零 I/O**
     /// [MUST-GATE-001]。
+    ///
+    /// # ⭐ 第三条音源支路：SFZ（任务 `#66` 的步 2）
+    ///
+    /// `sfz` 是**快照里那一份**摊平表（[`crate::sfz_instrument::SfzPlan::prepared`]）的
+    /// **借用**：⛔ 不 clone 它、⛔ 不 `Arc` clone 里面的 `Vec`（PCM **借用快照**）。
+    /// 与既有 `schedule: Option<&NoteSchedule>` **对称**（同样是"快照里的只读投影"）。
+    ///
+    /// **分派次序 ＝ 鼓机 ＞ SFZ ＞ 复音**（一条轨至多一件音源，[`crate::drums`] §4.1）：
+    ///
+    /// | 鼓机键位映射 | `sfz` | 走哪条路 |
+    /// | :---: | :---: | :--- |
+    /// | `Some` | 任意 | 鼓机（SFZ 池**被释放**；"鼓机＋SFZ 同轨"是引擎取舍，登记为 sfz-needs-3） |
+    /// | `None` | `Some` | SFZ 声部池（⛔ **不叠加**复音） |
+    /// | `None` | `None` | 复音合成器（SFZ 池**被释放**） |
+    ///
+    /// SFZ 分支的终点口径与分配纪律见 [`crate::sfz_instrument`] 模块头
+    /// （`min(end_sample, span 终点, 样本播完)`；⛔ 跳过 `ampeg_*`、用样本自然结束）。
     pub fn render_track(
         &mut self,
         track: EntityId,
         schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
         out: &mut [f32],
     ) {
         out.fill(0.0);
@@ -1709,6 +1768,7 @@ impl SynthEngine {
         // （[ARCH-RT-004]）；引擎只负责"哪个音符、在哪个量子边界"。
         // 鼓机分支共用同一个游标与同一个窗口判定，只有"音符 → 器件"这一步不同：
         // 键位映射里没有的音高**不触发任何鼓件**（也不改动器件状态）。
+        // SFZ 分支同办：为**每条匹配区域**占一个声部（多匹配 ＝ 叠加，与摊平表同口径）。
         if let Some(schedule) = schedule {
             let notes = schedule.notes();
             while let Some(note) = notes.get(slot.cursor) {
@@ -1728,30 +1788,60 @@ impl SynthEngine {
                                 *notes_triggered = notes_triggered.saturating_add(1);
                             }
                         }
-                        None => {
-                            slot.synth.note_on(
-                                NoteEvent::new(
-                                    note.start_sample,
+                        // ⭐ SFZ：鼓机缺席时才轮到它（次序 ＝ 鼓机 ＞ SFZ ＞ 复音）。
+                        None => match sfz {
+                            Some(plan) => {
+                                // 覆盖度：真的建出声部才记一次"触发"（与鼓机
+                                // "映射里没有的音高不记"同口径）。
+                                if slot.sfz.trigger_note(
+                                    plan,
+                                    note.pitch,
+                                    note.velocity,
                                     note.end_sample,
-                                    note.freq_hz,
-                                    note.gain,
-                                ),
-                                tables,
-                            );
-                            *notes_triggered = notes_triggered.saturating_add(1);
-                        }
+                                ) > 0
+                                {
+                                    *notes_triggered = notes_triggered.saturating_add(1);
+                                }
+                            }
+                            None => {
+                                slot.synth.note_on(
+                                    NoteEvent::new(
+                                        note.start_sample,
+                                        note.end_sample,
+                                        note.freq_hz,
+                                        note.gain,
+                                    ),
+                                    tables,
+                                );
+                                *notes_triggered = notes_triggered.saturating_add(1);
+                            }
+                        },
                     }
                 }
                 slot.cursor += 1;
             }
         }
 
-        // --- 2) 逐样本合成：全部在器件里（整数相位 + ADSR + 可选低通）---
+        // --- 2) 逐样本合成 ---
         match drum_map {
             // 鼓机：器件自己把 `out` 清零再落样本（"无占用槽位 ⇒ 逐位静音"）。
             // 尾音的回收也在 `render` 里（包络走完的槽位被置回空闲）。
-            Some(_) => drums[index].render(position, out),
-            None => slot.synth.render(tables, position, out),
+            // ⚠ SFZ 池在这里被**释放**：本轨的音源是鼓机 ⇒ ⛔ 不留采样尾巴。
+            Some(_) => {
+                slot.sfz.silence();
+                drums[index].render(position, out);
+            }
+            None => match sfz {
+                // ⭐ SFZ：逐**声部**混（线性插值 + 增益乘加），位置跨量子延续。
+                // 零分配：只读 `plan` 的 PCM、原地写 `out`。
+                // 尾音在源采样播完（或音符终点）时于池内退休。
+                Some(plan) => slot.sfz.render_into(plan, position, out),
+                // 复音：整数相位 + ADSR + 可选低通（器件内）。
+                None => {
+                    slot.sfz.silence();
+                    slot.synth.render(tables, position, out);
+                }
+            },
         }
     }
 }
@@ -1909,7 +1999,7 @@ mod tests {
         frames: usize,
     ) -> Vec<f32> {
         let mut out = vec![0.0f32; frames];
-        engine.render_track(id, Some(schedule), &mut out);
+        engine.render_track(id, Some(schedule), None, &mut out);
         engine.advance(frames);
         out
     }
@@ -2263,7 +2353,7 @@ mod tests {
     fn unknown_track_renders_silence() {
         let mut engine = SynthEngine::new(48_000);
         let mut out = [1.0f32; 128];
-        engine.render_track(EntityId::new(), None, &mut out);
+        engine.render_track(EntityId::new(), None, None, &mut out);
         assert!(out.iter().all(|s| *s == 0.0));
         assert_eq!(engine.position(), 0, "渲染不推进播放头（由 advance 负责）");
     }

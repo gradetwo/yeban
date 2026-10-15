@@ -90,7 +90,7 @@ fn arm_from_snapshot_and_render_eight_seconds() {
     let mut rendered = 0usize;
     while rendered < frames {
         let step = BLOCK.min(frames - rendered);
-        engine.render_track(track, None, &mut out[..step]);
+        engine.render_track(track, None, None, &mut out[..step]);
         rendered += step;
     }
     let wall = start.elapsed();
