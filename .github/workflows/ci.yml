@@ -648,6 +648,181 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  macos:
+    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine 的平台分支)
+    needs: plan
+    if: |
+      contains(needs.plan.outputs.crates, 'yeban-mcp') ||
+      contains(needs.plan.outputs.crates, 'yeban-model') ||
+      contains(needs.plan.outputs.crates, 'yeban-dsp') ||
+      contains(needs.plan.outputs.crates, 'yeban-render') ||
+      contains(needs.plan.outputs.crates, 'yeban-decode') ||
+      contains(needs.plan.outputs.crates, 'yeban-app') ||
+      contains(needs.plan.outputs.crates, 'yeban-sfz') ||
+      contains(needs.plan.outputs.crates, 'yeban-engine')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: libclang (bindgen 前置；macOS 由 Xcode CLT 提供，导出 LIBCLANG_PATH)
+        shell: bash
+        run: |
+          set -euo pipefail
+          LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || echo "")"
+          if [ -n "$LLVM_PREFIX" ] && [ -d "$LLVM_PREFIX/lib" ]; then
+            echo "LIBCLANG_PATH=$LLVM_PREFIX/lib" >> "$GITHUB_ENV"
+          else
+            SDK="$(xcrun --show-sdk-path)"
+            echo "LIBCLANG_PATH=$SDK/usr/lib" >> "$GITHUB_ENV"
+          fi
+
+      - name: 工具链漂移断言 (与 Linux 腿同一个钉死版本)
+        shell: bash
+        run: |
+          set -euo pipefail
+          want="$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | head -1 | cut -d'"' -f2)"
+          got="$(rustc --version | awk '{print $2}')"
+          [ "$want" = "$got" ] || { echo "::error::工具链漂移, L1 声学确定性要求锁定工具链"; exit 1; }
+
+      - name: clippy (-D warnings)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo clippy -p yeban-model -p yeban-mcp -p yeban-dsp -p yeban-render -p yeban-decode -p yeban-app -p yeban-sfz -p yeban-engine --all-targets --locked -- -D warnings 2>&1 | tee "$RUNNER_TEMP/gate.log"
+
+      # 为什么把三个 crate 拆成三步（实测代价换来）:
+      # 原先是一条 `cargo test -p yeban-model -p yeban-mcp -p yeban-dsp --all-targets --locked`。
+      # 实测一次 `windows` 红: 红的是 `yeban-dsp` 的判据, 而**同一条命令**在第一步失败后就停了,
+      # 于是 `yeban-mcp` / `yeban-model` 的读数**根本没产生** —— 失败归属因此**不可读**
+      # (日志只覆盖 1/N, 且无法从日志区分"这个 crate 过了"与"这个 crate 没跑")。
+      # 拆成三步 + `--no-fail-fast` 之后: 每个 crate 各自出结论, 一个红不再截断另两个的读数。
+      # 注意 `--no-fail-fast` 只跨**判据**生效; 同一个判据**内部**的臂首败仍即停
+      # (因此判据内的臂必须各自独立, 或由 crate 内的臂计数器报告 N 与跑到第几条)。
+      - name: test (yeban-model 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-model --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      - name: test (yeban-mcp 的 .yeban.lock 平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-mcp --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      - name: test (yeban-dsp 的扫描器)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-dsp --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # 为什么加这一步体检: 上传步的「绿而无效」实测过一次 —— 它报 success 而 artifacts 为空。
+      # 本步把「文件是否存在」与「多少字节」打印出来 ⇒ 缺失或空文件当场可见,
+      # 且与本改动**唯一**的另一点（`if-no-files-found: error`）互相印证:
+      # 体检通过而上传空 ⇒ 故障在上传侧; 体检失败 ⇒ 故障在写入侧。
+      # ⭐ 为什么加 `yeban-render`: 该 crate 的测试**就是逐字节跨平台对账**，
+      # 而它此前从未在 Windows 上跑过（台账 R474）。其甲类站点已修：
+      # 对账夹具的行尾由根级 `.gitattributes` 钉住（`-text`），两侧来源一致。
+      # ⭐ 代价低：零系统库依赖，且其重依赖已由 `yeban-mcp` 拖进现腿 ⇒ 边际成本≈只多编它自己。
+      - name: test (yeban-render 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-render --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # ⭐ 为什么加 `yeban-decode`: 扩腿顺序的第 2 步（台账 R474）。
+      # 它的甲类 = 0，但**它本身在本会话被修过一处 CRLF 脆弱点**（`src/decode.rs`），
+      # 而那处修法从未在真 CRLF 检出上验证过 —— 扩腿即为验证它。
+      # ⭐ 代价低-中：唯一系统库 `symphonia` 是**纯 Rust**。
+      - name: test (yeban-decode 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-decode --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # ⭐ 为什么加 `yeban-app`（**第三次**加）: 前两次各曝一族平台差异
+      # （台账 R469/R472）。⭐ 本次按第 56 条口径**先按类清扫、再加腿**：
+      # `mod-app` 清扫了六子族（行尾/路径分隔符/绝对路径/大小写/OS 错误文本/写死分隔符），
+      # 只发现 1 处甲类、已修（`f61c4191`）。⭐ 且同文件三处陈旧注释已改成指路 `ci.yml`。
+      - name: test (yeban-app 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-app --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # ⭐ 为什么加 `yeban-sfz`: 它的测试文件**曾在 Windows 上编不过**
+      # （`std::os::unix::fs::symlink` 未门控 ⇒ `E0433`），而那个缺陷**只有 windows 腿能捕到**。
+      # ⭐ 已修（逐处加门、测试未删）⇒ 现在加腿即把**这一类编译缺陷**变成可检测。
+      # ⚠ 其 symlink 判据在 Windows 上仍会被 `#[cfg(unix)]` 跳过（那是另一类：平台门控的覆盖缺口）。
+      # ⭐ 代价最低：零系统库依赖、本机全量 0.52s。
+      - name: test (yeban-sfz 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-sfz --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # ⭐ 为什么再次加 `yeban-engine`（第二次）: 上一次它真的红了，
+      # 真因是 **主线程栈溢出**（窗口 1 MiB vs Linux/macOS 8 MiB）。
+      # ⭐ 已修：那 4 个目标都自带 `fn main()`（自定义 harness）⇒
+      # 把主体搬进 `thread::Builder::new().stack_size(8 MiB)`。
+      # ⭐ 硬约束有**机械证据**：`100 insertions / 0 deletions` ⇒ 判据体逐行未改。
+      # ⚠ 本次是**验证修复**、⼌ 不是“发现缺陷”。
+      - name: test (yeban-engine 的平台分支)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p yeban-engine --all-targets --locked --no-fail-fast 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      - name: 门日志体检 (存在性与字节数)
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/gate.log" ]; then
+            echo "gate.log exists, bytes=$(wc -c < "$RUNNER_TEMP/gate.log")"
+            ls -l "$RUNNER_TEMP/gate.log"
+          else
+            echo "::error::gate.log not found, so the upload can only be empty"
+            exit 1
+          fi
+
+      # 为什么上传日志产物: 实测一次 `windows` 红时**四条取证路全空**
+      # (`jobs/<jid>/logs` 0 字节 / `gh run view --log` 空 / `失败摘要` 的 summary=none /
+      #  run 级 zip 里没有 windows 腿) ⇒ 失败正文**结构上不可得**, 只能靠复现。
+      # 该步骤已经把输出 `tee` 到 `"$RUNNER_TEMP/gate.log"`, 因此把它作为产物上传即可闭环。
+      - name: 上传门日志产物 (取证用)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-gate-log
+          path: ${{ runner.temp }}/gate.log
+          # 为什么用 `runner.temp` 而不用 `/tmp`: 实测「体检通过而上传 failure」——
+          # bash 侧 `/tmp/gate.log` 存在, 而 `actions/upload-artifact` 按 Windows 语义
+          # 解析不了 `/tmp` ⇒ 故障在**上传侧**。`$RUNNER_TEMP`（bash 侧的默认变量）
+          # 与 `${{ runner.temp }}`（表达式形式）指向**同一目录** ⇒ 两侧一致。
+          # ⛔ 不用作业级 `env:` 传这个路径: 实测它会让工作流文件**不可用**（详见 R252）。
+          if-no-files-found: error
+
+      - name: 失败摘要
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### Windows 腿未通过 — 多半是平台分支/lint/环境假设"
+            echo '```text'
+            tail -100 "$RUNNER_TEMP/gate.log" 2>/dev/null || echo "(没有捕获到日志)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deny:
     name: deny (cargo-deny 开源合规)
     runs-on: ubuntu-latest
