@@ -3,8 +3,8 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `d53fa5c64162662c`
-- 外部依赖包数: **632**（不含 27 个 workspace 成员）
+- `Cargo.lock` SHA-256（前 16 位）: `686f6322929e4de1`
+- 外部依赖包数: **634**（不含 27 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
 ## 许可族分布
@@ -12,7 +12,7 @@
 | SPDX 表达式 | 包数 |
 | :--- | ---: |
 | `MIT OR Apache-2.0` | 293 |
-| `MIT` | 130 |
+| `MIT` | 131 |
 | `Apache-2.0 OR MIT` | 52 |
 | `Unicode-3.0` | 27 |
 | `Apache-2.0` | 18 |
@@ -23,9 +23,9 @@
 | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | 8 |
 | `MIT OR Apache-2.0 OR Zlib` | 7 |
 | `BSD-3-Clause` | 6 |
+| `Apache-2.0/MIT` | 4 |
 | `Unlicense OR MIT` | 4 |
 | `Zlib` | 4 |
-| `Apache-2.0/MIT` | 3 |
 | `BSD-2-Clause OR Apache-2.0 OR MIT` | 2 |
 | `BSD-3-Clause OR Apache-2.0` | 2 |
 | `BSD-3-Clause OR MIT OR Apache-2.0` | 2 |
@@ -408,6 +408,7 @@
 | `plain` | `0.2.3` | `MIT/Apache-2.0` | 传递 | — |
 | `png` | `0.18.1` | `MIT OR Apache-2.0` | 传递 | — |
 | `polling` | `3.11.0` | `Apache-2.0 OR MIT` | 传递 | — |
+| `pollster` | `0.4.0` | `Apache-2.0/MIT` | 传递 | — |
 | `polycool` | `0.4.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `portable-atomic` | `1.15.0` | `Apache-2.0 OR MIT` | 传递 | — |
 | `portable-atomic-util` | `0.2.8` | `Apache-2.0 OR MIT` | 传递 | — |
@@ -447,6 +448,7 @@
 | `regex-syntax` | `0.8.11` | `MIT OR Apache-2.0` | 传递 | — |
 | `renderdoc-sys` | `1.1.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `resvg` | `0.48.1` | `Apache-2.0 OR MIT` | 传递 | — |
+| `rfd` | `0.17.2` | `MIT` | 直接 | `yeban-app` |
 | `rgb` | `0.8.53` | `MIT` | 传递 | — |
 | `rowan` | `0.17.0` | `MIT OR Apache-2.0` | 传递 | — |
 | `roxmltree` | `0.21.1` | `MIT OR Apache-2.0` | 传递 | — |

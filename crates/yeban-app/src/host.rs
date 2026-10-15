@@ -1678,6 +1678,58 @@ fn wire_mixer_sampler(ui: &MainWindow, port: &Rc<UndoPort>) {
     });
 }
 
+/// ⭐ **③ 选 SFZ 路径 —— 原生对话框那一条入口**（任务单 `#86` 乙）。
+///
+/// ## 它做什么（只有一件事）
+///
+/// `.slint` 的 `mixer-sampler-browse(index)` ⇒ 问一次 [`crate::file_picker::FilePicker`]
+/// ⇒ 把选中的路径**写进** `track-sampler-paths[index]`（= `track-{i}-sampler-path`
+/// 那个 `TextInput` 的 `text`）。
+///
+/// ## ⛔ 它**不**提交任何工程内容（这是刻意的，不是没做完）
+///
+/// 本回调**不**碰 `UndoPort`、**不**构造 `Op::SetTrackSampler`、**不**改 `TrackV3::sampler`。
+/// 提交仍然是**已有的**那一条：用户按 SET（或输入框里回车）⇒
+/// [`wire_mixer_sampler`] ⇒ [`commit_sampler_binding`]。
+///
+/// 为什么不做成"选完直接提交"：那会让"浏览"变成一个**隐式提交** —— 用户只是想看看
+/// 文件在哪，工程却已经被改了。而且本单的硬要求是"**文本框与 CLI 两条路仍然可用**"，
+/// 保持"浏览只填框、SET 才提交"这条**既有**语义正是那句话的机械形态。
+///
+/// ## 边界（如实登记）
+///
+/// * 取消（`None`）⇒ **一位不动**：不改模型、不改输入框、⛔ 不出声、⛔ 不报错。
+/// * `index` 越界（投影换了、界面还拿着旧下标）⇒ **一位不动**（⛔ 不 panic、⛔ 不猜一条轨道）。
+/// * 路径**原样**填进输入框（⛔ 不去空白、⛔ 不加后缀、⛔ 不查存在性）—— 与
+///   [`wire_mixer_sampler`] 对"用户手敲的文本"的口径**逐字相同**："界面侧只做一处
+///   规范化"这条纪律因此没有被第二次破坏。
+pub fn wire_mixer_sampler_browse(ui: &MainWindow, picker: Rc<dyn crate::file_picker::FilePicker>) {
+    let weak = ui.as_weak();
+    ui.on_mixer_sampler_browse(move |index| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let request =
+            crate::file_picker::PickerRequest::open("选择 SFZ 音色文件").with_extensions(["sfz"]);
+        // ⚠ 取消 ⇒ 一位不动（⛔ 不把"我不想"写成一条错误）。
+        let Some(path) = picker.choose_open(&request) else {
+            return;
+        };
+        let text = SharedString::from(path.to_string_lossy().as_ref());
+        let mut paths: Vec<SharedString> = {
+            use slint::Model as _;
+            ui.get_track_sampler_paths().iter().collect()
+        };
+        // ⚠ 越界 ⇒ 一位不动（⛔ 不 panic、⛔ 不 append 到别的轨道上）。
+        let Some(slot) = usize::try_from(index).ok().and_then(|i| paths.get_mut(i)) else {
+            return;
+        };
+        *slot = text;
+        ui.set_track_sampler_paths(ModelRc::new(VecModel::from(paths)));
+    });
+}
+
 /// `Set` / `Clear` 的**唯一**提交实现（两条回调共用，因此不可能有一份漂移的 `Op` 构造）。
 ///
 /// `new_path`：`Some(text)` = 绑定那条路径；`None` = **解绑**。
@@ -2647,11 +2699,20 @@ pub fn wire_save(
     ui: &MainWindow,
     port: SaveStatus,
     live_port: Option<Rc<UndoPort>>,
+    // ⭐ **原生文件对话框**（任务单 `#86` 乙）—— "保存到哪"的**可注入**能力面。
+    // 只有在**装配期没给目标路径**时才会被问到（既有 `--open` / `--save` 那条路
+    // 一次都不弹窗）；判据传自己的假实现，于是"对话框被调用了"与"选了路径 ⇒ 写盘"
+    // 两句话都能被机械读数（⛔ 不依赖真弹窗）。
+    picker: Rc<dyn crate::file_picker::FilePicker>,
     #[cfg(feature = "in-process-mcp")] authority: Option<crate::mcp_mount::ProjectAuthorityHandle>,
     #[cfg(not(feature = "in-process-mcp"))]
     #[cfg_attr(not(feature = "in-process-mcp"), allow(unused_variables))]
     authority: Option<crate::save_action::AuthorityHandle>,
 ) {
+    // ⭐ `#86` 乙：用户在对话框里挑过一次之后**记住**它（否则每次按保存都要再问一次 ——
+    // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径时本格**永远**是 `None`。
+    let chosen: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
     let weak = ui.as_weak();
     ui.on_save_project(move || {
         let Some(ui) = weak.upgrade() else {
@@ -2664,6 +2725,32 @@ pub fn wire_save(
         let authority = authority.as_ref();
         #[cfg(not(feature = "in-process-mcp"))]
         let authority = None;
+        // ⭐ **目标路径**（`#86` 乙）：装配期的路径优先；否则用上次在对话框里挑的；
+        // 再否则**问一次原生对话框**。
+        //
+        // ⚠ **取消不是失败**：用户按了"取消" ⇒ 本回调**什么都不做**（⛔ 不写
+        // `save-status`、⛔ 不调 `dispatch_save`）。把取消写成"保存失败：没有目标路径"
+        // 是把"我不想"和"出错了"混成一句 —— 本仓最忌讳的那类假读数。
+        let target = match port.target.clone().or_else(|| chosen.borrow().clone()) {
+            Some(path) => Some(path),
+            None => {
+                let picked = picker.choose_save(
+                    &crate::file_picker::PickerRequest::save("保存工程", "project.yeban")
+                        .with_extensions(["yeban"]),
+                );
+                match picked {
+                    Some(path) => {
+                        let path = crate::file_picker::with_default_extension(path, "yeban");
+                        *chosen.borrow_mut() = Some(path.clone());
+                        Some(path)
+                    }
+                    None => None,
+                }
+            }
+        };
+        let Some(target) = target else {
+            return;
+        };
         // 保存的是**此刻**的活会话：工程 + 提交图谱。编码口径只有
         // `yeban_model::commit::encode_history_dag` 一份（本处不写第二份序列化）。
         // 目标路径是**装配期**的知识（`--open` 的那个文件），不随会话变；它保持
@@ -2675,7 +2762,7 @@ pub fn wire_save(
             .as_ref()
             .and_then(|live| live.try_project().map(|project| (project, live.graph())));
         let request = crate::save_action::SaveRequest {
-            target: port.target.clone(),
+            target: Some(target),
             archive: match live {
                 Some((project, graph)) => yeban_model::container::ProjectArchive {
                     project,

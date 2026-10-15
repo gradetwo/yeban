@@ -202,6 +202,34 @@ yeban-mcp = { path = "../yeban-mcp", optional = true }
 # 只写 `path`(+`optional`)，不写 version —— 见上面 `yeban-mcp` 的同一条注释。
 yeban-ui-mcp = { path = "../yeban-ui-mcp", optional = true }
 
+# ---------------------------------------------------------------------------
+# rfd: **原生文件对话框**（任务单 `#86` 乙，⭐ 人类授权）
+# ---------------------------------------------------------------------------
+# 为什么需要它：今天"打开 / 保存工程、选 SFZ"只能靠 CLI 或混音台的**文本框**
+# （勘察确认：全仓 `rfd` / `native-dialog` / `FileDialog` 命中 0）。用户没有
+# 系统级的选择器可点。
+#
+# 为什么是 `rfd`（而不是 `native-dialog` / 自己写平台 FFI）：
+#   * 本仓**已经**在依赖图里有它需要的全部 macOS 依赖 —— 实测 `-e normal` 的
+#     `cargo tree` 只多 **1** 个包（`rfd` 自己），`Cargo.lock` 只多 **2** 条
+#     （`rfd` ＋ `pollster`）：`objc2 0.6.4` / `objc2-app-kit 0.3.2` /
+#     `objc2-foundation 0.3.2` / `block2 0.6.2` / `raw-window-handle` 早已被
+#     slint/winit 带进来 ⇒ **没有引入新的 objc2 族**（这是本单事先担心的那一点）。
+#     Linux 目标多 **4** 个包（`cargo tree --target x86_64-unknown-linux-gnu`）。
+#   * 默认 feature 里**没有** `gtk3`（那会拖进整套 GTK）—— 起的是 `xdg-portal`
+#     那条腿，⛔ 不需要在 CI 上装 GTK 开发库。
+#   * 它是这条路上最常用的 crate（原生对话框、跨平台、MIT/Apache-2.0 双许可）。
+#
+# ⚠ 依赖图变了 ⇒ 按纪律重生成 `docs/ledger/dependency-licenses.md` 并**同批提交**。
+#
+# ⚠ **与 `#85` 的 `yeban-decode` 边同段**：`#85`（FLAC/OGG 接线）在它自己的树上加了
+# `yeban-decode = { workspace = true }`。两条边都落在本 `[dependencies]` 段里，
+# 合并时**不会重叠**（各自一块带注释的段落）⇒ 由集成者按序处理。
+#
+# 只写版本号字面量：它是 **registry** 依赖（⛔ 不是成员间 path 依赖），
+# `deny.toml` 的 `[bans] wildcards = "deny"` 要求真实版本需求。
+rfd = "0.17.2"
+
 [features]
 # `dep:` 语法: 只暴露 feature 名, 不额外产生一个同名隐式 feature。
 ui-test-port = ["dep:yeban-ui-test-port"]

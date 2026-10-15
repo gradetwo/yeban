@@ -883,6 +883,18 @@ impl ElementRegistry {
                 &format!("轨道 {} 解绑 SFZ 采样器", track.name),
                 false,
             );
+            // ⭐ **③ 浏览…**（任务单 `#86` 乙）：开一次**原生**文件对话框，把选中的路径
+            // **填进** `-sampler-path` 那个输入框（⛔ 不提交 —— 提交仍是 `-sampler-set`）。
+            //
+            // ⚠ 它是一个**独立**的语义节点而不是给输入框加个后缀：控制面要能分开寻址
+            // "开对话框"与"提交"，否则判据分不清"按钮没接"与"对话框没弹"。
+            registry.add(
+                &format!("track-{track_index}-sampler-browse"),
+                ElementKind::Button,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 浏览 SFZ 文件", track.name),
+                false,
+            );
         }
         registry.add(
             "mixer-master-strip",

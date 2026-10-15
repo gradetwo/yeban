@@ -1633,6 +1633,70 @@ impl LiveUi {
     pub fn open_project(&mut self, path: &str, save_first: bool) -> Result<(), PortError> {
         UiTestPort::open_project(&mut self.surface, path, save_first)
     }
+
+    /// ⭐ **① 打开工程 —— 原生对话框那一条入口**（任务单 `#86` 乙）。
+    ///
+    /// 它做的只有两件事，顺序是契约：
+    /// 1. 问 [`yeban_app::file_picker::FilePicker`] 要一个路径（**可注入** ⇒ 判据能测
+    ///    "对话框被调用了"与"选了路径 ⇒ 工程真的换了"）；
+    /// 2. 把选中的路径交给**已有的** [`Self::open_project`] —— ⛔ 本方法**不**另写
+    ///    第二条"读盘 + 换工程"的实现，因此权限闸门 / 权威与撤销端口的在场检查 /
+    ///    容器裁决全部照旧走原来那一处。
+    ///
+    /// ## 返回形状（三种结局分得开）
+    ///
+    /// * [`OpenViaPicker::Cancelled`] —— 用户取消（或没有对话框可用）。
+    ///   ⚠ **不是错误**：调用方什么都不做，⛔ 不把它报成"打开失败"。
+    ///   ⛔ 因此它**不**返回 `Result`：把"我不想"塞进 `Err` 就是把两件事混成一句。
+    /// * [`OpenViaPicker::Opened`] —— 对话框给了路径，且 `open_project` 成功。
+    /// * `Err(PortError)` —— 对话框给了路径，但**打开被拒**（权限 / 目标打不开 / …）。
+    ///   这里⛔ 不吞错：拒绝理由原样上抛（与 `open_project` 自己的契约一致）。
+    ///
+    /// ## 边界（如实登记）
+    ///
+    /// ⚠ 本仓**产品** `run_gui` 里今天**没有**"运行期打开工程"的实现（`--open` 只在
+    /// 启动时读一次），因此本入口接在**已有的**运行期打开路径上（`ui/open_project` /
+    /// [`Self::open_project`]）。"给产品加一个可见的打开入口"是**另一个缺口**，
+    /// 本单⛔ 不假装接上（它会改默认帧 ⇒ 需要重录 `tests/golden/linux/**`）。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Self::open_project`]：端口拒绝（权限不足 / 当前工程没有落点 / 目标打不开 /
+    /// 权威或撤销端口在场）。
+    // ⚠ `#[allow(dead_code)]`：本文件会被 `#[path]` 装进**十几个**集成测试目标，
+    // 而"原生对话框打开工程"只有本单那条判据用到 ⇒ 其余目标（如 `live_ui_mcp`）会报
+    // dead_code，而 `-D warnings` 把那条变成编译失败。⛔ 这不是"藏死代码"：
+    // 本入口在产品腿上有真实用途（见上面的边界登记）。
+    #[allow(dead_code)]
+    pub fn open_project_via_picker(
+        &mut self,
+        picker: &dyn yeban_app::file_picker::FilePicker,
+        save_first: bool,
+    ) -> Result<OpenViaPicker, PortError> {
+        let request =
+            yeban_app::file_picker::PickerRequest::open("打开工程").with_extensions(["yeban"]);
+        let Some(path) = picker.choose_open(&request) else {
+            return Ok(OpenViaPicker::Cancelled);
+        };
+        let text = path.to_string_lossy().into_owned();
+        self.open_project(&text, save_first)?;
+        Ok(OpenViaPicker::Opened { path })
+    }
+}
+
+/// [`LiveUi::open_project_via_picker`] 的**两种成功结局**（取消不是错误）。
+///
+/// ⚠ `#[allow(dead_code)]` 的理由与上面那个方法**逐字相同**（`#[path]` 装进多个目标）。
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenViaPicker {
+    /// 用户取消（或没有对话框可用）⇒ 调用方**什么都不做**。
+    Cancelled,
+    /// 对话框给了路径，且工程已经真的换过了。
+    Opened {
+        /// 对话框给出的那个路径（**未**做任何改写 —— 本层不加后缀、不规范化）。
+        path: std::path::PathBuf,
+    },
 }
 
 /// 控制面 + 装配时留下的证据（判据用）。

@@ -82,6 +82,9 @@ pub mod export_als;
 pub mod export_logic;
 pub mod export_midi;
 pub mod export_wav;
+// ⭐ **原生文件对话框的唯一能力面**（任务单 `#86` 乙）：`FilePicker` trait ＋ `rfd` 实现。
+// 判据靠替换它来测"对话框被调用了 / 选了路径 ⇒ 模型被提交"。
+pub mod file_picker;
 pub mod headless_idle;
 pub mod host;
 pub mod import_audio;

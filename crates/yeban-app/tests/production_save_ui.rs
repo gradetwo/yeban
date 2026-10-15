@@ -186,6 +186,8 @@ fn the_production_window_save_entry_writes_through_the_mounted_authority() {
             project: before.clone(),
         },
         Some(live_port),
+        // ⭐ `#86` 乙：装配期**给了**目标路径 ⇒ 一次都不该弹窗（`NoPicker` 让那句承诺可执行）。
+        Rc::new(yeban_app::file_picker::NoPicker),
         Some(authority.clone()),
     );
     assert_eq!(

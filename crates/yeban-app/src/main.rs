@@ -446,6 +446,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             project: loaded.archive.project.clone(),
         },
         Some(Rc::clone(&undo_port)),
+        // ⭐ `#86` 乙：**产品腿**接真原生对话框。它只在"装配期没给目标路径"时被问到
+        // （`--open` / `--save` 那条路一次都不弹窗）—— 判据腿接的是自己的假实现。
+        Rc::new(yeban_app::file_picker::NativeFilePicker),
         #[cfg(feature = "in-process-mcp")]
         in_process_mcp
             .as_ref()
@@ -494,6 +497,11 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 四条回调各自落到**已经存在**的模块（`export_wav` / `import_midi` / `sfz_load` /
     // `record_wav`），⛔ 不另写一套。目标路径由宿主解析（`ModulePaths::from_env`）。
     let midi_state = host::wire_module_actions(&ui, Some(Rc::clone(&undo_port)));
+    // ⭐ **③ 选 SFZ 路径 —— 原生对话框腿**（任务单 `#86` 乙）：混音台通道条的"…"按钮
+    // ⇒ 系统文件对话框 ⇒ 把选中的路径**填进** `track-{i}-sampler-path` 那个文本框。
+    // ⛔ 它**不**提交工程内容：提交仍是既有的 SET / 回车那一处
+    // （`host::wire_mixer_edit` ⇒ `wire_mixer_sampler`）⇒ 文本框与 CLI 两条路一位没变。
+    host::wire_mixer_sampler_browse(&ui, Rc::new(yeban_app::file_picker::NativeFilePicker));
     // ⭐ 把刚建好的实时腿句柄填进心跳的共享槽（见上面 `midi_live_state` 的注释）：
     // 从这一刻起，硬件 MIDI 会话在窗口内采到的事件就会在 60Hz 心跳里进引擎的音符路径。
     // ⭐ 实时腿的落点（音轨 ＋ 片段）也一并记下：提交音符时按它构造 `Op::AddNote`。

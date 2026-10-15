@@ -615,6 +615,14 @@ export component MainWindow inherits Window {
     callback mixer-sampler-set(int, string);
     /// CLR：把该轨的采样器绑定设回 `None`（**解绑**；`None` 是一等状态，⛔ 不是"丢失"）。
     callback mixer-sampler-clear(int);
+    // ⭐ **③ 浏览…**（任务单 `#86` 乙）：开一次**原生**文件对话框，把选中的路径**填进**
+    // `track-{i}-sampler-path` 那个文本框。
+    //
+    // ⚠ 它与上面两条**不是同一类**：SET / CLR 是**工程内容**的提交（走 `Op` ＋ `UndoPort`），
+    // 而本回调⛔ 不提交任何东西 —— 唯一落点 `host::wire_mixer_sampler_browse` 只写
+    // 界面属性 `track-sampler-paths[i]`。用户随后照旧按 SET 提交
+    // ⇒ **文本框与 CLI 两条路一位没变**（本单的硬要求）。
+    callback mixer-sampler-browse(int);
     // 主控通道条的**写入面**：与上面那六个手势逐条同形，唯一区别是**不带下标**
     // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
     // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
@@ -1096,6 +1104,11 @@ export component MainWindow inherits Window {
             }
             mixer-sampler-clear(index) => {
                 root.mixer-sampler-clear(index);
+            }
+            // ⭐ **③ 浏览…**（任务单 `#86` 乙）：只上抛。落点 `host::wire_mixer_sampler_browse`
+            // 只把选中的路径**填进输入框**（⛔ 不提交工程内容 —— 提交仍是 SET / 回车）。
+            mixer-sampler-browse(index) => {
+                root.mixer-sampler-browse(index);
             }
             // 主控写入面：只上抛、不带下标（身份由 `host::wire_mixer_edit` 从权威工程取）。
             mixer-master-fader-grab(y) => {

@@ -133,6 +133,9 @@ fn the_local_save_entry_writes_the_live_session_project_and_graph() {
             project: loaded.archive.project.clone(),
         },
         Some(Rc::clone(&port)),
+        // ⭐ `#86` 乙：本判据的装配**给了**目标路径（`target: Some(..)`）⇒ 一次都不该弹窗。
+        // `NoPicker` 让那句承诺**可执行**：真弹了也只会拿到 `None`（本判据因此仍然绿）。
+        Rc::new(yeban_app::file_picker::NoPicker),
         None,
     );
     assert_eq!(
