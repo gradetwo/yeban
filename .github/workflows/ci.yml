@@ -649,7 +649,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   macos:
-    name: windows (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine 的平台分支)
+    name: macos (yeban-mcp / yeban-model / yeban-dsp / yeban-render / yeban-decode / yeban-app / yeban-sfz / yeban-engine 的平台分支)
     needs: plan
     if: |
       contains(needs.plan.outputs.crates, 'yeban-mcp') ||
