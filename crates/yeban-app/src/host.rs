@@ -1884,10 +1884,82 @@ pub fn apply_meters(ui: &MainWindow, snapshot: &MeterSnapshot) {
 pub struct ProductionTick {
     /// 这一跳增量发布的快照版本号；`None` = 没发布（标记没变 / 没有工程可发 / 发布失败）。
     pub published_revision: Option<u64>,
+    /// ⭐ **这一跳发布失败**的错误原文（`EngineHostError` 的 `Display` 原文）；任务单 `#86` 甲。
+    ///
+    /// 与 `crate::live_surface::EngineTick::publish_error` **同形同义**（两份执行面，
+    /// 同一个读数形状）：`Some(text)` = 发布了但失败 ⇒ 播放侧仍是**上一版**快照。
+    ///
+    /// ⚠ **本字段是 `#86` 甲补上的那一格**：在这之前，本函数把发布错误只写进
+    /// `eprintln!`，`ProductionTick` 里**没有**它 ⇒ 生产窗口读不到，"点了 SET 一个坏路径
+    /// 而界面毫无反应"在界面上不可见（用户以为"没生效"）。现在它既进这个读数
+    /// **又**经 [`apply_engine_error`] 投到界面（错误横幅）。
+    pub publish_error: Option<String>,
     /// 这一跳的回收读数；`None` = **没有引擎**（这一跳一位没动）。
     pub readings: Option<HeartbeatReadings>,
     /// 电平腿的结局。
     pub meters: MeterPump,
+}
+
+/// ⭐ **引擎发布腿的一次结局** ⇒ [`apply_engine_error`] 的唯一输入（任务单 `#86` 甲）。
+///
+/// 为什么是三档而不是 `Option<&str>`：三种结局在界面上必须是**三件不同的事**
+/// （与 `EngineTick::publish_error` 的表格同一口径，⛔ 不许压成一个 `None`）：
+///
+/// | 值 | 界面上的动作 | 为什么 |
+/// | :--- | :--- | :--- |
+/// | [`Published`](Self::Published) | **清掉**横幅 | 这一跳真的换了一份新快照 ⇒ 上一次的错误已经作废（"成功时消失"） |
+/// | [`Unchanged`](Self::Unchanged) | **一位不动** | 没有发布（标记没变 / 没有工程可发）⇒ 横幅仍代表"**最近一次**"错误，⛔ 不能因为"这一跳什么都没发生"就清掉它 |
+/// | [`Failed`](Self::Failed) | **显示**这条原文 | 发布了但失败 ⇒ 用户必须看见 |
+///
+/// ⚠ 把 `Unchanged` 也当成"成功清屏"是**最容易写错**的一档：心跳每秒跑 60 次，而
+/// 发布失败之后标记通常**不再变**（用户没再改），于是下一跳就是 `Unchanged`
+/// ⇒ 那样写会让横幅**闪一下就走**，等于没做。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnginePublishOutcome<'a> {
+    /// 这一跳真的发布了一份新快照。
+    Published,
+    /// 这一跳没有发布（标记没变 / 没有工程可发 / 没有引擎）。
+    Unchanged,
+    /// 这一跳发布了但失败（`EngineHostError` 的 `Display` 原文）。
+    Failed(&'a str),
+}
+
+/// **「引擎错误横幅」的唯一写者**（任务单 `#86` 甲）—— 全仓只有这一处写
+/// `MainWindow.engine-error`。
+///
+/// ## 它与既有投影通道的关系（⚠ 本单**没有**造第二条通道）
+///
+/// 本仓库"引擎/宿主状态 ⇒ 界面"的既有投影通道有**三条**，本函数是第四条的**同款**：
+///
+/// | 通道 | 写者 | 数据源 | 目标属性 |
+/// | :--- | :--- | :--- | :--- |
+/// | 电平 | [`pump_meters`] → [`apply_meters`] | `MeterRuntime`（引擎 SPSC 消费端） | `track-meter-*` |
+/// | 走带 | [`apply_transport`] | `EngineHost::transport()`（RT→UI 原子镜面） | `playing` / `timecode` |
+/// | 保存 | [`apply_save_outcome`] | `save_action::SaveOutcome` | `save-status` / `save-succeeded` |
+/// | ⭐ **发布失败** | ⭐ **本函数** | ⭐ `EngineHost::publish_project` 的 `Err` | ⭐ `engine-error` |
+///
+/// 共同的纪律（四条一模一样）：**宿主是唯一写者**、`.slint` 只显示不算、界面属性是
+/// **原文**而不是一个压扁的 `bool`、失败与成功走**同一条**写路径（于是"失败时忘了刷新
+/// 界面"这种错法不存在）。
+///
+/// ⚠ 本函数**不进音频线程**（调用点只有生产 60Hz 心跳与无头执行面两处），因此允许
+/// 分配（`SharedString` 那一次）。
+///
+/// ## 为什么图标 / tooltip / 可关闭的条都没做（如实登记）
+///
+/// 本单选了**最小**的形状：一条可见文本 ＋ 一个稳定的语义 ID。理由是可判性 ——
+/// `DoD §3.6` 要的是"无头控件树 JSON 里能按 ID 寻址到**内容**"，而图标与 tooltip 在
+/// `accessible-value` 上给不出比原文更多的东西；"可关闭"会引入**第二个**状态
+/// （关掉之后错误还在、横幅没了 ⇒ 那正是本仓最忌讳的"用户以为没事了"）。
+pub fn apply_engine_error(ui: &MainWindow, outcome: EnginePublishOutcome<'_>) {
+    match outcome {
+        // 成功 ⇒ 横幅消失。空串是 `.slint` 侧 `visible` 的**唯一**判据（⛔ 不另设 bool：
+        // 两个属性就有"文字还在、bool 说没有"这种自相矛盾的中间态）。
+        EnginePublishOutcome::Published => ui.set_engine_error(slint::SharedString::new()),
+        // 没有发布 ⇒ 一位不动（见 [`EnginePublishOutcome::Unchanged`] 的说明）。
+        EnginePublishOutcome::Unchanged => {}
+        EnginePublishOutcome::Failed(text) => ui.set_engine_error(text.into()),
+    }
 }
 
 /// 电平腿（[`pump_meters`]）的三种结局 —— 三种都能被调用方与判据**分开**读。
@@ -2078,13 +2150,18 @@ impl ProductionLoop {
     ) -> ProductionTick {
         let mut engine = self.engine.borrow_mut();
         if !engine.has_engine() {
+            // 没有引擎 ⇒ 这一跳"没有发布" ⇒ 横幅**一位不动**（⛔ 不因为"引擎没起来"
+            // 就清掉上一次的错误：那不是"错误已解决"的证据）。见 [`EnginePublishOutcome`]。
+            apply_engine_error(ui, EnginePublishOutcome::Unchanged);
             return ProductionTick {
                 published_revision: None,
+                publish_error: None,
                 readings: None,
                 meters: MeterPump::NoEngine,
             };
         }
         let mut published_revision = None;
+        let mut publish_error = None;
         if engine.should_publish(mark)
             && let Some(project) = project
         {
@@ -2093,6 +2170,9 @@ impl ProductionLoop {
                 // 投影失败**不改播放侧**（旧快照原样保留）⇒ 如实出声，不静默。
                 Err(error) => {
                     eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
+                    // ⭐ `#86` 甲：保留原文（⛔ 不是只 `eprintln!`）⇒ 控制面能读、
+                    // 下面经 [`apply_engine_error`] 投到界面。
+                    publish_error = Some(error.to_string());
                 }
             }
         }
@@ -2117,9 +2197,23 @@ impl ProductionLoop {
         // 其余各跳传的是 `None`；`EngineHost` 缓存最近一份工程 ⇒ 采样**每一跳都进行**。
         // 在这里判 `Some` 会让自动化只在工程改动的那一跳生效（静默丢失）。
         engine.publish_automation(project);
+        // ⭐ `#86` 甲：**引擎发布腿 ⇒ 界面**的投影点（与上面三步同一个 tick、同一个 UI 线程）。
+        //
+        // ⛔ 顺序：必须在 `publish_project` 之后 —— 它读的就是那一步的结局。
+        // ⛔ 它**不是**第 5 个"必做步骤"：它只写一个 Slint 属性（无 I/O、无分配上限、
+        //   不阻塞），即使失败也不影响前三步的读数。
+        apply_engine_error(
+            ui,
+            match (&publish_error, published_revision) {
+                (Some(error), _) => EnginePublishOutcome::Failed(error),
+                (None, Some(_)) => EnginePublishOutcome::Published,
+                (None, None) => EnginePublishOutcome::Unchanged,
+            },
+        );
         drop(engine);
         ProductionTick {
             published_revision,
+            publish_error,
             readings: Some(readings),
             meters: pump_meters(ui, &mut self.meters, view),
         }

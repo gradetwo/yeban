@@ -251,6 +251,89 @@ component AiRail inherits Rectangle {
     }
 }
 
+// ⭐ **引擎错误横幅**（任务单 `#86` 甲）：把"最近一次快照发布失败"投到窗口里。
+//
+// ## 它补的是哪一格
+//
+// 引擎侧的发布失败**早就是结构化的**（`EngineHostError::Sfz` 等），`#82` 也**不再吞掉**
+// 它（`live_surface::engine_tick` ⇒ `EngineTick::publish_error`）。但那一路只把原文落成
+// **读数 ＋ `stderr`** —— **窗口里看不见**。后果是用户点了混音台的 SET 敲一条不存在的
+// SFZ 路径，界面毫无反应，他以为"没生效"。本组件就是那句话的可见落点。
+//
+// ## 数据流（单向，界面不算任何东西）
+//
+// ```text
+// EngineHost::publish_project(…)
+//     └─ Err(EngineHostError) ──> host::apply_engine_error(ui, Failed(text))  ← 唯一写者
+//         └─ MainWindow.engine-error ──> EngineErrorBanner.text
+//             └─ visible: text != ""     ← 空串 = 不显示（成功 / 还没出过错）
+// ```
+//
+// 界面**不**自己判断"这是不是错误"、**不**自己清屏、**不**存第二份状态 —— 与
+// `status_bar.slint` 的 `save-status` / `module_actions.slint` 的 `module-status`
+// 是**同一条**纪律（宿主是唯一写者，`.slint` 只显示）。
+//
+// ## 为什么它住在 `app.slint` 里而不是自己的一个 `.slint` 文件
+//
+// `ADR-0001` **D2** 把 `ui/` 的 `.slint` 清单**冻结**了，且由本 crate 的判据
+// `elements::tests::slint_manifest_matches_adr_0001_d2` 机械看守（新建一个文件会让它当场红）。
+// 增加一个 `.slint` 文件等于改一条**已生效**的 ADR 裁决 —— 那是人类负责人的事
+// （`AGENTS.md` §5.7：⛔ 不擅自改写 Normative 文档），⛔ 不是本单能顺手做的。
+// 因此本条**就地**定义：与 `AiRail` 同一种形态（`app.slint` 里的内联组件）。
+//
+// ## 为什么 `visible` 绑在**文本**上而不是另设一个 `bool`
+//
+// 两个属性会造出一个自相矛盾的中间态（"文字还在、bool 说没有"），而那种态没有任何
+// 合法的产生路径，只会让判据分不清"没有错误"与"写者漏写了一半"。空串因此是**唯一**的
+// "没有错误"表示（与 `save-status` 的 `""` 同款口径）。
+//
+// ## 默认帧为什么逐像素不变（第 247 条）
+//
+// 它在 `MainWindow` 里是**覆盖层**（不是 `VerticalLayout` 的子元素，见本文件末尾的
+// "覆盖层"一节），且没有错误时 `visible = false` ⇒ 它一位像素都不画、也不参与任何布局
+// 计算。上游的控件树遍历会**过滤掉** `visible: false` 的分支（既有判据
+// `test_port_adapter` 的 `DEFAULT_VIEW_MUST_NOT_HAVE` 钉的就是这条语义）⇒ 无头控件树
+// JSON 里它**根本不出现** —— 这正是"成功时不显示"的可判形态。
+//
+// ## `accessible-value` 是原文，不是"有错误吗"
+//
+// `[UI-TEST-001]` 的语义寻址要能回答"**错在哪**"，所以 `accessible-value` 直接挂错误
+// 原文。压成一个 `bool` 就等于又把信息丢一次 —— 那正是 `#82` 修掉的错法。
+component EngineErrorBanner inherits Rectangle {
+    /// **最近一次**快照发布失败的原文（`EngineHostError` 的 `Display`）。
+    ///
+    /// 唯一写者 = `crates/yeban-app/src/host.rs` 的 `host::apply_engine_error`。
+    /// 默认空串 = "本次会话还没有过引擎错误"，**不是**一个编造的读数。
+    in property <string> text: "";
+
+    // 空串 ⇒ 不显示（也不进入控件树、不影响布局）。
+    visible: text != "";
+
+    height: 28px;
+    background: Tokens.bg-panel;
+    border-width: 1px;
+    border-color: Tokens.record-red;
+
+    // 语义节点：ID 稳定、角色是 `banner`、label 与 `src/elements.rs` 的注册表**逐字相同**
+    // （`test_port_adapter` 会断言运行时 label == 注册表 label）。
+    accessible-role: banner;
+    accessible-id: "engine-error-banner";
+    accessible-label: "引擎错误横幅";
+    // ⭐ 错误**原文**（`DoD §3.6` 的"内容可读"就落在这一格上）。
+    accessible-value: root.text;
+
+    UiText {
+        x: Tokens.space-4;
+        y: 0;
+        width: parent.width - Tokens.space-4 * 2;
+        height: parent.height;
+        // 前缀是**界面**加的固定字面量（不是读数）；读数本身原样跟在后面。
+        text: "引擎错误：" + root.text;
+        color: Tokens.record-red;
+        font-size: Tokens.font-size-xs;
+    }
+}
+
 export component MainWindow inherits Window {
     // [UI-GRID-002] 1366–1919 断点。宿主 Rust 按 §1.2 的规则写入 (见 main.rs 的
     // `DemoScene::compact()`); 真实屏幕尺寸探测 + 缩放比换算待接线, 见 notes 的 pending。
@@ -390,6 +473,15 @@ export component MainWindow inherits Window {
     // 默认值 `"—"` = **还没有读数**；它**不是**任何一个具体的采样率 / 位深。
     // `"DSP …%"` 那个编造的性能读数已删除：没有真实数据源就不填那一格。
     in-out property <string> status-device: "—";
+    // ⭐ **最近一次"引擎发布失败"的原文**（任务单 `#86` 甲）。
+    //
+    // 写者**只有一处**：`host::apply_engine_error`（生产 60Hz 心跳与无头执行面共用它）。
+    // 数据源 = `EngineHost::publish_project` 的 `Err` ⇒ `EngineHostError` 的 `Display` 原文。
+    // 默认空串 = **本次会话还没有过引擎错误**，不是一个编造的读数。
+    //
+    // ⛔ 界面**不**自己清屏：`host::apply_engine_error` 只在**真的发布成功**那一跳写空串
+    // （标记没变的那一跳一位不动）—— 否则 60Hz 心跳会让横幅闪一下就走，等于没做。
+    in-out property <string> engine-error: "";
     callback open-musical-pr();
     callback accept-ai-proposal();
     callback reject-ai-proposal();
@@ -1041,6 +1133,22 @@ export component MainWindow inherits Window {
     // =====================================================================
     // 覆盖层 (不是布局子元素, 因此可以绝对定位且不影响网格)
     // =====================================================================
+
+    // ⭐ **引擎错误横幅**（任务单 `#86` 甲）—— 紧贴在 24px 状态栏**上方**的一条 28px 横条。
+    //
+    // 为什么是覆盖层而不是 `VerticalLayout` 里的一格（**这是第 247 条的关键**）：
+    // 加进 `VerticalLayout` 会在没有错误时也**占掉 28px**（布局是静态的，`visible: false`
+    // 的兄弟会不会被重新分配空间取决于 Slint 的布局实现）⇒ 默认帧会变 ⇒ 必须重录基准。
+    // 覆盖层没有这个问题：`visible: false` 时它一位像素都不画、也不动任何人的几何。
+    //
+    // `text` 由 `root.engine-error` 单向注入（唯一写者 = `host::apply_engine_error`）；
+    // 组件内部自己用 `text != ""` 决定 `visible` ⇒ 本处**不**再写一次 `visible`。
+    EngineErrorBanner {
+        x: 0;
+        y: root.height - Tokens.status-bar-height - self.height;
+        width: root.width;
+        text: root.engine-error;
+    }
 
     // compact 断点: 右栏变抽屉 (Cmd/Ctrl + 反斜杠 呼出)
     AiRail {

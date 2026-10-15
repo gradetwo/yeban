@@ -503,7 +503,14 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
 
 /// 默认视图下**不可见**的语义 ID 样本：它们不得出现在运行时树里 ——
 /// 否则说明 `visible:` 的语义没有被尊重（见文件头对上游 `visible.rs` 的核验）。
-const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 7] = [
+///
+/// ⭐ **`engine-error-banner`（任务单 `#86` 甲）在最后一位**：它与上面六个
+/// （会话视图 / 混音台 / 设备链 / 两个模态）**不是同一类**不可见 —— 上面那些是
+/// "**这个视图此刻没被选中**"，而横幅是"**此刻没有错误**"（`visible: text != ""`）。
+/// 两者都走同一条上游过滤，因此都该在这里；但它的**判据面**比这一条强得多：
+/// `tests/engine_error_banner.rs` 会**造一个坏路径**把同一个 ID 变成可见的、再断言
+/// 它的 `accessible-value` 含那段错误原文 ⇒ 覆盖"不显示 ⇄ 显示"的**两个方向**。
+const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 8] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",
     "scene-launch-column-header",
@@ -511,6 +518,7 @@ const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 7] = [
     "device-rack",
     "musical-pr-drawer",
     "undo-tree-modal",
+    "engine-error-banner",
 ];
 
 fn demo_registry() -> ElementRegistry {

@@ -83,6 +83,16 @@ pub enum ElementKind {
     ContentInfo,
     /// `main`: 地标 —— 主内容区 (工作区画布)。每个视图恰好一个。
     Main,
+    /// ⭐ `banner`: 地标 —— 横跨全宽、与主内容**并列**的一条通知 (任务单 `#86` 甲)。
+    ///
+    /// 取 Slint `AccessibleRole::Banner`（上游
+    /// `i-slint-common-1.18.1/enums.rs` 的变体，kebab 名 `banner` 已登记在
+    /// `yeban_ui_test_port::tree::KNOWN_ROLES`，本单之前**没有**任何元素用它）。
+    ///
+    /// ⚠ 为什么不用 `content-info`：那个角色已经被状态栏占着，而"一条错误横幅"
+    /// 与"状态栏"是**两个**语义节点（判据要能分开寻址，屏读器要能分开念）。
+    /// 上游的角色表里**没有** `alert` —— `banner` 是可用的最近似取值，如实登记这一点。
+    Banner,
 }
 
 impl ElementKind {
@@ -107,6 +117,7 @@ impl ElementKind {
             Self::Complementary => "complementary",
             Self::ContentInfo => "content-info",
             Self::Main => "main",
+            Self::Banner => "banner",
         }
     }
 }
@@ -362,6 +373,29 @@ impl ElementRegistry {
             // （引擎据此向声卡协商），不是声卡协商回来的读数。
             "音频配置与性能目标",
             true,
+        );
+
+        // ⭐ ------------------------------------------------- 引擎错误横幅
+        // 任务单 `#86` 甲：状态栏**上方**的一条覆盖层（`ui/engine_error_banner.slint`）。
+        //
+        // ⚠ 它**不进** `DEFAULT_VIEW_MUST_HAVE`：没有错误时 `.slint` 侧
+        // `visible = text != ""` 为假 ⇒ 上游遍历**过滤掉**它 ⇒ 无头控件树里
+        // 它根本不出现。它进的是 `test_port_adapter` 的 `DEFAULT_VIEW_MUST_NOT_HAVE`
+        // （那条判据正是"默认帧里它不显示"的机械形态）。
+        //
+        // `dynamic_region = false`：它只在**错误变了**的那一跳重画（不是每帧跳变），
+        // 因此金标比对**不**需要遮罩它 —— 与 VU 表 / 走带光标 / 时间码不同。
+        registry.add(
+            "engine-error-banner",
+            ElementKind::Banner,
+            // ⚠ 组件住在 `app.slint` 的**内联** `EngineErrorBanner` 里，⛔ 不是自己的
+            // 一个 `.slint` 文件：`ADR-0001` **D2** 冻结了 `ui/` 的清单，且由判据
+            // `elements::tests::slint_manifest_matches_adr_0001_d2` 机械看守。
+            "app.slint",
+            // ⚠ 必须与 `.slint` 的 `accessible-label` **逐字相同**
+            // （`test_port_adapter` 断言运行时 label == 注册表 label）。
+            "引擎错误横幅",
+            false,
         );
 
         // ------------------------------------------------------------ AI 协作栏

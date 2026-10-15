@@ -545,6 +545,16 @@ impl LiveAdminSurface {
     /// 现在失败进 [`EngineTick::publish_error`]（`EngineHostError` 的 `Display` 原文）
     /// ＋ 出声。⚠ 生产 `run_gui` 那条腿（[`crate::host::ProductionLoop::tick`]）**本来
     /// 就有**这一段 `match`（它不吞）；本单修的是**本执行面**这一份。
+    ///
+    /// ## ⭐ 原文**同时**投到界面（任务单 `#86` 甲）
+    ///
+    /// 上面那件事只让失败"在控制面上可读" —— **窗口里仍然看不见**。本单把同一个结局
+    /// 交给 [`crate::host::apply_engine_error`]（错误横幅的**唯一写者**），于是
+    /// "用户点了 SET 一个坏路径"在无头控件树 JSON 里也**可寻址**（`engine-error-banner`
+    /// 的 `accessible-value` = 这段原文）。
+    ///
+    /// ⚠ 顺序：投影必须在算完 `publish_error` **之后**；`Unchanged` 那一档一位不动
+    /// （见 [`crate::host::EnginePublishOutcome`]）—— 否则 60Hz 心跳会让横幅闪一下就走。
     fn engine_tick(&mut self, mark: EditMark, project: Option<&YebanProjectV1>) -> EngineTick {
         let mut published_revision = None;
         let mut publish_error = None;
@@ -561,6 +571,20 @@ impl LiveAdminSurface {
                 }
             }
         }
+        // ⭐ `#86` 甲：**本执行面**的投影点（与生产 `ProductionLoop::tick` 调的是
+        // **同一个**函数 ⇒ 两条腿的界面读数不可能漂移）。
+        //
+        // ⚠ 用 `host::`（文件头的 `use yeban_app::host;`）而**不是** `crate::host::`：
+        // 本文件会被 `#[path]` 装进集成测试目标，那时 `crate` 是**测试 crate**、
+        // 里面没有 `host` 模块（`crate::host::` 会在 `cargo test` 时报 E0433）。
+        host::apply_engine_error(
+            &self.window,
+            match (&publish_error, published_revision) {
+                (Some(error), _) => host::EnginePublishOutcome::Failed(error),
+                (None, Some(_)) => host::EnginePublishOutcome::Published,
+                (None, None) => host::EnginePublishOutcome::Unchanged,
+            },
+        );
         EngineTick {
             published_revision,
             publish_error,
