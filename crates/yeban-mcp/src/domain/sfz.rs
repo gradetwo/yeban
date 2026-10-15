@@ -1149,6 +1149,13 @@ pub fn render(
         .saturating_mul(channels);
     let mut samples = vec![0.0_f32; total];
     let engine_hz = sample_rate as f32;
+    // 这对采样率只服务**两个**用途：① 区域选择后的 gate / 增益 / 循环
+    // （`total_gain()` 与 `loops()` 都不吃 `sample_hz`）；② **内存正弦回退** ——
+    // 下面的 `InMemorySfzSample::sine(tone_hz, engine_hz, ..)` 就是在 `engine_hz`
+    // 上生成的，所以它的步进比恰好是 `pitch_ratio * engine_hz / engine_hz`。
+    // ⛔ **文件样本不走这对**：它有自己的采样率（`SampleFileReading::sample_hz`），
+    // 见下面的 `file_rate` —— 拿 `engine_hz` 当 `sample_hz` 会让 44.1 kHz 样本在
+    // 48 kHz 输出上快 48/44.1 ≈ 8.8%（≈ +1.47 半音）并提前耗尽。
     let rates = RenderRates::new(engine_hz, engine_hz);
     let mut regions_used: BTreeSet<usize> = BTreeSet::new();
     let mut notes_unmatched = 0u64;
@@ -1198,7 +1205,13 @@ pub fn render(
         let mut mono = vec![0.0_f32; span];
         let written = if let Some(reading) = &file_sample {
             notes_using_file_sample = notes_using_file_sample.saturating_add(1);
-            render_pcm_into(reading.pcm.as_slice(), rate, gain, &mut mono)
+            // ⭐ 文件样本的步进比按**它自己的**采样率换算（`yeban-sfz` 的
+            // `playback_rate` = `pitch_ratio * sample_hz / engine_hz`），与
+            // `yeban-engine::SfzInstrument::render_note_into` 的
+            // `RenderRates::new(source.sample_hz, engine_hz)` **同一口径**。
+            let file_rate =
+                region.playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz));
+            render_pcm_into(reading.pcm.as_slice(), file_rate, gain, &mut mono)
         } else {
             notes_using_sine_fallback = notes_using_sine_fallback.saturating_add(1);
             // 样本长度 = 这个音符的时值（外加一个淡出尾巴）⇒ 内存正弦在整段时值里都有

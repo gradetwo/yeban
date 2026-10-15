@@ -9,6 +9,7 @@
 //! | c | 装载响应如实：读到 ⇒ `sampleFilesRead=true` ＋ 区域 `sampleFileState=file(<path> frames=N rate=R)`；读不到 ⇒ `unreadable(...)` 带原因，且**装载仍然成功** | `the_load_response_reports_the_file_it_really_read` |
 //! | d | **上界**：单文件超过字节上限 ⇒ **拒绝读取**并记原因（⛔ 不静默截断），装载仍成功 | `an_oversized_sample_file_is_refused_loudly_and_does_not_break_the_load` |
 //! | e | 相对路径按 **SFZ 文件所在目录**解析（⛔ 不是进程 cwd） | `the_load_response_reports_the_file_it_really_read`（夹具与 SFZ 同目录，cwd 不是那里） |
+//! | f | **文件样本按它自己的采样率换算步进比**（44.1 kHz 文件在 48 kHz 输出上必须按 `44100/48000` 重采样，⛔ 不能拿 `engine_hz` 当 `sample_hz`） | `a_44k_sample_file_plays_at_its_own_rate_not_the_engine_rate` |
 //!
 //! ## 判定量的口径（先命名，再测）
 //!
@@ -422,4 +423,81 @@ fn an_oversized_sample_file_is_refused_loudly_and_does_not_break_the_load() {
         "原因必须说清是**上界**（⛔ 不是静默截断）: {state}"
     );
     assert_eq!(data["sampleFramesLoaded"], 0, "一个字节都不许读进来");
+}
+
+/// 判据 f：**文件样本按它自己的采样率换算步进比**（回归：MCP 侧曾把 `engine_hz`
+/// 当 `sample_hz` 传进 `RenderRates::new`，而 `yeban-engine` 的同一算式用的是
+/// `source.sample_hz`）。
+///
+/// ## 判定量的口径（先命名，再测）
+///
+/// - **量**：渲染出的 24-bit WAV 里**最后一个明显非静音帧的帧号**（单位 = 输出帧
+///   @ 48 kHz；"明显非静音" = 左声道 `|样本| > 1000`，⛔ 不是 `!= 0` —— 输出经
+///   TPDF 抖动，静音段也有 ±1 LSB 的噪声）。
+/// - **期望**：44,100 Hz、4,800 帧的常量样本，音高比 = 1（`key=60` +
+///   `pitch_keycenter=60`）⇒ 步进比 = `44100/48000 = 0.91875` ⇒ 样本在
+///   ≈ 5,223 个输出帧处耗尽（`4,799 / 0.91875 ≈ 5,223`）。
+/// - **错误口径**：步进比 = `48000/48000 = 1.0` ⇒ 只会写 ≈ 4,799 帧。
+///
+/// 两侧都远小于音符自身的时值（480 tick = 12,000 帧 @48 kHz）⇒ 耗尽点**就是**
+/// 判据，不受音符长度影响。
+#[test]
+fn a_44k_sample_file_plays_at_its_own_rate_not_the_engine_rate() {
+    let scratch = Scratch::new("resample");
+    write_constant_wav(&scratch.join("tone44.wav"), 0.25, 4_800, 44_100);
+    let sfz = scratch.join("rate44.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=tone44.wav key=60 pitch_keycenter=60\n",
+    )
+    .expect("写 SFZ");
+
+    let mut dispatcher = dispatcher_with_project();
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    assert!(
+        loaded["data"]["sampleSource"]
+            .as_str()
+            .expect("sampleSource")
+            .contains("rate=44100"),
+        "夹具必须真的是 44.1 kHz 文件（⛔ 否则本判据退化为 48 kHz 的不动点）: {loaded}"
+    );
+
+    let target = scratch.join("rate44-rendered.wav");
+    let rendered = call_tool(
+        &mut dispatcher,
+        "yeban_render_sfz_wav",
+        serde_json::json!({
+            "instrumentId": 1,
+            "frames": 24_000,
+            "path": target.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    assert_eq!(
+        rendered["data"]["notesUsingFileSample"], 1,
+        "必须真的用了文件样本（⛔ 不是回退正弦）: {rendered}"
+    );
+
+    let bytes = std::fs::read(&target).expect("读回渲染结果");
+    let (channels, rate, samples) = wav_read(&bytes);
+    assert_eq!((channels, rate), (2, 48_000));
+    let frames = samples.len() / 2;
+    let last_audible = (0..frames)
+        .rev()
+        .find(|frame| samples[frame * 2].unsigned_abs() > 1_000)
+        .expect("渲染结果不得全静音");
+    println!(
+        "[sfz-file] 44.1 kHz/4,800 帧样本在 48 kHz 输出上的耗尽帧号 = {last_audible} \
+         （正确 ≈ 5223；把 engine_hz 当 sample_hz 的旧口径 ≈ 4798）"
+    );
+    assert!(
+        (5_100..=5_300).contains(&last_audible),
+        "4,800 帧 @44.1 kHz 必须按 44100/48000 重采样后写到 ≈5223 帧，实得 {last_audible}；\
+         若实得 ≈4798，说明步进比又用回了 engine_hz 当 sample_hz"
+    );
 }
