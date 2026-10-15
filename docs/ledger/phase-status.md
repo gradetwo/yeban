@@ -9126,3 +9126,39 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **五、⭐ 巡检（⭐ 人类指令）**: ⭐ **`incremental` ＝ **3.9 G**（⭐ 低于阈值）**；⭐ **可用 **50 GiB**（⭐ 95%）**；⭐ ⚠ **`/tmp` 有 4 个目录残留**（⭐ `golden-old2`／⭐ `golden-old`（⭐ 空）／⭐ `mod-model`／⭐ `mod-render`（⭐ 各含 `inj`））⇒ ⭐ **已核实并清除** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`windows` 腿那条"⭐ 平台分支"的真因** ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-5`／⭐ 6／⭐ 8 ＋ ⭐ **一次真跑全量腿的提交**（⭐ 以验工作流级 `RUST_MIN_STACK` 对全量腿的作用）✓
+
+---
+
+## R724 实测追加（2026-10-16）：⭐⭐⭐ **`windows` 腿剩余红的**真因**查明: ⭐ 子进程 `main` **栈溢出****（⭐ `0xC00000FD`）⇒ ⭐ **`RUST_MIN_STACK` 对它**无效****（⭐ 只作用于测试引导器 spawn 的线程）
+
+⭐ ⭐ ⭐ **一、⭐ 决定性读数（⭐ 逐字、⭐ 制品 `windows-gate-log`）**: ⭐ ⭐ **`error: 1 target failed:` ⇒ `\`-p yeban-app --test cli_contract\``**、⭐ **`FAILED. 25 passed; 2 failed`** ✓
+| ⭐ 失败判据 | ⭐ 位置 | ⭐ 断言与 ⭐ `stderr` |
+| :--- | :--- | :--- |
+| ⭐ ⭐ **`export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays_compatible`** | ⭐ `crates/yeban-app/tests/cli_contract.rs:1650` | ⭐ ⭐ **`assertion left == right failed: 缺省导出必须成功; stderr=` ⇒ ⭐ `thread 'main' (3640) has overflowed its stack`；⭐ **`left: -1073741571`／⭐ `right: 0`** |
+| ⭐ ⭐ **`export_wav_runs_on_the_windowless_path_from_the_real_binary`** | ⭐ `crates/yeban-app/tests/cli_contract.rs:1592` | ⭐ ⭐ **`assertion left == right failed: \`--export-wav\` 单独给必须自己选无窗口路径; stderr=` ⇒ ⭐ `thread 'main' (8612) has overflowed its stack`；⭐ **`left: -1073741571`／⭐ `right: 0`** |
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 两条都是**栈溢出**、⭐ 而溢出的是**被拉起的真实二进制的 `main` 线程**** ✓
+⭐ ⭐ **而 `left: -1073741571` ＝ **`0xC00000FD`**** ⇒ ⭐ ⭐ **那就是 Windows 的 **`STATUS_STACK_OVERFLOW`**** ⇒ ⭐ **机器可判的签名** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 故真因是**层次**问题（⭐ 而它解释了为何前面的尝试都没用）**: ⭐ ⭐ **`RUST_MIN_STACK` **只作用于测试引导器（⭐ libtest）spawn 的线程**** ⇒ ⭐ ⚠ **而这两条判据是**拉起真实二进制**（⭐ `export_wav_…_from_the_real_binary`）⇒ ⭐ ⭐ **子进程的 `main` 线程拿到的是**操作系统默认栈**、⭐ ⛔ 不受 `RUST_MIN_STACK` 影响**** ✓
+| ⭐ 平台 | ⭐ 主线程默认栈 | ⭐ 后果 |
+| :--- | :--- | :--- |
+| ⭐ **macOS／⭐ Linux** | ⭐ **≈ 8 MiB** | ⭐ ⭐ **本机跑得过去 ⇒ ⭐ 故本会话一直"⭐ 本机绿"** ✓ |
+| ⭐ ⭐ **Windows** | ⭐ ⭐ **≈ 1 MiB**（⭐ PE 头 `StackReserve`）| ⭐ ⭐ **同一份代码溢出 ⇒ ⭐ `0xC00000FD`** ✓ |
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 这是"⭐ 本机绿 ≠ CI 绿"（⭐ 第 210 条）的**又一次**、⭐ 而这次差异因素是**主线程栈的默认值** ✓
+⭐ ⚠ **并附（⭐ 一处须修正的先前结论）**: ⭐ ⚠ **R714／⭐ R723 我先把该红归为 `RUST_MIN_STACK`、⭐ 后又因 per-crate 腿过而改判为"⭐ Windows 特有、⭐ 非栈"** ⇒ ⭐ ⭐ **而本轮证明: ⭐ 它**仍是栈问题**、⭐ 只是 `RUST_MIN_STACK` **管不到那一层**** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 修法候选（⭐ 待择）**:
+| ⭐ 候选 | ⭐ 做法 | ⭐ 代价 |
+| :--- | :--- | :--- |
+| ⭐ ⭐ **甲（⭐ 首选）** | ⭐ ⭐ **降 `main` 线程的栈用量** —— ⭐ 找出真实二进制启动路径上那个大栈对象（⭐ 如一个几 MiB 的 `[f32; N]`／⭐ `EngineRuntime`）⇒ ⭐ **该对象改堆分配（⭐ `Box`）或缩小** | ⭐ ⭐ **治本、⭐ 且对三平台一致** ⇒ ⚠ **但需先定位到那个对象** ✓ |
+| ⭐ **乙** | ⭐ **给 Windows 目标加链接参数扩大栈保留**（⭐ 如 `.cargo/config.toml` 的 `rustflags` `/STACK:…` 或 ⭐ `build.rs` 的链接指令，⭐ 仅 `target_os="windows"`）| ⭐ **治标、⭐ 且引入平台特化** ⇒ ⚠ **本仓对平台特化很谨慎** ✓ |
+| ⭐ **丙** | ⭐ **判据改为不拉起真实二进制**（⭐ 用库内调用）| ⭐ ⚠ **削弱"⭐ 真二进制端到端"的强度** ⇒ ⭐ **不推荐** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 甲优先** —— ⭐ **因为"⭐ 主线程默认栈 1 MiB"是**真实用户**在 Windows 上也会遇到的** ⇒ ⭐ ⭐ **故那不是测试环境问题、⭐ 而是产品在 Windows 上的缺陷** ✓
+
+⭐ ⚠ **四、⭐ 一条可复用口径（⭐ 第 233 条）**: ⭐ ⭐ **`RUST_MIN_STACK` 只治"⭐ 测试引导器的线程"、⭐ ⛔ 不治"⭐ 被拉起的子进程"** —— ⚠ **因为子进程是一次新的 OS 进程、⭐ 它的 `main` 栈由**可执行文件头**（⭐ Windows：⭐ PE `StackReserve`）或**系统默认**决定** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **见 `stderr` 含 `has overflowed its stack` 且**退出码是 `0xC00000FD`** ⇒ ⭐ **先分"⭐ 崩在测试线程还是子进程"**（⭐ 看 `thread 'main'` vs ⭐ `thread '<test name>'`）⇒ ⭐ **前者调 `RUST_MIN_STACK`、⭐ 后者要改链接或降栈用量** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **`thread 'main'` ＋ ⭐ `0xC00000FD`** ⇒ ⭐ **故 `RUST_MIN_STACK` 无论如何都不会有效** ✓
+
+⭐ ⚠ **五、⭐ 判决读数**: ⭐ ⭐ **`macos` ＋ ⭐ `rust (yeban-app)` ＋ ⭐ `rust (yeban-engine)` ＝ success**；⭐ **`windows` ＝ failure（⭐ 本条查明）**；⭐ **`eee735ca`／⭐ `677bbf7d` 待查** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **修 Windows 主线程栈溢出（⭐ 甲优先、⭐ 先定位大栈对象）** ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-5`／⭐ 6／⭐ 8 ＋ ⭐ 一次真跑全量腿的提交 ✓
