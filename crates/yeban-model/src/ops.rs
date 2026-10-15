@@ -244,6 +244,31 @@ pub enum Op {
         /// 移除前的完整条目。
         previous_clip: ClipPoolEntry,
     },
+    /// 设置**片段池条目的显示名**（[`ClipPoolEntry::name`]）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`ClipPoolEntry::name` 在操作日志层
+    /// 不可表达** —— 唯一的入口是 [`Op::AddClip`]（新建时把整个 `ClipPoolEntry` 交进去），
+    /// 而它之后**没有任何 `Op` 能改名** ⇒ 改名只能"删 + 加"，⭐ 而 [`Op::RemoveClip`]
+    /// 还要求**没有任何摆放引用它**（[`ModelError::ClipInUse`]）⇒ 调用方得先把该片段的
+    /// **每一处摆放**拆掉、改完名再摆回去。这是 `ARCH-OPS-001` 那一族的又一处
+    /// （与 `D27` 补 `AddClip`、[`Op::SetTrackName`]、[`Op::SetAuthor`] 的成因同型）。
+    ///
+    /// ⚠ **为何安全**：⭐ `name` 是**纯展示注记**、⛔ 无身份语义 —— 条目身份是
+    /// [`ClipPoolEntry::id`]，而 `clip_pool` 的**键**就是那个 `id`
+    /// （`BTreeMap<EntityId, ClipPoolEntry>`）⇒ ⭐ 改 `name` **不动键**、⛔ 不让任何
+    /// 摆放（引用 `clip_id`）悬空。本变体只写这一个字段：⛔ 不碰 `id` / `content`，
+    /// 也⛔ 不碰 `clip_pool` 的键集合与任何摆放。
+    ///
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetTrackName`] / [`Op::SetAuthor`]），
+    /// ⛔ **不是** `previous_*`（那是 delete/remove 类的惯例，见 [`Op::RemoveClip`]）。
+    SetClipName {
+        /// 目标片段身份（即 `clip_pool` 的键）。
+        clip_id: EntityId,
+        /// 修改前的显示名。
+        old_name: String,
+        /// 修改后的显示名。
+        new_name: String,
+    },
     /// 平移摆放。
     MoveClipPlacement {
         /// 目标音轨。
@@ -655,6 +680,7 @@ impl Op {
             Self::ModifyNoteVelocity { .. } => "ModifyNoteVelocity",
             Self::AddClip { .. } => "AddClip",
             Self::RemoveClip { .. } => "RemoveClip",
+            Self::SetClipName { .. } => "SetClipName",
             Self::AddRoutingNode { .. } => "AddRoutingNode",
             Self::RemoveRoutingNode { .. } => "RemoveRoutingNode",
             Self::AddClipPlacement { .. } => "AddClipPlacement",
@@ -840,6 +866,20 @@ impl Op {
                 clip.content.validate()?;
                 if doc.clip_pool.contains_key(&clip.id) {
                     return Err(ModelError::DuplicateEntityId { id: clip.id });
+                }
+                Ok(())
+            }
+            Self::SetClipName {
+                clip_id, old_name, ..
+            } => {
+                let clip = doc
+                    .clip_pool
+                    .get(clip_id)
+                    .ok_or(ModelError::ClipNotFound { id: *clip_id })?;
+                // ⚠ `String` 的相等是**逐字节**的（与 [`Op::SetTrackName`] / [`Op::SetAuthor`]
+                // 同一口径）⇒ 陈旧载荷必被拒。
+                if clip.name != *old_name {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
             }
@@ -1346,6 +1386,15 @@ impl Op {
             Self::RemoveTrack { previous_track, .. } => Self::AddTrack {
                 track: previous_track.clone(),
             },
+            Self::SetClipName {
+                clip_id,
+                old_name,
+                new_name,
+            } => Self::SetClipName {
+                clip_id: *clip_id,
+                old_name: new_name.clone(),
+                new_name: old_name.clone(),
+            },
             Self::AddClip { clip } => Self::RemoveClip {
                 clip_id: clip.id,
                 // `ClipPoolEntry` 含 `String`/`BTreeMap`, 不是 `Copy` ⇒ 逆操作必须克隆
@@ -1604,6 +1653,18 @@ impl Op {
         match self {
             Self::AddClip { clip } => {
                 doc.clip_pool.insert(clip.id, clip.clone());
+                Ok(())
+            }
+            // 只写那**一个**显示名字段：⛔ 不碰 `id` / `content`、⛔ 不动 `clip_pool`
+            // 的键、⛔ 不碰任何摆放。
+            Self::SetClipName {
+                clip_id, new_name, ..
+            } => {
+                let clip = doc
+                    .clip_pool
+                    .get_mut(clip_id)
+                    .ok_or(ModelError::ClipNotFound { id: *clip_id })?;
+                clip.name = new_name.clone();
                 Ok(())
             }
             Self::RemoveClip { clip_id, .. } => {
