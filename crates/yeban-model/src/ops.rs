@@ -2688,6 +2688,16 @@ mod tests {
                 old_name: "Clip".to_owned(),
                 new_name: "Clip (renamed)".to_owned(),
             },
+            // 改设备显示名：**唯一的改名通路**（此前只能"删 + 加"，而 `devices` 是
+            // `Vec` ⇒ 增删还会移位下标）。
+            // ⚠ 目标用 `fixture_document()` 里 lead 轨上那个设备（`f.device`，名
+            // "PolySynth"）；showcase 自己的 `InsertDevice` 加的是 `f.bass` 上的另一台。
+            Op::SetDeviceName {
+                track_id: f.lead,
+                device_id: f.device,
+                old_name: "PolySynth".to_owned(),
+                new_name: "PolySynth (renamed)".to_owned(),
+            },
             // 资产声明（**创建**：夹具里尚未声明过这份新哈希 ⇒ `old_asset: None`）。
             Op::SetAsset {
                 asset_hash: crate::ids::AssetHash::of_bytes(b"snare"),

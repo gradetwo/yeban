@@ -172,6 +172,16 @@
         },
         {
           "required": [
+            "SetDeviceName"
+          ],
+          "properties": {
+            "SetDeviceName": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "MoveClipPlacement"
           ],
           "properties": {
