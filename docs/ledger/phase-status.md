@@ -8416,3 +8416,54 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **六、⭐ 判决读数**: ⭐ ⭐ **`4ab5fad0`／⭐ `6ff99ba9` in_progress** ⇒ ⭐ **下一轮将看到 macOS 腿是否变绿** ⇒ ⭐ ⚠ **而本轮改了 `yeban-app` 的测试属性 ⇒ ⭐ 新 run 的 `if:` 应命中该 crate** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **macOS 腿真绿验证** ＋ ⭐ SFZ 步 3 ＋ ⭐ 轨↔SFZ 绑定 ＋ ⭐ 6 条 `needs` ＋ ⭐ 遗留 3 项 ✓
+
+---
+
+## R706 实测追加（2026-10-16）：⭐⭐⭐ **SFZ 缺口 1 的**步 3** 已并入**（多采样 ＋ ⭐ 真应用 `start`/`end` ＋ ⭐ 公开注入路径）⇒ ⭐ **`sfz-needs-4` 闭合**、⭐ **三处注入全红**、⭐ **13 条既有判据逐字不变**
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **4 文件、＋1324／−210** ⇒ ⭐ **完整 sha ＝ **`049f7e06fad3d0dbfa04c4e26bece4edf9da26dc`**** ✓
+| ⭐ 文件 | ⭐ ± |
+| :--- | :--- |
+| ⭐ `engine/src/sfz_instrument.rs` | ⭐ ＋589／−166 |
+| ⭐ `engine/tests/sfz_instrument.rs` | ⭐ ＋658／−30 |
+| ⭐ `engine/src/lib.rs` | ⭐ ＋1／−1（⭐ 模块地图）|
+| ⭐ `docs/ledger/sfz-core-notes.md` | ⭐ ＋76／−13（⭐ §13 needs 表 ＋ ⭐ 新 §13.2）|
+⭐ ⚠ **并附（⭐ 边界干净）**: ⭐ **⛔ 未动 `yeban-sfz`／⭐ `yeban-app`／⭐ `yeban-model`／⭐ schema** ⇒ ⭐ **故只跑 engine 四门即可** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 三件做法（⭐ 逐条）**:
+| ⭐ # | ⭐ 内容 |
+| --: | :--- |
+| ⭐ ⭐ **1** | ⭐ **多采样**: ⭐ 新增 `PreparedSample{path,pcm,sample_hz}` ＋ ⭐ **`prepare_with_samples(&SfzInstrument, &[(String, InMemorySample)], hz)`**；⭐ **去重键 ＝ `region.sample_path()`、⭐ 容器 ＝ `BTreeMap`**（⭐ 合 `MODEL-AST-003`、⭐ ⛔ 无 `HashMap`）；⭐ `PreparedFz` 改持 `samples: Vec<PreparedSample>`、⭐ `PreparedRegion` 增 **`sample_index: u16`**（⭐ `NO_SAMPLE` 哨兵）；⭐ ⚠ **`prepare` ⛔ 未删 ＝ 广播**（⭐ 读数 `broadcast(1)`、⭐ 文档登记"⭐ 音色内容错"）；⭐ **解码留控制侧**（⭐ ⛔ 不引 `symphonia`／`rubato`、⭐ ⛔ 无 I/O）＋ ⭐ 新增 **`referenced_sample_paths`** 交出路径全集 |
+| ⭐ ⭐ **2** | ⭐ **真应用 `start`/`end`**: ⭐ 新增**唯一归约 `reduce_span`**、⭐ **离线／⭐ 摊平／⭐ 实时三路共用**；⭐ `SfzVoice` 增 `sample_index`、⭐ `position` 初始化为 `offset` ⇒ ⭐ ⭐ **`sfz-needs-4` 闭合**（⭐ 且**离线侧同口径 ⇒ 两侧不再分叉**）✓ |
+| ⭐ ⭐ **3** | ⭐ **公开注入路径**: ⭐ `referenced_sample_paths`（⭐ 枚举）⇒ ⭐ **控制侧解码** ⇒ ⭐ `prepare_with_samples` ⇒ ⭐ `EngineSnapshot::with_sfz` ⇒ ⭐ ⭐ **该路径**只用 `pub` API 即可走通多采样**（⭐ S16 即如此验）⇒ ⭐ ⛔ **不发明模型语义**（⭐ `sfz-needs-5` 保留未闭合）✓ |
+
+⭐ ⭐ ⭐ **三、⭐ 验证读数（⭐ 逐字、⭐ 每条都带反向对照）**:
+| ⭐ 判据 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ ⭐ **S11 多采样各播自己** | ⭐ **`key=60` ⇒ `0xd8710445ec5a5faf`（⭐ ＝离线 `a.wav`）；⭐ `key=64` ⇒ `0x29bc219a1b7a0b4b`（⭐ ＝离线 `b.wav`）⇒ 两条**互异****；⭐ **反向对调提供表 ⇒ `0x28928510f012cb43` ≠**；⭐ **广播在 `key=64` ⇒ `0xb0d8460b4f0cf499` ＝ "⭐ 用 `a.wav` 播 `key=64`"** ⇒ ⭐ ⭐ **即"⭐ 内容错"的**机械证据**** ✓ |
+| ⭐ **S12 同一样本引两次只解码一次** | ⭐ **`sample_count=1`、⭐ `pcm_bytes=1920`（⭐ 480×4、⭐ **一份**）**；⭐ 反向两条不同路径 ⇒ **`2`／`3840`** ✓ |
+| ⭐ ⭐ **S13 `start`/`end` 真应用** | ⭐ **`offset=10 end=200` ⇒ 写 **190** 帧、⭐ **离线 vs 摊平 `0e0`**、⭐ **引擎 vs 摊平 `0e0`**、⭐ 输出 `[0]=0.27231953` **逐位 ＝ `源[10]×gain`****；⭐ 反向 `offset=50` ⇒ **150** 帧、⭐ `0.12940946` ✓ |
+| ⭐ **S3／⭐ S4 改写为同口径** | ⭐ **`end=200` ⇒ 两侧都停第 200 帧、⭐ 整块 `0e0`**；⭐ **`end=-1` ⇒ 引擎 0 帧／⭐ 0 声部、⭐ 且摊平**也** 0 帧** ⇒ ⭐ ⭐ **故**无口径分叉可登记**（⭐ 原分叉已被本步消除）** ✓ |
+| ⭐ **S14 单样本重载兼容** | ⭐ **span-free `(60,127)` 512 帧指纹 ＝ `0xa933ddab286bdf5e` ＝ 本线在 `6ae70ef8`（⭐ 改动前）实测值**、⭐ `sample_content=broadcast(1)` ✓ |
+| ⭐ **S15 缺文件如实回退** | ⭐ **`fallback_region_count=1`、⭐ `missing_sample_paths=["missing.wav"]`**；⭐ **输出指纹逐位 ＝ "⭐ 用 `a.wav` 播那个键"**（⭐ 回退真发生、⭐ ⛔ 不静默）；⭐ **空提供表 ⇒ `silent=2`、⭐ 写 0 帧** ✓ |
+| ⭐ **S16 注入端到端** | ⭐ **多采样臂非零 1716、⭐ 峰值 0.21920355、⭐ 指纹 `0x10e619a422b4b7dd` ≠ 不给 SFZ `0xd50d599c66c92565`**；⭐ 广播臂 `0x5587041753dfe375` ≠ 多采样版 ✓ |
+| ⭐ ⭐ **尺寸** | ⭐ ⭐ **`SfzVoice 32→40 B`、⭐ `SfzVoicePool 520→648`、⭐ `SynthEngine 89936→91984`、⭐ `EngineRuntime 160784→162832 < 196608`** ✓ |
+| ⭐ ⭐ **㉙（⭐ 夹具未改）** | ⭐ ⭐ **10 001 量子总能量 **2999.164**（⭐ 与步 2 逐字相同）、⭐ 1 次换采样率 ⇒ `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`**、⭐ 该档 **73／73** ✓ |
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 既有 S1／⭐ S1b／⭐ S2／⭐ S5／⭐ S6／⭐ S7／⭐ S8／⭐ S10 读数**逐字不变****（⭐ 含接线前 `0x71dca4dc55b44df5`／⭐ `0x6eee378072730521`）✓
+
+⭐ ⭐ ⭐ **四、⭐ 而三处注入全红（⭐ 依第 208 条）**:
+| ⭐ # | ⭐ 注入 | ⭐ 红读数 |
+| --: | :--- | :--- |
+| ⭐ **1** | ⭐ `sample_index` 恒 0 | ⭐ **13／3 failed**：⭐ S11 `left 0`／⭐ `right 1`、⭐ S15 `left==right 12743012160029652121`、⭐ S16 `left==right 6162899113317753717` |
+| ⭐ **2** | ⭐ `end` 恒取 `pcm_len` | ⭐ **14／2 failed**：⭐ S3／⭐ S13 `left Some(480)`／⭐ `right Some(201)`（⭐ **S4 与 ⭐ S14 仍绿** ⇒ ⭐ **作用域只到 `end`**）|
+| ⭐ **3** | ⭐ 起点恒 `0.0` | ⭐ **15／1 failed**：⭐ S13 `left Some(0.0)`／⭐ `right Some(10.0)` |
+⭐ **并附（⭐ 还原自证很强）**: ⭐ **注入前 `sha256=5fd478c5…ac35b`、⭐ `git diff` ＝ **100111** 字节；⭐ 每次还原后 `sha256sum -c` OK、⭐ 两次 `git diff` **逐字节相同**、⭐ `INJECT` 标记 **0**** ✓
+
+⭐ ⚠ **五、⭐ `needs` 闭合表（⭐ 逐条）**: ⭐ **`sfz-needs-4`**已闭合****；⭐ **`needs-6`**部分闭合**（⭐ 多采样／⭐ 每区域独立 PCM 那一半已做）**；⭐ **`needs-1`／⭐ 2／⭐ 3**未闭合**（⭐ 原因保留在模块头）；⭐ **`needs-5`（⭐ "⭐ SFZ 如何进 `YebanProjectV1`"）**未闭合**：⭐ 本步只做成**可经公开路径调用的 API**、⭐ ⛔ 不加 `DeviceKind` 档、⭐ ⛔ 不改 schema** ✓
+⭐ ⭐ **并新登记两条**: ⭐ ⭐ **`sfz-needs-7`**（⭐ 缺样本回退 ＝ 广播到 `samples[0]`、⭐ **内容错**；⭐ app 的 `sfz_load.rs:264-267`（⭐ 内存正弦 ＋ ⭐ 原因文案）**未搬进引擎** ⇒ ⭐ **"⭐ 回退内容归谁"要裁决**）＋ ⭐ **`sfz-needs-8`**（⭐ 摊平表无字节预算／⭐ 无流式）✓
+
+⭐ ⚠ **六、⭐ 四门读数**: ⭐ `cargo fmt --all --check` **通过**／⭐ `clippy -p yeban-engine --all-targets -D warnings` **通过**（⭐ 0 告警）／⭐ `cargo test -p yeban-engine` **全绿**（⭐ lib **296**、⭐ `sfz_instrument` **16**、⭐ `sfz_arm_perf` **5**、⭐ `rt_zero_alloc` **73／73**）／⭐ `policy_check.py` **17／17**（⭐ 含 **G17**）／⭐ `run-gates.sh light` **通过**／⭐ `run-gates.sh crate yeban-engine` **通过** ✓
+
+⭐ ⚠ **七、⭐ 判决读数**: ⭐ ⭐ **`6ae70ef8`（⭐ 含 `[HARDWARE]` 标记那次）的 macOS 腿**仍在 queued／⭐ in_progress** ⇒ ⭐ **它是决定性那次**（⭐ 一举验 `libclang` ＋ ⭐ `RUST_MIN_STACK` ＋ ⭐ 声卡测试跳过）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **macOS 腿真绿验证** ＋ ⭐ **`needs-7` 的裁决**（⭐ "⭐ 回退内容归谁"）＋ ⭐ `needs-1`／⭐ 2／⭐ 3／⭐ 5 ＋ ⭐ 循环／⭐ ADSR ＋ ⭐ 遗留 3 项 ✓
