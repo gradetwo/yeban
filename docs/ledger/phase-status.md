@@ -9875,3 +9875,63 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **`deps` 57 G／⭐ `target` 61 G** ⇒ ⭐ ⭐ **清它一次得到 57 GiB** ⇒ ⭐ **而清 `release`＋⭐`incremental`＋⭐`build` 只得到 8 GiB** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`e0937922` 判决** ＋ ⭐ 原生文件对话框 ＋ ⭐ GUI 错误横幅 ＋ ⭐ 非 PCM-WAV 支持 ＋ ⭐ `sfz-cache-needs-1`／⭐ 2 ＋ ⭐ `needs-3`／⭐ `needs-8` ✓
+
+---
+
+## R741 实测追加（2026-10-16）：⭐⭐ **`#83` 已并入**（⭐ 做到**乙**＋ ⭐ 停手报批）⇒ ⭐ **"⭐ 读不到"从不可判别的文案改为**结构化可判别理由**** ＋ ⭐ ⭐ **而它把"⭐ 加依赖"按令**停手报批**** ⇒ ⭐ **我裁为**待裁****
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **5 文件、＋978／−23**（⭐ `sfz_load.rs` ＋243、⭐ `render_core.rs` ＋21、⭐ `cli.rs` ＋20、⭐ **新增 `tests/sfz_sample_formats.rs` 460 行**、⭐ **新增 `docs/ledger/app-sfz-sample-formats-notes.md` 257 行**）⇒ ⭐ **HEAD ＝ **`871d9bcd6f60161fb0704575af258fb27c32ca2f`**** ✓ ⭐ **`premerge-gate yeban-app` ＝ 全过** ✓ ⭐ ⚠ **且首次 `cargo check` 仅 **0.68 s** ⇒ ⭐ 本机 `target` 缓存**已是热的**、⭐ 未发生全量重编**（⭐ 即 R740 清 `deps` 后已由它自己的门禁跑重建了）✓
+
+⭐ ⭐ ⭐ **二、⭐ 勘察结论（⭐ 两条、⭐ 都很实）**:
+| ⭐ 项 | ⭐ 结论 |
+| :--- | :--- |
+| ⭐ ⭐ **解码入口＝本仓已有** | ⭐ ⭐ **`yeban_decode::decode_path`（⭐ `decode.rs:91`）⇒ ⭐ `DecodedAsset::samples() -> &[f32]`（⭐ `asset.rs:200`）／⭐ `channels()`（⭐ `:182`）／⭐ `sample_rate()`（⭐ `:188`）** ⇒ ⭐ **其 `symphonia` feature 集**显式含** `wav／ogg／flac／pcm／adpcm／vorbis／ape`** ⇒ ⭐ ⭐ **FLAC 与 OGG／Vorbis 都在** ⇒ ⭐ **"⭐ 解一份 FLAC 成 `Vec<f32>`" ＝ ⭐ **一次调用 ＋ ⭐ 一次拷贝、⭐ 已有现成函数**** ✓ |
+| ⭐ ⭐ **唯一口径差（⭐ 关键）** | ⭐ ⭐ **`DecodedAsset::samples()` 是**交织**多声道、⭐ 而 app 的 `read_plain_wav_mono_f32`（⭐ `wav.rs:294`）按 `step_by(channels)` 取**声道 0**** ⇒ ⭐ ⭐ **故接线时必须显式折单声道** ✓ |
+| ⭐ ⭐ **依赖影响（⭐ 实测）** | ⭐ ⭐ **`yeban-app` 的 `-e normal` 里**没有** `yeban-decode`；⭐ 全仓**只有 `yeban-mcp` 依赖它**（⭐ 台账那条成立）；⭐ ⭐ **`cargo tree` 实测: ⭐ app **288 ⇒ +22 个包****（⭐ `yeban-decode` ＋ ⭐ `symphonia` ＋ ⭐ 9 个 `symphonia-*` ＋ ⭐ `rubato` ＋ ⭐ 10 个 rubato 依赖）⇒ ⭐ ⚠ **含 `AGENTS.md §5.2` **点名的重依赖** `symphonia`**** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 它把"⭐ 能不能做、⭐ 代价多少"都测了** ⇒ ⭐ **故报批时给的是**可决断的数字**、⭐ ⛔ 不是"⭐ 大概会变大"** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 乙的交付（⭐ 本单的**实际成果**、⭐ 且它是有价值的）**: ⭐ **"⭐ 读不到"从一句**无法判别的文案**改成**结构化可判别理由**** ✓
+| ⭐ 新形状 | ⭐ 处 |
+| :--- | :--- |
+| ⭐ **`SampleReadFailure{NotFound, UnsupportedFormat, Unreadable}`** | ⭐ `sfz_load.rs:393` |
+| ⭐ **`UnreadableSample`** | ⭐ `:427` |
+| ⭐ **`SfzDecodeReport.unreadable_sample_reasons`** ＋ ⭐ 三个计数 | ⭐ `:581` |
+| ⭐ **CLI／⭐ `source_label` 加 `unreadable(not_found=…,unsupported=…,other=…)`** | ⭐ 逗号无空格、⭐ ⛔ 不动报告行切词法 ✓
+⇒ ⭐ ⭐ **并附（⭐ 它**指出了必须分档的理由**、⭐ 很硬）**: ⭐ ⭐ **"⭐ `blob.xyz`／⭐ `fake.flac` 的 hound 原文**都是** `Ill-formed WAVE file: no RIFF tag found` ⇒ ⭐ 只靠文案字面**分不开'⭐ 格式不对'与'⭐ 文件没了'**"** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 那是"⭐ 可判别性"的**真实动机**、⭐ ⛔ 不是为改名而改名** ✓
+
+⭐ ⚠ **四、⭐ 端到端读数（⭐ 它如实说"⭐ 无可比输出"）**: ⭐ ⚠ **"⭐ FLAC 那条腿**没有输出可比** —— ⭐ 走的是'⭐ 格式不受支持 ⇒ ⭐ 缺样本 ⇒ ⭐ 区域静音 ＋ ⭐ 计数'、⭐ 所以**逐样本差 ＝ 全部**（⭐ 不是一个量化误差）"** ⇒ ⭐ **并给可判别性读数**: ⭐ **`samples＝1 silent＝4 unreadable＝4 unreadable_kind(not_found＝1, unsupported＝2, other＝1)`** ⇒ ⭐ **逐条: ⭐ `nothere.wav` ⇒ ⭐ 文件不存在；⭐ `blob.xyz`／⭐ `fake.flac` ⇒ ⭐ 格式不受支持；⭐ `broken.wav`（⭐ RIFF／⭐WAVE 头 ＋ ⭐ 垃圾体）⇒ ⭐ 文件在但读不动** ✓ ⭐ **CLI 报告行: ⭐ `unreadable(not_found＝0,unsupported＝1,other＝0)`、⭐ `nonzero＝9598`** ✓
+⭐ ⚠ **并附（⭐ 诚实）**: ⭐ ⭐ **"⭐ 本机没有真 FLAC／⭐OGG 样本 ⇒ ⭐ 替代物 ＝ `fLaC` 魔数 ＋ ⭐ 垃圾体的夹具 ⇒ ⭐ 它只证'⭐ 理由分得开'、⭐ ⛔ **不**证'⭐ 能解 FLAC'"** ✓
+
+⭐ ⭐ ⭐ **五、⭐ 反向对照 ＋ ⭐ 一处很好的"⭐ 独立性"分析**: ⭐ **WAV 路径指纹 `0x0df478fa15264e79`（⭐ nonzero＝9598、⭐ peak＝0.109731831）＝ 改动后**逐位相同**** ✓ ⭐ **已写成 `BASELINE_WAV_READ`（⭐ 仅测量平台断言、⭐ 异平台打印 SKIP ＝ ⭐ 未判定≠通过）** ✓
+⭐ ⭐ **并附（⭐ 独立性问题）**: ⭐ ⭐ **"⭐ 既有 `sfz_model_chain::the_model_chain_is_bit_identical_to_the_hand_built_plan` 的**两条腿都要经过**本单改动的 `read_sample_file` ⇒ ⭐ 对'⭐ WAV 路径被改坏'**不独立** ⇒ ⭐ 故新增这道独立指纹"** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 它发现既有判据**对该变动不独立**、⭐ 于是**另加一道** ⇒ ⭐ ⭐ **那正是"⭐ 注入 B 能红"的前提**（⭐ 见下）✓
+
+⭐ ⭐ ⭐ **六、⭐ 注入双向（⭐ 含应绿腿、⭐ 而这次应绿腿**真的抓到了东西****）**:
+| ⭐ 注入 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **A（⭐ 关掉新分类路径: ⭐ `return SampleReadFailure::NotFound;`）** | ⭐ **判据 ②③ FAILED**（⭐ `unreadable_kind(not_found＝4,unsupported＝0,other＝0)`、⭐ `left: Some(NotFound)`／⭐ `right: Some(UnsupportedFormat)`）；⭐ **判据 ① 仍 ok** ✓ |
+| ⭐ ⭐ **B（⭐ **应绿腿** —— ⭐ 成功臂把第 0 帧清零、⭐ 模拟'⭐ 为支持别的格式而动了 WAV'）** | ⭐ ⭐ **判据 ① FAILED**、⭐ 读数 `0x0df478fa15264e79 ⇒ 0xc0ec3f3fa2b8840d`（⭐ nonzero 9598⇒9596）** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 应绿腿**确实能抓"⭐ WAV 被改坏"**** ⇒ ⭐ **那是第 243 条（⭐ "⭐ 应绿腿也要注入验证"）的一次**实证**** ✓
+⭐ **并附（⭐ 还原自证）**: ⭐ **`shasum -a 256 -c` 四文件全 `OK`；⭐ `grep -rn "INJECTION" crates/yeban-app/` ＝ **0 行**** ✓
+
+⭐ ⭐ **七、⭐ 状态差集（⭐ 第 241 条）**: ⭐ **557（⭐ 全 ok）⇒ 560（⭐ 全 ok）** ⇒ ⭐ ⭐ **差集**恰好 +3 条**（⭐ 新增判据、⭐ 全 ok）；⭐ **既有判据状态变化 **0** 条**** ✓
+
+⭐ ⚠ **八、⭐ 四门读数**: ⭐ `fmt` **0**／⭐ `check --all-targets --locked` **0**／⭐ `clippy -D warnings` **0**／⭐ `test -p yeban-app --locked` **0**（⭐ 560 条全 ok）／⭐ `premerge-gate.sh yeban-app` **0**／⭐ `light` **0**（⭐ 17 守卫全过、⭐ 含 `licenses` 693 行一致）✓
+
+⭐ ⚠ ⭐ ⭐ **九、⭐ 而其 SCHEMA_REQUEST 我裁为**待裁****（⭐ 本条要点）**: ⭐ ⚠ **它请批在 `crates/yeban-app/Cargo.toml` 加一条**工作区内部**依赖边 `yeban-decode ＝ { workspace ＝ true }`** ✓
+| ⭐ 项 | ⭐ 内容 |
+| :--- | :--- |
+| ⭐ **加什么** | ⭐ **一条**工作区内部**边（⭐ 根 `Cargo.toml:94` 已登记该 crate）⇒ ⭐ ⛔ **非新外部 crate** |
+| ⭐ **为何必要** | ⭐ **不加则 app **无法在源码里命名** `yeban_decode::*`（⭐ Rust 要求显式依赖）⇒ ⭐ **甲不可能在不批的前提下完成** |
+| ⭐ ⭐ **影响面（⭐ 实测）** | ⭐ ⭐ **`Cargo.lock` 的 `yeban-app` 依赖列表 ＋ ⭐ `-e normal` 图 **+22 个包**、⭐ 含重依赖 `symphonia`** ⇒ ⭐ **`cargo deny` 许可面不变**；⭐ **需重生成 `docs/ledger/dependency-licenses.md` 并一起提交** |
+| ⭐ **不批** | ⭐ **本单即终态**（⭐ FLAC／⭐OGG 不支持、⭐ 但理由可判别）|
+| ⭐ ⭐ **若批** | ⭐ ⭐ **接法已勘明: ⭐ WAV 仍走既有 hound 路径（⭐ 保 `BASELINE_WAV_READ` 逐位）、⭐ 其余后缀走 `decode_path` ＋ ⭐ **显式折单声道**（⭐ `step_by(channels)` ⇒ ⭐ 声道 0、⭐ ⛔ 不可把交织当单声道）** ✓
+⇒ ⭐ ⭐ ⭐ **而我的裁定: ⭐ **登记为待裁、⭐ ⛔ 不擅自批**** —— ⭐ ⚠ **理由: ⭐ 那是**依赖政策**类决定（⭐ "⭐ 给产品 crate 加一条含重依赖的边"），⭐ 而本仓 `AGENTS.md §5.2` **点名** `symphonia` 为重依赖** ⇒ ⭐ ⭐ **故属人类保留档** ⇒ ⭐ **且它已把"⭐ 不批"与"⭐ 若批"两条路都勘明 ⇒ ⭐ 故裁决**一步即可执行**** ✓
+⭐ **并附（⭐ 待裁一号、⭐ 台账 `§6` 口径）**: ⭐ ⭐ **"⭐ 是否在 `crates/yeban-app/Cargo.toml` 加 `yeban-decode ＝ { workspace ＝ true }`（⭐ 使 app 能解 FLAC／⭐ OGG 样本）；⭐ 影响面 ＝ ⭐ `Cargo.lock` 变 ＋ ⭐ +22 包含 `symphonia`；⭐ 不批则 FLAC／⭐OGG 仍静音但理由可判别；⭐ 若批则接法已勘明（⭐ WAV 走旧路径保逐位、⭐ 其余走 `decode_path` ＋ ⭐ 显式折单声道）"** ✓
+
+⭐ ⚠ **十、⭐ 一条可复用口径（⭐ 第 249 条）**: ⭐ ⭐ **报批"⭐ 加依赖"时、⭐ 必须给出**实测的影响面数字**（⭐ 包数、⭐ 重依赖名、⭐ 锁文件是否变、⭐ 许可面是否变）＋ ⭐ **"⭐ 不批"与"⭐ 若批"两条路的做法** —— ⚠ **因为"⭐ 大概会变大"无法据以决断、⭐ 而"⭐ +22 包含 `symphonia`"可以** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **① `cargo tree -e normal --locked --prefix none` 取包数差；⭐ ② 点出**重依赖**是否在列（⭐ 对照 `AGENTS.md §5.2` 的名单）；⭐ ③ 写明"⭐ 不批 ＝ 交付即终态"与"⭐ 若批 ＝ 具体接法"** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **它给了 +22、⭐ 点了 `symphonia`、⭐ 且两条路都写好** ⇒ ⭐ **故我这一侧**只需裁一个"⭐ 批／⭐ 不批"**** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **待裁: ⭐ `yeban-decode` 依赖边**（⭐ 新登记）＋ ⭐ **`e0937922`／⭐ `9a939318` 判决** ＋ ⭐ 原生文件对话框（⭐ 须报批）＋ ⭐ GUI 错误横幅 ＋ ⭐ `sfz-cache-needs-1`／⭐ 2 ＋ ⭐ `needs-3`／⭐ `needs-8` ✓
