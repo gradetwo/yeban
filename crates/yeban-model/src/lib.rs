@@ -73,8 +73,8 @@ pub use project::{
     ClipPoolEntry, DeviceDefinition, DeviceKind, LaunchQuantization, LoopConfig,
     MIN_READER_VERSION, MacroMapping, MacroParameter, MediaKind, PanLaw, ParameterValue,
     ProjectAudioConfig, ProjectMetadata, READER_SCHEMA_VERSION, RoutingEdge, RoutingGraph,
-    RoutingKind, SCHEMA_VERSION, SampleRate, SceneV3, SectionV3, TimeSignature, TrackKind, TrackV3,
-    TransportConfig, YebanProjectV1,
+    RoutingKind, SCHEMA_VERSION, SampleRate, SamplerBinding, SceneV3, SectionV3, TimeSignature,
+    TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
 pub use samples::{SampleExportError, export_all, export_to_default_dir};
 pub use session::{

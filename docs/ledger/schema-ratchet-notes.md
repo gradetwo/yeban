@@ -128,8 +128,8 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 ## 3. 豁免集与 `model-no-compat-notes.md` **§5.4** 的逐项对应
 
 豁免集是显式常量 `D43_EXEMPT_REQUIRED_PATHS`（`crates/yeban-model/tests/schema_ratchet.rs:95`），
-带 §5.4 的行号级表格注释。18 项 = 3 + 1 + 1 + 2 + 1 + 2 + 1 + 7，
-**全部以 notes §5.4 为准**，本线**没有**改动任何一项：
+带 §5.4 的行号级表格注释。**建线时** 18 项 = 3 + 1 + 1 + 2 + 1 + 2 + 1 + 7，
+**全部以 notes §5.4 为准**、本线**没有**改动任何一项；**第 19 项由任务单 `#76` 追加**（见下）：
 
 | # | 本线常量里的路径 | §5.4 的对象 / 字段 | 最终形态实测 |
 | :-- | :--- | :--- | :--- |
@@ -151,6 +151,15 @@ if serde_json::from_value::<YebanProjectV1>(document).is_ok() {
 | 16 | `…notes.*.pitch_bend_curve` | `MidiNote::pitch_bend_curve` | 同上 |
 | 17 | `…notes.*.syllable` | `MidiNote::syllable` | 已声明、非 required；4 个键实测删键可读 ✅ |
 | 18 | `…notes.*.phonemes` | `MidiNote::phonemes` | 已声明、非 required；夹具里不落盘 |
+| 19 | `#.tracks.*.sampler` | `tracks[*].sampler` | 已声明、非 required；**夹具里不落盘**（任务单 `#76` 新增，见下） |
+
+⚠ **第 19 项（任务单 `#76`，2026-10-16 追加）**：`TrackV3::sampler`
+（`Option<SamplerBinding>`，"这条轨用哪份 SFZ"）与第 6/7 项**同形**
+（`None` + `skip_serializing_if` + `#[serde(default)]`）⇒ 契约里只能声明为可选属性，
+而现有夹具**刻意不落盘**它（那正是"默认不改变既有工程"的判据）。
+⇒ 不登记 ⇒ 判据 ⑥ 报"棘轮盲区"（`leaked`）；填进夹具 ⇒ `project.filled.json` 的冻结
+sha256 改变 ⇒ 唯一出路是登记。本次与该行同时更新了 `model-no-compat-notes.md` §5.4。
+它同样受 ④/⑤ 双向反证：删键必须读成功、且不得进任何 `required`。
 
 **反例（§5.4 原文点名）**：`clip_pool[*].content.Audio.gain_db` **不在**豁免表里 ——
 那里是裸 `f32`，所以它**是**必需的。判据 ③ 删它，实测报

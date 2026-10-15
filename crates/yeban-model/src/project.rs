@@ -1110,6 +1110,42 @@ impl ClipPlacement {
     }
 }
 
+/// 音轨的**采样器绑定**：这条轨用**哪一份外部采样器定义文件**（今天只有 SFZ）。
+///
+/// ## 为什么是"路径"，而不是"已解析的乐器"
+///
+/// 本结构只带一个**路径字符串**，刻意**不**含任何运行时对象 —— 没有
+/// `SfzInstrument`、没有 PCM、没有 `Vec<f32>`。理由有三条：
+///
+/// 1. [`YebanProjectV1`] 是**持久化 AST**：它的每一位都必须能确定性序列化、
+///    跨进程逐字节复现 [MODEL-AST-003]，而解析后的乐器带着浮点 PCM 与
+///    来自文件系统的顺序（违反红线 4 的确定性要求，也违反 [MODEL-ISO-001]
+///    的"持久化 / 运行态物理隔离"）。
+/// 2. 本仓**既有的外部文件引用形状**就是这样：音频片段用内容寻址的
+///    [`AssetHash`] 指向 `assets` 表，而**路径**住在
+///    [`AssetMetadata::original_path`]（`String`，"仅留痕，不参与寻址"）。
+///    本结构照那一族的**路径留痕**那一半做：⛔ 不做 CAS —— 采样器定义文件
+///    必须**留在磁盘上**（它自己再用相对路径引用一批样本），归档进 CAS 无从解析。
+/// 3. "怎么读它"不属于模型：把路径摊平成引擎快照是**控制侧**的事
+///    （`yeban-engine` 的 `SfzPlan::prepare_with_samples` →
+///    `EngineSnapshot::with_sfz`）。模型只回答"哪条轨用哪份文件"。
+///
+/// ## 校验
+///
+/// ⛔ **本结构不发明任何路径校验**：非空、存在性、扩展名、绝对/相对一律**不查**。
+/// 与 [`AssetMetadata::original_path`] / [`TrackV3::color`] 同一口径 —— 模型把
+/// 路径当**留痕字符串**收下，读到不存在的文件是**控制侧**要响亮的错（`yeban-sfz`
+/// 已经会对缺失样本计数并静音，见 `sfz-needs-7`）。
+///
+/// ⚠ **今天没有任何引擎读它**：`EngineSnapshot::from_project` **不**消费本字段。
+/// 本结构是"模型能表达 + 能序列化 + 不改变旧工程"的**最小入口**
+/// （`sfz-needs-5` 的模型面那一半）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SamplerBinding {
+    /// 采样器定义文件路径（原样留痕，⛔ 模型不解析、不规范化、不查存在性）。
+    pub path: String,
+}
+
 /// 音轨 [MODEL-AST-002]。
 ///
 /// `folder_id` **仅**用于界面层树状折叠，严禁承载音频信号语义
@@ -1147,6 +1183,18 @@ pub struct TrackV3 {
     /// [ADR-0001 D43 对 `Option<T>` 的豁免]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// 采样器绑定（这条轨用哪一份外部采样器定义文件）。
+    ///
+    /// `None` 是**一等状态**（"这条轨不用采样器"），保留 `#[serde(default)]`
+    /// [ADR-0001 D43 对 `Option<T>` 的豁免]，并与 `skip_serializing_if` 对偶
+    /// ⇒ ⭐ **默认（不带 SFZ）的工程逐字节不变**：本字段为 `None` 时**不落盘**。
+    ///
+    /// ⚠ 形状说明与"为什么是路径而不是已解析乐器"见 [`SamplerBinding`]。
+    /// ⚠ 本字段**不影响** `devices` 设备链：它是一条**平行的**可选绑定，
+    /// ⛔ 不是第五档 [`DeviceKind`]（那会改 `DeviceKind` 的规范四档、破坏它的
+    /// `Copy`，并让 `yeban-mcp` 里四处**穷举** `DeviceKind` 的 match 失配）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<SamplerBinding>,
     /// 设备链（有序）。
     ///
     /// **必需** [ADR-0001 D43]：设备链是音轨内容的一部分，缺键等于静默清空整条链。
@@ -1183,6 +1231,7 @@ impl Default for TrackV3 {
             solo_safe: false,
             folder_id: None,
             color: None,
+            sampler: None,
             devices: Vec::new(),
             macros: Vec::new(),
             automation_lanes: BTreeMap::new(),
@@ -5132,10 +5181,88 @@ mod tests {
         assert!(!track.solo_safe);
         assert!(track.folder_id.is_none());
         assert!(track.color.is_none());
+        assert!(
+            track.sampler.is_none(),
+            "`sampler` 的默认值必须是 `None`（一等状态：这条轨不用采样器）"
+        );
         assert!(track.devices.is_empty());
         assert!(track.macros.is_empty());
         assert!(track.automation_lanes.is_empty());
         assert!(track.clips.is_empty());
+    }
+
+    /// 采样器绑定（任务单 `#76`）：**默认不落盘**、带值时**逐字节往返**、路径**原样**保留。
+    ///
+    /// 为什么需要这一条：`sampler` 是"模型能表达 ＋ 能序列化 ＋ ⛔ 不改变旧工程"的
+    /// **最小入口**。三件事必须各有判据，否则任一条都会被静默破坏：
+    ///
+    /// 1. **默认不变**：`None` ⇒ 键**消失**（不是 `null`）⇒ 既有夹具的字节不动。
+    ///    这里显式把 `filled_project()` 的 lead 轨设回 `None` 再比**整份工程**的
+    ///    字节 —— 那正是"不带 SFZ 的工程输出与改动前逐位相同"。
+    /// 2. **往返稳定**：带绑定的工程 `to_string` → `from_str` → `to_string` 逐字节相同。
+    /// 3. **路径是留痕字符串**：模型⛔ 不校验、⛔ 不规范化（空串 / 反斜杠 / 前后空格
+    ///    一律原样收下）—— 与 [`AssetMetadata::original_path`] 同一口径。
+    #[test]
+    fn sampler_binding_is_absent_by_default_and_round_trips_verbatim() {
+        // ---- ① 默认：键**消失**（`skip_serializing_if`），不是写成 `null` ----
+        let default_track = serde_json::to_value(TrackV3::default()).expect("序列化默认音轨");
+        assert!(
+            default_track.get("sampler").is_none(),
+            "默认音轨不得写出 `sampler` 键（`None` ⇒ `skip_serializing_if`）: {default_track}"
+        );
+
+        // ---- ② 把字段显式设回 `None` ⇒ 整份夹具工程逐字节不变 ----
+        let lead = fixture_id(2);
+        let mut without = filled_project();
+        without
+            .track_mut(&lead)
+            .expect("夹具的 lead 轨必须在")
+            .sampler = None;
+        assert_eq!(
+            serde_json::to_string(&without).expect("序列化"),
+            serde_json::to_string(&filled_project()).expect("序列化"),
+            "`sampler = None` 不得移动既有夹具工程的任何一个字节"
+        );
+
+        // ---- ③ 带值：往返逐字节稳定 ＋ 路径原样（含空串 / 反斜杠 / 空格）----
+        for path in ["instruments/lead.sfz", "", r"C:\sfz\a b.sfz", "  spaced  "] {
+            let mut project = filled_project();
+            project.track_mut(&lead).expect("lead 在").sampler = Some(SamplerBinding {
+                path: path.to_owned(),
+            });
+            assert_eq!(
+                project.validate(),
+                Ok(()),
+                "模型⛔ 不发明路径校验 ⇒ `{path}` 不得被拒"
+            );
+            assert_eq!(project.check_readable(), Ok(()));
+            let first = serde_json::to_string_pretty(&project).expect("序列化");
+            let back: YebanProjectV1 = serde_json::from_str(&first).expect("读回");
+            assert_eq!(back, project, "路径 `{path}` 往返后必须逐字段相等");
+            assert_eq!(
+                serde_json::to_string_pretty(&back).expect("再序列化"),
+                first,
+                "路径 `{path}` 往返必须**逐字节**相同"
+            );
+            assert_eq!(
+                back.track(&lead).expect("lead 在").sampler,
+                Some(SamplerBinding {
+                    path: path.to_owned()
+                }),
+                "路径必须**原样**保留（⛔ 不规范化、⛔ 不解析）"
+            );
+        }
+
+        // ---- ④ 落盘形态：`"sampler":{"path":"…"}`（对象、值只是字符串）----
+        let mut project = filled_project();
+        project.track_mut(&lead).expect("lead 在").sampler = Some(SamplerBinding {
+            path: "instruments/lead.sfz".to_owned(),
+        });
+        let json = serde_json::to_string(&project).expect("序列化");
+        assert!(
+            json.contains(r#""sampler":{"path":"instruments/lead.sfz"}"#),
+            "落盘形态必须是单键对象 `sampler.path`: {json}"
+        );
     }
 
     /// `RoutingGraph::validate` 的**四类结构检查逐条点名校验**（含正对照）。

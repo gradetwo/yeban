@@ -288,6 +288,21 @@
               "null"
             ]
           },
+          "sampler": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Optional sampler binding (which external sampler definition file this track uses / SFZ). `null` or an absent key means \"this track uses no sampler\" and is the semantic default, so the writer omits it. `path` is a verbatim path string: the model never parses, normalises or resolves it, and it never stores a parsed instrument or PCM.",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          },
           "devices": {
             "type": "array",
             "items": {

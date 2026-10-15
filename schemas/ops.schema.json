@@ -392,6 +392,16 @@
         },
         {
           "required": [
+            "SetTrackSampler"
+          ],
+          "properties": {
+            "SetTrackSampler": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetTrackName"
           ],
           "properties": {

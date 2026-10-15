@@ -238,7 +238,8 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 > ### ⚠ 两条同样重要：§5.1–§5.3 是"该收紧的"，**§5.4 是"绝不能收紧的"**
 >
 > 集成者明确要求把豁免清单放在显眼位置（原话：**豁免比收紧更容易出错：收紧了语义上可选的字段就是 bug**）。
-> 因此：**§5.4 的 18 个字段一律不得进任何 `required`** —— 其中 15 个本写入器**会在默认值上省略**
+> 因此：**§5.4 的字段一律不得进任何 `required`** —— 今天共 **19** 项（历史 18 项 ＋ 任务单 `#76`
+> 新增的 `tracks[*].sampler`），其中 16 个本写入器**会在默认值上省略**
 > （`Option::None` 或空集 + `skip_serializing_if`），另 3 个（`author` / `description` / `tags`）本写入器总是写出但**读取器接受缺失**。
 > 一旦把 §5.4 的字段写进 `required`，本写入器自己的输出就会被 schema 判为非法。判据 ④（§4）是这条原则的机械形式。
 
@@ -314,7 +315,7 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 
 顺带：`properties.tracks.additionalProperties.properties.solo_safe` 已存在（作为可选属性），**只需把它加进 required 即可**。
 
-### 5.4 ⚠ **绝不能**加进任何 `required` 的字段（D43 豁免集，18 项）
+### 5.4 ⚠ **绝不能**加进任何 `required` 的字段（D43 豁免集，18 项 ＋ 1）
 
 这些字段**本写入器会在默认值上省略**（`Option::None` + `skip_serializing_if`，或空集）。一旦 schema 要求它们，**本写入器自己的输出就会被 schema 判为非法** —— 那比"漏检"更糟：它会制造一批"实现与契约互相指责"的假事故。
 
@@ -325,10 +326,18 @@ cargo test -p yeban-model --test no_compat -- --ignored --nocapture
 | `tracks[*].devices[*].params[*]` | `unit` | `None` ⇒ **不落盘** |
 | `tracks[*].automation_lanes[*]` | `domain` | `None` ⇒ **不落盘** |
 | `tracks[*]` | `folder_id`, `color` | `None` ⇒ **不落盘** |
+| `tracks[*]` | `sampler` | `None` ⇒ **不落盘**（**任务单 `#76` 新增的第 19 项**；`Option<SamplerBinding>` = "这条轨用哪份采样器定义文件"，⛔ 不含运行时对象） |
 | `sections[*]` | `color` | `None` ⇒ **不落盘** |
 | `scenes[*]` | `tempo`, `color` | `None` ⇒ **不落盘** |
 | `routing_graph.edges[*]` | `gain_db` | `None` ⇒ **不落盘**（对比 `clip_pool[*].content.Audio.gain_db`：那里是裸 `f32`，所以**是**必需） |
 | `clip_pool[*].content.Midi.notes[*]` | `probability`, `ratchet`, `micro_timing_ticks`, `slide`, `pitch_bend_curve`, `syllable`, `phonemes` | `None` / 空集 ⇒ **不落盘**（稀疏编码） |
+
+⚠ **第 19 项的机械后果**（照实登记）：它在既有夹具 `samples::filled_project()` 里**一处都不落盘**
+—— 那正是"默认不改变既有工程"这条判据本身。因此 `tests/schema_ratchet.rs` 的判据 ⑥ 会把它记成
+"契约声明了、夹具里一处都没有"的 `unjudged`；不把它登记进 `D43_EXEMPT_REQUIRED_PATHS`
+就会**变红**（"棘轮盲区"），而"把它填进夹具"会改掉 `project.filled.json` 的冻结 sha256。
+⇒ 唯一正确的出路是**登记**，这就是本节从 18 长成 19 的原因（同一行已同步进
+`docs/ledger/schema-ratchet-notes.md` §3）。
 
 一句话记忆法：**"写入器会省略的键，schema 一律不得 required"**；反过来，"schema required 的键，写入器必须总是写出、读取器必须要求存在"。判据 ④ 是这条原则的机械形式。
 

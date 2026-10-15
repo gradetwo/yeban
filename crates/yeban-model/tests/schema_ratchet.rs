@@ -5,7 +5,8 @@
 //! - `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md` **D10**
 //!   （契约与规范冲突时以规范为准，并且**改契约**留痕）、**D43**（无兼容包袱：
 //!   设计上必需 ⇒ 缺键即报错；语义上可选 ⇒ `Option<T>` / 空集才允许默认）；
-//! - `docs/ledger/model-no-compat-notes.md` **§5**（收紧清单）与 **§5.4**（18 项 D43 豁免集）；
+//! - `docs/ledger/model-no-compat-notes.md` **§5**（收紧清单）与 **§5.4**（D43 豁免集，
+//!   历史 18 项 ＋ 任务单 `#76` 新增的第 19 项 `tracks[*].sampler`）；
 //! - `MODEL-AST-002`（`YebanProjectV1`）、`MODEL-AST-003`（`BTreeMap` 确定性，红线 4）。
 //!
 //! ## 为什么要有这条常设判据
@@ -29,7 +30,7 @@
 //! | ① | [`fixture_round_trips_and_is_rich_enough_for_the_ratchet`] | — | 夹具自身合法且够富（棘轮不会空转） |
 //! | ② | [`direction_a_every_contract_required_path_is_emitted_by_the_writer`] | A | 契约 `required` 的**每一条路径**（递归）都出现在写入器的序列化结果里 |
 //! | ③ | [`direction_b_every_contract_required_path_is_required_by_the_reader`] | B | 逐个 `required` 路径**删键** ⇒ `from_value::<YebanProjectV1>` **必须失败** |
-//! | ④ | [`direction_b_d43_exempt_paths_tolerate_missing_keys`] | B 反面 | §5.4 的 18 项豁免**确实**可以缺键（证明豁免集没写错） |
+//! | ④ | [`direction_b_d43_exempt_paths_tolerate_missing_keys`] | B 反面 | §5.4 的豁免项**确实**可以缺键（证明豁免集没写错） |
 //! | ⑤ | [`contract_required_is_disjoint_from_the_d43_exemption_set`] | §5.4 | 豁免项**绝不**能被契约 `required`（否则写入器输出被判非法） |
 //! | ⑥ | [`reader_required_paths_are_frozen_debt_in_the_contract`] | B′ | "实现要求但契约没要求"（schema 更松）只能等于**已登记的收紧待办**，新增即红 |
 //! | ⑦ | [`contract_self_check_refs_resolve_and_required_names_are_declared`] | 契约自身 | `$ref` 可解析；每个 `required` 名都在同一对象的 `properties` 里（防拼写错）；无未支持的 JSON Schema 形态 |
@@ -73,7 +74,7 @@ use yeban_model::samples::filled_project;
 
 /// D43 语义可选字段：**绝不能**出现在契约的任何 `required` 里 [ADR-0001 D43, notes §5.4]。
 ///
-/// 逐项对应 `docs/ledger/model-no-compat-notes.md` **§5.4** 的表格（18 项）：
+/// 逐项对应 `docs/ledger/model-no-compat-notes.md` **§5.4** 的表格：
 ///
 /// | # | 本常量里的路径 | §5.4 行 | 写入侧行为 |
 /// | :-- | :--- | :--- | :--- |
@@ -89,9 +90,20 @@ use yeban_model::samples::filled_project;
 /// | 10 | `#.scenes.*.color` | `scenes[*].color` | `None` ⇒ 不落盘 |
 /// | 11 | `#.routing_graph.edges[].gain_db` | `routing_graph.edges[*].gain_db` | `Option<f32>` ⇒ 不落盘 |
 /// | 12–18 | `#.clip_pool.*.content.Midi.notes.*.{probability,ratchet,micro_timing_ticks,slide,pitch_bend_curve,syllable,phonemes}` | 同左（7 个表现力字段） | `None` / 空集 ⇒ 不落盘（稀疏编码） |
+/// | 19 | `#.tracks.*.sampler` | `tracks[*].sampler` | `None` ⇒ 不落盘（任务单 `#76` 新增） |
 ///
 /// **注意反例**：`clip_pool[*].content.Audio.gain_db` **不在**本表里 —— 那里 `gain_db`
 /// 是裸 `f32`，所以它**是**必需的（§5.4 原文明确点名了这个对比）。
+///
+/// ⚠ **第 19 项的来历**（任务单 `#76`，2026-10-16）：`TrackV3::sampler` 是
+/// `Option<SamplerBinding>` + `#[serde(default)]` + `skip_serializing_if`，是
+/// [ADR-0001 D43] 对 `Option<T>` 的**标准豁免形状** ⇒ 契约里只能声明为**可选**属性。
+/// ⚠ 它**不落盘**在既有夹具（`samples::filled_project()`）里 —— 那正是"默认不改变
+/// 既有工程"的判据本身 ⇒ 判据 ⑥ 会把它记成"契约声明了、夹具里一处都没有"的
+/// `unjudged`。不登记在这里就会**变红**（"棘轮盲区"），而"把它填进夹具"会改变
+/// `project.filled.json` 的冻结 sha256 ⇒ 唯一正确的出路就是登记它。
+/// 因此 §5.4 的 18 项在这里**长成了 19 项**；账本 `model-no-compat-notes.md` §5.4
+/// 与 `schema-ratchet-notes.md` §3 已同步补上同一行。
 const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.author",
     "#.metadata.description",
@@ -100,6 +112,7 @@ const D43_EXEMPT_REQUIRED_PATHS: &[&str] = &[
     "#.tracks.*.automation_lanes[].domain",
     "#.tracks.*.folder_id",
     "#.tracks.*.color",
+    "#.tracks.*.sampler",
     "#.sections.*.color",
     "#.scenes.*.tempo",
     "#.scenes.*.color",
@@ -863,7 +876,7 @@ fn direction_a_every_contract_required_path_is_emitted_by_the_writer() {
 /// 某个路径删掉后**仍然读成功** ⇒ 说明"实现其实不要求它" ⇒ 契约比实现更紧，
 /// 这条棘轮当场红并**点名那个路径**。
 ///
-/// §5.4 的 18 项豁免**不参与**本判据（它们是语义可选字段，契约一旦 required 它们，
+/// D43 豁免集**不参与**本判据（它们是语义可选字段，契约一旦 required 它们，
 /// 本写入器自己的输出就会被判非法）—— 由判据 ④⑤ 单独负责。
 #[test]
 fn direction_b_every_contract_required_path_is_required_by_the_reader() {
@@ -915,14 +928,14 @@ fn direction_b_every_contract_required_path_is_required_by_the_reader() {
 // ④ 方向 B 的反面：§5.4 豁免项**确实**可以缺键
 // ---------------------------------------------------------------------------
 
-/// §5.4 的 18 项豁免逐个"删键 ⇒ 必须**读成功**"。
+/// D43 豁免集（§5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler`）逐个"删键 ⇒ 必须**读成功**"。
 ///
 /// 这一条专门证明**豁免集没写错**：若 §5.4 里某一项其实是**必需**的（清单有误），
 /// 本判据会红并点名它 —— 那时**不要**改豁免集换绿，把清单报给集成者。
 ///
-/// 夹具里本来就不落盘的豁免项（`folder_id` / `SceneV3::color` / `MidiNote::slide` /
-/// `pitch_bend_curve` / `phonemes`）在这里记为"缺席"：它们的"缺键可读"由判据 ① 的
-/// 整份往返已经证明。
+/// 夹具里本来就不落盘的豁免项（`folder_id` / `tracks[*].sampler` / `SceneV3::color` /
+/// `MidiNote::slide` / `pitch_bend_curve` / `phonemes`）在这里记为"缺席"：它们的
+/// "缺键可读"由判据 ① 的整份往返已经证明。
 #[test]
 fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
     let fixture = fixture();
@@ -953,18 +966,21 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 
     assert_eq!(
         D43_EXEMPT_REQUIRED_PATHS.len(),
-        18,
-        "§5.4 是 18 项（逐项对应见常量上的表）"
+        19,
+        "D43 豁免集 = §5.4 的 18 项 ＋ 任务单 `#76` 的 `tracks[*].sampler`（逐项对应见常量上的表）"
     );
     assert!(
         present_paths >= 8,
-        "只有 {present_paths}/18 条豁免路径在夹具里真的落了盘（删了 {deleted_keys} 个键）\
-         —— 夹具太贫瘠，本条判据形同虚设。缺席（由判据 ① 覆盖）: {absent:?}"
+        "只有 {present_paths}/{} 条豁免路径在夹具里真的落了盘（删了 {deleted_keys} 个键）\
+         —— 夹具太贫瘠，本条判据形同虚设。缺席（由判据 ① 覆盖）: {absent:?}",
+        D43_EXEMPT_REQUIRED_PATHS.len()
     );
     eprintln!(
-        "[schema-ratchet] §5.4 豁免: {present_paths}/18 条落盘并删键验证成功（共 {deleted_keys} 个键）; \
-         缺席 {}/18: {absent:?}",
-        absent.len()
+        "[schema-ratchet] D43 豁免: {present_paths}/{} 条落盘并删键验证成功（共 {deleted_keys} 个键）; \
+         缺席 {}/{}: {absent:?}",
+        D43_EXEMPT_REQUIRED_PATHS.len(),
+        absent.len(),
+        D43_EXEMPT_REQUIRED_PATHS.len()
     );
 }
 
@@ -972,7 +988,7 @@ fn direction_b_d43_exempt_paths_tolerate_missing_keys() {
 // ⑤ §5.4 的机械形式：豁免项绝不能被契约 required
 // ---------------------------------------------------------------------------
 
-/// §5.4 的 18 项**一律不得**出现在契约的任何 `required` 里 [ADR-0001 D43]。
+/// D43 豁免集（§5.4 的 18 项 ＋ `tracks[*].sampler`）**一律不得**出现在契约的任何 `required` 里 [ADR-0001 D43]。
 ///
 /// 这是 notes §5.4 "判据 ④ 是这条原则的机械形式"的落地版，而且是**直接读契约**的：
 /// 收紧线若把某个语义可选字段收进 `required`，本判据立刻红 —— 那比"漏检"更糟，
@@ -1003,7 +1019,8 @@ fn contract_required_is_disjoint_from_the_d43_exemption_set() {
          说明本文件的路径记号与契约漂移了，请先修判据"
     );
     eprintln!(
-        "[schema-ratchet] §5.4 豁免集: 18 项, 其中 {declared} 项已被契约声明为属性、0 项被 required"
+        "[schema-ratchet] D43 豁免集: {} 项, 其中 {declared} 项已被契约声明为属性、0 项被 required",
+        D43_EXEMPT_REQUIRED_PATHS.len()
     );
 }
 

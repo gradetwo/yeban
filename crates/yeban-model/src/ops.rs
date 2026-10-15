@@ -52,8 +52,8 @@ use crate::ids::{AssetHash, EntityId};
 use crate::music::MidiNote;
 use crate::project::{
     AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget, ClipPlacement, ClipPoolEntry,
-    DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SceneV3, SectionV3, TrackV3, TransportConfig,
-    YebanProjectV1,
+    DeviceDefinition, MAX_BPM, MIN_BPM, RoutingEdge, SamplerBinding, SceneV3, SectionV3, TrackV3,
+    TransportConfig, YebanProjectV1,
 };
 
 /// 操作来源 [ARCH-OPS-001]。
@@ -634,6 +634,39 @@ pub enum Op {
         /// 修改后的色标（`None` = 清除 = 回到主题默认色）。
         new_color: Option<String>,
     },
+    /// 设置音轨的**采样器绑定**（[`TrackV3::sampler`]，即"这条轨用哪一份采样器定义文件"）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`TrackV3::sampler` 在操作日志层
+    /// 不可表达** —— 唯一的入口是 [`Op::AddTrack`]（建轨时把整个 `TrackV3` 交进去），
+    /// 而它之后**没有任何 `Op` 能改它** ⇒ 换采样器只能"删轨 + 重建"，⭐ 那会**换掉
+    /// `EntityId`**、并连带丢掉该轨的设备链 / 自动化 / 路由边（⭐ 那些都以 `track_id`
+    /// 为键）。这是 `ARCH-OPS-001` 那一族的又一处（与 `D27` 补 `AddClip`、
+    /// [`Op::SetTrackName`] / [`Op::SetTrackColor`] 的成因同型）。
+    ///
+    /// ⚠ 载荷是 [`SamplerBinding`]（**一个路径字符串**），⛔ 不是已解析的乐器：
+    /// 模型的持久化 AST 里**不放** `SfzInstrument` / PCM / `Vec<f32>`
+    /// （理由见 [`SamplerBinding`] 的文档）。本变体因此只是"把这一个字段换个值"。
+    ///
+    /// ⚠ 两边都是 `Option<SamplerBinding>`：`None` 是**一等状态**（"这条轨不用采样器"，
+    /// 见字段自己的文档）⇒ 设成 `None` ⛔ 不是"丢失"，⭐ 而是"解绑"。
+    /// 相等是**逐字节 + 同态**的（`None == None`、`Some(a) == Some(b)` 当且仅当
+    /// `path` 逐字节相等）⇒ 与 [`Op::SetTrackColor`] 同一"陈旧载荷必被拒"口径。
+    ///
+    /// ⛔ **本变体不发明路径语义**：不查文件存在性、不查扩展名、不规范化、不解析
+    /// （与 [`TrackV3::sampler`] 的字段文档同一口径 —— 模型把路径当留痕字符串）。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `id` / `name` / `kind` / `color` / `devices` /
+    /// `macros` / `automation_lanes` / `clips` / `volume_db` / `pan` / `mute` / `solo` /
+    /// `solo_safe` / `folder_id`，也⛔ 不碰其它轨。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetTrackColor`]），⛔ **不是** `previous_*`。
+    SetTrackSampler {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的绑定（`None` = 该轨本来不用采样器）。
+        old_sampler: Option<SamplerBinding>,
+        /// 修改后的绑定（`None` = 解绑 = 回到"不用采样器"）。
+        new_sampler: Option<SamplerBinding>,
+    },
     /// 设置音轨**名字**（[`TrackV3::name`]）。
     ///
     /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`TrackV3::name` 在操作日志层
@@ -865,6 +898,7 @@ impl Op {
             Self::SetTrackMute { .. } => "SetTrackMute",
             Self::SetTrackName { .. } => "SetTrackName",
             Self::SetTrackColor { .. } => "SetTrackColor",
+            Self::SetTrackSampler { .. } => "SetTrackSampler",
             Self::SetTransportConfig { .. } => "SetTransportConfig",
             Self::SetTempo { .. } => "SetTempo",
             Self::SetAuthor { .. } => "SetAuthor",
@@ -1295,6 +1329,18 @@ impl Op {
                 // ⚠ `Option<String>` 的相等是**逐字节 + 同态**的（`None == None`、`Some(a) == Some(b)`
                 // 当且仅当 `a`/`b` 逐字节相等）⇒ 与 [`Op::SetTrackName`] 同一"陈旧载荷必被拒"口径。
                 if doc.track(track_id)?.color != *old_color {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            // 与 `SetTrackColor` **逐字同型**（同样是 `Option<T>` 的"逐字节 + 同态"比较）：
+            // `None` 是一等状态（"这条轨不用采样器"）⇒ 陈旧载荷必被拒。
+            Self::SetTrackSampler {
+                track_id,
+                old_sampler,
+                ..
+            } => {
+                if doc.track(track_id)?.sampler != *old_sampler {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
@@ -1822,6 +1868,16 @@ impl Op {
                 old_color: new_color.clone(),
                 new_color: old_color.clone(),
             },
+            // 纯结构化取反：只交换"前 / 后"两个 `Option<SamplerBinding>`（同 `SetTrackColor`）。
+            Self::SetTrackSampler {
+                track_id,
+                old_sampler,
+                new_sampler,
+            } => Self::SetTrackSampler {
+                track_id: *track_id,
+                old_sampler: new_sampler.clone(),
+                new_sampler: old_sampler.clone(),
+            },
             Self::SetTrackName {
                 track_id,
                 old_name,
@@ -2181,6 +2237,17 @@ impl Op {
                 ..
             } => {
                 doc.track_mut(track_id)?.color = new_color.clone();
+                Ok(())
+            }
+            // 只写那**一个**绑定字段：⛔ 不碰设备链、⛔ 不碰 `color`/`name`/集合/混音标量。
+            // ⚠ `new_sampler: None` = **解绑**（这条轨不再用采样器），⛔ 不是"丢失"。
+            // ⚠ 载荷是路径字符串，⛔ 模型**不解析**它（那是控制侧的事）。
+            Self::SetTrackSampler {
+                track_id,
+                new_sampler,
+                ..
+            } => {
+                doc.track_mut(track_id)?.sampler = new_sampler.clone();
                 Ok(())
             }
             // 只写那**一个**名字字段：不碰 `volume_db` / `pan` / `mute` / `solo` /
@@ -3010,6 +3077,17 @@ mod tests {
                 old_color: None,
                 new_color: Some("#22AA88".to_owned()),
             },
+            // 采样器绑定：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 换 SFZ 只能删轨重建。
+            // ⚠ `old_sampler: None` 对应夹具的 `TrackV3::default()`（⭐ `sampler` 默认 `None`
+            // ＝"这条轨不用采样器"，⭐ 是一等状态）；⭐ 新值只是一个**路径字符串**，
+            // ⛔ 不带任何已解析乐器（模型的持久化 AST 里不放运行时对象）。
+            Op::SetTrackSampler {
+                track_id: f.lead,
+                old_sampler: None,
+                new_sampler: Some(SamplerBinding {
+                    path: "instruments/lead.sfz".to_owned(),
+                }),
+            },
             Op::SetTrackName {
                 track_id: f.lead,
                 old_name: "Lead".to_owned(),
@@ -3227,6 +3305,71 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "脚本缺少变体 {expected}");
         }
+    }
+
+    /// `SetTrackSampler` 只写**那一个**字段，且"陈旧载荷必被拒"（任务单 `#76`）。
+    ///
+    /// 判据的设计意图：`sampler` 是**路径引用**（⛔ 不是运行时对象），所以这一条同时钉三件事：
+    ///
+    /// 1. **只有 `sampler` 变** —— ⛔ 不动设备链 / 名字 / 色标 / 集合 / 混音标量；
+    /// 2. **陈旧载荷必被拒** —— 声明"旧值"与文档现值不符时 `OpStateMismatch`，且文档一位不动；
+    /// 3. **`None` 是一等状态** —— 逆操作把 `Some(path)` 还原成 `None`（解绑），
+    ///    ⛔ 不是"丢失"（`None` 在字段自己的文档里就写着"这条轨不用采样器"）。
+    ///
+    /// ⚠ 路径**原样**写进文档：⛔ 模型不解析、不查存在性（那是 `yeban-engine` / `yeban-sfz`
+    /// 的后续单要做的事；本变体只管"这一个字段能表达、能序列化、能撤销"）。
+    #[test]
+    fn set_track_sampler_writes_exactly_one_field_and_rejects_a_stale_payload() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        let binding = SamplerBinding {
+            path: "instruments/lead.sfz".to_owned(),
+        };
+        let before = doc.track(&f.lead).expect("lead 轨在夹具里").clone();
+
+        // ① 陈旧载荷：文档现值是 `None`，声明 `Some(…)` 必须被拒，且文档一位不动。
+        let stale = Op::SetTrackSampler {
+            track_id: f.lead,
+            old_sampler: Some(binding.clone()),
+            new_sampler: None,
+        };
+        assert_eq!(
+            stale.apply(&mut doc),
+            Err(ModelError::OpStateMismatch {
+                op: "SetTrackSampler"
+            }),
+            "陈旧载荷必须被拒"
+        );
+        assert_eq!(doc, fixture_document(), "被拒的操作不得改动文档");
+
+        // ② 正路：`None` ⇒ `Some(path)`，且**只有** `sampler` 变。
+        let op = Op::SetTrackSampler {
+            track_id: f.lead,
+            old_sampler: None,
+            new_sampler: Some(binding.clone()),
+        };
+        assert_eq!(op.precondition(&doc), Ok(()));
+        op.apply(&mut doc).expect("施加");
+        let after = doc.track(&f.lead).expect("lead 轨在夹具里");
+        assert_eq!(after.sampler, Some(binding.clone()));
+        assert_eq!(
+            TrackV3 {
+                sampler: before.sampler.clone(),
+                ..after.clone()
+            },
+            before,
+            "`SetTrackSampler` 只许改 `sampler`：其余字段必须逐字段不变"
+        );
+
+        // ③ 逆操作：`Some(path)` ⇒ `None`（一等状态 = 解绑），逐字节精确还原。
+        let inverse = op.invert(&doc).expect("求逆");
+        assert_eq!(
+            inverse.name(),
+            "SetTrackSampler",
+            "同族 `Option<T>` setter 的逆仍是它自己（照 `SetTrackColor`）"
+        );
+        inverse.apply(&mut doc).expect("施加逆操作");
+        assert_eq!(doc, fixture_document(), "逆操作必须精确还原");
     }
 
     /// 新增两个"池/图成员"变体后，规范 §7.2 的"新建片段 → 摆放 → 撤销"整链必须真的走得通，

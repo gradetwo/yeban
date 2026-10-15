@@ -754,6 +754,7 @@ pub fn demo_project() -> YebanProjectV1 {
                 solo_safe: false,
                 folder_id: None,
                 color: track_colors[slot].map(str::to_owned),
+                sampler: None,
                 devices: demo_track_devices(slot),
                 macros: Vec::new(),
                 automation_lanes: demo_automation_lanes(slot, track_id),
