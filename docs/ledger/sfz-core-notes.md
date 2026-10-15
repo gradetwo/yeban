@@ -1,5 +1,7 @@
 # sfz-core 工作线笔记（口径 / 来源 / 缺口）
 
+> ⚠ **本文件为历史快照**（落款 2026-10-09）：§5「已实现 vs 明确未实现」等清单是**当时**的读数，**之后**的变化见 [`phase-status.md`](phase-status.md)、⛔ 本文件不再逐条追改。
+
 > 工作线: `line/sfz-core` · 工作树 `.worktrees/sfz-core` · 拥有目录 `crates/yeban-sfz/**`
 > 规范 ID: **ROAD-M2-005**（零拷贝 SFZ v2 解析器 + 预分配声部池）、**ROAD-M2-006**（声学自愈平滑的
 > 池侧口径）、**ARCH-RT-001**（RT 零分配）、**ARCH-RT-004**（确定性声部窃取 + 3ms 淡出）、

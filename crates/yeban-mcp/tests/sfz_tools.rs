@@ -15,8 +15,8 @@
 //!
 //! ## 口径（如实标注）
 //!
-//! - 样本数据是**内存正弦**（本仓没有采样文件读取/解码）⇒ 响应 `sampleSource` /
-//!   `sampleFilesRead` 必须如实说明；判据断言这两件事，⛔ 不假装读到了 `.wav`。
+//! - 采样文件**会被真读**（`sample=` 指向的 PCM WAV；读不到则如实回退内存正弦）⇒ 响应
+//!   `sampleSource` / `sampleFilesRead` 必须如实说明；判据断言这两件事，⛔ 不假装读到了 `.wav`。
 //! - 本文件的运行期判据需要编译 `yeban-mcp`（传递依赖 rayon/symphonia/rubato/hound）。
 
 use std::path::PathBuf;

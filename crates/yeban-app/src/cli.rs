@@ -926,13 +926,17 @@ pub struct Options {
     /// `--record-seconds <n>`：`--record-wav` 的录制秒数（默认 2.0）。
     pub record_seconds: Option<f32>,
     /// `--record-source <project|tone>`：录什么（默认 **project** = 工程离线渲染的声音；
-    /// `tone` = 内存正弦测试音）。⚠ 本轮录音**不接 `--sfz`**（如实登记）。
+    /// `tone` = 内存正弦测试音）。⭐ `project` **已接 `--sfz`**：同时给了 `--sfz` ⇒ 录的就是
+    /// 那份 SFZ 的乐器（`run_batch` 里 `record_project` 的调用会收到 `loaded_sfz`），
+    /// 与 `--export-wav` 同一条渲染核心。
     pub record_source: Option<String>,
     /// `--sfz <path>`：**装载**一份 SFZ 乐器并报告区域数与一次音符探测读数。
     ///
-    /// ⚠ 今天只到"装载 ＋ 探测"这一层：SFZ 音色**尚未**接到 `--export-wav` 的音源链
-    /// （报告行里 `wired_to_export=no` 如实说明）。样本数据用**内存正弦**，
-    /// ⛔ 不是 SFZ 里 `sample=` 指到的 wav（本仓尚无采样文件读取/解码）。
+    /// ⭐ **已接线**：与 `--export-wav` 或 `--record-wav` 同时给 ⇒ 音源链就用这份 SFZ
+    /// （报告行 `wired_to_export=yes`；接线见 `run_batch` 里 `report.wired_to_export` 的赋值与
+    /// `export_wav_with_sfz_file_and_assets` 的调用，GUI 侧见 `host.rs` 的 `on_export_wav`）。
+    /// 样本数据**真读** SFZ 里 `sample=` 指到的 PCM WAV（`sfz_load::read_sample_file`）；
+    /// 读不到才**如实回退**到内存正弦并把原因写进报告行。
     /// 本开关**只读**（不建会话、不改工程）⇒ 与导出/保存可以任意组合。
     pub sfz: Option<PathBuf>,
     /// `--midi-in <端口>`：⭐ **打开一个物理 MIDI 输入端口并采集**（⭐ 本仓第一条
@@ -3081,8 +3085,8 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     // 录音：把一段测试音录成 WAV（三段见 `record_wav.rs`）。它只写**目标文件**，不改工程。
     // SFZ 装载 ＋ 音符探测：**只读**（不改工程、不写文件），所以它只影响输出行。
-    // ⭐ 与 `--export-wav` 同时给 ⇒ 导出的音源就是这份 SFZ（见下面的导出块）。
-    // ⚠ 诚实登记：样本数据是**内存正弦**（⛔ 不是 `sample=` 指向的 wav）。
+    // ⭐ 与 `--export-wav`（或 `--record-wav`）同时给 ⇒ 音源就是这份 SFZ（见下面的导出/录音块）。
+    // 样本数据：`sample=` 指到的 PCM WAV 会被**真读**；读不到才回退内存正弦（原因进报告行）。
     let mut loaded_sfz: Option<(
         std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
         std::path::PathBuf,
@@ -3097,7 +3101,6 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             path: path.clone(),
             source,
         })?;
-        // 只有真的会给导出用，才报 `wired_to_export=yes`（⛔ 不夸大）。
         // 导出**或录音**真的会用到它，才报 `wired_to_export=yes`（⛔ 不夸大）。
         report.wired_to_export = options.export_wav.is_some() || options.record_wav.is_some();
         lines.push(report.summary());
@@ -3110,7 +3113,8 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             record_options.seconds = seconds;
         }
         // 默认录**工程**（与 `--export-wav` 同一条渲染核心 ＋ 同一种子 ⇒ 逐位一致，判据断言）；
-        // `--record-source tone` 才录内存正弦测试音。⚠ 本轮⛔不接 `--sfz`（如实登记）。
+        // `--record-source tone` 才录内存正弦测试音。⭐ 给了 `--sfz` ⇒ 把乐器（＋SFZ 文件路径）
+        // 一并交给 `record_project`（下面那两行）⇒ `sample=` 指向的 WAV 会被真读。
         let report = if options.record_source.as_deref() == Some("tone") {
             crate::record_wav::record_test_tone(path, &record_options)
         } else {
@@ -5646,7 +5650,7 @@ mod tests {
     }
 
     /// `--sfz`：装载一份最小 SFZ ⇒ 报告里的区域数与文件内容一致，且输出行**如实**说明
-    /// 样本来源与"尚未接到导出"。
+    /// 样本来源，并在**没请求**导出时报 `wired_to_export=no`。
     #[test]
     fn sfz_load_reports_the_region_count_and_says_what_is_not_wired() {
         let dir = scratch_dir("sfz-load");

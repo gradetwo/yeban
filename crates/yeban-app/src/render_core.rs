@@ -5,13 +5,16 @@
 //! ⚠ 本会话的机械教训：把新增的公开项**追加在 `#[cfg(test)] mod tests` 之后**会触发
 //! `clippy::items_after_test_module`（已咬过两次）。把新增项放进**独立模块**可以一次性避开该形态。
 //!
-//! ## 与 `export_wav.rs` 的关系（**如实登记**）
+//! ## 与 `export_wav.rs` 的关系（**去重已完成**）
 //!
-//! 本函数的流水线与 `export_wav::export_wav_with_sfz_file` **逐行等价**（同一批步骤：慢路径校验
-//! → 计划编译 → 音源装配 → 执行 → digest），是"先并存"的产物；**真正的去重（让导出也调用本函数）
-//! 是下一步**。⚠ 在去重之前，两边**必须保持同步** —— 而 `record_wav` 的判据
-//! `recording_the_project_is_bit_identical_to_exporting_it` 就是这条同步的**回归网**：
-//! 一旦两边漂移，该判据立刻红 ✓
+//! 本函数是导出与录音的**单一真源**（同一批步骤：慢路径校验 → 计划编译 → 音源装配 → 执行 →
+//! digest）。`export_wav.rs` 的四个入口 `export_wav` / `export_wav_with_sfz` /
+//! `export_wav_with_sfz_file` / `export_wav_with_sfz_file_and_assets` 逐级收束，末端那个
+//! **已改为调用本模块的** [`render_project_f32_with_assets`]（`export_wav.rs:414-417`）；
+//! `record_wav::record_project` 也走同一条 [`render_project_f32`]（`record_wav.rs:700`）。
+//! ⇒ ⭐ "真正的去重（让导出也调用本函数）"**已经落地**，不再是"下一步"。
+//! 判据 `recording_the_project_is_bit_identical_to_exporting_it` 仍是这条"两侧逐位一致"契约的
+//! **回归网**：一旦漂移，该判据立刻红 ✓
 //!
 //! ## ⚠ 红线 7 与**调用方约束**
 //!

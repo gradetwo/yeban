@@ -128,7 +128,7 @@ fn minimal_smf() -> Vec<u8> {
 
 /// 一份最小但**合法**的 SFZ（一个区域，覆盖全部音高）。
 ///
-/// ⚠ **不**指向真实 wav：`sfz_load` 的诚实登记写明"样本数据是内存正弦"。
+/// ⚠ **不**指向真实 wav：`sfz_load` 的诚实登记写明"读不到就**如实回退**到内存正弦"。
 /// 本判据只证"装载成功并且那份乐器被交给导出"，不证"样本被解码"
 /// （后者的判据在 `src/sfz_load.rs` 自己的单元测试里）。
 const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keycenter=60\n";

@@ -31,8 +31,8 @@
 //! 如实失败（⛔ 不 `unwrap`、⛔ 不留半成品）。
 //!
 //! ⭐ **SFZ 音源**（`export_wav_with_sfz` 的 `Some(sfz)`）：带 `--sfz` 时每条可渲染轨用
-//! [`crate::sfz_load::SfzTrackSource`] ⇒ 导出的声音来自该 SFZ 的区域；样本数据是**内存正弦**
-//! （⛔ 本仓无采样文件读取）⇒ 报告行 `source=` 明说。
+//! [`crate::sfz_load::SfzTrackSource`] ⇒ 导出的声音来自该 SFZ 的区域；同时给出 SFZ 文件路径时，
+//! `sample=` 指向的 PCM WAV 会被**真读**（读不到则如实回退内存正弦）⇒ 报告行 `source=` 明说。
 //!
 //! `WavExportOptions::use_engine_source = false` 时才用**最小音源**（确定性方波 ＋ 首尾包络，
 //! 相位由整数帧号派生）：它是**判据的对照**与极端回退，报告行里的 `source=` 字段**明说用了哪一个**

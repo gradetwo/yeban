@@ -12,13 +12,16 @@
 //!
 //! ## ⚠ 三条诚实登记（⛔ 不假装）
 //!
-//! 1. **样本文件没有被读取/解码**：`SfzInstrument` 只用文本；`sample=a.wav` 在本仓今天**只是路径字符串**
-//!    ⇒ 本模块用 [`InMemorySample::sine`]（440 Hz）当数据源，报告行里明写
-//!    `sample_source=in-memory-sine(440Hz)`，⛔ 不声称读到了 wav。
+//! 1. **样本文件会被真读**：`sample=` 指到的文件经 [`read_sample_file`]（→
+//!    `yeban_render::wav::read_plain_wav_mono_f32`）解码成单声道 `f32`，报告行里写出
+//!    `file(<path> frames=… rate=…)`。⚠ 两条**仍然成立**的限制：只支持该读取器能读的 PCM WAV；
+//!    读不到时**如实回退**到内存正弦 [`InMemorySample::sine`] 并把原因写进来源文案
+//!    （探测那一条 [`probe_note_energy`] 本身就用内存正弦 —— 它不解析 `sample=`）。
 //! 2. **红线 7**：`render_note_into` **每次调用都解析 ⇒ 分配** ⇒ 只能**离线/控制侧**调用，
 //!    ⛔ 绝不可在音频回调里调用（与 `arm_from_snapshot` 同一条边）。
-//! 3. **尚未接到导出路径**：`--export-wav` 今天仍走引擎合成器（`arm_from_snapshot`）；
-//!    SFZ 音色**没有**接进去 ⇒ 报告里的 `wired_to_export=false` 如实说明（下一步工作）。
+//! 3. **已接到导出/录音路径**：`--sfz` ＋ `--export-wav` / `--record-wav` 时，SFZ 音色经
+//!    [`SfzTrackSource`] 进入音源链（报告里的 `wired_to_export=yes`）。单独给 `--sfz` 时仍是
+//!    `wired_to_export=false` —— 那是"**没请求**导出/录音"，⛔ 不是"没接线"。
 
 use std::path::{Path, PathBuf};
 
@@ -89,9 +92,11 @@ pub struct SfzLoadReport {
     pub regions: usize,
     /// 探测读数（`probe_note = None` 时为 `None`）。
     pub probe: Option<SfzProbeReading>,
-    /// 样本数据来源的**如实**文案（文件样本会写出路径／帧数／采样率；否则写明是内存正弦）。
+    /// **探测那一步**的样本来源文案（恒为 [`SAMPLE_SOURCE`] —— `probe_note_energy` 不解析
+    /// `sample=`）。导出/录音真正用的样本来源由 `export_wav` 报告行的 `source=` 给出。
     pub sample_source: String,
-    /// 是否已经接到 `--export-wav` 的音源上（今天恒为 `false`，见模块文档 ③）。
+    /// 是否已经接到导出/录音的音源上：默认 `false`（本次装载**没有请求**导出/录音），
+    /// 调用方（CLI 的 `run_batch`）在真的要用它导出/录音时改写为 `true`。
     pub wired_to_export: bool,
 }
 
@@ -156,7 +161,7 @@ pub fn load_sfz_with_instrument(
             regions: instrument.region_count(),
             probe,
             sample_source: SAMPLE_SOURCE.to_owned(),
-            // 默认如实报"未接到导出"；真正接到导出时由调用方（CLI）改写为 `true`。
+            // 默认 `false`（本次装载没有请求导出/录音）；调用方（CLI）在真的要用它导出/录音时改写为 `true`。
             wired_to_export: false,
         },
         instrument,
@@ -269,7 +274,9 @@ pub fn region_sample_for(
 ///
 /// 每个音符在**第一次需要时整段渲染一次**（`SfzInstrument::render_note_into`）到自己的 scratch，
 /// 之后按块把该块对应的窗口**叠加**进 `out` ⇒ 音符可以跨块延续，且每条音符只解析渲染一次。
-/// 样本数据是**共享的一份内存正弦**（[`InMemorySample::sine`]；⛔ 本仓没有采样文件读取/解码）。
+/// 样本数据：用 [`SfzTrackSource::new_from_sfz_path`] 构造时逐音符真读 `sample=` 指向的
+/// PCM WAV；读不到（或用 [`SfzTrackSource::new`]）才用**共享的一份内存正弦**
+/// （[`InMemorySample::sine`]）。
 ///
 /// ## ⚠ 红线 7
 ///

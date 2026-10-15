@@ -37,10 +37,11 @@
 //!
 //! ## 四条诚实登记（⛔ 不假装）
 //!
-//! 1. **没有采样文件读取/解码**：`Region::sample_path()` 在本仓今天只是路径字符串
-//!    （`crates/yeban-app/src/sfz_load.rs` 的诚实登记①）。样本数据是
-//!    [`InMemorySfzSample::sine`]（内存正弦），响应 `sampleSource` / `sampleFilesRead`
-//!    逐字说明这一点，⛔ 不声称读到了 `.wav`。
+//! 1. **采样文件会被真读**：`Region::sample_path()` 指向的 PCM WAV 由 [`read_sample_file`]
+//!    （→ `yeban_render::wav::read_plain_wav_mono_f32`，与 `app` 侧**同一份**归一化）解码，
+//!    经 [`SampleCache`] 去重并受三条上限约束；响应里的 `sampleSource` / `sampleFilesRead`
+//!    逐字反映读了哪些文件。⚠ 读不到（或没有区域声明 `sample=`）时**如实回退**到
+//!    [`InMemorySfzSample::sine`]（内存正弦）并把原因写进 `sampleSource`。
 //! 2. **工具面没有设备链**：`DeviceKind` 没有 SFZ 变体，本模块**不**往
 //!    `TrackV3::devices` 里塞任何东西（塞一个就是发明规范）。SFZ 音色只在这一条
 //!    **显式**导出路径上取代 MIDI 合成源。
@@ -288,7 +289,7 @@ const CODE_RENDER: ErrorCode = ErrorCode::RenderFailed;
 pub struct RegionSummary {
     /// 区域下标（文件里的顺序）。
     pub index: usize,
-    /// `sample=` 的原始取值（本仓不读它）。
+    /// `sample=` 的原始取值（**原样登记**；它指向的文件读到没有，见 `sample_file_state`）。
     pub sample: String,
     /// 键下限（`lokey`）。
     pub key_low: i32,
