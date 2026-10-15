@@ -372,6 +372,16 @@
         },
         {
           "required": [
+            "SetTrackColor"
+          ],
+          "properties": {
+            "SetTrackColor": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetTrackName"
           ],
           "properties": {

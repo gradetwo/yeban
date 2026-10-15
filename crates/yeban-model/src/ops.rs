@@ -1227,7 +1227,9 @@ impl Op {
             // `new_* == old_*` 是**合法**的无操作（`SetParam` 也放行）—— 幂等由调用方决定
             // 是否要提交（GUI 侧在值没变时**不**提交，见 `host::end_mixer_drag`）。
             Self::SetTrackColor {
-                track_id, old_color, ..
+                track_id,
+                old_color,
+                ..
             } => {
                 // ⚠ `Option<String>` 的相等是**逐字节 + 同态**的（`None == None`、`Some(a) == Some(b)`
                 // 当且仅当 `a`/`b` 逐字节相等）⇒ 与 [`Op::SetTrackName`] 同一"陈旧载荷必被拒"口径。
@@ -2089,7 +2091,9 @@ impl Op {
             // 只写那**一个**色标字段：⛔ 不碰 `id` / `name` / `kind` / 集合 / 混音标量。
             // ⚠ `new_color: None` = **清除**（回到主题默认色），⛔ 不是"丢失"。
             Self::SetTrackColor {
-                track_id, new_color, ..
+                track_id,
+                new_color,
+                ..
             } => {
                 doc.track_mut(track_id)?.color = new_color.clone();
                 Ok(())
@@ -2904,6 +2908,14 @@ mod tests {
                 new_author: "Yeban Author".to_owned(),
             },
             // 改名：**唯一的名字通路**（此前只能删轨重建 ⇒ 换 `EntityId`）。
+            // 音轨色标：**此前只能在建轨时给**（`AddTrack` 的载荷）⇒ 改色只能删轨重建。
+            // ⚠ `old_color: None` 对应夹具的 `TrackV3::default()`（⭐ `color` 默认 `None`
+            // ＝"用主题默认色"，⭐ 是一等状态）；⭐ `new_color: Some(…)` 用#RRGGBB 形态。
+            Op::SetTrackColor {
+                track_id: f.lead,
+                old_color: None,
+                new_color: Some("#22AA88".to_owned()),
+            },
             Op::SetTrackName {
                 track_id: f.lead,
                 old_name: "Lead".to_owned(),
