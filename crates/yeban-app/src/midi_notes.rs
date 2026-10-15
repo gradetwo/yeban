@@ -73,6 +73,7 @@ use std::collections::BTreeMap;
 
 use yeban_engine::ring::EngineEvent;
 use yeban_model::{EntityId, MidiNote, Op, OpOrigin, YebanProjectV1};
+use yeban_render::dither::BitDepth;
 
 use crate::engine_host::EngineHost;
 use crate::import_midi::{MidiImportOptions, destination};
@@ -805,6 +806,9 @@ pub fn render_to_wav(
         channels.max(1),
         sample_rate,
         seed,
+        // ⚠ `--midi-in-render` 的位深**不在本切片的选择面里**（它没有 `--wav-*` 参数）：
+        // 这里钉住 24-bit 整数 ⇒ 它的产物仍与 `--export-wav` 的缺省（24-bit）逐字节可比。
+        BitDepth::Int24,
     )
     .map_err(MidiNoteError::Wav)?;
     report.bytes = Some(bytes);

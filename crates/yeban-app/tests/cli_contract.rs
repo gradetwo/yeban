@@ -1626,6 +1626,127 @@ fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 判据 B16: `--export-wav` 的**位深 / 采样率 / 时长**可被 CLI 选，且**缺省兼容**。
+///
+/// 本条钉三件事（都**回读真文件**，⛔ 不读 stdout 的自报值）：
+/// ① 不给 `--wav-*` ⇒ 与旧行为一致（48 kHz / 立体声 / 24-bit / 8 秒）—— 演示工程
+///    的 `audio_config.sample_rate` 就是 48 kHz，所以"跟随工程"在缺省档**不改变产物**；
+/// ② 显式给三条 ⇒ 产物形状**逐条**跟着变（16-bit / 44.1 kHz / 1 秒）；
+/// ③ `--wav-*` 单独给（没有 `--export-wav`）⇒ 用法错误退出码 **2**，
+///    ⛔ 不是"静默忽略"（本仓对修饰开关的一贯纪律）。
+#[test]
+fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays_compatible() {
+    let dir = scratch_dir("export-wav-shape");
+    let source = write_real_container(&dir, "shape.yeban");
+
+    // ---- ① 缺省：旧行为（48 kHz / 2ch / 24-bit / 8 秒）----
+    let default_out = dir.join("default.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        default_out.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "缺省导出必须成功; stderr={}", run.stderr);
+    let (format, buffer) = yeban_render::wav::read_plain_wav(&default_out).expect("回读缺省档");
+    assert_eq!(format.sample_rate, 48_000, "缺省采样率 = 工程采样率");
+    assert_eq!(format.channels, 2, "缺省声道");
+    assert_eq!(format.bits_per_sample, 24, "缺省位深");
+    assert!(!format.is_float, "缺省是整数 PCM");
+    assert_eq!(
+        buffer.len(),
+        384_000 * 2,
+        "缺省 = 8 秒 @ 48 kHz 立体声的帧数 × 声道"
+    );
+
+    // ---- ② 显式三条：16-bit / 44.1 kHz / 1 秒 ----
+    let chosen_out = dir.join("chosen.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        chosen_out.to_str().expect("utf8"),
+        "--wav-bit-depth",
+        "16",
+        "--wav-sample-rate",
+        "44100",
+        "--wav-seconds",
+        "1",
+    ]);
+    assert_eq!(run.code, 0, "显式形状必须成功; stderr={}", run.stderr);
+    let (format, buffer) = yeban_render::wav::read_plain_wav(&chosen_out).expect("回读选定档");
+    assert_eq!(format.sample_rate, 44_100, "采样率必须真的是请求值");
+    assert_eq!(format.bits_per_sample, 16, "位深必须真的是请求值");
+    assert!(!format.is_float, "16-bit 是整数 PCM");
+    assert_eq!(
+        buffer.len(),
+        44_100 * 2,
+        "1 秒 @ 44.1 kHz 立体声的帧数 × 声道"
+    );
+    assert!(
+        matches!(buffer, yeban_render::dither::PcmBuffer::Int16(_)),
+        "容器里的样本必须是 16-bit 整数（⛔ 不是 24-bit 换个头）"
+    );
+    // 报告行的自报值必须与回读一致。
+    let line = line_with(&run.stdout, "exported-wav:").expect("必须有 exported-wav: 行");
+    assert_eq!(
+        field(line, "sample_rate").as_deref(),
+        Some("44100"),
+        "{line}"
+    );
+    assert_eq!(field(line, "bits").as_deref(), Some("16"), "{line}");
+    assert_eq!(field(line, "frames").as_deref(), Some("44100"), "{line}");
+
+    // ---- ③ 修饰开关单独给 = 用法错误（⛔ 不静默忽略）----
+    //
+    // ⚠ 必须带一个**选无窗口路径**的开关（这里用 `--headless`）：`--wav-*` 是**修饰**
+    // 开关（与 `--record-seconds` / `--midi-in-seconds` 同档），它自己**不**把进程推离
+    // GUI 路径 ⇒ 单独给会开窗口并阻塞（本仓已登记的"修饰开关不选路径"口径）。
+    // 守卫住在 `run_batch` 里 ⇒ 本判据必须真的走到 `run_batch` 才钉得住它。
+    for (flag, value) in [
+        ("--wav-bit-depth", "16"),
+        ("--wav-sample-rate", "44100"),
+        ("--wav-seconds", "1"),
+    ] {
+        let run = invoke(&["--headless", flag, value]);
+        assert_eq!(
+            run.code, 2,
+            "`{flag}` 单独给（不给 --export-wav）必须是用法错误 (退出码 2); stderr={}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains(flag) && run.stderr.contains("--export-wav"),
+            "错误必须点名两个开关; stderr={}",
+            run.stderr
+        );
+    }
+
+    // ---- ④ 值域护栏：⛔ 不静默接受非法取值 ----
+    for (flag, value) in [
+        ("--wav-bit-depth", "32"), // 歧义（只有 32f 一种 32 位容器）
+        ("--wav-bit-depth", "8"),
+        ("--wav-sample-rate", "9600"), // 枚举外
+        ("--wav-sample-rate", "abc"),
+        ("--wav-seconds", "0"),
+        ("--wav-seconds", "-1"),
+    ] {
+        let run = invoke(&[
+            "--headless",
+            "--export-wav",
+            dir.join("never.wav").to_str().expect("utf8"),
+            flag,
+            value,
+        ]);
+        assert_eq!(
+            run.code, 2,
+            "`{flag} {value}` 必须被拒 (退出码 2); stderr={}",
+            run.stderr
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 判据 B13: `--export-midi` 的失败语义与既有 CLI 一致 —— 非容器输入 ⇒ 退出码 **3**
 /// 且一个字节都不写；目标不可写 ⇒ 退出码 **5**、精确原因、**不留下半个文件**。
 #[test]

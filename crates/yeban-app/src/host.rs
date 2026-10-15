@@ -2795,10 +2795,21 @@ pub fn wire_module_actions_with_capture(
                 .borrow()
                 .clone()
                 .map(|(instrument, path)| (instrument, Some(path)));
+            // ⭐ 与 CLI 的 `--export-wav` **共用唯一解析处**（⛔ 不各写一份缺省）：
+            // UI 今天**没有**位深／采样率／时长的控件（见 `ModulePaths` 的登记与
+            // `export_wav::WavExportOptions::resolve` 的文档），三个覆盖值都是 `None`
+            // ⇒ 与 CLI 不给 `--wav-*` 时**逐字节相同**的产物（8 秒 / 24-bit / 采样率跟随工程）。
+            // ⚠ UI 侧"可选"这半件登记为**待做**：需要 Slint 控件 + 元素 ID + 无头判据。
+            let wav_options = crate::export_wav::WavExportOptions::resolve(
+                &project,
+                None::<yeban_model::project::SampleRate>,
+                None::<yeban_render::dither::BitDepth>,
+                None::<f32>,
+            );
             let (receipt, ok) = match crate::export_wav::export_wav_with_sfz_file(
                 &project,
                 &target,
-                crate::export_wav::WavExportOptions::default(),
+                wav_options,
                 sfz,
             ) {
                 Ok(report) => (

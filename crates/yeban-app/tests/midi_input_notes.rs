@@ -298,9 +298,15 @@ fn the_ring_events_make_the_engine_sound_and_differ_from_the_no_event_render() {
 
     // ---- 产物层：两档 WAV 逐字节不同 ----
     let baseline_wav = dir.join("baseline.wav");
-    let (baseline_bytes, _) =
-        write_interleaved_wav(&baseline_wav, &baseline, channels, SAMPLE_RATE, 1)
-            .expect("写对照档");
+    let (baseline_bytes, _) = write_interleaved_wav(
+        &baseline_wav,
+        &baseline,
+        channels,
+        SAMPLE_RATE,
+        1,
+        yeban_render::dither::BitDepth::Int24,
+    )
+    .expect("写对照档");
     let ring_file = std::fs::read(&wav).expect("读环档");
     let baseline_file = std::fs::read(&baseline_wav).expect("读对照档");
     println!(

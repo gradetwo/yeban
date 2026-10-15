@@ -695,6 +695,9 @@ pub fn record_project(
         channels: usize::from(options.channels),
         seed: 1,
         use_engine_source: true,
+        // `--record-wav` 的位深**不在本切片的选择面里**：钉住 24-bit（旧行为），
+        // 于是"录制"的中间渲染仍与 `--export-wav` 的缺省同一格式。
+        bit_depth: yeban_render::dither::BitDepth::Int24,
     };
     let (samples, _frames, source_label, _digest) =
         crate::render_core::render_project_f32(project, wav_options, sfz)

@@ -7,8 +7,9 @@
 //! YebanProjectV1 ──▶ RenderPlan::compile(&project.routing_graph, project.master_bus_track_id, opts)
 //!                 ──▶ RenderPlan::execute(sources: BTreeMap<EntityId, Box<dyn AudioSource>>)
 //!                 ──▶ RenderOutput { samples: 交错 f32, frames, channels, digest }
-//!                 ──▶ 逐个样本 quantize_i24(_, &mut DeterministicDitherRng)   ← TPDF 抖动
-//!                 ──▶ PcmBuffer::Int24  ──▶  yeban_render::wav::write_plain_wav
+//!                 ──▶ dither::quantize(_, options.bit_depth, &mut DeterministicDitherRng)
+//!                     （16/24-bit ⇒ TPDF 抖动；32f ⇒ 原样透传）
+//!                 ──▶ PcmBuffer::{Int16,Int24,Float32} ──▶ yeban_render::wav::write_plain_wav
 //! ```
 //!
 //! ⛔ 本文件**不写 RIFF 头**（`write_plain_wav` 是唯一落盘点），⛔ 也**不另造渲染路径**
@@ -54,14 +55,14 @@ use std::path::{Path, PathBuf};
 
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
+use yeban_model::project::SampleRate;
 use yeban_model::{EntityId, YebanProjectV1};
-use yeban_render::dither::{PcmBuffer, quantize_i24};
+use yeban_render::dither::{BitDepth, quantize};
 use yeban_render::render::{AudioSource, BlockContext, RenderError};
-use yeban_render::rf64::PcmFormat;
 use yeban_render::rng::DeterministicDitherRng;
-use yeban_render::wav::write_plain_wav;
+use yeban_render::wav::{format_of, write_plain_wav};
 
-/// 导出参数（秒数／采样率／声道／种子）。
+/// 导出参数（秒数／采样率／声道／位深／种子）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WavExportOptions {
     /// 总帧数。
@@ -75,17 +76,65 @@ pub struct WavExportOptions {
     /// `true`（默认）= 用**引擎乐器**（`SynthEngine::arm_from_snapshot`）；
     /// `false` = 用**最小音源**回退（方波；判据用它做对照）。
     pub use_engine_source: bool,
+    /// 导出的位深（`16` / `24` 整数走 TPDF 抖动，`32f` 浮点透传）。
+    ///
+    /// 唯一落盘点 [`write_interleaved_wav`] 用它选量化器与容器格式，
+    /// ⛔ 位深**不再**硬编码在里面（[`WavExportOptions::resolve`] 是唯一解析处）。
+    pub bit_depth: BitDepth,
 }
+
+/// `--wav-seconds` / UI 缺省时长（秒）。
+///
+/// ⭐ 与旧行为**逐字一致**：`--export-wav` 一直导出 8 秒。
+pub const DEFAULT_WAV_SECONDS: f32 = 8.0;
 
 impl Default for WavExportOptions {
     fn default() -> Self {
         Self {
-            // 8 秒 48 kHz 立体声：足以听见演示工程的内容，且导出足够快。
+            // 8 秒 48 kHz 立体声 24-bit：足以听见演示工程的内容，且导出足够快。
             frames: 48_000 * 8,
             sample_rate: 48_000,
             channels: 2,
             seed: 1,
             use_engine_source: true,
+            bit_depth: BitDepth::Int24,
+        }
+    }
+}
+
+impl WavExportOptions {
+    /// 从**可选参数**解析出一次导出真正用的选项（CLI 的 `--wav-*` 与 UI 的缺省
+    /// 共用这一处 ⇒ ⛔ 不会出现"同一份渲染、两种字节"）。
+    ///
+    /// 三个参数全 `None` 时的口径（＝旧行为的**语义**）：
+    ///
+    /// - **采样率跟随工程** `project.audio_config.sample_rate`
+    ///   （[`MODEL-AST-002`] 的唯一来源；工程缺省 48 kHz）。为什么必须跟随：
+    ///   引擎音源 `SynthEngine::new(snapshot.sample_rate())` 与快照的 `samples_per_tick`
+    ///   都按**工程**采样率推进，容器头却按本字段写 —— 两者不等 ⇒ 样本被按错误速率解释
+    ///   （音高／时长错），且音频片段会因"素材采样率 ≠ 导出采样率"被整条**跳过**
+    ///   （见 [`crate::audio_clip`]）。内置三份夹具工程都是 48 kHz ⇒ 默认产物与旧行为
+    ///   **逐字节相同**；`--wav-sample-rate 48000` 可强制回旧口径。
+    /// - **时长 8 秒**（[`DEFAULT_WAV_SECONDS`]）⇒ 帧数 = `round(秒 × 采样率)`。
+    ///   ⛔ 缺省**不**改成"工程可闻末端"：那不是接线而是**新能力**（导出路径今天没有
+    ///   "工程有多长"的唯一权威读数），且会改变既有判据钉住的产物长度。
+    /// - **位深 24-bit 整数**（旧行为）。
+    #[must_use]
+    pub fn resolve(
+        project: &YebanProjectV1,
+        sample_rate: Option<SampleRate>,
+        bit_depth: Option<BitDepth>,
+        seconds: Option<f32>,
+    ) -> Self {
+        let sample_rate = sample_rate.unwrap_or_else(|| project.sample_rate()).hz();
+        let seconds = seconds.unwrap_or(DEFAULT_WAV_SECONDS);
+        // f64 而不是 f32：192 kHz × 长时长时 f32 的尾数不够（32 bit 只到 ~7 位十进制）。
+        let frames = (f64::from(seconds) * f64::from(sample_rate)).round() as u64;
+        Self {
+            frames,
+            sample_rate,
+            bit_depth: bit_depth.unwrap_or(BitDepth::Int24),
+            ..Self::default()
         }
     }
 }
@@ -428,6 +477,7 @@ pub fn export_wav_with_sfz_file_and_assets(
         u16::try_from(options.channels).unwrap_or(u16::MAX),
         options.sample_rate,
         options.seed,
+        options.bit_depth,
     )?;
     Ok(WavExportReport {
         path: path.to_path_buf(),
@@ -447,9 +497,13 @@ pub fn export_wav_with_sfz_file_and_assets(
 /// 由 `write_plain_wav` 保证：它先校验再建文件）。
 ///
 /// ⚠ ⭐ 为什么它必须是一个**共享**函数（⛔ 不是复制一份）：`--export-wav` 与
-/// `--midi-in-render` 都要把"内存里的 f32"变成"同一个格式的 24-bit 抖动 PCM"。
+/// `--midi-in-render` 都要把"内存里的 f32"变成"同一个格式的抖动 PCM"。
 /// 两份实现迟早会漂移（位深 / 抖动种子 / 量化取整任一处不同，产物就不再可比）——
 /// 那正是"同一份渲染、两种字节"这类最难查的缺陷。⇒ ⭐ **唯一实现**在这里。
+///
+/// 量化与容器格式**都不在本函数里选择**：位深由调用方给的 `bit_depth` 决定
+/// （`quantize` 按它选抖动器，`format_of` 按缓冲反推容器字段 ⇒ 两者不可能不一致），
+/// 容器字段的合法性由 `write_plain_wav` 的 `check_match` 兜底。
 ///
 /// 返回 `(文件字节数, 位深)`：字节数取自**落盘后的 `metadata`**（⛔ 不是推算值）。
 ///
@@ -462,15 +516,12 @@ pub fn write_interleaved_wav(
     channels: u16,
     sample_rate: u32,
     seed: u64,
+    bit_depth: BitDepth,
 ) -> Result<(u64, u16), WavExportError> {
     let mut rng =
         DeterministicDitherRng::new(u32::try_from(seed & u64::from(u32::MAX)).unwrap_or(1));
-    let quantized: Vec<i32> = samples
-        .iter()
-        .map(|sample| quantize_i24(*sample, &mut rng))
-        .collect();
-    let buffer = PcmBuffer::Int24(quantized);
-    let format = PcmFormat::integer(channels.max(1), sample_rate, 24);
+    let buffer = quantize(samples, bit_depth, &mut rng);
+    let format = format_of(&buffer, channels.max(1), sample_rate);
     write_plain_wav(path, &format, &buffer)
         .map_err(|error| WavExportError::Write(error.to_string()))?;
     let bytes = std::fs::metadata(path)
@@ -815,5 +866,64 @@ mod tests {
         );
         assert!(!target.exists(), "失败 ⇒ 一个字节都不许写出去");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ 两个**行为裁决**的钉子（本切片的选择面）——⛔ 不是"跑通"判据，是"口径不许漂移"判据。
+    ///
+    /// ① **采样率缺省跟随工程**：工程 48 kHz ⇒ `resolve` 与 `default()` **逐字段相同**
+    ///    （⇒ 内置三份夹具的产物与旧行为逐字节一致）；工程 44.1 kHz ⇒ 跟随成 44.1 kHz
+    ///    （⛔ 不是固定 48000），且**时长**仍是 8 秒（帧数 = 8 × 采样率，⛔ 不是 384000）。
+    /// ② **时长缺省 8 秒**：⛔ 缺省**不**改成"工程可闻末端"。
+    /// ③ 位深缺省 24-bit 整数；给了就用给了的。
+    #[test]
+    fn resolve_follows_the_project_rate_and_keeps_the_eight_second_default() {
+        use yeban_model::project::SampleRate;
+
+        // ① 48 kHz 工程（内置夹具的采样率）⇒ 与 `default()` 逐字段相同。
+        let project_48k = yeban_model::samples::demo_project();
+        assert_eq!(project_48k.sample_rate(), SampleRate::Hz48000);
+        assert_eq!(
+            WavExportOptions::resolve(&project_48k, None, None, None),
+            WavExportOptions::default(),
+            "48 kHz 工程 + 全缺省 必须与旧行为逐字段相同"
+        );
+
+        // ② 44.1 kHz 工程 ⇒ 跟随工程，且**时长仍是 8 秒**（352800 帧，⛔ 不是 384000）。
+        let mut project_44k = project_48k.clone();
+        project_44k.audio_config.sample_rate = SampleRate::Hz44100;
+        let followed = WavExportOptions::resolve(&project_44k, None, None, None);
+        assert_eq!(followed.sample_rate, 44_100, "缺省采样率必须跟随工程");
+        assert_eq!(
+            followed.frames,
+            44_100 * 8,
+            "缺省时长仍是 8 秒（不是固定帧数）"
+        );
+        assert_ne!(followed.frames, 48_000 * 8, "⛔ 不是把旧帧数原样搬过来");
+
+        // ③ 显式覆盖 ⇒ 三条各自生效。
+        let chosen = WavExportOptions::resolve(
+            &project_44k,
+            Some(SampleRate::Hz96000),
+            Some(BitDepth::Int16),
+            Some(1.5),
+        );
+        assert_eq!(chosen.sample_rate, 96_000);
+        assert_eq!(chosen.bit_depth, BitDepth::Int16);
+        assert_eq!(chosen.frames, 144_000, "1.5 秒 @ 96 kHz");
+        // 未覆盖的字段保持旧缺省（声道 / 种子 / 音源）。
+        assert_eq!(chosen.channels, 2);
+        assert_eq!(chosen.seed, 1);
+        assert!(chosen.use_engine_source);
+
+        // ④ 32f 与 24-bit 都能表达（下层 `quantize` 接受三者）。
+        assert_eq!(
+            WavExportOptions::resolve(&project_48k, None, Some(BitDepth::Float32), None).bit_depth,
+            BitDepth::Float32
+        );
+        assert_eq!(
+            WavExportOptions::resolve(&project_48k, None, None, None).bit_depth,
+            BitDepth::Int24,
+            "缺省位深仍是 24-bit 整数"
+        );
     }
 }
