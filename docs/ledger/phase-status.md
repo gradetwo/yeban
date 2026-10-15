@@ -9760,3 +9760,46 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **`sampler ＝ None` ⇒ ⭐ 整份 `EngineSnapshot` 与 `from_project` 投影全字段相等** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **乙（⭐ UI 选择面）** ＋ ⭐ **`live_surface.rs::engine_tick` 的吞错**（⭐ 新登记）＋ ⭐ `project.rs:1140-1141` 注释订正 ＋ ⭐ schema `sampler` 分支的常驻判据 ＋ ⭐ 非 PCM-WAV 支持 ＋ ⭐ `sfz-cache-needs-1`／⭐ 2 ＋ ⭐ `needs-3`／⭐ `needs-8` ✓
+
+---
+
+## R738 实测追加（2026-10-16）：⭐⭐⭐ **`#81` 已并入**（⭐ 陈旧注释订正 ＋ ⭐ schema `sampler` 分支的常驻判据）⇒ ⭐ **两处注入**双红****、⭐ **状态差集恰好 2 新增** ＋ ⭐ ⭐ **而"⭐ 为何要两条判据"的理由是本会话最准的一处 CI 分析**
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **2 文件、＋436／−3**（⭐ `project.rs` ＋17／−3、⭐ ⭐ **新增 `tests/schema_sampler_branch.rs` 419 行**）⇒ ⭐ **HEAD ＝ **`62293b8feb84d4148116b5cfa105fb8dea60d134`**** ✓ ⭐ **`premerge-gate yeban-model` ＝ 全过** ✓ ⭐ **主树并入前 `git status` ＝ 0 行** ✓ ⭐ ⚠ **且⛔ 未改 `schemas/**`（⭐ `git diff -- schemas/` ＝ 0 字节）、⭐ ⛔ 未改 `scripts/**`** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 注释订正（⭐ 它分**三层**改、⭐ 每层都有机械读数支撑）**:
+| ⭐ 层 | ⭐ 内容 | ⭐ 依据 |
+| :--- | :--- | :--- |
+| ⭐ **① 引擎**已消费**** | ⭐ **`from_project` 把 `path` 原样投影成待摊平项 `sfz_pending`** | ⭐ **`snapshot.rs:384-404` ／ ⭐ `sfz_instrument.rs:128`／⭐ `:149`** |
+| ⭐ **② 而摊平仍在**控制侧**、⭐ 引擎**不读盘**** | ⭐ **`sfz_pending()` ⇒（⭐ 读盘／⭐解析／⭐解码）⇒ `prepare_with_samples` ⇒ `with_sfz`（⭐ 后者取代前者）；⭐ 实时侧只读摊平表 ⇒ `Some`／⭐ `None` 渲染输出**逐位相同**** | ⭐ **`snapshot.rs:390-401` ／ ⭐ S21／⭐ S22／⭐ S23** |
+| ⭐ ⭐ **③ 明写 "'⭐ 已全链打通'是**过头**的"** | ⭐ ⭐ **"⭐ 模型只陈述'⭐ 哪条轨用哪份文件'、⭐ 把路径变成声音的那一段**不在引擎里**"** | ⭐ ⭐ **即**主动拒绝过头话**** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 我派单里写"⭐ 必必须准确、⭐ ⛔ 不要写'⭐ 已全链打通'之类过头的话"** ⇒ ⭐ ⭐ **而它把这条**写进了注释本身**（⭐ 第 ③ 层）** ⇒ ⭐ **那是把纪律**传给后来者**** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 两条判据、⭐ 而"⭐ 为何两条都要"的理由最准（⭐ 本条要点）**: ⭐ ⭐ **它查了流水线**: ⭐ **"⭐ CI 的 **rust 矩阵腿不装 `jsonschema`**（⭐ `ci.yml:246-250`）、⭐ 而装了它的 **`checks` job **直调脚本、⭐ 不跑 `cargo test`**（⭐ `ci.yml:141-196`）⇒ ⭐ ⭐ **只留 ② 就是'⭐ 判据从不执行'的假绿"**** ✓
+| ⭐ 判据 | ⭐ 手法 | ⭐ 承重环境 |
+| :--- | :--- | :--- |
+| ⭐ ⭐ **①**（⭐ `:194`）| ⭐ **复用 `schema_ratchet.rs` 的"⭐ 直接读契约"手法**补**形状**对账（⭐ 契约属性名／⭐类型／⭐必需性 ⇔ ⭐ `SamplerBinding` 的**真实 serde 输出** ＋ ⭐ 正／⭐反向判决 ＋ ⭐ `None` ⇒ ⭐ 键缺席 ＋ ⭐ 读写往返）⇒ ⭐ **零 python、⭐ 零新依赖** | ⭐ ⭐ **任何环境都跑** ⇒ ⭐ **承重** ✓ |
+| ⭐ ⭐ **②**（⭐ `:300`）| ⭐ **复用 `yeban-mcp/tests/contract.rs` 的"⭐ 干净样本必须过 ＋ ⭐ 故意违法样本必须被点名拒收"形状**、⭐ **直调**既有** `validate_schemas.py --samples-dir`** 拿真 `jsonschema` 判 | ⭐ ⚠ **无 `jsonschema` 时**响亮 SKIP**（⭐ ⛔ 不伪造绿）** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 它没有停在"⭐ 加条判据"、⭐ 而是查了**哪条腿会真跑它**** ⇒ ⭐ ⭐ **故两条是**互补覆盖**、⭐ 而⛔ 不是冗余** ✓
+
+⭐ ⭐ **四、⭐ 正反向读数（⭐ 逐字）**: ⭐ **正向 `exit＝0`: ⭐ `[ok] project.sampler.json: 通过 project.schema.json`；⭐ `[ok] project.sampler.null.json: 通过`；⭐ `契约校验通过 (4 份 schema)`** ✓ ⭐ **反向 a（⭐ `"sampler":{}`）`exit＝1`: ⭐ `- project.sampler.missing_path.json: 违反 … @ tracks/…/sampler: 'path' is a required property`** ✓ ⭐ **反向 b（⭐ `"sampler":"x"`）`exit＝1`: ⭐ `… 'x' is not of type 'object', 'null'`** ✓
+⇒ ⭐ ⭐ **即: ⭐ 它给了三条样本（⭐ 一正两反）、⭐ 且拒绝信息是**逐项点名 + 定位路径**** ✓
+
+⭐ ⭐ ⭐ **五、⭐ 注入双向（⭐ 两处都**双红****）**:
+| ⭐ 注入 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **删 `sampler.required`** | ⭐ **① `FAILED`：⭐ "⭐ sampler 分支必须有 `required`"；⭐ ② `FAILED`：⭐ "⭐ `sampler: {}`（⭐ 缺 `path`）必须让契约变红"**（⭐ **因反向 a 变 `exit＝0`**）⇒ ⭐ ⭐ **双红** ✓ |
+| ⭐ **`sampler.path.type: string ⇒ number`** | ⭐ **① `FAILED`：⭐ "⭐ `sampler.path` 的实例值 `"instruments/piano.sfz"` 不满足契约声明的类型"；⭐ ② `FAILED`：⭐ 带 sampler 必须通过契约**（⭐ `stderr`: ⭐ `'instruments/piano.sfz' is not of type 'number'`）⇒ ⭐ ⭐ **双红** ✓
+⭐ **并附（⭐ 还原自证）**: ⭐ **`sha256` ＝ `6332249a…f6b` 与基线逐字相同；⭐ `git diff -- schemas/` ＝ **0** 字节；⭐ 还原后新判据 `2 passed`** ✓
+
+⭐ ⭐ **六、⭐ 状态差集（⭐ 第 241 条）**: ⭐ **三元组 405（⭐ 402 ok ＋ ⭐ 3 ignored）⇒ ⭐ 407（⭐ 404 ok ＋ ⭐ 3 ignored）** ⇒ ⭐ ⭐ **新增 2 ≡ 本单新判据（⭐ 均 ok）、⭐ 消失 **0**、⭐ 翻转 **0**** ✓ ⭐ **二进制 10 ⇒ 11（⭐ 新增 `tests/schema_sampler_branch.rs`）** ✓
+
+⭐ ⚠ **七、⭐ 它能验与不能验（⭐ 很准）**: ⭐ **能验: ⭐ 真 `jsonschema` 三例的接受与点名拒收；⭐ 契约形状 ⇔ `SamplerBinding` 真实 serde 输出；⭐ 注入必红；⭐ `None` ⇒ ⭐ 键缺席；⭐ 读写往返** ✓ ⭐ ⚠ **不能验（⭐ 诚实边界）: ⭐ "⭐ 判据 ② 在没装 `jsonschema` 的环境（⭐ CI rust 矩阵腿）会 SKIP、⭐ 那里只有 ① 承重；⭐ 引擎侧实际摊平／⭐渲染等价性不在本单（⭐ 由 S21／⭐S22／⭐S23 钉）；⭐ 路径存在性／⭐扩展名模型刻意不查（⭐ 控制侧职责）；⭐ 本单不覆盖 `sampler` 之外的其它契约分支"** ✓
+
+⭐ ⚠ **八、⭐ 四门读数**: ⭐ `fmt --check` **0**／⭐ `check --all-targets --locked` **0**／⭐ `clippy -D warnings` **0**（⭐ 首次 101 ＝ ⭐ `collapsible_if`、⭐ 改 `is_some_and` 后绿）／⭐ `test -p yeban-model --locked` **0**（⭐ 407 三元组、⭐ 0 failed）／⭐ `premerge-gate.sh yeban-model` **0**（⭐ 含 light 0）／⭐ `light` **0**（⭐ 17 守卫全 ok）✓
+
+⭐ ⚠ **九、⭐ 一条可复用口径（⭐ 第 246 条）**: ⭐ ⭐ **加"⭐ 靠工具／⭐ 依赖的判据"时、⭐ 必须查明**哪条 CI 腿会真跑它**** —— ⚠ **因为"⭐ 有判据"与"⭐ 判据被执行"是两件事、⭐ 而装了依赖的那条 job 可能**不跑 `cargo test`** ⇒ ⭐ ⭐ **于是判据**从不执行**** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **① 查该判据的承重环境（⭐ `grep` `ci.yml` 的 job 与步骤）；⭐ ② 若只有一条腿能跑、⭐ 就再补一条**不依赖外部工具**的同义判据**（⭐ 本条的 ① 就是）✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **"⭐ rust 矩阵腿不装 `jsonschema`"＋"⭐ `checks` job 不跑 `cargo test`"** ⇒ ⭐ ⭐ **故两条互补** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **乙（⭐ UI 选择面）** ＋ ⭐ **`engine_tick` 吞错** ＋ ⭐ 非 PCM-WAV 支持 ＋ ⭐ `sfz-cache-needs-1`／⭐ 2 ＋ ⭐ `needs-3`／⭐ `needs-8` ✓
