@@ -43,11 +43,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-
-# ⚠ `RUST_MIN_STACK` 是**工作流级**的：本仓门禁脚本（scripts/dev/premerge-gate.sh:23）就设它，
-# 而 `yeban-app` 的部分测试在默认栈下会栈溢出（Windows 与全量腿曾因此红，见台账 R707/R710/R713）。
-# ⭐ 放这里而不是逐腿：CI 与本地门禁的**环境变量必须对齐**（第 215 条）。
-env:
+  # ⚠ `RUST_MIN_STACK` 是**工作流级**的：本仓门禁脚本（scripts/dev/premerge-gate.sh:23）就设它，
+  # 而 `yeban-app` 的部分测试在默认栈下会崩溃（Windows 与全量腿曾因此红，见台账 R707/R714）。
+  # ⭐ 放工作流级而⛔ 不逐腿：CI 与本地门禁的**环境变量必须对齐**（第 215 条）。
   RUST_MIN_STACK: 16777216
 
 jobs:
