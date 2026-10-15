@@ -967,7 +967,11 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 32] = [
+/// ⚠ ⭐ **类型是切片、⛔ 不是定长数组** —— 原因**实测**：本常量会被 `json!` 序列化
+/// （`supportedKinds`），⭐ 而 `serde` 对 `[T; N]` 的 impl **只到 N ≤ 32** ⇒
+/// ⭐ **加到第 33 个 kind 时会以 `E0277: [&str; 33]: Serialize` 报错**。
+/// ⭐ 故这里用 `&[&str]`（`&[T]` 的 impl 没有长度上限）⇒ 加 kind 时⛔ 不会撞墙。
+pub const OP_KINDS: &[&str] = &[
     "add",
     "delete",
     "move",
@@ -988,6 +992,7 @@ pub const OP_KINDS: [&str; 32] = [
     SET_CLIP_NAME_KIND,
     SET_DEVICE_NAME_KIND,
     SET_DEVICE_BYPASSED_KIND,
+    SET_CLIP_PLACEMENT_MUTED_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1554,6 +1559,32 @@ pub const SET_DEVICE_BYPASSED_FIELDS: [&str; 4] = [
     DEVICE_TRACK_FIELD,
     DEVICE_ID_FIELD,
     SET_DEVICE_BYPASSED_BYPASSED_FIELD,
+];
+
+/// `ops[].kind` 的**切换摆放静音**形态名（写 [`Op::SetClipPlacementMuted`]）。
+pub const SET_CLIP_PLACEMENT_MUTED_KIND: &str = "setClipPlacementMuted";
+
+/// 切换摆放静音形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
+pub const SET_CLIP_PLACEMENT_MUTED_TRACK_FIELD: &str = "trackId";
+
+/// 切换摆放静音形态的**目标摆放**字段名（`ops[].placementId`，必填，ULID）。
+///
+/// ⚠ **平铺**（⛔ 不嵌套 `placement` 对象）—— 与 `setDeviceBypassed` 的 `deviceId` 同形，
+/// 因为 `set*` 家族一律是**平铺**的（嵌套 `placement` 对象属于 `add`/`move`/`remove`
+/// 那三个走顶层实参的形态）。
+pub const SET_CLIP_PLACEMENT_MUTED_PLACEMENT_FIELD: &str = "placementId";
+
+/// 切换摆放静音形态的**目标静音态**字段名（`ops[].muted`，必填，布尔）。
+///
+/// ⚠ **只收 JSON 布尔**（照 `setTrackMute`／`setDeviceBypassed` 口径：⛔ 不做真假值强转）。
+pub const SET_CLIP_PLACEMENT_MUTED_MUTED_FIELD: &str = "muted";
+
+/// 切换摆放静音形态允许出现的**全部**键（判别键 + 目标音轨 + 目标摆放 + 静音态）。
+pub const SET_CLIP_PLACEMENT_MUTED_FIELDS: [&str; 4] = [
+    "kind",
+    SET_CLIP_PLACEMENT_MUTED_TRACK_FIELD,
+    SET_CLIP_PLACEMENT_MUTED_PLACEMENT_FIELD,
+    SET_CLIP_PLACEMENT_MUTED_MUTED_FIELD,
 ];
 
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
@@ -2391,6 +2422,30 @@ pub enum NoteOp {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 切换**摆放静音**（[`Op::SetClipPlacementMuted`]，寻址到一条音轨上的一个摆放）。
+    ///
+    /// ⭐ **本形态补上了什么**：⭐ 在它之前 `ClipPlacement::muted` **只在创建时**能给
+    /// （`add` 形态的 `placement` 对象带它）⇒ ⭐ **创建之后改不了静音**；⭐ 而重建摆放会
+    /// **换掉摆放身份**。⚠ `move` 形态**只写 `startTick`**。
+    ///
+    /// ⚠ **寻址用 `trackId` + `placementId`（两个身份）**：⭐ 摆放住在音轨里；⚠ 但本条
+    /// **不必防下标移位** —— ⭐ `TrackV3::clips` 是 `BTreeMap`（键 = 摆放身份，稳定），
+    /// ⭐ 与 `devices`（`Vec`）那处**不同**。
+    /// ⚠ **为何安全（可逆）**：静音是布尔开关 ⇒ 切回去即复原；⚠ **但有行为重量** ——
+    /// 四处下游按它**不发声/不导出**（引擎快照、`als`、`logic`、离线渲染）。
+    /// ⛔ 不碰 `clipId` / `startTick` / `durationTicks` / `loopConfig`（⭐ 后两个是
+    /// **有意不做**：改长度与"静音"不同类、`loopConfig` 是结构体要另议）。
+    /// 撤销载荷 `old_muted` 由 [`compile`] 从**当前文档**读 ⇒ ⛔ 不信调用方。
+    SetClipPlacementMuted {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份。
+        placement_id: EntityId,
+        /// 修改前的静音状态（来自当前文档）。
+        old_muted: bool,
+        /// 修改后的静音状态。
+        new_muted: bool,
+    },
     /// 切换**设备旁通**（[`Op::SetDeviceBypassed`]，寻址到一条音轨上的一台设备）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前 `DeviceDefinition::bypassed` **只能**在
@@ -2848,6 +2903,7 @@ impl NoteOp {
             Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
             Self::SetDeviceName { .. } => SET_DEVICE_NAME_KIND,
             Self::SetDeviceBypassed { .. } => SET_DEVICE_BYPASSED_KIND,
+            Self::SetClipPlacementMuted { .. } => SET_CLIP_PLACEMENT_MUTED_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -3212,6 +3268,16 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 // ⚠ `old_bpm` 是**占位**：真值由 `compile` 从当前文档读（⛔ 不信调用方）。
                 old_bpm: 0.0,
                 new_bpm: read_required_finite_f64(object, SET_TEMPO_BPM_FIELD)?,
+            })
+        }
+        SET_CLIP_PLACEMENT_MUTED_KIND => {
+            reject_set_clip_placement_muted_fields(object)?;
+            Ok(NoteOp::SetClipPlacementMuted {
+                track_id: read_id(object, SET_CLIP_PLACEMENT_MUTED_TRACK_FIELD)?,
+                placement_id: read_id(object, SET_CLIP_PLACEMENT_MUTED_PLACEMENT_FIELD)?,
+                // ⚠ `old_muted` 是**占位**：真值由 `compile` 从当前文档读。
+                old_muted: false,
+                new_muted: read_required_bool(object, SET_CLIP_PLACEMENT_MUTED_MUTED_FIELD)?,
             })
         }
         SET_DEVICE_BYPASSED_KIND => {
@@ -3604,6 +3670,15 @@ fn reject_set_tempo_fields(object: &Map<String, Value>) -> Result<(), Fault> {
 }
 
 /// 拒绝 `setAuthor` 里 [`SET_AUTHOR_FIELDS`] 之外的键。
+fn reject_set_clip_placement_muted_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_CLIP_PLACEMENT_MUTED_FIELDS,
+        SET_CLIP_PLACEMENT_MUTED_KIND,
+        "unknownSetClipPlacementMutedField",
+    )
+}
+
 fn reject_set_device_bypassed_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     reject_unknown_keys(
         object,
@@ -5906,6 +5981,44 @@ pub fn compile(
                     track_id: *track_id,
                     old_name: track.name.clone(),
                     new_name: new_name.clone(),
+                }
+            }
+            NoteOp::SetClipPlacementMuted {
+                track_id,
+                placement_id,
+                new_muted,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，值比较）。
+                // ⚠ 模型本实体有**专用**错误 `ClipPlacementNotFound`（与 `MoveClipPlacement` 同一条）。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有摆放可以切换静音"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "placementTrackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                let placement = track.clips.get(placement_id).ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::ClipNotFound,
+                        format!("音轨 {track_id} 上没有身份 {placement_id} 的摆放"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "placementId": placement_id.to_canonical_string(),
+                            "reason": "clipPlacementNotFound",
+                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                        }),
+                    )
+                })?;
+                Op::SetClipPlacementMuted {
+                    track_id: *track_id,
+                    placement_id: *placement_id,
+                    old_muted: placement.muted,
+                    new_muted: *new_muted,
                 }
             }
             NoteOp::SetDeviceBypassed {
@@ -8267,7 +8380,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 32);
+        assert_eq!(OP_KINDS.len(), 33);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -13015,7 +13128,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 32] = [
+        let table: [(&str, serde_json::Value); 33] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -13098,6 +13211,14 @@ mod tests {
                 }),
             ),
             (
+                "setClipPlacementMuted",
+                serde_json::json!({
+                    "trackId": ulid,
+                    "placementId": ulid,
+                    "muted": true,
+                }),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -13155,6 +13276,7 @@ mod tests {
                 "setClipName",
                 "setDeviceName",
                 "setDeviceBypassed",
+                "setClipPlacementMuted",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -13491,7 +13613,20 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 33] = [
+        // ⭐ 摆放静音那一行需要**真的存在**的摆放（`compile` 按 trackId + placementId 查，
+        // 缺失会响亮报 `clipPlacementNotFound`）⇒ 找一个**有摆放的**音轨与它的第一个摆放。
+        let (placement_track, placed) = project
+            .tracks
+            .iter()
+            .find(|(_, track)| !track.clips.is_empty())
+            .map(|(id, track)| {
+                (
+                    *id,
+                    *track.clips.keys().next().expect("非空轨必有第一个摆放"),
+                )
+            })
+            .expect("样本里必须有带摆放的音轨");
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 34] = [
             (
                 "add",
                 None,
@@ -13657,6 +13792,17 @@ mod tests {
                 "SetDeviceBypassed",
             ),
             (
+                "setClipPlacementMuted",
+                None,
+                None,
+                serde_json::json!({
+                    "trackId": placement_track.to_canonical_string(),
+                    "placementId": placed.to_canonical_string(),
+                    "muted": true,
+                }),
+                "SetClipPlacementMuted",
+            ),
+            (
                 "setAutomationLane#patch",
                 None,
                 None,
@@ -13791,7 +13937,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 33);
+        assert_eq!(seen.len(), 34);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
