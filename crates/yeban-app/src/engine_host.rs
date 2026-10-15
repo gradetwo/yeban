@@ -111,6 +111,9 @@
 //! **非实时线程**上 —— 音频回调那条读路径（`SnapshotReader::begin_block`）一位没动
 //! [ARCH-RT-001 / MUST-GATE-001]。
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
 use yeban_engine::level::db_to_gain;
@@ -121,6 +124,7 @@ use yeban_engine::param::{
 };
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
 use yeban_engine::rt::{EngineRuntime, EngineStats};
+use yeban_engine::sfz_instrument::SfzPlan;
 use yeban_engine::snapshot::{
     EngineSnapshot, RetireQueue, SnapshotError, SnapshotSlot, retire_channel,
 };
@@ -128,6 +132,9 @@ use yeban_engine::transport::{TransportMirror, TransportReading, TransportState}
 use yeban_model::AutomationTarget;
 use yeban_model::EntityId;
 use yeban_model::project::YebanProjectV1;
+
+use crate::sfz_cache::{SfzCacheReadings, SfzPlanCache};
+use crate::sfz_load::SfzLoadError;
 
 /// 走带命令等待设备回调确认的上界。
 ///
@@ -170,6 +177,16 @@ pub enum EngineHostError {
     /// 错误码的**唯一**权威（与 D25 同一条纪律：不发明第二套错误码）。
     /// 打开失败时**既有引擎一位不动**（控制驱动形态可继续用）。
     Device(DeviceError),
+    /// ⭐ **SFZ 摊平失败**（任务单 `#80`）：某条待摊平项的 SFZ 文件读不到 / 文本非法 /
+    /// 区域表摊不平。
+    ///
+    /// ⚠ 它让 [`EngineHost::reload`] / [`EngineHost::publish_project`] **明确失败**
+    /// （⛔ 不静默回退到复音合成器）：模型说"这条轨用这份文件"，而文件读不到时仍出一版
+    /// **不是它**的声音，是用户听不出、报告里也看不见的内容错 —— 与 `#79` 的离线路径
+    /// （`WavExportError::Sfz`）同一条裁决。
+    ///
+    /// 失败时**既有的一代引擎一位不动**（发布点在这一步之前没有动过任何状态）。
+    Sfz(SfzLoadError),
 }
 
 impl core::fmt::Display for EngineHostError {
@@ -178,6 +195,7 @@ impl core::fmt::Display for EngineHostError {
             Self::Snapshot(error) => write!(formatter, "引擎快照投影失败: {error}"),
             Self::NoEngine => write!(formatter, "还没有一代引擎 (reload 从未成功过)"),
             Self::Device(error) => write!(formatter, "音频设备打开失败: {error}"),
+            Self::Sfz(error) => write!(formatter, "SFZ 摊平失败: {error}"),
         }
     }
 }
@@ -188,6 +206,7 @@ impl core::error::Error for EngineHostError {
             Self::Snapshot(error) => Some(error),
             Self::NoEngine => None,
             Self::Device(error) => Some(error),
+            Self::Sfz(error) => Some(error),
         }
     }
 }
@@ -195,6 +214,12 @@ impl core::error::Error for EngineHostError {
 impl From<SnapshotError> for EngineHostError {
     fn from(value: SnapshotError) -> Self {
         Self::Snapshot(value)
+    }
+}
+
+impl From<SfzLoadError> for EngineHostError {
+    fn from(value: SfzLoadError) -> Self {
+        Self::Sfz(value)
     }
 }
 
@@ -455,6 +480,12 @@ pub struct EngineHost {
     device: Option<OutputStreamHandle>,
     /// 走带动作日志（控制线程私有；判据的注入点，见 [`TransportActionRecord`]）。
     journal: Vec<TransportActionRecord>,
+    /// ⭐ ⭐ **路径 ⇒ 已摊平 SFZ 的控制侧缓存**（任务单 `#80`）。
+    ///
+    /// 为什么住在这里（⛔ 不是全局）：生命周期就是"这一代宿主"、写者只有 `reload` /
+    /// `publish_project` 两条（都是 `&mut self` ⇒ 不需要 `Mutex`）、判据可隔离。
+    /// 完整的设计与三条失效条件见 [`crate::sfz_cache`] 的模块文档。
+    sfz_cache: SfzPlanCache,
 }
 
 /// 手写 `Debug`：`EngineRuntime` / `SnapshotSlot` 刻意没有 `Debug`（它们持有裸指针与
@@ -518,6 +549,77 @@ impl EngineHost {
         self.device.take().is_some()
     }
 
+    /// ⭐ ⭐ **把快照里的待摊平表 arm 成摊平表**（任务单 `#80`：`#79` 登记的
+    /// "实时／GUI 播放未接线"那半边）。
+    ///
+    /// ## 它补的是哪一跳
+    ///
+    /// `#78` 让 `TrackV3.sampler` 在快照里只留一个**路径**（`PendingSfz`，引擎⛔ 不读盘）；
+    /// `#79` 把"路径 ⇒ 摊平表"的六步接到了**导出／录音**的构造期。实时／GUI 那条路走的是
+    /// [`EngineHost::reload`] 与 [`EngineHost::publish_project`] —— 本函数就是那两处的**同一个**
+    /// 注入点（⛔ 不新建第三条引擎入口、⛔ 不另写一份解码）。
+    ///
+    /// ## 三步（每一步都复用 `#79` 的既有形状）
+    ///
+    /// ```text
+    /// ① 待摊平项 ← EngineSnapshot::sfz_pending()          // 键升序 ⇒ 确定性 [MODEL-AST-003]
+    /// ② 路径 ⇒ 摊平表 ← SfzPlanCache::get_or_prepare(…)    // ⭐ 本单的缓存；未命中才读盘
+    ///        build = crate::sfz_load::decode_sfz_plan(path, engine_hz)   // #79 的同一条管线
+    /// ③ 注入 ← crate::sfz_load::arm_pending_sfz(snapshot, hz, prebuilt)  // #79 的同一条入口
+    /// ```
+    ///
+    /// ## 缓存（本单的核心设计点）
+    ///
+    /// 采样率取**快照自己的** `sample_rate()`（⛔ 不是界面/选项里的另一份声明）：
+    /// 摊平表里的播放速率是相对**这个**采样率算的 ⇒ 它变了就必须重建（[`crate::sfz_cache`] ②）。
+    ///
+    /// ## 失败口径（⛔ 不静默）
+    ///
+    /// SFZ 文件读不到 / 文本非法 ⇒ [`EngineHostError::Sfz`] 原样透出；两个调用点都在
+    /// "还没有动过任何状态"的位置调它 ⇒ **既有的一代引擎一位不动**。
+    ///
+    /// ## 红线 7（[MUST-GATE-001]）
+    ///
+    /// 读盘、解析、PCM 解码与 `SfzPlan` 的 clone **全部**在这里（控制线程）发生；
+    /// 音频线程只读快照里已摊平的表。⛔ 本函数不在任何回调路径上。
+    fn arm_pending_sfz_into_snapshot(
+        &mut self,
+        snapshot: EngineSnapshot,
+    ) -> Result<EngineSnapshot, EngineHostError> {
+        let engine_hz = snapshot.sample_rate() as f32;
+        // ① 待摊平项（`BTreeMap` ⇒ 键升序；`Vec` 收集是因为 `with_sfz` 需要 `&mut self`）。
+        let pending: Vec<(EntityId, String)> = snapshot
+            .sfz_pending()
+            .iter()
+            .map(|(track, entry)| (*track, entry.path().to_owned()))
+            .collect();
+        // ⭐ 缓存只保留"此刻还有 SFZ 绑定的轨"：sampler 被清回 `None` 的轨在这里回收条目
+        //    （失效条件 ③；⛔ 不回收的话旧摊平表会只涨不落）。即使 `pending` 为空也要做。
+        let live: BTreeSet<EntityId> = pending.iter().map(|(track, _)| *track).collect();
+        self.sfz_cache.retain_tracks(&live);
+        if pending.is_empty() {
+            return Ok(snapshot);
+        }
+        // ② 路径 ⇒ 摊平表（⭐ 命中 ⇒ 复用；未命中 ⇒ 走 `#79` 的唯一解码管线）。
+        let mut prebuilt: BTreeMap<EntityId, SfzPlan> = BTreeMap::new();
+        for (track, path) in pending {
+            let plan = self
+                .sfz_cache
+                .get_or_prepare(track, &path, engine_hz, |path, hz| {
+                    crate::sfz_load::decode_sfz_plan(Path::new(path), hz)
+                        .map(|(plan, _report)| plan)
+                })?;
+            // ⚠ `PreparedSfz` 的 PCM 今天**没有** `Arc` 共享（引擎侧事实，见
+            //    `PreparedSample` 的字段文档）⇒ 注入必须按值 clone 一份给快照，缓存留着
+            //    上一份供下一次发布复用。这是**控制侧**的 memcpy，登记为 `sfz-cache-needs-1`。
+            prebuilt.insert(track, (*plan).clone());
+        }
+        // ③ 复用 `#79` 的注入入口：它先注入 `prebuilt`（并**取代**待摊平项），再解码剩余
+        //    待摊平项（这里已经没有剩余 —— 全部由缓存供给 ⇒ ⛔ 不会重复读盘）。
+        let (snapshot, _reports) = crate::sfz_load::arm_pending_sfz(snapshot, engine_hz, prebuilt)?;
+        Ok(snapshot)
+    }
+
     /// **重建引擎**：投影新快照 → 建新队列 → 推 `quanta` 个量子 → 交还消费端。
     ///
     /// `quanta = 0` 是合法的（只重建、不推进）；但**失败必须被上报**：快照投影失败时
@@ -541,6 +643,10 @@ impl EngineHost {
         let revision = self.snapshot_revision.saturating_add(1);
         // 第 1 步：真的投影快照（失败在这里就返回，旧的一代不动 —— 包括设备腿）。
         let snapshot = EngineSnapshot::from_project(project, revision)?;
+        // ⭐ ⭐ 第 1.2 步（任务单 `#80`）：待摊平表 ⇒ 摊平表（缓存 ⇒ 控制侧解码 ⇒ `with_sfz`）。
+        //    它在关设备腿**之前**、动任何状态**之前**：失败 ⇒ 旧的一代一位不动
+        //    （与投影失败同一条口径）。读盘/分配都发生在**控制线程**上 [红线 7]。
+        let snapshot = self.arm_pending_sfz_into_snapshot(snapshot)?;
         let tracks = snapshot.tracks().len();
         let channels = snapshot.channels().max(1);
 
@@ -762,16 +868,32 @@ impl EngineHost {
         project: &YebanProjectV1,
         mark: EditMark,
     ) -> Result<u64, EngineHostError> {
-        let Some(slot) = self.slot.as_ref() else {
+        // ⚠ 先把槽的 `Arc` 拷出来（而不是借 `self.slot`）：本函数下面要 `&mut self`
+        //    走 SFZ 缓存 ⇒ 不能同时持有对 `self` 的不可变借用。
+        let Some(slot) = self.slot.as_ref().map(std::sync::Arc::clone) else {
             return Err(EngineHostError::NoEngine);
         };
         let revision = self.snapshot_revision.saturating_add(1);
         let snapshot = EngineSnapshot::from_project(project, revision)?;
+        // ⭐ ⭐ 任务单 `#80` 的**第二个**接线点：与 `reload` 走**同一个**注入函数
+        //    （缓存 ＋ `#79` 的 `arm_pending_sfz`），因此"编辑 ⇒ 发声"这条生产路径
+        //    （GUI 16 ms 一跳）只在**首次**读盘。失败 ⇒ 槽里当前快照一位不动。
+        let snapshot = self.arm_pending_sfz_into_snapshot(snapshot)?;
         // 复用槽自己的写者路径（`publish` 就是本函数的包装）。
         slot.publish_arc(std::sync::Arc::new(snapshot));
         self.snapshot_revision = revision;
         self.last_mark = Some(mark);
         Ok(revision)
+    }
+
+    /// ⭐ **SFZ 摊平缓存的读数**（任务单 `#80` 的缓存判据；单位见 [`SfzCacheReadings`]）。
+    ///
+    /// 它与 `yeban_app::sfz_load::read_probe` 的读盘计数是**两个互补的观测量**：
+    /// 前者是"缓存自己怎么看"（命中/未命中/回收），后者是"磁盘真的被碰了几次"。
+    /// ⛔ 两者都不进实时线程。
+    #[must_use]
+    pub fn sfz_cache_readings(&self) -> SfzCacheReadings {
+        self.sfz_cache.readings()
     }
 
     /// 这一跳要不要发布：`true` = 标记与"当前快照已经反映的"不同。

@@ -106,6 +106,8 @@ pub mod midi_notes;
 pub mod open;
 pub mod record_wav;
 pub mod render_core;
+// ⭐ **路径 ⇒ 已摊平 SFZ 的控制侧缓存**（任务单 `#80`：实时／GUI 发布点的读盘复用）。
+pub mod sfz_cache;
 pub mod sfz_load;
 // 工程文件的 `.yeban.lock` —— **与 `yeban-mcp` 字面上同一份源码**（`#[path]` 共享）。
 // `ROAD-M4-008` 选项 (a) 第三片：GUI 的保存路径与领域 MCP 参与**同一把**建议锁。

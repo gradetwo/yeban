@@ -58,6 +58,84 @@ use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
 use yeban_sfz::parser::ParseLimits;
 
+/// ⭐ **控制侧读盘计数器**（任务单 `#80` 的缓存判据的**可观测量**）。
+///
+/// ## 数什么（对象 ＋ 单位）
+///
+/// | 读数 | 对象 | 单位 |
+/// | :--- | :--- | :--- |
+/// | `sfz_text_reads` | **本线程**对 SFZ 文本文件发起的 `read_to_string` | 次 |
+/// | `sample_decodes` | **本线程**对 `sample=` 指向的 PCM WAV 发起的解码尝试 | 次 |
+///
+/// ⚠ 计的是**发起次数**（失败也算一次：读盘动作已经发生），⛔ 不是"成功次数"。
+///
+/// ## 为什么按线程计（⛔ 不用进程级 `AtomicU64`）
+///
+/// 与 `yeban-engine` 的 `release_probe` 同一条纪律：跨线程的窗口必须**按线程归账**，
+/// 否则同一进程里并行的判据会互相污染读数（本仓实测过这类假红：目录计数被并行活动扰动，
+/// 见 `sfz_load` 测试 c 的注释）。控制侧的装载/解码都发生在**调用它的那一条线程**上
+/// （GUI 主线程 / MCP 控制线程 / 判据线程），因此按线程计恰好覆盖真实调用面。
+///
+/// ## 红线 7（实时线程零可见性）
+///
+/// 它只在**控制侧**（[`load_sfz_with_instrument`] 与 [`read_sample_file`]）自增；
+/// 实时侧不读盘（引擎快照只带已摊平的表）⇒ ⛔ 音频回调一个字都不碰它。
+pub mod read_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SFZ_TEXT_READS: Cell<u64> = const { Cell::new(0) };
+        static SAMPLE_DECODES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// 一次读盘读数的**快照**（单位：次）。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct SfzReadCounts {
+        /// SFZ 文本文件的读盘尝试次数。
+        pub sfz_text_reads: u64,
+        /// 样本（PCM WAV）的解码尝试次数。
+        pub sample_decodes: u64,
+    }
+
+    impl SfzReadCounts {
+        /// 两个分量之和（仍是一个"次数"）。
+        #[must_use]
+        pub const fn total(self) -> u64 {
+            self.sfz_text_reads + self.sample_decodes
+        }
+
+        /// 相对 `earlier` 的**增量**（`self − earlier`，逐分量）。
+        ///
+        /// ⚠ 前一个读数更大时**饱和到 0**（⛔ 不 panic、⛔ 不绕回）。
+        #[must_use]
+        pub const fn since(self, earlier: Self) -> Self {
+            Self {
+                sfz_text_reads: self.sfz_text_reads.saturating_sub(earlier.sfz_text_reads),
+                sample_decodes: self.sample_decodes.saturating_sub(earlier.sample_decodes),
+            }
+        }
+    }
+
+    /// 此刻**本线程**的读数。
+    #[must_use]
+    pub fn counts() -> SfzReadCounts {
+        SfzReadCounts {
+            sfz_text_reads: SFZ_TEXT_READS.with(Cell::get),
+            sample_decodes: SAMPLE_DECODES.with(Cell::get),
+        }
+    }
+
+    /// 记一次 SFZ 文本读盘尝试（[`super::load_sfz_with_instrument`] 唯一调用点）。
+    pub(super) fn note_sfz_text_read() {
+        SFZ_TEXT_READS.with(|counter| counter.set(counter.get().saturating_add(1)));
+    }
+
+    /// 记一次样本解码尝试（[`super::read_sample_file`] 唯一调用点）。
+    pub(super) fn note_sample_decode() {
+        SAMPLE_DECODES.with(|counter| counter.set(counter.get().saturating_add(1)));
+    }
+}
+
 /// 探测用的样本源（440 Hz 内存正弦）的文案——报告行里逐字使用。
 pub const SAMPLE_SOURCE: &str = "in-memory-sine(440Hz)";
 
@@ -175,6 +253,8 @@ pub fn load_sfz_with_instrument(
     probe_note: Option<u8>,
     engine_hz: f32,
 ) -> Result<(SfzLoadReport, SfzInstrument), SfzLoadError> {
+    // ⭐ 读盘计数器（任务单 `#80`）：只在这里自增 —— 本函数是 SFZ 文本**唯一**的读入口。
+    read_probe::note_sfz_text_read();
     let text = std::fs::read_to_string(path)
         .map_err(|error| SfzLoadError::Read(format!("读 `{}` 失败: {error}", path.display())))?;
     let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
@@ -234,6 +314,8 @@ pub fn probe_note_energy(
 ///
 /// 读文件 / 解码失败 ⇒ [`SfzLoadError::Sample`]。
 pub fn read_sample_file(path: &Path) -> Result<(InMemorySample, u64, String), SfzLoadError> {
+    // ⭐ 读盘计数器（任务单 `#80`）：只在这里自增 —— 本函数是样本 PCM **唯一**的解码入口。
+    read_probe::note_sample_decode();
     // ⭐ **共享实现**（`yeban-render`；MCP 线把它唯一化了）与本地那份**逐行同口径**：
     // `Float32` 直用、`Int16`/`Int24` 除 `full_scale_max().max(1)`、`step_by(channels)` 取单声道，
     // 且它的 `describe` 文案与本函数原来**一字不差**（`file(<path> frames=… rate=…)`）。
