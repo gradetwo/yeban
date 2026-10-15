@@ -147,6 +147,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_track_pans(strings(&view.track_pans()));
     ui.set_track_mutes(booleans(&view.track_mutes()));
     ui.set_track_solos(booleans(&view.track_solos()));
+    // ⭐ `#82`：SFZ 采样器绑定的**只读**注入面（`TrackV3::sampler` 的路径原文，
+    // `None` ⇒ `""`）。写方向是两条 `mixer-sampler-*` 回调（`wire_mixer_sampler`）。
+    ui.set_track_sampler_paths(strings(&view.track_sampler_paths()));
     ui.set_scene_names(strings(&view.scene_names()));
     ui.set_section_names(strings(&view.section_names()));
     ui.set_clip_ulids(strings(&view.clip_ulids()));
@@ -1610,6 +1613,124 @@ pub fn wire_mixer_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
     // ---------------------------------------------------------------- 两个开关
     wire_mixer_switch(ui, port, &weak, MixerSwitch::Mute);
     wire_mixer_switch(ui, port, &weak, MixerSwitch::Solo);
+
+    // ---------------------------------------------------------------- SFZ 采样器绑定
+    // ⭐ 任务单 `#82`：模型 `TrackV3::sampler`（`#76`）第一次有**用户入口**。
+    wire_mixer_sampler(ui, port);
+}
+
+/// ⭐ **SFZ 采样器绑定**的接线（任务单 `#82`）—— 两条回调的**唯一**实现。
+///
+/// 形状照 [`wire_mixer_switch`]：读当前值 → 构造 `Op` → `commit_ops` **一次** → 重投影。
+/// 差别只有一处：新值来自 `.slint` 传进来的**文本**（本仓没有文件对话框 ⇒ 文本输入，
+/// 见交付报告的"删减了什么"），而 `Clear` 的新值是 `None`（**解绑**，一等状态）。
+///
+/// ## 空文本为什么是"**不提交**"，而不是"解绑"
+///
+/// `""` 不是 `None`：`SamplerBinding { path: "" }` 会让发布点把"读不到的文件"如实报错
+/// （`EngineHostError::Sfz`）。而用户清空输入框**往往只是想重打一遍** ⇒ 这里什么都不做
+/// 并出声。解绑只有一个入口：`Clear`（它写的就是 `None`）。
+///
+/// ## 值没变时不提交
+///
+/// 提交一条 `old == new` 的 `Op` 会在撤销树上留下**一步什么也没改**的历史
+/// （`Op::SetTrackSampler` 的陈旧载荷比对只拦"读到的基线不对"，不拦 `old == new`）
+/// ⇒ 这里先比一次再提交。
+///
+/// ## 这条消息不带来源视图前缀（台账 R17 的同一条纪律）
+///
+/// 它是撤销树的节点标签。今天只有一个界面入口（调音台通道条），但"不带来源"的措辞
+/// 在任何入口下都成立 —— 与静音 / 独奏的 `"toggle track mute"` 同款。
+fn wire_mixer_sampler(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_mixer_sampler_set({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index, path| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // ⛔ 空文本不落到 `Some("")`（那会被引擎当成一条读不到的文件路径）。
+            // 只报"这一下没有提交"，不假装做过什么。
+            //
+            // ⚠ 界面侧对路径**只做一处**规范化：去掉首尾空白（粘贴常常带一个换行）。
+            // 除此之外**原样**交给模型（⛔ 不规范化、⛔ 不查存在性、⛔ 不判扩展名 ——
+            // 与 `TrackV3::sampler` 的字段口径逐字相同）。
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                eprintln!("[yeban-app] SFZ 路径是空的 ⇒ 没有提交（解绑请用 Clear）");
+                return;
+            }
+            commit_sampler_binding(&ui, &port, index, Some(trimmed), "set track sampler");
+        }
+    });
+    ui.on_mixer_sampler_clear({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            commit_sampler_binding(&ui, &port, index, None, "clear track sampler");
+        }
+    });
+}
+
+/// `Set` / `Clear` 的**唯一**提交实现（两条回调共用，因此不可能有一份漂移的 `Op` 构造）。
+///
+/// `new_path`：`Some(text)` = 绑定那条路径；`None` = **解绑**。
+fn commit_sampler_binding(
+    ui: &MainWindow,
+    port: &UndoPort,
+    index: i32,
+    new_path: Option<&str>,
+    message: &str,
+) {
+    let Some(track_id) = track_id_at(ui, index) else {
+        return;
+    };
+    let Ok(id) = track_id.parse::<yeban_model::EntityId>() else {
+        return;
+    };
+    let Some(old_sampler) = authoritative_sampler(port, &track_id) else {
+        return;
+    };
+    let new_sampler = new_path.map(|path| yeban_model::SamplerBinding {
+        path: path.to_owned(),
+    });
+    // 值没变 ⇒ 不制造"什么也没改"的一步撤销历史（见本函数调用者的文档）。
+    if old_sampler == new_sampler {
+        return;
+    }
+    let op = yeban_model::Op::SetTrackSampler {
+        track_id: id,
+        old_sampler,
+        new_sampler,
+    };
+    if port.commit_ops(now_ms(), message, vec![op]).is_err() {
+        eprintln!("[yeban-app] SFZ 绑定提交被拒绝（工程未改）");
+        return;
+    }
+    refresh_undo_window(ui, port, true);
+}
+
+/// 权威工程里某轨的 `TrackV3::sampler` **原值**。
+///
+/// 返回 `None` = "问不出来"（端口此刻没有活跃工程 / 工程里没有这条轨）——
+/// 与 [`Some(None)`]（"这条轨不用采样器"）是**两件不同的事**，因此这里用双层 `Option`
+/// 而不是把两者压成一个 `None`（压掉之后，"没有活跃工程"会被当成"解绑"而静默提交）。
+fn authoritative_sampler(
+    port: &UndoPort,
+    track_id: &str,
+) -> Option<Option<yeban_model::SamplerBinding>> {
+    let project = port.try_project()?;
+    project
+        .tracks
+        .values()
+        .find(|track| track.id.to_canonical_string() == track_id)
+        .map(|track| track.sampler.clone())
 }
 
 /// 混音台上的两个**布尔开关**（静音 / 独奏）—— 除了目标字段不同，接线逐字相同。

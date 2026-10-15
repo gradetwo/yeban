@@ -62,6 +62,9 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> track-pans: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    // ⭐ SFZ 采样器路径（`TrackV3::sampler` 的路径原文；`None` ⇒ `""`）——
+    // 与上面两格同一条透传纪律：本组件不解释它。
+    in property <[string]> track-sampler-paths: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
     in property <[string]> track-meter-peaks: [];
@@ -92,6 +95,10 @@ export component ConsoleTabs inherits Rectangle {
     callback mixer-pan-release(int);
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
+    // ⭐ SFZ 采样器绑定的写入面（任务单 `#82`）：SET（设成 `Some(path)`）/ CLR（解绑 `None`）。
+    // 与上面八个同款 —— 本组件只上抛，不解释、不改任何值，也没有第二份提交实现。
+    callback mixer-sampler-set(int, string);
+    callback mixer-sampler-clear(int);
     // 主控通道条的**写入面**透传（与上面八个同款：本组件只上抛，不解释、不改任何值）。
     // 这六个**不带下标** —— 主总线不在 `track-names` 里，它的身份由宿主从权威工程取。
     callback mixer-master-fader-grab(length);
@@ -236,6 +243,7 @@ export component ConsoleTabs inherits Rectangle {
         track-pans: root.track-pans;
         track-mutes: root.track-mutes;
         track-solos: root.track-solos;
+        track-sampler-paths: root.track-sampler-paths;
         track-colors: root.track-colors;
         track-color-labels: root.track-color-labels;
         track-meter-peaks: root.track-meter-peaks;
@@ -276,6 +284,13 @@ export component ConsoleTabs inherits Rectangle {
         }
         mixer-solo-toggle(index) => {
             root.mixer-solo-toggle(index);
+        }
+        // SFZ 采样器绑定（任务单 `#82`）：同样只上抛（宿主 `host::wire_mixer_sampler` 是唯一落点）。
+        mixer-sampler-set(index, path) => {
+            root.mixer-sampler-set(index, path);
+        }
+        mixer-sampler-clear(index) => {
+            root.mixer-sampler-clear(index);
         }
         // 主控写入面：同样只上抛，**不带下标**（宿主在按下那一刻从权威工程取主总线身份）。
         mixer-master-fader-grab(y) => {

@@ -511,6 +511,18 @@ export component MainWindow inherits Window {
     callback mixer-mute-toggle(int);
     /// 独奏按钮点击。
     callback mixer-solo-toggle(int);
+    // ⭐ **SFZ 采样器绑定**（任务单 `#82`）—— 模型 `TrackV3::sampler`（`#76`）的**用户入口**。
+    //
+    // 形状与上面两个开关逐条同款（`.slint` 只报"哪一个下标（+ 输入框文本）"，`Op` 的构造、
+    // 陈旧载荷比对与 `commit_ops` 全在宿主 `host::wire_mixer_sampler`）⇒ 一次 SET / CLR
+    // = **恰好一步**可撤销的编辑。
+    //
+    // ⚠ 路径是**文本输入**而不是文件对话框：本仓没有文件对话框（原生选择器要引新依赖 ⇒
+    // 必须先报批）⇒ 本单交最小可用的一条，见交付报告的"删减了什么"。
+    /// SET：把该轨的采样器绑定设成 `Some(path)`（空文本**不提交**，见宿主的口径）。
+    callback mixer-sampler-set(int, string);
+    /// CLR：把该轨的采样器绑定设回 `None`（**解绑**；`None` 是一等状态，⛔ 不是"丢失"）。
+    callback mixer-sampler-clear(int);
     // 主控通道条的**写入面**：与上面那六个手势逐条同形，唯一区别是**不带下标**
     // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
     // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
@@ -543,6 +555,10 @@ export component MainWindow inherits Window {
     in property <[string]> track-volumes: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    // ⭐ SFZ 采样器路径（`TrackV3::sampler` 的路径原文；`None` ⇒ `""`）——
+    // 注入面与 `track-mutes` / `track-solos` 同族（`host::apply_view` 是唯一写者；
+    // `ui.set_track_sampler_paths` 在 `src/host.rs`）。
+    in property <[string]> track-sampler-paths: [];
     in property <[string]> scene-names: [];
     in property <[string]> section-names: [];
     in property <[length]> section-positions: [];
@@ -934,6 +950,7 @@ export component MainWindow inherits Window {
             track-pans: root.track-pans;
             track-mutes: root.track-mutes;
             track-solos: root.track-solos;
+            track-sampler-paths: root.track-sampler-paths;
             track-colors: root.track-colors;
             track-color-labels: root.track-color-labels;
             track-meter-peaks: root.track-meter-peaks;
@@ -980,6 +997,13 @@ export component MainWindow inherits Window {
             }
             mixer-solo-toggle(index) => {
                 root.mixer-solo-toggle(index);
+            }
+            // ⭐ SFZ 采样器绑定（任务单 `#82`）：同样只上抛，宿主是唯一落点。
+            mixer-sampler-set(index, path) => {
+                root.mixer-sampler-set(index, path);
+            }
+            mixer-sampler-clear(index) => {
+                root.mixer-sampler-clear(index);
             }
             // 主控写入面：只上抛、不带下标（身份由 `host::wire_mixer_edit` 从权威工程取）。
             mixer-master-fader-grab(y) => {

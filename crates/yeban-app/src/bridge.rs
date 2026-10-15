@@ -1119,6 +1119,15 @@ pub struct TrackView {
     pub solo: bool,
     /// 独奏安全（`TrackV3::solo_safe`）。
     pub solo_safe: bool,
+    /// ⭐ SFZ 采样器绑定的**路径原文**（`TrackV3::sampler`，`#76` 的模型字段）。
+    ///
+    /// `None` 是**一等状态**（"这条轨不用采样器"），⛔ 不是"空字符串"：`Clear` 落到它，
+    /// 而 `.slint` 的文本输入面把 `None` 显示成空串（见 [`ViewState::track_sampler_paths`]）。
+    ///
+    /// ⚠ 投影**不**查文件存在性、⛔ 不规范化、⛔ 不判扩展名 —— 与模型的字段口径逐字相同
+    /// （路径是留痕字符串，不是"已装载的乐器"）。"这份 SFZ 读不到"是**发布点**的事
+    /// （[`crate::engine_host::EngineHost::publish_project`] 明确失败，⛔ 不静默回退）。
+    pub sampler_path: Option<String>,
     /// 音量 (dB)，原样保留模型值。
     pub volume_db: f32,
     /// 音量的显示文本（`{:.1}` dB）。
@@ -1752,6 +1761,28 @@ impl ViewState {
         self.tracks.iter().map(|track| track.solo).collect()
     }
 
+    /// ⭐ 非主总线轨道的 **SFZ 采样器路径文本**（`track-sampler-paths` 的注入源）。
+    ///
+    /// 口径（一条纯映射，判据 `track_sampler_paths_maps_none_to_the_empty_text` 钉住）：
+    ///
+    /// | `TrackV3::sampler` | 这里给 `.slint` 的文本 | 含义 |
+    /// | :--- | :--- | :--- |
+    /// | `None` | `""` | 这条轨**不用**采样器（一等状态；界面上是空输入框） |
+    /// | `Some(SamplerBinding { path })` | `path` 原文 | 用户/模型写下的那条路径 |
+    ///
+    /// ⚠ **`None` 与 `Some("")` 在这里落到同一个文本**（都是 `""`），这是刻意的：
+    /// 界面上的文本输入面只有"文本"这一维，而 `Clear`（`None`）与"输入框被清空但没提交"
+    /// 在视觉上本来就该一样。两者的区别住在**模型**里（`Option`），⛔ 不在文本里 ——
+    /// 因此 `Set` 收到空文本时**不提交**（见 `host::commit_sampler_binding`），
+    /// 解绑只有一个入口：`Clear`。
+    #[must_use]
+    pub fn track_sampler_paths(&self) -> Vec<String> {
+        self.tracks
+            .iter()
+            .map(|track| track.sampler_path.clone().unwrap_or_default())
+            .collect()
+    }
+
     /// 段落名（章节卡片文本源）。
     #[must_use]
     pub fn section_names(&self) -> Vec<String> {
@@ -2224,7 +2255,7 @@ impl ViewState {
         }
         for track in &self.tracks {
             lines.push(format!(
-                "track index={} id={} name={} kind={} color={} color_rgb={} mute={} solo={} solo_safe={} volume_db={:.6} pan_millis={} pan={} clips={}",
+                "track index={} id={} name={} kind={} color={} color_rgb={} mute={} solo={} solo_safe={} volume_db={:.6} pan_millis={} pan={} clips={} sampler={}",
                 track.index,
                 track.id,
                 track.name,
@@ -2238,6 +2269,9 @@ impl ViewState {
                 track.pan_millis,
                 track.pan_display,
                 track.clip_count,
+                // ⭐ `#82`：投影里**第一次**有采样器绑定的可读读数。`None` 用 `-`
+                // （与 `color` 同一款占位），因此"解绑"与"绑了一条空路径"在文本上可分。
+                track.sampler_path.as_deref().unwrap_or("-"),
             ));
         }
         for clip in &self.clips {
@@ -2411,6 +2445,7 @@ fn track_view(
         mute: track.mute,
         solo: track.solo,
         solo_safe: track.solo_safe,
+        sampler_path: track.sampler.as_ref().map(|binding| binding.path.clone()),
         volume_db: track.volume_db,
         volume_display: format!("{:.1}", track.volume_db),
         volume_fraction: volume_fraction(track.volume_db),

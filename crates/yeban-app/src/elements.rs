@@ -812,6 +812,43 @@ impl ElementRegistry {
                 &format!("轨道色标 {} (调音台)", track.color_hex),
                 false,
             );
+            // ⭐ **SFZ 采样器绑定**（任务单 `#82`）：路径输入框 ＋ SET / CLR。
+            //
+            // 三个 ID 是**独立**的语义节点（不是把输入框与按钮揉成一格）：控制面要能
+            // ① 读当前绑定（`-sampler-path` 的 `value` = 路径原文）、② 写一段文本
+            // （`ElementHandle::set_accessible_value` 落到 `TextInput.text`）、
+            // ③ 触发提交 / 解绑（两个按钮的 `accessible-action-default`）。
+            // 混起来的后果是"读"与"写"落到同一个节点而看不出是哪一步失败。
+            //
+            // `-sampler-path` 的**路径原文**进 `accessible-value` 是自动绑定的
+            // （Slint 对 `TextInput` 的 `accessible-value` 默认指向 `text`；
+            // 上游 `i-slint-compiler-1.18.1/passes/lower_accessibility.rs`）——
+            // 因此它不是"我们声称有一个值"，而是这个控件**本来**的可读值。
+            registry.add(
+                &format!("track-{track_index}-sampler-path"),
+                ElementKind::TextInput,
+                "console/mixer_console.slint",
+                &format!(
+                    "轨道 {} SFZ 采样器路径: {}",
+                    track.name,
+                    track.sampler_path.as_deref().unwrap_or("(未绑定)")
+                ),
+                false,
+            );
+            registry.add(
+                &format!("track-{track_index}-sampler-set"),
+                ElementKind::Button,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 提交 SFZ 路径", track.name),
+                false,
+            );
+            registry.add(
+                &format!("track-{track_index}-sampler-clear"),
+                ElementKind::Button,
+                "console/mixer_console.slint",
+                &format!("轨道 {} 解绑 SFZ 采样器", track.name),
+                false,
+            );
         }
         registry.add(
             "mixer-master-strip",

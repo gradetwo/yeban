@@ -42,6 +42,10 @@ export component MixerConsole inherits Rectangle {
     in property <[string]> track-pans: [];
     in property <[bool]> track-mutes: [];
     in property <[bool]> track-solos: [];
+    // ⭐ **SFZ 采样器路径**（任务单 `#82`）：`TrackV3::sampler` 的路径原文，`None` ⇒ `""`。
+    // 这是"用户怎么设它"那一环的**只读注入面**；写方向是下面两条 `mixer-sampler-*` 回调
+    // （落到 `Op::SetTrackSampler`，与 `mixer-mute-toggle` 同一条提交路径）。
+    in property <[string]> track-sampler-paths: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
 
@@ -64,6 +68,13 @@ export component MixerConsole inherits Rectangle {
     callback mixer-pan-release(int);
     callback mixer-mute-toggle(int);
     callback mixer-solo-toggle(int);
+    // ⭐ SFZ 采样器绑定的**写入面**（任务单 `#82`）：
+    //   `mixer-sampler-set(index, path)` —— 把这条轨的 `TrackV3::sampler` 设成 `Some(path)`；
+    //   `mixer-sampler-clear(index)`     —— 设回 `None`（**解绑**；`None` 是一等状态）。
+    // `.slint` 只报"哪一个下标 + 输入框里的文本"，`Op` 构造 / 陈旧载荷比对 / `commit_ops`
+    // 全在宿主（`host::wire_mixer_sampler`）—— 与静音 / 独奏逐条同形。
+    callback mixer-sampler-set(int, string);
+    callback mixer-sampler-clear(int);
 
     // ---- 主控通道条的**写入面**（本切片新增）----
     //
@@ -319,6 +330,128 @@ export component MixerConsole inherits Rectangle {
             color: Tokens.gold;
             font-size: Tokens.font-size-xs;
             horizontal-alignment: center;
+        }
+
+        // ------------------------------------------------ SFZ 采样器绑定（任务单 `#82`）
+        //
+        // ⭐ 这是"用户怎么设 SFZ"那一环：一条**文本**路径输入 ＋ SET / CLR。
+        //
+        // ⚠ 为什么是文本而不是文件选择器：本仓**没有**文件对话框（原生选择器要引新依赖
+        // ⇒ 必须先报批，见本单的边界登记）⇒ 最小可用的一条是"用户能敲/粘贴路径"。
+        //
+        // 语义节点的形状：
+        //   * 输入框自己是 `text-input` 角色 —— Slint 对 `TextInput` 自动挂
+        //     `accessible-role: text-input` ＋ `accessible-value: text` ＋
+        //     `accessible-action-set-value`（上游 `i-slint-compiler-1.18.1` 的
+        //     `passes/lower_accessibility.rs:71-115`），因此屏读器与控制面既能**读**当前
+        //     绑定，也能**写**一段文本（`ui/property {name:"value"}` /
+        //     `ElementHandle::set_accessible_value`）；
+        //   * SET 的 `accessible-action-default` 与它的 `TouchArea.clicked` 是**逐字同一段**
+        //     ⇒ "屏读器按 SET"与"鼠标点 SET"不可能分叉（`[UI-A11Y-003]` §7.3 的同款纪律）；
+        //     回车走 `TextInput.accepted`，落点是**同一个** `mixer-sampler-set` 回调。
+        //
+        // 写方向 ⛔ 不在这里提交任何东西：`.slint` 只报"哪一个下标 + 输入框文本"，
+        // `Op::SetTrackSampler` 的构造 / 陈旧载荷比对 / `commit_ops` 全在宿主
+        // （`host::wire_mixer_sampler`）。CLR 落到 `None`（**解绑**是一等状态）。
+        UiMonoText {
+            x: Tokens.space-3;
+            y: 194px;
+            width: parent.width - 8px;
+            height: 12px;
+            text: "SFZ";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+
+        sampler-path-field := TextInput {
+            x: Tokens.space-3;
+            y: 208px;
+            width: parent.width - 8px;
+            height: 16px;
+            text: root.track-sampler-paths[track_index];
+            single-line: true;
+            font-family: Tokens.font-mono;
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            vertical-alignment: center;
+            accessible-id: "track-" + track_index + "-sampler-path";
+            accessible-label: "轨道 " + track_name + " SFZ 采样器路径";
+            // 回车 = SET。⛔ 不是第二份提交实现：与 SET 按钮发**同一条**回调。
+            accepted => {
+                root.mixer-sampler-set(track_index, self.text);
+            }
+        }
+
+        Rectangle {
+            x: Tokens.space-3;
+            y: 228px;
+            width: 40px;
+            height: 16px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line-strong;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-sampler-set";
+            accessible-label: "轨道 " + track_name + " 提交 SFZ 路径";
+            accessible-action-default => {
+                root.mixer-sampler-set(track_index, sampler-path-field.text);
+            }
+
+            UiMonoText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "SET";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.mixer-sampler-set(track_index, sampler-path-field.text);
+                }
+            }
+        }
+
+        Rectangle {
+            x: 48px;
+            y: 228px;
+            width: 40px;
+            height: 16px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line-strong;
+            accessible-role: button;
+            accessible-id: "track-" + track_index + "-sampler-clear";
+            accessible-label: "轨道 " + track_name + " 解绑 SFZ 采样器";
+            accessible-action-default => {
+                root.mixer-sampler-clear(track_index);
+            }
+
+            UiMonoText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "CLR";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.mixer-sampler-clear(track_index);
+                }
+            }
         }
 
         // ---------------------------------------------------------------- 输入面

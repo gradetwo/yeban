@@ -115,9 +115,49 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// 为什么钉"换掉模型实例"而不是"调用 `ui.set_*` 的次数"：Slint 的 repeater 只有在
 /// **模型实例换了**（或某一行变了）时才重建子图元，而重建子图元就是那 0.4 ms 的来源
 /// （实测：照常重建但内容冻结 = ±0.00 ms 差值）。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 30;
-/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（现在 39）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 39;
+///
+/// ## 30 → 31 的追加（任务单 `#82`，2026-10-16）
+///
+/// 新数组是 `track-sampler-paths`（SFZ 采样器绑定的路径文本）。实测：这一格在
+/// `#82` 之前**恰好在预算上**（30），加上它之后是 **31**（判据会逐字打出整个清单）。
+///
+/// ⚠ **这一格的代价边界（如实说清）**：
+///
+/// * 它的消费者是 `MixerConsole` 通道条里的 `TextInput.text` —— 而混音台只在
+///   `console-tab == 1` 时可见（默认帧是 Tab 0）⇒ 默认帧的 PNG sha256 逐位不变
+///   （读数见 `APPLY_VIEW_WRITE_SITE_BUDGET` 的注释）；
+/// * `apply_view` **不是** 60Hz 心跳那一跳（那条路走 `ProductionLoop::tick` ⇒
+///   `pump_meters` + 按需 `publish_project`），它跑在"换工程 / 撤销 / 打开"这类
+///   完整重投影上 ⇒ 多一次 `VecModel` 换实例的**频率**远低于每帧；
+/// * ⛔ 墙钟成本本机没测（要 GPU 档，`AGENTS.md` §5 不允许）。上面给的是数量与像素读数。
+///
+/// 该文件头"已批准、尚未落地"的那条补丁（写之前先比一次）落地后，这一格与
+/// `APPLY_VIEW_WRITE_SITE_BUDGET` 都会跟着收回去 —— 那时请一并改这两个常量。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 31;
+/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（现在 **40**）。
+///
+/// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
+///
+/// 那一格是 `ui.set_track_sampler_paths(...)`：SFZ 采样器绑定（`TrackV3::sampler`）的
+/// **唯一**注入点。它必须住在 `apply_view` 里 —— `host::apply_view` 是"投影 ⇒ 界面"的
+/// 唯一实现（D28），另一处写它就会多出第二个真相源。
+///
+/// 数量侧的重新测量（本机，Apple M2）：
+///
+/// * 写入点：**39 → 40**（本常量）；
+/// * `array_instance_addrs` 的"每帧换掉模型实例"个数：见该函数（`#82` 把新数组
+///   **计入清单**，因为它在 `apply_view` 的每帧路径上、不属于手势路径）；
+/// * 默认帧（控制台 Tab 0，即 5 张 Linux 基准渲染的那一帧）：PNG sha256
+///   `e93ec5bc26bddab8dda0f60425d56aa7d8774222bd7c3e48ecca4572141ba6ba` **逐位不变**
+///   （改动前 / 后各测一次）⇒ ⛔ 不需要重录基准；
+/// * 混音台那一帧（Tab 1，**不在**任何基准里）的 PNG sha256 从
+///   `6f478d014908a27e6da00a535dfe90bc68125b5120ed570920f85e859a58b5d3` 变为
+///   `3ae6fec9b8c3e68e48773c773df83b3721b5c509b6697b3199cb1574de7c4405`，
+///   运行时节点数 102 → 111（每条轨 +3：路径输入 / SET / CLR）。
+///
+/// ⚠ **未测**（如实登记）：⛔ 绘制回调的**墙钟**成本没有在本机重量 —— 那要 `examples/fps_gpu.rs`
+/// 的 GPU 档（本机纪律不允许，见 `AGENTS.md` §5）。上面给的是数量侧读数与逐像素读数。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 40;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -145,6 +185,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("track-pans", get_track_pans);
     push!("track-mutes", get_track_mutes);
     push!("track-solos", get_track_solos);
+    // ⭐ 任务单 `#82`：SFZ 采样器路径也在 `apply_view` 的每帧路径上（⛔ 不是手势路径）
+    // ⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"这类回归会漏数。
+    push!("track-sampler-paths", get_track_sampler_paths);
     push!("scene-names", get_scene_names);
     push!("section-names", get_section_names);
     push!("section-positions", get_section_positions);
