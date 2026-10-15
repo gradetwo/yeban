@@ -9162,3 +9162,62 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **五、⭐ 判决读数**: ⭐ ⭐ **`macos` ＋ ⭐ `rust (yeban-app)` ＋ ⭐ `rust (yeban-engine)` ＝ success**；⭐ **`windows` ＝ failure（⭐ 本条查明）**；⭐ **`eee735ca`／⭐ `677bbf7d` 待查** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **修 Windows 主线程栈溢出（⭐ 甲优先、⭐ 先定位大栈对象）** ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-5`／⭐ 6／⭐ 8 ＋ ⭐ 一次真跑全量腿的提交 ✓
+
+---
+
+## R725 实测追加（2026-10-16）：⭐⭐⭐ **`#72` 已并入**（⭐ Windows 主线程栈溢出、⭐ 改 `Box<SynthEngine>`）⇒ ⭐ **帧 582496 ⇒ 145856 B**、⭐ **小栈复现 1.02 MiB ⇒ 0.46 MiB**、⭐ **导出指纹逐位相同** ＋ ⭐ **裁定第二处为**联合单****
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **1 文件、＋16／−2**（⭐ `crates/yeban-app/src/export_wav.rs`）⇒ ⭐ ⭐ **完整 sha ＝ **`d85e58790041d25081438e54d4c6c79b4660bbe7`**** ✓ ⭐ ⚠ **且⛔ 未加 Windows-only 链接参数、⭐ ⛔ 未改判据、⭐ ⛔ 未动引擎侧** ⇒ ⭐ **纯 app 侧、⭐ 极小改动** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 定位结论（⭐ 用 `lldb` 量逐帧、⭐ 本条最硬）**: ⭐ ⭐ **根因对象 ＝ `SynthEngine`，⭐ **109152 B****（⭐ 实测 `size_of`）；⭐ 派生 `EngineTrackSource ＝ 109232 B`** ✓
+| ⭐ 层 | ⭐ 位置 | ⭐ 帧大小 |
+| :--- | :--- | ---: |
+| ⭐ `main` | ⭐ `app/src/main.rs:107` | ⭐ 328 B |
+| ⭐ `cli::run_batch` | ⭐ `app/src/cli.rs:3134` | ⭐ 26608 B |
+| ⭐ ⭐ **`render_core::render_project_f32_with_assets`** | ⭐ `app/src/render_core.rs:157` | ⭐ ⭐ ****582496 B****（⭐ ≈5.3×）|
+| ⭐ ⭐ **`export_wav::EngineTrackSource::new`** | ⭐ `app/src/export_wav.rs:356` | ⭐ ⭐ ****327904 B****（⭐ ＝3×＋224）|
+| ⭐ `synth::SynthEngine::new`（⭐ 引擎侧、⭐ 未改） | ⭐ `engine/src/synth.rs:970` | ⭐ 129952 B |
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 那是"⭐ **单一大对象 × ⭐ 多层按值副本**"、⭐ ⛔ 不是无关的多层累积** ⇒ ⭐ **成因**: ⭐ **`export_wav.rs:341` 的 `engine: SynthEngine` 按值** ⇒ ⭐ **`new()` 返回位／⭐ `?` 中间位／⭐ `Box::new` 装箱源／⭐ unsize 各留一份 10 万字节副本**；⭐ **`render_core.rs:183` 的探针与 ⭐ `:257` 的 `Box::new(EngineTrackSource::new(..)?)` 把它们叠在同一主线程** ✓
+⭐ ⚠ **并附（⭐ 方法价值）**: ⭐ ⭐ **它用 `lldb` 读反汇编序言的 `sub sp` 总额量出每一帧** ⇒ ⭐ ⭐ **那是**机械读数**、⭐ ⛔ 不是估算** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 修法与读数**: ⭐ **`engine: SynthEngine` ⇒ `Box<SynthEngine>`**（⭐ 构造改 `Box::new(SynthEngine::new(..))`）⇒ ⭐ **搬动变常数级；⭐ 分配点仍只在离线构造期（⭐ 红线 7 未动）** ✓
+| ⭐ 读数 | ⭐ 修复前 | ⭐ 修复后 |
+| :--- | ---: | ---: |
+| ⭐ **`render_project`** 帧 | ⭐ **582496 B** | ⭐ ⭐ **145856 B** ✓ |
+| ⭐ **`EngineTrackSource::new`** 帧 | ⭐ **327904 B** | ⭐ ⭐ **109664 B** ✓ |
+| ⭐ ⭐ **小栈阈值（⭐ 二分）** | ⭐ **1024 红／⭐ 1536 绿** ⇒ ⭐ **≈1.02 MiB** | ⭐ ⭐ **464 红／⭐ **468 KiB 绿**** ⇒ ⭐ **≈0.46 MiB** ✓ |
+| ⭐ ⭐ **判据级 @1024 KiB** | ⭐ **两条都 FAILED**（⭐ `stderr` ＝ ⭐ `fatal runtime error: stack overflow, aborting`）| ⭐ ⭐ **`ok. 2 passed; 0 failed`** ✓ |
+⇒ ⭐ ⭐ ⭐ **即: ⭐ `ulimit -s` **对子进程生效**（⭐ `RLIMIT_STACK`）⇒ ⭐ ⭐ **故"⭐ Windows 才红"被变成"⭐ 本机可复现"** ⇒ ⭐ **那是本单最强的判据** ✓
+
+⭐ ⭐ ⭐ **四、⭐ 而产品行为逐位不变（⭐ 它给了三档对照）**: ⭐ ⭐ **同一 `--open probe.yeban --export-wav`** ⇒ ⭐ **修复前 @8 MiB 与 ⭐ 修复后 @8 MiB、⭐ **@1 MiB** 三者**同一个 `sha256 ＝ 473c84be…f111`、⭐ 同一个 `digest ＝ a12de92a…9b60`、⭐ 同一个 `bytes ＝ 2304068`**** ✓
+⇒ ⭐ ⭐ **即: ⭐ 只搬了分配位置、⭐ 输出**逐位不变**** ✓
+
+⭐ ⭐ ⭐ **五、⭐ 既有判据的集合对账（⭐ 第 231 条）**: ⭐ ⭐ **按测试二进制分组对账修复前／⭐后全量 `cargo test -p yeban-app --locked` ⇒ **542／⭐542、⭐ 消失 0、⭐ 新增 0、⭐ 翻转 0****；⭐ **两次均 35 桶、⭐ 0 failed、⭐ 3 ignored**（⭐ 既有 `[HARDWARE]`、⭐ 未增未减）✓
+
+⭐ ⚠ **六、⭐ 四门读数**: ⭐ `fmt --check` **0**／⭐ `check --all-targets --locked` **0**／⭐ `clippy --lib --tests -D warnings` **0**／⭐ `test -p yeban-app --locked` **539 passed／⭐ 0 failed／⭐ 3 ignored**（⭐ 35 桶）／⭐ `premerge-gate.sh yeban-app` **全过**／⭐ `run-gates.sh light` **门禁通过** ✓
+
+⭐ ⭐ ⭐ **七、⭐ 而它发现同一类缺陷的**第二处**并停手报我（⭐ 处置正确、⭐ 本条要点）**: ⭐ ⭐ **GUI 路径（⭐ `--open <p>` 不带 `--export-wav`）更深**** ✓
+| ⭐ 层 | ⭐ 帧 |
+| :--- | ---: |
+| ⭐ `host::ProductionLoop::start` | ⭐ **543360 B** |
+| ⭐ ⭐ **`EngineHost::reload`／⭐ `open_device`** | ⭐ ⭐ **744528 B**／⭐ **722912 B** |
+| ⭐ `engine_host::fresh_runtime` | ⭐ **360992 B** |
+| ⭐ `EngineRuntime::new` | ⭐ **393616 B**（⭐ `size_of::<EngineRuntime>() ＝ 180000 B`）|
+⇒ ⭐ ⭐ ⭐ **即: ⭐ **最浅一条链在**进入设备腿之前**就已 ≥ **1.29 MiB**** ⇒ ⭐ ⭐ **故 Windows 上 **GUI 启动同样溢出**** ⇒ ⭐ ⚠ **那是比 `--export-wav` 更严重的一面**（⭐ 用户开界面就崩）✓
+
+⭐ ⭐ ⭐ **八、⭐ 我的裁定（⭐ 本条）**: ⭐ ⭐ **联合单** —— ⭐ **app 侧装箱 ＋ ⭐ 引擎侧 `EngineRuntime::new_boxed()`** ✓
+| ⭐ 理由 | ⭐ 内容 |
+| :--- | :--- |
+| ⭐ ⭐ **① 余量太薄** | ⭐ ⭐ **app 侧单独装箱估计只压到 **≈0.76 MiB**（⭐ 它自己的估算）、⭐ 而限额是 **1 MiB** ⇒ ⭐ ⚠ **余量仅 ≈0.24 MiB** ⇒ ⭐ **不足以容纳后续增长**（⭐ 本会话 `EngineRuntime` 已从 160784 涨到 180000）✓ |
+| ⭐ ⭐ **② 最大单项在引擎侧** | ⭐ ⭐ **`EngineRuntime` ＝ **180000 B**** ⇒ ⭐ **而它是**按值**构造的** ⇒ ⭐ ⭐ **一个 `new_boxed()` 就移掉最大的那块** ✓ |
+| ⭐ **③ 一处改动解决两面** | ⭐ **GUI 路径与 `--export-wav` 路径共用那段构造** ⇒ ⭐ **联合修一次即覆盖两条链** ✓ |
+⭐ **交付形态建议**: ⭐ ⭐ **mod-engine 先出 `EngineRuntime::new_boxed()`（⭐ 新 API、⭐ ⛔ 不改既有 `new` 的行为）⇒ mod-app 再用它并做 app 侧装箱** ⇒ ⭐ **两个提交、⭐ 一条线序**（⭐ 避免同时改同一处）✓
+⭐ ⚠ **并附（⭐ 一条硬要求）**: ⭐ ⭐ **该单的判据必须包含"⭐ GUI 路径在 1 MiB 主线程栈下能启动"**（⭐ 用本单同一套 `ulimit -s` 手法）⇒ ⭐ **否则改完仍不知是否够** ✓
+
+⭐ ⚠ **九、⭐ 一条可复用口径（⭐ 第 234 条）**: ⭐ ⭐ **"⭐ 本机不红、⭐ 别平台红"的栈类问题可用**降低本机栈限额**来复现**** —— ⚠ **因为 macOS 的 `ulimit -s` **对子进程生效**（⭐ `RLIMIT_STACK`）⇒ ⭐ ⭐ **故能把"⭐ Windows 的 1 MiB 默认"搬到本机** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **① 量出目标平台默认栈（⭐ Windows 主线程 ≈1 MiB）⇒ ⭐ ② 用 `ulimit -s`（⭐ 或 ⭐ `std::thread::Builder::stack_size`）压到该值 ⇒ ⭐ ③ **二分求阈值**、⭐ 修复前后各求一次 ⇒ ⭐ ⭐ **阈值下降量就是修复的效果量**** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **1.02 MiB ⇒ 0.46 MiB** ⇒ ⭐ **且三档导出指纹相同 ⇒ ⭐ 证明只搬了分配位置** ✓
+
+⭐ ⚠ **十、⭐ 判决读数**: ⭐ ⭐ **本轮 `d85e5879` 待查** ⇒ ⭐ ⚠ **若 `windows` 腿转绿 ⇒ ⭐ **那将是本会话**首次全腿绿含 Windows `cli_contract`**** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **联合单（⭐ `EngineRuntime::new_boxed()` ＋ ⭐ app 侧装箱、⭐ 含 GUI 1 MiB 判据）** ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-5`／⭐ 6／⭐ 8 ✓
