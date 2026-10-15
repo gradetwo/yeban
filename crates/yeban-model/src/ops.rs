@@ -269,6 +269,37 @@ pub enum Op {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 设置**设备显示名**（[`DeviceDefinition::name`]）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`DeviceDefinition::name` 在操作日志层
+    /// 不可表达** —— 唯一的入口是 [`Op::InsertDevice`]（插入时把整个 `DeviceDefinition`
+    /// 交进去），而它之后**没有任何 `Op` 能改名** ⇒ 改名只能"删 + 加"。⭐ 这个实体上
+    /// "删 + 加"有**两个**坏处：⭐ ① 同 [`Op::SetClipName`] / [`Op::SetTrackName`]，
+    /// 设备的身份会变（对 PDC 与参数自动化而言那是另一个设备）；⭐ ② **`TrackV3::devices`
+    /// 是 `Vec`** ⇒ 既有 `InsertDevice` / `RemoveDevice` 用 `slot_index` 寻址，
+    /// 而 `remove` / `insert` 会**移位下标** ⇒ 调用方还得自己重算链上每一格的下标。
+    /// 这是 `ARCH-OPS-001` 那一族的又一处（与 `D27` 补 `AddClip`、[`Op::SetTrackName`]、
+    /// [`Op::SetClipName`]、[`Op::SetAuthor`] 的成因同型）。
+    ///
+    /// ⚠ **为何安全**：⭐ `name` 是**纯展示注记**、⛔ 无身份语义 —— 设备身份是
+    /// [`DeviceDefinition::id`] ⇒ ⭐ 改 `name` ⛔ 不动身份、⛔ 不动下标、⛔ 不让任何
+    /// 引用悬空。本变体只写这一个字段：⛔ 不碰 `id` / `kind` / `params` /
+    /// `latency_samples`，⭐ **也⛔ 不碰 `bypassed`** —— ⚠ **那是有意不做的**：
+    /// `bypassed` 是**行为开关**（与 [`TrackV3::solo_safe`] 同类），⛔ 不属于"显示名"这一票。
+    ///
+    /// ⚠ **寻址用 `track_id` + `device_id` 两个身份、⛔ 不用下标** —— 因为 `devices` 是
+    /// `Vec` 且增删会移位下标（见上）。⚠ 命名用 `old_*` / `new_*`（**set** 类，照
+    /// [`Op::SetTrackName`] / [`Op::SetClipName`]），⛔ **不是** `previous_*`。
+    SetDeviceName {
+        /// 目标音轨（设备的容器）。
+        track_id: EntityId,
+        /// 目标设备身份。
+        device_id: EntityId,
+        /// 修改前的显示名。
+        old_name: String,
+        /// 修改后的显示名。
+        new_name: String,
+    },
     /// 平移摆放。
     MoveClipPlacement {
         /// 目标音轨。
@@ -693,6 +724,7 @@ impl Op {
             Self::SetRoutingGain { .. } => "SetRoutingGain",
             Self::InsertDevice { .. } => "InsertDevice",
             Self::RemoveDevice { .. } => "RemoveDevice",
+            Self::SetDeviceName { .. } => "SetDeviceName",
             Self::SetParam { .. } => "SetParam",
             Self::SetTrackMute { .. } => "SetTrackMute",
             Self::SetTrackName { .. } => "SetTrackName",
@@ -971,6 +1003,32 @@ impl Op {
                         field: "routing.edge.gain_db",
                         value: f64::from(*gain_db),
                     });
+                }
+                Ok(())
+            }
+            Self::SetDeviceName {
+                track_id,
+                device_id,
+                old_name,
+                ..
+            } => {
+                let track = doc.track(track_id)?;
+                // ⚠ **按身份找、不按下标**（`devices` 是 `Vec`，增删会移位下标）。
+                // ⚠ 缺失时复用既有 `DeviceSlotOutOfRange`：`index` 传链长 = "请求落在
+                // 链尾之后"，是"这个身份不在链上"的**准确**读数（本仓没有"按 id 报设备
+                // 不存在"的模型错误变体，⛔ 不为此新增变体）。
+                let index = track
+                    .devices
+                    .iter()
+                    .position(|existing| existing.id == *device_id)
+                    .ok_or(ModelError::DeviceSlotOutOfRange {
+                        index: track.devices.len(),
+                        len: track.devices.len(),
+                    })?;
+                // ⚠ `String` 的相等是**逐字节**的（与 [`Op::SetTrackName`] /
+                // [`Op::SetClipName`] 同一口径）⇒ 陈旧载荷必被拒。
+                if track.devices[index].name != *old_name {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
             }
@@ -1422,6 +1480,17 @@ impl Op {
                 old_gain_db: *new_gain_db,
                 new_gain_db: *old_gain_db,
             },
+            Self::SetDeviceName {
+                track_id,
+                device_id,
+                old_name,
+                new_name,
+            } => Self::SetDeviceName {
+                track_id: *track_id,
+                device_id: *device_id,
+                old_name: new_name.clone(),
+                new_name: old_name.clone(),
+            },
             Self::InsertDevice {
                 track_id,
                 slot_index,
@@ -1761,6 +1830,26 @@ impl Op {
                 if let Some(edge) = doc.routing_graph.edges.get_mut(edge_id) {
                     edge.gain_db = *new_gain_db;
                 }
+                Ok(())
+            }
+            // 只写那**一个**显示名字段：⛔ 不碰 `id` / `kind` / `params` /
+            // `latency_samples`，⭐ 也⛔ 不碰 `bypassed`（行为开关，本票有意不做）。
+            Self::SetDeviceName {
+                track_id,
+                device_id,
+                new_name,
+                ..
+            } => {
+                let track = doc.track_mut(track_id)?;
+                let index = track
+                    .devices
+                    .iter()
+                    .position(|existing| existing.id == *device_id)
+                    .ok_or(ModelError::DeviceSlotOutOfRange {
+                        index: track.devices.len(),
+                        len: track.devices.len(),
+                    })?;
+                track.devices[index].name = new_name.clone();
                 Ok(())
             }
             Self::InsertDevice {
