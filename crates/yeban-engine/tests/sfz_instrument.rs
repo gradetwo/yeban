@@ -10,6 +10,7 @@
 //! | # | 判据 | 判定量 |
 //! | :--- | :--- | :--- |
 //! | S1 | 引擎声部路径 == 摊平表路径 | **逐样本最大绝对差**（`max_i |flat_i − engine_i|`）＝ **0**，并配"两侧都真的出声"的反向对照 |
+//! | S1b | ⭐ **逐块拼接的整音符**（`#66` 补做 2） | 8 × 128 帧拼接 vs 摊平表**一次性 1024 帧**：逐样本最大绝对差 ＝ **0**，且"有声块 ≥ 2"（跨块见证；⛔ 挡住"提前退休"注入） |
 //! | S2 | 终点口径 ＝ 样本自然结束 | 播完那一块之后 `sfz_active_voices == 0`（退休）＋ 下一块**逐位静音**，而摊平表**每一块都从源 0 重播**（≠ 0） |
 //! | S3 | 显式 `span` 终点 | 引擎在**第 `end` 帧**停、摊平表继续（已登记的口径分叉 sfz-needs-4） |
 //! | S4 | `end=-1`（`SampleEnd::Silent`） | 引擎**一帧不写**、池子 0 声部；摊平表仍出声（对照 ⇒ 引擎的静音不是"夹具坏了"） |
@@ -18,6 +19,7 @@
 //! | S7 | 分派次序 | 鼓机 ＋ SFZ 同轨的输出对"只有鼓机"**逐位相同**；而无鼓机时 SFZ 支路**真的出声** |
 //! | S8 | 池满（> 16 条匹配区域） | `created == 16` ＋ `dropped == 1`（⛔ 不静默） |
 //! | S9 | 尺寸 | `size_of` 读数 ＋ `EngineRuntime < 192 KiB`（与 `synth_rt_zero_alloc.rs:2570` 同一门槛） |
+//! | S10 | ⭐ **换音源 / 定位必须释放 SFZ 池**（`#66` 补做 2） | `sfz_active_voices`：触发后 **2** → 换音源后/`seek` 后 **0**；换音源那一块**复音非零 > 0**（真的换了音源）；切回 SFZ 那一块**非零 ＝ 0** |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -107,6 +109,12 @@ const SAMPLE_FRAMES: usize = 480;
 /// 块长（帧）：**比样本长** ⇒ 一块之内就能观察到"样本自然结束 ⇒ 退休"。
 const BLOCK: usize = 512;
 
+/// ⭐ S1 第二条腿用的**量子长**（帧；= `block::DEFAULT_BLOCK_FRAMES`）。
+const QUANTUM: usize = 128;
+
+/// ⭐ S1 第二条腿用的**量子数**：`8 × 128 = 1024` 帧 > 样本 480 帧 ⇒ 真的跨块。
+const MULTI_BLOCKS: usize = 8;
+
 /// 摊平一条 SFZ 文本（控制侧；**允许分配**）。
 fn prepare(text: &str) -> PreparedSfz {
     let sfz = SfzInstrument::load(text.to_owned(), &Default::default()).expect("SFZ 必须解析成功");
@@ -171,6 +179,58 @@ fn s1_engine_voices_match_the_flattened_table_sample_by_sample() {
         "引擎侧必须真的出声（否则上面的等号是空转）"
     );
     assert!(flat.iter().any(|s| *s != 0.0), "摊平侧必须真的出声");
+
+    // --- ⭐ S1 第二条腿（任务单 `#66` 补做 2）：**逐块拼接的整音符** ---
+    //
+    // 为什么必须补（注入实测）：上面那条腿只跨**一块**（512 帧 ≥ 样本 480 帧）
+    // ⇒ `written == remaining` 永不发生 ⇒ "声部是否跨量子延续"**没有被量到**。
+    // 实测：把 `written < remaining` 改成 `<=`（提前退休）时上一条腿**逐位不变**，
+    // 只有把尺度**跨过"样本长"**才看得见 —— 那种注入会让输出腰斩
+    // （端到端非零 1716 → 508、㉙ 总能量 2999.164 → 780.073）而**无人知**。
+    //
+    // 判定量：8 个 128 帧量子（= 1024 帧）拼起来的整段，与摊平表**一次性 1024 帧**
+    // 调用的**逐样本最大绝对差**；外加"真的有 ≥ 2 个块出声"（跨块见证，⛔ 防空转）。
+    let mut engine_multi = engine_with_track(track);
+    let mut joined = vec![0.0f32; QUANTUM * MULTI_BLOCKS];
+    let mut blocks_with_sound = 0usize;
+    for block in 0..MULTI_BLOCKS {
+        let mut out = vec![0.0f32; QUANTUM];
+        engine_multi.render_track(track, Some(&schedule), Some(&prepared), &mut out);
+        if out.iter().any(|s| *s != 0.0) {
+            blocks_with_sound += 1;
+        }
+        joined[block * QUANTUM..(block + 1) * QUANTUM].copy_from_slice(&out);
+        engine_multi.advance(QUANTUM);
+    }
+    let mut flat_joined = vec![0.0f32; QUANTUM * MULTI_BLOCKS];
+    let flat_joined_written = prepared.render_block_into(60, 127, &mut flat_joined);
+    let joined_diff = joined
+        .iter()
+        .zip(flat_joined.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    println!(
+        "[engine-sfz/S1b] 逐块拼接（{MULTI_BLOCKS} × {QUANTUM} = {} 帧）：逐样本最大绝对差 = \
+         {joined_diff:e}；有声块 = {blocks_with_sound}；摊平一次性写入 {flat_joined_written} 帧；\
+         引擎非零 = {}；摊平非零 = {}",
+        QUANTUM * MULTI_BLOCKS,
+        joined.iter().filter(|s| **s != 0.0).count(),
+        flat_joined.iter().filter(|s| **s != 0.0).count(),
+    );
+    assert_eq!(
+        joined_diff, 0.0,
+        "⭐ 逐块拼接的整音符必须与摊平表的一次性调用**逐样本相同**\
+         （声部跨量子延续、且样本只播**一遍**）"
+    );
+    assert!(
+        blocks_with_sound >= 2,
+        "⭐ 夹具必须真的**跨块**（有声块 = {blocks_with_sound}）—— 否则这条腿量不到'跨量子延续'\
+         （进程内自检：注入'提前退休'时必须在这里变红）"
+    );
+    assert!(
+        flat_joined_written > 0,
+        "摊平表的整段调用必须真的写入（否则等号是空转）"
+    );
 }
 
 /// S2：**终点口径 ＝ 样本自然结束**（⛔ 无包络）。
@@ -581,5 +641,93 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
         runtime < 192 * 1024,
         "`EngineRuntime` = {runtime} 字节 ≥ 192 KiB（{})—— 定长声部池把实时对象撑爆了",
         192 * 1024
+    );
+}
+
+/// S10（任务单 `#66` **补做 2**）：**换音源 / 定位必须释放 SFZ 池**。
+///
+/// # 为什么补它（注入实测的缺口，逐字读数见补做报告）
+///
+/// `slot.sfz.silence()` 的**三处调用**（`synth.rs:1483` 的 `seek`／`:1831` 的鼓机分支／
+/// `:1841` 的复音分支）在 S1~S9 里**零覆盖**：把三处全删掉之后，`S1~S9` 与
+/// `rt_zero_alloc` ㉙ **全绿**（9 passed / 73 通过），而**临时探针**量到注入确实活着 ——
+/// 换音源后 `sfz_active_voices` 仍是 `Some(1)`、`seek` 后仍是 `Some(1)`，
+/// 且**切回 SFZ 时陈旧声部从旧源位置复活、写出 128 个非零样本**（还原态三处全是
+/// `Some(0)` / `0`）。那是**用户可见的错**：换掉音源（或定位）之后仍听到上一件音源的尾巴。
+///
+/// # 判定量
+///
+/// * `SynthEngine::sfz_active_voices`（声部数）：触发后必须 **2**（前置见证）、
+///   换音源后与 `seek` 后必须 **0**；
+/// * 换音源那一个量子的**复音非零样本数** > 0（证明那个量子**真的**走了复音分支，
+///   ⛔ 不是"整条链没跑"）；
+/// * 切回 SFZ 那一个量子的**非零样本数** ＝ **0**（逐位静音，⛔ 不得复活）。
+#[test]
+fn s10_changing_the_source_or_seeking_releases_the_sfz_pool() {
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let track = EntityId::new();
+    // 音符 A：key 60（两条区域都匹配）⇒ 第一量子建 **2** 个 SFZ 声部；
+    // 音符 B：在**第二量子**起音、音高 67（三条区域都不匹配）⇒ 换音源那一个量子由
+    // **复音**发声 ⇒ 那个量子是"真的走了复音分支"的见证。
+    let schedule = NoteSchedule::from_sorted(vec![
+        support::scheduled(0, 12_000, 60, 1.0, 48_000.0),
+        support::scheduled(QUANTUM as u64, 3_000, 67, 1.0, 48_000.0),
+    ]);
+
+    // --- 臂 A：换音源（`sfz = None` ⇒ 复音分支）必须释放池 ---
+    let mut engine = engine_with_track(track);
+    let mut out = vec![0.0f32; QUANTUM];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut out);
+    let after_sfz = engine.sfz_active_voices(track);
+    engine.advance(QUANTUM);
+    engine.render_track(track, Some(&schedule), None, &mut out);
+    let poly_nonzero = out.iter().filter(|s| **s != 0.0).count();
+    let after_swap = engine.sfz_active_voices(track);
+    engine.advance(QUANTUM);
+    let mut back = vec![0.0f32; QUANTUM];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut back);
+    let back_nonzero = back.iter().filter(|s| **s != 0.0).count();
+
+    // --- 臂 B：`seek`（定位）也必须释放池 ---
+    let mut engine_seek = engine_with_track(track);
+    engine_seek.render_track(track, Some(&schedule), Some(&prepared), &mut out);
+    let before_seek = engine_seek.sfz_active_voices(track);
+    engine_seek.seek(0);
+    let after_seek = engine_seek.sfz_active_voices(track);
+
+    println!(
+        "[engine-sfz/S10] 触发后活声部 = {after_sfz:?}；换音源那一块复音非零 = {poly_nonzero}；\
+         换音源后活声部 = {after_swap:?}；切回 SFZ 的非零 = {back_nonzero}；\
+         seek 前 = {before_seek:?}、seek 后 = {after_seek:?}"
+    );
+    assert_eq!(
+        after_sfz,
+        Some(2),
+        "⭐ 前置见证：两条 `key=60` 的区域都匹配 ⇒ 触发后必须有 **2** 个声部在飞\
+         （否则下面的 `Some(0)` 是空转）"
+    );
+    assert!(
+        poly_nonzero > 0,
+        "⭐ 换音源那一个量子必须由**复音**发声（非零 = {poly_nonzero}）—— 这是'真的换了音源'的见证"
+    );
+    assert_eq!(
+        after_swap,
+        Some(0),
+        "⭐ 换音源（`sfz = None`）⇒ SFZ 池必须被**释放**（`slot.sfz.silence()`）"
+    );
+    assert_eq!(
+        back_nonzero, 0,
+        "⭐ 切回 SFZ 时陈旧声部⛔ 不得复活（该量子必须逐位静音）—— 注入实测：不释放时会\
+         从旧源位置写出 128 个非零样本"
+    );
+    assert_eq!(
+        before_seek,
+        Some(2),
+        "⭐ 前置见证：`seek` 前必须也有 2 个声部在飞"
+    );
+    assert_eq!(
+        after_seek,
+        Some(0),
+        "⭐ `seek`（定位）⇒ SFZ 池必须被释放（⛔ 不留上一段采样）"
     );
 }
