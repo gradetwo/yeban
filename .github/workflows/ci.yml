@@ -661,6 +661,10 @@ jobs:
       contains(needs.plan.outputs.crates, 'yeban-sfz') ||
       contains(needs.plan.outputs.crates, 'yeban-engine')
     runs-on: macos-latest
+    env:
+      # macOS 的默认测试线程栈小于 Linux：yeban-app 的 engine_device_leg 在裸跑时会栈溢出，
+      # 而仓库自己的门禁脚本（scripts/dev/premerge-gate.sh:23）就设了这个值。
+      RUST_MIN_STACK: 16777216
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
