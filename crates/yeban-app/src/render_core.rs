@@ -22,17 +22,19 @@
 //! | :--- | :--- | :--- |
 //! | 引擎乐器（默认） | [`EngineTrackSource`] → `SynthEngine::render_track` | ⭐ 引擎**内部**：鼓机读 `ScheduledNote::gain`、复音读同一个 `note.gain`、SFZ 声部读 `NoteSchedule::track_gain` —— 三者都来自 `snapshot::project_schedules` 里**同一次** [`yeban_engine::synth::track_gain_scale`] |
 //! | **SFZ 旁路**（`--sfz`） | [`crate::sfz_load::SfzTrackSource`] | ⭐ **本模块**在构造期逐轨调**同一个** [`track_gain_of`]（⇒ 同一个 `track_gain_scale`）再经 `with_track_gain` 注入 |
-//! | 最小音源（`use_engine_source = false`） | [`NoteToneSource`] | ⚠ **未接**（见下） |
+//! | 最小音源（`use_engine_source = false`） | [`NoteToneSource`] | ⭐ **本模块**在构造期逐轨调**同一个** [`track_gain_of`]（⇒ 同一个 `track_gain_scale`）再经 `with_track_gain` 注入（与 SFZ 旁路**同形**） |
 //!
-//! ⚠ **为什么 SFZ 旁路原先吃不到**：它**整个替换**引擎音源，且本模块在带 SFZ 时
+//! ⚠ **为什么两条旁路原先吃不到**：SFZ 与最小音源都**整个替换**引擎音源，且本模块在带 SFZ 时
 //! **不建引擎快照**（上面的 `snapshot` 判据）⇒ 那份"投影期已乘好的"轨增益不存在。
 //! 修法**不是**在这里写一份 `volume_db ⇒ 线性`（那会与引擎分叉），而是调引擎的
-//! **同一个**算子。
+//! **同一个**算子：两条旁路都在构造期经 `with_track_gain(track_gain_of(...))` 注入。
 //!
-//! ⚠ **仍然如实登记的缺口**：最小音源 [`NoteToneSource`] **没有**轨增益（它只作判据对照
-//! 与极端回退 —— 产品路径 `--export-wav` / `record_wav` 都给 `use_engine_source = true`）。
-//! ⛔ 本单**不动**它：它不属本单受理的那条边界（SFZ 旁路），且改它会让那条对照臂的产物
-//! 字节变化，需要单独一条判据与登记。
+//! ⭐ **缺口已闭合**（本单落地 `#69` 登记的边界）：最小音源 [`NoteToneSource`] 现在也吃轨增益
+//! —— 此前它只作判据对照与极端回退（产品路径 `--export-wav` / `record_wav` 都给
+//! `use_engine_source = true` ⇒ ⛔ 产品字节一位没变）。⚠ 唯一受影响的是 `export_wav.rs` 的
+//! `the_engine_source_is_not_silent_and_differs_from_the_fallback_tone`：它只断言"两版**逐字节
+//! 不同**"＋来源文案，**不钉**回退版的字节；夹具那条 MIDI 轨 `volume_db = -3.0`
+//! ⇒ 回退版整体乘 `track_gain(-3.0)`，而**没有一条断言期望值**因此改变。
 //!
 //! ⚠ **音频片段**（[`crate::audio_clip`]）另有一套自己的"片段增益 ＋ 轨音量 ＋ 声相"
 //! 组合（`audio_clip.rs:282` 的 `db_to_linear(clip_gain_db + track_volume_db)`）——
@@ -257,14 +259,20 @@ pub fn render_project_f32_with_assets(
         }
         "引擎乐器（SynthEngine::arm_from_snapshot + render_track）".to_owned()
     } else {
+        // ⭐ **轨增益门**（推子 × 静音/独奏）：与 SFZ 分支**同一个** [`track_gain_of`]
+        // （⇒ 同一个 `track_gain_scale`）。⚠ 这段必须在这里算：最小音源同样是**整体替换**
+        // 引擎音源的旁路（见上面 `snapshot` 判据），拿不到投影期已乘好的那一份。
+        let any_solo = project.tracks.values().any(|track| track.solo);
         for track_id in renderable.clone() {
+            let track_gain = track_gain_of(project, track_id, any_solo);
             sources.insert(
                 track_id,
-                Box::new(NoteToneSource::from_track(
-                    project,
-                    track_id,
-                    options.sample_rate,
-                )),
+                Box::new(
+                    NoteToneSource::from_track(project, track_id, options.sample_rate)
+                        // ⭐ 与 SFZ 侧同形（`SfzTrackSource::with_track_gain`）：轨增益乘在
+                        //    **本源输出之外**；`1.0` ⇒ 跳过乘法、读数逐位不变。
+                        .with_track_gain(track_gain),
+                ),
             );
         }
         "最小音源（方波 + 首尾包络；回退）".to_owned()
@@ -426,5 +434,165 @@ mod tests {
                  （volume_db={volume_db} mute={mute} solo_elsewhere={solo_elsewhere}）"
             );
         }
+    }
+
+    /// 峰值（绝对值最大；单位：线性幅度）—— 本模块的两条最小音源判据用它排除"全零也算恒等"。
+    fn peak(samples: &[f32]) -> f32 {
+        samples
+            .iter()
+            .fold(0.0_f32, |acc, sample| acc.max(sample.abs()))
+    }
+
+    /// 一块 8 秒 48 kHz 的单声道上下文（与 `WavExportOptions::default()` 同长）。
+    fn block_context(frames: usize) -> BlockContext {
+        BlockContext {
+            block_index: 0,
+            first_frame: 0,
+            frames,
+            channels: 1,
+            sample_rate: 48_000,
+            seed: 1,
+        }
+    }
+
+    /// ⭐ 判据（本单新增，`#71`）：**同一个算子** —— 最小音源注入的那一份 vs 引擎投影。
+    ///
+    /// # 量什么（先说再跑）
+    ///
+    /// 同一份工程上，[`NoteToneSource::with_track_gain`] 收到的那个标量
+    /// （读回＝[`NoteToneSource::track_gain`]）与引擎快照投影写进
+    /// `NoteSchedule::track_gain` 的那个标量，**逐位相同的 f32**（单位：线性增益）。
+    ///
+    /// 做法与 [`the_sfz_track_gain_is_bit_identical_to_the_engine_projection`] 逐条对齐
+    /// —— 两条旁路用的是**同一个** [`track_gain_of`]（⇒ 同一个 `track_gain_scale`）。
+    ///
+    /// # 怎么变红
+    ///
+    /// 把 [`NoteToneSource`] 的注入换成自己换算（例如 `10f32.powf(db / 20.0)` 而丢掉
+    /// 可闻门）⇒ 静音档 / 别轨独奏档当场不等，其余档末位 `to_bits()` 也不等。
+    #[test]
+    fn the_minimum_tone_track_gain_is_bit_identical_to_the_engine_projection() {
+        for (volume_db, mute, solo_elsewhere) in [
+            (0.0_f32, false, false),
+            (-6.0, false, false),
+            (-3.5, false, false),
+            (0.0, true, false),
+            (0.0, false, true),
+        ] {
+            let (project, lead) = fixture(volume_db, mute, solo_elsewhere);
+            let any_solo = project.tracks.values().any(|track| track.solo);
+            let ours = NoteToneSource::from_track(&project, lead, 48_000)
+                .with_track_gain(track_gain_of(&project, lead, any_solo))
+                .track_gain();
+            let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具工程必须成快照");
+            let theirs = snapshot
+                .schedules()
+                .get(&lead)
+                .expect("本轨必须有调度表")
+                .track_gain();
+            println!(
+                "[app-tone-gain/operator] volume_db={volume_db} mute={mute} \
+                 solo_elsewhere={solo_elsewhere}: 最小音源注入={ours:.9} ({:#010x}) vs \
+                 引擎投影={theirs:.9} ({:#010x})",
+                ours.to_bits(),
+                theirs.to_bits()
+            );
+            assert_eq!(
+                ours.to_bits(),
+                theirs.to_bits(),
+                "⭐ 最小音源注入的轨增益必须与引擎投影 `NoteSchedule::track_gain` **逐位相同**\
+                 （volume_db={volume_db} mute={mute} solo_elsewhere={solo_elsewhere}）"
+            );
+        }
+    }
+
+    /// ⭐ 判据（本单新增，`#71`）：**单位增益（`1.0`）⇒ 跳过乘法 ⇒ 逐位恒等**。
+    ///
+    /// 判定量：同一条轨、同一段帧区间上，`with_track_gain(1.0)` 的输出与**完全不注入**
+    /// 的输出**逐位相同**（单位：线性幅度，单声道 8 秒）；并断言该段**非静音**
+    /// （否则"全零 ＝ 全零"也算恒等，判据没有牙）。
+    ///
+    /// ⚠ 这条腿解释"为什么 `1.0` 那档的字节一位没变"。
+    #[test]
+    fn the_default_tone_track_gain_is_a_bit_exact_identity() {
+        let (project, lead) = fixture(-6.0, false, false);
+        let frames = 48_000 * 8;
+        let mut implicit = NoteToneSource::from_track(&project, lead, 48_000);
+        assert_eq!(
+            implicit.track_gain(),
+            1.0,
+            "缺省必须是**单位增益**，⛔ 不是 0.0"
+        );
+        let mut explicit = NoteToneSource::from_track(&project, lead, 48_000).with_track_gain(1.0);
+        assert_eq!(
+            explicit.track_gain().to_bits(),
+            1.0_f32.to_bits(),
+            "`with_track_gain` 必须原样存下注入的门"
+        );
+        let mut without = vec![0.0_f32; frames];
+        let mut with = vec![0.0_f32; frames];
+        implicit
+            .render_block(block_context(frames), &mut without)
+            .expect("最小音源渲染不得失败");
+        explicit
+            .render_block(block_context(frames), &mut with)
+            .expect("最小音源渲染不得失败");
+        assert!(
+            peak(&without) > 0.0,
+            "该段必须真的出声（否则恒等没有判别力）"
+        );
+        assert_eq!(
+            without
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            with.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            "⭐ 单位增益 ⇒ 输出必须与**不注入**逐位相同（`1.0` 是 IEEE 恒等、跳过乘法）"
+        );
+    }
+
+    /// ⭐ 判据（本单新增，`#71`）：**轨增益乘在本源输出之外**（⛔ 不是折进每个音符的幅度）。
+    ///
+    /// 判定量：`with_track_gain(g)` 的输出与"单位增益输出 × `g`"**逐位相同**
+    /// （单位：线性幅度，单声道 8 秒，`g = track_gain(−6 dB)`）。
+    ///
+    /// ⚠ 与 `SfzTrackSource` 同形：增益乘在**源的输出**上，与引擎侧
+    /// `NoteSchedule::track_gain` 一次乘法同口径。
+    #[test]
+    fn the_tone_source_output_is_the_unit_gain_output_times_the_track_gain() {
+        let gain = yeban_engine::synth::track_gain(-6.0);
+        assert!(gain > 0.0 && gain < 1.0, "夹具档必须是非恒等衰减");
+        let (project, lead) = fixture(-6.0, false, false);
+        let frames = 48_000 * 8;
+        let mut raw_source = NoteToneSource::from_track(&project, lead, 48_000);
+        let mut gated_source =
+            NoteToneSource::from_track(&project, lead, 48_000).with_track_gain(gain);
+        let mut raw = vec![0.0_f32; frames];
+        let mut gated = vec![0.0_f32; frames];
+        raw_source
+            .render_block(block_context(frames), &mut raw)
+            .expect("最小音源渲染不得失败");
+        gated_source
+            .render_block(block_context(frames), &mut gated)
+            .expect("最小音源渲染不得失败");
+        let expected: Vec<f32> = raw.iter().map(|value| value * gain).collect();
+        println!(
+            "[app-tone-gain/shape] 单位增益峰值 {:.9} × {gain:.9} = {:.9}，注入档峰值 {:.9}",
+            peak(&raw),
+            peak(&raw) * gain,
+            peak(&gated)
+        );
+        assert!(peak(&raw) > 0.0 && peak(&gated) > 0.0, "两臂都必须出声");
+        assert_eq!(
+            gated
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            "⭐ 注入档必须 ＝ 单位增益输出 × 轨增益（逐位相同）"
+        );
     }
 }

@@ -43,6 +43,9 @@
 //! `WavExportOptions::use_engine_source = false` 时才用**最小音源**（确定性方波 ＋ 首尾包络，
 //! 相位由整数帧号派生）：它是**判据的对照**与极端回退，报告行里的 `source=` 字段**明说用了哪一个**
 //! （⛔ 不让人误以为听到了乐器）。
+//! ⭐ 它**也吃引擎层的轨增益**（推子／静音／独奏）：[`crate::render_core`] 在构造期用引擎的
+//! **同一个**算子 [`yeban_engine::synth::track_gain_scale`] 逐轨算好，再经
+//! [`NoteToneSource::with_track_gain`] 注入 —— 与 SFZ 旁路**同形**（见该类型文档）。
 //!
 //! ⭐ **音频片段**（`ClipContent::Audio`）：引擎快照把音频摆放当静音（`snapshot.rs` 的登记），
 //! 因此它们由 [`crate::render_core`] 在 MIDI 基座之上**叠加**（[`crate::audio_clip`]，
@@ -220,9 +223,23 @@ impl core::error::Error for WavExportError {}
 ///
 /// ⛔ 这不是引擎乐器（见模块文档的诚实登记）；它的职责是"把导出管路打通且**可听**"，
 /// 并保持确定性：同一工程 ＋ 同一选项 ⇒ 逐位相同的输出。
+///
+/// ## ⭐ 引擎层的轨增益门（推子／静音／独奏）
+///
+/// 与姊妹源 [`crate::sfz_load::SfzTrackSource`] **同形**：本类型**不碰**力度那一半
+/// （它自己的 `velocity/127 × 0.2` 是"最小音源"的固有幅度），只把**引擎层的轨增益**
+/// 乘在**本源输出之外**（`render_block` 里逐样本）。值由调用方
+/// （[`crate::render_core`]）用引擎的**同一个算子**
+/// [`yeban_engine::synth::track_gain_scale`] 逐轨算出，再经 [`Self::with_track_gain`]
+/// 注入 —— ⛔ 本类型**不**自己写一份 `volume_db ⇒ 线性` 的换算。
+///
+/// ⚠ 缺省是 **`1.0` ＝ 单位增益**（⛔ 不是 `0.0`：默认不是静音）；`1.0` 是 IEEE 恒等
+/// ⇒ 跳过乘法，"调用方没给轨参数"的读数与接线前**逐位相同**。
 pub(crate) struct NoteToneSource {
     /// `(绝对起始帧, 结束帧, 2 * freq / sample_rate, 幅度)`。
     notes: Vec<(u64, u64, f64, f32)>,
+    /// ⭐ **引擎层的轨增益门**（可闻门 ＝ 静音/独奏 × 推子；默认 **`1.0`＝单位增益**）。
+    track_gain: f32,
 }
 
 /// 首尾包络长度（帧）：避免方波起止的爆音。
@@ -260,7 +277,33 @@ impl NoteToneSource {
             }
         }
         notes.sort_unstable_by_key(|n| n.0);
-        Self { notes }
+        Self {
+            notes,
+            // ⭐ 默认**单位增益**（⛔ 不是 `0.0`）—— 与引擎侧
+            // `NoteSchedule::from_sorted`／`SfzTrackSource::new` 的默认同口径。
+            track_gain: 1.0,
+        }
+    }
+
+    /// ⭐ 写入**引擎层的轨增益门**（推子 × 静音/独奏；构造期一次）。
+    ///
+    /// ⚠ 值必须来自引擎的**同一个算子** [`yeban_engine::synth::track_gain_scale`]
+    /// （见字段文档）—— ⛔ 本类型不接受"这里自己换算"的第二份实现。
+    /// 与引擎侧 [`yeban_engine::synth::NoteSchedule::with_track_gain`]、以及与姊妹源
+    /// [`crate::sfz_load::SfzTrackSource::with_track_gain`] **同名同形**。
+    #[must_use]
+    pub(crate) const fn with_track_gain(mut self, track_gain: f32) -> Self {
+        self.track_gain = track_gain;
+        self
+    }
+
+    /// ⭐ 本源的**轨增益门**（与力度无关：可闻门 × 推子）。
+    ///
+    /// ⚠ 这是"注入的那一份标量"，不是"输出里量出来的比例"——判据用它逐位对账引擎投影
+    /// （`NoteSchedule::track_gain`）。
+    #[must_use]
+    pub(crate) const fn track_gain(&self) -> f32 {
+        self.track_gain
     }
 
     /// 该帧上所有正在发声的音符之和（`[-1, 1]` 之外的削波交给渲染层的母线）。
@@ -358,11 +401,20 @@ impl AudioSource for NoteToneSource {
         out.fill(0.0);
         let channels = context.channels.max(1);
         let frames = context.frames.min(out.len() / channels);
+        let track_gain = self.track_gain();
         for index in 0..frames {
             let frame = context.first_frame + index as u64;
-            let value = self.sample_at(frame);
+            let mut value = self.sample_at(frame);
+            // ⭐ **引擎层的轨增益门**乘在**本源输出之外**（与 `SfzTrackSource::ensure_rendered`
+            //    同形）。`1.0` 是 IEEE 恒等 ⇒ 跳过乘法，"调用方没给轨参数"的读数逐位不变。
+            if track_gain != 1.0 {
+                value *= track_gain;
+            }
             for channel in 0..channels {
-                out[index * channels + channel] = value;
+                // ⭐ 累加进**已清零**的缓冲（与 `SfzTrackSource`／音频片段同口径）：这样
+                //    `-x * 0.0 = -0.0` 会被 `+0.0` 归一 ⇒ 静音档是**逐位** 0（`to_bits() == 0`），
+                //    而不是 `0x8000_0000`。非零样本上 `0.0 + x == x` 逐位相等。
+                out[index * channels + channel] += value;
             }
         }
         Ok(())
