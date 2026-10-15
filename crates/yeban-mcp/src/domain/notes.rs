@@ -993,6 +993,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_DEVICE_NAME_KIND,
     SET_DEVICE_BYPASSED_KIND,
     SET_CLIP_PLACEMENT_MUTED_KIND,
+    SET_TRACK_COLOR_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1585,6 +1586,30 @@ pub const SET_CLIP_PLACEMENT_MUTED_FIELDS: [&str; 4] = [
     SET_CLIP_PLACEMENT_MUTED_TRACK_FIELD,
     SET_CLIP_PLACEMENT_MUTED_PLACEMENT_FIELD,
     SET_CLIP_PLACEMENT_MUTED_MUTED_FIELD,
+];
+
+/// `ops[].kind` 的**设置音轨色标**形态名（写 [`Op::SetTrackColor`]）。
+pub const SET_TRACK_COLOR_KIND: &str = "setTrackColor";
+
+/// 设置音轨色标形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
+pub const SET_TRACK_COLOR_TRACK_FIELD: &str = "trackId";
+
+/// 设置音轨色标形态的**色标**字段名（`ops[].color`，**必填**，非空字符串或 `null`）。
+///
+/// ⚠ **`null` = 清除**（⭐ 回到主题默认色 —— ⭐ 模型的 `None` 是**一等状态**，⭐ 见
+/// `TrackV3::color` 的文档）。⭐ **缺键 ⛔ 不等于清除**：⭐ 本形态是**单字段设值**、
+/// ⛔ 不是"合并式 patch"（⭐ 后者是 `setScene`／`setSection` 的形状）⇒ ⭐ 缺键**响亮拒绝**。
+/// ⚠ **非空**：⭐ 照 [`SCENE_COLOR_FIELD`] 的既有口径（`read_non_empty_string`，
+/// reason `sceneColorMustBeNonEmptyString`）⇒ 本源用 `trackColorMustBeNonEmptyString`。
+/// ⚠ 模型层**没有**校验色值格式（`parse_hex_color` 在 `yeban-app`、非法即回退默认）⇒
+/// 本层也⛔ **不自造格式判断**。
+pub const SET_TRACK_COLOR_COLOR_FIELD: &str = "color";
+
+/// 设置音轨色标形态允许出现的**全部**键（判别键 + 目标音轨 + 色标）。
+pub const SET_TRACK_COLOR_FIELDS: [&str; 3] = [
+    "kind",
+    SET_TRACK_COLOR_TRACK_FIELD,
+    SET_TRACK_COLOR_COLOR_FIELD,
 ];
 
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
@@ -2422,6 +2447,26 @@ pub enum NoteOp {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 设置**音轨色标**（[`Op::SetTrackColor`]，寻址到一条音轨）。
+    ///
+    /// ⭐ **本形态补上了什么**：⭐ 在它之前 `TrackV3::color` **只能在建轨时给**
+    /// （`addTrack` 的载荷）⇒ ⭐ 改色标只能删轨重建（⭐ 会换掉 `trackId`、丢掉设备/自动化/路由）。
+    /// ⚠ ⭐ **`section` 与 `scene` 的色标 **已有通路****（⭐ 走它们各自的 patch）⇒
+    /// ⭐ **只有音轨这一个是缺口**，⛔ 故本单只加这一个形态（⭐ ⛔ 不给另两个加重复通路）。
+    ///
+    /// ⚠ **`color` 必填**：⭐ `null` = **清除**（回主题默认色）、⭐ 非空字符串 = 设值
+    /// ⇒ ⭐ **缺键 ⛔ 不等于清除**（⭐ 本形态是**单字段设值**、⛔ 不是合并式 patch）。
+    /// ⚠ **为何安全**：色标是**纯展示注记**、身份是 `trackId`；⭐ `None` 是**一等状态**。
+    /// 撤销载荷 `old_color` 由 [`compile`] 从**当前文档**读（`project.tracks[trackId].color`）
+    /// ⇒ ⛔ 不信调用方。⛔ 不碰 `id` / `name` / `kind` / 集合 / 混音标量。
+    SetTrackColor {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的色标（来自当前文档；`None` = 主题默认色）。
+        old_color: Option<String>,
+        /// 修改后的色标（`None` = 清除 = 回到主题默认色）。
+        new_color: Option<String>,
+    },
     /// 切换**摆放静音**（[`Op::SetClipPlacementMuted`]，寻址到一条音轨上的一个摆放）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前 `ClipPlacement::muted` **只在创建时**能给
@@ -2904,6 +2949,7 @@ impl NoteOp {
             Self::SetDeviceName { .. } => SET_DEVICE_NAME_KIND,
             Self::SetDeviceBypassed { .. } => SET_DEVICE_BYPASSED_KIND,
             Self::SetClipPlacementMuted { .. } => SET_CLIP_PLACEMENT_MUTED_KIND,
+            Self::SetTrackColor { .. } => SET_TRACK_COLOR_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -3268,6 +3314,30 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 // ⚠ `old_bpm` 是**占位**：真值由 `compile` 从当前文档读（⛔ 不信调用方）。
                 old_bpm: 0.0,
                 new_bpm: read_required_finite_f64(object, SET_TEMPO_BPM_FIELD)?,
+            })
+        }
+        SET_TRACK_COLOR_KIND => {
+            reject_set_track_color_fields(object)?;
+            Ok(NoteOp::SetTrackColor {
+                track_id: read_id(object, SET_TRACK_COLOR_TRACK_FIELD)?,
+                // ⚠ `old_color` 是**占位**：真值由 `compile` 从当前文档读。
+                old_color: None,
+                new_color: match object.get(SET_TRACK_COLOR_COLOR_FIELD) {
+                    // ⚠ **缺键 ≠ 清除**：本形态是单字段设值 ⇒ 缺键响亮拒绝。
+                    None => {
+                        return Err(missing(
+                            SET_TRACK_COLOR_COLOR_FIELD,
+                            "非空字符串或 null（null 表示清除、回到主题默认色）",
+                        ));
+                    }
+                    Some(Value::Null) => None,
+                    Some(value) => Some(read_non_empty_string(
+                        SET_TRACK_COLOR_KIND,
+                        value,
+                        SET_TRACK_COLOR_COLOR_FIELD,
+                        "trackColorMustBeNonEmptyString",
+                    )?),
+                },
             })
         }
         SET_CLIP_PLACEMENT_MUTED_KIND => {
@@ -3670,6 +3740,15 @@ fn reject_set_tempo_fields(object: &Map<String, Value>) -> Result<(), Fault> {
 }
 
 /// 拒绝 `setAuthor` 里 [`SET_AUTHOR_FIELDS`] 之外的键。
+fn reject_set_track_color_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TRACK_COLOR_FIELDS,
+        SET_TRACK_COLOR_KIND,
+        "unknownSetTrackColorField",
+    )
+}
+
 fn reject_set_clip_placement_muted_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     reject_unknown_keys(
         object,
@@ -5981,6 +6060,29 @@ pub fn compile(
                     track_id: *track_id,
                     old_name: track.name.clone(),
                     new_name: new_name.clone(),
+                }
+            }
+            NoteOp::SetTrackColor {
+                track_id,
+                new_color,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，`Option` 比对）。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有色标可以改"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "trackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                Op::SetTrackColor {
+                    track_id: *track_id,
+                    old_color: track.color.clone(),
+                    new_color: new_color.clone(),
                 }
             }
             NoteOp::SetClipPlacementMuted {
@@ -8380,7 +8482,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 33);
+        assert_eq!(OP_KINDS.len(), 34);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -13128,7 +13230,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 33] = [
+        let table: [(&str, serde_json::Value); 34] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -13219,6 +13321,10 @@ mod tests {
                 }),
             ),
             (
+                "setTrackColor",
+                serde_json::json!({"trackId": ulid, "color": "#22AA88"}),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -13277,6 +13383,7 @@ mod tests {
                 "setDeviceName",
                 "setDeviceBypassed",
                 "setClipPlacementMuted",
+                "setTrackColor",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -13635,7 +13742,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 34] = [
+        let rows: [Row<'_>; 35] = [
             (
                 "add",
                 None,
@@ -13812,6 +13919,13 @@ mod tests {
                 "SetClipPlacementMuted",
             ),
             (
+                "setTrackColor",
+                None,
+                None,
+                serde_json::json!({"trackId": track.to_canonical_string(), "color": "#22AA88"}),
+                "SetTrackColor",
+            ),
+            (
                 "setAutomationLane#patch",
                 None,
                 None,
@@ -13946,7 +14060,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 34);
+        assert_eq!(seen.len(), 35);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
