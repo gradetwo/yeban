@@ -352,19 +352,25 @@ pub struct DeviceOpening {
 /// `device::open_output` **和** `play()` 都成功之后才换掉手里那一代 ——
 /// 这样"打开设备失败"绝不会把正在用的引擎弄丢（优雅降级的结构性保证）。
 struct FreshRuntime {
-    runtime: EngineRuntime,
+    /// ⭐ **装箱**：`size_of::<EngineRuntime>()` 本机 = `180000 B`。按值持有 ⇒ `fresh_runtime`
+    /// 自己的帧里要留一份返回值位，而这条路会**多层**叠在 GUI 链上（`#72`／台账 R725）。
+    /// 装箱后本结构的值尺寸与 `EngineRuntime` 无关，搬动恒为常数级。
+    runtime: Box<EngineRuntime>,
     retire: RetireQueue,
     events: EventSender,
     mirror: std::sync::Arc<TransportMirror>,
     collector: MeterCollector,
 }
 
-/// 用**当前快照槽**造一套全新端点（`EngineRuntime::new` 要求全部通道在开设备之前建立）。
+/// 用**当前快照槽**造一套全新端点（[`EngineRuntime::new_boxed`] 要求全部通道在开设备之前建立）。
+///
+/// ⚠ 构造入口是 [`EngineRuntime::new_boxed`]（⛔ 不是按值返回的 `new`）：在堆上就地构造，
+/// 栈上只有一个 `Box` 指针 —— 这条链在 Windows 主线程默认栈（≈ 1 MiB）下才装得下。
 fn fresh_runtime(slot: &std::sync::Arc<SnapshotSlot>) -> FreshRuntime {
     let (retire_producer, retire) = retire_channel(RETIRE_CAPACITY);
     let (events, event_receiver) = event_channel(EVENT_CAPACITY);
     let (publisher, collector) = meter_channel(DEFAULT_METER_CAPACITY);
-    let runtime = EngineRuntime::new(slot, retire_producer, event_receiver, publisher);
+    let runtime = EngineRuntime::new_boxed(slot, retire_producer, event_receiver, publisher);
     let mirror = std::sync::Arc::clone(runtime.transport_mirror());
     FreshRuntime {
         runtime,
@@ -409,7 +415,10 @@ pub struct EngineHost {
     /// 情况下两者逐步相等。
     snapshot_revision: u64,
     slot: Option<std::sync::Arc<SnapshotSlot>>,
-    runtime: Option<EngineRuntime>,
+    /// ⭐ **装箱**：`EngineHost` **按值**活在调用者栈上（`ProductionLoop::start` 里先建它、
+    /// 再搬进 `Rc<RefCell<..>>`），按值持有 `EngineRuntime` 会让 `size_of::<EngineHost>()`
+    /// 跟着 `180000 B` 走 ⇒ GUI 链每一层都多背一份（台账 R725 逐帧实测）。
+    runtime: Option<Box<EngineRuntime>>,
     retire: Option<RetireQueue>,
     /// 最近一次发布所依据的工程标记（[`EngineHost::should_publish`] 的比较基准）。
     ///
@@ -682,7 +691,12 @@ impl EngineHost {
         }
 
         // 3) 开设备（失败 ⇒ 手里那一代一位不动）。
-        let handle = match yeban_engine::device::open_output(&config, runtime) {
+        //
+        // ⚠ `open_output` 的入参是**按值**的 `EngineRuntime`（引擎侧 API，本单⛔ 不改）：
+        // 这里必须把装箱的那一份**移出来**交给它，调用点因此仍有一个 `180000 B` 的
+        // 实参位。这是设备腿的**下限**，不是本单能搬走的部分 —— 读数见
+        // `tests/gui_stack_budget.rs` 的 `DeviceLegEntry` 一档。
+        let handle = match yeban_engine::device::open_output(&config, *runtime) {
             Ok(handle) => handle,
             Err(error) => return Err(EngineHostError::Device(error)),
         };
@@ -792,7 +806,7 @@ impl EngineHost {
     ///
     /// ⚠ 没装引擎（`reload` 之前 / 失败之后）⇒ `None`（⛔ 不 panic）。
     pub fn runtime_for_criteria(&mut self) -> Option<&mut yeban_engine::rt::EngineRuntime> {
-        self.runtime.as_mut()
+        self.runtime.as_deref_mut()
     }
 
     /// 心跳：把**写者侧**要做的事做完（电平读数 ＋ 快照退役回收）。
@@ -1016,7 +1030,7 @@ impl EngineHost {
     /// 统计来源）。
     #[must_use]
     pub fn engine_stats(&self) -> Option<EngineStats> {
-        self.runtime.as_ref().map(EngineRuntime::stats)
+        self.runtime.as_deref().map(EngineRuntime::stats)
     }
 
     // -----------------------------------------------------------------------
