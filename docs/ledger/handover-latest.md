@@ -237,7 +237,7 @@
 > ⭐ **197** **找「实体缺失」的错误变体先查该实体有无专用变体**（`ModelError::<实体>NotFound`）；借用语义不贴切的通用变体虽过闸但语义错位。⚠ 第 178 条补充：看守护测试**还要看断言里那个值的**类型****（同名不同实体很常见 —— `notes.rs:8140` 的 `muted` 是 `TrackV3` 的）。
 > ⭐ **198** **会被 `serde`／`json!` 序列化的定长数组有 `N ≤ 32` 的暗墙** ⇒ 超 32 改用 `&[T]` 切片（`&[T]` 无长度上限），并写明原因。`OP_KINDS` 已如此改。
 > ⭐ **199** **「无 `Set*` 变体」≠「无通路」**：本仓有间接路径（自动化目标等）⇒ 第 196 条的范式比对只产生**嫌疑位**。定罪前**先 grep 该字段名本身**。（`volume_db`／`pan` 经 `AutomationTarget::TrackVolume`／`TrackPan` 可达。）
-> ⭐ **200** **可选字段的修改用三态 patch**（`Option<Option<T>>`）：缺省＝保留／`null`＝清空／值＝设值 ⇒ 照同类字段的既有 patch（`SectionPatch.color`／`ScenePatch.color`），⛔ 不发明第二套。
+> ⭐ **200**（**已按 R684 补正**）**合并式 patch**（`setSection`／`setScene`，一次多个字段）用三态 `Option<Option<T>>`：缺省＝保留／`null`＝清空／值＝设值。**单字段设值**（`setTrackColor`）则**必填**、`null`＝清除、**缺键响亮拒绝**。两者共同点只有 `null`＝清除。
 
 1. ⭐ ⭐ **一树一线**；⭐ **根级共享文件（`Cargo.toml`／`Cargo.lock`／`.github/**`／`scripts/**`／`schemas/**`／`docs/**`）由集成者独占**。
 2. ⭐ ⭐ **第 51 条**：在文件里写任何源码片段（**含注释**）前，**先 `grep` 有没有判据在 `find` 它**（`find` **连注释也匹配**）。
