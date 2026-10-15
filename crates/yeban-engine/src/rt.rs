@@ -1786,6 +1786,23 @@ impl EngineRuntime {
     /// `retire` 是 [`RetireProducer`]（`rtrb::Producer` 的薄包装）：它带着退役队列的
     /// 跨线程记账 ⇒ [`Self::stats`] 能直接报出退役队列的 `pending` / `drained` /
     /// 释放线程归属，**控制面不需要额外接线**（`retire_channel` 的调用点一字未改）。
+    /// ⚠ **本函数按值返回 ⇒ 每个调用点都要在自己的栈帧里留一份
+    /// `size_of::<Self>()`（本机 = `180000 B`）的返回值位**。Windows 主线程默认栈
+    /// ≈ 1 MiB（PE `StackReserve`）时，GUI 那条链会因此溢出 ⇒ **不装箱的调用点
+    /// 应当改用 [`Self::new_boxed`]**（它直接在堆上构造，见那里的文档）。
+    ///
+    /// ⚠ 两个入口共用同一份字段清单（[`Self::write_into`]）⇒ ⛔ 不存在"两个构造函数
+    /// 各写一张字段表、然后慢慢漂移"的形态；本函数的**签名**与**可观测输出**一个字没改。
+    ///
+    /// ⚠ **本函数自身的栈帧**：若直接在栈上就地构造（`MaybeUninit` ＋ `write_into`），
+    /// `-C opt-level=0` 下要**两块** 180000 B（`MaybeUninit` 那块 ＋ `assume_init()` 的
+    /// 返回值临时量）⇒ 实测帧 `360304 B`（各字段的临时量另在 `write_into` 的
+    /// `176416 B` 里，调用期峰值共 `536720 B`）。因此本函数实现为
+    /// "**先按堆构造、再按值交出**"：帧降到 `224 B`，调用期峰值由 `write_into`
+    /// ＋ 器件构造决定（≈ `306928 B`），⛔ 比改动前（`359312 B` ＋ 器件帧 ⇒ `489296 B`）
+    /// **更省**、⛔ 不是更费。
+    /// 代价是构造期多一次 `size_of::<Self>()` 的堆分配（本函数本来就在构造期大量分配：
+    /// 卷积混响池一处就是 ≈ 4.8 MiB）—— 这条差别写在提交信息与报告里。
     #[must_use]
     pub fn new(
         slot: &Arc<SnapshotSlot>,
@@ -1793,16 +1810,114 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Self {
+        // ⚠ ⛔ 不写成 `MaybeUninit` ＋ `assume_init()`：见上面那段读数（那正是 +180000 B
+        // 的来源）。`*boxed` 是"把堆上那份值移出来"，⛔ 不会在栈上再建一份。
+        *Self::new_boxed(slot, retire, events, meters)
+    }
+
+    /// ⭐ **装箱构造**：`size_of::<EngineRuntime>()`（本机 = `180000 B`）那一份值
+    /// **直接在堆上**建成，构造期**没有** `EngineRuntime` 按值落到栈帧上。
+    ///
+    /// ## 为什么需要它：Windows 主线程默认栈 ≈ 1 MiB
+    ///
+    /// [`Self::new`] 按值返回 ⇒ 每个调用点都要在自己的栈帧里留一份 180000 B 的
+    /// 返回值位，**改动前**函数自己还要一份（实测：`new` 的帧 `359312 B`／
+    /// `yeban-app` 那侧的构建里是 `393616 B` —— 那是"单一大对象 × 多层按值副本"，
+    /// 不是无关的多层累积）。GUI 那条链
+    /// （`yeban-app`：`host::ProductionLoop::start` → `EngineHost::reload`／`open_device`
+    /// → `engine_host::fresh_runtime` → `EngineRuntime::new`）在**打开设备之前**就已经
+    /// ≥ 1.29 MiB ⇒ Windows 上**开界面即崩**（[R725] 的逐帧读数）。
+    ///
+    /// ## 做法（⛔ 不是 `Box::new(Self { … })`）
+    ///
+    /// `Box::<Self>::new_uninit()` 先只在堆上要一块 `size_of::<Self>()`，再由
+    /// [`Self::write_into`] **就地**把字段写进去。⚠ 之所以不能写
+    /// `Box::new(Self { … })`：Rust 的 `Box::new` 语义是"**先在栈上把值建出来、再搬进
+    /// 堆**"，`-C opt-level=0`（本仓判据的档位）下那一份 180000 B 一定在栈帧里
+    /// —— 那正是本函数要避开的东西。
+    ///
+    /// ## 与 [`Self::new`] 的关系
+    ///
+    /// [`Self::new`] **就是**本函数的按值适配（`*Self::new_boxed(…)`）⇒ 两个入口
+    /// **共用**同一个 [`Self::write_into`]、同一份字段清单、同一条"混响延迟线只在
+    /// 构造期分配"的纪律；差别只有**分配位置与栈用量**。
+    /// ⛔ `new` 的签名与可观测输出一个字没改（内部改为"先按堆构造、再按值交出"，
+    /// 构造期多一次 180000 B 的堆分配 —— 见 `new` 的文档）。
+    ///
+    /// ## 栈读数（本机 `-C opt-level=0`，判据二进制逐帧实测）
+    ///
+    /// | 函数 | 自身帧 |
+    /// | :--- | ---: |
+    /// | `new_boxed` | **`304 B`** |
+    /// | `write_into`（两个入口共用） | `176416 B` |
+    /// | `SynthEngine::new`（器件构造、未动） | `129984 B` |
+    ///
+    /// ⇒ `new_boxed` **调用期峰值** = `304 + 176416 + 129984` = `306704 B`，其中
+    /// 一个 `EngineRuntime` 都不在栈上；改动前 `new` 的调用期峰值 =
+    /// `359312 + 129984` = `489296 B`。而**按值调用者**还要多留一份 180000 B 的
+    /// 返回值位 —— 那一份是装箱消掉的（见判据 `tests/rt_new_boxed.rs` 的阈值差 `176 KiB`）。
+    ///
+    /// # Panics
+    ///
+    /// ⚠ `Box<MaybeUninit<_>>` 的析构**不碰**内容 ⇒ 若某个字段初始化 panic，已经写好的
+    /// 字段不会被析构（会泄漏）。⛔ 不会 UB；且那条路本来就等于启动失败
+    /// （`EngineRuntime` 的构造期在打开设备之前，没有半成品会逃出去）。
+    #[must_use]
+    pub fn new_boxed(
+        slot: &Arc<SnapshotSlot>,
+        retire: RetireProducer,
+        events: EventReceiver,
+        meters: MeterPublisher,
+    ) -> Box<Self> {
+        // 堆上只要一块 `size_of::<Self>()`（180000 B）；栈帧里只有一个 `Box` 指针。
+        let mut place = Box::<Self>::new_uninit();
+        // SAFETY: `write_into` 的有效性前提由本函数满足（`place` 是堆上一块有效、对齐、
+        // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
+        // `Box<MaybeUninit<Self>>` 变成 `Box<Self>`（⛔ 不搬值、⛔ 不复制）。
+        unsafe {
+            Self::write_into(place.as_mut_ptr(), slot, retire, events, meters);
+            place.assume_init()
+        }
+    }
+
+    /// 构造期**唯一的**字段写入点（[`Self::new`] 与 [`Self::new_boxed`] 共用）。
+    ///
+    /// 字段清单与结构体定义**同名、同序**（77 个字段）⇒ "`EngineRuntime` 由什么组成"
+    /// 只有一处描述，⛔ 不会出现两份会漂移的字段表。
+    ///
+    /// # Safety
+    ///
+    /// `dst` 必须指向一块**有效、对齐、当前未初始化**的 `EngineRuntime`。
+    /// 本函数返回时 `*dst` 已**完整初始化**：每个字段恰好被 `ptr::write` 写一次，
+    /// 因此调用方的 `assume_init()` 合法。
+    unsafe fn write_into(
+        dst: *mut Self,
+        slot: &Arc<SnapshotSlot>,
+        retire: RetireProducer,
+        events: EventReceiver,
+        meters: MeterPublisher,
+    ) {
         // 混响延迟线的**唯一**分配点（[`crate::insert`] 模块文档 §8.4 / §8.5）：
         // 采样率取自**初始快照**——调用方（`EngineHost::reload` / `device` 腿）都是
         // 先用工程建好快照、再建运行时，因此这里拿到的就是本工程将要用的采样率。
         // `SnapshotSlot::current` 会在写者锁上短暂等待，因此只允许在**非实时**路径调用
         // （本函数就是那条路径：全部通道必须在打开设备之前建立）。
         let armed_reverb_sample_rate = slot.current().sample_rate();
-        let mut reverb_pool: [Reverb; MAX_TRACK_SLOTS] = core::array::from_fn(|_| Reverb::new());
-        for reverb in &mut reverb_pool {
+        // 混响池：**逐台就地写进目的地**，⛔ 不像原来那样先建一个 `[Reverb; 16]`
+        // 的栈上临时量（那一个就是 20 992 B）。分配次数、分配顺序与原来逐字相同：
+        // 每台 `Reverb::new()` 之后立刻 `set_sample_rate`（唯一的 `Vec` 分配点）。
+        for slot_index in 0..MAX_TRACK_SLOTS {
+            let mut reverb = Reverb::new();
             // 构造期允许分配（`Vec` 延迟线在这里建好，回调内一次也不重建）。
             reverb.set_sample_rate(armed_reverb_sample_rate as f32);
+            // SAFETY: `dst` 由调用方保证有效、对齐、未初始化；`slot_index < 16`
+            // ⇒ 落在 `reverb_pool` 数组边界内；本字段在此只写这一次。
+            unsafe {
+                core::ptr::write(
+                    core::ptr::addr_of_mut!((*dst).reverb_pool[slot_index]),
+                    reverb,
+                );
+            }
         }
         // 卷积混响池的**唯一**分配点（[`crate::insert`] 模块文档 §9.2／§9.5）：预延迟线
         // ＋ 四条 IR 频谱。两者都按**引擎常量**的 IR 长度建满，于是快照边界上的换 IR
@@ -1829,120 +1944,152 @@ impl EngineRuntime {
         // 含一次 `exp`；回调内一次也不重算 —— 采样率不变时 `set_sample_rate` 直接返回）。
         let params = ParamTable::new(armed_reverb_sample_rate as f32);
         let armed_master = slot.current().master();
-        let runtime = Self {
-            snapshot: SnapshotReader::attach(slot, retire),
-            audition: None,
-            audition_active: false,
-            pending_launch: None,
-            scene_launches_applied: 0,
-            events,
-            meters,
-            block: AudioBlock::new(),
-            scratch_events: [EngineEvent::IDLE; SCRATCH_EVENTS],
-            scratch_meters: [MeterFrame::default(); SCRATCH_METERS],
-            track_scratch: [0.0; DEFAULT_BLOCK_FRAMES],
-            bank: MeterBank::new(),
-            // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
-            synth: SynthEngine::new(48_000),
-            // 走带默认**自由跑**：接入走带之前 `process_quantum` 的语义就是
-            // "快照一发布就从 tick 0 起滚"，因此未收到任何命令时行为逐位不变。
-            // 要"加载即停住"的控制面显式发一条 `Stop`（`yeban-app` 的 GUI 路径
-            // 在 `EngineHost::reload` 之后就这么做；`reload` 自己**不**碰走带状态）。
-            transport: Transport::free_running(48_000, yeban_model::project::DEFAULT_BPM),
-            transport_mirror: Arc::new(TransportMirror::new()),
-            // 统计镜像：**构造期**分配一次（回调内只做原子存）[MUST-GATE-001]。
-            stats_mirror: Arc::new(EngineStatsMirror::new()),
-            limiter: BusLimiter::new(),
-            // PDC 延迟线池：**构造期**按上限预分配（回调内绝不再分配）。
-            pdc: CompensationBank::preallocated(PDC_SLOTS, MAX_PDC_DELAY_FRAMES),
-            pdc_unarmed_nodes: 0,
-            pdc_clamped_frames: 0,
-            pdc_alignment_frames: 0,
-            engine_output_latency_frames: 0,
-            armed_pan_law: PanLaw::default(),
-            armed_pan_gains: [(
+        // 就地写一个字段。
+        //
+        // ⚠ 宏而不是辅助函数：字段名必须**保持是"字段"**（`addr_of_mut!` 取的是 place），
+        // 一旦变成函数参数就先求值成了一份值 ⇒ 大字段又被搬回栈上，那正是本函数要避开的。
+        macro_rules! put {
+            ($field:ident, $value:expr) => {
+                // SAFETY: 调用方是本函数 —— `dst` 有效、对齐、未初始化；每个字段名在
+                // 本函数里恰好出现一次 ⇒ 每次展开都只写一个字段，写满后 `*dst` 完整初始化。
+                unsafe { core::ptr::write(core::ptr::addr_of_mut!((*dst).$field), $value) }
+            };
+        }
+        // ---- 字段清单（与 `struct EngineRuntime` 的定义**同名、同序**）----
+        put!(snapshot, SnapshotReader::attach(slot, retire));
+        put!(audition, None);
+        put!(audition_active, false);
+        put!(pending_launch, None);
+        put!(scene_launches_applied, 0);
+        put!(events, events);
+        put!(meters, meters);
+        put!(block, AudioBlock::new());
+        put!(scratch_events, [EngineEvent::IDLE; SCRATCH_EVENTS]);
+        put!(scratch_meters, [MeterFrame::default(); SCRATCH_METERS]);
+        put!(track_scratch, [0.0; DEFAULT_BLOCK_FRAMES]);
+        put!(bank, MeterBank::new());
+        // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
+        put!(synth, SynthEngine::new(48_000));
+        // 走带默认**自由跑**：接入走带之前 `process_quantum` 的语义就是
+        // "快照一发布就从 tick 0 起滚"，因此未收到任何命令时行为逐位不变。
+        // 要"加载即停住"的控制面显式发一条 `Stop`（`yeban-app` 的 GUI 路径
+        // 在 `EngineHost::reload` 之后就这么做；`reload` 自己**不**碰走带状态）。
+        put!(
+            transport,
+            Transport::free_running(48_000, yeban_model::project::DEFAULT_BPM)
+        );
+        put!(transport_mirror, Arc::new(TransportMirror::new()));
+        // 统计镜像：**构造期**分配一次（回调内只做原子存）[MUST-GATE-001]。
+        put!(stats_mirror, Arc::new(EngineStatsMirror::new()));
+        put!(limiter, BusLimiter::new());
+        // PDC 延迟线池：**构造期**按上限预分配（回调内绝不再分配）。
+        put!(
+            pdc,
+            CompensationBank::preallocated(PDC_SLOTS, MAX_PDC_DELAY_FRAMES)
+        );
+        put!(pdc_unarmed_nodes, 0);
+        put!(pdc_clamped_frames, 0);
+        put!(pdc_alignment_frames, 0);
+        put!(engine_output_latency_frames, 0);
+        put!(armed_pan_law, PanLaw::default());
+        put!(
+            armed_pan_gains,
+            [(
                 EntityId::default(),
                 core::f32::consts::FRAC_1_SQRT_2,
                 core::f32::consts::FRAC_1_SQRT_2,
-            ); MAX_TRACK_SLOTS],
-            armed_pan_slots: 0,
-            // 声相平滑器：**构造期**预分配（回调内绝不再分配）。`with_default_time`
-            // 需要一个采样率来算 α；真正的采样率在快照边界用 `set_sample_rate` 校准
-            // （同值提前返回 ⇒ 不重复算 `exp`）。
-            // 初值采样率用 48 kHz（与 `ParamTable::new` 的判据默认值同一个数）；
-            // 真正的采样率在**快照边界**用 `set_sample_rate` 校准（同值提前返回）。
-            armed_pan_l: core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0)),
-            armed_pan_r: core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0)),
-            armed_pan_armed: [false; MAX_TRACK_SLOTS],
-            pan_automation_frames: 0,
-            pan_automation_value_rejects: 0,
-            pan_automation_resets: 0,
-            armed_master_gain: 1.0,
-            armed_metronome_enabled: false,
-            armed_metronome_ticks_per_beat: 0,
-            armed_metronome_beats_per_bar: 0,
-            metronome: MetronomeVoice::new(),
-            limiter_gain_reductions: 0,
-            limiter_max_reduction: 0.0,
-            limiter_current_reduction: 0.0,
-            // 插入链：**构造期**预分配全部槽位（回调内绝不再分配）。
-            // `from_fn` 而不是 `[expr; N]`：`ChannelStrip` 没有 `const` 构造器，
-            // 而 `Option<ChannelStrip>` 的"全 `None`"初值用函数形式表达最直接
-            // （`from_fn` 在**构造期**调用，不在回调里）。
-            armed_strips: core::array::from_fn(|_| (EntityId::default(), None)),
-            armed_insert_slots: 0,
-            insert_gain_reductions: 0,
-            insert_max_reduction_db: 0.0,
-            insert_current_reduction_db: 0.0,
-            // 冷值就是 `None`（= `EngineStats::default()` 的派生值）：`0.0` 是一个合法
-            // 的检波器电平（0 dBFS）⇒ 不能用它表示"从没有过读数"。
-            insert_detector_level_db: None,
-            insert_strip_frames: 0,
-            insert_reverb_frames: 0,
-            insert_reverb_rate_rejects: 0,
-            insert_convolution_frames: 0,
-            insert_convolution_rejects: 0,
-            // 参数目标表：**构造期**建满（回调内惰性分配的槽位都落在这张定长表里）。
-            params,
-            armed_master,
-            // 混响延迟线池：**构造期**按初始快照的采样率预分配（回调内绝不再分配）。
-            reverb_pool,
-            armed_reverbs: [(EntityId::default(), false); MAX_TRACK_SLOTS],
-            armed_reverb_slots: 0,
-            armed_reverb_sample_rate,
-            reverb_scratch: [[0.0; DEFAULT_BLOCK_FRAMES]; 2],
-            // 卷积混响池：**构造期**按初始快照的采样率把占位 IR 与预延迟线全部建好
-            // （回调内只做同长度的换 IR 与 `set_params`）。
-            conv_pool,
-            armed_convs: [(EntityId::default(), false); MAX_TRACK_SLOTS],
-            armed_conv_slots: 0,
-            armed_conv_ir_hashes: [0; MAX_TRACK_SLOTS],
-            armed_conv_sample_rate,
-            conv_scratch: [0.0; 2 * DEFAULT_BLOCK_FRAMES],
-            armed_revision: None,
-            quanta: 0,
-            events_applied: 0,
-            note_steals: 0,
-            orphan_note_offs: 0,
-            event_bulk_pops: 0,
-            meter_frames: 0,
-            meter_bulk_publishes: 0,
-            meter_capacity_drops: 0,
-            ftz: None,
-            ftz_ready: false,
-            armed_quanta_per_second: None,
-            armed_scheduled_notes: 0,
-            armed_note_schedule_drops: 0,
-        };
+            ); MAX_TRACK_SLOTS]
+        );
+        put!(armed_pan_slots, 0);
+        // 声相平滑器：**构造期**预分配（回调内绝不再分配）。`with_default_time`
+        // 需要一个采样率来算 α；真正的采样率在快照边界用 `set_sample_rate` 校准
+        // （同值提前返回 ⇒ 不重复算 `exp`）。
+        // 初值采样率用 48 kHz（与 `ParamTable::new` 的判据默认值同一个数）；
+        // 真正的采样率在**快照边界**用 `set_sample_rate` 校准（同值提前返回）。
+        put!(
+            armed_pan_l,
+            core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0))
+        );
+        put!(
+            armed_pan_r,
+            core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0))
+        );
+        put!(armed_pan_armed, [false; MAX_TRACK_SLOTS]);
+        put!(pan_automation_frames, 0);
+        put!(pan_automation_value_rejects, 0);
+        put!(pan_automation_resets, 0);
+        put!(armed_master_gain, 1.0);
+        put!(armed_metronome_enabled, false);
+        put!(armed_metronome_ticks_per_beat, 0);
+        put!(armed_metronome_beats_per_bar, 0);
+        put!(metronome, MetronomeVoice::new());
+        put!(limiter_gain_reductions, 0);
+        put!(limiter_max_reduction, 0.0);
+        put!(limiter_current_reduction, 0.0);
+        // 插入链：**构造期**预分配全部槽位（回调内绝不再分配）。
+        // `from_fn` 而不是 `[expr; N]`：`ChannelStrip` 没有 `const` 构造器，
+        // 而 `Option<ChannelStrip>` 的"全 `None`"初值用函数形式表达最直接
+        // （`from_fn` 在**构造期**调用，不在回调里）。
+        put!(
+            armed_strips,
+            core::array::from_fn(|_| (EntityId::default(), None))
+        );
+        put!(armed_insert_slots, 0);
+        // ⚠ `reverb_pool` **不在这里**：它已经在上面逐台就地写好了（那一段就是本字段）。
+        put!(
+            armed_reverbs,
+            [(EntityId::default(), false); MAX_TRACK_SLOTS]
+        );
+        put!(armed_reverb_slots, 0);
+        put!(armed_reverb_sample_rate, armed_reverb_sample_rate);
+        put!(reverb_scratch, [[0.0; DEFAULT_BLOCK_FRAMES]; 2]);
+        // 卷积混响池：**构造期**按初始快照的采样率把占位 IR 与预延迟线全部建好
+        // （回调内只做同长度的换 IR 与 `set_params`）。
+        put!(conv_pool, conv_pool);
+        put!(armed_convs, [(EntityId::default(), false); MAX_TRACK_SLOTS]);
+        put!(armed_conv_slots, 0);
+        put!(armed_conv_ir_hashes, [0; MAX_TRACK_SLOTS]);
+        put!(armed_conv_sample_rate, armed_conv_sample_rate);
+        put!(conv_scratch, [0.0; 2 * DEFAULT_BLOCK_FRAMES]);
+        put!(insert_gain_reductions, 0);
+        put!(insert_max_reduction_db, 0.0);
+        put!(insert_current_reduction_db, 0.0);
+        // 冷值就是 `None`（= `EngineStats::default()` 的派生值）：`0.0` 是一个合法
+        // 的检波器电平（0 dBFS）⇒ 不能用它表示"从没有过读数"。
+        put!(insert_detector_level_db, None);
+        put!(insert_strip_frames, 0);
+        put!(insert_reverb_frames, 0);
+        put!(insert_reverb_rate_rejects, 0);
+        put!(insert_convolution_frames, 0);
+        put!(insert_convolution_rejects, 0);
+        // 参数目标表：**构造期**建满（回调内惰性分配的槽位都落在这张定长表里）。
+        put!(params, params);
+        put!(armed_master, armed_master);
+        put!(armed_revision, None);
+        put!(quanta, 0);
+        put!(events_applied, 0);
+        put!(note_steals, 0);
+        put!(orphan_note_offs, 0);
+        put!(event_bulk_pops, 0);
+        put!(meter_frames, 0);
+        put!(meter_bulk_publishes, 0);
+        put!(meter_capacity_drops, 0);
+        put!(ftz, None);
+        put!(ftz_ready, false);
+        put!(armed_quanta_per_second, None);
+        put!(armed_scheduled_notes, 0);
+        put!(armed_note_schedule_drops, 0);
         // 先发布一次初值：控制面在**第一次量子之前**就能读到"Playing / tick 0"，
         // 而不是一个与引擎实际状态不符的冷值（`TransportReading::cold`）。
+        // SAFETY: 上面已把**全部**字段各写一次 ⇒ `*dst` 现在是一份合法、已初始化的
+        // `EngineRuntime` ⇒ 取共享引用合法（`publish` 只读这两个字段）。
+        let runtime: &Self = unsafe { &*dst };
         runtime.transport.publish(&runtime.transport_mirror);
         // 统计镜像也先发布一次：控制面在**第一个量子之前**就能读到与引擎实际状态
         // 相符的数（`ftz` 与走带状态就是这一批里最有用的两个），而不是全零冷值。
         // 与上面那条同一个理由、同一个位置（非实时路径）。
         let cold = runtime.stats();
         runtime.stats_mirror.publish(&cold);
-        runtime
     }
 
     /// 挂上 A/B 盲听的**第二份可渲染版本**（[ARCH-RT-005] 片 1：**只持有**）。
