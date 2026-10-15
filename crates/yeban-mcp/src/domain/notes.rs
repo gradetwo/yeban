@@ -967,7 +967,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 29] = [
+pub const OP_KINDS: [&str; 30] = [
     "add",
     "delete",
     "move",
@@ -985,6 +985,7 @@ pub const OP_KINDS: [&str; 29] = [
     SET_TEMPO_KIND,
     SET_AUTHOR_KIND,
     SET_TRACK_NAME_KIND,
+    SET_CLIP_NAME_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1496,6 +1497,24 @@ pub const SET_TRACK_NAME_FIELDS: [&str; 3] = [
     SET_TRACK_NAME_TRACK_FIELD,
     SET_TRACK_NAME_NAME_FIELD,
 ];
+
+/// `ops[].kind` 的**设置片段名**形态名（写 [`Op::SetClipName`]）。
+pub const SET_CLIP_NAME_KIND: &str = "setClipName";
+
+/// 设置片段名形态的**目标片段**字段名（`ops[].clipId`，必填，ULID）。
+pub const SET_CLIP_NAME_CLIP_FIELD: &str = "clipId";
+
+/// 设置片段名形态的**新名字**字段名（`ops[].name`，必填，字符串）。
+///
+/// ⚠ **⛔ 本层不发明**"非空"或长度上限：模型 [`Op::SetClipName`] 的校验**只有**
+/// "文档现值必须逐字等于 `old_name`"（陈旧载荷 ⇒ `OpStateMismatch`），而
+/// `ClipPoolEntry` 的校验**不查**空名 ⇒ 空串合法（"显式清空名字"）。
+/// ⚠ 与 [`SET_TRACK_NAME_NAME_FIELD`] 同一口径，⛔ 与 `addClip` 的"必需标签"不是同一条。
+pub const SET_CLIP_NAME_NAME_FIELD: &str = "name";
+
+/// 设置片段名形态允许出现的**全部**键（判别键 + 两个必填）。
+pub const SET_CLIP_NAME_FIELDS: [&str; 3] =
+    ["kind", SET_CLIP_NAME_CLIP_FIELD, SET_CLIP_NAME_NAME_FIELD];
 
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
 ///
@@ -2314,6 +2333,24 @@ pub enum NoteOp {
     /// 撤销载荷 `old_config` 由 [`Self::read_transport`] 从**当前文档**读，
     /// 不是调用方声明。
     ///
+    /// 设置**片段池条目的显示名**（[`Op::SetClipName`]，寻址到一个 `clip_id`）。
+    ///
+    /// ⭐ **本形态补上了什么**：⭐ 在它之前 `ClipPoolEntry::name` **没有**任何字段级通路
+    /// ⇒ 改名只能"删 + 加"，⭐ 而模型 [`Op::RemoveClip`] 还要求**没有任何摆放引用它**
+    /// ⇒ 调用方得先把该片段的每一处摆放拆掉、改完名再摆回去。
+    ///
+    /// ⚠ **为何安全**：⭐ 身份是 `ClipPoolEntry::id`（即 `clip_pool` 的**键**）⇒ 改 `name`
+    /// **不动键**、⛔ 不让任何摆放悬空。撤销载荷 `old_name` 由 [`compile`] 从**当前文档**读
+    /// （`project.clip_pool[clip_id].name`）⇒ ⛔ 不信调用方声明。⭐ 与 [`Self::SetTrackName`]
+    /// 同口径：模型**只有**"陈旧载荷"一条校验 ⇒ ⛔ 本层不发明非空/长度校验。
+    SetClipName {
+        /// 目标片段身份。
+        clip_id: EntityId,
+        /// 修改前的显示名（来自当前文档）。
+        old_name: String,
+        /// 修改后的显示名。
+        new_name: String,
+    },
     /// ⚠ **目标不是音轨**：本形态不查顶层 `trackId`（与 `removeTrack` 同类，
     /// 见 [`Self::is_track_entity_level`]）。
     SetTransportConfig {
@@ -2721,6 +2758,7 @@ impl NoteOp {
             Self::SetTempo { .. } => SET_TEMPO_KIND,
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
             Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
+            Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -3087,6 +3125,15 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 new_bpm: read_required_finite_f64(object, SET_TEMPO_BPM_FIELD)?,
             })
         }
+        SET_CLIP_NAME_KIND => {
+            reject_set_clip_name_fields(object)?;
+            Ok(NoteOp::SetClipName {
+                clip_id: read_id(object, SET_CLIP_NAME_CLIP_FIELD)?,
+                // ⚠ `old_name` 是**占位**：真值由 `compile` 从当前文档读。
+                old_name: String::new(),
+                new_name: read_required_string(object, SET_CLIP_NAME_NAME_FIELD)?,
+            })
+        }
         SET_TRACK_NAME_KIND => {
             reject_set_track_name_fields(object)?;
             Ok(NoteOp::SetTrackName {
@@ -3448,6 +3495,15 @@ fn reject_set_tempo_fields(object: &Map<String, Value>) -> Result<(), Fault> {
 }
 
 /// 拒绝 `setAuthor` 里 [`SET_AUTHOR_FIELDS`] 之外的键。
+fn reject_set_clip_name_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_CLIP_NAME_FIELDS,
+        SET_CLIP_NAME_KIND,
+        "unknownSetClipNameField",
+    )
+}
+
 fn reject_set_track_name_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     reject_unknown_keys(
         object,
@@ -5725,6 +5781,19 @@ pub fn compile(
                     new_name: new_name.clone(),
                 }
             }
+            NoteOp::SetClipName {
+                clip_id, new_name, ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，逐字节比较）。
+                let clip = project.clip_pool.get(clip_id).ok_or_else(|| {
+                    Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}"))
+                })?;
+                Op::SetClipName {
+                    clip_id: *clip_id,
+                    old_name: clip.name.clone(),
+                    new_name: new_name.clone(),
+                }
+            }
             NoteOp::SetAuthor { new_author, .. } => {
                 // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，且是**逐字节**比较）。
                 // ⚠ 模型**没有**空串/长度校验 ⇒ 本层也⛔ 不发明（`new_author` 原样收下）。
@@ -7985,7 +8054,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 29);
+        assert_eq!(OP_KINDS.len(), 30);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -12733,7 +12802,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 29] = [
+        let table: [(&str, serde_json::Value); 30] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -12796,6 +12865,10 @@ mod tests {
                 serde_json::json!({"trackId": ulid, "name": "A"}),
             ),
             (
+                "setClipName",
+                serde_json::json!({"clipId": ulid, "name": "A"}),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -12850,6 +12923,7 @@ mod tests {
                 "setTempo",
                 "setAuthor",
                 "setTrackName",
+                "setClipName",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -13186,7 +13260,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 30] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 31] = [
             (
                 "add",
                 None,
@@ -13319,6 +13393,13 @@ mod tests {
                 None,
                 serde_json::json!({"trackId": device_track_id, "name": "Renamed"}),
                 "SetTrackName",
+            ),
+            (
+                "setClipName",
+                None,
+                None,
+                serde_json::json!({"clipId": clip.to_canonical_string(), "name": "Renamed"}),
+                "SetClipName",
             ),
             (
                 "setAutomationLane#patch",
@@ -13455,7 +13536,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 30);
+        assert_eq!(seen.len(), 31);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
