@@ -88,7 +88,7 @@ use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
 use crate::metronome::MetronomePlan;
 use crate::mixer::{PanLaw, pan_gains};
-use crate::sfz_instrument::SfzPlan;
+use crate::sfz_instrument::{PendingSfz, SfzPlan};
 use crate::synth::{
     MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, ToneParams, tick_to_sample, velocity_gain,
 };
@@ -381,6 +381,27 @@ pub struct EngineSnapshot {
     ///
     /// **一条都没有时它是空表 ⇒ 实时侧整段跳过**。
     sfz: BTreeMap<EntityId, SfzPlan>,
+    /// 每轨的 **SFZ 待摊平项**（⭐ 只带一个路径字符串；任务单 `#78` 的接线）。
+    ///
+    /// ⭐ **投影自 `TrackV3.sampler: Option<SamplerBinding>`**（`yeban-model`，
+    /// 形状与裁决见台账 `R731`）：模型只给"这条轨用哪一份 SFZ 文件"这一个事实，
+    /// 引擎把它原样抄进本表 ⇒ ⭐ 快照携带的事实到此为止。
+    ///
+    /// # 为什么引擎侧停在这里（⛔ 不读盘）
+    ///
+    /// 把路径变成 [`Self::sfz`] 里那张摊平表需要**读盘 ＋ 解析 ＋ 解码**，而本仓的
+    /// 两条既有边界把它钉在控制侧：① 引擎⛔ 不读磁盘；② 引擎⛔ 不引
+    /// `symphonia`／`rubato`。⇒ ⭐ 控制侧的次序是
+    /// `sfz_pending()` →（读盘 / 解码）→ [`SfzPlan::prepare_with_samples`] →
+    /// [`Self::with_sfz`]；后者会把本表里那条**移除**（摊平表**取代**待摊平项
+    /// ⇒ 控制侧不会重复解码同一条轨）。
+    ///
+    /// ⛔ **实时侧一个字都不看它**：`SynthEngine` / `EngineRuntime` 只读 [`Self::sfz`]
+    /// ⇒ `sampler: None` 与 `sampler: Some(…)` 的渲染输出**逐位相同**
+    /// （判据见 `tests/sfz_instrument.rs` 的 S21／S22／S23）。
+    ///
+    /// **默认工程（`sampler = None`）⇒ 本表为空** ⇒ 与接线前逐位相同。
+    sfz_pending: BTreeMap<EntityId, PendingSfz>,
     /// 声相衰减律（`audio_config.pan_law` 的投影）[MODEL-AST-002]。
     ///
     /// 模型层已有这个枚举，但**快照此前没有投影它**（`line/engine-sound` 的 needs N4）。
@@ -493,6 +514,11 @@ impl EngineSnapshot {
         let mut inserts: BTreeMap<EntityId, InsertParams> = BTreeMap::new();
         // 只收录识别出鼓机的轨道（见 `EngineSnapshot::drums` 的字段文档）。
         let mut drums: BTreeMap<EntityId, DrumsParams> = BTreeMap::new();
+        // ⭐ 模型→快照的**接线**（任务单 `#78`）：`TrackV3.sampler` 只给出一个路径，
+        // 引擎⛔ 不读盘、⛔ 不摊平 ⇒ 这里只把"这条轨有一份 SFZ 待摊平"这一**事实**
+        // 抄进快照（重数据 [`SfzPlan`] 仍由控制侧解码后经 [`EngineSnapshot::with_sfz`]
+        // 注入）⇒ ⭐ 实时侧看不见本表 ⇒ 渲染逐位不变。
+        let mut sfz_pending: BTreeMap<EntityId, PendingSfz> = BTreeMap::new();
         // 三件插入器件里**只有卷积混响**需要采样率：它的 IR 帧数是 `采样率 ÷ 10` 的
         // 引擎常量，而 IR 本身在**这里**（控制线程的构造期）合成 —— 模型层没有承载
         // 样本数组的字段，理由与两处出处见 `crate::insert` 模块文档 §9.1／§9.2。
@@ -506,6 +532,10 @@ impl EngineSnapshot {
             }
             if let Some(params) = DrumsParams::from_devices(&track.devices) {
                 drums.insert(*id, params);
+            }
+            // ⭐ 接线：有采样器绑定 ⇒ 记一条**待摊平**（路径原样；⛔ 不读盘、⛔ 不解析）。
+            if let Some(binding) = &track.sampler {
+                sfz_pending.insert(*id, PendingSfz::new(binding.path.clone()));
             }
         }
         let block = project.audio_config.block_size.frames() as usize;
@@ -526,6 +556,7 @@ impl EngineSnapshot {
                 .with_tones(tones)
                 .with_inserts(inserts)
                 .with_drums(drums)
+                .with_sfz_pending(sfz_pending)
                 .with_pan_law(PanLaw::from_model(project.audio_config.pan_law))
                 .with_bpm(project.bpm)
                 .with_metronome(project.transport.metronome_enabled.then(|| {
@@ -579,6 +610,9 @@ impl EngineSnapshot {
             // ⛔ `from_parts` **不**填 SFZ：绑定只能由 [`Self::with_sfz`] 显式注入
             // （模型层没有轨↔SFZ 绑定，见字段文档）。
             sfz: BTreeMap::new(),
+            // ⛔ 待摊平项同理：只有 [`Self::from_project`]（模型有 `sampler` 时）或
+            // [`Self::with_sfz_pending`] 会填它（任务单 `#78`）。
+            sfz_pending: BTreeMap::new(),
             pan_law: PanLaw::default(),
             master_gain,
             scheduled_notes: 0,
@@ -631,12 +665,23 @@ impl EngineSnapshot {
         self
     }
 
+    /// ⭐ **附上"每轨有一份 SFZ 待摊平"这一事实**（任务单 `#78`；见 [`Self::sfz_pending`]
+    /// 的字段文档）。
+    ///
+    /// 形状照 [`Self::with_tones`] / [`Self::with_drums`]：消费式构造器、整表替换。
+    /// ⚠ 它**只搬路径字符串**：⛔ 不读盘、⛔ 不解析、⛔ 不摊平、⛔ 不产生运行期对象
+    /// （分配只到 `String` 为止，且发生在控制线程的构造期）。
+    #[must_use]
+    pub fn with_sfz_pending(mut self, pending: BTreeMap<EntityId, PendingSfz>) -> Self {
+        self.sfz_pending = pending;
+        self
+    }
+
     /// ⭐ **给一条轨注入 SFZ 音源**（摊平后的区域表 ＋ PCM）。
     ///
-    /// ⚠ 本函数是 **API**、⛔ 不是模型语义：`yeban-model` 今天**没有**轨↔SFZ 的绑定
-    /// （`DeviceKind` 四档没有 sampler、`from_project` 也**不**填 [`Self::sfz`]）⇒
-    /// "哪条轨用哪份 SFZ"这个问题由**调用方**决定，模型侧的形状登记为 needs
-    /// （见 [`crate::sfz_instrument`] 模块头的 sfz-needs-5）。
+    /// ⚠ 本函数是 **API**、⛔ 不是模型语义：模型的 `TrackV3.sampler` 只给**路径**
+    /// （登记在 `R731`），而"把路径摊平"要读盘 ＋ 解码 ⇒ 那是**控制侧**的活
+    /// （见 [`PendingSfz`] 的分工说明与本函数的"取代"语义）。
     ///
     /// 形状照 [`Self::with_tones`] / [`Self::with_drums`]：**消费式**构造器、返回 `Self`。
     /// 多次调用**累加**（同一轨再调一次 ⇒ 覆盖该轨那一份）。
@@ -644,9 +689,13 @@ impl EngineSnapshot {
     /// ⛔ 本函数**不**摊平（那是 [`SfzPlan::prepare`]，控制线程的构造期）—— 它只把
     /// 已经建好的摊平表**按值移进**本快照（快照自身由 `Arc` 共享）⇒ **边界零分配**（红线 7）。
     ///
+    /// ⭐ **摊平表取代待摊平项**：同一条轨若在 [`Self::sfz_pending`] 里有一条待摊平项，
+    /// 本函数会把它**移除**（"已经有摊平表了" ⇒ 控制侧⛔ 不必也不会重复解码那条轨）。
+    ///
     /// ⚠ 不在表里的轨道 ⇒ 音源照旧（鼓机优先，否则复音合成器）⇒ **逐位不变**。
     #[must_use]
     pub fn with_sfz(mut self, track: EntityId, plan: SfzPlan) -> Self {
+        self.sfz_pending.remove(&track);
         self.sfz.insert(track, plan);
         self
     }
@@ -816,6 +865,22 @@ impl EngineSnapshot {
     #[must_use]
     pub fn sfz_plan(&self, id: &EntityId) -> Option<&SfzPlan> {
         self.sfz.get(id)
+    }
+
+    /// ⭐ 全部音轨的 **SFZ 待摊平项**（只带路径；`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    ///
+    /// ⚠ **轻数据**（几个路径字符串，⛔ 无区域表、⛔ 无 PCM）：它的语义是"**控制侧还欠
+    /// 这几条轨一次摊平**"。见 [`Self::sfz_pending`] 的字段文档与 [`PendingSfz`] 的分工图。
+    #[must_use]
+    pub const fn sfz_pending(&self) -> &BTreeMap<EntityId, PendingSfz> {
+        &self.sfz_pending
+    }
+
+    /// ⭐ 单轨的 SFZ 待摊平项（`None` = 这条轨**没有** SFZ 绑定**或**它已经摊平了
+    /// ⇒ 后者看 [`Self::sfz_plan`]）。
+    #[must_use]
+    pub fn pending_sfz(&self, id: &EntityId) -> Option<&PendingSfz> {
+        self.sfz_pending.get(id)
     }
 
     /// 声相衰减律（`audio_config.pan_law` 的投影）。

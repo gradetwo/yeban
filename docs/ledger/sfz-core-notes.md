@@ -440,7 +440,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73**（⭐ 步 3 后逐字不变） |
 | 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B**（广播路径；步 3 后逐字不变） |
 
-### needs（⭐ 下表状态截至**任务单 `#70`**，即 2026-10-16 的窃取/同轨信号落地；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
+### needs（⭐ 下表状态截至**任务单 `#78`**，即 2026-10-16 的"模型绑定 → 引擎待摊平项"接线；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
 
 | # | 缺口 | 状态 |
 | :--- | :--- | :--- |
@@ -448,7 +448,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | sfz-needs-2 | **池满只丢弃 ＋ 计数，无窃取口径** | ⭐ ⭐ **已闭合（任务单 `#70`）**：引擎侧 SFZ 池**采纳引擎既有那一套**（`PolySynth` 的三段键 `(层级, 触发序号, 槽位下标)`）＋ 3 ms 指数淡出（`StealFade` 形状、**同一把** `steal_fade_frames` 舵）；`yeban-sfz::VoicePool::select_victim` 是**它自己那一份**且**不被引擎使用** ⇒ ⛔ 不是"两份实现"。落地：池满走 `steal`（victim 在自己槽里淡出、新声部**挂起在同一槽**）；真丢弃只剩"挂起者被再一次换掉"（计 `dropped`，⛔ 不静默）、窃取计 `stolen`；S8／S19 钉住（读数见 §13.4） |
 | sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（引擎＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **已闭合（信号腿；任务单 `#70`）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 `crate::drums` §4.1 一致 ⇒ ⛔ 不改叠加）；落地＝新增**投影读数** `SynthEngine::armed_sources`／`ignored_sources`（三件同轨 ⇒ 武装 `3`、被忽略 `2`）；S20 钉住（读数见 §13.4）。⚠ **模型面**那一半仍挂在 `crate::drums` 的 `needs-3` |
 | sfz-needs-4 | **`span` 终点引擎侧已应用、离线/摊平侧未应用** | ⭐ **已闭合（步 3）**：三条路共用 `reduce_span` 一份归约 ⇒ `start` ＋ `end` 都应用；S3/S13 逐样本差 **0e0**（读数见 §13.2） |
-| sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（**"SFZ 如何进 `YebanProjectV1`"未裁**） | **未闭合（模型面）**：本步只把它做成**可经公开路径调用的 API**（`SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz`，S16 端到端）；⛔ 不加 `DeviceKind` 档、⛔ 不改 schema |
+| sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（**"SFZ 如何进 `YebanProjectV1`"未裁**） | ⭐ ⭐ **已闭合（模型面＝任务单 `#76`、引擎面＝任务单 `#78`）**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象；裁决见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** `PendingSfz`（`from_project` 从 `track.sampler` 投影、只搬路径字符串）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ `SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz`（后者**取代**前者）。⛔ 不加 `DeviceKind` 档、⛔ 不改 schema；S21～S24 钉住 |
 | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by`** | **部分闭合**：步 3 只闭合了它的"多采样／每区域独立 PCM"那一半；其余仍完全未做 |
 | sfz-needs-7 | ⭐ **（步 3 新增）缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **已闭合（任务单 `#68`；裁决 R711）**：**引擎出静音并计数**（`silent_region_count` ＋ `missing_sample_paths`）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表）。`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）；⛔ 旧"广播到 `samples[0]`"**已删除**；S15 已**如实地**改写期望（读数见 §13.3） |
 | sfz-needs-8 | ⭐ **（步 3 新增）摊平表不含样本字节预算 / 流式** | **未闭合**：每个被引用的样本 `pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无 `Arc` 共享口径 |

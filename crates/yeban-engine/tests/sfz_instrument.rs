@@ -31,6 +31,10 @@
 //! | ⭐ S18 | ⭐ **引擎层⛔ 不乘第二次力度**（本单新增；`needs-1` 的防双重计腿） | `v ∈ {0,32,64,100,127}`：引擎声部路径与**乐器层**一次性渲染**逐位相同**（手工调度表的 `gain` 显式写成 `velocity_gain(v)`）；反向对照：`velocity_gain(127) == 1.0`（恒等）⇒ S1 的 127 那条腿**抓不住**双重计 |
 //! | ⭐ S19 | ⭐ **池满 ⇒ 窃取 ＋ 3 ms 淡出**（本单新增；`sfz-needs-2`） | 池满后再触发：`stolen == 1`、`dropped == 0`、`fade_remaining == 144`（3 ms @ 48 kHz）；淡出窗口里槽位仍宣称**被窃取者**、走完 144 帧后就地换成新声部（`note` 变）；输出读数：淡出臂的第 143 帧 / 第 0 帧 ＝ `FLOOR^(143/144)`；**硬窃取对照臂**（`steal_fade_frames = 0`）⇒ 即时换人、指纹不同 |
 //! | ⭐ S20 | ⭐ **三件同轨的可读信号**（本单新增；`sfz-needs-3`） | 鼓机 ＋ SFZ ＋ 复音同轨 ⇒ `armed_sources == 3` ＋ `ignored_sources == 2`（输出仍对"只有鼓机"**逐位相同**）；反向对照：鼓机＋复音 ⇒ `2 / 1`、只有复音 ⇒ `1 / 0` |
+//! | ⭐ S21 | ⭐ **反向对照（任务单 `#78` 的核心）** | `TrackV3.sampler = None` ⇒ 端到端 **FNV-1a 指纹**仍逐位等于**接线前** [`BASELINE_PLAIN`]／[`BASELINE_TUNED`]，且 `sfz_pending()` **空** |
+//! | ⭐ S22 | ⭐ **正向（`#78`）** | `sampler = Some(路径)` ⇒ `from_project` 的快照里出现**该轨**的待摊平项 `PendingSfz`（路径**逐字**相同、条数 1）＋ ⛔ **摊平表 `sfz()` 仍空**（引擎⛔ 不凭空摊平） |
+//! | ⭐ S23 | ⭐ **待摊平项是纯事实（`#78`）** | 路径**磁盘上不存在**也不报错、⛔ 不改渲染（同夹具 `None`／`Some` 指纹**逐位相同**）；`with_sfz` 注入摊平表 ⇒ 待摊平项被**取代**（表清空、`sfz()` 1 条、指纹变） |
+//! | ⭐ S24 | ⭐ **缺样本口径不变，且经新接线可达（`#78`）** | 由 `sfz_pending()` 给出的路径 → 控制侧解码（**只给 `a.wav`**）⇒ `silent_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、`sample_index == NO_SAMPLE`、`render_track` 该键**不建声部**（`sfz_active_voices == 0`、逐位 0） |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -53,12 +57,15 @@ mod support;
 use support::{MixSpec, NoteSpec, note_project, render, render_snapshot, tuned_project};
 use yeban_engine::drums::DrumsParams;
 use yeban_engine::sfz_instrument::{
-    InMemorySample, PreparedRegion, PreparedSfz, SFZ_VOICES_PER_TRACK, SfzInstrument, SfzPlan,
-    SfzVoice, SfzVoicePool,
+    InMemorySample, PendingSfz, PreparedRegion, PreparedSfz, SFZ_VOICES_PER_TRACK, SfzInstrument,
+    SfzPlan, SfzVoice, SfzVoicePool,
 };
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, ScheduledNote, SynthEngine, track_gain, velocity_gain};
-use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, TrackKind, TrackV3};
+use yeban_model::{
+    DeviceDefinition, DeviceKind, EntityId, ParameterValue, SamplerBinding, TrackKind, TrackV3,
+    YebanProjectV1,
+};
 
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
@@ -1964,5 +1971,361 @@ fn s20_three_sources_on_one_track_report_two_ignored() {
         never_rendered.armed_sources(track),
         None,
         "⛔ 没渲染过的槽必须读 `None`（不是'0 件'）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#78`：引擎侧**消费** `TrackV3.sampler`（⭐ 只接线、⛔ 不读盘）
+// ---------------------------------------------------------------------------
+
+/// S21／S22／S23 的路径夹具：`instruments/lead.sfz`。
+///
+/// ⚠ 它**刻意在磁盘上不存在**（判据不碰文件系统）：引擎侧⛔ 不读盘 ⇒ 这个路径无论
+/// 真假都⛔ 不该改变任何东西（⛔ 不报错、⛔ 不建声部、⛔ 不改渲染）—— 那正是
+/// "接线 ⛔ 不是读盘"的机械见证。
+const SAMPLER_PATH: &str = "instruments/lead.sfz";
+
+/// S24 的块长：**小于**样本帧数（`SAMPLE_FRAMES = 480`）⇒ 有样本的声部在这一次
+/// 渲染里**不会播完退休** ⇒ `sfz_active_voices` 才有区分度（`BLOCK = 512` 会让
+/// 声部在同一块里播完，两条腿都会读成 `0` —— 那会让"不建声部"这条腿失去牙齿）。
+const S24_BLOCK: usize = 128;
+
+/// 把夹具工程里那条 MIDI 轨的 `sampler` 设成给定值（`None` ⇒ 清空），其余一字不动。
+///
+/// ⭐ "只差这一个字段"是 S21／S23 反向对照成立的**前提**：两条臂的工程除 `sampler`
+/// 之外完全相同（同一份夹具、同一批音符、同一条路由）。
+fn project_with_sampler(fixture: &support::Fixture, sampler: Option<&str>) -> YebanProjectV1 {
+    let mut project = fixture.project.clone();
+    project
+        .tracks
+        .get_mut(&fixture.track)
+        .expect("夹具里必须有那条 MIDI 轨")
+        .sampler = sampler.map(|path| SamplerBinding {
+        path: path.to_owned(),
+    });
+    project
+}
+
+/// ⭐ S21（任务单 `#78`；⭐ 本单核心的**反向对照**）：`sampler` 缺席 ⇒ 快照与渲染与
+/// **接线前**逐位相同。
+///
+/// # 判定量
+///
+/// 两条臂（无设备链 / 带音色）的端到端 **FNV-1a 指纹**必须等于 [`BASELINE_PLAIN`]／
+/// [`BASELINE_TUNED`] —— 那两个字面值是**接线前**（HEAD `720db9f1`，即本单的第一条
+/// 命令之后）在同一夹具、同一量子数、同一条产品路径上实测的（同 S5 的口径）。
+/// 另加一条**结构腿**：`sampler = None` ⇒ `sfz_pending()` 必须**空**。
+///
+/// # 怎么变红
+///
+/// 在 `from_project_with_latencies` 里把 `track.sampler` 也塞进**摊平表**（或让
+/// 实时侧读 `sfz_pending`）⇒ 第二条腿（`sfz_pending()` 空）与第一条腿（指纹）当场红。
+#[test]
+fn s21_an_absent_sampler_is_bit_identical_to_before_the_wiring() {
+    let plain = note_project(&SFZ_NOTES);
+    let plain_snapshot = EngineSnapshot::from_project(&plain.project, 1).expect("快照");
+    assert!(
+        plain_snapshot.sfz_pending().is_empty(),
+        "⛔ `sampler = None` ⇒ 待摊平表必须为空（实得 {} 条）",
+        plain_snapshot.sfz_pending().len()
+    );
+    assert!(plain_snapshot.pending_sfz(&plain.track).is_none());
+
+    let rendered = render(&plain.project, SFZ_QUANTA);
+    assert!(rendered.nonzero() > 0, "夹具必须真的出声（否则等号是空转）");
+    println!(
+        "[engine-sfz/S21] `sampler = None` 无设备链: 帧={} 非零={} 峰值={} 指纹={} (0x{:016x})",
+        rendered.frames(),
+        rendered.nonzero(),
+        rendered.peak(),
+        rendered.fingerprint(),
+        rendered.fingerprint(),
+    );
+    let plain_checked = check_fingerprint(
+        "`sampler = None` 无设备链",
+        rendered.fingerprint(),
+        BASELINE_PLAIN,
+    );
+
+    let tuned = tuned_project(&SFZ_NOTES, MixSpec::tone(800.0, 0.3));
+    let tuned_snapshot = EngineSnapshot::from_project(&tuned.project, 1).expect("快照");
+    assert!(tuned_snapshot.sfz_pending().is_empty());
+    let rendered_tuned = render(&tuned.project, SFZ_QUANTA);
+    println!(
+        "[engine-sfz/S21] `sampler = None` 音色(800, 0.3): 帧={} 非零={} 峰值={} 指纹={} (0x{:016x})",
+        rendered_tuned.frames(),
+        rendered_tuned.nonzero(),
+        rendered_tuned.peak(),
+        rendered_tuned.fingerprint(),
+        rendered_tuned.fingerprint(),
+    );
+    let tuned_checked = check_fingerprint(
+        "`sampler = None` 音色(800, 0.3)",
+        rendered_tuned.fingerprint(),
+        BASELINE_TUNED,
+    );
+
+    assert_eq!(
+        plain_checked, tuned_checked,
+        "两条臂必须在**同一平台判定**下（否则本判据的读数不可比）"
+    );
+}
+
+/// ⭐ S22（任务单 `#78`；**正向**）：`sampler = Some(路径)` ⇒ 快照里出现**该轨**的
+/// 待摊平项，路径**逐字**相同。
+///
+/// # 判定量
+///
+/// * `sfz_pending()` **恰好 1 条**、键就是那条 MIDI 轨（母线⛔ 不在表里）；
+/// * `pending_sfz(track).path()` **逐字**等于模型里那个路径（⛔ 不规范化、⛔ 不改写）；
+/// * ⛔ **摊平表 `sfz()` 仍空** —— 引擎没有凭空摊平（那需要读盘）；
+/// * 反向对照：同一夹具把 `sampler` 清回 `None` ⇒ 待摊平表**空**。
+#[test]
+fn s22_a_sampler_path_lands_in_the_snapshot_as_a_pending_item() {
+    let fixture = note_project(&SFZ_NOTES);
+    let project = project_with_sampler(&fixture, Some(SAMPLER_PATH));
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("快照");
+
+    let paths: Vec<&str> = snapshot
+        .sfz_pending()
+        .values()
+        .map(PendingSfz::path)
+        .collect();
+    println!(
+        "[engine-sfz/S22] 待摊平条数 = {}；路径 = {paths:?}；摊平表条数 = {}；\
+         母线在待摊平表里 = {}",
+        snapshot.sfz_pending().len(),
+        snapshot.sfz().len(),
+        snapshot.sfz_pending().contains_key(&fixture.master),
+    );
+
+    assert_eq!(
+        snapshot.sfz_pending().len(),
+        1,
+        "⭐ `sampler = Some(…)` ⇒ 恰好一条待摊平项"
+    );
+    let pending = snapshot
+        .pending_sfz(&fixture.track)
+        .expect("⭐ 正向：那条 MIDI 轨必须出现在待摊平表里");
+    assert_eq!(
+        pending.path(),
+        SAMPLER_PATH,
+        "⭐ 路径必须**逐字**来自模型（⛔ 不规范化、⛔ 不查存在性）"
+    );
+    assert!(
+        !snapshot.sfz_pending().contains_key(&fixture.master),
+        "没绑定 `sampler` 的轨（母线）⛔ 不得出现在待摊平表里"
+    );
+    assert!(
+        snapshot.sfz().is_empty(),
+        "⛔ 引擎不读盘 ⇒ 摊平表必须仍为空（只有控制侧解码后 `with_sfz` 才填它）"
+    );
+
+    // 反向对照：同一夹具、只把 `sampler` 清回 `None` ⇒ 待摊平表空。
+    let cleared = project_with_sampler(&fixture, None);
+    let cleared_snapshot = EngineSnapshot::from_project(&cleared, 1).expect("快照");
+    assert!(
+        cleared_snapshot.sfz_pending().is_empty(),
+        "反向对照：`sampler = None` ⇒ 待摊平表必须为空"
+    );
+}
+
+/// ⭐ S23（任务单 `#78`）：**待摊平项是纯事实** —— 它⛔ 不改渲染、⛔ 不报错；
+/// 而 `with_sfz` 注入摊平表时**取代**它。
+///
+/// # 判定量
+///
+/// 1. 同夹具 `None`／`Some(不存在的路径)` 两条臂的端到端 FNV-1a 指纹**逐位相同**
+///    （且都真的出声）⇒ ⭐ 引擎⛔ 没有第二份音源事实源；
+/// 2. 那个路径**磁盘上不存在**，但 `from_project` 仍 `Ok` ⇒ ⭐ 引擎⛔ 不读盘
+///    （真读盘会 `Err` 或至少要碰文件系统）；
+/// 3. 控制侧注入摊平表（`with_sfz`）⇒ 待摊平项被**取代**（表清空、`sfz()` 一条），
+///    且指纹**变**（⇒ 摊平表真的接上了实时侧）。
+///
+/// # 怎么变红
+///
+/// 把 `with_sfz` 里那句 `self.sfz_pending.remove(&track)` 删掉 ⇒ 腿 ③ 的"表清空"红；
+/// 让 `from_project` 去读那个路径 ⇒ 腿 ② 红（不存在的文件必然 `Err`）。
+#[test]
+fn s23_a_pending_path_changes_nothing_audible_and_is_superseded_by_with_sfz() {
+    let fixture = note_project(&SFZ_NOTES);
+    let bare_project = project_with_sampler(&fixture, None);
+    let pending_project = project_with_sampler(&fixture, Some(SAMPLER_PATH));
+
+    let bare = render(&bare_project, SFZ_QUANTA);
+    let with_pending = render(&pending_project, SFZ_QUANTA);
+    println!(
+        "[engine-sfz/S23] `sampler = None`: 非零={} 指纹={} (0x{:016x})；\
+         `sampler = Some({SAMPLER_PATH})`（文件不存在）: 非零={} 指纹={} (0x{:016x})",
+        bare.nonzero(),
+        bare.fingerprint(),
+        bare.fingerprint(),
+        with_pending.nonzero(),
+        with_pending.fingerprint(),
+        with_pending.fingerprint(),
+    );
+    assert!(
+        bare.nonzero() > 0 && with_pending.nonzero() > 0,
+        "两条臂都必须真的出声（否则'逐位相同'可能只是两边都哑）"
+    );
+    assert_eq!(
+        with_pending.fingerprint(),
+        bare.fingerprint(),
+        "⭐ 待摊平项⛔ 不改渲染：`None` 与 `Some(…)` 的输出必须**逐位相同**"
+    );
+    assert_eq!(
+        bits(&with_pending.left),
+        bits(&bare.left),
+        "⭐ 左声道逐位相同（指纹之外的独立见证）"
+    );
+
+    // ② 不存在的路径仍能编译成快照 ⇒ ⭐ 引擎⛔ 不读盘。
+    let snapshot = EngineSnapshot::from_project(&pending_project, 1)
+        .expect("⭐ 引擎不读盘 ⇒ 磁盘上不存在的 SFZ 路径也必须能编译成快照");
+    assert!(snapshot.sfz().is_empty(), "⛔ 没有摊平表（引擎没读盘）");
+
+    // ③ 控制侧（允许 I/O）解码后注入 ⇒ 摊平表**取代**待摊平项。
+    let sfz = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("SFZ 必须解析成功");
+    let sample = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let plan = SfzPlan::prepare_with_samples(&sfz, &[("a.wav".to_owned(), sample)], 48_000.0)
+        .expect("多采样摊平必须成功");
+    let armed = snapshot.with_sfz(fixture.track, plan);
+    println!(
+        "[engine-sfz/S23] 注入摊平表之后：待摊平条数 = {}；摊平表条数 = {}",
+        armed.sfz_pending().len(),
+        armed.sfz().len()
+    );
+    assert!(
+        armed.sfz_pending().is_empty(),
+        "⭐ 摊平表**取代**待摊平项（否则控制侧会重复解码同一条轨）"
+    );
+    assert_eq!(armed.sfz().len(), 1, "注入一次 ⇒ 摊平表一条");
+    let armed_audio = render_snapshot(armed, SFZ_QUANTA);
+    assert_ne!(
+        armed_audio.fingerprint(),
+        bare.fingerprint(),
+        "⭐ 摊平表必须真的接上实时侧（否则'取代'只是账面动作）"
+    );
+}
+
+/// ⭐ S24（任务单 `#78`）：**缺样本口径不变**，且它能**经新接线**走到。
+///
+/// 前三条判据只证明"路径进快照"；本条证明⭐ **新接线与控制侧既有分工衔接得上**：
+/// 由 `sfz_pending()` 里的路径 →（控制侧"读盘"／解析）→ 只解码 `a.wav` →
+/// `prepare_with_samples` → `render_track`：缺 `missing.wav` 的那条区域
+/// **`NO_SAMPLE` ⇒ 不建声部 ＋ 计数**（既有口径，`R711`／`needs-7`）。
+///
+/// # 判定量
+///
+/// * `silent_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、
+///   该区域 `sample_index == PreparedRegion::NO_SAMPLE`；
+/// * 引擎侧：key=64（缺样本）那次 `render_track` ⇒ `sfz_active_voices == Some(0)`
+///   ＋ 输出**逐位 0**（⛔ 不建声部、⛔ 不回退播别人的采样）；
+/// * 反向对照：同一份 plan 上 key=60（有样本）**真的出声** ⇒ 上一条不是"两边都哑"。
+#[test]
+fn s24_a_missing_sample_is_still_silent_and_counted_through_the_new_wiring() {
+    const ONE_MISSING: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                               <region> sample=missing.wav key=64 pitch_keycenter=60\n";
+    let fixture = note_project(&SFZ_NOTES);
+    let project = project_with_sampler(&fixture, Some(SAMPLER_PATH));
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("快照");
+
+    // 控制侧（模拟"读盘"）：路径必须**先**从待摊平项取到。
+    let pending = snapshot
+        .pending_sfz(&fixture.track)
+        .expect("⭐ 待摊平项是控制侧的唯一入口");
+    assert_eq!(pending.path(), SAMPLER_PATH);
+    let sfz = SfzInstrument::load(ONE_MISSING.to_owned(), &Default::default()).expect("解析");
+    assert_eq!(
+        sfz.referenced_sample_paths().expect("路径全集"),
+        ["a.wav".to_owned(), "missing.wav".to_owned()],
+        "控制侧据此知道该解码哪两份（`missing.wav` 读不到 ⇒ ⛔ 不放进提供表）"
+    );
+    let a = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let plan = SfzPlan::prepare_with_samples(&sfz, &[("a.wav".to_owned(), a)], 48_000.0)
+        .expect("多采样摊平必须成功");
+    let prepared = plan.prepared();
+    println!(
+        "[engine-sfz/S24] silent = {}、missing = {:?}、sample_content = {}、\
+         key=64 的 sample_index = {}",
+        prepared.silent_region_count(),
+        prepared.missing_sample_paths(),
+        prepared.sample_content_label(),
+        prepared.regions()[1].sample_index(),
+    );
+    assert_eq!(prepared.silent_region_count(), 1, "⭐ 缺样本的区域计数");
+    assert_eq!(
+        prepared.missing_sample_paths().to_vec(),
+        vec!["missing.wav".to_owned()],
+        "⭐ 缺失路径必须**具名**登记（⛔ 不静默）"
+    );
+    assert_eq!(
+        prepared.regions()[1].sample_index(),
+        PreparedRegion::NO_SAMPLE,
+        "⭐ 缺样本 ⇒ `NO_SAMPLE`（⛔ 不是回退到 `samples[0]`）"
+    );
+
+    // 引擎侧：缺样本那个键**不建声部**（`sfz_active_voices == Some(0)` ＋ 逐位 0）。
+    let engine_track = EntityId::new();
+    let mut engine = engine_with_track(engine_track);
+    let missing_note = NoteSchedule::from_sorted(vec![ScheduledNote::new(
+        0,
+        12_000,
+        64,
+        127,
+        support::yeban_dsp_note_to_hz(64),
+        1.0,
+        48_000.0,
+    )]);
+    let mut missing_out = vec![0.0f32; S24_BLOCK];
+    engine.render_track(
+        engine_track,
+        Some(&missing_note),
+        Some(prepared),
+        &mut missing_out,
+    );
+    assert_eq!(
+        engine.sfz_active_voices(engine_track),
+        Some(0),
+        "⭐ 缺样本 ⇒ **不建声部**（池里 0 个活声部）"
+    );
+    assert!(
+        missing_out.iter().all(|s| *s == 0.0),
+        "⭐ 缺样本的区域必须**逐位静音**"
+    );
+
+    // 反向对照：同一份 plan，key=60（有样本）必须真的出声。
+    // ⚠ 用一条**新的**引擎：`SynthEngine` 的每槽 `cursor` 单调前进（同 S18 每条腿
+    // 各建一台的理由）⇒ 在同一个引擎上换一份调度表不会重新触发。
+    let sibling_note = NoteSchedule::from_sorted(vec![ScheduledNote::new(
+        0,
+        12_000,
+        60,
+        127,
+        support::yeban_dsp_note_to_hz(60),
+        1.0,
+        48_000.0,
+    )]);
+    let mut sibling_engine = engine_with_track(engine_track);
+    let mut sibling_out = vec![0.0f32; S24_BLOCK];
+    sibling_engine.render_track(
+        engine_track,
+        Some(&sibling_note),
+        Some(prepared),
+        &mut sibling_out,
+    );
+    println!(
+        "[engine-sfz/S24] 反向对照 key=60：活声部 = {:?}、非零 = {}",
+        sibling_engine.sfz_active_voices(engine_track),
+        sibling_out.iter().filter(|s| **s != 0.0).count(),
+    );
+    assert!(
+        sibling_engine.sfz_active_voices(engine_track).unwrap_or(0) > 0
+            && sibling_out.iter().any(|s| *s != 0.0),
+        "反向对照：缺的**只有** `missing.wav` ⇒ key=60 那条区域必须照常出声"
     );
 }

@@ -125,9 +125,12 @@
 //! | [`PreparedSfz::prepare_with_samples`] | 控制侧构造 | 每区域**播自己**那份样本；同一路径**只 materialize 一次**；⭐ 缺样本 ⇒ **静音 ＋ 计数**（⛔ 不发明替代内容） |
 //! | [`PreparedSfz::prepare`] | 单样本**广播**（兼容重载，⛔ 未删） | 所有 `sample_index = 0`；⚠ **音色内容错**（各 region 播同一份）⇒ 读数 `sample_content=broadcast(1)` |
 //! | [`SfzPlan::prepare_with_samples`] | 快照投影 | 经 [`crate::snapshot::EngineSnapshot::with_sfz`] 注入 ⇒ **唯一**的公开绑定路径 |
+//! | ⭐ [`PendingSfz`] | 快照（⭐ 轻数据：只带路径） | ⭐ **模型 `TrackV3.sampler` → 快照的接线**：`from_project` 抄进 `sfz_pending` ⇒ 控制侧据此读盘／解码（引擎⛔ 不读盘）；`with_sfz` 摊平后**取代**它 |
 //!
 //! ⛔ **解码在控制侧**：引擎只接**已经解码**的 [`InMemorySample`]（⛔ 不引 `symphonia`/`rubato`）。
-//! 调用方先用 [`SfzInstrument::referenced_sample_paths`] 拿到"这条 SFZ 到底引用哪些路径"
+//! 调用方从 [`crate::snapshot::EngineSnapshot::sfz_pending`]（⭐ 由 `TrackV3.sampler` 投影而来）
+//! 拿到 **SFZ 文件路径**、读盘后用 [`SfzInstrument::load`] 解析，
+//! 再用 [`SfzInstrument::referenced_sample_paths`] 拿到"这条 SFZ 到底引用哪些路径"
 //! （排序去重），再按 `crates/yeban-app/src/sfz_load.rs` 的形状（真读 PCM WAV、读不到 ⇒
 //! 如实回退 ＋ 把原因写进来源文案）解码成 `&[(String, InMemorySample)]`。
 //! ⭐ ⭐ **引擎侧对"没给"的路径只做一件事：出静音 ＋ 计数**（[`PreparedSfz::silent_region_count`]
@@ -143,7 +146,7 @@
 //! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | ⭐ ⭐ **本单已闭合**：引擎侧 SFZ 池**采纳引擎既有那一套**（`yeban_dsp::polysynth::PolySynth` 的三段键 `(层级, 触发序号, 槽位下标)`，见 [`SfzVoicePool::select_victim`]）＋ 3 ms 指数淡出（`yeban-sfz` 的 `StealFade` 形状、**同一把** `steal_fade_frames` 舵）。`yeban_sfz::voice_pool::VoicePool::select_victim` 是**它自己那一份**（`(层级, 注入电平, 序号, 下标)` ＋ 立即接管），且那个池**不被引擎使用** ⇒ ⛔ 不构成"两份实现"。落地：池满走 `steal` —— victim 在自己槽里淡出、新声部**挂起在同一槽**（`pending`）⇒ 定容池⛔ 不需要额外 slack 槽；真丢弃只剩"挂起者还没发声就被再一次换掉"（计 `dropped`，⛔ 不静默），窃取计 `stolen`（判据 S8/S19）|
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）仍挂在 [`crate::drums`] 的 `needs-3`（属模型面，本单⛔ 不动）|
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
-//! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 本步只把它做成**可经公开路径调用的 API**） | `yeban-model` 里 SFZ 命中只有一行注释（`model/src/lib.rs:16`）、`DeviceKind` 四档没有 sampler ⇒ 今天只能由引擎 API（[`crate::snapshot::EngineSnapshot::with_sfz`] ＋ [`SfzPlan::prepare_with_samples`]）显式注入。**"SFZ 如何进 `YebanProjectV1`"仍未裁**（⛔ 不发明模型语义：本步不加 `DeviceKind` 档、不改 schema）（未闭合、属模型面） |
+//! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
 //! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **步 3 只闭合了它的"多采样／每区域独立 PCM"那一半**；循环、`ampeg_*`、`off_mode`、`group`/`off_by` 仍完全未做（未闭合） |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | `prepare_with_samples` 把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无共享（`Arc`）口径（未闭合） |
@@ -1597,6 +1600,57 @@ impl SfzVoicePool {
     #[must_use]
     pub const fn voices(&self) -> &[SfzVoice; SFZ_VOICES_PER_TRACK] {
         &self.voices
+    }
+}
+
+/// ⭐ **一条轨的"待摊平"SFZ 绑定**：只带路径、**零运行时对象**（任务单 `#78`）。
+///
+/// # 它补的是哪一段（引擎侧只做接线、⛔ 不读盘）
+///
+/// 模型层现在能表达"这条轨用哪一份 SFZ 定义文件"（`TrackV3.sampler:
+/// Option<SamplerBinding>`，形状见 `yeban-model` 的 `project.rs`，登记在台账 `R731`）
+/// —— ⚠ 而它**只留痕一个路径字符串**、⛔ 不带任何已解析乐器或 PCM。
+///
+/// 摊平（`SfzInstrument` → 区域表 ＋ PCM）需要**读盘 ＋ 解码**，而本仓有两条既有边界
+/// 把它钉在控制侧 ⇒ 引擎侧能把 `sampler.path` 变成的**只有这一件事**：
+///
+/// * ⛔ **引擎不读磁盘**（真读 PCM 的是控制侧，形状见 `crates/yeban-app/src/sfz_load.rs`）；
+/// * ⛔ **引擎不引 `symphonia`／`rubato`**（解码器的依赖⛔ 不进实时 crate）。
+///
+/// # 分工（本类型就是两个阶段之间的那张"待办条"）
+///
+/// ```text
+/// from_project(&project)            ⇒  sfz_pending(): "这条轨有一份 SFZ，路径是它"
+///                                       ↓  控制侧（允许分配、允许 I/O，⛔ 不在音频线程）
+///                                       SfzInstrument::load(读盘)
+///                                       referenced_sample_paths() → 逐个解码
+///                                       SfzPlan::prepare_with_samples(...)
+/// with_sfz(track, plan)             ⇒  sfz(): 摊平表（并**移除**该轨的待摊平项）
+/// ```
+///
+/// ⚠ **实时侧完全不看本类型**：`SynthEngine` / `EngineRuntime` 只读
+/// [`crate::snapshot::EngineSnapshot::sfz`] 那一张摊平表 ⇒ `sampler: None` 与
+/// `sampler: Some(…)` 的**渲染输出逐位相同**（引擎没有第二份音源事实源）。
+///
+/// ⚠ 字段**原样**保留模型给的字节：⛔ 不查存在性、⛔ 不查扩展名、⛔ 不做路径规范化
+/// （与 `SamplerBinding::path` 同一口径，"留痕"就是它的全部语义）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingSfz {
+    /// 采样器定义文件路径（逐字留痕；见本类型的模块级说明）。
+    path: String,
+}
+
+impl PendingSfz {
+    /// 从一个路径建（控制侧投影用：把 `TrackV3.sampler.path` 原样搬过来）。
+    #[must_use]
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// 路径（**逐字**，⛔ 未被规范化）。
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
     }
 }
 
