@@ -9657,3 +9657,51 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **五、⭐ 巡检**: ⭐ **可用 **53 GiB**（⭐ 95%）**；⭐ `target` **58 G**；⭐ `/tmp` **本轮未清**（⭐ 下轮处理）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#79`（⭐ app 端到端）** ＋ ⭐ `project.rs:1140-1141` 注释订正 ＋ ⭐ schema `sampler` 分支的常驻判据 ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-8` ✓
+
+---
+
+## R736 实测追加（2026-10-16）：⭐⭐⭐ **`#79` 已并入**（⭐ SFZ 端到端打通）⇒ ⭐ **`auto` 与**显式手搭六步**逐位相同**、⭐ **`sampler ＝ None` 逐位等于接线前** ⚠ **而 GUI／⭐实时播放**仍未接线**（⭐ 已登记）
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **5 文件、＋881／−23**（⭐ `sfz_load.rs` ＋189／−8、⭐ `render_core.rs` ＋98／−3、⭐ `export_wav.rs` ＋44／−11、⭐ `cli.rs` ＋31／−1、⭐ ⭐ **新增 `tests/sfz_model_chain.rs` 519 行**）⇒ ⭐ **HEAD ＝ **`f5e090f2`**（⭐ 原报告 `4f84760c`）** ✓ ⭐ **`premerge-gate yeban-app` ＝ 全过**（⭐ 后台 `bash-eb15…` 收回 exit 0）✓ ⭐ **主树并入前 `git status` ＝ 0 行** ✓
+
+⭐ ⭐ ⭐ **二、⭐ 甲 ＝ `sfz_load::decode_sfz_plan(path, hz)`（⭐ 六步全复用既有形状）**:
+| ⭐ 步 | ⭐ 复用 |
+| :--- | :--- |
+| ⭐ ① 读盘＋解析 | ⭐ **`load_sfz_with_instrument`**（⭐ 与 `--sfz` 装载**同一个**函数）|
+| ⭐ ② 字节／⭐区域数 | ⭐ **同一个 `SfzLoadReport` 字段**（⭐ ⛔ 不重数）|
+| ⭐ ③ 样本路径全集 | ⭐ **`SfzInstrument::referenced_sample_paths`** |
+| ⭐ ④ 逐个解码 | ⭐ ⭐ **与 `region_sample_for` **共用**新抽出的 `resolve_sample_path`**（⭐ ⛔ 不写第二份解码）|
+| ⭐ ⑤ 摊平 | ⭐ **`SfzPlan::prepare_with_samples`**（⭐ 引擎口径: ⭐ 按 `sample_path` 去重 ＋ ⭐ 缺样本 `NO_SAMPLE`）|
+| ⭐ ⑥ 读数 | ⭐ **`PreparedSfz::missing_sample_paths`／⭐ `silent_region_count`**（⭐ 引擎口径）＋ ⭐ 本层 `unreadable_samples`（⭐ 路径＋原因）|
+⇒ ⭐ ⭐ **接线**: ⭐ **`arm_pending_sfz(snapshot, hz, prebuilt)`** 按键升序逐条解码 ⇒ ⭐ 既有 `with_sfz`；⭐ **`render_core` 新增 `render_project_f32_with_plans`**；⭐ ⭐ **`EngineTrackSource` 改持 `Arc<EngineSnapshot>`、⭐ `render_track` 第 3 参由硬编码 `None` 改为从快照 `sfz()` **借用****（⭐ ⛔ 不 clone PCM）✓
+
+⭐ ⭐ ⭐ **三、⭐ 端到端（⭐ 本条最硬的一条）**: ⭐ **`auto: nonzero＝9598 peak＝0.109731831 fnv＝0x0df478fa15264e79；⭐ hand: 同名同值；⭐ none: fnv＝0x442c774e81dc2bd1`** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ `auto`（⭐ 走新管线）与 ⭐ `hand`（⭐ 测试内**显式手搭六步**的同一份摊平表）**逐位相同**（⭐ digest 亦同）** ⇒ ⭐ ⭐ **那是"⛔ 无第二份实现"的**最强验证**** ⇒ ⭐ **比任何断言都强** ✓
+
+⭐ ⭐ **四、⭐ 反向对照**: ⭐ **`sampler ＝ None` ⇒ `frames＝384000 nonzero＝767998 peak＝0.327392042 fnv＝0x442c774e81dc2bd1`**（⭐ **＝ 接线前 `e4f00a37` 实测值**；⭐ 同平台硬判、⭐ 异平台如实跳过）✓ ⭐ **`sfz_decoded` 空、⭐ label 不含 `sfz(`** ✓
+
+⭐ ⭐ **五、⭐ 缺样本（⭐ 如实、⭐ ⛔ 不回退播别人的采样）**: ⭐ **`regions＝4 samples＝1 silent＝3 missing＝["missing.wav"] unreadable＝1；⭐ nonzero＝9598`**（⭐ 有样本那条区域照常发声）；⭐ **全缺臂 `samples＝0 silent＝4 missing＝["missing.wav"] unreadable＝1；⭐ nonzero＝0`**（⭐ 逐位全零）✓ ⭐ **SFZ 文件本身缺失 ⇒ `Err(WavExportError::Sfz)` 点名路径、⭐ 且目标文件不存在（⭐ 不留半成品）** ✓
+
+⭐ ⭐ ⭐ **六、⭐ 注入双向（⭐ 含**应绿腿**、⭐ 第 243 条）**:
+| ⭐ 注入 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **A（⭐ 第 ④ 步跳过 ⇒ ⭐ 样本不进提供表）** | ⭐ **正向腿红: ⭐ `auto: nonzero＝0 peak＝0.000000000`**（⭐ "⭐ 模型链条必须真的发声"）；⭐ missing 腿红（⭐ `silent＝4 missing＝["missing.wav","present.wav"]`）；⭐ ⭐ **`sampler＝None` **应绿腿仍绿****（⭐ fnv 不变）✓ |
+| ⭐ **B（⭐ pending 循环 `with_sfz` 不被调用）** | ⭐ **逐位对照腿红: ⭐ `auto fnv＝0x442c774e81dc2bd1`（⭐ 回落基线）vs ⭐ `hand 0x0df478fa15264e79`**；⭐ "⭐ 全缺 ⇒ ⭐ 全零"腿红（⭐ poly 出声）；⭐ ⭐ **`sampler＝None` 应绿腿仍绿** ✓
+⇒ ⭐ ⭐ **即: ⭐ 两条腿各证一件事**（⭐ 第 243 条）✓
+
+⭐ ⭐ **七、⭐ 状态差集（⭐ 第 241 条）**: ⭐ **base 544 vs after 548 ⇒ ⭐ 新增**恰好 4 条**（⭐ 本单判据、⭐ 全 ok）⇒ ⭐ 同名判据**状态变化 0 条**、⭐ **消失 0 条**** ✓ ⭐ **既有 WAV／⭐SFZ 导出读数 31 条（⭐ 3 二进制 ＋ ⭐ lib、⭐ 临时目录归一后）**逐字相同**** ✓
+
+⭐ ⚠ ⭐ ⭐ **八、⭐ 而它如实披露一处**未接线****（⭐ 本条要点、⭐ 须登记）**: ⭐ ⚠ **"⭐ **GUI／⭐实时播放未接线** —— ⭐ `EngineHost::reload`／⭐ `publish_project` 仍未调 `arm_pending_sfz`，⭐ 故 GUI 里带 sampler 的工程播放仍是**复音合成器**（⭐ 不报错、⭐ 也不发声；⭐ 导出／⭐录音已接线）"** ⇒ ⭐ ⭐ **并说明要接实时须在 publish／⭐reload 处加"⭐ 路径 ⇒ 摊平表"的**缓存****（⭐ 否则每次发布都读盘）⇒ ⭐ **属后续单** ✓
+⇒ ⭐ ⭐ ⭐ **即: ⭐ 这是**半边接线**（⭐ 离线通、⭐ 实时未通）** ⇒ ⭐ ⚠ **而它没有把"⭐ 导出通了"说成"⭐ SFZ 通了"** ⇒ ⭐ **边界说得很准** ✓
+
+⭐ ⚠ **九、⭐ 其余如实边界**: ⭐ **② 乙（⭐ UI）未做**、⭐ 并**勘察清楚了所需件**（⭐ `TrackView` 加 `sampler_path` 投影、⭐ `device_rack.slint` 一条带 element-id 的路径输入 ＋ ⭐ Set／Clear、⭐ `host.rs` 按 `SetTrackMute`／`SetTrackSolo` 同款提交 `SetTrackSampler`；⭐ ⚠ **本仓无文件对话框 ⇒ 建议先文本输入、⭐ 原生选择器要新依赖须报批**）✓ ⭐ **③ 非 PCM-WAV 样本（⭐ FLAC／OGG）会被判为读不到 ⇒ ⭐ 按"⭐ 缺样本"静音 ＋ ⭐ 计数（⭐ 如实、⭐ 不假装支持）** ✓
+
+⭐ ⚠ **十、⭐ `--sfz` 旁路与模型链条的关系（⭐ 它判得很清）**: ⭐ **旁路保留**（⭐ "⭐ 整工程试听一份 SFZ"的便捷路径、⭐ 语义不动）；⭐ **模型链条按轨绑定**；⭐ **两者同时给 ⇒ 旁路优先**；⭐ **`use_engine_source＝false` ⇒ ⭐ 最小音源（⭐ 两者都不读 `plans`）** ✓
+
+⭐ ⚠ **十一、⭐ 四门读数**: ⭐ `fmt --check` **0**／⭐ `check --all-targets --locked` **0**／⭐ `clippy -D warnings` **0**／⭐ `test -p yeban-app --locked` **0**（⭐ 37 二进制、⭐ **545 passed／⭐ 0 failed／⭐ 3 ignored**）／⭐ `premerge-gate.sh yeban-app` **全 5 层 0**／⭐ `light` **0** ✓
+
+⭐ ⚠ **十二、⭐ 一条可复用口径（⭐ 第 244 条）**: ⭐ ⭐ **"⭐ 新管线"的最强验证是**与"⭐ 显式手搭同一管线"的产物逐位对照**** —— ⚠ **因为"⭐ 与期望值相符"只能证明**这一处**对、⭐ 而"⭐ 与手搭逐位相同"证明整条链**无第二份实现**** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **在判据里**手写一遍**那套步骤（⭐ 不用被测的封装）⇒ ⭐ 断言两者产物**逐位相同**** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **`auto` vs ⭐ `hand` 的 `fnv` 同为 `0x0df478fa15264e79`** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **GUI／⭐实时播放接线**（⭐ 新登记、⭐ 含"⭐ 路径 ⇒ 摊平表"缓存）＋ ⭐ **乙（⭐ UI 选择面）** ＋ ⭐ `project.rs:1140-1141` 注释订正 ＋ ⭐ schema `sampler` 分支的常驻判据 ＋ ⭐ 非 PCM-WAV 支持 ＋ ⭐ `needs-3` 模型面 ＋ ⭐ `needs-8` ✓
