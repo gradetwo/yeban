@@ -2785,6 +2785,14 @@ mod tests {
                 old_name: "PolySynth".to_owned(),
                 new_name: "PolySynth (renamed)".to_owned(),
             },
+            // 旁通切换：**此前连一次"旁通"都做不出来**（`Default` 与所有夹具写死 `false`）。
+            // ⚠ 目标仍是 lead 轨那台设备（`f.device`）；旁通是布尔开关 ⇒ 切回去即复原。
+            Op::SetDeviceBypassed {
+                track_id: f.lead,
+                device_id: f.device,
+                old_bypassed: false,
+                new_bypassed: true,
+            },
             // 资产声明（**创建**：夹具里尚未声明过这份新哈希 ⇒ `old_asset: None`）。
             Op::SetAsset {
                 asset_hash: crate::ids::AssetHash::of_bytes(b"snare"),

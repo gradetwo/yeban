@@ -172,6 +172,16 @@
         },
         {
           "required": [
+            "SetDeviceBypassed"
+          ],
+          "properties": {
+            "SetDeviceBypassed": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "SetDeviceName"
           ],
           "properties": {
