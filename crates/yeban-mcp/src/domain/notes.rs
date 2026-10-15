@@ -13626,7 +13626,16 @@ mod tests {
                 )
             })
             .expect("样本里必须有带摆放的音轨");
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 34] = [
+        // ⚠ 类型别名：⭐ `clippy::type_complexity` 在这个宽度上会红（⭐ 5 元组 × 定长数组），
+        // ⭐ 按 clippy 的建议**提取别名**（⛔ 不用 `#[allow]` 掩盖 —— 那只是把复杂度留下）。
+        type Row<'a> = (
+            &'a str,
+            Option<EntityId>,
+            Option<ClipPoolEntry>,
+            Value,
+            &'a str,
+        );
+        let rows: [Row<'_>; 34] = [
             (
                 "add",
                 None,
