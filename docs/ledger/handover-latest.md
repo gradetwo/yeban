@@ -347,6 +347,7 @@
 | :--- | :--- | :--- |
 | `/Users/crow/work/music/yeban` | `main` | 主树（集成者工作区）|
 | `.worktrees/mod-app` | `line/mod-app` | 四条持久线，**复用、⛔ 不拆** |
+| `.worktrees/mod-app-86` | `line/mod-app-86` | ⚠ ⭐ **临时树**（R743 事故的处置）：`mod-app` 同时要两个不相关切片时另开，⛔ 切片的线不得与 `line/mod-app` 共树。**收工后拆**。 |
 | `.worktrees/mod-mcp` | `line/mod-mcp` | 同上 |
 | `.worktrees/mod-model` | `line/mod-model` | 同上 |
 | `.worktrees/mod-engine` | `line/mod-engine` | 同上（**等规范**）|
