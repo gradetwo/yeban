@@ -8611,3 +8611,50 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **五、⭐ 巡检（⭐ 人类指令）**: ⭐ **`target/debug/incremental` ＝ **3.6 G**（⭐ 低于阈值 ⇒ ⛔ 不清）**；⭐ **可用 **52 GiB**（⭐ 95%）**；⭐ ⚠ **`/tmp` 有 3 个线残留**（⭐ `guards.txt`／⭐ `d3.patch`／⭐ `inject3.txt`）⇒ ⭐ ⭐ **已按显式名单清除** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **两条裁决的**落地**（⭐ `needs-1` 让 SFZ 与鼓机同径、⭐ `needs-7` 改静音＋⭐ 计数）** ＋ ⭐ `needs-2`（⭐ 池满无窃取）／⭐ 3（⭐ 鼓机＋SFZ 同轨）／⭐ 5（⭐ 模型绑定）＋ ⭐ 循环／⭐ ADSR ＋ ⭐ 遗留 3 项 ✓
+
+---
+
+## R712 实测追加（2026-10-16）：⭐⭐⭐ **R711 的两条归属裁决已落地**（`sfz-needs-1` 轨推子／静音／独奏 ＋ `sfz-needs-7` 缺样本 ⇒ 静音）⇒ ⭐ **两处注入打红**、⭐ **既有判据逐字不变**
+
+⭐ ⭐ ⭐ **一、⭐ 合入读数**: ⭐ **5 文件、＋563／−114** ⇒ ⭐ **完整 sha ＝ `e00896238fdac02ada88c69469c5605bbb877b6f`**（⭐ 代码提交；本条台账紧随其后入库）✓
+| ⭐ 文件 | ⭐ 改了什么 |
+| :--- | :--- |
+| ⭐ `engine/src/synth.rs` | ⭐ `NoteSchedule` 增**轨增益门** `track_gain`（默认 **1.0** 单位）＋ `with_track_gain`／`track_gain()`；`render_track` 的 **SFZ 分支**把**同一张表**上的门交给 `trigger_note` |
+| ⭐ `engine/src/snapshot.rs` | ⭐ 投影把**同一个** `track_gain_scale(...)` 结果**同时**写进 `note.gain` 与 `NoteSchedule::track_gain`（⭐ **单一来源**）|
+| ⭐ `engine/src/sfz_instrument.rs` | ⭐ 甲：`trigger_note` 增 `track_gain` 参数、增益 ＝ `region.gain_at(...) * track_gain`；⭐ 乙：缺样本 ⇒ `NO_SAMPLE` ＋ 计数，⛔ **删掉"广播到 `samples[0]`"**（含 `fallback_regions`／`fallback_region_count()`／读数的 `+fallback(N)`）|
+| ⭐ `engine/tests/sfz_instrument.rs` | ⭐ 新增 **S17**（推子同比例）／**S18**（防双重计）；⭐ **S15 期望如实改写**（旧期望固化了**错内容**）|
+| ⭐ `docs/ledger/sfz-core-notes.md` | ⭐ `needs` 表闭合两条 ＋ 新 **§13.3**（交付形状／读数／注入／改变项）|
+| ⭐ `docs/ledger/phase-status.md` | ⭐ 本条 |
+⭐ ⚠ **边界干净**: ⭐ **⛔ 未动 `yeban-sfz`／`yeban-app`／`yeban-model`／`schema`／根级共享文件** ⇒ ⭐ **故只跑 engine 四门 ＋ 仓级 `light`** ✓
+
+⭐ ⭐ ⭐ **二、⭐ `needs-1`（甲）：让 SFZ 与鼓机**同径**过轨推子**:
+⭐ **勘察读数（"鼓机在哪一步乘轨增益"）**: ⭐ ① 算子 ＝ `engine/src/snapshot.rs:914` 的 `track_gain_scale(mute, solo, solo_safe, any_solo, volume_db)`；⭐ ② 折进逐音符 ＝ `snapshot.rs:978` 的 `velocity_gain(note.velocity) * gain`；⭐ ③ 交给鼓机 ＝ `synth.rs:1837` 的 `DrumHit::new(voice, start, note.gain)`（复音同径，`synth.rs:1866`）⇒ ⭐ ⭐ **鼓机确实吃到了轨门、而 SFZ 分支只交 `velocity` ⇒ 缺陷即此**（⭐ 裁决前提成立、⛔ 无需停手）✓
+⭐ **修法**: ⭐ **不是**把力度搬到引擎，⭐ 而是**让 SFZ 与鼓机同径** —— 把**同一个** `gain` 写进 `NoteSchedule::track_gain`（`snapshot.rs:991`），SFZ 分支（`synth.rs:1854`）交给 `trigger_note`，在**触发期**乘在乐器层增益之外（`sfz_instrument.rs:1179`）⇒ ⭐ ⭐ **两者相乘、⛔ 不重复**（引擎⛔ 不碰力度）✓
+
+⭐ ⭐ ⭐ **三、⭐ `needs-7`（乙）：缺样本 ⇒ 静音 ＋ 计数（⛔ 去掉广播错内容）**:
+⭐ `prepare_with_samples` 遇**调用方没给**的 `sample_path` ⇒ ⭐ 该区域 `sample_index = NO_SAMPLE`（`sfz_instrument.rs:684`）⇒ ⭐ 触发时**不建声部**（与 `span()==None` 同径）＋ ⭐ 累加 `missing_sample_paths`／`silent_region_count`（`sfz_instrument.rs:682`）✓
+⭐ ⛔ **旧"广播到 `samples[0]`"已删**（那会让缺样本的区域去播**别人的采样**＝听得出、读文件看不见的**内容错**）⇒ ⭐ **合成替代内容的决定归控制侧**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 `prepare` 明确声明）✓
+
+⭐ ⭐ ⭐ **四、⭐ 验证读数（⭐ 逐字、⭐ 每条都带反向对照）**:
+| ⭐ 判据 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ ⭐ **S17 推子 ⇒ SFZ 与鼓机**同比例**** | ⭐ 峰值：SFZ 臂 `0 dB = 0.429437995`／`−6 dB = 0.215228811`／静音 `0`／别轨独奏 `0`；鼓机臂 `0.766429424`／`0.384124607`／`0`／`0`；⭐ ⭐ **比值 SFZ `0.501187146` vs 鼓机 `0.501187205`**（期望 `track_gain(−6 dB) = 0.501187205`，相对误差 ≤ `1e-5`）；静音／独奏两档**逐位** `0` ✓ |
+| ⭐ ⭐ **S18 防双重计（引擎⛔ 不乘第二次力度）** | ⭐ `v ∈ {0,32,64,100,127}` 引擎声部路径与**乐器层**一次性渲染**逐位相同**（`0x28c31cf8…`／`0x35e214ac…`／`0xbae21072…`／`0xfd159d8c…`／`0xa933ddab286bdf5e`，两侧同值）；⭐ **反向对照**：`velocity_gain(127) == 1.0`（恒等）⇒ ⭐ **S1 的 127 那条腿抓不住双重计**，故本判据必须存在 ✓ |
+| ⭐ **S15 缺样本 ⇒ 静音 ＋ 计数**（改写）| ⭐ 缺 `missing.wav`（提供表 `[a.wav]`）：`silent = 1`、`missing = ["missing.wav"]`、`sample_content = distinct(1)+silent(1)`、`sample_index = NO_SAMPLE`、`key=64` **写入 0 帧**（整块逐位 0）；⭐ 反向对照①：补上 ⇒ 该键**逐位**＝ `b` 的离线参照；⭐ 反向对照②：`key=60` 那条区域**写入 479 帧**（静音作用域**只到**缺样本的区域）；空提供表 ⇒ `silent = 2`、写入 **0** 帧 ✓ |
+| ⭐ ⭐ **尺寸** | ⭐ `SfzVoice = 40`、`SfzVoicePool = 648`、⭐ `SfzPlan = 88`／`PreparedSfz = 88`（原 **96**：删 `fallback_regions`）、`SynthEngine = 91984`、`EngineSnapshot = 4480`、⭐ ⭐ `EngineRuntime = 162832 < 196608`（**逐字未变**）✓ |
+| ⭐ ⭐ **㉙（⭐ 夹具未改）** | ⭐ ⭐ **10 001 量子总能量 **2999.164**（⭐ 与步 2／步 3 逐字相同）**、⭐ 1 次换采样率 ⇒ `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`**、⭐ 该档 **73／73** ✓ |
+| ⭐ ⭐ **既有判据逐字不变** | ⭐ S1 `0e0`／478／478；⭐ S1b `0e0`／有声块 4；⭐ S2／S3／S4；⭐ S5 `0x71dca4dc55b44df5`／`0x6eee378072730521`；⭐ S6 `0x5587041753dfe375`；⭐ S7／S8／S10／S11／S12／S13；⭐ S14 `0xa933ddab286bdf5e`；⭐ S16 `0x10e619a422b4b7dd` ✓ |
+
+⭐ ⭐ ⭐ **五、⭐ 三处注入全红（⭐ 依第 208 条）**:
+| ⭐ # | ⭐ 注入 | ⭐ 红读数 |
+| --: | :--- | :--- |
+| ⭐ **①** | ⭐（甲·防双重计）`trigger_note` 再乘一次 `velocity_gain(velocity)` | ⭐ **17／1 failed**：⭐ S18 `力度 32：引擎必须与乐器层逐位相同` ⇒ `left[1] = 976564401`／`right[1] = 993248848`（⭐ `v=127` 仍绿）|
+| ⭐ **②** | ⭐（甲·丢轨门）⛔ 不乘 `track_gain` | ⭐ **17／1 failed**：⭐ S17 `[SFZ 臂] −6 dB = 0.429437995`（＝0 dB）、`静音 = 0.429437995`、`比值 SFZ = 1.000000000 vs 鼓机 = 0.501187205` |
+| ⭐ **③** | ⭐（乙·广播回来）缺样本回退到 `samples[0]` | ⭐ **17／1 failed**：⭐ S15 `缺样本的区域计数` `left: 0`／`right: 1` |
+⭐ **并附（⭐ 还原自证很强）**: ⭐ **注入前 4 文件 `sha256` 记录 ＋ `git diff` ＝ **51590** 字节；⭐ 每次还原后 `sha256sum -c` **四行全 OK**、⭐ `git diff` 字节数**回到 51590**、⭐ 四个文件的 `INJECT` 标记 **0**** ✓
+
+⭐ ⚠ **六、⭐ 因本单改变／需解释的既有读数（⭐ 逐条）**: ⭐ `sfz_instrument` 档 **16 → 18**（⭐ 新增 S17／S18）；⭐ **S15 名称与期望**（⭐ 旧期望**固化了错内容**，按裁决如实改写）；⭐ `S9` 的 `SfzPlan`／`PreparedSfz` **96 → 88**（⭐ **变小**：删 `fallback_regions`；⭐ `EngineRuntime` 未变）；⭐ doctest 行号 `snapshot.rs (line 1494) → (line 1499)`（⭐ 该 doctest 是 `ignored`）；⭐ `[sfz] 两次解析的区域表地址`（⭐ 只打印、⭐ 无断言）；⭐ `[engine-stats-mirror/J15] 读次数`（⭐ 同树连跑两次 `669972`／`671614` ⇒ **调度漂移**）；⭐ `[MUST-GATE-012]` 的 `drain_calls`／`backlog`／`max_quanta_between_drains`（⭐ 同一 run 的两轮本就不同）；⭐ `[perf]` 墙钟（⭐ 内存 `4544` 与总能量 `748.967` 不变）；⭐ `[assertion-bounds]` 的行出现位置（⭐ stdout 交错；⭐ 计数 `R118 4/4`／`R146 5/5` 不变）⇒ ⭐ **其余逐字不变** ✓
+
+⭐ ⚠ **七、⭐ 四门读数**: ⭐ `cargo fmt -p yeban-engine -- --check` **通过**／⭐ `cargo check -p yeban-engine --all-targets --locked` **通过**／⭐ `clippy -p yeban-engine --lib --tests --locked -- -D warnings` **通过**（⭐ 0 告警）／⭐ `cargo test -p yeban-engine --locked` **全绿**（⭐ lib **296**、⭐ `sfz_instrument` **18**、⭐ `rt_zero_alloc` **73／73**）／⭐ `premerge-gate.sh yeban-engine` **全过**／⭐ `run-gates.sh light` **门禁通过（mode=light）** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ `needs-2`（⭐ 池满无窃取、⭐ 需 ADR）／⭐ `needs-3`（⭐ 鼓机＋SFZ 同轨）／⭐ `needs-5`（⭐ 模型绑定）／⭐ `needs-6`（⭐ 循环／⭐ ADSR／⭐ `off_mode`）／⭐ `needs-8`（⭐ 字节预算／流式）＋ ⭐ 遗留 3 项 ✓
