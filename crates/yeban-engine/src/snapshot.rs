@@ -895,6 +895,8 @@ impl Drop for EngineSnapshot {
 ///    这样"力度 0 不发声"是**增益路径**的判据，而不是"被调度器丢掉"的巧合；
 /// 4. **静音/独奏**在构造期折算成增益门（`track_is_audible`）：
 ///    不可闻的轨道照常触发声部，但增益恒为 0 ⇒ 输出逐位为 0；
+///    ⭐ 该门**同时**写进 [`NoteSchedule::track_gain`]（与逐音符那份**同源**）
+///    ⇒ SFZ 声部与鼓机/复音**同径**吃到推子/静音/独奏（归属裁决见台账 R711）；
 /// 5. **`ClipContent::Audio` 不产生声音**（采样播放/SFZ 尚未接入，见 notes）；
 /// 6. 每轨超过 [`MAX_NOTES_PER_TRACK`] 的音符被丢弃并计数。
 fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedule>, u64) {
@@ -983,7 +985,10 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
         // 排序 ⇒ 实时侧的单调游标成立（`BTreeMap` 顺序不等于时间顺序）。
         // 稳定排序 + 全序 key ⇒ 迭代顺序与平台无关 [MODEL-AST-003]。
         notes.sort_by_key(|note| (note.start_sample(), note.pitch(), note.end_sample()));
-        schedules.insert(*id, NoteSchedule::from_sorted(notes));
+        // ⭐ 轨增益门**一并**写进调度表（与上面 `velocity_gain(v) * gain` 里那一份
+        // **同一个来源**）：鼓机/复音读含轨门的 `note.gain`，SFZ 声部读这里的
+        // `track_gain`（力度那一半由乐器层拥有 ⇒ ⛔ 不重复计）。
+        schedules.insert(*id, NoteSchedule::from_sorted(notes).with_track_gain(gain));
     }
 
     (schedules, dropped)

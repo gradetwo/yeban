@@ -111,7 +111,10 @@
 //! ⭐ 步 3 之后**两条路的数值口径完全相同**（`span` 起点/终点、样本、速率、增益都在
 //! [`reduce_span`] / `gain_at` / `rate_per_note` 上对齐）⇒ "逐样本最大绝对差 ＝ 0"覆盖
 //! **整段**（不再是"只覆盖触发量子"），判据见 `tests/sfz_instrument.rs` 的 S1/S1b/S3。
-//! 唯一的差别是**状态归属**（谁记住位置、谁负责退休），⛔ 不是数值口径。
+//! ⚠ 唯一的**额外因子**是引擎层的**轨增益门**（`track_gain`，见 `needs-1`）：
+//! 摊平表那条路**没有轨上下文** ⇒ 对账时取**单位门**（`track_gain = 1.0`，`× 1.0` 逐位不变）
+//! ⇒ 上式仍逐位成立；⭐ "引擎只多乘轨增益、⛔ 不碰力度"由 S18 逐位钉住。
+//! 除此之外唯一的差别是**状态归属**（谁记住位置、谁负责退休），⛔ 不是数值口径。
 //!
 //! # 任务 `#67` 的步 3：**多采样** ＋ ⭐ **绑定注入 API**（⭐ 控制侧；⛔ 不发明模型语义）
 //!
@@ -119,7 +122,7 @@
 //! | :--- | :--- | :--- |
 //! | [`PreparedSample`] | 摊平表里的**一份**样本（`path` ＋ `pcm` ＋ `sample_hz`） | 去重键 ＝ `region.sample_path()`；容器 ＝ `BTreeMap` ⇒ 顺序确定 [MODEL-AST-003] |
 //! | [`PreparedRegion::sample_index`] | `u16` 指路 | `NO_SAMPLE` 哨兵 ＝ 该区域**不产生采样输出** |
-//! | [`PreparedSfz::prepare_with_samples`] | 控制侧构造 | 每区域**播自己**那份样本；同一路径**只 materialize 一次** |
+//! | [`PreparedSfz::prepare_with_samples`] | 控制侧构造 | 每区域**播自己**那份样本；同一路径**只 materialize 一次**；⭐ 缺样本 ⇒ **静音 ＋ 计数**（⛔ 不发明替代内容） |
 //! | [`PreparedSfz::prepare`] | 单样本**广播**（兼容重载，⛔ 未删） | 所有 `sample_index = 0`；⚠ **音色内容错**（各 region 播同一份）⇒ 读数 `sample_content=broadcast(1)` |
 //! | [`SfzPlan::prepare_with_samples`] | 快照投影 | 经 [`crate::snapshot::EngineSnapshot::with_sfz`] 注入 ⇒ **唯一**的公开绑定路径 |
 //!
@@ -127,20 +130,22 @@
 //! 调用方先用 [`SfzInstrument::referenced_sample_paths`] 拿到"这条 SFZ 到底引用哪些路径"
 //! （排序去重），再按 `crates/yeban-app/src/sfz_load.rs` 的形状（真读 PCM WAV、读不到 ⇒
 //! 如实回退 ＋ 把原因写进来源文案）解码成 `&[(String, InMemorySample)]`。
-//! ⚠ 引擎侧对**没给**的路径只做一件事：**回退到 `samples[0]` ＋ 计数**（[`PreparedSfz::fallback_region_count`]
-//! ／[`PreparedSfz::missing_sample_paths`]），⛔ 不静默 —— 那是**内容错**，登记为 sfz-needs-7。
+//! ⭐ ⭐ **引擎侧对"没给"的路径只做一件事：出静音 ＋ 计数**（[`PreparedSfz::silent_region_count`]
+//! ／[`PreparedSfz::missing_sample_paths`]），⛔ **不发明替代内容** ——
+//! "用什么替代"是**控制侧**的产品决定（归属裁决见台账 `R711`；旧行为"回退到 `samples[0]`"
+//! 是**内容错**，已删除 ⇒ `needs-7` 闭合）。
 //!
 //! ## needs 汇总（⭐ 本步闭合的标注"已闭合"，未闭合的说明卡在哪）
 //!
 //! | # | 缺口 | 为什么需要裁决 |
 //! | :--- | :--- | :--- |
-//! | sfz-needs-1 | **轨推子/静音没有乘到 SFZ 声部上** | 本片的逐样本对账口径是 `render_block_into(note, velocity)`（它**没有**轨增益参数）⇒ 声部增益＝`region.gain_at(...)`。接线轨增益要先裁"谁拥有力度增益"（SFZ 曲线的 vs `synth::velocity_gain`），否则会双重计力度。⚠ 与鼓机（乘 `ScheduledNote::gain`）**不对称**（未闭合） |
+//! | sfz-needs-1 | **轨推子/静音没有乘到 SFZ 声部上** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**乐器层**拥有乐器内增益（`volume_gain`／`velocity_gain[128]`／`key_crossfade`／`velocity_fade_*`／`amp_veltrack`），**引擎层**拥有轨增益（推子＝音量、静音、独奏）⇒ ⭐ **两者相乘、⛔ 不重复**。落地口径：`snapshot::project_schedules` 把**同一个** `track_gain_scale(...)` 结果写进 [`crate::synth::NoteSchedule::track_gain`]（与鼓机/复音读的 `note.gain` **同源**）⇒ [`SfzVoicePool::trigger_note`] 把它乘在 `region.gain_at(...)` **之外** ⇒ ⭐ SFZ 与鼓机**同径**（判据：`tests/sfz_instrument.rs` 的 S17／S18）|
 //! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | `yeban-sfz` 的 `VoicePool` 有确定性窃取，但它是**全局 512 声部**、且 victim 选择是另一份口径 ⇒ 两套形状要一条 ADR（未闭合） |
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | 与 `crate::drums` 的 needs-3 同族：模型若禁止这种组合，本条删除（未闭合） |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 本步只把它做成**可经公开路径调用的 API**） | `yeban-model` 里 SFZ 命中只有一行注释（`model/src/lib.rs:16`）、`DeviceKind` 四档没有 sampler ⇒ 今天只能由引擎 API（[`crate::snapshot::EngineSnapshot::with_sfz`] ＋ [`SfzPlan::prepare_with_samples`]）显式注入。**"SFZ 如何进 `YebanProjectV1`"仍未裁**（⛔ 不发明模型语义：本步不加 `DeviceKind` 档、不改 schema）（未闭合、属模型面） |
 //! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **步 3 只闭合了它的"多采样／每区域独立 PCM"那一半**；循环、`ampeg_*`、`off_mode`、`group`/`off_by` 仍完全未做（未闭合） |
-//! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | [`PreparedSfz::prepare_with_samples`] 对**调用方没给**的 `sample_path` 一律回退到 `samples[0]` 并计数（⛔ 不静默）；app 形状（`sfz_load.rs:264-267`：回退**内存正弦** ＋ 把原因写进来源文案）**没有**搬进引擎 ⇒ "回退内容归谁"要一条裁决（未闭合） |
+//! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | `prepare_with_samples` 把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无共享（`Arc`）口径（未闭合） |
 
 use std::collections::BTreeMap;
@@ -393,8 +398,8 @@ pub struct PreparedRegion {
     velocity_gain: [f32; 128],
     /// ⭐ **该区域用哪一份摊平样本**（[`PreparedSfz::samples`] 的下标）。
     ///
-    /// [`Self::NO_SAMPLE`] ＝ 该区域**不产生采样输出**（调用方没给它的 `sample_path`，且
-    /// 连回退用的 `samples[0]` 都没有）⇒ 渲染时整条跳过。
+    /// [`Self::NO_SAMPLE`] ＝ 该区域**不产生采样输出**（调用方没给它的 `sample_path`）
+    /// ⇒ 渲染与建声部时整条跳过。
     sample_index: u16,
     /// ⭐ `offset` / `end` 归约出的**源采样区间**（半开 `[start, end)`，单位源采样帧）。
     ///
@@ -407,8 +412,9 @@ pub struct PreparedRegion {
 impl PreparedRegion {
     /// ⭐ 「没有样本」哨兵（[`Self::sample_index`] 的取值）：该区域**不产生采样输出**。
     ///
-    /// 出现条件只有一个：调用方给的样本表里**没有**该区域的 `sample_path`，**且**表本身为空
-    /// （连回退目标 `samples[0]` 都不存在）⇒ 如实登记 ＋ 计数（⛔ 不静默、⛔ 不 panic）。
+    /// 出现条件只有一个：调用方给的样本表里**没有**该区域的 `sample_path`
+    /// ⇒ 如实标静音 ＋ 计数（⛔ 不静默、⛔ 不 panic、⛔ **不去播别人的采样**）。
+    /// ⚠ 归属裁决（台账 R711）：引擎出静音，**合成替代内容是控制侧的决定**。
     pub const NO_SAMPLE: u16 = u16::MAX;
 
     /// 该区域是否接受 `(note, velocity)`（⭐ 纯位测试：无分配、无解析）。
@@ -512,9 +518,10 @@ pub struct PreparedSfz {
     samples: Vec<PreparedSample>,
     /// 建表口径：`true` ⇒ 单样本重载 [`Self::prepare`] 的**广播**路径（⛔ 内容错，已登记）。
     broadcast: bool,
-    /// ⭐ 缺样本 ⇒ **回退到 `samples[0]`** 的区域数（**计数**，⛔ 不静默；内容错见 sfz-needs-7）。
-    fallback_regions: usize,
-    /// ⭐ 缺样本且**连回退目标都没有**（`samples` 为空）⇒ 标 `NO_SAMPLE` 的区域数（**计数**）。
+    /// ⭐ 缺样本 ⇒ 标 `NO_SAMPLE`（**不产生采样输出**）的区域数（**计数**，⛔ 不静默）。
+    ///
+    /// ⚠ 归属裁决（台账 R711）：引擎只出**静音** ＋ 计数，⛔ **不发明替代内容**
+    /// （旧行为"回退到 `samples[0]`"是**内容错**，已删除）。
     silent_regions: usize,
     /// ⭐ 缺样本的**路径**（排序 ＋ 去重 ⇒ 确定性顺序；报告/诊断用）。
     missing_samples: Vec<String>,
@@ -609,7 +616,6 @@ impl PreparedSfz {
             regions,
             samples,
             broadcast: true,
-            fallback_regions: 0,
             silent_regions: 0,
             missing_samples: Vec::new(),
         })
@@ -627,12 +633,14 @@ impl PreparedSfz {
     ///    `symphonia`/`rubato`、⛔ 不做任何 I/O。调用方先用
     ///    [`SfzInstrument::referenced_sample_paths`] 取路径全集，再按
     ///    `crates/yeban-app/src/sfz_load.rs` 的形状真读 PCM WAV。
-    /// 3. ⭐ **缺样本如实回退 ＋ 计数**（⛔ 不静默）：`provided_samples` 里**没有**某个
-    ///    `sample_path` 时 —— 有替代样本 ⇒ 该区域回退到 `samples[0]`（＝调用方第一份，
-    ///    形如 `sfz_load.rs:264-267` 的"替代样本"）并计入 [`Self::fallback_region_count`]；
-    ///    提供表**为空** ⇒ 该区域标 [`PreparedRegion::NO_SAMPLE`]（不产生输出）并计入
-    ///    [`Self::silent_region_count`]。两条都把路径记进 [`Self::missing_sample_paths`]。
-    ///    ⚠ 回退到 `samples[0]` 是**内容错**（那个区域播别人的样本）⇒ 登记为 sfz-needs-7。
+    /// 3. ⭐ ⭐ **缺样本 ⇒ 静音 ＋ 计数**（⛔ 不静默、⛔ **不发明内容**）：
+    ///    `provided_samples` 里**没有**某个 `sample_path` 时 —— 该区域标
+    ///    [`PreparedRegion::NO_SAMPLE`]（不产生任何采样输出，触发时**不建声部**）
+    ///    并计入 [`Self::silent_region_count`]，路径进 [`Self::missing_sample_paths`]。
+    ///    ⛔ **本函数不再"回退到 `samples[0]`"**：那会让缺样本的区域去播**别人的采样**
+    ///    （听得出、读文件看不见的**内容错**）。⭐ 归属裁决（台账 R711）：**引擎出静音并计数**、
+    ///    **合成替代内容是控制侧的决定**（想给替代样本 ⇒ 由调用方显式放进 `provided_samples`，
+    ///    或先用 [`Self::prepare`] 明确声明"这一份就是全部区域的样本"）。
     ///
     /// ⚠ 样本数上限：`sample_index` 是 `u16` ⇒ 去重后至多 `65534` 份（超出时后续区域被记为
     /// `NO_SAMPLE`，⛔ 不 panic、⛔ 不回绕）。
@@ -649,16 +657,10 @@ impl PreparedSfz {
         for (index, (path, _sample)) in provided_samples.iter().enumerate() {
             provided_index.entry(path.as_str()).or_insert(index);
         }
-        // ② 回退目标 ＝ 调用方给的**第一份**样本（恒为 `samples[0]`；内容错，已计数登记）。
+        // ② 样本表按**区域引用顺序**去重建立（⛔ 不预置"回退目标"：缺样本不回退）。
         let mut samples: Vec<PreparedSample> = Vec::new();
         let mut index_of: BTreeMap<String, u16> = BTreeMap::new();
-        let fallback_index: Option<u16> = provided_samples.first().map(|(path, source)| {
-            samples.push(PreparedSample::from_in_memory(path.clone(), source));
-            index_of.insert(path.clone(), 0);
-            0
-        });
         let mut missing: Vec<String> = Vec::new();
-        let mut fallback_regions = 0usize;
         let mut silent_regions = 0usize;
         let regions = flatten_regions(instrument, engine_hz, |region| {
             let path = region.sample_path();
@@ -675,19 +677,11 @@ impl PreparedSfz {
                 index_of.insert(path.clone(), index);
                 return (index, sample_hz);
             }
-            // ⭐ 缺样本：如实回退 ＋ 计数（⛔ 不静默）。
+            // ⭐ 缺样本：**静音 ＋ 计数**（⛔ 不静默、⛔ 不去播别人的采样）。
             missing.push(path.clone().into_owned());
-            match fallback_index {
-                Some(index) => {
-                    fallback_regions += 1;
-                    (index, samples[usize::from(index)].sample_hz)
-                }
-                None => {
-                    silent_regions += 1;
-                    // 没有样本 ⇒ 速率表用引擎采样率（该区域**永不渲染**，读数不进结论）。
-                    (PreparedRegion::NO_SAMPLE, engine_hz)
-                }
-            }
+            silent_regions += 1;
+            // 没有样本 ⇒ 速率表用引擎采样率（该区域**永不渲染**，读数不进结论）。
+            (PreparedRegion::NO_SAMPLE, engine_hz)
         })?;
         missing.sort();
         missing.dedup();
@@ -695,7 +689,6 @@ impl PreparedSfz {
             regions,
             samples,
             broadcast: false,
-            fallback_regions,
             silent_regions,
             missing_samples: missing,
         })
@@ -763,13 +756,10 @@ impl PreparedSfz {
         self.broadcast
     }
 
-    /// ⭐ 缺样本 ⇒ 回退到 `samples[0]` 的**区域数**（累计；⛔ 不静默）。
-    #[must_use]
-    pub const fn fallback_region_count(&self) -> usize {
-        self.fallback_regions
-    }
-
-    /// ⭐ 缺样本且连回退目标都没有 ⇒ 标 `NO_SAMPLE`（不产生输出）的**区域数**。
+    /// ⭐ 缺样本 ⇒ 标 [`PreparedRegion::NO_SAMPLE`]（**不产生采样输出**）的**区域数**。
+    ///
+    /// ⚠ 这就是"缺样本"的**唯一**计数口径（⛔ 不再有第二个"回退"计数）：
+    /// 引擎只出静音 ＋ 计数、⛔ 不发明替代内容（归属裁决见台账 R711）。
     #[must_use]
     pub const fn silent_region_count(&self) -> usize {
         self.silent_regions
@@ -782,7 +772,7 @@ impl PreparedSfz {
     }
 
     /// ⭐ **样本内容读数**（报告用）：
-    /// `broadcast(N)` / `distinct(N)`，缺样本时追加 `+fallback(N)` / `+silent(N)`。
+    /// `broadcast(N)` / `distinct(N)`，缺样本时追加 `+silent(M)`。
     #[must_use]
     pub fn sample_content_label(&self) -> String {
         let mut label = if self.broadcast {
@@ -790,9 +780,6 @@ impl PreparedSfz {
         } else {
             format!("distinct({})", self.samples.len())
         };
-        if self.fallback_regions > 0 {
-            label.push_str(&format!("+fallback({})", self.fallback_regions));
-        }
         if self.silent_regions > 0 {
             label.push_str(&format!("+silent({})", self.silent_regions));
         }
@@ -843,7 +830,7 @@ impl PreparedSfz {
 ///
 /// `resolve` 决定"这条区域用哪份样本"：
 /// * [`PreparedSfz::prepare`] 传常数 `(0, source.sample_hz)`（**广播**）；
-/// * [`PreparedSfz::prepare_with_samples`] 传路径查表（**多采样** ＋ 去重回退）。
+/// * [`PreparedSfz::prepare_with_samples`] 传路径查表（**多采样** ＋ 去重；缺样本 ⇒ 静音 ＋ 计数）。
 ///
 /// ⭐ 每个区域的**速率表**用**它自己那份样本**的采样率换算（`RenderRates::new(sample_hz, engine_hz)`）
 /// ⇒ 多采样下不同源采样率的样本各自换算正确（⛔ 不是全表一个 rates）。
@@ -985,7 +972,9 @@ pub const SFZ_VOICES_PER_TRACK: usize = 16;
 /// 触发时（[`SfzVoicePool::trigger_note`]）把摊平表里的标量**预计算**进来：
 ///
 /// * `rate` ＝ `region.rate_per_note[note]`（速率预计算 ⇒ ⛔ 逐样本不做除法/`exp`）；
-/// * `gain` ＝ `region.gain_at(note, velocity)`（与摊平口径**逐位相同**）；
+/// * `gain` ＝ `region.gain_at(note, velocity)`（**乐器层**，与摊平口径**逐位相同**）
+///   **×** `track_gain`（**引擎层**的轨增益门，归属裁决见台账 `R711`）
+///   ⇒ ⭐ 两者**相乘、⛔ 不重复**（引擎⛔ 不碰力度）；
 /// * `sample_index` ＝ [`PreparedRegion::sample_index`]（⭐ 步 3：多采样下读**自己**那份 PCM）；
 /// * `source_start` / `source_end` ＝ [`PreparedRegion::span_bounds`] 的**同一份**归约
 ///   （`offset` 起点与 `min(end, 样本播完)` 终点）。
@@ -1151,12 +1140,20 @@ impl SfzVoicePool {
     ///
     /// ⭐ 步 3：每个声部抄下**该区域自己**的 `sample_index`（多采样）与 `span` 归约出的
     /// **源起点**（`offset`）；`NO_SAMPLE` 的区域⛔ 不建声部。
+    ///
+    /// # ⭐ 轨增益门（`track_gain`；归属裁决见台账 R711）
+    ///
+    /// 声部增益 ＝ **乐器层**（`region.gain_at`：`volume_gain`／`velocity_gain[128]`／
+    /// `key_crossfade`／`velocity_fade_*`／`amp_veltrack`）× **引擎层**（本参数：
+    /// 可闻门 × 推子，与鼓机/复音拿到的那一份**同一个** `track_gain_scale` 值）。
+    /// ⇒ ⭐ 两者**相乘、⛔ 不重复**：引擎层⛔ 不碰力度（那由乐器层拥有）。
     pub fn trigger_note(
         &mut self,
         plan: &PreparedSfz,
         note: u8,
         velocity: u8,
         end_sample: u64,
+        track_gain: f32,
     ) -> usize {
         let n = note as usize;
         let mut created = 0usize;
@@ -1164,6 +1161,8 @@ impl SfzVoicePool {
             if !region.accepts(note, velocity) {
                 continue;
             }
+            // ⭐ 缺样本（`NO_SAMPLE`）⇒ 与 `span_bounds() == None` **同径**：⛔ 不建声部
+            // （引擎⛔ 不发明替代内容 —— 那是控制侧的决定；归属裁决见台账 R711 的 `needs-7`）。
             let Some(sample) = plan.sample(region.sample_index) else {
                 continue;
             };
@@ -1176,11 +1175,13 @@ impl SfzVoicePool {
             let Some((source_start, source_end)) = region.span_bounds(pcm_len) else {
                 continue;
             };
+            // ⭐ 引擎层的轨增益门**乘在乐器层增益之外**（两个归属各一份 ⇒ ⛔ 不重复）。
+            let gain = region.gain_at(note, velocity) * track_gain;
             let voice = SfzVoice::new(
                 note,
                 velocity,
                 rate,
-                region.gain_at(note, velocity),
+                gain,
                 region.sample_index,
                 source_start,
                 source_end,
@@ -1304,7 +1305,7 @@ impl SfzPlan {
     }
 
     /// ⭐ **控制侧多采样摊平**：把 `[(sample_path, 已解码样本)]` 交给
-    /// [`PreparedSfz::prepare_with_samples`]（去重 ＋ 缺样本回退 ＋ 计数）。
+    /// [`PreparedSfz::prepare_with_samples`]（去重 ＋ 缺样本**静音** ＋ 计数）。
     ///
     /// 这是**绑定注入 API 的公开入口**：调用方建好本 plan 之后，用
     /// [`crate::snapshot::EngineSnapshot::with_sfz`] 把它注入某一条轨的快照 —— 全仓**唯一**

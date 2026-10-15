@@ -25,8 +25,10 @@
 //! | ⭐ S12 | **同一样本引两次只解码一次**（步 3） | `sample_count() == 1` ＋ `pcm_bytes() == 1 × 480 × 4`；反向对照：两条**不同**路径 ⇒ `2` / `2 × 1920`；提供表同一路径两份 ⇒ 首个为准（内容仍是第一份） |
 //! | ⭐ S13 | **`start`/`end` 真正应用**（步 3） | 离线 vs 摊平**逐样本 0**；`offset=10` ⇒ 输出第 0 帧 **逐位等于** `源[10] × gain`；写入帧数 **190**；反向对照：`offset=50` ⇒ 指纹与波形都变 |
 //! | ⭐ S14 | **单样本重载的兼容性**（步 3） | `prepare`（广播）在 span-free 夹具上的 FNV-1a 指纹 ＝ **步 2 实测** `0xa933ddab286bdf5e`；`is_broadcast()` / `sample_content_label() == "broadcast(1)"` |
-//! | ⭐ S15 | **缺样本如实回退 ＋ 计数**（步 3） | 缺 `missing.wav` ⇒ `fallback_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、回退到 `samples[0]`（与"用 a 播 key=64"**逐位相同**）；空提供表 ⇒ `silent_region_count() == 2` ＋ `NO_SAMPLE` ＋ 一帧不写 |
+//! | ⭐ S15 | **缺样本 ⇒ 静音 ＋ 计数**（⭐ 本单改写；归属裁决 `R711` 的 `needs-7`） | 缺 `missing.wav`（提供表 `[a.wav]`）⇒ `silent_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、`sample_content = distinct(1)+silent(1)`、`sample_index == NO_SAMPLE`、该键**一帧不写**（⛔ 不再回退到 `samples[0]`）；反向对照①：补上 ⇒ 该键真的出声且**逐位**是自己的内容；反向对照②：key=60 那条区域**照常出声**（静音作用域只到缺样本的区域）；空提供表 ⇒ `silent = 2`、写入 **0** 帧、`missing = ["a.wav","missing.wav"]`（排序去重） |
 //! | ⭐ S16 | **绑定注入 API 经公开路径可用（多采样）**（步 3） | `SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz` → `render_snapshot`：非零 > 0、指纹 ≠ 不给 SFZ；反向对照：广播 plan 的端到端指纹与多采样版**不同** |
+//! | ⭐ S17 | ⭐ **轨推子变化 N dB ⇒ SFZ 与鼓机输出同比例变**（本单新增；`needs-1`） | 两臂（同一份工程、只差音源）`peak(−6 dB)/peak(0 dB)` 都等于 `track_gain(−6.0)`（相对误差 ≤ 1e-5）且**互相**相等；`mute = true` ⇒ 两臂**逐位** 0；另一条轨独奏 ⇒ 两臂**逐位** 0。⚠ 量的是 `render_track` 输出（母线限制器前）|
+//! | ⭐ S18 | ⭐ **引擎层⛔ 不乘第二次力度**（本单新增；`needs-1` 的防双重计腿） | `v ∈ {0,32,64,100,127}`：引擎声部路径与**乐器层**一次性渲染**逐位相同**（手工调度表的 `gain` 显式写成 `velocity_gain(v)`）；反向对照：`velocity_gain(127) == 1.0`（恒等）⇒ S1 的 127 那条腿**抓不住**双重计 |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -49,12 +51,12 @@ mod support;
 use support::{MixSpec, NoteSpec, note_project, render, render_snapshot, tuned_project};
 use yeban_engine::drums::DrumsParams;
 use yeban_engine::sfz_instrument::{
-    InMemorySample, PreparedSfz, SFZ_VOICES_PER_TRACK, SfzInstrument, SfzPlan, SfzVoice,
-    SfzVoicePool,
+    InMemorySample, PreparedRegion, PreparedSfz, SFZ_VOICES_PER_TRACK, SfzInstrument, SfzPlan,
+    SfzVoice, SfzVoicePool,
 };
 use yeban_engine::snapshot::EngineSnapshot;
-use yeban_engine::synth::{NoteSchedule, SynthEngine};
-use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue};
+use yeban_engine::synth::{NoteSchedule, ScheduledNote, SynthEngine, track_gain, velocity_gain};
+use yeban_model::{DeviceDefinition, DeviceKind, EntityId, ParameterValue, TrackKind, TrackV3};
 
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
@@ -637,7 +639,8 @@ fn s8_a_full_pool_counts_drops_instead_of_silently_dropping_them() {
     );
 
     let mut pool = SfzVoicePool::empty();
-    let created = pool.trigger_note(&prepared, 60, 100, 12_000);
+    // ⭐ 轨增益门 = 1.0（单位）：本判据量的是**池容量**，⛔ 不掺轨增益。
+    let created = pool.trigger_note(&prepared, 60, 100, 12_000, 1.0);
     println!(
         "[engine-sfz/S8] 建出声部 = {created}；活声部 = {}；丢弃 = {}",
         pool.active_count(),
@@ -658,7 +661,7 @@ fn s8_a_full_pool_counts_drops_instead_of_silently_dropping_them() {
     let under_prepared = prepare(&under);
     let mut under_pool = SfzVoicePool::empty();
     assert_eq!(
-        under_pool.trigger_note(&under_prepared, 60, 100, 12_000),
+        under_pool.trigger_note(&under_prepared, 60, 100, 12_000, 1.0),
         SFZ_VOICES_PER_TRACK - 1
     );
     assert_eq!(under_pool.dropped(), 0, "未满时不得计数");
@@ -1168,71 +1171,86 @@ fn s14_the_broadcast_overload_is_bit_identical_to_step_two() {
         "⭐ 报告里的 `sample_content=broadcast(1)` 必须来自机械读数"
     );
     assert_eq!(prepared.sample_count(), 1);
-    assert_eq!(prepared.fallback_region_count(), 0);
     assert_eq!(prepared.silent_region_count(), 0);
     assert!(prepared.missing_sample_paths().is_empty());
     assert!(prepared.regions().iter().all(|r| r.sample_index() == 0));
 }
 
-/// S15（步 3）：⭐ **缺样本如实回退 ＋ 计数**（⛔ 不静默）。
+/// S15（⭐ 本单改写，归属裁决见台账 R711）：⭐ **缺样本 ⇒ 静音 ＋ 计数**（⛔ 不静默、⛔ 不发明内容）。
 ///
-/// # 判定量（两条分支）
+/// # ⚠ 旧期望固化了**错内容**（如实说明）
 ///
-/// * 提供表**非空**但缺某个 `sample_path` ⇒ 该区域回退到 `samples[0]`：
-///   `fallback_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、
-///   `sample_content_label()` 含 `+fallback(1)`，且输出与"用 `a.wav` 播那个键"**逐位相同**
-///   （⇒ 回退**真的发生了**，⛔ 不是静音丢弃；⚠ 这是**内容错**，登记为 sfz-needs-7）；
-/// * 提供表**为空** ⇒ `silent_region_count() == 2`、全部 `NO_SAMPLE`、**一帧不写**；
-/// * 反向对照：把 `missing.wav` 补上 ⇒ `fallback == 0` 且输出**变**。
+/// 步 3 的 S15 断言的是"缺 `missing.wav` ⇒ 回退到 `samples[0]`，输出与'用 `a.wav` 播那个键'
+/// **逐位相同**" ⇒ ⭐ 它把"缺样本的区域去播**别人的采样**"这条**内容错**钉成了期望值。
+/// R711 裁决：**引擎出静音并计数**、**合成替代内容是控制侧的决定** ⇒ 本判据改为断言
+/// **零输出 ＋ 计数正确**（新期望比旧期望**强**：旧的在"错内容"与"静音"之间分不出来）。
+///
+/// # 判定量（三条）
+///
+/// * 提供表**非空**但缺 `missing.wav` ⇒ 该区域 `NO_SAMPLE`：`silent_region_count() == 1`、
+///   `missing_sample_paths() == ["missing.wav"]`、`sample_content_label() == "distinct(1)+silent(1)"`，
+///   ⭐ 该键**一帧不写**（`render_block_into(64, 127)` 返回 **0** 且整块逐位 0）；
+/// * 反向对照 ①：**同一份表**把 `missing.wav` 补上 ⇒ 同一个键**真的出声**且指纹 ≠ 0
+///   （⇒ 上面那个 0 不是"这条区域本来就不响"）；
+/// * 反向对照 ②：缺少的**只有** `missing.wav` ⇒ `a.wav` 那条区域（key=60）**照常出声**
+///   （⇒ 静音的作用域**只到缺样本的那条区域**，⛔ 不是整条轨哑掉）；
+/// * 提供表**为空** ⇒ `silent_region_count() == 2`、全部 `NO_SAMPLE`、**一帧不写**。
 #[test]
-fn s15_a_missing_sample_falls_back_and_is_counted() {
+fn s15_a_missing_sample_is_silent_and_is_counted() {
     const ONE_MISSING: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
                                <region> sample=missing.wav key=64 pitch_keycenter=60\n";
     let sfz = SfzInstrument::load(ONE_MISSING.to_owned(), &Default::default()).expect("解析");
     let a = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
     let b = InMemorySample::sine(660.0, 48_000.0, SAMPLE_FRAMES);
 
-    // ① 非空提供表 + 缺一份 ⇒ 回退到 samples[0] ＋ 计数
-    let fallback =
+    // ① 非空提供表 + 缺一份 ⇒ **静音** ＋ 计数（⛔ 不去播 `samples[0]`）
+    let missing =
         PreparedSfz::prepare_with_samples(&sfz, &[("a.wav".to_owned(), a.clone())], 48_000.0)
             .expect("摊平必须成功");
-    assert_eq!(fallback.fallback_region_count(), 1, "⭐ 缺样本的计数");
-    assert_eq!(fallback.silent_region_count(), 0);
+    assert_eq!(missing.silent_region_count(), 1, "⭐ 缺样本的区域计数");
     assert_eq!(
-        fallback.missing_sample_paths().to_vec(),
+        missing.missing_sample_paths().to_vec(),
         vec!["missing.wav".to_owned()],
         "⭐ 缺失路径必须**具名**登记（⛔ 不静默）"
     );
     assert_eq!(
-        fallback.sample_content_label(),
-        "distinct(1)+fallback(1)",
-        "读数必须如实写出回退"
+        missing.sample_content_label(),
+        "distinct(1)+silent(1)",
+        "读数必须如实写出静音（⛔ 再没有 `+fallback(...)` 这一档）"
     );
     assert_eq!(
-        fallback.regions()[1].sample_index(),
-        0,
-        "缺样本 ⇒ 回退到 `samples[0]`（⚠ 内容错，已登记）"
+        missing.regions()[1].sample_index(),
+        PreparedRegion::NO_SAMPLE,
+        "⭐ 缺样本 ⇒ `NO_SAMPLE`（⛔ 不是回退到 `samples[0]`）"
     );
-    let mut fallback_out = vec![0.0f32; BLOCK];
-    fallback.render_block_into(64, 127, &mut fallback_out);
-    let mut reference = vec![0.0f32; BLOCK];
-    offline_one("a.wav", 64, &a, 64, &mut reference);
+    assert!(
+        !missing.regions()[1].has_sample(),
+        "缺样本的区域必须**没有**样本可播"
+    );
+    let mut missing_out = vec![0.0f32; BLOCK];
+    let missing_frames = missing.render_block_into(64, 127, &mut missing_out);
+    // 反向对照 ② 的前置：**只有**缺样本的那条区域哑掉，key=60 那条照常出声。
+    let mut sibling = vec![0.0f32; BLOCK];
+    let sibling_frames = missing.render_block_into(60, 127, &mut sibling);
     println!(
-        "[engine-sfz/S15] 缺样本：fallback = {}、missing = {:?}、key=64 指纹 = 0x{:016x}\
-         （用 `a.wav` 播该键的离线参照 = 0x{:016x}）",
-        fallback.fallback_region_count(),
-        fallback.missing_sample_paths(),
-        fnv1a_64(&fallback_out),
-        fnv1a_64(&reference),
+        "[engine-sfz/S15] 缺样本：silent = {}、missing = {:?}、sample_content = {}、\
+         key=64 写入 = {missing_frames}（整块非零 = {}）、key=60 写入 = {sibling_frames}",
+        missing.silent_region_count(),
+        missing.missing_sample_paths(),
+        missing.sample_content_label(),
+        missing_out.iter().filter(|s| **s != 0.0).count(),
     );
-    assert_eq!(
-        bits(&fallback_out),
-        bits(&reference),
-        "⭐ 回退**真的发生**（输出 ＝ 用 `a.wav` 播那个键），⛔ 不是静音丢弃"
+    assert_eq!(missing_frames, 0, "⭐ 缺样本 ⇒ **一帧不写**（引擎出静音）");
+    assert!(
+        missing_out.iter().all(|s| *s == 0.0),
+        "⭐ 缺样本的区域必须**逐位静音**（⛔ 不许播别人的采样）"
     );
-    assert!(fallback_out.iter().any(|s| *s != 0.0), "回退必须出声");
+    assert!(
+        sibling_frames > 0 && sibling.iter().any(|s| *s != 0.0),
+        "反向对照②：缺的**只有** `missing.wav` ⇒ `a.wav` 那条区域必须照常出声"
+    );
 
-    // ② 反向对照：把缺失那份补上 ⇒ fallback 归零、输出变
+    // 反向对照 ①：把缺失那份补上 ⇒ 同一个键**真的出声**、指纹 ≠ 0
     let complete = PreparedSfz::prepare_with_samples(
         &sfz,
         &[
@@ -1243,16 +1261,25 @@ fn s15_a_missing_sample_falls_back_and_is_counted() {
     )
     .expect("摊平必须成功");
     let mut complete_out = vec![0.0f32; BLOCK];
-    complete.render_block_into(64, 127, &mut complete_out);
-    assert_eq!(complete.fallback_region_count(), 0, "补上之后不得再有回退");
+    let complete_frames = complete.render_block_into(64, 127, &mut complete_out);
+    assert!(
+        complete.silent_region_count() == 0,
+        "补上之后不得再有缺样本的区域"
+    );
     assert!(complete.missing_sample_paths().is_empty());
     assert_ne!(
-        fnv1a_64(&complete_out),
-        fnv1a_64(&fallback_out),
-        "⭐ 补上内容之后输出必须变（否则'回退'是空转）"
+        complete_frames, 0,
+        "⭐ 补上内容之后同一个键必须真的出声（否则上面那个 0 是空转）"
+    );
+    let mut reference = vec![0.0f32; BLOCK];
+    offline_one("missing.wav", 64, &b, 64, &mut reference);
+    assert_eq!(
+        bits(&complete_out),
+        bits(&reference),
+        "补上的那一份必须**逐位**是它自己的内容（`b`，⛔ 不是 `a`）"
     );
 
-    // ③ 空提供表 ⇒ NO_SAMPLE ＋ 计数 ＋ 一帧不写
+    // ③ 空提供表 ⇒ 全部 NO_SAMPLE ＋ 计数 ＋ 一帧不写
     let empty = PreparedSfz::prepare_with_samples(&sfz, &[], 48_000.0).expect("摊平必须成功");
     let mut empty_out = vec![0.0f32; BLOCK];
     let empty_frames = empty.render_block_into(64, 127, &mut empty_out);
@@ -1264,7 +1291,6 @@ fn s15_a_missing_sample_falls_back_and_is_counted() {
         empty.sample_content_label(),
     );
     assert_eq!(empty.silent_region_count(), 2);
-    assert_eq!(empty.fallback_region_count(), 0);
     assert!(empty.regions().iter().all(|r| !r.has_sample()));
     assert_eq!(empty_frames, 0, "没有样本 ⇒ 一帧不写");
     assert!(empty_out.iter().all(|s| *s == 0.0));
@@ -1357,5 +1383,282 @@ fn s16_the_multi_sample_binding_api_is_reachable_through_the_public_path() {
         broadcast.fingerprint(),
         with_sfz.fingerprint(),
         "⭐ 多采样 vs 广播的端到端指纹必须不同（`key=64` 那条区域换了内容）"
+    );
+}
+
+// =====================================================================================
+// ⭐ 归属裁决 `R711` 的两条落地判据（本单新增）：S17 = 轨推子（`needs-1`）、S18 = 防双重计。
+// =====================================================================================
+
+/// ⭐ S17／S18 用的**鼓机设备**：五个键位名写全 ⇒ `DrumsParams::from_devices` 认它是鼓机
+/// （口径与 S7 的那个设备、与 `crates/yeban-engine/src/drums.rs` 的识别一致）。
+fn drum_kit_device() -> DeviceDefinition {
+    DeviceDefinition {
+        id: EntityId::new(),
+        name: "Yeban Drums".to_owned(),
+        kind: DeviceKind::InternalInstrument,
+        bypassed: false,
+        params: [
+            ("kick_note", 60.0),
+            ("snare_note", 38.0),
+            ("closed_hat_note", 42.0),
+            ("open_hat_note", 46.0),
+            ("clap_note", 39.0),
+        ]
+        .iter()
+        .map(|(name, value)| ParameterValue {
+            name: (*name).to_owned(),
+            value: *value,
+            unit: None,
+        })
+        .collect(),
+        latency_samples: 0,
+    }
+}
+
+/// ⭐ S17 的轨参数夹具：`volume_db` ＋ `mute` ＋ "**另一条轨在独奏**"（可闻门的三个自变量）。
+///
+/// `drums = true` ⇒ 本轨挂鼓机设备（分派次序 ＝ 鼓机 ＞ SFZ ⇒ 该臂走鼓机）；
+/// `drums = false` ⇒ 不挂任何设备（该臂可由调用方注入 SFZ 摊平表）。
+/// ⚠ 两个臂的**音符、推子、静音/独奏**逐字相同 ⇒ 差异**只有音源**。
+fn fader_fixture(
+    volume_db: f32,
+    mute: bool,
+    solo_elsewhere: bool,
+    drums: bool,
+) -> support::Fixture {
+    let mut fixture = tuned_project(&E2E_NOTES, MixSpec::volume(volume_db));
+    let track = fixture.track;
+    {
+        let entry = fixture
+            .project
+            .tracks
+            .get_mut(&track)
+            .expect("夹具必须有那条 MIDI 轨");
+        entry.mute = mute;
+        if drums {
+            entry.devices = vec![drum_kit_device()];
+        }
+    }
+    if solo_elsewhere {
+        let other = EntityId::new();
+        fixture.project.tracks.insert(
+            other,
+            TrackV3 {
+                id: other,
+                name: "Solo".to_owned(),
+                kind: TrackKind::Midi,
+                solo: true,
+                ..TrackV3::default()
+            },
+        );
+        fixture.project.routing_graph.nodes.push(other);
+    }
+    fixture
+}
+
+/// 判据窗口（帧）：`E2E_NOTES` 的两个起音（0 与 48 tick = **1200** 帧）都落在窗口内。
+const FADER_FRAMES: usize = 2560;
+
+/// 本轨的**单声道时域输出**（`render_track` ⇒ **声相与母线之前**）。
+///
+/// # ⚠ 量什么（先说再跑）
+///
+/// 量的是**本轨的样本序列**（单位：线性幅度，48 kHz 单声道，2560 帧）。
+///
+/// ⚠ **为什么⛔ 不量端到端**：母线限制器是**非线性**器件 ⇒ 它会给出一个与轨增益无关的
+/// 因子，把"轨增益的线性"测糊。本判据要证的是"轨增益乘了一次、且两件音源乘的是**同一个**值"
+/// ⇒ 必须在这一级量。
+///
+/// 路径：`EngineSnapshot::from_project` → `SynthEngine::arm_from_snapshot`（**产品路径**，
+/// 含 `set_track_gain_scales`）→ `render_track`。
+fn track_output(fixture: &support::Fixture, sfz: Option<&PreparedSfz>) -> Vec<f32> {
+    let track = fixture.track;
+    let snapshot = EngineSnapshot::from_project(&fixture.project, 1).expect("夹具工程必须成快照");
+    let mut engine = SynthEngine::new(48_000);
+    engine
+        .arm_from_snapshot(&snapshot)
+        .expect("武装最小工程不得报错");
+    let schedule = snapshot
+        .schedules()
+        .get(&track)
+        .cloned()
+        .expect("本轨必须有调度表");
+    let mut out = vec![0.0f32; FADER_FRAMES];
+    engine.render_track(track, Some(&schedule), sfz, &mut out);
+    out
+}
+
+/// ⭐ 一个档的**两臂峰值** ＋ 两臂的时域缓冲：(SFZ 臂, 鼓机臂)。
+fn two_arm_outputs(
+    volume_db: f32,
+    mute: bool,
+    solo_elsewhere: bool,
+    prepared: &PreparedSfz,
+) -> (Vec<f32>, Vec<f32>) {
+    let sfz_arm = track_output(
+        &fader_fixture(volume_db, mute, solo_elsewhere, false),
+        Some(prepared),
+    );
+    let drum_arm = track_output(&fader_fixture(volume_db, mute, solo_elsewhere, true), None);
+    (sfz_arm, drum_arm)
+}
+
+/// 峰值（绝对值最大；单位：线性幅度）。
+fn peak(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()))
+}
+
+/// S17（⭐ 本单新增；归属裁决 `R711` 的 `needs-1` 落地）：⭐ **轨推子变化 N dB ⇒
+/// SFZ 与鼓机输出同比例变**。
+///
+/// # 判定量（三条腿，都可机械判定）
+///
+/// 1. **推子 −6 dB**：`peak(−6) / peak(0)` 在**两臂**上都等于 [`track_gain`]`(−6.0)`
+///    （相对误差 ≤ `1e-5`），且两臂的比值**互相**相等 ⇒ ⭐ "同径、同一个算子"；
+/// 2. **静音**（`mute = true`）：两臂**逐位**为 `0.0`（⇒ 可闻门真的到了声部上）；
+/// 3. **另一条轨独奏**（`any_solo = true` 且本轨既不 solo 也不 solo_safe）：两臂**逐位** `0.0`
+///    （⇒ 独奏与静音走的是**同一个** `track_is_audible` 门）。
+///
+/// # 怎么变红
+///
+/// 让 SFZ 那条支路不再乘轨增益（把 `trigger_note` 的 `region.gain_at(...) * track_gain`
+/// 改回 `region.gain_at(...)`）⇒ 腿 ① 的 SFZ 比值变回 `1.0`、腿 ②/③ 的 SFZ 臂**不再全零**。
+/// ⚠ 腿 ① 本身⛔ 不能证明"鼓机也吃了推子"：那由**同一个** `track_gain_scale` 在
+/// `snapshot::project_schedules` 里的一次调用保证（鼓机读含轨门的 `note.gain`）。
+#[test]
+fn s17_a_track_fader_scales_the_sfz_and_the_drums_arm_by_the_same_ratio() {
+    let prepared = prepare(E2E_SFZ);
+
+    // ③ 前置：**两臂都必须真的出声**（否则"同比例"可能是 0/0 那种空话）。
+    let (sfz_0, drum_0) = two_arm_outputs(0.0, false, false, &prepared);
+    let (sfz_6, drum_6) = two_arm_outputs(-6.0, false, false, &prepared);
+    let (sfz_mute, drum_mute) = two_arm_outputs(0.0, true, false, &prepared);
+    let (sfz_solo, drum_solo) = two_arm_outputs(0.0, false, true, &prepared);
+
+    let expected = track_gain(-6.0);
+    let sfz_ratio = peak(&sfz_6) / peak(&sfz_0);
+    let drum_ratio = peak(&drum_6) / peak(&drum_0);
+    println!(
+        "[engine-sfz/S17] 峰值：SFZ 臂 0 dB = {:.9} / −6 dB = {:.9} / 静音 = {:.9} / 别轨独奏 = {:.9}；\
+         鼓机臂 0 dB = {:.9} / −6 dB = {:.9} / 静音 = {:.9} / 别轨独奏 = {:.9}；\
+         比值 SFZ = {sfz_ratio:.9} vs 鼓机 = {drum_ratio:.9}（期望 track_gain(−6 dB) = {expected:.9}）",
+        peak(&sfz_0),
+        peak(&sfz_6),
+        peak(&sfz_mute),
+        peak(&sfz_solo),
+        peak(&drum_0),
+        peak(&drum_6),
+        peak(&drum_mute),
+        peak(&drum_solo),
+    );
+
+    assert!(
+        peak(&sfz_0) > 0.0 && peak(&drum_0) > 0.0,
+        "0 dB 档两臂都必须真的出声（SFZ = {} / 鼓机 = {}）",
+        peak(&sfz_0),
+        peak(&drum_0)
+    );
+    assert!(
+        peak(&sfz_6) > 0.0 && peak(&drum_6) > 0.0,
+        "−6 dB 档两臂都必须仍然出声（⇒ 比值不是 0/0）"
+    );
+    // ① 推子比例：两臂各自 == `track_gain(-6)`，且两臂**互相**相等。
+    let rel = |a: f32, b: f32| (a - b).abs() / b.abs();
+    assert!(
+        rel(sfz_ratio, expected) <= 1e-5,
+        "⭐ SFZ 臂的推子比例必须 ＝ `track_gain(-6 dB)`：实得 {sfz_ratio} vs {expected}"
+    );
+    assert!(
+        rel(drum_ratio, expected) <= 1e-5,
+        "⭐ 鼓机臂的推子比例必须 ＝ `track_gain(-6 dB)`：实得 {drum_ratio} vs {expected}"
+    );
+    assert!(
+        rel(sfz_ratio, drum_ratio) <= 1e-5,
+        "⭐ ⭐ **同径**：SFZ 与鼓机的推子比例必须一致（{sfz_ratio} vs {drum_ratio}）"
+    );
+    // ② 静音档：两臂**逐位** 0（⛔ 不是"很小"）。
+    assert!(
+        sfz_mute.iter().all(|s| *s == 0.0) && drum_mute.iter().all(|s| *s == 0.0),
+        "⭐ 静音轨 ⇒ 两臂都必须**逐位**静音（SFZ 峰值 = {}、鼓机峰值 = {}）",
+        peak(&sfz_mute),
+        peak(&drum_mute)
+    );
+    // ③ 独奏档：同一道可闻门。
+    assert!(
+        sfz_solo.iter().all(|s| *s == 0.0) && drum_solo.iter().all(|s| *s == 0.0),
+        "⭐ 另一条轨独奏 ⇒ 本轨两臂都必须**逐位**静音（SFZ 峰值 = {}、鼓机峰值 = {}）",
+        peak(&sfz_solo),
+        peak(&drum_solo)
+    );
+}
+
+/// S18（⭐ 本单新增；归属裁决 `R711` 的**防双重计**腿）：⭐ **引擎层只乘轨增益，
+/// ⛔ 绝不替乐器层再乘一次力度**。
+///
+/// # 判定量
+///
+/// 每个力度 `v ∈ {0, 32, 64, 100, 127}`：**引擎声部路径**与**摊平表（乐器层）一次性渲染**
+/// **逐位相同**。手工调度表里 `ScheduledNote::gain` 显式写成 `velocity_gain(v)`
+/// （＝"如果引擎把力度也交给 SFZ，就会多乘一次"的那一份）⇒ 只要两侧逐位相同，
+/// 就证明引擎**没有**碰力度、只乘了轨增益（本档轨增益 ＝ 默认 `1.0`）。
+///
+/// # ⚠ 反向对照：为什么必须用**中段**力度
+///
+/// `velocity_gain(127) == 1.0` 是**恒等** ⇒ 在 127 上"多乘一次力度"看不出来。
+/// S1 那条腿正是 127 ⇒ ⭐ **S1 抓不住双重计**，本判据补的正是这个盲区（下面两条断言钉住它）。
+///
+/// # 怎么变红
+///
+/// 在 `SfzVoicePool::trigger_note` 里把增益改成
+/// `region.gain_at(note, velocity) * track_gain * velocity_gain(velocity)` ⇒
+/// `v ∈ {32, 64, 100}` 三条腿当场**逐位不等**（`v = 127` 那条仍绿 ⇒ 盲区真实存在）。
+#[test]
+fn s18_the_engine_never_applies_a_second_velocity_gain() {
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let mut rows = Vec::new();
+    for velocity in [0u8, 32, 64, 100, 127] {
+        let track = EntityId::new();
+        let mut engine = engine_with_track(track);
+        // ⚠ 手工调度表：轨增益门 ＝ `NoteSchedule::from_sorted` 的默认 **1.0**（单位）；
+        //    逐音符 `gain` 显式写成 `velocity_gain(v)`（见判据文档）。
+        let schedule = NoteSchedule::from_sorted(vec![ScheduledNote::new(
+            0,
+            12_000,
+            60,
+            velocity,
+            support::yeban_dsp_note_to_hz(60),
+            velocity_gain(velocity),
+            48_000.0,
+        )]);
+        let mut engine_out = vec![0.0f32; BLOCK];
+        engine.render_track(track, Some(&schedule), Some(&prepared), &mut engine_out);
+        let mut flat = vec![0.0f32; BLOCK];
+        prepared.render_block_into(60, velocity, &mut flat);
+        rows.push(format!(
+            "v={velocity}: 引擎 = {:#010x} / 摊平 = {:#010x}",
+            fnv1a_64(&engine_out),
+            fnv1a_64(&flat)
+        ));
+        assert_eq!(
+            bits(&engine_out),
+            bits(&flat),
+            "⭐ 力度 {velocity}：引擎声部路径必须与**乐器层**一次性渲染**逐位相同**             （⇒ 引擎⛔ 没有替乐器层再乘一次力度）"
+        );
+    }
+    println!("[engine-sfz/S18] 逐位对账 ⇒ {}", rows.join("；"));
+
+    // 反向对照：`velocity_gain(127) == 1.0`（恒等）⇒ 127 那条腿对"双重计"**没有牙**；
+    // 中段力度才有（下面这条断言就是 S18 必须存在、而 S1 不够的理由）。
+    assert_eq!(velocity_gain(127), 1.0, "127 的力度增益必须是**恒等**");
+    assert!(
+        velocity_gain(64) > 0.0 && velocity_gain(64) < 1.0,
+        "中段力度必须既非 0 也非恒等（实得 {}）",
+        velocity_gain(64)
+    );
+    assert_ne!(
+        velocity_gain(64),
+        1.0,
+        "⭐ 中段力度是**恒等**的话，本判据就没有鉴别力了"
     );
 }

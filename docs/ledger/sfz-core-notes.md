@@ -440,17 +440,17 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73**（⭐ 步 3 后逐字不变） |
 | 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B**（广播路径；步 3 后逐字不变） |
 
-### needs（⭐ 下表状态截至**步 3**，即 2026-10-16 的 `#67`；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
+### needs（⭐ 下表状态截至**任务单 `#68`**，即 2026-10-16 的 R711 落地；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
 
 | # | 缺口 | 状态 |
 | :--- | :--- | :--- |
-| sfz-needs-1 | **轨推子/静音未乘到 SFZ 声部** | **未闭合**：逐样本对账口径是 `render_block_into(note, velocity)`（无轨增益参数）⇒ 声部增益 ＝ `region.gain_at(...)`。接线要先裁"谁拥有力度增益"（SFZ 曲线 vs `synth::velocity_gain`） |
+| sfz-needs-1 | **轨推子/静音未乘到 SFZ 声部** | ⭐ ⭐ **已闭合（任务单 `#68`；裁决 R711）**：**乐器层**拥有乐器内增益（`volume_gain`／`velocity_gain[128]`／`key_crossfade`／`velocity_fade_*`／`amp_veltrack`）、**引擎层**拥有轨增益（推子／静音／独奏）⇒ **两者相乘、⛔ 不重复**。`snapshot::project_schedules` 把**同一个** `track_gain_scale(...)` 结果写进 `NoteSchedule::track_gain`，`SfzVoicePool::trigger_note` 乘在 `region.gain_at(...)` 之外 ⇒ ⭐ 与鼓机**同径**；S17／S18 钉住（读数见 §13.3） |
 | sfz-needs-2 | **池满只丢弃 ＋ 计数，无窃取口径** | **未闭合**：`yeban-sfz` 的 `VoicePool` 是全局 512 声部、victim 选择是另一份口径 ⇒ 要一条 ADR |
 | sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（引擎＝鼓机优先，SFZ 池被释放） | **未闭合**：与 `crate::drums` 的 needs-3 同族（模型若禁止这种组合，本条删除） |
 | sfz-needs-4 | **`span` 终点引擎侧已应用、离线/摊平侧未应用** | ⭐ **已闭合（步 3）**：三条路共用 `reduce_span` 一份归约 ⇒ `start` ＋ `end` 都应用；S3/S13 逐样本差 **0e0**（读数见 §13.2） |
 | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（**"SFZ 如何进 `YebanProjectV1`"未裁**） | **未闭合（模型面）**：本步只把它做成**可经公开路径调用的 API**（`SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz`，S16 端到端）；⛔ 不加 `DeviceKind` 档、⛔ 不改 schema |
 | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by`** | **部分闭合**：步 3 只闭合了它的"多采样／每区域独立 PCM"那一半；其余仍完全未做 |
-| sfz-needs-7 | ⭐ **（步 3 新增）缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | **未闭合**：`prepare_with_samples` 对调用方没给的 `sample_path` 回退到 `samples[0]` ＋ **计数**（⛔ 不静默）；app 形状（`sfz_load.rs:264-267`：回退**内存正弦** ＋ 原因文案）**没有**搬进引擎 ⇒ "回退内容归谁"要裁决 |
+| sfz-needs-7 | ⭐ **（步 3 新增）缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **已闭合（任务单 `#68`；裁决 R711）**：**引擎出静音并计数**（`silent_region_count` ＋ `missing_sample_paths`）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表）。`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）；⛔ 旧"广播到 `samples[0]`"**已删除**；S15 已**如实地**改写期望（读数见 §13.3） |
 | sfz-needs-8 | ⭐ **（步 3 新增）摊平表不含样本字节预算 / 流式** | **未闭合**：每个被引用的样本 `pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无 `Arc` 共享口径 |
 
 ⚠ **换采样率的后果**（实测于 ㉙）：摊平表带着构造期的 `engine_hz` ⇒ 换采样率必须由
@@ -501,7 +501,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | **S3 `end` 两侧同口径**（改写） | `end=200` ⇒ 引擎与摊平表都停在**第 200 帧**、整块**逐样本最大绝对差 `0e0`**、摊平写入 **200** 帧；反向对照 `end=400` ⇒ **400** 帧 |
 | **S4 `end=-1` 两侧同口径**（改写） | 引擎 **0** 帧 / `Some(0)` 声部；⭐ 摊平表**也** 0 帧（步 2 时它仍出声 ⇒ 分叉闭合）；反向对照（无 `end=-1`）⇒ 摊平写入 **479** 帧 |
 | **S14 广播重载与步 2 逐位相同** | span-free 夹具 `(60,127)`、512 帧：**FNV-1a `0xa933ddab286bdf5e` ＝ 本线在 HEAD `6ae70ef8`（改动前）实测值**；`is_broadcast()` ✓、`sample_content_label() = "broadcast(1)"`、写入 479 / 非零 478 |
-| **S15 缺样本如实回退 ＋ 计数** | 缺 `missing.wav`（提供表 `[a.wav]`）：`fallback_region_count = 1`、`missing_sample_paths = ["missing.wav"]`、`sample_content = distinct(1)+fallback(1)`，输出指纹 `0xb0d8460b4f0cf499` **逐位等于**"用 `a.wav` 播那个键" ⇒ 回退**真的发生**（⚠ 内容错，sfz-needs-7）。反向对照：补上 ⇒ `fallback = 0` 且指纹变。空提供表 ⇒ `silent = 2`、`sample_content = distinct(0)+silent(2)`、写入 **0** 帧、`missing = ["a.wav","missing.wav"]`（排序去重） |
+| **S15 缺样本如实回退 ＋ 计数** ⚠ **已被 §13.3 改写** | ⚠ **旧期望固化了错内容**（"缺样本 ⇒ 回退到 `samples[0]`，输出与'用 `a.wav` 播那个键'逐位相同"＝把**内容错**钉成了期望）。步 3 当时的读数：`fallback_region_count = 1`、`missing_sample_paths = ["missing.wav"]`、`sample_content = distinct(1)+fallback(1)`，指纹 `0xb0d8460b4f0cf499`；空提供表 ⇒ `silent = 2`、写入 **0** 帧、`missing = ["a.wav","missing.wav"]`。⭐ **新期望见 §13.3**（静音 ＋ 计数；`+fallback(...)` 这一档已删） |
 | **S16 绑定注入 API 经公开路径（多采样）** | `referenced_sample_paths = ["a.wav","b.wav"]` → `SfzPlan::prepare_with_samples`（`sample_count = 2`）→ `EngineSnapshot::with_sfz` → **端到端**非零 1716、峰值 0.21920355、指纹 `0x10e619a422b4b7dd` ≠ 不给 SFZ 的 `0xd50d599c66c92565`；反向对照：**广播** plan 的端到端指纹 `0x5587041753dfe375` ≠ 多采样版 |
 | **尺寸（照打）** | `SfzVoice = 40 B`（原 32：`sample_index: u16` ＋ 对齐）、`SfzVoicePool = 648 B`（16 × 40 ＋ 8）、`SfzPlan = 96`、`PreparedSfz = 96`、`SynthEngine = 91984`、`EngineSnapshot = 4480`、⭐ `EngineRuntime = 162832 < 196608`（192 KiB） |
 | **零分配（`rt_zero_alloc` ㉙，未改夹具）** | 10 001 量子（总能量 **2999.164**，与步 2 逐字相同）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73** |
@@ -531,3 +531,84 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 步 2 的"引擎应用 `span`、离线/摊平不应用"在步 3 被 `reduce_span` 消除 ⇒
 S3/S13 的**逐样本最大绝对差 = 0e0** 覆盖**整段**（含显式 `offset`/`end`），
 不再是"只覆盖触发量子、夹具必须没有 `offset`/`end`"。
+
+### 13.3 两处"归属"裁决的**落地**（2026-10-16，任务单 `#68`；裁决 R711）
+
+本步**只落地 R711 的两条裁决**（⛔ 不做循环／`ampeg`／`off_mode`／`group`／模型层绑定／池满窃取／
+鼓机＋SFZ 同轨／新依赖）：`sfz-needs-1`（轨推子／静音／独奏）＋ `sfz-needs-7`（缺样本 ⇒ 静音）。
+
+#### 甲 · 让 SFZ 声部与鼓机**同径**过轨推子／静音／独奏（`needs-1`）
+
+**勘察（实现前先量"鼓机在哪一步乘轨增益"）**：
+
+| 步 | 位置 | 做什么 |
+| :--- | :--- | :--- |
+| ① 投影 | `crates/yeban-engine/src/snapshot.rs:914` | `let gain = crate::synth::track_gain_scale(mute, solo, solo_safe, any_solo, volume_db)` ⇒ ⭐ **全仓唯一的轨增益算子**（可闻门 × 推子） |
+| ② 折进逐音符 | `crates/yeban-engine/src/snapshot.rs:978` | `velocity_gain(note.velocity) * gain` ⇒ 写进 `ScheduledNote::gain` |
+| ③ 交给鼓机 | `crates/yeban-engine/src/synth.rs:1837` | `drums[index].trigger(DrumHit::new(voice, note.start_sample, note.gain))` ⇒ ⭐ **鼓机吃到的就是含轨门的那一份** |
+| ③′ 交给复音 | `crates/yeban-engine/src/synth.rs:1866` | `slot.synth.note_on(NoteEvent::new(…, note.gain), tables)` ⇒ 同径 |
+| ⛔ SFZ（改前） | `crates/yeban-engine/src/synth.rs`（SFZ 分支） | 只把 `note.velocity` 交给 `trigger_note` ⇒ **轨增益整条没进去**（＝缺陷本身） |
+
+⇒ ⭐ **修法 ＝ 让 SFZ 与鼓机同径**（⛔ **不是**把力度搬到引擎）：把**同一个** `gain` 也写进
+`NoteSchedule::track_gain`（`crates/yeban-engine/src/snapshot.rs:991` 的 `with_track_gain(gain)`），
+再由 `render_track` 的 SFZ 分支（`crates/yeban-engine/src/synth.rs:1854`）把它交给
+`SfzVoicePool::trigger_note(…, track_gain)`，在**触发期**乘在乐器层增益**之外**
+（`crates/yeban-engine/src/sfz_instrument.rs:1179` 的 `region.gain_at(note, velocity) * track_gain`）
+⇒ ⭐ **两者相乘、⛔ 不重复**（引擎⛔ 不碰力度：SFZ 的 `velocity_gain[128]` 归乐器层）。
+
+⚠ **为什么挂在调度表上而不是槽位上**：`slot.gain_scale` 只服务**环音符**那条路；已调度的
+鼓机/复音读的是**同一条调度表**上的 `note.gain` ⇒ 把轨门挂在**同一张表**上，三者
+**按构造同径**（也避免"未武装槽位 ⇒ SFZ 静默而鼓机照响"的新不对称）。
+
+#### 乙 · 缺样本 ⇒ 不建声部、去掉"广播到 `samples[0]`"（`needs-7`）
+
+| 位置 | 改法 |
+| :--- | :--- |
+| `crates/yeban-engine/src/sfz_instrument.rs:682` | 缺 `sample_path` ⇒ `silent_regions += 1` ＋ 路径进 `missing_sample_paths` |
+| `crates/yeban-engine/src/sfz_instrument.rs:684` | `sample_index = PreparedRegion::NO_SAMPLE`（⛔ 不再回退到 `samples[0]`） |
+| `crates/yeban-engine/src/sfz_instrument.rs:1150` | `trigger_note` 里 `plan.sample(NO_SAMPLE) ⇒ None ⇒ continue` ⇒ 与 `span_bounds() == None` **同径**：⛔ 不建声部 |
+| 删 | `fallback_regions` 字段 ＋ `fallback_region_count()` ＋ 读数里的 `+fallback(N)` 一档（**唯一**计数口径＝`silent_region_count()`） |
+
+#### 本步读数（`cargo test -p yeban-engine --locked`；`sfz_instrument` **18 / 18**，lib **296**，㉙ **73 / 73**）
+
+| 判据 | 读数 |
+| :--- | :--- |
+| ⭐ **S17 推子 ⇒ SFZ 与鼓机同比例** | 峰值：SFZ 臂 `0 dB = 0.429437995` / `−6 dB = 0.215228811` / 静音 `0` / 别轨独奏 `0`；鼓机臂 `0.766429424` / `0.384124607` / `0` / `0`；⭐ 比值 **SFZ `0.501187146` vs 鼓机 `0.501187205`**（期望 `track_gain(−6 dB) = 0.501187205`，相对误差 ≤ `1e-5`）；静音／独奏两档**逐位** `0` |
+| ⭐ **S18 引擎⛔ 不乘第二次力度** | `v ∈ {0,32,64,100,127}`：引擎声部路径与**乐器层**一次性渲染**逐位相同**（`0x28c31cf8df2ec325` / `0x35e214ace6e19df0` / `0xbae210721e5956bc` / `0xfd159d8c329d0e7f` / `0xa933ddab286bdf5e`，两侧同值）；反向对照：`velocity_gain(127) == 1.0`（恒等）⇒ S1 的 127 那条腿**抓不住**双重计，中段力度才有牙 |
+| ⭐ **S15 缺样本 ⇒ 静音 ＋ 计数**（改写） | 缺 `missing.wav`（提供表 `[a.wav]`）：`silent = 1`、`missing = ["missing.wav"]`、`sample_content = distinct(1)+silent(1)`、`sample_index = NO_SAMPLE`、`key=64` **写入 0 帧**（整块逐位 0）；反向对照①：补上 ⇒ 该键**逐位**＝ `b` 的离线参照；反向对照②：`key=60` 那条区域**写入 479 帧**（静音作用域只到缺样本的区域）；空提供表 ⇒ `silent = 2`、写入 **0** 帧 |
+| **尺寸** | `SfzVoice = 40`、`SfzVoicePool = 648`、⭐ `SfzPlan = 88`／`PreparedSfz = 88`（原 **96**：删掉 `fallback_regions: usize`）、`SynthEngine = 91984`、`EngineSnapshot = 4480`、⭐ `EngineRuntime = 162832 < 196608`（**逐字未变**） |
+| **零分配（`rt_zero_alloc` ㉙）** | 10 001 量子（总能量 **2999.164**，与步 2／步 3 **逐字相同**）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73** |
+| **既有判据** | S1 `0e0`／478／478、S1b `0e0`／有声块 4、S2、S3、S4、S5 `0x71dca4dc55b44df5`／`0x6eee378072730521`、S6 `0x5587041753dfe375`、S7、S8、S10、S11、S12、S13、S14 `0xa933ddab286bdf5e`、S16 `0x10e619a422b4b7dd` —— ⭐ **逐字不变** |
+
+#### ⭐ 注入打红（三处，各自的**红读数** ＋ 还原自证）
+
+还原自证：注入前记录 4 个文件的 `sha256`（`sfz_instrument.rs = c2a36c5e…a8142871` 等）＋
+`git diff | wc -c = 51590`；每次还原后 `sha256sum -c` **四行全 OK**、`git diff` 字节数
+**回到 51590**、四个文件的 `INJECT` 标记数 **0**。
+
+| # | 注入 | 红读数 | 变红的判据 |
+| ---: | :--- | :--- | :--- |
+| ①（甲·防双重计）| `trigger_note` 里把增益改成 `region.gain_at(note, velocity) * track_gain * crate::synth::velocity_gain(velocity)` | `s18`：`力度 32：引擎声部路径必须与乐器层一次性渲染逐位相同` ⇒ `left[1] = 976564401 / right[1] = 993248848`（v=127 那条仍绿）；**17 passed / 1 failed** | S18（⛔ **只**打红它） |
+| ②（甲·丢轨门）| `trigger_note` 里⛔ 不乘 `track_gain`（`let _ = track_gain;`） | `s17`：`[SFZ 臂] 0 dB = 0.429437995 / −6 dB = 0.429437995 / 静音 = 0.429437995 / 别轨独奏 = 0.429437995`，`比值 SFZ = 1.000000000 vs 鼓机 = 0.501187205`；**17 passed / 1 failed** | S17（两臂比值分叉 ＋ 静音/独奏档不再为 0） |
+| ③（乙·广播回来）| `prepare_with_samples` 缺样本时**回退到 `samples[0]`**（旧行为）| `s15`：`assertion left == right failed: ⭐ 缺样本的区域计数` ⇒ `left: 0 / right: 1`；**17 passed / 1 failed** | S15 |
+
+⇒ ⭐ 三处注入各打红**与它对应**的判据（S18／S17／S15 互不代红）⇒ 判据各自有牙。
+
+#### ⚠ 因本单改变／需解释的既有读数（其余逐字不变）
+
+| 项 | 改前 → 改后 | 原因 |
+| :--- | :--- | :--- |
+| `sfz_instrument` 档 **16 → 18** | 16 passed → 18 passed | ⭐ 新增 S17／S18（本单要求的判据） |
+| S15 名称与期望 | `s15_a_missing_sample_falls_back_and_is_counted` → `s15_a_missing_sample_is_silent_and_is_counted` | ⭐ **旧期望固化了错内容**（"回退到 `samples[0]`"），按 R711 裁决如实改写 |
+| `S9` 的 `SfzPlan`／`PreparedSfz` | `96` → **`88`** | 删掉 `fallback_regions: usize`（8 B）⇒ ⭐ **变小**；`EngineRuntime = 162832 < 196608` **未变** |
+| doctest 行号 | `snapshot.rs - snapshot::SnapshotReader (line 1494)` → **(line 1499)** | `snapshot.rs` 的文档注释 ＋5 行（该 doctest 是 `ignored`，⛔ 不是判据） |
+| `[sfz] 两次解析的区域表地址` | 两次相同 → 两次不同 | 只**打印**（无断言）；堆地址随分配器/进程布局而变 |
+| `[engine-stats-mirror/J15] 读次数` | `668719` → `669885` | ⭐ **窗口内并发读计数量**：同树连跑两次实测 `669972` / `671614` ⇒ 随线程调度漂移，⛔ 与本单无关 |
+| `[MUST-GATE-012]` 的 `drain_calls` / `backlog` / `max_quanta_between_drains` | e.g. `backlog 514 → 513` | ⭐ 同一个 run 里"高频交换"与"高频交换（复跑）"本来就不同（514/513）⇒ 调度相关读数 |
+| `[perf]` 墙钟／`[device-clock] elapsed` | 小幅浮动（如 `摊平一次 165 → 37 µs`） | ⭐ 墙钟噪声；**内存 4544 字节**与 **SFZ 总能量 748.967** 逐字不变 |
+| `[assertion-bounds]` 行 | 逐行出现位置变（`… entered` 与测试名粘连不同） | ⭐ stdout 交错（计数读数 `R118 4/4`／`R146 5/5` **不变**） |
+
+⛔ **本步不做**（如实登记）：`loop_*`／`ampeg_*`／`off_mode`／`group`/`off_by`/`note_polyphony`／
+模型层绑定（`needs-5`）／池满窃取（`needs-2`，需 ADR）／鼓机＋SFZ 同轨（`needs-3`）／
+新依赖（⛔ 未加）／推远端。⚠ 边界：`yeban-sfz`／`yeban-app`／`yeban-model`／`schema` **一个字未动**
+⇒ 只跑 engine 四门（＋仓级 `light`）。

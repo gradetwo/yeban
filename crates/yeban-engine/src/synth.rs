@@ -739,19 +739,67 @@ impl ScheduledNote {
 // `round` 本身是 IEEE 精确类（D32 §1）。
 
 /// 单轨的音符调度表（按 `start_sample` 升序，构造期分配、实时侧只读）。
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// # ⭐ 本表携带**两个**增益量（归属裁决见 `phase-status.md` 的 R711）
+///
+/// | 量 | 落在哪 | 谁拥有 |
+/// | :--- | :--- | :--- |
+/// | `ScheduledNote::gain`（`velocity_gain(v) × track_gain`）| 每个音符（**逐音符**）| ⭐ **引擎层**的轨增益 × ⭐ 复音/鼓机的力度 |
+/// | [`Self::track_gain`]（`track_gain_scale(...)`，**与力度无关**）| 每条轨（**一个标量**）| ⭐ **引擎层**的轨增益（推子 × 静音/独奏门）|
+///
+/// ⚠ **为什么需要第二个**：SFZ 声部的力度增益由**乐器层**拥有（`yeban-sfz` 的
+/// `velocity_gain[128]` / 交叉淡化 / `amp_veltrack`）⇒ 引擎⛔ 不能把含力度的那一份
+/// （`ScheduledNote::gain`）交给它（那会**双重计力度**）。它只交**轨增益**这一半，
+/// 与鼓机拿到的轨增益**同一个来源、同一个算子**（`snapshot::project_schedules` 里
+/// 同一次 [`track_gain_scale`] 调用的结果）⇒ 两者**相乘、⛔ 不重复**。
+#[derive(Clone, Debug, PartialEq)]
 pub struct NoteSchedule {
     notes: Vec<ScheduledNote>,
+    /// ⭐ 本轨的**轨增益门**（可闻门 ＝ 静音/独奏 × 推子；⛔ 与力度无关）。
+    ///
+    /// 默认 **`1.0`（单位增益）** ⇒ 用手工构造的调度表（测试夹具、离线拼接）驱动时，
+    /// "没有轨参数"就是"不衰减"。⚠ 产品路径的值由
+    /// [`crate::snapshot::project_schedules`] 写入（与 `note.gain` 里那一份同源）。
+    track_gain: f32,
+}
+
+impl Default for NoteSchedule {
+    /// 空表 ＋ **单位轨增益**（`1.0`，⛔ 不是 `0.0`：默认不是静音）。
+    fn default() -> Self {
+        Self {
+            notes: Vec::new(),
+            track_gain: 1.0,
+        }
+    }
 }
 
 impl NoteSchedule {
-    /// 由**已排序**的音符序列构造。
+    /// 由**已排序**的音符序列构造（轨增益门 ＝ **单位增益** `1.0`）。
     ///
     /// `notes` 必须按 `start_sample` 升序；[`crate::snapshot`] 的投影负责排序
     /// （实时侧的游标只向前推进，乱序会让音符被永久跳过）。
     #[must_use]
     pub const fn from_sorted(notes: Vec<ScheduledNote>) -> Self {
-        Self { notes }
+        Self {
+            notes,
+            track_gain: 1.0,
+        }
+    }
+
+    /// ⭐ 写入本轨的**轨增益门**（构造期；见类型文档的两增益量表）。
+    #[must_use]
+    pub const fn with_track_gain(mut self, track_gain: f32) -> Self {
+        self.track_gain = track_gain;
+        self
+    }
+
+    /// ⭐ 本轨的**轨增益门**（与力度无关：可闻门 × 推子）。
+    ///
+    /// 读数口径：产品路径下它**逐位等于** `SynthEngine` 槽位里那一份
+    /// （`slot.gain_scale`）—— 两者都由 [`track_gain_scale`] 在同一次投影里算出。
+    #[must_use]
+    pub const fn track_gain(&self) -> f32 {
+        self.track_gain
     }
 
     /// 音符条数。
@@ -1727,6 +1775,13 @@ impl SynthEngine {
     ///
     /// SFZ 分支的终点口径与分配纪律见 [`crate::sfz_instrument`] 模块头
     /// （`min(end_sample, span 终点, 样本播完)`；⛔ 跳过 `ampeg_*`、用样本自然结束）。
+    ///
+    /// # ⭐ 轨增益（**三条支路同径**；归属裁决见台账 `R711`）
+    ///
+    /// 三条支路都在**本函数**里拿到"引擎层的轨增益"：鼓机与复音读的是调度表上**逐音符**的
+    /// `ScheduledNote::gain`（投影期已乘进 `track_gain_scale(...)`），SFZ 读的是**同一张表**上的
+    /// [`NoteSchedule::track_gain`]（同一次投影、**同一个**算子）⇒ ⭐ 推子/静音/独奏对三者
+    /// **同径生效**；而 SFZ 的**力度**那一半由乐器层拥有 ⇒ ⛔ 不重复计。
     pub fn render_track(
         &mut self,
         track: EntityId,
@@ -1793,11 +1848,15 @@ impl SynthEngine {
                             Some(plan) => {
                                 // 覆盖度：真的建出声部才记一次"触发"（与鼓机
                                 // "映射里没有的音高不记"同口径）。
+                                // ⭐ 轨增益门（引擎层）在这里**与鼓机同一处**交给音源：
+                                // 鼓机拿的是含轨门的 `note.gain`，SFZ 拿的是**同一张调度表**
+                                // 上的 `track_gain`（力度那一半由乐器层自己算 ⇒ ⛔ 不重复）。
                                 if slot.sfz.trigger_note(
                                     plan,
                                     note.pitch,
                                     note.velocity,
                                     note.end_sample,
+                                    schedule.track_gain(),
                                 ) > 0
                                 {
                                     *notes_triggered = notes_triggered.saturating_add(1);
