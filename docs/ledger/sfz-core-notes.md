@@ -438,9 +438,9 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 池满（17 条匹配区域） | 步 2：`created = 16`、`dropped = 1`（⛔ 不静默）⇒ ⭐ **任务单 `#70` 已改为窃取口径**：`created = 16`、`stolen = 1`、`dropped = 0`（见 §13.4） |
 | 尺寸（步 2） | `SfzVoice = 32 B`、`SfzVoicePool = 520 B`、`SynthEngine = 89936`、`EngineRuntime = 160784 < 196608`（192 KiB）⇒ ⭐ 步 3 改为 **40 / 648 / 91984 / 162832** ⇒ ⭐ **任务单 `#70` 再改为 40 / 1712 / 109152 / 180000 < 196608**（见 §13.4） |
 | 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73**（⭐ 步 3 后逐字不变） |
-| 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B**（广播路径；步 3 后逐字不变） |
+| 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B**（广播路径；步 3 后逐字不变）⇒ ⭐ **任务单 `#84` 起可拆开读**（区域表 ／ PCM ／ 路径文本，见 §13.5） |
 
-### needs（⭐ 下表状态截至**任务单 `#78`**，即 2026-10-16 的"模型绑定 → 引擎待摊平项"接线；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
+### needs（⭐ 下表状态截至**任务单 `#84`**，即 2026-10-16 的"摊平表字节预算读数与判据"；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
 
 | # | 缺口 | 状态 |
 | :--- | :--- | :--- |
@@ -451,7 +451,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（**"SFZ 如何进 `YebanProjectV1`"未裁**） | ⭐ ⭐ **已闭合（模型面＝任务单 `#76`、引擎面＝任务单 `#78`）**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象；裁决见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** `PendingSfz`（`from_project` 从 `track.sampler` 投影、只搬路径字符串）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ `SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz`（后者**取代**前者）。⛔ 不加 `DeviceKind` 档、⛔ 不改 schema；S21～S24 钉住 |
 | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by`** | **部分闭合**：步 3 只闭合了它的"多采样／每区域独立 PCM"那一半；其余仍完全未做 |
 | sfz-needs-7 | ⭐ **（步 3 新增）缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **已闭合（任务单 `#68`；裁决 R711）**：**引擎出静音并计数**（`silent_region_count` ＋ `missing_sample_paths`）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表）。`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）；⛔ 旧"广播到 `samples[0]`"**已删除**；S15 已**如实地**改写期望（读数见 §13.3） |
-| sfz-needs-8 | ⭐ **（步 3 新增）摊平表不含样本字节预算 / 流式** | **未闭合**：每个被引用的样本 `pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无 `Arc` 共享口径 |
+| sfz-needs-8 | ⭐ **（步 3 新增）摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（`SfzByteBudget` ／ `SfzByteUsage` ／ `SfzBudgetOverrun`、`PreparedSfz::byte_usage` ／ `PreparedSfz::budget_overrun`、控制侧入口 `SfzPlan::byte_usage` ／ `budget_overrun`；判据 S25～S27，读数见 §13.5）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不计数、⛔ 不截断、⛔ 不改摊平结果；三条理由见 `PreparedSfz::budget_overrun`）；③⚠ **仍未闭合**：每个被引用的样本 `pcm` 仍**整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 
 ⚠ **换采样率的后果**（实测于 ㉙）：摊平表带着构造期的 `engine_hz` ⇒ 换采样率必须由
 **控制侧在窗口外重新摊平**并发布一份新快照；引擎⛔ 不在快照边界重算，**在飞的声部**
@@ -711,4 +711,118 @@ test 档 `sfz_instrument.rs = 0d5bb69c…`；⭐ 均为 `cargo fmt -p yeban-engi
 ⛔ **本步不做**（如实登记）：循环／`ampeg_*`／`off_mode`／`group`/`off_by`/`note_polyphony`／
 模型层绑定（`needs-5`）／字节预算与流式（`needs-8`）／新依赖／推远端。
 ⚠ 边界：`yeban-dsp`／`yeban-sfz`／`yeban-model`／`yeban-app`／`schemas` **一个字未动**
+⇒ 只跑 engine 四门（＋仓级 `light`）。
+
+### 13.5 摊平表的**字节预算读数 ＋ 判据**（`sfz-needs-8` 的"可判"那一半）（2026-10-16，任务单 `#84`）
+
+⭐ **本片要的不是流式，而是"让它可判"**：一条**读数**（拆成区域表／PCM／路径文本）
+＋ 一条**判据**（`bytes ≤ N`，`N` 的来源可复算）＋ 一条**超预算口径**（引擎只报数、控制侧决定）。
+⚠ **流式仍未做** ⇒ `needs-8` 只**部分闭合**（见 needs 表）。
+
+#### 一 · 现状读数（对象 ＝ 一份 `PreparedSfz`；单位 ＝ **字节**）
+
+拆开的三条换算（**唯一**一份求和，`SfzByteUsage::total_bytes` ＝ 既有 `memory_bytes()`）：
+
+| 项 | 换算 | 广播夹具（S6：2 区域） | 预算夹具（S25：3 区域、2 路径） |
+| :--- | :--- | ---: | ---: |
+| 区域表 | `size_of::<PreparedRegion>() × 区域数` | `2624 × 2` ＝ **5 248** | `2624 × 3` ＝ **7 872** |
+| PCM | `4 × 去重后总帧数` | `4 × 480` ＝ **1 920** | `4 × (480 + 1920)` ＝ **9 600** |
+| 路径文本 | `Σ path.len()`（广播路径为空串 ⇒ 0） | **0** | `5 + 5` ＝ **10** |
+| **合计** | ＝ `memory_bytes()` | **7 168**（与步 2／步 3 逐字相同） | **17 482** |
+
+⭐ **"今天有没有任何判据/读数在盯这个数？"—— 读数有，判据（上界）没有**（本单前的清点，逐处）：
+
+| 点 | 形状 | 是不是上界判据 |
+| :--- | :--- | :--- |
+| `PreparedSfz::memory_bytes` ／ `SfzPlan::memory_bytes` | 读数（`usize` 字节） | ⛔ 不是（无比较） |
+| `tests/sfz_instrument.rs` S6 | **打印**"区域 2、内存 7168 字节" | ⛔ 不是 |
+| `tests/sfz_arm_perf.rs` 两处 | **打印**"内存 9792／4544 字节" | ⛔ 不是 |
+| `crates/yeban-app/tests/sfz_ui_selector.rs` | `memory_bytes > 0` | ⛔ **地板**，不是上界 |
+| `crates/yeban-app/src/sfz_load.rs`（`plan_bytes`） | 控制侧读数（供 UI／诊断） | ⛔ 不是 |
+| `tests/sfz_instrument.rs` S12 | `pcm_bytes() == 1 × 480 × 4` | 去重口径的**精确等式**，与"整库上限"无关 |
+
+⇒ ⭐ 结论：**改动前，一条 1 GB PCM 的音色库会被整段读进内存并 clone 进摊平表，而没有任何
+判据会红**；唯一的"读数"是 `memory_bytes()`（只是在几个测试里打印，在 app 侧透出）。
+
+#### 二 · 预算口径与 `N` 的来源
+
+* `SfzByteBudget`：三条**独立**上界（区域表 ／ PCM ／ 路径文本）—— 一个总数会让"区域表悄悄
+  长大"与"PCM 爆炸"在读数上不可区分；
+* `SfzByteBudget::for_layout(regions, pcm_frames, path_bytes)`：由**声明的形状**按
+  `region_bytes` ／ `pcm_bytes` ／ `path_bytes` 那**同一份**换算反推 ⇒ `N` **恰好**等于该形状的
+  精确字节数（⭐ **判定是闭区间**：恰好等于上界**通过**，与 `yeban-decode::PcmBudget` 同口径）。
+  于是判据钉住的是"**读数里没有隐藏的第四份开销**"（`Vec` 容量余量、或有人往
+  `PreparedRegion` 里加字段却没进读数），⛔ 不是拍出来的阈值；
+* `SfzByteBudget::new(...)`：控制侧直接给上界。⭐ **本 crate 不自带默认上限**：要用产品要求
+  推导的上限（如 `PcmBudget::max_pcm_bytes`），把那个数**传进来**，⛔ 不复制那份常数。
+
+#### 三 · 超预算怎么办 —— 裁决：**引擎只报数，控制侧决定**
+
+`PreparedSfz::budget_overrun(&SfzByteBudget) -> SfzBudgetOverrun`：⛔ 不报错、⛔ 不计数、
+⛔ 不截断、⛔ 不改摊平结果，只给逐项超出字节数（`is_within()` ＝ `bytes ≤ N`）。三条理由：
+
+1. **在摊平里报错来得太晚**：`prepare_with_samples` 拿到的是**已经解码**的
+   `InMemorySample`（峰值内存**在调用之前**就已花掉一次，本函数只是 clone 一份）
+   ⇒ 在那里报错挡不住峰值，只把"载入成功但偏重"变成"载入失败"；
+2. **归属先例**：`R711`（`needs-7`）已裁决"引擎出事实＋计数、产品决定交控制侧"——
+   字节预算是同一条分界线（引擎有"占多少字节"的事实，控制侧有"值不值得载入"的判断）；
+3. **⛔ 不动既有判据**：强制预算必须改 `prepare*` 的返回形状或加参数 ⇒ 既有调用点
+   （`SfzPlan::prepare*`、`sfz_load.rs`、S11～S16）全部要动，本单明确⛔ 不改既有类型/签名。
+
+#### 四 · 本片读数（`cargo test -p yeban-engine`，新增三条）
+
+| 判据 | 读数 |
+| :--- | :--- |
+| ⭐ **S25 读数拆开** | 区域表 `size_of::<PreparedRegion>() 2624 B × 3 = 7872`；PCM `4 B × 2400 = 9600`；路径 `10`；**合计 17482 ＝ `memory_bytes()`** |
+| ⭐ **S25 预算判据** | `N = for_layout(3, 2400, 10)` ＝ `{区域表 ≤ 7872，PCM ≤ 9600，路径 ≤ 10}`；实际 `{7872, 9600, 10}` ⇒ 超出 `{0, 0, 0}`、`is_within = true` |
+| ⭐ **S25 内置反向腿** | 三个维度各 −1 B ⇒ `{区域表 1,0,0}`／`{0,1,0}`／`{0,0,1}`，`is_within = false`（⛔ 绿不是空的） |
+| ⭐ **S26 超预算口径** | `N = for_layout(3, 480, 10)` ⇒ 超出 `{区域表 0，PCM 7680，路径 0}`、合计 **7680** 字节、`is_within = false`；⭐ `prepare_with_samples` 仍 **`Ok`**、样本数 2、PCM 9600、区域 3 |
+| ⭐ **S26 零预算** | `new(0, 0, 0)` ⇒ 超出 `{7872, 9600, 10}`、合计 **17482**（⭐ 只报数：表一字未改） |
+| ⭐ **S26 摊平结果逐位不变** | `byte_usage {7872, 9600, 10} → {7872, 9600, 10}`；`sample_count 2 → 2`；`pcm_bytes 9600 → 9600`；`region_count 3 → 3`；渲染 `(写入 512, 非零 511) → (写入 512, 非零 511)` |
+| ⭐ **S27 1 GiB 级（⛔ 不真的分配）** | 读数 `{区域表 335872，PCM 1073741824，路径 1536}` vs 预算 `{335872, 536870912, 1536}` ⇒ 超出 `{0, 536870912, 0}`、`is_within = false`；⭐ 上界给**恰好 1 GiB** ⇒ **通过**（闭区间） |
+
+#### 五 · 注入打红（三条，逐条还原自证）
+
+还原自证：注入前 `sha256`（`src/sfz_instrument.rs = 2df79766…`、test 档 `sfz_instrument.rs = 7b50dc3a…`）
+＋ `git diff` 字节数 ＝ **45309**；每次还原后 `shasum -a 256 -c` **三行全 OK**、该字节数**回到 45309**、
+两个文件里 `INJECT` 标记数 **0**。
+
+| # | 注入 | 红读数 | 变红的判据 |
+| --: | :--- | :--- | :--- |
+| ①（测试侧）| S25 的 `N` 的 PCM 那一维调到**夹具之下**（`for_layout(3, 2400→480, 10)`） | `预算 N … {区域表 ≤ 7872，PCM ≤ 1920，路径 ≤ 10}；实际 {7872, 9600, 10} ⇒ 超出 {0, 7680, 0}（is_within = false）`；`assertion left == right failed: N 的 PCM 那一维必须恰好等于夹具的实际 PCM 字节数` ⇒ `left: 1920 / right: 9600`；**0 passed / 1 failed** | **S25**（⭐ 这条同时是"应绿的反向腿"的注入验证：原本绿的那条腿被打红）|
+| ②（库侧）| `SfzByteUsage::overrun` 的 `saturating_sub` 改成**恒 0**（判据失去牙齿） | S25：`超出 {0,0,0}（is_within = true）`、反向腿同样 `is_within = true` ⇒ 红；S26：`超出 {0,0,0}、合计 0 字节、is_within = true` ⇒ 红；S27：`超出 {0,0,0}、is_within = true` ⇒ 红；**24 passed / 3 failed** | **S25／S26／S27**（⭐ 只这三条）|
+| ③（测试侧）| S26 的超预算臂把预算**放宽到恰好装下**（`for_layout(3, 480→2400, 10)`） | `N = for_layout(3, 480, 10) ⇒ 超出 {0,0,0}、is_within = true`；`panicked … ⭐ 这份夹具对「只给 a.wav」的预算必须**超**（否则本判据无话可说）`；**0 passed / 1 failed** | **S26** |
+
+#### 六 · 状态差集（任务单第 241 条）
+
+`cargo test -p yeban-engine --locked`（默认捕获模式 ⇒ 结果行不被 stdout 交错污染），改动前／后各一次：
+
+| 量 | 改动前 | 改动后 |
+| :--- | ---: | ---: |
+| `(二进制, 判据, 状态)` 三元组 | **509**（26 个二进制） | **512**（26 个二进制） |
+| 消失 | — | **0** |
+| 出现 | — | **+3**：`tests/sfz_instrument.rs` 的 `s25_…`／`s26_…`／`s27_…`（均 `ok`） |
+| 状态翻转 | — | **0** |
+
+⇒ ⭐ **差集恰好等于本单应新增的三条**（无一条既有判据消失或翻转）。
+⭐ 注入 ② 的差集同样是**恰好 3 条翻转**（`s25`／`s26`／`s27`：`ok → FAILED`，0 消失／0 出现）。
+
+#### 七 · 尺寸与零分配（⛔ 本单一个字段都没加）
+
+| 判据 | 读数 |
+| :--- | :--- |
+| 尺寸照打（S9） | `SfzVoice 40` ／ `SfzVoicePool 1712` ／ `SfzPlan 88` ／ `PreparedSfz 88` ／ `SynthEngine 109152` ／ `EngineSnapshot 4496` ／ ⭐ **`EngineRuntime 180000 < 196608`**（余量 16608）—— 与 `#70` 逐字相同 |
+| `rt_zero_alloc` 全部场景 | **73 / 73**；⭐ ㉙（每轨 SFZ 音源 10 001 量子＋1 次换采样率）`四元组[alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]`、⭐ 总能量 **2999.164**（逐字不变）；`[sfz] 回调窗口：allocations=0 deallocations=0 lock_blocking=0 io_ops=0` |
+| 既有读数未扰动 | S6 摊平表 **7168 B** ／ SFZ 臂指纹 `0x5587041753dfe375` ／ `[perf] 摊平一次 4544 B`、`逐样本差 0e0（内存 9792 B）` |
+
+#### 八 · needs 表更新
+
+* `yeban-engine/src/sfz_instrument.rs` 模块头的 `sfz-needs-8` 行 ⇒ **部分闭合**（"可判"闭合、"流式"未做），
+  并把 `SfzByteBudget` 一族加进"件"表；
+* 本文档的 needs 表 `sfz-needs-8` 行 ⇒ 同步**部分闭合**（同口径）。
+
+⛔ **本片不做**（如实登记）：**真流式**（`Arc` 共享／分页读盘／流式重采样）／
+**控制侧在解码之前**设闸门（那是 app 侧，本单⛔ 不动）／模型侧／`ampeg_*`／`off_mode`／
+`group`/`off_by`／新依赖／推远端。
+⚠ 边界：`yeban-dsp`／`yeban-sfz`／`yeban-model`／`yeban-app`／`schemas`／`scripts` **一个字未动**
 ⇒ 只跑 engine 四门（＋仓级 `light`）。

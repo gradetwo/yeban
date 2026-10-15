@@ -35,6 +35,9 @@
 //! | ⭐ S22 | ⭐ **正向（`#78`）** | `sampler = Some(路径)` ⇒ `from_project` 的快照里出现**该轨**的待摊平项 `PendingSfz`（路径**逐字**相同、条数 1）＋ ⛔ **摊平表 `sfz()` 仍空**（引擎⛔ 不凭空摊平） |
 //! | ⭐ S23 | ⭐ **待摊平项是纯事实（`#78`）** | 路径**磁盘上不存在**也不报错、⛔ 不改渲染（同夹具 `None`／`Some` 指纹**逐位相同**）；`with_sfz` 注入摊平表 ⇒ 待摊平项被**取代**（表清空、`sfz()` 1 条、指纹变） |
 //! | ⭐ S24 | ⭐ **缺样本口径不变，且经新接线可达（`#78`）** | 由 `sfz_pending()` 给出的路径 → 控制侧解码（**只给 `a.wav`**）⇒ `silent_region_count() == 1`、`missing_sample_paths() == ["missing.wav"]`、`sample_index == NO_SAMPLE`、`render_track` 该键**不建声部**（`sfz_active_voices == 0`、逐位 0） |
+//! | ⭐ S25 | ⭐ **摊平表字节读数拆开 ＋ 预算判据**（本单新增；`sfz-needs-8` 的"可判"那一半） | **字节**：区域表 ＝ `size_of::<PreparedRegion>() × 3`、PCM ＝ `4 × 2400`、路径文本 ＝ `10`、合计 ＝ `memory_bytes()`；预算 `N = SfzByteBudget::for_layout(3, 2400, 10)` ⇒ 三项**各自** `bytes ≤ N`、超出读数**全 0**；⭐ **内置反向腿**：三个维度**各自** −1 字节 ⇒ 该维度恰好报 **1** 字节超出、`is_within() == false` |
+//! | ⭐ S26 | ⭐ **超预算会怎样：引擎只报数**（本单新增；`sfz-needs-8` 的口径） | 真的超预算的臂（预算按"只给 `a.wav`"声明 ⇒ PCM 超 **7680** 字节）：`prepare_with_samples` 仍 **`Ok`**（⛔ 不报错）、读数逐项（区域表 0 ／ PCM 7680 ／ 路径 0）；⭐ **摊平结果逐位不变**：`budget_overrun` 前后的 `byte_usage`／`sample_count`／`pcm_bytes`／`region_count`／**渲染输出**全部相同（零预算 ⇒ 三项全报超，仍不改表） |
+//! | ⭐ S27 | ⭐ **1 GiB 级音色库今天可判**（本单新增；`sfz-needs-8` 的动机） | ⛔ **不真的分配 1 GiB**：`SfzByteUsage::new(区域表, 1 GiB, 路径)` 对 `SfzByteBudget::new(区域表, 512 MiB, 路径)` 报出**恰好** `536 870 912` 字节超出（`is_within() == false`）；反向腿：上界给**恰好 1 GiB** ⇒ **通过**（闭区间，⛔ 判据不是"永远红"） |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -57,8 +60,8 @@ mod support;
 use support::{MixSpec, NoteSpec, note_project, render, render_snapshot, tuned_project};
 use yeban_engine::drums::DrumsParams;
 use yeban_engine::sfz_instrument::{
-    InMemorySample, PendingSfz, PreparedRegion, PreparedSfz, SFZ_VOICES_PER_TRACK, SfzInstrument,
-    SfzPlan, SfzVoice, SfzVoicePool,
+    InMemorySample, PendingSfz, PreparedRegion, PreparedSfz, SFZ_VOICES_PER_TRACK, SfzByteBudget,
+    SfzByteUsage, SfzInstrument, SfzPlan, SfzVoice, SfzVoicePool,
 };
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, ScheduledNote, SynthEngine, track_gain, velocity_gain};
@@ -2327,5 +2330,411 @@ fn s24_a_missing_sample_is_still_silent_and_counted_through_the_new_wiring() {
         sibling_engine.sfz_active_voices(engine_track).unwrap_or(0) > 0
             && sibling_out.iter().any(|s| *s != 0.0),
         "反向对照：缺的**只有** `missing.wav` ⇒ key=60 那条区域必须照常出声"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S25／S26／S27：摊平表的**字节预算**（任务单 `#84`；`sfz-needs-8` 的"可判"那一半）
+//
+// 背景（`sfz-needs-8` 逐字）："摊平表无字节预算／无流式（样本 PCM 整段 clone）"。
+// ⭐ 本片要的**不是**流式，而是"让它可判"：一条**读数**（拆成区域表／PCM／路径文本）
+// ＋ 一条**判据**（`bytes ≤ N`，`N` 的来源可复算）＋ 一条**超预算口径**
+// （引擎只报数、控制侧决定 —— 理由见 `PreparedSfz::budget_overrun`）。
+// ---------------------------------------------------------------------------
+
+/// ⭐ 字节预算夹具的**声明形状**（这三个常量就是"这份音色库有多大"的声明）。
+///
+/// * `BUDGET_FIXTURE_REGIONS = 3` 条区域；
+/// * 去重后 **2** 份样本：`a.wav` 480 帧、`b.wav` 1920 帧 ⇒ PCM ＝ `(480 + 1920) × 4`；
+/// * 路径文本 ＝ `"a.wav" + "b.wav"`。
+const BUDGET_FIXTURE_REGIONS: usize = 3;
+const BUDGET_FIXTURE_A_FRAMES: usize = 480;
+const BUDGET_FIXTURE_B_FRAMES: usize = 1920;
+const BUDGET_FIXTURE_PCM_FRAMES: usize = BUDGET_FIXTURE_A_FRAMES + BUDGET_FIXTURE_B_FRAMES;
+const BUDGET_FIXTURE_PATH_BYTES: usize = "a.wav".len() + "b.wav".len();
+
+/// ⭐ 字节预算夹具的 SFZ 文本：两条区域引 `a.wav`（不同键）、一条引 `b.wav`
+/// ⇒ **去重后 2 份样本**（去重口径本身由 S12 钉住，这里只借它造出"样本 < 区域"的形状）。
+const BUDGET_FIXTURE_SFZ: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
+                                  <region> sample=a.wav key=62 pitch_keycenter=62\n\
+                                  <region> sample=b.wav key=64 pitch_keycenter=64\n";
+
+/// ⭐ 建一份**声明形状已知**的摊平表（S25／S26／S27 共用）。
+fn budget_fixture_plan() -> PreparedSfz {
+    let instrument = SfzInstrument::load(BUDGET_FIXTURE_SFZ.to_owned(), &Default::default())
+        .expect("字节预算夹具的 SFZ 必须解析成功");
+    PreparedSfz::prepare_with_samples(
+        &instrument,
+        &[
+            (
+                "a.wav".to_owned(),
+                InMemorySample::sine(440.0, 48_000.0, BUDGET_FIXTURE_A_FRAMES),
+            ),
+            (
+                "b.wav".to_owned(),
+                InMemorySample::sine(660.0, 48_000.0, BUDGET_FIXTURE_B_FRAMES),
+            ),
+        ],
+        48_000.0,
+    )
+    .expect("字节预算夹具的摊平必须成功")
+}
+
+/// ⭐ S25（本单新增；`sfz-needs-8`）：摊平表的字节占用**拆成三项** ＋ 一条**可判的预算口径**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 一份 [`PreparedSfz`]（[`budget_fixture_plan`]：3 条区域、2 份样本、2400 帧 PCM）；
+/// 单位 ＝ **字节**。三项拆开：
+///
+/// | 项 | 换算 | 夹具读数（字节） |
+/// | :--- | :--- | ---: |
+/// | 区域表 | `size_of::<PreparedRegion>() × 3` | 由 `size_of` 现读（⛔ 不手抄） |
+/// | PCM | `4 × 2400` | **9 600** |
+/// | 路径文本 | `"a.wav" + "b.wav"` | **10** |
+///
+/// # `N` 的来源（⭐ 为什么是这个数）
+///
+/// `N = SfzByteBudget::for_layout(3, 2400, 10)`：由夹具**自己声明的形状**按
+/// [`PreparedSfz::region_bytes`] ／ [`PreparedSfz::pcm_bytes`] ／ [`PreparedSfz::path_bytes`]
+/// 那**同一份**换算反推 ⇒ 上界**恰好**是该形状的精确字节数。于是判据 "`bytes ≤ N`"
+/// 钉住的是"**读数里没有隐藏的第四份开销**"（例如 `Vec` 的容量余量、或有人往
+/// `PreparedRegion` 里加了大字段却没进读数），⛔ **不是**"某个数比某个拍出来的阈值小"。
+/// 口径与 `yeban-decode` 的 `PcmBudget::for_layout` 同一形状（那边由 `pcm_bytes_for`
+/// 一条换算给出，可被判据复算）。
+///
+/// # 判定量
+///
+/// * 三项**各自的精确读数**（⛔ 不是 `> 0` 那种地板断言）＋ 合计 ＝ 既有 `memory_bytes()`；
+/// * `budget_overrun(&N).is_within() == true`（三项超出读数全 0）；
+/// * ⭐ **内置反向腿（⛔ 让"绿"不能是空的）**：三个维度**各自** −1 字节 ⇒
+///   该维度恰好报 **1** 字节超出、`is_within() == false`、且**只有**一个维度非 0。
+#[test]
+fn s25_the_flat_table_byte_reading_is_split_and_has_a_judgeable_budget() {
+    let plan = budget_fixture_plan();
+    let region_struct = core::mem::size_of::<PreparedRegion>();
+    assert_eq!(
+        plan.region_count(),
+        BUDGET_FIXTURE_REGIONS,
+        "⭐ 声明与夹具必须一致（否则下面的 N 就不是这份夹具的形状）"
+    );
+
+    // ① 现状读数（拆开）：区域表 ／ PCM ／ 路径文本 ／ 合计。
+    let usage = plan.byte_usage();
+    println!(
+        "[engine-sfz/S25] 摊平表字节读数（拆开）：区域表 = size_of::<PreparedRegion>() {region_struct} B × \
+         {BUDGET_FIXTURE_REGIONS} = {}；PCM = 4 B × {BUDGET_FIXTURE_PCM_FRAMES} = {}；\
+         路径文本 = {}；合计 = {}（＝ memory_bytes() = {}）",
+        usage.region_bytes(),
+        usage.pcm_bytes(),
+        usage.path_bytes(),
+        usage.total_bytes(),
+        plan.memory_bytes(),
+    );
+
+    // ② 三项各自的**精确**读数（⛔ 不是地板断言）。
+    assert_eq!(
+        usage.region_bytes(),
+        region_struct * BUDGET_FIXTURE_REGIONS,
+        "区域表 ＝ 结构体字节数 × 区域数"
+    );
+    assert_eq!(
+        usage.pcm_bytes(),
+        4 * BUDGET_FIXTURE_PCM_FRAMES,
+        "PCM ＝ 4 B × 2400 帧（去重后 2 份样本）"
+    );
+    assert_eq!(
+        usage.pcm_bytes(),
+        plan.pcm_bytes(),
+        "⭐ 与既有 `pcm_bytes()` **同一份求和**（⛔ 不是第二套口径）"
+    );
+    assert_eq!(
+        usage.path_bytes(),
+        BUDGET_FIXTURE_PATH_BYTES,
+        "路径文本 ＝ `\"a.wav\" + \"b.wav\"`（⛔ 不含 `String` 容量余量）"
+    );
+    // ③ 合计 ＝ 既有 `memory_bytes()`（⛔ 不是第二套口径）。
+    assert_eq!(
+        usage.total_bytes(),
+        plan.memory_bytes(),
+        "⭐ 三项之和必须**逐字节等于**既有的 memory_bytes()"
+    );
+    assert_eq!(
+        usage.total_bytes(),
+        usage.region_bytes() + usage.pcm_bytes() + usage.path_bytes(),
+        "合计 ＝ 三项之和"
+    );
+
+    // ④ 预算判据：bytes ≤ N（N 由夹具声明的形状反推；闭区间 ⇒ 恰好等于上界通过）。
+    let declared = SfzByteBudget::for_layout(
+        BUDGET_FIXTURE_REGIONS,
+        BUDGET_FIXTURE_PCM_FRAMES,
+        BUDGET_FIXTURE_PATH_BYTES,
+    );
+    println!(
+        "[engine-sfz/S25] 预算 N = for_layout({BUDGET_FIXTURE_REGIONS}, {BUDGET_FIXTURE_PCM_FRAMES}, \
+         {BUDGET_FIXTURE_PATH_BYTES}) = {{区域表 ≤ {}，PCM ≤ {}，路径 ≤ {}}}；\
+         实际 = {{区域表 {}，PCM {}，路径 {}}} ⇒ 超出 = {{区域表 {}，PCM {}，路径 {}}}（is_within = {}）",
+        declared.max_region_bytes(),
+        declared.max_pcm_bytes(),
+        declared.max_path_bytes(),
+        usage.region_bytes(),
+        usage.pcm_bytes(),
+        usage.path_bytes(),
+        plan.budget_overrun(&declared).region_bytes(),
+        plan.budget_overrun(&declared).pcm_bytes(),
+        plan.budget_overrun(&declared).path_bytes(),
+        plan.budget_overrun(&declared).is_within(),
+    );
+    assert_eq!(
+        declared.max_region_bytes(),
+        usage.region_bytes(),
+        "N 的区域表那一维必须恰好等于夹具的实际区域表字节数（同一份换算）"
+    );
+    assert_eq!(
+        declared.max_pcm_bytes(),
+        usage.pcm_bytes(),
+        "N 的 PCM 那一维必须恰好等于夹具的实际 PCM 字节数"
+    );
+    assert_eq!(
+        declared.max_path_bytes(),
+        usage.path_bytes(),
+        "N 的路径那一维必须恰好等于夹具的实际路径文本字节数"
+    );
+    let within = plan.budget_overrun(&declared);
+    assert!(
+        within.is_within(),
+        "⭐ 夹具的实际占用必须 ≤ 声明形状反推的 N（超出读数 = {within:?}）"
+    );
+    assert_eq!(within.total_bytes(), 0, "在预算内 ⇒ 三项超出量全 0");
+
+    // ⑤ ⭐ 内置反向腿：每个维度各 −1 字节 ⇒ 该维度恰好报 1 字节超出（⛔ 绿不是空的）。
+    let tight = [
+        (
+            "区域表",
+            SfzByteBudget::new(
+                declared.max_region_bytes() - 1,
+                declared.max_pcm_bytes(),
+                declared.max_path_bytes(),
+            ),
+        ),
+        (
+            "PCM",
+            SfzByteBudget::new(
+                declared.max_region_bytes(),
+                declared.max_pcm_bytes() - 1,
+                declared.max_path_bytes(),
+            ),
+        ),
+        (
+            "路径文本",
+            SfzByteBudget::new(
+                declared.max_region_bytes(),
+                declared.max_pcm_bytes(),
+                declared.max_path_bytes() - 1,
+            ),
+        ),
+    ];
+    for (name, budget) in tight {
+        let over = plan.budget_overrun(&budget);
+        let nonzero = [over.region_bytes(), over.pcm_bytes(), over.path_bytes()]
+            .iter()
+            .filter(|bytes| **bytes != 0)
+            .count();
+        println!(
+            "[engine-sfz/S25] 反向腿（{name} −1 B）⇒ 超出 = {{区域表 {}，PCM {}，路径 {}}}、\
+             is_within = {}",
+            over.region_bytes(),
+            over.pcm_bytes(),
+            over.path_bytes(),
+            over.is_within(),
+        );
+        assert!(
+            !over.is_within(),
+            "⭐ {name} 预算 −1 字节 ⇒ 判据必须红（实得 {over:?}）"
+        );
+        assert_eq!(over.total_bytes(), 1, "⭐ {name}：恰好超出 1 字节");
+        assert_eq!(
+            nonzero, 1,
+            "⭐ {name}：**只有**该维度非 0（其余两项在预算内）"
+        );
+    }
+}
+
+/// ⭐ S26（本单新增；`sfz-needs-8`）：**超预算会怎样** —— 引擎**只报数**。
+///
+/// 构造一份**真的超预算**的表：同一份夹具（PCM 9 600 字节），但预算按"只给 `a.wav`
+/// 那一份"声明 ＝ `for_layout(3, 480, 10)` ⇒ PCM 超出 `9600 − 1920` ＝ **7 680** 字节。
+///
+/// # 三条腿（对应"超预算怎么办"的候选 ①②③）
+///
+/// 1. **⛔ 不报错**：`prepare_with_samples` 仍然返回 `Ok`（本测试能走到断言就是证据）；
+/// 2. **⛔ 不截断 / 不改摊平结果**：`budget_overrun` 前后 —— `byte_usage` ／ `sample_count`
+///    ／ `pcm_bytes` ／ `region_count` ／ **渲染输出**全部**相同**；
+///    ⭐ 零预算（`new(0, 0, 0)`）也**只**报数（三项全报超），表一个字不变；
+/// 3. **只报数**：读数**逐项**给出超出量（区域表 0 ／ PCM 7 680 ／ 路径 0）——
+///    于是"超了多少、超在哪一项"是机械可读的（归属裁决与三条理由见
+///    `PreparedSfz::budget_overrun`）。
+#[test]
+fn s26_over_budget_is_reported_not_refused() {
+    let plan = budget_fixture_plan();
+    let before = plan.byte_usage();
+    let before_samples = plan.sample_count();
+    let before_pcm = plan.pcm_bytes();
+    let before_regions = plan.region_count();
+
+    // 渲染参照：`budget_overrun` 不得改变任何渲染读数。
+    let render = |plan: &PreparedSfz| {
+        let mut out = vec![0.0f32; 512];
+        let written = plan.render_block_into(64, 100, &mut out);
+        (written, out)
+    };
+    let reference = render(&plan);
+
+    // ① 真的超预算：预算按"只给 `a.wav` 那一份"声明。
+    let only_a = SfzByteBudget::for_layout(
+        BUDGET_FIXTURE_REGIONS,
+        BUDGET_FIXTURE_A_FRAMES,
+        BUDGET_FIXTURE_PATH_BYTES,
+    );
+    let over = plan.budget_overrun(&only_a);
+    println!(
+        "[engine-sfz/S26] 超预算读数：N = for_layout({BUDGET_FIXTURE_REGIONS}, {BUDGET_FIXTURE_A_FRAMES}, \
+         {BUDGET_FIXTURE_PATH_BYTES}) ⇒ 超出 = {{区域表 {}，PCM {}，路径 {}}}、合计 {} 字节、is_within = {}；\
+         ⭐ prepare_with_samples 仍 Ok（⛔ 不报错），样本数 = {}、PCM = {} 字节、区域数 = {}",
+        over.region_bytes(),
+        over.pcm_bytes(),
+        over.path_bytes(),
+        over.total_bytes(),
+        over.is_within(),
+        plan.sample_count(),
+        plan.pcm_bytes(),
+        plan.region_count(),
+    );
+    assert!(
+        !over.is_within(),
+        "⭐ 这份夹具对「只给 `a.wav`」的预算必须**超**（否则本判据无话可说）"
+    );
+    assert_eq!(over.region_bytes(), 0, "区域表那一维仍在预算内");
+    assert_eq!(
+        over.pcm_bytes(),
+        4 * BUDGET_FIXTURE_B_FRAMES,
+        "⭐ PCM 恰好超出 `b.wav` 那一份（1920 帧 × 4 = 7680 字节）"
+    );
+    assert_eq!(over.path_bytes(), 0, "路径文本那一维仍在预算内");
+    assert_eq!(over.total_bytes(), 7_680, "合计超出 = 7680 字节");
+
+    // ② ⭐ 零预算：三项全报超 ⇒ 仍然**只报数**。
+    let zero = plan.budget_overrun(&SfzByteBudget::new(0, 0, 0));
+    println!(
+        "[engine-sfz/S26] 零预算读数：超出 = {{区域表 {}，PCM {}，路径 {}}}、合计 {} 字节（⭐ 仍不改表）",
+        zero.region_bytes(),
+        zero.pcm_bytes(),
+        zero.path_bytes(),
+        zero.total_bytes(),
+    );
+    assert!(!zero.is_within(), "零预算 ⇒ 必然超");
+    assert_eq!(
+        zero.region_bytes(),
+        before.region_bytes(),
+        "零预算 ⇒ 区域表超出量 ＝ 它的全部占用（⛔ 不是被截断后的值）"
+    );
+
+    // ③ ⛔ 摊平结果**逐位不变**（"只报数"的机械证据）。
+    let after = plan.byte_usage();
+    let rendered = render(&plan);
+    println!(
+        "[engine-sfz/S26] 摊平结果逐位不变：byte_usage {before:?} → {after:?}；\
+         sample_count {before_samples} → {}；pcm_bytes {before_pcm} → {}；region_count {before_regions} → {}；\
+         渲染 (写入 {}, 非零 {}) → (写入 {}, 非零 {})",
+        plan.sample_count(),
+        plan.pcm_bytes(),
+        plan.region_count(),
+        reference.0,
+        reference.1.iter().filter(|s| **s != 0.0).count(),
+        rendered.0,
+        rendered.1.iter().filter(|s| **s != 0.0).count(),
+    );
+    assert_eq!(after, before, "⭐ 预算判定不得改变字节读数");
+    assert_eq!(plan.sample_count(), before_samples, "⛔ 不丢样本");
+    assert_eq!(plan.pcm_bytes(), before_pcm, "⛔ 不裁 PCM");
+    assert_eq!(plan.region_count(), before_regions, "⛔ 不丢区域");
+    assert_eq!(rendered.0, reference.0, "⛔ 不改变写入帧数");
+    assert_eq!(
+        rendered.1, reference.1,
+        "⭐ 超预算判定之后，渲染输出必须**逐位相同**（只报数 ⇒ 表没被改）"
+    );
+    assert!(
+        rendered.1.iter().any(|sample| *sample != 0.0),
+        "⭐ 见证：这条渲染路径**真的出声**（⛔ 挡住「什么都没渲染」的假绿）"
+    );
+}
+
+/// ⭐ S27（本单新增；`sfz-needs-8` 的**动机**）："巨大音色库"这件事今天**可判**。
+///
+/// # 为什么要这条（逐字背景）
+///
+/// `sfz-needs-8` ＝ "摊平表无字节预算／无流式（样本 PCM 整段 clone）" ⇒ 1 GB PCM 的
+/// 音色库会被**整段读进内存并 clone 进摊平表**。本判据给出的是**那个库会不会被看出来**。
+///
+/// # 量什么（对象 ＋ 单位）
+///
+/// 对象 ＝ 一份**参数化**的 [`SfzByteUsage`]（128 条区域 ＋ **1 GiB** PCM ＋ 128 × 12 字节
+/// 路径文本）；单位 ＝ **字节**。⭐ 判定是**纯算术**（[`SfzByteUsage::overrun`]）⇒
+/// **⛔ 不需要真的分配 1 GiB**（那正是"可判"与"实现流式"的区别）。
+///
+/// # 判定量
+///
+/// * 对 **512 MiB** 的 PCM 上界：`pcm` 超出 **恰好** `1 GiB − 512 MiB` ＝ **536 870 912** 字节、
+///   `is_within() == false`、区域表与路径两维**为 0**；
+/// * ⭐ **反向腿**（闭区间）：上界给**恰好 1 GiB** ⇒ **通过**（⛔ 判据不是"永远红"）。
+#[test]
+fn s27_a_gib_scale_library_is_visible_to_the_budget() {
+    const GIB: usize = 1 << 30;
+    const HALF_GIB: usize = 1 << 29;
+    let region_bytes = core::mem::size_of::<PreparedRegion>() * 128;
+    let path_bytes = 128 * 12;
+    let usage = SfzByteUsage::new(region_bytes, GIB, path_bytes);
+    let budget = SfzByteBudget::new(region_bytes, HALF_GIB, path_bytes);
+    let over = usage.overrun(&budget);
+    println!(
+        "[engine-sfz/S27] 1 GiB 级 PCM（128 条区域）：读数 = {{区域表 {region_bytes}，PCM {GIB}，路径 {path_bytes}}}、\
+         预算 = {{区域表 {region_bytes}，PCM {HALF_GIB}，路径 {path_bytes}}} ⇒ \
+         超出 = {{区域表 {}，PCM {}，路径 {}}}、合计 {} 字节、is_within = {}",
+        over.region_bytes(),
+        over.pcm_bytes(),
+        over.path_bytes(),
+        over.total_bytes(),
+        over.is_within(),
+    );
+    assert_eq!(
+        usage.total_bytes(),
+        region_bytes + GIB + path_bytes,
+        "读数合计"
+    );
+    assert!(
+        !over.is_within(),
+        "⭐ 1 GiB PCM 对 512 MiB 的预算必须超（否则「巨大音色库不可判」）"
+    );
+    assert_eq!(
+        over.pcm_bytes(),
+        GIB - HALF_GIB,
+        "⭐ 恰好超出 512 MiB ＝ 536 870 912 字节"
+    );
+    assert_eq!(
+        over.total_bytes(),
+        536_870_912,
+        "合计超出 ＝ 536 870 912 字节"
+    );
+    assert_eq!(
+        (over.region_bytes(), over.path_bytes()),
+        (0, 0),
+        "区域表与路径两维在预算内（⇒ 超预算**指向** PCM 这一项）"
+    );
+    // 反向腿：闭区间 ⇒ 上界恰好等于占用时**通过**（⛔ 判据不是"永远红"）。
+    let exact = SfzByteBudget::new(region_bytes, GIB, path_bytes);
+    assert!(
+        usage.overrun(&exact).is_within(),
+        "⭐ 上界恰好等于占用时必须**通过**（闭区间，与 `PcmBudget` 同口径）"
     );
 }

@@ -125,6 +125,7 @@
 //! | [`PreparedSfz::prepare_with_samples`] | 控制侧构造 | 每区域**播自己**那份样本；同一路径**只 materialize 一次**；⭐ 缺样本 ⇒ **静音 ＋ 计数**（⛔ 不发明替代内容） |
 //! | [`PreparedSfz::prepare`] | 单样本**广播**（兼容重载，⛔ 未删） | 所有 `sample_index = 0`；⚠ **音色内容错**（各 region 播同一份）⇒ 读数 `sample_content=broadcast(1)` |
 //! | [`SfzPlan::prepare_with_samples`] | 快照投影 | 经 [`crate::snapshot::EngineSnapshot::with_sfz`] 注入 ⇒ **唯一**的公开绑定路径 |
+//! | ⭐ [`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`] | ⭐ **字节预算读数**（⭐ `needs-8` 的"可判"那一半） | 占用拆成**区域表 ／ PCM ／ 路径文本**三项（[`PreparedSfz::byte_usage`]），对**声明形状反推的上界** `N` 判 `bytes ≤ N`（[`SfzByteBudget::for_layout`]）⇒ ⛔ **只报数、不拒绝、不截断、不改摊平结果**（超预算口径与归属理由见 [`PreparedSfz::budget_overrun`]） |
 //! | ⭐ [`PendingSfz`] | 快照（⭐ 轻数据：只带路径） | ⭐ **模型 `TrackV3.sampler` → 快照的接线**：`from_project` 抄进 `sfz_pending` ⇒ 控制侧据此读盘／解码（引擎⛔ 不读盘）；`with_sfz` 摊平后**取代**它 |
 //!
 //! ⛔ **解码在控制侧**：引擎只接**已经解码**的 [`InMemorySample`]（⛔ 不引 `symphonia`/`rubato`）。
@@ -149,7 +150,7 @@
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
 //! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **步 3 只闭合了它的"多采样／每区域独立 PCM"那一半**；循环、`ampeg_*`、`off_mode`、`group`/`off_by` 仍完全未做（未闭合） |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
-//! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | `prepare_with_samples` 把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）；无上限、无流式、无共享（`Arc`）口径（未闭合） |
+//! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 
 use std::collections::BTreeMap;
 
@@ -604,6 +605,197 @@ impl PreparedSample {
     }
 }
 
+/// ✂️ **摊平表的字节预算**：三条**独立**上界（区域表 ／ PCM ／ 路径文本）。
+///
+/// ⭐ 本类型**只装上界**，⛔ 不装行为 —— 超过它**不会**拒绝、截断或改变摊平结果
+/// （超预算怎么办见 [`PreparedSfz::budget_overrun`] 的归属裁决）。
+///
+/// # 为什么是三条而不是一个总数
+///
+/// 摊平表的占用有三条**来源不同**的项（[`PreparedSfz::byte_usage`]）：
+///
+/// | 项 | 随什么增长 | 单独设界的理由 |
+/// | :--- | :--- | :--- |
+/// | 区域表 | 区域**条数**（每条 [`PreparedRegion`] 定长） | 它由 SFZ **文本**决定，与样本大小无关 |
+/// | PCM | 样本**帧数**（每帧一个 `f32`） | 它是"巨大音色库"的**唯一**放大器（整段 clone，`needs-8`） |
+/// | 路径文本 | 路径**字符串长度**（去重后每份一份） | 极小，但它是去重键的半身 ⇒ 单独留读数 |
+///
+/// 只给一个总数的话，"区域表悄悄长大"与"PCM 爆炸"在读数上**不可区分** ⇒
+/// 三条独立上界才能把超预算**指向**是哪一项（[`SfzBudgetOverrun`]）。
+///
+/// # `N`（上界）的来源：⛔ 不是拍出来的常数
+///
+/// 本 crate **不自带**任何"默认上限"：上界是**控制侧的输入**。两种给法：
+///
+/// * [`Self::for_layout`]（本单判据用的形状）：由**声明的形状**（区域数 ／ PCM 帧数 ／
+///   路径字节）按**同一份换算**反推 ⇒ "声明内的表一定进得来"是**构造上**成立的，
+///   ⛔ 不是靠调数字。口径与 `yeban-decode` 的 `PcmBudget::for_layout` 同一形状
+///   （那边的"为什么是这个数"由 `pcm_bytes_for` 一条换算给出 ⇒ 判据可以按同一条公式复算）。
+/// * [`Self::new`]：调用方直接给三条上界。⭐ 控制侧若要用**产品要求**推导的上限
+///   （如 `yeban-decode` 的 `PcmBudget::max_pcm_bytes`），把那个数**传进来**即可 ——
+///   ⛔ 本 crate **不复制**那份常数（一份事实一个来源）。
+///
+/// ⚠ 判定是**闭区间**：恰好等于上界**通过**（与 `PcmBudget` 同一条口径）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SfzByteBudget {
+    /// 区域表上界（字节）。
+    max_region_bytes: usize,
+    /// 全部样本 PCM 上界（字节；⛔ 不含路径文本）。
+    max_pcm_bytes: usize,
+    /// 全部样本路径文本上界（字节）。
+    max_path_bytes: usize,
+}
+
+impl SfzByteBudget {
+    /// 逐字段构造（控制侧给的任意上界）。
+    #[must_use]
+    pub const fn new(max_region_bytes: usize, max_pcm_bytes: usize, max_path_bytes: usize) -> Self {
+        Self {
+            max_region_bytes,
+            max_pcm_bytes,
+            max_path_bytes,
+        }
+    }
+
+    /// ⭐ 由**声明的形状**反推一个预算：`regions` 条区域 ＋ `pcm_frames` 帧单声道 `f32` PCM
+    /// ＋ `path_bytes` 字节路径文本。
+    ///
+    /// 换算就是 [`PreparedSfz::region_bytes`] ／ [`PreparedSfz::pcm_bytes`] ／
+    /// [`PreparedSfz::path_bytes`] 那三条**同一份**公式
+    /// （`size_of::<PreparedRegion>() × regions` ／ `size_of::<f32>() × frames` ／ 原样）⇒
+    /// 返回的预算**恰好**允许该形状；因此判据 "`bytes ≤ N`" 钉住的是
+    /// "**读数里没有隐藏的第四份开销**"（⛔ 不是"某个数比某个阈值小"）。
+    #[must_use]
+    pub const fn for_layout(regions: usize, pcm_frames: usize, path_bytes: usize) -> Self {
+        Self {
+            max_region_bytes: core::mem::size_of::<PreparedRegion>() * regions,
+            max_pcm_bytes: core::mem::size_of::<f32>() * pcm_frames,
+            max_path_bytes: path_bytes,
+        }
+    }
+
+    /// 区域表上界（字节）。
+    #[must_use]
+    pub const fn max_region_bytes(&self) -> usize {
+        self.max_region_bytes
+    }
+
+    /// 全部样本 PCM 上界（字节）。
+    #[must_use]
+    pub const fn max_pcm_bytes(&self) -> usize {
+        self.max_pcm_bytes
+    }
+
+    /// 全部样本路径文本上界（字节）。
+    #[must_use]
+    pub const fn max_path_bytes(&self) -> usize {
+        self.max_path_bytes
+    }
+}
+
+/// ✂️ 摊平表的**逐项字节读数**（[`PreparedSfz::byte_usage`]）：区域表 ／ PCM ／ 路径文本。
+///
+/// ⚠ 三项之和**逐字节等于** [`PreparedSfz::memory_bytes`]（**同一份求和**，
+/// ⛔ 不是第二套口径 —— 改这里的求和就等于改 `memory_bytes`，判据会立刻看出来）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SfzByteUsage {
+    region_bytes: usize,
+    pcm_bytes: usize,
+    path_bytes: usize,
+}
+
+impl SfzByteUsage {
+    /// 逐项构造（判据可用于"不真的分配那份 PCM"的纯算术场景）。
+    #[must_use]
+    pub const fn new(region_bytes: usize, pcm_bytes: usize, path_bytes: usize) -> Self {
+        Self {
+            region_bytes,
+            pcm_bytes,
+            path_bytes,
+        }
+    }
+
+    /// 区域表占用：`size_of::<PreparedRegion>() × 区域数`。
+    #[must_use]
+    pub const fn region_bytes(&self) -> usize {
+        self.region_bytes
+    }
+
+    /// 全部样本 PCM 占用（去重后）：`4 × 总帧数`。
+    #[must_use]
+    pub const fn pcm_bytes(&self) -> usize {
+        self.pcm_bytes
+    }
+
+    /// 全部样本**路径文本**占用（去重后）：`Σ path.len()`（⛔ 不含 `String` 容量余量）。
+    #[must_use]
+    pub const fn path_bytes(&self) -> usize {
+        self.path_bytes
+    }
+
+    /// 总占用字节数（三项之和；＝ [`PreparedSfz::memory_bytes`]）。
+    #[must_use]
+    pub const fn total_bytes(&self) -> usize {
+        self.region_bytes + self.pcm_bytes + self.path_bytes
+    }
+
+    /// ⭐ 对给定预算的**逐项超出量**（全 0 ⇒ 在预算内）。
+    ///
+    /// ⚠ 纯算术 ⇒ "1 GiB 级音色库会不会超"这件事**可以在不真的持有那 1 GiB 的前提下判定**
+    /// （判据 S27 就是这么做的）。
+    #[must_use]
+    pub const fn overrun(&self, budget: &SfzByteBudget) -> SfzBudgetOverrun {
+        SfzBudgetOverrun {
+            region_bytes: self.region_bytes.saturating_sub(budget.max_region_bytes),
+            pcm_bytes: self.pcm_bytes.saturating_sub(budget.max_pcm_bytes),
+            path_bytes: self.path_bytes.saturating_sub(budget.max_path_bytes),
+        }
+    }
+}
+
+/// ✂️ **超预算读数**：逐项**超出上界的字节数**（⭐ 这是引擎对"超预算"唯一给出的东西）。
+///
+/// 全 0 ⇒ 在预算内（[`Self::is_within`]）。⭐ 本类型只装**事实**，⛔ 不装决定 ——
+/// 归属裁决（"引擎只报数、控制侧决定"）见 [`PreparedSfz::budget_overrun`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SfzBudgetOverrun {
+    region_bytes: usize,
+    pcm_bytes: usize,
+    path_bytes: usize,
+}
+
+impl SfzBudgetOverrun {
+    /// 区域表超出量（字节）。
+    #[must_use]
+    pub const fn region_bytes(&self) -> usize {
+        self.region_bytes
+    }
+
+    /// PCM 超出量（字节）。
+    #[must_use]
+    pub const fn pcm_bytes(&self) -> usize {
+        self.pcm_bytes
+    }
+
+    /// 路径文本超出量（字节）。
+    #[must_use]
+    pub const fn path_bytes(&self) -> usize {
+        self.path_bytes
+    }
+
+    /// 三项超出量之和（字节）。
+    #[must_use]
+    pub const fn total_bytes(&self) -> usize {
+        self.region_bytes + self.pcm_bytes + self.path_bytes
+    }
+
+    /// ⭐ 是否**在预算内**（三项超出量全 0）＝ 预算判据 `bytes ≤ N`。
+    #[must_use]
+    pub const fn is_within(&self) -> bool {
+        self.total_bytes() == 0
+    }
+}
+
 impl PreparedSfz {
     /// **构造期**摊平（**单样本广播**）：把区域谓词、速率、增益与样本一次算好（⭐ 允许分配）。
     ///
@@ -714,17 +906,84 @@ impl PreparedSfz {
         })
     }
 
+    /// ⭐ **区域表**占用的字节数（`size_of::<PreparedRegion>() × 区域数`）。
+    ///
+    /// ⚠ 这是**结构本身**的字节数（⛔ 不含 `Vec` 的容量余量、⛔ 不含任何样本数据）：
+    /// [`PreparedRegion`] 是定长纯数据（两张掩码 ＋ 五张 `[f32; 128]` 表 ＋ 两个标量）
+    /// ⇒ "区域条数"这一维的开销是**可复算**的。
+    #[must_use]
+    pub fn region_bytes(&self) -> usize {
+        core::mem::size_of::<PreparedRegion>() * self.regions.len()
+    }
+
+    /// ⭐ **全部样本路径文本**占用的字节数（去重后 `Σ path.len()`）。
+    ///
+    /// ⚠ 只算 `len()`（⛔ 不含 `String` 的容量余量）；广播路径是空串 ⇒ 0。
+    #[must_use]
+    pub fn path_bytes(&self) -> usize {
+        self.samples
+            .iter()
+            .map(|sample| sample.path.len())
+            .sum::<usize>()
+    }
+
+    /// ⭐ **逐项字节读数**（区域表 ／ PCM ／ 路径文本）—— `needs-8` 的"现状拆开"读数。
+    ///
+    /// ⚠ 三项之和 ＝ [`Self::memory_bytes`]（同一份求和）。
+    #[must_use]
+    pub fn byte_usage(&self) -> SfzByteUsage {
+        SfzByteUsage {
+            region_bytes: self.region_bytes(),
+            pcm_bytes: self.pcm_bytes(),
+            path_bytes: self.path_bytes(),
+        }
+    }
+
     /// 摊平占用的**内存字节数**（读数用：区域表 ＋ 样本 PCM ＋ 样本路径文本）。
     ///
     /// ⚠ `path` 只算 `len()`（⛔ 不含 `String` 的容量余量）；广播路径是空串 ⇒ 0。
+    /// ⭐ 本读数就是 [`Self::byte_usage`] 三项之和（**同一份求和**：⛔ 不是第二套口径）。
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
-        core::mem::size_of::<PreparedRegion>() * self.regions.len()
-            + self
-                .samples
-                .iter()
-                .map(|sample| sample.pcm_bytes() + sample.path.len())
-                .sum::<usize>()
+        self.byte_usage().total_bytes()
+    }
+
+    /// ⭐⭐ **字节预算判据**（`needs-8` 的"可判"落地）：本摊平表对给定预算的**逐项超出读数**。
+    ///
+    /// 判定量 ＝ `bytes ≤ N`（**闭区间**）：[`SfzBudgetOverrun::is_within`] 为 `true` 当且仅当
+    /// 区域表 ／ PCM ／ 路径文本三项**各自**都在 [`SfzByteBudget`] 的上界内。
+    /// `N` 的来源见 [`SfzByteBudget`]（判据用 [`SfzByteBudget::for_layout`] 的"声明形状反推"）。
+    ///
+    /// # ⭐ 超预算怎么办 —— 归属裁决：**引擎只报数，调用方决定**
+    ///
+    /// 引擎侧对"超预算"的**唯一**动作是给出这份 [`SfzBudgetOverrun`]：
+    ///
+    /// * ⛔ **不报错**（`prepare` ／ `prepare_with_samples` 仍然返回 `Ok`）；
+    /// * ⛔ **不计数继续**（"计数"是 `needs-7` 那条**缺样本**的口径，本项**不新增**计数器）；
+    /// * ⛔ **不截断**：不丢样本、不丢区域、不改变任何渲染读数。
+    ///
+    /// 三条理由：
+    ///
+    /// 1. **在摊平里报错来得太晚**。调用 [`Self::prepare_with_samples`] 时，
+    ///    `provided_samples` 里那份已解码的 [`InMemorySample`] **已经在调用方手里**
+    ///    （本函数只是把 `pcm` 整段 clone 一份）⇒ 峰值内存在**调用之前**就已花掉一次。
+    ///    在摊平里报错 ⛔ **挡不住那个峰值**，只会把"载入成功但偏重"变成"载入失败"。
+    ///    ⇒ 真正能省内存的闸门必须落在**控制侧的解码之前**（那是 app 侧的事，本单⛔ 不动）。
+    /// 2. **归属先例**：台账 `R711`（`needs-7`）已裁决"**引擎出事实 ＋ 计数**、
+    ///    **产品决定交控制侧**"。字节预算是同一条分界线：引擎拥有"这张表占多少字节"这份
+    ///    **事实**，控制侧拥有"这个库值不值得载入 ／ 要不要提示用户 ／ 要不要不发出这一轨"
+    ///    这份**产品判断**。
+    /// 3. **⛔ 不动既有判据**：在 `prepare*` 里强制预算就必须改它们的形状
+    ///    （`Result` 变体 ／ 新参数）⇒ 既有调用点（[`SfzPlan::prepare`] ／
+    ///    [`SfzPlan::prepare_with_samples`] ／ `crates/yeban-app/src/sfz_load.rs` ／
+    ///    S11～S16）全部要动。本单明确⛔ 不改既有类型与签名 ⇒ 只加**新**读数与新判据。
+    ///
+    /// ⭐ 因此控制侧的正确用法：拿 [`Self::byte_usage`] ／ 本读数**自行**决定
+    /// （例如把 `yeban-decode` 的 `PcmBudget::max_pcm_bytes` 传进 [`SfzByteBudget::new`]，
+    /// 在解码之前或之后判）。
+    #[must_use]
+    pub fn budget_overrun(&self, budget: &SfzByteBudget) -> SfzBudgetOverrun {
+        self.byte_usage().overrun(budget)
     }
 
     /// 区域数（摊平后）。
@@ -1734,6 +1993,23 @@ impl SfzPlan {
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
         self.prepared.memory_bytes()
+    }
+
+    /// ⭐ **逐项字节读数**（转交 [`PreparedSfz::byte_usage`]：区域表 ／ PCM ／ 路径文本）。
+    ///
+    /// ⭐ 这是**控制侧**真正拿得到的读数形状（`SfzPlan` 才是公开的绑定入口）。
+    #[must_use]
+    pub fn byte_usage(&self) -> SfzByteUsage {
+        self.prepared.byte_usage()
+    }
+
+    /// ⭐ **字节预算判据**（转交 [`PreparedSfz::budget_overrun`]）。
+    ///
+    /// ⚠ 超预算**不会**让本 plan 失效：⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；
+    /// 归属裁决（"引擎只报数、控制侧决定"）与三条理由见 [`PreparedSfz::budget_overrun`]。
+    #[must_use]
+    pub fn budget_overrun(&self, budget: &SfzByteBudget) -> SfzBudgetOverrun {
+        self.prepared.budget_overrun(budget)
     }
 }
 
