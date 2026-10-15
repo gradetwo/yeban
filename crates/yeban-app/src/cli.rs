@@ -3614,8 +3614,26 @@ fn exported_wav_line(report: &crate::export_wav::WavExportReport, loaded: &Loade
             .iter()
             .flat_map(|(_, entry)| entry.missing_sample_paths.iter().map(String::as_str))
             .collect();
+        // ⭐ `#83`：读失败的**可判别**计数（not_found / unsupported / other）。
+        //    ⇒ FLAC／OGG 这类"格式不受支持"⛔ 不再与"文件不存在"混成同一个数。
+        let not_found: usize = report
+            .sfz_decoded
+            .iter()
+            .map(|(_, entry)| entry.unreadable_not_found_count())
+            .sum();
+        let unsupported: usize = report
+            .sfz_decoded
+            .iter()
+            .map(|(_, entry)| entry.unreadable_unsupported_format_count())
+            .sum();
+        let other: usize = report
+            .sfz_decoded
+            .iter()
+            .map(|(_, entry)| entry.unreadable_other_count())
+            .sum();
         format!(
-            " sfz(tracks={} regions={regions} samples={samples} silent={silent} missing={missing:?})",
+            " sfz(tracks={} regions={regions} samples={samples} silent={silent} missing={missing:?} \
+             unreadable(not_found={not_found},unsupported={unsupported},other={other}))",
             report.sfz_decoded.len()
         )
     };

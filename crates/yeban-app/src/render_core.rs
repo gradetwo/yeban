@@ -412,7 +412,10 @@ pub fn render_project_f32_with_plans(
 
 /// ⭐ 模型 SFZ 链条的**读数文案**（进 `source_label` ⇒ ⛔ 缺样本不静默）。
 ///
-/// 形态：`sfz(tracks=1 regions=4 samples=1 silent=1 missing=["missing.wav"])`。
+/// 形态：`sfz(tracks=1 regions=4 samples=1 silent=1 missing=["missing.wav"] unreadable(not_found=0,unsupported=0,other=0))`。
+/// ⭐ `unreadable(...)` 是任务单 `#83` 加的可判别计数：**文件不存在**与**格式不受支持**
+/// （FLAC／OGG）分开报 —— 否则用户会把"格式不支持"读成"缺文件"。
+/// ⚠ 逗号分隔、**无空格**（报告行按空格切词，⛔ 不引入第二种切法）。
 fn sfz_decode_label(decoded: &[(EntityId, crate::sfz_load::SfzDecodeReport)]) -> String {
     let regions: usize = decoded.iter().map(|(_, report)| report.regions).sum();
     let samples: usize = decoded
@@ -427,8 +430,22 @@ fn sfz_decode_label(decoded: &[(EntityId, crate::sfz_load::SfzDecodeReport)]) ->
         .iter()
         .flat_map(|(_, report)| report.missing_sample_paths.iter().map(String::as_str))
         .collect();
+    // ⭐ `#83`：读失败的**可判别**计数（not_found / unsupported / other）。
+    let not_found: usize = decoded
+        .iter()
+        .map(|(_, report)| report.unreadable_not_found_count())
+        .sum();
+    let unsupported: usize = decoded
+        .iter()
+        .map(|(_, report)| report.unreadable_unsupported_format_count())
+        .sum();
+    let other: usize = decoded
+        .iter()
+        .map(|(_, report)| report.unreadable_other_count())
+        .sum();
     format!(
-        "sfz(tracks={} regions={regions} samples={samples} silent={silent} missing={missing:?})",
+        "sfz(tracks={} regions={regions} samples={samples} silent={silent} missing={missing:?} \
+         unreadable(not_found={not_found},unsupported={unsupported},other={other}))",
         decoded.len()
     )
 }
