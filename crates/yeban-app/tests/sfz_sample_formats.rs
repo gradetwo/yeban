@@ -1,12 +1,17 @@
 //! 判据（任务单 `#83`）：**SFZ 样本的"格式面"在报告里可判别**。
 //!
-//! ## 本单的交接形态（勘察结论，见 `sfz_load` 模块文档 ①）
+//! ⭐ **任务单 `#85` 之后的更新（本文件的两条判据按第 241 条**合理改变**）**：
+//! 本仓**已有**的通用解码入口 `yeban-decode`（symphonia ＋ rubato）**已经接线**到
+//! `crates/yeban-app`（依赖边 ＋ `src/sfz_load.rs` 的按后缀分派）⇒ 从前"⛔ 非 PCM WAV
+//! ＝ 格式不受支持"这条口径**收窄**成"**解码器真的不认识**才算 `UnsupportedFormat`"。
+//! 因此本文件的期望在**两处**合理改变（逐条理由见各自判据的文档）：
 //!
-//! 本仓**已有**一份能解 FLAC／OGG 的解码入口 —— `yeban-decode`（symphonia ＋ rubato）。
-//! 但 `yeban-app` **没有**那条依赖边（全仓只有 `yeban-mcp` 依赖它）⇒ 接进 app 需要新增
-//! `crates/yeban-app/Cargo.toml` 一条边 ＋ 重生成 `Cargo.lock`（集成者独占）⇒ **本单不做**，
-//! 按任务单的**乙**口径交付：不改格式面，只把"读不到"从**一句无法判别的错误文案**
-//! 变成**结构化的可判别理由**（文件不存在 / 格式不受支持 / 文件在但读不动）。
+//! | 夹具 | `#83` 的期望 | `#85` 的期望 | 为什么 |
+//! | :--- | :--- | :--- | :--- |
+//! | `blob.xyz` | `UnsupportedFormat` | `UnsupportedFormat`（**不变**） | symphonia 探测器认不出这个容器 ⇒ 真的"格式不受支持" |
+//! | `fake.flac`（`fLaC` 魔数 ＋ 垃圾体） | `UnsupportedFormat` | **`Unreadable`** | 容器**认得**（FLAC），内容坏（STREAMINFO 的采样率越界）⇒ 是"读不动"，⛔ 不是"格式不受支持" |
+//!
+//! ⚠ 计数随之变：`unsupported` 2 ⇒ **1**、`other` 1 ⇒ **2**（`not_found` 恒为 1）。
 //!
 //! ## 判定量（每个数字都有单位）
 //!
@@ -14,8 +19,8 @@
 //! | :--- | :--- | :--- |
 //! | `fnv1a_64` | 一条导出的**交错 f32 样本**（逐位卷字节） | 无符号 64 位整数 |
 //! | `unreadable_not_found_count` | [`SfzDecodeReport`] 里理由 = "文件不存在"的样本 | 条 |
-//! | `unreadable_unsupported_format_count` | 理由 = "格式不受支持"（非 PCM／float WAV）的样本 | 条 |
-//! | `unreadable_other_count` | 以上都不是的读失败 | 条 |
+//! | `unreadable_unsupported_format_count` | 理由 = "格式不受支持"（解码器认不出容器／本构建未启用该编解码器）的样本 | 条 |
+//! | `unreadable_other_count` | 以上都不是的读失败（容器认得、内容坏） | 条 |
 //! | `silent_region_count` | 引擎口径：缺样本 ⇒ `NO_SAMPLE` 的区域数 | 区域数 |
 //!
 //! ## 判据清单
@@ -23,7 +28,7 @@
 //! | # | 判据 | 作用 |
 //! | :--- | :--- | :--- |
 //! | ① | `the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint` | **应绿的反向腿**：WAV 路径逐位不变 |
-//! | ② | `the_unreadable_reason_separates_missing_files_from_unsupported_formats` | **乙核心**：`.xyz`／FLAC 与"文件不存在"分得开 |
+//! | ② | `the_unreadable_reason_separates_missing_files_from_unsupported_formats` | **可判别性核心**：`.xyz`／损坏 FLAC 与"文件不存在"分得开 |
 //! | ③ | `the_export_report_line_carries_the_reason_counts` | 用户可见：导出报告行带可判别计数 |
 //!
 //! [`SfzDecodeReport`]: yeban_app::sfz_load::SfzDecodeReport
@@ -179,9 +184,12 @@ where
 /// * `nonzero > 0`（真的发声，不是"全零也算逐位相同"）；
 /// * `fnv1a_64(samples) == BASELINE_WAV_READ`（逐位；仅在测量平台上断言）。
 ///
-/// ⚠ **为什么本判据在"新增可判别理由"之后必须仍然绿**：本单只增加**读失败之后**的分类
-/// 信息，⛔ 一个字节都不碰 `read_plain_wav_mono_f32` 的调用与它的成功路径
-/// ⇒ 指纹必须**逐位不变**。它变红 = 改动了 WAV 路径（本单明确禁止）。
+/// ⚠ **为什么本判据必须仍然绿**（`#83` 增加可判别理由之后、`#85` 接线通用解码腿之后
+/// **两次**都成立）：`#83` 只增加**读失败之后**的分类信息；`#85` 只**新增**一条
+/// `非 wav/wave 后缀` 的解码腿 —— 两者都⛔ 一个字节都不碰 `read_plain_wav_mono_f32`
+/// 的调用与它的成功路径（`.wav` 后缀仍走 hound）。⇒ 指纹必须**逐位不变**
+/// （字面值 `0x0df478fa15264e79`，本单**逐字未改**）。
+/// 它变红 = 改动了 WAV 路径（本单明确禁止）。
 #[test]
 fn the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint() {
     let dir = scratch("wav-fingerprint");
@@ -256,19 +264,21 @@ fn write_five_region_sfz(dir: &Path, name: &str, samples: &[&str]) -> PathBuf {
 /// | `present.wav` | 合法 24-bit PCM WAV | （**读成功**） |
 /// | `nothere.wav` | **不存在** | [`SampleReadFailure::NotFound`] |
 /// | `blob.xyz` | 存在；内容是任意文本 | [`SampleReadFailure::UnsupportedFormat`] |
-/// | `fake.flac` | 存在；内容以 `fLaC` 开头（这就是真实音色库里的那一类） | [`SampleReadFailure::UnsupportedFormat`] |
+/// | `fake.flac` | 存在；内容以 `fLaC` 开头（这就是真实音色库里的那一类魔数）＋ 垃圾体 | ⭐ `#85` 起：[`SampleReadFailure::Unreadable`]（容器认得、内容坏） |
 /// | `broken.wav` | 存在；`RIFF…WAVE` 头 ＋ 垃圾体（**像 WAV 但读不动**） | [`SampleReadFailure::Unreadable`] |
 ///
 /// ## 判定量
 ///
-/// * 计数：`not_found == 1`、`unsupported == 2`、`other == 1`（单位：条）；
+/// * 计数：`not_found == 1`、`unsupported == 1`、`other == 2`（单位：条）——
+///   ⭐ `#85` 起 `.xyz` 是**唯一**的 `unsupported`，两份"像某种容器但内容坏"的
+///   （`fake.flac` ＋ `broken.wav`）都归 `Unreadable`；
 /// * 逐条：四条登记的 `reason` 与上表**逐行相同**（单位：理由枚举）；
 /// * `decoded_samples == 1`（`present.wav` 那一份**真的读了** ⇒ 不是"全都没读"）；
 /// * `silent_region_count == 4`（引擎口径：缺样本的区域数）；
 /// * 旧的字符串视图 `unreadable_samples` 仍是 4 条且每条点名自己的路径（⛔ 不因本单消失）。
 ///
-/// ⚠ **红/绿怎么读**：若把分类退化成"读不到就只有一种理由"，下面的 `unsupported == 2`
-/// 与逐条 `reason` 断言立刻红 —— 这正是本单要挡住的那件事（"缺样本"读起来像一个数）。
+/// ⚠ **红/绿怎么读**：若把分类退化成"读不到就只有一种理由"，下面的 `unsupported == 1`
+/// 与逐条 `reason` 断言立刻红 —— 这正是 `#83` 要挡住的那件事（"缺样本"读起来像一个数）。
 #[test]
 fn the_unreadable_reason_separates_missing_files_from_unsupported_formats() {
     let dir = scratch("reasons");
@@ -336,8 +346,10 @@ fn the_unreadable_reason_separates_missing_files_from_unsupported_formats() {
     );
     assert_eq!(
         reason_of("fake.flac"),
-        Some(SampleReadFailure::UnsupportedFormat),
-        "⭐ FLAC ⇒ 必须是 `UnsupportedFormat`（⛔ 不是「缺文件」）"
+        Some(SampleReadFailure::Unreadable),
+        "⭐ `#85` 起：FLAC **容器认得**（`fLaC` 魔数）但 STREAMINFO 的采样率越界 ⇒ 是\
+         **内容**问题（`Unreadable`），⛔ 不再是「格式不受支持」（那是 `#83` 的乙口径，\
+         当时 app 没有 `yeban-decode` 依赖边、任何非 WAV 都读不到）"
     );
     assert_eq!(
         reason_of("broken.wav"),
@@ -349,10 +361,14 @@ fn the_unreadable_reason_separates_missing_files_from_unsupported_formats() {
     assert_eq!(report.unreadable_not_found_count(), 1, "文件不存在 1 条");
     assert_eq!(
         report.unreadable_unsupported_format_count(),
-        2,
-        "格式不受支持 2 条（`.xyz` ＋ FLAC 魔数）"
+        1,
+        "格式不受支持 1 条（只剩 `.xyz`；`fake.flac` 已归 `Unreadable`）"
     );
-    assert_eq!(report.unreadable_other_count(), 1, "读不动 1 条");
+    assert_eq!(
+        report.unreadable_other_count(),
+        2,
+        "读不动 2 条（`fake.flac` ＋ `broken.wav`）"
+    );
 
     // ---- 引擎口径 ＋ 旧视图：缺样本的区域数不变；字符串登记不因本单消失 ----
     assert_eq!(
@@ -383,15 +399,20 @@ fn the_unreadable_reason_separates_missing_files_from_unsupported_formats() {
     assert!(
         report
             .summary()
-            .contains("unreadable_kind(not_found=1,unsupported=2,other=1)"),
-        "摘要里必须带可判别计数：{}",
+            .contains("unreadable_kind(not_found=1,unsupported=1,other=2)"),
+        "摘要里必须带可判别计数（⭐ `#85` 起 `unsupported` 只剩 `.xyz`）：{}",
         report.summary()
     );
     assert!(
         SampleReadFailure::UnsupportedFormat
             .to_string()
-            .contains("FLAC"),
-        "`UnsupportedFormat` 的文案必须点名 FLAC／OGG（用户要能读懂「为什么」）"
+            .contains("FLAC")
+            && SampleReadFailure::UnsupportedFormat
+                .to_string()
+                .contains("OGG"),
+        "`UnsupportedFormat` 的文案必须点名 FLAC／OGG 已被支持（用户要能读懂\
+         「为什么这一条还算不受支持」）：{}",
+        SampleReadFailure::UnsupportedFormat
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -403,11 +424,13 @@ fn the_unreadable_reason_separates_missing_files_from_unsupported_formats() {
 /// ## 夹具
 ///
 /// 工程那条 MIDI 轨的 `sampler` 指向一份 SFZ：第 0 个音高 → 合法 `present.wav`，
-/// 其余音高 → **FLAC 魔数** `fake.flac`（去重后 `referenced_sample_paths` 恰好 2 条）。
+/// 其余音高 → **损坏的 FLAC** `fake.flac`（`fLaC` 魔数 ＋ 垃圾体；去重后
+/// `referenced_sample_paths` 恰好 2 条）。
 ///
 /// ## 判定量
 ///
-/// * `source_label` 含 `unreadable(not_found=0,unsupported=1,other=0)`（判据：子串存在）；
+/// * `source_label` 含 `unreadable(not_found=0,unsupported=0,other=1)`（判据：子串存在）
+///   —— ⭐ `#85` 起损坏的 FLAC 落 **`other`（`Unreadable`）**，不再是 `unsupported`；
 /// * `silent_region_count == 音高数 − 1`、`nonzero > 0`（有样本的那条**照常发声**）。
 #[test]
 fn the_export_report_line_carries_the_reason_counts() {
@@ -431,7 +454,7 @@ fn the_export_report_line_carries_the_reason_counts() {
     bind_sampler(&mut project, lead, &sfz);
 
     let out = render_project_f32_with_assets(&project, float_options(), None, &[])
-        .expect("格式不受支持的样本**不是**错误（区域静音 ＋ 计数）");
+        .expect("读不到的样本**不是**错误（区域静音 ＋ 计数）");
     println!(
         "[app-sfz-formats/label] source_label={} nonzero={} peak={:.9}",
         out.source_label,
@@ -441,8 +464,9 @@ fn the_export_report_line_carries_the_reason_counts() {
 
     assert!(
         out.source_label
-            .contains("unreadable(not_found=0,unsupported=1,other=0)"),
-        "⭐ 导出报告行必须带可判别计数（FLAC ⇒ unsupported=1，⛔ 不是 not_found）：{}",
+            .contains("unreadable(not_found=0,unsupported=0,other=1)"),
+        "⭐ 导出报告行必须带可判别计数（⭐ `#85` 起：损坏的 FLAC ⇒ other=1，\
+         因为它**认得容器**、只是读不动；⛔ 不再是 unsupported、更不是 not_found）：{}",
         out.source_label
     );
     let (_, report) = &out.sfz_decoded[0];

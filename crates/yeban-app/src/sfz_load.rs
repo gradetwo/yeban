@@ -39,42 +39,53 @@
 //!
 //! ## ⚠ 三条诚实登记（⛔ 不假装）
 //!
-//! 1. **样本文件会被真读**：`sample=` 指到的文件经 [`read_sample_file`]（→
-//!    `yeban_render::wav::read_plain_wav_mono_f32`）解码成单声道 `f32`，报告行里写出
-//!    `file(<path> frames=… rate=…)`。⚠ 两条**仍然成立**的限制：只支持该读取器能读的 PCM WAV；
-//!    读不到时**如实回退**到内存正弦 [`InMemorySample::sine`] 并把原因写进来源文案
+//! 1. **样本文件会被真读**：`sample=` 指到的文件经 [`read_sample_file`] 解码成单声道 `f32`
+//!    （⭐ 任务单 `#85` 起按**后缀分派**：WAV 走 `yeban_render::wav::read_plain_wav_mono_f32`，
+//!    其余走 `yeban_decode::decode_path` —— 见下面的 ④），报告行里写出
+//!    `file(<path> frames=… rate=…)`。⚠ 仍然成立的两条限制：**WAV 那条腿**只吃 `hound`
+//!    能读的 PCM／float WAV（16/24-bit 整数、32-bit 浮点）；任何一条腿读不到时都**如实回退**
+//!    到内存正弦 [`InMemorySample::sine`] 并把原因写进来源文案
 //!    （探测那一条 [`probe_note_energy`] 本身就用内存正弦 —— 它不解析 `sample=`）。
-//!    ⭐ **本条的"读不到"自任务单 `#83` 起是可判别的**：见下面的 ④。
+//!    ⭐ **"读不到"自任务单 `#83` 起是可判别的**：见下面的 ④。
 //! 2. **红线 7**：`render_note_into` **每次调用都解析 ⇒ 分配** ⇒ 只能**离线/控制侧**调用，
 //!    ⛔ 绝不可在音频回调里调用（与 `arm_from_snapshot` 同一条边）。
 //! 3. **已接到导出/录音路径**：`--sfz` ＋ `--export-wav` / `--record-wav` 时，SFZ 音色经
 //!    [`SfzTrackSource`] 进入音源链（报告里的 `wired_to_export=yes`）。单独给 `--sfz` 时仍是
 //!    `wired_to_export=false` —— 那是"**没请求**导出/录音"，⛔ 不是"没接线"。
 //!
-//! ## ⭐ ④ **非 PCM-WAV 样本**（⭐ FLAC／OGG）：不支持 —— **但理由可判别**（任务单 `#83`）
+//! ## ⭐ ④ **非 PCM-WAV 样本**（⭐ FLAC／OGG）：**已接线**（任务单 `#85` ⇒ 收窄 `#83` 的乙口径）
 //!
-//! ⚠ **结论（勘察，⛔ 不假装支持）**：今天的格式面**只有** `read_plain_wav_mono_f32` 能读的
-//! **PCM／float WAV**。一份 `sample=` 指向 **FLAC／OGG** 的音色 ⇒ 本层读不到 ⇒
-//! 按**缺样本**处理（引擎口径：该区域 `NO_SAMPLE` ⇒ **静音 ＋ 计数**，见 [`decode_sfz_plan`]）。
+//! ⭐ **接线后的格式面**（按**后缀**分派，见 [`decode_sample_classified`]）：
 //!
-//! ⭐ 而"**为什么**读不到"现在**分得开**：每一条读失败都带 [`SampleReadFailure`]
-//! （[`SampleReadFailure::NotFound`] ＝ 文件不存在／[`SampleReadFailure::UnsupportedFormat`]
-//! ＝ 格式不受支持 ⇒ **FLAC／OGG 落这一档**／[`SampleReadFailure::Unreadable`] ＝ 文件在但读不动），
-//! 并计入 [`SfzDecodeReport::unreadable_not_found_count`] 等**计数**（报告行里也写出
-//! `unreadable_kind(...)`）⇒ ⛔ 不再与"文件不存在"混成同一句。
+//! | `sample=` 后缀 | 解码器 | 口径 |
+//! | :--- | :--- | :--- |
+//! | `.wav` / `.wave`（大小写不敏感） | `yeban_render::wav::read_plain_wav_mono_f32`（hound） | **逐位与接线前相同** —— 那条腿一个字节都没动 |
+//! | **其余**（`.flac` / `.ogg` / …） | `yeban_decode::decode_path`（symphonia：wav／ogg／flac／vorbis／adpcm） | ⭐ **显式折单声道**（取声道 0，与 hound 那条腿**同一口径**） |
 //!
-//! ⭐ **为什么不直接接上解码**：本仓**已有**能解 FLAC／OGG 的入口 —— `yeban-decode`
-//! （`symphonia` ＋ `rubato`，公开面 `decode_path` ⇒ `DecodedAsset::samples() -> &[f32]`）。
-//! 但 `yeban-app` **没有**那条依赖边（全仓只有 `yeban-mcp` 依赖它）⇒ 接线要在
-//! `crates/yeban-app/Cargo.toml` 新增一条**工作区内部**依赖边并重生成 `Cargo.lock`，
-//! 它给 `-e normal` 的依赖图带来 **+22 个包**（`symphonia` ＋ 9 个 `symphonia-*`、
-//! `rubato` ＋ 10 个 `rubato` 依赖、`yeban-decode` 自己）。
-//! ⚠ 依赖图与 `Cargo.lock` 由**集成者独占**（`AGENTS.md` §5.6）⇒ 本单**停手报批**，
-//! ⛔ 不擅自加。
+//! ⚠ **口径差（⛔ 别踩）**：`DecodedAsset::samples()` 是**交织**多声道，而 hound 那条腿按
+//! `step_by(channels)` 取**声道 0** ⇒ 新腿必须做**同一件事**，⛔ 不能把交织数据当单声道
+//! （否则立体声样本会以 2× 长度、交替声道进入引擎）。两条腿因此对**同一份 PCM** 给出
+//! **逐位相同**的单声道 `f32`（端到端判据见 `tests/sfz_flac_ogg.rs`）。
+//!
+//! ⚠ **采样率不匹配**：`DecodedAsset::sample_rate()` 与工程采样率不同时**不重采样** ——
+//! 它原样进 [`InMemorySample::sample_hz`]，由引擎既有的 `RenderRates::new(sample_hz, engine_hz)`
+//! 在**播放速率**上换算（WAV 那条腿从来就是这个口径，⛔ 本单不新造第二条）。理由与
+//! "为什么不接 rubato"见 [`decode_sample_classified`]。
+//!
+//! ⭐ **`#83` 的 `UnsupportedFormat` 因此收窄**：从前"⛔ 不是 PCM WAV"＝ `UnsupportedFormat`；
+//! 现在只有**解码器真的不认识**（symphonia 探测失败 / 本构建没启用那个编解码器）才算。
+//! 一份**损坏的 FLAC**（`fLaC` 魔数 ＋ 垃圾体）现在归 [`SampleReadFailure::Unreadable`] ——
+//! 那是"文件在、也像那种容器，但读不动"，与"格式不受支持"是**两回事**。
+//!
+//! ⚠ **依赖边**：本单由**人类批文**（"加 `yeban-decode`"）在
+//! `crates/yeban-app/Cargo.toml` 新增一条**工作区内部**边，并重生成
+//! `docs/ledger/dependency-licenses.md`。⛔ 没有引入任何新的第三方包
+//! （`symphonia`／`rubato` 早由 `yeban-mcp` 那条边进了 `Cargo.lock`）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use yeban_decode::{DecodeError, DecodeOptions, decode_path};
 use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
@@ -88,7 +99,7 @@ use yeban_sfz::parser::ParseLimits;
 /// | 读数 | 对象 | 单位 |
 /// | :--- | :--- | :--- |
 /// | `sfz_text_reads` | **本线程**对 SFZ 文本文件发起的 `read_to_string` | 次 |
-/// | `sample_decodes` | **本线程**对 `sample=` 指向的 PCM WAV 发起的解码尝试 | 次 |
+/// | `sample_decodes` | **本线程**对 `sample=` 指向的样本（两条解码腿：WAV 走 hound／其余走 `yeban_decode`）发起的解码尝试 | 次 |
 ///
 /// ⚠ 计的是**发起次数**（失败也算一次：读盘动作已经发生），⛔ 不是"成功次数"。
 ///
@@ -116,7 +127,7 @@ pub mod read_probe {
     pub struct SfzReadCounts {
         /// SFZ 文本文件的读盘尝试次数。
         pub sfz_text_reads: u64,
-        /// 样本（PCM WAV）的解码尝试次数。
+        /// 样本（WAV 走 hound；其余走 `yeban_decode`，任务单 `#85`）的解码尝试次数。
         pub sample_decodes: u64,
     }
 
@@ -175,7 +186,7 @@ pub enum SfzLoadError {
     Read(String),
     /// SFZ 文本非法（语法/超限）—— 引擎原样透出的裁决。
     Parse(String),
-    /// 样本文件读取/解码失败（本仓只支持 `read_plain_wav` 能读的 PCM WAV）。
+    /// 样本文件读取/解码失败（⭐ 任务单 `#85` 起格式面 = PCM／float WAV **＋ FLAC／OGG**）。
     ///
     /// ⭐ 需要区分"文件不存在 / 格式不受支持 / 文件在但读不动"时走 [`decode_sfz_plan`]：
     /// 它把同一次失败同时填进 [`SfzDecodeReport::unreadable_sample_reasons`]。
@@ -332,9 +343,10 @@ pub fn probe_note_energy(
     })
 }
 
-/// 把一个 PCM WAV 读成 [`InMemorySample`]（**只支持 `read_plain_wav` 能读的格式**）。
+/// 把一个 SFZ 样本读成 [`InMemorySample`]（⭐ 任务单 `#85` 起支持 **FLAC／OGG**）。
 ///
 /// 多声道样本取**声道 0**（本仓的 SFZ 播放按单声道叠加；⛔ 不自己发明下混规则，文档写明）。
+/// **两条解码腿用同一口径**：WAV 走 `hound`（既有路径，逐位不变），其余走 `yeban_decode`。
 ///
 /// # Errors
 ///
@@ -346,18 +358,61 @@ pub fn read_sample_file(path: &Path) -> Result<(InMemorySample, u64, String), Sf
     decode_sample_classified(path).map_err(|failure| SfzLoadError::Sample(failure.detail))
 }
 
-/// [`read_sample_file`] 的实现体：成功路径与它**逐位相同**，失败时**带上**可判别理由。
+/// [`read_sample_file`] 的实现体：**按后缀分派**两条解码腿，失败时**带上**可判别理由。
 ///
-/// ⚠ 读盘计数（任务单 `#80`）在**这里**自增 ⇒ 两条入口（[`read_sample_file`] 与
-/// [`decode_sfz_plan`]）各调一次都恰好记**一次**，与接线前**逐次相同**（⛔ 不多不少）。
+/// ## 分派（任务单 `#85`；⛔ 唯一判据是**文件后缀**）
+///
+/// | 后缀 | 腿 | 依据 |
+/// | :--- | :--- | :--- |
+/// | `wav` / `wave`（大小写不敏感） | [`decode_with_hound`] | ⭐ **保持既有 WAV 路径逐位不变**（`BASELINE_WAV_READ` 的指纹就是它） |
+/// | **其余**（含 `.flac` / `.ogg` / 未知 / 无后缀） | [`decode_with_yeban_decode`] | 通用入口：symphonia 按**内容**探测容器 |
+///
+/// ⚠ **为什么按后缀而不是按内容嗅探**：内容嗅探会为 `.wav` 增加一次读盘/探测，并且
+/// "哪个读取器先认领"变成一条隐含规则；按后缀分派让"WAV 走老腿"这条**可判据的**承诺
+/// 逐字成立（既有判据 `sfz_sample_formats::the_wav_sample_path_is_bit_identical_...` 断言
+/// 的正是它）。代价如实登记：**无后缀／冷门后缀的 WAV** 现在走通用腿（symphonia 也解 WAV，
+/// 结果同口径），`.wav` 但 hound 读不动的位深（32-bit 整数）**仍然读不动**（⛔ 不被新腿救回）。
+///
+/// ## 采样率（任务单 `#85` 第 4 条：**不重采样**）
+///
+/// 两条腿都**原样上报文件自己的采样率**（[`InMemorySample::sample_hz`]），由引擎既有的
+/// `RenderRates::new(source.sample_hz, engine_hz)` 在**播放速率**上换算。
+/// ⛔ 本层**不**调 `rubato` —— 那会把"引擎已经处理好的事"做成第二条换算，
+/// 且 WAV 那条腿从来就是这个口径（44.1 kHz 样本在 48 kHz 工程里一直靠播放速率换算）。
+///
+/// ⚠ 读盘计数（任务单 `#80`）在**这里**自增：**两条腿都会先经过它** ⇒ 两条入口
+/// （[`read_sample_file`] 与 [`decode_sfz_plan`]）各调一次都恰好记**一次**，与接线前**逐次相同**
+/// （⛔ 不多不少；⛔ 也没有因为分派而多记一次）。
 fn decode_sample_classified(
     path: &Path,
 ) -> Result<(InMemorySample, u64, String), UnreadableSample> {
     read_probe::note_sample_decode();
-    // ⭐ **共享实现**（`yeban-render`；MCP 线把它唯一化了）与本地那份**逐行同口径**：
-    // `Float32` 直用、`Int16`/`Int24` 除 `full_scale_max().max(1)`、`step_by(channels)` 取单声道，
-    // 且它的 `describe` 文案与本函数原来**一字不差**（`file(<path> frames=… rate=…)`）。
-    // ⇒ 适配只做**形状转换**（`InMemorySample` ＋ `u64` 帧数），⛔ 不隐藏任何语义差异。
+    if is_wav_suffix(path) {
+        decode_with_hound(path)
+    } else {
+        decode_with_yeban_decode(path)
+    }
+}
+
+/// 后缀是不是**既有 hound 路径**的那一族（`wav` / `wave`，大小写不敏感）。
+///
+/// ⚠ 只决定**走哪条腿**，⛔ 不决定成功与否：腿自己失败时按 [`classify_sample_failure`] /
+/// [`classify_decode_failure`] 分类。
+fn is_wav_suffix(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("wav") || extension.eq_ignore_ascii_case("wave")
+        })
+}
+
+/// **WAV 腿**（⛔ 逐字保留接线前的实现，任务单 `#79`／`#83`）。
+///
+/// ⭐ **共享实现**（`yeban-render`；MCP 线把它唯一化了）与本地那份**逐行同口径**：
+/// `Float32` 直用、`Int16`/`Int24` 除 `full_scale_max().max(1)`、`step_by(channels)` 取单声道，
+/// 且它的 `describe` 文案与本函数原来**一字不差**（`file(<path> frames=… rate=…)`）。
+/// ⇒ 适配只做**形状转换**（`InMemorySample` ＋ `u64` 帧数），⛔ 不隐藏任何语义差异。
+fn decode_with_hound(path: &Path) -> Result<(InMemorySample, u64, String), UnreadableSample> {
     match yeban_render::wav::read_plain_wav_mono_f32(path) {
         Ok((pcm, sample_rate, describe)) => {
             let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
@@ -384,6 +439,60 @@ fn decode_sample_classified(
     }
 }
 
+/// ⭐ **通用解码腿**（任务单 `#85`）：`yeban_decode::decode_path` ⇒ 显式折单声道。
+///
+/// ## 折单声道（⚠ 本函数存在的**唯一**理由）
+///
+/// [`yeban_decode::DecodedAsset::samples`] 是**交织**样本（`frames × channels`），
+/// 而本仓 SFZ 播放的口径是**单声道声道 0**（与 [`decode_with_hound`] 的
+/// `step_by(channels)` 一字不差）⇒ 这里按**同一个** `step_by(channels)` 取声道 0。
+/// ⛔ 若直接交出交织缓冲，立体声样本会以 2× 长度、左右交替进入引擎（判据
+/// `sfz_flac_ogg::a_stereo_flac_is_folded_to_channel_zero` 会红）。
+///
+/// ## 与 WAV 腿的语义对齐
+///
+/// * `sample_hz` ← [`yeban_decode::DecodedAsset::sample_rate`]（原样，⛔ 不重采样）；
+/// * `describe` ← 同一形状 `file(<path> frames=<折后帧数> rate=<文件采样率>)`；
+/// * 帧数 ← 折单声道**之后**的长度（= 每声道帧数，与 WAV 腿的 `samples.len()` 同义）。
+fn decode_with_yeban_decode(
+    path: &Path,
+) -> Result<(InMemorySample, u64, String), UnreadableSample> {
+    match decode_path(path, &DecodeOptions::default()) {
+        Ok(asset) => {
+            // `decode_path` 保证 `channels >= 1`（0 声道的布局在闸门处就被拒），
+            // `max(1)` 只是让"除零"在这条路径上不可能发生。
+            let channels = usize::from(asset.channels().max(1));
+            let pcm: Vec<f32> = asset.samples().iter().step_by(channels).copied().collect();
+            let sample_rate = asset.sample_rate();
+            let describe = format!(
+                "file({} frames={} rate={})",
+                path.display(),
+                pcm.len(),
+                sample_rate
+            );
+            let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
+            Ok((
+                InMemorySample {
+                    pcm,
+                    sample_hz: sample_rate as f32,
+                },
+                frames,
+                describe,
+            ))
+        }
+        Err(error) => {
+            let reason = classify_decode_failure(path, &error);
+            Err(UnreadableSample {
+                path: path.display().to_string(),
+                reason,
+                // ⚠ 与 WAV 腿**同一个形状**（`` `<path>`: <读取器原文> ``）⇒
+                // `UnreadableSample::row` / `message` 不需要第二条格式化。
+                detail: format!("`{}`: {error}", path.display()),
+            })
+        }
+    }
+}
+
 /// ⭐ 一份**读不到的样本**为什么读不到（任务单 `#83` 的**乙**口径：可判别，⛔ 不再只是一句
 /// 混在一起的错误文案）。
 ///
@@ -393,16 +502,28 @@ fn decode_sample_classified(
 pub enum SampleReadFailure {
     /// **文件不存在**：`sample=` 解析出来的路径在盘上没有（资源没随 SFZ 分发，或路径写错）。
     NotFound,
-    /// **格式不受支持**：文件在，但**不是本入口能读的 PCM／float WAV**。
+    /// **格式不受支持**：文件在，但**两条解码腿都不认识它**。
     ///
-    /// ⭐ 这是"SFZ 用了 **FLAC／OGG**"时的读数。本仓**已有**能解它们的入口
-    /// （`yeban-decode`：`symphonia` ＋ `rubato`），但 `yeban-app` **没有**那条依赖边
-    /// （全仓只有 `yeban-mcp` 依赖它）⇒ 接线要新增 `Cargo.toml` 边 ＋ 重生成 `Cargo.lock`
-    /// （集成者独占）⇒ **本单未接线**（任务单 `#83` 的乙）。
-    /// 本档也涵盖"是 RIFF/WAVE 但位深不受支持"（如 32-bit 整数）。
+    /// ⭐ **本档自任务单 `#85` 起收窄**（`#83` 的乙口径 ⇒ 甲口径）：
+    ///
+    /// | 情形 | `#83`（接线前） | `#85`（接线后） |
+    /// | :--- | :--- | :--- |
+    /// | `.flac` / `.ogg` 的**真文件** | `UnsupportedFormat` | **读成功**（⛔ 不再落这一档） |
+    /// | 解码器**认不出**的容器（如 `.xyz` 文本） | `UnsupportedFormat` | `UnsupportedFormat` |
+    /// | 本构建**没启用**那个编解码器 | `UnsupportedFormat` | `UnsupportedFormat` |
+    /// | 是 RIFF/WAVE 但位深不受支持（如 32-bit 整数） | `UnsupportedFormat` | `UnsupportedFormat` |
+    ///
+    /// ⚠ **为什么收窄是对的**：`UnsupportedFormat` 的语义是"**这个格式**不受支持"，
+    /// 而 FLAC／OGG 现在**受支持** ⇒ 再把它们记成"格式不受支持"就是一条**假读数**
+    /// （用户会据此去转格式，而真正的问题是别的）。反过来，一份**损坏的 FLAC**
+    /// （`fLaC` 魔数 ＋ 垃圾体）落 [`SampleReadFailure::Unreadable`] —— 容器认得、内容坏，
+    /// 与"格式不支持"分得开，正是 `#83` 建立可判别性时要的那个区分。
     UnsupportedFormat,
-    /// **文件在、也像 WAV，但读不动**：截断／容器字段非法（声道或采样率为 0）／样本越界／
-    /// 其它 I/O 失败。
+    /// **文件在、容器也（可能）认得，但读不动**：截断／容器字段非法（声道或采样率为 0）／
+    /// 样本越界／坏帧／声明时长与实际不符／其它 I/O 失败。
+    ///
+    /// ⚠ 对**通用腿**（`yeban_decode`）而言，本档还涵盖"像某种容器但内容坏"——
+    /// 例如 `fLaC` 魔数 ＋ 垃圾体（见上表）。
     Unreadable,
 }
 
@@ -412,11 +533,12 @@ impl core::fmt::Display for SampleReadFailure {
             Self::NotFound => write!(formatter, "文件不存在"),
             Self::UnsupportedFormat => write!(
                 formatter,
-                "格式不受支持（本入口只读 PCM／float WAV；FLAC／OGG 等需 `yeban-decode`，app 未接线）"
+                "格式不受支持（本入口读 PCM／float WAV 与 FLAC／OGG；这条读失败是解码器\
+                 认不出容器，或本构建没启用那个编解码器）"
             ),
             Self::Unreadable => write!(
                 formatter,
-                "文件在、但读取/解析失败（截断／字段非法／样本越界／I/O）"
+                "文件在、但读取/解析失败（截断／字段非法／样本越界／坏帧／I/O）"
             ),
         }
     }
@@ -429,7 +551,8 @@ pub struct UnreadableSample {
     pub path: String,
     /// ⭐ 可判别理由（[`SampleReadFailure`]）。
     pub reason: SampleReadFailure,
-    /// 读取器原文：`SfzLoadError::Sample` 的**负载**（形如 `` `<path>`: <wav 错误> ``）。
+    /// 读取器原文：`SfzLoadError::Sample` 的**负载**（形如 `` `<path>`: <读取器错误> ``；
+    /// WAV 腿是 `WavError`，通用腿（`#85`）是 `DecodeError`）。
     pub detail: String,
 }
 
@@ -466,7 +589,11 @@ fn looks_like_wav_family(path: &Path) -> bool {
     riff && wave
 }
 
-/// ⭐ 给一份**读不到的样本**分类（任务单 `#83`）。
+/// ⭐ 给一份**读不到的 WAV 样本**分类（任务单 `#83`；⛔ 只服务 `wav` / `wave` 那条腿）。
+///
+/// ⚠ 任务单 `#85` 之后，本函数**只**由 [`decode_with_hound`] 调用；非 WAV 后缀走
+/// [`classify_decode_failure`]。两条腿共用同一个 [`SampleReadFailure`] 词表
+/// （⇒ 报告里的 `unreadable_kind(...)` 计数对两条腿**同一口径**）。
 ///
 /// 顺序：① 盘上有没有这个路径 ⇒ [`SampleReadFailure::NotFound`]；
 /// ② 读取器的错误种类 ＋ 文件头是不是 WAV 家族 ⇒ 格式面 / 内容面。
@@ -484,6 +611,35 @@ pub fn classify_sample_failure(path: &Path, error: &WavError) -> SampleReadFailu
         WavError::Hound(_) | WavError::FormatMismatch { .. } | WavError::RejectedFormat { .. } => {
             SampleReadFailure::Unreadable
         }
+    }
+}
+
+/// ⭐ 给一份**读不到的通用腿样本**分类（任务单 `#85`）。
+///
+/// ## 三档怎么分（⛔ 不是"非 WAV 就不支持"）
+///
+/// | `DecodeError` | 档 | 为什么 |
+/// | :--- | :--- | :--- |
+/// | [`DecodeError::UnsupportedFormat`] | [`SampleReadFailure::UnsupportedFormat`] | 探测器**认不出容器** ⇒ 真的是格式问题（`.xyz` 落这里） |
+/// | [`DecodeError::UnsupportedCodec`] | [`SampleReadFailure::UnsupportedFormat`] | 容器认得，但**本构建没启用**那个编解码器 ⇒ 对用户同样是"格式不受支持" |
+/// | [`DecodeError::Io`] 且 `kind == NotFound` | [`SampleReadFailure::NotFound`] | 竞态下文件在 `metadata` 之后消失 ⇒ 仍是"不存在"，⛔ 不冒充"读不动" |
+/// | 其余（畸形／无音轨／缺编解码参数／空流／超预算／重采样…） | [`SampleReadFailure::Unreadable`] | 文件在、内容坏 ⇒ 与"格式不受支持"分得开 |
+///
+/// ⚠ 顺序与 [`classify_sample_failure`] **同款**：先判盘上有没有（`metadata`），
+/// 再判错误种类 —— 两条腿因此对"文件不存在"给出**同一个**读数。
+#[must_use]
+pub fn classify_decode_failure(path: &Path, error: &DecodeError) -> SampleReadFailure {
+    if std::fs::metadata(path).is_err() {
+        return SampleReadFailure::NotFound;
+    }
+    match error {
+        DecodeError::UnsupportedFormat | DecodeError::UnsupportedCodec { .. } => {
+            SampleReadFailure::UnsupportedFormat
+        }
+        DecodeError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            SampleReadFailure::NotFound
+        }
+        _ => SampleReadFailure::Unreadable,
     }
 }
 
@@ -751,7 +907,7 @@ pub fn arm_pending_sfz(
 /// 每个音符在**第一次需要时整段渲染一次**（`SfzInstrument::render_note_into`）到自己的 scratch，
 /// 之后按块把该块对应的窗口**叠加**进 `out` ⇒ 音符可以跨块延续，且每条音符只解析渲染一次。
 /// 样本数据：用 [`SfzTrackSource::new_from_sfz_path`] 构造时逐音符真读 `sample=` 指向的
-/// PCM WAV；读不到（或用 [`SfzTrackSource::new`]）才用**共享的一份内存正弦**
+/// PCM WAV／FLAC／OGG；读不到（或用 [`SfzTrackSource::new`]）才用**共享的一份内存正弦**
 /// （[`InMemorySample::sine`]）。
 ///
 /// ## ⚠ 红线 7
@@ -847,7 +1003,7 @@ impl SfzTrackSource {
 
     /// 与 [`Self::new`] 相同，但**按 SFZ 文件路径解析每条音符的区域样本**（`sample=` 真读文件）。
     ///
-    /// ⚠ 读不到（不存在／截断／非 PCM WAV）⇒ **如实回退**到内存正弦，并把原因写进来源文案
+    /// ⚠ 读不到（不存在／截断／格式不受支持）⇒ **如实回退**到内存正弦，并把原因写进来源文案
     /// （⛔ 不假装读到了文件）。⚠ 红线 7：读文件与解析都发生在**构造期**（离线/控制侧）。
     #[must_use]
     pub fn new_from_sfz_path(
