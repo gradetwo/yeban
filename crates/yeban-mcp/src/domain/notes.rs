@@ -994,6 +994,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_DEVICE_BYPASSED_KIND,
     SET_CLIP_PLACEMENT_MUTED_KIND,
     SET_TRACK_COLOR_KIND,
+    SET_CLIP_PLACEMENT_DURATION_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1610,6 +1611,32 @@ pub const SET_TRACK_COLOR_FIELDS: [&str; 3] = [
     "kind",
     SET_TRACK_COLOR_TRACK_FIELD,
     SET_TRACK_COLOR_COLOR_FIELD,
+];
+
+/// `ops[].kind` 的**设置摆放长度**形态名（写 [`Op::SetClipPlacementDuration`]）。
+pub const SET_CLIP_PLACEMENT_DURATION_KIND: &str = "setClipPlacementDuration";
+
+/// 设置摆放长度形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
+pub const SET_CLIP_PLACEMENT_DURATION_TRACK_FIELD: &str = "trackId";
+
+/// 设置摆放长度形态的**目标摆放**字段名（`ops[].placementId`，必填，ULID）。
+pub const SET_CLIP_PLACEMENT_DURATION_PLACEMENT_FIELD: &str = "placementId";
+
+/// 设置摆放长度形态的**长度**字段名（`ops[].durationTicks`，**必填**，非零整数）。
+///
+/// ⚠ 按第 200 条：⭐ 本形态是**单字段设值**、⛔ 不是合并式 patch ⇒ ⭐ **必填**，
+/// 且 **`null` ⛔ 不适用**（`u64` 不可空）⇒ ⭐ **缺键／非数／非整数一律响亮拒绝**、
+/// ⛔ **不做真假值强转**（⭐ 与 `setTrackMute`／`setDeviceBypassed` 同一纪律）。
+/// ⚠ **必须 ≥ 1**：⭐ 模型 `ClipPlacement::validate` 对 `0` 报 `ZeroDuration`
+/// ⇒ ⭐ 本层⛔ 不自造第二条口径，⭐ 但会在**取值时**要求正整数（⭐ `0` 由模型层响亮拒绝）。
+pub const SET_CLIP_PLACEMENT_DURATION_DURATION_FIELD: &str = "durationTicks";
+
+/// 设置摆放长度形态允许出现的**全部**键（判别键 + 目标音轨 + 目标摆放 + 长度）。
+pub const SET_CLIP_PLACEMENT_DURATION_FIELDS: [&str; 4] = [
+    "kind",
+    SET_CLIP_PLACEMENT_DURATION_TRACK_FIELD,
+    SET_CLIP_PLACEMENT_DURATION_PLACEMENT_FIELD,
+    SET_CLIP_PLACEMENT_DURATION_DURATION_FIELD,
 ];
 
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
@@ -2447,6 +2474,29 @@ pub enum NoteOp {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 设置摆放**长度**（[`Op::SetClipPlacementDuration`]，寻址到一条音轨上的一个摆放）。
+    ///
+    /// ⭐ **本形态补上了什么**：⭐ 在它之前 `ClipPlacement::duration_ticks` **只在创建时**能给
+    /// ⇒ ⭐ **创建之后改不了长度**（修剪/拉伸都做不了）；⭐ `move` 形态**只写 `startTick`**。
+    /// ⚠ ⭐ **与 `loopConfig` 的关系（已核实）**：⭐ **校验层解耦**（`loopConfig` 用自己的
+    /// 绝对 tick 区间、⛔ 无"必须与长度一致"的校验）⇒ ⭐ 本形态⛔ 不动 `loopConfig`；
+    /// ⚠ 但 `clipLoopRepetition` 的登记口径是「启用中且区间**不是恰好 `0..durationTicks`**」
+    /// ⇒ ⭐ 改长度会改变那个判定（⭐ 那是**长度本来就该决定的量**）。
+    /// ⚠ **值域**：⭐ **必须 ≥ 1**（⭐ `0` 由模型 `ZeroDuration` 响亮拒绝）。
+    /// ⚠ **为何完全可逆**：⭐ 长度只是**播放窗口**；⭐ 音符住在片段内容里，⭐ 引擎的裁剪发生在
+    /// **快照构建期**、⛔ 不是在应用时截断 ⇒ ⭐ **改短再改长⛔ 不丢音符**。
+    /// 撤销载荷 `old_duration_ticks` 由 [`compile`] 从**当前文档**读 ⇒ ⛔ 不信调用方。
+    /// ⛔ 不碰 `clipId` / `startTick` / `muted` / `loopConfig`。
+    SetClipPlacementDuration {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份。
+        placement_id: EntityId,
+        /// 修改前的长度（tick，来自当前文档）。
+        old_duration_ticks: u64,
+        /// 修改后的长度（tick，必须 ≥ 1）。
+        new_duration_ticks: u64,
+    },
     /// 设置**音轨色标**（[`Op::SetTrackColor`]，寻址到一条音轨）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前 `TrackV3::color` **只能在建轨时给**
@@ -2950,6 +3000,7 @@ impl NoteOp {
             Self::SetDeviceBypassed { .. } => SET_DEVICE_BYPASSED_KIND,
             Self::SetClipPlacementMuted { .. } => SET_CLIP_PLACEMENT_MUTED_KIND,
             Self::SetTrackColor { .. } => SET_TRACK_COLOR_KIND,
+            Self::SetClipPlacementDuration { .. } => SET_CLIP_PLACEMENT_DURATION_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -3314,6 +3365,19 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 // ⚠ `old_bpm` 是**占位**：真值由 `compile` 从当前文档读（⛔ 不信调用方）。
                 old_bpm: 0.0,
                 new_bpm: read_required_finite_f64(object, SET_TEMPO_BPM_FIELD)?,
+            })
+        }
+        SET_CLIP_PLACEMENT_DURATION_KIND => {
+            reject_set_clip_placement_duration_fields(object)?;
+            Ok(NoteOp::SetClipPlacementDuration {
+                track_id: read_id(object, SET_CLIP_PLACEMENT_DURATION_TRACK_FIELD)?,
+                placement_id: read_id(object, SET_CLIP_PLACEMENT_DURATION_PLACEMENT_FIELD)?,
+                // ⚠ `old_duration_ticks` 是**占位**：真值由 `compile` 从当前文档读。
+                old_duration_ticks: 0,
+                new_duration_ticks: read_required_u64(
+                    object,
+                    SET_CLIP_PLACEMENT_DURATION_DURATION_FIELD,
+                )?,
             })
         }
         SET_TRACK_COLOR_KIND => {
@@ -3740,6 +3804,15 @@ fn reject_set_tempo_fields(object: &Map<String, Value>) -> Result<(), Fault> {
 }
 
 /// 拒绝 `setAuthor` 里 [`SET_AUTHOR_FIELDS`] 之外的键。
+fn reject_set_clip_placement_duration_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_CLIP_PLACEMENT_DURATION_FIELDS,
+        SET_CLIP_PLACEMENT_DURATION_KIND,
+        "unknownSetClipPlacementDurationField",
+    )
+}
+
 fn reject_set_track_color_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     reject_unknown_keys(
         object,
@@ -5083,6 +5156,30 @@ fn read_required_bool(object: &Map<String, Value>, field: &str) -> Result<bool, 
 }
 
 /// 读一个**必填**的无符号字节（缺省/负/超 `255`/非整数一律响亮失败）。
+/// 读一个**必填**的非负整数（`u64` 全域）。
+///
+/// ⚠ **为什么新增它**：⭐ 摆放长度是 `u64`，⭐ 而本文件此前只有 `read_required_u8`；
+/// ⚠ ⭐ **它复用既有的通用 reason 名 `valueMustBeUnsignedInteger`**（⭐ 与
+/// [`read_required_u8`] 同一条）⇒ ⭐ **⛔ 不新增 `reason` 名**、⭐ 故 `reason` 面的
+/// 规范形式（⭐ 冻结摘要 ＋ 两张黄金表）**不受影响**。
+/// ⚠ **只收 JSON 无符号整数**（⛔ 不做真假值强转：`"480"` 与 `480.0` 都不是整数）。
+fn read_required_u64(object: &Map<String, Value>, field: &str) -> Result<u64, Fault> {
+    let raw = object
+        .get(field)
+        .ok_or_else(|| missing(field, "非负整数"))?;
+    raw.as_u64().ok_or_else(|| {
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!("`{field}` 必须是非负整数, 实际收到 {raw}"),
+            serde_json::json!({
+                "field": field,
+                "reason": "valueMustBeUnsignedInteger",
+                "received": raw,
+            }),
+        )
+    })
+}
+
 fn read_required_u8(object: &Map<String, Value>, field: &str) -> Result<u8, Fault> {
     let raw = object
         .get(field)
@@ -6060,6 +6157,43 @@ pub fn compile(
                     track_id: *track_id,
                     old_name: track.name.clone(),
                     new_name: new_name.clone(),
+                }
+            }
+            NoteOp::SetClipPlacementDuration {
+                track_id,
+                placement_id,
+                new_duration_ticks,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，值比较）。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有摆放可以改长度"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "placementTrackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                let placement = track.clips.get(placement_id).ok_or_else(|| {
+                    Fault::domain_with_data(
+                        ErrorCode::ClipNotFound,
+                        format!("音轨 {track_id} 上没有身份 {placement_id} 的摆放"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "placementId": placement_id.to_canonical_string(),
+                            "reason": "clipPlacementNotFound",
+                            "hint": "摆放身份由 `yeban_query_project` 的 `tracks[].clips` 报出",
+                        }),
+                    )
+                })?;
+                Op::SetClipPlacementDuration {
+                    track_id: *track_id,
+                    placement_id: *placement_id,
+                    old_duration_ticks: placement.duration_ticks,
+                    new_duration_ticks: *new_duration_ticks,
                 }
             }
             NoteOp::SetTrackColor {
@@ -8482,7 +8616,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 34);
+        assert_eq!(OP_KINDS.len(), 35);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -13230,7 +13364,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 34] = [
+        let table: [(&str, serde_json::Value); 35] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -13325,6 +13459,14 @@ mod tests {
                 serde_json::json!({"trackId": ulid, "color": "#22AA88"}),
             ),
             (
+                "setClipPlacementDuration",
+                serde_json::json!({
+                    "trackId": ulid,
+                    "placementId": ulid,
+                    "durationTicks": 960,
+                }),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -13384,6 +13526,7 @@ mod tests {
                 "setDeviceBypassed",
                 "setClipPlacementMuted",
                 "setTrackColor",
+                "setClipPlacementDuration",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -13742,7 +13885,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 35] = [
+        let rows: [Row<'_>; 36] = [
             (
                 "add",
                 None,
@@ -13926,6 +14069,17 @@ mod tests {
                 "SetTrackColor",
             ),
             (
+                "setClipPlacementDuration",
+                None,
+                None,
+                serde_json::json!({
+                    "trackId": placement_track.to_canonical_string(),
+                    "placementId": placed.to_canonical_string(),
+                    "durationTicks": 960,
+                }),
+                "SetClipPlacementDuration",
+            ),
+            (
                 "setAutomationLane#patch",
                 None,
                 None,
@@ -14060,7 +14214,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 35);
+        assert_eq!(seen.len(), 36);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
