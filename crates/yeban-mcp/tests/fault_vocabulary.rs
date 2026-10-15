@@ -33,7 +33,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（字面 `json!` 第一层键，含顺序） | 136 | 610 | `d1fa25d15a8c54c823cc61c8da1536916aef9c409766de9d46366f7d9c15e745` |
+//! | `reason`（字面 `json!` 第一层键，含顺序） | 136 | 610 | `f29c084e995a93a738b7edf712f84de08c02aa85cd51e5f51b7441188add412d` |
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -1291,7 +1291,7 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 规范形式：**文件按路径排序** → 每个 `reason` 按**首次出现**顺序 →
 /// 每个键按**源码顺序**（只收字面 `json!` 对象第一层的键）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "d1fa25d15a8c54c823cc61c8da1536916aef9c409766de9d46366f7d9c15e745";
+    "f29c084e995a93a738b7edf712f84de08c02aa85cd51e5f51b7441188add412d";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
 pub const REASON_SURFACE_REASONS: usize = 136;

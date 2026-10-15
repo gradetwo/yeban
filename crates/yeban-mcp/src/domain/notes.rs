@@ -967,7 +967,7 @@ pub const TRACK_FLAG_FIELDS: [&str; 2] = ["kind", TRACK_FLAG_VALUE_FIELD];
 /// 取走**整条音轨**，`SET_PARAM_KIND` / `SET_TRACK_MUTE_KIND` / `SET_TRACK_SOLO_KIND`
 /// 写一条音轨的**属性** —— 它们不是一个层级（见 [`NoteOp::is_track_entity_level`]）。
 /// ⚠ 两个设备键同理自成一层（见 [`NoteOp::is_device_level`]）。
-pub const OP_KINDS: [&str; 30] = [
+pub const OP_KINDS: [&str; 31] = [
     "add",
     "delete",
     "move",
@@ -986,6 +986,7 @@ pub const OP_KINDS: [&str; 30] = [
     SET_AUTHOR_KIND,
     SET_TRACK_NAME_KIND,
     SET_CLIP_NAME_KIND,
+    SET_DEVICE_NAME_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
     SET_ROUTING_GAIN_KIND,
@@ -1515,6 +1516,26 @@ pub const SET_CLIP_NAME_NAME_FIELD: &str = "name";
 /// 设置片段名形态允许出现的**全部**键（判别键 + 两个必填）。
 pub const SET_CLIP_NAME_FIELDS: [&str; 3] =
     ["kind", SET_CLIP_NAME_CLIP_FIELD, SET_CLIP_NAME_NAME_FIELD];
+
+/// `ops[].kind` 的**设置设备名**形态名（写 [`Op::SetDeviceName`]）。
+pub const SET_DEVICE_NAME_KIND: &str = "setDeviceName";
+
+/// 设置设备名形态的**新名字**字段名（`ops[].name`，必填，字符串）。
+///
+/// ⚠ **⛔ 本层不发明**"非空"或长度上限：模型 [`Op::SetDeviceName`] 的校验**只有**
+/// "文档现值必须逐字等于 `old_name`"（陈旧载荷 ⇒ `OpStateMismatch`）⇒ 空串合法
+/// （"显式清空名字"），与 [`SET_CLIP_NAME_NAME_FIELD`] / [`SET_TRACK_NAME_NAME_FIELD`]
+/// 同一口径。⚠ 目标音轨与设备复用既有的 [`DEVICE_TRACK_FIELD`] / [`DEVICE_ID_FIELD`]，
+/// ⛔ 不另立一套拼写。
+pub const SET_DEVICE_NAME_NAME_FIELD: &str = "name";
+
+/// 设置设备名形态允许出现的**全部**键（判别键 + 目标音轨 + 目标设备 + 新名字）。
+pub const SET_DEVICE_NAME_FIELDS: [&str; 4] = [
+    "kind",
+    DEVICE_TRACK_FIELD,
+    DEVICE_ID_FIELD,
+    SET_DEVICE_NAME_NAME_FIELD,
+];
 
 /// `ops[].kind` 的**新增音轨**形态名（写 [`Op::AddTrack`]）。
 ///
@@ -2351,6 +2372,28 @@ pub enum NoteOp {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 设置**设备显示名**（[`Op::SetDeviceName`]，寻址到一条音轨上的一台设备）。
+    ///
+    /// ⭐ **本形态补上了什么**：⭐ 在它之前 `DeviceDefinition::name` **没有**任何字段级通路
+    /// ⇒ 改名只能"删 + 加"，⭐ 而 `TrackV3::devices` 是 `Vec` ⇒ 既有 `insertDevice` /
+    /// `removeDevice` 用 `slotIndex` 寻址、增删还会**移位下标**，⭐ 调用方得自己重算。
+    ///
+    /// ⚠ **寻址用 `trackId` + `deviceId`（两个身份）、⛔ 不用下标** —— 正是为了不受移位影响。
+    /// ⚠ **为何安全**：身份是 `DeviceDefinition::id` ⇒ 改 `name` ⛔ 不动身份/下标。
+    /// ⛔ 不碰 `kind` / `params` / `latencySamples`，⭐ **也⛔ 不碰 `bypassed`** ——
+    /// ⚠ **那是有意不做的**（它是**行为开关**，与 `soloSafe` 同类，⛔ 不属于"显示名"这一票）。
+    /// 撤销载荷 `old_name` 由 [`compile`] 从**当前文档**读（按 id 查设备）⇒ ⛔ 不信调用方。
+    /// ⚠ 设备缺失复用既有 `deviceNotFound` 形态（与 [`Self::RemoveDevice`] 同一条）。
+    SetDeviceName {
+        /// 目标音轨（设备的容器）。
+        track_id: EntityId,
+        /// 目标设备身份。
+        device_id: EntityId,
+        /// 修改前的显示名（来自当前文档）。
+        old_name: String,
+        /// 修改后的显示名。
+        new_name: String,
+    },
     /// ⚠ **目标不是音轨**：本形态不查顶层 `trackId`（与 `removeTrack` 同类，
     /// 见 [`Self::is_track_entity_level`]）。
     SetTransportConfig {
@@ -2759,6 +2802,7 @@ impl NoteOp {
             Self::SetAuthor { .. } => SET_AUTHOR_KIND,
             Self::SetTrackName { .. } => SET_TRACK_NAME_KIND,
             Self::SetClipName { .. } => SET_CLIP_NAME_KIND,
+            Self::SetDeviceName { .. } => SET_DEVICE_NAME_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
             Self::RemoveClip => REMOVE_CLIP_KIND,
@@ -3123,6 +3167,16 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 // ⚠ `old_bpm` 是**占位**：真值由 `compile` 从当前文档读（⛔ 不信调用方）。
                 old_bpm: 0.0,
                 new_bpm: read_required_finite_f64(object, SET_TEMPO_BPM_FIELD)?,
+            })
+        }
+        SET_DEVICE_NAME_KIND => {
+            reject_set_device_name_fields(object)?;
+            Ok(NoteOp::SetDeviceName {
+                track_id: read_id(object, DEVICE_TRACK_FIELD)?,
+                device_id: read_id(object, DEVICE_ID_FIELD)?,
+                // ⚠ `old_name` 是**占位**：真值由 `compile` 从当前文档读。
+                old_name: String::new(),
+                new_name: read_required_string(object, SET_DEVICE_NAME_NAME_FIELD)?,
             })
         }
         SET_CLIP_NAME_KIND => {
@@ -3495,6 +3549,15 @@ fn reject_set_tempo_fields(object: &Map<String, Value>) -> Result<(), Fault> {
 }
 
 /// 拒绝 `setAuthor` 里 [`SET_AUTHOR_FIELDS`] 之外的键。
+fn reject_set_device_name_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_DEVICE_NAME_FIELDS,
+        SET_DEVICE_NAME_KIND,
+        "unknownSetDeviceNameField",
+    )
+}
+
 fn reject_set_clip_name_fields(object: &Map<String, Value>) -> Result<(), Fault> {
     reject_unknown_keys(
         object,
@@ -5781,6 +5844,49 @@ pub fn compile(
                     new_name: new_name.clone(),
                 }
             }
+            NoteOp::SetDeviceName {
+                track_id,
+                device_id,
+                new_name,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型只查"陈旧载荷"这一条，逐字节比较）。
+                // ⚠ 与 [`Self::RemoveDevice`] **同一形状**：按 id 找、缺失报 `deviceNotFound`。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有设备链可以改名"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "deviceTrackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                let device = track
+                    .devices
+                    .iter()
+                    .find(|device| device.id == *device_id)
+                    .ok_or_else(|| {
+                        Fault::domain_with_data(
+                            ErrorCode::EntityNotFound,
+                            format!("音轨 {track_id} 的设备链里没有身份 {device_id} 的设备"),
+                            serde_json::json!({
+                                "trackId": track_id.to_canonical_string(),
+                                "deviceId": device_id.to_canonical_string(),
+                                "reason": "deviceNotFound",
+                                "hint": "`yeban_query_engine_state` 的 \
+                                         `tracks[].devices[]` 逐槽报出 `deviceId`",
+                            }),
+                        )
+                    })?;
+                Op::SetDeviceName {
+                    track_id: *track_id,
+                    device_id: *device_id,
+                    old_name: device.name.clone(),
+                    new_name: new_name.clone(),
+                }
+            }
             NoteOp::SetClipName {
                 clip_id, new_name, ..
             } => {
@@ -8054,7 +8160,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 30);
+        assert_eq!(OP_KINDS.len(), 31);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -12802,7 +12908,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 30] = [
+        let table: [(&str, serde_json::Value); 31] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -12869,6 +12975,14 @@ mod tests {
                 serde_json::json!({"clipId": ulid, "name": "A"}),
             ),
             (
+                "setDeviceName",
+                serde_json::json!({
+                    "trackId": ulid,
+                    "deviceId": ulid,
+                    "name": "A",
+                }),
+            ),
+            (
                 "setAutomationLane",
                 serde_json::json!({"lane": {"lane": "TrackVolume"}}),
             ),
@@ -12924,6 +13038,7 @@ mod tests {
                 "setAuthor",
                 "setTrackName",
                 "setClipName",
+                "setDeviceName",
                 "setAutomationLane",
                 "removeAutomationPoint",
                 "setRoutingGain",
@@ -13260,7 +13375,7 @@ mod tests {
 
         // (标签, 顶层 clip 覆盖, 本行预置的池条目, 载荷, 期望的 `Op` 变体名)
         #[allow(clippy::type_complexity)]
-        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 31] = [
+        let rows: [(&str, Option<EntityId>, Option<ClipPoolEntry>, Value, &str); 32] = [
             (
                 "add",
                 None,
@@ -13402,6 +13517,19 @@ mod tests {
                 "SetClipName",
             ),
             (
+                "setDeviceName",
+                None,
+                None,
+                serde_json::json!({
+                    // ⚠ 用**真实**设备链上的 id（`device` ＝ 某个带设备音轨的第 0 台），
+                    // ⛔ 不是 `device_track_id` —— compile 按 id 查设备、缺失即 `deviceNotFound`。
+                    "trackId": device_track_id.to_canonical_string(),
+                    "deviceId": device.to_canonical_string(),
+                    "name": "Renamed",
+                }),
+                "SetDeviceName",
+            ),
+            (
                 "setAutomationLane#patch",
                 None,
                 None,
@@ -13536,7 +13664,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 31);
+        assert_eq!(seen.len(), 32);
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
