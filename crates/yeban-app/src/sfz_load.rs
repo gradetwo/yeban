@@ -514,15 +514,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 判据 c：文件不存在 ⇒ `Read` 错误（⛔ 不 panic），且**不新增任何文件**。
+    /// 判据 c：文件不存在 ⇒ `Read` 错误（⛔ 不 panic），且**不写出任何文件**。
+    ///
+    /// ⚠ **为何不直接比较目录计数**（2026-10-16 修，见台账 R709／R710）：本判据原以
+    /// `read_dir(..).count()` 前后相等为准，而在 Windows runner 上**偶发变红**（同一提交
+    /// 时红时绿、本机 macOS 复现不出）。目录计数是**间接量**：它会被与该判据无关的
+    /// 文件系统活动扰动（另一个并行测试、杀软/索引器、临时目录的惰性回收）。
+    /// 把断言改成**直接量**——"目标路径不存在" ＋ "目录里没有 `.sfz`"——才是它真正要证的
+    /// 事（"⛔ 不写出东西"），且不再受无关活动影响。
     #[test]
     fn a_missing_file_is_an_error_and_writes_nothing() {
         let dir = temp_dir("missing");
-        let before = std::fs::read_dir(&dir).expect("列目录").count();
-        let error =
-            load_sfz(&dir.join("nope.sfz"), Some(60), 48_000.0).expect_err("文件不存在必须失败");
+        let missing = dir.join("nope.sfz");
+        let error = load_sfz(&missing, Some(60), 48_000.0).expect_err("文件不存在必须失败");
         assert!(matches!(error, SfzLoadError::Read(_)), "实际: {error:?}");
-        assert_eq!(std::fs::read_dir(&dir).expect("列目录").count(), before);
+        // ⭐ 直接量之一：目标文件⛔ 必须不存在（"writes nothing" 的字面意思）。
+        assert!(!missing.exists(), "load_sfz 失败时⛔ 不得写出目标文件");
+        // ⭐ 直接量之二：目录里⛔ 不得出现任何 `.sfz`（间接量的窄化版，仍不依赖裸计数）。
+        let sfz_files: Vec<String> = std::fs::read_dir(&dir)
+            .expect("列目录")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".sfz"))
+            .collect();
+        assert!(
+            sfz_files.is_empty(),
+            "load_sfz 失败时⛔ 不得写出 .sfz：{sfz_files:?}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
