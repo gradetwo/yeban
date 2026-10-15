@@ -199,10 +199,28 @@ impl Default for LiveWiringOptions {
 ///
 /// 它是生产 `run_gui` 的 60Hz 定时器那一跳的**逐字复制**：先按需增量发布快照，再回收
 /// （`SnapshotSlot::prune` + `RetireQueue::drain`）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// ⚠ ⛔ **不再 `Copy`**（任务单 `#82`）：`publish_error` 是 `String` 而不是一个枚举哨兵，
+/// 因为"失败在哪一步 / 是哪个文件"正是用户要看到的东西（`EngineHostError` 的 `Display`
+/// 原文），把它压成一个 `bool` 就等于又把信息丢一次。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineTick {
     /// 这一跳真的发布了新快照时是它的版本号；标记没变（或没有工程可投影）时是 `None`。
     pub published_revision: Option<u64>,
+    /// ⭐ **这一跳发布失败**的错误原文（`#82` 修掉 `.ok()` 吞错）。
+    ///
+    /// 三种取值对应三件**不同**的事，⛔ 不许压成一个 `None`：
+    ///
+    /// | 值 | 含义 |
+    /// | :--- | :--- |
+    /// | `None` ＋ `published_revision == Some(_)` | 这一跳真的换了一份新快照 |
+    /// | `None` ＋ `published_revision == None` | **没有发布**（标记没变 / 没有工程可送 / 没有引擎） |
+    /// | `Some(text)` | **发布了但失败** ⇒ 播放侧仍是**上一版**快照 |
+    ///
+    /// 为什么必须有第三档：失败在修之前与"没改动"**在读数上一模一样**
+    /// （都是 `published_revision = None`），于是"用户以为换了 SFZ、其实一次都没生效"
+    /// 在控制面上不可见 —— 那正是本单修掉的吞错。
+    pub publish_error: Option<String>,
     /// 回收读数（见 [`HeartbeatReadings`]）。
     pub readings: HeartbeatReadings,
 }
@@ -515,16 +533,37 @@ impl LiveAdminSurface {
     /// 3. 无论发没发 ⇒ `EngineHost::heartbeat`：`prune` + `drain`。
     ///
     /// ⛔ ②与③必须在**同一条调用序列**里：只发布不回收会留下"只涨不回收"的慢泄漏。
+    ///
+    /// ## ⭐ 失败**不再被吞掉**（任务单 `#82`）
+    ///
+    /// 这里原先是 `self.engine.publish_project(project, mark).ok()` —— 发布失败与
+    /// "标记没变"因此给出**同一个**读数（`published_revision == None`），控制面看不见
+    /// "这条编辑一次都没生效"。对 SFZ 绑定尤其致命：用户敲了一条**不存在的路径**，
+    /// 界面上输入框留着那条路径，而播放侧静默地用着上一代快照 ⇒
+    /// "换了 SFZ 但没生效"变成一个查不出的现象。
+    ///
+    /// 现在失败进 [`EngineTick::publish_error`]（`EngineHostError` 的 `Display` 原文）
+    /// ＋ 出声。⚠ 生产 `run_gui` 那条腿（[`crate::host::ProductionLoop::tick`]）**本来
+    /// 就有**这一段 `match`（它不吞）；本单修的是**本执行面**这一份。
     fn engine_tick(&mut self, mark: EditMark, project: Option<&YebanProjectV1>) -> EngineTick {
         let mut published_revision = None;
+        let mut publish_error = None;
         if self.engine.has_engine()
             && self.engine.should_publish(mark)
             && let Some(project) = project
         {
-            published_revision = self.engine.publish_project(project, mark).ok();
+            match self.engine.publish_project(project, mark) {
+                Ok(revision) => published_revision = Some(revision),
+                Err(error) => {
+                    // ⭐ 保留原文供控制面/判据读（不是 `.ok()`），并出声。
+                    eprintln!("[yeban-app] 快照发布失败（播放侧仍是上一版）: {error}");
+                    publish_error = Some(error.to_string());
+                }
+            }
         }
         EngineTick {
             published_revision,
+            publish_error,
             readings: self.engine.heartbeat(),
         }
     }
@@ -1448,6 +1487,36 @@ impl LiveUi {
             .engine
             .engine_stats()
             .map(|stats| stats.snapshot_switches)
+    }
+
+    /// ⭐ 当前引擎快照里某轨的**摊平 SFZ 读数**：`(区域数, 内存字节数, 缺样本路径)`。
+    ///
+    /// 三个量都有单位（区域数 = 条，内存 = 字节，缺样本 = 条路径），全部取自
+    /// `SfzPlan::prepared()` 的**公开读数** —— ⛔ 不是"看起来摊平了"的推断。
+    ///
+    /// `None` = 没有引擎 / **该轨没有摊平表**（未绑定，或绑了但还没摊平）。
+    /// 判据靠它区分"已摊平"与"还没摊平"：后者正是"用户以为换了 SFZ、其实没生效"的
+    /// 可观测形态（任务单 `#80`/`#82`）。
+    #[must_use]
+    pub fn engine_sfz_plan_readings(
+        &self,
+        track_id: &EntityId,
+    ) -> Option<(usize, usize, Vec<String>)> {
+        let snapshot = self.surface.engine.current_snapshot()?;
+        let prepared = snapshot.sfz_plan(track_id)?.prepared();
+        Some((
+            prepared.region_count(),
+            prepared.memory_bytes(),
+            prepared.missing_sample_paths().to_vec(),
+        ))
+    }
+
+    /// ⭐ 当前引擎快照里**待摊平**（只带路径、还没读盘）的条数。
+    ///
+    /// `None` = 没有引擎。`Some(0)` = 已摊平 / 一条绑定都没有。
+    #[must_use]
+    pub fn engine_sfz_pending_len(&self) -> Option<usize> {
+        Some(self.surface.engine.current_snapshot()?.sfz_pending().len())
     }
 
     /// 换一个工程（同一个活窗口上的重新投影 + 重新注入）。

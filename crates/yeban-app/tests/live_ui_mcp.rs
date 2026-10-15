@@ -2437,10 +2437,18 @@ fn a_mixer_gesture_reaches_the_engine_snapshot_on_the_live_window() {
         "★ 编辑 ⇒ 发声：快照里那一个字段必须不同"
     );
     assert_eq!(edited_db, committed_db, "快照读到的就是提交进工程的那一版");
+    // ⭐ `#82` 顺手把这一跳的**另外三个读数**也打出来（⛔ 不新增断言 ⇒ 本判据的状态不变）：
+    // 发布错误（修掉 `.ok()` 吞错之后它才存在）、该轨的摊平 SFZ 读数与待摊平条数。
+    // 这条工程没有 SFZ 绑定 ⇒ 后两者如实为 `None` / `Some(0)`。
     report_line(&format!(
         "[engine-snapshot] 推子手势 {opened_db:.1} → {committed_db:.1} dB; \
-         快照 {opened_db:.1} → {edited_db:.1} dB; published={} pending={}",
-        first.readings.published, first.readings.pending_len
+         快照 {opened_db:.1} → {edited_db:.1} dB; published={} pending={}; \
+         publish_error={:?} sfz_plan={:?} sfz_pending={:?}",
+        first.readings.published,
+        first.readings.pending_len,
+        first.publish_error,
+        live.engine_sfz_plan_readings(&track_id),
+        live.engine_sfz_pending_len(),
     ));
 
     // 重复标记 ⇒ **不**再发布（"没改就不克隆工程"这条成本契约）。
