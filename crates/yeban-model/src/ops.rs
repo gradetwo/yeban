@@ -333,6 +333,38 @@ pub enum Op {
         /// 修改后的显示名。
         new_name: String,
     },
+    /// 切换**摆放静音**（[`ClipPlacement::muted`]）。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ **在它出现之前，`ClipPlacement::muted` **只在创建时**能给
+    /// （[`Op::AddClipPlacement`] 的载荷带它）**，而**它之后没有任何 `Op` 能改它** ——
+    /// [`Op::MoveClipPlacement`] **只写 `start_tick`** ⇒ ⭐ **创建之后改不了静音**；⭐ 想改
+    /// 只能"删掉摆放再建一个"，⭐ 而重建会**换掉摆放身份**（`EntityId`）。
+    /// ⚠ 这是 `ARCH-OPS-001` 那一族的又一处（与 `D27` 补 `AddClip`、[`Op::SetTrackName`]、
+    /// [`Op::SetClipName`]、[`Op::SetDeviceName`]、[`Op::SetDeviceBypassed`] 的成因同型）。
+    ///
+    /// ⚠ **为何安全（可逆）**：⭐ 静音是**布尔开关** ⇒ 切回去即完全复原。⚠ **它有真正的
+    /// 行为重量** —— 四处下游读它并按此**不发声/不导出**：`yeban-engine::snapshot`、
+    /// `yeban-render::{als,logic}`、以及 `yeban-mcp::domain::render` 的离线路径。
+    ///
+    /// ⚠ 本变体只写这一个字段：⛔ 不碰 `id` / `clip_id` / `start_tick`，⭐ **也⛔ 不碰
+    /// `duration_ticks` 与 `loop_config`** —— ⚠ **那两个是**有意不做**的**：⭐ 改
+    /// `duration_ticks` 会变**摆放长度**（与"静音"不同类）、⭐ `loop_config` 是结构体
+    /// （要另议），⛔ 不属于本票的"开关"语义。
+    /// ⚠ **寻址用 `track_id` + `placement_id` 双定位**（摆放住在音轨里）—— ⚠ 但本条
+    /// **不必防下标移位**：⭐ `TrackV3::clips` 是 **`BTreeMap<EntityId, ClipPlacement>`**
+    /// （键 = 摆放身份，⭐ 稳定）⇒ ⭐ 与 `devices`（`Vec`）那处**不同**。
+    /// ⚠ 命名用 `old_*` / `new_*`（**set** 类，照 [`Op::SetTrackMute`] / [`Op::SetDeviceBypassed`]），
+    /// ⛔ **不是** `previous_*`。
+    SetClipPlacementMuted {
+        /// 目标音轨（摆放的容器）。
+        track_id: EntityId,
+        /// 目标摆放身份（即 `clips` 的键）。
+        placement_id: EntityId,
+        /// 修改前的静音状态。
+        old_muted: bool,
+        /// 修改后的静音状态。
+        new_muted: bool,
+    },
     /// 平移摆放。
     MoveClipPlacement {
         /// 目标音轨。
@@ -750,6 +782,7 @@ impl Op {
             Self::AddClipPlacement { .. } => "AddClipPlacement",
             Self::RemoveClipPlacement { .. } => "RemoveClipPlacement",
             Self::MoveClipPlacement { .. } => "MoveClipPlacement",
+            Self::SetClipPlacementMuted { .. } => "SetClipPlacementMuted",
             Self::AddTrack { .. } => "AddTrack",
             Self::RemoveTrack { .. } => "RemoveTrack",
             Self::ConnectRouting { .. } => "ConnectRouting",
@@ -881,6 +914,25 @@ impl Op {
                     .get(placement_id)
                     .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
                 if current != previous_placement {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                Ok(())
+            }
+            Self::SetClipPlacementMuted {
+                track_id,
+                placement_id,
+                old_muted,
+                ..
+            } => {
+                let track = doc.track(track_id)?;
+                // ⚠ 摆放**按身份**取（`clips` 是 `BTreeMap`，键 = 摆放身份）⇒ 有**专用**
+                // 错误变体可复用（⛔ 不必像 `devices`（`Vec`）那样借用下标越界错误）。
+                let current = track
+                    .clips
+                    .get(placement_id)
+                    .ok_or(ModelError::ClipPlacementNotFound { id: *placement_id })?;
+                // ⚠ `bool` 的比较是**值比较**（与 [`Op::SetTrackMute`] 同口径）⇒ 陈旧载荷必被拒。
+                if current.muted != *old_muted {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
                 Ok(())
@@ -1482,6 +1534,17 @@ impl Op {
                 track_id: *track_id,
                 placement: *previous_placement,
             },
+            Self::SetClipPlacementMuted {
+                track_id,
+                placement_id,
+                old_muted,
+                new_muted,
+            } => Self::SetClipPlacementMuted {
+                track_id: *track_id,
+                placement_id: *placement_id,
+                old_muted: *new_muted,
+                new_muted: *old_muted,
+            },
             Self::MoveClipPlacement {
                 track_id,
                 placement_id,
@@ -1862,6 +1925,19 @@ impl Op {
                 ..
             } => {
                 doc.track_mut(track_id)?.clips.remove(placement_id);
+                Ok(())
+            }
+            // 只写那**一个**静音开关：⛔ 不碰 `id` / `clip_id` / `start_tick` /
+            // `duration_ticks` / `loop_config`。
+            Self::SetClipPlacementMuted {
+                track_id,
+                placement_id,
+                new_muted,
+                ..
+            } => {
+                if let Some(placement) = doc.track_mut(track_id)?.clips.get_mut(placement_id) {
+                    placement.muted = *new_muted;
+                }
                 Ok(())
             }
             Self::MoveClipPlacement {
