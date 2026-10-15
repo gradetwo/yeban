@@ -162,6 +162,16 @@
         },
         {
           "required": [
+            "SetClipName"
+          ],
+          "properties": {
+            "SetClipName": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "MoveClipPlacement"
           ],
           "properties": {

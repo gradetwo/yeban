@@ -2590,6 +2590,15 @@ mod tests {
                 old_name: "Lead".to_owned(),
                 new_name: "Lead (renamed)".to_owned(),
             },
+            // 改片段显示名：**唯一的改名通路**（此前只能删 + 加，而 `RemoveClip`
+            // 还要求先把该片段的每一处摆放拆掉）。
+            // ⚠ 用 `f.clip`（而不是 `f.audio_clip`）—— 后者在同一条 showcase 里
+            // 已被 `RemoveClip` 取走，本变体的前置条件要求条目**在**池子里。
+            Op::SetClipName {
+                clip_id: f.clip,
+                old_name: "Clip".to_owned(),
+                new_name: "Clip (renamed)".to_owned(),
+            },
             // 资产声明（**创建**：夹具里尚未声明过这份新哈希 ⇒ `old_asset: None`）。
             Op::SetAsset {
                 asset_hash: crate::ids::AssetHash::of_bytes(b"snare"),
