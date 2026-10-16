@@ -398,7 +398,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 摊平增益 vs `total_gain`（含键轴 ＋ 力度轴 in/out 交叉淡化） | **128×128 网格位型不同点数 = 0** |
 | `trigger=release` 的键/力度掩码 | 均 `[0, 0]`；`accepts(60, 100) == false`；离线只剩 release ⇒ 写 **0** 帧 |
 | 分配四元组（`rt_zero_alloc` 的 SFZ 回调窗口） | `allocations=0 deallocations=0 lock_blocking=0 io_ops=0`（71/71 场景通过） |
-| `PreparedRegion` 结构字节数 | **2664 B**（原 548 B；代价来自 5 张 128×`f32` 表 + `SampleSpan`；⭐ `#91` 加 **+8 B** ＝ `loop_start: u32` ＋ `loop_end: u32` ＋ `loop_mode: LoopMode`(1 B) ＋ 对齐 ⇒ 2624 → 2632；⭐ `#92` 再加 **+24 B** ＝ `ampeg_attack`／`hold`／`decay`／`sustain`／`release` 五字段（5×`f32` ＝ 20 B payload ＋ 4 B 对齐）⇒ **2632 → 2656**） |
+| `PreparedRegion` 结构字节数 | **2664 B**（原 548 B；代价来自 5 张 128×`f32` 表 + `SampleSpan`；⭐ `#91` 加 **+8 B** ＝ `loop_start: u32` ＋ `loop_end: u32` ＋ `loop_mode: LoopMode`(1 B) ＋ 对齐 ⇒ 2624 → 2632；⭐ `#92` 再加 **+24 B** ＝ `ampeg_attack`／`hold`／`decay`／`sustain`／`release` 五字段（5×`f32` ＝ 20 B payload ＋ 4 B 对齐）⇒ 2632 → 2656；⭐ `#94` 再加 **+8 B** ＝ `group: u32` ＋ `off_by: u32`（⭐ `off_mode` 落进对齐填充）⇒ **2656 → 2664**） |
 
 
 ## 13. 引擎侧声部 ＋ 快照形状（2026-10-15，任务 `#66` 的**步 2**）
