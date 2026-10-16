@@ -1163,6 +1163,7 @@ mod tests {
                             ampeg_decay: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
                             ampeg_sustain: crate::instrument::AMPEG_SUSTAIN_DEFAULT_PERCENT,
                             ampeg_release: crate::instrument::AMPEG_RELEASE_DEFAULT_SECONDS,
+                            ampeg_mods: Vec::new(),
                             offset: 0,
                             end: SampleEnd::Unspecified,
                             direction: PlayDirection::Forward,

@@ -353,6 +353,7 @@ pub mod error;
 pub mod instrument;
 pub mod label;
 pub mod midi;
+pub mod modulation;
 pub mod parser;
 pub mod playback;
 pub mod velocity;

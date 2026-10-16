@@ -445,6 +445,25 @@ pub enum SfzError {
     /// 用一个无效（已失效 / 不属于本池）的声部句柄调用池操作。
     #[error("voice handle is stale or does not belong to this pool")]
     StaleVoiceHandle,
+
+    // ------------------------------------------------------------------
+    // `ampeg_*` 的 CC 调制归约
+    // ------------------------------------------------------------------
+    /// 归约后的 `ampeg_*` CC 调制项数超过 [`crate::modulation::AMPEG_MOD_CAP`]。
+    ///
+    /// 这不是规范域（规范对调制项**条数**没有上限），而是**摊平表定长容器**的界：
+    /// [`crate::modulation::AmpegCcMod`] 在引擎侧按 `AMPEG_MOD_CAP` 条定长承载。
+    /// 超过即明确 `Err`（⛔ 不截断、⛔ 不静默丢弃）。登记语料 1398 个 `.sfz` 的最大读数
+    /// 是 **10** 条（`blackheart_noise.sfz`）⇒ 该界覆盖全部登记语料。
+    #[error("line {line}: {count} ampeg_* CC modulations exceed the maximum of {max}")]
+    TooManyAmpegModulations {
+        /// 1-based 行号（`<region>` 段头所在行）。
+        line: usize,
+        /// 归约后的调制项数（按 `(param, cc)` 去重后）。
+        count: usize,
+        /// 上限。
+        max: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +476,7 @@ mod tests {
 
     /// 每个 `SfzError` 臂的 `Display` 文案**逐字**钉住。
     ///
-    /// 这条判据覆盖 44 个 `thiserror` 臂的全部公开诊断面：文案改动（哪怕是删一个词）
+    /// 这条判据覆盖 45 个 `thiserror` 臂的全部公开诊断面：文案改动（哪怕是删一个词）
     /// 都会在这里变红。同时断言 `source()` 恒为 `None` —— 本 crate 刻意不携带底层
     /// `io::Error`（见 `Io` 的文档：保留 `PartialEq`），因此错误链只有一层。
     /// 黄金表的唯一来源：每个 `SfzError` 臂一条 `(错误值, 期望 Display 文案)`。
@@ -741,13 +760,21 @@ mod tests {
                 SfzError::StaleVoiceHandle,
                 "voice handle is stale or does not belong to this pool",
             ),
+            (
+                SfzError::TooManyAmpegModulations {
+                    line: 3,
+                    count: 21,
+                    max: 20,
+                },
+                "line 3: 21 ampeg_* CC modulations exceed the maximum of 20",
+            ),
         ]
     }
 
     #[test]
     fn every_sfz_error_display_arm_is_pinned() {
         let cases = display_cases();
-        assert_eq!(cases.len(), 44);
+        assert_eq!(cases.len(), 45);
         for (error, expected) in cases {
             assert_eq!(format!("{error}"), expected, "Display for {error:?}");
             assert!(
@@ -809,6 +836,7 @@ mod tests {
             SfzError::MacroExpansionTooLong { .. } => 41,
             SfzError::InvalidVoiceCapacity { .. } => 42,
             SfzError::StaleVoiceHandle => 43,
+            SfzError::TooManyAmpegModulations { .. } => 44,
         }
     }
 

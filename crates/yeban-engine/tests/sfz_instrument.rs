@@ -57,6 +57,11 @@
 //! | ⭐ S51 | ⭐ **`note_selfmask` 的力度规则**（任务 `#100` 新增；§4.1 的那一半） | 缺省 `on`：力度 `100 → 40` ⇒ 在场 **2**（低力度新音符⛔ 不掐高力度者 ⇒ 规范原句 "not a strict polyphony limit but more of a hint"）、力度集合 `[40,100]`；再 `+100` ⇒ 在场 **1**、留下的是**新音符**；显式 `off`：力度 `100 → 40` ⇒ 在场 **1** 且留下的是**新音符**（`[40]`，⛔ 不是被掐的那个）⇒ 规范 "A new note will always play." |
 //! | ⭐ S52 | ⭐ **不带 `note_polyphony` 的既有夹具逐位不变**（任务 `#100` 新增；§4.4） | 三个**承重指纹**逐字复跑并断言：`S37` 的 `0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`S33` 的 `0xa933ddab286bdf5e`（非零 478）；⭐ 第二条腿：带 `group` 但 `note_polyphony` **缺省**的夹具与**同文本 ＋ `note_polyphony=0`** 逐位相同（`limit == 0` 与"未给出"同义）；⭐ **反向腿**：改成 `note_polyphony=1` 并连发两次同音 ⇒ 指纹**必须变**（实测 `0x2c45640bc37af325` ≠ `0x407676123fcaf325`） |
 //! | ⭐ S53 | ⭐ **`note_polyphony` 的让位 ⛔ 不是池满窃取**（任务 `#100` 新增；§3.3） | 上限 2 ＋ 连发 5 次 ⇒ 在场 **2** 而 `stolen == 0`／`dropped == 0`／`pending_count == 0`／逐槽淡出 **全 0**（掐是**立即**硬停）；⭐ **正对照**（17 条同键区域 ⇒ 池满）⇒ `stolen == 1`／`pending == 1`／槽 0 淡出 **144** ⇒ 证明这组读数**分得开**"每音符上限"与"池满窃取"两件事 |
+//! | ⭐ S54 | ⭐ **`ampeg_*` 四形态解析 ＋ 缺省 ＋ `Err` 政策**（任务单 `#104` 新增；§4.1） | 每条区域归约出的 `(AmpegParam, cc, delta, curve)` 读数：legacy `ccN` ⇒ `(Attack, 100, 1.5, 0)`；v2 `_onccN` ⇒ `(Decay, 71, -0.4, 0)`；`_onccN`＋`_curveccN`（自定义曲线 7）⇒ `(Sustain, 74, 25.0, 7)`；`_onccN`＋内建双极曲线 1 ⇒ `(Release, 93, 1.0, 1)`；**缺省** ⇒ `[]`。⭐ **八条负判据**（cc 256／99999、delta ±200／−250、curve 300／1.5、非数字、`inf`）各自响亮 `Err`（`IntegerOutOfRange{0,255}` ／ `FloatOutOfRange{-100,100}` ／ `InvalidInteger` ／ `InvalidFloat` ／ `NonFiniteFloat`），且每条都与**同批数据里的一个合法样例**同现、该样例**单独**出现时必须被接受 |
+//! | ⭐ S55 | ⭐ **端到端离线：两个 CC 值按规范公式改包络**（任务单 `#104` 新增；§4.2） | 恒定 `1.0` 样本 ＋ 力度 127（`velocity_gain(127) == 1.0`）⇒ 输出**恰好**是包络电平；`ampeg_attack=0.5` ＋ `ampeg_attack_oncc100=0.5`：`cc = 0` ⇒ 起音**实测 24 000 帧**、`cc = 127` ⇒ **48 000 帧**（各自断言 ＝ `round((0.5 + 0.5 × cc/127) × 48 000)`，⛔ 不是只断言『两者不同』）；线性段每点 `\|实测 − t/A\| ≤ 1e-6`（实测最大 **5.96e-8**）；第 `A` 帧**恰好** `1.0`；⭐ 离线 → 摊平两条路**逐位相同** |
+//! | ⭐ S56 | ⭐ **无探针 ⇒ 逐位不变 ＋ 三个承重指纹复跑**（任务单 `#104` 新增；§4.3） | 三个 FNV-1a 指纹逐字复跑并断言：`0xa9dec8a87f69106c`（S37 臂 1）／`0xd3c2a82076bd8947`（S37 臂 2）／`0xa933ddab286bdf5e`（S33／S14 广播路径）；新入口传 `None` 与旧入口**逐位相同**（摊平 512 帧 ＋ 离线 512 帧）；⭐ **应绿反向腿**：同一输出 × `1.0000001` ⇒ 指纹**必须**变（实测 `0xf181aa780f2cfab1` ≠ `0xa933ddab286bdf5e`） |
+//! | ⭐ S57 | ⭐ **判据有牙（夹具真的体现在读数上）**（任务单 `#104` 新增；§4.4） | 带 `ampeg_attack_oncc100` ⇒ cc0/cc127 起音帧数 `[24000, 48000]`；⭐ **正对照**：去掉那一行 ⇒ `[24000, 24000]`（⛔ 证明 S55 的差异来自『解析＋归约＋求值』这条新链，不是探针管道自身造的假差异） |
+//! | ⭐ S58 | ⭐ **「双口径登记」可判**（任务单 `#104` 新增；§3.4／§9） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ 双口径登记（任务单 `#104`）」与「⭐ 摊平期门控登记（任务单 `#104`）」；反向腿：文档里**没有**的两句 ⇒ `contains` 必须 `false` |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -92,6 +97,8 @@ use yeban_model::{
 // （⛔ 判据不复制它们的取值，只引用唯一权威事实源）。
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{LoopMode, OffMode};
+// ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（四形态归约的读数形状）。
+use yeban_sfz::modulation::AmpegParam;
 
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
@@ -5324,5 +5331,452 @@ fn s53_note_polyphony_is_not_the_pool_full_steal() {
             && control.pending_count() > 0
             && control_fades.iter().any(|remaining| *remaining > 0),
         "⭐ 正对照：池满路径必须让这三个读数**动起来**（否则 A 的「全 0」没有信息量）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S54～S58：`ampeg_*` 的 CC 调制（任务单 `#104`）
+// ---------------------------------------------------------------------------
+//
+// 本片的落点是**解析 ＋ 归约 ＋ 离线求值**：`yeban-sfz` 读得进
+// `ampeg_attackcc100` / `ampeg_attack_oncc100` / `ampeg_attack_curvecc100`，
+// 归约结果经 `PreparedRegion` 承载，并由**既有**的 `RegionQuery::with_cc` 探针在
+// 离线两条路（`render_note_into_with_cc` / `render_block_into_with_cc`）求值。
+// ⛔ 实时通路（`SfzVoicePool`）**本片一个字都不动** ⇒ 那里仍走基准值（登记见 S58）。
+
+/// ⭐ 四形态夹具（一条 `<curve>` ＋ 五条区域）：
+///
+/// | region | 形态 | 期望读数 `(param, cc, delta, curve)` |
+/// | :--- | :--- | :--- |
+/// | `key=60` | legacy `ccN` | `(Attack, 100, 1.5, 0)` |
+/// | `key=61` | v2 `_onccN` | `(Decay, 71, -0.4, 0)` |
+/// | `key=62` | v2 ＋ `_curveccN`（**自定义**曲线 7） | `(Sustain, 74, 25.0, 7)` |
+/// | `key=63` | v2 ＋ `_curveccN`（**内建双极**曲线 1） | `(Release, 93, 1.0, 1)` |
+/// | `key=64` | **缺省**（一个调制 opcode 都没有） | `[]` |
+const AMPEG_FOUR_FORMS: &str = "<curve>curve_index=7\n\
+                                v000=0\n\
+                                v063=1\n\
+                                v127=0\n\
+                                <region> sample=a.wav key=60 pitch_keycenter=60 ampeg_attack=0.5 ampeg_attackcc100=1.5\n\
+                                <region> sample=a.wav key=61 pitch_keycenter=60 ampeg_decay=0.2 ampeg_decay_oncc71=-0.4\n\
+                                <region> sample=a.wav key=62 pitch_keycenter=60 ampeg_sustain=50 ampeg_sustain_oncc74=25 ampeg_sustain_curvecc74=7\n\
+                                <region> sample=a.wav key=63 pitch_keycenter=60 ampeg_release=0.3 ampeg_release_oncc93=1.0 ampeg_release_curvecc93=1\n\
+                                <region> sample=a.wav key=64 pitch_keycenter=60 ampeg_hold=0.1\n";
+
+/// S54 负判据要认的几种 `Err` 形状。
+#[derive(Debug, Clone, Copy)]
+enum ModErrorShape {
+    IntRange255,
+    FloatRange100,
+    InvalidInteger,
+    InvalidFloat,
+    NonFinite,
+}
+
+fn matches_mod_error(error: &SfzError, shape: ModErrorShape) -> bool {
+    match shape {
+        ModErrorShape::IntRange255 => {
+            matches!(
+                error,
+                SfzError::IntegerOutOfRange {
+                    min: 0,
+                    max: 255,
+                    ..
+                }
+            )
+        }
+        ModErrorShape::FloatRange100 => matches!(
+            error,
+            SfzError::FloatOutOfRange { min, max, .. } if *min == -100.0 && *max == 100.0
+        ),
+        ModErrorShape::InvalidInteger => matches!(error, SfzError::InvalidInteger { .. }),
+        ModErrorShape::InvalidFloat => matches!(error, SfzError::InvalidFloat { .. }),
+        ModErrorShape::NonFinite => matches!(error, SfzError::NonFiniteFloat { .. }),
+    }
+}
+
+/// ⭐ S54（任务单 `#104`；§4.1）：**四形态各至少一条 ＋ 缺省 ＋ 非法 ⇒ `Err`**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 一份含 `<curve>` 与五条区域的 SFZ；单位 ＝ 每条区域归约出的
+/// `(AmpegParam, cc, delta, curve)` 读数（元组）＋ 非法输入的 `SfzError` 变体。
+///
+/// ⭐ 负判据每条都与**同一批数据里的一个合法样例**同现（`ampeg_attackcc100=1.5`），
+/// 并且该合法样例**单独**出现时必须被接受 ⇒ ⛔ 证明那些 `Err` 不是"整族一律拒"。
+#[test]
+fn s54_the_four_ampeg_cc_forms_are_parsed_with_their_domains() {
+    let instrument = SfzInstrument::load(AMPEG_FOUR_FORMS.to_owned(), &Default::default())
+        .expect("四形态夹具必须解析成功");
+    let expected: [&[(AmpegParam, u8, f32, u8)]; 5] = [
+        &[(AmpegParam::Attack, 100, 1.5, 0)],
+        &[(AmpegParam::Decay, 71, -0.4, 0)],
+        &[(AmpegParam::Sustain, 74, 25.0, 7)],
+        &[(AmpegParam::Release, 93, 1.0, 1)],
+        &[],
+    ];
+    let actual: Vec<Vec<(AmpegParam, u8, f32, u8)>> = instrument
+        .with_instrument(|parsed| {
+            parsed
+                .regions()
+                .iter()
+                .map(|region| {
+                    region
+                        .ampeg_modulations()
+                        .iter()
+                        .map(|item| (item.param, item.cc, item.delta, item.curve))
+                        .collect()
+                })
+                .collect()
+        })
+        .expect("重解析");
+    assert_eq!(actual.len(), 5, "五条区域都在");
+    for (index, (got, want)) in actual.iter().zip(expected).enumerate() {
+        assert_eq!(
+            got.as_slice(),
+            want,
+            "⭐ region {index} 的 `(param, cc, delta, curve)` 读数"
+        );
+    }
+    println!("[engine-sfz/S54] 四形态读数（逐条）：{actual:?}（第 5 条 = 缺省 ⇒ 空）");
+
+    // ---- 负判据：非法 ⇒ 响亮 `Err`（第 259 条；⛔ 不静默降级、⛔ 不钳位）----
+    let legal = "ampeg_attackcc100=1.5";
+    let bad: [(&str, ModErrorShape); 8] = [
+        ("ampeg_attackcc256=1.0", ModErrorShape::IntRange255),
+        ("ampeg_attack_oncc99999=1.0", ModErrorShape::IntRange255),
+        ("ampeg_attackcc100=200", ModErrorShape::FloatRange100),
+        ("ampeg_attackcc100=-250", ModErrorShape::FloatRange100),
+        ("ampeg_attack_curvecc100=300", ModErrorShape::IntRange255),
+        ("ampeg_attack_curvecc100=1.5", ModErrorShape::InvalidInteger),
+        ("ampeg_attackcc100=abc", ModErrorShape::InvalidFloat),
+        ("ampeg_attackcc100=inf", ModErrorShape::NonFinite),
+    ];
+    for (illegal, shape) in bad {
+        // ⭐ 同一批数据里带一个**合法样例**（`legal`）：它能被接受（见下一条断言），
+        // 因此这里的 `Err` 必然是 `illegal` 那一行造成的。
+        let text = format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 {legal} {illegal}\n\
+             <region> sample=a.wav key=61 pitch_keycenter=60 ampeg_hold=0.1\n"
+        );
+        let error = SfzInstrument::load(text, &Default::default())
+            .expect_err(&format!("{illegal} 必须响亮 Err"));
+        assert!(
+            matches_mod_error(&error, shape),
+            "⭐ {illegal} ⇒ {error:?}（不是期望的 {shape:?}）"
+        );
+        println!("[engine-sfz/S54] {illegal} ⇒ {error}");
+    }
+    // ⭐ 同一条合法样例**单独**出现 ⇒ 必须被接受（负判据的正对照）。
+    let accepted = SfzInstrument::load(
+        format!("<region> sample=a.wav key=60 pitch_keycenter=60 {legal}\n"),
+        &Default::default(),
+    );
+    assert!(
+        accepted.is_ok(),
+        "⭐ 同批数据里的合法样例必须被接受：{accepted:?}"
+    );
+    // ⛔ 缺失 ≠ 非法：一个 `ampeg_*ccN` 都没有 ⇒ `Ok` ＋ 空表（见上面第 5 条区域）。
+    assert!(
+        SfzInstrument::load(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_attack=0.5\n".to_owned(),
+            &Default::default()
+        )
+        .is_ok(),
+        "缺省（没有该族 opcode）必须合法"
+    );
+}
+
+/// ⭐ 起音段**实测帧数**：输出从 0 线性升到平台（＝ `1.0`）所用的帧数。
+///
+/// 夹具是**恒定 `1.0`** 的样本 ＋ 力度 `127`（`velocity_gain(127) == 1.0`，见 S18）
+/// ⇒ 输出**恰好**是包络电平本身，于是"到峰帧"可逐样本读出来。
+fn measured_attack_frames(out: &[f32]) -> usize {
+    out.iter().take_while(|sample| **sample < 1.0).count()
+}
+
+/// ⭐ S55（任务单 `#104`；§4.2）：**端到端离线（既有 `with_cc` 探针）**——
+/// 同一份 SFZ ＋ 两个不同的 CC 值 ⇒ 包络按规范公式不同，且**两条离线路逐位相同**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ `ampeg_attack=0.5` ＋ `ampeg_attack_oncc100=0.5` 的区域在
+/// `cc = 0` 与 `cc = 127` 两个探针值下的输出；单位 ＝ **起音段实测帧数**（帧）；
+/// 容差口径 ＝ 线性段**每一点** `|实测 − t/A| ≤ 1e-6`（与 S35 同口径）。
+///
+/// # 公式（逐字出处见 `yeban_sfz::modulation` 的模块文档）
+///
+/// `A = round((0.5 + 0.5 × cc/127) × 48000)` ⇒ `cc = 0` ⇒ **24000**、
+/// `cc = 127` ⇒ **48000**（⭐ 各自配一条"它自己该怎样"的断言，⛔ 不是只断言"两者不同"）。
+#[test]
+fn s55_two_cc_values_change_the_envelope_by_the_specification_formula() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 72_000;
+    const SFZ: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                       ampeg_attack=0.5 ampeg_attack_oncc100=0.5\n";
+    let instrument = SfzInstrument::load(SFZ.to_owned(), &Default::default()).expect("解析");
+    // ⚠ 样本**比输出缓冲更长**：否则逐样本路径会在最后一帧前停住（实测写入 71999）。
+    let sample = InMemorySample {
+        pcm: vec![1.0; FRAMES + 1_024],
+        sample_hz: HZ,
+    };
+    let plan = prepare_with(SFZ, &sample);
+    assert_eq!(
+        plan.regions()[0].ampeg_modulations().len(),
+        1,
+        "摊平表必须真的承载那一条调制项"
+    );
+
+    let expected = |cc: u8| -> usize {
+        let seconds = 0.5f32 + 0.5 * (f32::from(cc) / 127.0);
+        (f64::from(seconds) * f64::from(HZ)).round() as usize
+    };
+
+    let mut measured = [0usize; 2];
+    for (index, cc) in [0u8, 127].into_iter().enumerate() {
+        let probe = move |_: u8| cc;
+        let mut offline = vec![0.0f32; FRAMES];
+        let written_offline = instrument
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut offline, HZ)
+            .expect("离线渲染");
+        let mut flat = vec![0.0f32; FRAMES];
+        let written_flat = plan.render_block_into_with_cc(60, 127, Some(&probe), &mut flat);
+        assert_eq!(written_offline, FRAMES, "离线整段写满");
+        assert_eq!(written_flat, FRAMES, "摊平整段写满");
+        // ⭐ 两条离线路走**同一份**求值（`ampeg_value_with_baked`）⇒ 必须逐位相同。
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ cc = {cc}：离线 → 摊平两条路必须逐位相同"
+        );
+
+        let attack = measured_attack_frames(&offline);
+        measured[index] = attack;
+        // ⭐ 线性段逐点对账（容差 1e-6）。
+        let mut worst = 0.0f32;
+        for (t, value) in offline.iter().enumerate().take(attack) {
+            worst = worst.max((value - t as f32 / attack as f32).abs());
+        }
+        println!(
+            "[engine-sfz/S55] cc = {cc}：⭐ 起音实测帧数 = {attack}（规范公式 = {}）；\
+             线性段最大偏差 = {worst:e}；out[0] = {}、out[{attack}] = {}、out[last] = {}",
+            expected(cc),
+            offline[0],
+            offline[attack],
+            offline[FRAMES - 1]
+        );
+        assert_eq!(
+            attack,
+            expected(cc),
+            "⭐ cc = {cc} 的起音帧数必须**逐帧**等于规范公式 `round((0.5 + 0.5 × cc/127) × 48000)`"
+        );
+        assert!(
+            worst <= 1e-6,
+            "⭐ cc = {cc}：线性段最大偏差 {worst:e} > 1e-6"
+        );
+        assert_eq!(
+            offline[attack], 1.0,
+            "⭐ cc = {cc}：第 A 帧必须**恰好**到峰"
+        );
+    }
+    assert_eq!(measured, [24_000, 48_000], "⭐ 两个 CC 值的实测帧数");
+    assert_ne!(
+        measured[0], measured[1],
+        "⭐ 两个 CC 值必须给出**不同**的包络（⛔ 不是『两者相同也算过』）"
+    );
+}
+
+/// ⭐ S56（任务单 `#104`；§4.3）：**无探针 ⇒ 逐位不变** ＋ ⭐ **复跑承重指纹**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ ① 既有夹具的三个 **FNV-1a 64 指纹**（逐位）；② 新入口传 `None` 与旧入口
+/// 的**位模式序列**（逐帧比较）。单位 ＝ `u64` 指纹 ＋ 位模式相等的布尔。
+///
+/// 三个承重指纹就是 §4.3 逐字点名的：`0xa9dec8a87f69106c`（S37 臂 1）、
+/// `0xd3c2a82076bd8947`（S37 臂 2）、`0xa933ddab286bdf5e`（S33／S14 的广播路径）。
+#[test]
+fn s56_without_a_probe_the_readings_are_bit_identical_and_the_fingerprints_hold() {
+    // ---- ① 三个承重指纹 ----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    assert!(looped.regions()[0].ampeg_is_transparent());
+    assert!(plain.regions()[0].ampeg_is_transparent());
+    for (label, plan, end_sample, expected) in [
+        (
+            "S37 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            0xa9de_c8a8_7f69_106cu64,
+        ),
+        (
+            "S37 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            0xd3c2_a820_76bd_8947u64,
+        ),
+    ] {
+        let out = render_pool(plan, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!("[engine-sfz/S56] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）");
+        let _checked = check_fingerprint(&format!("S56 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy_block = vec![0.0f32; BLOCK];
+    let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
+    let legacy = fnv1a_64(&legacy_block);
+    println!(
+        "[engine-sfz/S56] S33／S14 广播路径 512 帧 @ (60,127)：指纹 = 0x{legacy:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）；写入 = {legacy_frames}"
+    );
+    let _checked = check_fingerprint("S56 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    // ⭐ 应绿反向腿（§6.3）：同一段输出 × `1.0000001` ⇒ 指纹**必须**变
+    // （证明上面那三条是**逐位**判据，⛔ 不是"有输出就算过"）。
+    let scaled: Vec<f32> = legacy_block
+        .iter()
+        .map(|sample| sample * 1.000_000_1)
+        .collect();
+    let scaled_hash = fnv1a_64(&scaled);
+    println!(
+        "[engine-sfz/S56] 反向腿（× 1.0000001）：指纹 = 0x{scaled_hash:016x}         （原指纹 0x{legacy:016x}，必须不同）"
+    );
+    assert_ne!(scaled_hash, legacy, "⭐ 反向腿：乘 1.0000001 后指纹必须变");
+
+    // ---- ② 无探针 ⇒ 逐位不变（新入口 vs 旧入口）----
+    let mut probe_none = vec![0.0f32; BLOCK];
+    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, &mut probe_none);
+    assert_eq!(none_frames, legacy_frames);
+    assert_eq!(
+        bits(&legacy_block),
+        bits(&probe_none),
+        "⭐ `render_block_into_with_cc(cc = None)` 必须逐位等于 `render_block_into`"
+    );
+
+    let instrument =
+        SfzInstrument::load(TWO_MATCH_ONE_MISS.to_owned(), &Default::default()).expect("解析");
+    let sample = InMemorySample::sine(440.0, 48_000.0, SAMPLE_FRAMES);
+    let mut offline_legacy = vec![0.0f32; BLOCK];
+    let mut offline_none = vec![0.0f32; BLOCK];
+    instrument
+        .render_note_into(&sample, 60, 127, &mut offline_legacy, 48_000.0)
+        .expect("离线旧入口");
+    instrument
+        .render_note_into_with_cc(&sample, 60, 127, None, &mut offline_none, 48_000.0)
+        .expect("离线新入口");
+    assert_eq!(
+        bits(&offline_legacy),
+        bits(&offline_none),
+        "⭐ `render_note_into_with_cc(cc = None)` 必须逐位等于 `render_note_into`"
+    );
+    println!(
+        "[engine-sfz/S56] 无探针逐位对账：摊平 512 帧逐位相同 = {}、离线 512 帧逐位相同 = {}",
+        bits(&legacy_block) == bits(&probe_none),
+        bits(&offline_legacy) == bits(&offline_none)
+    );
+}
+
+/// ⭐ S57（任务单 `#104`；§4.4）：**判据有牙**——夹具能让被测差异真的体现在读数上。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 同一份 `ampeg_attack` 夹具**去掉** `ampeg_attack_oncc100` 那一行前后的
+/// 起音实测帧数（帧）。单位 ＝ 帧。
+///
+/// ⭐ 内置**正对照**：去掉那一行 ⇒ 两个 CC 值给出**同一个**帧数（＝ 基准 24000）
+/// ⇒ 证明 S55 的差异完全来自"解析 ＋ 归约 ＋ 求值"这条新链，⛔ 不是探针管道自身
+/// 制造的假差异（若把本片的解析短接掉，这一条正对照与 S55 必然分道扬镳）。
+#[test]
+fn s57_the_fixture_can_actually_show_the_difference() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 72_000;
+    const WITH_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                            ampeg_attack=0.5 ampeg_attack_oncc100=0.5\n";
+    const WITHOUT_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_attack=0.5\n";
+    let sample = InMemorySample {
+        pcm: vec![1.0; FRAMES + 1_024],
+        sample_hz: HZ,
+    };
+    let measure = |text: &str, cc: u8| -> usize {
+        let instrument = SfzInstrument::load(text.to_owned(), &Default::default()).expect("解析");
+        let probe = move |_: u8| cc;
+        let mut out = vec![0.0f32; FRAMES];
+        instrument
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut out, HZ)
+            .expect("渲染");
+        measured_attack_frames(&out)
+    };
+    let with = [measure(WITH_MOD, 0), measure(WITH_MOD, 127)];
+    let without = [measure(WITHOUT_MOD, 0), measure(WITHOUT_MOD, 127)];
+    println!(
+        "[engine-sfz/S57] 带 `ampeg_attack_oncc100` ⇒ cc0/cc127 起音帧数 = {with:?}；\
+         去掉那一行 ⇒ {without:?}"
+    );
+    assert_eq!(
+        with,
+        [24_000, 48_000],
+        "⭐ 有调制：两个 CC 值必须落在规范公式的两个端点上"
+    );
+    assert_eq!(
+        without,
+        [24_000, 24_000],
+        "⭐ 正对照：去掉调制 opcode ⇒ 两个 CC 值给出**同一个**基准帧数"
+    );
+    assert_ne!(
+        with[0], with[1],
+        "⭐ 有牙：夹具必须让被测差异真的体现在读数上"
+    );
+    assert_ne!(
+        with[1], without[1],
+        "⭐ 有牙：唯一变化的那一行必须真的改变读数"
+    );
+}
+
+/// ⭐ S58（任务单 `#104`；§3.4 / §9）：**「双口径登记」可判**。
+///
+/// # 判定量
+///
+/// `include_str!("../src/sfz_instrument.rs")`（模块头**源码**）必须逐字含两条登记：
+/// ① 双口径（离线按 CC 调制 ／ 实时恒为基准值）；② 摊平表不随探针改变区域选择。
+/// ⭐ 反向腿：文档里**没有**的那两句 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真）。
+///
+/// ⚠ 形态照本仓"文本即判据"的既有做法（S32／S38 同款）。
+#[test]
+fn s58_the_two_caliber_registration_is_judgeable() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const CALIBER: &str = "⭐ 双口径登记（任务单 `#104`）";
+    const GATE: &str = "⭐ 摊平期门控登记（任务单 `#104`）";
+    // ⭐ 反向腿：文档里**不存在**的两句（旧口径 ／ 从未写过的承诺）。
+    const ABSENT_CALIBER: &str = "实时通路也已经按 CC 调制包络";
+    const ABSENT_GATE: &str = "摊平表会随探针重新选择区域";
+    println!(
+        "[engine-sfz/S58] 模块头含双口径登记 = {}、摊平期门控登记 = {}；\
+         反向腿 = {} / {}",
+        MODULE_SOURCE.contains(CALIBER),
+        MODULE_SOURCE.contains(GATE),
+        MODULE_SOURCE.contains(ABSENT_CALIBER),
+        MODULE_SOURCE.contains(ABSENT_GATE),
+    );
+    assert!(
+        MODULE_SOURCE.contains(CALIBER),
+        "⭐ 模块头必须逐字登记：{CALIBER}"
+    );
+    assert!(
+        MODULE_SOURCE.contains(GATE),
+        "⭐ 模块头必须逐字登记：{GATE}"
+    );
+    assert!(
+        !MODULE_SOURCE.contains(ABSENT_CALIBER),
+        "⭐ 反向腿：文档里**没有**的句子必须 `contains == false`"
+    );
+    assert!(
+        !MODULE_SOURCE.contains(ABSENT_GATE),
+        "⭐ 反向腿：文档里**没有**的句子必须 `contains == false`"
     );
 }

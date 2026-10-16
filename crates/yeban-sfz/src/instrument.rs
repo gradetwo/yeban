@@ -31,6 +31,11 @@ use crate::effect::{Effect, EffectBus};
 use crate::error::SfzError;
 use crate::label::{Labels, cc_label_index};
 use crate::midi::MidiSection;
+use crate::modulation::{
+    AMPEG_MOD_CAP, AmpegCcMod, AmpegParam, MAX_MODULATION_CC, MAX_MODULATION_CURVE_INDEX,
+    MAX_MODULATION_DELTA, MIN_MODULATION_DELTA, ModulationForm, bake_ampeg_mods,
+    parse_modulation_name,
+};
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
 use crate::velocity::{
@@ -573,6 +578,20 @@ pub struct Region<'a> {
     /// ⚠ 与 [`Region::off_time`] 的区别：`off_time` 是 **voice-stealing** 的淡化时长
     /// （`off_mode=time`），本字段是 **note-off** 之后的释放段时长 —— 两个量、⛔ 不互相改写。
     pub ampeg_release: f32,
+    /// ⭐ **`ampeg_*` 的 CC 调制项**（`ccN` / `_onccN` / `_curveccN`；任务单 `#104`）。
+    ///
+    /// 顺序**固定**：按 [`AmpegParam`] 的声明序（`attack < hold < decay < sustain <
+    /// release`），同一参数内按 CC 号升序 ⇒ 同一输入得到同一个 `Vec`
+    /// （二进制浮点加法不结合，求和顺序必须唯一 [ARCH-DET-001]）。
+    ///
+    /// 元素是**解析层**的形状（[`AmpegCcMod`]：`curve` 是**下标**而不是曲线本体）——
+    /// `<curve>` 段可以出现在 `<region>` **之后**，所以解析期拿不到曲线本体；
+    /// 求值走 [`Instrument::ampeg_value_with_cc`]（它用
+    /// [`Instrument::modulation_curve`] 解析下标）。
+    ///
+    /// 空 `Vec` ＝ 该 region 没有任何 `ampeg_*ccN` 形态（**缺省 ⇒ 无调制**，
+    /// 与接线前逐位相同）。语义、公式、取值域与工程裁决见 [`crate::modulation`]。
+    pub ampeg_mods: Vec<AmpegCcMod>,
     /// 采样起始偏移（`offset`，单位采样点，规范默认 0）。
     pub offset: u32,
     /// 采样播放终点（`end`，规范默认 `unspecified`）。
@@ -782,6 +801,30 @@ impl<'a> Region<'a> {
     #[must_use]
     pub fn effective_off_time(&self) -> f32 {
         self.off_time.unwrap_or(OFF_TIME_DEFAULT_SECONDS)
+    }
+
+    /// ⭐ **该区域某参数的基准值**（不含任何 CC 调制；单位见字段文档：时间 = 秒、
+    /// `sustain` = 百分比）。
+    ///
+    /// 与 [`Instrument::ampeg_value_with_cc`] 的分工：本方法是 `cc = None` 那一档，
+    /// 也就是"没有 CC 状态"时应该看到的读数。
+    #[must_use]
+    pub const fn ampeg_base(&self, param: AmpegParam) -> f32 {
+        match param {
+            AmpegParam::Attack => self.ampeg_attack,
+            AmpegParam::Hold => self.ampeg_hold,
+            AmpegParam::Decay => self.ampeg_decay,
+            AmpegParam::Sustain => self.ampeg_sustain,
+            AmpegParam::Release => self.ampeg_release,
+        }
+    }
+
+    /// ⭐ 该区域的 `ampeg_*` CC 调制项（顺序与语义见 [`Region::ampeg_mods`]）。
+    ///
+    /// 空切片 ＝ 没有该族 opcode（**缺省 ⇒ 无调制**）。零分配、可在实时路径调用。
+    #[must_use]
+    pub fn ampeg_modulations(&self) -> &[AmpegCcMod] {
+        &self.ampeg_mods
     }
 
     /// 该 region 是否需要「其它按住的音符数」这类外部状态（`trigger=first` /
@@ -1173,6 +1216,52 @@ impl<'a> Instrument<'a> {
         self.control_cc_defaults.get(&cc).copied()
     }
 
+    /// ⭐ **把 `_curveccN` 的下标解析成一条曲线**（任务单 `#104` 的曲线解析点）。
+    ///
+    /// 次序（规范明文，见 [`crate::modulation`] 的模块文档）：
+    /// 1. **内建** `0..=3`（[`Curve::built_in`]：`‹curve›` 页给出"从 A 到 B 线性"的公式）；
+    /// 2. 文件里的 **`<curve>` 段**（[`Instrument::curve`]；规范要求自定义编号 ≥ 7）。
+    ///
+    /// 内建 `4..=6` 被规范称为 `Nonlinear` 却**没有给出任何公式**（见 [`crate::curve`]），
+    /// `≥ 7` 又没有对应 `<curve>` 段 ⇒ **都返回 [`None`]**：⛔ 本 crate 不发明曲线形状。
+    /// 调用方必须把 `None` 如实报出去（[`Instrument::ampeg_value_with_cc`] 把它计进
+    /// 第二个返回值），⛔ 不得当成曲线 0。
+    ///
+    /// ⚠ 命中 `<curve>` 时会 clone 点表（构造/离线路径）⇒ ⛔ 不在实时回调里调用。
+    #[must_use]
+    pub fn modulation_curve(&self, index: u8) -> Option<Curve> {
+        Curve::built_in(index).or_else(|| self.curve(index).cloned())
+    }
+
+    /// ⭐ **求某区域某 `ampeg_*` 参数在给定 CC 探针下的取值**：`base + Σ delta ×
+    /// curve(cc)`（公式、逐字出处与工程裁决见 [`crate::modulation`] 模块文档）。
+    ///
+    /// * `probe == None` ⇒ **无调制**：返回基准值 ＋ 未施加数 `0`
+    ///   （＝ [`Region::ampeg_base`]，与接线前的读数逐位相同）；
+    /// * `probe == Some` ⇒ 逐项相加；`curve` 解析不到的项**计进第二个返回值**且
+    ///   **不贡献**任何量（⛔ 不静默当成曲线 0）；
+    /// * 返回 `(取值, 未施加的调制项数)`。
+    ///
+    /// ⚠ **只覆盖离线**：它按需 clone `<curve>` 点表（求值期分配）⇒
+    /// ⛔ 不得在音频回调里调用。实时侧要用定长形状
+    /// （[`crate::modulation::BakedAmpegCcMod`]，由 `yeban-engine` 的摊平表承载）。
+    #[must_use]
+    pub fn ampeg_value_with_cc(
+        &self,
+        region: &Region<'_>,
+        param: AmpegParam,
+        probe: Option<&dyn Fn(u8) -> u8>,
+    ) -> (f32, usize) {
+        let base = region.ampeg_base(param);
+        let Some(probe) = probe else {
+            return (base, 0);
+        };
+        let baked = bake_ampeg_mods(region.ampeg_modulations(), |index| {
+            self.modulation_curve(index)
+        });
+        crate::modulation::ampeg_value_with_baked(base, param, &baked, probe)
+    }
+
     /// 「当前生效的 keyswitch」对应的 `sw_label`（ARIA 的 GUI 行为）。
     ///
     /// 规范出处 <https://sfzformat.com/opcodes/sw_label/> 的 "Practical
@@ -1480,6 +1569,9 @@ pub(crate) fn build_region<'a>(
     let ampeg_sustain =
         read_ampeg_sustain(&scopes, "ampeg_sustain", AMPEG_SUSTAIN_DEFAULT_PERCENT)?;
     let ampeg_release = read_ampeg_time(&scopes, "ampeg_release", AMPEG_RELEASE_DEFAULT_SECONDS)?;
+    // ⭐ CC 调制（`ampeg_*ccN` / `_onccN` / `_curveccN`）：与五个基准值**分开**归约
+    // （调制量不是取值；缺失 ⇒ 空表 ⇒ 无调制）。
+    let ampeg_mods = read_ampeg_cc_mods(&scopes, line)?;
 
     // ---- 播放区间 / 方向（显式区间与方向，见 <https://sfzformat.com/opcodes/offset/>、
     //      <https://sfzformat.com/opcodes/end/>、<https://sfzformat.com/opcodes/direction/>） ----
@@ -1626,6 +1718,7 @@ pub(crate) fn build_region<'a>(
         ampeg_decay,
         ampeg_sustain,
         ampeg_release,
+        ampeg_mods,
         offset,
         end,
         direction,
@@ -2156,6 +2249,185 @@ fn read_ampeg_sustain(
     Ok(parsed)
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ `ampeg_*` 的 CC 调制（任务单 `#104`）
+// ---------------------------------------------------------------------------
+
+/// 归约一条 `<region>` 生效链上的 `ampeg_*` CC 调制（`ccN` / `_onccN` / `_curveccN`）。
+///
+/// 语义、公式（`base + delta × curve(cc)`）、取值域与全部工程裁决**逐字**写在
+/// [`crate::modulation`] 的模块文档里；这里只负责"读"：
+///
+/// * **作用域链**：`global → master → group → region`（弱到强）喂入
+///   ⇒ 同一 `(参数, CC)` 后者胜（与 `amp_velcurve_N` 的归约同形）；同一作用域里
+///   `OpcodeMap` 是 `BTreeMap` ⇒ 同一 opcode 重复出现时后写的行已经胜出；
+/// * **别名**：`ccN`（SFZ1 旧形）与 `_onccN`（SFZ2）都归 [`ModulationForm::Delta`]
+///   ⇒ 同一 `(参数, CC)` 上的两个写法落在**同一个键**上（规范说它们是别名）；
+/// * **`_curveccN`** 只写曲线下标，与同键的 `delta` **合并**；
+/// * **缺失 ⇒ 空 `Vec`**（＝ 无调制，与接线前逐位相同）；**越界/畸形 ⇒ 明确 `Err`**
+///   （第 259 条：⛔ 不静默降级、⛔ 不钳位）；**只有 `_curveccN` 没有 `delta`**
+///   ⇒ 该项**不产生**调制项（退化输入，⛔ 不是错误）；
+/// * **条数上限**：[`AMPEG_MOD_CAP`]，超过 ⇒ [`SfzError::TooManyAmpegModulations`]
+///   （摊平表的定长容器；登记语料最大读数 10 条）。
+///
+/// 顺序**确定**：`BTreeMap` 的键序 ＝ 参数声明序 × CC 号升序（[ARCH-DET-001]）。
+fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegCcMod>, SfzError> {
+    // 键 = (参数, CC 号)；值 = (delta, curve 下标)。两个分量各自独立合并。
+    let mut table: BTreeMap<(AmpegParam, u8), (Option<f32>, Option<u8>)> = BTreeMap::new();
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let name = name.as_ref();
+            let Some((param, form, digits)) = parse_modulation_name(name) else {
+                continue;
+            };
+            let cc = parse_modulation_cc(digits, name, line)?;
+            let entry = table.entry((param, cc)).or_insert((None, None));
+            match form {
+                ModulationForm::Delta => {
+                    entry.0 = Some(read_ampeg_modulation_delta(
+                        value.as_ref(),
+                        name,
+                        param,
+                        line,
+                    )?);
+                }
+                ModulationForm::Curve => {
+                    entry.1 = Some(read_modulation_curve_index(value.as_ref(), name, line)?);
+                }
+            }
+        }
+    }
+    let mods: Vec<AmpegCcMod> = table
+        .into_iter()
+        .filter_map(|((param, cc), (delta, curve))| {
+            // 只有 `_curveccN`、没有 `delta` ⇒ 没有任何量被调制（模块文档裁决 4）。
+            let delta = delta?;
+            Some(AmpegCcMod {
+                param,
+                cc,
+                delta,
+                curve: curve.unwrap_or(0),
+            })
+        })
+        .collect();
+    if mods.len() > AMPEG_MOD_CAP {
+        return Err(SfzError::TooManyAmpegModulations {
+            line,
+            count: mods.len(),
+            max: AMPEG_MOD_CAP,
+        });
+    }
+    Ok(mods)
+}
+
+/// 解析 `ccN` / `_onccN` / `_curveccN` 里的 **CC 号**（`0..=255`，见
+/// [`crate::modulation`] 裁决 1）。
+///
+/// `digits` 由 [`parse_modulation_name`] 保证非空且全是 ASCII 数字 ⇒ 这里只有
+/// 「超过 `u16`」与「超过 255」两种失败，都是明确 [`SfzError::IntegerOutOfRange`]。
+fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzError> {
+    let cc = digits
+        .parse::<u16>()
+        .map_err(|_| SfzError::IntegerOutOfRange {
+            line,
+            opcode: name.to_string(),
+            value: digits.parse::<i64>().unwrap_or(i64::MAX),
+            min: 0,
+            max: i64::from(MAX_MODULATION_CC),
+        })?;
+    if cc > MAX_MODULATION_CC {
+        return Err(SfzError::IntegerOutOfRange {
+            line,
+            opcode: name.to_string(),
+            value: i64::from(cc),
+            min: 0,
+            max: i64::from(MAX_MODULATION_CC),
+        });
+    }
+    Ok(cc as u8)
+}
+
+/// 读 `delta`（`ampeg_*ccN` / `ampeg_*_onccN` 的取值）。
+///
+/// 单位与目标**同单位**（时间 = 秒、`sustain` = 百分比），取值域**统一**是
+/// `-100..=100`（各 opcode 页 Modulation 表的 Range 列）。与基准 opcode 的读取
+/// （[`read_ampeg_time`] / [`read_ampeg_sustain`]）有两处**刻意**不同：
+///
+/// 1. **允许负值**（基准确是 `0..=100`）：登记语料里负 `delta` 有 760 处；
+/// 2. 越界一律 [`SfzError::FloatOutOfRange`]（基准确把负值单独报 `InvalidDuration`，
+///    这里负数合法 ⇒ 只有一条域）。
+///
+/// 其余政策同基准：认 `s` / `ms`（时间）与 `%`（`sustain`）后缀、大小写不敏感，
+/// 认不出 ⇒ [`SfzError::InvalidFloat`]，非有限 ⇒ [`SfzError::NonFiniteFloat`]。
+fn read_ampeg_modulation_delta(
+    raw: &str,
+    name: &str,
+    param: AmpegParam,
+    line: usize,
+) -> Result<f32, SfzError> {
+    let raw = raw.trim();
+    let (number, scale) = if param.is_time() {
+        if let Some(number) = strip_unit(raw, "ms") {
+            (number, 1.0e-3_f32)
+        } else if let Some(number) = strip_unit(raw, "s") {
+            (number, 1.0_f32)
+        } else {
+            (raw, 1.0_f32)
+        }
+    } else {
+        (strip_unit(raw, "%").unwrap_or(raw), 1.0_f32)
+    };
+    let parsed = number
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| SfzError::InvalidFloat {
+            line,
+            opcode: name.to_string(),
+            value: raw.to_string(),
+        })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::NonFiniteFloat {
+            line,
+            opcode: name.to_string(),
+            value: raw.to_string(),
+        });
+    }
+    let value = parsed * scale;
+    if !(MIN_MODULATION_DELTA..=MAX_MODULATION_DELTA).contains(&value) {
+        return Err(SfzError::FloatOutOfRange {
+            line,
+            opcode: name.to_string(),
+            value,
+            min: MIN_MODULATION_DELTA,
+            max: MAX_MODULATION_DELTA,
+        });
+    }
+    Ok(value)
+}
+
+/// 读 `_curveccN` 的**曲线下标**（整数，`0..=255`；`ampeg_attackccN` 页 Modulation 表）。
+///
+/// 非整数 ⇒ [`SfzError::InvalidInteger`]；越界 ⇒ [`SfzError::IntegerOutOfRange`]
+/// （⛔ 不钳位、⛔ 不"认不出就当曲线 0"）。
+fn read_modulation_curve_index(raw: &str, name: &str, line: usize) -> Result<u8, SfzError> {
+    let text = raw.trim();
+    let parsed = text.parse::<i64>().map_err(|_| SfzError::InvalidInteger {
+        line,
+        opcode: name.to_string(),
+        value: text.to_string(),
+    })?;
+    if !(0..=i64::from(MAX_MODULATION_CURVE_INDEX)).contains(&parsed) {
+        return Err(SfzError::IntegerOutOfRange {
+            line,
+            opcode: name.to_string(),
+            value: parsed,
+            min: 0,
+            max: i64::from(MAX_MODULATION_CURVE_INDEX),
+        });
+    }
+    Ok(parsed as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2188,6 +2460,7 @@ mod tests {
             ampeg_decay: AMPEG_TIME_DEFAULT_SECONDS,
             ampeg_sustain: AMPEG_SUSTAIN_DEFAULT_PERCENT,
             ampeg_release: AMPEG_RELEASE_DEFAULT_SECONDS,
+            ampeg_mods: Vec::new(),
             offset: 0,
             end: SampleEnd::Unspecified,
             direction: PlayDirection::Forward,

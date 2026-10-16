@@ -145,41 +145,55 @@ impl Curve {
         &self.points
     }
 
-    /// 求 `x` 处的曲线值。
+    /// 求 `x` 处的曲线值（＝ [`curve_value_at`] 作用在 [`Curve::points`] 上）。
     ///
-    /// 规则（规范原文见模块文档）：
-    /// 1. 已定义点上**逐位命中**该点的值；
-    /// 2. 已定义点之间**线性插值**；
-    /// 3. `x` 在 `0..=127` 之外取端点值（点表已含 `at == 0` 与 `at == 127`，所以不外推）；
-    /// 4. `x` 是 `NaN` ⇒ 返回 `NaN`。
+    /// 规则（规范原文见模块文档）见 [`curve_value_at`]。
     ///
     /// 实时安全：无分配、无锁、无 I/O。逐位可复现：只有 `+ - * /` 与比较。
     #[must_use]
     pub fn value_at(&self, x: f32) -> f32 {
-        if x.is_nan() {
-            return f32::NAN;
-        }
-        let (Some(first), Some(last)) = (self.points.first(), self.points.last()) else {
-            // 构造方保证至少两个点；空表只可能来自未来改动，这里明确退化而不是 panic。
-            return 0.0;
-        };
-        if x <= f32::from(first.at) {
-            return first.value;
-        }
-        if x >= f32::from(last.at) {
-            return last.value;
-        }
-        let upper = self
-            .points
-            .partition_point(|point| f32::from(point.at) <= x);
-        if upper == 0 || upper >= self.points.len() {
-            return last.value;
-        }
-        let low = self.points[upper - 1];
-        let high = self.points[upper];
-        let t = (x - f32::from(low.at)) / f32::from(high.at - low.at);
-        low.value + t * (high.value - low.value)
+        curve_value_at(&self.points, x)
     }
+}
+
+/// **曲线求值的唯一实现**（`Curve::value_at` 与摊平表的[烘焙曲线]共用它
+/// ⇒ 两条路不可能算出差一分的插值）。
+///
+/// `points` 必须满足构造方契约：按 [`CurvePoint::at`] 升序、首点 `at == 0`、
+/// 末点 `at == 127`、无重复 `at`（空表是退化输入，返回 `0.0`，⛔ 不 panic）。
+///
+/// 规则（规范原文见模块文档）：
+/// 1. 已定义点上**逐位命中**该点的值；
+/// 2. 已定义点之间**线性插值**；
+/// 3. `x` 在 `0..=127` 之外取端点值（点表已含 `at == 0` 与 `at == 127`，所以不外推）；
+/// 4. `x` 是 `NaN` ⇒ 返回 `NaN`。
+///
+/// 实时安全：无分配、无锁、无 I/O（纯切片读 ＋ 算术）。逐位可复现：只有 `+ - * /` 与比较。
+///
+/// [烘焙曲线]: crate::modulation::BakedCurve
+#[must_use]
+pub fn curve_value_at(points: &[CurvePoint], x: f32) -> f32 {
+    if x.is_nan() {
+        return f32::NAN;
+    }
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        // 构造方保证至少两个点；空表只可能来自未来改动，这里明确退化而不是 panic。
+        return 0.0;
+    };
+    if x <= f32::from(first.at) {
+        return first.value;
+    }
+    if x >= f32::from(last.at) {
+        return last.value;
+    }
+    let upper = points.partition_point(|point| f32::from(point.at) <= x);
+    if upper == 0 || upper >= points.len() {
+        return last.value;
+    }
+    let low = points[upper - 1];
+    let high = points[upper];
+    let t = (x - f32::from(low.at)) / f32::from(high.at - low.at);
+    low.value + t * (high.value - low.value)
 }
 
 #[cfg(test)]

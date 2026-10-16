@@ -479,9 +479,50 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）已由任务单 `#96` 闭合：⭐ **模型层不禁止**这个组合（模型里没有"鼓机"这个概念 —— `DeviceKind` 只有四档、无鼓机档；`TrackV3.sampler` 与 `devices` 是**平行**字段）⇒ ⭐ 裁决**留在引擎**（`鼓机 ＞ SFZ ＞ 复音` ＋ `armed_sources`／`ignored_sources` 读数）；常驻判据 `crates/yeban-model/tests/track_multi_source_coexistence.rs` |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⛔ **仍未做**：`ampeg_*` 的**调制类**（`ampeg_*ccN` / `ampeg_vel2*` / `*_curveccN`）、`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⛔ **仍未做**：`ampeg_*` 的**调制类** —— ⭐ **一半已由任务单 `#104` 接上**（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍未接线，登记见本模块头的"CC 调制"一节）；⛔ 仍未做：`ampeg_vel2*`、`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
+//!
+//! # ⭐ `ampeg_*` 的 CC 调制（任务单 `#104`）
+//!
+//! 规范语义、四种形态（`ccN` ／ `_onccN` ／ `_curveccN`，外加被调制的基准 opcode）的
+//! **逐字出处**、公式（`base + Σ delta × curve(cc)`）、取值域与全部工程裁决写在
+//! **`yeban-sfz`** 的 `modulation` 模块文档里 —— 本片 ⛔ 不复制那份事实源。
+//!
+//! 本片在**引擎侧**做了三件事：
+//!
+//! 1. **摊平期承载**：归约结果（含**烘好的**曲线点表）搬进 [`PreparedRegion`]
+//!    （`ampeg_mods[AMPEG_MOD_CAP]` ＋ 条数；`PreparedRegion` 2672 → **4192 B**，＋1 520 B／区域，
+//!    摊平期、⛔ 不进实时对象；`SfzVoice` 40 B ／ `SfzVoicePool` 1712 B ／ `EngineRuntime` 180000 B 全部 ＋0）。
+//!    曲线在这里烘进**区域表**而不是另开一张表，是为了让
+//!    [`SfzByteUsage`] 的"区域表 ＝ `size_of × N`"读数**仍然没有隐藏的第四份开销**；
+//! 2. **离线两条路求值**：[`SfzInstrument::render_note_into_with_cc`] 与
+//!    [`PreparedSfz::render_block_into_with_cc`]（各有一个 `cc = None` 的旧入口包装，
+//!    ⇒ 无探针时**逐位不变**）。求值本体是 `yeban-sfz` 的
+//!    `ampeg_value_with_baked`（**同一份**实现，⛔ 没有第二套公式）；
+//! 3. **`slot_readings` 侧可见**：[`PreparedRegion::ampeg_value_with_cc`] ／
+//!    [`PreparedRegion::ampeg_run_with_cc`] 是纯算术 ＋ 定长切片（零分配、零锁、零 I/O），
+//!    [`SfzVoicePool`] 那条路今天传 `None`（见下面的登记）。
+//!
+//! ⭐ 双口径登记（任务单 `#104`）：**包络的 CC 调制只在离线的两条路
+//! `render_note_into_with_cc` ／ `render_block_into_with_cc`（以及它们的摊平表读数）上生效
+//! —— 实时通路（[`SfzVoicePool`] 的触发与渲染）今天**不读任何 CC 状态**，
+//! 因此同一份 SFZ 在"给了探针的离线渲染"与"实时回调"下包络**不同**：
+//! 前者按 `base + Σ delta × curve(cc)`，后者恒为基准值。**这是本片有意的范围边界
+//! （⛔ 不是静默降级）：把 CC 状态接进实时回调属于"架构单"，需人类批准。**
+//!
+//! ⭐ 摊平期门控登记（任务单 `#104`）：**摊平表不随探针改变区域选择** ——
+//! CC 门控（`loccN`/`hiccN`）与 keyswitch / `trigger` 一样在**摊平期**用
+//! `RegionQuery::new(note, velocity)`（＝ `cc = None`）求值一次并烧进两张掩码
+//! （见 [`flatten_regions`]）⇒ `render_block_into_with_cc` 的探针只影响 `ampeg_*` 的**取值**，
+//! ⛔ 不会让一条被 CC 门控挡掉的区域发声。离线的
+//! [`SfzInstrument::render_note_into_with_cc`] 则把同一个探针**同时**喂给
+//! [`RegionQuery::with_cc`]（门控在那条路上是活的）⇒ 这条差别**登记在案**，⛔ 不分叉成两份选择口径。
+//!
+//! ⚠ **仍未做**（⛔ 不发明）：扩展 CC 的**取值语义**（135 = unipolar random `0..1`、
+//! 136 = bipolar random `-1..1`、140/141 = 半音数…… `u8` 探针表达不了负值/小数）、
+//! `ampeg_vel2*`、`fileg_*` / `pitcheg_*`、`smoothccN` / `stepccN`（`ampeg_*` 的规范表里
+//! **没有**这两行，登记语料出现 0 次 ⇒ 本片不识别，按未知 opcode 忽略）。
 
 use std::collections::BTreeMap;
 
@@ -491,6 +532,12 @@ use yeban_dsp::polysynth::steal_fade_frames_for;
 use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{Instrument, LoopMode, NotePolyphony, OffMode, Region, RegionQuery};
+// ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（`ccN` / `_onccN` / `_curveccN`）。
+// 摊平表按 [`AMPEG_MOD_CAP`] 条**定长**承载（`Copy`），求值本体是
+// [`ampeg_value_with_baked`]（与 `yeban-sfz` 的离线路径**同一份**实现）。
+use yeban_sfz::modulation::{
+    AMPEG_MOD_CAP, AmpegParam, BakedAmpegCcMod, ampeg_value_with_baked, bake_ampeg_mods,
+};
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
@@ -647,9 +694,46 @@ impl SfzInstrument {
         out: &mut [f32],
         engine_hz: f32,
     ) -> Result<usize, SfzError> {
+        self.render_note_into_with_cc(source, note, velocity, None, out, engine_hz)
+    }
+
+    /// ⭐ **离线渲染 ＋ CC 探针**（任务单 `#104`）：与 [`Self::render_note_into`]
+    /// **同一条路**，只多一个 CC 状态来源。
+    ///
+    /// * `cc == None` ⇒ 与 [`Self::render_note_into`] **逐位相同**
+    ///   （既有的 `loccN`/`hiccN` 门控走"未提供状态 ⇒ 不匹配"的严格策略，
+    ///   `ampeg_*` 走基准值）；
+    /// * `cc == Some(probe)` ⇒ ① 探针同时喂给**既有**的
+    ///   [`RegionQuery::with_cc`]（CC 门控生效）；② `ampeg_*` 按
+    ///   `base + Σ delta × curve(cc)` 求值（公式与逐字出处见
+    ///   [`yeban_sfz::modulation`]）。
+    ///
+    /// ⚠ **`probe` 的值域是 `u8`**：标准 CC（`0..=127`）与 SFZ2 扩展 CC
+    /// （`128..=137`）都能表达；**扩展 CC 的取值语义**（135 = unipolar random `0..1`、
+    /// 136 = bipolar random `-1..1`、140/141 = 半音数）**本片不声称支持**（登记为缺口）。
+    ///
+    /// ⚠ **只覆盖离线**：本函数在调用时**解析**（⇒ 分配）⇒ ⛔ 不得在音频回调里调用（红线 7）。
+    /// 摊平侧的同一能力见 [`PreparedSfz::render_block_into_with_cc`]。
+    ///
+    /// # Errors
+    /// 同 [`Self::render_note_into`]。
+    pub fn render_note_into_with_cc(
+        &self,
+        source: &InMemorySample,
+        note: u8,
+        velocity: u8,
+        cc: Option<&dyn Fn(u8) -> u8>,
+        out: &mut [f32],
+        engine_hz: f32,
+    ) -> Result<usize, SfzError> {
         let pcm_len = source.pcm.len();
         let rates = RenderRates::new(source.sample_hz, engine_hz);
         let query = RegionQuery::new(note, velocity);
+        // ⭐ 探针同时注入**既有**的 CC 门控（`loccN`/`hiccN`）；`None` ⇒ 严格策略不变。
+        let query = match cc {
+            Some(probe) => query.with_cc(probe),
+            None => query,
+        };
         self.with_instrument(|instrument| {
             let mut written = 0usize;
             for region in instrument.regions() {
@@ -684,15 +768,35 @@ impl SfzInstrument {
                 // ⚠ `abs_base = 0` 只用于释放进度，这条路上用不到。
                 // ⚠ `frame = u64::MAX`（这条路没有 note-off ⇒ 永不进释放段）、
                 // `abs_base = 0`（释放进度用不到）、`loop_during_release = false`。
-                let mut env = ampeg_run_from(
-                    region.ampeg_attack,
-                    region.ampeg_hold,
-                    region.ampeg_decay,
-                    region.ampeg_sustain,
-                    region.ampeg_release,
-                    engine_hz,
-                )
-                .map(|run| EnvRun::new(run, ENV_STAGE_IDLE, 0, u64::MAX, 0, false));
+                // ⭐ CC 调制（任务单 `#104`）：五个参数按探针求值，走
+                // `yeban-sfz` 的**同一份**求值本体（`ampeg_value_with_baked`）；
+                // `cc == None` ⇒ 五个读数就是基准字段 ⇒ 与接线前逐位相同。
+                let (attack, hold, decay, sustain, release) = match cc {
+                    None => (
+                        region.ampeg_attack,
+                        region.ampeg_hold,
+                        region.ampeg_decay,
+                        region.ampeg_sustain,
+                        region.ampeg_release,
+                    ),
+                    Some(probe) => {
+                        let baked = bake_ampeg_mods(region.ampeg_modulations(), |index| {
+                            instrument.modulation_curve(index)
+                        });
+                        let value = |param: AmpegParam| {
+                            ampeg_value_with_baked(region.ampeg_base(param), param, &baked, probe).0
+                        };
+                        (
+                            value(AmpegParam::Attack),
+                            value(AmpegParam::Hold),
+                            value(AmpegParam::Decay),
+                            value(AmpegParam::Sustain),
+                            value(AmpegParam::Release),
+                        )
+                    }
+                };
+                let mut env = ampeg_run_from(attack, hold, decay, sustain, release, engine_hz)
+                    .map(|run| EnvRun::new(run, ENV_STAGE_IDLE, 0, u64::MAX, 0, false));
                 let region_written = mix_span_into(
                     &source.pcm,
                     &mut position,
@@ -1104,6 +1208,20 @@ pub struct PreparedRegion {
     /// 本字段只在 note-off **真的**到达时才起作用（且 `release == 0` ⇒ 释放段零长 ⇒ 立即退休，
     /// 即"今天的 `end_sample` 硬停"）。
     ampeg_release: f32,
+    /// ⭐ **`ampeg_*` 的 CC 调制项**（任务单 `#104`）：`ccN` / `_onccN` / `_curveccN`
+    /// 的归约结果，**曲线已烘进本结构**（[`BakedAmpegCcMod`] / [`BakedCurve`]）
+    /// ⇒ 求值不再需要 `Instrument`，也⛔ 不额外分配。
+    ///
+    /// 有效范围是 `..ampeg_mod_count`（定长槽的空槽是 [`BakedAmpegCcMod::EMPTY`]，
+    /// ⛔ 不能靠值判断）。顺序由 `yeban-sfz` 的归约唯一确定（参数声明序 × CC 升序）。
+    ///
+    /// ⚠ **它是"区域参数"、不是"声部状态"**：逐声部的推进状态仍在 [`SfzVoice`]，
+    /// ⇒ 本字段⛔ 不进实时对象（`SfzVoice` 尺寸不变）。
+    ///
+    /// [BakedCurve]: yeban_sfz::modulation::BakedCurve
+    ampeg_mods: [BakedAmpegCcMod; AMPEG_MOD_CAP],
+    /// ⭐ 上面那张表里**有效**的条数（`0..=AMPEG_MOD_CAP`）。
+    ampeg_mod_count: u8,
     /// ⭐ **独占组号**（`group`，缺省 `0`；别名 `polyphony_group`）。
     ///
     /// 语义（SFZ v1 逐字，见 <https://sfzformat.com/opcodes/group/>）：
@@ -1377,15 +1495,103 @@ impl PreparedRegion {
     /// * 透明区域 ⇒ `None`（⛔ 不进包络路径）。
     ///
     /// ⚠ **零分配、零锁、零 I/O**（纯浮点/整数换算）⇒ 可被逐块路径调用 [MUST-GATE-001]。
+    ///
+    /// ⭐ 本方法是 [`Self::ampeg_run_with_cc`] 传 `probe == None` 的**薄包装**
+    /// ⇒ "没有 CC 状态"与接线前的读数**逐位相同**（⛔ 不是第二份换算）。
     #[must_use]
     pub fn ampeg_run(&self, engine_hz: f32) -> Option<AmpegRun> {
+        self.ampeg_run_with_cc(engine_hz, None)
+    }
+
+    /// ⭐ **该区域某 `ampeg_*` 参数的基准值**（不含 CC 调制）。
+    #[must_use]
+    pub const fn ampeg_base(&self, param: AmpegParam) -> f32 {
+        match param {
+            AmpegParam::Attack => self.ampeg_attack,
+            AmpegParam::Hold => self.ampeg_hold,
+            AmpegParam::Decay => self.ampeg_decay,
+            AmpegParam::Sustain => self.ampeg_sustain,
+            AmpegParam::Release => self.ampeg_release,
+        }
+    }
+
+    /// ⭐ **该区域承载的 `ampeg_*` CC 调制项**（任务单 `#104`；曲线已烘焙）。
+    ///
+    /// 空切片 ＝ 该区域没有该族 opcode（⇒ `probe` 给不给都一样）。零分配。
+    #[must_use]
+    pub fn ampeg_modulations(&self) -> &[BakedAmpegCcMod] {
+        &self.ampeg_mods[..usize::from(self.ampeg_mod_count)]
+    }
+
+    /// ⭐ 表里**曲线无法解析**的调制项数（内建 `4..=6` 规范未给公式、`<curve>` 未定义、
+    /// 或点数超过 [`MAX_BAKED_CURVE_POINTS`]）。
+    ///
+    /// 这些项**不贡献**任何量（⛔ 不当成曲线 0），本读数是它们的**响亮**出口
+    /// （登记见本模块头的"CC 调制"一节）。
+    ///
+    /// [MAX_BAKED_CURVE_POINTS]: yeban_sfz::modulation::MAX_BAKED_CURVE_POINTS
+    #[must_use]
+    pub fn ampeg_unresolved_mods(&self) -> usize {
+        self.ampeg_modulations()
+            .iter()
+            .filter(|item| !item.curve.is_resolved())
+            .count()
+    }
+
+    /// ⭐ **求某参数在给定 CC 探针下的取值**：`base + Σ delta × curve(cc)`。
+    ///
+    /// * `probe == None` ⇒ 基准值 ＋ 未施加数 `0`（＝ [`Self::ampeg_base`]）；
+    /// * `probe == Some` ⇒ 逐项相加；曲线解析不到的项**计进第二个返回值**且不贡献量。
+    ///
+    /// 求值本体是 `yeban-sfz` 的 [`ampeg_value_with_baked`]（与离线
+    /// [`SfzInstrument::render_note_into_with_cc`] **同一份**实现）。
+    ///
+    /// ⚠ **零分配、零锁、零 I/O**（纯算术 ＋ 定长切片）⇒ 可在逐块路径调用。
+    #[must_use]
+    pub fn ampeg_value_with_cc(
+        &self,
+        param: AmpegParam,
+        probe: Option<&dyn Fn(u8) -> u8>,
+    ) -> (f32, usize) {
+        let base = self.ampeg_base(param);
+        let Some(probe) = probe else {
+            return (base, 0);
+        };
+        ampeg_value_with_baked(base, param, self.ampeg_modulations(), probe)
+    }
+
+    /// ⭐ **逐块归约 ＋ CC 调制**（任务单 `#104`）：先按 CC 探针求五个参数，再走
+    /// [`ampeg_run_from`] 的**同一份**帧换算。
+    ///
+    /// * `probe == None` ⇒ 与 [`Self::ampeg_run`] **逐位相同**（⛔ 没有第二条换算路径）；
+    /// * `probe == Some` ⇒ 五个参数各自 `base + Σ delta × curve(cc)`；
+    /// * 曲线解析不到的项**不贡献**量（可由 [`Self::ampeg_unresolved_mods`] 读出）。
+    ///
+    /// ⚠ **零分配、零锁、零 I/O**。
+    #[must_use]
+    pub fn ampeg_run_with_cc(
+        &self,
+        engine_hz: f32,
+        probe: Option<&dyn Fn(u8) -> u8>,
+    ) -> Option<AmpegRun> {
+        if probe.is_none() {
+            return ampeg_run_from(
+                self.ampeg_attack,
+                self.ampeg_hold,
+                self.ampeg_decay,
+                self.ampeg_sustain,
+                self.ampeg_release,
+                engine_hz,
+            );
+        }
+        let probe = probe?;
+        // `AmpegParam::ALL` 是声明序 ⇒ 五个读数各自独立求值，顺序确定。
+        let mut values = [0.0f32; 5];
+        for param in AmpegParam::ALL {
+            values[param.index()] = self.ampeg_value_with_cc(param, Some(probe)).0;
+        }
         ampeg_run_from(
-            self.ampeg_attack,
-            self.ampeg_hold,
-            self.ampeg_decay,
-            self.ampeg_sustain,
-            self.ampeg_release,
-            engine_hz,
+            values[0], values[1], values[2], values[3], values[4], engine_hz,
         )
     }
 }
@@ -1973,6 +2179,33 @@ impl PreparedSfz {
     /// 在 `min(span.end, PCM 长度)` 停（[`PreparedRegion::span_bounds`] ⇒ [`reduce_span`]）
     /// ⇒ 与离线侧、与实时声部的**逐样本最大绝对差为 0**，且覆盖**整段**（含显式 `end`）。
     pub fn render_block_into(&self, note: u8, velocity: u8, out: &mut [f32]) -> usize {
+        self.render_block_into_with_cc(note, velocity, None, out)
+    }
+
+    /// ⭐ **回调侧渲染 ＋ CC 探针**（任务单 `#104`）：与 [`Self::render_block_into`]
+    /// **同一条路**，只多一个 `ampeg_*` 调制的 CC 状态来源。
+    ///
+    /// * `cc == None` ⇒ 与 [`Self::render_block_into`] **逐位相同**；
+    /// * `cc == Some(probe)` ⇒ 每条区域的 `ampeg_*` 按 `base + Σ delta × curve(cc)`
+    ///   求值（[`PreparedRegion::ampeg_run_with_cc`]）。
+    ///
+    /// ⚠ **与离线 [`SfzInstrument::render_note_into_with_cc`] 的两处登记差别**
+    /// （本模块头的"CC 调制"一节有逐字登记）：
+    ///
+    /// 1. **区域选择不随探针变**：门控（含 `loccN`/`hiccN`）在**摊平期**就用
+    ///    `cc = None` 求值过（[`flatten_regions`]）⇒ 探针只影响 `ampeg_*` 的取值，
+    ///    ⛔ 不会让一条被 CC 门控挡掉的区域发声；
+    /// 2. **曲线点表已在摊平期烘焙** ⇒ 探针不再需要 `Instrument`。
+    ///
+    /// ⚠ **零分配、零锁、零 I/O**（只做位测试、定长数组读与 `out` 的原地写入）
+    /// ⇒ 该函数仍可被回调路径调用 [MUST-GATE-001]。
+    pub fn render_block_into_with_cc(
+        &self,
+        note: u8,
+        velocity: u8,
+        cc: Option<&dyn Fn(u8) -> u8>,
+        out: &mut [f32],
+    ) -> usize {
         let n = note as usize;
         let mut written = 0usize;
         for region in &self.regions {
@@ -1999,7 +2232,7 @@ impl PreparedSfz {
             // ⭐ 包络（任务 `#92`）：与离线/实时两条路**同一份归约**（秒 × 本表的 `engine_hz`）。
             // 这条一次性调用**没有 note-off** ⇒ 只走 起音→保持→衰减→保持（`frame = u64::MAX`）。
             let mut env = region
-                .ampeg_run(self.engine_hz)
+                .ampeg_run_with_cc(self.engine_hz, cc)
                 .map(|run| EnvRun::new(run, ENV_STAGE_IDLE, 0, u64::MAX, 0, false));
             let region_written = mix_span_into(
                 pcm,
@@ -2096,6 +2329,25 @@ fn flatten_regions(
                 *slot = region.velocity_gain(velocity as u8);
             }
 
+            // ⭐ CC 调制（任务单 `#104`）：把解析层的 `(cc, delta, 曲线下标)` 烘成
+            // **定长 `Copy`** 形状。曲线点表只能在这里解析 —— 摊平之后就拿不到
+            // `<curve>` 段了（这是本片把曲线**烘进**区域表、而不是另开一张表的原因：
+            // `SfzByteUsage` 的"区域表 ＝ `size_of × N`"读数因此仍然**没有隐藏的第四份开销**）。
+            // 条数超过 `AMPEG_MOD_CAP` 在 `yeban-sfz` 的**解析期**就已经响亮 `Err`
+            //（`SfzError::TooManyAmpegModulations`）⇒ 这里⛔ 不会截断。
+            let baked = bake_ampeg_mods(region.ampeg_modulations(), |index| {
+                parsed.modulation_curve(index)
+            });
+            debug_assert!(
+                baked.len() <= AMPEG_MOD_CAP,
+                "yeban-sfz caps at AMPEG_MOD_CAP"
+            );
+            let ampeg_mod_count = baked.len() as u8;
+            let mut ampeg_mods = [BakedAmpegCcMod::EMPTY; AMPEG_MOD_CAP];
+            for (slot, item) in ampeg_mods.iter_mut().zip(baked) {
+                *slot = item;
+            }
+
             regions.push(PreparedRegion {
                 key_mask,
                 vel_mask,
@@ -2121,6 +2373,10 @@ fn flatten_regions(
                 ampeg_decay: region.ampeg_decay,
                 ampeg_sustain: region.ampeg_sustain,
                 ampeg_release: region.ampeg_release,
+                // ⭐ CC 调制（任务单 `#104`）：归约结果（含烘好的曲线）搬进摊平表。
+                // 它是**区域参数**、不是声部状态 ⇒ `SfzVoice` 尺寸不变，⛔ 不进实时对象。
+                ampeg_mods,
+                ampeg_mod_count,
                 // ⭐ 独占组（任务单 `#94`）：三个**每区域**字段原样搬进摊平表。
                 // `group` / `off_by` 的解析与域（`0..=u32::MAX`）在 `yeban-sfz` 里早已有
                 // 判据（`instrument.rs` 的 `read_u32` 一族）⇒ 本片只**搬运**，⛔ 不新增解析。
