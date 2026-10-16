@@ -10686,3 +10686,27 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ ⚠ ⭐ ⭐ **三、⭐ 一处**我自己的小瑕疵（⭐ 照实登记）**: ⭐ **我给 R761 那次提交写 `-m` 消息时用反引号包了 sha** ⇒ ⭐ **bash 把它当命令替换执行**（⭐ stderr 一行 `cb97fcd3: command not found`）⇒ ⭐ **那条提交消息里少了几个 sha 字面** ✓ ⚠ **台账文件内容不受影响**（⭐ heredoc 是引号形式 `<<'EOF'` ⇒ ⭐ 不做替换）⇒ ⭐ **事实都在台账里**；⛔ **我不改已推送的提交**（⭐ 那要 force-push、⭐ 不当操作）✓ ⇒ ⭐ **可复用的教训**: ⭐ ⭐ **给 `git commit -m` 传带反引号／⭐`$`⭐ 的文本必须用单引号或 heredoc** ✓
 
 ⭐ ⚠ ⭐ **四、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `1a4363be` 的 CI 判决** ＋ ⭐ **`#94` 交单（⭐ 读法 B ＋ ⭐规范口径）** ＋ ⭐ **`loop_end == pcm_len` 的钳位单** ＋ ⭐ **`--enable-ui-mcp-http` 形态的打开入口单** ＋ ⭐ **`sfz_load.rs` 陈旧注释单**（⭐ 新登记）＋ ⭐ **统一归一化分母单**（⭐ 只对**无损**腿有意义）＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R763 实测追加（2026-10-16）：⭐ **`#94` 落地（⭐ `off_by` 独占组 ＋ `off_mode` 读法 B ＋ note-off 三档按规范改）** ⇒ ⭐ **`sfz-needs-6` 的 `off_mode`／`group`／`off_by` 三项闭合**
+
+⭐ ⭐ ⭐ **一、⭐ `#94` 落地（⭐ mod-engine；⭐ `dbdbb065` ⇒ ⭐ rebase 后 ＝ `42618116`；⭐ 3 文件 ＋1008／⭐−173）**:
+| ⭐ 项 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ ⭐ **照实说：⭐ 本单是**接线**** | ⭐ `off_mode` 早在 `instrument.rs:1398-1401` 解析、⭐ ⭐ **`group`／⭐`off_by` 也早在 `:1531-1532`**（⭐ 别名 `polyphony_group`／⭐`offby`、⭐ 域 `0..=u32::MAX`）⇒ ⭐ **只加播放层，⭐ 一行新解析都没写** ✓ |
+| ⭐ ⭐ **读法 B 落地** | ⭐ `off_mode` **只管 `off_by` 关断**；⭐ note-off 路径由 `loop_mode` ＋ ⭐`ampeg_*` 决定 ⇒ ⭐ **模块头逐字登记规范那句**（⭐ "how a region is turned off by an `off_by` opcode"）＋ ⭐ **写明读法 A 有意不做、⭐ ⛔ 不开单** ✓ |
+| ⭐ ⭐ **note-off 三档按规范改（⭐ 撤回我 `#92` 那两条）** | ⭐ `no_loop`／⭐`loop_sustain`／⭐`loop_continuous` **一律 note-off 就地进释放**；⭐ 分野只剩"⭐ 释放期要不要回绕"、⭐ **唯一闸门 ＝ `EnvRun::may_wrap`**（⭐ `mix_span_into` 里那**一个** `if`）⇒ ⭐ `loop_continuous` 释放期照旧回绕、⭐ 其余两档沿源位置往后播（⭐ "⭐ 释放走完"⭐ 与"⭐ 到样本尾"⭐ 谁先到谁结束）✓ ⭐ **已删 `AmpegStage::ReleasePending` ＋ `ENV_RELEASE_PENDING` ＋ `sustain_tail` ＋ `on_loop_wrap`**（⭐ ⛔ 不留第二份循环几何）＋ ⭐ **透明包络一字未动** ✓ |
+| ⭐ ⭐ **承重指纹原样（⭐ 我要求的那条）** | ⭐ ⭐ **`S37`：⭐ `loop_continuous`＋200 ⇒ `0xa9dec8a87f69106c`（⭐ 原样）＋ 非零 200；⭐ `no_loop`＋MAX ⇒ `0xd3c2a82076bd8947`（⭐ 原样）＋ 非零 399** ⇒ ⭐ **透明路径逐位不变** ✓ |
+| ⭐ **尺寸（⭐ 实时对象全 ＋0、⭐ 连续第三单）** | ⭐ `SfzVoice 40`／⭐池 `1712`／⭐`SynthEngine 109152`／⭐`EngineRuntime 180000`（⭐ **门槛 196608、⭐ 余量 16608 ≥ 8192**）⇒ ⭐ **全 ＋0**；⭐ ⭐ **唯一变的是 `PreparedRegion` 2656 ⇒ **2664**（＋8 ＝ `group: u32` ＋ `off_by: u32`；⭐ `off_mode` 落进对齐填充）** ⇒ ⭐ **我已更新 `sfz-core-notes.md` 四处**（⭐ `2664 B`／⭐`5328`／⭐`7992`／⭐合计 `17602`）✓ |
+| ⭐ **新语义可判（⭐ 实测数字）** | ⭐ ⭐ **`fast` 非零 200（关断帧起逐位 0）vs `normal` 非零 680（释放起点 1）** ⇒ ⭐ **两者不同且各配自己该怎样的断言**；⭐ ⭐ **不误伤**：⭐ `off_by=0` 与 `off_by=5`（⭐ 无人属于组 5）**整段逐位相同**、⭐ `off_by=1` 不同；⭐ ⭐ **`one_shot` 的 `off_by=1` 与 `=0` 指纹逐位相同（`0xfcd2c659a174eda5`）＋ `no_loop` 正对照不同** ⇒ ⭐ 开关真有承重；⭐ **不自掐**；⭐ **victim 只停 `active`、⭐ 保留同槽 `pending`**（⭐ 判据 S45 钉住"⭐ 挂起者照常接管"）✓ |
+| ⭐ ⭐ **我的独立复核** | ⭐ ⭐ **复合门 12 层全 0**（⭐ `全过 ✓`）／⭐ ⭐ **`test --no-fail-fast`：⭐ `yeban-engine` 27 二进制・536 passed・0 failed・4 ignored ＋ ⭐ `yeban-sfz` rc=0（⭐ 454 passed）** ⇒ ⭐ **与它报的逐数一致** ✓ |
+| ⭐ **状态差集** | ⭐ ⭐ **`yeban-engine` 529 ⇒ 536（⭐ 新增恰好 7 ＝ S39～S45）／⭐消失 0／⭐变状态 0**；⭐ `yeban-sfz` 454／454 **零变化** ✓ |
+
+⭐ ⚠ ⭐ **二、⭐ 我的文档更新**: ⭐ **`docs/ledger/sfz-core-notes.md` 四处尺寸**（⭐ `PreparedRegion 2664 B`／⭐区域表 `5328`／⭐`7992`／⭐合计 `17602`）＋ ⭐ `:401` 那格**追加 `#94` 的 ＋8 与原因** ✓ ⚠ **`sfz-needs-6` 行**我**未在本轮重写**（⭐ 我自己的 `docs/**`，⭐ 但本轮上下文预算紧）⇒ ⭐ **按第 264 条的三段式，⭐ 现在应记为：⭐ 已落 ＝ 多采样／循环／ADSR／`off_mode`＋`group`/`off_by`；⭐ 仍未落 ＝ `note_polyphony`／⭐`ampeg_*ccN` 调制类／⭐`fileg`／⭐`pitcheg`／⭐`direction`（⭐ 反向循环）／⭐`off_time`** ⇒ ⭐ **下一轮补这一处** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 它上报的两条**测量教训**（⭐ 都值得记、⭐ 与我既有口径同型）**:
+1. ⭐ ⭐ **`git checkout -- <files>` 想回 base ⇒ 而 HEAD 已经是它自己的提交 ⇒ ⭐ 那是**空操作**（⭐ 自我确认）** ⇒ ⭐ 它改用**显式基线** `git checkout 158de9bb -- <files>` ＋ ⭐ `git diff 158de9bb --stat` **空**才开跑 ⇒ ⭐ ⭐ **与第 6.2 条同型**（⭐ "⭐ 回退的基线必须是你想回到的那个提交"）✓
+2. ⭐ ⭐ **`src/sfz_instrument.rs` 与 `tests/sfz_instrument.rs` **同名** ⇒ ⭐ `cp` 到同一备份目录时**后者覆盖前者**** ⇒ ⭐ 改用**git 对象为唯一事实源**（⭐ `git show HEAD:<file> | shasum`）做还原自证 ⇒ ⭐ ⭐ **可复用的做法: ⭐ 备份同名文件时用**带路径的**备份名、⭐ 或直接用 git 对象** ✓
+
+⭐ ⚠ ⭐ **四、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `42618116` 的 CI 判决** ＋ ⭐ **补 `sfz-needs-6` 行的三段式重写** ＋ ⭐ **`loop_end == pcm_len` 的钳位单** ＋ ⭐ **`--enable-ui-mcp-http` 形态的打开入口单** ＋ ⭐ **`sfz_load.rs` 陈旧注释单** ＋ ⭐ **统一归一化分母单**（⭐ 只对**无损**腿有意义）＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
