@@ -329,6 +329,81 @@
 //! 4. ⛔ **不收紧** `ampeg_*` / `amplitude`：实现是**逐单位分派**
 //!    （[`ModUnit`]／[`ModTarget::mod_unit`]），`Seconds` 支与 `Percent` 支**逐字未动**。
 //!
+//! ## 7. ⭐⭐ `pitch` 族（任务单 `#118`）—— 与 `tune` 是**同一个目标**的两个拼写
+//!
+//! ### 7.1 规范逐字（<https://sfzformat.com/opcodes/tune/>，2026-10-17 现读）
+//!
+//! 同一页（`…/opcodes/pitch/` 落到的也是**这一页**）的 Modulation 表**逐字**四行：
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `pitch_onccN` | SFZ v2 | N/A | N/A | **-9600 to 9600** | **cents** |
+//! | `pitch_curveccN` | SFZ v2 | integer | **0** | **0 to 255** | N/A |
+//! | `pitch_smoothccN` | SFZ v2 | float | **0** | 0 to ? | **ms** |
+//! | `pitch_stepccN` | SFZ v2 | N/A | **0** | 0 to ? | N/A |
+//!
+//! 同页 Practical Considerations 逐字（§6.1 已引一次；这里是**裁定的直接依据**）：
+//!
+//! > In ARIA, `tune_*ccN` can also be used as an alias for `pitch_*ccN`.
+//!
+//! ⚠ 该页的**静态**表**只有一行** `| tune | SFZ v1 | integer | 0 | -100 to 100 | cents |`
+//! ⇒ ⛔ **规范里没有 `pitch` 这个静态 opcode**（`pitch_keycenter` 在**另一页**，
+//! 且它定义的是 "Root key for the sample"，⛔ 不是音分偏移）。
+//!
+//! ### 7.2 裁定（本单要求自裁的那一条）：**同一个调制目标的两个拼写**
+//!
+//! ⭐ **裁定：`pitch_*ccN` 归 [`ModTarget::Tune`]** —— 与 `tune_*ccN` 落**同一个键**
+//! （`BTreeMap<(ModTarget, u8), …>`），⛔ **不是**两个独立目标。三条理由：
+//!
+//! 1. **规范的用词就是 alias**：那句逐字写 "can also be used as an **alias** for"；
+//!    而 Modulation 表里⛔ **没有** `tune_*ccN` 行 ⇒ 规范里只有**一个**实体
+//!    （`pitch_*ccN`），`tune_*ccN` 是它的拼写变体 ⇒ 两个拼写调制的是**同一件事**；
+//! 2. **仓内既有先例（同一形状）**：`ccN`（SFZ1）与 `_onccN`（SFZ2）规范说 "may be
+//!    aliases" ⇒ [`crate::instrument::read_cc_mods`] 让它们落**同一个键**、后者胜
+//!    （该函数文档逐字写着这条）⇒ "别名归一键"是本仓**已立**的形状，⛔ 非本单发明；
+//! 3. **"两个独立目标"的代价算不出来**：那要新开一个枚举变体（`ModTarget::COUNT`
+//!    7 → 8），而它与 `Tune` 的**物理效果完全相同**（都只喂
+//!    [`tune_ratio_with_baked`] 的那**一个**指数）⇒ 求值层必须把两个目标**再合起来
+//!    求和**，等于用两个目标实现一个目标；并且 `#116` 逐字登记的
+//!    `COUNT == 7`／`ALL[6] == Tune`（判据 `S106` 的 `contains`）会被迫改写
+//!    —— 与任务单"⛔ 不改既有 `tune_*ccN` 的读数"直接冲突。
+//!
+//! ⚠ **代价（如实登记，⛔ 不静默）**：同一作用域里**同一 CC** 上两个拼写同时出现
+//! ⇒ 归约到**一个键**、**不求和**（`OpcodeMap` 是 `BTreeMap<String, _>` ⇒ 字典序
+//! `pitch_…` < `tune_…` ⇒ `tune_…` 那一行胜）。这与 `ccN`／`_onccN` 的既有别名坍塌
+//! 是**同一类**行为。⭐ 语料安全：登记语料 **1398** 份 `.sfz` 里 `pitch_*ccN` 只有
+//! **39** 处（**1** 个文件 `assets/samples/karoryfer-bear-sax/Programs/5-bearcussion.sfz`），
+//! 而该文件里 `tune_*ccN` **0** 处 ⇒ 今天**没有**可观察的碰撞。
+//! ⚠ `ModTarget::Tune::name()` 仍是 `"tune"`（矩阵/诊断的标签）；而**报错文本**用的是
+//! **原文 opcode 名**（[`crate::instrument::read_modulation_delta`] 的 `name` 参数）
+//! ⇒ `pitch_oncc1=9601` 报的是 `pitch_oncc1`，⛔ 不冒充 `tune`。
+//!
+//! ### 7.3 落地形状（⛔ 零新字段、零新变体、零引擎改动）
+//!
+//! * **识别**：[`parse_modulation_name`] 里加**一支** `pitch`，与 `tune` 支**同款**的
+//!   四种后缀（`ccN` / `_ccN` / `_onccN` / `_curveccN`）⇒ `pitch_onccN`、
+//!   `pitch_ccN`、`pitch_curveccN` 三类写法读得进；
+//! * **域与后缀**：⛔ **一行都不用改** —— 目标既然就是 [`ModTarget::Tune`]，
+//!   它的 [`ModTarget::mod_unit`]（`Cents`）、[`ModTarget::delta_range`]
+//!   （`±9600` 音分）与 [`ModUnit::suffixes`]（只认 `""`）**自动**生效
+//!   （`#117` 的逐单位分派）；
+//! * **归约**：落回**同一张** `BTreeMap` ⇒ 求和序（[`ModTarget::index`] × CC 升序）、
+//!   [`AMPEG_MOD_CAP`] 与摊平表形状**全不变**；
+//! * **求值**：三条路（离线／摊平表／实时）**早已**读 [`ModTarget::Tune`]
+//!   （[`tune_ratio_with_baked`] 是唯一实现）⇒ `yeban-engine` **一个字都不改**；
+//! * **尺寸**：`PreparedRegion` / `SfzVoice` / `SfzVoicePool` / `EngineRuntime`
+//!   **四个全 ＋0**（判据 `S113` 由 `size_of` 现读）。
+//!
+//! ### 7.4 ⛔ 本单**不做**的两行（登记，⛔ 不静默忽略）
+//!
+//! 表里有 `pitch_smoothccN`（float，Default `0`，Unit **ms**）与 `pitch_stepccN`
+//! （N/A，Default `0`）两行，⛔ **本单不做**：前者是**平滑时间常数**（需要逐块/逐样本
+//! 状态），后者是**步进量化**（另一套曲线语义）—— 两者都**不在**"复用 `#116`／`#117`
+//! 已立机制"的范围内（本单的边界是 **CC 调制量**，⛔ 不含平滑与步进）。
+//! ⭐ **今天的行为（⛔ 一字不改）**：两者的名字落不进 [`parse_modulation_name`] 的
+//! 四后缀 ⇒ 按**未知 opcode 忽略**（与 `tune_smoothccN`／`tune_stepccN` 同款）；
+//! 判据 `S113` 把这一格**逐字**钉住（⛔ 不许哪天变成"识别到了但静默丢弃"）。
+//!
 //! # 实时安全
 //!
 //! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
@@ -497,6 +572,16 @@ pub enum ModTarget {
     /// ⚠ **它承载的是"调制量 `delta`"，单位 ＝ 音分**（⛔ 不是基准 `tune`）：
     /// 基准 `tune` 早就烘进 `Region::pitch_ratio` / 摊平表的 `rate_per_note`，
     /// 本目标只贡献**逐块可变的增量**（见 [`tune_ratio_with_baked`]）。
+    ///
+    /// ⭐ ⭐ **追加修订段（任务单 `#118`）—— 被修订的是上面那句里"`tune`"这个目标名
+    /// 所涵盖的**拼写集**那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋
+    /// 追加修订段 ＋ 点名被修订的支）：`#116` 时本目标只由 **`tune<suffix>`** 四族识别
+    /// 到达；`#118` 起**`pitch<suffix>`**（`pitch_onccN` / `pitch_ccN` / `pitch_curveccN`）
+    /// 也归到**本变体**（规范那句 "In ARIA, `tune_*ccN` can also be used as an alias
+    /// for `pitch_*ccN`." 的机械后果，裁定见模块文档 §7.2）。
+    /// ⭐ **被修订的只是"谁能到达本变体"**：本变体的**下标（6）**、`name()`（`"tune"`）、
+    /// `mod_unit()`（`Cents`）与 `delta_range()`（`±9600`）**逐字未变**
+    /// ⇒ `S106`／`S107`／`S111` 的既有读数与位模式**逐位不变**。
     Tune,
 }
 
@@ -763,6 +848,14 @@ pub enum ModulationForm {
 /// `#116` 加上第四族 **`tune<suffix>`** ⇒ 现在是**四族**。⚠ 被修订的只是**族数**：
 /// `#104`／`#106`／`#115` 那三族的识别文本、后缀政策与返回形状**一字未变**。
 ///
+/// ⭐ ⭐ **追加修订段（任务单 `#118`）—— 被修订的是上一段末尾"现在是**四族**"里的
+/// 族数**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋
+/// 点名被修订的支）：`#118` 加上第五族 **`pitch<suffix>`** ⇒ 现在是**五族**。
+/// ⚠ **被修订的只有族数**：`#104`／`#106`／`#115`／`#116` 那四族的识别文本、
+/// 后缀政策与返回形状**一字未变**；⭐ 而且第五族归的是**同一个目标**
+/// [`ModTarget::Tune`]（裁定、理由与代价见模块文档 §7.2）—— 它**没有**新增枚举变体、
+/// **没有**新增域、**没有**新增单位类别。
+///
 /// 四种后缀（大小写敏感，与其它 opcode 同口径）：
 /// * `ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 旧形）；
 /// * `_ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 的另一种写法；`amplitude_ccN` 用它，
@@ -809,6 +902,30 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
             return None;
         }
         return Some((ModTarget::Amplitude, form, digits));
+    }
+    // ⭐⭐ `pitch` 族（任务单 `#118`）：规范表行逐字是 `pitch_onccN` / `pitch_curveccN`
+    // （模块文档 §7.1）⇒ 与 `tune` 族**同款**的四种后缀识别（⛔ 不另开一套），
+    // 并归**同一个目标** [`ModTarget::Tune`] —— 规范那句 "alias" 的机械后果
+    // （裁定、理由与代价见模块文档 §7.2）。⚠ 检查顺序同上面：`_curvecc` 在 `_cc`
+    // 之前、`_oncc` 也在 `cc` 之前。
+    // ⚠ `pitch_keycenter`（静态 opcode）在这里被 `strip_prefix("cc")?` 挡掉
+    // ⇒ 它**不是**本族的目标（⛔ 本单不发明 `pitch=` 这个静态 opcode）。
+    // ⚠ `pitch_smoothccN` / `pitch_stepccN`（表里有、⛔ 本单不做）同样落不进四后缀
+    // ⇒ 按未知 opcode 忽略（登记见模块文档 §7.4）。
+    if let Some(tail) = name.strip_prefix("pitch") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Tune, form, digits));
     }
     // ⭐⭐ `tune` 族（任务单 `#116`）：与 [`ModTarget::Amplitude`] **同款**的四种后缀
     // （⛔ 不另开一套识别）。⚠ 检查顺序同上面：`_curvecc` 在 `_cc` 之前、`_oncc` 也在
@@ -1151,7 +1268,7 @@ mod tests {
     #[test]
     fn the_three_suffixes_are_recognised_and_nothing_else_is() {
         // ⭐ 四形态里"名字"这一层：旧形 `ccN` / SFZ2 `_onccN` 同归 Delta，`_curveccN` 归 Curve。
-        let cases: [(&str, ModTarget, ModulationForm, &str); 13] = [
+        let cases: [(&str, ModTarget, ModulationForm, &str); 17] = [
             (
                 "ampeg_attackcc100",
                 ModTarget::Ampeg(AmpegParam::Attack),
@@ -1212,6 +1329,18 @@ mod tests {
             ("tune_cc41", ModTarget::Tune, ModulationForm::Delta, "41"),
             ("tune_curvecc1", ModTarget::Tune, ModulationForm::Curve, "1"),
             ("tunecc1", ModTarget::Tune, ModulationForm::Delta, "1"),
+            // ⭐⭐ 任务单 `#118`：`pitch` 族 —— 规范表行逐字就是这四个名字里的
+            // `pitch_onccN` / `pitch_curveccN`，而它归的是**同一个目标** `Tune`
+            // （裁定见模块文档 §7.2）。
+            ("pitch_oncc27", ModTarget::Tune, ModulationForm::Delta, "27"),
+            ("pitch_cc94", ModTarget::Tune, ModulationForm::Delta, "94"),
+            (
+                "pitch_curvecc3",
+                ModTarget::Tune,
+                ModulationForm::Curve,
+                "3",
+            ),
+            ("pitchcc12", ModTarget::Tune, ModulationForm::Delta, "12"),
         ];
         for (name, target, form, digits) in cases {
             assert_eq!(
@@ -1262,6 +1391,23 @@ mod tests {
             "tuneoncc1",
             "tune_cc-1",
             "tuned",
+            // ⭐⭐ `#118` 的反向腿：`pitch` 族的**非目标**写法一律 None。
+            // ⚠⭐ 最承重的一条是 `pitch_keycenter` —— 它是**真的静态 opcode**，
+            // ⛔ 绝不能被本族识别吞掉；裸 `pitch`（⛔ 规范里没有这个静态 opcode）
+            // 与 `pitch_smoothccN`／`pitch_stepccN`（表里有、⛔ 本单不做，见 §7.4）
+            // 同样必须 None。
+            "pitch",
+            "pitch_keycenter",
+            "pitch_smoothcc1",
+            "pitch_stepcc1",
+            "pitch_hdcc12",
+            "pitch_oncc",
+            "pitch_cc",
+            "pitch_curvecc",
+            "pitch_oncc1x",
+            "pitchoncc1",
+            "pitch_cc-1",
+            "pitched",
         ] {
             assert_eq!(parse_modulation_name(bad), None, "{bad:?} must not match");
         }

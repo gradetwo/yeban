@@ -890,6 +890,55 @@
 //! 由 `size_of` 现读）；⛔ `SfzVoice` 仍 **40 B**、⛔ `SfzVoicePool` 仍 **1712 B**、
 //! ⛔ `EngineRuntime` 仍 **180144 B**（门槛 192 KiB ＝ `196608`，余量 `16464`）。
 //!
+//! # ⭐⭐ `pitch` 族（任务单 `#118`）—— `tune` 的**别名拼写**，⛔ 零引擎改动
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#118`）—— 被修订的是 `#116` 那一节里
+//! 「⛔ **`pan_oncc*` ／ `volume_oncc*` ／ `cutoff_oncc*` ／ `pitch_oncc*` 那四项
+//! 整条有效**（仍未做，另开单）」里 **`pitch_oncc*` 这一项**
+//! **（⛔ 上面所有登记的**原文一字未删**，口径同台账第 278 条：保留原文 ＋
+//! 追加修订段 ＋ 点名被修订的支）。**被修订的只是"`pitch_oncc*` 仍未做"这一支**：
+//! ⛔ **`pan_oncc*` ／ `volume_oncc*` ／ `cutoff_oncc*` 那三项仍然有效**（仍未做，另开单）。
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/tune/>，2026-10-17 现读）
+//!
+//! 该页（`…/opcodes/pitch/` 落到的也是这一页）Modulation 表**逐字四行**：
+//! `pitch_onccN`（Range ＝ **`-9600 to 9600`**、Unit ＝ **cents**）、
+//! `pitch_curveccN`（Default `0`、Range ＝ `0 to 255`）、
+//! `pitch_smoothccN`（float，Default `0`、Unit ＝ **ms**）、
+//! `pitch_stepccN`（Default `0`）。⭐ 裁定依据**只有一句**（同页逐字）：
+//!
+//! > In ARIA, `tune_*ccN` can also be used as an alias for `pitch_*ccN`.
+//!
+//! ⚠ 该页的**静态**表只有 `tune` 一行 ⇒ ⛔ **规范里没有 `pitch` 这个静态 opcode**
+//! ⇒ `pitch_*ccN` 的基准就是 **0 音分**（只加调制量）；⛔ 本单**不发明** `pitch=`。
+//! 完整裁定、理由与代价的**唯一事实源**是 [`yeban_sfz::modulation`] 模块文档 §7
+//! （⛔ 本节不复制）。
+//!
+//! ## 落地形状（三条，逐条可判）
+//!
+//! 1. **同一个目标的两个拼写**：`pitch_onccN` / `pitch_ccN` / `pitch_curveccN` 归
+//!    **同一个** `ModTarget::Tune`（⛔ 不新增枚举变体、⛔ 不改域、⛔ 不改单位类别）
+//!    ⇒ 归约表、求和序与 `AMPEG_MOD_CAP` 全不变；
+//! 2. ⭐ ⭐ **引擎侧零改动**：三条路（离线 [`SfzInstrument::render_note_into_with_cc`] ／
+//!    摊平 [`PreparedSfz::render_block_into_with_cc`] ／ 实时
+//!    [`SfzVoicePool::render_into_with_cc`]）**早已**把 `ModTarget::Tune` 喂给
+//!    [`tune_ratio_with_baked`] ⇒ `pitch_*ccN` **自动**获得与 `tune_*ccN` **逐位相同**
+//!    的作用点与公式（判据 `S113` 的"三条路逐位相同"腿）；
+//! 3. **四个尺寸全 ＋0**：`PreparedRegion` 仍 **6160 B**、`SfzVoice` 仍 **40 B**、
+//!    `SfzVoicePool` 仍 **1712 B**、`EngineRuntime` 仍 **180144 B**（`S113` 现读）。
+//!
+//! ## 语料普查（2026-10-17 现读；分母 **1398** 份 `.sfz`）
+//!
+//! ⭐ ⭐ **口径决定读数**（台账第 274 条）：`pitch_onccN=` 的**家族子串**是
+//! **143** 处 ／ **33** 文件，而**opcode token**（词边界 ＋ `=`）是 **39** 处 ／
+//! **1** 文件 —— 那 **104** 处差额**全是别的族**：`lfoNN_pitch_onccNN=`（LFO 目标）
+//! 与 `egNN_pitch_onccNN=`（包络目标），⛔ 不是 `<region>` 的调制 opcode。
+//! 唯一真正用到本族的是 `assets/samples/karoryfer-bear-sax/Programs/5-bearcussion.sfz`
+//! （同一文件里 `pitch=-1200` **一处** —— ⛔ 那是个**未知 opcode**，今天被忽略，
+//! 本单⛔ 不给它实现）。⭐ `pitch_curveccN` ／ `pitch_ccN` ／ `pitch_smoothccN` ／
+//! `pitch_stepccN` 全部 **0** 处。⚠ 本单⛔ 不抬高 `AMPEG_MOD_CAP`（单区域最多
+//! 2 条 ⇒ 离 20 远）。
+//!
 //! # ⭐ `set_ccN` 播种（任务单 `#110`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是下面三处登记里 `set_ccN=` 的

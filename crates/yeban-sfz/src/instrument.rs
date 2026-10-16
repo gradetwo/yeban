@@ -2390,6 +2390,9 @@ fn read_ampeg_sustain(
 ///   `OpcodeMap` 是 `BTreeMap` ⇒ 同一 opcode 重复出现时后写的行已经胜出；
 /// * **别名**：`ccN`（SFZ1 旧形）与 `_onccN`（SFZ2）都归 [`ModulationForm::Delta`]
 ///   ⇒ 同一 `(目标, CC)` 上的两个写法落在**同一个键**上（规范说它们是别名）；
+///   ⭐ 任务单 `#118` 起 **`pitch_*ccN` 也落同一个键**（它归 [`ModTarget::Tune`]，
+///   规范逐字 "In ARIA, `tune_*ccN` can also be used as an alias for `pitch_*ccN`."
+///   ⇒ **同一个调制目标的两个拼写**；裁定、理由与代价见 [`crate::modulation`] §7.2）；
 /// * **`_curveccN`** 只写曲线下标，与同键的 `delta` **合并**；
 /// * **缺失 ⇒ 空 `Vec`**（＝ 无调制，与接线前逐位相同）；**越界/畸形 ⇒ 明确 `Err`**
 ///   （第 259 条：⛔ 不静默降级、⛔ 不钳位）；**只有 `_curveccN` 没有 `delta`**
