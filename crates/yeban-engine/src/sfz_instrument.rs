@@ -53,9 +53,9 @@
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
-//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做，`direction` / `pan` / `off_mode` **仍未做**，拆到⑩ |
+//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩ |
 //! | ⑨ | ⭐ **多 `sample=` 每区域各播自己** | ⭐ **步 3 已做**：摊平表持 `samples: Vec<PreparedSample>` ＋ [`PreparedRegion::sample_index`] 指路；⚠ 单样本重载 [`PreparedSfz::prepare`] **仍是广播**（键/力度映射对、**音色内容错** ⇒ 读数 `sample_content=broadcast(1)`） |
-//! | ⑩ | `direction` / `pan` / `off_mode` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带） |
+//! | ⑩ | `direction` / `pan` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带）。⚠ 沿革：本行原文把 `off_mode` 也列在这里 —— ⭐ **任务 `#94` 已把它接线**（`PreparedRegion` 承载 ＋ `off_by` 关断期用；⛔ 作用面**不含** MIDI note-off），故本行只剩 `direction` / `pan` |
 //!
 //! # 引擎侧声部（任务 `#66` 的步 2：`SfzPlan` / `SfzVoicePool` / 分派次序）
 //!
@@ -126,23 +126,33 @@
 //!    （[`PreparedRegion::ignores_note_off`]）⛔ 不因 `end_sample`（＝ note-off）退休，
 //!    只由样本自然结束退休（与 `yeban-sfz` 的 `PlaybackSpec::ignores_note_off` 同一份裁决）。
 //!
-//! ## ⭐ `loop_sustain` 与 `loop_continuous` 的**分野**（⭐ 任务 `#92` 已落地）
+//! ## ⭐ `no_loop` / `loop_sustain` / `loop_continuous` 在 note-off 后的**分野**
+//! （⭐ 任务单 `#94` **按规范改写**；⛔ 旧口径已作废）
 //!
 //! ⚠ **沿革（⛔ 不改写历史）**：本行在循环接线片（任务 `#91`）里曾**逐字**写
 //! 「note-off 后两者的差别（走完当前循环再进释放）属 ADSR 片、本片不声称已实现」
-//! —— 任务 `#92` 把那条**变成现实**，见下面"幅度包络"一节。
+//! —— 任务 `#92` 曾按"`loop_sustain` ＝ 走完当前循环再释放；`loop_continuous` ＝ note-off
+//! **不进**释放、`end_sample` 硬停"实现；⭐ **任务 `#94` 查了 `sfzformat` 的两份页面后把
+//! 那两条口径都撤掉** ⇒ 现在的分野是：
 //!
-//! 依据（当时与现在都成立）：`loop_sustain` 与 `loop_continuous` 的**唯一分野**在
-//! note-off **之后**，而 note-off 在 `#91` 里只体现为 `end_sample` 硬停 ⇒
-//! **没有释放段就表现不出那个差别**。⭐ 现在有了：
-//!
-//! | 模式 | 有 `ampeg_*` 时 note-off 之后 |
+//! | 模式 | note-off 之后 |
 //! | :--- | :--- |
-//! | `loop_continuous` | ⭐ **note-off 不影响循环**：照旧循环，并在 `end_sample` 处**硬停**（＝ 今天的读数） |
-//! | `loop_sustain` | ⭐ **走完当前循环**（源位置第一次回绕）**再进** `ampeg_release` 释放段 |
+//! | `no_loop` | ⭐ 进释放段；释放期**⛔ 不循环**（源位置沿途往后播） |
+//! | `loop_sustain` | ⭐ 同 `no_loop`（"During the release phase, there's no looping." ＋ `legacy` 的 "The rest of the sample will play after note release."） |
+//! | `loop_continuous` | ⭐ ⭐ **释放期照旧循环（可以重复多次）**（"the loop will repeat if the loop end is reached during the release phase, including repeating multiple times if the release time is longer than the loop length."） |
 //!
-//! ⚠ 两者的输出**必须不同**（判据 `S36` 各配一条"它自己在 note-off 后该怎样"的断言，
-//! ⛔ 不是只断言"两者不同"—— 那可能两个都错）。
+//! 规范逐字（<https://sfzformat.com/opcodes/loop_mode/>）："Whether no_loop,
+//! loop_continuous or loop_sustain is set, the duration of the release phase is set using
+//! `ampeg_release`. However, in loop_sustain or no_loop mode, the sound can be cut off
+//! before the release phase ends, if the end of sample is reached."
+//! ⇒ ⭐ 三档**都在 note-off 就地进释放**；分野只剩"释放期要不要回绕"＋"谁先到谁结束"。
+//! ⚠ 没有包络（透明）时**没有释放阶段可言** ⇒ 不在上表里：照旧 `end_sample` 硬停。
+//! ⚠ 第 3 档与第 4 档的输出**必须不同**（判据 `S36` 各配一条"它自己在 note-off 后该怎样"
+//! 的断言，⛔ 不是只断言"两者不同"—— 那可能两个都错）。
+//!
+//! ⭐ **实现落点（唯一闸门）**：[`EnvRun::may_wrap`] 是逐样本回绕的**唯一**判据
+//! （[`mix_span_into`] 里那一个 `if`）⇒"释放期循环与否"⛔ 不是第二份循环几何；
+//! "进释放"本身仍由 [`EnvRun::advance`] 在 `abs_frame >= note-off` 时做（三档同径）。
 //!
 //! ## ⭐ 退化窗口的**既有**语义（本片只登记，⛔ 不加新机制）
 //!
@@ -185,19 +195,81 @@
 //! * ⭐ **零长段被跳过**（`A == 0` / `D == 0` / `R == 0` 各自合法）⇒ 这是**数学上的必然**
 //!   （零长的线性段没有中间点），⛔ 不是"降级政策"。
 //!
-//! ## ⭐ note-off 语义（本单的核心；四档）
+//! ## ⭐ note-off 语义（⭐ 任务单 `#94` 按规范改写；五档）
 //!
 //! | # | 情形 | note-off 之后 |
 //! | :--- | :--- | :--- |
 //! | 1 | ⭐ **透明包络**（五个值都在缺省上 ⇒ 区域**没有** `ampeg_*` 的效果） | ⭐ **一字不改**：照旧 `end_sample` 硬停（⛔ 逐样本一个浮点运算都不加） |
-//! | 2 | `loop_mode=loop_continuous` ＋ 有包络 | ⭐ note-off **不影响循环**：照旧循环并在 `end_sample` 硬停（⛔ 不进释放段） |
-//! | 3 | `loop_mode=loop_sustain` ＋ 有包络 | ⭐ **走完当前循环**（源位置第一次回绕）**再进**释放段 |
-//! | 4 | 其余（`no_loop` 等）＋ 有包络 | ⭐ note-off **就地**进释放段（声部继续写，直到释放走完或样本用完） |
+//! | 2 | `loop_mode=no_loop` ＋ 有包络 | ⭐ note-off **就地**进释放段；释放期⛔ 不循环 ⇒ 声部在**"释放走完"与"到样本尾"谁先到**时结束 |
+//! | 3 | `loop_mode=loop_sustain` ＋ 有包络 | ⭐ 同第 2 档（note-off **之前**"按住才循环"照旧；释放期⛔ 不循环） |
+//! | 4 | `loop_mode=loop_continuous` ＋ 有包络 | ⭐ note-off **就地**进释放段，且⭐ **释放期照旧循环（可以重复多次）** ⇒ 声部到**释放走完**才结束 |
 //! | 5 | ⭐ `loop_mode=one_shot` ＋ 有包络 | ⭐ **连释放段也不进**（"忽略 note-off"是一条**完整**裁决：既不改退休、也不起释放）⇒ 声部照旧播到样本尾 |
 //!
-//! ⚠ `ampeg_release` 换算成 **0 帧**时，第 3 档仍然是"先走完当前循环、再（零长）释放"
-//! ＝ 回绕那一刻立即退休（零长段跳过），第 4 档则是 note-off 那一刻立即退休。
-//! ⚠ 第 2 档与第 3 档的输出**必须不同**（判据 `S36`）。
+//! ⚠ `ampeg_release` 换算成 **0 帧**时，第 2/3/4 档都是 note-off 那一刻**立即退休**
+//! （零长段跳过，见 [`AmpegRun`]）。
+//! ⚠ 第 3 档与第 4 档的输出**必须不同**（判据 `S36`）。
+//!
+//! # ⭐ 独占组（`group` / `off_by` / `off_mode`；任务单 `#94` 接线）
+//!
+//! ## ⚠ 本单是**接线**，⛔ 不是新解析
+//!
+//! 解析层**早就有了**：`yeban-sfz` 的 [`Region::group`](yeban_sfz::instrument::Region::group)／
+//! `off_by`／`off_mode`（别名 `polyphony_group`／`offby`；缺省 `0`/`0`/`fast`；
+//! 域按 `read_u32` 的 `0..=u32::MAX`，集合外的 `off_mode` 走 `as_option` 报 `Err`）。
+//! 缺的只是**播放层装不下**（摊平表以前⛔ 不携带这三个字段）⇒ 本单把它们搬进
+//! [`PreparedRegion`] ＋ 在[`SfzVoicePool::trigger_note`] 的**触发期**接上关断。
+//!
+//! ## 语义（规范逐字，⭐ 三条 ＋ 一条工程裁决）
+//!
+//! * [`PreparedRegion::group`]（<https://sfzformat.com/opcodes/group/>）：
+//!   "Exclusive group number for this region." —— **本区域属于哪个独占组**；
+//! * [`PreparedRegion::off_by`]（<https://sfzformat.com/opcodes/off_by/>）：
+//!   "Region off group. When a new region with a group number equal to `off_by` plays,
+//!   this region will be turned off." ＋ `group` 页的镲片扼音例
+//!   （"the crash sounds would be in one group, the choke samples in another"）
+//!   ⇒ **本区域触发时**去关掉"当前正在发声、且其区域的 `group == 本区域的 off_by`"的声部；
+//!   `off_by == 0` ＝ **一个都不关**（格式页 Practical considerations：各播放器对
+//!   `group=0`/`off_by=0` 都做"not muted"的绕过 ⇒ 本仓取同一条）；
+//! * [`PreparedRegion::off_mode`]（<https://sfzformat.com/opcodes/off_mode/>）：
+//!   "This opcode will determinate how a region is turned off by an `off_by` opcode."
+//!   ⇒ ⭐ ⭐ **它的作用面只有 `off_by` 关断**（本片按规范字面裁；⛔ **不管** MIDI note-off
+//!   —— 那条路由 `loop_mode` ＋ `ampeg_*` 决定，见上面那张五档表）：
+//!   * `fast`（缺省）："The voice will be turned off immediately. Release settings will
+//!     not have any effect." ⇒ victim **当场硬停**（[`SfzVoice::silence`]）；
+//!   * `normal`："The region will be set into release stage." ⇒ victim 进释放段
+//!     （把它自己的 `end_sample` 挪到"现在"，剩下**完全**交给既有 note-off 机）；
+//!   * `time`（ARIA）：⚠ **本片按 `normal` 处理**并**逐字登记为书面偏离** ——
+//!     差别只剩 `<https://sfzformat.com/opcodes/off_time/>` 的延迟（缺省 6 ms），
+//!     而 `off_time` 不在本片范围内（语料分布：`time` 4 次）；⛔ 不是静默降级
+//!     （显式取值一律原样解析、原样带出，`S44` 钉住集合外的取值仍报 `Err`）。
+//!
+//! ## ⭐ 触发者**不自掐**（rgc／sfizz 一侧；⭐ 语料逼出来的正确答案）
+//!
+//! 登记语料 `assets/samples/karoryfer-272-merry-orks/ork_dialogue.sfz` 的写法是
+//! `group=1` ＋ `off_by=1`（规范页说的"同组独占"标准写法）⇒ **若按 ARIA 的自掐解释**，
+//! 新声部会被**自己**立刻掐掉 ⇒ 那 20 处会**发不出声**。本仓因此取：
+//! **只有 [`SfzVoicePool::trigger_note`] 入口那一刻就 active 的槽位**才是候选 victim
+//! （一个 `u16` 快照，⛔ 零分配、⛔ 不进任何结构体）⇒ 本次新建的声部永远不在候选里。
+//! 判据 `S43` 把"旧声部被关掉、新声部照常发声"钉在一起（自掐 ⇒ 0 个活声部、
+//! 完全不关 ⇒ 2 个，两种都被抓住）。
+//!
+//! ## ⭐ 其它两条边界（都有判据）
+//!
+//! * **`one_shot` 的 victim 不关**：`loop_mode=one_shot` 的"忽略 note-off"是一条**完整**
+//!   裁决（`#92` 立、`#94` 确认）⇒ `off_by` 是**停止请求**的一种，同样被它忽略
+//!   （⛔ 不造"忽略 note-off 但不忽略 `off_by`"的半裁决；判据 `S42`，并配 `no_loop` 正对照）；
+//! * **硬停只动 `active` 那一个声部**：同槽的 `pending`（被窃取后等着接管的新声部）
+//!   **原样保留** ⇒ 它会照常接管（判据 `S45`）。⚠ 同时把该槽的 `fade` 归
+//!   [`FadeRamp::NONE`]：那个淡出属于**已经不存在**的 victim（它被硬停而不是淡出）
+//!   ⇒ 留着它会让 `render_slot` 的"提升"条件永远不成立（淡出只在 victim 还 active 时
+//!   推进）⇒ 挂起者会**卡死**。
+//!
+//! ## 分配纪律（红线 7 / [MUST-GATE-001]）
+//!
+//! 查找与释放触发全部在**触发期**（⛔ 不在逐样本路径）：一次 ≤ [`SFZ_VOICES_PER_TRACK`]
+//! 槽的**线性扫描**、一次 `u16` 位运算 ⇒ **零堆分配、零锁等待、零阻塞 I/O**
+//! （预计算全在摊平期：`group`/`off_by`/`off_mode` 已是摊平表的定长字段）。
+//!
 //!
 //! ## 状态归属（⛔ 不把状态塞进实时对象以外的地方）
 //!
@@ -295,10 +367,10 @@
 //! | :--- | :--- | :--- |
 //! | sfz-needs-1 | **轨推子/静音没有乘到 SFZ 声部上** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**乐器层**拥有乐器内增益（`volume_gain`／`velocity_gain[128]`／`key_crossfade`／`velocity_fade_*`／`amp_veltrack`），**引擎层**拥有轨增益（推子＝音量、静音、独奏）⇒ ⭐ **两者相乘、⛔ 不重复**。落地口径：`snapshot::project_schedules` 把**同一个** `track_gain_scale(...)` 结果写进 [`crate::synth::NoteSchedule::track_gain`]（与鼓机/复音读的 `note.gain` **同源**）⇒ [`SfzVoicePool::trigger_note`] 把它乘在 `region.gain_at(...)` **之外** ⇒ ⭐ SFZ 与鼓机**同径**（判据：`tests/sfz_instrument.rs` 的 S17／S18）|
 //! | sfz-needs-2 | **池满（> 16 条区域同时匹配）只丢弃 ＋ 计数，没有窃取口径** | ⭐ ⭐ **本单已闭合**：引擎侧 SFZ 池**采纳引擎既有那一套**（`yeban_dsp::polysynth::PolySynth` 的三段键 `(层级, 触发序号, 槽位下标)`，见 [`SfzVoicePool::select_victim`]）＋ 3 ms 指数淡出（`yeban-sfz` 的 `StealFade` 形状、**同一把** `steal_fade_frames` 舵）。`yeban_sfz::voice_pool::VoicePool::select_victim` 是**它自己那一份**（`(层级, 注入电平, 序号, 下标)` ＋ 立即接管），且那个池**不被引擎使用** ⇒ ⛔ 不构成"两份实现"。落地：池满走 `steal` —— victim 在自己槽里淡出、新声部**挂起在同一槽**（`pending`）⇒ 定容池⛔ 不需要额外 slack 槽；真丢弃只剩"挂起者还没发声就被再一次换掉"（计 `dropped`，⛔ 不静默），窃取计 `stolen`（判据 S8/S19）|
-//! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）仍挂在 [`crate::drums`] 的 `needs-3`（属模型面，本单⛔ 不动）|
+//! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）已由任务单 `#96` 闭合：⭐ **模型层不禁止**这个组合（模型里没有"鼓机"这个概念 —— `DeviceKind` 只有四档、无鼓机档；`TrackV3.sampler` 与 `devices` 是**平行**字段）⇒ ⭐ 裁决**留在引擎**（`鼓机 ＞ SFZ ＞ 复音` ＋ `armed_sources`／`ignored_sources` 读数）；常驻判据 `crates/yeban-model/tests/track_multi_source_coexistence.rs` |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ ⭐ **循环与 ADSR 两半都已闭合**：循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off）；⭐ **ADSR ＝ 任务 `#92`**（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性、note-off 四档语义、`loop_sustain` 与 `loop_continuous` 的**分野已可判**）。⛔ **仍未做**：`ampeg_*` 的**调制类**（`ampeg_*ccN` / `ampeg_vel2*` / `*_curveccN`）、`fileg_*` / `pitcheg_*`、`off_mode`（`off_time`）、`group`/`off_by`/`note_polyphony` |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by`** | ⭐ ⭐ **三片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⛔ **仍未做**：`ampeg_*` 的**调制类**（`ampeg_*ccN` / `ampeg_vel2*` / `*_curveccN`）、`fileg_*` / `pitcheg_*`、`off_time`、`note_polyphony`、`direction`、`pan` |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 
@@ -309,7 +381,7 @@ use std::collections::BTreeMap;
 use yeban_dsp::polysynth::steal_fade_frames_for;
 use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
-use yeban_sfz::instrument::{Instrument, LoopMode, Region, RegionQuery};
+use yeban_sfz::instrument::{Instrument, LoopMode, OffMode, Region, RegionQuery};
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
@@ -502,7 +574,7 @@ impl SfzInstrument {
                 // （`frame = u64::MAX`：永远不会进释放段）；
                 // ⚠ `abs_base = 0` 只用于释放进度，这条路上用不到。
                 // ⚠ `frame = u64::MAX`（这条路没有 note-off ⇒ 永不进释放段）、
-                // `abs_base = 0`（释放进度用不到）、`sustain_tail = false`。
+                // `abs_base = 0`（释放进度用不到）、`loop_during_release = false`。
                 let mut env = ampeg_run_from(
                     region.ampeg_attack,
                     region.ampeg_hold,
@@ -608,8 +680,14 @@ pub fn reduce_loop_window(
 ///
 /// ⭐ **幅度包络的段位**（`ampeg_*` 的逐声部推进状态的公开读数；任务单 `#92`）。
 ///
-/// 只有**六个**取值：四段 ＋ 两个"释放态"。⚠ "从哪一段进释放"**不是**本枚举的取值
+/// 只有**五个**取值：四段 ＋ 一个"释放态"。⚠ "从哪一段进释放"**不是**本枚举的取值
 /// （它是内部编码的低位），因为对调用方而言"释放中"就是释放中。
+///
+/// ⚠ 沿革（⛔ 不改写历史）：任务单 `#92` 曾有一个第六取值 `ReleasePending`
+/// （"等当前循环走完"）。任务单 `#94` 按 `sfzformat` 的两份页面**删掉了它** ——
+/// 规范逐字只说"note-off 那一刻进释放段"（`ampeg_release` 决定时长），
+/// "走完当前循环再释放"**没有**出处；释放期要不要继续回绕由 `loop_mode` 决定
+/// （见 [`EnvRun::may_wrap`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmpegStage {
     /// 起音段：线性上升 `0 → 1`（时长 ＝ `ampeg_attack`）。
@@ -620,9 +698,6 @@ pub enum AmpegStage {
     Decay,
     /// 保持段：恒定 `ampeg_sustain`（直到 note-off）。
     Sustain,
-    /// ⭐ **等当前循环走完**（`loop_sustain` 收到 note-off 之后）：电平**保持在** note-off
-    /// 那一刻的值；源位置**第一次回绕**时才进 [`AmpegStage::Release`]。
-    ReleasePending,
     /// 释放段：从释放起点电平线性降到 `0`（时长 ＝ `ampeg_release`）。
     Release,
 }
@@ -639,8 +714,6 @@ const ENV_STAGE_DECAY: u8 = 3;
 const ENV_STAGE_SUSTAIN: u8 = 4;
 /// 「释放中」位：`段位 = ENV_RELEASING | (收到 note-off 时所在的段)`。
 const ENV_RELEASING: u8 = 0x80;
-/// 「等当前循环走完」位（`loop_sustain` 专用）：`段位 = ENV_RELEASE_PENDING | 收到时的段`。
-const ENV_RELEASE_PENDING: u8 = 0x40;
 /// 段位（低 3 位）的掩码。
 const ENV_STAGE_MASK: u8 = 0x07;
 
@@ -664,9 +737,6 @@ const fn env_stage_of(byte: u8) -> Option<AmpegStage> {
     }
     if byte & ENV_RELEASING != 0 {
         return Some(AmpegStage::Release);
-    }
-    if byte & ENV_RELEASE_PENDING != 0 {
-        return Some(AmpegStage::ReleasePending);
     }
     match byte & ENV_STAGE_MASK {
         ENV_STAGE_ATTACK => Some(AmpegStage::Attack),
@@ -919,6 +989,40 @@ pub struct PreparedRegion {
     /// 本字段只在 note-off **真的**到达时才起作用（且 `release == 0` ⇒ 释放段零长 ⇒ 立即退休，
     /// 即"今天的 `end_sample` 硬停"）。
     ampeg_release: f32,
+    /// ⭐ **独占组号**（`group`，缺省 `0`；别名 `polyphony_group`）。
+    ///
+    /// 语义（SFZ v1 逐字，见 <https://sfzformat.com/opcodes/group/>）：
+    /// "Exclusive group number for this region." —— 它标的是**本区域属于哪个独占组**，
+    /// 被别的区域的 `off_by` 用来**指名关断**（本片：任务单 `#94`）。
+    ///
+    /// ⚠ 同一个 `group` 还是下一片 `note_polyphony` 的检查键（`yeban-sfz` 的
+    /// [`yeban_sfz::instrument::NotePolyphony`] 已经把"无 group 时按 `group=0`"写进文档）
+    /// ⇒ 本字段**一片两用**，⛔ 不是两个字段。
+    group: u32,
+    /// ⭐ **被谁关掉**（`off_by`，缺省 `0` ＝ **不关任何区域**；别名 `offby`）。
+    ///
+    /// 语义（SFZ v1 逐字，见 <https://sfzformat.com/opcodes/off_by/>）：
+    /// "Region off group. When a new region with a group number equal to `off_by` plays,
+    /// this region will be turned off." ＋ 格式页的镲片扼音例（`group` 页）把**触发侧**写成
+    /// `off_by`、**被关侧**写成 `group` ⇒ 本仓裁决：**本区域触发时**去关掉"当前正在发声、
+    /// 且其区域的 `group == 本区域的 off_by`"的声部（见 [`SfzVoicePool::trigger_note`]）。
+    ///
+    /// ⚠ `0` ＝ 关闭该功能：`read_u32` 的缺省就是 `0`，且格式页的 Practical considerations
+    /// 逐字记着各播放器对 `group=0` / `off_by=0` 的绕过（"regions are not muted"）
+    /// ⇒ 本仓取同一条：**`off_by == 0` 永不关断别人**。
+    off_by: u32,
+    /// ⭐ **关断模式**（`off_mode`，缺省 [`OffMode::Fast`]）。
+    ///
+    /// 格式页逐字（<https://sfzformat.com/opcodes/off_mode/>）：
+    /// "This opcode will determinate how a region is turned off by an `off_by` opcode."
+    /// * `fast`（缺省）："The voice will be turned off immediately. Release settings will
+    ///   not have any effect." ⇒ 被关的声部**当场硬停**；
+    /// * `normal`："The region will be set into release stage." ⇒ 被关的声部**进释放段**
+    ///   （它自己的 `ampeg_*`／`loop_sustain` 规则照旧生效）；
+    /// * `time`（ARIA）：本片**按 `normal` 处理**并逐字登记为书面偏离 —— 差别只剩
+    ///   [`yeban_sfz::instrument::Region::off_time`] 的延迟（缺省 6 ms），而 `off_time`
+    ///   不在本片范围内；见模块头的"off_by 关断"一节。
+    off_mode: OffMode,
 }
 
 impl PreparedRegion {
@@ -1035,6 +1139,31 @@ impl PreparedRegion {
     #[must_use]
     pub const fn ignores_note_off(&self) -> bool {
         matches!(self.loop_mode, LoopMode::OneShot)
+    }
+
+    // -----------------------------------------------------------------
+    // ⭐ 独占组（`group` / `off_by` / `off_mode`；任务单 `#94`）的只读读数
+    // -----------------------------------------------------------------
+
+    /// ⭐ 本区域**属于哪个独占组**（`group`，原样；缺省 `0`）。
+    ///
+    /// 用途有两个（⭐ 同一份数据、⛔ 不是两个字段）：① 被别的区域的 `off_by` **指名关断**
+    /// （本片）；② 下一片 `note_polyphony` 的检查键。
+    #[must_use]
+    pub const fn group(&self) -> u32 {
+        self.group
+    }
+
+    /// ⭐ 本区域**触发时去关掉哪个组**（`off_by`，原样；`0` ＝ **不关任何区域**）。
+    #[must_use]
+    pub const fn off_by(&self) -> u32 {
+        self.off_by
+    }
+
+    /// ⭐ 本区域的**关断模式**（`off_mode`，原样；缺省 [`OffMode::Fast`]）。
+    #[must_use]
+    pub const fn off_mode(&self) -> OffMode {
+        self.off_mode
     }
 
     /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
@@ -1855,6 +1984,12 @@ fn flatten_regions(
                 ampeg_decay: region.ampeg_decay,
                 ampeg_sustain: region.ampeg_sustain,
                 ampeg_release: region.ampeg_release,
+                // ⭐ 独占组（任务单 `#94`）：三个**每区域**字段原样搬进摊平表。
+                // `group` / `off_by` 的解析与域（`0..=u32::MAX`）在 `yeban-sfz` 里早已有
+                // 判据（`instrument.rs` 的 `read_u32` 一族）⇒ 本片只**搬运**，⛔ 不新增解析。
+                group: region.group,
+                off_by: region.off_by,
+                off_mode: region.off_mode,
             });
         }
         regions
@@ -1943,8 +2078,9 @@ impl FadeRamp {
 /// * **未进释放**：它是 **note-off 帧**（就是 [`SfzVoice::end_sample`] 的原义）；
 /// * **已进释放**：它是**释放 epoch**（释放段的第 0 帧）。
 ///
-/// 于是"释放已走的帧数" ＝ `abs_frame − frame`；而 epoch 在 `loop_sustain` 的
-/// "走完当前循环"分支里被**改写**成回绕帧 ⇒ ⭐ 这一个 `u64` 就够（⛔ 不需要给
+/// 于是"释放已走的帧数" ＝ `abs_frame − frame`；而 epoch 在**进释放那一帧**被改写成
+/// `abs_frame`（⭐ 任务 `#94` 起：三档一律"note-off 就地进释放"，⛔ 没有"等回绕"那种
+/// 延迟改写）⇒ ⭐ 这一个 `u64` 就够（⛔ 不需要给
 /// `SfzVoice` 加第 9 个字段）。释放一旦开始，note-off 帧就**不再被需要**
 /// （退休已由包络接管）⇒ ⛔ 不产生语义冲突。
 ///
@@ -1973,26 +2109,32 @@ pub(crate) struct EnvRun {
     ///
     /// ⚠ 离线/摊平两条路给 `0`：它们**没有 note-off**（`frame = u64::MAX`）⇒ 该值不被使用。
     abs_base: u64,
-    /// 该区域的 note-off 是否要走"**先走完当前循环**"（`loop_sustain` **且**窗口有效）。
+    /// 该区域的 note-off 之后是否**继续循环**（`loop_continuous` **且**窗口有效）。
     ///
-    /// ⚠ `loop_sustain` 但窗口退化（`loop_end <= loop_start` ⇒
-    /// [`PreparedRegion::loop_window`] 为 `None`）时必须是 `false`：否则"等回绕"永远等不到
-    /// ⇒ 声部会**卡在挂起态**。调用方按 `loop_window.is_some()` 求值。
-    sustain_tail: bool,
+    /// 规范逐字（<https://sfzformat.com/opcodes/loop_mode/>）："In loop_continuous mode,
+    /// the loop will repeat if the loop end is reached during the release phase, including
+    /// repeating multiple times if the release time is longer than the loop length."
+    /// ⇒ 三档里**只有它**在释放期照旧回绕；`no_loop` / `loop_sustain` 释放期⛔ 不循环
+    /// （"During the release phase, there's no looping." ＋ 沿源位置往后播到样本尾）。
+    ///
+    /// ⚠ 窗口退化（`loop_end <= loop_start` ⇒ [`PreparedRegion::loop_window`] 为 `None`）
+    /// 时必须是 `false`：那时根本没有窗口可回绕。调用方按 `loop_window.is_some()` 求值。
+    loop_during_release: bool,
 }
 
 impl EnvRun {
     /// ⭐ 构造（逐块一次；⛔ 不在逐样本路径上）。
     ///
     /// `stage` / `counter` 从声部抄来（跨块延续）；`frame` 是 note-off 帧**或**释放 epoch
-    /// （由声部的 [`SfzVoice::end_sample`] 承载 —— 语义由 `stage` 决定，见类型文档）。
+    /// （由声部的 [`SfzVoice::end_sample`] 承载 —— 语义由 `stage` 决定，见类型文档）；
+    /// `loop_during_release` 见字段文档（离线/摊平两条路给 `false`：它们没有 note-off）。
     pub(crate) const fn new(
         run: AmpegRun,
         stage: u8,
         counter: u32,
         frame: u64,
         abs_base: u64,
-        sustain_tail: bool,
+        loop_during_release: bool,
     ) -> Self {
         EnvRun {
             stage,
@@ -2000,19 +2142,23 @@ impl EnvRun {
             run,
             frame,
             abs_base,
-            sustain_tail,
+            loop_during_release,
         }
     }
 
-    /// ⭐ **循环回绕**发生在这一帧：若正"等当前循环走完" ⇒ 就地转进释放段。
+    /// ⭐ **本帧允不允许回绕**（[`mix_span_into`] 回绕闸门的**唯一**判据）。
     ///
-    /// 调用点在 [`mix_span_into`] 的回绕分支里（**唯一**的逐样本回绕处）⇒
-    /// "走完当前循环"的判定与回绕本身**同源**，⛔ 不是第二份循环几何。
-    fn on_loop_wrap(&mut self, abs_frame: u64) {
-        if self.stage & ENV_RELEASE_PENDING != 0 {
-            self.stage = ENV_RELEASING | (self.stage & ENV_STAGE_MASK);
-            self.frame = abs_frame;
+    /// * `loop_continuous` ⇒ **恒允许**（释放期照旧循环，规范那一条）；
+    /// * 其余模式 ⇒ 只在**释放期之前**允许：`abs_frame < self.frame` 把 **note-off 那一帧**
+    ///   也算进释放期（⛔ 不在 note-off 帧再回绕一次）；一旦进释放，`frame` 被改写成释放
+    ///   epoch（`<= abs_frame`）⇒ 这个比较恒假 ⇒ 源位置沿 `source_end` 往后播。
+    ///
+    /// ⚠ 没有包络的声部（`env == None`）走**另一支**：回绕不受任何限制（＝ 接线前的行为）。
+    fn may_wrap(&self, abs_frame: u64) -> bool {
+        if self.loop_during_release {
+            return true;
         }
+        self.stage & ENV_RELEASING == 0 && abs_frame < self.frame
     }
 
     /// ⭐ **推进一帧并给出该帧的包络增益**；`None` ＝ 包络**已归零**
@@ -2020,13 +2166,14 @@ impl EnvRun {
     ///
     /// 判定次序（逐条可判）：
     /// 1. **启用**：`IDLE` ⇒ `ATTACK`（区域有包络才会走到这里）；
-    /// 2. **note-off**（只在"还没进释放/等回绕"时）：记下**当时所在的段**
-    ///    （释放段要从那一刻的电平起算，这是"分段线性"的必要信息）——
-    ///    `loop_sustain` ＋ 有效窗口 ⇒ 进**等回绕**态；其余 ⇒ **就地进释放**
-    ///    并把 `frame` 改写成释放 epoch ＝ 本帧；
-    /// 3. **电平**：等回绕 ⇒ 保持在 `t_off` 那一刻的电平；释放 ⇒ 再乘 `(R − k) / R`；
-    ///    其余 ⇒ [`AmpegRun::level_at`]；
-    /// 4. **计数**：只有"还没进释放/等回绕"时才推进（释放期冻结在 `t_off`）。
+    /// 2. **note-off**（只在还没进释放时）：记下**当时所在的段**
+    ///    （释放段要从那一刻的电平起算，这是"分段线性"的必要信息），把 `frame` 改写成
+    ///    释放 epoch ＝ 本帧 ⇒ **三档（`no_loop` / `loop_sustain` / `loop_continuous`）
+    ///    一律就地进释放**（规范逐字："the duration of the release phase is set using
+    ///    `ampeg_release`"）；释放期**要不要继续循环**由 [`Self::may_wrap`] 决定，
+    ///    ⛔ 不在这里分支（也就⛔ 不存在"等回绕"那一档）；
+    /// 3. **电平**：释放 ⇒ [`AmpegRun::level_at`] 再乘 `(R − k) / R`；其余 ⇒ `level_at`；
+    /// 4. **计数**：只有还没进释放时才推进（释放期冻结在 `t_off`）。
     ///
     /// ⚠ **未进释放时的段位由计数唯一决定**（段边界是常数 `A` / `A+H` / `A+H+D`）⇒
     /// 每帧都按 [`env_held_stage_byte`] 刷新 `stage`，于是 [`SfzVoice::envelope_stage`]
@@ -2037,21 +2184,15 @@ impl EnvRun {
         if byte == ENV_STAGE_IDLE {
             byte = ENV_STAGE_ATTACK;
         }
-        if byte & (ENV_RELEASING | ENV_RELEASE_PENDING) == 0 {
+        if byte & ENV_RELEASING == 0 {
             byte = env_held_stage_byte(&self.run, t);
             if abs_frame >= self.frame {
-                let at = byte;
-                if self.sustain_tail {
-                    byte = ENV_RELEASE_PENDING | at;
-                } else {
-                    byte = ENV_RELEASING | at;
-                    self.frame = abs_frame;
-                }
+                // ⭐ note-off 就地进释放：段位低 3 位记下"收到时在哪一段"（`L_off` 的来源）。
+                byte |= ENV_RELEASING;
+                self.frame = abs_frame;
             }
         }
-        let level = if byte & ENV_RELEASE_PENDING != 0 {
-            self.run.level_at(byte, t)
-        } else if byte & ENV_RELEASING != 0 {
+        let level = if byte & ENV_RELEASING != 0 {
             match self.run.release_scale(abs_frame.saturating_sub(self.frame)) {
                 Some(scale) => self.run.level_at(byte, t) * scale,
                 None => 0.0,
@@ -2059,7 +2200,7 @@ impl EnvRun {
         } else {
             self.run.level_at(byte, t)
         };
-        if byte & (ENV_RELEASING | ENV_RELEASE_PENDING) == 0 {
+        if byte & ENV_RELEASING == 0 {
             self.counter = t.saturating_add(1);
         }
         self.stage = byte;
@@ -2150,13 +2291,13 @@ pub(crate) fn mix_span_into(
         let abs_frame = env.as_ref().map_or(0, |run| run.abs_base + written as u64);
         if let Some((loop_start, loop_len)) = loop_bounds
             && *position >= loop_start + loop_len
+            // ⭐ **回绕闸门**（任务单 `#94` 按规范改）：有包络时，只有
+            // [`EnvRun::may_wrap`] 允许才回绕 ⇒ 释放期里 `loop_continuous` 照旧循环、
+            // `no_loop` / `loop_sustain` 沿源位置往后播到样本尾。
+            // ⚠ 没有包络（`env == None`）⇒ **恒允许**（＝ 接线前的行为，逐位不变）。
+            && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
         {
             *position = loop_start + (*position - loop_start) % loop_len;
-            // ⭐ `loop_sustain` 的 note-off 之后：**走完当前循环**（正好在这里发生）
-            // ⇒ 这一刻才是释放段的起点（epoch ＝ 本帧）。
-            if let Some(run) = env.as_mut() {
-                run.on_loop_wrap(abs_frame);
-            }
         }
         let index = *position as usize;
         if index as u64 + 1 >= source_end || index + 1 >= pcm.len() {
@@ -2209,23 +2350,27 @@ pub const SFZ_VOICES_PER_TRACK: usize = 16;
 /// * `source_start` / `source_end` ＝ [`PreparedRegion::span_bounds`] 的**同一份**归约
 ///   （`offset` 起点与 `min(end, 样本播完)` 终点）。
 ///
-/// # 终点口径（⭐ 任务 `#92` 起：**有 `ampeg_*` 时由包络接管**）
+/// # 终点口径（⭐ 任务 `#92` 起：**有 `ampeg_*` 时由包络接管**；⭐ `#94` 按规范统一三档）
 ///
 /// * **无 `ampeg_*`（透明包络）**：`stop = min(end_sample, source_end, 样本播完)`
 ///   —— ⭐ **与任务 `#92` 之前一字不差**（逐位判据 `S37`）；
 /// * ⭐ **有 `ampeg_*`**：note-off（＝ `end_sample`）**不再**是硬停，而是**释放段的起点** ——
 ///   声部继续写（到 `source_end` 或释放走完为止）：
-///   * `loop_mode=loop_continuous` ⇒ ⭐ **note-off 不影响循环**（⛔ 不进释放段，
-///     照旧在 `end_sample` 硬停 —— 与 `loop_sustain` 的**唯一分野**就是这一条）；
-///   * `loop_mode=loop_sustain` ⇒ ⭐ note-off 后**走完当前循环**（源位置第一次回绕）
-///     **再进**释放段（[`AmpegStage::ReleasePending`] ⇒ [`AmpegStage::Release`]）；
-///   * 其余模式（`no_loop` 等）⇒ note-off **就地**进释放段；
+///   * ⭐ **三档（`no_loop` / `loop_sustain` / `loop_continuous`）都就地进释放段**
+///     （规范逐字："Whether no_loop, loop_continuous or loop_sustain is set, the duration
+///     of the release phase is set using `ampeg_release`."）；
+///   * ⭐ 分野只在**释放期要不要继续回绕**（唯一闸门 [`EnvRun::may_wrap`]）：
+///     `loop_continuous` ⇒ ⭐ **照旧循环（可以重复多次）**；`no_loop` / `loop_sustain`
+///     ⇒ ⛔ 不循环（沿源位置往后播，**"释放走完"与"到样本尾"谁先到谁结束**）；
 ///   * `ampeg_release` 换算后为 **0 帧** ⇒ 零长释放段 ⇒ 立即退休（＝ 今天的硬停）；
 /// * ⭐ **用样本自然结束**：源位置走到 `source_end` 即退休（有包络时这条**仍然**有效：
 ///   释放段比样本尾巴长 ⇒ 尾巴用完就停）；
 /// * ⭐ **`loop_mode=one_shot` 的区域 ⛔ 不退休**（`one_shot` 忽略 note-off，
 ///   见 [`PreparedRegion::ignores_note_off`]）—— 注意它与 `loop_continuous` 的分别：
 ///   `one_shot` 连**循环窗口都没有**（[`reduce_loop_window`] 对它恒 `None`）。
+/// * ⭐ **`off_by` 关断不是第二条终点口径**：被关掉的声部走的就是上面这几条
+///   （`fast` ⇒ 硬停；`normal` / `time` ⇒ 把它自己的 `end_sample` 挪到"现在"），
+///   见模块头的"独占组"一节与 [`SfzVoicePool::stop_off_by_victims`]。
 ///
 /// ⭐ **循环由区域（[`PreparedRegion`]）拥有、⛔ 不由声部拥有**：声部只带
 /// [`Self::region_index`] 指路 ⇒ `position` ＋ `region_index` 就够（[`Self::sample_index`]
@@ -2471,8 +2616,9 @@ struct SlotReadings {
     /// ⭐ **包络眼里的 note-off 帧**：`u64::MAX` ＝「**不理会** note-off」
     /// （`loop_mode=one_shot`，与 [`PreparedRegion::ignores_note_off`] 的既有裁决同源）。
     note_off: u64,
-    /// note-off 后是否**先走完当前循环**（`loop_sustain` ＋ 有效窗口）。
-    sustain_tail: bool,
+    /// ⭐ note-off 之后是否**继续循环**（`loop_continuous` ＋ 有效窗口；
+    /// 见 [`EnvRun::loop_during_release`] 与 [`EnvRun::may_wrap`]）。
+    loop_during_release: bool,
     /// 该区域的帧口径包络参数；`None` ＝ 透明包络（⛔ 逐样本不加浮点运算）。
     env: Option<AmpegRun>,
 }
@@ -2537,6 +2683,15 @@ impl SfzVoicePool {
     /// ⭐ 步 3：每个声部抄下**该区域自己**的 `sample_index`（多采样）与 `span` 归约出的
     /// **源起点**（`offset`）；`NO_SAMPLE` 的区域⛔ 不建声部。
     ///
+    /// # ⭐ 独占组／`off_by`（任务单 `#94`；`sfz-needs-6` 的最后一瓣之一）
+    ///
+    /// 匹配的**每一条**区域在**建自己的声部之前**先跑一次
+    /// [`Self::stop_off_by_victims`] ⇒ 语义、来源与边界见模块头的"⭐ `off_by` 关断"一节。
+    /// ⚠ 关断**不受**"这条区域是否真的建声部"影响（`end=-1` 的静音区域正是规范给出的
+    /// 用法："Marking a region end with -1 can be used to use a silent region to turn off
+    /// other regions by using the `group` and `off_by` opcodes."）⇒ 扫描点在
+    /// `accepts()` 之后、`sample/span/rate` 那些检查**之前**。
+    ///
     /// # ⭐ 轨增益门（`track_gain`；归属裁决见台账 R711）
     ///
     /// 声部增益 ＝ **乐器层**（`region.gain_at`：`volume_gain`／`velocity_gain[128]`／
@@ -2553,9 +2708,26 @@ impl SfzVoicePool {
     ) -> usize {
         let n = note as usize;
         let mut created = 0usize;
+        // ⭐ **触发前的在场快照**（任务单 `#94` 裁决 5：**触发者不自掐**）：只有本次调用
+        // **之前**就 active 的槽位才是 `off_by` 的候选 victim ⇒ 无论本次新建的声部属于
+        // 什么 `group`、本次区域的 `off_by` 是多少，都不会被自己这次触发关掉。
+        // 语料依据：登记语料 `assets/samples/karoryfer-272-merry-orks/ork_dialogue.sfz`
+        // 用的是 `group=1` ＋ `off_by=1`（同组独占的标准写法）；按 ARIA 的自掐解释，
+        // 新声部会被自己立刻掐掉 ⇒ 那 20 处会**发不出声**。
+        // 机械代价：一个 `u16` 局部量（⛔ 零分配、⛔ 不进任何结构体）。
+        let mut active_before: u16 = 0;
+        for (index, voice) in self.voices.iter().enumerate() {
+            if voice.is_active() {
+                active_before |= 1u16 << index;
+            }
+        }
         for (region_index, region) in plan.regions().iter().enumerate() {
             if !region.accepts(note, velocity) {
                 continue;
+            }
+            // ⭐ `off_by`：在**建自己的声部之前**关掉它点名的那个组（`0` ＝ 不关任何人）。
+            if region.off_by != 0 {
+                self.stop_off_by_victims(plan, region.off_by, active_before);
             }
             // ⭐ 区域下标进 `u16`（`flatten_regions` 走 `ParseLimits::default()` ⇒
             // 区域数 ≤ `DEFAULT_MAX_REGIONS = 65_536` ⇒ 下标必落在 `u16` 内）。
@@ -2603,6 +2775,64 @@ impl SfzVoicePool {
             }
         }
         created
+    }
+
+    /// ⭐ **`off_by` 关断**（任务单 `#94`）：把 `active_before` 里那些"其区域的
+    /// `group == off_by`"的声部按**它自己的** `off_mode` 关掉。
+    ///
+    /// # 语义（逐条，全部有出处）
+    ///
+    /// * 调用方保证 `off_by != 0`；`0` 在格式页的 Practical considerations 里是
+    ///   "regions are not muted" ⇒ 本函数对它**一个都不碰**；
+    /// * ⭐ **`one_shot` victim 不关**：`loop_mode=one_shot` 的"忽略 note-off"是一条
+    ///   **完整**裁决（`#92`／`#94` 两次确认）⇒ `off_by` 是**停止请求**的一种，
+    ///   同样被它忽略（⛔ 不造"忽略 note-off 但不忽略 off_by"的半裁决）；
+    /// * ⭐ **`fast`（缺省）**："The voice will be turned off immediately. Release settings
+    ///   will not have any effect." ⇒ 用**既有**的 [`SfzVoice::silence`] 原语当场硬停
+    ///   （⭐ 只翻 `active` 那一个声部：同槽的 `pending`（被窃取后等着接管的新声部）
+    ///   与 `fade` **原样保留** ⇒ 它会照常接管，判据 `S41`）；
+    /// * ⭐ **`normal` / `time`**："The region will be set into release stage." ⇒ 把 victim 的
+    ///   [`SfzVoice::end_sample`] 置 `0` ＝「note-off 就是现在」，剩下**完全**由既有
+    ///   note-off 机接手（透明包络 ⇒ 硬停；有包络 ⇒ 释放段；`loop_continuous` ⇒ 释放期
+    ///   照旧循环）—— ⛔ 本函数**不新造**任何包络/淡化路径；
+    /// * ⭐ **透明包络的 victim 直接走硬停那一支**（即使 `off_mode=normal`）：没有包络就
+    ///   没有释放阶段可言（规范那张表只覆盖"进 release"这一种），而走 `end_sample = 0`
+    ///   会经 `render_slot` 的 `silence_slot` 分支**连带清掉同槽的 `pending`**。
+    /// * ⭐ **已经在释放里的 victim 不重写 `end_sample`**：那会把释放 epoch 篡改成 0
+    ///   ⇒ 释放段被当场截断（"set into release stage" 对它已经成立 ⇒ 保持原状）。
+    ///
+    /// # 分配纪律
+    ///
+    /// 一次 ≤ [`SFZ_VOICES_PER_TRACK`] 槽的线性扫描（**触发期**一次，⛔ 不进逐样本路径）：
+    /// **零分配、零锁、零 I/O**。
+    fn stop_off_by_victims(&mut self, plan: &PreparedSfz, off_by: u32, active_before: u16) {
+        for index in 0..SFZ_VOICES_PER_TRACK {
+            if active_before & (1u16 << index) == 0 || !self.voices[index].is_active() {
+                continue;
+            }
+            let region_index = usize::from(self.voices[index].region_index);
+            let Some(victim_region) = plan.regions().get(region_index) else {
+                continue;
+            };
+            if victim_region.group() != off_by || victim_region.ignores_note_off() {
+                continue;
+            }
+            let hard_stop =
+                victim_region.off_mode() == OffMode::Fast || victim_region.ampeg_is_transparent();
+            if hard_stop {
+                // ⭐ 硬停**只翻 `active` 那一个声部**；同槽的 `pending`（被窃取后等着接管的
+                // 新声部）**原样保留** ⇒ ⛔ 不丢掉一个合法声部。
+                // ⚠ 同时把该槽的 `fade` 归 [`FadeRamp::NONE`]：那个淡出属于**已经不存在**的
+                // victim（它被硬停而不是淡出）⇒ 留着它会让 `render_slot` 的"提升"条件
+                // （`!fade.is_fading()`）永远不成立（淡出只在 victim 还 active 时才推进）
+                // ⇒ 挂起者会**卡死**。归零之后 `render_slot` 第 2 步在**同一块**里就地提升。
+                self.voices[index].silence();
+                self.fade[index] = FadeRamp::NONE;
+            } else if self.voices[index].env_stage & ENV_RELEASING == 0 {
+                // 进释放：交给既有 note-off 机（`end_sample = 0` ＝ "note-off 就是现在"）。
+                self.voices[index].end_sample = 0;
+            }
+        }
     }
 
     /// ⭐ **池满时换掉一个声部**（`trigger_note` 的池满分支）。
@@ -2730,7 +2960,7 @@ impl SfzVoicePool {
                     voice.env_counter,
                     readings.note_off,
                     position,
-                    readings.sustain_tail,
+                    readings.loop_during_release,
                 )
             });
             let written = mix_span_into(
@@ -2789,7 +3019,7 @@ impl SfzVoicePool {
                 voice.env_counter,
                 readings.note_off,
                 position + offset as u64,
-                readings.sustain_tail,
+                readings.loop_during_release,
             )
         });
         let written = mix_span_into(
@@ -2818,31 +3048,34 @@ impl SfzVoicePool {
     }
 
     /// ⭐ **逐块路径的三个区域读数**（任务 `#92` 起）：有效循环窗口 ／ 生效的引擎终点 ／
-    /// 包络参数（＋ 是否走 `loop_sustain` 的"等回绕"）。
+    /// 包络参数（＋ 释放期要不要继续循环）。
     ///
     /// * 区域查不到（池与摊平表不匹配）⇒ `None` ⇒ 调用方**如实退休**（与
     ///   [`PreparedSfz::sample`] 落空同径）；
     /// * 循环窗口按**该声部自己那份 PCM** 的长度归约（[`PreparedRegion::loop_window`]）；
-    /// * ⭐ **终点**：
+    /// * ⭐ **终点**（任务单 `#94` 按 `sfzformat` 改）：
     ///   * `one_shot`（[`PreparedRegion::ignores_note_off`]）⇒ `u64::MAX`
-    ///     ＝「note-off ⛔ 不切它」（循环接线片既有裁决）；
-    ///   * ⭐ **有包络且该模式会进释放段**（即 `loop_mode != loop_continuous`）⇒ `u64::MAX`
-    ///     ＝「note-off 由**包络**接管，⛔ 不在这里硬切」；
-    ///   * 其余（透明包络，或 `loop_continuous` ＋ 有包络）⇒ 原样带出 `voice.end_sample`
-    ///     ＝ **今天的硬停**（`loop_continuous` 的"note-off 不影响循环"就落在这里）。
-    /// * ⭐ `sustain_tail`：`loop_sustain` **且**窗口有效 ⇒ `true`（note-off 后先走完当前循环）；
+    ///     ＝「note-off ⛔ 不切它」（循环接线片既有裁决，⭐ 本片不动）；
+    ///   * ⭐ **有包络** ⇒ `u64::MAX` ＝「note-off 由**包络**接管，⛔ 不在这里硬切」——
+    ///     规范逐字（<https://sfzformat.com/opcodes/loop_mode/>）："Whether `no_loop`,
+    ///     `loop_continuous` or `loop_sustain` is set, the duration of the release phase is
+    ///     set using `ampeg_release`." ⇒ **三档都是同一件事**（旧口径把 `loop_continuous`
+    ///     排除在这条之外，已按规范撤掉）；
+    ///   * 其余（**透明包络**）⇒ 原样带出 `voice.end_sample` ＝ 今天的硬停
+    ///     （没有释放阶段可言 ⇒ 不在规范那张表里）。
+    /// * ⭐ `loop_during_release`：`loop_continuous` **且**窗口有效 ⇒ `true`（释放期照旧回绕；
+    ///   规范逐字："the loop will repeat if the loop end is reached during the release
+    ///   phase, including repeating multiple times if the release time is longer than the
+    ///   loop length."）；`no_loop` / `loop_sustain` ⇒ `false`（"During the release phase,
+    ///   there's no looping." ＋ `legacy` 的 "The rest of the sample will play after note
+    ///   release."）。
     /// * ⭐ `note_off`：包络眼里的 note-off 帧（`one_shot` ⇒ `u64::MAX` ＝ 不理会）。
-    ///   ⚠ **第 2 档的机制在这里**：`loop_continuous` ＋ 有包络时 `limit` 仍取 `voice.end_sample`
-    ///   ⇒ 逐样本循环在**到达 note-off 那一帧之前**就停（`limit == position` 时调用方直接退休）
-    ///   ⇒ 包络**根本看不到** note-off ⇒ 它自然"不进释放段"。⛔ 不是靠包络里的分支特判。
     fn slot_readings(plan: &PreparedSfz, voice: SfzVoice, engine_hz: f32) -> Option<SlotReadings> {
         let region = plan.regions().get(voice.region_index as usize)?;
         let pcm_len = plan.sample(voice.sample_index)?.pcm().len();
         let loop_window = region.loop_window(pcm_len);
         let env = region.ampeg_run(engine_hz);
-        let end_sample = if region.ignores_note_off()
-            || (env.is_some() && !matches!(region.loop_mode(), LoopMode::LoopContinuous))
-        {
+        let end_sample = if region.ignores_note_off() || env.is_some() {
             u64::MAX
         } else {
             voice.end_sample
@@ -2858,7 +3091,7 @@ impl SfzVoicePool {
             } else {
                 voice.end_sample
             },
-            sustain_tail: matches!(region.loop_mode(), LoopMode::LoopSustain)
+            loop_during_release: matches!(region.loop_mode(), LoopMode::LoopContinuous)
                 && loop_window.is_some(),
             env,
         })

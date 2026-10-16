@@ -152,7 +152,7 @@
 //! | :--- | :--- | :--- |
 //! | needs-1 | **"这台设备是鼓机"的类型级信息**：`DeviceKind` 只有 `InternalInstrument` / `InternalEffect` / `External*`（`crates/yeban-model/src/project.rs:403`），没有鼓机档 | 今天的识别靠"五个键位名写全"这一条**名称约定**；类型级信息落下后这条约定删除 |
 //! | needs-2 | **打击乐键位映射的形状**：`MidiNote` 没有鼓件/通道字段（见 §3.1） | 今天由工程在设备参数里逐件写出；模型若给出 `InstrumentDefinition` 的键位表，这条要求删除 |
-//! | needs-3 | **同轨多件音源的裁决**：一台设备链里既有复音合成器参数、又有完整鼓机映射时谁发声 | 今天引擎的裁决是"鼓机优先"（§4.1）；模型若禁止这种组合，本条删除 |
+//! | needs-3 | ⭐ **已闭合（任务单 `#96`，模型面）**：同轨多件音源的裁决 —— 模型层**不禁止**同一轨既有 `TrackV3.sampler` 又有会被本模块当鼓机的 `InternalInstrument` 设备 | ⭐ 裁决：本条自己的措辞「**模型若禁止这种组合，本条删除**」那一支**不成立** ⇒ **本条删除**（模型层**没有**"鼓机"这个概念：`DeviceKind` 四档无鼓机档）。引擎侧的既有权衡**照旧**、且**明说它是引擎的裁决**：`鼓机 ＞ SFZ ＞ 复音`（§4.1），可读信号 [`SynthEngine::armed_sources`]／[`SynthEngine::ignored_sources`]（`sfz-needs-3` 的信号腿，判据 S20）。常驻判据：`crates/yeban-model/tests/track_multi_source_coexistence.rs` 的 `model_allows_a_track_to_hold_both_a_sampler_and_a_drum_shaped_instrument` ＋ `the_five_key_names_are_exactly_the_engines_drum_recognition_names` |
 //!
 //! ## 8. 判据与注入
 //!

@@ -46,7 +46,7 @@
 //! | ⭐ S33 | ⭐ **不带任何 `loop_*` 的既有夹具逐位不变**（任务 `#91` 新增；§4.4） | 既有夹具 [`TWO_MATCH_ONE_MISS`] 经 `render_track` 实时路径 512 帧 @ `(60,127)` 的 **FNV-1a 指纹** ＝ **改动前实测** `0xa933ddab286bdf5e`（基线探针：`flat` 与 `engine` 两条路同值、`max\|Δ\| = 0`）；⭐ **反向腿**：同一输出乘 `1.0000001` ⇒ 指纹**必须变**（证明它是逐位判据、⛔ 不是"有输出就算过"） |
 //! | ⭐ S34 | ⭐ **五个 `ampeg_*` 的解析层五条腿 ＋ `Err` 政策 ＋ 缺失 ⇒ 缺省 ＋ 帧换算**（任务 `#92` 新增） | 秒 / 百分比读数逐字回读（`1.5s` / `250ms` / 裸值 / `50%` / `2s`）；`engine_hz == 48 kHz`；⭐ `0.01 s × 48 kHz` ⇒ **480 帧**（四舍五入，⛔ 不是截断 479）；非法三类 ⇒ `InvalidFloat` / `InvalidDuration` / `FloatOutOfRange`（＋ 同批数据里的合法样例**必须被接受**）；缺失 ⇒ 五个读数全在透明缺省（`release == 0`，⛔ 不是规范的 `0.001`）＋ `ampeg_is_transparent()` ＋ `ampeg_run() == None` |
 //! | ⭐ S35 | ⭐ **包络形状逐样本可判**（任务 `#92` 新增） | 恒定 `1.0` 样本 ⇒ 输出**恰好**是包络电平；容差口径 ＝ **线性段每一点 `\|实测 − 理论\| ≤ 1e-6`**（实测最大 **5.96e-8**）；起音**恰好**在第 `A = 480` 帧到峰、衰减终点 ＝ `sustain = 0.5`、note-off 后**恰好** `R = 960` 帧归零且之后逐位 0；⭐ 段位读数逐块 `Attack → Hold → Decay → Sustain → None`（状态真的在推进，⛔ 不是假读数） |
-//! | ⭐ S36 | ⭐ **`loop_sustain` 与 `loop_continuous` 在 note-off 之后输出不同**（任务 `#92` 新增；上一片搬家过来的判据） | 两臂**各配一条**"它自己该怎样"：`loop_continuous` ⇒ 非零**恰好 200**＝ `end_sample` 硬停（⛔ 无释放尾巴，前置见证：note-off 前周期 ＝ 64）；`loop_sustain` ⇒ 回绕帧 **228** 之后释放 **480** 帧 ⇒ 非零**恰好 708**；⭐ 第 `[200,228)` 段与"无 note-off"的循环输出**逐位相同**（＝ 走完当前循环）；反向腿：输出必须**越过** `end_sample`，且两条腿的非零数**不同** |
+//! | ⭐ S36 | ⭐ **`loop_sustain` 与 `loop_continuous` 在 note-off 之后输出不同**（任务 `#92` 新增；⭐ **任务 `#94` 按规范改写期望**） | 两臂**各配一条**"它自己该怎样"：`loop_continuous` ⇒ note-off 就地**进释放**且**释放期照旧回绕** ⇒ 非零**恰好 680**（200 ＋ 480；全程逐点 ＝「循环 × 斜坡」）；`loop_sustain` ⇒ 进释放、释放期**⛔ 不循环**（源下标逐帧 +1、永不回绕）⇒ 非零**恰好 463**（"释放走完"与"到样本尾"**谁先到谁结束** ⇒ 样本尾先到）；反向腿：两条腿的非零数**不同**（680 ≠ 463）＋ 输出越过 `end_sample` ＋ 理论值由 `pcm` ＋ 斜坡**独立算出** |
 //! | ⭐ S37 | ⭐ **无 `ampeg_*` 的既有夹具逐位不变**（任务 `#92` 新增；§4.4） | 两臂（`loop_continuous` ＋ `end_sample = 200`、`no_loop` ＋ `end_sample = u64::MAX`）经实时池 512 帧的 **FNV-1a 指纹** ＝ **改动前实测** `0xa9dec8a87f69106c` / `0xd3c2a82076bd8947`（基线探针在 base `1beffe2a`、工作树干净时测得，测后删除）；⭐ **反向腿**：同一输出乘 `1.0000001` ⇒ 指纹**必须变** |
 //! | ⭐ S38 | ⭐ **"取线性段"那条登记可判**（任务 `#92` 新增；§3.5） | `include_str!("../src/sfz_instrument.rs")` 必须含字面量"`本仓取线性段；参考实现的指数／对数选项不在本片范围内`"＋ note-off 四档语义表里那一条；反向腿：文档里**没有**的句子 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真） |
 //!
@@ -83,7 +83,7 @@ use yeban_model::{
 // ⭐ 任务 `#91`：循环判据要读**生效循环模式**与 `yeban-sfz` 的两类**响亮 `Err`**
 // （⛔ 判据不复制它们的取值，只引用唯一权威事实源）。
 use yeban_sfz::error::SfzError;
-use yeban_sfz::instrument::LoopMode;
+use yeban_sfz::instrument::{LoopMode, OffMode};
 
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
@@ -3570,35 +3570,57 @@ fn s35_the_envelope_shape_is_judgeable_sample_by_sample() {
     );
 }
 
-/// ⭐ S36（任务单 `#92` 的**核心**）：**`loop_sustain` 与 `loop_continuous` 在 note-off
-/// 之后输出必须不同**，且**各配一条"它自己在 note-off 后该怎样"的断言**。
+/// ⭐ S36（任务单 `#92` 新增；⭐ **任务单 `#94` 按规范改写期望**）：**`loop_sustain` 与
+/// `loop_continuous` 在 note-off 之后的输出必须不同**，且**各配一条"它自己在 note-off
+/// 之后该怎样"的断言**（⛔ 不是只断言"两者不同"）。
+///
+/// # ⚠ 本判据为什么被改写（沿革，⛔ 不改写历史）
+///
+/// `#92` 曾按"`loop_sustain` ⇒ **走完当前循环**再进释放；`loop_continuous` ⇒ note-off
+/// **根本不进释放**（`end_sample` 硬停）"实现。任务单 `#94` 查了 `sfzformat` 的两份页面后
+/// **撤掉了这两条口径**（逐字引文见下）⇒ 本判据的**期望**随之改写（**编号与判据名不变**）。
 ///
 /// # 量什么（对象 ＋ 单位，先说再跑）
 ///
-/// 对象 ＝ 实时池在**斜坡样本**（⇒ 输出可**逐帧反解源下标**，见 [`source_index_at`]）
-/// 上的输出；单位 ＝ **非零帧数**（存在性）＋ **源采样下标序列**（形状）
-/// ＋ **逐位相等**（"走完当前循环"那一段）。
+/// 对象 ＝ 实时池在**斜坡样本**（⇒ 输出可**逐帧反解源下标**）上的输出；单位 ＝
+/// **非零帧数**（存在性）＋ **源采样下标序列**（形状）＋ **释放段逐帧对账**
+/// （`|实测 − 理论| ≤ 1e-6`）。
 ///
-/// # 判定量（两条腿**各自**成立，⛔ 不是只断言"两者不同"）
+/// # 规范逐字（全部来自 `sfzformat`，⭐ 三条）
 ///
-/// * ⭐ **`loop_continuous`**：note-off **不影响循环** ⇒ 照旧在 `end_sample`（＝ 200）
-///   处**硬停** ⇒ 非零**恰好 200**、第 200 帧起逐位 0（⛔ 不进释放段）；
-/// * ⭐ **`loop_sustain`**：note-off 后**走完当前循环**（窗口 `[100,164)`、周期 64
-///   ⇒ 下一次回绕落在**第 228 帧**）⇒ 第 `[200,228)` 段**逐位等于**"没有 note-off"的
-///   循环输出（电平**保持**在 note-off 那一刻的值，⛔ 不提前释放、⛔ 不切歌），
-///   然后从第 228 帧起**恰好 480 帧**线性释放 ⇒ 非零**恰好 228 + 480 ＝ 708**，
-///   第 708 帧起逐位 0。
-/// * ⭐ 反向腿（⛔ 防空绿）：两条腿的**非零帧数必须不同**（200 ≠ 708），
-///   且 `loop_sustain` 的输出**确实越过** `end_sample`（`end_sample` 真的在切
-///   `loop_continuous`，见 S29 的同款反向腿）。
+/// 1. <https://sfzformat.com/opcodes/loop_mode/>：「loop_sustain: the player will play the
+///    loop while the note is held … **During the release phase, there's no looping.**」；
+/// 2. 同页：「Whether no_loop, **loop_continuous** or **loop_sustain** is set, **the duration
+///    of the release phase is set using `ampeg_release`**. However, in loop_sustain or
+///    no_loop mode, **the sound can be cut off before the release phase ends, if the end of
+///    sample is reached**. In loop_continuous mode, **the loop will repeat if the loop end
+///    is reached during the release phase**, including repeating multiple times if the
+///    release time is longer than the loop length.」；
+/// 3. <https://sfzformat.com/legacy/>：「loop_sustain: … **The rest of the sample will play
+///    after note release.**」
+///
+/// # 判定量（两条腿**各自**成立）
+///
+/// * ⭐ **`loop_continuous`**：note-off（第 200 帧）**就地进释放**，且**释放期照旧回绕**
+///   ⇒ 非零**恰好** `200 + 480 = 680`（释放走完才结束）；⭐ **整段**与**独立**理论轨迹
+///   （源下标按 `[100,164)` 循环 × 释放斜坡）逐点相符 ⇒ 那一条同时钉住"释放期仍在循环"；
+/// * ⭐ **`loop_sustain`**：note-off **就地进释放**、释放期**⛔ 不循环**（沿源位置往后播）
+///   ⇒ 第 200 帧起源下标**逐帧 +1、永不回绕**，直到**样本播完**
+///   （`source_end = 400` ⇒ 最后一个可写下标 `398`）⇒ 非零**恰好** `200 + 263 = 463`
+///   （⚠ "释放走完（680）"与"到样本尾（463）"**谁先到谁结束** ⇒ 这里样本尾先到）。
+/// * ⭐ 反向腿（⛔ 防空绿）：两条腿的**非零帧数必须不同**（680 ≠ 463）；
+///   `loop_sustain` 的输出**确实越过** `end_sample`（第 200 帧必须非零）；
+///   释放段的理论值由 `pcm` ＋ 斜坡**独立算出**（⛔ 不拿实测反解自己比自己）；
+///   ⭐ 前置见证：两份夹具在 note-off **之前**都实测周期 ＝ `loop_end − loop_start`。
 #[test]
 fn s36_loop_sustain_and_loop_continuous_differ_after_note_off() {
     const END_SAMPLE: usize = 200;
-    /// ⭐ 下一次回绕的输出帧：窗口 `[100,164)`、源位置在 `t=164` 首次回绕
-    /// ⇒ `t ≡ 164 (mod 64)` ⇒ `t = 164, 228, …`；`≥ 200` 的第一个是 **228**。
-    const WRAP: usize = 228;
     const RELEASE_FRAMES: usize = 480; // 0.01 s @ 48 kHz
-    const FRAMES: usize = WRAP + RELEASE_FRAMES + 8;
+    /// ⭐ note-off 那一帧的源位置：窗口 `[100,164)`、周期 64 ⇒ `100 + (200 − 164) mod 64`。
+    const SUSTAIN_POSITION_AT_NOTE_OFF: usize = LOOP_START + (END_SAMPLE - LOOP_END) % LOOP_PERIOD;
+    /// ⭐ `loop_sustain` 在释放期还能写的帧数：源下标从 136 一路 +1 到最后一个可写下标 398。
+    const SUSTAIN_TAIL: usize = (LOOP_PCM_FRAMES - 1) - SUSTAIN_POSITION_AT_NOTE_OFF;
+    const FRAMES: usize = END_SAMPLE + RELEASE_FRAMES + 8;
 
     let text = |mode: &str| {
         format!(
@@ -3606,99 +3628,129 @@ fn s36_loop_sustain_and_loop_continuous_differ_after_note_off() {
              loop_start={LOOP_START} loop_end={LOOP_END} ampeg_release=0.01\n"
         )
     };
-    let continuous = prepare_with(&text("loop_continuous"), &ramp_sample(LOOP_PCM_FRAMES));
-    let sustain = prepare_with(&text("loop_sustain"), &ramp_sample(LOOP_PCM_FRAMES));
-    // 反向腿的参照：**没有 note-off** 的同一份循环夹具（`end_sample = u64::MAX`）。
-    let free_running = render_pool(&continuous, u64::MAX, FRAMES);
+    let pcm = ramp_sample(LOOP_PCM_FRAMES);
+    let continuous = prepare_with(&text("loop_continuous"), &pcm);
+    let sustain = prepare_with(&text("loop_sustain"), &pcm);
 
     let continuous_out = render_pool(&continuous, END_SAMPLE as u64, FRAMES);
     let sustain_out = render_pool(&sustain, END_SAMPLE as u64, FRAMES);
     let count = |out: &[f32]| out.iter().filter(|sample| **sample != 0.0).count();
 
-    let held_segment_mismatches = (END_SAMPLE..WRAP)
-        .filter(|frame| sustain_out[*frame] != free_running[*frame])
-        .count();
-    // ⚠ 释放段的**理论值 = 源内容 × 线性斜坡**：循环窗口在释放期**照旧生效**
-    // ⇒ 源内容跟着走，参照取"没有 note-off"那一份的**同一帧**（位置轨迹逐帧相同）。
-    let release_mismatches = (0..RELEASE_FRAMES)
-        .filter(|k| {
-            let frame = WRAP + k;
-            let expected =
-                free_running[frame] * (RELEASE_FRAMES - k) as f32 / RELEASE_FRAMES as f32;
-            (sustain_out[frame] - expected).abs() > 1.0e-6
+    // ⭐ `loop_continuous` 的**独立**理论轨迹：源下标永远按 `[100,164)` 循环，
+    // 第 200 帧起乘 `(R − k)/R`（k ≥ R ⇒ 0 ⇒ 声部已退休）。
+    let continuous_index = |t: usize| {
+        if t < LOOP_END {
+            t
+        } else {
+            LOOP_START + (t - LOOP_START) % LOOP_PERIOD
+        }
+    };
+    let continuous_mismatches = (0..=END_SAMPLE + RELEASE_FRAMES)
+        .filter(|t| {
+            let ramp = if *t < END_SAMPLE {
+                1.0
+            } else {
+                (RELEASE_FRAMES - (*t - END_SAMPLE)) as f32 / RELEASE_FRAMES as f32
+            };
+            (continuous_out[*t] - pcm.pcm[continuous_index(*t)] * ramp).abs() > 1.0e-6
         })
         .count();
+    // ⭐ `loop_sustain` 的**独立**理论轨迹：第 200 帧起源下标**逐帧 +1**（⛔ 不回绕），
+    // 直到样本播完（最后一个可写下标 = `LOOP_PCM_FRAMES − 2`）。
+    let sustain_mismatches = (0..SUSTAIN_TAIL)
+        .filter(|k| {
+            let ramp = (RELEASE_FRAMES - k) as f32 / RELEASE_FRAMES as f32;
+            (sustain_out[END_SAMPLE + k] - pcm.pcm[SUSTAIN_POSITION_AT_NOTE_OFF + k] * ramp).abs()
+                > 1.0e-6
+        })
+        .count();
+    // ⭐ "释放期⛔ 不循环"的**形状**读数：除掉释放斜坡后反解的源下标必须**严格递增**。
+    let recover = |k: usize| {
+        sustain_out[END_SAMPLE + k] * RELEASE_FRAMES as f32 / (RELEASE_FRAMES - k) as f32
+    };
+    let sustain_indices_increase = (1..SUSTAIN_TAIL).all(|k| recover(k) > recover(k - 1));
+    // ⭐ 前置见证：note-off **之前**两份夹具都真的按窗口循环（⛔ 防"根本没出声"的假绿）。
+    let continuous_period = detect_period(&continuous_out, LOOP_START, LOOP_END + 3 * LOOP_PERIOD);
+    let sustain_period = detect_period(&sustain_out, LOOP_START, LOOP_END + 3 * LOOP_PERIOD);
     println!(
-        "[engine-sfz/S36] `loop_continuous`（end_sample={END_SAMPLE}）⇒ 非零 = {}；\
-         ⭐ `loop_sustain` ⇒ 非零 = {}（回绕帧 {WRAP} ＋ 释放 {RELEASE_FRAMES}）；\
-         [200,228) 段与「无 note-off」逐位不符 = {held_segment_mismatches}；\
-         释放段 |实测 − 理论| > 1e-6 的点 = {release_mismatches}；\
-         释放起点（第 {WRAP} 帧）= {}（参照第 {WRAP} 帧 = {}）",
+        "[engine-sfz/S36] ⭐ `loop_continuous`（end_sample={END_SAMPLE}）⇒ 非零 = {}（＝ note-off \
+         ＋ 释放 {RELEASE_FRAMES} 帧）；全程与「循环 × 斜坡」不符 = {continuous_mismatches}；\
+         ⭐ `loop_sustain` ⇒ 非零 = {}（＝ note-off ＋ 往后播到样本尾 {SUSTAIN_TAIL} 帧）；\
+         释放段与「源下标恒 +1 × 斜坡」不符 = {sustain_mismatches}；反解源下标严格递增 = \
+         {sustain_indices_increase}；前置周期 = {continuous_period} / {sustain_period}",
         count(&continuous_out),
         count(&sustain_out),
-        sustain_out[WRAP],
-        free_running[WRAP],
     );
 
-    // ---- 腿 ①：`loop_continuous` —— note-off 不影响循环（照旧硬停）----
+    // ---- 腿 ①：`loop_continuous` —— note-off 进释放、释放期照旧循环 ----
     assert_eq!(
-        count(&continuous_out),
-        END_SAMPLE,
-        "⭐ `loop_continuous`：note-off **不触发释放** ⇒ 非零恰好 {END_SAMPLE}（＝ 今天的硬停读数）"
-    );
-    assert!(
-        continuous_out[END_SAMPLE..]
-            .iter()
-            .all(|sample| *sample == 0.0),
-        "⭐ `loop_continuous`：`end_sample` 之后必须**逐位**静音（⛔ 无释放尾巴）"
-    );
-    // 前置见证：`end_sample` 之前它**真的在循环**（否则上面那条可能是"根本没出声"）。
-    assert_eq!(
-        detect_period(&continuous_out, LOOP_START, LOOP_END),
-        LOOP_PERIOD,
+        continuous_period, LOOP_PERIOD,
         "⭐ 前置见证：`loop_continuous` 在 note-off 之前必须按 `loop_end − loop_start` 循环"
     );
-
-    // ---- 腿 ②：`loop_sustain` —— 走完当前循环再释放 ----
     assert_eq!(
-        count(&sustain_out),
-        WRAP + RELEASE_FRAMES,
-        "⭐ `loop_sustain`：非零 = 回绕帧 {WRAP} ＋ 释放 {RELEASE_FRAMES} 帧"
+        count(&continuous_out),
+        END_SAMPLE + RELEASE_FRAMES,
+        "⭐ `loop_continuous`：note-off **就地进释放**且**释放期照旧回绕** ⇒ 声部活到释放走完"
     );
     assert_eq!(
-        held_segment_mismatches, 0,
-        "⭐ `loop_sustain`：note-off 之后到回绕之前必须**逐位等于**「无 note-off」的循环输出\
-         （电平保持在 note-off 那一刻的值 ⇒ 这才是「**走完当前循环**」）"
+        continuous_mismatches, 0,
+        "⭐ `loop_continuous`：整段必须逐点等于「源下标按 [100,164) 循环 × 释放斜坡」\
+         （|实测 − 理论| ≤ 1e-6）"
+    );
+    assert!(
+        continuous_out[END_SAMPLE + RELEASE_FRAMES..]
+            .iter()
+            .all(|sample| *sample == 0.0),
+        "⭐ `loop_continuous`：释放走完 ⇒ 逐位静音"
+    );
+
+    // ---- 腿 ②：`loop_sustain` —— 释放期⛔ 不循环，沿源位置往后播到样本尾 ----
+    assert_eq!(
+        sustain_period, LOOP_PERIOD,
+        "⭐ 前置见证：`loop_sustain` 在 note-off 之前照旧「按住才循环」"
+    );
+    assert_eq!(
+        count(&sustain_out),
+        END_SAMPLE + SUSTAIN_TAIL,
+        "⭐ `loop_sustain`：非零 = note-off（{END_SAMPLE}）＋ 往后播到样本尾（{SUSTAIN_TAIL}）\
+         —— 释放（{RELEASE_FRAMES}）比样本尾巴长 ⇒ **样本尾先到**"
+    );
+    assert_eq!(
+        sustain_mismatches, 0,
+        "⭐ `loop_sustain`：释放段必须逐点等于「源下标 **恒 +1**（⛔ 不回绕）× 释放斜坡」\
+         （|实测 − 理论| ≤ 1e-6）"
+    );
+    assert!(
+        sustain_indices_increase,
+        "⭐ `loop_sustain`：释放期的源下标必须**严格递增**（⛔ 不回绕）\
+         —— 这就是「During the release phase, there's no looping」的机械读数"
     );
     assert!(
         sustain_out[END_SAMPLE] != 0.0,
         "⭐ 反向腿：`loop_sustain` 的输出必须**越过** `end_sample`（否则这条腿是空绿）"
     );
-    assert_eq!(
-        release_mismatches, 0,
-        "⭐ `loop_sustain`：回绕之后按 `ampeg_release` 线性释放（|实测 − 理论| ≤ 1e-6）"
-    );
     assert!(
-        sustain_out[WRAP + RELEASE_FRAMES..]
+        sustain_out[END_SAMPLE + SUSTAIN_TAIL..]
             .iter()
             .all(|sample| *sample == 0.0),
-        "⭐ 释放走完 ⇒ 逐位静音"
+        "⭐ `loop_sustain`：样本播完 ⇒ 逐位静音"
     );
-    // ⭐ 两条腿必须**不同**（本节的核心判据）。
+    // ⭐ 两条腿必须**不同**（本节的核心判据；680 ≠ 463）。
     assert_ne!(
         count(&continuous_out),
         count(&sustain_out),
-        "⭐ 核心：note-off 之后两者输出必须不同（上一片搬家过来的判据）"
+        "⭐ 核心：note-off 之后两者输出必须不同（前一片搬家过来的判据）"
     );
 
     // ---- 腿 ③：`one_shot` ＋ 有包络 ⇒ **连释放段也不进**（"忽略 note-off"是完整裁决）----
-    let one_shot = prepare_with(&text("one_shot"), &ramp_sample(LOOP_PCM_FRAMES));
+    let one_shot = prepare_with(&text("one_shot"), &pcm);
     let one_shot_out = render_pool(&one_shot, END_SAMPLE as u64, FRAMES);
     // 参照臂：同一个 `one_shot` 夹具但**没有** note-off（`end_sample = u64::MAX`）
     // ⇒ 逐帧对照才能证明"note-off 那一帧没有被释放段改写"。
     let one_shot_free = render_pool(&one_shot, u64::MAX, FRAMES);
     println!(
-        "[engine-sfz/S36] ⭐ `one_shot` ＋ `ampeg_release`（end_sample={END_SAMPLE}）⇒ 非零 = {}；         第 {END_SAMPLE} 帧 = {}（⛔ 不许就地进释放）",
+        "[engine-sfz/S36] ⭐ `one_shot` ＋ `ampeg_release`（end_sample={END_SAMPLE}）⇒ 非零 = {}；\
+         第 {END_SAMPLE} 帧 = {}（⛔ 不许就地进释放）",
         count(&one_shot_out),
         one_shot_out[END_SAMPLE],
     );
@@ -3709,7 +3761,8 @@ fn s36_loop_sustain_and_loop_continuous_differ_after_note_off() {
     assert_eq!(
         count(&one_shot_out),
         LOOP_PCM_FRAMES - 1,
-        "⭐ `one_shot` ＋ 有包络：note-off（＝ {END_SAMPLE}）既不退休、**也不起释放** ⇒          声部照旧播到样本尾（{LOOP_PCM_FRAMES} 帧样本 ⇒ 最多 {} 帧）",
+        "⭐ `one_shot` ＋ 有包络：note-off（＝ {END_SAMPLE}）既不退休、**也不起释放** ⇒ \
+         声部照旧播到样本尾（{LOOP_PCM_FRAMES} 帧样本 ⇒ 最多 {} 帧）",
         LOOP_PCM_FRAMES - 1
     );
     assert_eq!(
@@ -3835,10 +3888,559 @@ fn s38_the_linear_segment_registration_is_judgeable() {
         !MODULE_SOURCE.contains("本仓取指数段；参考实现的指数选项已在本片范围内"),
         "⭐ 反向腿：文档里**没有**的句子必须 `contains == false`（否则判据恒真）"
     );
-    // ⭐ 第二条登记：note-off 的四档语义表必须与"`loop_continuous` ⛔ 不进释放段"一起在案。
-    const NOTE_OFF_NEEDLE: &str = "note-off **不影响循环**：照旧循环并在 `end_sample` 硬停";
+    // ⭐ 第二条登记（⭐ 任务单 `#94` **按规范改写**）：note-off 语义表必须与
+    // "`loop_continuous` 释放期照旧循环"一起在案；⭐ **反向腿**：旧口径那一句必须
+    // `contains == false`（⛔ 不许留一句与实现相反的文档）。
+    const NOTE_OFF_NEEDLE: &str = "释放期照旧循环（可以重复多次）";
     assert!(
         MODULE_SOURCE.contains(NOTE_OFF_NEEDLE),
         "⭐ note-off 语义表必须逐字在案：{NOTE_OFF_NEEDLE}"
+    );
+    const OLD_NEEDLE: &str = "note-off **不影响循环**：照旧循环并在 `end_sample` 硬停";
+    assert!(
+        !MODULE_SOURCE.contains(OLD_NEEDLE),
+        "⭐ 反向腿：被任务单 `#94` 撤掉的旧口径必须 `contains == false`"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S39～S45：**`group` / `off_by` / `off_mode` 接进实时播放**（任务单 `#94`）
+//
+// 规范逐字（全部来自 `sfzformat`，⭐ 三条）：
+// * <https://sfzformat.com/opcodes/group/>：「Exclusive group number for this region.」
+//   ＋「In these cases, the `group` number will be equal to the `off_by` number.」
+//   ＋ 镲片扼音例（"the crash sounds would be in one group, the choke samples in another"）；
+// * <https://sfzformat.com/opcodes/off_by/>：「Region off group. When a new region with a
+//   group number equal to `off_by` plays, this region will be turned off.」；
+// * <https://sfzformat.com/opcodes/off_mode/>：「This opcode will determinate how a region
+//   is turned off by an `off_by` opcode.」—— `fast`（缺省）＝「The voice will be turned off
+//   immediately. Release settings will not have any effect.」；`normal` ＝「The region will
+//   be set into release stage.」
+//
+// ⚠ **作用面**（任务单 `#94` 按规范字面裁）：`off_mode` **只管 `off_by` 关断**，
+// ⛔ **不管** MIDI note-off —— 那条路由 `loop_mode` ＋ `ampeg_*` 决定（见 `S35`/`S36`）。
+// ---------------------------------------------------------------------------
+
+/// ⭐ S39（任务单 `#94`；§4.3）：**`off_by` 真的把"停"落到那一个声部上**，
+/// 且 victim 按**它自己**的关断规则衰减（两个读数：**释放起点** ＋ **非零长度**）。
+#[test]
+fn s39_off_by_really_stops_the_named_group_member() {
+    const NOTE_OFF_AT: usize = 200;
+    const RELEASE: usize = 480; // 0.01 s @ 48 kHz
+    const TAIL: usize = 64;
+    const FRAMES: usize = NOTE_OFF_AT + RELEASE + TAIL;
+    /// ⭐ 样本 PCM 长度（`flat_sample(PCM)` 下最多写 `PCM − 1` 帧，见 `mix_span_into`）。
+    const PCM: usize = 4096;
+
+    // A：出声、`group=1`、`off_mode=normal`（⇒ 被关断时**进释放**）。
+    // B：规范登记的**静音关断区**（`end=-1`）—— 它自己⛔ 不建声部，但照常关断别人
+    //    （<https://sfzformat.com/legacy/> 的 `end` 词条逐字："Marking a region end with -1
+    //    can be used to use a silent region to turn off other regions by using the `group`
+    //    and `off_by` opcodes."）。
+    let text = |off_by: u32| {
+        format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 group=1 off_mode=normal \
+             ampeg_release=0.01\n\
+             <region> sample=s.wav key=62 pitch_keycenter=62 end=-1 off_by={off_by}\n"
+        )
+    };
+    let sample = flat_sample(PCM);
+    let plan = prepare_with(&text(1), &sample);
+    let control = prepare_with(&text(0), &sample);
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let mut control_pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+        1,
+        "A 必须建 1 个声部"
+    );
+    assert_eq!(
+        control_pool.trigger_note(&control, 60, 127, u64::MAX, 1.0),
+        1
+    );
+    let mut out = vec![0.0f32; FRAMES];
+    let mut control_out = vec![0.0f32; FRAMES];
+    pool.render_into(&plan, 0, &mut out[..NOTE_OFF_AT]);
+    control_pool.render_into(&control, 0, &mut control_out[..NOTE_OFF_AT]);
+    assert!(
+        out[..NOTE_OFF_AT].iter().all(|sample| *sample == 1.0),
+        "⭐ 前置见证：关断之前 A 恒 1.0（`ampeg_attack` 缺省 0、sustain 缺省 100 %）"
+    );
+    assert_eq!(
+        pool.voices()[0].end_sample(),
+        u64::MAX,
+        "关断之前 A 的引擎终点仍是「永不」（夹具给的就是 u64::MAX）"
+    );
+    // ⭐ 触发 B（静音关断区）：它自己⛔ 不建声部，但 `off_by=1` 必须关掉 group=1 的 A。
+    assert_eq!(
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0),
+        0,
+        "⭐ 静音关断区（`end=-1`）⛔ 不建声部（既有 `span == None` 口径）"
+    );
+    assert_eq!(
+        control_pool.trigger_note(&control, 62, 127, u64::MAX, 1.0),
+        0
+    );
+    assert_eq!(
+        pool.voices()[0].end_sample(),
+        0,
+        "⭐ `normal` 关断 ＝ 把 victim 的 note-off 挪到「现在」（既有 note-off 机接手）"
+    );
+    assert_eq!(
+        control_pool.voices()[0].end_sample(),
+        u64::MAX,
+        "⭐ 负对照：`off_by=0` ⇒ 一个都不关（同一份夹具、只差那一个数）"
+    );
+    pool.render_into(&plan, NOTE_OFF_AT as u64, &mut out[NOTE_OFF_AT..]);
+    control_pool.render_into(
+        &control,
+        NOTE_OFF_AT as u64,
+        &mut control_out[NOTE_OFF_AT..],
+    );
+    let count = |samples: &[f32]| samples.iter().filter(|sample| **sample != 0.0).count();
+    let ramp_mismatches = (0..RELEASE)
+        .filter(|k| {
+            let expected = (RELEASE - k) as f32 / RELEASE as f32;
+            (out[NOTE_OFF_AT + k] - expected).abs() > 1.0e-6
+        })
+        .count();
+    println!(
+        "[engine-sfz/S39] ⭐ `normal` 关断（第 {NOTE_OFF_AT} 帧触发）⇒ 释放起点电平 = {}；\
+         非零 = {}（＝ 关断前 {NOTE_OFF_AT} ＋ 释放 {RELEASE}）；释放段与 (R−k)/R 不符 = \
+         {ramp_mismatches}；⭐ 负对照（`off_by=0`）在窗内非零 = {}",
+        out[NOTE_OFF_AT],
+        count(&out),
+        count(&control_out),
+    );
+    assert_eq!(
+        out[NOTE_OFF_AT], 1.0,
+        "⭐ 释放起点：关断那一帧的电平必须＝关断前那一刻（就地进释放，⛔ 不跳变、⛔ 不硬切）"
+    );
+    assert_eq!(
+        count(&out),
+        NOTE_OFF_AT + RELEASE,
+        "⭐ 非零长度：关断前 {NOTE_OFF_AT} 帧 ＋ 恰好 {RELEASE} 帧释放"
+    );
+    assert_eq!(
+        ramp_mismatches, 0,
+        "⭐ 释放段逐点 ＝ (R − k)/R（|Δ| ≤ 1e-6）"
+    );
+    assert!(
+        out[NOTE_OFF_AT + RELEASE..]
+            .iter()
+            .all(|sample| *sample == 0.0),
+        "⭐ 释放走完 ⇒ 逐位 0（声部已退休）"
+    );
+    assert_eq!(
+        count(&control_out),
+        FRAMES,
+        "⭐ 负对照：`off_by=0` ⇒ A 一路有声（窗内 {FRAMES} 帧全非零）"
+    );
+    assert!(
+        count(&out) < count(&control_out),
+        "⭐ 正/负对照（第 42 条）：关断腿必须比不关断那条**更短**"
+    );
+}
+
+/// ⭐ S40（任务单 `#94`；§4.4）：**组号不匹配的区域必须完全不受影响**（⛔ 不误伤）。
+///
+/// ⭐ **负判据的正对照**（第 42 条）：同一批数据里同时有"该被停的"（A，`group=1`）与
+/// "不该被停的"（C，`group=4`）；`off_by` 取 `1`（关 A）／`0`（不关任何）／`5`（⛔ 没有
+/// 区域属于组 5）三跑 ⇒ 后两跑**整段逐位相同**，而第一跑必须不同；C 的**声部状态**
+/// 在"关 A"与"不关"两跑之间也必须**逐字段相同**。
+#[test]
+fn s40_off_by_never_touches_a_region_outside_the_named_group() {
+    const HALF: usize = 200;
+    let text = |off_by: u32| {
+        format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 group=1 off_mode=normal ampeg_release=0.01\n\
+             <region> sample=s.wav key=62 pitch_keycenter=62 end=-1 off_by={off_by}\n\
+             <region> sample=c.wav key=62 pitch_keycenter=62 group=4\n"
+        )
+    };
+    let sample = flat_sample(4096);
+    let run = |off_by: u32| {
+        let plan = prepare_with(&text(off_by), &sample);
+        let mut pool = SfzVoicePool::new(48_000.0);
+        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0), 1);
+        let mut out = vec![0.0f32; HALF * 2];
+        pool.render_into(&plan, 0, &mut out[..HALF]);
+        // ⭐ 关断区是**静音**的 ⇒ 本次触发只可能改变 A 的状态。
+        assert_eq!(
+            pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0),
+            1,
+            "只有 C 建声部"
+        );
+        pool.render_into(&plan, HALF as u64, &mut out[HALF..]);
+        (pool, out)
+    };
+    let (pool_stop, out_stop) = run(1);
+    let (pool_none, out_none) = run(0);
+    let (pool_other, out_other) = run(5);
+    println!(
+        "[engine-sfz/S40] 指纹：off_by=1 ⇒ {:#018x}；off_by=0 ⇒ {:#018x}；off_by=5 ⇒ {:#018x}",
+        fnv1a_64(&out_stop),
+        fnv1a_64(&out_none),
+        fnv1a_64(&out_other),
+    );
+    assert_eq!(
+        fnv1a_64(&out_none),
+        fnv1a_64(&out_other),
+        "⭐ 组号不匹配（off_by=5，⛔ 没有区域属于组 5）⇒ 与「不关任何」逐位相同"
+    );
+    assert_eq!(out_none, out_other, "⭐ 逐位相同（比整段，⛔ 不止比指纹）");
+    assert_eq!(
+        pool_other.voices()[1],
+        pool_none.voices()[1],
+        "⭐ 声部状态读数：`off_by=5`（无人属于组 5）与 `off_by=0` 下 C 逐字段相同"
+    );
+    assert_ne!(
+        fnv1a_64(&out_stop),
+        fnv1a_64(&out_none),
+        "⭐ 正对照：`off_by=1` 真的关掉了 A ⇒ 输出必须不同"
+    );
+    // ⭐ C 的声部**状态**（位置／增益／包络计数器／终点…）在关 A 与不关 A 两跑之间相同。
+    assert_eq!(
+        pool_stop.voices()[1],
+        pool_none.voices()[1],
+        "⭐ C 必须逐字段不受影响（它不在被点名的组里）"
+    );
+    assert_eq!(
+        pool_stop.active_count(),
+        2,
+        "关断腿：A 进释放（仍 active）＋ C 在响 ⇒ 活声部 2"
+    );
+    assert!(
+        pool_stop.voices()[0].is_active(),
+        "⭐ `normal` 关断⛔ 不是硬停：A 在释放段里仍然是活声部"
+    );
+}
+
+/// ⭐ S41（任务单 `#94`；原 §4.1 的"fast vs normal 可判"**改在 `off_by` 关断路径上考**
+/// —— 那是规范唯一赋予 `off_mode` 意义的路径）：两条腿**都必须不同**，
+/// 且**各配一条"它自己该怎样"的断言**（⛔ 只断言"不同"不够）。
+///
+/// 规范逐字（<https://sfzformat.com/opcodes/off_mode/>）：
+/// * `fast`（缺省）：「The voice will be turned off immediately. Release settings will not
+///   have any effect.」⇒ 关断帧起**逐位 0**（`ampeg_release` 不生效）；
+/// * `normal`：「The region will be set into release stage.」⇒ 就地进释放段
+///   （`ampeg_release × engine_hz` 帧线性归零）。
+#[test]
+fn s41_off_by_fast_cuts_immediately_and_normal_enters_release() {
+    const NOTE_OFF_AT: usize = 200;
+    const RELEASE: usize = 480;
+    const TAIL: usize = 64;
+    const FRAMES: usize = NOTE_OFF_AT + RELEASE + TAIL;
+    let text = |mode: &str| {
+        format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 group=1 off_mode={mode} \
+             ampeg_release=0.01\n\
+             <region> sample=s.wav key=62 pitch_keycenter=62 end=-1 off_by=1\n"
+        )
+    };
+    let sample = flat_sample(4096);
+    let run = |mode: &str| {
+        let plan = prepare_with(&text(mode), &sample);
+        let mut pool = SfzVoicePool::new(48_000.0);
+        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0), 1);
+        let mut out = vec![0.0f32; FRAMES];
+        pool.render_into(&plan, 0, &mut out[..NOTE_OFF_AT]);
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0);
+        pool.render_into(&plan, NOTE_OFF_AT as u64, &mut out[NOTE_OFF_AT..]);
+        (pool, out)
+    };
+    let (fast_pool, fast_out) = run("fast");
+    let (normal_pool, normal_out) = run("normal");
+    let count = |samples: &[f32]| samples.iter().filter(|sample| **sample != 0.0).count();
+    let ramp_mismatches = (0..RELEASE)
+        .filter(|k| {
+            let expected = (RELEASE - k) as f32 / RELEASE as f32;
+            (normal_out[NOTE_OFF_AT + k] - expected).abs() > 1.0e-6
+        })
+        .count();
+    println!(
+        "[engine-sfz/S41] ⭐ `fast` ⇒ 非零 = {}（关断帧起逐位 0）；⭐ `normal` ⇒ 非零 = {}；\
+         释放起点电平 = {}；释放段与 (R−k)/R 不符 = {ramp_mismatches}",
+        count(&fast_out),
+        count(&normal_out),
+        normal_out[NOTE_OFF_AT],
+    );
+    // ---- 腿 ①：`fast` ⇒ 立刻关断（release 设置无效）----
+    assert_eq!(
+        count(&fast_out),
+        NOTE_OFF_AT,
+        "⭐ `fast`：关断帧起逐位 0 ⇒ 非零恰好 {NOTE_OFF_AT}"
+    );
+    assert!(
+        fast_out[NOTE_OFF_AT..].iter().all(|sample| *sample == 0.0),
+        "⭐ `fast`：`ampeg_release` 设置**无效**"
+    );
+    assert!(
+        !fast_pool.voices()[0].is_active(),
+        "⭐ `fast` ＝ 声部**当场退休**（池内状态翻转）"
+    );
+    // ---- 腿 ②：`normal` ⇒ 进释放段 ----
+    assert_eq!(
+        normal_out[NOTE_OFF_AT], 1.0,
+        "⭐ `normal`：关断那一帧 ＝ 释放起点电平（就地进释放，⛔ 不跳变）"
+    );
+    assert_eq!(
+        count(&normal_out),
+        NOTE_OFF_AT + RELEASE,
+        "⭐ `normal`：非零 ＝ 关断前 {NOTE_OFF_AT} ＋ 恰好 {RELEASE} 帧释放"
+    );
+    assert_eq!(ramp_mismatches, 0, "⭐ `normal`：释放段逐点 ＝ (R − k)/R");
+    assert!(
+        normal_out[NOTE_OFF_AT + RELEASE - 1] > 0.0,
+        "⭐ `normal`：释放的**最后一帧**仍非零（释放段真的走满 {RELEASE} 帧 ⇒ ⛔ 不是硬停）"
+    );
+    assert!(
+        !normal_pool.voices()[0].is_active(),
+        "⭐ `normal`：**释放走完才退休**（与 `fast` 的「立刻退休」分开钉）"
+    );
+    // ---- 反向腿：两者必须不同 ----
+    assert_ne!(
+        count(&fast_out),
+        count(&normal_out),
+        "⭐ 核心：`fast` ≠ `normal`（{NOTE_OFF_AT} ≠ {}）",
+        NOTE_OFF_AT + RELEASE
+    );
+}
+
+/// ⭐ S42（任务单 `#94` 裁决 4）：**`one_shot` 的 victim 也忽略 `off_by`**
+/// （"忽略 note-off"是一条**完整**裁决 ⇒ `off_by` 这种停止请求同样被忽略），
+/// ⭐ **并配正对照**：同一批数据里把 victim 换成 `no_loop` ⇒ 关断**必须**发生
+/// （⛔ 否则上面那条"逐位相同"可能是"夹具根本没触发"的假绿）。
+#[test]
+fn s42_a_one_shot_victim_ignores_off_by() {
+    const HALF: usize = 200;
+    let text = |mode: &str, off_by: u32| {
+        format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 group=1 off_mode=normal \
+             loop_mode={mode} ampeg_release=0.01\n\
+             <region> sample=s.wav key=62 pitch_keycenter=62 end=-1 off_by={off_by}\n"
+        )
+    };
+    let sample = flat_sample(4096);
+    let run = |mode: &str, off_by: u32| {
+        let plan = prepare_with(&text(mode, off_by), &sample);
+        assert!(
+            plan.regions()[0].ignores_note_off() == (mode == "one_shot"),
+            "夹具自检：`ignores_note_off` 必须与 loop_mode 一致"
+        );
+        let mut pool = SfzVoicePool::new(48_000.0);
+        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0), 1);
+        let mut out = vec![0.0f32; HALF * 2];
+        pool.render_into(&plan, 0, &mut out[..HALF]);
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0);
+        pool.render_into(&plan, HALF as u64, &mut out[HALF..]);
+        out
+    };
+    let one_shot_stopped = run("one_shot", 1);
+    let one_shot_free = run("one_shot", 0);
+    let no_loop_stopped = run("no_loop", 1);
+    let no_loop_free = run("no_loop", 0);
+    println!(
+        "[engine-sfz/S42] ⭐ `one_shot`：off_by=1 与 off_by=0 的指纹 = {:#018x} / {:#018x}；\
+         ⭐ 正对照 `no_loop`：{:#018x} / {:#018x}",
+        fnv1a_64(&one_shot_stopped),
+        fnv1a_64(&one_shot_free),
+        fnv1a_64(&no_loop_stopped),
+        fnv1a_64(&no_loop_free),
+    );
+    assert_eq!(
+        one_shot_stopped, one_shot_free,
+        "⭐ `one_shot` ＋ `off_by=1` 必须与 `off_by=0` **逐位相同**（它忽略 `off_by`）"
+    );
+    assert_eq!(
+        fnv1a_64(&one_shot_stopped),
+        fnv1a_64(&one_shot_free),
+        "⭐ 同一条的指纹读数"
+    );
+    assert_ne!(
+        no_loop_stopped, no_loop_free,
+        "⭐ 正对照：同批数据里 `no_loop` 的 victim **必须**被关掉（否则上面那条是空绿）"
+    );
+}
+
+/// ⭐ S43（任务单 `#94` 裁决 5）：**触发者不自掐**。
+///
+/// 夹具就是登记语料 `assets/samples/karoryfer-272-merry-orks/ork_dialogue.sfz` 的写法
+/// （`group=1` ＋ `off_by=1` ＝ 同组独占）：第二次触发**必须关掉第一个声部**，
+/// 而**第二个声部自己**必须照常发声 —— ⭐ 按 ARIA 的自掐解释，新声部会被自己立刻掐掉，
+/// 那 20 处会**发不出声** ⇒ 本仓取 rgc／sfizz 一侧（不自掐）。
+#[test]
+fn s43_the_triggering_region_does_not_choke_itself() {
+    const FIRST: usize = 100;
+    let sample = flat_sample(4096);
+    let plan = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 group=1 off_by=1\n",
+        &sample,
+    );
+    let mut pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+        1,
+        "第一次触发建 1 个声部"
+    );
+    let mut out = vec![0.0f32; FIRST * 2];
+    pool.render_into(&plan, 0, &mut out[..FIRST]);
+    assert_eq!(pool.active_count(), 1);
+    assert_eq!(pool.voices()[0].source_position(), FIRST as f32);
+    // ⭐ 第二次触发**同一条区域**：它自己就是自己的 `off_by` 目标。
+    assert_eq!(
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+        1,
+        "第二次触发建 1 个声部"
+    );
+    assert_eq!(
+        pool.active_count(),
+        1,
+        "⭐ 恰好 1 个活声部：旧声部被关掉、**新声部没有被自己掐掉**\
+         （自掐 ⇒ 0；完全不关 ⇒ 2 ⇒ 两种都被这条抓住）"
+    );
+    assert_eq!(
+        pool.voices()[0].source_position(),
+        0.0,
+        "⭐ 活下来的是**新**声部（源位置从 0 起）"
+    );
+    pool.render_into(&plan, FIRST as u64, &mut out[FIRST..]);
+    assert!(
+        out[FIRST..].iter().all(|sample| *sample == 1.0),
+        "⭐ 新声部必须照常发声（整段恒 1.0）—— 自掐会让它一个样本都发不出来"
+    );
+}
+
+/// ⭐ S44（任务单 `#94`；第 259 条）：**非法的 `group` / `off_by` 响亮 `Err`**，
+/// ⛔ 不静默降级；⭐ 同批数据里的合法样例**必须被接受**；⭐ 缺省与别名逐字回读。
+///
+/// ⚠ 域是 `yeban-sfz` 的**既有**口径（`read_u32` ⇒ `0..=u32::MAX`，与
+/// `tests/malformed_inputs.rs` 的登记一致）—— 本片⛔ 不改解析、⛔ 不发明边界。
+#[test]
+fn s44_illegal_group_and_off_by_are_errors_not_defaults() {
+    let load = |text: &str| SfzInstrument::load(text.to_owned(), &Default::default());
+    // ---- ① 合法 ⇒ 原样读出 ----
+    let legal = load("<region> sample=a.wav group=7 off_by=9\n").expect("⭐ 合法样例必须被接受");
+    let plan = PreparedSfz::prepare(&legal, &flat_sample(64), 48_000.0).expect("摊平");
+    let region = &plan.regions()[0];
+    assert_eq!(region.group(), 7, "`group` 原样");
+    assert_eq!(region.off_by(), 9, "`off_by` 原样");
+    assert_eq!(
+        region.off_mode(),
+        OffMode::Fast,
+        "`off_mode` 缺省是 `fast`（规范缺省）"
+    );
+    // ---- ② 缺省：`group=0` ＋ `off_by=0`（⛔ 不关任何人）----
+    let default = load("<region> sample=a.wav\n").expect("parses");
+    let default_plan = PreparedSfz::prepare(&default, &flat_sample(64), 48_000.0).expect("摊平");
+    let default_region = &default_plan.regions()[0];
+    assert_eq!(
+        (default_region.group(), default_region.off_by()),
+        (0, 0),
+        "⭐ 缺省：组 0、⛔ 不关任何区域"
+    );
+    // ---- ③ 非法 ⇒ `Err`（⛔ 不是"降级 ＋ 记录"）----
+    for text in [
+        "<region> sample=a.wav off_by=-1\n",
+        "<region> sample=a.wav group=-1\n",
+    ] {
+        assert!(
+            matches!(load(text), Err(SfzError::IntegerOutOfRange { .. })),
+            "⛔ {text:?} 必须**越界报错**（⛔ 不许静默钳到 0）"
+        );
+    }
+    for text in [
+        "<region> sample=a.wav off_by=abc\n",
+        "<region> sample=a.wav group=abc\n",
+    ] {
+        assert!(
+            matches!(load(text), Err(SfzError::InvalidInteger { .. })),
+            "⛔ {text:?} 必须**认不出就报错**（⛔ 不许落缺省）"
+        );
+    }
+    // ---- ④ 两个别名与四级作用域链同径 ----
+    let alias = load("<group>polyphony_group=3 offby=4\n<region> sample=a.wav\n").expect("parses");
+    let alias_plan = PreparedSfz::prepare(&alias, &flat_sample(64), 48_000.0).expect("摊平");
+    assert_eq!(
+        (
+            alias_plan.regions()[0].group(),
+            alias_plan.regions()[0].off_by()
+        ),
+        (3, 4),
+        "⭐ `polyphony_group` / `offby` 两个别名经 `<group>` 段继承下来"
+    );
+}
+
+/// ⭐ S45（任务单 `#94` §3.2 的第二条）：**`off_by` 的硬停只动 `active` 那一个声部，
+/// ⛔ 不丢掉同槽的挂起者（`pending`）**。
+///
+/// 场景：池被 `SFZ_VOICES_PER_TRACK` 条区域灌满 ⇒ 第 17 条区域走**窃取**，那个槽里
+/// `active` ＝ 正在淡出的 victim、`pending` ＝ 等着接管的新声部；此时再触发一条 `off_by`
+/// 静音关断区 ⇒ victim 被**硬停**，而 `pending` 必须**照常接管**
+/// （读数：`pending_count()` ＋ 接管后那个声部的 `sample_index` ＋ 输出非零）。
+#[test]
+fn s45_an_off_by_hard_stop_keeps_the_pending_voice_in_the_same_slot() {
+    let mut text = String::new();
+    for _ in 0..SFZ_VOICES_PER_TRACK {
+        text.push_str("<region> sample=a.wav key=60 pitch_keycenter=60 group=7\n");
+    }
+    // 第 17 条：走窃取 ⇒ 挂起（用另一份 PCM ⇒ 接管后能靠 `sample_index` 认出来）。
+    text.push_str("<region> sample=b.wav key=60 pitch_keycenter=60 group=7\n");
+    // 关断区（另一个音符 ⇒ ⛔ 不占池的槽）：静音、`off_by=7`。
+    text.push_str("<region> sample=s.wav key=62 pitch_keycenter=62 end=-1 off_by=7\n");
+    let instrument = SfzInstrument::load(text, &Default::default()).expect("夹具必须解析成功");
+    let plan = PreparedSfz::prepare_with_samples(
+        &instrument,
+        &[
+            ("a.wav".to_string(), flat_sample(4096)),
+            ("b.wav".to_string(), flat_sample(4096)),
+        ],
+        48_000.0,
+    )
+    .expect("摊平必须成功");
+    assert_eq!(plan.samples()[0].path(), "a.wav");
+    assert_eq!(plan.samples()[1].path(), "b.wav");
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let created = pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0);
+    assert_eq!(created, SFZ_VOICES_PER_TRACK, "⭐ 前 16 条占满池");
+    assert_eq!(pool.stolen(), 1, "⭐ 第 17 条走窃取");
+    assert_eq!(pool.pending_count(), 1, "⭐ 窃取 ⇒ 恰好 1 个挂起者");
+    assert_eq!(
+        pool.voices()[0].sample_index(),
+        0,
+        "victim 仍占着槽 0（它还在淡出）"
+    );
+    // ⭐ 触发关断区：槽 0 的 active victim 被**硬停**（缺省 `off_mode=fast`）。
+    assert_eq!(
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0),
+        0,
+        "静音关断区⛔ 不建声部"
+    );
+    assert_eq!(
+        pool.active_count(),
+        0,
+        "⭐ 组 7 的 16 个 active 声部全被关掉"
+    );
+    assert_eq!(
+        pool.pending_count(),
+        1,
+        "⭐ 挂起者**必须还在**（⛔ 不许被 `off_by` 的硬停连带丢掉）"
+    );
+    let mut out = vec![0.0f32; 512];
+    pool.render_into(&plan, 0, &mut out);
+    assert_eq!(
+        pool.pending_count(),
+        0,
+        "⭐ 同一块内挂起者就地接管（`render_slot` 第 2 步）"
+    );
+    assert_eq!(pool.active_count(), 1, "⭐ 接管之后恰好 1 个活声部");
+    assert_eq!(
+        pool.voices()[0].sample_index(),
+        1,
+        "⭐ 接管的是**挂起者**（`b.wav`），⛔ 不是被硬停的 victim"
+    );
+    assert!(
+        out.iter().any(|sample| *sample != 0.0),
+        "⭐ 接管者必须真的发声（⛔ 不是「槽还在但永远不出声」）"
     );
 }
