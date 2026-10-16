@@ -11307,3 +11307,24 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ ⚠ ⭐ ⭐ **一条运维口径（⭐ 第 281 条）**: ⭐ 我这一轮**差点读错判决** —— ⭐ 匿名 REST 从轮询第 20 次起返回 **`403`（限流）**，⭐ 而我的脚本把**解析失败**写成了 `apierr`、⭐ 那几轮输出**看起来像"⭐仍在跑"** ⇒ ⭐ ⭐ **实际上该 run 早已在 `13:25:29Z` 完成（⭐ `success`）** ⇒ ⭐ **我按 `apierr` 继续等，⭐白等了约 20 分钟** ✓ ⭐ **做法**: ⭐ ① ⭐ **优先用 `gh`**（⭐ 已认证 ⇒ ⭐ 不走匿名配额；⭐ 本仓 `scripts/dev/ci-verdict.sh` 本来就这么选）；⭐ ② ⭐ 用 REST 时**必须把"⭐限流／解析失败"⭐与"⭐仍在跑"⭐分开**（⭐ ⛔ 把 `apierr` 读成 `in_progress` ＝ ⭐ 假等待）；⭐ ③ ⭐ 同一个 run **连续多次**读不到状态 ⇒ ⭐ **换 `gh` 复核**，⭐ ⛔ 不要继续等 ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`HD-64` 的裁决** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R790 实测追加（2026-10-16）：⭐ **人类跑了硬件第 6 项**（⭐ `sudo killall coreaudiod` 之后）⇒ ⭐ **实测 `measured_roundtrip_ms = 53.0885`**（⭐ `verdict=over-target`，⭐ 目标 `5.5`）
+
+⭐ ⚠ **开跑方式（⭐ 记下来，⭐ 免得下次再白跑）**: ⭐ `bash scripts/dev/hardware-check.sh --only 6` **是交互式的**（⭐ 逐项问 `y/n/s`）⇒ ⭐ 我在**后台**跑它时 stdin 是 EOF ⇒ ⭐ **所有提示都被跳过、⭐ 报告文件全空** ⇒ ⭐ ⭐ **真正产出数字的是它内部那一条命令**（⭐ `scripts/dev/hardware-check.sh:300`）:
+```
+cargo run --release -p yeban-engine --locked --features device --example measure_latency -- \
+  --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000
+```
+⭐ 退出码 **1** ＝ ⭐ **实测超目标**（⭐ ⛔ 不是"没测到"：⭐ 那个是 4）✓
+
+⭐ ⚠ **`BENCH` 行（⭐ 照抄）**: `baseline=005 label=blackhole verdict=over-target evidence=loopback-measured devices=6 output_devices=3 input_devices=3 measured_roundtrip_ms=53.0885 target_ms=5.5000 nominal_out_ms=1.3333 nominal_in_ms=1.3333 nominal_io_sum_ms=2.6667 nominal_io_sum_is_roundtrip=false callbacks_out=1504 callbacks_in=1525 backend_errors_out=0 backend_errors_in=0 jitter_out_p50_ms=0.0000 jitter_out_p99_ms=0.0000 jitter_out_max_ms=0.0022 jitter_in_p50_ms=0.0000 jitter_in_p99_ms=0.0000 jitter_in_max_ms=0.0031 driver_out_latency_source=playback_minus_callback driver_out_latency_reported=true driver_out_latency_p50_ms=4.3333 driver_out_latency_p99_ms=4.3333 driver_out_latency_max_ms=4.3333 driver_in_latency_source=callback_minus_capture driver_in_latency_reported=true driver_in_latency_p50_ms=2.3750 driver_in_latency_p99_ms=2.3750 driver_in_latency_max_ms=2.3750 driver_io_sum_is_roundtrip=false loopback=true`
+
+⭐ ⚠ **回环证据（⭐ `NOTE` 行）**: `chirp detected (delay_frames=15762 peak_ncc=-0.4904 peak_ratio=4.19 lags=95201)`（⭐ `peak_ratio 4.19 > 3.0` 阈值 ⇒ ⭐ **真的检出了**、⭐ ⛔ 不是"没找到 chirp"）✓
+
+⭐ ⚠ ⭐ ⭐ **两个要紧的观察**: ⭐ ① ⭐ 设备读数里 **BlackHole 2ch 报 `sample_rate=44100`**，⭐ 而测量流按 **48000** 开 ⇒ ⭐ **存在重采样**（⭐ 可能贡献一段固定时延）；⭐ ② ⭐ `measured_roundtrip_ms` 的**两次独立测量高度一致**（⭐ 本会话早先一次 ＝ `52.2381`／`52.2467`，⭐ 本次 ＝ **53.0885**）⇒ ⭐ ⭐ **这是一个**稳定**的固定时延，⭐ 不是抖动**（⭐ 抖动读数：⭐ `jitter_out_max 0.0022 ms`／⭐ `jitter_in_max 0.0031 ms`）⇒ ⭐ ⭐ **~53 ms 的固定量级最可能来自"⭐多输出设备（⭐多输出＝聚合设备）的漂移补偿缓冲"**，⭐ 而不是驱动缓冲本身（⭐ 驱动侧预测只有 `4.33 ms ＋ 2.38 ms`）✓
+
+⭐ ⚠ **下一步（⭐ 可执行的假设检验，⭐ 无需改代码）**: ⭐ ① ⭐ 把**系统输出直接切到 `BlackHole 2ch`**（⭐ ⛔ 不要经"多输出设备"）再跑同一条命令 ⇒ ⭐ **预测：⭐ 去掉漂移补偿后该数字会显著下降到毫秒量级**（⭐ 代价：⭐ 那样听不到声音 —— ⭐ 但**测时延不需要听到**）；⭐ ② ⭐ 把采样率对齐（⭐ `--sample-rate 44100`，⭐ 或在「音频 MIDI 设置」把 BlackHole 设成 48000）以去掉重采样 ✅ ⭐ ⚠ **两条都不涉及红线**：⭐ 本项是**硬件／环境读数**，⭐ 且 `BASELINE-005` 本来就记**虚拟回环给的是下限**（⭐ `#87` 的登记）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#110`（⭐ `set_ccN` 播种）交单** ＋ ⭐ **`HD-64` 的裁决** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ **第 6 项的复测（⭐ 切直连 ＋ 对齐采样率）** ✓
