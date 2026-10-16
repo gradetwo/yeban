@@ -262,10 +262,18 @@ check_acoustic() {
   say "好处：不要物理线。"
   say "坏处：它没有 AD/DA 转换。它给的是下限。它不等于真硬件往返。"
   blank
-  say "本仓的测量工具（crates/yeban-engine/examples/measure_latency.rs）今天不收集回环证据。"
-  say "所以它打印 measured_roundtrip_ms=none，verdict 不会是 within-target。"
-  say "它给两件有用的东西：标称时延与驱动侧时延。"
-  say "要判达标，还需要采集比对那一段。集成者已登记该单。"
+  say "本仓的测量工具：crates/yeban-engine/examples/measure_latency.rs"
+  say "它有 --loopback 开关。它播一段 chirp，再在输入侧找回来。"
+  say "开了它，工具就会给出 measured_roundtrip_ms 这个数字。"
+  say "闭合的判定是：≤ 5.5 ms 算达标（BASELINE-005）。"
+  blank
+  say "这个数字是什么：主机观测到的回调到回调往返。"
+  say "它含驱动缓冲。它不含 DAC 与 ADC 的模拟段。"
+  say "虚拟回环没有 AD/DA，所以它给的是下限。"
+  say "真硬件往返仍要采购或借用音频接口，或用线把输出接回输入。"
+  blank
+  say "退出码：0 = 达标，1 = 超目标，3 = 没有设备，4 = 没有回环证据。"
+  say "0 与 1 现在都到得了。"
   blank
   if need brew; then
     if brew list --cask blackhole-2ch >/dev/null 2>&1; then
@@ -289,25 +297,33 @@ check_acoustic() {
   ask_yn "现在跑测量工具吗？（约 10 秒音频）" ACU_RUN
   local log="/tmp/yeban-hc-latency.log"
   if [ "${ANS_ACU_RUN:-no}" = "yes" ] && need cargo; then
-    say "命令：cargo run --release -p yeban-engine --features device --example measure_latency -- --label blackhole --frames 64 --seconds 2 --sample-rate 48000"
-    if ( cd "$REPO" && cargo run --release -p yeban-engine --locked --features device --example measure_latency -- --label blackhole --frames 64 --seconds 2 --sample-rate 48000 ) 2>&1 | tee "$log"; then
-      say "测量完成。"
+    say "命令：cargo run --release -p yeban-engine --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000"
+    if ( cd "$REPO" && cargo run --release -p yeban-engine --locked --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000 ) 2>&1 | tee "$log"; then
+      say "测量完成。退出码 0 = 达标。"
     else
-      say "命令退出码非 0。这可能正常：3 表示没有设备，4 表示没有回环证据。"
+      say "命令退出码非 0。1 = 超目标，3 = 没有设备，4 = 没有回环证据。"
+      say "4 表示工具没在录回来的信号里找到 chirp。看下面那行 best peak_ratio。"
     fi
     say "读数行："
-    grep -E 'NOMINAL|DRIVER-LATENCY|BENCH|CALLBACK' "$log" 2>/dev/null | tail -30 | sed 's/^/  /'
-    grep -E 'NOMINAL|DRIVER-LATENCY|BENCH|CALLBACK' "$log" 2>/dev/null >>"$REPORT"
+    grep -E 'NOMINAL|DRIVER-LATENCY|BENCH|CALLBACK|NOTE|loopback=|peak_ratio' "$log" 2>/dev/null | tail -40 | sed 's/^/  /'
+    grep -E 'NOMINAL|DRIVER-LATENCY|BENCH|CALLBACK|NOTE|loopback=|peak_ratio' "$log" 2>/dev/null >>"$REPORT"
   fi
+  blank
+  say "备选（没有 BlackHole 时）：内置扬声器到内置麦克风的声学路径。"
+  say "它是真的声学往返。它不是设备往返。它含整个空气与系统处理链。"
+  say "命令：把 --label blackhole 换成 --label builtin-acoustic。"
+  say "注意：这条路时有时无。工具可能报没找到 chirp（退出码 4）。"
   blank
   ask_yn "你装了 BlackHole 吗？" ACU_DEV
   ask_yn "你建了多输出设备吗？" ACU_READY
   ask_yn "测量工具跑完了吗？" ACU_DONE
   ask_text "BENCH 行的完整内容（照抄）" ACU_BENCH
+  ask_text "measured_roundtrip_ms 与 loopback 两个字段的值" ACU_RTT
+  ask_text "NOTE 行（如果有）与 peak_ratio 的读数" ACU_NOTE
   ask_text "NOMINAL 与 DRIVER-LATENCY 行的数字" ACU_NUM
   ask_text "缓冲区帧数与采样率" ACU_BUF
   ask_text "其他观察" ACU_MS
-  note ACU "装BlackHole=${ANS_ACU_DEV:-} 多输出=${ANS_ACU_READY:-} 跑完=${ANS_ACU_DONE:-}"
+  note ACU "装BlackHole=${ANS_ACU_DEV:-} 多输出=${ANS_ACU_READY:-} 跑完=${ANS_ACU_DONE:-} 往返=${ANS_ACU_RTT:-}"
 }
 
 # ---------- 主流程 ----------
