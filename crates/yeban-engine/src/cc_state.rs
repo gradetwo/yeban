@@ -23,6 +23,16 @@
 //!    ⚠ 这是**本表**的口径，⛔ **不是** `<control> set_ccN=` 的初值：
 //!    "调用方在加载乐器时按 [`yeban_sfz::instrument::Instrument::cc_defaults`] 播种"
 //!    仍归调用方（登记见 `crate::sfz_instrument` 模块头的 CC 一节）。本单 ⛔ 不播种。
+//!
+//!    ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是上面这一句的
+//!    "**本单 ⛔ 不播种**"那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋
+//!    追加修订段 ＋ 点名被修订的支）：**播种已经接线**，机制在 `yeban-engine` 的**快照边界**
+//!    ——`rt.rs::render_block` 的重新武装分支按**摊平表**里的
+//!    [`crate::sfz_instrument::CcSeedTable`]（`PreparedSfz::cc_seeds`）调
+//!    [`ControlChangeState::seed`]。⚠ **被修订的只是"归谁在什么时候写"**，不是上面那条
+//!    读值口径：未收到过、也没被播种的控制器**仍然读 `0`**；而**没有任何 `set_ccN`** 的
+//!    快照 ⛔ 一次 `seed` 都不调 ⇒ 本文件 §2 第 1 条的 armed 口径**整条有效**
+//!    （`armed == false` ⇒ 引擎传 `None` ⇒ 与接线前逐位相同）。
 //! 3. **越界输入按 `& 0x7F` 掩码**：与 `yeban-app` 的 `midi_live::note_action`
 //!    对数据字节的掩码同口径 ⇒ 一个越界字节**不会**写到表外，也**不会**变成幻觉控制器。
 //! 4. **FIFO**：事件在出队顺序里逐条写入 ⇒ 同一量子里的多条同控制器事件按到达顺序覆盖，
@@ -86,6 +96,35 @@ impl ControlChangeState {
         self.values[controller] = value;
         self.received[controller / 64] |= 1u64 << (controller % 64);
         value
+    }
+
+    /// ⭐ **播种**一条 `<control> set_ccN=` 的加载时初值（任务单 `#110`；**快照边界**）。
+    ///
+    /// 口径（三条，都可机械判定）：
+    ///
+    /// 1. **只在"这个控制器从未收到过"时写**：已经有值（真 MIDI CC 或更早的播种）
+    ///    ⇒ **跳过**并返回 `false`。这条规则正是规范逐字 "**default initial value** …
+    ///    when the instrument is initially loaded" 的机械形态 —— 初值只在没有真值时才成立；
+    ///    ⭐ 它同时让播种**幂等**：每次快照重新武装（任何编辑都会发新修订）再播一遍，
+    ///    ⛔ **不会**覆盖演奏中已经收到的真 CC。
+    /// 2. **播种会计进"收到过"**：否则 [`Self::received`] 读 `None`、
+    ///    [`Self::is_armed`] 读 `false` ⇒ 探针拿不到那个值（播种就白做了）。
+    ///    ⚠ 这是**与真 MIDI CC 的唯一区别**：写入的表状态**故意**同形，
+    ///    区分点在**时机**（加载/快照边界 vs 事件边界）与**先后**（播种⛔ 不覆盖真值）。
+    /// 3. 越界按 `& 0x7F` 掩码（与 [`Self::apply`] 同口径）—— ⚠ 调用方
+    ///    （[`crate::sfz_instrument::CcSeedTable`]）**已经**把 `N > 127` 的声明挡在外面
+    ///    并计数，⛔ 不靠这次掩码去"别名"它们。
+    ///
+    /// 零分配、零锁、零 I/O、一次位或 ⇒ 可在快照边界调用 [MUST-GATE-001]。
+    pub fn seed(&mut self, controller: u8, value: u8) -> bool {
+        let controller = usize::from(controller & 0x7F);
+        let bit = 1u64 << (controller % 64);
+        if self.received[controller / 64] & bit != 0 {
+            return false;
+        }
+        self.values[controller] = value & 0x7F;
+        self.received[controller / 64] |= bit;
+        true
     }
 
     /// 某个控制器**此刻的值**（未收到过也返回表里的 `0`；越界按 `& 0x7F` 掩码）。
@@ -195,5 +234,36 @@ mod tests {
             0,
             "0xFF & 0x7F = 127（表内，未收到 ⇒ 0）"
         );
+    }
+
+    /// ⭐ 任务单 `#110`：**播种**的三条口径（只在未收到过时写 ＋ 会计进 armed ＋ 幂等）。
+    #[test]
+    fn seeding_only_fills_slots_that_never_received_a_real_cc() {
+        let mut state = ControlChangeState::new();
+        assert!(!state.is_armed(), "空表没有 armed");
+
+        // ① 空槽 ⇒ 真的写进去，并且**读得到**（`received` 是 `Some`、表 armed）。
+        assert!(state.seed(1, 64), "未收到过 ⇒ 播种成功");
+        assert_eq!(state.received(1), Some(64), "播种后探针读得到那个初值");
+        assert!(state.is_armed(), "播种会计进 armed（否则探针拿不到值）");
+        assert_eq!(state.received_count(), 1);
+
+        // ② 幂等：同一个槽再播一次 ⇒ 跳过（返回 false），值不变。
+        assert!(!state.seed(1, 0), "已经收到过/播种过 ⇒ 跳过");
+        assert_eq!(state.received(1), Some(64), "幂等：⛔ 不覆盖");
+
+        // ③ 真 CC **赢**：先播种再 `apply` ⇒ 后者覆盖；再来一次播种仍跳过。
+        assert_eq!(state.apply(1, 7), 7);
+        assert_eq!(state.received(1), Some(7), "真 CC 覆盖初值");
+        assert!(!state.seed(1, 64), "真 CC 之后播种照样跳过");
+        assert_eq!(state.received(1), Some(7));
+
+        // ④ 越界播种按 `& 0x7F` 掩码（调用方另有域检查，见 `CcSeedTable`）。
+        assert!(
+            !state.seed(0x81, 0x40),
+            "0x81 ⇒ 控制器 1（已被真 CC 占）⇒ 跳过"
+        );
+        assert!(state.seed(0x82, 3), "0x82 ⇒ 控制器 2（空槽）⇒ 写得进");
+        assert_eq!(state.received(2), Some(3));
     }
 }

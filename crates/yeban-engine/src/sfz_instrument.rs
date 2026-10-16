@@ -628,7 +628,168 @@
 //! `PreparedRegion` `5768 → 6152 B`（＋384 ＝ `128 × 3`；条数 `u8` 与尾部对齐共 6 B）；
 //! ⛔ `SfzVoice` 仍 `40 B`、⛔ `SfzVoicePool` 仍 `1712 B`、⛔ `EngineRuntime` 仍 `180144 B`。
 //!
+//! # ⭐ `set_ccN` 播种（任务单 `#110`）
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是下面三处登记里 `set_ccN=` 的
+//! "**播种仍归调用方**"那一支**（⛔ 上面 `#104`／`#107`／`#108`／`#109` 的**原文一字未删**，
+//! 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+//!
+//! 1. `#107` 第 3 条（「本单未接线（登记，⛔ 不静默）」）：那一整条里有**两个**题材
+//!    —— `pan_oncc*` 一族与 `set_ccN=` 播种。**被修订的只有后者**：`set_ccN=` 的播种
+//!    **已由本单落地**（机制见本节）；`pan_oncc*`／`volume_oncc*` 一族**整条有效**
+//!    （⛔ 仍在"未接线"里，本单不碰）。
+//! 2. `#108` 第 2 条的第二个圆点（「`set_ccN=` 的**播种**（初值）仍归调用方 —— 本节第 3 条
+//!    的原文**整条有效**」）：被修订的**同样是** `set_ccN` 那一支。
+//! 3. `#109`「⛔ 本单仍未接线（登记，⛔ 不静默）」的第二个圆点（「`<control> set_ccN=` 的
+//!    **播种**（初值；语料 1137 处）仍归调用方」）：同上。⚠ 该节第三个圆点
+//!    （「`set_ccN` 的初值与"会话表未 armed ⇒ 探针 `None`"是**两件事**」）**仍然成立**：
+//!    本单正是靠"空表 ⇒ 一次都不写"把这两件事继续分开的。
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/set_ccN/>）
+//!
+//! > Sets a default initial value for MIDI CC number N, when the instrument is
+//! > initially loaded.
+//! >
+//! > Used under the ‹`control`› header.
+//!
+//! 表格行：Type `integer`、Default `N/A`、**Range `0 to 127`**、Category
+//! ＝ "Instrument Settings"；同页例子 `set_cc40=127` / `set_cc100=30`。解析层事实源
+//! ＝ `yeban_sfz::instrument::Instrument::cc_defaults`（`<control>` 作用域、
+//! 同名后者覆盖前者、取值越界是响亮 `Err`、取值非整数是**丢弃 ＋ 告警**）。
+//!
+//! ## 播种**在哪里**发生（自裁 ＋ 依据 ＋ 代价）
+//!
+//! **位置 ＝ 引擎的快照边界**：`rt.rs::render_block` 的重新武装分支（`2a-cc` 段）逐轨读
+//! [`SfzPlan::prepared`] 的 [`CcSeedTable`]（摊平期从**同一次解析**抄下）并调
+//! [`crate::cc_state::ControlChangeState::seed`]。⭐ 三条依据：
+//!
+//! 1. **"加载时"就是快照边界**：摊平表是控制侧"装载＋解码＋摊平"的产物
+//!    （[`SfzPlan::prepare`]），它随快照按值到达音频线程 —— 表到达的那一刻正是
+//!    "乐器被装载"那一刻；
+//! 2. ⛔ **不新增实时状态**：播种规则是"**只填从未收到过的槽**"
+//!    （[`crate::cc_state::ControlChangeState::seed`]）⇒ 对"每次修订重新武装"**幂等**
+//!    ⇒ 不需要在 `EngineRuntime` 里记"这条轨播过没有" ⇒ `EngineRuntime` **＋0 B**；
+//!    ⚠ 若改成"每次武装都写"，演奏中的真 CC 会被**每次编辑**（每次新快照）覆盖；
+//! 3. ⛔ **不走事件面**：把初值做成一批 `EngineEvent::ControlChange` 会让播种受
+//!    SPSC 环容量影响（环满 ⇒ 悄悄少播一条），而摊平表是**按值随快照到达**的
+//!    ⇒ **无丢件可能**；⚠ 这也让"文件里真的写了 `set_ccN`"与"表非空"是同一个事实。
+//!
+//! **与真实 MIDI CC 的区别（逐条）**：
+//!
+//! * **时机**：真 CC 走**事件边界**（`EngineEvent::ControlChange` → `apply`），
+//!   播种走**快照边界**（`seed`）；
+//! * **先后**：事件面在同一个量子**先**跑 ⇒ **真 CC 永远赢**（`seed` 对已收到的槽返回
+//!   `false`）；播种⛔ 不覆盖任何一个真值；
+//! * **表状态**：播种**故意**把该控制器标成"收到过"（否则 [`crate::cc_state`] 的探针
+//!   读 `None` ⇒ 播了等于没播）—— ⚠ 这是"armed 会因播种变真"的**唯一**来路，而它
+//!   **只在表非空**（文件真写了 `set_ccN`）时发生；
+//! * **不可撤销**：播种与真 CC 一样**永不**把控制器退回"未收到"（会话运行态是单调的）。
+//!
+//! ## ⭐ 保命不变量（机械开关，判据 S87）
+//!
+//! **表为空 ⇒ 播种机制一个字节都不动**：`render_block` 的 `2a-cc` 段对每张摊平表先问
+//! [`CcSeedTable::is_empty`]，为空就 `continue` ⇒ 一次 `seed` 都不调
+//! ⇒ `ControlChangeState::is_armed()` 保持 `false` ⇒ `render_branch` 继续传 `cc = None`
+//! ⇒ **没有 `set_ccN` 的文件与接线前逐位相同**（端到端指纹 ＋ 三个承重指纹）。
+//!
+//! ## 域（⛔ 不静默、⛔ 不别名）
+//!
+//! 会话 CC 表的域是 `0..=127`（[`crate::cc_state::CONTROL_CHANGE_COUNT`]）；解析层接受
+//! `N` 到 `u16::MAX`（语料里真有 `set_cc400=63` / `set_cc401=63`）。`400 & 0x7F = 16`
+//! ⇒ 直接喂表会**冒充 CC16**，因此 [`CcSeedTable`] ⛔ **不做**那次掩码：
+//! 域外声明**只计数**（[`CcSeedTable::out_of_domain`]）、不进表（判据 S92）。
+//!
+//! ## 语料普查（本机实测，2026-10-16，第 271／274 条）
+//!
+//! ⚠ **尺子先写清楚**：词边界口径 `(?<![A-Za-z0-9_])set_cc[0-9]+=`，
+//! 分母 ＝ `assets/samples/**/*.sfz` 的 **1398** 份（`find … -name '*.sfz' | wc -l`）。
+//! ⚠ ⛔ **不用纯子串尺**：`offset_cc131=5500` 的尾巴长得像 `set_cc131=`，
+//! 会把它算成第 1138 处（实测：纯子串 **1138**／词边界 **1137**）。
+//!
+//! | 读数 | 值 |
+//! | :--- | ---: |
+//! | `set_ccN=` 出现次数 / 文件数 | **1137** / **105** |
+//! | 其中落在 `<control>` 段的（解析层口径） | **1137**（全部；见 `yeban-sfz/src/control.rs`） |
+//! | 取值字面不是十进制整数的次数 / 文件数（解析层丢弃 ＋ 告警） | 51 / 19（`63.5` 42 处、`$ht_lo_hi_init` 9 处） |
+//! | 取值是整数但 `> 127`（**响亮 `Err`**）的次数 | **0** |
+//! | **`N > 127`** 的声明次数 / 文件数（本表**计数、不进表**） | **38** / 19（全是 `set_cc400=63`／`set_cc401=63`） |
+//! | 不同 `N` 的个数 / `N` 的范围 | 82 / `1..=401` |
+//! | 单文件可进表条数（`N ≤ 127`、`(文件,N)` 末者胜）**最大** | **62** |
+//! | 单文件条数直方图 | `{1: 18, 2: 1, 3: 6, 4: 7, 6: 9, 7: 9, 8: 1, 9: 9, 10: 11, 11: 8, 12: 3, 13: 7, 14: 1, 16: 3, 17: 2, 19: 2, 22: 2, 30: 1, 31: 2, 57: 1, 62: 2}` |
+//! | 有 ≥1 条可进表初值的文件数 | 105 |
+//! | 已知非零对照（同一次扫描） | `label_cc` 1767 处 / 102 文件；`ampeg_release` 2831 处 / 373 文件；`ampeg_attack` 2828 处 / 368 文件；`note_polyphony` 87 处 / 32 文件 |
+//!
+//! ⭐ **上界是结构性的**：容量 ＝ 会话表的 **128** 个槽（`BTreeMap` 去重 ⇒ 每个 CC 至多一条）
+//! ⇒ **零截断可能**（⛔ 不是"语料最大 **62** ＋ 余量"；62 只说明今天用不满）。
+//!
+//! ## 尺寸（本单机械读数）
+//!
+//! `PreparedSfz` **88 → 240 B**（＋152 ＝ `size_of::<CcSeedTable>()`：值表 `[u8; 128]` ＋
+//! 掩码 `[u64; 2]` ＋ 域外计数 `usize`）；⭐ `SfzPlan` **88 → 240 B**（⭐ 任务单 `#112`
+//! **追加修订段**，被修订的是本行原先的「`SfzPlan` 仍 **88 B**（它只是包装）」那一支：
+//! `SfzPlan` 的定义是 `struct SfzPlan { prepared: PreparedSfz }` —— 它**按值内联**那份摊平表
+//! ⇒ 内层 `88 + 152 = 240` 时包装**必然同长**；「它只是包装」这条**理由**成立，被修订的只是
+//! 由它推出的那个**数**（88）：「只是包装」⛔ **不蕴含**「尺寸不变」—— 增量的**来源在内层**）、
+//! `PreparedRegion` 仍 **6152 B**、`SfzVoice` 仍 **40 B**、`SfzVoicePool` 仍 **1712 B**、
+//! `EngineRuntime` 仍 **180144 B**（门槛 192 KiB ＝ `196608`，余量 `16464`）——
+//! 播种表进的是**摊平表**（控制侧构造、随快照按值走），⛔ 不进任何实时对象。
+//!
+//! ## ⚠ 已知边界（如实登记，⛔ 不静默）
+//!
+//! 1. **会话表是"一张"**（[`crate::cc_state`]）：多条轨各带 `set_ccN` 时，
+//!    播种按 `EngineSnapshot::sfz()` 的 `BTreeMap` 顺序（[MODEL-AST-003]）**先到先得**
+//!    （后到者要填的槽已经"收到过"）⇒ 冲突时**键序最小的那条轨赢**。这是 `#107`
+//!    既有的"CC 探针没有轨道维度"（[`crate::ring::EngineEvent::ControlChange`] 的载荷形状）
+//!    的**同一个**限制，⛔ 本单没有发明轨道路由；
+//! 2. **离线导出那条路仍传 `cc = None`**：`SynthEngine::render_track`（旧入口）**不变**
+//!    ⇒ `yeban-app` 的导出/录音路径**还没有**吃到 `set_ccN`；
+//!    摊平表已经把表带出来了（[`PreparedSfz::cc_seeds`]），接线点是控制侧的
+//!    一行探针（登记在交付报告的"给集成者的待办"）。
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#112`，`#110` 的收尾单）—— 被修订的是上面第 1 条的
+//! "只登记了『**哪条轨的初值赢**』那一半"这一支**（⛔ 上面第 1／2 条的**原文一字未删**，
+//! 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+//!
+//! ⭐ **补上的另一半 ＝ 跨轨外溢，且它是"有意边界"**（机械可判，判据 S93）：会话表是
+//! **一张** ⇒ 只要有**任何一条**轨的 `set_ccN` 把表武装起来，**别的**、自己**没有**
+//! `set_ccN` 的轨在逐轨渲染时也会拿到 `Some(probe)`（`rt.rs` 的 `render_branch` 每块
+//! 只算**一次** `cc`，见那里的 `let cc: Option<&dyn Fn(u8) -> u8>`，再交给**所有**轨）
+//! ⇒ 它的 `loccN` / `hiccN` 门控会读**那条轨**的初值。
+//!
+//! 实测（判据 `S93`；16 量子 ＝ 2048 帧；A 轨区域 `key=127` ⇒ 本夹具的音符 60 **恒不匹配**
+//! ⇒ A 轨自身逐位静音（对照腿实测非零样本 `0`）⇒ 下表"非零样本"**全部**来自 B 轨）：
+//!
+//! | A 轨的 `<control>` | 会话表 `armed` | `control_change(1)` | B 轨（`locc1=64 hicc1=127`）非零样本 | B 轨端到端指纹 |
+//! | :--- | :--- | ---: | ---: | :--- |
+//! | 无 | `false` | `None` | **0** | `0x9c1bda7f8c872325` |
+//! | `set_cc1=64` | `true` | `Some(64)` | **4030** | `0xec4ca6ac0fe2b1e9` |
+//! | `set_cc2=64`（**判别腿**） | `true` | `None` | **0** | `0x9c1bda7f8c872325` |
+//!
+//! ⚠ 第三行是**判别腿**：仅仅"表被武装"**不足以**让 B 轨门控成立 —— 它真的读到了 A 轨
+//! **CC1 的值 64**（对照行武装了表、但 CC1 仍 `None` ⇒ B 轨静音）。
+//!
+//! ⭐ **为什么登记而不是修**（代价逐条）：① 会话级单一 CC 表是 `#107` 的既有形状
+//! （`EngineEvent::ControlChange` 的**载荷里没有轨道维度**）⇒ 一条**真** MIDI CC 本来
+//! 就**全会话**可见；只把**播种**做成按轨，会让模型变成"一半按轨、一半按会话"，
+//! 比现状更难推理；② 要**真的**按轨，就得给 CC 事件加轨道维度（新载荷/新变体）＋
+//! 让探针按轨取值（新逐轨状态或新快照面）⇒ 那是**架构面**（本单 §4 的止损条件 ①②③），
+//! ⛔ 不是收尾；③ 只把探针换成"读本轨那份摊平表的 `cc_seeds`"是**半修**：真 MIDI CC
+//! 仍全会话可见，且会让离线路径与实时路径用**两套**播种机制。⇒ 本单**保留**这个边界，
+//! 并把它钉成**可判事实**（`S93`：去掉 `#110` 的快照边界播种段 ⇒ 该判据变红）。
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#112`）—— 被修订的是上面第 2 条的"接线点在控制侧"这一支的
+//! 确认状态**（⛔ 原文一字未删）：本单**决定维持**这条登记（⛔ 不是接线），并把它从"散文"
+//! 钉成**可判事实**（判据 `S93` 的离线腿）：`SynthEngine::render_track` 对带 `set_ccN`
+//! 的摊平表**仍**传 `cc = None` ⇒ 逐位等于 `render_track_with_cc(…, None)`、
+//! **不等**于把探针喂成"本表 `cc_seeds`"的那一臂。⭐ **为什么维持**：离线/导出路的探针
+//! **来源**（只吃 `set_ccN`？还是也吃模型里的 CC 自动化、录音进来的 CC）是**控制侧**的
+//! 一次裁决，⛔ 不是引擎可以替它选的；而且只有在引擎里**再实现一套**"按表播种"的探针
+//! 才能接上（实时侧那套长在 `rt.rs` 的**会话表**上）⇒ 两套机制比"一套 ＋ 登记来源缺口"更差。
+//! ⚠ 这是**已知行为差异**：同一份带 `set_ccN` 的文件，实时路径吃初值、离线导出⛔ 还不吃
+//! （给集成者的待办）。
+//!
 //! # ⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）
+
 //!
 //! ## 规范逐字（<https://sfzformat.com/opcodes/loccN/>，`hiccN` 是同一页的另一行）
 //!
@@ -1460,6 +1621,150 @@ pub const CC_CROSSFADE_CAP: usize = 256;
 /// 新 `Err` 会把今天**能解析**的文件变成**不可解析** —— 本单不选。
 pub const CC_GATE_CAP: usize = 128;
 
+/// ⭐ **`set_ccN` 的播种表**（任务单 `#110`）：一条 SFZ 在**加载时**声明的 CC 初值。
+///
+/// # 规范逐字（<https://sfzformat.com/opcodes/set_ccN/>）
+///
+/// > Sets a default initial value for MIDI CC number N, when the instrument is
+/// > initially loaded. Used under the ‹`control`› header.
+///
+/// 表格行：Type `integer`、Default `N/A`、**Range `0 to 127`**、Category
+/// ＝ "Instrument Settings"；同页例子 `set_cc40=127` / `set_cc100=30`。
+/// 解析层的唯一事实源是 `yeban_sfz::instrument::Instrument::cc_defaults`
+/// （`<control>` 作用域、同名后者覆盖前者、取值越界是响亮 `Err`）。
+///
+/// # 域与形状（⛔ 不是"语料最大值 ＋ 余量"）
+///
+/// 域 ＝ **会话 CC 表**（[`crate::cc_state::CONTROL_CHANGE_COUNT`] ＝ `128`，即 `0..=127`）：
+/// 值表 `[u8; 128]` ＋ 128 位"这个控制器有初值"掩码（与
+/// [`crate::cc_state::ControlChangeState`] 同形）。⭐ 域与表**同界** ⇒ **零截断可能**
+/// （`cc_defaults` 是 `BTreeMap` ⇒ 每个 CC 号至多一条），⛔ 不需要新增 `Err`、
+/// ⛔ 不改任何既有文件的可解析性。
+///
+/// ⚠ ⭐ **域外声明被计数**、⛔ **不被掩码别名**：解析层接受 `N` 到 `u16::MAX`
+/// （登记语料里真有 `set_cc400=63` / `set_cc401=63`，19 个文件 38 处 —— 见
+/// [`Self::out_of_domain`] 的普查读数）。`400 & 0x7F = 16` ⇒ 直接喂给
+/// [`crate::cc_state::ControlChangeState::seed`] 会**冒充 CC16**。本表⛔ **不做**那次掩码：
+/// 域外的声明**只计数、不进表**（"表达不了"必须可见，⛔ 不是静默别名）。
+///
+/// # 语料普查（本机实测，2026-10-16；分母 ＝ `assets/samples/**/*.sfz` 的 **1398** 份）
+///
+/// | 读数（词边界口径 `(?<![A-Za-z0-9_])set_cc[0-9]+=`） | 值 |
+/// | :--- | ---: |
+/// | `set_ccN=` 出现次数 / 文件数 | **1137** / **105** |
+/// | 取值字面不是十进制整数的次数 / 文件数（解析层丢弃 ＋ 告警） | 51 / 19（其中 `63.5` 42 处） |
+/// | 取值是整数但 `> 127`（**响亮 `Err`**）的次数 | **0** |
+/// | `N > 127` 的声明次数 / 文件数（**本表计数、不进表**） | 38 / 19（`set_cc400=63`／`set_cc401=63`） |
+/// | 不同 `N` 的个数 / `N` 的范围 | 82 / `1..=401` |
+/// | 单文件可进表的条数（`N ≤ 127`、`(文件,N)` 末者胜）最大 / 直方图 | **62** / `{1: 18, 2: 1, 3: 6, 4: 7, 6: 9, 7: 9, 8: 1, 9: 9, 10: 11, 11: 8, 12: 3, 13: 7, 14: 1, 16: 3, 17: 2, 19: 2, 22: 2, 30: 1, 31: 2, 57: 1, 62: 2}` |
+/// | 有 ≥1 条可进表初值的文件数 | 105 |
+/// | 已知非零对照（同一次扫描） | `label_cc` 1767 处 / 102 文件；`ampeg_release` 2831 处 / 373 文件；`ampeg_attack` 2828 处 / 368 文件；`note_polyphony` 87 处 / 32 文件 |
+///
+/// ⚠ **上界的来历是结构性的**：容量就是会话表的 128 个槽（⛔ 不是"语料最大 **62** ＋
+/// 余量"）。语料最大值只说明"今天用不满"，它⛔ **不是**本表的界。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CcSeedTable {
+    /// CC 号 → 初值（`0..=127`；只有掩码置位的位置有意义）。
+    values: [u8; crate::cc_state::CONTROL_CHANGE_COUNT],
+    /// "这个 CC 有 `set_ccN` 初值"的位图（字 0 = `0..=63`，字 1 = `64..=127`）。
+    present: [u64; 2],
+    /// **域外**（`N > 127`）的声明条数：⛔ 不进表、⛔ 不别名，只当读数。
+    out_of_domain: usize,
+}
+
+impl CcSeedTable {
+    /// 空表（没有任何初值）。`const` ⇒ 可在常量/构造期用。
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            values: [0; crate::cc_state::CONTROL_CHANGE_COUNT],
+            present: [0; 2],
+            out_of_domain: 0,
+        }
+    }
+
+    /// 从解析层的 `cc_defaults()` **建表**（控制侧；`BTreeMap` 的键序确定 [MODEL-AST-003]）。
+    ///
+    /// `N ≤ 127` ⇒ 进表；`N > 127` ⇒ 只进 [`Self::out_of_domain`] 计数。
+    #[must_use]
+    pub fn from_cc_defaults(defaults: &BTreeMap<u16, u8>) -> Self {
+        let mut table = Self::new();
+        for (cc, value) in defaults {
+            table.insert(*cc, *value);
+        }
+        table
+    }
+
+    /// 写入一条声明：`cc ≤ 127` ⇒ 进表（同一 CC 后者覆盖前者）；否则只计数。
+    pub fn insert(&mut self, cc: u16, value: u8) {
+        match u8::try_from(cc) {
+            Ok(cc) if usize::from(cc) < crate::cc_state::CONTROL_CHANGE_COUNT => {
+                let index = usize::from(cc);
+                self.values[index] = value & 0x7F;
+                self.present[index / 64] |= 1u64 << (index % 64);
+            }
+            _ => self.out_of_domain = self.out_of_domain.saturating_add(1),
+        }
+    }
+
+    /// 这个 CC 有没有声明初值（`false` ⇒ ⛔ 不播种：空表 ⇒ 一个字节都不动）。
+    #[must_use]
+    pub const fn has(&self, cc: u8) -> bool {
+        let index = (cc & 0x7F) as usize;
+        self.present[index / 64] & (1u64 << (index % 64)) != 0
+    }
+
+    /// 这个 CC 的初值（没声明 ⇒ `None`）。
+    #[must_use]
+    pub const fn value(&self, cc: u8) -> Option<u8> {
+        if self.has(cc) {
+            Some(self.values[(cc & 0x7F) as usize])
+        } else {
+            None
+        }
+    }
+
+    /// **整张表是否为空**（＝ 这份文件一个 `set_ccN` 都没声明）。
+    ///
+    /// ⭐ 这是"**没有 `set_ccN` 的文件 ⇒ 播种机制一个字节都不动**"那条不变量的机械开关：
+    /// 空表 ⇒ 快照边界⛔ 一次 `seed` 都不调 ⇒ `armed` 保持 `false`。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.present[0] == 0 && self.present[1] == 0
+    }
+
+    /// 表里的初值条数（分母 128）。
+    #[must_use]
+    pub const fn len(&self) -> u32 {
+        self.present[0].count_ones() + self.present[1].count_ones()
+    }
+
+    /// **域外**（`N > 127`）被计数、⛔ 未进表的声明条数。
+    #[must_use]
+    pub const fn out_of_domain(&self) -> usize {
+        self.out_of_domain
+    }
+
+    /// 升序遍历全部初值（`cc` 升序 ⇒ 确定性；`BTreeMap` 来源顺序的机械再现）。
+    ///
+    /// 零分配、零锁、零 I/O（128 次位测试于**快照边界**，⛔ 不在逐样本路径上）。
+    pub fn for_each(&self, mut f: impl FnMut(u8, u8)) {
+        for index in 0..crate::cc_state::CONTROL_CHANGE_COUNT {
+            if self.present[index / 64] & (1u64 << (index % 64)) != 0 {
+                // `index < 128` ⇒ `as u8` 精确；掩码来自同一域。
+                #[allow(clippy::cast_possible_truncation)]
+                f(index as u8, self.values[index]);
+            }
+        }
+    }
+}
+
+impl Default for CcSeedTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 摊平表里 CC 段数组的**惰性填充**（只有 `..cc_crossfade_count` 会被读 ⇒ 取值无关）。
 ///
 /// ⚠ 用**字面构造**（⛔ 不调 `Crossfade::new`：那不是 `const fn`）；`Crossfade` 的字段
@@ -2215,6 +2520,12 @@ pub struct PreparedSfz {
     /// ⇒ **换采样率必须由控制侧重新摊平**并发布新快照（既有纪律，见模块头），
     /// ⛔ 实时侧不重算、⛔ 不读时钟。
     engine_hz: f32,
+    /// ⭐ **`set_ccN` 的播种表**（任务单 `#110`）：摊平期从**同一次解析**的
+    /// [`yeban_sfz::instrument::Instrument::cc_defaults`] 抄下（见 [`CcSeedTable`]）。
+    ///
+    /// ⚠ 形状是**定长内联数组**（⛔ 无 `Vec`、⛔ 零额外堆）：它随摊平表按值走，
+    /// 快照边界只**读**它；⭐ **空表 ⇒ 播种机制一个字节都不动**（`#110` 的保命不变量）。
+    cc_seeds: CcSeedTable,
 }
 
 /// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
@@ -2492,7 +2803,8 @@ impl PreparedSfz {
         // 广播：只有**一份**样本（路径身份为空串），所有区域都指它。
         let samples = vec![PreparedSample::from_in_memory(String::new(), source)];
         let sample_hz = source.sample_hz;
-        let regions = flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
+        let (regions, cc_seeds) =
+            flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         Ok(Self {
             regions,
             samples,
@@ -2500,6 +2812,7 @@ impl PreparedSfz {
             silent_regions: 0,
             missing_samples: Vec::new(),
             engine_hz,
+            cc_seeds,
         })
     }
 
@@ -2544,7 +2857,7 @@ impl PreparedSfz {
         let mut index_of: BTreeMap<String, u16> = BTreeMap::new();
         let mut missing: Vec<String> = Vec::new();
         let mut silent_regions = 0usize;
-        let regions = flatten_regions(instrument, engine_hz, |region| {
+        let (regions, cc_seeds) = flatten_regions(instrument, engine_hz, |region| {
             let path = region.sample_path();
             // 已 materialize 过 ⇒ 直接复用（**去重**：同一路径只解码/只 clone 一次）。
             if let Some(index) = index_of.get(path.as_ref()) {
@@ -2574,6 +2887,7 @@ impl PreparedSfz {
             silent_regions,
             missing_samples: missing,
             engine_hz,
+            cc_seeds,
         })
     }
 
@@ -2594,6 +2908,23 @@ impl PreparedSfz {
     #[must_use]
     pub const fn engine_hz(&self) -> f32 {
         self.engine_hz
+    }
+
+    /// ⭐ **`set_ccN` 的播种表**（任务单 `#110`）。
+    ///
+    /// 它的读者有两个：
+    ///
+    /// 1. **实时侧的快照边界**（`rt.rs::render_block` 的重新武装分支）：逐条
+    ///    [`CcSeedTable::for_each`] ⇒ [`crate::cc_state::ControlChangeState::seed`]
+    ///    ⇒ 会话 CC 表 armed ⇒ 探针拿得到初值（零分配、零锁、零 I/O）；
+    /// 2. **控制侧**（判据 / 报告）：`cc_seeds().len()` / `out_of_domain()` 是
+    ///    "这份文件声明了多少初值、多少条表达不了"的读数。
+    ///
+    /// ⭐ **空表 ⇒ 引擎一个字节都不播种**（`is_empty()`）：没有 `set_ccN` 的文件
+    /// 因此保持 `armed == false`、输出与接线前逐位相同（`#110` 的保命不变量）。
+    #[must_use]
+    pub const fn cc_seeds(&self) -> &CcSeedTable {
+        &self.cc_seeds
     }
 
     /// ⭐ **全部样本路径文本**占用的字节数（去重后 `Σ path.len()`）。
@@ -2868,12 +3199,19 @@ impl PreparedSfz {
 ///
 /// ⭐ 每个区域的**速率表**用**它自己那份样本**的采样率换算（`RenderRates::new(sample_hz, engine_hz)`）
 /// ⇒ 多采样下不同源采样率的样本各自换算正确（⛔ 不是全表一个 rates）。
+///
+/// ⭐ **返回的第二项是 `set_ccN` 的播种表**（任务单 `#110`）：它与区域表来自**同一次解析**
+/// （`with_instrument` 会重新解析 ⇒ ⛔ 不在这里开第二次），因此"文件里真的写了 `set_ccN`"
+/// 与"摊平表里真的带了初值"是同一个事实（判据 S86／S87／S92）。
 fn flatten_regions(
     instrument: &SfzInstrument,
     engine_hz: f32,
     mut resolve: impl FnMut(&Region<'_>) -> (u16, f32),
-) -> Result<Vec<PreparedRegion>, SfzError> {
+) -> Result<(Vec<PreparedRegion>, CcSeedTable), SfzError> {
     instrument.with_instrument(|parsed| {
+        // ⭐ `set_ccN` 的初值：`<control>` 作用域、同名后者覆盖前者（解析层已归约）
+        // ⇒ 这里只做"抄进会话 CC 域"与"域外计数"（见 [`CcSeedTable`]）。
+        let cc_seeds = CcSeedTable::from_cc_defaults(parsed.cc_defaults());
         let mut regions = Vec::with_capacity(parsed.regions().len());
         for region in parsed.regions() {
             let (sample_index, sample_hz) = resolve(region);
@@ -3060,7 +3398,7 @@ fn flatten_regions(
                 note_polyphony: region.note_polyphony,
             });
         }
-        regions
+        (regions, cc_seeds)
     })
 }
 

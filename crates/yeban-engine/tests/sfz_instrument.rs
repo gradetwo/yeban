@@ -80,6 +80,29 @@
 //! | ⭐ S83 | ⭐ **判定时机 ＝ 触发期**（任务单 `#109` 新增；§2） | 先以 `cc = 100` 触发、再以 `cc = 0` 渲染**第二块** ⇒ 第二块非零帧数仍 **512**（门控**不**逐块重判 ⇒ 声部不被截断）；⭐ 反空判腿：**触发时** CC 已在区间外 ⇒ **0** 个声部 |
 //! | ⭐ S84 | ⭐ **既有掩码行为未扰动 ＋ 非空对照**（任务单 `#109` 新增；§5.5） | keyswitch（`sw_default` 满足 ⇒ 掩码含 60；无 `sw_default` ⇒ 掩码 `[0,0]`）／`trigger=release`（掩码 `[0,0]`）／力度臂的读数逐条复跑；⭐ 有 `locc1=64` 的区域**进得了**掩码（`#109` 前被清 0）；⭐ `cc = None` ⇒ 仍不建声部（严格策略）、`cc = 100` ⇒ 建 **1** 个（非空对照） |
 //! | ⭐ S85 | ⭐ **条数上界的来历 ＋ 修订段 ＋ 尺寸可判**（任务单 `#109` 新增；§5.6） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#109`）」／「# ⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）」／「结构性上界」／`#108`／`#107` 的修订段原文／`#104` 的两条原文／`#107` 的显式选路 ③ 原文；⭐ 语料普查原始读数必须在源码里可判（`**1398**`／`**1205**`／`**64894**`／`{0: 43831, 1: 16872, 2: 797, 3: 3394}`／`{0: 62281, 1: 1920, 2: 693}`）；⭐ `CC_GATE_CAP == 128`、`size_of::<CcGate>() == 3` ⇒ 每区域 `＋384 B`；⭐ 尺寸读数 `SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144 < 192 KiB`（⛔ 三者都 ＋0）、`PreparedRegion=6152`（由 `size_of` 现读） |
+//! | ⭐ S86 | ⭐ **播种真的生效（本单核心）**（任务单 `#110` 新增；§5.2） | 同一份区域**只差一行** `<control>set_cc1=64`：无那一行 ⇒ `armed == false`／`control_change(1) == None`／非零 **0**／端到端指纹 ＝ 改动前 `0x9c1bda7f8c872325`；有那一行 ⇒ `armed == true`／`Some(64)`／`received_count == 1`／非零 **4030**／指纹 ＝ `0xec4ca6ac0fe2b1e9`（**与"无门控"夹具逐位相同**）；⭐ 规范公式臂 `set_cc100=64` ⇒ 实时起音帧数 **337** ＝ `round((0.005 + 0.004 × 64/127) × 48 000)`（无 `set_ccN` 的基准 ＝ **240**） |
+//! | ⭐ S87 | ⭐ **保命不变量：没有 `set_ccN` ⇒ 一个字节都不动**（任务单 `#110` 新增；§5.3） | `PreparedSfz::cc_seeds().is_empty()` ⇒ 产品路径 `armed == false`／`received_count == 0`／`control_change(1) == None`；端到端指纹 ＝ **改动前实测** `0xec4ca6ac0fe2b1e9`（非零 4030）；⭐ 三个**承重指纹**逐字复跑（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`） |
+//! | ⭐ S88 | ⭐ **三条路一致（探针取自被播种的会话表）**（任务单 `#110` 新增；§5.4） | `EngineRuntime` 走一个量子后从 `control_change` 读回探针 ⇒ **离线 ＝ 摊平 ＝ 实时** 位模式**逐位相同**、声部数 **1**、非零帧 **512**；⭐ 反空判腿：初值 0 ⇒ 三条路静音且与上面**逐位不同** |
+//! | ⭐ S89 | ⭐ **真实 CC 覆盖初值**（任务单 `#110` 新增；§5.5） | ⭐ **同一量子**（事件面先跑）⇒ `control_change(1) == Some(0)`；后一量子再发 ⇒ `Some(7)`；⭐ **重新武装一份等价快照**（播种幂等）⇒ 仍是 `Some(7)`（⛔ 不被初值 64 覆盖）；⭐ 非空对照：只有播种 ⇒ 恒 `Some(64)` |
+//! | ⭐ S90 | ⭐ **反向腿（分形态）＋ 三个承重指纹**（任务单 `#110` 新增；§5.6） | ⭐ 反向腿 ①（会话面）：去掉 `<control>` 行 ⇒ `armed == false` 且端到端指纹 ＝ 改动前 `0x9c1bda7f8c872325`；⭐ 反向腿 ②：**不读 CC** 的区域在两个初值（64／0）下输出**逐位相同**（播种本身⛔ 不制造差异），**有牙对照**（`locc1` 区域）⇒ 两个初值**逐位不同**；⭐ 三个承重指纹逐字复跑 ＋ `×1.0000001` ⇒ `0xf181aa780f2cfab1`（必须变） |
+//! | ⭐ S91 | ⭐ **修订段 ＋ 上界来历 ＋ 尺寸可判**（任务单 `#110` 新增；§5.7） | `include_str!` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#110`）」／「# ⭐ `set_ccN` 播种（任务单 `#110`）」／「上界是结构性的」／「**不被掩码别名**」／「只填从未收到过的槽」／「表为空 ⇒ 播种机制一个字节都不动」＋ `#104`／`#107`／`#108`／`#109` 的**原文**（第 278 条：⛔ 不许删）＋ `cc_state.rs` 的 `seed` 口径；⭐ 语料读数 `**1398**`／`**1137**`／`**105**`／`**38**`／`**62**`／`**128**`／`offset_cc131=5500` 与直方图可判；⭐ 尺寸 `CcSeedTable=152`、`PreparedSfz`／`SfzPlan` ＝ `88 + 152 = 240`；⛔ `PreparedRegion=6152`／`SfzVoice=40`／`SfzVoicePool=1712`／`ControlChangeState=144`／`EngineRuntime=180144 < 192 KiB` |
+//! | ⭐ S92 | ⭐ **域外 `set_ccN` ⛔ 不别名 7 位控制器**（任务单 `#110` 新增；§5.7 域口径） | `set_cc400=63`（`400 & 0x7F = 16`）⇒ 初值表**空**、域外计数 **1**、`armed == false`、`control_change(16) == None`、非零 **0**；⭐ 非空对照：`set_cc16=63` ⇒ 表 1 条、`Some(63)`、可闻 |
+//!
+//! # ⭐ `#110` 的两条**端到端基线**是改动前实测
+//!
+//! 对象 ＝ 一份单轨工程（一个 `key=60` 的音符）经**产品路径**
+//! （`EngineSnapshot::from_project` → `with_sfz` → `EngineRuntime::process_quantum`）
+//! 渲染 **16 量子 ＝ 2048 帧**的输出（左后右，FNV-1a 64 逐位）：
+//!
+//! | 夹具 | 帧数 | 非零样本 | 峰值 | 指纹 |
+//! | :--- | :--- | :--- | :--- | :--- |
+//! | 区域**不带** `<control>`（可闻） | 2048 | 4030 | 0.70710677 | `0xec4ca6ac0fe2b1e9` |
+//! | 区域**带**`<control>set_cc1=64`（当时被静默忽略） | 2048 | 0 | 0 | `0x9c1bda7f8c872325` |
+//!
+//! ⭐ 第二行就是本单要闭合的缺口；⭐ 第一行是**保命不变量**的基线（S87）。两条都由本线在
+//! **改动任何源码之前**于 base `4a6b862c`、`git status --porcelain` 为空时用一次性探针
+//! 测得（探针随后删除，见本文件的交付报告）。同理，它们不是规范常数 ⇒ 同平台硬红、
+//! 异平台如实跳过（[`check_fingerprint`]）。
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -7765,5 +7788,1174 @@ fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
     assert!(
         runtime < 192 * 1024,
         "⛔ `EngineRuntime` 必须 ＋0（仍是 {runtime} B < 192 KiB）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#110`：把 `<control> set_ccN=` 的**加载时初值**播种进会话 CC 表
+// ---------------------------------------------------------------------------
+//
+// 规范逐字（<https://sfzformat.com/opcodes/set_ccN/>）：
+//
+// > Sets a default initial value for MIDI CC number N, when the instrument is
+// > initially loaded. Used under the ‹`control`› header.
+//
+// 播种点 ＝ **快照边界**（`rt.rs::render_block` 的 `2a-cc` 段）：按摊平表自带的
+// `CcSeedTable`（`PreparedSfz::cc_seeds`）调 `ControlChangeState::seed`，
+// 规则 ＝ **只填从未收到过的槽** ⇒ 真 MIDI CC 永远赢、`set_ccN` 为空表时**一次都不写**。
+//
+// ⚠ 三条路（离线 `render_note_into_with_cc` ／ 摊平 `render_block_into_with_cc` ／
+// 实时 `SfzVoicePool`）都**只**认调用方给的探针；本单让那个探针的**初值来源**变成
+// 文件声明的 `set_ccN`（S88 用"从会话表读回来的探针"把三条路钉在一起）。
+
+/// ⭐ S86／S87／S88／S89／S90 的夹具基（**没有** `<control>` 行）：
+/// `locc1=64 hicc1=127` 门控 ＋ `amp_veltrack=0`。
+///
+/// ⚠ `amp_veltrack=0` ⇒ 力度 ≥ 1 时乐器层增益恰 `1.0`；样本是恒 `1.0` 的常数
+/// ⇒ "发声 / 不发声"与位模式都能手算（与 S81 同款夹具形态）。
+const CC_SEED_GATE_PLAIN: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                  amp_veltrack=0 locc1=64 hicc1=127\n";
+
+/// ⭐ 与 [`CC_SEED_GATE_PLAIN`] **只差一行** `<control>set_cc1=64` 的夹具。
+const CC_SEED_GATE_SEEDED: &str = "<control>set_cc1=64\n\
+                                   <region> sample=a.wav key=60 pitch_keycenter=60 \
+                                   amp_veltrack=0 locc1=64 hicc1=127\n";
+
+/// ⭐ S86 的**规范公式**臂（S63／S64 同款题材）：`ampeg_attack=0.005` ＋
+/// `ampeg_attackcc100=0.004`，摊平表里的初值 ＝ `<control>set_cc100=64`
+/// ⇒ 期望起音帧数 ＝ `round((0.005 + 0.004 × 64/127) × 48 000)` ＝ **337**
+/// （`0.005 + 0.002015748 = 0.007015748`；`× 48 000 = 336.7559`）。
+const CC_SEED_ATTACK_PLAIN: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                    amp_veltrack=0 ampeg_attack=0.005 ampeg_attackcc100=0.004\n";
+const CC_SEED_ATTACK_SEEDED: &str = "<control>set_cc100=64\n\
+                                     <region> sample=a.wav key=60 pitch_keycenter=60 \
+                                     amp_veltrack=0 ampeg_attack=0.005 ampeg_attackcc100=0.004\n";
+
+/// ⭐ S87 的"**没有** `set_ccN`"端到端夹具（可闻 ⇒ 指纹非平凡、⛔ 不是静音指纹）。
+const CC_SEED_ABSENT: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0\n";
+
+/// ⭐ **改动前实测**（`#110` 之前、`git status --porcelain` 为空时的一次性探针，测后删除）：
+/// [`CC_SEED_ABSENT`] 经**产品路径**（`EngineRuntime`，16 量子 ＝ 2048 帧）渲染的
+/// FNV-1a 指纹 ＝ `0xec4ca6ac0fe2b1e9`（非零样本 **4030**、峰值 `0.70710677`）。
+///
+/// ⚠ 与 S37／S33 的三条承重指纹同一条纪律：它是**本机实现读数**（`aarch64/macos`），
+/// ⛔ 不是规范常数 ⇒ 同平台硬红、异平台如实跳过（[`check_fingerprint`]）。
+const CC_SEED_ABSENT_RUNTIME_FINGERPRINT: u64 = 0xec4c_a6ac_0fe2_b1e9;
+
+/// ⭐ **改动前实测**：同一装置下**带 `<control>set_cc1=64`** 的夹具（[`CC_SEED_GATE_SEEDED`]）
+/// 指纹 ＝ `0x9c1bda7f8c872325`（**与不带那一行的 [`CC_SEED_GATE_PLAIN`] 逐位相同**、
+/// 非零样本 **0**）—— ⭐ 那正是本单要闭合的缺口：加载时初值当时被静默忽略。
+const CC_SEED_IGNORED_RUNTIME_FINGERPRINT: u64 = 0x9c1b_da7f_8c87_2325;
+
+/// ⭐ `#110` 的端到端装置：**产品路径**（`EngineRuntime::process_quantum`）＋ 可在量子
+/// 之间注入 `EngineEvent`（S89 要"先播种、再喂真 CC"）＋ 可重新发布快照（幂等腿）。
+///
+/// ⚠ 与 `support::render_snapshot` **同一份形态**（`SnapshotSlot` ＋ `retire_channel` ＋
+/// `event_channel` ＋ `meter_channel` ⇒ `EngineRuntime::new`）；唯一的区别是本装置
+/// **留着**事件发送端（那边把它丢掉）。
+struct CcSeedRig {
+    slot: std::sync::Arc<yeban_engine::snapshot::SnapshotSlot>,
+    sender: yeban_engine::ring::EventSender,
+    runtime: yeban_engine::rt::EngineRuntime,
+    _collector: yeban_engine::meter::MeterCollector,
+    _queue: yeban_engine::snapshot::RetireQueue,
+    project: YebanProjectV1,
+    track: EntityId,
+    plan: SfzPlan,
+    revision: u64,
+    out: Vec<f32>,
+    left: Vec<f32>,
+    right: Vec<f32>,
+}
+
+impl CcSeedRig {
+    fn new(fixture: &support::Fixture, plan: SfzPlan) -> Self {
+        let track = fixture.track;
+        let snapshot = EngineSnapshot::from_project(&fixture.project, 1)
+            .expect("夹具工程必须能编译成快照")
+            .with_sfz(track, plan.clone());
+        let slot = yeban_engine::snapshot::SnapshotSlot::new(snapshot);
+        let (retire, queue) = yeban_engine::snapshot::retire_channel(64);
+        let (sender, receiver) = yeban_engine::ring::event_channel(64);
+        let (publisher, collector) = yeban_engine::meter::meter_channel(4096);
+        let runtime = yeban_engine::rt::EngineRuntime::new(&slot, retire, receiver, publisher);
+        Self {
+            slot,
+            sender,
+            runtime,
+            _collector: collector,
+            _queue: queue,
+            project: fixture.project.clone(),
+            track,
+            plan,
+            revision: 1,
+            out: vec![0.0; 2 * 128],
+            left: Vec::new(),
+            right: Vec::new(),
+        }
+    }
+
+    /// 走 `quanta` 个量子（每个量子 128 帧 × 2 声道），输出追加进两声道。
+    fn run(&mut self, quanta: usize) {
+        for _ in 0..quanta {
+            self.out.fill(0.0);
+            self.runtime.process_quantum(&mut self.out, 2);
+            for frame in 0..128 {
+                self.left.push(self.out[frame * 2]);
+                self.right.push(self.out[frame * 2 + 1]);
+            }
+        }
+    }
+
+    /// 发布事件（SPSC 生产端 ＝ `#107` 的事件面）。
+    fn publish(&mut self, events: &[yeban_engine::ring::EngineEvent]) -> usize {
+        self.sender.publish(events)
+    }
+
+    /// 换一份**等价的新快照**（同一条轨、同一份摊平表，只改修订号）⇒ 触发重新武装。
+    fn rearm(&mut self) {
+        self.revision += 1;
+        let snapshot = EngineSnapshot::from_project(&self.project, self.revision)
+            .expect("等价快照")
+            .with_sfz(self.track, self.plan.clone());
+        self.slot.publish(snapshot);
+    }
+
+    /// FNV-1a 64（与 `support::Render::fingerprint` **同一份口径**：左声道后右声道）。
+    fn fingerprint(&self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for sample in self.left.iter().chain(self.right.iter()) {
+            for byte in sample.to_bits().to_le_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    /// 两声道里的非零样本数。
+    fn nonzero(&self) -> usize {
+        self.left
+            .iter()
+            .chain(self.right.iter())
+            .filter(|sample| **sample != 0.0)
+            .count()
+    }
+
+    /// ⭐ 把会话 CC 表读成一个 `Fn(u8) -> u8`（与 `ControlChangeState::value` **同口径**：
+    /// 未收到过 ⇒ `0`）—— 这就是 S88 三条路共用的那个探针。
+    fn probe_value(&self, controller: u8) -> u8 {
+        self.runtime.control_change(controller).unwrap_or(0)
+    }
+}
+
+/// ⭐ S86（任务单 `#110`；§5.2）：**播种真的生效** —— 同一份区域，只差一行
+/// `<control>set_cc1=64`：会话表从"一条 CC 都没有"变成 `Some(64)`，且区域真的发声；
+/// 规范公式臂上实时起音帧数**等于** `round((0.005 + 0.004 × 64/127) × 48 000)`。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_SEED_GATE_SEEDED`] ／ [`CC_SEED_GATE_PLAIN`] ／ [`CC_SEED_ATTACK_SEEDED`]
+/// 经**产品路径**（`EngineRuntime`，16 量子）与**实时声部池**（512 帧）的输出；
+/// 单位 ＝ `armed`（布尔）＋ `control_change(N)`（`Option<u8>`）＋ 收到过的控制器个数（个）
+/// ＋ 非零样本数（个）＋ 起音段帧数（帧）＋ FNV-1a 指纹（逐位）。
+#[test]
+fn s86_the_seeded_initial_value_reaches_the_session_state_and_the_probe() {
+    const HZ: f32 = 48_000.0;
+    const QUANTA: usize = 16;
+    let fixture = note_project(&[NoteSpec::at(0, 480, 60, 100)]);
+    let sample = constant_sample(4_096);
+
+    // ---- ① 门控臂：同一份区域，只差一行 `<control>set_cc1=64` ----
+    let plain_plan = prepare_with(CC_SEED_GATE_PLAIN, &sample);
+    let seeded_plan = prepare_with(CC_SEED_GATE_SEEDED, &sample);
+    assert!(
+        plain_plan.cc_seeds().is_empty(),
+        "无 `<control>` ⇒ 空表（保命不变量的机械开关）"
+    );
+    assert_eq!(
+        seeded_plan.cc_seeds().len(),
+        1,
+        "`set_cc1=64` ⇒ 恰好一条初值"
+    );
+    assert_eq!(seeded_plan.cc_seeds().value(1), Some(64));
+    assert_eq!(seeded_plan.cc_seeds().out_of_domain(), 0);
+
+    let mut plain = CcSeedRig::new(&fixture, SfzPlan::from_prepared(plain_plan));
+    plain.run(QUANTA);
+    let mut seeded = CcSeedRig::new(&fixture, SfzPlan::from_prepared(seeded_plan));
+    seeded.run(QUANTA);
+    println!(
+        "[engine-sfz/S86] 门控臂：plain ⇒ armed={} control_change(1)={:?} \
+         received_count={} 非零={} 指纹=0x{:016x}",
+        plain.runtime.control_change_armed(),
+        plain.runtime.control_change(1),
+        plain.runtime.control_change_received_count(),
+        plain.nonzero(),
+        plain.fingerprint()
+    );
+    println!(
+        "[engine-sfz/S86] 门控臂：seeded ⇒ armed={} control_change(1)={:?} \
+         received_count={} 非零={} 指纹=0x{:016x}",
+        seeded.runtime.control_change_armed(),
+        seeded.runtime.control_change(1),
+        seeded.runtime.control_change_received_count(),
+        seeded.nonzero(),
+        seeded.fingerprint()
+    );
+    assert!(
+        !plain.runtime.control_change_armed(),
+        "无 `set_ccN` ⇒ 播种一次都不写 ⇒ 表**不** armed"
+    );
+    assert_eq!(plain.runtime.control_change(1), None, "没播种 ⇒ 读 `None`");
+    assert_eq!(
+        plain.nonzero(),
+        0,
+        "探针 `None` ⇒ `locc1=64` 不成立 ⇒ 不发声"
+    );
+    assert!(seeded.runtime.control_change_armed(), "播种把表 armed");
+    assert_eq!(
+        seeded.runtime.control_change(1),
+        Some(64),
+        "初值 64 真的进表"
+    );
+    assert_eq!(seeded.runtime.control_change_received_count(), 1);
+    assert_eq!(
+        seeded.nonzero(),
+        4030,
+        "初值让 `locc1=64` 成立 ⇒ 端到端可闻；4030 ＝ 与 S87 的无门控夹具**同值**\
+         （4096 帧 − 66 帧链路固定静音前缀；两臂同值 ⇒ 那个差值与本单无关）"
+    );
+    let _checked = check_fingerprint(
+        "S86 gate-plain（改动前实测）",
+        plain.fingerprint(),
+        CC_SEED_IGNORED_RUNTIME_FINGERPRINT,
+    );
+    let _checked = check_fingerprint(
+        "S86 gate-seeded（门控成立 ⇒ 与无门控夹具逐位相同）",
+        seeded.fingerprint(),
+        CC_SEED_ABSENT_RUNTIME_FINGERPRINT,
+    );
+    assert_ne!(
+        plain.fingerprint(),
+        seeded.fingerprint(),
+        "⭐ 有牙：那一行真的改变端到端输出"
+    );
+
+    // ---- ② 规范公式臂：`set_cc100=64` ⇒ 实时起音帧数 ＝ 公式 ----
+    let attack_plan = prepare_with(CC_SEED_ATTACK_SEEDED, &sample);
+    let attack_plain = prepare_with(CC_SEED_ATTACK_PLAIN, &sample);
+    assert!(attack_plain.cc_seeds().is_empty());
+    assert_eq!(attack_plan.cc_seeds().value(100), Some(64));
+    let expected = |cc: u8| -> usize {
+        let seconds = 0.005f32 + 0.004f32 * (f32::from(cc) / 127.0);
+        (f64::from(seconds) * f64::from(HZ)).round() as usize
+    };
+    // 会话表那条腿：同一份摊平表经产品路径 ⇒ `control_change(100) == Some(64)`。
+    let mut attack_rig = CcSeedRig::new(&fixture, SfzPlan::from_prepared(attack_plan.clone()));
+    attack_rig.run(1);
+    assert_eq!(
+        attack_rig.runtime.control_change(100),
+        Some(64),
+        "`set_cc100=64` 真的进会话表"
+    );
+    // 探针 ＝ **播种表本身**（与①里会话表的值同源）。
+    let seed_probe = |controller: u8| attack_plan.cc_seeds().value(controller).unwrap_or(0);
+    let seed_arg: Option<&dyn Fn(u8) -> u8> = Some(&seed_probe);
+    let mut pool = SfzVoicePool::new(HZ);
+    assert_eq!(
+        pool.trigger_note(&attack_plan, 60, 127, u64::MAX, 1.0, seed_arg),
+        1
+    );
+    let mut out = vec![0.0f32; 512];
+    pool.render_into_with_cc(&attack_plan, 0, &mut out, seed_arg);
+    let seeded_attack = measured_attack_frames(&out);
+    // 反向对照：同一份区域**没有** `<control>` ⇒ `cc = None` ⇒ 基准 240 帧。
+    let mut base_pool = SfzVoicePool::new(HZ);
+    assert_eq!(
+        base_pool.trigger_note(&attack_plain, 60, 127, u64::MAX, 1.0, None),
+        1
+    );
+    let mut base_out = vec![0.0f32; 512];
+    base_pool.render_into_with_cc(&attack_plain, 0, &mut base_out, None);
+    let base_attack = measured_attack_frames(&base_out);
+    println!(
+        "[engine-sfz/S86] 公式臂：播种 cc=64 ⇒ 起音 {seeded_attack} 帧；\
+         无 `set_ccN` ⇒ 基准 {base_attack} 帧；公式(64) = {}、公式(0) = {}",
+        expected(64),
+        expected(0)
+    );
+    assert_eq!(
+        expected(64),
+        337,
+        "公式自身可复算：round((0.005 + 0.004 × 64/127) × 48000) = round(336.7559)"
+    );
+    assert_eq!(
+        seeded_attack,
+        expected(64),
+        "⭐ 播种的初值 64 ⇒ 起音帧数**等于规范公式**"
+    );
+    assert_eq!(base_attack, 240, "无 `set_ccN` ⇒ `cc = None` ⇒ 基准 240 帧");
+    assert_ne!(seeded_attack, base_attack, "⭐ 有牙：两个读数必须不同");
+}
+
+/// ⭐ S87（任务单 `#110`；§5.3 保命不变量）：**没有 `set_ccN` 的夹具 ⇒ 播种机制一个
+/// 字节都不动** —— 会话表不 armed、收到过的控制器 0 个、端到端指纹等于**改动前实测**，
+/// 且三个**承重指纹**逐字不变。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_SEED_ABSENT`] 经产品路径（`EngineRuntime`，16 量子）的输出
+/// ＋ 三个既有夹具（S37 两臂、S33／S14 广播路径）；
+/// 单位 ＝ `armed`（布尔）＋ 收到过的控制器个数（个）＋ 非零样本数（个）
+/// ＋ FNV-1a 指纹（逐位）。
+#[test]
+fn s87_without_set_cc_the_seeding_moves_no_byte() {
+    let fixture = note_project(&[NoteSpec::at(0, 480, 60, 100)]);
+    let plan = prepare_with(CC_SEED_ABSENT, &constant_sample(4_096));
+    assert!(plan.cc_seeds().is_empty(), "没有 `<control>` ⇒ 空表");
+    assert_eq!(plan.cc_seeds().len(), 0);
+    assert_eq!(plan.cc_seeds().out_of_domain(), 0);
+    let mut rig = CcSeedRig::new(&fixture, SfzPlan::from_prepared(plan));
+    rig.run(16);
+    let actual = rig.fingerprint();
+    println!(
+        "[engine-sfz/S87] 无 set_ccN：armed={} received_count={} control_change(1)={:?} \
+         非零={} 指纹=0x{actual:016x}（改动前 0x{CC_SEED_ABSENT_RUNTIME_FINGERPRINT:016x}）",
+        rig.runtime.control_change_armed(),
+        rig.runtime.control_change_received_count(),
+        rig.runtime.control_change(1),
+        rig.nonzero(),
+    );
+    assert!(
+        !rig.runtime.control_change_armed(),
+        "⭐ 保命不变量：空表 ⇒ 一次 `seed` 都不调 ⇒ 表**不** armed"
+    );
+    assert_eq!(
+        rig.runtime.control_change_received_count(),
+        0,
+        "⭐ 收到过的控制器个数必须仍是 0"
+    );
+    assert_eq!(rig.runtime.control_change(1), None);
+    assert!(rig.nonzero() > 0, "夹具必须**可闻**（⛔ 不是静音指纹）");
+    let _checked = check_fingerprint(
+        "S87 无 set_ccN 的端到端指纹",
+        actual,
+        CC_SEED_ABSENT_RUNTIME_FINGERPRINT,
+    );
+
+    // ⭐ 三个承重指纹：无 `set_ccN` 的既有夹具 ⇒ ⛔ 必须不变（复跑 S37／S33 的两条臂）。
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, fixture, end_sample, expected) in [
+        ("S87 → S37 臂 1", &looped, 200u64, 0xa9de_c8a8_7f69_106cu64),
+        ("S87 → S37 臂 2", &plain, u64::MAX, 0xd3c2_a820_76bd_8947u64),
+    ] {
+        let out = render_pool(fixture, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!(
+            "[engine-sfz/S87] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）；\
+             非零帧数 = {}",
+            nonzero_frames(&out)
+        );
+        let _checked = check_fingerprint(&format!("S87 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy = vec![0.0f32; BLOCK];
+    broadcast.render_block_into_with_cc(60, 127, None, &mut legacy);
+    println!(
+        "[engine-sfz/S87] S87 → S33／S14 广播路径：指纹 = 0x{:016x}（承重 = 0x{:016x}）",
+        fnv1a_64(&legacy),
+        NO_LOOP_FIXTURE_FINGERPRINT
+    );
+    let _checked = check_fingerprint(
+        "S87 S33/S14 广播路径",
+        fnv1a_64(&legacy),
+        NO_LOOP_FIXTURE_FINGERPRINT,
+    );
+}
+
+/// ⭐ S88（任务单 `#110`；§5.4 三条路一致）：探针**从被播种的会话表读回来** ⇒
+/// **离线 ＝ 摊平 ＝ 实时** 位模式逐位相同，且三条路都真的发声。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_SEED_GATE_SEEDED`] 经三条路渲染 512 帧的输出；
+/// 单位 ＝ 声部数（个）＋ 非零帧数（帧）＋ 写入帧数（帧）＋ 位模式序列（逐帧 `u32`）。
+#[test]
+fn s88_the_three_paths_agree_with_the_probe_read_back_from_the_seeded_session_table() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    let fixture = note_project(&[NoteSpec::at(0, 480, 60, 100)]);
+    let sample = constant_sample(4_096);
+    let instrument = SfzInstrument::load(CC_SEED_GATE_SEEDED.to_owned(), &Default::default())
+        .expect("夹具必须解析成功");
+    let plan = prepare_with(CC_SEED_GATE_SEEDED, &sample);
+
+    let mut rig = CcSeedRig::new(&fixture, SfzPlan::from_prepared(plan.clone()));
+    rig.run(1);
+    assert_eq!(
+        rig.runtime.control_change(1),
+        Some(64),
+        "⭐ 探针的来源：会话表真的拿到了 `set_cc1=64` 的初值"
+    );
+
+    // ⭐ 探针 ＝ **从会话表读回来的那个函数**（与 `ControlChangeState::value` 同口径）。
+    let probe = |controller: u8| rig.probe_value(controller);
+    let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+
+    // ① 离线
+    let mut offline = vec![0.0f32; FRAMES];
+    let written_offline = instrument
+        .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+        .expect("离线渲染");
+    // ② 摊平
+    let mut flat = vec![0.0f32; FRAMES];
+    let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+    // ③ 实时（声部池）
+    let mut pool = SfzVoicePool::new(HZ);
+    let voices = pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, cc_arg);
+    let mut realtime = vec![0.0f32; FRAMES];
+    pool.render_into_with_cc(&plan, 0, &mut realtime, cc_arg);
+
+    println!(
+        "[engine-sfz/S88] 探针 = 会话表（cc1 = {:?}）：声部数 = {voices}、\
+         离线写入 = {written_offline}、摊平写入 = {written_flat}、非零帧数 = {}、\
+         三条路位模式相同 = {}",
+        rig.runtime.control_change(1),
+        nonzero_frames(&offline),
+        bits(&offline) == bits(&flat) && bits(&flat) == bits(&realtime)
+    );
+    assert_eq!(voices, 1, "初值让门控成立 ⇒ 建 1 个声部");
+    assert_eq!(nonzero_frames(&offline), FRAMES, "三条路都**真的发声**");
+    assert_eq!(written_offline, written_flat, "离线与摊平的写入帧数同值");
+    assert_eq!(bits(&offline), bits(&flat), "⭐ 离线 ＝ 摊平（逐位）");
+    assert_eq!(bits(&flat), bits(&realtime), "⭐ 摊平 ＝ 实时（逐位）");
+
+    // ⭐ 反空判腿：同一个夹具、初值为 0（门控不成立）⇒ 三条路都静音 ⇒ 与上面**不同**。
+    let closed = |_controller: u8| 0u8;
+    let closed_arg: Option<&dyn Fn(u8) -> u8> = Some(&closed);
+    let mut closed_offline = vec![0.0f32; FRAMES];
+    instrument
+        .render_note_into_with_cc(&sample, 60, VELOCITY, closed_arg, &mut closed_offline, HZ)
+        .expect("离线渲染");
+    assert_eq!(nonzero_frames(&closed_offline), 0);
+    assert_ne!(
+        bits(&offline),
+        bits(&closed_offline),
+        "⭐ 有牙：初值 64 与 0 必须给出**逐位不同**的输出"
+    );
+}
+
+/// ⭐ S89（任务单 `#110`；§5.5 真实 CC 覆盖初值）：**先播种、再喂一条同号
+/// `ControlChange` ⇒ 后者赢** —— 同一量子、后面的量子、以及"重新武装一份等价快照"
+/// 三条腿都成立（播种**幂等** ⇒ ⛔ 不覆盖真值）。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_SEED_GATE_SEEDED`] 的会话表在四条时间线上的读数；
+/// 单位 ＝ `control_change(1)`（`Option<u8>`）＋ `armed`（布尔）。
+#[test]
+fn s89_a_real_control_change_beats_the_seeded_initial_value() {
+    let fixture = note_project(&[NoteSpec::at(0, 480, 60, 100)]);
+    let sample = constant_sample(4_096);
+    let mut rig = CcSeedRig::new(
+        &fixture,
+        SfzPlan::from_prepared(prepare_with(CC_SEED_GATE_SEEDED, &sample)),
+    );
+    // ① 同一量子：真 CC 与快照第一次武装**同批**到达 ⇒ 事件面先跑 ⇒ 真值赢。
+    assert_eq!(
+        rig.publish(&[yeban_engine::ring::EngineEvent::ControlChange {
+            controller: 1,
+            value: 0,
+        }]),
+        1
+    );
+    rig.run(1);
+    assert_eq!(
+        rig.runtime.control_change(1),
+        Some(0),
+        "⭐ 同一量子：真 CC 覆盖初值（事件面在 2a-cc 段之前）"
+    );
+    assert_eq!(rig.runtime.control_change_received_count(), 1);
+    // ② 后面的量子再来一条 ⇒ 仍是真值（最后一条赢）。
+    assert_eq!(
+        rig.publish(&[yeban_engine::ring::EngineEvent::ControlChange {
+            controller: 1,
+            value: 7,
+        }]),
+        1
+    );
+    rig.run(1);
+    assert_eq!(rig.runtime.control_change(1), Some(7));
+    // ③ 换一份**等价的新快照**（任何编辑都会发新修订 ⇒ 重新武装 ⇒ 再播一遍）
+    //    ⇒ ⭐ 幂等：已经收到过 ⇒ 播种**跳过** ⇒ 真值不被覆盖。
+    rig.rearm();
+    rig.run(1);
+    println!(
+        "[engine-sfz/S89] 重新武装之后：control_change(1) = {:?}（初值 64 必须⛔ 不覆盖真值 7）",
+        rig.runtime.control_change(1)
+    );
+    assert_eq!(
+        rig.runtime.control_change(1),
+        Some(7),
+        "⭐ 重新武装：播种**幂等** ⇒ 真 CC 仍然是 7"
+    );
+    // ④ 反空判腿：**没有**真 CC 那一步 ⇒ 重新武装后恒为初值 64。
+    let mut only_seed = CcSeedRig::new(
+        &fixture,
+        SfzPlan::from_prepared(prepare_with(CC_SEED_GATE_SEEDED, &sample)),
+    );
+    only_seed.run(1);
+    only_seed.rearm();
+    only_seed.run(1);
+    assert_eq!(
+        only_seed.runtime.control_change(1),
+        Some(64),
+        "非空对照：只有播种 ⇒ 值恒为初值"
+    );
+}
+
+/// ⭐ S90（任务单 `#110`；§5.6 反向腿 ＋ 三个承重指纹）：**去掉 `set_ccN` 那一行** ⇒
+/// 端到端与"没有播种机制"逐位相同、两个**初值**在**不读 CC** 的区域上给出**逐位相同**
+/// 的输出；⭐ 三个承重指纹逐字不变；⭐ `×1.0000001` ⇒ 指纹必变。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_SEED_GATE_PLAIN`]／[`CC_SEED_GATE_SEEDED`]／两份只差初值的
+/// **CC-blind** 区域 ／ 三个既有夹具；单位 ＝ FNV-1a 指纹（逐位）＋ `armed`（布尔）
+/// ＋ 非零样本数（个）。
+#[test]
+fn s90_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
+    let fixture = note_project(&[NoteSpec::at(0, 480, 60, 100)]);
+    let sample = constant_sample(4_096);
+
+    // ---- ① 反向腿（会话面）：去掉那一行 ⇒ 与"没有播种机制"逐位相同 ----
+    let mut plain = CcSeedRig::new(
+        &fixture,
+        SfzPlan::from_prepared(prepare_with(CC_SEED_GATE_PLAIN, &sample)),
+    );
+    plain.run(16);
+    let mut seeded = CcSeedRig::new(
+        &fixture,
+        SfzPlan::from_prepared(prepare_with(CC_SEED_GATE_SEEDED, &sample)),
+    );
+    seeded.run(16);
+    println!(
+        "[engine-sfz/S90] 反向腿：plain 指纹 = 0x{:016x}（armed={}）／seed 指纹 = 0x{:016x}\
+         （armed={}）",
+        plain.fingerprint(),
+        plain.runtime.control_change_armed(),
+        seeded.fingerprint(),
+        seeded.runtime.control_change_armed()
+    );
+    assert!(!plain.runtime.control_change_armed());
+    assert!(seeded.runtime.control_change_armed());
+    let _checked = check_fingerprint(
+        "S90 gate-plain（改动前实测）",
+        plain.fingerprint(),
+        CC_SEED_IGNORED_RUNTIME_FINGERPRINT,
+    );
+    assert_ne!(
+        plain.fingerprint(),
+        seeded.fingerprint(),
+        "⭐ 有牙：那一行真的改变端到端输出"
+    );
+
+    // ---- ② 「两个初值逐位相同」腿：区域**不读 CC** ⇒ 播种本身⛔ 不制造差异 ----
+    const SEED_64_BLIND: &str =
+        "<control>set_cc1=64\n<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0\n";
+    const SEED_0_BLIND: &str =
+        "<control>set_cc1=0\n<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0\n";
+    let blind_64 = prepare_with(SEED_64_BLIND, &sample);
+    let blind_0 = prepare_with(SEED_0_BLIND, &sample);
+    assert_eq!(blind_64.cc_seeds().value(1), Some(64));
+    assert_eq!(blind_0.cc_seeds().value(1), Some(0));
+    let blind_probe_64 = |controller: u8| blind_64.cc_seeds().value(controller).unwrap_or(0);
+    let blind_probe_0 = |controller: u8| blind_0.cc_seeds().value(controller).unwrap_or(0);
+    let arg_64: Option<&dyn Fn(u8) -> u8> = Some(&blind_probe_64);
+    let arg_0: Option<&dyn Fn(u8) -> u8> = Some(&blind_probe_0);
+    let mut out_64 = vec![0.0f32; BLOCK];
+    let mut out_0 = vec![0.0f32; BLOCK];
+    blind_64.render_block_into_with_cc(60, 100, arg_64, &mut out_64);
+    blind_0.render_block_into_with_cc(60, 100, arg_0, &mut out_0);
+    println!(
+        "[engine-sfz/S90] CC-blind 区域：初值 64 ⇒ 0x{:016x}（非零 {}）／初值 0 ⇒ 0x{:016x}\
+         （非零 {}）",
+        fnv1a_64(&out_64),
+        nonzero_frames(&out_64),
+        fnv1a_64(&out_0),
+        nonzero_frames(&out_0)
+    );
+    assert!(nonzero_frames(&out_64) > 0, "夹具必须可闻");
+    assert_eq!(
+        bits(&out_64),
+        bits(&out_0),
+        "⭐ 反向腿：区域不读 CC ⇒ 两个初值**逐位相同**（播种本身⛔ 不制造差异）"
+    );
+    // ⭐ 有牙对照：**读 CC** 的区域（`locc1`）在同样两个初值下**必须不同**。
+    let gate_64 = prepare_with(CC_SEED_GATE_SEEDED, &sample);
+    let gate_0 = prepare_with(
+        "<control>set_cc1=0\n<region> sample=a.wav key=60 pitch_keycenter=60 \
+         amp_veltrack=0 locc1=64 hicc1=127\n",
+        &sample,
+    );
+    let gate_probe_64 = |controller: u8| gate_64.cc_seeds().value(controller).unwrap_or(0);
+    let gate_probe_0 = |controller: u8| gate_0.cc_seeds().value(controller).unwrap_or(0);
+    let gate_arg_64: Option<&dyn Fn(u8) -> u8> = Some(&gate_probe_64);
+    let gate_arg_0: Option<&dyn Fn(u8) -> u8> = Some(&gate_probe_0);
+    let mut gate_out_64 = vec![0.0f32; BLOCK];
+    let mut gate_out_0 = vec![0.0f32; BLOCK];
+    gate_64.render_block_into_with_cc(60, 100, gate_arg_64, &mut gate_out_64);
+    gate_0.render_block_into_with_cc(60, 100, gate_arg_0, &mut gate_out_0);
+    assert_ne!(
+        bits(&gate_out_64),
+        bits(&gate_out_0),
+        "⭐ 有牙对照：读 CC 的区域在两个初值下必须**不同**"
+    );
+
+    // ---- ③ 三个承重指纹逐字复跑并断言 ----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain_fixture = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, fixture, end_sample, expected) in [
+        ("S90 → S37 臂 1", &looped, 200u64, 0xa9de_c8a8_7f69_106cu64),
+        (
+            "S90 → S37 臂 2",
+            &plain_fixture,
+            u64::MAX,
+            0xd3c2_a820_76bd_8947u64,
+        ),
+    ] {
+        let out = render_pool(fixture, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!(
+            "[engine-sfz/S90] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）；\
+             非零帧数 = {}",
+            nonzero_frames(&out)
+        );
+        let _checked = check_fingerprint(&format!("S90 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy = vec![0.0f32; BLOCK];
+    broadcast.render_block_into_with_cc(60, 127, None, &mut legacy);
+    let legacy_hash = fnv1a_64(&legacy);
+    println!(
+        "[engine-sfz/S90] S90 → S33／S14 广播路径：指纹 = 0x{legacy_hash:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）"
+    );
+    let _checked = check_fingerprint(
+        "S90 S33/S14 广播路径",
+        legacy_hash,
+        NO_LOOP_FIXTURE_FINGERPRINT,
+    );
+
+    // ---- ④ 应绿反向腿：同一输出 × `1.0000001` ⇒ 指纹**必须变** ----
+    let scaled: Vec<f32> = legacy.iter().map(|sample| sample * 1.000_000_1).collect();
+    let scaled_hash = fnv1a_64(&scaled);
+    println!(
+        "[engine-sfz/S90] 反向腿（× 1.0000001）：指纹 = 0x{scaled_hash:016x}\
+         （原指纹 0x{legacy_hash:016x}，必须不同）"
+    );
+    assert_ne!(
+        scaled_hash, legacy_hash,
+        "⭐ 反向腿：乘 1.0000001 后指纹必须变"
+    );
+}
+
+/// ⭐ S92（任务单 `#110`；域口径）：**域外的 `set_ccN` 声明⛔ 不别名一个 7 位控制器**
+/// —— `set_cc400=63` 的 `400 & 0x7F = 16`，⛔ **不得**写成 CC16；表保持空、会话表不 armed。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 两份只差 `N`（`400` / `16`）的 SFZ 与它们的会话读数；
+/// 单位 ＝ 初值表条数（条）＋ 域外计数（条）＋ `armed`（布尔）＋ `control_change(16)`
+/// （`Option<u8>`）＋ 非零样本数（个）。
+#[test]
+fn s92_an_out_of_domain_set_cc_never_aliases_a_seven_bit_controller() {
+    let fixture = note_project(&[NoteSpec::at(0, 480, 60, 100)]);
+    let sample = constant_sample(4_096);
+    // ① 域外：`set_cc400=63` ＋ 一条 `locc16=63 hicc16=63` 的**诱饵**区域。
+    let out_of_domain = prepare_with(
+        "<control>set_cc400=63\n<region> sample=a.wav key=60 pitch_keycenter=60 \
+         amp_veltrack=0 locc16=63 hicc16=63\n",
+        &sample,
+    );
+    assert!(
+        out_of_domain.cc_seeds().is_empty(),
+        "域外声明 ⛔ 不进表（`400 & 0x7F = 16` 会**别名** CC16）"
+    );
+    assert_eq!(
+        out_of_domain.cc_seeds().out_of_domain(),
+        1,
+        "但要**计数**（⛔ 不静默）"
+    );
+    let mut bad = CcSeedRig::new(&fixture, SfzPlan::from_prepared(out_of_domain));
+    bad.run(16);
+    println!(
+        "[engine-sfz/S92] set_cc400=63：初值条数 = 0、域外计数 = 1、armed={}、\
+         control_change(16)={:?}、非零={}",
+        bad.runtime.control_change_armed(),
+        bad.runtime.control_change(16),
+        bad.nonzero()
+    );
+    assert!(
+        !bad.runtime.control_change_armed(),
+        "⭐ 域外声明⛔ 不得把表 armed（那正是别名的来路）"
+    );
+    assert_eq!(
+        bad.runtime.control_change(16),
+        None,
+        "CC16 必须仍然**没收到过**"
+    );
+    assert_eq!(
+        bad.nonzero(),
+        0,
+        "CC16 没被播种 ⇒ `locc16=63` 不成立 ⇒ 不发声"
+    );
+
+    // ② 非空对照：把 `N` 改成域内的 16 ⇒ 真的进表、真的发声。
+    let in_domain = prepare_with(
+        "<control>set_cc16=63\n<region> sample=a.wav key=60 pitch_keycenter=60 \
+         amp_veltrack=0 locc16=63 hicc16=63\n",
+        &sample,
+    );
+    assert_eq!(in_domain.cc_seeds().value(16), Some(63));
+    assert_eq!(in_domain.cc_seeds().out_of_domain(), 0);
+    let mut good = CcSeedRig::new(&fixture, SfzPlan::from_prepared(in_domain));
+    good.run(16);
+    assert!(good.runtime.control_change_armed());
+    assert_eq!(good.runtime.control_change(16), Some(63));
+    assert!(good.nonzero() > 0, "非空对照：域内声明真的进表 ⇒ 门控成立");
+}
+
+/// ⭐ S91（任务单 `#110`；§5.7）：**修订段 ＋ 条数上界的来历 ＋ 尺寸**可判。
+///
+/// # 判定量
+///
+/// * `include_str!("../src/sfz_instrument.rs")` 必须逐字含 `#110` 的追加修订段、
+///   新一节、**结构性上界**与**域外不别名**那句；`#104`／`#107`／`#108`／`#109` 的
+///   **原文**（第 278 条：⛔ 不许删）仍在；`include_str!("../src/cc_state.rs")` 必须含
+///   `seed` 的口径句；
+/// * 语料普查原始读数（分母 **1398** ／ **1137** ／ **105** ／ **38** ／ **62**）可判；
+/// * 尺寸：`CcSeedTable` **152**、`PreparedSfz` **88 → 240**、`SfzPlan` **240**；
+///   ⛔ `SfzVoice` **40**、⛔ `SfzVoicePool` **1712**、⛔ `EngineRuntime` **180144**
+///   （< 192 KiB）、⛔ `PreparedRegion` **6152**、⛔ `ControlChangeState` **144**。
+#[test]
+fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const CC_STATE_SOURCE: &str = include_str!("../src/cc_state.rs");
+    const REVISION: &str = "⭐ ⭐ **追加修订段（任务单 `#110`）";
+    const SECTION: &str = "# ⭐ `set_ccN` 播种（任务单 `#110`）";
+    const BOUND: &str = "上界是结构性的";
+    const SEED_ONCE: &str = "只填从未收到过的槽";
+    const NO_ALIAS: &str = "**不被掩码别名**";
+    const INERT: &str = "表为空 ⇒ 播种机制一个字节都不动";
+    const PREV_104_CALIBER: &str = "⭐ 双口径登记（任务单 `#104`）";
+    const PREV_104_GATE: &str = "⭐ 摊平期门控登记（任务单 `#104`）";
+    const PREV_107: &str = "⭐ ⭐ **追加修订段（任务单 `#107`）";
+    const PREV_107_UNWIRED: &str = "本单未接线（登记，⛔ 不静默）";
+    const PREV_108: &str = "⭐ ⭐ **追加修订段（任务单 `#108`）";
+    const PREV_109: &str = "⭐ ⭐ **追加修订段（任务单 `#109`）";
+    const PREV_109_UNWIRED: &str = "⛔ 本单仍未接线（登记，⛔ 不静默）";
+    const CC_STATE_SEED: &str = "只在\"这个控制器从未收到过\"时写";
+    const ABSENT: &str = "`set_ccN` 的播种仍然一行都不接线";
+    const ABSENT_CC_STATE: &str = "本单 ⛔ 不播种，`set_ccN` 永远不被播种";
+    println!(
+        "[engine-sfz/S91] 模块头：`#110` 修订段 = {}、新一节 = {}、结构性上界 = {}、\
+         不别名 = {}、空表不动 = {}、`seed` 口径 = {}",
+        MODULE_SOURCE.contains(REVISION),
+        MODULE_SOURCE.contains(SECTION),
+        MODULE_SOURCE.contains(BOUND),
+        MODULE_SOURCE.contains(NO_ALIAS),
+        MODULE_SOURCE.contains(INERT),
+        CC_STATE_SOURCE.contains(CC_STATE_SEED),
+    );
+    for (label, needle) in [
+        ("`#110` 追加修订段", REVISION),
+        ("`set_ccN` 播种一节", SECTION),
+        ("结构性上界（条数上界的来历）", BOUND),
+        ("域外声明不被掩码别名", NO_ALIAS),
+        ("只填从未收到过的槽（幂等口径）", SEED_ONCE),
+        ("空表 ⇒ 一个字节都不动（保命不变量）", INERT),
+        ("`#104` 的双口径登记（⛔ 不许删）", PREV_104_CALIBER),
+        ("`#104` 的摊平期门控登记（⛔ 不许删）", PREV_104_GATE),
+        ("`#107` 的追加修订段（⛔ 不许删）", PREV_107),
+        ("`#107` 的未接线登记原文（⛔ 不许删）", PREV_107_UNWIRED),
+        ("`#108` 的追加修订段（⛔ 不许删）", PREV_108),
+        ("`#109` 的追加修订段（⛔ 不许删）", PREV_109),
+        ("`#109` 的未接线登记原文（⛔ 不许删）", PREV_109_UNWIRED),
+    ] {
+        assert!(MODULE_SOURCE.contains(needle), "⭐ 必须逐字含：{label}");
+    }
+    assert!(
+        CC_STATE_SOURCE.contains(CC_STATE_SEED),
+        "⭐ `ControlChangeState::seed` 的「只填从未收到过的槽」口径必须写在源码里"
+    );
+    assert!(
+        !MODULE_SOURCE.contains(ABSENT),
+        "⭐ 反向腿：文档里没有的句子必须 `false`"
+    );
+    assert!(
+        !CC_STATE_SOURCE.contains(ABSENT_CC_STATE),
+        "⭐ 反向腿：`cc_state.rs` 里没有的句子必须 `false`"
+    );
+
+    // ⭐ 语料普查的原始读数必须登记在源码里（第 271／274 条：口径 ＋ 分母 ＋ 对照）。
+    for needle in [
+        "**1398**",
+        "**1137**",
+        "**105**",
+        "**38**",
+        "**62**",
+        "**128**",
+        "`offset_cc131=5500`",
+        "`{1: 18, 2: 1, 3: 6, 4: 7, 6: 9, 7: 9, 8: 1, 9: 9, 10: 11, 11: 8, 12: 3, 13: 7, 14: 1, 16: 3, 17: 2, 19: 2, 22: 2, 30: 1, 31: 2, 57: 1, 62: 2}`",
+    ] {
+        assert!(
+            MODULE_SOURCE.contains(needle),
+            "⭐ 语料/口径读数必须可判：模块头缺少 `{needle}`"
+        );
+    }
+
+    // ⭐ 任务单 `#112`（§2①）：那条自相矛盾的旧数字（`SfzPlan` 仍 88 B）必须已经不在
+    // 源码里，且新数字必须**逐字**在模块头 —— 这两条是**源文本腿**，`size_of` 抓不到
+    // "文档写错、代码没错"这种形态。
+    assert!(
+        MODULE_SOURCE.contains("⭐ `SfzPlan` **88 → 240 B**"),
+        "⭐ 模块头必须把 `SfzPlan` 的尺寸写成 **240 B**（它按值内联 `PreparedSfz`）"
+    );
+    assert!(
+        !MODULE_SOURCE.contains("⭐ `SfzPlan` 仍 **88 B**"),
+        "⭐ 反向腿：`SfzPlan` 仍 **88 B** 这条与 `size_of` 矛盾的旧文字必须已删"
+    );
+
+    let seed_table = core::mem::size_of::<yeban_engine::sfz_instrument::CcSeedTable>();
+    let prepared_sfz = core::mem::size_of::<PreparedSfz>();
+    let plan = core::mem::size_of::<SfzPlan>();
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let cc_state = core::mem::size_of::<yeban_engine::cc_state::ControlChangeState>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S91] size_of: CcSeedTable={seed_table} PreparedSfz={prepared_sfz}\
+         （88 → {prepared_sfz}）SfzPlan={plan} PreparedRegion={region} SfzVoice={voice} \
+         SfzVoicePool={pool} ControlChangeState={cc_state} EngineRuntime={runtime}\
+         （门槛 192 KiB = {}；余量 = {}）",
+        192 * 1024,
+        192 * 1024 - runtime,
+    );
+    assert_eq!(
+        seed_table, 152,
+        "⭐ `CcSeedTable` ＝ 值表 `[u8; 128]` ＋ 掩码 `[u64; 2]` ＋ 域外计数 `usize`"
+    );
+    // ⭐ 任务单 `#112`（§2①）：**绝对值基线 ＋ 增量**两条腿都要钉。只钉增量
+    // （`88 + seed_table`）在**基线自己漂了**的时候不会响（内层原有 88 若变成别的数，
+    // 增量腿仍绿）⇒ 这里同时钉绝对值。
+    assert_eq!(
+        prepared_sfz, 240,
+        "⭐ `PreparedSfz` 的**绝对值**基线（`88 + 152`；基线漂了本腿必须响）"
+    );
+    assert_eq!(
+        plan, 240,
+        "⭐ `SfzPlan` 的**绝对值**基线（它按值内联 `PreparedSfz` ⇒ 与内层同长）"
+    );
+    assert_eq!(
+        prepared_sfz,
+        88 + seed_table,
+        "⭐ `PreparedSfz` 的增量 ＝ `size_of::<CcSeedTable>()`（摊平表长大，⛔ 不进实时对象）"
+    );
+    assert_eq!(
+        plan,
+        88 + seed_table,
+        "⭐ `SfzPlan` 的增量 ＝ 内层的增量（它按值内联 `PreparedSfz`）"
+    );
+    assert_eq!(
+        prepared_sfz, plan,
+        "⭐ 包装与内层**同长**（`SfzPlan` 按值内联 `PreparedSfz`）"
+    );
+    assert_eq!(
+        region, 6152,
+        "⛔ `PreparedRegion` 必须 ＋0（播种表是**每表**一份）"
+    );
+    assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
+    assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
+    assert_eq!(
+        cc_state, 144,
+        "⛔ `ControlChangeState` 必须 ＋0（`seed` 不加字段）"
+    );
+    assert_eq!(
+        runtime, 180_144,
+        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+    );
+    assert!(
+        runtime < 192 * 1024,
+        "⛔ `EngineRuntime` 必须 < 192 KiB（余量 {} B）",
+        192 * 1024 - runtime
+    );
+}
+
+/// ⭐ S93 的**双轨装置**（任务单 `#112`；§2② 的实测 ＋ §2③ 的离线腿）。
+///
+/// 两条 MIDI 轨各带一份摊平表（A ＝ 产物轨／播种轨、B ＝ 门控轨），同一条 60 号音符、
+/// 同一条产品路径（`EngineRuntime::process_quantum`，每量子 128 帧 × 2 声道）。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 双轨快照经 `quanta` 个量子的输出与**会话表**读数；
+/// 单位 ＝ `armed`（布尔）＋ `control_change(N)`（`Option<u8>`）＋ 非零样本数（个）
+/// ＋ FNV-1a 指纹（逐位，左声道后右声道）。
+///
+/// ⚠ A 轨的区域是 `key=127` ⇒ 本夹具的 60 号音符**恒不匹配** ⇒ A 轨自身逐位静音
+/// （由调用方用一条对照腿实测证明）⇒ 输出里的非零样本**全部**来自 B 轨。
+fn run_two_track_cc_seed_leak(
+    a_plan: &PreparedSfz,
+    b_plan: &PreparedSfz,
+    quanta: usize,
+) -> (bool, Option<u8>, Option<u8>, usize, u64) {
+    let (project, first, second) = support::two_track_project(
+        &[NoteSpec::at(0, 480, 60, 100)],
+        &[NoteSpec::at(0, 480, 60, 100)],
+    );
+    let snapshot = EngineSnapshot::from_project(&project, 1)
+        .expect("双轨夹具必须能编译成快照")
+        .with_sfz(first, SfzPlan::from_prepared(a_plan.clone()))
+        .with_sfz(second, SfzPlan::from_prepared(b_plan.clone()));
+    let slot = yeban_engine::snapshot::SnapshotSlot::new(snapshot);
+    let (retire, _queue) = yeban_engine::snapshot::retire_channel(64);
+    let (_sender, receiver) = yeban_engine::ring::event_channel(64);
+    let (publisher, _collector) = yeban_engine::meter::meter_channel(4096);
+    let mut runtime = yeban_engine::rt::EngineRuntime::new(&slot, retire, receiver, publisher);
+    let mut out = vec![0.0f32; 2 * 128];
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for _ in 0..quanta {
+        out.fill(0.0);
+        runtime.process_quantum(&mut out, 2);
+        for frame in 0..128 {
+            left.push(out[frame * 2]);
+            right.push(out[frame * 2 + 1]);
+        }
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for sample in left.iter().chain(right.iter()) {
+        for byte in sample.to_bits().to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    let nonzero = left
+        .iter()
+        .chain(right.iter())
+        .filter(|sample| **sample != 0.0)
+        .count();
+    (
+        runtime.control_change_armed(),
+        runtime.control_change(1),
+        runtime.control_change(2),
+        nonzero,
+        hash,
+    )
+}
+
+/// ⭐ A 轨的**可播种但恒不触发**的摊平表（区域 `key=127`，本夹具的音符恒为 60）。
+fn silent_seed_plan(control: &str, sample: &InMemorySample) -> PreparedSfz {
+    prepare_with(
+        &format!("{control}<region> sample=a.wav key=127 pitch_keycenter=127 amp_veltrack=0\n"),
+        sample,
+    )
+}
+
+/// ⭐ S93（任务单 `#112`；§2② 的**(b) 登记为有意边界** ＋ §2③ 的**维持登记**）：
+/// **一条轨的 `set_ccN` 会经会话表把另一条没有 `set_ccN` 的轨的门控带走** ——
+/// 本判据把这个行为**钉死**（它是有意的、被登记的边界，⛔ 不是"读者自己猜"）。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 双轨快照（A ＝ `key=127` 的播种轨、B ＝ `locc1=64 hicc1=127` 的门控轨）
+/// 经产品路径 16 量子 ＝ 2048 帧的输出，以及会话表的 `armed` / `control_change(1)`；
+/// 单位 ＝ `armed`（布尔）＋ `control_change(N)`（`Option<u8>`）＋ 非零样本数（个）
+/// ＋ FNV-1a 指纹（逐位）。
+///
+/// ⚠ **有牙**：去掉 `#110` 在 `rt.rs` 快照边界的播种段（`2a-cc`）⇒ 会话表不 armed
+/// ⇒ `nz_seed1` 从 `4030` 掉回 `0` ⇒ 本判据的两条断言立刻红。
+#[test]
+fn s93_a_track_without_set_cc_is_carried_by_another_tracks_seed() {
+    const QUANTA: usize = 16;
+    let sample = constant_sample(4_096);
+    let a_plain = silent_seed_plan("", &sample);
+    let a_seed1 = silent_seed_plan("<control>set_cc1=64\n", &sample);
+    let a_seed2 = silent_seed_plan("<control>set_cc2=64\n", &sample);
+    // B 轨：门控 `locc1=64 hicc1=127`，**自己一条 `set_ccN` 都没有**。
+    let b_gated = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 locc1=64 hicc1=127\n",
+        &sample,
+    );
+
+    assert!(
+        b_gated.cc_seeds().is_empty(),
+        "⭐ B 轨自己**没有** `set_ccN`（外溢必须是**跨轨**的，⛔ 不是 B 轨自播）"
+    );
+    assert_eq!(
+        b_gated.regions().len(),
+        1,
+        "⭐ B 轨摊平表里恰好一条区域（否则本判据量的是别的东西）"
+    );
+    assert_eq!(
+        b_gated.regions()[0].cc_gates().len(),
+        1,
+        "⭐ B 轨真的带一条 `locc1=64 hicc1=127` 门控"
+    );
+    assert!(a_plain.cc_seeds().is_empty(), "A 对照轨没有 `<control>`");
+    assert_eq!(a_seed1.cc_seeds().value(1), Some(64), "A 播种轨声明 CC1=64");
+    assert_eq!(a_seed2.cc_seeds().value(2), Some(64), "A 判别轨声明 CC2=64");
+
+    // ① 对照腿：A 无 `<control>` ⇒ 表不 armed ⇒ B 轨门控不成立 ⇒ **逐位静音**。
+    let (armed_plain, cc1_plain, _cc2_plain, nz_plain, fp_plain) =
+        run_two_track_cc_seed_leak(&a_plain, &b_gated, QUANTA);
+    // ② 边界的**正腿**：A 的 `set_cc1=64` 经会话表走到 B 轨 ⇒ B 轨门控**成立** ⇒ 发声。
+    let (armed_seed1, cc1_seed1, _cc2_seed1, nz_seed1, fp_seed1) =
+        run_two_track_cc_seed_leak(&a_seed1, &b_gated, QUANTA);
+    // ③ **判别腿**：A 只武装表、但 CC1 仍是 `None` ⇒ B 轨门控**不**成立 ⇒ 静音。
+    let (armed_seed2, cc1_seed2, cc2_seed2, nz_seed2, fp_seed2) =
+        run_two_track_cc_seed_leak(&a_seed2, &b_gated, QUANTA);
+    // ④ A 轨自身静音的对照腿（B 也换成恒不触发的 `key=127`）⇒ 非零样本必须是 0。
+    let b_silent = silent_seed_plan("", &sample);
+    let (_armed_a_only, _cc1_a_only, _cc2_a_only, nz_a_only, _fp_a_only) =
+        run_two_track_cc_seed_leak(&a_seed1, &b_silent, QUANTA);
+
+    println!(
+        "[engine-sfz/S93] 多轨跨轨外溢：A=无 ⇒ armed={armed_plain} cc1={cc1_plain:?} \
+         nz={nz_plain} fp=0x{fp_plain:016x}；A=set_cc1=64 ⇒ armed={armed_seed1} \
+         cc1={cc1_seed1:?} nz={nz_seed1} fp=0x{fp_seed1:016x}；\
+         A=set_cc2=64（判别腿）⇒ armed={armed_seed2} cc1={cc1_seed2:?} cc2={cc2_seed2:?} \
+         nz={nz_seed2} fp=0x{fp_seed2:016x}；A 轨自证的静音腿 nz={nz_a_only}"
+    );
+
+    assert_eq!(
+        nz_a_only, 0,
+        "⭐ 承重前提：A 轨的区域 `key=127` 恒不触发 ⇒ ②③ 的非零样本**全部**来自 B 轨"
+    );
+    assert!(!armed_plain, "A 无 `set_ccN` ⇒ 表不 armed");
+    assert_eq!(cc1_plain, None);
+    assert_eq!(
+        nz_plain, 0,
+        "表不 armed ⇒ 探针 `None` ⇒ B 轨门控不成立 ⇒ 静音"
+    );
+    assert!(
+        armed_seed1,
+        "⭐ A 的 `set_cc1=64` 把**会话表**武装起来（这正是跨轨外溢的机械来路）"
+    );
+    assert_eq!(cc1_seed1, Some(64), "初值进会话表");
+    assert_eq!(
+        nz_seed1, 4030,
+        "⭐⭐ **有意边界**：B 轨自己没有 `set_ccN`，它的 `locc1=64` 却被 A 轨的初值带走 \
+         ⇒ 端到端可闻（4030 ＝ 单轨无门控夹具同值：4096 帧 − 66 帧链路固定静音前缀）"
+    );
+    let _checked = check_fingerprint(
+        "S93 A 无 set_ccN（B 轨静音）",
+        fp_plain,
+        CC_SEED_IGNORED_RUNTIME_FINGERPRINT,
+    );
+    let _checked = check_fingerprint(
+        "S93 A 有 set_cc1=64（B 轨被带走 ⇒ 与单轨无门控指纹同值）",
+        fp_seed1,
+        CC_SEED_ABSENT_RUNTIME_FINGERPRINT,
+    );
+    assert_ne!(fp_plain, fp_seed1, "⭐ 有牙：那一行真的改变端到端输出");
+    assert!(armed_seed2, "判别腿：A 的 `set_cc2=64` 同样武装会话表");
+    assert_eq!(cc1_seed2, None, "判别腿：但 CC1 从未被任何轨播种");
+    assert_eq!(cc2_seed2, Some(64), "判别腿：被武装的是 CC2");
+    assert_eq!(
+        nz_seed2, 0,
+        "⭐ 判别腿：**仅仅**武装表不足以让 B 轨门控成立 —— 它读的是 A 轨 CC1 的**值**"
+    );
+    let _checked = check_fingerprint(
+        "S93 A 有 set_cc2=64（B 轨仍静音）",
+        fp_seed2,
+        CC_SEED_IGNORED_RUNTIME_FINGERPRINT,
+    );
+
+    // ---- §2③ 离线腿：`SynthEngine::render_track` 仍传 `cc = None`（维持登记） ----
+    //
+    // 对象 ＝ 同一条轨、同一份带 `set_ccN` 的摊平表经**离线入口**渲染的 512 帧；
+    // 单位 ＝ 非零帧数（帧）＋ 位模式（逐帧 `u32`）。
+    let offline_track = EntityId::new();
+    let offline_plan = prepare_with(CC_SEED_GATE_SEEDED, &sample);
+    assert_eq!(
+        offline_plan.cc_seeds().value(1),
+        Some(64),
+        "离线腿的夹具真的带 `set_cc1=64`"
+    );
+    // ⚠ 三条腿各建**一台**引擎：`SynthEngine` 的每槽 `cursor` 单调前进（同 S18／S24
+    // "每条腿各建一台"的理由）⇒ 同一个引擎上换调度表不会重新触发。
+    let offline_schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let mut via_render_track = vec![0.0f32; BLOCK];
+    engine_with_track(offline_track).render_track(
+        offline_track,
+        Some(&offline_schedule),
+        Some(&offline_plan),
+        &mut via_render_track,
+    );
+    let seed_probe = |controller: u8| offline_plan.cc_seeds().value(controller).unwrap_or(0);
+    let seed_arg: Option<&dyn Fn(u8) -> u8> = Some(&seed_probe);
+    let mut via_probe = vec![0.0f32; BLOCK];
+    engine_with_track(offline_track).render_track_with_cc(
+        offline_track,
+        Some(&offline_schedule),
+        Some(&offline_plan),
+        &mut via_probe,
+        seed_arg,
+    );
+    let mut via_none = vec![0.0f32; BLOCK];
+    engine_with_track(offline_track).render_track_with_cc(
+        offline_track,
+        Some(&offline_schedule),
+        Some(&offline_plan),
+        &mut via_none,
+        None,
+    );
+    println!(
+        "[engine-sfz/S93] 离线腿：`render_track` 非零帧数 = {}、位模式 == `(…, None)` = {}、\
+         位模式 == 探针臂 = {}（std = {}）",
+        nonzero_frames(&via_render_track),
+        bits(&via_render_track) == bits(&via_none),
+        bits(&via_render_track) == bits(&via_probe),
+        nonzero_frames(&via_probe),
+    );
+    assert_eq!(
+        bits(&via_render_track),
+        bits(&via_none),
+        "⭐ 维持登记：`render_track` 仍**逐位等于** `render_track_with_cc(…, None)`"
+    );
+    assert_eq!(
+        nonzero_frames(&via_render_track),
+        0,
+        "⭐ `set_cc1=64` 的 `locc1=64` 门控在离线入口下**不**成立 ⇒ 逐位静音"
+    );
+    assert!(
+        nonzero_frames(&via_probe) > 0,
+        "⭐ 有牙：把探针喂成同表的 `cc_seeds` ⇒ 同一份表**会**发声（离线路径只差这一个探针）"
+    );
+    assert_ne!(
+        bits(&via_render_track),
+        bits(&via_probe),
+        "⭐ 有牙：离线入口与探针臂必须**逐位不同**（否则这条登记无意义）"
     );
 }

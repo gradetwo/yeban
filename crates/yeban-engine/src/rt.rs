@@ -1548,6 +1548,15 @@ pub struct EngineRuntime {
     /// （[`Self::render_block`] 的 1) 段），逐块路径只在**旁路**读它
     /// （`render_branch` 把它的只读探针交给 [`SynthEngine::render_track_with_cc`]）。
     ///
+    /// ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是上一段的"落点"那一支**
+    /// （⛔ 原文一字未删，口径同台账第 278 条）：[`EngineEvent::ControlChange`]
+    /// **不再**是唯一的写入口 —— 快照边界的**重新武装**分支
+    /// （[`Self::render_block`] 的 `2a-cc` 段）会按摊平表自带的
+    /// [`crate::sfz_instrument::CcSeedTable`] 调 [`ControlChangeState::seed`]
+    /// （`<control> set_ccN=` 的加载时初值）。⚠ 两条写入的**关系**：事件面**先**跑、
+    /// 播种**只填从未收到过的槽** ⇒ 真 MIDI CC 永远赢；⚠ **表为空**（文件没有
+    /// `set_ccN`）⇒ 播种**一次都不写** ⇒ 本字段的 `armed` 口径与读数**整条有效**。
+    ///
     /// * **定长**：`[u8; 128]` ＋ 128 位"收到过"位图 ＝ `144 B`（[`crate::cc_state`]）
     ///   ⇒ ⛔ 无 `Vec`／⛔ 无 `HashMap`／⛔ 无 `Box`、无 `Drop`、无分配；
     /// * ⛔ **不进快照**：它是挥发性会话运行态（与 [`crate::transport::Transport`] 的
@@ -3240,6 +3249,48 @@ impl EngineRuntime {
                 bank.set_quanta_per_second(quanta_per_second);
                 self.armed_quanta_per_second = Some(quanta_per_second);
                 *armed_revision = Some(revision);
+
+                // --- 2a-cc) ⭐ `<control> set_ccN=` 的**播种**（任务单 `#110`）---
+                //
+                // 规范逐字（<https://sfzformat.com/opcodes/set_ccN/>）：
+                //
+                // > Sets a default initial value for MIDI CC number N, when the instrument
+                // > is initially loaded. Used under the ‹`control`› header.
+                //
+                // ⇒ 播种点是**快照边界**（"乐器被装载/换上一份新表"那一刻），载体是
+                // **摊平表自带的**初值表 [`crate::sfz_instrument::CcSeedTable`]
+                // （`PreparedSfz::cc_seeds`，摊平期从**同一次解析**的
+                // `Instrument::cc_defaults` 抄下）。
+                //
+                // ⭐ **为什么在这里而不是事件面**（自裁记录，⛔ 不是随手选）：
+                // ① 初值是**控制侧摊平的结果**（"文件里真的写了 `set_ccN`" ⇒ 表非空），
+                //    把它做成事件就得让控制侧**另发一批** `EngineEvent::ControlChange`
+                //    —— 那会让"播种"受 SPSC 环容量影响（满环 ⇒ 悄悄少播一条），
+                //    而摊平表是**按值随快照到达**的，⛔ 无丢件可能；
+                // ② ⛔ **不新增首个 RT 状态**：播种规则是"只填**从未收到过**的槽"
+                //    （[`ControlChangeState::seed`]）⇒ 它对"每次修订重新武装"**幂等**
+                //    ⇒ ⛔ 不需要在 `EngineRuntime` 里记"这条轨播过没有"
+                //    ⇒ `EngineRuntime` 尺寸 **＋0**（判据 S9／S91 现读 `180144`）。
+                //
+                // ⭐ **保命不变量的机械开关**：表为空 ⇒ `is_empty()` 为真 ⇒ 本段
+                // **一次 `seed` 都不调** ⇒ `ControlChangeState::is_armed()` 保持 `false`
+                // ⇒ `render_branch` 继续传 `cc = None` ⇒ 没有 `set_ccN` 的文件与接线前
+                // **逐位相同**（判据 S87 的端到端指纹 ＋ 三个承重指纹）。
+                //
+                // ⚠ **与真 MIDI CC 的关系**：事件面（上面 1) 段）先跑、播种后跑
+                // ⇒ 同一量子里的**真 CC 覆盖初值**；播种⛔ 不覆盖已经收到过的槽。
+                // ⚠ 域外声明（`N > 127`，语料里 38 处 `set_cc400=63`）**不进表**、
+                // 只计数（[`CcSeedTable::out_of_domain`]）—— ⛔ 不用 `& 0x7F` 去别名它们。
+                // 零分配、零锁、零 I/O [MUST-GATE-001]：BTreeMap 迭代 ＋ 定长位测试。
+                for plan in current.sfz().values() {
+                    let seeds = plan.prepared().cc_seeds();
+                    if seeds.is_empty() {
+                        continue;
+                    }
+                    seeds.for_each(|cc, value| {
+                        let _ = control_change.seed(cc, value);
+                    });
+                }
 
                 // --- 2a') 参数目标表的采样率与主总线身份（每修订一次）---
                 // [crate::param]。采样率只用来重算平滑器的 `α`（含 `exp`）⇒ 属 [ADR-0001 D32]
