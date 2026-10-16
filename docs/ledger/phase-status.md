@@ -64,7 +64,7 @@
 | `ROAD-M1-002` | 唯一声学路由真理源 `RoutingGraph`；`folder_id` 只做 UI 折叠、不承载音频语义 | **已完成** | `crates/yeban-model/src/project.rs:1376` `RoutingGraph { nodes, edges: BTreeMap<EntityId, RoutingEdge> }` + `validate()`（节点无重复 / 边键与 `id` 一致 / 两端节点存在 / 增益有限）；`project.rs:1115-1116` 的文档直接标注 `[ROAD-M1-002]`"`folder_id` **仅**用于界面层树状折叠，严禁承载音频信号语义"（字段定义 `project.rs:1143`）；契约在 `schemas/project.schema.json` 的 `routing_graph` | 判据位置：`project.rs` 的 `validate()` 与其单测；渲染侧消费者在 `crates/yeban-render/src/render.rs`（按拓扑分层），两侧读的是**同一张图** |
 | `ROAD-M1-003` | 操作日志 + 非线性撤销树：带 `OpOrigin` 的可逆操作、匿名分叉撤销树 + 命名分支、每 256 次提交归档全量快照 | **已完成** | `crates/yeban-model/src/commit.rs` 模块头直接标 `[ARCH-OPS-002, ROAD-M1-003]`：`CommitGraph`（提交与分支的唯一事实源，全 `BTreeMap`）+ `Commit`（父集合/分支/操作日志/`snapshot_ref`）+ `UndoCursor`（跨 Commit 边界连续撤销，`commit.rs:708`）；匿名分叉 `CommitGraph::fork_anonymous`（`commit.rs:342`，撤销后继续编辑自动派生匿名分支、原分支头不动成为只读孤岛，判据 `commit.rs:795`）；每 256 次提交一个全量快照 —— `commit.rs:39` `pub const SNAPSHOT_INTERVAL: u64 = 256` + `snapshot_due_at_depth`（快照点 = 深度 1, 257, 513…，判据 `commit.rs:637`） | 规范措辞的 `MusicalBranch` 在实现里叫 `branch_id` / `BranchHead`（`commit.rs:60,98`）—— **同一机制、不同名字**；引用时请用代码里的名字 |
 | `ROAD-M1-004` | 安全存储引擎：`.yeban` ZIP + CAS、Zip-Slip 与解压炸弹上限、临时文件 + fsync + 原子重命名 | **已完成** | 四件都有可复跑判据：①CAS 容器布局 `assets/{sha256}` —— `crates/yeban-model/src/container/mod.rs:59,511`；②Zip-Slip —— `crates/yeban-model/src/container/path.rs` + `crates/yeban-model/tests/container_adversarial.rs` 的 Zip-Slip 组，引用 `MUST-GATE-006`（**已接线**）；③解压炸弹四道上限（单条声明值 / 单条**实际**字节 / 全归档实际字节 / 膨胀比率）—— `crates/yeban-model/src/container/zip.rs` 的 `ContainerLimits`，引用 `MUST-GATE-007`（**已接线**）；④原子落盘 `.{name}.tmp-{ulid}` + `File::sync_all()` + `std::fs::rename` —— `crates/yeban-mcp/src/domain/store.rs:686`（模块文档 §"原子落盘的三阶段"） | 分层是刻意的：`container/` 是**纯字节层**（输入 `&[u8]`、输出 `Vec<u8>`、不碰文件系统），`store.rs` 管**落盘那一刻不可撕裂**。两者拼起来才是完整的"安全保存 + 安全加载"（`container/mod.rs:33-37`） |
-| `ROAD-M1-005` | 历史数据迁移器 `crates/yeban-model/src/migration/` | **PENDING** | 迁移器模块**不存在**：`ls crates/yeban-model/src/migration/` ⇒ `No such file or directory`；`find crates/yeban-model/src -name "migration*"` 无输出。仓库里与"迁移"有关的只有 `OpOrigin::Migration` 枚举变体（`crates/yeban-model/src/ops.rs:95`）与样本里的用法（`ops.rs:2576`），**没有**把历史工程升格为 v1.0.0 AST 的代码。PENDING 的原因 = **未实现** | ⚠ 需要一次裁决（见"还该问人的事"）：`ADR-0001 D43` 已把 `schema_version` 的职责从"兼容多版本"降级为"拒绝不匹配"，且明文"1.0.0 之前没有历史包袱与兼容需求" ⇒ 本条**可能永远不需要**。本表按现状记 `PENDING`，是否关闭应由人类裁决，**不由我替它判**（`AGENTS.md` §5.7） | ⭐ ⭐ **2026-10-16 追加（任务单 `#105` 勘察，见 `R775`）**：本条已被写成 **`docs/adr/ADR-0009-road-m1-005-historical-migration-scope.md`**（状态 `Proposed`）并登记为 **`HD-64`** ⇒ ⭐ 三分法判定 ＝ **条目本身是②（规范与规范冲突）、它预设的输入是③（规范没覆盖）**；⭐ 实测：Yeban 侧历史文档 **0 份**、`OpOrigin::Migration` 生产者／消费者各 **0**、仓库内旧工程夹具 **0** 个；全盘只有 **6** 个 `.groove`（全在 `/Users/crow/Downloads`），**只有 1 个**是真旧 Groove Web 工程（**19111** 字节），且它 **24** 个顶层字段里**只有 9 个**有精确对应物 ⇒ ⭐ ⭐ **"无损升格"经测量不成立**。⚠ `PENDING` 在此读作"**条目仍挂在路线图上、等 `HD-64` 裁决**"，⛔ 不代表本轮要做 |
+| `ROAD-M1-005` | 历史数据迁移器 `crates/yeban-model/src/migration/` | **PENDING** | 迁移器模块**不存在**：`ls crates/yeban-model/src/migration/` ⇒ `No such file or directory`；`find crates/yeban-model/src -name "migration*"` 无输出。仓库里与"迁移"有关的只有 `OpOrigin::Migration` 枚举变体（`crates/yeban-model/src/ops.rs:95`）与样本里的用法（`ops.rs:2576`），**没有**把历史工程升格为 v1.0.0 AST 的代码。PENDING 的原因 = **未实现** | ⚠ 需要一次裁决（⭐ 见本行**末尾**的 `HD-64`；⚠ "还该问人的事"一节早已不存在、此处是**悬空指针**，本轮就地改掉）：`ADR-0001 D43` 已把 `schema_version` 的职责从"兼容多版本"降级为"拒绝不匹配"，且明文"1.0.0 之前没有历史包袱与兼容需求" ⇒ 本条**可能永远不需要**。本表按现状记 `PENDING`，是否关闭应由人类裁决，**不由我替它判**（`AGENTS.md` §5.7） | ⭐ ⭐ **2026-10-16 追加（任务单 `#105` 勘察，见 `R775`）**：本条已被写成 **`docs/adr/ADR-0009-road-m1-005-historical-migration-scope.md`**（状态 `Proposed`）并登记为 **`HD-64`** ⇒ ⭐ 三分法判定 ＝ **条目本身是②（规范与规范冲突）、它预设的输入是③（规范没覆盖）**；⭐ 实测：Yeban 侧历史文档 **0 份**、`OpOrigin::Migration` 生产者／消费者各 **0**、仓库内旧工程夹具 **0** 个；全盘只有 **6** 个 `.groove`（全在 `/Users/crow/Downloads`），**只有 1 个**是真旧 Groove Web 工程（**19111** 字节），且它 **24** 个顶层字段里**只有 9 个**有精确对应物 ⇒ ⭐ ⭐ **"无损升格"经测量不成立**。⚠ `PENDING` 在此读作"**条目仍挂在路线图上、等 `HD-64` 裁决**"，⛔ 不代表本轮要做 |
 | `ROAD-M1-006` | `proptest` 覆盖 10,000 步随机操作序列，应用 + 逆操作后状态守恒 | **已完成** | `crates/yeban-model/src/ops.rs:1648` `const CI_SEQUENCE_STEPS: usize = 10_000`；`sequence_steps()`（`ops.rs:1656`）在 CI 上取该值、本机取小步数；判据 `state_tree_is_conserved_under_reverse_undo`（`ops.rs:3746`），引用 `MUST-GATE-010`（**已接线**） | ⚠ `docs/ledger/gate-status.md` 第 27 行把该判据名写成 `state_tree_is_conserved_under_inverse_application`，而 `grep -rn "inverse_application" crates/` 命中 **0** ⇒ **门禁表的这条测试名已经漂移**（本表按真实名字引用；已作为 needs 上报，`gate-status.md` 不在本线的可改范围） |
 
 ## 4. Phase 2 —— cpal 原生低时延音频管线与首个发声切片
@@ -10997,3 +10997,30 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ ⚠ ⭐ ⭐ **四、⭐ 一条可复用口径（⭐ 第 277 条）**: ⭐ ⭐ **一个规范条目可以同时是②与③ —— 条目本身与它预设的输入对象要分开问** —— ⚠ **因为"⭐ 条目与另一条规范冲突"⭐与"⭐ 条目要处理的那个对象不存在／没有规范承认它"⭐是两个独立事实**：⭐ 只答②会去建一个**零历史步骤的注册表**（⭐ 而源 schema 只能**编造**）；⭐ 只答③会去解析一个**没人承认的格式**** ✓ ⭐ **本条实例**: ⭐ `ROAD-M1-005` 与 `ADR-0001 D43`（"⭐ 为读旧文件而存在的分支一律删除"）**冲突** ＝ ②；⭐ 而它预设的"⭐ 历史工程"⭐在 Yeban 侧 **0 份**、⭐ 唯一真实旧格式（⭐ Groove Web `.groove`）**任何规范都不描述** ＝ ③ ✓ ⭐ **做法**: ⭐ ① 勘察报告里**两条都写**、⭐ 并各自给依据；⭐ ② 待裁行里**分列两问的选项**（⭐ 或一条行内写明"⭐ 本条同时是②与③"）；⭐ ③ 三分法的结论要落到**不同的动作**上（⭐ ② ⇒ ADR ＋ 人类；⭐ ③ ⇒ 登记"有意不做"），⭐ 而**两者的动作不能互相替代** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `649e5ad5` 的 CI 判决** ＋ ⭐ **`HD-64` 的裁决**（⭐ 一句话 A／B／C）＋ ⭐ **架构单**（⭐ 需人类批）＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R776 实测追加（2026-10-16）：⭐⭐ **`649e5ad5`（`#104` 的代码提交）的 CI 判决 ＝ `success`** ⇒ ⭐ **这是一次**真绿**（含两条平台腿）**
+
+⭐ **读法（⭐ 第 258 条 ＋ `AGENTS.md` §6.3）**: ⭐ 读的是**那个提交自己**的 run（⭐ `head_sha = 649e5ad5`、⭐ run `38853565448`）⇒ ⭐ ⛔ 不用"⭐ 主干 tip 绿"⭐ 去代替它（⭐ tip 是 `0224253a`、⭐ 那一跑是**空绿**）✓
+
+| 腿 | 结论 | 步数 | 起 → 止（UTC） | 时长 |
+| :--- | :--- | ---: | :--- | ---: |
+| `plan` | success | 5 | 05:01:00 → 05:01:07 | 7 s |
+| `lockfile` | success | 6 | 05:01:00 → 05:01:16 | 16 s |
+| `checks` | success | 15 | 05:01:00 → 05:01:54 | 54 s |
+| `deny` | success | 6 | 05:01:00 → 05:01:46 | 46 s |
+| ⭐ `rust (yeban-sfz)` | success | 15 | 05:01:10 → 05:01:58 | 48 s |
+| ⭐ `rust (yeban-engine)` | success | 15 | 05:01:10 → 05:04:57 | 227 s |
+| `rust (yeban-mcp)` | success | 15 | 05:01:11 → 05:03:56 | 165 s |
+| `rust (yeban-ui-mcp)` | success | 15 | 05:01:11 → 05:04:26 | 195 s |
+| ⭐ `rust (yeban-app)` | success | 15 | 05:01:10 → 05:15:06 | **836 s** |
+| ⭐ ⭐ `macos` | success | **18** | 05:01:14 → 05:10:18 | **544 s** |
+| ⭐ ⭐ `windows` | success | **18** | 05:01:10 → 05:20:37 | **1167 s** |
+| ⚠ `rust (workspace 全量)` | **skipped** | **0** | — | — |
+
+⭐ ⚠ **防伪读数**: ⭐ ① **11 条腿真的执行过**（⭐ 时长全 **非 0**、⭐ 两条平台腿各 **18** 步）；⭐ ② ⚠ **`rust (workspace 全量)` 是 `skipped`／0 步 ⇒ **不计入绿**（⭐ `AGENTS.md` §6.3：⭐ 跳过的作业不是绿）—— ⭐ **但它不影响本判决**：⭐ 本单只碰 `yeban-sfz` 与 `yeban-engine`，⭐ 而这两条腿**都真跑了且绿**；⭐ ③ ⭐ 我本机的读数（⭐ 10 层复合门 ＋ 全量 `--no-fail-fast` 0 failed）与这条判决**同向**，⭐ 但按纪律**只有这条 CI 判决算数**✓
+
+⭐ ⚠ **并附一条口径**: ⭐ `e834463a`（⭐ 台账提交）与 `0224253a`（⭐ `ADR-0009`／`HD-64` 那一批）**都是纯文档** ⇒ ⭐ 它们的 run **只跑了 `plan`／`lockfile`／`checks`／`deny`**、⭐ 四条 rust 腿与两条平台腿**全部 `skipped`／0 步** ⇒ ⭐ ⭐ **那是"空绿"**：⭐ 它**只**证明"⭐ 文档没弄坏守卫与 schema"，⭐ ⛔ **不构成任何代码验证** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#106`（`ampeg_vel2*`）交单** ＋ ⭐ **读回它的 CI 判决** ＋ ⭐ **`HD-64` 的裁决** ＋ ⭐ **架构单**（⭐ 需人类批）＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
