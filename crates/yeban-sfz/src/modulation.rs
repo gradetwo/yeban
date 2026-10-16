@@ -519,6 +519,61 @@
 //!   （语料 `global_volume_onccN` 一族 **47** 处）：它们是**另外三个**静态 opcode
 //!   （[`crate::instrument`] 今天⛔ 不读它们）⇒ 另开单。
 //!
+//! ### 8.4.1 ⭐ ⭐ 追加修订段（任务单 `#121`）—— 被修订的是 §8.4 第三条里**那 47 处的归属**
+//! 以及同口径下四处「`volume_onccN` 只有 **2** 处」的同类登记
+//!
+//! ⛔ 上面**原文一字未删**（口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）。
+//!
+//! **口径（本修订段唯一口径，台账第 274／287 条）**：`assets/samples/**/*.sfz` 逐行剥 `//` 注释
+//! ⇒ 取**行首或空白边界**的 opcode token ⇒ token 里 `volume_oncc` 之后的尾巴是**数字**
+//! 或 **`$` 宏名** ⇒ ⭐ **收 `$` 宏名**（解析器把 `volume_oncc$F2_DIS` 当本族的一个键读）。
+//! **命令** ＝ `cargo test -p yeban-engine --test sfz_instrument s115 -- --nocapture`
+//! （判据 `S115` 用同一口径就地重算并逐名打印）；分母
+//! `find assets/samples -name '*.sfz' | wc -l` ⇒ **1398**。
+//!
+//! * ① 原登记「语料 `global_volume_onccN` 一族 **47** 处」 ⇒ ⭐ **实测**：
+//!   `global_volume_onccN` ／ `master_volume_onccN` ／ `group_volume_onccN` **各 0 次 ／ 0 文件**；
+//!   那 **47** 处**全是 `lfo*_volume_onccN`**（**47** 次 ／ **30** 文件）—— ⛔ 与那三个静态 opcode 无关；
+//! * ② 原登记「**47** 次 ／ **32** 文件」里的**文件数** ⇒ ⭐ **实测 30 文件**
+//!   （该族在**任何**测过的口径下都是 **30**，⛔ 复现不出 **32**）；
+//! * ③ 原登记「`volume_onccN` 只有 **2** 处（值均为 **7**）」（§8.2 的语料见证句，
+//!   以及同模块另两处 `///` 文档里的同类句子） ⇒ ⭐ **实测 3 处**：
+//!   `volume_oncc24` **2** 处（值均为 **7**）＋ `volume_oncc$F2_DIS` **1** 处（值 **-6**，
+//!   `assets/samples/ixox-flute/Ixox Flute.sfz:152`）⇒ 第三处**就是**宏名形式，按本口径**算本族**；
+//! * ④ 原登记「家族子串 **49** 次 ／ **32** 文件」 ⇒ ⭐ **实测 50 次 ／ 33 文件**
+//!   （＝裸 **3** ＋ 前缀 **47**）。⚠ **②／③／④ 的原登记恰好是"不收 `$` 宏名"口径的读数**
+//!   （本轮实测复现：不收宏名 ⇒ **2** 处 ／ 子串 **49** 次 ／ **32** 文件）。
+//!
+//! ⭐ **被修订的支点名**：§8.4 第三条的**家族名**（`global_volume_onccN` 一族 —— 它其实 **0** 处）、
+//! §8.2 的**语料见证句**、`volume_ratio_with_cc` 上方与"非目标写法反向腿"上方那**两条代码注释**
+//! （它们写的「语料 47 处」同属错误归属）、以及 `crates/yeban-engine/src/sfz_instrument.rs`
+//! `#119` 语料普查表里的**三格**。⭐ **完整逐名展开（11 个名字 ＋ 各自次数／文件数）的唯一事实源**
+//! 是那三格上面的 `#121` 修订段。
+//!
+//! ### 8.5 ⭐ 作用域音量三 opcode（任务单 `#120`）—— ⭐ **规范无 Modulation 表**
+//!
+//! ⭐ **依据（事实面）**：`global_volume` ／ `master_volume` ／ `group_volume` **三页各只有一张表**
+//! —— **静态**表各只有一行（逐字分别是
+//! `| global_volume | ARIA | float | 0 | -144 to 6 | dB |`、
+//! `| master_volume | ARIA | float | 0 | -144 to 6 | dB |`、
+//! `| group_volume | ARIA | float | 0 | -144 to 6 | dB |`），⭐ **无任何 `_onccN` 行**
+//! （三页都没有 `Modulation` 表）⇒ `global_volume_onccN` ／ `master_volume_onccN` ／
+//! `group_volume_onccN` **三个 opcode 规范无** —— 没有域、没有单位、没有别名句、没有默认值
+//! ⇒ **⛔ 没有可实现的契约**（不是"规范里写了而本线漏做"）。现读日期 2026-10-17，三页 URL：
+//! <https://sfzformat.com/opcodes/global_volume/> ／ <https://sfzformat.com/opcodes/master_volume/> ／
+//! <https://sfzformat.com/opcodes/group_volume/>。⭐ 语料侧同向：三个家族**各 0 次 ／ 0 文件**
+//! （口径与命令见上面 §8.4.1）。
+//!
+//! ⭐ **结构面（另一条独立的依据，与规范无关）**：三页正文逐字写着那是**按 header 生效**的
+//! （"affecting everything when set under the <`global`> header"，`master`／`group` 两页同形）
+//! —— 而**今天的查询面表达不了"只在某个 header 下有效"**：[`crate::instrument`] 的
+//! `Scopes::get`（`crates/yeban-sfz/src/instrument.rs:1550-1555`）是**扁平 first-match**
+//! （在 `[region, group, master, global]` 上 `find_map`，**名字里没有 header 维度**）
+//! ⇒ 同一个 opcode 名在四个作用域里是**同一个键**，⛔ 无法表达"只在 `<global>` 有效"。
+//! ⇒ 这件事的**前置件**是一个**新的按 header 限定的查询 API**：登记为 ⭐ **需要新面**
+//! —— ⛔ 这不是"本线漏了一个实现"（规范根本没有那三个 opcode 的定义；即便按 ARIA 语义实现，
+//! 也得先有这个 header 维度的查询面）。
+//!
 //! # 实时安全
 //!
 //! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
@@ -1202,6 +1257,11 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
     // 落不进四后缀 ⇒ 按未知 opcode 忽略。
     // ⚠ `global_volume_onccN` / `master_volume_onccN` / `group_volume_onccN`
     // （**另外三个**静态 opcode，语料 47 处）⛔ 不以 `volume` 开头 ⇒ 同样不落本族。
+    // ⭐⭐ 追加修订（任务单 `#121`，台账第 278 条）：上面那句里的「语料 **47** 处」**归属错了** ——
+    // 实测那 47 处**全是 `lfo*_volume_onccN`（47 次 ／ 30 文件）**，而这**三个** `_oncc` 家族
+    // **各 0 次 ／ 0 文件**（口径 ＝ 剥 `//` 注释 ＋ 行首/空白边界 token ＋ **收 `$` 宏名**；
+    // 命令 ＝ `cargo test -p yeban-engine --test sfz_instrument s115 -- --nocapture`；
+    // 完整依据与逐名展开见上面 §8.4.1）。
     // ⚠ 规范 Modulation 表逐字的 delta 行名 `gain_ccN` ⛔ 本单不识别（§8.4）。
     if let Some(tail) = name.strip_prefix("volume") {
         let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
@@ -1708,6 +1768,11 @@ mod tests {
             // ⇒ ⛔ 本单不做，见 §8.4）必须 None；
             // ⚠ `global_volume_oncc1`（**另外三个**静态 opcode 之一，语料 47 处）
             // 同样必须 None —— 它⛔ 不以 `volume` 开头。
+            // ⭐⭐ 追加修订（任务单 `#121`）：上面「语料 **47** 处」的**归属错了** ——
+            // 实测那 47 处全是 `lfo*_volume_onccN`（47 次 ／ 30 文件）；`global_volume_oncc*`
+            // 家族本身 **0 次 ／ 0 文件**（口径 ＝ 剥 `//` 注释 ＋ 行首/空白边界 token
+            // ＋ **收 `$` 宏名**；命令 ＝ `cargo test -p yeban-engine --test sfz_instrument s115 --
+            // --nocapture`；依据见 §8.4.1）。
             // ⚠ 规范 Modulation 表逐字的 delta 行名 `gain_ccN`／`gain_onccN`
             // ⛔ 本单不识别（§8.4 的裁定）。
             "volume",

@@ -144,7 +144,8 @@
 //! | # | 判据 | 判定量 |
 //! | :--- | :--- | :--- |
 //! | ⭐ S113 | ⭐ ⭐ **`pitch` 族 ＝ `tune` 的别名拼写（同一个调制目标）＋ 三条路一致 ＋ 病态夹具 ＋ 未做两行登记**（任务单 `#118` 新增；§4 八条 —— **本单核心**） | ① **规范逐字 ＋ 关系裁定**（源文本 `contains`）：`pitch_onccN`（`-9600 to 9600`／cents）／`pitch_curveccN`（`0 to 255`）／`pitch_smoothccN`（ms）／`pitch_stepccN` 四条表行 ＋ 别名句 ＋ 裁定「`pitch_*ccN` 归 `ModTarget::Tune`」＋ 语料**两口径**（家族子串 **143**／**33** 文件 vs `opcode token` **39**／**1** 文件）＋ 反向腿（一句不存在的登记必须 `contains == false`）；② **单位矩阵新增行**：`pitch_oncc1` ＝ (`Tune`, `Cents`)、行数 `7 → 8`、格数 `28 → 32`、接受／拒绝 `(17, 11) → (18, 14)`（**两个读数都现算**）；③ **解析与域**：四种写法读得进（`(Tune,1,1200,0)`／`(Tune,2,−2400,0)`／`(Tune,4,600,0)`，`pitch_curvecc3` 只有曲线 ⇒ 不产生项）、`pitch_keycenter` 与静态 `tune=25` **不被吞掉**、越界／畸形／`inf`／`nan` 逐字 `Err`（`value 9601 out of range -9600..=9600`／`expects a number, got \`50%\``／`must be finite, got \`inf\``…）、缺省 ⇒ 空表且任意 CC **逐位相同**；④ **真的生效**：乘子逐位等于「表里的 delta × 曲线」；可读量**首次为负** `55 → 28`、**上升零交叉** 约翻倍；⑤ ⭐ **三条路一致**（`cc ∈ {0,37,100,127}` 逐位相同）＋ ⭐ **病态夹具**（`2^128 ⇒ Inf` 全退休／`16×9600 cc126` 有限 `1.69e38` 各写 1 帧／`2^−128` 次正规各 512 帧／`2^−160 ⇒ 0` 全退休／`192 kHz` 乘积 `Inf` 三路一致退休／`delta=0` 乘子恰 1.0）；⑥ **反向腿**：去掉那一行 ⇒ 两个 CC 值逐位相同（`cc=0` 与无调制臂也相同，如实登记）＋ 三个**承重指纹**逐字不变（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ **既有三族未扰动**（`ampeg_attack`／`amplitude` 各走自己的公式；只有 `pitch` 的 CC 动 ⇒ 它们一动不动）＋ ⭐ **裁定的机械见证**：`tune_oncc2` 与 `pitch_oncc3` 同一 CC 值给出**逐位相同**的乘子，两者同时动 ⇒ **求和**（＝平方）；⑦ **尺寸**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**），另有 `rt_zero_alloc` 的 `[sfz-pitch]` 场景（四元组全 0 ＋ 乘子 ≠ 1）；⑧ **负向**：`pitch_smoothccN`／`pitch_stepccN`（规范有、⛔ 本单不做）**今天按未知 opcode 忽略**（⛔ 不静默吃掉），而 `pitch_curveccN` **必须真的被识别**（同一夹具里两者可分辨） |
-//! | ⭐ S114 | ⭐ ⭐ **`volume` 族 ＝ 第三个单位类别（dB）＋ 三条路一致 ＋ 病态夹具 ＋ 未做行登记**（任务单 `#119` 新增；§4 八条 —— **本单核心**） | ① **规范逐字 ＋ 单位裁定**（源文本 `contains`）：`volume`（`-144 to 6`／dB）／被别名的 delta 行 `gain_ccN`（`-144 to 48`／dB）／`volume_curveccN`（`0 to 255`）／`volume_smoothccN`／`volume_stepccN`（Range 空、Unit `N/A`）五条表行 ＋ 别名句「`volume_ccN` is a valid alias for `gain_ccN`」＋ 裁定「新开 `ModUnit::Decibels`」（⭐ **Modulation 表里⛔ 没有 `volume_onccN` 行**）＋ 语料四口径（`volume_onccN` **2**／**2**、静态 `volume=` **8504**／**284**、家族子串 **49**／**32**、`global_volume_onccN` **47**／**32**）＋ 反向腿 ＋ 第 280 条（`#116` 的历史原句仍在且已标注）；② **单位矩阵新增行**：`volume_oncc1` ＝ (`Volume`, `Decibels`)、行数 `8 → 9`、格数 `32 → 36`、接受／拒绝 `(18, 14) → (19, 17)`（**两个读数都现算**；⚠ `Decibels` 行的格值取 **48** 而非 `50` —— `50` 越**域**）；③ **解析与域**：四种写法读得进（`(Volume,1,12,0)`／`(Volume,2,−24,0)`／`(Volume,4,6,0)`；`volume_curvecc3` 只有曲线 ⇒ 不产生项）、静态 `volume=-6` **不被吞掉**、越界／畸形／`inf`／`nan` 逐字 `Err`（`value 49 out of range -144..=48`／`expects a number, got \`50%\``…）、缺省 ⇒ 空表且任意 CC **逐位相同**；④ **真的生效**：乘子逐位等于 `2 ^ (dB × log2(10) / 20)`（`cc=0` ⇒ 恰 `1.0`；`cc=127`、6 dB ⇒ `1.995262265`），两个 CC 值输出**不同**且 `+6 dB` 是**放大**；⑤ ⭐ **三条路一致**（`cc ∈ {0,37,100,127}` 逐位相同）＋ ⭐ **五个病态夹具**（`20×48 dB ⇒ Inf` 三路一致 512 帧／`20×38 dB ⇒ 9.999955e37` 有限极大／`20×(−39) dB ⇒ 1.000003e-39` 次正规／`20×(−48) dB ⇒ 恰 0` 三路一致全零／`delta=0` 乘子恰 1.0）；⑥ **反向腿**：去掉那一行 ⇒ 两个 CC 值**逐位相同**（乘子逐位 `1.0`）＋ 三个**承重指纹**逐字不变（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ **既有四族未扰动**（`amplitude`／`tune`／`ampeg_attack` 各走自己的公式，双向都不动）；⑦ **尺寸**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**），另有 `rt_zero_alloc` 的 `[sfz-volume]` 场景（四元组全 0 ＋ 乘子 ≈ 1.9952623 ≠ 1）；⑧ **负向**：`volume_smoothccN`／`volume_stepccN`／`gain_ccN`／`gain_onccN`／`global_volume_onccN` 一族（规范有、或有别的实体、⛔ 本单不做）**今天按未知 opcode 忽略**，而 `volume_curveccN` 与裸 `volumeccN` **必须真的被识别** |
+//! | ⭐ S114 | ⭐ ⭐ **`volume` 族 ＝ 第三个单位类别（dB）＋ 三条路一致 ＋ 病态夹具 ＋ 未做行登记**（任务单 `#119` 新增；§4 八条 —— **本单核心**） | ① **规范逐字 ＋ 单位裁定**（源文本 `contains`）：`volume`（`-144 to 6`／dB）／被别名的 delta 行 `gain_ccN`（`-144 to 48`／dB）／`volume_curveccN`（`0 to 255`）／`volume_smoothccN`／`volume_stepccN`（Range 空、Unit `N/A`）五条表行 ＋ 别名句「`volume_ccN` is a valid alias for `gain_ccN`」＋ 裁定「新开 `ModUnit::Decibels`」（⭐ **Modulation 表里⛔ 没有 `volume_onccN` 行**）＋ 语料四口径（`volume_onccN` **2**／**2**、静态 `volume=` **8504**／**284**、家族子串 **49**／**32**、`global_volume_onccN` **47**／**32**）＋ 反向腿 ＋ 第 280 条（`#116` 的历史原句仍在且已标注）；② **单位矩阵新增行**：`volume_oncc1` ＝ (`Volume`, `Decibels`)、行数 `8 → 9`、格数 `32 → 36`、接受／拒绝 `(18, 14) → (19, 17)`（**两个读数都现算**；⚠ `Decibels` 行的格值取 **48** 而非 `50` —— `50` 越**域**）；③ **解析与域**：四种写法读得进（`(Volume,1,12,0)`／`(Volume,2,−24,0)`／`(Volume,4,6,0)`；`volume_curvecc3` 只有曲线 ⇒ 不产生项）、静态 `volume=-6` **不被吞掉**、越界／畸形／`inf`／`nan` 逐字 `Err`（`value 49 out of range -144..=48`／`expects a number, got \`50%\``…）、缺省 ⇒ 空表且任意 CC **逐位相同**；④ **真的生效**：乘子逐位等于 `2 ^ (dB × log2(10) / 20)`（`cc=0` ⇒ 恰 `1.0`；`cc=127`、6 dB ⇒ `1.995262265`），两个 CC 值输出**不同**且 `+6 dB` 是**放大**；⑤ ⭐ **三条路一致**（`cc ∈ {0,37,100,127}` 逐位相同）＋ ⭐ **五个病态夹具**（`20×48 dB ⇒ Inf` 三路一致 512 帧／`20×38 dB ⇒ 9.999955e37` 有限极大／`20×(−39) dB ⇒ 1.000003e-39` 次正规／`20×(−48) dB ⇒ 恰 0` 三路一致全零／`delta=0` 乘子恰 1.0）；⑥ **反向腿**：去掉那一行 ⇒ 两个 CC 值**逐位相同**（乘子逐位 `1.0`）＋ 三个**承重指纹**逐字不变（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ **既有四族未扰动**（`amplitude`／`tune`／`ampeg_attack` 各走自己的公式，双向都不动）；⑦ **尺寸**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**），另有 `rt_zero_alloc` 的 `[sfz-volume]` 场景（四元组全 0 ＋ 乘子 ≈ 1.9952623 ≠ 1）；⑧ **负向**：`volume_smoothccN`／`volume_stepccN`／`gain_ccN`／`gain_onccN`／`global_volume_onccN` 一族（规范有、或有别的实体、⛔ 本单不做）**今天按未知 opcode 忽略**，而 `volume_curveccN` 与裸 `volumeccN` **必须真的被识别**（⭐ `#121` 修订：本行 ① 的语料四口径里，裸 `volume_onccN` **2**／**2** ⇒ ⭐ **实测 3**／**3**、家族子串 **49**／**32** ⇒ ⭐ **实测 50**／**33**、`global_volume_onccN` **47**／**32** ⇒ ⭐ **实测该家族 0**／**0** 而那 **47** 次 ／ **30** 文件的真身是 `lfo*_volume_onccN`；口径 ＝ 剥 `//` 注释 ＋ 行首/空白边界 token ＋ **收 `$` 宏名**，⛔ 上面的原句一字未删，判据 `S115`） |
+//! | ⭐ S115 | ⭐ ⭐ **三格错数的修订可判 ＋ 计数口径逐名可判 ＋ `#120` 的"规范无表"依据**（任务单 `#121` 新增） | ① 三处修订**可判**：三格的原句仍在（`contains`）＋ 三条修订句 `contains`（每条写着**原登记 ⇒ 实测 ＋ 口径 ＋ 命令**）＋ `口径 ＝ …`／`命令 ＝ …` 各 ≥ 3 次；② ⭐ **计数口径逐名可判**：`assets/samples/**/*.sfz` **就地重算**（分母 **1398**）并**逐名打印** `名字 = 次数 ／ 文件数` —— 裸档 **3** 次 ／ **3** 文件（`volume_oncc24` 2／2、`volume_oncc$F2_DIS` 1／1）、前缀档 **47** 次 ／ **30** 文件（9 个 `lfo*_volume_onccNNN`）、家族子串 **50** 次 ／ **33** 文件；⭐ **有牙**：裸档名字必须**全部**以 `volume_oncc` 开头 ⇒ 谁把 `lfo*` 的行数算进裸档，`bare_total == 3` 与这条 `all` 至少一条红；⭐ 引擎侧修订段的**逐名表**必须与本判据**现算**的表逐字相同；③ `#120` 的**"规范无 Modulation 表"**依据（三页各只有一张静态表 ＋ **无任何 `_onccN` 行** ＋ 三个 URL ＋ 三个静态表行）＋ ⭐ **反向腿**（§8.5 段内 `规范有`／`另开单`／`本单不做` 必须 `contains == false`，而非真空由"整份文档里确实有 `另开单`"作证）＋ 结构面 `Scopes::get` 扁平 first-match（`instrument.rs:1550-1555`）⇒ 登记为 **需要新面**；④ `size_of` 现读 `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ 三个承重指纹逐字仍在 ＋ `S114` 的 `ABSENT` 反向腿字面量一字未动 |
 //!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
 //!
@@ -12595,6 +12596,13 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
 /// * `gain_oncc8` 是规范 Modulation 表里**逐字的 delta 行名**（⛔ 本单不识别，§8.4）。
 ///
 /// 另加两个**不做**的行 `volume_smoothcc5` ／ `volume_stepcc6`。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#121`，⛔ 上面原文一字未删）**：上面「语料 47 处」的**归属错了** ——
+/// ⭐ **原登记**「`global_volume_oncc7` 是另一个 opcode（`global_volume` 的调制，语料 **47** 处）」
+/// ⇒ ⭐ **实测**：`global_volume_onccN` 家族 **0** 次 ／ **0** 文件；那 **47** 处**全是
+/// `lfo*_volume_onccN`（47 次 ／ 30 文件）**。**口径** ＝ 剥 `//` 注释 ＋ 行首/空白边界 token
+/// ＋ **收 `$` 宏名**；**命令** ＝ `cargo test -p yeban-engine --test sfz_instrument s115 -- --nocapture`
+/// （逐名展开见引擎侧 `#121` 修订段与 `yeban-sfz/src/modulation.rs` §8.4.1）。
 const VOLUME_FORMS_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 volume=-6 \
      volume_oncc1=12 volume_cc2=-24 volume_curvecc3=9 volumecc4=6 \
      volume_smoothcc5=10 volume_stepcc6=1 global_volume_oncc7=3 gain_oncc8=3\n";
@@ -13526,5 +13534,419 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
             .expect("重解析"),
         ModTarget::Volume,
         "⭐ 那一项必须归 `ModTarget::Volume`"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐⭐ 任务单 `#121`：`#119` 三格错数的修订（台账第 278 条）＋ `#120` 的"规范无"依据
+// ---------------------------------------------------------------------------
+
+/// ⭐ `#121` 的**就地重算口径**（与 `crates/yeban-engine/src/sfz_instrument.rs` 的 `#121`
+/// 修订段**逐字同一口径**）：`assets/samples/**/*.sfz` 逐行**剥 `//` 注释** ⇒ 取**行首或
+/// 空白边界**的 opcode token ⇒ token 里 `volume_oncc` 之后的尾巴必须是**数字**或 **`$` 宏名**
+/// （⭐ **收 `$` 宏名**：`volume_oncc$F2_DIS` **算**本族的一个键 —— 解析器就是这么读的）。
+///
+/// 对象 ＝ ① 三格的**逐名重算**（opcode 名 × 出现次数 × 文件数）；② 三份源文本里的 `#121`
+/// 修订段（`contains`，逐字）；③ `#120` 的"规范无 Modulation 表"依据 ＋ 反向腿；
+/// ④ `size_of`（字节）＋ 既有承重指纹与 `S114` 反向腿的字面量仍在。
+#[test]
+fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const ENGINE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const MODULATION_SOURCE: &str = include_str!("../../yeban-sfz/src/modulation.rs");
+    const SELF_SOURCE: &str = include_str!("sfz_instrument.rs");
+
+    fn is_token_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+    }
+    fn is_volume_suffix(suffix: &str) -> bool {
+        match suffix.strip_prefix('$') {
+            Some(macro_name) => {
+                !macro_name.is_empty()
+                    && macro_name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            }
+            None => !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()),
+        }
+    }
+
+    // ---- ① 三格的**原句仍在**（第 278 条：⛔ 不许删改原句）＋ 三条**修订句**逐字在 ----
+    for (label, needle) in [
+        (
+            "① 原句（`global_volume_onccN` 一族 47 次 ／ 32 文件）",
+            "`global_volume_onccN` 一族（**另外三个** opcode） | **47** 次 ／ **32** 文件 |",
+        ),
+        (
+            "② 原句（家族子串 49 次 ／ 32 文件）",
+            "**49** 次 ／ **32** 文件 —— 那 **47** 处差额**全是别的 opcode**",
+        ),
+        (
+            "③ 原句（裸 `volume_onccN` 2 次 ／ 2 文件）",
+            "| `volume_onccN`（**裸**；⛔ 规范 Modulation 表无此行） | **2** 次 ／ **2** 文件 |",
+        ),
+    ] {
+        assert!(
+            ENGINE_SOURCE.contains(needle),
+            "⛔ 原句必须一字未删（第 278 条）：{label}"
+        );
+    }
+    for (label, needle) in [
+        (
+            "① 修订句",
+            "原登记「`global_volume_onccN` 一族 **47** 次 ／ **32** 文件」 ⇒ ⭐ **实测**",
+        ),
+        (
+            "② 修订句",
+            "原登记「家族子串 **49** 次 ／ **32** 文件」 ⇒ ⭐ **实测 50 次 ／ 33 文件**",
+        ),
+        (
+            "③ 修订句",
+            "原登记「裸 `volume_onccN` **2** 次 ／ **2** 文件」 ⇒ ⭐ **实测 3 次 ／ 3 文件**",
+        ),
+    ] {
+        assert!(
+            ENGINE_SOURCE.contains(needle),
+            "⭐ 修订句必须逐字在：{label}"
+        );
+    }
+    assert!(
+        ENGINE_SOURCE.contains("⭐ ⭐ **追加修订段（任务单 `#121`）"),
+        "⭐ 「有修订段」本身必须是可判事实（第 280 条）"
+    );
+    let caliber_marks = ENGINE_SOURCE.matches("口径 ＝ 剥 `//` 注释").count();
+    assert!(
+        caliber_marks >= 3,
+        "⭐ 三条修订里**每条**都要写口径（实测 {caliber_marks} 处，要求 ≥ 3）"
+    );
+    let command_marks = ENGINE_SOURCE.matches("命令 ＝").count();
+    assert!(
+        command_marks >= 3,
+        "⭐ 三条修订里**每条**都要写依据命令（实测 {command_marks} 处，要求 ≥ 3）"
+    );
+    assert!(
+        ENGINE_SOURCE.contains("**收 `$` 宏名**"),
+        "⭐ 口径裁定（收 `$` 宏名）必须逐字可判"
+    );
+    assert!(
+        ENGINE_SOURCE
+            .contains("cargo test -p yeban-engine --test sfz_instrument s115 -- --nocapture"),
+        "⭐ 依据命令必须逐字可判"
+    );
+    println!(
+        "[engine-sfz/S115] ① 三格原句仍在 ＋ 三条修订句逐字在 ＋ 口径标记 {caliber_marks} 处 ＋ \
+         命令标记 {command_marks} 处"
+    );
+
+    // ---- ② 就地重算（与修订段同一口径）：逐名打印 ＋ 逐档断言 ----
+    let corpus_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/samples");
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![corpus_root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|error| panic!("⭐ 语料目录 {dir:?} 必须存在：{error}"));
+        for entry in entries {
+            let path = entry.expect("目录项").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("sfz") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        1398,
+        "⭐ 分母 ＝ `find assets/samples -name '*.sfz' | wc -l` ⇒ 必须与 `#121` 修订段一致"
+    );
+
+    let mut occurrences: BTreeMap<String, usize> = BTreeMap::new();
+    let mut files_of: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let mut substring_total = 0usize;
+    let mut substring_files = 0usize;
+    for (index, path) in paths.iter().enumerate() {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("⭐ 读 {path:?} 失败：{error}"));
+        let mut file_has_substring = false;
+        for raw in text.lines() {
+            let line = raw.split("//").next().unwrap_or("");
+            let bytes = line.as_bytes();
+            let mut cursor = 0usize;
+            while cursor < bytes.len() {
+                if !is_token_byte(bytes[cursor]) {
+                    cursor += 1;
+                    continue;
+                }
+                let start = cursor;
+                while cursor < bytes.len() && is_token_byte(bytes[cursor]) {
+                    cursor += 1;
+                }
+                if start != 0 && !bytes[start - 1].is_ascii_whitespace() {
+                    continue;
+                }
+                let token = &line[start..cursor];
+                let Some(at) = token.find("volume_oncc") else {
+                    continue;
+                };
+                if !is_volume_suffix(&token[at + "volume_oncc".len()..]) {
+                    continue;
+                }
+                *occurrences.entry(token.to_owned()).or_default() += 1;
+                files_of.entry(token.to_owned()).or_default().insert(index);
+            }
+            let hits = line.matches("volume_oncc").count();
+            substring_total += hits;
+            if hits > 0 {
+                file_has_substring = true;
+            }
+        }
+        if file_has_substring {
+            substring_files += 1;
+        }
+    }
+
+    let mut bare: BTreeMap<String, usize> = BTreeMap::new();
+    let mut prefixed: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, count) in &occurrences {
+        if name.starts_with("volume_oncc") {
+            bare.insert(name.clone(), *count);
+        } else {
+            prefixed.insert(name.clone(), *count);
+        }
+    }
+    let files_for = |names: &BTreeMap<String, usize>| -> usize {
+        let mut set = BTreeSet::new();
+        for name in names.keys() {
+            set.extend(files_of[name].iter().copied());
+        }
+        set.len()
+    };
+    let bare_total: usize = bare.values().sum();
+    let prefixed_total: usize = prefixed.values().sum();
+    let bare_files = files_for(&bare);
+    let prefixed_files = files_for(&prefixed);
+
+    let ordered = |names: &BTreeMap<String, usize>| -> Vec<(String, usize, usize)> {
+        let mut rows: Vec<(String, usize, usize)> = names
+            .iter()
+            .map(|(name, count)| (name.clone(), *count, files_of[name].len()))
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        rows
+    };
+    for (tier, names) in [
+        ("① 前缀族（`*_volume_onccN`）", &prefixed),
+        ("③ 裸 `volume_onccN`", &bare),
+    ] {
+        for (name, count, files) in ordered(names) {
+            println!(
+                "[engine-sfz/S115] ② {tier}：`{name}` = {count} 次 ／ {files} 文件\
+                 （第 287 条：逐个完整 opcode 名 ＋ 各自计数）"
+            );
+        }
+    }
+    println!(
+        "[engine-sfz/S115] ② 三档：裸 {bare_total} 次 ／ {bare_files} 文件；\
+         前缀 {prefixed_total} 次 ／ {prefixed_files} 文件；\
+         家族子串 {substring_total} 次 ／ {substring_files} 文件（分母 {} 份 `.sfz`）",
+        paths.len()
+    );
+
+    assert_eq!(bare_total, 3, "⭐ 裸档实测 3 次（原登记 2）");
+    assert_eq!(bare_files, 3, "⭐ 裸档实测 3 文件（原登记 2）");
+    assert_eq!(prefixed_total, 47, "⭐ 前缀档实测 47 次（原登记 47，✓）");
+    assert_eq!(
+        prefixed_files, 30,
+        "⭐ 前缀档实测 30 文件（原登记 32 ⇒ ⛔ 复现不出）"
+    );
+    assert_eq!(substring_total, 50, "⭐ 家族子串实测 50 次（原登记 49）");
+    assert_eq!(substring_files, 33, "⭐ 家族子串实测 33 文件（原登记 32）");
+    assert_eq!(
+        bare_total + prefixed_total,
+        substring_total,
+        "⭐ 家族子串 ＝ 裸 ＋ 前缀（口径自洽）"
+    );
+    assert_eq!(
+        bare.get("volume_oncc24").copied(),
+        Some(2),
+        "⭐ 裸档逐名：`volume_oncc24` 2 次"
+    );
+    assert_eq!(
+        bare.get("volume_oncc$F2_DIS").copied(),
+        Some(1),
+        "⭐ 裸档逐名：`volume_oncc$F2_DIS` 1 次（宏名形式 —— 按裁定算本族）"
+    );
+    assert!(
+        bare.keys().all(|name| name.starts_with("volume_oncc")),
+        "⭐⭐ **有牙**：裸档里的名字必须**全部**以 `volume_oncc` 开头 ⇒ \
+         谁把 `lfo*_volume_onccN` 的行数**再算成本族**，这一条与 `bare_total == 3` 至少一条会红\
+         （实测裸档名字 = {:?}）",
+        bare.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        prefixed
+            .keys()
+            .all(|name| name.starts_with("lfo") && name.contains("_volume_oncc")),
+        "⭐ 前缀档实测**全是** `lfo*_volume_onccN`（9 个名字），实测 = {:?}",
+        prefixed.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !prefixed.keys().any(|name| name.starts_with("global_volume")
+            || name.starts_with("master_volume")
+            || name.starts_with("group_volume")),
+        "⭐⭐ `global_volume_onccN` ／ `master_volume_onccN` ／ `group_volume_onccN` \
+         实测**各 0 次 ／ 0 文件** ⇒ ⛔ 一个都不许出现在前缀档里"
+    );
+    assert_eq!(
+        prefixed.len(),
+        9,
+        "⭐ 第 287 条：前缀族共 9 个完整 opcode 名"
+    );
+    assert_eq!(
+        bare.len() + prefixed.len(),
+        11,
+        "⭐ 第 287 条：家族子串共 11 个完整 opcode 名（9 个 `lfo*` ＋ 2 个裸）"
+    );
+
+    // ⭐ 引擎侧修订段的**逐名表**必须与本判据**现算**出来的表**逐字相同**
+    // （⛔ 不手抄：期望串就是从这次重算生成的）。
+    let mut all_names = prefixed.clone();
+    all_names.extend(bare.clone());
+    let expected_enumeration = ordered(&all_names)
+        .iter()
+        .map(|(name, count, files)| format!("`{name}` = {count}／{files}"))
+        .collect::<Vec<_>>()
+        .join("、");
+    assert!(
+        ENGINE_SOURCE.contains(&expected_enumeration),
+        "⭐⭐ 引擎侧 `#121` 修订段的逐名表必须与就地重算逐字相同：{expected_enumeration}"
+    );
+    println!("[engine-sfz/S115] ② 逐名表与引擎侧修订段逐字相同：{expected_enumeration}");
+
+    // ---- ③ `#120`：**规范无 Modulation 表** 的依据 ＋ 反向腿（段内不许出现欠账话术） ----
+    const SCOPE_MARK: &str = "### 8.5 ⭐ 作用域音量三 opcode（任务单 `#120`）";
+    const SCOPE_END: &str = "\n//! # 实时安全";
+    let scope_start = MODULATION_SOURCE
+        .find(SCOPE_MARK)
+        .expect("⭐ `#120` 的 §8.5 登记必须存在");
+    let tail = &MODULATION_SOURCE[scope_start..];
+    let scope_end = tail
+        .find(SCOPE_END)
+        .expect("⭐ §8.5 之后必须仍有 `# 实时安全` 一节（段边界可判）");
+    let scope = &tail[..scope_end];
+    assert!(
+        scope.contains("**规范无 Modulation 表**"),
+        "⭐⭐ `#120` 的依据必须逐字写「规范无 Modulation 表」"
+    );
+    assert!(
+        scope.contains("无任何 `_onccN` 行") && scope.contains("**三页各只有一张表**"),
+        "⭐ 依据必须是「三页各只有一张表 ＋ 无任何 `_onccN` 行」（⛔ 不是「规范有」）"
+    );
+    for needle in [
+        "https://sfzformat.com/opcodes/global_volume/",
+        "https://sfzformat.com/opcodes/master_volume/",
+        "https://sfzformat.com/opcodes/group_volume/",
+        "| global_volume | ARIA | float | 0 | -144 to 6 | dB |",
+        "| master_volume | ARIA | float | 0 | -144 to 6 | dB |",
+        "| group_volume | ARIA | float | 0 | -144 to 6 | dB |",
+        "Scopes::get",
+        "crates/yeban-sfz/src/instrument.rs:1550-1555",
+        "**需要新面**",
+        "header",
+    ] {
+        assert!(scope.contains(needle), "⭐ §8.5 必须逐字含：`{needle}`");
+    }
+    assert!(
+        !scope.contains("规范有"),
+        "⭐⭐ **反向腿**：`#120` 的依据⛔ 不许写成「规范有」（那是「欠着活儿」的框）"
+    );
+    assert!(
+        !scope.contains("另开单") && !scope.contains("本单不做"),
+        "⭐ **反向腿**：`#120` ⛔ 不许登记成「另开单」／「本单不做」式的欠账 ⇒ 只能是「规范无 ＋ 需要新面」"
+    );
+    assert!(
+        MODULATION_SOURCE.contains("另开单"),
+        "⭐ **非真空**：整份模块文档里确实有「另开单」（§8.4 的原文）⇒ 上面那条段内反向腿不是恒真"
+    );
+    println!(
+        "[engine-sfz/S115] ③ `#120`：§8.5 「规范无 Modulation 表」＋ 三页各一张表 ＋ \
+         `Scopes::get` 扁平 first-match ⇒ **需要新面**；段内反向腿（规范有／另开单／本单不做）全 false"
+    );
+
+    // ---- ④ 测试文件侧的机械针：S114 那一行与夹具文档的修订 ＋ 原句仍在 ----
+    // ⚠ 这里的判据读的是**本文件自己** ⇒ 期望串在运行期拼出来（R84：⛔ 不把期望字面量
+    //   直接写进 `contains` 实参 —— 否则判据读的正是它自己、恒真）。
+    let row_revision_mark = concat!("⭐ `#121` 修订：本行 ① 的", "语料四口径里");
+    assert!(
+        SELF_SOURCE.contains(row_revision_mark),
+        "⭐ `S114` 那一行的四口径必须带 `#121` 修订（原句仍在该行里）"
+    );
+    let row_original_mark = concat!(
+        "家族子串 **49**／**32**、`global_volume",
+        "_onccN` **47**／**32**"
+    );
+    assert!(
+        SELF_SOURCE.contains(row_original_mark),
+        "⛔ `S114` 那一行的四个原登记读数必须一字未删"
+    );
+    let fixture_revision_mark = concat!(
+        "⭐ ⭐ **追加修订段（任务单 `#121`，",
+        "⛔ 上面原文一字未删）**"
+    );
+    assert!(
+        SELF_SOURCE.contains(fixture_revision_mark),
+        "⭐ `VOLUME_FORMS_FIXTURE` 的文档必须带 `#121` 修订段"
+    );
+    assert!(
+        SELF_SOURCE.contains(concat!("（`global_volume` 的调制，语料 47 ", "处）")),
+        "⛔ 夹具文档的原句必须一字未删"
+    );
+
+    // ---- ⑤ `S114` 的反向腿 ＋ 三个承重指纹：字面量仍在（真值由 `S114` 现跑） ----
+    let absent_literal = concat!("`volume_oncc*` 那一项仍未做", "（另开单）");
+    assert!(
+        SELF_SOURCE.contains(absent_literal),
+        "⭐⭐ `S114` 的 `ABSENT` 反向腿字面量必须**一字未动**"
+    );
+    assert!(
+        SELF_SOURCE.contains(concat!("必须被忽略", "而不是报错"))
+            && SELF_SOURCE.contains("不进调制表（本单不做、登记在案）"),
+        "⭐⭐ `S114` 的「必须被忽略」断言必须一字未动"
+    );
+    for prefix in [
+        "global_volume_oncc",
+        "master_volume_oncc",
+        "group_volume_oncc",
+    ] {
+        let quoted = format!("\"{prefix}1\",");
+        assert!(
+            SELF_SOURCE.contains(&quoted),
+            "⭐ `S114` 的负向表必须仍逐字列出 `{prefix}1`"
+        );
+    }
+    for fingerprint in ["a9dec8a87f69106c", "d3c2a82076bd8947", "a933ddab286bdf5e"] {
+        let quoted = format!("0x{fingerprint}");
+        assert!(
+            SELF_SOURCE.contains(&quoted),
+            "⭐ 承重指纹必须逐字仍在（真值由 `S114` 现跑）：{quoted}"
+        );
+    }
+
+    // ---- ⑥ 尺寸（`size_of` 现读）：本单只改文档 ＋ 计数 ⇒ 四个全 ＋0 ----
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S115] ⑥ size_of: PreparedRegion={region} SfzVoice={voice} \
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}）",
+        192 * 1024
+    );
+    assert_eq!(
+        (region, voice, pool, runtime),
+        (6160, 40, 1712, 180_144),
+        "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0"
     );
 }
