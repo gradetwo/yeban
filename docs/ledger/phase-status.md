@@ -10787,3 +10787,11 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ **后台轮询第 20 次读到 `completed/success`** ⇒ ⭐ **`loop_end == pcm_len` 也能循环在 CI 上也成立**（⭐ 连同 `#91`～`#96`，⭐ 本会话已读回的 CI 判决**全部 success**）✓ ⚠ ⭐ **`c96ae99b`（⭐ `ADR-0008` ＋ ⭐`R766` 那次提交）的判决待读回**、⭐ ⛔ **不写成"⭐ 通过"** ✓
 
 ⭐ ⚠ ⭐ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `c96ae99b` 的判决** ＋ ⭐ **`#100`（⭐ `note_polyphony`）交单** ＋ ⭐ **调制类 `ampeg_*ccN`·`ampeg_vel2*`／⭐`fileg`／⭐`pitcheg`** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R768 实测追加（2026-10-16）：⭐ **`c96ae99b`（⭐ `ADR-0008` ＋ ⭐`R766`）的 CI 判决 ＝ `success`**（⚠ 纯 `docs/**` ⇒ 按 `AGENTS.md §6.3` **当空绿**看）
+
+⭐ 读到 `completed/success`。⚠ ⭐ **该提交只改 `docs/adr/ADR-0008-…md` 与 `docs/ledger/**` ⇒ 受影响集合为空 ⇒ `rust`／⭐`macos`／⭐`windows` 三条腿**必然 `skipped`** ⇒ ⭐ 按第 970 条**它不构成对代码的验证**；⭐ 真有验证意义的只有 `checks`／⭐`lockfile`／⭐`deny`／⭐`plan`（⭐ 且 **`checks` 里含**文档契约那一层** —— ⭐ 那正是本提交该被验的地方，⭐ 因为 `ADR-0008` 与台账都在它覆盖范围内）✓
+
+⭐ ⚠ ⭐ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`#100`（⭐ `note_polyphony`）交单** ＋ ⭐ **调制类 `ampeg_*ccN`·`ampeg_vel2*`／⭐`fileg`／⭐`pitcheg`** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
