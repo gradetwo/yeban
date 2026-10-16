@@ -53,8 +53,9 @@
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
-//! | ⑧ | `loop_window` / `direction` / `pan` / `off_mode` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带） |
+//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做，`direction` / `pan` / `off_mode` **仍未做**，拆到⑩ |
 //! | ⑨ | ⭐ **多 `sample=` 每区域各播自己** | ⭐ **步 3 已做**：摊平表持 `samples: Vec<PreparedSample>` ＋ [`PreparedRegion::sample_index`] 指路；⚠ 单样本重载 [`PreparedSfz::prepare`] **仍是广播**（键/力度映射对、**音色内容错** ⇒ 读数 `sample_content=broadcast(1)`） |
+//! | ⑩ | `direction` / `pan` / `off_mode` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带） |
 //!
 //! # 引擎侧声部（任务 `#66` 的步 2：`SfzPlan` / `SfzVoicePool` / 分派次序）
 //!
@@ -84,10 +85,64 @@
 //! * ⭐ **用样本自然结束**：源位置走到 [`PreparedRegion::source_end`]
 //!   （`min(span 终点, PCM 长度)`；线性插值需要 `position` 与 `position + 1` 两个样本）
 //!   即退休；
-//! * 音符先到 [`crate::synth::ScheduledNote::end_sample`] 也退休。
+//! * 音符先到 [`crate::synth::ScheduledNote::end_sample`] 也退休 ——
+//!   ⭐ **但 `loop_mode=one_shot` 例外**（任务 `#91`：`one_shot` 忽略 note-off ⇒
+//!   声部⛔ 不因 `end_sample` 退休）；
+//! * ⭐ **循环声部（`loop_continuous` / `loop_sustain`）不由"样本播完"退休**：
+//!   回绕把源位置压在窗口内（[`reduce_loop_window`] 保证窗口落在可读范围内）⇒
+//!   只剩 `end_sample` 能终止它。
 //!
 //! ⚠ `span` 的**起点**（`offset`）与**终点**（`end`）**步 3 已应用**：三条路都从
-//! `span.start` 起播、在 `span.end` 停（[`reduce_span`] 的唯一归约）。循环**仍不做**。
+//! `span.start` 起播、在 `span.end` 停（[`reduce_span`] 的唯一归约）。
+//! ⭐ **循环**（任务 `#91`）**已接线**：见下面"循环"一节。
+//!
+//! # ⭐ 循环（任务 `#91` 的**循环那一半**；⛔ ADSR／`ampeg_*` 是下一单）
+//!
+//! ## ⚠ 本单是**接线**，⛔ 不是新实现
+//!
+//! 解析层**早就有了**：`yeban-sfz` 的 [`Region::loop_start`](yeban_sfz::instrument::Region::loop_start)／
+//! `loop_end`／`loop_mode`（含旧拼写别名 `loopstart`／`loopend`）与四取值白名单，
+//! 以及判据 [`Region::loop_window`](yeban_sfz::instrument::Region::loop_window)
+//! （`no_loop` / `one_shot` ⇒ `None`；`loop_end <= loop_start` ⇒ `None`）。
+//! 缺的只是**播放层装不下**：摊平表（[`PreparedRegion`]）此前⛔ 不携带任何循环字段
+//! （旧⑧逐字："读数在 `PlaybackSpec` 里，摊平表未携带"）。本单把那三个字段搬进
+//! 摊平表、接到逐样本路径上 ⇒ ⭐ **新增的是接线，⛔ 不是新的解析/判定规则**。
+//!
+//! ## 落地形状（三条，逐条可判）
+//!
+//! 1. **每区域承载**：`loop_start` / `loop_end` / `loop_mode` 进 [`PreparedRegion`]，
+//!    ⛔ **不进** [`SfzVoice`]。声部只加 `region_index: u16`（落在既有尾部填充里
+//!    ⇒ **+0 字节**，`S9` 仍钉 `40 B`）；循环窗口由
+//!    [`PreparedRegion::loop_window`] ＋ 唯一归约 [`reduce_loop_window`] 求值。
+//!    ⚠ [`SfzVoice::sample_index`] **不够**：它指到**去重后的样本**，多条区域可以共用
+//!    一份 PCM 却各有各的循环窗口 ⇒ 必须能回到**区域**。
+//! 2. **唯一逐样本实现**：[`mix_span_into`] 在写每个样本之前回绕
+//!    （`fmod` 而非"减一次"，理由见该函数文档）⇒ 离线／摊平／实时**三条路同口径**。
+//! 3. **`one_shot` 忽略 note-off**：`loop_mode=one_shot` 的区域
+//!    （[`PreparedRegion::ignores_note_off`]）⛔ 不因 `end_sample`（＝ note-off）退休，
+//!    只由样本自然结束退休（与 `yeban-sfz` 的 `PlaybackSpec::ignores_note_off` 同一份裁决）。
+//!
+//! ## ⭐ `loop_sustain` 在本片的行为 **＝** `loop_continuous`（逐字登记）
+//!
+//! ⭐ note-off 后两者的差别（走完当前循环再进释放）属 ADSR 片、本片不声称已实现。
+//!
+//! 依据：`loop_sustain` 与 `loop_continuous` 的**唯一分野**在 note-off **之后**，
+//! 而 note-off 今天只体现为 `end_sample` 硬停 ⇒ **没有释放段就表现不出那个差别**
+//! ⇒ ⛔ 本片**不假装**做到了那一步（判据见 `tests/sfz_instrument.rs` 的 `S32`）。
+//!
+//! ## ⭐ 退化窗口的**既有**语义（本片只登记，⛔ 不加新机制）
+//!
+//! `loop_end <= loop_start`（两个值**各自**合法、只有**组合**退化）⇒
+//! [`PreparedRegion::loop_window`] 返回 `None` ＝ **按不循环渲染**
+//! （零长度循环没有定义，⛔ 不返回 `start == end` 的死循环窗口）。
+//! 这是 `yeban-sfz` 的既有裁决，本片**只沿用**。
+//!
+//! ## 输入政策不变（⭐ 响亮 `Err`，⛔ 不静默降级）
+//!
+//! 集合外的 `loop_mode` 取值与越界的 `loop_start` / `loop_end` **仍然报错**：
+//! 前者走 `yeban-sfz` 的 `as_option` ⇒ `SfzError::InvalidOption`，后者走 `read_u32`
+//! ⇒ `SfzError::IntegerOutOfRange`。⚠ 本片⛔ 没有把它们改成"降级 ＋ 记录"，
+//! 也没有新增任何降级档（判据 `S31` 在引擎侧钉住这两条 `Err` 仍能透出）。
 //!
 //! ## 分配纪律（红线 7 / [MUST-GATE-001]）
 //!
@@ -148,7 +203,7 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）仍挂在 [`crate::drums`] 的 `needs-3`（属模型面，本单⛔ 不动）|
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **步 3 只闭合了它的"多采样／每区域独立 PCM"那一半**；循环、`ampeg_*`、`off_mode`、`group`/`off_by` 仍完全未做（未闭合） |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **循环那一半已闭合**（任务 `#91`：`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；⚠ `loop_sustain` 与 `loop_continuous` 在本片**行为相同** ⇒ 差别属 ADSR 片）。⛔ **仍未做**：`ampeg_*`（ADSR / 力度包络）、`off_mode`（`off_time`）、`group`/`off_by`/`note_polyphony` |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 
@@ -159,11 +214,11 @@ use std::collections::BTreeMap;
 use yeban_dsp::polysynth::steal_fade_frames_for;
 use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
-use yeban_sfz::instrument::{Instrument, Region, RegionQuery};
+use yeban_sfz::instrument::{Instrument, LoopMode, Region, RegionQuery};
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
-use yeban_sfz::playback::{RenderRates, SampleSpan};
+use yeban_sfz::playback::{LoopWindow, RenderRates, SampleSpan};
 // ⭐ 衰减底（−60 dBFS）取自 `yeban-sfz` 的 [`StealFade`](yeban_sfz::voice_pool::StealFade)：
 // 引擎侧的 SFZ 窃取淡出与该库的 3 ms 指数淡出**同形状**（`FLOOR^(n/N)`），
 // ⛔ 不是引擎自造的一条包络（victim **选择**口径则由引擎自己拥有，见 `SfzVoicePool::select_victim`）。
@@ -335,6 +390,14 @@ impl SfzInstrument {
                 let Some((start, source_end)) = reduce_span(region.playback_span(), pcm_len) else {
                     continue;
                 };
+                // ⭐ 循环：与摊平表、实时声部**同一份**归约（`None` ⇒ 按不循环渲染）。
+                let loop_window = reduce_loop_window(
+                    region.effective_loop_mode(),
+                    region.loop_start,
+                    region.loop_end,
+                    source_end,
+                    pcm_len,
+                );
                 let mut position = start;
                 // 离线/摊平这条路**不窃取**：淡出状态恒为 [`FadeRamp::NONE`]
                 // （`gain == 1.0` ⇒ 那个逐帧乘法逐位不变）。
@@ -345,6 +408,7 @@ impl SfzInstrument {
                     rate,
                     gain,
                     source_end,
+                    loop_window,
                     &mut fade,
                     out,
                 );
@@ -381,6 +445,52 @@ pub fn reduce_span(span: Option<SampleSpan>, pcm_len: usize) -> Option<(f32, u64
         return None;
     }
     Some((span.start as f32, end))
+}
+
+/// ⭐ **循环窗口归约的唯一实现**（本单新增）：离线 [`SfzInstrument::render_note_into`]、
+/// 摊平 [`PreparedSfz::render_block_into`] 与实时声部（[`SfzVoicePool`]）三条路共用它
+/// ⇒ 与 [`reduce_span`] 同一形态，循环口径不可能在三条路之间分叉。
+///
+/// # 判定次序（每条都只回答"能不能按这个窗口循环"）
+///
+/// 1. **模式**：只有 `loop_continuous` / `loop_sustain` 会循环。`no_loop` / `one_shot`
+///    恒 `None`（即使文件写了 `loop_start` / `loop_end`）——与
+///    [`Region::loop_window`](yeban_sfz::instrument::Region::loop_window) 同一条口径；
+/// 2. **退化窗口**：`loop_end <= loop_start` ⇒ `None` ＝ **按不循环渲染**
+///    （零长度循环没有定义，⛔ 不返回 `start == end` 的死循环窗口）。这是 `yeban-sfz`
+///    的**既有**裁决，本函数只**沿用**它，⛔ 不新增机制、⛔ 不报错
+///    （两个值**各自**合法，只有组合退化）；
+/// 3. **越界**：窗口终点超出**源采样区间**（[`reduce_span`] 的归约结果）或超出 PCM
+///    可读范围 ⇒ `None`。⚠ 线性插值要读 `index + 1`
+///    （见 [`mix_span_into`]）⇒ 窗口终点必须**严格小于** `pcm_len`，否则回绕后会读到
+///    PCM 之外的 `pcm[loop_end]`（⛔ 越界读、⛔ panic 都不允许）；
+/// 4. **合法窗口**：半开区间 `[loop_start, loop_end)`，⛔ 不夹、⛔ 不改写。
+///
+/// ⚠ **零分配、零锁、零 I/O**（纯整数比较）⇒ 可被实时声部在**逐块**路径调用 [MUST-GATE-001]。
+#[must_use]
+pub fn reduce_loop_window(
+    loop_mode: LoopMode,
+    loop_start: u32,
+    loop_end: u32,
+    source_end: u64,
+    pcm_len: usize,
+) -> Option<LoopWindow> {
+    if !matches!(loop_mode, LoopMode::LoopContinuous | LoopMode::LoopSustain) {
+        return None;
+    }
+    if loop_end <= loop_start {
+        return None;
+    }
+    if u64::from(loop_end) > source_end {
+        return None;
+    }
+    if loop_end as usize >= pcm_len {
+        return None;
+    }
+    Some(LoopWindow {
+        start: loop_start,
+        end: loop_end,
+    })
 }
 
 /// ✂️ **摊平后的一个区域**：回调侧**只读**（⛔ 无 `Vec`／`Box`／`String`，全部定长）。
@@ -428,6 +538,20 @@ pub struct PreparedRegion {
     /// ⭐ **步 3 起渲染真正应用它**（[`reduce_span`]）：起点从 `span.start` 开始、
     /// 终点停在 `min(span.end, PCM 长度)` ⇒ 离线/摊平/实时三条路同口径。
     span: Option<SampleSpan>,
+    /// ⭐ **循环起点**（`loop_start`，源采样点；原样带出，⛔ 不夹、⛔ 不回填）。
+    ///
+    /// 本片（循环接线片）把 `yeban-sfz` 已经解析好的三个循环字段搬进摊平表
+    /// ⇒ 实时回调**不再**只有 `PlaybackSpec` 里那份读数。生效归约见
+    /// [`Self::loop_window`]／[`reduce_loop_window`]。
+    loop_start: u32,
+    /// ⭐ **循环终点**（`loop_end`，源采样点；半开区间的**不含**端点）。
+    loop_end: u32,
+    /// ⭐ **生效循环模式**（`Region::effective_loop_mode`：`trigger=release` /
+    /// `release_key` 家族已被覆写成 [`LoopMode::OneShot`]）。
+    ///
+    /// ⚠ 本片**只**实现"循环"这一半：`loop_sustain` 的取值**原样保留**，但它在
+    /// note-off 之后的语义与 `loop_continuous` **相同**（差别属 ADSR 片，见模块头）。
+    loop_mode: LoopMode,
 }
 
 impl PreparedRegion {
@@ -500,6 +624,50 @@ impl PreparedRegion {
     #[must_use]
     pub fn source_end(&self, pcm_len: usize) -> Option<u64> {
         self.span_bounds(pcm_len).map(|(_, end)| end)
+    }
+
+    /// ⭐ 该区域的**循环起点**（`loop_start`，原样）。
+    #[must_use]
+    pub const fn loop_start(&self) -> u32 {
+        self.loop_start
+    }
+
+    /// ⭐ 该区域的**循环终点**（`loop_end`，原样）。
+    #[must_use]
+    pub const fn loop_end(&self) -> u32 {
+        self.loop_end
+    }
+
+    /// ⭐ 该区域的**生效循环模式**（原样，除 `trigger=release` 家族被覆写成 `one_shot`）。
+    #[must_use]
+    pub const fn loop_mode(&self) -> LoopMode {
+        self.loop_mode
+    }
+
+    /// ⭐ **有效循环窗口**（本单的接线点）：半开 `[start, end)`；`None` ＝ 按不循环渲染。
+    ///
+    /// 直接转交 [`reduce_loop_window`]（⭐ **唯一**归约），把存储的三个字段与
+    /// [`Self::span_bounds`] 的终点、PCM 长度折成一个判断 ⇒ 与离线/摊平两条路同口径。
+    #[must_use]
+    pub fn loop_window(&self, pcm_len: usize) -> Option<LoopWindow> {
+        let (_, source_end) = self.span_bounds(pcm_len)?;
+        reduce_loop_window(
+            self.loop_mode,
+            self.loop_start,
+            self.loop_end,
+            source_end,
+            pcm_len,
+        )
+    }
+
+    /// ⭐ 该区域是否**忽略 note-off**（`loop_mode=one_shot`，鼓组常用）。
+    ///
+    /// 与 [`yeban_sfz::playback::PlaybackSpec::ignores_note_off`] 的**同一份**裁决
+    /// （那边是 `self.loop_mode == LoopMode::OneShot`）：本片把它接进实时声部
+    /// ⇒ `end_sample` 对 `one_shot` 声部**不生效**（声部只由样本自然结束退休）。
+    #[must_use]
+    pub const fn ignores_note_off(&self) -> bool {
+        matches!(self.loop_mode, LoopMode::OneShot)
     }
 
     /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
@@ -1097,11 +1265,21 @@ impl PreparedSfz {
                 continue;
             };
             let gain = region.gain_at(note, velocity);
+            // ⭐ 循环窗口（本单）：归约已把模式／退化／越界三条判完（`None` ⇒ 不循环）。
+            let loop_window = region.loop_window(pcm.len());
             let mut position = start;
             // 摊平表的一次性调用**不窃取**（与上一条路同款：`× 1.0` 逐位不变）。
             let mut fade = FadeRamp::NONE;
-            let region_written =
-                mix_span_into(pcm, &mut position, rate, gain, source_end, &mut fade, out);
+            let region_written = mix_span_into(
+                pcm,
+                &mut position,
+                rate,
+                gain,
+                source_end,
+                loop_window,
+                &mut fade,
+                out,
+            );
             written = written.max(region_written);
         }
         written
@@ -1197,6 +1375,12 @@ fn flatten_regions(
                 velocity_gain,
                 sample_index,
                 span: region.playback_span(),
+                // ⭐ 循环接线（本单）：三个**每区域**字段原样搬进摊平表。生效模式取
+                // `effective_loop_mode()`（与 `PlaybackSpec::loop_mode` 同一份读数）
+                // ⇒ `trigger=release` 家族在这里就已经是 `one_shot`。
+                loop_start: region.loop_start,
+                loop_end: region.loop_end,
+                loop_mode: region.effective_loop_mode(),
             });
         }
         regions
@@ -1290,22 +1474,56 @@ impl FadeRamp {
 /// * 实时声部给同一个 [`PreparedRegion::span_bounds`]（触发期抄下）；
 /// * 离线 [`SfzInstrument::render_note_into`] 给同一份归约。
 ///
+/// ⚠ **给了循环窗口时这一条不可达**：回绕把位置压在 `[loop_start, loop_end)` 内，
+/// 而窗口已由 [`reduce_loop_window`] 保证 `loop_end < pcm_len` 且
+/// `loop_end <= source_end` ⇒ 声部由**外部**终止（`end_sample`）或继续循环，
+/// ⛔ 不再由"样本播完"退休。
+///
 /// ⭐ `fade` 是**窃取淡出**：非淡出传 [`FadeRamp::NONE`]（`× 1.0` 逐位不变）；
 /// 淡出中**写满 `remaining` 帧就返回**（`written == remaining`）⇒ 调用方可以就地
 /// 提升挂起声部、用**同一段**代码继续写剩下的帧。
 ///
 /// ⚠ **零分配、零锁、零 I/O**：只读 `pcm`、原地写 `out` [MUST-GATE-001]。
+///
+/// # ⭐ 循环（本单新增；`sfz-needs-6` 的"循环"那一半）
+///
+/// `loop_window` 是[归约后](reduce_loop_window)的**有效**窗口
+/// （半开 `[start, end)`）；`None` ＝ 按不循环渲染 ⇒ 逐样本路径**一字不改**
+/// （`if let` 落空 ⇒ ⛔ 不加任何浮点运算）⇒ 既有夹具**逐位不变**。
+///
+/// 写每个样本**之前**回绕：位置一旦到达（或越过）窗口终点，就折回窗口内。
+/// ⚠ **用 fmod 而不是"减一次"**：
+///
+/// * `rate <= 窗口长` 时两者**逐位相同**（`position − start < 窗口长` ⇒
+///   `(position − start) % len == position − start`）——即裁决里那条
+///   `position -= (loop_end - loop_start)`；
+/// * `rate > 窗口长`（极短循环 ＋ 大幅移调）时"减一次"**折不回**窗口内（会一路播到
+///   `source_end`，循环退化成长音）；"重复减到窗口内"则有**死循环**风险
+///   （`position` 远大于 `len` 时 f32 的 ULP 会把 `-= len` 吸收掉）。
+///   `fmod` 的余数**按定义精确**、逐样本**有界**（一次求余）⇒ 两条风险都不在。
+// ⚠ 8 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
+// （本仓既有同款豁免见 `SfzVoice::new`）。⭐ `loop_window` 是唯一的**静态**入参
+// （触发期/构造期定好），⛔ 不在逐样本路径上求值。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mix_span_into(
     pcm: &[f32],
     position: &mut f32,
     rate: f32,
     gain: f32,
     source_end: u64,
+    loop_window: Option<LoopWindow>,
     fade: &mut FadeRamp,
     out: &mut [f32],
 ) -> usize {
+    // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
+    let loop_bounds = loop_window.map(|window| (window.start as f32, window.len() as f32));
     let mut written = 0usize;
     for slot in out.iter_mut() {
+        if let Some((loop_start, loop_len)) = loop_bounds
+            && *position >= loop_start + loop_len
+        {
+            *position = loop_start + (*position - loop_start) % loop_len;
+        }
         let index = *position as usize;
         if index as u64 + 1 >= source_end || index + 1 >= pcm.len() {
             break;
@@ -1352,9 +1570,13 @@ pub const SFZ_VOICES_PER_TRACK: usize = 16;
 ///
 /// * ⛔ **跳过 `ampeg_*`**（ADSR / 力度包络本片不做）⇒ 音符**没有**包络收尾；
 /// * ⭐ **用样本自然结束**：源位置走到 `source_end` 即退休；
-/// * `end_sample`（音符的引擎终点）先到也退休。
+/// * `end_sample`（音符的引擎终点）先到也退休 —— ⭐ **但 `loop_mode=one_shot` 的区域
+///   ⛔ 不退休**（`one_shot` 忽略 note-off，见 [`PreparedRegion::ignores_note_off`]）。
 ///
-/// ⛔ 本片不做循环、不做 `off_mode`（模块头 sfz-needs-6）。
+/// ⭐ **循环由区域（[`PreparedRegion`]）拥有、⛔ 不由声部拥有**：声部只带
+/// [`Self::region_index`] 指路 ⇒ `position` ＋ `region_index` 就够（[`Self::sample_index`]
+/// **不够**：它指向**去重后的样本**，多条区域可以共用一份样本、却各有各的循环窗口）。
+/// ⛔ 因此本片**没有**为了"记住当前在循环里"而给声部加字段（尺寸读数见 `S9`）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SfzVoice {
     /// 源采样位置（帧；浮点 ⇒ 分数速率与线性插值）。
@@ -1375,6 +1597,12 @@ pub struct SfzVoice {
     /// ⭐ **该声部播哪一份摊平样本**（[`PreparedSfz::samples`] 的下标；触发时抄自
     /// [`PreparedRegion::sample_index`]）⇒ 多采样下各声部读**自己**那份 PCM。
     sample_index: u16,
+    /// ⭐ **该声部来自哪一条摊平区域**（[`PreparedSfz::regions`] 的下标；触发时抄下）。
+    ///
+    /// 本片（循环接线）新增：循环窗口在**区域**上（[`PreparedRegion::loop_window`]），
+    /// 而 [`Self::sample_index`] 只指到**去重后的样本** ⇒ 逐块路径必须能回到区域。
+    /// ⚠ 它落在 `SfzVoice` 既有的**尾部填充**里 ⇒ 尺寸 **+0 字节**（`S9` 钉住 40 B）。
+    region_index: u16,
     /// **源采样终点（半开）**：见类型文档的"终点口径"。
     source_end: u64,
     /// **引擎侧终点**（绝对样本位置）：来自 [`crate::synth::ScheduledNote::end_sample`]。
@@ -1391,6 +1619,7 @@ impl SfzVoice {
         velocity: 0,
         active: false,
         sample_index: PreparedRegion::NO_SAMPLE,
+        region_index: 0,
         source_end: 0,
         end_sample: 0,
     };
@@ -1407,6 +1636,7 @@ impl SfzVoice {
         rate: f32,
         gain: f32,
         sample_index: u16,
+        region_index: u16,
         source_start: f32,
         source_end: u64,
         end_sample: u64,
@@ -1419,6 +1649,7 @@ impl SfzVoice {
             velocity,
             active: true,
             sample_index,
+            region_index,
             source_end,
             end_sample,
         }
@@ -1446,6 +1677,15 @@ impl SfzVoice {
     #[must_use]
     pub const fn sample_index(&self) -> u16 {
         self.sample_index
+    }
+
+    /// ⭐ 该声部来自哪一条摊平区域（[`PreparedSfz::regions`] 的下标）。
+    ///
+    /// 逐块路径据此取**该区域自己**的循环窗口（[`PreparedRegion::loop_window`]）与
+    /// `one_shot` 的"忽略 note-off"（[`PreparedRegion::ignores_note_off`]）。
+    #[must_use]
+    pub const fn region_index(&self) -> u16 {
+        self.region_index
     }
 
     /// 当前源采样位置（帧）。
@@ -1596,10 +1836,15 @@ impl SfzVoicePool {
     ) -> usize {
         let n = note as usize;
         let mut created = 0usize;
-        for region in plan.regions() {
+        for (region_index, region) in plan.regions().iter().enumerate() {
             if !region.accepts(note, velocity) {
                 continue;
             }
+            // ⭐ 区域下标进 `u16`（`flatten_regions` 走 `ParseLimits::default()` ⇒
+            // 区域数 ≤ `DEFAULT_MAX_REGIONS = 65_536` ⇒ 下标必落在 `u16` 内）。
+            let Ok(region_index) = u16::try_from(region_index) else {
+                continue;
+            };
             // ⭐ 缺样本（`NO_SAMPLE`）⇒ 与 `span_bounds() == None` **同径**：⛔ 不建声部
             // （引擎⛔ 不发明替代内容 —— 那是控制侧的决定；归属裁决见台账 R711 的 `needs-7`）。
             let Some(sample) = plan.sample(region.sample_index) else {
@@ -1622,6 +1867,7 @@ impl SfzVoicePool {
                 rate,
                 gain,
                 region.sample_index,
+                region_index,
                 source_start,
                 source_end,
                 end_sample,
@@ -1719,23 +1965,34 @@ impl SfzVoicePool {
     }
 
     /// 渲染**一个槽**（`render_into` 的逐槽体；拆出来是为了借用清晰）。
+    ///
+    /// ⭐ **本片（循环接线）新增的两件事都在这里**：① 逐块路径按
+    /// [`SfzVoice::region_index`] 回到**该声部来源的那条区域**取循环窗口
+    /// （[`PreparedRegion::loop_window`]）；② `loop_mode=one_shot` 的声部把
+    /// `end_sample` 当成**无穷远**（[`PreparedRegion::ignores_note_off`]）⇒
+    /// note-off ⛔ 不再硬切它。两条都是**每块一次**的结构体读取，
+    /// ⛔ 逐样本路径（[`mix_span_into`]）不做任何额外查表。
     fn render_slot(&mut self, index: usize, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
         let mut offset = 0usize;
         let mut victim_stopped = false;
         // --- 1) 淡出段：victim 在自己的窗口里继续发声，逐帧乘衰减增益 ---
         if self.voices[index].active && self.fade[index].is_fading() {
             let voice = self.voices[index];
-            let limit = voice
-                .end_sample
-                .saturating_sub(position)
-                .min(out.len() as u64) as usize;
+            let (loop_window, end_sample) = match Self::slot_readings(plan, voice) {
+                Some(readings) => readings,
+                None => {
+                    // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休。
+                    self.silence_slot(index);
+                    return;
+                }
+            };
+            let limit = end_sample.saturating_sub(position).min(out.len() as u64) as usize;
             if limit == 0 {
                 // 引擎终点先到 ⇒ 本槽（含挂起者）退休，⛔ 不静默地继续跑。
                 self.silence_slot(index);
                 return;
             }
             let Some(sample) = plan.sample(voice.sample_index) else {
-                // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休。
                 self.silence_slot(index);
                 return;
             };
@@ -1747,6 +2004,7 @@ impl SfzVoicePool {
                 voice.rate,
                 voice.gain,
                 voice.source_end,
+                loop_window,
                 &mut fade,
                 &mut out[..limit],
             );
@@ -1767,15 +2025,16 @@ impl SfzVoicePool {
         if !voice.active {
             return;
         }
+        let Some((loop_window, end_sample)) = Self::slot_readings(plan, voice) else {
+            self.silence_slot(index);
+            return;
+        };
         // 引擎终点（音符先到终点 ⇒ 本量子只渲染到它为止）。
-        if voice.end_sample <= position.saturating_add(offset as u64) {
+        if end_sample <= position.saturating_add(offset as u64) {
             self.silence_slot(index);
             return;
         }
-        let remaining = voice
-            .end_sample
-            .saturating_sub(position)
-            .min(out.len() as u64) as usize;
+        let remaining = end_sample.saturating_sub(position).min(out.len() as u64) as usize;
         let Some(sample) = plan.sample(voice.sample_index) else {
             self.silence_slot(index);
             return;
@@ -1788,15 +2047,35 @@ impl SfzVoicePool {
             voice.rate,
             voice.gain,
             voice.source_end,
+            loop_window,
             &mut fade,
             &mut out[offset..remaining],
         );
         self.voices[index].position = local;
         self.fade[index] = fade;
-        // ⭐ 用样本自然结束：源位置走完 ⇒ 退休（⛔ 无包络、⛔ 无循环）。
+        // ⭐ 用样本自然结束：源位置走完 ⇒ 退休。⚠ 有循环窗口时这一条**不可达**
+        // （回绕把位置压在窗口内）⇒ 循环声部只由 `end_sample` 终止。
         if written < remaining - offset {
             self.silence_slot(index);
         }
+    }
+
+    /// ⭐ **逐块路径的两个区域读数**（本单新增）：`(有效循环窗口, 生效的引擎终点)`。
+    ///
+    /// * 区域查不到（池与摊平表不匹配）⇒ `None` ⇒ 调用方**如实退休**（与
+    ///   [`PreparedSfz::sample`] 落空同径）；
+    /// * `one_shot`（[`PreparedRegion::ignores_note_off`]）⇒ 终点取 `u64::MAX`
+    ///   ＝「note-off ⛔ 不切它」；其余模式原样带出 `voice.end_sample`；
+    /// * 循环窗口按**该声部自己那份 PCM** 的长度归约（[`PreparedRegion::loop_window`]）。
+    fn slot_readings(plan: &PreparedSfz, voice: SfzVoice) -> Option<(Option<LoopWindow>, u64)> {
+        let region = plan.regions().get(voice.region_index as usize)?;
+        let pcm_len = plan.sample(voice.sample_index)?.pcm().len();
+        let end_sample = if region.ignores_note_off() {
+            u64::MAX
+        } else {
+            voice.end_sample
+        };
+        Some((region.loop_window(pcm_len), end_sample))
     }
 
     /// 释放**一个**槽：声部与挂起者一起退休（淡出状态归 [`FadeRamp::NONE`]）。

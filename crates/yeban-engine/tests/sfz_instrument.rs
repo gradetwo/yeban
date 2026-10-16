@@ -38,6 +38,12 @@
 //! | ⭐ S25 | ⭐ **摊平表字节读数拆开 ＋ 预算判据**（本单新增；`sfz-needs-8` 的"可判"那一半） | **字节**：区域表 ＝ `size_of::<PreparedRegion>() × 3`、PCM ＝ `4 × 2400`、路径文本 ＝ `10`、合计 ＝ `memory_bytes()`；预算 `N = SfzByteBudget::for_layout(3, 2400, 10)` ⇒ 三项**各自** `bytes ≤ N`、超出读数**全 0**；⭐ **内置反向腿**：三个维度**各自** −1 字节 ⇒ 该维度恰好报 **1** 字节超出、`is_within() == false` |
 //! | ⭐ S26 | ⭐ **超预算会怎样：引擎只报数**（本单新增；`sfz-needs-8` 的口径） | 真的超预算的臂（预算按"只给 `a.wav`"声明 ⇒ PCM 超 **7680** 字节）：`prepare_with_samples` 仍 **`Ok`**（⛔ 不报错）、读数逐项（区域表 0 ／ PCM 7680 ／ 路径 0）；⭐ **摊平结果逐位不变**：`budget_overrun` 前后的 `byte_usage`／`sample_count`／`pcm_bytes`／`region_count`／**渲染输出**全部相同（零预算 ⇒ 三项全报超，仍不改表） |
 //! | ⭐ S27 | ⭐ **1 GiB 级音色库今天可判**（本单新增；`sfz-needs-8` 的动机） | ⛔ **不真的分配 1 GiB**：`SfzByteUsage::new(区域表, 1 GiB, 路径)` 对 `SfzByteBudget::new(区域表, 512 MiB, 路径)` 报出**恰好** `536 870 912` 字节超出（`is_within() == false`）；反向腿：上界给**恰好 1 GiB** ⇒ **通过**（闭区间，⛔ 判据不是"永远红"） |
+//! | ⭐ S28 | ⭐ **循环周期逐样本精确**（任务 `#91` 新增；`sfz-needs-6` 的"循环"那一半） | **源采样下标序列**（斜坡夹具 `pcm[i] = (i+1)/1024` ⇒ 输出可**逐帧反解下标**）：`loop_continuous`、窗口 `[100,164)` ⇒ 下标序列**逐帧**等于 `t<100 ? t : 100 + (t−100) mod 64`（**0 处不符**）；⭐ **实测最小周期**（首个窗口段重复位置）**恰好** `64 ＝ loop_end − loop_start`；反向腿：窗口段必须 ≥ 2 个不同位模式（⛔ 防空转） |
+//! | ⭐ S29 | ⭐ **`no_loop` / `one_shot` 都不循环 ＋ `one_shot` 忽略 note-off**（任务 `#91` 新增） | 两份夹具**都写了** `loop_start/loop_end`：`no_loop` ⇒ 非零 **399**（播到样本尾后**逐位静音**，⛔ 不重复）；`one_shot` ⇒ 非零 **399**（同样不循环）；⭐ `one_shot` ＋ `end_sample=100` ⇒ 仍 **399**（**忽略 note-off**）；⭐ **反向腿**：`no_loop` ＋ `end_sample=100` ⇒ 恰好 **100**（证明 `end_sample` 真的在切，⛔ 空绿） |
+//! | ⭐ S30 | ⭐ **字段真的被播放层读到**（任务 `#91` 新增；§4.3 的常驻腿） | 两份**只差 `loop_end` 一个数**的夹具（`164` / `200`）⇒ `PreparedRegion::loop_end()` 与 `loop_window()` 逐字回读 ＋ **实测周期分别为 64 / 100**、下标序列各自**逐帧精确** ⇒ 字段错一位（或只"搬了个字段"而没接线）**必红** |
+//! | ⭐ S31 | ⭐ **输入政策不变：非法取值仍响亮 `Err`**（任务 `#91` 新增；第 259 条） | 引擎路径上：集合外 `loop_mode` ⇒ `SfzError::InvalidOption`；越界 `loop_start` ⇒ `SfzError::IntegerOutOfRange`（⛔ **不是**"降级 ＋ 记录"）；⭐ 唯一例外臂：`loop_end <= loop_start`（两值各自合法、组合退化）⇒ `load` **`Ok`** ＋ `loop_window() == None` ＝ **按不循环渲染**（既有语义，⛔ 不加新机制） |
+//! | ⭐ S32 | ⭐ **`loop_sustain` ≡ `loop_continuous` 的登记可判**（任务 `#91` 新增） | `include_str!("../src/sfz_instrument.rs")` 必须含字面量"`note-off 后两者的差别（走完当前循环再进释放）属 ADSR 片、本片不声称已实现`"；反向腿：文档里**没有**的那句 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真） |
+//! | ⭐ S33 | ⭐ **不带任何 `loop_*` 的既有夹具逐位不变**（任务 `#91` 新增；§4.4） | 既有夹具 [`TWO_MATCH_ONE_MISS`] 经 `render_track` 实时路径 512 帧 @ `(60,127)` 的 **FNV-1a 指纹** ＝ **改动前实测** `0xa933ddab286bdf5e`（基线探针：`flat` 与 `engine` 两条路同值、`max\|Δ\| = 0`）；⭐ **反向腿**：同一输出乘 `1.0000001` ⇒ 指纹**必须变**（证明它是逐位判据、⛔ 不是"有输出就算过"） |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -69,11 +75,24 @@ use yeban_model::{
     DeviceDefinition, DeviceKind, EntityId, ParameterValue, SamplerBinding, TrackKind, TrackV3,
     YebanProjectV1,
 };
+// ⭐ 任务 `#91`：循环判据要读**生效循环模式**与 `yeban-sfz` 的两类**响亮 `Err`**
+// （⛔ 判据不复制它们的取值，只引用唯一权威事实源）。
+use yeban_sfz::error::SfzError;
+use yeban_sfz::instrument::LoopMode;
 
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
 /// ⚠ 它的作用是**跨提交对账**（步 2 vs 步 3 的同一条广播路径逐位不变），⛔ 不是规范常数。
 const BROADCAST_STEP2_FINGERPRINT: u64 = 0xa933_ddab_286b_df5e;
+
+/// ⭐ **改动前实测**（任务 `#91` 的 §4.4）：既有夹具 [`TWO_MATCH_ONE_MISS`]（**不带任何
+/// `loop_*`**）经 `render_track` **实时路径**渲染 512 帧 @ `(60,127)` 的 FNV-1a 指纹。
+///
+/// 测法与测后处置见 [`s33_a_fixture_without_any_loop_fields_renders_bit_identically`]
+/// 的文档：在 HEAD `5ac570eb`、**工作树干净**时用一次性探针测得，探针随后删除。
+/// ⚠ 与 [`BROADCAST_STEP2_FINGERPRINT`]（摊平路径）同值 —— 两条独立来路的交叉印证
+/// （`S1` 曾把"引擎逐样本 == 摊平逐样本"钉成 `max|Δ| = 0`）。
+const NO_LOOP_FIXTURE_FINGERPRINT: u64 = 0xa933_ddab_286b_df5e;
 
 /// FNV-1a 64（逐位；把每个 `f32` 的 4 个字节按小端卷进哈希）。
 fn fnv1a_64(samples: &[f32]) -> u64 {
@@ -749,6 +768,11 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
     // 触发序号 8）＋ 挂起标志 16 ＋ 两个计数器（丢弃/窃取/序号舵）⇒ 池 648 → **1712**、
     // `SynthEngine` 91984 → **109152**、`EngineRuntime` 162832 → **180000**
     // （仍 < 192 KiB，余量 16608 字节）。
+    // ⭐ **本单（循环接线 `#91`）的代价 ＝ 0 字节**：声部只多一个 `region_index: u16`
+    // （循环窗口由**区域**拥有，见 [`SfzVoice::region_index`]），它落在**既有尾部填充**里
+    // ⇒ `SfzVoice` 仍 **40 B**、池仍 **1712**、`EngineRuntime` 仍 **180000**（余量仍 16608）。
+    // ⚠ 涨价的是**摊平表**：`PreparedRegion` 2624 → **2632 B**（+8；三个循环字段），
+    // 它按**区域数**计（`S25` 的预算读数跟着走），⛔ 不进实时对象。
     assert_eq!(voice, 40, "一个 SFZ 声部 = 40 字节（定长、全 `Copy`）");
     assert_eq!(
         pool, 1712,
@@ -2736,5 +2760,453 @@ fn s27_a_gib_scale_library_is_visible_to_the_budget() {
     assert!(
         usage.overrun(&exact).is_within(),
         "⭐ 上界恰好等于占用时必须**通过**（闭区间，与 `PcmBudget` 同口径）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S28～S33：**SFZ 循环点接进实时播放**（任务单 `#91` 的"循环那一半"）
+//
+// ⚠ **本单是接线，⛔ 不是新实现**：`loop_start` / `loop_end` / `loop_mode` 的解析
+// 与"哪些模式才循环 / 退化窗口不循环"的裁决**早就存在**于 `yeban-sfz`
+// （`instrument.rs` 的 `Region` 三字段与 `LoopMode` 白名单、`playback.rs` 的
+// `Region::loop_window`）。缺的只是**播放层装不下** —— 摊平表此前不携带这三个字段。
+// 本片把它们搬进 `PreparedRegion`、在唯一的逐样本循环 `mix_span_into` 里回绕，
+// 并按 `region_index` 从逐块路径读回。
+//
+// 判据的分工：
+//   * S28 —— 周期**逐样本精确**（下标序列，⛔ 不是"波形看起来在重复"）；
+//   * S29 —— `no_loop` / `one_shot` **不循环** ＋ `one_shot` 忽略 note-off；
+//   * S30 —— 字段**真的**被播放层读到（两份只差一个数的夹具）；
+//   * S31 —— 输入政策不变（非法取值仍响亮 `Err`）；
+//   * S32 —— `loop_sustain ≡ loop_continuous` 的登记**可判**；
+//   * S33 —— 不带 `loop_*` 的既有夹具**逐位不变**（改动前实测指纹）。
+// ---------------------------------------------------------------------------
+
+/// ⭐ 循环夹具的 PCM 长度（帧；`rate` 恒 1.0 ⇒ 源下标与输出帧一一对应）。
+const LOOP_PCM_FRAMES: usize = 400;
+
+/// ⭐ 循环窗口（源采样点；半开 `[LOOP_START, LOOP_END)`）。
+const LOOP_START: usize = 100;
+const LOOP_END: usize = 164;
+
+/// ⭐ 循环周期 ＝ `loop_end − loop_start`（帧）。
+const LOOP_PERIOD: usize = LOOP_END - LOOP_START;
+
+/// ⭐ 渲染帧数：跨过 **3 整圈**（⇒ "周期"不是从一段里猜的）。
+const LOOP_RENDER_FRAMES: usize = LOOP_END + 3 * LOOP_PERIOD;
+
+/// ⭐ **可解码的斜坡样本**：`pcm[i] = (i + 1) / 1024`。
+///
+/// 分母是 2 的幂 ⇒ 在 binary32 下**逐位精确**（`i < 2²⁴`）。
+/// ⚠ 从 `i + 1` 起（⛔ 不是 `i`）：`pcm[0]` **必须非零**，否则"非零帧数"会把第 0 帧
+/// 误记成静音（本单实测过一次 off-by-one）。
+/// `gain == 1.0` 时输出**恰好**等于源采样值 ⇒ 判据可以把每个输出帧**反解成源采样
+/// 下标**，从而把"循环周期"量成**下标的精确序列**，⛔ 不是"波形看起来像在重复"。
+fn ramp_sample(frames: usize) -> InMemorySample {
+    InMemorySample {
+        pcm: (0..frames)
+            .map(|frame| (frame + 1) as f32 / 1024.0)
+            .collect(),
+        sample_hz: 48_000.0,
+    }
+}
+
+/// ⭐ 摊平一份**自己给样本**的 SFZ（循环夹具用）。
+fn prepare_with(text: &str, sample: &InMemorySample) -> PreparedSfz {
+    let instrument = SfzInstrument::load(text.to_owned(), &Default::default())
+        .expect("循环夹具的 SFZ 必须解析成功");
+    PreparedSfz::prepare(&instrument, sample, 48_000.0).expect("摊平必须成功")
+}
+
+/// ⭐ 单区域循环夹具的 SFZ 文本（`key=60`、零移调 ⇒ `rate == 1.0`）。
+fn loop_sfz(mode: &str, loop_start: usize, loop_end: usize) -> String {
+    format!(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode={mode} \
+         loop_start={loop_start} loop_end={loop_end}\n"
+    )
+}
+
+/// ⭐ 从输出帧**反解源采样下标**（斜坡夹具专用；见 [`ramp_sample`]）。
+fn source_index_at(out: &[f32], frame: usize) -> usize {
+    (out[frame] * 1024.0) as usize - 1
+}
+
+/// ⭐ 触发**一个**声部并渲染 `frames` 帧（实时池路径；⭐ 本单的目标路径）。
+fn render_pool(plan: &PreparedSfz, end_sample: u64, frames: usize) -> Vec<f32> {
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let created = pool.trigger_note(plan, 60, 127, end_sample, 1.0);
+    assert_eq!(created, 1, "单区域夹具 ⇒ 恰好建 1 个声部");
+    let mut out = vec![0.0f32; frames];
+    pool.render_into(plan, 0, &mut out);
+    out
+}
+
+/// ⭐ **实测最小周期**：窗口段 `out[start..start+8)` 第一次**逐位重复**的位置减去 `start`。
+///
+/// ⛔ 不是"数非零点"：斜坡夹具下任何小于真周期的平移都会**逐位不同** ⇒ 首个重复位置
+/// 就是真周期。
+fn detect_period(out: &[f32], start: usize, search_to: usize) -> usize {
+    const WINDOW: usize = 8;
+    let head = &out[start..start + WINDOW];
+    for candidate in (start + 1)..=search_to {
+        if out[candidate..candidate + WINDOW] == *head {
+            return candidate - start;
+        }
+    }
+    panic!(
+        "⭐ 在 [{}..{}] 内找不到周期（说明逐样本路径根本没回绕）",
+        start + 1,
+        search_to
+    );
+}
+
+/// ⭐ **循环段下标序列的逐帧对账**：`t < start` ⇒ `t`；否则 `start + (t−start) mod period`。
+fn loop_index_mismatches(out: &[f32], start: usize, period: usize) -> usize {
+    out.iter()
+        .enumerate()
+        .filter(|(frame, _)| {
+            let expected = if *frame < start {
+                *frame
+            } else {
+                start + (*frame - start) % period
+            };
+            source_index_at(out, *frame) != expected
+        })
+        .count()
+}
+
+/// ⭐ S28（任务单 `#91`；`sfz-needs-6` 的"循环"那一半）：**循环周期逐样本精确**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 一个实时 SFZ 声部（[`SfzVoicePool`]）渲染出的一段输出；单位 ＝ **源采样下标**
+/// （由斜坡夹具**逐帧反解**，见 [`ramp_sample`]）。
+///
+/// # 判定量
+///
+/// * 摊平表**真的**带出了三个循环字段（`loop_start` / `loop_end` / `loop_mode`）——
+///   ⛔ 否则这条判据量到的只是 `PlaybackSpec` 里的读数；
+/// * 下标序列**逐帧**等于 `t < 100 ? t : 100 + (t−100) mod 64`（**0 处不符**）；
+/// * ⭐ **实测最小周期**（首个窗口段逐位重复的位置）**恰好** `64 ＝ loop_end − loop_start`；
+/// * ⭐ 反向腿（⛔ 防空转）：窗口段 `[100,164)` 必须 ≥ 2 个**不同位模式**。
+#[test]
+fn s28_the_loop_cycle_is_exactly_loop_end_minus_loop_start() {
+    let plan = prepare_with(
+        &loop_sfz("loop_continuous", LOOP_START, LOOP_END),
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let region = &plan.regions()[0];
+    assert_eq!(
+        (region.loop_start(), region.loop_end()),
+        (LOOP_START as u32, LOOP_END as u32),
+        "⭐ 摊平表必须**真的**带出 `loop_start` / `loop_end`（⛔ 不是只落在 `PlaybackSpec` 里）"
+    );
+    assert_eq!(
+        region.loop_mode(),
+        LoopMode::LoopContinuous,
+        "⭐ 生效循环模式必须进摊平表"
+    );
+    let window = region
+        .loop_window(LOOP_PCM_FRAMES)
+        .expect("loop_continuous ＋ 合法窗口 ⇒ 必须有窗口");
+    assert_eq!(
+        (window.start as usize, window.end as usize),
+        (LOOP_START, LOOP_END),
+        "归约后的窗口必须逐字等于文件里的两个数"
+    );
+
+    let out = render_pool(&plan, u64::MAX, LOOP_RENDER_FRAMES);
+    let nonzero = out.iter().filter(|sample| **sample != 0.0).count();
+    let mismatches = loop_index_mismatches(&out, LOOP_START, LOOP_PERIOD);
+    let measured = detect_period(&out, LOOP_START, LOOP_END);
+    let distinct = out[LOOP_START..LOOP_END]
+        .iter()
+        .map(|sample| sample.to_bits())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    println!(
+        "[engine-sfz/S28] 窗口 = [{LOOP_START},{LOOP_END}) ⇒ 声明周期 = {LOOP_PERIOD}；\
+         {LOOP_RENDER_FRAMES} 帧里非零 = {nonzero}；⭐ **实测最小周期** = {measured}；\
+         下标序列不符 = {mismatches}；窗口段不同位模式 = {distinct}；\
+         前 8 帧下标 = {:?}、回绕点前后（163,164,165）= {:?}",
+        (0..8)
+            .map(|frame| source_index_at(&out, frame))
+            .collect::<Vec<_>>(),
+        (163..166)
+            .map(|frame| source_index_at(&out, frame))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        nonzero, LOOP_RENDER_FRAMES,
+        "循环声部必须写满整段（⛔ 不因'样本播完'退休）"
+    );
+    assert_eq!(
+        mismatches, 0,
+        "⭐ 下标序列必须**逐帧精确**（⛔ 这不是'波形看起来在重复'）"
+    );
+    assert_eq!(
+        measured, LOOP_PERIOD,
+        "⭐ **实测周期必须恰好等于 `loop_end − loop_start`**（实得 {measured}）"
+    );
+    assert!(
+        distinct >= 2,
+        "⭐ 反向腿：窗口段必须 ≥ 2 个不同位模式（否则'周期'可能是常数段的假象）"
+    );
+}
+
+/// ⭐ S29（任务单 `#91`）：**`no_loop` / `one_shot` 都不循环**，且 **`one_shot` 忽略 note-off**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 实时池的输出（斜坡夹具 400 帧 ⇒ 源下标可反解）；单位 ＝ **非零帧数**
+/// （⛔ 不是"有没有声音"：`no_loop` 与 `one_shot` 都**必须**出声，只是**不重复**）。
+///
+/// # 为什么四条腿都要
+///
+/// * 两份夹具都**写了** `loop_start=100 loop_end=164` ⇒ 若播放层不看 `loop_mode`
+///   就会循环（非零会远超 399）⇒ 这两条腿把"模式被读到"钉住；
+/// * `one_shot` ＋ `end_sample=100` ⇒ 非零仍 **399** ＝ **忽略 note-off**；
+/// * ⭐ **反向腿**：`no_loop` ＋ `end_sample=100` ⇒ 恰好 **100**
+///   （证明 `end_sample` **真的在切**，否则"忽略 note-off"那一条是空绿）。
+#[test]
+fn s29_no_loop_and_one_shot_do_not_loop_and_one_shot_ignores_note_off() {
+    // 样本 400 帧、从源 0 起播：会写下的**最大**帧数（线性插值要读 `index+1`）。
+    const MAX_WRITTEN: usize = LOOP_PCM_FRAMES - 1;
+    let frames = 512usize;
+
+    let no_loop = prepare_with(
+        &loop_sfz("no_loop", LOOP_START, LOOP_END),
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let one_shot = prepare_with(
+        &loop_sfz("one_shot", LOOP_START, LOOP_END),
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    assert!(
+        no_loop.regions()[0].loop_window(LOOP_PCM_FRAMES).is_none(),
+        "`no_loop` 即使写了 `loop_start`/`loop_end` 也⛔ 不产生窗口"
+    );
+    assert!(
+        one_shot.regions()[0].loop_window(LOOP_PCM_FRAMES).is_none(),
+        "`one_shot` 同样⛔ 不产生窗口"
+    );
+
+    let no_loop_out = render_pool(&no_loop, u64::MAX, frames);
+    let one_shot_out = render_pool(&one_shot, u64::MAX, frames);
+    let one_shot_held = render_pool(&one_shot, 100, frames);
+    let no_loop_cut = render_pool(&no_loop, 100, frames);
+
+    let count = |out: &[f32]| out.iter().filter(|sample| **sample != 0.0).count();
+    println!(
+        "[engine-sfz/S29] no_loop ⇒ 非零 = {}；one_shot ⇒ 非零 = {}；\
+         one_shot ＋ end_sample=100 ⇒ 非零 = {}；⭐ no_loop ＋ end_sample=100（反向腿）⇒ 非零 = {}；\
+         （样本 {LOOP_PCM_FRAMES} 帧 ⇒ 不循环时上限 {MAX_WRITTEN}）",
+        count(&no_loop_out),
+        count(&one_shot_out),
+        count(&one_shot_held),
+        count(&no_loop_cut),
+    );
+    for (label, out) in [("no_loop", &no_loop_out), ("one_shot", &one_shot_out)] {
+        assert_eq!(
+            count(out),
+            MAX_WRITTEN,
+            "⭐ `{label}` **不循环**：播到样本尾就停（⛔ 不是从 `loop_start` 重播）"
+        );
+        assert!(
+            out[MAX_WRITTEN..].iter().all(|sample| *sample == 0.0),
+            "⭐ `{label}`：样本尾之后必须是**逐位静音**（⛔ 不是重复）"
+        );
+    }
+    assert_eq!(
+        count(&one_shot_held),
+        MAX_WRITTEN,
+        "⭐ `one_shot` **忽略 note-off**：`end_sample=100` 到点⛔ 不切它"
+    );
+    assert_eq!(
+        count(&no_loop_cut),
+        100,
+        "⭐ 反向腿：`no_loop` 在 `end_sample=100` 处**恰好**停 100 帧\
+         （证明 `end_sample` 真的在切，⛔ 否则上一条是空绿）"
+    );
+}
+
+/// ⭐ S30（任务单 `#91`；§4.3 的**常驻腿**）：字段**真的**被逐样本路径读到。
+///
+/// # 为什么需要它（把"接线"与"只是搬了个字段"分开）
+///
+/// 一份"搬了字段但没接线"的实现，让 `PreparedRegion` 带上 `loop_start` / `loop_end`
+/// 也能通过类型检查、也能让 S9 的尺寸读数变化 —— 但⛔ **不会**让周期跟着字段走。
+/// 本判据用两份**只差 `loop_end` 一个数**的夹具（`164` / `200`），要求：
+///
+/// * 回读的字段与归约窗口**逐字**等于文件里的数；
+/// * **实测最小周期**分别为 `64` / `100`，且下标序列各自**逐帧精确**。
+///
+/// ⇒ 字段错一位（或没接线）**必红**。
+#[test]
+fn s30_the_loop_window_really_feeds_the_per_sample_path() {
+    for (loop_end, period) in [(164usize, 64usize), (200usize, 100usize)] {
+        let plan = prepare_with(
+            &loop_sfz("loop_continuous", LOOP_START, loop_end),
+            &ramp_sample(LOOP_PCM_FRAMES),
+        );
+        let region = &plan.regions()[0];
+        assert_eq!(
+            (region.loop_start(), region.loop_end()),
+            (LOOP_START as u32, loop_end as u32),
+            "回读的循环字段必须逐字等于文件"
+        );
+        let window = region.loop_window(LOOP_PCM_FRAMES).expect("有效窗口");
+        assert_eq!(
+            (
+                window.start as usize,
+                window.end as usize,
+                window.len() as usize
+            ),
+            (LOOP_START, loop_end, period),
+            "归约窗口与长度"
+        );
+
+        let frames = loop_end + 3 * period;
+        let out = render_pool(&plan, u64::MAX, frames);
+        let measured = detect_period(&out, LOOP_START, loop_end);
+        let mismatches = loop_index_mismatches(&out, LOOP_START, period);
+        println!(
+            "[engine-sfz/S30] loop_end = {loop_end} ⇒ 声明周期 = {period}；\
+             实测周期 = {measured}；下标序列不符 = {mismatches}（帧数 {frames}）"
+        );
+        assert_eq!(
+            measured, period,
+            "⭐ 实测周期必须跟着 `loop_end` 走（⛔ 只搬字段不接线会在这里红）"
+        );
+        assert_eq!(mismatches, 0, "⭐ 下标序列逐帧精确");
+    }
+}
+
+/// ⭐ S31（任务单 `#91`；第 259 条）：**非法循环输入仍响亮 `Err`**，⛔ 不静默降级。
+///
+/// # 判定量（逐条）
+///
+/// * 集合外 `loop_mode` ⇒ `SfzError::InvalidOption`（`yeban-sfz` 的 `as_option` 白名单）；
+/// * 越界 `loop_start` ⇒ `SfzError::IntegerOutOfRange`（`read_u32`）；
+/// * ⭐ **唯一保留的一档**：`loop_end <= loop_start`（两个值**各自合法**、只有**组合**
+///   退化）⇒ `load` **`Ok`**、`loop_window() == None` ＝ **按不循环渲染**
+///   ——既有语义，本片⛔ 不加新机制、⛔ 不报错。
+#[test]
+fn s31_illegal_loop_input_still_fails_loudly_on_the_engine_path() {
+    let load = |text: &str| SfzInstrument::load(text.to_owned(), &Default::default());
+
+    let bad_mode = load("<region> sample=a.wav loop_mode=bogus\n")
+        .expect_err("⭐ 集合外的 `loop_mode` 必须**响亮报错**（⛔ 不许降级 ＋ 记录）");
+    assert!(
+        matches!(bad_mode, SfzError::InvalidOption { .. }),
+        "⭐ 必须是 `InvalidOption`（白名单拒绝），实得 {bad_mode:?}"
+    );
+
+    let bad_start = load(
+        "<region> sample=a.wav loop_mode=loop_continuous loop_start=99999999999999 loop_end=20\n",
+    )
+    .expect_err("⭐ 越界的 `loop_start` 必须**响亮报错**（⛔ 不许降级）");
+    assert!(
+        matches!(bad_start, SfzError::IntegerOutOfRange { .. }),
+        "⭐ 必须是 `IntegerOutOfRange`，实得 {bad_start:?}"
+    );
+
+    // ⭐ 唯一保留的一档：组合退化 ⇒ `Ok` ＋ 不循环（既有语义）。
+    let degenerate = load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous loop_start=100 loop_end=100\n",
+    )
+    .expect("⭐ 两个值各自合法 ⇒ `load` 必须 `Ok`（⛔ 不新增降级机制）");
+    let plan = PreparedSfz::prepare(&degenerate, &ramp_sample(LOOP_PCM_FRAMES), 48_000.0)
+        .expect("摊平必须成功");
+    let window = plan.regions()[0].loop_window(LOOP_PCM_FRAMES);
+    println!(
+        "[engine-sfz/S31] `loop_mode=bogus` ⇒ {bad_mode:?}；越界 `loop_start` ⇒ {bad_start:?}；\
+         退化窗口（`loop_end == loop_start`）⇒ `load` Ok、`loop_window` = {window:?}"
+    );
+    assert!(
+        window.is_none(),
+        "⭐ `loop_end <= loop_start` ⇒ 既有语义是**按不循环渲染**（⛔ 不是死循环窗口）"
+    );
+}
+
+/// ⭐ S32（任务单 `#91`）：**`loop_sustain ≡ loop_continuous` 的登记可判**。
+///
+/// # 判定量
+///
+/// `include_str!("../src/sfz_instrument.rs")`（模块头**源码**）必须含那条**逐字**登记；
+/// ⭐ 反向腿：文档里**没有**的那一句 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真）。
+///
+/// ⚠ 形态照本仓"文本即判据"的既有做法（如 `yeban-engine/src/level.rs` /
+/// `yeban-app/tests/engine_device_leg.rs` 的 `include_str!` 断言）。
+#[test]
+fn s32_the_loop_sustain_equivalence_is_registered_in_the_module_doc() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const NEEDLE: &str =
+        "note-off 后两者的差别（走完当前循环再进释放）属 ADSR 片、本片不声称已实现";
+    println!(
+        "[engine-sfz/S32] 模块头含登记 = {}；反向腿（文档里没有的句子）= {}",
+        MODULE_SOURCE.contains(NEEDLE),
+        MODULE_SOURCE.contains("note-off 后两者的差别属本片已实现"),
+    );
+    assert!(
+        MODULE_SOURCE.contains(NEEDLE),
+        "⭐ 模块头必须逐字登记：{NEEDLE}"
+    );
+    assert!(
+        !MODULE_SOURCE.contains("note-off 后两者的差别属本片已实现"),
+        "⭐ 反向腿：文档里**没有**的句子必须 `contains == false`（否则判据恒真）"
+    );
+}
+
+/// ⭐ S33（任务单 `#91`；§4.4）：**不带任何 `loop_*` 的既有夹具逐位不变**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 既有夹具 [`TWO_MATCH_ONE_MISS`]（**一个 `loop_*` 都没有**）经
+/// `SynthEngine::render_track` 实时路径渲染的 512 帧；单位 ＝ **FNV-1a 64 指纹**（逐位）。
+///
+/// # 字面值的来源（⭐ 改动前实测）
+///
+/// `0xa933ddab286bdf5e` 是**基线探针**（`git checkout` 回 HEAD `5ac570eb`、工作树干净时
+/// 运行、测后删除）在本机 `aarch64/macos` 上量到的**同一个夹具、同一段 512 帧**的读数：
+/// 摊平路径与**引擎实时路径**两条路**同值**、`max|engine − flat| = 0`。
+/// ⭐ 它同时等于既有 [`BROADCAST_STEP2_FINGERPRINT`]（步 2 实测）——两条独立来路的
+/// 交叉印证。
+///
+/// # 反向腿（⛔ 让"绿"不能是空的）
+///
+/// 把同一段输出**乘 `1.0000001`** ⇒ 指纹**必须变**（证明它是**逐位**判据，
+/// ⛔ 不是"有输出就算过"）。
+#[test]
+fn s33_a_fixture_without_any_loop_fields_renders_bit_identically() {
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let track = EntityId::new();
+    let mut engine = engine_with_track(track);
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let mut out = vec![0.0f32; BLOCK];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut out);
+    let actual = fnv1a_64(&out);
+    // ⭐ 反向腿：逐位判据的敏感性见证。
+    let scaled: Vec<f32> = out.iter().map(|sample| sample * 1.000_000_1).collect();
+    let scaled_hash = fnv1a_64(&scaled);
+    println!(
+        "[engine-sfz/S33] 无 `loop_*` 夹具（512 帧 @60,127）：非零 = {}、指纹 = 0x{actual:016x}\
+         （改动前实测 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）；\
+         反向腿（× 1.0000001）指纹 = 0x{scaled_hash:016x}（必须不同）",
+        out.iter().filter(|sample| **sample != 0.0).count(),
+    );
+    assert!(
+        out.iter().any(|sample| *sample != 0.0),
+        "夹具必须真的出声（否则指纹比对是空转）"
+    );
+    let _checked = check_fingerprint(
+        "S33 无 loop 夹具逐位不变",
+        actual,
+        NO_LOOP_FIXTURE_FINGERPRINT,
+    );
+    assert_ne!(
+        scaled_hash, actual,
+        "⭐ 反向腿：输出乘 1.0000001 ⇒ 指纹**必须**不同（否则判据不是逐位的）"
     );
 }
