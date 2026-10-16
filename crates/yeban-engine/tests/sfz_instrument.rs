@@ -145,6 +145,7 @@
 //! | :--- | :--- | :--- |
 //! | ⭐ S113 | ⭐ ⭐ **`pitch` 族 ＝ `tune` 的别名拼写（同一个调制目标）＋ 三条路一致 ＋ 病态夹具 ＋ 未做两行登记**（任务单 `#118` 新增；§4 八条 —— **本单核心**） | ① **规范逐字 ＋ 关系裁定**（源文本 `contains`）：`pitch_onccN`（`-9600 to 9600`／cents）／`pitch_curveccN`（`0 to 255`）／`pitch_smoothccN`（ms）／`pitch_stepccN` 四条表行 ＋ 别名句 ＋ 裁定「`pitch_*ccN` 归 `ModTarget::Tune`」＋ 语料**两口径**（家族子串 **143**／**33** 文件 vs `opcode token` **39**／**1** 文件）＋ 反向腿（一句不存在的登记必须 `contains == false`）；② **单位矩阵新增行**：`pitch_oncc1` ＝ (`Tune`, `Cents`)、行数 `7 → 8`、格数 `28 → 32`、接受／拒绝 `(17, 11) → (18, 14)`（**两个读数都现算**）；③ **解析与域**：四种写法读得进（`(Tune,1,1200,0)`／`(Tune,2,−2400,0)`／`(Tune,4,600,0)`，`pitch_curvecc3` 只有曲线 ⇒ 不产生项）、`pitch_keycenter` 与静态 `tune=25` **不被吞掉**、越界／畸形／`inf`／`nan` 逐字 `Err`（`value 9601 out of range -9600..=9600`／`expects a number, got \`50%\``／`must be finite, got \`inf\``…）、缺省 ⇒ 空表且任意 CC **逐位相同**；④ **真的生效**：乘子逐位等于「表里的 delta × 曲线」；可读量**首次为负** `55 → 28`、**上升零交叉** 约翻倍；⑤ ⭐ **三条路一致**（`cc ∈ {0,37,100,127}` 逐位相同）＋ ⭐ **病态夹具**（`2^128 ⇒ Inf` 全退休／`16×9600 cc126` 有限 `1.69e38` 各写 1 帧／`2^−128` 次正规各 512 帧／`2^−160 ⇒ 0` 全退休／`192 kHz` 乘积 `Inf` 三路一致退休／`delta=0` 乘子恰 1.0）；⑥ **反向腿**：去掉那一行 ⇒ 两个 CC 值逐位相同（`cc=0` 与无调制臂也相同，如实登记）＋ 三个**承重指纹**逐字不变（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ **既有三族未扰动**（`ampeg_attack`／`amplitude` 各走自己的公式；只有 `pitch` 的 CC 动 ⇒ 它们一动不动）＋ ⭐ **裁定的机械见证**：`tune_oncc2` 与 `pitch_oncc3` 同一 CC 值给出**逐位相同**的乘子，两者同时动 ⇒ **求和**（＝平方）；⑦ **尺寸**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**），另有 `rt_zero_alloc` 的 `[sfz-pitch]` 场景（四元组全 0 ＋ 乘子 ≠ 1）；⑧ **负向**：`pitch_smoothccN`／`pitch_stepccN`（规范有、⛔ 本单不做）**今天按未知 opcode 忽略**（⛔ 不静默吃掉），而 `pitch_curveccN` **必须真的被识别**（同一夹具里两者可分辨） |
 //! | ⭐ S114 | ⭐ ⭐ **`volume` 族 ＝ 第三个单位类别（dB）＋ 三条路一致 ＋ 病态夹具 ＋ 未做行登记**（任务单 `#119` 新增；§4 八条 —— **本单核心**） | ① **规范逐字 ＋ 单位裁定**（源文本 `contains`）：`volume`（`-144 to 6`／dB）／被别名的 delta 行 `gain_ccN`（`-144 to 48`／dB）／`volume_curveccN`（`0 to 255`）／`volume_smoothccN`／`volume_stepccN`（Range 空、Unit `N/A`）五条表行 ＋ 别名句「`volume_ccN` is a valid alias for `gain_ccN`」＋ 裁定「新开 `ModUnit::Decibels`」（⭐ **Modulation 表里⛔ 没有 `volume_onccN` 行**）＋ 语料四口径（`volume_onccN` **2**／**2**、静态 `volume=` **8504**／**284**、家族子串 **49**／**32**、`global_volume_onccN` **47**／**32**）＋ 反向腿 ＋ 第 280 条（`#116` 的历史原句仍在且已标注）；② **单位矩阵新增行**：`volume_oncc1` ＝ (`Volume`, `Decibels`)、行数 `8 → 9`、格数 `32 → 36`、接受／拒绝 `(18, 14) → (19, 17)`（**两个读数都现算**；⚠ `Decibels` 行的格值取 **48** 而非 `50` —— `50` 越**域**）；③ **解析与域**：四种写法读得进（`(Volume,1,12,0)`／`(Volume,2,−24,0)`／`(Volume,4,6,0)`；`volume_curvecc3` 只有曲线 ⇒ 不产生项）、静态 `volume=-6` **不被吞掉**、越界／畸形／`inf`／`nan` 逐字 `Err`（`value 49 out of range -144..=48`／`expects a number, got \`50%\``…）、缺省 ⇒ 空表且任意 CC **逐位相同**；④ **真的生效**：乘子逐位等于 `2 ^ (dB × log2(10) / 20)`（`cc=0` ⇒ 恰 `1.0`；`cc=127`、6 dB ⇒ `1.995262265`），两个 CC 值输出**不同**且 `+6 dB` 是**放大**；⑤ ⭐ **三条路一致**（`cc ∈ {0,37,100,127}` 逐位相同）＋ ⭐ **五个病态夹具**（`20×48 dB ⇒ Inf` 三路一致 512 帧／`20×38 dB ⇒ 9.999955e37` 有限极大／`20×(−39) dB ⇒ 1.000003e-39` 次正规／`20×(−48) dB ⇒ 恰 0` 三路一致全零／`delta=0` 乘子恰 1.0）；⑥ **反向腿**：去掉那一行 ⇒ 两个 CC 值**逐位相同**（乘子逐位 `1.0`）＋ 三个**承重指纹**逐字不变（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ **既有四族未扰动**（`amplitude`／`tune`／`ampeg_attack` 各走自己的公式，双向都不动）；⑦ **尺寸**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**），另有 `rt_zero_alloc` 的 `[sfz-volume]` 场景（四元组全 0 ＋ 乘子 ≈ 1.9952623 ≠ 1）；⑧ **负向**：`volume_smoothccN`／`volume_stepccN`／`gain_ccN`／`gain_onccN`／`global_volume_onccN` 一族（规范有、或有别的实体、⛔ 本单不做）**今天按未知 opcode 忽略**，而 `volume_curveccN` 与裸 `volumeccN` **必须真的被识别**（⭐ `#121` 修订：本行 ① 的语料四口径里，裸 `volume_onccN` **2**／**2** ⇒ ⭐ **实测 3**／**3**、家族子串 **49**／**32** ⇒ ⭐ **实测 50**／**33**、`global_volume_onccN` **47**／**32** ⇒ ⭐ **实测该家族 0**／**0** 而那 **47** 次 ／ **30** 文件的真身是 `lfo*_volume_onccN`；口径 ＝ 剥 `//` 注释 ＋ 行首/空白边界 token ＋ **收 `$` 宏名**，⛔ 上面的原句一字未删，判据 `S115`） |
+//! | ⭐ S116 | ⭐ ⭐ **`ampeg_attack` 三档计数的口径就地可判 ＋ 口径矩阵（≥6 档）＋ `#include` 展开档**（任务单 `#123` 新增；台账第 274／278／289 条） | ① **修订段可判**：引擎模块头必须逐字含「⭐ ⭐ **追加修订段（任务单 `#123`）」／新一节「# ⭐⭐ `ampeg_attack` 三档计数的**口径**（任务单 `#123`）」／三档的口径行（① 家族**子串** ／ ② **不剥注释** token ／ ③ **剥注释** token）／口径声明句「本台账的 `ampeg_attack` 三档口径」，⭐ **原句仍在**（`**2828**` ／ `**844**` ／ `**835**`）；② ⭐ **就地重算三档**（分母 **1398** 份 `assets/samples/**/*.sfz`，对象 ＝ 匹配**次数** ／ 含匹配的**文件数**）：① 子串**⛔ 不剥注释** ＝ **2828 ／ 368**、② `\b…\b\s*=` token **⛔ 不剥注释** ＝ **844 ／ 318**、③ 同 ② **剥** `//` 注释 ＝ **835 ／ 310**；⭐ **②−③ ＝ 9**，那 9 行**逐文件逐行号**钉住（`virtuosity-drums/Programs/mappings/` 的 9 个文件，内容 ＝ `//ampeg_attack=0.001`）；③ ⭐ **口径矩阵 ≥ 6 档**（打印 ＋ 逐档断言）：① 2828 ／ ② 844 ／ ③ 835 ／ ④ 剥注释子串 **2819 ／ 360**（＝ `#122` 勘察到的那个数）／ ⑤ `(^|\s)` 左边界（不剥／剥注释**同值**）**835 ／ 310** ／ ⑥⑦ ⭐ **`#include` 展开后**（解析器尺：`IncludeResolver::resolve` ＋ `SfzSource::text` 拼接）子串 **5144 ／ 353**、token **1000 ／ 315**（`resolve` 成功 **1291** ／ include 失败 **107**）／ ⑧ 宏名位 `ampeg_attack$VAR=` **0**、跨行 **0**、大小写不敏感与 ① 同值、⚠ 也剥 `/* */` ＝ **2786 ／ 359**（**口径陷阱**：语料 18 处 `/*` 全在 `//****` 横幅里，不容错的剥法吞掉 9 个文件）；④ **反向腿 ＋ 指纹**：三个承重 `FNV-1a 64` 指纹逐字复跑（`0xa9dec8a87f69106c` ／ `0xd3c2a82076bd8947` ／ `0xa933ddab286bdf5e`）＋ `× 1.0000001` ⇒ **必变**；⭐ 有牙反向腿：模块头里**没有**的句子（「844 与 2828 都复现不出」）⇒ `contains == false`；⑤ **尺寸**：`PreparedRegion=6160` ／ `SfzVoice=40` ／ `SfzVoicePool=1712` ／ `EngineRuntime=180144`（**四个全 ＋0**） |
 //! | ⭐ S115 | ⭐ ⭐ **三格错数的修订可判 ＋ 计数口径逐名可判 ＋ `#120` 的"规范无表"依据**（任务单 `#121` 新增） | ① 三处修订**可判**：三格的原句仍在（`contains`）＋ 三条修订句 `contains`（每条写着**原登记 ⇒ 实测 ＋ 口径 ＋ 命令**）＋ `口径 ＝ …`／`命令 ＝ …` 各 ≥ 3 次；② ⭐ **计数口径逐名可判**：`assets/samples/**/*.sfz` **就地重算**（分母 **1398**）并**逐名打印** `名字 = 次数 ／ 文件数` —— 裸档 **3** 次 ／ **3** 文件（`volume_oncc24` 2／2、`volume_oncc$F2_DIS` 1／1）、前缀档 **47** 次 ／ **30** 文件（9 个 `lfo*_volume_onccNNN`）、家族子串 **50** 次 ／ **33** 文件；⭐ **有牙**：裸档名字必须**全部**以 `volume_oncc` 开头 ⇒ 谁把 `lfo*` 的行数算进裸档，`bare_total == 3` 与这条 `all` 至少一条红；⭐ 引擎侧修订段的**逐名表**必须与本判据**现算**的表逐字相同；③ `#120` 的**"规范无 Modulation 表"**依据（三页各只有一张静态表 ＋ **无任何 `_onccN` 行** ＋ 三个 URL ＋ 三个静态表行）＋ ⭐ **反向腿**（§8.5 段内 `规范有`／`另开单`／`本单不做` 必须 `contains == false`，而非真空由"整份文档里确实有 `另开单`"作证）＋ 结构面 `Scopes::get` 扁平 first-match（`instrument.rs:1550-1555`）⇒ 登记为 **需要新面**；④ `size_of` 现读 `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ 三个承重指纹逐字仍在 ＋ `S114` 的 `ABSENT` 反向腿字面量一字未动 |
 //!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
@@ -13948,5 +13949,608 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
         (region, voice, pool, runtime),
         (6160, 40, 1712, 180_144),
         "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐⭐ 任务单 `#123`：`ampeg_attack` 三档计数的**口径**（就地重算 ＋ 矩阵 ＋ 展开档）
+// ---------------------------------------------------------------------------
+
+/// ⭐⭐ S116（任务单 `#123`；台账第 274／278／289 条）：**`ampeg_attack` 三档计数的口径
+/// 就地可判 ＋ 口径矩阵（≥6 档）＋ `#include` 展开档 ＋ 反向腿与三个承重指纹＋四个尺寸**。
+///
+/// # 三档口径（与 `crates/yeban-engine/src/sfz_instrument.rs` 的 `#123` 修订段**逐字同一口径**）
+///
+/// * ① **家族子串** ＝ 裸子串 `ampeg_attack`，**任意位置**、**⛔ 不剥注释**、大小写敏感；
+/// * ② **不剥注释 token** ＝ `\bampeg_attack\b\s*=`（左边界 ＝ 行首或**任一非
+///   `[A-Za-z0-9_]` 字节**，⭐ 含 `/`）、**⛔ 不剥注释**；
+/// * ③ **剥注释 token** ＝ 同 ②，但每行先截掉 `//` 到行尾。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ ① 三档的**匹配次数 ／ 含匹配的文件数**（分母 ＝ `assets/samples/**/*.sfz`
+/// **1398** 份）；② 六档以上口径矩阵的每一格；③ `#include` **展开后**的两档（解析器尺）；
+/// ④ 三个承重 `FNV-1a 64` 指纹与 `× 1.0000001` 的反向腿；⑤ `size_of` 四个读数（**字节**）。
+#[test]
+fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
+    use std::collections::BTreeMap;
+    use yeban_sfz::{IncludeResolver, ParseLimits};
+
+    const ENGINE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+
+    /// ⭐ 左边界用的"词字节"：`\b` 在 Rust 正则里的含义（字母 / 数字 / `_`）。
+    fn is_token_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    /// 数**一行**里的 `\bampeg_attack\b\s*=`（左边界 ＝ 行首或任一非词字节，⭐ 含 `/`）。
+    fn token_hits_in_line(line: &str) -> usize {
+        let bytes = line.as_bytes();
+        let needle = b"ampeg_attack";
+        let mut hits = 0usize;
+        let mut cursor = 0usize;
+        while cursor + needle.len() <= bytes.len() {
+            if &bytes[cursor..cursor + needle.len()] == needle {
+                let left_ok = cursor == 0 || !is_token_byte(bytes[cursor - 1]);
+                let right = cursor + needle.len();
+                let right_ok = right >= bytes.len() || !is_token_byte(bytes[right]);
+                if left_ok && right_ok {
+                    let mut probe = right;
+                    while probe < bytes.len() && bytes[probe].is_ascii_whitespace() {
+                        probe += 1;
+                    }
+                    if probe < bytes.len() && bytes[probe] == b'=' {
+                        hits += 1;
+                    }
+                }
+                cursor += needle.len();
+            } else {
+                cursor += 1;
+            }
+        }
+        hits
+    }
+
+    /// 数**一行**里的 `(^|\s)ampeg_attack\s*=`（⭐ 左边界**只收行首与空白** —— 这正是
+    /// `#122` 用的那一档，它把 `//ampeg_attack=0.001` 挡在门外）。
+    fn token_hits_whitespace_boundary(line: &str) -> usize {
+        let bytes = line.as_bytes();
+        let needle = b"ampeg_attack";
+        let mut hits = 0usize;
+        let mut cursor = 0usize;
+        while cursor + needle.len() <= bytes.len() {
+            if &bytes[cursor..cursor + needle.len()] == needle {
+                let left_ok = cursor == 0 || bytes[cursor - 1].is_ascii_whitespace();
+                if left_ok {
+                    let mut probe = cursor + needle.len();
+                    while probe < bytes.len() && bytes[probe].is_ascii_whitespace() {
+                        probe += 1;
+                    }
+                    if probe < bytes.len() && bytes[probe] == b'=' {
+                        hits += 1;
+                    }
+                }
+                cursor += needle.len();
+            } else {
+                cursor += 1;
+            }
+        }
+        hits
+    }
+
+    /// 剥掉 `/* */` 块注释（⭐ 语料里一个都没有 ⇒ 读数与只剥 `//` 的那一档同值）。
+    fn strip_c_comments(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find("/*") {
+            out.push_str(&rest[..start]);
+            match rest[start + 2..].find("*/") {
+                Some(end) => rest = &rest[start + 2 + end + 2..],
+                None => rest = "",
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    // ---- ① 修订段与三档口径行必须逐字可判（台账第 278 条：原句仍在 ＋ 修订段点名被修订的支） ----
+    let checks = [
+        ("`#123` 追加修订段", "⭐ ⭐ **追加修订段（任务单 `#123`）"),
+        (
+            "`#123` 新一节",
+            "# ⭐⭐ `ampeg_attack` 三档计数的**口径**（任务单 `#123`）",
+        ),
+        ("被修订的支①（`#113` 那一行）", "① `#113` 节语料表里"),
+        (
+            "被修订的支②③（两行「三档对照」）",
+            "节语料表里「三档对照（`ampeg_attack`）",
+        ),
+        ("被修订的支④（`#112` 那一格）", "④ `#112` 节语料表里"),
+        ("① 家族子串的口径行", "| ① 家族**子串** |"),
+        ("② 不剥注释 token 的口径行", "| ② **不剥注释** token |"),
+        ("③ 剥注释 token 的口径行", "| ③ **剥注释** token |"),
+        ("原句仍在：家族子串", "家族子串 **2828**"),
+        ("原句仍在：不剥注释 token 的值", "**844**"),
+        ("原句仍在：剥注释 token 的值", "剥注释 token 835"),
+        ("②−③ 那 9 行的左边界成因", "`(^|\\s)` 型左边界**不收**它"),
+        ("9 行的逐文件逐行号钉住", "`snaremic_basic` :63"),
+        ("矩阵第 ④ 档（`#122` 的 2819）", "**2819**"),
+        ("矩阵第 ⑤ 档（空白左边界）", "| ⑤ |"),
+        ("矩阵第 ⑥⑦ 档（`#include` 展开）", "| ⑥ |"),
+        ("矩阵第 ⑧ 档（宏名 / 跨行）", "| ⑧ |"),
+        ("第 ⑧ 档的口径陷阱读数", "**2786**"),
+        ("口径陷阱的成因（`//****` 横幅）", "分隔横幅"),
+        ("`#include` 展开档的尺子", "第 ⑥⑦ 档的尺子"),
+        ("单位警告（次数 ≠ 行数）", "**匹配次数**与"),
+        ("跨单可比性的口径声明句", "本台账的 `ampeg_attack` 三档口径"),
+        (
+            "点名 `#122` 换错了两档",
+            "`#122` 的两把尺子各自**换错了一档**",
+        ),
+    ];
+    let check_count = checks.len();
+    for (label, needle) in checks {
+        assert!(
+            ENGINE_SOURCE.contains(needle),
+            "⭐ 必须逐字含：{label}（`{needle}`）"
+        );
+    }
+    assert!(
+        !ENGINE_SOURCE.contains("844 与 2828 都复现不出"),
+        "⭐ **有牙反向腿**：模块头里**没有**的句子必须 `contains == false`（否则判据恒真）"
+    );
+    println!(
+        "[engine-sfz/S116] ① 模块头：`#123` 修订段 ＋ 新一节 ＋ 三档口径行 ＋ {check_count} 条逐字针 —— 全部命中"
+    );
+
+    // ---- ② 分母 / 文件集合（对象 ＝ 文件数） ----
+    let corpus_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/samples");
+    let mut all_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![corpus_root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|error| panic!("⭐ 语料目录 {dir:?} 必须存在：{error}"));
+        for entry in entries {
+            let path = entry.expect("目录项").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                all_files.push(path);
+            }
+        }
+    }
+    all_files.sort();
+    let paths: Vec<std::path::PathBuf> = all_files
+        .iter()
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("sfz"))
+        .cloned()
+        .collect();
+    let sfzh = all_files
+        .iter()
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("sfzh"))
+        .count();
+    let upper = all_files
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".SFZ") || n.ends_with(".Sfz"))
+        })
+        .count();
+    println!(
+        "[engine-sfz/S116] ② 文件集合：`assets/samples/**` 下 {} 个文件，其中 `.sfz` **{}** 份、\
+         `.sfzh` **{sfzh}** 份、大写扩展名 **{upper}** 份",
+        all_files.len(),
+        paths.len()
+    );
+    assert_eq!(
+        paths.len(),
+        1398,
+        "⭐ 分母必须 = `find assets/samples -name '*.sfz' | wc -l` = 1398"
+    );
+    assert_eq!(
+        sfzh, 0,
+        "⭐ 本仓 `assets/samples/**` 下没有 `.sfzh` ⇒ 扩展名集合不产生差别"
+    );
+    assert_eq!(
+        upper, 0,
+        "⭐ 本仓 `assets/samples/**` 下没有大写 `.SFZ` 扩展名"
+    );
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut elsewhere: Vec<std::path::PathBuf> = Vec::new();
+    for sub in ["crates", "spikes"] {
+        let mut stack = vec![repo_root.join(sub)];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry.expect("目录项").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
+                    && (ext.eq_ignore_ascii_case("sfz") || ext.eq_ignore_ascii_case("sfzh"))
+                {
+                    elsewhere.push(path);
+                }
+            }
+        }
+    }
+    assert!(
+        elsewhere.is_empty(),
+        "⭐ `crates/**` 与 `spikes/**` 下必须 **0** 个 `.sfz`／`.sfzh`（实测 {elsewhere:?}）\
+         ⇒ 「文件集合」这一档在本仓只剩 `assets/samples/**` 一种选择"
+    );
+
+    // ---- ③ 就地重算三档 ＋ 口径矩阵（每格都现算） ----
+    let mut substring_raw = 0usize;
+    let mut substring_raw_files = 0usize;
+    let mut substring_stripped = 0usize;
+    let mut substring_stripped_files = 0usize;
+    let mut token_raw = 0usize;
+    let mut token_raw_files = 0usize;
+    let mut token_stripped = 0usize;
+    let mut token_stripped_files = 0usize;
+    let mut token_ws_raw = 0usize;
+    let mut token_ws_raw_files = 0usize;
+    let mut token_ws_stripped = 0usize;
+    let mut token_ws_stripped_files = 0usize;
+    let mut c_comment_substring = 0usize;
+    let mut c_comment_substring_files = 0usize;
+    let mut ci_substring = 0usize;
+    let mut ci_token = 0usize;
+    let mut macro_name = 0usize;
+    let mut cross_line = 0usize;
+    let mut hit_lines_raw = 0usize;
+    let mut comment_only: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+
+    for path in &paths {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("⭐ 读 {path:?} 失败：{error}"));
+        let relative = path
+            .strip_prefix(&corpus_root)
+            .expect("⭐ 语料根")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let stripped: String = text
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lowered = text.to_lowercase();
+
+        let raw_hits = text.matches("ampeg_attack").count();
+        substring_raw += raw_hits;
+        if raw_hits > 0 {
+            substring_raw_files += 1;
+        }
+        let stripped_hits = stripped.matches("ampeg_attack").count();
+        substring_stripped += stripped_hits;
+        if stripped_hits > 0 {
+            substring_stripped_files += 1;
+        }
+        let c_hits = strip_c_comments(&text).matches("ampeg_attack").count();
+        c_comment_substring += c_hits;
+        if c_hits > 0 {
+            c_comment_substring_files += 1;
+        }
+        ci_substring += lowered.matches("ampeg_attack").count();
+        ci_token += lowered.split('\n').map(token_hits_in_line).sum::<usize>();
+        macro_name += text.matches("ampeg_attack$").count();
+
+        let mut file_token_raw = 0usize;
+        let mut file_token_stripped = 0usize;
+        let mut file_ws_raw = 0usize;
+        let mut file_ws_stripped = 0usize;
+        let lines: Vec<&str> = text.split('\n').collect();
+        for (index, raw_line) in lines.iter().enumerate() {
+            let code = raw_line.split("//").next().unwrap_or("");
+            let with_comments = token_hits_in_line(raw_line);
+            let without_comments = token_hits_in_line(code);
+            file_token_raw += with_comments;
+            file_token_stripped += without_comments;
+            file_ws_raw += token_hits_whitespace_boundary(raw_line);
+            file_ws_stripped += token_hits_whitespace_boundary(code);
+            if with_comments > without_comments {
+                comment_only
+                    .entry(relative.clone())
+                    .or_default()
+                    .push(index + 1);
+            }
+            if raw_line.contains("ampeg_attack") {
+                hit_lines_raw += 1;
+            }
+        }
+        token_raw += file_token_raw;
+        if file_token_raw > 0 {
+            token_raw_files += 1;
+        }
+        token_stripped += file_token_stripped;
+        if file_token_stripped > 0 {
+            token_stripped_files += 1;
+        }
+        token_ws_raw += file_ws_raw;
+        if file_ws_raw > 0 {
+            token_ws_raw_files += 1;
+        }
+        token_ws_stripped += file_ws_stripped;
+        if file_ws_stripped > 0 {
+            token_ws_stripped_files += 1;
+        }
+        for pair in lines.windows(2) {
+            if pair[0].trim_end().ends_with("ampeg_attack") && pair[1].trim_start().starts_with('=')
+            {
+                cross_line += 1;
+            }
+        }
+    }
+
+    println!(
+        "[engine-sfz/S116] ① 家族子串（裸子串 `ampeg_attack`、任意位置、⛔ 不剥注释、\
+         大小写敏感）：{substring_raw} 次 ／ {substring_raw_files} 文件（分母 {} 份 `.sfz`）",
+        paths.len()
+    );
+    println!(
+        "[engine-sfz/S116] ② 不剥注释 token（左边界 `\\b` ＝ 行首或任一非 `[A-Za-z0-9_]` 字节，\
+         ⛔ 不剥注释）：{token_raw} 次 ／ {token_raw_files} 文件"
+    );
+    println!(
+        "[engine-sfz/S116] ③ 剥注释 token（同 ②，每行先截掉 `//`）：{token_stripped} 次 ／ \
+         {token_stripped_files} 文件"
+    );
+    assert_eq!(
+        (substring_raw, substring_raw_files),
+        (2828, 368),
+        "⭐ ① 家族子串（⛔ 不剥注释）＝ 2828 次 ／ 368 文件"
+    );
+    assert_eq!(
+        (token_raw, token_raw_files),
+        (844, 318),
+        "⭐ ② 不剥注释 token ＝ 844 次 ／ 318 文件"
+    );
+    assert_eq!(
+        (token_stripped, token_stripped_files),
+        (835, 310),
+        "⭐ ③ 剥注释 token ＝ 835 次 ／ 310 文件"
+    );
+
+    // ---- ④ 口径矩阵第 ④⑤⑧ 档（⭐ 每格都现算） ----
+    println!(
+        "[engine-sfz/S116] ④ 子串、剥 `//` 注释（⭐ `#122` 勘察到的那个数就是这一档）：\
+         {substring_stripped} 次 ／ {substring_stripped_files} 文件"
+    );
+    assert_eq!(
+        (substring_stripped, substring_stripped_files),
+        (2819, 360),
+        "⭐ ④ 剥注释子串 ＝ 2819 次 ／ 360 文件（⛔ 不是登记口径）"
+    );
+    println!(
+        "[engine-sfz/S116] ⑤ token、左边界 `(^|\\s)`（行首或空白）：⛔ 不剥注释 {token_ws_raw} 次 ／ \
+         {token_ws_raw_files} 文件；剥注释 {token_ws_stripped} 次 ／ {token_ws_stripped_files} 文件"
+    );
+    assert_eq!(
+        (token_ws_raw, token_ws_raw_files),
+        (835, 310),
+        "⭐ ⑤ 空白左边界档：`//ampeg_attack=0.001` **被挡住** ⇒ 不剥注释也只得 835"
+    );
+    assert_eq!(
+        token_ws_raw, token_ws_stripped,
+        "⭐ ⑤ 左边界只收空白 ⇒ 「剥／不剥注释」两档**同值**（这正是 `#122` 复现不出 844 的原因）"
+    );
+    println!(
+        "[engine-sfz/S116] ⑧ 宏名位 `ampeg_attack$VAR=`：{macro_name} 处；跨行\
+         （`ampeg_attack` 换行后再 `=`）：{cross_line} 处；大小写不敏感子串：{ci_substring} 次、\
+         token：{ci_token} 次；⚠ 也剥 `/* */`（**陷阱档**）：{c_comment_substring} 次 ／ \
+         {c_comment_substring_files} 文件"
+    );
+    assert_eq!(
+        macro_name, 0,
+        "⭐ ⑧ 语料里没有 `ampeg_attack$VAR=` 形式的宏名 opcode"
+    );
+    assert_eq!(
+        cross_line, 0,
+        "⭐ ⑧ 语料里没有跨行的 `ampeg_attack` 换行 `=`"
+    );
+    assert_eq!(ci_substring, substring_raw, "⭐ ⑧ 语料里没有其它大小写拼写");
+    assert_eq!(ci_token, token_raw, "⭐ ⑧ 语料里没有其它大小写拼写");
+    assert_eq!(
+        (c_comment_substring, c_comment_substring_files),
+        (2786, 359),
+        "⚠ ⑧ **口径陷阱**：SFZ **没有**块注释语法（解析器只认 `//`）—— 语料里那 **18** 处 `/*` \
+         字节**全部**落在 `//****…` 分隔横幅里；一个**不容错**（找不到 `*/` 就一直剥到文末）的\
+         天真剥法会在 **9** 个文件里把整份文件吞掉（共丢 **42** 处 ＝ 2828 − 2786）\
+         ⇒ ⛔ 本档不是三档的候选，登记它只为点名这个会静默改读数的坑"
+    );
+    assert_eq!(
+        hit_lines_raw, substring_raw,
+        "⚠ 单位警告（台账第 271／274 条）：本仓 `ampeg_attack` 的**匹配次数**与**命中行数**\
+         偶然同值（各 {hit_lines_raw}）⇒ ⛔ 两个单位不可互换，登记一律用「次数 ／ 文件数」"
+    );
+
+    // ---- ⑤ ②−③ 的 9 行：逐文件逐行号钉住 ----
+    let comment_only_lines: usize = comment_only.values().map(Vec::len).sum();
+    println!(
+        "[engine-sfz/S116] ②−③ 的差额逐文件逐行：{comment_only_lines} 行 ／ {} 文件",
+        comment_only.len()
+    );
+    for (file, lines) in &comment_only {
+        println!("[engine-sfz/S116]   ②−③：{file}:{lines:?}（内容 `//ampeg_attack=0.001`）");
+    }
+    assert_eq!(
+        token_raw - token_stripped,
+        9,
+        "⭐ ②−③ 必须恰为 9（同一批 9 行注释里的 opcode 文本）"
+    );
+    assert_eq!(comment_only_lines, 9, "⭐ 那 9 行必须逐行可判");
+    assert_eq!(
+        comment_only.len(),
+        9,
+        "⭐ 那 9 行分布在 **9** 个文件（`virtuosity-drums/Programs/mappings/`）里"
+    );
+    for name in [
+        "kickmic_all.sfz",
+        "kickmic_basic.sfz",
+        "lofi_all.sfz",
+        "mid_all.sfz",
+        "oh_all.sfz",
+        "oh_basic.sfz",
+        "room_all.sfz",
+        "snaremic_all.sfz",
+        "snaremic_basic.sfz",
+    ] {
+        let key = format!("virtuosity-drums/Programs/mappings/{name}");
+        assert_eq!(
+            comment_only.get(&key).map(Vec::len),
+            Some(1),
+            "⭐ `{key}` 必须恰有 **1** 行注释里的 opcode 文本"
+        );
+    }
+    assert_eq!(
+        token_raw_files - token_stripped_files,
+        8,
+        "⭐ 有 **8** 个文件**只**在注释里出现本 token（第 9 个 `oh_all.sfz` 另有正文命中）"
+    );
+
+    // ---- ⑥ `#include` 展开档（解析器尺） ----
+    let limits = ParseLimits::default();
+    let mut expanded_substring = 0usize;
+    let mut expanded_substring_files = 0usize;
+    let mut expanded_token = 0usize;
+    let mut expanded_token_files = 0usize;
+    let (mut resolved_ok, mut resolve_err, mut parse_err) = (0usize, 0usize, 0usize);
+    for path in &paths {
+        let parent = path.parent().expect("⭐ 父目录");
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("⭐ 文件名");
+        let Ok(resolver) = IncludeResolver::new(parent, limits) else {
+            resolve_err += 1;
+            continue;
+        };
+        match resolver.resolve(name) {
+            Ok(sources) => {
+                resolved_ok += 1;
+                let text: String = sources
+                    .iter()
+                    .map(|source| source.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let hits = text.matches("ampeg_attack").count();
+                expanded_substring += hits;
+                if hits > 0 {
+                    expanded_substring_files += 1;
+                }
+                let tokens: usize = text.split('\n').map(token_hits_in_line).sum();
+                expanded_token += tokens;
+                if tokens > 0 {
+                    expanded_token_files += 1;
+                }
+                if yeban_sfz::parse_sources(&sources, &limits).is_err() {
+                    parse_err += 1;
+                }
+            }
+            Err(_) => resolve_err += 1,
+        }
+    }
+    println!(
+        "[engine-sfz/S116] ⑥⑦ `#include` 展开档（解析器尺：`IncludeResolver::resolve` ＋ \
+         `SfzSource::text` 顺序拼接）：resolve 成功 {resolved_ok} ／ include 解析失败 \
+         {resolve_err} ／ 其中 `parse_sources` 报错 {parse_err}"
+    );
+    println!(
+        "[engine-sfz/S116] ⑥ 展开后**子串**（⛔ 不剥注释）：{expanded_substring} 次 ／ \
+         {expanded_substring_files} 文件"
+    );
+    println!(
+        "[engine-sfz/S116] ⑦ 展开后 **token**（左边界 `\\b`，⛔ 不剥注释）：{expanded_token} 次 ／ \
+         {expanded_token_files} 文件"
+    );
+    assert_eq!(
+        resolve_err, 107,
+        "⭐ include 解析失败数必须与 `yeban-sfz/src/control.rs` 登记的 **107** 逐字一致"
+    );
+    assert_eq!(
+        (expanded_substring, expanded_substring_files),
+        (5144, 353),
+        "⭐ ⑥ `#include` 展开后的子串 ＝ 5144 次 ／ 353 文件"
+    );
+    assert_eq!(
+        (expanded_token, expanded_token_files),
+        (1000, 315),
+        "⭐ ⑦ `#include` 展开后的 token ＝ 1000 次 ／ 315 文件"
+    );
+    assert!(
+        expanded_substring > substring_raw,
+        "⭐ 展开档会把被 include 的文件在每个引用它的根文件里**再数一遍** ⇒ 读数更大\
+         （{expanded_substring} > {substring_raw}）⇒ ⛔ 展开**不是**三档的母体"
+    );
+
+    // ---- ⑦ 三个承重指纹 ＋ `× 1.0000001` 反向腿 ----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, expected) in [
+        (
+            "S37 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            0xa9de_c8a8_7f69_106cu64,
+        ),
+        (
+            "S37 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            0xd3c2_a820_76bd_8947u64,
+        ),
+    ] {
+        let out = render_pool(plan, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!("[engine-sfz/S116] 承重指纹 {label}：0x{actual:016x}（承重 = 0x{expected:016x}）");
+        let _checked = check_fingerprint(&format!("S116 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy_block = vec![0.0f32; BLOCK];
+    let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
+    let legacy = fnv1a_64(&legacy_block);
+    println!(
+        "[engine-sfz/S116] 承重指纹 S33／S14 广播路径 512 帧 @ (60,127)：0x{legacy:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}，写入 {legacy_frames} 帧）"
+    );
+    let _checked = check_fingerprint("S116 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    let scaled: Vec<f32> = legacy_block
+        .iter()
+        .map(|sample| sample * 1.000_000_1)
+        .collect();
+    let scaled_hash = fnv1a_64(&scaled);
+    println!(
+        "[engine-sfz/S116] 反向腿（× 1.0000001）：0x{scaled_hash:016x} ≠ 0x{legacy:016x}\
+         （广播路径写入 {legacy_frames} 帧）"
+    );
+    assert_ne!(
+        scaled_hash, legacy,
+        "⭐ 反向腿：乘 1.0000001 后指纹必须变（证明上面三条是逐位判据）"
+    );
+
+    // ---- ⑧ 尺寸（`size_of` 现读）：本单只改文档 ＋ 判据 ⇒ 四个全 ＋0 ----
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S116] ⑧ size_of: PreparedRegion={region} SfzVoice={voice} \
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}）",
+        192 * 1024
+    );
+    assert_eq!(
+        (region, voice, pool, runtime),
+        (6160, 40, 1712, 180_144),
+        "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0"
     );
 }
