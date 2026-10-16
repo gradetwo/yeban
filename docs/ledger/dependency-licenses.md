@@ -3,7 +3,7 @@
 > 由 `python3 scripts/gates/license_inventory.py` 从 `cargo metadata --locked` 生成。
 > CI 用 `--check` 对账：加依赖/升版本后忘记重新生成，这一项会变红。
 
-- `Cargo.lock` SHA-256（前 16 位）: `686f6322929e4de1`
+- `Cargo.lock` SHA-256（前 16 位）: `d839211772442ccf`
 - 外部依赖包数: **634**（不含 27 个 workspace 成员）
 - 许可来源: 各包 `Cargo.toml` 的 `license` 字段（SPDX 表达式，未经人工改写）
 
@@ -678,7 +678,7 @@
 | `zerotrie` | `0.2.5` | `Unicode-3.0` | 传递 | — |
 | `zerovec` | `0.11.8` | `Unicode-3.0` | 传递 | — |
 | `zerovec-derive` | `0.11.6` | `Unicode-3.0` | 传递 | — |
-| `zip` | `8.6.0` | `MIT` | 直接 | `yeban-diagnostics` |
+| `zip` | `9.0.3` | `MIT` | 直接 | `yeban-diagnostics` |
 | `zlib-rs` | `0.6.8` | `Zlib` | 传递 | — |
 | `zmij` | `1.0.23` | `MIT` | 传递 | — |
 | `zune-core` | `0.5.3` | `MIT OR Apache-2.0 OR Zlib` | 传递 | — |

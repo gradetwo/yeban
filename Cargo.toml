@@ -78,7 +78,7 @@ midly = { version = "0.5.3", default-features = false }
 # enabled (D6). Consumed only behind the `midi-input` feature of crates/yeban-midi-io.
 midir = { version = "=0.11.1", default-features = false }
 notify = { version = "8.2.0", default-features = false }
-zip = { version = "8.6.0", default-features = false }
+zip = { version = "9.0.3", default-features = false }
 flate2 = { version = "1.1.10", default-features = false }
 rstar = { version = "0.13.0", default-features = false }
 signalsmith-stretch = { version = "0.1.3", default-features = false }

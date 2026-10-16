@@ -44,7 +44,9 @@ fn read_entries(zip_path: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).expect("取条目");
-        let name = entry.name().to_owned();
+        // ⚠ `zip` 9 起 `ZipFile::name()` 返回 `Result<Cow<'_, str>, ZipError>`
+        // （旧版返回 `&str`）⇒ 取 Ok 再 `into_owned()` 得到与旧版同形的 `String`。
+        let name = entry.name().expect("条目名").into_owned();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).expect("读条目");
         out.insert(name, bytes);
