@@ -750,6 +750,25 @@ pub struct VisibleNotes {
     /// 音符块顶沿 y。
     pub ys: Vec<f32>,
     /// 音高车道索引。
+    ///
+    /// ⚠ **追加修订段（任务单 `#127`；台账第 283 条）—— ⛔ 只针对 `rows` 这一支**：
+    /// 上面这行与 [`VisibleNotes`] 的字段集合**不删不改**；被修订的是"六个字段同索引集
+    /// ⇒ 六个一起注入宿主"这一支里的 **`rows` 注入面**。实测（`#127`）：宿主
+    /// `apply_view` 从 `visible_notes` 注入的是 **5** 个数组（`ulids` / `velocities` /
+    /// `positions` / `widths` / `ys`），第 6 条注入是 `note-selected`（由
+    /// `flags_for_ids` 从选区现算，⛔ 不是 `rows`）；`rows` 的**宿主生产读点 = 0**
+    /// （只有测试读点与访问器 `ViewState::note_rows` 读它）⇒ 按第 283 条**登记为
+    /// 有意不消费**（⛔ 不是"待接线"、⛔ 不是静默降级）。
+    ///
+    /// **为什么不给它消费者**（代价读数，⛔ 不是判断）：`ys` 已经是同一事实的像素形态
+    /// （`pitch_lane` 一次乘法），宿主与 `.slint` 的绘制/命中路径都只读 `ys`；要真消费
+    /// `rows` 就得新增 `note-rows` 属性 ＋ `apply_view` 里多一个写入点 ⇒ 会动
+    /// `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET`（现 **40**）与
+    /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（现 **31**）⇒ ⛔ 本单禁改那两个读数。
+    ///
+    /// **判据**：`crates/yeban-app/tests/roll_injection_registration.rs` 从 `host.rs`
+    /// 源码**派生**"注入面恰是那 5 个名字 ＋ `rows` 不在其中"（⛔ 不读判据自己所在的文件，
+    /// 第 293 条）。
     pub rows: Vec<i32>,
     /// `note-{ulid}-rect` 的 `{ulid}` 段（语义元素 ID 的一半）。
     pub ulids: Vec<String>,

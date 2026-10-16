@@ -160,11 +160,15 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
     // `[ROAD-M3-002 / BASELINE-003]` **视口裁剪**：只注入可见窗口内的音符。
-    // 六个平行数组（ulids / velocities / positions / widths / ys / rows）必须共用**同一**索引集，
+    // 五个平行数组（ulids / velocities / positions / widths / ys）必须共用**同一**索引集，
     // 否则语义 ID 与力度会和几何错位 —— 所以用 `visible_notes` 一次取走，而不是各数组各裁一遍。
+    // `VisibleNotes::rows`（音高车道索引）**有意不注入**：纵向几何已由投影算进 `ys`
+    // （`pitch_lane` 一次乘法），宿主与 `.slint` 两侧都没有车道索引的消费者
+    // ⇒ 登记与判据见 `bridge.rs` 的 `VisibleNotes::rows` 与 `tests/roll_injection_registration.rs`
+    // （台账第 283 条：生产读点 0；改这里之前先读那条登记）。
     // 位置**相对视口**（投影侧已减去 `scroll_x`）⇒ `.slint` 不做位置算术, 事件路径传 0.0。
     let visible = view.visible_notes(scroll_x, viewport_width);
-    // 选中标志与其它数组**同一索引集**（第七个）：每次注入都从界面上的 `selected-ulids` 重算,
+    // 选中标志与其它数组**同一索引集**（第六个：五个平行数组之后的那一个）：每次注入都从界面上的 `selected-ulids` 重算,
     // 因此滚动/撤销重注入后不会错位（账本第 504 轮）。
     // `ModelRc` 的迭代要 `Model` trait 在作用域内；构造要 `VecModel`（`Vec` 不直接 `Into<ModelRc>`）。
     let selected_ulids: Vec<String> = {
