@@ -11514,3 +11514,30 @@ cargo run --release -p yeban-engine --locked --features device --example measure
 ⭐ ⚠ **读法**: ⭐ 本单只碰 `yeban-engine/**`（⭐ 3 文件）⇒ ⭐ ⭐ **核心 crate 有独立腿且真跑（182 s）**＋ ⭐ `app` 依赖腿（977 s）＋ ⭐ 两条平台腿各 18 步 ⇒ ⭐ **受影响集合被完整覆盖**；⭐ ⚠ `workspace 全量` **skipped／0 步 ⇒ ⛔ 不计入绿**（⭐ 非缺口：⭐ 逐 crate 腿已覆盖）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#115`（⭐ 增益族 `_onccN`／`amplitude`）交单** ＋ ⭐ **`loop_type` 新单**（⭐ 需裁决）＋ ⭐ **立体声路立项**（⭐ `pan` 的前置，⭐ 需裁决）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
+
+---
+
+## R798 实测追加（2026-10-16）：⭐⭐ **`#115`（增益族 `_onccN` → `amplitude`）已落地 ＋ 快进合并**（主干 `4bb0b043`）⇒ ⭐ **`PreparedRegion` ＋0**（⭐ 票据预估的 ＋8 没发生）
+
+⭐ ⚠ **一、⭐ 合并读数**: ⭐ base `944d3083` ⇒ ⭐ `FINAL=8cade905`（⭐ 6 文件 ＋1347／−172）⇒ ⭐ 集成前 **`git rebase main`**（⭐ `4d83fdaa`；⭐ 干净）⇒ ⭐ 主干 `git merge --ff-only line/mod-engine`：`Updating 4d83fdaa..4bb0b043` ⇒ ⭐ ⭐ **交付 `8cade905` ⇒ 主干 `4bb0b043`** ✓
+
+⭐ ⚠ **二、⭐ 我独立复跑的读数**（⛔ 不抄交付报告）:
+| 门／读数 | 值 |
+| :--- | :--- |
+| `premerge-gate.sh yeban-sfz yeban-engine` | ⭐ **12 层全 `0`** ⇒ `全过 ✓` |
+| 全量测试 | ⭐ `rc=0`；⭐ **32 块 ok／FAILED 0**；⭐`passed` 合计 **1063** ✓ |
+| `policy_check.py` | ⭐ **18 条**全过 |
+| ⭐ 尺寸（现读） | ⭐ ⭐ **`PreparedRegion=6160`（⭐ ＋0！）**／⭐`SfzVoice=40`／⭐池 `1712`／⭐`EngineRuntime=180144`（⭐ 余量 16464）✓ |
+| ⭐ S101（解析与域） | ⭐ `(target,cc,delta,curve) 读数 = [(Amplitude,1,50.0,0),(Amplitude,2,25.0,0)]`；⭐ 响亮 `Err` 逐字：⭐ `amplitude_oncc1 value 101 out of range -100..=100`／⭐`-101 …`／⭐`expects a number, got \`abc\``／⭐`amplitude_curvecc1 value 256 out of range 0..=255` ✓ |
+| ⭐ S102（公式） | ⭐ `cc=0 ⇒ 增益 0.500000000`／⭐`cc=37 ⇒ 0.645669341`（⭐ ＝ `(50+50×cc/127)/100`）✓ |
+| ⭐ 三个承重指纹 | ⭐ 逐字出现（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）✓ |
+
+⭐ ⚠ **三、⭐ 一处前提被**好方向**地推翻（⭐ 第 279 条的实例 9）**: ⭐ 我在 `#115` 票据里写"⭐ `amplitude: f32` 落不进填充 ⇒ `PreparedRegion` **＋8**" ⇒ ⭐ ⭐ **实测 ＋0**（⭐ 它落进**既有尾部对齐空隙**；⭐ `ModTarget`（≤2 B）也落在 `BakedCcMod` 的既有 padding 里）⇒ ⭐ ⭐ **本条是**第一次**"⭐ 我预估的代价比实际更悲观"** ⇒ 交付线**现读**纠正了它 ✓
+
+⭐ ⚠ **四、⭐ 设计（⭐ 一层机制、⛔ 无并行系统）**: ⭐ 新 `ModTarget`（`modulation.rs:319`）：⭐ 五个 `Ampeg` **在前**、⭐ **`Amplitude` 在末尾** ⇒ ⭐ `BTreeMap` 键序 ＝ 声明序 × CC 升序 ＝ **求和序** ⇒ ⭐ ⭐ **既有五个 `ampeg_*` 的相对顺序逐位不变** ✓ ⭐ `#104`／`#106` 的旧名（`AmpegCcMod`／`bake_ampeg_mods`／`ampeg_value_with_baked*`／`ampeg_modulations`）⭐ **保留为别名／薄包装**（⭐ 第 278 条）⇒ ⭐ 既有判据与登记原文**一字未删** ✓ ⭐ **施加点**：⭐ `amplitude_gain = (amplitude + Σ delta×curve(cc)) / 100`，⭐ 作**最外层线性乘子**（⭐ 离线 `total_gain()*amplitude_gain`；⭐ 摊平／实时 `gain_at_with_cc` 的 `(base*crossfade)*amplitude_gain`）⇒ ⭐ 缺省 `amplitude=100` ⇒ ⭐ 因子恰 `1.0` ⇒ ⭐ **接线前逐位相同** ✓ ⭐ **规范依据逐字**（`volume` 页）：⭐ `volume` ＝ **dB**、⭐ `amplitude` ＝ **线性百分比**、⭐ 两者**相乘**（⛔ 非别名）✓ ⭐ **零分配**：⭐ 新增 `[sfz-amplitude]` 场景四元组 **0/0/0/0**（⭐ 家族 **75/75**）✓
+
+⭐ ⚠ **五、⭐ 登记的四条边界（⭐ 交付线如实给出）**: ⭐ ① ⭐ `pan` ⛔ 未碰（⭐ 单声道路，⭐ 需立体声路 ＋ 破 `render_track` 签名）；⭐ ② ⭐ `volume_oncc*`／`tune_oncc*`／`cutoff_oncc*`／`pitch_oncc*`／`fileg_*`／`pitcheg_*`／`off_time`／`loop_type` ⛔ 未碰；⭐ ③ ⚠ **`yeban-mcp/src/domain/sfz.rs` 的 `yeban_render_sfz_wav` 离线渲染器不应用 `amplitude`**（⭐ 它本就不应用 ampeg 包络、⭐ 无 CC 状态 ⇒ ⭐ 今天行为不变，⭐ 登记为另一片）；⭐ ④ ⚠ **base 取值歧义**：⭐ `amplitude` 表行 Default ＝ **100**，⭐ 而页内例子读起来像 base 0 ⇒ ⭐ **按表行 Default=100 取**（⭐ 唯一带数值的声明），⭐ 并**逐字登记**该冲突（⛔ 不把冲突一侧当另一侧）✓
+
+⭐ ⚠ **六、⭐ 上界（⭐ 未抬高）**: ⭐ 两族 `(目标, cc)` 并集最大 **11 ≤ `AMPEG_MOD_CAP = 20`** ⇒ ⭐ ⛔ **不抬高上限、⛔ 不新增 `Err`**（⭐ 与 `#108`／`#109` 的自裁口径一致：⭐ 今天能解析的文件一个都不会变成不可解析）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `4bb0b043` 的 CI 判决** ＋ ⭐ **`#115` §10③ 的 MCP 离线渲染器**（⭐ 建议单独登记）＋ ⭐ **同一推广的后续目标**（⭐ `volume_oncc*` 2 处／`tune_oncc*` 9442 处／`cutoff_oncc*` 8／`pitch_oncc*` 39）＋ ⭐ **`loop_type` 新单**（⭐ 需裁决）＋ ⭐ **立体声路立项**（⭐ `pan` 前置）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
