@@ -79,14 +79,20 @@
 //! | ⭐ S82 | ⭐ **反向腿 ＋ 三个承重指纹**（任务单 `#109` 新增；§5.4） | ⭐ **反向腿**：同文本**去掉** `locc1`／`hicc1` 两行 ⇒ 两个 CC 值（`0`／`100`）的输出**逐位相同**（同指纹）且**都发声**（声部 1／非零 512）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`0xa933ddab286bdf5e`（广播路径） |
 //! | ⭐ S83 | ⭐ **判定时机 ＝ 触发期**（任务单 `#109` 新增；§2） | 先以 `cc = 100` 触发、再以 `cc = 0` 渲染**第二块** ⇒ 第二块非零帧数仍 **512**（门控**不**逐块重判 ⇒ 声部不被截断）；⭐ 反空判腿：**触发时** CC 已在区间外 ⇒ **0** 个声部 |
 //! | ⭐ S84 | ⭐ **既有掩码行为未扰动 ＋ 非空对照**（任务单 `#109` 新增；§5.5） | keyswitch（`sw_default` 满足 ⇒ 掩码含 60；无 `sw_default` ⇒ 掩码 `[0,0]`）／`trigger=release`（掩码 `[0,0]`）／力度臂的读数逐条复跑；⭐ 有 `locc1=64` 的区域**进得了**掩码（`#109` 前被清 0）；⭐ `cc = None` ⇒ 仍不建声部（严格策略）、`cc = 100` ⇒ 建 **1** 个（非空对照） |
-//! | ⭐ S85 | ⭐ **条数上界的来历 ＋ 修订段 ＋ 尺寸可判**（任务单 `#109` 新增；§5.6） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#109`）」／「# ⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）」／「结构性上界」／`#108`／`#107` 的修订段原文／`#104` 的两条原文／`#107` 的显式选路 ③ 原文；⭐ 语料普查原始读数必须在源码里可判（`**1398**`／`**1205**`／`**64894**`／`{0: 43831, 1: 16872, 2: 797, 3: 3394}`／`{0: 62281, 1: 1920, 2: 693}`）；⭐ `CC_GATE_CAP == 128`、`size_of::<CcGate>() == 3` ⇒ 每区域 `＋384 B`；⭐ 尺寸读数 `SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144 < 192 KiB`（⛔ 三者都 ＋0）、`PreparedRegion=6152`（由 `size_of` 现读） |
+//! | ⭐ S85 | ⭐ **条数上界的来历 ＋ 修订段 ＋ 尺寸可判**（任务单 `#109` 新增；§5.6） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#109`）」／「# ⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）」／「结构性上界」／`#108`／`#107` 的修订段原文／`#104` 的两条原文／`#107` 的显式选路 ③ 原文；⭐ 语料普查原始读数必须在源码里可判（`**1398**`／`**1205**`／`**64894**`／`{0: 43831, 1: 16872, 2: 797, 3: 3394}`／`{0: 62281, 1: 1920, 2: 693}`）；⭐ `CC_GATE_CAP == 128`、`size_of::<CcGate>() == 3` ⇒ 每区域 `＋384 B`；⭐ 尺寸读数 `SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144 < 192 KiB`（⛔ 三者都 ＋0）、`PreparedRegion=6152`（⭐ `#113` 后现读 ＝ **6160**）（由 `size_of` 现读） |
 //! | ⭐ S86 | ⭐ **播种真的生效（本单核心）**（任务单 `#110` 新增；§5.2） | 同一份区域**只差一行** `<control>set_cc1=64`：无那一行 ⇒ `armed == false`／`control_change(1) == None`／非零 **0**／端到端指纹 ＝ 改动前 `0x9c1bda7f8c872325`；有那一行 ⇒ `armed == true`／`Some(64)`／`received_count == 1`／非零 **4030**／指纹 ＝ `0xec4ca6ac0fe2b1e9`（**与"无门控"夹具逐位相同**）；⭐ 规范公式臂 `set_cc100=64` ⇒ 实时起音帧数 **337** ＝ `round((0.005 + 0.004 × 64/127) × 48 000)`（无 `set_ccN` 的基准 ＝ **240**） |
 //! | ⭐ S87 | ⭐ **保命不变量：没有 `set_ccN` ⇒ 一个字节都不动**（任务单 `#110` 新增；§5.3） | `PreparedSfz::cc_seeds().is_empty()` ⇒ 产品路径 `armed == false`／`received_count == 0`／`control_change(1) == None`；端到端指纹 ＝ **改动前实测** `0xec4ca6ac0fe2b1e9`（非零 4030）；⭐ 三个**承重指纹**逐字复跑（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`） |
 //! | ⭐ S88 | ⭐ **三条路一致（探针取自被播种的会话表）**（任务单 `#110` 新增；§5.4） | `EngineRuntime` 走一个量子后从 `control_change` 读回探针 ⇒ **离线 ＝ 摊平 ＝ 实时** 位模式**逐位相同**、声部数 **1**、非零帧 **512**；⭐ 反空判腿：初值 0 ⇒ 三条路静音且与上面**逐位不同** |
 //! | ⭐ S89 | ⭐ **真实 CC 覆盖初值**（任务单 `#110` 新增；§5.5） | ⭐ **同一量子**（事件面先跑）⇒ `control_change(1) == Some(0)`；后一量子再发 ⇒ `Some(7)`；⭐ **重新武装一份等价快照**（播种幂等）⇒ 仍是 `Some(7)`（⛔ 不被初值 64 覆盖）；⭐ 非空对照：只有播种 ⇒ 恒 `Some(64)` |
 //! | ⭐ S90 | ⭐ **反向腿（分形态）＋ 三个承重指纹**（任务单 `#110` 新增；§5.6） | ⭐ 反向腿 ①（会话面）：去掉 `<control>` 行 ⇒ `armed == false` 且端到端指纹 ＝ 改动前 `0x9c1bda7f8c872325`；⭐ 反向腿 ②：**不读 CC** 的区域在两个初值（64／0）下输出**逐位相同**（播种本身⛔ 不制造差异），**有牙对照**（`locc1` 区域）⇒ 两个初值**逐位不同**；⭐ 三个承重指纹逐字复跑 ＋ `×1.0000001` ⇒ `0xf181aa780f2cfab1`（必须变） |
-//! | ⭐ S91 | ⭐ **修订段 ＋ 上界来历 ＋ 尺寸可判**（任务单 `#110` 新增；§5.7） | `include_str!` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#110`）」／「# ⭐ `set_ccN` 播种（任务单 `#110`）」／「上界是结构性的」／「**不被掩码别名**」／「只填从未收到过的槽」／「表为空 ⇒ 播种机制一个字节都不动」＋ `#104`／`#107`／`#108`／`#109` 的**原文**（第 278 条：⛔ 不许删）＋ `cc_state.rs` 的 `seed` 口径；⭐ 语料读数 `**1398**`／`**1137**`／`**105**`／`**38**`／`**62**`／`**128**`／`offset_cc131=5500` 与直方图可判；⭐ 尺寸 `CcSeedTable=152`、`PreparedSfz`／`SfzPlan` ＝ `88 + 152 = 240`；⛔ `PreparedRegion=6152`／`SfzVoice=40`／`SfzVoicePool=1712`／`ControlChangeState=144`／`EngineRuntime=180144 < 192 KiB` |
+//! | ⭐ S91 | ⭐ **修订段 ＋ 上界来历 ＋ 尺寸可判**（任务单 `#110` 新增；§5.7） | `include_str!` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#110`）」／「# ⭐ `set_ccN` 播种（任务单 `#110`）」／「上界是结构性的」／「**不被掩码别名**」／「只填从未收到过的槽」／「表为空 ⇒ 播种机制一个字节都不动」＋ `#104`／`#107`／`#108`／`#109` 的**原文**（第 278 条：⛔ 不许删）＋ `cc_state.rs` 的 `seed` 口径；⭐ 语料读数 `**1398**`／`**1137**`／`**105**`／`**38**`／`**62**`／`**128**`／`offset_cc131=5500` 与直方图可判；⭐ 尺寸 `CcSeedTable=152`、`PreparedSfz`／`SfzPlan` ＝ `88 + 152 = 240`；⛔ `PreparedRegion=6152`（⭐ `#113` 后现读 ＝ **6160**）／`SfzVoice=40`／`SfzVoicePool=1712`／`ControlChangeState=144`／`EngineRuntime=180144 < 192 KiB` |
 //! | ⭐ S92 | ⭐ **域外 `set_ccN` ⛔ 不别名 7 位控制器**（任务单 `#110` 新增；§5.7 域口径） | `set_cc400=63`（`400 & 0x7F = 16`）⇒ 初值表**空**、域外计数 **1**、`armed == false`、`control_change(16) == None`、非零 **0**；⭐ 非空对照：`set_cc16=63` ⇒ 表 1 条、`Some(63)`、可闻 |
+//! | ⭐ S94 | ⭐ **规范逐字 ＋ 实现口径 ＋ `alternate` 登记可判**（任务单 `#113` 新增；§5.1／§5.6） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#113`）」／「# ⭐ 播放方向（`direction`，任务单 `#113`）」／`direction` 的规范表行 `forward, reverse`／`loop_type` 的规范表行 `forward, backward, alternate`／"affects the entire sample, not just the"／「规范**没有**明文」／`direction=alternate` 今天响亮报错的登记；⭐ 语料普查原始读数可判（`**1398**`／`direction` **0** 处／对照 `ampeg_attack` **835**（不剥注释口径 **844**）／`loop_type` **0** 处）；⭐ 取值域权威在 `yeban-sfz`（`PlayDirection::OPTIONS` **恰好** `[forward, reverse]`、`ALLOWED == "forward, reverse"`）；反向腿：文档里**没有**的句子 ⇒ `contains` 必须 `false` |
+//! | ⭐ S95 | ⭐ ⭐ **反向真的反了 ＋ 逐帧等于"倒序后按 forward 渲染"**（任务单 `#113` 新增；§5.2） | 单区域 `offset=100 end=199` 的 400 帧斜坡：`forward` 写 **99** 帧、源下标 `100…198`；`direction=reverse` 写 **99** 帧、源下标 `199…101`（逐帧反解，0 处不符）；两条输出**逐位不同**；⭐ **独立参照**：把 `pcm[100..200]` **倒序**当新样本、同一条 `forward` 路渲染 ⇒ 与前者的 `reverse` 输出**逐位相同**（＋首帧 `0.1953125` ＝ `200/1024`） |
+//! | ⭐ S96 | ⭐ **反向 × `offset`／`end`**（任务单 `#113` 新增；§5.5） | 规范三页对"反向时 `offset`/`end` 的语义"**没有明文**（登记为工程口径）：反向覆盖**同一个**半开区间 `[offset, min(end, pcm_len))`、只改**走过它的方向**；三条读数逐字：写成 **99** 帧／首帧源下标 **199 ＝ `end`** ／末帧源下标 **101**（⚠ `end` 含端点 ⇒ `199` 在区间内、`offset = 100` 那一格**读不到**）；三条路**逐位相同**；`end` 变小（`149`）⇒ 首帧变 `149`、帧数变 **49**；`end=-1` ⇒ **0** 帧、**0** 声部；`offset` 落在 PCM 之外 ⇒ **0** 帧（三个夹具各自实测） |
+//! | ⭐ S97 | ⭐ ⭐ **三条路一致（本单核心）**（任务单 `#113` 新增；§5.3） | 三个 `direction=reverse` 夹具（朴素反向 ／ 反向 ＋ `loop_continuous` ／ 反向 ＋ `offset`/`end`）× 力度 100：**离线** `render_note_into_with_cc` ／ **摊平** `render_block_into_with_cc` ／ **实时** `render_into_with_cc` 的位模式序列**逐位相同**（两两相等）；⭐ 实时声部可读：`source_position() == 199`（＝ 区间末格）、`source_end() == 100`（＝ 下界）；⭐ 反空判腿：同夹具去掉 `direction=reverse` ⇒ 三条路的位模式**必须变**（逐一 `assert_ne!`） |
+//! | ⭐ S98 | ⭐ **尺寸 ＋ 零分配**（任务单 `#113` 新增；§5.7） | `size_of` 现读：`PreparedRegion` **6160**（`6152 ＋ 8`；⭐ 本单唯一的代价，摊平期）／⛔ `SfzVoice` **40**／⛔ `SfzVoicePool` **1712**／⛔ `EngineRuntime` **180144**（< 192 KiB，余量 **16464**）；⭐ 语料普查读数（`**1398**`／`**0**` 处／`**835**`）与"⛔ 零新逐声部字段"的登记可判；⭐ `rt_zero_alloc` 家族的四元组读数由该 target 的 `[sfz-reverse]` 场景给出（`allocations=0 deallocations=0 lock_blocking=0 io_ops=0`） |
+//! | ⭐ S99 | ⭐ **反向腿 ＋ 三个承重指纹 ＋ `alternate` 登记腿**（任务单 `#113` 新增；§5.6） | ⭐ **反向腿①**：去掉 `direction=reverse` 那一行 ⇒ 与 `forward` 夹具**逐位相同**（且三条路一致）；⭐ 有牙：反向臂必须**真的写满 99 帧且出声**（⛔ 挡住"静默不发声也算改了输出"）＋ 指纹**必变**；② **改写 `offset`／`end`／`loop_*`** ⇒ 指纹**必变**；③ **`alternate` 腿**：`direction=alternate` ⇒ 响亮 `SfzError::InvalidOption{opcode:"direction", value:"alternate", allowed:"forward, reverse"}`、`direction=sideways` 同款、⛔ 不静默变成 `forward`；`loop_type=alternate` ⇒ **`Ok`**（未知 opcode 忽略，＝ 今天的行为，且方向仍是缺省 `forward`）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`0xa933ddab286bdf5e`（非零 478）；⭐ **应绿反向腿**：同一输出 × `1.0000001` ⇒ 指纹**必须**变 |
 //!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
 //!
@@ -138,6 +144,8 @@ use yeban_model::{
 // ⭐ 任务 `#91`：循环判据要读**生效循环模式**与 `yeban-sfz` 的两类**响亮 `Err`**
 // （⛔ 判据不复制它们的取值，只引用唯一权威事实源）。
 use yeban_sfz::error::SfzError;
+// ⭐ 任务单 `#113`：取值域的**唯一权威**（`direction` 的白名单恰好 `forward` / `reverse`）。
+use yeban_sfz::PlayDirection;
 use yeban_sfz::instrument::{LoopMode, OffMode};
 // ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（四形态归约的读数形状）。
 use yeban_sfz::modulation::AmpegParam;
@@ -8555,6 +8563,12 @@ fn s92_an_out_of_domain_set_cc_never_aliases_a_seven_bit_controller() {
 /// * 尺寸：`CcSeedTable` **152**、`PreparedSfz` **88 → 240**、`SfzPlan` **240**；
 ///   ⛔ `SfzVoice` **40**、⛔ `SfzVoicePool` **1712**、⛔ `EngineRuntime` **180144**
 ///   （< 192 KiB）、⛔ `PreparedRegion` **6152**、⛔ `ControlChangeState` **144**。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是上面最后那三个"⛔"里
+/// `PreparedRegion` **6152** 那一支**（⛔ 原文一字未删，口径同台账第 278 条）：
+/// `#113`（`direction`）给摊平表加了**一个**每区域字段 ⇒ `PreparedRegion` 现为 **6160 B**；
+/// ⛔ `SfzVoice` **40** / `SfzVoicePool` **1712** / `EngineRuntime` **180144** 三条**一条未动**
+/// （它们才是本单的硬边界）。
 #[test]
 fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
     const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
@@ -8689,9 +8703,23 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
         prepared_sfz, plan,
         "⭐ 包装与内层**同长**（`SfzPlan` 按值内联 `PreparedSfz`）"
     );
+    // ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是下面这条断言的**绝对值**那一支**
+    // （⛔ 原文保留在此，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+    //     assert_eq!(region, 6152, "⛔ `PreparedRegion` 必须 ＋0（播种表是**每表**一份）");
+    // ⭐ `#113`（`direction`）给摊平表加了**一个**每区域字段（`direction: PlayDirection`，
+    // `size_of` ＝ 1；`#[repr(Rust)]` 重排后落在对齐 8 的尾巴上）⇒ `PreparedRegion`
+    // `6152 → 6160`（＋**8**）。⚠ **被修订的只是这条绝对值**：`#110` 的原意
+    // ——"**播种表**⛔ 不按区域收费"——**仍然成立**（播种表在 `PreparedSfz` 层、每表一份，
+    // 上面两条 `88 → 240` 的腿整条有效）；⛔ `SfzVoice` / 池 / `EngineRuntime` 三条
+    // **＋0 边界一条未动**（下面三条断言逐字保留）。
     assert_eq!(
-        region, 6152,
-        "⛔ `PreparedRegion` 必须 ＋0（播种表是**每表**一份）"
+        region, 6160,
+        "⭐ `#113` 后的**绝对值**基线（`6152 ＋ 8`；⛔ 三条实时边界仍 ＋0）"
+    );
+    assert_eq!(
+        region,
+        6152 + 8,
+        "⭐ `#113` 的**增量** ＝ `direction: PlayDirection` ＋ 尾部对齐（⛔ 不是 `per-table` 那一份）"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
@@ -8958,4 +8986,701 @@ fn s93_a_track_without_set_cc_is_carried_by_another_tracks_seed() {
         bits(&via_probe),
         "⭐ 有牙：离线入口与探针臂必须**逐位不同**（否则这条登记无意义）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#113`：**播放方向**（`direction` ＝ `forward` / `reverse`）
+// ---------------------------------------------------------------------------
+//
+// ⛔ 本片**不动**解析与取值域：`yeban-sfz` 早就解析了 `direction`
+// （`PlayDirection`：`forward` 缺省 / `reverse`；白名单拒绝其余取值）——缺的是
+// **播放层装不下**：`PreparedRegion` 不带这份读数、`mix_span_into` 只朝一个方向走。
+//
+// ⭐ 落地口径（逐条可判）：`reduce_travel` 是**唯一**归约，把方向折成三件**已有**读数
+// —— 行进起点 / 带符号步进 / 行进边界（`forward`：`start` / `+rate` / `end`；
+// `reverse`：`end − 1` / `−rate` / `start`）⇒ ⛔ **零新逐声部字段**（`SfzVoice` 仍 40 B）。
+// 规范逐字（含 `alternate` 其实属于 `loop_type` 这件事）与语料普查见
+// `src/sfz_instrument.rs` 模块头的「⭐ 播放方向（`direction`，任务单 `#113`）」一节。
+
+/// ⭐ S94～S99 的夹具几何：400 帧斜坡上的半开区间 `[100, 200)`。
+const DIR_PCM_FRAMES: usize = 400;
+const DIR_OFFSET: usize = 100;
+/// ⚠ `end` 是**含**端点的（规范逐字）⇒ 半开区间的终点是 `end + 1`。
+const DIR_END_INCLUSIVE: usize = 199;
+/// 半开区间长度（帧）＝ `200 − 100`。
+const DIR_SPAN_FRAMES: usize = DIR_END_INCLUSIVE + 1 - DIR_OFFSET;
+/// ⭐ 实写帧数 ＝ `区间长 − 1`（线性插值要读"下一格"）——`forward` 与 `reverse` **同数**。
+const DIR_WRITTEN_FRAMES: usize = DIR_SPAN_FRAMES - 1;
+
+/// ⭐ `forward` 臂（缺省方向 ⇒ 与接线前**逐字相同**的文本）。
+const DIR_FIXTURE_FORWARD: &str =
+    "<region> sample=a.wav key=60 pitch_keycenter=60 offset=100 end=199\n";
+/// ⭐ `reverse` 臂：**只多** `direction=reverse` 一个 token。
+const DIR_FIXTURE_REVERSE: &str =
+    "<region> sample=a.wav key=60 pitch_keycenter=60 offset=100 end=199 direction=reverse\n";
+/// ⭐ 反向 ＋ 循环（窗口 `[100, 164)`，周期 64）。
+const DIR_FIXTURE_LOOP_REVERSE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+     loop_mode=loop_continuous loop_start=100 loop_end=164 direction=reverse\n";
+/// ⭐ 反向 ＋ 更短的 `end`（`end=149` ⇒ 半开区间 `[100, 150)`）。
+const DIR_FIXTURE_REVERSE_SHORT_END: &str =
+    "<region> sample=a.wav key=60 pitch_keycenter=60 offset=100 end=149 direction=reverse\n";
+/// ⭐ 反向 ＋ `end=-1`（规范：采样不播）。
+const DIR_FIXTURE_REVERSE_SILENT: &str =
+    "<region> sample=a.wav key=60 pitch_keycenter=60 end=-1 direction=reverse\n";
+/// ⭐ 反向 ＋ `offset` 落在 PCM 之外（400 帧 ⇒ `offset=1000` ⇒ 空区间）。
+const DIR_FIXTURE_REVERSE_OFFSET_PAST_END: &str = "<region> sample=a.wav key=60 \
+     pitch_keycenter=60 offset=1000 direction=reverse\n";
+
+/// ⭐ **三条路的位模式**（离线 / 摊平 / 实时）＋ 各自的实写帧数。
+///
+/// 关掉包络与 CC 依赖（夹具里没有 `ampeg_*`、`amp_veltrack` 也不写 ⇒ 力度 127 的
+/// 力度增益恰 `1.0`）⇒ 每一条路的输出逐帧**逐位**可对账。
+fn dir_three_paths(
+    text: &str,
+    sample: &InMemorySample,
+    frames: usize,
+) -> (Vec<u32>, Vec<u32>, Vec<u32>, usize, usize, usize) {
+    let instrument =
+        SfzInstrument::load(text.to_owned(), &Default::default()).expect("方向夹具必须解析成功");
+    let plan = PreparedSfz::prepare(&instrument, sample, 48_000.0).expect("摊平必须成功");
+
+    // ① 离线（`SfzInstrument` 的一次性渲染）
+    let mut offline = vec![0.0f32; frames];
+    let written_offline = instrument
+        .render_note_into(sample, 60, 127, &mut offline, 48_000.0)
+        .expect("离线渲染");
+    // ② 摊平表（`PreparedSfz` 的一次性渲染）
+    let mut flat = vec![0.0f32; frames];
+    let written_flat = plan.render_block_into(60, 127, &mut flat);
+    // ③ 实时声部池（块长与 ①② 不同 ⇒ 真的覆盖"跨块延续"）
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let created = pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None);
+    assert_eq!(created, 1, "单区域夹具 ⇒ 恰好建 1 个声部");
+    let mut realtime = vec![0.0f32; frames];
+    let quantum = 128usize.min(frames.max(1));
+    let mut rendered = 0usize;
+    while rendered < frames {
+        let end = (rendered + quantum).min(frames);
+        pool.render_into(&plan, rendered as u64, &mut realtime[rendered..end]);
+        rendered = end;
+    }
+    (
+        bits(&offline),
+        bits(&flat),
+        bits(&realtime),
+        written_offline,
+        written_flat,
+        frames,
+    )
+}
+
+/// ⭐ S94（任务单 `#113`；判据 §5.1／§5.6）：**规范逐字 ＋ 实现口径 ＋ `alternate` 登记**可判。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ `src/sfz_instrument.rs` 的**源文本**；单位 ＝ `contains`（布尔，逐字）。
+/// ⭐ 取值域的权威在 `yeban-sfz`：同时断言 `PlayDirection::OPTIONS` **恰好**两项。
+#[test]
+fn s94_the_direction_spec_disposition_and_the_alternate_registration_are_judgeable() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const REVISION: &str = "⭐ ⭐ **追加修订段（任务单 `#113`）";
+    const SECTION: &str = "# ⭐ 播放方向（`direction`，任务单 `#113`）";
+    const SPEC_ROW: &str = "| direction | SFZ v2 | string | forward | forward, reverse | |";
+    const LOOP_TYPE_OPTIONS: &str = "forward, backward, alternate";
+    const SPEC_ENTIRE: &str = "affects the entire sample, not just the";
+    const NO_SPEC_TEXT: &str = "规范**没有**明文";
+    const ALTERNATE_LOUD: &str = "⭐ **`direction=alternate` 今天的行为 ＝ 响亮报错**";
+    const ZERO_VOICE_FIELDS: &str = "⛔ **零新逐声部字段**";
+    const ABSENT: &str = "`direction` 与 `loop_type` 都已由本单接线";
+    println!(
+        "[engine-sfz/S94] 模块头：`#113` 修订段 = {}、新一节 = {}、规范表行 = {}、\
+         `loop_type` 表行 = {}、`entire sample` 逐字 = {}、`offset/end` 无明文登记 = {}、\
+         `alternate` 报错登记 = {}",
+        MODULE_SOURCE.contains(REVISION),
+        MODULE_SOURCE.contains(SECTION),
+        MODULE_SOURCE.contains(SPEC_ROW),
+        MODULE_SOURCE.contains(LOOP_TYPE_OPTIONS),
+        MODULE_SOURCE.contains(SPEC_ENTIRE),
+        MODULE_SOURCE.contains(NO_SPEC_TEXT),
+        MODULE_SOURCE.contains(ALTERNATE_LOUD),
+    );
+    for (label, needle) in [
+        ("`#113` 追加修订段", REVISION),
+        ("播放方向一节", SECTION),
+        ("`direction` 的规范表行", SPEC_ROW),
+        (
+            "`loop_type` 的取值集（`alternate` 的**家**）",
+            LOOP_TYPE_OPTIONS,
+        ),
+        ("规范逐字（`entire sample`）", SPEC_ENTIRE),
+        ("`offset`/`end` 无明文（工程口径登记）", NO_SPEC_TEXT),
+        ("`direction=alternate` 今天响亮报错", ALTERNATE_LOUD),
+        ("零新逐声部字段的口径", ZERO_VOICE_FIELDS),
+    ] {
+        assert!(MODULE_SOURCE.contains(needle), "⭐ 必须逐字含：{label}");
+    }
+    assert!(
+        !MODULE_SOURCE.contains(ABSENT),
+        "⭐ 反向腿：文档里**没有**的句子必须 `contains == false`（否则判据恒真）"
+    );
+
+    // ⭐ 语料普查的原始读数必须可判（第 271／274 条：口径 ＋ 分母 ＋ 对照）。
+    for needle in [
+        "**1398**",
+        "**0** 处（三种口径一致",
+        "**835** 处",
+        "**844**",
+        "对照 `loop_type` | ⭐ **0** 处",
+        "**6160 B**",
+    ] {
+        assert!(
+            MODULE_SOURCE.contains(needle),
+            "⭐ 语料/尺寸读数必须可判：模块头缺少 `{needle}`"
+        );
+    }
+
+    // ⭐ 取值域的**唯一权威**是 `yeban-sfz`：白名单恰好 `forward` / `reverse`。
+    let options: Vec<(&str, PlayDirection)> = PlayDirection::OPTIONS.to_vec();
+    println!(
+        "[engine-sfz/S94] `PlayDirection::OPTIONS` = {:?}；`ALLOWED` = {:?}",
+        options.iter().map(|(name, _)| *name).collect::<Vec<&str>>(),
+        PlayDirection::ALLOWED
+    );
+    assert_eq!(
+        options,
+        vec![
+            ("forward", PlayDirection::Forward),
+            ("reverse", PlayDirection::Reverse),
+        ],
+        "⭐ `direction` 的取值域**恰好**两项（⛔ 没有 `alternate` —— 它在 `loop_type` 里）"
+    );
+    assert_eq!(
+        PlayDirection::ALLOWED,
+        "forward, reverse",
+        "⭐ 错误信息里的允许值列表（与规范表行逐字一致）"
+    );
+}
+
+/// ⭐ S95（任务单 `#113`；判据 §5.2）：**反向真的反了**，且**逐帧等于**
+/// "把区间倒序之后按 `forward` 渲染"。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 400 帧斜坡（`pcm[i] = (i+1)/1024`，增益恒 `1.0` ⇒ 输出可**逐帧反解源下标**）
+/// 上区间 `[100, 200)` 的输出；单位 ＝ **源采样下标** ＋ **位模式**。
+///
+/// # 判定量
+///
+/// * `forward` 写 **99** 帧、下标 `100…198`；`reverse` 写 **99** 帧、下标 `199…101`
+///   （逐帧反解 ⇒ 两串必须逐字相等）；
+/// * 两条输出**逐位不同**（⛔ 不是"有输出就算过"）；
+/// * ⭐ **独立参照**：把 `pcm[100..200]` **倒序**成新样本、用**同一条不带 `direction`
+///   的路**渲染 ⇒ 与前者的 `reverse` 输出**逐位相同**（这是"倒序 ＋ 正向"的等价性，
+///   ⛔ 不是把实现抄一遍）。
+#[test]
+fn s95_reverse_is_really_reversed_and_matches_the_reversed_source_reading() {
+    let sample = ramp_sample(DIR_PCM_FRAMES);
+    let forward = prepare_with(DIR_FIXTURE_FORWARD, &sample);
+    let reverse = prepare_with(DIR_FIXTURE_REVERSE, &sample);
+
+    let mut fwd = vec![0.0f32; 256];
+    let n_fwd = forward.render_block_into(60, 127, &mut fwd);
+    let mut rev = vec![0.0f32; 256];
+    let n_rev = reverse.render_block_into(60, 127, &mut rev);
+    assert_eq!(n_fwd, DIR_WRITTEN_FRAMES, "`forward` 实写帧数");
+    assert_eq!(
+        n_rev, DIR_WRITTEN_FRAMES,
+        "`reverse` 实写帧数（与 `forward` 同数）"
+    );
+
+    let fwd_idx: Vec<usize> = (0..n_fwd).map(|k| source_index_at(&fwd, k)).collect();
+    let rev_idx: Vec<usize> = (0..n_rev).map(|k| source_index_at(&rev, k)).collect();
+    let expected_fwd: Vec<usize> = (DIR_OFFSET..=DIR_END_INCLUSIVE - 1).collect();
+    let expected_rev: Vec<usize> = (DIR_OFFSET + 1..=DIR_END_INCLUSIVE).rev().collect();
+    assert_eq!(fwd_idx, expected_fwd, "⭐ `forward` 的源下标序列逐帧精确");
+    assert_eq!(
+        rev_idx, expected_rev,
+        "⭐ `reverse` 的源下标序列逐帧精确（＝ 从 `end` 那一格倒着走到 `offset + 1`）"
+    );
+    assert_ne!(
+        bits(&fwd[..n_fwd]),
+        bits(&rev[..n_rev]),
+        "⭐ 反向必须真的反了（位模式逐位不同）"
+    );
+    println!(
+        "[engine-sfz/S95] forward 帧数 = {n_fwd}、首/末源下标 = {}/{}；\
+         reverse 帧数 = {n_rev}、首/末源下标 = {}/{}；首帧值 = {} / {}",
+        fwd_idx[0],
+        fwd_idx[n_fwd - 1],
+        rev_idx[0],
+        rev_idx[n_rev - 1],
+        fwd[0],
+        rev[0],
+    );
+    assert_eq!(
+        rev[0],
+        (DIR_END_INCLUSIVE + 1) as f32 / 1024.0,
+        "⭐ 反向首帧**逐位**等于 `pcm[end] = 200/1024`"
+    );
+
+    // ⭐ 独立参照：倒序切片 ＋ 不带 `direction` 的同一条路。
+    let mut reversed_pcm = sample.pcm[DIR_OFFSET..DIR_END_INCLUSIVE + 1].to_vec();
+    reversed_pcm.reverse();
+    let reversed_sample = InMemorySample {
+        pcm: reversed_pcm,
+        sample_hz: sample.sample_hz,
+    };
+    let reference = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &reversed_sample,
+    );
+    let mut ref_out = vec![0.0f32; 256];
+    let n_ref = reference.render_block_into(60, 127, &mut ref_out);
+    assert_eq!(
+        n_ref, n_rev,
+        "⭐ 参照臂的帧数必须与反向臂相同（否则等价性无从谈起）"
+    );
+    println!(
+        "[engine-sfz/S95] 独立参照（倒序样本 ＋ forward）帧数 = {n_ref}；\
+         与反向臂逐位相同 = {}",
+        bits(&ref_out[..n_ref]) == bits(&rev[..n_rev])
+    );
+    assert_eq!(
+        bits(&ref_out[..n_ref]),
+        bits(&rev[..n_rev]),
+        "⭐ ⭐ 反向输出必须**逐位等于**「把区间样本倒序之后按 `forward` 渲染」"
+    );
+}
+
+/// ⭐ S96（任务单 `#113`；判据 §5.5）：**反向 × `offset` / `end`**。
+///
+/// # 规范面（先说再判）
+///
+/// `direction` / `offset` / `end` 三页（2026-10-16 现读）**都没有**一句规定
+/// "反向时 `offset` / `end` 的语义"⇒ 本仓**不发明**，只按登记在案的工程口径判：
+/// `offset` / `end` 定义的是**同一个**半开区间 `[offset, min(end, pcm_len))`
+/// （`reduce_span` 是三条路共用的唯一归约），方向只改变**走过它的方向**。
+///
+/// # 判定量（逐条读数）
+///
+/// * `offset=100 end=199 direction=reverse` ⇒ 写 **99** 帧、首帧源下标 **199 ＝ `end`**、
+///   末帧 **101**（⚠ `offset = 100` 那一格**读不到** —— 与 `forward` 那一侧"读不到**
+///   `end` 那一格"同源：线性插值要读"下一格"）；
+/// * 三条路**逐位相同**；
+/// * `end=149` ⇒ 首帧 **149**、写 **49** 帧（区间真的跟着 `end` 走）；
+/// * `end=-1` ⇒ **0** 帧、实时侧**0** 声部（与 `forward` 同口径）；
+/// * `offset` 落在 PCM 之外 ⇒ **0** 帧（空区间 ⇒ ⛔ 不从末尾兜一圈）。
+#[test]
+fn s96_reverse_times_offset_and_end_follow_the_registered_reading() {
+    let sample = ramp_sample(DIR_PCM_FRAMES);
+
+    // ---- ① 主腿：`offset=100 end=199 direction=reverse` ----
+    let (off, flat, rt, _n_off, n_flat, _frames) =
+        dir_three_paths(DIR_FIXTURE_REVERSE, &sample, 256);
+    assert_eq!(n_flat, DIR_WRITTEN_FRAMES, "实写帧数");
+    assert_eq!(off, flat, "⭐ 反向：离线 → 摊平逐位相同");
+    assert_eq!(flat, rt, "⭐ 反向：摊平 → 实时逐位相同");
+
+    let reverse = prepare_with(DIR_FIXTURE_REVERSE, &sample);
+    let mut out = vec![0.0f32; 256];
+    let n = reverse.render_block_into(60, 127, &mut out);
+    let idx: Vec<usize> = (0..n).map(|k| source_index_at(&out, k)).collect();
+    println!(
+        "[engine-sfz/S96] 主腿：帧数 = {n}、首帧源下标 = {}（＝ `end`）、末帧源下标 = {}（＝ `offset + 1`）",
+        idx[0],
+        idx[n - 1]
+    );
+    assert_eq!(idx[0], DIR_END_INCLUSIVE, "⭐ 首帧 ＝ `end` 那一格");
+    assert_eq!(idx[n - 1], DIR_OFFSET + 1, "⭐ 末帧 ＝ `offset + 1`");
+    assert!(
+        !idx.contains(&DIR_OFFSET),
+        "⭐ `offset` 那一格**读不到**（与 `forward` 读不到 `end` 那一格同源）"
+    );
+
+    // ---- ② `end` 变小 ⇒ 区间真的跟着走 ----
+    let short = prepare_with(DIR_FIXTURE_REVERSE_SHORT_END, &sample);
+    let mut short_out = vec![0.0f32; 256];
+    let n_short = short.render_block_into(60, 127, &mut short_out);
+    assert_eq!(n_short, 49, "`[100, 150)` ⇒ 49 帧");
+    assert_eq!(
+        source_index_at(&short_out, 0),
+        149,
+        "⭐ 反向首帧跟着 `end` 走"
+    );
+    assert_eq!(source_index_at(&short_out, n_short - 1), 101);
+
+    // ---- ③ `end=-1`（不发声）与 ④ `offset` 越界（空区间）----
+    let silent = prepare_with(DIR_FIXTURE_REVERSE_SILENT, &sample);
+    let mut silent_out = vec![0.0f32; 256];
+    assert_eq!(silent.render_block_into(60, 127, &mut silent_out), 0);
+    let mut pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(
+        pool.trigger_note(&silent, 60, 127, u64::MAX, 1.0, None),
+        0,
+        "⭐ `end=-1` ⇒ 实时侧不建声部（与 `forward` 同口径）"
+    );
+    let past = prepare_with(DIR_FIXTURE_REVERSE_OFFSET_PAST_END, &sample);
+    let mut past_out = vec![0.0f32; 256];
+    assert_eq!(
+        past.render_block_into(60, 127, &mut past_out),
+        0,
+        "⭐ 空区间 ⇒ 0 帧（⛔ 不从末尾兜一圈）"
+    );
+    assert_eq!(
+        pool.trigger_note(&past, 60, 127, u64::MAX, 1.0, None),
+        0,
+        "⭐ 空区间 ⇒ 不建声部"
+    );
+
+    // ---- ⑤ 三条路在小 `end` 与循环腿上同样一致 ----
+    let (off_s, flat_s, rt_s, ..) = dir_three_paths(DIR_FIXTURE_REVERSE_SHORT_END, &sample, 256);
+    assert_eq!(off_s, flat_s);
+    assert_eq!(flat_s, rt_s);
+    let (off_l, flat_l, rt_l, ..) = dir_three_paths(DIR_FIXTURE_LOOP_REVERSE, &sample, 512);
+    assert_eq!(off_l, flat_l);
+    assert_eq!(flat_l, rt_l);
+    println!(
+        "[engine-sfz/S96] `end=149` 三路一致 = {}；反向 ＋ 循环三路一致 = {}",
+        off_s == rt_s,
+        off_l == rt_l
+    );
+}
+
+/// ⭐ S97（任务单 `#113`；判据 §5.3）：**三条路一致** ＋ 反向 ＋ 循环的回绕见证。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 三个 `direction=reverse` 夹具在三条路（离线 / 摊平 / 实时）上的输出；
+/// 单位 ＝ **位模式序列**（`f32::to_bits`）＋ **源采样下标**（斜坡夹具反解）。
+///
+/// # 判定量
+///
+/// * 三条路**两两逐位相同**（三个夹具各一遍）；
+/// * ⭐ 实时声部可读：`source_position() == end` 那一格（`199`）、
+///   `source_end() == offset`（`100`）—— 这就是"起点 ＋ 带符号步进 ＋ 行进边界"
+///   三件读数落在**已有**字段上的机械见证（⛔ 零新字段）；
+/// * ⭐ **反向 ＋ `loop_continuous`**：下标序列**逐帧**等于
+///   `k < 300 ? 399 − k : 163 − ((k − 300) mod 64)`（**0 处不符**）
+///   ＋ ⭐ **跨过起点回绕的见证**：第 `299` 帧下标 `100`、第 `300` 帧下标 **`163`**
+///   （**向上**跳 63 格，跨过 `loop_start`）；
+/// * ⭐ 反空判腿：同夹具**去掉** `direction=reverse` ⇒ 三条路的位模式**必须变**。
+#[test]
+fn s97_the_three_paths_agree_bit_for_bit_in_reverse_and_the_loop_wraps_mirrored() {
+    let sample = ramp_sample(DIR_PCM_FRAMES);
+    for (label, text, frames) in [
+        ("朴素反向", DIR_FIXTURE_REVERSE, 256usize),
+        ("反向 ＋ offset/end", DIR_FIXTURE_REVERSE_SHORT_END, 256),
+        ("反向 ＋ 循环", DIR_FIXTURE_LOOP_REVERSE, 512),
+    ] {
+        let (off, flat, rt, n_off, n_flat, _frames) = dir_three_paths(text, &sample, frames);
+        assert_eq!(off, flat, "⭐ {label}：离线 → 摊平逐位相同");
+        assert_eq!(flat, rt, "⭐ {label}：摊平 → 实时逐位相同");
+        assert_eq!(off, rt, "⭐ {label}：三条路同值");
+        assert_eq!(n_off, n_flat);
+        println!(
+            "[engine-sfz/S97] {label}：三条路位模式相同 = {}（帧数 {n_flat}）",
+            off == rt
+        );
+    }
+
+    // ⭐ 实时声部里的三件读数（零新字段的机械见证）。
+    let reverse = prepare_with(DIR_FIXTURE_REVERSE, &sample);
+    let mut pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(pool.trigger_note(&reverse, 60, 127, u64::MAX, 1.0, None), 1);
+    let voice = pool.voices()[0];
+    println!(
+        "[engine-sfz/S97] 反向声部：position = {}（区间末格）、source_end = {}（下界）、\
+         方向 = {:?}",
+        voice.source_position(),
+        voice.source_end(),
+        reverse.regions()[0].direction()
+    );
+    assert_eq!(
+        voice.source_position(),
+        DIR_END_INCLUSIVE as f32,
+        "⭐ 反向声部从区间**末格**起步（`end − 1` 的读法：`end` 含端点 ⇒ 末格 ＝ `end`）"
+    );
+    assert_eq!(
+        voice.source_end(),
+        DIR_OFFSET as u64,
+        "⭐ 反向声部把**下界**存进既有的 `source_end` 格子（⛔ 零新字段）"
+    );
+    assert_eq!(
+        reverse.regions()[0].direction(),
+        PlayDirection::Reverse,
+        "⭐ 摊平表真的带上了 `direction`（回读）"
+    );
+
+    // ⭐ 反向 ＋ 循环：逐帧下标对账 ＋ 回绕见证。
+    let loop_reverse = prepare_with(DIR_FIXTURE_LOOP_REVERSE, &sample);
+    let mut out = vec![0.0f32; 500];
+    let n = loop_reverse.render_block_into(60, 127, &mut out);
+    assert_eq!(n, 500, "循环声部在 500 帧窗口内不退休");
+    let idx: Vec<i64> = (0..n).map(|k| source_index_at(&out, k) as i64).collect();
+    let mut mismatches = 0usize;
+    for (k, actual) in idx.iter().enumerate() {
+        let expected = if k < 300 {
+            399 - k as i64
+        } else {
+            163 - ((k - 300) % LOOP_PERIOD) as i64
+        };
+        if *actual != expected {
+            mismatches += 1;
+        }
+    }
+    println!(
+        "[engine-sfz/S97] 反向 ＋ 循环：帧数 = {n}、下标不符 = {mismatches}（周期 {}）；\
+         回绕见证 idx[298..302] = {:?}",
+        LOOP_END - LOOP_START,
+        &idx[298..302]
+    );
+    assert_eq!(mismatches, 0, "⭐ 反向循环的下标序列逐帧精确");
+    assert_eq!(
+        idx[299], LOOP_START as i64,
+        "⭐ 回绕前最后一格 ＝ `loop_start`"
+    );
+    assert_eq!(
+        idx[300],
+        (LOOP_END - 1) as i64,
+        "⭐ ⭐ 跨过起点回绕：从 `loop_start` 直接折到 `loop_end − 1`（向上 63 格）"
+    );
+    assert!(
+        idx[300] > idx[299],
+        "⭐ 回绕见证：反向的上跳（⛔ 正向的下跳）"
+    );
+
+    // ⭐ 反空判腿：去掉 `direction=reverse` ⇒ 三条路的位模式必须变。
+    let forward_loop = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &sample,
+    );
+    let mut fwd_out = vec![0.0f32; 500];
+    forward_loop.render_block_into(60, 127, &mut fwd_out);
+    assert_ne!(
+        bits(&out),
+        bits(&fwd_out),
+        "⭐ 应绿反向腿：去掉 `direction=reverse` ⇒ 位模式必须变"
+    );
+}
+
+/// ⭐ S98（任务单 `#113`；判据 §5.7）：**尺寸 ＋ 零分配口径**可判。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 四个类型的 `size_of`（字节）＋ 源码里的登记句；单位 ＝ 字节 / 布尔。
+#[test]
+fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S98] size_of: PreparedRegion={region}（`#109` 后 6152 → ＋8）\
+         SfzVoice={voice} SfzVoicePool={pool} EngineRuntime={runtime}\
+         （门槛 192 KiB = {}；余量 = {}）",
+        192 * 1024,
+        192 * 1024 - runtime
+    );
+    assert_eq!(
+        region, 6160,
+        "⭐ 本单唯一的代价：`PreparedRegion` `6152 → 6160`（＋8 ＝ `direction` ＋ 对齐；摊平期）"
+    );
+    assert_eq!(
+        region,
+        6152 + 8,
+        "⭐ 增量腿：`direction: PlayDirection`（`size_of` ＝ 1）＋ 尾部对齐"
+    );
+    assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
+    assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0");
+    assert_eq!(runtime, 180_144, "⛔ `EngineRuntime` 必须 ＋0");
+    assert!(
+        runtime < 192 * 1024,
+        "⛔ `EngineRuntime` 必须 < 192 KiB（余量 {} B）",
+        192 * 1024 - runtime
+    );
+
+    // ⭐ "新代码为什么无分配"的**机械**依据（源文本腿）：三件读数全是标量，
+    // ⛔ 没有集合、⛔ 没有 `Vec`、⛔ 没有锁 —— 归约与逐样本判别都只做整数/浮点比较。
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    for needle in [
+        "⛔ **零新逐声部字段**",
+        "零分配、零锁、零 I/O**（纯整数/浮点比较与一次取负）",
+    ] {
+        assert!(
+            MODULE_SOURCE.contains(needle),
+            "⭐ 零分配口径必须逐字可判：缺少 `{needle}`"
+        );
+    }
+    assert!(
+        !MODULE_SOURCE.contains("`direction` 的实现需要一张逐区域的方向表"),
+        "⭐ 反向腿：文档里没有的句子必须 `false`"
+    );
+}
+
+/// ⭐ S99（任务单 `#113`；判据 §5.6）：**反向腿 ＋ 三个承重指纹 ＋ `alternate` 腿**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// * **反向腿**：去掉 `direction=reverse` 那一行 ⇒ 与 `forward` 夹具**逐位相同**
+///   （位模式序列）；改写 `offset` / `loop_*` ⇒ 指纹**必变**（FNV-1a 64）。
+/// * **`alternate` 腿**：`direction=alternate` ⇒ 响亮 `InvalidOption`（⛔ 不静默降级）；
+///   `loop_type=alternate` ⇒ **`Ok`**（未知 opcode 忽略 ＝ 今天的行为）。
+/// * **三个承重指纹**（§5.6 逐字点名）：`0xa9dec8a87f69106c` / `0xd3c2a82076bd8947` /
+///   `0xa933ddab286bdf5e`。
+#[test]
+fn s99_the_direction_reverse_legs_the_alternate_leg_and_the_three_fingerprints() {
+    let sample = ramp_sample(DIR_PCM_FRAMES);
+
+    // ---- ① 反向腿：去掉那一行 ⇒ 与 `forward` 逐位相同 ----
+    let forward = prepare_with(DIR_FIXTURE_FORWARD, &sample);
+    let revealed = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 offset=100 end=199\n",
+        &sample,
+    );
+    let mut a = vec![0.0f32; 256];
+    let mut b = vec![0.0f32; 256];
+    let na = forward.render_block_into(60, 127, &mut a);
+    let nb = revealed.render_block_into(60, 127, &mut b);
+    assert_eq!(na, nb);
+    assert_eq!(
+        bits(&a[..na]),
+        bits(&b[..nb]),
+        "⭐ 反向腿：去掉 `direction=reverse` ⇒ 与成文的 `forward` 夹具**逐位相同**"
+    );
+    let reverse = prepare_with(DIR_FIXTURE_REVERSE, &sample);
+    let mut c = vec![0.0f32; 256];
+    let nc = reverse.render_block_into(60, 127, &mut c);
+    assert_eq!(
+        nc, DIR_WRITTEN_FRAMES,
+        "⭐ 反向臂必须**真的写满** `区间长 − 1` 帧（⛔ 挡住「静默不发声也算改了输出」）"
+    );
+    assert!(
+        nonzero_frames(&c[..nc]) > 0,
+        "⭐ 反向臂必须真的出声（否则下面那条 `assert_ne!` 是空转）"
+    );
+    assert_ne!(
+        fnv1a_64(&a[..na]),
+        fnv1a_64(&c[..nc]),
+        "⭐ 有牙：`direction=reverse` 那一行**确实**改了输出（指纹必变）"
+    );
+    println!(
+        "[engine-sfz/S99] 反向腿：forward 指纹 = 0x{:016x}、reverse 指纹 = 0x{:016x}、\
+         去掉那一行后与 forward 逐位相同 = {}",
+        fnv1a_64(&a[..na]),
+        fnv1a_64(&c[..nc]),
+        bits(&a[..na]) == bits(&b[..nb])
+    );
+
+    // ---- ② `alternate` 腿（今天的行为：响亮报错 / 未知 opcode 忽略）----
+    let alternate = SfzInstrument::load(
+        "<region> sample=a.wav direction=alternate".to_owned(),
+        &Default::default(),
+    )
+    .expect_err("⭐ `alternate` **不在** `direction` 的取值域里 ⇒ 必须响亮报错");
+    let sideways = SfzInstrument::load(
+        "<region> sample=a.wav direction=sideways".to_owned(),
+        &Default::default(),
+    )
+    .expect_err("集合外取值同样响亮报错");
+    println!("[engine-sfz/S99] `direction=alternate` ⇒ {alternate:?}");
+    println!("[engine-sfz/S99] `direction=sideways` ⇒ {sideways:?}");
+    match &alternate {
+        SfzError::InvalidOption {
+            opcode,
+            value,
+            allowed,
+            ..
+        } => {
+            assert_eq!(*opcode, "direction");
+            assert_eq!(*value, "alternate");
+            assert_eq!(*allowed, "forward, reverse");
+        }
+        other => panic!("⭐ 必须是 `InvalidOption`，实得 {other:?}"),
+    }
+    assert!(
+        matches!(sideways, SfzError::InvalidOption { .. }),
+        "⭐ 越界取值同款"
+    );
+    // ⚠ `loop_type`（`alternate` 的**家**）在本仓**一个字节都没解析** ⇒ 它是未知 opcode、
+    // 被**忽略**（⛔ 不是 `Err`，也⛔ 不是"被当成 `direction` 的第三个取值"）。
+    let loop_type = SfzInstrument::load(
+        "<region> sample=a.wav key=60 loop_type=alternate".to_owned(),
+        &Default::default(),
+    );
+    assert!(
+        loop_type.is_ok(),
+        "⭐ `loop_type=alternate` 今天是被忽略的未知 opcode（本仓不解析 `loop_type`）"
+    );
+    let loop_type_plan = prepare_with(
+        "<region> sample=a.wav key=60 loop_type=alternate\n",
+        &ramp_sample(DIR_PCM_FRAMES),
+    );
+    assert_eq!(
+        loop_type_plan.regions()[0].direction(),
+        PlayDirection::Forward,
+        "⭐ ⛔ `loop_type=alternate` **不得**被读成 `direction`（方向仍是缺省 `forward`）"
+    );
+
+    // ---- ③ 应绿反向腿：同一输出 ×1.0000001 ⇒ 指纹必须变 ----
+    let scaled: Vec<f32> = a[..na].iter().map(|v| v * 1.000_000_1).collect();
+    assert_ne!(
+        fnv1a_64(&a[..na]),
+        fnv1a_64(&scaled),
+        "⭐ 应绿反向腿：×1.0000001 ⇒ 指纹**必须变**（证明它是逐位判据）"
+    );
+    println!(
+        "[engine-sfz/S99] ×1.0000001 后的指纹 = 0x{:016x}（必须 ≠ 0x{:016x}）",
+        fnv1a_64(&scaled),
+        fnv1a_64(&a[..na])
+    );
+
+    // ---- ④ 三个承重指纹：逐字复跑（S37 两臂 ＋ S33 广播路径）----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let arm1 = render_pool(&looped, 200, 512);
+    let arm2 = render_pool(&plain, u64::MAX, 512);
+    assert_eq!(nonzero_frames(&arm1), 200, "S37 臂 1 的非零帧数");
+    assert_eq!(nonzero_frames(&arm2), 399, "S37 臂 2 的非零帧数");
+    let fp1 = fnv1a_64(&arm1);
+    let fp2 = fnv1a_64(&arm2);
+    println!(
+        "[engine-sfz/S99] 承重指纹：臂 1 = 0x{fp1:016x}（非零 {}）、臂 2 = 0x{fp2:016x}\
+         （非零 {}）",
+        nonzero_frames(&arm1),
+        nonzero_frames(&arm2)
+    );
+    check_fingerprint(
+        "S37 臂 1（loop_continuous + end_sample=200）",
+        fp1,
+        0xa9de_c8a8_7f69_106c,
+    );
+    check_fingerprint(
+        "S37 臂 2（no_loop + end_sample=u64::MAX）",
+        fp2,
+        0xd3c2_a820_76bd_8947,
+    );
+
+    // S33：既有夹具 [`TWO_MATCH_ONE_MISS`] 经**实时路径** 512 帧。
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let track = EntityId::new();
+    let mut engine = engine_with_track(track);
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let mut rendered = vec![0.0f32; BLOCK];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut rendered);
+    let fp3 = fnv1a_64(&rendered);
+    println!(
+        "[engine-sfz/S99] 承重指纹：臂 3（S33 广播路径）= 0x{fp3:016x}（非零 {}）",
+        nonzero_frames(&rendered)
+    );
+    assert_eq!(nonzero_frames(&rendered), 478, "S33 的非零帧数");
+    check_fingerprint("S33／S14 广播路径", fp3, 0xa933_ddab_286b_df5e);
 }

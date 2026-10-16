@@ -3877,6 +3877,7 @@ fn judgement_body() -> ExitCode {
     scenario_ring_note_steal_fade(&mut report);
     scenario_input_callback_body(&mut report);
     prepared_sfz_callback_path_allocates_nothing();
+    prepared_sfz_reverse_callback_path_allocates_nothing();
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);
@@ -3927,4 +3928,77 @@ fn prepared_sfz_callback_path_allocates_nothing() {
     );
     assert_eq!(reading.quad.allocations, 0, "⭐ 回调路径不得有任何堆分配");
     assert_eq!(reading.quad.deallocations, 0, "⭐ 回调路径不得有任何堆释放");
+}
+
+/// ⭐ 任务单 `#113`：**反向**（`direction=reverse`）的回调路径零分配场景。
+///
+/// 为什么要单独一条：`#113` 让 [`mix_span_into`] 在 `rate < 0` 时走**另一支**逐样本几何
+/// （镜向回绕 ＋ 下界闸门 ＋ 恒开钳位），而"反向真的生效"这件事本身**不蕴含**它零分配
+/// ⇒ 本场景把**摊平表那条路**（`render_block_into`）与**实时声部池**（`trigger_note`
+/// ＋ `render_into`）都放进窗口，四元组读数必须全 0。
+///
+/// ⚠ 反向**真的在跑**（⛔ 不是"反向夹具被静默丢掉"）：窗口里两条路各自出声，
+/// 由 `nonzero` 见证断言（⛔ 不靠"没分配就一定跑过"这种反向推理）。
+fn prepared_sfz_reverse_callback_path_allocates_nothing() {
+    use yeban_engine::sfz_instrument::{InMemorySample, PreparedSfz, SfzInstrument, SfzVoicePool};
+
+    const REVERSE_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                   offset=0 end=479 direction=reverse\n";
+    // ⭐ 构造期（允许分配）：解析 + 摊平。
+    let instrument = SfzInstrument::load(REVERSE_FIXTURE.to_owned(), &Default::default())
+        .expect("反向夹具必须解析");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+    let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平不得报错");
+    assert_eq!(
+        prepared.regions()[0].direction(),
+        yeban_sfz::PlayDirection::Reverse,
+        "⭐ 夹具必须真的带上 `direction=reverse`（否则本场景是空转）"
+    );
+
+    // ⭐ 回调路径（禁止分配）：窗口内只做"触发 + 渲染"（摊平那条路 ＋ 实时池那条路）。
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let mut flat_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES];
+    let mut rt_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES];
+    let mut nonzero = 0usize;
+    let reading = window(|| {
+        for block in 0..64u32 {
+            flat_out.fill(0.0);
+            rt_out.fill(0.0);
+            if block % 8 == 0 {
+                let _ = prepared.render_block_into(60, 100, &mut flat_out);
+                let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
+            }
+            pool.render_into(
+                &prepared,
+                u64::from(block) * DEFAULT_BLOCK_FRAMES as u64,
+                &mut rt_out,
+            );
+        }
+    });
+    // ⚠ 见证在**窗口外**数（数非零不分配，但为了不让它混进窗口的读数）。
+    for block in 0..8u32 {
+        flat_out.fill(0.0);
+        let _ = prepared.render_block_into(60, 100, &mut flat_out);
+        nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
+        let _ = block;
+    }
+    println!(
+        "[sfz-reverse] 回调窗口：allocations={} deallocations={} lock_blocking={} io_ops={}",
+        reading.quad.allocations,
+        reading.quad.deallocations,
+        reading.quad.lock_blocking,
+        reading.quad.io_ops
+    );
+    println!("[sfz-reverse] 反向摊平路的非零样本数（窗口外见证）= {nonzero}");
+    assert_eq!(
+        reading.quad.allocations, 0,
+        "⭐ 反向回调路径不得有任何堆分配"
+    );
+    assert_eq!(
+        reading.quad.deallocations, 0,
+        "⭐ 反向回调路径不得有任何堆释放"
+    );
+    assert_eq!(reading.quad.lock_blocking, 0, "⭐ 反向回调路径不得等锁");
+    assert_eq!(reading.quad.io_ops, 0, "⭐ 反向回调路径不得有任何 I/O");
+    assert!(nonzero > 0, "⭐ 反向摊平路必须真的出声（⛔ 防空转）");
 }

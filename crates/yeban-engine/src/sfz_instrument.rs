@@ -53,9 +53,9 @@
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴）。⭐ ⭐ **任务单 `#108` 已接线**：上面这句是**原文保留**（第 278 条，⛔ 一字未删）；`#107` 之后"回调侧没有 CC 状态"这条**理由已不成立**，三条路现在都读探针 —— 见下面「⭐ CC 轴交叉淡化（任务单 `#108`）」一节 |
-//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；⭐ **任务 `#97` 把 `loop_end == pcm_len` 那一档从"不循环"改成"循环 ＋ 插值钳位"**（见下面"`loop_end == pcm_len`"一节）；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩ |
+//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；⭐ **任务 `#97` 把 `loop_end == pcm_len` 那一档从"不循环"改成"循环 ＋ 插值钳位"**（见下面"`loop_end == pcm_len`"一节）；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩　⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是本行尾句里 `direction` 那一支**（⛔ 原文一字未删）：`direction` **已接线**、`pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
 //! | ⑨ | ⭐ **多 `sample=` 每区域各播自己** | ⭐ **步 3 已做**：摊平表持 `samples: Vec<PreparedSample>` ＋ [`PreparedRegion::sample_index`] 指路；⚠ 单样本重载 [`PreparedSfz::prepare`] **仍是广播**（键/力度映射对、**音色内容错** ⇒ 读数 `sample_content=broadcast(1)`） |
-//! | ⑩ | `direction` / `pan` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带）。⚠ 沿革：本行原文把 `off_mode` 也列在这里 —— ⭐ **任务 `#94` 已把它接线**（`PreparedRegion` 承载 ＋ `off_by` 关断期用；⛔ 作用面**不含** MIDI note-off），故本行只剩 `direction` / `pan` |
+//! | ⑩ | `direction` / `pan` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带）。⚠ 沿革：本行原文把 `off_mode` 也列在这里 —— ⭐ **任务 `#94` 已把它接线**（`PreparedRegion` 承载 ＋ `off_by` 关断期用；⛔ 作用面**不含** MIDI note-off），故本行只剩 `direction` / `pan`　⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是本行里 `direction` 那一支**（⛔ 原文一字未删，含上面那句沿革）：`direction` **已接线**、本行只剩 `pan`（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
 //!
 //! # 引擎侧声部（任务 `#66` 的步 2：`SfzPlan` / `SfzVoicePool` / 分派次序）
 //!
@@ -479,7 +479,7 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）已由任务单 `#96` 闭合：⭐ **模型层不禁止**这个组合（模型里没有"鼓机"这个概念 —— `DeviceKind` 只有四档、无鼓机档；`TrackV3.sampler` 与 `devices` 是**平行**字段）⇒ ⭐ 裁决**留在引擎**（`鼓机 ＞ SFZ ＞ 复音` ＋ `armed_sources`／`ignored_sources` 读数）；常驻判据 `crates/yeban-model/tests/track_multi_source_coexistence.rs` |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 //!
@@ -628,6 +628,111 @@
 //! `PreparedRegion` `5768 → 6152 B`（＋384 ＝ `128 × 3`；条数 `u8` 与尾部对齐共 6 B）；
 //! ⛔ `SfzVoice` 仍 `40 B`、⛔ `SfzVoicePool` 仍 `1712 B`、⛔ `EngineRuntime` 仍 `180144 B`。
 //!
+//! # ⭐ 播放方向（`direction`，任务单 `#113`）
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是三处"`direction` 仍未做"的登记**：
+//! 局限表第 ⑧ 行的尾句「`direction` / `pan` **仍未做**，拆到⑩」、局限表第 ⑩ 行
+//! 「`direction` / `pan` | 未做」、以及 `sfz-needs-6` 的「⛔ **仍未做**：… `direction` …」
+//! （⛔ **三处原文一字未删**，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）。
+//! **被修订的只有 `direction` 那一支**：它**已由本单接线**（`pan` 那一支**整条有效**、
+//! ⛔ 本单不碰 —— 与 `#110` 修订 `set_ccN` 而把 `pan_oncc*` 留在未接线里同款）。
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/direction/>，2026-10-16 现读）
+//!
+//! > The direction in which the sample is to be played.
+//! >
+//! > This is similar to [loop\_type](../loop_type/) but affects the entire sample, not just the
+//! > defined loop regions.
+//!
+//! | Name | Version | Type | Default | Options | Unit |
+//! | --- | --- | --- | --- | --- | --- |
+//! | direction | SFZ v2 | string | forward | forward, reverse | |
+//!
+//! ⭐ **取值域＝ `forward` / `reverse` 两项**（⛔ 没有 `alternate`）：`yeban-sfz` 的白名单
+//! [`PlayDirection::OPTIONS`] 逐字就是这两项、缺省 `forward`、大小写不敏感匹配
+//! （`ScopedValue::as_option`），集合外取值 ⇒ **响亮 `SfzError::InvalidOption`**
+//! （⛔ 不降级、⛔ 不猜）。本单只**搬运**那份 `Copy` 读数，⛔ 一个字节的解析都没改。
+//!
+//! ⭐ **`alternate` 不在 `direction` 里 —— 它在 `loop_type` 里**（同一站点
+//! <https://sfzformat.com/opcodes/loop_type/>，2026-10-16 现读）：
+//!
+//! | Name | Version | Type | Default | Options | Unit |
+//! | --- | --- | --- | --- | --- | --- |
+//! | loop\_type | SFZ v2 | string | forward | forward, backward, alternate | |
+//!
+//! > This only affects the loop portion of the sample. To play a sample backwards with no
+//! > looping, use [direction](../direction/) instead.
+//!
+//! ### ⛔ 未做（登记，⛔ 不静默）：`direction` 的第三个取值与 `loop_type`
+//!
+//! ⭐ **`direction=alternate` 今天的行为 ＝ 响亮报错**：它**不在**
+//! `direction` 的 `Options` 里（逐字见上表）⇒ `yeban-sfz` 的 `as_option` 判
+//! `InvalidOption`（判据 `S99` 把这个读数钉住，⛔ 不是"We 静默当成 forward"）。
+//! ⭐ **`loop_type` 整条**（含 `alternate` / `backward`）在本仓**一个字节都没解析**
+//! —— 语料普查 **0 处**、源码 grep **0 处** ⇒ ⛔ 本单不发明它的语义、⛔ 不为
+//! "`direction` 的 `alternate`"造一个规范里不存在的取值。⭐ 若将来要实现
+//! 「循环段来回弹」，那是 `loop_type` 单（需要**逐声部**的方向状态 ⇒
+//! 与 `#113` 的"零新逐声部字段"口径**不相容**，⛔ 不在本单）。
+//!
+//! ## 实现口径（三条路共用一份归约）
+//!
+//! ⭐ 唯一归约是 [`reduce_travel`]（与 [`reduce_span`] / [`reduce_loop_window`] 同形态）：
+//! 它把方向折成**三件已有读数** —— **行进起点** / **带符号步进** / **行进边界**
+//! （`forward`：`start` / `+rate` / 上界 `end`；`reverse`：`end − 1` / `−rate` / 下界 `start`）
+//! ⇒ ⛔ **零新逐声部字段**（`SfzVoice` 仍 40 B：三件读数落在既有的
+//! `position` / `rate` / `source_end` 三格上）。
+//!
+//! ⭐ 反向的**逐样本**几何同样只有一处（[`mix_span_into`] 里那个 `rate < 0` 判别）：
+//! 回绕镜向（越过窗口**下**侧折回）、停止闸门换成**下界**（浮点比较）、
+//! 插值"下一格"**恒钳**到最后可读样本（反向从区间高端起步 ⇒ `index + 1` 可以越界）。
+//! `rate > 0` 那一侧的三条表达式**逐字未动** ⇒ 既有夹具逐位不变（判据 `S33`/`S37`/`S48`）。
+//!
+//! ⭐ **反向的语义 ＝ "把区间样本倒序之后按 `forward` 渲染"**（逐帧逐位，判据 `S95` 用
+//! **倒序样本 ＋ 不带 `direction` 的同一条路**当独立参照）：对任意 `t = i + f`，
+//! `F(end − 1 − t) = pcm[end−1−i]·(1−f) + pcm[end−2−i]·f` 与倒序数组
+//! `R[j] = pcm[end−1−j]` 的 `G(t) = R[i]·(1−f) + R[i+1]·f` 是同一个表达式
+//! （两项操作数相同、加法在 binary32 下可交换）⇒ ⛔ 不是"另一套插值口径"。
+//!
+//! ## ⚠ `direction=reverse` × `offset` / `end`：规范**没有**明文
+//!
+//! ⭐ 三份相关页面（`direction` / `offset` / `end`）在 2026-10-16 现读时**都没有**
+//! 一句说"反向时 `offset` / `end` 的语义如何变"（`direction` 页只有上面那两句 ＋
+//! ARIA 的 Practical Considerations；`offset` 页只说"从第 `offset` 个采样起播"；
+//! `end` 页只说"`end` 含端点、缺省整份、`-1` 不发声"）⇒ ⛔ **本单不发明**。
+//! **工程口径（登记为裁决、⛔ 不声称是规范）**：`offset` / `end` 定义的是**同一个**
+//! 半开区间 `[offset, min(end, pcm_len))`（[`reduce_span`] 是三条路共用的那一份归约），
+//! 方向**只**改变这个区间**被走过的方向** —— 反向从区间**最后一格**起、走到下界止
+//! （判据 `S96` 把"起点 ＝ `end − 1`、终点 ＝ `offset`、`offset` 那一格**读不到**"
+//! 逐帧钉住）。⚠ 这条口径的唯一依据是"区间归约在三条路之间**不可能分叉**"这条机械纪律
+//! ＋ `direction` 页的 "affects the **entire sample**"；⛔ 不是从规范推出来的。
+//!
+//! ## 语料普查（2026-10-16 现读；口径：`assets/samples/**/*.sfz` **剥掉 `//` 注释**后
+//! 数 `name=` 形式的 opcode token）
+//!
+//! | 读数 | 值 |
+//! | :--- | :--- |
+//! | 文件分母 | **1398** 份 `.sfz` |
+//! | opcode token 总数 / 不同 opcode | 383049 / 866 |
+//! | ⭐ `direction` | ⭐ **0** 处（三种口径一致：token 0 ／ 不剥注释子串 0 ／ `name\s*=` 0） |
+//! | 已知非零对照 `ampeg_attack` | ⭐ **835** 处（⭐ 同一份数据的**不剥注释**口径是 **844** —— 差的 9 处落在 `//` 注释里；两个口径都如实登记） |
+//! | 对照 `loop_type` | ⭐ **0** 处（⇒ `alternate` 的"家"在本仓同样一个字节都没有） |
+//! | 对照 `loop_mode` / `offset` / `end` / `pan` / `off_time` | 294 / 2637 / 56 / 1221 / 16 处 |
+//!
+//! ⚠ ⭐ **0 处 ⛔ 不构成"不做"的理由**（第 271／274 条）：语料是**夹具**，不是用户 SFZ 的
+//! 全集 —— `direction` 是 SFZ v2 的**规范取值**，本单按规范实现并由**构造夹具**判据
+//! （S94～S99）。
+//!
+//! ## 尺寸（本单机械读数）
+//!
+//! `PreparedRegion` `6152 → ` **6160 B**（＋**8** ＝ `direction: PlayDirection`
+//! （`size_of` ＝ 1）＋ `#[repr(Rust)]` 重排后的尾部对齐；判据 `S98` 由 `size_of` 现读）；
+//! ⛔ `SfzVoice` 仍 **40 B**、⛔ `SfzVoicePool` 仍 **1712 B**、
+//! ⛔ `EngineRuntime` 仍 **180144 B**（门槛 192 KiB ＝ `196608`，余量 `16464`）——
+//! 方向进的是**摊平表**（控制侧构造、随快照按值走），⛔ 不进任何实时对象。
+//! ⚠ ⭐ **被修订的只是"当前值"那一档**：`#108` / `#109` / `#110` 各节里
+//! `PreparedRegion` 的**历史读数**（`4232 → 5768` / `5768 → 6152` / `仍 6152`）
+//! ⛔ 一字未删，它们各自是**当时**的实测值。
+//!
 //! # ⭐ `set_ccN` 播种（任务单 `#110`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是下面三处登记里 `set_ccN=` 的
@@ -733,6 +838,12 @@
 //! `PreparedRegion` 仍 **6152 B**、`SfzVoice` 仍 **40 B**、`SfzVoicePool` 仍 **1712 B**、
 //! `EngineRuntime` 仍 **180144 B**（门槛 192 KiB ＝ `196608`，余量 `16464`）——
 //! 播种表进的是**摊平表**（控制侧构造、随快照按值走），⛔ 不进任何实时对象。
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是上一段里 `PreparedRegion` 仍 **6152 B**
+//! 那一支**（⛔ 原文一字未删，口径同台账第 278 条）：`PreparedRegion` 现为 **6160 B**
+//! （`#113` 加了**一个**每区域字段 `direction: PlayDirection`）；⛔ `SfzVoice` 仍 **40 B**、
+//! ⛔ `SfzVoicePool` 仍 **1712 B**、⛔ `EngineRuntime` 仍 **180144 B**（余量 `16464`）。
+//! ⭐ `SfzPlan` **88 → 240 B** 与 `PreparedSfz` **88 → 240 B** 两支**整条有效**（与本单无关）。
 //!
 //! ## ⚠ 已知边界（如实登记，⛔ 不静默）
 //!
@@ -949,7 +1060,7 @@ use yeban_dsp::polysynth::steal_fade_frames_for;
 use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
-    CcGate, Instrument, LoopMode, NotePolyphony, OffMode, Region, RegionQuery,
+    CcGate, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region, RegionQuery,
 };
 // ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（`ccN` / `_onccN` / `_curveccN`）。
 // 摊平表按 [`AMPEG_MOD_CAP`] 条**定长**承载（`Copy`），求值本体是
@@ -1187,7 +1298,11 @@ impl SfzInstrument {
                     source_end,
                     pcm_len,
                 );
-                let mut position = start;
+                // ⭐ **播放方向**（任务单 `#113`）：摊平/实时两条路**同一份**归约
+                // （[`reduce_travel`]）⇒ `direction=reverse` 时起点 ＝ 区间末格、
+                // 步进取负、边界换成下界。⚠ `direction=forward` 时三项**逐位不变**。
+                let (mut position, rate, source_end) =
+                    reduce_travel(region.direction, rate, start, source_end);
                 // 离线/摊平这条路**不窃取**：淡出状态恒为 [`FadeRamp::NONE`]
                 // （`gain == 1.0` ⇒ 那个逐帧乘法逐位不变）。
                 let mut fade = FadeRamp::NONE;
@@ -1274,6 +1389,51 @@ pub fn reduce_span(span: Option<SampleSpan>, pcm_len: usize) -> Option<(f32, u64
         return None;
     }
     Some((span.start as f32, end))
+}
+
+/// ⭐ **播放方向归约的唯一实现**（任务单 `#113`）：离线
+/// [`SfzInstrument::render_note_into_with_cc`]、摊平 [`PreparedSfz::render_block_into_with_cc`]
+/// 与实时声部（[`SfzVoicePool::trigger_note`]）三条路共用它 ⇒ 方向口径不可能在三条路之间分叉
+/// （与 [`reduce_span`] / [`reduce_loop_window`] 同一形态）。
+///
+/// # 三件读数（⭐ 全部落在**已有**字段上 ⇒ ⛔ 零新逐声部字段）
+///
+/// 输入是 [`reduce_span`] 归约出的**半开区间** `[start, end)`（源采样帧）与
+/// **已校验为正**的步进 `rate`（`yeban-sfz` 的 `Region::playback_rate`）。
+///
+/// | 方向 | 起点 `position` | 步进 `rate` | 行进边界 `bound` |
+/// | :--- | :--- | :--- | :--- |
+/// | [`PlayDirection::Forward`] | `start` | `+rate` | `end`（**上**界，半开） |
+/// | [`PlayDirection::Reverse`] | `(end − 1) as f32`（区间**最后**一格） | `−rate` | `start`（**下**界，闭） |
+///
+/// # 为什么这样就够（⛔ 不需要"反向"这个字段）
+///
+/// ① **起点**：反向必须从区间的高端起步 —— `end − 1` 就是半开区间 `[start, end)` 里
+/// **最后**一格（`reduce_span` 保证 `end > start ≥ 0` ⇒ `end ≥ 1`，⛔ 不会下溢）。
+/// ② **步进**：取负 ⇒ [`mix_span_into`] 逐样本**递减** —— 那条路的除法/插值算术一个字不改。
+/// ③ **边界**：`bound` 是声部**行进方向上的那一端** ⇒ 实时声部把它存进**既有的**
+/// [`SfzVoice::source_end`] 格子里（⛔ 不新增字段）；`bound` 是**上界还是下界**由
+/// **`rate` 的符号**唯一决定（[`mix_span_into`] 里唯一的那个 `reverse` 判别）。
+///
+/// ⭐ 等价性（可判）：反向那条路的输出**逐帧逐位等于**"把区间 `[start, end)` 的样本
+/// **倒序**之后按 `forward` 渲染"—— 因为对任意 `t = i + f`（`i` 整数、`f ∈ [0,1)`），
+/// `F(end − 1 − t) = pcm[end−1−i]·(1−f) + pcm[end−2−i]·f`
+/// 与倒序数组 `R[j] = pcm[end−1−j]` 的 `G(t) = R[i]·(1−f) + R[i+1]·f` 是**同一个表达式**
+/// （乘法两项各自操作数相同、加法在 binary32 下可交换）⇒ 判据可以拿"倒序样本 ＋
+/// 不带 `direction` 的同一条路"当**独立参照**（判据 `S95`）。
+///
+/// ⚠ `end − 1` 经 `u64 → f32`：与 [`reduce_span`] 的 `start as f32` 同一条登记
+/// （超过 2²⁴ 帧时会有位级舍入，⛔ 不假装精确）。
+///
+/// ⚠ **零分配、零锁、零 I/O**（纯整数/浮点比较与一次取负）⇒ 可被实时声部在**触发期**调用
+/// [MUST-GATE-001]。
+#[must_use]
+pub fn reduce_travel(direction: PlayDirection, rate: f32, start: f32, end: u64) -> (f32, f32, u64) {
+    match direction {
+        PlayDirection::Forward => (start, rate, end),
+        // `end >= 1` 由 `reduce_span` 保证（`end > start >= 0`）⇒ `end - 1` 不下溢。
+        PlayDirection::Reverse => ((end - 1) as f32, -rate, start as u64),
+    }
 }
 
 /// ⭐ **循环窗口归约的唯一实现**（本单新增）：离线 [`SfzInstrument::render_note_into`]、
@@ -1968,6 +2128,18 @@ pub struct PreparedRegion {
     ///   [`yeban_sfz::instrument::Region::off_time`] 的延迟（缺省 6 ms），而 `off_time`
     ///   不在本片范围内；见模块头的"off_by 关断"一节。
     off_mode: OffMode,
+    /// ⭐ **播放方向**（`direction`；任务单 `#113`）。
+    ///
+    /// 解析与取值域在 `yeban-sfz` 里**早已落地**（[`PlayDirection`]：`forward` 缺省 /
+    /// `reverse`；白名单拒绝其余取值）⇒ 本字段只把那份 `Copy` 读数搬进摊平表，
+    /// ⛔ 不新增解析、⛔ 不改取值域。
+    ///
+    /// ⚠ **它是"区域参数"、⛔ 不是"声部状态"**：本单的落地口径是
+    /// **触发／求值期把方向折进「起点 ＋ 带符号步进 ＋ 行进边界」三件已有读数**
+    /// （[`reduce_travel`]）⇒ ⛔ `SfzVoice` 一个字段都不加（判据 `S9` 仍钉 40 B）。
+    /// 生效口径、规范逐字与"为什么 `alternate` 未做"见模块头的
+    /// 「⭐ 播放方向（`direction`，任务单 `#113`）」一节。
+    direction: PlayDirection,
     /// ⭐ **同音同时发声数上限**（`note_polyphony` ＋ `note_selfmask`；任务单 `#100`）。
     ///
     /// 解析与改写（含 `limit = 0` ⇒ 不限制、`note_selfmask` 白名单）在 `yeban-sfz` 里
@@ -2169,6 +2341,15 @@ impl PreparedRegion {
     #[must_use]
     pub const fn note_polyphony(&self) -> NotePolyphony {
         self.note_polyphony
+    }
+
+    /// ⭐ 本区域的**播放方向**（`direction`，原样；缺省 [`PlayDirection::Forward`]）。
+    ///
+    /// 只读副本 ⇒ 判据可以直接回读"摊平表**真的**带上了这份读数"，⛔ 不是只看解析层。
+    /// 求值口径见 [`reduce_travel`]（⭐ 三条路共用它）。
+    #[must_use]
+    pub const fn direction(&self) -> PlayDirection {
+        self.direction
     }
 
     /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
@@ -3164,7 +3345,10 @@ impl PreparedSfz {
             let gain = region.gain_at_with_cc(note, velocity, cc);
             // ⭐ 循环窗口（本单）：归约已把模式／退化／越界三条判完（`None` ⇒ 不循环）。
             let loop_window = region.loop_window(pcm.len());
-            let mut position = start;
+            // ⭐ **播放方向**（任务单 `#113`）：与离线/实时两条路**同一份**归约
+            // （[`reduce_travel`]）。⚠ `forward` ⇒ 三项逐位不变（判据 `S33`/`S37`/`S65`）。
+            let (mut position, rate, source_end) =
+                reduce_travel(region.direction(), rate, start, source_end);
             // 摊平表的一次性调用**不窃取**（与上一条路同款：`× 1.0` 逐位不变）。
             let mut fade = FadeRamp::NONE;
             // ⭐ 包络（任务 `#92`）：与离线/实时两条路**同一份归约**（秒 × 本表的 `engine_hz`）。
@@ -3396,6 +3580,11 @@ fn flatten_regions(
                 // `limit = 0` ⇒ 不限制、`self_mask` 缺省 `on`）⇒ 本片只**搬运**，
                 // ⛔ 不新增解析、⛔ 不改 `yeban-sfz` 的既有判定规则。
                 note_polyphony: region.note_polyphony,
+                // ⭐ 播放方向（任务单 `#113`）：解析层早已裁决好的 `Copy` 读数**原样**
+                // 搬进摊平表（`Region::direction`：`forward` 缺省 / `reverse`；
+                // 白名单在 `yeban-sfz` 的 `PlayDirection::OPTIONS`）。
+                // 它是**区域参数**、不是声部状态 ⇒ `SfzVoice` 尺寸不变，⛔ 不进实时对象。
+                direction: region.direction,
             });
         }
         (regions, cc_seeds)
@@ -3724,6 +3913,29 @@ impl EnvRun {
 /// * 实时声部给同一个 [`PreparedRegion::span_bounds`]（触发期抄下）；
 /// * 离线 [`SfzInstrument::render_note_into`] 给同一份归约。
 ///
+/// ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是上面这一段"停止条件"里
+/// `source_end` 的**语义**那一支**（⛔ 原文一字未删）：
+/// `rate < 0.0`（反向，[`reduce_travel`] 的产物）时，同一个参数位承载的是**下界**
+/// 而不是上界，闸门也随之换成"位置是否已经走到下界之下"：
+///
+/// | `rate` 符号 | `source_end` 的含义 | 逐样本闸门（写之前） |
+/// | :--- | :--- | :--- |
+/// | `> 0`（`forward`） | 上界（半开） | `floor(position) + 1 >= source_end`（钳位腿：`floor(position) >= source_end`） |
+/// | `< 0`（`reverse`） | **下界**（闭） | ⭐ `position <= source_end`（**浮点**比较：整数闸门会漏掉 `low + 0.5` 那一帧） |
+///
+/// ⭐ **反向为什么是 `<=` 而不是 `<`**：参照系是"把区间样本倒序后按 `forward` 渲染"
+/// （[`reduce_travel`] 的等价性证明）—— 倒序数组长 `L = end − start`，`forward` 在
+/// `floor(t) + 1 >= L` 时停 ⇒ 换成源位置就是 `position <= start`（判据 `S95` 逐帧对账）。
+/// ⭐ **反向的回绕也是镜向的**：`forward` 在 `position >= loop_start + loop_len` 时折回；
+/// 反向在 `position < loop_start` 时折回 `loop_start + loop_len − (loop_start − position) % loop_len`
+/// （同一个 `fmod` 形态的两侧，⛔ 不是"减一次"那种会留下死循环风险的第二套几何）。
+/// ⭐ **反向的钳位恒开**：反向读的最高一格可以恰好是 PCM 最后一格
+/// （区间取到样本尾时 `position = pcm_len − 1` ⇒ `index + 1` 越界）⇒
+/// `next` 恒钳到最后一个可读样本（`forward` 那一侧的触发条件**一字未动**）。
+/// ⚠ 三条既有性质在 `rate > 0` 时**逐位不变**（判据 `S33`/`S37`/`S48`/`S52`）：
+/// `reverse` 判别是一次 `f32` 比较，`bound_f` 是循环**外**的一次转换，
+/// `tail_clamp` 的表达式对 `forward` 与接线前**同一份**。
+///
 /// ⚠ **给了循环窗口时这一条不可达**：回绕把位置压在 `[loop_start, loop_end)` 内，
 /// 而窗口已由 [`reduce_loop_window`] 保证 `loop_end <= pcm_len` 且
 /// `loop_end <= source_end`（⭐ `== pcm_len` 那一档靠上面的钳位可读）⇒ 声部由**外部**
@@ -3789,27 +4001,50 @@ pub(crate) fn mix_span_into(
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
     let loop_bounds = loop_window.map(|window| (window.start as f32, window.len() as f32));
+    // ⭐ **方向判别**（任务单 `#113`）：唯一的判据就是 `rate` 的符号
+    // （[`reduce_travel`] 把 `direction=reverse` 折成"起点 = 区间末尾 ＋ 步进取负"）。
+    // ⚠ 这是**一次** `f32` 比较（循环外）⇒ `rate > 0` 那条既有的路一个字节不变。
+    let reverse = rate < 0.0;
+    // ⭐ 反向的闸门要用**浮点**比（整数下标会漏掉 `low + 0.5` 那一帧）⇒ 循环外转一次。
+    // ⚠ `source_end` 在 `reverse` 时是**下界**（见本函数文档的追加修订段）。
+    let travel_bound = source_end as f32;
     // ⭐ **钳位腿**（任务单 `#97`）：窗口终点**恰好等于** PCM 长度时，回绕点上要读的
     // `index + 1` 落在 PCM 之外 ⇒ 把"插值要读的下一格"钳到**最后一格**
     // （`Some(last)` ⇒ 本声部走钳位腿；`pcm` 为空时 `checked_sub` ⇒ `None`）。
     // ⚠ **循环外**预算：逐样本路径只做一次 `.min()`，⛔ 不做 `pcm.len()` 比较。
-    let tail_clamp = loop_window
-        .filter(|window| window.end as usize == pcm.len())
-        .and_then(|_| pcm.len().checked_sub(1));
+    // ⭐ ⭐ **追加修订段（任务单 `#113`）**：反向**恒**走钳位腿 —— 反向从区间高端起步，
+    // 最高一格可以恰好是 `pcm_len − 1` ⇒ `index + 1` 越界；`forward` 那一侧的触发条件
+    // 逐字未变（表达式仍是同一个 `loop_window.filter(...)`）。
+    let tail_clamp = if reverse {
+        pcm.len().checked_sub(1)
+    } else {
+        loop_window
+            .filter(|window| window.end as usize == pcm.len())
+            .and_then(|_| pcm.len().checked_sub(1))
+    };
     let mut written = 0usize;
     for slot in out.iter_mut() {
         // ⭐ 逐样本的引擎**绝对**帧（包络的释放进度 `k = abs − epoch` 靠它算；
         // ⛔ 不用"本块内的下标"：那会让跨块的释放段重新计时）。
         let abs_frame = env.as_ref().map_or(0, |run| run.abs_base + written as u64);
-        if let Some((loop_start, loop_len)) = loop_bounds
-            && *position >= loop_start + loop_len
-            // ⭐ **回绕闸门**（任务单 `#94` 按规范改）：有包络时，只有
-            // [`EnvRun::may_wrap`] 允许才回绕 ⇒ 释放期里 `loop_continuous` 照旧循环、
-            // `no_loop` / `loop_sustain` 沿源位置往后播到样本尾。
-            // ⚠ 没有包络（`env == None`）⇒ **恒允许**（＝ 接线前的行为，逐位不变）。
-            && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
-        {
-            *position = loop_start + (*position - loop_start) % loop_len;
+        // ⭐ **回绕闸门**（任务单 `#94` 按规范改）：有包络时，只有
+        // [`EnvRun::may_wrap`] 允许才回绕 ⇒ 释放期里 `loop_continuous` 照旧循环、
+        // `no_loop` / `loop_sustain` 沿源位置往后播到样本尾。
+        // ⚠ 没有包络（`env == None`）⇒ **恒允许**（＝ 接线前的行为，逐位不变）。
+        // ⭐ 任务单 `#113`：闸门**同一处**、几何**镜向** —— 正向越过窗口上侧折回、
+        // 反向越过窗口下侧折回（两者都是同一个 `%` 余数，⛔ 不是第二套循环几何）；
+        // ⚠ 正向那一支的**短路次序逐字未变**（⛔ 不在每个样本上多求一次 `may_wrap`）。
+        if let Some((loop_start, loop_len)) = loop_bounds {
+            if reverse {
+                if *position < loop_start && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
+                {
+                    *position = loop_start + loop_len - (loop_start - *position) % loop_len;
+                }
+            } else if *position >= loop_start + loop_len
+                && env.as_ref().is_none_or(|run| run.may_wrap(abs_frame))
+            {
+                *position = loop_start + (*position - loop_start) % loop_len;
+            }
         }
         let index = *position as usize;
         // ⭐ **钳位**（任务单 `#97`）：钳位腿上 `index + 1` 那一格已经不在 PCM 里
@@ -3822,7 +4057,11 @@ pub(crate) fn mix_span_into(
         // —— 线性插值需要 `position` 与 `position + 1` 两个样本。
         // ⭐ 钳位腿上"下一格"已被钳到最后一格 ⇒ 只要求 `index` 本身仍在源区间内
         // （⭐ 于是 `loop_end == pcm_len` 的窗口能在最后一格上照常回绕，⛔ 不再被当退休）。
-        let past_source_end = if tail_clamp.is_some() {
+        // ⭐ 任务单 `#113`：反向的闸门是**下界**（`position <= bound`）——
+        // 理由与等价性证明见本函数文档的追加修订段。
+        let past_source_end = if reverse {
+            *position <= travel_bound
+        } else if tail_clamp.is_some() {
             index as u64 >= source_end
         } else {
             index as u64 + 1 >= source_end
@@ -3955,7 +4194,12 @@ pub struct SfzVoice {
     /// 而 [`Self::sample_index`] 只指到**去重后的样本** ⇒ 逐块路径必须能回到区域。
     /// ⚠ 它落在 `SfzVoice` 既有的**尾部填充**里 ⇒ 尺寸 **+0 字节**（`S9` 钉住 40 B）。
     region_index: u16,
-    /// **源采样终点（半开）**：见类型文档的"终点口径"。
+    /// **行进边界**：见类型文档的"终点口径"。
+    ///
+    /// ⭐ ⭐ **追加修订段（任务单 `#113`）**：本格承载的是**行进方向上的那一端**
+    /// —— `rate > 0`（`forward`）时是**源采样终点**（半开上界，＝ 接线前的语义，⛔ 未变）；
+    /// `rate < 0`（`reverse`）时是**源采样下界**（闭）。哪一端由 [`Self::rate`] 的符号
+    /// 唯一决定（[`reduce_travel`] 是三条路共用的唯一归约）⇒ ⛔ 不新增字段。
     source_end: u64,
     /// **引擎侧终点**（绝对样本位置）：来自 [`crate::synth::ScheduledNote::end_sample`]。
     end_sample: u64,
@@ -3982,6 +4226,19 @@ impl SfzVoice {
     ///
     /// `source_start` ＝ [`reduce_span`] 归约出的源起点（`offset`）；`source_end` ＝ 同一份
     /// 归约的终点。两者与摊平表/离线侧**同源** ⇒ 两侧逐样本相同。
+    ///
+    /// ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是上面那句里"`source_start` / `source_end`
+    /// 就是归约出的起点 / 终点"那一支**（⛔ 原文一字未删）：调用方现在**先**过一遍
+    /// [`reduce_travel`] ⇒ 三个入参的语义变成"**行进**起点 / **带符号**步进 / **行进**边界"：
+    ///
+    /// | 方向 | `source_start`（→ [`Self::position`]） | `rate` | `source_end`（→ [`Self::source_end`]） |
+    /// | :--- | :--- | :--- | :--- |
+    /// | `forward` | 区间起点 | `> 0` | 区间**上**界（半开） |
+    /// | `reverse` | 区间**末**格 `end − 1` | `< 0` | 区间**下**界（闭） |
+    ///
+    /// ⚠ **零新字段**：三件读数**全部**落在本构造器**既有**的三个参数/字段上
+    /// （`position` / `rate` / `source_end`）⇒ `SfzVoice` 仍 **40 B**（判据 `S9`）。
+    /// ⚠ `direction=forward` 时三个入参与接线前**逐字相同** ⇒ 既有夹具逐位不变。
     ///
     /// ⚠ 包络状态**不在参数里**：它从 [`ENV_STAGE_IDLE`] ＋ 计数 0 起（区域有包络时由
     /// 逐样本路径第一帧提升为 [`AmpegStage::Attack`]）⇒ ⛔ 本构造器的签名与接线前一致。
@@ -4082,6 +4339,9 @@ impl SfzVoice {
     }
 
     /// 源采样终点（半开）。
+    ///
+    /// ⭐ **追加修订段（任务单 `#113`）**：`rate < 0`（反向）的声部里它承载的是**下界**
+    /// （见 `source_end` 字段的追加修订段）⇒ 读它之前先看 `source_position()` 在往哪边走。
     #[must_use]
     pub const fn source_end(&self) -> u64 {
         self.source_end
@@ -4338,6 +4598,12 @@ impl SfzVoicePool {
             let Some((source_start, source_end)) = region.span_bounds(pcm_len) else {
                 continue;
             };
+            // ⭐ **播放方向**（任务单 `#113`）：与离线/摊平两条路**同一份**归约
+            // （[`reduce_travel`]）⇒ 三件读数（起点 / 带符号步进 / 行进边界）**全部**
+            // 落在 [`SfzVoice::new`] 已有的三个参数位上 ⇒ ⛔ 零新逐声部字段（`S9` 仍 40 B）。
+            // ⚠ `direction=forward` ⇒ 三项**逐位不变**（判据 `S37`/`S52`/`S65`）。
+            let (source_start, rate, source_end) =
+                reduce_travel(region.direction(), rate, source_start, source_end);
             // ⭐ 引擎层的轨增益门**乘在乐器层增益之外**（两个归属各一份 ⇒ ⛔ 不重复）。
             // ⚠ 任务单 `#108`：这里**只**存引擎层那一份（`track_gain`）—— 乐器层
             // （含 CC 轴交叉淡化）由逐块路径现算（CC 逐块可变，触发期烘死不成立）。
