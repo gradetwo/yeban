@@ -398,7 +398,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 摊平增益 vs `total_gain`（含键轴 ＋ 力度轴 in/out 交叉淡化） | **128×128 网格位型不同点数 = 0** |
 | `trigger=release` 的键/力度掩码 | 均 `[0, 0]`；`accepts(60, 100) == false`；离线只剩 release ⇒ 写 **0** 帧 |
 | 分配四元组（`rt_zero_alloc` 的 SFZ 回调窗口） | `allocations=0 deallocations=0 lock_blocking=0 io_ops=0`（71/71 场景通过） |
-| `PreparedRegion` 结构字节数 | **2672 B**（原 548 B；代价来自 5 张 128×`f32` 表 + `SampleSpan`；⭐ `#91` 加 **+8 B** ＝ `loop_start: u32` ＋ `loop_end: u32` ＋ `loop_mode: LoopMode`(1 B) ＋ 对齐 ⇒ 2624 → 2632；⭐ `#92` 再加 **+24 B** ＝ `ampeg_attack`／`hold`／`decay`／`sustain`／`release` 五字段（5×`f32` ＝ 20 B payload ＋ 4 B 对齐）⇒ 2632 → 2656；⭐ `#94` 再加 **+8 B** ＝ `group: u32` ＋ `off_by: u32`（⭐ `off_mode` 落进对齐填充）⇒ 2656 → 2664；⭐ `#100` 再加 **+8 B** ＝ `note_polyphony: NotePolyphony` ⇒ **2664 → 2672**） |
+| `PreparedRegion` 结构字节数 | **2672 B**（原 548 B；代价来自 5 张 128×`f32` 表 + `SampleSpan`；⭐ `#91` 加 **+8 B** ＝ `loop_start: u32` ＋ `loop_end: u32` ＋ `loop_mode: LoopMode`(1 B) ＋ 对齐 ⇒ 2624 → 2632；⭐ `#92` 再加 **+24 B** ＝ `ampeg_attack`／`hold`／`decay`／`sustain`／`release` 五字段（5×`f32` ＝ 20 B payload ＋ 4 B 对齐）⇒ 2632 → 2656；⭐ `#94` 再加 **+8 B** ＝ `group: u32` ＋ `off_by: u32`（⭐ `off_mode` 落进对齐填充）⇒ 2656 → 2664；⭐ `#100` 再加 **+8 B** ＝ `note_polyphony: NotePolyphony` ⇒ 2664 → 2672；⭐ ⭐ **`#104` 再加 **+1520 B** ＝ `ampeg_mods: [BakedAmpegCcMod; AMPEG_MOD_CAP=20]` ＋ `ampeg_mod_count: u8`（**曲线点表烘进每一条调制项**：`BakedCurve { index, len, points: [CurvePoint; 8] }`）⇒ **2672 → 4192**） |
 
 
 ## 13. 引擎侧声部 ＋ 快照形状（2026-10-15，任务 `#66` 的**步 2**）
@@ -438,7 +438,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | 池满（17 条匹配区域） | 步 2：`created = 16`、`dropped = 1`（⛔ 不静默）⇒ ⭐ **任务单 `#70` 已改为窃取口径**：`created = 16`、`stolen = 1`、`dropped = 0`（见 §13.4） |
 | 尺寸（步 2） | `SfzVoice = 32 B`、`SfzVoicePool = 520 B`、`SynthEngine = 89936`、`EngineRuntime = 160784 < 196608`（192 KiB）⇒ ⭐ 步 3 改为 **40 / 648 / 91984 / 162832** ⇒ ⭐ **任务单 `#70` 再改为 40 / 1712 / 109152 / 180000 < 196608**（见 §13.4） |
 | 零分配（`rt_zero_alloc` ㉙） | 10 000 量子（总能量 2999.164）＋ 1 次换采样率：四元组 `alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0`；该档 **73 / 73**（⭐ 步 3 后逐字不变） |
-| 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **7168 B**（广播路径；步 3 后逐字不变）⇒ ⭐ **任务单 `#84` 起可拆开读**（区域表 ／ PCM ／ 路径文本，见 §13.5） |
+| 摊平表内存 | 2 区域 ＋ 480 帧 PCM = **10304 B**（广播路径；⭐ `#104` 后 ＝ 区域表 `4192 × 2 = 8384` ＋ PCM 1920 ＋ 路径 0；⚠ `#104` 前是 **7168**）⇒ ⭐ **任务单 `#84` 起可拆开读**（区域表 ／ PCM ／ 路径文本，见 §13.5） |
 
 ### needs（⭐ 下表状态截至**任务单 `#84`**，即 2026-10-16 的"摊平表字节预算读数与判据"；权威表在 `yeban-engine/src/sfz_instrument.rs` 模块头）
 
@@ -449,7 +449,7 @@ attack region 之后，所以「release 采样被 note-on 选中」这个缺陷�
 | sfz-needs-3 | **鼓机 ＋ SFZ 同轨**（引擎＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **已闭合（信号腿；任务单 `#70`）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 `crate::drums` §4.1 一致 ⇒ ⛔ 不改叠加）；落地＝新增**投影读数** `SynthEngine::armed_sources`／`ignored_sources`（三件同轨 ⇒ 武装 `3`、被忽略 `2`）；S20 钉住（读数见 §13.4）。⚠ **模型面**那一半仍挂在 `crate::drums` 的 `needs-3` |
 | sfz-needs-4 | **`span` 终点引擎侧已应用、离线/摊平侧未应用** | ⭐ **已闭合（步 3）**：三条路共用 `reduce_span` 一份归约 ⇒ `start` ＋ `end` 都应用；S3/S13 逐样本差 **0e0**（读数见 §13.2） |
 | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（**"SFZ 如何进 `YebanProjectV1`"未裁**） | ⭐ ⭐ **已闭合（模型面＝任务单 `#76`、引擎面＝任务单 `#78`）**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象；裁决见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** `PendingSfz`（`from_project` 从 `track.sampler` 投影、只搬路径字符串）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ `SfzPlan::prepare_with_samples` → `EngineSnapshot::with_sfz`（后者**取代**前者）。⛔ 不加 `DeviceKind` 档、⛔ 不改 schema；S21～S24 钉住 |
-| sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony` / `direction`** | ⭐ **三段式（第 264 条）：已落 ／ 仍未落 ／ 登记在案的偏离**。**① 已落**：㈠ **多采样 ／ 每区域独立 PCM**（步 3）；㈡ ⭐ **循环**（任务单 `#91`）——`loop_start`／`loop_end`／`loop_mode` 四值早已**解析且有判据**，`#91` 把它们搬进 `PreparedRegion` 并接进**唯一的逐样本混音循环** `mix_span_into`（三条路同口径；`SfzVoice` **+0 字节**；判据 S28～S33）；㈢ ⭐ **ADSR**（任务单 `#92`）——`ampeg_attack|hold|decay|sustain|release`（秒／百分比，认 `s`/`ms`/`%` 后缀、`ms` 优先）、**四段全分段线性**、输入政策＝**响亮 `Err`** 且**分清"缺失 ≠ 非法"**、`SfzVoice` **+0 字节**（判据 S34～S38 ＋ 解析层 3 条）；㈣ ⭐ ⭐ **`off_mode` ＋ `group` ／ `off_by`**（任务单 `#94`）——两者**也早已解析**（`instrument.rs:1398-1401` 与 `:1531-1532`，别名 `polyphony_group`/`offby`），`#94` **只加播放层**：`off_mode` **只管 `off_by` 关断路径**（规范逐字 "how a region is turned off by an `off_by` opcode"）、`group`/`off_by` 独占组（victim 按自己的 `off_mode` 处理）、**触发者不自掐**、**`one_shot` victim 忽略 `off_by`**、victim 只停 `active` 并**保留同槽 `pending`**（判据 S39～S45；`PreparedRegion` 2656 → **2664**，`SfzVoice` **+0**）；㈤ ⭐ ⭐ **`note_polyphony` ＋ `note_selfmask`**（任务单 `#100`）——两者**也早已解析**（`read_note_polyphony`，`instrument.rs:1987`；归约 `NotePolyphony` `:392-440`），⭐ **而本仓甚至早有一份完整策略** `VoicePool::apply_note_polyphony`（`voice_pool.rs:418`）——但那个池被明文登记为**不被引擎使用**，引擎的 `SfzVoicePool` 从不消费它 ⇒ `#100` **只加播放层**（触发期一次 ≤16 槽扫描；⛔ 无 per-voice 字段）；⭐ **规格有据**（力度资格规则 ＋ "A new note will always play." ＋ "not a strict polyphony limit but more of a **hint**"；唯一规范沉默处＝多个同资格者掐谁 ⇒ **复用仓内既有裁决**）；⭐ **语料 32 文件/87 处**（对照 `direction` **0** 处）；⭐ ⭐ **并逼出一条与 `#94` **相反**的裁决**：`one_shot` 的 victim **照掐**（`#94` 里 `one_shot` 对 `off_by` **免疫**）——依据＝语料里 `note_polyphony` **几乎全用在 `one_shot` 上**（`virtuosity-drums` 每麦克风一组；`cithara` 的 `loop_mode=one_shot`/`note_polyphony=1`/`note_selfmask=off`/`group=1` **四行紧挨**），若沿用外推则该 opcode 在**全部**用到它的文件里变空操作；判据 S49～S53；`PreparedRegion` 2664 → **2672**，`SfzVoice` **+0**）。**② 仍未落**：⭐ **`ampeg_*ccN` ／ `ampeg_vel2*` 调制类**；`fileg_*`；`pitcheg_*`；`direction`（**反向循环**）；`off_time`（`off_mode=time` 的延迟）。**③ 登记在案的偏离（三条，都有依据、⛔ 不是静默降级）**：㈠ `ampeg_release` **规范缺省 `0.001` 秒、本仓取 `0`**（依据＝保住既有逐位读数；`0.001 s @48 kHz` ＝ 48 帧斜坡会动既有夹具；显式取值一律原样读入）；㈡ `off_mode=time` **按 `normal` 处理**（差别只剩 `off_time` 的延迟，而它不在本片范围）；㈢ `off_by=1 ≡ 同音高`**有意不做**（两页规范全文只有通例、仓内无据 ⇒ ⛔ 不发明）；㈣ `group == off_by` 时**不自掐**（依据＝登记语料 `ork_dialogue.sfz` 正是 `group=1`+`off_by=1` 的"同组独占"写法，自掐会让那 20 处**发不出声**）。|
+| sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony` / `direction`** | ⭐ **三段式（第 264 条）：已落 ／ 仍未落 ／ 登记在案的偏离**。**① 已落**：㈠ **多采样 ／ 每区域独立 PCM**（步 3）；㈡ ⭐ **循环**（任务单 `#91`）——`loop_start`／`loop_end`／`loop_mode` 四值早已**解析且有判据**，`#91` 把它们搬进 `PreparedRegion` 并接进**唯一的逐样本混音循环** `mix_span_into`（三条路同口径；`SfzVoice` **+0 字节**；判据 S28～S33）；㈢ ⭐ **ADSR**（任务单 `#92`）——`ampeg_attack|hold|decay|sustain|release`（秒／百分比，认 `s`/`ms`/`%` 后缀、`ms` 优先）、**四段全分段线性**、输入政策＝**响亮 `Err`** 且**分清"缺失 ≠ 非法"**、`SfzVoice` **+0 字节**（判据 S34～S38 ＋ 解析层 3 条）；㈣ ⭐ ⭐ **`off_mode` ＋ `group` ／ `off_by`**（任务单 `#94`）——两者**也早已解析**（`instrument.rs:1398-1401` 与 `:1531-1532`，别名 `polyphony_group`/`offby`），`#94` **只加播放层**：`off_mode` **只管 `off_by` 关断路径**（规范逐字 "how a region is turned off by an `off_by` opcode"）、`group`/`off_by` 独占组（victim 按自己的 `off_mode` 处理）、**触发者不自掐**、**`one_shot` victim 忽略 `off_by`**、victim 只停 `active` 并**保留同槽 `pending`**（判据 S39～S45；`PreparedRegion` 2656 → **2664**，`SfzVoice` **+0**）；㈤ ⭐ ⭐ **`note_polyphony` ＋ `note_selfmask`**（任务单 `#100`）——两者**也早已解析**（`read_note_polyphony`，`instrument.rs:1987`；归约 `NotePolyphony` `:392-440`），⭐ **而本仓甚至早有一份完整策略** `VoicePool::apply_note_polyphony`（`voice_pool.rs:418`）——但那个池被明文登记为**不被引擎使用**，引擎的 `SfzVoicePool` 从不消费它 ⇒ `#100` **只加播放层**（触发期一次 ≤16 槽扫描；⛔ 无 per-voice 字段）；⭐ **规格有据**（力度资格规则 ＋ "A new note will always play." ＋ "not a strict polyphony limit but more of a **hint**"；唯一规范沉默处＝多个同资格者掐谁 ⇒ **复用仓内既有裁决**）；⭐ **语料 32 文件/87 处**（对照 `direction` **0** 处）；⭐ ⭐ **并逼出一条与 `#94` **相反**的裁决**：`one_shot` 的 victim **照掐**（`#94` 里 `one_shot` 对 `off_by` **免疫**）——依据＝语料里 `note_polyphony` **几乎全用在 `one_shot` 上**（`virtuosity-drums` 每麦克风一组；`cithara` 的 `loop_mode=one_shot`/`note_polyphony=1`/`note_selfmask=off`/`group=1` **四行紧挨**），若沿用外推则该 opcode 在**全部**用到它的文件里变空操作；判据 S49～S53；`PreparedRegion` 2664 → **2672**，`SfzVoice` **+0**）；㈥ ⭐ ⭐ **`ampeg_*` 的 CC 调制**（任务单 `#104`）——`ampeg_*ccN`（SFZ1 旧形）／`ampeg_*_onccN`（SFZ2；规范逐字说它与 `ccN` **"may be aliases"**）／`ampeg_*_curveccN`（ARIA；载**曲线下标**而不是调制量）**此前解析层一个都读不到**（解析走**精确键**，后缀形态永远匹配不上 ⇒ 第 274 条）⇒ `#104` **从 0 到 1 新实现**：名字识别 ＋ 归约（`BTreeMap` 键序 ＝ 参数声明序 × CC 升序，求和顺序唯一）＋ **离线两条路**求值（`base + Σ delta × curve(cc)`；四处独立见证）；⭐ ⭐ **实时通路⛔ 仍未接线**（有意边界、逐字登记在 `yeban-engine/src/sfz_instrument.rs` 模块头；属"架构单"、需人类批准）⇒ ⭐ **本条只闭合一半**；`PreparedRegion` 2672 → **4192**（＋1520 B，摊平期），`SfzVoice` **+0**）。**② 仍未落**：⭐ **`ampeg_*` 的实时接线**（`SfzVoicePool` 的触发与渲染今天**不读任何 CC 状态**）＋ `ampeg_vel2*`；`fileg_*`；`pitcheg_*`；`direction`（**反向循环**）；`off_time`（`off_mode=time` 的延迟）。**③ 登记在案的偏离（三条，都有依据、⛔ 不是静默降级）**：㈠ `ampeg_release` **规范缺省 `0.001` 秒、本仓取 `0`**（依据＝保住既有逐位读数；`0.001 s @48 kHz` ＝ 48 帧斜坡会动既有夹具；显式取值一律原样读入）；㈡ `off_mode=time` **按 `normal` 处理**（差别只剩 `off_time` 的延迟，而它不在本片范围）；㈢ `off_by=1 ≡ 同音高`**有意不做**（两页规范全文只有通例、仓内无据 ⇒ ⛔ 不发明）；㈣ `group == off_by` 时**不自掐**（依据＝登记语料 `ork_dialogue.sfz` 正是 `group=1`+`off_by=1` 的"同组独占"写法，自掐会让那 20 处**发不出声**）。|
 | sfz-needs-7 | ⭐ **（步 3 新增）缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **已闭合（任务单 `#68`；裁决 R711）**：**引擎出静音并计数**（`silent_region_count` ＋ `missing_sample_paths`）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表）。`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）；⛔ 旧"广播到 `samples[0]`"**已删除**；S15 已**如实地**改写期望（读数见 §13.3） |
 | sfz-needs-8 | ⭐ **（步 3 新增）摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（`SfzByteBudget` ／ `SfzByteUsage` ／ `SfzBudgetOverrun`、`PreparedSfz::byte_usage` ／ `PreparedSfz::budget_overrun`、控制侧入口 `SfzPlan::byte_usage` ／ `budget_overrun`；判据 S25～S27，读数见 §13.5）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不计数、⛔ 不截断、⛔ 不改摊平结果；三条理由见 `PreparedSfz::budget_overrun`）；③⚠ **仍未闭合**：每个被引用的样本 `pcm` 仍**整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 
@@ -725,18 +725,20 @@ test 档 `sfz_instrument.rs = 0d5bb69c…`；⭐ 均为 `cargo fmt -p yeban-engi
 
 | 项 | 换算 | 广播夹具（S6：2 区域） | 预算夹具（S25：3 区域、2 路径） |
 | :--- | :--- | ---: | ---: |
-| 区域表 | `size_of::<PreparedRegion>() × 区域数` | `2672 × 2` ＝ **5 344** | `2672 × 3` ＝ **8 016** |
+| 区域表 | `size_of::<PreparedRegion>() × 区域数` | `4192 × 2` ＝ **8 384** | `4192 × 3` ＝ **12 576** |
 | PCM | `4 × 去重后总帧数` | `4 × 480` ＝ **1 920** | `4 × (480 + 1920)` ＝ **9 600** |
 | 路径文本 | `Σ path.len()`（广播路径为空串 ⇒ 0） | **0** | `5 + 5` ＝ **10** |
-| **合计** | ＝ `memory_bytes()` | **7 168**（与步 2／步 3 逐字相同） | **17 482** |
+| **合计** | ＝ `memory_bytes()` | **10 304** | **22 186** |
+
+⚠ **本表在 `#104` 前有两处陈旧**（`#104` 一并修）：① 区域表那一列在 `#91`～`#100` 后应逐级为 `2632／2656／2664／2672`，而 `#100` 只改了"预算夹具"那一格 ⇒ `#104` 起两列**同时**给现值；② **合计**列停在 `#92` 的 `17 482`（＝ 3×2624 ＋ 9600 ＋ 10 的**步 3 前**读数）⇒ 现值是 **22 186**（沿革见 §13.5 的 S25 行）。
 
 ⭐ **"今天有没有任何判据/读数在盯这个数？"—— 读数有，判据（上界）没有**（本单前的清点，逐处）：
 
 | 点 | 形状 | 是不是上界判据 |
 | :--- | :--- | :--- |
 | `PreparedSfz::memory_bytes` ／ `SfzPlan::memory_bytes` | 读数（`usize` 字节） | ⛔ 不是（无比较） |
-| `tests/sfz_instrument.rs` S6 | **打印**"区域 2、内存 7168 字节" | ⛔ 不是 |
-| `tests/sfz_arm_perf.rs` 两处 | **打印**"内存 9792／4544 字节" | ⛔ 不是 |
+| `tests/sfz_instrument.rs` S6 | **打印**"区域 2、内存 10304 字节"（⭐ `#104` 实测值；`#104` 前是 7168） | ⛔ 不是 |
+| `tests/sfz_arm_perf.rs` 两处 | **打印**"内存 14496／6112 字节"（⭐ `#104` 实测值：3 区域那条 ／ 1 区域那条；`#104` 前是 9792／4544） | ⛔ 不是 |
 | `crates/yeban-app/tests/sfz_ui_selector.rs` | `memory_bytes > 0` | ⛔ **地板**，不是上界 |
 | `crates/yeban-app/src/sfz_load.rs`（`plan_bytes`） | 控制侧读数（供 UI／诊断） | ⛔ 不是 |
 | `tests/sfz_instrument.rs` S12 | `pcm_bytes() == 1 × 480 × 4` | 去重口径的**精确等式**，与"整库上限"无关 |
@@ -773,12 +775,12 @@ test 档 `sfz_instrument.rs = 0d5bb69c…`；⭐ 均为 `cargo fmt -p yeban-engi
 
 | 判据 | 读数 |
 | :--- | :--- |
-| ⭐ **S25 读数拆开** | 区域表 `size_of::<PreparedRegion>() 2672 B × 3 = 8016`；PCM `4 B × 2400 = 9600`；路径 `10`；**合计 17626 ＝ `memory_bytes()`**（沿革：`#91` 之前 2624/7872/17482 ⇒ `#91` 2632/7896/17506 ⇒ `#92` 2656/**7968**/**17578**） |
-| ⭐ **S25 预算判据** | `N = for_layout(3, 2400, 10)` ＝ `{区域表 ≤ 8016，PCM ≤ 9600，路径 ≤ 10}`；实际 `{8016, 9600, 10}` ⇒ 超出 `{0, 0, 0}`、`is_within = true` ⚠ 区域表那一维**自动跟着 `size_of` 走**（判据是现读，⛔ 不是字面） |
+| ⭐ **S25 读数拆开** | 区域表 `size_of::<PreparedRegion>() 4192 B × 3 = 12576`；PCM `4 B × 2400 = 9600`；路径 `10`；**合计 22186 ＝ `memory_bytes()`**（沿革：`#91` 之前 2624/7872/17482 ⇒ `#91` 2632/7896/17506 ⇒ `#92` 2656/**7968**/**17578** ⇒ ⭐ `#94` 2664/**7992**/**17602** ⇒ ⭐ `#100` 2672/**8016**/**17626** ⇒ ⭐ ⭐ `#104` **4192**/**12576**/**22186**） |
+| ⭐ **S25 预算判据** | `N = for_layout(3, 2400, 10)` ＝ `{区域表 ≤ 12576，PCM ≤ 9600，路径 ≤ 10}`；实际 `{12576, 9600, 10}` ⇒ 超出 `{0, 0, 0}`、`is_within = true` ⚠ 区域表那一维**自动跟着 `size_of` 走**（判据是现读，⛔ 不是字面） |
 | ⭐ **S25 内置反向腿** | 三个维度各 −1 B ⇒ `{区域表 1,0,0}`／`{0,1,0}`／`{0,0,1}`，`is_within = false`（⛔ 绿不是空的） |
 | ⭐ **S26 超预算口径** | `N = for_layout(3, 480, 10)` ⇒ 超出 `{区域表 0，PCM 7680，路径 0}`、合计 **7680** 字节、`is_within = false`；⭐ `prepare_with_samples` 仍 **`Ok`**、样本数 2、PCM 9600、区域 3 |
-| ⭐ **S26 零预算** | `new(0, 0, 0)` ⇒ 超出 `{7872, 9600, 10}`、合计 **17482**（⭐ 只报数：表一字未改） |
-| ⭐ **S26 摊平结果逐位不变** | `byte_usage {7872, 9600, 10} → {7872, 9600, 10}`；`sample_count 2 → 2`；`pcm_bytes 9600 → 9600`；`region_count 3 → 3`；渲染 `(写入 512, 非零 511) → (写入 512, 非零 511)` |
+| ⭐ **S26 零预算** | `new(0, 0, 0)` ⇒ 超出 `{12576, 9600, 10}`、合计 **22186**（⭐ 只报数：表一字未改；⭐ `#104` 实测值，`#84` 当年读数是 `{7872, 9600, 10}`/`17482`） |
+| ⭐ **S26 摊平结果逐位不变** | `byte_usage {12576, 9600, 10} → {12576, 9600, 10}`；`sample_count 2 → 2`；`pcm_bytes 9600 → 9600`；`region_count 3 → 3`；渲染 `(写入 512, 非零 511) → (写入 512, 非零 511)` |
 | ⭐ **S27 1 GiB 级（⛔ 不真的分配）** | 读数 `{区域表 335872，PCM 1073741824，路径 1536}` vs 预算 `{335872, 536870912, 1536}` ⇒ 超出 `{0, 536870912, 0}`、`is_within = false`；⭐ 上界给**恰好 1 GiB** ⇒ **通过**（闭区间） |
 
 #### 五 · 注入打红（三条，逐条还原自证）
@@ -813,7 +815,7 @@ test 档 `sfz_instrument.rs = 0d5bb69c…`；⭐ 均为 `cargo fmt -p yeban-engi
 | :--- | :--- |
 | 尺寸照打（S9） | `SfzVoice 40` ／ `SfzVoicePool 1712` ／ `SfzPlan 88` ／ `PreparedSfz 88` ／ `SynthEngine 109152` ／ `EngineSnapshot 4496` ／ ⭐ **`EngineRuntime 180000 < 196608`**（余量 16608）—— 与 `#70` 逐字相同 |
 | `rt_zero_alloc` 全部场景 | **73 / 73**；⭐ ㉙（每轨 SFZ 音源 10 001 量子＋1 次换采样率）`四元组[alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]`、⭐ 总能量 **2999.164**（逐字不变）；`[sfz] 回调窗口：allocations=0 deallocations=0 lock_blocking=0 io_ops=0` |
-| 既有读数未扰动 | S6 摊平表 **7168 B** ／ SFZ 臂指纹 `0x5587041753dfe375` ／ `[perf] 摊平一次 4544 B`、`逐样本差 0e0（内存 9792 B）` |
+| 既有读数未扰动 | S6 摊平表 **7168 B** ／ SFZ 臂指纹 `0x5587041753dfe375` ／ `[perf] 摊平一次 4544 B`、`逐样本差 0e0（内存 9792 B）`（⚠ 本行是**任务单 `#84` 当时**的读数：那三个字节数后来随 `PreparedRegion` 长大而**移动**，⛔ **不是未扰动**；`#104` 实测值 ＝ `S6 **10304 B**`／`[perf] 摊平一次 **6112 B**`／`逐样本差 0e0（内存 **14496 B**）`，**指纹 `0x5587041753dfe375` 逐字不变**） |
 
 #### 八 · needs 表更新
 
