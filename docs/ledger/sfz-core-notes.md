@@ -813,7 +813,7 @@ test 档 `sfz_instrument.rs = 0d5bb69c…`；⭐ 均为 `cargo fmt -p yeban-engi
 
 | 判据 | 读数 |
 | :--- | :--- |
-| 尺寸照打（S9） | `SfzVoice 40` ／ `SfzVoicePool 1712` ／ `SfzPlan 88` ／ `PreparedSfz 88` ／ `SynthEngine 109152` ／ `EngineSnapshot 4496` ／ ⭐ **`EngineRuntime 180000 < 196608`**（余量 16608）—— 与 `#70` 逐字相同 |
+| 尺寸照打（S9） | `SfzVoice 40` ／ `SfzVoicePool 1712` ／ `SfzPlan 88` ／ `PreparedSfz 88` ／ `SynthEngine 109152` ／ `EngineSnapshot 4496` ／ ⭐ **`EngineRuntime`**（本行是 `#70` 当时的读数 `180000`；⭐ ⭐ **`#107` 后为 `180144`**——`＋144 B` ＝ 新 `ControlChangeState` 定长表，余量 `16608 → 16464`，⛔ 仍 `< 196608`；⭐ `rt_new_boxed.rs` 的字面判据已同步为 `180_144`） |
 | `rt_zero_alloc` 全部场景 | **73 / 73**；⭐ ㉙（每轨 SFZ 音源 10 001 量子＋1 次换采样率）`四元组[alloc=0 dealloc=0 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]`、⭐ 总能量 **2999.164**（逐字不变）；`[sfz] 回调窗口：allocations=0 deallocations=0 lock_blocking=0 io_ops=0` |
 | 既有读数未扰动 | S6 摊平表 **7168 B** ／ SFZ 臂指纹 `0x5587041753dfe375` ／ `[perf] 摊平一次 4544 B`、`逐样本差 0e0（内存 9792 B）`（⚠ 本行是**任务单 `#84` 当时**的读数：那三个字节数后来随 `PreparedRegion` 长大而**移动**，⛔ **不是未扰动**；现值（⭐ `#106` 实测）＝ `S6 **10384 B**`／`[perf] 摊平一次 **6152 B**`／`逐样本差 0e0（内存 **14616 B**）`（沿革：`#104` 为 10304／6112／14496），**指纹 `0x5587041753dfe375` 逐字不变**） |
 

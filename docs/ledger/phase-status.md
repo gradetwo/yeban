@@ -11092,3 +11092,33 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ ⚠ **防伪**: ⭐ **11 条腿真的执行过**（⭐ 时长全非 0、⭐ 两条平台腿各 18 步）；⭐ ⚠ **`workspace 全量` 是 `skipped`／0 步 ⇒ 不计入绿**（⭐ 但它与本单无关：⭐ 本单只碰 `yeban-sfz` ＋ `yeban-engine`，⭐ 两条腿都真跑且绿）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `8f5ef395`（⭐ `G18`）的 CI 判决** ＋ ⭐ **`#107`（⭐ CC 实时接线）交单** ＋ ⭐ **`HD-64` 的裁决** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+
+---
+
+## R780 实测追加（2026-10-16）：⭐⭐ **`#107`（MIDI CC 接进引擎实时通路）已落地 ＋ 快进合并**（主干 `392cfa3d`）⇒ ⭐ **`#104` 留下的"CC 支只在离线"那条边界已被补上**（⭐ 逐字按第 278 条追加修订段）
+
+⭐ ⚠ **一、⭐ 合并读数**: ⭐ 交付在 `8f5ef395` 上做（⭐ `FINAL=63fe0060`、⭐ `status` 空）⇒ ⭐ 集成前 **`git rebase main`**（⭐ 干净无冲突）⇒ ⭐ 主干 `git merge --ff-only line/mod-engine`：`Updating 7f25078c..392cfa3d` ⇒ ⭐ ⭐ **交付 `63fe0060` ⇒ 主干 `392cfa3d`**；⭐ **12 文件 ＋1221／−63**（⭐ 新文件 `crates/yeban-engine/src/cc_state.rs` ＋199）✓
+
+⭐ ⚠ **二、⭐ 我独立复跑的读数**（⛔ 不抄交付报告）:
+| 门／读数 | 值 |
+| :--- | :--- |
+| `premerge-gate.sh yeban-engine yeban-app` | ⭐ **16 层全 `0`**（⭐ engine 6 ＋ app 9 ＋ 仓级 light 1）⇒ `合并前复合门: 全过 ✓` |
+| `cargo test -p yeban-engine -p yeban-app --locked --no-fail-fast` | ⭐ `rc=0`；⭐ **74 个 `test result: ok`／`FAILED` 0**；⭐`passed` 合计 **1150** |
+| `policy_check.py` | ⭐ `守卫全部通过 (**18** 条)`（⭐ 含本会话新加的 `G18`） |
+| ⭐ S9 尺寸（现读） | `SfzVoice=40`／⭐池 `1712`／⭐`EngineRuntime=**180144**`／⭐ ⭐ **`ControlChangeState=144`**（⭐ 新对象）／⭐`SynthEngine=109152`／⭐`EngineSnapshot=4496` ⇒ ⭐ 余量 `16464 ≥ 8192` ✓ |
+| ⭐ `EngineEvent` 尺寸（现读） | ⭐ **48 B**（⭐ 门槛 `<= 64`）⇒ ⭐ 新变体**没有**把它撑大 ✓ |
+| ⭐ S63（实时 CC 支） | ⭐ `cc=None ⇒ 240`／`cc=0 ⇒ 240`／`cc=37 ⇒ **296**`／`cc=127 ⇒ **432**`（⭐ 均 ＝ 公式 `round((0.005+0.004×cc/127)×48000)`）✓ |
+| ⭐ S64（三条路一致） | ⭐ `cc = 0／37／127` **逐一**打印 `三条路位模式相同 = true` ✓ |
+| ⭐ S65（无 CC 逐位不变） | ⭐ 三个承重指纹 `0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e` **逐字不变** ✓ |
+| ⭐ S66（登记可判） | ⭐ `追加修订段 = true`／`显式选路 ③ = true`／⭐ **`#104` 原文两条 = true / true**（⭐ 第 278 条落实）／`未接线登记 = true` ✓ |
+
+⭐ ⚠ **三、⭐ 交付内容**: ⭐ ① **事件面**：新 `EngineEvent::ControlChange { controller: u8, value: u8 }`（⭐ **追加在枚举末尾**、⭐ 既有 5 个变体 0 改动、⭐ 尺寸 **48 → 48**）；⭐ 载荷**不带 `track`** 的理由逐字登记（⭐ `yeban-sfz` 的探针形状是 `Fn(u8) -> u8`、⭐ 引擎无通道→轨路由 ⇒ ⭐ 加 `track` 就是**发明**口径）✓ ⭐ ② **状态住在哪**：新 `crates/yeban-engine/src/cc_state.rs` 的 `ControlChangeState { values: [u8;128], received: [u64;2] }` ＝ **144 B**、⭐ `Copy`、⭐ ⛔ 无 `Vec`／`HashMap`／`Box`／`Drop` ⇒ ⭐ 由 `EngineRuntime` 按值持有（⭐ `＋144 B`）⇒ ⭐ ⛔ **不进快照／⛔ 不进 AST／⛔ 不进 schema**（⭐ [MODEL-ISO-001]）✓ ⭐ ③ **实时链**：⭐ `rt.rs::render_block` 出队 → `apply` → `BranchShare.control_change` → ⭐ `armed.then(|| &probe)` → `SynthEngine::render_track_with_cc` → `SfzVoicePool::render_into_with_cc` → `slot_readings(.., cc)` → ⭐ `ampeg_run_with_cc_and_velocity`；⭐ **旧入口全部保留为传 `None` 的薄包装**（⭐ ~35 个既有调用点**一字未改**）✓ ⭐ ④ **app 侧**：⭐ `midi_live.rs` 的 `0xB0` 从"⭐计数丢弃"⭐改为"⭐映射成事件、⭐与音符同批同一次发布"（⭐ 新字段 `control_changes`；⭐ 其它非音符**仍**计数）✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 两条口径（⭐ 都逐字登记、⭐ ⛔ 不静默）**: ⭐ ⭐ **① 探针的 armed 口径**：⭐ 会话里**一条 CC 都没有** ⇒ 引擎传 `None`（⭐ ⇒ 与接线前**逐位相同**）；⭐ **armed 之后**未收到过的控制器读 `0`（⭐ 与"⭐收到 0"⭐由 `received()` 区分：⭐`None` vs `Some(0)`）✓ ⭐ ⭐ **② CC 门控（`loccN`/`hiccN`）显式选路 ③**：⭐ **维持"门控只在摊平期"**、⭐ 登记为**已知边界** —— ⭐ 明文后果：⭐ 被门控的区域在**摊平表路径**（⭐含实时）**永不发声**、⭐ 而离线 `render_note_into_with_cc` 那条路上门控是**活的**；⭐ 语料体量 **7950** 处（⭐ ⛔ 不是理论缺口）；⭐ ⛔ 不选①（⭐重摊平 ＝ 架构单且把 CC 塞进快照）／②（⭐实时每块现查 ＝ **改变区域选择**、⭐超本单范围）✓
+
+⭐ ⚠ **五、⭐ 判据（⭐ 新增 7 条 ＋ 两条注入）**: ⭐ **S63**（⭐实时 CC 支生效）／⭐ **S64**（⭐ ⭐ **离线 ＝ 摊平 ＝ 实时**逐位相同）／⭐ **S65**（⭐无 CC 逐位不变 ＋ 三指纹）／⭐ **S66**（⭐登记可判 ＋ 反向腿）／⭐ `rt.rs` 库判据 `control_change_events_advance_the_session_state`／⭐ app 判据⑫（⭐真 `EngineHost`）／⭐ `rt_zero_alloc` ㉙ 的 d／e 两腿 ✓ ⭐ **零分配**：`rt_zero_alloc` **75/75**、⭐㉙ 四元组全 0、⭐新增 1 000 量子 CC 腿（⭐`control_change(1)=Some(64)`）✓ ⭐ **注入两条**：⭐ I1（⭐`slot_readings` 把 `cc` 换回 `None`）⇒ ⭐S63／S64 **红**（⭐`cc=37` 读 `240` vs 公式 `296`）；⭐ I2（⭐删 `0xB0 =>`）⇒ ⭐app 判据⑫ **红**（⭐且 live 腿读数回落到 `control-changes=0`）＋ ⭐两条还原后 `sha256` **逐字等于注入前** ✓
+
+⭐ ⚠ **六、⭐ 三条要如实登记的代价**: ⭐ ① ⭐ ⭐ **一动字面基线**：⭐ `crates/yeban-engine/tests/rt_new_boxed.rs:264` 的 `180_000` ⇒ **`180_144`**（⭐ 依 `HD-56`：⭐ 基线可动、⭐ 代价照实记 ⇒ ⭐ 本条代价＝**改一个字面数**，⭐ 回退代价同样小）✓ ⭐ ② ⭐ **四处旧期望字面量被改写**（⭐ `midi_live`⑨／⑩、⭐`midi_input_notes` live、⭐`midi_live_wire` session）—— ⭐ 它们编码的**正是"⭐CC 被忽略"⭐这一行为** ⇒ ⭐ 本单把它改成"⭐被映射"⭐是**有意**的语义变更、⭐ ⛔ 不是"⭐判据由绿转红"（⭐ `CHANGED 0` 的口径要读作后者）✓ ⭐ ③ ⭐ **陈旧叙述数**（⭐ 集成者未改、⭐ 属我的文件面）：`crates/yeban-app/src/engine_host.rs:380/445/802`、⭐`crates/yeban-app/tests/gui_stack_budget.rs:9/43/45`、⭐`crates/yeban-engine/tests/synth_rt_zero_alloc.rs:2564` 的 `180000 B` 文案 ⇒ ⭐ ⚠ **登记为待修**（⭐ 都只是注释／叙述、⭐ ⛔ 不是判据：⭐ 相关套件当时全绿；⭐ 已同步 `sfz-core-notes.md` 的 S9 行）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `8f5ef395`（⭐ `G18`）与 `392cfa3d`（⭐ `#107`）的 CI 判决** ＋ ⭐ **上面 ③ 的陈旧叙述数** ＋ ⭐ **`HD-64` 的裁决** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
