@@ -11738,3 +11738,28 @@ cargo run --release -p yeban-engine --locked --features device --example measure
 ⭐ ⚠ **读法**: ⭐ 本单在 `yeban-sfz` **公开面新增 `ModTarget::Volume` ＋ `ModUnit::Decibels`**（⭐ 第四类单位）⇒ ⭐ **五条依赖腿全部真跑且绿**（sfz 41 s／engine 171 s／app 956 s／mcp／ui-mcp）＋ ⭐ 两条平台腿各 18 步 ⇒ ⭐ **受影响集合被完整覆盖**（⭐ 扩单位类别**未**漏掉任何依赖腿）✓ ⭐ ⚠ `workspace 全量` **skipped／0 步 ⇒ ⛔ 不计入绿**（⭐ 非缺口）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`gain_ccN`／`gain_onccN`／`gain_curveccN`**（⭐ 规范 Modulation 表里**逐字的 delta 行名**、⭐ 语料裸出现 **0** 处 ⇒ ⭐ 另开单 ＋ 需裁与静态 `gain` 别名的关系）＋ ⭐ **`global_volume`／`master_volume`／`group_volume`**（⭐ 三个静态 opcode 未解析、⭐ 其 CC 调制 **47 处／32 文件**）＋ ⭐ **`volume_smoothccN`／`volume_stepccN`**（⭐ Range 空／Unit `N/A` ⇒ ⭐ 不做 ＋ 已钉住）＋ ⭐ **`cutoff_oncc*`（8）**（⭐ `cutoff` 静态都未解析 ⇒ 先勘察）＋ ⭐ **`loop_type` 新单**（⭐ 需裁决）＋ ⭐ **立体声路立项**（⭐ `pan` 前置）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
+
+---
+
+## R808 实测追加（2026-10-17）：⭐⭐ **`#120` **止损结案**（⛔ 零代码、⛔ 零提交）** —— ⭐ 我写的两条核心事实**都是假的**（⭐ 第 13／14 次）
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 硬错之一：⭐ 规范里没有那三张 Modulation 表**: ⭐ 我要求抄"⭐ `global_volume`／`master_volume`／`group_volume` 各自的 Modulation 表里哪些 `_onccN` 行真的存在"⭐ ⇒ ⭐ ⭐ **三页⛔ 根本没有 Modulation 表**！⭐ 三页各只有一张表（⭐ 逐字同域：⭐ `| global_volume | ARIA | float | 0 | -144 to 6 | dB |`）⇒ ⭐ 而对照 ⭐ `volume` 页**有** `Modulations` 表（⭐ `gain_ccN`／`volume_curveccN`／…）⇒ ⭐ ⭐ **"⭐ 它们的 CC 调制"⭐在规范里不存在** ⇒ ⭐ 接它就＝**发明语义**（⭐ 违反 `AGENTS.md` §5.7）✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 硬错之二：⭐ "⭐ 47 处／32 文件"⭐是**假事实**，⭐ 而且溯源到了真身**: ⭐ 实测（⭐ 分母 1398、⭐ 剥注释 ＋ token 边界）：⭐ `global_volume=` **0／0**、⭐ `master_volume=` **0／0**、⭐ `group_volume=` **1／1**、⭐ 三个 `_oncc` 家族 **0／0** ⇒ ⭐ ⭐ **那 47 的真身是 `lfo*_volume_onccN` 的行数**（⭐ 如 `lfo01_volume_oncc101=-24`）⇒ ⭐ 全语料**从未**出现 `global_volume` 这个字符串（⭐ `git log -S 'global_volume_oncc' -- assets` **无输出** ⇒ ⭐ 不是语料变了、⭐ **是从写下起就错**）✓ ⭐ 并且**连带查出 `#119` 另有两条登记数也是错的**：⭐ 家族子串实测 **50／33**（⭐ 登记 49／32）、⭐ 裸 `volume_onccN` 含 `$` 宏名口径实测 **3／3**（⭐ 登记 2／2；⭐ 第三处是 `Ixox Flute.sfz:152` 的 `volume_oncc$F2_DIS=-6`）✓ ⭐ 机械针位置：⭐ `crates/yeban-engine/tests/sfz_instrument.rs:12781`（⭐ `**49** 次 ／ **32** 文件`）＋ ⭐ `:147` 头部 doc；⭐ 同源 "47" 注释另有 `sfz_instrument.rs:1000`／`:1002-1004`、⭐ `modulation.rs:518-520`／`:1203-1204`／`:1709`、⭐ `tests/sfz_instrument.rs:12594` ✓
+
+⭐ ⚠ **三、⭐ 止损判定：⭐ 触发**（⭐ 三条独立依据、⭐ 任一条单独成立）:
+| # | 依据 | 内容 |
+| :-- | :--- | :--- |
+| 1 | **规范面** | ⭐ 无 Modulation 表 ⇒ ⭐ 要求的 CC 调制在规范里**不存在** |
+| 2 | **结构面** | ⭐ 作用域级语义 ⛔ **无法在"⭐ 四尺寸全 ＋0"下落地**：⭐ ① ⭐ `Region` 要 ＋2 个独立字段才保得住 provenance；⭐ ② ⭐ `PreparedRegion` 要 ＋2~3 个 `f32`（⭐ 预乘进 `volume_gain` 则**语义错**）；⭐ ③ ⭐ ⭐ `Scopes::get` 是**扁平 first-match**（⭐ `instrument.rs:1550-1555`）⇒ ⭐ 三个名字走**同一张表**、⭐ ⛔ 无法表达"⭐ 只在 `<global>` 有效"⭐ ⇒ ⭐ 必须新增**按 header 限定的查询 API**（＝新面）；⭐ ④ ⭐ 实时侧**无逐作用域载体** |
+| 3 | ⭐ **最强** | ⭐ **三级怎么乘到区域音量：⭐ 规范读不到** —— ⭐ `volume` 页只裁定**同一级**的 `volume`(dB)→线性 ＋ `amplitude` 线性**相乘**；⭐ `headers/global` 只说 **override**（"⭐ If the same opcode defined in global is also defined in group or region, the group or region setting is used"）⇒ ⭐ **结合律未给** ⇒ ⭐ 接它就＝发明 ✓ |
+
+⭐ ⚠ **四、⭐ 四项真实状态（⭐ 第 283 条的实测）**: ⭐ ⓐ ⭐ 解析层 ⭐ **存但⛔ 不读**（⭐ `OpcodeMap` 按名通用收 ⇒ ⭐ 三个 opcode 躺在作用域表里；⭐ 而 `yeban-engine` 内 `grep` 命中 **2 处全是注释** ⇒ ⭐ **0 处代码**）；⭐ ⓑ ⭐ ⭐ **三个 header 都完整建模**（⭐ `Header` **8** 变体含 `Global`／`Master`／`Group`；⭐ 作用域链 `region→group→master→global`；⭐ 语料 `<global>` **224 行／167 文件**、⭐ `<master>` **1240／134**、⭐ `<group>` **8851／657**）⇒ ⭐ ⛔ 止损的**第一分支（header 未建模）不成立**、⭐ 真正卡住的是**依据 1／2／3**；⭐ ⓒ ⭐ **生产消费者 0**（⭐ 测试读点 3 组，⭐ 全部只断言"⭐ 必须被忽略"）；⭐ ⓓ ⭐ 语料合计 **1／1** ✓
+
+⭐ ⚠ **五、⭐ 本单产出**: ⛔ **零 `crates/**` 改动、⛔ 零提交**（⭐ 符合票据 §4.5"⭐ 止损 ⇒ ⛔ 不提交"）⇒ ⭐ 只留一份报告（⭐ `.worktrees/mod-engine/REPORT-120.md`，⭐ 505 行 ⇒ ⭐ **临时文件，⭐ 我读后即清**）＋ ⭐ 四门 ⛔ 未跑（⭐ 无改动可跑）＋ ⭐ 注入 ⛔ 未做（⭐ 无对象）✓ ⭐ ⭐ **结论：⭐ `#120` 判定为**止损结案**、⛔ 不派第二片实现、⛔ 不产出接受这三个 opcode 的提交** ✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 两条可复用口径**: ⭐ ⭐ **第 287 条 —— 前缀族必须**先展开成员**再计数**: ⭐ 数"⭐ 某前缀族多少处"⭐时，⭐ **必须把匹配该前缀的**完整 opcode 名逐个列出并分别计数**；⭐ 任何**未列出的匹配**都可能属于**另一个 opcode** ⇒ ⚠ **本条的实测**：⭐ "⭐ `global_volume_onccN` 一族 47／32"⭐ 的真身是 ⭐ **`lfo*_volume_onccN`**，⭐ 而 `global_volume` **全语料 0 处** ✓ ⭐ ⭐ **第 288 条 —— 规范**缺表**⇒ ⭐ 登记为"⭐ 规范无"、⭐ ⛔ 不当成"⭐ 本单不做"**: ⭐ 若规范页**没有**那张表／那一行，⭐ 那么"⭐ 未做"⭐这个说法**本身是错的**（⭐ 它暗示"⭐ 有余地"⭐）⇒ ⭐ 正确依据是 ⭐ ⭐ **"⭐ 规范无 Modulation 表"**（⭐ ⛔ 不许写成"⭐ 规范有、⭐ 本单不做"⭐ —— ⭐ 那会让下一位接手者以为欠着活儿）✓
+
+⭐ ⚠ **七、⭐ 待办（⭐ 我留下的）**: ⭐ ① ⭐ **按第 278 条修 `#119` 的三处错数**（⭐ `47／32` ⇒ 真身 `lfo*_volume_onccN`；⭐ 家族子串 `49／32` ⇒ **50／33**；⭐ 裸 `volume_onccN` `2／2` ⇒ **3／3**，⭐ 并**裁决口径**：⭐ `_oncc` 下标是否收 `$` 宏名）；⭐ ② ⭐ **同步机械针**（⭐ `tests/sfz_instrument.rs:12781` ＋ `:147`）＋ ⭐ **保留** S114 的 `ABSENT` 反向腿 ⇒ ⭐ 已派 **`#121`**；⭐ ③ ⭐ 给 `#120` 留"⭐ 未做形态"⭐判据时 ⭐ **依据必须写"⭐ 规范无 Modulation 表"** ✓ ⚠ 并登记两条**非本单**发现（⭐ 供参考）：⭐ `SynthEngine=109152`／⭐`EngineSnapshot=4496`／⭐`SfzPlan=240`／⭐`PreparedSfz=240`／⭐`ControlChangeState=144`；⭐ 以及 ⭐ ⚠ `scopes.get("group")`（⭐ `instrument.rs:1748`）读的是 `group=` **复音组号 opcode**、⭐ 与 `<group>` **段头无关** ⇒ ⭐ 任何后续设计 ⛔ **不能复用它** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#121`（⭐ 修 `#119` 三处错数 ＋ 机械针 ＋ 钉住 `#120` 的"⭐ 规范无表"）** ＋ ⭐ **`gain_ccN`**（⭐ 规范确实有那一行、⭐ 语料裸 0）＋ ⭐ **`cutoff_oncc*`（8）**（⭐ 先勘察）＋ ⭐ **`volume_smoothccN`／`volume_stepccN`** ＋ ⭐ **`loop_type` 新单**（⭐ 需裁决）＋ ⭐ **立体声路立项**（⭐ `pan` 前置）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
