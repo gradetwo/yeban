@@ -10643,3 +10643,24 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ ⭐ **第 267 条: 要求"⭐ 逐位／⭐ 容差"⭐ 判据之前、⭐ 先核**格式本身**是否无损** —— ⚠ **把无损格式的结论外推到有损格式 ⇒ ⭐ 判据**不可构造**、⭐ 而"⭐ 差值超容差"⭐ 会被误读成实现错**；⭐ 本条实例: ⭐ FLAC 的"⭐ 差 ＝ 分母差 1.19e-7"⭐ 外推到 Vorbis ⇒ ⭐ 实测 `1.51e-2`（⭐ 大 5 个数量级，⭐ 因为 Vorbis 有损）✓
 
 ⭐ ⚠ ⭐ **七、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`#94` 按读法 B ＋ 规范口径实现（⭐ 在制）** ＋ ⭐ **`#95` 按三条加固交单（⭐ 在制）** ＋ ⭐ **读回 `cb97fcd3`／⭐`3d9b95d3`／⭐`67f50990` 的 CI 判决** ＋ ⭐ **`loop_end == pcm_len` 的钳位单** ＋ ⭐ **`--enable-ui-mcp-http` 形态的打开入口单** ＋ ⭐ **统一归一化分母单**（⭐ 只对**无损**腿有意义）＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R761 实测追加（2026-10-16）：⭐ **`cb97fcd3`（⭐ `#92`）的 CI 判决 ＝ `success`、⭐ 真绿** ＋ ⭐ **`3d9b95d3`（⭐ `#96`）仍在跑**
+
+⭐ ⭐ **一、⭐ `cb97fcd3`（⭐ `#92` SFZ `ampeg` ADSR）: ⭐ run `38838828471` ＝ `success`** —— ⭐ ⭐ **真绿的证据（⭐ 非零耗时步数，⭐ 第 258 条）**:
+| ⭐ 腿 | ⭐ 结论 | ⭐ 非零步 |
+| :--- | :--- | --: |
+| ⭐ ⭐ **`rust (yeban-engine)`** | ⭐ **success** | ⭐ **6** |
+| ⭐ ⭐ **`rust (yeban-sfz)`** | ⭐ **success** | ⭐ **6** |
+| ⭐ **`rust (yeban-app)`** | ⭐ **success** | ⭐ **12** |
+| ⭐ **`rust (yeban-mcp)`**／⭐ **`rust (yeban-ui-mcp)`** | ⭐ **success** | ⭐ 9／⭐6 |
+| ⭐ ⭐ **`macos`** | ⭐ **success** | ⭐ **14** |
+| ⭐ ⭐ **`windows`** | ⭐ **success** | ⭐ **15** |
+| ⭐ `deny`／⭐`checks`／⭐`lockfile`／⭐`plan` | ⭐ **success** | ⭐ 4／⭐11／⭐5／⭐2 |
+| ⭐ `rust (workspace 全量)` | ⭐ `skipped`（⭐ `plan` 判受影响集合）| ⭐ 0 |
+⇒ ⭐ ⭐ **即: ⭐ 改 `yeban-sfz` ＋ `yeban-engine` 连带验了 `yeban-app`／⭐`yeban-mcp`／⭐`yeban-ui-mcp`** ⇒ ⭐ **五条 crate 腿全跑非 0** ✓
+
+⭐ ⚠ ⭐ **二、⭐ `3d9b95d3`（⭐ `#96`）: ⭐ 读时 `in_progress`** —— ⭐ ⭐ **已见 `rust (yeban-model)` ＝ success（⭐ 非零步 6）**、⭐ `macos`／⭐`windows`／⭐`rust (yeban-render)`／⭐`rust (yeban-engine)`／⭐`rust (yeban-app)` 仍在跑 ⇒ ⭐ **判决待下次读回**（⭐ ⛔ 现在**不写成"⭐ 通过"**）✓
+
+⭐ ⚠ ⭐ **三、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `3d9b95d3` 与 `49f3a5e8` 的最终判决** ＋ ⭐ **`#94`／⭐`#95` 交单** ＋ ⭐ **`loop_end == pcm_len` 的钳位单** ＋ ⭐ **`--enable-ui-mcp-http` 形态的打开入口单** ＋ ⭐ **统一归一化分母单**（⭐ 只对**无损**腿有意义，⭐ 见第 267 条）＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
