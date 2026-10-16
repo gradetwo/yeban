@@ -10102,3 +10102,58 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⭐ ⚠ **七、⭐ 已发的两条线（⭐ 在制）**: ⭐ ⭐ **`#87`（⭐ mod-engine）＝ 回环往返时延的采集与判定通道** ⇒ ⭐ **它按停止条款停手上报一次**（⭐ 逐字证据: ⭐ `open_output`／⭐`open_input` 的数据回调被**硬编码**、⭐ `OutputStreamHandle` 字段全私有、⭐ `RecordSender` 无时间戳 ⇒ ⭐ **我原单的 §2.4（⭐ 时间锚定）与 §2.7（⭐ 别动公开面）互斥**）⇒ ⭐ ⭐ **我裁 **①**: ⭐ 批准 `--loopback` 腿**直接用 cpal 自建两条流**** ⇒ ⭐ **我已实测 `examples/measure_latency.rs` **本来就在 `:655`／⭐`:713` 自己建流****（⭐ 即"⭐ 自建流"是**该文件的既有模式**、⭐ ⛔ 不是偏离、⭐ 且 ⛔ 零改动 `device.rs` 公开面、⭐ ⛔ 零新依赖）✓ ⭐ ⭐ **`#88`（⭐ mod-app）＝ 真实设备输入接进录音链**（⭐ `host.rs:2288` 硬写 `SilenceSource`、⭐ `device.rs:579 open_input` 全仓生产代码**零调用者**）⇒ ⭐ **我裁: ⭐ 默认 ＝ 真设备源、⭐ 打不开就**响亮失败**（⭐ ⛔ 不许悄悄录静音）、⭐ 静音源保留为**显式缝**** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`#87`／⭐`#88` 收工** ＋ ⭐ **`#87` 落地后改 `scripts/dev/hardware-check.sh` 第 6 项走 `--loopback`**（⭐ 集成者自己的活） ＋ ⭐ **`run_gui` 运行期打开工程 ＋ ⭐ 可见入口 ＋ ⭐ 金标重录** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **OGG 端到端夹具** ＋ ⭐ MIDI 导出 UI 按钮 ＋ ⭐ `needs-3`／⭐`needs-6` ＋ ⭐ 待裁 5 件 ✓
+
+---
+
+## R747 实测追加（2026-10-16）：⭐⭐⭐ **`#87`（回环往返采集）＋ `#88`（真实设备录音）双双落地** ⇒ ⭐ **`--loopback` 腿**真跑出数字了**（⭐ 本机 52.2381／⭐52.2467 ms）** ＋ ⭐ **我改完检查单第 6 项** ＋ ⭐ **查明 BlackHole 装了但**没被 coreaudiod 加载****
+
+⭐ ⭐ ⭐ **一、⭐ `#87` 落地（⭐ mod-engine；⭐ 它交单时**未提交**、⭐ 由我在它的树里提交为 `b2e1e171`、⭐ rebase 后 ＝ `47617a9e`）**:
+| ⭐ 项 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **改动面** | ⭐ 4 文件、⭐ **+1171／⭐−72**：⭐ `src/latency.rs`（⭐ 检测器 ＋ 判据）／⭐ `examples/measure_latency.rs`（⭐ `--loopback` 腿）／⭐ `tests/latency_cli_contract.rs`／⭐ `src/lib.rs`（⭐ **仅文档** ＋6／⭐−3）✓ |
+| ⭐ ⭐ **检测器（⭐ 本单的可判核心）** | ⭐ ⭐ **`pub fn detect_delay_frames(reference, recorded, threshold) -> Option<Detected>`** —— ⭐ **逐滞后归一化互相关**、⭐ 取 `argmax|ncc|`；⭐ `Detected { delay_frames, peak_ncc, peak_ratio, lags }`；⭐ **纯函数、⭐ 零依赖、⭐ 无 feature 门** ⇒ ⭐ **无声卡也能真跑** ✓ |
+| ⭐ **信号** | ⭐ 线性 chirp **200 Hz → 8 kHz、⭐ 50 ms**（⭐ 首尾 5% 半余弦淡入淡出）⇒ ⭐ ⛔ 不是单点脉冲 ✓ |
+| ⭐ ⭐ **主瓣保护带（⭐ 值得记的工程细节）** | ⭐ **`peak_ratio` ＝ 峰 ÷ 主瓣保护带（⭐ ±max(L/8,1)）外的次高峰** ⇒ ⚠ ⭐ **不设保护带时相邻滞后重叠 `L−1` 个样本 ⇒ 峰值比恒 ≈ 1、⭐ 真信号也被判"没检出"**（⭐ agent 第一版撞上并已修）✓ |
+| ⭐ ⭐ **时序锚定** | ⭐ 两条流由 example **自建**（⭐ `build_output_stream`／⭐`build_input_stream` ＝ **该文件既有模式**）⇒ ⭐ 输出回调首次写 chirp 首样本时存 `base.elapsed()`；⭐ 输入回调把 `(累计首帧序号, base.elapsed())` 存进**预分配**槽；⭐ 控制线程用检出延迟 D 定位那一块 ⇒ ⭐ **两侧同一 `Instant` 时基、⭐ 不需要共享流帧计数器** ✓ |
+| ⭐ **实时红线** | ⭐ 回调内**只有**静音填充 ＋ ⭐ 覆盖 chirp 窗 ＋ ⭐ 原子 store ⇒ ⭐ **零堆分配／⭐零锁等待／⭐零阻塞 I/O**（⭐ 检出在回调外）✓ |
+| ⭐ ⭐ **诚实闸** | ⭐ **`LoopbackMeasured` 只在真的检出时给出**；⭐ 没检出 ⇒ ⭐ 维持 `nominal-only` ＋ ⭐ `measured_roundtrip_ms=none` ＋ ⭐ `unmeasurable-without-loopback` ＋ ⭐ **非零退出**，⭐ 并把"⭐ 为什么没检出"（⭐ `best peak_ratio`／⭐`peak_ncc`／⭐`delay_frames`／⭐`lags`）打进 stderr 与 `human_summary()` 的 `NOTE:` 行 ✓ |
+| ⭐ **`BENCH` 行** | ⭐ 字段集**未改**；⭐ 不确定性**只**进 `NOTE:` ＋ ⭐ stderr；⭐ 唯一动的是**本已存在**的 `loopback=`：⭐ 从硬编码 `false` 改成 `self.evidence == LoopbackMeasured` ⇒ ⭐ **消除了"⭐ `evidence=loopback-measured` 却 `loopback=false`"的自相矛盾** ✓ ⭐ **我复核: ⭐ 默认腿字面由指纹 `fnv1a_64(bench_line()) == 0x77070a2b9447c69a`**（⭐ ＝ 改动前在 `29836135` 上的实测值）**守住** ✓ |
+| ⭐ ⭐ **我的独立复核** | ⭐ **`fmt --check` ＝ 0**／⭐ **`check --all-targets --features device --locked` ＝ 0（⭐ 0 warning）**／⭐ **`clippy --all-targets --features device --locked -- -D warnings` ＝ 0（⭐ 0 warning）**／⭐ **`test --no-fail-fast` ＝ 27 二进制・518 passed・0 failed・4 ignored**／⭐ **`policy_check.py` ＝ 0（⭐17 守卫含 G17）**；⭐ ⭐ **`Cargo.toml`／⭐`Cargo.lock` 零改动 ⇒ 包集合不变**（⭐ `cargo deny` 本机未安装的机械替代证据）✓ |
+| ⭐ **注入双向（⭐ agent 做、⭐ 我采信其读数）** | ⭐ ① 阈值 `3.0 → 0.0` ⇒ "⭐ 纯噪声不许被检出"红（⭐ rc=101）② 诚实闸短路 ⇒ "⭐ 声称有回环但没有有限数字绝不许翻成达标"红 ③ **反向腿** `ms <= TARGET` → `<` ⇒ "⭐ 恰好 5.5 ms 算达标（≤）"红；⭐ 三次均 **sha256 逐字节还原** ✓ |
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 本机**第一次**真的量到往返时延（⭐ 人类最关心的那个数字）**: ⭐ ⭐ **`--loopback --seconds 2` 实测 ＝ 52.2381 ms 与 52.2467 ms**（⭐ `verdict=over-target`、⭐ exit ＝ 1、⭐ `peak_ratio ≈ 3.9`）✓
+⭐ ⚠ ⭐ **但必须**如实标注它的**口径****（⭐ ⛔ 不许当成"⭐ 设备往返超标"）**: ⭐ **那是 M2 **内置扬声器 → 内置麦克风**的**声学**路径** ⇒ ⭐ **它含整个空气传播 ＋ 系统处理链**、⭐ ⛔ **不是虚拟回环、⭐ 也不是有线回环**；⭐ ⭐ **且这条路**时有时无**** —— ⭐ **一次 `--seconds 1` 未检出（⭐ `peak_ratio=1.62`）、⭐ `--seconds 2` 两次都检出（⭐ ≈3.9）** ✓ ⇒ ⭐ **故它**不能**用来判 `BASELINE-005`**、⭐ **但它是工具的"⭐ 端到端真能出数"的活证明** ✓
+
+⭐ ⭐ ⭐ **三、⭐ `#88` 落地（⭐ mod-app；⭐ `d2cc0166` ⇒ ⭐ rebase 后 ＝ `4dc8c6cd`）**:
+| ⭐ 项 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ **改动面** | ⭐ 8 文件（⭐ 2 新增）：⭐ `src/record_device.rs`（⭐ 新 284 行）／⭐ `tests/record_device_wiring.rs`（⭐ 新 866 行）／⭐ `src/record_wav.rs` ＋169／⭐−31 ／⭐ `src/host.rs` ＋81／⭐−23 ／⭐ `src/test_port_adapter.rs` ＋26／⭐−11 ／⭐ `src/lib.rs` ＋3 ✓ |
+| ⭐ ⭐ **工厂缝** | ⭐ ⭐ **`pub trait InputSourceFactory { fn open(&self, options: &RecordOptions) -> Result<Box<dyn InputSource + Send>, String>; fn label(&self) -> &'static str; }`** ⇒ ⭐ **产品实现 `DeviceInputFactory`**（⭐ `record_channel` ⇒ ⭐ `open_input` ⇒ ⭐ **`handle.play()`** ⇒ ⭐ 返回 `DeviceInputSource { RecordReceiver, InputStreamHandle, channels }`）＋ ⭐ **判据实现**（⭐ 脚本化假源／⭐返 `Err` 的工厂）✓ ⭐ **`InputStreamHandle: Send` 由编译期断言 `const _: () = assert_send::<InputStreamHandle>();` 钉住** ✓ |
+| ⭐ ⭐ **默认与静音缝** | ⭐ **默认 ＝ 真设备源**；⭐ **静音源保留**、⭐ 走**显式**环境变量 `YEBAN_RECORD_SOURCE`、⭐ **只有字面量 `silence`** 选它 ⇒ ⭐ ⭐ **其它任何值（⭐ 含拼错）⇒ ⭐ 真设备源**（⭐ 方向刻意: ⭐ **拼错**不可能**把产品悄悄变成录静音**）✓ ⭐ **选择逻辑是纯函数 `input_factory_for(Option<&str>)`** ⇒ ⭐ **判据把它当参数传、⭐ ⛔ 不读环境**（⭐ 满足"⭐ 测量纪律: ⛔ 不读环境"）✓ |
+| ⭐ ⭐ **响亮失败** | ⭐ 工厂返 `Err` ⇒ ⭐ `RecordError::Source` ⇒ ⭐ **⛔ 不建会话、⭐⛔ 不落盘**；⭐ 错误文本走**既有** `apply_record_outcome` ＋ ⭐ stderr；⭐ `recording` 保持 `false` ✓ |
+| ⭐ ⭐ **判据 ①（⭐ 本单的机械验收核）** | ⭐ ⭐ **注入 1024 帧非零样本（⭐ 峰值 7977759 码）⇒ 落盘 2048 码，⭐ 且 2048／⭐2048 **逐码等于手搓等价物、⭐ 容差 0 码****（⭐ 第 244 条: ⭐ 最强的新管线证明是与手搓等价物逐位比对）✓ ⚠ 口径: ⭐ 管道**故意**带 TPDF 抖动（⭐ `[ARCH-FMT-001]` ±1 LSB）⇒ ⭐ "⭐ 与注入浮点逐位相等"⭐ 数学上不可能、⭐ 故与**同一抖动种子的手搓等价物**比 ✓ |
+| ⭐ **判据 ④（⭐ 负判据的正对照）** | ⭐ 打开失败 ⇒ ⭐ 工厂**恰好 1 次**、⭐ 落点收到**非空**文本、⭐ `recording=false`、⭐ ⭐ **路径上**没有文件****（⭐ ⛔ 不是"⭐ 写了一条静音"）✓ |
+| ⭐ **判据 ⑤／⭐⑤b** | ⭐ 显式静音腿 ⇒ ⭐ 落盘 49152 码、⭐ **峰值 1 码**（⭐ 只有抖动）⇒ ⭐ **与 ① 的 7977759 码形成对照**；⭐ **单声道设备**（⭐ 真机常态）⇒ ⭐ 起录成功、⭐ 落 **mono** WAV、⭐ 逐码相等 ✓ |
+| ⭐ ⭐ **我的独立复核** | ⭐ ⭐ **`fmt` ＝ 0**／⭐ **`check --all-targets --locked` ＝ 0（⭐ 0 warning）**／⭐ **`clippy --lib --tests -D warnings` ＝ 0**／⭐ ⭐ **`test --no-fail-fast` ＝ 44 二进制・581 passed・0 failed・4 ignored**（⭐ **＝ 585 总条；⭐ 与 `#86` tip 的 576 条对齐 ⇒ ⭐ ＋9**）／⭐ **`premerge-gate.sh yeban-app` ＝ 0**／⭐ **`policy_check.py` ＝ 0** ✓ |
+| ⭐ ⭐ **rebase 的**逐文件**核验（⭐ 我做的）** | ⭐ ⭐ **`record_device.rs`／⭐`record_device_wiring.rs`／⭐`record_wav.rs` 三份 sha256 跨 rebase **完全相同****；⭐ `host.rs`／⭐`test_port_adapter.rs`／⭐`lib.rs` 的差异**逐行核对全是 `#86` 的内容**（⭐ `wire_mixer_sampler_browse`／⭐ `engine-error-banner` 那一段／⭐ `pub mod file_picker;`）⇒ ⭐ **rebase 无丢失、⭐ 无静默错并** ✓ |
+
+⭐ ⭐ ⭐ **四、⭐ 我的两条裁决（⭐ §三 那两条需人类复核的事）**:
+| ⭐ # | ⭐ 事项 | ⭐ 我的裁决 |
+| --: | :--- | :--- |
+| ⭐ ⭐ **1. ⭐ "⭐ 协商通道数不符"⭐ 怎么处置**（⭐ agent 实测: ⭐ macOS 内建麦克风是 **1** 声道、⭐ 而 `RecordOptions::default().channels == 2`；⭐ 它早期"⭐ 不符就 `Err`"⭐ 的版本让本机录音键**永远起不来**、⭐ `real_ui_tier1` 既有判据实测红） | ⭐ **采纳它的取舍**: ⭐ ⭐ **`InputSource::channels()` 是权威 ⇒ ⭐ 环／⭐切块／⭐WAV 头一致地用协商值（⭐ 落**单声道** WAV）**、⭐ ⛔ **不拒绝**、⭐ ⛔ **不偷偷上混／⭐降混**（⭐ 本仓对"⭐ 怎么混"没有裁决 ⇒ ⭐ agent ⛔ 不许发明）；⭐ **采样率不符仍**响亮失败****（⭐ ⛔ 不改音高／⭐时长）✓ ⭐ **依据: ⭐ 我已独立实测本机 `system_profiler SPAudioDataType` ⇒ `MacBook Pro Microphone: Input Channels: 1`** ⇒ ⭐ **拒绝就等于在本机把功能关掉** ✓ |
+| ⭐ **2. ⭐ 它改了 `src/test_port_adapter.rs`（⭐ 不在我禁用清单、⭐ 但属 Tier-1 判据源）** | ⭐ **采纳**: ⭐ 那条既有判据会用**真指针**按录音键 ⇒ ⭐ 新默认会**打开真麦克风**且帧数依赖真时钟（⭐ CI／⭐无声卡机器必红）⇒ ⭐ 改为**从代码缝**注入显式静音腿（⭐ ⛔ 不碰 `live_surface.rs`）＋ ⭐ **删掉原来的 `unsafe { set_var(...) }`** ⇒ ⭐ **该判据状态保持 `ok`**（⭐ 它测的仍是"⭐ 按钮 ⇒ ⭐ 会话 ⇒ ⭐ 落盘"）✓ ⭐ **并由我的 585 条实测证明"⭐ 既有判据 0 条变状态"** ✓ |
+| ⭐ **3. ⭐ 它顺手修了两处既有**假读数****（⭐ `RecordReport` 的 `pushed` 原来只数控制侧、⭐ `dropped` **写死 0**） | ⭐ **采纳**（⭐ 与本单同因、⭐ 两条生产路现在共用同一对帧级计数器）✓ |
+
+⭐ ⭐ ⭐ **五、⭐ 我改完检查单第 6 项（⭐ `56047c1c`）** —— ⭐ **人类那一项现在**能出判决****:
+| ⭐ 改点 | ⭐ 内容 |
+| :--- | :--- |
+| ⭐ **1. ⭐ 前言** | ⭐ ⛔ 删掉"⭐ 工具今天不收集回环证据"；⭐ 改成说明 `--loopback` 会播 chirp 再在输入侧找回，⭐ 并**逐字**写清这个数字是什么: ⭐ **主机观测到的回调到回调往返**（⭐ 含驱动缓冲、⭐ ⛔ 不含 DAC／⭐ADC 模拟段）⇒ ⭐ **虚拟回环没有 AD／DA ⇒ ⭐ 它给的是下限** ✓ |
+| ⭐ **2. ⭐ 命令 ＋ ⭐ 退出码** | ⭐ 加 `--loopback`；⭐ 说明改成 **0 达标／⭐1 超目标／⭐3 无设备／⭐4 无回环证据**、⭐ 并指出 **0 与 1 **现在都到得了****；⭐ `4` 时提示去看 `best peak_ratio` ✓ |
+| ⭐ **3. ⭐ 取数 ＋ ⭐ 提问** | ⭐ 取数行扩到 `NOTE`／⭐`loopback=`／⭐`peak_ratio`；⭐ 问题清单**加两条**（⭐ `measured_roundtrip_ms` 与 `loopback` 的值；⭐ `NOTE` 行与 `peak_ratio` 读数）✓ |
+| ⭐ **4. ⭐ 加一段备选** | ⭐ 没有 BlackHole 时可用**内置扬声器→内置麦克风**的声学路径（⭐ 真声学往返、⭐ ⛔ 不是设备往返，⭐ 且**时有时无**）✓ |
+| ⭐ **5. ⭐ 过门** | ⭐ **`bash -n` ＝ 0**／⭐ **无关联数组**（⭐ G14）／⭐ **`policy_check.py` 17 条全过**／⭐ ⭐ **非交互跑通**（⭐ 第 250 条）: ⭐ `printf ... \| bash scripts/dev/hardware-check.sh --only 6` ⇒ ⭐ **rc ＝ 0**、⭐ 全部提问都出现 ✓ |
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 一个**对人类马上有用**的实测发现（⭐ 我顺手查的、⭐ 只读）**: ⭐ ⭐ **BlackHole 2ch **已经装了****（⭐ `brew list --cask blackhole-2ch` ⇒ ⭐ `/opt/homebrew/Caskroom/blackhole-2ch/0.7.1/`、⭐ HAL 驱动在位: ⭐ `/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver`）⇒ ⚠ ⭐ ⭐ **但它**没出现在设备列表里**** —— ⭐ `system_profiler SPAudioDataType` 只报三件: ⭐ `MacBook Pro Microphone`（⭐ **1** 声道）／⭐`MacBook Pro Speakers`／⭐`Microsoft Teams Audio`（⭐ 而 `MSTeamsAudioDevice.driver` 同在 HAL 目录**却**被列出来了 ⇒ ⭐ ⭐ **说明 HAL 插件**是会**被列出的、⭐ BlackHole 是**没加载****）✓
+⇒ ⭐ ⭐ **最可能的原因: ⭐ `coreaudiod`（⭐ 本次 pid **613**、⭐ 开机就在跑）⭐ 比驱动安装更早**（⭐ cask 的时间戳是 **2026-10-15 23:37**）⇒ ⭐ ⭐ **故人类的第 1 步**已经**做完了、⭐ 只要让 `coreaudiod` 重新加载驱动即可** ⇒ ⭐ **动作: ⭐ 重启，⭐ 或 `sudo killall coreaudiod`** ✓
+
+⭐ ⚠ ⭐ **七、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `47617a9e`／⭐`4dc8c6cd` 的 CI 判决** ＋ ⭐ **`run_gui` 运行期打开工程 ＋ ⭐ 可见入口 ＋ ⭐ 金标重录** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **OGG 端到端夹具** ＋ ⭐ MIDI 导出 UI 按钮 ＋ ⭐ `needs-3`／⭐`needs-6` ＋ ⭐ 人类跑第 6 项（⭐ 前置: ⭐ 重启 coreaudiod）✓
