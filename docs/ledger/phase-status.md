@@ -11939,3 +11939,24 @@ cargo run --release -p yeban-engine --locked --features device --example measure
 ⭐ ⚠ **五、⭐ 判据 `S118`（⭐ 三条牙）**: ⭐ ① ⭐ 三处就地指针逐处断言（⭐ 原句仍在 ＋ 40 行窗口内有修订段）；⭐ ② ⭐ **25 条逐条打印**（⭐ 文件:行号／原句／判定／依据）＋ ⭐ **机械牙**：⭐ `NotRecognized` **真调** `parse_modulation_name`、⭐ `NotInCode` 剥注释后**按标识符**比 ⇒ ⭐ ⭐ **"⭐ 有人把某族落地却不更新清单"⭐ = 红**（⭐ 注入 I3 实测：⭐ 临时给 `parse_modulation_name` 加 `pan_oncc` 分支 ⇒ ⭐ 判据红）✓ ⭐ ③ ⭐ 三承重指纹 ＋ `×1.0000001` 反向腿 ✓ ⭐ 另两条注入（⭐ 去掉本片改动／⭐ 就地取反一条修订）也各有牙 ⇒ ⭐ **三条注入全红、⭐ 还原后 `sha256` 三文件 MATCH** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `2238a473` 的 CI 判决** ＋ ⭐ **`pan*`／`cutoff*`／`fileg_*`／`pitcheg_*`／`off_time`／`loop_type`／作用域音量／各族 `*smoothccN`·`*stepccN`／`gain_onccN`·`curveccN`**（⭐ **本单逐条核实：⭐ 全部"仍成立"、⭐ 一条都没落地**）＋ ⭐ **`#122`／`HD-66`（⭐ 滤波器）**（⭐ 待裁；⭐ 我建议 C）＋ ⭐ **立体声路立项** ＋ ⭐ **`loop_type`**（⭐ 需加逐声部方向状态 ⇒ ⭐ 需批）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
+
+---
+
+## R817 实测追加（2026-10-17）：⭐⭐ **`2238a473`（`#125`：登记巡检）的 CI 判决 ＝ `success`**（⭐ 真绿：⭐ 两条平台腿各 **18** 步）
+
+⭐ run `38974557764`（⭐ `created 22:14:37Z → updated 22:34:09Z`，⭐ 约 **20 分钟**）✓
+
+| 腿 | 结论 | 步数 | 时长 |
+| :--- | :--- | ---: | ---: |
+| `plan`／`lockfile`／`checks`／`deny` | success | 5／6／15／6 | 短 |
+| ⭐ `rust (yeban-sfz)` | success | 15 | **37 s** |
+| ⭐ `rust (yeban-engine)` | success | 15 | **219 s** |
+| `rust (yeban-mcp)`／`rust (yeban-ui-mcp)` | success | 15／15 | 177／126 s |
+| ⭐ `rust (yeban-app)` | success | 15 | **956 s** |
+| ⭐ `macos` | success | **18** | **624 s** |
+| ⭐ `windows` | success | **18** | **1157 s** |
+| ⚠ `rust (workspace 全量)` | **skipped** | **0** | — |
+
+⭐ ⚠ **读法**: ⭐ 本单虽为**注释／登记为主**，⭐ 但**改了 `tests/sfz_instrument.rs`（＋683 行）** ⇒ ⭐ ⭐ **必须确认 rust 腿真的跑过**（⭐ ⛔ 不能只信"⭐ 文档空绿"⭐）⇒ ⭐ **`rust (yeban-sfz)` 37 s／⭐ `rust (yeban-engine)` 219 s／⭐ `app` 956 s 都是非 0 步** ⇒ ⭐ **目标作业真的跑过** ✓ ⭐ 加上两条平台腿各 **18** 步 ⇒ ⭐ **受影响集合被完整覆盖** ✓ ⭐ ⚠ `workspace 全量` **skipped／0 步 ⇒ ⛔ 不计入绿**（⭐ 非缺口）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`pan*`／`cutoff*`／`fileg_*`／`pitcheg_*`／`off_time`／`loop_type`／作用域音量／各族 `*smoothccN`·`*stepccN`／`gain_onccN`·`curveccN`**（⭐ `#125` 逐条核实：⭐ **全部"仍成立"、⭐ 一条未落地**）＋ ⭐ **`HD-66`（SFZ 滤波器）**（⭐ 待裁；⭐ 我建议 C）＋ ⭐ **立体声路立项** ＋ ⭐ **`loop_type`**（⭐ 需批：⭐ 要加逐声部方向状态）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
