@@ -775,6 +775,53 @@ def g17_hardware_markers_are_ignored() -> list[Violation]:
     return out
 
 
+#: 纪律族的号号上界（[`g18_ledger_rule_numbers_stay_in_one_family`]）。
+#: 2026-10-16 的实测值：本族在 **278** 附近，每次会话长个位数 ⇒ 界放到 400。
+LEDGER_RULE_CEILING = 400
+
+
+def g18_ledger_rule_numbers_stay_in_one_family() -> list[Violation]:
+    """[交接一致性] 台账里的「第 N 条」不得出现**外来号族**。
+
+    为什么值得机械化（实测**四次**）: `scripts/tools/check_handover_consistency.py` 取
+    `docs/ledger/phase-status.md` 里 `第 (\\d+) 条` 的**全局最大值**，再拿它去比交接 §4 标题
+    声明的区间。于是**引用另一个号族**（例如别的台账的轮次号、或一句引文里的条号）
+    会把这个最大值抬到几百 ⇒ 交接检查报「声明到第 278 条，而台账已到第 969 条」——
+    ⚠ 而**没有一行规则出错**，排查成本全在"为什么最大的条号是 969"。
+    修法是改引 `AGENTS.md §…`，⛔ 不写那个数字。
+
+    ⚠ 本条**只查 `phase-status.md`** —— 那正是交接检查唯一读的文件（别的台账不参与对账）。
+
+    判据: 每个 `第 N 条` 的 N ≤ [`LEDGER_RULE_CEILING`]。该上界是**结构性**的：
+    一旦越界，要么混入了外来号族，要么有人真把纪律族写过了 400 —— 两种都值得人工看一眼。
+    ⚠ 真的合法越过 ⇒ **在同一次提交里抬高本常数并注明**，⛔ 不是删掉本判据。
+    """
+    bad: list[Violation] = []
+    path = REPO / "docs" / "ledger" / "phase-status.md"
+    if not path.is_file():
+        bad.append(("G18", "docs/ledger/phase-status.md", "台账文件不存在 ⇒ 本判据空转，不能算证据"))
+        return bad
+    text = path.read_text(encoding="utf-8")
+    numbers = sorted({int(m) for m in re.findall(r"第\s*(\d+)\s*条", text)})
+    if not numbers:
+        bad.append(
+            ("G18", "docs/ledger/phase-status.md", "读不到任何「第 N 条」⇒ 本判据空转，不能算证据")
+        )
+        return bad
+    for n in numbers:
+        if n > LEDGER_RULE_CEILING:
+            bad.append(
+                (
+                    "G18",
+                    f"docs/ledger/phase-status.md: 第 {n} 条",
+                    f"纪律条号 {n} 超过本族上界 {LEDGER_RULE_CEILING} ⇒ 疑似混入外来号族；"
+                    "应改引 `AGENTS.md §…`（⛔ 不要写那个数字 —— "
+                    "`check_handover_consistency.py` 会据此误报交接陈旧）",
+                )
+            )
+    return bad
+
+
 GUARDS = {
     "G01": ("[MODEL-AST-003] 持久化 AST 零 HashMap/HashSet", g01_no_hashmap_in_model),
     "G02": ("[ARCH-TOP-003] 引擎层 crate 零 GUI 依赖", g02_no_gui_deps_in_engine_crates),
@@ -791,18 +838,24 @@ GUARDS = {
     "G13": ("[CI 可用性] workflow YAML 合法且 job 完整", g13_workflows_are_valid),
     "G14": ("[本地门禁可移植性] shell 脚本 bash 3.2 兼容(禁关联数组)且 bash -n 可解析", g14_shell_scripts_are_portable),
     "G15": ("[多线纪律/红线 3、8] crates/* 每个 crate 都必须被显式分类", g15_every_crate_is_classified),
-    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),    "G17": ("[人类裁决 R687] [HARDWARE] 标记必须落在 #[ignore] 里", g17_hardware_markers_are_ignored),}
+    "G16": ("[红线 6] asio／experimental-vst3 永不定义（ADR-0007）", g16_no_forbidden_feature_is_defined),
+    "G17": ("[人类裁决 R687] [HARDWARE] 标记必须落在 #[ignore] 里", g17_hardware_markers_are_ignored),
+    "G18": (
+        "[交接一致性] 台账的「第 N 条」不得混入外来号族（R777 实测四次）",
+        g18_ledger_rule_numbers_stay_in_one_family,
+    ),
+}
 
 
 
 
 def self_test() -> int:
-    """守卫自检 —— 本仓的 14 条守卫**本来没有自检**（R546 的发现）。
+    """守卫自检 —— 本仓的守卫**本来没有自检**（R546 的发现）。
 
     ⚠ 为什么需要：CI 会跑守卫、**但没有任何注入／变异测试** ⇒ 一条守卫若因重构
     或改错而**静默失效**（被从注册表里删掉、或函数抛异常／返回 None）、CI 会一直绿。
     ⭐ 本自检能机械抓住的三件事：
-      ① **注册表完整性**：`G01`…`G14` 一个不缺、且没有空标题／非可调用项；
+      ① **注册表完整性**：`G01`…`G18` 一个不缺、且没有空标题／非可调用项；
       ② **可调用性**：每个 check 函数存在且可调用；
       ③ **真的跑过并返回列表**：逐个调用，断言返回的是 `list`（不是 None、不抛异常）。
     ⚠ 它**不**证明每条判据对**坏输入**会报红（那需要对每个判据构造变异输入）；
@@ -810,7 +863,7 @@ def self_test() -> int:
     """
     fails: list[str] = []
 
-    expected = [f"G{n:02d}" for n in range(1, 18)]
+    expected = [f"G{n:02d}" for n in range(1, 19)]
     missing = [g for g in expected if g not in GUARDS]
     if missing:
         fails.append(f"注册表缺少守卫 {missing}（共应有 {len(expected)} 条）")
