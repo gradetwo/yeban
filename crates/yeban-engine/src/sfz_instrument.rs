@@ -586,6 +586,129 @@
 //!    应读作「探针只影响**取值类**的量（`ampeg_*` **与 CC 轴交叉淡化的增益**），
 //!    ⛔ 不影响区域选择」—— 两句的原文一字未删，本条就是它们的修订见证。
 //!
+//! ⭐ ⭐ **追加修订段（任务单 `#109`）—— 被修订的是上面 `#107` 第 2 条登记里
+//! "摊平期门控登记维持不变（显式选路 ③）"**那一支**（⛔ 上面 `#104`／`#107`／`#108`
+//! 的**原文一字未删**，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+//!
+//! 1. **`#107` 第 2 条的"区域选择口径不改"作废**（它整条就是显式选路 ③ 的登记）：
+//!    CC 门控**不再是**区域选择的唯一依据，也**不再**被烧进掩码 ⇒ 一条被
+//!    `loccN`/`hiccN` 门控的区域**不再**在摊平表路径上"永远不发声"。
+//!    新的口径：掩码只承载**静态**门控（通道 / `trigger` / keyswitch / `first`／
+//!    `legato`），CC 门控由**触发期**的 [`PreparedRegion::cc_gates_ok`] 按会话运行态的
+//!    探针裁决（`flatten_regions` 的静态门控改走 [`non_cc_gates_open`]，它把 CC 那一段
+//!    整个摘出去）。
+//!    ⚠ **对没有 CC 门控的区域逐位不变**（[`non_cc_gates_open`] 与 `region_matches` **同序、
+//!    同缺省值**，只把 CC 那一段换成 `true`）⇒ `#107` 第 1 条（"实时恒为基准值"已作废、
+//!    三条路一致）与 `#108` 的两条**都仍然成立**（判据 `S64`／`S65`／`S68` 复跑）。
+//! 2. **`#107` 第 2 条里那两句"明文后果"作废**：原文写"一条被 `loccN`/`hiccN` 门控的
+//!    区域在引擎的**摊平表**路径上**永远不发声**（不论 CC 状态是什么、也不论是离线摊平
+//!    还是实时）"—— 本单之后**不成立**：CC 门控在摊平表路径上**按探针生效**（判据
+//!    `S81`／`S82` 两个 CC 值的发声读数 ＋ `S81` 三条路一致）。⭐ 原文保留，本段是它的
+//!    修订见证 ＋ 点名。
+//! 3. **`#108` 第 2 条的第三个圆点"`loccN`/`hiccN` 区域门控的实时化仍**未接线**"作废**
+//!    （同一件事的另一处登记，⛔ 一并点名）：它现在**已接线**。`#108` 第 2 条另外两个
+//!    圆点（`set_ccN=` 播种、`pan_oncc*` 一族）**整条有效**，本单⛔ 不碰。
+//! 4. **`#108` 第 4 条"顺带修订的措辞"扩写**（⛔ 原文保留，只点名读法）：上面 `#104`
+//!    的「探针只影响 `ampeg_*` 的**取值**」（第 522 行）、`#107` 第 2 条同款的那句、
+//!    以及 `#108` 第 4 条自己写的「探针只影响**取值类**的量 …… ⛔ 不影响区域选择」，
+//!    在 `#109` 之后应读作「探针影响**取值类**的量（`ampeg_*`、CC 轴交叉淡化的增益）
+//!    **与区域选择里唯一那一项——CC 门控**」—— 三句的原文一字未删，本条是修订见证。
+//! 5. **`#104` 双口径登记（`cc = None` ⇒ 与 `playback_spec` 一致地跳过该轴）那一支**
+//!    **⛔ 未被本单修订**：它说的是**取值**（`cc = None` 时 CC 轴增益恒 `1.0`），
+//!    仍然成立。⭐ 被修订的**只有**"门控在掩码里"这一支。
+//! 6. **顺带修订的第三处措辞**（⛔ 原文保留）：本节 `#108` 的第 3 条里
+//!    "`PreparedRegion` `4232 → 5768 B`"是**`#108` 当时**的读数；`#109` 之后它是
+//!    **6152 B**（＋384 ＝ `128 × size_of::<CcGate>()` ＋ 条数 `u8`；余下 6 B 落在结构体尾部对齐）。
+//!
+//! ### ⭐ 门控上界（`CC_GATE_CAP` ＝ 128）是结构性的（⛔ 不是语料最大值 ＋ 余量）
+//!
+//! 由来、语料普查读数（分母 **1398** 份 `.sfz`／可解析根文件 **1205** 份／region
+//! **64894** 条／单区域门控**最大 3**／直方图 `{0: 43831, 1: 16872, 2: 797, 3: 3394}`）
+//! 与两条路的代价逐条写在 [`CC_GATE_CAP`] 的文档里。⭐ 代价：
+//! `PreparedRegion` `5768 → 6152 B`（＋384 ＝ `128 × 3`；条数 `u8` 与尾部对齐共 6 B）；
+//! ⛔ `SfzVoice` 仍 `40 B`、⛔ `SfzVoicePool` 仍 `1712 B`、⛔ `EngineRuntime` 仍 `180144 B`。
+//!
+//! # ⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/loccN/>，`hiccN` 是同一页的另一行）
+//!
+//! > Defines the range of the last MIDI controller N required for the region to play.
+//! >
+//! > `locc74=30 hicc74=100` … The region will play only if last MIDI controller 74
+//! > received was in the 30 to 100 range.
+//! >
+//! > Allowed range is 0 to 127. The defaults are `loccN=0` and `hiccN=127`.
+//! >
+//! > This is a "hard" switch - if a region is within the locc to hicc range it plays,
+//! > if it's outside that range it does not play. For smooth fades controlled by CC
+//! > (such as crossfaded dynamic layers or crossfaded vibrato layers on sustained
+//! > instruments), other opcodes such as `xfin_loccN` / `xfin_hiccN` and
+//! > `xfout_loccN` / `xfout_hiccN` should be used, or perhaps the `amplitude_onccN`
+//! > ARIA extension.
+//!
+//! 表格行（同页）：`loccN` … Type `integer`、Default `0`、Range `0 to 127`；
+//! `hiccN` … Type `integer`、Default `127`、Range `0 to 127`。Category
+//! ＝ "Region Logic, MIDI Conditions"。
+//!
+//! ## 判定时机 ＝ **触发期**（裁定 ＋ 依据，⛔ 不是猜的）
+//!
+//! 1. 规范把它归在 **Region Logic / MIDI Conditions**，措辞是"**required for the
+//!    region to play**"（"这条区域**要不要**发声"）—— 那是**区域选择**，与 keyswitch
+//!    ／`trigger` 同类，⛔ 不是逐块（per-block）的调制。
+//! 2. 同页把它与 `xfin_*`／`xfout_*`（交叉淡化）**显式对立**："This is a 'hard' switch …
+//!    For smooth fades … `xfin_loccN` / `xfin_hiccN` … should be used"。⭐ 而渐变的
+//!    那两族**恰恰是逐块**的量（本仓 `#108` 已按逐块接线，见上一节）⇒ 门控两族是
+//!    **另一类**：一旦判定，**整条音符**（整个声部生命周期）要么有这条区域、要么没有。
+//! 3. 因此本仓裁定：**门控在触发期求值一次**，结果就是"建不建这个声部"
+//!    ⇒ ⛔ **没有**"一块开、下一块关"的语义（那会把 `hicc1=63`／`locc1=64` 的
+//!    硬切换成**块级**断续，与"hard switch"直接矛盾）。
+//!
+//! ## 三条路的求值点（⛔ 不是三份公式）
+//!
+//! | 路 | 求值点 | 几何来源 |
+//! | :--- | :--- | :--- |
+//! | 离线 [`SfzInstrument::render_note_into_with_cc`] | `Region::matches_query(&query)` 里的 `region_matches` → `Region::cc_gates_ok` | `Region::cc_gates`（解析层，**本来就在跑**） |
+//! | 摊平 [`PreparedSfz::render_block_into_with_cc`] | [`PreparedRegion::cc_gates_ok`]（掩码之上） | 烘好的 `cc_gates` |
+//! | 实时 [`SfzVoicePool::trigger_note`] | 同上（**触发期一次**） | 同摊平 |
+//!
+//! ## ⭐ 为什么没有新的逐声部字段（`SfzVoice` ＋0）
+//!
+//! 门控的**几何**（`[lo, hi]` ＋ CC 号）是**区域参数**（静态），它烘进
+//! [`PreparedRegion::cc_gates`]；门控的**裁决结果**是"这个声部**存不存在**"——
+//! 它**不是**声部状态，因此 ⛔ 不需要在 [`SfzVoice`] 里存任何一位。声部尺寸
+//! 仍 `40 B`（判据 `S9`）。
+//!
+//! ## ⭐ 为什么不破坏既有掩码行为
+//!
+//! 掩码（`key_mask` / `vel_mask`）承载的是**静态**门控；本单⛔ **不改**它们的口径，
+//! 只把"CC 门控用 `cc = None` 求值一次并清 0"这一条**从掩码里摘出来**：
+//! `flatten_regions` 的静态门控改用 [`non_cc_gates_open`]（与 `region_matches` **同序、
+//! 同缺省值**，只把 CC 那一段换成 `true` ⇒ 门控**不再**清 0）。
+//! ⚠ ⛔ 不是「喂一个假探针」：门控是**逐区域**的区间，任何单一常量探针都只能满足
+//! 一部分区域（本单实测：探针 `0` 满足不了 `locc1=64`）。⇒ 通道 / `trigger` / keyswitch /
+//! `force` / `first`／`legato` / 键轴 / 力度轴 / `seq_*` 的判定**一个字节都没碰**（判据
+//! `S65` 的三个承重指纹 ＋ `S9`／`S66`／`S71` 复跑）。
+//!
+//! ⚠ **本单的明文后果（如实登记，⛔ 不静默）**：一条**只有** CC 门控的区域，
+//! 在会话**一条 CC 都没收到过**（探针 `None`）时**仍不发声** —— 这是 `yeban-sfz`
+//! 从严策略的**同一份**口径（`region_matches` 的 `else { return false }`），
+//! 三条路**一致**；⭐ 本单⛔ **不**替调用方发明规范缺省 `loccN=0`/`hiccN=127`
+//! 的播种（那是 `set_ccN` 那一族的事，见本节末）。
+//!
+//! ## 尺寸（本单机械读数）
+//!
+//! `CC_GATE_CAP` ＝ **128**（结构性上界，由来见 [`CC_GATE_CAP`] 的文档）⇒
+//! `PreparedRegion` `5768 → ` **6152 B**（＋384，摊平期，⛔ 不进实时对象）；
+//! ⛔ `SfzVoice` 仍 `40 B`（＋0）、⛔ `SfzVoicePool` 仍 `1712 B`（＋0）、
+//! ⛔ `EngineRuntime` 仍 `180144 B`（＋0，门槛 192 KiB、余量 16464）。
+//!
+//! ## ⛔ 本单仍未接线（登记，⛔ 不静默）
+//!
+//! * `pan_oncc*` ／ `volume_oncc*` 这一族"**任意 opcode 的 `_onccN` 调制**"（语料
+//!   `pan_oncc*` 9796 处）—— 另开单，⛔ 与本单的区域门控不是同一件事；
+//! * `<control> set_ccN=` 的**播种**（初值；语料 1137 处）仍归调用方；
+//! * `set_ccN` 的初值与"会话表未 armed ⇒ 探针 `None`"是**两件事**：本单⛔ 不播种。
+//!
 //! # ⭐ CC 轴交叉淡化（任务单 `#108`）
 //!
 //! 规范逐字（<https://sfzformat.com/opcodes/xfin_loccN/>）：
@@ -664,7 +787,9 @@ use std::collections::BTreeMap;
 use yeban_dsp::polysynth::steal_fade_frames_for;
 use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use yeban_sfz::error::SfzError;
-use yeban_sfz::instrument::{Instrument, LoopMode, NotePolyphony, OffMode, Region, RegionQuery};
+use yeban_sfz::instrument::{
+    CcGate, Instrument, LoopMode, NotePolyphony, OffMode, Region, RegionQuery,
+};
 // ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（`ccN` / `_onccN` / `_curveccN`）。
 // 摊平表按 [`AMPEG_MOD_CAP`] 条**定长**承载（`Copy`），求值本体是
 // [`ampeg_value_with_baked`]（与 `yeban-sfz` 的离线路径**同一份**实现）。
@@ -1304,6 +1429,37 @@ pub fn ampeg_run_from(
 /// `flatten_regions` 的 `debug_assert` 是"绝不可达"的见证，与 `AMPEG_MOD_CAP` 同款）。
 pub const CC_CROSSFADE_CAP: usize = 256;
 
+/// ⭐ **每区域的 CC 门控（`loccN`/`hiccN`）条数上界**（任务单 `#109`；摊平表的**定长**容器）。
+///
+/// # 这个数从哪来（⛔ 不是拍的，也⛔ 不是语料最大值 ＋ 余量）
+///
+/// 它是 `yeban-sfz` 的**结构性上界**：`instrument.rs` 把四个作用域
+/// （`global` → `master` → `group` → `region`）的 `loccN`/`hiccN` 归约进
+/// 一张 `BTreeMap<u8, (Option<u8>, Option<u8>)>`（键 ＝ **CC 号**），再由
+/// `parse_cc_gate_name` 把 CC 号夹在 `cc > 127 ⇒ None`（⛔ 不接受 128 及以上）
+/// ⇒ 任意长的一条 scope 链（含 `#include` 展开的全部内容）归约出的门控
+/// **≤ 128**（`u8` 的 `0..=127` 每一个至多 1 条）。
+///
+/// ⚠ **键是去重键**：同一个 CC 在四级作用域里重复声明只会**覆盖** `lo`/`hi`，
+/// ⛔ 不会各留一条 —— 这正是上界只有 128（而不是"声明处的条数"）的原因。
+///
+/// 登记语料普查（本机实测，2026-10-16；分母 ＝ `assets/samples/**/*.sfz` 的
+/// **1398** 份，其中 `#include` 能解析全的根文件 **1205** 份、归约出的 region
+/// 共 **64894** 条 —— 与 `#108` 的同一读数**逐字相同**，证明两把尺子的 region
+/// 归约口径一致）：**单区域 CC 门控条数最大 ＝ 3**
+/// （`karoryfer-bear-sax/Programs/bearborg/medium_sides.sfz`），
+/// 直方图 `{0: 43831, 1: 16872, 2: 797, 3: 3394}`；已知非零对照 ＝ 同批 region 的
+/// **全部**交叉淡化段数直方图 `{0: 62281, 1: 1920, 2: 693}`（与 `#108` 登记逐字相同）；
+/// 有门控的 region **21063** 条、门控条数**总计 28648**、用到的不同 CC 下标 **13** 个
+/// （`{1, 80, 81, 83, 85, 86, 89, 92, 94, 107, 109, 119, 121}`）。
+/// ⇒ 取**结构性上界 128**（⛔ 不是"语料最大值 3 ＋ 余量"）的代价是每区域
+/// `128 × size_of::<CcGate>()`，换来的是**零截断可能**：⛔ 不需要给 `yeban-sfz`
+/// 新增 `Err`、⛔ 不改任何既有文件的可解析性（越界在结构上不可达 ⇒
+/// `flatten_regions` 的直接下标是"绝不会越界"的见证，与 `CC_CROSSFADE_CAP`／
+/// `AMPEG_MOD_CAP` 同款）。⚠ 另一条路的代价（`#108` 的自裁口径）：取语料最大值 ＋
+/// 新 `Err` 会把今天**能解析**的文件变成**不可解析** —— 本单不选。
+pub const CC_GATE_CAP: usize = 128;
+
 /// 摊平表里 CC 段数组的**惰性填充**（只有 `..cc_crossfade_count` 会被读 ⇒ 取值无关）。
 ///
 /// ⚠ 用**字面构造**（⛔ 不调 `Crossfade::new`：那不是 `const fn`）；`Crossfade` 的字段
@@ -1313,6 +1469,15 @@ const INERT_CC_CROSSFADE: Crossfade = Crossfade {
     direction: XfDirection::In,
     range: XfRange::FADE_IN_DEFAULT,
     curve: XfCurve::Gain,
+};
+
+/// 摊平表里 CC 门控数组的**惰性填充**（只有 `..cc_gate_count` 会被读 ⇒ 取值无关）。
+///
+/// ⚠ 用**字面构造**（⛔ 不调任何构造函数）；[`CcGate`] 的字段全是 `pub`。
+const INERT_CC_GATE: CcGate = CcGate {
+    cc: 0,
+    lo: 0,
+    hi: 0,
 };
 
 /// 键/力度的可播性、以及**全部静态门控**（通道 / `trigger` 事件 / keyswitch / CC）
@@ -1441,6 +1606,28 @@ pub struct PreparedRegion {
     ///
     /// ⚠ `u16`（⛔ 不是 `u8`）：结构性上界是 **256**，`u8` 装不下 256。
     cc_crossfade_count: u16,
+    /// ⭐ **CC 区域门控的几何**（任务单 `#109`）：`Region::cc_gates` 的 `loccN`/`hiccN`
+    /// 闭区间**原样**（[`CcGate`] 是 `Copy` 的值类型）搬进摊平表，顺序 ＝ `yeban-sfz`
+    /// 的归约序（按 CC 号升序）。
+    ///
+    /// 只有 `..cc_gate_count` 有效（定长槽的其余部分是 [`INERT_CC_GATE`]，
+    /// ⛔ 不能靠值判断）；容量 [`CC_GATE_CAP`] **＝ 结构性上界**（它的文档里有由来、
+    /// 语料普查读数与代价）⇒ **没有截断这回事**。
+    ///
+    /// ⚠ **为什么烘**：实时回调拿不到 `Instrument`（摊平之后只剩本结构），而门控是
+    /// **区域选择**的判据 ⇒ 它必须在**触发期**按会话运行态的探针求值
+    /// （[`Self::cc_gates_ok`]）。规范逐字与判定时机的依据见模块头的
+    /// 「⭐ ⭐ **追加修订段（任务单 `#109`）**」那一节。
+    ///
+    /// ⚠ **为什么它是"区域参数"、⛔ 不是"声部状态"**：CC 值**逐块**变（探针由调用方
+    /// 沿 `with_cc` 那条链交下来），几何本身却是静态的 ⇒ 数组不进 [`SfzVoice`]，
+    /// 声部尺寸 ⛔ 不变（判据 `S9` 钉住 40 B）。
+    cc_gates: [CcGate; CC_GATE_CAP],
+    /// ⭐ 上面那张表里**有效**的条数（`0..=CC_GATE_CAP`）。
+    ///
+    /// ⚠ `u8`（⛔ 不是 `u16`）：结构性上界是 **128**，`u8` 恰好装得下（`128` 落
+    /// `u8` 内）；`usize` 会白占 7 字节填充。
+    cc_gate_count: u8,
     /// ⭐ **独占组号**（`group`，缺省 `0`；别名 `polyphony_group`）。
     ///
     /// 语义（SFZ v1 逐字，见 <https://sfzformat.com/opcodes/group/>）：
@@ -1505,6 +1692,45 @@ impl PreparedRegion {
         let v = velocity as usize;
         self.key_mask[n / 64] & (1u64 << (n % 64)) != 0
             && self.vel_mask[v / 64] & (1u64 << (v % 64)) != 0
+    }
+
+    /// ⭐ **CC 区域门控**（`loccN`/`hiccN`，任务单 `#109`）是否成立。
+    ///
+    /// 语义 ＝ `yeban-sfz` 的 `Region::cc_gates_ok` **逐字**再实现一遍的必要部分：
+    /// 每一条门控要求 `lo ≤ cc(cc号) ≤ hi`（**闭区间**，两端都含）；空集合恒 `true`
+    /// （⛔ 不查探针 ⇒ 没有 CC 门控的区域与接线前**逐位相同**）。
+    ///
+    /// 规范逐字（<https://sfzformat.com/opcodes/loccN/>）：
+    /// "The region will play only if last MIDI controller 74 received was in the
+    /// 30 to 100 range." ＋ "This is a 'hard' switch - if a region is within the locc to
+    /// hicc range it plays, if it's outside that range it does not play."
+    /// ⇒ 它是**区域选择**（"要不要这条区域"），⛔ 不是逐块调制 ⇒ 判定时机 ＝ **触发期**。
+    ///
+    /// ⚠ **严格策略与 `yeban-sfz` 逐字同款**：`cc == None`（＝ **整张会话表一条 CC
+    /// 都没收到过**，见 [`crate::cc_state::ControlChangeState::is_armed`]）时，**有**门控的
+    /// 区域**不成立**（`region_matches` 的 `let Some(probe) = query.cc else { return false }`
+    /// 同一条）—— ⛔ 本仓不去替调用方发明规范缺省（那是 `set_ccN` 播种那一族的事，
+    /// 登记见模块头）。没有门控的区域⛔ 不看探针 ⇒ `None` 下逐位不变。
+    ///
+    /// **零分配、零锁、零 I/O**：≤ [`CC_GATE_CAP`] 条定长数组读 ＋ 每条一次整数区间测试。
+    #[must_use]
+    pub fn cc_gates_ok(&self, cc: Option<&dyn Fn(u8) -> u8>) -> bool {
+        if self.cc_gate_count == 0 {
+            return true;
+        }
+        let Some(probe) = cc else {
+            return false;
+        };
+        let active = &self.cc_gates[..usize::from(self.cc_gate_count)];
+        active
+            .iter()
+            .all(|gate| (gate.lo..=gate.hi).contains(&probe(gate.cc)))
+    }
+
+    /// ⭐ 摊平表里承载的 CC 门控**只读副本**（判据用：必须与 `Region::cc_gates` 逐字相同）。
+    #[must_use]
+    pub fn cc_gates(&self) -> &[CcGate] {
+        &self.cc_gates[..usize::from(self.cc_gate_count)]
     }
 
     /// 键掩码的**只读副本**（判据用：`trigger=release` 的区域必须为 `[0, 0]`）。
@@ -2551,9 +2777,22 @@ impl PreparedSfz {
     ///    区域发声；
     /// 2. **曲线点表已在摊平期烘焙** ⇒ 探针不再需要 `Instrument`。
     ///
+    /// ⭐ ⭐ **追加修订段（任务单 `#109`）—— 被修订的是上面第 1 条**（⛔ 原文一字未删）：
+    /// `loccN`/`hiccN` 的门控**不再**在摊平期按 `cc = None` 求值 —— 掩码只留**静态**门控
+    /// （通道 / `trigger` / keyswitch），CC 门控在**每条区域**上由
+    /// [`PreparedRegion::cc_gates_ok`] 按**本函数的 `cc` 参数**裁决（见下面第 3 条）。
+    /// 第 2 条（曲线烘焙）**整条有效**。
+    ///
     /// ⚠ **探针影响的面**（任务单 `#108` 起）：**取值类**的量 —— `ampeg_*` 的取值
     /// **与** CC 轴交叉淡化的增益（[`PreparedRegion::gain_at_with_cc`]）——
     /// ⛔ **不**影响区域选择（那是第 1 条）。
+    ///
+    /// ⭐ ⭐ **追加修订段（任务单 `#109`）—— 被修订的是上面这一段里的"⛔ 不影响区域选择"**
+    /// （⛔ 原文一字未删）：探针现在还影响**区域选择里的唯一一项** —— CC 门控
+    /// （`loccN`/`hiccN`）⇒ `cc == Some(probe)` 时，门控不成立的区域**不再**发声
+    /// （新增的一步在位掩码 `accepts()` **之后**；⛔ 键 / 力度 / `trigger` / keyswitch
+    /// 那几张掩码的口径一个字节没碰）。`cc == None` 时**有**门控的区域仍不发声
+    /// （与 `yeban-sfz` 的严格策略逐字同款）⇒ 既有夹具逐位不变。
     ///
     /// ⚠ **零分配、零锁、零 I/O**（只做位测试、定长数组读与 `out` 的原地写入）
     /// ⇒ 该函数仍可被回调路径调用 [MUST-GATE-001]。
@@ -2568,6 +2807,14 @@ impl PreparedSfz {
         let mut written = 0usize;
         for region in &self.regions {
             if !region.accepts(note, velocity) {
+                continue;
+            }
+            // ⭐ CC 区域门控（任务单 `#109`）：掩码之上**再**判一次 `loccN`/`hiccN`。
+            // 掩码里那一条走 [`non_cc_gates_open`]（⛔ 不再按"CC 未提供"清 0）
+            // ⇒ 门控的**唯一**求值点在这里（一次性渲染）与触发期（实时）。
+            // ⚠ `cc == None` ⇒ 有门控的区域不过（与 `yeban-sfz` 的严格策略逐字同款，
+            // 见 [`PreparedRegion::cc_gates_ok`]）⇒ 既有夹具（无门控）逐位不变。
+            if !region.cc_gates_ok(cc) {
                 continue;
             }
             let Some(sample) = self.sample(region.sample_index) else {
@@ -2649,10 +2896,25 @@ fn flatten_regions(
             // ⭐ 门控：取"键与力度都命中"的一个探测点 ⇒ `matches_query` 的答案只剩
             // 通道 / trigger / keyswitch / CC 这些与 (note, velocity) 无关的门控。
             // 门控不过 ⇒ 掩码清 0（`trigger=release` 的 region 因此不进 note-on 掩码）。
+            //
+            // ⭐ ⭐ **追加修订段（任务单 `#109`）—— 被修订的是上面这段在 `#104`／`#107`
+            // 口径下的"`cc = None`"那一支**（⛔ 上面两句的**原文一字未删**，口径同台账第 278 条：
+            // 保留原文 ＋ 追加修订段 ＋ 点名被修订的支）。规范逐字与裁定见模块头的
+            // 「⭐ ⭐ **追加修订段（任务单 `#109`）**」一节；这里只说**机械**改了什么：
+            //
+            // * 掩码的静态门控改走 [`non_cc_gates_open`]（**同序、同缺省值**，
+            //   只把 CC 那一段换成 `true`）⇒ 对**没有** CC 门控的 region（语料 64894 条里
+            //   43831 条，`#109` 普查）**逐位不变**；对**有** CC 门控的 region，掩码不再被
+            //   `loccN`/`hiccN` 清 0（它们从"永不发声"变成"**触发期**按探针裁决"）。
+            //   ⚠ ⛔ 不能用"喂一个假探针"绕过：门控是**逐区域**的区间，任何单一常量
+            //   探针都只能满足一部分区域（本单实测过：探针 `0` 满足不了 `locc1=64`）。
+            // * 门控几何**原样**烘进 [`PreparedRegion::cc_gates`]（定长 `[CcGate; CC_GATE_CAP]`
+            //   ＋ 条数）⇒ 触发／渲染那一刻才用 `cc_gates_ok(probe)` 判。
+            let gates = &region.cc_gates;
+            let (baked_cc_gates, baked_cc_gate_count) = cc_gate_slots(gates);
             let probe = first_set_bit(&key_mask).zip(first_set_bit(&vel_mask));
-            let gate_open = probe.is_some_and(|(note, velocity)| {
-                region.matches_query(&RegionQuery::new(note, velocity))
-            });
+            let gate_open =
+                probe.is_some_and(|(note, velocity)| non_cc_gates_open(region, note, velocity));
             if !gate_open {
                 key_mask = [0u64; 2];
                 vel_mask = [0u64; 2];
@@ -2779,6 +3041,12 @@ fn flatten_regions(
                 // 它是**区域参数**、不是声部状态 ⇒ `SfzVoice` 尺寸不变，⛔ 不进实时对象。
                 cc_crossfades,
                 cc_crossfade_count: cc_crossfade_count as u16,
+                // ⭐ CC 区域门控（任务单 `#109`）：`loccN`/`hiccN` 的闭区间**原样**搬进
+                // 摊平表（定长 `[CcGate; CC_GATE_CAP]` ＋ 条数）。它是**区域参数**、
+                // ⛔ 不是声部状态（CC 值逐块变、几何是静态的）⇒ `SfzVoice` 尺寸不变，
+                // ⛔ 不进实时对象。求值点在**触发期**（`cc_gates_ok(probe)`）。
+                cc_gates: baked_cc_gates,
+                cc_gate_count: baked_cc_gate_count,
                 // ⭐ 独占组（任务单 `#94`）：三个**每区域**字段原样搬进摊平表。
                 // `group` / `off_by` 的解析与域（`0..=u32::MAX`）在 `yeban-sfz` 里早已有
                 // 判据（`instrument.rs` 的 `read_u32` 一族）⇒ 本片只**搬运**，⛔ 不新增解析。
@@ -2794,6 +3062,82 @@ fn flatten_regions(
         }
         regions
     })
+}
+
+/// ⭐ **摊平期掩码用的"非 CC 门控"谓词**（任务单 `#109`）：它只判**静态**门控
+/// （通道 / `trigger` 事件 ＋ `held_notes` / keyswitch），**⛔ 完全不看 CC 门控**。
+///
+/// # 为什么必须这样（而不是"把 CC 从 `matches_query` 里删掉"）
+///
+/// 摊平期的掩码承载的是**静态**门控 —— 那些与 `(note, velocity)` 无关、也与会话
+/// 运行态无关，因此可以在构造期烧死。CC 门控**不是**静态的：它要等**触发期**拿到
+/// 会话运行态的 CC 探针才能裁决（裁定见模块头的「⭐ ⭐ **追加修订段（任务单 `#109`）**」）。
+///
+/// ⚠ **⛔ 不能靠"喂一个假探针"绕过**（本单试过、实测红）：CC 门控是一条**逐区域**的
+/// 区间 `[lo, hi]`，**任何单一常量探针**都只能满足一部分区域 —— 喂 `0` 满足不了
+/// `locc1=64`（⇒ 掩码照旧被清 0），喂 `127` 满足不了 `hicc1=63`。所以这里**不碰**
+/// `RegionQuery::cc`，而是把非 CC 的那几项**照 `region_matches` 的次序**判一遍。
+///
+/// # 与 `yeban-sfz::region_matches` 的关系（⛔ 不是第二份口径）
+///
+/// 逐项与 `region_matches`（`crates/yeban-sfz/src/instrument.rs`）**同源**：
+/// `matches_key` / `matches_velocity` / `matches_channel` 是解析层的公开谓词；
+/// `trigger.responds_to(NoteOn)` / `trigger.held_notes_ok(None)` 与
+/// `keyswitch_ok(None, down)` 也是 —— ⭐ **本函数只把 CC 那一段换成 `true`**，
+/// 其余部分的调用序、缺省值（`channel = 1`、`event = NoteOn`、`held_notes` /
+/// `last_keyswitch` / `keys_down` 全 `None`）与 `RegionQuery::new(note, velocity)`
+/// **逐字段相同** ⇒ 对**没有** CC 门控的区域，掩码**逐位不变**。
+///
+/// ⚠ 它**只**用于构造期的掩码（摊平期一次）；"这条区域此刻该不该响"的**运行时**判据
+/// 是 [`PreparedRegion::cc_gates_ok`]，⛔ 不是本函数。
+#[inline]
+fn non_cc_gates_open(region: &Region<'_>, note: u8, velocity: u8) -> bool {
+    region.matches_key(note)
+        && region.matches_velocity(velocity)
+        && region.matches_channel(1)
+        && region
+            .trigger
+            .responds_to(yeban_sfz::instrument::TriggerEvent::NoteOn)
+        && region.trigger.held_notes_ok(None)
+        && {
+            // keyswitch：与 `region_matches` 的**同一串**判定
+            // （`sw_last` 无 `sw_default` ⇒ 严格策略不过；`sw_down`/`sw_up` 无探针 ⇒ 不过）。
+            // ⚠ 两支的结论**同值**（都不过）⇒ 合成一条 `||`（⛔ 不是两条 `if`：clippy 的
+            // `if_same_then_else` 正确地点出了那条冗余；语义一个字没变）。
+            if !region.has_keyswitch_gate() {
+                true
+            } else if (region.sw_last.is_some() && region.sw_default.is_none())
+                || region.sw_down.is_some()
+                || region.sw_up.is_some()
+            {
+                false
+            } else {
+                region.keyswitch_ok(None, |_| false)
+            }
+        }
+}
+
+/// ⭐ 把区域归约好的 `loccN`/`hiccN` 门控搬进摊平表的**定长**槽位（任务单 `#109`）。
+///
+/// 返回 `([CcGate; CC_GATE_CAP], u8)`：前者是惰性填充的定长数组（只有前 `n` 个有效），
+/// 后者是有效条数。**零分配**（⛔ 无 `Vec`、⛔ 无堆）。
+///
+/// ⚠ 条数上界是**结构性**的（[`CC_GATE_CAP`]）：`yeban-sfz` 把门控归约进
+/// `BTreeMap<u8, _>` 且 `parse_cc_gate_name` 拒绝 `cc > 127` ⇒ `n ≤ 128`。
+/// 越界在结构上不可达，因此这里是**直接下标**（⛔ 不截断、⛔ 不静默丢门控）——
+/// 万一约束被改坏，那是响亮的 panic。
+fn cc_gate_slots(gates: &[CcGate]) -> ([CcGate; CC_GATE_CAP], u8) {
+    let mut slots = [INERT_CC_GATE; CC_GATE_CAP];
+    for (slot, gate) in slots.iter_mut().zip(gates) {
+        *slot = *gate;
+    }
+    let count = gates.len();
+    debug_assert!(
+        count <= CC_GATE_CAP,
+        "yeban-sfz 的门控按 `u8` CC 号去重、且只收 cc ≤ 127 \
+         ⇒ 单区域门控 ≤ {CC_GATE_CAP}"
+    );
+    (slots, count as u8)
 }
 
 /// ⭐ **窃取淡出的一段斜坡**（逐帧推进；`Copy`、定长、⛔ 无指针）。
@@ -3577,6 +3921,26 @@ impl SfzVoicePool {
     /// ⚠ 任务单 `#108` 起，**触发期只存引擎层那一份**（[`SfzVoice::track_gain`]）：
     /// 乐器层由 [`Self::slot_readings`] 逐块现算（CC 逐块可变 ⇒ 触发期烘死不成立）。
     /// ⇒ 乘积的两条腿**没有变**（⛔ 不是第二份口径），变的只是求值时机。
+    ///
+    /// # ⭐ CC 区域门控（`loccN`/`hiccN`；任务单 `#109`）
+    ///
+    /// `cc` 是**会话运行态**的 CC 探针（与 [`Self::render_into_with_cc`] 的**同一个**
+    /// 形状：`crate::rt` 在量子边界把 [`crate::cc_state::ControlChangeState`] 借出来）。
+    /// 每一条区域在 `accepts(note, velocity)` **之后**还要过 [`PreparedRegion::cc_gates_ok`]：
+    ///
+    /// * `cc == None`（整张表一条 CC 都**没收到过**）⇒ **有**门控的区域不建声部
+    ///   （与 `yeban-sfz` 的严格策略逐字同款；⛔ 不替调用方发明规范缺省）；
+    /// * `cc == Some(probe)` ⇒ 每条门控要求 `lo ≤ probe(cc号) ≤ hi`（闭区间）。
+    ///
+    /// ⚠ **为什么求值点在触发期**（⛔ 不是逐块）：规范逐字（<https://sfzformat.com/opcodes/loccN/>）
+    /// "The region will play only if last MIDI controller 74 received was in the 30 to 100
+    /// range." ＋ "This is a 'hard' switch - if a region is within the locc to hicc range it
+    /// plays, if it's outside that range it does not play." ⇒ 它决定的是
+    /// **"这个音符要不要这条区域"**（与 keyswitch／`trigger` 同类）⛔ 不是逐块调制
+    /// （那是 `xfin_*`／`xfout_*` 与 `_onccN` 家族）。裁定与依据见模块头。
+    ///
+    /// **零分配、零锁、零 I/O**：每条区域 ≤ [`CC_GATE_CAP`] 条定长数组读 ＋ 每条一次
+    /// 整数区间测试（触发期一次，⛔ 不进逐样本路径）。
     pub fn trigger_note(
         &mut self,
         plan: &PreparedSfz,
@@ -3584,6 +3948,7 @@ impl SfzVoicePool {
         velocity: u8,
         end_sample: u64,
         track_gain: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
     ) -> usize {
         let n = note as usize;
         let mut created = 0usize;
@@ -3602,6 +3967,14 @@ impl SfzVoicePool {
         }
         for (region_index, region) in plan.regions().iter().enumerate() {
             if !region.accepts(note, velocity) {
+                continue;
+            }
+            // ⭐ CC 区域门控（任务单 `#109`）：掩码之上的**第二道**、也是**唯一按探针**的
+            // 区域选择判据。位置在 `accepts()` 之后、`off_by` 关断**之前** ——
+            // 理由：被 CC 门控挡掉的区域**不发声**，因此它⛔ 不该去关掉别人
+            // （与"`end=-1` 的静音区域**照旧**关断别人"那条**不冲突**：那条区域是
+            // **CC 门控通过**的，只是没有采样输出 ⇒ 它仍然走到下面的关断扫描）。
+            if !region.cc_gates_ok(cc) {
                 continue;
             }
             // ⭐ `off_by`：在**建自己的声部之前**关掉它点名的那个组（`0` ＝ 不关任何人）。
@@ -3961,6 +4334,12 @@ impl SfzVoicePool {
     /// ⚠ **不改区域选择**：`cc` 只到 `slot_readings`，而"这条区域该不该响"由
     /// **摊平期**烧进掩码（[`flatten_regions`]）的键/力度/门控决定
     /// ⇒ CC 门控（`loccN`/`hiccN`）在实时通路上**仍在摊平期**判定（登记见模块头）。
+    ///
+    /// ⭐ ⭐ **追加修订段（任务单 `#109`）—— 被修订的是上面这两句**（⛔ 原文一字未删）：
+    /// 区域选择里**还有一项不在摊平期** —— CC 门控（`loccN`/`hiccN`）在**触发期**由
+    /// [`SfzVoicePool::trigger_note`] 按探针裁决（本函数的探针只影响**已建声部**的
+    /// 逐块取值）。⚠ 本函数自己**不再**重复判门控：声部已经按触发期的判定建好了
+    /// ⇒ 逐块再判会让"一个音符中途换 CC"把它拦腰截断（与规范的 "hard switch" 矛盾）。
     ///
     /// **零分配、零锁、零 I/O**：探针是只读借用，逐块每槽只多一次整数读（见模块头 CC 一节）。
     pub fn render_into_with_cc(

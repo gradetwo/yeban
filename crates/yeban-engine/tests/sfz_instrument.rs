@@ -75,6 +75,11 @@
 //! | ⭐ S69 | ⭐ **反向腿（分形态）＋ 三个承重指纹**（任务单 `#108` 新增；§6.3） | ⭐ **反向腿 ①**：同文本去掉两条 CC 行 ⇒ 两个 CC 值的输出**逐位相同**（且与 `cc = None` 相同、增益恒 `1.0`）；② **`xfout` 单行形态**：`xfout_locc1=64` 单独出现 ⇒ 区间 `[64, 127]`（`cc = 64` ⇒ **1.0**、`cc = 127` ⇒ **0.0**），**去掉那一行** ⇒ 两个 CC 值**逐位相同**；③ **如实登记的读数**：`xfin_hicc1=100` 单独出现时下界取规范缺省 **0** ⇒ 去掉 `xfin_locc1=0` **仍然不同**（`cc = 25` ⇒ `0.5`）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`0xa933ddab286bdf5e`；⭐ **应绿反向腿**：× `1.0000001` ⇒ 指纹**必须**变 |
 //! | ⭐ S70 | ⭐ **Key／Velocity 两轴未被扰动**（任务单 `#108` 新增；§6.4） | 两条**只差 CC 两行**的区域（`volume=-3` ＋ 键轴 in/out ＋ 力度淡入/淡出），`gain_at` 覆盖**全 128×128 网格（16384 点）**：位型不同 ＝ **0**；⭐ 两轴读数对照（键轴 `0.09814711 → 0.0`、力度轴 `0.0 → 0.09814711` ⇒ 两轴都真的在生效，⛔ 不是空夹具）；⭐ 渲染腿：带 CC 的区域在 `cc = None` 时与不带 CC 的区域输出**逐位相同** |
 //! | ⭐ S71 | ⭐ **条数上界的来历 ＋ 修订段 ＋ 尺寸可判**（任务单 `#108` 新增；§6.5／§11） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#108`）」／「# ⭐ CC 轴交叉淡化（任务单 `#108`）」／「结构性上界」／局限表第 ⑦ 行的**原文**／`#107` 与 `#104` 的原文；⭐ 语料普查原始读数必须在源码里可判（`**1398**`／`**1205**`／`**64894**`／`{0: 62436, 1: 1816, 2: 642}`／`{0: 62281, 1: 1920, 2: 693}`／`{1, 85, 121}`）；⭐ `CC_CROSSFADE_CAP == 256`、`size_of::<Crossfade>() == 6` ⇒ 每区域 `＋1536 B`；⭐ 尺寸读数 `SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144 < 192 KiB`（⛔ 三者都 ＋0）、`PreparedRegion=5768`（由 `size_of` 现读） |
+//! | ⭐ S81 | ⭐ **门控真的活（本单核心）**（任务单 `#109` 新增；§5.2） | `locc1=64 hicc1=127` ＋ `amp_veltrack=0`：`cc = 0` ⇒ 声部 **0**／非零帧 **0**；`cc = 100` ⇒ 声部 **1**／非零帧 **512**；⭐ 闭区间两条边界（`63` ⇒ 不发声、`64` ⇒ 发声）；⭐ 摊平表里的门控与 `Region::cc_gates` **逐字相同**；⭐ `cc ∈ {0, 63, 64, 100}`：**离线 ＝ 摊平 ＝ 实时** 位模式逐位相同 |
+//! | ⭐ S82 | ⭐ **反向腿 ＋ 三个承重指纹**（任务单 `#109` 新增；§5.4） | ⭐ **反向腿**：同文本**去掉** `locc1`／`hicc1` 两行 ⇒ 两个 CC 值（`0`／`100`）的输出**逐位相同**（同指纹）且**都发声**（声部 1／非零 512）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`0xa933ddab286bdf5e`（广播路径） |
+//! | ⭐ S83 | ⭐ **判定时机 ＝ 触发期**（任务单 `#109` 新增；§2） | 先以 `cc = 100` 触发、再以 `cc = 0` 渲染**第二块** ⇒ 第二块非零帧数仍 **512**（门控**不**逐块重判 ⇒ 声部不被截断）；⭐ 反空判腿：**触发时** CC 已在区间外 ⇒ **0** 个声部 |
+//! | ⭐ S84 | ⭐ **既有掩码行为未扰动 ＋ 非空对照**（任务单 `#109` 新增；§5.5） | keyswitch（`sw_default` 满足 ⇒ 掩码含 60；无 `sw_default` ⇒ 掩码 `[0,0]`）／`trigger=release`（掩码 `[0,0]`）／力度臂的读数逐条复跑；⭐ 有 `locc1=64` 的区域**进得了**掩码（`#109` 前被清 0）；⭐ `cc = None` ⇒ 仍不建声部（严格策略）、`cc = 100` ⇒ 建 **1** 个（非空对照） |
+//! | ⭐ S85 | ⭐ **条数上界的来历 ＋ 修订段 ＋ 尺寸可判**（任务单 `#109` 新增；§5.6） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#109`）」／「# ⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）」／「结构性上界」／`#108`／`#107` 的修订段原文／`#104` 的两条原文／`#107` 的显式选路 ③ 原文；⭐ 语料普查原始读数必须在源码里可判（`**1398**`／`**1205**`／`**64894**`／`{0: 43831, 1: 16872, 2: 797, 3: 3394}`／`{0: 62281, 1: 1920, 2: 693}`）；⭐ `CC_GATE_CAP == 128`、`size_of::<CcGate>() == 3` ⇒ 每区域 `＋384 B`；⭐ 尺寸读数 `SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144 < 192 KiB`（⛔ 三者都 ＋0）、`PreparedRegion=6152`（由 `size_of` 现读） |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -97,7 +102,7 @@ mod support;
 use support::{MixSpec, NoteSpec, note_project, render, render_snapshot, tuned_project};
 use yeban_engine::drums::DrumsParams;
 use yeban_engine::sfz_instrument::{
-    CC_CROSSFADE_CAP, InMemorySample, PendingSfz, PreparedRegion, PreparedSfz,
+    CC_CROSSFADE_CAP, CC_GATE_CAP, InMemorySample, PendingSfz, PreparedRegion, PreparedSfz,
     SFZ_VOICES_PER_TRACK, SfzByteBudget, SfzByteUsage, SfzInstrument, SfzPlan, SfzVoice,
     SfzVoicePool,
 };
@@ -115,6 +120,9 @@ use yeban_sfz::instrument::{LoopMode, OffMode};
 use yeban_sfz::modulation::AmpegParam;
 // ⭐ 任务单 `#108`：交叉淡化的 CC 轴（摊平表里烘的是 `yeban-sfz` 的 `Crossfade` 值类型）。
 use yeban_sfz::Crossfade;
+// ⭐ 任务单 `#109`：CC 区域门控（`loccN`/`hiccN`）——摊平表里烘的是 `yeban-sfz` 的
+// `CcGate` 值类型（与 `Crossfade` 同一条"⛔ 不复制事实源"的纪律）。
+use yeban_sfz::CcGate;
 
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
@@ -717,7 +725,7 @@ fn s8_a_full_pool_steals_instead_of_silently_dropping_the_overflow() {
 
     let mut pool = SfzVoicePool::empty();
     // ⭐ 轨增益门 = 1.0（单位）：本判据量的是**池容量**，⛔ 不掺轨增益。
-    let created = pool.trigger_note(&prepared, 60, 100, 12_000, 1.0);
+    let created = pool.trigger_note(&prepared, 60, 100, 12_000, 1.0, None);
     println!(
         "[engine-sfz/S8] 17 条：建出声部 = {created}；活声部 = {}；窃取 = {}；真丢弃 = {}；挂起 = {}",
         pool.active_count(),
@@ -742,7 +750,7 @@ fn s8_a_full_pool_steals_instead_of_silently_dropping_the_overflow() {
     }
     let many_prepared = prepare(&many);
     let mut many_pool = SfzVoicePool::empty();
-    let many_created = many_pool.trigger_note(&many_prepared, 60, 100, 12_000, 1.0);
+    let many_created = many_pool.trigger_note(&many_prepared, 60, 100, 12_000, 1.0, None);
     println!(
         "[engine-sfz/S8] 33 条：建出声部 = {many_created}；窃取 = {}；真丢弃 = {}；挂起 = {}",
         many_pool.stolen(),
@@ -770,7 +778,7 @@ fn s8_a_full_pool_steals_instead_of_silently_dropping_the_overflow() {
     let under_prepared = prepare(&under);
     let mut under_pool = SfzVoicePool::empty();
     assert_eq!(
-        under_pool.trigger_note(&under_prepared, 60, 100, 12_000, 1.0),
+        under_pool.trigger_note(&under_prepared, 60, 100, 12_000, 1.0, None),
         SFZ_VOICES_PER_TRACK - 1
     );
     assert_eq!(under_pool.dropped(), 0, "未满时不得计数");
@@ -821,6 +829,16 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
     // ⇒ `PreparedRegion` 4232 → **5768**（＋**1536**；条数 `u16` 落在既有填充里 ⇒ 0 B）。
     // ⛔ `SfzVoice` 仍 **40 B**（＋0）、⛔ 池仍 **1712**（＋0）、
     // ⛔ `EngineRuntime` 仍 **180144**（＋0，余量仍 16464 ≥ 8192 —— 摊平表⛔ 不进实时对象）。
+    // ⭐ **本单（`#109`：CC 区域门控 `loccN`/`hiccN`）的代价**：`PreparedRegion` 多一张
+    // **定长**门控数组（`[CcGate; CC_GATE_CAP ＝ 128]`，`size_of::<CcGate>() ＝ 3`）
+    // ⇒ `PreparedRegion` 5768 → **6152**（＋**384**；条数 `cc_gate_count: u8` ＋ 尾部对齐
+    // 共 6 B —— ⭐ 现值由 `size_of` 现读：见判据 `S85`）。
+    let gate_bytes = CC_GATE_CAP * std::mem::size_of::<CcGate>();
+    assert!(
+        (5768 + gate_bytes..=5768 + gate_bytes + 8)
+            .contains(&std::mem::size_of::<PreparedRegion>()),
+        "⭐ `#109` 的每区域代价 ＝ `CC_GATE_CAP × size_of::<CcGate>()`（＝ {gate_bytes} B）         ＋ 条数 `u8` ＋ 尾部对齐（≤ 8 B）"
+    );
     // ⚠ `SfzVoice::gain` 本片**改了名**（→ `SfzVoice::track_gain`）而**⛔ 没有加字段**：
     // 它只存**引擎层**那一份，乐器层（含 CC 轴交叉淡化）由逐块路径现算 —— 见判据 `S68`／`S71`。
     assert_eq!(voice, 40, "一个 SFZ 声部 = 40 字节（定长、全 `Copy`）");
@@ -1853,16 +1871,16 @@ fn s19_a_full_pool_steals_the_oldest_voice_behind_a_three_millisecond_fade() {
 
     let mut pool = SfzVoicePool::empty();
     assert_eq!(pool.steal_fade_frames(), 144, "3 ms @ 48 kHz");
-    assert_eq!(pool.trigger_note(&one, 60, 100, LATE, 1.0), 1, "槽 0");
+    assert_eq!(pool.trigger_note(&one, 60, 100, LATE, 1.0, None), 1, "槽 0");
     assert_eq!(
-        pool.trigger_note(&fifteen, 60, 100, EARLY, 1.0),
+        pool.trigger_note(&fifteen, 60, 100, EARLY, 1.0, None),
         SFZ_VOICES_PER_TRACK - 1,
         "填满槽 1..15"
     );
     assert_eq!(pool.active_count(), SFZ_VOICES_PER_TRACK);
 
     // ③ 池满 ⇒ 窃取最旧的（槽 0 的触发序号最小）。
-    let created = pool.trigger_note(&stealer, 64, 100, LATE, 1.0);
+    let created = pool.trigger_note(&stealer, 64, 100, LATE, 1.0, None);
     println!(
         "[engine-sfz/S19] 池满触发：新建 = {created}；窃取 = {}；丢弃 = {}；挂起 = {}；\
          槽 0 淡出剩余 = {}；槽 0 在场音高 = {}",
@@ -1933,9 +1951,9 @@ fn s19_a_full_pool_steals_the_oldest_voice_behind_a_three_millisecond_fade() {
     // ⑥ 硬窃取对照臂：同样的触发序列，淡出帧数 = 0 ⇒ 立刻换人、输出无衰减。
     let mut hard = SfzVoicePool::empty();
     hard.set_steal_fade_frames(0);
-    hard.trigger_note(&one, 60, 100, LATE, 1.0);
-    hard.trigger_note(&fifteen, 60, 100, EARLY, 1.0);
-    let hard_created = hard.trigger_note(&stealer, 64, 100, LATE, 1.0);
+    hard.trigger_note(&one, 60, 100, LATE, 1.0, None);
+    hard.trigger_note(&fifteen, 60, 100, EARLY, 1.0, None);
+    let hard_created = hard.trigger_note(&stealer, 64, 100, LATE, 1.0, None);
     let mut hard_out = vec![0.0f32; 144];
     hard.render_into(&one, EARLY, &mut hard_out);
     println!(
@@ -2889,7 +2907,7 @@ fn source_index_at(out: &[f32], frame: usize) -> usize {
 /// ⭐ 触发**一个**声部并渲染 `frames` 帧（实时池路径；⭐ 本单的目标路径）。
 fn render_pool(plan: &PreparedSfz, end_sample: u64, frames: usize) -> Vec<f32> {
     let mut pool = SfzVoicePool::new(48_000.0);
-    let created = pool.trigger_note(plan, 60, 127, end_sample, 1.0);
+    let created = pool.trigger_note(plan, 60, 127, end_sample, 1.0, None);
     assert_eq!(created, 1, "单区域夹具 ⇒ 恰好建 1 个声部");
     let mut out = vec![0.0f32; frames];
     pool.render_into(plan, 0, &mut out);
@@ -3488,7 +3506,7 @@ fn s35_the_envelope_shape_is_judgeable_sample_by_sample() {
     let plan = prepare_with(&ampeg_sfz("no_loop"), &flat_sample(4096));
     let mut pool = SfzVoicePool::new(48_000.0);
     assert_eq!(
-        pool.trigger_note(&plan, 60, 127, AMPEG_NOTE_OFF as u64, 1.0),
+        pool.trigger_note(&plan, 60, 127, AMPEG_NOTE_OFF as u64, 1.0, None),
         1,
         "单区域夹具 ⇒ 恰好建 1 个声部"
     );
@@ -4000,12 +4018,12 @@ fn s39_off_by_really_stops_the_named_group_member() {
     let mut pool = SfzVoicePool::new(48_000.0);
     let mut control_pool = SfzVoicePool::new(48_000.0);
     assert_eq!(
-        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None),
         1,
         "A 必须建 1 个声部"
     );
     assert_eq!(
-        control_pool.trigger_note(&control, 60, 127, u64::MAX, 1.0),
+        control_pool.trigger_note(&control, 60, 127, u64::MAX, 1.0, None),
         1
     );
     let mut out = vec![0.0f32; FRAMES];
@@ -4023,12 +4041,12 @@ fn s39_off_by_really_stops_the_named_group_member() {
     );
     // ⭐ 触发 B（静音关断区）：它自己⛔ 不建声部，但 `off_by=1` 必须关掉 group=1 的 A。
     assert_eq!(
-        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0),
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0, None),
         0,
         "⭐ 静音关断区（`end=-1`）⛔ 不建声部（既有 `span == None` 口径）"
     );
     assert_eq!(
-        control_pool.trigger_note(&control, 62, 127, u64::MAX, 1.0),
+        control_pool.trigger_note(&control, 62, 127, u64::MAX, 1.0, None),
         0
     );
     assert_eq!(
@@ -4112,12 +4130,12 @@ fn s40_off_by_never_touches_a_region_outside_the_named_group() {
     let run = |off_by: u32| {
         let plan = prepare_with(&text(off_by), &sample);
         let mut pool = SfzVoicePool::new(48_000.0);
-        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0), 1);
+        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None), 1);
         let mut out = vec![0.0f32; HALF * 2];
         pool.render_into(&plan, 0, &mut out[..HALF]);
         // ⭐ 关断区是**静音**的 ⇒ 本次触发只可能改变 A 的状态。
         assert_eq!(
-            pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0),
+            pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0, None),
             1,
             "只有 C 建声部"
         );
@@ -4192,10 +4210,10 @@ fn s41_off_by_fast_cuts_immediately_and_normal_enters_release() {
     let run = |mode: &str| {
         let plan = prepare_with(&text(mode), &sample);
         let mut pool = SfzVoicePool::new(48_000.0);
-        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0), 1);
+        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None), 1);
         let mut out = vec![0.0f32; FRAMES];
         pool.render_into(&plan, 0, &mut out[..NOTE_OFF_AT]);
-        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0);
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0, None);
         pool.render_into(&plan, NOTE_OFF_AT as u64, &mut out[NOTE_OFF_AT..]);
         (pool, out)
     };
@@ -4279,10 +4297,10 @@ fn s42_a_one_shot_victim_ignores_off_by() {
             "夹具自检：`ignores_note_off` 必须与 loop_mode 一致"
         );
         let mut pool = SfzVoicePool::new(48_000.0);
-        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0), 1);
+        assert_eq!(pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None), 1);
         let mut out = vec![0.0f32; HALF * 2];
         pool.render_into(&plan, 0, &mut out[..HALF]);
-        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0);
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0, None);
         pool.render_into(&plan, HALF as u64, &mut out[HALF..]);
         out
     };
@@ -4329,7 +4347,7 @@ fn s43_the_triggering_region_does_not_choke_itself() {
     );
     let mut pool = SfzVoicePool::new(48_000.0);
     assert_eq!(
-        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None),
         1,
         "第一次触发建 1 个声部"
     );
@@ -4339,7 +4357,7 @@ fn s43_the_triggering_region_does_not_choke_itself() {
     assert_eq!(pool.voices()[0].source_position(), FIRST as f32);
     // ⭐ 第二次触发**同一条区域**：它自己就是自己的 `off_by` 目标。
     assert_eq!(
-        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+        pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None),
         1,
         "第二次触发建 1 个声部"
     );
@@ -4451,7 +4469,7 @@ fn s45_an_off_by_hard_stop_keeps_the_pending_voice_in_the_same_slot() {
     assert_eq!(plan.samples()[0].path(), "a.wav");
     assert_eq!(plan.samples()[1].path(), "b.wav");
     let mut pool = SfzVoicePool::new(48_000.0);
-    let created = pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0);
+    let created = pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None);
     assert_eq!(created, SFZ_VOICES_PER_TRACK, "⭐ 前 16 条占满池");
     assert_eq!(pool.stolen(), 1, "⭐ 第 17 条走窃取");
     assert_eq!(pool.pending_count(), 1, "⭐ 窃取 ⇒ 恰好 1 个挂起者");
@@ -4462,7 +4480,7 @@ fn s45_an_off_by_hard_stop_keeps_the_pending_voice_in_the_same_slot() {
     );
     // ⭐ 触发关断区：槽 0 的 active victim 被**硬停**（缺省 `off_mode=fast`）。
     assert_eq!(
-        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0),
+        pool.trigger_note(&plan, 62, 127, u64::MAX, 1.0, None),
         0,
         "静音关断区⛔ 不建声部"
     );
@@ -4904,7 +4922,7 @@ fn s49_note_polyphony_really_caps_the_voices_of_one_pitch() {
     let mut pool = SfzVoicePool::new(48_000.0);
     let mut readings = Vec::new();
     for _ in 0..N {
-        pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0);
+        pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0, None);
         readings.push(pool.active_count());
     }
     println!("[engine-sfz/S49] 带 `note_polyphony=2` 的逐次在场数 = {readings:?}（上限 {M}）");
@@ -4929,7 +4947,7 @@ fn s49_note_polyphony_really_caps_the_voices_of_one_pitch() {
     for (label, plan) in [("note_polyphony=0", &zero), ("无 opcode", &absent)] {
         let mut control = SfzVoicePool::new(48_000.0);
         for _ in 0..N {
-            control.trigger_note(plan, 60, 100, u64::MAX, 1.0);
+            control.trigger_note(plan, 60, 100, u64::MAX, 1.0, None);
         }
         println!(
             "[engine-sfz/S49] 正对照（{label}）：在场 = {}",
@@ -4969,11 +4987,11 @@ fn s50_the_note_polyphony_key_is_the_group_plus_the_pitch() {
     );
     let mut pool = SfzVoicePool::new(48_000.0);
     for _ in 0..N {
-        pool.trigger_note(&one_key_range, 60, 100, u64::MAX, 1.0);
+        pool.trigger_note(&one_key_range, 60, 100, u64::MAX, 1.0, None);
     }
     let after_sixty = pool.active_count();
     for _ in 0..N {
-        pool.trigger_note(&one_key_range, 64, 100, u64::MAX, 1.0);
+        pool.trigger_note(&one_key_range, 64, 100, u64::MAX, 1.0, None);
     }
     let after_sixty_four = pool.active_count();
     let sixty_four_voices = pool
@@ -4997,7 +5015,7 @@ fn s50_the_note_polyphony_key_is_the_group_plus_the_pitch() {
 
     // ⭐ 另一音高的声部必须**真的出声**：只触发 64（新池）⇒ 输出非零。
     let mut only_sixty_four = SfzVoicePool::new(48_000.0);
-    only_sixty_four.trigger_note(&one_key_range, 64, 100, u64::MAX, 1.0);
+    only_sixty_four.trigger_note(&one_key_range, 64, 100, u64::MAX, 1.0, None);
     let mut out = vec![0.0f32; 256];
     only_sixty_four.render_into(&one_key_range, 0, &mut out);
     assert!(
@@ -5013,7 +5031,7 @@ fn s50_the_note_polyphony_key_is_the_group_plus_the_pitch() {
     );
     let mut grouped = SfzVoicePool::new(48_000.0);
     for _ in 0..N {
-        grouped.trigger_note(&two_groups, 60, 100, u64::MAX, 1.0);
+        grouped.trigger_note(&two_groups, 60, 100, u64::MAX, 1.0, None);
     }
     println!(
         "[engine-sfz/S50] ② 两个 group（各 `note_polyphony=2`）连发 {N} 次后在场 = {}",
@@ -5066,8 +5084,8 @@ fn s51_note_selfmask_decides_which_voices_may_be_turned_off() {
 
     // --- 腿 A：缺省 `on` —— 低力度新音符**照常发声**且⛔ 不掐高力度者（hint ⛔ 不是硬上限）。
     let mut soft = SfzVoicePool::new(48_000.0);
-    soft.trigger_note(&default_on, 60, 100, u64::MAX, 1.0);
-    soft.trigger_note(&default_on, 60, 40, u64::MAX, 1.0);
+    soft.trigger_note(&default_on, 60, 100, u64::MAX, 1.0, None);
+    soft.trigger_note(&default_on, 60, 40, u64::MAX, 1.0, None);
     let mut velocities: Vec<u8> = soft
         .voices()
         .iter()
@@ -5091,7 +5109,7 @@ fn s51_note_selfmask_decides_which_voices_may_be_turned_off() {
     );
 
     // --- 腿 A2：再来一个**高**力度 ⇒ 两个不高于它的都在资格内 ⇒ 掐到只剩新音符。
-    soft.trigger_note(&default_on, 60, 100, u64::MAX, 1.0);
+    soft.trigger_note(&default_on, 60, 100, u64::MAX, 1.0, None);
     let survivors: Vec<u8> = soft
         .voices()
         .iter()
@@ -5111,8 +5129,8 @@ fn s51_note_selfmask_decides_which_voices_may_be_turned_off() {
 
     // --- 腿 B：显式 `off` —— 严格上限（不分力度都掐），且留下来的是**新音符**。
     let mut strict = SfzVoicePool::new(48_000.0);
-    strict.trigger_note(&explicit_off, 60, 100, u64::MAX, 1.0);
-    strict.trigger_note(&explicit_off, 60, 40, u64::MAX, 1.0);
+    strict.trigger_note(&explicit_off, 60, 100, u64::MAX, 1.0, None);
+    strict.trigger_note(&explicit_off, 60, 40, u64::MAX, 1.0, None);
     let survivor: Vec<u8> = strict
         .voices()
         .iter()
@@ -5236,8 +5254,8 @@ fn s52_a_fixture_without_note_polyphony_renders_bit_identically() {
     let mut absent_pool = SfzVoicePool::new(48_000.0);
     let mut zero_pool = SfzVoicePool::new(48_000.0);
     for _ in 0..2 {
-        absent_pool.trigger_note(&absent, 60, 100, u64::MAX, 1.0);
-        zero_pool.trigger_note(&explicit_zero, 60, 100, u64::MAX, 1.0);
+        absent_pool.trigger_note(&absent, 60, 100, u64::MAX, 1.0, None);
+        zero_pool.trigger_note(&explicit_zero, 60, 100, u64::MAX, 1.0, None);
     }
     let mut absent_out = vec![0.0f32; 256];
     let mut zero_out = vec![0.0f32; 256];
@@ -5267,7 +5285,7 @@ fn s52_a_fixture_without_note_polyphony_renders_bit_identically() {
     );
     let mut limited_pool = SfzVoicePool::new(48_000.0);
     for _ in 0..2 {
-        limited_pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0);
+        limited_pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0, None);
     }
     let mut limited_out = vec![0.0f32; 256];
     limited_pool.render_into(&limited, 0, &mut limited_out);
@@ -5313,7 +5331,7 @@ fn s53_note_polyphony_is_not_the_pool_full_steal() {
     );
     let mut pool = SfzVoicePool::new(48_000.0);
     for _ in 0..N {
-        pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0);
+        pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0, None);
     }
     let fades: Vec<u32> = (0..SFZ_VOICES_PER_TRACK)
         .map(|index| pool.fade_remaining_at(index))
@@ -5351,7 +5369,7 @@ fn s53_note_polyphony_is_not_the_pool_full_steal() {
     text.push_str("<region> sample=b.wav key=60 pitch_keycenter=60\n");
     let full = prepare_with(&text, &sample);
     let mut control = SfzVoicePool::new(48_000.0);
-    control.trigger_note(&full, 60, 100, u64::MAX, 1.0);
+    control.trigger_note(&full, 60, 100, u64::MAX, 1.0, None);
     let control_fades: Vec<u32> = (0..SFZ_VOICES_PER_TRACK)
         .map(|index| control.fade_remaining_at(index))
         .collect();
@@ -6135,7 +6153,7 @@ fn s61_the_realtime_path_matches_the_flat_path_bit_for_bit_at_the_same_velocity(
         let written_flat = plan.render_block_into_with_cc(60, velocity, None, &mut flat);
         // ③ ⭐ 实时池（逐声部力度就是本函数的 `velocity` 参数）
         let mut pool = SfzVoicePool::new(HZ);
-        let created = pool.trigger_note(&plan, 60, velocity, u64::MAX, 1.0);
+        let created = pool.trigger_note(&plan, 60, velocity, u64::MAX, 1.0, None);
         assert_eq!(created, 1, "单区域夹具 ⇒ 恰好建 1 个声部");
         assert_eq!(
             pool.voices()[0].velocity(),
@@ -6330,6 +6348,11 @@ fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
 // 三条路（离线 `render_note_into_with_cc` ／ 摊平 `render_block_into_with_cc` ／
 // 实时 `render_into_with_cc`）在**同一 CC ＋ 同一力度**下必须**逐位相同**。
 // ⛔ 区域选择仍由摊平期的掩码决定（`loccN`/`hiccN` 的显式选路 ③，登记见 `src/sfz_instrument.rs`）。
+// ⭐ ⭐ **追加修订段（任务单 `#109`）—— 被修订的是上面这一行**（⛔ 原文一字未删）：
+// `loccN`/`hiccN` **不再**在摊平期判定 —— 掩码只留静态门控（通道 / `trigger` /
+// keyswitch），CC 门控在**触发期**（`SfzVoicePool::trigger_note`）按探针裁决。
+// ⚠ `ampeg_*` 的 CC 调制（本段夹具的题材）**仍然**是逐块求值 ⇒ 本段各判据的
+// 语义与读数不受影响（`trigger_note` 多收一个 `cc = None` 的参数）。
 
 /// ⭐ S63 夹具：`ampeg_attack=0.005` ＋ `ampeg_attackcc100=0.004`（legacy `ccN` 形态）。
 ///
@@ -6378,7 +6401,7 @@ fn s63_the_realtime_path_reads_cc_and_follows_the_specification_formula() {
     let render_at = |cc: Option<u8>| -> (Vec<f32>, usize) {
         let mut pool = SfzVoicePool::new(HZ);
         assert_eq!(
-            pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+            pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0, None),
             1,
             "单区域夹具 ⇒ 恰好建 1 个声部"
         );
@@ -6449,6 +6472,11 @@ fn s63_the_realtime_path_reads_cc_and_follows_the_specification_formula() {
 ///
 /// ⚠ 实时那条路的 CC 只进 [`SfzVoicePool::render_into_with_cc`]（渲染），
 /// ⛔ 不进 `trigger_note`（区域选择在摊平期）⇒ 三条路的选择口径一致。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#109`）—— 被修订的是上面这一行的后半**（⛔ 原文一字未删）：
+/// `trigger_note` 现在**也**收 `cc`（`#109`：`loccN`/`hiccN` 在触发期裁决）。本判据的
+/// 夹具**没有** CC 门控 ⇒ 两条入口（`cc = None` 与本段的探针）给出**同一个**声部集合，
+/// 因此下面三条路的**位模式**读数不变（本段判据复跑全绿即可见）。
 #[test]
 fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
     const HZ: f32 = 48_000.0;
@@ -6477,7 +6505,7 @@ fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
         // ③ ⭐ 实时声部池（本单接线的那条路）
         let mut pool = SfzVoicePool::new(HZ);
         assert_eq!(
-            pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0),
+            pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, None),
             1,
             "单区域夹具 ⇒ 恰好建 1 个声部"
         );
@@ -6514,7 +6542,7 @@ fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
     for cc_value in [0u8, 127] {
         let probe = |controller: u8| -> u8 { if controller == 100 { cc_value } else { 0 } };
         let mut pool = SfzVoicePool::new(HZ);
-        pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0);
+        pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, None);
         let mut out = vec![0.0f32; FRAMES];
         pool.render_into_with_cc(&plan, 0, &mut out, Some(&probe));
         arms.push(bits(&out));
@@ -6565,7 +6593,7 @@ fn s65_the_new_entry_points_leave_the_three_load_bearing_fingerprints_untouched(
         let old = render_pool(plan, end_sample, BLOCK);
         // ⭐ 新入口（`cc = None`）：必须与旧入口**逐位相同**。
         let mut pool = SfzVoicePool::new(48_000.0);
-        assert_eq!(pool.trigger_note(plan, 60, 127, end_sample, 1.0), 1);
+        assert_eq!(pool.trigger_note(plan, 60, 127, end_sample, 1.0, None), 1);
         let mut new = vec![0.0f32; BLOCK];
         pool.render_into_with_cc(plan, 0, &mut new, None);
         assert_eq!(
@@ -6851,9 +6879,12 @@ fn s68_the_three_paths_agree_bit_for_bit_at_the_same_cc_on_the_crossfade_axis() 
         let mut flat = vec![0.0f32; FRAMES];
         let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
         // ③ 实时声部池
+        // ⭐ `#109`：`trigger_note` 现在**也**收 `cc`；本夹具**没有** CC 门控
+        // ⇒ 门控一项都不查，声部数与 `cc = None` 时**同一个**（下面三条路逐位相同
+        // 就是这条的机械见证）。
         let mut pool = SfzVoicePool::new(HZ);
         assert_eq!(
-            pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0),
+            pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, cc_arg),
             1,
             "单区域夹具 ⇒ 恰好建 1 个声部"
         );
@@ -6911,7 +6942,10 @@ fn s68_the_three_paths_agree_bit_for_bit_at_the_same_cc_on_the_crossfade_axis() 
     // ⭐ 第四条腿：非单位 `track_gain`（0.5）下声部存的确实是**它**，
     // 而输出 = 乐器层 × 0.5（⛔ 不是"把乘积当成 track_gain"）。
     let mut pool = SfzVoicePool::new(HZ);
-    assert_eq!(pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 0.5), 1);
+    assert_eq!(
+        pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 0.5, None),
+        1
+    );
     assert_eq!(
         pool.voices()[0].track_gain(),
         0.5,
@@ -7070,7 +7104,7 @@ fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
         ),
     ] {
         let mut pool = SfzVoicePool::new(HZ);
-        assert_eq!(pool.trigger_note(plan, 60, 127, end_sample, 1.0), 1);
+        assert_eq!(pool.trigger_note(plan, 60, 127, end_sample, 1.0, None), 1);
         let mut out = vec![0.0f32; BLOCK];
         pool.render_into_with_cc(plan, 0, &mut out, None);
         let actual = fnv1a_64(&out);
@@ -7111,7 +7145,7 @@ fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
 /// ⭐ 另一条腿：同一条带 CC 的区域在 `cc = None` 时与**不带 CC 的那条**输出逐位相同
 /// （渲染层面的同一件事）。
 #[test]
-fn s70_the_key_and_velocity_axes_are_undisturbed_by_the_cc_geometry() {
+fn s76_the_key_and_velocity_axes_are_undisturbed_by_the_cc_geometry() {
     const BASE: &str = "sample=a.wav key=60 pitch_keycenter=60 volume=-3 \
                         xfin_lokey=48 xfin_hikey=72 xfout_lokey=48 xfout_hikey=72 \
                         xfin_lovel=40 xfin_hivel=90 xfout_lovel=60 xfout_hivel=110";
@@ -7151,7 +7185,7 @@ fn s70_the_key_and_velocity_axes_are_undisturbed_by_the_cc_geometry() {
     assert_ne!(key_reading[0], key_reading[1], "⭐ 键轴必须仍在生效");
     assert_ne!(vel_reading[0], vel_reading[1], "⭐ 力度轴必须仍在生效");
     println!(
-        "[engine-sfz/S70] `gain_at` 全 128×128 网格（16384 点）位型不同 = {mismatches}\
+        "[engine-sfz/S76] `gain_at` 全 128×128 网格（16384 点）位型不同 = {mismatches}\
          （首个 = {first:?}）；键轴读数 [cc 无关] = {key_reading:?}；力度轴读数 = {vel_reading:?}"
     );
     assert_eq!(
@@ -7254,6 +7288,477 @@ fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
     assert_eq!(
         crossfade_bytes, 6,
         "⭐ `Crossfade` ＝ `XfAxis`(2) ＋ `XfDirection`(1) ＋ `XfRange`(2) ＋ `XfCurve`(1)"
+    );
+    assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
+    assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
+    assert!(
+        runtime < 192 * 1024,
+        "⛔ `EngineRuntime` 必须 ＋0（仍是 {runtime} B < 192 KiB）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#109`：把 **CC 区域门控**（`loccN` ／ `hiccN`）接进引擎的**三条路**
+// ---------------------------------------------------------------------------
+//
+// ⛔ 本片**不动**解析/归约：门控几何早就在 `Region::cc_gates` 里（`yeban-sfz`）。
+// 本片补的是"**按会话运行态的 CC 状态裁决**"那一半：
+//
+// * **离线** `render_note_into_with_cc`：**本来就在跑**（探针经 `RegionQuery::with_cc`
+//   进 `region_matches`）—— 本片只把它**锁住**（判据不得改坏）；
+// * **摊平表** `render_block_into_with_cc`：掩码之上再加一步 `cc_gates_ok(probe)`；
+// * **实时** `SfzVoicePool::trigger_note`：**触发期**按探针裁决（⛔ 不是逐块）。
+//
+// 规范逐字与"为什么是触发期"的裁定见 `src/sfz_instrument.rs` 模块头的
+// 「⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）」一节。
+
+/// ⭐ S81／S82／S83 的**带门控**夹具（规范页示例的形态）：
+/// `locc1=64 hicc1=127` ⇒ 区域只在 `CC1 ∈ [64, 127]` 时发声。
+///
+/// ⚠ `amp_veltrack=0`（与 S60／S61／S67／S68 同款）：力度 ≥ 1 时力度增益恰 `1.0`
+/// ⇒ 输出的**每一帧逐位等于** `1.0`（恒 `1.0` 样本 ＋ `rate == 1.0`）⇒
+/// "发声 / 不发声"与"位模式"都能用手算的读数判。
+const CC_GATE_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                               amp_veltrack=0 locc1=64 hicc1=127\n";
+
+/// ⭐ S82 的**反向腿**夹具：同文本**去掉那两行** ⇒ 门控集合为空。
+const CC_GATE_REMOVED_FIXTURE: &str =
+    "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0\n";
+
+/// 一个 CC1 探针（其余控制器读 `0`）。
+fn cc1_probe(value: u8) -> impl Fn(u8) -> u8 {
+    move |controller: u8| -> u8 { if controller == 1 { value } else { 0 } }
+}
+
+/// 非零帧数（帧）—— 三条路共用的"发不发声"读数。
+fn nonzero_frames(out: &[f32]) -> usize {
+    out.iter().filter(|sample| **sample != 0.0).count()
+}
+
+/// ⭐ S81（任务单 `#109`；判据 §5.2）：**门控真的活** —— 同一份带
+/// `locc1=64 hicc1=127` 的 SFZ，两个 CC 值给出**相反**的发声结论。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_GATE_FIXTURE`] 经**三条路**渲染 512 帧的输出；
+/// 单位 ＝ **声部数**（个）＋ **非零帧数**（帧）＋ FNV-1a 指纹（逐位）。
+///
+/// ⭐ 两个 CC 值：`0`（< `locc1`）⇒ **不发声**；`100`（∈ `[64, 127]`）⇒ **发声**。
+/// ⭐ 附**边界读数**：`63` ⇒ 不发声、`64` ⇒ 发声（闭区间两端都含）。
+#[test]
+fn s81_the_cc_gate_is_live_on_all_three_paths() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    let instrument = SfzInstrument::load(CC_GATE_FIXTURE.to_owned(), &Default::default())
+        .expect("夹具必须解析成功");
+    let sample = constant_sample(4_096);
+    let plan = prepare_with(CC_GATE_FIXTURE, &sample);
+
+    // ⭐ 摊平表必须真的承载那一条门控，且与解析层**逐字**相同。
+    let parsed_gates = instrument
+        .with_instrument(|parsed| parsed.regions()[0].cc_gates.clone())
+        .expect("闭包式访问");
+    assert_eq!(
+        plan.regions()[0].cc_gates(),
+        parsed_gates.as_slice(),
+        "⭐ 摊平表里的门控必须与 `Region::cc_gates` **逐字**相同（⛔ 不是另造一份几何）"
+    );
+    assert_eq!(
+        plan.regions()[0].cc_gates(),
+        &[CcGate {
+            cc: 1,
+            lo: 64,
+            hi: 127
+        }],
+        "⭐ `locc1=64 hicc1=127` ⇒ 恰好一条闭区间门控"
+    );
+
+    let render = |value: u8, frames: usize| -> (usize, Vec<f32>, usize) {
+        let probe = cc1_probe(value);
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+        let mut pool = SfzVoicePool::new(HZ);
+        let voices = pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, cc_arg);
+        let mut out = vec![0.0f32; frames];
+        pool.render_into_with_cc(&plan, 0, &mut out, cc_arg);
+        let nonzero = nonzero_frames(&out);
+        (voices, out, nonzero)
+    };
+
+    // ---- 两条主臂 ----
+    let (voices_closed, closed, nonzero_closed) = render(0, FRAMES);
+    let (voices_open, open, nonzero_open) = render(100, FRAMES);
+    println!(
+        "[engine-sfz/S81] cc = 0：声部数 = {voices_closed}、非零帧数 = {nonzero_closed}、\
+         指纹 = 0x{:016x}",
+        fnv1a_64(&closed)
+    );
+    println!(
+        "[engine-sfz/S81] cc = 100：声部数 = {voices_open}、非零帧数 = {nonzero_open}、\
+         指纹 = 0x{:016x}",
+        fnv1a_64(&open)
+    );
+    assert_eq!(voices_closed, 0, "⭐ cc = 0 < locc1 = 64 ⇒ **不建声部**");
+    assert_eq!(nonzero_closed, 0, "⭐ cc = 0 ⇒ 输出恒 0（不发声）");
+    assert_eq!(voices_open, 1, "⭐ cc = 100 ∈ [64, 127] ⇒ 恰好 1 个声部");
+    assert_eq!(nonzero_open, FRAMES, "⭐ cc = 100 ⇒ 512 帧全非零（发声）");
+    assert_ne!(
+        fnv1a_64(&closed),
+        fnv1a_64(&open),
+        "⭐ 有牙：两个 CC 值的输出必须**逐位不同**"
+    );
+
+    // ---- 闭区间两端的边界读数 ----
+    let (voices_below, _, nonzero_below) = render(63, FRAMES);
+    let (voices_at, _, nonzero_at) = render(64, FRAMES);
+    assert_eq!(
+        (voices_below, nonzero_below),
+        (0, 0),
+        "⭐ 边界：cc = 63 < locc1 ⇒ 不发声"
+    );
+    assert_eq!(
+        (voices_at, nonzero_at),
+        (1, FRAMES),
+        "⭐ 边界：cc = 64 ＝ locc1 ⇒ **发声**（下界**含**）"
+    );
+
+    // ---- 三条路在四个 CC 值上必须一致（判据 §5.3）----
+    for value in [0u8, 63, 64, 100] {
+        let probe = cc1_probe(value);
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+        // ① 离线
+        let mut offline = vec![0.0f32; FRAMES];
+        let written_offline = instrument
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .expect("离线渲染");
+        // ② 摊平表
+        let mut flat = vec![0.0f32; FRAMES];
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        // ③ 实时
+        let (voices, realtime, _) = render(value, FRAMES);
+        assert_eq!(
+            written_offline, written_flat,
+            "⭐ cc = {value}：离线与摊平的 `written` 必须同值"
+        );
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ cc = {value}：**离线 ＝ 摊平** 必须逐位相同"
+        );
+        assert_eq!(
+            bits(&flat),
+            bits(&realtime),
+            "⭐ cc = {value}：**摊平 ＝ 实时** 必须逐位相同"
+        );
+        println!(
+            "[engine-sfz/S81] cc = {value}：三条路位模式相同 = {}；声部数 = {voices}；\
+             非零帧数 = {}",
+            bits(&offline) == bits(&realtime),
+            nonzero_frames(&offline)
+        );
+    }
+}
+
+/// ⭐ S82（任务单 `#109`；判据 §5.4 反向腿 ＋ 三个承重指纹）：
+/// **去掉 `locc1`／`hicc1` 那两行** ⇒ 两个 CC 值**逐位相同**，且三个既有承重指纹
+/// **逐字不变**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_GATE_REMOVED_FIXTURE`]（无门控）在 `cc ∈ {0, 100}` 下的三条路输出；
+/// 单位 ＝ 声部数（个）＋ 非零帧数（帧）＋ FNV-1a 指纹（逐位）。
+#[test]
+fn s82_removing_the_gate_lines_makes_the_two_cc_values_bit_identical() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    let plan = prepare_with(CC_GATE_REMOVED_FIXTURE, &constant_sample(4_096));
+    assert!(
+        plan.regions()[0].cc_gates().is_empty(),
+        "⭐ 反向腿夹具**一条门控都没有**"
+    );
+
+    let render = |value: u8| -> (usize, u64, usize) {
+        let probe = cc1_probe(value);
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+        let mut pool = SfzVoicePool::new(HZ);
+        let voices = pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, cc_arg);
+        let mut out = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut out, cc_arg);
+        (voices, fnv1a_64(&out), nonzero_frames(&out))
+    };
+    let (voices_0, fingerprint_0, nonzero_0) = render(0);
+    let (voices_100, fingerprint_100, nonzero_100) = render(100);
+    println!(
+        "[engine-sfz/S82] 无门控：cc = 0 ⇒ 声部 {voices_0}／非零 {nonzero_0}／\
+         指纹 0x{fingerprint_0:016x}；cc = 100 ⇒ 声部 {voices_100}／非零 {nonzero_100}／\
+         指纹 0x{fingerprint_100:016x}"
+    );
+    assert_eq!(
+        (voices_0, nonzero_0),
+        (1, FRAMES),
+        "⭐ 无门控 ⇒ 两个 CC 值都发声（对照读数必须非空）"
+    );
+    assert_eq!(
+        fingerprint_0, fingerprint_100,
+        "⭐ 反向腿：去掉那两行 ⇒ 两个 CC 值**逐位相同**（输出指纹相等）"
+    );
+
+    // ⭐ 三个承重指纹：无门控的既有夹具 ⇒ ⛔ 必须不变（复跑 S37／S33 的两条臂）。
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, fixture, end_sample, expected) in [
+        ("S82 → S37 臂 1", &looped, 200u64, 0xa9de_c8a8_7f69_106cu64),
+        ("S82 → S37 臂 2", &plain, u64::MAX, 0xd3c2_a820_76bd_8947u64),
+    ] {
+        let out = render_pool(fixture, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!(
+            "[engine-sfz/S82] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）；\
+             非零帧数 = {}",
+            nonzero_frames(&out)
+        );
+        let _checked = check_fingerprint(&format!("S82 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy = vec![0.0f32; BLOCK];
+    broadcast.render_block_into_with_cc(60, 127, None, &mut legacy);
+    println!(
+        "[engine-sfz/S82] S82 → S33／S14 广播路径：指纹 = 0x{:016x}（承重 = 0x{:016x}）",
+        fnv1a_64(&legacy),
+        NO_LOOP_FIXTURE_FINGERPRINT
+    );
+    let _checked = check_fingerprint(
+        "S82 S33/S14 广播路径",
+        fnv1a_64(&legacy),
+        NO_LOOP_FIXTURE_FINGERPRINT,
+    );
+}
+
+/// ⭐ S83（任务单 `#109`；判据 §2 的"语义裁决"）：**判定时机 ＝ 触发期**
+/// —— 声部一旦建立，**中途**把 CC 挪出区间**不会**截断它。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_GATE_FIXTURE`] 先以 `cc = 100` 触发、再以**逐步变化**的 CC 分两块
+/// 渲染（`cc = 100` 一块 ＋ `cc = 0` 一块）；单位 ＝ 非零帧数（帧）。
+///
+/// ⭐ 如果门控是**逐块**判定，第二块（`cc = 0`）会**静音**；触发期判定 ⇒ 第二块
+/// **照旧发声**（规范逐字是 "hard switch"／"required for the region to play"，
+/// 见模块头那一节）。
+#[test]
+fn s83_the_gate_is_decided_at_trigger_time_not_per_block() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    let plan = prepare_with(CC_GATE_FIXTURE, &constant_sample(4_096));
+
+    let open = cc1_probe(100);
+    let closed = cc1_probe(0);
+    let open_arg: Option<&dyn Fn(u8) -> u8> = Some(&open);
+    let closed_arg: Option<&dyn Fn(u8) -> u8> = Some(&closed);
+
+    let mut pool = SfzVoicePool::new(HZ);
+    assert_eq!(
+        pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, open_arg),
+        1,
+        "⭐ 触发期：cc = 100 ⇒ 建 1 个声部"
+    );
+    let mut first = vec![0.0f32; FRAMES];
+    pool.render_into_with_cc(&plan, 0, &mut first, open_arg);
+    let mut second = vec![0.0f32; FRAMES];
+    pool.render_into_with_cc(&plan, FRAMES as u64, &mut second, closed_arg);
+    println!(
+        "[engine-sfz/S83] 第一块（cc = 100）非零帧数 = {}；第二块（cc = 0）非零帧数 = {}",
+        nonzero_frames(&first),
+        nonzero_frames(&second)
+    );
+    assert_eq!(
+        nonzero_frames(&second),
+        FRAMES,
+        "⭐ 触发期判定：声部已建 ⇒ 中途把 CC 挪出区间**不截断**它（⛔ 不是逐块判定）"
+    );
+
+    // ⭐ 反空判腿：**触发时** CC 已经在区间外 ⇒ 一个声部都不建（与上一条同源）。
+    let mut closed_pool = SfzVoicePool::new(HZ);
+    assert_eq!(
+        closed_pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, closed_arg),
+        0,
+        "⭐ 触发期：cc = 0 ⇒ 0 个声部（同上一条判定时机）"
+    );
+}
+
+/// ⭐ S84（任务单 `#109`；判据 §5.5）：**既有掩码行为未扰动** ——
+/// keyswitch ／ `trigger` ／ 力度／键轴那几张掩码的读数一个字节没变，
+/// 且"有 CC 门控"的区域**进得了**掩码（非空对照）。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 四条夹具的摊平表 `key_mask` / `vel_mask`（各 128 位）；
+/// 单位 ＝ 位模式 `[u64; 2]`（逐位）。
+#[test]
+fn s84_the_existing_masks_are_undisturbed_and_a_gated_region_enters_them() {
+    // ① keyswitch 门控：`sw_last=36` ＋ `sw_default=36` ⇒ 缺省成立（既有口径）。
+    let keyswitch_default = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 sw_last=36 sw_default=36\n",
+        &constant_sample(SAMPLE_FRAMES),
+    );
+    let mask = keyswitch_default.regions()[0].key_mask();
+    let bit = |mask: [u64; 2], note: u8| mask[usize::from(note) / 64] & (1u64 << (note % 64)) != 0;
+    assert!(bit(mask, 60), "⭐ `sw_default` 满足 `sw_last` ⇒ 掩码含 60");
+    assert!(!bit(mask, 61), "⭐ 键域之外不含 61");
+    assert_eq!(
+        plan_match_count(&keyswitch_default, 60),
+        1,
+        "⭐ 非空对照：键 60 上恰 1 条区域过掩码"
+    );
+
+    // ② keyswitch 门控**没有** `sw_default` ⇒ 严格策略：掩码清 0（既有行为）。
+    let keyswitch_strict = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 sw_last=36\n",
+        &constant_sample(SAMPLE_FRAMES),
+    );
+    assert_eq!(
+        keyswitch_strict.regions()[0].key_mask(),
+        [0, 0],
+        "⭐ 没有 `sw_default` 的 `sw_last` ⇒ 掩码清 0（既有行为，⛔ 未被本单改动）"
+    );
+    assert_eq!(plan_match_count(&keyswitch_strict, 60), 0);
+
+    // ③ `trigger=release` ⇒ 不进 note-on 掩码（既有行为）。
+    let release = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 trigger=release\n",
+        &constant_sample(SAMPLE_FRAMES),
+    );
+    assert_eq!(
+        release.regions()[0].key_mask(),
+        [0, 0],
+        "⭐ `trigger=release` ⇒ note-on 掩码清 0（既有行为）"
+    );
+
+    // ④ ⭐ 有 CC 门控的区域**如今进得了**掩码（本单的机械差异；门控仍不通过 ⇒ 不发声）。
+    let gated = prepare_with(CC_GATE_FIXTURE, &constant_sample(SAMPLE_FRAMES));
+    assert_eq!(
+        plan_match_count(&gated, 60),
+        1,
+        "⭐ 有 `locc1=64` 的区域在掩码里**在**（#109 之前它被清 0 ⇒ 永远不发声）"
+    );
+    // ⚠ 但探针为 `None`（会话表一条 CC 都没收到过）⇒ 门控**不成立** ⇒ 仍不发声。
+    let mut pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(
+        pool.trigger_note(&gated, 60, 100, u64::MAX, 1.0, None),
+        0,
+        "⭐ `cc = None` ⇒ 有门控的区域仍然不建声部（`yeban-sfz` 的严格策略，三条路一致）"
+    );
+    // ⭐ 有牙的对照：同一个池、同一个区域，`cc = 100` ⇒ 建 1 个声部。
+    let probe = cc1_probe(100);
+    let mut open_pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(
+        open_pool.trigger_note(&gated, 60, 100, u64::MAX, 1.0, Some(&probe)),
+        1,
+        "⭐ 非空对照：`cc = 100` ⇒ 同一条区域建 1 个声部"
+    );
+}
+
+/// 摊平表里"键 60 上过掩码的区域条数"（判据用的只读读数）。
+fn plan_match_count(plan: &PreparedSfz, note: u8) -> usize {
+    plan.regions()
+        .iter()
+        .filter(|region| region.accepts(note, 100))
+        .count()
+}
+
+/// ⭐ S85（任务单 `#109`；判据 §5.6）：**条数上界 ＋ 尺寸**。
+///
+/// # 判定量
+///
+/// * [`CC_GATE_CAP`] ＝ **128**（结构性上界：`yeban-sfz` 的 `BTreeMap<u8, _>` 键域
+///   ＝ `0..=127`）；`size_of::<CcGate>()` ＝ **3**；
+/// * `PreparedRegion` **由 `size_of` 现读**（⛔ 不手抄）；
+/// * ⛔ `SfzVoice` **40**、⛔ `SfzVoicePool` **1712**、⛔ `EngineRuntime` < 192 KiB；
+/// * 模块头必须逐字含 `#109` 的追加修订段、新一节、结构性上界与语料普查读数。
+#[test]
+fn s85_the_gate_cap_provenance_and_the_sizes_are_judgeable() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const REVISION: &str = "⭐ ⭐ **追加修订段（任务单 `#109`）";
+    const SECTION: &str = "# ⭐ CC 区域门控（`loccN` / `hiccN`，任务单 `#109`）";
+    const STRUCTURAL: &str = "结构性上界";
+    const PREV_REVISION_108: &str = "⭐ ⭐ **追加修订段（任务单 `#108`）";
+    const PREV_REVISION_107: &str = "⭐ ⭐ **追加修订段（任务单 `#107`）";
+    const ORIGINAL_CALIBER: &str = "⭐ 双口径登记（任务单 `#104`）";
+    const ORIGINAL_GATE: &str = "⭐ 摊平期门控登记（任务单 `#104`）";
+    const GATE_CHOICE_107: &str = "摊平期门控登记维持不变（显式选路 ③）";
+    const ABSENT: &str = "CC 区域门控仍然一行都不接线";
+    println!(
+        "[engine-sfz/S85] 模块头：`#109` 修订段 = {}、新一节 = {}、结构性上界 = {}、\
+         `#108` 原文 = {}、`#107` 原文 = {}、`#104` 原文两条 = {} / {}、选路 ③ 原文 = {}",
+        MODULE_SOURCE.contains(REVISION),
+        MODULE_SOURCE.contains(SECTION),
+        MODULE_SOURCE.contains(STRUCTURAL),
+        MODULE_SOURCE.contains(PREV_REVISION_108),
+        MODULE_SOURCE.contains(PREV_REVISION_107),
+        MODULE_SOURCE.contains(ORIGINAL_CALIBER),
+        MODULE_SOURCE.contains(ORIGINAL_GATE),
+        MODULE_SOURCE.contains(GATE_CHOICE_107),
+    );
+    for (label, needle) in [
+        ("`#109` 追加修订段", REVISION),
+        ("CC 区域门控一节", SECTION),
+        ("结构性上界（条数上界的来历）", STRUCTURAL),
+        ("`#108` 的修订段（第 278 条：⛔ 不许删）", PREV_REVISION_108),
+        ("`#107` 的修订段（⛔ 不许删）", PREV_REVISION_107),
+        ("`#104` 的双口径登记", ORIGINAL_CALIBER),
+        ("`#104` 的摊平期门控登记", ORIGINAL_GATE),
+        ("`#107` 的显式选路 ③ 原文", GATE_CHOICE_107),
+    ] {
+        assert!(MODULE_SOURCE.contains(needle), "⭐ 必须逐字含：{label}");
+    }
+    assert!(
+        !MODULE_SOURCE.contains(ABSENT),
+        "⭐ 反向腿：文档里没有的句子必须 `false`"
+    );
+
+    // ⭐ 语料普查的原始读数（分母 ＋ 已知非零对照 ＋ 单区域最大条数）必须登记在源码里。
+    for needle in [
+        "**1398**",
+        "**1205**",
+        "**64894**",
+        "{0: 43831, 1: 16872, 2: 797, 3: 3394}",
+        "{0: 62281, 1: 1920, 2: 693}",
+    ] {
+        assert!(
+            MODULE_SOURCE.contains(needle),
+            "⭐ 条数上界的来历必须可判：模块头缺少普查读数 `{needle}`"
+        );
+    }
+
+    let gate_bytes = core::mem::size_of::<CcGate>();
+    let region_bytes = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S85] size_of: CcGate={gate_bytes} PreparedRegion={region_bytes} \
+         SfzVoice={voice} SfzVoicePool={pool} EngineRuntime={runtime}\
+         （CC_GATE_CAP={CC_GATE_CAP} ⇒ ＋{} B／区域；门槛 192 KiB = {}；余量 = {}）",
+        CC_GATE_CAP * gate_bytes,
+        192 * 1024,
+        192 * 1024 - runtime,
+    );
+    assert_eq!(
+        CC_GATE_CAP, 128,
+        "⭐ 结构性上界：`BTreeMap<u8, _>` 的键域 ＝ `0..=127`"
+    );
+    assert_eq!(
+        gate_bytes, 3,
+        "⭐ `CcGate` ＝ `cc`(1) ＋ `lo`(1) ＋ `hi`(1)"
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");

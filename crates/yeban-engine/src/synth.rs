@@ -1954,12 +1954,17 @@ impl SynthEngine {
                                 // ⭐ 轨增益门（引擎层）在这里**与鼓机同一处**交给音源：
                                 // 鼓机拿的是含轨门的 `note.gain`，SFZ 拿的是**同一张调度表**
                                 // 上的 `track_gain`（力度那一半由乐器层自己算 ⇒ ⛔ 不重复）。
+                                // ⭐ 任务单 `#109`：**同一个** CC 探针也进触发期 ——
+                                // `loccN`/`hiccN` 是**区域选择**判据（规范逐字见
+                                // `SfzVoicePool::trigger_note` 的文档）⇒ 门控不成立的
+                                // 区域在这里就**不建声部**（⛔ 不是逐块调制）。
                                 if slot.sfz.trigger_note(
                                     plan,
                                     note.pitch,
                                     note.velocity,
                                     note.end_sample,
                                     schedule.track_gain(),
+                                    cc,
                                 ) > 0
                                 {
                                     *notes_triggered = notes_triggered.saturating_add(1);
