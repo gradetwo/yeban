@@ -65,7 +65,7 @@
 //! ⚠ **口径差（⛔ 别踩）**：`DecodedAsset::samples()` 是**交织**多声道，而 hound 那条腿按
 //! `step_by(channels)` 取**声道 0** ⇒ 新腿必须做**同一件事**，⛔ 不能把交织数据当单声道
 //! （否则立体声样本会以 2× 长度、交替声道进入引擎）。两条腿因此对**同一份 PCM** 给出
-//! **逐位相同**的单声道 `f32`（端到端判据见 `tests/sfz_flac_ogg.rs`）。
+//! **逐位相同**的单声道 `f32`（端到端判据见 `tests/sfz_decoded_formats.rs`）。
 //!
 //! ⚠ **采样率不匹配**：`DecodedAsset::sample_rate()` 与工程采样率不同时**不重采样** ——
 //! 它原样进 [`InMemorySample::sample_hz`]，由引擎既有的 `RenderRates::new(sample_hz, engine_hz)`
@@ -447,7 +447,7 @@ fn decode_with_hound(path: &Path) -> Result<(InMemorySample, u64, String), Unrea
 /// 而本仓 SFZ 播放的口径是**单声道声道 0**（与 [`decode_with_hound`] 的
 /// `step_by(channels)` 一字不差）⇒ 这里按**同一个** `step_by(channels)` 取声道 0。
 /// ⛔ 若直接交出交织缓冲，立体声样本会以 2× 长度、左右交替进入引擎（判据
-/// `sfz_flac_ogg::a_stereo_flac_is_folded_to_channel_zero` 会红）。
+/// `sfz_decoded_formats::a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg` 会红）。
 ///
 /// ## 与 WAV 腿的语义对齐
 ///
