@@ -601,7 +601,7 @@ panicked at crates/yeban-mcp/tests/extension_tools.rs:835:9:
 | 证据 | 原文 | 结论 |
 | :--- | :--- | :--- |
 | 规范定义 | `docs/YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:361`：`**[BASELINE-006]** \| **AI 交互效率** \| 单次段落生成数据负载与 Token 开销 \| 统计生成 16 小节段落的完整 MCP 工具往返载荷 \| **序列化 JSON 载荷 ≤ 4 KB，结构化字段传输，Token 开销中位数 ≤ 600 Tokens (测试参考基准)**` | 它是 **tokenizer / 载荷**指标 |
-| 人类裁决 | `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md:554-559`（**D53**）："「Token 中位数 ≤600 用哪个 tokenizer 数」**暂不裁决**"；`docs/ledger/human-decisions.md:88`（`HD-47`）"`BASELINE-006` 的 tokenizer 口径 … A 用通用分词器 / B 用本仓自己的分词器 / C 负责人指定另一个" | 被延后的是**分词器口径**，不是响度 |
+| 人类裁决 | `docs/adr/ADR-0001-workspace-topology-and-version-pinning.md:554-559`（**D53**）："「Token 中位数 ≤600 用哪个 tokenizer 数」**暂不裁决**"；`docs/ledger/human-decisions.md:90`（`HD-47`）"`BASELINE-006` 的 tokenizer 口径 … A 用通用分词器 / B 用本仓自己的分词器 / C 负责人指定另一个" | 被延后的是**分词器口径**，不是响度 |
 | 响度的规范来源 | `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016`："主母带总线提供标准的 **LUFS (Momentary / Short-term / Integrated)** 与响度范围（LRA）数值显示"；`:396`（真峰值限制器需要 BS.1770-4 的 4× 过采样）；`:461`（RF64 `bext` 的"响度元数据 EBU R128"）；`YEBAN_ENGINEERING_IMPLEMENTATION_ROADMAP.md:107`（限制器"符合 ITU-R BS.1770-4"） | 响度的规范族是 **EBU R128 / ITU-R BS.1770**，与 tokenizer 无关 |
 
 > **注（2026-10-07，带日期的记录只标注不改写）**：上表与 §10.3 里的 `docs/YEBAN_ARCHITECTURE_AND_SYSTEM_DESIGN.md:1016`

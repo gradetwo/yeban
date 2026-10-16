@@ -269,7 +269,7 @@
 - **证据**：
   - 报告缺口的代码：`crates/yeban-mcp/src/domain/section.rs:8-16`（模块头断言"没有 `AddClip` / `RemoveClip` / `AddRoutingNode` / `RemoveRoutingNode` 变体"）与 `section.rs:109-110`（响应里报 `data.unwired = ["clipPoolEntries","routingEdges"]`）。
   - 反证：`crates/yeban-model/src/ops.rs:218`（`AddClip`）、`:225`（`RemoveClip`）、以及 `AddRoutingNode` / `RemoveRoutingNode`（31 个变体中的四个）**都已经存在**，落地提交 `4190651`（`git merge-base --is-ancestor 4190651 HEAD` ⇒ 真）。
-  - 裁决依据：`docs/ledger/human-decisions.md:38`（`HD-12` = `ADR-0001 D27`，已裁决"追认并回写"，状态 ✅ 2026-10-04）。
+  - 裁决依据：`docs/ledger/human-decisions.md:40`（`HD-12` = `ADR-0001 D27`，已裁决"追认并回写"，状态 ✅ 2026-10-04）。
   - 台账也停在旧结论：`docs/ledger/tools-domain-notes.md:55,231` 与 `docs/ledger/mcp-render-notes.md:325`（needs-4）。
 - **影响**：① 规范 §7.2 要求的"声部连接"**至今没产出**，而阻塞理由已经不成立 —— 这是"假阻塞"；
   ② AI Agent 拿到 `unwired` 会以为模型表达力不足，转而去绕路（例如直接改工程文件），绕开 `Op` 日志的撤销语义；
