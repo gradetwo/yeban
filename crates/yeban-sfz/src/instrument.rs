@@ -2571,6 +2571,18 @@ fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzE
 /// 的行为（判据 `S101`／`S107` 的反空判腿逐字仍绿）；`#116` 修订的**域**那一支
 /// **仍未动**（[`ModTarget::delta_range`] 是唯一来源）。⭐ 处置与规范依据见
 /// [`crate::modulation`] 模块文档 §6.4 的 `#117` 追加修订段。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#119`）—— 被修订的是上面那张表里"三行"的行数那一支**
+/// （⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+/// `#119` 加上**第四行** [`ModUnit::Decibels`]：
+///
+/// | 单位类别 | 目标 | 接受的后缀 | `50%` 的处置 |
+/// | :--- | :--- | :--- | :--- |
+/// | ⭐ [`ModUnit::Decibels`] | ⭐ `volume` | ⭐ `""`（⛔ 无任何后缀） | ⭐ **响亮 `InvalidFloat`**（`#119` 新增） |
+///
+/// ⚠ **被修订的只是行数**：上表前三行**逐字未动**（`Seconds` 仍只认 `s` / `ms`、
+/// `Percent` 仍只认 `%`、`Cents` 仍只认 `""`）⇒ `#104`～`#118` 的既有读数**逐位不变**。
+/// ⭐ 为什么 dB 要**新开一行**而⛔ 不并进 `Cents`：见 [`crate::modulation`] §8.2 的裁定。
 fn read_modulation_delta(
     raw: &str,
     name: &str,
@@ -2599,6 +2611,11 @@ fn read_modulation_delta(
         // （⛔ 不静默当成 50 音分；理由与规范依据见 [`crate::modulation`] §6.4 的
         // `#117` 追加修订段）。
         ModUnit::Cents => (raw, 1.0_f32),
+        // ⭐⭐ `#119`：分贝与音分**同款** —— ⛔ 不剥任何后缀
+        // （规范里没有 `volume_oncc1=6dB` 这种写法）⇒ `6%` / `6s` / `6ms` 都落
+        // `InvalidFloat`（⛔ 不静默当成 6 dB；理由与表行见
+        // [`crate::modulation`] §8.1／§8.2）。
+        ModUnit::Decibels => (raw, 1.0_f32),
     };
     let parsed = number
         .trim()

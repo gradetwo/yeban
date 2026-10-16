@@ -939,6 +939,74 @@
 //! `pitch_stepccN` 全部 **0** 处。⚠ 本单⛔ 不抬高 `AMPEG_MOD_CAP`（单区域最多
 //! 2 条 ⇒ 离 20 远）。
 //!
+//! # ⭐⭐ `volume` 族（任务单 `#119`）—— **第三个单位类别**（dB），三条路同一处施加点
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#119`）—— 被修订的是 `#104`／`#115`／`#116`／`#118`
+//! 那几条登记里**「`pan_oncc*` ／ `volume_oncc*` ／ `cutoff_oncc*` 那一族仍未做、
+//! 另开单」**这一支里 **`volume_oncc*` 这一项**（⛔ 上面所有登记的**原文一字未删**，
+//! 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）。
+//! **被修订的只是"`volume_oncc*` 仍未做"这一支**：它**不再是"另开单"** —— 本单把
+//! `#115` 的增益族机制**推广到 `volume`**（`volumeccN` ／ `volume_ccN` ／
+//! `volume_onccN` ／ `volume_curveccN` 四种拼写）。
+//! ⛔ **`pan_oncc*` ／ `cutoff_oncc*` 那两项整条有效**（仍未做，另开单）；
+//! ⛔ **规范 Modulation 表里逐字的 delta 行名 `gain_ccN`／`gain_onccN` 也不在本单**
+//! （裁定与语料读数见 `yeban-sfz/src/modulation.rs` §8.4；判据 `S114` 把今天的
+//! 可观察行为逐字钉住）。⭐ 判据 `S114` 同时 `contains` 上面这几条**被修订的原文**
+//! 与**本修订段**（台账第 280 条：让"有修订"本身成为可判事实）。
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/volume/>，2026-10-17 现读）
+//!
+//! ⚠ ⚠ **本单最承重的一条事实**：该页 **Modulation 表里⛔ 没有 `volume_onccN` 行**，
+//! 它的 delta 行逐字是 **`| gain_ccN |  | float | 0 | -144 to 48 | dB |`**，
+//! 而同页正文写「**`volume_ccN` is a valid alias for `gain_ccN`**」
+//! ⇒ `volume` 族的 delta 域随被别名的那一行（`-144 to 48` dB）。
+//! ⭐ 静态表行是 `| volume | SFZ v1 | float | 0 | -144 to 6 | dB |`；
+//! `volume_curveccN` 行是 `0 to 255`／`N/A`（**曲线下标**），
+//! `volume_smoothccN`／`volume_stepccN` 两行 **Range 空、Unit `N/A`**（⛔ 本单不做）。
+//! 完整依据链、单位裁定（**新开** `ModUnit::Decibels` 的四条理由与代价）与语料普查的
+//! **唯一事实源**是 [`yeban_sfz::modulation`] 的模块文档 §8（⛔ 本节不复制）。
+//!
+//! ## 落地形状（三条，逐条可判）
+//!
+//! 1. **目标枚举 ＋1 ＋ 单位类别 ＋1**：`ModTarget::Volume` 加在 [`ModTarget::Tune`]
+//!    **之后**（下标 7）；它的 `mod_unit()` 是新变体 `ModUnit::Decibels`
+//!    ⇒ 既有七个目标的下标与 `is_time()` 读数**一个都没动**（`S106` 仍绿）；
+//! 2. **三条路同一处施加点**：基准 `volume`（dB）早就烘进摊平表的 `volume_gain`
+//!    （[`PreparedRegion::gain_at_with_cc`] 的 `base`）与离线
+//!    [`yeban_sfz::playback::PlaybackSpec::total_gain`] ⇒ 本族只贡献**一个新的最外层
+//!    线性乘子** `volume_ratio`（`yeban_sfz::modulation::volume_ratio_with_baked`
+//!    是唯一实现，＝ `2 ^ (dB × log2(10) / 20)`）：
+//!    离线 [`SfzInstrument::render_note_into_with_cc`] ＝
+//!    `(total_gain() × amplitude_gain) × volume_ratio`；
+//!    摊平 [`PreparedSfz::render_block_into_with_cc`] ／ 实时
+//!    [`SfzVoicePool::slot_readings`] ＝ `((base × crossfade) × amplitude_gain) × volume_ratio`
+//!    （[`PreparedRegion::volume_ratio_with_cc`]）⇒ **离线 ＝ 摊平 ＝ 实时**逐位相同
+//!    （判据 `S114`，含五个病态臂）；
+//! 3. **零新逐声部字段**：乘子是**区域参数**（`cc_mods` 早就在摊平表里）、
+//!    CC 逐块从探针读、算出的是**栈上**的值 ⇒ ⛔ 不回写 [`SfzVoice`]
+//!    ⇒ `SfzVoice` 仍 **40 B**（判据 `S9`／`S114`）。
+//!
+//! ## 语料普查（2026-10-17 现读；分母 **1398** 份 `.sfz`；剥 `//` 注释 ＋ 词边界 token）
+//!
+//! | 读数（对象＋单位：opcode **出现次数**／**文件数**） | 值 |
+//! | :--- | :--- |
+//! | `volume_onccN`（**裸**；⛔ 规范 Modulation 表无此行） | **2** 次 ／ **2** 文件 |
+//! | `volume_curveccN` | **2** 次 ／ **2** 文件 |
+//! | `volume_ccN`（正文说的 SFZ1 别名） | **0** 次 ／ **0** 文件 |
+//! | 裸 `volumeccN` | **0** 次 ／ **0** 文件 |
+//! | 静态 `volume=` | **8504** 次 ／ **284** 文件 |
+//! | ⛔ `volume_smoothccN` ／ `volume_stepccN`（本单不做） | **0** 次 ／ **0** 文件 |
+//! | ⛔ `gain_ccN` ／ `gain_onccN`（规范逐字的 delta 行名；本单不识别） | **0** 次 ／ **0** 文件 |
+//! | ⛔ `global_volume_onccN` 一族（**另外三个** opcode） | **47** 次 ／ **32** 文件 |
+//!
+//! ⭐ **口径警告（台账第 271／274 条）**：`volume_oncc` 的**家族子串**是
+//! **49** 次 ／ **32** 文件 —— 那 **47** 处差额**全是别的 opcode**
+//! （`global_volume_onccN` 等），⛔ 不是本族的 `<region>` 调制 opcode。
+//! ⚠ 唯一真正用到本族的是 `assets/samples/karoryfer-black-and-blue-basses/Programs/controls/`
+//! 的 `common.sfz` 与 `common_warm.sfz`（各 `volume_oncc24=7` ＋ `volume_curvecc24=11`）。
+//! ⚠ 本单⛔ 不抬高 `AMPEG_MOD_CAP`（**四族**并集最大仍 **15** ＝ 与 `#104`／`#116`
+//! 同一个文件同一个数 ⇒ 今天能解析的文件**一个都不会**变成不可解析）。
+//!
 //! # ⭐ `set_ccN` 播种（任务单 `#110`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是下面三处登记里 `set_ccN=` 的
@@ -1274,9 +1342,11 @@ use yeban_sfz::instrument::{
 // [`cc_value_with_baked`]（与 `yeban-sfz` 的离线路径**同一份**实现）。
 // ⭐⭐ 任务单 `#116`：第二个被推广的目标 `tune`（音分 → 速率乘子），换算本体是
 // [`tune_ratio_with_baked`]（同样是 `yeban-sfz` 的**同一份**实现，⛔ 不是引擎里第二套）。
+// ⭐⭐ 任务单 `#119`：第三个被推广的目标 `volume`（**dB** → 线性增益乘子），换算本体是
+// [`volume_ratio_with_baked`]（同样是 `yeban-sfz` 的**同一份**实现）。
 use yeban_sfz::modulation::{
     AMPEG_MOD_CAP, AmpegParam, BakedCcMod, ModTarget, bake_cc_mods, cc_value_with_baked,
-    cc_value_with_baked_and_vel2, tune_ratio_with_baked,
+    cc_value_with_baked_and_vel2, tune_ratio_with_baked, volume_ratio_with_baked,
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
@@ -1529,7 +1599,14 @@ impl SfzInstrument {
                     cc,
                 )
                 .0 / AMPLITUDE_PERCENT_SCALE;
-                let gain = region.playback_spec_with(&query, rates).total_gain() * amplitude_gain;
+                // ⭐⭐ 音量调制（任务单 `#119`）：**最外层线性乘子** `volume_ratio`
+                // 与摊平／实时两条路**同一份**（`yeban-sfz` 的
+                // [`volume_ratio_with_baked`]）⇒ 三条路逐位一致（判据 `S114`）。
+                // 缺省（无 `volume_*ccN`）⇒ 乘子恰 `1.0` ⇒ 乘它**逐位不变**。
+                let volume_ratio = volume_ratio_with_baked(baked.as_deref().unwrap_or(&[]), cc);
+                let gain = region.playback_spec_with(&query, rates).total_gain()
+                    * amplitude_gain
+                    * volume_ratio;
                 // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
                 if !rate_is_usable(rate) || pcm_len == 0 {
                     continue;
@@ -2702,7 +2779,10 @@ impl PreparedRegion {
         }
         // ⭐ 振幅（任务单 `#115`）：最外层线性乘子；缺省 `amplitude = 100` ⇒ 因子 `1.0`
         // ⇒ 这一句对没有 `amplitude` 的区域**逐位不变**（IEEE：× `1.0` 恒等）。
-        (base * crossfade) * self.amplitude_gain_with_cc(cc)
+        // ⭐⭐ 音量调制（任务单 `#119`）：**新的最外层**线性乘子；缺省（无 `volume_*ccN`）
+        // ⇒ 因子恰 `1.0` ⇒ 同样**逐位不变**。结合序与离线那条路**逐字相同**
+        // （`(… × amplitude_gain) × volume_ratio`，判据 `S114`）。
+        ((base * crossfade) * self.amplitude_gain_with_cc(cc)) * self.volume_ratio_with_cc(cc)
     }
 
     /// ⭐ 本区域承载的 CC 轴交叉淡化段数（判据用：`0` ＝ 这条区域没有该轴）。
@@ -2881,6 +2961,27 @@ impl PreparedRegion {
     #[must_use]
     pub fn tune_ratio_with_cc(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
         tune_ratio_with_baked(self.cc_modulations(), cc)
+    }
+
+    /// ⭐⭐ **`volume` 调制的线性增益乘子**（任务单 `#119`）：
+    /// `2 ^ (Σ delta × curve(cc) × log2(10) / 20)`（＝ `10 ^ (dB / 20)`）。
+    ///
+    /// * `cc == None` ⇒ 一项 CC 都不读 ⇒ **恰 `1.0`**（`gain × 1.0` 在 binary32 下
+    ///   **逐位不变** ⇒ 与接线前逐位相同）；
+    /// * `cc == Some(probe)` 而表里没有 `volume` 项 ⇒ `0.0f32.exp2()` **恰 `1.0`**
+    ///   ⇒ 同样逐位不变；
+    /// * 求值本体是 `yeban-sfz` 的 [`volume_ratio_with_baked`]（离线 ／ 摊平 ／ 实时
+    ///   三条路**同一份**实现，⛔ 没有第二套换算）；
+    /// * 曲线解析不到的项**不贡献** dB（⛔ 不当成曲线 0；可由
+    ///   [`Self::ampeg_unresolved_mods`] 读出）；
+    /// * ⛔ **不钳位**：域的裁定（`volume` ⇒ `-144..=48` dB）见
+    ///   [`ModTarget::delta_range`]；`2^x` 的上溢（`Inf`）／下溢（`0`）由**既有**增益
+    ///   通路如实通过（增益**没有**"必须有限"的守卫 —— 与 `tune` 的速率守卫不同）。
+    ///
+    /// ⚠ **零分配、零锁、零 I/O**（纯算术 ＋ 定长切片 ＋ 一次 `exp2`）⇒ 可逐块调用。
+    #[must_use]
+    pub fn volume_ratio_with_cc(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        volume_ratio_with_baked(self.cc_modulations(), cc)
     }
 
     /// ⭐ **该区域某参数上的力度调制量**（`ampeg_vel2…`；任务单 `#106`）。

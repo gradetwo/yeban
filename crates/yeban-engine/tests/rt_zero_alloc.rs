@@ -3883,6 +3883,8 @@ fn judgement_body() -> ExitCode {
     prepared_sfz_tune_callback_path_allocates_nothing();
     // ⭐⭐ 任务单 `#118`：`pitch` 族（`pitch_onccN`）的回调路径。
     prepared_sfz_pitch_callback_path_allocates_nothing();
+    // ⭐⭐ 任务单 `#119`：`volume` 族（`volume_onccN`）的回调路径。
+    prepared_sfz_volume_callback_path_allocates_nothing();
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);
@@ -4251,4 +4253,90 @@ fn prepared_sfz_pitch_callback_path_allocates_nothing() {
     assert_eq!(reading.quad.lock_blocking, 0, "⭐ 音高回调路径不得等锁");
     assert_eq!(reading.quad.io_ops, 0, "⭐ 音高回调路径不得有任何 I/O");
     assert!(nonzero > 0, "⭐ 音高调制路必须真的出声（⛔ 防空转）");
+}
+
+/// ⭐⭐ 任务单 `#119`：**`volume` 族（`volume_onccN`）**的回调路径零分配场景。
+///
+/// 为什么要单独一条：`#119` 给 `SfzVoicePool` 的逐块增益通路加了一只**新的最外层
+/// 线性乘子**（`PreparedRegion::volume_ratio_with_cc`，与 `#115` 的 `amplitude_gain`
+/// 同形）⇒ "这一族真的接上了"这件事**不蕴含**它零分配（⛔ 与 `#115` 的
+/// `[sfz-amplitude]` 是**两条独立输入**）⇒ 本场景把**摊平表那条路**
+/// （`render_block_into_with_cc`）与**实时声部池**（`trigger_note` ＋
+/// `render_into_with_cc`）都放进窗口，四元组读数必须全 0。
+///
+/// ⚠ 音量调制**真的在跑**（⛔ 不是"夹具被静默丢掉"）：摊平表必须真的带 1 条调制项、
+/// 乘子必须**真的不是 `1.0`**，且窗口外数到非零样本。
+fn prepared_sfz_volume_callback_path_allocates_nothing() {
+    use yeban_engine::sfz_instrument::{InMemorySample, PreparedSfz, SfzInstrument, SfzVoicePool};
+
+    // ⚠ `volume_oncc1=6`：合法域（`gain_ccN` 表行 `-144 to 48` dB）之内的值。
+    const VOLUME_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                  amp_veltrack=0 volume=0 volume_oncc1=6\n";
+    // ⭐ 构造期（允许分配）：解析 + 摊平。
+    let instrument = SfzInstrument::load(VOLUME_FIXTURE.to_owned(), &Default::default())
+        .expect("音量夹具必须解析");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+    let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平不得报错");
+    assert_eq!(
+        prepared.regions()[0].cc_modulations().len(),
+        1,
+        "⭐ 摊平表必须真的承载那一条 `volume_oncc1` 调制项（否则本场景是空转）"
+    );
+
+    // ⭐ 回调路径（禁止分配）：窗口内只做"触发 + 按探针渲染"。
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let probe = |controller: u8| -> u8 { if controller == 1 { 127 } else { 0 } };
+    let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+    let mut flat_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES];
+    let mut rt_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES];
+    let reading = window(|| {
+        for block in 0..64u32 {
+            flat_out.fill(0.0);
+            rt_out.fill(0.0);
+            if block % 8 == 0 {
+                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+                let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
+            }
+            pool.render_into_with_cc(
+                &prepared,
+                u64::from(block) * DEFAULT_BLOCK_FRAMES as u64,
+                &mut rt_out,
+                cc_arg,
+            );
+        }
+    });
+    // ⚠ 见证在**窗口外**数（同 `[sfz-pitch]` 的口径）。
+    let mut nonzero = 0usize;
+    flat_out.fill(0.0);
+    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+    nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
+    // ⭐ 有牙：同一个探针下乘子必须**真的不是 1.0**（否则本场景测的是一条死支）。
+    let ratio = prepared.regions()[0].volume_ratio_with_cc(cc_arg);
+    println!(
+        "[sfz-volume] 回调窗口：allocations={} deallocations={} lock_blocking={} io_ops={}",
+        reading.quad.allocations,
+        reading.quad.deallocations,
+        reading.quad.lock_blocking,
+        reading.quad.io_ops
+    );
+    println!(
+        "[sfz-volume] 音量调制路的非零样本数（窗口外见证）= {nonzero}；\
+         cc = 127 处的线性增益乘子 = {ratio}（公式 = 10^(6/20) ≈ 1.9952621）"
+    );
+    assert!(
+        (ratio - 1.995_262_1).abs() < 1.0e-6,
+        "⭐ cc = 127、delta = 6 dB ⇒ 乘子 ≈ 1.9952621（实得 {ratio}）"
+    );
+    assert_ne!(ratio, 1.0, "⭐ 有牙：乘子必须真的不是 `1.0`");
+    assert_eq!(
+        reading.quad.allocations, 0,
+        "⭐ 音量回调路径不得有任何堆分配"
+    );
+    assert_eq!(
+        reading.quad.deallocations, 0,
+        "⭐ 音量回调路径不得有任何堆释放"
+    );
+    assert_eq!(reading.quad.lock_blocking, 0, "⭐ 音量回调路径不得等锁");
+    assert_eq!(reading.quad.io_ops, 0, "⭐ 音量回调路径不得有任何 I/O");
+    assert!(nonzero > 0, "⭐ 音量调制路必须真的出声（⛔ 防空转）");
 }

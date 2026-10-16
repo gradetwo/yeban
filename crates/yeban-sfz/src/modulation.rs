@@ -404,6 +404,121 @@
 //! 四后缀 ⇒ 按**未知 opcode 忽略**（与 `tune_smoothccN`／`tune_stepccN` 同款）；
 //! 判据 `S113` 把这一格**逐字**钉住（⛔ 不许哪天变成"识别到了但静默丢弃"）。
 //!
+//! ## 8. ⭐⭐ `volume` 族（任务单 `#119`）—— **第三个单位类别**（dB）
+//!
+//! ### 8.1 规范逐字（<https://sfzformat.com/opcodes/volume/>，2026-10-17 现读）
+//!
+//! 静态表**只有一行**：
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `volume` | SFZ v1 | float | **0** | \-144 to 6 | **dB** |
+//!
+//! 同页 **Modulation 表逐字四行**（⚠ 这是本单最承重的一条事实）：
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `gain_ccN` |  | float | **0** | **-144 to 48** | **dB** |
+//! | `volume_curveccN` | SFZ v2 | integer | **0** | **0 to 255** | N/A |
+//! | `volume_smoothccN` | SFZ v2 | N/A | N/A |  | N/A |
+//! | `volume_stepccN` | SFZ v2 | N/A | N/A |  | N/A |
+//!
+//! ⚠ ⚠ **逐字事实 ①：Modulation 表里⛔ 没有 `volume_onccN` 这一行**。表里的
+//! **delta 行是 `gain_ccN`**（`-144 to 48` dB）。`volume_onccN`（以及 `volume_ccN`）
+//! 是**别名拼写**，出处是同页正文两句逐字：
+//!
+//! > Extended opcodes, such as `volume_curveccN` shown above, only apply to `volume`,
+//! > although the specification originally stated `gain_ccN` for adjusting volume using CCs.
+//! > `volume_ccN` is a valid alias for `gain_ccN` and is used for consistency in the example.
+//!
+//! ⚠ **逐字事实 ②**：`volume_curveccN` 的行 **Range ＝ `0 to 255`、Unit ＝ `N/A`**
+//! —— 与 `amplitude_curveccN`／`pitch_curveccN` 同形（**曲线下标**，⛔ 不是调制量）。
+//! ⚠ **逐字事实 ③**：`volume_smoothccN` 与 `volume_stepccN` 两行 **Range 空、Unit ＝ `N/A`**
+//! ⇒ ⛔ **不发明域**（它们⛔ 不在本单范围）。
+//! ⚠ **逐字事实 ④**（正文与表行**不一致**，如实登记）：正文写
+//! "Whilst the range is **-144.6 to 6** in the specification"，表行写 **-144 to 6**
+//! ⇒ 本单以**表行**为准（表行是结构化的那一个）。
+//!
+//! ### 8.2 单位裁定：⭐ **新开第四类 `ModUnit::Decibels`**（⛔ 不复用既有三类）
+//!
+//! ⭐ **裁定：`volume` 族的 `delta` 单位类别是**新变体 [`ModUnit::Decibels`]**。
+//! 四条理由：
+//!
+//! 1. **物理类别不同**：既有三类是 秒（时间）／百分比（线性比）／音分（对数音高比）；
+//!    dB 是**对数幅度比** —— 它的换算是 `10 ^ (dB / 20)`，与三者**都不是**同一个函数。
+//!    ⛔ 复用 [`ModUnit::Percent`] 会让 `volume_oncc1=50%` 被**静默**接受（dB 没有
+//!    `%` 写法）；⛔ 复用 [`ModUnit::Cents`] 会既接受 `%` 语义错、又把 `dB` 当音分；
+//! 2. **`#117` 的分派就是为这件事建的**：`#117` 把 `#104` 的布尔 `is_time()`
+//!    显式化成单位类别，其**存在理由**逐字是"非时间那一支把百分比与音分混在一起"
+//!    ⇒ 遇到**第三个**类别时正解是**加一行**，⛔ 不是把 dB 塞进某一支；
+//! 3. ⭐ **它⛔ 不动 `#104` 的 `is_time()` 契约**（这正是 `#116` 的警示）：
+//!    [`ModTarget::is_time`] 现在是 `matches!(self.mod_unit(), ModUnit::Seconds)`
+//!    ⇒ 新变体 `Decibels` 对它返回 `false`，而**七个既有目标**的 `is_time()` 返回值
+//!    **一个都没变**（`Seconds ⇒ true`、`Percent`／`Cents ⇒ false`）；
+//! 4. **代价可控、且已核实**：`ModUnit` 是 `#[derive(Copy)]` 的无载荷枚举，
+//!    3 → 4 变体仍落在 **1 B**（判据 `S111` 现读 `size_of::<ModUnit>() == 1`）；
+//!    ⛔ 不进任何定长容器（`BakedCcMod` 存的是 [`ModTarget`] 而⛔ 不是 `ModUnit`）
+//!    ⇒ `PreparedRegion`／`SfzVoice`／`SfzVoicePool`／`EngineRuntime` **四个全 ＋0**。
+//!
+//! ⭐ **域裁定**：`volume` 族的 `delta` 域取 **`-144.0 ..= 48.0` dB** ——
+//! 出处是 Modulation 表里**被别名的那一行** `gain_ccN` 的 Range `-144 to 48`
+//! （与 `#116` 让 `tune` 随 `pitch_onccN` 的 `±9600` 是**同一条口径**）。
+//! ⚠ 语料见证：登记语料 `volume_onccN` 只有 **2** 处（值均为 **7**）⇒ 域上下界
+//! 都**没有**语料约束力，因此本题只能由规范表行回答（⛔ 不发明 ±100）。
+//!
+//! ⭐ **别名处置**（口径同 §7.2 与台账第 285 条）：`volumeccN`（裸）／`volume_ccN`
+//! （SFZ1）／`volume_onccN`（SFZ2）／`volume_curveccN` 三个 delta 拼写 ＋ 一个 curve
+//! 拼写**全部落同一个 [`ModTarget::Volume`] 键**。
+//! ⚠ **代价（如实登记）**：同一作用域同一 CC 上两个拼写同时出现 ⇒ 归约到**一个键**、
+//! **不求和**（`OpcodeMap` 是 `BTreeMap` ⇒ 字典序后者胜）—— 与 `ccN`／`_onccN` 的
+//! 既有别名坍塌同形。
+//!
+//! ### 8.3 落地形状：**dB 增量 → 线性乘子**（⛔ 不重新读基准）
+//!
+//! 基准 `volume`（dB）**早就烘进**两条既有读数：`Region::linear_gain()`（摊平表的
+//! `volume_gain`）与 `PlaybackSpec::volume_db`（离线 `total_gain()`）⇒ 本族只贡献
+//! **一个线性乘子**（与 `#115` 的 `amplitude_gain`、`#116` 的 `tune_ratio` 同形）：
+//!
+//! ```text
+//! volume_delta_db = 0 + Σ_{cc} delta × curve(probe(cc))      // 单位：dB
+//! volume_ratio    = 2 ^ (volume_delta_db × log2(10) / 20)    // ＝ 10 ^ (dB/20)
+//! 结果            = (… × amplitude_gain) × volume_ratio       // 最外层线性乘子
+//! ```
+//!
+//! * `probe == None` ⇒ **一项 CC 都不读**、直接返回 `1.0`（`× 1.0` 在 binary32 下
+//!   **逐位不变**）；
+//! * `probe == Some` 且表里没有 `volume` 项 ⇒ `0.0 × log2(10) / 20 == 0.0`
+//!   ⇒ `0.0f32.exp2()` 恰 `1.0` ⇒ 同样逐位不变；
+//! * ⭐ **为什么是乘子而不是"重算 `10^((volume+delta)/20)`"**：`PreparedRegion` 里
+//!   只有**烘好的** `volume_gain`、⛔ **没有** `volume_db` ⇒ 走"重新求指数"那条路
+//!   需要给 `PreparedRegion` **加一个 `f32` 字段**（＝尺寸必须长大 ⇒ 任务单止损条件 ⑤）；
+//!   乘子形状则**一个字段都不用加**；
+//! * ⚠ ⭐ **如实登记的偏离**：上式是 `linear(volume) × linear(delta)`，⛔ 不是
+//!   `linear(volume + delta)`。两者在 binary32 下**一般相差若干个 ulp**
+//!   （判据 `S114` 量出实数差并把**两条**读数都打印）。⭐ 采用乘子形状的代价就是这条
+//!   偏离；收益是"⛔ 零新字段 ＋ 无调制时逐位不变"两条硬约束同时成立。
+//!   ⚠ 三条路用的是**同一个**乘子与**同一个**结合序 ⇒ 三路仍**逐位相同**（判据 `S114`）；
+//! * ⛔ **不钳位**：域只由 [`ModTarget::delta_range`] 在**读取**层检查（第 259 条）；
+//!   多项代数相加后 `2^x` 仍可能上溢成 `Inf`（`x > 128`）或下溢成 `0` ——
+//!   消费方按**既有**守卫如实退休，⛔ 不静默改成 `1.0`（判据 `S114` 的病态臂）。
+//!
+//! ### 8.4 ⛔ 本单**不做**的行（登记，⛔ 不静默忽略）
+//!
+//! * ⭐ **`gain_ccN`**（规范 Modulation 表里**逐字的 delta 行名**，`-144 to 48` dB）
+//!   与它的 ARIA 衍生拼写 `gain_onccN`：⛔ **本单不识别**。依据：① 任务单的
+//!   accept 集逐字只列 `volume` 拼写；② 登记语料里**裸** `gain_ccN`＝**0** 处、
+//!   `gain_onccN`＝**0** 处（那 14 处 `gain_onccN` 全是 `lfo*_eq1gain_onccN`，
+//!   ⛔ 不是本族）；③ `gain` 在本仓是**静态** `volume` 的别名 opcode
+//!   （[`crate::instrument`] 的 `scopes.get("volume").or_else(\|\| scopes.get("gain"))`）
+//!   ⇒ 是否把 `gain_*ccN` 也接上属**另一张单**。⭐ 今天的可观察行为由判据 `S114` 钉住
+//!   （⛔ 不是"哪天变成识别到了但静默丢弃"）；
+//! * **`volume_smoothccN`** ／ **`volume_stepccN`**：表行 **Range 空、Unit ＝ `N/A`**
+//!   ⇒ 需逐块平滑／步进语义，⛔ 不在"复用 `#104`～`#118` 已立机制"的范围内。
+//!   ⭐ 今天：名字落不进四后缀 ⇒ 按**未知 opcode 忽略**（`S114` 钉住）。
+//! * ⛔ **`global_volume`／`master_volume`／`group_volume`** 的 CC 调制
+//!   （语料 `global_volume_onccN` 一族 **47** 处）：它们是**另外三个**静态 opcode
+//!   （[`crate::instrument`] 今天⛔ 不读它们）⇒ 另开单。
+//!
 //! # 实时安全
 //!
 //! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
@@ -512,6 +627,13 @@ pub enum ModUnit {
     /// ⭐⭐ **音分**（`tune`）：⛔ **不认任何后缀** —— 规范里 `cents` 没有后缀写法，
     /// 尤其 ⛔ 没有 `%`（见本模块 §6.1 的逐字表行与别名句）。
     Cents,
+    /// ⭐⭐ **分贝**（`volume`；任务单 `#119`）：⛔ **不认任何后缀** —— 规范里 `dB`
+    /// 一族只写纯数字（`volume_oncc24=7`），⛔ 没有 `%`／`s`／`ms`／`dB` 写法。
+    ///
+    /// ⚠ **这是第四个**单位类别，`#117` 的三支**逐字未动**（见本模块 §8.2 的裁定、
+    /// 理由与代价）。⚠ 它对 [`ModTarget::is_time`] 返回 `false` ⇒ `#104` 的
+    /// `is_time()` 契约对**七个既有目标**逐字不变。
+    Decibels,
 }
 
 impl ModUnit {
@@ -525,6 +647,9 @@ impl ModUnit {
             Self::Seconds => &["", "s", "ms"],
             Self::Percent => &["", "%"],
             Self::Cents => &[""],
+            // ⭐⭐ `#119`：`dB` 一族与 `cents` 同款 —— ⛔ 一个后缀都不认
+            // （规范里没有 `volume_oncc1=6dB` 这种写法）。
+            Self::Decibels => &[""],
         }
     }
 }
@@ -583,14 +708,39 @@ pub enum ModTarget {
     /// `mod_unit()`（`Cents`）与 `delta_range()`（`±9600`）**逐字未变**
     /// ⇒ `S106`／`S107`／`S111` 的既有读数与位模式**逐位不变**。
     Tune,
+    /// ⭐⭐ `volume`（**分贝**；任务单 `#119` 的第三个被推广目标，也是**第三个**
+    /// 单位类别 [`ModUnit::Decibels`]）。
+    ///
+    /// ⚠ ⭐ **沿革（任务单 `#119`）—— 被修订的是 [`Self::Tune`] 上面那段里
+    /// 「⛔ 本单**不发明** `pitch=`」所在的**"末尾"位置**那一支**
+    /// （⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋
+    /// 点名被修订的支）：`#118` 起"末尾"是 [`Self::Tune`]（下标 6），`#119` 起
+    /// "末尾"是**本变体**（下标 7）⇒ **既有七个目标的下标一个都没动**
+    /// （求和序逐位不变，判据 `S106` 现读 `ALL[5] == Amplitude`、
+    /// `ALL[6] == Tune` 与 `S114` 现读 `ALL[7] == Volume`）。
+    ///
+    /// ⚠ **它承载的是"调制量 `delta`"，单位 ＝ dB**（⛔ 不是基准 `volume`）：
+    /// 基准 `volume`（dB）早就烘进 [`crate::Region::linear_gain`]（摊平表的
+    /// `volume_gain`）与 [`crate::playback::PlaybackSpec::volume_db`]（离线
+    /// `total_gain()`），本目标只贡献**逐块可变的增量**（见
+    /// [`volume_ratio_with_baked`]）。
+    ///
+    /// ⚠ 本变体**只由 `volume<suffix>` 四族**到达（`volumeccN` / `volume_ccN` /
+    /// `volume_onccN` / `volume_curveccN`）；⛔ **`gain_ccN` 那一支本单不识别**
+    /// （规范逐字的 delta 行名是 `gain_ccN`，裁定与理由见本模块 §8.4）。
+    Volume,
 }
 
 impl ModTarget {
     /// 目标个数（[`Self::ALL`] 的长度）。
-    pub const COUNT: usize = 7;
+    ///
+    /// ⭐ **沿革（任务单 `#119`）**：`#115` 登记 `6`、`#116`／`#118` 登记 `7`
+    /// （后两者⛔ 不加变体）。`#119` 加上 [`Self::Volume`] ⇒ **`8`**。
+    /// ⚠ 被修订的只是**这个数**：既有七个目标的**下标与位模式逐位不变**。
+    pub const COUNT: usize = 8;
 
-    /// 全部七个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 7] = [
+    /// 全部八个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 8] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
@@ -598,15 +748,18 @@ impl ModTarget {
         Self::Ampeg(AmpegParam::Release),
         Self::Amplitude,
         Self::Tune,
+        // ⭐⭐ `#119` 的**新增目标**（⛔ 加在末尾 ⇒ 既有七个下标一个都不动）。
+        Self::Volume,
     ];
 
-    /// 在 [`Self::ALL`] 里的下标（`0..=6`）；**这个序就是求和序**。
+    /// 在 [`Self::ALL`] 里的下标（`0..=7`）；**这个序就是求和序**。
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
             Self::Ampeg(param) => param.index(),
             Self::Amplitude => AmpegParam::COUNT,
             Self::Tune => AmpegParam::COUNT + 1,
+            Self::Volume => AmpegParam::COUNT + 2,
         }
     }
 
@@ -621,6 +774,7 @@ impl ModTarget {
             Self::Ampeg(AmpegParam::Release) => "ampeg_release",
             Self::Amplitude => "amplitude",
             Self::Tune => "tune",
+            Self::Volume => "volume",
         }
     }
 
@@ -629,7 +783,7 @@ impl ModTarget {
     pub const fn ampeg(self) -> Option<AmpegParam> {
         match self {
             Self::Ampeg(param) => Some(param),
-            Self::Amplitude | Self::Tune => None,
+            Self::Amplitude | Self::Tune | Self::Volume => None,
         }
     }
 
@@ -658,6 +812,9 @@ impl ModTarget {
             }
             Self::Amplitude => ModUnit::Percent,
             Self::Tune => ModUnit::Cents,
+            // ⭐⭐ `#119`：**第四个**单位类别（`volume` 的表行 Unit ＝ dB）。
+            // ⚠ `#117` 的三支**逐字未动**（见本模块 §8.2）。
+            Self::Volume => ModUnit::Decibels,
         }
     }
 
@@ -691,6 +848,8 @@ impl ModTarget {
             ModUnit::Seconds => "seconds",
             ModUnit::Percent => "%",
             ModUnit::Cents => "cents",
+            // ⭐⭐ `#119`：`volume` 页表行 Unit 列的字面就是 `dB`。
+            ModUnit::Decibels => "dB",
         }
     }
 
@@ -701,7 +860,12 @@ impl ModTarget {
     /// * ⭐⭐ [`Self::Tune`] ⇒ **`-9600..=9600` 音分**（模块文档 §6 的裁定：
     ///   `tune_*ccN` 在规范里是 `pitch_onccN` 的 ARIA 别名，而 `pitch_onccN` 表行
     ///   Range ＝ `-9600 to 9600`、Unit ＝ cents；`tune` 页自己的例子
-    ///   `pitch_oncc27=200` 也**超出** `tune` 自身的 `±100`）。
+    ///   `pitch_oncc27=200` 也**超出** `tune` 自身的 `±100`）；
+    /// * ⭐⭐ [`Self::Volume`] ⇒ **`-144..=48` dB**（模块文档 §8.2 的裁定：
+    ///   `volume` 页的 Modulation 表**没有 `volume_onccN` 行**，delta 行是
+    ///   `gain_ccN`（Range ＝ `-144 to 48`、Unit ＝ dB），而正文写
+    ///   "`volume_ccN` is a valid alias for `gain_ccN`" ⇒ 域随被别名的那一行 ——
+    ///   与 `Tune` 走的是**同一条口径**）。
     ///
     /// ⚠ 调用方 [`crate::instrument::read_modulation_delta`] 是**唯一**读它的地方
     /// ⇒ ⛔ 没有第二套域检查、⛔ 没有第二对常数被绕过。
@@ -710,6 +874,7 @@ impl ModTarget {
         match self {
             Self::Ampeg(_) | Self::Amplitude => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
             Self::Tune => (MIN_TUNE_MODULATION_DELTA, MAX_TUNE_MODULATION_DELTA),
+            Self::Volume => (MIN_VOLUME_MODULATION_DELTA, MAX_VOLUME_MODULATION_DELTA),
         }
     }
 }
@@ -740,6 +905,67 @@ pub const MIN_TUNE_MODULATION_DELTA: f32 = -9600.0;
 
 /// ⭐⭐ `tune_*ccN` 的 `delta` 上界（`+9600` 音分；依据同 [`MIN_TUNE_MODULATION_DELTA`]）。
 pub const MAX_TUNE_MODULATION_DELTA: f32 = 9600.0;
+
+/// ⭐⭐ `volume_*ccN` 的 `delta` 下界（**dB**；任务单 `#119`）。
+///
+/// 出处（逐字，模块文档 §8.1／§8.2）：`volume` 页的 Modulation 表**没有**
+/// `volume_onccN` 行，delta 行逐字是
+/// `| gain_ccN |  | float | 0 | -144 to 48 | dB |`，而同页正文写
+/// 「**`volume_ccN` is a valid alias for `gain_ccN`**」⇒ `volume` 族的 `delta` 域
+/// 随被别名的那一行取 **`-144` dB**（与 `tune` 随 `pitch_onccN` 的 `±9600`
+/// 是**同一条口径**）。
+/// ⚠ 语料见证：登记语料 `volume_onccN` 只有 **2** 处（值均 **7**）、`volume_ccN`
+/// **0** 处 ⇒ 域两个端点都**没有**语料约束力，本题只能由规范表行回答（⛔ 不发明 `±100`）。
+pub const MIN_VOLUME_MODULATION_DELTA: f32 = -144.0;
+
+/// ⭐⭐ `volume_*ccN` 的 `delta` 上界（`+48` dB；依据同
+/// [`MIN_VOLUME_MODULATION_DELTA`]）。
+pub const MAX_VOLUME_MODULATION_DELTA: f32 = 48.0;
+
+/// ⭐⭐ `volume` 调制的**唯一换算**（任务单 `#119`）：dB 增量 → 线性增益乘子。
+///
+/// ```text
+/// volume_delta_db = 0 + Σ_{cc} delta × curve(probe(cc))      // 单位：dB
+/// volume_ratio    = 2 ^ (volume_delta_db × log2(10) / 20)    // ＝ 10 ^ (dB / 20)
+/// gain            = gain_base × volume_ratio                 // gain_base 已含基准 volume
+/// ```
+///
+/// ⚠ **它用的是 `2^x` 而不是 `10^x`**：`log2(10) / 20` 是**同一个**换算的等价写法，
+/// 而 `exp2` 是本 crate 已经在用的超越函数（[`tune_ratio_with_baked`]）——
+/// ⛔ 没有第二个超越函数入口。⚠ `Region::linear_gain()` 用的是**同一个**代数式
+/// （`(volume × LOG2_10 / 20).exp2()`，f64 中间量 + `as f32`）；本函数是它的
+/// `f32` 形态（调制量在 `f32` 上求和 ⇒ 换算走 `f32`，与 [`tune_ratio_with_baked`] 同款）。
+///
+/// * **基准 `volume` 不在本函数里**：它早就烘进 [`crate::Region::linear_gain`]
+///   （摊平表的 `volume_gain`）／[`crate::playback::PlaybackSpec::volume_db`]
+///   （离线 `total_gain()`）⇒ 本函数只贡献**增量**（`base = 0.0`）；
+/// * `probe == None` ⇒ **一项 CC 都不读**、直接返回 `1.0`（⇒ `gain × 1.0` 在 binary32
+///   下**逐位不变**，与接线前逐位相同）；
+/// * `probe == Some` 且**没有** `volume` 项 ⇒ `cc_value_with_baked` 返回 `0.0`
+///   ⇒ `0.0f32.exp2()` 恰为 `1.0`（IEEE：`exp2(±0)` ＝ `1`）⇒ 同样逐位不变；
+/// * 曲线不可烘焙的项**不贡献** dB（⛔ 不当成曲线 0），与 [`cc_value_with_baked`] 同口径；
+/// * ⛔ **不钳位**：规范只给了 `delta` 的域（模块文档 §8.2）⇒ 本函数沿用。
+///   ⚠ 如实登记的边界：多项代数相加后 `2^x` 仍可能上溢成 `Inf`
+///   （`x > 128` 即 `|Σ delta| > 1605` dB）或下溢成 `0`（`x < −149`）——
+///   消费方按**既有**守卫如实退休，⛔ 不静默改成 `1.0`（判据 `S114` 的病态臂）。
+///
+/// ⚠ ⭐ **如实登记的偏离（模块文档 §8.3）**：本乘子给出
+/// `linear(volume) × linear(delta)`，⛔ 不是 `linear(volume + delta)`；
+/// 两者在 binary32 下一般相差若干 ulp。采用乘子形状的代价就是这条偏离，
+/// 收益是"⛔ 零新每区域字段（`PreparedRegion` ＋0）＋ 无调制时逐位不变"两条硬约束
+/// 同时成立 —— 因为摊平表里只有**烘好的** `volume_gain`、⛔ 没有 `volume_db`。
+///
+/// 实时安全：纯算术 ＋ 定长切片 ＋ 一次 `exp2`；无分配、无锁、无 I/O。
+/// ⚠ `exp2` 属 ADR-0001 的超越函数类 ⇒ 跨架构用 ulp 预算判定，⛔ 不声称位型相等；
+/// **同一二进制内**三条路调用的是本函数**同一份**实现 ⇒ 逐位一致（判据 `S114`）。
+#[must_use]
+pub fn volume_ratio_with_baked(mods: &[BakedCcMod], probe: Option<&dyn Fn(u8) -> u8>) -> f32 {
+    let Some(probe) = probe else {
+        return 1.0;
+    };
+    let (decibels, _unresolved) = cc_value_with_baked(0.0, ModTarget::Volume, mods, probe);
+    (decibels * std::f32::consts::LOG2_10 / 20.0).exp2()
+}
 
 /// ⭐⭐ 一个八度的音分数（**音分 → 音高比** 换算的唯一分母；任务单 `#116`）。
 ///
@@ -824,6 +1050,18 @@ pub const MAX_BAKED_CURVE_POINTS: usize = 8;
 /// 的 15 是**同一个文件同一个数**）；仅按"真的产生 `delta` 的项"去重则最大 **13** 条。
 /// ⇒ **15 ≤ 20** ⇒ ⛔ **本常量仍然不抬高、⛔ 仍然不引入新 `Err`**
 /// （今天能解析的文件一个都不会变成不可解析）。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#119`）—— 被修订的是上面那个分**母**那一支里的
+/// "**三族**合计"**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋
+/// 点名被修订的支）：`#119` 之后这张表**同时**承载**四族**目标（`ampeg_*` ＋
+/// `amplitude` ＋ `tune`／`pitch` ＋ `volume`）⇒ 正确的分母是**四族合计**的
+/// `(目标, CC)` 并集。⭐ `#119` 现读数（`#116` 的**同一口径**：剥 `//` 注释后按
+/// `(目标, cc)` 去重、**含 `_curveccN` 键**；分母 1398 份 `.sfz`）：最大 **15** 条
+/// （`assets/samples/karoryfer-big-rusty-drums/Programs/01-full.sfz` —— 与 `#104`／
+/// `#116` 登记的是**同一个文件同一个数**）；仅按"真的产生 `delta` 的项"去重则最大
+/// **11** 条。⚠ 语料里 `volume_*ccN` 只有 **2** 处（`karoryfer-black-and-blue-basses`
+/// 的 `Programs/controls/common.sfz` 与 `common_warm.sfz`），它**没有**把任何文件的
+/// 并集推高。⇒ **15 ≤ 20** ⇒ ⛔ **本常量仍然不抬高、⛔ 仍然不引入新 `Err`**。
 pub const AMPEG_MOD_CAP: usize = 20;
 
 /// 一个调制项的**形态**（名字后缀）。
@@ -855,6 +1093,15 @@ pub enum ModulationForm {
 /// 后缀政策与返回形状**一字未变**；⭐ 而且第五族归的是**同一个目标**
 /// [`ModTarget::Tune`]（裁定、理由与代价见模块文档 §7.2）—— 它**没有**新增枚举变体、
 /// **没有**新增域、**没有**新增单位类别。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#119`）—— 被修订的是上一段末尾"现在是**五族**"里的
+/// 族数**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋
+/// 点名被修订的支）：`#119` 加上第六族 **`volume<suffix>`** ⇒ 现在是**六族**。
+/// ⚠ **被修订的只有族数**：`#104`／`#106`／`#115`／`#116`／`#118` 那五族的识别文本、
+/// 后缀政策与返回形状**一字未变**；⭐ 第六族归的是**新目标** [`ModTarget::Volume`]
+/// —— 与第五族**不同**，它**是**新枚举变体、**是**新域
+/// （`-144..=48` dB）、**也是**新单位类别（[`ModUnit::Decibels`]）：
+/// 规范逐字表行、域裁定、理由与代价见模块文档 §8。
 ///
 /// 四种后缀（大小写敏感，与其它 opcode 同口径）：
 /// * `ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 旧形）；
@@ -945,6 +1192,31 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
             return None;
         }
         return Some((ModTarget::Tune, form, digits));
+    }
+    // ⭐⭐ `volume` 族（任务单 `#119`）：与上面三族**同款**的四种后缀识别
+    // （⛔ 不另开一套）。⚠ 检查顺序同上面：`_curvecc` 在 `_cc` 之前、`_oncc` 也在
+    // `cc` 之前。
+    // ⚠ 裸 `volume=`（**静态基准**）在这里被 `strip_prefix("cc")?` 挡掉
+    // ⇒ 它**不是**本族的目标（由 [`crate::instrument`] 单独读）。
+    // ⚠ `volume_smoothccN` / `volume_stepccN`（表里有、⛔ 本单不做，见 §8.4）同样
+    // 落不进四后缀 ⇒ 按未知 opcode 忽略。
+    // ⚠ `global_volume_onccN` / `master_volume_onccN` / `group_volume_onccN`
+    // （**另外三个**静态 opcode，语料 47 处）⛔ 不以 `volume` 开头 ⇒ 同样不落本族。
+    // ⚠ 规范 Modulation 表逐字的 delta 行名 `gain_ccN` ⛔ 本单不识别（§8.4）。
+    if let Some(tail) = name.strip_prefix("volume") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Volume, form, digits));
     }
     let rest = name.strip_prefix("ampeg_")?;
     // ⭐ 力度形态（任务单 `#106`）：`ampeg_vel2<param>` —— 整名到此为止。
@@ -1268,7 +1540,11 @@ mod tests {
     #[test]
     fn the_three_suffixes_are_recognised_and_nothing_else_is() {
         // ⭐ 四形态里"名字"这一层：旧形 `ccN` / SFZ2 `_onccN` 同归 Delta，`_curveccN` 归 Curve。
-        let cases: [(&str, ModTarget, ModulationForm, &str); 17] = [
+        // ⚠ ⭐ **追加修订段（任务单 `#119`）—— 被修订的是本数组的行数 `17` 那一支**
+        // （⛔ `#104`～`#118` 的十七条**原文一字未删**，口径同台账第 278 条：保留原文 ＋
+        // 追加修订段 ＋ 点名被修订的支）：`#119` 在**末尾**追加四条 `volume` 族的
+        // 合法写法 ⇒ 行数 `17 → 21`。
+        let cases: [(&str, ModTarget, ModulationForm, &str); 21] = [
             (
                 "ampeg_attackcc100",
                 ModTarget::Ampeg(AmpegParam::Attack),
@@ -1341,6 +1617,24 @@ mod tests {
                 "3",
             ),
             ("pitchcc12", ModTarget::Tune, ModulationForm::Delta, "12"),
+            // ⭐⭐ 任务单 `#119`：`volume` 族的四种后缀 —— 与上面三族**同款**
+            // （⛔ 不另开一套识别）。⚠ 规范 Modulation 表里逐字的 delta 行名是
+            // `gain_ccN`（⛔ 本单不识别，见 §8.4），而正文写
+            // "`volume_ccN` is a valid alias for `gain_ccN`" ⇒ 这四个拼写落同一个目标。
+            (
+                "volume_oncc24",
+                ModTarget::Volume,
+                ModulationForm::Delta,
+                "24",
+            ),
+            ("volume_cc7", ModTarget::Volume, ModulationForm::Delta, "7"),
+            (
+                "volume_curvecc11",
+                ModTarget::Volume,
+                ModulationForm::Curve,
+                "11",
+            ),
+            ("volumecc3", ModTarget::Volume, ModulationForm::Delta, "3"),
         ];
         for (name, target, form, digits) in cases {
             assert_eq!(
@@ -1408,6 +1702,31 @@ mod tests {
             "pitchoncc1",
             "pitch_cc-1",
             "pitched",
+            // ⭐⭐ `#119` 的反向腿：`volume` 族的**非目标**写法一律 None。
+            // ⚠⭐ 最承重的三条：裸 `volume`（**静态基准** opcode）、
+            // `volume_smoothccN`／`volume_stepccN`（表里有、Range 空、Unit `N/A`
+            // ⇒ ⛔ 本单不做，见 §8.4）必须 None；
+            // ⚠ `global_volume_oncc1`（**另外三个**静态 opcode 之一，语料 47 处）
+            // 同样必须 None —— 它⛔ 不以 `volume` 开头。
+            // ⚠ 规范 Modulation 表逐字的 delta 行名 `gain_ccN`／`gain_onccN`
+            // ⛔ 本单不识别（§8.4 的裁定）。
+            "volume",
+            "volume_smoothcc1",
+            "volume_stepcc1",
+            "volume_hdcc12",
+            "volume_oncc",
+            "volume_cc",
+            "volume_curvecc",
+            "volume_oncc1x",
+            "volumeoncc1",
+            "volume_cc-1",
+            "volumed",
+            "global_volume_oncc1",
+            "master_volume_oncc1",
+            "group_volume_oncc1",
+            "gain_cc1",
+            "gain_oncc1",
+            "gain_curvecc1",
         ] {
             assert_eq!(parse_modulation_name(bad), None, "{bad:?} must not match");
         }
@@ -1424,9 +1743,21 @@ mod tests {
         assert_eq!(ModTarget::ALL[5], ModTarget::Amplitude, "新目标必须在末尾");
         // ⭐⭐ 任务单 `#116`：`#115` 那句"新目标必须在末尾"里的 `ALL[5]` 断言
         // **原样保留**（它现在钉的是"既有目标的下标一个都没动"）；新目标 `Tune`
-        // 加在**它之后**（下标 6 ＝ `COUNT − 1`）。
-        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Tune);
+        // 加在**它之后**（下标 6 ＝ 当时的 `COUNT − 1`）。
+        //
+        // ⭐ ⭐ **追加修订段（任务单 `#119`）—— 被修订的是本段原判据里
+        // 「`Tune` 在 `COUNT − 1`（＝**末尾**）」那一支**（⛔ 原句一字未删，
+        // 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+        // `#119` 把 [`ModTarget::Volume`] 加在 `Tune` **之后** ⇒ "末尾"现在是
+        // `Volume`（`COUNT − 1`），而 `Tune` 退到 `COUNT − 2`。
+        // ⚠ **被修订的只是"末尾"这个位置**：既有七个目标的下标**一个都没动**
+        // ⇒ 上面那条 `ALL[5] == Amplitude` 逐位不变。
+        // ⛔ **原句（历史，⛔ 不再作为断言）**：
+        // `assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Tune);`
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 2], ModTarget::Tune);
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Volume);
         assert_eq!(ModTarget::Tune.index(), AmpegParam::COUNT + 1);
+        assert_eq!(ModTarget::Volume.index(), AmpegParam::COUNT + 2);
         assert_eq!(ModTarget::Tune.name(), "tune");
         assert_eq!(ModTarget::Tune.ampeg(), None);
         assert!(!ModTarget::Tune.is_time(), "`tune_onccN` 的单位是音分");
@@ -1444,6 +1775,51 @@ mod tests {
         assert_eq!(ModTarget::Amplitude.unit(), "%");
         assert_eq!(ModTarget::Ampeg(AmpegParam::Attack).unit(), "seconds");
         assert_eq!(ModTarget::Ampeg(AmpegParam::Sustain).unit(), "%");
+        // ⭐⭐ 任务单 `#119`：第三个被推广目标 `Volume` —— **第三个**单位类别。
+        assert_eq!(ModTarget::Volume.name(), "volume");
+        assert_eq!(ModTarget::Volume.ampeg(), None);
+        assert!(
+            !ModTarget::Volume.is_time(),
+            "`volume_onccN` 的单位是 dB（⛔ 不是秒）"
+        );
+        assert_eq!(ModTarget::Volume.mod_unit(), ModUnit::Decibels);
+        assert_eq!(ModTarget::Volume.unit(), "dB");
+        assert_eq!(
+            ModTarget::Volume.delta_range(),
+            (-144.0, 48.0),
+            "⭐ `volume_*ccN` 的域随被别名的那一行 `gain_ccN`（表行 Range `-144 to 48`、\
+             Unit dB）—— 与 `Tune` 随 `pitch_onccN` 是**同一条口径**"
+        );
+        assert_eq!(ModUnit::Decibels.suffixes(), &[""]);
+        // ⭐ `#119` 的换算：`6 dB` 在 CC 满量程 ⇒ `2 ^ (6 × log2(10) / 20)`。
+        let volume_item = vec![BakedCcMod {
+            target: ModTarget::Volume,
+            cc: 1,
+            delta: 6.0,
+            curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),
+        }];
+        assert_eq!(volume_ratio_with_baked(&volume_item, None), 1.0);
+        assert_eq!(
+            volume_ratio_with_baked(&[], Some(&|_| 127)),
+            1.0,
+            "无 `volume` 项 ⇒ `0.0.exp2()` 恰 1.0（逐位不变）"
+        );
+        assert_eq!(
+            volume_ratio_with_baked(&volume_item, Some(&|_| 127)),
+            (6.0f32 * std::f32::consts::LOG2_10 / 20.0).exp2()
+        );
+        // ⭐ 目标过滤真的按 `target` 走：`Volume` 的项 ⛔ 不影响任何既有目标。
+        for param in AmpegParam::ALL {
+            let (other, _) = ampeg_value_with_baked(1.0, param, &volume_item, &|_| 127);
+            assert_eq!(other, 1.0, "{param:?} 的基准值必须一动不动");
+        }
+        let (amp, _) = cc_value_with_baked(100.0, ModTarget::Amplitude, &volume_item, &|_| 127);
+        assert_eq!(amp, 100.0, "`amplitude` 也必须一动不动");
+        assert_eq!(
+            tune_ratio_with_baked(&volume_item, Some(&|_| 127)),
+            1.0,
+            "⭐ `volume` 的项 ⛔ 不动 `tune` 的速率乘子（不同目标 ⇒ 不求和）"
+        );
         // ⭐ 目标过滤真的按 `target` 走：`Tune` 的项 ⛔ 不影响任何既有目标。
         let tune_item = vec![BakedCcMod {
             target: ModTarget::Tune,
