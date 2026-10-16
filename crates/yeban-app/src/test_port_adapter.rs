@@ -504,13 +504,20 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
 /// 默认视图下**不可见**的语义 ID 样本：它们不得出现在运行时树里 ——
 /// 否则说明 `visible:` 的语义没有被尊重（见文件头对上游 `visible.rs` 的核验）。
 ///
-/// ⭐ **`engine-error-banner`（任务单 `#86` 甲）在最后一位**：它与上面六个
+/// ⭐ **`engine-error-banner`（任务单 `#86` 甲）**：它与上面六个
 /// （会话视图 / 混音台 / 设备链 / 两个模态）**不是同一类**不可见 —— 上面那些是
 /// "**这个视图此刻没被选中**"，而横幅是"**此刻没有错误**"（`visible: text != ""`）。
 /// 两者都走同一条上游过滤，因此都该在这里；但它的**判据面**比这一条强得多：
 /// `tests/engine_error_banner.rs` 会**造一个坏路径**把同一个 ID 变成可见的、再断言
 /// 它的 `accessible-value` 含那段错误原文 ⇒ 覆盖"不显示 ⇄ 显示"的**两个方向**。
-const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 8] = [
+///
+/// ⭐ **`module-export-midi-button`（任务单 `#90` 甲）在最后一位**：它是**新的第六条模块
+/// 入口**，但物理地址在控制台 **Tab 1（调音台）**里 ⇒ 默认帧（Tab 0 卷帘）中不可见。
+/// 它在这里不是"顺便加一条"，而是本节要证的那句话本身：**默认帧里没有它**
+/// ⇒ `[UI-MCP-003]` 的 5 张 Linux 基准逐位不变（本机 macOS 无法重录）。
+/// 反方向（Tab 1 里**有**它、且能被事件注入触发、且回执可读）在
+/// `tests/export_midi_ui.rs` 里断 —— 与 `engine-error-banner` 的两个方向同款。
+const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 9] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",
     "scene-launch-column-header",
@@ -519,6 +526,7 @@ const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 8] = [
     "musical-pr-drawer",
     "undo-tree-modal",
     "engine-error-banner",
+    "module-export-midi-button",
 ];
 
 fn demo_registry() -> ElementRegistry {
@@ -1301,6 +1309,91 @@ fn runtime_control_tree_cross_check_against_the_registry() {
         port.read_property("transport-play-button", "no-such-property"),
         Err(PortError::Rejected { .. })
     ));
+}
+
+/// 判据（任务单 `#90` **乙**）：顶栏**保存按钮**不再被 **AI 提案徽章**遮挡。
+///
+/// ## 判定量（每个数字都有单位）
+///
+/// | 量 | 对象 | 单位 |
+/// | :--- | :--- | :--- |
+/// | `bounds` | 运行时控件树里该节点的几何包围盒 | 逻辑像素（x / y / 宽 / 高） |
+/// | `overlap_area` | 两个包围盒的交集面积（无交集 ⇒ `0`） | 平方逻辑像素（px²） |
+/// | 遮挡宽度 | 交集矩形的宽 | 逻辑像素 |
+///
+/// ## 为什么这两个 ID（而不是"看着像被挡住"）
+///
+/// `transport-save-button`（`ui/transport.slint`，`x: 580px`、`w: 56px` ⇒ `580..636`）
+/// 与 `transport-ai-proposal-badge`（同文件**声明在后**，后画的盖在上面）在历史版本上
+/// 曾经真的相交。`docs/adr/ADR-0003-save-button-top-bar-slot.md` §(c) 记下了那一刻的
+/// 机械读数：**56 px 中有 48 px 被遮挡（85.7%）**，徽章占 `x 588..708`。那份读数**就是**
+/// 本判据负方向的正对照（"修复前长什么样"）；`9c8d49d2`（"ADR-0003 落地"）把徽章右移到
+/// `x: 640px` 之后，交集必须归零。
+///
+/// ## 它怎么变红（注入读数见交付报告）
+///
+/// 把 `ui/transport.slint` 里徽章的 `x: 640px` 改回 `x: 588px` ⇒ 交集
+/// `x 588..636 × y 8..40` = **48 × 32 = 1536 px²** ⇒ 本判据立刻红。
+/// 因此它测的是**同一件事**，不是一个恒真的空断言。
+///
+/// ⚠ 本判据**只读**运行时树（`LivePort::tree()`，几何来自 `ElementHandle` 的
+/// `absolute_position()` + `size()`），⛔ 不解析 `.slint` 源码、⛔ 不看截图猜。
+#[test]
+fn the_save_button_is_not_occluded_by_the_ai_badge() {
+    let view = ViewState::demo();
+    let scene = DemoScene::from_view(&view);
+    let registry = demo_registry();
+    let static_tree = registry_to_tree(&registry).expect("注册表适配");
+    let size = Size::new(scene.viewport_width, scene.viewport_height);
+    let port = LivePort::new(size, Permission::ReadOnly, Some(&static_tree), || {
+        build_demo_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + MainWindow + 运行时控件树");
+
+    let runtime = port.tree();
+    let bounds_of = |id: &str| -> Rect {
+        runtime
+            .find_by_id(id)
+            .and_then(|node| node.bounds)
+            .unwrap_or_else(|| {
+                panic!(
+                    "默认帧里 `{id}` 必须有几何（它在 `VISIBLE_SINGLETONS` 里，且是顶栏可见控件）"
+                )
+            })
+    };
+    let save = bounds_of("transport-save-button");
+    let badge = bounds_of("transport-ai-proposal-badge");
+    let area = overlap_area(save, badge);
+    let intersection = {
+        let x0 = save.x.max(badge.x);
+        let y0 = save.y.max(badge.y);
+        let x1 = save.right().min(badge.right());
+        let y1 = save.bottom().min(badge.bottom());
+        if x1 > x0 && y1 > y0 {
+            Some(Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32))
+        } else {
+            None
+        }
+    };
+    observe(&format!(
+        "[#90 乙] 保存按钮 bounds={save:?}；AI 提案徽章 bounds={badge:?}；相交={intersection:?}；\
+         相交面积={area} px²（历史读数（`9c8d49d2` 之前，徽章 x=588）: 48 × 32 = 1536 px²，遮挡 48/56 px）"
+    ));
+
+    assert!(
+        save.right() <= badge.x,
+        "⛔ 保存按钮（右边缘 {}）必须**完全**在 AI 提案徽章（左边缘 {}）之左 —— \
+         后者在 `ui/transport.slint` 里**声明在后**，任何相交都会盖住前者。\
+         实测保存按钮 {save:?} / 徽章 {badge:?} / 相交 {intersection:?}。\
+         负方向的正对照（`docs/adr/ADR-0003-save-button-top-bar-slot.md` §(c)，徽章在 x=588 时）：\
+         遮挡 48/56 px、面积 48 × 32 = 1536 px²。",
+        save.right(),
+        badge.x
+    );
+    assert_eq!(
+        area, 0,
+        "⛔ 保存按钮与 AI 提案徽章的包围盒交集面积必须是 **0 px²**（实得 {area}，相交 {intersection:?}）"
+    );
 }
 
 /// **本工作线最核心的判据**：模型数据真的从 `YebanProjectV1` 流到了像素。

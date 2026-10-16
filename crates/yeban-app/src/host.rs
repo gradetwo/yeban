@@ -2869,7 +2869,7 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
     ui.set_save_succeeded(ok);
 }
 
-/// **四个模块入口的目标路径／参数** —— `host::wire_module_actions` 的唯一装配输入。
+/// **模块入口的目标路径／参数** —— `host::wire_module_actions` 的唯一装配输入。
 ///
 /// 为什么目标路径由**宿主**给出而不是界面：
 /// 1. `[MODEL-AST-002]` / `ADR-0005` 的方向是"界面只报事件、宿主决定语义"；
@@ -2878,9 +2878,16 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// 3. 判据因此可以**确定性地**驱动整条链（把四条路径指向 `tempfile` 那样的临时目录），
 ///    而不需要模拟原生文件对话框。
 ///
-/// 覆盖方式（每一条都独立）：`YEBAN_UI_EXPORT_WAV_PATH` / `YEBAN_UI_IMPORT_MIDI_PATH` /
-/// `YEBAN_UI_LOAD_SFZ_PATH` / `YEBAN_UI_RECORD_WAV_PATH`，秒数用
+/// 覆盖方式（每一条都独立）：`YEBAN_UI_EXPORT_WAV_PATH` / `YEBAN_UI_EXPORT_MIDI_PATH` /
+/// `YEBAN_UI_IMPORT_MIDI_PATH` / `YEBAN_UI_LOAD_SFZ_PATH` / `YEBAN_UI_RECORD_WAV_PATH`，
+/// 秒数用
 /// `YEBAN_UI_RECORD_SECONDS`（默认 8.0 —— 与 CLI 的 `--export-wav` 默认 8 秒同档）。
+///
+/// ⭐ **导出 MIDI**（第六条入口，任务单 `#90` 甲）的落盘路径 = `export_midi`，缺省
+/// `ui-export.mid`（与 `export_wav` 的 `ui-export.wav` 同款落在当前工作目录）。
+/// ⚠ 它**没有**位深 / 采样率 / 时长这类参数 —— SMF 的 PPQ 与格式由投影与**共享**编码器
+/// 决定（`crate::export_midi::export_project_to_file`，与 CLI 的 `--export-midi`
+/// 是**同一个**函数）。
 ///
 /// ⭐ **硬件 MIDI 输入**（第五条入口）另有两个：`YEBAN_UI_MIDI_IN_PORT`（默认 `"0"`，
 /// 取值口径与 CLI 的 `--midi-in` **逐字相同**）与 `YEBAN_UI_MIDI_IN_SECONDS`
@@ -2892,16 +2899,20 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
 /// `crate::import_midi::destination`）。⚠ 界面**没有**开关、**没有**轨道选择器；
 /// ⛔ CLI 自己的默认值一位不动（`--midi-in` 单给仍然是只读诊断）。
 ///
-/// 缺省值落在**当前工作目录**下（`ui-export.wav` / `ui-import.mid` / `ui-instrument.sfz` /
-/// `ui-record.wav`），⛔ **不**落到系统临时目录：后者的路径里带随机分量，会让回执行
-/// 不可复现，而"回执里的路径"正是判据要断言的东西。
+/// 缺省值落在**当前工作目录**下（`ui-export.wav` / `ui-export.mid` / `ui-import.mid` /
+/// `ui-instrument.sfz` / `ui-record.wav`），⛔ **不**落到系统临时目录：后者的路径里带
+/// 随机分量，会让回执行不可复现，而"回执里的路径"正是判据要断言的东西。
 ///
 /// ⚠ 边界（如实登记）：本票**没有**原生文件对话框 —— 用户不能在这里挑文件，
-/// 只能走上面那四个环境变量。那是**另一票**（需要 platform 侧的新能力）。
+/// 只能走上面那几个环境变量。那是**另一票**（需要 platform 侧的新能力）；
+/// `#86` 乙给 SFZ 采样器加的那条"浏览…"是**另一条**通道（`host::wire_mixer_sampler_browse`），
+/// ⛔ 本结构不消费它。
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModulePaths {
     /// `导出 WAV` 的落盘路径。
     pub export_wav: std::path::PathBuf,
+    /// ⭐ `导出 MIDI` 的落盘路径（`SMF 1`；与 CLI 的 `--export-midi` 同一条落盘实现）。
+    pub export_midi: std::path::PathBuf,
     /// `导入 MIDI` 的来源文件。
     pub import_midi: std::path::PathBuf,
     /// `装载 SFZ` 的来源文件。
@@ -2923,6 +2934,7 @@ impl Default for ModulePaths {
     fn default() -> Self {
         Self {
             export_wav: std::path::PathBuf::from("ui-export.wav"),
+            export_midi: std::path::PathBuf::from("ui-export.mid"),
             import_midi: std::path::PathBuf::from("ui-import.mid"),
             load_sfz: std::path::PathBuf::from("ui-instrument.sfz"),
             record_wav: std::path::PathBuf::from("ui-record.wav"),
@@ -2965,6 +2977,7 @@ impl ModulePaths {
         let midi_in_seconds = seconds_from("YEBAN_UI_MIDI_IN_SECONDS", defaults.midi_in_seconds);
         Self {
             export_wav: read("YEBAN_UI_EXPORT_WAV_PATH").unwrap_or(defaults.export_wav),
+            export_midi: read("YEBAN_UI_EXPORT_MIDI_PATH").unwrap_or(defaults.export_midi),
             import_midi: read("YEBAN_UI_IMPORT_MIDI_PATH").unwrap_or(defaults.import_midi),
             load_sfz: read("YEBAN_UI_LOAD_SFZ_PATH").unwrap_or(defaults.load_sfz),
             record_wav: read("YEBAN_UI_RECORD_WAV_PATH").unwrap_or(defaults.record_wav),
@@ -3044,11 +3057,12 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
     );
 }
 
-/// **五个模块入口的接线**：`.slint` 的按钮 → 已经存在的模块实现。
+/// **六个模块入口的接线**：`.slint` 的按钮 → 已经存在的模块实现。
 ///
 /// | 界面回调 | 落点（**复用**，⛔ 不另写一套） | 会不会改工程 |
 /// | :--- | :--- | :--- |
 /// | `export-wav` | [`crate::export_wav::export_wav_with_sfz_file`] | 不会（只写目标 WAV） |
+/// | `export-midi` | [`crate::export_midi::export_project_to_file`] | 不会（只写目标 `.mid`；= CLI `--export-midi` **同一个**函数） |
 /// | `import-midi` | [`crate::import_midi::import_midi_file`]（经 `UndoPort`） | **会**（`OpOrigin::MidiInput`，可撤销） |
 /// | `load-sfz` | [`crate::sfz_load::load_sfz_with_instrument`] | 不会（只读 SFZ；之后给导出用） |
 /// | `record-wav` | [`crate::record_wav::record_test_tone`] | 不会（只写目标 WAV） |
@@ -3056,15 +3070,16 @@ fn module_trace(action: &str, started: std::time::Instant, receipt: &str) {
 ///
 /// ## 工程从哪来（唯一权威）
 ///
-/// 五条里 `import-midi` 与 `midi-in` 改工程，两条走的都是装配给的那个 [`UndoPort`] —— 与
+/// 六条里 `import-midi` 与 `midi-in` 改工程，两条走的都是装配给的那个 [`UndoPort`] —— 与
 /// `Cmd+Z` / `yeban_undo` **同一个**端口，因此"界面上弹/导入出来的音符"与"撤销栈"不可能分叉。
-/// 另外三条读工程时用 `port.project()`（端口的当前读数），**不**用装配时的快照
-/// ⇒ 撤销之后按导出，导出的是撤销之后的那一版。
+/// 另外四条（含 `export-midi`）读工程时用 `port.project()`（端口的当前读数），**不**用装配时的
+/// 快照 ⇒ 撤销之后按导出，导出的是撤销之后的那一版。
 ///
 /// ## `port` 为 `None` 时
 ///
-/// 装配方没有撤销会话（若干既有判据就是这种形态）⇒ 三条只读动作照常可用，
-/// `import-midi` 与 `midi-in` 的**落地**那一半**如实拒绝**
+/// 装配方没有撤销会话（若干既有判据就是这种形态）⇒ `load-sfz` / `record-wav` 两条
+/// 不读工程的动作照常可用，**读工程**的三条（`export-wav` / `export-midi`）如实拒绝
+/// `error=no-project`，而 `import-midi` 与 `midi-in` 的**落地**那一半**如实拒绝**
 /// （`outcome=error:error=no-undo-port`），⛔ 不静默用一个临时会话把编辑吞掉
 /// （那会让"可撤销"变成假话）。
 ///
@@ -3199,6 +3214,73 @@ pub fn wire_module_actions_with_capture(
             };
             apply_module_receipt(&ui, &receipt, ok);
             module_trace("export-wav", started, &receipt);
+        });
+    }
+
+    // ------------------------------------------------------------ 导出 MIDI
+    //
+    // 任务单 `#90` 甲：与 `export-wav` **逐条同形**（同一份 `port.project()` 读数、
+    // 同一个 `apply_module_receipt` 写入点、同一条 `module_trace`），只是落点是
+    // **已经存在**的 `crate::export_midi::export_project_to_file` —— 那正是 CLI 的
+    // `--export-midi` 调用的**同一个**函数（`cli.rs:3386`），⛔ 本票不另写导出器。
+    //
+    // 为什么 `port` 是 `Some` 才可用：导出的对象是**当前工程**，而工程的权威读数只有
+    // 撤销端口给得出（撤销之后按导出 ⇒ 导出的是撤销之后那一版）。没有端口 ⇒ 如实
+    // `outcome=error:error=no-project`，⛔ 不用装配时的快照假装知道。
+    {
+        let weak = ui.as_weak();
+        let port = port.clone();
+        let target = paths.export_midi.clone();
+        ui.on_export_midi(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            let Some(port) = port.as_ref() else {
+                let receipt = module_receipt(
+                    "export-midi",
+                    &module_error_fields("no-project", "没有撤销端口 ⇒ 拿不到当前工程的权威读数"),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("export-midi", started, &receipt);
+                return;
+            };
+            let project = port.project();
+            let (receipt, ok) = match crate::export_midi::export_project_to_file(&project, &target)
+            {
+                Ok(report) => (
+                    module_receipt(
+                        "export-midi",
+                        &[
+                            "outcome=ok".to_owned(),
+                            format!("path={}", report.path.display()),
+                            format!("bytes={}", report.bytes),
+                            format!("ppq={}", report.ppq),
+                            format!(
+                                "format={}",
+                                match report.format {
+                                    yeban_midi::midi::MidiFormat::SingleTrack => "single-track",
+                                    yeban_midi::midi::MidiFormat::Parallel => "parallel",
+                                }
+                            ),
+                            format!("tracks={}", report.tracks),
+                            format!("notes={}", report.notes),
+                            format!("tempos={}", report.tempos),
+                        ],
+                    ),
+                    true,
+                ),
+                Err(error) => (
+                    module_receipt(
+                        "export-midi",
+                        &module_error_fields("export-midi", &error.to_string()),
+                    ),
+                    false,
+                ),
+            };
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("export-midi", started, &receipt);
         });
     }
 

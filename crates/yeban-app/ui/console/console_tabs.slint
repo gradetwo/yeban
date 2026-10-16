@@ -102,6 +102,9 @@ export component ConsoleTabs inherits Rectangle {
     // ⭐ **③ 浏览…**（任务单 `#86` 乙）：与上面两条**不同** —— 它⛔ 不提交工程内容，
     // 只请求宿主"问一次原生对话框、把选中的路径填进输入框"。同样只上抛。
     callback mixer-sampler-browse(int);
+    // ⭐ **导出 MIDI**（任务单 `#90` 甲）：混音台（Tab 1）里的**控制台级**动作。
+    // 与上面那一族同款 —— 本组件只上抛，⛔ 不写盘、⛔ 不判断成功与否。
+    callback export-midi();
     // 主控通道条的**写入面**透传（与上面八个同款：本组件只上抛，不解释、不改任何值）。
     // 这六个**不带下标** —— 主总线不在 `track-names` 里，它的身份由宿主从权威工程取。
     callback mixer-master-fader-grab(length);
@@ -299,6 +302,11 @@ export component ConsoleTabs inherits Rectangle {
         // 是唯一落点）—— ⛔ 它不提交任何工程内容，只填输入框。
         mixer-sampler-browse(index) => {
             root.mixer-sampler-browse(index);
+        }
+        // ⭐ **导出 MIDI**（任务单 `#90` 甲）：同样只上抛（宿主 `host::wire_module_actions`
+        // 的 `export-midi` 分支是唯一落点）—— ⛔ 本组件不写盘、不判断成功与否。
+        export-midi => {
+            root.export-midi();
         }
         // 主控写入面：同样只上抛，**不带下标**（宿主在按下那一刻从权威工程取主总线身份）。
         mixer-master-fader-grab(y) => {

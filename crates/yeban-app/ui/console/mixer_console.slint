@@ -87,6 +87,22 @@ export component MixerConsole inherits Rectangle {
     // 文本框与 CLI 两条路也**一位没变**（本单的硬要求）。
     callback mixer-sampler-browse(int);
 
+    // ⭐ **导出 MIDI**（任务单 `#90` 甲）—— 把当前工程写成 `SMF 1`（`.mid`）。
+    //
+    // 为什么这条入口长在**混音台（控制台 Tab 1）**里，而不是右栏那排「模块入口」里：
+    // 右栏（`ai-rail`）在**默认帧**（Arrangement / Tab 0 卷帘）里是**可见的静态像素**
+    // —— 在那里多一个按钮会让 5 张 Linux 基准**确定性过期**，而本机是 macOS、
+    // `tests/golden/<platform>` 只有 `linux` ⇒ 本机**无法**按 `[UI-MCP-003]` 重录。
+    // `MixerConsole` 只在 `active-tab == 1` 时可见（`console_tabs.slint` 的
+    // `visible: root.active-tab == 1`），默认帧里它**一个像素都不画** ⇒ 默认帧逐位不变。
+    // 这与任务单 `#86` 乙的「浏览…」按钮（同样落在 Tab 1）是同一条纪律。
+    //
+    // ⛔ 本回调**不**写盘、**不**猜路径、**不**判断成功与否：落点是宿主
+    // `host::wire_module_actions` 的 `export-midi` 分支（复用**已经存在**的
+    // `crate::export_midi::export_project_to_file`，与 CLI 的 `--export-midi` 是**同一个**
+    // 函数），回执走**既有**的 `module-status` 投影通道（与 `export-wav` 逐字同款）。
+    callback export-midi();
+
     // ---- 主控通道条的**写入面**（本切片新增）----
     //
     // ⭐ 为什么主控是**另一组回调**、而不是把主控编成一个下标送进上面那八个：
@@ -134,6 +150,68 @@ export component MixerConsole inherits Rectangle {
     accessible-role: region;
     accessible-id: "mixer-console";
     accessible-label: "多轨调音台总控";
+
+    // ⭐ **工程导出 · 导出 MIDI**（任务单 `#90` 甲）—— 只在控制台 Tab 1（混音台）里可见。
+    //
+    // 位置：跟在**最后一条通道条之后**（`104px * root.track-names.length`，与 `for` 循环的
+    // `104px * track_index` 共用同一组几何常量）⇒ 从不与通道条重叠，也不需要把任何既有
+    // 控件挪一位。它声明在通道条循环**之前** ⇒ 极端轨道数下通道条盖住它（数据优先）。
+    //
+    // ⛔ 本块**不**写盘、**不**判断成功与否：它只发 `export-midi` 回调，回执由宿主
+    // （`host::wire_module_actions` 的 `export-midi` 分支）写进**既有**的
+    // `MainWindow.module-status` —— 与 `module-export-wav-button` 逐字同一条通道。
+    Rectangle {
+        x: Tokens.space-4 + 104px * root.track-names.length;
+        y: Tokens.space-4;
+        width: 216px;
+        height: 76px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+
+        UiMediumText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: 18px;
+            text: "工程导出";
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+
+        // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
+        Rectangle {
+            x: Tokens.space-3;
+            y: 24px;
+            width: parent.width - 12px;
+            height: 28px;
+            background: midi_export_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-md;
+            accessible-role: button;
+            accessible-id: "module-export-midi-button";
+            accessible-label: "导出 MIDI（把当前工程写成 SMF 1 文件）";
+            accessible-action-default => { root.export-midi(); }
+
+            UiText {
+                x: Tokens.space-3;
+                y: 0;
+                width: parent.width - 12px;
+                height: parent.height;
+                text: "导出 MIDI";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            midi_export_area := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.export-midi(); }
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- 通道条
     // 通道条数 == 工程的非主总线轨道数。`for name[i] in <model>` 必须带声明标识符

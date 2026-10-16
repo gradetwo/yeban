@@ -513,6 +513,27 @@ impl ElementRegistry {
             true,
         );
 
+        // ⭐ **导出 MIDI**（任务单 `#90` 甲）—— 第六条模块入口。
+        //
+        // 它与上面五条**同一族**（ID 族 `module-{动作}-button`、同一行回执的
+        // `action=export-midi`、同一个宿主写者 `host::wire_module_actions`），但**物理位置
+        // 不同**：它住在 `ui/console/mixer_console.slint` 里（控制台 **Tab 1 = 调音台**），
+        // 因为 `ai-rail` 在**默认帧**里是可见的静态像素，在那里多一个按钮会让 5 张 Linux
+        // 基准确定性过期，而本机是 macOS、`tests/golden/<platform>` 只有 `linux`
+        // （⛔ 本机无法按 `[UI-MCP-003]` 重录）。`MixerConsole` 只在 `active-tab == 1` 时
+        // 可见 ⇒ 默认帧逐位不变（同一纪律的既有先例：`#86` 乙的「浏览…」按钮）。
+        //
+        // ⛔ 它不是"第二个导出器"：落点是**已经存在**的
+        // `crate::export_midi::export_project_to_file`（与 CLI 的 `--export-midi` 同一个函数）。
+        registry.add(
+            "module-export-midi-button",
+            ElementKind::Button,
+            "console/mixer_console.slint",
+            // 与 `.slint` 的 `accessible-label` **逐字相同**（运行时树对账会断言相等）。
+            "导出 MIDI（把当前工程写成 SMF 1 文件）",
+            false,
+        );
+
         // ------------------------------------------------------------ Session View
         registry.add(
             "workspace-session-canvas",

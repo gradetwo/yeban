@@ -686,6 +686,7 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         .expect("本判据只装一次门");
     let double_paths = yeban_app::host::ModulePaths {
         export_wav: scratch.join("double-never-written.wav"),
+        export_midi: scratch.join("double-never-exported.mid"),
         import_midi: import.clone(),
         load_sfz: scratch.join("double-never-loaded.sfz"),
         record_wav: scratch.join("double-never-recorded.wav"),
@@ -807,6 +808,7 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
     // 它住在 `crate::import_midi::destination`（`midi_notes` 的写入原语转调它）。
     let landing_paths = yeban_app::host::ModulePaths {
         export_wav: scratch.join("landing-never-written.wav"),
+        export_midi: scratch.join("landing-never-exported.mid"),
         import_midi: import.clone(),
         load_sfz: scratch.join("landing-never-loaded.sfz"),
         record_wav: scratch.join("landing-never-recorded.wav"),
@@ -937,6 +939,7 @@ fn the_four_module_entries_are_addressable_and_their_actions_change_the_ui_state
         Some(Rc::clone(&port)),
         yeban_app::host::ModulePaths {
             export_wav: scratch.join("never-written.wav"),
+            export_midi: scratch.join("never-exported.mid"),
             import_midi: import.clone(),
             load_sfz: missing.clone(),
             record_wav: scratch.join("never-recorded.wav"),
