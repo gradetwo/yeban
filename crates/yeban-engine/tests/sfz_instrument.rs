@@ -52,6 +52,11 @@
 //! | ⭐ S46 | ⭐ **`loop_end == pcm_len` 也循环**（任务 `#97` 新增；§3.1） | 两条腿（`loop_end = pcm_len − 1 = 399` / `= pcm_len = 400`）**都必须周期化**，各断言**实测最小周期**恰好 ＝ `loop_end − loop_start`（`299` / `300`）＋ 下标序列**逐帧精确**（0 处不符）＋ 整段写满（⛔ 不因"样本播完"退休）；反向腿：窗口段 ≥ 2 个不同位模式 |
 //! | ⭐ S47 | ⭐ **钳位不越界、不爆音**（任务 `#97` 新增；§3.2） | `rate = 2^-1 = 0.5`（`pitch_keycenter=72`）⇒ `frac ≡ 0.5`（⭐ `rate=1.0` 时 `frac ≡ 0`，钳位**读不出差别**）：钳位腿边界帧 **逐位** ＝ `pcm[399]*(1−0.5) + pcm[399]*0.5`（"钳到 0"会读 `pcm[0] = −1.0` ⇒ 必红）＋ 进入循环后**每一帧**都落在窗口 `[min,max]` 内 ＋ 全部 `\|out\| ≤ 样本峰值`（不爆音）＋ 输出帧周期 ＝ `2 × (loop_end − loop_start)`；⭐ 未钳位腿（`399`）的边界帧**仍**读窗口外紧邻的 `pcm[loop_end]`（行为不变的正面见证） |
 //! | ⭐ S48 | ⭐ **既有判据读数原样（复跑并断言）**（任务 `#97` 新增；§3.3） | `S28`／`S30` 的周期（`64` / `100`）＋ 逐帧下标（0 处不符）；`S37` 的两个 **FNV-1a 指纹**（`0xa9dec8a87f69106c` / `0xd3c2a82076bd8947`）＋ 非零帧数（`200` / `399`）；`S33` 的无 `loop_*` 夹具指纹（`0xa933ddab286bdf5e`）⇒ ⭐ **既有判据 0 条变状态** |
+//! | ⭐ S49 | ⭐ **`note_polyphony` 真的生效**（任务 `#100` 新增；§4.1） | 同一条区域、同音连发 `N = 5` 次、上限 `M = 2 < N` ⇒ **在场声部数**逐次实测 `[1,2,2,2,2]`（恒 ≤ 2）＋ 剩下的声部**真的出声**（256 帧非零 = 256）；⭐ **内置正对照**（同夹具去掉 opcode ／ 写 `note_polyphony=0`）⇒ 在场 **5**（⇒ 夹具真的有牙：判据量的是**上限**，⛔ 不是"能建声部"） |
+//! | ⭐ S50 | ⭐ **键 ＝ polyphony group × 音高**（任务 `#100` 新增；§4.2 的负判据正对照） | 同一条 `lokey=60 hikey=64` ＋ `note_polyphony=2`：音高 60 连发 5 次 ⇒ **2**；再发音高 64 连发 5 次 ⇒ **4**（其中音高 64 的声部 = 2；单独触发 64 时输出非零）⇒ 若上限**不**按音高分键（变成全局上限）必**停在 2** ⇒ 必红；⭐ 同音高、**不同 `group`**（各 `note_polyphony=2`）连发 5 次 ⇒ **4**（跨 group 合并会停在 2） |
+//! | ⭐ S51 | ⭐ **`note_selfmask` 的力度规则**（任务 `#100` 新增；§4.1 的那一半） | 缺省 `on`：力度 `100 → 40` ⇒ 在场 **2**（低力度新音符⛔ 不掐高力度者 ⇒ 规范原句 "not a strict polyphony limit but more of a hint"）、力度集合 `[40,100]`；再 `+100` ⇒ 在场 **1**、留下的是**新音符**；显式 `off`：力度 `100 → 40` ⇒ 在场 **1** 且留下的是**新音符**（`[40]`，⛔ 不是被掐的那个）⇒ 规范 "A new note will always play." |
+//! | ⭐ S52 | ⭐ **不带 `note_polyphony` 的既有夹具逐位不变**（任务 `#100` 新增；§4.4） | 三个**承重指纹**逐字复跑并断言：`S37` 的 `0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`S33` 的 `0xa933ddab286bdf5e`（非零 478）；⭐ 第二条腿：带 `group` 但 `note_polyphony` **缺省**的夹具与**同文本 ＋ `note_polyphony=0`** 逐位相同（`limit == 0` 与"未给出"同义）；⭐ **反向腿**：改成 `note_polyphony=1` 并连发两次同音 ⇒ 指纹**必须变**（实测 `0x2c45640bc37af325` ≠ `0x407676123fcaf325`） |
+//! | ⭐ S53 | ⭐ **`note_polyphony` 的让位 ⛔ 不是池满窃取**（任务 `#100` 新增；§3.3） | 上限 2 ＋ 连发 5 次 ⇒ 在场 **2** 而 `stolen == 0`／`dropped == 0`／`pending_count == 0`／逐槽淡出 **全 0**（掐是**立即**硬停）；⭐ **正对照**（17 条同键区域 ⇒ 池满）⇒ `stolen == 1`／`pending == 1`／槽 0 淡出 **144** ⇒ 证明这组读数**分得开**"每音符上限"与"池满窃取"两件事 |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -4782,5 +4787,542 @@ fn s48_the_existing_loop_readings_and_fingerprints_are_unchanged() {
         "S48 ③ S33 无 loop 夹具逐位不变",
         actual,
         NO_LOOP_FIXTURE_FINGERPRINT,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S49～S53：`note_polyphony` ＋ `note_selfmask` 的**播放层接线**（任务单 `#100`）
+//
+// 缺口（`docs/ledger/sfz-core-notes.md` 的 `sfz-needs-6` 行「② 仍未落」点名
+// `note_polyphony`）：两个 opcode **早就解析了**——
+// `crates/yeban-sfz/src/instrument.rs:1987` 的 `read_note_polyphony`（域、缺省、
+// `note_selfmask` 白名单与错误政策全在，判据在 `instrument.rs:3618-3760` 与
+// `tests/malformed_inputs.rs:1335-1440`），`yeban-sfz` 的 `VoicePool` 甚至早有一份完整策略
+// `VoicePool::apply_note_polyphony`（`voice_pool.rs:418`）。**缺的只是播放层**：那个池
+// **不被引擎使用**（见 `SFZ_VOICES_PER_TRACK` 的文档），而引擎的 `SfzVoicePool` 与
+// `PreparedRegion` 从来不消费这份读数 ⇒ 本片是**接线**，⛔ 不是新实现、⛔ 不是新解析。
+//
+// 判据分工：
+//   * S49 —— 上限**真的生效**（同音连发 `N = 5`、上限 `M = 2` ⇒ 在场数恒 ≤ 2）＋ 内置正对照；
+//   * S50 —— 键是 **polyphony group × 音高**：另一个音高照常发声（§4.2 的负判据正对照）；
+//   * S51 —— `note_selfmask` 的力度规则（缺省 `on` 是 hint、显式 `off` 才严格）；
+//   * S52 —— 不带 `note_polyphony` 的既有夹具**指纹逐位不变**（§4.4）；
+//   * S53 —— ⛔ **不是窃取**：`stolen`／`dropped`／`pending`／淡出 全 0（§3.3）。
+// ---------------------------------------------------------------------------
+
+/// ⭐ S49（任务单 `#100`；§4.1）：**`note_polyphony` 真的生效** —— 同音连发 `N = 5` 次、
+/// 上限 `M = 2 < N` ⇒ **在场声部数恒 ≤ M**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 实时池 [`SfzVoicePool`] 的**在场声部数**（[`SfzVoicePool::active_count`]；
+/// 单位 ＝ 声部）＋ 一段输出的**非零帧数**（单位 ＝ 帧）。两次触发之间**不渲染**
+/// （⛔ 不让"样本自然播完"混进读数）。
+///
+/// # ⭐ 为什么这个夹具**有牙**（§4.3：先证明差异能体现在读数上）
+///
+/// 同一条 SFZ 文本**去掉 `note_polyphony`** 就是**内置正对照**：同样 5 次触发 ⇒ 在场数
+/// **5**（⛔ 不是 2）。实测读数：带 opcode 的臂逐次 `1,2,2,2,2`；两条对照臂 `1,2,3,4,5`。
+/// 判据因此量的是**上限**，⛔ 不是"能建声部"。
+/// `note_polyphony=0`（＝不限制；登记语料里出现 **26** 处，用法是复位）也走对照臂那一档。
+#[test]
+fn s49_note_polyphony_really_caps_the_voices_of_one_pitch() {
+    const N: usize = 5;
+    const M: usize = 2;
+
+    /// 同一条区域的三种写法（⚠ 只有 opcode 一处不同 ⇒ 对照是干净的）。
+    fn text(opcode: &str) -> String {
+        format!("<region> sample=a.wav key=60 pitch_keycenter=60 {opcode}\n")
+    }
+
+    let sample = flat_sample(4096);
+    let limited = prepare_with(&text("note_polyphony=2"), &sample);
+    let zero = prepare_with(&text("note_polyphony=0"), &sample);
+    let absent = prepare_with(&text(""), &sample);
+
+    // ⭐ 摊平表**真的**带上了这份读数（⛔ 不是"只解析了、没搬过来"）。
+    assert_eq!(
+        limited.regions()[0].note_polyphony().limit,
+        M as u32,
+        "摊平表必须原样带上 `note_polyphony`"
+    );
+    assert!(!limited.regions()[0].note_polyphony().is_unlimited());
+    assert!(
+        limited.regions()[0].note_polyphony().self_mask,
+        "`note_selfmask` 的规范缺省是 `on`"
+    );
+    for (label, plan) in [("note_polyphony=0", &zero), ("无 opcode", &absent)] {
+        assert!(
+            plan.regions()[0].note_polyphony().is_unlimited(),
+            "⭐ {label} ⇒ 与「未给出」同义（`yeban-sfz` 的既有裁决：`limit == 0` 即不限制）"
+        );
+    }
+
+    // ⭐ 主臂：同音连发 5 次，逐次读在场数。
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let mut readings = Vec::new();
+    for _ in 0..N {
+        pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0);
+        readings.push(pool.active_count());
+    }
+    println!("[engine-sfz/S49] 带 `note_polyphony=2` 的逐次在场数 = {readings:?}（上限 {M}）");
+    assert_eq!(readings, vec![1, 2, 2, 2, 2], "⭐ 在场声部数恒 ≤ M ＝ {M}");
+    assert!(pool.active_count() <= M);
+
+    // ⭐ 剩下的声部必须**真的出声**（⛔ 不是"槽还在但永远不出声"）。
+    let mut out = vec![0.0f32; 256];
+    pool.render_into(&limited, 0, &mut out);
+    let nonzero = out.iter().filter(|sample| **sample != 0.0).count();
+    println!(
+        "[engine-sfz/S49] 渲染 256 帧：非零 = {nonzero}、在场 = {}",
+        pool.active_count()
+    );
+    assert!(
+        nonzero > 0,
+        "⭐ 主臂必须真的出声（⛔ 证明不是「全被掐成静音」的假绿）"
+    );
+    assert!(pool.active_count() <= M, "渲染之后仍在场 ≤ M");
+
+    // ⭐ 内置正对照（§4.3 的"有牙"见证）：同夹具去掉该 opcode ⇒ 5 个在场声部。
+    for (label, plan) in [("note_polyphony=0", &zero), ("无 opcode", &absent)] {
+        let mut control = SfzVoicePool::new(48_000.0);
+        for _ in 0..N {
+            control.trigger_note(plan, 60, 100, u64::MAX, 1.0);
+        }
+        println!(
+            "[engine-sfz/S49] 正对照（{label}）：在场 = {}",
+            control.active_count()
+        );
+        assert_eq!(
+            control.active_count(),
+            N,
+            "⭐ 正对照（{label}）必须 {N} 个在场 ⇒ 夹具真的有牙（差异真的体现在读数上）"
+        );
+    }
+}
+
+/// ⭐ S50（任务单 `#100`；§4.2）：**键 ＝ polyphony group × 音高** —— 另一个音高照常发声。
+///
+/// # 量什么（对象 ＋ 单位）
+///
+/// 对象 ＝ 同一个池的**在场声部数**（单位 ＝ 声部）＋ 在场声部的**音高分布**（单位 ＝ 个）。
+///
+/// # ⭐ 负判据的**正对照**（第 42 条）
+///
+/// ① 同一条区域覆盖 `60..=64` ＋ `note_polyphony=2`：音高 60 连发 5 次 ⇒ **2**；
+///    随后音高 64 连发 5 次 ⇒ **4**（2 ＋ 2）—— 若上限**不**按音高分键（变成全局上限），
+///    第二条腿会停在 **2** ⇒ 必红。
+/// ② 同音高、**不同 `group`**（规范："checked within a polyphony group"）⇒ 两组各自的上限
+///    ⇒ 5 次触发（每次两条区域各建 1 个声部）之后在场 **4**；若上限跨 group 合并 ⇒ 会停在 2。
+/// ③ 收尾：在场声部里必须**真的有**音高 64 的（⛔ 不是"计数对上了但那条腿根本没触发"）。
+#[test]
+fn s50_the_note_polyphony_key_is_the_group_plus_the_pitch() {
+    const N: usize = 5;
+    let sample = flat_sample(4096);
+
+    // ① 一个音高一份上限。
+    let one_key_range = prepare_with(
+        "<region> sample=a.wav lokey=60 hikey=64 pitch_keycenter=60 note_polyphony=2\n",
+        &sample,
+    );
+    let mut pool = SfzVoicePool::new(48_000.0);
+    for _ in 0..N {
+        pool.trigger_note(&one_key_range, 60, 100, u64::MAX, 1.0);
+    }
+    let after_sixty = pool.active_count();
+    for _ in 0..N {
+        pool.trigger_note(&one_key_range, 64, 100, u64::MAX, 1.0);
+    }
+    let after_sixty_four = pool.active_count();
+    let sixty_four_voices = pool
+        .voices()
+        .iter()
+        .filter(|voice| voice.is_active() && voice.note() == 64)
+        .count();
+    println!(
+        "[engine-sfz/S50] ① 音高 60 连发 {N} 次后在场 = {after_sixty}；\
+         再连发音高 64 {N} 次后在场 = {after_sixty_four}（其中音高 64 = {sixty_four_voices}）"
+    );
+    assert_eq!(after_sixty, 2, "音高 60 被自己的上限限到 2");
+    assert_eq!(
+        after_sixty_four, 4,
+        "⭐ 另一个音高**照常发声**（2 ＋ 2）—— ⛔ 不是全局上限（那会停在 2）"
+    );
+    assert_eq!(
+        sixty_four_voices, 2,
+        "⭐ 音高 64 的声部必须真的在场（⛔ 不是空计数）"
+    );
+
+    // ⭐ 另一音高的声部必须**真的出声**：只触发 64（新池）⇒ 输出非零。
+    let mut only_sixty_four = SfzVoicePool::new(48_000.0);
+    only_sixty_four.trigger_note(&one_key_range, 64, 100, u64::MAX, 1.0);
+    let mut out = vec![0.0f32; 256];
+    only_sixty_four.render_into(&one_key_range, 0, &mut out);
+    assert!(
+        out.iter().any(|sample| *sample != 0.0),
+        "⭐ 音高 64 必须真的出声（§4.2 的「逐位或计数对照」那一半）"
+    );
+
+    // ② 同音高、不同 `group` ⇒ 两份互不干涉的上限。
+    let two_groups = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 group=1 note_polyphony=2\n\
+         <region> sample=b.wav key=60 pitch_keycenter=60 group=2 note_polyphony=2\n",
+        &sample,
+    );
+    let mut grouped = SfzVoicePool::new(48_000.0);
+    for _ in 0..N {
+        grouped.trigger_note(&two_groups, 60, 100, u64::MAX, 1.0);
+    }
+    println!(
+        "[engine-sfz/S50] ② 两个 group（各 `note_polyphony=2`）连发 {N} 次后在场 = {}",
+        grouped.active_count()
+    );
+    assert_eq!(
+        grouped.active_count(),
+        4,
+        "⭐ 每个 polyphony group 各自的上限 2 ⇒ 4（2 ＋ 2）；跨 group 合并会停在 2"
+    );
+}
+
+/// ⭐ S51（任务单 `#100`；§4.1 的 `note_selfmask` 那一半）：**力度规则**。
+///
+/// # 量什么（对象 ＋ 单位）
+///
+/// 对象 ＝ 池的**在场声部数**与在场声部的**力度读数**（[`SfzVoice::velocity`]；单位 ＝ 个 / 力度值）。
+///
+/// # 腿（规范逐字，<https://sfzformat.com/opcodes/note_selfmask/>）
+///
+/// * **缺省 `on`**："higher-or-equal-velocity notes turn off lower-velocity notes, but
+///   lower-velocity notes do not turn off higher-velocity notes." ⇒ 力度 100 在场时，
+///   来一个力度 40 ⇒ ⛔ **不掐**、新音符照常发声（在场 **2** > `limit = 1`：规范原句
+///   "The `note_polyphony` opcode is thus not a strict polyphony limit but more of a hint"）；
+///   再来一个力度 100 ⇒ 两个不高于它的都在资格内 ⇒ 掐到只剩**新音符**（在场 **1**）。
+/// * **显式 `off`**："notes turn off notes with the same pitch regardless of velocity, which
+///   … does ensure that note polyphony is always preserved within the set limit" ⇒ 力度 100
+///   在场时来力度 40 ⇒ 掐掉 100、留下 **40**（在场 **1**）——
+///   ⭐ 留在场上的必须是**新音符**（规范："A new note will always play."），⛔ 不是反过来。
+#[test]
+fn s51_note_selfmask_decides_which_voices_may_be_turned_off() {
+    let sample = flat_sample(4096);
+    let default_on = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 note_polyphony=1\n",
+        &sample,
+    );
+    let explicit_off = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 note_polyphony=1 note_selfmask=off\n",
+        &sample,
+    );
+    // ⭐ 摊平表读数：缺省 `on` / 显式 `off` 必须分得开（⛔ 不是"都读成缺省"）。
+    assert!(
+        default_on.regions()[0].note_polyphony().self_mask,
+        "规范 Default = `on`"
+    );
+    assert!(
+        !explicit_off.regions()[0].note_polyphony().self_mask,
+        "显式 `note_selfmask=off` 必须带出 `self_mask == false`"
+    );
+
+    // --- 腿 A：缺省 `on` —— 低力度新音符**照常发声**且⛔ 不掐高力度者（hint ⛔ 不是硬上限）。
+    let mut soft = SfzVoicePool::new(48_000.0);
+    soft.trigger_note(&default_on, 60, 100, u64::MAX, 1.0);
+    soft.trigger_note(&default_on, 60, 40, u64::MAX, 1.0);
+    let mut velocities: Vec<u8> = soft
+        .voices()
+        .iter()
+        .filter(|voice| voice.is_active())
+        .map(SfzVoice::velocity)
+        .collect();
+    velocities.sort_unstable();
+    println!(
+        "[engine-sfz/S51] A（缺省 on）力度 100 → 40：在场 = {}、力度 = {velocities:?}",
+        soft.active_count()
+    );
+    assert_eq!(
+        soft.active_count(),
+        2,
+        "⭐ 低力度新音符⛔ 不掐高力度者 ⇒ 在场 2 > limit 1（规范：hint，⛔ 不是硬上限）"
+    );
+    assert_eq!(
+        velocities,
+        vec![40, 100],
+        "⭐ 两个声部都在场（新的那个也真的在）"
+    );
+
+    // --- 腿 A2：再来一个**高**力度 ⇒ 两个不高于它的都在资格内 ⇒ 掐到只剩新音符。
+    soft.trigger_note(&default_on, 60, 100, u64::MAX, 1.0);
+    let survivors: Vec<u8> = soft
+        .voices()
+        .iter()
+        .filter(|voice| voice.is_active())
+        .map(SfzVoice::velocity)
+        .collect();
+    println!(
+        "[engine-sfz/S51] A2（缺省 on）再 +100：在场 = {}、力度 = {survivors:?}",
+        soft.active_count()
+    );
+    assert_eq!(soft.active_count(), 1, "⭐ 高力度新音符掐掉两个不高于它的");
+    assert_eq!(
+        survivors,
+        vec![100],
+        "⭐ 留下的是**新音符**（最晚触发的那个 100）"
+    );
+
+    // --- 腿 B：显式 `off` —— 严格上限（不分力度都掐），且留下来的是**新音符**。
+    let mut strict = SfzVoicePool::new(48_000.0);
+    strict.trigger_note(&explicit_off, 60, 100, u64::MAX, 1.0);
+    strict.trigger_note(&explicit_off, 60, 40, u64::MAX, 1.0);
+    let survivor: Vec<u8> = strict
+        .voices()
+        .iter()
+        .filter(|voice| voice.is_active())
+        .map(SfzVoice::velocity)
+        .collect();
+    println!(
+        "[engine-sfz/S51] B（显式 off）力度 100 → 40：在场 = {}、力度 = {survivor:?}",
+        strict.active_count()
+    );
+    assert_eq!(
+        strict.active_count(),
+        1,
+        "⭐ `note_selfmask=off` ⇒ 严格上限（规范：'does ensure that note polyphony is always \
+         preserved within the set limit'）"
+    );
+    assert_eq!(
+        survivor,
+        vec![40],
+        "⭐ 留在场上的必须是**新音符**（规范：'A new note will always play.'），⛔ 不是被掐的那个"
+    );
+}
+
+/// ⭐ S52（任务单 `#100`；§4.4）：**不带 `note_polyphony` 的既有夹具逐位不变**。
+///
+/// # 量什么（对象 ＋ 单位）
+///
+/// 对象 ＝ 既有夹具经**同一条产品路径**渲染出的一段输出；单位 ＝ **FNV-1a 64 指纹**
+/// （逐位；把每个 `f32` 的 4 个字节按小端卷进哈希）。
+///
+/// # 三个**承重指纹**（⭐ 改动前实测值，本片一字未动）
+///
+/// | 夹具 | 帧数 | 非零 | 指纹 |
+/// | :--- | :--- | :--- | :--- |
+/// | `S37` `loop_continuous` ＋ `end_sample = 200` | 512 | 200 | `0xa9dec8a87f69106c` |
+/// | `S37` `no_loop` ＋ `end_sample = u64::MAX` | 512 | 399 | `0xd3c2a82076bd8947` |
+/// | `S33` [`TWO_MATCH_ONE_MISS`]（引擎实时路径） | 512 | 478 | `0xa933ddab286bdf5e` |
+///
+/// ⚠ 三条夹具**一个 `note_polyphony` 都没有**（本片新增的路径在缺省下必须是**空操作**）。
+/// 字面值的来源与"同平台硬红、异平台如实跳过"的纪律见 [`check_fingerprint`]。
+///
+/// # ⭐ 第二条腿（本片新增的"缺省 ⇒ 逐位不动"）
+///
+/// 一条**带 `group`** 的夹具（`note_polyphony` 缺省）与**同文本再加 `note_polyphony=0`**
+/// 必须**逐位相同**（`limit == 0` 与"未给出"同义）；
+/// ⭐ **反向腿**：把 `note_polyphony` 改成 `1` 并**连发两次同音**⇒ 指纹**必须变**
+/// （证明这条新路径真的活着，且差异确实落在这段读数上，⛔ 不是判据空转）。
+#[test]
+fn s52_a_fixture_without_note_polyphony_renders_bit_identically() {
+    /// ⭐ `S37` 两条既有指纹（改动前实测；来源见 `S37` 的文档）。
+    const S37_LOOPED: u64 = 0xa9de_c8a8_7f69_106c;
+    const S37_PLAIN: u64 = 0xd3c2_a820_76bd_8947;
+
+    // --- ① 三个承重指纹：原样复跑并断言。
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, nonzero, expected) in [
+        (
+            "S37 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            200usize,
+            S37_LOOPED,
+        ),
+        (
+            "S37 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            399usize,
+            S37_PLAIN,
+        ),
+    ] {
+        assert!(
+            plan.regions()[0].note_polyphony().is_unlimited(),
+            "⭐ {label}：夹具必须**一个 `note_polyphony` 都没有**（否则指纹比对不是「缺省路径」的判据）"
+        );
+        let out = render_pool(plan, end_sample, 512);
+        let actual = fnv1a_64(&out);
+        let nonzero_actual = out.iter().filter(|sample| **sample != 0.0).count();
+        println!(
+            "[engine-sfz/S52] ① {label}：非零 = {nonzero_actual}（既有 {nonzero}）、\
+             指纹 = 0x{actual:016x}（既有 0x{expected:016x}）"
+        );
+        assert_eq!(nonzero_actual, nonzero, "⭐ {label}：既有非零帧数必须原样");
+        let _checked = check_fingerprint(&format!("S52 ① {label}"), actual, expected);
+    }
+    // `S33`：`TWO_MATCH_ONE_MISS` 经**引擎实时路径**（同一个夹具、同一段 512 帧）。
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let track = EntityId::new();
+    let mut engine = engine_with_track(track);
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let mut out = vec![0.0f32; BLOCK];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut out);
+    let actual = fnv1a_64(&out);
+    let nonzero_actual = out.iter().filter(|sample| **sample != 0.0).count();
+    println!(
+        "[engine-sfz/S52] ① S33 无 `loop_*`／无 `note_polyphony` 夹具：非零 = {nonzero_actual}、\
+         指纹 = 0x{actual:016x}（既有 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）"
+    );
+    assert_eq!(nonzero_actual, 478, "⭐ S33 的既有非零帧数必须原样");
+    let _checked = check_fingerprint("S52 ① S33", actual, NO_LOOP_FIXTURE_FINGERPRINT);
+
+    // --- ② 缺省 ⇒ 空操作：`group` 在、`note_polyphony` 缺省 vs 显式 `0` ⇒ 逐位相同。
+    let sample = flat_sample(4096);
+    let absent = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 group=7\n",
+        &sample,
+    );
+    let explicit_zero = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 group=7 note_polyphony=0\n",
+        &sample,
+    );
+    let mut absent_pool = SfzVoicePool::new(48_000.0);
+    let mut zero_pool = SfzVoicePool::new(48_000.0);
+    for _ in 0..2 {
+        absent_pool.trigger_note(&absent, 60, 100, u64::MAX, 1.0);
+        zero_pool.trigger_note(&explicit_zero, 60, 100, u64::MAX, 1.0);
+    }
+    let mut absent_out = vec![0.0f32; 256];
+    let mut zero_out = vec![0.0f32; 256];
+    absent_pool.render_into(&absent, 0, &mut absent_out);
+    zero_pool.render_into(&explicit_zero, 0, &mut zero_out);
+    println!(
+        "[engine-sfz/S52] ② 缺省 vs `note_polyphony=0`：在场 = {}/{}、逐位相同 = {}",
+        absent_pool.active_count(),
+        zero_pool.active_count(),
+        bits(&absent_out) == bits(&zero_out)
+    );
+    assert_eq!(
+        bits(&absent_out),
+        bits(&zero_out),
+        "⭐ `note_polyphony=0` 与「未给出」必须逐位相同（`yeban-sfz` 的既有裁决）"
+    );
+    assert_eq!(
+        absent_pool.active_count(),
+        2,
+        "缺省 ⇒ ⛔ 不掐（两个都在场）"
+    );
+
+    // --- ③ 反向腿：把它改成 `1` 并连发两次同音 ⇒ 指纹**必须变**。
+    let limited = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 group=7 note_polyphony=1\n",
+        &sample,
+    );
+    let mut limited_pool = SfzVoicePool::new(48_000.0);
+    for _ in 0..2 {
+        limited_pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0);
+    }
+    let mut limited_out = vec![0.0f32; 256];
+    limited_pool.render_into(&limited, 0, &mut limited_out);
+    println!(
+        "[engine-sfz/S52] ③ 反向腿（`note_polyphony=1`，连发两次）：在场 = {}、\
+         指纹 = 0x{:016x}（缺省 0x{:016x}，必须不同）",
+        limited_pool.active_count(),
+        fnv1a_64(&limited_out),
+        fnv1a_64(&absent_out)
+    );
+    assert_eq!(
+        limited_pool.active_count(),
+        1,
+        "⭐ 反向腿的前置见证：真的掐到 1"
+    );
+    assert_ne!(
+        fnv1a_64(&limited_out),
+        fnv1a_64(&absent_out),
+        "⭐ 反向腿：带上限 ⇒ 指纹必须变（⛔ 判据不是恒绿的空转）"
+    );
+}
+
+/// ⭐ S53（任务单 `#100`；§3.3）：**`note_polyphony` 的让位 ⛔ 不是 [`SfzVoicePool::steal`]**。
+///
+/// # 量什么（对象 ＋ 单位）
+///
+/// 对象 ＝ 池的四个**既有**计数读数（单位 ＝ 个）：`stolen`（池满窃取，累计）、
+/// `dropped`（真丢弃，累计）、`pending_count`（挂起者）、`fade_remaining_at`（每槽淡出帧数）。
+///
+/// # 两条腿（⭐ 正对照证明这些读数**分得开**两件事）
+///
+/// * **A（本片）**：`note_polyphony=2` ＋ 同音连发 5 次 ⇒ 掐掉 3 个，但四个读数**全 0**
+///   —— 掐是**立即**的硬停（⛔ 不淡出、⛔ 不挂起、⛔ 不计窃取/丢弃）。
+/// * **B（对照，池满）**：17 条同键区域 ⇒ 走既有**窃取**路径 ⇒ `stolen > 0`、
+///   `pending_count > 0`、`fade_remaining_at > 0` ⇒ 证明 A 的"全 0"不是"读数根本没接"。
+#[test]
+fn s53_note_polyphony_is_not_the_pool_full_steal() {
+    const N: usize = 5;
+    let sample = flat_sample(4096);
+    let limited = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 note_polyphony=2\n",
+        &sample,
+    );
+    let mut pool = SfzVoicePool::new(48_000.0);
+    for _ in 0..N {
+        pool.trigger_note(&limited, 60, 100, u64::MAX, 1.0);
+    }
+    let fades: Vec<u32> = (0..SFZ_VOICES_PER_TRACK)
+        .map(|index| pool.fade_remaining_at(index))
+        .collect();
+    println!(
+        "[engine-sfz/S53] A（`note_polyphony=2`，连发 {N} 次）：在场 = {}、窃取 = {}、\
+         丢弃 = {}、挂起 = {}、逐槽淡出 = {fades:?}",
+        pool.active_count(),
+        pool.stolen(),
+        pool.dropped(),
+        pool.pending_count()
+    );
+    assert_eq!(pool.active_count(), 2, "前置见证：真的掐到上限 2");
+    assert_eq!(
+        pool.stolen(),
+        0,
+        "⭐ 每音符上限⛔ 不是池满窃取 ⇒ `stolen` 必须 0"
+    );
+    assert_eq!(pool.dropped(), 0, "⭐ ⛔ 不丢弃任何声部");
+    assert_eq!(
+        pool.pending_count(),
+        0,
+        "⭐ ⛔ 不动挂起者（那不是窃取路径）"
+    );
+    assert!(
+        fades.iter().all(|remaining| *remaining == 0),
+        "⭐ 掐是**立即**的硬停 ⇒ ⛔ 不留任何 3 ms 窃取淡出：{fades:?}"
+    );
+
+    // --- B：正对照（既有窃取路径必须能被这四个读数**抓住**）。
+    let mut text = String::new();
+    for _ in 0..SFZ_VOICES_PER_TRACK {
+        text.push_str("<region> sample=a.wav key=60 pitch_keycenter=60\n");
+    }
+    text.push_str("<region> sample=b.wav key=60 pitch_keycenter=60\n");
+    let full = prepare_with(&text, &sample);
+    let mut control = SfzVoicePool::new(48_000.0);
+    control.trigger_note(&full, 60, 100, u64::MAX, 1.0);
+    let control_fades: Vec<u32> = (0..SFZ_VOICES_PER_TRACK)
+        .map(|index| control.fade_remaining_at(index))
+        .collect();
+    println!(
+        "[engine-sfz/S53] B（池满对照）：在场 = {}、窃取 = {}、挂起 = {}、逐槽淡出 = {control_fades:?}",
+        control.active_count(),
+        control.stolen(),
+        control.pending_count()
+    );
+    assert!(
+        control.stolen() > 0
+            && control.pending_count() > 0
+            && control_fades.iter().any(|remaining| *remaining > 0),
+        "⭐ 正对照：池满路径必须让这三个读数**动起来**（否则 A 的「全 0」没有信息量）"
     );
 }

@@ -49,7 +49,7 @@
 //! | ① | 力度增益 | **已修**（步 1：每力度一张表，⛔ 不再冻结在 100） |
 //! | ② | `trigger` 门控 | **已修**（步 1：走 `matches_query`；门控不过的区域掩码全 0） |
 //! | ③ | `offset`/`end`（`SampleSpan`） | ⭐ **步 3 已闭合**：离线 `render_note_into`／摊平 `render_block_into`／实时声部三条路共用 [`reduce_span`] 的**一份**归约 ⇒ `start`（起点）与 `end`（终点）都**真正应用**，两侧逐样本差 ＝ 0 |
-//! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | 未做（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁 ⇒ 属步 2） |
+//! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | ⭐ **`group`/`off_by` 已由任务 `#94` 接线、`note_polyphony` ＋ `note_selfmask` 已由任务 `#100` 接线**（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁；见下面"独占组"与"同音复音限制"两节）；⛔ **仍未做：`seq_`**（round-robin 序列） |
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
@@ -289,6 +289,97 @@
 //! （预计算全在摊平期：`group`/`off_by`/`off_mode` 已是摊平表的定长字段）。
 //!
 //!
+//! # ⭐ 同音复音限制（`note_polyphony` / `note_selfmask`；任务单 `#100` 接线）
+//!
+//! ## ⚠ 本单是**接线**，⛔ 不是新解析、⛔ 不是新裁决
+//!
+//! 解析层**早就有了**：`crates/yeban-sfz/src/instrument.rs:1987` 的 `read_note_polyphony`
+//! 读 `note_polyphony`（`read_u32`：缺省 `0`、域 `0..=u32::MAX`、越界／非数值 ⇒ 响亮 `Err`）
+//! 与 `note_selfmask`（白名单 `on`/`off`，大小写不敏感，集合外 ⇒ `Err`），归约成
+//! [`NotePolyphony`]（一个 `Copy`：`limit: u32` ＋ `self_mask: bool`）—— 取值域／缺省／
+//! 语义的逐字出处与"`limit = 0` 读作不限制"的工程裁决**全写在 [`NotePolyphony`] 的文档里**。
+//! `yeban-sfz` 的 `VoicePool` 甚至早有一份完整策略 `VoicePool::apply_note_polyphony`
+//! （`voice_pool.rs:418`）。⛔ 缺的**只是播放层**：那个池**不被引擎使用**
+//! （见 [`SFZ_VOICES_PER_TRACK`]），而引擎的 [`PreparedRegion`]／[`SfzVoicePool`]
+//! 从来不消费这份读数 ⇒ 本片把这一份 `Copy` 读数搬进摊平表，并在
+//! [`SfzVoicePool::trigger_note`] 的**触发期**接上限：**⛔ 不新增解析、
+//! ⛔ 不改 `yeban-sfz` 的既有判定规则**（第 259 条：集合外／非法一律响亮 `Err`，
+//! "缺失 ≠ 非法"，这些行为本片一字未动）。
+//!
+//! ## 语义（规范逐字）
+//!
+//! * <https://sfzformat.com/opcodes/note_polyphony/>：表格行是 Type = integer、
+//!   Default = N/A、Range = **空**；正文 "Polyphony limit for playing the same note
+//!   repeatedly."，键是 polyphony group —— "The note polyphony is checked within a
+//!   polyphony group, set by the `group` or `polyphony_group` opcodes. If no group is
+//!   specified on the region (or its group, master or globally) the note polyphony applies
+//!   to the default group as if `group=0` was specified."；
+//! * <https://sfzformat.com/opcodes/note_selfmask/>：表格行是 Type = string、Default = `on`、
+//!   Options = `on, off`；缺省的力度规则与 `off` 的严格化**逐字**引在
+//!   [`SfzVoicePool::enforce_note_polyphony`] 的文档里；
+//! * ⭐ **上限是 hint、⛔ 不是硬上限**："The `note_polyphony` opcode is thus not a strict
+//!   polyphony limit but more of a hint for the instrument behavior." ＋
+//!   "A new note will always play." ⇒ 没有有资格的在场声部时**停手**，新音符照常发声。
+//!
+//! ## 落地形状（⭐ 三条，逐条可判）
+//!
+//! * [`PreparedRegion::note_polyphony`]：**每区域**一份 [`NotePolyphony`]（原样搬运，
+//!   摊平期 ⇒ ⛔ 不进实时对象；`SfzVoice` **＋0 字节**，`S9` 仍钉 `40 B`）；
+//! * [`SfzVoicePool::enforce_note_polyphony`]：**触发期**一次 ≤ [`SFZ_VOICES_PER_TRACK`]
+//!   槽的线性扫描（⛔ 不进逐样本路径）⇒ **零分配、零锁等待、零阻塞 I/O**；
+//!   victim 的 `group` 由它**自己**的 [`SfzVoice::region_index`] 回查摊平表
+//!   ⇒ ⛔ **不新增任何逐声部字节**；
+//! * ⛔ **不借用 `off_by` 的关断**、⛔ **不借用池满的窃取**：见下面两条。
+//!
+//! ## ⚠ "引擎里是不是有**两份** `apply_note_polyphony`？"（⭐ 如实登记）
+//!
+//! 是**两份扫描**，⛔ 不是两份**语义**：`yeban-sfz` 的 `VoicePool` 与引擎的
+//! [`SfzVoicePool`] 是**两套形状**（前者：全局 512 声部、立即接管 ＋ 把 victim 句柄交还
+//! 调用方；后者：每轨 16 槽、victim 与挂起者**共用同一槽**、`fade`／`pending` 全在池内）
+//! —— 这与 [`SfzVoicePool::select_victim`] 的处境**逐字相同**，而 `#94` 已就那一处境裁决
+//! "那个池**不被引擎使用** ⇒ ⛔ 不构成引擎里有两份实现"（见 [`SFZ_VOICES_PER_TRACK`] 的
+//! 文档）。本片照**同一口径**：**资格判定直接调用 `yeban-sfz` 的 [`NotePolyphony::masks`]**、
+//! **让位顺序照抄 [`NotePolyphony`] 文档里那条既有裁决**（⛔ 不另立一份排序），
+//! 引擎侧只多一次 ≤ [`SFZ_VOICES_PER_TRACK`] 槽的**触发期**扫描。
+//! ⛔ 本片**没有**把 `yeban_sfz::VoicePool` 拉进引擎：那会引入第二个全局声部池与第二条
+//! 声部生命周期，与 `#94` 的形状裁决（定容池、槽内 slack）直接冲突。
+//!
+//! ## ⭐ 与 `off_by` ／ 池满窃取的分工（⛔ 三件事，⛔ 不互相借用）
+//!
+//! | 机制 | 触发条件 | victim 选择 | 怎么让位 |
+//! | :--- | :--- | :--- | :--- |
+//! | `off_by` 关断（`#94`） | **另一个区域**指名一个组 | victim 自己区域的 `group == off_by` | 看 **victim 自己的 `off_mode`**；`one_shot` victim 免疫 |
+//! | 池满窃取（`needs-2`） | 池里 **16 槽全 active** | `(层级, 触发序号, 槽位下标)` | 3 ms 淡出 ＋ **同槽挂起者**（计 `stolen`／`dropped`） |
+//! | `note_polyphony`（`#100`） | **同一音符连发**超过上限 | `group` × 音高 ＋ [`NotePolyphony::masks`] 的资格；键 `(力度, 触发序号, 槽位下标)` | **立即硬停**（既有 `silence()` 原语）；⛔ 不动 `pending`／[`FadeRamp`]，⛔ 不计数 |
+//!
+//! ⚠ `off_mode` **不在**本片的路径上：规范把它的作用面限定在 `off_by`
+//! （"This opcode will determinate how a region is turned off by an `off_by` opcode."）。
+//!
+//! ## ⭐ `one_shot` 的 victim **照掐**（语料逼出来的正确答案，与 `off_by` 那条**不同**）
+//!
+//! `#94` 裁决过"`one_shot` 的 victim 忽略 `off_by`"（那是"**另一个区域**来掐我"）。
+//! ⛔ 那条**不**外推到本片：登记语料里 `note_polyphony` 的用法**几乎全长在 `one_shot` 上**
+//! —— `virtuosity-drums` 的映射文件是 `<global> loop_mode=one_shot … note_polyphony=3
+//! group=5NN`（每麦克风一个组，正是规范下一句说的用法），`cithara-barbarica` 的 Lyre 模式
+//! 是 `loop_mode=one_shot`／`note_polyphony=1`／`note_selfmask=off`／`group=1` **四行紧挨着**
+//! （`assets/samples/cithara-barbarica/Programs/01-cithara_barbarica_keyswitch.sfz:43-46`）。
+//! 若把 `off_by` 那条外推过来，`note_polyphony` 会在**用到它的每一个文件里**变成空操作
+//! ⇒ 那不是规范的意思（本片管的是"同音连发的并发数"，⛔ 不是"note-off 到不到"）。
+//!
+//! ## ⭐ "多个有资格者掐谁"的出处（⭐ 复用既有裁决，⛔ 不发明）
+//!
+//! 规范只对 `note_polyphony=1` 给出逐步规则，⛔ 不规定"多个同力度者时掐谁"。本仓对这一点的
+//! **既有**工程裁决写在 [`NotePolyphony`] 的文档里（`yeban-sfz`，随 `main` 一起在案）：
+//! "选择顺序由 `VoicePool::apply_note_polyphony` 规定（力度最低 → 触发最早 → 槽位下标最小），
+//! 保证 [ARCH-DET-001] 的确定性" ⇒ 本片**照抄这条键**，⛔ 不是本单新立的裁决。
+//! 规范**明确有据**的两条是：**资格**（`note_selfmask` 的力度规则）与
+//! **新音符永远发声**（"A new note will always play."）。
+//!
+//! ## 判据
+//!
+//! `tests/sfz_instrument.rs` 的 S49～S53（上限真的生效 ／ 键 ＝ `group` × 音高 ／
+//! `note_selfmask` 的力度规则 ／ 既有夹具指纹逐位不变 ／ ⛔ 不是窃取）。
+//!
 //! ## 状态归属（⛔ 不把状态塞进实时对象以外的地方）
 //!
 //! * **每区域**的 ADSR **时间与电平**（秒 / 百分比）进 [`PreparedRegion`]
@@ -388,7 +479,7 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）已由任务单 `#96` 闭合：⭐ **模型层不禁止**这个组合（模型里没有"鼓机"这个概念 —— `DeviceKind` 只有四档、无鼓机档；`TrackV3.sampler` 与 `devices` 是**平行**字段）⇒ ⭐ 裁决**留在引擎**（`鼓机 ＞ SFZ ＞ 复音` ＋ `armed_sources`／`ignored_sources` 读数）；常驻判据 `crates/yeban-model/tests/track_multi_source_coexistence.rs` |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by`** | ⭐ ⭐ **三片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⛔ **仍未做**：`ampeg_*` 的**调制类**（`ampeg_*ccN` / `ampeg_vel2*` / `*_curveccN`）、`fileg_*` / `pitcheg_*`、`off_time`、`note_polyphony`、`direction`、`pan` |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⛔ **仍未做**：`ampeg_*` 的**调制类**（`ampeg_*ccN` / `ampeg_vel2*` / `*_curveccN`）、`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 
@@ -399,7 +490,7 @@ use std::collections::BTreeMap;
 use yeban_dsp::polysynth::steal_fade_frames_for;
 use yeban_sfz::crossfade::{XfAxis, XfDirection};
 use yeban_sfz::error::SfzError;
-use yeban_sfz::instrument::{Instrument, LoopMode, OffMode, Region, RegionQuery};
+use yeban_sfz::instrument::{Instrument, LoopMode, NotePolyphony, OffMode, Region, RegionQuery};
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
 use yeban_sfz::parser::{ParseLimits, parse_text};
@@ -1019,9 +1110,10 @@ pub struct PreparedRegion {
     /// "Exclusive group number for this region." —— 它标的是**本区域属于哪个独占组**，
     /// 被别的区域的 `off_by` 用来**指名关断**（本片：任务单 `#94`）。
     ///
-    /// ⚠ 同一个 `group` 还是下一片 `note_polyphony` 的检查键（`yeban-sfz` 的
-    /// [`yeban_sfz::instrument::NotePolyphony`] 已经把"无 group 时按 `group=0`"写进文档）
-    /// ⇒ 本字段**一片两用**，⛔ 不是两个字段。
+    /// ⚠ 同一个 `group` 还是 [`Self::note_polyphony`] 的检查键（`yeban-sfz` 的
+    /// [`NotePolyphony`] 已经把"无 group 时按 `group=0`"写进文档）⇒ 本字段**一片两用**，
+    /// ⛔ 不是两个字段。⚠ 沿革：任务单 `#94` 落地时本行写的是"**下一片** `note_polyphony`
+    /// 的检查键" ⇒ 那一瓣已由任务单 `#100` 接线（判据 S50 把"键 ＝ `group` × 音高"钉住）。
     group: u32,
     /// ⭐ **被谁关掉**（`off_by`，缺省 `0` ＝ **不关任何区域**；别名 `offby`）。
     ///
@@ -1047,6 +1139,18 @@ pub struct PreparedRegion {
     ///   [`yeban_sfz::instrument::Region::off_time`] 的延迟（缺省 6 ms），而 `off_time`
     ///   不在本片范围内；见模块头的"off_by 关断"一节。
     off_mode: OffMode,
+    /// ⭐ **同音同时发声数上限**（`note_polyphony` ＋ `note_selfmask`；任务单 `#100`）。
+    ///
+    /// 解析与改写（含 `limit = 0` ⇒ 不限制、`note_selfmask` 白名单）在 `yeban-sfz` 里
+    /// **早已落地**（[`yeban_sfz::instrument::NotePolyphony`]，判据在
+    /// `yeban-sfz` 的 `instrument.rs` / `malformed_inputs.rs`）⇒ 本片只把这份**已经裁决好**
+    /// 的读数搬进摊平表，⛔ 不新增解析、⛔ 不改既有判定规则。
+    ///
+    /// 语义（规范逐字见 [`NotePolyphony`] 的文档）：检查的键是
+    /// **polyphony group × 音高**（group 由本区域的 [`Self::group`] 给出，缺省 0）
+    /// —— "The note polyphony is checked within a polyphony group, set by the `group` or
+    /// `polyphony_group` opcodes."。
+    note_polyphony: NotePolyphony,
 }
 
 impl PreparedRegion {
@@ -1188,6 +1292,15 @@ impl PreparedRegion {
     #[must_use]
     pub const fn off_mode(&self) -> OffMode {
         self.off_mode
+    }
+
+    /// ⭐ 本区域的**同音同时发声数上限**（`note_polyphony` ＋ `note_selfmask`，原样）。
+    ///
+    /// 判定函数是 [`SfzVoicePool::enforce_note_polyphony`]（触发期一次 ≤ 16 槽的线性扫描）。
+    /// 只读副本 ⇒ 判据可以直接回读"摊平表**真的**带上了这份读数"，⛔ 不是只看解析层。
+    #[must_use]
+    pub const fn note_polyphony(&self) -> NotePolyphony {
+        self.note_polyphony
     }
 
     /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
@@ -2014,6 +2127,11 @@ fn flatten_regions(
                 group: region.group,
                 off_by: region.off_by,
                 off_mode: region.off_mode,
+                // ⭐ 同音复音限制（任务单 `#100`）：`note_polyphony` ＋ `note_selfmask`
+                // 归约出的**一份** `Copy` 读数原样搬进摊平表（`yeban-sfz` 早已解析并裁决：
+                // `limit = 0` ⇒ 不限制、`self_mask` 缺省 `on`）⇒ 本片只**搬运**，
+                // ⛔ 不新增解析、⛔ 不改 `yeban-sfz` 的既有判定规则。
+                note_polyphony: region.note_polyphony,
             });
         }
         regions
@@ -2831,6 +2949,18 @@ impl SfzVoicePool {
                 source_end,
                 end_sample,
             );
+            // ⭐ `note_polyphony`（任务单 `#100`）：在建**自己**的声部之前，把同键
+            // （`group` × 音高）的在场声部数降到上限以下 —— 语义、规范逐字、工程裁决
+            // 与"⛔ 不是 off_by、⛔ 不是窃取"的分工见 [`Self::enforce_note_polyphony`]。
+            // ⚠ 次序：它在**新声部入池之前** ⇒ 新声部天然不可能被自己这次触发掐掉
+            // （规范："A new note will always play."）。
+            self.enforce_note_polyphony(
+                plan,
+                note,
+                velocity,
+                region.group(),
+                region.note_polyphony(),
+            );
             match self.voices.iter().position(|voice| !voice.active) {
                 Some(index) => {
                     self.order_counter = self.order_counter.wrapping_add(1);
@@ -2903,6 +3033,150 @@ impl SfzVoicePool {
                 self.voices[index].end_sample = 0;
             }
         }
+    }
+
+    /// ⭐ **`note_polyphony` 上限**（任务单 `#100`）：把**同键**（`group` × 音高）的
+    /// 在场声部数降到 `policy.limit` 以下，为**即将**建的那个新声部腾位。
+    ///
+    /// # 语义（规范逐字，⭐ 全部有出处）
+    ///
+    /// * **键 ＝ polyphony group × 音高**（<https://sfzformat.com/opcodes/note_polyphony/>）：
+    ///   "Polyphony limit for playing the same note repeatedly." ＋
+    ///   "The note polyphony is checked within a polyphony group, set by the `group` or
+    ///   `polyphony_group` opcodes. If no group is specified on the region (or its group,
+    ///   master or globally) the note polyphony applies to the default group as if
+    ///   `group=0` was specified." ⇒ 只有"`group` 相同（取区域**自己**的
+    ///   [`PreparedRegion::group`]，缺省 `0`）**且**音高相同"的在场声部才互相计入。
+    ///   语料佐证：`virtuosity-drums` 正是规范下一句说的用法
+    ///   （"drums with separate microphone samples, will usually need to set a separate
+    ///   group number for each microphone position, so the note polyphony limit is tracked
+    ///   separately for each mic."）—— 每个麦克风一个 `group=501`／`502`／…
+    /// * **掐谁** ＝ `note_selfmask` 的力度规则
+    ///   （<https://sfzformat.com/opcodes/note_selfmask/>）：缺省（`on`）是
+    ///   "higher-or-equal-velocity notes turn off lower-velocity notes, but lower-velocity
+    ///   notes do not turn off higher-velocity notes."；显式 `off` 时
+    ///   "notes turn off notes with the same pitch regardless of velocity"。
+    ///   资格判定**复用** `yeban-sfz` 既有的 [`NotePolyphony::masks`]（⛔ 不新写一份）。
+    /// * ⭐ **新音符永远发声**：规范原句 "A new note will always play." ⇒ 本函数**不**决定
+    ///   新音符的去留（新声部由调用方在扫描**之后**才入池），⛔ 也不因"没掐成"而拒绝它。
+    /// * ⭐ **上限是 hint、⛔ 不是硬上限**：规范原句 "The `note_polyphony` opcode is thus
+    ///   not a strict polyphony limit but more of a hint for the instrument behavior." ⇒
+    ///   没有**有资格**的在场声部时就停下，在场数可以**超过** `limit`。
+    /// * `limit == 0`（[`NotePolyphony::is_unlimited`]）⇒ ⛔ 一个都不掐（与"未给出"同义，
+    ///   登记语料里 `note_polyphony=0` 出现 26 次、用法是复位）。
+    ///
+    /// # ⭐ 与 `off_by` ／ 池满窃取的分工（⛔ 三件事，⛔ 不互相借用）
+    ///
+    /// * 本函数**不是** [`Self::stop_off_by_victims`]：那条是"**另一个区域**指名关断一个组"，
+    ///   看 victim 自己的 `off_mode`；本函数是"**同一音符连发**的并发数上限"，
+    ///   ⛔ **不看** `off_mode` —— 规范把 `off_mode` 的作用面限定在 `off_by`：
+    ///   "This opcode will determinate how a region is turned off by an `off_by` opcode."
+    /// * 本函数**不是** [`Self::steal`]（**池满**的处置）：⛔ 不记 [`Self::stolen`]／
+    ///   [`Self::dropped`]、⛔ 不动 `pending`／[`FadeRamp`]、⛔ 不做"挂起者接管"。
+    ///   池容量（[`SFZ_VOICES_PER_TRACK`]）与每音符上限是**两件事**。
+    ///
+    /// # ⭐ `one_shot` 的 victim **照掐**（语料逼出来的正确答案，与 `off_by` 那条**不同**）
+    ///
+    /// `#94` 裁决过"`one_shot` 的 victim 忽略 `off_by`"（那是"**另一个区域**来掐我"）。
+    /// ⛔ 那条**不**外推到本函数：登记语料里 `note_polyphony` 的用法**几乎全长在
+    /// `one_shot` 上** —— `virtuosity-drums` 的映射文件是
+    /// `<global> loop_mode=one_shot … note_polyphony=3 group=5NN`，
+    /// `cithara-barbarica` 的 Lyre 模式是 `loop_mode=one_shot`／`note_polyphony=1`／
+    /// `note_selfmask=off`／`group=1` **四行紧挨着**
+    /// （`assets/samples/cithara-barbarica/Programs/01-cithara_barbarica_keyswitch.sfz:43-46`）。
+    /// 若把 `off_by` 那条外推过来，`note_polyphony` 会在**用到它的每一个文件里**
+    /// 变成空操作 ⇒ 那不是规范的意思（`note_polyphony` 管的是"同音连发的并发数"，
+    /// ⛔ 不是"note-off 到不到"）。
+    ///
+    /// # 让位顺序（确定性，[ARCH-DET-001]）
+    ///
+    /// 取排序键 `(力度, 触发序号, 槽位下标)` 的**最小者** —— 与 `yeban-sfz` 的
+    /// `VoicePool::apply_note_polyphony` **同一条**键。那是本仓对"多个有资格者掐谁"的
+    /// **既有**工程裁决（[`NotePolyphony`] 的文档逐字写着"选择顺序由
+    /// `VoicePool::apply_note_polyphony` 规定（力度最低 → 触发最早 → 槽位下标最小），
+    /// 保证 [ARCH-DET-001] 的确定性"）⇒ 本片**复用**它，⛔ 不另立一份排序。
+    ///
+    /// # 分配纪律
+    ///
+    /// 一次 ≤ [`SFZ_VOICES_PER_TRACK`] 槽的线性扫描（**触发期**一次，⛔ 不进逐样本路径）：
+    /// **零分配、零锁等待、零阻塞 I/O**。victim 的 `group` 由它**自己**的
+    /// [`SfzVoice::region_index`] 回查摊平表 ⇒ **⛔ 不新增任何逐声部字节**（`S9` 仍钉 40 B）。
+    fn enforce_note_polyphony(
+        &mut self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        group: u32,
+        policy: NotePolyphony,
+    ) {
+        if policy.is_unlimited() {
+            return;
+        }
+        let limit = policy.limit as usize;
+        // 在场数（**只数 `active`**，与 [`Self::active_count`] 同一量规 —— 被掐掉的声部
+        // 当场 `silence()` ⇒ 下一次触发时它不再计入）。
+        let mut standing = self.standing_same_key(plan, note, group);
+        while standing >= limit {
+            let Some(victim) = self.note_polyphony_victim(plan, note, velocity, group, policy)
+            else {
+                // 规范："A new note will always play." ⇒ 没有有资格者就停下（在场数可超上限）。
+                break;
+            };
+            // ⭐ 掐掉 ＝ **既有**的硬停原语（与 `off_by` 的 `fast` 分支同一句）：
+            // ⛔ 不新造包络/淡化路径、⛔ 不记窃取/丢弃、⛔ 不动同槽的 `pending`
+            // （挂起者照常接管；`fade` 归零的理由与 `stop_off_by_victims` 逐字相同）。
+            self.voices[victim].silence();
+            self.fade[victim] = FadeRamp::NONE;
+            standing -= 1;
+        }
+    }
+
+    /// **同键在场声部数**（`note` ＋ `group`；只数 `active`）。零分配、零 I/O。
+    fn standing_same_key(&self, plan: &PreparedSfz, note: u8, group: u32) -> usize {
+        (0..SFZ_VOICES_PER_TRACK)
+            .filter(|index| {
+                let voice = self.voices[*index];
+                voice.is_active()
+                    && voice.note() == note
+                    && self.voice_group(plan, *index) == Some(group)
+            })
+            .count()
+    }
+
+    /// **第 `index` 槽的声部来自哪条区域的 `group`**（`region_index` 回查；
+    /// 查不到 ⇒ `None` ⇒ 调用方**不**把它计入任何键，与 `stop_off_by_victims` 同径）。
+    fn voice_group(&self, plan: &PreparedSfz, index: usize) -> Option<u32> {
+        let region_index = usize::from(self.voices[index].region_index());
+        plan.regions().get(region_index).map(PreparedRegion::group)
+    }
+
+    /// `note_polyphony` 的下一个让位对象：**同键**（`note` ＋ `group`）且**有资格**
+    /// （[`NotePolyphony::masks`]）的在场声部里，排序键 `(力度, 触发序号, 槽位下标)`
+    /// 的**最小者**；没有则 `None`（新声部照常发声）。零分配、零 I/O。
+    fn note_polyphony_victim(
+        &self,
+        plan: &PreparedSfz,
+        note: u8,
+        velocity: u8,
+        group: u32,
+        policy: NotePolyphony,
+    ) -> Option<usize> {
+        let mut best: Option<(u8, u64, usize)> = None;
+        for index in 0..SFZ_VOICES_PER_TRACK {
+            let voice = self.voices[index];
+            if !voice.is_active()
+                || voice.note() != note
+                || self.voice_group(plan, index) != Some(group)
+                || !policy.masks(voice.velocity(), velocity)
+            {
+                continue;
+            }
+            let key = (voice.velocity(), self.order[index], index);
+            if best.is_none_or(|current| key < current) {
+                best = Some(key);
+            }
+        }
+        best.map(|(_, _, index)| index)
     }
 
     /// ⭐ **池满时换掉一个声部**（`trigger_note` 的池满分支）。
