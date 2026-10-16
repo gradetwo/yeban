@@ -816,6 +816,80 @@
 //! ⛔ `SfzVoicePool` 仍 **1712 B**、⛔ `EngineRuntime` 仍 **180144 B**
 //! （门槛 192 KiB ＝ `196608`，余量 `16464`）。
 //!
+//! # ⭐⭐ `tune` 目标（任务单 `#116`）—— 第二个被推广的目标
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#116`）—— 被修订的是 `#115` 那一节里
+//! 「⛔ **`pan_oncc*` ／ `volume_oncc*` ／ `tune_oncc*` ／ `cutoff_oncc*` ／
+//! `pitch_oncc*` 那一支整条有效**（仍未做，另开单）」里 **`tune_oncc*` 这一项**
+//! **（⛔ 上面所有登记的**原文一字未删**，口径同台账第 278 条：保留原文 ＋
+//! 追加修订段 ＋ 点名被修订的支）。**被修订的只是"`tune_oncc*` 仍未做"这一支**：
+//! 它**不再是"另开单"** —— 本单把 `#104`／`#115` 的机制**推广到 `tune`**
+//! （`tune` ／ `tune_ccN` ／ `tune_onccN` ／ `tune_curveccN`）。
+//! ⛔ **`pan_oncc*` ／ `volume_oncc*` ／ `cutoff_oncc*` ／ `pitch_oncc*` 那四项
+//! 整条有效**（仍未做，另开单）—— 与本单是**同一推广**的**不同目标**
+//! （判据 `S106` 把这条修订逐字钉住）。
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/tune/>，2026-10-16 现读）
+//!
+//! ⚠ ⚠ **本单最重要的一条事实裁决**：该页的 **Modulation 表里 ⛔ 没有
+//! `tune_onccN` / `tune_ccN` / `tune_curveccN` 行**，它列的是 `pitch` 族
+//! （`pitch_onccN` Range ＝ **`-9600 to 9600`**、Unit ＝ **cents**；
+//! `pitch_curveccN` Range ＝ `0 to 255`）。`tune` 族与被别名者的关系**只有一句**：
+//!
+//! > In ARIA, `tune_*ccN` can also be used as an alias for `pitch_*ccN`.
+//!
+//! `tune` 自己的表行是 **`| tune | SFZ v1 | integer | 0 | -100 to 100 | cents |`**，
+//! 正文逐字「The fine tuning for the sample, **in cents**.」。⭐ 同页例子
+//! `tune=-100` ＋ `pitch_oncc27=200` 里的 `200` **超出** `tune` 自身的 `±100`
+//! ⇒ 规范文本自己证明"**调制量的域 ≠ 基准的域**"。完整依据链、域裁定与语料普查
+//! 的**唯一事实源**是 [`yeban_sfz::modulation`] 的模块文档 §6（⛔ 本节不复制）。
+//!
+//! ## 落地形状（三条，逐条可判）
+//!
+//! 1. **目标枚举 ＋1**：`yeban_sfz::modulation::ModTarget::Tune` 加在 [`ModTarget::Amplitude`]
+//!    **之后**（下标 6）⇒ 既有六个目标的下标**一个都没动**（求和序逐位不变）；
+//! 2. **三条路同一处施加点**：`tune` 只加**音分**、不改方向、不改区间 ⇒ 它是
+//!    **速率上的一个线性乘子** `2 ^ (Σ delta × curve(cc) / 1200)`
+//!    （[`tune_ratio_with_baked`] 是唯一实现）——
+//!    离线 [`SfzInstrument::render_note_into_with_cc`] 乘在 `Region::playback_rate` 上、
+//!    摊平 [`PreparedSfz::render_block_into_with_cc`] 乘在 `rate_per_note[n]` 上、
+//!    实时 [`SfzVoicePool::slot_readings`] 乘在 `SfzVoice::rate()` 上
+//!    ⇒ **离线 ＝ 摊平 ＝ 实时**逐位相同（判据 `S108`／`S109`）；
+//! 3. **零新逐声部字段**：乘子与基准速率都是**区域参数 ＋ 触发期副本**
+//!    （CC 逐块从探针读）⇒ 逐块算出的 `rate` 活在**栈上**的 `SlotReadings` 里，
+//!    ⛔ 不回写 [`SfzVoice`]（⛔ 不能回写：那会让乘子**逐块复合**）⇒
+//!    `SfzVoice` 仍 **40 B**（判据 `S9`／`S100`／`S106`）。
+//!
+//! ## 语料普查（2026-10-16 现读；口径同 `#104`／`#115`：`assets/samples/**/*.sfz`
+//! 剥 `//` 注释后数 `(^|\s)name[0-9]*\s*=` 形式的 opcode token）
+//!
+//! 分母 **1398** 份 `.sfz`：
+//!
+//! | 读数（对象＋单位：opcode **出现次数**／**文件数**） | 值 |
+//! | :--- | :--- |
+//! | `tune_onccN`（**带数字下标**） | **9442** 次 ／ **83** 文件 |
+//! | `tune_ccN`（SFZ1 别名） | **608** 次 ／ **87** 文件 |
+//! | `tune_curveccN` | **218** 次 ／ **45** 文件 |
+//! | 静态 `tune=` | **4120** 次 ／ **154** 文件 |
+//! | 裸 `tuneccN`（⛔ 规范无此行、语料 **0** 处） | **0** 次 ／ **0** 文件 |
+//! | `tune_smoothccN` ／ `tune_stepccN`（⛔ 不属本族） | **0** ／ **1** 次 |
+//! | 对照 `pitch_onccN`（⛔ 本单**不做**的那一族） | **39** 次 ／ **1** 文件 |
+//! | 三档对照（`ampeg_attack`） | 家族子串 **2828** ／ 不剥注释 token **844** ／ **剥注释 token 835** |
+//! | `tune_*ccN` 的 `|delta| > 100` 处数 ／ 最大 `|delta|` | **599** ／ **2400** 音分 |
+//! | 单文件 `(目标, cc)` **并集**最大（**三族**合计） | **15** ≤ `AMPEG_MOD_CAP`（20） |
+//!
+//! ⚠ **条数上界沿用 [`AMPEG_MOD_CAP`] ＝ 20**：`#116` 的三族并集读数 **15**
+//! （与 `#104` 登记 `ampeg_*` 一族时的 15 是**同一个文件同一个数**）
+//! ≤ **20** ⇒ ⛔ **不抬高上限、⛔ 不引入新 `Err`**
+//! （⇒ 今天能解析的文件一个都不会变成不可解析）。
+//!
+//! ## 尺寸（本单机械读数）
+//!
+//! `PreparedRegion` **仍 6160 B**（⛔ **＋0**：本单**没有**新增任何每区域字段 ——
+//! 基准 `tune` 早已烘进 `rate_per_note`、调制项早已在 `cc_mods` 里；判据 `S106`
+//! 由 `size_of` 现读）；⛔ `SfzVoice` 仍 **40 B**、⛔ `SfzVoicePool` 仍 **1712 B**、
+//! ⛔ `EngineRuntime` 仍 **180144 B**（门槛 192 KiB ＝ `196608`，余量 `16464`）。
+//!
 //! # ⭐ `set_ccN` 播种（任务单 `#110`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是下面三处登记里 `set_ccN=` 的
@@ -1149,9 +1223,11 @@ use yeban_sfz::instrument::{
 // ⭐ 任务单 `#115`：目标从五个 `ampeg_*` 推广成 [`ModTarget`]（首个增益族目标
 // `amplitude`）。摊平表按 [`AMPEG_MOD_CAP`] 条**定长**承载（`Copy`），求值本体是
 // [`cc_value_with_baked`]（与 `yeban-sfz` 的离线路径**同一份**实现）。
+// ⭐⭐ 任务单 `#116`：第二个被推广的目标 `tune`（音分 → 速率乘子），换算本体是
+// [`tune_ratio_with_baked`]（同样是 `yeban-sfz` 的**同一份**实现，⛔ 不是引擎里第二套）。
 use yeban_sfz::modulation::{
     AMPEG_MOD_CAP, AmpegParam, BakedCcMod, ModTarget, bake_cc_mods, cc_value_with_baked,
-    cc_value_with_baked_and_vel2,
+    cc_value_with_baked_and_vel2, tune_ratio_with_baked,
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
@@ -1367,7 +1443,11 @@ impl SfzInstrument {
                     continue;
                 }
                 // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`。
-                let rate = region.playback_rate(note, rates);
+                // ⭐⭐ `tune` 调制（任务单 `#116`）：`playback_rate` 已含**静态** `tune`，
+                // 再乘上 `yeban-sfz` 的 [`tune_ratio_with_baked`]（**同一份**换算，
+                // 与摊平表 `render_block_into_with_cc`、实时 `slot_readings` 共用）。
+                // ⚠ `cc == None` ⇒ 乘子恰 `1.0` ⇒ 与接线前**逐位相同**；
+                // ⚠ 非法速率沿用**下面那条既有守卫**（⛔ 不加第二条谓词）。
                 // ⭐ 任务单 `#108`：这里从 `playback_spec(..)`（`cc = None` 的那条重载）
                 // 换成 `playback_spec_with(&query, ..)` —— 后者读 `query.cc`，于是
                 // **CC 轴交叉淡化**也在离线这条路上生效（`query` 上面已经按探针构造过）。
@@ -1379,11 +1459,18 @@ impl SfzInstrument {
                 // 摊平／实时两条路**同一份**（`cc_value_with_baked_and_vel2`，
                 // `target = Amplitude`）⇒ 三条路逐位一致（判据 `S103`）。
                 // 缺省 `amplitude = 100` ⇒ 因子恰 `1.0` ⇒ 乘它**逐位不变**。
+                // ⚠ `#116` 起 `baked` 同时服务 `tune` ⇒ 它必须**先**算出来。
                 let baked = cc.map(|_| {
                     bake_cc_mods(region.cc_modulations(), |index| {
                         instrument.modulation_curve(index)
                     })
                 });
+                // ⭐⭐ `tune` 调制（任务单 `#116`）：`playback_rate` 已含**静态** `tune`，
+                // 再乘上 `yeban-sfz` 的 [`tune_ratio_with_baked`]（**同一份**换算，
+                // 与摊平表 `render_block_into_with_cc`、实时 `slot_readings` 共用）。
+                // ⚠ `cc == None` ⇒ 乘子恰 `1.0` ⇒ `rate × 1.0` 与接线前**逐位相同**。
+                let rate = region.playback_rate(note, rates)
+                    * tune_ratio_with_baked(baked.as_deref().unwrap_or(&[]), cc);
                 let amplitude_gain = cc_value_with_baked_and_vel2(
                     region.amplitude,
                     ModTarget::Amplitude,
@@ -2693,6 +2780,26 @@ impl PreparedRegion {
             .count()
     }
 
+    /// ⭐⭐ **`tune` 调制的速率乘子**（任务单 `#116`）：
+    /// `2 ^ (Σ delta × curve(cc) / 1200)`。
+    ///
+    /// * `cc == None` ⇒ 一项 CC 都不读 ⇒ **恰 `1.0`**（`rate × 1.0` 在 binary32 下
+    ///   **逐位不变** ⇒ 与接线前逐位相同）；
+    /// * `cc == Some(probe)` 而表里没有 `tune` 项 ⇒ `0.0f32.exp2()` **恰 `1.0`** ⇒ 同样逐位不变；
+    /// * 求值本体是 `yeban-sfz` 的 [`tune_ratio_with_baked`]（离线 ／ 摊平 ／ 实时三条路
+    ///   **同一份**实现，⛔ 没有第二套换算）；
+    /// * 曲线解析不到的项**不贡献**音分（⛔ 不当成曲线 0；可由
+    ///   [`Self::ampeg_unresolved_mods`] 读出）；
+    /// * ⛔ **不钳位**：域的裁定（`tune` ⇒ ±9600 音分）见 [`ModTarget::delta_range`]；
+    ///   `2^x` 的上溢／下溢边界由调用方按"速率必须有限非零"的既有守卫如实退休
+    ///   （见 [`Self::tune_ratio_with_cc`] 的调用点 [`Self::slot_readings`]）。
+    ///
+    /// ⚠ **零分配、零锁、零 I/O**（纯算术 ＋ 定长切片 ＋ 一次 `exp2`）⇒ 可逐块调用。
+    #[must_use]
+    pub fn tune_ratio_with_cc(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        tune_ratio_with_baked(self.cc_modulations(), cc)
+    }
+
     /// ⭐ **该区域某参数上的力度调制量**（`ampeg_vel2…`；任务单 `#106`）。
     ///
     /// `None` ＝ 该参数的 `ampeg_vel2…` opcode **根本没出现**
@@ -3504,7 +3611,12 @@ impl PreparedSfz {
                 continue;
             };
             let pcm = sample.pcm();
-            let rate = region.rate_per_note[n];
+            // ⭐⭐ `tune` 调制（任务单 `#116`）：本函数的 `cc` 就是这一支输入 ——
+            // `rate_per_note[n]` 已含**静态** `tune`，再乘 [`PreparedRegion::tune_ratio_with_cc`]
+            // （与实时 `slot_readings`、离线 `render_note_into_with_cc` **同一份**换算）。
+            // ⚠ `cc == None` ⇒ 乘子恰 `1.0` ⇒ `rate` 与接线前**逐位相同**。
+            // ⚠ 非法速率（乘子上溢/下溢）**沿用下面那条既有守卫**（⛔ 不加第二条谓词）。
+            let rate = region.rate_per_note[n] * region.tune_ratio_with_cc(cc);
             if !(rate.is_finite() && rate > 0.0) || pcm.is_empty() {
                 continue;
             }
@@ -4514,6 +4626,18 @@ impl SfzVoice {
         self.position
     }
 
+    /// ⭐⭐ **该声部的基准步进**（`region.rate_per_note[note]` 的触发期副本；反向时为**负**）。
+    ///
+    /// ⚠ `tune` 的**调制量**（任务单 `#116`）⛔ 不在本读数里：基准 `tune` 早在摊平期
+    /// 就烘进 `rate_per_note`，而调制量**逐块**可变 ⇒ 逐块路径用
+    /// [`PreparedRegion::tune_ratio_with_cc`] 现算乘子再乘到本读数上
+    /// （⇒ ⛔ 没有第二个逐声部字段，`SfzVoice` 仍 **40 B**）。
+    /// ⚠ 符号是**方向**（`< 0` ⇒ `reverse`，见 [`Self::source_end`] 的追加修订段）。
+    #[must_use]
+    pub const fn rate(&self) -> f32 {
+        self.rate
+    }
+
     /// 源采样终点（半开）。
     ///
     /// ⭐ **追加修订段（任务单 `#113`）**：`rate < 0`（反向）的声部里它承载的是**下界**
@@ -4603,6 +4727,18 @@ struct SlotReadings {
     /// 触发期的乘积**不够**。⚠ `cc == None` 时它与接线前的 `voice.gain`
     /// **逐位相同**（同一条 `gain_at` 求值、同一个 `track_gain` 因子）。
     gain: f32,
+    /// ⭐⭐ **本块的逐样本步进**（任务单 `#116`）＝ `voice.rate()`（触发期抄下的**基准**
+    /// 速率，含静态 `tune`；反向时为负）**×** [`PreparedRegion::tune_ratio_with_cc`]。
+    ///
+    /// ⚠ **为什么每块现算**：`tune_*ccN` 的音分增量按**当前** CC 取值（CC 逐块可变）
+    /// ⇒ 触发期抄下的 `voice.rate()` **不够**。
+    /// ⚠ `cc == None`（或表里没有 `tune` 项）⇒ 乘子**恰 `1.0`** ⇒ 本读数与接线前的
+    /// `voice.rate` **逐位相同**（同一个乘法、同一个 `× 1.0` 恒等）。
+    /// ⚠ **符号**：乘子恒 `> 0` ⇒ 方向（`rate < 0` ⇒ `reverse`）仍由 `voice.rate()`
+    /// 唯一决定，⛔ 本字段不改变 [`mix_span_into`] 的方向判别。
+    /// ⚠ **没有新的逐声部字段**：率值活在**栈上**的本结构里，声部里仍只有
+    /// `SfzVoice::rate`（基准）⇒ `SfzVoice` 仍 **40 B**（判据 `S9`／`S100`／`S106`）。
+    rate: f32,
     /// **生效的引擎终点**：`u64::MAX` ＝「本块不由 `end_sample` 截止」（见 `slot_readings`）。
     limit: u64,
     /// ⭐ **包络眼里的 note-off 帧**：`u64::MAX` ＝「**不理会** note-off」
@@ -5196,7 +5332,7 @@ impl SfzVoicePool {
             let written = mix_span_into(
                 sample.pcm(),
                 &mut local,
-                voice.rate,
+                readings.rate,
                 readings.gain,
                 voice.source_end,
                 readings.loop_window,
@@ -5255,7 +5391,7 @@ impl SfzVoicePool {
         let written = mix_span_into(
             sample.pcm(),
             &mut local,
-            voice.rate,
+            readings.rate,
             readings.gain,
             voice.source_end,
             readings.loop_window,
@@ -5320,6 +5456,29 @@ impl SfzVoicePool {
         // `SfzVoice` 里 ⇒ ⛔ **没有新的逐声部字段**（`SfzVoice` 仍 40 B，判据 `S9`）。
         // `cc == None` ⇒ 与接线前的 `voice.gain` **逐位相同**（同一个求值点同一个因子）。
         let gain = region.gain_at_with_cc(voice.note(), voice.velocity(), cc) * voice.track_gain();
+        // ⭐⭐ `tune` 调制（任务单 `#116`）：**逐块现算**本声部的步进 ——
+        // 基准速率 `voice.rate()`（触发期抄下，含静态 `tune`）乘上
+        // [`PreparedRegion::tune_ratio_with_cc`]（音分增量 → 线性乘子）。
+        // `note` / `velocity` / `region_index` 早就在 `SfzVoice` 里 ⇒ ⛔ **没有新的
+        // 逐声部字段**（`SfzVoice` 仍 40 B，判据 `S9`／`S100`／`S106`）。
+        // ⚠ 乘子的**唯一**实现是 `yeban-sfz` 的 [`tune_ratio_with_baked`]（离线／摊平
+        // 两条路调的是**同一份**）⇒ 三条路逐位一致（判据 `S109`）。
+        // `cc == None` ⇒ 乘子恰 `1.0` ⇒ `voice.rate() × 1.0` 与接线前**逐位相同**。
+        let tune_ratio = region.tune_ratio_with_cc(cc);
+        // ⭐⭐ **退化输入的守卫**（任务单 `#116`）：多个 `tune` 项代数相加后可让
+        // `2^x` 上溢成 `Inf`（`|Σ delta| > 153600` 音分）或下溢成 `0`
+        // ⇒ 本块速率会变成非有限／零。⭐ 口径**不是新发明的**：摊平期
+        // （[`flatten_regions`] 的 `rate_per_note`）与两条一次性渲染路
+        // （[`PreparedSfz::render_block_into_with_cc`] ／
+        // [`SfzInstrument::render_note_into_with_cc`]）**早就**用同一条谓词
+        // （"速率必须有限正数，否则该区域不产生采样输出"）拦住非法速率
+        // ⇒ 这里对**乘子**照同一条口径如实退休（`None` ⇒ 调用方 `silence_slot`），
+        // ⛔ 不静默改成 `1.0`、⛔ 不让 `Inf` 进逐样本循环（那会在 `index + 1` 上溢出）。
+        // ⚠ `cc == None` 时乘子恰 `1.0` ⇒ 本守卫**永不成立** ⇒ 既有夹具逐位不变。
+        if !(tune_ratio.is_finite() && tune_ratio > 0.0) {
+            return None;
+        }
+        let rate = voice.rate() * tune_ratio;
         // ⭐ 力度调制（任务单 `#106`）：**逐声部力度**就在 [`SfzVoice`] 里
         // （[`SfzVoice::velocity`]，触发期抄下、此后不变）⇒ 本路**不需要任何新字段**
         // （`SfzVoice` 仍 40 B）。
@@ -5335,6 +5494,7 @@ impl SfzVoicePool {
         Some(SlotReadings {
             loop_window,
             gain,
+            rate,
             limit: end_sample,
             // ⭐ `one_shot` 连**包络的释放段**也不许进（"忽略 note-off"是一条完整裁决：
             // 既不改退休，也不起释放）⇒ 给它 `u64::MAX`。其余模式把引擎终点原样交给包络

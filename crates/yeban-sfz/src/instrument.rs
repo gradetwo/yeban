@@ -32,9 +32,8 @@ use crate::error::SfzError;
 use crate::label::{Labels, cc_label_index};
 use crate::midi::MidiSection;
 use crate::modulation::{
-    AMPEG_MOD_CAP, AmpegParam, CcMod, MAX_MODULATION_CC, MAX_MODULATION_CURVE_INDEX,
-    MAX_MODULATION_DELTA, MIN_MODULATION_DELTA, ModTarget, ModulationForm, bake_cc_mods,
-    parse_modulation_name,
+    AMPEG_MOD_CAP, AmpegParam, CcMod, MAX_MODULATION_CC, MAX_MODULATION_CURVE_INDEX, ModTarget,
+    ModulationForm, bake_cc_mods, parse_modulation_name,
 };
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
@@ -2525,10 +2524,10 @@ fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzE
     Ok(cc as u8)
 }
 
-/// 读 `delta`（`ampeg_*ccN` / `ampeg_*_onccN` / ⭐ `amplitude_*` 的取值）。
+/// 读 `delta`（`ampeg_*ccN` / `ampeg_*_onccN` / ⭐ `amplitude_*` / ⭐⭐ `tune_*` 的取值）。
 ///
 /// 单位与目标**同单位**（`ampeg_*` 时间 = 秒、`sustain` = 百分比；
-/// ⭐ `amplitude` = **百分比**），取值域**统一**是 `-100..=100`（各 opcode 页
+/// ⭐ `amplitude` = **百分比**；⭐⭐ `tune` = **音分**），取值域**统一**是 `-100..=100`（各 opcode 页
 /// Modulation 表的 Range 列）。与基准 opcode 的读取（[`read_ampeg_time`] /
 /// [`read_ampeg_sustain`]）有两处**刻意**不同：
 ///
@@ -2541,6 +2540,16 @@ fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzE
 ///
 /// ⭐ 任务单 `#106` 起**同一份读取**也服务 `ampeg_vel2*`；⭐ `#115` 起服务
 /// `amplitude_onccN`（表行 `-100 to 100`、Unit = **%**）⇒ ⛔ 没有第二套域检查。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#116`）—— 被修订的是上面那句里"取值域**统一**是
+/// `-100..=100`"那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋
+/// 追加修订段 ＋ 点名被修订的支）：`#116` 起域是**逐目标**的
+/// （[`ModTarget::delta_range`]）—— 五个 `ampeg_*` 与 `amplitude` **仍然是**
+/// `-100..=100`（上面那句**对它们逐字有效**），⭐⭐ 而 `tune` 是
+/// **`-9600..=9600` 音分**（依据见 [`crate::modulation`] 模块文档 §6.3：
+/// `tune_*ccN` 是 `pitch_onccN` 的 ARIA 别名，而 `pitch_onccN` 表行 Range ＝
+/// `-9600 to 9600`；登记语料有 **599** 处 `|delta| > 100`、最大 **2400**）。
+/// ⚠ 被修订的**只是域的来源**：报错类型、后缀政策、非有限检查、负值合法**逐字未变**。
 fn read_modulation_delta(
     raw: &str,
     name: &str,
@@ -2575,13 +2584,15 @@ fn read_modulation_delta(
         });
     }
     let value = parsed * scale;
-    if !(MIN_MODULATION_DELTA..=MAX_MODULATION_DELTA).contains(&value) {
+    // ⭐⭐ `#116`：域的**唯一**来源（`tune` ⇒ ±9600 音分；其余目标 ⇒ ±100）。
+    let (min, max) = target.delta_range();
+    if !(min..=max).contains(&value) {
         return Err(SfzError::FloatOutOfRange {
             line,
             opcode: name.to_string(),
             value,
-            min: MIN_MODULATION_DELTA,
-            max: MAX_MODULATION_DELTA,
+            min,
+            max,
         });
     }
     Ok(value)

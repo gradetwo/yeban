@@ -213,6 +213,100 @@
 //! `amplitude=0`（登记语料里 `cithara-barbarica` 的静音区正是这么写的）。⛔ 不把
 //! 冲突的一侧当成另一侧。
 //!
+//! ## 6. ⭐⭐ `tune` 目标（任务单 `#116`）—— 第二个被推广的目标
+//!
+//! ⭐ ⭐ **追加段（任务单 `#116`）**：本节**再推广一个目标**（[`ModTarget::Tune`]），
+//! ⛔ **不修订** §1～§5 的任何一条（五个 `ampeg_*` 与 `amplitude` 的语义、公式、域与
+//! 求和序**逐字不变**）。
+//!
+//! ### 6.1 规范逐字（<https://sfzformat.com/opcodes/tune/>，2026-10-16 现读）
+//!
+//! 该页**只有一行** `tune` 自己的表行（**逐字**）：
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `tune` | SFZ v1 | integer | 0 | **-100 to 100** | **cents** |
+//!
+//! 同页正文逐字：「The fine tuning for the sample, **in cents**.」＋
+//! 「Range of `tune` in the SFZ1 spec is ±1 semitone, from -100 to 100, though at least
+//! in ARIA, it seems a broader range is supported, at least -2400 to 2400 cents.」
+//!
+//! ⚠ ⚠ **本单最重要的一条事实裁决（派单方写错的那一条）**：该页的 **Modulation 表里
+//! ⛔ 没有 `tune_onccN` / `tune_ccN` / `tune_curveccN` 行**。它列的是 **`pitch` 族**：
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `pitch_onccN` | SFZ v2 | N/A | N/A | **-9600 to 9600** | **cents** |
+//! | `pitch_curveccN` | SFZ v2 | integer | 0 | **0 to 255** | N/A |
+//! | `pitch_smoothccN` | SFZ v2 | float | 0 | 0 to ? | ms |
+//! | `pitch_stepccN` | SFZ v2 | N/A | 0 | 0 to ? | N/A |
+//!
+//! 而 `tune` 族与被别名者的关系**只有一句**（同页 Practical Considerations，逐字）：
+//!
+//! > In ARIA, `tune_*ccN` can also be used as an alias for `pitch_*ccN`.
+//!
+//! ### 6.2 `tune` 与 `pitch_keycenter` / `transpose` / `playback_rate` 的关系
+//!
+//! ⛔ 规范**没有**给"音分 → 速率"的公式。本仓的换算**不是本单发明的**，它比 `#104`
+//! 还早：`crates/yeban-sfz/src/playback.rs` 从 `b5ca1528` 起就把三个 pitch opcode
+//! 折进**同一个指数** —— 该文件模块头逐字写着
+//! `pitch_ratio = 2 ^ ( ((note - pitch_keycenter + transpose) * 100 + tune) / 1200 )`，
+//! 实现是 [`crate::Region::pitch_ratio`]（`cents = semitones × 100 + tune`，
+//! 再 `exp2(cents / 1200)`）。⭐ 同理 `pitch_keycenter` 页只把 `pitch_keycenter` 定义成
+//! "Root key for the sample"（Range `0 to 127`），它与 `transpose`（半音）一起决定
+//! **指数里的整数半音项**，`tune` 决定**同一指数里的小数音分项** ⇒ 三者**加法共存**，
+//! ⛔ 不互相覆盖。`PlaybackSpec::playback_rate` 是**速率**（`f32` ＝
+//! `pitch_ratio × sample_hz / engine_hz`），而 `tune` 是**音分**（整数）⇒
+//! 本单要挂的桥就是"音分增量 → 乘在速率上的线性因子"：
+//!
+//! ```text
+//! rate_with_cc = rate_base × 2 ^ (Σ_{tune 项} delta × curve(probe(cc)) / 1200)
+//! ```
+//!
+//! ⚠ 依据链：`tune` 的 Unit ＝ **cents**（表行逐字）＋ 一个八度 ＝ 1200 音分
+//! （[`TUNE_CENTS_PER_OCTAVE`]，与 [`crate::Region::pitch_ratio`] 同源同值）
+//! ⇒ `2^(Δcents/1200)`。⛔ 本单**不发明**第二套换算，
+//! 唯一实现是 [`tune_ratio_with_baked`]。
+//!
+//! ### 6.3 `delta` 的域（**逐目标不同**，裁定 ＋ 依据）
+//!
+//! ⭐ **裁定：`tune` 族的 `delta` 域 ＝ `-9600..=9600` 音分**
+//! （[`MIN_TUNE_MODULATION_DELTA`] / [`MAX_TUNE_MODULATION_DELTA`]），
+//! ⛔ **不是** `tune` 基准自己的 `-100..=100`。三条依据：
+//!
+//! 1. `tune_*ccN` 的表行在规范里**不存在**，唯一可援引的是那句别名声明
+//!    「`tune_*ccN` … alias for `pitch_*ccN`」⇒ 域随 `pitch_onccN` ＝ `-9600 to 9600`；
+//! 2. `tune` 页**自己的例子**逐字是 `tune=-100` ＋ `pitch_oncc27=200` —— 那个 `200`
+//!    **超出** `tune` 基准的 `-100..=100` ⇒ 规范文本自己证明"调制量的域 ≠ 基准的域"；
+//! 3. 语料普查（分母 **1398** 份 `.sfz`）：`tune_*ccN` 的 `|delta| > 100` 有 **599** 处、
+//!    最大 **2400**（`tune_cc98=2400`）⇒ 沿用 `±100` 会把今天**能解析**的 599 处
+//!    变成不可解析（与 `#109` 的"⛔ 不改既有文件可解析性"同一条纪律）。
+//!
+//! ⚠ 这条与本模块裁决 2（"`delta` 域 ＝ `-100..=100`"）**并存**：裁决 2 管的是
+//! 各 opcode 页 Modulation 表 Range 列**真写 `-100 to 100`** 的那些目标
+//! （五个 `ampeg_*` ＋ `amplitude`）；`tune` 的不在其列。⭐ 唯一读它的地方是
+//! [`ModTarget::delta_range`] ⇒ ⛔ 没有第二套域检查。
+//! ⚠ `_curveccN` 的下标域**没有**分叉：`pitch_curveccN` 的 Range 也是 `0 to 255`
+//! ⇒ [`MAX_MODULATION_CURVE_INDEX`] 原样复用。
+//!
+//! ### 6.4 施加点（**唯一形状**）
+//!
+//! `tune` 只**加音分、不改方向、不改区间** ⇒ 它是**速率上的一个线性乘子**
+//! （[`tune_ratio_with_baked`]），三条路（离线 ／ 摊平表 ／ 实时）都把它乘在
+//! **已经含基准 `tune` 的**速率上：
+//!
+//! ```text
+//! 离线      rate = Region::playback_rate(note, rates) × tune_ratio        // yeban-engine
+//! 摊平表    rate = PreparedRegion::rate_per_note[n]   × tune_ratio
+//! 实时      rate = SfzVoice::rate()                   × tune_ratio        // 逐块现算
+//! ```
+//!
+//! ⚠ `probe == None` ⇒ `tune_ratio` **恰** `1.0` ⇒ 三个乘法都是 `× 1.0`
+//! （binary32 恒等）⇒ 与接线前**逐位相同**。
+//! ⚠ 单位政策：`tune` 的 `delta` 认 `%` 后缀（[`crate::instrument::read_modulation_delta`]
+//! 的非时间支）—— 这是**既有分支的副作用**（`Unit` 列的真实值是 `cents`）；
+//! 如实登记为"过度宽松"，⛔ 不声称规范允许 `tune_onccN=50%`。
+//!
 //! # 实时安全
 //!
 //! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
@@ -315,34 +409,56 @@ impl AmpegParam {
 ///
 /// 声明顺序**就是求和顺序**：五个 `ampeg_*` 在前（`#104`／`#106` 的顺序**逐位不变**），
 /// [`Self::Amplitude`] 在**末尾**（新增目标永远加在最后 ⇒ 既有目标的位模式不受影响）。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#116`）—— 被修订的是上面这句里"[`Self::Amplitude`] 在
+/// **末尾**"那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋
+/// 点名被修订的支）：`#116` 把**第二个**目标 [`Self::Tune`]（`tune` ／ `tune_ccN` ／
+/// `tune_onccN` ／ `tune_curveccN`）加在 [`Self::Amplitude`] **之后** ⇒ "末尾"现在是
+/// `Tune`。⭐ **被修订的只是"末尾"这个位置**：五个 `ampeg_*`（下标 `0..=4`）与
+/// [`Self::Amplitude`]（下标 `5`）的下标**一个都没动** ⇒ 既有六个目标的求和序与
+/// 位模式**逐位不变**（判据 `S106`／`S110` 现读）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ModTarget {
     /// 五个 `ampeg_*` 参数之一（`#104` 的原始目标、`#106` 的力度支）。
     Ampeg(AmpegParam),
     /// ⭐ `amplitude`（**线性**百分比；任务单 `#115` 的第一个增益族目标）。
     Amplitude,
+    /// ⭐⭐ `tune`（**音分**；任务单 `#116` 的第二个被推广目标）。
+    ///
+    /// ⚠ ⭐ **沿革（任务单 `#116`）—— 被修订的是上面那句"新增目标永远加在最后"
+    /// 里"最后"的位置**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段
+    /// ＋ 点名被修订的支）：`#115` 时"最后"是 [`Self::Amplitude`]（下标 5），`#116` 起
+    /// "最后"是**本变体**（下标 6）⇒ **既有六个目标的下标一个都没动**（求和序逐位不变，
+    /// 判据 `S106` 现读 `All[5] == Amplitude` 与 `All[6] == Tune`）。
+    ///
+    /// ⚠ **它承载的是"调制量 `delta`"，单位 ＝ 音分**（⛔ 不是基准 `tune`）：
+    /// 基准 `tune` 早就烘进 `Region::pitch_ratio` / 摊平表的 `rate_per_note`，
+    /// 本目标只贡献**逐块可变的增量**（见 [`tune_ratio_with_baked`]）。
+    Tune,
 }
 
 impl ModTarget {
     /// 目标个数（[`Self::ALL`] 的长度）。
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
 
-    /// 全部六个目标（声明序；判据与遍历用）。
-    pub const ALL: [Self; 6] = [
+    /// 全部七个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 7] = [
         Self::Ampeg(AmpegParam::Attack),
         Self::Ampeg(AmpegParam::Hold),
         Self::Ampeg(AmpegParam::Decay),
         Self::Ampeg(AmpegParam::Sustain),
         Self::Ampeg(AmpegParam::Release),
         Self::Amplitude,
+        Self::Tune,
     ];
 
-    /// 在 [`Self::ALL`] 里的下标（`0..=5`）；**这个序就是求和序**。
+    /// 在 [`Self::ALL`] 里的下标（`0..=6`）；**这个序就是求和序**。
     #[must_use]
     pub const fn index(self) -> usize {
         match self {
             Self::Ampeg(param) => param.index(),
             Self::Amplitude => AmpegParam::COUNT,
+            Self::Tune => AmpegParam::COUNT + 1,
         }
     }
 
@@ -356,6 +472,7 @@ impl ModTarget {
             Self::Ampeg(AmpegParam::Sustain) => "ampeg_sustain",
             Self::Ampeg(AmpegParam::Release) => "ampeg_release",
             Self::Amplitude => "amplitude",
+            Self::Tune => "tune",
         }
     }
 
@@ -364,19 +481,59 @@ impl ModTarget {
     pub const fn ampeg(self) -> Option<AmpegParam> {
         match self {
             Self::Ampeg(param) => Some(param),
-            Self::Amplitude => None,
+            Self::Amplitude | Self::Tune => None,
         }
     }
 
-    /// `delta` 的单位是不是**时间**（秒）；`false` ⇒ 百分比。
+    /// `delta` 的单位是不是**时间**（秒）；`false` ⇒ 百分比或音分。
     ///
     /// 五个 `ampeg_*` 里只有 `sustain` 是百分比；⭐ [`Self::Amplitude`] 的
-    /// `amplitude_onccN` 表行 Unit ＝ **%**（逐字表行见模块文档 §5）⇒ `false`。
+    /// `amplitude_onccN` 表行 Unit ＝ **%**（逐字表行见模块文档 §5）⇒ `false`；
+    /// ⭐⭐ [`Self::Tune`] 的 `tune_*ccN` Unit ＝ **cents**（逐字表行与裁定见模块文档 §6）
+    /// ⇒ `false`（⛔ 不是"默认百分比"—— 调用方读 [`Self::unit`] 取真单位）。
     #[must_use]
     pub const fn is_time(self) -> bool {
         match self {
             Self::Ampeg(param) => param.is_time(),
-            Self::Amplitude => false,
+            Self::Amplitude | Self::Tune => false,
+        }
+    }
+
+    /// ⭐⭐ `delta` 的**单位名**（规范表行 Unit 列的字面；诊断与判据文案用）。
+    ///
+    /// ⚠ 它⛔ 不参与任何换算 —— 换算由各目标的消费方做
+    /// （`ampeg_*`／`amplitude` 见模块文档 §2／§5，`tune` 见 §6）。
+    #[must_use]
+    pub const fn unit(self) -> &'static str {
+        match self {
+            Self::Ampeg(param) => {
+                if param.is_time() {
+                    "seconds"
+                } else {
+                    "%"
+                }
+            }
+            Self::Amplitude => "%",
+            Self::Tune => "cents",
+        }
+    }
+
+    /// ⭐⭐ `delta` 的**取值域**（下界，上界），**逐目标不同**。
+    ///
+    /// * [`Self::Ampeg`] ／ [`Self::Amplitude`] ⇒ `-100..=100`
+    ///   （各 opcode 页 Modulation 表 Range 列，见模块文档裁决 2 与 §5.1）；
+    /// * ⭐⭐ [`Self::Tune`] ⇒ **`-9600..=9600` 音分**（模块文档 §6 的裁定：
+    ///   `tune_*ccN` 在规范里是 `pitch_onccN` 的 ARIA 别名，而 `pitch_onccN` 表行
+    ///   Range ＝ `-9600 to 9600`、Unit ＝ cents；`tune` 页自己的例子
+    ///   `pitch_oncc27=200` 也**超出** `tune` 自身的 `±100`）。
+    ///
+    /// ⚠ 调用方 [`crate::instrument::read_modulation_delta`] 是**唯一**读它的地方
+    /// ⇒ ⛔ 没有第二套域检查、⛔ 没有第二对常数被绕过。
+    #[must_use]
+    pub const fn delta_range(self) -> (f32, f32) {
+        match self {
+            Self::Ampeg(_) | Self::Amplitude => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
+            Self::Tune => (MIN_TUNE_MODULATION_DELTA, MAX_TUNE_MODULATION_DELTA),
         }
     }
 }
@@ -392,6 +549,66 @@ pub const MIN_MODULATION_DELTA: f32 = -100.0;
 
 /// `delta` 的上界（同上）。
 pub const MAX_MODULATION_DELTA: f32 = 100.0;
+
+/// ⭐⭐ `tune_*ccN` 的 `delta` 下界（**音分**；任务单 `#116`）。
+///
+/// 出处（逐字，模块文档 §6）：`tune` 页的 Modulation 表**没有** `tune_onccN` 行，
+/// 它列的是 `pitch_onccN`（Range ＝ **`-9600 to 9600`**、Unit ＝ **cents**），
+/// 而同页正文写「In ARIA, `tune_*ccN` can also be used as an alias for `pitch_*ccN`.」
+/// ⇒ `tune` 族的 `delta` 域随被别名的那一行取 **`±9600` 音分**。
+/// ⚠ 独立见证：`tune` 页自己的例子 `tune=-100` ＋ `pitch_oncc27=200` 里的 `200`
+/// **超出** `tune` 自身的 `-100 to 100` ⇒ `tune` 的基准域**不是**调制量的域。
+/// ⚠ 语料见证：登记语料里 `tune_*ccN` 的 `|delta| > 100` 有 **599** 处、最大 **2400** 音分
+/// ⇒ 若沿用 `±100` 会把今天**能解析**的 599 处变成不可解析。
+pub const MIN_TUNE_MODULATION_DELTA: f32 = -9600.0;
+
+/// ⭐⭐ `tune_*ccN` 的 `delta` 上界（`+9600` 音分；依据同 [`MIN_TUNE_MODULATION_DELTA`]）。
+pub const MAX_TUNE_MODULATION_DELTA: f32 = 9600.0;
+
+/// ⭐⭐ 一个八度的音分数（**音分 → 音高比** 换算的唯一分母；任务单 `#116`）。
+///
+/// ⚠ ⛔ 本常量**不是**本单发明的：`crates/yeban-sfz/src/playback.rs` 的
+/// `CENTS_PER_OCTAVE`（`= 1200.0`，`f64`）从 `b5ca1528`
+/// （"add the region -> renderable sample descriptor bridge"，2026-10-08）起就在这里，
+/// [`crate::Region::pitch_ratio`] 一直用它把 `transpose`（半音）与 `tune`（音分）
+/// 折成音高比：`2 ^ (((note − pitch_keycenter + transpose) × 100 + tune) / 1200)`。
+/// 本常量是那**同一个数**的 `f32` 形态（`tune` 的调制量在 `f32` 上求和 ⇒ 换算走 `f32`）。
+pub const TUNE_CENTS_PER_OCTAVE: f32 = 1200.0;
+
+/// ⭐⭐ `tune` 调制的**唯一换算**（任务单 `#116`）：音分增量 → 音高比乘子。
+///
+/// ```text
+/// tune_delta_cents = 0 + Σ_{cc} delta × curve(probe(cc))     // 单位：音分
+/// tune_ratio       = 2 ^ (tune_delta_cents / 1200)           // 线性乘子（无调制 ⇒ 恰 1.0）
+/// rate             = rate_base × tune_ratio                  // rate_base 已含基准 tune
+/// ```
+///
+/// * **基准 `tune` 不在本函数里**：它早就烘进
+///   [`crate::Region::pitch_ratio`]（离线）／摊平表的 `rate_per_note`（引擎）
+///   ⇒ 本函数只贡献**增量**（`base = 0.0`）；
+/// * `probe == None` ⇒ **一项 CC 都不读**、直接返回 `1.0`（⇒ `rate × 1.0` 在 binary32
+///   下**逐位不变**，与接线前逐位相同）；
+/// * `probe == Some` 且**没有** `tune` 项 ⇒ `cc_value_with_baked` 返回 `0.0`
+///   ⇒ `0.0f32.exp2()` 恰为 `1.0`（IEEE：`exp2(±0)` ＝ `1`）⇒ 同样逐位不变；
+/// * 曲线不可烘焙的项**不贡献**音分（⛔ 不当成曲线 0），与 [`cc_value_with_baked`] 同口径；
+/// * ⛔ **不钳位**：规范只给了 `delta` 的域（模块文档裁决 3）⇒ 本函数沿用。
+///   ⚠ 如实登记的边界：多个 `tune` 项代数相加后**可能**让 `2^x` 上溢成 `Inf`
+///   （`x > 128` 即 `|Σ delta| > 153600` 音分）或下溢成 `0`（`x < −149`）——
+///   消费方（`yeban-engine`）按**摊平期 `rate_per_note` 的既有守卫**（"速率必须有限正数，
+///   否则该区域不产生采样输出"）如实退休，⛔ 不静默改成 `1.0`。
+///
+/// 实时安全：纯算术 ＋ 定长切片 ＋ 一次 `exp2`；无分配、无锁、无 I/O。
+/// ⚠ `exp2` 属 ADR-0001 的超越函数类（与 [`crate::Region::pitch_ratio`] 同一个函数）
+/// ⇒ 跨架构用 ulp 预算判定，⛔ 不声称位型相等；**同一二进制内**三条路调用的是本函数
+/// **同一份**实现 ⇒ 逐位一致（判据 `S109`）。
+#[must_use]
+pub fn tune_ratio_with_baked(mods: &[BakedCcMod], probe: Option<&dyn Fn(u8) -> u8>) -> f32 {
+    let Some(probe) = probe else {
+        return 1.0;
+    };
+    let (cents, _unresolved) = cc_value_with_baked(0.0, ModTarget::Tune, mods, probe);
+    (cents / TUNE_CENTS_PER_OCTAVE).exp2()
+}
 
 /// 摊平表里**烘进**一条曲线的点数上限（[`BakedCurve`]）。
 ///
@@ -421,6 +638,16 @@ pub const MAX_BAKED_CURVE_POINTS: usize = 8;
 /// **两族合计**的 `(目标, CC)` 并集。⭐ `#115` 现读数：最大 **11** 条
 /// （剥 `//` 注释后按 `(目标, cc)` 去重；分母 1398 份 `.sfz`）⇒ **11 ≤ 20**
 /// ⇒ ⛔ **本常量不抬高、⛔ 不引入新 `Err`**（今天能解析的文件一个都不会变成不可解析）。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#116`）—— 被修订的是上面那个分**母**那一支里的
+/// "**两族**合计"**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋
+/// 点名被修订的支）：`#116` 之后这张表**同时**承载**三族**目标（`ampeg_*` ＋ `amplitude`
+/// ＋ `tune`）⇒ 正确的分母是**三族合计**的 `(目标, CC)` 并集。⭐ `#116` 现读数：
+/// 与 `#104` **同一口径**（含 `_curveccN` 键的并集）最大 **15** 条
+/// （`assets/samples/karoryfer-big-rusty-drums/Programs/01-full.sfz` —— 与 `#104` 登记
+/// 的 15 是**同一个文件同一个数**）；仅按"真的产生 `delta` 的项"去重则最大 **13** 条。
+/// ⇒ **15 ≤ 20** ⇒ ⛔ **本常量仍然不抬高、⛔ 仍然不引入新 `Err`**
+/// （今天能解析的文件一个都不会变成不可解析）。
 pub const AMPEG_MOD_CAP: usize = 20;
 
 /// 一个调制项的**形态**（名字后缀）。
@@ -440,6 +667,11 @@ pub enum ModulationForm {
 /// 识别 `ampeg_<param><suffix>` ／ ⭐ `ampeg_vel2<param>` ／ ⭐ **`amplitude<suffix>`**
 /// 三族，返回 `(⭐ 目标, 形态, 下标数字串)`。
 ///
+/// ⭐ ⭐ **追加修订段（任务单 `#116`）—— 被修订的是上面那句里的族数"三族"**
+/// （⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+/// `#116` 加上第四族 **`tune<suffix>`** ⇒ 现在是**四族**。⚠ 被修订的只是**族数**：
+/// `#104`／`#106`／`#115` 那三族的识别文本、后缀政策与返回形状**一字未变**。
+///
 /// 四种后缀（大小写敏感，与其它 opcode 同口径）：
 /// * `ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 旧形）；
 /// * `_ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 的另一种写法；`amplitude_ccN` 用它，
@@ -455,9 +687,12 @@ pub enum ModulationForm {
 ///
 /// ⭐ **目标**（任务单 `#115`）：`ampeg_…` 一族 ⇒ [`ModTarget::Ampeg`]；
 /// `amplitude<suffix>` ⇒ [`ModTarget::Amplitude`]（逐字表行见模块文档 §5）。
+/// ⭐⭐ **目标**（任务单 `#116`）：`tune<suffix>` ⇒ [`ModTarget::Tune`]
+/// （逐字表行与裁定见模块文档 §6）。
 /// `amplitude_smoothccN`（表行 Type ＝ N/A）与裸 `amplitude`（没有下标）都**不是**
 /// 本函数的目标（前者按未知 opcode 忽略、后者是**基准** opcode、由
-/// [`crate::instrument`] 单独读）。
+/// [`crate::instrument`] 单独读）。⭐ 同理 `tune_smoothccN` / `tune_stepccN`
+/// （`tune` 页的 Modulation 表没有这两行）与裸 `tune=` 也都**不是**本函数的目标。
 ///
 /// 数字串必须非空且全是 ASCII 数字；否则返回 [`None`]（按未知 opcode 忽略，与
 /// [`crate::instrument`] 里 `amp_velcurve_N` / `loccN` 两族同一条口径）。
@@ -483,6 +718,25 @@ pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &
             return None;
         }
         return Some((ModTarget::Amplitude, form, digits));
+    }
+    // ⭐⭐ `tune` 族（任务单 `#116`）：与 [`ModTarget::Amplitude`] **同款**的四种后缀
+    // （⛔ 不另开一套识别）。⚠ 检查顺序同上面：`_curvecc` 在 `_cc` 之前、`_oncc` 也在
+    // `cc` 之前。⚠ 裸 `tune=`（静态基准）在这里被 `strip_prefix("cc")?` 挡掉
+    // ⇒ 它**不是**本族的目标（由 [`crate::instrument`] 单独读，见模块文档 §6）。
+    if let Some(tail) = name.strip_prefix("tune") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Tune, form, digits));
     }
     let rest = name.strip_prefix("ampeg_")?;
     // ⭐ 力度形态（任务单 `#106`）：`ampeg_vel2<param>` —— 整名到此为止。
@@ -806,7 +1060,7 @@ mod tests {
     #[test]
     fn the_three_suffixes_are_recognised_and_nothing_else_is() {
         // ⭐ 四形态里"名字"这一层：旧形 `ccN` / SFZ2 `_onccN` 同归 Delta，`_curveccN` 归 Curve。
-        let cases: [(&str, ModTarget, ModulationForm, &str); 9] = [
+        let cases: [(&str, ModTarget, ModulationForm, &str); 13] = [
             (
                 "ampeg_attackcc100",
                 ModTarget::Ampeg(AmpegParam::Attack),
@@ -862,6 +1116,11 @@ mod tests {
                 ModulationForm::Curve,
                 "110",
             ),
+            // ⭐⭐ 任务单 `#116`：`tune` 族的四种后缀（与 `amplitude` **同款**）。
+            ("tune_oncc34", ModTarget::Tune, ModulationForm::Delta, "34"),
+            ("tune_cc41", ModTarget::Tune, ModulationForm::Delta, "41"),
+            ("tune_curvecc1", ModTarget::Tune, ModulationForm::Curve, "1"),
+            ("tunecc1", ModTarget::Tune, ModulationForm::Delta, "1"),
         ];
         for (name, target, form, digits) in cases {
             assert_eq!(
@@ -898,6 +1157,20 @@ mod tests {
             "amplitude_oncc1x",
             "amplitudeoncc1",
             "amplitude_cc-1",
+            // ⭐⭐ `#116` 的反向腿：`tune` 族的**非目标**写法一律 None。
+            // ⚠ 裸 `tune`（基准 opcode）与 `tune_smoothccN`／`tune_stepccN`
+            // （`tune` 页的 Modulation 表没有这两行）都在这里 —— ⛔ 不是本族。
+            "tune",
+            "tune_smoothcc1",
+            "tune_stepcc1",
+            "tune_hdcc12",
+            "tune_oncc",
+            "tune_cc",
+            "tune_curvecc",
+            "tune_oncc1x",
+            "tuneoncc1",
+            "tune_cc-1",
+            "tuned",
         ] {
             assert_eq!(parse_modulation_name(bad), None, "{bad:?} must not match");
         }
@@ -912,6 +1185,47 @@ mod tests {
         }
         assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
         assert_eq!(ModTarget::ALL[5], ModTarget::Amplitude, "新目标必须在末尾");
+        // ⭐⭐ 任务单 `#116`：`#115` 那句"新目标必须在末尾"里的 `ALL[5]` 断言
+        // **原样保留**（它现在钉的是"既有目标的下标一个都没动"）；新目标 `Tune`
+        // 加在**它之后**（下标 6 ＝ `COUNT − 1`）。
+        assert_eq!(ModTarget::ALL[ModTarget::COUNT - 1], ModTarget::Tune);
+        assert_eq!(ModTarget::Tune.index(), AmpegParam::COUNT + 1);
+        assert_eq!(ModTarget::Tune.name(), "tune");
+        assert_eq!(ModTarget::Tune.ampeg(), None);
+        assert!(!ModTarget::Tune.is_time(), "`tune_onccN` 的单位是音分");
+        assert_eq!(ModTarget::Tune.unit(), "cents");
+        assert_eq!(
+            ModTarget::Tune.delta_range(),
+            (-9600.0, 9600.0),
+            "⭐ `tune_*ccN` 是 `pitch_onccN` 的别名 ⇒ 域随那一行（±9600 音分），\
+             ⛔ 不是 `tune` 基准自己的 ±100"
+        );
+        assert_eq!(
+            ModTarget::Amplitude.delta_range(),
+            (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
+        );
+        assert_eq!(ModTarget::Amplitude.unit(), "%");
+        assert_eq!(ModTarget::Ampeg(AmpegParam::Attack).unit(), "seconds");
+        assert_eq!(ModTarget::Ampeg(AmpegParam::Sustain).unit(), "%");
+        // ⭐ 目标过滤真的按 `target` 走：`Tune` 的项 ⛔ 不影响任何既有目标。
+        let tune_item = vec![BakedCcMod {
+            target: ModTarget::Tune,
+            cc: 1,
+            delta: 1200.0,
+            curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),
+        }];
+        for param in AmpegParam::ALL {
+            let (other, _) = ampeg_value_with_baked(1.0, param, &tune_item, &|_| 127);
+            assert_eq!(other, 1.0, "{param:?} 的基准值必须一动不动");
+        }
+        let (amp, _) = cc_value_with_baked(100.0, ModTarget::Amplitude, &tune_item, &|_| 127);
+        assert_eq!(amp, 100.0, "`amplitude` 也必须一动不动");
+        // ⭐ `tune` 的换算：+1200 音分在 CC 满量程 ⇒ 恰一个八度（×2）。
+        assert_eq!(tune_ratio_with_baked(&tune_item, Some(&|_| 127)), 2.0);
+        // ⭐ 无探针 ⇒ 恰 `1.0`（⛔ 一项 CC 都不读）。
+        assert_eq!(tune_ratio_with_baked(&tune_item, None), 1.0);
+        // ⭐ 有探针但表里没有 `tune` 项 ⇒ `0.0.exp2()` 恰 `1.0`（逐位不变）。
+        assert_eq!(tune_ratio_with_baked(&[], Some(&|_| 127)), 1.0);
         assert_eq!(ModTarget::Amplitude.name(), "amplitude");
         assert_eq!(ModTarget::Amplitude.ampeg(), None);
         assert!(
