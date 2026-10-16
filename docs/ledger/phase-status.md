@@ -11716,3 +11716,25 @@ cargo run --release -p yeban-engine --locked --features device --example measure
 ⭐ ⚠ **六、⭐ 一条可复用口径（⭐ 第 286 条）**: ⭐ ⭐ **新目标的单位若与既有类别**物理不同**，⭐ 就**新开一类**（⭐ ⛔ 不要塞进最接近的那类）** —— ⚠ **因为**：⭐ ① ⭐ 单位类别是**后缀接受集**的事实源 ⇒ ⭐ 塞错类会让**不该接受的后缀被静默接受**（⭐ 本条：⭐ dB 塞进 `Percent` ⇒ `volume_oncc1=50%` 静默生效）；⭐ ② ⭐ `#117` 那种**显式枚举**的存在理由就是让"⭐ 加一类"⭐成为**一行改动**（⭐ 而布尔时代只能二选一）；⭐ ③ ⭐ 扩类的**风险面**只有"⭐ 会不会动既有派生谓词"⭐ —— ⭐ 用 `matches!` 从枚举**派生**（⭐ 如 `is_time() == matches!(Seconds)`）⇒ ⭐ **新增变体自动落 false**、⭐ 既有目标**逐位不变** ✓ ⭐ **做法**: ⭐ ① ⭐ 先读规范那一行的 **Unit**；⭐ ② ⭐ 与既有各类**逐条比**（⭐ 函数形式、⭐ 后缀集）；⭐ ③ ⭐ 不同 ⇒ ⭐ **新开变体** ＋ ⭐ **逐格说明它对"⭐ 目标 × 后缀"⭐矩阵的影响**（⭐ 前后计数都**现算**）；⭐ ④ ⭐ ⛔ 不要用"⭐ 差不多"⭐的类别省事 ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `a0a95def` 的 CI 判决** ＋ ⭐ **`gain_ccN`／`gain_onccN`／`gain_curveccN`**（⭐ 规范 Modulation 表里**逐字的 delta 行名**、⭐ 语料裸出现 **0** 处 ⇒ ⭐ 另开单 ＋ 需裁"⭐ 与静态 `gain` 别名 opcode 的关系"）＋ ⭐ **`global_volume`／`master_volume`／`group_volume`**（⭐ 三个静态 opcode **本仓仍未解析**、⭐ 其 CC 调制 **47 处／32 文件** ⇒ ⭐ 建议新单）＋ ⭐ **`volume_smoothccN`／`volume_stepccN`**（⭐ Range 空、⭐ Unit `N/A` ⇒ ⭐ 不做 ＋ 已判据钉住）＋ ⭐ **`cutoff_oncc*`（8）**（⭐ `cutoff` 静态都未解析 ⇒ 先勘察）＋ ⭐ **`loop_type` 新单**（⭐ 需裁决）＋ ⭐ **立体声路立项**（⭐ `pan` 前置）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
+
+---
+
+## R807 实测追加（2026-10-17）：⭐⭐ **`a0a95def`（`#119`：`volume` 族的 CC 调制 ＋ 第四类单位 `Decibels`）的 CI 判决 ＝ `success`**（⭐ 真绿：⭐ 两条平台腿各 **18** 步）
+
+⭐ run `38950185474`（⭐ `created 18:48:43Z → updated 19:07:15Z`，⭐ 约 **19 分钟**）✓
+
+| 腿 | 结论 | 步数 | 起 → 止（UTC） | 时长 |
+| :--- | :--- | ---: | :--- | ---: |
+| `plan`／`lockfile`／`checks`／`deny` | success | 5／6／15／6 | 18:48:46 → 18:49:58 | 8／23／72／53 s |
+| ⭐ `rust (yeban-sfz)` | success | 15 | 18:48:58 → 18:49:39 | **41 s** |
+| ⭐ `rust (yeban-engine)` | success | 15 | 18:48:57 → 18:51:48 | **171 s** |
+| `rust (yeban-mcp)` | success | 15 | 18:48:57 → 18:51:57 | 180 s |
+| `rust (yeban-ui-mcp)` | success | 15 | 18:48:58 → 18:51:04 | 126 s |
+| ⭐ `rust (yeban-app)` | success | 15 | 18:48:58 → 19:04:54 | **956 s** |
+| ⭐ `macos` | success | **18** | 18:49:03 → 19:05:52 | **1009 s** |
+| ⭐ `windows` | success | **18** | 18:48:58 → 19:07:15 | **1097 s** |
+| ⚠ `rust (workspace 全量)` | **skipped** | **0** | — | — |
+
+⭐ ⚠ **读法**: ⭐ 本单在 `yeban-sfz` **公开面新增 `ModTarget::Volume` ＋ `ModUnit::Decibels`**（⭐ 第四类单位）⇒ ⭐ **五条依赖腿全部真跑且绿**（sfz 41 s／engine 171 s／app 956 s／mcp／ui-mcp）＋ ⭐ 两条平台腿各 18 步 ⇒ ⭐ **受影响集合被完整覆盖**（⭐ 扩单位类别**未**漏掉任何依赖腿）✓ ⭐ ⚠ `workspace 全量` **skipped／0 步 ⇒ ⛔ 不计入绿**（⭐ 非缺口）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`gain_ccN`／`gain_onccN`／`gain_curveccN`**（⭐ 规范 Modulation 表里**逐字的 delta 行名**、⭐ 语料裸出现 **0** 处 ⇒ ⭐ 另开单 ＋ 需裁与静态 `gain` 别名的关系）＋ ⭐ **`global_volume`／`master_volume`／`group_volume`**（⭐ 三个静态 opcode 未解析、⭐ 其 CC 调制 **47 处／32 文件**）＋ ⭐ **`volume_smoothccN`／`volume_stepccN`**（⭐ Range 空／Unit `N/A` ⇒ ⭐ 不做 ＋ 已钉住）＋ ⭐ **`cutoff_oncc*`（8）**（⭐ `cutoff` 静态都未解析 ⇒ 先勘察）＋ ⭐ **`loop_type` 新单**（⭐ 需裁决）＋ ⭐ **立体声路立项**（⭐ `pan` 前置）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **硬件第 6 项复测** ✓
