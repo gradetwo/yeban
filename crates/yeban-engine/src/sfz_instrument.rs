@@ -53,7 +53,7 @@
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
-//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩ |
+//! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；⭐ **任务 `#97` 把 `loop_end == pcm_len` 那一档从"不循环"改成"循环 ＋ 插值钳位"**（见下面"`loop_end == pcm_len`"一节）；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩ |
 //! | ⑨ | ⭐ **多 `sample=` 每区域各播自己** | ⭐ **步 3 已做**：摊平表持 `samples: Vec<PreparedSample>` ＋ [`PreparedRegion::sample_index`] 指路；⚠ 单样本重载 [`PreparedSfz::prepare`] **仍是广播**（键/力度映射对、**音色内容错** ⇒ 读数 `sample_content=broadcast(1)`） |
 //! | ⑩ | `direction` / `pan` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带）。⚠ 沿革：本行原文把 `off_mode` 也列在这里 —— ⭐ **任务 `#94` 已把它接线**（`PreparedRegion` 承载 ＋ `off_by` 关断期用；⛔ 作用面**不含** MIDI note-off），故本行只剩 `direction` / `pan` |
 //!
@@ -92,7 +92,9 @@
 //!   ⭐ **但 `loop_mode=one_shot` 例外**（任务 `#91`：`one_shot` 忽略 note-off ⇒
 //!   声部⛔ 不因 `end_sample` 退休）；
 //! * ⭐ **循环声部（`loop_continuous` / `loop_sustain`）不由"样本播完"退休**：
-//!   回绕把源位置压在窗口内（[`reduce_loop_window`] 保证窗口落在可读范围内）⇒
+//!   回绕把源位置压在窗口内（[`reduce_loop_window`] 保证窗口落在可读范围内；
+//!   ⭐ 终点**恰好等于** `pcm_len` 时靠 [`mix_span_into`] 的**插值钳位**可读，
+//!   见下面"`loop_end == pcm_len`"一节）⇒
 //!   只剩 `end_sample`（无包络）或**释放段走完**（有包络且会进释放）能终止它。
 //!
 //! ⚠ `span` 的**起点**（`offset`）与**终点**（`end`）**步 3 已应用**：三条路都从
@@ -160,6 +162,22 @@
 //! [`PreparedRegion::loop_window`] 返回 `None` ＝ **按不循环渲染**
 //! （零长度循环没有定义，⛔ 不返回 `start == end` 的死循环窗口）。
 //! 这是 `yeban-sfz` 的既有裁决，本片**只沿用**。
+//!
+//! ## ⭐ `loop_end == pcm_len`（`#91` 登记、任务单 `#97` 裁决；⛔ 不是新机制）
+//!
+//! ⚠ **沿革（⛔ 不改写历史）**：循环接线片（任务 `#91`）的归约要求 `loop_end`
+//! **严格小于** `pcm_len`（理由是归约层无法保证 `index + 1` 可读）⇒ 那一档被
+//! **判成"不循环"**。`#91` 把它作为一条**边界**主动上报，集成者登记 ＋ 开单。
+//!
+//! ⭐ **本单（`#97`）的裁决**：**在循环边界处把插值钳位**，⛔ 不是把窗口判成不循环 ——
+//! 即 `loop_end == pcm_len` **也循环**，回绕点上读 `index + 1` 时**钳到最后一个样本**
+//! （[`mix_span_into`] 的"钳位"一节；理由：它是 `loop_end < pcm_len` 那条既有路
+//! 唯一同形的最小延伸 —— 那条路读的是窗口外**紧邻**的那一格，而 `== pcm_len` 时那一格
+//! **不存在**）。⚠ **`loop_end == pcm_len - 1` 的行为⛔ 一字未动**（判据 `S46`／`S47`
+//! 两条腿并列量周期；`S28`／`S30`／`S37` 逐位指纹原样）。
+//!
+//! ⚠ 归约层**仍**拒绝 `loop_end > pcm_len`（⛔ 越界窗口不发明"夹到末尾"语义）；
+//! 本单只放宽**恰好等于**这一档。
 //!
 //! ## 输入政策不变（⭐ 响亮 `Err`，⛔ 不静默降级）
 //!
@@ -643,10 +661,13 @@ pub fn reduce_span(span: Option<SampleSpan>, pcm_len: usize) -> Option<(f32, u64
 ///    （零长度循环没有定义，⛔ 不返回 `start == end` 的死循环窗口）。这是 `yeban-sfz`
 ///    的**既有**裁决，本函数只**沿用**它，⛔ 不新增机制、⛔ 不报错
 ///    （两个值**各自**合法，只有组合退化）；
-/// 3. **越界**：窗口终点超出**源采样区间**（[`reduce_span`] 的归约结果）或超出 PCM
-///    可读范围 ⇒ `None`。⚠ 线性插值要读 `index + 1`
-///    （见 [`mix_span_into`]）⇒ 窗口终点必须**严格小于** `pcm_len`，否则回绕后会读到
-///    PCM 之外的 `pcm[loop_end]`（⛔ 越界读、⛔ panic 都不允许）；
+/// 3. **越界**：窗口终点超出**源采样区间**（[`reduce_span`] 的归约结果）或**超过** PCM
+///    长度 ⇒ `None`。⚠ 线性插值要读 `index + 1`：窗口终点**恰好等于** `pcm_len`
+///    （＝ 文件用 `loop_end = 总帧数` 表达"循环到结尾"）时，回绕点上那一格落在 PCM 之外
+///    ⇒ [`mix_span_into`] 把下一格**钳到最后一个样本**（⛔ 越界读、⛔ panic 都不允许；
+///    见该函数的"钳位"一节）。⭐ 任务单 `#97` **把这一档从"不循环"改成"循环 ＋ 钳位"**：
+///    旧口径是 `loop_end >= pcm_len ⇒ None`，会把那种文件**静默变成不循环**；
+///    ⚠ `loop_end == pcm_len - 1` 的行为⛔ 一字未动（窗口终点仍**不允许超过** `pcm_len`）；
 /// 4. **合法窗口**：半开区间 `[loop_start, loop_end)`，⛔ 不夹、⛔ 不改写。
 ///
 /// ⚠ **零分配、零锁、零 I/O**（纯整数比较）⇒ 可被实时声部在**逐块**路径调用 [MUST-GATE-001]。
@@ -667,7 +688,10 @@ pub fn reduce_loop_window(
     if u64::from(loop_end) > source_end {
         return None;
     }
-    if loop_end as usize >= pcm_len {
+    // ⭐ 任务单 `#97`：**超过** `pcm_len` 才拒绝（旧口径是 `>=`）。
+    // 恰好等于 `pcm_len` 的窗口**照常循环** ⇒ 回绕点上的插值由 `mix_span_into` 钳位
+    // （⛔ 不是把窗口判成"不循环"）。
+    if loop_end as usize > pcm_len {
         return None;
     }
     Some(LoopWindow {
@@ -2235,15 +2259,17 @@ impl EnvRun {
 ///
 /// 停止条件（写每个样本**之前**）：`floor(position) + 1 >= source_end` ——
 /// 线性插值需要 `position` 与 `position + 1` 两个样本。
+/// ⭐ **钳位腿例外**（任务单 `#97`）：窗口终点恰好等于 `pcm_len` 时"下一格"由钳位给定
+/// ⇒ 条件放宽成 `floor(position) >= source_end`（见下面"钳位"一节）。
 /// `source_end` 由调用方给出（⭐ 三条路都是 [`reduce_span`] 的归约结果）：
 /// * 摊平表的一次性调用给 [`PreparedRegion::span_bounds`] 的终点（`span` 已应用）；
 /// * 实时声部给同一个 [`PreparedRegion::span_bounds`]（触发期抄下）；
 /// * 离线 [`SfzInstrument::render_note_into`] 给同一份归约。
 ///
 /// ⚠ **给了循环窗口时这一条不可达**：回绕把位置压在 `[loop_start, loop_end)` 内，
-/// 而窗口已由 [`reduce_loop_window`] 保证 `loop_end < pcm_len` 且
-/// `loop_end <= source_end` ⇒ 声部由**外部**终止（`end_sample`）或继续循环，
-/// ⛔ 不再由"样本播完"退休。
+/// 而窗口已由 [`reduce_loop_window`] 保证 `loop_end <= pcm_len` 且
+/// `loop_end <= source_end`（⭐ `== pcm_len` 那一档靠上面的钳位可读）⇒ 声部由**外部**
+/// 终止（`end_sample`）或继续循环，⛔ 不再由"样本播完"退休。
 ///
 /// ⭐ `fade` 是**窃取淡出**：非淡出传 [`FadeRamp::NONE`]（`× 1.0` 逐位不变）；
 /// 淡出中**写满 `remaining` 帧就返回**（`written == remaining`）⇒ 调用方可以就地
@@ -2267,6 +2293,27 @@ impl EnvRun {
 ///   `source_end`，循环退化成长音）；"重复减到窗口内"则有**死循环**风险
 ///   （`position` 远大于 `len` 时 f32 的 ULP 会把 `-= len` 吸收掉）。
 ///   `fmod` 的余数**按定义精确**、逐样本**有界**（一次求余）⇒ 两条风险都不在。
+///
+/// ## ⭐ 钳位（任务单 `#97`：`loop_end == pcm_len` 的窗口**也循环**）
+///
+/// 窗口终点**恰好等于** `pcm_len` 时（文件用 `loop_end = 总帧数` 表达"循环到结尾"）
+/// 位置天然被封在 `[loop_start, pcm_len)`，而线性插值要读 `index + 1` ——
+/// 最后一格上那一格**落在 PCM 之外**。本函数的处置是**钳到最后一个样本**
+/// （`next = min(index + 1, pcm_len - 1)`），⛔ **不是**把窗口判成"不循环"：
+///
+/// * **钳到最后一格**（而不是 `0`、也不是回绕到 `loop_start`）：它是**唯一**与
+///   `loop_end < pcm_len` 那条既有路同形的最小延伸 —— 那条路在窗口末帧读的是
+///   `pcm[loop_end]`（窗口**外**紧邻的那一格，⭐ 本单⛔ 不改），而 `loop_end == pcm_len`
+///   时"紧邻的那一格"**根本不存在** ⇒ 只能停在最后一个可读样本上（"保持"语义）。
+///   ⚠ 回绕到 `loop_start` 是**另一条**语义（把插值也卷进循环缝），那会与
+///   `loop_end == pcm_len - 1` 的既有读数分叉 ⇒ ⛔ 本单不取；
+/// * **有界**：`next` 恒在 `[0, pcm_len)`，样本是 `pcm[index]` 与 `pcm[next]` 的凸组合
+///   ⇒ 幅度不超过窗口内两个样本的包络（⛔ 不产生爆音），且**一次越界读都没有**；
+/// * **逐位不变**：`rate == 1.0` 且窗口为整数时 `frac == 0` ⇒ 读的是 `pcm[index] * 1.0`
+///   ＋ `pcm[index] * 0.0` ＝ `pcm[index]`，⭐ 与"多读一格"无关；
+/// * ⭐ **代价**：钳位腿的**逐样本**增量只有一次 `.min()` 与一次"是不是钳位腿"的
+///   `Option` 判别（`pcm.len()` 那一侧的判断在**函数开头**算一次）
+///   ⇒ 纯算术、⛔ 零分配、⛔ 零锁、⛔ 零 I/O [MUST-GATE-001]。
 // ⚠ 9 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
 // （本仓既有同款豁免见 `SfzVoice::new`）。⭐ `loop_window` 与 `env` 是仅有的**静态**入参
 // （触发期/构造期/块首定好），⛔ 不在逐样本路径上构造。
@@ -2284,6 +2331,13 @@ pub(crate) fn mix_span_into(
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
     let loop_bounds = loop_window.map(|window| (window.start as f32, window.len() as f32));
+    // ⭐ **钳位腿**（任务单 `#97`）：窗口终点**恰好等于** PCM 长度时，回绕点上要读的
+    // `index + 1` 落在 PCM 之外 ⇒ 把"插值要读的下一格"钳到**最后一格**
+    // （`Some(last)` ⇒ 本声部走钳位腿；`pcm` 为空时 `checked_sub` ⇒ `None`）。
+    // ⚠ **循环外**预算：逐样本路径只做一次 `.min()`，⛔ 不做 `pcm.len()` 比较。
+    let tail_clamp = loop_window
+        .filter(|window| window.end as usize == pcm.len())
+        .and_then(|_| pcm.len().checked_sub(1));
     let mut written = 0usize;
     for slot in out.iter_mut() {
         // ⭐ 逐样本的引擎**绝对**帧（包络的释放进度 `k = abs − epoch` 靠它算；
@@ -2300,7 +2354,22 @@ pub(crate) fn mix_span_into(
             *position = loop_start + (*position - loop_start) % loop_len;
         }
         let index = *position as usize;
-        if index as u64 + 1 >= source_end || index + 1 >= pcm.len() {
+        // ⭐ **钳位**（任务单 `#97`）：钳位腿上 `index + 1` 那一格已经不在 PCM 里
+        // ⇒ 换成最后一格（⛔ 越界读、⛔ panic）；其余两条路**逐字**是原来的 `index + 1`。
+        let next = match tail_clamp {
+            Some(last) => index.saturating_add(1).min(last),
+            None => index + 1,
+        };
+        // 停止条件（写每个样本**之前**）：默认 `floor(position) + 1 >= source_end`
+        // —— 线性插值需要 `position` 与 `position + 1` 两个样本。
+        // ⭐ 钳位腿上"下一格"已被钳到最后一格 ⇒ 只要求 `index` 本身仍在源区间内
+        // （⭐ 于是 `loop_end == pcm_len` 的窗口能在最后一格上照常回绕，⛔ 不再被当退休）。
+        let past_source_end = if tail_clamp.is_some() {
+            index as u64 >= source_end
+        } else {
+            index as u64 + 1 >= source_end
+        };
+        if past_source_end || next >= pcm.len() {
             break;
         }
         // ⭐ 包络（本片新增）：`None` ⇒ `1.0` ⇒ 下面那个乘法是**恒等**的 `× 1.0`
@@ -2314,7 +2383,8 @@ pub(crate) fn mix_span_into(
             None => 1.0,
         };
         let frac = *position - index as f32;
-        let sample = pcm[index] * (1.0 - frac) + pcm[index + 1] * frac;
+        // ⚠ `next`（⭐ 钳位腿上是最后一格）⛔ 不是 `index + 1`：越界读一次都不允许。
+        let sample = pcm[index] * (1.0 - frac) + pcm[next] * frac;
         // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**；
         // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
         *slot += sample * gain * fade.gain * env_gain;

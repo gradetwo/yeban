@@ -49,6 +49,9 @@
 //! | ⭐ S36 | ⭐ **`loop_sustain` 与 `loop_continuous` 在 note-off 之后输出不同**（任务 `#92` 新增；⭐ **任务 `#94` 按规范改写期望**） | 两臂**各配一条**"它自己该怎样"：`loop_continuous` ⇒ note-off 就地**进释放**且**释放期照旧回绕** ⇒ 非零**恰好 680**（200 ＋ 480；全程逐点 ＝「循环 × 斜坡」）；`loop_sustain` ⇒ 进释放、释放期**⛔ 不循环**（源下标逐帧 +1、永不回绕）⇒ 非零**恰好 463**（"释放走完"与"到样本尾"**谁先到谁结束** ⇒ 样本尾先到）；反向腿：两条腿的非零数**不同**（680 ≠ 463）＋ 输出越过 `end_sample` ＋ 理论值由 `pcm` ＋ 斜坡**独立算出** |
 //! | ⭐ S37 | ⭐ **无 `ampeg_*` 的既有夹具逐位不变**（任务 `#92` 新增；§4.4） | 两臂（`loop_continuous` ＋ `end_sample = 200`、`no_loop` ＋ `end_sample = u64::MAX`）经实时池 512 帧的 **FNV-1a 指纹** ＝ **改动前实测** `0xa9dec8a87f69106c` / `0xd3c2a82076bd8947`（基线探针在 base `1beffe2a`、工作树干净时测得，测后删除）；⭐ **反向腿**：同一输出乘 `1.0000001` ⇒ 指纹**必须变** |
 //! | ⭐ S38 | ⭐ **"取线性段"那条登记可判**（任务 `#92` 新增；§3.5） | `include_str!("../src/sfz_instrument.rs")` 必须含字面量"`本仓取线性段；参考实现的指数／对数选项不在本片范围内`"＋ note-off 四档语义表里那一条；反向腿：文档里**没有**的句子 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真） |
+//! | ⭐ S46 | ⭐ **`loop_end == pcm_len` 也循环**（任务 `#97` 新增；§3.1） | 两条腿（`loop_end = pcm_len − 1 = 399` / `= pcm_len = 400`）**都必须周期化**，各断言**实测最小周期**恰好 ＝ `loop_end − loop_start`（`299` / `300`）＋ 下标序列**逐帧精确**（0 处不符）＋ 整段写满（⛔ 不因"样本播完"退休）；反向腿：窗口段 ≥ 2 个不同位模式 |
+//! | ⭐ S47 | ⭐ **钳位不越界、不爆音**（任务 `#97` 新增；§3.2） | `rate = 2^-1 = 0.5`（`pitch_keycenter=72`）⇒ `frac ≡ 0.5`（⭐ `rate=1.0` 时 `frac ≡ 0`，钳位**读不出差别**）：钳位腿边界帧 **逐位** ＝ `pcm[399]*(1−0.5) + pcm[399]*0.5`（"钳到 0"会读 `pcm[0] = −1.0` ⇒ 必红）＋ 进入循环后**每一帧**都落在窗口 `[min,max]` 内 ＋ 全部 `\|out\| ≤ 样本峰值`（不爆音）＋ 输出帧周期 ＝ `2 × (loop_end − loop_start)`；⭐ 未钳位腿（`399`）的边界帧**仍**读窗口外紧邻的 `pcm[loop_end]`（行为不变的正面见证） |
+//! | ⭐ S48 | ⭐ **既有判据读数原样（复跑并断言）**（任务 `#97` 新增；§3.3） | `S28`／`S30` 的周期（`64` / `100`）＋ 逐帧下标（0 处不符）；`S37` 的两个 **FNV-1a 指纹**（`0xa9dec8a87f69106c` / `0xd3c2a82076bd8947`）＋ 非零帧数（`200` / `399`）；`S33` 的无 `loop_*` 夹具指纹（`0xa933ddab286bdf5e`）⇒ ⭐ **既有判据 0 条变状态** |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -4442,5 +4445,342 @@ fn s45_an_off_by_hard_stop_keeps_the_pending_voice_in_the_same_slot() {
     assert!(
         out.iter().any(|sample| *sample != 0.0),
         "⭐ 接管者必须真的发声（⛔ 不是「槽还在但永远不出声」）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S46～S48：**`loop_end == pcm_len` 也循环（插值钳位）**（任务单 `#97`）
+//
+// 缺口（`#91` 主动登记、集成者确认是真的）：`reduce_loop_window` 的旧口径要求
+// `loop_end` **严格小于** `pcm_len`（理由是线性插值要读 `index + 1`）⇒
+// `loop_end = 文件总帧数`（"循环到结尾"）的窗口被**判成不循环** ⇒ 真实 SFZ 会
+// **静默变成不循环**。裁决：**在循环边界处把插值钳位**，⛔ 不是把窗口判成不循环。
+//
+// 判据分工：
+//   * S46 —— 两条腿（`pcm_len − 1` / `pcm_len`）**都周期化**，各自实测周期精确；
+//   * S47 —— 钳位**不越界、不爆音**，且 `pcm_len − 1` 那条腿**未被钳位**（行为不变）；
+//   * S48 —— 既有判据（`S28`／`S30`／`S37`／`S33`）的读数**原样复跑并断言**。
+// ---------------------------------------------------------------------------
+
+/// ⭐ S46（任务单 `#97`；§3.1）：**`loop_end == pcm_len` 也循环**，且两条腿的
+/// **实测最小周期**各自恰好等于 `loop_end − loop_start`。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 实时池（[`SfzVoicePool`]）渲染出的一段输出；单位 ＝ **源采样下标**
+/// （斜坡夹具**逐帧反解**，见 [`ramp_sample`]；`rate == 1.0` ⇒ 源下标与输出帧一一对应）。
+///
+/// # 两条腿（⭐ 都必须循环）
+///
+/// | 腿 | `loop_end` | 声明周期 | 为什么必须量 |
+/// | :--- | :--- | :--- | :--- |
+/// | **A（既有）** | `pcm_len − 1 = 399` | `299` | ⭐ 硬边界：它的行为⛔ 不许变 |
+/// | **B（本单）** | `pcm_len = 400` | `300` | ⭐ 旧口径把它**判成不循环** ⇒ 本单必须让它周期化 |
+///
+/// 两条腿各断言：窗口逐字回读／整段写满／**实测最小周期 == 声明周期**／下标序列
+/// **逐帧精确**（0 处不符）。⭐ **反向腿**：窗口段必须 ≥ 2 个不同位模式（⛔ 防空转）。
+#[test]
+fn s46_a_window_ending_exactly_at_the_sample_end_still_loops() {
+    for (label, loop_end, period) in [
+        (
+            "既有腿 loop_end = pcm_len − 1",
+            LOOP_PCM_FRAMES - 1,
+            LOOP_PCM_FRAMES - 1 - LOOP_START,
+        ),
+        (
+            "本单腿 loop_end = pcm_len",
+            LOOP_PCM_FRAMES,
+            LOOP_PCM_FRAMES - LOOP_START,
+        ),
+    ] {
+        let plan = prepare_with(
+            &loop_sfz("loop_continuous", LOOP_START, loop_end),
+            &ramp_sample(LOOP_PCM_FRAMES),
+        );
+        let region = &plan.regions()[0];
+        assert_eq!(
+            (region.loop_start(), region.loop_end()),
+            (LOOP_START as u32, loop_end as u32),
+            "⭐ {label}：摊平表必须逐字带出两个循环点"
+        );
+        let window = region.loop_window(LOOP_PCM_FRAMES).unwrap_or_else(|| {
+            panic!("⭐ {label}：`loop_end <= pcm_len` ⇒ 必须有**有效窗口**（⛔ 不是按不循环渲染）")
+        });
+        assert_eq!(
+            (
+                window.start as usize,
+                window.end as usize,
+                window.len() as usize
+            ),
+            (LOOP_START, loop_end, period),
+            "⭐ {label}：归约窗口与长度"
+        );
+
+        let frames = loop_end + 3 * period;
+        let out = render_pool(&plan, u64::MAX, frames);
+        let nonzero = out.iter().filter(|sample| **sample != 0.0).count();
+        let measured = detect_period(&out, LOOP_START, loop_end);
+        let mismatches = loop_index_mismatches(&out, LOOP_START, period);
+        let distinct = out[LOOP_START..loop_end]
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        println!(
+            "[engine-sfz/S46] {label}：窗口 = [{LOOP_START},{loop_end}) ⇒ 声明周期 = {period}；\
+             {frames} 帧里非零 = {nonzero}；⭐ **实测最小周期** = {measured}；\
+             下标序列不符 = {mismatches}；窗口段不同位模式 = {distinct}"
+        );
+        assert_eq!(
+            nonzero, frames,
+            "⭐ {label}：循环声部必须**写满整段**（⛔ 不因「样本播完」退休）"
+        );
+        assert_eq!(
+            measured, period,
+            "⭐ {label}：**实测周期必须恰好等于 `loop_end − loop_start`**（实得 {measured}）"
+        );
+        assert_eq!(
+            mismatches, 0,
+            "⭐ {label}：下标序列必须**逐帧精确**（⛔ 不是「波形看起来在重复」）"
+        );
+        assert!(
+            distinct >= 2,
+            "⭐ {label} 反向腿：窗口段必须 ≥ 2 个不同位模式（否则「周期」可能是常数段的假象）"
+        );
+    }
+}
+
+/// ⭐ S47（任务单 `#97`；§3.2）：**钳位不越界、不爆音**，且**未钳位腿行为不变**。
+///
+/// # 夹具（为什么必须长这样）
+///
+/// * `pcm_len = 400`、窗口 `[100, loop_end)`；
+/// * `pcm[0] = −1.0`（窗口**外**的负离群点 —— 它是"钳到 0"那种错法的**证人**）；
+/// * `pcm[399] = +1.0`（窗口**末格**；对 `loop_end = 400` 腿它在窗口内，对 `399` 腿它在窗口外）；
+/// * 其余是斜坡 `pcm[i] = (i + 1) / 1024`（2 的幂 ⇒ binary32 逐位精确）；
+/// * ⭐ `key=60 pitch_keycenter=72` ⇒ `rate = 2^-1 = 0.5`（**2 的幂 ⇒ 逐位精确**）
+///   ⇒ `frac ≡ 0.5` ⇒ **插值的那一格真的被读到**。
+///   ⚠ `rate == 1.0`（`S28`／`S30`／`S46`）时 `frac ≡ 0` ⇒ **钳位与不钳位读不出差别**
+///   —— 在这条判据上那会是**空转**，故本条必须换夹具。
+///
+/// # 判定量（逐条）
+///
+/// * ⭐ **钳位腿**（`loop_end = pcm_len`）：回绕点那一帧**逐位** ＝
+///   `pcm[399]*(1−0.5) + pcm[399]*0.5`（**两格都是最后一格**）＋ 进入循环后**每一帧**
+///   都落在窗口 `[window_min, window_max]` 内 ⇒ "钳到 0"（把 `pcm[0] = −1.0` 卷进来）
+///   **必红**；
+/// * ⭐ **未钳位腿**（`loop_end = pcm_len − 1`）：回绕点那一帧**仍**读窗口**外**紧邻的
+///   `pcm[loop_end] = +1.0` ⇒ **逐位**等于 `pcm[398]*(1−0.5) + pcm[399]*0.5` 且
+///   **大于**窗口最大值 ⇒ 正面见证"本单只对 `== pcm_len` 那一档钳位"；
+/// * **有界**（不爆音）：每个输出帧 `|out| ≤ 样本峰值`；
+/// * **周期化**：`rate = 0.5` ⇒ 输出帧周期 ＝ `2 × (loop_end − loop_start)`（`598` / `600`）
+///   —— ⭐ 与 S46 的 `rate = 1.0` 口径互为独立见证；
+/// * **不 panic**：钳位腿上若不钳，`pcm[index + 1]` 就是 `pcm[400]`（⭐ 这条判据会当场炸）
+///   ⇒ 跑完即证。
+#[test]
+fn s47_the_clamp_stays_inside_the_window_and_bounds_every_sample() {
+    /// ⭐ 夹具的两格"物证"（窗口外负离群点 ＋ 窗口末格正离群点）。
+    const OUTLIER: f32 = 1.0;
+    /// ⭐ 半速率（`pitch_keycenter=72`）：`frac` 恒为 `1 − 0.5`／`0.5`。
+    const HALF: f32 = 0.5;
+
+    let mut pcm: Vec<f32> = (0..LOOP_PCM_FRAMES)
+        .map(|frame| (frame + 1) as f32 / 1024.0)
+        .collect();
+    pcm[0] = -OUTLIER;
+    pcm[LOOP_PCM_FRAMES - 1] = OUTLIER;
+    let sample = InMemorySample {
+        pcm: pcm.clone(),
+        sample_hz: 48_000.0,
+    };
+    let peak = pcm.iter().fold(0.0f32, |acc, value| acc.max(value.abs()));
+
+    for (label, loop_end, clamped) in [
+        (
+            "未钳位腿 loop_end = pcm_len − 1",
+            LOOP_PCM_FRAMES - 1,
+            false,
+        ),
+        ("钳位腿 loop_end = pcm_len", LOOP_PCM_FRAMES, true),
+    ] {
+        let period = loop_end - LOOP_START;
+        let text = format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=72 loop_mode=loop_continuous \
+             loop_start={LOOP_START} loop_end={loop_end}\n"
+        );
+        let plan = prepare_with(&text, &sample);
+        // ⚠ `rate = 0.5` ⇒ `position = 0.5 t`：到 `loop_start` 要 `2 × loop_start` 帧。
+        let entered = 2 * LOOP_START;
+        // ⚠ 回绕点**前**那一帧：`position = loop_end − 1 + 0.5` ⇒ `t = 2 (loop_end − 1) + 1`。
+        let boundary = 2 * (loop_end - 1) + 1;
+        let frames = boundary + 2 * (2 * period) + 8;
+        let out = render_pool(&plan, u64::MAX, frames);
+        let window_min = pcm[LOOP_START..loop_end]
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let window_max = pcm[LOOP_START..loop_end]
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let over_peak = out.iter().filter(|value| value.abs() > peak).count();
+        let outside_window = out[entered..]
+            .iter()
+            .filter(|value| **value < window_min || **value > window_max)
+            .count();
+        let measured = detect_period(&out, entered, entered + 2 * period);
+        println!(
+            "[engine-sfz/S47] {label}：窗口 = [{LOOP_START},{loop_end}) ⇒ 声明周期 = {period}；\
+             帧周期实测 = {measured}（期望 {}）；边界帧 t = {boundary} ⇒ out = {}（窗口 [{window_min},\
+             {window_max}]）；越峰帧 = {over_peak}；进入循环后越窗帧 = {outside_window}；\
+             pcm[0] = {}、pcm[loop_end] = {:?}",
+            2 * period,
+            out[boundary],
+            pcm[0],
+            pcm.get(loop_end).copied(),
+        );
+
+        // ① **不爆音**：每个输出帧都在样本峰值之内。
+        assert_eq!(
+            over_peak, 0,
+            "⭐ {label}：每个输出帧都必须 `|out| ≤ 样本峰值`（实得越峰 {over_peak} 帧）"
+        );
+        // ② **周期化**：源周期 `period` 帧 ⇒ 输出帧周期 `2 × period`（`rate = 0.5`）。
+        assert_eq!(
+            measured,
+            2 * period,
+            "⭐ {label}：输出帧周期必须是 `2 × (loop_end − loop_start)`（实得 {measured}）"
+        );
+        // ③ 回绕点那一帧的**读法**（钳位腿 vs 未钳位腿）。
+        if clamped {
+            let expected = pcm[loop_end - 1] * (1.0 - HALF) + pcm[loop_end - 1] * HALF;
+            assert_eq!(
+                out[boundary], expected,
+                "⭐ {label}：回绕点那一帧**两格都是最后一格**（钳位到最后一个样本）；\
+                 「钳到 0」会把 `pcm[0] = {OUTLIER}` 的相反数卷进来 ⇒ 这里红"
+            );
+            assert_eq!(
+                outside_window, 0,
+                "⭐ {label}：进入循环后**每一帧**都必须落在窗口 `[{window_min}, {window_max}]` 内\
+                 （⛔ 窗口外的 `pcm[0]` 一次都不许被读到）"
+            );
+        } else {
+            let expected = pcm[loop_end - 1] * (1.0 - HALF) + pcm[loop_end] * HALF;
+            assert_eq!(
+                out[boundary], expected,
+                "⭐ {label}：回绕点那一帧读的仍是窗口**外**紧邻的 `pcm[{loop_end}]`（⛔ 行为不许变）"
+            );
+            assert!(
+                out[boundary] > window_max,
+                "⭐ {label}：这一帧**故意**越出窗口最大值（＝ 它没有被钳位的正面见证）"
+            );
+        }
+    }
+}
+
+/// ⭐ S48（任务单 `#97`；§3.3）：**既有判据的读数原样**（复跑并断言）。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// ① 对象 ＝ `S28`／`S30` 的两份斜坡夹具在**实时池**上的输出；单位 ＝ **实测最小周期**
+/// （帧）＋ **逐帧下标不符数**（处）；
+/// ② 对象 ＝ `S37` 的两份无 `ampeg_*` 夹具 512 帧输出；单位 ＝ **FNV-1a 64 指纹**（逐位）
+/// ＋ **非零帧数**（帧）；
+/// ③ 对象 ＝ `S33` 的无 `loop_*` 夹具（[`TWO_MATCH_ONE_MISS`]）经 `render_track` 的
+/// 512 帧输出；单位 ＝ **FNV-1a 64 指纹**（逐位）。
+///
+/// # 字面值的来源
+///
+/// 全部是**既有判据自己**钉住的常数（`S28`／`S30`／`S37`／`S33` 的文档里各有点名），
+/// ⛔ 本判据不新造任何字面值 —— 它只是把那些读数**再量一次**，让"既有判据 0 条变状态"
+/// 这件事有一条**当期**的、能因**夹具被扰动**而变红的见证。
+///
+/// # 反向腿（⛔ 让"绿"不能是空的）
+///
+/// ⭐ 把**无 `loop_*` 的既有夹具样本**乘 `1.0000001` ⇒ 本判据的 ③（以及 `S33`、`S37`
+/// 的 `plain` 腿）**必须红**（任务单 `#97` 的注入 3）。
+#[test]
+fn s48_the_existing_loop_readings_and_fingerprints_are_unchanged() {
+    /// ⭐ `S37` 的两条既有指纹（改动前实测；来源见 `S37` 的文档）。
+    const S37_LOOPED: u64 = 0xa9de_c8a8_7f69_106c;
+    const S37_PLAIN: u64 = 0xd3c2_a820_76bd_8947;
+
+    // ① `S28`／`S30`：周期 ＋ 逐帧下标（`rate = 1.0`，窗口 `[100, loop_end)`）。
+    for (label, loop_end, period) in [
+        ("S28／S30 loop_end = 164", 164usize, 64usize),
+        ("S30 loop_end = 200", 200usize, 100usize),
+    ] {
+        let plan = prepare_with(
+            &loop_sfz("loop_continuous", LOOP_START, loop_end),
+            &ramp_sample(LOOP_PCM_FRAMES),
+        );
+        let frames = loop_end + 3 * period;
+        let out = render_pool(&plan, u64::MAX, frames);
+        let measured = detect_period(&out, LOOP_START, loop_end);
+        let mismatches = loop_index_mismatches(&out, LOOP_START, period);
+        println!(
+            "[engine-sfz/S48] ① {label}：声明周期 = {period}；实测周期 = {measured}；\
+             下标序列不符 = {mismatches}（帧数 {frames}）"
+        );
+        assert_eq!(measured, period, "⭐ {label}：既有周期读数必须原样");
+        assert_eq!(mismatches, 0, "⭐ {label}：既有逐帧下标读数必须原样");
+    }
+
+    // ② `S37`：两个无 `ampeg_*` 夹具的 FNV 指纹 ＋ 非零帧数。
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, nonzero, expected) in [
+        (
+            "S37 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            200usize,
+            S37_LOOPED,
+        ),
+        (
+            "S37 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            399usize,
+            S37_PLAIN,
+        ),
+    ] {
+        let out = render_pool(plan, end_sample, 512);
+        let actual = fnv1a_64(&out);
+        let nonzero_actual = out.iter().filter(|sample| **sample != 0.0).count();
+        println!(
+            "[engine-sfz/S48] ② {label}：非零 = {nonzero_actual}（既有 {nonzero}）、\
+             指纹 = 0x{actual:016x}（既有 0x{expected:016x}）"
+        );
+        assert_eq!(nonzero_actual, nonzero, "⭐ {label}：既有非零帧数必须原样");
+        let _checked = check_fingerprint(&format!("S48 {label}"), actual, expected);
+    }
+
+    // ③ `S33`：无 `loop_*` 的既有夹具经**引擎实时路径**（同一个夹具、同一段 512 帧）。
+    let prepared = prepare(TWO_MATCH_ONE_MISS);
+    let track = EntityId::new();
+    let mut engine = engine_with_track(track);
+    let schedule =
+        NoteSchedule::from_sorted(vec![support::scheduled(0, 12_000, 60, 1.0, 48_000.0)]);
+    let mut out = vec![0.0f32; BLOCK];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut out);
+    let actual = fnv1a_64(&out);
+    let nonzero_actual = out.iter().filter(|sample| **sample != 0.0).count();
+    println!(
+        "[engine-sfz/S48] ③ S33 无 `loop_*` 夹具（512 帧 @60,127）：非零 = {nonzero_actual}、\
+         指纹 = 0x{actual:016x}（既有 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）"
+    );
+    assert!(nonzero_actual > 0, "夹具必须真的出声（否则指纹比对是空转）");
+    let _checked = check_fingerprint(
+        "S48 ③ S33 无 loop 夹具逐位不变",
+        actual,
+        NO_LOOP_FIXTURE_FINGERPRINT,
     );
 }
