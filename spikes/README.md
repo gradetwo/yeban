@@ -31,7 +31,7 @@ spike 本身就可以按需退役（`docs/DEV_WORKFLOW.md`「明确废弃」）�
 | `spike-02-spsc-retire` / `spike-09-snapshot-exchange` | **将由 `line/engine-rt` 覆盖** | 无锁 SPSC 批量契约、`Arc<EngineSnapshot>` 原子交换与退役队列零泄漏都是该线的交付内容（`ROAD-M2-002/007`）。spike 目录保留为空壳，直到读数登记。 |
 | `spike-05-ui-test-port` / `spike-08-software-renderer` | **将由 `line/ui-test-port` 覆盖** | Tier-1 `SoftwareRenderer` 截图 + 语义控件树（`MUST-GATE-015`）。 |
 | `spike-03-slint-fps` | **未开始，且 CI 上无法可靠验证** | 通过判据是「稳定 120 FPS + 常驻内存 < 25MB」。**硬件异议已由负责人裁决解除**（`HD-45` = B，2026-10-05）：接受参考机（MacBook Pro M2 Max，ProMotion 自适应刷新率）上的读数，局限写进门禁行。**仍未开始的真正原因变了**：不是硬件，而是**没有可跑的帧率判据** —— 本目录仍是空壳，`BASELINE-003` 至今缺一条 example（规格见 `docs/DEVELOPMENT_LEDGER.md` 第 136 轮）。托管 runner 的读数仍**不得**用来宣布通过。 |
-| `spike-06-roll-virtualization` | **未开始** | 10 万音符卷帘的视口裁剪（R-Tree）与批量绘制。依赖 `yeban-app` 的卷帘组件真正接上模型数据（目前 UI 只有演示数据），因此排在数据绑定之后。 |
+| `spike-06-roll-virtualization` | **未开始**（⭐ **`#128` 修订段**：⭐ 本行**已过期** ⇒ ⭐ 视口裁剪**已实现且有消费者**（`crates/yeban-app/src/bridge.rs` 的 `notes_visible_in` → `host.rs` 的五条注入），⭐ 判据在 `crates/yeban-app/tests/perf_draw_budget.rs`；⭐ 真正仍缺的是 ⭐ **10 万音符下稳定 120 FPS 的正式读数**（⭐ 只能在参考机 GPU 路径取，⭐ 见 `ROAD-M0-006`／`BASELINE-003`）） | 10 万音符卷帘的视口裁剪（R-Tree）与批量绘制。依赖 `yeban-app` 的卷帘组件真正接上模型数据（目前 UI 只有演示数据），因此排在数据绑定之后。 |
 | `spike-07-mcp-lock` | **部分由 `line/mcp-core` 覆盖** | 内嵌 Streamable HTTP MCP + 独立 stdio CLI 的**互斥**需要 `.yeban.lock`（`ARCH-SEC-001`），而**锁文件尚未实现**（`ROAD-M1-004` 的一部分）。因此 MCP 侧可以验证"内嵌可工作"，但"并发打开得到 `PROJECT_LOCKED`"这一半仍缺实现。 |
 | `spike-03` / `spike-06` 的共同点 | — | 两者都是**帧率/交互**类判据。CI 托管 runner 的读数**不得**用来宣布通过（这一条没变）；但「需要固定刷新率硬件」这个理由**已被 `HD-45` 裁决解除**，所以它们现在缺的是**判据本身**，不是机器。 | 目录为空壳骨架，`[dependencies]` 里的重依赖仍是 `TODO(spike)` 注释。这也意味着一件事：**在 `line/ui-shell` 之前，整个仓库从未编译过 Slint**（第一次真的编译时暴露了 Linux fontconfig 前置条件，见 `docs/CI_CD.md` §3.2）。 |
 
