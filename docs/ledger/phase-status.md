@@ -10881,3 +10881,41 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⇒ ⭐ ⭐ **即: ⭐ `ampeg_*ccN`（⭐ 801 处）／⭐`pitcheg`（⭐ 10 处）／⭐`fileg`（⭐ 90 处）三者共享**同一个架构前置（CC 通路），⭐ 而 `fileg` 还多一层（⭐滤波器）** ⇒ ⭐ **该前置应当**先独立立项**、⭐ ⛔ 不要塞进"⭐ 某一族"⭐ 的单里** ✓
 
 ⭐ ⚠ ⭐ **四、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `82c4f684` 的 CI 判决** ＋ ⭐ **CC 通路这一架构前置**（⭐ 建议先独立立项；⭐ 它解锁 `ampeg_*ccN` 801 处 ＋ ⭐`pitcheg` 10 处）＋ ⭐ **`fileg` 的滤波器前置**（⭐ 会破 40 B ⇒ ⭐ 需人类先裁尺寸预算）＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R772 实测追加（2026-10-16）：🚨 **`82c4f684` 的 CI ＝ `failure`，⭐ 而**不是我的改动造成的** —— ⭐ 是上游把 `zip 8.6.0` **yank** 了（⭐ `deny` 腿查实时库）** ⇒ ⭐ **已修（⭐ 提到 `zip 9.0.3` ＋ ⭐1 处调用点迁移）⇒ ⭐ 主干 `14d79a6b`**
+
+⭐ ⭐ ⭐ **一、⭐ 判决与根因（⭐ 逐字）**: ⭐ ⭐ **run `38848698541`：⭐ `deny (cargo-deny 开源合规)` ＝ **failure**，⭐ 而**其它腿全 success**（⭐ `plan`／⭐`lockfile`／⭐`checks`／⭐`macos`／⭐`windows`／⭐`rust (yeban-engine)`／⭐`rust (yeban-app)`）** ✓ ⭐ ⭐ **失败步骤逐字**：⭐ `error[yanked]: detected yanked crate (try 'cargo update -p zip')` ⇒ ⭐ **`zip 8.6.0`（⭐ 经 `zip -> yeban-diagnostics`）在上游被 yank** ＋ ⭐ **`advisories FAILED, bans ok, licenses ok, sources ok`** ✓
+⇒ ⭐ ⭐ **即: ⭐ 那一跑红的是**合规腿查到的实时数据**、⭐ ⛔ 与我改的那行注释**无关** ⇒ ⭐ **任何提交在那一刻跑 `deny` 都会红** ✓ ⭐ **而 `cargo-deny-action` 自己还有一行 `error: override toolchain '1.99.0-x86_64-unknown-linux-musl' is not installed`**（⭐ 动作自身的工具链 override 噪声，⭐ 不影响判决结论）✓
+
+⭐ ⭐ ⭐ **二、⭐ 处置（⭐ 已落主干）**: ⭐ **`cargo update -p zip` 办不到** —— ⭐ workspace 是 `zip = { version = "8.6.0" }` ＝ `^8.6.0`，⭐ 而 **`cargo info zip` 说 latest ＝ `9.0.3`、⭐ 8.6.0 是唯一发过的 8.x** ⇒ ⭐ **只能挪要求** ✓
+| ⭐ 步 | ⭐ 内容 |
+| :--- | :--- |
+| ⭐ ⭐ **1. ⭐ 提版本** | ⭐ 根 `Cargo.toml:81` 的 `zip = { version = "8.6.0", default-features = false }` ⇒ **`"9.0.3"`** ⇒ ⭐ ⛔ **我没有去放宽 `deny.toml` 的 `yanked = "deny"`**（⭐ 那是**弱化合规门**、⭐ 不该为一次上游 yank 而做）✓ |
+| ⭐ ⭐ **2. ⭐ 迁移代价（⭐ 实测只有 1 处）** | ⭐ ⭐ **`zip` 9 起 `ZipFile::name()` 返回 `Result<Cow<'_, str>, ZipError>`（⭐ 旧版 `&str`）** ⇒ ⭐ **全 crates 只有 **1 处**受影响**：⭐ `crates/yeban-diagnostics/tests/bundle_contract.rs:47` 的 `entry.name().to_owned()` ⇒ ⭐ 改成 `entry.name().expect("条目名").into_owned()`（⭐ 并加注释说明型号变化）✓ |
+| ⭐ **3. ⭐ 读数** | ⭐ `Cargo.lock` 的 `zip = **9.0.3**`；⭐ ⭐ **包数 `685 ⇒ 685`（不变）**；⭐ `cargo test -p yeban-diagnostics --locked --no-fail-fast` ＝ **3 二进制・4 passed・0 failed**；⭐ `license_inventory.py` 重生成后 `--check` ＝ 「⭐ 依赖许可清单与依赖图一致 (695 行)」；⭐ `run-gates.sh light` ＝ **0**（⭐ 含 licenses）✓ |
+| ⭐ **4. ⭐ 主干** | ⭐ ⭐ **`14d79a6b`**（⭐ 已推）⇒ ⭐ **判决待读回**、⭐ ⛔ 不写成"⭐ 通过" ✓ |
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ `#103` 的重大更正（⭐ 它把我背景里的第 4 条后半推翻，⭐ 并挖出一条我根本没想到的事实）**:
+| ⭐ # | ⭐ 我的背景 | ⭐ 它的复核 |
+| --: | :--- | :--- |
+| ⭐ 1／⭐2／⭐3 | ⭐ `EngineEvent` 五变体无 CC ／⭐`XfAxis::Cc(_) => {}` 空转 ／⭐`yeban-midi` 零 CC 且引擎不依赖它 | ⭐ ⭐ **逐字成立** ✓ |
+| ⭐ ⚠ **4** | ⭐ `ParamAddress` 只有 `entity+slot` ✅ ／⭐ ⛔ **"⭐ 引擎只认 `TRACK_GAIN_SLOT`"⭐ 已陈旧** | ⭐ ⭐ **引擎今天认 **4 个**槽位**：⭐ `TRACK_GAIN_SLOT=0`／⭐`MASTER_GAIN_SLOT=1`／⭐`TRACK_PAN_LEFT_SLOT=2`／⭐`TRACK_PAN_RIGHT_SLOT=3`（⭐ `param.rs:172`／⭐`:178`／⭐`:190`／⭐`:193`；⭐ 2／⭐3 由 `rt.rs:3076-3101` 在进表前截走）⇒ ⭐ **我的结论（装不下 CC）仍对、⭐ 但理由要换成"⭐ 槽位词汇是 per-entity 一格"** ✓ |
+| ⭐ ⭐ ⭐ **新事实（⭐ 四条里没有、⭐ 且更要紧）** | ⭐ — | ⭐ ⭐ ⭐ **三族 `ccN` 今天**连解析层都没读到****：⭐ 解析走**精确键**（⭐ `read_ampeg_time(&scopes, "ampeg_attack", …)` `instrument.rs:1477-1482` ⇒ ⭐ `Scopes::get` 是精确 `map.get(&'static str)` `:1345-1350`）⇒ ⭐ ⭐ **`ampeg_attackcc100`／⭐`ampeg_attack_oncc100` **查不到****；⭐ 全 crate `grep 'oncc\|curvecc\|smoothcc\|stepcc'` ⇒ ⭐ **只有 1 行、⭐ 且是注释**（⭐`:4630`）；⭐ 不像规范 opcode 的名字一律**按未知 opcode 忽略**（⭐`:1673`／⭐`:1788`／⭐`:4529`）⇒ ⭐ ⭐ **所以"⭐ 801 处"是**语料**读数、⭐ ⛔ **不是"⭐ 已解析"⭐ 读数**** ✓ ⭐ ⭐ **即 CC 调制要动**两层**：⭐ (a) `yeban-sfz` 的解析＋归约层、⭐ (b) 引擎的 CC 状态与通路 ⇒ ⭐ **我的单子里只写了 (b)** ✓ |
+
+⭐ ⭐ **四、⭐ 它给的关键读数（⭐ 择要）**:
+- ⭐ ⭐ **CC 在 FFI 层就被承载**（⭐ `yeban-midi-io/src/input.rs:75` 的 `0x80..=0xBF => Some(2)`）⇒ ⭐ **到 app 层：**批采留全量**（⭐ `midi_in.rs:448` ⇒ `CapturedMessages::messages`）、⭐ **实时只计数丢弃**（⭐ `midi_live.rs:120` `NotANote` ⇒ ⭐`:299` `report.ignored += 1`，⭐ 注释 `:297-298` 逐字承认）** ⇒ ⭐ ⭐ **"⭐ 已解析但无处可去"⭐ 的 CC 明确存在** ✓
+- ⭐ ⭐ **"⭐ 缝"已经设计好且有判据**（⭐ 最省钱的发现）：⭐ `yeban-sfz` 的 `RegionQuery.cc: Option<&'q dyn Fn(u8) -> u8>`（⭐ `instrument.rs:925`）＋ ⭐`with_cc`（⭐`:992`）＋ ⭐`cc_defaults`（⭐`:1156-1176`，⭐ 注释逐字说"⭐ 调用方（⭐引擎）应当在加载乐器时把每个 `cc` 置为对应 `value`"）＋ ⭐ **3 条判据**（⭐`:5307`／⭐`playback.rs:1543`／⭐`:1561`）⇒ ⭐ **接口形状已有、⭐ 缺的是引擎喂值** ✓
+- ⭐ ⭐ **逐块现算的插入点也已存在**：⭐ `SfzVoicePool::slot_readings`（⭐`sfz_instrument.rs:3417-3441`）每声部每块一次、⭐ 里面已经 `region.ampeg_run(engine_hz)`（⭐`:3421`）**现算** ⇒ ⭐ **CC 调制可在此现算、⭐ ⛔ 不必进声部** ⇒ ⭐ **`SfzVoice` ＋0 完全可行** ✓ ⭐ 且 `ampeg_run_from`／⭐`Crossfade::gain_at` 全在 **IEEE 精确类**（⭐ `sqrt` 明文归入，⭐ `crossfade.rs:81-83`）⇒ ⭐ **逐块调用合法** ✓
+- ⭐ ⭐ **它用独立 `rustc` 探针摆了 `SfzVoice` 的字段偏移**：⭐ **40 B 在 8 字节对齐下**恰好填满、⭐ 一个填充字节都不剩**** ⇒ ⭐ ⭐ **任何新逐声部字段 ⇒ 40 → 48（⭐ ＋20%）**、⭐ **不再是"⭐ 落进填充里 ＋0"** ✓ ⭐ 并给出 `EngineEvent` 今天 **48 B、⭐ 加 CC 变体仍 48 B**（⭐ `ring.rs:421` 的 `<= 64` 仍绿）✓
+- ⭐ ⭐ **语料（⭐ 带分母与对照）**：⭐ 分母 **1398** 个 `.sfz`；⭐ 对照 `ampeg_release` ⇒ ⭐ **2280 处/348 文件**（⭐ 词边界口径）／⭐2831 处/373（⭐ 纯子串）⇒ ⭐ ⚠ **它**复现不出**台账里那个"⭐ 2630 次"**（⭐ 两种口径都不是）⇒ ⭐ **它如实上报、⭐ 未改台账** ✓ ⭐ ⭐ **并复核**我的三个数**全部成立**（⭐ `ampeg_*ccN` **801**（⭐ legacy 口径；⭐ 含 v2 形式 `_onccN`／⭐`_curveccN` 则 **4595**／⭐149 文件）、⭐ `pitcheg` **10** 且 plain **0**、⭐ `fileg` 的 ccN **23**）＋ ⭐ **801 的 8 个构成逐一对上** ✓ ⭐ ⭐ **CC 号分布：⭐ **CC100 最常见 1833 处/68 文件**、⭐ 模态标签 `label_cc100=Attack`（⭐ 31 次）** ⇒ ⭐ **作者把它当**用户旋钮**、⭐ ⛔ 不是标准 MIDI 控制器**（⭐ CC100 的标准义是 RPN LSB）＋ ⭐ CC101=Hold／⭐102=Decay／⭐103=Sustain／⭐104=Release 组成**ADSR 旋钮块**；⭐ `set_ccN=` **1137 处/105 文件**、⭐`label_ccN=` **1672 处/102 文件** ⇒ ⭐ **语料明确期待引擎维护 CC 状态** ✓
+- ⭐ **它顺带指出同一前置还能解锁两族**（⭐ ⛔ 不在本单范围）：⭐ `xfin_loccN`／⭐`xfout_*ccN` **2275 处/51 文件**（⭐ `yeban-sfz` **已解析完**、⭐ 缝也已判据化 ⇒ ⭐ **只缺引擎喂值**）＋ ⭐ `loccN`／⭐`hiccN` 区域门 **7950 处/247 文件** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 两条可复用口径（⭐ 第 273／⭐274 条）**:
+⭐ ⭐ **第 273 条: ⭐ CI 的 `deny`／⭐`advisories` 腿查的是**实时**数据库 ⇒ ⭐ 它会在**与你的改动无关**时变红** —— ⚠ **因为"⭐ yank"⭐ 与"⭐ 新 advisory"⭐ 都是**上游事件**、⭐ 会在你两次推送之间发生** ✓ ⭐ **做法**：⭐ ① 先看**失败的腿是不是 `deny`／⭐`advisories`**（⭐ 若是、⭐ 而其它腿全绿 ⇒ ⭐ **先怀疑上游**）；⭐ ② 读**逐字错误**（⭐ `error[yanked]`／⭐`RUSTSEC-…`）；⭐ ③ ⭐ ⭐ **修法是处理那个 crate（⭐ 提版本／⭐换等价物），⭐ ⛔ **不是**放宽 `deny.toml`**（⭐ 弱化合规门 ＝ ⭐ 把"⭐ 上游事件"⭐ 变成"⭐ 永久豁免"）**；⭐ ④ ⭐ 若该 crate 是**唯一**满足要求且已 yank 的版本 ⇒ ⭐ **必须提 major**、⭐ 并**把迁移代价量出来**（⭐ 本条实测：⭐ 全 crates 只 1 处受影响）✓
+⭐ ⭐ **第 274 条: ⭐ 一个 opcode 在语料里"⭐ 有多少处"⭐ 与"⭐ 解析层认不认它"⭐ 是两件事** —— ⚠ **因为解析器可能走**精确键**查找、⭐ 而带后缀的写法（⭐ `_onccN`／⭐`ccN`／⭐`_curveccN`）**永远匹配不上**** ✓ ⭐ **做法**：⭐ ⭐ **① `grep` 解析器里 `scopes.get("…")` 是精确还是带后缀展开；⭐ ② 语料计数要**分形态**（⭐ plain ／⭐ legacy 后缀 ／⭐ v2 `_onccN` ／⭐ `_curveccN`）—— ⭐ 本条实测四者差别巨大（⭐ `ampeg_*`：⭐ plain 4676、⭐`_onccN` 2948、⭐`_curveccN` 846、⭐legacy 801）；⭐ ③ 报"⭐ 已解析"⭐ 之前先证明**那个后缀真的读得进来**** ✓ ⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **我把"⭐ 801 处"⭐ 当成了"⭐ 有解析"⭐ 的证据、⭐ 而它实测那是**语料**读数** ✓
+
+⭐ ⚠ ⭐ **六、⭐ 它推荐的路（⭐ 我采信、⭐ 待人类裁"⭐ 架构单"⭐ 那一半）**: ⭐ **选项 A**（⭐ 新 `EngineEvent::ControlChange` ＋ ⭐`EngineRuntime.armed_cc` 预分配定长表 ＋ ⭐每量子借探针进 `slot_readings`）⇒ ⭐ ⭐ **并**拆两单**：⭐ ① **前置单**（⭐ `yeban-sfz` 解析＋归约，⭐ ⛔ 不碰事件面、⭐不动尺寸基线 ⇒ ⭐ **不需要架构裁决**）；⭐ ② **架构单**（⭐ 动 `EngineEvent` 公开面 ＋ ⭐动 `EngineRuntime` 的字面基线 `180_000` ⇒ ⭐ **要人类批**）✓ ⚠ ⭐ **它明确不推荐** B（⭐ CC 进快照 ⇒ ⭐ 与 `MODEL-ISO-001`／⭐`should_publish`／⭐churn 门冲突）与 C（⭐ 重载 `ParamAddress` ⇒ ⭐ 公开契约破坏性）✓ ⚠ ⭐ **而它指出生产侧必须改 `crates/yeban-app/src/midi_live.rs:282-300`（⭐ app 侧、⭐ 它按我的边界**只报不改**）⇒ ⭐ "⭐ 有引擎能力、⭐ 没人喂"⭐ 是这条路的真实依赖** ✓
+
+⭐ ⚠ ⭐ **七、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `14d79a6b` 的 CI 判决（⭐ 验证红已修）** ＋ ⭐ **前置单**（⭐ `yeban-sfz` 解析 `_onccN`／⭐`ccN`／⭐`_curveccN`）＋ ⭐ **架构单**（⭐ `EngineEvent::ControlChange` ＋ ⭐`EngineRuntime.armed_cc`；⭐ **需人类批**）＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
