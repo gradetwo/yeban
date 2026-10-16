@@ -2869,6 +2869,254 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
     ui.set_save_succeeded(ok);
 }
 
+// ===========================================================================
+// ⭐ 运行期「打开工程」的**唯一**接线（任务单 `#93`）
+// ===========================================================================
+//
+// ## 本单补的是哪一格（`#86` 乙 的边界登记所指的那一格）
+//
+// `#86` 乙 把**原生文件对话框**接到**已有的**运行期打开入口上了
+// （`LiveUi::open_project` / `open_project_via_picker`，落点 `ui/open_project`），
+// 但它在文档里如实登记：**产品 `run_gui` 里没有可点的入口**（`--open` 只在启动时读一次，
+// 运行期换工程没有实现）。本节就是那个入口的**唯一**实现。
+//
+// ## 它不新造任何东西（逐条点名复用了什么）
+//
+// | 这一步 | 复用的既有实现 | ⛔ 没有新造 |
+// | :--- | :--- | :--- |
+// | 挑一个路径 | [`crate::file_picker::FilePicker`]（`#86` 乙 的能力面） | 第二套对话框 |
+// | 读盘 | [`crate::open::open_project_file`]（控制面 `ui/open_project` 的同一个入口） | 第二个容器读法 |
+// | 换工程 | [`UndoPort::open_project_session`]（「打开一个工程 = 新会话」） | 第二条换工程实现 |
+// | 注入界面 | [`apply_view`]（本文件的唯一注入实现） | 第二个注入点 |
+// | 引擎换代 | [`EngineHost::reload`]（`ui/reload_engine` 的同一个落点） | 第二条换代路径 |
+// | 回执 | [`apply_module_receipt`] ⇒ **既有**的 `module-status` 通道 | 第二条投影通道 |
+//
+// ## 顺序是承重的（失败时当前工程**一位不动**）
+//
+// 1. **先问对话框**：`None`（取消）⇒ **什么都不做** —— ⛔ 不写回执、⛔ 不报错
+//    （"我不想"与"出错了"是两件事，见 `crate::file_picker` 的模块文档第 2 条）；
+// 2. **（可选）先保存当前工程**：走**已有的**保存入口（`save-project` 回调 =
+//    [`wire_save`] 的唯一落点），保存没落盘 ⇒ 拒绝换工程并**响亮**报出一句；
+// 3. **读新文件**：读失败 ⇒ 立即返回，当前工程 / 窗口 / 引擎一个字节都没碰；
+// 4. **投影一次**（只读）：投影失败（没有主总线 / 拍号退化 / 缩放为 0）⇒ 同上，
+//    一个字节都没碰 —— 这一跳存在的理由就是"把失败挡在改状态**之前**"；
+// 5. **换会话**：`UndoPort::open_project_session`；权威后端在场 ⇒ 如实拒绝（仍是一位不动）；
+// 6. **注入 + 换代**（[`OpenProjectRuntime`] 的实现里）；
+// 7. **回执**：成功与失败都经 [`apply_module_receipt`] 写**同一条** `module-status` 通道。
+
+/// ⭐ **「打开一个已经挑好的路径」的能力面**（[`wire_open_project`] 的装配输入）。
+///
+/// 为什么是 trait 而不是把逻辑写死在一个函数里：本仓的**工程持有者**有两种装配
+/// （产品 `run_gui` 的权威是 [`UndoPort`] 里那份会话；控制面形态是执行面自己的投影），
+/// 而"读盘 + 换会话 + 重投影"这一段在两种装配里**是同一条**——
+/// 差别只在最后那几件装配方自己的事（心跳对齐基准、保存落点、静态快照）。
+/// 于是：固定动作住在 [`PortOpenProject`]，装配相关的一跳由 `after` 注入。
+///
+/// ⚠ `open_runtime` **不**问对话框：路径由调用方（[`wire_open_project`]）给出 ——
+/// 那样"对话框被问了几次"与"路径被打开了没有"是两件可分别断言的事。
+pub trait OpenProjectRuntime {
+    /// 打开**已经挑好**的那个路径。
+    ///
+    /// # Errors
+    ///
+    /// 给用户看的完整原因（**非空**）。调用方原样写进 `module-status` 回执。
+    fn open_runtime(&self, ui: &MainWindow, path: &str) -> Result<(), String>;
+}
+
+/// 换工程之后**装配方最后一跳**的签名：`(ui, 新工程, 新落点, 新投影)`。
+///
+/// 单独起一个别名的两个理由：① `clippy::type_complexity`（`-D warnings` 下是硬错误）；
+/// ② 这**是**一条契约（调用方要拿哪四样东西）—— 别名比内联的函数类型好读。
+pub type OpenProjectAfter =
+    Rc<dyn Fn(&MainWindow, &YebanProjectV1, &str, &ViewState) -> Result<(), String>>;
+
+/// **产品形态**的「打开工程」：工程的权威是那个 [`UndoPort`]（打开 = 换掉它里面的会话）。
+///
+/// 任务单 `#93`：`run_gui` 接的就是这一个。判据接的也是**同一个**结构（`production: None`），
+/// 因此"产品里点一下真的换工程"这句话在判据里是可机械复核的，而不是靠读 `main.rs`。
+pub struct PortOpenProject {
+    /// 工程的**唯一可变权威**（`run_gui` 那个 `Rc<UndoPort>` 的**同一份**，不是克隆出来的第二份）。
+    pub port: Rc<UndoPort>,
+    /// 产品心跳那一代（`None` ⇒ 这个装配没有产品心跳；只重投影界面）。
+    ///
+    /// `Some` 时本结构负责**换代**（[`EngineHost::reload`] ＋ 采纳新的电平消费端 ＋
+    /// 停在停止态），与装配点（`run_gui` 的 [`ProductionLoop::start`] 之后那两行）逐字同款。
+    pub production: Option<Rc<RefCell<ProductionLoop>>>,
+    /// `reload` 的量子数（与装配时给 [`ProductionLoop::start`] 的那一个同源）。
+    pub quanta: u64,
+    /// **装配方自己的最后一跳**（`(ui, 新工程, 新落点, 新投影)`）：产品用它更新心跳的对齐
+    /// 基准并重接三处**静态快照**（保存落点 / 走带 / 按键）。⛔ 它**不**注入视图、
+    /// ⛔ 它**不**换代引擎 —— 那两件是[`Self::open_runtime`]的固定动作。
+    pub after: OpenProjectAfter,
+}
+
+impl OpenProjectRuntime for PortOpenProject {
+    fn open_runtime(&self, ui: &MainWindow, path: &str) -> Result<(), String> {
+        // ① 读盘（唯一读取核心）。读失败 ⇒ 到这里就返回：下面一个字节都没改。
+        let project = crate::open::open_project_file(path)
+            .map_err(|error| format!("打开 `{path}` 失败（当前工程一位没动）: {error}"))?;
+        // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**。
+        //    用的是与 ③ 里 `apply_view` **同一个** `project_with_view_state`（不读第二份）。
+        let view = project_with_view_state(&project, ui)
+            .map_err(|error| format!("`{path}` 投影失败（当前工程一位没动）: {error}"))?;
+        // ③ 换会话（「打开一个工程 = **新会话**」的唯一实现）。
+        //    权威后端在场 / 根提交被模型拒绝 ⇒ 到这里就返回：界面与引擎都还没碰。
+        self.port
+            .open_project_session(format!("open {path}"), project.clone(), now_ms())?;
+        // ④ 注入界面（唯一注入点）—— 视图态从**当前窗口**读回（行高 / 缩放不因换工程清零）。
+        let width = slint::ComponentHandle::window(ui).size().width as f32;
+        let scroll_x = ui.get_roll_scroll_x();
+        apply_view(ui, &view, width, scroll_x);
+        // ⑤ 引擎换代：新快照 / 新队列 / 新的电平消费端。
+        //
+        // ⚠ 边界（**既有的**，不是本单引入）：若 `reload` 失败，界面**已经是**新工程
+        //    而引擎还是旧一代 —— `live_surface::LiveAdminSurface::apply_project` 的第 3 步
+        //    是同一条边界（同一个 `EngineHost::reload`），本处照旧，⛔ 不假装有回滚。
+        let mut reload_error = None;
+        if let Some(production) = self.production.as_ref() {
+            let engine = production.borrow().engine_handle();
+            // ⚠ **先读成一个布尔**（⛔ 不写 `if engine.borrow().has_engine() { … }`）：那样写会让
+            // 那个 `Ref` **活着穿过整个 `if` 体**，于是体内任何 `engine.borrow_mut()` 都会
+            // `RefCell already borrowed` —— `tests/open_project_ui.rs` 的正向腿第一版实测抓到的
+            // 就是这一条（本处是那次实测的修法）。
+            let has_engine = engine.borrow().has_engine();
+            if has_engine {
+                // ⚠ **同一个坑的第二处**：`match engine.borrow_mut().reload(..) { … }` 也会让那个
+                // `RefMut` 活着穿过整个 `match` ⇒ 分支里的 `engine.borrow_mut()` 直接 panic。
+                // ⇒ 先把结局**结算**成一个值，再进 `match`。
+                let rebuild = engine.borrow_mut().reload(&project, self.quanta);
+                match rebuild {
+                    Ok(rebuild) => {
+                        production
+                            .borrow_mut()
+                            .meters_mut()
+                            .adopt(rebuild.collector);
+                        // 与装配点**逐字同款**：新引擎沿用"自由跑"默认值，而界面此刻应当停在
+                        // 停止态（`ProductionLoop::start` 的文档第 ① 条）。⛔ 不 stop 会让
+                        // `playing: false` 的界面背后真的在跑。
+                        engine.borrow_mut().stop();
+                        let reading = engine.borrow().transport();
+                        apply_transport(ui, reading);
+                    }
+                    Err(error) => reload_error = Some(error.to_string()),
+                }
+            }
+        }
+        // ⑥ 装配方自己的那一跳（心跳对齐基准 / 保存落点 / 静态快照）。
+        (self.after)(ui, &project, path, &view)?;
+        if let Some(error) = reload_error {
+            // 界面已经换了新工程 ⇒ 这一句**如实**说明"播放侧还是上一版"（不静默）。
+            return Err(format!(
+                "界面已换成 `{path}`，但引擎换代失败（播放侧仍是上一版）: {error}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// ⭐ **运行期「打开工程」的唯一接线**：`.slint` 的 `open-project` 回调 ⇒ 对话框 ⇒
+/// [`OpenProjectRuntime`] ⇒ **既有**的 `module-status` 回执通道。
+///
+/// ## 取消**不是**失败（⛔ 不写回执）
+///
+/// 用户在对话框里按取消 ⇒ [`FilePicker::choose_open`](crate::file_picker::FilePicker::choose_open)
+/// 回 `None` ⇒ 本回调**什么都不做**：既不换工程，也不写 `module-status`
+/// （把它写成"打开失败"是把"我不想"和"出错了"混成一句 —— 与 [`wire_save`] 的取消口径、
+/// `crate::file_picker` 的模块文档第 2 条**逐字一致**）。
+///
+/// ## `save_first`：**复用**已有的保存入口
+///
+/// 为真时，先让**已有的**保存入口（`save-project` 回调，宿主侧唯一实现是 [`wire_save`]）
+/// 把当前工程写出去，只有它报告**真的落盘**才继续。⛔ 这里**不**再调一次
+/// `save_action::dispatch_save` —— 那会把 `wire_save` 的装配输入（目标路径 / 权威句柄 /
+/// 另存为对话框）复制成第二份，两份迟早漂移。
+///
+/// 保存没落盘（没有目标路径 / 权威只读 / 入口未接线）⇒ **响亮**报 `error=save-first`，
+/// 且**当前工程与界面一位不动**（返回得比读新文件还早）。
+pub fn wire_open_project(
+    ui: &MainWindow,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
+    runtime: Rc<dyn OpenProjectRuntime>,
+    save_first: bool,
+) {
+    let weak = ui.as_weak();
+    ui.on_open_project(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let started = std::time::Instant::now();
+        // ⭐ ① 问**一次**对话框（`#86` 乙 的能力面；请求的标题与后缀过滤与
+        //    `open_project_via_picker` **逐字相同**：`"打开工程"` + `["yeban"]`）。
+        let picked = picker.choose_open(
+            &crate::file_picker::PickerRequest::open("打开工程").with_extensions(["yeban"]),
+        );
+        let Some(path) = picked else {
+            // 取消：什么都不做（⛔ 不写回执、⛔ 不动工程），见上面的文档。
+            return;
+        };
+        let path = path.to_string_lossy().into_owned();
+        // ② 先保存（可选）：唯一的保存入口就是那个回调。
+        if save_first && let Err(message) = save_first_through_the_existing_entry(&ui) {
+            let receipt =
+                module_receipt("open-project", &module_error_fields("save-first", &message));
+            apply_module_receipt(&ui, &receipt, false);
+            module_trace("open-project", started, &receipt);
+            return;
+        }
+        // ③ 打开（唯一实现在 runtime 里）。
+        let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
+            Ok(()) => (
+                module_receipt(
+                    "open-project",
+                    &[
+                        "outcome=ok".to_owned(),
+                        format!("path={path}"),
+                        // **回读**（不是回显入参）：界面此刻的轨道行数。
+                        format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                        format!("savedFirst={save_first}"),
+                    ],
+                ),
+                true,
+            ),
+            Err(message) => (
+                module_receipt(
+                    "open-project",
+                    &module_error_fields("open-project", &message),
+                ),
+                false,
+            ),
+        };
+        apply_module_receipt(&ui, &receipt, ok);
+        module_trace("open-project", started, &receipt);
+    });
+}
+
+/// 「打开之前先保存」——**复用**已有的保存入口（`save-project` 回调 / [`wire_save`]）。
+///
+/// 做法只有三步：清掉**上一次**的读数（否则"上次保存成功过"会被读成"这一次也成功了"）
+/// ⇒ 触发那**一个**回调 ⇒ 读它的结果。回调体（目标路径解析 / 权威分流 / 原子写 /
+/// 回执文本）**一位都不重复**。
+///
+/// ⚠ 如实登记：本装配的保存入口**未接线**时，`invoke_save_project` 什么都不做，
+/// 于是这里如实拒绝换工程（⛔ 不把"没人管保存"当成"保存过了"）。
+fn save_first_through_the_existing_entry(ui: &MainWindow) -> Result<(), String> {
+    ui.set_save_succeeded(false);
+    ui.set_save_status(SharedString::new());
+    ui.invoke_save_project();
+    if ui.get_save_succeeded() {
+        return Ok(());
+    }
+    let status = ui.get_save_status().to_string();
+    Err(if status.is_empty() {
+        "先保存当前工程**没有落盘**：本装配的保存入口未接线（或它没有可用的目标路径）\
+         ⇒ 拒绝换工程（当前工程一位没动）"
+            .to_owned()
+    } else {
+        format!("{status} ⇒ 拒绝换工程（当前工程一位没动）")
+    })
+}
+
 /// **模块入口的目标路径／参数** —— `host::wire_module_actions` 的唯一装配输入。
 ///
 /// 为什么目标路径由**宿主**给出而不是界面：

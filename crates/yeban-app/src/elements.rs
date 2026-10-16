@@ -534,6 +534,29 @@ impl ElementRegistry {
             false,
         );
 
+        // ⭐ **打开工程**（任务单 `#93`）—— **运行期换工程**的可见入口。
+        //
+        // 与 `module-export-midi-button` **逐条同款**：同一族 ID（`module-{动作}-button`）、
+        // 同一个面板行、同一条 `module-status` 回执通道、**同一个物理位置纪律**
+        // （控制台 **Tab 1 = 调音台**；`MixerConsole` 只在 `active-tab == 1` 时可见
+        // ⇒ **默认帧（Tab 0 卷帘）里没有它** ⇒ 5 张 Linux 基准逐位不变，而本机是 macOS
+        // ⇒ 无法按 `[UI-MCP-003]` 重录）。
+        //
+        // 它补的是 `#86` 乙 如实登记过的那一格：原生对话框那时只接到**已有的**运行期入口
+        // （`LiveUi::open_project` / 控制面 `ui/open_project`）上，产品 `run_gui` 里
+        // **没有**可点的入口（`--open` 只在启动时读一次）。本条的唯一落点是
+        // `host::wire_open_project`：读盘复用 `crate::open::open_project_file`、
+        // 换会话复用 `UndoPort::open_project_session`（「打开一个工程 = **新会话**」），
+        // ⛔ 没有第二份读盘 / 换工程实现。
+        registry.add(
+            "module-open-project-button",
+            ElementKind::Button,
+            "console/mixer_console.slint",
+            // 与 `.slint` 的 `accessible-label` **逐字相同**（运行时树对账会断言相等）。
+            "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）",
+            false,
+        );
+
         // ------------------------------------------------------------ Session View
         registry.add(
             "workspace-session-canvas",

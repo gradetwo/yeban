@@ -78,6 +78,7 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
+use yeban_app::bridge::ViewState;
 use yeban_app::cli::{self, Options};
 use yeban_app::engine_host::EditMark;
 use yeban_app::host;
@@ -347,11 +348,16 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 里面的电平消费端随之 drop ⇒ tick 停 ⇒ **不再 poll**。
     // 走带回调拿的是**同一个** `EngineHost`（`engine_handle()` 只是 `Rc` 计数 +1）。
     let production = Rc::new(RefCell::new(engine));
+    // ⭐ **心跳的对齐基准是共享格**（任务单 `#93`）：心跳闭包在**装配期**建好，而工程可以在
+    // **运行期**换（`host::wire_open_project`）⇒ 基准必须是"此刻那一份"。
+    // ⛔ 用装配期的 `view.clone()` 会让换工程之后的电平表按**旧**工程的轨道数抽帧
+    // （`host::MeterPump::LengthMismatch` ⇒ 电平表停在静音值）。
+    let view_cell: Rc<RefCell<ViewState>> = Rc::new(RefCell::new(view.clone()));
     {
         let production_tick = Rc::clone(&production);
         let port = Rc::clone(&undo_port);
         let ui_tick = slint::ComponentHandle::clone_strong(&ui);
-        let view_tick = view.clone();
+        let view_tick = Rc::clone(&view_cell);
         let warned = Rc::clone(&meter_mismatch_warned);
         let midi_live = Rc::clone(&midi_live_state);
         heartbeat.start(
@@ -366,7 +372,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 } else {
                     None
                 };
-                let tick = production.tick(&ui_tick, &view_tick, mark, project.as_ref());
+                let tick = production.tick(&ui_tick, &view_tick.borrow(), mark, project.as_ref());
                 // ⭐ **实时腿的发布点**（⭐ 与"编辑 ⇒ 发声"共用同一个 60Hz 节拍、同一个
                 // `EngineHost`）：会话线程在窗口内采到的事件在这里进引擎的音符路径。
                 // ⚠ 车道空时是一次 `Mutex` 判空（⛔ 不进音频线程、⛔ 不加任何音频侧工作）；
@@ -470,6 +476,94 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         Some(Rc::clone(&engine_handle)),
         Some(Rc::new(loaded.archive.project.clone())),
     );
+    // ⭐ **运行期「打开工程」的可见入口**（任务单 `#93`）—— 本单补的那一格。
+    //
+    // 缺口（`#86` 乙 如实登记过）：原生对话框那时只接到**已有的**运行期入口
+    // （`ui/open_project` / `LiveUi::open_project`）上，而产品 `run_gui` 里**没有任何
+    // 可点的入口** —— `--open` 只在启动时读一次，运行期换工程没有实现。
+    //
+    // 入口 = `ui/console/mixer_console.slint` 的 `module-open-project-button`
+    // （控制台 **Tab 1 = 调音台**，与 `#90` 甲的「导出 MIDI」并排）。`MixerConsole` 只在
+    // `active-tab == 1` 时可见 ⇒ **默认帧（Tab 0 卷帘）里一个像素都不画** ⇒
+    // `[UI-MCP-003]` 的 5 张 Linux 基准逐位不变（本机是 macOS，无法重录）。
+    //
+    // 这一跳复用**已经存在**的每一件东西（逐条见 `host::wire_open_project` 的文档表）：
+    // `FilePicker`（`#86` 乙 的对话框能力面）/ `open::open_project_file`（读盘）/
+    // `UndoPort::open_project_session`（换会话 = **新会话**）/ `host::apply_view`（唯一注入点）/
+    // `EngineHost::reload`（换代）/ `apply_module_receipt`（**既有**的 `module-status` 通道）。
+    // ⛔ 不需要换窗口、⛔ 不需要重新装配工作区：同一个 `Rc<UndoPort>` 被十来处接线共用，
+    // 它们都在点击那一刻现读端口 ⇒ 换掉端口里的会话，那一批接线自动跟着换。
+    {
+        // `after` = **装配方**自己的最后一跳：视图注入与引擎换代已经在
+        // `host::PortOpenProject::open_runtime` 里做过（那是固定动作），这里只做三件与
+        // **本装配**绑定的事：
+        // ① 心跳的对齐基准换成新的投影（⛔ 不换 ⇒ 电平表按旧轨道数抽帧）；
+        // ② 重接三处**静态快照**（保存落点 / 走带 / 按键）—— 它们都是装配期的 `clone`，
+        //    不重接就会拿着旧工程；保存那一处尤其危险：新工程会被写进**旧**工程的文件；
+        // ③ 引擎的"已应用标记"跟上新会话（与装配点那一句同款，免得下一跳白发布一遍）。
+        let view_after = Rc::clone(&view_cell);
+        let production_after = Rc::clone(&production);
+        let engine_after = Rc::clone(&engine_handle);
+        let port_after = Rc::clone(&undo_port);
+        let input_after = Rc::clone(&input);
+        #[cfg(feature = "in-process-mcp")]
+        let authority_after = in_process_mcp
+            .as_ref()
+            .map(yeban_app::mcp_mount::InProcessMcp::project_authority);
+        let save_picker_after: Rc<dyn yeban_app::file_picker::FilePicker> =
+            Rc::new(yeban_app::file_picker::NativeFilePicker);
+        let after = Rc::new(
+            move |ui: &yeban_app::ui::MainWindow,
+                  project: &yeban_model::YebanProjectV1,
+                  path: &str,
+                  view: &yeban_app::bridge::ViewState|
+                  -> Result<(), String> {
+                // ① 心跳对齐基准。
+                *view_after.borrow_mut() = view.clone();
+                // ② 保存落点**跟着新工程走**（`--open` 那个文件 → 这次打开的那个文件）。
+                host::wire_save(
+                    ui,
+                    host::SaveStatus {
+                        target: Some(std::path::PathBuf::from(path)),
+                        project: project.clone(),
+                    },
+                    Some(Rc::clone(&port_after)),
+                    Rc::clone(&save_picker_after),
+                    #[cfg(feature = "in-process-mcp")]
+                    authority_after.clone(),
+                    #[cfg(not(feature = "in-process-mcp"))]
+                    None,
+                );
+                // ③ 走带 / 按键那两处静态快照（`on_*` setter 覆盖旧闭包）。
+                wire_callbacks(ui, &engine_after, Some(Rc::new(project.clone())));
+                host::wire_keys(
+                    ui,
+                    Rc::clone(&input_after),
+                    Some(Rc::clone(&port_after)),
+                    Some(Rc::clone(&engine_after)),
+                    Some(Rc::new(project.clone())),
+                );
+                // ④ 已应用标记（与装配点 `engine_handle().mark_applied(..)` 同款）。
+                engine_after
+                    .borrow_mut()
+                    .mark_applied(EditMark::from_display(&port_after.display()));
+                Ok(())
+            },
+        );
+        host::wire_open_project(
+            &ui,
+            Rc::new(yeban_app::file_picker::NativeFilePicker),
+            Rc::new(host::PortOpenProject {
+                port: Rc::clone(&undo_port),
+                production: Some(Rc::clone(&production_after)),
+                quanta: 0,
+                after,
+            }),
+            // ⭐ `saveFirst = true`：与 `ui/open_project` 的**默认值**同义 —— 换工程之前
+            // 先把当前工程写出去；保存没落盘就**响亮**拒绝（⛔ 不静默丢掉未保存的改动）。
+            true,
+        );
+    }
     // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口（台账 R16）：界面报行号，宿主把它送进
     // **同一个** `Action::SelectTool` 臂（与上面 `wire_keys` 的 `1`..`5` 数字键同一条链）。
     // 因此"点工具按钮"与"按数字键"不可能分叉。

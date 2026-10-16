@@ -517,7 +517,13 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
 /// ⇒ `[UI-MCP-003]` 的 5 张 Linux 基准逐位不变（本机 macOS 无法重录）。
 /// 反方向（Tab 1 里**有**它、且能被事件注入触发、且回执可读）在
 /// `tests/export_midi_ui.rs` 里断 —— 与 `engine-error-banner` 的两个方向同款。
-const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 9] = [
+///
+/// ⭐ **`module-open-project-button`（任务单 `#93`）紧随其后**：同一条纪律、同一个物理位置
+/// （控制台 **Tab 1 = 调音台**，与 `#90` 那条并排）。它是**运行期「打开工程」**的可见入口，
+/// 而在**默认帧（Tab 0 卷帘）里一个像素都不画** ⇒ 5 张 Linux 基准逐位不变。
+/// 反方向（Tab 1 里**有**它、且注入它的默认无障碍动作**真的换掉工程**、取消不动一位、
+/// 坏路径响亮且不毁工程）在 `tests/open_project_ui.rs` 里断。
+const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 10] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",
     "scene-launch-column-header",
@@ -527,6 +533,7 @@ const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 9] = [
     "undo-tree-modal",
     "engine-error-banner",
     "module-export-midi-button",
+    "module-open-project-button",
 ];
 
 fn demo_registry() -> ElementRegistry {

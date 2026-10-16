@@ -103,6 +103,26 @@ export component MixerConsole inherits Rectangle {
     // 函数），回执走**既有**的 `module-status` 投影通道（与 `export-wav` 逐字同款）。
     callback export-midi();
 
+    // ⭐ **打开工程**（任务单 `#93`）—— **运行期换工程**在界面上的**可见入口**。
+    //
+    // 本单补的是哪一格：`#86` 乙 已经把原生对话框接到**已有的**运行期打开入口上
+    // （`LiveUi::open_project` / `open_project_via_picker`，落点 `ui/open_project`），
+    // 但产品 `run_gui` 里**没有任何可点的入口** —— `--open` 只在启动时读一次。
+    // 本回调就是那个入口的**事件源**。
+    //
+    // 为什么它长在**混音台（控制台 Tab 1）**里：与上面那条「导出 MIDI」**逐字同一条纪律**
+    // （`#90` 甲的先例）。`MixerConsole` 只在 `active-tab == 1` 时可见
+    // （`console_tabs.slint` 的 `visible: root.active-tab == 1`）⇒ 默认帧（Tab 0 卷帘）里
+    // 它**一个像素都不画** ⇒ `[UI-MCP-003]` 的 5 张 Linux 基准逐位不变
+    // （而本机是 macOS、`tests/golden/<platform>` 只有 `linux` ⇒ 本机**无法**重录）。
+    //
+    // ⛔ 本回调**不**读盘、**不**弹窗、**不**判断成功与否、**不**猜路径：落点是宿主
+    // `host::wire_open_project`（问一次**可注入**的 `FilePicker` → 走**已经存在**的
+    // `crate::open::open_project_file` 读盘 → 把端口里的会话整体换成新的一份
+    // （`UndoPort::open_project_session`，「打开一个工程 = **新会话**」）→ 重投影）。
+    // 回执走**既有**的 `module-status` 投影通道（与 `export-midi` / `export-wav` 逐字同一条）。
+    callback open-project();
+
     // ---- 主控通道条的**写入面**（本切片新增）----
     //
     // ⭐ 为什么主控是**另一组回调**、而不是把主控编成一个下标送进上面那八个：
@@ -209,6 +229,72 @@ export component MixerConsole inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.export-midi(); }
+            }
+        }
+    }
+
+    // ⭐ **工程打开**（任务单 `#93`）—— 运行期「打开工程」的可见入口，**只在 Tab 1 里可见**。
+    //
+    // 位置：紧挨着上面 `#90` 的「工程导出」面板**右侧**（同一个 `y`，即 `Tokens.space-4`；
+    // `x` 在它之后 + 它自己的宽度 `216px` + 一个 `space-3` 间隙）。⭐ 选这个座位是因为它
+    // **不改任何既有控件的几何**：`#90` 那条面板的 `x` / `y` / 高宽与它的按钮位置
+    // （`y: 24px` / `height: 28px`）**一位不动**，而通道条永远在 `104px * track_index`
+    // 那一列里（都在这两个面板的左边）⇒ 三者互不重叠。
+    // （`216px` 是与左侧那块面板**并排对齐**的座位常量；它⛔ 不参与任何算术，
+    //  只是"下一格从上一格右边缘再让一个间隙开始"。）
+    //
+    // ⛔ 本块**不**写盘、**不**判断成功与否：它只发 `open-project` 回调；问对话框、读盘、
+    // 换会话与重投影全在宿主 `host::wire_open_project`（唯一实现），回执走**既有**的
+    // `MainWindow.module-status` —— 与 `module-export-midi-button` 逐字同一条通道。
+    Rectangle {
+        x: Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
+        y: Tokens.space-4;
+        width: 216px;
+        height: 76px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+
+        UiMediumText {
+            x: Tokens.space-3;
+            y: 0;
+            width: parent.width - 8px;
+            height: 18px;
+            text: "工程";
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+        }
+
+        // 唯一点击源与 `accessible-action-default` 是**同一段**落点（`[UI-A11Y-003]` §7.3）。
+        Rectangle {
+            x: Tokens.space-3;
+            y: 24px;
+            width: parent.width - 12px;
+            height: 28px;
+            background: open_project_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-md;
+            accessible-role: button;
+            accessible-id: "module-open-project-button";
+            accessible-label: "打开工程（用文件对话框挑一个 .yeban 容器并就地换掉当前工程）";
+            accessible-action-default => { root.open-project(); }
+
+            UiText {
+                x: Tokens.space-3;
+                y: 0;
+                width: parent.width - 12px;
+                height: parent.height;
+                text: "打开工程";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            open_project_area := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.open-project(); }
             }
         }
     }

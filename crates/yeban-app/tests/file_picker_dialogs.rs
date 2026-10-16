@@ -44,7 +44,6 @@
 //!   在 ①② 两种注入下**必须照旧绿** —— 它断言"手敲文本 ⇒ SET 仍然提交"与
 //!   "`NoPicker` ⇒ 一次都不弹"。注入 ①② 都动不了这两条（它们不经过对话框）。
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -64,76 +63,15 @@ mod live;
 
 use live::{LiveUi, LiveWiringOptions, OpenViaPicker, build_live_ui_with};
 
+#[path = "common/mod.rs"]
+mod common;
+
+/// ⭐ **假的选择器**（`#86` 乙）住在 `tests/common/mod.rs`：任务单 `#93` 的
+/// `tests/open_project_ui.rs` 断的是**同一个**替身（"对话框被问了几次"这类读数不允许有两份）。
+use common::ScriptedPicker;
+
 /// 撤销会话的"现在"（与 `sfz_ui_selector.rs` 的常量同款：判据不需要墙钟）。
 const NOW_MS: u64 = 1_760_000_000_000;
-
-/// ⭐ **假的选择器**：记下每一次请求，并按脚本回答（`None` = 用户取消）。
-///
-/// 它⛔ 不碰文件系统、⛔ 不开窗口 —— 这正是本单"可注入"那句话的落点。
-struct ScriptedPicker {
-    /// 每一次请求（`open` 与 `save` 都在这里，按发生顺序）。
-    calls: RefCell<Vec<(&'static str, PickerRequest)>>,
-    /// `choose_open` 的脚本答案。
-    open: RefCell<Option<PathBuf>>,
-    /// `choose_save` 的脚本答案。
-    save: RefCell<Option<PathBuf>>,
-}
-
-impl ScriptedPicker {
-    fn new() -> Rc<Self> {
-        Rc::new(Self {
-            calls: RefCell::new(Vec::new()),
-            open: RefCell::new(None),
-            save: RefCell::new(None),
-        })
-    }
-
-    fn answering_open(path: impl Into<PathBuf>) -> Rc<Self> {
-        let picker = Self::new();
-        *picker.open.borrow_mut() = Some(path.into());
-        picker
-    }
-
-    fn answering_save(path: impl Into<PathBuf>) -> Rc<Self> {
-        let picker = Self::new();
-        *picker.save.borrow_mut() = Some(path.into());
-        picker
-    }
-
-    /// **取消**（两个方法都回 `None`）—— 语义就是"用户在对话框里按了取消"。
-    fn cancelling() -> Rc<Self> {
-        Self::new()
-    }
-
-    fn call_count(&self, kind: &str) -> usize {
-        self.calls
-            .borrow()
-            .iter()
-            .filter(|(which, _)| *which == kind)
-            .count()
-    }
-
-    fn last_request(&self, kind: &str) -> Option<PickerRequest> {
-        self.calls
-            .borrow()
-            .iter()
-            .rev()
-            .find(|(which, _)| *which == kind)
-            .map(|(_, request)| request.clone())
-    }
-}
-
-impl FilePicker for ScriptedPicker {
-    fn choose_open(&self, request: &PickerRequest) -> Option<PathBuf> {
-        self.calls.borrow_mut().push(("open", request.clone()));
-        self.open.borrow().clone()
-    }
-
-    fn choose_save(&self, request: &PickerRequest) -> Option<PathBuf> {
-        self.calls.borrow_mut().push(("save", request.clone()));
-        self.save.borrow().clone()
-    }
-}
 
 /// 临时目录（形态照 `sfz_ui_selector.rs` 的 `scratch`）。
 fn scratch(tag: &str) -> PathBuf {

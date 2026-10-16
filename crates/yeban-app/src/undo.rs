@@ -300,6 +300,68 @@ impl UndoPort {
         }
     }
 
+    /// ⭐ **打开一个工程 = 新会话**（任务单 `#93`）—— 把端口里的**本地**会话整体换掉。
+    ///
+    /// ## 它存在的理由（这是本单补的那一格）
+    ///
+    /// 在此之前，"打开一个工程 = 新会话"只有**装配期**一条实现
+    /// （`crates/yeban-app/src/main.rs` 的 `open_undo_session`）：`--open` 只在启动时读一次，
+    /// 而运行期换工程**没有落点** —— 端口一旦建好，手里那份 `UndoSession` 就换不掉
+    /// （`session` 是私有 `RefCell<UndoBackend>`），于是产品 `run_gui` 里那个入口接不上。
+    ///
+    /// ## 语义与装配期那一条**逐字相同**
+    ///
+    /// 新会话由 [`UndoSession::open`] 建：图谱从**一条根提交**开始，游标与活跃分支都从头
+    /// ⇒ **撤销不可能跨越打开边界**（`ADR-0001` D45 / `MODEL-ISO-001`）。动作日志与
+    /// "最近一次提交来源"一并清空（它们是**会话**运行态，`MODEL-ISO-001` 的三层里不是
+    /// 工程内容）；时光机弹窗的开关也回到关闭（装配期的初值）。
+    ///
+    /// ## 为什么**就地换**（而不是让调用方换一个新的 `Rc<UndoPort>`）
+    ///
+    /// 产品 `run_gui` 里有**十来处**接线持有同一个 `Rc<UndoPort>`（保存 / 键盘 / 撤销 /
+    /// 工具 / 卷帘 / 行高 / 混音台 / 模块入口），它们都在**每一次点击时**现读
+    /// [`Self::project`] / [`Self::try_project`] ⇒ 换掉会话，这一批接线**自动**跟着换，
+    /// ⛔ 不需要换窗口、⛔ 不需要重新装配（这是"运行期换工程"能落在同一个窗口上的原因）。
+    ///
+    /// ## 权威后端**如实拒绝**
+    ///
+    /// 挂了进程内控制面（[`UndoBackend::Authority`]）时，工程的唯一可变权威是那个
+    /// `Domain`（`ADR-0005`）：在这里换一份会让"界面画的是哪一份"与"会话读写的是哪一份"
+    /// 立刻分叉，而本端口**不持有**任何可用于换工程的权威入口（宿主的 `HostAction` 只有
+    /// `Undo` / `Redo` / `Commit`，没有"打开工程"）⇒ 拒绝，与
+    /// `live_surface::LiveAdminSurface::open_project_now` 的既有一句**同一个理由**。
+    /// 那时正确的出口是领域 MCP 的 `yeban_close_project` / `yeban_open_project`。
+    ///
+    /// # Errors
+    ///
+    /// 权威后端在场（原因原文），或新会话的根提交被模型拒绝（[`UndoRefusal`] 原文）。
+    pub fn open_project_session(
+        &self,
+        label: impl Into<String>,
+        project: YebanProjectV1,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let session = UndoSession::open(label, "yeban-app", project, now_ms)
+            .map_err(|error| format!("新工程的撤销会话无法初始化: {error}"))?;
+        let mut backend = self.session.borrow_mut();
+        #[cfg(feature = "in-process-mcp")]
+        if matches!(&*backend, UndoBackend::Authority(_)) {
+            return Err(
+                "本端口的工程来自进程内控制面会话（唯一可变权威）⇒ 不在这里换工程\
+                 （宿主的写入口没有『打开工程』这一项）；\
+                 请用领域 MCP 的 `yeban_close_project` / `yeban_open_project`"
+                    .to_owned(),
+            );
+        }
+        *backend = UndoBackend::Local(Box::new(session));
+        drop(backend);
+        // 会话运行态（**不是**工程内容）：新会话 = 空日志、无来源标记、时光机回到关闭。
+        self.actions.borrow_mut().clear();
+        *self.last_origin.borrow_mut() = None;
+        self.open.set(false);
+        Ok(())
+    }
+
     /// 显示态（**模型读数**：能不能撤 / 还能撤几步 / 已撤几步 / 提交数 / 分支）。
     #[must_use]
     pub fn display(&self) -> UndoDisplay {
