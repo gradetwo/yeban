@@ -1481,7 +1481,8 @@ impl SfzInstrument {
                 )
                 .0 / AMPLITUDE_PERCENT_SCALE;
                 let gain = region.playback_spec_with(&query, rates).total_gain() * amplitude_gain;
-                if !(rate.is_finite() && rate > 0.0) || pcm_len == 0 {
+                // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
+                if !rate_is_usable(rate) || pcm_len == 0 {
                     continue;
                 }
                 // ⭐ `offset`/`end`：与摊平表、实时声部**同一份**归约（`None` ⇒ 不产生输出）。
@@ -1629,6 +1630,39 @@ pub fn reduce_travel(direction: PlayDirection, rate: f32, start: f32, end: u64) 
         // `end >= 1` 由 `reduce_span` 保证（`end > start >= 0`）⇒ `end - 1` 不下溢。
         PlayDirection::Reverse => ((end - 1) as f32, -rate, start as u64),
     }
+}
+
+/// ⭐⭐ **速率可用性谓词**（任务单 `#117`）：三条渲染路**唯一**的速率守卫。
+///
+/// `rate` 可用 ⇔ **有限且非零**。⚠ **符号不参与判定**：`direction=reverse`
+/// 的摊平／实时声部带**负** `rate`（[`reduce_travel`] 把"起点 ＝ 区间末格 ＋
+/// 步进取负"折进去），那是**合法**输入 ⇒ 谓词用 `!= 0.0` 而不是 `> 0.0`。
+///
+/// # 为什么要有它（`#117` 实测）
+///
+/// `#104`～`#116` 的三条路各写各的守卫：
+///
+/// | 路 | 守卫的对象 | 谓词 |
+/// | :--- | :--- | :--- |
+/// | 离线 [`SfzInstrument::render_note_into_with_cc`] | **速率**（基率 × 乘子） | `is_finite && > 0.0` |
+/// | 摊平 [`PreparedSfz::render_block_into_with_cc`] | **速率**（同上） | `is_finite && > 0.0` |
+/// | ⭐ 实时 [`SfzVoicePool::slot_readings`] | ⭐ **乘子**（`tune_ratio`） | `is_finite && > 0.0` |
+///
+/// ⇒ 存在一档病态输入（有限乘子 `2^x` 与基率相乘**溢出成 `Inf`**）让前两路
+/// **退休**、实时路**放行**（实测：前两路写 0 帧、实时拿 `Inf` 冲进逐样本循环）。
+/// 本谓词把三处收口成**同一条**：判定的量都是"本块真正用的那个速率"。
+///
+/// ⚠ **与既有行为的关系**：两条一次性渲染路的速率恒**非负**（基率 > 0、
+/// 乘子 ＝ `exp2(·) ≥ 0`）⇒ 对它们 `rate_is_usable` 与原来的 `> 0.0` 写法
+/// **逐位等价**（既有判据 `S109` 等逐字仍绿）；实时路的 `voice.rate()` 在
+/// `reverse` 时为负 ⇒ `!= 0.0` 才能保住反向播放（判据 `S97`）。
+///
+/// ⚠ 它**不是**幅值上界：`rate` 可以**有限但极大**（`2^x` 的有限上界 ≈ `f32::MAX`）
+/// ⇒ 那种位置由 [`mix_span_into`] 的"越界即退休"闸门（`saturating_add(1)` 索引算术）
+/// 如实收掉，⛔ 本谓词**不发明**第二个阈值（口径同台账第 259 条）。
+#[must_use]
+pub fn rate_is_usable(rate: f32) -> bool {
+    rate.is_finite() && rate != 0.0
 }
 
 /// ⭐ **循环窗口归约的唯一实现**（本单新增）：离线 [`SfzInstrument::render_note_into`]、
@@ -3617,7 +3651,8 @@ impl PreparedSfz {
             // ⚠ `cc == None` ⇒ 乘子恰 `1.0` ⇒ `rate` 与接线前**逐位相同**。
             // ⚠ 非法速率（乘子上溢/下溢）**沿用下面那条既有守卫**（⛔ 不加第二条谓词）。
             let rate = region.rate_per_note[n] * region.tune_ratio_with_cc(cc);
-            if !(rate.is_finite() && rate > 0.0) || pcm.is_empty() {
+            // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
+            if !rate_is_usable(rate) || pcm.is_empty() {
                 continue;
             }
             let Some((start, source_end)) = region.span_bounds(pcm.len()) else {
@@ -4337,9 +4372,19 @@ pub(crate) fn mix_span_into(
         let index = *position as usize;
         // ⭐ **钳位**（任务单 `#97`）：钳位腿上 `index + 1` 那一格已经不在 PCM 里
         // ⇒ 换成最后一格（⛔ 越界读、⛔ panic）；其余两条路**逐字**是原来的 `index + 1`。
+        // ⭐ ⭐ **追加修订段（任务单 `#117`）—— 被修订的是上面这句里
+        // 「其余两条路**逐字**是原来的 `index + 1`」那一支**（⛔ 原文一字未删，
+        // 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+        // `#116` 起 `rate` 可以收到一个**有限但极大**的 `tune` 乘子（`2^x` 的
+        // 有限上界 ≈ `f32::MAX`），`position` 于是可以超过 `usize::MAX`；Rust 的
+        // `f32 as usize` 是**饱和**转换 ⇒ `index == usize::MAX`，而 `index + 1`
+        // 在 debug 下**溢出 panic**、在 release 下回绕成 `0` 并绕过下面那条
+        // "越界即退休"的检查。改成 `saturating_add(1)`：正常值下与 `+ 1`
+        // **逐位相同**，只有"位置已在 PCM 之外"这一档从 panic 变成**如实退休**
+        // （`next >= pcm.len()` 那条既有闸门接住它，⛔ 不加第二条语义）。
         let next = match tail_clamp {
             Some(last) => index.saturating_add(1).min(last),
-            None => index + 1,
+            None => index.saturating_add(1),
         };
         // 停止条件（写每个样本**之前**）：默认 `floor(position) + 1 >= source_end`
         // —— 线性插值需要 `position` 与 `position + 1` 两个样本。
@@ -4352,7 +4397,10 @@ pub(crate) fn mix_span_into(
         } else if tail_clamp.is_some() {
             index as u64 >= source_end
         } else {
-            index as u64 + 1 >= source_end
+            // ⭐ ⭐ `#117`（同上一条修订段）：`index as u64 + 1` 在
+            // `index == usize::MAX` 时同样溢出 ⇒ `saturating_add(1)`
+            // （正常值下与 `+ 1` 逐位相同）。
+            (index as u64).saturating_add(1) >= source_end
         };
         if past_source_end || next >= pcm.len() {
             break;
@@ -4903,7 +4951,8 @@ impl SfzVoicePool {
             };
             let pcm_len = sample.pcm().len();
             let rate = region.rate_per_note[n];
-            if !(rate.is_finite() && rate > 0.0) || pcm_len == 0 {
+            // ⭐⭐ `#117`：速率守卫的唯一谓词（三条路同一量、同一谓词）。
+            if !rate_is_usable(rate) || pcm_len == 0 {
                 continue;
             }
             // ⭐ 起点/终点口径：同一份归约（`span() == None` / 空区间 ⇒ 不建声部）。
@@ -5475,10 +5524,30 @@ impl SfzVoicePool {
         // ⇒ 这里对**乘子**照同一条口径如实退休（`None` ⇒ 调用方 `silence_slot`），
         // ⛔ 不静默改成 `1.0`、⛔ 不让 `Inf` 进逐样本循环（那会在 `index + 1` 上溢出）。
         // ⚠ `cc == None` 时乘子恰 `1.0` ⇒ 本守卫**永不成立** ⇒ 既有夹具逐位不变。
-        if !(tune_ratio.is_finite() && tune_ratio > 0.0) {
+        //
+        // ⭐ ⭐ **追加修订段（任务单 `#117`）—— 被修订的是上面这段最后两句里
+        // 「这里对**乘子**……如实退休」与「（那会在 `index + 1` 上溢出）」那两支**
+        // （⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋
+        // 点名被修订的支）。`#117` 的病态夹具实测把两件事钉死了：
+        //
+        // 1. **守卫的对象必须与另两条路同量**：离线／摊平两条路拦的是
+        //    **速率本身**（`rate = 基率 × 乘子`），而这里原来拦的是**乘子**
+        //    ⇒ 存在一档输入（有限乘子 `1.69e38` × 基率 `4.0` ＝ `Inf`）让它们
+        //    **退休**而本路**放行**（实测：另两路写 0 帧、本路拿 `rate = Inf`
+        //    冲进逐样本循环）。⇒ 本片把守卫**下移到乘积之后**，谓词改成
+        //    [`rate_is_usable`]（有限且非零）—— 与另两条路**同一量、同一谓词**
+        //    （反向播放的 `voice.rate()` 为**负**，所以用 `!= 0.0` 而不是 `> 0.0`；
+        //    对那两条路，速率恒非负 ⇒ 两者等价）。
+        // 2. **`index + 1` 那一句不再是唯一出口**：有限乘子上界 ≈ `f32::MAX`
+        //    ⇒ `rate` 本身可以**有限但极大**（实测 `1.69e38`）而通过守卫，
+        //    此时 `position` 超过 `usize::MAX`、`f32 as usize` **饱和**成 `usize::MAX`
+        //    ⇒ `index + 1` 在 debug 下 panic、release 下回绕并绕过"越界即退休"
+        //    ⇒ [`mix_span_into`] 的索引算术已同片改成 `saturating_add(1)`
+        //    （见那里的 `#117` 追加修订段）。
+        let rate = voice.rate() * tune_ratio;
+        if !rate_is_usable(rate) {
             return None;
         }
-        let rate = voice.rate() * tune_ratio;
         // ⭐ 力度调制（任务单 `#106`）：**逐声部力度**就在 [`SfzVoice`] 里
         // （[`SfzVoice::velocity`]，触发期抄下、此后不变）⇒ 本路**不需要任何新字段**
         // （`SfzVoice` 仍 40 B）。

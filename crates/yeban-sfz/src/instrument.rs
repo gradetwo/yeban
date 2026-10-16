@@ -33,7 +33,7 @@ use crate::label::{Labels, cc_label_index};
 use crate::midi::MidiSection;
 use crate::modulation::{
     AMPEG_MOD_CAP, AmpegParam, CcMod, MAX_MODULATION_CC, MAX_MODULATION_CURVE_INDEX, ModTarget,
-    ModulationForm, bake_cc_mods, parse_modulation_name,
+    ModUnit, ModulationForm, bake_cc_mods, parse_modulation_name,
 };
 use crate::parser::Warning;
 use crate::parser::{OpcodeMap, OpcodeValue, parse_int};
@@ -2550,6 +2550,24 @@ fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzE
 /// `tune_*ccN` 是 `pitch_onccN` 的 ARIA 别名，而 `pitch_onccN` 表行 Range ＝
 /// `-9600 to 9600`；登记语料有 **599** 处 `|delta| > 100`、最大 **2400**）。
 /// ⚠ 被修订的**只是域的来源**：报错类型、后缀政策、非有限检查、负值合法**逐字未变**。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#117`）—— 被修订的是上面 `#116` 修订段最后半句里
+/// 「后缀政策……**逐字未变**」那一支**（⛔ 原文一字未删，口径同台账第 278 条：
+/// 保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：`#116` 时后缀政策确实是
+/// `#104` 的二分（`is_time()` ⇒ `s` / `ms`，否则剥 `%`）⇒ `tune` 落进"否则"支、
+/// **静默**认 `%`（`#116` 自己如实登记为"过度宽松"）。`#117` 把它换成
+/// **逐单位类别分派**（[`ModTarget::mod_unit`] ／ [`ModUnit`]）：
+///
+/// | 单位类别 | 目标 | 接受的后缀 | `50%` 的处置 |
+/// | :--- | :--- | :--- | :--- |
+/// | [`ModUnit::Seconds`] | 四个 `ampeg_*` 时间参数 | `""` / `s` / `ms` | ⛔ `InvalidFloat`（**逐字未变**） |
+/// | [`ModUnit::Percent`] | `ampeg_sustain` ／ `amplitude` | `""` / `%` | `Ok(50.0)`（**逐字未变**） |
+/// | ⭐ [`ModUnit::Cents`] | ⭐ `tune` | ⭐ `""`（⛔ 无任何后缀） | ⭐ **响亮 `InvalidFloat`**（`#117` 收紧） |
+///
+/// ⚠ 被修订的**只是 `Cents` 一行的后缀接受集**：上表前两行**逐字**是 `#104`／`#115`
+/// 的行为（判据 `S101`／`S107` 的反空判腿逐字仍绿）；`#116` 修订的**域**那一支
+/// **仍未动**（[`ModTarget::delta_range`] 是唯一来源）。⭐ 处置与规范依据见
+/// [`crate::modulation`] 模块文档 §6.4 的 `#117` 追加修订段。
 fn read_modulation_delta(
     raw: &str,
     name: &str,
@@ -2557,16 +2575,27 @@ fn read_modulation_delta(
     line: usize,
 ) -> Result<f32, SfzError> {
     let raw = raw.trim();
-    let (number, scale) = if target.is_time() {
-        if let Some(number) = strip_unit(raw, "ms") {
-            (number, 1.0e-3_f32)
-        } else if let Some(number) = strip_unit(raw, "s") {
-            (number, 1.0_f32)
-        } else {
-            (raw, 1.0_f32)
+    // ⭐⭐ `#117`：后缀分支**逐单位类别分派**（[`ModTarget::mod_unit`]）——
+    // ⛔ 不再是 `is_time()` 的二分（那会把 `%` 一族与 `cents` 一族混在一起）。
+    let (number, scale) = match target.mod_unit() {
+        // 秒：认 `ms` / `s`（⛔ 不认 `%`）。**逐字未动**（`#104` 起的口径）。
+        ModUnit::Seconds => {
+            if let Some(number) = strip_unit(raw, "ms") {
+                (number, 1.0e-3_f32)
+            } else if let Some(number) = strip_unit(raw, "s") {
+                (number, 1.0_f32)
+            } else {
+                (raw, 1.0_f32)
+            }
         }
-    } else {
-        (strip_unit(raw, "%").unwrap_or(raw), 1.0_f32)
+        // 百分比：认 `%`（⛔ 不认时间后缀）。**逐字未动**（`ampeg_sustain` 起、
+        // `#115` 的 `amplitude` 同款）。
+        ModUnit::Percent => (strip_unit(raw, "%").unwrap_or(raw), 1.0_f32),
+        // ⭐⭐ 音分：⛔ **不剥任何后缀** ⇒ `50%` / `50s` / `50ms` 都落到下面的
+        // `parse::<f32>()` 失败 ⇒ 响亮 [`SfzError::InvalidFloat`]
+        // （⛔ 不静默当成 50 音分；理由与规范依据见 [`crate::modulation`] §6.4 的
+        // `#117` 追加修订段）。
+        ModUnit::Cents => (raw, 1.0_f32),
     };
     let parsed = number
         .trim()

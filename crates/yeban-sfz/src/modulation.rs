@@ -307,6 +307,28 @@
 //! 的非时间支）—— 这是**既有分支的副作用**（`Unit` 列的真实值是 `cents`）；
 //! 如实登记为"过度宽松"，⛔ 不声称规范允许 `tune_onccN=50%`。
 //!
+//! ⭐ ⭐ **追加修订段（任务单 `#117`）—— 被修订的是上面这段的"认 `%` 后缀"那一支**
+//! （⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+//! `#117` 起 `tune` 的 `delta` **⛔ 不接受 `%`**（也⛔ 不接受 `s` / `ms`）——
+//! 上面那句描述的"非时间支一律剥 `%`"**只对 `ampeg_sustain` 与 `amplitude` 继续成立**
+//! （它们的表行 Unit 逐字是 `%`）。判据与理由：
+//!
+//! 1. **规范依据**（§6.1 逐字）：`tune` 页的表行 Unit ＝ **`cents`**，同页
+//!    Modulation 表**只有 `pitch` 族**（`pitch_onccN` 的 Unit 也是 `cents`），
+//!    别名句只说 `tune_*ccN` 是 `pitch_*ccN` 的别名 ⇒ **`cents` 一族在规范里
+//!    没有任何 `%` 写法**；
+//! 2. **处置 ＝ 响亮 `Err`**（⛔ 不是"登记为未定义而悄悄接受"）：`tune_oncc1=50%`
+//!    在解析期报 [`crate::error::SfzError::InvalidFloat`]（`opcode = "tune_oncc1"`、
+//!    `value = "50%"`）。理由：本 crate 对"后缀与单位不匹配"的**既有口径**就是
+//!    响亮 `Err`（第 259 条：⛔ 不静默降级、⛔ 不钳位）—— `tune_oncc1=50s` /
+//!    `tune_oncc1=50ms` **在 `#116` 就已经**响亮 `Err`；`%` 与它们是同一类输入
+//!    ⇒ 让它走同一条出口才不会在"哪种错后缀被吞掉"上产生第二个口径；
+//! 3. **语料安全**：登记语料 **1398** 份 `.sfz` 里 `tune_*ccN` 的取值**全部**是
+//!    纯数字（`%` **0** 处、任何后缀 **0** 处）⇒ 今天能解析的文件**一个都不会**
+//!    变成不可解析；
+//! 4. ⛔ **不收紧** `ampeg_*` / `amplitude`：实现是**逐单位分派**
+//!    （[`ModUnit`]／[`ModTarget::mod_unit`]），`Seconds` 支与 `Percent` 支**逐字未动**。
+//!
 //! # 实时安全
 //!
 //! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
@@ -387,6 +409,47 @@ impl AmpegParam {
             3 => Some(Self::Sustain),
             4 => Some(Self::Release),
             _ => None,
+        }
+    }
+}
+
+/// ⭐⭐ `delta` 的**单位类别**（任务单 `#117`）：把 `#104` 的 `is_time()` **布尔**
+/// 显式化成一个枚举。
+///
+/// ⚠ **为什么要有它**：`#104` 只区分"时间／非时间"，而非时间那一支把
+/// **百分比**（`ampeg_sustain` ／ `amplitude`）与**音分**（`tune`）混在一起
+/// ⇒ 后缀政策只能靠"不是时间就剥 `%`"实现，于是 `tune_oncc1=50%` 被**静默**
+/// 读成 `50` 音分（`#116` 如实登记的"过度宽松"）。本枚举把三者分开，
+/// 让**后缀接受集**成为单位类别的一个函数。
+///
+/// ⛔ **它不改任何既有接受集**：`Seconds` 仍只认 `s` / `ms`、`Percent` 仍只认 `%`
+/// —— 两支的行为**逐字不变**；被收窄的只有**新增的** `Cents` 一支。
+///
+/// ⚠ `ampeg_sustain` 是 `Percent`（表行 Unit ＝ `%`）、`amplitude` 是 `Percent`
+/// （表行 Unit ＝ `%`）、`tune` 是 `Cents`（表行 Unit ＝ `cents`）—— 逐字出处见
+/// 本模块 §2／§5.1／§6.1。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ModUnit {
+    /// **秒**（`ampeg_attack` / `hold` / `decay` / `release`）：认 `s` / `ms` 后缀。
+    Seconds,
+    /// **百分比**（`ampeg_sustain` ／ `amplitude`）：认 `%` 后缀。
+    Percent,
+    /// ⭐⭐ **音分**（`tune`）：⛔ **不认任何后缀** —— 规范里 `cents` 没有后缀写法，
+    /// 尤其 ⛔ 没有 `%`（见本模块 §6.1 的逐字表行与别名句）。
+    Cents,
+}
+
+impl ModUnit {
+    /// 该单位类别**接受的后缀**（诊断与判据文案用；空串 ＝ 无后缀）。
+    ///
+    /// ⚠ 它是**唯一**一处把"单位类别 → 后缀集"写下来的地方
+    /// （[`crate::instrument::read_modulation_delta`] 的分支就是它的机械后果）。
+    #[must_use]
+    pub const fn suffixes(self) -> &'static [&'static str] {
+        match self {
+            Self::Seconds => &["", "s", "ms"],
+            Self::Percent => &["", "%"],
+            Self::Cents => &[""],
         }
     }
 }
@@ -485,36 +548,64 @@ impl ModTarget {
         }
     }
 
+    /// ⭐⭐ `delta` 的**单位类别**（任务单 `#117`）—— **单位政策的唯一来源**。
+    ///
+    /// ⚠ **`is_time()` 与 `unit()` 都从它派生**（两者对既有目标逐字返回同一结果）
+    /// ⇒ ⛔ 没有第二张表、⛔ 没有第二个真相；后缀接受集
+    /// （[`ModUnit::suffixes`]）是它的机械后果。
+    ///
+    /// ⭐⭐ **追加修订段（任务单 `#117`）—— 被修订的是上面 `unit()` 文档里
+    /// 「换算由各目标的消费方做」那一支里**"消费方"的名单**（⛔ 原文一字未删，
+    /// 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+    /// `#104`～`#116` 的消费方只有**域检查**与**数值求值**；`#117` 起
+    /// [`crate::instrument::read_modulation_delta`] 的**后缀分支**也读它
+    /// ⇒ `tune`（`Cents`）与 `amplitude`／`ampeg_sustain`（`Percent`）在**读取**层
+    /// 就分了道（⛔ 不再是"都是非时间 ⇒ 都剥 `%`"）。
+    #[must_use]
+    pub const fn mod_unit(self) -> ModUnit {
+        match self {
+            Self::Ampeg(param) => {
+                if param.is_time() {
+                    ModUnit::Seconds
+                } else {
+                    ModUnit::Percent
+                }
+            }
+            Self::Amplitude => ModUnit::Percent,
+            Self::Tune => ModUnit::Cents,
+        }
+    }
+
     /// `delta` 的单位是不是**时间**（秒）；`false` ⇒ 百分比或音分。
     ///
     /// 五个 `ampeg_*` 里只有 `sustain` 是百分比；⭐ [`Self::Amplitude`] 的
     /// `amplitude_onccN` 表行 Unit ＝ **%**（逐字表行见模块文档 §5）⇒ `false`；
     /// ⭐⭐ [`Self::Tune`] 的 `tune_*ccN` Unit ＝ **cents**（逐字表行与裁定见模块文档 §6）
-    /// ⇒ `false`（⛔ 不是"默认百分比"—— 调用方读 [`Self::unit`] 取真单位）。
+    /// ⇒ `false`（⛔ 不是"默认百分比"—— 调用方读 [`Self::mod_unit`] 取真单位）。
+    ///
+    /// ⭐⭐ **追加修订段（任务单 `#117`）—— 被修订的是上面那句里**
+    /// 「调用方读 [`Self::unit`] 取真单位」**那一支**（⛔ 原文一字未删，口径同台账
+    /// 第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：`#104`～`#116` 的
+    /// **后缀政策**读的是本函数（布尔）；`#117` 起改读 [`Self::mod_unit`]
+    /// ⭐ **被修订的只是"后缀政策读谁"这件事** —— 本函数的**返回值对七个目标
+    /// 一个都没变**（`Seconds` ⇒ `true`、`Percent`／`Cents` ⇒ `false`）
+    /// ⇒ 既有判据（`S100`／`S106`／`S101`／`S107`）逐字仍绿。
     #[must_use]
     pub const fn is_time(self) -> bool {
-        match self {
-            Self::Ampeg(param) => param.is_time(),
-            Self::Amplitude | Self::Tune => false,
-        }
+        matches!(self.mod_unit(), ModUnit::Seconds)
     }
 
     /// ⭐⭐ `delta` 的**单位名**（规范表行 Unit 列的字面；诊断与判据文案用）。
     ///
     /// ⚠ 它⛔ 不参与任何换算 —— 换算由各目标的消费方做
     /// （`ampeg_*`／`amplitude` 见模块文档 §2／§5，`tune` 见 §6）。
+    /// ⭐⭐ `#117` 起它由 [`Self::mod_unit`] **派生**（⛔ 不是第二张表）。
     #[must_use]
     pub const fn unit(self) -> &'static str {
-        match self {
-            Self::Ampeg(param) => {
-                if param.is_time() {
-                    "seconds"
-                } else {
-                    "%"
-                }
-            }
-            Self::Amplitude => "%",
-            Self::Tune => "cents",
+        match self.mod_unit() {
+            ModUnit::Seconds => "seconds",
+            ModUnit::Percent => "%",
+            ModUnit::Cents => "cents",
         }
     }
 

@@ -116,6 +116,20 @@
 //! | ⭐ S109 | ⭐ ⭐ **三条路一致（本单核心）**（任务单 `#116` 新增；§4） | `cc ∈ {0,37,100,127}`：**离线** `render_note_into_with_cc` ／ **摊平** `render_block_into_with_cc` ／ **实时** `render_into_with_cc` 的位模式**逐位相同**（两两相等）；⭐ 反空判腿：`cc=0`（乘子 `1.0`）与 `cc=127`（乘子 `2.0`）**必须逐位不同**；四条臂都必须**真的出声**（⛔ 挡住"静默不发声也算一致"） |
 //! | ⭐ S110 | ⭐ **反向腿 ＋ 三个承重指纹 ＋ 既有三族未扰动**（任务单 `#116` 新增；§5／§6） | ⭐ **反向腿**：去掉 `tune_oncc1` 那一行 ⇒ 两个 CC 值**逐位相同**（`cc=0` 时与有调制臂也**相同** —— 调制项在 0 处贡献恰 0 音分，如实登记）＋ 有牙腿改用 `cc=127`（必不同）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`；⭐ **应绿反向腿**：× `1.0000001` ⇒ 指纹**必须**变（实测 `0xf181aa780f2cfab1`）；⭐ **同夹具三族对照**：`ampeg_attack` 仍走 `0.5 + 0.5 × cc/127`、`amplitude` 走 `(50 + 50 × cc/127)/100`、`tune` 走 `2 ^ (1200 × cc/127 / 1200)`，三者**互不顶替**（只动 `tune` 的 CC ⇒ 另两族读数**一动不动**） |
 //!
+//! ⭐ ⭐ **追加修订段（任务单 `#117`）—— 被修订的是上面 S110 那一行**之后**
+//! 的空白**（⛔ 表格原文一字未删：`#100`／`#101`／`#103`～`#110` 的登记逐字保留，
+//! 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）。
+//! `#117` 收掉 `#116` 如实登记的两条缺口：① 单位只是 `is_time()` 布尔
+//! ⇒ `tune`（音分）落进"非时间"支、**静默**认 `%`；② `2^x` 的上溢／下溢边界
+//! **没有病态夹具**（`#116` 只登记为"无判据覆盖"）。
+//! ⚠ 被修订的**只有这两件事**：`#116` 的域裁定（`tune` ⇒ ±9600 音分）、
+//! 目标枚举序、三条路公式与 `S106`～`S110` 的读数**一个都没动**。
+//!
+//! | # | 判据 | 判定量 |
+//! | :--- | :--- | :--- |
+//! | ⭐ S111 | ⭐ **单位显式化 ＋ `tune` 拒 `%` ＋ 单位×后缀矩阵**（任务单 `#117` 新增；§2／§3） | `ModUnit` 是**唯一**事实源（`size_of == 1`、`suffixes()` 逐字 `Seconds → ["", "s", "ms"]`／`Percent → ["", "%"]`／`Cents → [""]`、`is_time()` 与 `unit()` 都从它派生且七个目标**逐字未变**）；⭐ `tune_oncc1=50%` ⇒ 响亮 `SfzError::InvalidFloat`，原文 `line 1: \`tune_oncc1\` expects a number, got \`50%\``；⭐ **28 格矩阵**（7 目标 × `""`／`s`／`ms`／`%`）**从判据里打印**并逐格断言（接受 ⇒ delta 逐位、拒绝 ⇒ `expects a number`）；⭐ **反空判腿**：`ampeg_attack_oncc1=50s`／`=50ms`／`ampeg_sustain_oncc1=50%`／`amplitude_oncc1=50%` 仍**接受**（⛔ 不是一刀切）；⚠ 如实登记：`ampeg_attack_oncc1=50%` **在 `#117` 之前就不是**接受的（秒支只认 `s`/`ms`），本判据按事实登记；⭐ `size_of` 现读 `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144` |
+//! | ⭐ S112 | ⭐ ⭐ **`2^x` 上溢／下溢的病态夹具 ＋ 三条路一致**（任务单 `#117` 新增；§3.3／§3.4 —— **本单核心**） | 六个病态臂**逐臂给读数**（乘子位型／基率／乘积／三条路各自的写入帧数 ＋ 非零帧数 ＋ 指纹）：`16×9600 cc=127` ⇒ 乘子 `0x7f800000`（`Inf`）六路全退休；⭐ `16×9600 cc=126` ⇒ 乘子 `0x7efe9a9f`（`1.6921337e38`，**有限**）⇒ 三条路各写 **1** 帧且**逐位相同**（`#117` 之前三条路**都 panic**：`index + 1` 溢出）；⭐⭐ `192k × 16×9600 cc=126` ⇒ 乘子有限、乘积 `Inf` ⇒ 三条路**全退休**（`#117` 之前**离线／摊平退休而实时放行** —— 守卫量的口径分叉）；`20×(−9600)` ⇒ 乘子 `0.0` 全退休；`16×(−9600)` ⇒ 乘子 `2.938736e-39`（次正规）⇒ 三条路各写 512 帧且逐位相同；`1×9600`（对照）⇒ 乘子 `256` ⇒ 16 帧；⭐ **反向腿**：去掉全部病态项 ⇒ 恢复正常（三条路各 512 帧、逐位相同）且与病态臂**逐位不同**；⭐ 三个**承重指纹**逐字复跑：`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e` |
+//!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
 //!
 //! 对象 ＝ 一份单轨工程（一个 `key=60` 的音符）经**产品路径**
@@ -171,7 +185,8 @@ use yeban_sfz::PlayDirection;
 use yeban_sfz::instrument::{LoopMode, OffMode};
 // ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（四形态归约的读数形状）。
 // ⭐ 任务单 `#115`：目标推广成 `ModTarget`（首个增益族目标 `Amplitude`）。
-use yeban_sfz::modulation::{AmpegParam, ModTarget};
+// ⭐ 任务单 `#117`：单位显式化成 `ModUnit`（后缀接受集的唯一事实源）。
+use yeban_sfz::modulation::{AmpegParam, ModTarget, ModUnit};
 // ⭐ 任务单 `#108`：交叉淡化的 CC 轴（摊平表里烘的是 `yeban-sfz` 的 `Crossfade` 值类型）。
 use yeban_sfz::Crossfade;
 // ⭐ 任务单 `#109`：CC 区域门控（`loccN`/`hiccN`）——摊平表里烘的是 `yeban-sfz` 的
@@ -10899,4 +10914,626 @@ fn s110_the_reverse_leg_the_three_fingerprints_and_the_existing_families() {
              amplitude 因子 = {want_amplitude:.9}、tune 乘子 = {want_tune:.9}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#117`：单位显式化（`ModUnit`）＋ `tune` 的 `2^x` 上溢／下溢边界
+// ---------------------------------------------------------------------------
+
+/// ⭐ `#117` 单位表：**每个单位类别接受的后缀**（判据里的**独立**期望值 ——
+/// ⛔ 不从被测代码抄，用来给 [`ModUnit::suffixes`] 当反空判腿）。
+const EXPECTED_SUFFIXES: [(ModUnit, &[&str]); 3] = [
+    (ModUnit::Seconds, &["", "s", "ms"]),
+    (ModUnit::Percent, &["", "%"]),
+    // ⭐⭐ `#117`：音分**没有任何**后缀写法（规范里 `cents` 一族只写纯数字）。
+    (ModUnit::Cents, &[""]),
+];
+
+/// ⭐ `#117` 单位矩阵的**行**：opcode 名 ＋ 它必须归属的目标 ＋ 期望的单位类别。
+const UNIT_MATRIX_ROWS: [(&str, ModTarget, ModUnit); 7] = [
+    (
+        "ampeg_attack_oncc1",
+        ModTarget::Ampeg(AmpegParam::Attack),
+        ModUnit::Seconds,
+    ),
+    (
+        "ampeg_hold_oncc1",
+        ModTarget::Ampeg(AmpegParam::Hold),
+        ModUnit::Seconds,
+    ),
+    (
+        "ampeg_decay_oncc1",
+        ModTarget::Ampeg(AmpegParam::Decay),
+        ModUnit::Seconds,
+    ),
+    (
+        "ampeg_sustain_oncc1",
+        ModTarget::Ampeg(AmpegParam::Sustain),
+        ModUnit::Percent,
+    ),
+    (
+        "ampeg_release_oncc1",
+        ModTarget::Ampeg(AmpegParam::Release),
+        ModUnit::Seconds,
+    ),
+    ("amplitude_oncc1", ModTarget::Amplitude, ModUnit::Percent),
+    ("tune_oncc1", ModTarget::Tune, ModUnit::Cents),
+];
+
+/// ⭐ `#117` 矩阵的四列（后缀）。
+const UNIT_MATRIX_SUFFIXES: [&str; 4] = ["", "s", "ms", "%"];
+
+/// ⭐ `#117`：读一条**单区域** SFZ 文本里第一个调制项的 `delta`（必须解析成功）。
+fn unit_matrix_delta(text: &str) -> f32 {
+    let instrument = SfzInstrument::load(text.to_owned(), &Default::default())
+        .unwrap_or_else(|error| panic!("`{text}` 必须解析成功：{error}"));
+    instrument
+        .with_instrument(|parsed| parsed.regions()[0].cc_modulations()[0].delta)
+        .expect("重解析")
+}
+
+/// ⭐⭐ `#117` 病态夹具：`items` 条 `tune_onccN=delta`。
+///
+/// ⚠ 下标逐个不同（`1..=items`）⇒ 归约表里是 `items` 个**独立**的 `(Tune, cc)` 键
+/// —— 同一键会被"后者胜"合并，那**凑不出**复合量（`AMPEG_MOD_CAP` 是 20）。
+fn tune_compound_fixture(items: usize, delta: i32) -> String {
+    let mut text = String::from("<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0");
+    for cc in 1..=items {
+        text.push_str(&format!(" tune_oncc{cc}={delta}"));
+    }
+    text.push('\n');
+    text
+}
+
+/// ⭐ `#117` 夹具用的**斜坡**样本：`pcm[i] = (i + 1) / 1024`。
+///
+/// ⚠ 与 [`ramp_sample`] 同一形状，但**采样率可给**（病态臂要 `192 kHz` 那一档
+/// ⇒ 基率 `4.0` ⇒ `基率 × 有限大乘子` 溢出成 `Inf`）。
+/// ⭐ 与正弦夹具的分别：`pcm[0] = 1/1024 ≠ 0` ⇒ "只写了 1 帧"与"一帧没写"
+/// 在**非零帧数**与**指纹**上都分得开（`InMemorySample::sine` 的 `pcm[0] == 0` 分不开）。
+fn ramp_at(sample_hz: f32, frames: usize) -> InMemorySample {
+    InMemorySample {
+        pcm: (0..frames)
+            .map(|frame| (frame + 1) as f32 / 1024.0)
+            .collect(),
+        sample_hz,
+    }
+}
+
+/// ⭐ `#117`：**三条路**（离线 ／ 摊平 ／ 实时）用同一探针渲染 `FRAMES` 帧。
+///
+/// 返回值：`(离线 written, 离线输出, 摊平 written, 摊平输出, 实时输出)`。
+/// ⚠ 实时路的"写入帧数"没有对外读数（`render_into_with_cc` 返回 `()`）
+/// ⇒ 这一路用**非零帧数**当它的可读量（斜坡样本 ⇒ 可区分"写了"与"退休"）。
+fn tune_three_paths(
+    instrument: &SfzInstrument,
+    plan: &PreparedSfz,
+    sample: &InMemorySample,
+    items: usize,
+    cc_value: u8,
+) -> (usize, Vec<f32>, usize, Vec<f32>, Vec<f32>) {
+    const FRAMES: usize = 512;
+    let controls: Vec<u8> = (1..=items as u8).collect();
+    let probe = |controller: u8| -> u8 {
+        if controls.contains(&controller) {
+            cc_value
+        } else {
+            0
+        }
+    };
+    let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+    let mut offline = vec![0.0f32; FRAMES];
+    let written_offline = instrument
+        .render_note_into_with_cc(sample, 60, 127, cc_arg, &mut offline, 48_000.0)
+        .expect("离线渲染");
+    let mut flat = vec![0.0f32; FRAMES];
+    let written_flat = plan.render_block_into_with_cc(60, 127, cc_arg, &mut flat);
+    let mut pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(
+        pool.trigger_note(plan, 60, 127, u64::MAX, 1.0, None),
+        1,
+        "单区域夹具 ⇒ 恰好建 1 个声部"
+    );
+    let mut realtime = vec![0.0f32; FRAMES];
+    pool.render_into_with_cc(plan, 0, &mut realtime, cc_arg);
+    (written_offline, offline, written_flat, flat, realtime)
+}
+
+/// ⭐ `#117` 一个病态臂：**打印**乘子位型／基率／乘积与三条路各自的读数，
+/// 并断言三条路**输出逐位相同**。
+///
+/// 返回 `(乘子, 离线 written, 摊平 written, 三条路输出的非零帧数, 实时输出)`。
+fn tune_boundary_arm(
+    label: &str,
+    items: usize,
+    delta: i32,
+    sample_hz: f32,
+    cc_value: u8,
+) -> (f32, usize, usize, [usize; 3], Vec<f32>) {
+    let text = tune_compound_fixture(items, delta);
+    let sample = ramp_at(sample_hz, 4096);
+    let instrument = SfzInstrument::load(text, &Default::default()).expect("病态夹具必须解析成功");
+    let plan = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平");
+    assert_eq!(
+        plan.regions()[0].cc_modulations().len(),
+        items,
+        "⭐ `{label}`：`items` 个不同 CC ⇒ 表里必须恰好 {items} 项（⛔ 不被合并）"
+    );
+    let controls: Vec<u8> = (1..=items as u8).collect();
+    let probe = |controller: u8| -> u8 {
+        if controls.contains(&controller) {
+            cc_value
+        } else {
+            0
+        }
+    };
+    let multiplier = plan.regions()[0].tune_ratio_with_cc(Some(&probe));
+    let base_rate = sample_hz / plan.engine_hz();
+    let (written_offline, offline, written_flat, flat, realtime) =
+        tune_three_paths(&instrument, &plan, &sample, items, cc_value);
+    println!(
+        "[engine-sfz/S112] {label}：乘子 = {multiplier:?}（{:#010x}，finite={}）基率 = {base_rate:?} \
+         乘积 = {:?}（finite={}）⇒ 离线 written={written_offline} 非零={} 指纹=0x{:016x}；\
+         摊平 written={written_flat} 非零={} 指纹=0x{:016x}；实时 非零={} 指纹=0x{:016x}",
+        multiplier.to_bits(),
+        multiplier.is_finite(),
+        base_rate * multiplier,
+        (base_rate * multiplier).is_finite(),
+        nonzero_frames(&offline),
+        fnv1a_64(&offline),
+        nonzero_frames(&flat),
+        fnv1a_64(&flat),
+        nonzero_frames(&realtime),
+        fnv1a_64(&realtime),
+    );
+    assert_eq!(
+        bits(&offline),
+        bits(&flat),
+        "⭐ `{label}`：离线 → 摊平必须逐位相同"
+    );
+    assert_eq!(
+        bits(&flat),
+        bits(&realtime),
+        "⭐ `{label}`：摊平 → 实时必须逐位相同"
+    );
+    assert_eq!(bits(&offline), bits(&realtime), "⭐ `{label}`：三条路同值");
+    (
+        multiplier,
+        written_offline,
+        written_flat,
+        [
+            nonzero_frames(&offline),
+            nonzero_frames(&flat),
+            nonzero_frames(&realtime),
+        ],
+        realtime,
+    )
+}
+
+/// ⭐ `#117`：按**实现同一条公式**重算 `tune` 乘子（`2 ^ (Σ delta × curve(cc) / 1200)`）。
+///
+/// ⚠ 在判据里用**同一个二进制里的同一次 `exp2`** 当参照 ⇒ 跨架构稳（`exp2` 是
+/// ADR-0001 的超越函数类，⛔ 不硬编码它的位型读数当规范常数）。
+/// 求和的次序与 [`yeban_sfz::modulation::cc_value_with_baked_and_vel2`] 一致
+/// （`0.0` 起、逐项 `+`；默认曲线在 `cc` 处的值 ＝ `cc / 127`）。
+fn tune_multiplier_reference(items: usize, delta: f32, cc_value: u8) -> f32 {
+    let curve = f32::from(cc_value) / 127.0;
+    let mut cents = 0.0f32;
+    for _ in 0..items {
+        cents += delta * curve;
+    }
+    (cents / 1200.0).exp2()
+}
+
+/// ⭐ S111（任务单 `#117`；判据 §2／§3.1／§3.2／§3.6）：**单位显式化** ——
+/// `ModUnit` 是唯一事实源、`tune` 拒 `%`、`ampeg_*`／`amplitude` 的接受集未动、
+/// 单位 × 后缀矩阵**从判据里打印**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 七条调制 opcode 的**接受／拒绝**（布尔）与读出的 `delta`（`f32`）；
+/// 单位 ＝ 格（7 × 4 ＝ 28 格）＋ 字节（`size_of`）。
+#[test]
+fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
+    // ---- ① `ModUnit` 是**唯一**事实源：三个类别 × 后缀集 ＋ 逐目标归属 ----
+    assert_eq!(
+        core::mem::size_of::<ModUnit>(),
+        1,
+        "⭐ `ModUnit` 必须落在既有对齐空隙里（1 B）"
+    );
+    for (unit, expected) in EXPECTED_SUFFIXES {
+        assert_eq!(
+            unit.suffixes(),
+            expected,
+            "⭐ `{unit:?}` 的接受后缀必须逐字是 {expected:?}"
+        );
+    }
+    for (name, target, unit) in UNIT_MATRIX_ROWS {
+        assert_eq!(target.mod_unit(), unit, "⭐ `{name}` 必须归 `{unit:?}`");
+        // ⭐ 既有契约**逐字未变**：`is_time()` ⇔ `Seconds`、`unit()` 是同一事实源的字符串。
+        assert_eq!(
+            target.is_time(),
+            unit == ModUnit::Seconds,
+            "⭐ `{name}`：`is_time()` 必须仍等价于「单位 == 秒」"
+        );
+        assert_eq!(
+            target.unit(),
+            match unit {
+                ModUnit::Seconds => "seconds",
+                ModUnit::Percent => "%",
+                ModUnit::Cents => "cents",
+            },
+            "⭐ `{name}`：`unit()` 必须仍返回规范表行 Unit 列的字面"
+        );
+    }
+
+    // ---- ② `tune_oncc1=50%` ⇒ **响亮 `Err`**（`#116` 之前被静默读成 50 音分） ----
+    let error = SfzInstrument::load(
+        "<region> sample=a.wav tune_oncc1=50%\n".to_owned(),
+        &Default::default(),
+    )
+    .expect_err("⭐ `tune`（音分）⛔ 不接受 `%` ⇒ 必须响亮 `Err`");
+    let shown = format!("{error}");
+    println!("[engine-sfz/S111] `tune_oncc1=50%` ⇒ `{shown}`");
+    assert!(
+        shown.contains("line 1: `tune_oncc1` expects a number, got `50%`"),
+        "⭐ `%` 在音分目标上必须走 `InvalidFloat` 的原文出口（实得 `{shown}`）"
+    );
+
+    // ---- ③ 单位 × 后缀矩阵（7 目标 × 4 后缀 ＝ 28 格）：**打印** ＋ 逐格断言 ----
+    println!(
+        "[engine-sfz/S111] 单位矩阵（行 ＝ 目标，列 ＝ 后缀 {}）",
+        UNIT_MATRIX_SUFFIXES
+            .iter()
+            .map(|suffix| format!("\"{suffix}\""))
+            .collect::<Vec<_>>()
+            .join(" / ")
+    );
+    let mut accepted_cells = 0usize;
+    let mut rejected_cells = 0usize;
+    for (name, target, unit) in UNIT_MATRIX_ROWS {
+        let expected = EXPECTED_SUFFIXES
+            .iter()
+            .find(|(candidate, _)| *candidate == unit)
+            .map(|(_, suffixes)| *suffixes)
+            .expect("单位类别必须在期望表里");
+        let mut cells: Vec<String> = Vec::new();
+        for suffix in UNIT_MATRIX_SUFFIXES {
+            let text =
+                format!("<region> sample=a.wav key=60 pitch_keycenter=60 {name}=50{suffix}\n");
+            let outcome = SfzInstrument::load(text.clone(), &Default::default());
+            if expected.contains(&suffix) {
+                accepted_cells += 1;
+                let want = if unit == ModUnit::Seconds && suffix == "ms" {
+                    50.0f32 * 1.0e-3_f32
+                } else {
+                    50.0f32
+                };
+                let delta = unit_matrix_delta(&text);
+                assert_eq!(
+                    delta.to_bits(),
+                    want.to_bits(),
+                    "⭐ `{name}=50{suffix}` 必须读成 {want}（实得 {delta}）"
+                );
+                // 目标必须真的归到期望的那一类（⛔ 不是"碰巧读进去"）。
+                let read_target = SfzInstrument::load(text, &Default::default())
+                    .expect("已解析")
+                    .with_instrument(|parsed| parsed.regions()[0].cc_modulations()[0].target)
+                    .expect("重解析");
+                assert_eq!(read_target, target, "⭐ `{name}` 归约出的目标必须逐字相同");
+                cells.push(format!("Ok({delta})"));
+            } else {
+                rejected_cells += 1;
+                let rejected = outcome.expect_err(&format!(
+                    "⭐ `{name}=50{suffix}`（单位 {unit:?}）必须**响亮** `Err`（⛔ 不静默当成 50）"
+                ));
+                let rejected_text = format!("{rejected}");
+                assert!(
+                    rejected_text.contains(&format!(
+                        "line 1: `{name}` expects a number, got `50{suffix}`"
+                    )),
+                    "⭐ `{name}=50{suffix}`：必须逐字走 `InvalidFloat`（实得 `{rejected_text}`）"
+                );
+                cells.push(format!("Err({suffix:?})"));
+            }
+        }
+        println!(
+            "[engine-sfz/S111] `{name}`（{}，单位 {unit:?}）× 后缀 ⇒ {}",
+            target.name(),
+            cells.join(" | ")
+        );
+    }
+    assert_eq!(
+        (accepted_cells, rejected_cells),
+        (17, 11),
+        "⭐ 矩阵必须恰好 17 格接受、11 格拒绝（`#117` 把 `tune` × `%` 从接受改成拒绝）"
+    );
+
+    // ---- ④ 反空判腿：三支的既有接受集**仍未动**（⛔ 不是一刀切） ----
+    for (label, text, want) in [
+        (
+            "秒支仍认 `s`",
+            "<region> sample=a.wav ampeg_attack_oncc1=50s\n",
+            50.0f32,
+        ),
+        (
+            "秒支仍认 `ms`",
+            "<region> sample=a.wav ampeg_attack_oncc1=50ms\n",
+            50.0f32 * 1.0e-3_f32,
+        ),
+        (
+            "秒支仍认无后缀",
+            "<region> sample=a.wav ampeg_attack_oncc1=50\n",
+            50.0f32,
+        ),
+        (
+            "百分比支仍认 `%`（`ampeg_sustain`）",
+            "<region> sample=a.wav ampeg_sustain_oncc1=50%\n",
+            50.0f32,
+        ),
+        (
+            "百分比支仍认 `%`（`amplitude`）",
+            "<region> sample=a.wav amplitude_oncc1=50%\n",
+            50.0f32,
+        ),
+        (
+            "百分比支仍认无后缀",
+            "<region> sample=a.wav amplitude_oncc1=50\n",
+            50.0f32,
+        ),
+    ] {
+        let delta = unit_matrix_delta(text);
+        println!("[engine-sfz/S111] 反空判腿 · {label} ⇒ `{delta}`");
+        assert_eq!(delta.to_bits(), want.to_bits(), "⭐ 反空判腿 · {label}");
+    }
+    // ⚠ **如实登记的读数**（任务单 §3.1 的原文与事实不符的那一格）：派单方把
+    // `ampeg_attackcc1=50%` 列进"仍然接受"的反空判腿 —— 实测它**在 `#117` 之前
+    // 就不是**接受的：`ampeg_attack` 的单位是**秒**，`#104` 起的时间支只认
+    // `s`/`ms`，`%` 一直落 `InvalidFloat`（判据 `S111` 的注入实测把这一格在
+    // **改动前**的构建上也跑了一遍：两边的读数都是 `Err`）。⇒ 本判据按**事实**登记，
+    // 反空判腿改用上面六个**真正**覆盖三支的格子。
+    let already = SfzInstrument::load(
+        "<region> sample=a.wav ampeg_attack_oncc1=50%\n".to_owned(),
+        &Default::default(),
+    );
+    let already_shown = format!("{}", already.expect_err("秒支的 `%` 必须拒绝"));
+    println!(
+        "[engine-sfz/S111] 如实登记：`ampeg_attack_oncc1=50%` ⇒ `{already_shown}`（改动前同）"
+    );
+    assert!(
+        already_shown.contains("expects a number, got `50%`"),
+        "⭐ 秒支的 `%` 必须是同一条响亮出口"
+    );
+
+    // ---- ⑤ 尺寸（`size_of` 现读，⛔ 不手抄） ----
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S111] size_of: PreparedRegion={region} SfzVoice={voice} \
+         SfzVoicePool={pool} EngineRuntime={runtime}（< 192 KiB = {}）",
+        192 * 1024
+    );
+    assert_eq!(
+        region, 6160,
+        "⭐ `#117` 没新增任何每区域字段 ⇒ `PreparedRegion` ＋0"
+    );
+    assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
+    assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
+    assert_eq!(
+        runtime, 180_144,
+        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+    );
+}
+
+/// ⭐ S112（任务单 `#117`；判据 §3.3／§3.4 —— **本单核心**）：**`2^x` 的上溢／下溢
+/// 病态夹具** ＋ 三条路一致 ＋ 反向腿 ＋ 三个承重指纹。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 六份病态夹具的**乘子**（无量纲）与**三条路各自的输出**；
+/// 单位 ＝ 写入帧数（帧）／非零帧数（帧）／FNV-1a 64（逐位指纹）。
+#[test]
+fn s112_the_overflow_boundary_has_a_pathological_fixture_across_three_paths() {
+    // ---- ①② `≥16 × 9600` ⇒ 乘子 `Inf`（`2^128` 上溢）：三条路**全退休** ----
+    let (inf_multiplier, written_offline, written_flat, nonzero, _) =
+        tune_boundary_arm("① 16×9600 cc127（2^128 ⇒ Inf）", 16, 9600, 48_000.0, 127);
+    assert!(
+        !inf_multiplier.is_finite(),
+        "⭐ 16 × 9600 ＝ 153600 音分 ⇒ `2^128` 在 `f32` 上是 `Inf`（实得 {inf_multiplier}）"
+    );
+    assert_eq!(
+        (written_offline, written_flat, nonzero),
+        (0, 0, [0, 0, 0]),
+        "⭐ 乘子非有限 ⇒ 三条路**全退休**（既有谓词）"
+    );
+
+    // ---- ③ 有限大乘子（`cc=126`）⇒ `position` 超过 `usize::MAX`：
+    //      `#117` 之前三条路**都 panic**（`index + 1` 溢出）；现在**各写 1 帧且逐位相同** ----
+    let (finite_multiplier, written_offline, written_flat, nonzero, _) =
+        tune_boundary_arm("② 16×9600 cc126（有限 1.69e38）", 16, 9600, 48_000.0, 126);
+    assert_eq!(
+        finite_multiplier.to_bits(),
+        tune_multiplier_reference(16, 9600.0, 126).to_bits(),
+        "⭐ 乘子必须逐位等于公式 `2 ^ (Σ 9600 × 126/127 / 1200)`（实测 {finite_multiplier:?}，\
+         位型 {:#010x}）⇒ 它是**有限**的 ⇒ 守卫**必须放行**",
+        finite_multiplier.to_bits()
+    );
+    assert!(
+        finite_multiplier.is_finite() && finite_multiplier > 1.0e38,
+        "⭐ 有牙：这一档乘子必须**有限但极大**（实测 {finite_multiplier:?}）"
+    );
+    assert_eq!(
+        (written_offline, written_flat, nonzero),
+        (1, 1, [1, 1, 1]),
+        "⭐ 有限大速率：三条路各写**恰好 1 帧**（第一帧）后按「位置越过 PCM」如实退休；\
+         ⛔ 不是 panic、⛔ 不是三路分叉"
+    );
+
+    // ---- ④ ⭐⭐ **守卫量的口径分叉**（`#116` 的真实缺口）：`192 kHz` 样本 ⇒
+    //      基率 `4.0` ⇒ 有限乘子 × 基率**溢出成 `Inf`**：
+    //      `#117` 之前**离线／摊平退休而实时放行**（实测：实时拿 `Inf` 冲进逐样本循环）；
+    //      现在三条路**同量同谓词** ⇒ 全退休 ----
+    let (finite_192k, written_offline, written_flat, nonzero, _) = tune_boundary_arm(
+        "③ 192k × 16×9600 cc126（乘积 Inf：三路曾分叉）",
+        16,
+        9600,
+        192_000.0,
+        126,
+    );
+    assert!(
+        finite_192k.is_finite() && finite_192k > 0.0,
+        "⭐ 乘子有限正数（`2^x` 的有限上界）"
+    );
+    assert!(
+        !(4.0 * finite_192k).is_finite(),
+        "⭐ 基率 4.0 × 有限乘子 ⇒ 乘积必须是 `Inf`（否则本臂没有牙）"
+    );
+    assert_eq!(
+        (written_offline, written_flat, nonzero),
+        (0, 0, [0, 0, 0]),
+        "⭐⭐ 三条路必须**一致退休**（实时路的守卫必须与另两条路同量：速率而非乘子）"
+    );
+
+    // ---- ⑤ 20 × (−9600) ⇒ `2^−160` 下溢成**恰 0**：三条路全退休 ----
+    let (zero_multiplier, written_offline, written_flat, nonzero, _) =
+        tune_boundary_arm("④ 20×(−9600) cc127（2^−160 ⇒ 0）", 20, -9600, 48_000.0, 127);
+    assert_eq!(
+        zero_multiplier.to_bits(),
+        tune_multiplier_reference(20, -9600.0, 127).to_bits(),
+        "⭐ 乘子必须逐位等于公式 `2 ^ (Σ 20 × (−9600) / 1200)`"
+    );
+    assert_eq!(
+        zero_multiplier.to_bits(),
+        0.0f32.to_bits(),
+        "⭐ 乘子必须**恰是 `+0.0`**（下溢到零，⛔ 不是次正规）"
+    );
+    assert_eq!(
+        (written_offline, written_flat, nonzero),
+        (0, 0, [0, 0, 0]),
+        "⭐ 乘子为零 ⇒ 三条路**全退休**"
+    );
+
+    // ---- ⑥ 16 × (−9600) ⇒ `2^−128` ＝ **次正规但非零**：三条路照常出声且逐位相同 ----
+    let (subnormal_multiplier, written_offline, _, nonzero, _) = tune_boundary_arm(
+        "⑤ 16×(−9600) cc127（2^−128 次正规）",
+        16,
+        -9600,
+        48_000.0,
+        127,
+    );
+    assert_eq!(
+        subnormal_multiplier.to_bits(),
+        tune_multiplier_reference(16, -9600.0, 127).to_bits(),
+        "⭐ 乘子必须逐位等于公式 `2 ^ (Σ 16 × (−9600) / 1200)`"
+    );
+    assert!(
+        subnormal_multiplier.is_finite()
+            && subnormal_multiplier > 0.0
+            && subnormal_multiplier < f32::MIN_POSITIVE,
+        "⭐ 乘子必须是**次正规正数**（{subnormal_multiplier:?}，位型 {:#010x}）",
+        subnormal_multiplier.to_bits()
+    );
+    assert_eq!(
+        (written_offline, nonzero),
+        (512, [512, 512, 512]),
+        "⭐ 极慢速率 ⇒ 三条路都写满 512 帧（位置几乎不动）且逐位相同"
+    );
+
+    // ---- ⑦ 对照臂（`1 × 9600` ⇒ 乘子 `256`）：正常档**真的出声**（⛔ 挡住"全退休也算一致"） ----
+    let (normal_multiplier, written_offline, written_flat, nonzero, _) =
+        tune_boundary_arm("⑥ 1×9600 cc127（对照：乘子 256）", 1, 9600, 48_000.0, 127);
+    assert_eq!(
+        normal_multiplier.to_bits(),
+        tune_multiplier_reference(1, 9600.0, 127).to_bits(),
+        "⭐ 乘子必须逐位等于公式 `2 ^ (9600 / 1200)`"
+    );
+    assert_eq!(
+        normal_multiplier, 256.0,
+        "⭐ `+9600` 音分 ＝ 八个八度 ⇒ 乘子恰 256"
+    );
+    assert_eq!(
+        (written_offline, written_flat),
+        (16, 16),
+        "⭐ 速率 256 ⇒ 4096 帧的源在 512 帧窗口里播完（写到源尾）"
+    );
+    assert!(
+        nonzero.iter().all(|count| *count > 0),
+        "⭐ 对照臂三条路都必须**真的出声**"
+    );
+
+    // ---- ⑧ 反向腿：去掉病态夹具里的项 ⇒ **恢复正常**，且与病态臂逐位不同 ----
+    let base_only = ramp_at(48_000.0, 4096);
+    let plain_text = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0\n";
+    let plain_instrument =
+        SfzInstrument::load(plain_text.to_owned(), &Default::default()).expect("基准夹具必须解析");
+    let plain_plan = PreparedSfz::prepare(&plain_instrument, &base_only, 48_000.0).expect("摊平");
+    assert!(
+        plain_plan.regions()[0].cc_modulations().is_empty(),
+        "⭐ 去掉全部 `tune_onccN` ⇒ 空表"
+    );
+    let (plain_written_offline, plain_offline, plain_written_flat, plain_flat, plain_realtime) =
+        tune_three_paths(&plain_instrument, &plain_plan, &base_only, 0, 127);
+    assert_eq!(
+        (plain_written_offline, plain_written_flat),
+        (512, 512),
+        "⭐ 反向腿：去掉病态项 ⇒ 恢复正常（速率 1.0，写满 512 帧）"
+    );
+    assert!(
+        nonzero_frames(&plain_offline) > 0
+            && nonzero_frames(&plain_flat) > 0
+            && nonzero_frames(&plain_realtime) > 0,
+        "⭐ 反向腿：三条路都必须**真的出声**"
+    );
+    assert_eq!(
+        bits(&plain_offline),
+        bits(&plain_realtime),
+        "⭐ 反向腿：去掉病态项后三条路仍逐位相同"
+    );
+    // ⭐ 有牙：病态臂（全退休的所有输出位型）必须与"恢复正常"的输出**逐位不同**
+    // ⇒ ⛔ 挡住"把退休也当成正常出声"。
+    assert_ne!(
+        bits(&plain_realtime),
+        vec![0.0f32.to_bits(); 512],
+        "⭐ 有牙：反向腿的输出必须**不是**全零"
+    );
+
+    // ---- ⑨ 三个承重指纹（`#117` 的改动必须让它们**逐字不动**） ----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, expected) in [
+        ("S37 臂 1", &looped, 200u64, 0xa9de_c8a8_7f69_106cu64),
+        ("S37 臂 2", &plain, u64::MAX, 0xd3c2_a820_76bd_8947u64),
+    ] {
+        let out = render_pool(plan, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!("[engine-sfz/S112] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）");
+        let _checked = check_fingerprint(&format!("S112 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy_block = vec![0.0f32; BLOCK];
+    let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
+    let legacy = fnv1a_64(&legacy_block);
+    println!(
+        "[engine-sfz/S112] S33／S14 广播路径 512 帧 @ (60,127)：指纹 = 0x{legacy:016x}（承重 = \
+         0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）；写入 = {legacy_frames}"
+    );
+    let _checked = check_fingerprint("S112 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    let scaled: Vec<f32> = legacy_block
+        .iter()
+        .map(|sample| sample * 1.000_000_1)
+        .collect();
+    assert_ne!(
+        fnv1a_64(&scaled),
+        legacy,
+        "⭐ 应绿反向腿：× 1.0000001 ⇒ 指纹必须变"
+    );
 }
