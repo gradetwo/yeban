@@ -10919,3 +10919,11 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ ⚠ ⭐ **六、⭐ 它推荐的路（⭐ 我采信、⭐ 待人类裁"⭐ 架构单"⭐ 那一半）**: ⭐ **选项 A**（⭐ 新 `EngineEvent::ControlChange` ＋ ⭐`EngineRuntime.armed_cc` 预分配定长表 ＋ ⭐每量子借探针进 `slot_readings`）⇒ ⭐ ⭐ **并**拆两单**：⭐ ① **前置单**（⭐ `yeban-sfz` 解析＋归约，⭐ ⛔ 不碰事件面、⭐不动尺寸基线 ⇒ ⭐ **不需要架构裁决**）；⭐ ② **架构单**（⭐ 动 `EngineEvent` 公开面 ＋ ⭐动 `EngineRuntime` 的字面基线 `180_000` ⇒ ⭐ **要人类批**）✓ ⚠ ⭐ **它明确不推荐** B（⭐ CC 进快照 ⇒ ⭐ 与 `MODEL-ISO-001`／⭐`should_publish`／⭐churn 门冲突）与 C（⭐ 重载 `ParamAddress` ⇒ ⭐ 公开契约破坏性）✓ ⚠ ⭐ **而它指出生产侧必须改 `crates/yeban-app/src/midi_live.rs:282-300`（⭐ app 侧、⭐ 它按我的边界**只报不改**）⇒ ⭐ "⭐ 有引擎能力、⭐ 没人喂"⭐ 是这条路的真实依赖** ✓
 
 ⭐ ⚠ ⭐ **七、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `14d79a6b` 的 CI 判决（⭐ 验证红已修）** ＋ ⭐ **前置单**（⭐ `yeban-sfz` 解析 `_onccN`／⭐`ccN`／⭐`_curveccN`）＋ ⭐ **架构单**（⭐ `EngineEvent::ControlChange` ＋ ⭐`EngineRuntime.armed_cc`；⭐ **需人类批**）＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R773 实测追加（2026-10-16）：⭐⭐ **`14d79a6b`（⭐ `zip` 9.0.3 那一修）的 CI 判决 ＝ `success`** ⇒ ⭐ **上游 yank 造成的红**已消除**
+
+⭐ **后台轮询第 20 次读到 `completed/success`** ⇒ ⭐ ⭐ **即: ⭐ `deny` 腿在 `zip 8.6.0` 被 yank 后第一次回到绿** ⇒ ⭐ **`R772` 的处置（⭐ 提 `9.0.3` ＋ ⭐1 处调用点迁移、⭐ ⛔ 不放宽 `deny.toml`）经 CI 证实有效** ✓ ⚠ ⭐ **并附一条口径**: ⭐ ⭐ **`14d79a6b` 是**唯一**能判定"⭐ 红已修"⭐ 的那一跑 —— ⭐ `82c4f684`（⭐红）与 `14d79a6b`（⭐绿）**同一条腿 `deny`**、⭐ 而中间只差**那个 crate 的版本**（⭐ 第 258 条：⭐ 同一 job 的"⭐ 红转绿"⭐ 是最强的修复证据）✓
+
+⭐ ⚠ ⭐ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`#104`（⭐ 前置单）交单** ＋ ⭐ **读回它的 CI 判决** ＋ ⭐ **架构单**（⭐ 需人类批：⭐ `EngineEvent::ControlChange` ＋ ⭐`EngineRuntime.armed_cc`）＋ ⭐ **统一归一化分母单** ＋ ⭐ **`ADR-0008` 待人类批准** ＋ ⭐ `HD-48`／⭐`HD-52`／⭐`HD-58` ＋ ⭐ 人类跑第 6 项 ✓
