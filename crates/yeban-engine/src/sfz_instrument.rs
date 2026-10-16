@@ -1158,6 +1158,77 @@
 //! ⚠ 本单⛔ 不抬高 `AMPEG_MOD_CAP`（**四族**并集最大仍 **15** ＝ 与 `#104`／`#116`
 //! 同一个文件同一个数 ⇒ 今天能解析的文件**一个都不会**变成不可解析）。
 //!
+//! # ⭐⭐ `gain_ccN`（任务单 `#124`）—— `volume` 的**逐字 delta 行名**，⛔ 零引擎改动
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#124`）—— 被修订的是上面 `#119` 那张语料表里的
+//! 「⛔ `gain_ccN` ／ `gain_onccN`（规范逐字的 delta 行名；本单不识别）」**这一行**，
+//! 以及 `#119` 修订段里「⛔ **规范 Modulation 表里逐字的 delta 行名 `gain_ccN`／`gain_onccN`
+//! 也不在本单**」那一句**（⛔ 上面所有登记的**原文一字未删**，口径同台账第 278 条：
+//! 保留原文 ＋ 追加修订段 ＋ 点名被修订的支）。⭐ **被修订的只是"`gain_ccN` 不识别"这一支**：
+//! `#124` 起 `gain_ccN` **是识别的**（⛔ 不新开目标、⛔ 不新开单位 ⇒ 引擎侧**一个字节都没改**，
+//! 它落在 [`yeban_sfz::modulation::parse_modulation_name`] 的识别层 ＋ 既有的
+//! `volume_ratio` 施加点上）。
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/volume/>，2026-10-17 现读）
+//!
+//! `volume` 页 Modulation 表里**只有一行**以 `gain` 开头，逐字是
+//! **`| gain_ccN |  | float | 0 | -144 to 48 | dB |`**（⛔ **没有** `gain_onccN`、
+//! ⛔ **没有** `gain_curveccN`、⛔ **没有** `gain_smoothccN`、⛔ **没有** `gain_stepccN`）；
+//! 同页正文两句逐字：「Extended opcodes, such as `volume_curveccN` shown above,
+//! **only apply to `volume`**」＋「**`volume_ccN` is a valid alias for `gain_ccN`**」。
+//! ⭐ **裁定：`gain_ccN` 归 `ModTarget::Volume`**（同一个目标、同一个
+//! `ModUnit::Decibels`、同一个域 `-144.0 ..= 48.0`）—— 四条理由、代价与"只收一个拼写"
+//! 的依据，**唯一事实源**是 [`yeban_sfz::modulation`] 的模块文档 §8.6（⛔ 本节不复制）。
+//!
+//! ## 落地形状（⛔ 零行为改动面 —— 只多一个**名字**）
+//!
+//! 1. **识别层**：`gain` ＋ `_cc` ＋ 数字 ⇒ `(ModTarget::Volume, ModulationForm::Delta, N)`；
+//! 2. **求值层**：⛔ 一行都没改 —— 复用 `#119` 的
+//!    [`PreparedRegion::volume_ratio_with_cc`]（＝ `yeban_sfz::modulation::volume_ratio_with_baked`，
+//!    `2 ^ (dB × log2(10) / 20)`）⇒ 离线 ＝ 摊平 ＝ 实时**逐位相同**（判据 `S117`）；
+//! 3. **零新字段**：`gain` 与 `volume` 是**同一个静态 opcode** 的两个名字
+//!    （`scopes.get("volume").or_else(|| scopes.get("gain"))`）⇒ 目标相同 ⇒ ⛔ 不加变体、
+//!    ⛔ 不加字段 ⇒ `SfzVoice` 仍 **40 B** ／ `SfzVoicePool` 仍 **1712 B** ／
+//!    `EngineRuntime` 仍 **180144 B** ／ `PreparedRegion` 仍 **6160 B**（**四个全 ＋0**）。
+//!
+//! ## 语料普查（2026-10-17 现读；分母 **1398** 份 `assets/samples/**/*.sfz`）
+//!
+//! ⭐ **三元组口径** ＝ **剥／不剥 `//` 注释** × **左边界**（任意位置 ／ **行首或空白**）
+//! × **收／不收 `$` 宏名** ⇒ ⭐ **8 档全部同值**（判据 `S117` 逐档现算并打印）：
+//!
+//! | 读数（对象＋单位：opcode **出现次数**／**文件数**） | 值 |
+//! | :--- | :--- |
+//! | 裸 `gain_ccN`（⭐ 规范逐字的 delta 行名） | **0** 次 ／ **0** 文件 |
+//! | 裸 `gain_onccN`（⛔ 规范无此行） | **0** 次 ／ **0** 文件 |
+//! | 裸 `gain_curveccN`（⛔ 规范无此行） | **0** 次 ／ **0** 文件 |
+//! | 本族**之外**（`gain_cc`／`gain_oncc`／`gain_curvecc` 子串命中） | **43** 次 ／ **35** 文件 ／ **7** 个不同名字 |
+//!
+//! ⭐ **完整 opcode 名逐个列出**（第 287 条；顺序 ＝ 次数降序、同次数名字升序）：
+//! `eq1_gain_oncc77` = 23／21、`lfo01_eq1gain_oncc114` = 7／7、`lfo02_eq1gain_oncc115` = 4／4、
+//! `lfo01_eq1gain_oncc21` = 3／3、`eq1_gain_oncc1` = 2／2、`eq2_gain_oncc1` = 2／2、
+//! `eq3_gain_oncc1` = 2／2。
+//! ⚠ 那 **7** 个名字**一个都不是**本族：`eq*_gain_onccN` 是 **EQ 段增益**、
+//! `lfo*_eq*gain_onccN` 是 **LFO 调制 EQ 增益**（⛔ 都不是 `volume` 目标）。
+//! ⚠ **左边界必须写成"行首或空白"**：用 `[^a-zA-Z]` 当边界会把 `lfo02_eq1gain_oncc115`
+//! 里的 `gain_oncc115` 数成**裸**用法（`#119` 的教训）⇒ 本表按**行首或空白**口径给 **0**。
+//!
+//! ⚠ **与 `#119` 登记的异同（第 287／289 条）**：⭐ **同** ＝ 裸 `gain_ccN` **0** ／
+//! 裸 `gain_onccN` **0** —— `#119` 上面那张表的**两个 0 复核成立**；
+//! ⭐ **异** ＝ `yeban-sfz` §8.4 写「那 **14** 处 `gain_onccN` 全是 `lfo*_eq1gain_onccN`」——
+//! **14** 只是 **`lfo*` 那一族**（14 次 ／ 14 文件 ✓），另有 `eq*_gain_onccN` 一族
+//! **29** 次 ／ **23** 文件 ⇒ `gain_oncc` **合计 43 次 ／ 35 文件**（⭐ 那 **14** 是**漏计**）。
+//! ⭐ **复现不出的如实写（第 289 条）**：本线**复现不出**任何"`gain_oncc` 只有 14 处"的口径
+//! （左边界取行首/空白 ⇒ **0**；取任意位置 ⇒ **43**）⇒ 只登记 **0**（裸档）与 **43**（本族之外）。
+//!
+//! ## ⛔ 本单**只**收 `gain_ccN`（同族申请被驳回的三条）
+//!
+//! ⛔ `gain_onccN` ／ ⛔ `gain_curveccN` ／ ⛔ `gainccN`（无下划线形）／
+//! ⛔ `gain_smoothccN` ／ ⛔ `gain_stepccN` —— 依据：规范 Modulation 表里 `gain` 开头的
+//! **只有 `gain_ccN` 这一行**，且正文把扩展拼写**限定在 `volume` 上**；`gain_onccN` 是
+//! ARIA 通用形的**外推**（规范一个字都没写）⇒ 接它就＝**发明语义**。
+//! ⭐ 今天的可观察行为由判据 `S117` **逐字**钉住（⛔ 不是"哪天变成识别到了但静默丢弃"）；
+//! ⚠ `gain_smoothccN`／`gain_stepccN` 连**表行都没有**（⛔ 与 `volume_smoothccN` 不同）。
+//!
 //! # ⭐ `set_ccN` 播种（任务单 `#110`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是下面三处登记里 `set_ccN=` 的

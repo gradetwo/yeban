@@ -147,6 +147,7 @@
 //! | ⭐ S114 | ⭐ ⭐ **`volume` 族 ＝ 第三个单位类别（dB）＋ 三条路一致 ＋ 病态夹具 ＋ 未做行登记**（任务单 `#119` 新增；§4 八条 —— **本单核心**） | ① **规范逐字 ＋ 单位裁定**（源文本 `contains`）：`volume`（`-144 to 6`／dB）／被别名的 delta 行 `gain_ccN`（`-144 to 48`／dB）／`volume_curveccN`（`0 to 255`）／`volume_smoothccN`／`volume_stepccN`（Range 空、Unit `N/A`）五条表行 ＋ 别名句「`volume_ccN` is a valid alias for `gain_ccN`」＋ 裁定「新开 `ModUnit::Decibels`」（⭐ **Modulation 表里⛔ 没有 `volume_onccN` 行**）＋ 语料四口径（`volume_onccN` **2**／**2**、静态 `volume=` **8504**／**284**、家族子串 **49**／**32**、`global_volume_onccN` **47**／**32**）＋ 反向腿 ＋ 第 280 条（`#116` 的历史原句仍在且已标注）；② **单位矩阵新增行**：`volume_oncc1` ＝ (`Volume`, `Decibels`)、行数 `8 → 9`、格数 `32 → 36`、接受／拒绝 `(18, 14) → (19, 17)`（**两个读数都现算**；⚠ `Decibels` 行的格值取 **48** 而非 `50` —— `50` 越**域**）；③ **解析与域**：四种写法读得进（`(Volume,1,12,0)`／`(Volume,2,−24,0)`／`(Volume,4,6,0)`；`volume_curvecc3` 只有曲线 ⇒ 不产生项）、静态 `volume=-6` **不被吞掉**、越界／畸形／`inf`／`nan` 逐字 `Err`（`value 49 out of range -144..=48`／`expects a number, got \`50%\``…）、缺省 ⇒ 空表且任意 CC **逐位相同**；④ **真的生效**：乘子逐位等于 `2 ^ (dB × log2(10) / 20)`（`cc=0` ⇒ 恰 `1.0`；`cc=127`、6 dB ⇒ `1.995262265`），两个 CC 值输出**不同**且 `+6 dB` 是**放大**；⑤ ⭐ **三条路一致**（`cc ∈ {0,37,100,127}` 逐位相同）＋ ⭐ **五个病态夹具**（`20×48 dB ⇒ Inf` 三路一致 512 帧／`20×38 dB ⇒ 9.999955e37` 有限极大／`20×(−39) dB ⇒ 1.000003e-39` 次正规／`20×(−48) dB ⇒ 恰 0` 三路一致全零／`delta=0` 乘子恰 1.0）；⑥ **反向腿**：去掉那一行 ⇒ 两个 CC 值**逐位相同**（乘子逐位 `1.0`）＋ 三个**承重指纹**逐字不变（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ **既有四族未扰动**（`amplitude`／`tune`／`ampeg_attack` 各走自己的公式，双向都不动）；⑦ **尺寸**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**），另有 `rt_zero_alloc` 的 `[sfz-volume]` 场景（四元组全 0 ＋ 乘子 ≈ 1.9952623 ≠ 1）；⑧ **负向**：`volume_smoothccN`／`volume_stepccN`／`gain_ccN`／`gain_onccN`／`global_volume_onccN` 一族（规范有、或有别的实体、⛔ 本单不做）**今天按未知 opcode 忽略**，而 `volume_curveccN` 与裸 `volumeccN` **必须真的被识别**（⭐ `#121` 修订：本行 ① 的语料四口径里，裸 `volume_onccN` **2**／**2** ⇒ ⭐ **实测 3**／**3**、家族子串 **49**／**32** ⇒ ⭐ **实测 50**／**33**、`global_volume_onccN` **47**／**32** ⇒ ⭐ **实测该家族 0**／**0** 而那 **47** 次 ／ **30** 文件的真身是 `lfo*_volume_onccN`；口径 ＝ 剥 `//` 注释 ＋ 行首/空白边界 token ＋ **收 `$` 宏名**，⛔ 上面的原句一字未删，判据 `S115`） |
 //! | ⭐ S116 | ⭐ ⭐ **`ampeg_attack` 三档计数的口径就地可判 ＋ 口径矩阵（≥6 档）＋ `#include` 展开档**（任务单 `#123` 新增；台账第 274／278／289 条） | ① **修订段可判**：引擎模块头必须逐字含「⭐ ⭐ **追加修订段（任务单 `#123`）」／新一节「# ⭐⭐ `ampeg_attack` 三档计数的**口径**（任务单 `#123`）」／三档的口径行（① 家族**子串** ／ ② **不剥注释** token ／ ③ **剥注释** token）／口径声明句「本台账的 `ampeg_attack` 三档口径」，⭐ **原句仍在**（`**2828**` ／ `**844**` ／ `**835**`）；② ⭐ **就地重算三档**（分母 **1398** 份 `assets/samples/**/*.sfz`，对象 ＝ 匹配**次数** ／ 含匹配的**文件数**）：① 子串**⛔ 不剥注释** ＝ **2828 ／ 368**、② `\b…\b\s*=` token **⛔ 不剥注释** ＝ **844 ／ 318**、③ 同 ② **剥** `//` 注释 ＝ **835 ／ 310**；⭐ **②−③ ＝ 9**，那 9 行**逐文件逐行号**钉住（`virtuosity-drums/Programs/mappings/` 的 9 个文件，内容 ＝ `//ampeg_attack=0.001`）；③ ⭐ **口径矩阵 ≥ 6 档**（打印 ＋ 逐档断言）：① 2828 ／ ② 844 ／ ③ 835 ／ ④ 剥注释子串 **2819 ／ 360**（＝ `#122` 勘察到的那个数）／ ⑤ `(^|\s)` 左边界（不剥／剥注释**同值**）**835 ／ 310** ／ ⑥⑦ ⭐ **`#include` 展开后**（解析器尺：`IncludeResolver::resolve` ＋ `SfzSource::text` 拼接）子串 **5144 ／ 353**、token **1000 ／ 315**（`resolve` 成功 **1291** ／ include 失败 **107**）／ ⑧ 宏名位 `ampeg_attack$VAR=` **0**、跨行 **0**、大小写不敏感与 ① 同值、⚠ 也剥 `/* */` ＝ **2786 ／ 359**（**口径陷阱**：语料 18 处 `/*` 全在 `//****` 横幅里，不容错的剥法吞掉 9 个文件）；④ **反向腿 ＋ 指纹**：三个承重 `FNV-1a 64` 指纹逐字复跑（`0xa9dec8a87f69106c` ／ `0xd3c2a82076bd8947` ／ `0xa933ddab286bdf5e`）＋ `× 1.0000001` ⇒ **必变**；⭐ 有牙反向腿：模块头里**没有**的句子（「844 与 2828 都复现不出」）⇒ `contains == false`；⑤ **尺寸**：`PreparedRegion=6160` ／ `SfzVoice=40` ／ `SfzVoicePool=1712` ／ `EngineRuntime=180144`（**四个全 ＋0**） |
 //! | ⭐ S115 | ⭐ ⭐ **三格错数的修订可判 ＋ 计数口径逐名可判 ＋ `#120` 的"规范无表"依据**（任务单 `#121` 新增） | ① 三处修订**可判**：三格的原句仍在（`contains`）＋ 三条修订句 `contains`（每条写着**原登记 ⇒ 实测 ＋ 口径 ＋ 命令**）＋ `口径 ＝ …`／`命令 ＝ …` 各 ≥ 3 次；② ⭐ **计数口径逐名可判**：`assets/samples/**/*.sfz` **就地重算**（分母 **1398**）并**逐名打印** `名字 = 次数 ／ 文件数` —— 裸档 **3** 次 ／ **3** 文件（`volume_oncc24` 2／2、`volume_oncc$F2_DIS` 1／1）、前缀档 **47** 次 ／ **30** 文件（9 个 `lfo*_volume_onccNNN`）、家族子串 **50** 次 ／ **33** 文件；⭐ **有牙**：裸档名字必须**全部**以 `volume_oncc` 开头 ⇒ 谁把 `lfo*` 的行数算进裸档，`bare_total == 3` 与这条 `all` 至少一条红；⭐ 引擎侧修订段的**逐名表**必须与本判据**现算**的表逐字相同；③ `#120` 的**"规范无 Modulation 表"**依据（三页各只有一张静态表 ＋ **无任何 `_onccN` 行** ＋ 三个 URL ＋ 三个静态表行）＋ ⭐ **反向腿**（§8.5 段内 `规范有`／`另开单`／`本单不做` 必须 `contains == false`，而非真空由"整份文档里确实有 `另开单`"作证）＋ 结构面 `Scopes::get` 扁平 first-match（`instrument.rs:1550-1555`）⇒ 登记为 **需要新面**；④ `size_of` 现读 `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ 三个承重指纹逐字仍在 ＋ `S114` 的 `ABSENT` 反向腿字面量一字未动 |
+//! | ⭐ S117 | ⭐ ⭐ **`gain_ccN` ＝ `volume` 的逐字 delta 行名（**同一个** `ModTarget::Volume` 的第五个拼写）＋ 8 档语料三元组口径 ＋ 单位矩阵 ＋ 解析与域 ＋ 三条路一致 ＋ 病态夹具 ＋ 反向腿 ＋ 尺寸**（任务单 `#124` 新增；§4 七条 —— **本单核心**） | ① **规范逐字 ＋ 归属裁定**（源文本 `contains`）：`gain` 页 Modulation 表逐字行 `\| gain_ccN \|  \| float \| 0 \| -144 to 48 \| dB \|` ＋ 别名句「`volume_ccN` is a valid alias for `gain_ccN`」＋ 扩展拼写限定句「only apply to `volume`」＋ 裁定「`gain_ccN` 归 **同一个** `ModTarget::Volume`」（四条理由：规范说同一 opcode／静态别名 `scopes.get("volume").or_else(\|\| scopes.get("gain"))`（`instrument.rs:1730`）／域与单位复用／零新字段）＋ 驳回三条（⛔ `gain_onccN`／⛔ `gain_curveccN`／⛔ `gainccN`）＋ 反向腿（两句不存在的登记必须 `contains == false`，两份源文本各一条）；② ⭐ **语料逐名展开（第 287 条）＋ 三元组口径（第 291 条）**：分母 **1398**，8 档（剥／不剥 `//` 注释 × 左边界任意／行首或空白 × 收／不收 `$` 宏名）**全部同值** —— 裸 `gain_ccN` **0** ／ 裸 `gain_onccN` **0** ／ 裸 `gain_curveccN` **0** ／ 本族之外 **43 次 ／ 35 文件 ／ 7 名**（逐名：`eq1_gain_oncc77` 23／21、`lfo01_eq1gain_oncc114` 7／7、`lfo02_eq1gain_oncc115` 4／4、`lfo01_eq1gain_oncc21` 3／3、`eq1_gain_oncc1` 2／2、`eq2_gain_oncc1` 2／2、`eq3_gain_oncc1` 2／2）；⭐ **有牙**：每个名字都必须**不是**裸档（谁用 `[^a-zA-Z]` 当边界就会把 `lfo02_eq1gain_oncc115` 数成裸 `gain_oncc115`）；⭐ **与 `#119` 登记的异同**：两个 0 **复核成立**，但 `#119` 的「那 14 处全是 `lfo*_eq1gain_onccN`」是**漏计**（另有 `eq*_` 一族 **29 次 ／ 23 文件**）⇒ 第 289 条：**复现不出的如实写**（`gain_oncc` 只有 14 处这个口径本线复现不出：行首/空白 ⇒ 0；任意位置 ⇒ 43）；③ **单位矩阵**：`gain_cc1` 加进"目标 × 后缀"矩阵、行数 `9 → 10`、格数 `36 → 40`、接受／拒绝 `(19, 17) → (20, 20)`（**两个数都从判据里现算**；⛔ 共享常量 `UNIT_MATRIX_ROWS` **仍是 9 行** —— `#117`／`#118`／`#119` 的读数逐字未动）；④ **解析与域**：`gain_cc1`／`gain_cc5` 读得进（静态 `gain=-6` **仍读进** `Region::volume`）、`gain_curvecc5=9` 的曲线下标**一个字节不进表**、越界／`%`／`s`／`ms`／`nan`／`inf` 逐字 `Err`（文本用**原文 opcode 名** `gain_cc1`：`value 49 out of range -144..=48`／`expects a number, got \`50%\``）、闭区间端点 ＋ `+0.0` 读得进、缺省 ⇒ 空表且任意 CC **逐位相同**；⑤ **真的生效 ＋ 三条路一致**：乘子逐位等于 `2 ^ (dB × log2(10) / 20)`（cc=0 ⇒ 恰 `1.0`；cc=127、6 dB ⇒ `1.9952621`，两个 CC 值输出**不同**）＋ `cc ∈ {0,37,63,127}` 离线 ＝ 摊平 ＝ 实时**逐位相同**＋ 五个**病态臂**（20×48 dB ⇒ `Inf`／20×38 ⇒ 有限极大 `> 1e30`／20×(−39) ⇒ 正次正规／20×(−48) ⇒ 恰 `0` 全零／delta = 0 ⇒ `+0.0` 位型恰 `1.0`）；⑥ **反向腿 ＋ 承重指纹**：去掉 `gain_cc1` 那一行 ⇒ 两个 CC 值**逐位相同**（乘子逐位 `1.0`）＋ 三个承重指纹逐字复跑（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ ⭐ **别名见证**（裁定 ① 的机械后果）：同一 CC 下 `gain_cc1=6` 与 `volume_oncc1=6` 的乘子**逐位相同**，且既有 `volume_*ccN` 的读数**一字不动**（非空对照：`#119` 的 `volume_oncc1` 那一项仍在、仍走原公式）＋ 混合夹具里 `volume`（CC1）与 `gain`（CC2）两键各走自己的 CC；⑦ **尺寸 ＋ 零分配**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ `ModTarget::COUNT` 仍 **8**（⛔ 不加目标）＋ `ModUnit::Decibels.suffixes() == [""]`，另有 `rt_zero_alloc` 的 `[sfz-gain]` 场景（四元组全 0 ＋ 乘子 ≈ 1.9952621 ≠ 1 ＋ 摊平表**真的**承载 1 项） |
 //!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
 //!
@@ -13452,10 +13453,15 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
 
     // ---- ⑧ 负向：本单**不做**的行（规范有、或有别的实体）今天必须被忽略 ----
+    // ⭐⭐ 追加修订段（任务单 `#124`，台账第 278 条）：本表**原文里**有一项 `"gain_cc1"` ——
+    // **被修订的正是那一支**：`#124` 起 `gain_ccN` **是识别的**（归 `ModTarget::Volume`／
+    // `Decibels`，规范依据与裁定见 `yeban-sfz/src/modulation.rs` §8.6）⇒ 它从**本反向腿表
+    // 移出**，改由判据 `S117` 用**正例**逐字钉住（1 项、`target == Volume`、`delta == 10`）。
+    // ⚠ `gain_oncc1`／`gain_curvecc1` **逐字仍在下面**（规范 Modulation 表里 `gain` 开头的
+    // **只有 `gain_ccN` 这一行** ⇒ 那两格仍是"未知 opcode 忽略"）。
     for name in [
         "volume_smoothcc1",
         "volume_stepcc1",
-        "gain_cc1",
         "gain_oncc1",
         "gain_curvecc1",
         "global_volume_oncc1",
@@ -13483,6 +13489,31 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
             "[engine-sfz/S114] ⑧ `{name}=10` 单独出现 ⇒ 调制项数 = {count}（＝未知 opcode 忽略）"
         );
         assert_eq!(count, 0, "⭐ `{name}` ⛔ 不进调制表（本单不做、登记在案）");
+    }
+    // ⭐⭐ `#124` 的**正例**（第 278 条：上面那张表里 `"gain_cc1"` 那一支被修订后落到这里）：
+    // `gain_ccN` —— 规范 Modulation 表里**逐字的 delta 行名** —— 必须**真的被识别**。
+    let gain_row = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 gain_cc1=10\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("`gain_cc1=10` 必须在 `-144..=48` 域内 ⇒ 解析成功");
+    {
+        let readings: Vec<(ModTarget, u8, f32, u8)> = gain_row
+            .with_instrument(|parsed| {
+                parsed.regions()[0]
+                    .cc_modulations()
+                    .iter()
+                    .map(|item| (item.target, item.cc, item.delta, item.curve))
+                    .collect()
+            })
+            .expect("重解析");
+        println!("[engine-sfz/S114] ⑧ `gain_cc1=10`（`#124` 修订后**识别**）⇒ 读数 = {readings:?}");
+        assert_eq!(
+            readings,
+            vec![(ModTarget::Volume, 1, 10.0, 0)],
+            "⭐ `#124` 起 `gain_ccN` 归 `ModTarget::Volume`（`volume` 页 delta 行名 ＋ \
+             别名句的机械后果）；单位随之是 `Decibels` ⇒ 域 `-144..=48`"
+        );
     }
     // ⭐ 有牙：`volume_curveccN`（表里有、**本单做**）必须**真的被识别**（合并进同一键），
     // 而 `volume_smoothccN` 必须**仍被忽略** —— 同一个夹具里只有这两者能分辨。
@@ -13519,6 +13550,12 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
          （⛔ 不是静默吃掉那个 9）"
     );
     // ⭐ 有牙②：`volumeccN`（裸 SFZ1 形）**真的被识别**，而它的邻居 `gain_onccN` 不被识别。
+    // ⭐⭐ 追加修订段（任务单 `#124`，台账第 278 条）：下面那句断言文案里把 `gain_onccN` 叫作
+    // 「规范逐字的行名」—— ⚠ **那句叫法本身是错的**（⛔ 文案原文一字未删，只在此点名）：
+    // `volume` 页 Modulation 表里 `gain` 开头的**只有 `gain_ccN` 一行**，
+    // `gain_onccN` **不在表里**（8 档语料口径与逐名展开见 `yeban-sfz/src/modulation.rs` §8.6.3）。
+    // ⭐ **被修订的只是那句文案里的叫法**：本格**断言的行为**（`gain_onccN` ⛔ 不被识别 ⇒ 恰 1 项）
+    // 逐字仍成立，由 `S117` 与 `yeban-sfz` 的单元测试反向腿表继续钉住。
     let bare = SfzInstrument::load(
         "<region> sample=a.wav volumecc1=6 gain_oncc1=6\n".to_owned(),
         &Default::default(),
@@ -14553,4 +14590,965 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
         (6160, 40, 1712, 180_144),
         "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐⭐ 任务单 `#124`：`gain_ccN` —— `volume` 的**逐字 delta 行名**（同一个目标）
+// ---------------------------------------------------------------------------
+
+/// ⭐ `#124` 合法写法 ＋ **五个必须不被吞掉**的邻居（裁定见 `yeban-sfz/src/modulation.rs` §8.6）。
+///
+/// * 静态 `gain=-6`：**同一个静态 opcode** 的另一半（⛔ 必须仍读进 `Region::volume`）；
+/// * `gain_cc5=6` ＋ `gain_curvecc5=9`：**有牙** —— 若 `gain_curvecc` 被识别（Curve 形），
+///   曲线下标 `9` 会**合并进 cc5 那个键**（同 `volume_curvecc1` 的行为）⇒ 本判据看 `curve` 是不是 0；
+/// * `gain_oncc8=3` / `gaincc3=6`：被驳回的拼写 ⇒ 若被识别就会**多出两项**；
+/// * `gain_smoothcc6` / `gain_stepcc7`：⛔ 连表行都没有。
+const GAIN_FORMS_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 gain=-6 \
+     gain_cc1=12 gain_cc5=6 gain_curvecc5=9 gain_oncc8=3 gaincc3=6 \
+     gain_smoothcc6=1 gain_stepcc7=1\n";
+
+/// ⭐ `#124` 可读量夹具：静态 `gain=0`（基准 0 dB ⇒ `volume_gain = 1.0`）
+/// ＋ `gain_cc1=6`（+6 dB ⇒ 乘子 `2 ^ (6 × log2(10) / 20)` ≈ `1.9952621`）。
+const GAIN_DB_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                               amp_veltrack=0 gain=0 gain_cc1=6\n";
+
+/// ⭐ `#124` 反向腿：同文本**去掉** `gain_cc1` 那一行（静态 `gain=0` 仍在）。
+const GAIN_BASE_ONLY_FIXTURE: &str =
+    "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 gain=0\n";
+
+/// ⭐ `#124` 未扰动对照：同一夹具里 `volume` 拼写（CC1）与 `gain` 拼写（CC2）**两个键**
+/// 各走自己的 CC（⛔ 两个不同 CC ⇒ 互不干扰；⭐ 别名裁定由 ⑥ 的"同 CC 逐位相同"腿见证）。
+const GAIN_MIXED_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+     volume=0 volume_oncc1=6 gain=0 gain_cc2=6\n";
+
+/// ⭐⭐ `#124` 病态夹具：`items` 条 `gain_ccN=delta`（单位 **dB**，同一个 `Decibels` 域）。
+///
+/// ⚠ 与 `#119` 的 [`volume_compound_fixture`] **同形**（同单位、同域、同求值点）——
+/// ⛔ 本单**不**改那个夹具（它是 `#119` 的登记面），只加这一份 `gain` 拼写的。
+fn gain_compound_fixture(items: usize, delta: i32) -> String {
+    let mut text = String::from("<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0");
+    for cc in 1..=items {
+        text.push_str(&format!(" gain_cc{cc}={delta}"));
+    }
+    text.push('\n');
+    text
+}
+
+/// ⭐⭐ `#124` 一个病态臂：**打印**乘子位型／基增益／产物与三条路各自的读数，
+/// 并断言三条路**输出逐位相同**（台账第 284 条）。
+///
+/// 返回 `(乘子, 离线 written, 摊平 written, 三条路输出的非零帧数, 实时输出)`。
+/// ⚠ 与 `#119` 的 [`volume_boundary_arm`] **同形**，只有夹具换成 `gain` 拼写。
+fn gain_boundary_arm(
+    label: &str,
+    items: usize,
+    delta: i32,
+    sample_hz: f32,
+    cc_value: u8,
+) -> (f32, usize, usize, [usize; 3], Vec<f32>) {
+    let text = gain_compound_fixture(items, delta);
+    let sample = ramp_at(sample_hz, 4096);
+    let instrument = SfzInstrument::load(text, &Default::default()).expect("病态夹具必须解析成功");
+    let plan = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平");
+    assert_eq!(
+        plan.regions()[0].cc_modulations().len(),
+        items,
+        "⭐ `{label}`：`items` 个不同 CC ⇒ 表里必须恰好 {items} 项（⛔ 不被合并）"
+    );
+    let controls: Vec<u8> = (1..=items as u8).collect();
+    let probe = |controller: u8| -> u8 {
+        if controls.contains(&controller) {
+            cc_value
+        } else {
+            0
+        }
+    };
+    let multiplier = plan.regions()[0].volume_ratio_with_cc(Some(&probe));
+    let base_gain = plan.regions()[0].gain_at(60, 127);
+    let (written_offline, offline, written_flat, flat, realtime) =
+        tune_three_paths(&instrument, &plan, &sample, items, cc_value);
+    println!(
+        "[engine-sfz/S117] {label}：乘子 = {multiplier:?}（{:#010x}，finite={}）基增益(无探针) = \
+         {base_gain:?} 产物 = {:?}（finite={}）⇒ 离线 written={written_offline} 非零={} \
+         指纹=0x{:016x}；摊平 written={written_flat} 非零={} 指纹=0x{:016x}；实时 非零={} \
+         指纹=0x{:016x}",
+        multiplier.to_bits(),
+        multiplier.is_finite(),
+        base_gain * multiplier,
+        (base_gain * multiplier).is_finite(),
+        nonzero_frames(&offline),
+        fnv1a_64(&offline),
+        nonzero_frames(&flat),
+        fnv1a_64(&flat),
+        nonzero_frames(&realtime),
+        fnv1a_64(&realtime),
+    );
+    assert_eq!(
+        bits(&offline),
+        bits(&flat),
+        "⭐ `{label}`：离线 → 摊平必须逐位相同"
+    );
+    assert_eq!(
+        bits(&flat),
+        bits(&realtime),
+        "⭐ `{label}`：摊平 → 实时必须逐位相同"
+    );
+    assert_eq!(bits(&offline), bits(&realtime), "⭐ `{label}`：三条路同值");
+    (
+        multiplier,
+        written_offline,
+        written_flat,
+        [
+            nonzero_frames(&offline),
+            nonzero_frames(&flat),
+            nonzero_frames(&realtime),
+        ],
+        realtime,
+    )
+}
+
+/// ⭐ `#124`：名字是不是**裸**的 `prefix` ＋ 全数字尾巴（`prefix` ∈ `gain_cc` / `gain_oncc` /
+/// `gain_curvecc`）—— 语料普查的"裸档"判据（第 287 条）。
+fn is_bare_gain_name(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .is_some_and(|tail| !tail.is_empty() && tail.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// ⭐ `#124`：一档语料口径的扫描结果 ＝ `(名字 → 次数, 名字 → 文件下标集合)`。
+type GainScan = (
+    std::collections::BTreeMap<String, usize>,
+    std::collections::BTreeMap<String, std::collections::BTreeSet<usize>>,
+);
+
+/// ⭐ `#124`：打一档语料口径的**裸档计数**（`gain_ccN` / `gain_onccN` / `gain_curveccN`）
+/// 与**本族之外**的（次数, 不同名字数）。
+fn gain_tier_totals(
+    occurrences: &std::collections::BTreeMap<String, usize>,
+) -> (usize, usize, usize, usize, usize) {
+    let bare = |prefix: &str| -> usize {
+        occurrences
+            .iter()
+            .filter(|(name, _)| is_bare_gain_name(name, prefix))
+            .map(|(_, count)| *count)
+            .sum()
+    };
+    let foreign: usize = occurrences
+        .iter()
+        .filter(|(name, _)| {
+            !is_bare_gain_name(name, "gain_cc")
+                && !is_bare_gain_name(name, "gain_oncc")
+                && !is_bare_gain_name(name, "gain_curvecc")
+        })
+        .map(|(_, count)| *count)
+        .sum();
+    (
+        bare("gain_cc"),
+        bare("gain_oncc"),
+        bare("gain_curvecc"),
+        foreign,
+        occurrences.len(),
+    )
+}
+
+/// ⭐⭐ S117（任务单 `#124`；判据 §4 七条 —— **本单核心**）：**`gain_ccN`（`volume` 页
+/// Modulation 表里逐字的 delta 行名）＝ 同一个 `ModTarget::Volume` 的第五个拼写** ＋
+/// 8 档语料口径 ＋ 单位矩阵 ＋ 解析与域 ＋ 真的生效 ＋ 三条路一致 ＋ 病态夹具（第 284 条） ＋
+/// 反向腿与三个承重指纹 ＋ 尺寸。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ ① 两份源文件的**源文本**（`contains`，布尔 ＋ 逐字）；② 语料的
+/// **opcode 出现次数 ／ 文件数**（分母 **1398** 份 `.sfz`；8 档口径 ＋ 逐名展开）；
+/// ③ 单位矩阵的**格**（9 行 × 4 后缀 ＝ 36 格 → 10 行 × 4 ＝ 40 格）与**接受／拒绝计数**（格）；
+/// ④ 调制项的 `(目标, cc, delta, curve)` 与错误文本；⑤ **线性增益乘子**（无量纲）与
+/// 三条路各自的**输出位模式**／**非零帧数**（帧）；⑥ **三个承重指纹**（FNV-1a 64）；
+/// ⑦ `size_of`（字节）。
+#[test]
+fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const ENGINE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const MODULATION_SOURCE: &str = include_str!("../../yeban-sfz/src/modulation.rs");
+
+    // ---- ① 规范逐字 ＋ 归属裁定（源文本 `contains`，逐字） ----
+    for (label, needle) in [
+        (
+            "`#124` 追加修订段（引擎侧）",
+            "⭐ ⭐ **追加修订段（任务单 `#124`）",
+        ),
+        (
+            "被修订的支 ＝ `#119` 语料表里 `gain_ccN` 那一行（原文仍在，第 278 条）",
+            "`gain_ccN` ／ `gain_onccN`（规范逐字的 delta 行名；本单不识别）",
+        ),
+        (
+            "`#119` 修订段里那句「也不在本单」（原文仍在）",
+            "规范 Modulation 表里逐字的 delta 行名 `gain_ccN`／`gain_onccN` 也不在本单",
+        ),
+        (
+            "Modulation 表逐字的 delta 行（`gain_ccN`）",
+            "| gain_ccN |  | float | 0 | -144 to 48 | dB |",
+        ),
+        (
+            "别名句（逐字）",
+            "**`volume_ccN` is a valid alias for `gain_ccN`**",
+        ),
+        ("扩展拼写限定句（逐字）", "only apply to `volume`"),
+        (
+            "归属裁定（同一个目标）",
+            "⭐ **裁定：`gain_ccN` 归 `ModTarget::Volume`**",
+        ),
+        (
+            "语料：本族之外 43 次 ／ 35 文件 ／ 7 名",
+            "**43** 次 ／ **35** 文件 ／ **7** 个不同名字",
+        ),
+        ("语料：逐名表首行", "`eq1_gain_oncc77` = 23／21"),
+        (
+            "语料：左边界口径（第 287 条）",
+            "左边界必须写成\"行首或空白\"",
+        ),
+        (
+            "语料：与 `#119` 的异同（14 是漏计）",
+            "**29** 次 ／ **23** 文件",
+        ),
+        ("驳回三条（只收 `gain_ccN`）", "⛔ `gainccN`（无下划线形）"),
+        ("尺寸四个全 ＋0", "`SfzVoice` 仍 **40 B**"),
+    ] {
+        assert!(
+            ENGINE_SOURCE.contains(needle),
+            "⭐ 引擎侧必须逐字含：{label}（`{needle}`）"
+        );
+    }
+    println!(
+        "[engine-sfz/S117] ① 引擎侧源文本：`#124` 修订段 ＋ 规范逐字 ＋ 裁定 ＋ 语料 —— 全部逐字命中"
+    );
+    // ⭐ 反向腿（⛔ 挡住恒真）：一句**不存在**的登记必须 `contains == false`。
+    const ABSENT_ENGINE: &str = "`gain_ccN` 仍不识别（另开单）";
+    assert!(
+        !ENGINE_SOURCE.contains(ABSENT_ENGINE),
+        "⭐ 反向腿：`{ABSENT_ENGINE}` 必须 `contains == false`"
+    );
+    for (label, needle) in [
+        (
+            "§8.6 标题（追加修订段）",
+            "### 8.6 ⭐⭐ 追加修订段（任务单 `#124`）",
+        ),
+        (
+            "§8.6.1 归属裁定标题",
+            "#### 8.6.1 ⭐ 归属裁定：`gain_ccN` 归 **同一个** [`ModTarget::Volume`]",
+        ),
+        (
+            "`gain_ccN` 表行（逐字）",
+            "| `gain_ccN` |  | float | **0** | **-144 to 48** | **dB** |",
+        ),
+        (
+            "别名句（逐字）",
+            "`volume_ccN` is a valid alias for `gain_ccN`",
+        ),
+        (
+            "静态别名的行号（`gain` 与 `volume` 同一静态 opcode）",
+            "crates/yeban-sfz/src/instrument.rs:1730",
+        ),
+        (
+            "静态别名的逐字代码",
+            "`scopes.get(\"volume\").or_else(|| scopes.get(\"gain\"))`",
+        ),
+        (
+            "§8.6.3 第 ① 档（8 档同值的第一行）",
+            "| ① | ⛔ 不剥 | 任意 | 收 | **0** | **0** | **0** | **43** |",
+        ),
+        (
+            "§8.6.3 逐名表合计",
+            "| （合计 ＝ 本族之外） | **43** | **35** |",
+        ),
+        (
+            "§8.6.3 与 `#119` 的异同",
+            "`lfo*_eq1gain_onccN` 确为 **14** 次 ／ **14** 文件",
+        ),
+        (
+            "§8.6.3 复现不出的如实写（第 289 条）",
+            "**复现不出的如实写（第 289 条）**",
+        ),
+        ("§8.6.2 驳回 `gain_onccN`", "⛔ **不识别** `gain_onccN`"),
+    ] {
+        assert!(
+            MODULATION_SOURCE.contains(needle),
+            "⭐ `yeban-sfz` 侧必须逐字含：{label}（`{needle}`）"
+        );
+    }
+    const ABSENT_MODULATION: &str = "`gain_ccN` 仍落不进本函数（另开单）";
+    assert!(
+        !MODULATION_SOURCE.contains(ABSENT_MODULATION),
+        "⭐ 反向腿：`{ABSENT_MODULATION}` 必须 `contains == false`"
+    );
+    println!(
+        "[engine-sfz/S117] ① `yeban-sfz` 侧源文本：§8.6（裁定 ＋ 8 档口径 ＋ 逐名表 ＋ 驳回三条）\
+         —— 全部逐字命中"
+    );
+
+    // ---- ② 语料逐名展开 ＋ ≥6 档三元组口径（第 287／291 条） ----
+    let corpus_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/samples");
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![corpus_root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|error| panic!("⭐ 语料目录 {dir:?} 必须存在：{error}"));
+        for entry in entries {
+            let path = entry.expect("目录项").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("sfz") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        1398,
+        "⭐ 分母 ＝ `find assets/samples -name '*.sfz' | wc -l` ⇒ 必须与 `#119`／`#121`／`#123` 一致"
+    );
+    // 一次性读进内存（8 档共用同一份文本 ⇒ 每档读数可比）。
+    let texts: Vec<String> = paths
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("⭐ 读 {path:?} 失败：{error}"))
+        })
+        .collect();
+
+    /// ⭐ `#124` 一档口径的扫描：返回 `(名字 → 次数, 名字 → 文件下标集合)`。
+    ///
+    /// `strip_comments` ＝ 剥 `//` 注释（⛔ 不剥 ＝ 整行）；`boundary` ＝ 要求**行首或空白**
+    /// 左边界（⛔ `false` ＝ 任意位置）；`macros` ＝ 收 `$` 宏名（`$` 算名字字节）。
+    fn gain_scan(texts: &[String], strip_comments: bool, boundary: bool, macros: bool) -> GainScan {
+        let mut occurrences: BTreeMap<String, usize> = BTreeMap::new();
+        let mut files_of: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        let name_byte = |byte: u8| -> bool {
+            byte.is_ascii_alphanumeric() || byte == b'_' || (macros && byte == b'$')
+        };
+        for (index, text) in texts.iter().enumerate() {
+            for raw in text.lines() {
+                let line = if strip_comments {
+                    raw.split("//").next().unwrap_or("")
+                } else {
+                    raw
+                };
+                let bytes = line.as_bytes();
+                let mut cursor = 0usize;
+                while cursor < bytes.len() {
+                    if !name_byte(bytes[cursor]) {
+                        cursor += 1;
+                        continue;
+                    }
+                    let start = cursor;
+                    while cursor < bytes.len() && name_byte(bytes[cursor]) {
+                        cursor += 1;
+                    }
+                    if boundary && start != 0 && !bytes[start - 1].is_ascii_whitespace() {
+                        continue;
+                    }
+                    let token = &line[start..cursor];
+                    if !(token.contains("gain_cc")
+                        || token.contains("gain_oncc")
+                        || token.contains("gain_curvecc"))
+                    {
+                        continue;
+                    }
+                    // 右侧必须是 `=`（跳过空白）⇒ 它才是一个 **opcode** token。
+                    let mut probe = cursor;
+                    while probe < bytes.len() && bytes[probe].is_ascii_whitespace() {
+                        probe += 1;
+                    }
+                    if probe >= bytes.len() || bytes[probe] != b'=' {
+                        continue;
+                    }
+                    *occurrences.entry(token.to_owned()).or_default() += 1;
+                    files_of.entry(token.to_owned()).or_default().insert(index);
+                }
+            }
+        }
+        (occurrences, files_of)
+    }
+
+    // 8 档 ＝ 剥不剥注释 × 左边界 × 收不收宏名。
+    let tiers = [
+        ("①不剥/任意/收宏", false, false, true),
+        ("②不剥/任意/不收宏", false, false, false),
+        ("③不剥/行首空白/收宏", false, true, true),
+        ("④不剥/行首空白/不收宏", false, true, false),
+        ("⑤剥/任意/收宏", true, false, true),
+        ("⑥剥/任意/不收宏", true, false, false),
+        ("⑦剥/行首空白/收宏", true, true, true),
+        ("⑧剥/行首空白/不收宏", true, true, false),
+    ];
+    let mut tier_readings: Vec<(usize, usize, usize, usize, usize)> = Vec::new();
+    let mut tier7: Option<GainScan> = None;
+    for (label, strip, boundary, macros) in tiers {
+        let (occurrences, files_of) = gain_scan(&texts, strip, boundary, macros);
+        let totals = gain_tier_totals(&occurrences);
+        println!(
+            "[engine-sfz/S117] ② {label}：裸 `gain_ccN` = {}、裸 `gain_onccN` = {}、\
+             裸 `gain_curveccN` = {}；本族之外 = {} 次 ／ {} 个名字",
+            totals.0, totals.1, totals.2, totals.3, totals.4
+        );
+        assert_eq!(
+            totals,
+            (0, 0, 0, 43, 7),
+            "⭐ 档 {label}：裸三档各 0 ＋ 本族之外 43 次 ／ 7 名（⛔ 8 档必须同值）"
+        );
+        for name in occurrences.keys() {
+            assert!(
+                !is_bare_gain_name(name, "gain_cc")
+                    && !is_bare_gain_name(name, "gain_oncc")
+                    && !is_bare_gain_name(name, "gain_curvecc"),
+                "⭐ 有牙：`{name}` 是**别的目标**的完整 opcode 名 ⇒ ⛔ 不许被当成裸档\
+                 （`[^a-zA-Z]` 当边界会把 `lfo02_eq1gain_oncc115` 数成裸 `gain_oncc115`）"
+            );
+        }
+        if label.starts_with('⑦') {
+            tier7 = Some((occurrences, files_of));
+        }
+        tier_readings.push(totals);
+    }
+    assert!(
+        tier_readings.windows(2).all(|pair| pair[0] == pair[1]),
+        "⭐⭐ 8 档三元组口径必须**全部同值**（⛔ 换口径就换读数这件事在本族上不成立）"
+    );
+    let (occurrences7, files_of7) = tier7.expect("⑦ 档必须跑过");
+    // ⭐ 逐名展开（第 287 条）：完整 opcode 名 ＋ 次数 ＋ 文件数，**逐条**打印并断言。
+    let expected_names: [(&str, usize, usize); 7] = [
+        ("eq1_gain_oncc77", 23, 21),
+        ("lfo01_eq1gain_oncc114", 7, 7),
+        ("lfo02_eq1gain_oncc115", 4, 4),
+        ("lfo01_eq1gain_oncc21", 3, 3),
+        ("eq1_gain_oncc1", 2, 2),
+        ("eq2_gain_oncc1", 2, 2),
+        ("eq3_gain_oncc1", 2, 2),
+    ];
+    for (name, count, files) in expected_names {
+        let live_count = occurrences7.get(name).copied().unwrap_or(0);
+        let live_files = files_of7.get(name).map_or(0, BTreeSet::len);
+        println!(
+            "[engine-sfz/S117] ② 逐名：`{name}` = {live_count} 次 ／ {live_files} 文件\
+             （登记 {count} ／ {files}）"
+        );
+        assert_eq!(
+            (live_count, live_files),
+            (count, files),
+            "⭐ 逐名展开：`{name}` 的（次数, 文件数）必须与登记一致"
+        );
+        assert!(
+            !is_bare_gain_name(name, "gain_cc")
+                && !is_bare_gain_name(name, "gain_oncc")
+                && !is_bare_gain_name(name, "gain_curvecc"),
+            "⭐ 有牙：`{name}` 的名字里 `gain_*cc` 前面**有前缀** ⇒ ⛔ 不是本族的裸用法"
+        );
+    }
+    assert_eq!(occurrences7.len(), 7, "⭐ 完整名字数 ＝ 7");
+    let union_files: BTreeSet<usize> = files_of7.values().flatten().copied().collect();
+    let eq_hits: usize = expected_names
+        .iter()
+        .filter(|(name, _, _)| name.starts_with("eq"))
+        .map(|(_, count, _)| *count)
+        .sum();
+    let lfo_hits: usize = expected_names
+        .iter()
+        .filter(|(name, _, _)| name.starts_with("lfo"))
+        .map(|(_, count, _)| *count)
+        .sum();
+    let eq_files: BTreeSet<usize> = expected_names
+        .iter()
+        .filter(|(name, _, _)| name.starts_with("eq"))
+        .flat_map(|(name, _, _)| files_of7.get(*name).cloned().unwrap_or_default())
+        .collect();
+    println!(
+        "[engine-sfz/S117] ② 本族之外合计 = 43 次 ／ {} 文件；`eq*_gain_onccN` = {eq_hits} 次 ／ \
+         {} 文件；`lfo*_eq*gain_onccN` = {lfo_hits} 次 ／ 14 文件；\
+         ⚠ `#119` 的登记把 `gain_oncc` 记成「14 处全是 `lfo*_eq1gain_onccN`」⇒ \
+         **14 是漏计**（另有 `eq*_` 一族）—— 第 289 条：`gain_oncc` 只有 14 处这个口径\
+         **本线复现不出**（行首/空白 ⇒ 0；任意位置 ⇒ 43）",
+        union_files.len(),
+        eq_files.len(),
+    );
+    assert_eq!(union_files.len(), 35, "⭐ 本族之外的文件并集 ＝ 35");
+    assert_eq!(eq_hits + lfo_hits, 43, "⭐ 两族之和 ＝ 43");
+    assert_eq!(
+        (eq_hits, lfo_hits),
+        (29, 14),
+        "⭐ `eq*` 29 次 ／ `lfo*` 14 次"
+    );
+    assert_ne!(lfo_hits, 43, "⭐ 第 289 条：14 ⛔ 不是本族之外的总数");
+
+    // ---- ③ 单位矩阵：`gain_cc1` 加进"目标 × 后缀"矩阵（两个计数都**现算**） ----
+    let mut rows: Vec<(&str, ModTarget, ModUnit)> = UNIT_MATRIX_ROWS.to_vec();
+    assert_eq!(
+        rows.len(),
+        9,
+        "⛔ 共享常量 `UNIT_MATRIX_ROWS` 必须仍是 9 行 —— `#117`／`#118`／`#119` 的\
+         行数与读数**逐字未动**（本单的机器读数在**下面这张局部延长表**里，⛔ 不写回共享常量）"
+    );
+    rows.push(("gain_cc1", ModTarget::Volume, ModUnit::Decibels));
+    let count_cells = |slice: &[(&str, ModTarget, ModUnit)]| -> (usize, usize) {
+        let mut accepted = 0usize;
+        let mut rejected = 0usize;
+        for (name, _target, unit) in slice {
+            let cell_value = unit_matrix_cell_value(*unit);
+            for suffix in UNIT_MATRIX_SUFFIXES {
+                let text = format!(
+                    "<region> sample=a.wav key=60 pitch_keycenter=60 {name}={cell_value}{suffix}\n"
+                );
+                if SfzInstrument::load(text, &Default::default()).is_ok() {
+                    accepted += 1;
+                } else {
+                    rejected += 1;
+                }
+            }
+        }
+        (accepted, rejected)
+    };
+    let before = count_cells(&rows[..9]);
+    let after = count_cells(&rows);
+    println!(
+        "[engine-sfz/S117] ③ 单位矩阵：行数 9 → 10（新增 `gain_cc1`／`Decibels`）；\
+         格数 36 → 40；接受／拒绝：改动前 {before:?} → 改动后 {after:?}"
+    );
+    assert_eq!(
+        before,
+        (19, 17),
+        "⭐ `#119` 登记的读数（9 行 × 4 ＝ 36 格）必须**现算**出来仍未变"
+    );
+    assert_eq!(
+        after,
+        (20, 20),
+        "⭐⭐ `#124` 改动后（10 行 × 4 ＝ 40 格）⇒ 20 接受／20 拒绝\
+         （新增行：1 格接受 `\"\"` ＋ 3 格拒绝 `s`／`ms`／`%`）"
+    );
+    assert_eq!(
+        rows[9],
+        ("gain_cc1", ModTarget::Volume, ModUnit::Decibels),
+        "⭐ 新增行必须逐字是 (`gain_cc1`, `Volume`, `Decibels`)"
+    );
+
+    // ---- ④ 解析与域 ----
+    let instrument = SfzInstrument::load(GAIN_FORMS_FIXTURE.to_owned(), &Default::default())
+        .expect("合法写法必须解析成功");
+    let readings: Vec<(ModTarget, u8, f32, u8)> = instrument
+        .with_instrument(|parsed| {
+            parsed.regions()[0]
+                .cc_modulations()
+                .iter()
+                .map(|item| (item.target, item.cc, item.delta, item.curve))
+                .collect()
+        })
+        .expect("重解析");
+    println!(
+        "[engine-sfz/S117] ④ `(target, cc, delta, curve)` 读数 = {readings:?}\
+         （`gain_curvecc5` / `gain_oncc8` / `gaincc3` / `gain_smoothcc6` / `gain_stepcc7` \
+         的表行不在本单 ⇒ 必须不进表、⛔ 不静默吃掉）"
+    );
+    assert_eq!(
+        readings,
+        vec![
+            (ModTarget::Volume, 1, 12.0, 0),
+            (ModTarget::Volume, 5, 6.0, 0)
+        ],
+        "⭐ 恰两项：`gain_cc1` 与 `gain_cc5`；⛔ `gain_curvecc5=9` 若被识别会把曲线 9 \
+         合并进 cc5 那个键 ⇒ `curve` 必须仍是 0"
+    );
+    assert_eq!(
+        readings[1].3, 0,
+        "⭐ 有牙：`gain_curvecc5` 的曲线下标 `9` ⛔ 一个字节都不许进表（`gain_curveccN` 不是本族）"
+    );
+    assert_eq!(
+        instrument
+            .with_instrument(|parsed| parsed.regions()[0].volume)
+            .expect("重解析"),
+        -6.0,
+        "⭐ 静态 `gain=-6` 必须仍读进 `Region::volume`（⛔ 不被 `gain_ccN` 那一支吞掉 —— \
+         两者是**不同**的 scope 键）"
+    );
+    for (label, text, needle) in [
+        (
+            "`gain_cc1=49` 越界（被别名行 `gain_ccN` 的 +48 上界）",
+            "<region> sample=a.wav gain_cc1=49\n",
+            "line 1: `gain_cc1` value 49 out of range -144..=48",
+        ),
+        (
+            "`gain_cc1=-145` 越界",
+            "<region> sample=a.wav gain_cc1=-145\n",
+            "line 1: `gain_cc1` value -145 out of range -144..=48",
+        ),
+        (
+            "后缀不匹配 `50%`（dB 族无 `%`）",
+            "<region> sample=a.wav gain_cc1=50%\n",
+            "line 1: `gain_cc1` expects a number, got `50%`",
+        ),
+        (
+            "后缀不匹配 `50s`",
+            "<region> sample=a.wav gain_cc1=50s\n",
+            "line 1: `gain_cc1` expects a number, got `50s`",
+        ),
+        (
+            "后缀不匹配 `50ms`",
+            "<region> sample=a.wav gain_cc1=50ms\n",
+            "line 1: `gain_cc1` expects a number, got `50ms`",
+        ),
+        (
+            "非数",
+            "<region> sample=a.wav gain_cc1=abc\n",
+            "line 1: `gain_cc1` expects a number, got `abc`",
+        ),
+        (
+            "`Inf` 明文 ⇒ 非有限",
+            "<region> sample=a.wav gain_cc1=inf\n",
+            "line 1: `gain_cc1` must be finite, got `inf`",
+        ),
+        (
+            "`NaN` 明文 ⇒ 非有限",
+            "<region> sample=a.wav gain_cc1=nan\n",
+            "line 1: `gain_cc1` must be finite, got `nan`",
+        ),
+        (
+            "CC 号 300 越界",
+            "<region> sample=a.wav gain_cc300=10\n",
+            "line 1: `gain_cc300` value 300 out of range 0..=255",
+        ),
+    ] {
+        let error = SfzInstrument::load(text.to_owned(), &Default::default())
+            .expect_err(&format!("{label} 必须响亮 Err"));
+        let shown = format!("{error}");
+        println!("[engine-sfz/S117] ④ {label} ⇒ `{shown}`");
+        assert!(
+            shown.contains(needle),
+            "⭐ {label}：错误文本必须逐字含 `{needle}`（⭐ 用**原文 opcode 名** `gain_cc1`）\
+             （实得 `{shown}`）"
+        );
+    }
+    // 闭区间端点读得进（含 `+0.0`）。
+    for value in ["48", "-144", "0", "0.0", "+0.0"] {
+        let text = format!("<region> sample=a.wav gain_cc1={value}\n");
+        let loaded = SfzInstrument::load(text, &Default::default())
+            .unwrap_or_else(|error| panic!("边界值 {value} 必须合法：{error}"));
+        let delta = loaded
+            .with_instrument(|parsed| parsed.regions()[0].cc_modulations()[0].delta)
+            .expect("重解析");
+        assert_eq!(
+            delta,
+            value.parse::<f32>().expect("数"),
+            "⭐ 端点必须原样读进"
+        );
+    }
+    // 缺省 ⇒ 无调制（与接线前**逐位相同**）。
+    let sample = InMemorySample::sine(TUNE_SINE_HZ, TUNE_SAMPLE_HZ, TUNE_PCM_FRAMES);
+    let plain = prepare_with(GAIN_BASE_ONLY_FIXTURE, &sample);
+    assert!(
+        plain.regions()[0].cc_modulations().is_empty(),
+        "⭐ `gain=0` 单独出现 ⇒ 空表（一项都不进 `cc_mods`）"
+    );
+    let mut absent_arms: Vec<Vec<u32>> = Vec::new();
+    for cc_value in [0u8, 1, 63, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc_value } else { 0 } };
+        assert_eq!(
+            plain.regions()[0]
+                .volume_ratio_with_cc(Some(&probe))
+                .to_bits(),
+            1.0f32.to_bits(),
+            "⭐ cc = {cc_value}：空表 ⇒ 乘子逐位是 1.0"
+        );
+        let mut out = vec![0.0f32; BLOCK];
+        plain.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        absent_arms.push(bits(&out));
+    }
+    assert!(
+        absent_arms.windows(2).all(|pair| pair[0] == pair[1]),
+        "⭐ 缺省 ⇒ 任意 CC 值给出**逐位相同**的输出（与接线前同口径）"
+    );
+
+    // ---- ⑤ 真的生效：乘子逐位等于公式 ＋ 两个 CC 值输出不同 ＋ 三条路一致 ----
+    let plan = prepare_with(GAIN_DB_FIXTURE, &sample);
+    assert_eq!(plan.regions()[0].cc_modulations().len(), 1);
+    let mods = plan.regions()[0].cc_modulations().to_vec();
+    let mut arms: Vec<Vec<u32>> = Vec::new();
+    for cc in [0u8, 37, 63, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
+        let ratio = plan.regions()[0].volume_ratio_with_cc(Some(&probe));
+        let decibels = mods[0].delta * mods[0].curve.value_at(f32::from(cc));
+        let want = (decibels * std::f32::consts::LOG2_10 / 20.0).exp2();
+        assert_eq!(
+            ratio.to_bits(),
+            want.to_bits(),
+            "⭐ cc = {cc}：乘子必须逐位等于「`gain_cc1` 的 delta(dB) × 曲线」算出的比"
+        );
+        assert_eq!(
+            ratio.to_bits(),
+            volume_multiplier_reference(1, mods[0].delta, cc).to_bits(),
+            "⭐ cc = {cc}：与判据里按实现同一条公式重算的参照逐位相同"
+        );
+        let instrument =
+            SfzInstrument::load(GAIN_DB_FIXTURE.to_owned(), &Default::default()).expect("解析");
+        let (written_offline, offline, written_flat, flat, realtime) =
+            tune_three_paths(&instrument, &plan, &sample, 1, cc);
+        assert_eq!((written_offline, written_flat), (512, 512));
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ cc = {cc}：离线 → 摊平逐位相同"
+        );
+        assert_eq!(
+            bits(&flat),
+            bits(&realtime),
+            "⭐ cc = {cc}：摊平 → 实时逐位相同"
+        );
+        assert!(
+            nonzero_frames(&offline) > 0
+                && nonzero_frames(&flat) > 0
+                && nonzero_frames(&realtime) > 0,
+            "⭐ cc = {cc}：三条路都必须真的出声"
+        );
+        println!(
+            "[engine-sfz/S117] ⑤ cc = {cc:3}：delta×curve = {decibels:8.4} dB ⇒ 乘子 = \
+             {ratio:.9}（{:#010x}）非零帧 离线/摊平/实时 = {}/{}/{}",
+            ratio.to_bits(),
+            nonzero_frames(&offline),
+            nonzero_frames(&flat),
+            nonzero_frames(&realtime),
+        );
+        arms.push(bits(&offline));
+    }
+    assert_ne!(
+        arms[0], arms[3],
+        "⭐ 反空判腿：cc = 0（乘子 1.0）与 cc = 127（乘子 ≈ 2.0）必须逐位不同"
+    );
+    assert!(
+        (plan.regions()[0].volume_ratio_with_cc(Some(&|_| 127)) - 1.995_262_1).abs() < 1.0e-6,
+        "⭐ 给数字：`gain_cc1=6`、cc = 127 ⇒ 乘子 ≈ 1.9952621（+6 dB 是**放大**）"
+    );
+    assert_eq!(
+        plan.regions()[0]
+            .volume_ratio_with_cc(Some(&|_| 0))
+            .to_bits(),
+        1.0f32.to_bits(),
+        "⭐ 给数字：cc = 0 ⇒ 乘子**恰** 1.0"
+    );
+
+    // ⑤b 病态夹具：`Inf`／有限极大／次正规／恰 `0`（下溢）／`delta = 0`（`+0.0`）。
+    let (inf_multiplier, ..) =
+        gain_boundary_arm("① 20×48 dB cc127（≈2^159 ⇒ Inf）", 20, 48, 48_000.0, 127);
+    assert!(
+        inf_multiplier.is_infinite(),
+        "⭐ ① 20 条 × 48 dB × 满量程 ⇒ 乘子必须是 `Inf`（实得 {inf_multiplier:?}）"
+    );
+    let (finite_multiplier, wo, wf, nz, _) = gain_boundary_arm(
+        "② 20×38 dB cc127（≈2^126 ⇒ 有限极大）",
+        20,
+        38,
+        48_000.0,
+        127,
+    );
+    assert!(
+        finite_multiplier.is_finite() && finite_multiplier > 1.0e30,
+        "⭐ ② 必须是**有限极大**（实得 {finite_multiplier:?}）"
+    );
+    assert_eq!((wo, wf), (512, 512));
+    assert!(nz.iter().all(|count| *count > 0));
+    let (subnormal, wo, wf, nz, _) = gain_boundary_arm(
+        "③ 20×(−39) dB cc127（≈2^−130 ⇒ 次正规）",
+        20,
+        -39,
+        48_000.0,
+        127,
+    );
+    assert!(
+        subnormal > 0.0 && subnormal < f32::MIN_POSITIVE,
+        "⭐ ③ 必须是**正次正规**（实得 {subnormal:?}）"
+    );
+    assert_eq!((wo, wf), (512, 512));
+    assert!(nz.iter().all(|count| *count > 0));
+    let (underflow, wo, wf, nz, _) =
+        gain_boundary_arm("④ 20×(−48) dB cc127（≈2^−159 ⇒ 0）", 20, -48, 48_000.0, 127);
+    assert_eq!(underflow, 0.0, "⭐ ④ 必须**下溢到恰 0**");
+    assert_eq!((wo, wf), (512, 512));
+    assert!(nz.iter().all(|count| *count == 0));
+    let (zero_delta, wo, wf, nz, _) = gain_boundary_arm(
+        "⑤ 20×0 dB cc127（delta = 0 ⇒ 乘子恰 1.0）",
+        20,
+        0,
+        48_000.0,
+        127,
+    );
+    assert_eq!(zero_delta, 1.0, "⭐ ⑤ `delta = 0` ⇒ 乘子**恰** 1.0");
+    assert_eq!(
+        zero_delta.to_bits(),
+        1.0f32.to_bits(),
+        "⭐ `+0.0` 的位型见证：`0.0f32.exp2()` 恰是 `1.0`（⛔ 不是 `0.999…`）"
+    );
+    assert_eq!((wo, wf), (512, 512));
+    assert!(nz.iter().all(|count| *count > 0));
+
+    // ---- ⑥ 反向腿 ＋ 别名见证 ＋ 三个承重指纹 ----
+    let with_line = prepare_with(GAIN_DB_FIXTURE, &sample);
+    let without_line = prepare_with(GAIN_BASE_ONLY_FIXTURE, &sample);
+    assert_eq!(
+        without_line.regions()[0].cc_modulations().len(),
+        0,
+        "⭐ 反向腿夹具必须**没有**调制项"
+    );
+    let mut with_arms: Vec<Vec<u32>> = Vec::new();
+    let mut without_arms: Vec<Vec<u32>> = Vec::new();
+    for cc_value in [0u8, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc_value } else { 0 } };
+        let mut a = vec![0.0f32; BLOCK];
+        let mut b = vec![0.0f32; BLOCK];
+        with_line.render_block_into_with_cc(60, 127, Some(&probe), &mut a);
+        without_line.render_block_into_with_cc(60, 127, Some(&probe), &mut b);
+        with_arms.push(bits(&a));
+        without_arms.push(bits(&b));
+    }
+    assert_ne!(
+        with_arms[0], with_arms[1],
+        "⭐ 有那一行 ⇒ 两个 CC 值必须**不同**"
+    );
+    assert_eq!(
+        without_arms[0], without_arms[1],
+        "⭐ **反向腿**：去掉 `gain_cc1` 那一行 ⇒ 两个 CC 值**逐位相同**"
+    );
+    assert_eq!(
+        without_line.regions()[0]
+            .volume_ratio_with_cc(Some(&|_| 127))
+            .to_bits(),
+        1.0f32.to_bits(),
+        "⭐ 反向腿：空表 ⇒ 乘子逐位 1.0"
+    );
+    println!(
+        "[engine-sfz/S117] ⑥ 反向腿：有那一行 ⇒ cc=0/127 指纹 0x{:016x}/0x{:016x}（不同）；\
+         去掉那一行 ⇒ 0x{:016x}/0x{:016x}（逐位相同）",
+        fnv1a_64_from_bits(&with_arms[0]),
+        fnv1a_64_from_bits(&with_arms[1]),
+        fnv1a_64_from_bits(&without_arms[0]),
+        fnv1a_64_from_bits(&without_arms[1]),
+    );
+    // ⭐ 别名见证（裁定的机械后果）：**同一 CC 值**下 `gain_cc1` 与 `volume_oncc1`
+    // 给出**逐位相同**的乘子 —— 且既有 `volume_*ccN` 的读数**一字不动**（非空对照）。
+    let volume_plan = prepare_with(VOLUME_DB_FIXTURE, &sample);
+    assert_eq!(
+        volume_plan.regions()[0].cc_modulations().len(),
+        1,
+        "⭐ 非空对照：`#119` 的 `volume_oncc1` 那一项仍在（⛔ 不能被本单改动）"
+    );
+    let gain_plan = prepare_with(GAIN_DB_FIXTURE, &sample);
+    for cc in [0u8, 37, 63, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
+        let volume_ratio = volume_plan.regions()[0].volume_ratio_with_cc(Some(&probe));
+        let gain_ratio = gain_plan.regions()[0].volume_ratio_with_cc(Some(&probe));
+        assert_eq!(
+            volume_ratio.to_bits(),
+            gain_ratio.to_bits(),
+            "⭐⭐ 别名见证：cc = {cc} 时 `volume_oncc1=6` 与 `gain_cc1=6` 的乘子必须**逐位相同**"
+        );
+        assert_eq!(
+            volume_ratio.to_bits(),
+            volume_multiplier_reference(1, 6.0, cc).to_bits(),
+            "⭐ 既有 `volume_*ccN` 的读数**一字不动**：cc = {cc} 仍走 `#119` 的公式\
+             `2 ^ (6 × cc/127 × log2(10) / 20)`"
+        );
+    }
+    // ⭐ 未扰动对照：`volume`（CC1）与 `gain`（CC2）两个键各走自己的 CC。
+    let mixed = prepare_with(GAIN_MIXED_FIXTURE, &sample);
+    assert_eq!(
+        mixed.regions()[0].cc_modulations().len(),
+        2,
+        "⭐ 混合夹具两项：`volume_oncc1` ＋ `gain_cc2`（⛔ 不同 CC ⇒ 不坍塌）"
+    );
+    for cc in [0u8, 37, 127] {
+        let want = volume_multiplier_reference(1, 6.0, cc);
+        let only_volume = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
+        let only_gain = |controller: u8| -> u8 { if controller == 2 { cc } else { 0 } };
+        assert_eq!(
+            mixed.regions()[0]
+                .volume_ratio_with_cc(Some(&only_volume))
+                .to_bits(),
+            want.to_bits(),
+            "⭐ cc = {cc}：只有 `volume_oncc1` 动 ⇒ 乘子仍走 `#119` 的读数"
+        );
+        assert_eq!(
+            mixed.regions()[0]
+                .volume_ratio_with_cc(Some(&only_gain))
+                .to_bits(),
+            want.to_bits(),
+            "⭐ cc = {cc}：只有 `gain_cc2` 动 ⇒ 同一个目标的**同一个**公式"
+        );
+        assert_eq!(
+            mixed.regions()[0]
+                .volume_ratio_with_cc(Some(&|_| 0))
+                .to_bits(),
+            1.0f32.to_bits(),
+            "⭐ cc = {cc}：两个 CC 都为 0 ⇒ 乘子逐位 1.0"
+        );
+    }
+    // ⭐ 三个承重指纹（夹具里没有任何 `gain*`／`volume*`／`amplitude*`／`tune*`／`pitch*`
+    // ⇒ 必须逐字不变）。
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain_loop = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, expected) in [
+        ("S37 臂 1", &looped, 200u64, 0xa9de_c8a8_7f69_106cu64),
+        ("S37 臂 2", &plain_loop, u64::MAX, 0xd3c2_a820_76bd_8947u64),
+    ] {
+        let out = render_pool(plan, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!("[engine-sfz/S117] ⑥ {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）");
+        let _checked = check_fingerprint(&format!("S117 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy_block = vec![0.0f32; BLOCK];
+    let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
+    let legacy = fnv1a_64(&legacy_block);
+    println!(
+        "[engine-sfz/S117] ⑥ S33／S14 广播路径 512 帧 @ (60,127)：指纹 = 0x{legacy:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）；写入 = {legacy_frames}"
+    );
+    let _checked = check_fingerprint("S117 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    let scaled: Vec<f32> = legacy_block
+        .iter()
+        .map(|sample| sample * 1.000_000_1)
+        .collect();
+    assert_ne!(
+        fnv1a_64(&scaled),
+        legacy,
+        "⭐ 应绿反向腿：× 1.0000001 ⇒ 指纹必须变"
+    );
+
+    // ---- ⑦ 尺寸（`size_of` 现读，⛔ 不手抄）：四个全 ＋0 ----
+    assert_eq!(
+        ModTarget::COUNT,
+        8,
+        "⛔ `#124` ⛔ 不加目标（`gain_ccN` 落**既有**的 `Volume`）"
+    );
+    assert_eq!(ModTarget::ALL[7], ModTarget::Volume);
+    assert_eq!(ModTarget::Volume.mod_unit(), ModUnit::Decibels);
+    assert_eq!(ModTarget::Volume.delta_range(), (-144.0, 48.0));
+    assert_eq!(ModUnit::Decibels.suffixes(), &[""]);
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S117] ⑦ size_of: PreparedRegion={region} SfzVoice={voice} \
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）；\
+         零分配场景见 `rt_zero_alloc` 的 `[sfz-gain]`",
+        192 * 1024,
+        192 * 1024 - runtime,
+    );
+    assert_eq!(
+        (region, voice, pool, runtime),
+        (6160, 40, 1712, 180_144),
+        "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0"
+    );
+    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
 }
