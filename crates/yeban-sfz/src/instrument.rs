@@ -592,6 +592,20 @@ pub struct Region<'a> {
     /// 空 `Vec` ＝ 该 region 没有任何 `ampeg_*ccN` 形态（**缺省 ⇒ 无调制**，
     /// 与接线前逐位相同）。语义、公式、取值域与工程裁决见 [`crate::modulation`]。
     pub ampeg_mods: Vec<AmpegCcMod>,
+    /// ⭐ **`ampeg_*` 的力度调制量**（`ampeg_vel2attack` / `…hold` / `…decay` /
+    /// `…sustain` / `…release`；任务单 `#106`）。
+    ///
+    /// 下标 ＝ [`AmpegParam`] 的声明序（[`AmpegParam::index`]）；
+    /// `None` ＝ 该参数的 `ampeg_vel2…` opcode **根本没出现**（**缺省 ⇒ 无调制**，
+    /// 与接线前逐位相同）；`Some(delta)` ＝ 求值时末尾加一项 `delta × velocity / 127`。
+    ///
+    /// ⚠ **与 [`Region::ampeg_mods`] 是两支独立输入**：这支来自**音符力度**
+    /// （每个声部自带、触发后不再变），那支来自 **CC 状态**（外部控制器）
+    /// ⇒ 两者**相加**，⛔ 不互相顶替（规范公式、逐字出处与工程裁决见 [`crate::modulation`]）。
+    ///
+    /// 取值域 `-100..=100`（五个 opcode 页 Modulation 表 Range 列**逐字相同**）、
+    /// 单位与目标同单位（时间 = 秒、`sustain` = 百分比）。
+    pub ampeg_vel2: [Option<f32>; AmpegParam::COUNT],
     /// 采样起始偏移（`offset`，单位采样点，规范默认 0）。
     pub offset: u32,
     /// 采样播放终点（`end`，规范默认 `unspecified`）。
@@ -825,6 +839,19 @@ impl<'a> Region<'a> {
     #[must_use]
     pub fn ampeg_modulations(&self) -> &[AmpegCcMod] {
         &self.ampeg_mods
+    }
+
+    /// ⭐ **该区域某参数上的力度调制量**（`ampeg_vel2…`；任务单 `#106`）。
+    ///
+    /// `None` ＝ 该参数的 `ampeg_vel2…` opcode **根本没出现**
+    /// （**缺省 ⇒ 无调制**，与接线前逐位相同：求值期一项算术都不做）；
+    /// `Some(delta)` ＝ 求值时末尾加 `delta × velocity / 127`。
+    ///
+    /// ⚠ 与 [`Region::ampeg_modulations`] 是**两支独立输入**（力度 ／ CC），
+    /// 语义与公式逐字出处见 [`crate::modulation`]。零分配、`const`、可在实时路径调用。
+    #[must_use]
+    pub const fn ampeg_vel2(&self, param: AmpegParam) -> Option<f32> {
+        self.ampeg_vel2[param.index()]
     }
 
     /// 该 region 是否需要「其它按住的音符数」这类外部状态（`trigger=first` /
@@ -1262,6 +1289,56 @@ impl<'a> Instrument<'a> {
         crate::modulation::ampeg_value_with_baked(base, param, &baked, probe)
     }
 
+    /// ⭐ **求某区域某 `ampeg_*` 参数在给定 CC 探针 ＋ 音符力度下的取值**（任务单 `#106`）：
+    /// `base + Σ delta_cc × curve(cc) + delta_vel2 × velocity / 127`
+    /// （公式、逐字出处与工程裁决见 [`crate::modulation`] 模块文档 §4）。
+    ///
+    /// 与 [`Instrument::ampeg_value_with_cc`] 的关系：**同一份** CC 求和
+    /// （`crate::modulation::ampeg_value_with_baked` 是合一求值的薄包装），
+    /// 本方法**多一支力度输入**。
+    ///
+    /// * `probe == None` ⇒ 不读任何 CC；力度项照算（`None` ⇒ 一项算术都不做）；
+    /// * `probe == Some` ⇒ CC 项逐项相加；`curve` 解析不到的项**计进第二个返回值**
+    ///   且**不贡献**任何量（⛔ 不静默当成曲线 0）；
+    /// * 返回 `(取值, 未施加的 CC 调制项数)`。
+    ///
+    /// ⚠ **只覆盖离线**：它按需 clone `<curve>` 点表（求值期分配）⇒
+    /// ⛔ 不得在音频回调里调用。实时侧要用定长形状
+    /// （[`crate::modulation::BakedAmpegCcMod`]，由 `yeban-engine` 的摊平表承载）。
+    #[must_use]
+    pub fn ampeg_value_with_cc_and_velocity(
+        &self,
+        region: &Region<'_>,
+        param: AmpegParam,
+        velocity: u8,
+        probe: Option<&dyn Fn(u8) -> u8>,
+    ) -> (f32, usize) {
+        let base = region.ampeg_base(param);
+        let vel2 = region.ampeg_vel2(param);
+        let Some(probe) = probe else {
+            // 没有 CC 状态 ⇒ 只剩力度项（仍是**同一份**合一求值，⛔ 不是第二套公式）。
+            return crate::modulation::ampeg_value_with_baked_and_vel2(
+                base,
+                param,
+                &[],
+                vel2,
+                velocity,
+                None,
+            );
+        };
+        let baked = bake_ampeg_mods(region.ampeg_modulations(), |index| {
+            self.modulation_curve(index)
+        });
+        crate::modulation::ampeg_value_with_baked_and_vel2(
+            base,
+            param,
+            &baked,
+            vel2,
+            velocity,
+            Some(probe),
+        )
+    }
+
     /// 「当前生效的 keyswitch」对应的 `sw_label`（ARIA 的 GUI 行为）。
     ///
     /// 规范出处 <https://sfzformat.com/opcodes/sw_label/> 的 "Practical
@@ -1572,6 +1649,9 @@ pub(crate) fn build_region<'a>(
     // ⭐ CC 调制（`ampeg_*ccN` / `_onccN` / `_curveccN`）：与五个基准值**分开**归约
     // （调制量不是取值；缺失 ⇒ 空表 ⇒ 无调制）。
     let ampeg_mods = read_ampeg_cc_mods(&scopes, line)?;
+    // ⭐ 力度调制（`ampeg_vel2*`；任务单 `#106`）：**第二支独立输入**，与上面那支
+    // 分开归约（一个来自 CC 状态、一个来自**音符力度**；缺失 ⇒ `None` ⇒ 无调制）。
+    let ampeg_vel2 = read_ampeg_vel2_mods(&scopes, line)?;
 
     // ---- 播放区间 / 方向（显式区间与方向，见 <https://sfzformat.com/opcodes/offset/>、
     //      <https://sfzformat.com/opcodes/end/>、<https://sfzformat.com/opcodes/direction/>） ----
@@ -1719,6 +1799,7 @@ pub(crate) fn build_region<'a>(
         ampeg_sustain,
         ampeg_release,
         ampeg_mods,
+        ampeg_vel2,
         offset,
         end,
         direction,
@@ -2280,6 +2361,13 @@ fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegC
             let Some((param, form, digits)) = parse_modulation_name(name) else {
                 continue;
             };
+            // ⭐ 力度形态（任务单 `#106`）**不属这张表**：它载的是**力度**调制量、
+            // ⛔ 不是 CC（名字里连下标都没有），也⛔ 不走 `_curveccN` 那支曲线
+            // ⇒ 由 `read_ampeg_vel2_mods` 单独归约。⚠ 必须在这里就分道，
+            // 因为 `parse_modulation_cc("")` 会响亮 `Err`。
+            if form == ModulationForm::Vel2 {
+                continue;
+            }
             let cc = parse_modulation_cc(digits, name, line)?;
             let entry = table.entry((param, cc)).or_insert((None, None));
             match form {
@@ -2294,6 +2382,9 @@ fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegC
                 ModulationForm::Curve => {
                     entry.1 = Some(read_modulation_curve_index(value.as_ref(), name, line)?);
                 }
+                // 上面 `if form == Vel2 { continue }` 已把这一支挡掉
+                // （保留穷尽匹配：⛔ 不用 `_ =>` 把未来的形态静默吞掉）。
+                ModulationForm::Vel2 => {}
             }
         }
     }
@@ -2318,6 +2409,50 @@ fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegC
         });
     }
     Ok(mods)
+}
+
+/// ⭐ 归约一条 `<region>` 生效链上的 **`ampeg_vel2*`**（力度调制；任务单 `#106`）。
+///
+/// 与 [`read_ampeg_cc_mods`] 是**两支独立输入**：这一支载的是**力度**调制量
+/// （公式 `base + delta × velocity / 127`，逐字出处与全部工程裁决见 [`crate::modulation`]），
+/// 那一支载的是 CC 调制量。⛔ 不互相顶替、⛔ 不合并到同一张表。
+///
+/// * **作用域链**：`global → master → group → region`（弱到强）喂入 ⇒ 同一参数后者胜
+///   （与 [`read_ampeg_cc_mods`] 同形）；同一作用域里 `OpcodeMap` 是 `BTreeMap`
+///   ⇒ 同一 opcode 重复出现时后写的行已经胜出；
+/// * **下标 ＝ 参数**：每个参数**最多一条**（规范只列这五个 opcode，名字里没有下标）
+///   ⇒ 结果是 `[Option<f32>; AmpegParam::COUNT]`，⛔ 不是 `Vec`、⛔ 没有条数上限问题；
+/// * **缺失 ⇒ `None`**（＝ 无调制，与接线前逐位相同：求值期一项算术都不做）；
+/// * **越界/畸形 ⇒ 明确 `Err`**（第 259 条：⛔ 不静默降级、⛔ 不钳位）：
+///   域与后缀政策与 `delta` **同一份**读取（[`read_ampeg_modulation_delta`]），
+///   因为五个 `ampeg_vel2*` 页的 Range 列与 `ccN` 那几行**逐字相同**（`-100 to 100`），
+///   单位也随目标（时间 = 秒、`sustain` = %）。
+///
+/// 顺序**确定**：`[Option<f32>; COUNT]` 按 [`AmpegParam`] 声明序索引
+/// （[ARCH-DET-001]；求和时力度项永远在 CC 项**之后**）。
+fn read_ampeg_vel2_mods(
+    scopes: &Scopes<'_, '_>,
+    line: usize,
+) -> Result<[Option<f32>; AmpegParam::COUNT], SfzError> {
+    let mut table: [Option<f32>; AmpegParam::COUNT] = [None; AmpegParam::COUNT];
+    for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
+        for (name, value) in map {
+            let name = name.as_ref();
+            let Some((param, form, _digits)) = parse_modulation_name(name) else {
+                continue;
+            };
+            if form != ModulationForm::Vel2 {
+                continue;
+            }
+            table[param.index()] = Some(read_ampeg_modulation_delta(
+                value.as_ref(),
+                name,
+                param,
+                line,
+            )?);
+        }
+    }
+    Ok(table)
 }
 
 /// 解析 `ccN` / `_onccN` / `_curveccN` 里的 **CC 号**（`0..=255`，见
@@ -2359,6 +2494,9 @@ fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzE
 ///
 /// 其余政策同基准：认 `s` / `ms`（时间）与 `%`（`sustain`）后缀、大小写不敏感，
 /// 认不出 ⇒ [`SfzError::InvalidFloat`]，非有限 ⇒ [`SfzError::NonFiniteFloat`]。
+///
+/// ⭐ 任务单 `#106` 起**同一份读取**也服务 `ampeg_vel2*`（五个 `vel2` 页的 Range 列
+/// 与 `ccN` 那几行**逐字相同**：`-100 to 100`；单位同样随目标）⇒ ⛔ 没有第二套域检查。
 fn read_ampeg_modulation_delta(
     raw: &str,
     name: &str,
@@ -2461,6 +2599,7 @@ mod tests {
             ampeg_sustain: AMPEG_SUSTAIN_DEFAULT_PERCENT,
             ampeg_release: AMPEG_RELEASE_DEFAULT_SECONDS,
             ampeg_mods: Vec::new(),
+            ampeg_vel2: [None; AmpegParam::COUNT],
             offset: 0,
             end: SampleEnd::Unspecified,
             direction: PlayDirection::Forward,
@@ -7090,5 +7229,141 @@ v127=1
             parse_text(legal_only, &Default::default()).is_ok(),
             "⭐ 反向腿：同批数据里那条**合法**样例单独解析必须 `Ok`"
         );
+    }
+
+    /// ⭐ 任务单 `#106`：`ampeg_vel2*` 的**作用域链归约**（`global → master → group →
+    /// region`，后者胜）＋ **合一求值**（`base + Σ delta_cc × curve(cc) + vel2 × v/127`）。
+    ///
+    /// 对象 ＝ 一条区域在四个作用域上的 `vel2` 读数 ＋ `Instrument::ampeg_value_with_cc_and_velocity`
+    /// 的取值；单位 ＝ `Option<f32>`（与目标同单位）＋ `f32` 秒。
+    #[test]
+    fn ampeg_vel2_is_reduced_over_the_scope_chain_and_added_to_the_cc_term() {
+        // 同一参数在**强**作用域里被改写（region 胜 group 胜 master 胜 global）；
+        // 别的参数只在**弱**作用域里出现（必须**穿透**下来）。
+        let text = "<global> ampeg_vel2attack=1 ampeg_vel2hold=2\n\
+                    <master> ampeg_vel2attack=3\n\
+                    <group> ampeg_vel2attack=4\n\
+                    <region> sample=a.wav ampeg_vel2attack=5 ampeg_vel2sustain=-10\n";
+        let instrument = parse_text(text, &Default::default()).expect("解析");
+        let region = &instrument.regions()[0];
+        assert_eq!(
+            region.ampeg_vel2(AmpegParam::Attack),
+            Some(5.0),
+            "⭐ 强作用域必须胜（region > group > master > global）"
+        );
+        assert_eq!(
+            region.ampeg_vel2(AmpegParam::Hold),
+            Some(2.0),
+            "⭐ 弱作用域必须**穿透**下来"
+        );
+        assert_eq!(region.ampeg_vel2(AmpegParam::Sustain), Some(-10.0));
+        assert_eq!(
+            region.ampeg_vel2(AmpegParam::Decay),
+            None,
+            "没出现的 ⇒ None"
+        );
+        assert_eq!(region.ampeg_vel2(AmpegParam::Release), None);
+
+        // ⭐ 合一求值：`base + Σ_cc delta × curve(cc) ＋ delta_vel2 × v/127`。
+        // `ampeg_attackcc100=0.5`（curve 0 ⇒ cc=127 时权重恰 1.0）＋ `vel2 = 5`。
+        let text = "<region> sample=a.wav ampeg_attack=0.5 ampeg_attackcc100=0.5 \
+                    ampeg_vel2attack=-0.25\n";
+        let instrument = parse_text(text, &Default::default()).expect("解析");
+        let region = &instrument.regions()[0];
+        let probe = |_: u8| 127u8;
+        // CC 支：0.5 + 0.5 × 1.0 = 1.0；力度支：−0.25 × 127/127 = −0.25 ⇒ 0.75。
+        let (with_both, unresolved) = instrument.ampeg_value_with_cc_and_velocity(
+            region,
+            AmpegParam::Attack,
+            127,
+            Some(&probe),
+        );
+        assert_eq!((with_both, unresolved), (0.75, 0));
+        // ⭐ 单臂：只给 CC 探针（＝ `#104` 的既有入口，⛔ 不读力度）⇒ 1.0。
+        assert_eq!(
+            instrument
+                .ampeg_value_with_cc(region, AmpegParam::Attack, Some(&probe))
+                .0,
+            1.0,
+            "⭐ `ampeg_value_with_cc` 是**没有力度输入**的那一支（⛔ 不是「按力度 0 求值」）"
+        );
+        // ⭐ 单臂：不给 CC 探针 ⇒ 只剩力度支 ⇒ 0.5 − 0.25 = 0.25。
+        assert_eq!(
+            instrument
+                .ampeg_value_with_cc_and_velocity(region, AmpegParam::Attack, 127, None)
+                .0,
+            0.25
+        );
+        // ⭐ 力度 0 ⇒ 力度支为 0（⛔ 不是"缺失"）。
+        assert_eq!(
+            instrument
+                .ampeg_value_with_cc_and_velocity(region, AmpegParam::Attack, 0, None)
+                .0,
+            0.5
+        );
+    }
+
+    /// ⭐ 任务单 `#106`：**五形态的域与单位后缀**（`-100..=100`；时间认 `s`/`ms`、
+    /// `sustain` 认 `%`）＋ 畸形 ⇒ 响亮 `Err` ＋ 同类里的合法样例被接受。
+    #[test]
+    fn ampeg_vel2_values_are_read_with_unit_suffixes_and_loud_errors() {
+        let text = "<region> sample=a.wav \
+                    ampeg_vel2attack=-100 ampeg_vel2hold=250ms ampeg_vel2decay=1.5s \
+                    ampeg_vel2sustain=-25% ampeg_vel2release=100\n";
+        let instrument = parse_text(text, &Default::default()).expect("五形态必须解析成功");
+        let region = &instrument.regions()[0];
+        assert_eq!(region.ampeg_vel2(AmpegParam::Attack), Some(-100.0));
+        assert_eq!(region.ampeg_vel2(AmpegParam::Hold), Some(0.25));
+        assert_eq!(region.ampeg_vel2(AmpegParam::Decay), Some(1.5));
+        assert_eq!(region.ampeg_vel2(AmpegParam::Sustain), Some(-25.0));
+        assert_eq!(region.ampeg_vel2(AmpegParam::Release), Some(100.0));
+        // ⛔ 越界 / 畸形 ⇒ 响亮 `Err`（⛔ 不钳位、⛔ 不静默降级）。
+        let bad: [(&str, &str); 6] = [
+            ("ampeg_vel2attack=100.5", "FloatOutOfRange"),
+            ("ampeg_vel2attack=-100.5", "FloatOutOfRange"),
+            ("ampeg_vel2sustain=101", "FloatOutOfRange"),
+            ("ampeg_vel2attack=abc", "InvalidFloat"),
+            ("ampeg_vel2hold=50%", "InvalidFloat"),
+            ("ampeg_vel2attack=inf", "NonFiniteFloat"),
+        ];
+        for (opcode, want) in bad {
+            let source = format!("<region> sample=a.wav {opcode}\n");
+            let outcome = parse_text(&source, &Default::default());
+            println!("[sfz/ampeg-vel2] {opcode} ⇒ {outcome:?}");
+            let ok = match want {
+                "FloatOutOfRange" => {
+                    matches!(outcome, Err(SfzError::FloatOutOfRange { min, max, .. })
+                        if min == -100.0 && max == 100.0)
+                }
+                "InvalidFloat" => matches!(outcome, Err(SfzError::InvalidFloat { .. })),
+                _ => matches!(outcome, Err(SfzError::NonFiniteFloat { .. })),
+            };
+            assert!(ok, "`{opcode}` 必须是 `{want}`，实得 {outcome:?}");
+        }
+        // ⭐ 同批数据里的**合法样例**单独出现必须被接受（负判据的正对照）。
+        for legal in [
+            "ampeg_vel2attack=-100.5s",
+            "ampeg_vel2decay=0",
+            "ampeg_vel2sustain=100%",
+        ] {
+            let source = format!("<region> sample=a.wav {legal}\n");
+            let outcome = parse_text(&source, &Default::default());
+            // `-100.5s` ⇒ 换算后 −100.5 < −100 ⇒ 仍越界；用一条**真**合法的样例做正对照。
+            if legal.starts_with("ampeg_vel2attack") {
+                assert!(outcome.is_err(), "换算后越界仍必须 `Err`：{outcome:?}");
+                continue;
+            }
+            assert!(
+                outcome.is_ok(),
+                "⭐ 合法样例 `{legal}` 必须被接受：{outcome:?}"
+            );
+        }
+        // ⛔ 不属本族的名字按未知 opcode 忽略（既有口径）：整份仍 `Ok`，且**不产生**读数。
+        let ignored = parse_text(
+            "<region> sample=a.wav ampeg_vel2foo=1 ampeg_vel2=1 ampeg_vel2attackcc1=1\n",
+            &Default::default(),
+        )
+        .expect("不属本族的名字不构成错误");
+        assert_eq!(ignored.regions()[0].ampeg_vel2(AmpegParam::Attack), None);
     }
 }

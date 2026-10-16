@@ -1164,6 +1164,8 @@ mod tests {
                             ampeg_sustain: crate::instrument::AMPEG_SUSTAIN_DEFAULT_PERCENT,
                             ampeg_release: crate::instrument::AMPEG_RELEASE_DEFAULT_SECONDS,
                             ampeg_mods: Vec::new(),
+                            // ⭐ 任务单 `#106`：力度调制量（`None` ＝ 该 opcode 没出现）。
+                            ampeg_vel2: [None; crate::modulation::AmpegParam::COUNT],
                             offset: 0,
                             end: SampleEnd::Unspecified,
                             direction: PlayDirection::Forward,

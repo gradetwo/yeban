@@ -79,10 +79,49 @@
 //!    controller input"，没有 `delta` 就没有任何量被调制。这是**退化输入**，⛔ 不是错误。
 //! 5. **求和顺序 = `(param, cc)` 升序**（[`AmpegParam`] 的声明序 × CC 号）：二进制浮点的
 //!    加法不结合 ⇒ 顺序必须唯一，才能保证同一文件两次求值逐位相同 [ARCH-DET-001]。
+//! 6. ⭐ **力度项在求和顺序里的位置 = 最后一项**（任务单 `#106`）：每个参数按
+//!    `base + Σ_cc delta×curve(cc) + delta_vel2 × velocity/127` 求值 —— CC 项按 CC 号
+//!    升序（裁决 5 不变），**力度项永远加在末尾**。规范只给了公式的形状、**没有**规定
+//!    两支输入的相加次序 ⇒ 这是**本仓**为 [ARCH-DET-001] 定的唯一顺序（⛔ 不声称规范如此）。
+//! 7. ⭐ **力度项的域 = `-100..=100`**，与 `delta` **共用**同一对常数
+//!    （[`MIN_MODULATION_DELTA`] / [`MAX_MODULATION_DELTA`]）：五个 `ampeg_vel2*` 页的
+//!    Range 列与 `ccN` 那几行**逐字相同**。单位随目标（时间 = 秒、`sustain` = %）。
+//!    ⛔ **缺失（`None`）与"写了 0"是两回事**：`None` ⇒ **一项算术都不做**（⇒ 与接线前
+//!    逐位相同）；`Some(0.0)` ⇒ 真的做一次 `+ 0.0 × v/127`（对 `-0.0` 基准可与 `+0.0`
+//!    差一位）⇒ 归约层用 `Option` 如实区分，⛔ 不用哨兵值。
+//!
+//! ## 4. ⭐ 力度调制（`vel2`；任务单 `#106`）—— **第二支独立输入**
+//!
+//! 五个 opcode 的**逐字**表行（<https://sfzformat.com/opcodes/ampeg_attack/> 一族的
+//! Modulation 表，五行**同形**）：
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `ampeg_vel2attack` | （空） | float | 0 | **-100 to 100** | **seconds** |
+//! | `ampeg_vel2hold` | （空） | float | 0 | **-100 to 100** | **seconds** |
+//! | `ampeg_vel2decay` | （空） | float | 0 | **-100 to 100** | **seconds** |
+//! | `ampeg_vel2sustain` | （空） | float | 0 | **-100 to 100** | **%** |
+//! | `ampeg_vel2release` | （空） | float | 0 | **-100 to 100** | **seconds** |
+//!
+//! 公式的**唯一**逐字出处是 <https://sfzformat.com/modulations/vel2/>：
+//!
+//! > `(param) = (eg type)_(param) + ( (eg type)_vel2(param) * velocity / 127 )`
+//!
+//! 同页例（`ampeg_attack=0.5` ＋ `ampeg_vel2attack=-0.4` ⇒ "attack of 0.5 seconds at
+//! 0 velocity and 0.1 seconds at 127 velocity"）就是这条公式的两个端点：
+//! `0.5 + (−0.4 × 0/127) = 0.5`、`0.5 + (−0.4 × 127/127) = 0.1`。
+//!
+//! ⛔ **没有曲线 opcode**：`ampeg_attack` 页的 Modulation 表**只有** `ccN` ／
+//! `_curveccN` ／ `vel2*` 三行 —— `_curveccN` 修的是 **CC** 的输入，力度那一支的
+//! 映射在公式里写死为 `velocity / 127`（[`velocity_scale`] 是它的唯一实现）。
+//! ⛔ **负值合法**（Range 的下界就是 `-100`）。
+//! ⛔ **与 `ccN` 是两支独立输入**：一支来自 CC 状态、一支来自**音符力度**
+//! （每个声部自带、触发后不变）⇒ 两者**相加**，⛔ 不互相顶替。
 //!
 //! # 实时安全
 //!
-//! [`ampeg_value_with_baked`] 与 [`BakedCurve::value_at`] 是**纯算术 ＋ 切片索引**：
+//! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
+//! [`BakedCurve::value_at`] 是**纯算术 ＋ 切片索引**：
 //! 无分配、无锁、无 I/O、无日志，可在实时路径调用。逐位可复现：只有 `+ - * /` 与比较
 //! （插值实现是 [`crate::curve::curve_value_at`] **同一份**，⛔ 没有第二套）。
 
@@ -107,6 +146,9 @@ pub enum AmpegParam {
 }
 
 impl AmpegParam {
+    /// 参数个数（`[T; AmpegParam::COUNT]` 的下标域 ＝ `0..COUNT`）。
+    pub const COUNT: usize = 5;
+
     /// 全部五个参数（声明序；判据与遍历用）。
     pub const ALL: [Self; 5] = [
         Self::Attack,
@@ -194,21 +236,33 @@ pub const MAX_BAKED_CURVE_POINTS: usize = 8;
 /// ⇒ 与解析器的读数可能有微小差别（登记为"不能验"项）。
 pub const AMPEG_MOD_CAP: usize = 20;
 
-/// 一个 CC 调制项的**形态**（名字后缀）。
+/// 一个调制项的**形态**（名字后缀）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulationForm {
     /// `ccN`（SFZ1 旧形）或 `_onccN`（SFZ2）——载**调制量 `delta`**。
     Delta,
     /// `_curveccN`（ARIA）——载**曲线下标**。
     Curve,
+    /// ⭐ `ampeg_vel2<param>`（任务单 `#106`）——载**力度调制量**（`-100..=100`，
+    /// 与目标同单位）。名字里**没有下标**（⇒ [`parse_modulation_name`] 返回的
+    /// 数字串是**空串**），也**没有**对应的曲线 opcode（映射写死在公式里：
+    /// `delta × velocity / 127`，见 [`velocity_scale`]）。
+    Vel2,
 }
 
-/// 识别 `ampeg_<param><suffix>` 一族，返回 `(参数, 形态, 下标数字串)`。
+/// 识别 `ampeg_<param><suffix>` ／ ⭐ `ampeg_vel2<param>` 一族，返回
+/// `(参数, 形态, 下标数字串)`。
 ///
-/// 三种后缀（大小写敏感，与其它 opcode 同口径）：
+/// 四种后缀（大小写敏感，与其它 opcode 同口径）：
 /// * `ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 旧形）；
 /// * `_onccN` ⇒ [`ModulationForm::Delta`]（SFZ2；规范说它与上一条**是别名**）；
-/// * `_curveccN` ⇒ [`ModulationForm::Curve`]。
+/// * `_curveccN` ⇒ [`ModulationForm::Curve`]；
+/// * ⭐ `vel2<param>` ⇒ [`ModulationForm::Vel2`]，数字串恒为**空串 `""`**
+///   （该形态的名字里没有下标；调用方 ⛔ 不得把空串当成畸形下标 —— 它由本函数
+///   在**返回 `Some` 之前**就确定了，⛔ 不到达下面那条"非空且全数字"的检查）。
+///   ⚠ `vel2` 在**参数名之前**（`ampeg_vel2attack`，⛔ 不是 `ampeg_attack_vel2`）；
+///   规范只列这五个名字 ⇒ `ampeg_vel2attack` 之外的任何尾巴（`…cc1` / `…_curvecc1` /
+///   未知参数名）都**不是**本族。
 ///
 /// 数字串必须非空且全是 ASCII 数字；否则返回 [`None`]（按未知 opcode 忽略，与
 /// [`crate::instrument`] 里 `amp_velcurve_N` / `loccN` 两族同一条口径）。
@@ -218,6 +272,13 @@ pub enum ModulationForm {
 #[must_use]
 pub fn parse_modulation_name(name: &str) -> Option<(AmpegParam, ModulationForm, &str)> {
     let rest = name.strip_prefix("ampeg_")?;
+    // ⭐ 力度形态（任务单 `#106`）：`ampeg_vel2<param>` —— 整名到此为止。
+    if let Some(param_name) = rest.strip_prefix("vel2") {
+        let param = AmpegParam::ALL
+            .into_iter()
+            .find(|param| param.name() == param_name)?;
+        return Some((param, ModulationForm::Vel2, ""));
+    }
     let (param, tail) = AmpegParam::ALL
         .into_iter()
         .find_map(|param| rest.strip_prefix(param.name()).map(|tail| (param, tail)))?;
@@ -362,6 +423,10 @@ impl BakedCurve {
 /// 返回 `(取值, 未施加的调制项数)`：曲线不可烘焙的项**计进第二个数**并且**不贡献**
 /// 任何量（⛔ 不静默当成曲线 0）——调用方负责把那个数报出去。
 ///
+/// ⚠ **本形态没有力度输入** ⇒ `ampeg_vel2*` **不参与**（⛔ 不是"按力度 0 求值"）。
+/// 有力度的那一支用 [`ampeg_value_with_baked_and_vel2`]；两支部走**同一段** CC 求和
+/// （本函数是它的薄包装，⛔ 没有第二套公式）。
+///
 /// 实时安全：纯算术 ＋ 切片读；无分配、无锁、无 I/O。
 #[must_use]
 pub fn ampeg_value_with_baked(
@@ -370,17 +435,60 @@ pub fn ampeg_value_with_baked(
     mods: &[BakedAmpegCcMod],
     probe: &dyn Fn(u8) -> u8,
 ) -> (f32, usize) {
+    ampeg_value_with_baked_and_vel2(base, param, mods, None, 0, Some(probe))
+}
+
+/// ⭐ **力度调制的唯一换算**：规范的 `velocity / 127`（`velocity` ∈ `0..=127`）。
+///
+/// 出处逐字：<https://sfzformat.com/modulations/vel2/> 的
+/// `(param) = (eg type)_(param) + ( (eg type)_vel2(param) * velocity / 127 )`。
+/// ⛔ 没有第二个分母、⛔ 没有曲线下标、⛔ 不查表。
+///
+/// ⚠ 本函数对 `velocity` 的**全 `u8` 域**都有定义（`128..=255` 会算出 `> 1.0`）——
+/// 调用方负责只喂 `0..=127`（MIDI 力度域；本仓的三条路喂的都是 `SfzVoice::velocity`／
+/// 渲染入口的 `velocity: u8`，其域由上层保证）。⛔ 这里**不钳位**（第 259 条同形）。
+#[must_use]
+pub fn velocity_scale(velocity: u8) -> f32 {
+    f32::from(velocity) / 127.0
+}
+
+/// ⭐ **两支输入的合一求值**（任务单 `#106`）：
+/// `base + Σ_cc delta × curve(probe(cc)) + delta_vel2 × velocity / 127`。
+///
+/// * `probe == None` ⇒ **不读任何 CC**（CC 项一项都不加，且不产生"未施加"计数 ——
+///   与 [`ampeg_value_with_baked`] 的调用方约定一致：探针没给 ⇒ 无 CC 调制）；
+/// * `vel2 == None` ⇒ **力度项一项算术都不做**（⇒ 与接线前逐位相同，见模块文档裁决 7）；
+///   `vel2 == Some(delta)` ⇒ 末尾加上 `delta × velocity / 127`（[`velocity_scale`]）；
+/// * 求和顺序唯一：CC 项（传入顺序 ＝ `(param, cc)` 升序）在前、力度项在**末尾**
+///   （模块文档裁决 5／6，[ARCH-DET-001]）；
+/// * 返回 `(取值, 未施加的调制项数)` —— 计数的定义与 [`ampeg_value_with_baked`] 一致。
+///
+/// 实时安全：纯算术 ＋ 定长切片；无分配、无锁、无 I/O。
+#[must_use]
+pub fn ampeg_value_with_baked_and_vel2(
+    base: f32,
+    param: AmpegParam,
+    mods: &[BakedAmpegCcMod],
+    vel2: Option<f32>,
+    velocity: u8,
+    probe: Option<&dyn Fn(u8) -> u8>,
+) -> (f32, usize) {
     let mut value = base;
     let mut unresolved = 0usize;
-    for item in mods {
-        if item.param != param {
-            continue;
+    if let Some(probe) = probe {
+        for item in mods {
+            if item.param != param {
+                continue;
+            }
+            if !item.curve.is_resolved() {
+                unresolved += 1;
+                continue;
+            }
+            value += item.delta * item.curve.value_at(f32::from(probe(item.cc)));
         }
-        if !item.curve.is_resolved() {
-            unresolved += 1;
-            continue;
-        }
-        value += item.delta * item.curve.value_at(f32::from(probe(item.cc)));
+    }
+    if let Some(delta) = vel2 {
+        value += delta * velocity_scale(velocity);
     }
     (value, unresolved)
 }
@@ -647,5 +755,269 @@ mod tests {
         // 分辨率边界：没有点 ⇒ 不 panic 且恒 0.0。
         assert_eq!(BakedCurve::UNRESOLVED.value_at(64.0), 0.0);
         assert_eq!(BakedCurve::UNRESOLVED.index(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ⭐ 力度调制（`ampeg_vel2*`；任务单 `#106`）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_five_vel2_names_are_recognised_and_nothing_else_is() {
+        // 规范表逐字的五个 opcode（本模块文档 §4）—— 每个参数恰好一个名字。
+        let cases: [(&str, AmpegParam); 5] = [
+            ("ampeg_vel2attack", AmpegParam::Attack),
+            ("ampeg_vel2hold", AmpegParam::Hold),
+            ("ampeg_vel2decay", AmpegParam::Decay),
+            ("ampeg_vel2sustain", AmpegParam::Sustain),
+            ("ampeg_vel2release", AmpegParam::Release),
+        ];
+        for (name, param) in cases {
+            assert_eq!(
+                parse_modulation_name(name),
+                Some((param, ModulationForm::Vel2, "")),
+                "{name}：力度形态，且数字串必须是**空串**（名字里没有下标）"
+            );
+        }
+        // 参数序与 `index()` 一致（归约层用 `index()` 当下标）。
+        for (position, param) in AmpegParam::ALL.into_iter().enumerate() {
+            assert_eq!(param.index(), position, "声明序与 index 必须一致");
+        }
+        assert_eq!(AmpegParam::COUNT, AmpegParam::ALL.len());
+        // ⛔ `vel2` 在前 ⛔ 整名到此为止 ⛔ 大小写敏感 ⛔ 别名 opcode 没有 `vel2` 形态
+        // ⛔ 别的 EG 族不属本模块 —— 一律 None（按未知 opcode 忽略）。
+        for bad in [
+            "ampeg_vel2",
+            "ampeg_vel2Attack",
+            "ampeg_vel2ATTACK",
+            "ampeg_vel2attackcc1",
+            "ampeg_vel2attack_oncc1",
+            "ampeg_vel2attack_curvecc1",
+            "ampeg_vel2attackx",
+            "ampeg_vel2attack1",
+            "ampeg_attack_vel2",
+            "ampeg_attackvel2",
+            "fileg_vel2attack",
+            "pitcheg_vel2attack",
+            "ampeg_vel2sustain%",
+            "ampeg_",
+            "vel2attack",
+        ] {
+            assert_eq!(
+                parse_modulation_name(bad),
+                None,
+                "{bad:?} 必须不匹配（⛔ 不从兄弟形态外推）"
+            );
+        }
+        // ⭐ 同批数据里的合法样例**单独**出现必须被接受（负判据的正对照）。
+        assert_eq!(
+            parse_modulation_name("ampeg_vel2decay"),
+            Some((AmpegParam::Decay, ModulationForm::Vel2, ""))
+        );
+    }
+
+    #[test]
+    fn the_velocity_scale_is_the_specification_division_by_127() {
+        // 出处逐字：`( (eg type)_vel2(param) * velocity / 127 )`。
+        assert_eq!(velocity_scale(0), 0.0);
+        assert_eq!(velocity_scale(127), 1.0);
+        assert_eq!(velocity_scale(63), 63.0f32 / 127.0);
+        // 端点可逐位断言：64/127 与 63/127 都不是"恰好 0.5"。
+        assert_eq!(velocity_scale(63).to_bits(), (63.0f32 / 127.0).to_bits());
+        assert!(velocity_scale(63) < 0.5 && velocity_scale(64) > 0.5);
+    }
+
+    #[test]
+    fn the_vel2_term_reproduces_the_specification_example() {
+        // ⭐ 规范例逐字：`ampeg_attack=0.5` ＋ `ampeg_vel2attack=-0.4` ⇒
+        // "attack of 0.5 seconds at 0 velocity and 0.1 seconds at 127 velocity"。
+        let value_at = |velocity: u8| {
+            ampeg_value_with_baked_and_vel2(
+                0.5,
+                AmpegParam::Attack,
+                &[],
+                Some(-0.4),
+                velocity,
+                None,
+            )
+            .0
+        };
+        // 端点逐位 = `base + delta × velocity/127` 的**同一表达式**（⛔ 不手抄十进制近似）。
+        let expected = |velocity: u8| 0.5f32 + (-0.4f32) * (f32::from(velocity) / 127.0);
+        assert_eq!(value_at(0).to_bits(), expected(0).to_bits());
+        assert_eq!(value_at(127).to_bits(), expected(127).to_bits());
+        assert_eq!(value_at(0), 0.5, "力度 0 ⇒ 基准值（规范原文 0.5 seconds）");
+        // 127 处规范原文写 `0.1`：binary32 下是 `0.5 + (-0.4)`，与字面 `0.1f32`
+        // **差一位**（`0.4f32` 不是精确的 0.4）⇒ 这里对**公式**逐位断言，对**十进制原文**
+        // 只断言 1e-7 容差（⛔ 不假装两者逐位相等）。
+        let at_127 = value_at(127);
+        assert_eq!(at_127, 0.5f32 + (-0.4f32));
+        assert!(
+            (at_127 - 0.1f32).abs() < 1e-7,
+            "规范原文的十进制 0.1：实测 {at_127} 偏差 {:e}",
+            (at_127 - 0.1f32).abs()
+        );
+        // 力度项的**符号必须真的随负 delta 反向**（⛔ 不是"两个值碰巧不同"）。
+        assert!(value_at(127) < value_at(0), "负 delta ⇒ 力度越大越短");
+        // 反向腿：把 delta 取正 ⇒ 单调方向翻转（证明上面那条不是常数）。
+        let positive = |velocity: u8| {
+            ampeg_value_with_baked_and_vel2(0.5, AmpegParam::Attack, &[], Some(0.4), velocity, None)
+                .0
+        };
+        assert!(positive(127) > positive(0));
+    }
+
+    #[test]
+    fn the_vel2_term_is_added_last_in_one_fixed_order() {
+        // ⭐ 求和顺序（模块文档裁决 5／6）：CC 项按 cc 升序在前、力度项在**末尾**
+        // —— `((base + Σ_cc) + vel2)`。这里用**搜索**找一组让两种结合序真的分道扬镳的
+        // 三元组（⛔ 不手抄"魔法常数"），再断言本实现走的是登记的那一种。
+        let mut witness = None;
+        'search: for base in [1.0f32, 0.1, 1.0e8, 3.0, 0.5] {
+            for delta in [6.0e-8f32, 1.2e-7, 0.1, 1.0e-8, 4.0] {
+                for vel2 in [6.0e-8f32, 0.1, 4.0, 1.0e-8, 2.5e-7] {
+                    // 探针恒 127 ⇒ 曲线 0 的权重恰为 1.0 ⇒ cc 项 = delta。
+                    let documented = (base + delta) + vel2;
+                    let alternative = (base + vel2) + delta;
+                    if documented.to_bits() != alternative.to_bits() {
+                        witness = Some((base, delta, vel2, documented, alternative));
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let (base, delta, vel2, documented, alternative) =
+            witness.expect("必须存在一组非结合的三元组（否则下面的判据是空的）");
+        let baked = [BakedAmpegCcMod {
+            param: AmpegParam::Attack,
+            cc: 7,
+            delta,
+            curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),
+        }];
+        let (value, unresolved) = ampeg_value_with_baked_and_vel2(
+            base,
+            AmpegParam::Attack,
+            &baked,
+            Some(vel2),
+            127,
+            Some(&|_| 127),
+        );
+        assert_eq!(unresolved, 0, "曲线 0 可烘焙 ⇒ 未施加数 0");
+        assert_eq!(
+            value.to_bits(),
+            documented.to_bits(),
+            "本实现必须走 `((base + cc) + vel2)`（base={base} delta={delta} vel2={vel2}）"
+        );
+        assert_ne!(
+            value.to_bits(),
+            alternative.to_bits(),
+            "⭐ 有牙：`((base + vel2) + cc)` 那条**不同**的结合序必须给出不同的位模式"
+        );
+    }
+
+    #[test]
+    fn an_absent_vel2_opcode_does_no_arithmetic_at_all() {
+        // ⭐ 模块文档裁决 7：`None`（opcode 没出现）与 `Some(0.0)`（写了 0）是两回事。
+        // 取 `base = -0.0`：加 `+0.0` 会把符号位翻成正 ⇒ 位模式直接暴露"有没有做那次加法"。
+        let negative_zero = -0.0f32;
+        let (absent, _) = ampeg_value_with_baked_and_vel2(
+            negative_zero,
+            AmpegParam::Attack,
+            &[],
+            None,
+            127,
+            None,
+        );
+        assert_eq!(
+            absent.to_bits(),
+            negative_zero.to_bits(),
+            "⭐ 缺失 ⇒ **一项算术都不做**（⇒ 与接线前逐位相同）"
+        );
+        let (present, _) = ampeg_value_with_baked_and_vel2(
+            negative_zero,
+            AmpegParam::Attack,
+            &[],
+            Some(0.0),
+            127,
+            None,
+        );
+        assert_eq!(present.to_bits(), 0.0f32.to_bits());
+        assert_ne!(
+            absent.to_bits(),
+            present.to_bits(),
+            "⭐ 有牙：`None` 与 `Some(0.0)` 必须**可区分**（⛔ 不是同一个哨兵值）"
+        );
+        // 反向腿：`Some(0.0)` 在**任何**力度上都不改变一个正常基准值。
+        for velocity in [0u8, 1, 63, 126, 127] {
+            let (value, _) = ampeg_value_with_baked_and_vel2(
+                0.75,
+                AmpegParam::Attack,
+                &[],
+                Some(0.0),
+                velocity,
+                None,
+            );
+            assert_eq!(value, 0.75, "velocity = {velocity}");
+        }
+    }
+
+    #[test]
+    fn the_two_inputs_add_and_never_replace_each_other() {
+        // ⭐ 两支独立输入：CC 项与力度项**相加**（⛔ 不互相顶替）。
+        let baked = vec![BakedAmpegCcMod {
+            param: AmpegParam::Sustain,
+            cc: 74,
+            delta: 25.0,
+            curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),
+        }];
+        // cc = 127 ⇒ +25；力度 127 ⇒ +（-10）× 1.0 = -10 ⇒ 50 + 25 - 10 = 65。
+        let (value, unresolved) = ampeg_value_with_baked_and_vel2(
+            50.0,
+            AmpegParam::Sustain,
+            &baked,
+            Some(-10.0),
+            127,
+            Some(&|_| 127),
+        );
+        assert_eq!((value, unresolved), (65.0, 0));
+        // 只给 CC ⇒ 75；只给力度 ⇒ 40（两个单臂都必须自洽）。
+        assert_eq!(
+            ampeg_value_with_baked(50.0, AmpegParam::Sustain, &baked, &|_| 127).0,
+            75.0,
+            "⭐ `ampeg_value_with_baked` 是 `vel2 = None` 的薄包装（⛔ 没有第二套公式）"
+        );
+        assert_eq!(
+            ampeg_value_with_baked_and_vel2(
+                50.0,
+                AmpegParam::Sustain,
+                &baked,
+                Some(-10.0),
+                127,
+                None
+            )
+            .0,
+            40.0,
+            "无 CC 探针 ⇒ 只剩力度项"
+        );
+        // ⛔ 两支输入**各自**按参数过滤：`Sustain` 的 CC 调制项 ⛔ 不影响 `Hold`，
+        // 而 `Hold` 的力度项照算（`1.0 + 5.0 × 1.0 = 6.0`）。
+        let (hold, _) = ampeg_value_with_baked_and_vel2(
+            1.0,
+            AmpegParam::Hold,
+            &baked,
+            Some(5.0),
+            127,
+            Some(&|_| 127),
+        );
+        assert_eq!(hold, 6.0, "别的参数的 CC 项必须一动不动");
+        // ⛔ 两支都没有的参数 ⇒ 原样基准值。
+        let (release, _) = ampeg_value_with_baked_and_vel2(
+            1.0,
+            AmpegParam::Release,
+            &baked,
+            None,
+            127,
+            Some(&|_| 127),
+        );
+        assert_eq!(release, 1.0);
     }
 }

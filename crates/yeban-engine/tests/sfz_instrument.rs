@@ -62,6 +62,10 @@
 //! | ⭐ S56 | ⭐ **无探针 ⇒ 逐位不变 ＋ 三个承重指纹复跑**（任务单 `#104` 新增；§4.3） | 三个 FNV-1a 指纹逐字复跑并断言：`0xa9dec8a87f69106c`（S37 臂 1）／`0xd3c2a82076bd8947`（S37 臂 2）／`0xa933ddab286bdf5e`（S33／S14 广播路径）；新入口传 `None` 与旧入口**逐位相同**（摊平 512 帧 ＋ 离线 512 帧）；⭐ **应绿反向腿**：同一输出 × `1.0000001` ⇒ 指纹**必须**变（实测 `0xf181aa780f2cfab1` ≠ `0xa933ddab286bdf5e`） |
 //! | ⭐ S57 | ⭐ **判据有牙（夹具真的体现在读数上）**（任务单 `#104` 新增；§4.4） | 带 `ampeg_attack_oncc100` ⇒ cc0/cc127 起音帧数 `[24000, 48000]`；⭐ **正对照**：去掉那一行 ⇒ `[24000, 24000]`（⛔ 证明 S55 的差异来自『解析＋归约＋求值』这条新链，不是探针管道自身造的假差异） |
 //! | ⭐ S58 | ⭐ **「双口径登记」可判**（任务单 `#104` 新增；§3.4／§9） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ 双口径登记（任务单 `#104`）」与「⭐ 摊平期门控登记（任务单 `#104`）」；反向腿：文档里**没有**的两句 ⇒ `contains` 必须 `false` |
+//! | ⭐ S59 | ⭐ **五个 `ampeg_vel2*` 的解析与域**（任务单 `#106` 新增；§5.1） | 五形态各一条区域（`-0.4` ／ `250ms`⇒`0.25` ／ `1` ／ `-25%`⇒`-25.0` ／ `0.5s`）⇒ 五参数 `Option<f32>` 读数逐字命中，第 6 条**缺省** ⇒ 全 `None`（⛔ 不是 `Some(0.0)`；显式 `=0` ⇒ `Some(0.0)`，两者**可区分**）；⭐ **八条负判据**（`200`／`-250`／`150`／`-101`／`abc`／`1.5x`／`50%`／`inf`）各自响亮 `Err`，且每条都与**同批数据里的一个合法样例**同现；五个 opcode 的 `-100`（域下界）全部合法；⛔ 六个**不属本族**的名字（`ampeg_vel2foo`／`ampeg_vel2`／`…cc1`／`…_curvecc1`／`fileg_`／`pitcheg_`）按未知 opcode 忽略 |
+//! | ⭐ S60 | ⭐ **端到端：两个力度按规范公式改包络**（任务单 `#106` 新增；§5.2） | `ampeg_attack=0.5` ＋ `ampeg_vel2attack=-0.4`、`amp_veltrack=0`（力度 ≥1 ⇒ 增益恰 `1.0`）⇒ 起音**实测** 力度 1 ⇒ **23 849 帧**、力度 127 ⇒ **4 800 帧**（各自断言 ＝ `round((0.5 + (−0.4) × v/127) × 48 000)`）；线性段每点 `\|实测 − t/A\| ≤ 1e-6`（实测最大 **5.96e-8**）；第 `A` 帧**恰好** `1.0`；⭐ 离线 → 摊平两条路**逐位相同** |
+//! | ⭐ S61 | ⭐ **实时 ↔ 摊平逐位相同（本单的核心新增）**（任务单 `#106` 新增；§5.2） | 离线／摊平／**实时池**三条路在**同一力度**下位模式序列**逐位相同**（力度 1 与 127 各一遍）；⭐ 实时那条路的输入是**逐声部力度** `SfzVoice::velocity`（本判据先断言 `pool.voices()[0].velocity() == velocity`）；起音**实测帧数**（实时路）＝ **238**／**48** ＝ `round((0.005 + (−0.004) × v/127) × 48 000)`；⭐ 两个力度必须给出**不同**读数 |
+//! | ⭐ S62 | ⭐ **反向腿 ＋ 三个承重指纹**（任务单 `#106` 新增；§5.3） | ⭐ **反向腿 ①**：去掉 `ampeg_vel2attack` 那一行 ⇒ 力度 1／127 起音帧数 `[240, 240]`（＝ `round(0.005 × 48 000)`）；①′ 写成 `=0` ⇒ 同样 `[240, 240]`；①″ 无 `vel2` ⇒ 两个力度的输出**逐位相同**；三个**承重指纹**逐字复跑并断言（无 `vel2` 的既有夹具 ⇒ ⛔ 必须不变）：`0xa9dec8a87f69106c`（S37 臂 1）／`0xd3c2a82076bd8947`（S37 臂 2）／`0xa933ddab286bdf5e`（S33／S14 广播路径）；⭐ **应绿反向腿**：同一输出 × `1.0000001` ⇒ 指纹**必须**变（实测 `0xf181aa780f2cfab1` ≠ `0xa933ddab286bdf5e`） |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -5778,5 +5782,507 @@ fn s58_the_two_caliber_registration_is_judgeable() {
     assert!(
         !MODULE_SOURCE.contains(ABSENT_GATE),
         "⭐ 反向腿：文档里**没有**的句子必须 `contains == false`"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#106`：`ampeg_vel2*`（力度调制的五个包络参数）
+//
+// 规范逐字（`yeban_sfz::modulation` 的模块文档 §4 —— 本文件 ⛔ 不复制那份事实源）：
+// 表行 `ampeg_vel2{attack,hold,decay,release}` = float / 默认 0 / Range `-100 to 100` /
+// Unit `seconds`，`ampeg_vel2sustain` 同域、Unit `%`；
+// 公式 `(param) = base + ( vel2(param) * velocity / 127 )`。
+//
+// ⭐ 三条路**全部接线**（⛔ 不是只接离线）：离线 `render_note_into_with_cc`、
+// 摊平表 `render_block_into_with_cc`、实时 `SfzVoicePool` 的每块现算路径
+// （输入 ＝ 逐声部力度 `SfzVoice::velocity`，⛔ 无新字段 ⇒ 声部仍 40 B）。
+// ⛔ 与 `ccN` 是**两支独立输入**（一个来自音符力度、一个来自 CC 状态）。
+// ---------------------------------------------------------------------------
+
+/// ⭐ S59 夹具：五个 `vel2` opcode 各一条区域（**分形态**）＋ 一条缺省区域。
+///
+/// | region | opcode | 期望读数 |
+/// | :--- | :--- | :--- |
+/// | `key=60` | `ampeg_vel2attack=-0.4` | `Attack ⇒ Some(-0.4)` |
+/// | `key=61` | `ampeg_vel2hold=250ms` | `Hold ⇒ Some(0.25)`（单位后缀） |
+/// | `key=62` | `ampeg_vel2decay=1` | `Decay ⇒ Some(1.0)` |
+/// | `key=63` | `ampeg_vel2sustain=-25%` | `Sustain ⇒ Some(-25.0)`（百分比、负值合法） |
+/// | `key=64` | `ampeg_vel2release=0.5s` | `Release ⇒ Some(0.5)` |
+/// | `key=65` | 缺省 | 五个全 `None` |
+const AMPEG_VEL2_FIVE_FORMS: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_vel2attack=-0.4\n\
+                                     <region> sample=a.wav key=61 pitch_keycenter=60 ampeg_vel2hold=250ms\n\
+                                     <region> sample=a.wav key=62 pitch_keycenter=60 ampeg_vel2decay=1\n\
+                                     <region> sample=a.wav key=63 pitch_keycenter=60 ampeg_vel2sustain=-25%\n\
+                                     <region> sample=a.wav key=64 pitch_keycenter=60 ampeg_vel2release=0.5s\n\
+                                     <region> sample=a.wav key=65 pitch_keycenter=60 ampeg_hold=0.1\n";
+
+/// ⭐ S59（任务单 `#106`；§5.1）：**五个 opcode 的解析与域**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 一份含六条区域的 SFZ（五形态 ＋ 缺省）；单位 ＝ 每条区域五参数上的
+/// `Option<f32>` 读数（**力度调制量**，与目标同单位）＋ 非法输入的 `SfzError` 变体。
+///
+/// ⭐ 每条负判据都与**同一批数据里的一个合法样例**同现，并且该合法样例**单独**出现时
+/// 必须被接受 ⇒ ⛔ 证明那些 `Err` 不是"整族一律拒"。
+#[test]
+fn s59_the_five_vel2_forms_are_parsed_with_their_domains() {
+    let instrument = SfzInstrument::load(AMPEG_VEL2_FIVE_FORMS.to_owned(), &Default::default())
+        .expect("五形态夹具必须解析成功");
+    let readings: Vec<[Option<f32>; 5]> = instrument
+        .with_instrument(|parsed| {
+            parsed
+                .regions()
+                .iter()
+                .map(|region| {
+                    let mut row = [None; 5];
+                    for param in AmpegParam::ALL {
+                        row[param.index()] = region.ampeg_vel2(param);
+                    }
+                    row
+                })
+                .collect()
+        })
+        .expect("重解析");
+    let expected: [[Option<f32>; 5]; 6] = [
+        [Some(-0.4), None, None, None, None],
+        [None, Some(0.25), None, None, None],
+        [None, None, Some(1.0), None, None],
+        [None, None, None, Some(-25.0), None],
+        [None, None, None, None, Some(0.5)],
+        [None, None, None, None, None],
+    ];
+    assert_eq!(readings.len(), 6, "六条区域都在");
+    for (index, (got, want)) in readings.iter().zip(expected).enumerate() {
+        assert_eq!(got, &want, "⭐ region {index} 的五参数力度读数");
+    }
+    println!("[engine-sfz/S59] 五形态读数（逐条）：{readings:?}（第 6 条 = 缺省 ⇒ 全 None）");
+
+    // ---- 负判据：越界／畸形 ⇒ 响亮 `Err`（第 259 条；⛔ 不静默降级、⛔ 不钳位）----
+    let legal = "ampeg_vel2attack=-0.4";
+    let bad: [(&str, ModErrorShape); 8] = [
+        ("ampeg_vel2attack=200", ModErrorShape::FloatRange100),
+        ("ampeg_vel2attack=-250", ModErrorShape::FloatRange100),
+        ("ampeg_vel2sustain=150", ModErrorShape::FloatRange100),
+        ("ampeg_vel2sustain=-101", ModErrorShape::FloatRange100),
+        ("ampeg_vel2attack=abc", ModErrorShape::InvalidFloat),
+        ("ampeg_vel2attack=1.5x", ModErrorShape::InvalidFloat),
+        ("ampeg_vel2hold=50%", ModErrorShape::InvalidFloat),
+        ("ampeg_vel2attack=inf", ModErrorShape::NonFinite),
+    ];
+    for (illegal, shape) in bad {
+        // ⭐ 同一批数据里带一个**合法样例**（`legal`）：它能被接受（见下一条断言），
+        // 因此这里的 `Err` 必然是 `illegal` 那一行造成的。
+        let text = format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 {legal} {illegal}\n\
+             <region> sample=a.wav key=61 pitch_keycenter=60 ampeg_hold=0.1\n"
+        );
+        let error = SfzInstrument::load(text, &Default::default())
+            .expect_err(&format!("{illegal} 必须响亮 Err"));
+        assert!(
+            matches_mod_error(&error, shape),
+            "⭐ {illegal} ⇒ {error:?}（不是期望的 {shape:?}）"
+        );
+        println!("[engine-sfz/S59] {illegal} ⇒ {error}");
+    }
+    // ⭐ 同一条合法样例**单独**出现 ⇒ 必须被接受（负判据的正对照）。
+    let accepted = SfzInstrument::load(
+        format!("<region> sample=a.wav key=60 pitch_keycenter=60 {legal}\n"),
+        &Default::default(),
+    );
+    assert!(
+        accepted.is_ok(),
+        "⭐ 同批数据里的合法样例必须被接受：{accepted:?}"
+    );
+    // ⭐ **负值合法**（Range 的下界就是 `-100`）：五个 opcode 各自 −100 都要读得进。
+    for name in [
+        "ampeg_vel2attack",
+        "ampeg_vel2hold",
+        "ampeg_vel2decay",
+        "ampeg_vel2sustain",
+        "ampeg_vel2release",
+    ] {
+        let text = format!("<region> sample=a.wav key=60 pitch_keycenter=60 {name}=-100\n");
+        assert!(
+            SfzInstrument::load(text, &Default::default()).is_ok(),
+            "⭐ {name} = -100 必须合法（Range 下界）"
+        );
+    }
+    // ⛔ **缺省 ≠ 非法**：一个 `vel2` opcode 都没有 ⇒ `Ok` ＋ 全 `None`（见上面第 6 条区域）。
+    assert_eq!(
+        readings[5], [None; 5],
+        "缺省 ⇒ 无调制（⛔ 不是 `Some(0.0)`）"
+    );
+    // ⭐ **写了 0** ⇒ `Some(0.0)` —— 与"缺省"**可区分**（求值期见 S62 的第二条腿）。
+    let zero = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_vel2attack=0\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("写 0 必须合法");
+    let zero_readings: [Option<f32>; 5] = zero
+        .with_instrument(|parsed| {
+            let region = &parsed.regions()[0];
+            let mut row = [None; 5];
+            for param in AmpegParam::ALL {
+                row[param.index()] = region.ampeg_vel2(param);
+            }
+            row
+        })
+        .expect("重解析");
+    assert_eq!(zero_readings[0], Some(0.0), "显式 0 ⇒ Some(0.0)");
+    assert_ne!(zero_readings[0], readings[5][0], "⛔ 与缺省必须可区分");
+
+    // ⛔ **不属本族的名字**按未知 opcode 忽略（既有的忽略口径）：解析成功 ＋ 无调制。
+    for ignored in [
+        "ampeg_vel2foo=1",
+        "ampeg_vel2=1",
+        "ampeg_vel2attackcc1=1",
+        "ampeg_vel2attack_curvecc1=1",
+        "fileg_vel2attack=1",
+        "pitcheg_vel2attack=1",
+    ] {
+        let text = format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_vel2attack=-0.4 {ignored}\n"
+        );
+        let parsed =
+            SfzInstrument::load(text, &Default::default()).expect("未知/不属本族的名字不构成错误");
+        let row: [Option<f32>; 5] = parsed
+            .with_instrument(|instrument| {
+                let region = &instrument.regions()[0];
+                let mut row = [None; 5];
+                for param in AmpegParam::ALL {
+                    row[param.index()] = region.ampeg_vel2(param);
+                }
+                row
+            })
+            .expect("重解析");
+        assert_eq!(
+            row[0],
+            Some(-0.4),
+            "⭐ {ignored} 必须被忽略（只剩下同批的合法样例）"
+        );
+    }
+}
+
+/// ⭐ S60（任务单 `#106`；§5.2）：**端到端 —— 两个力度 ⇒ 起音帧数不同且等于公式**，
+/// 并且 **离线 → 摊平** 两条路**逐位相同**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ `ampeg_attack=0.5` ＋ `ampeg_vel2attack=-0.4` 的区域在**两个力度**下的输出；
+/// 单位 ＝ **起音段实测帧数**（帧）＋ 两条路的位模式序列（逐帧 `u32`）。
+///
+/// # 公式与实测（⛔ 不写"约等于"）
+///
+/// `A(v) = round((0.5 + (−0.4) × v/127) × 48000)` ⇒ `v = 1` ⇒ **23849**、
+/// `v = 127` ⇒ **4800**。⭐ 两个力度**各自**配一条"它自己该怎样"的断言。
+///
+/// ⚠ **为什么不用力度 0**：`amp_veltrack` 的既有归约把 `velocity == 0` 特判成
+/// `0.0` 增益（`yeban-sfz` 的 `veltrack_gain`）⇒ 力度 0 的输出恒零，起音帧数**读不出来**。
+/// 夹具取 `amp_veltrack=0`（`velocity >= 1` 时增益恰为 `1.0`）⇒ 输出**恰好**是包络电平本身。
+#[test]
+fn s60_two_velocities_change_the_envelope_by_the_specification_formula() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 72_000;
+    const SFZ_WITH: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+                            ampeg_attack=0.5 ampeg_vel2attack=-0.4\n";
+    let instrument = SfzInstrument::load(SFZ_WITH.to_owned(), &Default::default()).expect("解析");
+    // ⚠ 样本**比输出缓冲更长**：否则逐样本路径会在最后一帧前停住（与 S55 同款）。
+    let sample = InMemorySample {
+        pcm: vec![1.0; FRAMES + 1_024],
+        sample_hz: HZ,
+    };
+    let plan = prepare_with(SFZ_WITH, &sample);
+    assert_eq!(
+        plan.regions()[0].ampeg_vel2(AmpegParam::Attack),
+        Some(-0.4),
+        "摊平表必须真的承载那一条力度调制量"
+    );
+
+    let expected = |velocity: u8| -> usize {
+        let seconds = 0.5f32 + (-0.4f32) * (f32::from(velocity) / 127.0);
+        (f64::from(seconds) * f64::from(HZ)).round() as usize
+    };
+
+    let mut measured = [0usize; 2];
+    for (index, velocity) in [1u8, 127].into_iter().enumerate() {
+        let mut offline = vec![0.0f32; FRAMES];
+        let written_offline = instrument
+            .render_note_into_with_cc(&sample, 60, velocity, None, &mut offline, HZ)
+            .expect("离线渲染");
+        let mut flat = vec![0.0f32; FRAMES];
+        let written_flat = plan.render_block_into_with_cc(60, velocity, None, &mut flat);
+        assert_eq!(written_offline, FRAMES, "离线整段写满");
+        assert_eq!(written_flat, FRAMES, "摊平整段写满");
+        // ⭐ 两条离线路走**同一份**求值（`ampeg_value_with_baked_and_vel2`）⇒ 必须逐位相同。
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ 力度 = {velocity}：离线 → 摊平两条路必须逐位相同"
+        );
+
+        let attack = measured_attack_frames(&offline);
+        measured[index] = attack;
+        // ⭐ 线性段逐点对账（容差 1e-6，与 S35／S55 同口径）。
+        let mut worst = 0.0f32;
+        for (t, value) in offline.iter().enumerate().take(attack) {
+            worst = worst.max((value - t as f32 / attack as f32).abs());
+        }
+        println!(
+            "[engine-sfz/S60] 力度 = {velocity}：⭐ 起音实测帧数 = {attack}\
+             （规范公式 = {}）；线性段最大偏差 = {worst:e}；out[0] = {}、out[{attack}] = {}",
+            expected(velocity),
+            offline[0],
+            offline[attack]
+        );
+        assert_eq!(
+            attack,
+            expected(velocity),
+            "⭐ 力度 = {velocity} 的起音帧数必须**逐帧**等于规范公式 \
+             `round((0.5 + (−0.4) × v/127) × 48000)`"
+        );
+        assert!(
+            worst <= 1e-6,
+            "⭐ 力度 = {velocity}：线性段最大偏差 {worst:e} > 1e-6"
+        );
+        assert_eq!(
+            offline[attack], 1.0,
+            "⭐ 力度 = {velocity}：第 A 帧必须**恰好**到峰"
+        );
+    }
+    assert_eq!(measured, [23_849, 4_800], "⭐ 两个力度的实测起音帧数");
+    assert_ne!(
+        measured[0], measured[1],
+        "⭐ 两个力度必须给出**不同**的包络（⛔ 不是『两者相同也算过』）"
+    );
+    // ⭐ 力度越大 ⇒ 负的 `vel2` 调制把起音压得越短（单调方向，⛔ 不是"碰巧两个数不同"）。
+    assert!(measured[1] < measured[0], "负 delta ⇒ 力度 127 的起音更短");
+}
+
+/// ⭐ S61（任务单 `#106`；§5.2 的核心新增）：**实时那条路**与**摊平**那条路在
+/// **同一力度**下**逐位相同**，并且**三条路**（离线／摊平／实时）同值。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 同一份 `ampeg_attack=0.005` ＋ `ampeg_vel2attack=-0.004` 的 SFZ 在力度
+/// `1` 与 `127` 下、由**三条路**各渲染 512 帧的输出；单位 ＝ 位模式序列（逐帧 `u32`）
+/// ＋ 起音段实测帧数（帧）。
+///
+/// # 公式与实测
+///
+/// `A(v) = round((0.005 + (−0.004) × v/127) × 48000)` ⇒ `v = 1` ⇒ **238**、`v = 127` ⇒ **48**
+/// （两者都 < 512 ⇒ 在本块内就能读到峰值）。
+///
+/// ⭐ 实时那条路的力度取自 [`SfzVoice::velocity`]（触发期抄下）—— `SfzVoice` 因此
+/// **＋0 字节**（判据 `S9` 把 40 B 钉住）。
+#[test]
+fn s61_the_realtime_path_matches_the_flat_path_bit_for_bit_at_the_same_velocity() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 512;
+    const SFZ: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+                       ampeg_attack=0.005 ampeg_vel2attack=-0.004\n";
+    let instrument = SfzInstrument::load(SFZ.to_owned(), &Default::default()).expect("解析");
+    let sample = InMemorySample {
+        pcm: vec![1.0; 4_096],
+        sample_hz: HZ,
+    };
+    let plan = prepare_with(SFZ, &sample);
+    let expected = |velocity: u8| -> usize {
+        let seconds = 0.005f32 + (-0.004f32) * (f32::from(velocity) / 127.0);
+        (f64::from(seconds) * f64::from(HZ)).round() as usize
+    };
+
+    let mut realtime_frames = [0usize; 2];
+    for (index, velocity) in [1u8, 127].into_iter().enumerate() {
+        // ① 离线
+        let mut offline = vec![0.0f32; FRAMES];
+        let written_offline = instrument
+            .render_note_into_with_cc(&sample, 60, velocity, None, &mut offline, HZ)
+            .expect("离线渲染");
+        // ② 摊平表
+        let mut flat = vec![0.0f32; FRAMES];
+        let written_flat = plan.render_block_into_with_cc(60, velocity, None, &mut flat);
+        // ③ ⭐ 实时池（逐声部力度就是本函数的 `velocity` 参数）
+        let mut pool = SfzVoicePool::new(HZ);
+        let created = pool.trigger_note(&plan, 60, velocity, u64::MAX, 1.0);
+        assert_eq!(created, 1, "单区域夹具 ⇒ 恰好建 1 个声部");
+        assert_eq!(
+            pool.voices()[0].velocity(),
+            velocity,
+            "⭐ 逐声部力度必须**真的**是本次触发的力度（实时那条路的输入）"
+        );
+        let mut realtime = vec![0.0f32; FRAMES];
+        pool.render_into(&plan, 0, &mut realtime);
+
+        assert_eq!(written_offline, FRAMES);
+        assert_eq!(written_flat, FRAMES);
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ 力度 = {velocity}：离线 → 摊平"
+        );
+        assert_eq!(
+            bits(&flat),
+            bits(&realtime),
+            "⭐ 力度 = {velocity}：**摊平 → 实时**必须逐位相同（本单的核心新增）"
+        );
+        assert_eq!(bits(&offline), bits(&realtime), "⭐ 三条路同值");
+
+        let attack = measured_attack_frames(&realtime);
+        realtime_frames[index] = attack;
+        println!(
+            "[engine-sfz/S61] 力度 = {velocity}：⭐ 实时起音实测帧数 = {attack}\
+             （规范公式 = {}）；三条路位模式相同 = {}",
+            expected(velocity),
+            bits(&offline) == bits(&realtime)
+        );
+        assert_eq!(
+            attack,
+            expected(velocity),
+            "⭐ 力度 = {velocity}：实时那条路的起音帧数也必须**逐帧**等于规范公式"
+        );
+    }
+    assert_eq!(
+        realtime_frames,
+        [238, 48],
+        "⭐ 实时那条路两个力度的实测帧数"
+    );
+    assert_ne!(
+        realtime_frames[0], realtime_frames[1],
+        "⭐ 实时那条路必须真的按力度变（⛔ 不是把 vel2 短接掉）"
+    );
+}
+
+/// ⭐ S62（任务单 `#106`；§5.3）：**应绿的反向腿 ＋ 三个承重指纹**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// ① 去掉 `ampeg_vel2attack` 那一行前后的**起音帧数**（帧，两力度各一档）；
+/// ② 三个既有夹具的 **FNV-1a 64 指纹**（逐位）；
+/// ③ 「× 1.0000001 ⇒ 指纹必须变」这条**反空判**腿（`u64` 比较）。
+///
+/// 三个承重指纹就是 §5.3 逐字点名的：`0xa9dec8a87f69106c`（S37 臂 1）、
+/// `0xd3c2a82076bd8947`（S37 臂 2）、`0xa933ddab286bdf5e`（S33／S14 的广播路径）。
+#[test]
+fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 512;
+    const WITH_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+                            ampeg_attack=0.005 ampeg_vel2attack=-0.004\n";
+    const WITHOUT_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+                               ampeg_attack=0.005\n";
+    const ZERO_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+                            ampeg_attack=0.005 ampeg_vel2attack=0\n";
+    let sample = InMemorySample {
+        pcm: vec![1.0; 4_096],
+        sample_hz: HZ,
+    };
+    let measure = |text: &str, velocity: u8| -> (usize, Vec<f32>) {
+        let plan = prepare_with(text, &sample);
+        let mut out = vec![0.0f32; FRAMES];
+        plan.render_block_into_with_cc(60, velocity, None, &mut out);
+        (measured_attack_frames(&out), out)
+    };
+    let with = [measure(WITH_MOD, 1), measure(WITH_MOD, 127)];
+    let without = [measure(WITHOUT_MOD, 1), measure(WITHOUT_MOD, 127)];
+    let zero = [measure(ZERO_MOD, 1), measure(ZERO_MOD, 127)];
+    let with_frames = [with[0].0, with[1].0];
+    let without_frames = [without[0].0, without[1].0];
+    let zero_frames = [zero[0].0, zero[1].0];
+    println!(
+        "[engine-sfz/S62] 带 `ampeg_vel2attack=-0.004` ⇒ 力度 1／127 起音帧数 = {with_frames:?}；\
+         去掉那一行 ⇒ {without_frames:?}；写成 0 ⇒ {zero_frames:?}"
+    );
+    assert_eq!(
+        with_frames,
+        [238, 48],
+        "⭐ 有调制：两个力度落在规范公式的两个点上"
+    );
+    assert_eq!(
+        without_frames,
+        [240, 240],
+        "⭐ 反向腿 ①：去掉那一行 ⇒ 两个力度给出**同一个**基准帧数（round(0.005×48000) = 240）"
+    );
+    assert_eq!(
+        zero_frames,
+        [240, 240],
+        "⭐ 反向腿 ①′：写成 `ampeg_vel2attack=0` ⇒ 值上**也是**无调制（`+ 0 × v/127`）"
+    );
+    assert_ne!(
+        with_frames[1], without_frames[1],
+        "⭐ 有牙：唯一变化的那个 opcode 必须真的改变读数"
+    );
+
+    // ---- ②③ 三个承重指纹（无 `vel2` 的既有夹具必须**逐字不变**）----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, expected) in [
+        (
+            "S37 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            0xa9de_c8a8_7f69_106cu64,
+        ),
+        (
+            "S37 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            0xd3c2_a820_76bd_8947u64,
+        ),
+    ] {
+        let out = render_pool(plan, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!("[engine-sfz/S62] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）");
+        let _checked = check_fingerprint(&format!("S62 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy_block = vec![0.0f32; BLOCK];
+    let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
+    let legacy = fnv1a_64(&legacy_block);
+    println!(
+        "[engine-sfz/S62] S33／S14 广播路径 512 帧 @ (60,127)：指纹 = 0x{legacy:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）；写入 = {legacy_frames}"
+    );
+    let _checked = check_fingerprint("S62 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    // ⭐ 应绿反向腿：同一段输出 × `1.0000001` ⇒ 指纹**必须**变
+    // （证明上面那三条是**逐位**判据，⛔ 不是"有输出就算过"）。
+    let scaled: Vec<f32> = legacy_block
+        .iter()
+        .map(|sample| sample * 1.000_000_1)
+        .collect();
+    let scaled_hash = fnv1a_64(&scaled);
+    println!(
+        "[engine-sfz/S62] 反向腿（× 1.0000001）：指纹 = 0x{scaled_hash:016x}\
+         （原指纹 0x{legacy:016x}，必须不同）"
+    );
+    assert_ne!(scaled_hash, legacy, "⭐ 反向腿：乘 1.0000001 后指纹必须变");
+
+    // ---- ④ 无 `vel2` 的**新入口**与旧入口逐位相同（缺省 ⇒ 与接线前逐位相同）----
+    let mut probe_none = vec![0.0f32; BLOCK];
+    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, &mut probe_none);
+    assert_eq!(none_frames, legacy_frames);
+    assert_eq!(
+        bits(&legacy_block),
+        bits(&probe_none),
+        "⭐ 无 `ampeg_vel2*` 的既有夹具：`render_block_into_with_cc(cc = None)` 逐位不变"
+    );
+    // ⭐ 有 `ampeg_vel2attack` 的区域在**力度 127** 与**力度 1** 下必须**不同**
+    // （上面 `with` 两条臂的位模式直接比）。
+    assert_ne!(
+        bits(&with[0].1),
+        bits(&with[1].1),
+        "⭐ 有牙：同一份 SFZ 在两个力度下的输出必须**逐位不同**"
+    );
+    assert_eq!(
+        bits(&without[0].1),
+        bits(&without[1].1),
+        "⭐ 反向腿 ①″：没有 `vel2` ⇒ 两个力度的输出**逐位相同**"
     );
 }
