@@ -62,6 +62,15 @@ for c in "$@"; do
   layer "check -p $c --lib" cargo check -p "$c" --lib --locked
   # ⚠ 第 43 条：这一层是 CI 真正会红的地方。
   layer "clippy -p $c --lib --tests" cargo clippy -p "$c" --lib --tests --locked -- -D warnings
+  # ⚠ 第 255 条：CI 有两条本机旧门**没覆盖**的腿 —— `--all-targets`（编译测试目标）与
+  #    `--features in-process-mcp`。实测代价：`#86` 改了 `tests/production_save_ui.rs` 的
+  #    一处 `Rc` 用法，**默认腿绿**而**特性腿 `error[E0433]`** ⇒ 主干红了一个 run。
+  #    下面两条就是补那两条腿；⛔ 只在 crate 真声明了该特性时才跑特性腿。
+  layer "check -p $c --all-targets" cargo check -p "$c" --all-targets --locked
+  if grep -q '^in-process-mcp' "crates/$c/Cargo.toml" 2>/dev/null; then
+    layer "check -p $c --all-targets --features in-process-mcp" \
+      cargo check -p "$c" --all-targets --locked --features in-process-mcp
+  fi
   if [ "${SKIP_TEST:-0}" = "1" ]; then
     note "test -p $c (SKIP_TEST=1 ⇒ 没跑)" "跳过"
   else

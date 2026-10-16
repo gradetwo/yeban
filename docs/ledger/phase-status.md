@@ -10157,3 +10157,42 @@ pat = re.compile(r'^<<<<<<< [^\n]*\n(.*?)(?:^\|\|\|\|\|\|\| [^\n]*\n.*?)?^======
 ⇒ ⭐ ⭐ **最可能的原因: ⭐ `coreaudiod`（⭐ 本次 pid **613**、⭐ 开机就在跑）⭐ 比驱动安装更早**（⭐ cask 的时间戳是 **2026-10-15 23:37**）⇒ ⭐ ⭐ **故人类的第 1 步**已经**做完了、⭐ 只要让 `coreaudiod` 重新加载驱动即可** ⇒ ⭐ **动作: ⭐ 重启，⭐ 或 `sudo killall coreaudiod`** ✓
 
 ⭐ ⚠ ⭐ **七、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `47617a9e`／⭐`4dc8c6cd` 的 CI 判决** ＋ ⭐ **`run_gui` 运行期打开工程 ＋ ⭐ 可见入口 ＋ ⭐ 金标重录** ＋ ⭐ **统一归一化分母单** ＋ ⭐ **OGG 端到端夹具** ＋ ⭐ MIDI 导出 UI 按钮 ＋ ⭐ `needs-3`／⭐`needs-6` ＋ ⭐ 人类跑第 6 项（⭐ 前置: ⭐ 重启 coreaudiod）✓
+
+---
+
+## R748 实测追加（2026-10-16）：🚨 **主干红了一个 run** —— `#86` 的一处 `Rc` 在 `in-process-mcp` 特性腿下编译不过 ⇒ ⭐ **立一条口径（⭐ 第 255 条）＋ ⭐ 补上本机旧门缺的两条腿**
+
+⭐ ⭐ ⭐ **一、⭐ 判决读回（⭐ 真红、⭐ 非空绿）**: ⭐ ⭐ **run `38828484316`（⭐ `headSha` ＝ `4a35c67f`、⭐ 即 `#86` 的合入）⇒ ⭐ `conclusion` ＝ **`failure`**** ✓
+| ⭐ 作业 | ⭐ 状态 |
+| :--- | :--- |
+| ⭐ `plan`／⭐`lockfile`／⭐`checks`／⭐`deny` | ⭐ **success** |
+| ⭐ `macos`／⭐`windows` | ⭐ **success** |
+| ⭐ ⭐ **`rust (workspace 全量)`** | ⭐ ⭐ ⭐ **failure** ⇒ ⭐ **失败步骤逐字: ⭐ `test (in-process-mcp 特性, yeban-app)`** ⇒ ⭐ **日志首行: ⭐ `error[E0433]: cannot find type "Rc" in this scope`** ✓ |
+⇒ ⭐ ⭐ **即: ⭐ 只有**一条**腿红、⭐ 而它是我本机旧门**结构上覆盖不到**的那一条**（⭐ 见 §三）✓
+
+⭐ ⭐ ⭐ **二、⭐ 我在本机**当前 main `d39311a9`** 上复现（⭐ 逐字）**:
+```
+$ cargo check -p yeban-app --all-targets --features in-process-mcp --locked
+error[E0433]: cannot find type `Rc` in this scope
+   --> crates/yeban-app/tests/production_save_ui.rs:190:9
+    |
+190 |         Rc::new(yeban_app::file_picker::NoPicker),
+    |         ^^ use of undeclared type `Rc`
+help: consider importing this struct  →  use std::rc::Rc;
+error: could not compile `yeban-app` (test "production_save_ui") due to 1 previous error
+```
+⭐ ⭐ **根因（⭐ 我的判断）**: ⭐ **`#86` 乙 给 `host::wire_save` 加了第 4 个参数 `picker`、⭐ 并改了既有的 `tests/production_save_ui.rs`** ⇒ ⭐ **`Rc` 的 import 大概只落在**某一条** `#[cfg(...)]` 分支** ⇒ ⭐ ⭐ **默认特性腿绿、⭐ `in-process-mcp` 特性腿红** ✓
+⚠ ⭐ ⭐ **并且它**不止影响那一个提交****: ⭐ **缺陷在 `47617a9e`／⭐`4dc8c6cd`／⭐`d39311a9` 上都还在**（⭐ `#87`／⭐`#88` ⛔ 没动那个文件）⇒ ⭐ **那三个 in-flight 的 run 也会红** ⇒ ⭐ **修它才是把主干带回绿的那个提交** ✓
+
+⭐ ⭐ ⭐ **三、⭐ 口径（⭐ 第 255 条）: ⭐ 本地门必须逐条覆盖 CI 的每一条腿（⭐ 含 `--all-targets` 与 `--features <f>`）**:
+| ⭐ # | ⭐ 要点 |
+| --: | :--- |
+| ⭐ **1. ⭐ 病根** | ⭐ ⭐ **"⭐ 默认腿绿"⭐ **不等于**绿** —— ⭐ **特性门后的代码本地**一次都没编译过**、⭐ 而 CI 会编译它** ✓ |
+| ⭐ **2. ⭐ 为什么旧门必然漏** | ⭐ ⭐ **`premerge-gate.sh` 旧版只跑 `--lib`**（⭐ ⭐ `check -p $c --lib` ＋ ⭐ `clippy -p $c --lib --tests` ＋ ⭐ `test -p $c --lib`）⇒ ⭐ **`tests/production_save_ui.rs` 这种**独立 test target** 根本不在门内**、⭐ **更不用说带 feature 的它** ✓ |
+| ⭐ **3. ⭐ 可复用的做法** | ⭐ ⭐ **① 列出 CI 里这个 crate 的**每一条** `cargo` 命令；⭐ ② 逐条在本地跑并取 rc；⭐ ③ 把缺的腿**加进 `premerge-gate.sh`**** ✓ |
+| ⭐ ⭐ **4. ⭐ 已执行** | ⭐ ⭐ **已在 `scripts/dev/premerge-gate.sh` 加两条层**: ⭐ **`check -p $c --all-targets`** ＋ ⭐ **`check -p $c --all-targets --features in-process-mcp`（⭐ 只在 `crates/$c/Cargo.toml` 真声明了 `^in-process-mcp` 时才跑）** ✓ |
+| ⭐ ⭐ **5. ⭐ 新层**已被注入证明是活的****（⭐ 第 219 条） | ⭐ ⭐ **实测: ⭐ `check -p yeban-app --all-targets --locked` ＝ **0**、⭐ 而 `check -p yeban-app --all-targets --locked --features in-process-mcp` ＝ **101**** ⇒ ⭐ ⭐ **新层**精确地**抓住了那条腿、⭐ 而旧层全绿** ✓ |
+
+⭐ ⚠ ⭐ **四、⭐ 处置**: ⭐ ⭐ **已发 `#89`（⭐ 线 mod-app）** —— ⭐ **修那一处 import（⭐ 最小、⭐ 诚实、⭐ ⛔ 不许删弱判据语义）＋ ⭐ 逐条跑 `crates/yeban-app/Cargo.toml` 声明的**每个** feature 腿并报 rc ＋ ⭐ 状态差集（⭐ 本单应为 `changed=0／⭐removed=0／⭐added=0`）＋ ⭐ 反向对照（⭐ 证明默认腿仍绿、⭐ 没把 import 挪成只在特性腿可见）** ✓
+
+⭐ ⚠ ⭐ **五、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`#89` 收工 ＋ ⭐ 读回它的 CI 判决（⭐ 那才是把主干带回绿的 Run）** ＋ ⭐ **读回 `47617a9e`／⭐`4dc8c6cd`／⭐`d39311a9` 的判决（⭐ 预期红、⭐ 红因同此缺陷）** ＋ ⭐ `run_gui` 运行期打开工程 ＋ ⭐ 可见入口 ＋ ⭐ 金标重录 ＋ ⭐ 统一归一化分母单 ＋ ⭐ OGG 端到端夹具 ＋ ⭐ MIDI 导出 UI 按钮 ＋ ⭐ `needs-3`／⭐`needs-6` ＋ ⭐ 人类跑第 6 项 ✓
