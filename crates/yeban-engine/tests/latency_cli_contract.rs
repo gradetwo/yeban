@@ -13,8 +13,9 @@
 //!
 //! # 判据（对着工具输出解析，不是对着实现）
 //!
-//! 1. **永不冒充达标**：任何调用形态下 `verdict` 都不得是 `within-target`，
-//!    `measured_roundtrip_ms` 都必须是字面 `none`，`loopback` 都必须是 `false`；
+//! 1. **永不冒充达标**：**不带 `--loopback`** 的任何调用形态下 `verdict` 都不得是
+//!    `within-target`，`measured_roundtrip_ms` 都必须是字面 `none`，`loopback` 都必须是
+//!    `false`（`--loopback` 腿另见判据 7/8：只有**真的检出** chirp 才允许给数）；
 //! 2. **无设备路径**（`--force-no-device`，任何机器上都确定性可跑）：退出码 **3**、
 //!    `verdict=no-device`、文案含 `NOT a pass and NOT 0 ms`、且输出里**没有** `0.0000`
 //!    这种"看起来像 0 ms 读数"的东西；
@@ -379,4 +380,147 @@ fn usage_errors_exit_two_and_help_exits_zero() {
     assert_eq!(help.code, 0);
     assert!(help.stdout.contains("usage:"));
     assert!(bench_line(&help.stdout).is_none(), "--help 不该产生读数");
+}
+
+/// 判据 7（**诚实闸**）：`--loopback` 腿**永不**在没有检出 chirp 的情况下给数或声称达标。
+///
+/// 本判据在**任何**机器上都能跑：
+/// - 没有输入设备 / 开流失败 / 始终没检出 ⇒ 必须**非零退出**（3 或 4）、
+///   `measured_roundtrip_ms=none`、`loopback=false`、`verdict` 仍不是达标；
+/// - 真接上了回环（物理线或 BlackHole）⇒ 才允许 `evidence=loopback-measured` ＋
+///   一个**有限**数字 ＋ 退出码 0/1。
+///
+/// ⚠ 它**不**要求"真的检出"（那是判据 8 的 `[HARDWARE]` 手工活儿），只要求
+/// **没有检出时不许冒充**。
+#[test]
+fn the_loopback_leg_never_claims_a_pass_without_a_detected_chirp() {
+    let Some(binary) = example_binary() else {
+        eprintln!("SKIP(loud): example 二进制不存在（见上一条判据的说明）");
+        return;
+    };
+    let probe = run(&binary, &["--seconds", "0.2"]);
+    if probe.code == DISABLED {
+        eprintln!("SKIP(loud): example 是 --no-default-features 变体；回环腿交给 CI/有声卡的机器");
+        return;
+    }
+    let result = run(&binary, &["--loopback", "--seconds", "1", "--frames", "64"]);
+    assert!(
+        matches!(result.code, 0 | 1 | NO_DEVICE | UNMEASURABLE),
+        "--loopback 退出码 {} 不在 {{0,1,3,4}} 内\nstdout:\n{}\nstderr:\n{}",
+        result.code,
+        result.stdout,
+        result.stderr
+    );
+    let fields = bench_of(&result);
+    assert_eq!(fields.baseline, "005");
+    if let Some(milliseconds) = fields.measured_roundtrip_ms {
+        // 有数 ⇒ 必须来自"真的检出"，且证据等级与 `loopback=` 同步。
+        assert_eq!(
+            fields.evidence, "loopback-measured",
+            "给了实测往返数却不是 loopback-measured 证据"
+        );
+        assert!(fields.loopback, "给了实测往返数却没写 loopback=true");
+        assert!(
+            matches!(result.code, 0 | 1),
+            "实测往返必须给 0/1，实际 {}",
+            result.code
+        );
+        assert!(
+            milliseconds.is_finite() && milliseconds >= 0.0,
+            "实测往返必须是有限非负数，实际 {milliseconds}"
+        );
+    } else {
+        // 诚实闸：没有数 ⇒ 不许有任何达标字样，且必须**非零**退出。
+        assert_ne!(fields.verdict, "within-target", "没有数却声称达标");
+        assert_ne!(fields.verdict, "over-target", "没有数却声称实测超目标");
+        assert!(!fields.loopback, "没有数却声称用了回环");
+        assert!(
+            matches!(result.code, NO_DEVICE | UNMEASURABLE),
+            "没有检出必须非零退出（3/4），实际 {} —— 本判据不用 --allow-unmeasurable\nstdout:\n{}",
+            result.code,
+            result.stdout
+        );
+        // 必须**说出来**为什么没检出（stdout 的 NOTE 或 stderr）。
+        let explained = result.stderr.contains("loopback") || result.stdout.contains("loopback");
+        assert!(
+            explained,
+            "没检出时必须在 stdout/stderr 里说明理由\nstdout:\n{}\nstderr:\n{}",
+            result.stdout, result.stderr
+        );
+    }
+    // 无论哪条路径，边界都要打印（含"没测到什么"）。
+    assert!(result.stdout.contains("MEASURES:"));
+    assert!(result.stdout.contains("DOES-NOT-MEASURE:"));
+    assert!(
+        !result.stdout.contains("driver_io_sum_ms"),
+        "不许出现驱动侧合计字段"
+    );
+}
+
+/// 判据 8（**必须真人手工验证**）：真声卡 / BlackHole 虚拟回环下的**真·往返**。
+///
+/// ⚠ 这是本单**唯一**要求"真的检出 chirp 并给出往返数"的判据 —— CI 的托管 runner
+/// 没有可用输入设备，所以它被 `#[ignore]`，由真人按
+/// `docs/ledger/audio-latency-notes.md`（与 `scripts/dev/hardware-check.sh`）在一台
+/// 接了声卡/BlackHole 的机器上跑：
+///
+/// ```text
+/// cargo test -p yeban-engine --test latency_cli_contract -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "[HARDWARE] 需真人手工验证：真声卡或 BlackHole 虚拟回环 + 采集比对（CI 无可用输入设备）"]
+fn the_loopback_leg_measures_a_real_roundtrip_on_hardware() {
+    let Some(binary) = example_binary() else {
+        panic!("example 二进制不存在；用 `cargo test -p yeban-engine` 构建后再跑本判据");
+    };
+    let probe = run(&binary, &["--seconds", "0.2"]);
+    assert_ne!(
+        probe.code, DISABLED,
+        "本判据要求带 `device` 的构建（默认 features）"
+    );
+    let result = run(
+        &binary,
+        &[
+            "--loopback",
+            "--seconds",
+            "2",
+            "--frames",
+            "64",
+            "--sample-rate",
+            "48000",
+        ],
+    );
+    let fields = bench_of(&result);
+    assert_eq!(
+        fields.evidence, "loopback-measured",
+        "真回环上必须**真的检出** chirp（否则本单的核心通道未被验证）\nstdout:\n{}\nstderr:\n{}",
+        result.stdout, result.stderr
+    );
+    assert!(fields.loopback, "检出后必须写 loopback=true");
+    let milliseconds = fields
+        .measured_roundtrip_ms
+        .expect("检出后必须给出实测往返数");
+    assert!(milliseconds.is_finite() && milliseconds >= 0.0);
+    assert!(
+        matches!(result.code, 0 | 1),
+        "实测往返必须给 0（达标）/1（超目标），实际 {}",
+        result.code
+    );
+    // 诚实口径必须**逐字**在 stdout 里（含"下界"与"不含 DAC/ADC 模拟段"）。
+    assert!(
+        result.stdout.contains("LOWER BOUND"),
+        "必须写明虚拟回环是**下界**\nstdout:\n{}",
+        result.stdout
+    );
+    assert!(
+        result
+            .stdout
+            .contains("EXCLUDES the DAC/ADC analog sections"),
+        "必须写明不含 DAC/ADC 模拟段\nstdout:\n{}",
+        result.stdout
+    );
+    eprintln!(
+        "[hardware-run] --loopback 实测往返 = {milliseconds:.4} ms（verdict={}，exit={}）",
+        fields.verdict, result.code
+    );
 }

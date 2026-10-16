@@ -16,7 +16,7 @@
 //! | [`block`] | 固定块长 `AudioBlock` 与栈上 `[f32; N]` 缓冲约定 | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-007] |
 //! | [`fpu`] | FTZ / DAZ 浮点环境开关（x86 MXCSR / aarch64 FPCR） | [ARCH-RT-003]、[ROAD-M2-003] |
 //! | [`graph`] | `RoutingGraph` 拓扑排序、关键路径 `L_max`、`D_i` 分配、环形延迟线 | [ARCH-PDC-001]、[ROAD-M2-004] |
-//! | [`latency`] | `BASELINE-005` 的**纯计算**一半：标称时延换算、回调抖动统计、机器可读行、以及"没测到 ≠ 达标"的判定（**零 cpal 依赖**，可用 `rustc --test` 单跑） | [BASELINE-005]、[ARCH-PDC-002] |
+//! | [`latency`] | `BASELINE-005` 的**纯计算**一半：标称时延换算、回调抖动统计、机器可读行、以及"没测到 ≠ 达标"的判定（**零 cpal 依赖**，可用 `rustc --test` 单跑）＋ `--loopback` 腿的线性 chirp 与归一化互相关检测器（[`latency::detect_delay_frames`]） | [BASELINE-005]、[ARCH-PDC-002] |
 //! | [`level`] | **再导出** `yeban_dsp::meter` 的电平口径（峰值/峰值保持/RMS/平滑/dBFS/钳位/取最新/真峰值）——本 crate 不再持有实现 | [ARCH-UI-002]、[ROAD-M2-008] |
 //! | [`insert`] | **每轨插入器件**：`InternalEffect` 设备 → 通道条（`yeban_dsp::channel_strip` 的再导出 + 约定参数名投影；其动态级即 `yeban_dsp::compressor`）＋ 混响（`yeban_dsp::reverb` 的再导出；延迟线只在构造期分配） | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-006] |
 //! | [`drums`] | **每轨鼓机音源**：`InternalInstrument` 设备 + **写全的五个键位名** → `yeban_dsp::drums`（再导出 + 约定参数名投影）。驱动源是**轨道自己的音符调度表**，位置在插入链**之前**；映射不完整 ⇒ 不武装 ⇒ 逐位不变 | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DSP-001]、[ARCH-DET-001] |
@@ -47,8 +47,11 @@
 //! + **每轨插入** + **参数目标表** + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
 //!
 //! ⚠ [`latency`] 是 `BASELINE-005` 的**工具**那一半，**不是**门禁本身：门禁要求的是
-//! **硬件往返时延**，而本 crate 在任何环境下都无法测它（cpal 0.18.2 不暴露硬件时延 API，
-//! 且没有物理回环）。因此 [`latency::Verdict::WithinTarget`] 在没有回环证据时**不可达** ——
+//! **硬件往返时延**。默认腿（`measure_latency` 不带 `--loopback`）测不到它 ——
+//! cpal 0.18.2 不暴露硬件时延 API、也没有物理回环；`--loopback` 腿能补上**主机观测的
+//! callback→callback 往返**（线性 chirp + 归一化互相关 + 采集比对，见
+//! [`latency::detect_delay_frames`]），但那只含驱动缓冲、**不含** DAC/ADC 模拟段。
+//! 因此 [`latency::Verdict::WithinTarget`] 在没有**回环证据**时**不可达** ——
 //! 这是刻意的，详见 `docs/ledger/audio-latency-notes.md`。
 //!
 //! **电平口径不在这条 feature 切分的两侧**：它已经上移到零重依赖的 `yeban-dsp`

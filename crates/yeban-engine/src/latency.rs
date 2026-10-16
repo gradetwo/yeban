@@ -16,7 +16,7 @@
 //! | 标称时延 `nominal_ms` | ✅ | 设备报告的**缓冲帧数 ÷ 采样率**。**不是**往返时延 |
 //! | 主机报的驱动侧时延 `distribution_ms` | ✅ | 输出：`playback − callback`；输入：`callback − capture`。**主机自己算的预测值** |
 //! | 回调调度抖动 `jitter_stats` | ✅ | **CPU 侧**回调到达间隔与标称周期的偏差。**不是**往返时延 |
-//! | 声学 / DAC-ADC 往返 | ❌ | 需要**物理回环**（输出接输入），或人类按 ADR 裁决"原生 API 口径"是否等价 |
+//! | 声学 / DAC-ADC 往返 | 默认腿 ❌ / `--loopback` 腿 ✅ | 默认腿要**物理回环**（输出接输入）；`--loopback` 腿用**线性 chirp + 归一化互相关**（本模块的 [`detect_delay_frames`]）做采集比对，给的是**主机观测的 callback→callback 往返**（含驱动缓冲、不含 DAC/ADC 模拟段） |
 //!
 //! ## ⚠ 关于 cpal 的准确说法（本线第一版说错过，这里更正并留痕）
 //!
@@ -155,10 +155,15 @@ pub const NO_DEVICE_REASON: &str = "no audio device reported by this host: nothi
 this is NOT a pass and NOT 0 ms";
 
 /// "有设备但无回环"的精确文案。
-pub const NO_LOOPBACK_REASON: &str = "no loopback evidence: cpal 0.18.2 has no explicit latency \
-query API, and although each callback carries a host-computed playback/capture instant that we DO \
-report, that is a driver-side prediction, not an acoustic DAC-ADC roundtrip (which needs a \
-physical output->input loopback)";
+///
+/// ⚠ 后半句明确"`--loopback` 腿**能**补上这个证据"：本常量是**这次调用没有回环证据**的
+/// 理由，不是"本工具永远测不到往返"。判据对着 `cpal 0.18.2` 这个字面断言。
+pub const NO_LOOPBACK_REASON: &str = "no loopback evidence in this invocation: cpal 0.18.2 has no \
+explicit latency query API, and although each callback carries a host-computed playback/capture \
+instant that we DO report, that is a driver-side prediction, not an acoustic DAC-ADC roundtrip. \
+The `--loopback` leg CAN supply real evidence (a linear chirp matched-filtered over the input \
+capture); without `--loopback` - or when it does not detect the chirp - the roundtrip stays \
+unmeasured";
 
 /// 输出侧驱动时延的推导口径（进机器可读行，让读数字的人知道这个数**是从哪来的**）。
 pub const DRIVER_OUT_LATENCY_SOURCE: &str = "playback_minus_callback";
@@ -441,7 +446,8 @@ pub struct Report {
     pub callbacks: Vec<CallbackReport>,
     /// 证据等级。
     pub evidence: Evidence,
-    /// **实测**往返时延：本工具在无回环时恒为 `None`（且**不许**被标称值填上）。
+    /// **实测**往返时延：**默认腿**恒为 `None`（且**不许**被标称值填上）；
+    /// `--loopback` 腿真的检出 chirp 时才是一个数（见 `measure_latency --loopback`）。
     pub measured_roundtrip_ms: Option<f64>,
     /// 额外的人类可读备注（**不**进机器可读行）。
     pub notes: Vec<String>,
@@ -503,7 +509,9 @@ impl Report {
     /// 因此**任何**标签都不会破坏行长格式。
     ///
     /// ⚠ 注意本行**没有** `roundtrip_ms` 这种"看起来达标的总数"字段：
-    /// 实测往返只出现在 `measured_roundtrip_ms=`，且在本工具的路径上恒为 `none`。
+    /// 实测往返只出现在 `measured_roundtrip_ms=` —— 在**默认腿**（没加 `--loopback`）
+    /// 上它恒为 `none`，只有 `--loopback` 腿**真的检出** chirp 之后才会是一个数
+    /// （那时 `evidence=loopback-measured`、`loopback=true`）。
     /// `nominal_io_sum_ms` 是**标称输入 + 标称输出**的和，随行的
     /// `nominal_io_sum_is_roundtrip=false` 明确声明它**不是**往返时延；
     /// `driver_out_latency_*` / `driver_in_latency_*` 是**主机报告的驱动侧时延**，
@@ -574,7 +582,7 @@ driver_in_latency_source={DRIVER_IN_LATENCY_SOURCE} \
 driver_in_latency_reported={driver_in_reported} \
 driver_in_latency_p50_ms={driver_in_p50} driver_in_latency_p99_ms={driver_in_p99} \
 driver_in_latency_max_ms={driver_in_max} \
-driver_io_sum_is_roundtrip=false loopback=false",
+driver_io_sum_is_roundtrip=false loopback={loopback}",
             label = sanitize_label(&self.label),
             verdict = self.verdict().as_str(),
             evidence = self.evidence.as_str(),
@@ -612,6 +620,11 @@ driver_io_sum_is_roundtrip=false loopback=false",
             driver_in_p50 = driver(Direction::Input, |distribution| distribution.p50_ms),
             driver_in_p99 = driver(Direction::Input, |distribution| distribution.p99_ms),
             driver_in_max = driver(Direction::Input, |distribution| distribution.max_ms),
+            // `loopback=` = "这条读数**真的**是回环测量吗"：只有在证据等级确实是
+            // 回环时才 `true`。⛔ 它**不**表示"这次调用加了 `--loopback`" ——
+            // 加了但没检出时证据仍是 nominal-only（`loopback=false`），
+            // 理由进 `notes` / `human_summary` / stderr。
+            loopback = self.evidence == Evidence::LoopbackMeasured,
         )
     }
 
@@ -625,14 +638,21 @@ driver_io_sum_is_roundtrip=false loopback=false",
             "MEASURES: nominal per-direction latency (device-reported buffer frames / sample rate); \
 device-reported actual buffer frames after opening; host-reported driver-side latency \
 (output playback-minus-callback, input callback-minus-capture) as p50/p99/max; callback arrival \
-jitter (p50/p99/max) on this CPU\n",
+jitter (p50/p99/max) on this CPU; and - only with `--loopback` - a REAL output->input capture \
+comparison: a linear chirp (200 Hz -> 8 kHz, ~50 ms) is played on the output stream and \
+matched-filtered (normalized cross-correlation) over the input capture. That roundtrip is the \
+difference between the two callbacks' own Instants (same process, same clock).\n",
         );
         out.push_str(
-            "DOES-NOT-MEASURE: the acoustic / DAC-ADC roundtrip itself. The playback/capture instants \
-are the HOST's own prediction (CoreAudio folds in kAudioDevicePropertyLatency + safety offset, \
-WASAPI IAudioClient::GetStreamLatency, ALSA the PCM delay, PulseAudio an estimate) - they are not \
-a measured loop. A real roundtrip needs a physical output->input loopback (or an ADR ruling that \
-the native-API figures count for BASELINE-005).\n",
+            "DOES-NOT-MEASURE: without `--loopback`, the acoustic / DAC-ADC roundtrip itself. The \
+playback/capture instants are the HOST's own prediction (CoreAudio folds in \
+kAudioDevicePropertyLatency + safety offset, WASAPI IAudioClient::GetStreamLatency, ALSA the PCM \
+delay, PulseAudio an estimate) - they are not a measured loop. With `--loopback` the figure is \
+still the HOST-OBSERVED callback-to-callback roundtrip: it starts when the output callback that \
+carried the chirp was invoked (NOT when the samples left the DAC) and ends when the input callback \
+that carried the chirp was invoked; it therefore includes the driver buffers and EXCLUDES the \
+DAC/ADC analog sections. On a virtual loopback (BlackHole/Loopback) there is no AD/DA at all, so \
+that number is a LOWER BOUND for a real hardware roundtrip - it is NOT equal to it.\n",
         );
         // 只有"有设备但没回环"才谈得上"没有回环证据"；没有设备时理由是 NO-DEVICE。
         if self.device_count() > 0 && self.evidence == Evidence::NominalOnly {
@@ -640,6 +660,17 @@ the native-API figures count for BASELINE-005).\n",
         }
         if self.device_count() == 0 {
             out.push_str(&format!("NO-DEVICE: {NO_DEVICE_REASON}\n"));
+        }
+        // 只有**真的**有回环证据才报这一行（诚实闸的出口）；数值为 `none` 时也照实写
+        // `none`（那时判定仍是 unmeasurable —— 见 `verdict_for`）。
+        if self.evidence == Evidence::LoopbackMeasured {
+            out.push_str(&format!(
+                "LOOPBACK: measured_roundtrip_ms={ms} source=chirp-normalized-cross-correlation \
+kind=host-observed-callback-to-callback-not-acoustic \
+scope=includes-driver-buffers-excludes-DAC-ADC-analog \
+note=virtual-loopback-is-a-LOWER-BOUND-not-a-real-hardware-roundtrip\n",
+                ms = self.measured_roundtrip_field(),
+            ));
         }
         for device in &self.devices {
             out.push_str(&format!(
@@ -882,6 +913,195 @@ fn driver_number_field(pairs: &[(&str, &str)], key: &str) -> Option<Option<f64>>
         DRIVER_LATENCY_UNREPORTED => Some(None),
         raw => Some(Some(raw.parse::<f64>().ok()?)),
     }
+}
+
+// ===========================================================================
+// `--loopback` 腿（回环往返）的**纯计算**那一半：线性 chirp + 归一化互相关
+// ===========================================================================
+//
+// 为什么放在这里、而不是 `examples/measure_latency.rs`：本文件是**零依赖**的判定面
+// （见模块头），能在没有声卡、甚至没有 `device` feature 的机器上真跑
+// ⇒ 把"能不能检出"的核心做成纯函数放这里，判据就不必依赖 cpal。
+// ⛔ 这里不引用 cpal / rtrb / 本 crate 其它模块，也不引入新依赖。
+
+/// `--loopback` 腿的 chirp **起始频率**（Hz）。
+pub const LOOPBACK_CHIRP_START_HZ: f64 = 200.0;
+
+/// `--loopback` 腿的 chirp **终止频率**（Hz）。
+pub const LOOPBACK_CHIRP_END_HZ: f64 = 8_000.0;
+
+/// `--loopback` 腿的 chirp **时长**（毫秒）。
+///
+/// 50 ms 是折中：48 kHz 下 2 400 帧，时间带宽积远大于 1（互相关峰尖锐），
+/// 又远短于"往返窗"，不会盖住下一次比对。
+pub const LOOPBACK_CHIRP_MS: f64 = 50.0;
+
+/// 判定"检出"的**峰值比**阈值 = `|互相关峰| / 主瓣外次高峰`（SNR 类读数）。
+///
+/// 口径：白噪声里 `|ncc|` 的最大与次大（主瓣外）几乎一样（比值 ≈ 1）；真检出时
+/// 主瓣外旁瓣低一个量级（比值 ≫ 1）⇒ 阈值 `3.0` 把"相关峰**突出**"与"随机起伏"
+/// 分开。注入实测：把它改成 `0.0` ⇒ 纯噪声判据变红
+/// （见 `mod tests` 的 `detect_delay_frames_rejects_pure_noise_zeros_and_constants`）。
+pub const LOOPBACK_PEAK_RATIO_THRESHOLD: f32 = 3.0;
+
+/// 归一化互相关分母的下限（防 0/0）。**不是**阈值。
+const NCC_EPS: f32 = 1e-12;
+
+/// [`detect_delay_frames`] 的检出结果。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Detected {
+    /// 参考信号在 `recorded` 里的**起点**（帧）= 互相关峰所在的滞后 `d`。
+    pub delay_frames: usize,
+    /// 峰值处的**归一化互相关**（带符号；`±1` = 完全对齐）。
+    pub peak_ncc: f32,
+    /// **峰值比**（SNR 类读数）：`|峰| / 次高 |ncc|`。
+    ///
+    /// 次高**在互相关主瓣之外**取（见 [`detect_delay_frames`] 的"主瓣保护带"口径）
+    /// —— 否则紧邻峰值的滞后与峰值几乎一样高（重叠了 `L−1` 个样本），比值恒 ≈ 1。
+    /// 主瓣与旁瓣之外都没有别的滞后时（录制窗太短）为 `+∞`。
+    pub peak_ratio: f32,
+    /// 扫过的滞后总数（`recorded.len() - reference.len() + 1`）。
+    /// `1` ⇒ 没有任何对照滞后，检出**没有判别力**（调用方读它自检）。
+    pub lags: usize,
+}
+
+/// 生成一条**线性 chirp**参考信号（单声道 `f32`）。
+///
+/// 口径：瞬时频率 `f(t) = f0 + (f1 - f0)·t/T`，相位
+/// `φ(t) = 2π(f0·t + (f1 - f0)·t²/(2T))`；首尾各 5% 做**半余弦淡入淡出**
+/// —— ⛔ 不用单点脉冲（脉冲的时间带宽积 ≈ 1，抗噪差且容易与咔哒混淆）。
+///
+/// 返回长度 `round(sample_rate · ms / 1000)`；`sample_rate == 0`、`ms` 非正或非有限
+/// ⇒ 空切片（⛔ 不发明信号）。
+#[must_use]
+pub fn loopback_chirp(sample_rate_hz: u32, chirp_ms: f64) -> Vec<f32> {
+    /// 首尾淡入淡出各占 chirp 的比例。
+    const FADE_FRACTION: f64 = 0.05;
+    if sample_rate_hz == 0 || !chirp_ms.is_finite() || chirp_ms <= 0.0 {
+        return Vec::new();
+    }
+    let length = (f64::from(sample_rate_hz) * chirp_ms / 1000.0).round() as usize;
+    if length == 0 {
+        return Vec::new();
+    }
+    let rate = f64::from(sample_rate_hz);
+    let total = length as f64;
+    let sweep = LOOPBACK_CHIRP_END_HZ - LOOPBACK_CHIRP_START_HZ;
+    let fade = ((total * FADE_FRACTION).round() as usize).max(1);
+    let mut samples = Vec::with_capacity(length);
+    for index in 0..length {
+        let t = index as f64 / rate;
+        let phase = std::f64::consts::TAU
+            * (LOOPBACK_CHIRP_START_HZ * t + sweep * t * t / (2.0 * total / rate));
+        let mut value = phase.sin() as f32;
+        if index < fade {
+            let ramp = 0.5 - 0.5 * (std::f64::consts::PI * index as f64 / fade as f64).cos();
+            value *= ramp as f32;
+        }
+        if index + fade >= length {
+            let tail = (length - 1 - index) as f64 / fade as f64;
+            let ramp = 0.5 - 0.5 * (std::f64::consts::PI * tail).cos();
+            value *= ramp as f32;
+        }
+        samples.push(value);
+    }
+    samples
+}
+
+/// **归一化互相关（matched filter）**：检出参考信号在录音里的滞后。
+///
+/// 纯函数：无 I/O、无时钟、无随机数 ⇒ 同一批输入永远给同一批输出。它跑在**控制侧**
+/// （可以分配 `Vec`）；⛔ 不是实时回调体。
+///
+/// # 口径（判据钉死的就是这几条）
+///
+/// 记 `L = reference.len()`、`M = recorded.len()`（要求 `M >= L`）。对每个滞后
+/// `d ∈ 0..=(M-L)`：
+/// `ncc[d] = (Σ_i ref[i]·rec[d+i]) / (‖ref‖·‖rec[d..d+L]‖)`；分母 `≤` [`NCC_EPS`]
+/// ⇒ `ncc[d] = 0`。取 `d* = argmax|ncc|`（并列取**最小** `d` ⇒ 确定性），于是：
+///
+/// - `delay_frames = d*`、`peak_ncc = ncc[d*]`；
+/// - `peak_ratio = |ncc[d*]| / max(主瓣外次高 |ncc[d]|, NCC_EPS)`；
+/// - 主瓣保护带 = `±max(reference.len()/8, 1)` 个滞后（匹配滤波的主瓣宽度随
+///   时间带宽积缩小；实测相邻滞后重叠 `L−1` 样本，不设保护带则比值恒 ≈ 1）；
+/// - `reference` 为空 / `M < L` / 参考能量 `≤` [`NCC_EPS`] ⇒ `None`；
+/// - `|peak| == 0` 或 `peak_ratio < threshold` ⇒ `None`（**没有检出**）。
+///
+/// ⛔ 返回 `Some` **只**说明"这条参考信号被相关出来了"，**不**说明往返时延达标
+/// —— 达标与否只由 [`verdict_for`] 判（它要求 [`Evidence::LoopbackMeasured`]）。
+#[must_use]
+pub fn detect_delay_frames(
+    reference: &[f32],
+    recorded: &[f32],
+    threshold: f32,
+) -> Option<Detected> {
+    let length = reference.len();
+    if length == 0 || recorded.len() < length {
+        return None;
+    }
+    let reference_energy: f64 = reference
+        .iter()
+        .map(|sample| f64::from(*sample) * f64::from(*sample))
+        .sum();
+    if reference_energy <= f64::from(NCC_EPS) {
+        return None;
+    }
+    let reference_norm = reference_energy.sqrt();
+    let lags = recorded.len() - length + 1;
+    let mut ncc = vec![0.0f32; lags];
+    for d in 0..lags {
+        let mut dot = 0.0f64;
+        let mut energy = 0.0f64;
+        for i in 0..length {
+            let x = f64::from(reference[i]);
+            let y = f64::from(recorded[d + i]);
+            dot += x * y;
+            energy += y * y;
+        }
+        let denominator = reference_norm * energy.sqrt();
+        ncc[d] = if denominator <= f64::from(NCC_EPS) {
+            0.0
+        } else {
+            (dot / denominator) as f32
+        };
+    }
+    let mut best = 0usize;
+    let mut best_abs = 0.0f32;
+    for (d, value) in ncc.iter().enumerate() {
+        let magnitude = value.abs();
+        if magnitude > best_abs {
+            best_abs = magnitude;
+            best = d;
+        }
+    }
+    let guard = (length / 8).max(1);
+    let mut second_abs = 0.0f32;
+    for (d, value) in ncc.iter().enumerate() {
+        if d.abs_diff(best) > guard {
+            let magnitude = value.abs();
+            if magnitude > second_abs {
+                second_abs = magnitude;
+            }
+        }
+    }
+    let peak_ratio = if second_abs <= NCC_EPS {
+        if best_abs <= NCC_EPS {
+            0.0
+        } else {
+            f32::INFINITY
+        }
+    } else {
+        best_abs / second_abs
+    };
+    if best_abs <= 0.0 || peak_ratio < threshold {
+        return None;
+    }
+    Some(Detected {
+        delay_frames: best,
+        peak_ncc: ncc[best],
+        peak_ratio,
+        lags,
+    })
 }
 
 #[cfg(test)]
@@ -1446,6 +1666,254 @@ driver_io_sum_is_roundtrip=false";
             percentile_nearest_rank(&sorted, 100.0),
             percentile_nearest_rank(&sorted, 99.0),
             "100 个样本时 p = 100 与 p = 99 必须落在不同元素上（非空证明）"
+        );
+    }
+
+    // =======================================================================
+    // `--loopback` 腿：判据（§3.1–§3.5）
+    // =======================================================================
+
+    /// 可复现的**伪噪声**（xorshift32；⛔ 不用随机数 ⇒ 判据确定性可复跑）。
+    fn pseudo_noise(length: usize, seed: u32) -> Vec<f32> {
+        let mut state = seed | 1;
+        (0..length)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    /// FNV-1a 64 位指纹（仓内既有先例：`crates/yeban-app/tests/sfz_model_chain.rs`）。
+    fn fnv1a_64(bytes: &[u8]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    /// §3.5 的输入：一份字段尽量多的**默认腿**规范报告（逐位确定 ⇒ 指纹可复跑）。
+    fn canonical_default_report() -> Report {
+        Report {
+            label: "fingerprint".to_owned(),
+            requested_frames: 64,
+            target_ms: TARGET_ROUNDTRIP_MS,
+            devices: vec![device(Direction::Output, 0), device(Direction::Input, 1)],
+            nominals: vec![
+                NominalReport {
+                    direction: Direction::Output,
+                    buffer_frames: 64,
+                    sample_rate_hz: 48_000,
+                    latency_ms: nominal_ms(64, 48_000).expect("合法"),
+                },
+                NominalReport {
+                    direction: Direction::Input,
+                    buffer_frames: 64,
+                    sample_rate_hz: 48_000,
+                    latency_ms: nominal_ms(64, 48_000).expect("合法"),
+                },
+            ],
+            callbacks: vec![
+                CallbackReport {
+                    direction: Direction::Output,
+                    callbacks: 1500,
+                    backend_errors: 0,
+                    stats: jitter_stats(&[1_000_000, 1_000_000, 1_002_000], 1_000_000),
+                    driver_latency: distribution_ms(&[2_500_000, 2_500_000, 2_900_000]),
+                },
+                CallbackReport {
+                    direction: Direction::Input,
+                    callbacks: 1499,
+                    backend_errors: 1,
+                    stats: jitter_stats(&[1_000_000, 1_010_000], 1_000_000),
+                    driver_latency: distribution_ms(&[1_000_000, 1_200_000]),
+                },
+            ],
+            evidence: Evidence::NominalOnly,
+            measured_roundtrip_ms: None,
+            notes: vec!["a note".to_owned()],
+        }
+    }
+
+    /// §3.1：注入已知延迟 ⇒ **逐帧精确**返回注入值（含 `D = 0` 与窗边界）。
+    #[test]
+    fn detect_delay_frames_recovers_the_injected_delay_exactly() {
+        let reference = loopback_chirp(48_000, 8.0);
+        let length = reference.len();
+        assert!(length >= 256, "参考 chirp 太短：{length} 帧");
+        let recorded_len = 2 * length + 50;
+        // 窗边界 = 最后一个合法滞后（参考信号正好贴住录制窗的右沿）。
+        let boundary = recorded_len - length;
+        for delay in [0usize, length / 2, boundary] {
+            let mut recorded = pseudo_noise(recorded_len, 0x1234_5678);
+            for (index, value) in reference.iter().enumerate() {
+                recorded[delay + index] += value;
+            }
+            let hit = detect_delay_frames(&reference, &recorded, LOOPBACK_PEAK_RATIO_THRESHOLD)
+                .unwrap_or_else(|| panic!("注入延迟 {delay} 帧必须被检出"));
+            assert_eq!(
+                hit.delay_frames, delay,
+                "注入延迟必须逐帧精确（delay={delay}）"
+            );
+            assert_eq!(hit.lags, recorded_len - length + 1);
+            assert!(
+                hit.peak_ratio > LOOPBACK_PEAK_RATIO_THRESHOLD,
+                "峰值比要真的过阈值：{}",
+                hit.peak_ratio
+            );
+        }
+    }
+
+    /// §3.2：**没有信号 ⇒ `None`**（负判据），且同一批数据里必须有一个**已知非空**的正对照。
+    #[test]
+    fn detect_delay_frames_rejects_pure_noise_zeros_and_constants() {
+        let reference = loopback_chirp(48_000, 8.0);
+        let length = reference.len();
+        let recorded_len = length + 200;
+        // 正对照（非空证明）：同一段伪噪声里埋一个 chirp ⇒ 必须检出。
+        let mut planted = pseudo_noise(recorded_len, 0x0BAD_F00D);
+        for (index, value) in reference.iter().enumerate() {
+            planted[100 + index] += value;
+        }
+        let positive = detect_delay_frames(&reference, &planted, LOOPBACK_PEAK_RATIO_THRESHOLD)
+            .expect("正对照必须检出（否则下面的 None 没有判别力）");
+        assert_eq!(positive.delay_frames, 100);
+        assert!(positive.peak_ratio > 1.0);
+        // 负判据：纯噪声 / 全零 / 全常数 / 比参考还短。
+        assert_eq!(
+            detect_delay_frames(
+                &reference,
+                &pseudo_noise(recorded_len, 0xC0FF_EE01),
+                LOOPBACK_PEAK_RATIO_THRESHOLD
+            ),
+            None,
+            "纯噪声不许被检出"
+        );
+        assert_eq!(
+            detect_delay_frames(
+                &reference,
+                &vec![0.0_f32; recorded_len],
+                LOOPBACK_PEAK_RATIO_THRESHOLD
+            ),
+            None,
+            "全零不许被检出"
+        );
+        assert_eq!(
+            detect_delay_frames(
+                &reference,
+                &vec![0.5_f32; recorded_len],
+                LOOPBACK_PEAK_RATIO_THRESHOLD
+            ),
+            None,
+            "全常数不许被检出"
+        );
+        assert_eq!(
+            detect_delay_frames(&reference, &[1.0_f32; 4], LOOPBACK_PEAK_RATIO_THRESHOLD),
+            None
+        );
+        assert_eq!(
+            detect_delay_frames(&[], &[1.0_f32; 16], LOOPBACK_PEAK_RATIO_THRESHOLD),
+            None
+        );
+    }
+
+    /// §3.3（诚实闸）：`LoopbackMeasured` ＋ **没有数字** ⇒ 仍不可判定（⛔ 不许翻成达标）。
+    #[test]
+    fn loopback_evidence_without_a_measured_number_is_still_unmeasurable() {
+        for claim in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ] {
+            let verdict = verdict_for(2, Evidence::LoopbackMeasured, claim);
+            assert_eq!(
+                verdict,
+                Verdict::UnmeasurableWithoutLoopback,
+                "声称有回环但没有有限数字（claim={claim:?}）绝不许翻成达标"
+            );
+            assert!(!verdict.is_pass());
+        }
+        // 整条 `Report` 也走同一条规则（不是只有裸函数被钉住）。
+        let report = Report {
+            label: "loopback-claimed-no-number".to_owned(),
+            requested_frames: 64,
+            target_ms: TARGET_ROUNDTRIP_MS,
+            devices: vec![device(Direction::Output, 0), device(Direction::Input, 1)],
+            nominals: Vec::new(),
+            callbacks: Vec::new(),
+            evidence: Evidence::LoopbackMeasured,
+            measured_roundtrip_ms: None,
+            notes: vec!["claimed loopback but carried no number".to_owned()],
+        };
+        assert_eq!(report.verdict(), Verdict::UnmeasurableWithoutLoopback);
+        assert!(!report.verdict().is_pass());
+        let line = report.bench_line();
+        assert!(
+            !line.contains("within-target"),
+            "行里不许出现达标字样: {line}"
+        );
+        let fields = parse_bench_line(&line).expect("可解析");
+        assert_eq!(fields.measured_roundtrip_ms, None);
+        assert_eq!(fields.verdict, "unmeasurable-without-loopback");
+        assert_ne!(
+            exit_code_for(report.verdict(), false),
+            0,
+            "没有数字必须非零退出"
+        );
+    }
+
+    /// §3.4：阈值边界**精确**（`≤` 含等号，不是 `<`）。
+    #[test]
+    fn the_roundtrip_boundary_at_the_target_is_inclusive() {
+        assert_eq!(
+            verdict_for(1, Evidence::LoopbackMeasured, Some(TARGET_ROUNDTRIP_MS)),
+            Verdict::WithinTarget,
+            "恰好 {TARGET_ROUNDTRIP_MS} ms 算达标（≤）"
+        );
+        // 最接近的**更大**可表示值（nextafter）也必须翻面。
+        let above = f64::from_bits(TARGET_ROUNDTRIP_MS.to_bits() + 1);
+        assert!(above > TARGET_ROUNDTRIP_MS);
+        assert_eq!(
+            verdict_for(1, Evidence::LoopbackMeasured, Some(above)),
+            Verdict::OverTarget
+        );
+        assert_eq!(
+            verdict_for(
+                1,
+                Evidence::LoopbackMeasured,
+                Some(TARGET_ROUNDTRIP_MS + 1e-9)
+            ),
+            Verdict::OverTarget,
+            "TARGET + ε 必须超目标"
+        );
+        let below = f64::from_bits(TARGET_ROUNDTRIP_MS.to_bits() - 1);
+        assert_eq!(
+            verdict_for(1, Evidence::LoopbackMeasured, Some(below)),
+            Verdict::WithinTarget
+        );
+        assert!(verdict_for(1, Evidence::LoopbackMeasured, Some(TARGET_ROUNDTRIP_MS)).is_pass());
+    }
+
+    /// §3.5：默认腿（`--loopback` 关掉）的 `bench_line()` **字面**被指纹钉死。
+    ///
+    /// 指纹常量 = **改动前**（`main`：`29836135a51dac17db028fa04485b35898d8f807`）实测值。
+    #[test]
+    fn the_default_leg_bench_line_literal_is_frozen() {
+        let line = canonical_default_report().bench_line();
+        assert_eq!(
+            fnv1a_64(line.as_bytes()),
+            0x7707_0a2b_9447_c69a,
+            "默认腿的机器可读行字面变了 —— `--loopback` 关掉时它必须逐字不变:\n{line}"
+        );
+        // 判别力（非空证明）：末尾多一个空格，指纹必须不同。
+        assert_ne!(
+            fnv1a_64(line.as_bytes()),
+            fnv1a_64(format!("{line} ").as_bytes())
         );
     }
 }

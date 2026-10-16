@@ -23,11 +23,11 @@
 //! 4. **回调调度抖动**（**CPU 侧**）：真的跑 2 秒输出流 + 输入流，统计每次回调到达间隔
 //!    与标称周期的偏差的 p50 / p99 / max / mean（`CALLBACK` 行）。
 //!
-//! **不能测**（因此本工具**永远**不会宣布达标）：
+//! **默认腿不能测**（因此不带 `--loopback` 时本工具**永远**不会宣布达标）：
 //!
 //! - **真正的声学 / DAC-ADC 往返时延**：`playback`/`capture` 是**主机自己的预测**，
-//!   不是测出来的声学量。真正的往返需要**物理回环**（输出接输入，或
-//!   BlackHole/Loopback 这类虚拟设备）并做采集比对。
+//!   不是测出来的声学量。默认腿没有**物理回环**（输出接输入，或
+//!   BlackHole/Loopback 这类虚拟设备）与**采集比对**，所以它拿不到往返证据。
 //! - **cpal 0.18.2 没有显式的时延查询 API**（`DeviceTrait` 上没有 `buffer_size()`/`now()`；
 //!   这两个在 `StreamTrait` 上）——
 //!   但这**不等于**"拿不到硬件时延"：上面第 3 条就是证据。想直接调
@@ -36,17 +36,39 @@
 //! - ⚠ **本线第一版把上面这条说错过**（写成"cpal 一个都不暴露"），已在核对
 //!   `cpal-0.18.2/src/` 源码后更正并留痕，见 `docs/ledger/audio-latency-notes.md` §1.1。
 //!
+//! **`--loopback` 腿能测**（默认**关**；只有显式加 `--loopback` 才走）：
+//!
+//! 1. 同时在**默认输出**与**默认输入**上各开一条 cpal 流（本文件自己
+//!    `build_output_stream` / `build_input_stream`，与 `run_output`/`run_input` 同款）；
+//! 2. 往输出回调写一条**线性 chirp**（200 Hz → 8 kHz、约 50 ms；参数见
+//!    [`yeban_engine::latency::LOOPBACK_CHIRP_MS`] 一族常量）；
+//! 3. 把输入采集攒起来，用**归一化互相关**
+//!    （[`yeban_engine::latency::detect_delay_frames`]）找 chirp 的滞后；
+//! 4. 往返 = **输出回调首次送出 chirp 的 `Instant`** 与 **输入回调首次检出该 chirp 的
+//!    `Instant`** 之差（两侧同进程、同一个 `Instant` 时基 ⇒ 不需要共享流帧计数器）。
+//!
+//! ⚠ **这个数字的诚实口径**（⛔ 不许读成"真硬件往返"）：
+//! 它从"输出回调被**调用**"算起（**不是**样本离开 DAC 的时刻），到"载着 chirp 的
+//! 输入回调被**调用**"为止 ⇒ 它**含驱动缓冲、不含 DAC／ADC 的模拟段**。
+//! **虚拟回环（BlackHole/Loopback）没有 AD／DA** ⇒ 那是真硬件往返的**下界**，
+//! ⛔ **不等于**真硬件往返。要判 `BASELINE-005` 是否达标，仍需人类按 ADR 裁决口径
+//! （"原生 API 口径"是否算数）。
+//!
+//! 检出的**不确定性**（峰值比、主瓣外次高峰、滞后帧数、回调量化）都写进
+//! `LOOPBACK:` / `NOTE:` 行与 stderr；**没检出**时本工具**不给数**，并**保持**
+//! `unmeasurable-without-loopback` + 非零退出（诚实闸，见正文）。
+//!
 //! ⇒ 所以本工具**没有** `roundtrip_ms` 这种"看起来达标的总数"字段：实测往返只出现在
-//! `measured_roundtrip_ms=`，且在本工具的路径上恒为 `none`；驱动侧时延**故意不给合计**
-//! （合计最像"达标总数"）。判定由 [`yeban_engine::latency::verdict_for`] 给出，
-//! **没有回环证据时 `within-target` 不可达**。
+//! `measured_roundtrip_ms=`，默认腿上恒为 `none`（只有 `--loopback` 腿**真的检出**才是一个数）；
+//! 驱动侧时延**故意不给合计**（合计最像"达标总数"）。判定由
+//! [`yeban_engine::latency::verdict_for`] 给出，**没有回环证据时 `within-target` 不可达**。
 //!
 //! # 退出码（"没测到"必须区别于"达标"）
 //!
 //! | 码 | 含义 |
 //! | :---: | :--- |
-//! | 0 | **实测**达标（本工具不产生此码）；或 `--allow-unmeasurable` 把"没测到"映射过来 |
-//! | 1 | **实测**超目标（本工具不产生此码）|
+//! | 0 | **实测**达标：只有 `--loopback` 腿**真的检出** chirp 且 `≤ 5.5 ms` 才产生；或 `--allow-unmeasurable` 把"没测到"映射过来 |
+//! | 1 | **实测**超目标：只有 `--loopback` 腿**真的检出** chirp 且 `> 5.5 ms` 才产生 |
 //! | 2 | 命令行用法错误 |
 //! | 3 | 本环境**没有音频设备**（托管 CI runner 的常态）—— **不是**达标，**不是** 0 ms |
 //! | 4 | 有设备但**没有回环证据** ⇒ 往返时延不可判定 —— **不是**达标 |
@@ -96,22 +118,26 @@ mod imp {
     use std::process::ExitCode;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::{
         BufferSize, SampleFormat, StreamConfig, SupportedBufferSize, SupportedStreamConfigRange,
     };
     use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
-    use yeban_engine::device::{EngineConfig, STREAM_OPEN_TIMEOUT, ShareMode, negotiate};
+    use yeban_engine::device::{
+        EngineConfig, STREAM_OPEN_TIMEOUT, ShareMode, capture_callback, negotiate, negotiate_input,
+    };
     use yeban_engine::graph::LatencyTable;
     use yeban_engine::latency::{
         CallbackReport, DRIVER_IN_LATENCY_SOURCE, DRIVER_OUT_LATENCY_SOURCE, DeviceReport,
-        Direction, EXIT_TOOL_DISABLED, EXIT_USAGE, Evidence, JitterStats, NO_DEVICE_REASON,
-        NominalReport, Report, TARGET_ROUNDTRIP_MS, distribution_ms, driver_latency_unreported,
-        exit_code_for, jitter_stats, nominal_ms, parse_bench_line,
+        Direction, EXIT_TOOL_DISABLED, EXIT_USAGE, Evidence, JitterStats, LOOPBACK_CHIRP_MS,
+        LOOPBACK_PEAK_RATIO_THRESHOLD, NO_DEVICE_REASON, NominalReport, Report,
+        TARGET_ROUNDTRIP_MS, detect_delay_frames, distribution_ms, driver_latency_unreported,
+        exit_code_for, jitter_stats, loopback_chirp, nominal_ms, parse_bench_line,
     };
     use yeban_engine::meter::meter_channel;
+    use yeban_engine::record::record_channel;
     use yeban_engine::ring::event_channel;
     use yeban_engine::rt::EngineRuntime;
     use yeban_engine::snapshot::{EngineSnapshot, SnapshotSlot, retire_channel};
@@ -131,6 +157,8 @@ mod imp {
         label: String,
         force_no_device: bool,
         allow_unmeasurable: bool,
+        /// `--loopback`：是否走**回环腿**（默认**关** ⇒ 默认腿行为一位不变）。
+        loopback: bool,
     }
 
     const USAGE: &str = "\
@@ -141,6 +169,14 @@ usage: measure_latency [options]
   --sample-rate HZ      requested sample rate (default 48000)
   --label NAME          reading label, goes into the BENCH line (default \"default\")
   --force-no-device     report the no-device path as if this host had no audio device
+  --loopback            ALSO open the default output+input streams SIMULTANEOUSLY, play a
+                        linear chirp (200 Hz -> 8 kHz, ~50 ms) on the output and matched-filter
+                        (normalized cross-correlation) the input capture. A roundtrip number is
+                        reported ONLY if the chirp is really detected; it is the host-observed
+                        callback-to-callback time (includes driver buffers, EXCLUDES the DAC/ADC
+                        analog sections). On a virtual loopback (BlackHole) there is no AD/DA, so
+                        that figure is a LOWER BOUND, not a real hardware roundtrip. If the chirp
+                        is not detected the reading stays unmeasurable and exits non-zero.
   --allow-unmeasurable  map exit codes 3 (no-device) and 4 (no loopback) to 0; the BENCH
                         line keeps verdict=no-device / unmeasurable-without-loopback
                         and NEVER becomes within-target
@@ -164,6 +200,7 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
             label: "default".to_owned(),
             force_no_device: false,
             allow_unmeasurable: false,
+            loopback: false,
         };
         let mut index = 0;
         while index < args.len() {
@@ -192,6 +229,7 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
                 }
                 "--force-no-device" => options.force_no_device = true,
                 "--allow-unmeasurable" => options.allow_unmeasurable = true,
+                "--loopback" => options.loopback = true,
                 other => return Err(format!("unknown argument {other:?} (try --help)")),
             }
             index += 1;
@@ -751,6 +789,401 @@ direction on purpose",
         }
     }
 
+    // =======================================================================
+    // `--loopback` 腿：同时开两条流 + 线性 chirp + 采集比对
+    // =======================================================================
+
+    /// 回环腿的**预热**时长（毫秒）：先让输入流跑起来，再送 chirp。
+    const LOOPBACK_PREROLL_MS: f64 = 250.0;
+
+    /// 回环腿最多采集多少秒（采集环容量上限；超出即截断 ⇒ 判为不可测）。
+    const LOOPBACK_MAX_CAPTURE_SECONDS: f64 = 30.0;
+
+    /// 回环腿的**共享锚**：控制侧建好，实时回调只写原子量 / 预分配槽
+    /// ⇒ 回调内零分配、零锁、零阻塞 I/O [AGENTS.md §2 红线 7]。
+    struct LoopbackAnchors {
+        /// 两条流共用的时基原点（同一个 `Instant` 基准 ⇒ 两侧可比）。
+        base: Instant,
+        /// 输出回调**首次送出 chirp** 的时刻（相对 `base` 的纳秒；0 = 还没送过）。
+        emit_ns: AtomicU64,
+        /// 第 k 次输入回调的**首帧序号**。
+        stamp_frames: Box<[AtomicU64]>,
+        /// 第 k 次输入回调的时刻（相对 `base` 的纳秒）。
+        stamp_ns: Box<[AtomicU64]>,
+        /// 已写入多少个输入回调时间戳槽。
+        stamp_count: AtomicUsize,
+        /// 采集环因满而丢弃的**帧**数（> 0 ⇒ 录音不连续 ⇒ 判为不可测）。
+        dropped_frames: AtomicU64,
+    }
+
+    impl LoopbackAnchors {
+        fn new() -> Arc<Self> {
+            let frames: Vec<AtomicU64> = (0..MAX_CALLBACKS).map(|_| AtomicU64::new(0)).collect();
+            let stamps: Vec<AtomicU64> = (0..MAX_CALLBACKS).map(|_| AtomicU64::new(0)).collect();
+            Arc::new(Self {
+                base: Instant::now(),
+                emit_ns: AtomicU64::new(0),
+                stamp_frames: frames.into_boxed_slice(),
+                stamp_ns: stamps.into_boxed_slice(),
+                stamp_count: AtomicUsize::new(0),
+                dropped_frames: AtomicU64::new(0),
+            })
+        }
+
+        /// `base` 起算的纳秒（饱和到 `u64`；回调内只读时钟，不分配不加锁）。
+        fn now_ns(&self) -> u64 {
+            u64::try_from(self.base.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        }
+    }
+
+    /// 回环腿的读数：两条流的常规统计 ＋ 一个（可能的）实测往返。
+    struct LoopbackRun {
+        output_name: String,
+        input_name: String,
+        output: StreamRun,
+        input: StreamRun,
+        /// 真的检出、且用两个回调的 `Instant` 算出来的往返（毫秒）；没检出 ⇒ `None`。
+        measurement: Option<f64>,
+    }
+
+    /// 把检出到的滞后帧映射成"载着它的那次输入回调"的时刻（相对 `base` 的纳秒）。
+    ///
+    /// 口径：`stamp_frames[k]` 是第 k 次回调的**首帧**序号 ⇒ 块内按采样率线性插值。
+    /// 返回 `None` 当滞后不在**已记录的回调窗**内 —— 这正是诚实闸要求的
+    /// "检出的延迟必须落在录制窗内"。
+    fn input_instant_ns(
+        anchors: &LoopbackAnchors,
+        onset_frame: usize,
+        recorded_frames: usize,
+        sample_rate_hz: u32,
+    ) -> Option<f64> {
+        let count = anchors
+            .stamp_count
+            .load(Ordering::Relaxed)
+            .min(anchors.stamp_frames.len());
+        if count == 0 {
+            return None;
+        }
+        let mut chosen: Option<usize> = None;
+        for index in 0..count {
+            let begin = anchors.stamp_frames[index].load(Ordering::Relaxed) as usize;
+            if begin <= onset_frame {
+                chosen = Some(index);
+            } else {
+                break;
+            }
+        }
+        let index = chosen?;
+        let begin = anchors.stamp_frames[index].load(Ordering::Relaxed) as usize;
+        let end = if index + 1 < count {
+            anchors.stamp_frames[index + 1].load(Ordering::Relaxed) as usize
+        } else {
+            recorded_frames
+        };
+        if onset_frame < begin || onset_frame >= end {
+            return None;
+        }
+        let within_block = (onset_frame - begin) as f64 / f64::from(sample_rate_hz);
+        Some(anchors.stamp_ns[index].load(Ordering::Relaxed) as f64 + within_block * 1e9)
+    }
+
+    /// 回环腿：**同时**开默认输出与默认输入两条流，输出送 chirp、输入采集比对。
+    ///
+    /// 两条流都由本文件自己 `build_*_stream`（与 [`run_output`]/[`run_input`] 同款），
+    /// 于是时间锚完全由我们掌握。⛔ 只有**真的检出**才给往返数 —— 没检出时返回
+    /// `Ok(.., None)` 并把"为什么没检出"写进 `notes` 与 stderr（诚实闸）。
+    /// 任何"开不了流"都返回 `Err`（⛔ 不许静默当 0、不许假装达标）。
+    fn run_loopback(
+        options: &Options,
+        config: &EngineConfig,
+        notes: &mut Vec<String>,
+    ) -> Result<LoopbackRun, String> {
+        let host = cpal::default_host();
+        let output_device = host
+            .default_output_device()
+            .ok_or_else(|| "no default output device".to_owned())?;
+        let input_device = host
+            .default_input_device()
+            .ok_or_else(|| "no default input device".to_owned())?;
+        let output_name = output_device.to_string();
+        let input_name = input_device.to_string();
+
+        let output_ranges: Vec<SupportedStreamConfigRange> = output_device
+            .supported_output_configs()
+            .map_err(|error| format!("supported_output_configs: {error}"))?
+            .collect();
+        let output_negotiated = negotiate(&output_ranges, config)
+            .map_err(|error| format!("output negotiation failed: {error}"))?;
+        let input_ranges: Vec<SupportedStreamConfigRange> = input_device
+            .supported_input_configs()
+            .map_err(|error| format!("supported_input_configs: {error}"))?
+            .collect();
+        let input_negotiated = negotiate_input(&input_ranges, config)
+            .map_err(|error| format!("input negotiation failed: {error}"))?;
+
+        // ⚠ 采样率不同 ⇒ 录回来的 chirp 被重采样过，参考信号对不上。
+        // 宁可**响亮地不测**，也不要拿一条对不上的相关峰当真（诚实闸）。
+        if input_negotiated.sample_rate != output_negotiated.sample_rate {
+            return Err(format!(
+                "input sample rate {} != output sample rate {}: the chirp would be resampled \
+before capture and the matched filter would compare different signals, so no roundtrip is \
+claimed",
+                input_negotiated.sample_rate, output_negotiated.sample_rate
+            ));
+        }
+        let sample_rate = output_negotiated.sample_rate;
+        let rate = f64::from(sample_rate);
+        let chirp = Arc::<[f32]>::from(loopback_chirp(sample_rate, LOOPBACK_CHIRP_MS));
+        if chirp.is_empty() {
+            return Err("chirp generation produced no samples".to_owned());
+        }
+
+        let output_channels = output_negotiated.channels;
+        let input_channels = input_negotiated.channels;
+        let preroll_frames = (rate * LOOPBACK_PREROLL_MS / 1000.0).round() as usize;
+
+        // 采集环：容量按 --seconds 给足（另留一秒余量），并有硬上限。
+        let wanted =
+            ((options.seconds * rate).ceil() as usize).saturating_add(sample_rate as usize);
+        let capacity = wanted
+            .min((LOOPBACK_MAX_CAPTURE_SECONDS * rate) as usize)
+            .max(1);
+        let (sender, mut receiver) = record_channel(capacity, input_channels);
+        let anchors = LoopbackAnchors::new();
+        let output_clock = CallbackClock::new();
+        let input_clock = CallbackClock::new();
+
+        let reported_output;
+        let reported_input;
+        {
+            // ---- 输出流：本文件自己建；回调只做静音 + 覆盖 chirp + 记两个时刻 ----
+            let anchor = Arc::clone(&anchors);
+            let signal = Arc::clone(&chirp);
+            let clock = Arc::clone(&output_clock);
+            let channels = usize::from(output_channels);
+            let mut cursor: usize = 0;
+            let mut emitted = false;
+            let output_stream = output_device
+                .build_output_stream::<f32, _, _>(
+                    StreamConfig {
+                        channels: output_channels,
+                        sample_rate,
+                        buffer_size: output_negotiated.buffer_size,
+                    },
+                    move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                        let stamp = info.timestamp();
+                        clock.record(stamp.callback);
+                        clock.record_driver_latency(delta_ns(stamp.playback, stamp.callback));
+                        // 先整块静音（回调内零分配），再把 chirp 窗口覆盖上去。
+                        for sample in data.iter_mut() {
+                            *sample = 0.0;
+                        }
+                        let frames = data.len() / channels;
+                        for index in 0..frames {
+                            let global = cursor + index;
+                            if global >= preroll_frames && global < preroll_frames + signal.len() {
+                                let value = signal[global - preroll_frames];
+                                for channel in 0..channels {
+                                    data[index * channels + channel] = value;
+                                }
+                                if !emitted {
+                                    emitted = true;
+                                    anchor.emit_ns.store(anchor.now_ns(), Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        cursor = cursor.saturating_add(frames);
+                    },
+                    {
+                        let error_clock = Arc::clone(&output_clock);
+                        move |_error: cpal::Error| error_clock.note_error()
+                    },
+                    Some(STREAM_OPEN_TIMEOUT),
+                )
+                .map_err(|error| format!("build_output_stream (loopback): {error}"))?;
+            // ---- 输入流：回调只写时间戳 + 无锁推入采集环（零分配 / 零锁）----
+            let anchor = Arc::clone(&anchors);
+            let clock = Arc::clone(&input_clock);
+            let mut sender = sender;
+            let in_channels = usize::from(input_channels);
+            let mut cursor: usize = 0;
+            let input_stream = input_device
+                .build_input_stream::<f32, _, _>(
+                    StreamConfig {
+                        channels: input_channels,
+                        sample_rate,
+                        buffer_size: input_negotiated.buffer_size,
+                    },
+                    move |data: &[f32], info: &cpal::InputCallbackInfo| {
+                        let stamp = info.timestamp();
+                        clock.record(stamp.callback);
+                        clock.record_driver_latency(delta_ns(stamp.callback, stamp.capture));
+                        let index = anchor.stamp_count.load(Ordering::Relaxed);
+                        if index < anchor.stamp_frames.len() {
+                            anchor.stamp_frames[index].store(cursor as u64, Ordering::Relaxed);
+                            anchor.stamp_ns[index].store(anchor.now_ns(), Ordering::Relaxed);
+                            anchor.stamp_count.store(index + 1, Ordering::Relaxed);
+                        }
+                        capture_callback(&mut sender, data, input_channels);
+                        anchor
+                            .dropped_frames
+                            .store(sender.dropped_frames(), Ordering::Relaxed);
+                        cursor = cursor.saturating_add(data.len() / in_channels);
+                    },
+                    {
+                        let error_clock = Arc::clone(&input_clock);
+                        move |_error: cpal::Error| error_clock.note_error()
+                    },
+                    Some(STREAM_OPEN_TIMEOUT),
+                )
+                .map_err(|error| format!("build_input_stream (loopback): {error}"))?;
+
+            // ⚠ **先起输入、后起输出**：输入先采，chirp 才不会落在录制窗之前。
+            input_stream
+                .play()
+                .map_err(|error| format!("input play (loopback): {error}"))?;
+            output_stream
+                .play()
+                .map_err(|error| format!("output play (loopback): {error}"))?;
+            reported_output = output_stream.buffer_size().ok();
+            reported_input = input_stream.buffer_size().ok();
+            std::thread::sleep(Duration::from_secs_f64(options.seconds));
+            let _ = output_stream.pause();
+            let _ = input_stream.pause();
+        }
+
+        // ---- 采集侧抽干（控制线程，允许分配）----
+        let mut mono: Vec<f32> = Vec::new();
+        receiver.drain_frames(usize::MAX, |frame| {
+            let sum: f32 = frame.iter().sum();
+            mono.push(sum / frame.len() as f32);
+        });
+        let dropped = anchors.dropped_frames.load(Ordering::Relaxed);
+
+        let measurement = if dropped > 0 {
+            let reason = format!(
+                "--loopback: the capture ring dropped {dropped} frame(s) (capacity too small) -> \
+the recording is not contiguous, so no roundtrip is claimed"
+            );
+            eprintln!("measure_latency: {reason}");
+            notes.push(reason);
+            None
+        } else if mono.is_empty() {
+            let reason = "--loopback: the input stream captured no samples -> no roundtrip is \
+claimed (this is NOT a pass and NOT 0 ms)"
+                .to_owned();
+            eprintln!("measure_latency: {reason}");
+            notes.push(reason);
+            None
+        } else if let Some(hit) = detect_delay_frames(&chirp, &mono, LOOPBACK_PEAK_RATIO_THRESHOLD)
+        {
+            let emitted_ns = anchors.emit_ns.load(Ordering::Relaxed);
+            if emitted_ns == 0 {
+                let reason = "--loopback: a correlation peak was found but the chirp was never \
+emitted by the output callback -> no roundtrip is claimed"
+                    .to_owned();
+                eprintln!("measure_latency: {reason}");
+                notes.push(reason);
+                None
+            } else {
+                match input_instant_ns(&anchors, hit.delay_frames, mono.len(), sample_rate) {
+                    Some(input_ns) if input_ns >= emitted_ns as f64 => {
+                        let roundtrip_ms = (input_ns - emitted_ns as f64) / 1e6;
+                        if roundtrip_ms.is_finite() && roundtrip_ms >= 0.0 {
+                            notes.push(format!(
+                                "--loopback: chirp detected (delay_frames={delay} peak_ncc={ncc:.4} \
+peak_ratio={ratio:.2} lags={lags}); roundtrip_ms={ms:.4} is the HOST-OBSERVED \
+callback-to-callback time: it starts when the output callback that carried the chirp was invoked \
+(NOT when the samples left the DAC) and ends when the input callback that carried the chirp was \
+invoked; it therefore includes the driver buffers and EXCLUDES the DAC/ADC analog sections. On a \
+virtual loopback (BlackHole/Loopback) there is no AD/DA at all, so this is a LOWER BOUND for a \
+real hardware roundtrip, NOT equal to it",
+                                delay = hit.delay_frames,
+                                ncc = hit.peak_ncc,
+                                ratio = hit.peak_ratio,
+                                lags = hit.lags,
+                                ms = roundtrip_ms,
+                            ));
+                            Some(roundtrip_ms)
+                        } else {
+                            let reason = format!(
+                                "--loopback: the derived roundtrip is not a finite non-negative \
+number ({roundtrip_ms}) -> no roundtrip is claimed"
+                            );
+                            eprintln!("measure_latency: {reason}");
+                            notes.push(reason);
+                            None
+                        }
+                    }
+                    Some(_) => {
+                        let reason =
+                            "--loopback: the chirp was detected BEFORE the output callback \
+emitted it (impossible timing) -> no roundtrip is claimed"
+                                .to_owned();
+                        eprintln!("measure_latency: {reason}");
+                        notes.push(reason);
+                        None
+                    }
+                    None => {
+                        let reason = "--loopback: the detected delay does not fall inside the \
+captured callback window -> no roundtrip is claimed"
+                            .to_owned();
+                        eprintln!("measure_latency: {reason}");
+                        notes.push(reason);
+                        None
+                    }
+                }
+            }
+        } else {
+            // 诊断读数：把"最佳匹配长什么样"如实报出来（阈值 0 ⇒ 不收口），
+            // 这**不**构成检出（判定仍看阈值）。
+            let reading = detect_delay_frames(&chirp, &mono, 0.0).map_or_else(
+                || {
+                    "no correlation reading at all (capture all-zero or shorter than the reference)"
+                        .to_owned()
+                },
+                |hit| {
+                    format!(
+                        "best peak_ratio={:.2} (threshold={LOOPBACK_PEAK_RATIO_THRESHOLD}), \
+peak_ncc={:.4}, delay_frames={}, lags={}",
+                        hit.peak_ratio, hit.peak_ncc, hit.delay_frames, hit.lags
+                    )
+                },
+            );
+            let reason = format!(
+                "--loopback: NO chirp detected -> evidence stays nominal-only, \
+measured_roundtrip_ms=none, verdict=unmeasurable-without-loopback ({reading})"
+            );
+            eprintln!("measure_latency: {reason}");
+            notes.push(reason);
+            None
+        };
+
+        let output_run = finish(
+            output_clock.drain(),
+            output_clock.drain_driver(),
+            output_clock.invocations(),
+            output_clock.errors(),
+            output_negotiated,
+            reported_output,
+        );
+        let input_run = finish(
+            input_clock.drain(),
+            input_clock.drain_driver(),
+            input_clock.invocations(),
+            input_clock.errors(),
+            input_negotiated,
+            reported_input,
+        );
+        Ok(LoopbackRun {
+            output_name,
+            input_name,
+            output: output_run,
+            input: input_run,
+            measurement,
+        })
+    }
+
     /// 主流程。
     pub fn run(args: &[String]) -> ExitCode {
         if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -809,52 +1242,103 @@ direction on purpose",
         let mut nominals = Vec::new();
         let mut callbacks = Vec::new();
 
-        // ---- 输出流 ----
-        match host.default_output_device() {
-            Some(device) => {
-                let name = device.to_string();
-                match run_output(&device, &config, options.seconds) {
-                    Ok(run) => {
-                        mark_opened(&mut devices, Direction::Output, &name, run.reported_frames);
-                        let (nominal, callback) =
-                            summarize(Direction::Output, &run, options.frames, &mut notes);
-                        nominals.extend(nominal);
-                        callbacks.push(callback);
+        // ---- 回环腿（可选）----
+        // ⚠ `--loopback` **关**的时候，下面 `else` 分支里的默认腿流程与读数
+        // **一位都不许变**（`latency.rs` 的指纹判据钉住了默认腿的 BENCH 行字面）。
+        let mut evidence = Evidence::NominalOnly;
+        let mut measured_roundtrip_ms: Option<f64> = None;
+        if options.loopback {
+            // 两条流**同时**开：输出送 chirp、输入采集比对（时间锚由本文件掌握）。
+            match run_loopback(&options, &config, &mut notes) {
+                Ok(run) => {
+                    mark_opened(
+                        &mut devices,
+                        Direction::Output,
+                        &run.output_name,
+                        run.output.reported_frames,
+                    );
+                    mark_opened(
+                        &mut devices,
+                        Direction::Input,
+                        &run.input_name,
+                        run.input.reported_frames,
+                    );
+                    let (nominal, callback) =
+                        summarize(Direction::Output, &run.output, options.frames, &mut notes);
+                    nominals.extend(nominal);
+                    callbacks.push(callback);
+                    let (nominal, callback) =
+                        summarize(Direction::Input, &run.input, options.frames, &mut notes);
+                    nominals.extend(nominal);
+                    callbacks.push(callback);
+                    // 诚实闸：证据等级只在**真的检出**时才升级。
+                    if let Some(milliseconds) = run.measurement {
+                        evidence = Evidence::LoopbackMeasured;
+                        measured_roundtrip_ms = Some(milliseconds);
                     }
-                    Err(message) => notes.push(format!(
-                        "output stream NOT measured (this is NOT a pass): {message}"
-                    )),
                 }
+                Err(message) => notes.push(format!(
+                    "--loopback leg NOT measured (this is NOT a pass): {message}"
+                )),
             }
-            None => notes.push("no default output device (this is NOT a pass)".to_owned()),
+        } else {
+            // ---- 输出流 ----
+            match host.default_output_device() {
+                Some(device) => {
+                    let name = device.to_string();
+                    match run_output(&device, &config, options.seconds) {
+                        Ok(run) => {
+                            mark_opened(
+                                &mut devices,
+                                Direction::Output,
+                                &name,
+                                run.reported_frames,
+                            );
+                            let (nominal, callback) =
+                                summarize(Direction::Output, &run, options.frames, &mut notes);
+                            nominals.extend(nominal);
+                            callbacks.push(callback);
+                        }
+                        Err(message) => notes.push(format!(
+                            "output stream NOT measured (this is NOT a pass): {message}"
+                        )),
+                    }
+                }
+                None => notes.push("no default output device (this is NOT a pass)".to_owned()),
+            }
+
+            // ---- 输入流 ----
+            match host.default_input_device() {
+                Some(device) => {
+                    let name = device.to_string();
+                    match run_input(&device, &config, options.seconds) {
+                        Ok(run) => {
+                            mark_opened(&mut devices, Direction::Input, &name, run.reported_frames);
+                            let (nominal, callback) =
+                                summarize(Direction::Input, &run, options.frames, &mut notes);
+                            nominals.extend(nominal);
+                            callbacks.push(callback);
+                        }
+                        Err(message) => notes.push(format!(
+                            "input stream NOT measured (this is NOT a pass): {message}"
+                        )),
+                    }
+                }
+                None => notes.push("no default input device (this is NOT a pass)".to_owned()),
+            }
         }
 
-        // ---- 输入流 ----
-        match host.default_input_device() {
-            Some(device) => {
-                let name = device.to_string();
-                match run_input(&device, &config, options.seconds) {
-                    Ok(run) => {
-                        mark_opened(&mut devices, Direction::Input, &name, run.reported_frames);
-                        let (nominal, callback) =
-                            summarize(Direction::Input, &run, options.frames, &mut notes);
-                        nominals.extend(nominal);
-                        callbacks.push(callback);
-                    }
-                    Err(message) => notes.push(format!(
-                        "input stream NOT measured (this is NOT a pass): {message}"
-                    )),
-                }
-            }
-            None => notes.push("no default input device (this is NOT a pass)".to_owned()),
+        // 只有**没拿到**回环证据时才出这条理由（拿到了就不该说"没有回环证据"）。
+        if measured_roundtrip_ms.is_none() {
+            notes.push(
+                "verdict is unmeasurable-without-loopback: the DRIVER-LATENCY rows are the host's \
+own playback/capture prediction (not an acoustic roundtrip), cpal 0.18.2 has no explicit hardware \
+latency query API, and this invocation obtained NO loopback evidence (add `--loopback` for a real \
+output->input capture comparison; if it was already added but did not detect the chirp, the reason \
+is in the NOTE lines above)"
+                    .to_owned(),
+            );
         }
-
-        notes.push(
-            "verdict is unmeasurable-without-loopback: the DRIVER-LATENCY rows are the host's own \
-playback/capture prediction (not an acoustic roundtrip), cpal 0.18.2 has no explicit hardware \
-latency query API, and no physical output->input loopback was used"
-                .to_owned(),
-        );
 
         let report = Report {
             label: options.label,
@@ -863,8 +1347,8 @@ latency query API, and no physical output->input loopback was used"
             devices,
             nominals,
             callbacks,
-            evidence: Evidence::NominalOnly,
-            measured_roundtrip_ms: None,
+            evidence,
+            measured_roundtrip_ms,
             notes,
         };
         emit(&report, options.allow_unmeasurable)
