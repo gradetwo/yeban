@@ -44,6 +44,11 @@
 //! | ⭐ S31 | ⭐ **输入政策不变：非法取值仍响亮 `Err`**（任务 `#91` 新增；第 259 条） | 引擎路径上：集合外 `loop_mode` ⇒ `SfzError::InvalidOption`；越界 `loop_start` ⇒ `SfzError::IntegerOutOfRange`（⛔ **不是**"降级 ＋ 记录"）；⭐ 唯一例外臂：`loop_end <= loop_start`（两值各自合法、组合退化）⇒ `load` **`Ok`** ＋ `loop_window() == None` ＝ **按不循环渲染**（既有语义，⛔ 不加新机制） |
 //! | ⭐ S32 | ⭐ **`loop_sustain` ≡ `loop_continuous` 的登记可判**（任务 `#91` 新增） | `include_str!("../src/sfz_instrument.rs")` 必须含字面量"`note-off 后两者的差别（走完当前循环再进释放）属 ADSR 片、本片不声称已实现`"；反向腿：文档里**没有**的那句 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真） |
 //! | ⭐ S33 | ⭐ **不带任何 `loop_*` 的既有夹具逐位不变**（任务 `#91` 新增；§4.4） | 既有夹具 [`TWO_MATCH_ONE_MISS`] 经 `render_track` 实时路径 512 帧 @ `(60,127)` 的 **FNV-1a 指纹** ＝ **改动前实测** `0xa933ddab286bdf5e`（基线探针：`flat` 与 `engine` 两条路同值、`max\|Δ\| = 0`）；⭐ **反向腿**：同一输出乘 `1.0000001` ⇒ 指纹**必须变**（证明它是逐位判据、⛔ 不是"有输出就算过"） |
+//! | ⭐ S34 | ⭐ **五个 `ampeg_*` 的解析层五条腿 ＋ `Err` 政策 ＋ 缺失 ⇒ 缺省 ＋ 帧换算**（任务 `#92` 新增） | 秒 / 百分比读数逐字回读（`1.5s` / `250ms` / 裸值 / `50%` / `2s`）；`engine_hz == 48 kHz`；⭐ `0.01 s × 48 kHz` ⇒ **480 帧**（四舍五入，⛔ 不是截断 479）；非法三类 ⇒ `InvalidFloat` / `InvalidDuration` / `FloatOutOfRange`（＋ 同批数据里的合法样例**必须被接受**）；缺失 ⇒ 五个读数全在透明缺省（`release == 0`，⛔ 不是规范的 `0.001`）＋ `ampeg_is_transparent()` ＋ `ampeg_run() == None` |
+//! | ⭐ S35 | ⭐ **包络形状逐样本可判**（任务 `#92` 新增） | 恒定 `1.0` 样本 ⇒ 输出**恰好**是包络电平；容差口径 ＝ **线性段每一点 `\|实测 − 理论\| ≤ 1e-6`**（实测最大 **5.96e-8**）；起音**恰好**在第 `A = 480` 帧到峰、衰减终点 ＝ `sustain = 0.5`、note-off 后**恰好** `R = 960` 帧归零且之后逐位 0；⭐ 段位读数逐块 `Attack → Hold → Decay → Sustain → None`（状态真的在推进，⛔ 不是假读数） |
+//! | ⭐ S36 | ⭐ **`loop_sustain` 与 `loop_continuous` 在 note-off 之后输出不同**（任务 `#92` 新增；上一片搬家过来的判据） | 两臂**各配一条**"它自己该怎样"：`loop_continuous` ⇒ 非零**恰好 200**＝ `end_sample` 硬停（⛔ 无释放尾巴，前置见证：note-off 前周期 ＝ 64）；`loop_sustain` ⇒ 回绕帧 **228** 之后释放 **480** 帧 ⇒ 非零**恰好 708**；⭐ 第 `[200,228)` 段与"无 note-off"的循环输出**逐位相同**（＝ 走完当前循环）；反向腿：输出必须**越过** `end_sample`，且两条腿的非零数**不同** |
+//! | ⭐ S37 | ⭐ **无 `ampeg_*` 的既有夹具逐位不变**（任务 `#92` 新增；§4.4） | 两臂（`loop_continuous` ＋ `end_sample = 200`、`no_loop` ＋ `end_sample = u64::MAX`）经实时池 512 帧的 **FNV-1a 指纹** ＝ **改动前实测** `0xa9dec8a87f69106c` / `0xd3c2a82076bd8947`（基线探针在 base `1beffe2a`、工作树干净时测得，测后删除）；⭐ **反向腿**：同一输出乘 `1.0000001` ⇒ 指纹**必须变** |
+//! | ⭐ S38 | ⭐ **"取线性段"那条登记可判**（任务 `#92` 新增；§3.5） | `include_str!("../src/sfz_instrument.rs")` 必须含字面量"`本仓取线性段；参考实现的指数／对数选项不在本片范围内`"＋ note-off 四档语义表里那一条；反向腿：文档里**没有**的句子 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真） |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -3208,5 +3213,632 @@ fn s33_a_fixture_without_any_loop_fields_renders_bit_identically() {
     assert_ne!(
         scaled_hash, actual,
         "⭐ 反向腿：输出乘 1.0000001 ⇒ 指纹**必须**不同（否则判据不是逐位的）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ S34～S38：**SFZ `ampeg` ADSR 接进实时播放**（任务单 `#92` 的 ADSR 那一半）
+//
+// 判据的分工：
+//   * S34 —— 解析层五条腿（含单位后缀）＋ `Err` 政策 ＋ 缺失 ⇒ 缺省 ＋ 帧换算；
+//   * S35 —— ⭐ **包络形状逐样本可判**（到峰帧数 / sustain 电平 / 释放归零 ＋ 段位真的推进）；
+//   * S36 —— ⭐ **`loop_sustain` 与 `loop_continuous` 在 note-off 之后输出不同**
+//             （各配一条"它自己该怎样"的断言）；
+//   * S37 —— ⭐ **无 `ampeg_*` 的既有夹具逐位不变**（改动前实测指纹 ＋ 乘 `1.0000001` 的反向腿）；
+//   * S38 —— ⭐ 模块文档里"取线性段 / 指数对数不在本片范围"那条登记**可判**（＋ 反向腿）。
+// ---------------------------------------------------------------------------
+
+/// ⭐ S35 夹具的形状（**秒**；48 kHz ⇒ 帧数都是整数，四舍五入与截断**不可区分**的
+/// 边界之外还刻意留了一条 `.01` 的腿）。
+const AMPEG_ATTACK_SECONDS: f32 = 0.010; // 480 帧
+const AMPEG_HOLD_SECONDS: f32 = 0.005; // 240 帧
+const AMPEG_DECAY_SECONDS: f32 = 0.005; // 240 帧
+const AMPEG_SUSTAIN_PERCENT: f32 = 50.0;
+const AMPEG_RELEASE_SECONDS: f32 = 0.020; // 960 帧
+
+/// 与上面四段对应的**引擎帧**（48 kHz；判据里⛔ 不手抄进断言，全部由这两条常量推）。
+const AMPEG_ATTACK_FRAMES: usize = 480;
+const AMPEG_HOLD_FRAMES: usize = 240;
+const AMPEG_DECAY_FRAMES: usize = 240;
+const AMPEG_RELEASE_FRAMES: usize = 960;
+/// 进入 sustain 的帧（＝ 前 3 段之和）。
+const AMPEG_SUSTAIN_START: usize = AMPEG_ATTACK_FRAMES + AMPEG_HOLD_FRAMES + AMPEG_DECAY_FRAMES;
+/// note-off 落在 sustain 里、且**离段边界有余量**（这样"释放段"]的起点电平是 `sustain`）。
+const AMPEG_NOTE_OFF: usize = AMPEG_SUSTAIN_START + 240;
+
+/// ⭐ **包络判据的夹具样本**：恒定 `1.0`。
+///
+/// 为什么必须是常量：`gain == 1.0`（`volume=0`、`velocity=127` ⇒ 两条恒等）时
+/// 输出**恰好**等于包络电平 ⇒ 判据可以把每个输出帧**直接当成包络读数**对账
+/// （⛔ 不是"波形看起来像包络"）。
+/// ⚠ 速率必须是 `1.0`（`pitch_keycenter == note`、`sample_hz == engine_hz`）：
+/// 否则 `frac ≠ 0` 会让 `1.0 * (1 − frac) + 1.0 * frac` 出现 1 ulp 的偏差
+/// （本片实测：`frac = 0.1` 时该式**不等于** 1.0）。
+fn flat_sample(frames: usize) -> InMemorySample {
+    InMemorySample {
+        pcm: vec![1.0f32; frames],
+        sample_hz: 48_000.0,
+    }
+}
+
+/// ⭐ S35/S36 的 SFZ 文本（单区域、`key=60`、零移调 ⇒ `rate == 1.0`）。
+fn ampeg_sfz(mode: &str) -> String {
+    format!(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode={mode} \
+         ampeg_attack={AMPEG_ATTACK_SECONDS} ampeg_hold={AMPEG_HOLD_SECONDS} \
+         ampeg_decay={AMPEG_DECAY_SECONDS} ampeg_sustain={AMPEG_SUSTAIN_PERCENT} \
+         ampeg_release={AMPEG_RELEASE_SECONDS}\n"
+    )
+}
+
+/// ⭐ S34（任务单 `#92`）：**解析层五条腿 ＋ `Err` 政策 ＋ 缺失 ⇒ 缺省 ＋ 帧换算**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 摊平表 [`PreparedRegion`] 的五个只读读数（**秒 / 百分比**）与
+/// [`AmpegRun`] 的**帧数**；单位 ＝ 秒、百分比、引擎帧（48 kHz）。
+///
+/// # 判定量（逐条）
+///
+/// * 五个 opcode **各自**一条腿，且**混用单位后缀**（`1.5s` / `250ms` / 裸值 / `50%` / `2s`）
+///   ⇒ 回读值**逐字**等于文件里的数（⛔ 不是"能解析就算过"）；
+/// * `PreparedSfz::engine_hz()` ＝ 摊平期的 48 kHz（帧换算的唯一事实源）；
+/// * 帧换算：`0.010 s × 48 kHz` ⇒ **480 帧**（⭐ 四舍五入：截断在 `.01` 上会得到 479）；
+/// * ⭐ **非法 ⇒ 响亮 `Err`**（三类各一条：认不出 / 负 / 越界）＋ ⭐
+///   **同一批数据里的合法样例必须被接受**（⛔ 防"输入永远被拒"的假绿）；
+/// * ⭐ **缺失 ⇒ 缺省**（与"非法"**分开**断言）：五个读数全在透明缺省上、
+///   `ampeg_is_transparent()` 为真、`ampeg_run()` 为 `None`（＝ ⛔ 不进包络路径）。
+#[test]
+fn s34_the_five_ampeg_opcodes_parse_and_the_illegal_ones_still_fail_loudly() {
+    let load = |text: &str| SfzInstrument::load(text.to_owned(), &Default::default());
+
+    // ---- ① 五个 opcode 各自一条腿（混用单位后缀写法）----
+    const FIVE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_attack=1.5s \
+                        ampeg_hold=250ms ampeg_decay=0.25 ampeg_sustain=50% ampeg_release=2s\n";
+    let instrument = load(FIVE).expect("⭐ 合法样例必须被接受");
+    let plan = PreparedSfz::prepare(&instrument, &flat_sample(64), 48_000.0).expect("摊平");
+    let region = &plan.regions()[0];
+    println!(
+        "[engine-sfz/S34] 五个 opcode（`1.5s` / `250ms` / `0.25` / `50%` / `2s`）⇒ \
+         attack={} hold={} decay={} sustain={} release={}；engine_hz={}",
+        region.ampeg_attack_seconds(),
+        region.ampeg_hold_seconds(),
+        region.ampeg_decay_seconds(),
+        region.ampeg_sustain_percent(),
+        region.ampeg_release_seconds(),
+        plan.engine_hz(),
+    );
+    assert_eq!(region.ampeg_attack_seconds(), 1.5, "`1.5s` ⇒ 1.5 秒");
+    assert_eq!(region.ampeg_hold_seconds(), 0.25, "`250ms` ⇒ 0.25 秒");
+    assert_eq!(region.ampeg_decay_seconds(), 0.25, "裸值按秒读");
+    assert_eq!(region.ampeg_sustain_percent(), 50.0, "`50%` ⇒ 50 个百分点");
+    assert_eq!(region.ampeg_release_seconds(), 2.0, "`2s` ⇒ 2 秒");
+    assert_eq!(plan.engine_hz(), 48_000.0, "帧换算的事实源＝摊平期采样率");
+
+    // ---- ② 帧换算：四舍五入（⛔ 不是截断）----
+    let rounded = PreparedSfz::prepare(
+        &load("<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_attack=0.01\n").expect("load"),
+        &flat_sample(64),
+        48_000.0,
+    )
+    .expect("摊平");
+    let run = rounded.regions()[0]
+        .ampeg_run(rounded.engine_hz())
+        .expect("0.01 s ≠ 缺省 ⇒ 必须进包络路径");
+    println!(
+        "[engine-sfz/S34] `0.01 s @ 48 kHz` ⇒ attack_frames = {}（四舍五入；截断会给 479）",
+        run.attack_frames()
+    );
+    assert_eq!(
+        run.attack_frames(),
+        480,
+        "⭐ 0.01 s × 48 kHz 必须**四舍五入**到 480 帧（截断 479 ⇒ 到峰帧数差一）"
+    );
+    assert_eq!(run.hold_frames(), 0, "未给出的段 ⇒ 0 帧（零长段）");
+    assert_eq!(run.decay_frames(), 0);
+    assert_eq!(run.release_frames(), 0);
+    assert_eq!(run.sustain_level(), 1.0, "未给出的 sustain ⇒ 100 % ⇒ 1.0");
+
+    // ---- ③ 非法 ⇒ 响亮 `Err`（三类各一条）----
+    let bad_float = load("<region> sample=a.wav ampeg_attack=abc\n")
+        .expect_err("⭐ 认不出的数值必须**响亮报错**");
+    let bad_duration =
+        load("<region> sample=a.wav ampeg_release=-1s\n").expect_err("⭐ 负时长必须**响亮报错**");
+    let bad_range = load("<region> sample=a.wav ampeg_sustain=150\n")
+        .expect_err("⭐ 越界的 sustain 必须**响亮报错**");
+    println!("[engine-sfz/S34] 非法输入 ⇒ {bad_float:?} / {bad_duration:?} / {bad_range:?}");
+    assert!(
+        matches!(bad_float, SfzError::InvalidFloat { .. }),
+        "⛔ `ampeg_attack=abc` 不许静默降级，实得 {bad_float:?}"
+    );
+    assert!(
+        matches!(bad_duration, SfzError::InvalidDuration { .. }),
+        "⛔ `ampeg_release=-1s` 不许静默钳位，实得 {bad_duration:?}"
+    );
+    assert!(
+        matches!(bad_range, SfzError::FloatOutOfRange { .. }),
+        "⛔ `ampeg_sustain=150` 不许静默钳位，实得 {bad_range:?}"
+    );
+    // ⭐ 同一批数据里必须有一条**合法**样例被正确接受（⛔ 否则上面三条可能是"永远拒绝"的假绿）。
+    let mixed = "<region> sample=a.wav ampeg_attack=abc\n\
+                 <region> sample=b.wav ampeg_attack=0.5s\n";
+    assert!(load(mixed).is_err(), "同一批里有一条非法 ⇒ 整份 `Err`");
+    let legal = load("<region> sample=b.wav ampeg_attack=0.5s\n").expect("⭐ 合法样例必须被接受");
+    let legal_value = legal
+        .with_instrument(|parsed| parsed.regions()[0].ampeg_attack)
+        .expect("查询");
+    assert_eq!(legal_value, 0.5, "同批数据里的合法值照读");
+
+    // ---- ④ 缺失 ⇒ 缺省（**与非法分开**断言）----
+    let absent = PreparedSfz::prepare(
+        &load("<region> sample=a.wav key=60 pitch_keycenter=60\n").expect("load"),
+        &flat_sample(64),
+        48_000.0,
+    )
+    .expect("摊平");
+    let absent_region = &absent.regions()[0];
+    println!(
+        "[engine-sfz/S34] 缺失读数：attack={} hold={} decay={} sustain={} release={}、\
+         transparent={}、ampeg_run={:?}",
+        absent_region.ampeg_attack_seconds(),
+        absent_region.ampeg_hold_seconds(),
+        absent_region.ampeg_decay_seconds(),
+        absent_region.ampeg_sustain_percent(),
+        absent_region.ampeg_release_seconds(),
+        absent_region.ampeg_is_transparent(),
+        absent_region.ampeg_run(absent.engine_hz()).is_some(),
+    );
+    assert_eq!(absent_region.ampeg_attack_seconds(), 0.0);
+    assert_eq!(absent_region.ampeg_hold_seconds(), 0.0);
+    assert_eq!(absent_region.ampeg_decay_seconds(), 0.0);
+    assert_eq!(absent_region.ampeg_sustain_percent(), 100.0);
+    assert_eq!(
+        absent_region.ampeg_release_seconds(),
+        0.0,
+        "⭐ 本仓 `ampeg_release` 缺省是 0（⛔ 不是规范的 0.001）—— 见 yeban-sfz 的常量文档"
+    );
+    assert!(
+        absent_region.ampeg_is_transparent(),
+        "五个值都在透明缺省上 ⇒ 快速通道"
+    );
+    assert!(
+        absent_region.ampeg_run(absent.engine_hz()).is_none(),
+        "⭐ 透明 ⇒ `None` ⇒ 逐样本路径一个浮点运算都不加"
+    );
+}
+
+/// ⭐ S35（任务单 `#92`）：**包络形状逐样本可判**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 实时池（[`SfzVoicePool`]）在**恒定 1.0 样本**上的输出；单位 ＝ **包络电平**
+/// （`gain == 1.0` ⇒ 输出**恰好**是包络值，见 [`flat_sample`]）。
+///
+/// # ⭐ 容差口径（写死，⛔ 不用"大约"）
+///
+/// **线性段上每一点都在 `|实测 − 理论| ≤ 1e-6` 内**。理论上界（逐段）：
+/// `t/A`、`1`、`1 − (1−S)(t−A−H)/D`、`S`、`L_off·(R−k)/R`。
+/// ⚠ 实现只做「一次整数→浮点转换 ＋ 一两次乘加」（倒数在逐块时算好）⇒ 实测偏差
+/// 应在 `1e-7` 量级（本判据会把实测最大偏差**打印出来**）。
+///
+/// # 判定量（逐条）
+///
+/// * `|out[t] − t/A| ≤ 1e-6`（`t ∈ 0..A`）＋ `out[A] == 1.0`（⭐ **恰好第 A 帧到峰**）；
+/// * `out[t] == 1.0`（保持段）＋ `out[t] == 0.5`（衰减后的 sustain 电平）；
+/// * ⭐ note-off 后按 `ampeg_release` **恰好 960 帧**线性归零：
+///   `|out[T_off + k] − 0.5·(960 − k)/960| ≤ 1e-6`（`k ∈ 0..960`）、
+///   `out[T_off + 960] == 0.0` 且**之后逐位为 0**（声部已退休）；
+/// * ⭐ **段位真的在推进**（`SfzVoice::envelope_stage` 逐块读数：`Attack → Hold → Decay
+///   → Sustain → Release`）—— ⛔ 这条把"电平恰好对"与"状态真的动了"分开钉住
+///   （一个永远返回 `Attack` 的假读数会在这里红）。
+#[test]
+fn s35_the_envelope_shape_is_judgeable_sample_by_sample() {
+    // 释放段需要写满 960 帧 ⇒ 总帧数留到 note-off ＋ 释放 ＋ 余量。
+    const FRAMES: usize = AMPEG_NOTE_OFF + AMPEG_RELEASE_FRAMES + 64;
+    let plan = prepare_with(&ampeg_sfz("no_loop"), &flat_sample(4096));
+    let mut pool = SfzVoicePool::new(48_000.0);
+    assert_eq!(
+        pool.trigger_note(&plan, 60, 127, AMPEG_NOTE_OFF as u64, 1.0),
+        1,
+        "单区域夹具 ⇒ 恰好建 1 个声部"
+    );
+
+    // ⭐ 逐块渲染：每块之后读段位（状态真的在推进的机械见证）。
+    let mut out = vec![0.0f32; FRAMES];
+    let mut stages: Vec<(usize, String)> = Vec::new();
+    let mut cursor = 0usize;
+    for chunk in [
+        1usize,
+        AMPEG_ATTACK_FRAMES - 1,
+        AMPEG_HOLD_FRAMES,
+        AMPEG_DECAY_FRAMES,
+    ] {
+        pool.render_into(&plan, cursor as u64, &mut out[cursor..cursor + chunk]);
+        cursor += chunk;
+        stages.push((cursor, format!("{:?}", pool.voices()[0].envelope_stage())));
+    }
+    // 保持到 note-off 前一刻，再读一次（此时仍在 sustain）。
+    let to_note_off = AMPEG_NOTE_OFF - cursor;
+    pool.render_into(&plan, cursor as u64, &mut out[cursor..cursor + to_note_off]);
+    cursor += to_note_off;
+    stages.push((cursor, format!("{:?}", pool.voices()[0].envelope_stage())));
+    // 释放段（含 note-off 那一帧）。
+    let rest = FRAMES - cursor;
+    pool.render_into(&plan, cursor as u64, &mut out[cursor..]);
+    stages.push((
+        cursor + rest,
+        format!("{:?}", pool.voices()[0].envelope_stage()),
+    ));
+
+    // ---- ① 逐样本对账（线性段，容差 1e-6）----
+    let mut worst = 0.0f32;
+    let mut worst_at = 0usize;
+    let check = |frame: usize, expected: f32, worst: &mut f32, worst_at: &mut usize| {
+        let delta = (out[frame] - expected).abs();
+        if delta > *worst {
+            *worst = delta;
+            *worst_at = frame;
+        }
+    };
+    let sustain = AMPEG_SUSTAIN_PERCENT / 100.0;
+    for t in 0..AMPEG_ATTACK_FRAMES {
+        let expected = t as f32 / AMPEG_ATTACK_FRAMES as f32;
+        check(t, expected, &mut worst, &mut worst_at);
+    }
+    // 保持段（只有 `A..A+H`；衰减段在下一个循环里单独对账）。
+    for t in AMPEG_ATTACK_FRAMES..(AMPEG_ATTACK_FRAMES + AMPEG_HOLD_FRAMES) {
+        check(t, 1.0, &mut worst, &mut worst_at);
+    }
+    // 衰减段：从 1.0 线性到 sustain。
+    for t in (AMPEG_ATTACK_FRAMES + AMPEG_HOLD_FRAMES)..AMPEG_SUSTAIN_START {
+        let k = t - AMPEG_ATTACK_FRAMES - AMPEG_HOLD_FRAMES;
+        let expected = 1.0 - (1.0 - sustain) * (k as f32 / AMPEG_DECAY_FRAMES as f32);
+        check(t, expected, &mut worst, &mut worst_at);
+    }
+    // sustain 段。
+    for t in AMPEG_SUSTAIN_START..=AMPEG_NOTE_OFF {
+        check(t, sustain, &mut worst, &mut worst_at);
+    }
+    // 释放段。
+    for k in 0..AMPEG_RELEASE_FRAMES {
+        let expected = sustain * (AMPEG_RELEASE_FRAMES - k) as f32 / AMPEG_RELEASE_FRAMES as f32;
+        check(AMPEG_NOTE_OFF + k, expected, &mut worst, &mut worst_at);
+    }
+    println!(
+        "[engine-sfz/S35] 恒定 1.0 样本、{FRAMES} 帧：⭐ 线性段最大偏差 = {worst:e}（在第 \
+         {worst_at} 帧）；到峰帧 = {}（out[{}] = {}）；sustain = {}；\
+         释放起点（第 {} 帧）= {}、释放末帧（第 {} 帧）= {}；第 {} 帧起 = {}；\
+         段位读数 = {stages:?}",
+        AMPEG_ATTACK_FRAMES,
+        AMPEG_ATTACK_FRAMES,
+        out[AMPEG_ATTACK_FRAMES],
+        out[AMPEG_SUSTAIN_START],
+        AMPEG_NOTE_OFF,
+        out[AMPEG_NOTE_OFF],
+        AMPEG_NOTE_OFF + AMPEG_RELEASE_FRAMES - 1,
+        out[AMPEG_NOTE_OFF + AMPEG_RELEASE_FRAMES - 1],
+        AMPEG_NOTE_OFF + AMPEG_RELEASE_FRAMES,
+        out[AMPEG_NOTE_OFF + AMPEG_RELEASE_FRAMES],
+    );
+    assert!(
+        worst <= 1.0e-6,
+        "⭐ 容差口径：线性段每一点 |实测 − 理论| ≤ 1e-6（实测最大 {worst:e}，第 {worst_at} 帧）"
+    );
+
+    // ---- ② 到峰 / sustain / 归零三条**精确**腿 ----
+    assert_eq!(
+        out[AMPEG_ATTACK_FRAMES], 1.0,
+        "⭐ 起音**恰好**在 A ＝ {AMPEG_ATTACK_FRAMES} 帧到峰（⛔ 不是 A±1）"
+    );
+    assert_eq!(
+        out[AMPEG_SUSTAIN_START], sustain,
+        "衰减段终点恰好是 sustain"
+    );
+    assert_eq!(
+        out[AMPEG_NOTE_OFF + AMPEG_RELEASE_FRAMES],
+        0.0,
+        "⭐ 释放段**恰好** R ＝ {AMPEG_RELEASE_FRAMES} 帧归零"
+    );
+    assert!(
+        out[AMPEG_NOTE_OFF + AMPEG_RELEASE_FRAMES..]
+            .iter()
+            .all(|sample| *sample == 0.0),
+        "⭐ 归零之后必须**逐位**静音（声部已退休，⛔ 不是「接近 0」）"
+    );
+    assert_eq!(
+        pool.active_count(),
+        0,
+        "⭐ 释放走完 ⇒ 声部退休（池内状态翻转）"
+    );
+
+    // ---- ③ 段位读数（状态真的在推进）----
+    let labels: Vec<&str> = stages.iter().map(|(_, label)| label.as_str()).collect();
+    // ⚠ 读数的语义：`envelope_stage()` 是**最后一帧所落的段**（状态是"处理完"的机器状态，
+    // 不是"下一帧将要进"的段）⇒ 在第 480 帧处读到的仍是 Attack（最后一帧 = 第 479 帧）。
+    // 这条**逐块**的序列本身就是"状态真的在按 A/H/D 推进"的机械见证。
+    assert_eq!(
+        labels,
+        vec![
+            "Some(Attack)",  // 第 1 帧之后（最后一帧 = 第 0 帧）
+            "Some(Attack)",  // 480 帧之后（最后一帧 = 第 479 帧，仍在起音段）
+            "Some(Hold)",    // 720 帧之后（最后一帧 = 第 719 帧，落在保持段）
+            "Some(Decay)",   // 960 帧之后（最后一帧 = 第 959 帧，落在衰减段）
+            "Some(Sustain)", // 1200 帧之后（最后一帧 = 第 1199 帧，落在 sustain）
+            "None",          // 释放走完 ⇒ 声部退休
+        ],
+        "⭐ 段位必须逐块按 A/H/D 的边界推进，并在释放走完后回到 `None`（退休）"
+    );
+}
+
+/// ⭐ S36（任务单 `#92` 的**核心**）：**`loop_sustain` 与 `loop_continuous` 在 note-off
+/// 之后输出必须不同**，且**各配一条"它自己在 note-off 后该怎样"的断言**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 实时池在**斜坡样本**（⇒ 输出可**逐帧反解源下标**，见 [`source_index_at`]）
+/// 上的输出；单位 ＝ **非零帧数**（存在性）＋ **源采样下标序列**（形状）
+/// ＋ **逐位相等**（"走完当前循环"那一段）。
+///
+/// # 判定量（两条腿**各自**成立，⛔ 不是只断言"两者不同"）
+///
+/// * ⭐ **`loop_continuous`**：note-off **不影响循环** ⇒ 照旧在 `end_sample`（＝ 200）
+///   处**硬停** ⇒ 非零**恰好 200**、第 200 帧起逐位 0（⛔ 不进释放段）；
+/// * ⭐ **`loop_sustain`**：note-off 后**走完当前循环**（窗口 `[100,164)`、周期 64
+///   ⇒ 下一次回绕落在**第 228 帧**）⇒ 第 `[200,228)` 段**逐位等于**"没有 note-off"的
+///   循环输出（电平**保持**在 note-off 那一刻的值，⛔ 不提前释放、⛔ 不切歌），
+///   然后从第 228 帧起**恰好 480 帧**线性释放 ⇒ 非零**恰好 228 + 480 ＝ 708**，
+///   第 708 帧起逐位 0。
+/// * ⭐ 反向腿（⛔ 防空绿）：两条腿的**非零帧数必须不同**（200 ≠ 708），
+///   且 `loop_sustain` 的输出**确实越过** `end_sample`（`end_sample` 真的在切
+///   `loop_continuous`，见 S29 的同款反向腿）。
+#[test]
+fn s36_loop_sustain_and_loop_continuous_differ_after_note_off() {
+    const END_SAMPLE: usize = 200;
+    /// ⭐ 下一次回绕的输出帧：窗口 `[100,164)`、源位置在 `t=164` 首次回绕
+    /// ⇒ `t ≡ 164 (mod 64)` ⇒ `t = 164, 228, …`；`≥ 200` 的第一个是 **228**。
+    const WRAP: usize = 228;
+    const RELEASE_FRAMES: usize = 480; // 0.01 s @ 48 kHz
+    const FRAMES: usize = WRAP + RELEASE_FRAMES + 8;
+
+    let text = |mode: &str| {
+        format!(
+            "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode={mode} \
+             loop_start={LOOP_START} loop_end={LOOP_END} ampeg_release=0.01\n"
+        )
+    };
+    let continuous = prepare_with(&text("loop_continuous"), &ramp_sample(LOOP_PCM_FRAMES));
+    let sustain = prepare_with(&text("loop_sustain"), &ramp_sample(LOOP_PCM_FRAMES));
+    // 反向腿的参照：**没有 note-off** 的同一份循环夹具（`end_sample = u64::MAX`）。
+    let free_running = render_pool(&continuous, u64::MAX, FRAMES);
+
+    let continuous_out = render_pool(&continuous, END_SAMPLE as u64, FRAMES);
+    let sustain_out = render_pool(&sustain, END_SAMPLE as u64, FRAMES);
+    let count = |out: &[f32]| out.iter().filter(|sample| **sample != 0.0).count();
+
+    let held_segment_mismatches = (END_SAMPLE..WRAP)
+        .filter(|frame| sustain_out[*frame] != free_running[*frame])
+        .count();
+    // ⚠ 释放段的**理论值 = 源内容 × 线性斜坡**：循环窗口在释放期**照旧生效**
+    // ⇒ 源内容跟着走，参照取"没有 note-off"那一份的**同一帧**（位置轨迹逐帧相同）。
+    let release_mismatches = (0..RELEASE_FRAMES)
+        .filter(|k| {
+            let frame = WRAP + k;
+            let expected =
+                free_running[frame] * (RELEASE_FRAMES - k) as f32 / RELEASE_FRAMES as f32;
+            (sustain_out[frame] - expected).abs() > 1.0e-6
+        })
+        .count();
+    println!(
+        "[engine-sfz/S36] `loop_continuous`（end_sample={END_SAMPLE}）⇒ 非零 = {}；\
+         ⭐ `loop_sustain` ⇒ 非零 = {}（回绕帧 {WRAP} ＋ 释放 {RELEASE_FRAMES}）；\
+         [200,228) 段与「无 note-off」逐位不符 = {held_segment_mismatches}；\
+         释放段 |实测 − 理论| > 1e-6 的点 = {release_mismatches}；\
+         释放起点（第 {WRAP} 帧）= {}（参照第 {WRAP} 帧 = {}）",
+        count(&continuous_out),
+        count(&sustain_out),
+        sustain_out[WRAP],
+        free_running[WRAP],
+    );
+
+    // ---- 腿 ①：`loop_continuous` —— note-off 不影响循环（照旧硬停）----
+    assert_eq!(
+        count(&continuous_out),
+        END_SAMPLE,
+        "⭐ `loop_continuous`：note-off **不触发释放** ⇒ 非零恰好 {END_SAMPLE}（＝ 今天的硬停读数）"
+    );
+    assert!(
+        continuous_out[END_SAMPLE..]
+            .iter()
+            .all(|sample| *sample == 0.0),
+        "⭐ `loop_continuous`：`end_sample` 之后必须**逐位**静音（⛔ 无释放尾巴）"
+    );
+    // 前置见证：`end_sample` 之前它**真的在循环**（否则上面那条可能是"根本没出声"）。
+    assert_eq!(
+        detect_period(&continuous_out, LOOP_START, LOOP_END),
+        LOOP_PERIOD,
+        "⭐ 前置见证：`loop_continuous` 在 note-off 之前必须按 `loop_end − loop_start` 循环"
+    );
+
+    // ---- 腿 ②：`loop_sustain` —— 走完当前循环再释放 ----
+    assert_eq!(
+        count(&sustain_out),
+        WRAP + RELEASE_FRAMES,
+        "⭐ `loop_sustain`：非零 = 回绕帧 {WRAP} ＋ 释放 {RELEASE_FRAMES} 帧"
+    );
+    assert_eq!(
+        held_segment_mismatches, 0,
+        "⭐ `loop_sustain`：note-off 之后到回绕之前必须**逐位等于**「无 note-off」的循环输出\
+         （电平保持在 note-off 那一刻的值 ⇒ 这才是「**走完当前循环**」）"
+    );
+    assert!(
+        sustain_out[END_SAMPLE] != 0.0,
+        "⭐ 反向腿：`loop_sustain` 的输出必须**越过** `end_sample`（否则这条腿是空绿）"
+    );
+    assert_eq!(
+        release_mismatches, 0,
+        "⭐ `loop_sustain`：回绕之后按 `ampeg_release` 线性释放（|实测 − 理论| ≤ 1e-6）"
+    );
+    assert!(
+        sustain_out[WRAP + RELEASE_FRAMES..]
+            .iter()
+            .all(|sample| *sample == 0.0),
+        "⭐ 释放走完 ⇒ 逐位静音"
+    );
+    // ⭐ 两条腿必须**不同**（本节的核心判据）。
+    assert_ne!(
+        count(&continuous_out),
+        count(&sustain_out),
+        "⭐ 核心：note-off 之后两者输出必须不同（上一片搬家过来的判据）"
+    );
+
+    // ---- 腿 ③：`one_shot` ＋ 有包络 ⇒ **连释放段也不进**（"忽略 note-off"是完整裁决）----
+    let one_shot = prepare_with(&text("one_shot"), &ramp_sample(LOOP_PCM_FRAMES));
+    let one_shot_out = render_pool(&one_shot, END_SAMPLE as u64, FRAMES);
+    // 参照臂：同一个 `one_shot` 夹具但**没有** note-off（`end_sample = u64::MAX`）
+    // ⇒ 逐帧对照才能证明"note-off 那一帧没有被释放段改写"。
+    let one_shot_free = render_pool(&one_shot, u64::MAX, FRAMES);
+    println!(
+        "[engine-sfz/S36] ⭐ `one_shot` ＋ `ampeg_release`（end_sample={END_SAMPLE}）⇒ 非零 = {}；         第 {END_SAMPLE} 帧 = {}（⛔ 不许就地进释放）",
+        count(&one_shot_out),
+        one_shot_out[END_SAMPLE],
+    );
+    assert!(
+        one_shot.regions()[0].ignores_note_off(),
+        "`one_shot` 的既有裁决：忽略 note-off"
+    );
+    assert_eq!(
+        count(&one_shot_out),
+        LOOP_PCM_FRAMES - 1,
+        "⭐ `one_shot` ＋ 有包络：note-off（＝ {END_SAMPLE}）既不退休、**也不起释放** ⇒          声部照旧播到样本尾（{LOOP_PCM_FRAMES} 帧样本 ⇒ 最多 {} 帧）",
+        LOOP_PCM_FRAMES - 1
+    );
+    assert_eq!(
+        one_shot_out[END_SAMPLE], one_shot_free[END_SAMPLE],
+        "⭐ `one_shot`：note-off 那一帧的电平必须等于「无 note-off」（⛔ 不是释放段的第 0 帧）"
+    );
+    assert_eq!(
+        fnv1a_64(&one_shot_out),
+        fnv1a_64(&one_shot_free),
+        "⭐ `one_shot` ＋ 有包络：整段输出与「无 note-off」**逐位相同**"
+    );
+}
+
+/// ⭐ S37（任务单 `#92`；§4.4）：**无 `ampeg_*` 的既有夹具逐位不变**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 两份**一个 `ampeg_*` 都没有**的既有形状夹具（① 循环 ＋ 有限 `end_sample`；
+/// ② `no_loop` ＋ `end_sample = u64::MAX`）经**实时池**渲染的输出；单位 ＝
+/// **FNV-1a 64 指纹**（逐位）＋ **非零帧数**。
+///
+/// # 字面值的来源（⭐ 改动前实测）
+///
+/// 两个 `u64` 由本线在**改动任何源码之前**于 base `1beffe2a`（`aarch64/macos`、
+/// 同一份夹具、同一条产品路径、一次性探针，测后删除）测得：
+///
+/// | 夹具 | 帧数 | 非零 | 指纹 |
+/// | :--- | :--- | :--- | :--- |
+/// | `loop_continuous` ＋ `end_sample = 200` | 512 | 200 | `0xa9dec8a87f69106c` |
+/// | `no_loop` ＋ `end_sample = u64::MAX` | 512 | 399 | `0xd3c2a82076bd8947` |
+///
+/// ⚠ 与既有 [`NO_LOOP_FIXTURE_FINGERPRINT`]（`S33`）同一条纪律：字面值是**跨提交对账**
+/// 的读数，⛔ 不是"跨架构必须相等"的规范常数 ⇒ 异平台**如实跳过并点名原因**。
+///
+/// # 反向腿（⛔ 让"绿"不能是空的）
+///
+/// 把同一段输出**乘 `1.0000001`** ⇒ 指纹**必须变**（证明它是**逐位**判据）。
+#[test]
+fn s37_a_fixture_without_any_ampeg_fields_renders_bit_identically() {
+    /// ⭐ 改动前实测（base `1beffe2a`、`aarch64/macos`）。
+    const LOOP_FIXTURE_FINGERPRINT: u64 = 0xa9de_c8a8_7f69_106c;
+    /// ⭐ 改动前实测（同上）。
+    const PLAIN_FIXTURE_FINGERPRINT: u64 = 0xd3c2_a820_76bd_8947;
+
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    assert!(
+        looped.regions()[0].ampeg_is_transparent(),
+        "夹具必须**一个 `ampeg_*` 都没有**（否则下面的指纹比对不是「缺省路径」的判据）"
+    );
+    assert!(plain.regions()[0].ampeg_is_transparent());
+
+    for (label, plan, end_sample, frames, nonzero, expected) in [
+        (
+            "loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            512usize,
+            200usize,
+            LOOP_FIXTURE_FINGERPRINT,
+        ),
+        (
+            "no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            512usize,
+            399usize,
+            PLAIN_FIXTURE_FINGERPRINT,
+        ),
+    ] {
+        let out = render_pool(plan, end_sample, frames);
+        let actual = fnv1a_64(&out);
+        let nonzero_actual = out.iter().filter(|sample| **sample != 0.0).count();
+        // ⭐ 反向腿：逐位判据的敏感性见证。
+        let scaled: Vec<f32> = out.iter().map(|sample| sample * 1.000_000_1).collect();
+        let scaled_hash = fnv1a_64(&scaled);
+        println!(
+            "[engine-sfz/S37] {label}：非零 = {nonzero_actual}（改动前 {nonzero}）、\
+             指纹 = 0x{actual:016x}（改动前实测 0x{expected:016x}）；\
+             反向腿（× 1.0000001）指纹 = 0x{scaled_hash:016x}（必须不同）"
+        );
+        assert_eq!(nonzero_actual, nonzero, "⭐ {label}：非零帧数也必须不变");
+        let _checked = check_fingerprint(&format!("S37 {label}"), actual, expected);
+        assert_ne!(
+            scaled_hash, actual,
+            "⭐ 反向腿（{label}）：输出乘 1.0000001 ⇒ 指纹**必须**不同"
+        );
+    }
+}
+
+/// ⭐ S38（任务单 `#92`；§3.5）：**模块文档里那条"取线性段"的登记可判**。
+///
+/// # 判定量
+///
+/// `include_str!("../src/sfz_instrument.rs")`（模块头**源码**）必须含那条**逐字**登记
+/// 「本仓取线性段；参考实现的指数／对数选项不在本片范围内」；
+/// ⭐ 反向腿：文档里**没有**的那一句 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真）。
+///
+/// ⚠ 形态照本仓"文本即判据"的既有做法（`S32` 同款）。
+#[test]
+fn s38_the_linear_segment_registration_is_judgeable() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    /// ⭐ 任务单 `#92` 裁决第 2 条要求逐字写明的那一句。
+    const NEEDLE: &str = "本仓取线性段；参考实现的指数／对数选项不在本片范围内";
+    println!(
+        "[engine-sfz/S38] 模块头含「线性段 ＋ 指数/对数不在本片范围」登记 = {}；\
+         反向腿（文档里没有的句子）= {}",
+        MODULE_SOURCE.contains(NEEDLE),
+        MODULE_SOURCE.contains("本仓取指数段；参考实现的指数选项已在本片范围内"),
+    );
+    assert!(
+        MODULE_SOURCE.contains(NEEDLE),
+        "⭐ 模块头必须逐字登记：{NEEDLE}"
+    );
+    assert!(
+        !MODULE_SOURCE.contains("本仓取指数段；参考实现的指数选项已在本片范围内"),
+        "⭐ 反向腿：文档里**没有**的句子必须 `contains == false`（否则判据恒真）"
+    );
+    // ⭐ 第二条登记：note-off 的四档语义表必须与"`loop_continuous` ⛔ 不进释放段"一起在案。
+    const NOTE_OFF_NEEDLE: &str = "note-off **不影响循环**：照旧循环并在 `end_sample` 硬停";
+    assert!(
+        MODULE_SOURCE.contains(NOTE_OFF_NEEDLE),
+        "⭐ note-off 语义表必须逐字在案：{NOTE_OFF_NEEDLE}"
     );
 }

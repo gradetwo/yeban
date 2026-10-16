@@ -11,6 +11,16 @@
 //! 默认值全部取自 sfzformat 的机器可读 opcode 表 `_data/sfz/syntax.yml`
 //! （`pitch_keycenter` 默认 60、`lokey` 0、`hikey` 127、`lovel` 0、`hivel` 127、
 //! `lochan` 1、`hichan` 16、`seq_length` 1、`seq_position` 1、`tune` 0、`transpose` 0）。
+//!
+//! ## ⚠ 三处**登记在案**的缺省偏离（⛔ 不是静默降级）
+//!
+//! | # | opcode | 规范缺省 | 本仓 | 依据 |
+//! | :--- | :--- | :--- | :--- | :--- |
+//! | ① | `loop_mode` | 有 loop 元数据时 `loop_continuous` | [`LoopMode::NoLoop`] | 本 crate 不读音频文件元数据（零重依赖），见 [`LoopMode`] 文档 |
+//! | ② | `off_time` | `0.006` | 保留 `None`（"没说"）＋ [`Region::effective_off_time`] 回退 | 与"显式 0"分开，见 [`Region::off_time`] |
+//! | ③ | ⭐ `ampeg_release` | `0.001` | ⭐ **`0`**（[`AMPEG_RELEASE_DEFAULT_SECONDS`]） | ⭐ 任务单 `#92` 裁决第 3 条：缺省必须让"没有 `ampeg_*`"的既有输出**逐位不变**；`0.001` 秒在 48 kHz 上是 48 帧斜坡，会改逐位读数 |
+//!
+//! ⚠ 这三处都只在**opcode 没出现**时生效：显式取值（含显式 `0`）一律原样读入。
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -203,6 +213,55 @@ impl Trigger {
 /// （见 `crate::voice_pool::StealFade`），本常量只是 [`Region::off_time`] 缺省时的回退值，
 /// 由消费方决定何时使用。两者不互相改写。
 pub const OFF_TIME_DEFAULT_SECONDS: f32 = 0.006;
+
+// ---------------------------------------------------------------------------
+// ⭐ `ampeg_*`（幅度包络；任务单 `#92`）：单位、取值域与缺省
+// ---------------------------------------------------------------------------
+
+/// `ampeg_attack` / `ampeg_hold` / `ampeg_decay` 的规范缺省值，单位**秒**（`0`）。
+///
+/// 出处：三个格式页的表格行都是 `Default = 0, Range = 0 to 100, Unit = seconds`
+/// （<https://sfzformat.com/opcodes/ampeg_attack/>、
+/// <https://sfzformat.com/opcodes/ampeg_hold/>、
+/// <https://sfzformat.com/opcodes/ampeg_decay/>）。
+pub const AMPEG_TIME_DEFAULT_SECONDS: f32 = 0.0;
+
+/// `ampeg_sustain` 的规范缺省值，单位**百分比**（`100`）。
+///
+/// 出处：<https://sfzformat.com/opcodes/ampeg_sustain/> 的表格行
+/// （Type = float，Default = 100，Range = 0 to 100，Unit = %）。
+pub const AMPEG_SUSTAIN_DEFAULT_PERCENT: f32 = 100.0;
+
+/// ⭐ `ampeg_release` 的**本仓**缺省值，单位**秒**（`0`）—— ⚠ **与规范缺省 `0.001` 不同**。
+///
+/// 出处（规范）：<https://sfzformat.com/opcodes/ampeg_release/> 的表格行是
+/// `Default = 0.001, Range = 0 to 100, Unit = seconds`（同页正文另记 ARIA 用 `0.03`）。
+///
+/// # 为什么本仓取 `0`（一处**有裁决依据**的登记偏离）
+///
+/// 规范缺省 `0.001` 秒在 48 kHz 上是 **48 帧**的释放斜坡 ⇒ 只要文件里**没有** `ampeg_*`，
+/// 今天"note-off ＝ `end_sample` 硬停"的输出就会**逐位改变**。任务单 `#92` 的裁决第 3 条
+/// 明确要求「**未指定**（opcode 根本不出现）⇒ 用默认值」，给出的例子正是
+/// 「无 `ampeg_release` ⇒ 今天的 `end_sample` 行为不变」。
+///
+/// 取 `0` 之后，"五个字段全在各自缺省上"恰好等于**透明包络**（各段零长、`sustain`
+/// 100 %）⇒ 缺省路径与"没有包络"**一字不差**（引擎侧逐位判据 `S37`/`S33`）。
+/// ⚠ 这不是"静默降级"：`ampeg_release` **显式写出**时（哪怕是 `0`）一律按
+/// [`Region::ampeg_release`] 原样读入，⛔ 不静默改写；只有**根本没出现**这个 opcode 时
+/// 才落到本常量。
+pub const AMPEG_RELEASE_DEFAULT_SECONDS: f32 = 0.0;
+
+/// `ampeg_attack` / `ampeg_hold` / `ampeg_decay` / `ampeg_release` 的规范取值上界，
+/// 单位**秒**（四个格式页的 Range 都是 `0 to 100`）。
+///
+/// 越界是明确 [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位（与 `amp_veltrack` 同一条口径）；
+/// 负时长是明确 [`SfzError::InvalidDuration`]（与 `off_time` 同一条口径）。
+pub const AMPEG_TIME_MAX_SECONDS: f32 = 100.0;
+
+/// `ampeg_sustain` 的规范取值上界，单位**百分比**（格式页 Range = `0 to 100`）。
+///
+/// 越界是明确 [`SfzError::FloatOutOfRange`]，⛔ 不静默钳位。
+pub const AMPEG_SUSTAIN_MAX_PERCENT: f32 = 100.0;
 
 /// `bend_up` opcode 的规范缺省值，单位**音分**。
 ///
@@ -473,6 +532,47 @@ pub struct Region<'a> {
     pub loop_end: u32,
     /// 循环模式。
     pub loop_mode: LoopMode,
+    // -----------------------------------------------------------------
+    // ⭐ 幅度包络（`ampeg_*`；任务单 `#92`）
+    //
+    // 五个字段都是 opcode 的**原样语义**（⛔ 不是引擎帧、⛔ 不是包络电平）：
+    // 时间四个是**秒**、`sustain` 是**百分比**。逐样本的推进状态（段位 ＋ 段内计数）
+    // **⛔ 不在本类型**（它是按区域的**参数**，不是按声部的**状态**）。
+    //
+    // 读法：认单位后缀（`1.5s` / `250ms` / `50%`，大小写不敏感、⛔ 不认别的后缀）；
+    // 见 [`read_ampeg_time`] / [`read_ampeg_sustain`]。数值认不出 / 越界 / 为负
+    // ⇒ **明确 `Err`**（第 259 条：⛔ 不静默降级、⛔ 不"认不出就落默认值"）。
+    // 只有 opcode **根本没出现**才落缺省值（"缺失 ≠ 非法"）。
+    // -----------------------------------------------------------------
+    /// `ampeg_attack`：起音时长（**秒**；规范 Range 0..=100，Default 0，Unit = seconds）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/ampeg_attack/>：同页正文写明 ARIA 的
+    /// SFZ1 包络**起音段是线性**的，而衰减/释放段带"比线性更快"的曲线
+    /// （`μ = exp(−8/(t·s))` 一类乘性下降）。⚠ 本 crate **只取分段线性**，
+    /// ⛔ 不假装等于那条曲线（登记在 `crates/yeban-engine/src/sfz_instrument.rs` 的模块头）。
+    pub ampeg_attack: f32,
+    /// `ampeg_hold`：保持段时长（**秒**；规范 Range 0..=100，Default 0）。
+    ///
+    /// 出处 <https://sfzformat.com/opcodes/ampeg_hold/>："During the hold stage,
+    /// EG output will remain at its maximum value."
+    pub ampeg_hold: f32,
+    /// `ampeg_decay`：衰减段时长（**秒**；规范 Range 0..=100，Default 0）—— 从峰值降到
+    /// [`Region::ampeg_sustain`]。
+    pub ampeg_decay: f32,
+    /// `ampeg_sustain`：保持电平（**百分比**；规范 Range 0..=100，Default **100**，Unit = %）。
+    ///
+    /// ⚠ 单位是百分比而**不是** 0..1 的线性增益（出处同名的表格行：
+    /// "EG sustain level, in percentage."）⇒ 换算成增益是 `percent / 100`，由消费方做。
+    pub ampeg_sustain: f32,
+    /// `ampeg_release`：释放段时长（**秒**；规范 Range 0..=100，⛔ **本仓 Default 0**）。
+    ///
+    /// ⚠ ⭐ **规范 Default 是 `0.001`、本仓取 `0`** —— 这是一处**登记的偏离**，
+    /// 依据是任务单 `#92` 的裁决第 3 条（"未指定 ⇒ 默认值"而"今天的 `end_sample`
+    /// 行为不变"）。完整理由见 [`AMPEG_RELEASE_DEFAULT_SECONDS`]。
+    ///
+    /// ⚠ 与 [`Region::off_time`] 的区别：`off_time` 是 **voice-stealing** 的淡化时长
+    /// （`off_mode=time`），本字段是 **note-off** 之后的释放段时长 —— 两个量、⛔ 不互相改写。
+    pub ampeg_release: f32,
     /// 采样起始偏移（`offset`，单位采样点，规范默认 0）。
     pub offset: u32,
     /// 采样播放终点（`end`，规范默认 `unspecified`）。
@@ -1370,6 +1470,17 @@ pub(crate) fn build_region<'a>(
         None => LoopMode::NoLoop,
     };
 
+    // ---- ⭐ 幅度包络（`ampeg_*`；任务单 `#92`）----
+    // 五个 opcode 各自独立：**缺失** ⇒ 缺省值（"缺失 ≠ 非法"）；**出现但认不出 / 越界**
+    // ⇒ 明确 `Err`（第 259 条）。⛔ 没有任何"降级"档：⛔ 不"认不出就当 0"、⛔ 不钳位。
+    // ⚠ 四个时间字段与 `ampeg_sustain` 的**唯一**解读处就在这里（消费方只看到秒 / 百分比）。
+    let ampeg_attack = read_ampeg_time(&scopes, "ampeg_attack", AMPEG_TIME_DEFAULT_SECONDS)?;
+    let ampeg_hold = read_ampeg_time(&scopes, "ampeg_hold", AMPEG_TIME_DEFAULT_SECONDS)?;
+    let ampeg_decay = read_ampeg_time(&scopes, "ampeg_decay", AMPEG_TIME_DEFAULT_SECONDS)?;
+    let ampeg_sustain =
+        read_ampeg_sustain(&scopes, "ampeg_sustain", AMPEG_SUSTAIN_DEFAULT_PERCENT)?;
+    let ampeg_release = read_ampeg_time(&scopes, "ampeg_release", AMPEG_RELEASE_DEFAULT_SECONDS)?;
+
     // ---- 播放区间 / 方向（显式区间与方向，见 <https://sfzformat.com/opcodes/offset/>、
     //      <https://sfzformat.com/opcodes/end/>、<https://sfzformat.com/opcodes/direction/>） ----
     let offset = read_u32(&scopes, "offset", None, 0)?;
@@ -1510,6 +1621,11 @@ pub(crate) fn build_region<'a>(
         loop_start,
         loop_end,
         loop_mode,
+        ampeg_attack,
+        ampeg_hold,
+        ampeg_decay,
+        ampeg_sustain,
+        ampeg_release,
         offset,
         end,
         direction,
@@ -1921,6 +2037,125 @@ fn read_u32(
     }
 }
 
+/// 大小写不敏感地剥掉一个**单位后缀**；要求后缀**恰好**在末尾且前面还有内容。
+///
+/// `strip_unit("250ms", "ms") == Some("250")`、`strip_unit("250MS", "ms") == Some("250")`、
+/// `strip_unit("ms", "ms") == None`（前缀为空 ⇒ 这不是"带单位的数"）、
+/// `strip_unit("1.5s", "ms") == None`（后缀不匹配 ⇒ 交给调用方报错，⛔ 不猜）。
+fn strip_unit<'a>(raw: &'a str, unit: &str) -> Option<&'a str> {
+    let at = raw.len().checked_sub(unit.len())?;
+    let (number, suffix) = raw.split_at(at);
+    (!number.is_empty() && suffix.eq_ignore_ascii_case(unit)).then_some(number)
+}
+
+/// 读一个 `ampeg_*` **时间** opcode（单位**秒**）：认 `s` / `ms` 后缀，⛔ 不认任何别的后缀。
+///
+/// # 政策（第 259 条：响亮 `Err`，⛔ 不静默降级）
+///
+/// | 输入 | 结果 |
+/// | :--- | :--- |
+/// | 缺失（opcode 没出现） | `Ok(fallback)` ＝ **缺省值**（"缺失 ≠ 非法"） |
+/// | `1.5` / `1.5s` / `1500ms` | `Ok`（秒；后缀大小写不敏感） |
+/// | `abc` / `` / `1x` / `50%` | [`SfzError::InvalidFloat`]（⛔ 不"认不出就当秒"） |
+/// | `NaN` / `inf` / `1e999` | [`SfzError::NonFiniteFloat`]（与 `off_time` 同口径） |
+/// | 负值 | [`SfzError::InvalidDuration`]（与 `off_time` 同口径） |
+/// | 换算后 `> 100` 秒 | [`SfzError::FloatOutOfRange`]（与 `amp_veltrack` 同口径） |
+///
+/// ⚠ `ms` 的换算在**解析期**做（`250ms` ⇒ `0.25`），于是上层只面对"秒"这一种单位。
+fn read_ampeg_time(
+    scopes: &Scopes<'_, '_>,
+    name: &'static str,
+    fallback: f32,
+) -> Result<f32, SfzError> {
+    let Some(value) = scopes.get(name) else {
+        return Ok(fallback);
+    };
+    let raw = value.as_str().trim();
+    let (number, scale) = if let Some(number) = strip_unit(raw, "ms") {
+        (number, 1.0e-3_f32)
+    } else if let Some(number) = strip_unit(raw, "s") {
+        (number, 1.0_f32)
+    } else {
+        (raw, 1.0_f32)
+    };
+    let parsed = number
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| SfzError::InvalidFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::NonFiniteFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        });
+    }
+    if parsed < 0.0 {
+        return Err(SfzError::InvalidDuration {
+            line: value.line,
+            opcode: name.to_string(),
+            value: parsed,
+        });
+    }
+    let seconds = parsed * scale;
+    if seconds > AMPEG_TIME_MAX_SECONDS {
+        return Err(SfzError::FloatOutOfRange {
+            line: value.line,
+            opcode: name.to_string(),
+            value: seconds,
+            min: 0.0,
+            max: AMPEG_TIME_MAX_SECONDS,
+        });
+    }
+    Ok(seconds)
+}
+
+/// 读 `ampeg_sustain`（单位**百分比**）：认 `%` 后缀，⛔ 不认时间后缀。
+///
+/// 政策与 [`read_ampeg_time`] 同一形状（缺失 ⇒ 缺省 100；认不出 ⇒ [`SfzError::InvalidFloat`]；
+/// 非有限 ⇒ [`SfzError::NonFiniteFloat`]；越界 `0..=100` ⇒ [`SfzError::FloatOutOfRange`]）。
+/// ⚠ 负 sustain 在这里走 [`SfzError::FloatOutOfRange`]（下界 0）而**不是** `InvalidDuration`
+/// —— 它是**电平**不是时长（`InvalidDuration` 的文档只覆盖时长类 opcode）。
+fn read_ampeg_sustain(
+    scopes: &Scopes<'_, '_>,
+    name: &'static str,
+    fallback: f32,
+) -> Result<f32, SfzError> {
+    let Some(value) = scopes.get(name) else {
+        return Ok(fallback);
+    };
+    let raw = value.as_str().trim();
+    let number = strip_unit(raw, "%").unwrap_or(raw);
+    let parsed = number
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| SfzError::InvalidFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        })?;
+    if !parsed.is_finite() {
+        return Err(SfzError::NonFiniteFloat {
+            line: value.line,
+            opcode: name.to_string(),
+            value: value.value.to_string(),
+        });
+    }
+    if !(0.0..=AMPEG_SUSTAIN_MAX_PERCENT).contains(&parsed) {
+        return Err(SfzError::FloatOutOfRange {
+            line: value.line,
+            opcode: name.to_string(),
+            value: parsed,
+            min: 0.0,
+            max: AMPEG_SUSTAIN_MAX_PERCENT,
+        });
+    }
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1948,6 +2183,11 @@ mod tests {
             loop_start: 0,
             loop_end: 0,
             loop_mode: LoopMode::NoLoop,
+            ampeg_attack: AMPEG_TIME_DEFAULT_SECONDS,
+            ampeg_hold: AMPEG_TIME_DEFAULT_SECONDS,
+            ampeg_decay: AMPEG_TIME_DEFAULT_SECONDS,
+            ampeg_sustain: AMPEG_SUSTAIN_DEFAULT_PERCENT,
+            ampeg_release: AMPEG_RELEASE_DEFAULT_SECONDS,
             offset: 0,
             end: SampleEnd::Unspecified,
             direction: PlayDirection::Forward,
@@ -6418,6 +6658,164 @@ v127=1
                 self_mask: false
             },
             "self_mask participates in equality"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ⭐ `ampeg_*`：解析层的五条腿（任务单 `#92`；判据 S34 在引擎侧**同一批数据**复读）
+    //
+    // 分工：
+    //   * `ampeg_five_opcodes_are_read_with_unit_suffixes` —— 五个 opcode 各自一条腿，
+    //     且**一条合法样例在同一批数据里被正确接受**；
+    //   * `ampeg_defaults_are_used_only_when_the_opcode_is_absent` —— **缺失 ⇒ 缺省**
+    //     （与"非法"**分开**断言）；
+    //   * `ampeg_illegal_values_are_loud_errors` —— 认不出 / 越界 / 为负 ⇒ 响亮 `Err`
+    //     （第 259 条：⛔ 不静默降级、⛔ 不"认不出就当 0"）。
+    // -----------------------------------------------------------------------
+
+    /// ⭐ 五个 opcode 各一个**非缺省**取值，且**故意混用**单位后缀写法。
+    const AMPEG_ALL: &str = "<region> sample=a.wav ampeg_attack=1.5s ampeg_hold=250ms \
+                             ampeg_decay=0.25 ampeg_sustain=50% ampeg_release=2s\n";
+
+    #[test]
+    fn ampeg_five_opcodes_are_read_with_unit_suffixes() {
+        let instrument = parse_text(AMPEG_ALL, &Default::default()).expect("合法样例必须被接受");
+        let region = &instrument.regions()[0];
+        // 五条腿**各自**断言（⛔ 不是"打印五个数"）：
+        assert_eq!(region.ampeg_attack, 1.5, "`1.5s` ⇒ 1.5 秒");
+        assert_eq!(region.ampeg_hold, 0.25, "`250ms` ⇒ 0.25 秒");
+        assert_eq!(region.ampeg_decay, 0.25, "裸值按**秒**读");
+        assert_eq!(region.ampeg_sustain, 50.0, "`50%` ⇒ 50 个百分点");
+        assert_eq!(region.ampeg_release, 2.0, "`2s` ⇒ 2 秒");
+        // ⭐ 后缀大小写不敏感（`S` / `MS` 同义），且 `ms` **优先**于 `s` 匹配
+        // （`1.5Ms` 是 1.5 **毫秒**而⛔ 不是 1.5 秒）；⛔ 别的前缀/后缀照样报错（见下一条判据）。
+        for (text, expected) in [("1S", 1.0f32), ("1.5Ms", 0.0015), ("250mS", 0.25)] {
+            let source = format!("<region> sample=a.wav ampeg_attack={text}\n");
+            let instrument = parse_text(&source, &Default::default()).expect("合法样例");
+            assert_eq!(
+                instrument.regions()[0].ampeg_attack,
+                expected,
+                "`{text}` 必须按秒读入"
+            );
+        }
+        // ⭐ 与既有 `loop_*` **同款**的作用域继承（`<global>` → `<region>`）。
+        let inherited = parse_text(
+            "<global> ampeg_attack=0.5 ampeg_sustain=25\n<region> sample=a.wav\n",
+            &Default::default(),
+        )
+        .expect("作用域继承必须成功");
+        assert_eq!(inherited.regions()[0].ampeg_attack, 0.5);
+        assert_eq!(inherited.regions()[0].ampeg_sustain, 25.0);
+    }
+
+    #[test]
+    fn ampeg_defaults_are_used_only_when_the_opcode_is_absent() {
+        let instrument =
+            parse_text("<region> sample=a.wav", &Default::default()).expect("缺省必须成功");
+        let region = &instrument.regions()[0];
+        println!(
+            "[sfz/ampeg] 缺省读数：attack={} hold={} decay={} sustain={} release={}",
+            region.ampeg_attack,
+            region.ampeg_hold,
+            region.ampeg_decay,
+            region.ampeg_sustain,
+            region.ampeg_release,
+        );
+        // ⭐ 前三个与 sustain 是**规范缺省**；release 是本仓缺省（⚠ 与规范的 0.001 不同）。
+        assert_eq!(region.ampeg_attack, AMPEG_TIME_DEFAULT_SECONDS);
+        assert_eq!(region.ampeg_hold, AMPEG_TIME_DEFAULT_SECONDS);
+        assert_eq!(region.ampeg_decay, AMPEG_TIME_DEFAULT_SECONDS);
+        assert_eq!(region.ampeg_sustain, AMPEG_SUSTAIN_DEFAULT_PERCENT);
+        assert_eq!(region.ampeg_release, AMPEG_RELEASE_DEFAULT_SECONDS);
+        assert_eq!(
+            region.ampeg_release, 0.0,
+            "⭐ 本仓 `ampeg_release` 缺省是 0（⛔ 不是规范的 0.001）—— 依据与理由见\
+             `AMPEG_RELEASE_DEFAULT_SECONDS`"
+        );
+        // ⭐ **显式 0 ≠ 缺失**：两者都读 0，但"缺失"是缺省、"显式"是文件说的 —— 断言它们**并存不冲突**。
+        let explicit = parse_text(
+            "<region> sample=a.wav ampeg_release=0 ampeg_attack=0s\n",
+            &Default::default(),
+        )
+        .expect("显式 0 必须成功");
+        assert_eq!(explicit.regions()[0].ampeg_release, 0.0);
+        assert_eq!(explicit.regions()[0].ampeg_attack, 0.0);
+        // 反向腿：给一个**非缺省**取值 ⇒ 必须读得不同（否则上面那组断言可能恒真）。
+        let changed = parse_text(
+            "<region> sample=a.wav ampeg_release=0.001\n",
+            &Default::default(),
+        )
+        .expect("规范缺省值本身是合法输入");
+        assert_ne!(
+            changed.regions()[0].ampeg_release,
+            AMPEG_RELEASE_DEFAULT_SECONDS,
+            "⭐ 文件显式写出规范的 0.001 时必须**原样读入**（⛔ 不被本仓缺省覆盖）"
+        );
+    }
+
+    #[test]
+    fn ampeg_illegal_values_are_loud_errors() {
+        // 认不出（⛔ 不"认不出就当秒"、⛔ 不落缺省）：空串 / 非数 / 未知后缀 / 时间 opcode 收到 `%`。
+        for bad in ["", "abc", "1x", "50%", "1.5ss", "ms", "s"] {
+            let source = format!("<region> sample=a.wav ampeg_attack={bad}\n");
+            let outcome = parse_text(&source, &Default::default());
+            println!("[sfz/ampeg] ampeg_attack={bad:?} ⇒ {outcome:?}");
+            assert!(
+                matches!(outcome, Err(SfzError::InvalidFloat { .. })),
+                "`ampeg_attack={bad}` 必须响亮 `Err(InvalidFloat)`，实得 {outcome:?}"
+            );
+        }
+        // 非有限：与 `off_time` 同口径。
+        for bad in ["NaN", "inf", "-inf", "1e999"] {
+            let source = format!("<region> sample=a.wav ampeg_release={bad}\n");
+            let outcome = parse_text(&source, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::NonFiniteFloat { .. })),
+                "`ampeg_release={bad}` 必须 `Err(NonFiniteFloat)`，实得 {outcome:?}"
+            );
+        }
+        // 负时长（与 `off_time` 同口径）；越界 `> 100` 秒（与 `amp_veltrack` 同口径）。
+        for (opcode, bad, expected) in [
+            ("ampeg_attack", "-0.5", "duration"),
+            ("ampeg_hold", "-1ms", "duration"),
+            ("ampeg_decay", "-2", "duration"),
+            ("ampeg_release", "-3s", "duration"),
+            ("ampeg_attack", "100.5", "range"),
+            ("ampeg_release", "1e9ms", "range"),
+        ] {
+            let source = format!("<region> sample=a.wav {opcode}={bad}\n");
+            let outcome = parse_text(&source, &Default::default());
+            println!("[sfz/ampeg] {opcode}={bad} ⇒ {outcome:?}");
+            match expected {
+                "duration" => assert!(
+                    matches!(outcome, Err(SfzError::InvalidDuration { .. })),
+                    "`{opcode}={bad}` 必须 `Err(InvalidDuration)`，实得 {outcome:?}"
+                ),
+                _ => assert!(
+                    matches!(outcome, Err(SfzError::FloatOutOfRange { .. })),
+                    "`{opcode}={bad}` 必须 `Err(FloatOutOfRange)`，实得 {outcome:?}"
+                ),
+            }
+        }
+        // `ampeg_sustain` 的越界（下界 0 / 上界 100 都在同一条 `FloatOutOfRange` 上）。
+        for bad in ["-1", "-1%", "100.5", "200%"] {
+            let source = format!("<region> sample=a.wav ampeg_sustain={bad}\n");
+            let outcome = parse_text(&source, &Default::default());
+            assert!(
+                matches!(outcome, Err(SfzError::FloatOutOfRange { .. })),
+                "`ampeg_sustain={bad}` 必须 `Err(FloatOutOfRange)`，实得 {outcome:?}"
+            );
+        }
+        // ⭐ **同一批数据里必须有一个合法样例被正确接受**（否则上面全是"输入永远被拒"的假绿）。
+        let mixed = "<region> sample=a.wav ampeg_attack=abc\n\
+                     <region> sample=b.wav ampeg_attack=1.5s\n";
+        let outcome = parse_text(mixed, &Default::default());
+        println!("[sfz/ampeg] 同批数据（一条非法 ＋ 一条合法）⇒ {outcome:?}");
+        assert!(outcome.is_err(), "同一批里只要有一条非法，整份必须 `Err`");
+        let legal_only = "<region> sample=b.wav ampeg_attack=1.5s\n";
+        assert!(
+            parse_text(legal_only, &Default::default()).is_ok(),
+            "⭐ 反向腿：同批数据里那条**合法**样例单独解析必须 `Ok`"
         );
     }
 }

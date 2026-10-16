@@ -76,12 +76,15 @@
 //! 否则 `sfz.is_some()` ⇒ 走 SFZ（⛔ 不叠加复音）；否则走复音。
 //! ⚠ "鼓机 ＋ SFZ 同轨"是**引擎的取舍**、⛔ 不是模型语义 ⇒ 登记为 needs（见下表）。
 //!
-//! ## 终点口径（**无包络时的诚实占位**）
+//! ## 终点口径（⭐ 任务 `#92` 起：**有 `ampeg_*` 时由包络接管**）
 //!
 //! 声部的停止条件是
 //! `stop = min(end_sample, span 终点 → 引擎帧, 样本播完)`：
 //!
-//! * ⛔ **跳过 `ampeg_*`**：ADSR / 力度包络**本片不做** ⇒ 音符**没有**包络收尾；
+//! * ⭐ **无 `ampeg_*`（透明包络）**：完全就是上面那条式子 —— ⛔ `ampeg_*` 一个都不读，
+//!   音符**没有**包络收尾（与任务 `#92` 之前**逐位相同**，判据 `S37`/`S33`）；
+//! * ⭐ **有 `ampeg_*`**：note-off（＝ `end_sample`）**不再**是硬停 ⇒ 见下面"幅度包络"一节
+//!   （`loop_continuous` 例外：它**照旧**硬停，那正是它与 `loop_sustain` 的唯一分野）；
 //! * ⭐ **用样本自然结束**：源位置走到 [`PreparedRegion::source_end`]
 //!   （`min(span 终点, PCM 长度)`；线性插值需要 `position` 与 `position + 1` 两个样本）
 //!   即退休；
@@ -90,11 +93,12 @@
 //!   声部⛔ 不因 `end_sample` 退休）；
 //! * ⭐ **循环声部（`loop_continuous` / `loop_sustain`）不由"样本播完"退休**：
 //!   回绕把源位置压在窗口内（[`reduce_loop_window`] 保证窗口落在可读范围内）⇒
-//!   只剩 `end_sample` 能终止它。
+//!   只剩 `end_sample`（无包络）或**释放段走完**（有包络且会进释放）能终止它。
 //!
 //! ⚠ `span` 的**起点**（`offset`）与**终点**（`end`）**步 3 已应用**：三条路都从
 //! `span.start` 起播、在 `span.end` 停（[`reduce_span`] 的唯一归约）。
-//! ⭐ **循环**（任务 `#91`）**已接线**：见下面"循环"一节。
+//! ⭐ **循环**（任务 `#91`）**已接线**：见下面"循环"一节；
+//! ⭐ **幅度包络**（任务 `#92`）**已接线**：见再下面"幅度包络"一节。
 //!
 //! # ⭐ 循环（任务 `#91` 的**循环那一半**；⛔ ADSR／`ampeg_*` 是下一单）
 //!
@@ -122,13 +126,23 @@
 //!    （[`PreparedRegion::ignores_note_off`]）⛔ 不因 `end_sample`（＝ note-off）退休，
 //!    只由样本自然结束退休（与 `yeban-sfz` 的 `PlaybackSpec::ignores_note_off` 同一份裁决）。
 //!
-//! ## ⭐ `loop_sustain` 在本片的行为 **＝** `loop_continuous`（逐字登记）
+//! ## ⭐ `loop_sustain` 与 `loop_continuous` 的**分野**（⭐ 任务 `#92` 已落地）
 //!
-//! ⭐ note-off 后两者的差别（走完当前循环再进释放）属 ADSR 片、本片不声称已实现。
+//! ⚠ **沿革（⛔ 不改写历史）**：本行在循环接线片（任务 `#91`）里曾**逐字**写
+//! 「note-off 后两者的差别（走完当前循环再进释放）属 ADSR 片、本片不声称已实现」
+//! —— 任务 `#92` 把那条**变成现实**，见下面"幅度包络"一节。
 //!
-//! 依据：`loop_sustain` 与 `loop_continuous` 的**唯一分野**在 note-off **之后**，
-//! 而 note-off 今天只体现为 `end_sample` 硬停 ⇒ **没有释放段就表现不出那个差别**
-//! ⇒ ⛔ 本片**不假装**做到了那一步（判据见 `tests/sfz_instrument.rs` 的 `S32`）。
+//! 依据（当时与现在都成立）：`loop_sustain` 与 `loop_continuous` 的**唯一分野**在
+//! note-off **之后**，而 note-off 在 `#91` 里只体现为 `end_sample` 硬停 ⇒
+//! **没有释放段就表现不出那个差别**。⭐ 现在有了：
+//!
+//! | 模式 | 有 `ampeg_*` 时 note-off 之后 |
+//! | :--- | :--- |
+//! | `loop_continuous` | ⭐ **note-off 不影响循环**：照旧循环，并在 `end_sample` 处**硬停**（＝ 今天的读数） |
+//! | `loop_sustain` | ⭐ **走完当前循环**（源位置第一次回绕）**再进** `ampeg_release` 释放段 |
+//!
+//! ⚠ 两者的输出**必须不同**（判据 `S36` 各配一条"它自己在 note-off 后该怎样"的断言，
+//! ⛔ 不是只断言"两者不同"—— 那可能两个都错）。
 //!
 //! ## ⭐ 退化窗口的**既有**语义（本片只登记，⛔ 不加新机制）
 //!
@@ -144,6 +158,82 @@
 //! ⇒ `SfzError::IntegerOutOfRange`。⚠ 本片⛔ 没有把它们改成"降级 ＋ 记录"，
 //! 也没有新增任何降级档（判据 `S31` 在引擎侧钉住这两条 `Err` 仍能透出）。
 //!
+//! # ⭐ 幅度包络（任务 `#92` 的 **ADSR 那一半**；`sfz-needs-6` 的另一半）
+//!
+//! ## ⭐ 曲线口径（⭐ 逐字登记，⛔ 不许含糊）
+//!
+//! ⭐ **本仓取线性段；参考实现的指数／对数选项不在本片范围内**（⛔ 不许假装线性等于
+//! 参考实现的曲线）。参考实现的形状见 `sfzformat` 的 `ampeg_attack` 页正文：ARIA 的
+//! SFZ1 包络**起音是线性**、衰减/释放**带一条比线性更快的乘性曲线**
+//! （`μ = exp(−8/(t·s))`）。本片把**四段都取分段线性**：逐样本可算、确定性、可判
+//! （判据 `S35` 的容差口径是「线性段上每一点都在 `|实测 − 理论| ≤ 1e-6` 内」）。
+//!
+//! ## 段与电平（分段线性；`A`/`H`/`D`/`R` 是**引擎帧**、`S` 是 **0..1**）
+//!
+//! | 段 | 区间（自触发起的帧数 `t`） | 电平 |
+//! | :--- | :--- | :--- |
+//! | 起音 `Attack` | `0 ≤ t < A` | `t / A` |
+//! | 保持 `Hold` | `A ≤ t < A + H` | `1` |
+//! | 衰减 `Decay` | `A + H ≤ t < A + H + D` | `1 − (1 − S) · (t − A − H) / D` |
+//! | 保持 `Sustain` | `t ≥ A + H + D` | `S` |
+//! | 释放 `Release` | 释放起点后第 `k` 帧（`0 ≤ k < R`） | `L_off · (R − k) / R` |
+//!
+//! * `A/H/D/R = round(秒 × engine_hz)`（**四舍五入**，⛔ 不截断）；
+//! * `S = ampeg_sustain / 100`（⛔ 该 opcode 是**百分比**不是增益）；
+//! * `L_off` ＝ 释放**起点那一刻**的电平（⛔ 不是"永远从 `S` 起算"：note-off 落在
+//!   起音/衰减段时从**当时**的电平起算 ⇒ 连续、⛔ 不跳变）；
+//! * ⭐ **零长段被跳过**（`A == 0` / `D == 0` / `R == 0` 各自合法）⇒ 这是**数学上的必然**
+//!   （零长的线性段没有中间点），⛔ 不是"降级政策"。
+//!
+//! ## ⭐ note-off 语义（本单的核心；四档）
+//!
+//! | # | 情形 | note-off 之后 |
+//! | :--- | :--- | :--- |
+//! | 1 | ⭐ **透明包络**（五个值都在缺省上 ⇒ 区域**没有** `ampeg_*` 的效果） | ⭐ **一字不改**：照旧 `end_sample` 硬停（⛔ 逐样本一个浮点运算都不加） |
+//! | 2 | `loop_mode=loop_continuous` ＋ 有包络 | ⭐ note-off **不影响循环**：照旧循环并在 `end_sample` 硬停（⛔ 不进释放段） |
+//! | 3 | `loop_mode=loop_sustain` ＋ 有包络 | ⭐ **走完当前循环**（源位置第一次回绕）**再进**释放段 |
+//! | 4 | 其余（`no_loop` 等）＋ 有包络 | ⭐ note-off **就地**进释放段（声部继续写，直到释放走完或样本用完） |
+//! | 5 | ⭐ `loop_mode=one_shot` ＋ 有包络 | ⭐ **连释放段也不进**（"忽略 note-off"是一条**完整**裁决：既不改退休、也不起释放）⇒ 声部照旧播到样本尾 |
+//!
+//! ⚠ `ampeg_release` 换算成 **0 帧**时，第 3 档仍然是"先走完当前循环、再（零长）释放"
+//! ＝ 回绕那一刻立即退休（零长段跳过），第 4 档则是 note-off 那一刻立即退休。
+//! ⚠ 第 2 档与第 3 档的输出**必须不同**（判据 `S36`）。
+//!
+//! ## 状态归属（⛔ 不把状态塞进实时对象以外的地方）
+//!
+//! * **每区域**的 ADSR **时间与电平**（秒 / 百分比）进 [`PreparedRegion`]
+//!   （`ampeg_attack/hold/decay/sustain/release` 五个字段，另见 [`AmpegRun`] 的帧口径归约）；
+//! * **每声部**只有**推进状态**：段位（`u8`）＋ 段内计数（`u32`）＝ **5 字节**，
+//!   落在 [`SfzVoice`] 既有的**填充字节**里 ⇒ 尺寸 **+0 字节**（`S9` 仍钉 `40 B`）；
+//! * ⭐ 释放段的**起点电平不需要另存**：段位里记着"收到 note-off 时在哪一段"，
+//!   而计数**冻结**在那一刻 ⇒ `L_off` 是 `(段位, 计数)` 的纯函数；
+//! * ⭐ 释放段的**进度**也不需要另存：它是 `引擎绝对帧 − epoch`，而 epoch 借用了
+//!   [`SfzVoice::end_sample`] 这个**既有** `u64`（见 [`EnvRun`] 的文档）。
+//!
+//! ## 输入政策（⭐ 响亮 `Err`，⛔ 不静默降级；第 259 条）
+//!
+//! 解析层（`crates/yeban-sfz/src/instrument.rs`）对五个 opcode 的口径：
+//!
+//! | 输入 | 结果 |
+//! | :--- | :--- |
+//! | opcode **没出现** | ⭐ **缺省值**（`0/0/0/100 %/0`）——"**缺失 ≠ 非法**" |
+//! | 单位后缀（`1.5s` / `250ms` / `50%`） | 认（大小写不敏感）；`ms` **优先**于 `s` 匹配 |
+//! | 认不出（`abc` / `1x` / 空串 / 时间 opcode 收到 `%`） | [`SfzError::InvalidFloat`]（⛔ 不"认不出就当秒"、⛔ 不落缺省） |
+//! | `NaN` / `±Inf` | [`SfzError::NonFiniteFloat`] |
+//! | 负时长 | [`SfzError::InvalidDuration`] |
+//! | 越界（时间 `> 100` 秒 / `sustain ∉ 0..=100`） | [`SfzError::FloatOutOfRange`] |
+//!
+//! ⚠ 一处**登记在案**的缺省偏离：`ampeg_release` 的规范缺省是 `0.001` 秒，**本仓取 `0`**
+//! —— 依据是任务 `#92` 的裁决第 3 条（"无 `ampeg_release` ⇒ 今天的 `end_sample` 行为不变"）。
+//! 完整理由见 `yeban_sfz` 的 `AMPEG_RELEASE_DEFAULT_SECONDS`（⛔ 不是静默降级：显式取值一律原样读入）。
+//!
+//! ### 包络这一半的分配纪律
+//!
+//! 包络的逐样本推进**零堆分配、零锁等待、零阻塞 I/O**：
+//! [`EnvRun`] 是一个**借用式**入参（⛔ 不分配），[`AmpegRun`] 是 `Copy` 的定长参数，
+//! [`AmpegRun::level_at`] 只有「一次整数→浮点转换 ＋ 一次乘加」
+//! （倒数在**逐块**时算好 ⇒ 逐样本⛔ 不做除法）。
+//!
 //! ## 分配纪律（红线 7 / [MUST-GATE-001]）
 //!
 //! * [`SfzPlan::prepare`]：**允许分配**（控制线程的构造期）；
@@ -155,6 +245,8 @@
 //! * ⚠ 摊平表带着**构造期的 `engine_hz`**（`rate_per_note`）⇒ **换采样率**必须由
 //!   **控制侧在窗口外重新摊平**并发布一份新快照；引擎⛔ 不在快照边界重算，
 //!   **在飞的声部**保留触发时抄下的 `rate`（实测见 `tests/rt_zero_alloc.rs` 的 ㉙）；
+//!   ⭐ 任务 `#92` 起 [`PreparedSfz::engine_hz`] 也**带回同一个数**（把 `ampeg_*` 的
+//!   **秒**换算成帧）⇒ 包络与速率**同一份采样率事实源**，⛔ 不是第二个时钟；
 //! * **退休归属不变**：SFZ 声部的退休是**池内状态翻转**（`active = false`），
 //!   ⛔ 不碰快照退役队列（旧快照仍由 `crate::snapshot` 的 `RetireProducer`
 //!   交回控制线程释放）。
@@ -169,6 +261,9 @@
 //! ⚠ 唯一的**额外因子**是引擎层的**轨增益门**（`track_gain`，见 `needs-1`）：
 //! 摊平表那条路**没有轨上下文** ⇒ 对账时取**单位门**（`track_gain = 1.0`，`× 1.0` 逐位不变）
 //! ⇒ 上式仍逐位成立；⭐ "引擎只多乘轨增益、⛔ 不碰力度"由 S18 逐位钉住。
+//! ⭐ 任务 `#92` 起**包络也在三条路上同口径**（同一个 [`ampeg_run_from`]）⇒ 有 `ampeg_*`
+//! 的夹具同样满足"逐样本最大绝对差 ＝ 0"（⚠ 前提：实时侧取 `end_sample = u64::MAX`，
+//! 否则实时侧会**按语义**多出释放段 —— 那不是口径分叉而是 note-off 的裁决）。
 //! 除此之外唯一的差别是**状态归属**（谁记住位置、谁负责退休），⛔ 不是数值口径。
 //!
 //! # 任务 `#67` 的步 3：**多采样** ＋ ⭐ **绑定注入 API**（⭐ 控制侧；⛔ 不发明模型语义）
@@ -203,7 +298,7 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）仍挂在 [`crate::drums`] 的 `needs-3`（属模型面，本单⛔ 不动）|
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ **循环那一半已闭合**（任务 `#91`：`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；⚠ `loop_sustain` 与 `loop_continuous` 在本片**行为相同** ⇒ 差别属 ADSR 片）。⛔ **仍未做**：`ampeg_*`（ADSR / 力度包络）、`off_mode`（`off_time`）、`group`/`off_by`/`note_polyphony` |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode`** | ⭐ ⭐ **循环与 ADSR 两半都已闭合**：循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off）；⭐ **ADSR ＝ 任务 `#92`**（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性、note-off 四档语义、`loop_sustain` 与 `loop_continuous` 的**分野已可判**）。⛔ **仍未做**：`ampeg_*` 的**调制类**（`ampeg_*ccN` / `ampeg_vel2*` / `*_curveccN`）、`fileg_*` / `pitcheg_*`、`off_mode`（`off_time`）、`group`/`off_by`/`note_polyphony` |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 
@@ -402,6 +497,21 @@ impl SfzInstrument {
                 // 离线/摊平这条路**不窃取**：淡出状态恒为 [`FadeRamp::NONE`]
                 // （`gain == 1.0` ⇒ 那个逐帧乘法逐位不变）。
                 let mut fade = FadeRamp::NONE;
+                // ⭐ 包络（任务 `#92`）：与摊平/实时两条路**同一份归约**（[`ampeg_run_from`]）。
+                // 这条路**没有 note-off** ⇒ 只走 起音→保持→衰减→保持
+                // （`frame = u64::MAX`：永远不会进释放段）；
+                // ⚠ `abs_base = 0` 只用于释放进度，这条路上用不到。
+                // ⚠ `frame = u64::MAX`（这条路没有 note-off ⇒ 永不进释放段）、
+                // `abs_base = 0`（释放进度用不到）、`sustain_tail = false`。
+                let mut env = ampeg_run_from(
+                    region.ampeg_attack,
+                    region.ampeg_hold,
+                    region.ampeg_decay,
+                    region.ampeg_sustain,
+                    region.ampeg_release,
+                    engine_hz,
+                )
+                .map(|run| EnvRun::new(run, ENV_STAGE_IDLE, 0, u64::MAX, 0, false));
                 let region_written = mix_span_into(
                     &source.pcm,
                     &mut position,
@@ -410,6 +520,7 @@ impl SfzInstrument {
                     source_end,
                     loop_window,
                     &mut fade,
+                    &mut env,
                     out,
                 );
                 written = written.max(region_written);
@@ -495,6 +606,241 @@ pub fn reduce_loop_window(
 
 /// ✂️ **摊平后的一个区域**：回调侧**只读**（⛔ 无 `Vec`／`Box`／`String`，全部定长）。
 ///
+/// ⭐ **幅度包络的段位**（`ampeg_*` 的逐声部推进状态的公开读数；任务单 `#92`）。
+///
+/// 只有**六个**取值：四段 ＋ 两个"释放态"。⚠ "从哪一段进释放"**不是**本枚举的取值
+/// （它是内部编码的低位），因为对调用方而言"释放中"就是释放中。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmpegStage {
+    /// 起音段：线性上升 `0 → 1`（时长 ＝ `ampeg_attack`）。
+    Attack,
+    /// 保持段：恒定 `1`（时长 ＝ `ampeg_hold`）。
+    Hold,
+    /// 衰减段：线性下降 `1 → ampeg_sustain`（时长 ＝ `ampeg_decay`）。
+    Decay,
+    /// 保持段：恒定 `ampeg_sustain`（直到 note-off）。
+    Sustain,
+    /// ⭐ **等当前循环走完**（`loop_sustain` 收到 note-off 之后）：电平**保持在** note-off
+    /// 那一刻的值；源位置**第一次回绕**时才进 [`AmpegStage::Release`]。
+    ReleasePending,
+    /// 释放段：从释放起点电平线性降到 `0`（时长 ＝ `ampeg_release`）。
+    Release,
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 段位编码（`SfzVoice::env_stage` 的取值）：⛔ 别处不许重复这套常量
+// ---------------------------------------------------------------------------
+
+/// 未启用（无包络的区域；`SfzVoice::envelope_stage()` 对它返回 `None`）。
+const ENV_STAGE_IDLE: u8 = 0;
+const ENV_STAGE_ATTACK: u8 = 1;
+const ENV_STAGE_HOLD: u8 = 2;
+const ENV_STAGE_DECAY: u8 = 3;
+const ENV_STAGE_SUSTAIN: u8 = 4;
+/// 「释放中」位：`段位 = ENV_RELEASING | (收到 note-off 时所在的段)`。
+const ENV_RELEASING: u8 = 0x80;
+/// 「等当前循环走完」位（`loop_sustain` 专用）：`段位 = ENV_RELEASE_PENDING | 收到时的段`。
+const ENV_RELEASE_PENDING: u8 = 0x40;
+/// 段位（低 3 位）的掩码。
+const ENV_STAGE_MASK: u8 = 0x07;
+
+/// 把 `t`（自触发起的帧数）落在哪一段编码成低位段位。
+fn env_held_stage_byte(run: &AmpegRun, t: u32) -> u8 {
+    if t < run.attack_frames() {
+        ENV_STAGE_ATTACK
+    } else if t < run.hold_end {
+        ENV_STAGE_HOLD
+    } else if t < run.decay_end {
+        ENV_STAGE_DECAY
+    } else {
+        ENV_STAGE_SUSTAIN
+    }
+}
+
+/// 段位编码 ⇒ 公开枚举（`0` ＝ 未启用 ⇒ `None`）。
+const fn env_stage_of(byte: u8) -> Option<AmpegStage> {
+    if byte == ENV_STAGE_IDLE {
+        return None;
+    }
+    if byte & ENV_RELEASING != 0 {
+        return Some(AmpegStage::Release);
+    }
+    if byte & ENV_RELEASE_PENDING != 0 {
+        return Some(AmpegStage::ReleasePending);
+    }
+    match byte & ENV_STAGE_MASK {
+        ENV_STAGE_ATTACK => Some(AmpegStage::Attack),
+        ENV_STAGE_HOLD => Some(AmpegStage::Hold),
+        ENV_STAGE_DECAY => Some(AmpegStage::Decay),
+        ENV_STAGE_SUSTAIN => Some(AmpegStage::Sustain),
+        _ => None,
+    }
+}
+
+/// ⭐ **引擎帧口径**的分段线性幅度包络（`ampeg_*`；任务单 `#92`）。
+///
+/// 由 [`PreparedRegion::ampeg_run`] 在**逐块**路径上求得（⛔ 逐样本不求值）：
+/// * 四个时间是**帧**（`round(秒 × engine_hz)`）；
+/// * [`Self::sustain_level`] 是 **0..1 的线性增益**（规范里的百分比 ÷ 100）。
+///
+/// ⚠ **逐样本只用一次乘加**（`t × 倒数` / `1 − span × (t × 倒数)`）⇒ 预先存好倒数，
+/// 回调里⛔ 不做除法、⛔ 不做整数→浮点的重复转换以外的开销。
+///
+/// ⚠ 本类型**不带任何逐声部状态**：段位与段内计数在 [`SfzVoice`]（⛔ 不在按区域的参数里）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmpegRun {
+    /// 起音段终点（帧；`0` ＝ 零长段 ⇒ 跳过）。
+    attack_end: u32,
+    /// 保持段终点（帧；＝ 起音 ＋ 保持）。
+    hold_end: u32,
+    /// 衰减段终点（帧；＝ 起音 ＋ 保持 ＋ 衰减）。
+    decay_end: u32,
+    /// `1 / attack_end`（`attack_end == 0` 时不会被读到）。
+    attack_inv: f32,
+    /// `1 / 衰减段帧数`（零长时不会被读到）。
+    decay_inv: f32,
+    /// `1 − sustain_level`（衰减段的落差）。
+    decay_span: f32,
+    /// 保持电平（0..1 的线性增益）。
+    sustain: f32,
+    /// 释放段帧数（`0` ＝ 零长段 ⇒ 跳到 0）。
+    release_frames: u32,
+    /// `1 / release_frames`（零长时不会被读到）。
+    release_inv: f32,
+}
+
+impl AmpegRun {
+    /// 起音段帧数（`ampeg_attack × engine_hz`，四舍五入）。
+    #[must_use]
+    pub const fn attack_frames(&self) -> u32 {
+        self.attack_end
+    }
+
+    /// 保持段帧数。
+    #[must_use]
+    pub const fn hold_frames(&self) -> u32 {
+        self.hold_end - self.attack_end
+    }
+
+    /// 衰减段帧数。
+    #[must_use]
+    pub const fn decay_frames(&self) -> u32 {
+        self.decay_end - self.hold_end
+    }
+
+    /// 保持电平（0..1 的线性增益；规范里的百分比 ÷ 100）。
+    #[must_use]
+    pub const fn sustain_level(&self) -> f32 {
+        self.sustain
+    }
+
+    /// 释放段帧数。
+    #[must_use]
+    pub const fn release_frames(&self) -> u32 {
+        self.release_frames
+    }
+
+    /// ⭐ **未释放阶段的电平**：给定段位与段内计数（`t` ＝ 自触发起的帧数）。
+    ///
+    /// 这是**唯一**的包络求值处：三种状态（保持 / 等回绕 / 释放）都从这里出发
+    /// （释放态把它的结果再乘一个 `(R − k) / R`）。
+    ///
+    /// ⚠ 零长段在这里**自然跳过**（例：`decay == 0` ⇒ `t < decay_end` 与
+    /// `t < hold_end` 同时为假 ⇒ 直接落到 `sustain`）—— 这是**数学上的必然**，
+    /// ⛔ 不是"降级政策"（见模块头）。
+    fn level_at(&self, stage_byte: u8, t: u32) -> f32 {
+        match stage_byte & ENV_STAGE_MASK {
+            ENV_STAGE_ATTACK => t as f32 * self.attack_inv,
+            ENV_STAGE_HOLD => 1.0,
+            ENV_STAGE_DECAY => {
+                1.0 - self.decay_span * ((t - self.hold_end) as f32 * self.decay_inv)
+            }
+            _ => self.sustain,
+        }
+    }
+
+    /// ⭐ **释放段的缩放**：`(R − k) / R`（`k` ＝ 释放已走的帧数）。
+    ///
+    /// `k >= R` ⇒ 返回 `None`（释放走完 ⇒ 声部退休）。
+    fn release_scale(&self, k: u64) -> Option<f32> {
+        if self.release_frames == 0 || k >= u64::from(self.release_frames) {
+            return None;
+        }
+        let remaining = (self.release_frames - k as u32) as f32;
+        Some(remaining * self.release_inv)
+    }
+}
+
+/// ⭐ **包络归约的唯一实现**（任务单 `#92`）：把 `ampeg_*` 的**秒 / 百分比**
+/// 换算成引擎帧口径的 [`AmpegRun`]。
+///
+/// 三条路（离线 [`SfzInstrument::render_note_into`] ／摊平
+/// [`PreparedSfz::render_block_into`] ／实时 [`SfzVoicePool`]）**共用它**
+/// ⇒ 包络口径不可能在三条路之间分叉（与 [`reduce_span`] / [`reduce_loop_window`] 同形）。
+///
+/// # 判定次序（逐条可判）
+///
+/// 1. **透明**：五个值都恰好在透明缺省（各段 `0` 秒、`sustain` 100 %、`release` 0 秒）
+///    ⇒ `None` ＝ **逐样本路径一个浮点运算都不加**（"没有 `ampeg_*`" ⇒ 与接线前逐位相同）；
+/// 2. **换算**：`frames = round(秒 × engine_hz)`（⛔ 不是截断：`0.01 s @ 48 kHz` 截断会得到
+///    479 而不是 480）；
+/// 3. **非有限 / 负的 `engine_hz`**：换算结果按 `0` 计（调用方给不出正常采样率时
+///    ⛔ 不 panic、⛔ 不产出 `NaN` —— 与 `crate::synth` 的 `sanitise_sample_rate` 同一精神）；
+/// 4. 换算后**为 0 帧**的段 ＝ 零长段，由 [`AmpegRun::level_at`] 自然跳过。
+#[must_use]
+pub fn ampeg_run_from(
+    attack_seconds: f32,
+    hold_seconds: f32,
+    decay_seconds: f32,
+    sustain_percent: f32,
+    release_seconds: f32,
+    engine_hz: f32,
+) -> Option<AmpegRun> {
+    if attack_seconds == 0.0
+        && hold_seconds == 0.0
+        && decay_seconds == 0.0
+        && sustain_percent == 100.0
+        && release_seconds == 0.0
+    {
+        return None;
+    }
+    let frames = |seconds: f32| -> u32 {
+        let raw = f64::from(seconds) * f64::from(engine_hz);
+        if !raw.is_finite() || raw <= 0.0 {
+            0
+        } else if raw >= f64::from(u32::MAX) {
+            u32::MAX
+        } else {
+            raw.round() as u32
+        }
+    };
+    let attack = frames(attack_seconds);
+    let hold = frames(hold_seconds);
+    let decay = frames(decay_seconds);
+    let release = frames(release_seconds);
+    let sustain = (sustain_percent / 100.0).clamp(0.0, 1.0);
+    let hold_end = attack.saturating_add(hold);
+    Some(AmpegRun {
+        attack_end: attack,
+        hold_end,
+        decay_end: hold_end.saturating_add(decay),
+        attack_inv: if attack == 0 {
+            0.0
+        } else {
+            1.0 / attack as f32
+        },
+        decay_inv: if decay == 0 { 0.0 } else { 1.0 / decay as f32 },
+        decay_span: 1.0 - sustain,
+        sustain,
+        release_frames: release,
+        release_inv: if release == 0 {
+            0.0
+        } else {
+            1.0 / release as f32
+        },
+    })
+}
+
 /// 键/力度的可播性、以及**全部静态门控**（通道 / `trigger` 事件 / keyswitch / CC）
 /// 在**构造期**由 `yeban-sfz` 的 `Region::matches_query` 求值后**打包成 128 位掩码** ⇒
 /// 回调侧只做位测试，⛔ 不在回调里调用任何解析/分配函数。
@@ -549,9 +895,30 @@ pub struct PreparedRegion {
     /// ⭐ **生效循环模式**（`Region::effective_loop_mode`：`trigger=release` /
     /// `release_key` 家族已被覆写成 [`LoopMode::OneShot`]）。
     ///
-    /// ⚠ 本片**只**实现"循环"这一半：`loop_sustain` 的取值**原样保留**，但它在
-    /// note-off 之后的语义与 `loop_continuous` **相同**（差别属 ADSR 片，见模块头）。
+    /// ⚠ 沿革：循环接线片（任务 `#91`）曾在此逐字登记"`loop_sustain` 的取值**原样保留**，
+    /// 但它在 note-off 之后的语义与 `loop_continuous` **相同**"。⭐ 任务 `#92`（ADSR 片）
+    /// 已把那条差别**变成现实** —— 见模块头的"⭐ 幅度包络"一节与
+    /// [`Self::ampeg_release`] 的说明。
     loop_mode: LoopMode,
+    /// ⭐ **起音时长**（`ampeg_attack`，**秒**；规范 Range 0..=100）。
+    ///
+    /// ⚠ 单位与口径：本摊平表**原样承载 opcode 的秒 / 百分比**（⛔ 不预先换算成引擎帧）——
+    /// 换算在**逐块**读该区域时用摊平期的采样率做（见 [`Self::ampeg_run`]），
+    /// 与 [`Self::rate_per_note`] 同一份"摊平期采样率"事实源。
+    ampeg_attack: f32,
+    /// ⭐ **保持段时长**（`ampeg_hold`，**秒**；规范 Range 0..=100）。
+    ampeg_hold: f32,
+    /// ⭐ **衰减段时长**（`ampeg_decay`，**秒**；从峰值降到 [`Self::ampeg_sustain`]）。
+    ampeg_decay: f32,
+    /// ⭐ **保持电平**（`ampeg_sustain`，**百分比** 0..=100；规范缺省 100）。
+    ampeg_sustain: f32,
+    /// ⭐ **释放段时长**（`ampeg_release`，**秒**；⚠ 本仓缺省 `0`，见 `yeban_sfz` 的
+    /// `AMPEG_RELEASE_DEFAULT_SECONDS`）。
+    ///
+    /// ⚠ 与 `one_shot` 的分工：`one_shot` ⇒ note-off **根本不触发**释放段（声部继续到样本尾）；
+    /// 本字段只在 note-off **真的**到达时才起作用（且 `release == 0` ⇒ 释放段零长 ⇒ 立即退休，
+    /// 即"今天的 `end_sample` 硬停"）。
+    ampeg_release: f32,
 }
 
 impl PreparedRegion {
@@ -680,6 +1047,81 @@ impl PreparedRegion {
             (self.key_crossfade[n] * self.velocity_fade_in[v]) * self.velocity_fade_out[v];
         base * crossfade
     }
+
+    // -----------------------------------------------------------------
+    // ⭐ 幅度包络（`ampeg_*`；任务单 `#92`）的**只读读数**与逐块归约
+    // -----------------------------------------------------------------
+
+    /// ⭐ `ampeg_attack`（**秒**，原样）。
+    #[must_use]
+    pub const fn ampeg_attack_seconds(&self) -> f32 {
+        self.ampeg_attack
+    }
+
+    /// ⭐ `ampeg_hold`（**秒**，原样）。
+    #[must_use]
+    pub const fn ampeg_hold_seconds(&self) -> f32 {
+        self.ampeg_hold
+    }
+
+    /// ⭐ `ampeg_decay`（**秒**，原样）。
+    #[must_use]
+    pub const fn ampeg_decay_seconds(&self) -> f32 {
+        self.ampeg_decay
+    }
+
+    /// ⭐ `ampeg_sustain`（**百分比** 0..=100，原样 --- ⛔ 不是 0..1 的增益）。
+    #[must_use]
+    pub const fn ampeg_sustain_percent(&self) -> f32 {
+        self.ampeg_sustain
+    }
+
+    /// ⭐ `ampeg_release`（**秒**，原样）。
+    #[must_use]
+    pub const fn ampeg_release_seconds(&self) -> f32 {
+        self.ampeg_release
+    }
+
+    /// ⭐ **该区域是否"没有包络效应"**（透明包络）：五个值都恰好在各自的**透明缺省**上
+    /// （各段零长 ＋ `sustain = 100 %` ＋ `release = 0`）。
+    ///
+    /// ⚠ 这是**快速通道**的判据，⛔ 不是"合法性"判据：它只看数值，**不看** opcode 是否出现
+    /// （`ampeg_attack=0` 与"没写 `ampeg_attack`"在这里**同值** ⇒ 同样走快速通道）。
+    ///
+    /// 判据的后果（三条路同口径）：透明 ⇒ 逐样本路径**一个浮点运算都不加**
+    /// （`env` 传 `None`）⇒ 与接线前的输出**逐位相同**（`S37`／`S33`）。
+    #[must_use]
+    pub fn ampeg_is_transparent(&self) -> bool {
+        self.ampeg_attack == 0.0
+            && self.ampeg_hold == 0.0
+            && self.ampeg_decay == 0.0
+            && self.ampeg_sustain == 100.0
+            && self.ampeg_release == 0.0
+    }
+
+    /// ⭐ **逐块归约**：把秒 / 百分比换算成**引擎帧**口径的分段线性参数（见 [`AmpegRun`]）。
+    ///
+    /// 换算口径（逐条可判）：
+    /// * `frames = round(seconds × engine_hz)`（**四舍五入**：`0.01 s @ 48 kHz` 若截断会得到
+    ///   479 帧而不是 480 ⇒ 判据里"恰好第 `A` 帧到峰"会差一帧）；
+    /// * 换算后**为 0 帧**的段 ＝ **零长段 ⇒ 跳过该段**（⛔ 不是"降级政策"，是数学上的必然：
+    ///   零长的线性段没有中间点）；
+    /// * `engine_hz` 是**摊平期**的那一个（与 `rate_per_note` 同一份）⇒ 换采样率必须由
+    ///   控制侧在窗口外**重新摊平**（既有纪律，见模块头）；
+    /// * 透明区域 ⇒ `None`（⛔ 不进包络路径）。
+    ///
+    /// ⚠ **零分配、零锁、零 I/O**（纯浮点/整数换算）⇒ 可被逐块路径调用 [MUST-GATE-001]。
+    #[must_use]
+    pub fn ampeg_run(&self, engine_hz: f32) -> Option<AmpegRun> {
+        ampeg_run_from(
+            self.ampeg_attack,
+            self.ampeg_hold,
+            self.ampeg_decay,
+            self.ampeg_sustain,
+            self.ampeg_release,
+            engine_hz,
+        )
+    }
 }
 
 /// ✂️ **摊平后的乐器**：区域表 ＋ **样本表**，**构造期**建好，回调侧只读。
@@ -714,6 +1156,13 @@ pub struct PreparedSfz {
     silent_regions: usize,
     /// ⭐ 缺样本的**路径**（排序 ＋ 去重 ⇒ 确定性顺序；报告/诊断用）。
     missing_samples: Vec<String>,
+    /// ⭐ **摊平期采样率**（Hz）：`prepare` / `prepare_with_samples` 的第二参原样抄下。
+    ///
+    /// 用途只有一个：把区域的 `ampeg_*` **秒**换算成引擎帧（[`PreparedRegion::ampeg_run`]）。
+    /// ⚠ 这与 `rate_per_note` 是**同一份事实源**（两者都在摊平期由同一个 `engine_hz` 求得）
+    /// ⇒ **换采样率必须由控制侧重新摊平**并发布新快照（既有纪律，见模块头），
+    /// ⛔ 实时侧不重算、⛔ 不读时钟。
+    engine_hz: f32,
 }
 
 /// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
@@ -998,6 +1447,7 @@ impl PreparedSfz {
             broadcast: true,
             silent_regions: 0,
             missing_samples: Vec::new(),
+            engine_hz,
         })
     }
 
@@ -1071,17 +1521,27 @@ impl PreparedSfz {
             broadcast: false,
             silent_regions,
             missing_samples: missing,
+            engine_hz,
         })
     }
 
     /// ⭐ **区域表**占用的字节数（`size_of::<PreparedRegion>() × 区域数`）。
     ///
     /// ⚠ 这是**结构本身**的字节数（⛔ 不含 `Vec` 的容量余量、⛔ 不含任何样本数据）：
-    /// [`PreparedRegion`] 是定长纯数据（两张掩码 ＋ 五张 `[f32; 128]` 表 ＋ 两个标量）
+    /// [`PreparedRegion`] 是定长纯数据（两张掩码 ＋ 五张 `[f32; 128]` 表 ＋ 标量）
     /// ⇒ "区域条数"这一维的开销是**可复算**的。
     #[must_use]
     pub fn region_bytes(&self) -> usize {
         core::mem::size_of::<PreparedRegion>() * self.regions.len()
+    }
+
+    /// ⭐ **摊平期采样率**（Hz）—— 把区域的 `ampeg_*` 秒换算成引擎帧的那一份事实源。
+    ///
+    /// ⚠ 与 `rate_per_note` **同源**（同一次 `prepare(…, engine_hz)`）⇒ 换采样率必须
+    /// 由控制侧重新摊平；本读数只是把它带出来（判据 S34 会对着它复算帧数）。
+    #[must_use]
+    pub const fn engine_hz(&self) -> f32 {
+        self.engine_hz
     }
 
     /// ⭐ **全部样本路径文本**占用的字节数（去重后 `Σ path.len()`）。
@@ -1270,6 +1730,11 @@ impl PreparedSfz {
             let mut position = start;
             // 摊平表的一次性调用**不窃取**（与上一条路同款：`× 1.0` 逐位不变）。
             let mut fade = FadeRamp::NONE;
+            // ⭐ 包络（任务 `#92`）：与离线/实时两条路**同一份归约**（秒 × 本表的 `engine_hz`）。
+            // 这条一次性调用**没有 note-off** ⇒ 只走 起音→保持→衰减→保持（`frame = u64::MAX`）。
+            let mut env = region
+                .ampeg_run(self.engine_hz)
+                .map(|run| EnvRun::new(run, ENV_STAGE_IDLE, 0, u64::MAX, 0, false));
             let region_written = mix_span_into(
                 pcm,
                 &mut position,
@@ -1278,6 +1743,7 @@ impl PreparedSfz {
                 source_end,
                 loop_window,
                 &mut fade,
+                &mut env,
                 out,
             );
             written = written.max(region_written);
@@ -1381,6 +1847,14 @@ fn flatten_regions(
                 loop_start: region.loop_start,
                 loop_end: region.loop_end,
                 loop_mode: region.effective_loop_mode(),
+                // ⭐ 幅度包络（任务单 `#92`）：五个**每区域**参数原样搬进摊平表
+                // （秒 / 百分比 —— ⛔ 不在这里换算成帧：换算在逐块读该区域时用
+                // `engine_hz` 做，见 `PreparedRegion::ampeg_run`）。
+                ampeg_attack: region.ampeg_attack,
+                ampeg_hold: region.ampeg_hold,
+                ampeg_decay: region.ampeg_decay,
+                ampeg_sustain: region.ampeg_sustain,
+                ampeg_release: region.ampeg_release,
             });
         }
         regions
@@ -1460,7 +1934,158 @@ impl FadeRamp {
     }
 }
 
-/// ⭐ **全仓唯一的逐样本混音循环**（线性插值 ＋ 增益乘加 ＋ 源采样终点）。
+/// ⭐ **逐样本包络的运行时束**（任务单 `#92`）：把"**每声部**的推进状态"、
+/// "**每块**求得的参数（[`AmpegRun`]）"与"note-off / 释放 epoch"打成一个**定长、`Copy`
+/// 之外的纯值**入参 —— ⛔ 它不进任何结构体的布局（`SfzVoice` 只多 5 字节，见 `S9`）。
+///
+/// # ⭐ `frame` 一个 `u64` 承载两件事（**有登记**）
+///
+/// * **未进释放**：它是 **note-off 帧**（就是 [`SfzVoice::end_sample`] 的原义）；
+/// * **已进释放**：它是**释放 epoch**（释放段的第 0 帧）。
+///
+/// 于是"释放已走的帧数" ＝ `abs_frame − frame`；而 epoch 在 `loop_sustain` 的
+/// "走完当前循环"分支里被**改写**成回绕帧 ⇒ ⭐ 这一个 `u64` 就够（⛔ 不需要给
+/// `SfzVoice` 加第 9 个字段）。释放一旦开始，note-off 帧就**不再被需要**
+/// （退休已由包络接管）⇒ ⛔ 不产生语义冲突。
+///
+/// # ⭐ 为什么是**自有状态**（⛔ 不是 `&mut` 借用）
+///
+/// 两个理由，都是机械的：
+///
+/// 1. `SfzVoice` 的**尺寸**被字面判据钉住（`S9`：`40 B`）：把状态打成一个
+///    `#[derive(Copy)] struct { stage: u8, counter: u32 }` 会因**对齐**从 5 字节涨到
+///    8 字节 ⇒ 声部涨到 48 B ⇒ 判据红。故声部里是两个**独立字段**。
+/// 2. 借用式（`&mut` 字段）会让构造点只能写成 `match opt { Some(r) => Some(EnvRun::new(
+///    &mut stage, …)), None => None }` —— 那个 `match` 被 `clippy::manual_map` 判红，
+///    而改回 `.map(闭包)` 又会被**借用检查器**拒绝（闭包体里返回借用了捕获变量的值，
+///    闭包签名表达不出那个生命周期）。自有状态两边都清爽：`.map(闭包)` 合法
+///    （闭包只**读**外部值、返回**自有**值），逐块写回也只是一次结构体赋值。
+pub(crate) struct EnvRun {
+    /// 段位（[`ENV_STAGE_IDLE`] / 四个段 / ＋释放位 / ＋等回绕位）。
+    stage: u8,
+    /// 段内计数：**自触发起的帧数**（进入释放/等回绕后**冻结**在 `t_off`）。
+    counter: u32,
+    /// 每块由区域求得的帧口径参数。
+    run: AmpegRun,
+    /// 未进释放 ⇒ note-off 帧；已进释放 ⇒ 释放 epoch（见类型文档）。
+    frame: u64,
+    /// 本块 `out[0]` 的**引擎绝对帧**（释放进度靠它算）。
+    ///
+    /// ⚠ 离线/摊平两条路给 `0`：它们**没有 note-off**（`frame = u64::MAX`）⇒ 该值不被使用。
+    abs_base: u64,
+    /// 该区域的 note-off 是否要走"**先走完当前循环**"（`loop_sustain` **且**窗口有效）。
+    ///
+    /// ⚠ `loop_sustain` 但窗口退化（`loop_end <= loop_start` ⇒
+    /// [`PreparedRegion::loop_window`] 为 `None`）时必须是 `false`：否则"等回绕"永远等不到
+    /// ⇒ 声部会**卡在挂起态**。调用方按 `loop_window.is_some()` 求值。
+    sustain_tail: bool,
+}
+
+impl EnvRun {
+    /// ⭐ 构造（逐块一次；⛔ 不在逐样本路径上）。
+    ///
+    /// `stage` / `counter` 从声部抄来（跨块延续）；`frame` 是 note-off 帧**或**释放 epoch
+    /// （由声部的 [`SfzVoice::end_sample`] 承载 —— 语义由 `stage` 决定，见类型文档）。
+    pub(crate) const fn new(
+        run: AmpegRun,
+        stage: u8,
+        counter: u32,
+        frame: u64,
+        abs_base: u64,
+        sustain_tail: bool,
+    ) -> Self {
+        EnvRun {
+            stage,
+            counter,
+            run,
+            frame,
+            abs_base,
+            sustain_tail,
+        }
+    }
+
+    /// ⭐ **循环回绕**发生在这一帧：若正"等当前循环走完" ⇒ 就地转进释放段。
+    ///
+    /// 调用点在 [`mix_span_into`] 的回绕分支里（**唯一**的逐样本回绕处）⇒
+    /// "走完当前循环"的判定与回绕本身**同源**，⛔ 不是第二份循环几何。
+    fn on_loop_wrap(&mut self, abs_frame: u64) {
+        if self.stage & ENV_RELEASE_PENDING != 0 {
+            self.stage = ENV_RELEASING | (self.stage & ENV_STAGE_MASK);
+            self.frame = abs_frame;
+        }
+    }
+
+    /// ⭐ **推进一帧并给出该帧的包络增益**；`None` ＝ 包络**已归零**
+    /// （释放段走完 ⇒ 调用方应退休声部）。
+    ///
+    /// 判定次序（逐条可判）：
+    /// 1. **启用**：`IDLE` ⇒ `ATTACK`（区域有包络才会走到这里）；
+    /// 2. **note-off**（只在"还没进释放/等回绕"时）：记下**当时所在的段**
+    ///    （释放段要从那一刻的电平起算，这是"分段线性"的必要信息）——
+    ///    `loop_sustain` ＋ 有效窗口 ⇒ 进**等回绕**态；其余 ⇒ **就地进释放**
+    ///    并把 `frame` 改写成释放 epoch ＝ 本帧；
+    /// 3. **电平**：等回绕 ⇒ 保持在 `t_off` 那一刻的电平；释放 ⇒ 再乘 `(R − k) / R`；
+    ///    其余 ⇒ [`AmpegRun::level_at`]；
+    /// 4. **计数**：只有"还没进释放/等回绕"时才推进（释放期冻结在 `t_off`）。
+    ///
+    /// ⚠ **未进释放时的段位由计数唯一决定**（段边界是常数 `A` / `A+H` / `A+H+D`）⇒
+    /// 每帧都按 [`env_held_stage_byte`] 刷新 `stage`，于是 [`SfzVoice::envelope_stage`]
+    /// 是**真实段位**（⛔ 不是"永远是 Attack"的假读数）。
+    fn advance(&mut self, abs_frame: u64) -> Option<f32> {
+        let t = self.counter;
+        let mut byte = self.stage;
+        if byte == ENV_STAGE_IDLE {
+            byte = ENV_STAGE_ATTACK;
+        }
+        if byte & (ENV_RELEASING | ENV_RELEASE_PENDING) == 0 {
+            byte = env_held_stage_byte(&self.run, t);
+            if abs_frame >= self.frame {
+                let at = byte;
+                if self.sustain_tail {
+                    byte = ENV_RELEASE_PENDING | at;
+                } else {
+                    byte = ENV_RELEASING | at;
+                    self.frame = abs_frame;
+                }
+            }
+        }
+        let level = if byte & ENV_RELEASE_PENDING != 0 {
+            self.run.level_at(byte, t)
+        } else if byte & ENV_RELEASING != 0 {
+            match self.run.release_scale(abs_frame.saturating_sub(self.frame)) {
+                Some(scale) => self.run.level_at(byte, t) * scale,
+                None => 0.0,
+            }
+        } else {
+            self.run.level_at(byte, t)
+        };
+        if byte & (ENV_RELEASING | ENV_RELEASE_PENDING) == 0 {
+            self.counter = t.saturating_add(1);
+        }
+        self.stage = byte;
+        // ⭐ 释放走完（或零长释放）⇒ `release_scale` 落空 ⇒ 电平 0 ⇒ 退休。
+        // ⚠ 用 `level > 0.0 || 未在释放` 而不是 `level > 0.0`：`sustain = 0` 且**未**释放时
+        // 电平恒 0 —— 那**不是**"释放走完"，声部应照旧活着（继续写 0 直到 note-off/样本尾）。
+        if level > 0.0 || byte & ENV_RELEASING == 0 {
+            Some(level)
+        } else {
+            None
+        }
+    }
+
+    /// ⭐ 把推进状态写回声部的三个字段（逐块一次）。
+    ///
+    /// `stage` / `counter` / `frame` 分别回写 [`SfzVoice::env_stage`] /
+    /// [`SfzVoice::env_counter`] / [`SfzVoice::end_sample`]（最后那个是 note-off ↔ epoch 的
+    /// **同一格**，见类型文档）。
+    fn write_back(self, voice: &mut SfzVoice) {
+        voice.env_stage = self.stage;
+        voice.env_counter = self.counter;
+        voice.end_sample = self.frame;
+    }
+}
+
+/// ⭐ **全仓唯一的逐样本混音循环**（线性插值 ＋ 增益乘加 ＋ 源采样终点 ＋ 幅度包络）。
 ///
 /// `position` 是**可变**的源采样位置 ⇒ 无状态的一次性调用
 /// （[`PreparedSfz::render_block_into`]）与跨量子延续的实时声部
@@ -1501,9 +2126,9 @@ impl FadeRamp {
 ///   `source_end`，循环退化成长音）；"重复减到窗口内"则有**死循环**风险
 ///   （`position` 远大于 `len` 时 f32 的 ULP 会把 `-= len` 吸收掉）。
 ///   `fmod` 的余数**按定义精确**、逐样本**有界**（一次求余）⇒ 两条风险都不在。
-// ⚠ 8 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
-// （本仓既有同款豁免见 `SfzVoice::new`）。⭐ `loop_window` 是唯一的**静态**入参
-// （触发期/构造期定好），⛔ 不在逐样本路径上求值。
+// ⚠ 9 个参数是**逐样本热路径**的代价：拆成结构体会在回调里多一次读结构体
+// （本仓既有同款豁免见 `SfzVoice::new`）。⭐ `loop_window` 与 `env` 是仅有的**静态**入参
+// （触发期/构造期/块首定好），⛔ 不在逐样本路径上构造。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mix_span_into(
     pcm: &[f32],
@@ -1513,25 +2138,45 @@ pub(crate) fn mix_span_into(
     source_end: u64,
     loop_window: Option<LoopWindow>,
     fade: &mut FadeRamp,
+    env: &mut Option<EnvRun>,
     out: &mut [f32],
 ) -> usize {
     // ⭐ 窗口预换算成 `f32`（逐样本路径⛔ 不做 `u32 → f32` 转换、⛔ 不读结构体）。
     let loop_bounds = loop_window.map(|window| (window.start as f32, window.len() as f32));
     let mut written = 0usize;
     for slot in out.iter_mut() {
+        // ⭐ 逐样本的引擎**绝对**帧（包络的释放进度 `k = abs − epoch` 靠它算；
+        // ⛔ 不用"本块内的下标"：那会让跨块的释放段重新计时）。
+        let abs_frame = env.as_ref().map_or(0, |run| run.abs_base + written as u64);
         if let Some((loop_start, loop_len)) = loop_bounds
             && *position >= loop_start + loop_len
         {
             *position = loop_start + (*position - loop_start) % loop_len;
+            // ⭐ `loop_sustain` 的 note-off 之后：**走完当前循环**（正好在这里发生）
+            // ⇒ 这一刻才是释放段的起点（epoch ＝ 本帧）。
+            if let Some(run) = env.as_mut() {
+                run.on_loop_wrap(abs_frame);
+            }
         }
         let index = *position as usize;
         if index as u64 + 1 >= source_end || index + 1 >= pcm.len() {
             break;
         }
+        // ⭐ 包络（本片新增）：`None` ⇒ `1.0` ⇒ 下面那个乘法是**恒等**的 `× 1.0`
+        // （binary32 下逐位不变 ⇒ 没有 `ampeg_*` 的夹具与接线前一字不差）。
+        let env_gain = match env.as_mut() {
+            Some(run) => match run.advance(abs_frame) {
+                Some(level) => level,
+                // 释放段走完 ⇒ 如实停在这里（调用方据 `written < out.len()` 退休声部）。
+                None => break,
+            },
+            None => 1.0,
+        };
         let frac = *position - index as f32;
         let sample = pcm[index] * (1.0 - frac) + pcm[index + 1] * frac;
-        // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**。
-        *slot += sample * gain * fade.gain;
+        // 非淡出时 `fade.gain == 1.0` ⇒ `(sample × gain) × 1.0` 与接线前**逐位相同**；
+        // 无包络时 `env_gain == 1.0` ⇒ 再乘一次 `1.0` 也**逐位相同**。
+        *slot += sample * gain * fade.gain * env_gain;
         *position += rate;
         written += 1;
         if fade.fading && !fade.advance() {
@@ -1564,19 +2209,30 @@ pub const SFZ_VOICES_PER_TRACK: usize = 16;
 /// * `source_start` / `source_end` ＝ [`PreparedRegion::span_bounds`] 的**同一份**归约
 ///   （`offset` 起点与 `min(end, 样本播完)` 终点）。
 ///
-/// # 终点口径（**无包络时的诚实占位**）
+/// # 终点口径（⭐ 任务 `#92` 起：**有 `ampeg_*` 时由包络接管**）
 ///
-/// `stop = min(end_sample, source_end, 样本播完)`，其中
-///
-/// * ⛔ **跳过 `ampeg_*`**（ADSR / 力度包络本片不做）⇒ 音符**没有**包络收尾；
-/// * ⭐ **用样本自然结束**：源位置走到 `source_end` 即退休；
-/// * `end_sample`（音符的引擎终点）先到也退休 —— ⭐ **但 `loop_mode=one_shot` 的区域
-///   ⛔ 不退休**（`one_shot` 忽略 note-off，见 [`PreparedRegion::ignores_note_off`]）。
+/// * **无 `ampeg_*`（透明包络）**：`stop = min(end_sample, source_end, 样本播完)`
+///   —— ⭐ **与任务 `#92` 之前一字不差**（逐位判据 `S37`）；
+/// * ⭐ **有 `ampeg_*`**：note-off（＝ `end_sample`）**不再**是硬停，而是**释放段的起点** ——
+///   声部继续写（到 `source_end` 或释放走完为止）：
+///   * `loop_mode=loop_continuous` ⇒ ⭐ **note-off 不影响循环**（⛔ 不进释放段，
+///     照旧在 `end_sample` 硬停 —— 与 `loop_sustain` 的**唯一分野**就是这一条）；
+///   * `loop_mode=loop_sustain` ⇒ ⭐ note-off 后**走完当前循环**（源位置第一次回绕）
+///     **再进**释放段（[`AmpegStage::ReleasePending`] ⇒ [`AmpegStage::Release`]）；
+///   * 其余模式（`no_loop` 等）⇒ note-off **就地**进释放段；
+///   * `ampeg_release` 换算后为 **0 帧** ⇒ 零长释放段 ⇒ 立即退休（＝ 今天的硬停）；
+/// * ⭐ **用样本自然结束**：源位置走到 `source_end` 即退休（有包络时这条**仍然**有效：
+///   释放段比样本尾巴长 ⇒ 尾巴用完就停）；
+/// * ⭐ **`loop_mode=one_shot` 的区域 ⛔ 不退休**（`one_shot` 忽略 note-off，
+///   见 [`PreparedRegion::ignores_note_off`]）—— 注意它与 `loop_continuous` 的分别：
+///   `one_shot` 连**循环窗口都没有**（[`reduce_loop_window`] 对它恒 `None`）。
 ///
 /// ⭐ **循环由区域（[`PreparedRegion`]）拥有、⛔ 不由声部拥有**：声部只带
 /// [`Self::region_index`] 指路 ⇒ `position` ＋ `region_index` 就够（[`Self::sample_index`]
 /// **不够**：它指向**去重后的样本**，多条区域可以共用一份样本、却各有各的循环窗口）。
-/// ⛔ 因此本片**没有**为了"记住当前在循环里"而给声部加字段（尺寸读数见 `S9`）。
+/// ⭐ **包络参数也由区域拥有**（秒 / 百分比）：声部只带**推进状态**
+/// （[`Self::envelope_stage`] ＋ [`Self::envelope_counter`] ＝ `u8 ＋ u32` ＝ **5 字节**，
+/// 落在既有尾部填充里 ⇒ `SfzVoice` 仍 **40 B**，判据 `S9`）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SfzVoice {
     /// 源采样位置（帧；浮点 ⇒ 分数速率与线性插值）。
@@ -1594,6 +2250,21 @@ pub struct SfzVoice {
     velocity: u8,
     /// 是否在发声（`false` ⇒ 逐样本循环整段跳过）。
     active: bool,
+    /// ⭐ **包络段位**（任务 `#92`；编码见 [`ENV_STAGE_IDLE`] 一族常量，
+    /// 公开读数是 [`Self::envelope_stage`]）。
+    ///
+    /// ⚠ 它落在 `SfzVoice` 既有的**填充字节**里（与 [`Self::env_counter`] 一起 5 字节）
+    /// ⇒ 尺寸 **+0 字节**。
+    ///
+    /// ⚠ `PartialEq` 会**比较它**：段位是声部的可观测状态（同一输入序列下确定），
+    /// 与 `position` / `active` 同等对待；没有判据用"两个声部相等"来断言别的东西
+    /// （`S9` 用的是 `size_of`，其余判据走 `note()` / `is_active()` 这类读数）。
+    env_stage: u8,
+    /// ⭐ **包络段内计数**（任务 `#92`）：**自触发起的帧数**（进入释放/等回绕后**冻结**）。
+    ///
+    /// ⚠ 增量是 `u32`（⛔ 不是 `u16`）：`ampeg_*` 上限 100 秒 ⇒ 48 kHz 上是 4 800 000 帧，
+    /// `u16` 装不下（会把长段"回绕"成短段）。落在填充里 ⇒ 尺寸 **+0 字节**。
+    env_counter: u32,
     /// ⭐ **该声部播哪一份摊平样本**（[`PreparedSfz::samples`] 的下标；触发时抄自
     /// [`PreparedRegion::sample_index`]）⇒ 多采样下各声部读**自己**那份 PCM。
     sample_index: u16,
@@ -1618,6 +2289,8 @@ impl SfzVoice {
         note: 0,
         velocity: 0,
         active: false,
+        env_stage: ENV_STAGE_IDLE,
+        env_counter: 0,
         sample_index: PreparedRegion::NO_SAMPLE,
         region_index: 0,
         source_end: 0,
@@ -1628,6 +2301,9 @@ impl SfzVoice {
     ///
     /// `source_start` ＝ [`reduce_span`] 归约出的源起点（`offset`）；`source_end` ＝ 同一份
     /// 归约的终点。两者与摊平表/离线侧**同源** ⇒ 两侧逐样本相同。
+    ///
+    /// ⚠ 包络状态**不在参数里**：它从 [`ENV_STAGE_IDLE`] ＋ 计数 0 起（区域有包络时由
+    /// 逐样本路径第一帧提升为 [`AmpegStage::Attack`]）⇒ ⛔ 本构造器的签名与接线前一致。
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
@@ -1648,6 +2324,8 @@ impl SfzVoice {
             note,
             velocity,
             active: true,
+            env_stage: ENV_STAGE_IDLE,
+            env_counter: 0,
             sample_index,
             region_index,
             source_end,
@@ -1659,6 +2337,22 @@ impl SfzVoice {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// ⭐ **该声部的包络段位**（任务 `#92`）；`None` ＝ 该声部**没有**包络
+    /// （区域透明，或还没渲染过第一帧）。
+    ///
+    /// ⚠ 这是"推进状态真的在动"的**可判读数**（判据 `S35`/`S36` 用它把
+    /// "状态推进"与"输出电平"分开钉住）。
+    #[must_use]
+    pub const fn envelope_stage(&self) -> Option<AmpegStage> {
+        env_stage_of(self.env_stage)
+    }
+
+    /// ⭐ **该声部的包络段内计数**（自触发起的帧数；释放/等回绕期冻结）。
+    #[must_use]
+    pub const fn envelope_counter(&self) -> u32 {
+        self.env_counter
     }
 
     /// 触发该声部的音高。
@@ -1765,6 +2459,24 @@ pub struct SfzVoicePool {
     stolen: u64,
 }
 
+/// ⭐ **逐块路径的三个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
+///
+/// 全部是**每块一次**求得的静态参数（⛔ 不进逐样本路径、⛔ 不含逐声部状态）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SlotReadings {
+    /// 有效循环窗口（[`PreparedRegion::loop_window`] 的归约结果）。
+    loop_window: Option<LoopWindow>,
+    /// **生效的引擎终点**：`u64::MAX` ＝「本块不由 `end_sample` 截止」（见 `slot_readings`）。
+    limit: u64,
+    /// ⭐ **包络眼里的 note-off 帧**：`u64::MAX` ＝「**不理会** note-off」
+    /// （`loop_mode=one_shot`，与 [`PreparedRegion::ignores_note_off`] 的既有裁决同源）。
+    note_off: u64,
+    /// note-off 后是否**先走完当前循环**（`loop_sustain` ＋ 有效窗口）。
+    sustain_tail: bool,
+    /// 该区域的帧口径包络参数；`None` ＝ 透明包络（⛔ 逐样本不加浮点运算）。
+    env: Option<AmpegRun>,
+}
+
 impl SfzVoicePool {
     /// 空池（⛔ 无分配：整个池是栈上/结构体内的定长数组）；淡出帧数按 `sample_rate` 定。
     #[must_use]
@@ -1792,6 +2504,11 @@ impl SfzVoicePool {
     ///
     /// ⚠ **在响的淡出窗口不重算** —— 它的帧数在窃取那一刻就定下了
     /// （与 `PolySynth` 的 `start_steal_fade` 同一条口径）。
+    ///
+    /// ⚠ ⭐ **包络的秒→帧不同此理**（如实登记）：`ampeg_*` 的秒是**区域的**参数，
+    /// 换算用的是**摊平期**的 `PreparedSfz::engine_hz()`（见
+    /// [`PreparedRegion::ampeg_run`]）⇒ 与 `rate_per_note` 同一条纪律
+    /// （换采样率必须由控制侧**重新摊平**）。本函数只重算窃取淡出。
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
         self.steal_fade_frames = steal_fade_frames_for(sample_rate);
     }
@@ -1966,27 +2683,35 @@ impl SfzVoicePool {
 
     /// 渲染**一个槽**（`render_into` 的逐槽体；拆出来是为了借用清晰）。
     ///
-    /// ⭐ **本片（循环接线）新增的两件事都在这里**：① 逐块路径按
+    /// ⭐ **循环接线（任务 `#91`）的两件事在这里**：① 逐块路径按
     /// [`SfzVoice::region_index`] 回到**该声部来源的那条区域**取循环窗口
     /// （[`PreparedRegion::loop_window`]）；② `loop_mode=one_shot` 的声部把
     /// `end_sample` 当成**无穷远**（[`PreparedRegion::ignores_note_off`]）⇒
-    /// note-off ⛔ 不再硬切它。两条都是**每块一次**的结构体读取，
-    /// ⛔ 逐样本路径（[`mix_span_into`]）不做任何额外查表。
+    /// note-off ⛔ 不再硬切它。
+    ///
+    /// ⭐ **幅度包络（任务 `#92`）的三件事也在这里**（都是**每块一次**的结构体读取，
+    /// ⛔ 逐样本路径不做额外查表）：
+    ///
+    /// 1. 按区域求 [`AmpegRun`]（秒 × `plan.engine_hz()` ⇒ 帧）；
+    /// 2. 有包络且**会进释放段**的区域 ⇒ 本块的**截止帧不再取 `end_sample`**
+    ///    （否则释放段会被 note-off 当场切断）—— 见 [`Self::slot_readings`]；
+    /// 3. 把声部的推进状态（段位 / 计数 / note-off↔epoch）按需交给 [`EnvRun`]，
+    ///    写完再**写回**（跨块延续）。
     fn render_slot(&mut self, index: usize, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
         let mut offset = 0usize;
         let mut victim_stopped = false;
         // --- 1) 淡出段：victim 在自己的窗口里继续发声，逐帧乘衰减增益 ---
         if self.voices[index].active && self.fade[index].is_fading() {
             let voice = self.voices[index];
-            let (loop_window, end_sample) = match Self::slot_readings(plan, voice) {
-                Some(readings) => readings,
-                None => {
-                    // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休。
-                    self.silence_slot(index);
-                    return;
-                }
+            let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz()) else {
+                // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休。
+                self.silence_slot(index);
+                return;
             };
-            let limit = end_sample.saturating_sub(position).min(out.len() as u64) as usize;
+            let limit = readings
+                .limit
+                .saturating_sub(position)
+                .min(out.len() as u64) as usize;
             if limit == 0 {
                 // 引擎终点先到 ⇒ 本槽（含挂起者）退休，⛔ 不静默地继续跑。
                 self.silence_slot(index);
@@ -1998,16 +2723,28 @@ impl SfzVoicePool {
             };
             let mut local = voice.position;
             let mut fade = self.fade[index];
+            let mut env = readings.env.map(|run| {
+                EnvRun::new(
+                    run,
+                    voice.env_stage,
+                    voice.env_counter,
+                    readings.note_off,
+                    position,
+                    readings.sustain_tail,
+                )
+            });
             let written = mix_span_into(
                 sample.pcm(),
                 &mut local,
                 voice.rate,
                 voice.gain,
                 voice.source_end,
-                loop_window,
+                readings.loop_window,
                 &mut fade,
+                &mut env,
                 &mut out[..limit],
             );
+            // 淡出中的 victim ⛔ 不回写包络状态（它马上就被挂起者接管）；位置/淡出照旧回写。
             self.voices[index].position = local;
             self.fade[index] = fade;
             offset = written;
@@ -2025,57 +2762,106 @@ impl SfzVoicePool {
         if !voice.active {
             return;
         }
-        let Some((loop_window, end_sample)) = Self::slot_readings(plan, voice) else {
+        let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz()) else {
             self.silence_slot(index);
             return;
         };
         // 引擎终点（音符先到终点 ⇒ 本量子只渲染到它为止）。
-        if end_sample <= position.saturating_add(offset as u64) {
+        // ⚠ 有包络的声部这里通常是 `u64::MAX`（note-off 已交给包络 ⇒ ⛔ 不在这里切）。
+        if readings.limit <= position.saturating_add(offset as u64) {
             self.silence_slot(index);
             return;
         }
-        let remaining = end_sample.saturating_sub(position).min(out.len() as u64) as usize;
+        let remaining = readings
+            .limit
+            .saturating_sub(position)
+            .min(out.len() as u64) as usize;
         let Some(sample) = plan.sample(voice.sample_index) else {
             self.silence_slot(index);
             return;
         };
         let mut local = voice.position;
         let mut fade = self.fade[index];
+        let mut env = readings.env.map(|run| {
+            EnvRun::new(
+                run,
+                voice.env_stage,
+                voice.env_counter,
+                readings.note_off,
+                position + offset as u64,
+                readings.sustain_tail,
+            )
+        });
         let written = mix_span_into(
             sample.pcm(),
             &mut local,
             voice.rate,
             voice.gain,
             voice.source_end,
-            loop_window,
+            readings.loop_window,
             &mut fade,
+            &mut env,
             &mut out[offset..remaining],
         );
         self.voices[index].position = local;
         self.fade[index] = fade;
+        if let Some(run) = env {
+            // ⭐ 包络状态**跨块延续**：段位 / 段内计数 / note-off↔释放 epoch。
+            run.write_back(&mut self.voices[index]);
+        }
         // ⭐ 用样本自然结束：源位置走完 ⇒ 退休。⚠ 有循环窗口时这一条**不可达**
-        // （回绕把位置压在窗口内）⇒ 循环声部只由 `end_sample` 终止。
+        // （回绕把位置压在窗口内）⇒ 循环声部只由 `end_sample`（无包络）
+        // 或**包络的释放段走完**（有包络）终止。
         if written < remaining - offset {
             self.silence_slot(index);
         }
     }
 
-    /// ⭐ **逐块路径的两个区域读数**（本单新增）：`(有效循环窗口, 生效的引擎终点)`。
+    /// ⭐ **逐块路径的三个区域读数**（任务 `#92` 起）：有效循环窗口 ／ 生效的引擎终点 ／
+    /// 包络参数（＋ 是否走 `loop_sustain` 的"等回绕"）。
     ///
     /// * 区域查不到（池与摊平表不匹配）⇒ `None` ⇒ 调用方**如实退休**（与
     ///   [`PreparedSfz::sample`] 落空同径）；
-    /// * `one_shot`（[`PreparedRegion::ignores_note_off`]）⇒ 终点取 `u64::MAX`
-    ///   ＝「note-off ⛔ 不切它」；其余模式原样带出 `voice.end_sample`；
-    /// * 循环窗口按**该声部自己那份 PCM** 的长度归约（[`PreparedRegion::loop_window`]）。
-    fn slot_readings(plan: &PreparedSfz, voice: SfzVoice) -> Option<(Option<LoopWindow>, u64)> {
+    /// * 循环窗口按**该声部自己那份 PCM** 的长度归约（[`PreparedRegion::loop_window`]）；
+    /// * ⭐ **终点**：
+    ///   * `one_shot`（[`PreparedRegion::ignores_note_off`]）⇒ `u64::MAX`
+    ///     ＝「note-off ⛔ 不切它」（循环接线片既有裁决）；
+    ///   * ⭐ **有包络且该模式会进释放段**（即 `loop_mode != loop_continuous`）⇒ `u64::MAX`
+    ///     ＝「note-off 由**包络**接管，⛔ 不在这里硬切」；
+    ///   * 其余（透明包络，或 `loop_continuous` ＋ 有包络）⇒ 原样带出 `voice.end_sample`
+    ///     ＝ **今天的硬停**（`loop_continuous` 的"note-off 不影响循环"就落在这里）。
+    /// * ⭐ `sustain_tail`：`loop_sustain` **且**窗口有效 ⇒ `true`（note-off 后先走完当前循环）；
+    /// * ⭐ `note_off`：包络眼里的 note-off 帧（`one_shot` ⇒ `u64::MAX` ＝ 不理会）。
+    ///   ⚠ **第 2 档的机制在这里**：`loop_continuous` ＋ 有包络时 `limit` 仍取 `voice.end_sample`
+    ///   ⇒ 逐样本循环在**到达 note-off 那一帧之前**就停（`limit == position` 时调用方直接退休）
+    ///   ⇒ 包络**根本看不到** note-off ⇒ 它自然"不进释放段"。⛔ 不是靠包络里的分支特判。
+    fn slot_readings(plan: &PreparedSfz, voice: SfzVoice, engine_hz: f32) -> Option<SlotReadings> {
         let region = plan.regions().get(voice.region_index as usize)?;
         let pcm_len = plan.sample(voice.sample_index)?.pcm().len();
-        let end_sample = if region.ignores_note_off() {
+        let loop_window = region.loop_window(pcm_len);
+        let env = region.ampeg_run(engine_hz);
+        let end_sample = if region.ignores_note_off()
+            || (env.is_some() && !matches!(region.loop_mode(), LoopMode::LoopContinuous))
+        {
             u64::MAX
         } else {
             voice.end_sample
         };
-        Some((region.loop_window(pcm_len), end_sample))
+        Some(SlotReadings {
+            loop_window,
+            limit: end_sample,
+            // ⭐ `one_shot` 连**包络的释放段**也不许进（"忽略 note-off"是一条完整裁决：
+            // 既不改退休，也不起释放）⇒ 给它 `u64::MAX`。其余模式把引擎终点原样交给包络
+            // （释放已开始时该字段是**释放 epoch** —— 语义由声部的段位决定，见 [`EnvRun`]）。
+            note_off: if region.ignores_note_off() {
+                u64::MAX
+            } else {
+                voice.end_sample
+            },
+            sustain_tail: matches!(region.loop_mode(), LoopMode::LoopSustain)
+                && loop_window.is_some(),
+            env,
+        })
     }
 
     /// 释放**一个**槽：声部与挂起者一起退休（淡出状态归 [`FadeRamp::NONE`]）。
