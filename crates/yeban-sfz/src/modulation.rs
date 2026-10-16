@@ -1,8 +1,15 @@
-//! SFZ `ampeg_*` 的 **MIDI CC 调制**：`ccN`（SFZ1 旧形）／`_onccN`（SFZ2）／`_curveccN`（曲线）。
+//! SFZ 的 **MIDI CC 调制**：`ccN`（SFZ1 旧形）／`_ccN`／`_onccN`（SFZ2）／`_curveccN`（曲线）。
 //!
-//! 本模块只做三件事：**名字识别**（[`parse_modulation_name`]）、**归约**（[`AmpegCcMod`]）、
-//! **求值**（[`ampeg_value_with_baked`]）。解析（读作用域链、查取值域）在
+//! 本模块只做三件事：**名字识别**（[`parse_modulation_name`]）、**归约**（[`CcMod`]）、
+//! **求值**（[`cc_value_with_baked`]）。解析（读作用域链、查取值域）在
 //! [`crate::instrument`]，本模块不碰任何 `OpcodeMap`。
+//!
+//! ⚠ **沿革（任务单 `#115`）**：`#104` 只服务五个 `ampeg_*` 参数；`#115` 把**目标**
+//! 推广成 [`ModTarget`]（增益族的第一个目标是 [`ModTarget::Amplitude`]）。
+//! ⛔ 上面两句的语义未变，只是"目标"从一个写死的类型变成了枚举；
+//! `#104`／`#106` 的旧名（`AmpegCcMod`／`BakedAmpegCcMod`／`bake_ampeg_mods`／
+//! `ampeg_value_with_baked*`）保留为**薄包装/别名**（口径同台账第 278 条）。
+//! 推广的规范逐字与裁定见下面 §5。
 //!
 //! # 规范逐字（先说清四形态的语义差别，再写代码）
 //!
@@ -128,6 +135,84 @@
 //! ⛔ **与 `ccN` 是两支独立输入**：一支来自 CC 状态、一支来自**音符力度**
 //! （每个声部自带、触发后不变）⇒ 两者**相加**，⛔ 不互相顶替。
 //!
+//! ## 5. ⭐ 增益族目标推广（任务单 `#115`）—— 首个目标 `amplitude`
+//!
+//! ⭐ ⭐ **追加段（任务单 `#115`）**：本节**推广**上面四节的目标类型，⛔ 不修订它们的
+//! 任何一条（五个 `ampeg_*` 的语义、公式、域与求和序**逐字不变**）。
+//!
+//! ### 5.1 规范逐字（`amplitude` 页，<https://sfzformat.com/opcodes/amplitude/>）
+//!
+//! 表行（**逐字**）：
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `amplitude` | ARIA | float | **100** | 0 to 100 | **%** |
+//! | `amplitude_onccN` | （空） | float | N/A | **-100 to 100** | **%** |
+//! | `amplitude_curveccN` | （空） | integer | **0** | **0 to 255** | N/A |
+//! | `amplitude_smoothccN` | （空） | N/A | N/A | （空） | N/A |
+//!
+//! 同页正文逐字：「**Amplitude for the specified region in percentage of full
+//! amplitude. 100% amplitude meaning no volume change is applied to the sample when
+//! played. Can be modulated with MIDI CC.**」以及「Note: Range in the table below is
+//! 0 to 100, but some players such as Aria/Sforazando do not clamp the range. Negative
+//! values invert the signal.」
+//!
+//! ⇒ `amplitude_onccN` 的 **Range ＝ `-100 to 100`、Unit ＝ `%`** 与五个 `ampeg_*ccN`
+//! 行**同形**（⇒ [`MIN_MODULATION_DELTA`] / [`MAX_MODULATION_DELTA`] 原样复用、
+//! ⛔ 不开第二对常数）；`amplitude_curveccN` 的 Type/Default/Range 与
+//! `ampeg_*_curveccN` **逐字相同** ⇒ [`MAX_MODULATION_CURVE_INDEX`] 原样复用。
+//! ⛔ `amplitude_smoothccN` 的表行 Type ＝ N/A（未实现）⇒ 本模块**不识别**它
+//! （按未知 opcode 忽略），与 `ampeg_*smoothccN` 同一条口径。
+//!
+//! ### 5.2 `amplitude` 与 `volume` 的关系（**逐字**依据）
+//!
+//! 唯一一处把两者放在一起写的规范页是 <https://sfzformat.com/opcodes/volume/> 的
+//! 收尾段：
+//!
+//! > For the final output level, you can expect the sample level to be adjusted by a
+//! > combination of the following:
+//! > - volume (as adjusted by, e.g. rt_decay, amp_keytrack and other direct modifiers)
+//! >   **in decibels**
+//! > - **linear amplitude adjustment by ampeg... opcodes, along with adjustments to that
+//! >   by amplitude opcodes**
+//! > - pan
+//!
+//! ⇒ 三条**逐字**事实：① `volume` 的单位是 **dB**；② `ampeg…` 与 `amplitude` 一起构成
+//! **linear amplitude adjustment**（线性振幅调整）；③ `amplitude` 的调整**叠加在
+//! ampeg 那台包络之上**（"along with adjustments **to that** by amplitude opcodes"），
+//! 与 `volume`（dB 段）是**两个不同的段**。⇒ **裁定：`amplitude` 是一条线性因子，
+//! 与 `volume` 的 dB→线性换算**相乘**，⛔ 不是 `volume` 的别名、⛔ 不是再一串 dB。**
+//!
+//! ### 5.3 施加点与公式（本仓的**唯一**形状）
+//!
+//! 复用 §2 的同一条代数相加公式（SFZ1 教程的 `offset=500` ＋ `offset_cc100=500`
+//! ⇒ "an offset of 1000 at maximum" 就是 `base + delta × curve`；`amplitude` 只是把
+//! **单位换成 %**）：
+//!
+//! ```text
+//! amplitude_value = amplitude + Σ_{cc} delta × curve(probe(cc))      // 单位 %
+//! amplitude_gain  = amplitude_value / 100                            // 线性因子，100 ⇒ 1.0
+//! final_gain      = PlaybackSpec::total_gain() × amplitude_gain      // ⭐ 最外层乘子
+//! ```
+//!
+//! * `amplitude` 缺省 ⇒ **100**（表行 Default 列逐字）⇒ `amplitude_gain == 1.0`
+//!   ⇒ 乘它**逐位不变**（IEEE：任何有限值 × `1.0` 恒等）⇒ **接线前后逐位相同**；
+//! * `probe == None` ⇒ 一项 CC 都不加（与 §3 的探针约定一致）；
+//! * ⛔ **不钳位**：规范自己记了"some players … do not clamp"，且 §2 的公式**只给
+//!   `delta` 的域**⇒ 本 crate 沿用裁决 3（⛔ 不发明夹取）。负值 ⇒ 反相
+//!   （规范逐字 "Negative values invert the signal"）。
+//! * ⚠ **算子次序**：`amplitude_gain` 是**最外层**乘子（`total_gain × amplitude_gain`），
+//!   三条路（离线 ／ 摊平表 ／ 实时）**都**用这一个次序与**同一份**求值本体
+//!   （[`cc_value_with_baked`]）⇒ 逐位一致（判据 `S103`）。
+//!
+//! ⚠ **base 的取值歧义（如实登记，⛔ 不发明）**：`amplitude` 页的表行把 Default 写成
+//! **100**，而同一页正文与 `‹curve›` 页的例子（`amplitude_oncc110=100` ＋
+//! `amplitude_curvecc110=9`，曲线 9 为 `0→0→1`）读起来像"CC 从 0 到最大 ⇒ 音量从
+//! 静音到满"（那要求 base ＝ 0）。两处**互相冲突** ⇒ 本 crate 取**表行的 Default
+//! ＝ 100**（它才是唯一带数值的声明），并把"要 0 → 满"的写法留给作者显式写
+//! `amplitude=0`（登记语料里 `cithara-barbarica` 的静音区正是这么写的）。⛔ 不把
+//! 冲突的一侧当成另一侧。
+//!
 //! # 实时安全
 //!
 //! [`ampeg_value_with_baked`] ／ [`ampeg_value_with_baked_and_vel2`] 与
@@ -212,6 +297,90 @@ impl AmpegParam {
     }
 }
 
+/// ⭐ **调制目标**（任务单 `#115`：把 `#104` 写死的 `AmpegParam` 推广成"目标"）。
+///
+/// `#104` 的机制（名字识别 → 归约 → 求值）本来就是"**对某个目标**施加
+/// `base + Σ delta × curve(cc)`"；唯一写死的地方是**目标的类型**是 [`AmpegParam`]。
+/// 本条把那一层抽象出来：目标可以是五个 `ampeg_*` 参数之一，也可以是 ⭐ **增益族**的
+/// 第一个目标 [`Self::Amplitude`]（`amplitude` ／ `amplitude_ccN` ／ `amplitude_onccN` ／
+/// `amplitude_curveccN`）。
+///
+/// ⚠ **形状裁决与代价**：用**一个带载荷的枚举**，而不是"给每一族各开一张表、各写一套公式"——
+/// ① 归约仍是**一张** `BTreeMap<(目标, cc), …>` ⇒ 求和顺序唯一
+/// （[`Self::index`] 的声明序 × CC 升序，[ARCH-DET-001]）；
+/// ② 摊平表仍是**一个** `[BakedCcMod;` [`AMPEG_MOD_CAP`]`]` ⇒ `PreparedRegion`
+/// **不因推广而长大**（`AmpegParam`(1 B) 与 `ModTarget`(≤2 B) 落在既有对齐空隙里，
+/// 由判据 `S100` 现读钉死）；
+/// ③ ⛔ 没有并行机制、⛔ 没有第二份公式。
+///
+/// 声明顺序**就是求和顺序**：五个 `ampeg_*` 在前（`#104`／`#106` 的顺序**逐位不变**），
+/// [`Self::Amplitude`] 在**末尾**（新增目标永远加在最后 ⇒ 既有目标的位模式不受影响）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ModTarget {
+    /// 五个 `ampeg_*` 参数之一（`#104` 的原始目标、`#106` 的力度支）。
+    Ampeg(AmpegParam),
+    /// ⭐ `amplitude`（**线性**百分比；任务单 `#115` 的第一个增益族目标）。
+    Amplitude,
+}
+
+impl ModTarget {
+    /// 目标个数（[`Self::ALL`] 的长度）。
+    pub const COUNT: usize = 6;
+
+    /// 全部六个目标（声明序；判据与遍历用）。
+    pub const ALL: [Self; 6] = [
+        Self::Ampeg(AmpegParam::Attack),
+        Self::Ampeg(AmpegParam::Hold),
+        Self::Ampeg(AmpegParam::Decay),
+        Self::Ampeg(AmpegParam::Sustain),
+        Self::Ampeg(AmpegParam::Release),
+        Self::Amplitude,
+    ];
+
+    /// 在 [`Self::ALL`] 里的下标（`0..=5`）；**这个序就是求和序**。
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Ampeg(param) => param.index(),
+            Self::Amplitude => AmpegParam::COUNT,
+        }
+    }
+
+    /// 规范里的目标名（诊断与判据文案用）。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ampeg(AmpegParam::Attack) => "ampeg_attack",
+            Self::Ampeg(AmpegParam::Hold) => "ampeg_hold",
+            Self::Ampeg(AmpegParam::Decay) => "ampeg_decay",
+            Self::Ampeg(AmpegParam::Sustain) => "ampeg_sustain",
+            Self::Ampeg(AmpegParam::Release) => "ampeg_release",
+            Self::Amplitude => "amplitude",
+        }
+    }
+
+    /// 目标是不是 `ampeg_*` 那一族；`Some(param)` ⇒ 该参数（力度支只服务这一族）。
+    #[must_use]
+    pub const fn ampeg(self) -> Option<AmpegParam> {
+        match self {
+            Self::Ampeg(param) => Some(param),
+            Self::Amplitude => None,
+        }
+    }
+
+    /// `delta` 的单位是不是**时间**（秒）；`false` ⇒ 百分比。
+    ///
+    /// 五个 `ampeg_*` 里只有 `sustain` 是百分比；⭐ [`Self::Amplitude`] 的
+    /// `amplitude_onccN` 表行 Unit ＝ **%**（逐字表行见模块文档 §5）⇒ `false`。
+    #[must_use]
+    pub const fn is_time(self) -> bool {
+        match self {
+            Self::Ampeg(param) => param.is_time(),
+            Self::Amplitude => false,
+        }
+    }
+}
+
 /// CC 号上界（**容器界**：既有探针是 `&dyn Fn(u8) -> u8`）。见模块文档裁决 1。
 pub const MAX_MODULATION_CC: u16 = u8::MAX as u16;
 
@@ -244,6 +413,14 @@ pub const MAX_BAKED_CURVE_POINTS: usize = 8;
 /// 摊平表的定长数组；若将来语料越界，应**抬高这个数**而不是改成截断。
 /// ⚠ 该普查是**原文尺**（⛔ 不模拟 `#define`，glob include 由 `glob` 展开）
 /// ⇒ 与解析器的读数可能有微小差别（登记为"不能验"项）。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#115`）—— 被修订的是上面那个分**母**那一支**
+/// （⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+/// `#104` 的分母是**仅 `ampeg_*` 一族**的 `(参数, CC)` 并集（最大 15）；`#115` 之后
+/// 这张表**同时**承载增益族目标（首个是 `amplitude`）⇒ 正确的分母是
+/// **两族合计**的 `(目标, CC)` 并集。⭐ `#115` 现读数：最大 **11** 条
+/// （剥 `//` 注释后按 `(目标, cc)` 去重；分母 1398 份 `.sfz`）⇒ **11 ≤ 20**
+/// ⇒ ⛔ **本常量不抬高、⛔ 不引入新 `Err`**（今天能解析的文件一个都不会变成不可解析）。
 pub const AMPEG_MOD_CAP: usize = 20;
 
 /// 一个调制项的**形态**（名字后缀）。
@@ -260,11 +437,13 @@ pub enum ModulationForm {
     Vel2,
 }
 
-/// 识别 `ampeg_<param><suffix>` ／ ⭐ `ampeg_vel2<param>` 一族，返回
-/// `(参数, 形态, 下标数字串)`。
+/// 识别 `ampeg_<param><suffix>` ／ ⭐ `ampeg_vel2<param>` ／ ⭐ **`amplitude<suffix>`**
+/// 三族，返回 `(⭐ 目标, 形态, 下标数字串)`。
 ///
 /// 四种后缀（大小写敏感，与其它 opcode 同口径）：
 /// * `ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 旧形）；
+/// * `_ccN` ⇒ [`ModulationForm::Delta`]（SFZ1 的另一种写法；`amplitude_ccN` 用它，
+///   语料 854 处 —— 五个 `ampeg_*` **没有**这个写法，见本函数末尾的反向腿）；
 /// * `_onccN` ⇒ [`ModulationForm::Delta`]（SFZ2；规范说它与上一条**是别名**）；
 /// * `_curveccN` ⇒ [`ModulationForm::Curve`]；
 /// * ⭐ `vel2<param>` ⇒ [`ModulationForm::Vel2`]，数字串恒为**空串 `""`**
@@ -272,7 +451,13 @@ pub enum ModulationForm {
 ///   在**返回 `Some` 之前**就确定了，⛔ 不到达下面那条"非空且全数字"的检查）。
 ///   ⚠ `vel2` 在**参数名之前**（`ampeg_vel2attack`，⛔ 不是 `ampeg_attack_vel2`）；
 ///   规范只列这五个名字 ⇒ `ampeg_vel2attack` 之外的任何尾巴（`…cc1` / `…_curvecc1` /
-///   未知参数名）都**不是**本族。
+///   未知参数名）都**不是**本族。⭐ `amplitude` 页**没有** `vel2` 行 ⇒ 它没有力度形态。
+///
+/// ⭐ **目标**（任务单 `#115`）：`ampeg_…` 一族 ⇒ [`ModTarget::Ampeg`]；
+/// `amplitude<suffix>` ⇒ [`ModTarget::Amplitude`]（逐字表行见模块文档 §5）。
+/// `amplitude_smoothccN`（表行 Type ＝ N/A）与裸 `amplitude`（没有下标）都**不是**
+/// 本函数的目标（前者按未知 opcode 忽略、后者是**基准** opcode、由
+/// [`crate::instrument`] 单独读）。
 ///
 /// 数字串必须非空且全是 ASCII 数字；否则返回 [`None`]（按未知 opcode 忽略，与
 /// [`crate::instrument`] 里 `amp_velcurve_N` / `loccN` 两族同一条口径）。
@@ -280,14 +465,32 @@ pub enum ModulationForm {
 /// 返回**数字串**而不是解析结果，是为了让调用方把"数字但越界"和"名字不像本族"
 /// 分开报（前者明确 `Err`，后者忽略）。
 #[must_use]
-pub fn parse_modulation_name(name: &str) -> Option<(AmpegParam, ModulationForm, &str)> {
+pub fn parse_modulation_name(name: &str) -> Option<(ModTarget, ModulationForm, &str)> {
+    // ⭐ 增益族（任务单 `#115`）：`amplitude` ＋ 四种后缀之一。
+    // ⚠ 检查顺序：`_curvecc` 必须在 `_cc` **之前**（否则 `…_curvecc4` 会被剥成
+    // `urvecc4` ⇒ 非数字 ⇒ 静默漏掉）；`_oncc` 也必须在 `cc` 之前。
+    if let Some(tail) = name.strip_prefix("amplitude") {
+        let (form, digits) = if let Some(digits) = tail.strip_prefix("_curvecc") {
+            (ModulationForm::Curve, digits)
+        } else if let Some(digits) = tail.strip_prefix("_oncc") {
+            (ModulationForm::Delta, digits)
+        } else if let Some(digits) = tail.strip_prefix("_cc") {
+            (ModulationForm::Delta, digits)
+        } else {
+            (ModulationForm::Delta, tail.strip_prefix("cc")?)
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        return Some((ModTarget::Amplitude, form, digits));
+    }
     let rest = name.strip_prefix("ampeg_")?;
     // ⭐ 力度形态（任务单 `#106`）：`ampeg_vel2<param>` —— 整名到此为止。
     if let Some(param_name) = rest.strip_prefix("vel2") {
         let param = AmpegParam::ALL
             .into_iter()
             .find(|param| param.name() == param_name)?;
-        return Some((param, ModulationForm::Vel2, ""));
+        return Some((ModTarget::Ampeg(param), ModulationForm::Vel2, ""));
     }
     let (param, tail) = AmpegParam::ALL
         .into_iter()
@@ -297,23 +500,29 @@ pub fn parse_modulation_name(name: &str) -> Option<(AmpegParam, ModulationForm, 
     } else if let Some(digits) = tail.strip_prefix("_oncc") {
         (ModulationForm::Delta, digits)
     } else {
+        // ⚠ `ampeg_*` 族**没有** `_ccN` 写法（SFZ1 教程把 EG 一族列为"名字复杂 ⇒
+        // 只追加 `ccN`"）⇒ 这里**只**认裸 `cc`，`ampeg_attack_cc100` 仍是 `None`。
         (ModulationForm::Delta, tail.strip_prefix("cc")?)
     };
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    Some((param, form, digits))
+    Some((ModTarget::Ampeg(param), form, digits))
 }
 
-/// 一条**解析层**的 CC 调制项（[`crate::instrument::Region::ampeg_modulations`] 的元素）。
+/// 一条**解析层**的 CC 调制项（[`crate::instrument::Region::cc_modulations`] 的元素）。
 ///
 /// `curve` 是**下标**（`0..=255`），**不是**曲线本体：`Region` 在解析期**看不到**
 /// `<curve>` 段（段头可以出现在 region 之后），所以这里只留下标，由
 /// [`crate::instrument::Instrument::modulation_curve`] 在求值期解析。
+///
+/// ⚠ **沿革（任务单 `#115`）**：`#104` 把它登记为 `AmpegCcMod`（字段 `param: AmpegParam`）；
+/// `#115` 把目标推广成 [`ModTarget`] ⇒ 本结构改名 [`CcMod`]、字段改名 `target`。
+/// 旧名保留为[类型别名](AmpegCcMod)（⛔ 原文一字未删，口径同台账第 278 条）。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AmpegCcMod {
-    /// 被调制的参数。
-    pub param: AmpegParam,
+pub struct CcMod {
+    /// 被调制的**目标**（五个 `ampeg_*` 之一，或 `#115` 的 `amplitude`）。
+    pub target: ModTarget,
     /// MIDI CC 号（`0..=255`；标准 `0..=127`，扩展 `128..=155`）。
     pub cc: u8,
     /// 调制量 `delta`（与目标同单位；规范 Range `-100..=100`）。
@@ -322,14 +531,21 @@ pub struct AmpegCcMod {
     pub curve: u8,
 }
 
+/// ⚠ **沿革别名**（台账第 278 条）：`#104` 的登记名 `AmpegCcMod`；`#115` 推广后
+/// 正名是 [`CcMod`]。旧名保留只为**既有登记文本的链接不断**（⛔ 语义未变）。
+pub type AmpegCcMod = CcMod;
+
 /// 一条**烘好曲线**的 CC 调制项（摊平表 [`crate::modulation`] 的 `Copy` 形状）。
 ///
-/// 与 [`AmpegCcMod`] 的唯一差别是 `curve` 已经从"下标"变成"曲线本体"的首地址无关表示
+/// 与 [`CcMod`] 的唯一差别是 `curve` 已经从"下标"变成"曲线本体"的首地址无关表示
 /// （[`BakedCurve`]）⇒ 求值不再需要 `Instrument`。
+///
+/// ⚠ **沿革（任务单 `#115`）**：`#104` 的登记名是 `BakedAmpegCcMod`（字段 `param`）；
+/// `#115` 改名并把字段推广成 `target`。旧名保留为[类型别名](BakedAmpegCcMod)。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BakedAmpegCcMod {
-    /// 被调制的参数。
-    pub param: AmpegParam,
+pub struct BakedCcMod {
+    /// 被调制的**目标**。
+    pub target: ModTarget,
     /// MIDI CC 号。
     pub cc: u8,
     /// 调制量。
@@ -338,13 +554,17 @@ pub struct BakedAmpegCcMod {
     pub curve: BakedCurve,
 }
 
-impl BakedAmpegCcMod {
+/// ⚠ **沿革别名**（台账第 278 条）：`#104` 的登记名 `BakedAmpegCcMod`；正名是
+/// [`BakedCcMod`]。旧名保留只为**既有登记文本的链接不断**。
+pub type BakedAmpegCcMod = BakedCcMod;
+
+impl BakedCcMod {
     /// 定长容器的**空槽**填充值。
     ///
-    /// ⚠ 它不是一条调制项：调用方**必须**用容器外的条数（`ampeg_mod_count`）限定有效范围，
+    /// ⚠ 它不是一条调制项：调用方**必须**用容器外的条数（`cc_mod_count`）限定有效范围，
     /// ⛔ 不得靠 `delta == 0.0` 之类的值判断（那会把"真的写了 `delta=0`"混淆掉）。
     pub const EMPTY: Self = Self {
-        param: AmpegParam::Attack,
+        target: ModTarget::Ampeg(AmpegParam::Attack),
         cc: 0,
         delta: 0.0,
         curve: BakedCurve::UNRESOLVED,
@@ -425,27 +645,40 @@ impl BakedCurve {
     }
 }
 
-/// **调制求值的唯一实现**：`base + Σ delta × curve(probe(cc))`。
+/// ⭐ **调制求值的唯一实现**（任务单 `#115` 起按 [`ModTarget`] 过滤）：
+/// `base + Σ delta × curve(probe(cc))`。
 ///
-/// `param` 过滤 [`BakedAmpegCcMod::param`]；`mods` 的求和顺序**就是**传入顺序
-/// （调用方按 `(param, cc)` 升序给出，见模块文档裁决 5）。
+/// `target` 过滤 [`BakedCcMod::target`]；`mods` 的求和顺序**就是**传入顺序
+/// （调用方按 `(target, cc)` 升序给出，见模块文档裁决 5）。
 ///
 /// 返回 `(取值, 未施加的调制项数)`：曲线不可烘焙的项**计进第二个数**并且**不贡献**
 /// 任何量（⛔ 不静默当成曲线 0）——调用方负责把那个数报出去。
 ///
 /// ⚠ **本形态没有力度输入** ⇒ `ampeg_vel2*` **不参与**（⛔ 不是"按力度 0 求值"）。
-/// 有力度的那一支用 [`ampeg_value_with_baked_and_vel2`]；两支部走**同一段** CC 求和
+/// 有力度的那一支用 [`cc_value_with_baked_and_vel2`]；两支部走**同一段** CC 求和
 /// （本函数是它的薄包装，⛔ 没有第二套公式）。
 ///
 /// 实时安全：纯算术 ＋ 切片读；无分配、无锁、无 I/O。
 #[must_use]
+pub fn cc_value_with_baked(
+    base: f32,
+    target: ModTarget,
+    mods: &[BakedCcMod],
+    probe: &dyn Fn(u8) -> u8,
+) -> (f32, usize) {
+    cc_value_with_baked_and_vel2(base, target, mods, None, 0, Some(probe))
+}
+
+/// ⚠ **沿革薄包装**（台账第 278 条）：`#104` 的 `ampeg_value_with_baked(base, param, …)`
+/// ＝ [`cc_value_with_baked`] 传 `ModTarget::Ampeg(param)`。⛔ 没有第二套公式。
+#[must_use]
 pub fn ampeg_value_with_baked(
     base: f32,
     param: AmpegParam,
-    mods: &[BakedAmpegCcMod],
+    mods: &[BakedCcMod],
     probe: &dyn Fn(u8) -> u8,
 ) -> (f32, usize) {
-    ampeg_value_with_baked_and_vel2(base, param, mods, None, 0, Some(probe))
+    cc_value_with_baked(base, ModTarget::Ampeg(param), mods, probe)
 }
 
 /// ⭐ **力度调制的唯一换算**：规范的 `velocity / 127`（`velocity` ∈ `0..=127`）。
@@ -466,19 +699,21 @@ pub fn velocity_scale(velocity: u8) -> f32 {
 /// `base + Σ_cc delta × curve(probe(cc)) + delta_vel2 × velocity / 127`。
 ///
 /// * `probe == None` ⇒ **不读任何 CC**（CC 项一项都不加，且不产生"未施加"计数 ——
-///   与 [`ampeg_value_with_baked`] 的调用方约定一致：探针没给 ⇒ 无 CC 调制）；
+///   与 [`cc_value_with_baked`] 的调用方约定一致：探针没给 ⇒ 无 CC 调制）；
 /// * `vel2 == None` ⇒ **力度项一项算术都不做**（⇒ 与接线前逐位相同，见模块文档裁决 7）；
 ///   `vel2 == Some(delta)` ⇒ 末尾加上 `delta × velocity / 127`（[`velocity_scale`]）；
-/// * 求和顺序唯一：CC 项（传入顺序 ＝ `(param, cc)` 升序）在前、力度项在**末尾**
+///   ⭐ 力度项只服务 `ampeg_*` 一族 ⇒ ⛔ 对 [`ModTarget::Amplitude`] 恒传 `None`
+///   （`amplitude` 页没有 `vel2` 行）；
+/// * 求和顺序唯一：CC 项（传入顺序 ＝ `(target, cc)` 升序）在前、力度项在**末尾**
 ///   （模块文档裁决 5／6，[ARCH-DET-001]）；
-/// * 返回 `(取值, 未施加的调制项数)` —— 计数的定义与 [`ampeg_value_with_baked`] 一致。
+/// * 返回 `(取值, 未施加的调制项数)` —— 计数的定义与 [`cc_value_with_baked`] 一致。
 ///
 /// 实时安全：纯算术 ＋ 定长切片；无分配、无锁、无 I/O。
 #[must_use]
-pub fn ampeg_value_with_baked_and_vel2(
+pub fn cc_value_with_baked_and_vel2(
     base: f32,
-    param: AmpegParam,
-    mods: &[BakedAmpegCcMod],
+    target: ModTarget,
+    mods: &[BakedCcMod],
     vel2: Option<f32>,
     velocity: u8,
     probe: Option<&dyn Fn(u8) -> u8>,
@@ -487,7 +722,7 @@ pub fn ampeg_value_with_baked_and_vel2(
     let mut unresolved = 0usize;
     if let Some(probe) = probe {
         for item in mods {
-            if item.param != param {
+            if item.target != target {
                 continue;
             }
             if !item.curve.is_resolved() {
@@ -503,22 +738,37 @@ pub fn ampeg_value_with_baked_and_vel2(
     (value, unresolved)
 }
 
-/// 把解析层的调制项烘成摊平层的定长形状。
+/// ⚠ **沿革薄包装**（台账第 278 条）：`#106` 的
+/// `ampeg_value_with_baked_and_vel2(base, param, …)` ＝ [`cc_value_with_baked_and_vel2`]
+/// 传 `ModTarget::Ampeg(param)`。⛔ 没有第二套公式。
+#[must_use]
+pub fn ampeg_value_with_baked_and_vel2(
+    base: f32,
+    param: AmpegParam,
+    mods: &[BakedCcMod],
+    vel2: Option<f32>,
+    velocity: u8,
+    probe: Option<&dyn Fn(u8) -> u8>,
+) -> (f32, usize) {
+    cc_value_with_baked_and_vel2(base, ModTarget::Ampeg(param), mods, vel2, velocity, probe)
+}
+
+/// 把解析层的调制项烘成摊平层的定长形状（目标**原样**带过，任务单 `#115`）。
 ///
 /// `resolve` 把曲线下标变成一条曲线（`None` ＝ **无据可依**：内建 4..=6 无公式、
 /// `<curve>` 未定义）⇒ 那一项烘成 [`BakedCurve::UNRESOLVED`]（**保留在表里**，
-/// 由 [`ampeg_value_with_baked`] 计数，⛔ 不删除、⛔ 不替换成曲线 0）。
+/// 由 [`cc_value_with_baked`] 计数，⛔ 不删除、⛔ 不替换成曲线 0）。
 ///
-/// 顺序**原样保留**（调用方给的是 `(param, cc)` 升序，见模块文档裁决 5）。
+/// 顺序**原样保留**（调用方给的是 `(target, cc)` 升序，见模块文档裁决 5）。
 /// 构造期调用（`Vec` ⇒ 允许分配）。
 #[must_use]
-pub fn bake_ampeg_mods(
-    mods: &[AmpegCcMod],
+pub fn bake_cc_mods(
+    mods: &[CcMod],
     mut resolve: impl FnMut(u8) -> Option<Curve>,
-) -> Vec<BakedAmpegCcMod> {
+) -> Vec<BakedCcMod> {
     mods.iter()
-        .map(|item| BakedAmpegCcMod {
-            param: item.param,
+        .map(|item| BakedCcMod {
+            target: item.target,
             cc: item.cc,
             delta: item.delta,
             curve: resolve(item.curve)
@@ -527,15 +777,25 @@ pub fn bake_ampeg_mods(
         .collect()
 }
 
+/// ⚠ **沿革薄包装**（台账第 278 条）：`#104` 的 `bake_ampeg_mods` ＝ [`bake_cc_mods`]。
+/// 名字保留只为既有调用点与登记链接不断（⛔ 语义、顺序、曲线烘焙口径全同）。
+#[must_use]
+pub fn bake_ampeg_mods(
+    mods: &[CcMod],
+    resolve: impl FnMut(u8) -> Option<Curve>,
+) -> Vec<BakedCcMod> {
+    bake_cc_mods(mods, resolve)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn mods(entries: &[(AmpegParam, u8, f32)]) -> Vec<BakedAmpegCcMod> {
+    fn mods(entries: &[(AmpegParam, u8, f32)]) -> Vec<BakedCcMod> {
         entries
             .iter()
-            .map(|&(param, cc, delta)| BakedAmpegCcMod {
-                param,
+            .map(|&(param, cc, delta)| BakedCcMod {
+                target: ModTarget::Ampeg(param),
                 cc,
                 delta,
                 curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0 is built in")),
@@ -546,53 +806,73 @@ mod tests {
     #[test]
     fn the_three_suffixes_are_recognised_and_nothing_else_is() {
         // ⭐ 四形态里"名字"这一层：旧形 `ccN` / SFZ2 `_onccN` 同归 Delta，`_curveccN` 归 Curve。
-        let cases: [(&str, AmpegParam, ModulationForm, &str); 6] = [
+        let cases: [(&str, ModTarget, ModulationForm, &str); 9] = [
             (
                 "ampeg_attackcc100",
-                AmpegParam::Attack,
+                ModTarget::Ampeg(AmpegParam::Attack),
                 ModulationForm::Delta,
                 "100",
             ),
             (
                 "ampeg_attack_oncc100",
-                AmpegParam::Attack,
+                ModTarget::Ampeg(AmpegParam::Attack),
                 ModulationForm::Delta,
                 "100",
             ),
             (
                 "ampeg_attack_curvecc100",
-                AmpegParam::Attack,
+                ModTarget::Ampeg(AmpegParam::Attack),
                 ModulationForm::Curve,
                 "100",
             ),
             (
                 "ampeg_sustain_oncc71",
-                AmpegParam::Sustain,
+                ModTarget::Ampeg(AmpegParam::Sustain),
                 ModulationForm::Delta,
                 "71",
             ),
             (
                 "ampeg_release_curvecc49",
-                AmpegParam::Release,
+                ModTarget::Ampeg(AmpegParam::Release),
                 ModulationForm::Curve,
                 "49",
             ),
             (
                 "ampeg_holdcc0",
-                AmpegParam::Hold,
+                ModTarget::Ampeg(AmpegParam::Hold),
                 ModulationForm::Delta,
                 "0",
             ),
+            // ⭐ 任务单 `#115`：增益族第一目标 `amplitude` 的四种合法写法。
+            (
+                "amplitude_oncc108",
+                ModTarget::Amplitude,
+                ModulationForm::Delta,
+                "108",
+            ),
+            (
+                "amplitude_cc50",
+                ModTarget::Amplitude,
+                ModulationForm::Delta,
+                "50",
+            ),
+            (
+                "amplitude_curvecc110",
+                ModTarget::Amplitude,
+                ModulationForm::Curve,
+                "110",
+            ),
         ];
-        for (name, param, form, digits) in cases {
+        for (name, target, form, digits) in cases {
             assert_eq!(
                 parse_modulation_name(name),
-                Some((param, form, digits)),
+                Some((target, form, digits)),
                 "{name}"
             );
         }
         // ⛔ 基准形态、⛔ `_ccN`（eg 族没有这个写法）、⛔ smoothcc/stepcc（不属本族）、
         // ⛔ 别的参数族、⛔ 空/非数字下标 —— 一律 None（按未知 opcode 忽略）。
+        // ⭐ 注意 `amplitude_oncc100` **不再**在这张表里：`#115` 起它是**合法**目标。
         for bad in [
             "ampeg_attack",
             "ampeg_attack_cc100",
@@ -604,12 +884,55 @@ mod tests {
             "ampeg_attack_oncc-1",
             "fileg_attackcc100",
             "ampeg_attackhdcc100",
-            "amplitude_oncc100",
             "ampeg_",
             "ampeg_attackcc 100",
             "ampeg_attack_curvecc",
+            // ⭐ `#115` 的反向腿：`amplitude` 族的**非目标**写法一律 None。
+            "amplitude",
+            "amplitude_smoothcc150",
+            "amplitude_stepcc150",
+            "amplitude_hdcc12",
+            "amplitude_oncc",
+            "amplitude_cc",
+            "amplitude_curvecc",
+            "amplitude_oncc1x",
+            "amplitudeoncc1",
+            "amplitude_cc-1",
         ] {
             assert_eq!(parse_modulation_name(bad), None, "{bad:?} must not match");
+        }
+    }
+
+    #[test]
+    fn the_amplitude_target_is_really_the_gain_family_first_target() {
+        // ⭐ 任务单 `#115`：目标枚举的**声明序就是求和序**，且 `amplitude` 在**末尾**
+        // （⇒ `#104`／`#106` 的五个 `ampeg_*` 顺序**逐位不变**）。
+        for (position, target) in ModTarget::ALL.into_iter().enumerate() {
+            assert_eq!(target.index(), position, "声明序与 index 必须一致");
+        }
+        assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
+        assert_eq!(ModTarget::ALL[5], ModTarget::Amplitude, "新目标必须在末尾");
+        assert_eq!(ModTarget::Amplitude.name(), "amplitude");
+        assert_eq!(ModTarget::Amplitude.ampeg(), None);
+        assert!(
+            !ModTarget::Amplitude.is_time(),
+            "`amplitude_onccN` 的单位是 %（不是秒）"
+        );
+        for param in AmpegParam::ALL {
+            assert_eq!(ModTarget::Ampeg(param).ampeg(), Some(param));
+        }
+        // ⭐ 目标过滤真的按 `target` 走：`amplitude` 的项 ⛔ 不影响任何 `ampeg_*` 目标。
+        let mixed = vec![BakedCcMod {
+            target: ModTarget::Amplitude,
+            cc: 1,
+            delta: 40.0,
+            curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),
+        }];
+        let (amp, unresolved) = cc_value_with_baked(100.0, ModTarget::Amplitude, &mixed, &|_| 127);
+        assert_eq!((amp, unresolved), (140.0, 0));
+        for param in AmpegParam::ALL {
+            let (other, _) = ampeg_value_with_baked(1.0, param, &mixed, &|_| 127);
+            assert_eq!(other, 1.0, "{param:?} 的基准值必须一动不动");
         }
     }
 
@@ -617,8 +940,8 @@ mod tests {
     fn the_unipolar_default_curve_reproduces_the_tutorial_formula() {
         // 规范（`sfz-1-midiccs`）：`offset=500` ＋ `offset_cc100=500` ⇒ 最大 1000。
         let baked = bake_ampeg_mods(
-            &[AmpegCcMod {
-                param: AmpegParam::Attack,
+            &[CcMod {
+                target: ModTarget::Ampeg(AmpegParam::Attack),
                 cc: 100,
                 delta: 0.5,
                 curve: 0,
@@ -646,8 +969,8 @@ mod tests {
         // 规范（`modulations/midi_ccs` 的 `<control>` 例）：curve 1 = -1..1 ⇒
         // 最大 `add 50`、最小 `subtract 50`。这里 delta = 50、base = 50 → 0 / 100。
         let bipolar = BakedCurve::bake(&Curve::built_in(1).expect("built in"));
-        let baked = vec![BakedAmpegCcMod {
-            param: AmpegParam::Sustain,
+        let baked = vec![BakedCcMod {
+            target: ModTarget::Ampeg(AmpegParam::Sustain),
             cc: 12,
             delta: 50.0,
             curve: bipolar,
@@ -670,8 +993,8 @@ mod tests {
     fn an_unresolvable_curve_is_counted_and_contributes_nothing() {
         // 内建 4..=6 规范未给公式（`curve.rs` 已登记）⇒ 不可烘焙。
         let baked = bake_ampeg_mods(
-            &[AmpegCcMod {
-                param: AmpegParam::Attack,
+            &[CcMod {
+                target: ModTarget::Ampeg(AmpegParam::Attack),
                 cc: 100,
                 delta: 0.5,
                 curve: 4,
@@ -685,8 +1008,8 @@ mod tests {
         assert_eq!(unresolved, 1, "必须如实计数");
         // 反向腿：同一条项换个可烘焙的曲线 ⇒ 未施加数归 0 且取值真的变。
         let ok = bake_ampeg_mods(
-            &[AmpegCcMod {
-                param: AmpegParam::Attack,
+            &[CcMod {
+                target: ModTarget::Ampeg(AmpegParam::Attack),
                 cc: 100,
                 delta: 0.5,
                 curve: 0,
@@ -784,7 +1107,7 @@ mod tests {
         for (name, param) in cases {
             assert_eq!(
                 parse_modulation_name(name),
-                Some((param, ModulationForm::Vel2, "")),
+                Some((ModTarget::Ampeg(param), ModulationForm::Vel2, "")),
                 "{name}：力度形态，且数字串必须是**空串**（名字里没有下标）"
             );
         }
@@ -821,7 +1144,11 @@ mod tests {
         // ⭐ 同批数据里的合法样例**单独**出现必须被接受（负判据的正对照）。
         assert_eq!(
             parse_modulation_name("ampeg_vel2decay"),
-            Some((AmpegParam::Decay, ModulationForm::Vel2, ""))
+            Some((
+                ModTarget::Ampeg(AmpegParam::Decay),
+                ModulationForm::Vel2,
+                ""
+            ))
         );
     }
 
@@ -897,8 +1224,8 @@ mod tests {
         }
         let (base, delta, vel2, documented, alternative) =
             witness.expect("必须存在一组非结合的三元组（否则下面的判据是空的）");
-        let baked = [BakedAmpegCcMod {
-            param: AmpegParam::Attack,
+        let baked = [BakedCcMod {
+            target: ModTarget::Ampeg(AmpegParam::Attack),
             cc: 7,
             delta,
             curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),
@@ -973,8 +1300,8 @@ mod tests {
     #[test]
     fn the_two_inputs_add_and_never_replace_each_other() {
         // ⭐ 两支独立输入：CC 项与力度项**相加**（⛔ 不互相顶替）。
-        let baked = vec![BakedAmpegCcMod {
-            param: AmpegParam::Sustain,
+        let baked = vec![BakedCcMod {
+            target: ModTarget::Ampeg(AmpegParam::Sustain),
             cc: 74,
             delta: 25.0,
             curve: BakedCurve::bake(&Curve::built_in(0).expect("curve 0")),

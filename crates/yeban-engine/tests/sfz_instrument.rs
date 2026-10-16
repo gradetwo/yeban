@@ -93,6 +93,12 @@
 //! | ⭐ S97 | ⭐ ⭐ **三条路一致（本单核心）**（任务单 `#113` 新增；§5.3） | 三个 `direction=reverse` 夹具（朴素反向 ／ 反向 ＋ `loop_continuous` ／ 反向 ＋ `offset`/`end`）× 力度 100：**离线** `render_note_into_with_cc` ／ **摊平** `render_block_into_with_cc` ／ **实时** `render_into_with_cc` 的位模式序列**逐位相同**（两两相等）；⭐ 实时声部可读：`source_position() == 199`（＝ 区间末格）、`source_end() == 100`（＝ 下界）；⭐ 反空判腿：同夹具去掉 `direction=reverse` ⇒ 三条路的位模式**必须变**（逐一 `assert_ne!`） |
 //! | ⭐ S98 | ⭐ **尺寸 ＋ 零分配**（任务单 `#113` 新增；§5.7） | `size_of` 现读：`PreparedRegion` **6160**（`6152 ＋ 8`；⭐ 本单唯一的代价，摊平期）／⛔ `SfzVoice` **40**／⛔ `SfzVoicePool` **1712**／⛔ `EngineRuntime` **180144**（< 192 KiB，余量 **16464**）；⭐ 语料普查读数（`**1398**`／`**0**` 处／`**835**`）与"⛔ 零新逐声部字段"的登记可判；⭐ `rt_zero_alloc` 家族的四元组读数由该 target 的 `[sfz-reverse]` 场景给出（`allocations=0 deallocations=0 lock_blocking=0 io_ops=0`） |
 //! | ⭐ S99 | ⭐ **反向腿 ＋ 三个承重指纹 ＋ `alternate` 登记腿**（任务单 `#113` 新增；§5.6） | ⭐ **反向腿①**：去掉 `direction=reverse` 那一行 ⇒ 与 `forward` 夹具**逐位相同**（且三条路一致）；⭐ 有牙：反向臂必须**真的写满 99 帧且出声**（⛔ 挡住"静默不发声也算改了输出"）＋ 指纹**必变**；② **改写 `offset`／`end`／`loop_*`** ⇒ 指纹**必变**；③ **`alternate` 腿**：`direction=alternate` ⇒ 响亮 `SfzError::InvalidOption{opcode:"direction", value:"alternate", allowed:"forward, reverse"}`、`direction=sideways` 同款、⛔ 不静默变成 `forward`；`loop_type=alternate` ⇒ **`Ok`**（未知 opcode 忽略，＝ 今天的行为，且方向仍是缺省 `forward`）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`0xa933ddab286bdf5e`（非零 478）；⭐ **应绿反向腿**：同一输出 × `1.0000001` ⇒ 指纹**必须**变 |
+//! | ⭐ S100 | ⭐ **目标枚举 ＋ 规范逐字 ＋ 语料普查 ＋ 尺寸可判**（任务单 `#115` 新增；§5.1／§5.2／§5.7） | `include_str!` 必须逐字含 `#115` 的追加修订段／「增益族目标推广」一节／`volume` 页的 amplitude×volume 关系原文；语料读数 `**1398**`／`**420**`／`**66**`／`**854**`／`**83**`／`**30**`／`**1**`／三档对照 `**2828**`／`**844**`／`**835**`／两族并集 `**11**`；⭐ `ModTarget::ALL.len() == 6`、`Amplitude` 在**末尾**（`index() == 5`）；⭐ `size_of` 现读 `PreparedRegion=6160`（**＋0**）／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144` |
+//! | ⭐ S101 | ⭐ **解析与域 ＋ 缺省无调制**（任务单 `#115` 新增；§5.2） | `amplitude_oncc1`／`amplitude_cc2` 归 `Delta`（目标 `Amplitude`）；`amplitude_curvecc3`（无 delta）**不产生**项；`amplitude_smoothcc4`（Type = N/A）⛔ 不识别；越界／畸形六腿逐字 `Err`：`value 101 out of range -100..=100`／`value -101 …`／`expects a number, got \`abc\``／`value 256 out of range 0..=255`／`expects an integer, got \`x\``／`value 300 out of range 0..=255`；缺省 ⇒ 因子 `1.0`、`cc=None` 与探针**逐位相同**（摊平 ＋ 离线） |
+//! | ⭐ S102 | ⭐ **真的生效且逐位等于公式**（任务单 `#115` 新增；§5.3） | `amplitude=50` ＋ `amplitude_oncc1=50`：`cc ∈ {0,37,63,127}` 的因子逐位等于 `(50 + 50 × cc/127)/100`（实测 `0.5`／`0.645669341`／`0.748031437`／`1.0`）；恒 `1.0` 样本 ⇒ 512 帧每帧都等于该因子；反空判腿：`cc=0` ⇒ `0.5`、`cc=127` ⇒ `1.0`（必不同） |
+//! | ⭐ S103 | ⭐ ⭐ **三条路一致（本单核心）**（任务单 `#115` 新增；§5.4） | `cc ∈ {0,37,100,127}`：**离线** `render_note_into_with_cc` ／ **摊平** `render_block_into_with_cc` ／ **实时** `render_into_with_cc` 的位模式**逐位相同**（两两相等）；⭐ 反空判腿：`cc=0` 与 `cc=127` 的实时输出**必须逐位不同** |
+//! | ⭐ S104 | ⭐ **曲线修的是控制器输入 ＋ 不可烘焙不贡献**（任务单 `#115` 新增；§5.3／§5.4） | 曲线 9（`0→0→1`）下因子 = `0.0`／`0.0`／`0.5`／`1.0`（`cc = 0`／`63`／`95`／`127`）且离线＝摊平**逐位相同**；内建曲线 4（Concave，规范未给公式）⇒ 不可烘焙、`ampeg_unresolved_mods() == 1`、因子恒 `0.0`（⛔ 不当成曲线 0） |
+//! | ⭐ S105 | ⭐ **反向腿 ＋ 三个承重指纹 ＋ `ampeg_*` 未扰动**（任务单 `#115` 新增；§5.5／§5.6） | ⭐ **反向腿**：去掉 `amplitude_oncc1` 那一行 ⇒ 两个 CC 值**逐位相同**（`cc=0` 时与有调制臂也**相同** —— 调制项在 0 处贡献恰 0，如实登记）＋ 有牙腿改用 `cc=127`（必不同）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`；⭐ **应绿反向腿**：× `1.0000001` ⇒ 指纹**必须**变（实测 `0xf181aa780f2cfab1`）；⭐ **同夹具对照**：`ampeg_attack` 仍走 `0.5 + 0.5 × cc/127`、`amplitude` 走 `(50 + 50 × cc/127)/100`，两者**互不顶替** |
 //!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
 //!
@@ -148,7 +154,8 @@ use yeban_sfz::error::SfzError;
 use yeban_sfz::PlayDirection;
 use yeban_sfz::instrument::{LoopMode, OffMode};
 // ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（四形态归约的读数形状）。
-use yeban_sfz::modulation::AmpegParam;
+// ⭐ 任务单 `#115`：目标推广成 `ModTarget`（首个增益族目标 `Amplitude`）。
+use yeban_sfz::modulation::{AmpegParam, ModTarget};
 // ⭐ 任务单 `#108`：交叉淡化的 CC 轴（摊平表里烘的是 `yeban-sfz` 的 `Crossfade` 值类型）。
 use yeban_sfz::Crossfade;
 // ⭐ 任务单 `#109`：CC 区域门控（`loccN`/`hiccN`）——摊平表里烘的是 `yeban-sfz` 的
@@ -5508,7 +5515,14 @@ fn s54_the_four_ampeg_cc_forms_are_parsed_with_their_domains() {
                     region
                         .ampeg_modulations()
                         .iter()
-                        .map(|item| (item.param, item.cc, item.delta, item.curve))
+                        .map(|item| {
+                            (
+                                item.target.ampeg().expect("本夹具全是 ampeg 目标"),
+                                item.cc,
+                                item.delta,
+                                item.curve,
+                            )
+                        })
                         .collect()
                 })
                 .collect()
@@ -9683,4 +9697,541 @@ fn s99_the_direction_reverse_legs_the_alternate_leg_and_the_three_fingerprints()
     );
     assert_eq!(nonzero_frames(&rendered), 478, "S33 的非零帧数");
     check_fingerprint("S33／S14 广播路径", fp3, 0xa933_ddab_286b_df5e);
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#115`：把 `#104` 的 CC 调制机制推广到**增益族目标**（首个目标 `amplitude`）
+// ---------------------------------------------------------------------------
+
+/// ⭐ S100 夹具：**基准 ＋ 调制**都有（`amplitude=50` ＋ `amplitude_oncc1=50`）。
+const AMPLITUDE_BASE_MOD_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                         amp_veltrack=0 amplitude=50 amplitude_oncc1=50\n";
+/// 同上**去掉调制那一行**（反向腿用；`amplitude=50` 留着）。
+const AMPLITUDE_BASE_ONLY_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                          amp_veltrack=0 amplitude=50\n";
+/// **缺省** `amplitude`（＝ 100 ⇒ 因子 `1.0`）的三态对照。
+const AMPLITUDE_DEFAULT_FIXTURE: &str =
+    "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0\n";
+/// ⭐ `amplitude_curveccN` 夹具：曲线 9 ＝ `0 → 0 → 1`（`‹curve›` 页的例子形状）。
+const AMPLITUDE_CURVE_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                       amp_veltrack=0 amplitude=0 amplitude_oncc1=100 \
+                                       amplitude_curvecc1=9\n\
+                                       <curve>curve_index=9\nv000=0\nv063=0\nv127=1\n";
+/// ⭐ 不可烘焙的曲线（内建 4 ＝ Concave，规范未给公式）⇒ 该项**不贡献**任何量。
+const AMPLITUDE_UNRESOLVED_CURVE_FIXTURE: &str = "<region> sample=a.wav key=60 \
+                                                  pitch_keycenter=60 amp_veltrack=0 amplitude=0 \
+                                                  amplitude_oncc1=100 amplitude_curvecc1=4\n";
+/// ⭐ `#115` 与 `#104` **同一夹具**（criterion 6 的对照：ampeg 调制仍生效）。
+const AMPLITUDE_AND_AMPEG_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 amplitude=50 \
+     amplitude_oncc1=50 ampeg_attack=0.5 ampeg_attack_oncc100=0.5\n";
+
+/// ⭐ S100（任务单 `#115`；判据 §5.1／§5.2／§5.7）：**规范逐字 ＋ 语料普查 ＋ 尺寸**可判。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 模块头源码（`include_str!`）的**登记文本** ＋ 目标枚举的读数
+/// ＋ 四个结构体的 `size_of`（字节）。单位 ＝ 布尔（文本存在性）／个数（目标数）／字节。
+///
+/// ⭐ 前提：`#115` 的 `amplitude: f32` **落进既有尾部对齐空隙** ⇒ `PreparedRegion`
+/// **仍 6160 B（＋0）**；⛔ `SfzVoice`／池／`EngineRuntime` 三条硬边界**一条未动**。
+#[test]
+fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const REVISION: &str = "⭐ ⭐ **追加修订段（任务单 `#115`）";
+    const SECTION: &str = "# ⭐ 增益族目标推广（任务单 `#115`）";
+    const VOLUME_RELATION: &str = "linear amplitude adjustment by ampeg... opcodes";
+    const ABSENT: &str = "amplitude 这一族仍未做（另开单）";
+    println!(
+        "[engine-sfz/S100] 模块头：`#115` 修订段 = {}、新一节 = {}、`volume` 页逐字 = {}",
+        MODULE_SOURCE.contains(REVISION),
+        MODULE_SOURCE.contains(SECTION),
+        MODULE_SOURCE.contains(VOLUME_RELATION),
+    );
+    for (label, needle) in [
+        ("`#115` 追加修订段", REVISION),
+        ("增益族目标推广一节", SECTION),
+        ("`volume` 页的 amplitude/volume 关系逐字", VOLUME_RELATION),
+        ("`amplitude_onccN` 的 Range/Unit 表行", "**-100 to 100**"),
+        ("语料分母", "**1398**"),
+        ("`amplitude_onccN` 次数", "**420**"),
+        ("`amplitude_onccN` 文件数", "**66**"),
+        ("`amplitude_ccN` 次数", "**854**"),
+        ("`amplitude_ccN` 文件数", "**83**"),
+        ("`amplitude_curveccN` 次数", "**30**"),
+        ("静态 `amplitude=` 次数", "**1**"),
+        ("三档对照：家族子串", "**2828**"),
+        ("三档对照：不剥注释 token", "**844**"),
+        ("三档对照：剥注释 token", "**835**"),
+        ("两族并集最大值", "**11**"),
+        ("条数上界不抬高", "≤ `AMPEG_MOD_CAP`（20）"),
+        ("尺寸：仍 6160", "6160 B"),
+    ] {
+        assert!(
+            MODULE_SOURCE.contains(needle),
+            "⭐ 必须逐字含：{label}（`{needle}`）"
+        );
+    }
+    assert!(
+        !MODULE_SOURCE.contains(ABSENT),
+        "⭐ 反向腿：文档里没有的句子必须 `false`"
+    );
+
+    // ⭐ 目标枚举：声明序就是求和序，`Amplitude` 必须在**末尾**（⇒ 既有目标位模式不变）。
+    assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
+    for (position, target) in ModTarget::ALL.into_iter().enumerate() {
+        assert_eq!(target.index(), position, "声明序与 index 必须一致");
+    }
+    assert_eq!(ModTarget::Amplitude.index(), AmpegParam::COUNT);
+    assert_eq!(ModTarget::Amplitude.name(), "amplitude");
+    assert_eq!(ModTarget::Amplitude.ampeg(), None);
+    assert!(
+        !ModTarget::Amplitude.is_time(),
+        "`amplitude_onccN` 的单位是 %（⛔ 不是秒）"
+    );
+
+    // ⭐ 尺寸（`size_of` 现读，⛔ 不手抄）。
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S100] size_of: PreparedRegion={region} SfzVoice={voice} \
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）",
+        192 * 1024,
+        192 * 1024 - runtime,
+    );
+    assert_eq!(
+        region, 6160,
+        "⭐ `#115` 的 `amplitude: f32` 落进既有尾部对齐空隙 ⇒ `PreparedRegion` **＋0**"
+    );
+    assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
+    assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
+    assert_eq!(
+        runtime, 180_144,
+        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+    );
+    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+}
+
+/// ⭐ S101（任务单 `#115`；判据 §5.2）：**解析与域** —— 合法值读得进、越界／畸形响亮 `Err`、
+/// 缺省 ⇒ 无调制（与接线前逐位相同）。
+#[test]
+fn s101_amplitude_parses_its_domain_errs_are_loud_and_absence_is_a_no_op() {
+    // ---- ① 合法值读得进（四种写法；目标必须是 `Amplitude`） ----
+    let instrument = SfzInstrument::load(
+        "<region> sample=a.wav key=60 amplitude=50 amplitude_oncc1=50 amplitude_cc2=25 \
+         amplitude_curvecc3=9 amplitude_smoothcc4=150\n"
+            .to_owned(),
+        &Default::default(),
+    )
+    .expect("合法写法必须解析成功");
+    let readings: Vec<(ModTarget, u8, f32, u8)> = instrument
+        .with_instrument(|parsed| {
+            parsed.regions()[0]
+                .cc_modulations()
+                .iter()
+                .map(|item| (item.target, item.cc, item.delta, item.curve))
+                .collect()
+        })
+        .expect("重解析");
+    println!(
+        "[engine-sfz/S101] `(target, cc, delta, curve)` 读数 = {readings:?}（`amplitude_smoothcc4` \
+         的 Type = N/A ⇒ 必须不在表里）"
+    );
+    assert_eq!(
+        readings,
+        vec![
+            (ModTarget::Amplitude, 1, 50.0, 0),
+            (ModTarget::Amplitude, 2, 25.0, 0),
+        ],
+        "⭐ 两条调制项：`_onccN`／`_ccN` 归 Delta（曲线下标缺省 0）；\
+         ⛔ `amplitude_curvecc3` 只有曲线、没有 delta ⇒ 按裁决 4 **不产生**调制项；\
+         ⛔ `amplitude_smoothcc4`（Type = N/A）不识别 ⇒ 一个字节都不进表"
+    );
+    assert_eq!(
+        instrument
+            .with_instrument(|parsed| parsed.regions()[0].amplitude)
+            .expect("重解析"),
+        50.0,
+        "⭐ 静态 `amplitude=50` 必须读进 `Region::amplitude`"
+    );
+
+    // ---- ② 越界／畸形 ⇒ 响亮 `Err`（原文错误文本） ----
+    for (label, text, needle) in [
+        (
+            "delta = 101 越界",
+            "<region> sample=a.wav amplitude_oncc1=101\n",
+            "line 1: `amplitude_oncc1` value 101 out of range -100..=100",
+        ),
+        (
+            "delta = -101 越界",
+            "<region> sample=a.wav amplitude_oncc1=-101\n",
+            "line 1: `amplitude_oncc1` value -101 out of range -100..=100",
+        ),
+        (
+            "delta 非数",
+            "<region> sample=a.wav amplitude_oncc1=abc\n",
+            "line 1: `amplitude_oncc1` expects a number, got `abc`",
+        ),
+        (
+            "曲线下标 256 越界",
+            "<region> sample=a.wav amplitude_curvecc1=256\n",
+            "line 1: `amplitude_curvecc1` value 256 out of range 0..=255",
+        ),
+        (
+            "曲线下标非整数",
+            "<region> sample=a.wav amplitude_curvecc1=x\n",
+            "line 1: `amplitude_curvecc1` expects an integer, got `x`",
+        ),
+        (
+            "CC 号 300 越界",
+            "<region> sample=a.wav amplitude_oncc300=10\n",
+            "line 1: `amplitude_oncc300` value 300 out of range 0..=255",
+        ),
+    ] {
+        let error = SfzInstrument::load(text.to_owned(), &Default::default())
+            .expect_err(&format!("{label} 必须响亮 Err"));
+        let shown = format!("{error}");
+        println!("[engine-sfz/S101] {label} ⇒ `{shown}`");
+        assert!(
+            shown.contains(needle),
+            "⭐ {label}：错误文本必须逐字含 `{needle}`（实得 `{shown}`）"
+        );
+    }
+
+    // ---- ③ 缺省 ⇒ 无调制（与接线前逐位相同） ----
+    let sample = constant_sample(4_096);
+    let plan = prepare_with(AMPLITUDE_DEFAULT_FIXTURE, &sample);
+    assert_eq!(
+        plan.regions()[0].amplitude_gain_with_cc(None),
+        1.0,
+        "⭐ 缺省 `amplitude` ＝ 100 ⇒ 因子恰 1.0"
+    );
+    let probe = |_: u8| 127u8;
+    let mut without = vec![0.0f32; BLOCK];
+    let mut with_cc = vec![0.0f32; BLOCK];
+    let written = plan.render_block_into(60, 127, &mut without);
+    let written_cc = plan.render_block_into_with_cc(60, 127, Some(&probe), &mut with_cc);
+    assert_eq!(written, written_cc);
+    assert_eq!(
+        bits(&without),
+        bits(&with_cc),
+        "⭐ 没有 `amplitude*` opcode ⇒ 探针一个字节都改变不了输出"
+    );
+    // 同一条腿：离线入口同样逐位不变。
+    let instrument = SfzInstrument::load(AMPLITUDE_DEFAULT_FIXTURE.to_owned(), &Default::default())
+        .expect("解析");
+    let mut offline_none = vec![0.0f32; BLOCK];
+    let mut offline_cc = vec![0.0f32; BLOCK];
+    instrument
+        .render_note_into(&sample, 60, 127, &mut offline_none, 48_000.0)
+        .expect("离线旧入口");
+    instrument
+        .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut offline_cc, 48_000.0)
+        .expect("离线新入口");
+    assert_eq!(
+        bits(&offline_none),
+        bits(&offline_cc),
+        "⭐ 离线：没有 `amplitude*` ⇒ cc = None 与探针逐位相同"
+    );
+}
+
+/// ⭐ S102（任务单 `#115`；判据 §5.3）：**真的生效且逐位等于公式**（离线路径）。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`AMPLITUDE_BASE_MOD_FIXTURE`]（`amplitude=50` ＋ `amplitude_oncc1=50`）经
+/// 离线 `render_note_into_with_cc` 渲染 512 帧的输出；单位 ＝ 增益（`1.0` ＝ 满幅）。
+///
+/// 公式（`yeban_sfz::modulation` §5.3）：`gain = (50 + 50 × curve0(cc)) / 100`，
+/// `curve0(cc) = cc/127`（缺省线性 `0 → 1`）。
+#[test]
+fn s102_amplitude_really_modulates_and_matches_the_formula() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 512;
+    let sample = constant_sample(4_096);
+    let instrument =
+        SfzInstrument::load(AMPLITUDE_BASE_MOD_FIXTURE.to_owned(), &Default::default())
+            .expect("夹具必须解析成功");
+    let plan = prepare_with(AMPLITUDE_BASE_MOD_FIXTURE, &sample);
+    let want = |cc: u8| (50.0f32 + 50.0f32 * (f32::from(cc) / 127.0)) / 100.0;
+
+    for cc in [0u8, 37, 63, 127] {
+        // `cc` 按值捕获 ⇒ 探针是 `Fn`（与 S67 同形，⛔ 不用全局状态）。
+        let probe = move |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
+        let gain = plan.regions()[0].amplitude_gain_with_cc(Some(&probe));
+        let mut out = vec![0.0f32; FRAMES];
+        let written = instrument
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut out, HZ)
+            .expect("离线渲染");
+        assert_eq!(written, FRAMES);
+        assert_eq!(
+            gain.to_bits(),
+            want(cc).to_bits(),
+            "⭐ cc = {cc}：摊平表读数必须逐位等于公式（实测 {gain:.9} / {:#010x}，\
+             公式 {:.9} / {:#010x}）",
+            gain.to_bits(),
+            want(cc),
+            want(cc).to_bits()
+        );
+        assert_eq!(
+            out[0].to_bits(),
+            want(cc).to_bits(),
+            "⭐ cc = {cc}：恒 1.0 样本 ⇒ 第 0 帧就是振幅因子本身"
+        );
+        assert!(
+            out.iter().all(|s| s.to_bits() == want(cc).to_bits()),
+            "⭐ 512 帧每一帧都等于该 CC 处的振幅因子"
+        );
+        println!(
+            "[engine-sfz/S102] cc = {cc}：实测增益 = {:.9}（{:#010x}）；公式 = {:.9}（{:#010x}）",
+            out[0],
+            out[0].to_bits(),
+            want(cc),
+            want(cc).to_bits()
+        );
+    }
+    let zero = plan.regions()[0].amplitude_gain_with_cc(Some(&|_| 0));
+    let full = plan.regions()[0].amplitude_gain_with_cc(Some(&|_| 127));
+    assert_eq!(zero, 0.5, "⭐ CC = 0 ⇒ `(50 + 0)/100` ＝ 0.5");
+    assert_eq!(full, 1.0, "⭐ CC = 127 ⇒ `(50 + 50)/100` ＝ 1.0");
+    assert_ne!(zero, full, "⭐ 两个 CC 值必须给出不同增益（有牙）");
+}
+
+/// ⭐ S103（任务单 `#115`；判据 §5.4）：**三条路一致** —— 同一 CC 下
+/// 离线 ／ 摊平 ／ 实时**位模式逐位相同**（`cc ∈ {0, 37, 100, 127}`）。
+#[test]
+fn s103_the_three_paths_agree_bit_for_bit_for_amplitude() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 127;
+    const FRAMES: usize = 512;
+    let sample = constant_sample(4_096);
+    let instrument =
+        SfzInstrument::load(AMPLITUDE_BASE_MOD_FIXTURE.to_owned(), &Default::default())
+            .expect("夹具必须解析成功");
+    let plan = prepare_with(AMPLITUDE_BASE_MOD_FIXTURE, &sample);
+    assert_eq!(plan.regions()[0].cc_modulations().len(), 1);
+    let mut arms: Vec<Vec<u32>> = Vec::new();
+    for cc_value in [0u8, 37, 100, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc_value } else { 0 } };
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+        let mut offline = vec![0.0f32; FRAMES];
+        let written_offline = instrument
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .expect("离线渲染");
+        let mut flat = vec![0.0f32; FRAMES];
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        let mut pool = SfzVoicePool::new(HZ);
+        assert_eq!(
+            pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0, None),
+            1,
+            "单区域夹具 ⇒ 恰好建 1 个声部"
+        );
+        let mut realtime = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut realtime, cc_arg);
+        assert_eq!(written_offline, FRAMES);
+        assert_eq!(written_flat, FRAMES);
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ cc = {cc_value}：离线 → 摊平"
+        );
+        assert_eq!(
+            bits(&flat),
+            bits(&realtime),
+            "⭐ cc = {cc_value}：摊平 → 实时"
+        );
+        assert_eq!(
+            bits(&offline),
+            bits(&realtime),
+            "⭐ cc = {cc_value}：三条路同值"
+        );
+        println!(
+            "[engine-sfz/S103] cc = {cc_value}：三条路位模式相同 = {}；第 0 帧 = {:.9}（{:#010x}）",
+            bits(&offline) == bits(&realtime),
+            realtime[0],
+            realtime[0].to_bits()
+        );
+        arms.push(bits(&realtime));
+    }
+    assert_ne!(
+        arms[0], arms[3],
+        "⭐ 有牙：cc = 0 与 cc = 127 的实时输出必须逐位不同"
+    );
+    assert_ne!(arms[1], arms[2], "⭐ 中间两个 CC 值也必须分道");
+}
+
+/// ⭐ S104（任务单 `#115`；判据 §5.3／§5.4 的曲线腿）：`amplitude_curveccN` 真的
+/// **shapes the controller input**；不可烘焙的曲线**不贡献**任何量（⛔ 不当成曲线 0）。
+#[test]
+fn s104_the_curve_shapes_the_controller_input_and_an_unresolved_curve_contributes_nothing() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 512;
+    let sample = constant_sample(4_096);
+
+    // ---- ① 曲线 9（`0 → 0 → 1`）：cc = 0 ⇒ 0.0、cc = 63 ⇒ 0.0、cc = 95 ⇒ 0.5、cc = 127 ⇒ 1.0 ----
+    let plan = prepare_with(AMPLITUDE_CURVE_FIXTURE, &sample);
+    for (cc, want) in [(0u8, 0.0f32), (63, 0.0), (95, 0.5), (127, 1.0)] {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
+        let gain = plan.regions()[0].amplitude_gain_with_cc(Some(&probe));
+        assert_eq!(
+            gain.to_bits(),
+            want.to_bits(),
+            "⭐ 曲线 9 在 cc = {cc} 处 ⇒ 振幅因子 {want}（实测 {gain}）"
+        );
+        // 三条路同值（曲线在摊平期烘进区域表 ⇒ 离线与摊平必须一致）。
+        let instrument =
+            SfzInstrument::load(AMPLITUDE_CURVE_FIXTURE.to_owned(), &Default::default())
+                .expect("解析");
+        let mut offline = vec![0.0f32; FRAMES];
+        instrument
+            .render_note_into_with_cc(&sample, 60, 127, Some(&probe), &mut offline, HZ)
+            .expect("离线");
+        let mut flat = vec![0.0f32; FRAMES];
+        plan.render_block_into_with_cc(60, 127, Some(&probe), &mut flat);
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ 曲线腿 cc = {cc}：离线 → 摊平必须逐位相同"
+        );
+        println!(
+            "[engine-sfz/S104] 曲线 9，cc = {cc}：因子 = {gain:.9}（{:#010x}）；\
+             离线＝摊平 = {}",
+            gain.to_bits(),
+            bits(&offline) == bits(&flat)
+        );
+    }
+
+    // ---- ② 不可烘焙的曲线（内建 4 ＝ Concave）：项**不贡献** ⇒ 因子恒 0.0 ----
+    let plan = prepare_with(AMPLITUDE_UNRESOLVED_CURVE_FIXTURE, &sample);
+    assert!(
+        !plan.regions()[0].cc_modulations()[0].curve.is_resolved(),
+        "⭐ 内建 4 规范未给公式 ⇒ 曲线不可烘焙（登记在 `curve.rs`）"
+    );
+    assert_eq!(
+        plan.regions()[0].ampeg_unresolved_mods(),
+        1,
+        "⭐ 不可烘焙的项必须**如实计数**（⛔ 不静默当成曲线 0）"
+    );
+    for cc in [0u8, 64, 127] {
+        let probe = |_: u8| cc;
+        assert_eq!(
+            plan.regions()[0].amplitude_gain_with_cc(Some(&probe)),
+            0.0,
+            "⭐ 不可烘焙 ⇒ 不贡献任何量（`amplitude=0` ⇒ 恒 0）；cc = {cc}"
+        );
+    }
+}
+
+/// ⭐ S105（任务单 `#115`；判据 §5.5／§5.6）：**反向腿 ＋ 三个承重指纹 ＋ 既有 `ampeg_*` 未扰动**。
+#[test]
+fn s105_the_reverse_leg_the_three_fingerprints_and_ampeg_are_untouched() {
+    // ---- ① 三个承重指纹（夹具里没有任何 `amplitude*` ⇒ 必须逐字不变） ----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    assert_eq!(
+        looped.regions()[0].amplitude_gain_with_cc(None),
+        1.0,
+        "⭐ 既有夹具没有 `amplitude` ⇒ 因子 1.0"
+    );
+    for (label, plan, end_sample, expected) in [
+        ("S37 臂 1", &looped, 200u64, 0xa9de_c8a8_7f69_106cu64),
+        ("S37 臂 2", &plain, u64::MAX, 0xd3c2_a820_76bd_8947u64),
+    ] {
+        let out = render_pool(plan, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        println!("[engine-sfz/S105] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）");
+        let _checked = check_fingerprint(&format!("S105 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy_block = vec![0.0f32; BLOCK];
+    let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
+    let legacy = fnv1a_64(&legacy_block);
+    println!(
+        "[engine-sfz/S105] S33／S14 广播路径 512 帧 @ (60,127)：指纹 = 0x{legacy:016x}（承重 = \
+         0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）；写入 = {legacy_frames}"
+    );
+    let _checked = check_fingerprint("S105 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    // ⭐ 应绿反向腿：× 1.0000001 ⇒ 指纹必须变（证明上面三条是逐位判据）。
+    let scaled: Vec<f32> = legacy_block
+        .iter()
+        .map(|sample| sample * 1.000_000_1)
+        .collect();
+    let scaled_hash = fnv1a_64(&scaled);
+    println!("[engine-sfz/S105] 反向腿（× 1.0000001）：0x{scaled_hash:016x} ≠ 0x{legacy:016x}");
+    assert_ne!(scaled_hash, legacy, "⭐ 反向腿：乘 1.0000001 后指纹必须变");
+
+    // ---- ② 反向腿：去掉那一行 ⇒ 两个 CC 值**逐位相同** ----
+    let sample = constant_sample(4_096);
+    let with_mod = prepare_with(AMPLITUDE_BASE_MOD_FIXTURE, &sample);
+    let without_mod = prepare_with(AMPLITUDE_BASE_ONLY_FIXTURE, &sample);
+    let render = |plan: &PreparedSfz, cc: u8| -> Vec<u32> {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc } else { 0 } };
+        let mut out = vec![0.0f32; BLOCK];
+        plan.render_block_into_with_cc(60, 127, Some(&probe), &mut out);
+        bits(&out)
+    };
+    let mod_zero = render(&with_mod, 0);
+    let mod_full = render(&with_mod, 127);
+    let plain_zero = render(&without_mod, 0);
+    let plain_full = render(&without_mod, 127);
+    assert_ne!(mod_zero, mod_full, "⭐ 有那一行 ⇒ 两个 CC 值必须不同");
+    assert_eq!(
+        plain_zero, plain_full,
+        "⭐ 去掉那一行 ⇒ 两个 CC 值**逐位相同**（`amplitude=50` 恒 0.5）"
+    );
+    assert_eq!(
+        without_mod.regions()[0].amplitude_gain_with_cc(Some(&|_| 0)),
+        0.5,
+        "⭐ 只剩基准 `amplitude=50` ⇒ 因子恒 0.5"
+    );
+    assert_eq!(
+        mod_zero, plain_zero,
+        "⭐ 登记的读数：cc = 0 时调制项贡献恰 0 ⇒ 与「只有基准」逐位相同\
+         （所以有牙腿必须用 cc = 127 那一臂）"
+    );
+    assert_ne!(
+        mod_full, plain_full,
+        "⭐ 有牙：那一行必须真的改变读数（⛔ 不是探针管道自造的差异）"
+    );
+
+    // ---- ③ 既有 `ampeg_*` 未扰动：同一夹具里 ampeg 调制仍按自己的公式走 ----
+    let plan = prepare_with(AMPLITUDE_AND_AMPEG_FIXTURE, &sample);
+    for cc in [0u8, 37, 127] {
+        let probe = |controller: u8| -> u8 {
+            if controller == 100 || controller == 1 {
+                cc
+            } else {
+                0
+            }
+        };
+        let (attack, unresolved) =
+            plan.regions()[0].ampeg_value_with_cc(AmpegParam::Attack, Some(&probe));
+        let want_attack = 0.5f32 + 0.5f32 * (f32::from(cc) / 127.0);
+        assert_eq!(unresolved, 0);
+        assert_eq!(
+            attack.to_bits(),
+            want_attack.to_bits(),
+            "⭐ cc = {cc}：同一夹具里 `ampeg_attack` 仍走自己的公式"
+        );
+        let want_amplitude = (50.0f32 + 50.0f32 * (f32::from(cc) / 127.0)) / 100.0;
+        assert_eq!(
+            plan.regions()[0]
+                .amplitude_gain_with_cc(Some(&probe))
+                .to_bits(),
+            want_amplitude.to_bits(),
+            "⭐ cc = {cc}：`amplitude` 走自己的公式，⛔ 不互相顶替"
+        );
+        println!(
+            "[engine-sfz/S105] 混合夹具 cc = {cc}：ampeg_attack = {attack:.9}、\
+             amplitude 因子 = {want_amplitude:.9}"
+        );
+    }
 }

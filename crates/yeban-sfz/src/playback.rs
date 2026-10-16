@@ -1163,7 +1163,7 @@ mod tests {
                             ampeg_decay: crate::instrument::AMPEG_TIME_DEFAULT_SECONDS,
                             ampeg_sustain: crate::instrument::AMPEG_SUSTAIN_DEFAULT_PERCENT,
                             ampeg_release: crate::instrument::AMPEG_RELEASE_DEFAULT_SECONDS,
-                            ampeg_mods: Vec::new(),
+                            cc_mods: Vec::new(),
                             // ⭐ 任务单 `#106`：力度调制量（`None` ＝ 该 opcode 没出现）。
                             ampeg_vel2: [None; crate::modulation::AmpegParam::COUNT],
                             offset: 0,
@@ -1174,6 +1174,7 @@ mod tests {
                             bend_up: crate::BEND_UP_DEFAULT_CENTS,
                             bend_down: crate::BEND_DOWN_DEFAULT_CENTS,
                             volume: 0.0,
+                            amplitude: crate::instrument::AMPLITUDE_DEFAULT_PERCENT,
                             pan: 0.0,
                             seq_position: 1,
                             seq_length: 1,

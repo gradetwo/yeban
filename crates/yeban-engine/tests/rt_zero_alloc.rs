@@ -3878,6 +3878,7 @@ fn judgement_body() -> ExitCode {
     scenario_input_callback_body(&mut report);
     prepared_sfz_callback_path_allocates_nothing();
     prepared_sfz_reverse_callback_path_allocates_nothing();
+    prepared_sfz_amplitude_callback_path_allocates_nothing();
     probe_teeth(&mut report, &witness);
     thread_attribution(&mut report, &witness);
     stats_read_path(&mut report);
@@ -4001,4 +4002,78 @@ fn prepared_sfz_reverse_callback_path_allocates_nothing() {
     assert_eq!(reading.quad.lock_blocking, 0, "⭐ 反向回调路径不得等锁");
     assert_eq!(reading.quad.io_ops, 0, "⭐ 反向回调路径不得有任何 I/O");
     assert!(nonzero > 0, "⭐ 反向摊平路必须真的出声（⛔ 防空转）");
+}
+
+/// ⭐ 任务单 `#115`：**增益族目标（`amplitude`）**的回调路径零分配场景。
+///
+/// 为什么要单独一条：`#115` 让 [`PreparedRegion::gain_at_with_cc`] 末尾多乘一个
+/// `amplitude_gain_with_cc`，而那一支会**过一遍调制表**（目标过滤 ＋ 曲线求值）
+/// ⇒ "振幅真的生效"这件事本身**不蕴含**它零分配 ⇒ 本场景把**摊平表那条路**
+/// （`render_block_into_with_cc`）与**实时声部池**（`trigger_note` ＋
+/// `render_into_with_cc`）都放进窗口，四元组读数必须全 0。
+///
+/// ⚠ 振幅调制**真的在跑**（⛔ 不是"夹具被静默丢掉"）：摊平表必须真的带 1 条调制项，
+/// 且窗口外数到非零样本。
+fn prepared_sfz_amplitude_callback_path_allocates_nothing() {
+    use yeban_engine::sfz_instrument::{InMemorySample, PreparedSfz, SfzInstrument, SfzVoicePool};
+
+    const AMPLITUDE_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                     amp_veltrack=0 amplitude=50 amplitude_oncc1=50\n";
+    // ⭐ 构造期（允许分配）：解析 + 摊平。
+    let instrument = SfzInstrument::load(AMPLITUDE_FIXTURE.to_owned(), &Default::default())
+        .expect("振幅夹具必须解析");
+    let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+    let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平不得报错");
+    assert_eq!(
+        prepared.regions()[0].cc_modulations().len(),
+        1,
+        "⭐ 摊平表必须真的承载那一条 `amplitude_oncc1` 调制项（否则本场景是空转）"
+    );
+
+    // ⭐ 回调路径（禁止分配）：窗口内只做"触发 + 按探针渲染"。
+    let mut pool = SfzVoicePool::new(48_000.0);
+    let probe = |controller: u8| -> u8 { if controller == 1 { 100 } else { 0 } };
+    let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+    let mut flat_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES];
+    let mut rt_out = vec![0.0f32; DEFAULT_BLOCK_FRAMES];
+    let reading = window(|| {
+        for block in 0..64u32 {
+            flat_out.fill(0.0);
+            rt_out.fill(0.0);
+            if block % 8 == 0 {
+                let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+                let _ = pool.trigger_note(&prepared, 60, 100, u64::MAX, 1.0, None);
+            }
+            pool.render_into_with_cc(
+                &prepared,
+                u64::from(block) * DEFAULT_BLOCK_FRAMES as u64,
+                &mut rt_out,
+                cc_arg,
+            );
+        }
+    });
+    // ⚠ 见证在**窗口外**数（同 `[sfz-reverse]` 的口径）。
+    let mut nonzero = 0usize;
+    flat_out.fill(0.0);
+    let _ = prepared.render_block_into_with_cc(60, 100, cc_arg, &mut flat_out);
+    nonzero += flat_out.iter().filter(|sample| **sample != 0.0).count();
+    println!(
+        "[sfz-amplitude] 回调窗口：allocations={} deallocations={} lock_blocking={} io_ops={}",
+        reading.quad.allocations,
+        reading.quad.deallocations,
+        reading.quad.lock_blocking,
+        reading.quad.io_ops
+    );
+    println!("[sfz-amplitude] 振幅调制路的非零样本数（窗口外见证）= {nonzero}");
+    assert_eq!(
+        reading.quad.allocations, 0,
+        "⭐ 振幅回调路径不得有任何堆分配"
+    );
+    assert_eq!(
+        reading.quad.deallocations, 0,
+        "⭐ 振幅回调路径不得有任何堆释放"
+    );
+    assert_eq!(reading.quad.lock_blocking, 0, "⭐ 振幅回调路径不得等锁");
+    assert_eq!(reading.quad.io_ops, 0, "⭐ 振幅回调路径不得有任何 I/O");
+    assert!(nonzero > 0, "⭐ 振幅调制路必须真的出声（⛔ 防空转）");
 }

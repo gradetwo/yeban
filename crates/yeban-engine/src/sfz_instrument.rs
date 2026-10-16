@@ -733,6 +733,89 @@
 //! `PreparedRegion` 的**历史读数**（`4232 → 5768` / `5768 → 6152` / `仍 6152`）
 //! ⛔ 一字未删，它们各自是**当时**的实测值。
 //!
+//! # ⭐ 增益族目标推广（任务单 `#115`）—— 首个目标 `amplitude`
+//!
+//! ⭐ ⭐ **追加修订段（任务单 `#115`）—— 被修订的是 `#108` 第 2 条里
+//! 「`pan_oncc*` ／ `volume_oncc*` 一族 … 是 `#104` 那套机制**的推广** … **另开单**」
+//! 那一支**（⛔ 上面所有登记的**原文一字未删**，口径同台账第 278 条：
+//! 保留原文 ＋ 追加修订段 ＋ 点名被修订的支）。**被修订的只是"`amplitude` 这一族"**：
+//! 它**不再是"另开单"** —— 本单把 `#104` 的机制**推广到增益族目标**，第一个目标就是
+//! `amplitude`（`amplitude` ／ `amplitude_ccN` ／ `amplitude_onccN` ／ `amplitude_curveccN`）。
+//! ⛔ **`pan_oncc*` ／ `volume_oncc*` ／ `tune_oncc*` ／ `cutoff_oncc*` ／ `pitch_oncc*`
+//! 那一支整条有效**（仍未做，另开单）—— 与本单是**同一推广**的**不同目标**。
+//!
+//! ## 规范逐字（<https://sfzformat.com/opcodes/amplitude/>，2026-10-16 现读）
+//!
+//! > Amplitude for the specified region in percentage of full amplitude.
+//! > 100% amplitude meaning no volume change is applied to the sample when played.
+//! > **Can be modulated with MIDI CC.**
+//!
+//! > Note: Range in the table below is 0 to 100, but some players such as
+//! > Aria/Sforazando do not clamp the range. **Negative values invert the signal.**
+//!
+//! | Name | Version | Type | Default | Range | Unit |
+//! | :--- | :--- | :--- | :--- | :--- | :--- |
+//! | `amplitude` | ARIA | float | **100** | 0 to 100 | **%** |
+//! | `amplitude_onccN` | （空） | float | N/A | **-100 to 100** | **%** |
+//! | `amplitude_curveccN` | （空） | integer | **0** | **0 to 255** | N/A |
+//! | `amplitude_smoothccN` | （空） | N/A | N/A | （空） | N/A |
+//!
+//! ⭐ **`amplitude` 与 `volume` 的关系**（唯一一处把两者写在一起的规范页
+//! <https://sfzformat.com/opcodes/volume/> 的收尾段，逐字）：
+//!
+//! > For the final output level, you can expect the sample level to be adjusted by a
+//! > combination of the following:
+//! > - volume (as adjusted by, e.g. rt_decay, amp_keytrack and other direct modifiers)
+//! >   **in decibels**
+//! > - **linear amplitude adjustment by ampeg... opcodes, along with adjustments to that
+//! >   by amplitude opcodes**
+//! > - pan
+//!
+//! ⇒ `volume` 是 **dB**、`amplitude` 是**线性百分比**，两者**相乘**（⛔ 不是别名、
+//! ⛔ 不是又一段 dB）。公式与逐条裁决的**唯一事实源**是
+//! [`yeban_sfz::modulation`] 的模块文档 §5（⛔ 本节不复制）。
+//!
+//! ## 落地形状（三条，逐条可判）
+//!
+//! 1. **目标推广 ⟹ 复用，⛔ 不另起系统**：`yeban-sfz` 的 `ModTarget`（五个 `ampeg_*`
+//!    在前、`Amplitude` 在末尾）把「目标」从写死的 `AmpegParam` 抽象出来；
+//!    归约仍是**一张** `BTreeMap<(目标, cc), …>`、摊平表仍是**一个**
+//!    `[BakedCcMod; AMPEG_MOD_CAP]`、求值仍是**同一份**
+//!    `cc_value_with_baked_and_vel2`（`#104`／`#106` 的薄包装原样保留）
+//!    ⇒ ⛔ **没有第二套公式、没有第二张表**。⭐ 五个 `ampeg_*` 的声明序**逐位不变**。
+//! 2. **三条路同一处施加点**：`amplitude_gain` ＝
+//!    `(amplitude + Σ delta × curve(cc)) / 100` 是**最外层**线性乘子 ——
+//!    离线 [`SfzInstrument::render_note_into_with_cc`] 走
+//!    `playback_spec_with(..).total_gain() * amplitude_gain`；摊平／实时走
+//!    [`PreparedRegion::gain_at_with_cc`]（`(base * crossfade) * amplitude_gain`）
+//!    ⇒ **离线 ＝ 摊平 ＝ 实时**逐位相同（判据 `S101`／`S102`／`S103`）。
+//! 3. **零新逐声部字段**：`amplitude` 与调制项都是**区域参数**（CC 逐块从探针读）
+//!    ⇒ ⛔ `SfzVoice` 尺寸不变（40 B）。
+//!
+//! ## 语料普查（2026-10-16 现读；口径同 `#104`：`assets/samples/**/*.sfz` 剥 `//` 注释）
+//!
+//! 分母 **1398** 份 `.sfz`：
+//!
+//! | 读数（对象＋单位：opcode **出现次数**／**文件数**） | 值 |
+//! | :--- | :--- |
+//! | `amplitude_onccN`（**带数字下标**） | **420** 次 ／ **66** 文件 |
+//! | `amplitude_ccN`（SFZ1 别名） | **854** 次 ／ **83** 文件 |
+//! | `amplitude_curveccN` | **30** 次 |
+//! | 静态 `amplitude=` | **1** 次（`cithara-barbarica` 的静音区 `amplitude=0`） |
+//! | 三档对照（`ampeg_attack`） | 家族子串 **2828** ／ 不剥注释 token **844** ／ **剥注释 token 835** |
+//! | 单文件 `(目标, cc)` **并集**最大（两族合计） | **11** ≤ `AMPEG_MOD_CAP`（20） |
+//!
+//! ⚠ **条数上界沿用 [`AMPEG_MOD_CAP`] ＝ 20**：`#115` 的并集读数 **11**（含 `amplitude`
+//! 族）＜ `#104` 登记的 **15** ⇒ ⛔ **不抬高上限、⛔ 不引入新 `Err`**
+//! （⇒ 今天能解析的文件一个都不会变成不可解析）。
+//!
+//! ## 尺寸（本单机械读数）
+//!
+//! `PreparedRegion` **仍 6160 B**（`#115` 的 `amplitude: f32` 落进既有尾部对齐空隙
+//! —— **＋0**；判据 `S100` 由 `size_of` 现读）；⛔ `SfzVoice` 仍 **40 B**、
+//! ⛔ `SfzVoicePool` 仍 **1712 B**、⛔ `EngineRuntime` 仍 **180144 B**
+//! （门槛 192 KiB ＝ `196608`，余量 `16464`）。
+//!
 //! # ⭐ `set_ccN` 播种（任务单 `#110`）
 //!
 //! ⭐ ⭐ **追加修订段（任务单 `#110`）—— 被修订的是下面三处登记里 `set_ccN=` 的
@@ -1062,12 +1145,13 @@ use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{
     CcGate, Instrument, LoopMode, NotePolyphony, OffMode, PlayDirection, Region, RegionQuery,
 };
-// ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（`ccN` / `_onccN` / `_curveccN`）。
-// 摊平表按 [`AMPEG_MOD_CAP`] 条**定长**承载（`Copy`），求值本体是
-// [`ampeg_value_with_baked`]（与 `yeban-sfz` 的离线路径**同一份**实现）。
+// ⭐ 任务单 `#104`：CC 调制（`ccN` / `_ccN` / `_onccN` / `_curveccN`）；
+// ⭐ 任务单 `#115`：目标从五个 `ampeg_*` 推广成 [`ModTarget`]（首个增益族目标
+// `amplitude`）。摊平表按 [`AMPEG_MOD_CAP`] 条**定长**承载（`Copy`），求值本体是
+// [`cc_value_with_baked`]（与 `yeban-sfz` 的离线路径**同一份**实现）。
 use yeban_sfz::modulation::{
-    AMPEG_MOD_CAP, AmpegParam, BakedAmpegCcMod, ampeg_value_with_baked,
-    ampeg_value_with_baked_and_vel2, bake_ampeg_mods,
+    AMPEG_MOD_CAP, AmpegParam, BakedCcMod, ModTarget, bake_cc_mods, cc_value_with_baked,
+    cc_value_with_baked_and_vel2,
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
@@ -1077,6 +1161,14 @@ use yeban_sfz::playback::{LoopWindow, RenderRates, SampleSpan};
 // 引擎侧的 SFZ 窃取淡出与该库的 3 ms 指数淡出**同形状**（`FLOOR^(n/N)`），
 // ⛔ 不是引擎自造的一条包络（victim **选择**口径则由引擎自己拥有，见 `SfzVoicePool::select_victim`）。
 use yeban_sfz::voice_pool::STEAL_FADE_FLOOR;
+
+/// ⭐ **`amplitude` 的百分比刻度**（任务单 `#115`）：`amplitude` 的单位是 **%**，
+/// 「100% ＝ 不做任何音量变化」（<https://sfzformat.com/opcodes/amplitude/> 正文逐字）
+/// ⇒ 线性因子 ＝ `amplitude_value / 100`。
+///
+/// ⚠ 它与 [`yeban_sfz::instrument::AMPLITUDE_DEFAULT_PERCENT`] 的关系：那个是**缺省值**
+/// （也是 100），这个是**除数**。两者分开命名，⛔ 不用"缺省值"当刻度。
+pub const AMPLITUDE_PERCENT_SCALE: f32 = 100.0;
 
 /// 已加载的 SFZ 乐器：**文本 + 元数据**（⛔ 不含借用式解析结果）。
 #[derive(Debug, Clone)]
@@ -1282,7 +1374,26 @@ impl SfzInstrument {
                 // ⚠ `cc = None` 时两者**逐位相同**：`playback_spec` 的实现就是
                 // `playback_spec_with(&RegionQuery::new(note, velocity), rates)`
                 // （见 `yeban-sfz/src/playback.rs`）⇒ 既有读数不变。
-                let gain = region.playback_spec_with(&query, rates).total_gain();
+                //
+                // ⭐ 振幅（任务单 `#115`）：**最外层线性乘子** `amplitude_gain` 与
+                // 摊平／实时两条路**同一份**（`cc_value_with_baked_and_vel2`，
+                // `target = Amplitude`）⇒ 三条路逐位一致（判据 `S103`）。
+                // 缺省 `amplitude = 100` ⇒ 因子恰 `1.0` ⇒ 乘它**逐位不变**。
+                let baked = cc.map(|_| {
+                    bake_cc_mods(region.cc_modulations(), |index| {
+                        instrument.modulation_curve(index)
+                    })
+                });
+                let amplitude_gain = cc_value_with_baked_and_vel2(
+                    region.amplitude,
+                    ModTarget::Amplitude,
+                    baked.as_deref().unwrap_or(&[]),
+                    None,
+                    0,
+                    cc,
+                )
+                .0 / AMPLITUDE_PERCENT_SCALE;
+                let gain = region.playback_spec_with(&query, rates).total_gain() * amplitude_gain;
                 if !(rate.is_finite() && rate > 0.0) || pcm_len == 0 {
                     continue;
                 }
@@ -1313,22 +1424,19 @@ impl SfzInstrument {
                 // ⚠ `frame = u64::MAX`（这条路没有 note-off ⇒ 永不进释放段）、
                 // `abs_base = 0`（释放进度用不到）、`loop_during_release = false`。
                 // ⭐ CC 调制（任务单 `#104`）：五个参数按探针求值，走
-                // `yeban-sfz` 的**同一份**求值本体（`ampeg_value_with_baked`）；
+                // `yeban-sfz` 的**同一份**求值本体（`cc_value_with_baked`；
+                // `#115` 起按 `ModTarget` 过滤，⛔ 公式未变）；
                 // `cc == None` ⇒ 五个读数就是基准字段 ⇒ 与接线前逐位相同。
                 // ⭐ 力度调制（任务单 `#106`）：**第二支独立输入**（音符力度）——
                 // 五个参数各自 `base + Σ delta_cc × curve(cc) + delta_vel2 × v/127`
                 // （公式、逐字出处与求和顺序见 `yeban_sfz::modulation`）。
                 // `cc == None` **且**没有 `ampeg_vel2*` ⇒ 五个读数就是基准字段
                 // ⇒ 与接线前**逐位相同**（求值本体一项算术都不做）。
-                let baked = cc.map(|_| {
-                    bake_ampeg_mods(region.ampeg_modulations(), |index| {
-                        instrument.modulation_curve(index)
-                    })
-                });
+                // ⚠ `baked` 在上面已经算好（`#115` 起它同时服务 `amplitude`）。
                 let value = |param: AmpegParam| {
-                    ampeg_value_with_baked_and_vel2(
+                    cc_value_with_baked_and_vel2(
                         region.ampeg_base(param),
-                        param,
+                        ModTarget::Ampeg(param),
                         baked.as_deref().unwrap_or(&[]),
                         region.ampeg_vel2(param),
                         velocity,
@@ -2024,27 +2132,43 @@ pub struct PreparedRegion {
     /// 本字段只在 note-off **真的**到达时才起作用（且 `release == 0` ⇒ 释放段零长 ⇒ 立即退休，
     /// 即"今天的 `end_sample` 硬停"）。
     ampeg_release: f32,
-    /// ⭐ **`ampeg_*` 的 CC 调制项**（任务单 `#104`）：`ccN` / `_onccN` / `_curveccN`
-    /// 的归约结果，**曲线已烘进本结构**（[`BakedAmpegCcMod`] / [`BakedCurve`]）
-    /// ⇒ 求值不再需要 `Instrument`，也⛔ 不额外分配。
+    /// ⭐ **CC 调制项**（任务单 `#104`；⭐ `#115` 起目标由 [`ModTarget`] 区分）：
+    /// `ccN` / `_ccN` / `_onccN` / `_curveccN` 的归约结果，**曲线已烘进本结构**
+    /// （[`BakedCcMod`] / [`BakedCurve`]）⇒ 求值不再需要 `Instrument`，
+    /// 也⛔ 不额外分配。
     ///
-    /// 有效范围是 `..ampeg_mod_count`（定长槽的空槽是 [`BakedAmpegCcMod::EMPTY`]，
-    /// ⛔ 不能靠值判断）。顺序由 `yeban-sfz` 的归约唯一确定（参数声明序 × CC 升序）。
+    /// 有效范围是 `..cc_mod_count`（定长槽的空槽是 [`BakedCcMod::EMPTY`]，
+    /// ⛔ 不能靠值判断）。顺序由 `yeban-sfz` 的归约唯一确定
+    /// （[`ModTarget`] 声明序 × CC 升序）。
     ///
     /// ⚠ **它是"区域参数"、不是"声部状态"**：逐声部的推进状态仍在 [`SfzVoice`]，
     /// ⇒ 本字段⛔ 不进实时对象（`SfzVoice` 尺寸不变）。
     ///
+    /// ⚠ **沿革（任务单 `#115`）**：`#104` 登记为 `ampeg_mods: [BakedAmpegCcMod; …]`
+    /// ＋ `ampeg_mod_count`；`#115` 改名并把目标推广成 [`ModTarget`]
+    /// （⛔ 定长槽的形状与"⛔ 不靠值判断"的口径一字未改，且本条**不改变尺寸**）。
+    ///
     /// [BakedCurve]: yeban_sfz::modulation::BakedCurve
-    ampeg_mods: [BakedAmpegCcMod; AMPEG_MOD_CAP],
+    cc_mods: [BakedCcMod; AMPEG_MOD_CAP],
     /// ⭐ 上面那张表里**有效**的条数（`0..=AMPEG_MOD_CAP`）。
-    ampeg_mod_count: u8,
+    cc_mod_count: u8,
+    /// ⭐ **`amplitude` 基准值**（**线性百分比**；任务单 `#115`）。
+    ///
+    /// 规范表行 Default ＝ **100**（＝ 无音量变化）；`amplitude_onccN` 的 `delta` 与它
+    /// **代数相加**（公式与逐字出处见 [`yeban_sfz::modulation`] 模块文档 §5），
+    /// 再除以 100 得到**最外层线性增益因子**。
+    ///
+    /// ⚠ **它是"区域参数"、不是"声部状态"**（CC 逐块从探针读）⇒ ⛔ 不进实时对象。
+    /// ⚠ **沿革（任务单 `#115`）**：本字段是 `#115` 新增的**唯一**每区域开销
+    /// （`PreparedRegion` 6160 → 6168，判据 `S100` 现读）。
+    amplitude: f32,
     /// ⭐ **`ampeg_*` 的力度调制量**（`ampeg_vel2attack` 一族；任务单 `#106`）。
     ///
     /// 下标 ＝ [`AmpegParam`] 的声明序；`None` ＝ 该参数的 `ampeg_vel2…` opcode
     /// **根本没出现** ⇒ 求值期**一项算术都不做**（与接线前逐位相同）；
     /// `Some(delta)` ⇒ 末尾加 `delta × velocity / 127`。
     ///
-    /// ⚠ **与 [`Self::ampeg_mods`] 是两支独立输入**：这支来自**音符力度**
+    /// ⚠ **与 [`Self::cc_mods`] 是两支独立输入**：这支来自**音符力度**
     /// （[`SfzVoice::velocity`]，触发后不变），那支来自 **CC 状态**（探针）
     /// ⇒ 两者**相加**，⛔ 不互相顶替。
     ///
@@ -2372,8 +2496,14 @@ impl PreparedRegion {
     /// base      = volume_gain * velocity_gain[v]
     /// crossfade = (key_crossfade[n] * velocity_fade_in[v]) * velocity_fade_out[v]
     /// 逐段：crossfade *= cc_crossfades[i].gain_at(probe(cc_i))   // i 递增
-    /// 结果       = base * crossfade
+    /// 结果       = (base * crossfade) * amplitude_gain           // ⭐ #115 最外层
     /// ```
+    ///
+    /// ⭐ **振幅（任务单 `#115`）**：`amplitude_gain` ＝
+    /// [`Self::amplitude_gain_with_cc`]（`(amplitude + Σ delta × curve(cc)) / 100`）。
+    /// 它是**最外层**乘子（`total_gain × amplitude_gain`），与离线
+    /// [`SfzInstrument::render_note_into_with_cc`] **同一份**次序 ⇒ 三条路逐位一致。
+    /// ⚠ 缺省 `amplitude == 100` ⇒ 因子恰 `1.0` ⇒ 乘它**逐位不变**（判据 `S100`/`S101`）。
     ///
     /// ⚠ 三段摊平表的结合序与 `yeban-sfz` 的 `crossfade_gain` 累加器**逐位相同**
     /// （`1.0` 乘是精确运算）⇒ 上式 ＝ `(gain * velocity_gain) * crossfade_gain(query)`，
@@ -2400,7 +2530,9 @@ impl PreparedRegion {
                 }
             }
         }
-        base * crossfade
+        // ⭐ 振幅（任务单 `#115`）：最外层线性乘子；缺省 `amplitude = 100` ⇒ 因子 `1.0`
+        // ⇒ 这一句对没有 `amplitude` 的区域**逐位不变**（IEEE：× `1.0` 恒等）。
+        (base * crossfade) * self.amplitude_gain_with_cc(cc)
     }
 
     /// ⭐ 本区域承载的 CC 轴交叉淡化段数（判据用：`0` ＝ 这条区域没有该轴）。
@@ -2499,12 +2631,51 @@ impl PreparedRegion {
         }
     }
 
-    /// ⭐ **该区域承载的 `ampeg_*` CC 调制项**（任务单 `#104`；曲线已烘焙）。
+    /// ⭐ **该区域承载的 CC 调制项**（任务单 `#104`；⭐ `#115` 起带 [`ModTarget`]；
+    /// 曲线已烘焙）。
     ///
     /// 空切片 ＝ 该区域没有该族 opcode（⇒ `probe` 给不给都一样）。零分配。
     #[must_use]
-    pub fn ampeg_modulations(&self) -> &[BakedAmpegCcMod] {
-        &self.ampeg_mods[..usize::from(self.ampeg_mod_count)]
+    pub fn cc_modulations(&self) -> &[BakedCcMod] {
+        &self.cc_mods[..usize::from(self.cc_mod_count)]
+    }
+
+    /// ⚠ **沿革别名**（台账第 278 条）：`#104` 的登记名 `ampeg_modulations`；
+    /// `#115` 推广后的正名是 [`Self::cc_modulations`]（⛔ 语义未变、⛔ 不是第二份数据）。
+    #[must_use]
+    pub fn ampeg_modulations(&self) -> &[BakedCcMod] {
+        self.cc_modulations()
+    }
+
+    /// ⭐ **`amplitude` 的基准值**（线性百分比；任务单 `#115`）。
+    ///
+    /// 规范表行 Default ＝ **100** ⇒ 没有 `amplitude` opcode 的区域本读数恰 `100.0`。
+    #[must_use]
+    pub const fn amplitude(&self) -> f32 {
+        self.amplitude
+    }
+
+    /// ⭐ **振幅的线性因子**（任务单 `#115`）：
+    /// `(amplitude + Σ delta × curve(cc)) / 100`。
+    ///
+    /// * `cc == None` ⇒ 一项 CC 都不加 ⇒ `amplitude / 100`（缺省 ⇒ 恰 `1.0`）；
+    /// * 求值本体与离线、摊平两条路**同一份**（[`cc_value_with_baked_and_vel2`]，
+    ///   `vel2 = None`、`target = Amplitude`）；
+    /// * 曲线解析不到的项**不贡献**量（⛔ 不当成曲线 0；可由
+    ///   [`Self::ampeg_unresolved_mods`] 读出）。
+    ///
+    /// ⚠ **零分配、零锁、零 I/O**（纯算术 ＋ 定长切片）⇒ 可在逐块路径调用。
+    #[must_use]
+    pub fn amplitude_gain_with_cc(&self, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
+        let (value, _unresolved) = cc_value_with_baked_and_vel2(
+            self.amplitude,
+            ModTarget::Amplitude,
+            self.cc_modulations(),
+            None,
+            0,
+            cc,
+        );
+        value / AMPLITUDE_PERCENT_SCALE
     }
 
     /// ⭐ 表里**曲线无法解析**的调制项数（内建 `4..=6` 规范未给公式、`<curve>` 未定义、
@@ -2537,7 +2708,7 @@ impl PreparedRegion {
     /// * `probe == None` ⇒ 基准值 ＋ 未施加数 `0`（＝ [`Self::ampeg_base`]）；
     /// * `probe == Some` ⇒ 逐项相加；曲线解析不到的项**计进第二个返回值**且不贡献量。
     ///
-    /// 求值本体是 `yeban-sfz` 的 [`ampeg_value_with_baked`]（与离线
+    /// 求值本体是 `yeban-sfz` 的 [`cc_value_with_baked`]（与离线
     /// [`SfzInstrument::render_note_into_with_cc`] **同一份**实现）。
     ///
     /// ⚠ **零分配、零锁、零 I/O**（纯算术 ＋ 定长切片）⇒ 可在逐块路径调用。
@@ -2551,7 +2722,7 @@ impl PreparedRegion {
         let Some(probe) = probe else {
             return (base, 0);
         };
-        ampeg_value_with_baked(base, param, self.ampeg_modulations(), probe)
+        cc_value_with_baked(base, ModTarget::Ampeg(param), self.cc_modulations(), probe)
     }
 
     /// ⭐ **逐块归约 ＋ CC 调制**（任务单 `#104`）：先按 CC 探针求五个参数，再走
@@ -2598,7 +2769,7 @@ impl PreparedRegion {
     /// * 曲线解析不到的项**计进第二个返回值**且不贡献量
     ///   （可由 [`Self::ampeg_unresolved_mods`] 读出）。
     ///
-    /// 求值本体是 `yeban-sfz` 的 [`ampeg_value_with_baked_and_vel2`]（与离线
+    /// 求值本体是 `yeban-sfz` 的 [`cc_value_with_baked_and_vel2`]（与离线
     /// [`SfzInstrument::render_note_into_with_cc`] **同一份**实现）。
     ///
     /// ⚠ **零分配、零锁、零 I/O**（纯算术 ＋ 定长切片）⇒ 可在逐块路径调用。
@@ -2609,10 +2780,10 @@ impl PreparedRegion {
         velocity: u8,
         probe: Option<&dyn Fn(u8) -> u8>,
     ) -> (f32, usize) {
-        ampeg_value_with_baked_and_vel2(
+        cc_value_with_baked_and_vel2(
             self.ampeg_base(param),
-            param,
-            self.ampeg_modulations(),
+            ModTarget::Ampeg(param),
+            self.cc_modulations(),
             self.ampeg_vel2(param),
             velocity,
             probe,
@@ -3512,16 +3683,16 @@ fn flatten_regions(
             // `SfzByteUsage` 的"区域表 ＝ `size_of × N`"读数因此仍然**没有隐藏的第四份开销**）。
             // 条数超过 `AMPEG_MOD_CAP` 在 `yeban-sfz` 的**解析期**就已经响亮 `Err`
             //（`SfzError::TooManyAmpegModulations`）⇒ 这里⛔ 不会截断。
-            let baked = bake_ampeg_mods(region.ampeg_modulations(), |index| {
+            let baked = bake_cc_mods(region.cc_modulations(), |index| {
                 parsed.modulation_curve(index)
             });
             debug_assert!(
                 baked.len() <= AMPEG_MOD_CAP,
                 "yeban-sfz caps at AMPEG_MOD_CAP"
             );
-            let ampeg_mod_count = baked.len() as u8;
-            let mut ampeg_mods = [BakedAmpegCcMod::EMPTY; AMPEG_MOD_CAP];
-            for (slot, item) in ampeg_mods.iter_mut().zip(baked) {
+            let cc_mod_count = baked.len() as u8;
+            let mut cc_mods = [BakedCcMod::EMPTY; AMPEG_MOD_CAP];
+            for (slot, item) in cc_mods.iter_mut().zip(baked) {
                 *slot = item;
             }
 
@@ -3550,10 +3721,15 @@ fn flatten_regions(
                 ampeg_decay: region.ampeg_decay,
                 ampeg_sustain: region.ampeg_sustain,
                 ampeg_release: region.ampeg_release,
-                // ⭐ CC 调制（任务单 `#104`）：归约结果（含烘好的曲线）搬进摊平表。
+                // ⭐ CC 调制（任务单 `#104`；⭐ `#115` 起目标由 `ModTarget` 区分）：
+                // 归约结果（含烘好的曲线）搬进摊平表。
                 // 它是**区域参数**、不是声部状态 ⇒ `SfzVoice` 尺寸不变，⛔ 不进实时对象。
-                ampeg_mods,
-                ampeg_mod_count,
+                cc_mods,
+                cc_mod_count,
+                // ⭐ 振幅基准（任务单 `#115`）：`amplitude` 的**线性百分比**原样搬进
+                // 摊平表（缺省 100）。它是**区域参数**（CC 逐块从探针读）⇒ `SfzVoice`
+                // 尺寸不变，⛔ 不进实时对象。求值点见 `amplitude_gain_with_cc`。
+                amplitude: region.amplitude,
                 // ⭐ 力度调制（任务单 `#106`）：五个**每参数**的力度调制量原样搬进
                 // 摊平表（`[Option<f32>; 5]`：`None` ＝ 该 opcode 没出现 ⇒ 求值期
                 // 一项算术都不做）。同样是**区域参数**、⛔ 不是声部状态

@@ -32,8 +32,8 @@ use crate::error::SfzError;
 use crate::label::{Labels, cc_label_index};
 use crate::midi::MidiSection;
 use crate::modulation::{
-    AMPEG_MOD_CAP, AmpegCcMod, AmpegParam, MAX_MODULATION_CC, MAX_MODULATION_CURVE_INDEX,
-    MAX_MODULATION_DELTA, MIN_MODULATION_DELTA, ModulationForm, bake_ampeg_mods,
+    AMPEG_MOD_CAP, AmpegParam, CcMod, MAX_MODULATION_CC, MAX_MODULATION_CURVE_INDEX,
+    MAX_MODULATION_DELTA, MIN_MODULATION_DELTA, ModTarget, ModulationForm, bake_cc_mods,
     parse_modulation_name,
 };
 use crate::parser::Warning;
@@ -255,6 +255,17 @@ pub const AMPEG_SUSTAIN_DEFAULT_PERCENT: f32 = 100.0;
 /// [`Region::ampeg_release`] 原样读入，⛔ 不静默改写；只有**根本没出现**这个 opcode 时
 /// 才落到本常量。
 pub const AMPEG_RELEASE_DEFAULT_SECONDS: f32 = 0.0;
+
+/// ⭐ **`amplitude` 的规范缺省**（任务单 `#115`）：**100**（单位 %）。
+///
+/// 出处逐字 <https://sfzformat.com/opcodes/amplitude/> 的表行
+/// （`amplitude`｜ARIA｜float｜**Default = 100**｜Range = 0 to 100｜Unit = %）。
+///
+/// 取 `100` 的效果：`amplitude_gain = amplitude / 100 == 1.0` ⇒ 最外层乘子恰 `1.0`
+/// ⇒ **没有 `amplitude` 的文件逐位不变**（IEEE：任何有限值 × `1.0` 恒等）。
+/// ⚠ **显式写出**时（含 `amplitude=0`）一律按 [`Region::amplitude`] 原样读入、⛔ 不钳位
+/// （规范自己记了 "some players … do not clamp"）。
+pub const AMPLITUDE_DEFAULT_PERCENT: f32 = 100.0;
 
 /// `ampeg_attack` / `ampeg_hold` / `ampeg_decay` / `ampeg_release` 的规范取值上界，
 /// 单位**秒**（四个格式页的 Range 都是 `0 to 100`）。
@@ -578,20 +589,24 @@ pub struct Region<'a> {
     /// ⚠ 与 [`Region::off_time`] 的区别：`off_time` 是 **voice-stealing** 的淡化时长
     /// （`off_mode=time`），本字段是 **note-off** 之后的释放段时长 —— 两个量、⛔ 不互相改写。
     pub ampeg_release: f32,
-    /// ⭐ **`ampeg_*` 的 CC 调制项**（`ccN` / `_onccN` / `_curveccN`；任务单 `#104`）。
+    /// ⭐ **CC 调制项**（`ccN` / `_ccN` / `_onccN` / `_curveccN`；任务单 `#104`，
+    /// ⭐ `#115` 把目标从五个 `ampeg_*` 推广成 [`ModTarget`]）。
     ///
-    /// 顺序**固定**：按 [`AmpegParam`] 的声明序（`attack < hold < decay < sustain <
-    /// release`），同一参数内按 CC 号升序 ⇒ 同一输入得到同一个 `Vec`
+    /// 顺序**固定**：按 [`ModTarget`] 的声明序（[`ModTarget::ALL`]：五个 `ampeg_*` 在前、
+    /// `amplitude` 在末尾），同一目标内按 CC 号升序 ⇒ 同一输入得到同一个 `Vec`
     /// （二进制浮点加法不结合，求和顺序必须唯一 [ARCH-DET-001]）。
     ///
-    /// 元素是**解析层**的形状（[`AmpegCcMod`]：`curve` 是**下标**而不是曲线本体）——
+    /// 元素是**解析层**的形状（[`CcMod`]：`curve` 是**下标**而不是曲线本体）——
     /// `<curve>` 段可以出现在 `<region>` **之后**，所以解析期拿不到曲线本体；
     /// 求值走 [`Instrument::ampeg_value_with_cc`]（它用
     /// [`Instrument::modulation_curve`] 解析下标）。
     ///
-    /// 空 `Vec` ＝ 该 region 没有任何 `ampeg_*ccN` 形态（**缺省 ⇒ 无调制**，
+    /// 空 `Vec` ＝ 该 region 没有任何本族形态（**缺省 ⇒ 无调制**，
     /// 与接线前逐位相同）。语义、公式、取值域与工程裁决见 [`crate::modulation`]。
-    pub ampeg_mods: Vec<AmpegCcMod>,
+    ///
+    /// ⚠ **沿革（任务单 `#115`）**：`#104` 登记为 `ampeg_mods: Vec<AmpegCcMod>`；
+    /// `#115` 改名并把目标推广成 [`ModTarget`]（⛔ 上面那两句的语义一字未改）。
+    pub cc_mods: Vec<CcMod>,
     /// ⭐ **`ampeg_*` 的力度调制量**（`ampeg_vel2attack` / `…hold` / `…decay` /
     /// `…sustain` / `…release`；任务单 `#106`）。
     ///
@@ -599,7 +614,7 @@ pub struct Region<'a> {
     /// `None` ＝ 该参数的 `ampeg_vel2…` opcode **根本没出现**（**缺省 ⇒ 无调制**，
     /// 与接线前逐位相同）；`Some(delta)` ＝ 求值时末尾加一项 `delta × velocity / 127`。
     ///
-    /// ⚠ **与 [`Region::ampeg_mods`] 是两支独立输入**：这支来自**音符力度**
+    /// ⚠ **与 [`Region::cc_mods`] 是两支独立输入**：这支来自**音符力度**
     /// （每个声部自带、触发后不再变），那支来自 **CC 状态**（外部控制器）
     /// ⇒ 两者**相加**，⛔ 不互相顶替（规范公式、逐字出处与工程裁决见 [`crate::modulation`]）。
     ///
@@ -638,6 +653,23 @@ pub struct Region<'a> {
     pub bend_down: i32,
     /// 音量（dB，规范范围 -144..=6；本实现只要求有限）。
     pub volume: f32,
+    /// ⭐ **振幅（`amplitude`，线性百分比；任务单 `#115`）**。
+    ///
+    /// 规范出处 <https://sfzformat.com/opcodes/amplitude/> 的表行：Type = float、
+    /// **Default = 100**、Range = `0 to 100`、Unit = **%**；同页正文："Amplitude for the
+    /// specified region in percentage of full amplitude. **100% amplitude meaning no
+    /// volume change** is applied to the sample when played. Can be modulated with MIDI CC."
+    ///
+    /// ⚠ **与 [`Region::volume`] 的关系**（逐字依据见 [`crate::modulation`] §5.2）：
+    /// `volume` 是 **dB**，`amplitude` 是 **线性**因子；<https://sfzformat.com/opcodes/volume/>
+    /// 的收尾段把两者写成两段：「volume … **in decibels**」＋「**linear amplitude
+    /// adjustment by ampeg... opcodes, along with adjustments to that by amplitude
+    /// opcodes**」⇒ 本 crate 把它们**相乘**（`amplitude/100` 作为最外层线性乘子）。
+    ///
+    /// ⚠ **不钳位**：同页正文自己记了 "some players such as Aria/Sforazando do not clamp
+    /// the range. Negative values invert the signal."，且 §2 的公式只给 `delta` 的域
+    /// ⇒ 本 crate 沿用`不发明夹取`的裁决（缺省 `100.0` ⇒ 乘子恰 `1.0` ⇒ 接线前逐位相同）。
+    pub amplitude: f32,
     /// 声相（%，规范范围 -100..=100；本实现只要求有限）。
     pub pan: f32,
     /// 轮替序号（`seq_position`，默认 1）。
@@ -833,12 +865,20 @@ impl<'a> Region<'a> {
         }
     }
 
-    /// ⭐ 该区域的 `ampeg_*` CC 调制项（顺序与语义见 [`Region::ampeg_mods`]）。
+    /// ⭐ 该区域的 **CC 调制项**（顺序与语义见 [`Region::cc_mods`]；
+    /// 任务单 `#115` 起目标由 [`ModTarget`] 区分）。
     ///
     /// 空切片 ＝ 没有该族 opcode（**缺省 ⇒ 无调制**）。零分配、可在实时路径调用。
     #[must_use]
-    pub fn ampeg_modulations(&self) -> &[AmpegCcMod] {
-        &self.ampeg_mods
+    pub fn cc_modulations(&self) -> &[CcMod] {
+        &self.cc_mods
+    }
+
+    /// ⚠ **沿革别名**（台账第 278 条）：`#104` 的登记名 `ampeg_modulations`；
+    /// `#115` 推广后的正名是 [`Region::cc_modulations`]。⛔ 语义未变、⛔ 不是第二份数据。
+    #[must_use]
+    pub fn ampeg_modulations(&self) -> &[CcMod] {
+        self.cc_modulations()
     }
 
     /// ⭐ **该区域某参数上的力度调制量**（`ampeg_vel2…`；任务单 `#106`）。
@@ -847,7 +887,7 @@ impl<'a> Region<'a> {
     /// （**缺省 ⇒ 无调制**，与接线前逐位相同：求值期一项算术都不做）；
     /// `Some(delta)` ＝ 求值时末尾加 `delta × velocity / 127`。
     ///
-    /// ⚠ 与 [`Region::ampeg_modulations`] 是**两支独立输入**（力度 ／ CC），
+    /// ⚠ 与 [`Region::cc_modulations`] 是**两支独立输入**（力度 ／ CC），
     /// 语义与公式逐字出处见 [`crate::modulation`]。零分配、`const`、可在实时路径调用。
     #[must_use]
     pub const fn ampeg_vel2(&self, param: AmpegParam) -> Option<f32> {
@@ -1283,7 +1323,7 @@ impl<'a> Instrument<'a> {
         let Some(probe) = probe else {
             return (base, 0);
         };
-        let baked = bake_ampeg_mods(region.ampeg_modulations(), |index| {
+        let baked = bake_cc_mods(region.cc_modulations(), |index| {
             self.modulation_curve(index)
         });
         crate::modulation::ampeg_value_with_baked(base, param, &baked, probe)
@@ -1326,7 +1366,7 @@ impl<'a> Instrument<'a> {
                 None,
             );
         };
-        let baked = bake_ampeg_mods(region.ampeg_modulations(), |index| {
+        let baked = bake_cc_mods(region.cc_modulations(), |index| {
             self.modulation_curve(index)
         });
         crate::modulation::ampeg_value_with_baked_and_vel2(
@@ -1646,9 +1686,9 @@ pub(crate) fn build_region<'a>(
     let ampeg_sustain =
         read_ampeg_sustain(&scopes, "ampeg_sustain", AMPEG_SUSTAIN_DEFAULT_PERCENT)?;
     let ampeg_release = read_ampeg_time(&scopes, "ampeg_release", AMPEG_RELEASE_DEFAULT_SECONDS)?;
-    // ⭐ CC 调制（`ampeg_*ccN` / `_onccN` / `_curveccN`）：与五个基准值**分开**归约
-    // （调制量不是取值；缺失 ⇒ 空表 ⇒ 无调制）。
-    let ampeg_mods = read_ampeg_cc_mods(&scopes, line)?;
+    // ⭐ CC 调制（`ampeg_*ccN` / `_onccN` / `_curveccN` ＋ `#115` 的 `amplitude_*`）：
+    // 与基准值**分开**归约（调制量不是取值；缺失 ⇒ 空表 ⇒ 无调制）。
+    let cc_mods = read_cc_mods(&scopes, line)?;
     // ⭐ 力度调制（`ampeg_vel2*`；任务单 `#106`）：**第二支独立输入**，与上面那支
     // 分开归约（一个来自 CC 状态、一个来自**音符力度**；缺失 ⇒ `None` ⇒ 无调制）。
     let ampeg_vel2 = read_ampeg_vel2_mods(&scopes, line)?;
@@ -1691,6 +1731,12 @@ pub(crate) fn build_region<'a>(
     let volume = match scopes.get("volume").or_else(|| scopes.get("gain")) {
         Some(value) => value.as_f32()?,
         None => 0.0,
+    };
+    // ⭐ 振幅（`amplitude`，线性 %；任务单 `#115`）—— 与 `volume`（dB）**分开**读。
+    // 缺省 ＝ 规范表行的 `100`（⛔ 不钳位：规范自己记了有些播放器不夹）。
+    let amplitude = match scopes.get("amplitude") {
+        Some(value) => value.as_f32()?,
+        None => AMPLITUDE_DEFAULT_PERCENT,
     };
     let pan = match scopes.get("pan") {
         Some(value) => value.as_f32()?,
@@ -1798,7 +1844,7 @@ pub(crate) fn build_region<'a>(
         ampeg_decay,
         ampeg_sustain,
         ampeg_release,
-        ampeg_mods,
+        cc_mods,
         ampeg_vel2,
         offset,
         end,
@@ -1808,6 +1854,7 @@ pub(crate) fn build_region<'a>(
         bend_up,
         bend_down,
         volume,
+        amplitude,
         pan,
         seq_position,
         seq_length,
@@ -2331,34 +2378,35 @@ fn read_ampeg_sustain(
 }
 
 // ---------------------------------------------------------------------------
-// ⭐ `ampeg_*` 的 CC 调制（任务单 `#104`）
+// ⭐ CC 调制（任务单 `#104`；⭐ `#115` 把目标推广成 `ModTarget`）
 // ---------------------------------------------------------------------------
 
-/// 归约一条 `<region>` 生效链上的 `ampeg_*` CC 调制（`ccN` / `_onccN` / `_curveccN`）。
+/// 归约一条 `<region>` 生效链上的 CC 调制（`ccN` / `_ccN` / `_onccN` / `_curveccN`）。
 ///
 /// 语义、公式（`base + delta × curve(cc)`）、取值域与全部工程裁决**逐字**写在
 /// [`crate::modulation`] 的模块文档里；这里只负责"读"：
 ///
 /// * **作用域链**：`global → master → group → region`（弱到强）喂入
-///   ⇒ 同一 `(参数, CC)` 后者胜（与 `amp_velcurve_N` 的归约同形）；同一作用域里
+///   ⇒ 同一 `(目标, CC)` 后者胜（与 `amp_velcurve_N` 的归约同形）；同一作用域里
 ///   `OpcodeMap` 是 `BTreeMap` ⇒ 同一 opcode 重复出现时后写的行已经胜出；
 /// * **别名**：`ccN`（SFZ1 旧形）与 `_onccN`（SFZ2）都归 [`ModulationForm::Delta`]
-///   ⇒ 同一 `(参数, CC)` 上的两个写法落在**同一个键**上（规范说它们是别名）；
+///   ⇒ 同一 `(目标, CC)` 上的两个写法落在**同一个键**上（规范说它们是别名）；
 /// * **`_curveccN`** 只写曲线下标，与同键的 `delta` **合并**；
 /// * **缺失 ⇒ 空 `Vec`**（＝ 无调制，与接线前逐位相同）；**越界/畸形 ⇒ 明确 `Err`**
 ///   （第 259 条：⛔ 不静默降级、⛔ 不钳位）；**只有 `_curveccN` 没有 `delta`**
 ///   ⇒ 该项**不产生**调制项（退化输入，⛔ 不是错误）；
 /// * **条数上限**：[`AMPEG_MOD_CAP`]，超过 ⇒ [`SfzError::TooManyAmpegModulations`]
-///   （摊平表的定长容器；登记语料最大读数 10 条）。
+///   （摊平表的定长容器；⭐ `#115` 的分母是**两族并集**，见本常数的语料读数）。
 ///
-/// 顺序**确定**：`BTreeMap` 的键序 ＝ 参数声明序 × CC 号升序（[ARCH-DET-001]）。
-fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegCcMod>, SfzError> {
-    // 键 = (参数, CC 号)；值 = (delta, curve 下标)。两个分量各自独立合并。
-    let mut table: BTreeMap<(AmpegParam, u8), (Option<f32>, Option<u8>)> = BTreeMap::new();
+/// 顺序**确定**：`BTreeMap` 的键序 ＝ [`ModTarget`] 声明序（五个 `ampeg_*` 在前、
+/// `amplitude` 在末尾）× CC 号升序（[ARCH-DET-001]）。
+fn read_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<CcMod>, SfzError> {
+    // 键 = (目标, CC 号)；值 = (delta, curve 下标)。两个分量各自独立合并。
+    let mut table: BTreeMap<(ModTarget, u8), (Option<f32>, Option<u8>)> = BTreeMap::new();
     for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
         for (name, value) in map {
             let name = name.as_ref();
-            let Some((param, form, digits)) = parse_modulation_name(name) else {
+            let Some((target, form, digits)) = parse_modulation_name(name) else {
                 continue;
             };
             // ⭐ 力度形态（任务单 `#106`）**不属这张表**：它载的是**力度**调制量、
@@ -2369,15 +2417,10 @@ fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegC
                 continue;
             }
             let cc = parse_modulation_cc(digits, name, line)?;
-            let entry = table.entry((param, cc)).or_insert((None, None));
+            let entry = table.entry((target, cc)).or_insert((None, None));
             match form {
                 ModulationForm::Delta => {
-                    entry.0 = Some(read_ampeg_modulation_delta(
-                        value.as_ref(),
-                        name,
-                        param,
-                        line,
-                    )?);
+                    entry.0 = Some(read_modulation_delta(value.as_ref(), name, target, line)?);
                 }
                 ModulationForm::Curve => {
                     entry.1 = Some(read_modulation_curve_index(value.as_ref(), name, line)?);
@@ -2388,13 +2431,13 @@ fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegC
             }
         }
     }
-    let mods: Vec<AmpegCcMod> = table
+    let mods: Vec<CcMod> = table
         .into_iter()
-        .filter_map(|((param, cc), (delta, curve))| {
+        .filter_map(|((target, cc), (delta, curve))| {
             // 只有 `_curveccN`、没有 `delta` ⇒ 没有任何量被调制（模块文档裁决 4）。
             let delta = delta?;
-            Some(AmpegCcMod {
-                param,
+            Some(CcMod {
+                target,
                 cc,
                 delta,
                 curve: curve.unwrap_or(0),
@@ -2413,18 +2456,18 @@ fn read_ampeg_cc_mods(scopes: &Scopes<'_, '_>, line: usize) -> Result<Vec<AmpegC
 
 /// ⭐ 归约一条 `<region>` 生效链上的 **`ampeg_vel2*`**（力度调制；任务单 `#106`）。
 ///
-/// 与 [`read_ampeg_cc_mods`] 是**两支独立输入**：这一支载的是**力度**调制量
+/// 与 [`read_cc_mods`] 是**两支独立输入**：这一支载的是**力度**调制量
 /// （公式 `base + delta × velocity / 127`，逐字出处与全部工程裁决见 [`crate::modulation`]），
 /// 那一支载的是 CC 调制量。⛔ 不互相顶替、⛔ 不合并到同一张表。
 ///
 /// * **作用域链**：`global → master → group → region`（弱到强）喂入 ⇒ 同一参数后者胜
-///   （与 [`read_ampeg_cc_mods`] 同形）；同一作用域里 `OpcodeMap` 是 `BTreeMap`
+///   （与 [`read_cc_mods`] 同形）；同一作用域里 `OpcodeMap` 是 `BTreeMap`
 ///   ⇒ 同一 opcode 重复出现时后写的行已经胜出；
 /// * **下标 ＝ 参数**：每个参数**最多一条**（规范只列这五个 opcode，名字里没有下标）
 ///   ⇒ 结果是 `[Option<f32>; AmpegParam::COUNT]`，⛔ 不是 `Vec`、⛔ 没有条数上限问题；
 /// * **缺失 ⇒ `None`**（＝ 无调制，与接线前逐位相同：求值期一项算术都不做）；
 /// * **越界/畸形 ⇒ 明确 `Err`**（第 259 条：⛔ 不静默降级、⛔ 不钳位）：
-///   域与后缀政策与 `delta` **同一份**读取（[`read_ampeg_modulation_delta`]），
+///   域与后缀政策与 `delta` **同一份**读取（[`read_modulation_delta`]），
 ///   因为五个 `ampeg_vel2*` 页的 Range 列与 `ccN` 那几行**逐字相同**（`-100 to 100`），
 ///   单位也随目标（时间 = 秒、`sustain` = %）。
 ///
@@ -2438,18 +2481,18 @@ fn read_ampeg_vel2_mods(
     for map in [scopes.global, scopes.master, scopes.group, scopes.region] {
         for (name, value) in map {
             let name = name.as_ref();
-            let Some((param, form, _digits)) = parse_modulation_name(name) else {
+            let Some((target, form, _digits)) = parse_modulation_name(name) else {
                 continue;
             };
             if form != ModulationForm::Vel2 {
                 continue;
             }
-            table[param.index()] = Some(read_ampeg_modulation_delta(
-                value.as_ref(),
-                name,
-                param,
-                line,
-            )?);
+            // ⭐ 力度形态只服务 `ampeg_*` 一族（`amplitude` 页没有 `vel2` 行）⇒
+            // 目标不是 `ampeg` 时按未知 opcode 忽略（防御性：解析层不会产生这种组合）。
+            let Some(param) = target.ampeg() else {
+                continue;
+            };
+            table[param.index()] = Some(read_modulation_delta(value.as_ref(), name, target, line)?);
         }
     }
     Ok(table)
@@ -2482,29 +2525,30 @@ fn parse_modulation_cc(digits: &str, name: &str, line: usize) -> Result<u8, SfzE
     Ok(cc as u8)
 }
 
-/// 读 `delta`（`ampeg_*ccN` / `ampeg_*_onccN` 的取值）。
+/// 读 `delta`（`ampeg_*ccN` / `ampeg_*_onccN` / ⭐ `amplitude_*` 的取值）。
 ///
-/// 单位与目标**同单位**（时间 = 秒、`sustain` = 百分比），取值域**统一**是
-/// `-100..=100`（各 opcode 页 Modulation 表的 Range 列）。与基准 opcode 的读取
-/// （[`read_ampeg_time`] / [`read_ampeg_sustain`]）有两处**刻意**不同：
+/// 单位与目标**同单位**（`ampeg_*` 时间 = 秒、`sustain` = 百分比；
+/// ⭐ `amplitude` = **百分比**），取值域**统一**是 `-100..=100`（各 opcode 页
+/// Modulation 表的 Range 列）。与基准 opcode 的读取（[`read_ampeg_time`] /
+/// [`read_ampeg_sustain`]）有两处**刻意**不同：
 ///
 /// 1. **允许负值**（基准确是 `0..=100`）：登记语料里负 `delta` 有 760 处；
 /// 2. 越界一律 [`SfzError::FloatOutOfRange`]（基准确把负值单独报 `InvalidDuration`，
 ///    这里负数合法 ⇒ 只有一条域）。
 ///
-/// 其余政策同基准：认 `s` / `ms`（时间）与 `%`（`sustain`）后缀、大小写不敏感，
+/// 其余政策同基准：认 `s` / `ms`（时间）与 `%`（百分比）后缀、大小写不敏感，
 /// 认不出 ⇒ [`SfzError::InvalidFloat`]，非有限 ⇒ [`SfzError::NonFiniteFloat`]。
 ///
-/// ⭐ 任务单 `#106` 起**同一份读取**也服务 `ampeg_vel2*`（五个 `vel2` 页的 Range 列
-/// 与 `ccN` 那几行**逐字相同**：`-100 to 100`；单位同样随目标）⇒ ⛔ 没有第二套域检查。
-fn read_ampeg_modulation_delta(
+/// ⭐ 任务单 `#106` 起**同一份读取**也服务 `ampeg_vel2*`；⭐ `#115` 起服务
+/// `amplitude_onccN`（表行 `-100 to 100`、Unit = **%**）⇒ ⛔ 没有第二套域检查。
+fn read_modulation_delta(
     raw: &str,
     name: &str,
-    param: AmpegParam,
+    target: ModTarget,
     line: usize,
 ) -> Result<f32, SfzError> {
     let raw = raw.trim();
-    let (number, scale) = if param.is_time() {
+    let (number, scale) = if target.is_time() {
         if let Some(number) = strip_unit(raw, "ms") {
             (number, 1.0e-3_f32)
         } else if let Some(number) = strip_unit(raw, "s") {
@@ -2598,7 +2642,8 @@ mod tests {
             ampeg_decay: AMPEG_TIME_DEFAULT_SECONDS,
             ampeg_sustain: AMPEG_SUSTAIN_DEFAULT_PERCENT,
             ampeg_release: AMPEG_RELEASE_DEFAULT_SECONDS,
-            ampeg_mods: Vec::new(),
+            cc_mods: Vec::new(),
+            amplitude: AMPLITUDE_DEFAULT_PERCENT,
             ampeg_vel2: [None; AmpegParam::COUNT],
             offset: 0,
             end: SampleEnd::Unspecified,
