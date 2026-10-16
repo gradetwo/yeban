@@ -493,7 +493,7 @@
 //!
 //! 1. **摊平期承载**：归约结果（含**烘好的**曲线点表）搬进 [`PreparedRegion`]
 //!    （`ampeg_mods[AMPEG_MOD_CAP]` ＋ 条数；`PreparedRegion` 2672 → **4192 B**，＋1 520 B／区域，
-//!    摊平期、⛔ 不进实时对象；`SfzVoice` 40 B ／ `SfzVoicePool` 1712 B ／ `EngineRuntime` 180000 B 全部 ＋0）。
+//!    摊平期、⛔ 不进实时对象；`SfzVoice` 40 B ／ `SfzVoicePool` 1712 B ／ `EngineRuntime` 180000 B 全部 ＋0；⭐ ⚠ **`#107` 后 `EngineRuntime` 为 `180144 B`**——见本模块头的 `#107` 追加修订段）。
 //!    曲线在这里烘进**区域表**而不是另开一张表，是为了让
 //!    [`SfzByteUsage`] 的"区域表 ＝ `size_of × N`"读数**仍然没有隐藏的第四份开销**；
 //! 2. **离线两条路求值**：[`SfzInstrument::render_note_into_with_cc`] 与
@@ -581,7 +581,7 @@
 //!
 //! ⭐ 摊平表承载：`[Option<f32>; AmpegParam::COUNT]`（每参数**至多一条**，规范只列
 //! 这五个名字）搬进 [`PreparedRegion`]：`4192 → ` **4232 B**（＋**40 B**／区域，摊平期）、
-//! ⛔ 不进实时对象（`SfzVoice` 40 ／ `SfzVoicePool` 1712 ／ `EngineRuntime` 180000 全部 ＋0；
+//! ⛔ 不进实时对象（`SfzVoice` 40 ／ `SfzVoicePool` 1712 ／ `EngineRuntime` 180000 全部 ＋0 —— ⭐ ⚠ **`#107` 后 `EngineRuntime` 为 `180144 B`**；
 //! `SynthEngine` 109152 ＋0、`EngineSnapshot` 4496 ＋0）。
 //! `None` ＝ 该 opcode **根本没出现** ⇒ 求值期**一项算术都不做**（⇒ 与接线前逐位相同）。
 //!

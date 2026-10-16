@@ -6,7 +6,7 @@
 //! ⇒ "本机绿"会掩盖一类**只在 Windows 红**的栈溢出（台账 R724）。`--export-wav` 那一面
 //! 已由 `#72` 修掉（`Box<SynthEngine>`）；**GUI 那一面更深**：`run_gui` → `host::ProductionLoop::start`
 //! → `EngineHost::reload`／`open_device` → `engine_host::fresh_runtime` → `EngineRuntime::new`
-//! 是**多层按值交接同一个** `EngineRuntime`（`180000 B`），在**进入设备腿之前**就已经
+//! 是**多层按值交接同一个** `EngineRuntime`（⭐ `#107` 后为 `180144 B`；`#107` 前是 `180000 B`），在**进入设备腿之前**就已经
 //! 越过 1 MiB（R725 逐帧读数：`start` `543360 B`／`reload` `744528 B`／`fresh_runtime`
 //! `360992 B`）⇒ Windows 上**开界面即崩**。
 //!
@@ -40,9 +40,9 @@
 //! | ② device-leg entry 最小可跑栈（KiB） | `1952`（@1024 红） | `528`（@1024 绿） |
 //!
 //! ⚠ ② 修复后的峰值由三项决定（逐帧见报告）：`EngineHost::open_device` 的帧里**先**留了
-//! `open_output` 的 `180000 B` 按值实参位（引擎侧 API，⛔ 本单不改），而**同一个帧**里
+//! `open_output` 的 `180144 B` 按值实参位（⭐ `#107` 后；引擎侧 API，⛔ 本单不改），而**同一个帧**里
 //! 又要嵌套 `fresh_runtime` → `new_boxed` → `write_into`（`176384 B`）→ `SynthEngine::new`
-//! （`129952 B`）那段构造 ⇒ `180000 + 176384 + 129952 ≈ 486 KiB` ＋ 包装帧。
+//! （`129952 B`）那段构造 ⇒ `180144 + 176384 + 129952 ≈ 486 KiB` ＋ 包装帧。
 //!
 //! ⛔ 本文件**不测**引擎内部结构，只测"这段装配链要多少栈"。
 

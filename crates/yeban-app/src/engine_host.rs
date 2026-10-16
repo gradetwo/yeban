@@ -377,7 +377,7 @@ pub struct DeviceOpening {
 /// `device::open_output` **和** `play()` 都成功之后才换掉手里那一代 ——
 /// 这样"打开设备失败"绝不会把正在用的引擎弄丢（优雅降级的结构性保证）。
 struct FreshRuntime {
-    /// ⭐ **装箱**：`size_of::<EngineRuntime>()` 本机 = `180000 B`。按值持有 ⇒ `fresh_runtime`
+    /// ⭐ **装箱**：`size_of::<EngineRuntime>()` 本机 = `180144 B`（⭐ `#107` 后；前 `180000 B`）。按值持有 ⇒ `fresh_runtime`
     /// 自己的帧里要留一份返回值位，而这条路会**多层**叠在 GUI 链上（`#72`／台账 R725）。
     /// 装箱后本结构的值尺寸与 `EngineRuntime` 无关，搬动恒为常数级。
     runtime: Box<EngineRuntime>,
@@ -442,7 +442,7 @@ pub struct EngineHost {
     slot: Option<std::sync::Arc<SnapshotSlot>>,
     /// ⭐ **装箱**：`EngineHost` **按值**活在调用者栈上（`ProductionLoop::start` 里先建它、
     /// 再搬进 `Rc<RefCell<..>>`），按值持有 `EngineRuntime` 会让 `size_of::<EngineHost>()`
-    /// 跟着 `180000 B` 走 ⇒ GUI 链每一层都多背一份（台账 R725 逐帧实测）。
+    /// 跟着 `180144 B` 走 ⇒ GUI 链每一层都多背一份（台账 R725 逐帧实测）。
     runtime: Option<Box<EngineRuntime>>,
     retire: Option<RetireQueue>,
     /// 最近一次发布所依据的工程标记（[`EngineHost::should_publish`] 的比较基准）。
@@ -799,7 +799,7 @@ impl EngineHost {
         // 3) 开设备（失败 ⇒ 手里那一代一位不动）。
         //
         // ⚠ `open_output` 的入参是**按值**的 `EngineRuntime`（引擎侧 API，本单⛔ 不改）：
-        // 这里必须把装箱的那一份**移出来**交给它，调用点因此仍有一个 `180000 B` 的
+        // 这里必须把装箱的那一份**移出来**交给它，调用点因此仍有一个 `180144 B` 的
         // 实参位。这是设备腿的**下限**，不是本单能搬走的部分 —— 读数见
         // `tests/gui_stack_budget.rs` 的 `DeviceLegEntry` 一档。
         let handle = match yeban_engine::device::open_output(&config, *runtime) {
