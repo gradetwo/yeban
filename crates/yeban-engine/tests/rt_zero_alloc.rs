@@ -59,7 +59,7 @@
 //! | ㉒ | 每轨插入**混响** 10 000 量子（两条轨）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz） | `render_block` 的 3a'''（`Reverb::process`：环形缓冲读写 + 单声道取中值）与快照边界的 `Reverb::set_params`；换采样率那一段覆盖**守卫**（延迟线不在音频线程重建）。这是本文件里**唯一**一个"武装需要堆"的器件 ⇒ 分配必须全部发生在构造期。行为判据在 `tests/reverb_insert.rs` |
 //! | ㉓ | 每轨**鼓机音源** 10 000 量子（两条轨：一条鼓机、一条复音）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz）＋ **1 次换回复音合成器** | `SynthEngine::render_track` 的鼓机分支（`DrumNoteMap::voice_for` → `DrumMachine::trigger` → `DrumMachine::render`）与快照边界的 `DrumMachine::set_params` / `set_sample_rate`。⚠ 与 ㉒ **相反**：鼓机没有延迟线 ⇒ 换采样率**照常武装**（不分配），因此本场景是「换采样率也必须零分配」的唯一判据。行为判据在 `tests/drums_instrument.rs` |
 //! | ㉔ | 环音符**窃取淡出窗口**：16 条 `NoteOn` **先走一个量子**灌满池（⚠ 触发量子与窃取量子必须错开，否则被窃取者电平 ≈ 0 ⇒ 3 ms release 立刻 Idle、`pending` 被回收丢掉）＋ 第 17 条**软窃取** ＋ **窗口内**推新音符自己的 `NoteOff`（3 个窗口：窃取量子 / 松键量子 / 64 量子回收），全部走 `note_project(&[])`（**零**已调度音符 ⇒ 声音只可能来自环音符） | `rt.rs::render_block` 的 `EngineEvent::NoteOn` 分支（灌满 + 软窃取，`pending` 挂起）＋ `EngineEvent::NoteOff` 分支 ＋ ⭐ `polysynth.rs::PolySynth::note_off` 的**挂起匹配**支路（`pending.is_some() && pending_freq_hz == freq_hz` ⇒ `pending_released = true`）与提升点的 `Adsr::gate_off()`。⚠ ⭐ 本行曾写"既有场景没有一条走到这条支路"—— **注入实测证否**：在挂起支路注入一次 `Vec::with_capacity(1)` 时 ⑯ 也红（`alloc=15`）⇒ ⑯ **偶然**覆盖 15 次，但⛔ 不断言、⛔ 不确定、且池里混着已调度音符 ⇒ ㉔ 把它做成**确定性 + 带断言**的覆盖。行为判据在 `rt.rs` 的 `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion` 与 `tests/two_path_gain.rs` |
-//! | ㉙ | 每轨 **SFZ 音源** 10 000 量子（一条轨、两条区域覆盖两个音高）＋ **1 次换采样率**（48 → 44.1 kHz） | `SynthEngine::render_track` 的 **SFZ 分支**（`SfzVoicePool::trigger_note` 的区域扫描 → `SfzVoicePool::render_into` 的逐声部线性插值＋增益乘加）与快照边界（`begin_snapshot` 的器件重武装；⛔ **不**重建摊平表 —— 那是控制侧、窗口外）。⚠ 与 ㉓ 的**结构差别**：鼓机是"触发一次、器件内部推进"，SFZ 是"**多声部**（每条匹配区域一个）＋**跨量子延续的源位置**" ⇒ 池的扫描与逐声部循环都要落在零分配量程内。覆盖度见证＝窗口内总能量 > 0。行为判据在 `tests/sfz_instrument.rs` |
+//! | ㉙ | 每轨 **SFZ 音源** 10 000 量子（一条轨、两条区域覆盖两个音高）＋ **1 次换采样率**（48 → 44.1 kHz）＋ ⭐ **1 000 量子 CC 探针腿**（`#107`：先发一条 `ControlChange`，之后逐块读数的探针恒为 `Some`） | `SynthEngine::render_track_with_cc` 的 **SFZ 分支**（`SfzVoicePool::trigger_note` 的区域扫描 → `SfzVoicePool::render_into_with_cc` 的逐声部线性插值＋增益乘加＋`ampeg_run_with_cc_and_velocity(probe = Some)` 的 CC 求值分支）与快照边界（`begin_snapshot` 的器件重武装；⛔ **不**重建摊平表 —— 那是控制侧、窗口外）＋ `rt.rs::render_block` 的 `EngineEvent::ControlChange` 分支（写 `ControlChangeState`：一次表写 ＋ 一次位或）。⚠ 与 ㉓ 的**结构差别**：鼓机是"触发一次、器件内部推进"，SFZ 是"**多声部**（每条匹配区域一个）＋**跨量子延续的源位置**" ⇒ 池的扫描与逐声部循环都要落在零分配量程内。覆盖度见证＝窗口内总能量 > 0（③ 腿另有 `control_change(1) == Some(64)` 与 `events_applied` ＋1 两条）。行为判据在 `tests/sfz_instrument.rs` 的 S63／S64（起音帧数逐帧等于规范公式） |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -2760,8 +2760,17 @@ fn scenario_drum_instrument(report: &mut Report) {
 const SFZ_QUANTA: u64 = 10_000;
 
 /// ㉙ 的 SFZ 文本：两条区域各管一个音高（⛔ 不共用一条 ⇒ 每个音符都真的触发）。
-const SFZ_SCENE_TEXT: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
-                              <region> sample=b.wav key=64 pitch_keycenter=60 volume=-6\n";
+///
+/// ⭐ 任务单 `#107`：两条区域各带一条 `ampeg_attackcc1`（幅度包的 **CC 支**）
+/// ⇒ 窗口里一旦有 CC 事件（㉙ 的 ③ 腿），逐块路径就**真的**走
+/// `ampeg_run_with_cc_and_velocity(probe = Some)` 的求值分支（⛔ 不是被快速通道跳过）。
+const SFZ_SCENE_TEXT: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                              ampeg_attack=0.0005 ampeg_attackcc1=0.0005\n\
+                              <region> sample=b.wav key=64 pitch_keycenter=60 volume=-6 \
+                              ampeg_attack=0.0005 ampeg_attackcc1=0.0005\n";
+
+/// ⭐ ㉙ 的 **CC 腿**量子数（任务单 `#107`；窗口里探针恒为 `Some`）。
+const SFZ_CC_QUANTA: u64 = 1_000;
 
 /// ㉙ 的 SFZ 音符：与 [`drum_scene_notes`] 同一个时间栅格（每 240 tick 起音），
 /// 音高轮流落在 60/64 两个**被区域覆盖**的音高上 ⇒ 每一记都建出声部。
@@ -2830,13 +2839,43 @@ fn scenario_sfz_instrument(report: &mut Report) {
     rig.slot.publish(shifted_snapshot);
     scenario.absorb(1, &rig.pump(1));
 
+    // ③ ⭐ **CC 腿**（任务单 `#107`）：先把一条 `ControlChange` 发进环（**窗口之外** ——
+    // 控制侧的 SPSC 写入不属实时路径），随后 1 000 个量子在窗口内跑。
+    // ⚠ 事件是在**窗口内**第一个量子的出队里应用的（⇒ 实时侧真的写了一次 CC 表），
+    // 之后的逐块读数因此恒走"探针 `Some`"那条求值分支。
+    let applied_before = rig.stats().events_applied;
+    let written = rig.sender.publish(&[EngineEvent::ControlChange {
+        controller: 1,
+        value: 64,
+    }]);
+    assert_eq!(written, 1, "CC 事件必须被通道接受");
+    let mut cc_energy = 0.0f64;
+    let cc = window(|| {
+        for _ in 0..SFZ_CC_QUANTA {
+            rig.step();
+            cc_energy += rig
+                .output
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+        }
+    });
+    scenario.absorb(SFZ_CC_QUANTA, &cc);
+    let cc_state = rig.runtime.control_change(1);
+    let armed = rig.runtime.control_change_armed();
+    let applied_after = rig.stats().events_applied;
+
     scenario.note(format!(
         "① 10 000 量子总能量 = {energy:.3}（> 0 ⇒ SFZ 声部真的在发声）；\
-         ② 换 44.1 kHz 之后的 1 个量子：⛔ 未重建摊平表（控制侧在窗口外重摊平）"
+         ② 换 44.1 kHz 之后的 1 个量子：⛔ 未重建摊平表（控制侧在窗口外重摊平）；\
+         ③ CC 腿 {SFZ_CC_QUANTA} 量子（探针 `Some`）：总能量 = {cc_energy:.3}、\
+         `control_change(1)` = {cc_state:?}、armed = {armed}、\
+         `events_applied` {applied_before} → {applied_after}"
     ));
     report.scenario(
         "㉙",
-        "[MUST-GATE-001] 每轨 SFZ 音源 10 001 量子（含 1 次换采样率）：四元组全 0",
+        "[MUST-GATE-001] 每轨 SFZ 音源 11 001 量子（含 1 次换采样率 ＋ 1 000 量子 CC 探针腿）：\
+         四元组全 0",
         &scenario,
     );
     report.assert(
@@ -2844,6 +2883,24 @@ fn scenario_sfz_instrument(report: &mut Report) {
         "覆盖度：窗口内真的在发声（总能量 > 0 ⇒ 不是'SFZ 没武装、静默跳过'的空转分支）",
         energy > 0.0,
         format!("窗口内总能量 = {energy:.6}"),
+    );
+    // ⭐ 任务单 `#107` 的两条读数：事件面真的推进了会话运行态（⇒ 探针在 ③ 腿恒为 `Some`），
+    // 且那一段窗口里 SFZ 仍在发声（⇒ 零分配读数不是在"空转分支"上量的）。
+    report.assert(
+        "㉙d",
+        "CC 腿：`EngineEvent::ControlChange` 真的推进了会话运行态（`control_change(1) == Some(64)`）\
+         且该窗口内 `events_applied` ＋1",
+        cc_state == Some(64) && armed && applied_after == applied_before + 1,
+        format!(
+            "control_change(1) = {cc_state:?}、armed = {armed}、\
+             events_applied {applied_before} → {applied_after}"
+        ),
+    );
+    report.assert(
+        "㉙e",
+        "CC 腿覆盖度：探针为 `Some` 的那 1 000 个量子内 SFZ 声部仍在发声（总能量 > 0）",
+        cc_energy > 0.0,
+        format!("CC 腿总能量 = {cc_energy:.6}"),
     );
 }
 

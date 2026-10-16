@@ -66,6 +66,10 @@
 //! | ⭐ S60 | ⭐ **端到端：两个力度按规范公式改包络**（任务单 `#106` 新增；§5.2） | `ampeg_attack=0.5` ＋ `ampeg_vel2attack=-0.4`、`amp_veltrack=0`（力度 ≥1 ⇒ 增益恰 `1.0`）⇒ 起音**实测** 力度 1 ⇒ **23 849 帧**、力度 127 ⇒ **4 800 帧**（各自断言 ＝ `round((0.5 + (−0.4) × v/127) × 48 000)`）；线性段每点 `\|实测 − t/A\| ≤ 1e-6`（实测最大 **5.96e-8**）；第 `A` 帧**恰好** `1.0`；⭐ 离线 → 摊平两条路**逐位相同** |
 //! | ⭐ S61 | ⭐ **实时 ↔ 摊平逐位相同（本单的核心新增）**（任务单 `#106` 新增；§5.2） | 离线／摊平／**实时池**三条路在**同一力度**下位模式序列**逐位相同**（力度 1 与 127 各一遍）；⭐ 实时那条路的输入是**逐声部力度** `SfzVoice::velocity`（本判据先断言 `pool.voices()[0].velocity() == velocity`）；起音**实测帧数**（实时路）＝ **238**／**48** ＝ `round((0.005 + (−0.004) × v/127) × 48 000)`；⭐ 两个力度必须给出**不同**读数 |
 //! | ⭐ S62 | ⭐ **反向腿 ＋ 三个承重指纹**（任务单 `#106` 新增；§5.3） | ⭐ **反向腿 ①**：去掉 `ampeg_vel2attack` 那一行 ⇒ 力度 1／127 起音帧数 `[240, 240]`（＝ `round(0.005 × 48 000)`）；①′ 写成 `=0` ⇒ 同样 `[240, 240]`；①″ 无 `vel2` ⇒ 两个力度的输出**逐位相同**；三个**承重指纹**逐字复跑并断言（无 `vel2` 的既有夹具 ⇒ ⛔ 必须不变）：`0xa9dec8a87f69106c`（S37 臂 1）／`0xd3c2a82076bd8947`（S37 臂 2）／`0xa933ddab286bdf5e`（S33／S14 广播路径）；⭐ **应绿反向腿**：同一输出 × `1.0000001` ⇒ 指纹**必须**变（实测 `0xf181aa780f2cfab1` ≠ `0xa933ddab286bdf5e`） |
+//! | ⭐ S63 | ⭐ **实时那条路读得到 CC**（任务单 `#107` 新增；§7.2） | [`CC_ATTACK_FIXTURE`]（`ampeg_attack=0.005` ＋ `ampeg_attackcc100=0.004`）经**实时声部池** `render_into_with_cc` 渲染 512 帧：`cc = None` ⇒ 起音 **240 帧**、`cc = 0` ⇒ **240**、`cc = 37` ⇒ **296**、`cc = 127` ⇒ **432**（各断言 ＝ `round((0.005 + 0.004 × cc/127) × 48 000)`）；⭐ 反空判腿：`cc = None` 与 `cc = Some(0)` 的输出**逐位相同**（⇒ "两个 CC 不同"的有牙来自 127 那一臂，⛔ 不是探针管道自造差异）＋ `cc = 127` 的输出与 `None` **逐位不同** |
+//! | ⭐ S64 | ⭐ **三条路一致（本单核心）**（任务单 `#107` 新增；§7.3） | `cc ∈ {0, 37, 127}` × 力度 100：**离线** `render_note_into_with_cc` ／ **摊平** `render_block_into_with_cc` ／ **实时** `render_into_with_cc` 三条路的位模式序列**逐位相同**（两两相等 ＋ 首尾相等）；⭐ 应绿反向腿：同夹具两个 CC 值的**实时**输出必须**逐位不同** |
+//! | ⭐ S65 | ⭐ **无 CC ⇒ 逐位不变 ＋ 三个承重指纹**（任务单 `#107` 新增；§7.4） | **新入口** `render_into_with_cc(cc = None)` 与旧入口 `render_into` **逐位相同**，两个夹具的 FNV-1a 指纹 ＝ `0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）；`render_block_into_with_cc(cc = None)` 与 `render_block_into` **逐位相同**，广播路径指纹 ＝ `0xa933ddab286bdf5e`；⭐ **应绿反向腿**：× `1.0000001` ⇒ 指纹**必须**变 |
+//! | ⭐ S66 | ⭐ **`#107` 的追加修订段 ＋ 显式选路 ③ 可判**（任务单 `#107` 新增；§2.3／台账第 278 条） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#107`）」／「摊平期门控登记维持不变（显式选路 ③）」／「本单未接线（登记，⛔ 不静默）」**且** `#104` 的两条**原文**登记仍在（「⭐ 双口径登记（任务单 `#104`）」／「⭐ 摊平期门控登记（任务单 `#104`）」）；反向腿：文档里**没有**的两句 ⇒ `contains` 必须 `false` |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -775,15 +779,18 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
     let voice = core::mem::size_of::<SfzVoice>();
     let pool = core::mem::size_of::<SfzVoicePool>();
     let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    let cc_state = core::mem::size_of::<yeban_engine::cc_state::ControlChangeState>();
     println!(
         "[engine-sfz/S9] size_of: SfzVoice={voice} SfzVoicePool={pool} \
          SfzPlan={} PreparedSfz={} SynthEngine={} EngineSnapshot={} EngineRuntime={runtime} \
-         （门槛 192 KiB = {}）",
+         ControlChangeState={cc_state} \
+         （门槛 192 KiB = {}；余量 = {}）",
         core::mem::size_of::<SfzPlan>(),
         core::mem::size_of::<PreparedSfz>(),
         core::mem::size_of::<SynthEngine>(),
         core::mem::size_of::<EngineSnapshot>(),
         192 * 1024,
+        192 * 1024 - runtime,
     );
     // ⚠ 钉住声部的**定长**形状：`SfzVoice` 只含 `f32`/`u8`/`bool`/`u16`/`u64`，
     // ⛔ 无指针、⛔ 无 `Vec`。
@@ -797,7 +804,16 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
     // ⇒ `SfzVoice` 仍 **40 B**、池仍 **1712**、`EngineRuntime` 仍 **180000**（余量仍 16608）。
     // ⚠ 涨价的是**摊平表**：`PreparedRegion` 2624 → **2632 B**（+8；三个循环字段），
     // 它按**区域数**计（`S25` 的预算读数跟着走），⛔ 不进实时对象。
+    // ⭐ **本单（`#107`：MIDI CC 进实时通路）的代价**：`EngineRuntime` 多一张**定长** CC 表
+    // （`ControlChangeState` ＝ `[u8; 128]` ＋ 128 位"收到过"位图 ＝ **144 B**）
+    // ⇒ `EngineRuntime` 180000 → **180144**（余量 16608 → **16464** ≥ 8192）；
+    // ⛔ `SfzVoice` 仍 **40 B**（＋0）、⛔ 池仍 **1712**（＋0）、⛔ 摊平表仍 **4232**（＋0）。
     assert_eq!(voice, 40, "一个 SFZ 声部 = 40 字节（定长、全 `Copy`）");
+    assert_eq!(
+        cc_state, 144,
+        "`#107` 的会话运行态 CC 表 = `[u8; 128]` ＋ `[u64; 2]`（128 位\"收到过\"位图）\
+         ＝ 144 字节（定长、全 `Copy`、⛔ 无 `Vec`／`HashMap`）"
+    );
     assert_eq!(
         pool, 1712,
         "声部池 = 16 槽 ×（声部 40 ＋ 挂起 40 ＋ 淡出 16 ＋ 序号 8）＋ 挂起标志 16 \
@@ -6285,4 +6301,343 @@ fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
         bits(&without[1].1),
         "⭐ 反向腿 ①″：没有 `vel2` ⇒ 两个力度的输出**逐位相同**"
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#107`：把 MIDI CC 状态接进引擎的**实时通路**
+// ---------------------------------------------------------------------------
+//
+// ⛔ 本片**不动**解析/归约（`#104` 已完成），也**不动**求值本体
+// （`yeban_sfz::modulation::ampeg_value_with_baked*` 是唯一一份实现）：
+// 本片补的是"**喂值**"那一半 —— 把会话运行态的 CC 表当探针
+// （`Fn(u8) -> u8`）交给**实时**那条逐块现算的路。
+//
+// 三条路（离线 `render_note_into_with_cc` ／ 摊平 `render_block_into_with_cc` ／
+// 实时 `render_into_with_cc`）在**同一 CC ＋ 同一力度**下必须**逐位相同**。
+// ⛔ 区域选择仍由摊平期的掩码决定（`loccN`/`hiccN` 的显式选路 ③，登记见 `src/sfz_instrument.rs`）。
+
+/// ⭐ S63 夹具：`ampeg_attack=0.005` ＋ `ampeg_attackcc100=0.004`（legacy `ccN` 形态）。
+///
+/// 公式：`A(cc) = round((0.005 + 0.004 × cc/127) × 48 000)` ⇒ `cc = 0` ⇒ **240 帧**、
+/// `cc = 127` ⇒ **432 帧**（两者都 < 512 ⇒ 在本块内就能读到峰值）。
+///
+/// ⚠ `amp_veltrack=0`（与 S60／S61 同款）：`velocity >= 1` 时力度增益恰 `1.0`
+/// ⇒ 输出**恰好**是包络电平本身（S64 的"起音帧数"那条打印因此也可读）。
+const CC_ATTACK_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
+                                 ampeg_attack=0.005 ampeg_attackcc100=0.004\n";
+
+/// ⭐ S63（任务单 `#107`；判据 §7.2）：**实时那条路读得到 CC** —— 两个 CC 值
+/// ⇒ 实时起音帧数**不同**且**等于规范公式**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 同一份 [`CC_ATTACK_FIXTURE`] 经**实时声部池**
+/// （[`SfzVoicePool::render_into_with_cc`]）渲染 512 帧的输出；
+/// 单位 ＝ **起音段实测帧数**（帧）＋ 位模式序列（逐帧 `u32`）。
+///
+/// ⭐ 反空判腿：**同一份夹具**在 `cc = None` 下必须给基准帧数 **240**，且
+/// `cc = Some(0)` 与 `cc = None` 在这里**恰好同值**（`0.005 × 48000 = 240`）——
+/// 因此"两个 CC 值不同"这条判据的**有牙**来自 `cc = 127` 那一臂，
+/// ⛔ 不是"探针管道自己造出来的假差异"（正对照见下一条断言里的 `cc = 37`）。
+#[test]
+fn s63_the_realtime_path_reads_cc_and_follows_the_specification_formula() {
+    const HZ: f32 = 48_000.0;
+    const FRAMES: usize = 512;
+    let sample = InMemorySample {
+        pcm: vec![1.0; 4_096],
+        sample_hz: HZ,
+    };
+    let plan = prepare_with(CC_ATTACK_FIXTURE, &sample);
+    assert_eq!(
+        plan.regions()[0].ampeg_modulations().len(),
+        1,
+        "摊平表必须真的承载那一条 CC 调制项"
+    );
+    let expected = |cc: u8| -> usize {
+        let seconds = 0.005f32 + 0.004f32 * (f32::from(cc) / 127.0);
+        (f64::from(seconds) * f64::from(HZ)).round() as usize
+    };
+
+    // ⭐ 探针：`cc == 100` 读传入值，其余控制器读 `0`
+    // （与 `ControlChangeState::value` 的"未设置读 0"同一口径）。
+    let render_at = |cc: Option<u8>| -> (Vec<f32>, usize) {
+        let mut pool = SfzVoicePool::new(HZ);
+        assert_eq!(
+            pool.trigger_note(&plan, 60, 127, u64::MAX, 1.0),
+            1,
+            "单区域夹具 ⇒ 恰好建 1 个声部"
+        );
+        let probe = |controller: u8| -> u8 {
+            if controller == 100 {
+                cc.unwrap_or(0)
+            } else {
+                0
+            }
+        };
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = match cc {
+            Some(_) => Some(&probe),
+            None => None,
+        };
+        let mut out = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut out, cc_arg);
+        let attack = measured_attack_frames(&out);
+        (out, attack)
+    };
+
+    let (out_none, attack_none) = render_at(None);
+    let (out_zero, attack_zero) = render_at(Some(0));
+    let (out_mid, attack_mid) = render_at(Some(37));
+    let (out_full, attack_full) = render_at(Some(127));
+
+    println!(
+        "[engine-sfz/S63] 实时路起音帧数：cc=None ⇒ {attack_none}、cc=0 ⇒ {attack_zero}、\
+         cc=37 ⇒ {attack_mid}、cc=127 ⇒ {attack_full}；公式 = [{}..{}]",
+        expected(0),
+        expected(127)
+    );
+    assert_eq!(
+        attack_none, 240,
+        "`cc = None` ⇒ 基准（与接线前逐位相同的那条路）"
+    );
+    assert_eq!(attack_zero, expected(0));
+    assert_eq!(attack_mid, expected(37));
+    assert_eq!(attack_full, expected(127));
+    assert_ne!(
+        attack_full, attack_none,
+        "⭐ 有牙：CC 127 必须真的改变实时那条路的包络（⛔ 不是探针被短接）"
+    );
+    assert_ne!(
+        attack_mid, attack_zero,
+        "⭐ 中间值也必须落在公式上（⛔ 不是两档查表）"
+    );
+    assert_ne!(
+        bits(&out_mid),
+        bits(&out_zero),
+        "⭐ 中间 CC 值的输出必须与基准**逐位不同**"
+    );
+    assert_eq!(
+        bits(&out_zero),
+        bits(&out_none),
+        "⭐ `cc = Some(0)` 与 `cc = None` 在本夹具下**同值**（公式 ⇒ 240）——\
+         这是『探针本身不引入差异』的反空判腿"
+    );
+    assert_ne!(bits(&out_full), bits(&out_none), "⭐ 输出必须**逐位**不同");
+}
+
+/// ⭐ S64（任务单 `#107`；判据 §7.3）：**三条路一致** —— 同一 CC ＋ 同一力度下
+/// 离线 ／ 摊平 ／ 实时**位模式逐位相同**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_ATTACK_FIXTURE`] 在 `cc ∈ {0, 37, 127}` 三个值下的三条路输出；
+/// 单位 ＝ 位模式序列（逐帧 `u32`）＋ 起音段实测帧数（帧）。
+///
+/// ⚠ 实时那条路的 CC 只进 [`SfzVoicePool::render_into_with_cc`]（渲染），
+/// ⛔ 不进 `trigger_note`（区域选择在摊平期）⇒ 三条路的选择口径一致。
+#[test]
+fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    let instrument = SfzInstrument::load(CC_ATTACK_FIXTURE.to_owned(), &Default::default())
+        .expect("夹具必须解析成功");
+    let sample = InMemorySample {
+        pcm: vec![1.0; 4_096],
+        sample_hz: HZ,
+    };
+    let plan = prepare_with(CC_ATTACK_FIXTURE, &sample);
+
+    for cc_value in [0u8, 37, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 100 { cc_value } else { 0 } };
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+
+        // ① 离线（`SfzInstrument` 的一次性渲染）
+        let mut offline = vec![0.0f32; FRAMES];
+        let written_offline = instrument
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .expect("离线渲染");
+        // ② 摊平表（`PreparedSfz` 的一次性渲染）
+        let mut flat = vec![0.0f32; FRAMES];
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        // ③ ⭐ 实时声部池（本单接线的那条路）
+        let mut pool = SfzVoicePool::new(HZ);
+        assert_eq!(
+            pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0),
+            1,
+            "单区域夹具 ⇒ 恰好建 1 个声部"
+        );
+        let mut realtime = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut realtime, cc_arg);
+
+        assert_eq!(written_offline, FRAMES);
+        assert_eq!(written_flat, FRAMES);
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ cc = {cc_value}：离线 → 摊平必须逐位相同"
+        );
+        assert_eq!(
+            bits(&flat),
+            bits(&realtime),
+            "⭐ cc = {cc_value}：**摊平 → 实时**必须逐位相同（本单的核心新增）"
+        );
+        assert_eq!(
+            bits(&offline),
+            bits(&realtime),
+            "⭐ cc = {cc_value}：三条路同值"
+        );
+        println!(
+            "[engine-sfz/S64] cc = {cc_value}：三条路位模式相同 = {}；起音帧数 = {}",
+            bits(&offline) == bits(&realtime),
+            measured_attack_frames(&realtime)
+        );
+    }
+
+    // ⭐ 反向腿（应绿）：同一份夹具在**两个不同 CC** 下的实时输出必须**逐位不同**
+    // ⇒ "三条路相同"⛔ 不能靠"整份夹具根本没接线"来满足。
+    let mut arms = Vec::new();
+    for cc_value in [0u8, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 100 { cc_value } else { 0 } };
+        let mut pool = SfzVoicePool::new(HZ);
+        pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0);
+        let mut out = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut out, Some(&probe));
+        arms.push(bits(&out));
+    }
+    assert_ne!(
+        arms[0], arms[1],
+        "⭐ 应绿反向腿：两个 CC 值的实时输出必须逐位不同"
+    );
+}
+
+/// ⭐ S65（任务单 `#107`；判据 §7.4）：**没有 CC ⇒ 逐位不变**（三个承重指纹）
+/// ＋ 新入口在 `cc = None` 下与旧入口**逐位相同**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 三个**既有**夹具（与 S33／S37／S62 逐字相同）经**新入口**
+/// （`render_into_with_cc(..., None)` ／ `render_block_into_with_cc(..., None)`）
+/// 的输出；单位 ＝ **FNV-1a 64 指纹**（逐位）＋ 非零帧数（帧）。
+///
+/// ⭐ 三个承重指纹（§5.3 逐字点名）：`0xa9dec8a87f69106c`（S37 臂 1）／
+/// `0xd3c2a82076bd8947`（S37 臂 2）／`0xa933ddab286bdf5e`（S33／S14 广播路径）。
+#[test]
+fn s65_the_new_entry_points_leave_the_three_load_bearing_fingerprints_untouched() {
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, expected) in [
+        (
+            "S65 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            0xa9de_c8a8_7f69_106cu64,
+        ),
+        (
+            "S65 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            0xd3c2_a820_76bd_8947u64,
+        ),
+    ] {
+        // 旧入口
+        let old = render_pool(plan, end_sample, BLOCK);
+        // ⭐ 新入口（`cc = None`）：必须与旧入口**逐位相同**。
+        let mut pool = SfzVoicePool::new(48_000.0);
+        assert_eq!(pool.trigger_note(plan, 60, 127, end_sample, 1.0), 1);
+        let mut new = vec![0.0f32; BLOCK];
+        pool.render_into_with_cc(plan, 0, &mut new, None);
+        assert_eq!(
+            bits(&old),
+            bits(&new),
+            "⭐ {label}：`render_into_with_cc(cc = None)` 必须与旧入口逐位相同"
+        );
+        let actual = fnv1a_64(&new);
+        println!(
+            "[engine-sfz/S65] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）；\
+             非零帧数 = {}",
+            new.iter().filter(|sample| **sample != 0.0).count()
+        );
+        let _checked = check_fingerprint(&format!("S65 {label}"), actual, expected);
+    }
+
+    // ③ 广播路径（S33／S14）：`render_block_into_with_cc(cc = None)` 与旧入口逐位相同。
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut legacy_block = vec![0.0f32; BLOCK];
+    let legacy_frames = broadcast.render_block_into(60, 127, &mut legacy_block);
+    let mut probe_none = vec![0.0f32; BLOCK];
+    let none_frames = broadcast.render_block_into_with_cc(60, 127, None, &mut probe_none);
+    assert_eq!(none_frames, legacy_frames);
+    assert_eq!(
+        bits(&legacy_block),
+        bits(&probe_none),
+        "⭐ `render_block_into_with_cc(cc = None)` 必须与旧入口逐位相同"
+    );
+    let legacy = fnv1a_64(&probe_none);
+    println!(
+        "[engine-sfz/S65] S33／S14 广播路径：指纹 = 0x{legacy:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）"
+    );
+    let _checked = check_fingerprint("S65 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    // ⭐ 应绿反向腿：× `1.0000001` ⇒ 指纹必须变（证明上面三条是**逐位**判据）。
+    let scaled: Vec<f32> = probe_none
+        .iter()
+        .map(|sample| sample * 1.000_000_1)
+        .collect();
+    assert_ne!(
+        fnv1a_64(&scaled),
+        legacy,
+        "⭐ 反向腿：乘 1.0000001 后指纹必须变"
+    );
+}
+
+/// ⭐ S66（任务单 `#107`；§2.3 的"⛔ 不许静默"）：**追加修订段 ＋ 显式选路 ③ 可判**。
+///
+/// # 判定量
+///
+/// `include_str!("../src/sfz_instrument.rs")`（模块头**源码**）必须逐字含：
+/// ① 追加修订段的标题（`#107`）；② 门控那条的**显式选路 ③**；
+/// ③ `#104` 的两条**原文**登记仍在（S58 的判据不许被本单的修订段冲掉）；
+/// ④ `#107` 未接线的两族（`pan_oncc*` / `set_ccN` 的播种）。
+/// ⭐ 反向腿：文档里**没有**的两句 ⇒ `contains` 必须 `false`（⛔ 判据不是恒真）。
+#[test]
+fn s66_the_107_revision_is_appended_and_the_gate_choice_is_explicit() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const REVISION: &str = "⭐ ⭐ **追加修订段（任务单 `#107`）";
+    const GATE_CHOICE: &str = "摊平期门控登记维持不变（显式选路 ③）";
+    const ORIGINAL_CALIBER: &str = "⭐ 双口径登记（任务单 `#104`）";
+    const ORIGINAL_GATE: &str = "⭐ 摊平期门控登记（任务单 `#104`）";
+    const UNWIRED: &str = "本单未接线（登记，⛔ 不静默）";
+    const ABSENT_REVISION: &str = "本单把门控也搬进了实时逐块判定";
+    const ABSENT_UNWIRED: &str = "pan_oncc* 与 set_ccN 已经全部接线";
+    println!(
+        "[engine-sfz/S66] 追加修订段 = {}、显式选路 ③ = {}、`#104` 原文两条 = {} / {}、\
+         未接线登记 = {}",
+        MODULE_SOURCE.contains(REVISION),
+        MODULE_SOURCE.contains(GATE_CHOICE),
+        MODULE_SOURCE.contains(ORIGINAL_CALIBER),
+        MODULE_SOURCE.contains(ORIGINAL_GATE),
+        MODULE_SOURCE.contains(UNWIRED),
+    );
+    assert!(
+        MODULE_SOURCE.contains(REVISION),
+        "⭐ 必须有 `#107` 的追加修订段"
+    );
+    assert!(
+        MODULE_SOURCE.contains(GATE_CHOICE),
+        "⭐ 必须显式登记门控的选路"
+    );
+    assert!(
+        MODULE_SOURCE.contains(ORIGINAL_CALIBER) && MODULE_SOURCE.contains(ORIGINAL_GATE),
+        "⭐ `#104` 的两条原文登记必须**保留**（第 278 条：保留原文 ＋ 追加修订段）"
+    );
+    assert!(MODULE_SOURCE.contains(UNWIRED), "⭐ 未接线的两族必须登记");
+    assert!(!MODULE_SOURCE.contains(ABSENT_REVISION), "⭐ 反向腿");
+    assert!(!MODULE_SOURCE.contains(ABSENT_UNWIRED), "⭐ 反向腿");
 }

@@ -487,7 +487,7 @@ mod live {
     /// * `0.7 s` **G4 与 B4** 同时按下（⭐ **同一个块**里的和弦 ⇒ 一次发布搬 2 条）
     ///   → `0.9 s` G4 用 **`0x90` 力度 0** 松开（⭐ 经典 bug 点：这**必须**是 NoteOff）；
     /// * `1.0 s` E4 按下（力度 90）→ `1.5 s` 松开；
-    /// * `1.2 s` 一条 CC7（**非音符** ⇒ 计数忽略）；
+    /// * `1.2 s` 一条 CC7（⭐ 任务单 `#107` 起**进引擎的 CC 表**，⛔ 不再计数忽略）；
     /// * `1.5 s` B4 松开（与 E4 松开同块）。
     ///
     /// ⚠ 为什么与批次判据的夹具**不完全相同**：端到端判据要**自己**钉住"力度 0 ⇒ NoteOff"
@@ -621,7 +621,8 @@ mod live {
             nonzero(&control_out),
         );
 
-        // ---- (a) 映射：⭐ 力度 0 与 `0x80` 都是 NoteOff；CC7 **计数** ----
+        // ---- (a) 映射：⭐ 力度 0 与 `0x80` 都是 NoteOff；
+        //      ⭐ 任务单 `#107`：CC7 **映射**（进引擎 CC 表）而不是计数忽略 ----
         assert_eq!(report.drained, 9, "{}", report.summary());
         assert_eq!(
             report.note_ons,
@@ -637,16 +638,38 @@ mod live {
             report.summary()
         );
         assert_eq!(
-            report.ignored,
+            report.control_changes,
             1,
-            "⭐ CC7 必须被**计数**，⛔ 不静默丢: {}",
+            "⭐ 任务单 `#107`：CC7 必须被**映射**成 `EngineEvent::ControlChange`: {}",
             report.summary()
         );
-        // ---- (d) 批量：8 条事件分布在 6 个块（其中一块是**和弦**）⇒ 6 次批量发布 ----
+        assert_eq!(
+            report.ignored,
+            0,
+            "⭐ 本批**没有**弯音/触后/实时字节 ⇒ 忽略数必须为 0（CC 不再落在这里）: {}",
+            report.summary()
+        );
+        // ⭐ 任务单 `#107`（判据 ⑦①）：CC7 真的推进了**引擎的会话运行态表**
+        // （`EngineRuntime::control_change`；值来自夹具的 `0xB0 07 100`）。
+        assert_eq!(
+            host.runtime_for_criteria()
+                .expect("判据借用：本档运行时归宿主所有")
+                .control_change(7),
+            Some(100),
+            "⭐ 泵 ⇒ 引擎：CC7 = 100 必须读得回来（⛔ 不是'计数了但没接线'）"
+        );
+        assert_eq!(
+            host.runtime_for_criteria()
+                .expect("判据借用")
+                .control_change(1),
+            None,
+            "⭐ 反向腿：夹具里没有 CC1 ⇒ 它必须仍是 `None`（⛔ 不是 Some(0)）"
+        );
+        // ---- (d) 批量：9 条消息分布在 7 个块（其中一块是**和弦**）⇒ 7 次批量发布 ----
         assert_eq!(
             report.publishes,
-            6,
-            "⭐ 每个有音符的块**恰好一次**批量发布（⛔ 不是每条事件一次，⛔ 空块不发布）: {}",
+            7,
+            "⭐ 每个有事件（含 CC）的块**恰好一次**批量发布（⛔ 不是每条事件一次，⛔ 空块不发布）: {}",
             report.summary()
         );
         assert!(
@@ -655,7 +678,7 @@ mod live {
             report.publishes,
             report.mapped()
         );
-        assert_eq!(report.published, 8, "环装得下 8 条: {}", report.summary());
+        assert_eq!(report.published, 9, "环装得下 9 条: {}", report.summary());
         assert_eq!(report.refused, 0, "环装得下: {}", report.summary());
         // ---- (c) 真的到了合成器 ＋ 真的发出声音 ----
         assert_eq!(

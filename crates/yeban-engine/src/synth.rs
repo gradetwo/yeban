@@ -1849,12 +1849,41 @@ impl SynthEngine {
     /// `ScheduledNote::gain`（投影期已乘进 `track_gain_scale(...)`），SFZ 读的是**同一张表**上的
     /// [`NoteSchedule::track_gain`]（同一次投影、**同一个**算子）⇒ ⭐ 推子/静音/独奏对三者
     /// **同径生效**；而 SFZ 的**力度**那一半由乐器层拥有 ⇒ ⛔ 不重复计。
+    ///
+    /// ⭐ 任务单 `#107`：本方法是 [`Self::render_track_with_cc`] 传 `cc = None` 的**薄包装**
+    /// （与 [`crate::sfz_instrument`] 的 `*_with_cc` 一族同一形态）⇒ 所有既有调用点
+    /// （含离线导出）**一个字都不用改**，读数与接线前逐位相同。
     pub fn render_track(
         &mut self,
         track: EntityId,
         schedule: Option<&NoteSchedule>,
         sfz: Option<&PreparedSfz>,
         out: &mut [f32],
+    ) {
+        self.render_track_with_cc(track, schedule, sfz, out, None);
+    }
+
+    /// ⭐ **带 MIDI CC 探针的渲染入口**（任务单 `#107`）：语义、分派次序与分配纪律
+    /// **逐字**沿用 [`Self::render_track`]（见那份文档 —— 本函数只多**一个**参数）。
+    ///
+    /// * `cc == None` ⇒ 与 [`Self::render_track`] **逐位相同**（该包装就传这个值）；
+    /// * `cc == Some(probe)` ⇒ SFZ 那条路把它交给
+    ///   [`crate::sfz_instrument::SfzVoicePool::render_into_with_cc`]
+    ///   ⇒ 逐块的 `ampeg_*` 求值按 `Fn(u8) -> u8` 读 CC（`ampeg_*ccN` 的 CC 支生效）；
+    ///   鼓机与复音两条支路**不读** CC（它们没有 CC 面）⇒ 那两条输出逐位不变。
+    ///
+    /// ⚠ **不改区域选择**：CC 门控（`loccN`/`hiccN`）在**摊平期**就已烧进掩码
+    /// （登记见 `crate::sfz_instrument` 模块头的"摊平期门控登记"）⇒ 探针只影响
+    /// **取值**。⛔ 这不是静默：那条登记在案。
+    ///
+    /// **零分配、零锁、零 I/O**：探针是**只读借用**（`&dyn Fn`），逐块只多几次整数读。
+    pub fn render_track_with_cc(
+        &mut self,
+        track: EntityId,
+        schedule: Option<&NoteSchedule>,
+        sfz: Option<&PreparedSfz>,
+        out: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
     ) {
         out.fill(0.0);
         let Some(index) = self
@@ -1968,7 +1997,8 @@ impl SynthEngine {
                 // ⭐ SFZ：逐**声部**混（线性插值 + 增益乘加），位置跨量子延续。
                 // 零分配：只读 `plan` 的 PCM、原地写 `out`。
                 // 尾音在源采样播完（或音符终点）时于池内退休。
-                Some(plan) => slot.sfz.render_into(plan, position, out),
+                // ⭐ 任务单 `#107`：CC 探针沿这条路下行（`None` ⇒ 逐位同接线前）。
+                Some(plan) => slot.sfz.render_into_with_cc(plan, position, out, cc),
                 // 复音：整数相位 + ADSR + 可选低通（器件内）。
                 None => {
                     slot.sfz.silence();

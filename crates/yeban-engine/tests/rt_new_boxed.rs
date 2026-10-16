@@ -4,8 +4,8 @@
 //!
 //! Windows 主线程默认栈 ≈ **1 MiB**（PE 头 `StackReserve`），而 macOS / Linux ≈ 8 MiB
 //! ⇒ "本机绿"会掩盖一类**只在新平台红**的栈溢出。`EngineRuntime` 的值尺寸是
-//! `180000 B`（本文件也有这条读数），而 `EngineRuntime::new` **按值返回** ⇒ 每个调用点
-//! 都要在自己的栈帧里留一份 180000 B 的返回值位；`yeban-app` 的 GUI 那条链
+//! `180144 B`（⭐ 任务单 `#107` 的 CC 表 ＋144 B；本文件也有这条读数），而 `EngineRuntime::new` **按值返回** ⇒ 每个调用点
+//! 都要在自己的栈帧里留一份 180144 B 的返回值位；`yeban-app` 的 GUI 那条链
 //! （`host::ProductionLoop::start` → `EngineHost::reload`／`open_device` →
 //! `engine_host::fresh_runtime` → `EngineRuntime::new`）在**打开设备之前**就已越过
 //! 1 MiB ⇒ 开界面即崩（台账 R725 的逐帧读数）。
@@ -32,10 +32,11 @@
 //! | :--- | ---: | ---: |
 //! | 自身栈帧（`objdump` 读序言 `sub sp`） | **`224 B`**（改动前 `359312 B`） | **`304 B`** |
 //! | 构造期峰值（＋ `write_into` `176416 B` ＋ 器件帧 `129984 B`） | ≈ `306928 B` | ≈ `306704 B` |
-//! | **调用者**还要为返回值位留一份 | `180000 B` | ⛔ **0**（只有一个 `Box` 指针） |
+//! | **调用者**还要为返回值位留一份 | `180144 B` | ⛔ **0**（只有一个 `Box` 指针） |
 //! | 最小可构造栈（本文件 ② 二分） | **`512 KiB`** | **`336 KiB`** |
 //!
-//! ⇒ ⭐ 装箱把"构造 ＋ 一个量子"的栈阈值压下去 **`176 KiB`**（＝那 180000 B 的返回值位）。
+//! ⇒ ⭐ 装箱把"构造 ＋ 一个量子"的栈阈值压下去 **`176 KiB`**（＝那 180144 B 的返回值位所在的
+//! 16 KiB 档；⭐ 任务单 `#107` 的 ＋144 B **没有跨档** ⇒ 本读数不变）。
 //! ⚠ 本夹具是**单层**按值交接 ⇒ `new` 在 1 MiB 下**不崩**（阈值 512 KiB）；产物里
 //! 真正越过 1 MiB 的是 `yeban-app` 那条**多层**按值交接的 GUI 链（台账 R725 实测逐帧：
 //! `start` `543360 B`／`reload` `744528 B`／`fresh_runtime` `360992 B`）——
@@ -71,7 +72,7 @@ const PROBE_STEP_KIB: usize = 16;
 /// 两条构造路径。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ctor {
-    /// 既有 API：**按值返回** ⇒ 调用点要留 `180000 B` 的返回值位。
+    /// 既有 API：**按值返回** ⇒ 调用点要留 `180144 B` 的返回值位。
     ByValue,
     /// 本单新增：**直接在堆上**构造 ⇒ 栈上只有一个 `Box` 指针。
     Boxed,
@@ -260,8 +261,8 @@ fn boxed_constructor_is_bit_identical_to_by_value() {
     );
     assert_eq!(
         core::mem::size_of::<EngineRuntime>(),
-        180_000,
-        "装箱构造不该改布局：`EngineRuntime` 的值尺寸必须仍被钉在 180000 B"
+        180_144,
+        "装箱构造不该改布局：`EngineRuntime` 的值尺寸必须仍被钉在 180144 B（`#107` 的 CC 表 ＋144）"
     );
     assert_eq!(
         boxed.fingerprint(),

@@ -117,6 +117,9 @@ use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::EntityId;
 
 use crate::block::{AudioBlock, DEFAULT_BLOCK_FRAMES};
+// ⭐ 任务单 `#107`：MIDI CC 的**会话运行态**表（`EngineEvent::ControlChange` 的落点，
+// 也是实时 SFZ 通路的 CC 探针来源）。定长、`Copy`、零分配（见该模块文档）。
+use crate::cc_state::ControlChangeState;
 use crate::fpu::{self, FtzDazOutcome};
 use crate::graph::CompensationBank;
 use crate::insert::{
@@ -1136,6 +1139,13 @@ fn blend_equal_power(
 struct BranchShare<'a> {
     pdc: &'a mut CompensationBank,
     params: &'a mut ParamTable,
+    /// ⭐ **只读**的 MIDI CC 会话运行态（任务单 `#107`）。
+    ///
+    /// 为什么是**共享**借用（而不是 `&'a mut`）：写它的是**事件边界**
+    /// （`render_block` 的批量出队闭包），逐块渲染只**读**它（把它当
+    /// `yeban-sfz` 的 `Fn(u8) -> u8` 探针喂给 SFZ 的 `ampeg_*` 求值）。
+    /// ⚠ 两条分支（主线 ＋ 试听）共用**同一份**借用 ⇒ 试听期两个版本看到**同一份** CC 状态。
+    control_change: &'a ControlChangeState,
     bank: &'a mut MeterBank<SCRATCH_METERS>,
     armed_strips: &'a mut [(EntityId, Option<ChannelStrip>); MAX_TRACK_SLOTS],
     armed_insert_slots: &'a mut usize,
@@ -1252,6 +1262,22 @@ fn render_branch(
     // ⇒ 它一定被第一次赋值覆盖（`seen` 为真时至少有一台器件报过数）。
     let mut insert_detector_db = f32::NEG_INFINITY;
     let mut insert_current_seen = false;
+    // ⭐ **CC 探针**（任务单 `#107`）：把会话运行态表借成 `yeban-sfz` 认识的
+    // `Fn(u8) -> u8`（零捕获大小的栈上闭包）⇒ 逐块路径把它交给 SFZ 的 `ampeg_*` 求值。
+    //
+    // ⚠ **`None` 的条件是"整张表从未收到过 CC"**（[`ControlChangeState::is_armed`]）：
+    // 没有 CC 事件的工程因此与接线前**逐位相同**（那条"无 CC ⇒ 逐位不变"的判据
+    // 不必依赖"探针返回恰好等于基准值"这种巧合）。
+    // ⚠ 借用：`share.control_change` 是 `&'a ControlChangeState`（共享引用，`Copy`）
+    // ⇒ 先把**它本身**取出来，逐轨循环里就只借一个**外部**的只读引用，
+    // ⛔ 不与 `share` 的 `&mut` 字段冲突。
+    let cc_state: &ControlChangeState = share.control_change;
+    let cc_probe = |controller: u8| cc_state.value(controller);
+    let cc: Option<&dyn Fn(u8) -> u8> = if cc_state.is_armed() {
+        Some(&cc_probe)
+    } else {
+        None
+    };
     for id in current.tracks().keys() {
         if *id == master || produced >= track_budget {
             continue;
@@ -1261,13 +1287,15 @@ fn render_branch(
             // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
             // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
             // 线性插值与 ADSR（全是 IEEE 精确类运算，见 `synth` 模块文档 §2）。
-            synth.render_track(
+            synth.render_track_with_cc(
                 track,
                 current.schedule(&track),
                 // ⭐ SFZ 音源（任务 `#66` 的步 2）：**借用快照里那一份摊平表**
                 // （⛔ 不 clone 里面的 PCM `Vec`）。不在表里 ⇒ `None` ⇒ 逐位不变。
                 current.sfz_plan(&track).map(|plan| plan.prepared()),
                 &mut share.track_scratch[..frames],
+                // ⭐ CC 探针（任务单 `#107`）：`None` ⇒ 整条 SFZ 包络路径与接线前逐位相同。
+                cc,
             );
         } else {
             // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
@@ -1514,6 +1542,20 @@ pub struct EngineRuntime {
     /// ⭐ 累计**真的生效**过的场景启动次数（缺席见证 ⇒ `==` 计数没有牙齿）。
     scene_launches_applied: u64,
     events: EventReceiver,
+    /// ⭐ **MIDI CC 的会话运行态**（任务单 `#107`）。
+    ///
+    /// [`EngineEvent::ControlChange`] 的落点：事件在**量子边界**的批量出队里写它
+    /// （[`Self::render_block`] 的 1) 段），逐块路径只在**旁路**读它
+    /// （`render_branch` 把它的只读探针交给 [`SynthEngine::render_track_with_cc`]）。
+    ///
+    /// * **定长**：`[u8; 128]` ＋ 128 位"收到过"位图 ＝ `144 B`（[`crate::cc_state`]）
+    ///   ⇒ ⛔ 无 `Vec`／⛔ 无 `HashMap`／⛔ 无 `Box`、无 `Drop`、无分配；
+    /// * ⛔ **不进快照**：它是挥发性会话运行态（与 [`crate::transport::Transport`] 的
+    ///   播放头同一层），[MODEL-ISO-001] 禁止把它塞进不可变模型投影；
+    /// * **成本**：本字段把 `Self` 从 `180144 - 144 = 180000 B` 抬到 `180144 B`
+    ///   （门槛 192 KiB = `196608` ⇒ 余量 `16464 B`，判据见 `tests/rt_new_boxed.rs` 与
+    ///   `tests/sfz_instrument.rs` 的 S9）。
+    control_change: ControlChangeState,
     meters: MeterPublisher,
     block: AudioBlock<DEFAULT_BLOCK_FRAMES>,
     scratch_events: [EngineEvent; SCRATCH_EVENTS],
@@ -1787,7 +1829,7 @@ impl EngineRuntime {
     /// 跨线程记账 ⇒ [`Self::stats`] 能直接报出退役队列的 `pending` / `drained` /
     /// 释放线程归属，**控制面不需要额外接线**（`retire_channel` 的调用点一字未改）。
     /// ⚠ **本函数按值返回 ⇒ 每个调用点都要在自己的栈帧里留一份
-    /// `size_of::<Self>()`（本机 = `180000 B`）的返回值位**。Windows 主线程默认栈
+    /// `size_of::<Self>()`（本机 = `180144 B`；⭐ 任务单 `#107` 的 CC 表 ＋144 B）的返回值位**。Windows 主线程默认栈
     /// ≈ 1 MiB（PE `StackReserve`）时，GUI 那条链会因此溢出 ⇒ **不装箱的调用点
     /// 应当改用 [`Self::new_boxed`]**（它直接在堆上构造，见那里的文档）。
     ///
@@ -1795,7 +1837,7 @@ impl EngineRuntime {
     /// 各写一张字段表、然后慢慢漂移"的形态；本函数的**签名**与**可观测输出**一个字没改。
     ///
     /// ⚠ **本函数自身的栈帧**：若直接在栈上就地构造（`MaybeUninit` ＋ `write_into`），
-    /// `-C opt-level=0` 下要**两块** 180000 B（`MaybeUninit` 那块 ＋ `assume_init()` 的
+    /// `-C opt-level=0` 下要**两块** 180144 B（`MaybeUninit` 那块 ＋ `assume_init()` 的
     /// 返回值临时量）⇒ 实测帧 `360304 B`（各字段的临时量另在 `write_into` 的
     /// `176416 B` 里，调用期峰值共 `536720 B`）。因此本函数实现为
     /// "**先按堆构造、再按值交出**"：帧降到 `224 B`，调用期峰值由 `write_into`
@@ -1810,17 +1852,17 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Self {
-        // ⚠ ⛔ 不写成 `MaybeUninit` ＋ `assume_init()`：见上面那段读数（那正是 +180000 B
+        // ⚠ ⛔ 不写成 `MaybeUninit` ＋ `assume_init()`：见上面那段读数（那正是 +180144 B
         // 的来源）。`*boxed` 是"把堆上那份值移出来"，⛔ 不会在栈上再建一份。
         *Self::new_boxed(slot, retire, events, meters)
     }
 
-    /// ⭐ **装箱构造**：`size_of::<EngineRuntime>()`（本机 = `180000 B`）那一份值
+    /// ⭐ **装箱构造**：`size_of::<EngineRuntime>()`（本机 = `180144 B`）那一份值
     /// **直接在堆上**建成，构造期**没有** `EngineRuntime` 按值落到栈帧上。
     ///
     /// ## 为什么需要它：Windows 主线程默认栈 ≈ 1 MiB
     ///
-    /// [`Self::new`] 按值返回 ⇒ 每个调用点都要在自己的栈帧里留一份 180000 B 的
+    /// [`Self::new`] 按值返回 ⇒ 每个调用点都要在自己的栈帧里留一份 180144 B 的
     /// 返回值位，**改动前**函数自己还要一份（实测：`new` 的帧 `359312 B`／
     /// `yeban-app` 那侧的构建里是 `393616 B` —— 那是"单一大对象 × 多层按值副本"，
     /// 不是无关的多层累积）。GUI 那条链
@@ -1833,7 +1875,7 @@ impl EngineRuntime {
     /// `Box::<Self>::new_uninit()` 先只在堆上要一块 `size_of::<Self>()`，再由
     /// [`Self::write_into`] **就地**把字段写进去。⚠ 之所以不能写
     /// `Box::new(Self { … })`：Rust 的 `Box::new` 语义是"**先在栈上把值建出来、再搬进
-    /// 堆**"，`-C opt-level=0`（本仓判据的档位）下那一份 180000 B 一定在栈帧里
+    /// 堆**"，`-C opt-level=0`（本仓判据的档位）下那一份 180144 B 一定在栈帧里
     /// —— 那正是本函数要避开的东西。
     ///
     /// ## 与 [`Self::new`] 的关系
@@ -1842,7 +1884,7 @@ impl EngineRuntime {
     /// **共用**同一个 [`Self::write_into`]、同一份字段清单、同一条"混响延迟线只在
     /// 构造期分配"的纪律；差别只有**分配位置与栈用量**。
     /// ⛔ `new` 的签名与可观测输出一个字没改（内部改为"先按堆构造、再按值交出"，
-    /// 构造期多一次 180000 B 的堆分配 —— 见 `new` 的文档）。
+    /// 构造期多一次 180144 B 的堆分配 —— 见 `new` 的文档）。
     ///
     /// ⚠ 就地写**不再有**"编译器不兜底字段完备性"的代价：共用清单的完备性由
     /// [`Self::write_into`] 末尾的**编译期穷尽解构**保证（清单与结构体定义一旦漂移，
@@ -1858,7 +1900,8 @@ impl EngineRuntime {
     ///
     /// ⇒ `new_boxed` **调用期峰值** = `304 + 176416 + 129984` = `306704 B`，其中
     /// 一个 `EngineRuntime` 都不在栈上；改动前 `new` 的调用期峰值 =
-    /// `359312 + 129984` = `489296 B`。而**按值调用者**还要多留一份 180000 B 的
+    /// `359312 + 129984` = `489296 B`（⚠ 两个字面读数是 `#107` **之前**实测的栈帧，⛔ 未重测）。
+    /// 而**按值调用者**还要多留一份 180144 B 的
     /// 返回值位 —— 那一份是装箱消掉的（见判据 `tests/rt_new_boxed.rs` 的阈值差 `176 KiB`）。
     ///
     /// # Panics
@@ -1873,7 +1916,7 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Box<Self> {
-        // 堆上只要一块 `size_of::<Self>()`（180000 B）；栈帧里只有一个 `Box` 指针。
+        // 堆上只要一块 `size_of::<Self>()`（180144 B）；栈帧里只有一个 `Box` 指针。
         let mut place = Box::<Self>::new_uninit();
         // SAFETY: `write_into` 的有效性前提由本函数满足（`place` 是堆上一块有效、对齐、
         // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
@@ -1886,7 +1929,7 @@ impl EngineRuntime {
 
     /// 构造期**唯一的**字段写入点（[`Self::new`] 与 [`Self::new_boxed`] 共用）。
     ///
-    /// 字段清单与结构体定义**同名、同序**（77 个字段）⇒ "`EngineRuntime` 由什么组成"
+    /// 字段清单与结构体定义**同名、同序**（78 个字段）⇒ "`EngineRuntime` 由什么组成"
     /// 只有一处描述，⛔ 不会出现两份会漂移的字段表。
     ///
     /// ## ⭐ 字段完备性是**编译期断言**（⛔ 不是文本守卫）
@@ -2015,6 +2058,7 @@ impl EngineRuntime {
             put!(pending_launch, None);
             put!(scene_launches_applied, 0);
             put!(events, events);
+            put!(control_change, ControlChangeState::new());
             put!(meters, meters);
             put!(block, AudioBlock::new());
             put!(scratch_events, [EngineEvent::IDLE; SCRATCH_EVENTS]);
@@ -2549,6 +2593,37 @@ impl EngineRuntime {
         self.pan_automation_resets
     }
 
+    /// ⭐ **读一个 MIDI CC 的当前值**（任务单 `#107`；会话运行态）。
+    ///
+    /// * `Some(v)` ＝ 这个控制器**收到过**至少一条 [`EngineEvent::ControlChange`]，
+    ///   当前值 `v`（最后一条赢）；
+    /// * `None` ＝ 它**从未**收到过事件（⛔ 与"收到 0"可区分 —— 后者的读数是 `Some(0)`）。
+    ///
+    /// ⚠ 控制器号按 `& 0x7F` 掩码（与事件面的掩码同口径；`0xFF` 读的是 127）。
+    /// 存在的理由（"读数"纪律）：判据要能**不靠音频输出**回答"事件面推一条 CC 之后，
+    /// 引擎侧的状态到底变没变"，否则"CC 被静默丢弃"与"CC 生效了但听不出来"不可区分。
+    /// 判据见 `tests/sfz_instrument.rs` 的 S63 与 `yeban-app` 的
+    /// `tests/midi_input_notes.rs`（实时泵那条腿）。
+    #[must_use]
+    pub const fn control_change(&self, controller: u8) -> Option<u8> {
+        self.control_change.received(controller)
+    }
+
+    /// ⭐ **整张 CC 表是否已 armed**（＝ 至少收到过一条 CC 事件；任务单 `#107`）。
+    ///
+    /// 它同时是**实时探针的开关**（[`Self::render_block`] 的 3a 段）：
+    /// `false` ⇒ 传 `None` ⇒ 没有 CC 事件的工程与接线前**逐位相同**。
+    #[must_use]
+    pub const fn control_change_armed(&self) -> bool {
+        self.control_change.is_armed()
+    }
+
+    /// 收到过事件的**控制器个数**（读数：分母 128；任务单 `#107`）。
+    #[must_use]
+    pub const fn control_change_received_count(&self) -> u32 {
+        self.control_change.received_count()
+    }
+
     /// **本量子**已计量的节点次数
     /// （[`MeterBank::active_nodes`](crate::meter::MeterBank::active_nodes) 的搬运）。
     ///
@@ -2920,6 +2995,7 @@ impl EngineRuntime {
             audition,
             audition_active,
             events,
+            control_change,
             meters,
             block,
             scratch_events,
@@ -3125,6 +3201,19 @@ impl EngineRuntime {
                 && !synth.note_off(track, pitch)
             {
                 *orphan_note_offs = orphan_note_offs.wrapping_add(1);
+            }
+            // ⭐ **MIDI CC**（任务单 `#107`）：把值推进**会话运行态表**。
+            // 它只写两个整数（一次表写 ＋ 一次位或）⇒ 零分配、零锁、零 I/O
+            // [MUST-GATE-001]。表本身是 [`EngineRuntime`] 的一个定长字段
+            // （[`ControlChangeState`]，`144 B`），⛔ 不进快照 [MODEL-ISO-001]。
+            // 写在这里的**位置**与 `NoteOn`/`NoteOff` 同一处（量子边界的批量出队）
+            // ⇒ 同一批里的顺序 ＝ 到达顺序（FIFO，最后一条赢）。
+            // ⚠ 计数：CC 没有"没生效"的分支（128 个控制器都是合法地址），因此它
+            // **只**计进 `events_applied`（上面那个"事件到了"的读数），⛔ 不另开计数器
+            // ——"无事可报"与"没有这条路径"在读数上必须可区分，`events_applied` 就是那条
+            // 区分的见证（判据：`tests/sfz_instrument.rs` 的 S63）。
+            if let EngineEvent::ControlChange { controller, value } = event {
+                let _ = control_change.apply(controller, value);
             }
         });
         *event_bulk_pops = event_bulk_pops.wrapping_add(1);
@@ -3451,6 +3540,8 @@ impl EngineRuntime {
                 let mut share = BranchShare {
                     pdc: &mut *pdc,
                     params: &mut *params,
+                    // ⭐ 共享借用：写它的是**上面**那个出队闭包，本处只读（NLL：可变借用已结束）。
+                    control_change: &*control_change,
                     bank: &mut *bank,
                     armed_strips: &mut *armed_strips,
                     armed_insert_slots: &mut *armed_insert_slots,
@@ -6399,6 +6490,7 @@ mod tests {
                 block,
                 synth,
                 armed_pan_gains,
+                control_change,
                 pdc,
                 params,
                 bank,
@@ -6443,6 +6535,7 @@ mod tests {
             let mut share = BranchShare {
                 pdc,
                 params,
+                control_change: &*control_change,
                 bank,
                 armed_strips,
                 armed_insert_slots,
@@ -7213,5 +7306,78 @@ mod tests {
              实得 {peak_audition}（≠ 0 ⇒ 主语变成了 A，口径漂移了）"
         );
         let _ = &queue;
+    }
+    /// ⭐ **CC 事件面 ⇒ 引擎的会话运行态读数**（任务单 `#107`；判据 §7.1）。
+    ///
+    /// # 量什么（对象 ＋ 单位，先说再跑）
+    ///
+    /// 对象 ＝ [`EngineRuntime`] 的 CC 表；单位 ＝ `control_change(控制器) -> Option<u8>`
+    /// 的读数（`None` ＝ 从未收到过，`Some(v)` ＝ 收到过且当前值为 `v`）。
+    ///
+    /// # 三条腿
+    ///
+    /// 1. **前**：`None`（⛔ 不是 `Some(0)`）＋ `control_change_armed() == false`；
+    /// 2. **推进**：一批四条事件（两条同控制器 ⇒ **最后一条赢** ＋ 一条掩码过界）⇒
+    ///    读数按预期变化，且 `events_applied` 把这个"事件到了"的事实钉住
+    ///    （⇒ "CC 被静默丢弃"与"CC 生效了"在读数上可区分）；
+    /// 3. **反向腿**：没喂过的控制器仍是 `None`（⛔ 不是 `Some(0)`）。
+    #[test]
+    fn control_change_events_advance_the_session_state() {
+        let mut rig = rig();
+        let mut output = [0.0f32; DEFAULT_BLOCK_FRAMES * 2];
+        rig.runtime.process_quantum(&mut output, 2);
+        assert_eq!(
+            rig.runtime.control_change(7),
+            None,
+            "① 一个事件都没喂 ⇒ None（⛔ 不是 Some(0)）"
+        );
+        assert!(!rig.runtime.control_change_armed());
+        assert_eq!(rig.runtime.control_change_received_count(), 0);
+
+        let batch = [
+            EngineEvent::ControlChange {
+                controller: 7,
+                value: 100,
+            },
+            EngineEvent::ControlChange {
+                controller: 10,
+                value: 64,
+            },
+            // ⭐ 同控制器的第二条 ⇒ **最后一条赢**（同一批内的 FIFO）。
+            EngineEvent::ControlChange {
+                controller: 7,
+                value: 32,
+            },
+            // ⭐ 越界字节：`0x87 & 0x7F = 7`、`0x80 & 0x7F = 0` ⇒ 覆盖 cc7 为 0。
+            EngineEvent::ControlChange {
+                controller: 0x87,
+                value: 0x80,
+            },
+        ];
+        assert_eq!(rig.sender.publish(&batch), 4, "四条事件必须全部写进环");
+        rig.runtime.process_quantum(&mut output, 2);
+
+        assert_eq!(
+            rig.runtime.control_change(7),
+            Some(0),
+            "② 最后一条（掩码后 cc7 = 0）赢"
+        );
+        assert_eq!(rig.runtime.control_change(10), Some(64), "② 另一条控制器");
+        assert_eq!(
+            rig.runtime.control_change(11),
+            None,
+            "③ 反向腿：没喂过的控制器仍是 None"
+        );
+        assert_eq!(
+            rig.runtime.control_change_received_count(),
+            2,
+            "② 收到过事件的控制器个数 = 2（7 与 10；掩码后的 7 不新增一个）"
+        );
+        assert!(rig.runtime.control_change_armed(), "② 表已 armed");
+        assert_eq!(
+            rig.runtime.stats().events_applied,
+            4,
+            "② 事件面：四条都到了（CC ⛔ 不静默丢弃 —— 它计入 events_applied）"
+        );
     }
 }

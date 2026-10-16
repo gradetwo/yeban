@@ -23,7 +23,19 @@
 //! | `status & 0xF0 == 0x90` 且**力度 > 0**（`data2 & 0x7F`） | NoteOn | [`EngineEvent::NoteOn`]（`pitch = data1 & 0x7F`） |
 //! | `status & 0xF0 == 0x90` 且**力度 == 0** | **NoteOff**（⭐ running status 的常见写法 ⇒ 这是**经典 bug 点**） | [`EngineEvent::NoteOff`] |
 //! | `status & 0xF0 == 0x80` | NoteOff | [`EngineEvent::NoteOff`] |
-//! | 其余（`0xA0`/`0xB0`/`0xC0`/`0xD0`/`0xE0`/系统消息） | **不是音符** | ⭐ **计数**（[`LivePumpReport::ignored`]），⛔ **不静默丢** |
+//! | ⭐ `status & 0xF0 == 0xB0` | ⭐ **控制改变（CC）**（任务单 `#107`） | ⭐ [`EngineEvent::ControlChange`]（`controller = data1 & 0x7F`、`value = data2 & 0x7F`） |
+//! | 其余（`0xA0`/`0xC0`/`0xD0`/`0xE0`/系统消息） | **不是音符、也不是 CC** | ⭐ **计数**（[`LivePumpReport::ignored`]），⛔ **不静默丢** |
+//!
+//! ⭐ **`#107` 修订（被修订的是"非音符 ⇒ 一律计数忽略"这一支）**：CC 从"计数丢弃"
+//! 改成"**推进引擎的 CC 状态**"——它经**既有的** UI→引擎 SPSC 进
+//! [`yeban_engine::rt::EngineRuntime`] 的会话运行态表
+//! （`yeban_engine::cc_state::ControlChangeState`），随后被实时 SFZ 通路当探针读到
+//! （`yeban_engine::sfz_instrument` 的模块头有那条追加修订段）。
+//! ⛔ 其余非音符（弯音 `0xE0`、触后 `0xA0`/`0xD0`、程序改变 `0xC0`、实时/系统字节）
+//! **仍然是"计数忽略"** —— 引擎里没有它们的承载面（⛔ 不发明）。
+//! ⚠ 批采路（[`crate::midi_in::capture_messages`]）与音符配对路
+//! （[`crate::midi_notes::pair_notes`]）**一个字都没改**：CC 仍不进谱面
+//! （它与 `Op::AddNote` / tick 无关），本条只说"实时那条车道"。
 //!
 //! ⭐ **顺序**：弹出顺序 ＝ [`MidiEventReceiver`] 的 FIFO 顺序（`rtrb` 整事件原子，⛔ 看不到
 //! 半条）⇒ 一批里的 `EngineEvent` **按到达顺序**排列 ⇒ 同一块内 `NoteOff` 不会越过它前面的
@@ -98,7 +110,18 @@ pub enum NoteAction {
         /// MIDI 音高（`data1 & 0x7F`）。
         pitch: u8,
     },
-    /// ⭐ **不是**音符（CC / 弯音 / 触后 / 实时 / 系统）—— 调用方**计数**，⛔ 不静默丢。
+    /// ⭐ **控制改变（`0xBn`）**（任务单 `#107`）：`data1` = 控制器号、`data2` = 值。
+    ///
+    /// 它是**会话运行态**事件（不是音符、不进谱面）：产物是
+    /// [`EngineEvent::ControlChange`] ⇒ 推进引擎的 CC 表。
+    ControlChange {
+        /// MIDI 控制器号（`data1 & 0x7F`）。
+        controller: u8,
+        /// 控制器值（`data2 & 0x7F`）。
+        value: u8,
+    },
+    /// ⭐ **不是**音符、也不是 CC（弯音 / 触后 / 程序改变 / 实时 / 系统）——
+    /// 调用方**计数**，⛔ 不静默丢。
     NotANote,
 }
 
@@ -117,11 +140,18 @@ pub fn note_action(event: MidiEvent) -> NoteAction {
         0x90 if velocity > 0 => NoteAction::On { pitch, velocity },
         // ⭐ `0x80`（NoteOff）**与** `0x90` 且力度 0（running status）是同一条分支。
         0x90 | 0x80 => NoteAction::Off { pitch },
+        // ⭐ 任务单 `#107`：CC（`0xBn`）从"非音符"里**分出来** —— 它有自己的承载面
+        // （引擎的会话运行态表）。`data1` 是控制器号、`data2` 是值（同一对掩码）。
+        0xB0 => NoteAction::ControlChange {
+            controller: pitch,
+            value: velocity,
+        },
         _ => NoteAction::NotANote,
     }
 }
 
-/// ⭐ **一条 MIDI 事件 ⇒ 引擎事件**（`None` ＝ 不是音符 ⇒ 调用方**计数**，⛔ 不静默丢）。
+/// ⭐ **一条 MIDI 事件 ⇒ 引擎事件**（`None` ＝ 不是音符也不是 CC ⇒ 调用方**计数**，
+/// ⛔ 不静默丢）。
 #[must_use]
 pub fn engine_event_for(event: MidiEvent, track: EntityId) -> Option<EngineEvent> {
     match note_action(event) {
@@ -131,6 +161,11 @@ pub fn engine_event_for(event: MidiEvent, track: EntityId) -> Option<EngineEvent
             velocity,
         }),
         NoteAction::Off { pitch } => Some(EngineEvent::NoteOff { track, pitch }),
+        // ⭐ 任务单 `#107`：CC ⛔ **不**携带 `track`（探针形状 `Fn(u8) -> u8` 没有轨道维度；
+        // 引擎里也没有通道 → 轨路由 —— 见 `EngineEvent::ControlChange` 的文档）。
+        NoteAction::ControlChange { controller, value } => {
+            Some(EngineEvent::ControlChange { controller, value })
+        }
         NoteAction::NotANote => None,
     }
 }
@@ -145,7 +180,16 @@ pub struct LivePumpReport {
     pub note_ons: usize,
     /// 映射成 [`EngineEvent::NoteOff`] 的条数（⭐ **含**力度 0 的 `0x9n`）。
     pub note_offs: usize,
-    /// ⭐ **非音符**消息条数（CC / 弯音 / 触后 / 实时 / 系统）—— **计数**，⛔ 不静默丢。
+    /// ⭐ 映射成 [`EngineEvent::ControlChange`] 的条数（任务单 `#107`）。
+    ///
+    /// ⚠ 它与 [`Self::note_ons`]／[`Self::note_offs`] **并列**：CC 也是"映射出来的事件"
+    /// ⇒ 计入 [`Self::mapped`] 与 [`Self::published`]（⛔ 不再计入 [`Self::ignored`]）。
+    pub control_changes: usize,
+    /// ⭐ **非音符、也非 CC** 的消息条数（弯音 / 触后 / 程序改变 / 实时 / 系统）
+    /// —— **计数**，⛔ 不静默丢。
+    ///
+    /// ⚠ `#107` 修订：`0xB0`（CC）**不再**落进这里（它有自己的产物），
+    /// 因此本字段的**分母口径**从"所有非音符"收窄为"引擎里没有承载面的那些消息"。
     pub ignored: usize,
     /// 真的写进引擎环的事件条数（⛔ 不是"打算写"的条数）。
     pub published: usize,
@@ -167,10 +211,13 @@ pub struct LivePumpReport {
 }
 
 impl LivePumpReport {
-    /// 映射出来的音符事件总数（＝ `published + refused` 的**应然**值）。
+    /// 映射出来的**引擎事件**总数（音符开 ＋ 音符关 ＋ CC；＝ `published + refused`
+    /// 的**应然**值）。
     #[must_use]
     pub const fn mapped(&self) -> usize {
-        self.note_ons.saturating_add(self.note_offs)
+        self.note_ons
+            .saturating_add(self.note_offs)
+            .saturating_add(self.control_changes)
     }
 
     /// ⭐ 把另一次泵的读数**并进来**（连续泵的分段读数合账）。
@@ -181,6 +228,7 @@ impl LivePumpReport {
         self.drained = self.drained.saturating_add(step.drained);
         self.note_ons = self.note_ons.saturating_add(step.note_ons);
         self.note_offs = self.note_offs.saturating_add(step.note_offs);
+        self.control_changes = self.control_changes.saturating_add(step.control_changes);
         self.ignored = self.ignored.saturating_add(step.ignored);
         self.published = self.published.saturating_add(step.published);
         self.publishes = self.publishes.saturating_add(step.publishes);
@@ -193,11 +241,12 @@ impl LivePumpReport {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "midi-live: drained={} note-ons={} note-offs={} ignored={} published={}/{} \
-             publishes={} refused={} midi-dropped={} unsupported={}",
+            "midi-live: drained={} note-ons={} note-offs={} control-changes={} ignored={} \
+             published={}/{} publishes={} refused={} midi-dropped={} unsupported={}",
             self.drained,
             self.note_ons,
             self.note_offs,
+            self.control_changes,
             self.ignored,
             self.published,
             self.mapped(),
@@ -294,8 +343,16 @@ where
                 mapped = mapped.saturating_add(1);
                 report.note_offs = report.note_offs.saturating_add(1);
             }
-            // ⭐ 非音符消息：**计数**，⛔ 不静默丢，⛔ 也不进环（引擎的音符路径不认识
-            // CC / 弯音 / 触后 —— 发明一条映射才是错的）。
+            // ⭐ **CC**（任务单 `#107`）：与音符**同一条环、同一次批量发布**，
+            // 产物是 [`EngineEvent::ControlChange`] ⇒ 引擎侧推进 CC 表（会话运行态）。
+            // ⛔ 不静默、⛔ 不新造通路：本分支只多一条 `EngineEvent` 与一个计数器。
+            NoteAction::ControlChange { controller, value } => {
+                outgoing[mapped] = EngineEvent::ControlChange { controller, value };
+                mapped = mapped.saturating_add(1);
+                report.control_changes = report.control_changes.saturating_add(1);
+            }
+            // ⭐ **其余非音符**（弯音 / 触后 / 程序改变 / 实时 / 系统）：**计数**，
+            // ⛔ 不静默丢，⛔ 也不进环（引擎里没有它们的承载面 —— 发明一条映射才是错的）。
             NoteAction::NotANote => report.ignored = report.ignored.saturating_add(1),
         }
     }
@@ -390,11 +447,29 @@ mod tests {
             Some(EngineEvent::NoteOff { track, pitch: 60 }),
             "越界的数据字节按 0x7F 掩码 ⇒ 不被读成幻觉音符"
         );
-        for status in [0xA0_u8, 0xB0, 0xC0, 0xD0, 0xE0, 0xF8, 0xFF] {
+        // ⭐ 任务单 `#107`：`0xBn`（CC）从"非音符"里分出来 ⇒ 有产物、⛔ 不计数忽略。
+        assert_eq!(
+            engine_event_for(event(0xB0, 7, 100), track),
+            Some(EngineEvent::ControlChange {
+                controller: 7,
+                value: 100
+            }),
+            "0xB0 ⇒ ControlChange（⛔ 不携带 track）"
+        );
+        assert_eq!(
+            note_action(event(0xB3, 0x8E, 0xFF)),
+            NoteAction::ControlChange {
+                controller: 0x0E,
+                value: 0x7F
+            },
+            "⭐ 数据字节按 0x7F 掩码；通道号（低 4 位）不影响判定"
+        );
+        // ⚠ ⛔ 其余非音符**仍然**是"计数忽略"（引擎里没有它们的承载面）。
+        for status in [0xA0_u8, 0xC0, 0xD0, 0xE0, 0xF8, 0xFF] {
             assert_eq!(
                 engine_event_for(event(status, 7, 100), track),
                 None,
-                "非音符消息必须不被映射（status={status:#04X}）"
+                "非音符、非 CC 的消息必须不被映射（status={status:#04X}）"
             );
             assert_eq!(note_action(event(status, 7, 100)), NoteAction::NotANote);
         }
@@ -410,18 +485,19 @@ mod tests {
     }
 
     /// 判据 ⑩（**顺序**，行为）：⭐ 混合序列（音符开 / CC / 音符开 / 力度 0 开 / 音符关）
-    /// ⇒ 泵出一批，**逐条读回**其顺序与到达顺序一致；非音符**计数**。
+    /// ⇒ 泵出一批，**逐条读回**其顺序与到达顺序一致；⭐ CC **有产物**（任务单 `#107`）、
+    /// 其余非音符**计数**。
     #[test]
     fn the_pump_preserves_arrival_order_and_counts_non_notes() {
         let track = EntityId::new();
         let (mut sender, mut receiver) = event_channel(64);
         // ⭐ 与真回调**同一段代码**（`MidiEventSender::handle_message` 是回调体的内核）。
         sender.handle_message(0, &[0x90, 60, 100]);
-        sender.handle_message(1_000, &[0xB0, 7, 100]); // CC7 ⇒ 非音符
+        sender.handle_message(1_000, &[0xB0, 7, 100]); // ⭐ CC7 ⇒ ControlChange（#107）
         sender.handle_message(2_000, &[0x90, 64, 90]);
         sender.handle_message(3_000, &[0x90, 60, 0]); // 力度 0 ⇒ NoteOff
         sender.handle_message(4_000, &[0x80, 64, 0]);
-        sender.handle_message(5_000, &[0xF8]); // 实时字节 ⇒ 非音符
+        sender.handle_message(5_000, &[0xF8]); // 实时字节 ⇒ 非音符（仍然计数）
 
         let mut published: Vec<EngineEvent> = Vec::new();
         let report = pump_once_with(&mut receiver, track, |batch| {
@@ -437,6 +513,11 @@ mod tests {
                     pitch: 60,
                     velocity: 100
                 },
+                // ⭐ 任务单 `#107`：CC 与音符**同一条环、同一个位置**（到达顺序）。
+                EngineEvent::ControlChange {
+                    controller: 7,
+                    value: 100
+                },
                 EngineEvent::NoteOn {
                     track,
                     pitch: 64,
@@ -445,23 +526,25 @@ mod tests {
                 EngineEvent::NoteOff { track, pitch: 60 },
                 EngineEvent::NoteOff { track, pitch: 64 },
             ],
-            "⭐ 必须是**到达顺序**（⭐ CC 与实时字节不进这批）"
+            "⭐ 必须是**到达顺序**（⭐ CC 进这批，实时字节不进）"
         );
         assert_eq!(report.drained, 6);
         assert_eq!(report.note_ons, 2);
         assert_eq!(report.note_offs, 2);
-        assert_eq!(report.ignored, 2, "CC7 与 0xF8 必须被**计数**");
+        assert_eq!(report.control_changes, 1, "⭐ CC7 必须被**映射**（#107）");
+        assert_eq!(report.ignored, 1, "⚠ 0xF8 仍然必须被**计数**");
+        assert_eq!(report.mapped(), 5, "音符 4 ＋ CC 1");
         assert_eq!(
             report.publishes, 1,
-            "⭐ 4 条事件 ⇒ **一次**批量发布（⛔ 不是 4 次）"
+            "⭐ 5 条事件 ⇒ **一次**批量发布（⛔ 不是 5 次）"
         );
-        assert_eq!(report.published, 4);
+        assert_eq!(report.published, 5);
         assert_eq!(report.refused, 0);
         assert_eq!(receiver.pending(), 0, "一次泵把这一批全部弹出");
         assert!(
             report
                 .summary()
-                .contains("drained=6 note-ons=2 note-offs=2 ignored=2"),
+                .contains("drained=6 note-ons=2 note-offs=2 control-changes=1 ignored=1"),
             "{}",
             report.summary()
         );
@@ -521,5 +604,98 @@ mod tests {
         );
         assert_eq!(receiver.pending(), 0);
         println!("[midi-live] 300 条 ⇒ {}", report.summary());
+    }
+
+    /// ⭐ 判据 ⑫（**CC 真的推进了引擎状态；其它消息的行为未变**；任务单 `#107`）。
+    ///
+    /// # 量什么（对象 ＋ 单位，先说再跑）
+    ///
+    /// 对象 ＝ 真 `EngineHost` 的**会话运行态 CC 表**；单位 ＝
+    /// `EngineRuntime::control_change(控制器) -> Option<u8>` 的读数（外加泵报告的三个计数）。
+    ///
+    /// # 三条腿
+    ///
+    /// 1. **前**：还没喂任何 CC ⇒ `control_change(7) == None`（⛔ 不是 `Some(0)`）；
+    /// 2. **推进**：泵一条 `0xB0 07 64` ＋ 渲染一个量子 ⇒ `Some(100)`；
+    ///    再泵一条 `0xB0 07 20` ⇒ `Some(32)`（最后一条赢）；
+    /// 3. **反向腿**：同批里的 `0xF8`（实时字节）**仍然**计 `ignored`，
+    ///    音符仍然计 `note_ons`，⛔ `0xE0`（弯音）**不**改变 CC 表。
+    ///
+    /// ⚠ 事件在**量子边界**生效（`EngineEvent` 不带时间戳）⇒ 每次泵之后必须
+    /// **真的推进一个量子**才读得到状态（与 `render_engine_offline` 的"预热量子"同一条引擎行为）。
+    #[test]
+    fn the_pumped_control_change_advances_the_engine_state() {
+        let track = EntityId::new();
+        let block = EngineHost::quantum_frames();
+        let mut host = EngineHost::new();
+        host.reload(&crate::bridge::demo_project(), 0)
+            .expect("引擎必须能建起来");
+        // 预热量子：让首块的"武装快照"走完（与 `midi_notes::render_engine_offline` 同款）。
+        let mut warm = vec![0.0f32; block * 2];
+        host.render_into(&mut warm, 2, 1);
+
+        let read = |host: &mut EngineHost, cc: u8| -> Option<u8> {
+            host.runtime_for_criteria()
+                .expect("判据借用：本档的运行时归宿主所有")
+                .control_change(cc)
+        };
+        assert_eq!(
+            read(&mut host, 7),
+            None,
+            "① 还没喂 CC ⇒ None（⛔ 不是 Some(0)）"
+        );
+        assert!(
+            !host
+                .runtime_for_criteria()
+                .expect("判据借用")
+                .control_change_armed(),
+            "① 整张表在第一条 CC 之前没有 armed（⇒ 实时探针传 None ⇒ 逐位同接线前）"
+        );
+
+        let (mut sender, mut receiver) = event_channel(64);
+        sender.handle_message(0, &[0xB0, 7, 100]); // CC7 = 100
+        sender.handle_message(1_000, &[0xF8]); // 实时字节 ⇒ 仍然 ignored
+        sender.handle_message(2_000, &[0x90, 60, 100]); // 音符 ⇒ 行为不变
+        let report = pump_once(&mut receiver, track, &mut host);
+        assert_eq!(report.drained, 3);
+        assert_eq!(report.control_changes, 1, "② CC 必须被映射");
+        assert_eq!(report.ignored, 1, "③ 反向腿：0xF8 仍然必须被计数");
+        assert_eq!(report.note_ons, 1, "③ 反向腿：音符路未变");
+        assert_eq!(report.published, 2, "CC 与音符进环，实时字节不进");
+
+        let mut out = vec![0.0f32; block * 2];
+        host.render_into(&mut out, 2, 1); // ⭐ 事件在量子边界生效
+        assert_eq!(read(&mut host, 7), Some(100), "② 状态真的被推进");
+        assert!(read(&mut host, 8).is_none(), "② 没喂过的控制器仍是 None");
+        assert!(
+            host.runtime_for_criteria()
+                .expect("判据借用")
+                .control_change_armed()
+        );
+
+        // ⭐ 最后一条赢（FIFO）：再推一条同控制器的 CC ⇒ 覆盖。
+        sender.handle_message(0, &[0xB0, 7, 32]);
+        let second = pump_once(&mut receiver, track, &mut host);
+        assert_eq!(second.control_changes, 1);
+        host.render_into(&mut out, 2, 1);
+        assert_eq!(read(&mut host, 7), Some(32), "② 最后一条赢");
+
+        // ⭐ 反向腿：弯音（`0xE0`）⛔ 不改 CC 表、也 ⛔ 不进环。
+        sender.handle_message(0, &[0xE0, 0x00, 0x40]);
+        let third = pump_once(&mut receiver, track, &mut host);
+        assert_eq!(third.control_changes, 0);
+        assert_eq!(third.ignored, 1);
+        assert_eq!(third.published, 0, "⛔ 弯音不进环（引擎没有它的承载面）");
+        host.render_into(&mut out, 2, 1);
+        assert_eq!(read(&mut host, 7), Some(32), "③ 弯音之后 CC7 原样");
+
+        println!(
+            "[midi-live/cc] {} | CC7 = {:?}、armed = {}",
+            report.summary(),
+            read(&mut host, 7),
+            host.runtime_for_criteria()
+                .expect("判据借用")
+                .control_change_armed()
+        );
     }
 }

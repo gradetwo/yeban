@@ -524,6 +524,38 @@
 //! [`SfzInstrument::render_note_into_with_cc`] 则把同一个探针**同时**喂给
 //! [`RegionQuery::with_cc`]（门控在那条路上是活的）⇒ 这条差别**登记在案**，⛔ 不分叉成两份选择口径。
 //!
+//! ⭐ ⭐ **追加修订段（任务单 `#107`）—— 被修订的是上面两条登记里"实时那一侧"的那一支**
+//! （⛔ 原文一字未删，见台账第 278 条的既有口径：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+//!
+//! 1. **双口径登记的"实时恒为基准值"这一半作废**：实时通路（[`SfzVoicePool`] 的逐块现算）
+//!    ⛔ **不再**恒为基准值 —— 它经 [`SfzVoicePool::render_into_with_cc`] →
+//!    [`PreparedRegion::ampeg_run_with_cc_and_velocity`] 读**会话运行态**的 CC 探针
+//!    （[`crate::cc_state::ControlChangeState`]，由 [`crate::rt::EngineRuntime`] 持有、
+//!    由 [`crate::ring::EngineEvent::ControlChange`] 在量子边界推进）⇒
+//!    **离线 ＝ 摊平 ＝ 实时**在"同一 CC 值 ＋ 同一力度"下**逐位相同**
+//!    （判据：`tests/sfz_instrument.rs` 的 S64／S65；门控那一半见第 2 条）。
+//!    ⚠ 差别的**残留**只剩两条，都登记在案：① 门控（第 2 条）；② 探针的
+//!    **armed 口径** —— 会话运行态里**一条 CC 都没有**时引擎传 `None`
+//!    （⇒ 与接线前逐位相同），**armed 之后**未收到过的控制器读 `0`
+//!    （[`crate::cc_state`] 模块文档 §2.2）。
+//! 2. **摊平期门控登记维持不变（显式选路 ③）**：本单**没有**改区域选择口径 ——
+//!    CC 门控（`loccN`/`hiccN`）仍在**摊平期**用 `RegionQuery::new(note, velocity)`
+//!    （`cc = None`）求值一次并烧进两张掩码（[`flatten_regions`]）⇒
+//!    [`SfzVoicePool::render_into_with_cc`] 的探针**只**影响 `ampeg_*` 的**取值**。
+//!    ⭐ **已知边界的明文后果**：一条被 `loccN`/`hiccN` 门控的区域在引擎的**摊平表**路径上
+//!    **永远不发声**（不论 CC 状态是什么、也不论是离线摊平还是实时）；而离线的
+//!    [`SfzInstrument::render_note_into_with_cc`] 那条路上门控是**活的**。
+//!    ⛔ **为什么不选另外两条**：①"控制侧在 CC 变化时重摊平"要把整张区域表 ＋ PCM
+//!    重发一遍（每次 CC 一条新快照）——那是**架构单**，且会把 CC 变成快照的一部分；
+//!    ②"实时每块现查门控"要让 `PreparedRegion` 带上逐条 `CcGate` 并在 `accepts` 之外
+//!    再判一次 —— 它会**改变区域选择**（＝ 修订第 2 条的登记，⛔ 本单的范围不允许静默改）。
+//!    语料分母（本机实测，1398 个 `.sfz`）：`loccN`/`hiccN` 门 **7950** 处、
+//!    `xfin_loccN`/`xfout_*ccN` **2275** 处 ⇒ 这条边界**有真实体量**，⛔ 不是理论缺口。
+//! 3. **本单未接线（登记，⛔ 不静默）**：CC 轴**交叉淡化**（`pan_oncc*` 9796 处 ／
+//!    `xfin_*ccN`）与 `set_ccN=`（1137 处）的**播种**都仍归调用方/后续单 ——
+//!    `flatten_regions` 的摊平期就跳过了 CC 轴那一段（既有注释），
+//!    而 `set_ccN` 的初值口径见 §2.2 与 `yeban-sfz` 的 `Instrument::cc_defaults`。
+//!
 //! # ⭐ `ampeg_*` 的力度调制（任务单 `#106`）
 //!
 //! 规范语义（五个 `ampeg_vel2*` opcode 的表行）、公式
@@ -3646,9 +3678,36 @@ impl SfzVoicePool {
     /// ⭐ 每个声部读**它自己**那份样本（[`SfzVoice::sample_index`]）。
     /// ⭐ 正在淡出的槽在**本块内**走完淡出时就地接管挂起者、用同一段
     /// [`mix_span_into`] 继续写剩下的帧（帧精确、⛔ 不留一个量子的空档）。
+    ///
+    /// ⭐ 任务单 `#107`：本方法是 [`Self::render_into_with_cc`] 传 `cc = None` 的**薄包装**
+    /// ⇒ 既有调用点（含所有既有判据）一个字都不用改，读数与接线前**逐位相同**。
     pub fn render_into(&mut self, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
+        self.render_into_with_cc(plan, position, out, None);
+    }
+
+    /// ⭐ **带 MIDI CC 探针的逐块渲染**（任务单 `#107`）：语义、退休口径与窃取淡出
+    /// **逐字**沿用 [`Self::render_into`]（见那份文档 —— 本函数只多**一个**参数）。
+    ///
+    /// * `cc == None` ⇒ 与 [`Self::render_into`] **逐位相同**（该包装就传这个值）；
+    /// * `cc == Some(probe)` ⇒ [`Self::slot_readings`] 把它交给
+    ///   [`PreparedRegion::ampeg_run_with_cc_and_velocity`] ⇒ 区域的
+    ///   `ampeg_*ccN`（含 `_onccN` ／ `_curveccN`）按 `base + Σ delta × curve(cc)`
+    ///   求值（**与离线两条路同一份实现**）。
+    ///
+    /// ⚠ **不改区域选择**：`cc` 只到 `slot_readings`，而"这条区域该不该响"由
+    /// **摊平期**烧进掩码（[`flatten_regions`]）的键/力度/门控决定
+    /// ⇒ CC 门控（`loccN`/`hiccN`）在实时通路上**仍在摊平期**判定（登记见模块头）。
+    ///
+    /// **零分配、零锁、零 I/O**：探针是只读借用，逐块每槽只多一次整数读（见模块头 CC 一节）。
+    pub fn render_into_with_cc(
+        &mut self,
+        plan: &PreparedSfz,
+        position: u64,
+        out: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
         for index in 0..SFZ_VOICES_PER_TRACK {
-            self.render_slot(index, plan, position, out);
+            self.render_slot(index, plan, position, out, cc);
         }
     }
 
@@ -3668,13 +3727,20 @@ impl SfzVoicePool {
     ///    （否则释放段会被 note-off 当场切断）—— 见 [`Self::slot_readings`]；
     /// 3. 把声部的推进状态（段位 / 计数 / note-off↔epoch）按需交给 [`EnvRun`]，
     ///    写完再**写回**（跨块延续）。
-    fn render_slot(&mut self, index: usize, plan: &PreparedSfz, position: u64, out: &mut [f32]) {
+    fn render_slot(
+        &mut self,
+        index: usize,
+        plan: &PreparedSfz,
+        position: u64,
+        out: &mut [f32],
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) {
         let mut offset = 0usize;
         let mut victim_stopped = false;
         // --- 1) 淡出段：victim 在自己的窗口里继续发声，逐帧乘衰减增益 ---
         if self.voices[index].active && self.fade[index].is_fading() {
             let voice = self.voices[index];
-            let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz()) else {
+            let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz(), cc) else {
                 // 摊平表与池不匹配（例如热更了另一份表）⇒ 如实退休。
                 self.silence_slot(index);
                 return;
@@ -3733,7 +3799,7 @@ impl SfzVoicePool {
         if !voice.active {
             return;
         }
-        let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz()) else {
+        let Some(readings) = Self::slot_readings(plan, voice, plan.engine_hz(), cc) else {
             self.silence_slot(index);
             return;
         };
@@ -3811,15 +3877,26 @@ impl SfzVoicePool {
     ///   there's no looping." ＋ `legacy` 的 "The rest of the sample will play after note
     ///   release."）。
     /// * ⭐ `note_off`：包络眼里的 note-off 帧（`one_shot` ⇒ `u64::MAX` ＝ 不理会）。
-    fn slot_readings(plan: &PreparedSfz, voice: SfzVoice, engine_hz: f32) -> Option<SlotReadings> {
+    /// * ⭐ `cc`（任务单 `#107`）：**会话运行态**的 CC 探针（`Fn(u8) -> u8`）；
+    ///   `None` ⇒ `ampeg_*ccN` 一项都不加（与接线前逐位相同）。它**只**进
+    ///   [`PreparedRegion::ampeg_run_with_cc_and_velocity`]（取值），⛔ 不参与
+    ///   `region.accepts(...)`（区域选择仍在摊平期，见模块头的门控登记）。
+    fn slot_readings(
+        plan: &PreparedSfz,
+        voice: SfzVoice,
+        engine_hz: f32,
+        cc: Option<&dyn Fn(u8) -> u8>,
+    ) -> Option<SlotReadings> {
         let region = plan.regions().get(voice.region_index as usize)?;
         let pcm_len = plan.sample(voice.sample_index)?.pcm().len();
         let loop_window = region.loop_window(pcm_len);
         // ⭐ 力度调制（任务单 `#106`）：**逐声部力度**就在 [`SfzVoice`] 里
         // （[`SfzVoice::velocity`]，触发期抄下、此后不变）⇒ 本路**不需要任何新字段**
-        // （`SfzVoice` 仍 40 B）。CC 那一支仍传 `None`（实时回调今天不读 CC 状态，
-        // 登记见模块头的"双口径登记"一节）。
-        let env = region.ampeg_run_with_cc_and_velocity(engine_hz, voice.velocity(), None);
+        // （`SfzVoice` 仍 40 B）。
+        // ⭐ ⭐ CC 调制（任务单 `#107`）：探针由调用方沿 `render_into_with_cc` 交下来
+        // （`EngineRuntime` 的会话运行态表；`None` ⇒ 没有 CC 事件 ⇒ 逐位同接线前）。
+        // 两者是**两支独立输入**，相加顺序由 `yeban_sfz::modulation` 定义（⛔ 不改）。
+        let env = region.ampeg_run_with_cc_and_velocity(engine_hz, voice.velocity(), cc);
         let end_sample = if region.ignores_note_off() || env.is_some() {
             u64::MAX
         } else {

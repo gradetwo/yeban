@@ -312,8 +312,20 @@ mod session {
             "⭐ `0x90` 力度 0 与 `0x80` **都**是 NoteOff: {summary}"
         );
         assert_eq!(
-            report.ignored, 1,
-            "⭐ CC7 必须被**计数**，⛔ 不静默丢: {summary}"
+            report.control_changes, 1,
+            "⭐ 任务单 `#107`：CC7 必须被**映射**成引擎事件（⛔ 不再计数忽略）: {summary}"
+        );
+        assert_eq!(
+            report.ignored, 0,
+            "⭐ 本脚本没有弯音/触后/实时字节 ⇒ 忽略数必须为 0: {summary}"
+        );
+        // ⭐ 任务单 `#107`（判据 ⑦①）：CC 真的推进了引擎的会话运行态表。
+        assert_eq!(
+            host.runtime_for_criteria()
+                .expect("判据借用：本档运行时归宿主所有")
+                .control_change(7),
+            Some(100),
+            "⭐ 会话循环 ⇒ 引擎：CC7 = 100 必须读得回来: {summary}"
         );
         assert_eq!(report.published, report.mapped(), "{summary}");
         assert_eq!(report.refused, 0, "{summary}");

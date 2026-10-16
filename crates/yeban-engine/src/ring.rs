@@ -138,6 +138,41 @@ pub enum EngineEvent {
         /// MIDI 音高。
         pitch: u8,
     },
+    /// ⭐ **MIDI 控制改变（CC）**（任务单 `#107`）：把会话运行态的 CC 表推进一步。
+    ///
+    /// 音频线程的消费者是 [`crate::cc_state::ControlChangeState`]（[`crate::rt::EngineRuntime`]
+    /// 按值持有的一张**定长**表）：出队时 `values[controller] = value` ＋ 置"收到过"位。
+    /// 实时 SFZ 通路（[`crate::sfz_instrument::SfzVoicePool`]）随后在**逐块**读数里
+    /// 借这张表当探针 ⇒ `ampeg_*ccN` 的 CC 支在实时回调里生效。
+    ///
+    /// # 载荷形状（为什么只有两个 `u8`、⛔ 没有 `track`）
+    ///
+    /// * `yeban-sfz` 的 CC 探针形状是 `Fn(u8) -> u8`
+    ///   （`yeban_sfz::instrument::RegionQuery::cc`）
+    ///   —— 它**没有轨道维度**；引擎里也没有 MIDI 通道 → 音轨的路由
+    ///   （`yeban-app` 的实时泵把输入映射到**一条**被选中的轨，见 `midi_live`）。
+    ///   ⛔ 给它加 `track` 就得凭空发明一条**尚不存在**的路由口径（[AGENTS.md §5.7]
+    ///   "不发明"），而且引擎侧没有第二处能消费它。
+    /// * 载荷两个 `u8` ⇒ 变体尺寸不成为新的最大变体 ⇒ `size_of::<EngineEvent>()`
+    ///   仍是 **48 B**（门槛 `<= 64`，判据见本文件库单测
+    ///   `events_are_copy_and_carry_no_destructor`）。
+    ///
+    /// # 取值域
+    ///
+    /// `controller` 与 `value` 都是 `0..=127`；生产端（`yeban-app` 的 `midi_live`）
+    /// 已按 `& 0x7F` 掩码，消费端（[`crate::cc_state::ControlChangeState::apply`]）
+    /// **再掩一次**（纵深防护：越界字节既不越表，也不变成幻觉控制器）。
+    ///
+    /// # 顺序
+    ///
+    /// ⛔ 不改既有变体的含义与顺序：本变体**追加在末尾** ⇒ `Idle` / `SetParam` /
+    /// `Transport` / `NoteOn` / `NoteOff` 的判别式与语义一个字节都没动。
+    ControlChange {
+        /// MIDI 控制器号（`0..=127`）。
+        controller: u8,
+        /// 控制器值（`0..=127`）。
+        value: u8,
+    },
 }
 
 impl EngineEvent {
@@ -418,12 +453,37 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<EngineEvent>();
         assert_copy::<ParamAddress>();
+        // ⭐ 尺寸读数是**机械读数**（任务单 `#107` 把它打出来：加 `ControlChange` 之前
+        // 是 48 B，之后仍是 48 B ⇒ 门槛 `<= 64` 前后都绿）。
+        println!(
+            "[engine-ring/size] size_of::<EngineEvent>() = {}（门槛 64）；\
+             size_of::<ParamAddress>() = {}",
+            size_of::<EngineEvent>(),
+            size_of::<ParamAddress>(),
+        );
         assert!(
             size_of::<EngineEvent>() <= 64,
             "事件必须足够小, 能塞进批量缓冲"
         );
         assert!(EngineEvent::IDLE.is_idle());
         assert_eq!(EngineEvent::IDLE.param_target(), None);
+        // ⭐ 新变体的结构性读数：它**不是**最大变体（载荷两个 `u8`）。
+        assert_eq!(
+            EngineEvent::ControlChange {
+                controller: 7,
+                value: 100
+            }
+            .param_target(),
+            None,
+            "CC ⛔ 不携带 `ParamAddress`（它走 CC 表，⛔ 不走参数目标表）"
+        );
+        assert!(
+            !EngineEvent::ControlChange {
+                controller: 7,
+                value: 100
+            }
+            .is_idle()
+        );
         assert_eq!(param(1.0).param_target().map(|a| a.slot), Some(0));
         assert_eq!(
             EngineEvent::Transport {
