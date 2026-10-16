@@ -466,6 +466,17 @@
 //! ⚠ 语料见证：登记语料 `volume_onccN` 只有 **2** 处（值均为 **7**）⇒ 域上下界
 //! 都**没有**语料约束力，因此本题只能由规范表行回答（⛔ 不发明 ±100）。
 //!
+//! ⭐ ⭐ **追加修订段（任务单 `#125`）—— 被修订的是上面那句里的「只有 **2** 处」**（⛔ 原文
+//! 一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：按 `#121` 裁的
+//! 唯一口径（`assets/samples/**/*.sfz` 逐行**剥 `//` 注释** ⇒ 取**行首或空白边界**的 opcode
+//! token ⇒ token 里 `volume_oncc` 之后的尾巴是**数字**或 **`$` 宏名** ⇒ ⭐ **收 `$` 宏名**）
+//! ⭐ **实测 3 处 ／ 3 文件**：`volume_oncc24` **2** 处（值均为 **7**）＋ `volume_oncc$F2_DIS`
+//! **1** 处（值 **-6**，`assets/samples/ixox-flute/Ixox Flute.sfz:152`）。⚠ 上面「**2** 处」
+//! 恰好是**不收 `$` 宏名**那个口径的读数（`#121` 已复现）⇒ 域结论（两个端点都**没有**语料
+//! 约束力）**逐字不变**。依据命令 ＝
+//! `cargo test -p yeban-engine --test sfz_instrument s115 -- --nocapture`（判据 `S115` 用同一
+//! 口径就地重算并逐名打印；判据 `S118` 把这三处就地修订本身钉住）。
+//!
 //! ⭐ **别名处置**（口径同 §7.2 与台账第 285 条）：`volumeccN`（裸）／`volume_ccN`
 //! （SFZ1）／`volume_onccN`（SFZ2）／`volume_curveccN` 三个 delta 拼写 ＋ 一个 curve
 //! 拼写**全部落同一个 [`ModTarget::Volume`] 键**。
@@ -1080,6 +1091,14 @@ pub const MAX_TUNE_MODULATION_DELTA: f32 = 9600.0;
 /// 是**同一条口径**）。
 /// ⚠ 语料见证：登记语料 `volume_onccN` 只有 **2** 处（值均 **7**）、`volume_ccN`
 /// **0** 处 ⇒ 域两个端点都**没有**语料约束力，本题只能由规范表行回答（⛔ 不发明 `±100`）。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#125`）—— 被修订的是上面那句里的「只有 **2** 处」**（⛔ 原文
+/// 一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：同 `#121` 裁的
+/// 唯一口径（剥 `//` 注释 ＋ 行首/空白边界 opcode token ＋ **收 `$` 宏名**）⭐ **实测 3 处**：
+/// `volume_oncc24` **2** 处（值均 **7**）＋ `volume_oncc$F2_DIS` **1** 处（值 **-6**，
+/// `assets/samples/ixox-flute/Ixox Flute.sfz:152`）⇒ 「域两个端点都**没有**语料约束力」**仍成立**
+/// （第三处是**宏名**形式，它的值 **-6** 落在 `-144..=48` 内、⛔ 不贴任一端点）。
+/// 依据命令 ＝ `cargo test -p yeban-engine --test sfz_instrument s115 -- --nocapture`。
 pub const MIN_VOLUME_MODULATION_DELTA: f32 = -144.0;
 
 /// ⭐⭐ `volume_*ccN` 的 `delta` 上界（`+48` dB；依据同
@@ -1226,6 +1245,16 @@ pub const MAX_BAKED_CURVE_POINTS: usize = 8;
 /// **11** 条。⚠ 语料里 `volume_*ccN` 只有 **2** 处（`karoryfer-black-and-blue-basses`
 /// 的 `Programs/controls/common.sfz` 与 `common_warm.sfz`），它**没有**把任何文件的
 /// 并集推高。⇒ **15 ≤ 20** ⇒ ⛔ **本常量仍然不抬高、⛔ 仍然不引入新 `Err`**。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#125`）—— 被修订的是上面那句里的「只有 **2** 处」**（⛔ 原文
+/// 一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：同 `#121` 裁的
+/// 唯一口径（剥 `//` 注释 ＋ 行首/空白边界 opcode token ＋ **收 `$` 宏名**）⇒ ⭐ **实测 3 处
+/// ／ 3 文件** —— 上面点名的两个 `volume_oncc24=7`（`common.sfz` ／ `common_warm.sfz`）
+/// **＋** `assets/samples/ixox-flute/Ixox Flute.sfz:152` 的 `volume_oncc$F2_DIS=-6`
+/// （**宏名**形式，按本口径**必须**算本族）。⚠ 本修订段**只**修订计数那一支：
+/// 「并集最大 **15**」与「**15 ≤ 20**」是 `#116`／`#119` 的**并集**读数（⛔ 本单不复算、
+/// 原样保留）；本单复核的是**裸出现计数**这一支。依据命令 ＝
+/// `cargo test -p yeban-engine --test sfz_instrument s115 -- --nocapture`。
 pub const AMPEG_MOD_CAP: usize = 20;
 
 /// 一个调制项的**形态**（名字后缀）。
@@ -1809,6 +1838,13 @@ mod tests {
             // （⛔ 不另开一套识别）。⚠ 规范 Modulation 表里逐字的 delta 行名是
             // `gain_ccN`（⛔ 本单不识别，见 §8.4），而正文写
             // "`volume_ccN` is a valid alias for `gain_ccN`" ⇒ 这四个拼写落同一个目标。
+            // ⭐⭐ 追加修订段（任务单 `#125`，台账第 278 条）—— **被修订的是上面那句里的
+            // 「`gain_ccN`（⛔ 本单不识别，见 §8.4）」这一支**（⛔ 原文一字未删）：
+            // `#124` 起 `gain_ccN` **是识别的**（归**同一个** `ModTarget::Volume`，
+            // 单位 `Decibels`；正例表里就是下面那一项 `"gain_cc9"`，裁定见 §8.6）。
+            // ⭐ 本单**点名**它，是因为 `#124` 的 §8.6「被修订的支」清单只点了
+            // `parse_modulation_name` 里那条同款注释与本函数**反向腿表**里的 `"gain_cc1"`，
+            // **漏了**这一处（本单只补登记，⛔ 不改行为）。
             (
                 "volume_oncc24",
                 ModTarget::Volume,

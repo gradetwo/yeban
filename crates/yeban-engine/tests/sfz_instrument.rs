@@ -148,6 +148,7 @@
 //! | ⭐ S116 | ⭐ ⭐ **`ampeg_attack` 三档计数的口径就地可判 ＋ 口径矩阵（≥6 档）＋ `#include` 展开档**（任务单 `#123` 新增；台账第 274／278／289 条） | ① **修订段可判**：引擎模块头必须逐字含「⭐ ⭐ **追加修订段（任务单 `#123`）」／新一节「# ⭐⭐ `ampeg_attack` 三档计数的**口径**（任务单 `#123`）」／三档的口径行（① 家族**子串** ／ ② **不剥注释** token ／ ③ **剥注释** token）／口径声明句「本台账的 `ampeg_attack` 三档口径」，⭐ **原句仍在**（`**2828**` ／ `**844**` ／ `**835**`）；② ⭐ **就地重算三档**（分母 **1398** 份 `assets/samples/**/*.sfz`，对象 ＝ 匹配**次数** ／ 含匹配的**文件数**）：① 子串**⛔ 不剥注释** ＝ **2828 ／ 368**、② `\b…\b\s*=` token **⛔ 不剥注释** ＝ **844 ／ 318**、③ 同 ② **剥** `//` 注释 ＝ **835 ／ 310**；⭐ **②−③ ＝ 9**，那 9 行**逐文件逐行号**钉住（`virtuosity-drums/Programs/mappings/` 的 9 个文件，内容 ＝ `//ampeg_attack=0.001`）；③ ⭐ **口径矩阵 ≥ 6 档**（打印 ＋ 逐档断言）：① 2828 ／ ② 844 ／ ③ 835 ／ ④ 剥注释子串 **2819 ／ 360**（＝ `#122` 勘察到的那个数）／ ⑤ `(^|\s)` 左边界（不剥／剥注释**同值**）**835 ／ 310** ／ ⑥⑦ ⭐ **`#include` 展开后**（解析器尺：`IncludeResolver::resolve` ＋ `SfzSource::text` 拼接）子串 **5144 ／ 353**、token **1000 ／ 315**（`resolve` 成功 **1291** ／ include 失败 **107**）／ ⑧ 宏名位 `ampeg_attack$VAR=` **0**、跨行 **0**、大小写不敏感与 ① 同值、⚠ 也剥 `/* */` ＝ **2786 ／ 359**（**口径陷阱**：语料 18 处 `/*` 全在 `//****` 横幅里，不容错的剥法吞掉 9 个文件）；④ **反向腿 ＋ 指纹**：三个承重 `FNV-1a 64` 指纹逐字复跑（`0xa9dec8a87f69106c` ／ `0xd3c2a82076bd8947` ／ `0xa933ddab286bdf5e`）＋ `× 1.0000001` ⇒ **必变**；⭐ 有牙反向腿：模块头里**没有**的句子（「844 与 2828 都复现不出」）⇒ `contains == false`；⑤ **尺寸**：`PreparedRegion=6160` ／ `SfzVoice=40` ／ `SfzVoicePool=1712` ／ `EngineRuntime=180144`（**四个全 ＋0**） |
 //! | ⭐ S115 | ⭐ ⭐ **三格错数的修订可判 ＋ 计数口径逐名可判 ＋ `#120` 的"规范无表"依据**（任务单 `#121` 新增） | ① 三处修订**可判**：三格的原句仍在（`contains`）＋ 三条修订句 `contains`（每条写着**原登记 ⇒ 实测 ＋ 口径 ＋ 命令**）＋ `口径 ＝ …`／`命令 ＝ …` 各 ≥ 3 次；② ⭐ **计数口径逐名可判**：`assets/samples/**/*.sfz` **就地重算**（分母 **1398**）并**逐名打印** `名字 = 次数 ／ 文件数` —— 裸档 **3** 次 ／ **3** 文件（`volume_oncc24` 2／2、`volume_oncc$F2_DIS` 1／1）、前缀档 **47** 次 ／ **30** 文件（9 个 `lfo*_volume_onccNNN`）、家族子串 **50** 次 ／ **33** 文件；⭐ **有牙**：裸档名字必须**全部**以 `volume_oncc` 开头 ⇒ 谁把 `lfo*` 的行数算进裸档，`bare_total == 3` 与这条 `all` 至少一条红；⭐ 引擎侧修订段的**逐名表**必须与本判据**现算**的表逐字相同；③ `#120` 的**"规范无 Modulation 表"**依据（三页各只有一张静态表 ＋ **无任何 `_onccN` 行** ＋ 三个 URL ＋ 三个静态表行）＋ ⭐ **反向腿**（§8.5 段内 `规范有`／`另开单`／`本单不做` 必须 `contains == false`，而非真空由"整份文档里确实有 `另开单`"作证）＋ 结构面 `Scopes::get` 扁平 first-match（`instrument.rs:1550-1555`）⇒ 登记为 **需要新面**；④ `size_of` 现读 `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ 三个承重指纹逐字仍在 ＋ `S114` 的 `ABSENT` 反向腿字面量一字未动 |
 //! | ⭐ S117 | ⭐ ⭐ **`gain_ccN` ＝ `volume` 的逐字 delta 行名（**同一个** `ModTarget::Volume` 的第五个拼写）＋ 8 档语料三元组口径 ＋ 单位矩阵 ＋ 解析与域 ＋ 三条路一致 ＋ 病态夹具 ＋ 反向腿 ＋ 尺寸**（任务单 `#124` 新增；§4 七条 —— **本单核心**） | ① **规范逐字 ＋ 归属裁定**（源文本 `contains`）：`gain` 页 Modulation 表逐字行 `\| gain_ccN \|  \| float \| 0 \| -144 to 48 \| dB \|` ＋ 别名句「`volume_ccN` is a valid alias for `gain_ccN`」＋ 扩展拼写限定句「only apply to `volume`」＋ 裁定「`gain_ccN` 归 **同一个** `ModTarget::Volume`」（四条理由：规范说同一 opcode／静态别名 `scopes.get("volume").or_else(\|\| scopes.get("gain"))`（`instrument.rs:1730`）／域与单位复用／零新字段）＋ 驳回三条（⛔ `gain_onccN`／⛔ `gain_curveccN`／⛔ `gainccN`）＋ 反向腿（两句不存在的登记必须 `contains == false`，两份源文本各一条）；② ⭐ **语料逐名展开（第 287 条）＋ 三元组口径（第 291 条）**：分母 **1398**，8 档（剥／不剥 `//` 注释 × 左边界任意／行首或空白 × 收／不收 `$` 宏名）**全部同值** —— 裸 `gain_ccN` **0** ／ 裸 `gain_onccN` **0** ／ 裸 `gain_curveccN` **0** ／ 本族之外 **43 次 ／ 35 文件 ／ 7 名**（逐名：`eq1_gain_oncc77` 23／21、`lfo01_eq1gain_oncc114` 7／7、`lfo02_eq1gain_oncc115` 4／4、`lfo01_eq1gain_oncc21` 3／3、`eq1_gain_oncc1` 2／2、`eq2_gain_oncc1` 2／2、`eq3_gain_oncc1` 2／2）；⭐ **有牙**：每个名字都必须**不是**裸档（谁用 `[^a-zA-Z]` 当边界就会把 `lfo02_eq1gain_oncc115` 数成裸 `gain_oncc115`）；⭐ **与 `#119` 登记的异同**：两个 0 **复核成立**，但 `#119` 的「那 14 处全是 `lfo*_eq1gain_onccN`」是**漏计**（另有 `eq*_` 一族 **29 次 ／ 23 文件**）⇒ 第 289 条：**复现不出的如实写**（`gain_oncc` 只有 14 处这个口径本线复现不出：行首/空白 ⇒ 0；任意位置 ⇒ 43）；③ **单位矩阵**：`gain_cc1` 加进"目标 × 后缀"矩阵、行数 `9 → 10`、格数 `36 → 40`、接受／拒绝 `(19, 17) → (20, 20)`（**两个数都从判据里现算**；⛔ 共享常量 `UNIT_MATRIX_ROWS` **仍是 9 行** —— `#117`／`#118`／`#119` 的读数逐字未动）；④ **解析与域**：`gain_cc1`／`gain_cc5` 读得进（静态 `gain=-6` **仍读进** `Region::volume`）、`gain_curvecc5=9` 的曲线下标**一个字节不进表**、越界／`%`／`s`／`ms`／`nan`／`inf` 逐字 `Err`（文本用**原文 opcode 名** `gain_cc1`：`value 49 out of range -144..=48`／`expects a number, got \`50%\``）、闭区间端点 ＋ `+0.0` 读得进、缺省 ⇒ 空表且任意 CC **逐位相同**；⑤ **真的生效 ＋ 三条路一致**：乘子逐位等于 `2 ^ (dB × log2(10) / 20)`（cc=0 ⇒ 恰 `1.0`；cc=127、6 dB ⇒ `1.9952621`，两个 CC 值输出**不同**）＋ `cc ∈ {0,37,63,127}` 离线 ＝ 摊平 ＝ 实时**逐位相同**＋ 五个**病态臂**（20×48 dB ⇒ `Inf`／20×38 ⇒ 有限极大 `> 1e30`／20×(−39) ⇒ 正次正规／20×(−48) ⇒ 恰 `0` 全零／delta = 0 ⇒ `+0.0` 位型恰 `1.0`）；⑥ **反向腿 ＋ 承重指纹**：去掉 `gain_cc1` 那一行 ⇒ 两个 CC 值**逐位相同**（乘子逐位 `1.0`）＋ 三个承重指纹逐字复跑（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 指纹必变 ＋ ⭐ **别名见证**（裁定 ① 的机械后果）：同一 CC 下 `gain_cc1=6` 与 `volume_oncc1=6` 的乘子**逐位相同**，且既有 `volume_*ccN` 的读数**一字不动**（非空对照：`#119` 的 `volume_oncc1` 那一项仍在、仍走原公式）＋ 混合夹具里 `volume`（CC1）与 `gain`（CC2）两键各走自己的 CC；⑦ **尺寸 ＋ 零分配**：`PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**四个全 ＋0**）＋ `ModTarget::COUNT` 仍 **8**（⛔ 不加目标）＋ `ModUnit::Decibels.suffixes() == [""]`，另有 `rt_zero_alloc` 的 `[sfz-gain]` 场景（四元组全 0 ＋ 乘子 ≈ 1.9952621 ≠ 1 ＋ 摊平表**真的**承载 1 项） |
+//! | ⭐ S118 | ⭐ **收尾与一致性巡检**（任务单 `#125` 新增；台账第 274／278／280／287 条） | ① `#121` 留下**三处**「`volume_onccN` 只有 **2** 处」的就地指针 ⇒ 三处原句仍在且其后 40 行内**都有**本单修订段（真值 **3 处 ／ 3 文件**；第三处 ＝ `Ixox Flute.sfz:152` 的 `volume_oncc$F2_DIS=-6`）；② ⭐ **「仍未做／另开单／不识别」一族断言的全量复核**：`25` 条（**仍成立 20 ／ 已落地 1 ／ 已过期 4**），判据**逐条打印**「文件:行号 ／ 原句摘要 ／ 今天成立与否 ／ 依据」⇒ 清单是否过期**可复核**；⭐ **有牙**：`NotRecognized` 的每一条都真的调 `parse_modulation_name`（谁把某族落地却不更新清单 ⇒ 红）、`NotInCode` 的每一条都剥注释后按**标识符**比（⛔ 注释里的登记不算实现）；③ **三个「另外三个 opcode」的交叉引用** 4 处锚点后 40 行内都点名**真身 ＝ `lfo*_volume_onccN`**；④ **判据文案的自证性清单**：把自己文件里 `` `SELF_SOURCE` `` 的 `.contains(` 条数（现读 **9**）与行号**打印**出来，并给口径（被钉的字符串应从**别的**源码读；`concat!` 拆串只是让 `grep` 看不见、**运行期仍恒真**）＋ ⭐ **只加**两条**派生形**替代（`S114` 索引行与 `VOLUME_FORMS_FIXTURE` 文档的 `#121` 修订标记改成「定位锚点 ＋ 断言计算窗口」）；⑤ **三个承重指纹**（`0xa9dec8a87f69106c`／`0xd3c2a82076bd8947`／`0xa933ddab286bdf5e`）＋ × `1.0000001` ⇒ 必变；⑥ **四个尺寸** `PreparedRegion=6160`／`SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144`（**全 ＋0**） |
 //!
 //! # ⭐ `#110` 的两条**端到端基线**是改动前实测
 //!
@@ -12597,6 +12598,13 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
 /// * `global_volume_oncc7` 是**另一个** opcode（`global_volume` 的调制，语料 47 处）；
 /// * `gain_oncc8` 是规范 Modulation 表里**逐字的 delta 行名**（⛔ 本单不识别，§8.4）。
 ///
+/// ⭐ ⭐ **追加修订段（任务单 `#125`，台账第 278 条）—— 被修订的是上面第三条里**「`gain_oncc8`
+/// 是规范 Modulation 表里**逐字的 delta 行名**」**那一支**（⛔ 原文一字未删）：规范里**逐字的
+/// delta 行名是 `gain_ccN`**（见 `yeban-sfz/src/modulation.rs` §8.6.1／§8.6.2 —— `#124` 起
+/// `gain_ccN` **是识别的**）；`gain_onccN` 是 **ARIA 通用 `_oncc` 形的外推**、规范**一个字
+/// 都没写**它（⛔ 本单不识别这一条**仍逐字成立**）。⭐ 本夹具里的 `gain_oncc8=3` 与
+/// `global_volume_oncc7=3` 仍在**必须不被吞掉**的那一侧（判据 `S117` 现跑）。
+///
 /// 另加两个**不做**的行 `volume_smoothcc5` ／ `volume_stepcc6`。
 ///
 /// ⭐ ⭐ **追加修订段（任务单 `#121`，⛔ 上面原文一字未删）**：上面「语料 47 处」的**归属错了** ——
@@ -15549,6 +15557,681 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
         (region, voice, pool, runtime),
         (6160, 40, 1712, 180_144),
         "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0"
+    );
+    assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
+}
+
+// ---------------------------------------------------------------------------
+// ⭐⭐ 任务单 `#125`：SFZ 调制族的**收尾与一致性巡检**（登记文字 ↔ 代码现状）
+// ---------------------------------------------------------------------------
+
+/// ⭐ 本单的就地修订标记（措辞与 `#121`／`#124` 同款）。
+///
+/// ⚠ 判据按「**锚点行 ＋ 其后 N 行的计算窗口**里出现它」判，⛔ **不**把整段修订文字再抄进
+/// 判据 —— 那样是**自证**（判据读的正是它自己写下的那句话，恒真；见判据 ④ 的口径）。
+const REVISION_125: &str = "追加修订段（任务单 `#125`";
+
+/// 巡检表里**机械可判的那一半**。
+enum SweepCheck {
+    /// 这些**调制拼写**今天仍必须 `parse_modulation_name(..) == None`。
+    ///
+    /// ⭐ **有牙**：谁把它们落地（返回 `Some`）却不更新本表 ⇒ 这一条红 —— 这正是任务单
+    /// 「清单过期必须变红」要求的那个机械形式。
+    NotRecognized(&'static [&'static str]),
+    /// 这些拼写今天**必须**被识别（已落地那一侧的见证腿）。
+    Recognized(&'static [&'static str]),
+    /// 这些 opcode **token** 今天仍必须**不在**该文件的**代码**里（剥注释后按标识符比）。
+    ///
+    /// ⛔ 注释里的登记**不算**实现：这一条挡的正是「以为写进文档就算做了」。
+    NotInCode(usize, &'static [&'static str]),
+    /// 这个**代码**片段今天**必须**在（否则解析／读数被拆掉 ⇒ 红）。
+    InCode(usize, &'static str),
+    /// 该锚点行今天**必须**带本单的就地修订段（其后 40 行内出现 [`REVISION_125`]）。
+    Revised(usize),
+    /// 只给依据 —— 机械腿由同族的**另一条**判据承担（这里如实登记指向）。
+    BasisOnly,
+}
+
+/// 一条巡检记录：`file`（`0` ＝ 引擎模块头 ／ `1` ＝ `yeban-sfz/src/modulation.rs` ／
+/// `2` ＝ `yeban-sfz/src/instrument.rs` ／ `3` ＝ **本文件**）＋ 原句短针 ＋ 今天的判定 ＋
+/// 依据 ＋ 机械腿。
+struct SweepRow {
+    file: usize,
+    needle: &'static str,
+    verdict: &'static str,
+    basis: &'static str,
+    check: SweepCheck,
+}
+
+/// ⭐⭐ S118（任务单 `#125`；台账第 274／278／280／287 条）：**收尾与一致性巡检**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// ① `#121` 留下**三处**「`volume_onccN` 只有 **2** 处」的就地指针 —— 对象 ＝ **原句仍在 ＋
+///    其后 40 行内有本单修订段**（布尔，逐处）；② 「仍未做／另开单／不识别」一族断言的
+///    **全量复核** —— 对象 ＝ **条数与逐条的「文件:行号 ＋ 原句 ＋ 判定 ＋ 依据」**，
+///    机械腿 ＝ `parse_modulation_name` 的返回（`None`／`Some`）与**剥注释后代码**里的标识符
+///    集合；③ 四个「另外三个 opcode」交叉引用点到**真身 `lfo*_volume_onccN`**；④ 判据文案的
+///    **自证式**断言 —— 对象 ＝ 本文件里 `` `SELF_SOURCE` `` 的 `.contains(` **条数 ／ 行号**；
+///    ⑤ 三个承重 `FNV-1a 64` 指纹与 `× 1.0000001` 反向腿；⑥ `size_of` 四个读数（**字节**）。
+///
+/// # 口径（本单裁定，判据文案的纪律）
+///
+/// * 被钉的字符串**应当从源码读**（`include_str!` 的**另一个**文件），⛔ 不该在判据里再写一遍；
+/// * especially：⛔ **不许**用「本文件自己」做 `contains` —— 那个字面量**就在本文件里** ⇒
+///   断言**恒真**。⚠ `concat!`／`format!` 把串拆开**只是让 `grep` 看不见**，运行期仍是同一个
+///   字符串、**仍然恒真** ⇒ 那不是缓解，**只是把自证藏起来**（判据 ④ 把它逐行打印出来）；
+/// * 自证式的**正解**是**派生形**：先**从源码定位锚点**，再断言该锚点**计算出来的窗口**里有
+///   某性质 ⇒ 删掉那句话就红（判据 ⑤ 按这条口径只**加**了两条）。
+#[test]
+fn s118_the_not_done_registrations_are_swept_and_still_hold() {
+    use std::collections::BTreeSet;
+
+    const ENGINE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const MODULATION_SOURCE: &str = include_str!("../../yeban-sfz/src/modulation.rs");
+    const INSTRUMENT_SOURCE: &str = include_str!("../../yeban-sfz/src/instrument.rs");
+    // ⚠ 本文件**只**用于判据 ④／⑤ 的**派生形**（先定位锚点、再断言计算窗口）——
+    //    ⛔ **不**拿它做「裸 `contains` 一句手抄的话」（那是恒真）。
+    const SELF_SOURCE: &str = include_str!("sfz_instrument.rs");
+    const SOURCES: [&str; 4] = [
+        ENGINE_SOURCE,
+        MODULATION_SOURCE,
+        INSTRUMENT_SOURCE,
+        SELF_SOURCE,
+    ];
+    const FILE_LABELS: [&str; 4] = [
+        "crates/yeban-engine/src/sfz_instrument.rs",
+        "crates/yeban-sfz/src/modulation.rs",
+        "crates/yeban-sfz/src/instrument.rs",
+        "crates/yeban-engine/tests/sfz_instrument.rs",
+    ];
+
+    /// 剥掉一行的 `//` 行注释（**字符串字面量里的 `//` 不剥** —— 直接 `split("//")` 会把
+    /// 含 `http://` 一类的代码行截断，那样「token 不在代码里」会**假阴**）。
+    fn strip_comment(line: &str) -> &str {
+        let bytes = line.as_bytes();
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut index = 0usize;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+            } else if byte == b'"' {
+                in_string = true;
+            } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                return &line[..index];
+            }
+            index += 1;
+        }
+        line
+    }
+
+    /// 该文件的**代码**：⛔ 整行注释不要 ＋ 行尾注释剥掉。
+    fn code_of(source: &str) -> String {
+        source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(strip_comment)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 代码里的**标识符**集合（按 `[A-Za-z0-9_]` 切）—— 用它判「某 token 今天在不在代码里」，
+    /// 这样 `span`／`expand`／`panicking` **不会**被误判成 `pan`。
+    fn identifiers(code: &str) -> BTreeSet<&str> {
+        code.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            .filter(|token| !token.is_empty())
+            .collect()
+    }
+
+    /// 短针在源文本里的**字节下标**（⛔ 找不到就响亮失败 —— 那正是「原句被删」）。
+    fn find(source: &str, needle: &str) -> usize {
+        source.find(needle).unwrap_or_else(|| {
+            panic!("⛔ 巡检针必须逐字仍在源文本里（第 278 条：⛔ 不许删原句）：{needle}")
+        })
+    }
+
+    /// 1-based 行号。
+    fn line_number(source: &str, at: usize) -> usize {
+        source[..at].matches('\n').count() + 1
+    }
+
+    /// 从 `at` 起的**计算窗口**（`lines` 行）。
+    fn window(source: &str, at: usize, lines: usize) -> String {
+        source[at..]
+            .lines()
+            .take(lines)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    let codes: Vec<String> = SOURCES.iter().map(|source| code_of(source)).collect();
+
+    // ---- ① `#121` 留下的 3 处「只有 **2** 处」就地指针：三处原句仍在 ＋ 都补了本单修订段 ----
+    for (index, needle) in [
+        "`volume_onccN` 只有 **2** 处（值均为 **7**）",
+        "`volume_onccN` 只有 **2** 处（值均 **7**）、`volume_ccN`",
+        "`volume_*ccN` 只有 **2** 处（`karoryfer-black-and-blue-basses`",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let at = find(MODULATION_SOURCE, needle);
+        let line = line_number(MODULATION_SOURCE, at);
+        let tail = window(MODULATION_SOURCE, at, 40);
+        assert!(
+            tail.contains(REVISION_125),
+            "⭐ 第 {} 处就地指针（`modulation.rs:{line}`）之后**必须**补本单的修订段（第 278 条）",
+            index + 1
+        );
+        assert!(
+            tail.contains("实测 3 处"),
+            "⭐⭐ 修订段必须写出裁定口径下的**真值**（`modulation.rs:{line}` 后 40 行内缺「实测 3 处」）"
+        );
+        println!(
+            "[engine-sfz/S118] ① 就地指针 {}：`yeban-sfz/src/modulation.rs:{line}` 原句仍在\
+             （`只有 **2** 处`）＋ 其后 40 行内本单修订段（真值 **3** 处 ／ 3 文件）",
+            index + 1
+        );
+    }
+    assert_eq!(
+        MODULATION_SOURCE.matches(REVISION_125).count(),
+        4,
+        "⭐ `modulation.rs` 里本单的就地修订段必须是 **4** 处\
+         （3 处计数指针 ＋ 单元测试里 `gain_ccN` 那一处漏点）"
+    );
+    assert_eq!(
+        ENGINE_SOURCE.matches(REVISION_125).count(),
+        2,
+        "⭐ 引擎模块头里本单的就地修订段必须是 **2** 处（「尚未实现这一步」＋ 局限表第 ⑤ 行）"
+    );
+
+    // ---- ② 「仍未做／另开单／不识别」一族的**全量复核**（逐条打印 ＋ 逐条机械腿） ----
+    let rows = [
+        SweepRow {
+            file: 0,
+            needle: "`direction` / `pan` **仍未做**，拆到⑩",
+            verdict: "仍成立（`pan` 在引擎侧未被应用）",
+            basis: "`pan` 在 `yeban-sfz` 里**被解析并携带**（`instrument.rs` 的 `scopes.get(\"pan\")`、\
+                    `Region::pan`、`PlaybackSpec::pan`），但**没有任何消费者**把它施加到输出上 —— \
+                    剥注释后引擎代码里**没有** `pan` 这个标识符 ⇒ 「引擎侧仍未做」成立",
+            check: SweepCheck::NotInCode(0, &["pan"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "`pan_oncc*` ／ `cutoff_oncc*` 那两项整条有效**（仍未做，另开单）",
+            verdict: "仍成立（`cutoff` 全族不在本仓）",
+            basis: "`cutoff*`（含 `cutoff_*ccN` 六个调制行）在 `yeban-sfz`／`yeban-engine` 的\
+                    **代码**里**一个 token 都没有**；`yeban-engine/src/synth.rs` 的 `cutoff_hz` \
+                    是**内部振荡器音色参数**，⛔ 与 SFZ 的 `cutoff` 不是同一个东西",
+            check: SweepCheck::NotInCode(0, &["cutoff"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "`pan_oncc*` ／ `cutoff_oncc*` 那两项整条有效**（仍未做，另开单）",
+            verdict: "仍成立（两支都落不进识别层）",
+            basis: "`parse_modulation_name` 今天对这两支都返回 `None` —— ⛔ 不新开目标、\
+                    ⛔ 不新开单位（同族的落地形状在 `#104`～`#124` 已立，缺的只是「谁来做」）",
+            check: SweepCheck::NotRecognized(&["pan_oncc1", "cutoff_oncc1"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan`",
+            verdict: "仍成立（`fileg_*`／`pitcheg_*` 未解析）",
+            basis: "两族在 `yeban-sfz`／`yeban-engine` 的代码里**一个 token 都没有**；\
+                    识别层对 `fileg_attackcc100` 返回 `None`（单元测试反向腿表里也在）",
+            check: SweepCheck::NotRecognized(&["fileg_attackcc100", "pitcheg_attackcc100"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan`",
+            verdict: "仍成立（静态 opcode 也没被读）",
+            basis: "`yeban-sfz/src/instrument.rs` 的 `scopes.get(..)` 全家福里**没有**\
+                    `fileg_*`／`pitcheg_*` ⇒ 连「读到但不用」都还没有",
+            check: SweepCheck::NotInCode(2, &["fileg", "pitcheg"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "`off_time` 不在本片范围",
+            verdict: "仍成立（引擎侧仍未应用 `off_time`）",
+            basis: "⚠ **必须写清**：`off_time` **已经被解析并携带**（见下一条），本条的「未做」\
+                    指的是**引擎侧没有任何消费者** —— 剥注释后引擎代码里没有 `off_time` 这个\
+                    标识符，`off_mode=time` 仍按 `normal` 处理（本行自身的书面偏离）",
+            check: SweepCheck::NotInCode(0, &["off_time"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "`off_time` 不在本片范围",
+            verdict: "仍成立（解析腿：`off_time` 确实已读进）",
+            basis: "`yeban-sfz/src/instrument.rs` 里 `scopes.get(\"off_time\")` 在，\
+                    `Region::effective_off_time()` 与 `PlaybackSpec::effective_off_time()` 也都\
+                    是公开读数 ⇒ 「仍未做」**只能**读作「引擎未应用」，⛔ 不能读作「没解析」",
+            check: SweepCheck::InCode(2, "scopes.get(\"off_time\")"),
+        },
+        SweepRow {
+            file: 0,
+            needle: "的第三个取值与 `loop_type`",
+            verdict: "仍成立（`loop_type` 引擎侧未做）",
+            basis: "剥注释后引擎代码里没有 `loop_type`；判据 `S99` 的 `alternate` 腿现跑钉住\
+                    「`loop_type=alternate` ⇒ `Ok`（未知 opcode 忽略）且方向仍是 `forward`」",
+            check: SweepCheck::NotInCode(0, &["loop_type"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "的第三个取值与 `loop_type`",
+            verdict: "仍成立（解析层也不认 `loop_type`）",
+            basis: "`yeban-sfz/src/instrument.rs` 的 `scopes.get(..)` 里没有 `loop_type`；\
+                    `direction` 的白名单**恰好** `forward` / `reverse`（`PlayDirection::OPTIONS`）\
+                    ⇒ `alternate` 是 `loop_type` 的取值、⛔ 不是 `direction` 的",
+            check: SweepCheck::NotInCode(2, &["loop_type"]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "（[`crate::instrument`] 今天⛔ 不读它们）⇒ 另开单。",
+            verdict: "仍成立（三个静态 opcode 今天仍不读）",
+            basis: "`yeban-sfz/src/instrument.rs` 的 `scopes.get(..)` 里**没有** `global_volume`／\
+                    `master_volume`／`group_volume` 三个名字 ⇒ `#120`／`#121` 的结构面依据\
+                    （`Scopes::get` 是扁平 first-match、没有 header 维度）**逐字未变**",
+            check: SweepCheck::NotInCode(2, &["global_volume", "master_volume", "group_volume"]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "（[`crate::instrument`] 今天⛔ 不读它们）⇒ 另开单。",
+            verdict: "仍成立（三个 `_onccN` 家族也不落本族）",
+            basis: "`parse_modulation_name` 对三个 `_onccN` 家族都返回 `None`；⭐ 且 `#121` 的\
+                    实测复核过：那三个家族**各 0 次 ／ 0 文件**（真身是 `lfo*_volume_onccN`）",
+            check: SweepCheck::NotRecognized(&[
+                "global_volume_oncc1",
+                "master_volume_oncc1",
+                "group_volume_oncc1",
+            ]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "`volume_smoothccN` / `volume_stepccN`（表里有、⛔ 本单不做，见 §8.4）",
+            verdict: "仍成立（两行今天按未知 opcode 忽略）",
+            basis: "规范表里两行的 Range 空、Unit `N/A` ⇒ 需要逐块平滑／步进语义；\
+                    识别层对两者都返回 `None`（判据 `S114` ⑧／`S117` 现跑）",
+            check: SweepCheck::NotRecognized(&["volume_smoothcc1", "volume_stepcc1"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "⛔ **没有** `gain_smoothccN`、⛔ **没有** `gain_stepccN`",
+            verdict: "仍成立（规范里连行都没有）",
+            basis: "`gain` 开头的 Modulation 表行**只有 `gain_ccN` 一行**（`#124` 的 8 档实测）；\
+                    识别层对 `gain_smoothcc6`／`gain_stepcc7` 返回 `None`",
+            check: SweepCheck::NotRecognized(&["gain_smoothcc6", "gain_stepcc7"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "⛔ `gain_onccN` ／ ⛔ `gain_curveccN` ／ ⛔ `gainccN`（无下划线形）",
+            verdict: "仍成立（三条外推今天都被驳回）",
+            basis: "`gain_onccN` 是 ARIA 通用 `_oncc` 形的**外推**（规范一个字都没写），\
+                    `gain_curveccN` 被规范那句「only apply to `volume`」排除，`gainccN` 缺下划线\
+                    ⇒ 识别层对三者都返回 `None`（判据 `S117` 现跑钉住）",
+            check: SweepCheck::NotRecognized(&["gain_oncc1", "gain_curvecc1", "gaincc1"]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "`pitch_smoothccN` / `pitch_stepccN`（表里有、⛔ 本单不做）",
+            verdict: "仍成立（两行今天按未知 opcode 忽略）",
+            basis: "`pitch` 页表里有这两行、但本仓⛔ 不做（`#118` 的登记）；识别层返回 `None`，\
+                    ⭐ 且与**必须被识别**的 `pitch_curveccN` 在同一夹具里可分辨（判据 `S113` ⑧）",
+            check: SweepCheck::NotRecognized(&["pitch_smoothcc1", "pitch_stepcc1"]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "`tune_smoothccN`／`tune_stepccN`",
+            verdict: "仍成立（§7.4 的两行今天按未知 opcode 忽略）",
+            basis: "`tune` 页的 Modulation 表**没有**这两行（`#116` 的登记）；识别层返回 `None`",
+            check: SweepCheck::NotRecognized(&["tune_smoothcc1", "tune_stepcc1"]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "⛔ `amplitude_smoothccN` 的表行 Type ＝ N/A（未实现）⇒ 本模块**不识别**它",
+            verdict: "仍成立（表行 Type ＝ N/A）",
+            basis: "`amplitude` 页那一行 Type ＝ N/A、Range 空 ⇒ 无契约可实现；识别层对\
+                    `amplitude_smoothcc150`／`amplitude_stepcc150` 返回 `None`",
+            check: SweepCheck::NotRecognized(&["amplitude_smoothcc150", "amplitude_stepcc150"]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "⛔ **不属本族**：`ampeg_*smoothccN` / `ampeg_*stepccN`",
+            verdict: "仍成立（表里只有三行）",
+            basis: "`ampeg_attack` 页的 Modulation 表**只有** `ccN` / `_curveccN` / `vel2*` 三行，\
+                    且语料 **0 次**；识别层对 `ampeg_attack_smoothcc100`／`_stepcc100` 返回 `None`",
+            check: SweepCheck::NotRecognized(&[
+                "ampeg_attack_smoothcc100",
+                "ampeg_attack_stepcc100",
+            ]),
+        },
+        SweepRow {
+            file: 1,
+            needle: "`gain_ccN`（⛔ 本单不识别，见 §8.4），而正文写",
+            verdict: "已过期（`#124` 已把 `gain_ccN` 落地）⇒ 本单就地补 `#125` 修订段",
+            basis: "`#124` 起 `gain_ccN` 归**同一个** `ModTarget::Volume`（单位 `Decibels`）；\
+                    ⚠ `#124` 的 §8.6「被修订的支」清单**漏了**这一处同款注释 ⇒ 本单点名补登记",
+            check: SweepCheck::Revised(1),
+        },
+        SweepRow {
+            file: 1,
+            needle: "`gain_ccN`（⛔ 本单不识别，见 §8.4），而正文写",
+            verdict: "已落地（`#124`）—— 本单的复核腿：这一支今天**真的**被识别",
+            basis: "`parse_modulation_name(\"gain_cc9\") == Some((Volume, Delta, \"9\"))`；\
+                    同一 CC 下与 `volume_oncc9` 的乘子逐位相同（判据 `S117` ⑥ 的别名见证）",
+            check: SweepCheck::Recognized(&["gain_cc9"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "⛔ **仍未做：`seq_`**（round-robin 序列）",
+            verdict: "仍成立（引擎摊平路仍不做 `seq_`）",
+            basis: "`seq_length`／`seq_position` 由 `yeban-sfz` **解析并由 `region_for_with` 用**\
+                    （触发计数是调用方给的），但引擎摊平路的区域选择走 `matches_query`、\
+                    ⛔ 不含轮替计数 ⇒ 引擎侧「仍未做」成立；剥注释后引擎代码里没有这两个 token",
+            check: SweepCheck::NotInCode(0, &["seq_position", "seq_length"]),
+        },
+        SweepRow {
+            file: 0,
+            needle: "| ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码）",
+            verdict: "已过期（`#84` 已落地**字节预算读数**）⇒ 本单就地补 `#125` 修订段",
+            basis: "`SfzByteBudget` ／ `SfzByteUsage` ／ `SfzBudgetOverrun` 与\
+                    `PreparedSfz::byte_usage` ／ `budget_overrun` 今天都在代码里（判据 S25～S27）；\
+                    ⚠ **仍未闭合**的只有「不强制上限」与「无流式」两条（原括注仍成立）",
+            check: SweepCheck::Revised(0),
+        },
+        SweepRow {
+            file: 0,
+            needle: "⛔ 当前**尚未**实现这一步，故本类型只用于",
+            verdict: "已过期（摊平表 `PreparedSfz` 就是这一步）⇒ 本单就地补 `#125` 修订段",
+            basis: "`Instrument::regions()` 在构造期/离线期被摊平成 [`PreparedSfz`] 的自有数据，\
+                    实时回调只读它（任务 `#66` 步 2 起由 `render_track` 第 3 参接进实时路径）；\
+                    ⚠ 「**本类型**（`SfzInstrument`）只用于控制侧」那一支**仍成立**",
+            check: SweepCheck::Revised(0),
+        },
+        SweepRow {
+            file: 0,
+            needle: "⚠ **仍未做**（⛔ 不发明）：扩展 CC 的**取值语义**",
+            verdict: "仍成立（扩展 CC 的取值语义未做）",
+            basis: "探针的容器界是 `&dyn Fn(u8) -> u8` ⇒ 135 ＝ unipolar random `0..1` 一类语义\
+                    **表达不了**（需要负值/小数）；本仓没有把 CC 号映射成随机数的消费者 \
+                    —— 机械腿由该行自身的反向腿与探针类型面承担（本条只登记依据）",
+            check: SweepCheck::BasisOnly,
+        },
+        SweepRow {
+            file: 3,
+            needle: "`gain_oncc8` 是规范 Modulation 表里**逐字的 delta 行名**",
+            verdict: "已过期（逐字行名是 `gain_ccN`，`gain_onccN` 是外推）⇒ 本单补 `#125` 修订段",
+            basis: "规范里**逐字的 delta 行名**是 `gain_ccN`（`#124` 裁定，§8.6.1／§8.6.2）；\
+                    `gain_onccN` 是 ARIA 通用 `_oncc` 形的**外推** ⇒ 原句的定语写错了，\
+                    ⚠ 但它真正要说的「本仓不识别 `gain_onccN`」**仍逐字成立**",
+            check: SweepCheck::Revised(3),
+        },
+    ];
+    let mut still_hold = 0usize;
+    let mut landed = 0usize;
+    let mut stale = 0usize;
+    for (index, row) in rows.iter().enumerate() {
+        let source = SOURCES[row.file];
+        let at = find(source, row.needle);
+        let line = line_number(source, at);
+        let label = FILE_LABELS[row.file];
+        match row.check {
+            SweepCheck::NotRecognized(names) => {
+                for name in names {
+                    assert_eq!(
+                        yeban_sfz::modulation::parse_modulation_name(name),
+                        None,
+                        "⭐⭐ 巡检第 {} 条（{label}:{line}）：`{name}` 今天**必须**仍是未知 opcode —— \
+                         谁把它落地了就必须同时更新这张清单，这就是这一条的牙",
+                        index + 1
+                    );
+                }
+            }
+            SweepCheck::Recognized(names) => {
+                for name in names {
+                    assert!(
+                        yeban_sfz::modulation::parse_modulation_name(name).is_some(),
+                        "⭐ 巡检第 {} 条（{label}:{line}）：`{name}` 今天**必须**被识别（已落地见证）",
+                        index + 1
+                    );
+                }
+            }
+            SweepCheck::NotInCode(file, tokens) => {
+                let names = identifiers(&codes[file]);
+                for token in tokens {
+                    assert!(
+                        !names.contains(token),
+                        "⭐⭐ 巡检第 {} 条（{label}:{line}）：`{token}` 今天**必须**仍不在\
+                         `{}` 的**代码**里（⛔ 注释里的登记不算实现）",
+                        index + 1,
+                        FILE_LABELS[file]
+                    );
+                }
+            }
+            SweepCheck::InCode(file, token) => {
+                assert!(
+                    codes[file].contains(token),
+                    "⭐ 巡检第 {} 条（{label}:{line}）：`{token}` 今天**必须**在 `{}` 的代码里",
+                    index + 1,
+                    FILE_LABELS[file]
+                );
+            }
+            SweepCheck::Revised(file) => {
+                let tail = window(SOURCES[file], find(SOURCES[file], row.needle), 40);
+                assert!(
+                    tail.contains(REVISION_125),
+                    "⭐⭐ 巡检第 {} 条（{label}:{line}）：这条的**原句已过期** ⇒ 其后 40 行内\
+                     **必须**有本单的就地修订段（第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）",
+                    index + 1
+                );
+            }
+            SweepCheck::BasisOnly => {}
+        }
+        if row.verdict.starts_with("仍成立") {
+            still_hold += 1;
+        } else if row.verdict.starts_with("已落地") {
+            landed += 1;
+        } else {
+            stale += 1;
+        }
+        println!(
+            "[engine-sfz/S118] ② 巡检 {:02}：{label}:{line} ／ 原句「{}」 ／ 判定：{} ／ 依据：{}",
+            index + 1,
+            row.needle,
+            row.verdict,
+            row.basis
+        );
+    }
+    assert_eq!(
+        still_hold + landed + stale,
+        rows.len(),
+        "⭐ 每条巡检都必须归类（仍成立／已落地／已过期）"
+    );
+    println!(
+        "[engine-sfz/S118] ② 合计 {} 条：**仍成立 {still_hold}** ／ **已落地 {landed}** ／ \
+         **已过期（本单补修订段）{stale}** —— 判据 `NotRecognized`／`NotInCode` 就是\
+         「清单过期必须变红」的那条机械腿",
+        rows.len()
+    );
+
+    // ---- ③ 三个「另外三个 opcode」的交叉引用：4 处都点到「真身 ＝ lfo*_volume_onccN」 ----
+    for (file, anchor, label) in [
+        (
+            1,
+            "（[`crate::instrument`] 今天⛔ 不读它们）⇒ 另开单。",
+            "§8.4 第三条（家族名归属）",
+        ),
+        (
+            1,
+            "（**另外三个**静态 opcode，语料 47 处）⛔ 不以 `volume` 开头 ⇒ 同样不落本族。",
+            "识别支的代码注释",
+        ),
+        (
+            1,
+            "（**另外三个**静态 opcode 之一，语料 47 处）",
+            "单元测试反向腿表的注释",
+        ),
+        (
+            0,
+            "`global_volume_onccN` 一族（**另外三个** opcode）",
+            "`#119` 语料表的那一格",
+        ),
+    ] {
+        let at = find(SOURCES[file], anchor);
+        let line = line_number(SOURCES[file], at);
+        let tail = window(SOURCES[file], at, 40);
+        assert!(
+            tail.contains("lfo*_volume_onccN"),
+            "⭐⭐ 交叉引用「另外三个 opcode」（{label}，{}:{line}）后 40 行内**必须**点名\
+             真身 ＝ `lfo*_volume_onccN`（第 287 条）",
+            FILE_LABELS[file]
+        );
+        println!(
+            "[engine-sfz/S118] ③ 交叉引用「另外三个 opcode」{label}：{}:{line} ／ \
+             真身已改成 `lfo*_volume_onccN`（⛔ 原句「47 处 / 32 文件」一字未删）",
+            FILE_LABELS[file]
+        );
+    }
+
+    // ---- ④ 判据文案的**自证性**清单：把自己文件里的行号**打印**出来（口径见文档） ----
+    // ⚠ 这里刻意用 `concat!` 拼出搜索串：`concat!("SELF_SOURCE", ".contains(")` 在**源码里
+    //    不是一段连续的字节** ⇒ 不会把判据自己算进清单（那种"自指"恰是本条要抓的东西）。
+    let self_proving_needle = concat!("SELF_SOURCE", ".contains(");
+    let self_proving: Vec<usize> = SELF_SOURCE
+        .match_indices(self_proving_needle)
+        .map(|(at, _)| line_number(SELF_SOURCE, at))
+        .collect();
+    for line in &self_proving {
+        println!(
+            "[engine-sfz/S118] ④ 自证式断言（读**本文件自己** ⇒ 恒真）：\
+             `crates/yeban-engine/tests/sfz_instrument.rs:{line}`"
+        );
+    }
+    println!(
+        "[engine-sfz/S118] ④ 口径：被钉的字符串应当**从源码读**（`include_str!` 的**另一个**文件），\
+         ⛔ 不该在判据里再写一遍；⚠ `concat!`／`format!` 拆串**只是让 `grep` 看不见**，\
+         运行期仍是同一个字符串、**仍然恒真** ⇒ 正解是**派生形**（定位锚点 ＋ 断言计算窗口）"
+    );
+    assert_eq!(
+        self_proving.len(),
+        9,
+        "⭐ 自证式断言的条数是**机械读数**（现读 {self_proving:?}）：新增一条必须先在巡检表里登记\
+         （改读别的源码文件，或改成派生形）"
+    );
+
+    // ---- ⑤ 自证式的**派生形替代**（⛔ 只加、⛔ 不删既有断言） ----
+    let row_anchor = "| ⭐ S114 |";
+    let row_at = find(SELF_SOURCE, row_anchor);
+    let row_line = SELF_SOURCE[row_at..].lines().next().unwrap_or("");
+    assert!(
+        row_line.contains(concat!("⭐ `#121` 修订：本行 ① 的", "语料四口径里")),
+        "⭐ `S114` 索引行必须带 `#121` 修订（⭐ 派生形：锚点**从源码定位**、\
+         断言的字符串**不在本文件里**（用 `concat!` 拼出）⇒ 删掉修订就红）"
+    );
+    let fixture_anchor = "const VOLUME_FORMS_FIXTURE";
+    let fixture_at = find(SELF_SOURCE, fixture_anchor);
+    let fixture_before = SELF_SOURCE[..fixture_at]
+        .lines()
+        .rev()
+        .take(20)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        fixture_before.contains("追加修订段（任务单 `#121`"),
+        "⭐ `VOLUME_FORMS_FIXTURE` 的文档（锚点前 20 行）必须带 `#121` 修订段（派生形）"
+    );
+    println!(
+        "[engine-sfz/S118] ⑤ 派生形替代（只加）：`S114` 索引行 {row_line_number} 带 `#121` 修订 ＋ \
+         `VOLUME_FORMS_FIXTURE` 文档带 `#121` 修订段",
+        row_line_number = line_number(SELF_SOURCE, row_at)
+    );
+
+    // ---- ⑥ 三个承重指纹 ＋ `× 1.0000001` 反向腿（本单一条代码路径都没动 ⇒ 必须逐字不变） ----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, expected) in [
+        (
+            "S37 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            0xa9de_c8a8_7f69_106cu64,
+        ),
+        (
+            "S37 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            0xd3c2_a820_76bd_8947u64,
+        ),
+    ] {
+        let out = render_pool(plan, end_sample, BLOCK);
+        let actual = fnv1a_64(&out);
+        let nonzero = out.iter().filter(|sample| **sample != 0.0).count();
+        println!(
+            "[engine-sfz/S118] ⑥ 承重指纹 {label}：0x{actual:016x}（承重 = 0x{expected:016x}，\
+             非零 {nonzero} 样本）"
+        );
+        assert!(
+            nonzero > 0,
+            "⭐ 非空对照：这条腿必须**真的出声**（否则指纹比对是空转）"
+        );
+        let _checked = check_fingerprint(&format!("S118 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut block = vec![0.0f32; BLOCK];
+    let frames = broadcast.render_block_into(60, 127, &mut block);
+    let actual = fnv1a_64(&block);
+    let nonzero = block.iter().filter(|sample| **sample != 0.0).count();
+    println!(
+        "[engine-sfz/S118] ⑥ 承重指纹 S33／S14 广播路径 512 帧 @ (60,127)：0x{actual:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}，写入 {frames} 帧、非零 {nonzero} 样本）"
+    );
+    assert!(nonzero > 0, "⭐ 非空对照：广播路径必须真的出声");
+    let _checked = check_fingerprint("S118 广播路径", actual, NO_LOOP_FIXTURE_FINGERPRINT);
+    let scaled: Vec<f32> = block.iter().map(|sample| sample * 1.000_000_1).collect();
+    let scaled_hash = fnv1a_64(&scaled);
+    println!(
+        "[engine-sfz/S118] ⑥ 应绿反向腿（× 1.0000001）：0x{scaled_hash:016x} ≠ 0x{actual:016x}"
+    );
+    assert_ne!(
+        scaled_hash, actual,
+        "⭐ 反向腿：乘 1.0000001 后指纹**必须**变（证明上面三条是逐位判据）"
+    );
+    // ⭐ 非空对照（本单第二条）：某个调制族**仍然生效** —— `volume` 族的落地拼写仍在识别层。
+    assert!(
+        yeban_sfz::modulation::parse_modulation_name("volume_oncc1").is_some()
+            && yeban_sfz::modulation::parse_modulation_name("gain_cc1").is_some(),
+        "⭐ 非空对照：`volume_oncc1`／`gain_cc1` 必须仍被识别（否则上面那些 `None` 是真空）"
+    );
+
+    // ---- ⑦ 四个尺寸（`size_of` 现读）：本单只改**注释／登记／判据** ⇒ 四个全 ＋0 ----
+    let region = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S118] ⑦ size_of: PreparedRegion={region} SfzVoice={voice} \
+         SfzVoicePool={pool} EngineRuntime={runtime}（门槛 192 KiB = {}；余量 = {}）",
+        192 * 1024,
+        192 * 1024 - runtime
+    );
+    assert_eq!(
+        (region, voice, pool, runtime),
+        (6160, 40, 1712, 180_144),
+        "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0"
     );
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
 }
