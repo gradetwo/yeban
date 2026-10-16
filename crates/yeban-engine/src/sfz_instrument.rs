@@ -52,7 +52,7 @@
 //! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | ⭐ **`group`/`off_by` 已由任务 `#94` 接线、`note_polyphony` ＋ `note_selfmask` 已由任务 `#100` 接线**（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁；见下面"独占组"与"同音复音限制"两节）；⛔ **仍未做：`seq_`**（round-robin 序列） |
 //! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码） |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
-//! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴） |
+//! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴）。⭐ ⭐ **任务单 `#108` 已接线**：上面这句是**原文保留**（第 278 条，⛔ 一字未删）；`#107` 之后"回调侧没有 CC 状态"这条**理由已不成立**，三条路现在都读探针 —— 见下面「⭐ CC 轴交叉淡化（任务单 `#108`）」一节 |
 //! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；⭐ **任务 `#97` 把 `loop_end == pcm_len` 那一档从"不循环"改成"循环 ＋ 插值钳位"**（见下面"`loop_end == pcm_len`"一节）；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩ |
 //! | ⑨ | ⭐ **多 `sample=` 每区域各播自己** | ⭐ **步 3 已做**：摊平表持 `samples: Vec<PreparedSample>` ＋ [`PreparedRegion::sample_index`] 指路；⚠ 单样本重载 [`PreparedSfz::prepare`] **仍是广播**（键/力度映射对、**音色内容错** ⇒ 读数 `sample_content=broadcast(1)`） |
 //! | ⑩ | `direction` / `pan` | 未做（读数在 `PlaybackSpec` 里，摊平表未携带）。⚠ 沿革：本行原文把 `off_mode` 也列在这里 —— ⭐ **任务 `#94` 已把它接线**（`PreparedRegion` 承载 ＋ `off_by` 关断期用；⛔ 作用面**不含** MIDI note-off），故本行只剩 `direction` / `pan` |
@@ -556,6 +556,73 @@
 //!    `flatten_regions` 的摊平期就跳过了 CC 轴那一段（既有注释），
 //!    而 `set_ccN` 的初值口径见 §2.2 与 `yeban-sfz` 的 `Instrument::cc_defaults`。
 //!
+//! ⭐ ⭐ **追加修订段（任务单 `#108`）—— 被修订的是上面第 3 条登记里
+//! "`xfin_*ccN` / `xfout_*ccN` 交叉淡化未接线"这一支**（⛔ 上面三条的**原文一字未删**，
+//! 口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：
+//!
+//! 1. **CC 轴交叉淡化已接线（三条路）**：`flatten_regions` 的 CC 分支**不再跳过** ——
+//!    几何（`XfAxis::Cc(cc)` 的 [`Crossfade`]）原样烘进
+//!    [`PreparedRegion::cc_crossfades`]（定长 `[Crossfade; CC_CROSSFADE_CAP]` ＋ 条数，
+//!    `Copy`、⛔ 无 `Vec`），取值在**逐块**由
+//!    [`PreparedRegion::gain_at_with_cc`] 按探针做；离线那条路改用
+//!    `yeban-sfz` 的 `Region::playback_spec_with`（它本来就**读得到** `RegionQuery::cc`）。
+//!    ⇒ **离线 ＝ 摊平 ＝ 实时**在"同一 CC 值 ＋ 同一力度"下**逐位相同**
+//!    （判据：`tests/sfz_instrument.rs` 的 S67／S68）。写在这里避免"改了却没登记"。
+//! 2. **⛔ 未修订的两支（仍在，逐条点名）**：
+//!    * `set_ccN=` 的**播种**（初值）仍归调用方 —— 本节第 3 条的原文**整条有效**；
+//!    * ⛔ **不属本单**的"任意 opcode 的 `_onccN` 调制"（`pan_oncc*` 9796 处 ／
+//!      `volume_oncc*` 等）是 `#104` 那套 `ampeg_*` 机制的**推广**（语料 9796 处），
+//!      另开单；⛔ 与本单的交叉淡化 CC 轴**不是同一件事**；
+//!    * `loccN`/`hiccN` **区域门控**的实时化仍**未接线**（`#107` 已登记显式选路 ③，
+//!      见上面第 2 条）—— ⛔ 本单**不改**它。
+//! 3. **上界（`CC_CROSSFADE_CAP` ＝ 256）是结构性的**，⛔ 不是语料最大值 ＋ 余量：
+//!    由来、语料普查读数与代价逐条写在 [`CC_CROSSFADE_CAP`] 的文档里
+//!    （分母 1398 份 `.sfz`／可解析根文件 1205 份／region 64894 条；单区域 CC 段最大 **2**）。
+//!    ⭐ 代价：`PreparedRegion` `4232 → 5768 B`（＋1536 ＝ 256 × `size_of::<Crossfade>()`）；
+//!    ⛔ `SfzVoice` 仍 `40 B`（＋0）、⛔ `SfzVoicePool` 仍 `1712 B`（＋0）、
+//!    ⛔ `EngineRuntime` 仍 `180144 B`（＋0）。
+//! 4. **顺带修订的措辞**（⛔ 原文保留，只点名读法）：上面 `#104` 的「探针只影响
+//!    `ampeg_*` 的**取值**」（第 522 行）与 `#107` 第 2 条同款的那句，在 `#108` 之后
+//!    应读作「探针只影响**取值类**的量（`ampeg_*` **与 CC 轴交叉淡化的增益**），
+//!    ⛔ 不影响区域选择」—— 两句的原文一字未删，本条就是它们的修订见证。
+//!
+//! # ⭐ CC 轴交叉淡化（任务单 `#108`）
+//!
+//! 规范逐字（<https://sfzformat.com/opcodes/xfin_loccN/>）：
+//!
+//! > `xfin_loccN` and `xfin_hiccN` set the range of values in the MIDI continuous
+//! > controller N which will perform a fade-in in the region.
+//! >
+//! > The volume of the region will be zero for values of the MIDI continuous controller N
+//! > lower than or equal to `xfin_loccN`, and maximum (as defined by the volume opcode)
+//! > for values greater than or equal to `xfin_hiccN`.
+//!
+//! 与淡出方向（<https://sfzformat.com/opcodes/xfout_loccN/>）：
+//!
+//! > The volume of the region will be maximum (as defined by the volume opcode) for values
+//! > of the MIDI continuous controller N lower than or equal to `xfout_loccN`, and zero
+//! > for values greater than or equal to `xfout_hiccN`.
+//!
+//! 曲线（`xf_cccurve`，缺省 `power`；<https://sfzformat.com/opcodes/xf_cccurve/>：
+//! "**gain**: Linear gain crossfade. … **power**: Equal-power RMS crossfade. …"）与
+//! 端点缺省、`power ⇒ sqrt` 的取舍**全在** `yeban-sfz` 的 `crossfade` 模块文档里
+//! —— ⛔ 本片不复制那份事实源，只**烘几何 ＋ 喂探针**。
+//!
+//! **求值点（三条路各一个，⛔ 不是三份公式）**：
+//!
+//! | 路 | 求值点 | 几何来源 |
+//! | :--- | :--- | :--- |
+//! | 离线 [`SfzInstrument::render_note_into_with_cc`] | `Region::playback_spec_with(&query, rates).total_gain()` | `Region::crossfades`（解析层） |
+//! | 摊平 [`PreparedSfz::render_block_into_with_cc`] | [`PreparedRegion::gain_at_with_cc`] | 烘好的 `cc_crossfades` |
+//! | 实时 [`SfzVoicePool::slot_readings`] | 同上（每块现算）× [`SfzVoice::track_gain`] | 同摊平 |
+//!
+//! ⭐ **为什么没有新的逐声部字段**：CC 增益**逐块**可变（CC 随时变）⇒ 触发期烘死的
+//! 乘积不够。本片取"**每块按 `region + note + velocity + probe` 重算**"这一支：
+//! `note` / `velocity` / `region_index` **早就在** [`SfzVoice`] 里 ⇒ 声部
+//! **＋0 字节**（`40 B`）。代价是 `SfzVoice::gain` 改名 [`SfzVoice::track_gain`] ——
+//! 它现在只存**引擎层**那一份（可闻门 × 推子），乐器层由逐块路径现算
+//! （两条腿仍相乘、⛔ 不重复；归属裁决 `R711` 不变）。
+//!
 //! # ⭐ `ampeg_*` 的力度调制（任务单 `#106`）
 //!
 //! 规范语义（五个 `ampeg_vel2*` opcode 的表行）、公式
@@ -595,7 +662,7 @@ use std::collections::BTreeMap;
 // ⭐ 窃取淡出的**帧数口径**：引擎里 PolySynth 用的就是这一个（3 ms × 采样率，
 // 上限 0.5 s、下限 1 帧）⇒ SFZ 池与复音池共用**同一个**舵，⛔ 不是第二份常数。
 use yeban_dsp::polysynth::steal_fade_frames_for;
-use yeban_sfz::crossfade::{XfAxis, XfDirection};
+use yeban_sfz::crossfade::{Crossfade, XfAxis, XfCurve, XfDirection, XfRange};
 use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{Instrument, LoopMode, NotePolyphony, OffMode, Region, RegionQuery};
 // ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（`ccN` / `_onccN` / `_curveccN`）。
@@ -773,7 +840,10 @@ impl SfzInstrument {
     /// * `cc == Some(probe)` ⇒ ① 探针同时喂给**既有**的
     ///   [`RegionQuery::with_cc`]（CC 门控生效）；② `ampeg_*` 按
     ///   `base + Σ delta × curve(cc)` 求值（公式与逐字出处见
-    ///   [`yeban_sfz::modulation`]）。
+    ///   [`yeban_sfz::modulation`]）；③ ⭐ 任务单 `#108`：增益改走
+    ///   `Region::playback_spec_with(&query, ..)` ⇒ **CC 轴交叉淡化**
+    ///   （`xfin_loccN` / `xfin_hiccN` / `xfout_loccN` / `xfout_hiccN`）也按探针生效
+    ///   （`cc == None` 时与 `playback_spec(..)` **逐位相同**，见下面的注释）。
     ///
     /// ⚠ **`probe` 的值域是 `u8`**：标准 CC（`0..=127`）与 SFZ2 扩展 CC
     /// （`128..=137`）都能表达；**扩展 CC 的取值语义**（135 = unipolar random `0..1`、
@@ -807,9 +877,15 @@ impl SfzInstrument {
                 if !region.matches_query(&query) {
                     continue;
                 }
-                // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`
+                // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`。
                 let rate = region.playback_rate(note, rates);
-                let gain = region.playback_spec(note, velocity, rates).total_gain();
+                // ⭐ 任务单 `#108`：这里从 `playback_spec(..)`（`cc = None` 的那条重载）
+                // 换成 `playback_spec_with(&query, ..)` —— 后者读 `query.cc`，于是
+                // **CC 轴交叉淡化**也在离线这条路上生效（`query` 上面已经按探针构造过）。
+                // ⚠ `cc = None` 时两者**逐位相同**：`playback_spec` 的实现就是
+                // `playback_spec_with(&RegionQuery::new(note, velocity), rates)`
+                // （见 `yeban-sfz/src/playback.rs`）⇒ 既有读数不变。
+                let gain = region.playback_spec_with(&query, rates).total_gain();
                 if !(rate.is_finite() && rate > 0.0) || pcm_len == 0 {
                     continue;
                 }
@@ -1201,16 +1277,55 @@ pub fn ampeg_run_from(
     })
 }
 
+/// ⭐ **每区域的 CC 轴交叉淡化段数上界**（任务单 `#108`；摊平表的**定长**容器）。
+///
+/// # 这个数从哪来（⛔ 不是拍的）
+///
+/// 它是 `yeban-sfz` 的**结构性上界**，⛔ 不是语料统计的近似值：`read_crossfades` 把
+/// CC 端点收在两张 `BTreeMap<u8, XfEndpoints>` 里（`cc_in` / `cc_out`），而
+/// `parse_cc_crossfade_name` 只接受 `cc ≤ 127` ⇒ 每张表 ≤ **128** 个键、每个键至多
+/// 产生 **1** 段（`XfEndpoints::resolve` 返回 `Some` 时）
+/// ⇒ 任意长的一条 scope 链（`global` → `master` → `group` → `region`，含 `#include`
+/// 展开的全部内容）归约出的 CC 段 **≤ 128 + 128 = 256**。
+///
+/// ⚠ **键是去重键**：`cc_in` / `cc_out` 是**按 CC 号索引的映射**，同一个 CC 在四级作用域
+/// 里重复声明只会**覆盖端点**，⛔ 不会各留一段 —— 这正是上界只有 256（而不是
+/// "声明处的条数"）的原因。
+///
+/// 登记语料普查（本机实测；分母 ＝ `assets/samples/**/*.sfz` 的 **1398** 份，其中
+/// `#include` 能解析全的根文件 **1205** 份、归约出的 region 共 **64894** 条）：
+/// **单区域 CC 轴段数最大 ＝ 2**
+/// （`karoryfer-bear-sax/Programs/duo_legato/dynfade_legato_first_map.sfz`），
+/// 直方图 `{0: 62436, 1: 1816, 2: 642}`；已知非零对照 ＝ 同批 region 的**全部**交叉淡化
+/// 段数直方图 `{0: 62281, 1: 1920, 2: 693}`（最大同为 **2**）；CC 下标只用到 `{1, 85, 121}`。
+/// ⇒ 取**结构性上界 256**（⛔ 不是"语料最大值 ＋ 余量"）的代价是每区域
+/// `256 × size_of::<Crossfade>()`，换来的是**零截断可能**：⛔ 不需要给 `yeban-sfz`
+/// 新增 `Err`、⛔ 不改任何既有文件的可解析性（越界在结构上不可达 ⇒
+/// `flatten_regions` 的 `debug_assert` 是"绝不可达"的见证，与 `AMPEG_MOD_CAP` 同款）。
+pub const CC_CROSSFADE_CAP: usize = 256;
+
+/// 摊平表里 CC 段数组的**惰性填充**（只有 `..cc_crossfade_count` 会被读 ⇒ 取值无关）。
+///
+/// ⚠ 用**字面构造**（⛔ 不调 `Crossfade::new`：那不是 `const fn`）；`Crossfade` 的字段
+/// 全是 `pub`。
+const INERT_CC_CROSSFADE: Crossfade = Crossfade {
+    axis: XfAxis::Cc(0),
+    direction: XfDirection::In,
+    range: XfRange::FADE_IN_DEFAULT,
+    curve: XfCurve::Gain,
+};
+
 /// 键/力度的可播性、以及**全部静态门控**（通道 / `trigger` 事件 / keyswitch / CC）
 /// 在**构造期**由 `yeban-sfz` 的 `Region::matches_query` 求值后**打包成 128 位掩码** ⇒
 /// 回调侧只做位测试，⛔ 不在回调里调用任何解析/分配函数。
 /// 门控未通过的区域**两张掩码都清 0** ⇒ 它**永远不会**进回调的命中集
 /// （含 `trigger=release` 一类的 region）。
 ///
-/// 增益按 `PlaybackSpec::total_gain()` 的乘积结构拆成四份（`volume`／力度／键轴淡化／
-/// 力度轴淡化），使回调侧的相乘顺序与离线路径**逐位相同**：
-/// `(volume × 力度) × ((键轴 × 力度淡入) × 力度淡出)`。
-/// 因此 `(note, velocity)` 的取值**不再冻结**在 `(60, 100)`。
+/// 增益按 `PlaybackSpec::total_gain()` 的乘积结构拆成五份（`volume`／力度／键轴淡化／
+/// 力度轴淡化／**CC 轴淡化**），使回调侧的相乘顺序与离线路径**逐位相同**：
+/// `(volume × 力度) × ((((键轴 × 力度淡入) × 力度淡出) × cc₀) × cc₁ …)`。
+/// 因此 `(note, velocity)` 的取值**不再冻结**在 `(60, 100)`，
+/// 而 CC 轴（任务单 `#108`）由 [`Self::cc_crossfades`] 承载、**逐块**按探针求值。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedRegion {
     /// 键掩码：第 `n` 位为 1 表示该区域接受 `note == n`（门控不过时全 0）。
@@ -1306,6 +1421,26 @@ pub struct PreparedRegion {
     /// ⚠ **它是"区域参数"、不是"声部状态"**：力度本身在 [`SfzVoice`] 里**早就有**
     /// （触发期抄下）⇒ 本字段⛔ 不进实时对象（`SfzVoice` 尺寸不变）。
     ampeg_vel2: [Option<f32>; AmpegParam::COUNT],
+    /// ⭐ **CC 轴交叉淡化的几何**（任务单 `#108`）：`XfAxis::Cc(cc)` 的段**原样**
+    /// （`Crossfade` 是 `Copy` 的值类型）搬进摊平表，顺序 ＝ `yeban-sfz` 的
+    /// `read_crossfades` 归约序（CC 淡入按 CC 号升序，再 CC 淡出按 CC 号升序）。
+    ///
+    /// 只有 `..cc_crossfade_count` 有效（定长槽的其余部分是 [`INERT_CC_CROSSFADE`]，
+    /// ⛔ 不能靠值判断）；容量 [`CC_CROSSFADE_CAP`] **＝ 结构性上界**（它的文档里有
+    /// 由来、语料普查读数与代价）⇒ **没有截断这回事**。
+    ///
+    /// ⚠ **为什么烘**：实时回调拿不到 `Instrument`（摊平之后只剩本结构）—— 求值期只需
+    /// [`Crossfade::gain_at`]（`yeban-sfz` 的**同一份**实现：整数减法、一次 `f32` 除法、
+    /// `power` 曲线时一次 `sqrt`），⛔ 不是第二份换算。
+    ///
+    /// ⚠ **为什么它是"区域参数"、⛔ 不是"声部状态"**：CC 值**逐块**变（探针由调用方沿
+    /// `with_cc` 那条链交下来），几何本身却是静态的 ⇒ 段数组不进 [`SfzVoice`]，
+    /// 声部尺寸 ⛔ 不变（判据 `S9` 钉住 40 B）。
+    cc_crossfades: [Crossfade; CC_CROSSFADE_CAP],
+    /// ⭐ 上面那张表里**有效**的条数（`0..=CC_CROSSFADE_CAP`）。
+    ///
+    /// ⚠ `u16`（⛔ 不是 `u8`）：结构性上界是 **256**，`u8` 装不下 256。
+    cc_crossfade_count: u16,
     /// ⭐ **独占组号**（`group`，缺省 `0`；别名 `polyphony_group`）。
     ///
     /// 语义（SFZ v1 逐字，见 <https://sfzformat.com/opcodes/group/>）：
@@ -1506,14 +1641,67 @@ impl PreparedRegion {
     }
 
     /// 给定时点的**合并线性增益**（与离线 `PlaybackSpec::total_gain` 逐位相同）。
+    ///
+    /// ⚠ 本方法是 [`Self::gain_at_with_cc`] 传 `cc == None` 的**薄包装**
+    /// ⇒ "没有 CC 状态"与接线前（`#108` 之前）的读数**逐位相同**
+    /// （`XfAxis::Cc` 段按 `yeban-sfz` 的"未提供状态 ⇒ 不贡献"处理）。
     #[must_use]
     pub fn gain_at(&self, note: u8, velocity: u8) -> f32 {
+        self.gain_at_with_cc(note, velocity, None)
+    }
+
+    /// ⭐ **合并线性增益 ＋ CC 探针**（任务单 `#108`）：与离线
+    /// [`yeban_sfz::playback::PlaybackSpec::total_gain`] **逐位相同**的求值点，
+    /// 只是 CC 轴按**当前**探针取值（CC 逐块可变 ⇒ 本方法每块都可能被调）。
+    ///
+    /// 乘积结构与结合序（**唯一**，[ARCH-DET-001]）：
+    ///
+    /// ```text
+    /// base      = volume_gain * velocity_gain[v]
+    /// crossfade = (key_crossfade[n] * velocity_fade_in[v]) * velocity_fade_out[v]
+    /// 逐段：crossfade *= cc_crossfades[i].gain_at(probe(cc_i))   // i 递增
+    /// 结果       = base * crossfade
+    /// ```
+    ///
+    /// ⚠ 三段摊平表的结合序与 `yeban-sfz` 的 `crossfade_gain` 累加器**逐位相同**
+    /// （`1.0` 乘是精确运算）⇒ 上式 ＝ `(gain * velocity_gain) * crossfade_gain(query)`，
+    /// 即离线那条路的 `total_gain()`（既有判据 `S…` 的 128×128 网格对账覆盖
+    /// `cc = None`；`#108` 的判据把同一份对账扩到 CC 轴）。
+    ///
+    /// * `cc == None` ⇒ CC 段**一段都不乘**（与 `Region::crossfade_gain` 对
+    ///   "未提供状态"的 `continue` 同口径）；`cc_crossfade_count == 0` 的区域
+    ///   ⇒ 循环体⛔ 不执行 ⇒ **一个浮点运算都不加**。
+    ///
+    /// **零分配、无锁、无 I/O、无日志**：只读定长数组与探针 [MUST-GATE-001]。
+    #[must_use]
+    pub fn gain_at_with_cc(&self, note: u8, velocity: u8, cc: Option<&dyn Fn(u8) -> u8>) -> f32 {
         let n = note as usize;
         let v = velocity as usize;
         let base = self.volume_gain * self.velocity_gain[v];
-        let crossfade =
+        let mut crossfade =
             (self.key_crossfade[n] * self.velocity_fade_in[v]) * self.velocity_fade_out[v];
+        if let Some(probe) = cc {
+            for baked in &self.cc_crossfades[..usize::from(self.cc_crossfade_count)] {
+                // 摊平期只装 `XfAxis::Cc(cc)`（见 `flatten_regions` 的 CC 分支）。
+                if let XfAxis::Cc(controller) = baked.axis {
+                    crossfade *= baked.gain_at(probe(controller));
+                }
+            }
+        }
         base * crossfade
+    }
+
+    /// ⭐ 本区域承载的 CC 轴交叉淡化段数（判据用：`0` ＝ 这条区域没有该轴）。
+    #[must_use]
+    pub const fn cc_crossfade_count(&self) -> usize {
+        self.cc_crossfade_count as usize
+    }
+
+    /// ⭐ 本区域承载的 CC 轴交叉淡化段的**只读副本**（判据用：逐段回读几何，
+    /// 证明摊平表**真的**带上了这份读数，⛔ 不是只看解析层）。
+    #[must_use]
+    pub fn cc_crossfades(&self) -> &[Crossfade] {
+        &self.cc_crossfades[..usize::from(self.cc_crossfade_count)]
     }
 
     // -----------------------------------------------------------------
@@ -2359,9 +2547,13 @@ impl PreparedSfz {
     /// （本模块头的"CC 调制"一节有逐字登记）：
     ///
     /// 1. **区域选择不随探针变**：门控（含 `loccN`/`hiccN`）在**摊平期**就用
-    ///    `cc = None` 求值过（[`flatten_regions`]）⇒ 探针只影响 `ampeg_*` 的取值，
-    ///    ⛔ 不会让一条被 CC 门控挡掉的区域发声；
+    ///    `cc = None` 求值过（[`flatten_regions`]）⇒ 探针⛔ 不会让一条被 CC 门控挡掉的
+    ///    区域发声；
     /// 2. **曲线点表已在摊平期烘焙** ⇒ 探针不再需要 `Instrument`。
+    ///
+    /// ⚠ **探针影响的面**（任务单 `#108` 起）：**取值类**的量 —— `ampeg_*` 的取值
+    /// **与** CC 轴交叉淡化的增益（[`PreparedRegion::gain_at_with_cc`]）——
+    /// ⛔ **不**影响区域选择（那是第 1 条）。
     ///
     /// ⚠ **零分配、零锁、零 I/O**（只做位测试、定长数组读与 `out` 的原地写入）
     /// ⇒ 该函数仍可被回调路径调用 [MUST-GATE-001]。
@@ -2389,7 +2581,9 @@ impl PreparedSfz {
             let Some((start, source_end)) = region.span_bounds(pcm.len()) else {
                 continue;
             };
-            let gain = region.gain_at(note, velocity);
+            // ⭐ 增益（任务单 `#108`）：CC 轴交叉淡化按**同一**探针求值
+            // （`cc == None` ⇒ `gain_at` 的老口径，逐位不变）。
+            let gain = region.gain_at_with_cc(note, velocity, cc);
             // ⭐ 循环窗口（本单）：归约已把模式／退化／越界三条判完（`None` ⇒ 不循环）。
             let loop_window = region.loop_window(pcm.len());
             let mut position = start;
@@ -2471,6 +2665,13 @@ fn flatten_regions(
             let mut key_crossfade = [1.0f32; 128];
             let mut velocity_fade_in = [1.0f32; 128];
             let mut velocity_fade_out = [1.0f32; 128];
+            // ⭐ 本片（任务单 `#108`）新增：CC 轴段**原样**烘成定长数组（顺序 ＝
+            // `read_crossfades` 的归约序）。容量是**结构性上界**（见 `CC_CROSSFADE_CAP`）
+            // ⇒ 条数不可能越界，⛔ 不需要 `Err`、⛔ 没有截断分支。
+            // ⚠ 下面用**直接下标**（⛔ 不用 `get_mut` 那种"满了就悄悄丢"的写法）：
+            // 万一约束被改坏，那是响亮的 panic，⛔ 不是静默丢段。
+            let mut cc_crossfades = [INERT_CC_CROSSFADE; CC_CROSSFADE_CAP];
+            let mut cc_crossfade_count = 0usize;
             for crossfade in &region.crossfades {
                 match crossfade.axis {
                     XfAxis::Key => {
@@ -2489,9 +2690,33 @@ fn flatten_regions(
                     }
                     // CC 轴：回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地跳过
                     // （`Region::crossfade_gain` 对未提供状态的 CC 段就是 `continue`）。
-                    XfAxis::Cc(_) => {}
+                    //
+                    // ⭐ ⭐ **追加修订段（任务单 `#108`）** —— ⛔ 上面两句的**原文保留**，
+                    // 它们**仍然成立**：它们说的是离线那条 `cc = None` 的重载
+                    // （`Region::playback_spec`）。⭐ 被修订的是**另一支**：摊平期
+                    // **不再把 CC 轴整个丢掉**。理由逐条：
+                    //   ① `yeban-sfz` 本来就另有一条**读得到** CC 状态的重载
+                    //      （`Region::playback_spec_with` → `Region::crossfade_gain` 读
+                    //      `RegionQuery::cc`）—— 语义在规范页上逐字可读，⛔ 不是发明；
+                    //   ② 任务单 `#107` 之后，**实时侧已经有 CC 状态**
+                    //      （`EngineEvent::ControlChange` → `ControlChangeState` → 探针）
+                    //      ⇒ "回调侧没有 CC 状态"这条**理由已经不成立**；
+                    //   ③ 于是三条路统一：几何烘进本数组，取值在**逐块**求值时按探针做
+                    //      （[`PreparedRegion::gain_at_with_cc`]），离线那条路改用
+                    //      `playback_spec_with`。
+                    // ⛔ 不修订的：`cc = None` 的一切读数（`gain_at` 传 `None` ⇒
+                    // CC 段一段都不乘 ⇒ 与接线前逐位相同，判据 `S33`/`S37`/`S65`）。
+                    XfAxis::Cc(_) => {
+                        cc_crossfades[cc_crossfade_count] = *crossfade;
+                        cc_crossfade_count += 1;
+                    }
                 }
             }
+            debug_assert!(
+                cc_crossfade_count <= CC_CROSSFADE_CAP,
+                "yeban-sfz 的 cc_in/cc_out 是按 `u8` CC 号索引的映射、且只收 cc ≤ 127 \
+                 ⇒ 单区域的 CC 段 ≤ 2 × 128 = {CC_CROSSFADE_CAP}"
+            );
             let mut velocity_gain = [0.0f32; 128];
             for (velocity, slot) in velocity_gain.iter_mut().enumerate() {
                 *slot = region.velocity_gain(velocity as u8);
@@ -2550,6 +2775,10 @@ fn flatten_regions(
                 // 一项算术都不做）。同样是**区域参数**、⛔ 不是声部状态
                 // （力度在 `SfzVoice` 里早就有）⇒ ⛔ 不进实时对象。
                 ampeg_vel2: region.ampeg_vel2,
+                // ⭐ CC 轴交叉淡化（任务单 `#108`）：归约序的几何 ＋ 有效条数。
+                // 它是**区域参数**、不是声部状态 ⇒ `SfzVoice` 尺寸不变，⛔ 不进实时对象。
+                cc_crossfades,
+                cc_crossfade_count: cc_crossfade_count as u16,
                 // ⭐ 独占组（任务单 `#94`）：三个**每区域**字段原样搬进摊平表。
                 // `group` / `off_by` 的解析与域（`0..=u32::MAX`）在 `yeban-sfz` 里早已有
                 // 判据（`instrument.rs` 的 `read_u32` 一族）⇒ 本片只**搬运**，⛔ 不新增解析。
@@ -3004,8 +3233,16 @@ pub struct SfzVoice {
     position: f32,
     /// 每样本的源位置增量（触发时从摊平表抄来）。
     rate: f32,
-    /// 逐样本增益（触发时算好；见 [`PreparedRegion::gain_at`]）。
-    gain: f32,
+    /// ⭐ **引擎层的轨增益门**（`track_gain` ＝ 可闻门 × 推子；触发期抄下，此后不变）。
+    ///
+    /// ⚠ **沿革（任务单 `#108`）**：本字段**原来**存的是"**乐器层** `region.gain_at(..)`
+    /// × 引擎层 `track_gain`"的乘积（触发期算好、此后不变）。CC 轴交叉淡化
+    /// （`xfin_*ccN` / `xfout_*ccN`）**逐块**可变 ⇒ 那份乘积**不够**（CC 一动就得重算）。
+    /// 本片改成只存**引擎层**那一份，乐器层由 [`SfzVoicePool::slot_readings`] 逐块用
+    /// [`PreparedRegion::gain_at_with_cc`] 现算（`note` / `velocity` / `region_index`
+    /// 早就在声部里）⇒ 两条腿仍**相乘、⛔ 不重复**（归属裁决不变，见台账 `R711`）。
+    /// ⭐ 尺寸 **＋0 字节**：仍是**一个** `f32`（判据 `S9` 钉住 40 B）。
+    track_gain: f32,
     /// 触发该声部的音高（诊断与判据用）。
     note: u8,
     /// 触发该声部的力度（诊断与判据用）。
@@ -3047,7 +3284,7 @@ impl SfzVoice {
     pub const EMPTY: Self = Self {
         position: 0.0,
         rate: 0.0,
-        gain: 0.0,
+        track_gain: 0.0,
         note: 0,
         velocity: 0,
         active: false,
@@ -3066,13 +3303,16 @@ impl SfzVoice {
     ///
     /// ⚠ 包络状态**不在参数里**：它从 [`ENV_STAGE_IDLE`] ＋ 计数 0 起（区域有包络时由
     /// 逐样本路径第一帧提升为 [`AmpegStage::Attack`]）⇒ ⛔ 本构造器的签名与接线前一致。
+    ///
+    /// ⚠ `track_gain`（任务单 `#108` 的改名）：它只是**引擎层**那一份增益门，
+    /// ⛔ **不再**是"乐器层 × 引擎层"的乘积（见 [`Self::track_gain`] 的沿革段）。
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
         note: u8,
         velocity: u8,
         rate: f32,
-        gain: f32,
+        track_gain: f32,
         sample_index: u16,
         region_index: u16,
         source_start: f32,
@@ -3082,7 +3322,7 @@ impl SfzVoice {
         Self {
             position: source_start,
             rate,
-            gain,
+            track_gain,
             note,
             velocity,
             active: true,
@@ -3142,6 +3382,15 @@ impl SfzVoice {
     #[must_use]
     pub const fn region_index(&self) -> u16 {
         self.region_index
+    }
+
+    /// ⭐ **该声部的引擎层轨增益门**（`track_gain`；任务单 `#108` 起 ⛔ 不含乐器层增益）。
+    ///
+    /// ⚠ 它是**只读副本**：乐器层那一份由逐块路径现算（[`PreparedRegion::gain_at_with_cc`]）
+    /// ⇒ 判据可以断言"声部里存的确实是引擎层那一份"（⛔ 不是另一个乘积）。
+    #[must_use]
+    pub const fn track_gain(&self) -> f32 {
+        self.track_gain
     }
 
     /// 当前源采样位置（帧）。
@@ -3221,13 +3470,21 @@ pub struct SfzVoicePool {
     stolen: u64,
 }
 
-/// ⭐ **逐块路径的三个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
+/// ⭐ **逐块路径的四个区域读数**（[`SfzVoicePool::slot_readings`] 的产物）。
 ///
-/// 全部是**每块一次**求得的静态参数（⛔ 不进逐样本路径、⛔ 不含逐声部状态）。
+/// 全部是**每块一次**求得的量（⛔ 不进逐样本路径、⛔ 不含逐声部状态）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SlotReadings {
     /// 有效循环窗口（[`PreparedRegion::loop_window`] 的归约结果）。
     loop_window: Option<LoopWindow>,
+    /// ⭐ **本块的逐样本增益**（任务单 `#108`）＝ **乐器层**
+    /// （[`PreparedRegion::gain_at_with_cc`]：`volume`／力度／键轴／力度轴／**CC 轴**）
+    /// **×** **引擎层**（[`SfzVoice::track_gain`]，触发期抄下）。
+    ///
+    /// ⚠ **为什么每块现算**：CC 轴交叉淡化按**当前** CC 取值（CC 逐块可变）⇒
+    /// 触发期的乘积**不够**。⚠ `cc == None` 时它与接线前的 `voice.gain`
+    /// **逐位相同**（同一条 `gain_at` 求值、同一个 `track_gain` 因子）。
+    gain: f32,
     /// **生效的引擎终点**：`u64::MAX` ＝「本块不由 `end_sample` 截止」（见 `slot_readings`）。
     limit: u64,
     /// ⭐ **包络眼里的 note-off 帧**：`u64::MAX` ＝「**不理会** note-off」
@@ -3311,10 +3568,15 @@ impl SfzVoicePool {
     ///
     /// # ⭐ 轨增益门（`track_gain`；归属裁决见台账 R711）
     ///
-    /// 声部增益 ＝ **乐器层**（`region.gain_at`：`volume_gain`／`velocity_gain[128]`／
-    /// `key_crossfade`／`velocity_fade_*`／`amp_veltrack`）× **引擎层**（本参数：
-    /// 可闻门 × 推子，与鼓机/复音拿到的那一份**同一个** `track_gain_scale` 值）。
+    /// 声部增益 ＝ **乐器层**（`region.gain_at_with_cc`：`volume_gain`／
+    /// `velocity_gain[128]`／`key_crossfade`／`velocity_fade_*`／**CC 轴交叉淡化**／
+    /// `amp_veltrack`）× **引擎层**（本参数：可闻门 × 推子，与鼓机/复音拿到的那一份
+    /// **同一个** `track_gain_scale` 值）。
     /// ⇒ ⭐ 两者**相乘、⛔ 不重复**：引擎层⛔ 不碰力度（那由乐器层拥有）。
+    ///
+    /// ⚠ 任务单 `#108` 起，**触发期只存引擎层那一份**（[`SfzVoice::track_gain`]）：
+    /// 乐器层由 [`Self::slot_readings`] 逐块现算（CC 逐块可变 ⇒ 触发期烘死不成立）。
+    /// ⇒ 乘积的两条腿**没有变**（⛔ 不是第二份口径），变的只是求值时机。
     pub fn trigger_note(
         &mut self,
         plan: &PreparedSfz,
@@ -3366,12 +3628,13 @@ impl SfzVoicePool {
                 continue;
             };
             // ⭐ 引擎层的轨增益门**乘在乐器层增益之外**（两个归属各一份 ⇒ ⛔ 不重复）。
-            let gain = region.gain_at(note, velocity) * track_gain;
+            // ⚠ 任务单 `#108`：这里**只**存引擎层那一份（`track_gain`）—— 乐器层
+            // （含 CC 轴交叉淡化）由逐块路径现算（CC 逐块可变，触发期烘死不成立）。
             let voice = SfzVoice::new(
                 note,
                 velocity,
                 rate,
-                gain,
+                track_gain,
                 region.sample_index,
                 region_index,
                 source_start,
@@ -3690,9 +3953,10 @@ impl SfzVoicePool {
     ///
     /// * `cc == None` ⇒ 与 [`Self::render_into`] **逐位相同**（该包装就传这个值）；
     /// * `cc == Some(probe)` ⇒ [`Self::slot_readings`] 把它交给
-    ///   [`PreparedRegion::ampeg_run_with_cc_and_velocity`] ⇒ 区域的
+    ///   ① [`PreparedRegion::ampeg_run_with_cc_and_velocity`] ⇒ 区域的
     ///   `ampeg_*ccN`（含 `_onccN` ／ `_curveccN`）按 `base + Σ delta × curve(cc)`
-    ///   求值（**与离线两条路同一份实现**）。
+    ///   求值，以及 ② ⭐ 任务单 `#108`：[`PreparedRegion::gain_at_with_cc`] ⇒
+    ///   **CC 轴交叉淡化**按探针求值（两者都是**与离线两条路同一份实现**）。
     ///
     /// ⚠ **不改区域选择**：`cc` 只到 `slot_readings`，而"这条区域该不该响"由
     /// **摊平期**烧进掩码（[`flatten_regions`]）的键/力度/门控决定
@@ -3774,7 +4038,7 @@ impl SfzVoicePool {
                 sample.pcm(),
                 &mut local,
                 voice.rate,
-                voice.gain,
+                readings.gain,
                 voice.source_end,
                 readings.loop_window,
                 &mut fade,
@@ -3833,7 +4097,7 @@ impl SfzVoicePool {
             sample.pcm(),
             &mut local,
             voice.rate,
-            voice.gain,
+            readings.gain,
             voice.source_end,
             readings.loop_window,
             &mut fade,
@@ -3878,9 +4142,10 @@ impl SfzVoicePool {
     ///   release."）。
     /// * ⭐ `note_off`：包络眼里的 note-off 帧（`one_shot` ⇒ `u64::MAX` ＝ 不理会）。
     /// * ⭐ `cc`（任务单 `#107`）：**会话运行态**的 CC 探针（`Fn(u8) -> u8`）；
-    ///   `None` ⇒ `ampeg_*ccN` 一项都不加（与接线前逐位相同）。它**只**进
-    ///   [`PreparedRegion::ampeg_run_with_cc_and_velocity`]（取值），⛔ 不参与
-    ///   `region.accepts(...)`（区域选择仍在摊平期，见模块头的门控登记）。
+    ///   `None` ⇒ `ampeg_*ccN` 一项都不加（与接线前逐位相同）。⭐ 任务单 `#108` 起它
+    ///   还进 [`PreparedRegion::gain_at_with_cc`]（**CC 轴交叉淡化**的增益）。
+    ///   两处都**只**影响取值，⛔ 不参与 `region.accepts(...)`
+    ///   （区域选择仍在摊平期，见模块头的门控登记）。
     fn slot_readings(
         plan: &PreparedSfz,
         voice: SfzVoice,
@@ -3890,6 +4155,12 @@ impl SfzVoicePool {
         let region = plan.regions().get(voice.region_index as usize)?;
         let pcm_len = plan.sample(voice.sample_index)?.pcm().len();
         let loop_window = region.loop_window(pcm_len);
+        // ⭐ ⭐ CC 轴交叉淡化（任务单 `#108`）：**逐块现算**本声部的逐样本增益 ——
+        // 乐器层（含 CC 轴）由 `region.gain_at_with_cc` 求值、再乘引擎层的
+        // `voice.track_gain`（触发期抄下）。`note` / `velocity` / `region_index` 早就在
+        // `SfzVoice` 里 ⇒ ⛔ **没有新的逐声部字段**（`SfzVoice` 仍 40 B，判据 `S9`）。
+        // `cc == None` ⇒ 与接线前的 `voice.gain` **逐位相同**（同一个求值点同一个因子）。
+        let gain = region.gain_at_with_cc(voice.note(), voice.velocity(), cc) * voice.track_gain();
         // ⭐ 力度调制（任务单 `#106`）：**逐声部力度**就在 [`SfzVoice`] 里
         // （[`SfzVoice::velocity`]，触发期抄下、此后不变）⇒ 本路**不需要任何新字段**
         // （`SfzVoice` 仍 40 B）。
@@ -3904,6 +4175,7 @@ impl SfzVoicePool {
         };
         Some(SlotReadings {
             loop_window,
+            gain,
             limit: end_sample,
             // ⭐ `one_shot` 连**包络的释放段**也不许进（"忽略 note-off"是一条完整裁决：
             // 既不改退休，也不起释放）⇒ 给它 `u64::MAX`。其余模式把引擎终点原样交给包络
@@ -4422,6 +4694,111 @@ mod tests {
         assert_eq!(
             mismatches, 0,
             "⭐ 摊平增益必须与 total_gain **逐位相同**（首个不同点 = {first:?}）"
+        );
+    }
+
+    /// ⭐ 判据（任务单 `#108`）：**CC 轴也逐位相同** —— 带 CC 交叉淡化的区域，在同一个
+    /// CC 探针下，摊平增益 ＝ `PlaybackSpec::total_gain`，**全 128×128 网格逐位相同**。
+    ///
+    /// 两臂（⛔ 各自是一个独立口径）：
+    /// * `cc = None` ⇒ 与**接线前**逐位相同（对照臂：`playback_spec(..)`）——它证明
+    ///   本片没有扰动键轴 / 力度淡入 / 力度淡出那三张表；
+    /// * `cc = Some(probe)` ⇒ 与 `playback_spec_with(&query, ..)` 逐位相同（新口径）——
+    ///   它证明烘进摊平表的 CC 几何与解析层是**同一条乘法链、同一个结合序**。
+    #[test]
+    fn flattened_cc_crossfade_gain_equals_total_gain_over_the_whole_grid() {
+        // 键轴 ＋ 力度淡出 ＋ **两条 CC 段**（淡入 cc1、淡出 cc2），⛔ 不带任何 `ampeg_*`
+        // ⇒ 这条判据量的**只有增益**。
+        const XF: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 volume=-3 \
+             xfin_lokey=48 xfin_hikey=72 xfout_lovel=60 xfout_hivel=110 \
+             xfin_locc1=0 xfin_hicc1=100 xfout_locc2=20 xfout_hicc2=90\n";
+        let instrument =
+            SfzInstrument::load(XF.to_owned(), &ParseLimits::default()).expect("解析必须成功");
+        let sample = InMemorySample::sine(440.0, 48_000.0, 480);
+        let prepared = PreparedSfz::prepare(&instrument, &sample, 48_000.0).expect("摊平");
+        let flat = &prepared.regions()[0];
+        assert_eq!(
+            flat.cc_crossfade_count(),
+            2,
+            "摊平表必须真的烘进两条 CC 段（⛔ 不是只看解析层）"
+        );
+        assert_eq!(flat.cc_crossfades()[0].axis, XfAxis::Cc(1));
+        assert_eq!(flat.cc_crossfades()[1].axis, XfAxis::Cc(2));
+
+        // 探针：cc1 读 64、cc2 读 40、其余读 0（与 `ControlChangeState::value` 同口径）。
+        let probe = |controller: u8| -> u8 {
+            match controller {
+                1 => 64,
+                2 => 40,
+                _ => 0,
+            }
+        };
+        // 鉴别力自检：探针必须真的改变增益（⛔ 否则本判据对结合序无话可说）。
+        assert_ne!(
+            flat.gain_at(60, 100),
+            flat.gain_at_with_cc(60, 100, Some(&probe)),
+            "⭐ CC 段必须在增益上生效（否则下面是空转）"
+        );
+
+        let rates = RenderRates::new(48_000.0, 48_000.0);
+        // 臂 ①：`cc = None`（接线前沿用的那条：`playback_spec(..)`）。
+        let (mismatches_none, first_none) = instrument
+            .with_instrument(|parsed| {
+                let region = &parsed.regions()[0];
+                let mut mismatches = 0usize;
+                let mut first: Option<(u8, u8, u32, u32)> = None;
+                for n in 0u16..128 {
+                    for v in 0u16..128 {
+                        let want = region.playback_spec(n as u8, v as u8, rates).total_gain();
+                        let got = flat.gain_at_with_cc(n as u8, v as u8, None);
+                        if want.to_bits() != got.to_bits() {
+                            mismatches += 1;
+                            if first.is_none() {
+                                first = Some((n as u8, v as u8, want.to_bits(), got.to_bits()));
+                            }
+                        }
+                    }
+                }
+                (mismatches, first)
+            })
+            .expect("闭包式访问");
+        // 臂 ②：`cc = Some(probe)`（本片新接的那条：`playback_spec_with(&query, ..)`）。
+        let probe_ref: &dyn Fn(u8) -> u8 = &probe;
+        let (mismatches_cc, first_cc) = instrument
+            .with_instrument(|parsed| {
+                let region = &parsed.regions()[0];
+                let mut mismatches = 0usize;
+                let mut first: Option<(u8, u8, u32, u32)> = None;
+                for n in 0u16..128 {
+                    for v in 0u16..128 {
+                        let query = RegionQuery::new(n as u8, v as u8).with_cc(probe_ref);
+                        let want = region.playback_spec_with(&query, rates).total_gain();
+                        let got = flat.gain_at_with_cc(n as u8, v as u8, Some(probe_ref));
+                        if want.to_bits() != got.to_bits() {
+                            mismatches += 1;
+                            if first.is_none() {
+                                first = Some((n as u8, v as u8, want.to_bits(), got.to_bits()));
+                            }
+                        }
+                    }
+                }
+                (mismatches, first)
+            })
+            .expect("闭包式访问");
+        println!(
+            "[sfz] CC 轴摊平增益 vs total_gain：`cc = None` 位型不同的点数 = {mismatches_none}\
+             （首个 = {first_none:?}）；`cc = Some(probe)` 位型不同的点数 = {mismatches_cc}\
+             （首个 = {first_cc:?}）"
+        );
+        assert_eq!(
+            mismatches_none, 0,
+            "⭐ `cc = None` 必须与 `playback_spec(..)` **逐位相同**（键/力度两轴未被扰动；\
+             首个不同点 = {first_none:?}）"
+        );
+        assert_eq!(
+            mismatches_cc, 0,
+            "⭐ `cc = Some(probe)` 必须与 `playback_spec_with(..)` **逐位相同**\
+             （首个不同点 = {first_cc:?}）"
         );
     }
 

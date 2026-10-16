@@ -70,6 +70,11 @@
 //! | ⭐ S64 | ⭐ **三条路一致（本单核心）**（任务单 `#107` 新增；§7.3） | `cc ∈ {0, 37, 127}` × 力度 100：**离线** `render_note_into_with_cc` ／ **摊平** `render_block_into_with_cc` ／ **实时** `render_into_with_cc` 三条路的位模式序列**逐位相同**（两两相等 ＋ 首尾相等）；⭐ 应绿反向腿：同夹具两个 CC 值的**实时**输出必须**逐位不同** |
 //! | ⭐ S65 | ⭐ **无 CC ⇒ 逐位不变 ＋ 三个承重指纹**（任务单 `#107` 新增；§7.4） | **新入口** `render_into_with_cc(cc = None)` 与旧入口 `render_into` **逐位相同**，两个夹具的 FNV-1a 指纹 ＝ `0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）；`render_block_into_with_cc(cc = None)` 与 `render_block_into` **逐位相同**，广播路径指纹 ＝ `0xa933ddab286bdf5e`；⭐ **应绿反向腿**：× `1.0000001` ⇒ 指纹**必须**变 |
 //! | ⭐ S66 | ⭐ **`#107` 的追加修订段 ＋ 显式选路 ③ 可判**（任务单 `#107` 新增；§2.3／台账第 278 条） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#107`）」／「摊平期门控登记维持不变（显式选路 ③）」／「本单未接线（登记，⛔ 不静默）」**且** `#104` 的两条**原文**登记仍在（「⭐ 双口径登记（任务单 `#104`）」／「⭐ 摊平期门控登记（任务单 `#104`）」）；反向腿：文档里**没有**的两句 ⇒ `contains` 必须 `false` |
+//! | ⭐ S67 | ⭐ **CC 轴淡出的端到端公式**（任务单 `#108` 新增；§6.1） | [`CC_FADE_IN_FIXTURE`]（`xfin_locc1=0 xfin_hicc1=100`）＋ [`CC_FADE_IN_LINEAR_FIXTURE`]（`xf_cccurve=gain`）经**离线**渲染 512 帧：恒 `1.0` 样本 ＋ `amp_veltrack=0` ⇒ **每一帧逐位等于**该 CC 处的增益 —— `power` 腿 `cc = 0/25/50/75/100/127` ⇒ `0.0`／**`0.5`**／`0.707106769`（`0x3f3504f3`）／`0.866025388`（`0x3f5db3d7`）／`1.0`／`1.0`（各断言 ＝ `sqrt(clamp(v/100))` 的位型）；`gain` 腿同六个值 ⇒ `0.0`／`0.25`／`0.5`／`0.75`／`1.0`／`1.0`；⭐ 反空判腿：`cc = 25` ⇒ **恰好 `0.5`**、`cc = 100` ＝ `cc = 127` ＝ `1.0`（上界处**钳位**，⛔ 不外推）、两个 CC 值必须**不同** |
+//! | ⭐ S68 | ⭐ **三条路一致（本单核心）**（任务单 `#108` 新增；§6.2） | `cc ∈ {0, 25, 50, 75, 100, 127}` × 力度 100 ⇒ **离线** `render_note_into_with_cc` ／ **摊平** `render_block_into_with_cc` ／ **实时** `render_into_with_cc` 三条路的位模式序列**逐位相同**（两两相等）；⭐ 摊平表里的 CC 段与 `Region::crossfades` **逐字相同**；⭐ 声部里存的是**引擎层**那一份（`track_gain()` ＝ `1.0`；非单位腿 `track_gain = 0.5` ⇒ 声部读 `0.5`、输出恰 `0.5`）；⭐ 反空判腿：不同 CC 值必须给出**不同**指纹（实测六臂 `0x28c31cf8df2ec325`／`0xbccf612c016c7325`／`0x1f4f6ba2fd851f25`／`0xfae0ddae7bb30325`／`0x2ccb74db492c7325`／`0x2ccb74db492c7325`） |
+//! | ⭐ S69 | ⭐ **反向腿（分形态）＋ 三个承重指纹**（任务单 `#108` 新增；§6.3） | ⭐ **反向腿 ①**：同文本去掉两条 CC 行 ⇒ 两个 CC 值的输出**逐位相同**（且与 `cc = None` 相同、增益恒 `1.0`）；② **`xfout` 单行形态**：`xfout_locc1=64` 单独出现 ⇒ 区间 `[64, 127]`（`cc = 64` ⇒ **1.0**、`cc = 127` ⇒ **0.0**），**去掉那一行** ⇒ 两个 CC 值**逐位相同**；③ **如实登记的读数**：`xfin_hicc1=100` 单独出现时下界取规范缺省 **0** ⇒ 去掉 `xfin_locc1=0` **仍然不同**（`cc = 25` ⇒ `0.5`）；⭐ 三个**承重指纹**逐字复跑并断言：`0xa9dec8a87f69106c`（非零 200）／`0xd3c2a82076bd8947`（非零 399）／`0xa933ddab286bdf5e`；⭐ **应绿反向腿**：× `1.0000001` ⇒ 指纹**必须**变 |
+//! | ⭐ S70 | ⭐ **Key／Velocity 两轴未被扰动**（任务单 `#108` 新增；§6.4） | 两条**只差 CC 两行**的区域（`volume=-3` ＋ 键轴 in/out ＋ 力度淡入/淡出），`gain_at` 覆盖**全 128×128 网格（16384 点）**：位型不同 ＝ **0**；⭐ 两轴读数对照（键轴 `0.09814711 → 0.0`、力度轴 `0.0 → 0.09814711` ⇒ 两轴都真的在生效，⛔ 不是空夹具）；⭐ 渲染腿：带 CC 的区域在 `cc = None` 时与不带 CC 的区域输出**逐位相同** |
+//! | ⭐ S71 | ⭐ **条数上界的来历 ＋ 修订段 ＋ 尺寸可判**（任务单 `#108` 新增；§6.5／§11） | `include_str!("../src/sfz_instrument.rs")` 必须逐字含「⭐ ⭐ **追加修订段（任务单 `#108`）」／「# ⭐ CC 轴交叉淡化（任务单 `#108`）」／「结构性上界」／局限表第 ⑦ 行的**原文**／`#107` 与 `#104` 的原文；⭐ 语料普查原始读数必须在源码里可判（`**1398**`／`**1205**`／`**64894**`／`{0: 62436, 1: 1816, 2: 642}`／`{0: 62281, 1: 1920, 2: 693}`／`{1, 85, 121}`）；⭐ `CC_CROSSFADE_CAP == 256`、`size_of::<Crossfade>() == 6` ⇒ 每区域 `＋1536 B`；⭐ 尺寸读数 `SfzVoice=40`／`SfzVoicePool=1712`／`EngineRuntime=180144 < 192 KiB`（⛔ 三者都 ＋0）、`PreparedRegion=5768`（由 `size_of` 现读） |
 //!
 //! # S5 的指纹是**接线前**的实测值
 //!
@@ -92,8 +97,9 @@ mod support;
 use support::{MixSpec, NoteSpec, note_project, render, render_snapshot, tuned_project};
 use yeban_engine::drums::DrumsParams;
 use yeban_engine::sfz_instrument::{
-    InMemorySample, PendingSfz, PreparedRegion, PreparedSfz, SFZ_VOICES_PER_TRACK, SfzByteBudget,
-    SfzByteUsage, SfzInstrument, SfzPlan, SfzVoice, SfzVoicePool,
+    CC_CROSSFADE_CAP, InMemorySample, PendingSfz, PreparedRegion, PreparedSfz,
+    SFZ_VOICES_PER_TRACK, SfzByteBudget, SfzByteUsage, SfzInstrument, SfzPlan, SfzVoice,
+    SfzVoicePool,
 };
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, ScheduledNote, SynthEngine, track_gain, velocity_gain};
@@ -107,6 +113,8 @@ use yeban_sfz::error::SfzError;
 use yeban_sfz::instrument::{LoopMode, OffMode};
 // ⭐ 任务单 `#104`：`ampeg_*` 的 CC 调制（四形态归约的读数形状）。
 use yeban_sfz::modulation::AmpegParam;
+// ⭐ 任务单 `#108`：交叉淡化的 CC 轴（摊平表里烘的是 `yeban-sfz` 的 `Crossfade` 值类型）。
+use yeban_sfz::Crossfade;
 
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
@@ -808,6 +816,13 @@ fn s9_sizes_are_printed_and_the_runtime_stays_under_192_kib() {
     // （`ControlChangeState` ＝ `[u8; 128]` ＋ 128 位"收到过"位图 ＝ **144 B**）
     // ⇒ `EngineRuntime` 180000 → **180144**（余量 16608 → **16464** ≥ 8192）；
     // ⛔ `SfzVoice` 仍 **40 B**（＋0）、⛔ 池仍 **1712**（＋0）、⛔ 摊平表仍 **4232**（＋0）。
+    // ⭐ **本单（`#108`：交叉淡化的 CC 轴）的代价**：`PreparedRegion` 多一张**定长**
+    // CC 段数组（`[Crossfade; CC_CROSSFADE_CAP ＝ 256]`，`size_of::<Crossfade>() ＝ 6`）
+    // ⇒ `PreparedRegion` 4232 → **5768**（＋**1536**；条数 `u16` 落在既有填充里 ⇒ 0 B）。
+    // ⛔ `SfzVoice` 仍 **40 B**（＋0）、⛔ 池仍 **1712**（＋0）、
+    // ⛔ `EngineRuntime` 仍 **180144**（＋0，余量仍 16464 ≥ 8192 —— 摊平表⛔ 不进实时对象）。
+    // ⚠ `SfzVoice::gain` 本片**改了名**（→ `SfzVoice::track_gain`）而**⛔ 没有加字段**：
+    // 它只存**引擎层**那一份，乐器层（含 CC 轴交叉淡化）由逐块路径现算 —— 见判据 `S68`／`S71`。
     assert_eq!(voice, 40, "一个 SFZ 声部 = 40 字节（定长、全 `Copy`）");
     assert_eq!(
         cc_state, 144,
@@ -6640,4 +6655,610 @@ fn s66_the_107_revision_is_appended_and_the_gate_choice_is_explicit() {
     assert!(MODULE_SOURCE.contains(UNWIRED), "⭐ 未接线的两族必须登记");
     assert!(!MODULE_SOURCE.contains(ABSENT_REVISION), "⭐ 反向腿");
     assert!(!MODULE_SOURCE.contains(ABSENT_UNWIRED), "⭐ 反向腿");
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#108`：把交叉淡化的 **CC 轴**（`xfin_loccN` ／ `xfin_hiccN` ／
+//    `xfout_loccN` ／ `xfout_hiccN`）接进引擎的**三条路**
+// ---------------------------------------------------------------------------
+//
+// ⛔ 本片**不动** `yeban-sfz` 的语义：`Region::crossfade_gain` 早就读得到
+// `RegionQuery::cc`（公式在 `crossfade.rs` 的 `fade_in` ／ `fade_out` 里），
+// 本片补的是"**把几何烘进摊平表** ＋ **把探针喂进逐块路径**"那一半。
+//
+// 三条路（离线 `render_note_into_with_cc` ／ 摊平 `render_block_into_with_cc` ／
+// 实时 `render_into_with_cc`）在**同一 CC ＋ 同一力度**下必须**逐位相同**。
+
+/// ⭐ S67 夹具：`xfin_locc1=0` ＋ `xfin_hicc1=100`（规范页示例的形态），曲线缺省 `power`。
+///
+/// `amp_veltrack=0` ⇒ 力度 ≥ 1 时 `velocity_gain == 1.0`；样本恒 `1.0`、`rate == 1.0`
+/// ⇒ 输出的**每一帧逐位等于**该 CC 处的交叉淡化增益（于是可以把输出**反解成公式值**，
+/// ⛔ 不是"看起来在变"）。
+const CC_FADE_IN_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                  amp_veltrack=0 xfin_locc1=0 xfin_hicc1=100\n";
+
+/// ⭐ S67 的第二条腿：同一条淡入、显式取 `xf_cccurve=gain`（线性增益曲线）。
+const CC_FADE_IN_LINEAR_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                        amp_veltrack=0 xf_cccurve=gain \
+                                        xfin_locc1=0 xfin_hicc1=100\n";
+
+/// ⭐ S69 的反向腿夹具（**单行**形态）：`xfout_locc1=64` 单独出现 ⇒ 上界取
+/// `xfout` 族的规范缺省 **127** ⇒ 区间 `[64, 127]`（真的淡出）；
+/// ⭐ **去掉这一行** ⇒ 该区域一段交叉淡化都没有 ⇒ 增益恒 `1.0` ⇒ CC 不再影响输出。
+const CC_FADE_OUT_ONE_LINE_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                           amp_veltrack=0 xfout_locc1=64\n";
+
+/// ⭐ S69 的对照夹具：与 [`CC_FADE_OUT_ONE_LINE_FIXTURE`] **同文本、去掉那一行**。
+const CC_FADE_OUT_ONE_LINE_REMOVED: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                            amp_veltrack=0\n";
+
+/// ⭐ S69 的第三条腿夹具：`xfin_hicc1=100` 单独出现 ⇒ 下界取 `xfin` 族的规范缺省 **0**
+/// ⇒ 区间 `[0, 100]`。⚠ **去掉 `xfin_locc1=0` 那一行不改变这条区间的生效性** ——
+/// 这正是下面那条"去行"反向腿**分形态**的原因（测出来的事实，⛔ 不是假设）。
+const CC_FADE_IN_NO_LOCC_FIXTURE: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 \
+                                          amp_veltrack=0 xfin_hicc1=100\n";
+
+/// ⭐ 规范公式（逐字照 `yeban-sfz` 的 `crossfade::fade_in`）：
+/// `t = 0`（`v <= low`）／`t = 1`（`v >= high`）／其间 `(v − low) / (high − low)`；
+/// `power`（缺省）⇒ `sqrt(t)`、`gain` ⇒ `t`。本夹具 `low = 0`。
+fn expected_cc_fade_in(v: u8, high: u8, power: bool) -> f32 {
+    let t = if v >= high {
+        1.0
+    } else {
+        f32::from(v) / f32::from(high)
+    };
+    if power { t.sqrt() } else { t }
+}
+
+/// ⭐ 恒 `1.0` 的样本（S67／S68 用）：`rate == 1.0`、`frac == 0` ⇒ 插值逐位精确。
+fn constant_sample(frames: usize) -> InMemorySample {
+    InMemorySample {
+        pcm: vec![1.0; frames],
+        sample_hz: 48_000.0,
+    }
+}
+
+/// ⭐ S67（任务单 `#108`；判据 §6.1）：**端到端 —— 两个 CC 值给出不同增益，且逐位等于公式**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_FADE_IN_FIXTURE`] ／ [`CC_FADE_IN_LINEAR_FIXTURE`] 经**离线**
+/// `render_note_into_with_cc` 渲染的 512 帧输出；单位 ＝ 增益（无量纲，`1.0` ＝ 满幅）
+/// ＋ 位模式（逐帧 `u32`）。
+///
+/// 规范逐字（<https://sfzformat.com/opcodes/xfin_loccN/>）："The volume of the region will
+/// be zero for values of the MIDI continuous controller N lower than or equal to
+/// `xfin_loccN`, and maximum … for values greater than or equal to `xfin_hiccN`."
+/// ⇒ `[0, 100]` 上 `gain = sqrt(v/100)`（`power`）／`v/100`（`gain`）。
+#[test]
+fn s67_the_cc_axis_fade_follows_the_specification_formula_on_the_offline_path() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    const HIGH: u8 = 100;
+    let sample = constant_sample(4_096);
+
+    for (label, text, power) in [
+        ("power（缺省）", CC_FADE_IN_FIXTURE, true),
+        ("gain（线性）", CC_FADE_IN_LINEAR_FIXTURE, false),
+    ] {
+        let instrument =
+            SfzInstrument::load(text.to_owned(), &Default::default()).expect("夹具必须解析成功");
+        for value in [0u8, 25, 50, 75, 100, 127] {
+            let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
+            let mut out = vec![0.0f32; FRAMES];
+            let written = instrument
+                .render_note_into_with_cc(&sample, 60, VELOCITY, Some(&probe), &mut out, HZ)
+                .expect("离线渲染");
+            assert_eq!(written, FRAMES);
+            let want = expected_cc_fade_in(value, HIGH, power);
+            assert_eq!(
+                out[0].to_bits(),
+                want.to_bits(),
+                "⭐ {label} cc = {value}：第 0 帧必须**逐位**等于规范公式值 \
+                 （实测 {:.9} / {:#010x}，公式 {:.9} / {:#010x}）",
+                out[0],
+                out[0].to_bits(),
+                want,
+                want.to_bits()
+            );
+            assert!(
+                out.iter().all(|s| s.to_bits() == want.to_bits()),
+                "⭐ 恒 `1.0` 样本 ⇒ 512 帧**每一帧**都等于该 CC 处的增益"
+            );
+            println!(
+                "[engine-sfz/S67] {label} cc = {value}：实测增益 = {:.9}（{:#010x}）；\
+                 公式 = {:.9}（{:#010x}）",
+                out[0],
+                out[0].to_bits(),
+                want,
+                want.to_bits()
+            );
+        }
+    }
+
+    // ⭐ 反空判腿：`power` 腿的 `cc = 25`（恰好 `0.5`）与 `cc = 100`（恰好 `1.0`）必须不同。
+    let power = SfzInstrument::load(CC_FADE_IN_FIXTURE.to_owned(), &Default::default())
+        .expect("夹具必须解析成功");
+    let render = |value: u8| -> f32 {
+        let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
+        let mut out = vec![0.0f32; FRAMES];
+        power
+            .render_note_into_with_cc(&sample, 60, VELOCITY, Some(&probe), &mut out, HZ)
+            .expect("离线渲染");
+        out[0]
+    };
+    assert_eq!(
+        render(25),
+        0.5,
+        "⭐ `v = 25`、`high = 100` ⇒ `sqrt(0.25)` **恰好** 0.5"
+    );
+    assert_eq!(render(100), 1.0, "⭐ `v >= high` ⇒ 满幅 1.0");
+    assert_eq!(
+        render(100),
+        render(127),
+        "⭐ 上界以上**钳到**满幅（同一段，⛔ 不是外推）"
+    );
+    assert_ne!(
+        render(25),
+        render(50),
+        "⭐ 两个 CC 值必须给出**不同**的增益"
+    );
+}
+
+/// ⭐ S68（任务单 `#108`；判据 §6.2）：**三条路一致** —— 同一 CC ＋ 同一力度下，
+/// 离线 ／ 摊平 ／ 实时**位模式逐位相同**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ [`CC_FADE_IN_FIXTURE`] 在 `cc ∈ {0, 25, 50, 75, 100, 127}`（力度 100）下
+/// 三条路的 512 帧输出；单位 ＝ 位模式序列（逐帧 `u32`）＋ 逐声部 `track_gain`（无量纲）。
+#[test]
+fn s68_the_three_paths_agree_bit_for_bit_at_the_same_cc_on_the_crossfade_axis() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    let instrument = SfzInstrument::load(CC_FADE_IN_FIXTURE.to_owned(), &Default::default())
+        .expect("夹具必须解析成功");
+    let sample = constant_sample(4_096);
+    let plan = prepare_with(CC_FADE_IN_FIXTURE, &sample);
+    assert_eq!(
+        plan.regions()[0].cc_crossfade_count(),
+        1,
+        "摊平表必须真的承载那一条 CC 段"
+    );
+    // ⭐ 烘的几何必须与**解析层**逐字一致（同一条区间、同一个方向、同一条曲线）。
+    let parsed = instrument
+        .with_instrument(|parsed| parsed.regions()[0].crossfades.clone())
+        .expect("闭包式访问");
+    assert_eq!(
+        plan.regions()[0].cc_crossfades(),
+        parsed.as_slice(),
+        "⭐ 摊平表里的 CC 段必须与 `Region::crossfades` **逐字**相同（⛔ 不是另造一份几何）"
+    );
+
+    let mut fingerprints: Vec<(u8, u64)> = Vec::new();
+    for cc_value in [0u8, 25, 50, 75, 100, 127] {
+        let probe = |controller: u8| -> u8 { if controller == 1 { cc_value } else { 0 } };
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = Some(&probe);
+
+        // ① 离线
+        let mut offline = vec![0.0f32; FRAMES];
+        let written_offline = instrument
+            .render_note_into_with_cc(&sample, 60, VELOCITY, cc_arg, &mut offline, HZ)
+            .expect("离线渲染");
+        // ② 摊平表
+        let mut flat = vec![0.0f32; FRAMES];
+        let written_flat = plan.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut flat);
+        // ③ 实时声部池
+        let mut pool = SfzVoicePool::new(HZ);
+        assert_eq!(
+            pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 1.0),
+            1,
+            "单区域夹具 ⇒ 恰好建 1 个声部"
+        );
+        let mut realtime = vec![0.0f32; FRAMES];
+        pool.render_into_with_cc(&plan, 0, &mut realtime, cc_arg);
+
+        assert_eq!(written_offline, FRAMES);
+        assert_eq!(written_flat, FRAMES);
+        // ⭐ 声部里存的是**引擎层**那一份（⛔ 不是"乐器层 × 引擎层"的乘积）。
+        assert_eq!(
+            pool.voices()[0].track_gain(),
+            1.0,
+            "⭐ 单位轨增益 ⇒ `track_gain` 恰 `1.0`（它**只**承载引擎层那一份）"
+        );
+        assert_eq!(
+            bits(&offline),
+            bits(&flat),
+            "⭐ cc = {cc_value}：离线 → 摊平必须逐位相同"
+        );
+        assert_eq!(
+            bits(&flat),
+            bits(&realtime),
+            "⭐ cc = {cc_value}：**摊平 → 实时**必须逐位相同"
+        );
+        assert_eq!(
+            bits(&offline),
+            bits(&realtime),
+            "⭐ cc = {cc_value}：三条路同值"
+        );
+        let fingerprint = fnv1a_64(&realtime);
+        fingerprints.push((cc_value, fingerprint));
+        println!(
+            "[engine-sfz/S68] cc = {cc_value}：三条路位模式相同 = {}；增益 = {:.9}；\
+             指纹 = 0x{fingerprint:016x}",
+            bits(&offline) == bits(&realtime),
+            realtime[0]
+        );
+    }
+    // ⭐ 反空判腿：六个 CC 值里至少要出现**两个不同**的指纹
+    // （⛔ 否则"三条路相同"可以靠"整条轴根本没接线"满足）。
+    assert!(
+        fingerprints.iter().any(|(_, f)| *f != fingerprints[0].1),
+        "⭐ 有牙：不同 CC 值必须给出**不同**的输出指纹"
+    );
+    assert_eq!(
+        fingerprints[4].1, fingerprints[5].1,
+        "⭐ `cc = 100`（＝ `xfin_hicc1`）与 `cc = 127`（上界以上）落在**同一段**\
+         ⇒ 同值（⛔ 不是外推：`position` 在 `v >= high` 处恒 `1.0`）"
+    );
+    assert_ne!(
+        fingerprints[0].1, fingerprints[1].1,
+        "⭐ `cc = 0`（下界 ⇒ 静音）与 `cc = 25` 必须不同"
+    );
+
+    // ⭐ 第四条腿：非单位 `track_gain`（0.5）下声部存的确实是**它**，
+    // 而输出 = 乐器层 × 0.5（⛔ 不是"把乘积当成 track_gain"）。
+    let mut pool = SfzVoicePool::new(HZ);
+    assert_eq!(pool.trigger_note(&plan, 60, VELOCITY, u64::MAX, 0.5), 1);
+    assert_eq!(
+        pool.voices()[0].track_gain(),
+        0.5,
+        "⭐ `track_gain = 0.5` ⇒ 声部里存的正是 0.5"
+    );
+    let probe = |controller: u8| -> u8 { if controller == 1 { 100 } else { 0 } };
+    let mut scaled = vec![0.0f32; FRAMES];
+    pool.render_into_with_cc(&plan, 0, &mut scaled, Some(&probe));
+    assert_eq!(
+        scaled[0].to_bits(),
+        (1.0f32 * 0.5).to_bits(),
+        "⭐ 满幅（cc = 100）× 轨增益 0.5 ⇒ 每帧恰 0.5"
+    );
+}
+
+/// ⭐ S69（任务单 `#108`；判据 §6.3）：**反向腿 ＋ 三个承重指纹**。
+///
+/// # 反向腿（⭐ 分形态 —— 测出来的事实，⛔ 不是假设）
+///
+/// * ① **两条都去掉**（同文本去掉 `xfin_locc1=0` 与 `xfin_hicc1=100`）⇒ 两个 CC 值的
+///   输出**逐位相同**，且与 `cc = None` 逐位相同；
+/// * ② **`xfout` 单行形态**：`xfout_locc1=64` 单独出现 ⇒ 区间 `[64, 127]` 真的淡出
+///   （`cc = 64` ⇒ 1.0、`cc = 127` ⇒ 0.0 ⇒ 输出不同）；**去掉那一行** ⇒ 两个 CC 值的
+///   输出**逐位相同**（⛔ 这一条才是任务单说的"去掉那一行 ⇒ 逐位相同"的成立形态）；
+/// * ③ **`xfin` 单行形态的反面读数**：`xfin_locc1=0` 单独去掉之后**仍然不同** ——
+///   因为 `xfin` 族的下界规范缺省是 **0**，`[0, 100]` 照样生效。本片把这条**如实测出来
+///   并登记**（⛔ 不假装"去行必然等价"）。
+///
+/// # 三个承重指纹（⛔ 必须逐字不变）
+///
+/// `0xa9dec8a87f69106c`（S37 臂 1）／`0xd3c2a82076bd8947`（S37 臂 2）／
+/// `0xa933ddab286bdf5e`（S33／S14 广播路径）；⭐ 应绿反向腿：同一输出 × `1.0000001`
+/// ⇒ 指纹**必须**变。
+#[test]
+fn s69_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
+    const HZ: f32 = 48_000.0;
+    const VELOCITY: u8 = 100;
+    const FRAMES: usize = 512;
+    let sample = constant_sample(4_096);
+
+    // ---- 反向腿 ①：两条都去掉 ⇒ 两个 CC 值逐位相同，且与 `cc = None` 相同 ----
+    let bare = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0\n",
+        &sample,
+    );
+    let render_bare = |value: Option<u8>| -> Vec<f32> {
+        let probe = |controller: u8| -> u8 {
+            if controller == 1 {
+                value.unwrap_or(0)
+            } else {
+                0
+            }
+        };
+        let cc_arg: Option<&dyn Fn(u8) -> u8> = match value {
+            Some(_) => Some(&probe),
+            None => None,
+        };
+        let mut out = vec![0.0f32; FRAMES];
+        bare.render_block_into_with_cc(60, VELOCITY, cc_arg, &mut out);
+        out
+    };
+    let (bare_none, bare_a, bare_b) = (
+        render_bare(None),
+        render_bare(Some(25)),
+        render_bare(Some(100)),
+    );
+    assert_eq!(
+        bits(&bare_a),
+        bits(&bare_b),
+        "⭐ 反向腿 ①：没有 CC 轴交叉淡化 ⇒ 两个 CC 值的输出必须**逐位相同**"
+    );
+    assert_eq!(
+        bits(&bare_none),
+        bits(&bare_a),
+        "⭐ 反向腿 ①：也必须与 `cc = None` 相同"
+    );
+    assert!(
+        bare_a.iter().all(|s| *s == 1.0),
+        "⭐ 反向腿 ①：没有交叉淡化 ⇒ 增益恒 `1.0`（恒 `1.0` 样本 ⇒ 每帧 1.0）"
+    );
+
+    // ---- 反向腿 ②：`xfout` 单行 ⇒ 真的淡出；去掉那一行 ⇒ 逐位相同 ----
+    let one_line = prepare_with(CC_FADE_OUT_ONE_LINE_FIXTURE, &sample);
+    let render_one_line = |value: u8| -> Vec<f32> {
+        let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
+        let mut out = vec![0.0f32; FRAMES];
+        one_line.render_block_into_with_cc(60, VELOCITY, Some(&probe), &mut out);
+        out
+    };
+    let (out_low, out_high) = (render_one_line(64), render_one_line(127));
+    assert_eq!(out_low[0], 1.0, "⭐ `cc = low = 64` ⇒ 淡出起点 ⇒ 满幅 1.0");
+    assert_eq!(
+        out_high[0], 0.0,
+        "⭐ `cc = high = 127` ⇒ 淡出终点 ⇒ 静音 0.0"
+    );
+    assert_ne!(
+        bits(&out_low),
+        bits(&out_high),
+        "⭐ 标定：这一行确实在起作用"
+    );
+    let removed = prepare_with(CC_FADE_OUT_ONE_LINE_REMOVED, &sample);
+    let render_removed = |value: u8| -> Vec<f32> {
+        let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
+        let mut out = vec![0.0f32; FRAMES];
+        removed.render_block_into_with_cc(60, VELOCITY, Some(&probe), &mut out);
+        out
+    };
+    assert_eq!(
+        bits(&render_removed(64)),
+        bits(&render_removed(127)),
+        "⭐ 反向腿 ②：去掉 `xfout_locc1=64` 那一行 ⇒ 两个 CC 值的输出**逐位相同**"
+    );
+
+    // ---- 反向腿 ③：`xfin` 单行 ⇒ 去掉 `xfin_locc1=0` 之后**仍然不同**（如实登记） ----
+    let no_locc = prepare_with(CC_FADE_IN_NO_LOCC_FIXTURE, &sample);
+    let render_no_locc = |value: u8| -> Vec<f32> {
+        let probe = |controller: u8| -> u8 { if controller == 1 { value } else { 0 } };
+        let mut out = vec![0.0f32; FRAMES];
+        no_locc.render_block_into_with_cc(60, VELOCITY, Some(&probe), &mut out);
+        out
+    };
+    let (only_hicc_a, only_hicc_b) = (render_no_locc(25), render_no_locc(100));
+    assert_ne!(
+        bits(&only_hicc_a),
+        bits(&only_hicc_b),
+        "⭐ 反向腿 ③（如实登记）：`xfin_hicc1=100` 单独出现时下界取规范缺省 **0** \
+         ⇒ 区间 `[0, 100]` 仍然生效 ⇒ 去掉 `xfin_locc1=0` **不**等于「没有 CC 轴」"
+    );
+    assert_eq!(
+        only_hicc_a[0], 0.5,
+        "⭐ 而且与「两条都在」的读数**逐位相同**（`[0, 100]` 就是那条区间）"
+    );
+
+    // ---- 三个承重指纹（⛔ 与 S33／S37／S52／S56／S62／S65 逐字同一份） ----
+    let looped = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60 loop_mode=loop_continuous \
+         loop_start=100 loop_end=164\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    let plain = prepare_with(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n",
+        &ramp_sample(LOOP_PCM_FRAMES),
+    );
+    for (label, plan, end_sample, expected) in [
+        (
+            "S69 loop_continuous ＋ end_sample = 200",
+            &looped,
+            200u64,
+            0xa9de_c8a8_7f69_106cu64,
+        ),
+        (
+            "S69 no_loop ＋ end_sample = u64::MAX",
+            &plain,
+            u64::MAX,
+            0xd3c2_a820_76bd_8947u64,
+        ),
+    ] {
+        let mut pool = SfzVoicePool::new(HZ);
+        assert_eq!(pool.trigger_note(plan, 60, 127, end_sample, 1.0), 1);
+        let mut out = vec![0.0f32; BLOCK];
+        pool.render_into_with_cc(plan, 0, &mut out, None);
+        let actual = fnv1a_64(&out);
+        println!(
+            "[engine-sfz/S69] {label}：指纹 = 0x{actual:016x}（承重 = 0x{expected:016x}）；\
+             非零帧数 = {}",
+            out.iter().filter(|sample| **sample != 0.0).count()
+        );
+        let _checked = check_fingerprint(&format!("S69 {label}"), actual, expected);
+    }
+    let broadcast = prepare(TWO_MATCH_ONE_MISS);
+    let mut block = vec![0.0f32; BLOCK];
+    broadcast.render_block_into_with_cc(60, 127, None, &mut block);
+    let legacy = fnv1a_64(&block);
+    println!(
+        "[engine-sfz/S69] S33／S14 广播路径：指纹 = 0x{legacy:016x}\
+         （承重 = 0x{NO_LOOP_FIXTURE_FINGERPRINT:016x}）"
+    );
+    let _checked = check_fingerprint("S69 广播路径", legacy, NO_LOOP_FIXTURE_FINGERPRINT);
+    // ⭐ 应绿反向腿：× `1.0000001` ⇒ 指纹必须变（证明上面三条是**逐位**判据）。
+    let scaled: Vec<f32> = block.iter().map(|sample| sample * 1.000_000_1).collect();
+    assert_ne!(
+        fnv1a_64(&scaled),
+        legacy,
+        "⭐ 反向腿：乘 1.0000001 后指纹必须变"
+    );
+}
+
+/// ⭐ S70（任务单 `#108`；判据 §6.4）：**Key／Velocity 两轴未被扰动**。
+///
+/// # 量什么（对象 ＋ 单位，先说再跑）
+///
+/// 对象 ＝ 两条**只差 CC 两行**的区域（键轴 ＋ 力度淡入／淡出 ＋ `volume` 全同）的
+/// [`PreparedRegion::gain_at`]；单位 ＝ 增益（无量纲）里的位模式，覆盖**全 128×128
+/// 网格**（16384 点）。
+///
+/// ⭐ 判定：**逐点位模式相同** ⇒ "往区域表里加 CC 几何"⛔ 一个字都没动键／力度两轴的读数。
+/// ⭐ 另一条腿：同一条带 CC 的区域在 `cc = None` 时与**不带 CC 的那条**输出逐位相同
+/// （渲染层面的同一件事）。
+#[test]
+fn s70_the_key_and_velocity_axes_are_undisturbed_by_the_cc_geometry() {
+    const BASE: &str = "sample=a.wav key=60 pitch_keycenter=60 volume=-3 \
+                        xfin_lokey=48 xfin_hikey=72 xfout_lokey=48 xfout_hikey=72 \
+                        xfin_lovel=40 xfin_hivel=90 xfout_lovel=60 xfout_hivel=110";
+    let without_cc = format!("<region> {BASE}\n");
+    let with_cc =
+        format!("<region> {BASE} xfin_locc1=0 xfin_hicc1=100 xfout_locc2=20 xfout_hicc2=90\n");
+    let sample = constant_sample(SAMPLE_FRAMES);
+    let plain = prepare_with(&without_cc, &sample);
+    let faded = prepare_with(&with_cc, &sample);
+
+    assert_eq!(plain.regions()[0].cc_crossfade_count(), 0);
+    assert_eq!(faded.regions()[0].cc_crossfade_count(), 2);
+
+    let mut mismatches = 0usize;
+    let mut first: Option<(u8, u8, u32, u32)> = None;
+    for n in 0u16..128 {
+        for v in 0u16..128 {
+            let a = plain.regions()[0].gain_at(n as u8, v as u8);
+            let b = faded.regions()[0].gain_at(n as u8, v as u8);
+            if a.to_bits() != b.to_bits() {
+                mismatches += 1;
+                if first.is_none() {
+                    first = Some((n as u8, v as u8, a.to_bits(), b.to_bits()));
+                }
+            }
+        }
+    }
+    // 两轴读数对照（键轴 ⇒ 逐点不同的那几行；力度轴 ⇒ 逐点不同的那几列）。
+    let key_reading = [
+        plain.regions()[0].gain_at(60, 100),
+        plain.regions()[0].gain_at(72, 100),
+    ];
+    let vel_reading = [
+        plain.regions()[0].gain_at(60, 40),
+        plain.regions()[0].gain_at(60, 100),
+    ];
+    assert_ne!(key_reading[0], key_reading[1], "⭐ 键轴必须仍在生效");
+    assert_ne!(vel_reading[0], vel_reading[1], "⭐ 力度轴必须仍在生效");
+    println!(
+        "[engine-sfz/S70] `gain_at` 全 128×128 网格（16384 点）位型不同 = {mismatches}\
+         （首个 = {first:?}）；键轴读数 [cc 无关] = {key_reading:?}；力度轴读数 = {vel_reading:?}"
+    );
+    assert_eq!(
+        mismatches, 0,
+        "⭐ 加 CC 几何⛔ 不得扰动键／力度两轴的读数（首个不同点 = {first:?}）"
+    );
+
+    // ⭐ 渲染层面的同一件事：带 CC 的区域在 `cc = None` 时与不带 CC 的**逐位相同**。
+    let render_flat = |plan: &PreparedSfz| -> Vec<f32> {
+        let mut out = vec![0.0f32; BLOCK];
+        plan.render_block_into_with_cc(60, 100, None, &mut out);
+        out
+    };
+    assert_eq!(
+        bits(&render_flat(&plain)),
+        bits(&render_flat(&faded)),
+        "⭐ `cc = None` ⇒ 带 CC 几何的区域与不带它的区域输出**逐位相同**"
+    );
+}
+
+/// ⭐ S71（任务单 `#108`；判据 §6.5 ＋ §11 的"登记可判"）：**条数上界的来历 ＋ 修订段 ＋ 尺寸**。
+///
+/// # 判定量
+///
+/// * `include_str!("../src/sfz_instrument.rs")` 必须逐字含 `#108` 的追加修订段、
+///   新的 CC 轴一节、以及**结构性上界**那句；`#107`／`#104` 的原文登记仍在；
+/// * [`CC_CROSSFADE_CAP`] ＝ **256**，且 `size_of::<Crossfade>()` ＝ **6**
+///   ⇒ 每区域的代价恰 `256 × 6 = 1536` 字节；
+/// * 尺寸读数：`SfzVoice` **40**（＋0）／`SfzVoicePool` **1712**（＋0）／
+///   `EngineRuntime` < 192 KiB（＋0）；`PreparedRegion` **由 `size_of` 现读**（⛔ 不手抄）。
+#[test]
+fn s71_the_cap_provenance_and_the_sizes_are_judgeable() {
+    const MODULE_SOURCE: &str = include_str!("../src/sfz_instrument.rs");
+    const REVISION: &str = "⭐ ⭐ **追加修订段（任务单 `#108`）";
+    const SECTION: &str = "# ⭐ CC 轴交叉淡化（任务单 `#108`）";
+    const STRUCTURAL: &str = "结构性上界";
+    const OLD_ROW: &str = "未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴）";
+    const PREV_REVISION: &str = "⭐ ⭐ **追加修订段（任务单 `#107`）";
+    const CALIBER: &str = "⭐ 双口径登记（任务单 `#104`）";
+    const ABSENT: &str = "CC 轴交叉淡化仍然一行都不接线";
+    println!(
+        "[engine-sfz/S71] 模块头：`#108` 修订段 = {}、新一节 = {}、结构性上界 = {}、\
+         ⑦ 原文保留 = {}、`#107` 原文 = {}、`#104` 原文 = {}",
+        MODULE_SOURCE.contains(REVISION),
+        MODULE_SOURCE.contains(SECTION),
+        MODULE_SOURCE.contains(STRUCTURAL),
+        MODULE_SOURCE.contains(OLD_ROW),
+        MODULE_SOURCE.contains(PREV_REVISION),
+        MODULE_SOURCE.contains(CALIBER),
+    );
+    for (label, needle) in [
+        ("`#108` 追加修订段", REVISION),
+        ("CC 轴交叉淡化一节", SECTION),
+        ("结构性上界（条数上界的来历）", STRUCTURAL),
+        ("局限表第 ⑦ 行的**原文**（第 278 条：⛔ 不许删）", OLD_ROW),
+        ("`#107` 的修订段", PREV_REVISION),
+        ("`#104` 的双口径登记", CALIBER),
+    ] {
+        assert!(MODULE_SOURCE.contains(needle), "⭐ 必须逐字含：{label}");
+    }
+    assert!(
+        !MODULE_SOURCE.contains(ABSENT),
+        "⭐ 反向腿：文档里没有的句子必须 `false`"
+    );
+
+    // ⭐ 语料普查的原始读数（分母 ＋ 已知非零对照 ＋ 单区域最大条数）必须登记在源码里。
+    for needle in [
+        "**1398**",
+        "**1205**",
+        "**64894**",
+        "{0: 62436, 1: 1816, 2: 642}",
+        "{0: 62281, 1: 1920, 2: 693}",
+        "{1, 85, 121}",
+    ] {
+        assert!(
+            MODULE_SOURCE.contains(needle),
+            "⭐ 条数上界的来历必须可判：模块头缺少普查读数 `{needle}`"
+        );
+    }
+
+    // ⭐ 容量与每区域代价。
+    let crossfade_bytes = core::mem::size_of::<Crossfade>();
+    let region_bytes = core::mem::size_of::<PreparedRegion>();
+    let voice = core::mem::size_of::<SfzVoice>();
+    let pool = core::mem::size_of::<SfzVoicePool>();
+    let runtime = core::mem::size_of::<yeban_engine::rt::EngineRuntime>();
+    println!(
+        "[engine-sfz/S71] size_of: Crossfade={crossfade_bytes} PreparedRegion={region_bytes} \
+         SfzVoice={voice} SfzVoicePool={pool} EngineRuntime={runtime}\
+         （CC_CROSSFADE_CAP={CC_CROSSFADE_CAP} ⇒ ＋{} B／区域；\
+         门槛 192 KiB = {}；余量 = {}）",
+        CC_CROSSFADE_CAP * crossfade_bytes,
+        192 * 1024,
+        192 * 1024 - runtime,
+    );
+    assert_eq!(
+        CC_CROSSFADE_CAP, 256,
+        "⭐ 结构性上界：128（淡入）× 2 张映射"
+    );
+    assert_eq!(
+        crossfade_bytes, 6,
+        "⭐ `Crossfade` ＝ `XfAxis`(2) ＋ `XfDirection`(1) ＋ `XfRange`(2) ＋ `XfCurve`(1)"
+    );
+    assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
+    assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
+    assert!(
+        runtime < 192 * 1024,
+        "⛔ `EngineRuntime` 必须 ＋0（仍是 {runtime} B < 192 KiB）"
+    );
 }
