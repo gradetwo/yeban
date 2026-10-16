@@ -10240,3 +10240,47 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 ⭐ **并附（⭐ 与第 255 条的关系）**: ⭐ ⭐ **第 255 条管"⭐ 本地门要覆盖 CI 的每一条腿"、⭐ 本条管"⭐ 为什么会有**结构上**覆盖不到的腿"** ⇒ ⭐ **前者是处方、⭐ 后者是病理** ✓
 
 ⭐ ⚠ ⭐ **六、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `40516ac6` 的 CI 判决** ＋ ⭐ **读回 `47617a9e`／⭐`4dc8c6cd`／⭐`d39311a9`／⭐`f10c8320` 的判决（⭐ 预期红、⭐ 红因同此缺陷；⭐ `40516ac6` 才是绿的第一个）** ＋ ⭐ `run_gui` 运行期打开工程 ＋ ⭐ 可见入口 ＋ ⭐ 金标重录 ＋ ⭐ 统一归一化分母单 ＋ ⭐ OGG 端到端夹具 ＋ ⭐ MIDI 导出 UI 按钮 ＋ ⭐ `needs-3`／⭐`needs-6` ＋ ⭐ 人类跑第 6 项 ✓
+
+---
+
+## R750 实测追加（2026-10-16）：⭐ **把新门从"⭐ 只补 `in-process-mcp`"⭐ 扩成"⭐ 逐条对齐 CI 的**三组** feature 腿 ＋ ⭐ `--all-features` 兜底"** ⇒ ⭐ **并把范围扫清（⭐ 全仓只那 5 个 crate 根门、⭐ 全在 `yeban-app`）**
+
+⭐ ⭐ ⭐ **一、⭐ 为什么要扩（⭐ 我核了 CI，⭐ 发现旧门只补了三条腿里的一条）**: ⭐ ⭐ **`.github/workflows/ci.yml` 里**真实的** feature 腿有三组**（⭐ 每组的守卫都是 `grep -q '^<特性>' crates/<crate>/Cargo.toml`）:
+| ⭐ 组 | ⭐ CI 命令 | ⭐ 行 |
+| :--- | :--- | :--- |
+| ⭐ **A. 实验性导出** | ⭐ `clippy`／⭐`test -p <crate> --all-targets --locked --features experimental-als-export,experimental-logic-export`（⭐ clippy 带 `-D warnings`） | ⭐ `:265`／⭐`:277` |
+| ⭐ **B. `midi-input`** | ⭐ `clippy`／⭐`test … --features midi-input` | ⭐ `:295`／⭐`:307` |
+| ⭐ **C. `in-process-mcp`** | ⭐ `test … --features in-process-mcp` | ⭐ `:330`／⭐`:406` |
+⇒ ⭐ ⭐ **而 R748 我只补了 C** ⇒ ⭐ ⭐ **A 与 B 仍是结构上覆盖不到的腿** ⇒ ⭐ **故本轮把三条都补上，⭐ 并加一条 `--all-features` 兜底**（⭐ 手动档 `gates-manual.yml` 用的就是 `--all-features`）✓
+
+⭐ ⭐ **二、⭐ 全仓扫描（⭐ 第 256 条的步骤 ①，⭐ 机械做的）**: ⭐ ⭐ **`grep -rn '^#!\[cfg(feature' crates/*/tests/ crates/*/examples/` ⇒ **恰好 5 处、⭐ 全在 `yeban-app`、⭐ 全是 `in-process-mcp`****:
+⭐ `tests/in_process_mcp.rs:40`／⭐`tests/single_writer_session.rs:34`／⭐`tests/production_reprojection.rs:37`／⭐`tests/in_process_mcp_lock.rs:38`／⭐`tests/production_save_ui.rs:28` ✓
+⇒ ⭐ ⭐ **与 CI 自己 `ci.yml:315-319` 那句"⭐ 5 个集成测试目标带的是 crate 根 `#![cfg(feature = "in-process-mcp")]`"**逐数吻合**** ⇒ ⭐ **没有第 6 个漏网的 crate 根门** ✓
+⭐ ⭐ **并附（⭐ 声明了 `[features]` 的 crate 全表）**: ⭐ `yeban-app`（⭐ 6 个）／⭐`yeban-engine`（⭐ `default`／⭐`device`）／⭐`yeban-mcp`（⭐ `default`／⭐`mcp-http`／⭐`midi-input`）／⭐`yeban-midi-io`（⭐ `default`／⭐`midi-input`）／⭐`yeban-render`（⭐ 2 个实验性导出）／⭐`yeban-ui-mcp`（⭐ `default`／⭐`ui-mcp-http`）✓
+
+⭐ ⭐ ⭐ **三、⭐ 新门的形态（⭐ 现在 11 层／⭐ `yeban-app`）**:
+| ⭐ 层 | ⭐ 读数 |
+| :--- | :--- |
+| ⭐ `fmt -p yeban-app --check` | ⭐ **0** |
+| ⭐ `check -p yeban-app --lib` | ⭐ **0** |
+| ⭐ `clippy -p yeban-app --lib --tests -- -D warnings` | ⭐ **0** |
+| ⭐ `check -p yeban-app --all-targets` | ⭐ **0** |
+| ⭐ ⭐ **`check … --features 实验性导出`** | ⭐ ⭐ **0**（⭐ 新）✓ |
+| ⭐ ⭐ **`check … --features midi-input`** | ⭐ ⭐ **0**（⭐ 新）✓ |
+| ⭐ ⭐ **`check … --features in-process-mcp`** | ⭐ ⭐ **0**（⭐ R748 那条）✓ |
+| ⭐ ⭐ **`check … --all-features`** | ⭐ ⭐ **0**（⭐ 新兜底）✓ |
+| ⭐ `test -p yeban-app --lib` | ⭐ **0** |
+| ⭐ `run-gates.sh light` | ⭐ **0** |
+⇒ ⭐ ⭐ **`premerge-gate.sh yeban-app` ＝ "⭐ 合并前复合门: ⭐ 全过 ✓"（⭐ 11 层）** ✓
+
+⭐ ⭐ ⭐ **四、⭐ 并证明"⭐ 不该跑的不跑"（⭐ 守卫的反向对照，⭐ 第 42／⭐243 条）**:
+| ⭐ crate | ⭐ 跑到的 feature 层 | ⭐ 结果 |
+| :--- | :--- | :--- |
+| ⭐ ⭐ **`yeban-model`（⭐ **无** `[features]`）** | ⭐ ⭐ **一层都没跑**（⭐ 只有 fmt／⭐check --lib／⭐clippy／⭐check --all-targets／⭐test --lib／⭐light） | ⭐ ⭐ **`全过 ✓`** ⇒ ⭐ **证明守卫**正确地**不误触发** ✓ |
+| ⭐ ⭐ **`yeban-midi-io`（⭐ 有 `midi-input`）** | ⭐ ⭐ **跑到** `--features midi-input` **与** `--all-features`**（⭐ 而**没**跑"⭐ 实验性导出"与"⭐ in-process-mcp"）** | ⭐ ⭐ **`全过 ✓`** ⇒ ⭐ **证明逐组守卫**按 crate 精确生效** ✓ |
+
+⭐ ⚠ **五、⭐ 一条可复用口径（⭐ 第 257 条）**: ⭐ ⭐ **补"⭐ 覆盖不到的门"时，⭐ 要**按 CI 的真实清单逐条对齐**、⭐ ⛔ 不要只补你这次踩到的那一条** —— ⚠ **因为"⭐ 踩到的那条"⭐ 只是样本、⭐ 而同一类陷阱往往有多条；⭐ 只补样本会给人"⭐ 已经治好"⭐ 的错觉** ✓
+⭐ **可复用的做法**: ⭐ ⭐ **① `grep -n 'features' .github/workflows/ci.yml` 列出**全部** feature 腿；⭐ ② 逐条对齐并各自加 Cargo.toml 守卫；⭐ ③ 再加一条 `--all-features` 兜底；⭐ ④ **用"⭐ 无 features 的 crate"与"⭐ 有部分 features 的 crate"各跑一次，⭐ 证明守卫不误触发也不漏触发**** ✓
+⭐ **并附**: ⭐ ⭐ **本条即一例** —— ⭐ **我 R748 只补了 `in-process-mcp`、⭐ 而 CI 有**三组**；⭐ 是第 ① 步把它扫出来的** ✓
+
+⭐ ⚠ ⭐ **六、⭐ 本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `40516ac6`／⭐`d22aa7a7` 的 CI 判决** ＋ ⭐ **读回 `47617a9e`／⭐`4dc8c6cd`／⭐`d39311a9`／⭐`f10c8320` 的判决（⭐ 预期红）** ＋ ⭐ `run_gui` 运行期打开工程 ＋ ⭐ 可见入口 ＋ ⭐ 金标重录 ＋ ⭐ 统一归一化分母单 ＋ ⭐ OGG 端到端夹具 ＋ ⭐ MIDI 导出 UI 按钮 ＋ ⭐ `needs-3`／⭐`needs-6` ＋ ⭐ 人类跑第 6 项 ✓

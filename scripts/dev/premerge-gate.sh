@@ -62,14 +62,36 @@ for c in "$@"; do
   layer "check -p $c --lib" cargo check -p "$c" --lib --locked
   # ⚠ 第 43 条：这一层是 CI 真正会红的地方。
   layer "clippy -p $c --lib --tests" cargo clippy -p "$c" --lib --tests --locked -- -D warnings
-  # ⚠ 第 255 条：CI 有两条本机旧门**没覆盖**的腿 —— `--all-targets`（编译测试目标）与
-  #    `--features in-process-mcp`。实测代价：`#86` 改了 `tests/production_save_ui.rs` 的
-  #    一处 `Rc` 用法，**默认腿绿**而**特性腿 `error[E0433]`** ⇒ 主干红了一个 run。
-  #    下面两条就是补那两条腿；⛔ 只在 crate 真声明了该特性时才跑特性腿。
+  # ⚠ 第 255 条：CI 有一批本机旧门**结构上覆盖不到**的腿 —— `--all-targets`（编译测试目标）
+  #    与三条 `--features`。实测代价：`#86` 改了 `tests/production_save_ui.rs` 的一处 `Rc`
+  #    用法，**默认腿绿**而**特性腿 `error[E0433]`** ⇒ 主干红了一个 run（第 256 条解释了
+  #    为什么那个文件在默认腿下"绿得毫无信息量"：它是 crate 根 `#![cfg(feature = "...")]`，
+  #    默认档下整个测试目标**编译成空 crate**）。
+  #    下面这组层**逐条对齐 `.github/workflows/ci.yml` 里真实存在的 feature 腿**；
+  #    ⛔ 只在 crate 真声明了该特性时才跑（对其余 crate 传不存在的 `--features` 会直接报错）。
   layer "check -p $c --all-targets" cargo check -p "$c" --all-targets --locked
+  # CI: clippy/test (实验性导出特性)
+  if grep -q '^experimental-logic-export' "crates/$c/Cargo.toml" 2>/dev/null; then
+    layer "check -p $c --all-targets --features 实验性导出" \
+      cargo check -p "$c" --all-targets --locked \
+      --features experimental-als-export,experimental-logic-export
+  fi
+  # CI: clippy/test (midi-input 特性)
+  if grep -q '^midi-input' "crates/$c/Cargo.toml" 2>/dev/null; then
+    layer "check -p $c --all-targets --features midi-input" \
+      cargo check -p "$c" --all-targets --locked --features midi-input
+  fi
+  # CI: test (in-process-mcp 特性)
   if grep -q '^in-process-mcp' "crates/$c/Cargo.toml" 2>/dev/null; then
     layer "check -p $c --all-targets --features in-process-mcp" \
       cargo check -p "$c" --all-targets --locked --features in-process-mcp
+  fi
+  # 收口：把**声明了但上面没覆盖**的特性（如 `ui-test-port` / `ui-mcp-http`）一并编一遍。
+  # 手动档 `gates-manual.yml` 用的就是 `--all-features`；⚠ 它不替代上面逐条腿
+  # （互斥特性组合与单项腿可能不同），只作兜底。⛔ 只对真声明了 `[features]` 的 crate 跑。
+  if grep -q '^\[features\]' "crates/$c/Cargo.toml" 2>/dev/null; then
+    layer "check -p $c --all-targets --all-features" \
+      cargo check -p "$c" --all-targets --locked --all-features
   fi
   if [ "${SKIP_TEST:-0}" = "1" ]; then
     note "test -p $c (SKIP_TEST=1 ⇒ 没跑)" "跳过"
