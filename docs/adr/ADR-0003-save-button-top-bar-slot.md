@@ -1,7 +1,7 @@
 # ADR-0003 — 顶栏保存按钮的槽位（挪徽章 vs 改规范序列）
 
-- **状态**: **Proposed（待人类裁决）**
-- **决定者**: 集成者（Agent）在负责人授权范围内提出；最终口径归负责人
+- **状态**: **Accepted（负责人已批准；决定 A 已落地）** —— ⚠ **本条状态行原本写 `Proposed（待人类裁决）`，于 2026-10-16 由集成者更正**：决定 A **已于 2026-10-06 由负责人批准并落地**（提交 `9c8d49d2`，提交信息逐字"ADR-0003 决定 A（负责人已批准）"），`crates/yeban-app/ui/transport.slint` 的 `transport-ai-proposal-badge` 现为 `x: 640px`（原 `588px`），逐像素遮挡由 48/56 px 降为 0（`#90` 的机械读数）。⇒ 状态行、`docs/ledger/human-decisions.md` 的 `HD-50` 行与代码**三者此前不一致**；本轮把前两者对齐到代码。
+- **决定者**: 集成者（Agent）在负责人授权范围内提出；最终口径归负责人 —— ⭐ **负责人已批准（2026-10-06）**
 - **关联**: `ROAD-M4-008`（用户够得到的保存入口）；`UI-MCP-003` / `MUST-GATE-015`（分平台 Golden 与视觉回归）；
   `UI-GRID-001`（UI/UX 规范 §1.1 的顶栏序列）；自 `d180bfb` 起持续变红的 CI run；
   基准目录 `crates/yeban-app/tests/golden/linux/`（含其 `MANIFEST.txt`）
