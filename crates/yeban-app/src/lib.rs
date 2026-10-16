@@ -107,6 +107,9 @@ pub mod midi_in;
 pub mod midi_live;
 pub mod midi_notes;
 pub mod open;
+// ⭐ `[ARCH-REC-001]` 的最后一段：**真设备输入源** ＋ 可注入的工厂缝（任务单 `#88`）。
+// 它把"按录音键录到的是静音"从"**没人喂**的偶然"变成"要么真设备源、要么**显式**选静音腿"。
+pub mod record_device;
 pub mod record_wav;
 pub mod render_core;
 // ⭐ **路径 ⇒ 已摊平 SFZ 的控制侧缓存**（任务单 `#80`：实时／GUI 发布点的读盘复用）。

@@ -20,8 +20,11 @@
 //!
 //! ## ⚠ 其它诚实登记（⛔ 不假装）
 //!
-//! 1. **本切片不碰声卡**：cpal 输入流不在本轮（本机禁编 cpal，设备线程属"逐步完善"）
-//!    ⇒ 样本来源是一条**可控的内存测试音**（正弦），报告行里 `source=in-memory-sine(440Hz)`。
+//! 1. **本模块自身不做设备 I/O**：[`record_test_tone`] 的样本来源是一条**可控的内存测试音**
+//!    （正弦，报告行 `source=in-memory-sine(440Hz)`）。⭐ **产品的录音键**（[`Recorder`]）
+//!    从任务单 `#88` 起**不再**是"没人喂"的静音：源由
+//!    [`crate::record_device::InputSourceFactory`] 给出（默认 = **真设备输入流**；
+//!    显式静音腿 = `YEBAN_RECORD_SOURCE=silence`；打不开 ⇒ **响亮失败**，⛔ 不录静音）。
 //! 2. **⛔ 不自写 RIFF 头**：WAV 一律交 [`yeban_render::wav::write_plain_wav`]。
 
 use std::io::Write;
@@ -118,6 +121,13 @@ pub enum RecordError {
     Invalid(String),
     /// 工程渲染失败（空工程 / 计划编译 / 引擎装载）。
     Render(String),
+    /// ⭐ **输入源打不开**（`[ARCH-REC-001]` 任务单 `#88`）：设备缺失 / 协商不匹配 /
+    /// 流启动失败 —— 由 [`crate::record_device::InputSourceFactory::open`] 原样给出。
+    ///
+    /// ⚠ 与 [`Self::Invalid`] **分开**：这是"环境打不开"，那头是"调用方给错了" ——
+    /// 把两者混在一起会把排查方向引错（与引擎 `DeviceError` 把输入/输出分开同一条理由）。
+    /// ⛔ 本变体**绝不**表示"那就录静音"：出现它 ⇒ **没有**会话、**没有**文件。
+    Source(String),
 }
 
 impl core::fmt::Display for RecordError {
@@ -127,6 +137,7 @@ impl core::fmt::Display for RecordError {
             Self::Write(reason) => write!(formatter, "写出 WAV 失败: {reason}"),
             Self::Invalid(reason) => write!(formatter, "录音参数非法: {reason}"),
             Self::Render(reason) => write!(formatter, "工程渲染失败: {reason}"),
+            Self::Source(reason) => write!(formatter, "打开录音输入源失败: {reason}"),
         }
     }
 }
@@ -267,25 +278,67 @@ pub fn default_record_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ui-record.wav"))
 }
 
+/// ⭐ **一次录音会话用到的参数**（路径 ＋ 建环参数）—— 任务单 `#88` 的**可注入面**。
+///
+/// ## 为什么要有它（⛔ 不是包装癖）
+///
+/// 原来这两样是**写死在录音闭包里**的：路径读环境变量、参数取
+/// [`RecordOptions::default`]。于是判据想验"录到的**不是**静音"就必须
+/// **改进程环境变量**才能决定落盘位置 —— 而测量纪律第 6 条明确**禁止**判据读环境。
+/// 把它提升成一个**值**（[`Self::production`] 是产品那一条），判据就能从**代码缝**
+/// 注入自己的路径与参数，⛔ 不碰环境、⛔ 不往仓库根写文件。
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordPlan {
+    /// 落盘路径。
+    pub path: PathBuf,
+    /// 建环参数（声道数 / 采样率 / 环容量 / 抽取批）。
+    pub options: RecordOptions,
+}
+
+impl RecordPlan {
+    /// ⭐ **产品那一条**：默认路径（[`default_record_path`]）＋ 默认参数。
+    #[must_use]
+    pub fn production() -> Self {
+        Self {
+            path: default_record_path(),
+            options: RecordOptions::default(),
+        }
+    }
+}
+
 /// ⭐ **设备输入源**（`[ARCH-REC-001]` 的"音频线程直接从声卡物理输入捕获 PCM 流"那一半）。
 ///
-/// ⭐ **为什么是 trait**：真实现要 `cpal` 的 `default_input_device` ＋ `build_input_stream`，
-/// 而 ⚠ **本仓到今天为止没有输入流**（`crates/yeban-engine/src/device.rs` 只有纯函数
-/// [`negotiate_input`]；`grep -n 'default_input_device\|build_input_stream\|open_input'
-/// crates/yeban-engine/src/*.rs` 命中 **0**），且 `yeban-app` 不依赖 `cpal`。
-/// ⇒ 本 trait 就是**那个缺口的位置本身**：真实现到达时**只换一个实现**，⛔ 不改录音路径。
+/// ⭐ **为什么是 trait**：真实现要 `cpal` 的 `default_input_device` ＋ `build_input_stream`
+/// （`yeban_engine::device::open_input`，线程与生命期都属引擎层），而判据要注入
+/// **脚本化假源**。⇒ 本 trait 是"源的形状"，[`crate::record_device`] 是它的两条实现
+/// （真设备 / 显式静音）＋ [`crate::record_device::InputSourceFactory`] 工厂缝。
 ///
 /// ⚠ **块语义**：`next_block(frames, out)` 填**交错**样本，填 `frames × channels` 个；
 /// 返回**真的填了几个帧**（0 ⇒ 暂时没有数据，调用方下一轮再问）。⛔ 不长阻塞。
 pub trait InputSource {
-    /// 声道数（⭐ 必须与 [`RecordOptions::channels`] 一致；不一致由调用方负责检出）。
+    /// 声道数。⭐ **它是权威**：调用方（[`Recorder`]）以它为准建环 / 切块 / 写 WAV 头 ——
+    /// 设备协商到的通道数与 [`RecordOptions::channels`]（**请求值**）不同时，录下来的是
+    /// **设备**那一条（如实），⛔ 不是伪造的立体声。
+    ///
+    /// ⚠ 它**必须**与 `next_block` 实际填的交错宽度一致（否则会错位）。
     fn channels(&self) -> u16;
     /// 取下一块交错样本。返回填进去的**帧**数。
     fn next_block(&mut self, frames: usize, out: &mut [f32]) -> usize;
+    /// ⭐ **如实文案**：落进 [`RecordReport::source`] ⇒ "这条录音是从哪来的"可读、可判。
+    ///
+    /// ⚠ 默认值是**诚实的中性文案**（⛔ 不是"内存正弦"——那会把判据里的假源
+    /// 报成产品源）；每条产品/判据实现都应当覆盖它。
+    fn label(&self) -> &'static str {
+        "input-source(unlabelled)"
+    }
 }
 
-/// ⭐ **静音源**：产品**今天的**默认（⭐ 它让"按按钮录到静音"这件事**有明确出处**，
-/// ⛔ 不是"没人喂"的偶然）。真设备源到达后，这里换成真实现即可。
+/// ⭐ **静音源**（⭐ 任务单 `#88` 起：产品的**显式**静音腿，⛔ 不再是默认）。
+///
+/// ⚠ 它**必须**活着，理由有两条（第 244 条的口径）：
+/// ① 判据需要一条"控制臂"（喂静音 ⇒ 落盘必须全 0）来证明非静音判据不是"有文件就算过"；
+/// ② 产品需要一条**显式**选静音的路（[`crate::record_device::RECORD_SOURCE_ENV`]）——
+/// 于是"录到静音"永远是**有人明确选的**，⛔ 不是"没人喂"的偶然。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SilenceSource {
     /// 声道数。
@@ -302,6 +355,10 @@ impl InputSource for SilenceSource {
         let fill = want.min(out.len());
         out[..fill].fill(0.0);
         fill / usize::from(self.channels.max(1))
+    }
+
+    fn label(&self) -> &'static str {
+        crate::record_device::SilenceFactory::LABEL
     }
 }
 
@@ -335,6 +392,10 @@ impl InputSource for RampSource {
         }
         self.produced += whole as u64;
         whole
+    }
+
+    fn label(&self) -> &'static str {
+        "injected-ramp-source"
     }
 }
 
@@ -372,9 +433,10 @@ pub fn count_in_frames(project: &yeban_model::YebanProjectV1, sample_rate: u32) 
 /// "量化 ＋ `write_plain_wav`"（⛔ 不自写 RIFF 头）。在内存里接住整段再落盘，可以复用
 /// [`write_plain_wav`] 这**唯一**的落盘点；代价是这一段录音在内存里（⚠ 长录音要注意）。
 ///
-/// ⚠ **真声卡输入仍是欠件**（本片**如实登记**）：本类型**准备好**了接收侧，但今天
-/// **没有**任何调用方把设备输入块喂进来 ⇒ 产品按按钮录到的是**静音**（一条合法的 WAV），
-/// ⛔ 不是"从声卡录到了声音"。设备输入流属 `[ARCH-REC-001]` 的下一片。
+/// ⚠ **源从哪来**（任务单 `#88` 起）：本类型**自己不做设备 I/O**，它只吃
+/// [`InputSource`]。产品的源由 [`crate::record_device::InputSourceFactory`] 给出
+/// （默认 = 真设备输入流；`YEBAN_RECORD_SOURCE=silence` = 显式静音腿），
+/// ⛔ **没有**"打不开设备就悄悄录静音"这条路径（见 [`Self::start_with_factory`]）。
 #[derive(Debug, Default)]
 pub struct Recorder {
     /// 当前会话（`None` ⇒ 没在录）。
@@ -382,6 +444,15 @@ pub struct Recorder {
     /// ⭐ **从设备源拉到的帧数**（⛔ 与"推入环的帧数"不同）：⭐ 预备拍期间**照拉**，故它
     /// **大于 0** 而推入为 0 ⇒ ⭐ "照拉、只不推"这件事**可被观测**（见 `count_in_tests`）。
     last_pulled: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// ⭐ **整帧成功推入的帧数**（任务单 `#88` 修）：**两条生产路共用**同一个计数器 ——
+    /// 控制侧 [`Self::push_block`] 与工作线程从**源**拉块的那条路。
+    /// ⚠ 修之前它**只**数控制侧 ⇒ 设备源接上后报告行会写 `pushed=0` 而 `frames` 非 0
+    /// （自相矛盾的报告，本单顺手钉住）。
+    pushed_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// ⭐ **因环满被丢弃的帧数**（本模块的**帧**级口径，同一条路共用）。
+    ///
+    /// ⚠ 修之前 `stop` 里是**写死的 0**：设备源一旦跑得比抽干快，报告就会说"没丢"。
+    dropped_frames: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -400,8 +471,10 @@ struct RecorderSession {
     path: PathBuf,
     /// 建环参数（落盘时要同一组）。
     options: RecordOptions,
-    /// 推入的**帧**数（本类型自己数：`push_input_block` 的返回值）。
-    pushed_frames: u64,
+    /// ⭐ **这次会话实际的声道数**（= `source.channels()`，⛔ 不是请求值）：切块与 WAV 头都用它。
+    channels: u16,
+    /// ⭐ 源的**如实**文案（起录时从 `InputSource::label` 取一次 ⇒ 落进报告的 `source=`）。
+    source_label: &'static str,
 }
 
 impl Recorder {
@@ -421,6 +494,31 @@ impl Recorder {
     #[must_use]
     pub fn is_recording(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// ⭐ **经工厂缝起录**（任务单 `#88`）：源**只能**由
+    /// [`crate::record_device::InputSourceFactory`] 给出 —— 于是"产品用什么源"成了
+    /// 一个**可注入、可判**的选择，而"打不开"是一条**响亮的失败**。
+    ///
+    /// ⭐ 这是裁决 §2.2 的"`Recorder` 与 `host.rs` **都**通过它拿源"里 `Recorder` 那一半：
+    /// 判据用 `Recorder::start_with_factory` 就能在**不碰 UI** 的前提下验源的选择/失败语义。
+    ///
+    /// ⛔ **失败时**：不建会话（`is_recording() == false`）、不落盘、不产生任何文件；
+    /// 原因原样装进 [`RecordError::Source`]。
+    ///
+    /// # Errors
+    ///
+    /// [`RecordError::Source`]（工厂拒绝），以及 [`Self::start`] 的那几条。
+    pub fn start_with_factory(
+        &mut self,
+        path: &Path,
+        options: &RecordOptions,
+        factory: &dyn crate::record_device::InputSourceFactory,
+        count_in_frames: u64,
+    ) -> Result<(), RecordError> {
+        // ⭐ 工厂**恰好调用一次**（判据会数它）：这一处是产品路径上唯一的 `open` 调用点。
+        let source = factory.open(options).map_err(RecordError::Source)?;
+        self.start(path, options, source, count_in_frames)
     }
 
     /// ⭐ **起录**。已有一场会话在手 ⇒ 返回错误（⛔ 不静默覆盖）。
@@ -443,7 +541,12 @@ impl Recorder {
                 "声道数 / 环容量 / 抽取批大小都必须大于 0".to_owned(),
             ));
         }
-        let (sender, receiver) = record_channel(options.capacity_frames, options.channels);
+        // ⭐ **实际声道数以源为准**（任务单 `#88`）：`RecordOptions::channels` 是**请求值**，
+        // 而真设备的协商结果可能只有 1 声道（macOS 内建麦克风就是）——
+        // 录音环、切块宽度、WAV 头必须**一致地**用同一个数，否则就是声道错位。
+        // 用源的值 = "照设备说的录一条单声道"，⛔ 不是拒绝录音、⛔ 不是偷偷上混。
+        let channels = source.channels().max(1);
+        let (sender, receiver) = record_channel(options.capacity_frames, channels);
         let sender = std::sync::Arc::new(std::sync::Mutex::new(sender));
         let sender_worker = std::sync::Arc::clone(&sender);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -452,12 +555,20 @@ impl Recorder {
         // ⭐ **设备输入块的大小**（帧）：一个 `drain_batch` 那么多 —— 与抽干批同量级，
         // 免得"生产远快于消费"而丢帧。⚠ 它**不是**音频回调的块长（真实现的块长由设备给）。
         let block_frames = batch;
-        let channels = options.channels.max(1);
         let mut block = vec![0.0_f32; block_frames.saturating_mul(usize::from(channels))];
         // ⭐ **预备拍计数器**：`Recorder` 与 worker 共享（⭐ 让"预备拍期间**照拉**"可被观测）。
         let pulled = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let pulled_worker = std::sync::Arc::clone(&pulled);
         self.last_pulled = std::sync::Arc::clone(&pulled);
+        // ⭐ **两条生产路共用的帧级计数器**（推入 / 丢弃）：工作线程那一半从**源**推。
+        let pushed = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let pushed_worker = std::sync::Arc::clone(&pushed);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let dropped_worker = std::sync::Arc::clone(&dropped);
+        self.pushed_frames = std::sync::Arc::clone(&pushed);
+        self.dropped_frames = std::sync::Arc::clone(&dropped);
+        // ⭐ **如实标签**（在源被 move 进线程**之前**取一次）：它进报告的 `source=` 字段。
+        let source_label = source.label();
         let worker = std::thread::spawn(move || {
             let mut drain = RecordDrain::new(receiver, SampleSink::default());
             let sender = sender_worker;
@@ -468,7 +579,8 @@ impl Recorder {
             // （⛔ 不能让按钮卡住）。1 ms 的休眠只在**后台线程**上，⛔ 不碰音频线程。
             while !stop_worker.load(std::sync::atomic::Ordering::Relaxed) {
                 // ⭐ **从设备输入源拉一块**（⭐ 这就是"谁在喂它"的答案）⇒ 整帧推进环。
-                // ⚠ 真实现里这一拉发生在音频回调上；本片的产品默认是 [`SilenceSource`]。
+                // ⚠ 真设备源（`crate::record_device::DeviceInputSource`）的这一拉发生在
+                // **本后台线程**上：设备回调只做无锁推入，⛔ 不在这一层分配/加锁。
                 let frames = source.next_block(block_frames, &mut block);
                 if frames > 0 {
                     // ⭐ ⭐ **照拉、只不推**：预备拍期间**照常**从源拉块（⛔ 不能停止拉取，
@@ -482,10 +594,17 @@ impl Recorder {
                     }
                     if recording && let Ok(mut sender) = sender.lock() {
                         let samples = frames.saturating_mul(usize::from(channels));
-                        let _ = yeban_engine::record::push_input_block(
+                        let accepted = yeban_engine::record::push_input_block(
                             &mut sender,
                             &block[..samples],
                             channels,
+                        );
+                        // ⭐ 帧级如实计数（⭐ 与 `push_block` 那一条路共用同一对计数器）。
+                        pushed_worker
+                            .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
+                        dropped_worker.fetch_add(
+                            frames.saturating_sub(accepted) as u64,
+                            std::sync::atomic::Ordering::Relaxed,
                         );
                     }
                 }
@@ -507,7 +626,9 @@ impl Recorder {
             worker: Some(worker),
             path: path.to_path_buf(),
             options: *options,
-            pushed_frames: 0,
+            channels,
+            // ⭐ **如实**取自源自己（⛔ 不再是一条写死的"no-device-input"文案）。
+            source_label,
         });
         Ok(())
     }
@@ -519,12 +640,19 @@ impl Recorder {
         let Some(session) = self.session.as_mut() else {
             return 0;
         };
+        let channels = session.channels.max(1);
         let Ok(mut sender) = session.sender.lock() else {
             return 0;
         };
-        let accepted =
-            yeban_engine::record::push_input_block(&mut sender, block, session.options.channels);
-        session.pushed_frames = session.pushed_frames.saturating_add(accepted as u64);
+        let accepted = yeban_engine::record::push_input_block(&mut sender, block, channels);
+        // ⭐ 与工作线程**同一对**计数器（见 [`Recorder`] 的字段文档）。
+        self.pushed_frames
+            .fetch_add(accepted as u64, std::sync::atomic::Ordering::Relaxed);
+        let attempted = block.len() / usize::from(channels);
+        self.dropped_frames.fetch_add(
+            attempted.saturating_sub(accepted) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         accepted
     }
 
@@ -555,11 +683,11 @@ impl Recorder {
             .iter()
             .map(|sample| quantize_i24(*sample, &mut rng))
             .collect();
-        let frames =
-            u64::try_from(sink.samples.len() / usize::from(session.options.channels.max(1)))
-                .unwrap_or(u64::MAX);
+        // ⭐ 帧数与 WAV 头都用**这次会话实际的**声道数（`session.channels` = 源协商值）。
+        let frames = u64::try_from(sink.samples.len() / usize::from(session.channels.max(1)))
+            .unwrap_or(u64::MAX);
         let buffer = PcmBuffer::Int24(quantized);
-        let format = PcmFormat::integer(session.options.channels, session.options.sample_rate, 24);
+        let format = PcmFormat::integer(session.channels, session.options.sample_rate, 24);
         write_plain_wav(&session.path, &format, &buffer)
             .map_err(|error| RecordError::Write(error.to_string()))?;
         let bytes = std::fs::metadata(&session.path)
@@ -568,12 +696,22 @@ impl Recorder {
         Ok(RecordReport {
             path: session.path.clone(),
             frames,
-            pushed: session.pushed_frames,
-            dropped: 0,
+            // ⭐ **如实**（任务单 `#88`）：两条生产路（控制侧 `push_block` / 工作线程从源拉块）
+            // 共用的帧级计数器 —— ⛔ 原来 `pushed` 只数控制侧（设备源接上后会写 0），
+            // `dropped` 更是**写死的 0**。
+            pushed: self
+                .pushed_frames
+                .load(std::sync::atomic::Ordering::Relaxed),
+            dropped: self
+                .dropped_frames
+                .load(std::sync::atomic::Ordering::Relaxed),
             bytes,
             bits: 24,
-            // ⚠ **如实**：本类型的样本来自 `push_block`，而今天**没有**设备输入在喂它。
-            source: "ui-record-button(no-device-input)".to_owned(),
+            // ⭐ **如实**取自源自己的标签（任务单 `#88`）：真设备源报 `device-input-stream`、
+            // 显式静音腿报 `explicit-silence-source`、判据的假源报它自己写的那一条。
+            // ⛔ 原来这里写死 `ui-record-button(no-device-input)` —— 设备源接上之后
+            // 那句话就**成了假话**（报告行是"这条录音从哪来"的唯一出处）。
+            source: session.source_label.to_owned(),
         })
     }
 }

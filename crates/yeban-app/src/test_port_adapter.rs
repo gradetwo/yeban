@@ -2902,33 +2902,47 @@ fn shift_space_and_space_are_the_same_transport_path_today() {
 /// ## 仍然成立的诚实边界（⛔ 不假装硬件已验证）
 ///
 /// 引擎的 `TransportState::Recording` 仍**不可达**（本票⛔ 不碰 `yeban-engine`）：录音走的是
-/// [`crate::record_wav::Recorder`] 的**独立会话**，⛔ 不是引擎走带的一个档。而**真声卡输入
-/// 仍是欠件** —— 接收侧已接好，但今天**没有**设备输入在喂它 ⇒ 录到的是**静音**（一条合法的
-/// 24-bit WAV）。本判据只证明"按钮 ⇒ 会话 ⇒ 落盘"这一条链真的通了。
+/// [`crate::record_wav::Recorder`] 的**独立会话**，⛔ 不是引擎走带的一个档。
+///
+/// ⭐ **任务单 `#88` 起**：产品的默认源是**真设备输入流**（`host::wire_record` ＋
+/// `record_device::default_input_factory`），"按下去有没有声音"由 `tests/record_device_wiring.rs`
+/// 的逐码判据 ＋ `#[ignore]` 的真设备腿负责。本判据**不碰设备**：它把源**从代码缝**换成
+/// 显式静音腿（见函数体），因此这条链在任何机器（含无声卡的 CI）上**确定性地**可判。
 ///
 /// ## 怎么变红
 ///
 /// | 注入 | 位置 | 现象 |
 /// | :--- | :--- | :--- |
 /// | 去掉 `rec_area` 的 `clicked` | `ui/transport.slint` | 本判据的"起录后 `checked` 必须为 `Some(true)`"红 ＋ 源码判据红 |
+/// | 去掉 `host::wire_record` 的 `on_toggle_record` | `host.rs` | 起录后 `recording` 恒假 ⇒ 红 |
 /// | 让引擎真的能进 `Recording` | `crates/yeban-engine/**` | ② 步的"从没有 `Recording`"红 |
 #[test]
 fn pressing_the_record_button_starts_and_stops_a_session() {
     let mut harness = TransportHarness::new();
     let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
 
-    // ⭐ 落盘路径走 `YEBAN_UI_RECORD_WAV_PATH`（本 crate 的既有环境变量族）。
+    // ⭐⭐ **任务单 `#88`：源从代码缝注入**（⛔ 判据既不读也不写环境变量，⛔ 也绝不在判据里
+    // 打开真麦克风）。`build_live_ui` 装的是**产品**接线（`host::wire_transport` ⇒
+    // `default_input_factory()` = 真设备源）；本判据的对象是"按钮 ⇒ 会话 ⇒ 落盘"这条
+    // **界面接线**，与"源从哪来"正交 ⇒ 这里用同一个 `host::wire_record` **再装一次**，
+    // 注入**显式静音腿**（确定性、零延迟、无硬件）。
+    // ⚠ 为什么必须再装一次而不是改 `live_surface.rs`：那条文件属另一条工作线（本单⛔ 不碰）；
+    // 而 Slint 的 `on_toggle_record` 是**设值**语义 ⇒ 后装的回调就是那一个。
     let record_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/tmp/mod-app-record-button")
         .join(format!("take-{}.wav", std::process::id()));
     std::fs::create_dir_all(record_path.parent().expect("有父目录")).expect("建判据目录");
     let _ = std::fs::remove_file(&record_path);
-    // SAFETY: 本判据进程里**只有这一组**测试读 `YEBAN_UI_RECORD_WAV_PATH`，且写入发生在
-    // 任何后台录音线程**之前**（录音线程只在按下按钮时起）；`set_var` 在 Rust 2024 起是
-    // `unsafe fn`（"改环境变量会和 `getenv` 竞态"），故此处显式声明安全前提。
-    unsafe {
-        std::env::set_var("YEBAN_UI_RECORD_WAV_PATH", &record_path);
-    }
+    host::wire_record(
+        &ui,
+        None,
+        yeban_app::record_wav::RecordPlan {
+            path: record_path.clone(),
+            options: yeban_app::record_wav::RecordOptions::default(),
+        },
+        Rc::new(yeban_app::record_device::SilenceFactory),
+        Rc::new(host::UiRecordOutcome),
+    );
 
     // ---- 起点读数：引擎 + 日志 + 控件**自己**的勾选位 ----
     let before = harness.reading();
@@ -3045,7 +3059,8 @@ fn pressing_the_record_button_starts_and_stops_a_session() {
     observe(&format!(
         "[transport-e2e] ③ 真指针点录音键 ⇒ 起录/停录各一次（`checked`: {:?} ⇒ {:?} ⇒ {:?}）；\
          落盘 {} 字节于 {}；引擎读数一位未变（状态={:?}，日志恒 {} 条）\
-         —— 录音走独立会话，`TransportState::Recording` 仍不可达（真声卡输入仍是欠件）",
+         —— 录音走独立会话，`TransportState::Recording` 仍不可达；本判据的源是**注入的显式静音腿**\
+         （`host::wire_record` 的代码缝），产品的真设备源由 `tests/record_device_wiring.rs` 负责",
         checked_before,
         checked_recording,
         checked_after,

@@ -2403,15 +2403,74 @@ pub fn wire_transport(
         }
     });
 
-    // ⭐ **录音键**（`[ARCH-REC-001]`）：起录 / 停录。会话状态**归这个闭包所有**
-    // （`Recorder` 持 `RecordSender`；⛔ `Rc` 不跨线程 ⇒ 不放进 `EngineHost`）。
-    //
-    // ⚠ **如实登记**：接收侧已经接好（建环 ⇒ `push_block` ⇒ `RecordDrain` ⇒ 落盘），
-    // 但今天**没有**设备输入在喂它 ⇒ 产品按下去录到的是**静音**（一条合法的 24-bit WAV），
-    // ⛔ **不是**"从声卡录到了声音"。设备输入流属 `[ARCH-REC-001]` 的下一片。
+    // ⭐ **录音键**（`[ARCH-REC-001]`，任务单 `#88`）：接线搬进 [`wire_record`] ——
+    // 那里有**可注入的工厂缝**（真设备源 / 显式静音腿 / 判据的假源）。
+    // 走带这一层只把"产品的三个端口"装配进去（⛔ 不再把源写死在这里）。
+    wire_record(
+        ui,
+        project,
+        crate::record_wav::RecordPlan::production(),
+        crate::record_device::default_input_factory(),
+        Rc::new(UiRecordOutcome),
+    );
+}
+
+/// ⭐ **录音结果落到界面的端口**（任务单 `#88` 的可注入面之一）。
+///
+/// ## 为什么需要一个 trait（⛔ 不是包装癖）
+///
+/// 判据要断言"打开失败 ⇒ **界面收到非空错误文本**"，而界面今天**只有** `recording`
+/// 一个布尔属性（录音状态**文本**控件属 `.worktrees/mod-app-86` 那条线，本单⛔ 不碰
+/// `ui/app.slint`）。把落点抽成一个端口 ⇒ ⭐ 判据能**观察**到产品落点收到了什么，
+/// 而产品路径一行没变（[`UiRecordOutcome`] 转调**既有**的 [`apply_record_outcome`]）。
+pub trait RecordOutcomePort {
+    /// 落一次录音结果（`Some(文本)` ⇒ 失败**出声**；`None` ⇒ 无事）。
+    fn report(&self, ui: &MainWindow, error: Option<String>);
+}
+
+/// **产品落点**：转调既有的 [`apply_record_outcome`]（`stderr` ＋ 读 `recording`）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UiRecordOutcome;
+
+impl RecordOutcomePort for UiRecordOutcome {
+    fn report(&self, ui: &MainWindow, error: Option<String>) {
+        apply_record_outcome(ui, error);
+    }
+}
+
+/// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
+///
+/// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
+///
+/// ```text
+/// 按录音键 ──▶ Recorder::start_with_factory(plan.path, plan.options, factory, 预备拍)
+///                     │                                     │
+///                     │  ① 工厂开不了 ⇒ RecordError::Source ─┘（⭐ 响亮失败：无文件、不置 recording）
+///                     ▼
+///           Recorder ⇒ 建环 ⇒ 后台线程从**源**拉块 ⇒ push_block ⇒ RecordDrain ⇒ 落盘
+/// 再按一次 ──▶ Recorder::stop ⇒ 报告 ⇒ `outcome.report(ui, err)`
+/// ```
+///
+/// ## 三个注入点（⭐ 判据全部从**代码缝**进，⛔ 不读环境变量）
+///
+/// | 参数 | 产品给的 | 判据给的 |
+/// | :--- | :--- | :--- |
+/// | [`RecordPlan`](crate::record_wav::RecordPlan) | 默认路径 ＋ 默认参数 | 判据自己的 scratch 路径 |
+/// | `factory` | [`default_input_factory`](crate::record_device::default_input_factory)（真设备源） | 脚本化假源 / 返回 `Err` 的工厂 / [`SilenceFactory`](crate::record_device::SilenceFactory) |
+/// | `outcome` | [`UiRecordOutcome`] | 记录读数的观察端口（内部**仍**转调产品落点） |
+///
+/// ⛔ **失败语义（裁决 §2.3）**：打开失败**绝不**退化成"录一条静音"。
+/// `recorder.start_with_factory` 返回 `Err` ⇒ `recording` 保持 `false`、
+/// ⛔ 不创建会话、⛔ 不落盘；错误文本走 [`RecordOutcomePort`]（产品落点 = `stderr`）。
+pub fn wire_record(
+    ui: &MainWindow,
+    project: Option<Rc<YebanProjectV1>>,
+    plan: crate::record_wav::RecordPlan,
+    factory: Rc<dyn crate::record_device::InputSourceFactory>,
+    outcome: Rc<dyn RecordOutcomePort>,
+) {
     let recorder = Rc::new(RefCell::new(crate::record_wav::Recorder::new()));
     // ⭐ 闭包要读工程算预备拍 ⇒ 先克隆（`Rc` 计数 +1）。
-    let project_for_record = project.clone();
     let record_ui = slint::ComponentHandle::as_weak(ui);
     ui.on_toggle_record(move || {
         let mut recorder = recorder.borrow_mut();
@@ -2423,30 +2482,29 @@ pub fn wire_transport(
             }
             if let Some(ui) = record_ui.upgrade() {
                 ui.set_recording(false);
-                apply_record_outcome(&ui, stopped.err().map(|error| error.to_string()));
+                outcome.report(&ui, stopped.err().map(|error| error.to_string()));
             }
         } else {
-            let path = crate::record_wav::default_record_path();
-            let options = crate::record_wav::RecordOptions::default();
-            // ⭐ **产品默认的设备输入源 = 静音**（⛔ 本机没有可用输入设备，且 `yeban-engine`
-            // 今天**没有**输入流 ⇒ 真设备源到达时**只换这一个实现**）。
-            // ⚠ 这不是"没人喂"的偶然：静音源让"按按钮录到静音"有**明确出处**。
-            let source = Box::new(crate::record_wav::SilenceSource {
-                channels: options.channels,
+            // ⭐ 预备拍（`transport.count_in_bars`）：长度由**工程**算出（⛔ 不靠墙钟）
+            // ⇒ 确定性、可本地验。⭐ 它与"用哪条源"**无关**（两条腿读数一致，见判据）。
+            let count_in = project.as_ref().map_or(0, |project| {
+                crate::record_wav::count_in_frames(project, plan.options.sample_rate)
             });
-            // ⭐ **预备拍**（`transport.count_in_bars`）：⭐ 长度由**工程**算出（⛔ 不靠墙钟）
-            // ⇒ 确定性、可本地验。⭐ 它的**第一个读者**就是这里。
-            let count_in = project_for_record.as_ref().map_or(0, |project| {
-                crate::record_wav::count_in_frames(project, options.sample_rate)
-            });
-            let started = recorder.start(&path, &options, source, count_in);
+            // ⭐ **源从工厂缝拿**：打不开 ⇒ `Err`（⛔ 不静默换成静音源）。
+            let started =
+                recorder.start_with_factory(&plan.path, &plan.options, factory.as_ref(), count_in);
             match &started {
-                Ok(()) => eprintln!("[yeban-app] 开始录音 ⇒ {}", path.display()),
+                Ok(()) => eprintln!(
+                    "[yeban-app] 开始录音 ⇒ {}（源={}）",
+                    plan.path.display(),
+                    factory.label()
+                ),
                 Err(error) => eprintln!("[yeban-app] 起录失败: {error}"),
             }
             if let Some(ui) = record_ui.upgrade() {
+                // ⭐ 起录失败 ⇒ `recording` 保持 `false`（⛔ 不许把失败画成"正在录"）。
                 ui.set_recording(started.is_ok());
-                apply_record_outcome(&ui, started.err().map(|error| error.to_string()));
+                outcome.report(&ui, started.err().map(|error| error.to_string()));
             }
         }
     });
