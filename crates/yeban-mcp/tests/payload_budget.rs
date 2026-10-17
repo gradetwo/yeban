@@ -112,7 +112,8 @@ fn section_arguments(include_ops: Option<bool>) -> Value {
 /// 变红的方式（都是实测过的注入，见文件末的 §注入证据）：
 /// 把缺省形状改回"回传完整 op 载荷" ⇒ 这条判据的"缺省不得回传 ops"先红；
 /// 把 `BASELINE_006_JSON_LIMIT_BYTES` 改小 ⇒ 预算断言红，字面读数是
-/// `必须 ≤ 1024 B, 实测 request 196 B + response 2747 B = 2943 B`。
+/// `必须 ≤ 1024 B, 实测 request 196 B + response 2816 B = 3012 B`。
+/// （#175 加入 `pendingMerge` / `mergeTool` / `warnings` 三个字段 ⇒ 响应 +69 B。）
 #[test]
 fn sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget() {
     let (mut dispatcher, authorization) = dispatcher();
@@ -153,7 +154,7 @@ fn sixteen_bar_section_round_trip_fits_the_baseline_006_json_budget() {
         reading,
         RoundTripPayload {
             request: 196,
-            response: 2747
+            response: 2816
         },
         "BASELINE-006 的 16 小节缺省读数变了"
     );

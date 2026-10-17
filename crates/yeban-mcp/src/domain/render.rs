@@ -158,6 +158,28 @@
 //! - 归一化发生在抖动**之前**：抖动是"降位深"这一步的伴生 [ARCH-FMT-001]，
 //!   对还没定标的信号抖动等于提前污染母带。
 //!
+//! ## 削波可见（#175；#174 实测坑⑧）
+//!
+//! 实测：响应里 `peak.before = 1.5748`，而写出的文件里 **6134 个样本**被钳在 `±1.0`
+//! —— 调用方**无法**从峰值推出"有多少个样本真的被削平了"，于是不知道自己导出的
+//! 是一份削波文件。现在响应有**三个**新读数（都在抖动/量化**之前**的浮点母带上量）：
+//!
+//! | 字段 | 单位 | 口径 |
+//! | :--- | :--- | :--- |
+//! | `clippedSamples` | **样本个数** | `|sample| > 1.0`（严格大于；`±1.0` 是 PCM 端点，不钳位） |
+//! | `truePeakDbfs` | dBFS（0 = 满量程，正值 = 过载） | 16× 多相过采样真峰值（母带口径） |
+//! | `headroomDb` | dB | `-truePeakDbfs`（负值 = 已过载） |
+//!
+//! 三者都**只读**：不改样本、不改 `bytes`、不改 `sha256`／`masterDigest`
+//! （判据 `tests/render_master.rs` 的"默认路径逐字节不变"仍然钉住）。
+//! 真峰值的实现走 `yeban-render::mastering::measure_master`（`yeban-dsp` 的
+//! `TruePeakDetector`，唯一实现）；本层不复制第二份过采样器。
+//!
+//! ⚠ **`peak.before` / `peak.after` 的语义**：它们分别是**归一化前 / 归一化后**的
+//! **样本峰值**（`max |sample|`），⛔ 不是写盘文件（TPDF 抖动 + 24-bit 量化之后）的
+//! 峰值，也⛔ 不是真峰值。这句话同时写在响应的 `peak.semantics` 与
+//! `tools/list` 的 `yeban_render_master` 描述里，不让调用方去猜。
+//!
 //! ## `targetLufs` 的口径（本切片新增；"能测的那一半"）
 //!
 //! **响度目标不是一个新工具，是 `yeban_render_master` 的一个可选参数**，因为
@@ -272,6 +294,7 @@ use yeban_render::dither::{BitDepth, quantize};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::inserts::{project_inserts, track_has_unhandled_dsp};
+use yeban_render::mastering;
 use yeban_render::render::{
     AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderPlan, db_to_linear,
     track_latencies,
@@ -943,6 +966,26 @@ pub struct RenderArtifact {
     pub peak_before: f32,
     /// 归一化后的峰值（未请求归一化时等于 `peak_before`）。
     pub peak_after: f32,
+    /// ⭐ #175（#174 坑⑧）：会被 24-bit 量化器**钳住**的样本数。
+    ///
+    /// 对象是抖动/量化**之前**的浮点母带；单位是**样本个数**（两侧声道合计）。
+    /// 判据是 `|sample| > 1.0`（严格大于：`±1.0` 恰好是 PCM 满量程端点，不需要钳位）。
+    /// 计算方法见 [`math::clipped_sample_count`]。
+    pub clipped_samples: u64,
+    /// ⭐ #175：**真峰值**（dBFS；`0.0` = 满量程，正值 = 超过满量程 ⇒ 可能削波）。
+    ///
+    /// 由 `yeban-render::mastering::measure_master` 按**母带口径 16×** 多相过采样测得
+    /// （唯一实现：`yeban-dsp::meter::TruePeakDetector`，本 crate 不复制 DSP）。
+    /// 全零母带 / 测不出 ⇒ `None`（⛔ 不写一个假的 `0.0`）。
+    ///
+    /// ⚠ 它与 `peak.after` **不是同一个数**：后者是样本峰值（`max |sample|`），
+    /// 真峰值还看样本之间的过冲，因此 `truePeakDbfs >= 20·log10(peak_after)`。
+    pub true_peak_dbfs: Option<f32>,
+    /// ⭐ #175：**余量**（dB）= `-truePeakDbfs`。
+    ///
+    /// 正值 = 真峰值在 0 dBFS 之下（还有余量）；负值 = 已过载（该削波了）。
+    /// 真峰值测不出 ⇒ `None`。
+    pub headroom_db: Option<f32>,
     /// 归一化是否真的改变了样本。
     pub normalize_applied: bool,
     /// 归一化的补充说明（全零信号等边界）。
@@ -1112,9 +1155,24 @@ impl RenderArtifact {
                 "before": self.peak_before,
                 "after": self.peak_after,
                 "target": NORMALIZE_TARGET,
-                "unit": "full-scale",
+                "unit": "full-scale (线性幅度; 1.0 = 0 dBFS, 不是 dB)",
+                // ⭐ #175（#174 坑⑧）：这两个数的语义曾在响应里**没有**任何一句话说清。
+                "semantics": "before = 归一化**前**的样本峰值 (max |sample|), after = 归一化**后**的样本峰值; \
+                              两者都作用在 TPDF 抖动 / 24-bit 量化**之前**的浮点母带上。\
+                              ⛔ 不是文件峰值 (写盘的那份经过抖动与量化; 见 top-level `clippedSamples`), \
+                              ⛔ 也不是真峰值 (样本间的过冲见 top-level `truePeakDbfs`)。",
+                "domain": "TPDF 抖动 / 24-bit 量化之前的浮点母带",
+                "truePeakDbfs": json_f32(self.true_peak_dbfs),
+                "truePeakOversampling": 16,
             }),
         );
+        // ⭐ #175（#174 坑⑧）：削波必须是**可见**的读数，⛔ 不许只给一个峰值让人自己推。
+        map.insert(
+            "clippedSamples".to_owned(),
+            Value::from(self.clipped_samples),
+        );
+        map.insert("truePeakDbfs".to_owned(), json_f32(self.true_peak_dbfs));
+        map.insert("headroomDb".to_owned(), json_f32(self.headroom_db));
         map.insert(
             "normalize".to_owned(),
             serde_json::json!({
@@ -1377,6 +1435,30 @@ pub fn build(
         }
     }
     let peak_after = math::peak_of(&output.samples);
+    // 10a. ⭐ #175（#174 坑⑧）：削波与真峰值读数（**只读**：不改一个样本、不进 `bytes`/摘要）。
+    //      - `clipped_samples` 数的是"会被 24-bit 量化器钳住"的样本（`|s| > 1.0`）；
+    //      - 真峰值走 `yeban-render::mastering`（母带口径 16× 过采样，唯一实现在
+    //        `yeban-dsp::meter`）。⚠ 它内部会把整段信号多扫几遍（离线路径可接受）；
+    //        本层不复制 DSP，也不在 MCP 里另写一份过采样器。
+    let clipped_samples = math::clipped_sample_count(&output.samples);
+    let (true_peak_dbfs, headroom_db) = {
+        let frames = output.samples.len() / MASTER_CHANNELS;
+        let mut left = Vec::with_capacity(frames);
+        let mut right = Vec::with_capacity(frames);
+        for index in 0..frames {
+            left.push(output.samples[index * MASTER_CHANNELS]);
+            right.push(output.samples[index * MASTER_CHANNELS + 1]);
+        }
+        match mastering::measure_master(sample_rate, &left, &right) {
+            Some(master) if master.true_peak_dbtp.is_finite() => {
+                let peak = master.true_peak_dbtp;
+                (Some(peak), Some(-peak))
+            }
+            // 静音（真峰值 = −∞）或采样率没有核验系数 ⇒ 如实报 `null`，
+            // ⛔ 绝不把"测不出"写成 `0 dBFS`（那是满量程，语义正好相反）。
+            _ => (None, None),
+        }
+    };
     // 10b. 响度读数 + 对 `targetLufs` 的判定（**只读**：在抖动之前的浮点母带上测）。
     //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是
     //      "降位深"的伴生步骤（与 `normalize` 同一条理由, 见模块文档）。
@@ -1443,6 +1525,9 @@ pub fn build(
         audio_assets: asset_reports.into_values().collect(),
         peak_before,
         peak_after,
+        clipped_samples,
+        true_peak_dbfs,
+        headroom_db,
         normalize_applied,
         normalize_note,
         loudness,

@@ -136,7 +136,7 @@ fn note_object() -> Value {
 fn device_object() -> Value {
     json!({
         "type": "object",
-        "description": "设备定义。`kind` 必须是 `InternalEffect` 且 `bypassed:false` 才会武装引擎内置效果器；`params` 的已识别名字见 items（名字大小写不敏感，未识别的名字会被存储但**不生效**）",
+        "description": "设备定义。`kind` 必须是 `InternalEffect` 且 `bypassed:false` 才会武装引擎内置效果器；`params` 的已识别名字见 items（名字大小写不敏感）。⚠ 拼错的 `name`（与某个已识别拼写的编辑距离 ≤ 2，例如 `eq_low_gian`）会被**响亮拒绝**（`INVALID_PARAMETER_RANGE` / `unknownEffectParam`，带最近邻建议）；距离更远的未识别名字仍会被存储但**不生效**，并在提案响应的 `warnings[]` 与读回的 `inserts[].unrecognisedParams` 里出现",
         "required": [
             "deviceId",
             "name",
@@ -165,7 +165,7 @@ fn device_object() -> Value {
             },
             "params": {
                 "type": "array",
-                "description": "效果器参数。每个元素 {name, value, unit?}；`name` 的已识别拼写、单位、值域与缺省值见 items（0 个元素 = 不武装）",
+                "description": "效果器参数。每个元素 {name, value, unit?}；`name` 的已识别拼写、单位、值域与缺省值见 items（0 个元素 = 不武装）。⚠ 拼错的 `name` 在写入时被拒（编辑距离 ≤ 2，带最近邻）；其余的未知名字被存储但不生效、并在 `warnings[]` / `unrecognisedParams` 里可见",
                 "items": {
                     "oneOf": effect_params::param_schema_branches(),
                 },

@@ -722,6 +722,7 @@
 //! | 操作对象里有支持集合之外的键 | `INVALID_PARAMETER_RANGE`（`unknownInsertDeviceField` / `unknownRemoveDeviceField`） |
 //! | `device` 里有支持集合之外的键（含 snake_case 拼写） | `INVALID_PARAMETER_RANGE`（`unknownDeviceField`） |
 //! | `device.params[]` 里有支持集合之外的键 | `INVALID_PARAMETER_RANGE`（`unknownDeviceParamField`） |
+//! | ⭐ `device.params[].name` 与某个已识别拼写只差 ≤ 2 个字符（拼错） | `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议 — #175） |
 //! | `device.kind` 不是 [`DEVICE_KINDS`] 里的名字 | `INVALID_PARAMETER_RANGE`（`unknownDeviceKind`） |
 //! | `device.latencySamples` 超出 `u32` | `OUT_OF_RANGE`（`latencyOutOfRange`） |
 //! | 参数值在收窄到 `f32` **之后**非有限 | `INVALID_PARAMETER_RANGE`（`nonFiniteValue`） |
@@ -4471,6 +4472,9 @@ fn reject_remove_device_fields(object: &Map<String, Value>) -> Result<(), Fault>
 ///   （`data.reason = "latencyOutOfRange"`）；
 /// - `params[]` 的 `value` 在收窄到 `f32` 之后不是有限数 →
 ///   `INVALID_PARAMETER_RANGE`（`data.reason = "nonFiniteValue"`）；
+/// - ⭐ `params[].name` 与某个已识别拼写**只差一两个字符**（拼错） →
+///   `INVALID_PARAMETER_RANGE`（`data.reason = "unknownEffectParam"`，带最近邻）——
+///   见 [`reject_misspelled_effect_params`]；
 /// - `name` 是空串 → `INVALID_PARAMETER_RANGE`（`data.reason = "deviceNameRequired"`）。
 fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault> {
     let mut unknown: Vec<&str> = payload
@@ -4595,6 +4599,8 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
         }
         parsed
     };
+    // ⭐ #175：拼错的参数名在**写入时**就响亮失败（⛔ 不再"存下来、静默不生效"）。
+    reject_misspelled_effect_params(&name, &params)?;
     Ok(DeviceDefinition {
         id,
         name,
@@ -4603,6 +4609,86 @@ fn parse_device(payload: &Map<String, Value>) -> Result<DeviceDefinition, Fault>
         params,
         latency_samples,
     })
+}
+
+/// 拒绝"与某个已识别拼写只差一两个字符"的设备参数名（**#175 坑⑤**）。
+///
+/// ## 为什么需要它（实测，⛔ 不是假想）
+///
+/// #174 的外部 agent 试跑写下 `{"name":"eq_low_gian","value":9.0}`，读到
+/// `status:"success"` —— 而引擎不认这个名字，设备链一台效果器都没武装
+/// （`effects:[]`、`recognisedParams:[]`、`unrecognisedParams:["eq_low_gian"]`）。
+/// agent **以为写成了**。根因不是"读回不够"，是**写入侧没有声音**。
+///
+/// ## 判据：够近才拒绝，⛔ 不是"未知就拒绝"
+///
+/// [`crate::effect_params::similar_spellings`] 只在编辑距离 ≤
+/// [`crate::effect_params::TYPO_MAX_DISTANCE`]（2）时给建议。那时我们**能确定**
+/// 调用方想写哪个名字 ⇒ 拒绝并把最近邻逐字交还，比"成功但没生效"诚实。
+///
+/// 距离更远的未知名字（`reverb_mix` / 外部插件自己的旋钮名）**照旧接受**：
+/// `#156` 的验收面要求它们在 `inserts[].unrecognisedParams` 里可见，而且
+/// 工具面没有外部插件参数词表，替调用方拒绝会误伤。它们**不静默** —— 提案响应的
+/// `warnings[]` 会逐条报出（见 `domain::mod::effect_param_warnings`）。
+///
+/// # Errors
+///
+/// 有至少一个 `params[].name` 命中"够近的错字" ⇒ `INVALID_PARAMETER_RANGE`
+/// （`data.reason = "unknownEffectParam"`；`data.suggestions[]` 逐条给
+/// `requested` / `spelling` / `canonicalName` / `effect` / `distance`）。
+fn reject_misspelled_effect_params(
+    device_name: &str,
+    params: &[ParameterValue],
+) -> Result<(), Fault> {
+    let mut misspelled: Vec<(&str, Vec<crate::effect_params::SimilarSpelling>)> = Vec::new();
+    for param in params {
+        // 已识别的拼写（规范名或别名）一个字都不动。
+        if crate::effect_params::recognise(&param.name).is_some() {
+            continue;
+        }
+        let similar = crate::effect_params::similar_spellings(&param.name);
+        if !similar.is_empty() {
+            misspelled.push((param.name.as_str(), similar));
+        }
+    }
+    if misspelled.is_empty() {
+        return Ok(());
+    }
+    let requested: Vec<&str> = misspelled.iter().map(|(name, _)| *name).collect();
+    // 报文逐字点名"你是指谁"：只写"未知参数"仍然要靠调用方自己再猜一次。
+    let advice: Vec<String> = misspelled
+        .iter()
+        .map(|(name, similar)| {
+            let best = similar[0];
+            format!(
+                "你是指 `{}`？（你写的是 `{name}`，编辑距离 {}）",
+                best.canonical, best.distance
+            )
+        })
+        .collect();
+    let suggestions: Vec<Value> = misspelled
+        .iter()
+        .flat_map(|(name, similar)| similar.iter().map(move |spelling| spelling.to_value(name)))
+        .collect();
+    Err(Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        format!(
+            "`device.params` 里有引擎不认的**拼错**名字（设备 `{device_name}`）: {}。{} \
+             引擎不认的拼写写进设备也**不会生效**, 因此本次调用响亮失败 (⛔ 不再静默通过)。\
+             全部可用拼写见 `tools/list` 的 `insertDevice.device.params.items`。",
+            requested.join(", "),
+            advice.join("; "),
+        ),
+        serde_json::json!({
+            "reason": "unknownEffectParam",
+            "deviceName": device_name,
+            "unrecognisedParams": requested,
+            "suggestions": suggestions,
+            "hint": "拼写与某个已识别名字的编辑距离 <= 2 ⇒ 写入侧直接拒绝并给出最近邻; \
+                     距离更远的未知名字仍然接受, 但会出现在提案响应的 warnings[] 与读回的 \
+                     tracks[].inserts[].unrecognisedParams 里",
+        }),
+    ))
 }
 
 /// 解析 `device.params[]` 的一个元素。

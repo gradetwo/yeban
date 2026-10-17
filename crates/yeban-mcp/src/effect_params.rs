@@ -22,6 +22,32 @@
 //! `yeban_query_engine_state` 的 `tracks[].inserts[].recognisedParams` /
 //! `unrecognisedParams` 也走 [`recognise`] —— 公告牌与验收读数不会各说各话。
 //!
+//! ## #175：拼错的名字在**写入时**就响亮（⛔ 不再是"存下来、静默不生效"）
+//!
+//! 实测（#174 外部 agent 试跑）：
+//!
+//! ```text
+//! {"name": "eq_low_gian", "value": 9.0}
+//!   ⇒ status:"success"; inserts[0].recognisedParams:[]
+//!     inserts[0].unrecognisedParams:["eq_low_gian"]   ← 没有错误
+//! ```
+//!
+//! 外部 agent 于是**以为写成了**。现在 [`crate::domain::notes`] 的 `insertDevice`
+//! 解析会调用 [`similar_spellings`]：拼写与某个已识别名字的**编辑距离 ≤
+//! [`TYPO_MAX_DISTANCE`]** ⇒ `INVALID_PARAMETER_RANGE`，报文与 `data.suggestions`
+//! 逐字给出**最近邻**（`eq_low_gian` ⇒ `eq_low_gain`）。
+//!
+//! 为什么是"**够近才拒绝**"而不是"未知就拒绝"：
+//!
+//! - `#156` 的验收面刻意接受"引擎不认、但不是拼错"的名字（`reverb_mix` /
+//!   `reverb_width`），并要求它们出现在 `unrecognisedParams` 里。`reverb_mix` 与
+//!   最近的已识别拼写 `reverb_wet` 差 **3** ⇒ 它**不**触发拒绝（阈值 2），
+//!   `#156` 的判据因此逐字仍绿；
+//! - 距离 ≤ 2 时我们能**确定**调用方想写哪个名字。既然能确定，就不该猜着写下去 ——
+//!   拒绝并把可用名字逐字交还，比"成功但没生效"诚实。
+//!
+//! 证据：判据 `tests/trap_175.rs::a_misspelled_effect_param_is_refused_with_the_nearest_name`。
+//!
 //! ⚠ **刻意不认**的两个名字（引擎同样不认，见 `insert.rs` 的模块文档）：
 //! `reverb_mix`、`reverb_width`。本表里也不许出现它们。
 
@@ -436,6 +462,97 @@ pub fn recognised_names() -> Vec<&'static str> {
         }
     }
     names
+}
+
+/// 拼写"最近邻"的**编辑距离上限**（Levenshtein，⛔ 不是字符重合度）。
+///
+/// 取 **2** 是一个刻意的窄门槛，两端都有实测依据：
+///
+/// - **挡住手滑**：`eq_low_gian`（2）、`cuttof_hz`（1）、`reverb_siz`（1）都落在门槛内；
+/// - **不碰刻意不认的名字**：`reverb_mix` 与最近的已识别拼写 `reverb_wet` 差 **3**
+///   ⇒ 仍走 `#156` 的"存储 + 读回 `unrecognisedParams`"那条路（判据
+///   `tests/effect_contract.rs::eq_and_reverb_round_trip_and_sends_are_readable` 钉住）。
+pub const TYPO_MAX_DISTANCE: usize = 2;
+
+/// 一个与调用方拼写"够近"的已识别拼写（错字建议）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimilarSpelling {
+    /// 引擎认的拼写（可能是别名，例如 `low_gain`）。
+    pub spelling: &'static str,
+    /// 该拼写所属参数的**规范名**（建议优先写它）。
+    pub canonical: &'static str,
+    /// 该拼写所属的效果器件分组 id（`eq` / `reverb` / …）。
+    pub group: &'static str,
+    /// 与调用方拼写的编辑距离（`1..=TYPO_MAX_DISTANCE`）。
+    pub distance: usize,
+}
+
+impl SimilarSpelling {
+    /// 进错误 `data.suggestions[]` 的 JSON 形态（`requested` 是调用方写的那个词）。
+    #[must_use]
+    pub fn to_value(self, requested: &str) -> Value {
+        json!({
+            "requested": requested,
+            "spelling": self.spelling,
+            "canonicalName": self.canonical,
+            "effect": self.group,
+            "distance": self.distance,
+        })
+    }
+}
+
+/// 与 `name` 的编辑距离 ≤ [`TYPO_MAX_DISTANCE`] 的全部已识别拼写（按距离、再按拼写排序）。
+///
+/// 返回空 = "没有任何已识别拼写像它" ⇒ 该名字不是可确定的错字（可能是外部插件自己的
+/// 参数名，也可能是 `reverb_mix` 那种"引擎刻意不认"的名字）⇒ 调用方**不**拒绝它，
+/// 由提案响应的 `warnings[]` 与读回的 `unrecognisedParams` 如实报出。
+#[must_use]
+pub fn similar_spellings(name: &str) -> Vec<SimilarSpelling> {
+    let mut found: Vec<SimilarSpelling> = Vec::new();
+    for group in &EFFECT_GROUPS {
+        for param in group.params {
+            for spelling in std::iter::once(param.name).chain(param.aliases.iter().copied()) {
+                let distance = edit_distance(name, spelling);
+                if distance > 0 && distance <= TYPO_MAX_DISTANCE {
+                    found.push(SimilarSpelling {
+                        spelling,
+                        canonical: param.name,
+                        group: group.id,
+                        distance,
+                    });
+                }
+            }
+        }
+    }
+    found.sort_unstable_by(|left, right| {
+        left.distance
+            .cmp(&right.distance)
+            .then_with(|| left.spelling.cmp(right.spelling))
+    });
+    found
+}
+
+/// 两个拼写的 **Levenshtein 编辑距离**（插入 / 删除 / 替换各记 1，⛔ 不算相邻换位）。
+///
+/// 大小写不敏感（与 [`recognise`] 同一口径：引擎把名字转小写后匹配）。
+/// 只用两行 DP，因此不会为一次错误路径分配平方级内存。
+#[must_use]
+pub fn edit_distance(left: &str, right: &str) -> usize {
+    let left: Vec<char> = left.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let right: Vec<char> = right.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current: Vec<usize> = vec![0; right.len() + 1];
+    for (row, left_char) in left.iter().enumerate() {
+        current[0] = row + 1;
+        for (column, right_char) in right.iter().enumerate() {
+            let substitution = previous[column] + usize::from(left_char != right_char);
+            current[column + 1] = (previous[column + 1] + 1)
+                .min(current[column] + 1)
+                .min(substitution);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
 }
 
 /// 一个参数在 `device.params.items` 里的 JSON Schema 分支。

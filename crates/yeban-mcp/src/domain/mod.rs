@@ -1311,6 +1311,13 @@ impl Plan {
                     "willCreate".to_owned(),
                     section_build::summarize_ops(&draft.ops),
                 );
+                // ⭐ #175：`dryRun` 也必须说清"这是一份提案, 还要 merge"。
+                preview.insert("pendingMerge".to_owned(), Value::from(true));
+                preview.insert("mergeTool".to_owned(), Value::from("yeban_merge_proposal"));
+                preview.insert(
+                    "warnings".to_owned(),
+                    Value::Array(effect_param_warnings(&draft.ops)),
+                );
             }
             Self::Merge {
                 proposal_id,
@@ -3448,11 +3455,55 @@ fn apply_propose(
     Ok(ToolResponse::success(serde_json::json!({
         "created": true,
         "projectUnchanged": true,
+        // ⭐ #175（#174 坑①）：提案语义必须是**显式字段**，⛔ 不许只靠
+        // `projectUnchanged:true` 让调用方反推"还要 merge"。
+        "pendingMerge": true,
+        "mergeTool": "yeban_merge_proposal",
         "projectDigest": project_digest,
         "unwired": unwired,
         "willCreate": will_create,
+        // ⭐ #175：本批写入里**引擎不认但又不是错字**的参数名（例如 `reverb_mix`）。
+        // 它们被存储、不生效，因此逐条报出来 —— 远距离未知名字的唯一写入侧读数。
+        // 拼错的（编辑距离 ≤ 2）在解析期就 `INVALID_PARAMETER_RANGE`，到不了这里。
+        "warnings": effect_param_warnings(&draft.ops),
         "proposal": wire_projection,
     })))
+}
+
+/// 一批 `Op` 里"引擎不认、但又不是拼错"的设备参数名（进提案响应的 `warnings[]`）。
+///
+/// ## 它补的是哪一半（#175）
+///
+/// 拼错的参数名在 [`notes::parse_device`] 就**响亮失败**了（编辑距离 ≤ 2）。
+/// 但工具面刻意保留了一条"距离更远的未知名字照旧接受"的路：
+///
+/// - `#156` 的验收面要求 `reverb_mix` 这类**引擎刻意不认**的名字能被存下来、并在读回
+///   `tracks[].inserts[].unrecognisedParams` 里可见（判据钉住）；
+/// - 外部插件自己的旋钮名不在本 crate 的任何词表里，替调用方拒绝会误伤。
+///
+/// 那条路的写入侧此前**一个字节都不提**这件事。现在它至少有一行 `warnings[]`：
+/// `code` / 设备名 / 参数名 / 会出现的读回位置。⚠ `code` 不是故障码（`reason`），
+/// 它只是这条警告的稳定标识 —— 调用**没有**失败，工程也照旧没变。
+fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
+    let mut warnings = Vec::new();
+    for op in ops {
+        let Op::InsertDevice { device, .. } = op else {
+            continue;
+        };
+        for param in &device.params {
+            if crate::effect_params::recognise(&param.name).is_some() {
+                continue;
+            }
+            warnings.push(serde_json::json!({
+                "code": "unrecognisedEffectParam",
+                "deviceName": device.name,
+                "paramName": param.name,
+                "hint": "引擎不认这个拼写: 参数会被存储但不生效; 读回见 \
+                         `yeban_query_engine_state` 的 tracks[].inserts[].unrecognisedParams",
+            }));
+        }
+    }
+    warnings
 }
 
 /// 提案类工具里**明确没接线**的那部分（如实上报，不藏在错误码后面）。

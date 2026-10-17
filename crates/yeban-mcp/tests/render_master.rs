@@ -2970,3 +2970,127 @@ fn the_midi_export_never_embeds_the_project_author_bytes() {
          裁定是「维持现状（MIDI 也不写作者）」; 若要改，请**显式**改这条判据"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 判据 14（#175 / #174 坑⑧）：导出**削波**必须可见
+// ---------------------------------------------------------------------------
+
+/// 过载工程 ⇒ `clippedSamples > 0` ＋ `truePeakDbfs > 0` ＋ `headroomDb < 0`。
+///
+/// #174 实测：响应只给 `peak.before = 1.5748`，文件里 **6134 个样本**被钳在 `±1.0`，
+/// 而调用方**无法**从峰值推出"我导出的是一份削波文件"。本条钉死三个新读数，
+/// 并用**独立解码**（[`decode_i24`]）核对文件里真的有贴在满量程的样本。
+#[test]
+fn a_clipping_master_reports_clipped_samples_and_true_peak() {
+    let scratch = Scratch::new("clip-visible");
+    // 满力度 + +24 dB 推子 ⇒ 浮点母带远超满量程（实测 `peak.before` ≈ 11）。
+    let loud = Spec {
+        velocity: 127,
+        volume_db: 24.0,
+        ..Spec::default()
+    };
+    let (mut dispatcher, auth) = dispatcher_with(&project(&loud), &scratch.join("loud.yeban"));
+    let path = scratch.join("loud.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    println!(
+        "### 过载工程的读数（逐字）\n{}",
+        serde_json::to_string_pretty(data).expect("pretty")
+    );
+
+    let peak_before = data["peak"]["before"].as_f64().expect("peak.before");
+    assert!(
+        peak_before > 1.0,
+        "夹具必须真的过载（峰值 > 1.0），实测 {peak_before}"
+    );
+    let clipped = data["clippedSamples"]
+        .as_u64()
+        .expect("clippedSamples 必须是整数");
+    assert!(
+        clipped > 0,
+        "过载工程必须报出被 24-bit 量化器钳住的样本数，实际 {clipped}"
+    );
+    let true_peak = data["truePeakDbfs"]
+        .as_f64()
+        .expect("truePeakDbfs 必须是数");
+    assert!(
+        true_peak > 0.0,
+        "真峰值必须 > 0 dBFS（过载），实测 {true_peak}"
+    );
+    let headroom = data["headroomDb"].as_f64().expect("headroomDb 必须是数");
+    assert!(
+        (headroom + true_peak).abs() < 1.0e-6,
+        "headroomDb 必须等于 -truePeakDbfs：{headroom} vs {}",
+        -true_peak
+    );
+    assert!(headroom < 0.0, "过载 ⇒ 负余量，实测 {headroom}");
+
+    // 文件里**真的**有贴在满量程端点的样本（独立解码，不用生产代码）。
+    let samples = verify_file_shape(&rendered, &path);
+    let full_scale = 8_388_607.0f32 / 8_388_608.0;
+    let clamped = samples
+        .iter()
+        .filter(|sample| sample.abs() >= full_scale)
+        .count();
+    assert!(
+        clamped > 0,
+        "写出的文件里必须有钳到满量程端点的样本（否则 '削波' 是假读数）"
+    );
+
+    // ⭐ `peak.before/after` 的语义必须**写在响应里**（#174 坑⑧的第二半）。
+    let semantics = data["peak"]["semantics"]
+        .as_str()
+        .expect("peak.semantics 必须是字符串");
+    assert!(semantics.contains("归一化"), "{semantics}");
+    assert!(semantics.contains("不是文件峰值"), "{semantics}");
+    assert!(semantics.contains("不是真峰值"), "{semantics}");
+}
+
+/// 普通工程 ⇒ `clippedSamples == 0` ＋ `truePeakDbfs <= 0` ＋ `headroomDb >= 0`。
+///
+/// 这一条挡住"永远报一个正数"的假读数：同一份夹具（默认力度 / 0 dB 推子）必须干净。
+#[test]
+fn a_normal_master_reports_zero_clipped_samples_and_no_overshoot() {
+    let scratch = Scratch::new("clip-normal");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("normal.yeban"));
+    let path = scratch.join("normal.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    println!(
+        "### 普通工程的削波读数（逐字）: clippedSamples={} truePeakDbfs={} headroomDb={} peak.before={} peak.after={}",
+        data["clippedSamples"],
+        data["truePeakDbfs"],
+        data["headroomDb"],
+        data["peak"]["before"],
+        data["peak"]["after"],
+    );
+    assert_eq!(data["clippedSamples"], 0, "普通工程不得报削波样本: {data}");
+    let true_peak = data["truePeakDbfs"]
+        .as_f64()
+        .expect("truePeakDbfs 必须是数");
+    assert!(
+        true_peak <= 0.0,
+        "普通工程的真峰值必须 <= 0 dBFS，实测 {true_peak}"
+    );
+    let headroom = data["headroomDb"].as_f64().expect("headroomDb 必须是数");
+    assert!(headroom >= 0.0, "普通工程余量必须 >= 0 dB，实测 {headroom}");
+}
