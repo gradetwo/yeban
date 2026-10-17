@@ -47,6 +47,17 @@ env:
   # 而 `yeban-app` 的部分测试在默认栈下会崩溃（Windows 与全量腿曾因此红，见台账 R707/R714）。
   # ⭐ 放工作流级而⛔ 不逐腿：CI 与本地门禁的**环境变量必须对齐**（第 215 条）。
   RUST_MIN_STACK: 16777216
+  # ⭐ #172: app 的特性清单**单一事实源** —— 合并后的 clippy / test 两条特性腿都从这里取,
+  # ⛔ 不在各腿里各写一份 (增删一个 feature 时两份必然漂移)。
+  # 每个名字都必须是 `crates/yeban-app/Cargo.toml` 的 `[features]` 键:
+  #   * `scripts/guards/check_workflow_structure.py` 把这份清单与 `Cargo.toml` **机械比对**
+  #     (声明了却没进清单 ⇒ 红; 清单里有而 `Cargo.toml` 没有 ⇒ 红);
+  #   * `scripts/dev/app-features.sh <crate>` 逐条对照 `crates/<crate>/Cargo.toml`,
+  #     只把该 crate **真的声明了**的那些交给 `--features`。
+  # 为什么是这 5 个而不是 app 声明的全部 7 个: 见该守卫的 `AUTO_CI_EXCLUDED`
+  # (`ui-test-port` 由 dev-dependency + 自动发现的测试目标覆盖; `ui-mcp-http` 由手动档
+  #  `gates-manual.yml` 的 `all-features` 覆盖)。
+  APP_FEATURES: "experimental-als-export,experimental-logic-export,experimental-logic-import,in-process-mcp,midi-input"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -249,104 +260,79 @@ jobs:
           set -o pipefail
           cargo test -p "${{ matrix.crate }}" --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
-      # R64: 实验性导出特性 (`experimental-als-export` / `experimental-logic-export`)
-      # 此前**没有任何自动步骤**带这个开关 ⇒ `yeban-render` 的 `src/logic.rs`
-      # (8252 行 / 37 判据) 与 `src/als.rs` (1587 行 / 5 判据) 在自动 CI 里
-      # **从不编译**。判据写得对、`--features` 也真能跑, 仍不够: 判据要真的被
-      # 跑到, 必须同时满足「目标被编进来」与「步骤带那个开关」两个条件。
-      # 只有声明了该特性的 crate 才跑这一腿 (对其余 crate 传不存在的
-      # `--features` 会直接报错), 因此用 Cargo.toml 守卫而不是 blanket flag。
-      - name: clippy (实验性导出特性, -D warnings)
+      # ⭐ #172: 把 app 的三条 feature test 腿**合并成一条**（clippy 也从两条合并成一条）。
+      #
+      # 为什么合并（#167 的 `CARGO_INCREMENTAL=0` + 清 incremental **不够**）:
+      #   每条 test 腿都是 `--all-targets` ⇒ **63 个集成测试二进制**
+      #   （`crates/yeban-app/tests/` 现有 63 个文件，单个 105–112 MB），
+      #   而且**每个 feature 组合都要重新链接一遍**。实测（run 39070081067，
+      #   commit b39b02c）: 前三条 test 腿跑完后 `du -sh target` = **68G**、
+      #   `df` 只剩 **17G**，第四条（in-process-mcp）70 秒内把盘写满，逐字
+      #   `error: couldn't create a temp dir: No space left on device (os error 28)`
+      #   / `ld terminated with signal 7 [Bus error]`，该步 **0 条 `test result:`**
+      #   ⇒ 不是测试红，是编译期爆盘。
+      # ⇒ 合并后**一个 feature 组合只链接一次**（默认档一条 + 合并档一条），
+      #   而**每个 feature 仍然真的被编进来、真的被测**（这是合并的硬条件）。
+      #
+      # 机制（⛔ 不是 blanket flag，`--features` 仍按 Cargo.toml 的实际声明过滤）:
+      #   ① 特性清单的**单一事实源**是 workflow 级 `APP_FEATURES`（见文件顶部 env）;
+      #   ② `scripts/dev/app-features.sh <crate>` 逐条对照 `crates/<crate>/Cargo.toml`
+      #      的 `[features]`，只输出该 crate **真的声明了**的那些 —— 对未声明的 crate
+      #      传 `--features` 会直接报错（R64/R335 的原话），所以必须过滤;
+      #   ③ 因此 yeban-midi-io / yeban-mcp 仍只拿到 `midi-input`、yeban-render 仍只拿到
+      #      导出族 —— 与合并前逐腿的开关**逐字相同**，⛔ 不是"给所有 crate 开所有特性"。
+      #
+      # 判据口径（`scripts/guards/check_workflow_structure.py` 机械比对）:
+      #   "合并"最容易出的事故是**某个 feature 被从清单里删掉、于是它的判据一条都不跑**。
+      #   该守卫把 `APP_FEATURES` 与 `crates/yeban-app/Cargo.toml` 声明的清单机械比对:
+      #   声明了但没进清单（且不在 `AUTO_CI_EXCLUDED` 的书面豁免里）⇒ **红**。
+      #
+      # 失败可定位（合并后"这是哪条腿"的答案）:
+      #   每个测试二进制仍各自打一行 `test result:`，失败行自带二进制名与模块路径;
+      #   编译失败自带 `error: could not compile yeban-app (test "…")`;
+      #   `--no-fail-fast` 让**一个二进制红了不掩盖其余**; 且本腿开头打印
+      #   `== 本腿特性 (<crate>): <实际清单>`，失败摘要里也贴它。
+      - name: clippy (合并特性, -D warnings)
         run: |
           set -euo pipefail
           set -o pipefail
-          if grep -q '^experimental-logic-export' "crates/${{ matrix.crate }}/Cargo.toml"; then
-            cargo clippy -p "${{ matrix.crate }}" --all-targets --locked \
-              --features experimental-als-export,experimental-logic-export \
-              -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-          else
-            echo "::notice::${{ matrix.crate }} 未声明实验性导出特性, 本腿跳过"
+          : "${APP_FEATURES:?workflow env APP_FEATURES 未设置（合并特性腿的单一事实源）}"
+          features="$(bash scripts/dev/app-features.sh "${{ matrix.crate }}")"
+          if [ -z "$features" ]; then
+            echo "::notice::${{ matrix.crate }} 未声明 APP_FEATURES 里的任何特性, 本腿跳过"
+            exit 0
           fi
+          echo "== 本腿特性 (${{ matrix.crate }}): $features"
+          cargo clippy -p "${{ matrix.crate }}" --all-targets --locked \
+            --features "$features" \
+            -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
-      - name: test (实验性导出特性)
-        run: |
-          set -euo pipefail
-          set -o pipefail
-          if grep -q '^experimental-logic-export' "crates/${{ matrix.crate }}/Cargo.toml"; then
-            cargo test -p "${{ matrix.crate }}" --all-targets --locked \
-              --features experimental-als-export,experimental-logic-export \
-              2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-          else
-            echo "::notice::${{ matrix.crate }} 未声明实验性导出特性, 本腿跳过"
-          fi
-
-      # R335: `midi-input` 特性下的代码（`crates/yeban-midi-io/src/input.rs` 的 midir
-      # 面向部分：端口枚举 / 会话 / `open_input`，共 5 处 `#[cfg(feature = "midi-input")]`）
-      # 在**默认档下不编译** ⇒ 若没有带这个开关的步骤，那部分在自动 CI 里**从不编译**
-      # —— 与上面 R64 的实验性导出特性是**同一类陷阱**（"判据要真的被跑到, 必须同时满足
-      # 「目标被编进来」与「步骤带那个开关」两个条件"）。同样用 **Cargo.toml 守卫**而不是
-      # blanket flag：只有声明了该特性的 crate 才跑这一腿。
-      - name: clippy (midi-input 特性, -D warnings)
-        run: |
-          set -euo pipefail
-          set -o pipefail
-          if grep -q '^midi-input' "crates/${{ matrix.crate }}/Cargo.toml"; then
-            cargo clippy -p "${{ matrix.crate }}" --all-targets --locked \
-              --features midi-input \
-              -- -D warnings 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-          else
-            echo "::notice::${{ matrix.crate }} 未声明 midi-input 特性, 本腿跳过"
-          fi
-
-      - name: test (midi-input 特性)
-        env:
-          CARGO_INCREMENTAL: "0"
-        run: |
-          set -euo pipefail
-          set -o pipefail
-          if grep -q '^midi-input' "crates/${{ matrix.crate }}/Cargo.toml"; then
-            cargo test -p "${{ matrix.crate }}" --all-targets --locked \
-              --features midi-input \
-              2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-          else
-            echo "::notice::${{ matrix.crate }} 未声明 midi-input 特性, 本腿跳过"
-          fi
-
-      # `in-process-mcp`: app 进程内托管领域 MCP 的运行态挂载
-      # (`crates/yeban-app/Cargo.toml` 的 `in-process-mcp = ["dep:yeban-mcp", "yeban-mcp/mcp-http"]`)。
-      # 与 R64 / R335 **同一类陷阱, 但形式更隐蔽**: 5 个集成测试目标带的是**crate 根**
-      # `#![cfg(feature = "in-process-mcp")]`(`tests/in_process_mcp.rs` / `in_process_mcp_lock.rs` /
-      # `production_reprojection.rs` / `production_save_ui.rs` / `single_writer_session.rs`),
-      # 默认档下它们**编译成空测试目标** —— 不是"被跳过", 是"从未编译";
-      # `tests/live_ui_mcp.rs` 另有 13 处逐项 `#[cfg(feature = "in-process-mcp")]` 同样不编。
-      # 自动档此前没有任何步骤带这个开关(`grep -c "in-process-mcp" ci.yml` = 0), 手动档
-      # `gates-manual.yml` 的 `all-features` 只在 `inputs.gate == 'all-features'` 时跑
-      # (定时触发只跑 `inventory`) ⇒ 这一整类判据在自动 CI 里**从未执行**。
-      # 仍然用 **Cargo.toml 守卫**: 只有声明了该特性的 crate 才跑这一腿。
-      # ⭐ `#167`：同一 job 里有 4 条 test 腿，每条 63 个测试二进制（单个 105–112 MB）
-      # ⇒ 第 4 条（in-process-mcp）在 hosted runner 上把盘写满：CI 逐字
-      # `rustc-LLVM ERROR: IO failure on output stream: No space left on device`，
-      # 且该步 **0 条 `test result:`** ⇒ 不是测试红，是编译期爆盘。
-      - name: 释放增量目录 (前面三条 test 腿的 incremental 会叠加)
+      # ⭐ 保留本条（#167 加的）: 它 1 秒内清掉前面两条腿的 incremental 并打印
+      # `du -sh target` / `df -h .` —— 在 hosted runner 上**这是唯一能读到的盘读数**，
+      # 也是下一轮判"够不够"的依据。合并后它挪到合并档 test 腿**之前**（最重的一次链接）。
+      - name: 释放增量目录 (合并档 test 腿之前; 前两条腿的 incremental 会叠加)
         run: |
           set -euo pipefail
           du -sh target 2>/dev/null || true
           rm -rf target/debug/incremental || true
           df -h . || true
 
-      - name: test (in-process-mcp 特性)
+      - name: test (合并特性)
         env:
           CARGO_INCREMENTAL: "0"
         run: |
           set -euo pipefail
           set -o pipefail
-          if grep -q '^in-process-mcp' "crates/${{ matrix.crate }}/Cargo.toml"; then
-            cargo test -p "${{ matrix.crate }}" --all-targets --locked \
-              --features in-process-mcp \
-              2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-          else
-            echo "::notice::${{ matrix.crate }} 未声明 in-process-mcp 特性, 本腿跳过"
+          : "${APP_FEATURES:?workflow env APP_FEATURES 未设置（合并特性腿的单一事实源）}"
+          features="$(bash scripts/dev/app-features.sh "${{ matrix.crate }}")"
+          if [ -z "$features" ]; then
+            echo "::notice::${{ matrix.crate }} 未声明 APP_FEATURES 里的任何特性, 本腿跳过"
+            exit 0
           fi
+          echo "== 本腿特性 (${{ matrix.crate }}): $features"
+          cargo test -p "${{ matrix.crate }}" --all-targets --locked --no-fail-fast \
+            --features "$features" \
+            2>&1 | tee -a "$RUNNER_TEMP/gate.log"
       - name: 上传无头 UI 截图 (若该 crate 产出了)
         if: always()
         uses: actions/upload-artifact@v4
@@ -407,22 +393,38 @@ jobs:
           set -o pipefail
           cargo test --workspace --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
-      # 同一条 `in-process-mcp` 缺口在**宽运行**这一侧也必须补: `plan` 判定根级文件
-      # (含 `.github/**` / `Cargo.toml` / `scripts/**` / `schemas/**`)被改动时, **矩阵腿整体被剪掉**
-      # (`rust.if: needs.plan.outputs.workspace_wide != 'true'`), 只剩这一条 `rust-workspace`。
-      # ⇒ 若只在矩阵腿里补, 那么"任何根级改动"的提交仍然一次都不会执行 in-process-mcp 判据
-      # (本次改动本身就是这种情况)。固定 `-p yeban-app`(本 job 没有矩阵变量), 守卫与矩阵腿同型。
-      - name: test (in-process-mcp 特性, yeban-app)
+      # 宽运行这一跳的 `test --workspace` 会留下 incremental; 下面这条 app 合并特性腿
+      # 是本 job 最重的一次链接, 先清掉并打印盘读数（与矩阵腿同一条纪律）。
+      - name: 释放增量目录 (宽运行的 app 合并特性腿之前)
+        run: |
+          set -euo pipefail
+          du -sh target 2>/dev/null || true
+          rm -rf target/debug/incremental || true
+          df -h . || true
+
+      # ⭐ #172: 宽运行这一侧也用**同一份** `APP_FEATURES`（⛔ 不再手写一份只有
+      # `in-process-mcp` 的清单）。两个理由:
+      #   ① 单一事实源: 矩阵腿与全量腿用同一份清单, 增删 feature 只改一处;
+      #   ② ⚠ `plan` 判定根级文件（含 `.github/**` / `Cargo.toml` / `scripts/**` /
+      #      `schemas/**`）被改动时, **矩阵腿整体被剪掉**（`rust.if: ...`）, 只剩本 job
+      #      ⇒ 若本 job 不带这些开关, 那么"任何根级改动"的提交（包括改门禁本身这一次）
+      #      一次都不会执行导出族 / midi-input / in-process-mcp 的判据。
+      - name: test (合并特性, yeban-app)
+        env:
+          CARGO_INCREMENTAL: "0"
         run: |
           set -euo pipefail
           set -o pipefail
-          if grep -q '^in-process-mcp' crates/yeban-app/Cargo.toml; then
-            cargo test -p yeban-app --all-targets --locked \
-              --features in-process-mcp \
-              2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-          else
-            echo "::notice::yeban-app 未声明 in-process-mcp 特性, 本腿跳过"
+          : "${APP_FEATURES:?workflow env APP_FEATURES 未设置（合并特性腿的单一事实源）}"
+          features="$(bash scripts/dev/app-features.sh yeban-app)"
+          if [ -z "$features" ]; then
+            echo "::notice::yeban-app 未声明 APP_FEATURES 里的任何特性, 本腿跳过"
+            exit 0
           fi
+          echo "== 本腿特性 (yeban-app): $features"
+          cargo test -p yeban-app --all-targets --locked --no-fail-fast \
+            --features "$features" \
+            2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
       # ⚠ 这里**故意暂时没有**"真实界面的内省判据"这一步。
       # 它的首次执行(commit 66b002c, run 37223586792)证明: `crates/yeban-app/src/test_port_adapter.rs`
