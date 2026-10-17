@@ -75,6 +75,13 @@ for c in "$@"; do
     layer "check -p $c --all-targets --features 实验性导出" \
       cargo check -p "$c" --all-targets --locked \
       --features experimental-als-export,experimental-logic-export
+    # ⭐ `#145` 实测发现的洞：上面那一层是 **check**，而"引脚字节流"判据住在
+    # `src/als.rs` / `src/logic.rs` 的 `#[cfg(test)]` 里 ⇒ check 编译得出来但**不会跑**
+    # ⇒ 本机门曾经漏掉 `#142` 引起的那条红（CI 的 `ci.yml` 才是真 test）。
+    # ⇒ 这一层补上**真 test**（双 feature 一起给：只给 logic 时 `als` 模块根本不编译）。
+    layer "test -p $c --features 实验性导出" \
+      cargo test -p "$c" --locked --no-fail-fast \
+      --features experimental-als-export,experimental-logic-export
   fi
   # CI: clippy/test (midi-input 特性)
   if grep -q '^midi-input' "crates/$c/Cargo.toml" 2>/dev/null; then
