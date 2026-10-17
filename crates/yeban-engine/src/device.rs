@@ -33,7 +33,7 @@
 //!   宁可明确失败，也不假装独占成功。
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -49,6 +49,254 @@ use crate::rt::{EngineRuntime, EngineStats};
 
 /// 打开流的超时（cpal 0.18 的 `timeout` 参数）。避免设备被独占时无限等待。
 pub const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 错误回调里保存**首条**后端错误消息的最大字节数。
+///
+/// 固定缓冲 + 原子字节 ⇒ 错误回调内**零分配**（红线 7）。已知的 cpal 消息都是短的
+/// ASCII（例如 `"Device disconnected"`）；超长消息按此上限截断。
+pub const BACKEND_ERROR_MESSAGE_MAX: usize = 96;
+
+/// cpal `ErrorKind` 的**稳定编号**（0 = 未知/未来新增的变体）。
+///
+/// 编号只在本 crate 的读数里使用；`name` 才是给人看的字面量。
+#[must_use]
+pub const fn backend_error_kind_code(kind: cpal::ErrorKind) -> u8 {
+    // `ErrorKind` 是 `#[non_exhaustive]` ⇒ 必须留通配臂。
+    match kind {
+        cpal::ErrorKind::DeviceBusy => 1,
+        cpal::ErrorKind::DeviceChanged => 2,
+        cpal::ErrorKind::DeviceNotAvailable => 3,
+        cpal::ErrorKind::HostUnavailable => 4,
+        cpal::ErrorKind::InvalidInput => 5,
+        cpal::ErrorKind::PermissionDenied => 6,
+        cpal::ErrorKind::RealtimeDenied => 7,
+        cpal::ErrorKind::ResourceExhausted => 8,
+        cpal::ErrorKind::StreamInvalidated => 9,
+        cpal::ErrorKind::UnsupportedConfig => 10,
+        cpal::ErrorKind::UnsupportedOperation => 11,
+        cpal::ErrorKind::Xrun => 12,
+        cpal::ErrorKind::BackendError => 13,
+        cpal::ErrorKind::Other => 14,
+        _ => 0,
+    }
+}
+
+/// 编号 → 稳定名字（机器可读行里**不带空白**）。
+#[must_use]
+pub const fn backend_error_kind_name(code: u8) -> &'static str {
+    match code {
+        1 => "device-busy",
+        2 => "device-changed",
+        3 => "device-not-available",
+        4 => "host-unavailable",
+        5 => "invalid-input",
+        6 => "permission-denied",
+        7 => "realtime-denied",
+        8 => "resource-exhausted",
+        9 => "stream-invalidated",
+        10 => "unsupported-config",
+        11 => "unsupported-operation",
+        12 => "xrun",
+        13 => "backend-error",
+        14 => "other",
+        _ => "unknown",
+    }
+}
+
+/// 首条后端错误的种类 + 截断后的消息（控制面读，**不在实时路径上**）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BackendErrorInfo {
+    kind: u8,
+    message_len: u8,
+    message: [u8; BACKEND_ERROR_MESSAGE_MAX],
+}
+
+impl BackendErrorInfo {
+    /// 稳定编号（见 [`backend_error_kind_code`]）。
+    #[must_use]
+    pub const fn kind_code(&self) -> u8 {
+        self.kind
+    }
+
+    /// 稳定名字（见 [`backend_error_kind_name`]）。
+    #[must_use]
+    pub const fn kind_name(&self) -> &'static str {
+        backend_error_kind_name(self.kind)
+    }
+
+    /// cpal 给的原始消息；没有消息时是空串。截断可能落在 UTF-8 边界外 ⇒ 退回空串。
+    #[must_use]
+    pub fn message(&self) -> &str {
+        std::str::from_utf8(&self.message[..usize::from(self.message_len)]).unwrap_or("")
+    }
+}
+
+/// 后端错误的两档计数：**运行期** vs **关闭/停止期**。
+///
+/// ⚠ 口径：阶段由**回调实际执行的时刻**决定（[`BackendErrorLog::begin_stop`] 之后
+/// 到达的回调记入 `stop`）。边界附近已在飞行中的事件可能被归到 stop —— 这是
+/// "两档读数"的自洽代价，登记在 `#147`；它**不会**改变 `total()`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BackendErrorCounts {
+    /// 流处于运行阶段时到达的错误回调次数。
+    pub runtime: u64,
+    /// [`BackendErrorLog::begin_stop`] 之后到达的错误回调次数（暂停/关流阶段）。
+    pub stop: u64,
+    /// 首条错误的种类与消息（一次都没来时 `None`）。
+    pub first: Option<BackendErrorInfo>,
+}
+
+impl BackendErrorCounts {
+    /// 两档之和 —— 与旧口径的 `backend_errors` **逐位相同**。
+    #[must_use]
+    pub const fn total(&self) -> u64 {
+        self.runtime.saturating_add(self.stop)
+    }
+
+    /// 一行**机器可读**的分档读数（`BACKEND-ERRORS direction=... runtime=... ...`）。
+    ///
+    /// 设计约束：
+    ///
+    /// - 独立于 `BENCH` 行 ⇒ 不改变 `BENCH` 的任何键、键序、行长（`latency.rs` 的
+    ///   严格解析器与既有指纹判据因此一位不变）；
+    /// - `first_message` 只保留 `[A-Za-z0-9_.:-]`，其余字节换成 `_` ⇒ 值里没有空白，
+    ///   可以被 `split_whitespace` 安全解析；没有错误时两项都是字面 `none`。
+    #[must_use]
+    pub fn machine_line(&self, direction: &str) -> String {
+        let (kind, message) = match self.first {
+            Some(info) => (
+                info.kind_name(),
+                backend_error_message_token(info.message()),
+            ),
+            None => ("none", "none".to_owned()),
+        };
+        format!(
+            "BACKEND-ERRORS direction={direction} runtime={} stop={} total={} first_kind={kind} \
+first_message={message}",
+            self.runtime,
+            self.stop,
+            self.total(),
+        )
+    }
+}
+
+/// 把错误消息压成一个**不含空白**的机器可读 token（空文本 ⇒ `none`）。
+fn backend_error_message_token(text: &str) -> String {
+    if text.is_empty() {
+        return "none".to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        out.push(
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':') {
+                char::from(byte)
+            } else {
+                '_'
+            },
+        );
+    }
+    out
+}
+
+/// 后端错误回调的**零分配**计数器：只做原子自增；首条错误额外记下种类与消息。
+///
+/// 为什么分两档：`measure_latency --loopback` 实测"每方向恰好 1 次"（`#147`），
+/// 而**关闭/暂停阶段**的错误与**运行期**的真 XRun 是两种不同的事实。旧口径把它们
+/// 混成一个数，于是"1"既可能是真错误、也可能是关流副作用，读不出来是哪一种。
+///
+/// 实时约束：`record` 只做原子操作与固定缓冲拷贝 —— 零分配、零锁、零 I/O [红线 7]。
+#[derive(Debug)]
+pub struct BackendErrorLog {
+    runtime: AtomicU64,
+    stop: AtomicU64,
+    stopping: AtomicBool,
+    first_claimed: AtomicBool,
+    first_kind: AtomicU8,
+    first_message_len: AtomicU8,
+    first_message: [AtomicU8; BACKEND_ERROR_MESSAGE_MAX],
+}
+
+impl Default for BackendErrorLog {
+    fn default() -> Self {
+        Self {
+            runtime: AtomicU64::new(0),
+            stop: AtomicU64::new(0),
+            stopping: AtomicBool::new(false),
+            first_claimed: AtomicBool::new(false),
+            first_kind: AtomicU8::new(0),
+            first_message_len: AtomicU8::new(0),
+            first_message: std::array::from_fn(|_| AtomicU8::new(0)),
+        }
+    }
+}
+
+impl BackendErrorLog {
+    /// 空的计数器（运行期阶段）。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// **错误回调内**调用：按当前阶段自增，并（仅首条）记下种类与消息。
+    ///
+    /// ⛔ 不打印、不分配、不加锁。
+    pub fn record(&self, error: &cpal::Error) {
+        if self.stopping.load(Ordering::Relaxed) {
+            self.stop.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.runtime.fetch_add(1, Ordering::Relaxed);
+        }
+        if self
+            .first_claimed
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.first_kind
+                .store(backend_error_kind_code(error.kind()), Ordering::Relaxed);
+            let bytes = error.message().unwrap_or("").as_bytes();
+            let len = bytes.len().min(BACKEND_ERROR_MESSAGE_MAX);
+            for (slot, byte) in self.first_message.iter().zip(&bytes[..len]) {
+                slot.store(*byte, Ordering::Relaxed);
+            }
+            self.first_message_len
+                .store(u8::try_from(len).unwrap_or(u8::MAX), Ordering::Release);
+        }
+    }
+
+    /// 从这一时刻起，到达的错误回调计入**关闭/停止期**。
+    pub fn begin_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+    }
+
+    /// 从这一时刻起，到达的错误回调重新计入**运行期**（`play` 之后用）。
+    pub fn begin_run(&self) {
+        self.stopping.store(false, Ordering::Release);
+    }
+
+    /// 控制面读数（暂停/关流之后读才有意义）。
+    #[must_use]
+    pub fn counts(&self) -> BackendErrorCounts {
+        let len = usize::from(self.first_message_len.load(Ordering::Acquire));
+        let first = if self.first_claimed.load(Ordering::Acquire) {
+            let mut message = [0u8; BACKEND_ERROR_MESSAGE_MAX];
+            for (slot, byte) in message.iter_mut().zip(&self.first_message) {
+                *slot = byte.load(Ordering::Relaxed);
+            }
+            Some(BackendErrorInfo {
+                kind: self.first_kind.load(Ordering::Relaxed),
+                message_len: u8::try_from(len).unwrap_or(u8::MAX),
+                message,
+            })
+        } else {
+            None
+        };
+        BackendErrorCounts {
+            runtime: self.runtime.load(Ordering::Relaxed),
+            stop: self.stop.load(Ordering::Relaxed),
+            first,
+        }
+    }
+}
 
 /// 共享/独占模式偏好。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -351,7 +599,7 @@ pub struct OutputStreamHandle {
     /// 不在实时路径上）。
     device_name: String,
     negotiated: NegotiatedConfig,
-    backend_errors: Arc<AtomicU64>,
+    backend_errors: Arc<BackendErrorLog>,
 }
 
 impl OutputStreamHandle {
@@ -367,28 +615,41 @@ impl OutputStreamHandle {
         &self.device_name
     }
 
-    /// 后端错误计数（错误回调只做自增，**从不打印** [红线 7]）。
+    /// 后端错误回调的**总**次数（运行期 + 关闭/停止期；错误回调只做自增，**从不打印**
+    /// [红线 7]）。
+    ///
+    /// 口径与旧版**逐位相同**：分档只增加读数，不改变这个数。
     #[must_use]
     pub fn backend_errors(&self) -> u64 {
-        self.backend_errors.load(Ordering::Relaxed)
+        self.backend_errors.counts().total()
+    }
+
+    /// 后端错误的两档读数 + 首条错误的种类/消息（控制面读）。
+    #[must_use]
+    pub fn backend_error_counts(&self) -> BackendErrorCounts {
+        self.backend_errors.counts()
     }
 
     /// 启动流（cpal 建的流默认是停止的，必须显式 `play`）。
+    ///
+    /// 成功后错误回调重新计入**运行期**（`pause` 之后的 `play` 不把新错误算成关闭期）。
     ///
     /// # Errors
     ///
     /// 设备消失 / 流失效 → [`DeviceError::Backend`]。
     pub fn play(&self) -> Result<(), DeviceError> {
+        self.backend_errors.begin_run();
         self.stream.play()?;
         Ok(())
     }
 
-    /// 暂停流。
+    /// 暂停流。**先**把阶段切到关闭/停止期，再暂停 ⇒ 暂停/关流阶段到达的错误单独计。
     ///
     /// # Errors
     ///
     /// 后端不支持暂停 → [`DeviceError::Backend`]。
     pub fn pause(&self) -> Result<(), DeviceError> {
+        self.backend_errors.begin_stop();
         self.stream.pause()?;
         Ok(())
     }
@@ -454,7 +715,7 @@ pub fn open_output(
         buffer_size: negotiated.buffer_size,
     };
     let channels = negotiated.channels;
-    let backend_errors = Arc::new(AtomicU64::new(0));
+    let backend_errors = Arc::new(BackendErrorLog::new());
     let error_counter = Arc::clone(&backend_errors);
 
     // 数据回调: 只有 `render_callback`（= 只有 `process_quantum`）——
@@ -464,9 +725,9 @@ pub fn open_output(
         move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
             render_callback(&mut runtime, data, channels);
         },
-        // 错误回调: 只自增原子计数器。打印/日志都在这里被禁止 [红线 7]。
-        move |_error: cpal::Error| {
-            error_counter.fetch_add(1, Ordering::Relaxed);
+        // 错误回调: 只做原子计数与固定缓冲拷贝（零分配 / 零锁 / 零 I/O；打印禁止 [红线 7]）。
+        move |error: cpal::Error| {
+            error_counter.record(&error);
         },
         Some(STREAM_OPEN_TIMEOUT),
     )?;
@@ -501,7 +762,7 @@ pub struct InputStreamHandle {
     /// 打开时协商到的那台设备的显示名（控制面读，不在实时路径上）。
     device_name: String,
     negotiated: NegotiatedConfig,
-    backend_errors: Arc<AtomicU64>,
+    backend_errors: Arc<BackendErrorLog>,
 }
 
 impl InputStreamHandle {
@@ -517,28 +778,38 @@ impl InputStreamHandle {
         &self.device_name
     }
 
-    /// 后端错误回调的累计次数（只增的原子量）。
+    /// 后端错误回调的**总**次数（运行期 + 关闭/停止期；只增的原子量）。
     #[must_use]
     pub fn backend_errors(&self) -> u64 {
-        self.backend_errors.load(Ordering::Relaxed)
+        self.backend_errors.counts().total()
+    }
+
+    /// 后端错误的两档读数 + 首条错误的种类/消息（控制面读）。
+    #[must_use]
+    pub fn backend_error_counts(&self) -> BackendErrorCounts {
+        self.backend_errors.counts()
     }
 
     /// 启动捕获。
+    ///
+    /// 成功后错误回调重新计入**运行期**。
     ///
     /// # Errors
     ///
     /// 设备消失 / 流失效 → [`DeviceError::Backend`]。
     pub fn play(&self) -> Result<(), DeviceError> {
+        self.backend_errors.begin_run();
         self.stream.play()?;
         Ok(())
     }
 
-    /// 暂停捕获。
+    /// 暂停捕获。**先**把阶段切到关闭/停止期，再暂停。
     ///
     /// # Errors
     ///
     /// 后端不支持暂停 → [`DeviceError::Backend`]。
     pub fn pause(&self) -> Result<(), DeviceError> {
+        self.backend_errors.begin_stop();
         self.stream.pause()?;
         Ok(())
     }
@@ -597,7 +868,7 @@ pub fn open_input(
         buffer_size: negotiated.buffer_size,
     };
     let channels = negotiated.channels;
-    let backend_errors = Arc::new(AtomicU64::new(0));
+    let backend_errors = Arc::new(BackendErrorLog::new());
     let error_counter = Arc::clone(&backend_errors);
 
     // 数据回调：只有 `capture_callback`（= 只有无锁推入）——
@@ -607,9 +878,9 @@ pub fn open_input(
         move |data: &[f32], _info: &cpal::InputCallbackInfo| {
             capture_callback(&mut sender, data, channels);
         },
-        // 错误回调：只自增原子计数器。打印/日志都在这里被禁止 [红线 7]。
-        move |_error: cpal::Error| {
-            error_counter.fetch_add(1, Ordering::Relaxed);
+        // 错误回调：只做原子计数与固定缓冲拷贝（零分配 / 零锁 / 零 I/O；打印禁止 [红线 7]）。
+        move |error: cpal::Error| {
+            error_counter.record(&error);
         },
         Some(STREAM_OPEN_TIMEOUT),
     )?;

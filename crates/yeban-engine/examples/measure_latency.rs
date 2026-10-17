@@ -126,7 +126,8 @@ mod imp {
     };
     use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
     use yeban_engine::device::{
-        EngineConfig, STREAM_OPEN_TIMEOUT, ShareMode, capture_callback, negotiate, negotiate_input,
+        BackendErrorCounts, BackendErrorLog, EngineConfig, STREAM_OPEN_TIMEOUT, ShareMode,
+        capture_callback, negotiate, negotiate_input,
     };
     use yeban_engine::graph::LatencyTable;
     use yeban_engine::latency::{
@@ -258,7 +259,7 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
         intervals_ns: Box<[AtomicU64]>,
         driver_index: AtomicUsize,
         driver_ns: Box<[AtomicU64]>,
-        errors: AtomicU64,
+        errors: BackendErrorLog,
     }
 
     impl CallbackClock {
@@ -273,7 +274,7 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
                 intervals_ns: intervals.into_boxed_slice(),
                 driver_index: AtomicUsize::new(0),
                 driver_ns: driver.into_boxed_slice(),
-                errors: AtomicU64::new(0),
+                errors: BackendErrorLog::new(),
             })
         }
 
@@ -329,16 +330,22 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
                 .collect()
         }
 
-        fn note_error(&self) {
-            self.errors.fetch_add(1, Ordering::Relaxed);
+        /// 错误回调内调用：按当前阶段计数，首条错误记下种类与消息（零分配 [红线 7]）。
+        fn note_error(&self, error: &cpal::Error) {
+            self.errors.record(error);
+        }
+
+        /// 从这一时刻起到达的错误计入**关闭/停止期**（在 `pause()` 之前调用）。
+        fn begin_stop(&self) {
+            self.errors.begin_stop();
         }
 
         fn invocations(&self) -> usize {
             self.count.load(Ordering::Relaxed)
         }
 
-        fn errors(&self) -> u64 {
-            self.errors.load(Ordering::Relaxed)
+        fn errors(&self) -> BackendErrorCounts {
+            self.errors.counts()
         }
     }
 
@@ -352,7 +359,7 @@ exit codes: 0 within-target (measured) | 1 over-target (measured) | 2 usage
         invocations: usize,
         intervals_ns: Vec<u64>,
         driver_ns: Vec<u64>,
-        backend_errors: u64,
+        backend_errors: BackendErrorCounts,
         sample_rate_hz: u32,
         negotiated_frames: Option<u32>,
         reported_frames: Option<u32>,
@@ -620,12 +627,33 @@ direction on purpose",
                 direction.as_str()
             )),
         }
+        // 后端错误的两档读数：**运行期** vs **关闭/停止期**（`#147`）。
+        //
+        // 旧口径把两者相加成一个 `backend_errors`，于是"每方向恰好 1 次"读不出
+        // 是运行期真错误还是关流阶段的一次事件。机器可读行（`BENCH`）的总数**不变**；
+        // 分档与首条错误的种类/消息走独立的 `BACKEND-ERRORS` 行与人读 NOTE。
+        let counts = run.backend_errors;
+        let first = match counts.first {
+            Some(info) => format!(
+                "first kind={} message={:?}",
+                info.kind_name(),
+                info.message()
+            ),
+            None => "first kind=none".to_owned(),
+        };
+        notes.push(format!(
+            "{}: backend errors split by phase: runtime={} stop/close={} total={} ({first})",
+            direction.as_str(),
+            counts.runtime,
+            counts.stop,
+            counts.total(),
+        ));
         (
             nominal,
             CallbackReport {
                 direction,
                 callbacks: run.invocations,
-                backend_errors: run.backend_errors,
+                backend_errors: counts.total(),
                 stats,
                 driver_latency,
             },
@@ -686,7 +714,7 @@ direction on purpose",
                     },
                     {
                         let error_clock = Arc::clone(&clock);
-                        move |_error: cpal::Error| error_clock.note_error()
+                        move |error: cpal::Error| error_clock.note_error(&error)
                     },
                     Some(STREAM_OPEN_TIMEOUT),
                 )
@@ -698,6 +726,7 @@ direction on purpose",
             // 必须**开流之后**从流上回读。CI 的第一次编译就是这么红掉的。
             reported_frames = stream.buffer_size().ok();
             std::thread::sleep(Duration::from_secs_f64(seconds));
+            clock.begin_stop();
             let _ = stream.pause();
         }
         Ok(finish(
@@ -744,7 +773,7 @@ direction on purpose",
                     },
                     {
                         let error_clock = Arc::clone(&clock);
-                        move |_error: cpal::Error| error_clock.note_error()
+                        move |error: cpal::Error| error_clock.note_error(&error)
                     },
                     Some(STREAM_OPEN_TIMEOUT),
                 )
@@ -756,6 +785,7 @@ direction on purpose",
             // 必须**开流之后**从流上回读。CI 的第一次编译就是这么红掉的。
             reported_frames = stream.buffer_size().ok();
             std::thread::sleep(Duration::from_secs_f64(seconds));
+            clock.begin_stop();
             let _ = stream.pause();
         }
         Ok(finish(
@@ -772,7 +802,7 @@ direction on purpose",
         intervals_ns: Vec<u64>,
         driver_ns: Vec<u64>,
         invocations: usize,
-        backend_errors: u64,
+        backend_errors: BackendErrorCounts,
         negotiated: yeban_engine::device::NegotiatedConfig,
         reported_frames: Option<u32>,
     ) -> StreamRun {
@@ -996,7 +1026,7 @@ claimed",
                     },
                     {
                         let error_clock = Arc::clone(&output_clock);
-                        move |_error: cpal::Error| error_clock.note_error()
+                        move |error: cpal::Error| error_clock.note_error(&error)
                     },
                     Some(STREAM_OPEN_TIMEOUT),
                 )
@@ -1032,7 +1062,7 @@ claimed",
                     },
                     {
                         let error_clock = Arc::clone(&input_clock);
-                        move |_error: cpal::Error| error_clock.note_error()
+                        move |error: cpal::Error| error_clock.note_error(&error)
                     },
                     Some(STREAM_OPEN_TIMEOUT),
                 )
@@ -1048,6 +1078,9 @@ claimed",
             reported_output = output_stream.buffer_size().ok();
             reported_input = input_stream.buffer_size().ok();
             std::thread::sleep(Duration::from_secs_f64(options.seconds));
+            // 两条流都在**同一时刻**进入关闭/停止阶段：先切阶段、再暂停。
+            output_clock.begin_stop();
+            input_clock.begin_stop();
             let _ = output_stream.pause();
             let _ = input_stream.pause();
         }
@@ -1217,7 +1250,7 @@ measured_roundtrip_ms=none, verdict=unmeasurable-without-loopback ({reading})"
                 measured_roundtrip_ms: None,
                 notes: vec![format!("forced no-device path: {NO_DEVICE_REASON}")],
             };
-            return emit(&report, options.allow_unmeasurable);
+            return emit(&report, options.allow_unmeasurable, &[]);
         }
 
         let host = cpal::default_host();
@@ -1235,12 +1268,14 @@ measured_roundtrip_ms=none, verdict=unmeasurable-without-loopback ({reading})"
                 measured_roundtrip_ms: None,
                 notes,
             };
-            return emit(&report, options.allow_unmeasurable);
+            return emit(&report, options.allow_unmeasurable, &[]);
         }
 
         let config = wanted(&options);
         let mut nominals = Vec::new();
         let mut callbacks = Vec::new();
+        // `#147`：错误分档的机器可读行（独立于 BENCH ⇒ 不改既有键序/行长）。
+        let mut backend_lines: Vec<String> = Vec::new();
 
         // ---- 回环腿（可选）----
         // ⚠ `--loopback` **关**的时候，下面 `else` 分支里的默认腿流程与读数
@@ -1271,6 +1306,16 @@ measured_roundtrip_ms=none, verdict=unmeasurable-without-loopback ({reading})"
                         summarize(Direction::Input, &run.input, options.frames, &mut notes);
                     nominals.extend(nominal);
                     callbacks.push(callback);
+                    backend_lines.push(
+                        run.output
+                            .backend_errors
+                            .machine_line(Direction::Output.as_str()),
+                    );
+                    backend_lines.push(
+                        run.input
+                            .backend_errors
+                            .machine_line(Direction::Input.as_str()),
+                    );
                     // 诚实闸：证据等级只在**真的检出**时才升级。
                     if let Some(milliseconds) = run.measurement {
                         evidence = Evidence::LoopbackMeasured;
@@ -1298,6 +1343,8 @@ measured_roundtrip_ms=none, verdict=unmeasurable-without-loopback ({reading})"
                                 summarize(Direction::Output, &run, options.frames, &mut notes);
                             nominals.extend(nominal);
                             callbacks.push(callback);
+                            backend_lines
+                                .push(run.backend_errors.machine_line(Direction::Output.as_str()));
                         }
                         Err(message) => notes.push(format!(
                             "output stream NOT measured (this is NOT a pass): {message}"
@@ -1318,6 +1365,8 @@ measured_roundtrip_ms=none, verdict=unmeasurable-without-loopback ({reading})"
                                 summarize(Direction::Input, &run, options.frames, &mut notes);
                             nominals.extend(nominal);
                             callbacks.push(callback);
+                            backend_lines
+                                .push(run.backend_errors.machine_line(Direction::Input.as_str()));
                         }
                         Err(message) => notes.push(format!(
                             "input stream NOT measured (this is NOT a pass): {message}"
@@ -1351,12 +1400,16 @@ is in the NOTE lines above)"
             measured_roundtrip_ms,
             notes,
         };
-        emit(&report, options.allow_unmeasurable)
+        emit(&report, options.allow_unmeasurable, &backend_lines)
     }
 
     /// 打印人读摘要 + 机器可读行，并按判定给退出码。
-    fn emit(report: &Report, allow_unmeasurable: bool) -> ExitCode {
+    fn emit(report: &Report, allow_unmeasurable: bool, backend_lines: &[String]) -> ExitCode {
         println!("{}", report.human_summary());
+        // `#147`：分档读数（每次运行都打印；没有打开流时为空）。
+        for line in backend_lines {
+            println!("{line}");
+        }
         let line = report.bench_line();
         // 自检：机器可读行必须能被自己的严格解析器读回来（格式漂移会在这里露馅）。
         match parse_bench_line(&line) {
