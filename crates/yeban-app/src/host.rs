@@ -3841,6 +3841,10 @@ pub fn wire_keys(
 ///
 /// `live_port` 为 `None`（判据侧没有撤销会话 / 窗口还没接端口）时退回 `port.project`
 /// 那份快照，并按"没有历史"写出空 `history.dag`（与此前行为逐字相同）。
+///
+/// ⭐ 任务单 `#170`：本入口**不知道引擎** ⇒ 落盘成功后**不**更新
+/// [`EngineHost::project_dir`]（旧行为，逐位不变）。产品 `run_gui` 走
+/// [`wire_save_with_engine`]（多一个引擎句柄，落盘后让工程目录跟着新文件走）。
 pub fn wire_save(
     ui: &MainWindow,
     port: SaveStatus,
@@ -3854,6 +3858,48 @@ pub fn wire_save(
     #[cfg(not(feature = "in-process-mcp"))]
     #[cfg_attr(not(feature = "in-process-mcp"), allow(unused_variables))]
     authority: Option<crate::save_action::AuthorityHandle>,
+) {
+    wire_save_with_engine(ui, port, live_port, picker, authority, None);
+}
+
+/// 与 [`wire_save`] 相同，但**知道这一代的引擎**：落盘成功后把
+/// [`EngineHost::set_project_dir`] 指到**新文件**的父目录（任务单 `#170`）。
+///
+/// ## 补的是哪一格（逐字）
+///
+/// "另存为"（装配期没有目标路径 ⇒ 对话框挑了一个新位置，或装配方重接了一个新落点）
+/// 落盘之后，`EngineHost.project_dir` 仍指向**旧**工程文件所在目录 ⇒ 之后新加的相对
+/// 路径 `sampler.path` 会按旧目录解析（界面说"有样本"，播放却读不到）。本入口把"目录跟
+/// **当前工程文件**走"这条语义与「打开」那一跳对齐：
+///
+/// | 这一跳 | 落点 |
+/// | :--- | :--- |
+/// | 「打开」（`host::PortOpenProject::open_runtime`） | `set_project_dir(新文件的父目录)`，**在** `reload` 之前 |
+/// | 「另存为」（本入口） | `set_project_dir(新文件的父目录)`，**在** `dispatch_save` 报 `Saved` 之后 |
+///
+/// ## 三条口径（承重）
+///
+/// * ⛔ **取消 / 失败不动它**：用户按取消 ⇒ 回调提前返回；`dispatch_save` 报
+///   [`crate::save_action::SaveOutcome::Failed`] ⇒ 不调 `set_project_dir` —— 没落盘就没有
+///   "新工程文件"，把目录挪过去会让**当前**工程解析到错的根（假读数）。
+/// * ⭐ **路径取自回执**（`SaveOutcome::Saved.path`），不是对话框给的原值：后缀补全
+///   （`with_default_extension`）与原子写在落点那侧发生，回执才是"真的写到哪"的真源。
+/// * `engine = None` ⇒ 与 [`wire_save`] **逐位相同**（旧装配 / 判据的旧腿一条都不变）。
+///
+/// # Errors
+///
+/// 无（失败经 `save-status` 如实回报，与 [`wire_save`] 同一条路）。
+pub fn wire_save_with_engine(
+    ui: &MainWindow,
+    port: SaveStatus,
+    live_port: Option<Rc<UndoPort>>,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
+    #[cfg(feature = "in-process-mcp")] authority: Option<crate::mcp_mount::ProjectAuthorityHandle>,
+    #[cfg(not(feature = "in-process-mcp"))]
+    #[cfg_attr(not(feature = "in-process-mcp"), allow(unused_variables))]
+    authority: Option<crate::save_action::AuthorityHandle>,
+    // ⭐ `#170`：落盘成功后要重定向的那个宿主（`None` ⇒ 旧行为，逐位不变）。
+    engine: Option<Rc<RefCell<EngineHost>>>,
 ) {
     // ⭐ `#86` 乙：用户在对话框里挑过一次之后**记住**它（否则每次按保存都要再问一次 ——
     // 那是"每保存一次弹一次窗"的坏体验）。装配期给了路径时本格**永远**是 `None`。
@@ -3928,6 +3974,18 @@ pub fn wire_save(
         };
         let outcome = crate::save_action::dispatch_save(&request, authority);
         apply_save_outcome(&ui, &outcome);
+        // ⭐ 任务单 `#170`：「另存为」落盘成功 ⇒ 工程目录跟着**这个文件**走（与「打开」
+        //    那一跳同一条语义）。⛔ 取消（上面提前 return）与失败（`Failed`）都**不动**它 ——
+        //    没有新工程文件就没有可跟的目录；挪过去会让当前工程按错的根解析相对样本。
+        //    路径取自**回执**（`Saved.path`）而不是对话框原值：后缀补全与原子写在落点那侧
+        //    发生，回执才是"真的写到哪"的真源。
+        if let (Some(engine), crate::save_action::SaveOutcome::Saved { path, .. }) =
+            (engine.as_ref(), &outcome)
+        {
+            engine
+                .borrow_mut()
+                .set_project_dir(path.parent().map(std::path::Path::to_path_buf));
+        }
     });
 }
 

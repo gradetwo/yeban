@@ -563,7 +563,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 第三个参数是**活会话**：保存按钮每次点击都从它现读"工程 + 提交图谱"，因此写出去的
     // 是此刻的那一版（`SaveStatus.project` 只是拿不到活会话时的兜底快照）。默认构建里
     // 这个端口就是 `open_undo_session` 建的那一个；挂了控制面时它是权威端口的委派者。
-    host::wire_save(
+    //
+    // ⭐ 任务单 `#170`：保存成功 ⇒ `EngineHost.project_dir` 跟着**写出的那个文件**走
+    // （`wire_save_with_engine` 的最后一跳）。于是"另存为到另一个目录"之后，新加的相对
+    // 路径样本按**新**目录解析 —— 与「打开」那一跳（`PortOpenProject::open_runtime`）
+    // 同一条语义。传的是与走带 / 按键**同一个** `Rc<RefCell<EngineHost>>`。
+    host::wire_save_with_engine(
         &ui,
         host::SaveStatus {
             target: loaded.source.save_target(),
@@ -579,6 +584,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             .map(yeban_app::mcp_mount::InProcessMcp::project_authority),
         #[cfg(not(feature = "in-process-mcp"))]
         None,
+        Some(Rc::clone(&engine_handle)),
     );
     // `N2` 裁决 (1)：GUI 的逻辑键快捷键 → 界面动作。撤销族经 `undo::dispatch_key`
     // （唯一下发点）落到 `UndoPort`，因此 `Cmd+Z` / `Cmd+Shift+Z` / `Cmd+Shift+H`
@@ -639,7 +645,9 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 // ① 心跳对齐基准。
                 *view_after.borrow_mut() = view.clone();
                 // ② 保存落点**跟着新工程走**（`--open` 那个文件 → 这次打开的那个文件）。
-                host::wire_save(
+                //    ⭐ `#170`：这一跳与「打开」同源 —— 保存成功时 `project_dir` 也跟着
+                //    落点走（`engine_after` 就是走带 / 按键那一代的同一个宿主）。
+                host::wire_save_with_engine(
                     ui,
                     host::SaveStatus {
                         target: Some(std::path::PathBuf::from(path)),
@@ -651,6 +659,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     authority_after.clone(),
                     #[cfg(not(feature = "in-process-mcp"))]
                     None,
+                    Some(Rc::clone(&engine_after)),
                 );
                 // ③ 走带 / 按键那两处静态快照（`on_*` setter 覆盖旧闭包）。
                 wire_callbacks(

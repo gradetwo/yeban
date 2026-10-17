@@ -11,7 +11,8 @@
 //! digest）。`export_wav.rs` 的四个入口 `export_wav` / `export_wav_with_sfz` /
 //! `export_wav_with_sfz_file` / `export_wav_with_sfz_file_and_assets` 逐级收束，末端那个
 //! **已改为调用本模块的** [`render_project_f32_with_assets`]（`export_wav.rs:414-417`）；
-//! `record_wav::record_project` 也走同一条 [`render_project_f32`]（`record_wav.rs:700`）。
+//! `record_wav::record_project_under` 也走同一条 [`render_project_f32_with_assets_under`]
+//! （`record_wav.rs` 的 `record_project` 委托 `project_dir = None` ⇒ 与 `#168` 之前逐位相同）。
 //! ⇒ ⭐ "真正的去重（让导出也调用本函数）"**已经落地**，不再是"下一步"。
 //! 判据 `recording_the_project_is_bit_identical_to_exporting_it` 仍是这条"两侧逐位一致"契约的
 //! **回归网**：一旦漂移，该判据立刻红 ✓
@@ -148,7 +149,9 @@ pub struct RenderProjectOutput {
 
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
 ///
-/// ⚠ 本入口**没有**资产池 ⇒ 音频片段被如实跳过并计数（`record_wav` 与既有判据仍用它）。
+/// ⚠ 本入口**没有**资产池、也**不知道工程文件在哪** ⇒ 音频片段被如实跳过并计数
+/// （既有判据仍用它；⭐ `#170` 起 `record_wav` 改走 [`render_project_f32_with_assets_under`]，
+/// `project_dir = None` 时两者**逐位相同**）。
 /// 生产导出（`--export-wav`）走 [`render_project_f32_with_assets`]。
 pub fn render_project_f32(
     project: &YebanProjectV1,

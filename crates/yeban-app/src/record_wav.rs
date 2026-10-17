@@ -796,7 +796,8 @@ where
     })
 }
 
-/// **录"工程的声音"**：用**同一条**渲染核心（[`crate::render_core::render_project_f32`]）拿交错 `f32`
+/// **录"工程的声音"**：用**同一条**渲染核心（[`crate::render_core::render_project_f32_with_assets_under`]；
+/// `project_dir = None` 时与 [`crate::render_core::render_project_f32`] 逐位相同）拿交错 `f32`
 /// ⇒ 建环 ⇒ `push_frame` ⇒ `RecordDrain::pump` ⇒ **同一 `DeterministicDitherRng` 种子**量化
 /// ⇒ `write_plain_wav`。
 ///
@@ -809,6 +810,15 @@ where
 /// # Errors
 ///
 /// 渲染失败（空工程／计划编译／引擎装载）／抽干 I/O 失败／WAV 写出被拒。⛔ 失败时不写任何文件。
+///
+/// ⚠ 本入口**不知道工程文件在哪**（`project_dir = None` ⇒ 相对 SFZ 路径从仓库根 ⇒ cwd
+/// 解析，任务单 `#164`／`#165` 的旧口径）。⭐ 生产 `--record-wav` 走
+/// [`record_project_under`]：它把 `--open` 那个文件的父目录交给渲染核心，于是"样本放在
+/// 工程旁边"与 `--export-wav` **同一个语义**（任务单 `#168`／`#170`）。
+///
+/// `project_dir = None` 是**如实的**"这次录制没有工程目录"（样本工程 / 没有 `--open`）：
+/// ⛔ 不假装有一个，也⛔ 不改写模型里的路径字符串；解析失败时
+/// [`crate::sfz_load::SfzPathError`] 的原文会逐条列出**试过的根**。
 pub fn record_project(
     project: &yeban_model::YebanProjectV1,
     path: &Path,
@@ -817,6 +827,36 @@ pub fn record_project(
         std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
         Option<PathBuf>,
     )>,
+) -> Result<RecordReport, RecordError> {
+    record_project_under(project, path, options, sfz, None)
+}
+
+/// 与 [`record_project`] 相同，但**知道工程文件所在目录**（任务单 `#170`：相对 SFZ
+/// 路径的第一个候选根，与 [`crate::export_wav::export_wav_with_sfz_file_and_assets_under`]
+/// 的 `project_dir` 是**同一条**语义 —— 目录跟着**当前工程文件**走）。
+///
+/// ## 这一跳为什么是**一层**、且没有改公共签名
+///
+/// 调用链：`cli` 的 `Loaded::project_dir()`（`--open` 的文件父目录）
+/// ⇒ **本入口** ⇒ [`crate::render_core::render_project_f32_with_assets_under`]。
+/// 旧入口 [`record_project`] 原样委托 `None` ⇒ 旧行为**逐位不变**（`#168` 的
+/// `_under` 形状）。
+///
+/// `project_dir = None` ⇒ 与 [`record_project`] **逐位相同**（`SfzRoots::none()`
+/// ⇒ 仓库根 ⇒ cwd）。
+///
+/// # Errors
+///
+/// 与 [`record_project`] 相同。
+pub fn record_project_under(
+    project: &yeban_model::YebanProjectV1,
+    path: &Path,
+    options: &RecordOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+    project_dir: Option<&Path>,
 ) -> Result<RecordReport, RecordError> {
     if options.seconds <= 0.0 {
         return Err(RecordError::Invalid("录制秒数必须大于 0".to_owned()));
@@ -837,9 +877,23 @@ pub fn record_project(
         // 于是"录制"的中间渲染仍与 `--export-wav` 的缺省同一格式。
         bit_depth: yeban_render::dither::BitDepth::Int24,
     };
-    let (samples, _frames, source_label, _digest) =
-        crate::render_core::render_project_f32(project, wav_options, sfz)
-            .map_err(|error| RecordError::Render(error.to_string()))?;
+    // ⭐ `#170`：与 `--export-wav` **同一个**渲染入口 —— 工程目录（若知道）是相对
+    //    `sampler.path` 的第一个候选根。`project_dir = None` ⇒ `&[]` 资产池 ＋ 旧根，
+    //    与 `render_project_f32` 的委托路径**逐位相同**。
+    let rendered = crate::render_core::render_project_f32_with_assets_under(
+        project,
+        wav_options,
+        sfz,
+        &[],
+        project_dir,
+    )
+    .map_err(|error| RecordError::Render(error.to_string()))?;
+    let (samples, _frames, source_label, _digest) = (
+        rendered.samples,
+        rendered.frames,
+        rendered.source_label,
+        rendered.digest,
+    );
     // ---- 构造期：唯一分配点 ----
     let (mut sender, receiver) = record_channel(options.capacity_frames, options.channels);
     // ---- 生产端（逐帧推；红线 7 安全）＋ 消费端**交错抽干** ----

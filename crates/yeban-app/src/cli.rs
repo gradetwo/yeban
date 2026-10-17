@@ -3757,17 +3757,24 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         }
         // 默认录**工程**（与 `--export-wav` 同一条渲染核心 ＋ 同一种子 ⇒ 逐位一致，判据断言）；
         // `--record-source tone` 才录内存正弦测试音。⭐ 给了 `--sfz` ⇒ 把乐器（＋SFZ 文件路径）
-        // 一并交给 `record_project`（下面那两行）⇒ `sample=` 指向的 WAV 会被真读。
+        // 一并交给 `record_project_under`（下面那两行）⇒ `sample=` 指向的 WAV 会被真读。
+        //
+        // ⭐ 任务单 `#170`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
+        //    （与 `--export-wav` **同一个** `Loaded::project_dir()`）⇒ "样本放在工程旁边"
+        //    在**任意 cwd** 下对录制也成立。样本形态（没有 `--open`）给 `None` ⇒ 旧口径
+        //    （仓库根 ⇒ cwd），⛔ 不假装有一个工程目录。
+        let project_dir = loaded.project_dir();
         let report = if options.record_source.as_deref() == Some("tone") {
             crate::record_wav::record_test_tone(path, &record_options)
         } else {
-            crate::record_wav::record_project(
+            crate::record_wav::record_project_under(
                 &loaded.archive.project,
                 path,
                 &record_options,
                 loaded_sfz
                     .clone()
                     .map(|(instrument, sfz_path)| (instrument, Some(sfz_path))),
+                project_dir.as_deref(),
             )
         }
         .map_err(|source| CliError::Record {

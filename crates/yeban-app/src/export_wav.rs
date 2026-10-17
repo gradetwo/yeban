@@ -595,8 +595,9 @@ pub fn export_wav_with_sfz_file_and_assets_under(
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
-    // ⭐ **一条真源**：导出与录音都走 `render_core::render_project_f32`
+    // ⭐ **一条真源**：导出与录音都走 `render_core::render_project_f32_*_under`
     // （慢路径校验 → 计划编译 → 音源装配 → 执行 → digest 全在那里）。
+    // ⭐ `#170`：录制那一侧与这里**同一个** `project_dir` 语义（工程文件的父目录）。
     let rendered = crate::render_core::render_project_f32_with_assets_under(
         project,
         options,

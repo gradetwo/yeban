@@ -39,12 +39,33 @@
 //! [`the_same_project_loads_the_same_from_three_cwds`] 要造一条**相对仓库根**的路径——
 //! 只有放在仓库内的文件才满足这个前提。`target/` 被 git 忽略，且 [`Fixture`] 在 `Drop`
 //! 时删掉自己的目录（⛔ 工作树里不留临时文件）。
+//!
+//! ## ⭐ 任务单 `#170` 补的两条（同一份实现，两个入口）
+//!
+//! `#168` 只把"相对路径的候选根"接到了 `--export-wav`；本单补上另外两处**同一条语义**：
+//!
+//! | 入口 | 缺口 | 本文件的判据 |
+//! | :--- | :--- | :--- |
+//! | `--record-wav`（离线录制） | 走 `render_project_f32`（无工程目录语境）⇒ 工程旁的相对样本读不到 | [`the_record_entry_reads_a_sample_next_to_the_project_file`] ＋ [`the_cli_record_entry_plumbs_the_project_dir`] |
+//! | GUI「另存为」（`host::wire_save`） | 落盘后**不更新** `EngineHost.project_dir` ⇒ 之后新加的相对样本按旧目录解析 | [`saving_elsewhere_moves_the_project_dir_to_the_new_file`] ＋ 两条"不动"腿 |
+//! | 旧入口 | 必须**逐位不变** | [`the_old_entries_are_bit_identical_on_the_none_path`] |
+//!
+//! ⛔ 本文件不证"人耳听到的声音"；样本"读到了"的读数是
+//! [`yeban_app::sfz_load::SfzDecodeReport`] 的 `decoded_samples == 1` ＋ `silent == 0`。
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::rc::Rc;
 
-use yeban_app::bridge::sfz_samples_present;
+use yeban_app::bridge::{ViewState, sfz_samples_present};
 use yeban_app::engine_host::EngineHost;
+use yeban_app::file_picker::{FilePicker, PickerRequest};
+use yeban_app::host::{SaveStatus, build_main_window_with_console_tab, wire_save_with_engine};
+use yeban_app::record_wav::{RecordOptions, record_project, record_project_under};
+use yeban_app::render_core::{render_project_f32, render_project_f32_with_assets_under};
+use yeban_app::scene::DemoScene;
 use yeban_app::sfz_load::{SfzRoots, arm_pending_sfz, repo_root, resolve_sampler_path};
 use yeban_engine::sfz_instrument::SfzPlan;
 use yeban_engine::snapshot::EngineSnapshot;
@@ -53,6 +74,7 @@ use yeban_model::{EntityId, SamplerBinding, YebanProjectV1};
 use yeban_render::dither::PcmBuffer;
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
+use yeban_ui_test_port::render::Tier1Window;
 
 /// 工程采样率（与 `YebanProjectV1::default` 同口径）。
 const RATE: u32 = 48_000;
@@ -524,4 +546,402 @@ fn the_real_process_cwd_does_not_change_the_reading() {
         reading.silent,
         reading.missing
     );
+}
+
+// ===========================================================================
+// 任务单 `#170`：⭐ 工程目录跟着**当前工程文件**走
+// ===========================================================================
+//
+// 两条缺口共用**一条**语义：`EngineHost.project_dir` / 渲染入口的 `project_dir`
+// = "当前工程文件所在目录"。
+//
+// | 判据 | 对象 | 读数 |
+// | :--- | :--- | :--- |
+// | ① | GUI「另存为」前后的 `EngineHost::project_dir()` | `Option<PathBuf>`（逐字）＋ 随后 `reload` 的 `sfz_plan` / `cache misses` |
+// | ② | 取消 / 失败后的 `project_dir` | 同一个 `Option<PathBuf>`（必须**不变**） |
+// | ③ | `--record-wav` 的渲染入口 | `recorded-wav: frames=… bytes=…` ＋ `SfzDecodeReport::{decoded,silent}` |
+// | ④ | 旧入口 vs `_under(None)` | WAV **字节**（逐位比较）＋ `digest` 十六进制 |
+
+/// 判据用的**脚本化保存对话框**：`path = None` ⇒ 用户取消（`FilePicker` 的既有口径）。
+struct ScriptedSave {
+    /// 对话框"选"的路径（`None` = 取消）。
+    path: Option<PathBuf>,
+    /// `choose_save` 被调用的次数（次）。
+    calls: Cell<usize>,
+}
+
+impl ScriptedSave {
+    /// 一份**回答**给定路径的对话框。
+    fn answering(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            calls: Cell::new(0),
+        }
+    }
+
+    /// 一份**取消**的对话框。
+    const fn cancelling() -> Self {
+        Self {
+            path: None,
+            calls: Cell::new(0),
+        }
+    }
+}
+
+impl FilePicker for ScriptedSave {
+    fn choose_open(&self, _request: &PickerRequest) -> Option<PathBuf> {
+        None
+    }
+
+    fn choose_save(&self, _request: &PickerRequest) -> Option<PathBuf> {
+        self.calls.set(self.calls.get() + 1);
+        self.path.clone()
+    }
+}
+
+/// 一条 Tier-1 无头平台上的**生产窗口**（`wire_save_with_engine` 的回调体是纯宿主逻辑）。
+///
+/// ⚠ 返回值里的 [`Tier1Window`] **必须被持有到判据结束**：平台是每线程一份，丢了它
+/// 窗口就没有后端（与 `tests/file_picker_dialogs.rs` 的 `production_window` 同款）。
+fn save_window() -> (Tier1Window, yeban_app::ui::MainWindow) {
+    let tier1 =
+        Tier1Window::install(yeban_ui_test_port::Size::new(1440, 900)).expect("装 Tier-1 无头平台");
+    let view = ViewState::from_project(&filled_project()).expect("投影");
+    let scene = DemoScene::from_view(&view);
+    let ui = build_main_window_with_console_tab(&view, &scene, 1).expect("生产窗口构造入口");
+    (tier1, ui)
+}
+
+/// ⭐ 判据 ①：**另存为到另一个目录** ⇒ `project_dir` 跟着新文件走，随后相对路径的
+/// 工程旁样本按**新**目录解析得到。
+///
+/// 读数：`before = old.dir`、`after = new.dir`、`reload = Ok`、`sfz_plan = Some`、
+/// `cache misses = 1`。
+#[test]
+fn saving_elsewhere_moves_the_project_dir_to_the_new_file() {
+    let old = Fixture::new("170-save-old");
+    let new = Fixture::new("170-save-new");
+    let target = new.dir.join("moved.yeban");
+    let (_tier1, ui) = save_window();
+    let (project, track) = project_with_sampler("samples/tone.sfz");
+    let engine = Rc::new(RefCell::new(EngineHost::new()));
+    engine.borrow_mut().set_project_dir(Some(old.dir.clone()));
+    let before = engine.borrow().project_dir().map(Path::to_path_buf);
+    let picker = Rc::new(ScriptedSave::answering(target.clone()));
+    // 装配期**没有**目标路径 ⇒ 保存会问一次对话框 = 产品的「另存为」形态。
+    wire_save_with_engine(
+        &ui,
+        SaveStatus {
+            target: None,
+            project: project.clone(),
+        },
+        None,
+        Rc::clone(&picker) as Rc<dyn FilePicker>,
+        None,
+        Some(Rc::clone(&engine)),
+    );
+
+    ui.invoke_save_project();
+    let after = engine.borrow().project_dir().map(Path::to_path_buf);
+
+    assert_eq!(picker.calls.get(), 1, "另存为必须问一次对话框");
+    assert!(ui.get_save_succeeded(), "另存为必须成功落盘");
+    assert_eq!(
+        before.as_deref(),
+        Some(old.dir.as_path()),
+        "另存前：工程目录必须还是**旧**文件所在目录"
+    );
+    assert_eq!(
+        after.as_deref(),
+        Some(new.dir.as_path()),
+        "⭐ 另存后：工程目录必须跟到**新**文件所在目录"
+    );
+    assert!(target.exists(), "另存的文件必须真的在磁盘上");
+
+    // 随后加载相对的 `samples/tone.sfz` ⇒ 必须按**新**目录解析并摊平。
+    let mut host = engine.borrow_mut();
+    host.reload(&project, 0)
+        .expect("另存后，工程旁的相对样本必须按新目录解析得到");
+    let snapshot = host.current_snapshot().expect("reload 后有快照");
+    let plan_present = snapshot.sfz_plan(&track).is_some();
+    let pending_empty = snapshot.sfz_pending().is_empty();
+    let misses = host.sfz_cache_readings().misses;
+    assert!(plan_present, "⭐ 摊平表里必须有那条轨（样本真的读到了）");
+    assert!(pending_empty, "摊平表必须取代待摊平项");
+    assert_eq!(misses, 1, "恰好解码一次");
+
+    println!(
+        "[#170 判据1] before={} after={} target_exists={} save_status={:?} \
+         reload=Ok sfz_plan={plan_present} pending_empty={pending_empty} misses={misses}",
+        before.as_deref().unwrap_or(Path::new("<none>")).display(),
+        after.as_deref().unwrap_or(Path::new("<none>")).display(),
+        target.exists(),
+        ui.get_save_status().to_string(),
+    );
+}
+
+/// ⭐ 判据 ②a：用户在「另存为」对话框里按**取消** ⇒ `project_dir` **一位不动**
+/// （与 `wire_save` 的既有取消口径一致：⛔ 不写状态、⛔ 不写文件）。
+#[test]
+fn a_cancelled_save_leaves_the_project_dir_alone() {
+    let fixture = Fixture::new("170-cancel");
+    let (_tier1, ui) = save_window();
+    let (project, _track) = project_with_sampler("samples/tone.sfz");
+    let engine = Rc::new(RefCell::new(EngineHost::new()));
+    engine
+        .borrow_mut()
+        .set_project_dir(Some(fixture.dir.clone()));
+    let before = engine.borrow().project_dir().map(Path::to_path_buf);
+    let picker = Rc::new(ScriptedSave::cancelling());
+    wire_save_with_engine(
+        &ui,
+        SaveStatus {
+            target: None,
+            project,
+        },
+        None,
+        Rc::clone(&picker) as Rc<dyn FilePicker>,
+        None,
+        Some(Rc::clone(&engine)),
+    );
+
+    ui.invoke_save_project();
+    let after = engine.borrow().project_dir().map(Path::to_path_buf);
+
+    assert_eq!(picker.calls.get(), 1, "取消也要先开一次对话框");
+    assert_eq!(
+        ui.get_save_status().to_string(),
+        "",
+        "⛔ 取消不是失败：不得留下一条错误文案"
+    );
+    assert!(!ui.get_save_succeeded(), "取消没保存成功");
+    assert_eq!(
+        before, after,
+        "⭐ 取消 ⇒ `project_dir` 必须**一位不动**（没有新工程文件就没有可跟的目录）"
+    );
+    println!(
+        "[#170 判据2a] calls={} project_dir={} save_status(空)={:?} succeeded={}",
+        picker.calls.get(),
+        after.as_deref().unwrap_or(Path::new("<none>")).display(),
+        ui.get_save_status().to_string(),
+        ui.get_save_succeeded()
+    );
+}
+
+/// ⭐ 判据 ②b：落盘**失败**（目标目录不存在）⇒ `project_dir` **一位不动**，
+/// 且界面如实报"保存失败"。
+#[test]
+fn a_failed_save_leaves_the_project_dir_alone() {
+    let fixture = Fixture::new("170-failure");
+    let (_tier1, ui) = save_window();
+    let (project, _track) = project_with_sampler("samples/tone.sfz");
+    let engine = Rc::new(RefCell::new(EngineHost::new()));
+    engine
+        .borrow_mut()
+        .set_project_dir(Some(fixture.dir.clone()));
+    let before = engine.borrow().project_dir().map(Path::to_path_buf);
+    // 父目录不存在 ⇒ 本地原子写必然被拒（⛔ 不建目录）。
+    let target = fixture.dir.join("missing-dir").join("moved.yeban");
+    let picker = Rc::new(ScriptedSave::answering(target.clone()));
+    wire_save_with_engine(
+        &ui,
+        SaveStatus {
+            target: None,
+            project,
+        },
+        None,
+        Rc::clone(&picker) as Rc<dyn FilePicker>,
+        None,
+        Some(Rc::clone(&engine)),
+    );
+
+    ui.invoke_save_project();
+    let after = engine.borrow().project_dir().map(Path::to_path_buf);
+    let status = ui.get_save_status().to_string();
+
+    assert!(!target.exists(), "失败时不得写出任何文件");
+    assert!(!ui.get_save_succeeded(), "失败不得报成功");
+    assert!(
+        status.starts_with("保存失败"),
+        "界面必须如实报失败（实得 {status:?}）"
+    );
+    assert_eq!(
+        before, after,
+        "⭐ 落盘失败 ⇒ `project_dir` 必须**一位不动**"
+    );
+    println!(
+        "[#170 判据2b] calls={} target_exists={} project_dir={} save_succeeded={} status={status:?}",
+        picker.calls.get(),
+        target.exists(),
+        after.as_deref().unwrap_or(Path::new("<none>")).display(),
+        ui.get_save_succeeded(),
+    );
+}
+
+/// ⭐ 判据 ③（直接入口）：录制入口**拿得到工程目录** ⇒ 工程旁的相对样本读得到；
+/// 反之（旧入口 `None`）**响亮**失败且⛔ 不写文件。
+#[test]
+fn the_record_entry_reads_a_sample_next_to_the_project_file() {
+    let fixture = Fixture::new("170-record");
+    let (project, _track) = project_with_sampler("samples/tone.sfz");
+    let options = RecordOptions {
+        seconds: 0.25,
+        ..RecordOptions::default()
+    };
+    let out = fixture.dir.join("recorded.wav");
+
+    // 反向腿：旧入口（没有工程目录）⇒ 解析必须**响亮**失败（⛔ 不静默静音）。
+    let error =
+        record_project(&project, &out, &options, None).expect_err("没有工程目录时必须读不到");
+    let text = error.to_string();
+    assert!(text.contains("试过："), "错误必须列出试过的根：{text}");
+    assert!(!out.exists(), "失败时⛔ 不得写任何文件");
+
+    // 正向腿：工程目录 = 夹具目录 ⇒ 工程旁的相对样本读得到。
+    let report = record_project_under(&project, &out, &options, None, Some(&fixture.dir))
+        .expect("工程旁的相对样本必须读得到");
+    let bytes = std::fs::metadata(&out).expect("写出的 WAV 必须在").len();
+    assert_eq!(bytes, report.bytes, "报告的字节数必须与磁盘一致");
+    assert!(report.bytes > 44, "WAV 必须比 44 字节的头部长");
+    assert_eq!(report.frames, 12_000, "0.25 s × 48 kHz = 12000 帧");
+
+    // 同一条渲染入口的装载读数：样本**真的**被解成 PCM（⛔ 不是静音兜底）。
+    let rendered = render_project_f32_with_assets_under(
+        &project,
+        record_wav_options(&options),
+        None,
+        &[],
+        Some(&fixture.dir),
+    )
+    .expect("渲染入口必须成功");
+    assert_eq!(rendered.sfz_decoded.len(), 1, "恰好一条轨有 SFZ");
+    let decode = &rendered.sfz_decoded[0].1;
+    assert_eq!((decode.decoded_samples, decode.silent_region_count), (1, 0));
+
+    println!(
+        "[#170 判据3] record(project_dir=Some) ⇒ frames={} bytes={} source={:?}；\
+         old_entry(None)=Err(含试过) bytes_on_disk={bytes}；sfz decoded={} silent={} regions={}",
+        report.frames,
+        report.bytes,
+        report.source,
+        decode.decoded_samples,
+        decode.silent_region_count,
+        decode.regions,
+    );
+    println!("[#170 判据3 反向腿原文] {text}");
+}
+
+/// ⭐ 判据 ③（生产接线）：**真二进制** `--open … --record-wav …` 也拿得到工程目录
+/// （证明 `cli` 那一跳真的把 `Loaded::project_dir()` 交给了录制入口，⛔ 不只测内部函数）。
+#[test]
+fn the_cli_record_entry_plumbs_the_project_dir() {
+    let fixture = Fixture::new("170-cli");
+    let (project, _track) = project_with_sampler("samples/tone.sfz");
+    let container = fixture.dir.join("project.yeban");
+    yeban_app::save::save_project_file(&project, &container).expect("写夹具工程文件");
+    let out = fixture.dir.join("cli-recorded.wav");
+    let run = Command::new(env!("CARGO_BIN_EXE_yeban-app"))
+        .args([
+            "--open",
+            container.to_str().expect("utf8 路径"),
+            "--record-wav",
+            out.to_str().expect("utf8 路径"),
+            "--record-seconds",
+            "0.2",
+        ])
+        .output()
+        .expect("跑 yeban-app --record-wav");
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    assert!(
+        run.status.success(),
+        "退出码={:?} stderr={stderr}",
+        run.status.code()
+    );
+    assert!(
+        stdout.contains("recorded-wav:"),
+        "必须打印录制回执；stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("frames=9600"),
+        "0.2 s × 48 kHz = 9600 帧必须逐字出现在回执里；stdout={stdout}"
+    );
+    let bytes = std::fs::metadata(&out)
+        .expect("CLI 录出的 WAV 必须在")
+        .len();
+    println!(
+        "[#170 判据3 CLI] rc={:?} bytes={bytes}；回执行={:?}",
+        run.status.code(),
+        stdout
+            .lines()
+            .find(|line| line.starts_with("recorded-wav:"))
+            .unwrap_or("<没有 recorded-wav 行>"),
+    );
+}
+
+/// ⭐ 判据 ④：旧入口（`project_dir = None` 的委托路径）**逐位不变**。
+///
+/// 读数：旧入口与 `_under(None)` 写出的 WAV **字节相等**（逐字节比较）、
+/// 渲染 `samples` 相等、`digest` 十六进制相等。
+#[test]
+fn the_old_entries_are_bit_identical_on_the_none_path() {
+    let fixture = Fixture::new("170-none");
+    // 相对**仓库根**的路径：`None` 口径（仓库根 ⇒ cwd）必须仍解析得到。
+    let relative = fixture.repo_relative_sfz();
+    let (project, _track) = project_with_sampler(&relative);
+    let options = RecordOptions {
+        seconds: 0.25,
+        ..RecordOptions::default()
+    };
+    let old_wav = fixture.dir.join("old-entry.wav");
+    let new_wav = fixture.dir.join("under-none.wav");
+    let old = record_project(&project, &old_wav, &options, None).expect("旧入口必须成功");
+    let new = record_project_under(&project, &new_wav, &options, None, None)
+        .expect("`_under(None)` 必须成功");
+    let old_bytes = std::fs::read(&old_wav).expect("旧入口写出的 WAV");
+    let new_bytes = std::fs::read(&new_wav).expect("`_under(None)` 写出的 WAV");
+    assert_eq!(old.frames, new.frames, "帧数必须相同");
+    assert_eq!(old.bytes, new.bytes, "字节数必须相同");
+    assert_eq!(
+        old_bytes, new_bytes,
+        "⭐ 旧入口与 `_under(None)` 写出的 WAV 必须**逐位相同**"
+    );
+
+    let old_render = render_project_f32(&project, record_wav_options(&options), None)
+        .expect("旧渲染入口必须成功");
+    let new_render = render_project_f32_with_assets_under(
+        &project,
+        record_wav_options(&options),
+        None,
+        &[],
+        None,
+    )
+    .expect("`_under(None)` 渲染入口必须成功");
+    assert_eq!(old_render.0, new_render.samples, "samples 必须逐位相同");
+    assert_eq!(old_render.1, new_render.frames, "帧数必须相同");
+    assert_eq!(
+        old_render.3, new_render.digest,
+        "⭐ digest 必须相同（同一份逐位样本）"
+    );
+
+    println!(
+        "[#170 判据4] wav_bytes_old={} wav_bytes_new={} byte_equal={} frames={} digest={}",
+        old_bytes.len(),
+        new_bytes.len(),
+        old_bytes == new_bytes,
+        old.frames,
+        new_render.digest,
+    );
+}
+
+/// 与 [`record_project`] 内部**同一组**渲染选项（判据用它读 `samples` / `digest`）。
+fn record_wav_options(options: &RecordOptions) -> yeban_app::export_wav::WavExportOptions {
+    yeban_app::export_wav::WavExportOptions {
+        frames: (options.seconds * options.sample_rate as f32) as u64,
+        sample_rate: options.sample_rate,
+        channels: usize::from(options.channels),
+        seed: 1,
+        use_engine_source: true,
+        bit_depth: yeban_render::dither::BitDepth::Int24,
+    }
 }
