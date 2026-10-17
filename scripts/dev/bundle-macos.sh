@@ -10,6 +10,15 @@
 # 用法:
 #   bash scripts/dev/bundle-macos.sh
 #
+# ⭐ 已由人类实测确认 (2026-10-17, 台账 R840):
+#   在真实桌面 `open target/Yeban.app` + 按录音 ⇒ **系统真的弹了权限框**, 授权后录音可用。
+#   ⇒ `NSMicrophoneUsageDescription` 这一条**已验**, 不再是"plist 里写了但没试过"。
+#
+# ⚠ 已知限制 (ad-hoc 签名): 本脚本用 `codesign --sign -` (ad-hoc), 其指定要求 (DR)
+#   是 **cdhash** ⇒ **每次重建 cdhash 都变** ⇒ 之前授予的麦克风权限可能失效, 需要重新
+#   授权 (系统设置 → 隐私与安全性 → 麦克风)。要跨重建稳定授权需要 Developer ID 证书,
+#   那超出本脚本范围 (属发布面)。需要重置时可 `tccutil reset Microphone dev.yeban.app`。
+#
 # 产物 (全部落在 `target/` 下, 该目录已被 .gitignore 忽略 ⇒ 不污染工作树):
 #   target/Yeban.app/Contents/MacOS/yeban         ← target/release/yeban-app 的副本
 #   target/Yeban.app/Contents/Info.plist          ← resources/macos/Info.plist + 版本
