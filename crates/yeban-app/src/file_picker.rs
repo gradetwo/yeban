@@ -110,6 +110,21 @@ pub trait FilePicker {
 
     /// 挑一个**要写**的路径（保存工程 / 另存为）。`None` = 用户取消。
     fn choose_save(&self, request: &PickerRequest) -> Option<PathBuf>;
+
+    /// ⭐ **本实现到底有没有一个能给用户看的对话框**（任务单 `#129`）。
+    ///
+    /// 为什么需要它：`choose_*` 把**两件不同的事**压成同一个 `None` ——
+    /// ① "用户按了取消"（我不想）；② "这个装配根本没有对话框"（做不到）。
+    /// 对"保存"而言两者无需分辨（都不写盘，静默即可）；对**新建工程**则不同：
+    /// 新工程的落点**只能**来自对话框（它没有装配期目标路径可退），所以"没有对话框"
+    /// 必须**如实报错**（⛔ 不静默、⛔ 不猜一个文件名）—— 见
+    /// [`crate::host::wire_new_project`] 的第一跳。
+    ///
+    /// 默认 `true`：产品实现（[`NativeFilePicker`]）与判据的脚本假实现都是"有对话框"的；
+    /// 只有 [`NoPicker`]（无头 / 装配期已定路径那一档）覆盖成 `false`。
+    fn can_prompt(&self) -> bool {
+        true
+    }
 }
 
 /// **产品实现**：`rfd`（系统原生对话框）。
@@ -159,6 +174,10 @@ fn build(request: &PickerRequest) -> rfd::FileDialog {
 /// * 既有的装配/判据里"保存路径在**装配期**就定好了"的那些（`--open` / `--save`）——
 ///   它们一次都不该弹窗，本实现让那句承诺**可执行**（弹了就会拿到 `None`，行为不变）；
 /// * 无头装配（没有窗口服务器时"打开对话框"只能取消）。
+///
+/// ⚠ 它同时是[`FilePicker::can_prompt`] = `false` 的**唯一**实现：本结构**没有**一个
+/// 能给用户看的对话框。因此需要"对话框里挑一个新落点"的动作（`host::wire_new_project`）
+/// 在它下面会**如实报错**，而不是把"没有对话框"伪装成"用户取消"。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoPicker;
 
@@ -169,6 +188,10 @@ impl FilePicker for NoPicker {
 
     fn choose_save(&self, _request: &PickerRequest) -> Option<PathBuf> {
         None
+    }
+
+    fn can_prompt(&self) -> bool {
+        false
     }
 }
 

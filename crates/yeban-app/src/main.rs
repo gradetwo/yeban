@@ -550,18 +550,38 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                 Ok(())
             },
         );
+        // ⭐ 换工程的**唯一装配**（任务单 `#93`）——「打开」与「新建」共用这**一个**
+        // `Rc<dyn OpenProjectRuntime>`（新建 = 写一个空容器 + 走同一段换工程路径）。
+        let open_runtime: Rc<dyn host::OpenProjectRuntime> = Rc::new(host::PortOpenProject {
+            port: Rc::clone(&undo_port),
+            production: Some(Rc::clone(&production_after)),
+            quanta: 0,
+            after,
+        });
         host::wire_open_project(
             &ui,
             Rc::new(yeban_app::file_picker::NativeFilePicker),
-            Rc::new(host::PortOpenProject {
-                port: Rc::clone(&undo_port),
-                production: Some(Rc::clone(&production_after)),
-                quanta: 0,
-                after,
-            }),
+            Rc::clone(&open_runtime),
             // ⭐ `saveFirst = true`：与 `ui/open_project` 的**默认值**同义 —— 换工程之前
             // 先把当前工程写出去；保存没落盘就**响亮**拒绝（⛔ 不静默丢掉未保存的改动）。
             true,
+        );
+        // ⭐ **运行期「新建工程」的可见入口**（任务单 `#129`）—— 本单补的那一格。
+        //
+        // 缺口（`#93` 之后仍然卡着人类实测）：GUI 只能"打开"一个**已经存在**的 `.yeban`；
+        // 从零开始时唯一的出路是 CLI `--project-sample empty --save-as <path>`
+        // （`#128` 实测 884 B／0 轨）。入口 = `ui/console/mixer_console.slint` 的
+        // `module-new-project-button`（控制台 **Tab 1 = 调音台**，"打开工程"正下方）⇒
+        // `host::wire_new_project`：问一次**同一个** `FilePicker` 的 `choose_save` ⇒
+        // `host::create_new_project_file`（`samples::default_project()` ＋
+        // `save::save_archive_file`，与 `--save-as` **同一条**写入口）⇒
+        // **同一个** `open_runtime`（`#93` 的换工程路径：读盘 → 换会话 → 注入 → 换代 → `after`）。
+        // ⛔ `after` 不必复制第二份：新建 = "写一个空文件 + 打开它"，保存落点 / 心跳基准 /
+        // 按键快照都由上面那**同一个** `after` 跟着新工程走。
+        host::wire_new_project(
+            &ui,
+            Rc::new(yeban_app::file_picker::NativeFilePicker),
+            open_runtime,
         );
     }
     // `[UI-NOTE-003]` §3.3 工具矩阵的**点击**入口（台账 R16）：界面报行号，宿主把它送进

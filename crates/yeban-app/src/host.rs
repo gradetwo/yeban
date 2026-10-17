@@ -2998,6 +2998,16 @@ impl OpenProjectRuntime for PortOpenProject {
         // ⚠ 边界（**既有的**，不是本单引入）：若 `reload` 失败，界面**已经是**新工程
         //    而引擎还是旧一代 —— `live_surface::LiveAdminSurface::apply_project` 的第 3 步
         //    是同一条边界（同一个 `EngineHost::reload`），本处照旧，⛔ 不假装有回滚。
+        //
+        // ⭐ **0 轨工程这一格**（任务单 `#129` 补的）：空工程没有主总线
+        //    （`samples::default_project()` 的 `master_bus_track_id` 是 nil），而
+        //    `EngineSnapshot::from_project` 的**既有**裁决是 `NoMasterBus`（引擎面一个字没改）。
+        //    装配点对同一情况的处置是 [`ProductionLoop::without_engine`]：界面照常开、
+        //    播放侧明确报"没有引擎"（`main.rs` 的 `ProductionLoop::start` 失败分支）。
+        //    运行期换工程时等价的处置是**清空**这个 `Rc<RefCell<EngineHost>>` 的**内容**
+        //    （⛔ 不是换掉 `Rc` —— 走带 / 按键 / 模块那批接线都持有它，换掉会指向旧引擎），
+        //    于是播放侧不会继续拿着**上一份**工程的快照（那会让"界面 0 轨、按播放却响旧工程"）。
+        //    ⛔ 不清空则 `reload` 必然失败、换工程回执变成"失败"，而界面其实已经换了 —— 假读数。
         let mut reload_error = None;
         if let Some(production) = self.production.as_ref() {
             let engine = production.borrow().engine_handle();
@@ -3006,7 +3016,18 @@ impl OpenProjectRuntime for PortOpenProject {
             // `RefCell already borrowed` —— `tests/open_project_ui.rs` 的正向腿第一版实测抓到的
             // 就是这一条（本处是那次实测的修法）。
             let has_engine = engine.borrow().has_engine();
-            if has_engine {
+            if view.master.is_none() {
+                // 0 轨（或主总线不在）⇒ 快照投影不可能。旧一代先停、再清空。
+                if has_engine {
+                    // 设备腿先放掉（与 `EngineHost::reload` 的第 1.5 步同款），再清空内容。
+                    let _ = engine.borrow_mut().close_device();
+                    *engine.borrow_mut() = EngineHost::new();
+                }
+                // 界面必须停在停止态（与装配点 `ProductionLoop::start` 失败后那一条同款；
+                // `TransportReading::cold` 的 `state` 不是 running ⇒ `playing: false`）。
+                let reading = engine.borrow().transport();
+                apply_transport(ui, reading);
+            } else if has_engine {
                 // ⚠ **同一个坑的第二处**：`match engine.borrow_mut().reload(..) { … }` 也会让那个
                 // `RefMut` 活着穿过整个 `match` ⇒ 分支里的 `engine.borrow_mut()` 直接 panic。
                 // ⇒ 先把结局**结算**成一个值，再进 `match`。
@@ -3115,6 +3136,184 @@ pub fn wire_open_project(
         };
         apply_module_receipt(&ui, &receipt, ok);
         module_trace("open-project", started, &receipt);
+    });
+}
+
+// ⭐ **新建工程**（任务单 `#129`）—— GUI 里"打开工程"旁边的那一格。
+//
+// ## 本单补的是哪一格
+//
+// `#93` 给了运行期「打开工程」一个可点的入口，于是 GUI 能**换**工程；但它要求磁盘上
+// **已经**有一个 `.yeban`。用户从零开始时唯一的出路是 CLI
+// `--project-sample empty --save-as <path>`（`#128` 实测：`saved: … bytes=884 …`，
+// `project-counts: tracks-all=0 master-track=0`）。本单把这同一个落点搬进 GUI。
+//
+// ## 它不新造任何东西（逐条点名复用了什么）
+//
+// | 这一步 | 复用的既有实现 | ⛔ 没有新造 |
+// | :--- | :--- | :--- |
+// | 挑一个落点 | [`crate::file_picker::FilePicker::choose_save`]（`#86` 乙 的能力面） | 第二套对话框 |
+// | 补后缀 | [`crate::file_picker::with_default_extension`]（`wire_save` 同一条口径） | 第二套后缀规则 |
+// | 空工程对象 | [`yeban_model::samples::default_project()`]（= CLI 的 `--project-sample empty`） | 第二份手写空夹具 |
+// | 落盘 | [`crate::save::save_archive_file`]（`--save-as` / GUI 保存**同一条**写入口） | 第二份容器写入 |
+// | 换成新工程 | [`OpenProjectRuntime::open_runtime`]（`#93` 的**同一段**换工程代码：读盘 → 投影 → 换会话 → 注入 → 换代 → `after`） | 第二条换工程实现 |
+// | 回执 | [`apply_module_receipt`] ⇒ **既有**的 `module-status` 通道 | 第二条投影通道 |
+//
+// ## 为什么"落盘"要单独是一个**纯函数**
+//
+// 去掉对话框与界面之后，"新建"剩下的那一半是**纯的**：`ProjectArchive`（空工程 +
+// 空图谱 + 空资产池）→ 一个 `.yeban` 文件。把它切成 [`new_project_archive`] ＋
+// [`create_new_project_file`] 之后，判据可以在**没有窗口、没有 Tauri/winit、没有对话框**
+// 的环境里直接量"写出的字节数 / 读回来的轨道数"，而 `.slint` 那一跳只剩"上抛一个回调"。
+// 这不是为了测试而分层：产品的"换成新工程"那一跳也**必须**走真正的读盘路径
+// （写出 → 读回 → 换会话），否则"文件里的字节"与"界面上的工程"会各说各话。
+
+/// ⭐ **一份"新建工程"的归档**（任务单 `#129`）= 模型侧的规范空工程 + 空图谱 + 空资产池。
+///
+/// 与 CLI `--project-sample empty --save-as <path>` 写出的归档**逐字段相同**：
+/// `history.dag` / 资产池为空是**如实置空**（样本本来就没有第二、第三层状态），
+/// 不是丢失 —— 与 [`crate::cli::load_project`] 的样本分支同一条口径。
+///
+/// "规范空工程"的唯一来源是 [`yeban_model::samples::default_project()`]（`884 B／0 轨`
+/// 那一条的模型侧对象）—— ⛔ 本函数不手写第二份空工程夹具。
+#[must_use]
+pub fn new_project_archive() -> yeban_model::container::ProjectArchive {
+    yeban_model::container::ProjectArchive {
+        project: yeban_model::samples::default_project(),
+        history_dag: Vec::new(),
+        assets: Vec::new(),
+    }
+}
+
+/// ⭐ **「把一个空工程写到 `path`」的纯函数部分**（任务单 `#129`）—— 无界面、无对话框。
+///
+/// 落点复用**唯一**的归档写入口 [`crate::save::save_archive_file`]：它与 CLI 的
+/// `--save-as`、与界面的"保存"争**同一把** `.yeban.lock`、走**同一条**原子写
+/// （临时文件 → `sync_all` → `rename` → 刷目录）⇒ 新建出来的文件与 CLI 那条路
+/// **逐字节相同**。
+///
+/// # Errors
+///
+/// 给用户看的完整原因（**非空**）：容器被拒 / `.yeban.lock` 被占 / I/O 失败，原样上报。
+/// 调用方（[`wire_new_project`]）把它写进 `module-status` 回执，⛔ 不静默、⛔ 不假装成功。
+pub fn create_new_project_file(
+    path: impl AsRef<std::path::Path>,
+) -> Result<crate::save::SaveReport, String> {
+    crate::save::save_archive_file(&new_project_archive(), path)
+        .map_err(|error| format!("新建工程落盘失败: {error}"))
+}
+
+/// ⭐ **运行期「新建工程」的唯一接线**（任务单 `#129`）：`.slint` 的 `new-project` 回调 ⇒
+/// 保存对话框（"新工程存到哪里"）⇒ [`create_new_project_file`] ⇒ [`OpenProjectRuntime::open_runtime`]
+/// （**打开工程那条换工程路径**）⇒ **既有**的 `module-status` 回执通道。
+///
+/// ## 顺序是承重的（失败时当前工程**一位不动**）
+///
+/// 1. **先问"有没有对话框"**：`FilePicker::can_prompt()` 为假（[`crate::file_picker::NoPicker`]
+///    ⇒ 无头 / 装配期已定路径的档）⇒ **如实报错** `error=no-picker` 并返回。
+///    ⛔ 这里**不**走"取消"那一支：把"没有对话框"写成"用户取消"会让一次点击**静默消失**
+///    （本仓最忌讳的假读数；任务单 `#129` §1.4 点名要求）。
+/// 2. **问一次保存对话框**：`None`（用户取消）⇒ **什么都不做** —— ⛔ 不写回执、⛔ 不建文件
+///    （"我不想"与"出错了"是两件事，与 [`wire_save`] / [`wire_open_project`] **逐字一致**）。
+/// 3. **落盘**（[`create_new_project_file`]）：失败 ⇒ **响亮**报 `error=create`，当前工程一位不动。
+/// 4. **换成新工程**：走 [`OpenProjectRuntime::open_runtime`]（与 [`wire_open_project`] **同一个**
+///    换工程实现）。它读的是**刚写出的那个文件**（⛔ 不把内存里的对象直接塞进会话）⇒
+///    "界面上的工程"与"磁盘上的字节"不可能分叉。
+///    失败 ⇒ 报 `error=swap` 并**点名**文件已经写出（不静默、不假装换成功）。
+///
+/// ## 为什么**不**先保存当前工程
+///
+/// [`wire_open_project`] 的 `save_first` 是为"换掉**已有**工程"设计的。新建工程的语义是
+/// "从空白开始"，而样本会话（`save_target()` = `None`）连目标路径都没有 ⇒ 若在这里套
+/// `save_first`，用户会在**新建**时先被弹一次保存框、并因为"没有目标路径"被拒绝。
+/// 用户想留下当前工程时，应当先按"保存"。
+///
+/// ⚠ **如实登记这个取舍的代价**（⛔ 不粉饰）：当前工程里**未保存的改动会被新工程替换**
+/// —— 与 [`wire_open_project`] 的 `saveFirst = true` 不同，本切片**不**先保存。
+/// 给新建套 `saveFirst` 会让样本会话（`save_target()` = `None`）先弹一次"保存当前工程"、
+/// 并因为"没有目标路径"**拒绝新建** —— 那正好堵死本单要补的"从零开始"。
+/// 正确的完整形态（后续切片）是"有未保存改动时问一次『保存 / 丢弃 / 取消』"，
+/// 那需要一个新的三态对话框能力面，⛔ 不在本单假装有它。
+pub fn wire_new_project(
+    ui: &MainWindow,
+    picker: Rc<dyn crate::file_picker::FilePicker>,
+    runtime: Rc<dyn OpenProjectRuntime>,
+) {
+    let weak = ui.as_weak();
+    ui.on_new_project(move || {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let started = std::time::Instant::now();
+        // ⭐ ① **没有对话框**不是"用户取消"：新工程的落点只能来自对话框 ⇒ 如实报错。
+        if !picker.can_prompt() {
+            let receipt = module_receipt(
+                "new-project",
+                &module_error_fields(
+                    "no-picker",
+                    "新建工程需要先问『新工程存到哪里』，但本装配没有可用的文件对话框\
+                     （`FilePicker::can_prompt() = false`）⇒ 拒绝创建（⛔ 不静默、\
+                     ⛔ 不猜一个文件名，当前工程一位没动）",
+                ),
+            );
+            apply_module_receipt(&ui, &receipt, false);
+            module_trace("new-project", started, &receipt);
+            return;
+        }
+        // ⭐ ② 问**一次**保存对话框（标题与建议文件名是本单的语义；后缀过滤与 `wire_save` 同款）。
+        let picked = picker.choose_save(
+            &crate::file_picker::PickerRequest::save("新建工程", "project.yeban")
+                .with_extensions(["yeban"]),
+        );
+        let Some(path) = picked else {
+            // 取消：什么都不做（⛔ 不写回执、⛔ 不建文件），见上面的文档。
+            return;
+        };
+        // 与 `wire_save` **同一条**后缀口径：用户敲了 `demo` ⇒ 写 `demo.yeban`。
+        let path = crate::file_picker::with_default_extension(path, "yeban");
+        let path = path.to_string_lossy().into_owned();
+        // ⭐ ③ 落盘（纯函数，唯一的归档写入口）。
+        let bytes = match create_new_project_file(&path) {
+            Ok(report) => report.bytes,
+            Err(message) => {
+                let receipt = module_receipt(
+                    "new-project",
+                    &module_error_fields("create", &format!("{message}（当前工程一位没动）")),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("new-project", started, &receipt);
+                return;
+            }
+        };
+        // ⭐ ④ 换成新工程 = **打开**刚写出的那个文件（`#93` 的同一段换工程代码）。
+        let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
+            Ok(()) => (
+                module_receipt(
+                    "new-project",
+                    &[
+                        "outcome=ok".to_owned(),
+                        format!("path={path}"),
+                        format!("bytes={bytes}"),
+                        // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
+                        format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                    ],
+                ),
+                true,
+            ),
+            Err(message) => (
+                module_receipt(
+                    "new-project",
+                    &module_error_fields(
+                        "swap",
+                        &format!("已写出 `{path}`（{bytes} 字节），但换成新工程失败: {message}"),
+                    ),
+                ),
+                false,
+            ),
+        };
+        apply_module_receipt(&ui, &receipt, ok);
+        module_trace("new-project", started, &receipt);
     });
 }
 

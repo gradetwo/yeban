@@ -557,6 +557,24 @@ impl ElementRegistry {
             false,
         );
 
+        // ⭐ **新建工程**（任务单 `#129`）—— **从零开始**的可见入口。
+        //
+        // 与上面那条**逐条同款**：同一族 ID（`module-{动作}-button`）、同一个「工程」面板
+        // （就在「打开工程」正下方 `y: 56px`）、同一条 `module-status` 回执通道、同一个
+        // 物理位置纪律（控制台 **Tab 1 = 调音台** ⇒ 默认帧里没有它 ⇒ 5 张 Linux 基准
+        // 逐位不变）。它补的是人类实测被卡的那一格：GUI 只能"打开"已经存在的 `.yeban`，
+        // 不能"新建"。唯一落点是 `host::wire_new_project`：落盘复用
+        // `save::save_archive_file`（与 CLI `--save-as` 同一条）、换工程复用
+        // `OpenProjectRuntime::open_runtime`（与「打开工程」同一条），⛔ 没有第二份实现。
+        registry.add(
+            "module-new-project-button",
+            ElementKind::Button,
+            "console/mixer_console.slint",
+            // 与 `.slint` 的 `accessible-label` **逐字相同**（运行时树对账会断言相等）。
+            "新建工程（用文件对话框给新工程选一个落点，写出 0 轨空容器并就地换过去）",
+            false,
+        );
+
         // ------------------------------------------------------------ Session View
         registry.add(
             "workspace-session-canvas",

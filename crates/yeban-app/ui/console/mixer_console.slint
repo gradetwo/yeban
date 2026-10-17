@@ -123,6 +123,23 @@ export component MixerConsole inherits Rectangle {
     // 回执走**既有**的 `module-status` 投影通道（与 `export-midi` / `export-wav` 逐字同一条）。
     callback open-project();
 
+    // ⭐ **新建工程**（任务单 `#129`）—— **从零开始**在界面上的可见入口。
+    //
+    // 本单补的是哪一格：上面那个 `#93` 的「打开工程」要磁盘上**已经**有一个 `.yeban`；
+    // 用户从零开始时唯一的出路是 CLI `--project-sample empty --save-as <path>`（`#128`
+    // 实测 884 B／0 轨）。本回调就是 GUI 里"新建"那个按钮的**事件源**。
+    //
+    // 座位：与「打开工程」**同一个面板**、它**正下方**（`y: 56px`，同一宽度/高度）——
+    // ⛔ 「打开工程」的 `x` / `y` / 宽 / 高**一位不动**（`#93` 的判据与几何不受影响），
+    // 面板只向下多出第二格（本面板住在 Tab 1，默认帧里一个像素都不画 ⇒ 5 张 Linux 基准
+    // 逐位不变）。
+    //
+    // ⛔ 本回调**不**写盘、**不**弹窗、**不**判断成功与否、**不**猜路径：唯一落点是宿主
+    // `host::wire_new_project`（问一次**可注入**的 `FilePicker::choose_save` ⇒
+    // `host::create_new_project_file` 落一个 884 B／0 轨容器 ⇒ 走**打开工程那条**
+    // 换工程路径 `OpenProjectRuntime::open_runtime`）。回执同样走 `module-status`。
+    callback new-project();
+
     // ---- 主控通道条的**写入面**（本切片新增）----
     //
     // ⭐ 为什么主控是**另一组回调**、而不是把主控编成一个下标送进上面那八个：
@@ -246,11 +263,15 @@ export component MixerConsole inherits Rectangle {
     // ⛔ 本块**不**写盘、**不**判断成功与否：它只发 `open-project` 回调；问对话框、读盘、
     // 换会话与重投影全在宿主 `host::wire_open_project`（唯一实现），回执走**既有**的
     // `MainWindow.module-status` —— 与 `module-export-midi-button` 逐字同一条通道。
+    //
+    // ⭐ 任务单 `#129` 在同一面板里向下加了一格「新建工程」（`y: 56px`）：
+    // 「打开工程」按钮的 `x` / `y` / 宽 / 高**一位不动**，本面板只从 76px 变成 104px
+    // （下面没有任何控件，`for` 通道条都在本面板**左侧**的 `104px * track_index` 列里）。
     Rectangle {
         x: Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
         y: Tokens.space-4;
         width: 216px;
-        height: 76px;
+        height: 104px;
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
         border-width: 1px;
@@ -295,6 +316,39 @@ export component MixerConsole inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.open-project(); }
+            }
+        }
+
+        // ⭐ **新建工程**（任务单 `#129`）—— 与上面那格**逐条同形**（同宽 / 同高 /
+        // 同样的 role / 同一个 `module-status` 回执通道），只是座位在它正下方
+        // （`y: 56px` = 24px 上格 + 28px 高 + 4px 间隙）。
+        // ⛔ 本块同样**不**写盘、**不**判断成功与否：唯一落点是宿主 `host::wire_new_project`。
+        Rectangle {
+            x: Tokens.space-3;
+            y: 56px;
+            width: parent.width - 12px;
+            height: 28px;
+            background: new_project_area.pressed ? Tokens.bg-raised : Tokens.bg-panel-alt;
+            border-radius: Tokens.radius-md;
+            accessible-role: button;
+            accessible-id: "module-new-project-button";
+            accessible-label: "新建工程（用文件对话框给新工程选一个落点，写出 0 轨空容器并就地换过去）";
+            accessible-action-default => { root.new-project(); }
+
+            UiText {
+                x: Tokens.space-3;
+                y: 0;
+                width: parent.width - 12px;
+                height: parent.height;
+                text: "新建工程";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+            }
+
+            new_project_area := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.new-project(); }
             }
         }
     }

@@ -109,6 +109,10 @@ export component ConsoleTabs inherits Rectangle {
     // **运行期换工程**的可见入口（本单补的那一格）。与上面那一族同款：本组件只上抛，
     // ⛔ 不读盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点是宿主 `host::wire_open_project`。
     callback open-project();
+    // ⭐ **新建工程**（任务单 `#129`）：混音台（Tab 1）里「打开工程」**正下方**的那一格。
+    // 同样只上抛：⛔ 不写盘、⛔ 不弹窗、⛔ 不判断成功与否；唯一落点 = 宿主
+    // `host::wire_new_project`（保存对话框 ⇒ 落一个 0 轨容器 ⇒ 打开那条换工程路径）。
+    callback new-project();
     // 主控通道条的**写入面**透传（与上面八个同款：本组件只上抛，不解释、不改任何值）。
     // 这六个**不带下标** —— 主总线不在 `track-names` 里，它的身份由宿主从权威工程取。
     callback mixer-master-fader-grab(length);
@@ -316,6 +320,11 @@ export component ConsoleTabs inherits Rectangle {
         // 是唯一落点）—— ⛔ 本组件不读盘、不弹窗、不判断成功与否。
         open-project => {
             root.open-project();
+        }
+        // ⭐ **新建工程**（任务单 `#129`）：同样只上抛（宿主 `host::wire_new_project`
+        // 是唯一落点）—— ⛔ 本组件不写盘、不弹窗、不判断成功与否。
+        new-project => {
+            root.new-project();
         }
         // 主控写入面：同样只上抛，**不带下标**（宿主在按下那一刻从权威工程取主总线身份）。
         mixer-master-fader-grab(y) => {
