@@ -476,6 +476,13 @@ export component MainWindow inherits Window {
     // 默认值 `"—"` = **还没有读数**；它**不是**任何一个具体的采样率 / 位深。
     // `"DSP …%"` 那个编造的性能读数已删除：没有真实数据源就不填那一格。
     in-out property <string> status-device: "—";
+    // ⭐ 任务单 `#166`：卷帘**最近一次编辑拒绝**的逐字原因（空串 = 没有拒绝）。
+    //
+    // 写者**只有一处**：`host::install_roll_click` 的第二段（它是卷帘点击的唯一派发器）——
+    // 每次点击先清空，铅笔拒绝时写入一句人话（"当前显示的轨上没有覆盖该位置的片段，未写入音符"）。
+    // 它不是工程数据、不是"选中轨"状态：只是**最近一次拒绝**的显示文本（`MODEL-ISO-001` 的挥发性层）。
+    // 读 = `ui/console/piano_roll.slint` 的 `piano-roll-status` 那一行。
+    in-out property <string> roll-edit-status: "";
     // ⭐ **最近一次"引擎发布失败"的原文**（任务单 `#86` 甲）。
     //
     // 写者**只有一处**：`host::apply_engine_error`（生产 60Hz 心跳与无头执行面共用它）。
@@ -1180,6 +1187,7 @@ export component MainWindow inherits Window {
             note-positions: root.note-positions;
             note-selected: root.note-selected;
             active-tool: root.active-tool;
+            roll-edit-status: root.roll-edit-status;
             scroll-requested(d) => { root.scroll-requested(d); }
             clicked(x, y) => { root.clicked(x, y); }
             double-clicked(x, y) => { root.double-clicked(x, y); }

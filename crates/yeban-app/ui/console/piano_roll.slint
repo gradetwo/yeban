@@ -86,6 +86,13 @@ export component PianoRoll inherits Rectangle {
     // 去比下标，启动默认（`1`）会勾中「2 铅笔」、按 `5` 还会一格都不勾（判据
     // `tests/live_ui_mcp.rs` 的 `the_tool_matrix_checked_state_tracks_the_active_tool_for_every_digit`）。
     property <int> active-tool-index: root.active-tool - 1;
+    // ⭐ 任务单 `#166`：宿主写进来的**最近一次卷帘编辑拒绝文本**（空串 = 没有拒绝）。
+    // 唯一写者 = `host::install_roll_click` 的第二段（每次点击先清空、拒绝时写逐字原因）。
+    // 空串时这一行仍是既有的静态读数 ⇒ 没有拒绝时与改前**逐像素相同**（⛔ 不新造一块 UI）。
+    in property <string> edit-status: "";
+    // "有没有可显示的拒绝文本"的**单一**读数（空串判定只写在这一行 ⇒ 无障碍标签那行
+    // 不出现空字面量，`no_accessible_name_may_be_the_empty_literal` 仍绿）。
+    property <bool> edit-status-shown: root.edit-status != "";
 
     in property <bool> show-velocity-lane: true;
     // 十二平均律一个八度里的白键位置 (C C# D D# E F F# G G# A A# B)。
@@ -167,14 +174,16 @@ export component PianoRoll inherits Rectangle {
     UiMonoText {
         x: 272px;
         y: Tokens.space-2;
-        width: 220px;
+        // 运行期拒绝原因（`#166`）比静态读数长 ⇒ 这一行横向占满剩余宽度（左侧 x / 顶沿 y
+        // 与高度一位未改，而**没有拒绝时**文字仍是同一串、左对齐 ⇒ 像素不变）。
+        width: parent.width - 272px - Tokens.space-4;
         height: 20px;
-        text: "吸附 1/16 · PPQ 960 · 显示 C2 – C7";
+        text: root.edit-status-shown ? root.edit-status : "吸附 1/16 · PPQ 960 · 显示 C2 – C7";
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         accessible-role: text;
         accessible-id: "piano-roll-status";
-        accessible-label: "卷帘吸附与音域状态";
+        accessible-label: root.edit-status-shown ? root.edit-status : "卷帘吸附与音域状态";
     }
 
     // ---------------------------------------------------------------- 琴键列

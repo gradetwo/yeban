@@ -6388,15 +6388,68 @@ pub fn wire_tool_select(ui: &MainWindow, undo: Option<Rc<UndoPort>>) {
     });
 }
 
+/// ⭐ 铅笔拒绝写入时给用户看的**逐字原因**（`#166`）：展示轨上没有覆盖该位置的片段。
+///
+/// 为什么必须有一句：旧行为会**静默**回退到"第一条有片段覆盖该 tick 的轨" ⇒ 用户看到的
+/// 面板说的是 A 轨、铅笔写到 B 轨。本单改成"只认展示轨"，于是"展示轨没覆盖"这条拒绝
+/// 必须说出来（⛔ 不是静默丢弃、⛔ 不是回退到别的轨）。
+pub const PENCIL_NO_CLIP_ON_DISPLAYED_TRACK_REASON: &str =
+    "当前显示的轨上没有覆盖该位置的片段，未写入音符";
+
+/// 铅笔拒绝的逐字原因：点击位置吸附不出计划（不在卷帘的音高范围内）。
+pub const PENCIL_NO_PLAN_REASON: &str = "该位置不在卷帘的音符范围内，未写入音符";
+
+/// 铅笔拒绝的逐字原因：工程里没有可显示的音轨（与 [`crate::bridge::device_rack_track`] 同一条规则）。
+pub const PENCIL_NO_DISPLAYED_TRACK_REASON: &str = "工程里没有可显示的音轨，未写入音符";
+
+/// 铅笔拒绝的逐字原因：工程无法投影（拍号 / 缩放退化）。
+pub const PENCIL_NO_PROJECTION_REASON: &str = "工程无法投影（拍号非法），未写入音符";
+
+/// 铅笔点击被拒绝的**结构化**原因（纯函数返回值 ⇒ 界面能选一句逐字文本，⛔ 不靠猜）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PencilRefusal {
+    /// 当前工具不是铅笔（数字键 2）—— 这次"拒绝"不是用户手势的失败，⛔ 不产生可见文本。
+    NotPencil,
+    /// 工程投影失败（拍号 / 缩放退化）。
+    NoProjection,
+    /// 点击位置吸附不出计划（不在卷帘的音高范围内）。
+    NoPlan,
+    /// 工程里没有可显示的音轨。
+    NoDisplayedTrack,
+    /// ⭐ 展示轨上没有覆盖该 tick 的片段（⛔ 不回退到别的轨）。
+    NoClipOnDisplayedTrack,
+}
+
+impl PencilRefusal {
+    /// 给用户看的逐字原因；`None` = 这次拒绝不该产生用户可见文本（工具门）。
+    #[must_use]
+    pub const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::NotPencil => None,
+            Self::NoProjection => Some(PENCIL_NO_PROJECTION_REASON),
+            Self::NoPlan => Some(PENCIL_NO_PLAN_REASON),
+            Self::NoDisplayedTrack => Some(PENCIL_NO_DISPLAYED_TRACK_REASON),
+            Self::NoClipOnDisplayedTrack => Some(PENCIL_NO_CLIP_ON_DISPLAYED_TRACK_REASON),
+        }
+    }
+}
+
 /// `[UI-NOTE-003]` 卷帘的**编辑入口**（目前只接铅笔）：把一次点击变成**可撤销**的模型操作。
 ///
-/// 规则（账本第 234/237 轮）：音符进"**点击 tick 所在片段**"、落在"**摆放该片段的轨道**"；
-/// **位置不在任何片段内 ⇒ 拒绝**（不新建片段）。撤销与提交图由 `commit_ops` 提供, 无需另写反向逻辑。
+/// 规则（账本第 234/237 轮；⭐ 任务单 `#166` 补上**轨**这一半）：音符进"**点击 tick 所在片段**"、
+/// 落在"**设备架 / 界面正在显示的那条轨**"—— 即 [`crate::bridge::device_rack_track`] 的**同一条**
+/// 规则（身份序第一条非主总线轨）。⭐ 展示轨上**没有**覆盖该 tick 的片段 ⇒ **拒绝**：
+/// ⛔ 不回退到别的轨（那正是 `#166` 的缺陷：多轨时写到 B 轨）、⛔ 不新建片段。
+/// 任务单 `#164` 的账本把"现在选**第一条有片段覆盖的 tick**、⛔ 不是设备架展示轨"登记为待修项
+/// ⇒ 本单把**两套规则并成一套**（设备架 / 发送条 / 面板 / 铅笔共用 `device_rack_track`）。
+///
+/// 撤销与提交图由 `commit_ops` 提供, 无需另写反向逻辑。
 /// `grid` 取 1/16（240 tick）作为当前吸附口径 —— 吸附设置将来若可配, 它应来自配置而不是这里。
 /// 把一次点击解析成**待提交的操作**，纯函数以便判据（`wire_roll_edit` 只负责把它接到端口）。
 ///
-/// 返回 `None` 的三种情形都是**决定**而非意外（第 234/237 轮）：工具不是铅笔；点击处吸附不出计划；
-/// **位置不在任何片段内**（拒绝, 不新建片段）。返回 `Some(op)` 表示"应当提交这一个操作"。
+/// 返回 `None` 的四种情形都是**决定**而非意外（第 234/237 轮 ＋ `#166`）：工具不是铅笔；
+/// 工程投影失败；点击处吸附不出计划；⭐ **展示轨上没有覆盖该位置的片段**。返回 `Some(op)`
+/// 表示"应当提交这一个操作"。
 ///
 /// **帧口径**：`x` / `y` 是**宿主帧**（网格局部，与 [`ViewState::hit_test_visible`] /
 /// `lane_at_y` 同一口径）。界面回调报的是**绘制帧** ⇒ 唯一派发器先经
@@ -6410,36 +6463,54 @@ pub fn pencil_op_for(
     grid_ticks: u64,
     active_tool: i32,
 ) -> Option<yeban_model::ops::Op> {
+    pencil_attempt_for(project, scroll_x, x, y, grid_ticks, active_tool).ok()
+}
+
+/// 同 [`pencil_op_for`]，但把**拒绝的原因**结构化返回 —— 界面据此写可见反馈（`#166`）。
+///
+/// 它是铅笔寻址的**唯一**实现：`pencil_op_for` 只是它的 `.ok()` 包装，因此
+/// "拒绝对不对"与"原因说不说得出来"不可能各有一套规则。
+///
+/// # Errors
+///
+/// 见 [`PencilRefusal`]：工具门 / 投影失败 / 吸附不出计划 / 没有展示轨 / ⭐ 展示轨无覆盖。
+pub fn pencil_attempt_for(
+    project: &yeban_model::YebanProjectV1,
+    scroll_x: f32,
+    x: f32,
+    y: f32,
+    grid_ticks: u64,
+    active_tool: i32,
+) -> Result<yeban_model::ops::Op, PencilRefusal> {
     if active_tool != i32::from(PENCIL_TOOL_DIGIT) {
-        return None;
+        return Err(PencilRefusal::NotPencil);
     }
     // 这里的命中测试**只**看卷帘的 14px 音高泳道（`lane_at_y`）与 tick 落在哪个片段，
     // 与编排行高无关：行高变高/变矮**不**改这条路径的答案（因此 S1 不给它加布局参数
     // —— 一个不影响结果的参数是假依赖）。
-    let view = ViewState::from_project(project).ok()?;
-    let plan = view.pencil_plan(scroll_x, x, y, grid_ticks)?;
-    let mut target: Option<(yeban_model::EntityId, yeban_model::EntityId)> = None;
-    for (track_id, track) in &project.tracks {
-        let triples: Vec<(u64, u64, yeban_model::EntityId)> = track
-            .clips
-            .values()
-            .map(|placement| {
-                (
-                    placement.start_tick,
-                    placement.duration_ticks,
-                    placement.clip_id,
-                )
-            })
-            .collect();
-        if let Some(clip_id) = crate::bridge::clip_at_tick(&triples, plan.start_tick) {
-            target = Some((*track_id, clip_id));
-            break;
-        }
-    }
-    let (track_id, clip_id) = target?;
-    Some(crate::bridge::plan_to_add_note(
+    let view = ViewState::from_project(project).map_err(|_| PencilRefusal::NoProjection)?;
+    let plan = view
+        .pencil_plan(scroll_x, x, y, grid_ticks)
+        .ok_or(PencilRefusal::NoPlan)?;
+    // ⭐ 任务单 `#166` 的**唯一**改动点：轨由 `device_rack_track` 决定（设备架 / 发送条 /
+    // 面板正在显示的那一条），⛔ 不再遍历 `project.tracks` 找"第一条有片段覆盖"的轨。
+    let track = crate::bridge::device_rack_track(project).ok_or(PencilRefusal::NoDisplayedTrack)?;
+    let triples: Vec<(u64, u64, yeban_model::EntityId)> = track
+        .clips
+        .values()
+        .map(|placement| {
+            (
+                placement.start_tick,
+                placement.duration_ticks,
+                placement.clip_id,
+            )
+        })
+        .collect();
+    let clip_id = crate::bridge::clip_at_tick(&triples, plan.start_tick)
+        .ok_or(PencilRefusal::NoClipOnDisplayedTrack)?;
+    Ok(crate::bridge::plan_to_add_note(
         plan,
-        track_id,
+        track.id,
         clip_id,
         yeban_model::EntityId::new(),
     ))
@@ -6899,7 +6970,8 @@ pub fn wire_roll_edit(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// 1. **总是**命中测试并更新选区（写 `selected-note-count` / `selected-ulids` /
 ///    `note-selected`，并同步状态栏）—— 无论当前是哪个工具。选择工具到此为止；
 /// 2. 再按 `Tool::click()` 落编辑：
-///    - `DrawNote` ⇒ [`pencil_op_for`] + `commit_ops`（`pencil: add note`）；
+///    - `DrawNote` ⇒ [`pencil_attempt_for`] + `commit_ops`（`pencil: add note`）；拒绝 ⇒
+///      不提交，并把 [`PencilRefusal::reason`] 的逐字原因写进 `roll-edit-status`；
 ///    - `DeleteNote` ⇒ 用刚命中的身份经 [`delete_ops_for`] + `commit_ops`
 ///      （`eraser: delete note`，与键盘 `DeleteSelection` **同一个**批解析点），
 ///      并清空已不存在的选区；
@@ -6976,6 +7048,9 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             // ⇒ 状态栏那一格必须在这里同步刷新，否则点击之后它停在旧选区上（= 新的假话）。
             publish_status_bar(&ui, view);
             // ---- 第二段：按工具落编辑 ----
+            // ⭐ 任务单 `#166`：拒绝文本只描述**最近一次**点击 —— 每次点击先清掉上一次的。
+            // 写的是**已有**的 `roll-edit-status` 属性（唯一写者就是这里），⛔ 不另造日志通道。
+            ui.set_roll_edit_status("".into());
             let active_tool = ui.get_active_tool();
             let Some(tool) = u8::try_from(active_tool)
                 .ok()
@@ -6990,19 +7065,32 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     let (Some(project), Some(port)) = (project.as_ref(), port.as_ref()) else {
                         return;
                     };
-                    let Some(op) =
-                        pencil_op_for(project, scroll, x, y, ROLL_SNAP_GRID_TICKS, active_tool)
-                    else {
-                        // 吸附不出计划、或位置不在任何片段内 ⇒ **拒绝**（第 234 轮的决定）。
-                        return;
-                    };
-                    if port
-                        .commit_ops(now_ms(), "pencil: add note", vec![op])
-                        .is_err()
-                    {
-                        return;
+                    // ⭐ `#166`：寻址只认**展示轨**（`bridge::device_rack_track`）。展示轨没有
+                    // 覆盖该 tick 的片段 ⇒ **不写**（⛔ 不回退到别的轨）＋ 把逐字原因写进可见的
+                    // `roll-edit-status`（⛔ 不静默丢弃）。
+                    match pencil_attempt_for(
+                        project,
+                        scroll,
+                        x,
+                        y,
+                        ROLL_SNAP_GRID_TICKS,
+                        active_tool,
+                    ) {
+                        Ok(op) => {
+                            if port
+                                .commit_ops(now_ms(), "pencil: add note", vec![op])
+                                .is_err()
+                            {
+                                return;
+                            }
+                            reproject_roll(&ui, port, width, scroll);
+                        }
+                        Err(refusal) => {
+                            if let Some(reason) = refusal.reason() {
+                                ui.set_roll_edit_status(reason.into());
+                            }
+                        }
                     }
-                    reproject_roll(&ui, port, width, scroll);
                 }
                 crate::input::ToolClick::DeleteNote => {
                     let (Some(project), Some(port), Some(index)) =

@@ -53,12 +53,16 @@
 #[allow(dead_code)]
 mod live;
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use live::{LiveControlPlane, build_live_ui};
 use serde_json::json;
-use yeban_app::bridge::{host_to_painted, painted_to_host};
-use yeban_app::host::{PENCIL_TOOL_DIGIT, ROLL_SNAP_GRID_TICKS, pencil_op_for, wire_roll_edit};
+use yeban_app::bridge::{ViewState, host_to_painted, painted_to_host};
+use yeban_app::host::{
+    PENCIL_NO_CLIP_ON_DISPLAYED_TRACK_REASON, PENCIL_TOOL_DIGIT, ROLL_SNAP_GRID_TICKS,
+    pencil_op_for, wire_roll_edit,
+};
 use yeban_app::input::Tool;
 use yeban_app::undo::{UndoPort, UndoSession};
 use yeban_ui_mcp::live::request_line;
@@ -3686,5 +3690,369 @@ fn arrow_nudge_d2_shift_through_the_real_event_source_lifts_the_selection_by_an_
         "[roll-nudge-d2-shift] 真 `Shift` 按下 + 真 `↑` ⇒ 提交数 {commits_before} ⇒ {}；\
          选区 {targets:?} 全部 +12 半音（tick 不动）",
         port.display().commit_count,
+    ));
+}
+
+// ===========================================================================
+// ⭐ 任务单 `#166`：铅笔写音符的**轨** —— 只认"设备架 / 界面正在显示的那条轨"，
+// ⛔ 不再认"第一条有片段覆盖该 tick 的轨"（那会在多轨时写到别的轨）。
+// ===========================================================================
+//
+// ## 规则（与 `bridge::device_rack_track` / `send_strip_track` **同一条**）
+//
+// "展示轨" = 身份序（`BTreeMap` 键序）第一条**非主总线**轨。设备架 / 发送条 / 轨删除 /
+// 一键装乐器已经在用它；铅笔此前**自己**遍历 `project.tracks` 找"第一条有片段覆盖"的轨
+// （`#164` 的账本把它登记为待修项）⇒ 多轨时两套规则会分叉：面板说 A、铅笔写 B。
+//
+// ## 三条判据（各自证明什么 / ⛔ 不证明什么）
+//
+// | 判据 | 证明 | ⛔ 不证明 |
+// | :--- | :--- | :--- |
+// | `a_pencil_is_refused_...` | 展示轨 A **无**片段、B 有覆盖该 tick 的片段 ⇒ 点击后 B 音符数 **不变**、工程**逐字节**不变、提交数不变，且 `roll-edit-status` **逐字**等于拒绝原因 | 音色 / 听证；别的工具 |
+// | `b_pencil_writes_...` | 展示轨 A **有**覆盖 ⇒ 新音符进 **A 的片段**，B 片段音符数不变 | 多选 / 跨片段；拖拽画音符 |
+// | `c_single_track_...` | 只有一条非主总线轨时：两条规则**指向同一条轨**，`pencil_op_for` 的 `(track, clip, tick, pitch, duration)` 与独立算出的计划**逐值相同**；点击后恰好 +1 | 别的工程形态（空工程 / 只有主总线） |
+//
+// ## 怎么变红（**行为**红）
+//
+// - 把 `pencil_attempt_for` 的寻址改回"遍历 `project.tracks` 取第一条有覆盖的轨"
+//   ⇒ (a) 红在 `B 音符数`（实测：0 ⇒ 1，即**又写错轨**）。
+// - 保留新寻址但删掉派发器 `Err` 臂里的 `set_roll_edit_status`
+//   ⇒ (a) 红在"拒绝必须可见"（文本为空）。
+// - 把寻址改成"第一条非主总线轨，但片段仍在**所有轨**里找"
+//   ⇒ (b) 红在 `A 的片段音符数`（新音符会落到 B 的片段里）。
+
+/// `#166` 夹具的**固定 ULID**（与 `samples::fixture_id` 同一形态）。
+///
+/// ⛔ 不用 `EntityId::new()`：它的随机低位让"谁是身份序第一条"不可构造 —— 而本判据的
+/// **全部**语义都建立在"展示轨 = 身份序第一条非主总线轨"上。
+fn pencil_fixture_id(index: u128) -> yeban_model::EntityId {
+    format!("01J8ZQ{index:020}")
+        .parse()
+        .expect("26 字符 Crockford Base32 ULID")
+}
+
+/// 在 `track` 上摆一个 `[start_tick, start_tick + duration_ticks)` 的空 MIDI 片段。
+fn place_empty_midi_clip(
+    track: &mut yeban_model::TrackV3,
+    pool: &mut BTreeMap<yeban_model::EntityId, yeban_model::ClipPoolEntry>,
+    clip_id: yeban_model::EntityId,
+    placement_id: yeban_model::EntityId,
+) {
+    pool.insert(
+        clip_id,
+        yeban_model::ClipPoolEntry {
+            id: clip_id,
+            name: "Clip".to_owned(),
+            content: yeban_model::ClipContent::Midi {
+                notes: BTreeMap::new(),
+            },
+        },
+    );
+    track.clips.insert(
+        placement_id,
+        yeban_model::ClipPlacement {
+            id: placement_id,
+            clip_id,
+            start_tick: 0,
+            duration_ticks: 1920,
+            loop_config: yeban_model::LoopConfig::default(),
+            muted: false,
+        },
+    );
+}
+
+/// `#166` 的夹具：主总线 ＋ **展示轨 A** ＋ **后面的轨 B**（两条都可选地有片段）。
+struct PencilTrackFixture {
+    project: yeban_model::YebanProjectV1,
+    displayed: yeban_model::EntityId,
+    displayed_clip: yeban_model::EntityId,
+    later: yeban_model::EntityId,
+    later_clip: yeban_model::EntityId,
+}
+
+fn pencil_track_fixture(displayed_has_clip: bool, later_has_clip: bool) -> PencilTrackFixture {
+    let master = pencil_fixture_id(1);
+    let displayed = pencil_fixture_id(2);
+    let later = pencil_fixture_id(3);
+    let displayed_clip = pencil_fixture_id(20);
+    let later_clip = pencil_fixture_id(21);
+
+    let mut project = yeban_model::YebanProjectV1 {
+        master_bus_track_id: master,
+        ..yeban_model::YebanProjectV1::default()
+    };
+    project.tracks.insert(
+        master,
+        yeban_model::TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: yeban_model::TrackKind::Master,
+            ..yeban_model::TrackV3::default()
+        },
+    );
+    let mut displayed_track = yeban_model::TrackV3 {
+        id: displayed,
+        name: "A".to_owned(),
+        kind: yeban_model::TrackKind::Midi,
+        ..yeban_model::TrackV3::default()
+    };
+    let mut later_track = yeban_model::TrackV3 {
+        id: later,
+        name: "B".to_owned(),
+        kind: yeban_model::TrackKind::Midi,
+        ..yeban_model::TrackV3::default()
+    };
+    if displayed_has_clip {
+        place_empty_midi_clip(
+            &mut displayed_track,
+            &mut project.clip_pool,
+            displayed_clip,
+            pencil_fixture_id(30),
+        );
+    }
+    if later_has_clip {
+        place_empty_midi_clip(
+            &mut later_track,
+            &mut project.clip_pool,
+            later_clip,
+            pencil_fixture_id(31),
+        );
+    }
+    project.tracks.insert(displayed, displayed_track);
+    project.tracks.insert(later, later_track);
+    PencilTrackFixture {
+        project,
+        displayed,
+        displayed_clip,
+        later,
+        later_clip,
+    }
+}
+
+/// 一个**宿主帧**点击 x：吸附 tick 落在夹具片段的 `[0, 1920)` 内。
+///
+/// 期望值由判据**自己**经 `ViewState::snapped_tick_at` 算出（⛔ 不读被测函数的结果）。
+fn host_x_inside_pencil_fixture(project: &yeban_model::YebanProjectV1) -> f32 {
+    let view = ViewState::from_project(project).expect("夹具必须能投影");
+    (0..240)
+        .map(|step| 10.0 * f32::from(u8::try_from(step).unwrap_or(0)))
+        .find(|x| (0..1920).contains(&view.snapped_tick_at(0.0, *x, ROLL_SNAP_GRID_TICKS)))
+        .expect("夹具里必须有一个吸附 tick 落在 [0, 1920) 的点击位置")
+}
+
+/// 某个片段里的音符数（`clip_pool` 的键序读数）。
+fn clip_note_count(project: &yeban_model::YebanProjectV1, clip: yeban_model::EntityId) -> usize {
+    project
+        .clip_pool
+        .get(&clip)
+        .and_then(|entry| entry.content.notes())
+        .map_or(0, BTreeMap::len)
+}
+
+/// 用**指定工程**装配：真窗口 ＋ 端口 ＋ 产品同一条 `wire_roll_edit`。
+fn assemble_with_project(
+    project: yeban_model::YebanProjectV1,
+) -> (yeban_app::ui::MainWindow, Rc<UndoPort>, LiveControlPlane) {
+    let ui = build_live_ui(&project, Permission::Interactive).expect("真实界面 + Tier-1 执行面");
+    let window = slint::ComponentHandle::clone_strong(ui.ui());
+    let port = Rc::new(UndoPort::new(
+        UndoSession::open("<pencil-track>", "yeban-app", project, NOW_MS).expect("打开"),
+    ));
+    wire_roll_edit(ui.ui(), &port);
+    let plane = ui.into_control_plane(Permission::Interactive);
+    (window, port, plane)
+}
+
+/// 判据 (a)：展示轨 A **没有**覆盖该 tick 的片段、B **有** ⇒ 铅笔**不得**写到 B。
+#[test]
+fn a_pencil_click_is_refused_when_the_displayed_track_has_no_clip_at_that_tick() {
+    let fixture = pencil_track_fixture(false, true);
+    let displayed_track =
+        yeban_app::bridge::device_rack_track(&fixture.project).expect("夹具里必须有展示轨");
+    assert_eq!(
+        displayed_track.id, fixture.displayed,
+        "夹具自证：展示轨必须是身份序第一条非主总线轨（A）"
+    );
+    let hit_x = host_x_inside_pencil_fixture(&fixture.project);
+    let tick = ViewState::from_project(&fixture.project)
+        .expect("投影")
+        .snapped_tick_at(0.0, hit_x, ROLL_SNAP_GRID_TICKS);
+    assert!(
+        fixture.project.tracks[&fixture.later]
+            .clips
+            .values()
+            .any(|placement| placement.start_tick <= tick
+                && tick < placement.start_tick + placement.duration_ticks),
+        "夹具自证：B 的片段必须覆盖点击 tick {tick}"
+    );
+
+    let (window, port, mut plane) = assemble_with_project(fixture.project);
+    let before = port.project();
+    let before_total = note_count(&before);
+    let before_later = clip_note_count(&before, fixture.later_clip);
+    let before_bytes = serde_json::to_vec(&before).expect("工程可序列化");
+    let commits_before = port.display().commit_count;
+
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    click_in_roll_by_id(&mut plane, 1, hit_x);
+
+    let after = port.project();
+    let after_later = clip_note_count(&after, fixture.later_clip);
+    let after_bytes = serde_json::to_vec(&after).expect("工程可序列化");
+    assert_eq!(
+        after_later, before_later,
+        "⚠ #166：展示轨 A 没覆盖 tick {tick} ⇒ 铅笔**不得**写到 B 轨（B 的音符数必须不变）"
+    );
+    assert_eq!(
+        note_count(&after),
+        before_total,
+        "拒绝 ⇒ 工程里一个音符都不许多"
+    );
+    assert_eq!(after_bytes, before_bytes, "拒绝 ⇒ 工程必须逐字节不变");
+    assert_eq!(
+        port.display().commit_count,
+        commits_before,
+        "拒绝 ⇒ 不得产生提交（撤销栈不许被空编辑推进一步）"
+    );
+    assert_eq!(
+        window.get_roll_edit_status(),
+        PENCIL_NO_CLIP_ON_DISPLAYED_TRACK_REASON,
+        "拒绝必须**可见**（逐字原因），⛔ 不静默丢弃"
+    );
+    report_line(&format!(
+        "[pencil-track-refuse] 展示轨 A 无片段 / B 有覆盖 tick {tick} 的片段 ⇒ \
+         点击后 B 音符 {before_later} ⇒ {after_later}；总数 {before_total} ⇒ {}；\
+         提交数 {commits_before} ⇒ {}；工程字节 {} ⇒ {}（逐字节相同 = {}）；拒绝文本 = {:?}",
+        note_count(&after),
+        port.display().commit_count,
+        before_bytes.len(),
+        after_bytes.len(),
+        before_bytes == after_bytes,
+        window.get_roll_edit_status(),
+    ));
+}
+
+/// 判据 (b)：展示轨 A **有**覆盖 ⇒ 写到**它**（B 也有覆盖，但 B 一位不动）。
+#[test]
+fn a_pencil_click_writes_to_the_displayed_track_not_a_covered_later_track() {
+    let fixture = pencil_track_fixture(true, true);
+    let hit_x = host_x_inside_pencil_fixture(&fixture.project);
+    let expected = ViewState::from_project(&fixture.project)
+        .expect("投影")
+        .pencil_plan(0.0, hit_x, HIT_Y_IN_ROLL, ROLL_SNAP_GRID_TICKS)
+        .expect("计划");
+
+    // 纯函数读数：目标必须是展示轨的片段（⛔ 不用点击结果当期望）。
+    match pencil_op_for(
+        &fixture.project,
+        0.0,
+        hit_x,
+        HIT_Y_IN_ROLL,
+        ROLL_SNAP_GRID_TICKS,
+        i32::from(PENCIL_TOOL_DIGIT),
+    ) {
+        Some(yeban_model::Op::AddNote {
+            track_id,
+            clip_id,
+            note,
+        }) => {
+            assert_eq!(track_id, fixture.displayed, "必须写到展示轨 A");
+            assert_eq!(clip_id, fixture.displayed_clip, "必须写到 A 的片段");
+            assert_eq!(
+                (note.start_tick, note.pitch, note.duration_ticks),
+                (expected.start_tick, expected.pitch, expected.duration_ticks),
+                "tick / pitch / duration 必须与独立算出的计划逐值相同"
+            );
+        }
+        other => panic!("铅笔必须产生展示轨上的 AddNote，实际是 {other:?}"),
+    }
+
+    let (window, port, mut plane) = assemble_with_project(fixture.project);
+    let before = port.project();
+    let before_displayed = clip_note_count(&before, fixture.displayed_clip);
+    let before_later = clip_note_count(&before, fixture.later_clip);
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    click_in_roll_by_id(&mut plane, 1, hit_x);
+    let after = port.project();
+    assert_eq!(
+        clip_note_count(&after, fixture.displayed_clip),
+        before_displayed + 1,
+        "展示轨 A 的片段必须 +1 个音符"
+    );
+    assert_eq!(
+        clip_note_count(&after, fixture.later_clip),
+        before_later,
+        "B 的片段（也有覆盖）必须一位不动"
+    );
+    assert_eq!(
+        window.get_roll_edit_status(),
+        "",
+        "写入成功 ⇒ 拒绝文本必须被清空（⛔ 不留上一击的假话）"
+    );
+    report_line(&format!(
+        "[pencil-track-write] 展示轨 A 有覆盖 tick 的片段 ⇒ 点击后 A 片段音符 {before_displayed} ⇒ {}；\
+         B 片段 {before_later} ⇒ {}；拒绝文本 = {:?}",
+        clip_note_count(&after, fixture.displayed_clip),
+        clip_note_count(&after, fixture.later_clip),
+        window.get_roll_edit_status(),
+    ));
+}
+
+/// 判据 (c)：**单轨**工程 —— 两条规则指向同一条轨，结果与改前逐值相同。
+#[test]
+fn a_single_track_project_keeps_the_pre_166_pencil_result() {
+    let mut fixture = pencil_track_fixture(true, false);
+    let displayed = fixture.displayed;
+    let displayed_clip = fixture.displayed_clip;
+    fixture.project.tracks.remove(&fixture.later);
+    let project = fixture.project;
+
+    let hit_x = host_x_inside_pencil_fixture(&project);
+    let expected = ViewState::from_project(&project)
+        .expect("投影")
+        .pencil_plan(0.0, hit_x, HIT_Y_IN_ROLL, ROLL_SNAP_GRID_TICKS)
+        .expect("计划");
+    let track = yeban_app::bridge::device_rack_track(&project).expect("单轨工程也有展示轨");
+    assert_eq!(track.id, displayed, "单轨工程：展示轨就是唯一那条轨");
+    match pencil_op_for(
+        &project,
+        0.0,
+        hit_x,
+        HIT_Y_IN_ROLL,
+        ROLL_SNAP_GRID_TICKS,
+        i32::from(PENCIL_TOOL_DIGIT),
+    ) {
+        Some(yeban_model::Op::AddNote {
+            track_id,
+            clip_id,
+            note,
+        }) => {
+            assert_eq!(track_id, displayed);
+            assert_eq!(clip_id, displayed_clip);
+            assert_eq!(
+                (note.start_tick, note.pitch, note.duration_ticks),
+                (expected.start_tick, expected.pitch, expected.duration_ticks),
+                "单轨：tick / pitch / duration 与改前同一份计划"
+            );
+        }
+        other => panic!("单轨铅笔必须产生 AddNote，实际是 {other:?}"),
+    }
+
+    let (window, port, mut plane) = assemble_with_project(project);
+    let before_total = note_count(&port.project());
+    window.set_active_tool(i32::from(Tool::Pencil.digit()));
+    click_in_roll_by_id(&mut plane, 1, hit_x);
+    assert_eq!(
+        note_count(&port.project()),
+        before_total + 1,
+        "单轨：点击后必须恰好 +1"
+    );
+    report_line(&format!(
+        "[pencil-track-single] 1 条非主总线轨；展示轨 == 唯一轨；\
+         op 目标 ({displayed}, {displayed_clip}) tick={} pitch={} duration={}；音符 {before_total} ⇒ {}",
+        expected.start_tick,
+        expected.pitch,
+        expected.duration_ticks,
+        note_count(&port.project()),
     ));
 }

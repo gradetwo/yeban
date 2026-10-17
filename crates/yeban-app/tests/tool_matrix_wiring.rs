@@ -401,8 +401,13 @@ fn roll_click_has_exactly_one_dispatcher_writer() {
          而不是把铅笔的数字硬编码成第二个工具真相源\n{dispatcher}"
     );
     assert!(
-        dispatcher.contains("pencil_op_for") && dispatcher.contains("delete_ops_for"),
-        "派发器必须把铅笔接 `pencil_op_for`、橡皮擦接 `delete_ops_for`\n{dispatcher}"
+        // ⭐ 任务单 `#166`：铅笔的解析入口从 `pencil_op_for` 换成
+        // `pencil_attempt_for`（它把**拒绝原因**结构化返回，界面据此写可见反馈）。
+        // `pencil_op_for` 仍是 `pencil_attempt_for(...).ok()` 的公开包装 —— 不变量是
+        // "派发器接的是**那一个**铅笔解析点"，不是"那个函数叫什么"。
+        dispatcher.contains("pencil_attempt_for") && dispatcher.contains("delete_ops_for"),
+        "派发器必须把铅笔接 `pencil_attempt_for`（`pencil_op_for` 的唯一实现）、\
+         橡皮擦接 `delete_ops_for`\n{dispatcher}"
     );
     // 帧换算的**唯一**落点：界面报的是绘制坐标（琴键列 56 ＋ 内缩 12，表头 28 之下），
     // `hit_test_visible` / `pencil_op_for` 用的是网格局部坐标。少了这一步，人手点得到的
