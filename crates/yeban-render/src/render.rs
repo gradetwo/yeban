@@ -43,6 +43,9 @@
 //! - 只渲染**能到达 Master** 的子图; 悬挂节点被剪掉 (这也会让"不需要的源"不必注册)。
 //! - 侧链 (`RoutingKind::Sidechain`) 只按普通音频边处理, 侧链键控语义未实现。
 //! - 渲染失败时并行收集的是"某一个"错误, 不承诺是哪一个 (成功路径的确定性不受影响)。
+//! - **插入链** (`crate::inserts`) 只给**非 master** 节点挂, 且只支持立体声
+//!   (`channels != 2` + 非空链 ⇒ [`RenderError::UnsupportedInsertChannels`])。
+//!   紧接在**求和之后**处理（源节点是"声源之后"）; 顺序差异见该模块头 §2。
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -51,6 +54,7 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use yeban_model::{EntityId, RoutingEdge, RoutingGraph, TrackV3};
 
+use crate::inserts::{InsertChain, InsertRuntime};
 use crate::pdc::{self, DelayLine, PdcError};
 use crate::sum;
 
@@ -211,6 +215,12 @@ pub enum RenderError {
         /// 源给的说明。
         message: String,
     },
+    /// 有插入链要处理, 但渲染声道数不是 2（本切片的混响/卷积只接立体声）。
+    ///
+    /// EQ 本身逐声道线性、任意声道数都能算, 但 Freeverb 与卷积混响的器件入口是
+    /// **立体声块**（L/R 两条独立状态）。在没有裁决"单声道插入点"之前不猜:
+    /// 任何非立体声 + 非空插入链的组合在这里**如实失败**, 而不是静默跳过。
+    UnsupportedInsertChannels(usize),
 }
 
 impl core::fmt::Display for RenderError {
@@ -230,6 +240,10 @@ impl core::fmt::Display for RenderError {
             }
             Self::ThreadPool(message) => write!(f, "线程池构建失败: {message}"),
             Self::Source { node, message } => write!(f, "样本源 {node} 失败: {message}"),
+            Self::UnsupportedInsertChannels(channels) => write!(
+                f,
+                "有插入链要处理, 但声道数是 {channels}（本切片只支持立体声）"
+            ),
         }
     }
 }
@@ -285,6 +299,10 @@ struct NodeState {
     delay_lines: Vec<DelayLine>,
     /// 延迟路径用的中转缓冲。
     scratch: Vec<f32>,
+    /// 本节点的插入链运行态 (EQ → Freeverb → 卷积) —— **主总线恒为 `None`**。
+    ///
+    /// `None` 表示"本节点没有可执行器件" ⇒ `render_node` 整段跳过 ⇒ 逐位不退化。
+    inserts: Option<InsertRuntime>,
 }
 
 /// 编译后的执行计划。
@@ -447,6 +465,38 @@ impl RenderPlan {
         options: RenderOptions,
         latencies: &BTreeMap<EntityId, u32>,
     ) -> Result<Self, RenderError> {
+        Self::compile_with_latencies_and_inserts(
+            graph,
+            master,
+            options,
+            latencies,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// 与 [`Self::compile_with_latencies`] 相同, 但给每条轨挂上**插入链**。
+    ///
+    /// # 插入点
+    ///
+    /// 链接在 `render_node` 的**求和之后**（源节点则是"声源渲染之后"）：这样
+    /// `SendToAux` 送进 Aux 返回轨的信号也会被该 Aux 轨自己的 EQ / 混响 / 卷积处理。
+    /// **主总线不挂链**（实时引擎的逐轨循环跳过 master；给 master 加插入会引入新的
+    /// "导出与监听不一致"差异）。详见 [`crate::inserts`] 模块头 §1／§2。
+    ///
+    /// `inserts` 由 [`crate::inserts::project_inserts`] 从 `TrackV3.devices` 投影得到。
+    /// 空表等价于 [`Self::compile_with_latencies`]（逐位不退化）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::compile`] 相同, 外加 [`RenderError::UnsupportedInsertChannels`]:
+    /// 有非空插入链且 `options.channels != 2` 时如实失败（本切片只接立体声器件）。
+    pub fn compile_with_latencies_and_inserts(
+        graph: &RoutingGraph,
+        master: EntityId,
+        options: RenderOptions,
+        latencies: &BTreeMap<EntityId, u32>,
+        inserts: &BTreeMap<EntityId, InsertChain>,
+    ) -> Result<Self, RenderError> {
         if options.channels == 0 {
             return Err(RenderError::ZeroChannels);
         }
@@ -499,6 +549,15 @@ impl RenderPlan {
             if let Some(parents) = predecessors.get(&node) {
                 frontier.extend(parents.iter().copied());
             }
+        }
+        // 插入链只在立体声下接（混响/卷积的器件入口是 L/R 两条独立状态）。主总线
+        // 不挂链 ⇒ 它上面的链不算"要处理", 不触发这条检查。
+        if options.channels != 2
+            && keep.iter().any(|node| {
+                *node != master && inserts.get(node).is_some_and(|chain| !chain.is_empty())
+            })
+        {
+            return Err(RenderError::UnsupportedInsertChannels(options.channels));
         }
         let edges: Vec<&RoutingEdge> = graph
             .edges
@@ -578,13 +637,27 @@ impl RenderPlan {
         // 不再做第二遍可能溢出的乘法。
         let mut states: Vec<NodeState> = ordered
             .iter()
-            .map(|&node| NodeState {
-                node,
-                buffer: vec![0.0; block_width],
-                source: None,
-                incoming: Vec::new(),
-                delay_lines: Vec::new(),
-                scratch: vec![0.0; block_width],
+            .map(|&node| {
+                // 主总线**刻意不挂链**（见 `compile_with_latencies_and_inserts` 的文档）。
+                let inserts = if node == master {
+                    None
+                } else {
+                    inserts
+                        .get(&node)
+                        .filter(|chain| !chain.is_empty())
+                        .map(|chain| {
+                            InsertRuntime::new(chain, options.sample_rate, options.block_size)
+                        })
+                };
+                NodeState {
+                    node,
+                    buffer: vec![0.0; block_width],
+                    source: None,
+                    incoming: Vec::new(),
+                    delay_lines: Vec::new(),
+                    scratch: vec![0.0; block_width],
+                    inserts,
+                }
             })
             .collect();
         for (slot, &node) in ordered.iter().enumerate() {
@@ -718,6 +791,12 @@ impl RenderPlan {
             for line in &mut state.delay_lines {
                 line.reset();
             }
+            // 插入器件（EQ 的双二阶状态、混响的梳状/全通线、卷积的分块尾）也是
+            // **跨执行存活**的时间状态 ⇒ 必须一起复位，否则第二次执行的尾巴会
+            // 带着上一次的残留。
+            if let Some(inserts) = &mut state.inserts {
+                inserts.reset();
+            }
         }
 
         // ---- 1. 先校验整张源表, 再装载 ----
@@ -820,12 +899,19 @@ fn render_node(
         incoming,
         delay_lines,
         scratch,
+        inserts,
     } = state;
 
     if incoming.is_empty() {
         buffer[..width].fill(0.0);
         let source = source.as_mut().ok_or(RenderError::MissingSource(*node))?;
-        return source.render_block(context, &mut buffer[..width]);
+        source.render_block(context, &mut buffer[..width])?;
+        // 插入点: **声源渲染之后**。源节点没有"求和", 但位置语义相同 ——
+        // 声源（含声相）已经写进 `buffer`, 插入链是它之后的最后一级。
+        if let Some(inserts) = inserts.as_mut() {
+            inserts.process(&mut buffer[..width]);
+        }
+        return Ok(());
     }
 
     // [ARCH-DET-002] 固定顺序的**单线程串行累加**。`incoming` 在编译期已按
@@ -841,6 +927,11 @@ fn render_node(
             line.process(upstream, &mut scratch[..width]);
             sum::accumulate_into(&scratch[..width], &mut buffer[..width], contribution.gain);
         }
+    }
+    // 插入点: **求和之后**（本票的裁决 —— Aux 返回轨因此也能被它自己的链处理）。
+    // 主总线的 `inserts` 恒为 `None`（实时引擎跳过 master, 见编译入口的文档）。
+    if let Some(inserts) = inserts.as_mut() {
+        inserts.process(&mut buffer[..width]);
     }
     Ok(())
 }

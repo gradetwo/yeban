@@ -94,6 +94,12 @@ pub mod mastering;
 // 账本第 283/284 轮：编解码已**下移**到独立 crate `yeban-midi`（MCP 也能依赖它, 见该 crate 的文档）。
 // 这里**再导出**同一个模块 ⇒ `yeban_render::midi::*` 的既有调用方（app 与其判据）一行不改。
 pub use yeban_midi::midi;
+// 每轨插入链的**离线投影与运行态**（EQ ＋ Freeverb ＋ 卷积混响）。
+//
+// ⚠ 这是 `crates/yeban-engine/src/insert.rs` 投影规则的**副本** —— `yeban-mcp` 不能
+// 依赖引擎（`scripts/gates/check_mcp_dependency_direction.py`），而本 crate 已依赖
+// `yeban-dsp`（DSP 本体是同一份）。待办：把投影下移到 `yeban-dsp`，见模块头 §0。
+pub mod inserts;
 pub mod pdc;
 pub mod render;
 pub mod rf64;
@@ -435,7 +441,7 @@ mod contract_tests {
         );
     }
 
-    /// 判据 (**诊断文案黄金表**): 本 crate 默认构建里 5 个错误枚举的**全部 45 个变体**
+    /// 判据 (**诊断文案黄金表**): 本 crate 默认构建里 5 个错误枚举的**全部 46 个变体**
     /// 的 `Display` 文案, 逐条钉死在同一张表里。
     ///
     /// # 为什么是一张**表**（本机实测的缺口）
@@ -450,19 +456,20 @@ mod contract_tests {
     ///
     /// 对象: 5 个枚举的**全部**变体（单位: 一个变体）, 每个给一个固定的构造值。
     /// 读数: 对该值 `to_string()` 得到的字符串（单位: 一个 UTF-8 字符串）。
-    /// 覆盖面由数组长度 `45` 与下面那条去重断言一起守住。
+    /// 覆盖面由数组长度 `46` 与下面那条去重断言一起守住。
     ///
     /// # 表的来源
     ///
-    /// 右列是**本机实测读数**（一个临时探针在 `469cedd` 上打印全部 45 条, 探针已删）,
+    /// 右列是**本机实测读数**（一个临时探针在 `469cedd` 上打印全部 45 条, 探针已删;
+    /// `#155` 新增 `Render::UnsupportedInsertChannels` 一条）,
     /// 不是从实现里抄的表达式。表的用途正是: **以后任何一字改动都必须显式改这张表**。
     ///
     /// # 非空证明
     ///
-    /// ① 45 条文案里**恰有一对相同** —— `Rf64Error::ZeroChannels` 与
+    /// ① 46 条文案里**恰有一对相同** —— `Rf64Error::ZeroChannels` 与
     /// `RenderError::ZeroChannels` 都是 `声道数为 0` ⇒ 去重后是 **44** 条
     /// （下面把这两个数与那一对一起断言）;
-    /// ② 五个枚举各自的变体数必须是 **18 / 4 / 12 / 3 / 8** —— 哪个枚举少一个变体进表就红;
+    /// ② 五个枚举各自的变体数必须是 **18 / 4 / 13 / 3 / 8** —— 哪个枚举少一个变体进表就红;
     /// ③ 其中 6 条带运行时参数（`Truncated` / `DataSizeMismatch` /
     /// `UnrepresentableBlockAlign` / `UnsupportedFormatTag` / `BadStartTimecode` /
     /// `NonFiniteSamples`）⇒ 改插值而不是改字面量也会红。
@@ -473,7 +480,7 @@ mod contract_tests {
         use crate::rf64::Rf64Error;
         use crate::wav::WavError;
 
-        let cases: [(&str, String, &str); 45] = [
+        let cases: [(&str, String, &str); 46] = [
             (
                 "Rf64::Io",
                 Rf64Error::Io("磁盘满了".to_owned()).to_string(),
@@ -679,6 +686,11 @@ mod contract_tests {
                 r#"样本源 00000000000000000000001ZZZ 失败: 音源炸了"#,
             ),
             (
+                "Render::UnsupportedInsertChannels",
+                RenderError::UnsupportedInsertChannels(1).to_string(),
+                r#"有插入链要处理, 但声道数是 1（本切片只支持立体声）"#,
+            ),
+            (
                 "Pdc::Cycle",
                 PdcError::Cycle {
                     remaining: vec!["a".to_owned(), "b".to_owned()],
@@ -754,12 +766,12 @@ mod contract_tests {
             assert_eq!(actual.as_str(), *golden, "诊断文案变了: {label}");
         }
 
-        // 覆盖面: 45 个变体, 按枚举分别是 18 / 4 / 12 / 3 / 8。
-        assert_eq!(cases.len(), 45, "黄金表必须覆盖全部 45 个变体");
+        // 覆盖面: 46 个变体, 按枚举分别是 18 / 4 / 13 / 3 / 8。
+        assert_eq!(cases.len(), 46, "黄金表必须覆盖全部 46 个变体");
         for (prefix, expected) in [
             ("Rf64::", 18usize),
             ("Wav::", 4),
-            ("Render::", 12),
+            ("Render::", 13),
             ("Pdc::", 3),
             ("Mst::", 8),
         ] {
@@ -773,14 +785,14 @@ mod contract_tests {
             );
         }
 
-        // 文案的唯一一处重合: 两个不同的枚举都用了 `声道数为 0` ⇒ 去重后 44 条。
+        // 文案的唯一一处重合: 两个不同的枚举都用了 `声道数为 0` ⇒ 去重后 45 条。
         let mut golden_texts: Vec<&str> = cases.iter().map(|(_, _, golden)| *golden).collect();
         golden_texts.sort_unstable();
         golden_texts.dedup();
         assert_eq!(
             golden_texts.len(),
-            44,
-            "45 条文案里恰有一对相同 ⇒ 去重后必须是 44"
+            45,
+            "46 条文案里恰有一对相同 ⇒ 去重后必须是 45"
         );
         assert_eq!(
             Rf64Error::ZeroChannels.to_string(),

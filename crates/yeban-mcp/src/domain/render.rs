@@ -47,7 +47,7 @@
 //! | 键 | 含义 |
 //! | :--- | :--- |
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
-//! | `deviceChainDsp` | 设备链的**参数**（滤波器/音色）没有求值；只有 `latency_samples` 进了 PDC |
+//! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（滤波/压缩/增益/未知旋钮）没有求值；EQ、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
 //! | `clipLoopRepetition` | `loop_config` 的**重复**没有展开（只渲染摆放的第一遍）。登记口径 = "启用中**且**区间不是恰好 `0..duration_ticks`"（覆盖才静默；见下面的 `loop_requests_repetition`） |
@@ -269,6 +269,9 @@ use yeban_model::{
     YebanProjectV1,
 };
 use yeban_render::dither::{BitDepth, quantize};
+// 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
+// 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
+use yeban_render::inserts::{project_inserts, track_has_unhandled_dsp};
 use yeban_render::render::{
     AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderPlan, db_to_linear,
     track_latencies,
@@ -1331,11 +1334,16 @@ pub fn build(
     }
     // 8. 真编译 + 真执行。
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
-    let mut plan = RenderPlan::compile_with_latencies(
+    // 每轨插入链：从 `TrackV3.devices` 投影（EQ + Freeverb + 卷积混响）。
+    // ⚠ 主总线上的设备链**不挂**（实时引擎的逐轨循环跳过 master），见
+    // `yeban_render::render::RenderPlan::compile_with_latencies_and_inserts` 的文档。
+    let inserts = project_inserts(&project.tracks, sample_rate);
+    let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
         project.master_bus_track_id,
         options,
         &latencies,
+        &inserts,
     )
     .map_err(|error| render_error("渲染计划编译", &error))?;
     let mut output = plan
@@ -2159,8 +2167,9 @@ fn build_source(
     } else {
         0.0
     };
-    // 设备链: 只有 latency_samples 进了 PDC; 参数求值没有实现 —— 出现即登记。
-    if track.devices.iter().any(|device| !device.bypassed) {
+    // 设备链: EQ / Freeverb / 卷积已经由 `yeban-render` 消费；只有**本切片没有消费**
+    // 的参数（滤波 / 压缩 / 增益 / 未知旋钮 / 外部器件）仍要如实登记。
+    if track_has_unhandled_dsp(track) {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
     if track.devices.iter().any(|device| {
