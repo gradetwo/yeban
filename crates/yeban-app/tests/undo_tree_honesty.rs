@@ -270,7 +270,10 @@ fn the_undo_tree_node_properties_have_exactly_one_writer() {
     );
 
     // 权威路径：唯一写者读的是 `UndoPort::graph()`（`CommitGraph`），不是自造列表。
-    let host = read("src/host.rs");
+    // ⚠ **行尾归一**（任务单 `#137`）：下面按多行字面量 `"\n}\n"` 切函数体，而 Windows
+    // 工作树（无 `.gitattributes` ＋ `core.autocrlf=true`）里源码是 CRLF ⇒ 不归一时
+    // `split` 找不到锚点，`.next()` 会把**整份源码**当成函数体（判据静默变弱，⛔ 不报错）。
+    let host = read("src/host.rs").replace("\r\n", "\n");
     let apply_undo = host
         .split("pub fn apply_undo")
         .nth(1)
