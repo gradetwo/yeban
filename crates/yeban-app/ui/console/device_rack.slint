@@ -81,6 +81,25 @@ export component DeviceRack inherits Rectangle {
     /// 值域上界 (dB) —— 同上。
     in property <float> eq-max-db: 0.0;
 
+    // ---------------------------------------------------------------- 发送条（⭐ 任务单 `#159`）
+    /// 展示轨的发送边身份（`RoutingEdge::id` 的 26 字符文本；与下面三个数组**同索引集**）。
+    /// 三个滑块回调只报它，⛔ 不报行下标 —— 行下标会随投影漂移，身份不会。
+    in property <[string]> send-edge-ids: [];
+    /// 每条发送的目的地显示名（来自 `RoutingEdge::destination_node` 指向的 `TrackV3::name`）。
+    in property <[string]> send-destination-names: [];
+    /// 每条发送的增益显示文本（`"−12 dB"` / `"单位增益"`）—— 逐字来自投影。
+    in property <[string]> send-gain-labels: [];
+    /// 每条发送的滑块位置 (dB)。`None`（单位增益）在投影里落到 0 dB。
+    in property <[float]> send-gain-dbs: [];
+    /// 发送增益值域下界 (dB) —— **模型给的**（`NOMINAL_GAIN_MIN_DB`），⛔ 本文件不造。
+    in property <float> send-gain-min-db: 0.0;
+    /// 发送增益值域上界 (dB) —— 同上。
+    in property <float> send-gain-max-db: 0.0;
+    /// "新建发送"此刻能不能用（工程里得有 `AuxReturn` 轨 ＋ 一条展示轨）。
+    in property <bool> send-create-available: false;
+    /// 不能新建时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
+    in property <string> send-create-reason: "";
+
     // ---------------------------------------------------------------- 写入面
     /// 点击某台的旁通开关（参数 = 设备链下标）。
     callback device-bypass-toggle(int);
@@ -90,6 +109,14 @@ export component DeviceRack inherits Rectangle {
     callback device-eq-drag(float);
     /// EQ 低架增益收尾。
     callback device-eq-release();
+    /// 发送增益按下（参数 = 路由边身份 + 滑块面内的归一化位置）。
+    callback send-gain-grab(string, float);
+    /// 发送增益拖动。
+    callback send-gain-drag(string, float);
+    /// 发送增益收尾。
+    callback send-gain-release(string);
+    /// 新建发送（目的地 / 新边身份都由宿主从权威工程求）。
+    callback send-create();
 
     // 旋钮位置（0.0–1.0）：值域退化（min == max）或不可用时给 0.5（居中），
     // 绝不除以零。**这是显示几何**，不是第二份范围表 —— 两个端点都是注入值。
@@ -300,6 +327,222 @@ export component DeviceRack inherits Rectangle {
             font-size: Tokens.font-size-xs;
             overflow: elide;
             visible: root.eq-available;
+        }
+    }
+
+    // ---------------------------------------------------------------- 发送条（⭐ 任务单 `#159`）
+    Rectangle {
+        x: 444px;
+        y: 136px;
+        width: 380px;
+        height: 74px + 40px * root.send-destination-names.length;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+        accessible-role: region;
+        accessible-id: "send-strip";
+        accessible-label: "发送";
+
+        UiText {
+            x: Tokens.space-4;
+            y: Tokens.space-2;
+            width: 220px;
+            height: 16px;
+            text: "发送";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        UiMonoText {
+            x: 240px;
+            y: Tokens.space-2;
+            width: parent.width - 252px;
+            height: 16px;
+            text: root.send-destination-names.length + " 条发送";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: right;
+            accessible-role: text;
+            accessible-id: "send-count";
+            accessible-label: root.send-destination-names.length + " 条发送";
+        }
+
+        // 空态：无发送时**不画**任何行，只写这一句（逐字，判据按它断言）。
+        UiText {
+            x: Tokens.space-4;
+            y: 28px;
+            width: parent.width - 16px;
+            height: 20px;
+            text: "无发送";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+            visible: root.send-destination-names.length == 0;
+            accessible-role: text;
+            accessible-id: "send-empty";
+            accessible-label: "无发送";
+        }
+
+        // ⭐ 条目数**就是**投影的发送数 —— 空数组 ⇒ 一行都不画。
+        for send_destination[send_index] in root.send-destination-names : Rectangle {
+            x: Tokens.space-4;
+            y: 30px + 40px * send_index;
+            width: parent.width - 16px;
+            height: 36px;
+            background: transparent;
+            accessible-role: list-item;
+            accessible-id: "send-" + send_index + "-row";
+            accessible-label: "发送 → " + send_destination + " · " + root.send-gain-labels[send_index];
+            accessible-item-index: send_index;
+            accessible-item-count: root.send-destination-names.length;
+
+            // 滑块位置（0.0–1.0）：值域退化（min == max）时给 0.5，绝不除以零。
+            // **这是显示几何**，不是第二份范围表 —— 两个端点都是注入值。
+            property <float> gain-fraction: root.send-gain-max-db > root.send-gain-min-db
+                ? (root.send-gain-dbs[send_index] - root.send-gain-min-db) / (root.send-gain-max-db - root.send-gain-min-db)
+                : 0.5;
+            property <float> gain-fraction-clamped: self.gain-fraction < 0.0
+                ? 0.0
+                : (self.gain-fraction > 1.0 ? 1.0 : self.gain-fraction);
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width - 100px;
+                height: 16px;
+                text: "→ " + send_destination;
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-sm;
+                overflow: elide;
+            }
+
+            UiMonoText {
+                x: parent.width - 96px;
+                y: 0;
+                width: 96px;
+                height: 16px;
+                text: root.send-gain-labels[send_index];
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: right;
+                accessible-role: text;
+                accessible-id: "send-" + send_index + "-gain-value";
+                accessible-label: root.send-gain-labels[send_index];
+            }
+
+            // 滑块语义节点：读屏器读得到值域与当前值（值域是**注入**的，⛔ 不是字面量）。
+            Rectangle {
+                x: 0;
+                y: 20px;
+                width: 300px;
+                height: 16px;
+                background: transparent;
+                accessible-role: slider;
+                accessible-id: "send-" + send_index + "-gain-slider";
+                accessible-label: "发送 " + send_destination + " 增益";
+                accessible-orientation: horizontal;
+                accessible-value-minimum: root.send-gain-min-db;
+                accessible-value-maximum: root.send-gain-max-db;
+                accessible-value-step: 0.1;
+                accessible-value: root.send-gain-labels[send_index];
+            }
+
+            // 导轨
+            Rectangle {
+                x: 0;
+                y: 26px;
+                width: 300px;
+                height: 4px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+            }
+
+            // 旋钮（位置只读注入的 dB 与注入的值域）
+            Rectangle {
+                x: 288px * parent.gain-fraction-clamped;
+                y: 22px;
+                width: 12px;
+                height: 12px;
+                background: Tokens.gold-deep;
+                border-radius: Tokens.radius-sm;
+            }
+
+            // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
+            TouchArea {
+                x: 0;
+                y: 20px;
+                width: 300px;
+                height: 20px;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        root.send-gain-grab(root.send-edge-ids[send_index], self.mouse-x / self.width);
+                    } else if (event.kind == PointerEventKind.move) {
+                        root.send-gain-drag(root.send-edge-ids[send_index], self.mouse-x / self.width);
+                    } else {
+                        // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条）。
+                        root.send-gain-release(root.send-edge-ids[send_index]);
+                    }
+                }
+            }
+        }
+
+        // ⭐ 新建发送：**一条**按钮 —— 目的地由宿主取身份序第一条 `AuxReturn` 轨，
+        // 新边身份由宿主用 `EntityId::new()` 分配，⛔ 本文件不拼任何身份。
+        // 没有 aux 轨时 `enabled: false` ＋ 下方逐字原因（⛔ 不静默）。
+        Rectangle {
+            x: Tokens.space-4;
+            y: 30px + 40px * root.send-destination-names.length;
+            width: 160px;
+            height: 22px;
+            background: root.send-create-available ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.send-create-available ? Tokens.gold : Tokens.line;
+            accessible-role: button;
+            accessible-id: "send-create-button";
+            accessible-label: "新建发送";
+            // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
+            // 不可用时由 `TouchArea.enabled` 拦住指针；无障碍动作与点击落到**同一个**
+            // `root.send-create()` —— 宿主对"没有 aux 轨"有自己的拒绝与逐字原因（⑤）。
+            accessible-action-default => { root.send-create(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "新建发送";
+                color: root.send-create-available ? Tokens.bg-void : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.send-create-available;
+                clicked => {
+                    root.send-create();
+                }
+            }
+        }
+
+        // 不可用时的**逐字**原因（可用时 `visible: false`，文本是空串）。
+        UiText {
+            x: Tokens.space-4;
+            y: 56px + 40px * root.send-destination-names.length;
+            width: parent.width - 16px;
+            height: 14px;
+            text: root.send-create-reason;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            visible: !root.send-create-available;
+            accessible-role: text;
+            accessible-id: "send-create-reason";
+            accessible-label: root.send-create-reason;
         }
     }
 

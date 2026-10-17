@@ -639,6 +639,20 @@ export component MainWindow inherits Window {
     callback device-eq-drag(float);
     /// EQ 低架增益收尾（松手 / 指针离开窗口）⇒ 值真的变了才提交一次。
     callback device-eq-release();
+    // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 设备机架面板里的"发送"区。
+    //
+    // 形状与 `device-*` 一族逐条同款：`.slint` 只报"哪一条边 / 滑块位置"，dB 换算 /
+    // 陈旧基线比对与**一次** `commit_ops` 全在宿主 `host::wire_send_strip`。
+    // 三个滑块回调都携带**路由边身份**（`RoutingEdge::id` 的 26 字符文本）——
+    // ⛔ 不用行下标当第二份身份。
+    /// 发送增益按下（参数 = 路由边身份 + 滑块面内的归一化位置 0.0–1.0）。
+    callback send-gain-grab(string, float);
+    /// 发送增益拖动（同一个边身份 + 归一化位置；dB 换算与预览在宿主）。
+    callback send-gain-drag(string, float);
+    /// 发送增益收尾（松手 / 指针离开窗口）⇒ 值真的变了才提交一次。
+    callback send-gain-release(string);
+    /// 新建发送（目的地 = 身份序第一条 `AuxReturn` 轨；新边身份由宿主分配）。
+    callback send-create();
     // ⭐ **导出 MIDI**（任务单 `#90` 甲）：把**当前工程**写成标准 MIDI 文件（`SMF 1`）。
     //
     // 事件源 = `ui/console/mixer_console.slint` 的 `module-export-midi-button`
@@ -743,6 +757,19 @@ export component MainWindow inherits Window {
     in property <float> device-eq-gain-db: 0.0;
     in property <float> device-eq-min-db: 0.0;
     in property <float> device-eq-max-db: 0.0;
+    // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
+    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::sends` /
+    // `ViewState::send_create_available` / `ViewState::send_create_reason`
+    // （⛔ 界面上没有第二份发送列表，也⛔ 没有第二份增益范围表 —— 值域来自模型）。
+    // 与设备链同住控制台 Tab 3 ⇒ 默认帧不画它。
+    in property <[string]> send-edge-ids: [];
+    in property <[string]> send-destination-names: [];
+    in property <[string]> send-gain-labels: [];
+    in property <[float]> send-gain-dbs: [];
+    in property <float> send-gain-min-db: 0.0;
+    in property <float> send-gain-max-db: 0.0;
+    in property <bool> send-create-available: false;
+    in property <string> send-create-reason: "";
     // 卷帘音符的位置（x / y / 宽，逻辑像素）—— 由 `start_tick` / `pitch` 整数派生，
     // 见 `src/bridge.rs` 的 `NoteView`（界面不做任何位置算术）。
     /// `[ROAD-M3-002]` 卷帘滚动手势（由宿主接管并重新注入）。
@@ -1127,6 +1154,16 @@ export component MainWindow inherits Window {
             device-eq-gain-db: root.device-eq-gain-db;
             device-eq-min-db: root.device-eq-min-db;
             device-eq-max-db: root.device-eq-max-db;
+            // ⭐ 发送条（任务单 `#159`）：同样只做单向搬运，⛔ 不解释、⛔ 不持有第二份
+            // 发送列表 / 增益范围（值域来自模型，经 `host::apply_view` 注入）。
+            send-edge-ids: root.send-edge-ids;
+            send-destination-names: root.send-destination-names;
+            send-gain-labels: root.send-gain-labels;
+            send-gain-dbs: root.send-gain-dbs;
+            send-gain-min-db: root.send-gain-min-db;
+            send-gain-max-db: root.send-gain-max-db;
+            send-create-available: root.send-create-available;
+            send-create-reason: root.send-create-reason;
             // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。
             track-names: root.track-names;
             track-volumes: root.track-volumes;
@@ -1169,6 +1206,21 @@ export component MainWindow inherits Window {
             }
             device-eq-release() => {
                 root.device-eq-release();
+            }
+            // ⭐ 发送条（Tab 3）的写入面：只上抛，唯一落点 `host::wire_send_strip`
+            // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，⛔ 界面不改任何工程值）。
+            // 三个滑块回调携带**路由边身份**，⛔ 不是行下标。
+            send-gain-grab(edge-id, fraction) => {
+                root.send-gain-grab(edge-id, fraction);
+            }
+            send-gain-drag(edge-id, fraction) => {
+                root.send-gain-drag(edge-id, fraction);
+            }
+            send-gain-release(edge-id) => {
+                root.send-gain-release(edge-id);
+            }
+            send-create() => {
+                root.send-create();
             }
 
             // 混音台写入面：只上抛，不在 `.slint` 里改任何工程值

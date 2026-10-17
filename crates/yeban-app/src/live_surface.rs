@@ -1925,6 +1925,10 @@ pub fn build_live_ui_with(
         // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_device_rack`，
         // 因此无头端口注入的手势与用户点击走同一条链（`Op` + `UndoPort`）。
         host::wire_device_rack(&window, undo);
+        // ⭐ 发送条（控制台 Tab 3 的同一面板）的写入面（任务单 `#159`）：与产品进程
+        // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_send_strip`，
+        // 因此无头端口注入的手势与用户点击走同一条链（`Op` + `UndoPort`）。
+        host::wire_send_strip(&window, undo);
         // `[UI-NOTE-003]` 卷帘的工具派发（铅笔 / 橡皮擦）与产品进程
         // （`main.rs` 的 `host::wire_roll_edit`）调的是**同一个**函数。
         //

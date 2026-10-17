@@ -55,8 +55,8 @@ pub use yeban_model::samples::{demo_id, demo_project};
 use yeban_model::music::MidiNote;
 pub use yeban_model::note_plan::{NotePlan, plan_to_add_note};
 use yeban_model::project::{
-    ClipContent, ClipPlacement, ClipPoolEntry, SceneV3, SectionV3, TimeSignature, TrackKind,
-    TrackV3, YebanProjectV1,
+    ClipContent, ClipPlacement, ClipPoolEntry, RoutingKind, SceneV3, SectionV3, TimeSignature,
+    TrackKind, TrackV3, YebanProjectV1,
 };
 
 /// 960 PPQ 整数时钟（`[MODEL-AST-001]`）—— 从模型层再导出，避免两处各写一个字面量。
@@ -1378,6 +1378,139 @@ pub struct DeviceEqView {
     pub max_db: f32,
 }
 
+/// 发送条里的一行 —— **展示轨**上的一条 `RoutingKind::SendToAux` 边。
+///
+/// ⭐ 任务单 `#159`：这是发送在界面上的**唯一**数据形态。四个字段全部来自
+/// `RoutingGraph::edges`（边身份 / 目的地 / `gain_db`）；目的地名字只来自
+/// `YebanProjectV1::tracks`，⛔ 界面层不持有第二份发送列表，也⛔ 不编造目的地。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendRowView {
+    /// 路由边身份规范文本（`RoutingEdge::id`，26 字符 ULID）—— 三个手势的寻址单位。
+    pub edge_id: String,
+    /// 目的地音轨显示名（`RoutingEdge::destination_node` 指向的 `TrackV3::name`）。
+    pub destination_name: String,
+    /// 边增益（`RoutingEdge::gain_db`；`None` = 单位增益）。
+    pub gain_db: Option<f32>,
+    /// 增益的显示文本：`Some(v)` ⇒ `"{v} dB"`，`None` ⇒ `"单位增益"`。
+    pub gain_display: String,
+}
+
+impl SendRowView {
+    /// 一整行无障碍标签：`"{目的地} · {增益}"`。
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{} · {}", self.destination_name, self.gain_display)
+    }
+}
+
+/// 发送增益的显示文本（**唯一**的格式化实现）。
+///
+/// `None` **不是** `0 dB`：它是模型里的"单位增益"一等状态（`RoutingEdge::gain_db` 的
+/// `Option` 语义，见 `Op::SetRoutingGain` 的文档）⇒ 界面上必须逐字写成 `"单位增益"`，
+/// ⛔ 不许悄悄画成 `0 dB`。
+fn send_gain_display(gain_db: Option<f32>) -> String {
+    gain_db.map_or_else(|| "单位增益".to_owned(), |gain_db| format!("{gain_db} dB"))
+}
+
+/// "新建发送"不可用时逐字写出的原因：工程里**没有非主总线音轨**可作发送源。
+pub const SEND_CREATE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法新建发送";
+
+/// "新建发送"不可用时逐字写出的原因：工程里**没有** `TrackKind::AuxReturn` 轨。
+///
+/// ⚠ 界面今天**也建不了轨**（`Op::AddTrack` 在 UI 侧 0 个构造点）⇒ 用户没法在界面里
+/// 自救；这句话把这层限制一并说出来，⛔ 不静默把按钮变灰。
+pub const SEND_CREATE_NO_AUX_REASON: &str =
+    "没有辅助返回轨（AuxReturn），无法新建发送（界面还没有新建轨的入口）";
+
+/// 发送增益的取用值域 (dB) —— **模型给的**，⛔ 不是界面里新写的一份范围表。
+///
+/// 来源：`yeban-model` 的 `AutomationTarget::SendGain{..}.nominal_domain()`
+/// （`crates/yeban-model/src/automation.rs` 以 [`yeban_model::NOMINAL_GAIN_MIN_DB`] /
+/// [`yeban_model::NOMINAL_GAIN_MAX_DB`] 为发送增益的固有取值域）。
+#[must_use]
+pub fn send_gain_range() -> (f32, f32) {
+    (
+        yeban_model::NOMINAL_GAIN_MIN_DB,
+        yeban_model::NOMINAL_GAIN_MAX_DB,
+    )
+}
+
+/// 发送条展示的那条轨 —— 与设备机架**同一条**规则（[`device_rack_track`]：
+/// 身份序第一条非主总线轨）。
+///
+/// ⚠ 界面没有"选中轨"状态（台账第 236 轮："the current track does not exist"）
+/// ⇒ 发送区与上方设备链永远指同一条轨；换工程之后两者一起随 `BTreeMap` 键序变化，
+/// 不需要宿主再同步一份下标。
+#[must_use]
+pub fn send_strip_track(project: &YebanProjectV1) -> Option<&TrackV3> {
+    device_rack_track(project)
+}
+
+/// "新建发送"的目的地 —— 身份序（`BTreeMap` 键序）第一条 `TrackKind::AuxReturn` 轨。
+///
+/// ⛔ 不按名字猜（"Reverb" 之类的词不构成契约）：类型是唯一判据。
+#[must_use]
+pub fn send_aux_target(project: &YebanProjectV1) -> Option<&TrackV3> {
+    project
+        .tracks
+        .values()
+        .find(|track| track.kind == TrackKind::AuxReturn)
+}
+
+/// 发送条 + "新建发送"可用性的投影本体（[`ViewState`] 与宿主提交路径**共用**这一份口径）。
+///
+/// 返回 `(发送行, 能否新建, 不能新建时的逐字原因)`。发送行来自展示轨的
+/// `SendToAux` 出边（`BTreeMap` 边键序 ⇒ 跨进程确定）；目的地名字来自 `tracks`。
+#[must_use]
+fn send_strip_projection(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+) -> (Vec<SendRowView>, bool, String) {
+    let Some(track) = track else {
+        return (Vec::new(), false, SEND_CREATE_NO_TRACK_REASON.to_owned());
+    };
+    let sends = project
+        .routing_graph
+        .edges
+        .values()
+        .filter(|edge| edge.kind == RoutingKind::SendToAux && edge.source_node == track.id)
+        .map(|edge| SendRowView {
+            edge_id: edge.id.to_canonical_string(),
+            destination_name: project.tracks.get(&edge.destination_node).map_or_else(
+                || format!("未知节点 {}", edge.destination_node.to_canonical_string()),
+                |destination| destination.name.clone(),
+            ),
+            gain_db: edge.gain_db,
+            gain_display: send_gain_display(edge.gain_db),
+        })
+        .collect();
+    let available = send_aux_target(project).is_some();
+    let reason = if available {
+        String::new()
+    } else {
+        SEND_CREATE_NO_AUX_REASON.to_owned()
+    };
+    (sends, available, reason)
+}
+
+/// 发送增益手势的**权威寻址**（宿主提交路径用它，⛔ 不信界面上的行下标）。
+///
+/// 返回 `(当前增益, 值域下界, 值域上界)`。只认**展示轨**上的一条 `SendToAux` 边：
+/// 边不存在 / 类型不对 / 源不是展示轨 ⇒ `None`（调用方据此放弃提交）。
+#[must_use]
+pub fn send_gain_target(
+    project: &YebanProjectV1,
+    edge_id: yeban_model::ids::EntityId,
+) -> Option<(Option<f32>, f32, f32)> {
+    let track = send_strip_track(project)?;
+    let edge = project.routing_graph.edges.get(&edge_id)?;
+    if edge.kind != RoutingKind::SendToAux || edge.source_node != track.id {
+        return None;
+    }
+    let (min_db, max_db) = send_gain_range();
+    Some((edge.gain_db, min_db, max_db))
+}
+
 /// 视图里的一个场景（`SceneV3`，Session View 的行）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneView {
@@ -1519,6 +1652,20 @@ pub struct ViewState {
     /// ⚠ 这是本切片**唯一**可编辑的设备参数（"最小可编辑"）。`None` 时界面禁用滑块
     /// 并如实写出"本轨没有 `eq_low_gain`"，⛔ 不落一个假的可编辑控件。
     pub eq_low_gain: Option<DeviceEqView>,
+    /// 当前展示轨（[`send_strip_track`]，与设备机架**同一条轨**）的 `SendToAux` 边逐条投影
+    /// —— 发送条的**唯一**事实源。
+    ///
+    /// ⭐ 任务单 `#159`：空 ⇒ 界面显示空态（`"无发送"`）＋ 条目数 `0`，⛔ 不是一片空白，
+    /// 也⛔ 不是编造的发送。
+    pub sends: Vec<SendRowView>,
+    /// "新建发送"此刻能不能用：展示轨存在**且**工程里有一条 `TrackKind::AuxReturn` 轨。
+    ///
+    /// `false` ⇒ 界面禁用按钮并逐字显示 [`Self::send_create_reason`]，⛔ 不静默。
+    pub send_create_available: bool,
+    /// "新建发送"不可用时**逐字**写出的原因（可用时是空串）。
+    ///
+    /// 两个取值来自 [`SEND_CREATE_NO_TRACK_REASON`] / [`SEND_CREATE_NO_AUX_REASON`]。
+    pub send_create_reason: String,
     /// 全部 MIDI 音符（片段池键序 → 音符键序，去重保序），**含**投影算出的 x / y / 宽 / 车道。
     ///
     /// 这是音符族唯一的权威投影产物；[`Self::note_ulids`] / [`Self::note_velocities`] 与
@@ -1722,6 +1869,12 @@ impl ViewState {
         let (device_track_label, devices, eq_low_gain) =
             device_rack_projection(device_rack_track(project));
 
+        // 发送条（任务单 `#159`）：与设备机架**同一条**展示轨（[`send_strip_track`]）。
+        // 条目逐条来自 `RoutingGraph::edges` 的 `SendToAux` 出边；目的地名字来自 `tracks`；
+        // "新建发送"能不能用取决于工程里有没有 `TrackKind::AuxReturn` 轨。
+        let (sends, send_create_available, send_create_reason) =
+            send_strip_projection(project, send_strip_track(project));
+
         // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
         // 身份进 `note-{ulid}-rect`；力度进力度泳道；**位置**由 start_tick / pitch 经整数
         // 变换得到（复用 `tick_to_px` 与 `pitch_lane`，不在别处再写一套换算）。
@@ -1792,6 +1945,9 @@ impl ViewState {
             device_track_label,
             devices,
             eq_low_gain,
+            sends,
+            send_create_available,
+            send_create_reason,
             note_x_order: {
                 // 一次性建索引：按 `x` 升序。`total_cmp` 对 NaN 也有全序, 不会 panic。
                 let mut order: Vec<u32> = (0..notes.len() as u32).collect();
@@ -2043,6 +2199,57 @@ impl ViewState {
     #[must_use]
     pub fn device_eq_max_db(&self) -> f32 {
         self.eq_low_gain.as_ref().map_or(0.0, |eq| eq.max_db)
+    }
+
+    /// 发送条每一行的**路由边身份**（与下面三个数组**同索引集**）。
+    ///
+    /// ⭐ 任务单 `#159`：`.slint` 的 `send-edge-ids` 就是它。三个手势都用**身份**
+    /// 寻址（宿主重新从权威工程查边），⛔ 不用行下标当第二份身份。
+    #[must_use]
+    pub fn send_edge_ids(&self) -> Vec<String> {
+        self.sends.iter().map(|row| row.edge_id.clone()).collect()
+    }
+
+    /// 发送条每一行的目的地显示名。
+    #[must_use]
+    pub fn send_destination_names(&self) -> Vec<String> {
+        self.sends
+            .iter()
+            .map(|row| row.destination_name.clone())
+            .collect()
+    }
+
+    /// 发送条每一行的增益显示文本（`"−12 dB"` / `"单位增益"`）。
+    #[must_use]
+    pub fn send_gain_labels(&self) -> Vec<String> {
+        self.sends
+            .iter()
+            .map(|row| row.gain_display.clone())
+            .collect()
+    }
+
+    /// 发送条每一行的滑块位置 (dB) —— `None`（单位增益）在这里落到 **0 dB**。
+    ///
+    /// ⚠ 这只是**显示几何**：`None` 与 `Some(0.0)` 的区别住在 [`Self::sends`]
+    /// （`gain_db`），⛔ 不在这个 `f32` 数组里。宿主提交时读的是模型的那一份。
+    #[must_use]
+    pub fn send_gain_dbs(&self) -> Vec<f32> {
+        self.sends
+            .iter()
+            .map(|row| row.gain_db.unwrap_or(0.0))
+            .collect()
+    }
+
+    /// 发送增益的值域下界 (dB) —— **模型给的**（[`send_gain_range`]）。
+    #[must_use]
+    pub fn send_gain_min_db(&self) -> f32 {
+        send_gain_range().0
+    }
+
+    /// 发送增益的值域上界 (dB) —— **模型给的**（[`send_gain_range`]）。
+    #[must_use]
+    pub fn send_gain_max_db(&self) -> f32 {
+        send_gain_range().1
     }
 
     /// 剪辑摆放身份（`clip-{ulid}-header` 的 `{ulid}` 段）。

@@ -83,6 +83,16 @@ export component ConsoleTabs inherits Rectangle {
     in property <float> device-eq-gain-db: 0.0;
     in property <float> device-eq-min-db: 0.0;
     in property <float> device-eq-max-db: 0.0;
+    // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
+    // 与上面四格同一条透传纪律 —— 本组件不解释、不筛选、⛔ 不持有第二份列表 / 值域。
+    in property <[string]> send-edge-ids: [];
+    in property <[string]> send-destination-names: [];
+    in property <[string]> send-gain-labels: [];
+    in property <[float]> send-gain-dbs: [];
+    in property <float> send-gain-min-db: 0.0;
+    in property <float> send-gain-max-db: 0.0;
+    in property <bool> send-create-available: false;
+    in property <string> send-create-reason: "";
     in property <[string]> track-meter-peaks: [];
     in property <[string]> track-meter-rmss: [];
     in property <[float]> track-meter-levels: [];
@@ -125,6 +135,13 @@ export component ConsoleTabs inherits Rectangle {
     callback device-eq-grab(float);
     callback device-eq-drag(float);
     callback device-eq-release();
+    // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 的两个手势，本组件只把
+    // `DeviceRack` 的回调**原样上抛**给 `MainWindow`（宿主侧唯一实现是
+    // `host::wire_send_strip`）—— ⛔ 不解释、⛔ 不提交、⛔ 不改任何工程值。
+    callback send-gain-grab(string, float);
+    callback send-gain-drag(string, float);
+    callback send-gain-release(string);
+    callback send-create();
     // ⭐ **导出 MIDI**（任务单 `#90` 甲）：混音台（Tab 1）里的**控制台级**动作。
     // 与上面那一族同款 —— 本组件只上抛，⛔ 不写盘、⛔ 不判断成功与否。
     callback export-midi();
@@ -390,6 +407,15 @@ export component ConsoleTabs inherits Rectangle {
         eq-gain-db: root.device-eq-gain-db;
         eq-min-db: root.device-eq-min-db;
         eq-max-db: root.device-eq-max-db;
+        // ⭐ 发送条（任务单 `#159`）：同样只透传投影，本组件不解释。
+        send-edge-ids: root.send-edge-ids;
+        send-destination-names: root.send-destination-names;
+        send-gain-labels: root.send-gain-labels;
+        send-gain-dbs: root.send-gain-dbs;
+        send-gain-min-db: root.send-gain-min-db;
+        send-gain-max-db: root.send-gain-max-db;
+        send-create-available: root.send-create-available;
+        send-create-reason: root.send-create-reason;
         // 写入面：两个手势原样上抛（唯一落点 `host::wire_device_rack`）。
         device-bypass-toggle(slot) => {
             root.device-bypass-toggle(slot);
@@ -402,6 +428,19 @@ export component ConsoleTabs inherits Rectangle {
         }
         device-eq-release() => {
             root.device-eq-release();
+        }
+        // ⭐ 发送条（任务单 `#159`）的写入面：三个滑块携带**路由边身份**（不是行下标）。
+        send-gain-grab(edge-id, fraction) => {
+            root.send-gain-grab(edge-id, fraction);
+        }
+        send-gain-drag(edge-id, fraction) => {
+            root.send-gain-drag(edge-id, fraction);
+        }
+        send-gain-release(edge-id) => {
+            root.send-gain-release(edge-id);
+        }
+        send-create() => {
+            root.send-create();
         }
     }
 }

@@ -168,8 +168,16 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// * 与 `#82` / `#133` 同一路线：`apply_view` 只在"换工程 / 撤销 / 打开"这类**完整重投影**
 ///   （以及本单新增的一次设备手势提交之后）上跑，不是 60Hz 心跳那一跳。
 /// * ⛔ 墙钟成本本机没测（要 GPU 档，`AGENTS.md` §5 不允许）。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 38;
-/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **52**）。
+///
+/// ## 38 → 42 的追加（任务单 `#159`，2026-10-18）
+///
+/// 那四格是发送条（仍在控制台 **Tab 3** 的 `DeviceRack` 面板里）的四个平行数组：
+/// `ui.set_send_edge_ids` / `set_send_destination_names` / `set_send_gain_labels` /
+/// `set_send_gain_dbs`（`ViewState::sends` 的投影）。四个数组同时把本常量从 **38**
+/// 推到 **42**（判据逐字打印整份"换掉模型实例"清单，42 条）；它们的唯一事实源是
+/// `RoutingGraph::edges` 的 `SendToAux` 边，⛔ 不是界面里的第二份发送列表。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 42;
+/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
 ///
@@ -233,7 +241,26 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 38;
 ///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
 ///
 /// ⚠ **未测**（如实登记）：⛔ 与上面两档同款 —— 绘制回调的**墙钟**成本没有在本机重量。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 52;
+///
+/// ## 52 → 60 的追加（任务单 `#159`，2026-10-18）
+///
+/// 那八格是发送条（与设备链**同住** Tab 3 的 `DeviceRack` 面板）的**唯一**注入点：
+///
+/// * 四个平行数组：`ui.set_send_edge_ids` / `set_send_destination_names` /
+///   `set_send_gain_labels` / `set_send_gain_dbs`（`ViewState::sends` 的投影）；
+/// * 四个标量：`ui.set_send_gain_min_db` / `set_send_gain_max_db`（值域**来自模型**：
+///   `AutomationTarget::SendGain` 的 `NOMINAL_GAIN_MIN_DB/MAX_DB`，⛔ 界面不造第二份表）、
+///   `ui.set_send_create_available` / `ui.set_send_create_reason`（"新建发送"可用性与
+///   不可用时的**逐字**原因 —— ⛔ 不静默禁用）。
+///
+/// 数量侧的**本机实测**（Apple M2；判据逐字报 `从 52 变成了 60`）：
+///
+/// * 写入点：**52 → 60**（本常量，判据自报的真实新数）；
+/// * 四个数组同时把 `PER_FRAME_ARRAY_REWRITE_BUDGET` 从 38 推到 **42**（判据逐字打印
+///   整份"换掉模型实例"清单，42 条）；
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack`（发送条在同一面板里）⇒ 结构上不参与
+///   默认帧绘制；⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 60;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -285,6 +312,12 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("device-bypassed", get_device_bypassed);
     push!("device-recognised", get_device_recognised);
     push!("device-unrecognised", get_device_unrecognised);
+    // ⭐ 任务单 `#159`：发送条（与设备链同住 Tab 3）的四个平行数组同样在 `apply_view`
+    // 的每帧路径上（⛔ 不是手势路径）⇒ 必须计入这份清单，否则会漏数。
+    push!("send-edge-ids", get_send_edge_ids);
+    push!("send-destination-names", get_send_destination_names);
+    push!("send-gain-labels", get_send_gain_labels);
+    push!("send-gain-dbs", get_send_gain_dbs);
     push!("bar-positions", get_bar_positions);
     push!("note-ulids", get_note_ulids);
     push!("note-velocities", get_note_velocities);
@@ -457,6 +490,9 @@ fn per_frame_injection_does_not_grow() {
          每帧多写一个属性 = 每帧多重建一批图元。若这一处确实必需：先重新测量绘制回调，\
          再把常量改到新值，并在提交信息里写出新读数。"
     );
+    println!(
+        "[perf ③a] apply_view 属性写入点（数 `ui.set_*` 行）= {sites}；预算 = {APPLY_VIEW_WRITE_SITE_BUDGET}"
+    );
 
     // ---- ③b：运行期的"换掉模型实例"个数 ----
     let project = yeban_model::samples::project_with_notes(NOTE_COUNT);
@@ -492,6 +528,10 @@ fn per_frame_injection_does_not_grow() {
         rewrites.len() >= 6,
         "随滚动变化的六个音符数组必须每帧都注入；现在只有 {} 个数组换了实例 —— \
          少了就说明卷帘不会跟着滚动重画",
+        rewrites.len()
+    );
+    println!(
+        "[perf ③b] 每帧换掉模型实例的数组 = {}；预算 = {PER_FRAME_ARRAY_REWRITE_BUDGET}；清单 = {rewrites:?}",
         rewrites.len()
     );
 }

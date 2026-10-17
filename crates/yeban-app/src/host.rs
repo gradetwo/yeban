@@ -178,6 +178,20 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_device_eq_gain_db(view.device_eq_gain_db());
     ui.set_device_eq_min_db(view.device_eq_min_db());
     ui.set_device_eq_max_db(view.device_eq_max_db());
+    // ⭐ 发送条（任务单 `#159`）：`ViewState::sends` 是**唯一**事实源。四个平行数组同
+    // 索引集（边身份 / 目的地 / 增益文本 / 滑块值）；四个标量给值域与"新建发送"的可用性。
+    // 值域**来自模型**（`bridge::send_gain_range` ⇒ `NOMINAL_GAIN_MIN_DB/MAX_DB`），
+    // ⛔ 不是界面里的第二份范围表。它们只在完整重投影（换工程 / 撤销 / 打开 / 一次发送
+    // 手势提交之后）时变化，但 `apply_view` 每次都会新建 `VecModel` ⇒ 计入
+    // `PER_FRAME_ARRAY_REWRITE_BUDGET`（见 `tests/perf_draw_budget.rs` 的读数与注释）。
+    ui.set_send_edge_ids(strings(&view.send_edge_ids()));
+    ui.set_send_destination_names(strings(&view.send_destination_names()));
+    ui.set_send_gain_labels(strings(&view.send_gain_labels()));
+    ui.set_send_gain_dbs(lengths(&view.send_gain_dbs()));
+    ui.set_send_gain_min_db(view.send_gain_min_db());
+    ui.set_send_gain_max_db(view.send_gain_max_db());
+    ui.set_send_create_available(view.send_create_available);
+    ui.set_send_create_reason(view.send_create_reason.clone().into());
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
@@ -1983,7 +1997,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             // 按下即定位（点一下滑块就跳到那一格）⇒ 一次**单击**也是一次可撤销的编辑，
             // 而不是"点了没反应"。`start_db` 仍是按下那一刻的工程值（提交的 `old_val`）。
-            let pressed_db = eq_db_from_fraction(fraction, min_db, max_db);
+            let pressed_db = db_from_fraction(fraction, min_db, max_db);
             *gesture.borrow_mut() = DeviceEqGesture::Dragging {
                 start_db: value,
                 last_db: pressed_db,
@@ -2017,7 +2031,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             else {
                 return;
             };
-            let next_db = eq_db_from_fraction(fraction, *min_db, *max_db);
+            let next_db = db_from_fraction(fraction, *min_db, *max_db);
             if next_db.to_bits() == last_db.to_bits() {
                 return;
             }
@@ -2111,17 +2125,284 @@ enum DeviceEqGesture {
     },
 }
 
-/// 滑块位置（0.0–1.0 归一化）→ dB：在契约给出的 `[min_db, max_db]` 上线性映射并夹紧。
+/// 滑块位置（0.0–1.0 归一化）→ dB：在**模型给的** `[min_db, max_db]` 上线性映射并夹紧。
 ///
 /// `NaN` / `±∞` 归中值（`0.5`）而不是 `clamp` 的端点：越界输入本来就该被 `clamp`
 /// 拦掉，但"非数"不是"拖到最左"，把它当端点会制造一个没人拖出来的值。
-fn eq_db_from_fraction(fraction: f32, min_db: f32, max_db: f32) -> f32 {
+///
+/// ⚠ 两个消费者共用这**一处**实现：EQ 低架增益（`#157`，值域来自效果器契约）与发送
+/// 增益（`#159`，值域来自 `NOMINAL_GAIN_MIN_DB/MAX_DB`）—— 两套值域的**来源**不同，
+/// 但"归一化位置 → dB"是同一段算术，⛔ 不复制第二份。
+fn db_from_fraction(fraction: f32, min_db: f32, max_db: f32) -> f32 {
     let fraction = if fraction.is_finite() {
         fraction.clamp(0.0, 1.0)
     } else {
         0.5
     };
     min_db + fraction * (max_db - min_db)
+}
+
+// ===========================================================================
+// 发送条（控制台 Tab 3，任务单 `#159`）
+// ===========================================================================
+
+/// 发送条（控制台 **Tab 3** 设备机架面板里的"发送"区）的**写入面**。
+///
+/// 两个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]：
+///
+/// | 手势 | `.slint` 回调 | 提交的 `Op` | 撤销标签 |
+/// | :--- | :--- | :--- | :--- |
+/// | 改发送增益 | `send-gain-grab/drag/release(edge-id)` | [`yeban_model::Op::SetRoutingGain`] | `"set send gain"` |
+/// | 新建发送 | `send-create()` | [`yeban_model::Op::ConnectRouting`]（端点不在图里时，同一次提交先补 `AddRoutingNode`） | `"create send"` |
+///
+/// ## 为什么拖动期**不**提交（与 EQ 滑块同一条纪律）
+///
+/// 拖动期间只写**界面视图态**（`send-gain-dbs`），松手时若值**真的变了**才提交一次
+/// ⇒ 一次拖动 = 一步可撤销的编辑。按下就松手、拖出去又拖回同一个数、提交被模型拒绝
+/// —— 三种情况都**不留下**撤销步。`None`（单位增益）与 `Some(0.0)` 的区别住在模型里：
+/// 滑块把 `None` 画在 0 dB 的位置，但拖回 0 dB **不会**把 `None` 改写成 `Some(0.0)`
+/// （那会改变 `Option` 语义而听觉上什么都没发生）。
+///
+/// ## 寻址：空间上只认身份，不认行下标
+///
+/// `.slint` 的三个滑块回调都携带**路由边身份**（`RoutingEdge::id` 的 26 字符文本）。
+/// 宿主在**按下**与**松手**两侧都从权威工程重新查一次
+/// （[`crate::bridge::send_gain_target`]），因此 `Op` 携带的 `old_gain_db` 永远是
+/// **当前**值（陈旧会被模型的逐位比对拒掉）；行下标只用于拖动期的视觉预览。
+///
+/// “新建发送”的设备身份与目的地都在提交前从权威工程重求：
+/// 源 = [`crate::bridge::send_strip_track`]（与上方设备链**同一条**轨），
+/// 目的地 = [`crate::bridge::send_aux_target`]（身份序第一条 `AuxReturn` 轨）。
+/// 新边的 `id` 由项目既有的身份分配器 [`yeban_model::EntityId::new`] 生成
+/// （⛔ 不硬编码、⛔ 不复用已有边身份）。
+///
+/// ## 它**不**做什么
+///
+/// ⛔ 不建轨（`Op::AddTrack` 在 UI 侧今天 0 个构造点），因此没有 `AuxReturn` 轨时
+/// 按钮禁用并逐字写出原因；⛔ 不删发送（`Op::DisconnectRouting` 本切片不造）；
+/// ⛔ 不碰引擎（发送在实时侧的可听性由 `yeban-engine` 自己文档化 —— 见交付报告的
+/// "能验与不能验"）。
+pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    let gesture = Rc::new(RefCell::new(SendGainGesture::Idle));
+
+    // ---------------------------------------------------------------- ① 改发送增益
+    ui.on_send_gain_grab({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |edge_id: SharedString, fraction: f32| {
+            let Ok(edge_id) = edge_id.parse::<yeban_model::EntityId>() else {
+                *gesture.borrow_mut() = SendGainGesture::Idle;
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                *gesture.borrow_mut() = SendGainGesture::Idle;
+                return;
+            };
+            let Some((current_db, min_db, max_db)) =
+                crate::bridge::send_gain_target(&project, edge_id)
+            else {
+                *gesture.borrow_mut() = SendGainGesture::Idle;
+                return;
+            };
+            // 按下即定位（点一下滑块就跳到那一格）⇒ 一次**单击**也是一次可撤销的编辑。
+            // `start_db` 仍是按下那一刻的工程值（提交的 `old_gain_db`）。
+            let pressed_db = db_from_fraction(fraction, min_db, max_db);
+            let moved = pressed_db.to_bits() != current_db.unwrap_or(0.0).to_bits();
+            *gesture.borrow_mut() = SendGainGesture::Dragging {
+                edge_id,
+                start_db: current_db,
+                last_db: pressed_db,
+                min_db,
+                max_db,
+                moved,
+            };
+            if moved && let Some(ui) = weak.upgrade() {
+                preview_send_gain(&ui, edge_id, pressed_db);
+            }
+        }
+    });
+    ui.on_send_gain_drag({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move |_edge_id: SharedString, fraction: f32| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let mut state = gesture.borrow_mut();
+            let SendGainGesture::Dragging {
+                edge_id,
+                last_db,
+                min_db,
+                max_db,
+                moved,
+                ..
+            } = &mut *state
+            else {
+                return;
+            };
+            let next_db = db_from_fraction(fraction, *min_db, *max_db);
+            if next_db.to_bits() == last_db.to_bits() {
+                return;
+            }
+            *last_db = next_db;
+            *moved = true;
+            // 拖动期只写**视图态**（下一次完整重投影会覆盖它）—— ⛔ 不提交工程内容。
+            preview_send_gain(&ui, *edge_id, next_db);
+        }
+    });
+    ui.on_send_gain_release({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |_edge_id: SharedString| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let taken = std::mem::replace(&mut *gesture.borrow_mut(), SendGainGesture::Idle);
+            let SendGainGesture::Dragging {
+                edge_id,
+                start_db,
+                last_db,
+                moved,
+                ..
+            } = taken
+            else {
+                return;
+            };
+            if !moved || last_db.to_bits() == start_db.unwrap_or(0.0).to_bits() {
+                return;
+            }
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 发送增益提交：权威会话此刻没有活跃工程");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            let Some((current_db, _, _)) = crate::bridge::send_gain_target(&project, edge_id)
+            else {
+                // 手势期间边被删掉 / 展示轨换了 ⇒ 目标已不存在，⛔ 不按一个过期基线提交。
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            // 逐位比对 `Option<f32>`：起点必须仍是当前值（陈旧基线 ⇒ 放弃提交）。
+            if current_db.map(f32::to_bits) != start_db.map(f32::to_bits) {
+                eprintln!("[yeban-app] 发送增益提交被放弃：拖动期间工程值已变（陈旧基线）");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            }
+            let op = yeban_model::Op::SetRoutingGain {
+                edge_id,
+                old_gain_db: start_db,
+                new_gain_db: Some(last_db),
+            };
+            if port
+                .commit_ops(now_ms(), "set send gain", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] 发送增益提交被拒绝（工程未改）");
+            }
+            // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- ② 新建发送
+    ui.on_send_create({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 新建发送：权威会话此刻没有活跃工程");
+                return;
+            };
+            let Some(track) = crate::bridge::send_strip_track(&project) else {
+                eprintln!("[yeban-app] 新建发送被拒绝：没有可显示的音轨");
+                return;
+            };
+            let Some(aux) = crate::bridge::send_aux_target(&project) else {
+                eprintln!("[yeban-app] 新建发送被拒绝：没有辅助返回轨（AuxReturn）");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            let source = track.id;
+            let destination = aux.id;
+            // 新边身份来自项目既有的分配器；`EntityId::new()` 是 `ulid::Ulid::generate()`
+            // 的唯一包装（见 `yeban-model/src/ids.rs` 的规范漂移记录）。
+            let edge = yeban_model::RoutingEdge {
+                id: yeban_model::EntityId::new(),
+                source_node: source,
+                destination_node: destination,
+                kind: yeban_model::RoutingKind::SendToAux,
+                gain_db: None,
+            };
+            // `ConnectRouting` 的前置条件是"两端已在 `routing_graph.nodes` 里"。
+            // 端点缺失时在**同一次** `commit_ops` 里先补节点（`Op::Batch` 顺序施加）
+            // ⇒ 仍是恰好一次提交；不假设所有工程都已经登记过节点。
+            let mut ops = Vec::new();
+            for node in [source, destination] {
+                if !project.routing_graph.nodes.contains(&node) {
+                    ops.push(yeban_model::Op::AddRoutingNode { node });
+                }
+            }
+            ops.push(yeban_model::Op::ConnectRouting { edge });
+            if port.commit_ops(now_ms(), "create send", ops).is_err() {
+                eprintln!("[yeban-app] 新建发送被拒绝（工程未改）");
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+}
+
+/// 发送增益手势的中间态（**会话运行态**，不进 `.yeban`）。
+///
+/// 与 [`DeviceEqGesture`] 同一条纪律：`Idle` 是唯一的空态；`cancel` 也走上报的
+/// `send-gain-release`，因此不存在"黏住的拖动"。`start_db` 是**提交时的
+/// `old_gain_db`**（`Option` 的原样，保留"单位增益 ≠ 0 dB"），`last_db` 是收尾要提交的
+/// `new_gain_db`。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SendGainGesture {
+    /// 没有手势。
+    Idle,
+    /// 正在拖某一条发送边。
+    Dragging {
+        /// 被拖的边身份（三个回调的寻址单位）。
+        edge_id: yeban_model::EntityId,
+        /// 按下时的工程值（`old_gain_db`；`None` = 单位增益）。
+        start_db: Option<f32>,
+        /// 最近一次算出的值（`new_gain_db` 的 `Some` 部分）。
+        last_db: f32,
+        /// 值域下界 (dB)，来自模型。
+        min_db: f32,
+        /// 值域上界 (dB)，来自模型。
+        max_db: f32,
+        /// 是否收到过至少一次**改变数值**的 move / 按下。
+        moved: bool,
+    },
+}
+
+/// 拖动期的**视觉预览**：只改 `send-gain-dbs` 里那一格，⛔ 不碰工程。
+///
+/// 行下标由边身份现查（`send-edge-ids` 是同一份投影的数组）⇒ 即便投影在拖动期间被
+/// 换掉、下标漂移，也不会把预览写到另一条发送上（找不到就不写）。
+fn preview_send_gain(ui: &MainWindow, edge_id: yeban_model::EntityId, value_db: f32) {
+    let edge_id = edge_id.to_canonical_string();
+    let ids = read_strings(&ui.get_send_edge_ids());
+    let Some(index) = ids.iter().position(|id| *id == edge_id) else {
+        return;
+    };
+    let mut gains = read_lengths(&ui.get_send_gain_dbs());
+    let Some(slot) = gains.get_mut(index) else {
+        return;
+    };
+    *slot = value_db;
+    ui.set_send_gain_dbs(lengths(&gains));
 }
 
 /// `[string]` 属性 → `Vec<String>`（读回视图态；写方向是 [`strings`]）。

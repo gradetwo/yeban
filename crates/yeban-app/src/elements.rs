@@ -1167,6 +1167,77 @@ impl ElementRegistry {
             false,
         );
 
+        // ------------------------------------------------------------ 发送条
+        //
+        // ⭐ 任务单 `#159`：发送条与设备链**同住** Tab 3 的同一面板。行数 / 目的地 /
+        // 增益文本全部来自 `ViewState::sends`（`RoutingGraph` 的 `SendToAux` 投影），
+        // 空 ⇒ 只登记 `send-empty` 的空态（界面逐字写"无发送"）。
+        registry.add(
+            "send-strip",
+            ElementKind::Region,
+            "console/device_rack.slint",
+            "发送",
+            false,
+        );
+        registry.add(
+            "send-count",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &format!("{} 条发送", view.sends.len()),
+            false,
+        );
+        registry.add(
+            "send-empty",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            "无发送",
+            false,
+        );
+        registry.add(
+            "send-create-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "新建发送",
+            false,
+        );
+        // `send-create-reason` 在**可用**时文本是空串（`.slint` 里 `visible: false`）；
+        // 注册表要求每条都有非空无障碍名 ⇒ 可用时登记一句"可用"的说明，⛔ 不登记空串。
+        let reason_label = if view.send_create_reason.is_empty() {
+            "新建发送可用（无不可用原因）".to_owned()
+        } else {
+            view.send_create_reason.clone()
+        };
+        registry.add(
+            "send-create-reason",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &reason_label,
+            false,
+        );
+        for (send_index, row) in view.sends.iter().enumerate() {
+            registry.add(
+                &format!("send-{send_index}-row"),
+                ElementKind::ListItem,
+                "console/device_rack.slint",
+                &row.label(),
+                false,
+            );
+            registry.add(
+                &format!("send-{send_index}-gain-slider"),
+                ElementKind::Slider,
+                "console/device_rack.slint",
+                &format!("发送 {} 增益", row.destination_name),
+                false,
+            );
+            registry.add(
+                &format!("send-{send_index}-gain-value"),
+                ElementKind::Text,
+                "console/device_rack.slint",
+                &row.gain_display,
+                false,
+            );
+        }
+
         // ------------------------------------------------------------ 对话框
         registry.add(
             "musical-pr-drawer",
@@ -1861,25 +1932,41 @@ mod tests {
             "`ui/` 里一个 accessible-id 都没有 [UI-TEST-001]"
         );
 
-        let registry = registry();
+        let registries = [
+            registry(),
+            // ⭐ 任务单 `#159`：`demo_project` 里**没有**发送（也没有 `AuxReturn` 轨），
+            // 而 `filled_project` 有一条真实的 `SendToAux` 边 ⇒ 发送行的动态模板
+            // （`send-{i}-row` / `-gain-slider` / `-gain-value`）只会在后者实例化。
+            // 两个注册表都走**同一个** `from_view`，⛔ 不是第二份常量。
+            ElementRegistry::from_view(
+                &ViewState::from_project(&yeban_model::samples::filled_project())
+                    .expect("filled_project 必须能投影"),
+            ),
+        ];
 
         // 方向 1: 注册表 → .slint
-        for meta in registry.iter() {
-            assert!(
-                patterns.iter().any(|(_, segments, is_template)| {
-                    id_matches_pattern(segments, *is_template, &meta.id)
-                }),
-                "注册表里的 `{}` 在 ui/ 的任何 .slint 里都找不到对应的 accessible-id 模板",
-                meta.id
-            );
+        for registry in &registries {
+            for meta in registry.iter() {
+                assert!(
+                    patterns.iter().any(|(_, segments, is_template)| {
+                        id_matches_pattern(segments, *is_template, &meta.id)
+                    }),
+                    "注册表里的 `{}` 在 ui/ 的任何 .slint 里都找不到对应的 accessible-id 模板",
+                    meta.id
+                );
+            }
         }
 
         // 方向 2: .slint → 注册表
         for (file, segments, is_template) in &patterns {
             assert!(
-                registry
+                registries
                     .iter()
-                    .any(|meta| id_matches_pattern(segments, *is_template, &meta.id)),
+                    .any(|registry| registry.iter().any(|meta| id_matches_pattern(
+                        segments,
+                        *is_template,
+                        &meta.id
+                    ))),
                 "{file} 里的 accessible-id 模板 {segments:?} (template={is_template}) 在注册表里一个成员都没有"
             );
         }
