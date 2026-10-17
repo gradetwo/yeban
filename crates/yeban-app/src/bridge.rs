@@ -740,7 +740,7 @@ pub fn timecode_for_ticks(grid: Option<TimecodeGrid>, ticks: u64) -> String {
 /// `[ROAD-M3-002]` 裁剪后的**全部平行数组**（**同一索引集**）。
 ///
 /// 平行数组各裁各的会让下标错位（位置取第 3 个、音高取第 5 个 ⇒ 画出错误的音符），
-/// 所以一次取走一份，由本结构保证四个长度相等。
+/// 所以一次取走一份，由本结构保证各数组长度相同。
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibleNotes {
     /// 音符块左沿 x。
@@ -777,7 +777,7 @@ pub struct VisibleNotes {
 }
 
 impl VisibleNotes {
-    /// 可见音符数（四个数组长度相同，故用一个函数报告）。
+    /// 可见音符数（各数组长度相同，故用一个函数报告）。
     #[must_use]
     pub fn len(&self) -> usize {
         self.positions.len()
@@ -3839,7 +3839,7 @@ mod tests {
 
     #[test]
     fn visible_notes_keeps_the_parallel_arrays_aligned() {
-        // 判据: 四个平行数组**同长**, 且第 k 个可见音符的每个字段都等于源 `notes[idx[k]]` 的同名字段。
+        // 判据: 六个平行数组**同长**, 且第 k 个可见音符的每个字段都等于源 `notes[idx[k]]` 的同名字段。
         // 若有人改成"每个数组各自裁剪", 下标错位会让这条红。
         let view = ViewState::from_project_with_zoom(&filled_project(), 120).expect("投影");
         // 窗口取**首个音符的位置**起 400px：保证非空, 否则判据无从检验（实测 (200,400) 在该夹具下是空的）。
@@ -4338,7 +4338,7 @@ mod tests {
             PITCH_LANE_HEIGHT_PX, 14.0,
             "车道高必须与 .slint 的 14px 一致"
         );
-        // `[UI-NOTE-003]` **力度车道几何**：宿主侧四个常量（本切片给它们命名）必须与 `.slint`
+        // `[UI-NOTE-003]` **力度车道几何**：宿主侧五个常量（本切片给它们命名）必须与 `.slint`
         // 逐值一致 —— 力度臂用它们把指针 y 反解成**绝对**力度，两处一旦分叉，
         // "拖到哪里 = 多少力度"就与画出来的柱各说各话（与帧原点同一类缺陷）。
         assert_eq!(

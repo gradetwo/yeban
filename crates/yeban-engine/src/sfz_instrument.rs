@@ -268,9 +268,15 @@
 //!   * `normal`："The region will be set into release stage." ⇒ victim 进释放段
 //!     （把它自己的 `end_sample` 挪到"现在"，剩下**完全**交给既有 note-off 机）；
 //!   * `time`（ARIA）：⚠ **本片按 `normal` 处理**并**逐字登记为书面偏离** ——
-//!     差别只剩 `<https://sfzformat.com/opcodes/off_time/>` 的延迟（缺省 6 ms），
-//!     而 `off_time` 不在本片范围内（语料分布：`time` 4 次）；⛔ 不是静默降级
-//!     （显式取值一律原样解析、原样带出，`S44` 钉住集合外的取值仍报 `Err`）。
+//!     规范（SFZ v2 / ARIA，<https://sfzformat.com/opcodes/off_time/>）说的是
+//!     **一段长度 ＝ `off_time` 的淡出**、**independent of the sample release time**
+//!     （缺省 6 ms）；⭐ 本仓**不读 per-region `off_time`**、`off_mode=time`
+//!     **按 `normal` 处理**（登记在案的偏离，见 `docs/adr/ADR-0008-sfz-off-time-versus-arch-rt-004.md`
+//!     裁决 **C**）；而 `off_time` 不在本片范围内（语料分布：`time` 4 次）；
+//!     ⛔ 不是静默降级（显式取值一律原样解析、原样带出，`S44` 钉住集合外的取值仍报 `Err`）。
+//!
+//!     ⚠ **与 `ARCH-RT-004` 的 3 ms 不冲突**：那条管的是**窃取路**（池满抢占），
+//!     与 `off_time`（**`off_by` 独占组路／`off_mode=time` 路**）**是两条不同的路**。
 //!
 //! ## ⭐ 触发者**不自掐**（rgc／sfizz 一侧；⭐ 语料逼出来的正确答案）
 //!
@@ -490,7 +496,7 @@
 //! | sfz-needs-3 | **鼓机 ＋ SFZ 同轨的取舍**（本片＝鼓机优先，SFZ 池被释放） | ⭐ ⭐ **本单已闭合（信号腿）**：裁决**维持** `鼓机 ＞ SFZ ＞ 复音`（与 [`crate::drums`] §4.1 的既有裁决一致 ⇒ ⛔ **不改成叠加**）；真正缺的是"用户看得出被忽略了" ⇒ 新增**投影读数** [`crate::synth::SynthEngine::armed_sources`] ／ [`crate::synth::SynthEngine::ignored_sources`]（三件同轨 ⇒ 武装 `3`、被忽略 `2`；判据 S20）。⚠ **模型面**那一半（"模型若禁止这种组合，本条删除"）已由任务单 `#96` 闭合：⭐ **模型层不禁止**这个组合（模型里没有"鼓机"这个概念 —— `DeviceKind` 只有四档、无鼓机档；`TrackV3.sampler` 与 `devices` 是**平行**字段）⇒ ⭐ 裁决**留在引擎**（`鼓机 ＞ SFZ ＞ 复音` ＋ `armed_sources`／`ignored_sources` 读数）；常驻判据 `crates/yeban-model/tests/track_multi_source_coexistence.rs` |
 //! | sfz-needs-4 | **`span` 终点已在引擎侧应用、离线侧未应用** | ⭐ **步 3 已闭合**：离线／摊平／实时三条路共用 [`reduce_span`]，`start`＋`end` 都应用；Criterion S3 量到**逐样本差 ＝ 0**（详见 `docs/ledger/sfz-core-notes.md` §13.2） |
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
-//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（差别只剩 `off_time` 的延迟，而 `off_time` 不在本片范围；⛔ 不是静默降级）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
+//! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（规范说的是**一段长度 ＝ `off_time` 的淡出**、**independent of the sample release time**；⭐ 本仓**不读 per-region `off_time`**；`off_time` 不在本片范围；⛔ 不是静默降级；见 `ADR-0008` 裁决 **C**）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
 //! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
 //!
@@ -2728,9 +2734,12 @@ pub struct PreparedRegion {
     ///   not have any effect." ⇒ 被关的声部**当场硬停**；
     /// * `normal`："The region will be set into release stage." ⇒ 被关的声部**进释放段**
     ///   （它自己的 `ampeg_*`／`loop_sustain` 规则照旧生效）；
-    /// * `time`（ARIA）：本片**按 `normal` 处理**并逐字登记为书面偏离 —— 差别只剩
-    ///   [`yeban_sfz::instrument::Region::off_time`] 的延迟（缺省 6 ms），而 `off_time`
-    ///   不在本片范围内；见模块头的"off_by 关断"一节。
+    /// * `time`（ARIA）：本片**按 `normal` 处理**并逐字登记为书面偏离 —— 规范说的是
+    ///   **一段长度 ＝ [`yeban_sfz::instrument::Region::off_time`] 的淡出**、
+    ///   **independent of the sample release time**（缺省 6 ms）；⭐ 本仓**不读
+    ///   per-region `off_time`**、`time` 按 `normal` 处理（`ADR-0008` 裁决 **C**），
+    ///   而 `off_time` 不在本片范围内；与 `ARCH-RT-004` 的 3 ms（**窃取路**）**不冲突**
+    ///   —— 两条不同的路；见模块头的"off_by 关断"一节。
     off_mode: OffMode,
     /// ⭐ **播放方向**（`direction`；任务单 `#113`）。
     ///
