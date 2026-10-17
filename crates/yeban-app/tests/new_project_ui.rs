@@ -62,7 +62,7 @@ const NEW_BUTTON_ID: &str = "module-new-project-button";
 
 /// 新入口的无障碍名称（与 `elements.rs` 登记的标签**逐字相同**，运行时对账会断言相等）。
 const NEW_BUTTON_LABEL: &str =
-    "新建工程（用文件对话框给新工程选一个落点，写出 0 轨空容器并就地换过去）";
+    "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）";
 
 /// 既有投影通道的落点（回执行的**可寻址**节点，住在右栏 —— 默认帧里就可见）。
 const MODULE_STATUS_ID: &str = "module-last-status";

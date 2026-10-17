@@ -577,7 +577,7 @@ impl ElementRegistry {
             ElementKind::Button,
             "console/mixer_console.slint",
             // 与 `.slint` 的 `accessible-label` **逐字相同**（运行时树对账会断言相等）。
-            "新建工程（用文件对话框给新工程选一个落点，写出 0 轨空容器并就地换过去）",
+            "新建工程（用文件对话框给新工程选一个落点，写出 0 音轨 ＋ 1 主总线的空白容器并就地换过去）",
             false,
         );
 

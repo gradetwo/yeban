@@ -1463,7 +1463,8 @@ mod tests {
             "空工程只该有工程级损失"
         );
         assert!(!export.losses.is_empty());
-        assert_eq!(export.mapped_tracks, 0);
+        // `#161` 起空样例含主总线 ⇒ `.als` 导出把它映射成 1 条 `MasterTrack`。
+        assert_eq!(export.mapped_tracks, 1);
         assert_eq!(export.mapped_clips, 0);
         assert_eq!(export.mapped_notes, 0);
     }
