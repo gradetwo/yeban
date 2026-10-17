@@ -12572,3 +12572,32 @@ git show HEAD --format= --unified=0 | awk '/^[+-]/ && !/^\+\+\+/ && !/^---/' | g
 
 ⭐ ⚠ **五、⭐ 清理（⭐ 第 302 条四件一起）**: ⭐ `mod-migrate`／⭐ `mod-device`／⭐ `mod-render` ⭐ **三棵树全部**：⭐ 删 `target`（⭐ 共约 **1.1 G** ＋ 34 M）＋ ⭐ 拆树 ＋ ⭐ 删分支 ＋ ⭐ 删交接行 ⇒ ⭐ 磁盘 ⭐ **90%／可用 96 Gi** ✓ ⚠ 本轮一开头 **96 GB** 那次清理记为 `R847`（⭐ 99% → 88%）✓
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `d0affb72`／`2ba49bd2`／`5932b295`／`28cdbd45` 的判决** ＋ ⭐ ⭐ **人类：⭐ 切 BlackHole 后重跑 `measure_latency --loopback` 读两行 `BACKEND-ERRORS`**（⭐ `first_kind=xrun` ⇒ ⭐ 按"⭐ 非缺陷"⭐收口）＋ ⭐ **刀 2 前置测量**（⭐ `qeSM` ↔ `qSvE` 摆放）＋ ⭐ **`HD-64` 的 v2 `arrangement`／⭐ `groove-package`**（⭐ 待规范）＋ ⭐ **行号改锚点** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R849 实测追加（2026-10-17）：⭐⭐⭐ **`backend_errors=1` 结案** —— ⭐ 人类切 BlackHole 后我重跑，⭐ 拿到 `first_kind=xrun`
+
+⭐ ⚠ **一、⭐ 逐字读数（⭐ 我跑的，⭐ 命令同 `#147` 报告）**:
+```
+BACKEND-ERRORS direction=output runtime=0 stop=1 total=1 first_kind=xrun first_message=none
+BACKEND-ERRORS direction=input  runtime=0 stop=1 total=1 first_kind=xrun first_message=none
+LOOPBACK: measured_roundtrip_ms=3.3314 …
+BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_out=1 backend_errors_in=1 …
+```
+⇒ ⭐ ⭐ **`first_kind=`** **`xrun`** ⭐ ＋ ⭐ **`runtime=0`** ＋ ⭐ **`stop=1`** ＋ ⭐ **`total=1`** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 这与 `#147` 的主假设**逐字吻合**（⭐ 所以结案）**:
+| `#147` 的预测 | ⭐ 本次实测 |
+| :--- | :--- |
+| ⭐ 是**设备级 overload**（⭐ `ErrorKind::Xrun`）⭐ 而 ⛔ 不是"关流副作用" | ⭐ ⭐ **`first_kind=xrun`** ✓ |
+| ⭐ 发生在**停止阶段**（⭐ 两条流**先一起切阶段、⭐ 再各自 pause**） | ⭐ ⭐ **`runtime=0 stop=1`** ✓ |
+| ⭐ **每方向恰 1**（⭐ 同一虚拟设备，⭐ 一次通知送**两个** listener） | ⭐ ⭐ **out=1 out=1、⭐ 各方向 `total=1`** ✓ |
+| ⭐ 无 message（⭐ 设备级通知不带文本） | ⭐ ⭐ **`first_message=none`** ✓ |
+| ⭐ 不扰动回环（⭐ 检出与时长都正常） | ⭐ ⭐ **`peak_ncc` 正常／⭐ `measured_roundtrip_ms=3.3314`／⭐ `within-target`** ✓ |
+⇒ ⭐ ⭐ **结论：⭐ 不是缺陷** ⇒ ⭐ 它是 ⭐ **虚拟回环设备在停止阶段的一次 processor overload**（⭐ BlackHole 两条流共用一台虚拟设备时的正常现象）✓ ⭐ ⭐ **`#147` 的分档 ＋ ⭐ `first_kind` 这两个设计一次就把悬案结掉了** ✓
+
+⭐ ⚠ **三、⭐ 顺带确认的硬件读数**: ⭐ 第 6 项 ⭐ **`within-target`／⭐ `3.3314 ms`**（⭐ 这是**第四次**一致：⭐ `3.3336`／⭐ `3.3292`／⭐ `3.3520`／⭐ **`3.3314`**）⇒ ⭐ **极差 0.023 ms** ✓ ⭐ 抖动：⭐ out 最大 **0.0000**／⭐ in 最大 **2.0833 ms** ✓
+
+⭐ ⚠ **四、⭐ 一条可复用口径（⭐ 第 304 条）**: ⭐ ⭐ **异常计数必须能回答"⭐ 是什么、⭐ 何时发、⭐ 有没有害"⭐三问** —— 只有数字的计数器**永远只能让人猜**；⭐ ⭐ **加一个 `first_kind` ＋ ⭐ 一个阶段分档，⭐ 就把"⭐ 每方向 1 次"⭐从悬案变成一句话结论** ★ ⚠ **因为**：⭐ ① ⭐ 本条之前，⭐ 我们对那个 `1` ⭐ 只能**猜**（⭐ 我猜错过一次，⭐ `R848`）；⭐ ② ⭐ **kind 只要存一次**（⭐ ≤96 B、⭐ 零分配）⭐ 就够 ⇒ ⭐ 代价极小；⭐ ③ ⭐ **阶段分档**（⭐ 运行期／⭐ 停止期）⭐ 让"⭐ 无害"⭐与"⭐ 有害"⭐在**输出里就分开**，⭐ ⛔ 不需要人去读源码 ✓ ⭐ **做法**: ⭐ ① ⭐ 计数类字段旁边**同时**记 `first_kind`／⭐ `first_message`；⭐ ② ⭐ 有阶段的地方**按阶段分档**；⭐ ③ ⭐ 结案时**把假设与实际逐条对照**（⭐ 如本节表格）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#148`（刀 2 前置测量）交单** ＋ ⭐ **读回 `d0affb72`／`2ba49bd2`／`5932b295`／`28cdbd45`／`6e4079f8` 判决** ＋ ⭐ **刀 2（真导入）** ＋ ⭐ **行号改锚点** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`（装依赖）／⭐ `HD-52`（同机同版本三轨 ＋ `.mid`）／⭐ 真 MIDI／⭐ **物理回环线**（⭐ 声学往返）✓
