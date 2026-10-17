@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  夜半 (Yeban) 的 macOS 应用包模板 —— 任务单 #140。
+
+  这是**模板**, 不是最终产物: 装配由 `scripts/dev/bundle-macos.sh` 完成,
+  它会把本文件复制进 `target/Yeban.app/Contents/Info.plist` 并覆盖版本占位符。
+
+  为什么要有这个文件 (实测背景):
+    裸二进制 (`cargo run` / `target/release/yeban-app`) 没有 bundle ⇒ 没有 Info.plist
+    ⇒ `NSMicrophoneUsageDescription` **无处可放** ⇒ TCC 只能按"终端"授权麦克风,
+    而不是按"夜半"授权。同一个二进制换一台机器/换一个终端就可能被系统拒绝。
+    本文件给麦克风权限一个**按应用**的身份 (CFBundleIdentifier)。
+
+  版本占位符 `__YEBAN_VERSION__` 的唯一事实源是根 `Cargo.toml` 的
+  `[workspace.package] version` (成员 crate 用 `version.workspace = true` 继承)。
+  脚本用 `cargo metadata --no-deps` 问 Cargo 拿解析后的版本再写回本文件的两个版本键,
+  ⇒ 版本只写在一处, 本模板不重复声明它。`plutil -lint` 对未替换的模板同样成立
+  (占位符只是一个合法字符串)。
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleDisplayName</key>
+    <string>夜半</string>
+    <key>CFBundleExecutable</key>
+    <string>yeban</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.yeban.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Yeban</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <!-- 两个版本键都由 scripts/dev/bundle-macos.sh 在装配时写入 Cargo 解析出的版本。 -->
+    <key>CFBundleShortVersionString</key>
+    <string>__YEBAN_VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__YEBAN_VERSION__</string>
+    <!--
+      macOS 的部署下限。aarch64 (Apple Silicon) 的 macOS 最低版本就是 11.0
+      ⇒ 11.0 是两种架构都能诚实声明的下限 (x86_64 构建同样可跑在 11.0+)。
+    -->
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!--
+      ★ 本单 (#140) 的核心: macOS 按应用申请麦克风权限时必须读到这一句人话。
+      缺少它时, TCC 会直接杀掉进程或拒绝授权 (取决于系统版本), 而不是弹权限框。
+    -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>夜半需要访问麦克风以录制音频输入。</string>
+</dict>
+</plist>
