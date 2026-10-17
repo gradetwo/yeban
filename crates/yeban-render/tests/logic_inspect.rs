@@ -15,8 +15,9 @@
 use std::path::Path;
 
 use yeban_render::logic_read::{
-    DEFAULT_DEMOS_DIR, LogicInspection, LogicTotals, RegionPlacement, import_bundle,
-    inspect_bundle, inspect_demos, region_placements,
+    DEFAULT_DEMOS_DIR, LOGIC_REGION_LENGTH_MAX, LOGIC_REGION_LENGTH_MIN, LogicInspection,
+    LogicTotals, RegionPlacement, import_bundle, inspect_bundle, inspect_demos,
+    is_region_length_in_range, region_placements,
 };
 
 /// 一台 demo 的期望读数（`#139` 实测）。
@@ -609,11 +610,31 @@ fn the_import_reader_agrees_with_the_probe_on_the_measured_demo() {
     assert_eq!(import.rba_sequences, 175);
     assert_eq!(import.audio_regions, 402);
     assert_eq!(import.channel_states, 634);
-    assert_eq!(import.imported_regions.len(), 176);
+    assert_eq!(import.imported_regions.len(), 174);
     assert_eq!(import.skipped_empty_regions, 24);
     assert_eq!(import.skipped_zero_length_regions, 0);
+    assert_eq!(import.out_of_range_regions.len(), 2);
     assert_eq!(import.unpaired_notes, 0);
     assert_eq!(import.notes_outside_region, 168);
+
+    // `#150`：两条垃圾样本被**逐条**留在读数里（⛔ 不是只计数）。
+    let rejected: Vec<(&str, u32, u32, usize)> = import
+        .out_of_range_regions
+        .iter()
+        .map(|region| {
+            (
+                region.name.as_str(),
+                region.start_tick,
+                region.length_ticks,
+                region.notes.len(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rejected,
+        vec![("", 0, 4, 0), ("TRASH", 0, 1_073_626_623, 0)],
+        "Swing! 的两条越界样本（记录流顺序、逐字读数）"
+    );
 
     // 音符没有在过滤里丢掉：可导入区域的音符数 == 探针的音符总数。
     let imported_notes: usize = import
@@ -623,11 +644,11 @@ fn the_import_reader_agrees_with_the_probe_on_the_measured_demo() {
         .sum();
     assert_eq!(imported_notes, probe.notes, "可导入区域的音符数");
 
-    // 前 3 条的可导入区域（记录流顺序）与实测字面量。
+    // 前 5 条**通过判据**的可导入区域（记录流顺序）与实测字面量。
     let first: Vec<(&str, u32, u32, usize)> = import
         .imported_regions
         .iter()
-        .take(3)
+        .take(5)
         .map(|region| {
             (
                 region.name.as_str(),
@@ -640,9 +661,11 @@ fn the_import_reader_agrees_with_the_probe_on_the_measured_demo() {
     assert_eq!(
         first,
         vec![
-            ("", 0, 4, 0),
-            ("TRASH", 0, 1_073_626_623, 0),
-            ("Swing!", 0, 316_800, 0)
+            ("Swing!", 0, 316_800, 0),
+            ("Fragile Keys", 163_200, 61_440, 96),
+            ("Glass Piano", 53_760, 15_360, 38),
+            ("Snaps", 163_200, 7_680, 9),
+            ("Glass Piano", 86_400, 138_240, 282),
         ]
     );
 
@@ -661,4 +684,117 @@ fn the_import_reader_agrees_with_the_probe_on_the_measured_demo() {
             region.length_ticks
         );
     }
+}
+
+/// 判据（`#150` 长度判据）：8 台**逐台**的越界条数、垃圾值分布与边界口径。
+///
+/// 这一条是 `#149` 暴露的那个洞的判据：单条时长的垃圾**不进任何总数**
+/// （`tracks/regions/non_internal/notes` 8/8 台仍然全对），所以只有**逐条**的
+/// 读数能判它。⛔ 不许把它写成"合计 17 条"了事 —— 下面逐台钉住。
+#[test]
+fn the_length_bound_rejects_the_measured_garbage_on_every_demo() {
+    if !Path::new(DEFAULT_DEMOS_DIR).exists() {
+        println!("logic-import-bounds: 无 demo（{DEFAULT_DEMOS_DIR} 不存在），跳过（0 台，不红）");
+        return;
+    }
+
+    // (bundle, 可导入条数, 被挡条数) —— `#150` 实测（`#149` 的 881 条减去 17 条）。
+    const BOUNDS_EXPECTED: [(&str, usize, usize); 8] = [
+        ("Colors", 155, 2),
+        ("Manzana", 113, 2),
+        ("Manzana - Spatial Audio", 113, 2),
+        ("MONTERO", 41, 3),
+        ("MONTERO - Spatial Audio", 41, 3),
+        ("ocean eyes", 121, 1),
+        ("Spatial Audio Demo Grid", 106, 2),
+        ("Swing!", 174, 2),
+    ];
+
+    let mut rejected_lengths: Vec<u32> = Vec::new();
+    let mut total_imported = 0usize;
+    for (bundle, expected_imported, expected_rejected) in BOUNDS_EXPECTED {
+        let path = Path::new(DEFAULT_DEMOS_DIR).join(format!("{bundle}.logicx"));
+        let import =
+            import_bundle(&path).unwrap_or_else(|error| panic!("{bundle} 的导入读取失败: {error}"));
+        let expected = EXPECTED
+            .iter()
+            .find(|expected| expected.bundle == bundle)
+            .unwrap_or_else(|| panic!("缺少 demo `{bundle}` 的实测表"));
+        // `#149` 的口径：计数**不受**长度判据影响（8/8 台逐项相等）。
+        assert_eq!(import.tracks, expected.tracks, "{bundle} 的轨道数");
+        assert_eq!(
+            import.regions_all, expected.regions,
+            "{bundle} 的 qeSM 条数"
+        );
+        assert_eq!(
+            import.regions, expected.non_internal,
+            "{bundle} 的非内部区域条数"
+        );
+        assert_eq!(import.notes, expected.notes, "{bundle} 的音符条数");
+
+        assert_eq!(
+            import.imported_regions.len(),
+            expected_imported,
+            "{bundle} 的可导入区域条数"
+        );
+        assert_eq!(
+            import.out_of_range_regions.len(),
+            expected_rejected,
+            "{bundle} 的被挡条数"
+        );
+        for region in &import.imported_regions {
+            assert!(
+                is_region_length_in_range(region.length_ticks),
+                "{bundle} 的可导入区域 `{}` 长度 {} 必须在 [{}, {}] 内",
+                region.name,
+                region.length_ticks,
+                LOGIC_REGION_LENGTH_MIN,
+                LOGIC_REGION_LENGTH_MAX
+            );
+        }
+        for region in &import.out_of_range_regions {
+            assert!(
+                !is_region_length_in_range(region.length_ticks),
+                "{bundle} 被挡的区域 `{}` 长度 {} 必须真的越界",
+                region.name,
+                region.length_ticks
+            );
+            assert_eq!(
+                region.notes.len(),
+                0,
+                "{bundle} 被挡的区域 `{}` 不含音符（挡掉它 ⛔ 不丢音符）",
+                region.name
+            );
+            rejected_lengths.push(region.length_ticks);
+        }
+        total_imported += import.imported_regions.len();
+    }
+
+    assert_eq!(total_imported, 864, "8 台的可导入区域合计（881 − 17）");
+    assert_eq!(rejected_lengths.len(), 17, "8 台合计被挡条数");
+    // 垃圾值的**分布**：11 条同一个 10.7 亿 tick 字面量 + 6 条 4 tick。
+    let huge = rejected_lengths
+        .iter()
+        .filter(|length| **length == 1_073_626_623)
+        .count();
+    let tiny = rejected_lengths
+        .iter()
+        .filter(|length| **length == 4)
+        .count();
+    assert_eq!(
+        (huge, tiny),
+        (11, 6),
+        "垃圾值分布：11 条 1.07e9 + 6 条 4 tick"
+    );
+
+    // 判据自身的边界口径（含两端的**开区间**）与两个常量的依据。
+    assert!(is_region_length_in_range(LOGIC_REGION_LENGTH_MIN));
+    assert!(!is_region_length_in_range(LOGIC_REGION_LENGTH_MIN - 1));
+    assert!(is_region_length_in_range(LOGIC_REGION_LENGTH_MAX));
+    assert!(!is_region_length_in_range(LOGIC_REGION_LENGTH_MAX + 1));
+    assert!(!is_region_length_in_range(4));
+    assert!(!is_region_length_in_range(1_073_626_623));
+    // 下界 = 1/64 拍（960 PPQ）；上界 = 4 × 实测最大正常值 549,120。
+    assert_eq!(LOGIC_REGION_LENGTH_MIN, 960 / 16);
+    assert_eq!(LOGIC_REGION_LENGTH_MAX, 4 * 549_120);
 }

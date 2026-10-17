@@ -56,6 +56,10 @@
 //! * **空区域**的长度是哨兵 [`LOGIC_REGION_EMPTY_LENGTH`] = **7,680,000**
 //!   （= 8000 拍 = 2000 小节），且起点恒 0、音符恒 0 ⇒ 它不是真实长度，
 //!   ⛔ 不得拿它算上界。
+//! * 非空区域的长度有**有效范围** [`LOGIC_REGION_LENGTH_MIN`]..=[`LOGIC_REGION_LENGTH_MAX`]
+//!   （60…2,196,480 tick；倍数的依据写在那两个常量的文档里）。8 台实测 **17 条**
+//!   越界：**11 条**同一字面量 1,073,626,623（≈ 10.7 亿 tick ≈ 559,000 拍）＋ **6 条**
+//!   4 tick ⇒ 导入时逐条打印 `kind=length-out-of-range` 并挡在工程之外（`#150`）。
 //! * 记录流顺序是**对象创建顺序**，不是时间顺序 ⇒ 全局「区域起点非递减」**不成立**
 //!   （8 台按 bundle 名排序的下降数：**95 / 76 / 77 / 105 / 104 / 45 / 6 / 149**；
 //!   ⛔ 不要把它当判据）。把编排摆放事件按**轨道**分组后才是 0（Swing! 可解析的 170 组、0 处）。
@@ -117,6 +121,55 @@ pub const LOGIC_REGION_START_FROM_REST: usize = 0xE0;
 /// 8 台 demo 里 114…486 条/台的空 `qeSM`（起点 0、音符 0，绝大多数是
 /// `*Automation`）都用这个值；它**不是**真实长度，⛔ 不得参与上界计算。
 pub const LOGIC_REGION_EMPTY_LENGTH: u32 = 7_680_000;
+
+/// 一条**非空**区域长度的**下界**：60 tick = 1/64 拍（960 PPQ 下 960 / 16 = 60）。
+///
+/// `#150` 实测依据（8 台 demo，881 条"非内部、非空哨兵、非零"区域，逐条读数见
+/// `tests/logic_inspect.rs`）：
+///
+/// * 8 台里有 **6 台**各带一条**逐字相同**的垃圾区域 `("", start=0, length=4, notes=0)`
+///   （Swing! / MONTERO / MONTERO - Spatial Audio / Spatial Audio Demo Grid / Manzana /
+///   Manzana - Spatial Audio）。4 tick = 1/240 拍，比 960 PPQ 能被记谱的最小音符
+///   （1/64 拍 = 60 tick）还小 **15 倍** ⇒ 它装不下任何音符，不是真实长度。
+/// * 8 台里**最小的一条正常区域**是 **432** tick（MONTERO 的 `post hum`，2 条），
+///   是下界的 **7.2 倍**；第二小是 **732** tick（Colors 的 `MIDI Region`，3 条）。
+///
+/// ⇒ 下界取"能被记谱的最小音符（1/64 拍）"，**不是**"刚好挡住 4"：任何 ≥ 1/64 拍的
+/// 真实区域（8/8 台实测最小 432）都保留，只有比最小音符还短的 4 tick 被挡。
+pub const LOGIC_REGION_LENGTH_MIN: u32 = 60;
+
+/// 一条**非空**区域长度的**上界**：2,196,480 tick = 2288 拍 = 572 小节（4/4）。
+///
+/// 依据是 **4 × 实测最大的正常长度**（8 台 demo 的 881 条候选逐条排序，去掉 11 条
+/// 10.7 亿的垃圾后 = **870 条**）：
+///
+/// | 读数（`start+length`，tick） | 值 | 依据 |
+/// | :--- | ---: | :--- |
+/// | p50 | 192,000 | 870 条正常值 |
+/// | p90 | 384,960 | 同上 |
+/// | p99 | 491,520 | 同上 |
+/// | p999 | 545,280 | 同上 |
+/// | **最大正常值** | **549,120** = 572 拍 | MONTERO 的 `post hum`（同一值也是最大正常**长度**） |
+/// | 垃圾值 | 1,073,626,623 = 1,118,361 拍 | 6/8 台共 **11 条**（`TRASH` 与名字恰为 `Automation` 的条），逐字相同的 `u32` |
+///
+/// ⇒ 上界 = **4 × 549,120 = 2,196,480**：比实测最大正常值留 **4.0 倍**余量
+/// （2288 拍 ≈ 572 小节，比任何真实歌曲都长），而垃圾值比上界还大 **488.8 倍**
+/// ⇒ 这道判据有预测力（⛔ 不是"刚好让 8 台通过"）。
+///
+/// ⚠ 只挡**已观测到**的量级（10.7 亿 tick）；别的垃圾形态仍可能漏 —— 见 `#150` 报告。
+pub const LOGIC_REGION_LENGTH_MAX: u32 = 2_196_480;
+
+/// 一条区域长度是否落在 [`LOGIC_REGION_LENGTH_MIN`]..=[`LOGIC_REGION_LENGTH_MAX`]。
+///
+/// ⚠ 空哨兵 [`LOGIC_REGION_EMPTY_LENGTH`] 与长度 0 由调用方**先行**排除
+/// （它们各有一张自己的损失表条目），本函数只判"非空区域"的取值范围。
+#[must_use]
+pub const fn is_region_length_in_range(length_ticks: u32) -> bool {
+    // 写成 `wrapping_sub <= 跨度`（等价于 `MIN <= x <= MAX`，更小的值会回绕成巨大值）：
+    // `const fn` 里 `RangeInclusive::contains` 还不能用，这样也避开 `manual_range_contains`。
+    length_ticks.wrapping_sub(LOGIC_REGION_LENGTH_MIN)
+        <= LOGIC_REGION_LENGTH_MAX - LOGIC_REGION_LENGTH_MIN
+}
 
 /// 一条 `qeSM` 区域的**摆放读数**（起点 + 长度 + 该区域自己的音符跨度）。
 ///
@@ -700,12 +753,21 @@ pub struct LogicImport {
     pub audio_regions: usize,
     /// `GenM`（落盘 `MneG`）记录条数（只计数）。
     pub channel_states: usize,
-    /// 可导入区域（非内部、长度 ≠ 空区域哨兵、长度 ≠ 0；**记录流顺序**）。
+    /// 可导入区域（非内部、长度 ≠ 空区域哨兵、长度 ≠ 0、长度落在
+    /// [`LOGIC_REGION_LENGTH_MIN`]..=[`LOGIC_REGION_LENGTH_MAX`]；**记录流顺序**）。
     pub imported_regions: Vec<ImportRegion>,
     /// 因空区域哨兵（[`LOGIC_REGION_EMPTY_LENGTH`]）被跳过的条数。
     pub skipped_empty_regions: usize,
     /// 因长度为 0 被跳过的条数（模型要求摆放时值非零）。
     pub skipped_zero_length_regions: usize,
+    /// 因长度**越界**（不在 [`LOGIC_REGION_LENGTH_MIN`]..=[`LOGIC_REGION_LENGTH_MAX`]）
+    /// 被跳过的区域，**逐条**保留（记录流顺序）。
+    ///
+    /// `#150` 实测：8 台里有 17 条 —— 11 条长度 1,073,626,623（≈ 10.7 亿 tick；
+    /// 960 PPQ 下 ≈ 1,118,361 拍）与 6 条长度 4 tick。它们⛔ 不进工程，也⛔ 不静默：
+    /// 导入器的损失表逐条打印
+    /// `level=boundary kind=length-out-of-range start=… length=…`。
+    pub out_of_range_regions: Vec<ImportRegion>,
     /// 落在任何 `qeSM` 之外（或 `qeSM` 之前）的音符条数。
     pub unpaired_notes: usize,
     /// 可导入区域里**起点 ≥ 区域长度**的音符条数（读数；内容原样保留）。
@@ -718,7 +780,10 @@ pub struct LogicImport {
 /// 区域名/摆放字段、同一个 [`decode_note_lines`]。新增的只有"把音符与区域一起交出来"。
 ///
 /// **跳过**：内部区域（`*Automation` / `RBA Sequence`）、空区域哨兵
-/// （`length == LOGIC_REGION_EMPTY_LENGTH`）、长度为 0 的区域。其余**全部**保留，
+/// （`length == LOGIC_REGION_EMPTY_LENGTH`）、长度为 0 的区域、长度**越界**的区域
+/// （不在 [`LOGIC_REGION_LENGTH_MIN`]..=[`LOGIC_REGION_LENGTH_MAX`]，`#150`）。
+/// 内部区域 / 空哨兵 / 零长度各有自己的计数；越界的那类**逐条**留在
+/// [`LogicImport::out_of_range_regions`]（⛔ 不静默丢弃）。其余**全部**保留，
 /// 包括没有音符的区域 —— 它们是编排里真实存在的区域。
 ///
 /// # Errors
@@ -795,6 +860,7 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
 
     let paired_all: usize = all_regions.iter().map(|region| region.notes.len()).sum();
     let mut imported_regions: Vec<ImportRegion> = Vec::new();
+    let mut out_of_range_regions: Vec<ImportRegion> = Vec::new();
     let mut skipped_empty_regions = 0usize;
     let mut skipped_zero_length_regions = 0usize;
     let mut notes_outside_region = 0usize;
@@ -808,6 +874,11 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
         }
         if region.length_ticks == 0 {
             skipped_zero_length_regions += 1;
+            continue;
+        }
+        if !is_region_length_in_range(region.length_ticks) {
+            // ⛔ 不静默：样本原样留在读数里，导入器逐条打印。
+            out_of_range_regions.push(region);
             continue;
         }
         let length = u64::from(region.length_ticks);
@@ -841,6 +912,7 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
         imported_regions,
         skipped_empty_regions,
         skipped_zero_length_regions,
+        out_of_range_regions,
         unpaired_notes,
         notes_outside_region,
     })

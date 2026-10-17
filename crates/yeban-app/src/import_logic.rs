@@ -15,7 +15,7 @@
 //! | Logic 侧（8 台 Apple demo 实测） | 本仓侧 |
 //! | :--- | :--- |
 //! | `karT` 且对象号 `0x0004_0000` 且 `payload[0] == 1` 的条数 | 轨道条数（外加一条 `Master`） |
-//! | `qeSM` 非内部、长度 ≠ 7,680,000、长度 ≠ 0 | 一个 `ClipPoolEntry` + 一个 `ClipPlacement` |
+//! | `qeSM` 非内部、长度 ≠ 7,680,000、长度 ≠ 0、长度 ∈ [60, 2,196,480]（`#150`） | 一个 `ClipPoolEntry` + 一个 `ClipPlacement` |
 //! | 区域起点 `rest + 0xe0`（960 PPQ tick） | `ClipPlacement::start_tick`（**原值**，⛔ 不对齐到拍） |
 //! | 区域长度 `rest + 0x3c`（960 PPQ tick） | `ClipPlacement::duration_ticks`（**原值**，⛔ 不扩展到音符） |
 //! | 配对 `qSvE` 的 `decode_note_lines` | `MidiNote`（`start_tick` 是**区域相对** tick，与模型的 `placement.start + note.start` 口径一致） |
@@ -55,7 +55,12 @@
 //! | control | 自动化曲线 / `RBA Sequence` | 内部区域，⛔ 不导入 |
 //! | binding | **轨道归属 provisional** | 轮转分配，待补测 7/8 台 |
 //! | region | 空区域哨兵（7,680,000） | 跳过（起点恒 0、音符恒 0） |
+//! | region | **区域长度越界**（`#150`） | 长度不在 `[60, 2,196,480]` tick ⇒ ⛔ 不进工程，**逐条**打印 |
 //! | boundary | 长度短于音符内容 | 摆放按长度；音符原样保留（读数） |
+//!
+//! `#150` 实测：8 台 demo 共 **17 条**越界 —— **11 条**长度 1,073,626,623
+//! （≈ 10.7 亿 tick ≈ 559,000 拍）＋ **6 条**长度 4 tick。两者都逐条打印成
+//! `level=boundary kind=length-out-of-range start=… length=…`，⛔ 不进工程、⛔ 不静默。
 //!
 //! ## 版权与只读
 //!
@@ -83,7 +88,9 @@ use yeban_model::project::{
     RoutingKind, SCHEMA_VERSION, SampleRate, TimeSignature, TrackKind, TrackV3, TransportConfig,
     YebanProjectV1,
 };
-use yeban_render::logic_read::{LogicImport, import_bundle};
+use yeban_render::logic_read::{
+    LOGIC_REGION_LENGTH_MAX, LOGIC_REGION_LENGTH_MIN, LogicImport, import_bundle,
+};
 
 use crate::save::{SaveError, SaveReport, save_project_file};
 
@@ -287,7 +294,8 @@ impl ImportReport {
         lines.push(format!(
             "logic-import-counts: imported-regions={} placements={} project-tracks={} \
              project-notes={} clips-pool={} internal={} automation={} rba={} gen_m={} \
-             skipped-empty={} skipped-zero-length={} unpaired-notes={} notes-outside-region={}",
+             skipped-empty={} skipped-zero-length={} skipped-out-of-range={} unpaired-notes={} \
+             notes-outside-region={}",
             data.imported_regions.len(),
             self.placements,
             self.project_tracks,
@@ -299,6 +307,7 @@ impl ImportReport {
             data.channel_states,
             data.skipped_empty_regions,
             data.skipped_zero_length_regions,
+            data.out_of_range_regions.len(),
             data.unpaired_notes,
             data.notes_outside_region,
         ));
@@ -333,15 +342,16 @@ impl ImportReport {
         lines
     }
 
-    /// 损失表条数（与 [`Self::losses`] 逐条对应）。
+    /// 损失表条数（与 [`Self::losses`] 逐条对应；⛔ 不写死数字，
+    /// 否则加了条目就会与 `losses()` 漂移）。
     fn loss_count(&self) -> usize {
-        6
+        self.losses().len()
     }
 
     /// 损失表（四级 + 两条边界读数；⛔ 不静默丢掉任何一类）。
     fn losses(&self) -> Vec<String> {
         let data = &self.data;
-        vec![
+        let mut losses = vec![
             format!(
                 "level=region kind=AuRg count={} 音频区域未导入（只计数；载荷语义未勘察）",
                 data.audio_regions
@@ -365,11 +375,32 @@ impl ImportReport {
                 data.skipped_empty_regions
             ),
             format!(
+                "level=region kind=长度越界 count={} 长度不在 [{}, {}] tick 内的区域跳过\
+                 （#150；逐条列在下面）",
+                data.out_of_range_regions.len(),
+                LOGIC_REGION_LENGTH_MIN,
+                LOGIC_REGION_LENGTH_MAX,
+            ),
+            format!(
                 "level=boundary kind=长度裁剪 count={} 起点 ≥ 区域长度的音符；\
                  摆放按区域长度裁剪、音符内容原样保留（⛔ 不扩展到音符）",
                 data.notes_outside_region
             ),
-        ]
+        ];
+        // `#150`：越界样本**逐条**列出（⛔ 不静默、⛔ 不只报总数）。
+        for sample in &data.out_of_range_regions {
+            losses.push(format!(
+                "level=boundary kind=length-out-of-range start={} length={} name={} notes={} \
+                 区域长度越界（不在 [{}, {}] tick），⛔ 不进工程",
+                sample.start_tick,
+                sample.length_ticks,
+                crate::cli::quoted(&sample.name),
+                sample.notes.len(),
+                LOGIC_REGION_LENGTH_MIN,
+                LOGIC_REGION_LENGTH_MAX,
+            ));
+        }
+        losses
     }
 }
 
@@ -523,6 +554,10 @@ fn build_project(
         Vec::with_capacity(data.imported_regions.len());
     let mut placements = 0usize;
     let mut project_notes = 0usize;
+    // ⚠ `data.imported_regions` 已由 `import_bundle` 的**逐条**长度判据
+    // （`#150`，`[LOGIC_REGION_LENGTH_MIN, LOGIC_REGION_LENGTH_MAX]`）过滤过；
+    // 本模块⛔ 不再写第二份判据（会与读取侧漂移），越界样本由读取侧的
+    // `out_of_range_regions` 交给损失表逐条打印。
     for (index, region) in data.imported_regions.iter().enumerate() {
         let clip_id = ids.next_id();
         let placement_id = ids.next_id();
@@ -683,6 +718,7 @@ mod tests {
             imported_regions: regions,
             skipped_empty_regions: 0,
             skipped_zero_length_regions: 0,
+            out_of_range_regions: Vec::new(),
             unpaired_notes: 0,
             notes_outside_region: 0,
         }
@@ -788,6 +824,45 @@ mod tests {
             assert!(
                 text.contains(required),
                 "损失表必须逐字包含 `{required}`：\n{text}"
+            );
+        }
+        assert_eq!(project.validate(), Ok(()));
+        assert_eq!(report.loss_count(), report.losses().len());
+    }
+
+    /// 判据（`#150`）：越界样本**逐条**写进损失表（⛔ 只报一个总数）。
+    #[test]
+    fn the_loss_table_names_every_out_of_range_sample() {
+        let mut data = synthetic(1, vec![region("A", 0, 960, 0)]);
+        // 合成的两条 = `#150` 实测的两个垃圾字面量（Swing! 的记录流前两条）。
+        data.out_of_range_regions = vec![region("", 0, 4, 0), region("TRASH", 0, 1_073_626_623, 0)];
+        let (project, project_tracks, placements, clips, project_notes, rows) =
+            build_project(&data).expect("合成读数");
+        let report = ImportReport {
+            input: PathBuf::from("in"),
+            bundle: PathBuf::from("in/Synthetic.logicx"),
+            data,
+            project_tracks,
+            placements,
+            clips,
+            project_notes,
+            placement_rows: rows,
+            saved: SaveReport {
+                path: PathBuf::from("out.yeban"),
+                bytes: 1,
+                temp_name: "tmp".to_owned(),
+            },
+        };
+        let text = report.lines().join("\n");
+        assert_eq!(placements, 1, "越界样本 ⛔ 不进工程（只有 1 条合法区域）");
+        assert!(text.contains("level=region kind=长度越界 count=2"));
+        for sample in [
+            "level=boundary kind=length-out-of-range start=0 length=4 ",
+            "level=boundary kind=length-out-of-range start=0 length=1073626623 ",
+        ] {
+            assert!(
+                text.contains(sample),
+                "损失表必须逐条打印 `{sample}`：\n{text}"
             );
         }
         assert_eq!(project.validate(), Ok(()));

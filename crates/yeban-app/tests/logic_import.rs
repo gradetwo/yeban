@@ -19,7 +19,10 @@ use yeban_app::cli::{self, Options};
 use yeban_app::import_logic::{ImportLogicError, PLACEMENT_REPORT_LIMIT, run};
 use yeban_model::ids::EntityId;
 use yeban_model::project::YebanProjectV1;
-use yeban_render::logic_read::{DEFAULT_DEMOS_DIR, LOGIC_REGION_EMPTY_LENGTH, region_placements};
+use yeban_render::logic_read::{
+    DEFAULT_DEMOS_DIR, LOGIC_REGION_EMPTY_LENGTH, LOGIC_REGION_LENGTH_MAX, LOGIC_REGION_LENGTH_MIN,
+    is_region_length_in_range, region_placements,
+};
 
 /// `#148` 的 Swing! 实测读数（与 `yeban-render/tests/logic_inspect.rs` 同一张表）。
 const SWING_TRACKS: usize = 76;
@@ -27,23 +30,27 @@ const SWING_REGIONS: usize = 545;
 const SWING_NON_INTERNAL: usize = 200;
 const SWING_NOTES: usize = 2_903;
 const SWING_AU_RG: usize = 402;
-const SWING_IMPORTED_REGIONS: usize = 176;
+const SWING_IMPORTED_REGIONS: usize = 174;
+/// `#150`：Swing! 被长度判据挡掉的 2 条。
+const SWING_OUT_OF_RANGE: usize = 2;
 const SWING_SKIPPED_EMPTY: usize = 24;
 const SWING_INTERNAL: usize = 345;
 const SWING_NOTES_OUTSIDE_REGION: usize = 168;
 
-/// `#148` 实测的**前 8 条**可导入摆放 `(start_tick, duration_ticks)`（记录流顺序）。
+/// `#150` 实测的**前 8 条**可导入摆放 `(start_tick, duration_ticks)`（记录流顺序）。
 ///
-/// 口径 = 非内部、长度 ≠ 7,680,000、长度 ≠ 0 的 `qeSM`，按记录流顺序。
+/// 口径 = 非内部、长度 ≠ 7,680,000、长度 ≠ 0、长度 ∈ [60, 2,196,480] 的 `qeSM`，
+/// 按记录流顺序。⚠ `#149` 的前两条 `(0, 4)` 与 `(0, 1_073_626_623)` 是**垃圾**，
+/// `#150` 起被挡在工程之外（逐条打印 `kind=length-out-of-range`）。
 const SWING_FIRST_PLACEMENTS: [(u64, u64); 8] = [
-    (0, 4),
-    (0, 1_073_626_623),
     (0, 316_800),
     (163_200, 61_440),
     (53_760, 15_360),
     (163_200, 7_680),
     (86_400, 138_240),
     (7_680, 15_360),
+    (170_880, 5_760),
+    (23_040, 15_360),
 ];
 
 /// demo 根目录（本机才有）。
@@ -150,10 +157,11 @@ fn swing_import_readings_and_loss_table_match_the_measured_table() {
     for expected in [
         format!("imported-regions={SWING_IMPORTED_REGIONS}"),
         format!("skipped-empty={SWING_SKIPPED_EMPTY}"),
+        format!("skipped-out-of-range={SWING_OUT_OF_RANGE}"),
         format!("internal={SWING_INTERNAL}"),
         format!("notes-outside-region={SWING_NOTES_OUTSIDE_REGION}"),
         "gen_m=634".to_owned(),
-        "clips-pool=176".to_owned(),
+        format!("clips-pool={SWING_IMPORTED_REGIONS}"),
         "project-notes=2903".to_owned(),
     ] {
         assert!(
@@ -185,6 +193,18 @@ fn swing_import_readings_and_loss_table_match_the_measured_table() {
             "损失表必须逐字包含 `{required}`：\n{text}"
         );
     }
+    // `#150`：两条垃圾样本**逐条**打印（⛔ 不是只报总数）。
+    for rejected in [
+        "level=boundary kind=length-out-of-range start=0 length=4",
+        "level=boundary kind=length-out-of-range start=0 length=1073626623",
+    ] {
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("logic-import-loss: ") && line.contains(rejected)),
+            "损失表必须逐条打印 `{rejected}`：\n{text}"
+        );
+    }
     assert!(output.is_file(), "必须真的写出 `.yeban` 容器");
 }
 
@@ -213,7 +233,7 @@ fn the_imported_project_opens_through_the_headless_path() {
     for expected in [
         "tracks-all=77",
         "master-track=1",
-        "clips-pool=176",
+        "clips-pool=174",
         "midi-notes=2903",
     ] {
         assert!(
@@ -269,6 +289,8 @@ fn placements_are_written_and_match_the_148_readings() {
         .filter(|placement| !placement.internal)
         .filter(|placement| placement.length_ticks != LOGIC_REGION_EMPTY_LENGTH)
         .filter(|placement| placement.length_ticks != 0)
+        // `#150`：长度越界的垃圾区域 ⛔ 不进工程（与导入器同一个判据函数）。
+        .filter(|placement| is_region_length_in_range(placement.length_ticks))
         .map(|placement| {
             (
                 u64::from(placement.start_tick),
@@ -289,6 +311,17 @@ fn placements_are_written_and_match_the_148_readings() {
         written.iter().any(|row| row.2 == 61_440),
         "必须保留非整拍的实测长度（不做取整）"
     );
+    // `#150`：写进工程的每一条摆放时长都必须在判据的范围内（垃圾 ⛔ 不落盘）。
+    for row in &written {
+        assert!(
+            (u64::from(LOGIC_REGION_LENGTH_MIN)..=u64::from(LOGIC_REGION_LENGTH_MAX))
+                .contains(&row.2),
+            "写进工程的摆放时长 {} 必须落在 [{}, {}] tick 内",
+            row.2,
+            LOGIC_REGION_LENGTH_MIN,
+            LOGIC_REGION_LENGTH_MAX
+        );
+    }
 }
 
 /// 判据 4：同一台导入两次 ⇒ 容器 `sha256` 相同。
