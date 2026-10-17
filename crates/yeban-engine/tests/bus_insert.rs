@@ -562,10 +562,21 @@ fn b6_the_bus_convolution_tail_is_audible() {
 
 /// B5：**尺寸红线** ＋ 裁决 (甲) 的代价读数。
 ///
-/// 本片**没有**新增每总线状态：总线复用逐轨武装池里**同一台**器件（它的 `TrackV3`
-/// 本来就在池里占一个槽位）⇒ `EngineRuntime` / `EngineSnapshot` 与 `#154` 之后
-/// **逐字节相同**。这里同时打印三件器件的 `size_of`（"左右各一套"要各自再备 16 份
-/// 的那三种类型），作为裁决里"缓存翻倍"的量化背景。
+/// `#158` 本片**没有**新增每总线状态：总线复用逐轨武装池里**同一台**器件（它的
+/// `TrackV3` 本来就在池里占一个槽位）⇒ 当时 `EngineRuntime` / `EngineSnapshot` 与
+/// `#154` 之后**逐字节相同**（`180144` / `4576`）。
+///
+/// ⭐ 任务单 `#173` 的**代价**（本条判据就地改数，三件套）：主总线需要**自己的一格**
+/// 插入槽位（它不在 `RoutingPlan::slots()` 里，不能挤掉一条轨的槽位）⇒
+/// `INSERT_SLOTS = MAX_TRACK_SLOTS + 1 = 17`，`EngineRuntime` **180144 → 181936**
+/// （**＋1792 B**；量法见下）。分项（按结构体字段的 `size_of` 逐项算）：
+/// `armed_strips` ＋392、`reverb_pool` ＋1 312、`armed_reverbs` ＋24、
+/// `armed_convs` ＋24、`armed_conv_ir_hashes` ＋8、新计数 `master_insert_frames` ＋8
+/// ＝ 1 768，其余 24 B 是字段对齐的填充。**门槛不变**：181 936 < 196 608（余 14 672）。
+/// `EngineSnapshot` **＋0**（主总线的设备投影在 `inserts` 映射里本来就有）。
+///
+/// 这里同时打印三件器件的 `size_of`（"左右各一套"要各自再备 16 份的那三种类型），
+/// 作为裁决里"缓存翻倍"的量化背景。
 #[test]
 fn b5_sizes_stay_under_the_192_kib_red_line() {
     let runtime = core::mem::size_of::<EngineRuntime>();
@@ -583,7 +594,10 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
          门槛 196608；余量={}",
         196_608 - runtime
     );
-    assert_eq!(runtime, 180_144, "EngineRuntime 必须仍是 180144 B（＋0）");
+    assert_eq!(
+        runtime, 181_936,
+        "EngineRuntime 必须是 181936 B（#173：主总线多一格插入槽位 ＋1792 B；见本判据文档）"
+    );
     assert_eq!(snapshot, 4_576, "EngineSnapshot 必须仍是 4576 B（＋0）");
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");
     assert_eq!(pool, 1_712, "SfzVoicePool 必须仍是 1712 B");

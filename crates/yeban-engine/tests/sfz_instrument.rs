@@ -239,6 +239,17 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
     hash
 }
 
+/// ⭐ `EngineRuntime` 的**当前**值尺寸（`size_of` **现读**）：**181 936 B**。
+///
+/// 历史：`#107` 把它钉在 `180144`（CC 表 ＋144）；`#173` 让主总线拥有**自己的一格**
+/// 插入槽位（`INSERT_SLOTS = MAX_TRACK_SLOTS + 1`）并加了 `master_insert_frames`
+/// 计数 ⇒ **180144 → 181936**（**＋1792 B**；分项见 `tests/bus_insert.rs` 的 B5）。
+/// 门槛不变：181936 < 192 KiB = 196608（余 14672）。
+///
+/// ⚠ 本文件表里仍写着 `EngineRuntime=180144` 的行是**各任务单当时的读数**
+/// （⛔ 不许删：第 278 条口径）；**断言**统一读这个常量 ⇒ 下一次再涨只有一处要改。
+const ENGINE_RUNTIME_BYTES: usize = 181_936;
+
 /// S5 夹具：两个音符（1 tick = 25 样本）。⭐ 本夹具与**接线前**测指纹时**一字不差**。
 const SFZ_NOTES: [NoteSpec; 2] = [
     NoteSpec::at(0, 480, 60, 100),
@@ -8793,8 +8804,8 @@ fn s91_the_110_registration_the_bound_and_the_sizes_are_judgeable() {
         "⛔ `ControlChangeState` 必须 ＋0（`seed` 不加字段）"
     );
     assert_eq!(
-        runtime, 180_144,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+        runtime, ENGINE_RUNTIME_BYTES,
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#173` 之后 181936 B；门槛 192 KiB）"
     );
     assert!(
         runtime < 192 * 1024,
@@ -9558,7 +9569,10 @@ fn s98_the_direction_sizes_and_the_zero_allocation_disposition_are_judgeable() {
     );
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（零新逐声部字段）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0");
-    assert_eq!(runtime, 180_144, "⛔ `EngineRuntime` 必须 ＋0");
+    assert_eq!(
+        runtime, ENGINE_RUNTIME_BYTES,
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#173` 之后 181936 B）"
+    );
     assert!(
         runtime < 192 * 1024,
         "⛔ `EngineRuntime` 必须 < 192 KiB（余量 {} B）",
@@ -9858,8 +9872,8 @@ fn s100_the_target_enum_the_census_and_the_sizes_are_judgeable() {
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
     assert_eq!(
-        runtime, 180_144,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+        runtime, ENGINE_RUNTIME_BYTES,
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#173` 之后 181936 B；门槛 192 KiB）"
     );
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
 }
@@ -10471,8 +10485,8 @@ fn s106_the_tune_spec_the_census_and_the_sizes_are_judgeable() {
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
     assert_eq!(
-        runtime, 180_144,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+        runtime, ENGINE_RUNTIME_BYTES,
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#173` 之后 181936 B；门槛 192 KiB）"
     );
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
 }
@@ -11457,8 +11471,8 @@ fn s111_the_unit_is_explicit_and_tune_rejects_the_percent_suffix() {
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
     assert_eq!(
-        runtime, 180_144,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+        runtime, ENGINE_RUNTIME_BYTES,
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#173` 之后 181936 B；门槛 192 KiB）"
     );
 }
 
@@ -12529,8 +12543,8 @@ fn s113_the_pitch_family_is_the_tune_alias_across_three_paths() {
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
     assert_eq!(
-        runtime, 180_144,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+        runtime, ENGINE_RUNTIME_BYTES,
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#173` 之后 181936 B；门槛 192 KiB）"
     );
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
 
@@ -13455,8 +13469,8 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     assert_eq!(voice, 40, "⛔ `SfzVoice` 必须 ＋0（仍是 40 B）");
     assert_eq!(pool, 1712, "⛔ `SfzVoicePool` 必须 ＋0（仍是 1712 B）");
     assert_eq!(
-        runtime, 180_144,
-        "⛔ `EngineRuntime` 必须 ＋0（仍是 180144 B）"
+        runtime, ENGINE_RUNTIME_BYTES,
+        "`EngineRuntime` 的现读值见 `ENGINE_RUNTIME_BYTES`（`#173` 之后 181936 B；门槛 192 KiB）"
     );
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
 
@@ -13992,7 +14006,7 @@ fn s115_the_three_revised_volume_counters_and_the_scope_absence() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6160, 40, 1712, 180_144),
+        (6160, 40, 1712, ENGINE_RUNTIME_BYTES),
         "⛔ `#121` 只改文档 ＋ 计数 ⇒ 四个尺寸读数全 ＋0"
     );
 }
@@ -14595,7 +14609,7 @@ fn s116_the_ampeg_attack_three_tiers_name_their_caliber() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6160, 40, 1712, 180_144),
+        (6160, 40, 1712, ENGINE_RUNTIME_BYTES),
         "⛔ `#123` 只改文档 ＋ 判据 ⇒ 四个尺寸读数全 ＋0"
     );
 }
@@ -15555,7 +15569,7 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6160, 40, 1712, 180_144),
+        (6160, 40, 1712, ENGINE_RUNTIME_BYTES),
         "⛔ `#124` 只加一个**名字**（识别支）⇒ 四个尺寸读数全 ＋0"
     );
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");
@@ -16230,7 +16244,7 @@ fn s118_the_not_done_registrations_are_swept_and_still_hold() {
     );
     assert_eq!(
         (region, voice, pool, runtime),
-        (6160, 40, 1712, 180_144),
+        (6160, 40, 1712, ENGINE_RUNTIME_BYTES),
         "⛔ `#125` 只改注释／登记／判据 ⇒ 四个尺寸读数全 ＋0"
     );
     assert!(runtime < 192 * 1024, "⛔ `EngineRuntime` 必须 < 192 KiB");

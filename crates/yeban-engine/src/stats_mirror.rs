@@ -180,6 +180,7 @@ pub struct EngineStatsMirror {
     insert_reverb_rate_rejects: AtomicU64,
     insert_convolution_frames: AtomicU64,
     insert_convolution_rejects: AtomicU64,
+    master_insert_frames: AtomicU64,
     param_gain_frames: AtomicU64,
     param_master_gain_frames: AtomicU64,
     param_gain_rejects: AtomicU64,
@@ -252,6 +253,7 @@ impl EngineStatsMirror {
             insert_reverb_rate_rejects: AtomicU64::new(0),
             insert_convolution_frames: AtomicU64::new(0),
             insert_convolution_rejects: AtomicU64::new(0),
+            master_insert_frames: AtomicU64::new(0),
             param_gain_frames: AtomicU64::new(0),
             param_master_gain_frames: AtomicU64::new(0),
             param_gain_rejects: AtomicU64::new(0),
@@ -359,6 +361,8 @@ impl EngineStatsMirror {
             .store(stats.insert_convolution_frames, Ordering::Relaxed);
         self.insert_convolution_rejects
             .store(stats.insert_convolution_rejects, Ordering::Relaxed);
+        self.master_insert_frames
+            .store(stats.master_insert_frames, Ordering::Relaxed);
         self.param_gain_frames
             .store(stats.param_gain_frames, Ordering::Relaxed);
         self.param_master_gain_frames
@@ -472,6 +476,7 @@ impl EngineStatsMirror {
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects.load(Ordering::Relaxed),
             insert_convolution_frames: self.insert_convolution_frames.load(Ordering::Relaxed),
             insert_convolution_rejects: self.insert_convolution_rejects.load(Ordering::Relaxed),
+            master_insert_frames: self.master_insert_frames.load(Ordering::Relaxed),
             param_gain_frames: self.param_gain_frames.load(Ordering::Relaxed),
             param_master_gain_frames: self.param_master_gain_frames.load(Ordering::Relaxed),
             param_gain_rejects: self.param_gain_rejects.load(Ordering::Relaxed),
@@ -513,7 +518,7 @@ impl Default for EngineStatsMirror {
 }
 
 impl core::fmt::Debug for EngineStatsMirror {
-    /// 打印**读出来**的那一份读数（不是 59 个原子量的内部状态）。
+    /// 打印**读出来**的那一份读数（不是 63 个原子量的内部状态）。
     ///
     /// 这个数是**机械读数**（`sed -n '/^pub struct EngineStatsMirror {/,/^}/p'` 里
     /// `Atomic` 字段的行数），与 `EngineStats` 的字段数一一对应（一个字段一个原子量）。
@@ -570,6 +575,7 @@ mod tests {
             insert_reverb_rate_rejects: 21,
             insert_convolution_frames: 27,
             insert_convolution_rejects: 28,
+            master_insert_frames: 54,
             param_gain_frames: 40,
             param_master_gain_frames: 44,
             param_gain_rejects: 41,
@@ -718,7 +724,7 @@ mod tests {
     /// 判据：镜像的手写 `Debug` 必须打印**读出来的那一份读数**，不是常量。
     ///
     /// `EngineStatsMirror` 的 `Debug` 是手写的：它刻意只打印 `stats: <读出来的 EngineStats>`，
-    /// 而不是 59 个原子量的内部状态。人工排障读到的就是这份文本 ⇒ 结构体名、字段名、
+    /// 而不是 63 个原子量的内部状态。人工排障读到的就是这份文本 ⇒ 结构体名、字段名、
     /// **且"里面真的是读数"**三者都是契约。
     ///
     /// **量什么**：`format!("{mirror:?}")` 的文本（单位：字符）。

@@ -470,8 +470,9 @@ fn the_shape_costs_are_read_not_hand_written() {
     );
     assert_eq!(schedule, 24, "AudioClipSchedule = 一个 Vec 头部（24 B）");
     assert_eq!(
-        runtime, 180_144,
-        "⛔ EngineRuntime 必须 ＋0 B（没有逐样本游标：位置由走带绝对帧导出）"
+        runtime, 181_936,
+        "EngineRuntime 的现读值（`#173` 之后 181936 = `#135` 时的 180144 ＋ 1792 B 的\
+         主总线插入槽位/计数；本判据只要求音频片段**不再**加字节 —— 见 `tests/bus_insert.rs` 的 B5）"
     );
     assert!(
         (4_496..=4_608).contains(&snapshot),

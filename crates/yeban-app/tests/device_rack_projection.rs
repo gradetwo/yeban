@@ -11,6 +11,7 @@
 //! | ⑤ EQ 滑块 = 恰好一次提交 | `invoke_device_eq_grab(1.0)` ＋ `invoke_device_eq_release()` ⇒ `commit_count +1`、`undoable +1`，**读回的模型值** = `18.0`（值域上界来自契约）；再在同位置按下 / 松手 ⇒ `+0`（没变就不提交） | 证"拖动一次 = 一步撤销，且改的值进了 `TrackV3::devices`" |
 //! | ⑥ 预算三件套 | 不在本文件：读数在 `tests/perf_draw_budget.rs`（52 写点 / 38 数组，常量与原因同处） | — |
 //! | ⑦ 无头可判 | Tier-1 窗口（`LivePort`）＋ 运行时控件树 ＋ 一张 Tab 3 截图（非黑 / 多色） | 证"真的有一个窗口在画它"；⛔ 不证墙钟成本（本机不许跑 GPU 档） |
+//! | ⑧ 主总线（`#173`） | `master_bus_track_id` 上挂一台 EQ ⇒ `ViewState::master_devices` 出现 1 行且"已识别 eq_low_gain"；**展示轨**的 `devices` 一动不动（可编辑面仍只属于展示轨） | 证"主总线的设备进了控制面投影"；⛔ 不证 `.slint` 布局（本单**刻意**不改布局，避免 golden 重录） |
 //!
 //! ## 反向腿（去掉本片改动 ⇒ 哪条红）
 //!
@@ -551,4 +552,81 @@ fn the_device_tab_renders_a_non_black_frame() {
     );
 
     report_line(&format!("[#157 ⑦] Tab 3 截图：{}", evidence.summary()));
+}
+
+// ===========================================================================
+// 判据 ⑧（任务单 `#173`）：主总线的设备链进了**只读**投影，可编辑面不越轨
+// ===========================================================================
+#[test]
+fn the_master_chain_is_projected_without_touching_the_editable_rack() {
+    let mut project = filled_project();
+    let master = project.master_bus_track_id;
+    project
+        .tracks
+        .get_mut(&master)
+        .expect("filled_project 必须有主总线轨")
+        .devices = vec![eq_device()];
+
+    let view = ViewState::from_project(&project).expect("投影");
+    let track_row = device_rack_track(&project).expect("展示轨仍必须存在");
+    println!(
+        "[#173 ⑧] master_devices={} → {:?}（recognised={:?}）；展示轨 = {:?}、\
+         devices={} 行；device_track_label={:?}",
+        view.master_devices.len(),
+        view.master_devices
+            .iter()
+            .map(|row| row.name.clone())
+            .collect::<Vec<_>>(),
+        view.master_devices
+            .iter()
+            .map(|row| row.recognised.clone())
+            .collect::<Vec<_>>(),
+        track_row.name,
+        view.devices.len(),
+        view.device_track_label,
+    );
+
+    assert_eq!(
+        view.master_devices.len(),
+        1,
+        "主总线上的 1 台设备必须投影成 1 行（⛔ 不是 0：那正是 `#173` 之前的不可见）"
+    );
+    assert_eq!(view.master_devices[0].name, "Yeban EQ");
+    assert!(
+        view.master_devices[0]
+            .recognised
+            .contains("eq_low_gain= 0 dB"),
+        "已识别分档与展示轨那一段**同一份**口径：{:?}",
+        view.master_devices[0].recognised
+    );
+    // 可编辑面不越轨：展示轨的投影仍是它**自己**的那一台（filled_project 的 1 台）。
+    assert_eq!(
+        view.devices.len(),
+        1,
+        "主总线的设备⛔ 不得并进可编辑的 `devices`（寻址会指错轨）"
+    );
+    assert_ne!(
+        view.devices[0].name, "Yeban EQ",
+        "可编辑那段必须仍是展示轨自己的设备"
+    );
+    assert!(
+        view.device_track_label.ends_with("· 设备链")
+            && !view.device_track_label.contains("Master"),
+        "设备架标题仍是展示轨：{:?}",
+        view.device_track_label
+    );
+
+    // 反向腿：删掉主总线的设备 ⇒ 这一段必须回到空（⛔ 不是缓存）。
+    project
+        .tracks
+        .get_mut(&master)
+        .expect("主总线轨仍在")
+        .devices
+        .clear();
+    let cleared = ViewState::from_project(&project).expect("投影");
+    assert!(
+        cleared.master_devices.is_empty(),
+        "主总线没有设备时这一段必须为空（实得 {} 行）",
+        cleared.master_devices.len()
+    );
 }

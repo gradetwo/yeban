@@ -43,9 +43,12 @@
 //! - 只渲染**能到达 Master** 的子图; 悬挂节点被剪掉 (这也会让"不需要的源"不必注册)。
 //! - 侧链 (`RoutingKind::Sidechain`) 只按普通音频边处理, 侧链键控语义未实现。
 //! - 渲染失败时并行收集的是"某一个"错误, 不承诺是哪一个 (成功路径的确定性不受影响)。
-//! - **插入链** (`crate::inserts`) 只给**非 master** 节点挂, 且只支持立体声
+//! - **插入链** (`crate::inserts`) 给**每个**节点挂 —— 包括**主总线**（任务单 `#173`
+//!   起; 此前主总线刻意是 `None`）, 且只支持立体声
 //!   (`channels != 2` + 非空链 ⇒ [`RenderError::UnsupportedInsertChannels`])。
 //!   紧接在**求和之后**处理（源节点是"声源之后"）; 顺序差异见该模块头 §2。
+//!   ⚠ 实时引擎的**主总线**插入是"下混成单声道 → 链 → 复制两路"（裁决 (甲)）,
+//!   离线是真立体声 ⇒ 两边的**宽度/尾巴形状**有差异（与 `#155`/`#158` 同族）。
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -480,8 +483,11 @@ impl RenderPlan {
     ///
     /// 链接在 `render_node` 的**求和之后**（源节点则是"声源渲染之后"）：这样
     /// `SendToAux` 送进 Aux 返回轨的信号也会被该 Aux 轨自己的 EQ / 混响 / 卷积处理。
-    /// **主总线不挂链**（实时引擎的逐轨循环跳过 master；给 master 加插入会引入新的
-    /// "导出与监听不一致"差异）。详见 [`crate::inserts`] 模块头 §1／§2。
+    /// ⭐ **主总线也挂链**（任务单 `#173`）：它和别的总线走**同一条**路径 ——
+    /// 全部入边求和之后 → EQ → 混响 → 卷积。实时引擎在 `#173` 同时补上了主总线的
+    /// 插入（`rt.rs` 的 3a⁗⁗），因此"导出与监听"在这件事上**不再**分叉；
+    /// 剩下的差异只是形状（实时单声道插入 vs 离线立体声），见
+    /// [`crate::inserts`] 模块头 §1／§2。
     ///
     /// `inserts` 由 [`crate::inserts::project_inserts`] 从 `TrackV3.devices` 投影得到。
     /// 空表等价于 [`Self::compile_with_latencies`]（逐位不退化）。
@@ -550,12 +556,13 @@ impl RenderPlan {
                 frontier.extend(parents.iter().copied());
             }
         }
-        // 插入链只在立体声下接（混响/卷积的器件入口是 L/R 两条独立状态）。主总线
-        // 不挂链 ⇒ 它上面的链不算"要处理", 不触发这条检查。
+        // 插入链只在立体声下接（混响/卷积的器件入口是 L/R 两条独立状态）。
+        // ⭐ 任务单 `#173`：主总线的链也算"要处理"（此前它被 `*node != master`
+        // 排除在外 ⇒ 单声道导出里主总线器件被静默忽略）。
         if options.channels != 2
-            && keep.iter().any(|node| {
-                *node != master && inserts.get(node).is_some_and(|chain| !chain.is_empty())
-            })
+            && keep
+                .iter()
+                .any(|node| inserts.get(node).is_some_and(|chain| !chain.is_empty()))
         {
             return Err(RenderError::UnsupportedInsertChannels(options.channels));
         }
@@ -638,17 +645,15 @@ impl RenderPlan {
         let mut states: Vec<NodeState> = ordered
             .iter()
             .map(|&node| {
-                // 主总线**刻意不挂链**（见 `compile_with_latencies_and_inserts` 的文档）。
-                let inserts = if node == master {
-                    None
-                } else {
-                    inserts
-                        .get(&node)
-                        .filter(|chain| !chain.is_empty())
-                        .map(|chain| {
-                            InsertRuntime::new(chain, options.sample_rate, options.block_size)
-                        })
-                };
+                // ⭐ 任务单 `#173`：主总线**同样挂链** —— 它在 `render_node` 里
+                // 走"求和之后 → 插入"这条与其它总线**完全相同**的路径
+                // （此前这里刻意写 `None`，见 `crate::inserts` 模块头 §1）。
+                let inserts = inserts
+                    .get(&node)
+                    .filter(|chain| !chain.is_empty())
+                    .map(|chain| {
+                        InsertRuntime::new(chain, options.sample_rate, options.block_size)
+                    });
                 NodeState {
                     node,
                     buffer: vec![0.0; block_width],
@@ -929,7 +934,8 @@ fn render_node(
         }
     }
     // 插入点: **求和之后**（本票的裁决 —— Aux 返回轨因此也能被它自己的链处理）。
-    // 主总线的 `inserts` 恒为 `None`（实时引擎跳过 master, 见编译入口的文档）。
+    // ⭐ 任务单 `#173`：主总线也走这一行（`inserts` 不再是 `None`）⇒ 导出里
+    // master 上的设备真的生效；顺序与实时侧同一条链：EQ → 混响 → 卷积。
     if let Some(inserts) = inserts.as_mut() {
         inserts.process(&mut buffer[..width]);
     }

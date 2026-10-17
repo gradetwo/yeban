@@ -432,29 +432,46 @@ fn two_renders_of_the_same_project_have_the_same_sha256() {
     assert_eq!(first.digest, third.digest, "全新编译的摘要不同");
 }
 
-/// 判据 6a：主总线上的设备链**不**被应用（实时引擎跳过 master）。
+/// 判据 6a（⭐ **任务单 `#173` 修订**）：主总线上的设备链**被应用**。
+///
+/// ## 为什么改（原文见文件末尾的修订登记）
+///
+/// `#155` 的原文断言是"主总线插入被应用了 —— 实时引擎跳过 master, 这会制造
+/// 导出/监听不一致"（`assert_eq!(touched.samples, baseline.samples)`）。那条断言
+/// 在 `#173` 之后**正好把一个缺陷钉成了不变量**：`rt.rs` 的 3a⁗⁗ 现在处理主总线，
+/// 离线侧也把 `render.rs` 的 `None` 删掉了 ⇒ 若还要求"母带逐位不变"，主总线设备
+/// 就又变成听不到。故按**三件套**改：① 实时侧 `rt.rs`（3a⁗⁗ ＋ 武装池 ＋ 计数）；
+/// ② 离线侧 `render.rs`（master 分支不再写 `None`）＋ 本判据；③ 模块头
+/// （`src/inserts.rs` §1）登记"为什么改 / 仍存的形状差"。
+///
+/// 三个读数（都从母带样本现算）：
+/// 1. **EQ 真的生效**：master 低架 +12 dB @ 120 Hz，80 Hz 基频带能量提升（dB）；
+/// 2. **摘要有牙**：有设备 / 无设备的 SHA-256 不同（⛔ 不是"有输出就算过"）；
+/// 3. **反向腿**：同一台 master 设备 `bypassed = true` ⇒ 投影为空链 ⇒ 母带与
+///    无设备基线**逐位相同**（证明读数来自链，不是"多挂一个节点"的副作用）。
 #[test]
-fn master_bus_inserts_are_not_applied() {
+fn master_bus_inserts_are_applied() {
     let master = node(0xFF);
     let track_node = node(1);
     let routing = graph(
         &[master, track_node],
         &[(track_node, master, RoutingKind::TrackToBus)],
     );
-    let frames = 12_000;
-    let mono = burst(440.0, frames, frames, 0.2);
+    let frames = 24_000; // 0.5 s（与判据 1 同一个窗口口径）
+    let mono = burst(80.0, frames, frames, 0.1);
+
     let mut tracks = BTreeMap::new();
     tracks.insert(
         master,
         track(vec![effect(&[
-            ("eq_low_gain", 18.0),
-            ("eq_high_gain", 18.0),
+            ("eq_low_gain", 12.0),
+            ("eq_low_freq", 120.0),
         ])]),
     );
     let with_master_inserts = project_inserts(&tracks, SR);
     assert!(
-        !with_master_inserts.is_empty(),
-        "投影本身不剔除 master（由渲染计划决定）"
+        with_master_inserts.contains_key(&master),
+        "投影必须包含 master（投影规则本身不剔除任何节点）"
     );
     let touched = render(
         &routing,
@@ -464,15 +481,55 @@ fn master_bus_inserts_are_not_applied() {
         mono.clone(),
         track_node,
     );
-    let baseline = render(&routing, master, &BTreeMap::new(), frames, mono, track_node);
+    let baseline = render(
+        &routing,
+        master,
+        &BTreeMap::new(),
+        frames,
+        mono.clone(),
+        track_node,
+    );
+    assert_ne!(
+        touched.samples, baseline.samples,
+        "主总线插入**没有被应用** —— 离线导出里 master 上的设备又听不到了"
+    );
+
+    // 窗口 = 0.125 s … 0.5 s（避开 EQ 的起始瞬态）；80 Hz 在 0.375 s 里恰好 30 个周期。
+    let boosted = tone_energy(&touched.samples, 6_000, frames, 80.0);
+    let plain = tone_energy(&baseline.samples, 6_000, frames, 80.0);
+    let gain_db = 10.0 * (boosted / plain).log10();
     println!(
-        "主总线读数: 摘要 有 master 设备 = {} / 无 = {}",
+        "主总线 EQ 读数: 80 Hz 基频带能量 有 master 设备 = {boosted:.9e} / 无 = {plain:.9e} \
+         ⇒ {gain_db:+.3} dB；摘要 有设备 = {} / 无 = {}",
         hex(&touched.digest),
         hex(&baseline.digest)
     );
+    assert!(
+        gain_db >= 6.0,
+        "master 低架 +12 dB @120 Hz 对 80 Hz 的能量提升只有 {gain_db:+.3} dB"
+    );
+
+    // ③ 反向腿：旁通 ⇒ 投影为空链 ⇒ 与基线逐位相同。
+    let mut bypassed = effect(&[("eq_low_gain", 12.0), ("eq_low_freq", 120.0)]);
+    bypassed.bypassed = true;
+    let mut bypassed_tracks = BTreeMap::new();
+    bypassed_tracks.insert(master, track(vec![bypassed]));
+    let bypassed_inserts = project_inserts(&bypassed_tracks, SR);
+    assert!(
+        !bypassed_inserts.contains_key(&master),
+        "旁通的 master 设备不得投影成链"
+    );
+    let untouched = render(
+        &routing,
+        master,
+        &bypassed_inserts,
+        frames,
+        mono,
+        track_node,
+    );
     assert_eq!(
-        touched.samples, baseline.samples,
-        "主总线插入被应用了 —— 实时引擎跳过 master, 这会制造导出/监听不一致"
+        untouched.samples, baseline.samples,
+        "旁通的 master 设备必须让母带与无设备基线逐位相同"
     );
 }
 
@@ -605,3 +662,30 @@ fn a_non_stereo_target_refuses_a_non_empty_insert_chain() {
         Some(RenderError::UnsupportedInsertChannels(1))
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 修订登记（任务单 `#173`）：判据 6a 从"master **不**处理"改为"master 处理"
+// ---------------------------------------------------------------------------
+//
+// **被修订的原文**（`#155`，逐字）：
+//
+// ```text
+// /// 判据 6a：主总线上的设备链**不**被应用（实时引擎跳过 master）。
+// fn master_bus_inserts_are_not_applied() { … }
+// assert_eq!(touched.samples, baseline.samples,
+//     "主总线插入被应用了 —— 实时引擎跳过 master, 这会制造导出/监听不一致");
+// ```
+//
+// **为什么原文在那时是对的**：实时引擎的逐轨循环跳过 master、离线计划也把 master 的
+// 链写成 `None` ⇒ 两条路都听不到；那时的 `assert_eq!` 把"两条路一致（都不处理）"
+// 钉住。**`#173` 之后它变成缺陷的机械形式**：实时侧补了 3a⁗⁗、离线侧删掉了 `None`
+// ⇒ 若还要求母带逐位不变，主总线设备就又变成"挂得上、听不到"。
+//
+// **改法（三件套）**：
+// 1. `crates/yeban-engine/src/rt.rs`：`INSERT_SLOTS = MAX_TRACK_SLOTS + 1` 的主总线
+//    槽位 ＋ 三个武装循环"主总线收尾" ＋ 3a⁗⁗（下混 → 链 → 复制两路）＋
+//    `master_insert_frames` 覆盖度计数；零分配判据 `tests/rt_zero_alloc.rs` ㊺。
+// 2. `crates/yeban-render/src/render.rs`：`node == master ⇒ None` 删除，master 与其它
+//    总线走同一条"求和之后 → 插入"；非立体声守卫改为**包含** master。
+// 3. `crates/yeban-render/src/inserts.rs` §1：登记"为什么改"与"仍存的形状差"
+//    （实时单声道插入 vs 离线立体声插入 ⇒ 宽度/尾巴形状差异，与 `#155`/`#158` 同族）。

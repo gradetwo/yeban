@@ -2353,6 +2353,17 @@ pub struct ViewState {
     /// ⭐ 任务单 `#157`：空链投影成空 `Vec` ⇒ 界面显示空态（`"无设备（点上方「装 EQ」或「装混响」）"`，
     /// `#163` 起这句提示指向真实的装置按钮），而不是旧版那三条编造的设备名。
     pub devices: Vec<DeviceRowView>,
+    /// ⭐ 任务单 `#173`：**主总线**（`master_bus_track_id`）上的设备链投影 —— 设备架
+    /// 面板的**第二段（只读）**事实源。
+    ///
+    /// 为什么单独一段而不是并进 [`Self::devices`]：可编辑面（旁通 / EQ 滑块 /
+    /// `InsertDevice` / `RemoveDevice`）的寻址单位是"展示轨的 `devices[slot_index]`"
+    /// （[`device_rack_track`] **排除**主总线）⇒ 把 master 的设备并进同一个数组会让
+    /// 那些 Op 指错轨。本字段只让面板**看得见**"主总线上有什么、已识别什么"。
+    ///
+    /// ⚠ 引擎侧（`rt.rs` 的 3a⁗⁗）与离线侧（`yeban-render` 的 `render_node`）在
+    /// `#173` 起都**真的处理**主总线的设备 ⇒ 这里列出的每一台都不是装饰。
+    pub master_devices: Vec<DeviceRowView>,
     /// 当前展示轨上**第一格** `eq_low_gain`（值域来自契约）；没有 ⇒ `None`。
     ///
     /// ⚠ 这是本切片**唯一**可编辑的设备参数（"最小可编辑"）。`None` 时界面禁用滑块
@@ -2635,6 +2646,9 @@ impl ViewState {
         // 设备逐条来自 `TrackV3::devices`，"已识别/未识别"走 `effect_params::recognise`。
         let (device_track_label, devices, eq_low_gain) =
             device_rack_projection(device_rack_track(project));
+        // ⭐ 任务单 `#173`：主总线的设备链 —— **只读**的第二段（可编辑面仍只属于展示轨，
+        // 见 `ViewState::master_devices` 的文档）。
+        let master_devices = master_device_rows(project);
 
         // ⭐ 任务单 `#163`：设备增删 ＋ 建空片段的可用性（与投影**同一份**口径）。
         let (device_insert_available, device_insert_reason) = device_insert_availability(project);
@@ -2730,6 +2744,7 @@ impl ViewState {
             asset_pool,
             device_track_label,
             devices,
+            master_devices,
             eq_low_gain,
             device_insert_available,
             device_insert_reason,
@@ -4060,6 +4075,24 @@ fn device_rack_projection(
         });
     }
     (format!("轨 {} · 设备链", track.name), devices, eq_low_gain)
+}
+
+/// ⭐ 任务单 `#173`：**主总线**上的设备链投影（只读；设备架面板的第二段事实源）。
+///
+/// 口径与 [`Self::devices`]（原名 `devices`）**逐字相同** —— 同一份
+/// [`device_rack_projection`]、同一份 `effect_params::recognise` 的"已识别/未识别"
+/// 分档 ⇒ 两段不会各说一套。唯一的差别是**主语**：那一段是"展示轨"，这一段是
+/// `master_bus_track_id` 指的主总线轨。
+///
+/// ⚠ 主总线**不在** [`device_rack_track`] 的候选里（那条规则排除了它）⇒ 这个函数
+/// 是主总线设备进入 UI 投影的**唯一**入口；`#173` 之前它根本不存在（主总线的设备
+/// 在面板上不可见，即使引擎侧现在已经会处理它）。
+#[must_use]
+pub fn master_device_rows(project: &YebanProjectV1) -> Vec<DeviceRowView> {
+    project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .map_or_else(Vec::new, |track| device_rack_projection(Some(track)).1)
 }
 
 /// 参数值的显示文本（**只有这一处**格式化）。

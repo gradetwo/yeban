@@ -36,6 +36,9 @@
 //!         →  MeterBank::measure(...)                        ← 逐轨电平口径不变
 //!         →  **PDC 补偿延迟线（`D(v) = L_max − arrival(v)` 采样点）** [ARCH-PDC-001]
 //!         →  sum_into_bus(声相增益 (cos θ, sin θ)，构造期算好)
+//!    ⭐ **主总线的插入链**（任务单 `#173`）：全部轨/总线汇流之后、节拍器之前，
+//!      把 `out` 下混成单声道 → `process_insert_chain`（EQ → 混响 → 卷积）→ 复制两路
+//!      （没有已武装器件 ⇒ 整段跳过；见下面的"主总线的插入链"一节）
 //!    然后 **节拍器咔哒声**（`transport.metronome_enabled` 的投影；默认关 ⇒ 整段跳过）
 //!    然后 **主总线推子**（构造期标量，逐样本只乘）
 //!    再 **BusLimiter::process_stereo(block)**              ← 母线峰值限制（前瞻 33 帧）
@@ -126,6 +129,75 @@
 //! 处理型总线的电平帧改在 3a⁗ **插入之后**计量（读的是送进来的信号 ＋ 自己的声源），
 //! 仍满足"每量子每节点恰好一次"；其它轨道的取样点**一位没动**。
 //!
+//! ## ⭐ 主总线的插入链（任务单 `#173`）
+//!
+//! `#158` 把插入链接到了**总线**（aux 返回）上，但主总线仍是缺口：本片之前
+//! **实时与离线都跳过 master**（实时：逐轨循环 `*id == master ⇒ continue` ＋ 三张
+//! 武装表都不收它；离线：`render.rs` 的 master 分支写 `None`）⇒ 主总线上挂设备
+//! **两条路都听不到**。本片把两处一起补上：
+//!
+//! * **实时**：`render_branch` 的 **3a⁗⁗** —— 全部轨/总线汇流之后、节拍器 / 主总线
+//!   推子 / 推子自动化 / 限制器**之前**，对 `out`（本量子的立体声和）跑
+//!   [`process_insert_chain`]；
+//! * **离线**：`yeban-render` 的 `RenderPlan` 不再给 master 写 `None`
+//!   （`crates/yeban-render/src/render.rs`），master 与其它总线走同一条
+//!   "全部入边求和之后 → EQ → 混响 → 卷积"。
+//!
+//! ### 槽位：`INSERT_SLOTS = MAX_TRACK_SLOTS + 1 = 17`
+//!
+//! 主总线**不在** `RoutingPlan::slots()` 里（它是求和终点），因此**不占**一条轨的
+//! 插入槽位：三个武装池各多一格，主总线的槽位由 [`master_last`] 排在**最后**
+//! （轨道按键序 → 主总线收尾）⇒ `[..armed_*_slots]` 仍是**紧凑前缀**，
+//! ⛔ 无空洞、⛔ 无陈旧残留项（空洞里可能留着上一份快照的另一条轨 —— 那是安静但
+//! 真实的错）。三个武装循环仍只为**轨道**使用 0..16（守卫不变），主总线用第 17 格
+//! ⇒ 16 条轨各有器件时它仍然有位置。
+//!
+//! ### 裁决 **(甲)**：与 `#158` 的总线插入**同一条**（下混 → 插入 → 复制两路）
+//!
+//! 主总线是**立体声且已经求和**的信号，形状与 `#158` 的总线累积信号**同族** ⇒
+//! 沿用同一条裁决：`(L + R) · 0.5` 下混成单声道 → 过链 → 把处理后的中值复制回
+//! 两路。理由与代价（逐条）：
+//!
+//! 1. **零新器件状态**：主总线复用与轨/总线**同一套**三张武装表与**同一个**
+//!    [`process_insert_chain`] ⇒ `EngineRuntime` 只涨 **1792 B**（三个池各多一格 ＋
+//!    一个覆盖度计数；分项见 `tests/bus_insert.rs` 的 B5），而"左右各一套"要把
+//!    `ChannelStrip`（376 B）/ `Reverb`（1 312 B）/ `ConvolutionReverb`（5 192 B
+//!    内联部分）各备两份、两个池扩到 32 槽，且 `armed_*` 表与堆上的 IR 全部翻倍。
+//! 2. **CPU**：单声道只跑一条链；左右各一套是 2× 滤波器/压缩器/混响运算。
+//! 3. **与既有口径一致**：逐轨插入本来就是单声道（声相之前）、`#158` 的总线插入
+//!    也是单声道 ⇒ 主总线不引入第二套"立体声插入"语义。
+//! 4. **代价（如实登记）**：**只要主总线有已武装器件**（哪怕 `reverb_wet: 0`／
+//!    EQ 全 0），母线就不再保留左右差异（居中声相逐位不变；硬声相会变）。判据
+//!    `tests/master_insert.rs` 的 M5 把这条钉住（⛔ 不是"湿声为 0 就绕过下混"）。
+//! 5. **与导出的关系**：对齐的是"有/没有"插入与**链内顺序**（EQ → 混响 → 卷积），
+//!    ⛔ 不是逐位相同 —— 离线是**真立体声**插入（与 `#155`/`#158` 同一族差异，
+//!    报告 §7 登记）。
+//!
+//! ### 每量子**恰好一次**
+//!
+//! 主总线的链跑在**主线**那一次 [`render_branch`] 调用里（`process_master_chain =
+//! true`）；A/B 试听的第二分支传 `false`（它共用同一套器件状态 ⇒ 再跑一遍会让混响
+//! 尾巴以两倍速衰减）。⚠ 这是试听期**已知的**口径边界：试听期主总线的链处理的是
+//! **主线**材料，⛔ 不是 A/B 混合后的信号（与"电平读数归后渲染那条分支"同族）。
+//!
+//! ### 快路（默认工程一分钱都不多花）
+//!
+//! 三张武装表里**没有**主总线（无设备／全旁通／参数名一个都不认识）⇒
+//! [`has_armed_insert_devices`] 为假 ⇒ 下混/复制/器件推进**整段跳过**，
+//! `master_insert_frames` 恒为 0（判据 `tests/master_insert.rs` 的 M3/M4，
+//! 零分配场景是 `tests/rt_zero_alloc.rs` 的 ㊺）。默认工程（无设备）的三条承重
+//! 指纹与混音夹具 `sha256` 因此**逐位不变**。
+//!
+//! ### 读数边界
+//!
+//! 主总线的通道条与轨/总线**同一把尺子**：它计进 `insert_strip_frames` /
+//! `insert_gain_reductions` / `insert_max_reduction_db`，并**参与**
+//! `insert_current_reduction_db` / `insert_detector_level_db` 两条按量子的量规
+//! （取值口径仍是"本量子压得最狠 / 检波器最高的一台"，只是候选里现在多了主总线）
+//! —— 因为 3a⁗⁗ 在 3a' 的收尾读数**之前**跑。另有 `master_insert_frames` 作为
+//! "主总线的链真的跑过"的覆盖度计数（三条 `insert_*_frames` 混着轨/总线，回答不了
+//! 那个问题）。
+//!
 //! ## 电平口径
 //!
 //! 峰值 / 峰值保持（20 dB/s 指数释放）/ 块 RMS / 平滑 RMS（τ=300 ms）/
@@ -143,10 +215,10 @@
 //! - [`crate::metronome::render_quantum`]：`[usize; 4]` + `[f32; 4]`（本量子的拍点，栈上定长）
 //! - [`EngineRuntime::block`]：`AudioBlock<128>`（`[f32; 128]` × 2）
 //! - [`EngineRuntime::synth`]：`[TrackSlot; 16]` × `[Voice; 16]`（声部池，定长）
-//! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 16]`（每轨插入链，定长；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
-//! - [`EngineRuntime::reverb_pool`]：`[Reverb; 16]`（每轨混响，**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
+//! - [`EngineRuntime::armed_strips`]：`[(EntityId, Option<ChannelStrip>); 17]`（`INSERT_SLOTS`：轨道 ＋ 主总线；`ChannelStrip` 不含 `Vec`/`Box` ⇒ 无堆）
+//! - [`EngineRuntime::reverb_pool`]：`[Reverb; 17]`（`INSERT_SLOTS`；**延迟线在构造期分配**；回调内只 `set_params` 与逐样本处理）
 //! - [`EngineRuntime::reverb_scratch`]：`[[f32; 128]; 2]`（混响的单声道取中值暂存，栈/内联）
-//! - [`EngineRuntime::conv_pool`]：`[ConvolutionReverb; 16]`（每轨卷积混响；**IR 频谱与预延迟线
+//! - [`EngineRuntime::conv_pool`]：`[ConvolutionReverb; 17]`（`INSERT_SLOTS`；**IR 频谱与预延迟线
 //!   在构造期分配**，长度是引擎常量 ⇒ 回调内只做同长度的换 IR 与 `set_params`）
 //! - [`EngineRuntime::conv_scratch`]：`[f32; 256]`（卷积混响的**交错立体声**暂存，栈/内联）
 //! - [`EngineRuntime::synth`] 的 `drums`：`Box<[DrumMachine<16>; 16]>`（每槽一台鼓机，
@@ -205,6 +277,20 @@ const _: () = assert!(SCRATCH_EVENTS >= DEFAULT_BLOCK_FRAMES);
 /// 条轨分配声部槽，第 17 条轨本身就没有信号可补偿。槽位用尽的计划由
 /// [`EngineStats::pdc_unarmed_nodes`] 如实计数（**不静默**）。
 pub const PDC_SLOTS: usize = MAX_TRACK_SLOTS;
+
+/// 插入链器件池的**槽位数**：`MAX_TRACK_SLOTS` 条轨 ＋ **1 条主总线**
+/// （任务单 `#173`）。
+///
+/// 为什么主总线要**单独一格**而不是占用一条轨的槽位：主总线是汇流终点、不是
+/// 第 17 条轨（`RoutingPlan` 的 `slots()` 也把它排除在外）⇒ 让它挤掉一条轨的
+/// 插入槽会让"16 条轨各有器件"这件事少一条。多出来的一格在主总线**没有**器件时
+/// 只是定长数组末尾的一项，`armed_*_slots` 根本不会扫到它 ⇒ 默认路径零成本。
+///
+/// 代价（字节）：`EngineRuntime` 的三个内联池各多一格 —— `armed_strips` ＋392 B、
+/// `reverb_pool` ＋1 312 B、两张 `armed_*` 表 ＋约 48 B、IR 哈希表 ＋8 B
+/// （`conv_pool` 在堆上 ⇒ 运行时字段一个字节不涨）。实测读数见模块头的
+/// "主总线的插入链"一节与 `tests/bus_insert.rs` 的 B5。
+pub const INSERT_SLOTS: usize = MAX_TRACK_SLOTS + 1;
 
 /// 每条 PDC 延迟线的**最大补偿延迟**（采样点）。
 ///
@@ -525,6 +611,20 @@ pub struct EngineStats {
     ///
     /// 它是"容量/配置不足不静默"的机械形式：宁可少一个器件，也不做出听不出来的错。
     pub insert_convolution_rejects: u64,
+    /// ⭐ **主总线插入链**累计处理过的帧数（任务单 `#173`；0 = 从未处理）。
+    ///
+    /// 与 [`Self::insert_strip_frames`] / [`Self::insert_reverb_frames`] /
+    /// [`Self::insert_convolution_frames`] **分开口径**：那三个数把"轨与总线"的
+    /// 器件帧数混在一起，回答不了"主总线上挂的设备到底有没有接在最终输出上"。
+    ///
+    /// * 主总线**没有**已武装器件（默认工程）⇒ 3a⁗⁗ 整段跳过 ⇒ **恒为 0**；
+    /// * 主总线有器件 ⇒ **每量子恰好** `＋frames`（128）⇒ 窗口内
+    ///   `master_insert_frames == 量子数 × 128`，⛔ 不是 2×（每量子恰好一次）。
+    ///
+    /// 它是"实时与离线都处理主总线"这条接线在**实时侧的覆盖度见证**：没有它，
+    /// "主总线的 EQ 真的生效"就只能从音频输出反推（行为判据见
+    /// `tests/master_insert.rs` 的 M1/M2/M3）。
+    pub master_insert_frames: u64,
     /// **实时侧参数目标表**累计把增益乘过的帧数（[`crate::param`]；0 = 从未乘过）。
     ///
     /// 它是"`SetParam` 真的改变了声音"的**见证**：没有它，`events_applied` 只能证明
@@ -1184,6 +1284,48 @@ fn blend_equal_power(
     }
 }
 
+/// 本快照的插入器件**武装顺序**：全部轨道按键序，**主总线收尾**（任务单 `#173`）。
+///
+/// 为什么主总线必须排在最后：三张武装表（`armed_strips` / `armed_reverbs` /
+/// `armed_convs`）用"前 `n` 项有效"的**紧凑前缀**表示已武装集合
+/// （`[..armed_*_slots]`）。主总线若按 `BTreeMap` 键序插在中间，前缀里就会出现
+/// **空洞**，而空洞里的旧条目可能属于上一份快照的另一条轨 ⇒ 查找会命中陈旧器件
+/// （一个安静、但真实的错）。把它排在最后 ⇒ 前缀永远是"轨道 ＋ 可选的主总线"，
+/// ⛔ 无空洞、⛔ 无陈旧项、⛔ 不需要清空任何槽位。
+///
+/// ⚠ 借用：键引用取自 `BTreeMap::get_key_value`（**表里那一份**），⛔ 不是指向
+/// 临时值的引用 ⇒ 迭代器活得和 `current` 一样久。
+fn master_last(
+    current: &EngineSnapshot,
+) -> impl Iterator<Item = (&EntityId, &crate::insert::InsertParams)> {
+    let master = current.master();
+    current
+        .inserts()
+        .iter()
+        .filter(move |(id, _)| **id != master)
+        .chain(current.inserts().get_key_value(&master))
+}
+
+/// `node` 在本快照里**有没有已武装的插入器件**（通道条／混响／卷积混响任一）。
+///
+/// 这是"要把哪条节点的信号送过插入链"的**唯一**谓词：逐轨循环的 `process_bus_inserts`
+/// （`#158`）、3a⁗ 的 `processing_bus`（`#158`）与 3a⁗⁗ 的主总线判定（`#173`）都调它
+/// ⇒ 三处**不可能**一处跑、一处不跑。
+///
+/// 只扫 `armed_*_slots` 截出的**定长前缀**（默认工程全是空切片）⇒ 零分配、零锁、
+/// 零 I/O [MUST-GATE-001]。
+fn has_armed_insert_devices(share: &BranchShare<'_>, node: &EntityId) -> bool {
+    share.armed_strips[..*share.armed_insert_slots]
+        .iter()
+        .any(|(id, strip)| id == node && strip.is_some())
+        || share.armed_reverbs[..*share.armed_reverb_slots]
+            .iter()
+            .any(|(id, armed)| *armed && id == node)
+        || share.armed_convs[..*share.armed_conv_slots]
+            .iter()
+            .any(|(id, armed)| *armed && id == node)
+}
+
 /// **一条分支的共享混音状态**（[ARCH-RT-005] 片 2a 的借用视图）。
 ///
 /// ⚠ **为什么是字段视图而不是 `&mut self`**：混音要同时持有 `current: &EngineSnapshot`
@@ -1201,14 +1343,14 @@ struct BranchShare<'a> {
     /// ⚠ 两条分支（主线 ＋ 试听）共用**同一份**借用 ⇒ 试听期两个版本看到**同一份** CC 状态。
     control_change: &'a ControlChangeState,
     bank: &'a mut MeterBank<SCRATCH_METERS>,
-    armed_strips: &'a mut [(EntityId, Option<ChannelStrip>); MAX_TRACK_SLOTS],
+    armed_strips: &'a mut [(EntityId, Option<ChannelStrip>); INSERT_SLOTS],
     armed_insert_slots: &'a mut usize,
-    reverb_pool: &'a mut [Reverb; MAX_TRACK_SLOTS],
-    armed_reverbs: &'a mut [(EntityId, bool); MAX_TRACK_SLOTS],
+    reverb_pool: &'a mut [Reverb; INSERT_SLOTS],
+    armed_reverbs: &'a mut [(EntityId, bool); INSERT_SLOTS],
     armed_reverb_slots: &'a mut usize,
     reverb_scratch: &'a mut [[f32; DEFAULT_BLOCK_FRAMES]; 2],
     conv_pool: &'a mut Box<[ConvolutionReverb]>,
-    armed_convs: &'a mut [(EntityId, bool); MAX_TRACK_SLOTS],
+    armed_convs: &'a mut [(EntityId, bool); INSERT_SLOTS],
     armed_conv_slots: &'a mut usize,
     conv_scratch: &'a mut [f32; 2 * DEFAULT_BLOCK_FRAMES],
     armed_pan_l: &'a mut [ParamSmoother; MAX_TRACK_SLOTS],
@@ -1229,6 +1371,12 @@ struct BranchShare<'a> {
     insert_strip_frames: &'a mut u64,
     insert_reverb_frames: &'a mut u64,
     insert_convolution_frames: &'a mut u64,
+    /// ⭐ **主总线插入链**累计处理过的帧数（任务单 `#173`；0 = 从未处理）。
+    ///
+    /// 它是"主总线上的器件真的接在**最终输出**上"的覆盖度见证：主总线**没有**
+    /// 已武装器件时，`render_branch` 的 3a⁗⁗ 整段跳过 ⇒ 本计数**恒为 0**
+    /// （快路的机械形式）；有器件时**每量子恰好** `＋frames`（⛔ 不是 2×）。
+    master_insert_frames: &'a mut u64,
     pan_automation_frames: &'a mut u64,
     meter_capacity_drops: &'a mut u64,
     pan_gains: &'a mut [(EntityId, f32, f32); MAX_TRACK_SLOTS],
@@ -1239,16 +1387,18 @@ struct BranchShare<'a> {
 ///
 /// 返回值：本轨的**通道条**是否真的处理过帧（用于"本量子有没有器件工作过"的量规）。
 ///
-/// ## 两个调用点（任务单 `#158` 起）
+/// ## 三个调用点（任务单 `#158` 起，`#173` 增加第三个）
 ///
 /// | 调用点 | 输入 | 何时 |
 /// | :--- | :--- | :--- |
 /// | 3a'（逐轨循环） | 该轨自己的渲染结果 | **普通轨**（与 `#158` 之前逐字相同） |
 /// | 3a⁗（总线转发） | 总线暂存池里**下混**后的累积信号 | **处理型总线**（有器件 ＋ 有入边） |
+/// | 3a⁗⁗（主总线） | 全部轨/总线汇流之后的**下混**信号 | **主总线**有已武装器件时（每量子一次） |
 ///
-/// ⚠ 两个调用点**互斥**：处理型总线在 3a' 整段跳过。理由在 [`crate::rt`] 模块文档
-/// 的"每量子每节点恰好一次"一节：器件的延迟线/弹道是**时间状态**，一个量子跑两遍
-/// 会让混响尾巴以两倍速衰减。
+/// ⚠ 三个调用点**互斥**：处理型总线在 3a' 整段跳过；主总线在 3a' 本来就被
+/// `*id == master` 跳过 ⇒ 同一条器件的链每量子只推进一次。理由在 [`crate::rt`]
+/// 模块文档的"每量子每节点恰好一次"一节：器件的延迟线/弹道是**时间状态**，
+/// 一个量子跑两遍会让混响尾巴以两倍速衰减。
 ///
 /// ## 实时约束
 ///
@@ -1429,6 +1579,14 @@ fn render_branch(
     running: bool,
     quantum: u64,
     block_start_frame: u64,
+    // ⭐ **主总线插入链开关**（任务单 `#173`）：只有**主线**那一次调用传 `true`。
+    //
+    // A/B 试听的第二分支传 `false`：主总线的链属于"最终输出的那一条总线"，
+    // 每量子只能推进一次（否则混响尾巴会以两倍速衰减）；而试听期两条分支共用
+    // 同一套器件状态，主线的链已经处理过主线材料 ⇒ 第二分支⛔ 不再跑一遍。
+    // ⚠ 这是试听期**已知的**口径边界（与"电平读数归后渲染那条分支"同族），
+    // 登记在模块头的"主总线的插入链"一节。
+    process_master_chain: bool,
 ) -> usize {
     let master = current.master();
     let mut produced = 0usize;
@@ -1521,15 +1679,7 @@ fn render_branch(
         // 零分配、零锁、零 I/O [MUST-GATE-001]。
         let process_bus_inserts = buses_needed
             && routing.has_incoming_audio(&track)
-            && (share.armed_strips[..*share.armed_insert_slots]
-                .iter()
-                .any(|(id, strip)| id == &track && strip.is_some())
-                || share.armed_reverbs[..*share.armed_reverb_slots]
-                    .iter()
-                    .any(|(id, armed)| *armed && id == &track)
-                || share.armed_convs[..*share.armed_conv_slots]
-                    .iter()
-                    .any(|(id, armed)| *armed && id == &track));
+            && has_armed_insert_devices(share, &track);
         if running {
             // 真的合成：快照里的音符调度表 → 声部池 → 单声道、声相之前的样本。
             // 参数/音符的投影全部在控制线程完成；这里只有整数相位递推、
@@ -1802,18 +1952,11 @@ fn render_branch(
             if routes.is_empty() {
                 continue;
             }
-            // ⭐ 与逐轨循环里的 `process_bus_inserts` 是**同一个谓词**（同一组武装表、
-            // 同一个 `has_incoming_audio`）⇒ 两处不可能一处跑、一处不跑。
-            let processing_bus = routing.has_incoming_audio(node)
-                && (share.armed_strips[..*share.armed_insert_slots]
-                    .iter()
-                    .any(|(id, strip)| id == node && strip.is_some())
-                    || share.armed_reverbs[..*share.armed_reverb_slots]
-                        .iter()
-                        .any(|(id, armed)| *armed && id == node)
-                    || share.armed_convs[..*share.armed_conv_slots]
-                        .iter()
-                        .any(|(id, armed)| *armed && id == node));
+            // ⭐ 与逐轨循环里的 `process_bus_inserts` 是**同一个谓词**（同一个
+            // `has_armed_insert_devices`、同一个 `has_incoming_audio`）⇒ 三处
+            // （逐轨 / 3a⁗ / 3a⁗⁗ 的主总线）不可能一处跑、一处不跑。
+            let processing_bus =
+                routing.has_incoming_audio(node) && has_armed_insert_devices(share, node);
             if processing_bus {
                 // ① 下混（`(L + R) · 0.5`，裁决 **(甲)**）：先写进 `track_scratch`。
                 {
@@ -1874,6 +2017,58 @@ fn render_branch(
                 share.routing_buses,
             );
         }
+    }
+
+    // --- ⭐ 3a⁗⁗) 主总线的插入链（任务单 `#173`）：**汇流之后、最终输出之前** ---
+    //
+    // 位置（三条理由）：
+    // 1. 在 3a⁗ **之后** ⇒ 它看到的是**全部**轨与总线的和（aux 返回也已经在里面），
+    //    与离线渲染 `crates/yeban-render/src/render.rs` 的 `render_node`
+    //    "求和之后 → 插入"是**同一个点**；
+    // 2. 在节拍器 / 主总线推子 / 推子自动化 / 限制器**之前**（那几段在 `render_block`
+    //    里、本函数返回之后）：主总线的器件处理的是**工程材料**，节拍器是监听信号
+    //    —— 导出的 WAV 里没有节拍器，因此"器件看到什么"在两条路径上一致；
+    // 3. 在本量子**所有**其它链之后 ⇒ 器件的每量子推进次数与逐轨/总线链同口径。
+    //
+    // 形状（裁决 **(甲)**，与 `#158` 的总线插入**同一条**）：立体声和先按
+    // `(L + R) · 0.5` **下混**成单声道 → 过链 → 把处理后的中值**复制回两路**。
+    // ⛔ 不是"左右各跑一套"：那要给三件器件各备两份状态（`ChannelStrip` 376 B、
+    // `Reverb` 1 312 B、`ConvolutionReverb` 5 192 B 的内联部分＋各自的堆）⇒
+    // 插入池要再翻一倍，而收益只是"主总线保留左右差异"；本仓库的每轨插入本来
+    // 就是单声道（声相之前）⇒ 一致性 ＞ 立体声精度。代价如实登记：**只要主总线
+    // 有已武装器件**（哪怕 `reverb_wet: 0`／EQ 全 0），母线就不再保留左右差异
+    // （居中声相逐位不变；硬声相会变）。
+    //
+    // 快路：主总线没有已武装器件 ⇒ [`has_armed_insert_devices`] 为假
+    // ⇒ 下面的下混/复制/器件推进**整段跳过**，`master_insert_frames` 不增长
+    // ⇒ 默认工程（无设备）的输出与接线前**逐位相同**。
+    if process_master_chain && has_armed_insert_devices(share, &master) {
+        // ① 下混（`(L + R) · 0.5`，裁决 (甲)）：先写进 `track_scratch`。
+        {
+            let (bus_left, bus_right) = out.stereo_mut();
+            for frame in 0..frames {
+                share.track_scratch[frame] = (bus_left[frame] + bus_right[frame]) * 0.5;
+            }
+        }
+        // ② 插入链**一次**（与逐轨/总线调用点同一个助手、同一组计数/量规）。
+        if process_insert_chain(
+            share,
+            master,
+            frames,
+            &mut insert_current_db,
+            &mut insert_detector_db,
+        ) {
+            insert_current_seen = true;
+        }
+        // ③ 复制回两路（单声道 → L/R 同值）：下混的逆操作**不是**重建立体声，
+        // 而是把处理后的中值放到两路 —— 这就是"单声道主总线插入"的全部口径。
+        {
+            let (bus_left, bus_right) = out.stereo_mut();
+            bus_left[..frames].copy_from_slice(&share.track_scratch[..frames]);
+            bus_right[..frames].copy_from_slice(&share.track_scratch[..frames]);
+        }
+        // ④ 覆盖度见证：主总线的链真的处理了本量子的帧（每量子**恰好** +frames）。
+        *share.master_insert_frames = share.master_insert_frames.wrapping_add(frames as u64);
     }
 
     // --- 插入链动态级的**当前**衰减与**检波器**电平读数（3a' 的收尾）：
@@ -2077,8 +2272,12 @@ pub struct EngineRuntime {
     /// ⚠ 本字段是 `c792fdc` 的 `armed_compressors` 的**同一张表**改名而来：`c792fdc`
     /// 里槽位装的是裸 `Compressor`，本票装的是**含动态级**的 `ChannelStrip`
     /// （见 [`crate::insert`] 模块文档 §2）。表形状、槽位数、查找方式都没变。
-    armed_strips: [(EntityId, Option<ChannelStrip>); MAX_TRACK_SLOTS],
+    armed_strips: [(EntityId, Option<ChannelStrip>); INSERT_SLOTS],
     /// 本快照武装的插入器件条数（前 `n` 项有效）。
+    ///
+    /// ⭐ 任务单 `#173`：`n` 可以到 [`INSERT_SLOTS`]（`MAX_TRACK_SLOTS` 条轨 ＋
+    /// **1 条主总线**）。主总线的槽位总是排在**最后**（武装顺序 = 轨道按键序、
+    /// 主总线收尾）⇒ `[..n]` 永远是**紧凑前缀**，⛔ 没有空洞、⛔ 没有陈旧残留项。
     armed_insert_slots: usize,
     /// **混响延迟线池**：每槽一台，**构造期**按初始快照的采样率预分配
     /// [ARCH-RT-001, MUST-GATE-001]。
@@ -2087,12 +2286,12 @@ pub struct EngineRuntime {
     /// [`Reverb::set_sample_rate`] 会分配（并因此释放）延迟线，是本器件**唯一**的
     /// 分配点 ⇒ 它只在 [`Self::new`]（音频回调之外）调用一次。快照边界只允许
     /// `set_params`（标量赋值，零分配）。理由见 [`crate::insert`] 模块文档 §8.4 / §8.5。
-    reverb_pool: [Reverb; MAX_TRACK_SLOTS],
+    reverb_pool: [Reverb; INSERT_SLOTS],
     /// 本快照武装的混响 `(轨道, 是否武装)`；前 [`Self::armed_reverb_slots`] 项有效。
     ///
     /// ⚠ 槽位里装的**不是** `Option<Reverb>`：延迟线必须是**构造期**建好的那一批，
     /// 因此 `Option` 只表达"这一槽本快照是否武装、武装给哪条轨"，实例本身恒存在。
-    armed_reverbs: [(EntityId, bool); MAX_TRACK_SLOTS],
+    armed_reverbs: [(EntityId, bool); INSERT_SLOTS],
     /// 本快照武装的混响条数（前 `n` 项有效）。
     armed_reverb_slots: usize,
     /// 混响延迟线池武装时用的采样率（**构造期**定，运行期不变；§8.5）。
@@ -2128,7 +2327,7 @@ pub struct EngineRuntime {
     ///
     /// 与 [`Self::armed_reverbs`] 同款：槽位里装的**不是** `Option<ConvolutionReverb>`
     /// —— 缓冲必须是**构造期**建好的那一批，`Option` 只表达"这一槽本快照是否武装"。
-    armed_convs: [(EntityId, bool); MAX_TRACK_SLOTS],
+    armed_convs: [(EntityId, bool); INSERT_SLOTS],
     /// 本快照武装的卷积混响条数（前 `n` 项有效）。
     armed_conv_slots: usize,
     /// 每个槽位里**当前装着的那一份 IR** 的内容标识（[`ConvolutionPlan::ir_hash`]）。
@@ -2140,7 +2339,7 @@ pub struct EngineRuntime {
     ///
     /// 初值 `0` 与任何真实 IR 的哈希都不同（FNV-1a 的偏移基值不是 0）⇒ 未武装过的槽位
     /// 第一次一定会走"重设 IR"那一支。
-    armed_conv_ir_hashes: [u64; MAX_TRACK_SLOTS],
+    armed_conv_ir_hashes: [u64; INSERT_SLOTS],
     /// 卷积混响池武装时用的采样率（**构造期**定，运行期不变）。
     ///
     /// ⚠ 它同时钉住 IR 的**帧数**（`采样率 ÷ 10`）⇒ 换采样率必须整段不武装，
@@ -2175,6 +2374,12 @@ pub struct EngineRuntime {
     /// 因配置不可用而未武装的卷积混响设备次数
     /// （与 [`EngineStats::insert_convolution_rejects`] 同源）。
     insert_convolution_rejects: u64,
+    /// ⭐ **主总线插入链**累计处理过的帧数（任务单 `#173`；与
+    /// [`EngineStats::master_insert_frames`] 同源）。
+    ///
+    /// 口径：主总线有已武装器件时**每量子** `＋frames`（恰好一次）；没有器件时
+    /// 恒为 0 ⇒ 它就是"主总线的快路真的被走 / 真的被绕过"的机械读数。
+    master_insert_frames: u64,
     /// **实时侧参数目标表**（[`crate::param`]）：`SetParam` → 逐样本平滑的逐轨增益乘子。
     ///
     /// 与 [`Self::armed_strips`] 的差别：这张表由**事件**（不是快照）驱动
@@ -2300,7 +2505,7 @@ impl EngineRuntime {
     /// ⇒ `new_boxed` **调用期峰值** = `304 + 176416 + 129984` = `306704 B`，其中
     /// 一个 `EngineRuntime` 都不在栈上；改动前 `new` 的调用期峰值 =
     /// `359312 + 129984` = `489296 B`（⚠ 两个字面读数是 `#107` **之前**实测的栈帧，⛔ 未重测）。
-    /// 而**按值调用者**还要多留一份 180144 B 的
+    /// 而**按值调用者**还要多留一份 181936 B 的
     /// 返回值位 —— 那一份是装箱消掉的（见判据 `tests/rt_new_boxed.rs` 的阈值差 `176 KiB`）。
     ///
     /// # Panics
@@ -2315,7 +2520,7 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Box<Self> {
-        // 堆上只要一块 `size_of::<Self>()`（180144 B）；栈帧里只有一个 `Box` 指针。
+        // 堆上只要一块 `size_of::<Self>()`（`#173` 之后 181936 B）；栈帧里只有一个 `Box` 指针。
         let mut place = Box::<Self>::new_uninit();
         // SAFETY: `write_into` 的有效性前提由本函数满足（`place` 是堆上一块有效、对齐、
         // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
@@ -2328,7 +2533,7 @@ impl EngineRuntime {
 
     /// 构造期**唯一的**字段写入点（[`Self::new`] 与 [`Self::new_boxed`] 共用）。
     ///
-    /// 字段清单与结构体定义**同名、同序**（78 个字段）⇒ "`EngineRuntime` 由什么组成"
+    /// 字段清单与结构体定义**同名、同序**（80 个字段；`#173` 起现读，含 `@drained` 的 `reverb_pool`）⇒ "`EngineRuntime` 由什么组成"
     /// 只有一处描述，⛔ 不会出现两份会漂移的字段表。
     ///
     /// ## ⭐ 字段完备性是**编译期断言**（⛔ 不是文本守卫）
@@ -2367,7 +2572,7 @@ impl EngineRuntime {
         // 混响池：**逐台就地写进目的地**，⛔ 不像原来那样先建一个 `[Reverb; 16]`
         // 的栈上临时量（那一个就是 20 992 B）。分配次数、分配顺序与原来逐字相同：
         // 每台 `Reverb::new()` 之后立刻 `set_sample_rate`（唯一的 `Vec` 分配点）。
-        for slot_index in 0..MAX_TRACK_SLOTS {
+        for slot_index in 0..INSERT_SLOTS {
             let mut reverb = Reverb::new();
             // 构造期允许分配（`Vec` 延迟线在这里建好，回调内一次也不重建）。
             reverb.set_sample_rate(armed_reverb_sample_rate as f32);
@@ -2393,8 +2598,8 @@ impl EngineRuntime {
         let placeholder = vec![0.0f32; conv_placeholder_frames];
         // ⚠ 逐台建、再 `into_boxed_slice`，**不**写 `Box::new([...; 16])`：后者会先造一个
         // 约 81 KiB 的栈上临时量（那正是本节要避免的东西，见字段文档的栈溢出读数）。
-        let mut conv_pool: Vec<ConvolutionReverb> = Vec::with_capacity(MAX_TRACK_SLOTS);
-        for _ in 0..MAX_TRACK_SLOTS {
+        let mut conv_pool: Vec<ConvolutionReverb> = Vec::with_capacity(INSERT_SLOTS);
+        for _ in 0..INSERT_SLOTS {
             let mut conv = ConvolutionReverb::new();
             conv.set_sample_rate(armed_conv_sample_rate as f32);
             conv.set_impulse_response(&placeholder, &placeholder, &placeholder, &placeholder);
@@ -2540,7 +2745,7 @@ impl EngineRuntime {
             // ⚠ `reverb_pool` **不在这里**：它已经在上面逐台就地写好了（那一段就是本字段）。
             put!(
                 armed_reverbs,
-                [(EntityId::default(), false); MAX_TRACK_SLOTS]
+                [(EntityId::default(), false); INSERT_SLOTS]
             );
             put!(armed_reverb_slots, 0);
             put!(armed_reverb_sample_rate, armed_reverb_sample_rate);
@@ -2548,9 +2753,9 @@ impl EngineRuntime {
             // 卷积混响池：**构造期**按初始快照的采样率把占位 IR 与预延迟线全部建好
             // （回调内只做同长度的换 IR 与 `set_params`）。
             put!(conv_pool, conv_pool);
-            put!(armed_convs, [(EntityId::default(), false); MAX_TRACK_SLOTS]);
+            put!(armed_convs, [(EntityId::default(), false); INSERT_SLOTS]);
             put!(armed_conv_slots, 0);
-            put!(armed_conv_ir_hashes, [0; MAX_TRACK_SLOTS]);
+            put!(armed_conv_ir_hashes, [0; INSERT_SLOTS]);
             put!(armed_conv_sample_rate, armed_conv_sample_rate);
             put!(conv_scratch, [0.0; 2 * DEFAULT_BLOCK_FRAMES]);
             put!(insert_gain_reductions, 0);
@@ -2564,6 +2769,7 @@ impl EngineRuntime {
             put!(insert_reverb_rate_rejects, 0);
             put!(insert_convolution_frames, 0);
             put!(insert_convolution_rejects, 0);
+            put!(master_insert_frames, 0);
             // 参数目标表：**构造期**建满（回调内惰性分配的槽位都落在这张定长表里）。
             put!(params, params);
             put!(armed_master, armed_master);
@@ -2909,6 +3115,7 @@ impl EngineRuntime {
             insert_reverb_rate_rejects: self.insert_reverb_rate_rejects,
             insert_convolution_frames: self.insert_convolution_frames,
             insert_convolution_rejects: self.insert_convolution_rejects,
+            master_insert_frames: self.master_insert_frames,
             param_gain_frames: self.params.gain_frames(),
             param_master_gain_frames: self.params.master_gain_frames(),
             param_gain_rejects: self.params.rejections(),
@@ -3437,6 +3644,7 @@ impl EngineRuntime {
             conv_scratch,
             insert_convolution_frames,
             insert_convolution_rejects,
+            master_insert_frames,
             params,
             armed_master,
             // 声相一族（P4=(b)）：事件循环要写平滑器的目标，逐样本路径要推进它们。
@@ -3809,8 +4017,11 @@ impl EngineRuntime {
                 // 动态级（`crate::insert` 模块文档 §2）。只写压缩器参数的设备投影成
                 // "只开动态级"的通道条 ⇒ 那条路径的输出与 `c792fdc` **逐位相同**。
                 *armed_insert_slots = 0;
-                for (id, insert) in current.inserts() {
-                    if *id == master || *armed_insert_slots >= MAX_TRACK_SLOTS {
+                // ⭐ 任务单 `#173`：主总线**排在最后**（轨道按键序，主总线收尾）⇒
+                // `[..armed_insert_slots]` 仍然是**紧凑前缀**；主总线占的是多出来的
+                // 第 17 格（[`INSERT_SLOTS`]），⛔ 不挤掉任何一条轨的槽位。
+                for (id, insert) in master_last(current) {
+                    if *armed_insert_slots >= MAX_TRACK_SLOTS && *id != master {
                         continue;
                     }
                     let Some(params) = insert.strip() else {
@@ -3850,8 +4061,9 @@ impl EngineRuntime {
                 // 整段跳过（不是"参数取成透明"）⇒ 那类轨的输出与接线前**逐位相同**。
                 *armed_reverb_slots = 0;
                 if current.sample_rate() == *armed_reverb_sample_rate {
-                    for (id, insert) in current.inserts() {
-                        if *id == master || *armed_reverb_slots >= MAX_TRACK_SLOTS {
+                    // ⭐ 任务单 `#173`：主总线排在最后（同上，紧凑前缀）。
+                    for (id, insert) in master_last(current) {
+                        if *armed_reverb_slots >= MAX_TRACK_SLOTS && *id != master {
                             continue;
                         }
                         let Some(params) = insert.reverb() else {
@@ -3896,8 +4108,9 @@ impl EngineRuntime {
                 // 路径整段跳过（不是"参数取成透明"）⇒ 那类轨的输出与接线前**逐位相同**。
                 *armed_conv_slots = 0;
                 if current.sample_rate() == *armed_conv_sample_rate {
-                    for (id, insert) in current.inserts() {
-                        if *id == master || *armed_conv_slots >= MAX_TRACK_SLOTS {
+                    // ⭐ 任务单 `#173`：主总线排在最后（同上，紧凑前缀）。
+                    for (id, insert) in master_last(current) {
+                        if *armed_conv_slots >= MAX_TRACK_SLOTS && *id != master {
                             continue;
                         }
                         let Some(plan) = insert.convolution() else {
@@ -3950,7 +4163,7 @@ impl EngineRuntime {
                     let unarmed = current
                         .inserts()
                         .iter()
-                        .filter(|(id, insert)| **id != master && insert.convolution().is_some())
+                        .filter(|(_, insert)| insert.convolution().is_some())
                         .count() as u64;
                     *insert_convolution_rejects = insert_convolution_rejects.wrapping_add(unarmed);
                 }
@@ -4019,6 +4232,7 @@ impl EngineRuntime {
                     insert_strip_frames: &mut *insert_strip_frames,
                     insert_reverb_frames: &mut *insert_reverb_frames,
                     insert_convolution_frames: &mut *insert_convolution_frames,
+                    master_insert_frames: &mut *master_insert_frames,
                     pan_automation_frames: &mut *pan_automation_frames,
                     meter_capacity_drops: &mut *meter_capacity_drops,
                     pan_gains: &mut pan_gains,
@@ -4032,6 +4246,8 @@ impl EngineRuntime {
                     running,
                     quantum,
                     block_start_frame,
+                    // ⭐ 主线：主总线的插入链在本量子里跑**一次**（任务单 `#173`）。
+                    true,
                 );
 
                 // ---- [ARCH-RT-005] 片 2b/2c：**并发渲染第二分支 + 等功率混合** ----
@@ -4066,6 +4282,9 @@ impl EngineRuntime {
                         running,
                         quantum,
                         block_start_frame,
+                        // ⚠ 试听分支：链已经由主线那次推进过 ⇒ 这里⛔ 不再跑第二遍
+                        // （否则主总线混响尾巴会以两倍速衰减）。口径见模块头。
+                        false,
                     );
                     blend_equal_power(
                         block,
@@ -7078,6 +7297,7 @@ mod tests {
                 insert_strip_frames,
                 insert_reverb_frames,
                 insert_convolution_frames,
+                master_insert_frames,
                 pan_automation_frames,
                 meter_capacity_drops,
                 ..
@@ -7124,6 +7344,7 @@ mod tests {
                 insert_strip_frames,
                 insert_reverb_frames,
                 insert_convolution_frames,
+                master_insert_frames,
                 pan_automation_frames,
                 meter_capacity_drops,
                 pan_gains: &mut pan_gains,
@@ -7137,6 +7358,9 @@ mod tests {
                 running,
                 quantum,
                 block_start_frame,
+                // ⚠ 与生产主线同参：主总线链**开**。本判据的夹具没有主总线器件
+                // ⇒ 那一段是快路（⛔ 一个样本都不碰）⇒ 与下面的旧内联参照仍逐位相同。
+                true,
             );
             let _ = produced;
             let (left, right) = out.stereo_mut();

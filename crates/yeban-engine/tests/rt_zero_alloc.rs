@@ -63,6 +63,7 @@
 //! | ㊷ | **实时音频片段**（`ClipContent::Audio`，任务单 `#135`）1 000 量子：单声道 `0.5` 常量 PCM（`Arc<[f32]>`，48 kHz，5 s ⇒ 覆盖**整段**摆放）＋ 摆放起点 tick 0 / 时值 9 600 tick（240 000 帧） | `rt.rs::render_branch` 的 ⭐ 音频片段累加分支（`audio_clip::mix_into`：绝对帧 → 素材帧 → 交织下标 → 一次乘加）＋ 快照构造期的摆放投影（`project_audio_clips` 的 tick→帧换算、增益门、全序排序；这些在**窗口之外**，但窗口里读到的区间与 PCM 只来自它们）。⚠ **没有**逐样本游标可覆盖：位置由走带绝对帧导出 ⇒ `EngineRuntime` **＋0 B**。覆盖度见证＝窗口**最后一个**量子 256 个样本全非零且峰值 ≈ `0.5 × 1/√2`。行为判据在 `tests/audio_clip_render.rs` |
 //! | ㊸ | **发送/总线路由** 2 000 量子（任务单 `#154`：轨 A `SendToAux` → aux 总线暂存 → `BusToMaster` → master） | `rt.rs::render_branch` 的按边搬运（`render_panned_into` → `route_panned`）与逐轨循环之后的总线转发阶段；两段都只用**构造期预分配**的总线暂存池（`Box<[_; 16]>`）⇒ 四元组全 0。覆盖度见证＝`uses_buses == true` 且窗口内总能量 > 0。行为判据在 `tests/bus_routing.rs` |
 //! | ㊹ | **总线插入链** 2 000 量子（任务单 `#158`：轨 A `SendToAux` → **挂湿混响**的 aux → `BusToMaster` → master） | `rt.rs::render_branch` 的"处理型总线"判定（三次定长武装表扫描 ＋ `RoutingPlan::has_incoming_audio`）＋ 3a⁗ 的"下混 → `process_insert_chain`（通道条/混响/卷积）→ 复制两路 → 计量"；所有缓冲都在构造期预分配（混响延迟线在 `EngineRuntime::new`）⇒ 四元组全 0。覆盖度见证＝`uses_buses == true`、窗口内总能量 > 0、且 `insert_reverb_frames` 在窗口内**恰好**增加 `2 000 × 128`（每量子每节点一次；路径没跑到时它是 0，逐轨＋转发各跑一次时是 2×）。行为判据在 `tests/bus_insert.rs` |
+//! | ㊺ | **主总线插入链** 2 000 量子（任务单 `#173`：主总线轨挂 EQ ＋ 湿混响 ＋ 卷积混响三台设备，轨 A 直连 master） | `rt.rs::render_branch` 的 3a⁗⁗（`has_armed_insert_devices(master)` → 下混 `(L+R)·0.5` → `process_insert_chain`（通道条/混响/卷积）→ 复制两路 → `master_insert_frames += frames`）；主总线的槽位是**构造期**预分配的 `INSERT_SLOTS = 17` 那一格（混响延迟线/IR 频谱在 `EngineRuntime::new` 建好）⇒ 四元组全 0。覆盖度见证＝`master_insert_frames` 与三个 `insert_*_frames` 在窗口内**都恰好**增加 `2 000 × 128`（路径没跑到时它们是 0；每量子跑两遍时是 2×）。行为判据在 `tests/master_insert.rs`（M1~M5） |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -116,6 +117,8 @@
 //! | I17 | `rt.rs::render_branch` 里把 `mix_into` 的 `block_start_frame` 实参写成 `0`（任务单 `#135` 的注入 R2：`block_end` 变成 128 ⇒ 起点 tick ≠ 0 的摆放整段被跳过） | **仅** `tests/audio_clip_render.rs` 的 A3／A4（行为分量；本文件的四元组全部不动 —— 分配/锁/I-O 与位置正确性无关） |
 //! | I18 | `rt.rs::process_insert_chain` 的混响级里加一次 `Vec::<u8>::with_capacity(1)`（任务单 `#158` 的注入 A） | ㊹ 的**分配/释放**分量（若只在本文件跑，㉒ 与 ㊹ 同时红——两者都会走到这条链；㊹ 是**新的**总线调用点） |
 //! | I19 | `rt.rs::render_branch` 的逐轨插入段删掉 `!process_bus_inserts`（任务单 `#158` 的注入 B：处理型总线在逐轨与转发各跑一次） | ㊹ 的**覆盖度见证**（`insert_reverb_frames` 变成 `2 × 2 000 × 128`；四元组仍全 0 —— 这不是分配违规，是"每量子每节点恰好一次"被破坏） |
+//! | I20 | `rt.rs::render_branch` 的 3a⁗⁗（主总线插入）里加一次 `Vec::<u8>::with_capacity(1)`（任务单 `#173` 的注入 A） | **仅** ㊺ 的**分配/释放**分量 —— ㉒/㊹ 的夹具里主总线没有设备 ⇒ 走不到 3a⁗⁗ ⇒ 它们**不动**（这就是新场景的必要性） |
+//! | I21 | `rt.rs` 的三个插入武装循环恢复 `*id == master ⇒ continue`（任务单 `#173` 的注入 B：主总线设备不被武装，= `#173` 之前的行为） | ㊺ 的**覆盖度见证**（`master_insert_frames` 与三个 `insert_*_frames` 全为 0）；同族的 `tests/master_insert.rs` M1~M3 同时红，`tests/insert_chain.rs` 的 6a（离线）也红 |
 //!
 //! # I14 的实测记录（`line/engine-12`：电平 SPSC 丢帧读数）
 //!
@@ -268,6 +271,8 @@ const PURE_QUANTA: u64 = 10_000;
 const BUS_ROUTING_QUANTA: u64 = 2_000;
 /// ⭐ ㊹ **总线插入链**窗口的量子数（任务单 `#158`）。
 const BUS_INSERT_QUANTA: u64 = 2_000;
+/// ⭐ ㊺ **主总线插入链**窗口的量子数（任务单 `#173`）。
+const MASTER_INSERT_QUANTA: u64 = 2_000;
 /// ② 逐步交换次数（每次交换后处理 1 个量子）。
 const SWAP_STEPWISE: u64 = 63;
 /// ② 高频交换次数（每量子一发一换）。
@@ -4156,6 +4161,139 @@ fn scenario_bus_insert(report: &mut Report) {
     );
 }
 
+/// ⭐ ㊺ **主总线插入链**（任务单 `#173`）：主总线轨挂 **EQ ＋ 湿混响 ＋ 卷积混响**
+/// 三台设备，轨 A 直连 master，2 000 个量子。
+///
+/// 为什么需要这条场景：本片在实时侧新增了 3a⁗⁗（汇流之后的下混 → 插入链 → 复制两路
+/// → `master_insert_frames` 计数）。它只碰**构造期**预分配的缓冲：主总线的槽位是
+/// `INSERT_SLOTS = 17` 的最后一格，混响延迟线/IR 频谱在 `EngineRuntime::new` 里建好
+/// ⇒ 四元组必须全 0。覆盖度见证＝`master_insert_frames` 与三个 `insert_*_frames`
+/// 在窗口内**都恰好**增加 `QUANTA × 128`（路径没跑到时是 0；每量子跑两遍时是 2×）。
+fn scenario_master_insert(report: &mut Report) {
+    let fixture = note_project(&[NoteSpec::at(0, 960, 60, 40)]);
+    let master = fixture.master;
+    let mut project = fixture.project;
+    // 三台设备同时挂在主总线上：通道条（EQ）＋ 混响（湿）＋ 卷积混响（湿）。
+    project
+        .tracks
+        .get_mut(&master)
+        .expect("夹具里必须有主总线轨")
+        .devices = vec![
+        DeviceDefinition {
+            id: EntityId::new(),
+            name: "Master EQ".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "eq_low_gain".to_owned(),
+                    value: 12.0,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "eq_low_freq".to_owned(),
+                    value: 200.0,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        },
+        DeviceDefinition {
+            id: EntityId::new(),
+            name: "Master Reverb".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![
+                ParameterValue {
+                    name: "reverb_size".to_owned(),
+                    value: 0.8,
+                    unit: None,
+                },
+                ParameterValue {
+                    name: "reverb_wet".to_owned(),
+                    value: 1.0,
+                    unit: None,
+                },
+            ],
+            latency_samples: 0,
+        },
+        DeviceDefinition {
+            id: EntityId::new(),
+            name: "Master Convolution".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: vec![ParameterValue {
+                name: "conv_wet".to_owned(),
+                value: 1.0,
+                unit: None,
+            }],
+            latency_samples: 0,
+        },
+    ];
+    // 构造期（窗口之外）确认：这份夹具的投影里**真的有**主总线的链。
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具必须能编译成快照");
+    let master_armed = snapshot.inserts().contains_key(&master);
+    drop(snapshot);
+    let mut rig = Rig::new(&project, 1, 64);
+    rig.preheat();
+    let before = rig.stats();
+
+    let mut energy = 0.0f64;
+    let reading = window(|| {
+        for _ in 0..MASTER_INSERT_QUANTA {
+            rig.step();
+            energy += rig
+                .output
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+        }
+    });
+    let after = rig.stats();
+    let master_frames = after
+        .master_insert_frames
+        .saturating_sub(before.master_insert_frames);
+    let strip_frames = after
+        .insert_strip_frames
+        .saturating_sub(before.insert_strip_frames);
+    let reverb_frames = after
+        .insert_reverb_frames
+        .saturating_sub(before.insert_reverb_frames);
+    let convolution_frames = after
+        .insert_convolution_frames
+        .saturating_sub(before.insert_convolution_frames);
+    let expected_frames = MASTER_INSERT_QUANTA * DEFAULT_BLOCK_FRAMES as u64;
+    let mut scenario = Scenario::new("㊺主总线插入链");
+    scenario.absorb(MASTER_INSERT_QUANTA, &reading);
+    scenario.note(format!(
+        "{MASTER_INSERT_QUANTA} 量子；投影含主总线链={master_armed}；窗口内总能量={energy:.6}；\
+         窗口内 master_insert_frames={master_frames}（期望 {expected_frames}）；\
+         insert strip/reverb/convolution={strip_frames}/{reverb_frames}/{convolution_frames}\
+         （期望各 {expected_frames}）"
+    ));
+    report.scenario(
+        "㊺",
+        "[MUST-GATE-001] 主总线插入链 2 000 量子（EQ ＋ 湿混响 ＋ 卷积 → master）：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㊺c",
+        "覆盖度：投影含主总线链、窗口内真的出声、且四路计数都每量子恰好一次",
+        master_armed
+            && energy > 0.0
+            && master_frames == expected_frames
+            && strip_frames == expected_frames
+            && reverb_frames == expected_frames
+            && convolution_frames == expected_frames,
+        format!(
+            "投影含主总线链={master_armed}、窗口内总能量={energy:.6}、\
+             master_insert_frames={master_frames}（期望 {expected_frames}）、\
+             strip/reverb/convolution={strip_frames}/{reverb_frames}/{convolution_frames}\
+             （期望各 {expected_frames}）"
+        ),
+    );
+}
+
 fn main() -> ExitCode {
     run_main_with_rt_stack(judgement_body)
 }
@@ -4193,6 +4331,7 @@ fn judgement_body() -> ExitCode {
     scenario_sfz_instrument(&mut report);
     scenario_bus_routing(&mut report);
     scenario_bus_insert(&mut report);
+    scenario_master_insert(&mut report);
     scenario_audition_branch(&mut report);
     scenario_audition_zero_alloc(&mut report);
     scenario_audition_crossfade_window(&mut report);
