@@ -12,7 +12,10 @@
 //! | R5 | 路由计划本身：发送边的目的地与线性增益、默认直连、拓扑序 | 计划构造漏边 / 默认项缺失 |
 //!
 //! 基线（改动前、同一夹具、同一量子数）：`sha256 = 9ca8bdcd…8065e0`、
-//! `FNV-1a 64 = 0x39d201894a7a3dfd`；改动后两者逐字复现（见交付报告 §3）。
+//! `FNV-1a 64 = 0x39d201894a7a3dfd` —— 这两个都是 **`aarch64`/macOS** 的读数，
+//! 在 `4ed3adf3` 上逐字复现。⭐ `#169` 的取证：同一份代码在 `x86_64` 上不是这两个数，
+//! 且 Linux（glibc）与 Windows（ucrt）**彼此也不同**（宿主 libm 的最后一位）
+//! ⇒ 指纹按平台钉，见 [`existing_mix_fnv`]；与平台无关的那条判据在 R1b。
 //!
 //! ⚠ **本片（`#154`）不证明**"aux 上能听到混响"：那时总线上还没有效果器调用点
 //! （报告 §7）。本片证明的是"信号真的被搬到了那条总线上"。⭐ **`#158` 已把那条
@@ -32,10 +35,52 @@ use yeban_model::{
     RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
 };
 
-/// 既有混音夹具在**改动前**实测的 FNV-1a 64（逐位指纹）。
-const EXISTING_MIX_FNV: u64 = 0x39d2_0189_4a7a_3dfd;
+/// 既有混音夹具在**改动前**实测的 FNV-1a 64（逐位指纹）—— **按平台**各钉一个读数。
+///
+/// ## 为什么不是一个常数（`#169` 的取证，⭐ 推翻了"`#161` 让基线过期"的假设）
+///
+/// 渲染链路里仍有**宿主 libm** 调用：[`yeban_engine::mixer::pan_gains`] 的 `cos`/`sin`、
+/// `yeban_dsp::oscillator` 的波表 `sin`、`yeban_dsp::math` 的 `exp2`/`log2`。
+/// 它们的最后一位随宿主 libm 实现而变 —— 正是 [ARCH-DET-001] 想禁用的那一类。
+/// **同一份代码**（`4ed3adf3`）三档实测：
+///
+/// | 平台 | 指纹 | 出处（两次 CI 读数一致） |
+/// | :--- | :--- | :--- |
+/// | `aarch64` / macOS | `0x39d201894a7a3dfd` | `#154` 的原始基线；本轮在 `4ed3adf3` 复算，逐位相同 |
+/// | `x86_64` / Linux（glibc） | `0xc3cd006ff3a94365` | run `39067449297`（`4ed3adf3`）＝ `14108933688450958181`；run `39039576568`（`fd33ff0f`）同值 |
+/// | `x86_64` / Windows（ucrt） | `0xca85e11740967fad` | run `39067449297`（`4ed3adf3`）＝ `14593317657548062637`；run `39039576568`（`fd33ff0f`）同值 |
+///
+/// 三档的 `peak` **逐位相同**（`0.9000465`）⇒ 差异只落在最低位，**不是**路由或增益变化。
+/// ⚠ Linux 与 Windows **不是同一个值** ⇒ 一个常数在三档里必然有两档红，
+/// "重钉一个数"在这三档上不可能同时成立（`#169` 的核心读数）。
+///
+/// ⚠ 这条红**早于 `#161`**：`#154` 自己的 CI（`fd33ff0f`，run `39039576568`）在
+/// Linux/Windows 两腿就红了；而 `#161` 只改 `samples::default_project()`，
+/// 本文件的夹具是 [`build_project`] **自造**的（`..YebanProjectV1::default()` ＋ 显式
+/// 轨/节点/边），**从不调用**那个样本 ⇒ `#161` 不可能改变这里的一个样本。
+///
+/// 未实测的平台返回 `None` ⇒ 只跑**与平台无关**的那两条（默认路径 == 显式单位直连、
+/// 峰值容差），并打印本机读数（与 `crates/yeban-render/tests/l1_digest_parity.rs`
+/// 的"未测平台 SKIP"同一口径）。
+const fn existing_mix_fnv() -> Option<u64> {
+    if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+        Some(0x39d2_0189_4a7a_3dfd)
+    } else if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
+        Some(0xc3cd_006f_f3a9_4365)
+    } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
+        Some(0xca85_e117_4096_7fad)
+    } else {
+        None
+    }
+}
 
-/// 既有混音夹具在**改动前**实测的 `sha256`（外部 `shasum -a 256` 对原始 `f32` 字节）。
+/// 既有混音夹具在**改动前**实测的 `sha256`（外部 `shasum -a 256` 对原始 `f32` 字节，
+/// 布局为 `left` 全部在前、`right` 全部在后，各 61 440 字节）。
+///
+/// ⚠ 这个值与 [`existing_mix_fnv`] 一样是**平台读数**（它就是对同一批样本做的哈希）：
+/// 本轮在 `aarch64`/macOS 上对 HEAD 重算，逐字复现 `9ca8bdcd…8065e0`
+/// ⇒ `#154` 的这一档**没有**陈旧（`#158`/`#161` 都没碰到默认路径）。
+/// x86_64 上不是这个数（同一根因）⇒ 本文件**只打印、不断言**它；断言的是指纹。
 const EXISTING_MIX_SHA256: &str =
     "9ca8bdcdb48409257d05609630ca975012fe0cf7d33d1aa83f49ec00818065e0";
 
@@ -217,7 +262,13 @@ fn r1_missing_edges_are_bit_identical_to_the_explicit_unit_direct_edge() {
     );
 }
 
-/// R1b：**既有混音夹具**与改动前的 `sha256` 基线逐位相同（FNV 指纹是它的内部判据）。
+/// R1b：**既有混音夹具**与改动前的基线一致。
+///
+/// 三条判据，按"是否依赖平台"分开：
+/// 1. **与平台无关**：默认路径 ≡ 同一夹具换一条**显式单位 `TrackToBus`** 边（逐位）。
+///    默认路由一旦被改坏（换目的地 / 改增益 / 多一条边），这条必红 —— 三档都跑；
+/// 2. **与平台无关**：峰值仍是 `0.9000465`（容差 `1e-6`）⇒ 增益/求和路径没变；
+/// 3. **已实测平台**：逐位等于该平台的改动前读数（见 [`existing_mix_fnv`]）。
 #[test]
 fn r1b_existing_mix_fixture_matches_the_pre_change_baseline() {
     let notes = [
@@ -227,28 +278,58 @@ fn r1b_existing_mix_fixture_matches_the_pre_change_baseline() {
     ];
     let master = EntityId::new();
     let track = EntityId::new();
-    let project = build_project(
-        master,
-        &[TrackSpec {
-            id: track,
-            kind: TrackKind::Midi,
-            pan: 0.0,
-            notes: notes.to_vec(),
-        }],
-        &[],
-    );
+    let tracks = [TrackSpec {
+        id: track,
+        kind: TrackKind::Midi,
+        pan: 0.0,
+        notes: notes.to_vec(),
+    }];
+    let project = build_project(master, &tracks, &[]);
     let out = render_project(&project);
+    // 同一夹具 ＋ 一条**显式**的单位 `TrackToBus` 边：`#154` 之前的行为。
+    let explicit = build_project(
+        master,
+        &tracks,
+        &[EdgeSpec {
+            source: track,
+            destination: master,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        }],
+    );
+    let explicit_out = render_project(&explicit);
+    let baseline = existing_mix_fnv();
+    let baseline_text = match baseline {
+        Some(value) => format!("{value:#018x}"),
+        None => "未实测".to_owned(),
+    };
     println!(
-        "[#154/R1b] 既有夹具: fingerprint={:#018x}（基线 {:#018x}）、peak={}、sha256_baseline={EXISTING_MIX_SHA256}",
+        "[#154/R1b] 既有夹具: fingerprint={:#018x}（本平台基线 {baseline_text}）、peak={}、sha256_baseline={EXISTING_MIX_SHA256}",
         out.fingerprint(),
-        EXISTING_MIX_FNV,
         out.peak()
+    );
+    println!(
+        "[#154/R1b] 默认路径 {:#018x} vs 显式单位直连 {:#018x}",
+        out.fingerprint(),
+        explicit_out.fingerprint()
     );
     assert_eq!(
         out.fingerprint(),
-        EXISTING_MIX_FNV,
-        "既有混音夹具的逐位指纹必须等于改动前基线（sha256 {EXISTING_MIX_SHA256}）"
+        explicit_out.fingerprint(),
+        "默认路径必须与显式单位 TrackToBus 逐位相同（与平台无关）"
     );
+    assert!(
+        (out.peak() - 0.900_046_5).abs() <= 1.0e-6,
+        "既有夹具的峰值必须仍是 0.9000465，实测 {}",
+        out.peak()
+    );
+    if let Some(expected) = baseline {
+        assert_eq!(
+            out.fingerprint(),
+            expected,
+            "既有混音夹具的逐位指纹必须等于本平台的改动前基线（sha256 {EXISTING_MIX_SHA256} 是 aarch64/macOS 的读数）"
+        );
+    }
 }
 
 /// 发送到 aux、aux 回 master 的工程。
