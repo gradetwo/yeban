@@ -281,7 +281,7 @@ pub fn usage_text() -> String {
                            --save-as <out.yeban> 成对给出 (⛔ 不默认落点);
                            默认构建不可用 (需 `experimental-logic-import` 特性);
                            打印读数 (轨 / 区域 / 音符) + 损失表 (AuRg / GenM / 自动化 /
-                           轨道归属 provisional 逐条); 输入 demo **只读**;
+                           轨道归属: 实测绑定数 + 余下 provisional 数); 输入 demo **只读**;
                            路径不存在 ⇒ 打印「跳过」并成功退出 (不红),
                            路径在但读不懂 ⇒ 报错 (退出码 {open});
                            本开关不与别的动作组合 (组合 = 用法错误)

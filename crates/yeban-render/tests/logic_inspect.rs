@@ -17,7 +17,7 @@ use std::path::Path;
 use yeban_render::logic_read::{
     DEFAULT_DEMOS_DIR, LOGIC_REGION_LENGTH_MAX, LOGIC_REGION_LENGTH_MIN, LogicInspection,
     LogicTotals, RegionPlacement, import_bundle, inspect_bundle, inspect_demos,
-    is_region_length_in_range, region_placements,
+    is_region_length_in_range, placement_events, region_placements,
 };
 
 /// 一台 demo 的期望读数（`#139` 实测）。
@@ -797,4 +797,117 @@ fn the_length_bound_rejects_the_measured_garbage_on_every_demo() {
     // 下界 = 1/64 拍（960 PPQ）；上界 = 4 × 实测最大正常值 549,120。
     assert_eq!(LOGIC_REGION_LENGTH_MIN, 960 / 16);
     assert_eq!(LOGIC_REGION_LENGTH_MAX, 4 * 549_120);
+}
+
+/// 判据（`#151`）：轨道号来自**摆放事件** `+0x14`，⛔ 不在 `qeSM` 载荷里。
+///
+/// 三条读数（8 台实测，逐台钉死）：
+///
+/// 1. **`qeSM` 里没有轨道号字段**：`rest+0x00..0x117` 的 `u8`/`u16`/`u32` 全扫过，
+///    **没有任何一个**偏移同时满足「1 ≤ 值 ≤ 轨数」与「每台 ≥ 2 个不同值」
+///    （`rest+0xd8` 实测是 `4` / `0x1d8` 这类小组 id，`rest+0xec` 落在名字长度不同的
+///    记录之外）。因此本判据不引用任何"轨道号偏移"常量（它不存在），只判**事件**。
+/// 2. **绑定是声的**：每条 `track_1based = Some(t)` 的区域都能找到一条摆放事件，
+///    其 `position_tick − 34560` **等于**区域起点、`track_1based` **等于** `t`，且
+///    `1 ≤ t ≤ tracks`。位置相等是独立于"槽位相等"的第二条证据（槽位那一条由
+///    `import_bundle` 施加）。
+/// 3. **覆盖是部分的**：8 台合计 **651/864**；`Spatial Audio Demo Grid` 只有 **5/106**。
+///    余下的区域**没有**摆放事件（形态与同一位置的 take／Track Alternatives 一致），
+///    判据⛔ 不许把它们写成已绑定 —— 导入器对它们保留 provisional 并逐条计数。
+#[test]
+fn track_binding_comes_from_placement_events_and_is_partial_on_every_demo() {
+    if !Path::new(DEFAULT_DEMOS_DIR).exists() {
+        println!("logic-track-binding: 无 demo（{DEFAULT_DEMOS_DIR} 不存在），跳过（0 台，不红）");
+        return;
+    }
+
+    /// 区域摆放的计数原点（实测字面量，⛔ 不从实现常量抄）。
+    const REGION_ORIGIN: u32 = 34_560;
+
+    // (bundle, 可导入区域, 绑定到实测轨道的条数) —— `#151` 实测。
+    const BINDING_EXPECTED: [(&str, usize, usize); 8] = [
+        ("Colors", 155, 89),
+        ("Manzana", 113, 107),
+        ("Manzana - Spatial Audio", 113, 107),
+        ("MONTERO", 41, 37),
+        ("MONTERO - Spatial Audio", 41, 37),
+        ("ocean eyes", 121, 105),
+        ("Spatial Audio Demo Grid", 106, 5),
+        ("Swing!", 174, 164),
+    ];
+
+    let mut total_regions = 0usize;
+    let mut total_bound = 0usize;
+    for (bundle, expected_imported, expected_bound) in BINDING_EXPECTED {
+        let path = Path::new(DEFAULT_DEMOS_DIR).join(format!("{bundle}.logicx"));
+        let import =
+            import_bundle(&path).unwrap_or_else(|error| panic!("{bundle} 的导入读取失败: {error}"));
+        let events = placement_events(&path)
+            .unwrap_or_else(|error| panic!("{bundle} 的摆放事件读取失败: {error}"));
+        assert!(
+            !events.is_empty(),
+            "{bundle} 必须至少解析出一条 MIDI 摆放事件"
+        );
+
+        assert_eq!(
+            import.imported_regions.len(),
+            expected_imported,
+            "{bundle} 的可导入区域条数"
+        );
+        assert_eq!(
+            import.measured_track_regions(),
+            expected_bound,
+            "{bundle} 绑定到实测轨道的区域条数"
+        );
+        assert_eq!(
+            import.provisional_track_regions(),
+            expected_imported - expected_bound,
+            "{bundle} 仍 provisional 的区域条数"
+        );
+
+        // ② 每条绑定的区域都必须有一条**位置与轨道号都相等**的摆放事件。
+        let mut matched = 0usize;
+        for region in &import.imported_regions {
+            let Some(track) = region.track_1based else {
+                continue;
+            };
+            assert!(
+                region.is_bound_to_measured_track(import.tracks),
+                "{bundle} 的区域 `{}` 轨道号 {track} 必须在 1..={}",
+                region.name,
+                import.tracks
+            );
+            assert!(
+                events.iter().any(|event| {
+                    event.track_1based == track
+                        && event.position_tick.checked_sub(REGION_ORIGIN) == Some(region.start_tick)
+                }),
+                "{bundle} 的区域 `{}`（起点 {}、轨道 {track}）找不到位置/轨道号都相等的摆放事件",
+                region.name,
+                region.start_tick
+            );
+            matched += 1;
+        }
+        assert_eq!(
+            matched, expected_bound,
+            "{bundle} 的实测绑定条数必须逐条有事件支持"
+        );
+
+        println!(
+            "logic-track-binding: bundle={bundle} tracks={} imported={expected_imported} \
+             bound={expected_bound} provisional={}",
+            import.tracks,
+            expected_imported - expected_bound,
+        );
+        total_regions += expected_imported;
+        total_bound += expected_bound;
+    }
+
+    assert_eq!(total_regions, 864, "8 台的可导入区域合计");
+    assert_eq!(total_bound, 651, "8 台绑定到实测轨道的区域合计");
+    assert!(
+        total_bound < total_regions,
+        "诚实口径：余下 {} 条没有摆放事件，仍是 provisional（判据⛔ 不假装全覆盖）",
+        total_regions - total_bound
+    );
 }

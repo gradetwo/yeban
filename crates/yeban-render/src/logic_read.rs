@@ -66,6 +66,49 @@
 //! * 有音符的区域里，`起点+长度` 对 `起点+最后音符结束` 的比值在 8/8 台是
 //!   **0.5517…1.0571**（不是 1.0 整：Logic 的区域长度允许比内容短/长）。
 //!
+//! ## 轨道归属：摆放事件 `+0x14`（`#151` 实测；**不是** `qeSM` 字段）
+//!
+//! `qeSM` 载荷里**没有**轨道号字段：`rest + 0x00..0x100` 的 `u8` / `u16` / `u32`
+//! 逐偏移扫过 8/8 台，**没有任何一个**同时满足「值落在 `1..=轨数`」与「每台 ≥ 2 个
+//! 不同值」（`#151` 报告列出了被排除的候选：`rest+0xd8` 的小值以 `4`/`8`/`0xc` 为主
+//! —— 最大到 12,472，落在 `1..=轨数` 的只有 4/116…157/200，不是 8/8；`rest+0xec` 只有
+//! `0` 与 `0x10000`/`0x7fff_0000` 这类值，8/8 台的合法数都是 **0** —— 两者都不是轨道号）。
+//! 轨道号只在**摆放事件**里：`qSvE` 载荷中定长 80 字节、`+0x00 == 0x20`（MIDI）的事件，
+//!
+//! | 字段 | 偏移 | 类型 | 实测读数（8/8 台） |
+//! | :--- | ---: | :--- | :--- |
+//! | 位置 | `+0x04` | `u32` 小端 | `34560 + 区域起点 tick`；与绑定区域的 `rest+0xe0` **逐条相等** |
+//! | 链接 id | `+0x10` | `u32` 小端 | demo 实测 `80 / 88 / 92 / …`（步长 4） |
+//! | **轨道号** | `+0x14` | **单字节** | **1 起**；绑定命中里 `1 ≤ 轨道号 ≤ 轨数` **651/651** |
+//! | 区域槽 | `+0x20` | `u32` 小端 | = `qeSM` 记录头 `+0x08` 的对象号 `>> 16`；位置也与 `rest+0xe0` 相等 |
+//!
+//! 还有三个逐事件恒定字（8/8 台每一个 MIDI 摆放事件都相同，用于把别的 `qSvE`
+//! 事件行排除掉）：`+0x17 == 0x89`、`+0x1c == 0x3fff_ffff`、`+0x24 == 0x8800_0000`。
+//! `+0x24 == 0x8800_0000` 同时是 **MIDI 与音频摆放的区分**：音频事件是 `0xbc00_0000`。
+//!
+//! 绑定规则（可伪证、⛔ 不猜）：事件与区域**同时**满足 `+0x20` 槽相等、位置相等、
+//! `1 ≤ 轨道号 ≤ 轨数` 才绑定；同一槽位出现互相矛盾的读数 ⇒ **不绑定**。
+//!
+//! ⚠ **不是每条可导入区域都有摆放事件**（8 台实测，`#151`）：
+//!
+//! | demo | 可导入区域 | 绑定到实测轨道 | 余下（无摆放事件） |
+//! | :--- | ---: | ---: | ---: |
+//! | Colors | 155 | 89 | 66 |
+//! | MONTERO | 41 | 37 | 4 |
+//! | MONTERO - Spatial Audio | 41 | 37 | 4 |
+//! | Manzana | 113 | 107 | 6 |
+//! | Manzana - Spatial Audio | 113 | 107 | 6 |
+//! | Spatial Audio Demo Grid | 106 | 5 | 101 |
+//! | Swing! | 174 | 164 | 10 |
+//! | ocean eyes | 121 | 105 | 16 |
+//! | **合计** | **864** | **651** | **213** |
+//!
+//! 余下的 213 条**没有任何摆放事件**（它们的起点与**另一条**已摆放区域相同；
+//! 8 台里「名字与别的区域重复」的条数 / 余下条数 = **65/66、3/4、3/4、2/6、2/6、
+//! 24/101、8/10、15/16** ⇒ 形态与"同一位置的多个 take／Track Alternatives"一致；
+//! 本条**只登记**，⛔ 不发明它们属于哪条轨道）。因此导入器对它们保留轮转并逐条计数
+//! （`#151` 的损失表行）。
+//!
 //! ## 版权（⛔ 不许提交 demo 或解析结果）
 //!
 //! Apple 演示工程有版权。本模块**只读** `/Library/Application Support/Logic/Logic Pro X
@@ -79,15 +122,17 @@
 //! data。它按 trailer 的 `offset_int_size` / `object_ref_size` / 偏移表走对象，
 //! 不依赖编码器的对象布局。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str;
 
 use crate::logic::{
-    LOGIC_FIRST_RECORD_OFFSET, LOGIC_KART_TAG, LOGIC_RECORD_CLUSTER_OFFSET, LOGIC_RECORD_HEADER,
-    LOGIC_RECORD_SIZE_OFFSET, LOGIC_REGION_LENGTH_FROM_REST, LOGIC_REGION_NAME_PAYLOAD_OFFSET,
+    LOGIC_ARRANGE_MIDI_MARKER, LOGIC_FIRST_RECORD_OFFSET, LOGIC_KART_TAG,
+    LOGIC_PLACEMENT_POSITION_OFFSET, LOGIC_PLACEMENT_REGION_OFFSET, LOGIC_PLACEMENT_TRACK_OFFSET,
+    LOGIC_RECORD_CLUSTER_OFFSET, LOGIC_RECORD_HEADER, LOGIC_RECORD_SIZE_OFFSET,
+    LOGIC_REGION_LENGTH_FROM_REST, LOGIC_REGION_NAME_PAYLOAD_OFFSET, LOGIC_REGION_ORIGIN_TICKS,
     LOGIC_REGION_TAG, LOGIC_ROOT_HEADER, LOGIC_ROOT_MAGIC, LOGIC_SEQUENCE_TAG, decode_note_lines,
     region_rest_start,
 };
@@ -686,6 +731,101 @@ pub fn region_placements(bundle: &Path) -> Result<Vec<RegionPlacement>, String> 
     Ok(placements)
 }
 
+/// 一台 `.logicx` bundle 的**摆放事件**（只读探针，`#151`）。
+///
+/// 返回记录流顺序里**所有**满足 MIDI 摆放签名的 80 字节事件；绑定规则由调用方施加
+/// （见 [`ImportRegion::track_1based`] 与 [`import_bundle`]）。
+///
+/// # Errors
+///
+/// 与 [`inspect_bundle`] 同。
+pub fn placement_events(bundle: &Path) -> Result<Vec<PlacementEvent>, String> {
+    let (_, alternative_dir) = active_alternative(bundle)?;
+    let project_data_path = alternative_dir.join("ProjectData");
+    let bytes = fs::read(&project_data_path)
+        .map_err(|error| format!("读 {} 失败: {error}", project_data_path.display()))?;
+    let records = walk_records(&bytes)
+        .map_err(|error| format!("{} 的记录流不合法: {error}", project_data_path.display()))?;
+    Ok(placement_events_in(&records))
+}
+
+/// `payload[at..at+4]` 的 `u32` 小端（调用方保证 `at + 4 <= len`）。
+fn le_u32(payload: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([
+        payload[at],
+        payload[at + 1],
+        payload[at + 2],
+        payload[at + 3],
+    ])
+}
+
+/// 从记录流里扫出**全部 MIDI 摆放事件**（`#151`）。
+///
+/// 判据是**逐偏移的字节常量**（8/8 台实测），不是"按 80 字节网格切"：
+/// 真实的编排 `qSvE` 里 MIDI（`0x20`）与音频（`0x24`）事件混排，音频事件后面还跟着
+/// 自己的载荷，网格会立刻错位（`#151` 报告里有错位的逐字节读数）。因此这里只认
+/// 四个常量都对的偏移：`+0x00 == 0x20`、`+0x17 == 0x89`、`+0x1c == 0x3fff_ffff`、
+/// `+0x24 == 0x8800_0000`，并要求 `+0x04 ≥ 34560`（区域原点）。
+fn placement_events_in(records: &[RecordView<'_>]) -> Vec<PlacementEvent> {
+    let origin = u32::try_from(LOGIC_REGION_ORIGIN_TICKS).unwrap_or(u32::MAX);
+    let marker = LOGIC_ARRANGE_MIDI_MARKER.to_le_bytes();
+    let mut events = Vec::new();
+    for record in records {
+        if record.tag != LOGIC_SEQUENCE_TAG {
+            continue;
+        }
+        let payload = record.payload;
+        let last = payload
+            .len()
+            .saturating_sub(LOGIC_PLACEMENT_REGION_OFFSET + 4);
+        for at in 0..=last {
+            if payload[at..at + 4] != marker {
+                continue;
+            }
+            if at + 0x28 > payload.len() {
+                break;
+            }
+            if payload[at + 0x17] != PLACEMENT_EVENT_CONST_17
+                || le_u32(payload, at + 0x1c) != PLACEMENT_EVENT_CONST_1C
+                || le_u32(payload, at + 0x24) != PLACEMENT_EVENT_CONST_24_MIDI
+            {
+                continue;
+            }
+            let position_tick = le_u32(payload, at + LOGIC_PLACEMENT_POSITION_OFFSET);
+            if position_tick < origin {
+                continue;
+            }
+            events.push(PlacementEvent {
+                link_id: le_u32(payload, at + 0x10),
+                track_1based: u32::from(payload[at + LOGIC_PLACEMENT_TRACK_OFFSET]),
+                position_tick,
+                region_slot: le_u32(payload, at + LOGIC_PLACEMENT_REGION_OFFSET),
+            });
+        }
+    }
+    events
+}
+
+/// 槽位 → `(轨道号, 位置)` 的实测绑定表；同一槽位出现**互相矛盾**的读数 ⇒ 记进
+/// 第二个返回值（歧义集合），调用方据此**不绑定**（⛔ 不挑一个猜）。
+fn measured_bindings(records: &[RecordView<'_>]) -> (BTreeMap<u32, (u32, u32)>, BTreeSet<u32>) {
+    let mut by_slot: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
+    let mut ambiguous: BTreeSet<u32> = BTreeSet::new();
+    for event in placement_events_in(records) {
+        let value = (event.track_1based, event.position_tick);
+        match by_slot.get(&event.region_slot) {
+            Some(existing) if *existing != value => {
+                ambiguous.insert(event.region_slot);
+            }
+            Some(_) => {}
+            None => {
+                by_slot.insert(event.region_slot, value);
+            }
+        }
+    }
+    (by_slot, ambiguous)
+}
+
 /// `GenM`（可读名 `GenM`；落盘四个字节反过来是 `MneG`）—— 通道状态记录的 tag。
 ///
 /// 导入器**不消费**它：本切片只计数并写进损失表（通道状态 / 混音器状态的含义未勘察）。
@@ -704,6 +844,31 @@ pub struct ImportNote {
     pub velocity: u8,
 }
 
+/// 一条**摆放事件**（`qSvE` 载荷里定长 80 字节的 `20 00 00 00` 事件）的实测读数。
+///
+/// `#151`：这是"区域 → 轨道"唯一的实测来源。`qeSM` 载荷里**没有**轨道号字段
+/// （`rest + 0x00..0x100` 的 `u8`/`u16`/`u32` 全扫过，8/8 台无一满足
+/// 「1 ≤ 值 ≤ 轨数」且「每台 ≥ 2 个不同值」）；轨道号只在事件的 `+0x14`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacementEvent {
+    /// 事件 `+0x10` 的链接 id（`u32` 小端；demo 实测 `80 / 88 / 92 / …`，步长 4）。
+    pub link_id: u32,
+    /// 事件 `+0x14` 的**1 起**轨道号（单字节）。
+    pub track_1based: u32,
+    /// 事件 `+0x04` 的位置（`u32` 小端 = `34560 + 区域起点 tick`）。
+    pub position_tick: u32,
+    /// 事件 `+0x20` 指向的**区域槽**（`u32` 小端 = `qeSM` 记录头 `+0x08` 的
+    /// 对象号 `>> 16`）。
+    pub region_slot: u32,
+}
+
+/// 摆放事件 `+0x17` 的实测常量（8/8 台每一个 MIDI 摆放事件都是 `0x89`）。
+const PLACEMENT_EVENT_CONST_17: u8 = 0x89;
+/// 摆放事件 `+0x1c` 的实测常量（8/8 台每一个 MIDI 摆放事件都是 `0x3fff_ffff`）。
+const PLACEMENT_EVENT_CONST_1C: u32 = 0x3fff_ffff;
+/// 摆放事件 `+0x24` 的实测常量：**MIDI** 是 `0x8800_0000`，音频是 `0xbc00_0000`。
+const PLACEMENT_EVENT_CONST_24_MIDI: u32 = 0x8800_0000;
+
 /// 一条**可导入**的 `qeSM` 区域（非内部、非空区域哨兵、非零长度）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportRegion {
@@ -715,6 +880,22 @@ pub struct ImportRegion {
     pub length_ticks: u32,
     /// 该区域的音符（`decode_note_lines` 原样；区域**相对** tick）。
     pub notes: Vec<ImportNote>,
+    /// **实测**轨道号（1 起），来自与之槽位/位置都相等的摆放事件 `+0x14`。
+    ///
+    /// `None` = 这条区域**没有**可用的摆放事件（8 台共 213/864 条；形态与同一
+    /// 位置的 take／Track Alternatives 一致）⇒ 调用方对它保留 provisional 轮转，
+    /// ⛔ 不猜。绑定判据见 [`ImportRegion::is_bound_to_measured_track`]。
+    pub track_1based: Option<u32>,
+}
+
+impl ImportRegion {
+    /// 这条区域是否绑定到了**合法**的实测轨道（`1 ≤ 轨道号 ≤ 轨数`）。
+    #[must_use]
+    pub fn is_bound_to_measured_track(&self, track_count: usize) -> bool {
+        self.track_1based.is_some_and(|track| {
+            usize::try_from(track).is_ok_and(|track| (1..=track_count).contains(&track))
+        })
+    }
 }
 
 /// 一台 `.logicx` 的**导入读取**（仍然是纯字节、只读）。
@@ -774,6 +955,23 @@ pub struct LogicImport {
     pub notes_outside_region: usize,
 }
 
+impl LogicImport {
+    /// 成功绑定到**合法**实测轨道（`1 ≤ 轨道号 ≤ 轨数`）的可导入区域条数（`#151`）。
+    #[must_use]
+    pub fn measured_track_regions(&self) -> usize {
+        self.imported_regions
+            .iter()
+            .filter(|region| region.is_bound_to_measured_track(self.tracks))
+            .count()
+    }
+
+    /// 仍按 provisional 轮转的可导入区域条数（`#151`；= 总数 − 实测绑定数）。
+    #[must_use]
+    pub fn provisional_track_regions(&self) -> usize {
+        self.imported_regions.len() - self.measured_track_regions()
+    }
+}
+
 /// 读一台 `.logicx` 的**可导入**字节（只读）。
 ///
 /// 口径与 [`inspect_bundle`] / [`region_placements`] 完全一致：同一套记录行走、同一套
@@ -804,7 +1002,18 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
     let records = walk_records(&bytes)
         .map_err(|error| format!("{} 的记录流不合法: {error}", project_data_path.display()))?;
 
-    let mut tracks = 0usize;
+    // `#151`：轨道号只来自摆放事件的 `+0x14`（`qeSM` 载荷里没有这个字段）。
+    // 绑定表与歧义槽位先算出来，再逐区域施加"槽位 + 位置 + 轨道号合法"三条判据。
+    let (placement_by_slot, ambiguous_slots) = measured_bindings(&records);
+    let tracks = records
+        .iter()
+        .filter(|record| {
+            record.tag == LOGIC_KART_TAG
+                && record.object == LOGIC_ARRANGE_OBJECT
+                && record.payload.first().copied() == Some(1)
+        })
+        .count();
+
     let mut regions_all = 0usize;
     let mut internal_regions = 0usize;
     let mut automation_regions = 0usize;
@@ -815,12 +1024,7 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
     let mut all_regions: Vec<ImportRegion> = Vec::new();
 
     for record in &records {
-        if record.tag == LOGIC_KART_TAG
-            && record.object == LOGIC_ARRANGE_OBJECT
-            && record.payload.first().copied() == Some(1)
-        {
-            tracks += 1;
-        } else if record.tag == LOGIC_REGION_TAG {
+        if record.tag == LOGIC_REGION_TAG {
             regions_all += 1;
             let name = region_name(record.payload, &project_data_path)?;
             if is_internal_region(name) {
@@ -832,11 +1036,22 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
                 }
             }
             let (start_tick, length_ticks) = region_timing(record.payload, &project_data_path)?;
+            let region_slot = record.object >> 16;
+            let origin = u32::try_from(LOGIC_REGION_ORIGIN_TICKS).unwrap_or(u32::MAX);
+            let track_1based = placement_by_slot
+                .get(&region_slot)
+                .filter(|_| !ambiguous_slots.contains(&region_slot))
+                .and_then(|&(track, position)| {
+                    (position.checked_sub(origin) == Some(start_tick)
+                        && usize::try_from(track).is_ok_and(|t| (1..=tracks).contains(&t)))
+                    .then_some(track)
+                });
             all_regions.push(ImportRegion {
                 name: name.to_owned(),
                 start_tick,
                 length_ticks,
                 notes: Vec::new(),
+                track_1based,
             });
         } else if record.tag == LOGIC_SEQUENCE_TAG {
             let decoded = decode_note_lines(record.payload);

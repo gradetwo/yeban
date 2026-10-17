@@ -19,18 +19,23 @@
 //! | 区域起点 `rest + 0xe0`（960 PPQ tick） | `ClipPlacement::start_tick`（**原值**，⛔ 不对齐到拍） |
 //! | 区域长度 `rest + 0x3c`（960 PPQ tick） | `ClipPlacement::duration_ticks`（**原值**，⛔ 不扩展到音符） |
 //! | 配对 `qSvE` 的 `decode_note_lines` | `MidiNote`（`start_tick` 是**区域相对** tick，与模型的 `placement.start + note.start` 口径一致） |
+//! | 摆放事件 `+0x14`（1 起轨道号；槽位 `+0x20` 与位置 `+0x04` 都与区域相等） | `ClipPlacement` 落到对应轨（**实测**；`#151`） |
 //! | `MetaData.plist` 的 `BeatsPerMinute` / 拍号 / `SampleRate` | 顶层 `bpm` / `time_signature` / `audio_config.sample_rate` |
 //!
-//! ## ⚠ 轨道归属是 provisional（逐字登记）
+//! ## 轨道归属：实测（`#151`）＋ 余下 N 条仍 provisional
 //!
-//! **轨道归属是 provisional、待补测 7/8 台。**
+//! **能绑定的都绑定到实测轨道。** 轨道号**不在** `qeSM` 载荷里（`rest + 0x00..0x100`
+//! 的 `u8`/`u16`/`u32` 全扫过 8/8 台，没有字段同时满足「1 ≤ 值 ≤ 轨数」与「每台 ≥ 2
+//! 个不同值」）；它只在**摆放事件** `+0x14`：`qSvE` 载荷里 80 字节、`+0x00 == 0x20`
+//! 的事件，`+0x04 = 34560 + 区域起点`、`+0x20` = 区域槽（`qeSM` 记录头 `+0x08` 的对象号
+//! `>> 16`）。绑定判据是三条**同时**成立：槽位相等、位置相等、`1 ≤ 轨道号 ≤ 轨数`；
+//! 同一槽位出现矛盾读数 ⇒ 不绑定（⛔ 不猜）。8 台实测 **651/864** 条可导入区域有
+//! 可用的摆放事件（逐台读数见 `yeban_render::logic_read` 的模块头表格）。
 //!
-//! 依据：`qeSM` 的轨道绑定证据（编排摆放事件 `+0x14` 的 1 起轨道号）**只在
-//! Swing! 一台上有逐条实测**（`#148` 报告：1/8 台）。其余 7 台没有独立来源，
-//! 因此本切片**不假装**知道每条区域属于哪条轨道。分配规则是**公开的**：
-//! 第 `i` 条可导入区域（按 `qeSM` 记录流顺序，0 起）落到第 `i % 轨道数` 条非 master 轨。
-//! 这是**轮转**，不是推断；一旦补测出 7/8 台的轨道号，替换的只有 `track_index` 这一个
-//! 表达式，其余映射不动。
+//! ⚠ **余下 213 条没有摆放事件**（形态与同一位置的 take／Track Alternatives 一致）
+//! ⇒ 这 213 条**仍按 provisional 轮转**：第 `i` 条可导入区域（按 `qeSM` 记录流顺序，
+//! 0 起）落到第 `i % 轨道数` 条非 master 轨。损失表逐条计数，⛔ 不静默、⛔ 不假装
+//! 它们也是实测的。
 //!
 //! ## 两条摆放裁决（照 `#149` 的成文裁决，⛔ 不另问）
 //!
@@ -46,14 +51,14 @@
 //! ## 损失表（四级 + 两条边界读数，逐条打印）
 //!
 //! 每一条都是 `logic-import-loss:` 一行；**至少**这四条逐字出现：
-//! `AuRg` / `GenM` / `自动化` / `轨道归属 provisional`。
+//! `AuRg` / `GenM` / `自动化` / `轨道归属`（后者写明实测绑定数与余下的 provisional 数）。
 //!
 //! | 级别 | 种类 | 处理 |
 //! | :--- | :--- | :--- |
 //! | region | `AuRg` 音频区域 | 只计数，⛔ 不导入（载荷语义未勘察） |
 //! | channel | `GenM` 通道状态 | 只计数，⛔ 不导入（混音器状态） |
 //! | control | 自动化曲线 / `RBA Sequence` | 内部区域，⛔ 不导入 |
-//! | binding | **轨道归属 provisional** | 轮转分配，待补测 7/8 台 |
+//! | binding | **轨道归属（实测 + 余下 provisional）** | 651/864 条按摆放事件 `+0x14` 落轨；余下 213 条轮转（`#151`） |
 //! | region | 空区域哨兵（7,680,000） | 跳过（起点恒 0、音符恒 0） |
 //! | region | **区域长度越界**（`#150`） | 长度不在 `[60, 2,196,480]` tick ⇒ ⛔ 不进工程，**逐条**打印 |
 //! | boundary | 长度短于音符内容 | 摆放按长度；音符原样保留（读数） |
@@ -295,7 +300,7 @@ impl ImportReport {
             "logic-import-counts: imported-regions={} placements={} project-tracks={} \
              project-notes={} clips-pool={} internal={} automation={} rba={} gen_m={} \
              skipped-empty={} skipped-zero-length={} skipped-out-of-range={} unpaired-notes={} \
-             notes-outside-region={}",
+             notes-outside-region={} measured-track-regions={} provisional-track-regions={}",
             data.imported_regions.len(),
             self.placements,
             self.project_tracks,
@@ -310,6 +315,8 @@ impl ImportReport {
             data.out_of_range_regions.len(),
             data.unpaired_notes,
             data.notes_outside_region,
+            data.measured_track_regions(),
+            data.provisional_track_regions(),
         ));
         lines.push(format!(
             "logic-import-placements: count={} reported={}",
@@ -365,8 +372,11 @@ impl ImportReport {
                 data.internal_regions, data.automation_regions, data.rba_sequences
             ),
             format!(
-                "level=binding kind=轨道归属 provisional 轨道归属 provisional：按 qeSM 出现顺序 \
-                 轮转到 {} 条非 master 轨；待补测 7/8 台",
+                "level=binding kind=轨道归属 实测：{}/{} 条可导入区域按摆放事件 `+0x14` 绑定；\
+                 余下 {} 条区域仍 provisional（没有摆放事件，按记录流顺序轮转到 {} 条非 master 轨）",
+                data.measured_track_regions(),
+                data.imported_regions.len(),
+                data.provisional_track_regions(),
                 data.tracks
             ),
             format!(
@@ -583,9 +593,16 @@ fn build_project(
             },
         );
 
-        // provisional：第 i 条可导入区域落到第 `i % 轨道数` 条非 master 轨。
-        // 这是**唯一**一处轨道归属表达式；补测出真轨道号后只改这里。
-        let track_index = index % track_ids.len();
+        // `#151`：优先用**实测**轨道号（摆放事件 `+0x14`，与区域槽位/位置都相等）。
+        // 落点索引 = 轨道号 − 1（轨道号 1 起，`track_ids` 0 起）。
+        // 余下的区域（没有摆放事件 / 读数矛盾 / 轨道号越界）**仍 provisional**：
+        // 第 i 条可导入区域落到第 `i % 轨道数` 条非 master 轨（公开规则，⛔ 不猜）。
+        let measured_index = region
+            .track_1based
+            .and_then(|track| usize::try_from(track).ok())
+            .and_then(|track| track.checked_sub(1))
+            .filter(|index| *index < track_ids.len());
+        let track_index = measured_index.unwrap_or(index % track_ids.len());
         let track = tracks
             .get_mut(&track_ids[track_index])
             .expect("track_ids 与 tracks 同源");
@@ -655,14 +672,18 @@ fn build_project(
         rng_seed: DEFAULT_RNG_SEED,
         metadata: ProjectMetadata {
             description: format!(
-                "Imported from Logic Pro project `{}`；轨道归属是 provisional（待补测 7/8 台）",
-                data.bundle
+                "Imported from Logic Pro project `{}`；{}/{} 条区域按摆放事件 +0x14 绑定到实测轨道，\
+                 余下 {} 条仍 provisional（无摆放事件）",
+                data.bundle,
+                data.measured_track_regions(),
+                data.imported_regions.len(),
+                data.provisional_track_regions(),
             ),
             created_at_unix_ms: IMPORTED_AT_UNIX_MS,
             modified_at_unix_ms: IMPORTED_AT_UNIX_MS,
             tags: vec![
                 "logic-import".to_owned(),
-                "provisional-track-binding".to_owned(),
+                "measured-track-binding".to_owned(),
             ],
         },
         transport: TransportConfig::default(),
@@ -737,11 +758,13 @@ mod tests {
                     velocity: 100,
                 })
                 .collect(),
+            // 合成读数没有摆放事件 ⇒ 落回 provisional 轮转（`#151` 的 fallback 判据）。
+            track_1based: None,
         }
     }
 
-    /// 判据（映射 + provisional）：区域按记录流顺序轮转落轨；起点/长度**原值**；
-    /// 音符数与每条区域的音符数逐项相等；工程通过模型校验。
+    /// 判据（映射 + provisional fallback）：没有实测轨道号的区域按记录流顺序轮转落轨；
+    /// 起点/长度**原值**；音符数与每条区域的音符数逐项相等；工程通过模型校验。
     #[test]
     fn regions_are_placed_at_the_measured_ticks_and_bound_round_robin() {
         let data = synthetic(
@@ -820,14 +843,45 @@ mod tests {
             },
         };
         let text = report.lines().join("\n");
-        for required in ["AuRg", "GenM", "自动化", "轨道归属 provisional"] {
+        for required in ["AuRg", "GenM", "自动化", "轨道归属"] {
             assert!(
                 text.contains(required),
                 "损失表必须逐字包含 `{required}`：\n{text}"
             );
         }
+        assert!(
+            text.contains("余下 1 条区域仍 provisional"),
+            "损失表必须写明余下的 provisional 条数：\n{text}"
+        );
         assert_eq!(project.validate(), Ok(()));
         assert_eq!(report.loss_count(), report.losses().len());
+    }
+
+    /// 判据（`#151`）：有实测轨道号的区域落到**实测**轨；没有的才轮转。
+    ///
+    /// 轨道号是 **1 起**（`track_1based`），落点索引 = 轨道号 − 1；越界/矛盾的读数
+    /// （`0`、`tracks+1`）**不得**被当成实测轨道（⛔ 不越界 panic、⛔ 不猜）。
+    #[test]
+    fn measured_track_numbers_take_precedence_over_the_provisional_rotation() {
+        let mut measured = region("M", 0, 960, 1);
+        measured.track_1based = Some(3);
+        let mut out_of_range = region("X", 960, 960, 1);
+        out_of_range.track_1based = Some(4); // 只有 3 条非 master 轨 ⇒ 越界
+        let mut zero = region("Z", 1_920, 960, 1);
+        zero.track_1based = Some(0); // 轨道号 1 起 ⇒ 0 非法
+        let data = synthetic(
+            3,
+            vec![measured, out_of_range, zero, region("P", 2_880, 960, 1)],
+        );
+        let (project, .., rows) = build_project(&data).expect("合成读数");
+        assert_eq!(project.validate(), Ok(()));
+        assert_eq!(
+            rows.iter().map(|row| row.1).collect::<Vec<_>>(),
+            vec![2, 1, 2, 0],
+            "第 1 条落到 3−1 = 2；第 2 条越界 ⇒ 1 % 3 = 1；第 3 条 0 非法 ⇒ 2 % 3 = 2；第 4 条无实测 ⇒ 3 % 3 = 0"
+        );
+        assert_eq!(data.measured_track_regions(), 1);
+        assert_eq!(data.provisional_track_regions(), 3);
     }
 
     /// 判据（`#150`）：越界样本**逐条**写进损失表（⛔ 只报一个总数）。

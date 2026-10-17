@@ -163,6 +163,8 @@ fn swing_import_readings_and_loss_table_match_the_measured_table() {
         "gen_m=634".to_owned(),
         format!("clips-pool={SWING_IMPORTED_REGIONS}"),
         "project-notes=2903".to_owned(),
+        "measured-track-regions=164".to_owned(),
+        "provisional-track-regions=10".to_owned(),
     ] {
         assert!(
             counts.contains(&expected),
@@ -185,9 +187,19 @@ fn swing_import_readings_and_loss_table_match_the_measured_table() {
         );
     }
 
-    // 损失表：四条必需条目逐字出现。
+    // 损失表：四条必需条目逐字出现（`#151` 起"轨道归属"一行写明实测绑定数与余下条数）。
     let text = lines.join("\n");
-    for required in ["AuRg", "GenM", "自动化", "轨道归属 provisional"] {
+    for required in ["AuRg", "GenM", "自动化", "轨道归属"] {
+        assert!(
+            text.contains(required),
+            "损失表必须逐字包含 `{required}`：\n{text}"
+        );
+    }
+    // `#151` 实测：Swing! 的可导入区域 174 条里 **164** 条有摆放事件、**10** 条没有。
+    for required in [
+        "164/174 条可导入区域按摆放事件",
+        "余下 10 条区域仍 provisional",
+    ] {
         assert!(
             text.contains(required),
             "损失表必须逐字包含 `{required}`：\n{text}"
