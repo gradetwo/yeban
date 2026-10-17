@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-# 硬件与真机验证的交互式检查单（人类手工跑）。
+# 硬件与真机验证的检查单。**默认推荐自动档**：`--auto` 自己采集、自己判断、零提问。
 #
 # 为什么需要它：CI 上没有真声卡、真扬声器、真 MIDI 键盘与真窗口。
-# 这些项由人类验证。本脚本负责提问、收答案、写报告。
 #
 # 用法：
-#   bash scripts/dev/hardware-check.sh
-#   bash scripts/dev/hardware-check.sh --only 1        # 只跑第 1 项
+#   bash scripts/dev/hardware-check.sh --auto         # ⭐ 推荐：跑命令 ⇒ 收产物 ⇒ 自动判定（零提问）
+#   bash scripts/dev/hardware-check.sh --auto --artifacts /tmp/foo   # 指定产物目录
+#   bash scripts/dev/hardware-check.sh                # 老档：交互式（逐项问 y/n/s），保留
+#   bash scripts/dev/hardware-check.sh --only 1        # 只跑第 1 项（交互档）
 #   bash scripts/dev/hardware-check.sh --list          # 列出所有项
 #   bash scripts/dev/hardware-check.sh --self-test     # 无副作用自检：只核 CLI 认不认这些开关，不问 y/n
+#
+# `--auto` 的每一项只允许三种结论：`pass` / `fail` / `not-automatable(理由)`。
+# ⛔ 不问任何 y/n、⛔ 不等任何自由文本；判据来自**真实运行**的产物，
+# 产物全部落在 /tmp/yeban-hc-auto-<时间戳>/（⛔ 不在工作树里留文件）。
+# 退出码：0 = 没有 fail；180 = 至少一项 fail；2 = 用法错误。
 #
 # 工程从哪来：GUI 里没有「新建工程」入口（只有「打开工程」）。先造一个空白工程：
 #   cargo run -p yeban-app --locked -- --project-sample empty --save-as /tmp/yeban-new.yeban
 #
-# 报告落在 /tmp/yeban-hardware-report-<时间戳>.txt。把报告发回即可。
+# 交互档的报告落在 /tmp/yeban-hardware-report-<时间戳>.txt。把报告发回即可。
 #
 # ⚠ 本脚本必须兼容 bash 3.2（本仓守卫 G14）。⛔ 不要用关联数组。
 
@@ -25,26 +31,32 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 REPORT="/tmp/yeban-hardware-report-${STAMP}.txt"
 ONLY=""
+AUTO=0
+ART_ROOT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --auto) AUTO=1; shift ;;
+    --artifacts) ART_ROOT="${2:-}"; shift 2 ;;
     --only) ONLY="${2:-}"; shift 2 ;;
     --list) ONLY="list"; shift ;;
     --self-test) ONLY="self-test"; shift ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "未知参数: $1"; exit 2 ;;
   esac
 done
 
 if [ "$ONLY" = "list" ]; then
   cat <<'EOF'
-1  录音       GUI 录音键与 CLI --record-wav 对照（疑为静音）
-2  SFZ 音色   经调音台三个控件试听
-3  视觉基准   macOS golden 基准补录
-4  窗口帧率   fps_gpu example 的 p50/p99
-5  MIDI 键盘  实体键盘输入
-6  声学往返   虚拟回环（BlackHole）的时延读数
+0  环境预检   Cargo.toml / cargo / python3 / 系统
+1  录音       CLI --record-wav 落盘 ⇒ WAV 主频/幅度/时长/位深/DC（880 Hz 反例腿）
+2  SFZ 音色   仓内 SFZ ⇒ --export-wav ⇒ RMS/能量包络/主频 vs pitch_keycenter
+3  视觉基准   Tier-1 截图 ⇒ PNG 尺寸 ≥800x600 ＋ 非背景像素 > 1%
+4  窗口帧率   fps_gpu 的 p99（≤2ms）＋ load_average（>4 ⇒ not-automatable）
+5  MIDI 键盘  无设备 ⇒ not-automatable；有设备 ⇒ --midi-in 采集
+6  声学往返   --loopback 的 verdict=/measured_roundtrip_ms/peak_ncc
 EOF
+  printf '\n%s\n' "自动档（零提问）：bash scripts/dev/hardware-check.sh --auto"
   exit 0
 fi
 
@@ -470,13 +482,365 @@ sys.exit(1 if bad else 0)
   say "      只读诊断：cargo run -p yeban-app --locked --features midi-input -- --midi-in 0 --midi-in-seconds 5"
   say "  [6] cargo run --release -p yeban-engine --locked --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000"
 
+  say "⑥ 自动档判据脚本（Python 标准库：struct / zlib / wave）"
+  if [ -f "$REPO/scripts/dev/hardware_check_auto.py" ] && python3 "$REPO/scripts/dev/hardware_check_auto.py" wav --help >/dev/null 2>&1; then
+    self_ok "scripts/dev/hardware_check_auto.py 可执行（wav --help rc=0）"
+  else
+    self_bad "scripts/dev/hardware_check_auto.py 缺失或不可执行"
+  fi
+
   blank
   if [ "$SELF_FAIL" -eq 0 ]; then
-    say "自检结论：全部通过。现在可以跑真档：bash scripts/dev/hardware-check.sh"
+    say "自检结论：全部通过。现在可以跑自动档（零提问）：bash scripts/dev/hardware-check.sh --auto"
     return 0
   fi
   say "自检结论：有 $SELF_FAIL 组失败（见上面的 [MISSING]）—— 先修脚本，⛔ 不要跑真档。"
   return 1
+}
+
+# ---------- 自动档（--auto）：采集 + 判定，零提问 ----------
+#
+# 结论只允许 pass / fail / not-automatable(理由)。⛔ 没有 skip、⛔ 不问人。
+# 判据全部来自**真实运行**的产物；判据代码在 scripts/dev/hardware_check_auto.py
+# （只用 Python 标准库：struct / zlib / wave，⛔ 不装任何包）。
+
+AUTO_ART=""
+AUTO_FAIL=0
+AUTO_SUMMARY_FILE=""
+
+auto_art() {
+  if [ -z "$AUTO_ART" ]; then
+    AUTO_ART="${ART_ROOT:-/tmp/yeban-hc-auto-${STAMP}}"
+  fi
+  # 采集命令会 `cd "$REPO"` 跑 ⇒ 产物路径必须是绝对路径。
+  case "$AUTO_ART" in
+    /*) ;;
+    *) AUTO_ART="$(pwd)/$AUTO_ART" ;;
+  esac
+  mkdir -p "$AUTO_ART"
+  AUTO_SUMMARY_FILE="$AUTO_ART/summary.txt"
+}
+
+auto_section() {
+  blank
+  rule
+  say "【$1】"
+  rule
+}
+
+auto_run() {
+  # auto_run <名字> <命令...>：在仓库根跑，stdout+stderr 进产物目录，返回原退出码。
+  local name="$1"
+  shift
+  local log="$AUTO_ART/${name}.log"
+  ( cd "$REPO" && "$@" ) >"$log" 2>&1
+  local rc=$?
+  printf '%s\n' "$rc" >"$AUTO_ART/${name}.rc"
+  return "$rc"
+}
+
+auto_py() {
+  python3 "$REPO/scripts/dev/hardware_check_auto.py" "$@"
+}
+
+auto_verdict() {
+  # auto_verdict <判定日志> -> pass / fail / not-automatable / 空
+  sed -n 's/^verdict=//p' "$1" 2>/dev/null | tail -1
+}
+
+auto_reason() {
+  sed -n 's/^reason=//p' "$1" 2>/dev/null | tail -1
+}
+
+auto_show() {
+  # auto_show <判定日志>：逐行缩进打印（这是"证据在屏幕上"）。
+  sed 's/^/  /' "$1" 2>/dev/null
+}
+
+auto_record() {
+  # auto_record <项名> <verdict> <理由>
+  printf 'verdict=%s=%s(%s)\n' "$1" "$2" "$3"
+  printf '%s = %s\n' "$1" "$2" >>"$AUTO_SUMMARY_FILE"
+  if [ "$2" = "fail" ]; then
+    AUTO_FAIL=$((AUTO_FAIL + 1))
+  fi
+}
+
+auto_load_1min() {
+  # 1 分钟 load average（macOS: `sysctl -n vm.loadavg` ⇒ `{ 2.31 2.10 1.98 }`）。
+  sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' | head -1
+}
+
+auto_env() {
+  auto_section "0 环境预检（自动）"
+  local problems=""
+  local os="$(uname -srm)"
+  if [ ! -f "$REPO/Cargo.toml" ]; then problems="${problems}Cargo.toml 不存在；"; fi
+  if ! need cargo; then problems="${problems}cargo 不存在；"; fi
+  if ! need python3; then problems="${problems}python3 不存在；"; fi
+  if need python3; then
+    if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)'; then
+      problems="${problems}python3 < 3.8；"
+    fi
+  fi
+  if need sw_vers; then
+    os="$(sw_vers -productName) $(sw_vers -productVersion) $(uname -m)"
+  fi
+  if [ -n "$problems" ]; then
+    auto_record "0-环境预检" "fail" "$problems"
+    return
+  fi
+  auto_record "0-环境预检" "pass" \
+    "${os}；cargo=$(cargo --version 2>/dev/null | awk '{print $2}') python=$(python3 -V 2>&1 | awk '{print $2}') load_1min=$(auto_load_1min)"
+}
+
+auto_wav() {
+  auto_section "1 WAV 落盘链（自动：Goertzel 判 440Hz）"
+  local wav="$AUTO_ART/hc1.wav"
+  local rc=0
+  say "采集：cargo run -q -p yeban-app --locked -- --record-wav $wav --record-seconds 2 --record-source tone"
+  say "（440Hz 是 tone 源；默认 project 源渲染的是演示工程的 6 个音符 ⇒ 那条路判不出 440Hz）"
+  auto_run record cargo run -q -p yeban-app --locked -- --record-wav "$wav" --record-seconds 2 --record-source tone
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ ! -f "$wav" ]; then
+    auto_record "1-WAV落盘链" "fail" "录音命令 rc=$rc 或 WAV 未落盘（见 record.log）"
+    return
+  fi
+  auto_py wav --path "$wav" --expect-hz 440 --tol-hz 2 --seconds 2 --seconds-tol 0.05 >"$AUTO_ART/wav-check.log" 2>&1
+  rc=$?
+  auto_show "$AUTO_ART/wav-check.log"
+  local line
+  line="$(grep '^wav=' "$AUTO_ART/wav-check.log" | tail -1)"
+  local hz rms peak seconds bits dc purity
+  hz="$(printf '%s' "$line" | sed -n 's/.*hz=\([0-9.]*\).*/\1/p')"
+  rms="$(printf '%s' "$line" | sed -n 's/.*rms=\([0-9.]*\).*/\1/p')"
+  peak="$(printf '%s' "$line" | sed -n 's/.*peak=\([0-9.]*\).*/\1/p')"
+  dc="$(printf '%s' "$line" | sed -n 's/.*dc=\([0-9.-]*\).*/\1/p')"
+  purity="$(printf '%s' "$line" | sed -n 's/.*purity=\([0-9.]*\).*/\1/p')"
+  seconds="$(sed -n 's/^wav=.*seconds=\([0-9.]*\).*/\1/p' "$AUTO_ART/wav-check.log" | head -1)"
+  bits="$(sed -n 's/^wav=.*bits=\([0-9]*\).*/\1/p' "$AUTO_ART/wav-check.log" | head -1)"
+
+  # 反向腿：同一判据对 880Hz 必须红（否则判据是空转的）。
+  auto_py synth-wav --path "$AUTO_ART/reverse-880.wav" --hz 880 --seconds 2 >"$AUTO_ART/reverse-synth.log" 2>&1
+  auto_py wav --path "$AUTO_ART/reverse-880.wav" --expect-hz 440 --tol-hz 2 --seconds 2 --seconds-tol 0.05 >"$AUTO_ART/reverse-check.log" 2>&1
+  local rev_verdict rev_hz
+  rev_verdict="$(auto_verdict "$AUTO_ART/reverse-check.log")"
+  rev_hz="$(sed -n 's/.*hz=\([0-9.]*\).*/\1/p' "$AUTO_ART/reverse-check.log" | tail -1)"
+  say "反向腿：880Hz WAV ⇒ verdict=${rev_verdict}（实测主频 ${rev_hz}Hz；期望 fail）"
+  if [ "$rev_verdict" != "fail" ]; then
+    auto_record "1-WAV落盘链" "fail" "反向腿没有红：880Hz 被判 ${rev_verdict}（判据不区分频率）"
+    return
+  fi
+
+  local detail="主频 ${hz}Hz（440±2）；RMS ${rms} 峰值 ${peak}；时长 ${seconds}s；${bits}-bit；DC ${dc}；purity ${purity}；反向腿 880Hz ⇒ fail ✓"
+  if [ "$(auto_verdict "$AUTO_ART/wav-check.log")" = "pass" ]; then
+    auto_record "1-WAV落盘链" "pass" "$detail"
+  else
+    auto_record "1-WAV落盘链" "fail" "$(auto_reason "$AUTO_ART/wav-check.log")；${detail}"
+  fi
+}
+
+auto_sfz() {
+  auto_section "2 SFZ 渲染（自动：RMS / 能量包络 / 主频 vs pitch_keycenter）"
+  local rc=0
+  auto_run save cargo run -q -p yeban-app --locked -- --save-as "$AUTO_ART/demo.yeban"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ ! -f "$AUTO_ART/demo.yeban" ]; then
+    auto_record "2-SFZ渲染" "fail" "建演示工程 rc=${rc}（见 save.log）"
+    return
+  fi
+  auto_run demo-midi cargo run -q -p yeban-app --locked -- --open "$AUTO_ART/demo.yeban" --export-midi "$AUTO_ART/demo.mid"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ ! -f "$AUTO_ART/demo.mid" ]; then
+    auto_record "2-SFZ渲染" "fail" "导出 MIDI 音符表 rc=${rc}（见 demo-midi.log）"
+    return
+  fi
+  auto_run pick-sfz python3 "$REPO/scripts/dev/hardware_check_auto.py" pick-sfz --midi "$AUTO_ART/demo.mid" --samples-root assets/samples
+  rc=$?
+  auto_show "$AUTO_ART/pick-sfz.log"
+  if [ "$(auto_verdict "$AUTO_ART/pick-sfz.log")" = "not-automatable" ]; then
+    auto_record "2-SFZ渲染" "not-automatable" "$(auto_reason "$AUTO_ART/pick-sfz.log")"
+    return
+  fi
+  local sfz=""
+  sfz="$(grep '^sfz=.*\.sfz$' "$AUTO_ART/pick-sfz.log" | head -1 | sed 's/^sfz=//')"
+  if [ -z "$sfz" ] || [ ! -f "$REPO/$sfz" ]; then
+    auto_record "2-SFZ渲染" "fail" "没有选出可用的仓内 SFZ（见 pick-sfz.log）"
+    return
+  fi
+  say "选中：$sfz"
+  auto_run sfz-export cargo run -q -p yeban-app --locked -- --open "$AUTO_ART/demo.yeban" --sfz "$sfz" --export-wav "$AUTO_ART/sfz.wav"
+  rc=$?
+  if [ "$rc" -ne 0 ] || [ ! -f "$AUTO_ART/sfz.wav" ]; then
+    auto_record "2-SFZ渲染" "fail" "SFZ 导出 rc=${rc}（见 sfz-export.log）"
+    return
+  fi
+  local mode="sample"
+  if grep -q '回退:' "$AUTO_ART/sfz-export.log"; then
+    mode="fallback"
+    say "产物来源：样本文件缺失 ⇒ 回退 in-memory-sine(440Hz)（期望频率按 440Hz×pitch_ratio 算）"
+  else
+    say "产物来源：真样本（期望频率按 keycenter=音符音高算）"
+  fi
+  say "导出读数：$(grep -o 'source=sfz([^)]*' "$AUTO_ART/sfz-export.log" | head -1 | cut -c1-96)…"
+  auto_py sfz --wav "$AUTO_ART/sfz.wav" --midi "$AUTO_ART/demo.mid" --sfz "$sfz" --mode "$mode" >"$AUTO_ART/sfz-check.log" 2>&1
+  rc=$?
+  auto_show "$AUTO_ART/sfz-check.log"
+  local summary
+  summary="$(grep '^sfz=seconds=' "$AUTO_ART/sfz-check.log" | sed 's/^sfz=//')；$(grep '^sfz=peak=' "$AUTO_ART/sfz-check.log" | sed 's/^sfz=//')"
+  if [ "$(auto_verdict "$AUTO_ART/sfz-check.log")" = "pass" ]; then
+    auto_record "2-SFZ渲染" "pass" "${summary}；6 个期望频率均在噪底 20× 以上"
+  else
+    auto_record "2-SFZ渲染" "fail" "$(auto_reason "$AUTO_ART/sfz-check.log")；$summary"
+  fi
+}
+
+auto_vision() {
+  auto_section "3 视觉 golden（自动：Tier-1 截图 ⇒ PNG 尺寸 + 像素占比）"
+  local rc=0
+  : >"$AUTO_ART/visual-marker"
+  auto_run visual cargo test -p yeban-app --locked --features ui-test-port --test test_port_adapter live_main_window_renders_tier1_pixels_and_enforces_permissions -- --nocapture
+  rc=$?
+  tail -3 "$AUTO_ART/visual.log" | sed 's/^/  /'
+  if [ "$rc" -ne 0 ]; then
+    auto_record "3-视觉golden" "fail" "Tier-1 截图测试 rc=${rc}（见 visual.log）"
+    return
+  fi
+  mkdir -p "$AUTO_ART/vision"
+  local found=0 png
+  for png in "$REPO"/target/ui-test-port/app-*.png; do
+    [ -f "$png" ] || continue
+    [ "$png" -nt "$AUTO_ART/visual-marker" ] || continue
+    cp "$png" "$AUTO_ART/vision/"
+    found=$((found + 1))
+  done
+  if [ "$found" -eq 0 ]; then
+    auto_record "3-视觉golden" "fail" "测试通过但产物目录里没有比 marker 更新的 PNG"
+    return
+  fi
+  local all_pass="yes" reason="" name
+  for png in "$AUTO_ART"/vision/*.png; do
+    name="$(basename "$png")"
+    auto_py png --path "$png" >"$AUTO_ART/png-check-${name}.log" 2>&1
+    auto_show "$AUTO_ART/png-check-${name}.log"
+    if [ "$(auto_verdict "$AUTO_ART/png-check-${name}.log")" != "pass" ]; then
+      all_pass="no"
+      reason="${reason}${name}: $(auto_reason "$AUTO_ART/png-check-${name}.log")；"
+    fi
+  done
+  local first_stats
+  first_stats="$(grep '^png=' "$AUTO_ART/png-check-app-main-window-arrangement-full-1920x1080.png.log" 2>/dev/null | sed 's/^png=//')"
+  if [ -z "$first_stats" ]; then
+    first_stats="$(grep '^png=' "$AUTO_ART"/png-check-*.log | head -1 | sed 's/.*png=//')"
+  fi
+  say "PNG：$found 张；$(printf '%s' "$first_stats" | cut -c1-160)"
+  if [ "$all_pass" = "yes" ]; then
+    auto_record "3-视觉golden" "pass" "${found} 张 PNG；${first_stats}"
+  else
+    auto_record "3-视觉golden" "fail" "$reason"
+  fi
+}
+
+auto_fps() {
+  auto_section "4 窗口帧率（自动：p99 ≤ 2ms；负载 > 4 ⇒ 机器忙）"
+  local rc=0
+  auto_run fps cargo run --release -q -p yeban-app --locked --example fps_gpu
+  rc=$?
+  local line p99 load
+  line="$(grep '结果=已测' "$AUTO_ART/fps.log" | tail -1)"
+  p99="$(printf '%s' "$line" | sed -n 's/.* p99=\([0-9.]*\)ms.*/\1/p')"
+  load="$(printf '%s' "$line" | sed -n 's/.*load_average={ \([0-9.]*\) .*/\1/p')"
+  if [ -z "$load" ]; then load="$(auto_load_1min)"; fi
+  if [ -z "$p99" ]; then
+    tail -3 "$AUTO_ART/fps.log" | sed 's/^/  /'
+    auto_record "4-窗口帧率" "not-automatable" "没有取到绘制回调读数（rc=${rc}；没有桌面会话/GPU 路径时就是这样，读不到数就不判）"
+    return
+  fi
+  say "读数：p99=${p99}ms load_average（1 分钟）=${load}；原始行：$(printf '%s' "$line" | cut -c1-120)…"
+  if awk -v value="$load" 'BEGIN { exit !(value > 4) }'; then
+    auto_record "4-窗口帧率" "not-automatable" "机器忙 load_1min=${load} > 4 ⇒ p99=${p99}ms 受负载污染，不判"
+  elif awk -v value="$p99" 'BEGIN { exit !(value <= 2.0) }'; then
+    auto_record "4-窗口帧率" "pass" "p99=${p99}ms ≤ 2ms；load_1min=${load}"
+  else
+    auto_record "4-窗口帧率" "fail" "p99=${p99}ms > 2ms；load_1min=${load}"
+  fi
+}
+
+auto_midi() {
+  auto_section "5 MIDI 硬件（自动：无设备 ⇒ not-automatable）"
+  local rc=0
+  auto_run midi cargo run -q -p yeban-app --locked --features midi-input -- --midi-in 0 --midi-in-seconds 3
+  rc=$?
+  tail -3 "$AUTO_ART/midi.log" | sed 's/^/  /'
+  if grep -q '没有任何.*MIDI 输入端口' "$AUTO_ART/midi.log"; then
+    auto_record "5-MIDI硬件" "not-automatable" "无 MIDI 端口（实测：当前没有任何可用 MIDI 输入端口；rc=${rc}）"
+    return
+  fi
+  if [ "$rc" -eq 0 ] && grep -q 'midi-in:' "$AUTO_ART/midi.log"; then
+    auto_record "5-MIDI硬件" "pass" "端口 0 采集 3s：$(grep 'midi-in:' "$AUTO_ART/midi.log" | tail -1 | cut -c1-160)"
+  else
+    auto_record "5-MIDI硬件" "fail" "--midi-in rc=$rc 且没有可用读数（见 midi.log）"
+  fi
+}
+
+auto_loopback() {
+  auto_section "6 声学往返（自动：--loopback 的 verdict=）"
+  local rc=0
+  auto_run latency cargo run --release -q -p yeban-engine --locked --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000
+  rc=$?
+  local verdict measured ncc load
+  verdict="$(grep -o 'verdict=[a-z-]*' "$AUTO_ART/latency.log" | tail -1 | cut -d= -f2)"
+  measured="$(grep -o 'measured_roundtrip_ms=[A-Za-z0-9.]*' "$AUTO_ART/latency.log" | tail -1 | cut -d= -f2)"
+  ncc="$(grep -o 'peak_ncc=[A-Za-z0-9.]*' "$AUTO_ART/latency.log" | tail -1 | cut -d= -f2)"
+  load="$(auto_load_1min)"
+  if [ -z "$verdict" ]; then
+    tail -3 "$AUTO_ART/latency.log" | sed 's/^/  /'
+    auto_record "6-声学往返" "not-automatable" "没有取到 verdict=（rc=${rc}；需要 device 特性 + 桌面音频设备）"
+    return
+  fi
+  say "读数：verdict=${verdict} measured_roundtrip_ms=${measured:-none} peak_ncc=${ncc:-none} load_1min=${load}"
+  case "$verdict" in
+    within-target)
+      auto_record "6-声学往返" "pass" "verdict=${verdict}；measured_roundtrip_ms=${measured}；peak_ncc=${ncc}；load_1min=${load}" ;;
+    over-target)
+      auto_record "6-声学往返" "fail" "verdict=${verdict}；measured_roundtrip_ms=${measured}；peak_ncc=${ncc}；load_1min=${load}" ;;
+    unmeasurable-*|no-device)
+      auto_record "6-声学往返" "not-automatable" "verdict=${verdict}；measured_roundtrip_ms=${measured:-none}；peak_ncc=${ncc:-none}；load_1min=${load}" ;;
+    *)
+      auto_record "6-声学往返" "not-automatable" "verdict=${verdict} 未登记映射（rc=${rc}）" ;;
+  esac
+}
+
+auto_main() {
+  auto_art
+  : >"$AUTO_SUMMARY_FILE"
+  say "夜半（yeban）硬件与真机验证 —— 自动档（--auto）：零提问，采集 + 判定"
+  say "时间：$(date '+%Y-%m-%d %H:%M:%S %Z')　仓库：${REPO}　提交：$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 未知)"
+  say "产物目录：$AUTO_ART"
+  auto_env
+  auto_wav
+  auto_sfz
+  auto_vision
+  auto_fps
+  auto_midi
+  auto_loopback
+
+  blank
+  rule
+  say "==== 汇总（项=verdict）===="
+  cat "$AUTO_SUMMARY_FILE"
+  rule
+  say "产物目录（文件名 + 字节数）：$AUTO_ART"
+  find "$AUTO_ART" -type f | sort | while IFS= read -r path; do
+    printf '%9s  %s\n' "$(wc -c <"$path" | tr -d ' ')" "${path#"$AUTO_ART"/}"
+  done
+  rule
+  if [ "$AUTO_FAIL" -eq 0 ]; then
+    say "结论：没有 fail（pass + not-automatable 的明细见上表）。"
+    return 0
+  fi
+  say "结论：$AUTO_FAIL 项 fail（退出码 180）。"
+  return 180
 }
 
 # ---------- 主流程 ----------
@@ -523,7 +887,11 @@ report_close() {
 }
 
 main() {
-  say "夜半（yeban）硬件与真机验证 —— 交互式检查单"
+  if [ "$AUTO" = "1" ]; then
+    auto_main
+    exit "$?"
+  fi
+  say "夜半（yeban）硬件与真机验证 —— 交互式检查单（自动档请用 --auto）"
   if [ "$ONLY" = "self-test" ]; then
     self_test
     exit "$?"
