@@ -10,14 +10,15 @@
 //! 这两份契约在"错误码"上**不一致**（见 [`ErrorCode`] 的说明），本模块的处置是
 //! "两份都实现、把差异钉成常量、让判据把它暴露出来"，而不是悄悄选一边。
 //!
-//! ## 二十个工具 = 规范表格的十个 + 十条**扩展**（ADR-0001 D45 / D46 + 后续线）
+//! ## 二十二个工具 = 规范表格的十个 + 十二条**扩展**（ADR-0001 D45 / D46 + 后续线）
 //!
 //! 扩展段的**唯一清单**是 [`EXTENSION_NAMES`]：D45 的撤销 / 重做 2 条、D46 的三类能力 3 条、
-//! D56 的诊断包 1 条、SMF 导出 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条 = **10** 条。
+//! D56 的诊断包 1 条、SMF 导出 1 条、SFZ 装载与 SFZ 音色导出 2 条、录音导出 1 条、
+//! 物理 MIDI 输入探针 1 条、未合并提案清单 1 条（`#176`）= **12** 条。
 //!
 //! `ADR-0001` **D46** 明文："十工具是**起点不是上限**；扩充时必须同步
 //! `schemas/mcp-tools.schema.json`（契约是唯一权威定义）"。**D45** 则要求撤销入口
-//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出九条扩展：
+//! "UI+MCP 两侧同接，共用同一实现"。于是本注册表多出十二条扩展：
 //!
 //! | 工具 | 作用 | 规范 ID |
 //! | :--- | :--- | :--- |
@@ -32,6 +33,7 @@
 //! | `yeban_render_sfz_wav` | 用已装载的 SFZ 区域把活跃工程的 MIDI 音符导出成 24-bit WAV | `MCP-TOOL-EXT-SFZ-WAV` |
 //! | `yeban_record_wav` | `ARCH-REC-001` 三段（无锁环 + 后台抽干）录一段测试音成 24-bit WAV | `MCP-TOOL-EXT-RECORD-WAV` |
 //! | `yeban_midi_input_probe` | 物理 MIDI 输入端口的一段事件窗口（`ADR-0006`，feature `midi-input` 默认关） | `MCP-TOOL-EXT-MIDI-INPUT` |
+//! | `yeban_list_proposals` | **未合并**的提案清单（只读；`#176`，`#174` 坑②的发现面） | `MCP-TOOL-EXT-LIST-PROPOSALS` |
 //!
 //! ### 为什么它们的 `specId` 不是 `MCP-TOOL-011/012`
 //!
@@ -91,15 +93,16 @@ pub const IDEMPOTENCY_KEY_PARAM: &str = "idempotencyKey";
 pub const INCLUDE_OPS_PARAM: &str = "includeOps";
 
 /// 工具集规模（规范表格的 10 个 + `ADR-0001` D45/D46 的扩展）。
-pub const TOOL_COUNT: usize = 21;
+pub const TOOL_COUNT: usize = 22;
 
 /// **规范表格**里的工具数（`MCP-TOOL-001..010`）。
 pub const DOCUMENTED_TOOL_COUNT: usize = 10;
 
 /// 扩展工具数（`MCP-TOOL-EXT-*`）：D45 的撤销入口 2 条 + D46 的三类能力 3 条
 /// + D56 的诊断包 1 条 + SMF 导出 1 条 + SFZ 装载 / SFZ 音色导出 2 条
-/// + 录音导出 1 条 + **物理 MIDI 输入探针 1 条**（`ADR-0006`，`midi-input` 默认关）。
-pub const EXTENSION_TOOL_COUNT: usize = 11;
+/// + 录音导出 1 条 + **物理 MIDI 输入探针 1 条**（`ADR-0006`，`midi-input` 默认关）
+/// + **未合并提案清单 1 条**（`#176`，`#174` 坑②）。
+pub const EXTENSION_TOOL_COUNT: usize = 12;
 
 /// 扩展工具的规范 ID 前缀。
 ///
@@ -124,6 +127,7 @@ pub const EXTENSION_NAMES: [&str; EXTENSION_TOOL_COUNT] = [
     "yeban_render_sfz_wav",
     "yeban_record_wav",
     "yeban_midi_input_probe",
+    "yeban_list_proposals",
 ];
 
 /// 规范 ID 前缀。
@@ -589,7 +593,7 @@ const fn array_param(
     }
 }
 
-/// 十九个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
+/// 二十二个工具，**规范顺序**（`MCP-TOOL-001..010` 在前，D45/D46 及后续的扩展在后）。
 pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-001",
@@ -713,7 +717,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-006",
         name: "yeban_edit_notes",
-        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main**（响应的 `data.pendingMerge` 恒为 `true`、`data.projectUnchanged` 恒为 `true` —— 成功只代表提案已创建, ⛔ 不代表已落盘）。⭐ 效果器参数名拼错（与某个已识别拼写的编辑距离 ≤ 2）会在**解析期** `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议）；引擎不认但距离更远的未知名字照旧接受, 并在响应的 `data.warnings[]` 里逐条报出。在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `ops[].kind:\"removeClip\"` 单独出现时把 `clipId` 这个**已有的**片段池条目取走 (`Op::RemoveClip`, 还有摆放引用它则报 `CONFLICT`); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的五个音轨级形态写 `trackId` 那条轨的静态混音值、通道条开关、自动化泳道属性与自动化点 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo` · `setAutomationLane` 读开关 / 写模式 / 取值域 / 取走泳道 · `removeAutomationPoint` 取走一个点); `ops[].kind:\"setRoutingGain\"` 写 `edgeId` 那条路由边的静态增益 (`Op::SetRoutingGain`; `value:null` = 单位增益, 与 `0.0` 可区分); `ops[].kind:\"disconnectRouting\"` 把 `edgeId` 那条路由边**取走** (`Op::DisconnectRouting`; 撤销载荷 `previous_edge` 从当前文档读); `ops[].kind:\"removeRoutingNode\"` 把 `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走 (`Op::RemoveRoutingNode`; 载荷只有节点身份, 主总线节点被响亮拒绝); `ops[].kind:\"removeSection\"` 把 `sectionId` 那个**曲式段落**从工程里取走 (`Op::RemoveSection`, `sectionId` 是本操作自带的寻址; 撤销载荷 `previousSection` 从当前文档读, 段落不存在报 `ENTITY_NOT_FOUND` (reason `sectionNotFound`)); `ops[].kind:\"removeTrack\"` 把 `trackId` 那条**音轨本身**从工程里取走 (`Op::RemoveTrack`, `trackId` 是本操作自带的寻址, 顶层 `trackId`/`clipId` 对本形态无意义; 撤销载荷 `previousTrack` 从当前文档读 (整条音轨, 含它的摆放与自动化泳道), 音轨不存在报 `ENTITY_NOT_FOUND` (reason `trackNotFound`), 主总线被响亮拒绝 (reason `masterBusTrackCannotBeRemoved`); 本形态只能**单独**出现, 不能与别的 `kind` 或 `placement` 同给); `ops[].kind:\"removeScene\"` 把 `sceneId` 那个**场景**从工程里取走 (`Op::RemoveScene`, `sceneId` 是本操作自带的寻址; 撤销载荷 `previousScene` 从当前文档读, 场景不存在报 `ENTITY_NOT_FOUND` (reason `sceneNotFound`)); `ops[].kind:\"setScene\"` 写 `scene.sceneId` 那个**场景** (`Op::SetScene`; `scene.create:true` = 新建 (身份必须**不在**工程里, 否则 `CONFLICT` (reason `sceneAlreadyExists`), 且 `name` 必填), 缺省 = 更新 (身份必须**在**工程里, 否则 `ENTITY_NOT_FOUND` (reason `sceneNotFound`); 三个属性 `name`/`tempo`/`color` 按**合并**语义施加 (缺省 = 保留现值), 显式 `null` 清空 `tempo`/`color`); 撤销载荷 `oldScene` 从当前文档读 (新建时为空, 更新时是整条现值 → 一次 `yeban_undo` 就能把这个场景整条取走)",
+        summary: "⭐ **本调用永远写入隔离提案分支，必须 `yeban_merge_proposal` 才落到 main**（响应的 `data.pendingMerge` 恒为 `true`、`data.projectUnchanged` 恒为 `true` —— 成功只代表提案已创建, ⛔ 不代表已落盘）。⭐ 用 `yeban_list_proposals` 查未合并的提案（`proposalId` / `title` / `opCount` / `opKinds` / `createdAt`）；⭐ 效果器参数名拼错（与某个已识别拼写的编辑距离 ≤ 2）会在**解析期** `INVALID_PARAMETER_RANGE`（`unknownEffectParam`，带最近邻建议）；引擎不认但距离更远的未知名字照旧接受, 并在响应的 `data.warnings[]` 里逐条报出。在指定片段执行音符增删改, 自动进行音域与发声数合法性校验; `create:true` 时用这个身份新建一条 MIDI 片段池条目 (材料创建); `ops[].kind:\"removeClip\"` 单独出现时把 `clipId` 这个**已有的**片段池条目取走 (`Op::RemoveClip`, 还有摆放引用它则报 `CONFLICT`); `placement.kind` 选择摆放编辑 (`add` 把已有片段摆到音轨时间轴上 / `move` 平移一条已有摆放 / `remove` 取走一条已有摆放); `ops[].kind` 的五个音轨级形态写 `trackId` 那条轨的静态混音值、通道条开关、自动化泳道属性与自动化点 (`setParam` 音量 / 声相 · `setTrackMute` · `setTrackSolo` · `setAutomationLane` 读开关 / 写模式 / 取值域 / 取走泳道 · `removeAutomationPoint` 取走一个点); `ops[].kind:\"setRoutingGain\"` 写 `edgeId` 那条路由边的静态增益 (`Op::SetRoutingGain`; `value:null` = 单位增益, 与 `0.0` 可区分); `ops[].kind:\"disconnectRouting\"` 把 `edgeId` 那条路由边**取走** (`Op::DisconnectRouting`; 撤销载荷 `previous_edge` 从当前文档读); `ops[].kind:\"removeRoutingNode\"` 把 `nodeId` 那个路由**节点**从 `routing_graph.nodes` 取走 (`Op::RemoveRoutingNode`; 载荷只有节点身份, 主总线节点被响亮拒绝); `ops[].kind:\"removeSection\"` 把 `sectionId` 那个**曲式段落**从工程里取走 (`Op::RemoveSection`, `sectionId` 是本操作自带的寻址; 撤销载荷 `previousSection` 从当前文档读, 段落不存在报 `ENTITY_NOT_FOUND` (reason `sectionNotFound`)); `ops[].kind:\"removeTrack\"` 把 `trackId` 那条**音轨本身**从工程里取走 (`Op::RemoveTrack`, `trackId` 是本操作自带的寻址, 顶层 `trackId`/`clipId` 对本形态无意义; 撤销载荷 `previousTrack` 从当前文档读 (整条音轨, 含它的摆放与自动化泳道), 音轨不存在报 `ENTITY_NOT_FOUND` (reason `trackNotFound`), 主总线被响亮拒绝 (reason `masterBusTrackCannotBeRemoved`); 本形态只能**单独**出现, 不能与别的 `kind` 或 `placement` 同给); `ops[].kind:\"removeScene\"` 把 `sceneId` 那个**场景**从工程里取走 (`Op::RemoveScene`, `sceneId` 是本操作自带的寻址; 撤销载荷 `previousScene` 从当前文档读, 场景不存在报 `ENTITY_NOT_FOUND` (reason `sceneNotFound`)); `ops[].kind:\"setScene\"` 写 `scene.sceneId` 那个**场景** (`Op::SetScene`; `scene.create:true` = 新建 (身份必须**不在**工程里, 否则 `CONFLICT` (reason `sceneAlreadyExists`), 且 `name` 必填), 缺省 = 更新 (身份必须**在**工程里, 否则 `ENTITY_NOT_FOUND` (reason `sceneNotFound`); 三个属性 `name`/`tempo`/`color` 按**合并**语义施加 (缺省 = 保留现值), 显式 `null` 清空 `tempo`/`color`); 撤销载荷 `oldScene` 从当前文档读 (新建时为空, 更新时是整条现值 → 一次 `yeban_undo` 就能把这个场景整条取走)",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
@@ -1337,9 +1341,24 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
             ErrorCode::InvalidParameterRange,
         ],
     },
+    ToolSpec {
+        spec_id: "MCP-TOOL-EXT-LIST-PROPOSALS",
+        name: "yeban_list_proposals",
+        summary: "列出当前**未合并**的提案（只读）: 每条给 `proposalId` / `title` / `opCount` / `opKinds` / `baseCommit` / `headCommit` / `branch` / `createdAt`（外加 1 起的 `index`）。没有未合并的提案 ⇒ `proposals: []` ＋ 一句 `note`（⛔ 不报错）。⚠ 提案记录是**会话运行态**（不落 `project.json` / `history.dag`）⇒ 进程重启后这里为空; 用它可以在提案还没 merge 时重新找到 `proposalId`，但**不能**跨进程恢复提案。",
+        scope: Scope::AppAdmin,
+        // 只读：读 `domain.proposals`，不改工程、不落盘（`Plan::ListProposals` 的 `apply` 原样回传）。
+        side_effect: SideEffect::ReadOnly,
+        params: &[param(
+            "kind",
+            "string",
+            false,
+            "只看某一类提案: `section` / `notes` / `macro`; 其余取值 ⇒ `INVALID_PARAMETER_RANGE` (⛔ 不静默返回全部)",
+        )],
+        errors: &[ErrorCode::InvalidParameterRange],
+    },
 ];
 
-/// 按名查找工具（`const` 数组上的线性查找；10 个元素，无需哈希表）。
+/// 按名查找工具（`const` 数组上的线性查找；22 个元素，无需哈希表）。
 #[must_use]
 pub fn tool(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.name == name)
@@ -1401,6 +1420,11 @@ impl ToolSpec {
         map.insert("name".to_owned(), Value::from(self.name));
         map.insert("description".to_owned(), Value::from(self.summary));
         map.insert("inputSchema".to_owned(), self.input_schema());
+        // ⭐ #176（#174 坑⑥）：成功响应的 `data` 形状由 `crate::output_schema`
+        // 派生。没声明形状的工具**不广播**这个键（⛔ 不拿空对象冒充）。
+        if let Some(schema) = crate::output_schema::for_tool(self.name) {
+            map.insert("outputSchema".to_owned(), schema);
+        }
         let mut annotations = Map::new();
         annotations.insert("specId".to_owned(), Value::from(self.spec_id));
         annotations.insert("requiredScope".to_owned(), Value::from(self.scope.as_str()));
@@ -2057,7 +2081,9 @@ mod tests {
                 // 不改工程、不落盘、不进提交图谱 ⇒ 显式分类为 read-only。
                 "yeban_load_sfz",
                 // 物理 MIDI 输入探针：只读硬件端口的事件窗口；连活跃工程都不要求。
-                "yeban_midi_input_probe"
+                "yeban_midi_input_probe",
+                // #176：未合并提案清单 —— 只读 `domain.proposals`，不动工程、不动提案记录。
+                "yeban_list_proposals"
             ],
             "只读工具必须显式分类为 read-only"
         );

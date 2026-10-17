@@ -894,6 +894,15 @@ pub enum Plan {
         /// 已经组装好的读数（`apply` 原样返回，一位都不改）。
         data: Value,
     },
+    /// `yeban_list_proposals`（**只读**）：当前**未合并**的提案清单 `[#176]`。
+    ///
+    /// 它是 `#174` 坑②的发现面：提案记录住在 [`Domain::proposals`]（会话运行态），
+    /// 此前**没有任何工具能读它** —— 调用方漏了 `proposalId` 就再也找不到那条提案。
+    /// `data` 在 `plan` 里就组装好（`apply` 原样回传，一位都不改）。
+    ListProposals {
+        /// 已经组装好的清单（`proposals` / `openCount` / `totalCount` / `mergeTool` / `note`）。
+        data: Value,
+    },
     /// `yeban_import_audio` [ADR-0001 **D46** 第 3 类能力]
     ImportAudio {
         /// 只读规划的产物（片段条目 + 需要登记进 CAS 池的字节）。
@@ -954,6 +963,7 @@ impl Plan {
             Self::Redo { .. } => "redo",
             Self::EditAutomation { .. } => "edit_automation",
             Self::EngineState { .. } => "engine_state",
+            Self::ListProposals { .. } => "list_proposals",
             Self::ImportAudio { .. } => "import_audio",
             Self::ExportMidi { .. } => "export_midi",
             Self::LoadSfz { .. } => "load_sfz",
@@ -991,6 +1001,8 @@ impl Plan {
             | Self::RenderMaster { .. }
             // 引擎/会话读数是**只读**的。
             | Self::EngineState { .. }
+            // 未合并提案清单也**只读**（不动工程、不动提案记录）。
+            | Self::ListProposals { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
             // SFZ 装载只动**会话态** registry（不是工程文档）；SFZ 导出与录音只写盘。
@@ -1055,6 +1067,8 @@ impl Plan {
             | Self::RenderMaster { .. }
             // 引擎/会话读数是**只读**的。
             | Self::EngineState { .. }
+            // 未合并提案清单也**只读**（不动工程、不动提案记录）。
+            | Self::ListProposals { .. }
             // SMF 导出也是**只读**的（字节只回传，不落盘、不改工程）。
             | Self::ExportMidi { .. }
             // SFZ 装载只动会话态 registry（不是工程文档）；SFZ 导出与录音只写盘。
@@ -1187,6 +1201,7 @@ impl Plan {
             | Self::Reject { .. }
             | Self::RenderMaster { .. }
             | Self::EngineState { .. }
+            | Self::ListProposals { .. }
             | Self::ExportMidi { .. }
             | Self::LoadSfz { .. }
             | Self::RenderSfzWav { .. }
@@ -1463,6 +1478,17 @@ impl Plan {
                 preview.insert("readOnly".to_owned(), Value::from(true));
                 preview.insert("result".to_owned(), data.clone());
             }
+            // 未合并提案清单：预览 = 真做（只读工具没有任何差异可预览）。
+            // 与 `EngineState` 同一做法：把 `data` 的键合并进预览。
+            Self::ListProposals { data } => {
+                if let Value::Object(fields) = data.clone() {
+                    for (key, value) in fields {
+                        preview.insert(key, value);
+                    }
+                }
+                preview.insert("readOnly".to_owned(), Value::from(true));
+                preview.insert("result".to_owned(), data.clone());
+            }
             // 音频导入：与自动化编辑同一个做法（共用 `AudioImport::data()`）。
             Self::ImportAudio { import } => {
                 let data = import.data()?;
@@ -1698,6 +1724,7 @@ pub fn plan(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         "yeban_redo" => plan_redo(domain, call),
         "yeban_edit_automation" => plan_edit_automation(domain, call),
         "yeban_query_engine_state" => plan_query_engine_state(domain, call),
+        "yeban_list_proposals" => plan_list_proposals(domain, call),
         "yeban_import_audio" => plan_import_audio(domain, call),
         "yeban_export_diagnostics" => plan_export_diagnostics(domain, call),
         "yeban_export_midi" => plan_export_midi(domain, call),
@@ -2563,6 +2590,92 @@ fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fau
     Ok(Plan::EngineState { data })
 }
 
+/// `yeban_list_proposals` `[#176]`（**只读**）。
+///
+/// ## 它解决的是哪一个坑
+///
+/// `#174` 的外部 agent 试跑：`yeban_edit_notes` 只回一次 `proposalId`，之后
+/// **没有任何工具能列出未合并的提案**（`grep -rn "list_proposals"` = 0）⇒
+/// 调用方一旦漏读响应，提案就永久成孤儿。这里把它变成**可发现**的读面。
+///
+/// ## 三条口径
+///
+/// 1. **只列未合并的**（`status == open`）：`merged` / `rejected` 都不算
+///    "还需要 merge"，把它们混进来会让"合并后列表变空"这条读数变成假话；
+/// 2. **没有提案是正常状态**：`proposals: []` + 一句 `note`，⛔ 不报错
+///    （空列表也是答案；"没有活跃工程"同样返回空列表 —— 提案本来就不存在）；
+/// 3. **顺序 = (createdAt, proposalId) 升序**：`createdAt` 由注入时钟给，
+///    同毫秒时用 `proposalId`（ULID，字典序 = 创建序）打破平局 ⇒ 读数稳定。
+///
+/// ⚠ **不是**跨进程恢复：提案记录住在 [`Domain::proposals`]（会话运行态，
+/// `MODEL-ISO-001` 第 2 层），进程重启后这里为空。这条边界写在工具描述里，
+/// 判据 `tests/props_176.rs` 也把"重启后为空"钉成如实读数（⛔ 不承诺做不到的事）。
+fn plan_list_proposals(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
+    const KINDS: [&str; 3] = ["section", "notes", "macro"];
+    let wanted = match arg_str(call, "kind") {
+        Some(kind) => {
+            if !KINDS.contains(&kind) {
+                return Err(Fault::domain(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`kind` 只接受 {} 之一, 实际收到 `{kind}`",
+                        KINDS.join(" / ")
+                    ),
+                ));
+            }
+            Some(kind)
+        }
+        None => None,
+    };
+    let mut open: Vec<&Proposal> = domain
+        .proposal_ids()
+        .into_iter()
+        .filter_map(|id| domain.proposal(&id))
+        .filter(|record| record.status == ProposalStatus::Open)
+        .filter(|record| wanted.is_none_or(|kind| record.kind == kind))
+        .collect();
+    open.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let proposals: Vec<Value> = open
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            let mut entry = record.summary();
+            if let Value::Object(fields) = &mut entry {
+                // `index` 是**本次**返回顺序里的 1 起始序号（与 `createdAt` 一起回答
+                // "这是第几个提案 / 什么时候建的"）。
+                fields.insert("index".to_owned(), Value::from(index as u64 + 1));
+            }
+            entry
+        })
+        .collect();
+    let note = if proposals.is_empty() {
+        match wanted {
+            Some(kind) => format!("当前没有未合并的 `{kind}` 类提案。"),
+            None => "当前没有未合并的提案。".to_owned(),
+        }
+    } else {
+        format!(
+            "共 {} 个未合并的提案; 用 `yeban_merge_proposal` 合并 (需要 proposalId), \
+             或 `yeban_reject_proposal` 拒绝。",
+            proposals.len()
+        )
+    };
+    Ok(Plan::ListProposals {
+        data: serde_json::json!({
+            "proposals": proposals,
+            "openCount": proposals.len(),
+            // 全部记录数（含 merged / rejected）—— 与 `openCount` 的差就是"历史提案"。
+            "totalCount": domain.proposal_count(),
+            "mergeTool": "yeban_merge_proposal",
+            "note": note,
+        }),
+    })
+}
+
 /// `yeban_import_audio` [ADR-0001 **D46** 第 3 类能力]。
 ///
 /// 资产池的读法**复用** [`render::AssetStore`]（[`Domain`] 自己实现它），
@@ -2979,6 +3092,8 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
         Plan::EditAutomation { edit } => automation::apply(domain, &edit),
         // 只读：`plan` 已经把读数组装好了，`apply` 原样返回（一位都不改）。
         Plan::EngineState { data } => Ok(ToolResponse::success(data)),
+        // 只读：清单在 `plan` 里就组装好了（`apply` 一位都不改）。
+        Plan::ListProposals { data } => Ok(ToolResponse::success(data)),
         Plan::ImportAudio { import } => import_audio::apply(domain, &import),
         Plan::Diagnostics { export } => diagnostics::apply(domain, &export),
         // 只读：字节在 `plan` 里就编好了，`apply` 原样回传（一位都不改、不落盘）。
@@ -3970,6 +4085,8 @@ mod tests {
             // 物理 MIDI 探针：**不要求**活跃工程；本机（与 CI）通常没有 MIDI 输入端口
             // ⇒ 预期是**结构化不可用**（`CONFLICT`），⛔ 不是"规划成功"、⛔ 也不是 `-32005`。
             ("yeban_midi_input_probe", serde_json::json!({})),
+            // #176：未合并提案清单（只读）⇒ 空会话里规划成功（`proposals: []`）。
+            ("yeban_list_proposals", serde_json::json!({})),
         ];
         for spec in &crate::tools::TOOLS {
             assert!(

@@ -34,7 +34,8 @@
             "yeban_load_sfz",
             "yeban_render_sfz_wav",
             "yeban_record_wav",
-            "yeban_midi_input_probe"
+            "yeban_midi_input_probe",
+            "yeban_list_proposals"
           ]
         },
         "arguments": {
@@ -259,6 +260,25 @@
             "properties": {
               "arguments": {
                 "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_midi_input_probe"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "const": "yeban_list_proposals"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "$ref": "#/definitions/ExtensionToolArguments/$defs/yeban_list_proposals"
               }
             }
           }
@@ -792,6 +812,30 @@
             "seconds": {
               "type": "number",
               "description": "收取窗口秒数（0 < seconds <= 60）；缺省 3。本工具在请求线程上真的等这段窗口。"
+            }
+          }
+        },
+        "yeban_list_proposals": {
+          "title": "yeban_list_proposals",
+          "type": "object",
+          "description": "列出当前未合并的提案（只读；#176，关闭 #174 坑②的可发现面）。响应 data：proposals[]（每条 = 提案摘要 + 1 起始 index）/ openCount / totalCount / mergeTool / note；没有未合并的提案时 proposals 为空数组且 note 给一句话（⛔ 不报错）。提案记录是会话运行态（不落 project.json / history.dag）⇒ 进程重启后为空。kind 只接受 section / notes / macro，其余取值 INVALID_PARAMETER_RANGE。",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "section",
+                "notes",
+                "macro"
+              ],
+              "description": "只看某一类提案；缺省 = 全部未合并的提案。其余取值 ⇒ INVALID_PARAMETER_RANGE（⛔ 不静默返回全部）。"
+            },
+            "dryRun": {
+              "type": "boolean",
+              "default": false
+            },
+            "idempotencyKey": {
+              "type": "string",
+              "maxLength": 256
             }
           }
         }
