@@ -80,6 +80,9 @@ FORBIDDEN_DEFAULT_FEATURES = (
     # `experimental-logic-export`: 实验性 Logic Pro `.logicx` bundle 导出。与上面同族
     # （实验性 DAW 互操作导出），必须永远保持"非默认"，故纳入本名单做机械防线。
     "experimental-logic-export",
+    # 任务单 #143：只读 Logic bundle 探针（`--inspect-logic`）。与导出器同族 —— 解析 Apple 的
+    # 私有分块二进制，只做结构对账、不产生 `.yeban`；必须永远保持"非默认"，故纳入本名单。
+    "experimental-logic-import",
     # 账本第 800 轮：`yeban-app` 的进程内 MCP 挂载（新依赖边 + 监听端口）—— 与上面几项同类，
     # 必须永远保持"非默认"，故纳入本名单做机械防线（纵深防御）。
     "in-process-mcp",
