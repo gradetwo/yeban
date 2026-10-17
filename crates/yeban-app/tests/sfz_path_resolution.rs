@@ -52,6 +52,14 @@
 //!
 //! ⛔ 本文件不证"人耳听到的声音"；样本"读到了"的读数是
 //! [`yeban_app::sfz_load::SfzDecodeReport`] 的 `decoded_samples == 1` ＋ `silent == 0`。
+//!
+//! ## ⭐ 任务单 `#171`：判据 4 的绝对路径必须是**该平台自己的**
+//!
+//! 判据 4（[`absolute_paths_are_returned_verbatim`]）原本用 `/nonexistent/yeban-168.sfz`
+//! 当"不存在的绝对路径"。在 **Windows** 上那不是绝对路径（需要盘符或 UNC 前缀）⇒
+//! 解析器当相对路径去三档里找 ⇒ `Err` ⇒ 判据 panic。本单用
+//! [`platform_absolute_nonexistent`] 换成 `C:\nonexistent\…`，**语义一位未变**：
+//! 绝对路径原样返回、不存在的绝对路径也原样、⛔ 不查存在性。
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -150,6 +158,32 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// ⭐ 任务单 `#171`：判据要的"**该平台自己的**绝对路径"（⛔ 不借用 Unix 形状）。
+///
+/// 教训（CI run `39070081067`，windows 腿）：`/nonexistent/…` 在 Unix 上是绝对路径，
+/// 在 **Windows** 上 `Path::is_absolute()` 读 `false` —— Windows 的绝对路径需要
+/// **盘符**（`C:\…`）或 **UNC** 前缀（`\\server\share\…`），只有根 `/…` 不算。
+/// 于是解析器把 `/nonexistent/…` 当**相对**路径，走"工程目录 ⇒ 仓库根 ⇒ cwd"三档，
+/// 找不到就 `Err` ⇒ `expect` 在 Windows 上 panic。
+///
+/// 修法**不改语义**（"绝对路径原样返回、⛔ 不查存在性"），只把那条路径换成
+/// **运行判据的这个平台**自己的绝对路径形状：
+///
+/// | 平台 | 形状 | `Path::new(…).is_absolute()` |
+/// | :--- | :--- | :--- |
+/// | Unix / macOS | `/nonexistent/<name>` | `true` |
+/// | Windows | `C:\nonexistent\<name>` | `true` |
+///
+/// 两个分支都是普通字符串，**任意**平台都能编译 ⇒ 不需要 `#[cfg]` 复制整个判据；
+/// 判据里再用 `#[cfg]` 两条断言核"形状"、一条运行期断言核"真的读作绝对"。
+fn platform_absolute_nonexistent(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"C:\nonexistent\{name}")
+    } else {
+        format!("/nonexistent/{name}")
     }
 }
 
@@ -399,10 +433,16 @@ fn a_missing_relative_path_is_loud_and_lists_every_root() {
 fn absolute_paths_are_returned_verbatim() {
     let fixture = Fixture::new("absolute");
     let absolute = fixture.sfz();
+    assert!(
+        absolute.is_absolute(),
+        "夹具路径必须是本平台的绝对路径（`target/tmp` 在仓库内）"
+    );
     let text = absolute.to_string_lossy().into_owned();
-    // 两个根都指向别处 ⇒ 若实现"改写绝对路径"，这里必然红。
-    let roots =
-        SfzRoots::under_project(Path::new("/tmp/yeban-168-elsewhere")).with_cwd(Path::new("/tmp"));
+    // 两个根都指向**别处**，且（`#171`）各自是**本平台的绝对路径** ⇒
+    // 若实现"改写绝对路径"，这里必然红。
+    let elsewhere = platform_absolute_nonexistent("yeban-171-elsewhere");
+    let elsewhere_cwd = platform_absolute_nonexistent("yeban-171-cwd");
+    let roots = SfzRoots::under_project(Path::new(&elsewhere)).with_cwd(Path::new(&elsewhere_cwd));
     let resolved = resolve_sampler_path(&text, roots).expect("绝对路径必须原样返回");
     assert_eq!(
         resolved,
@@ -417,17 +457,38 @@ fn absolute_paths_are_returned_verbatim() {
         "报告里的路径也必须原样"
     );
 
-    // 不存在的绝对路径也**原样**返回（缺件由 `decode_sfz_plan` 的 Read 错误响亮兜住）。
-    let nonexistent = "/nonexistent/yeban-168.sfz";
+    // ⭐ `#171`：不存在的绝对路径也**原样**返回（缺件由 `decode_sfz_plan` 的 Read 错误
+    // 响亮兜住）。这条路径必须是**本平台**的绝对路径 —— `/nonexistent/…` 在 Windows 上
+    // `is_absolute() == false`，会被当相对路径去三档里找，判据就丢了平台语义。
+    let nonexistent = platform_absolute_nonexistent("yeban-171.sfz");
+    #[cfg(windows)]
     assert_eq!(
-        resolve_sampler_path(nonexistent, roots).expect("原样返回"),
-        PathBuf::from(nonexistent)
+        nonexistent, r"C:\nonexistent\yeban-171.sfz",
+        "Windows 的绝对路径形状必须带盘符（`C:\\…`；⛔ 不是 `/…`）"
+    );
+    #[cfg(not(windows))]
+    assert_eq!(
+        nonexistent, "/nonexistent/yeban-171.sfz",
+        "Unix 的绝对路径形状必须是 `/…`（⛔ 不是 `C:\\…`）"
+    );
+    assert!(
+        Path::new(&nonexistent).is_absolute(),
+        "⭐ 判据前提：`{nonexistent}` 必须在本平台读作**绝对**路径；\
+         `#171` 的红正是因为 `/nonexistent/…` 在 Windows 上读作 `false`"
+    );
+    assert_eq!(
+        resolve_sampler_path(&nonexistent, roots).expect("原样返回"),
+        PathBuf::from(&nonexistent),
+        "⭐ **不存在**的绝对路径也必须原样返回（⛔ 不查根、⛔ 不查存在性）"
     );
     println!(
-        "[#168 判据4] abs={} ⇒ resolved={} decoded={}；不存在绝对路径也原样={nonexistent}",
+        "[#168/#171 判据4] abs={} is_absolute={} ⇒ resolved={} decoded={}；\
+         不存在的绝对路径={nonexistent} is_absolute={} ⇒ 原样；elsewhere={elsewhere}",
         absolute.display(),
+        absolute.is_absolute(),
         reading.resolved.display(),
-        reading.decoded
+        reading.decoded,
+        Path::new(&nonexistent).is_absolute()
     );
 }
 
