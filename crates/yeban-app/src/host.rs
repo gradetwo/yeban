@@ -2419,16 +2419,22 @@ pub fn wire_transport(
         }
     });
 
-    // ⭐ **录音键**（`[ARCH-REC-001]`，任务单 `#88`）：接线搬进 [`wire_record`] ——
+    // ⭐ **录音键**（`[ARCH-REC-001]`，任务单 `#88`）：接线搬进 [`wire_record_at`] ——
     // 那里有**可注入的工厂缝**（真设备源 / 显式静音腿 / 判据的假源）。
-    // 走带这一层只把"产品的三个端口"装配进去（⛔ 不再把源写死在这里）。
-    wire_record(
+    // 走带这一层只把"产品的四个端口"装配进去（⛔ 不再把源写死在这里）。
+    //
+    // ⭐ 第 4 个端口（任务单 `#134`）：**播放头读数**。停录落点要拿它当摆放起点，
+    // 而播放头的事实源是引擎走带读数（`position_ticks`，音频时钟）⇒ 这里注入一个
+    // 读 `EngineHost` 的闭包，⛔ 不在录音侧另存一份位置。
+    let playhead_engine = Rc::clone(&engine);
+    wire_record_at(
         ui,
         project,
         undo,
         crate::record_wav::RecordPlan::production(),
         crate::record_device::default_input_factory(),
         Rc::new(UiRecordOutcome),
+        Rc::new(move || playhead_engine.borrow().transport().position_ticks),
     );
 }
 
@@ -2478,17 +2484,21 @@ impl RecordOutcomePort for UiRecordOutcome {
 /// | `undo` | ⭐ 活会话那个 `Rc<UndoPort>`（`main.rs` 的 `undo_port`） | `None`（只落盘，不提交）或一个探针端口 |
 /// | `outcome` | [`UiRecordOutcome`] | 记录读数的观察端口（内部**仍**转调产品落点） |
 ///
-/// ## ⭐ 停录之后：真的进工程（任务单 `#132`，`#130` 的 L2 ＋ L3）
+/// ## ⭐ 停录之后：真的进工程（任务单 `#132` 的 L2＋L3，`#134` 的 L5）
 ///
-/// `frames > 0` 且 `undo` 在场 ⇒ 调 [`land_recording`](crate::record_landing::land_recording)：
-/// 读回**那段 WAV 的字节** ⇒ 按内容哈希登记进会话资产池 ⇒ **一次** `Op::AddClip`
-/// （`ClipContent::Audio { asset }`）⇒ `clip_pool` 多一条。⛔ 0 帧**不**走这一步：
-/// 0 帧的 WAV 只有头（`#130` 已让它响亮），把它写进 `clip_pool` 会在工程里留下一条
-/// "播放时什么都没有"的片段。⛔ `undo` 为 `None` 时也不假装提交过（只打一行如实登记）。
+/// `frames > 0` 且 `undo` 在场 ⇒ 调
+/// [`land_recording_at`](crate::record_landing::land_recording_at)：
+/// 读回**那段 WAV 的字节** ⇒ 按内容哈希登记进会话资产池 ⇒ **一次**提交
+/// `Op::AddClip`（`ClipContent::Audio { asset }`）＋ `Op::AddClipPlacement`
+/// ⇒ `clip_pool` 多一条、**第一条音频轨**的**播放头 tick** 上多一条摆放。
+/// ⛔ 0 帧**不**走这一步：0 帧的 WAV 只有头（`#130` 已让它响亮），把它写进
+/// `clip_pool` 会在工程里留下一条"播放时什么都没有"的片段。
+/// ⛔ `undo` 为 `None` 时也不假装提交过（只打一行如实登记）。
 ///
-/// ⚠ **L4 / L5 未做**（`crate::record_landing` 模块头已登记）：进去的那条 clip
-/// **不会**出现在任何素材池面板（`.slint` 对 `clip_pool` 的投影 0 处），也**不会**
-/// 自动摆到轨道上（⛔ 不写 `Op::AddClipPlacement`）。
+/// ⚠ **L4 由 `#133` 接力**（素材池面板）；本函数仍然只做"模型 ＋ 提交"。
+/// ⚠ **实时听不到**（`yeban-engine` 的快照不消费 `ClipContent::Audio`，见
+/// `crate::record_landing` 的模块文档）：摆放会被**离线渲染**（`render_core`）真的混进
+/// 母带，但走带播放那半属引擎层，本单 ⛔ 不改 `crates/yeban-engine/**`。
 ///
 /// ⛔ **失败语义（裁决 §2.3）**：打开失败**绝不**退化成"录一条静音"。
 /// `recorder.start_with_factory` 返回 `Err` ⇒ `recording` 保持 `false`、
@@ -2500,6 +2510,31 @@ pub fn wire_record(
     plan: crate::record_wav::RecordPlan,
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
     outcome: Rc<dyn RecordOutcomePort>,
+) {
+    // 兼容形态：起点 tick 取 0（见 [`wire_record_at`] 的说明）。
+    wire_record_at(ui, project, undo, plan, factory, outcome, Rc::new(|| 0));
+}
+
+/// [`wire_record`] 的**播放头形态**（任务单 `#134`）：停录落点需要一个起点 tick。
+///
+/// ## 为什么起点是**可注入的读数**（⛔ 不是常量）
+///
+/// 摆放的 `start_tick` 取"**停录落地这一刻**播放头在哪"（⚠ 不是起录位置：起录位置没有
+/// 被记录，⛔ 不假装知道）。产品路径的播放头 = 引擎
+/// 走带读数 [`EngineHost::transport().position_ticks`](crate::engine_host::EngineHost::transport)
+/// （RT→UI 镜面 = **音频时钟**，⛔ 不用墙钟）⇒ `wire_transport` 用
+/// `Rc::new(move || engine.borrow().transport().position_ticks)` 注入。
+/// 判据给固定值 ⇒ 读数可复现；⛔ 不读环境变量。
+///
+/// 其余语义与 [`wire_record`] 逐字相同（0 帧 ⇒ 不落地；`undo = None` ⇒ 只落盘）。
+pub fn wire_record_at(
+    ui: &MainWindow,
+    project: Option<Rc<YebanProjectV1>>,
+    undo: Option<Rc<UndoPort>>,
+    plan: crate::record_wav::RecordPlan,
+    factory: Rc<dyn crate::record_device::InputSourceFactory>,
+    outcome: Rc<dyn RecordOutcomePort>,
+    playhead_tick: Rc<dyn Fn() -> u64>,
 ) {
     let recorder = Rc::new(RefCell::new(crate::record_wav::Recorder::new()));
     // ⭐ 闭包要读工程算预备拍 ⇒ 先克隆（`Rc` 计数 +1）。
@@ -2538,10 +2573,16 @@ pub fn wire_record(
                     if report.frames > 0 {
                         match undo.as_ref() {
                             Some(port) => {
-                                match crate::record_landing::land_recording(
+                                // 起点 = **停录落地这一刻**的播放头（音频时钟读数）。
+                                // ⚠ 读点在 `recorder.stop()` **之后**（走带若在播放，它会比
+                                // 按下录音键那一刻更靠后）—— 本单的口径是"当前播放头"，
+                                // ⛔ 不假装知道起录位置。只读一次：随后播放头会继续走。
+                                let playhead = playhead_tick();
+                                match crate::record_landing::land_recording_at(
                                     port,
                                     &report.path,
                                     now_ms(),
+                                    playhead,
                                 ) {
                                     // 成功：`summary` 带 asset / clip / 字节数（可机械复核）。
                                     Ok(landed) => eprintln!("[yeban-app] {}", landed.summary()),

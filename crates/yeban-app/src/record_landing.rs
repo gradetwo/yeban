@@ -1,46 +1,61 @@
 //! ⭐ **录音落点**：把停录后**已经落盘**的那段 WAV 变成工程里的**真实编辑**
-//! （`Op::AddClip`）＋ 容器资产池里的**字节**（`assets/{sha256}`）。
+//! （`Op::AddClip` ＋ `Op::AddClipPlacement`）＋ 容器资产池里的**字节**
+//! （`assets/{sha256}`）。
 //!
-//! 任务单 `#132`，依据 `#130` 的分层分析里的 **L2 ＋ L3**（⛔ 不做 L1／L4／L5）。
+//! 任务单 `#132`（L2＋L3：进池）与 `#134`（L5：摆到轨道上、能响）；
+//! 依据 `#130` 的分层分析。L1／L4 不归本模块（L4 已由 `#133` 接力）。
 //!
-//! ## 它补的是哪一格（两条缺口，一条数据流）
+//! ## 它补的是哪一格（三条缺口，一条数据流）
 //!
 //! `#130` 之后，"按录音键 ⇒ 真设备的样本逐码落盘"已经成立
 //! （`crate::record_device` ＋ `crate::record_wav` 的判据）。但那段 WAV 到此为止
-//! **什么都不是**：工程的 `clip_pool` 里没有它，容器的 `assets/{sha256}` 里也没有它
-//! ⇒ 人录完音，工程**一位没变**。本模块把最后这一跳接上：
+//! **什么都不是**：工程的 `clip_pool` 里没有它，容器的 `assets/{sha256}` 里也没有它，
+//! 更不在任何轨道上 ⇒ 人录完音，工程**一位没变**、播放**没有声音**。本模块把这几跳
+//! 接上：
 //!
 //! ```text
 //! 停录成功（frames > 0）＋ 磁盘上那段 WAV
 //!   ──▶ plan_recording（**纯函数**：读字节 ＋ 解码校验 ＋ 内容哈希 ＋ 派生 `Op::AddClip`）
-//!   ──▶ land_recording（薄：读端口里的工程 → 规划 → **一次**提交 → 登记资产池）
+//!   ──▶ land_recording_at（薄：读工程 → 规划 → 算摆放 → **一次**提交 → 登记资产池）
+//!         ├─ 目标轨 = 第一条音频轨（BTreeMap 键序）
+//!         ├─ 起点   = 播放头 tick（产品路径 = EngineHost::transport().position_ticks）
+//!         └─ 长度   = frames_to_ticks_ceil(frames, PPQ, bpm, facts.sample_rate)
 //!   ──▶ UndoPort 的 CAS 池（`assets/{sha256}` 的字节）
-//!   ──▶ host::wire_save 把池写进容器（`ProjectArchive::assets`）
+//!   ──▶ host::wire_save 把池写进容器（`ProjectArchive.assets`）
 //! ```
 //!
 //! ## 为什么把"WAV 路径 → 资产 ＋ clip"抽成纯函数
 //!
-//! 这是本单的**设计要点**（与 `#129` 的 `new_project_archive` 同款）：判据要能在
+//! 这是 `#132` 的**设计要点**（与 `#129` 的 `new_project_archive` 同款）：判据要能在
 //! **无桌面会话**下判 ① 资产哈希是不是字节的 SHA-256、② clip 指向的资产对不对得上 ——
 //! 那两句话都不需要窗口、不需要设备、不需要工程会话。于是"从 WAV 到 `(资产, clip)`"
 //! 的唯一实现是 [`plan_recording`]（只读文件、⛔ 不碰会话、⛔ 不写盘），
-//! 而"把它变成一次提交"是 [`land_recording`]（薄到只剩端口调用）。
+//! 而"把它变成一次提交"是 [`land_recording_at`]（薄到只剩端口调用）。
+//! ⭐ 摆放的算术（帧 → tick）在**模型层** [`yeban_model::time_math::frames_to_ticks_ceil`]，
+//! 这里只决定"哪条轨、哪个起点"。
 //!
-//! ## ⚠ 三条**如实登记**（⛔ 不假装）
+//! ## 三条**如实登记**（⛔ 不假装）
 //!
-//! 1. ⭐ **L4（素材池面板）未做**：全仓 `.slint` 对 `clip_pool` 的投影是 **0 处**
-//!    （`crate::bridge` 只用 `clip_pool` 取 MIDI 音符，`bridge.rs:1600`）⇒ 本片之后，
-//!    用户在界面上**看得到的仍然只有**状态行／`stderr`：那条 clip **不会**出现在任何
-//!    素材池面板里。⛔ 本单不碰 `.slint`（那会动绘制预算，属 L1／L4）。
-//! 2. ⭐ **L5（frames → tick 摆放）未做**：本片只在 `clip_pool` **登记**片段
-//!    （`Op::AddClip`），⛔ 不写 `Op::AddClipPlacement` ⇒ 那段音频**不会**自动出现在
-//!    卷帘的某条轨道上。摆放需要"目的地策略 ＋ 帧 → tick（向上取整）"的换算，而
-//!    后者的**唯一实现**在 `crates/yeban-mcp/src/domain/render_math.rs`
-//!    （`yeban-mcp` 是默认关闭的可选依赖，app 够不着）⇒ 在这里照抄会造出**第二份**
-//!    tick 换算。与 `crate::import_audio` 模块文档第 2 条是**同一条**边界。
+//! 1. ⭐ **L4（素材池面板）**：`#132` 时 `.slint` 对 `clip_pool` 的投影是 0 处；
+//!    该格已由 `#133` 落地（`ViewState::asset_pool` → `asset-pool-*` 三个数组）。
+//!    本模块**仍然不碰** `.slint`／`apply_view`（绘制预算一位不动）。
+//! 2. ⭐ **L5（frames → tick 摆放）已落地（任务单 `#134`）**：本模块除了 `Op::AddClip`
+//!    ＋ 资产，还在**同一次提交**里写一条 `Op::AddClipPlacement` ⇒ 那段音频真的落在
+//!    **第一条音频轨**的**播放头 tick** 上。帧 → tick 的换算已下移到
+//!    [`yeban_model::time_math::frames_to_ticks_ceil`]（模型层纯函数，app 直接调用，
+//!    ⛔ 不再"够不着 mcp"）；`yeban-mcp` 那份既有实现**保留**并登记为重复实现
+//!    （见模型层模块文档：那条文件被裸 `rustc` 验证脚手架 `#[path]` 引入，
+//!    改成跨 crate 调用会断掉本机零依赖验证路径）。
 //! 3. **撤销不回收资产池里的字节**：资产字节不是 `Op` 的载荷（模型的 `Op` 全集没有
 //!    资产变体）⇒ `AddClip` 的逆只移除 `clip_pool` 里的条目，⛔ 不会删掉容器的
 //!    `assets/{sha256}`。与 `crate::import_audio` 模块文档第 3 条**逐字同款**。
+//!
+//! ⚠ **听得到的边界（如实）**：实时引擎快照**不消费** `ClipContent::Audio`
+//! （`yeban-engine/src/snapshot.rs` 的 `project_schedules` 第 5 条：音频不产生声音）⇒
+//! 走带（`EngineHost`）**听不到**这段录音。**离线渲染**入口
+//! （`crate::render_core::render_project_f32_with_assets`，`--export-wav` 与录音侧共用）
+//! 会真的把它混进母带 ⇒ 本单的"能响"判据走那条真实渲染路径。实时那半属引擎层，本单
+//! ⛔ 不改 `crates/yeban-engine/**`。
 //!
 //! ## 与"音频导入"的关系（⛔ 没有第二份解码／哈希／幂等实现）
 //!
@@ -58,7 +73,10 @@
 
 use std::path::{Path, PathBuf};
 
-use yeban_model::{AssetHash, ClipPoolEntry, EntityId, Op, OpOrigin, YebanProjectV1};
+use yeban_model::{
+    AssetHash, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, Op, OpOrigin, PPQ, TrackKind,
+    YebanProjectV1, frames_to_ticks_ceil,
+};
 
 use crate::import_audio::{
     AudioImportError, AudioImportFacts, AudioImportOptions, plan_audio_import,
@@ -143,7 +161,20 @@ pub fn plan_recording(
     })
 }
 
-/// 一次真的落进工程的录音（[`land_recording`] 的结果）。
+/// 一条已经摆到轨道上的录音（[`land_recording_at`] 的产物，任务单 `#134`）。
+///
+/// 它逐字携带**那次提交**里的 `Op::AddClipPlacement` 载荷 ⇒ 判据能直接读出
+/// 轨道 id ／ 起点 tick ／ 长度 tick ／ 摆放 id 与 clip id 的对应关系。
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacedRecording {
+    /// 目标音轨（今天恒为**第一条音频轨**）。
+    pub track_id: EntityId,
+    /// 提交进 `TrackV3::clips` 的那条摆放（`id`／`clip_id`／`start_tick`／
+    /// `duration_ticks`／`loop_config`／`muted` 逐字段可读）。
+    pub placement: ClipPlacement,
+}
+
+/// 一次真的落进工程的录音（[`land_recording`]／[`land_recording_at`] 的结果）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordedClip {
     /// 停录落盘的 WAV。
@@ -158,7 +189,9 @@ pub struct RecordedClip {
     pub clip_name: String,
     /// 解码事实。
     pub facts: AudioImportFacts,
-    /// `true` = 本次真的提交了 `Op::AddClip`；`false` = 池里已有同内容条目。
+    /// 本次的摆放（`None` = 工程里**没有**音频轨，无处可摆；如实登记，⛔ 不假装）。
+    pub placement: Option<PlacedRecording>,
+    /// `true` = 本次真的提交了操作（`AddClip` 和／或摆放）；`false` = 一位都没改。
     pub committed: bool,
     /// 提交身份（`None` = 没有提交，即幂等命中）。
     pub commit: Option<EntityId>,
@@ -168,9 +201,22 @@ impl RecordedClip {
     /// 一行可读摘要（产品路径打 `stderr`；资产哈希就是容器里的 `assets/{sha256}`）。
     #[must_use]
     pub fn summary(&self) -> String {
+        let (placement_id, track_id, start_tick, duration_ticks) =
+            self.placement.as_ref().map_or_else(
+                || ("<none>".to_owned(), "<none>".to_owned(), 0, 0),
+                |placed| {
+                    (
+                        placed.placement.id.to_canonical_string(),
+                        placed.track_id.to_canonical_string(),
+                        placed.placement.start_tick,
+                        placed.placement.duration_ticks,
+                    )
+                },
+            );
         format!(
             "recorded-clip: path={} name={} asset={} asset-bytes={} frames={} rate={} \
-             channels={} bits={} float={} clip={} committed={} commit={}",
+             channels={} bits={} float={} clip={} placement={placement_id} track={track_id} \
+             start-tick={start_tick} duration-ticks={duration_ticks} committed={} commit={}",
             self.path.display(),
             self.clip_name,
             self.asset,
@@ -199,6 +245,29 @@ pub enum RecordLandingError {
     NoProject,
     /// 读不到／解不开那段 WAV。
     Plan(AudioImportError),
+    /// 停录产物**一帧都没有** ⇒ 既不登记片段、也不摆放（任务单 `#134` 的 §4 第 5 条）。
+    ///
+    /// 产品路径（`host::wire_record`）在调用本模块**之前**就按 `report.frames > 0`
+    /// 挡了一层；本错误把同一条边界钉在落点函数**自己**身上 —— 任何直接调用
+    /// `land_recording_at` 的路径（判据／未来的其它入口）都不会把 0 帧写成一条
+    /// "播放时什么都没有"的摆放。
+    EmptyRecording {
+        /// 那段 0 帧 WAV 的路径。
+        path: PathBuf,
+    },
+    /// 帧 → tick 换算没有答案（工程 BPM 非有限／≤ 0，或素材采样率为 0）。
+    ///
+    /// 模型层 [`frames_to_ticks_ceil`] 对病态输入返回 `None`（⛔ 没有哨兵值：
+    /// 0 会被 `ClipPlacement::validate` 拒绝）⇒ 这里必须在**提交之前**明确拒绝，
+    /// ⛔ 不许写一条时长错误的摆放。
+    Ticks {
+        /// 工程速度。
+        bpm: f64,
+        /// 素材采样率（Hz）。
+        sample_rate: u32,
+        /// 素材帧数。
+        frames: u64,
+    },
     /// 提交被会话拒绝（工程与游标一位不动）。
     Refused(String),
 }
@@ -208,6 +277,20 @@ impl std::fmt::Display for RecordLandingError {
         match self {
             Self::NoProject => f.write_str("撤销端口里此刻没有工程，录音无处可落"),
             Self::Plan(error) => write!(f, "录音产物无法变成工程资产: {error}"),
+            Self::EmptyRecording { path } => write!(
+                f,
+                "`{}` 是 0 帧录音 ⇒ ⛔ 不登记片段、⛔ 不摆放",
+                path.display()
+            ),
+            Self::Ticks {
+                bpm,
+                sample_rate,
+                frames,
+            } => write!(
+                f,
+                "无法把 {frames} 帧换算成 tick（bpm={bpm}, sample_rate={sample_rate}）\
+                 ⇒ ⛔ 不摆放（时长会错）"
+            ),
             Self::Refused(reason) => write!(f, "录音进工程的提交被拒绝: {reason}"),
         }
     }
@@ -221,33 +304,72 @@ impl From<AudioImportError> for RecordLandingError {
     }
 }
 
-/// ⭐ **停录成功之后的唯一落地函数**（产品路径 `host::wire_record` 调它）。
+/// ⭐ **停录成功之后的落地函数**（播放头取 0 的兼容形态）。
 ///
-/// 顺序是承重的：**先**规划（读字节 ＋ 解码校验 ＋ 哈希），**再**提交一次
-/// `Op::AddClip`，**最后**才登记资产池 —— 提交被拒时池里不会留下"没有任何片段引用"
-/// 的孤儿字节；幂等命中时（`ops` 为空）一位都不提交，只确保字节在池里。
+/// 它转调 [`land_recording_at`]，起点 tick 取 `0`。产品路径走后者（录音键发生在
+/// 播放头所在的位置）；保留本函数是为了**不打断**既有调用方与判据的签名。
+///
+/// # Errors
+///
+/// 与 [`land_recording_at`] 相同。
+pub fn land_recording(
+    port: &crate::undo::UndoPort,
+    path: &Path,
+    now_ms: u64,
+) -> Result<RecordedClip, RecordLandingError> {
+    land_recording_at(port, path, now_ms, 0)
+}
+
+/// ⭐⭐ **停录成功之后的唯一落地函数**（任务单 `#132` 的 L2＋L3，`#134` 补上 L5）。
+///
+/// 顺序是承重的：
+///
+/// 1. **先**规划（读字节 ＋ 解码校验 ＋ 哈希）；
+/// 2. **再**算摆放（第一条音频轨 ＋ `playhead_tick` 起点 ＋ 帧 → tick 长度）；
+/// 3. **一次**提交 `Op::AddClip`（若片段是新的）＋ `Op::AddClipPlacement`；
+/// 4. **最后**才登记资产池 —— 提交被拒时池里不会留下"没有任何片段引用"的孤儿字节。
+///
+/// ⚠ 两条操作在**同一个** `Vec<Op>` 里 ⇒ 同一次提交、同一份撤销单元：`AddClip`
+/// 的片段**先**进池、`AddClipPlacement` 的摆放**后**引用它（顺序即施加顺序）。
+///
+/// `playhead_tick` 是摆放起点（来自引擎走带读数；判据给固定值 ⇒ 可复现）。
+/// **0 帧** ⇒ [`RecordLandingError::EmptyRecording`]，工程一位不动（⛔ 不 AddClip、
+/// ⛔ 不摆放）。
 ///
 /// `now_ms` 是提交时间戳（调用方给；判据给固定值 ⇒ 可复现）。
 ///
 /// # Errors
 ///
 /// [`RecordLandingError::NoProject`] / [`RecordLandingError::Plan`] /
+/// [`RecordLandingError::EmptyRecording`] / [`RecordLandingError::Ticks`] /
 /// [`RecordLandingError::Refused`]。任何一种都意味着**工程一位没动**（或只有池没变）。
-pub fn land_recording(
+pub fn land_recording_at(
     port: &crate::undo::UndoPort,
     path: &Path,
     now_ms: u64,
+    playhead_tick: u64,
 ) -> Result<RecordedClip, RecordLandingError> {
     let project = port.try_project().ok_or(RecordLandingError::NoProject)?;
     let plan = plan_recording(path, &project)?;
-    let commit = if plan.ops.is_empty() {
+    if plan.facts.frames == 0 {
+        return Err(RecordLandingError::EmptyRecording { path: plan.path });
+    }
+    let placement = plan_placement(&project, &plan, playhead_tick)?;
+    let mut ops = plan.ops;
+    if let Some(placed) = &placement {
+        ops.push(Op::AddClipPlacement {
+            track_id: placed.track_id,
+            placement: placed.placement,
+        });
+    }
+    let commit = if ops.is_empty() {
         None
     } else {
         // 来源 = `UserUi`：这是"人按了录音键"的直接结果（见模块文档的登记）。
-        let commit = port
-            .commit_ops_with_origin(now_ms, OpOrigin::UserUi, "record audio clip", plan.ops)
-            .map_err(|refusal| RecordLandingError::Refused(refusal.to_string()))?;
-        Some(commit)
+        Some(
+            port.commit_ops_with_origin(now_ms, OpOrigin::UserUi, "record audio clip", ops)
+                .map_err(|refusal| RecordLandingError::Refused(refusal.to_string()))?,
+        )
     };
     // 资产池登记（幂等；同键不重复）。放在提交**之后**，理由见函数头。
     port.insert_asset(plan.asset.clone(), plan.bytes.clone());
@@ -258,9 +380,67 @@ pub fn land_recording(
         clip_id: plan.clip.id,
         clip_name: plan.clip.name,
         facts: plan.facts,
+        placement,
         committed: commit.is_some(),
         commit,
     })
+}
+
+/// 摆放的**目的地策略**（任务单 `#134`）：第一条音频轨 ＋ 播放头 tick。
+///
+/// - **哪条轨**：`project.tracks` 的 `BTreeMap` 键序里**第一条 `TrackKind::Audio`**
+///   （身份升序 ⇒ 跨进程确定）。⛔ 不挑 MIDI／Aux／Master：把音频片段摆到 MIDI 轨上
+///   渲染时仍然是静音（`clip_pool` 里那条是 `ClipContent::Audio`），那是"看起来摆了、
+///   其实听不见"的假成功。
+/// - **起点**：调用方给的 `playhead_tick`（产品路径 = `EngineHost::transport().position_ticks`，
+///   即音频时钟；⛔ 不用墙钟）。
+/// - **长度**：`frames_to_ticks_ceil(frames, PPQ, project.bpm, facts.sample_rate)`。
+///   用**素材自己的**采样率（`facts.sample_rate`）—— `frames` 是它数出来的帧；
+///   产品路径上它与工程采样率同为 48 kHz（`RecordOptions::default().sample_rate`，
+///   工程缺省 48 kHz）。⚠ 票面写"用工程采样率"：两者同值时读数逐字相同；
+///   若未来两者不同，用工程率会把时长算成另一个秒数（同一口径见 MCP 的
+///   `import_audio.rs`，它同样传 `facts.sample_rate`）。
+///
+/// **没有音频轨** ⇒ `Ok(None)`：工程里无处可摆（如实登记，⛔ 不硬塞到别的轨）。
+fn plan_placement(
+    project: &YebanProjectV1,
+    plan: &RecordingPlan,
+    playhead_tick: u64,
+) -> Result<Option<PlacedRecording>, RecordLandingError> {
+    let Some(track_id) = first_audio_track(project) else {
+        return Ok(None);
+    };
+    let duration_ticks =
+        frames_to_ticks_ceil(plan.facts.frames, PPQ, project.bpm, plan.facts.sample_rate).ok_or(
+            RecordLandingError::Ticks {
+                bpm: project.bpm,
+                sample_rate: plan.facts.sample_rate,
+                frames: plan.facts.frames,
+            },
+        )?;
+    Ok(Some(PlacedRecording {
+        track_id,
+        placement: ClipPlacement {
+            id: EntityId::new(),
+            clip_id: plan.clip.id,
+            start_tick: playhead_tick,
+            duration_ticks,
+            loop_config: LoopConfig::default(),
+            muted: false,
+        },
+    }))
+}
+
+/// 工程里**第一条音频轨**的身份（`BTreeMap` 键序 ⇒ 身份升序，跨进程确定）。
+///
+/// 主总线按构造是 `TrackKind::Master`，不会被选中；这里仍显式排除一次，避免未来
+/// 有工程把主总线误标成 Audio 时把素材摆到唯一的声学出口上。
+fn first_audio_track(project: &YebanProjectV1) -> Option<EntityId> {
+    project
+        .tracks
+        .iter()
+        .find(|(id, track)| **id != project.master_bus_track_id && track.kind == TrackKind::Audio)
+        .map(|(id, _)| *id)
 }
 
 #[cfg(test)]

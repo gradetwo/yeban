@@ -47,6 +47,7 @@ pub mod ops;
 pub mod project;
 pub mod samples;
 pub mod session;
+pub mod time_math;
 
 pub use automation::{NOMINAL_GAIN_MAX_DB, NOMINAL_GAIN_MIN_DB};
 pub use commit::{
@@ -80,3 +81,4 @@ pub use samples::{SampleExportError, export_all, export_to_default_dir};
 pub use session::{
     PluginProcess, SessionRuntimeState, SessionStateError, TaskId, TaskKind, TaskProgress, WindowId,
 };
+pub use time_math::frames_to_ticks_ceil;
