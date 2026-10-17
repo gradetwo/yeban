@@ -679,7 +679,7 @@ impl EngineHost {
         self.audio_cache.readings()
     }
 
-    /// ⭐ ⭐ **第 1.3 步：枚举 `clip_pool` 的音频素材 ⇒ 注入快照**（任务单 `#136`）。
+    /// ⭐ ⭐ **第 1.3 步：枚举 `clip_pool` 的音频素材 ⇒ 注入快照**（任务单 `#136`／`#138`）。
     ///
     /// 口径（逐条与交付线一致）：
     ///
@@ -688,11 +688,14 @@ impl EngineHost {
     /// 2. **缓存失效**：先按这份集合调 [`AudioPcmCache::retain_live`] ⇒ 不再被引用的素材
     ///    在这一修订掉出缓存（快照自己持有的 `Arc` 由引擎退役队列回收）；
     /// 3. **取 PCM**：命中缓存 ⇒ `Arc` 克隆；未命中 ⇒ 向 [`AudioAssetSource`] 要字节 ⇒
-    ///    **同一个** `crate::audio_clip::decode_asset_bytes`（`#134` 的解码器）；
-    /// 4. **注入**：`snapshot.with_audio_asset(&asset, pcm)`。采样率不符 ⇒ 引擎返回
-    ///    `Err(SampleRateMismatch)` ⇒ 该素材**跳过**（⛔ 不重采样、⛔ 不改标签）；
-    /// 5. **报告**：每个素材的 `frames` / `channels` / `sample_rate` / `spans_attached`，
-    ///    以及每个跳过的**逐字原因**；非空时打到 stderr（`[yeban-app] …`）。
+    ///    **同一个** `crate::audio_clip::decode_asset_bytes`（`#134` 的解码器）⇒
+    ///    **素材率 ≠ 快照率时**用唯一那份 `yeban_decode::resample_interleaved`（`#138`）
+    ///    转到快照率（控制线程；输出帧数 = `ceil(原帧数 × 快照率 / 素材率)`）；
+    /// 4. **注入**：`snapshot.with_audio_asset(&asset, pcm)`。传进去的 PCM **已经是快照率**
+    ///    ⇒ 引擎的 `SampleRateMismatch` 不再触发；引擎仍保留那道拒绝（⛔ 不在 app 侧重写它）；
+    /// 5. **报告**：每个素材的 `frames` / `channels` / `sample_rate`（注入后）＋
+    ///    `source_sample_rate` / `source_frames` / `resampled`（重采样前），以及每个跳过的
+    ///    **逐字原因**；非空时打到 stderr（`[yeban-app] …`）。
     ///
     /// ⚠ 这个方法**不返回 `Result`**：注入失败是"某一份素材不发声"，不是"整代引擎失败" ——
     /// 与投影失败（`reload` 必须返回 `Err`）是两种不同性质的事。⛔ 但失败一律**可见**。
@@ -712,6 +715,8 @@ impl EngineHost {
             .collect();
         self.audio_cache.begin_revision();
         self.audio_cache.retain_live(&live);
+        // 目标采样率 = 快照自己的率（`project.audio_config.sample_rate` 的投影，唯一来源）。
+        let target_rate = snapshot.sample_rate();
         let mut report = AudioClipReport {
             revision: snapshot.revision(),
             ..AudioClipReport::default()
@@ -721,30 +726,40 @@ impl EngineHost {
             let attached_before = snapshot.audio_pcm_spans();
             match self
                 .audio_cache
-                .lookup(asset, self.audio_asset_source.as_ref())
+                .lookup(asset, self.audio_asset_source.as_ref(), target_rate)
             {
                 Ok(lookup) => {
                     let frames = lookup.pcm.frames();
                     let channels = lookup.pcm.channels();
                     let sample_rate = lookup.pcm.sample_rate();
+                    let source_sample_rate = lookup.source_sample_rate;
+                    let source_frames = lookup.source_frames;
+                    let resampled = lookup.resampled;
+                    let from_cache = lookup.from_cache;
                     // ⚠ `with_audio_asset` 消费快照，而它唯一的 `Err`（采样率不符）必须
                     //    让**已经接上的素材**保留 ⇒ 在副本上调用、成功才替换。
                     //    代价 = 每份音频素材一次 `EngineSnapshot` 深拷贝（控制线程；音频素材
                     //    通常个位数，且只在"工程改了"的那一跳发生）—— 换来的是引擎仍是
-                    //    **唯一**的拒绝判据（⛔ 不在 app 侧重写采样率比较与错误文本）。
+                    //    **唯一**的采样率判据（⛔ 不在 app 侧重写采样率比较与错误文本）。
                     match snapshot.clone().with_audio_asset(asset, lookup.pcm) {
                         Ok(next) => {
                             let attached = next.audio_pcm_spans().saturating_sub(attached_before);
                             snapshot = next;
                             report.injected_assets = report.injected_assets.saturating_add(1);
                             report.spans_attached = report.spans_attached.saturating_add(attached);
+                            if resampled {
+                                report.resampled_assets = report.resampled_assets.saturating_add(1);
+                            }
                             report.assets.push(AudioClipInjection {
                                 asset: asset.clone(),
                                 frames,
                                 channels,
                                 sample_rate,
+                                source_sample_rate,
+                                source_frames,
+                                resampled,
                                 spans_attached: attached,
-                                from_cache: lookup.from_cache,
+                                from_cache,
                             });
                         }
                         Err(error) => report.skipped.push(AudioClipSkip {

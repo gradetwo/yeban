@@ -24,18 +24,22 @@
 //!    而资产字节在 `ProjectArchive.assets` 里。⇒ 本模块把字节写进 `std::env::temp_dir()` 的
 //!    唯一临时名、用**本仓唯一的 WAV 读取器**解码、随即删除（`TempFile` 的 `Drop`）。
 //!    ⛔ 不新增 `yeban-render` 的函数、⛔ 不引入新依赖边、⛔ 不另写第二份 WAV 解析器。
-//! 2. **不重采样 ⇒ 采样率不匹配的素材被跳过并如实报告**：app 侧够不着
-//!    `yeban_decode::resample_interleaved`（rubato sinc，[ARCH-DSP-002] / D26 的唯一实现）。
+//! 2. **离线导出这条支路不重采样 ⇒ 采样率不匹配的素材被跳过并如实报告**：
+//!    `yeban_decode::resample_interleaved`（rubato sinc，[ARCH-DSP-002] / D26 的唯一实现）
+//!    其实**在 app 侧够得着**（`#85` 起 `yeban-decode` 就是本 crate 的依赖）；本模块**没有**
+//!    接它 —— 实时注入侧由 `#138` 接了（`crate::audio_inject`），离线导出这一半仍是
+//!    "跳过并报告"（**已知剩余缺口**，⛔ 不假装已闭合）。
 //!    ⛔ 绝不"改个采样率标签"（那是改时长）或"丢帧"（那是改音高）—— 两者都是静默的错误音频。
 //! 3. **多声道归一化**：共享的 `read_plain_wav_mono_f32` 会把多声道折成**第 0 声道**，
 //!    而 MCP 支持 `Identity`（立体声素材进立体声母线）。⇒ 本模块用 `read_plain_wav` 取
 //!    **保留声道数**的交织样本，并用**同一张归一化表**（`BitDepth::full_scale_max`；
 //!    浮点直用）折成 `f32`。这张表就是 `read_plain_wav_mono_f32` 文档里那张。
 //!
-//! ## 实时路径**不**受影响
+//! ## 本模块只服务**离线导出**（实时那半在 `crate::audio_inject`）
 //!
 //! 本模块只在离线导出（`render_core` → `RenderPlan::execute` 的源）里被构造。
-//! 实时快照仍然把音频片段当静音（`snapshot.rs` 的登记未改）——实时那半是**另一片**。
+//! 实时快照的音频 PCM 注入与采样率转换住 `crate::audio_inject`（`#136`／`#138`），
+//! ⛔ 本模块不参与实时回调。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -56,7 +60,8 @@ pub(crate) struct DecodedAsset {
     samples: Vec<f32>,
     /// 素材原始声道数（决定声道布局映射）。
     source_channels: u16,
-    /// 素材自身的采样率（Hz）—— 与导出率不符 ⇒ 跳过（见模块文档第 2 条）。
+    /// 素材自身的采样率（Hz）—— 实时注入侧按它决定是否重采样（`#138`）；
+    /// 离线导出侧与导出率不符 ⇒ 跳过（见模块文档第 2 条）。
     sample_rate: u32,
     /// 帧数（= 样本数 / 声道数）。
     frames: u64,
@@ -392,8 +397,8 @@ fn decode_checked(
     let decoded = decode_asset_bytes(hash, bytes)?;
     if decoded.sample_rate != target_rate {
         return Err(format!(
-            "素材采样率 {} Hz ≠ 导出采样率 {} Hz；app 侧够不着重采样器\
-             （唯一实现在 yeban-decode），已**跳过**而不是按错误音高播放",
+            "素材采样率 {} Hz ≠ 导出采样率 {} Hz；离线导出这条支路不做重采样\
+             （#138 只接了实时注入侧），已**跳过**而不是按错误音高播放",
             decoded.sample_rate, target_rate
         ));
     }
@@ -402,11 +407,12 @@ fn decode_checked(
 
 /// 校验哈希 ⇒ 解码（**不**比对采样率）。
 ///
-/// 任务单 `#136` 的实时注入侧复用它：采样率比对由引擎的
-/// `EngineSnapshot::with_audio_asset` 做（它要知道**快照自己的**采样率，且错误类型是
-/// `AudioClipError::SampleRateMismatch`）；这里只负责"字节是不是它声明的那个哈希"与
-/// "WAV 能不能解码"两件事 —— 与离线 `decode_checked` 的**前两步逐字相同**，
-/// ⛔ 没有第二份解码器。
+/// 任务单 `#136`／`#138` 的实时注入侧复用它：采样率**换算**由
+/// `crate::audio_inject` 在注入前做（`#138`：重采样到快照率）；引擎的
+/// `EngineSnapshot::with_audio_asset` 仍是**最后一道**拒绝（采样率不符 ⇒
+/// `AudioClipError::SampleRateMismatch`，⛔ 不在 app 侧删它）。这里只负责"字节是不是
+/// 它声明的那个哈希"与"WAV 能不能解码"两件事 —— 与离线 `decode_checked` 的**前两步
+/// 逐字相同**，⛔ 没有第二份解码器。
 pub(crate) fn decode_asset_bytes(hash: &AssetHash, bytes: &[u8]) -> Result<DecodedAsset, String> {
     let actual = AssetHash::of_bytes(bytes);
     if actual != *hash {
