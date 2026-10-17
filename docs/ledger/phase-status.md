@@ -12855,3 +12855,21 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **四、⭐ UI 侧"完整一首"⭐剩下的（⭐ 逐条）**: ⭐ ① ⭐ ⭐ **主总线 Op**（⭐ 上面那条）★ ⭐ ② ⭐ **设备／乐器装载**（⭐ UI 侧 `InsertDevice` **0 构造点**）；⭐ ③ ⭐ **新建 MIDI clip**（⭐ 建了轨但**没有材料**可编辑）；⭐ ④ ⭐ **选中轨／⭐ 改名／⭐ 排序**（⭐ 仍只有"⭐ 展示轨"⭐）；⭐ ⑤ ⚠ **面板高度**：⭐ 默认 900px 窗口里 Tab 内容约 **302px**、⭐ 本段最后一行到 **298px** ⇒ ⭐ **窗口更矮会被裁**（⭐ 未测其它高度）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **主总线 Op 票**（⭐ 本条件裁：⭐ 立刻开）＋ ⭐ **UI 设备装载 ＋ ⭐ 新建 clip** ＋ ⭐ **master 插入链** ＋ ⭐ **总线 PDC** ＋ ⭐ **人耳验收** ＋ ⭐ **真实第三方 agent 试跑** ＋ ⭐ **`yeban-mix`／契约上提** ＋ ⭐ **S3 后一半** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R863 实测追加（2026-10-18）：⭐⭐ **`#161`（空样例给主总线）落地 ＋ 快进合并** ⇒ ⭐ ⭐ **"⭐ 新建工程 → ⭐ 加轨"⭐这条路通了**
+
+⭐ **合并**: ⭐ base `2ce8750d` ⇒ ⭐ `FINAL=b80b95fc`（⭐ 12 文件 ＋305／−109）⇒ ⭐ 主干 ff 合并 ✓ ⭐ **我独立复跑**：⭐ 复合门 `全过 ✓`（⭐ **17 层**）／⭐ **`1080 passed`／FAILED 0**（model ＋ app）／⭐ 守卫 **18** ✓ ⭐ 树已拆 ＋ `target`（22 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 修法（⭐ 我裁的 B）⭐ 与读数**: ⭐ `default_project()` ⇒ ⭐ **0 音轨 ＋ ⭐ 1 条 `Master`**（⭐ `01J8ZQ…001`）＋ ⭐ `master_bus_track_id` **非 nil** ＋ ⭐ `routing_graph.nodes` 含它 ＋ ⭐ `validate()` **Ok** ✓ ⭐ ⚠ ⭐ ⛔ **没加 `Op`、⛔ 没动 `schemas`**（⭐ A 方案被否）✓
+⭐ ⭐ **`#160` 的路径通了**：⭐ `track_create_ops(default_project(), Midi)` ⭐ **`Ok`**（⭐ 不再 `NoMaster`）⇒ ⭐ `tracks 1 → 2`／⭐ `nodes 1 → 2`／⭐ `edges 0 → 1`／⭐ 新轨 `"MIDI 1"`／⭐ `validate() Ok` ✓
+⭐ ⭐ **Tier-1 真点按钮**：⭐ `module-new-project-button` ⇒ ⭐ 文件 **1136 B**（⭐ 回执 `bytes=1136:tracks=0`）＋ ⭐ `after = [(path, 1, 0)]` ＋ ⭐ ⭐ **引擎换代成功**（`has_engine = true`、⭐ `snapshot.master() == 主总线`）✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 连带读数（⭐ 全部按三件套重钉，⭐ 且逐条给了原因）**: ⭐ **容器 884 → 1136 B** ＋ ⭐ `project.default.json` SHA `6bd76fcb… → 20b20082…`（⭐ 递归键路径 **223** ／⭐ `95f70eb8…` **不变**）＋ ⭐ `project-counts 0/0 → 1/1` ＋ ⭐ `view-counts master 0 → 1` ＋ ⭐ **8 条判据**逐条"⭐ 旧期望 → ⭐ 新期望 ＋ ⭐ 原因"（⭐ `model_isolation`／⭐ `bridge` 空视图 → ⭐ 主总线视图／⭐ `cli` 空样例／⭐ `cli_contract` ×2／⭐ `new_project_file`／⭐ `new_project_ui`／⭐ `track_routing_crud`）✓
+⭐ ⭐ **`TRACK_CREATE_NO_MASTER_REASON` 保留**（⭐ 用 `YebanProjectV1::default()` 继续钉住拒绝）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 一条**跨线红**（⭐ 我亲核，⭐ 必须立刻修）**: ⚠ ⭐ `yeban-render` 的 ⭐ `empty_project_has_no_audio_freeze_and_only_project_losses` ⇒ ⭐ ⭐ **`left: 1 / right: 0`**（`assert_eq!(export.mapped_tracks, 0)`，⭐ `als.rs:1466`）⇒ ⭐ 因为 ⭐ **空样例现在有主总线** ⇒ ⭐ `.als` 导出把它映射成 `MasterTrack` ⇒ ⭐ **`mapped_tracks` 0 → 1** ⇒ ⭐ ⭐ **必须重钉**（⭐ 本条件裁：⭐ **立刻开小票**）✓
+⭐ ⚠ **另两处陈旧（⭐ 我的面）**: ⭐ ① ⭐ `ui/console/mixer_console.slint` 与 ⭐ `elements.rs` 的无障碍标签仍写 ⭐ `…写出 0 轨空容器…`（⭐ 与事实不符）；⭐ ② ⭐ `docs/ledger/model-session-state-notes.md:142` 仍写旧 SHA `6bd76fcb…` ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`yeban-render` 的 `mapped_tracks` 重钉**（⭐ 本条件裁）＋ ⭐ **无障碍文案 ＋ ⭐ 文档 SHA**（⭐ 我的面）＋ ⭐ **UI 设备装载 ＋ ⭐ 建 MIDI clip** ＋ ⭐ **master 插入链** ＋ ⭐ **总线 PDC** ＋ ⭐ **人耳验收** ＋ ⭐ **真实第三方 agent 试跑** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
