@@ -209,6 +209,7 @@
 | 外部软件联动（如 iZotope RX）与 `notify` 热重载（≤500ms） | 无｜`crates/yeban-services/src/lib.rs` 是 10 行纯文档占位（`pub fn` / `pub struct` 命中 0）；`ARCH-EXT-*` 无代码 | 无｜无 | 无｜无 | 原因：完全未实现；计划：`yeban-services` 线（`ARCH-EXT-*`）；状态：未到期 |
 | MLS Ping 声学脉冲延迟校准 | 无｜`crates/yeban-services/src/lib.rs` 只有文档占位；`grep -rn -i "mls\|ping" docs/ledger/audio-latency-notes.md` 命中 0 | 无｜无 | 无｜无 | 原因：完全未实现（与 `BASELINE-005` 的"机器就绪、门禁仍 PENDING"是两件事）；计划：`yeban-services` 线；状态：未到期 |
 | ASIO 可选特性与反向 VST3 打包（`yeban-vst`） | 无｜`grep -rn -i asio crates/*/Cargo.toml Cargo.toml` 命中 0（`docs/ledger/phase-status.md` §1 `ROAD-M-1-004`）；`crates/yeban-vst/src/lib.rs` 是 11 行占位且 `[dependencies]` 为空（`ROAD-M-1-003`） | 无｜无 | 无｜无 | 原因：法务确认未做（`HD-34`），且没有 `asio` 特性可标 `unverified`；反向打包属 `[v2.0.0]`；计划：人类法务签字 + v2.0.0；状态：人类决策中 |
+| 待合并提案列表 | 待接线｜`crates/yeban-mcp/src/domain/mod.rs` 的 `Domain.proposals: BTreeMap<EntityId, Proposal>`（内存记录，`Plan::ListProposals` 只读回传；`src/output_schema.rs` 给五个主力工具发布 `outputSchema`） | 无｜无提案列表面板 | 有｜`yeban_list_proposals`（可选 `kind`；出参 `proposals[]` / `openCount` / `totalCount` / `mergeTool`） | 原因：`#174` 验收发现提案不跨进程且无法列出 ⇒ 进程崩溃后成孤儿；计划：本工具让同一进程内可发现与可恢复，⛔ 不承诺跨进程恢复（记录不进 `project.json`）；状态：已实现 |
 
 ## 16. 建表过程中发现的**具体错位**（本表最有价值的部分）
 
