@@ -649,6 +649,17 @@ export component MainWindow inherits Window {
     // ⛔ 界面不读盘、不猜路径、不自己判断成功与否（那是第二个真相源）；回执走**既有**的
     // `module-status` 投影通道（与 `export-midi` / `export-wav` 逐字同款）。
     callback open-project();
+    // ⭐ **新建工程**（任务单 `#129`）：**从零开始**在界面上的可见入口。
+    //
+    // 事件源 = `ui/console/mixer_console.slint` 的 `module-new-project-button`
+    // （控制台 **Tab 1 = 调音台**里「打开工程」**正下方**那一格 ⇒ 默认帧一个像素都不画）。
+    //
+    // 落点是宿主 `host::wire_new_project`：问一次**同一个** `FilePicker::choose_save`
+    // ⇒ `host::create_new_project_file`（`samples::default_project()` ＋
+    // `save::save_archive_file`，与 CLI `--save-as` **同一条**写入口，884 B／0 轨）⇒
+    // **打开工程那条**换工程路径（`OpenProjectRuntime::open_runtime`）。
+    // ⛔ 界面不写盘、不猜路径、不判断成功与否；回执走**既有**的 `module-status` 通道。
+    callback new-project();
     // 主控通道条的**写入面**：与上面那六个手势逐条同形，唯一区别是**不带下标**
     // （主总线不在 `track-names` / `track-ids` 里 ⇒ 上面那些 `int` 参数没有合法值能指到它）。
     // 主总线身份由宿主在按下那一刻从权威工程取（`master_bus_track_id`），
@@ -1145,6 +1156,11 @@ export component MainWindow inherits Window {
             // （与 `export-midi` 同一条 `module-status` 回执通道）。
             open-project => {
                 root.open-project();
+            }
+            // ⭐ **新建工程**（任务单 `#129`）：只上抛。唯一落点 = `host::wire_new_project`
+            // （与「打开工程」同一条 `module-status` 回执通道）。
+            new-project => {
+                root.new-project();
             }
             // 主控写入面：只上抛、不带下标（身份由 `host::wire_mixer_edit` 从权威工程取）。
             mixer-master-fader-grab(y) => {

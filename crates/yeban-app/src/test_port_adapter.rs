@@ -523,7 +523,12 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
 /// 而在**默认帧（Tab 0 卷帘）里一个像素都不画** ⇒ 5 张 Linux 基准逐位不变。
 /// 反方向（Tab 1 里**有**它、且注入它的默认无障碍动作**真的换掉工程**、取消不动一位、
 /// 坏路径响亮且不毁工程）在 `tests/open_project_ui.rs` 里断。
-const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 10] = [
+///
+/// ⭐ **`module-new-project-button`（任务单 `#129`）紧随其后**：同一个「工程」面板、
+/// 「打开工程」**正下方**（控制台 **Tab 1 = 调音台**）⇒ **默认帧里一个像素都不画**。
+/// 反方向（Tab 1 里**有**它、注入默认无障碍动作 ⇒ 问一次保存框 ⇒ 落一个 884 B／0 轨容器
+/// ⇒ 就地换成新工程；取消 / 没有对话框两条腿）在 `tests/new_project_ui.rs` 里断。
+const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 11] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",
     "scene-launch-column-header",
@@ -534,6 +539,7 @@ const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 10] = [
     "engine-error-banner",
     "module-export-midi-button",
     "module-open-project-button",
+    "module-new-project-button",
 ];
 
 fn demo_registry() -> ElementRegistry {
