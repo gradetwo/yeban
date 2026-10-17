@@ -260,7 +260,26 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 42;
 ///   整份"换掉模型实例"清单，42 条）；
 /// * 默认帧（Tab 0）的运行时树不含 `device-rack`（发送条在同一面板里）⇒ 结构上不参与
 ///   默认帧绘制；⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 60;
+///
+/// ## 60 → 65 的追加（任务单 `#160`，2026-10-18）
+///
+/// 那五格是**轨 / 路由段**（与发送条**同住** Tab 3 的 `DeviceRack` 面板，上半段）的
+/// **唯一**注入点，全部是**标量**（⛔ 没有新数组 ⇒ `PER_FRAME_ARRAY_REWRITE_BUDGET`
+/// 仍是 **42**，一条都不动）：
+///
+/// * `ui.set_track_count_label` —— 工程轨数（含主总线）的显示文本；
+/// * `ui.set_track_create_available` —— 建轨可用性（工程里得有主总线）；
+/// * `ui.set_master_bus_label` —— 主总线说明；没有主总线时它**就是**建轨的逐字原因；
+/// * `ui.set_track_delete_available` / `ui.set_track_delete_reason` —— "删除展示轨"的
+///   可用性与不可用时的**逐字**原因（主总线不可删）。
+///
+/// 数量侧的**本机实测**（Apple M2；判据逐字报 `从 60 变成了 65`）：
+///
+/// * 写入点：**60 → 65**（本常量，判据自报的真实新数）；
+/// * 每帧换模型实例的数组：**42 → 42**（没有新增数组，判据清单逐字不变）；
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack`（轨 / 路由段在同一面板里）⇒ 结构上
+///   不参与默认帧绘制；⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 65;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {

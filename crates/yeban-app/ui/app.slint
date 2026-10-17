@@ -653,6 +653,21 @@ export component MainWindow inherits Window {
     callback send-gain-release(string);
     /// 新建发送（目的地 = 身份序第一条 `AuxReturn` 轨；新边身份由宿主分配）。
     callback send-create();
+    // ⭐ **轨 / 路由的写入面**（任务单 `#160`）：控制台 **Tab 3** 与发送条**同一面板**。
+    //
+    // 形状与 `send-*` 一族逐条同款：`.slint` 只报"按了哪个按钮 / 哪条边"，身份分配、
+    // 目标解析、防重复与**一次** `commit_ops` 全在宿主 `host::wire_track_strip` /
+    // `host::wire_send_strip`。因此一次点击 = **恰好一步**可撤销的编辑。
+    /// 删除某一条发送（参数 = 路由边身份，⛔ 不是行下标）。
+    callback send-remove(string);
+    /// 新建 MIDI 轨。
+    callback track-create-midi();
+    /// 新建音频轨。
+    callback track-create-audio();
+    /// 新建辅助返回轨（`AuxReturn`）。
+    callback track-create-aux();
+    /// 删除展示轨（主总线不是目标）。
+    callback track-delete();
     // ⭐ **导出 MIDI**（任务单 `#90` 甲）：把**当前工程**写成标准 MIDI 文件（`SMF 1`）。
     //
     // 事件源 = `ui/console/mixer_console.slint` 的 `module-export-midi-button`
@@ -770,6 +785,14 @@ export component MainWindow inherits Window {
     in property <float> send-gain-max-db: 0.0;
     in property <bool> send-create-available: false;
     in property <string> send-create-reason: "";
+    // ⭐ 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / 删展示轨的可用性与逐字原因。
+    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
+    // 与发送条同住控制台 Tab 3 ⇒ 默认帧不画它。
+    in property <string> routing-count-label: "";
+    in property <bool> routing-create-available: false;
+    in property <string> routing-master-label: "";
+    in property <bool> routing-delete-available: false;
+    in property <string> routing-delete-reason: "";
     // 卷帘音符的位置（x / y / 宽，逻辑像素）—— 由 `start_tick` / `pitch` 整数派生，
     // 见 `src/bridge.rs` 的 `NoteView`（界面不做任何位置算术）。
     /// `[ROAD-M3-002]` 卷帘滚动手势（由宿主接管并重新注入）。
@@ -1164,6 +1187,13 @@ export component MainWindow inherits Window {
             send-gain-max-db: root.send-gain-max-db;
             send-create-available: root.send-create-available;
             send-create-reason: root.send-create-reason;
+            // ⭐ 轨 / 路由（任务单 `#160`）：同样只做单向搬运，⛔ 不解释、⛔ 不自己算
+            // "能不能建 / 删"（可用性与逐字原因都来自投影）。
+            routing-count-label: root.routing-count-label;
+            routing-create-available: root.routing-create-available;
+            routing-master-label: root.routing-master-label;
+            routing-delete-available: root.routing-delete-available;
+            routing-delete-reason: root.routing-delete-reason;
             // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。
             track-names: root.track-names;
             track-volumes: root.track-volumes;
@@ -1221,6 +1251,24 @@ export component MainWindow inherits Window {
             }
             send-create() => {
                 root.send-create();
+            }
+            // ⭐ 轨 / 路由（Tab 3）的写入面：只上抛，唯一落点 `host::wire_track_strip`
+            // 与 `host::wire_send_strip`（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，
+            // ⛔ 界面不改任何工程值）。删除发送携带**路由边身份**，⛔ 不是行下标。
+            send-remove(edge-id) => {
+                root.send-remove(edge-id);
+            }
+            track-create-midi() => {
+                root.track-create-midi();
+            }
+            track-create-audio() => {
+                root.track-create-audio();
+            }
+            track-create-aux() => {
+                root.track-create-aux();
+            }
+            track-delete() => {
+                root.track-delete();
             }
 
             // 混音台写入面：只上抛，不在 `.slint` 里改任何工程值

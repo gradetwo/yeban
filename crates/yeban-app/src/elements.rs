@@ -1176,7 +1176,7 @@ impl ElementRegistry {
             "send-strip",
             ElementKind::Region,
             "console/device_rack.slint",
-            "发送",
+            "发送与轨路由",
             false,
         );
         registry.add(
@@ -1236,7 +1236,85 @@ impl ElementRegistry {
                 &row.gain_display,
                 false,
             );
+            // ⭐ 任务单 `#160`：每一条发送一个删除按钮（参数是**路由边身份**）。
+            registry.add(
+                &format!("send-{send_index}-remove-button"),
+                ElementKind::Button,
+                "console/device_rack.slint",
+                &format!("删除发送 → {}", row.destination_name),
+                false,
+            );
         }
+
+        // ------------------------------------------------------------ 轨 / 路由（⭐ `#160`）
+        //
+        // 与发送段**同一面板**（`send-strip` 的上半段）。建轨三个按钮 ＋ 删除展示轨；
+        // 四者都是**无条件声明**的（只有 `enabled` 随投影变）⇒ 这里**无条件**登记，
+        // 否则 `.slint` → 注册表的方向会红（与 `send-create-button` 同一条纪律）。
+        // 主总线说明那一行兼作"没有主总线 ⇒ 不能建轨"的逐字原因。
+        registry.add(
+            "track-routing-panel",
+            ElementKind::Region,
+            "console/device_rack.slint",
+            "轨与路由",
+            false,
+        );
+        registry.add(
+            "track-routing-count",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &view.track_count_label,
+            false,
+        );
+        registry.add(
+            "master-bus-label",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &view.master_bus_label,
+            false,
+        );
+        registry.add(
+            "track-create-midi-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "新建 MIDI 轨",
+            false,
+        );
+        registry.add(
+            "track-create-audio-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "新建音频轨",
+            false,
+        );
+        registry.add(
+            "track-create-aux-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "新建辅助返回轨",
+            false,
+        );
+        registry.add(
+            "track-delete-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "删除展示轨",
+            false,
+        );
+        // 与 `send-create-reason` 同款：可用时 `.slint` 里 `visible: false`、文本是空串，
+        // 而注册表要求每条都有非空无障碍名 ⇒ 可用时登记一句说明，⛔ 不登记空串。
+        let track_delete_reason_label = if view.track_delete_reason.is_empty() {
+            "删除展示轨可用（无不可用原因）".to_owned()
+        } else {
+            view.track_delete_reason.clone()
+        };
+        registry.add(
+            "track-delete-reason",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &track_delete_reason_label,
+            false,
+        );
 
         // ------------------------------------------------------------ 对话框
         registry.add(

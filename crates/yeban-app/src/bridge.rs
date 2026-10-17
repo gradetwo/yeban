@@ -55,9 +55,10 @@ pub use yeban_model::samples::{demo_id, demo_project};
 use yeban_model::music::MidiNote;
 pub use yeban_model::note_plan::{NotePlan, plan_to_add_note};
 use yeban_model::project::{
-    ClipContent, ClipPlacement, ClipPoolEntry, RoutingKind, SceneV3, SectionV3, TimeSignature,
-    TrackKind, TrackV3, YebanProjectV1,
+    ClipContent, ClipPlacement, ClipPoolEntry, RoutingEdge, RoutingKind, SceneV3, SectionV3,
+    TimeSignature, TrackKind, TrackV3, YebanProjectV1,
 };
+use yeban_model::{EntityId, Op};
 
 /// 960 PPQ 整数时钟（`[MODEL-AST-001]`）—— 从模型层再导出，避免两处各写一个字面量。
 pub use yeban_model::PPQ;
@@ -1417,10 +1418,17 @@ pub const SEND_CREATE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法
 
 /// "新建发送"不可用时逐字写出的原因：工程里**没有** `TrackKind::AuxReturn` 轨。
 ///
-/// ⚠ 界面今天**也建不了轨**（`Op::AddTrack` 在 UI 侧 0 个构造点）⇒ 用户没法在界面里
-/// 自救；这句话把这层限制一并说出来，⛔ 不静默把按钮变灰。
+/// ⭐ 任务单 `#160` 之后界面**能**建轨（`NewTrackKind::AuxReturn`）⇒ 这句话指路，
+/// 而不是像 `#159` 那样把"界面还没有新建轨的入口"写死成限制。
 pub const SEND_CREATE_NO_AUX_REASON: &str =
-    "没有辅助返回轨（AuxReturn），无法新建发送（界面还没有新建轨的入口）";
+    "没有辅助返回轨（AuxReturn），无法新建发送（用上方「+ 辅助返回」建一条）";
+
+/// "新建发送"不可用时逐字写出的原因：展示轨到那条 aux **已经有**一条
+/// `SendToAux` 边（同源同目的地）。
+///
+/// ⭐ 任务单 `#160`：`#159` 的"连点会各建一条新边"在这里被关掉 —— 判定读的是
+/// `routing_graph.edges`（权威），⛔ 不是界面上的行数。
+pub const SEND_CREATE_DUPLICATE_REASON: &str = "该发送已存在（源与目的地相同），无法重复新建";
 
 /// 发送增益的取用值域 (dB) —— **模型给的**，⛔ 不是界面里新写的一份范围表。
 ///
@@ -1484,13 +1492,39 @@ fn send_strip_projection(
             gain_display: send_gain_display(edge.gain_db),
         })
         .collect();
-    let available = send_aux_target(project).is_some();
-    let reason = if available {
-        String::new()
-    } else {
-        SEND_CREATE_NO_AUX_REASON.to_owned()
-    };
+    let (available, reason) = send_create_availability(project);
     (sends, available, reason)
+}
+
+/// "新建发送"的可用性 ＋ 不可用时的**逐字**原因（[`ViewState`] 与宿主提交路径共用的
+/// **唯一**口径）。
+///
+/// 三条不可用分支，按优先级：
+///
+/// 1. 没有展示轨 ⇒ [`SEND_CREATE_NO_TRACK_REASON`]；
+/// 2. 没有 `AuxReturn` 轨 ⇒ [`SEND_CREATE_NO_AUX_REASON`]；
+/// 3. 展示轨到那条 aux **已经**有一条 `SendToAux` 边 ⇒
+///    [`SEND_CREATE_DUPLICATE_REASON`]（⭐ 任务单 `#160`：`#159` 登记过"连点会各建
+///    一条新边"）。
+///
+/// ⛔ 不按名字猜目的地（类型是唯一判据），⛔ 不看界面上的行数（边是唯一事实源）。
+#[must_use]
+pub fn send_create_availability(project: &YebanProjectV1) -> (bool, String) {
+    let Some(track) = send_strip_track(project) else {
+        return (false, SEND_CREATE_NO_TRACK_REASON.to_owned());
+    };
+    let Some(aux) = send_aux_target(project) else {
+        return (false, SEND_CREATE_NO_AUX_REASON.to_owned());
+    };
+    let duplicated = project.routing_graph.edges.values().any(|edge| {
+        edge.kind == RoutingKind::SendToAux
+            && edge.source_node == track.id
+            && edge.destination_node == aux.id
+    });
+    if duplicated {
+        return (false, SEND_CREATE_DUPLICATE_REASON.to_owned());
+    }
+    (true, String::new())
 }
 
 /// 发送增益手势的**权威寻址**（宿主提交路径用它，⛔ 不信界面上的行下标）。
@@ -1509,6 +1543,239 @@ pub fn send_gain_target(
     }
     let (min_db, max_db) = send_gain_range();
     Some((edge.gain_db, min_db, max_db))
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#160`：轨 / 路由的 CRUD（建轨、删展示轨、删发送）
+// ---------------------------------------------------------------------------
+
+/// 界面可**新建**的三种轨。
+///
+/// ⛔ 不含 [`TrackKind::Master`]：主总线只能有一个，而模型的 `Op` 全集**没有**写
+/// `master_bus_track_id` 的变体（见 `yeban-mcp` 的 `project_create` 模块头）⇒ 界面
+/// 建不出第二条主总线，也不该让这个状态在类型上可表达。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewTrackKind {
+    /// MIDI / 乐器轨（[`TrackKind::Midi`]）。
+    Midi,
+    /// 音频轨（[`TrackKind::Audio`]）。
+    Audio,
+    /// 辅助返回轨（[`TrackKind::AuxReturn`]）—— 建完之后"新建发送"才可能可用。
+    AuxReturn,
+}
+
+impl NewTrackKind {
+    /// 落进 `TrackV3::kind` 的模型枚举。
+    #[must_use]
+    pub const fn track_kind(self) -> TrackKind {
+        match self {
+            Self::Midi => TrackKind::Midi,
+            Self::Audio => TrackKind::Audio,
+            Self::AuxReturn => TrackKind::AuxReturn,
+        }
+    }
+
+    /// 新轨到主总线那条边的 [`RoutingKind`]（语义见 `yeban-engine` 的 `routing.rs`：
+    /// `TrackToBus` = 音轨 → 总线，`BusToMaster` = 总线 → 主输出）。
+    ///
+    /// ⇒ `Midi` / `Audio` 是**音轨** ⇒ [`RoutingKind::TrackToBus`]；
+    /// `AuxReturn` 是**总线** ⇒ [`RoutingKind::BusToMaster`]。⛔ 两个方向不能互换。
+    #[must_use]
+    pub const fn routing_kind(self) -> RoutingKind {
+        match self {
+            Self::Midi | Self::Audio => RoutingKind::TrackToBus,
+            Self::AuxReturn => RoutingKind::BusToMaster,
+        }
+    }
+
+    /// 显示名前缀（**名字不是身份**：身份是 `EntityId`，见 [`track_create_ops`]）。
+    const fn name_prefix(self) -> &'static str {
+        match self {
+            Self::Midi => "MIDI",
+            Self::Audio => "Audio",
+            Self::AuxReturn => "Aux",
+        }
+    }
+}
+
+/// 界面建轨失败时逐字写出的原因：工程里**没有主总线**。
+///
+/// 模型的 `validate()` 要求"有音轨时 `master_bus_track_id` 必须指向一条 `Master` 轨"，
+/// 而 `Op` 全集**没有**写 `master_bus_track_id` 的变体 ⇒ 在 0 轨空工程（`new_project_archive`
+/// 的 `default_project()`）里建轨只会写出一份非法文档。这里**响亮拒绝**，⛔ 不写半份。
+pub const TRACK_CREATE_NO_MASTER_REASON: &str =
+    "工程没有主总线，无法建轨（0 轨空工程请先打开一个带主总线的工程）";
+
+/// 建轨是否可用 —— **唯一**判据是"工程有一条 `TrackKind::Master` 轨，且
+/// `master_bus_track_id` 指着它"。
+///
+/// ⛔ 不分配身份、⛔ 不改工程：它只是 [`track_create_ops`] 的前置条件读出来的读数。
+#[must_use]
+pub fn track_create_available(project: &YebanProjectV1) -> bool {
+    project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .is_some_and(|track| track.kind == TrackKind::Master)
+}
+
+/// 轨 / 路由段里那一行主总线说明（**投影给界面看**，不是界面自己拼的）。
+///
+/// - 有主总线 ⇒ `"主总线：{name}（不可删除）"`；
+/// - 没有主总线（0 轨空工程）⇒ [`TRACK_CREATE_NO_MASTER_REASON`]（同一行兼作
+///   建轨不可用的**逐字**原因）。
+#[must_use]
+pub fn master_bus_label(project: &YebanProjectV1) -> String {
+    match project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .filter(|track| track.kind == TrackKind::Master)
+    {
+        Some(master) => format!("主总线：{}（不可删除）", master.name),
+        None => TRACK_CREATE_NO_MASTER_REASON.to_owned(),
+    }
+}
+
+/// 界面删轨失败时逐字写出的原因：工程里**没有可显示的音轨**。
+pub const TRACK_DELETE_NO_TRACK_REASON: &str = "工程里没有可显示的音轨，无法删除";
+
+/// 界面删轨失败时逐字写出的原因：唯一的音轨是**主总线**（`master_bus_track_id`）。
+pub const TRACK_DELETE_MASTER_REASON: &str = "主总线（Master）不可删除";
+
+/// 新轨的显示名：`"{前缀} {同类现有轨数 + 1}"`（如 `"MIDI 5"` / `"Aux 1"`）。
+///
+/// ⚠ 名字**不是身份**：`tracks` 的键是 `EntityId`（[`EntityId::new`] 分配）。因此
+/// 删掉再建可能重名，模型允许（`TrackV3::validate` 不查空名，也不查重名）。
+#[must_use]
+pub fn new_track_name(project: &YebanProjectV1, kind: NewTrackKind) -> String {
+    let existing = project
+        .tracks
+        .values()
+        .filter(|track| track.kind == kind.track_kind())
+        .count();
+    format!("{} {}", kind.name_prefix(), existing + 1)
+}
+
+/// 建轨的**完整** `Op` 批次（⛔ 不是"只 `AddTrack`"）。
+///
+/// 返回 `[AddTrack, AddRoutingNode(新轨), ConnectRouting(新轨 → master)]`（主总线
+/// 不在 `nodes` 里时先补它的 `AddRoutingNode`）。三条形状与 `yeban-mcp` 的
+/// `project_create::build` **同一份**（`AddTrack` ＋ `AddRoutingNode` ＋
+/// `ConnectRouting{kind: TrackToBus, gain_db: None}`）⇒ 新轨在路由图里**有一条显式的
+/// 到主总线的边**，而不是靠引擎"没有出边 ⇒ 默认直连 master"这条回退。
+///
+/// ⚠ 引擎的回退确实存在（`yeban-engine/src/routing.rs` 模块头）：没有音频出边的节点默认
+/// 直连 master。本函数仍然显式建边，因为 ① 演示 / 填充 / MCP 建工程三条既有路径都建了；
+/// ② 判据要求"有条到 master 的边"；③ 图是唯一声学路由真理源，不把可听性寄托在回退上。
+///
+/// # Errors
+///
+/// - 没有主总线（或 `master_bus_track_id` 指向的轨不是 `Master`）⇒
+///   [`TRACK_CREATE_NO_MASTER_REASON`]。
+pub fn track_create_ops(
+    project: &YebanProjectV1,
+    kind: NewTrackKind,
+) -> Result<Vec<Op>, &'static str> {
+    let master = project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .filter(|track| track.kind == TrackKind::Master)
+        .ok_or(TRACK_CREATE_NO_MASTER_REASON)?;
+    let track_id = EntityId::new();
+    let track = TrackV3 {
+        id: track_id,
+        name: new_track_name(project, kind),
+        kind: kind.track_kind(),
+        ..TrackV3::default()
+    };
+    let edge = RoutingEdge {
+        id: EntityId::new(),
+        source_node: track_id,
+        destination_node: master.id,
+        kind: kind.routing_kind(),
+        gain_db: None,
+    };
+    let mut ops = Vec::with_capacity(4);
+    ops.push(Op::AddTrack { track });
+    ops.push(Op::AddRoutingNode { node: track_id });
+    // 主总线**通常**已经在 `nodes` 里（`validate()` 要求）；缺失时补一格，否则
+    // `ConnectRouting` 的前置条件（两端都在 `nodes` 里）会拒掉整批。
+    if !project.routing_graph.nodes.contains(&master.id) {
+        ops.push(Op::AddRoutingNode { node: master.id });
+    }
+    ops.push(Op::ConnectRouting { edge });
+    Ok(ops)
+}
+
+/// 删轨的目标 —— 与设备机架 / 发送条**同一条**展示轨（[`device_rack_track`]）。
+#[must_use]
+pub fn track_delete_target(project: &YebanProjectV1) -> Option<&TrackV3> {
+    device_rack_track(project)
+}
+
+/// 删轨的可用性 ＋ 不可用时的**逐字**原因。
+///
+/// 唯一的目标是展示轨（身份序第一条非主总线轨）⇒ 主总线**永远**不是目标；
+/// 当工程里只剩主总线时给出 [`TRACK_DELETE_MASTER_REASON`]，空工程给出
+/// [`TRACK_DELETE_NO_TRACK_REASON`]。
+#[must_use]
+pub fn track_delete_availability(project: &YebanProjectV1) -> (bool, String) {
+    let reason = track_delete_reason(project);
+    (reason.is_empty(), reason.to_owned())
+}
+
+/// 删轨不可用时的**逐字**原因（可用时是空串）—— [`track_delete_availability`] 的
+/// `&'static str` 形态，让 [`track_delete_ops`] 不必为一句静态文案分配。
+#[must_use]
+pub fn track_delete_reason(project: &YebanProjectV1) -> &'static str {
+    if track_delete_target(project).is_some() {
+        return "";
+    }
+    if project.tracks.is_empty() {
+        TRACK_DELETE_NO_TRACK_REASON
+    } else {
+        TRACK_DELETE_MASTER_REASON
+    }
+}
+
+/// 删展示轨的**完整** `Op` 批次：先断开**每一条**引用它的边，再取走它的路由节点，
+/// 最后取走音轨本身。
+///
+/// 顺序是承重的：`RemoveRoutingNode` 的前置条件是"没有任何边引用它"
+/// （`ModelError::RoutingNodeInUse`）⇒ 边必须先走。整批由 `commit_ops` 包成**一个**
+/// `Op::Batch`（原子）⇒ 一次手势 = **一步**可撤销的编辑。
+///
+/// ⛔ 主总线不可删：模型自己的 `Op::RemoveTrack` 前置条件就拒绝（`OpStateMismatch`），
+/// 这里在**更早**的地方用 [`TRACK_DELETE_MASTER_REASON`] 给出人话原因。
+///
+/// # Errors
+///
+/// - 没有展示轨 ⇒ [`TRACK_DELETE_MASTER_REASON`]（只剩主总线）或
+///   [`TRACK_DELETE_NO_TRACK_REASON`]（空工程）。
+pub fn track_delete_ops(project: &YebanProjectV1) -> Result<Vec<Op>, &'static str> {
+    let Some(track) = track_delete_target(project) else {
+        return Err(track_delete_reason(project));
+    };
+    // 防御：展示轨按定义不是主总线；万一将来规则变了，这里也不会把主总线删掉。
+    if track.id == project.master_bus_track_id {
+        return Err(TRACK_DELETE_MASTER_REASON);
+    }
+    let mut ops = Vec::new();
+    for edge in project.routing_graph.edges.values() {
+        if edge.source_node == track.id || edge.destination_node == track.id {
+            ops.push(Op::DisconnectRouting {
+                edge_id: edge.id,
+                previous_edge: *edge,
+            });
+        }
+    }
+    if project.routing_graph.nodes.contains(&track.id) {
+        ops.push(Op::RemoveRoutingNode { node: track.id });
+    }
+    ops.push(Op::RemoveTrack {
+        track_id: track.id,
+        previous_track: track.clone(),
+    });
+    Ok(ops)
 }
 
 /// 视图里的一个场景（`SceneV3`，Session View 的行）。
@@ -1658,14 +1925,37 @@ pub struct ViewState {
     /// ⭐ 任务单 `#159`：空 ⇒ 界面显示空态（`"无发送"`）＋ 条目数 `0`，⛔ 不是一片空白，
     /// 也⛔ 不是编造的发送。
     pub sends: Vec<SendRowView>,
-    /// "新建发送"此刻能不能用：展示轨存在**且**工程里有一条 `TrackKind::AuxReturn` 轨。
+    /// "新建发送"此刻能不能用：展示轨存在**且**工程里有一条 `TrackKind::AuxReturn` 轨
+    /// **且**展示轨到那条 aux 还没有同源同目的地的 `SendToAux` 边。
     ///
     /// `false` ⇒ 界面禁用按钮并逐字显示 [`Self::send_create_reason`]，⛔ 不静默。
     pub send_create_available: bool,
     /// "新建发送"不可用时**逐字**写出的原因（可用时是空串）。
     ///
-    /// 两个取值来自 [`SEND_CREATE_NO_TRACK_REASON`] / [`SEND_CREATE_NO_AUX_REASON`]。
+    /// 三个取值来自 [`SEND_CREATE_NO_TRACK_REASON`] / [`SEND_CREATE_NO_AUX_REASON`] /
+    /// [`SEND_CREATE_DUPLICATE_REASON`]。
     pub send_create_reason: String,
+    /// 工程轨数（**含主总线**）的显示文本：`"共 {n} 条轨"`。
+    ///
+    /// ⭐ 任务单 `#160`：它是"建轨 / 删轨真的发生了"在**同一面板**里的可见读数
+    /// —— 新轨按 `EntityId` 排序通常落在末尾，展示轨（身份序第一条非主总线轨）可能
+    /// 不变，所以只靠 `device_track_label` 看不出轨数变了。
+    pub track_count_label: String,
+    /// 建轨此刻能不能用（工程里得有一条 `TrackKind::Master` 轨）。
+    ///
+    /// `false` ⇒ 三个建轨按钮禁用，且 [`Self::master_bus_label`] **就是**逐字原因。
+    pub track_create_available: bool,
+    /// 主总线说明（`"主总线：Master（不可删除）"`；没有主总线时是建轨的逐字原因）。
+    pub master_bus_label: String,
+    /// "删除展示轨"此刻能不能用（展示轨存在）。
+    ///
+    /// ⭐ 任务单 `#160`：目标**只**是展示轨（身份序第一条非主总线轨）⇒ 主总线不可删；
+    /// `false` ⇒ 界面禁用按钮并逐字显示 [`Self::track_delete_reason`]。
+    pub track_delete_available: bool,
+    /// "删除展示轨"不可用时**逐字**写出的原因（可用时是空串）。
+    ///
+    /// 两个取值来自 [`TRACK_DELETE_NO_TRACK_REASON`] / [`TRACK_DELETE_MASTER_REASON`]。
+    pub track_delete_reason: String,
     /// 全部 MIDI 音符（片段池键序 → 音符键序，去重保序），**含**投影算出的 x / y / 宽 / 车道。
     ///
     /// 这是音符族唯一的权威投影产物；[`Self::note_ulids`] / [`Self::note_velocities`] 与
@@ -1871,9 +2161,17 @@ impl ViewState {
 
         // 发送条（任务单 `#159`）：与设备机架**同一条**展示轨（[`send_strip_track`]）。
         // 条目逐条来自 `RoutingGraph::edges` 的 `SendToAux` 出边；目的地名字来自 `tracks`；
-        // "新建发送"能不能用取决于工程里有没有 `TrackKind::AuxReturn` 轨。
+        // "新建发送"能不能用由 [`send_create_availability`] **唯一**决定（任务单 `#160`
+        // 起还要求"源 → 目的地"没有重复的 `SendToAux` 边）。
         let (sends, send_create_available, send_create_reason) =
             send_strip_projection(project, send_strip_track(project));
+
+        // 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / "删除展示轨"的可用性。
+        // 删轨的目标只认展示轨（[`track_delete_target`] = 身份序第一条非主总线轨）
+        // ⇒ 主总线永远不可删。
+        let (track_delete_available, track_delete_reason) = track_delete_availability(project);
+        let track_create_available = track_create_available(project);
+        let master_bus_label = master_bus_label(project);
 
         // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
         // 身份进 `note-{ulid}-rect`；力度进力度泳道；**位置**由 start_tick / pitch 经整数
@@ -1948,6 +2246,11 @@ impl ViewState {
             sends,
             send_create_available,
             send_create_reason,
+            track_count_label: format!("共 {} 条轨", project.tracks.len()),
+            track_create_available,
+            master_bus_label,
+            track_delete_available,
+            track_delete_reason,
             note_x_order: {
                 // 一次性建索引：按 `x` 升序。`total_cmp` 对 NaN 也有全序, 不会 panic。
                 let mut order: Vec<u32> = (0..notes.len() as u32).collect();

@@ -93,6 +93,13 @@ export component ConsoleTabs inherits Rectangle {
     in property <float> send-gain-max-db: 0.0;
     in property <bool> send-create-available: false;
     in property <string> send-create-reason: "";
+    // ⭐ 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / 删展示轨的可用性与逐字原因。
+    // 与上面发送那几格同一条透传纪律 —— 本组件不解释、⛔ 不自己算"能不能建/删"。
+    in property <string> routing-count-label: "";
+    in property <bool> routing-create-available: false;
+    in property <string> routing-master-label: "";
+    in property <bool> routing-delete-available: false;
+    in property <string> routing-delete-reason: "";
     in property <[string]> track-meter-peaks: [];
     in property <[string]> track-meter-rmss: [];
     in property <[float]> track-meter-levels: [];
@@ -142,6 +149,15 @@ export component ConsoleTabs inherits Rectangle {
     callback send-gain-drag(string, float);
     callback send-gain-release(string);
     callback send-create();
+    // ⭐ **轨 / 路由的写入面**（任务单 `#160`）：控制台 **Tab 3** 的同一面板里，
+    // 三个建轨按钮 ＋ 删除展示轨 ＋ 每条发送的删除按钮。本组件只把 `DeviceRack` 的
+    // 回调**原样上抛**给 `MainWindow`（宿主侧唯一实现是 `host::wire_track_strip` /
+    // `host::wire_send_strip`）—— ⛔ 不解释、⛔ 不提交、⛔ 不改任何工程值。
+    callback send-remove(string);
+    callback track-create-midi();
+    callback track-create-audio();
+    callback track-create-aux();
+    callback track-delete();
     // ⭐ **导出 MIDI**（任务单 `#90` 甲）：混音台（Tab 1）里的**控制台级**动作。
     // 与上面那一族同款 —— 本组件只上抛，⛔ 不写盘、⛔ 不判断成功与否。
     callback export-midi();
@@ -416,6 +432,12 @@ export component ConsoleTabs inherits Rectangle {
         send-gain-max-db: root.send-gain-max-db;
         send-create-available: root.send-create-available;
         send-create-reason: root.send-create-reason;
+        // ⭐ 轨 / 路由（任务单 `#160`）：同样只透传投影，本组件不解释。
+        routing-count-label: root.routing-count-label;
+        routing-create-available: root.routing-create-available;
+        routing-master-label: root.routing-master-label;
+        routing-delete-available: root.routing-delete-available;
+        routing-delete-reason: root.routing-delete-reason;
         // 写入面：两个手势原样上抛（唯一落点 `host::wire_device_rack`）。
         device-bypass-toggle(slot) => {
             root.device-bypass-toggle(slot);
@@ -441,6 +463,22 @@ export component ConsoleTabs inherits Rectangle {
         }
         send-create() => {
             root.send-create();
+        }
+        // ⭐ 轨 / 路由（任务单 `#160`）：删除发送 ＋ 三个建轨按钮 ＋ 删除展示轨。
+        send-remove(edge-id) => {
+            root.send-remove(edge-id);
+        }
+        track-create-midi() => {
+            root.track-create-midi();
+        }
+        track-create-audio() => {
+            root.track-create-audio();
+        }
+        track-create-aux() => {
+            root.track-create-aux();
+        }
+        track-delete() => {
+            root.track-delete();
         }
     }
 }

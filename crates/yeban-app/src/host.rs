@@ -192,6 +192,15 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_send_gain_max_db(view.send_gain_max_db());
     ui.set_send_create_available(view.send_create_available);
     ui.set_send_create_reason(view.send_create_reason.clone().into());
+    // ⭐ 轨 / 路由（任务单 `#160`）：显示轨数 ＋ 建轨 / "删除展示轨"的可用性与逐字原因
+    // （主总线说明那一行兼作"没有主总线 ⇒ 不能建轨"的原因）。五个都是**标量**（不是新
+    // 数组）⇒ 只增 `APPLY_VIEW_WRITE_SITE_BUDGET`，不动
+    // `PER_FRAME_ARRAY_REWRITE_BUDGET`。唯一事实源是 `ViewState` 的同名字段。
+    ui.set_routing_count_label(view.track_count_label.clone().into());
+    ui.set_routing_create_available(view.track_create_available);
+    ui.set_routing_master_label(view.master_bus_label.clone().into());
+    ui.set_routing_delete_available(view.track_delete_available);
+    ui.set_routing_delete_reason(view.track_delete_reason.clone().into());
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
@@ -2148,12 +2157,13 @@ fn db_from_fraction(fraction: f32, min_db: f32, max_db: f32) -> f32 {
 
 /// 发送条（控制台 **Tab 3** 设备机架面板里的"发送"区）的**写入面**。
 ///
-/// 两个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]：
+/// 三个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]：
 ///
 /// | 手势 | `.slint` 回调 | 提交的 `Op` | 撤销标签 |
 /// | :--- | :--- | :--- | :--- |
 /// | 改发送增益 | `send-gain-grab/drag/release(edge-id)` | [`yeban_model::Op::SetRoutingGain`] | `"set send gain"` |
 /// | 新建发送 | `send-create()` | [`yeban_model::Op::ConnectRouting`]（端点不在图里时，同一次提交先补 `AddRoutingNode`） | `"create send"` |
+/// | 删除发送（⭐ `#160`） | `send-remove(edge-id)` | [`yeban_model::Op::DisconnectRouting`] | `"remove send"` |
 ///
 /// ## 为什么拖动期**不**提交（与 EQ 滑块同一条纪律）
 ///
@@ -2165,21 +2175,22 @@ fn db_from_fraction(fraction: f32, min_db: f32, max_db: f32) -> f32 {
 ///
 /// ## 寻址：空间上只认身份，不认行下标
 ///
-/// `.slint` 的三个滑块回调都携带**路由边身份**（`RoutingEdge::id` 的 26 字符文本）。
-/// 宿主在**按下**与**松手**两侧都从权威工程重新查一次
+/// `.slint` 的三个滑块回调与删除按钮都携带**路由边身份**（`RoutingEdge::id` 的 26 字符
+/// 文本）。宿主在**按下**与**松手**两侧都从权威工程重新查一次
 /// （[`crate::bridge::send_gain_target`]），因此 `Op` 携带的 `old_gain_db` 永远是
 /// **当前**值（陈旧会被模型的逐位比对拒掉）；行下标只用于拖动期的视觉预览。
 ///
 /// “新建发送”的设备身份与目的地都在提交前从权威工程重求：
 /// 源 = [`crate::bridge::send_strip_track`]（与上方设备链**同一条**轨），
 /// 目的地 = [`crate::bridge::send_aux_target`]（身份序第一条 `AuxReturn` 轨）。
+/// 可用性（含**防重复**：同源同目的地的 `SendToAux` 已存在 ⇒ 拒绝）来自
+/// [`crate::bridge::send_create_availability`] —— 与投影**同一份**判定。
 /// 新边的 `id` 由项目既有的身份分配器 [`yeban_model::EntityId::new`] 生成
 /// （⛔ 不硬编码、⛔ 不复用已有边身份）。
 ///
 /// ## 它**不**做什么
 ///
-/// ⛔ 不建轨（`Op::AddTrack` 在 UI 侧今天 0 个构造点），因此没有 `AuxReturn` 轨时
-/// 按钮禁用并逐字写出原因；⛔ 不删发送（`Op::DisconnectRouting` 本切片不造）；
+/// ⛔ 不建轨（那是 [`wire_track_strip`] 的 `+ MIDI / + 音频 / + 辅助返回`）；
 /// ⛔ 不碰引擎（发送在实时侧的可听性由 `yeban-engine` 自己文档化 —— 见交付报告的
 /// "能验与不能验"）。
 pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
@@ -2322,6 +2333,14 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 eprintln!("[yeban-app] 新建发送：权威会话此刻没有活跃工程");
                 return;
             };
+            // ⭐ 任务单 `#160`：可用性（含**防重复**）与投影**同一份**口径
+            // （`bridge::send_create_availability`）。⛔ 不在这里写第二份判定。
+            let (available, reason) = crate::bridge::send_create_availability(&project);
+            if !available {
+                eprintln!("[yeban-app] 新建发送被拒绝：{reason}");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            }
             let Some(track) = crate::bridge::send_strip_track(&project) else {
                 eprintln!("[yeban-app] 新建发送被拒绝：没有可显示的音轨");
                 return;
@@ -2358,6 +2377,171 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
             refresh_undo_window(&ui, &port, true);
         }
     });
+
+    // ---------------------------------------------------------------- ③ 删除发送（⭐ 任务单 `#160`）
+    //
+    // `#159` 登记过"没删发送"；这里是那一条的落点。一次点击 = **恰好一次**
+    // `commit_ops`（一个 `Op::DisconnectRouting`）⇒ 一步可撤销的编辑。
+    ui.on_send_remove({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |edge_id: SharedString| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Ok(edge_id) = edge_id.parse::<yeban_model::EntityId>() else {
+                eprintln!("[yeban-app] 删除发送被拒绝：边身份不是合法的 ULID 文本");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 删除发送：权威会话此刻没有活跃工程");
+                return;
+            };
+            // 权重检查与增益手势**同一条**：边必须存在、类型是 `SendToAux`、源是展示轨。
+            // ⛔ 不信界面上的行下标。
+            let Some(track) = crate::bridge::send_strip_track(&project) else {
+                eprintln!("[yeban-app] 删除发送被拒绝：没有可显示的音轨");
+                return;
+            };
+            let Some(edge) = project.routing_graph.edges.get(&edge_id).copied() else {
+                eprintln!("[yeban-app] 删除发送被拒绝：那条路由边已经不存在");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            if edge.kind != yeban_model::RoutingKind::SendToAux || edge.source_node != track.id {
+                eprintln!("[yeban-app] 删除发送被拒绝：不是展示轨的发送边");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            }
+            let op = yeban_model::Op::DisconnectRouting {
+                edge_id,
+                previous_edge: edge,
+            };
+            if port.commit_ops(now_ms(), "remove send", vec![op]).is_err() {
+                eprintln!("[yeban-app] 删除发送被拒绝（工程未改）");
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+}
+
+// ===========================================================================
+// 轨 / 路由（控制台 Tab 3 的同一面板，任务单 `#160`）
+// ===========================================================================
+
+/// 轨 / 路由段（控制台 **Tab 3** 里与发送条**同一面板**）的**写入面**。
+///
+/// 四个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]：
+///
+/// | 手势 | `.slint` 回调 | 提交的 `Op`（一次 `Batch`） | 撤销标签 |
+/// | :--- | :--- | :--- | :--- |
+/// | 新建 MIDI 轨 | `track-create-midi()` | `AddTrack` ＋ `AddRoutingNode` ＋ `ConnectRouting{TrackToBus}` | `"create track"` |
+/// | 新建音频轨 | `track-create-audio()` | 同上 | `"create track"` |
+/// | 新建辅助返回轨 | `track-create-aux()` | 同上，但边的 `kind` 是 `BusToMaster` | `"create track"` |
+/// | 删除展示轨 | `track-delete()` | `DisconnectRouting`×n ＋ `RemoveRoutingNode` ＋ `RemoveTrack` | `"delete track"` |
+///
+/// ## 目标与规则（全部来自权威工程，⛔ 不信界面）
+///
+/// - 建轨的 `Op` 批次由 [`crate::bridge::track_create_ops`] 构造：新轨身份来自项目既有的
+///   分配器 [`yeban_model::EntityId::new`]，并且**同时**给它一条到主总线的显式路由边；
+/// - 删轨的目标**只**是展示轨（身份序第一条非主总线轨，`bridge::track_delete_target`）
+///   ⇒ 主总线**永远**不是目标；只剩主总线时按钮禁用并逐字写出
+///   [`crate::bridge::TRACK_DELETE_MASTER_REASON`]；直接调用回调也会被
+///   [`crate::bridge::track_delete_ops`] 拒掉（Δ0 提交）；
+/// - 没有主总线的 0 轨空工程 ⇒ 建轨被 [`crate::bridge::TRACK_CREATE_NO_MASTER_REASON`]
+///   拒绝（`Op` 全集写不了 `master_bus_track_id`，写下去就是一份非法文档）。
+///
+/// ## 它**不**做什么
+///
+/// ⛔ 不改音量 / 声相 / 静音 / 独奏（那是 `wire_mixer_edit`）；⛔ 不碰引擎；
+/// ⛔ 不猜"选中轨"（界面没有这个状态，展示轨由 `bridge::device_rack_track` 唯一决定）。
+pub fn wire_track_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+
+    // ---------------------------------------------------------------- ① 新建轨
+    ui.on_track_create_midi({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            create_track(&ui, &port, crate::bridge::NewTrackKind::Midi);
+        }
+    });
+    ui.on_track_create_audio({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            create_track(&ui, &port, crate::bridge::NewTrackKind::Audio);
+        }
+    });
+    ui.on_track_create_aux({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            create_track(&ui, &port, crate::bridge::NewTrackKind::AuxReturn);
+        }
+    });
+
+    // ---------------------------------------------------------------- ② 删除展示轨
+    ui.on_track_delete({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 删除轨：权威会话此刻没有活跃工程");
+                return;
+            };
+            let ops = match crate::bridge::track_delete_ops(&project) {
+                Ok(ops) => ops,
+                Err(reason) => {
+                    // 主总线 / 没有展示轨：**逐字**原因进日志（界面另有一份同样的原因）。
+                    eprintln!("[yeban-app] 删除轨被拒绝：{reason}");
+                    refresh_undo_window(&ui, &port, true);
+                    return;
+                }
+            };
+            if port.commit_ops(now_ms(), "delete track", ops).is_err() {
+                eprintln!("[yeban-app] 删除轨被拒绝（工程未改）");
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+}
+
+/// 建轨手势的唯一实现体（三个按钮共用；`kind` 是唯一的自变量）。
+fn create_track(ui: &MainWindow, port: &UndoPort, kind: crate::bridge::NewTrackKind) {
+    let Some(project) = port.try_project() else {
+        eprintln!("[yeban-app] 新建轨：权威会话此刻没有活跃工程");
+        return;
+    };
+    let ops = match crate::bridge::track_create_ops(&project, kind) {
+        Ok(ops) => ops,
+        Err(reason) => {
+            eprintln!("[yeban-app] 新建轨被拒绝：{reason}");
+            refresh_undo_window(ui, port, true);
+            return;
+        }
+    };
+    if port.commit_ops(now_ms(), "create track", ops).is_err() {
+        eprintln!("[yeban-app] 新建轨被拒绝（工程未改）");
+    }
+    refresh_undo_window(ui, port, true);
 }
 
 /// 发送增益手势的中间态（**会话运行态**，不进 `.yeban`）。

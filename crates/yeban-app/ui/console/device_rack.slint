@@ -100,6 +100,19 @@ export component DeviceRack inherits Rectangle {
     /// 不能新建时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
     in property <string> send-create-reason: "";
 
+    // ---------------------------------------------------------------- 轨 / 路由（⭐ 任务单 `#160`）
+    /// 工程轨数（**含主总线**）的显示文本（`"共 7 条轨"`）—— 逐字来自投影。
+    in property <string> routing-count-label: "";
+    /// 建轨此刻能不能用（工程里得有一条主总线）—— 三个 `+ …` 按钮共用这一格。
+    in property <bool> routing-create-available: false;
+    /// 主总线说明（`"主总线：Master（不可删除）"`）；没有主总线时它**就是**
+    /// [`track_count_label`] 旁边那句逐字原因 —— 逐字来自投影，⛔ 本文件不编造。
+    in property <string> routing-master-label: "";
+    /// "删除展示轨"此刻能不能用（工程里得有一条非主总线轨）。
+    in property <bool> routing-delete-available: false;
+    /// 不能删除时**逐字**写出的原因（可用时是空串）—— 主总线不可删。
+    in property <string> routing-delete-reason: "";
+
     // ---------------------------------------------------------------- 写入面
     /// 点击某台的旁通开关（参数 = 设备链下标）。
     callback device-bypass-toggle(int);
@@ -117,6 +130,16 @@ export component DeviceRack inherits Rectangle {
     callback send-gain-release(string);
     /// 新建发送（目的地 / 新边身份都由宿主从权威工程求）。
     callback send-create();
+    /// 删除某一条发送（参数 = 路由边身份，⛔ 不是行下标）。
+    callback send-remove(string);
+    /// 新建 MIDI 轨（轨身份 / 名称 / 路由边全部由宿主从权威工程求）。
+    callback track-create-midi();
+    /// 新建音频轨。
+    callback track-create-audio();
+    /// 新建辅助返回轨（`AuxReturn`）。
+    callback track-create-aux();
+    /// 删除展示轨（主总线不是目标：不可用时禁用并逐字给原因）。
+    callback track-delete();
 
     // 旋钮位置（0.0–1.0）：值域退化（min == max）或不可用时给 0.5（居中），
     // 绝不除以零。**这是显示几何**，不是第二份范围表 —— 两个端点都是注入值。
@@ -330,12 +353,17 @@ export component DeviceRack inherits Rectangle {
         }
     }
 
-    // ---------------------------------------------------------------- 发送条（⭐ 任务单 `#159`）
+    // ------------------------------------------- 发送条 ＋ 轨 / 路由（⭐ `#159` / `#160`）
+    // ⚠ 两段**同住**这一块面板：上半段是轨 / 路由（`#160`），下半段是发送（`#159`）。
+    // 之所以不新开面板：控制台高度在默认窗口里只有约 300 逻辑像素，右侧列已经排满
+    // （EQ 旋钮 28–128、发送条从 136 起）⇒ 新开一块会把它挤出裁剪区。发送段整体
+    // 下移 52px（轨 / 路由段占 0–58，发送段从 60 起），行 / 按钮 / 原因的**相对**
+    // 几何一位未变。
     Rectangle {
         x: 444px;
         y: 136px;
         width: 380px;
-        height: 74px + 40px * root.send-destination-names.length;
+        height: 126px + 40px * root.send-destination-names.length;
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
         border-width: 1px;
@@ -343,11 +371,235 @@ export component DeviceRack inherits Rectangle {
         clip: true;
         accessible-role: region;
         accessible-id: "send-strip";
-        accessible-label: "发送";
+        accessible-label: "发送与轨路由";
+
+        // ------------------------------------------------------------ 轨 / 路由段（⭐ `#160`）
+        //
+        // 三个建轨按钮 ＋ 一个删除按钮。身份 / 名称 / 路由边 / 批次全部由宿主
+        // （`host::wire_track_strip`）从权威工程求；⛔ 本文件不拼任何身份、不提交。
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: 58px;
+            background: transparent;
+            accessible-role: region;
+            accessible-id: "track-routing-panel";
+            accessible-label: "轨与路由";
+        }
 
         UiText {
             x: Tokens.space-4;
-            y: Tokens.space-2;
+            y: 6px;
+            width: 52px;
+            height: 14px;
+            text: "轨 / 路由";
+            color: Tokens.ink-1;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        // 轨数（含主总线）—— 逐字来自投影；建轨 / 删轨之后它会变。
+        UiMonoText {
+            x: 64px;
+            y: 6px;
+            width: 72px;
+            height: 14px;
+            text: root.routing-count-label;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            accessible-role: text;
+            accessible-id: "track-routing-count";
+            accessible-label: root.routing-count-label;
+        }
+
+        // 主总线说明（"主总线：Master（不可删除）"）；没有主总线时这一格**就是**
+        // 建轨不可用的逐字原因（同一个投影字段，⛔ 不是界面拼的第二份文案）。
+        UiMonoText {
+            x: 140px;
+            y: 6px;
+            width: parent.width - 148px;
+            height: 14px;
+            text: root.routing-master-label;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            accessible-role: text;
+            accessible-id: "master-bus-label";
+            accessible-label: root.routing-master-label;
+        }
+
+        // ---- 三个建轨按钮（可用性由 `routing-create-available` 单一决定）----
+        Rectangle {
+            x: 8px;
+            y: 22px;
+            width: 88px;
+            height: 20px;
+            background: root.routing-create-available ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.routing-create-available ? Tokens.gold : Tokens.line;
+            accessible-role: button;
+            accessible-id: "track-create-midi-button";
+            accessible-label: "新建 MIDI 轨";
+            accessible-action-default => { root.track-create-midi(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "+ MIDI";
+                color: root.routing-create-available ? Tokens.bg-void : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.routing-create-available;
+                clicked => {
+                    root.track-create-midi();
+                }
+            }
+        }
+
+        Rectangle {
+            x: 100px;
+            y: 22px;
+            width: 88px;
+            height: 20px;
+            background: root.routing-create-available ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.routing-create-available ? Tokens.gold : Tokens.line;
+            accessible-role: button;
+            accessible-id: "track-create-audio-button";
+            accessible-label: "新建音频轨";
+            accessible-action-default => { root.track-create-audio(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "+ 音频";
+                color: root.routing-create-available ? Tokens.bg-void : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.routing-create-available;
+                clicked => {
+                    root.track-create-audio();
+                }
+            }
+        }
+
+        Rectangle {
+            x: 192px;
+            y: 22px;
+            width: 88px;
+            height: 20px;
+            background: root.routing-create-available ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.routing-create-available ? Tokens.gold : Tokens.line;
+            accessible-role: button;
+            accessible-id: "track-create-aux-button";
+            accessible-label: "新建辅助返回轨";
+            accessible-action-default => { root.track-create-aux(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "+ 辅助返回";
+                color: root.routing-create-available ? Tokens.bg-void : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.routing-create-available;
+                clicked => {
+                    root.track-create-aux();
+                }
+            }
+        }
+
+        // ---- 删除展示轨（目标只认展示轨；主总线不是目标）----
+        Rectangle {
+            x: 284px;
+            y: 22px;
+            width: 88px;
+            height: 20px;
+            background: root.routing-delete-available ? Tokens.bg-shell : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.routing-delete-available ? Tokens.line-strong : Tokens.line;
+            accessible-role: button;
+            accessible-id: "track-delete-button";
+            accessible-label: "删除展示轨";
+            accessible-action-default => { root.track-delete(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "删除展示轨";
+                color: root.routing-delete-available ? Tokens.ink-0 : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.routing-delete-available;
+                clicked => {
+                    root.track-delete();
+                }
+            }
+        }
+
+        // 不可用时的**逐字**原因（只剩主总线 / 空工程）。
+        UiText {
+            x: Tokens.space-4;
+            y: 44px;
+            width: parent.width - 16px;
+            height: 12px;
+            text: root.routing-delete-reason;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            visible: !root.routing-delete-available;
+            accessible-role: text;
+            accessible-id: "track-delete-reason";
+            accessible-label: root.routing-delete-reason;
+        }
+
+        // 两段之间的分隔线。
+        Rectangle {
+            x: Tokens.space-4;
+            y: 57px;
+            width: parent.width - 16px;
+            height: 1px;
+            background: Tokens.line;
+        }
+
+        // ------------------------------------------------------------ 发送段（⭐ `#159`）
+        UiText {
+            x: Tokens.space-4;
+            y: 60px;
             width: 220px;
             height: 16px;
             text: "发送";
@@ -358,7 +610,7 @@ export component DeviceRack inherits Rectangle {
 
         UiMonoText {
             x: 240px;
-            y: Tokens.space-2;
+            y: 60px;
             width: parent.width - 252px;
             height: 16px;
             text: root.send-destination-names.length + " 条发送";
@@ -373,7 +625,7 @@ export component DeviceRack inherits Rectangle {
         // 空态：无发送时**不画**任何行，只写这一句（逐字，判据按它断言）。
         UiText {
             x: Tokens.space-4;
-            y: 28px;
+            y: 80px;
             width: parent.width - 16px;
             height: 20px;
             text: "无发送";
@@ -388,7 +640,7 @@ export component DeviceRack inherits Rectangle {
         // ⭐ 条目数**就是**投影的发送数 —— 空数组 ⇒ 一行都不画。
         for send_destination[send_index] in root.send-destination-names : Rectangle {
             x: Tokens.space-4;
-            y: 30px + 40px * send_index;
+            y: 82px + 40px * send_index;
             width: parent.width - 16px;
             height: 36px;
             background: transparent;
@@ -486,6 +738,44 @@ export component DeviceRack inherits Rectangle {
                     }
                 }
             }
+
+            // ⭐ 删除这一条发送（任务单 `#160`）：携带**路由边身份**，⛔ 不是行下标。
+            // 一次点击 = 恰好一次 `commit_ops`（一个 `Op::DisconnectRouting`）。
+            Rectangle {
+                x: parent.width - 24px;
+                y: 20px;
+                width: 20px;
+                height: 20px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line;
+                accessible-role: button;
+                accessible-id: "send-" + send_index + "-remove-button";
+                accessible-label: "删除发送 → " + send_destination;
+                accessible-action-default => {
+                    root.send-remove(root.send-edge-ids[send_index]);
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "✕";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.send-remove(root.send-edge-ids[send_index]);
+                    }
+                }
+            }
         }
 
         // ⭐ 新建发送：**一条**按钮 —— 目的地由宿主取身份序第一条 `AuxReturn` 轨，
@@ -493,7 +783,7 @@ export component DeviceRack inherits Rectangle {
         // 没有 aux 轨时 `enabled: false` ＋ 下方逐字原因（⛔ 不静默）。
         Rectangle {
             x: Tokens.space-4;
-            y: 30px + 40px * root.send-destination-names.length;
+            y: 82px + 40px * root.send-destination-names.length;
             width: 160px;
             height: 22px;
             background: root.send-create-available ? Tokens.gold-deep : Tokens.bg-void;
@@ -532,7 +822,7 @@ export component DeviceRack inherits Rectangle {
         // 不可用时的**逐字**原因（可用时 `visible: false`，文本是空串）。
         UiText {
             x: Tokens.space-4;
-            y: 56px + 40px * root.send-destination-names.length;
+            y: 108px + 40px * root.send-destination-names.length;
             width: parent.width - 16px;
             height: 14px;
             text: root.send-create-reason;

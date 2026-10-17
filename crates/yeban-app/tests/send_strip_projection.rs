@@ -24,8 +24,13 @@
 //!
 //! ⛔ 不证"人耳能听到混响"：本判据只证工程里多了一条 `SendToAux` 边，且
 //! `yeban-engine` 的 `RoutingPlan` 把它编译成"aux 有入边"。实时监听链由
-//! `#154` / `#158` 自己的判据负责。⛔ 不证"界面能建轨 / 建 aux 轨"：
-//! `Op::AddTrack` 在 UI 侧今天 0 个构造点。
+//! `#154` / `#158` 自己的判据负责。
+//!
+//! ⭐ **任务单 `#160` 追加**：本文件第 28 行原写"⛔ 不证'界面能建轨 / 建 aux 轨'：
+//! `Op::AddTrack` 在 UI 侧今天 0 个构造点"——那句在 `#160` 之后**不再成立**：
+//! UI 侧现在有三条 `AddTrack` 构造点（`host::wire_track_strip` 的 `+ MIDI` /
+//! `+ 音频` / `+ 辅助返回`，同一份批次在 `bridge::track_create_ops` 里构造）。
+//! 建轨 / 删轨 / 删发送 / 防重复的判据在 `tests/track_routing_crud.rs`。
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
