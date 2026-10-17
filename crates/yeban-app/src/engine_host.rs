@@ -132,7 +132,12 @@ use yeban_engine::transport::{TransportMirror, TransportReading, TransportState}
 use yeban_model::AutomationTarget;
 use yeban_model::EntityId;
 use yeban_model::project::YebanProjectV1;
+use yeban_model::{AssetHash, ClipContent};
 
+use crate::audio_inject::{
+    AudioAssetSource, AudioCacheReadings, AudioClipInjection, AudioClipReport, AudioClipSkip,
+    AudioPcmCache,
+};
 use crate::sfz_cache::{SfzCacheReadings, SfzPlanCache};
 use crate::sfz_load::SfzLoadError;
 
@@ -486,6 +491,19 @@ pub struct EngineHost {
     /// `publish_project` 两条（都是 `&mut self` ⇒ 不需要 `Mutex`）、判据可隔离。
     /// 完整的设计与三条失效条件见 [`crate::sfz_cache`] 的模块文档。
     sfz_cache: SfzPlanCache,
+    /// ⭐ ⭐ **音频片段字节的只读来源**（任务单 `#136`）：`AssetHash ⇒ 会话 CAS 池里的字节`。
+    ///
+    /// 为什么住在这里：`reload` / `publish_project` 只拿得到 `&YebanProjectV1`，而 **PCM
+    /// 不在工程模型里**（模型只有 `AssetHash`）⇒ 字节必须由装配方交进来。产品把它接成
+    /// 会话池（`UndoPort::asset_bytes`，⛔ 不复制第二份事实源）；判据接自己的夹具表。
+    ///
+    /// ⚠ 只在**控制线程**、且**缓存未命中**时被调用（读字节/解码都允许分配）。
+    audio_asset_source: Option<AudioAssetSource>,
+    /// ⭐ **按 `AssetHash` 键控的解码缓存**（任务单 `#136`）：PCM 不在工程模型里 ⇒ 每个
+    /// 修订都要重新注入 ⇒ 没有它就会每修订重解码。失效/上限见 [`crate::audio_inject`]。
+    audio_cache: AudioPcmCache,
+    /// ⭐ **最近一次注入的读数**（注入几个素材 / 每个的 `frames` / 跳过原因）。
+    audio_report: AudioClipReport,
 }
 
 /// 手写 `Debug`：`EngineRuntime` / `SnapshotSlot` 刻意没有 `Debug`（它们持有裸指针与
@@ -620,6 +638,145 @@ impl EngineHost {
         Ok(snapshot)
     }
 
+    // -----------------------------------------------------------------------
+    // 音频片段的 PCM 注入（任务单 `#136`）
+    // -----------------------------------------------------------------------
+
+    /// ⭐ **接上资产字节的只读来源**（`AssetHash ⇒ 会话 CAS 池里的字节`；控制线程）。
+    ///
+    /// 为什么需要它：`ClipContent::Audio` 在工程模型里**只有 `AssetHash`**（PCM 不在模型里）
+    /// ⇒ [`Self::reload`] / [`Self::publish_project`] 拿不到字节。产品把会话池
+    /// （`UndoPort::asset_bytes`）接进来；判据接自己的夹具表。⛔ 引擎侧一个字不改：
+    /// 注入走既有的 `EngineSnapshot::with_audio_asset`（任务单 `#135`）。
+    ///
+    /// 来源只在**缓存未命中**时被调用；返回 `None` 表示"池里没有这份字节"，会进
+    /// [`AudioClipReport::skipped`]（⛔ 不静默）。
+    ///
+    /// ⚠ 接上之后**已经存在的快照**不会自动补 PCM —— 下一次
+    /// [`Self::reload`] / [`Self::publish_project`] 才注入（"每修订重注入"是契约，
+    /// ⛔ 不是增量补丁）。
+    pub fn set_audio_asset_source(&mut self, source: AudioAssetSource) {
+        self.audio_asset_source = Some(source);
+    }
+
+    /// 是否接上了资产字节来源（没有 ⇒ 音频片段会被逐条记为"跳过"）。
+    #[must_use]
+    pub const fn has_audio_asset_source(&self) -> bool {
+        self.audio_asset_source.is_some()
+    }
+
+    /// ⭐ **最近一次注入的读数**（任务单 `#136` 的判据入口）。
+    ///
+    /// 没有音频片段 / 还没注入过 ⇒ 一份空报告（`revision = 0`、两个列表都空）。
+    #[must_use]
+    pub const fn audio_clip_report(&self) -> &AudioClipReport {
+        &self.audio_report
+    }
+
+    /// 音频解码缓存的读数（`decodes` / `hits` / 回收与上限计数）。
+    #[must_use]
+    pub fn audio_cache_readings(&self) -> AudioCacheReadings {
+        self.audio_cache.readings()
+    }
+
+    /// ⭐ ⭐ **第 1.3 步：枚举 `clip_pool` 的音频素材 ⇒ 注入快照**（任务单 `#136`）。
+    ///
+    /// 口径（逐条与交付线一致）：
+    ///
+    /// 1. **枚举**：当前工程 `clip_pool` 里**所有** `ClipContent::Audio { asset, .. }` 的
+    ///    `AssetHash`（`BTreeSet` ⇒ 键升序，确定性 [MODEL-AST-003]）；
+    /// 2. **缓存失效**：先按这份集合调 [`AudioPcmCache::retain_live`] ⇒ 不再被引用的素材
+    ///    在这一修订掉出缓存（快照自己持有的 `Arc` 由引擎退役队列回收）；
+    /// 3. **取 PCM**：命中缓存 ⇒ `Arc` 克隆；未命中 ⇒ 向 [`AudioAssetSource`] 要字节 ⇒
+    ///    **同一个** `crate::audio_clip::decode_asset_bytes`（`#134` 的解码器）；
+    /// 4. **注入**：`snapshot.with_audio_asset(&asset, pcm)`。采样率不符 ⇒ 引擎返回
+    ///    `Err(SampleRateMismatch)` ⇒ 该素材**跳过**（⛔ 不重采样、⛔ 不改标签）；
+    /// 5. **报告**：每个素材的 `frames` / `channels` / `sample_rate` / `spans_attached`，
+    ///    以及每个跳过的**逐字原因**；非空时打到 stderr（`[yeban-app] …`）。
+    ///
+    /// ⚠ 这个方法**不返回 `Result`**：注入失败是"某一份素材不发声"，不是"整代引擎失败" ——
+    /// 与投影失败（`reload` 必须返回 `Err`）是两种不同性质的事。⛔ 但失败一律**可见**。
+    #[must_use]
+    fn arm_audio_clips_into_snapshot(
+        &mut self,
+        project: &YebanProjectV1,
+        snapshot: EngineSnapshot,
+    ) -> EngineSnapshot {
+        let live: BTreeSet<AssetHash> = project
+            .clip_pool
+            .values()
+            .filter_map(|entry| match &entry.content {
+                ClipContent::Audio { asset, .. } => Some(asset.clone()),
+                _ => None,
+            })
+            .collect();
+        self.audio_cache.begin_revision();
+        self.audio_cache.retain_live(&live);
+        let mut report = AudioClipReport {
+            revision: snapshot.revision(),
+            ..AudioClipReport::default()
+        };
+        let mut snapshot = snapshot;
+        for asset in &live {
+            let attached_before = snapshot.audio_pcm_spans();
+            match self
+                .audio_cache
+                .lookup(asset, self.audio_asset_source.as_ref())
+            {
+                Ok(lookup) => {
+                    let frames = lookup.pcm.frames();
+                    let channels = lookup.pcm.channels();
+                    let sample_rate = lookup.pcm.sample_rate();
+                    // ⚠ `with_audio_asset` 消费快照，而它唯一的 `Err`（采样率不符）必须
+                    //    让**已经接上的素材**保留 ⇒ 在副本上调用、成功才替换。
+                    //    代价 = 每份音频素材一次 `EngineSnapshot` 深拷贝（控制线程；音频素材
+                    //    通常个位数，且只在"工程改了"的那一跳发生）—— 换来的是引擎仍是
+                    //    **唯一**的拒绝判据（⛔ 不在 app 侧重写采样率比较与错误文本）。
+                    match snapshot.clone().with_audio_asset(asset, lookup.pcm) {
+                        Ok(next) => {
+                            let attached = next.audio_pcm_spans().saturating_sub(attached_before);
+                            snapshot = next;
+                            report.injected_assets = report.injected_assets.saturating_add(1);
+                            report.spans_attached = report.spans_attached.saturating_add(attached);
+                            report.assets.push(AudioClipInjection {
+                                asset: asset.clone(),
+                                frames,
+                                channels,
+                                sample_rate,
+                                spans_attached: attached,
+                                from_cache: lookup.from_cache,
+                            });
+                        }
+                        Err(error) => report.skipped.push(AudioClipSkip {
+                            asset: asset.as_str().to_owned(),
+                            reason: error.to_string(),
+                        }),
+                    }
+                }
+                Err(reason) => report.skipped.push(AudioClipSkip {
+                    asset: asset.as_str().to_owned(),
+                    reason,
+                }),
+            }
+        }
+        report.cache = self.audio_cache.readings();
+        if !report.is_empty() {
+            // ⛔ 不静默：一行摘要 ＋ 逐素材读数 ＋ 逐跳过原因（逐字文本）。
+            eprintln!("[yeban-app] {}", report.summary());
+            for line in report.asset_lines() {
+                eprintln!("[yeban-app] {line}");
+            }
+            for skip in &report.skipped {
+                eprintln!(
+                    "[yeban-app] 音频片段注入跳过: asset {}：{}",
+                    skip.asset, skip.reason
+                );
+            }
+        }
+        self.audio_report = report;
+        snapshot
+    }
+
     /// **重建引擎**：投影新快照 → 建新队列 → 推 `quanta` 个量子 → 交还消费端。
     ///
     /// `quanta = 0` 是合法的（只重建、不推进）；但**失败必须被上报**：快照投影失败时
@@ -647,6 +804,11 @@ impl EngineHost {
         //    它在关设备腿**之前**、动任何状态**之前**：失败 ⇒ 旧的一代一位不动
         //    （与投影失败同一条口径）。读盘/分配都发生在**控制线程**上 [红线 7]。
         let snapshot = self.arm_pending_sfz_into_snapshot(snapshot)?;
+        // ⭐ ⭐ 第 1.3 步（任务单 `#136`）：`ClipContent::Audio` 的 PCM 注入（缓存 ⇒ 解码 ⇒
+        //    `with_audio_asset`）。位置与第 1.2 步**同一条纪律**：投影/摊平之后、关设备腿
+        //    之前；失败**不**换代（某份素材跳过 ＋ 报告，见 `arm_audio_clips_into_snapshot`）。
+        //    ⚠ 没有接字节来源 / 没有音频片段 ⇒ 这一步是**空操作**，输出与接线前逐位相同。
+        let snapshot = self.arm_audio_clips_into_snapshot(project, snapshot);
         let tracks = snapshot.tracks().len();
         let channels = snapshot.channels().max(1);
 
@@ -879,6 +1041,11 @@ impl EngineHost {
         //    （缓存 ＋ `#79` 的 `arm_pending_sfz`），因此"编辑 ⇒ 发声"这条生产路径
         //    （GUI 16 ms 一跳）只在**首次**读盘。失败 ⇒ 槽里当前快照一位不动。
         let snapshot = self.arm_pending_sfz_into_snapshot(snapshot)?;
+        // ⭐ ⭐ 任务单 `#136` 的**第二个**接线点：与 `reload` 走**同一个**
+        //    `arm_audio_clips_into_snapshot` ⇒ 编辑（加音符 / 再录一次）发布的新快照
+        //    **仍然带 PCM**（PCM 不在工程模型里 ⇒ 每个修订都要重注入）。缓存保证同一素材
+        //    只解码一次（`audio_cache_readings().decodes` 是判据读数）。
+        let snapshot = self.arm_audio_clips_into_snapshot(project, snapshot);
         // 复用槽自己的写者路径（`publish` 就是本函数的包装）。
         slot.publish_arc(std::sync::Arc::new(snapshot));
         self.snapshot_revision = revision;

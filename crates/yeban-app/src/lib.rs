@@ -72,6 +72,9 @@
 #![deny(missing_docs)]
 
 pub mod audio_clip;
+// ⭐ **控制侧音频片段注入**（任务单 `#136`）：`ClipContent::Audio` 的字节 ⇒ 引擎
+// `AudioPcm` ⇒ `EngineSnapshot::with_audio_asset`，按 `AssetHash` 缓存解码结果。
+pub mod audio_inject;
 pub mod audition;
 pub mod automation;
 pub mod bridge;

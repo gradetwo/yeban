@@ -240,16 +240,26 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // ⚠ 控制面权威形态下保存走权威自己的字节；这里的池只服务本地保存那条腿
     // （`UndoPort` 的文档已登记这条边界）。
     undo_port.replace_assets(loaded.archive.assets.clone());
-    let mut engine =
-        host::ProductionLoop::start(&loaded.archive.project, 0).unwrap_or_else(|error| {
-            // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
-            // 但走带回调会明确报告"没有引擎"，而不是静默地假装在播。
-            // ⛔ 这一段与接电平之前**逐字相同** —— 电平腿不许改这条语义。
-            cli::emit(&[format!(
-                "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
-            )]);
-            host::ProductionLoop::without_engine()
-        });
+    // ⭐ 任务单 `#136`：把**音频片段字节的来源**交给引擎宿主 —— 就是上面那一池
+    // （`UndoPort::asset_bytes`，⛔ 不复制第二份字节）。来源必须在 `start` **之前**
+    // 接上：`reload` 的第 1.3 步要当场给快照注入 `ClipContent::Audio` 的 PCM。
+    // 录音（`#132`）与导入落进这一池的后续字节，下一次 edited-publish（`publish_project`
+    // 的第 1.3 步）就会读到它 ⇒ "采得到 → 进工程 → 摆上轨道 → 听得到"闭环。
+    let audio_asset_port = Rc::clone(&undo_port);
+    let mut engine = host::ProductionLoop::start_with_audio_source(
+        &loaded.archive.project,
+        0,
+        Some(Box::new(move |hash| audio_asset_port.asset_bytes(hash))),
+    )
+    .unwrap_or_else(|error| {
+        // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
+        // 但走带回调会明确报告"没有引擎"，而不是静默地假装在播。
+        // ⛔ 这一段与接电平之前**逐字相同** —— 电平腿不许改这条语义。
+        cli::emit(&[format!(
+            "yeban-app: 走带未接线 —— 引擎快照投影失败: {error}"
+        )]);
+        host::ProductionLoop::without_engine()
+    });
     if engine.has_engine() {
         // 初始快照**就是**这份工程的投影 ⇒ 记下开局标记，免得第一次心跳白发一份
         // （`reload` 不知道"这一份投影对应哪个撤销标记"，只有装配点知道）。

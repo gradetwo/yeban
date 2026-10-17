@@ -2100,7 +2100,32 @@ impl ProductionLoop {
         project: &yeban_model::YebanProjectV1,
         quanta: u64,
     ) -> Result<Self, EngineHostError> {
+        Self::start_with_audio_source(project, quanta, None)
+    }
+
+    /// ⭐ **生产方式 ＋ 音频片段字节来源**（任务单 `#136`）：与 [`Self::start`] 逐字相同，
+    /// 但**先**把来源交给 [`EngineHost::set_audio_asset_source`] **再** `reload`。
+    ///
+    /// 顺序是契约：`reload` 的第 1.3 步要**当场**给快照注入 `ClipContent::Audio` 的 PCM
+    /// （PCM 不在工程模型里）⇒ 来源晚一步接上，第一份快照就是静音的（要等一次编辑发布
+    /// 才补上）。产品 `src/main.rs` 因此走本函数，来源 = 会话 CAS 池
+    /// （`UndoPort::asset_bytes`）—— 录音（`#132`）与导入落进那一池的**真实字节**。
+    ///
+    /// `None` = 不接来源（与 [`Self::start`] 等价）：工程里的音频片段会被逐条记为
+    /// "跳过"（可见，⛔ 不静默），输出与接线前逐位相同。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::start`] 相同。
+    pub fn start_with_audio_source(
+        project: &yeban_model::YebanProjectV1,
+        quanta: u64,
+        audio_source: Option<crate::audio_inject::AudioAssetSource>,
+    ) -> Result<Self, EngineHostError> {
         let mut engine = EngineHost::new();
+        if let Some(source) = audio_source {
+            engine.set_audio_asset_source(source);
+        }
         let rebuild = engine.reload(project, quanta)?;
         let mut meters = MeterRuntime::empty();
         // ⛔ 本票修的那一处。`adopt` 的语义是"引擎换代 ⇒ 旧读数全部作废"
@@ -3148,6 +3173,18 @@ impl OpenProjectRuntime for PortOpenProject {
                 let reading = engine.borrow().transport();
                 apply_transport(ui, reading);
             } else if has_engine {
+                // ⭐ 任务单 `#136`：把**音频片段字节来源**重新接到这一代宿主上。
+                //
+                // ③ 的 `open_project_session` 已经把会话资产池**换成新归档的**（替换，⛔ 不合并），
+                // 而来源是"读同一个 `Rc<UndoPort>` 的**现读**闭包" ⇒ 重接一次即可让
+                // `reload` 第 1.3 步看到新工程的 `assets/{sha256}`。0 轨分支（上面）会把
+                // 宿主整体换成 `EngineHost::new()` ⇒ 来源也会丢，所以每次换代都重接。
+                {
+                    let audio_port = Rc::clone(&self.port);
+                    engine
+                        .borrow_mut()
+                        .set_audio_asset_source(Box::new(move |hash| audio_port.asset_bytes(hash)));
+                }
                 // ⚠ **同一个坑的第二处**：`match engine.borrow_mut().reload(..) { … }` 也会让那个
                 // `RefMut` 活着穿过整个 `match` ⇒ 分支里的 `engine.borrow_mut()` 直接 panic。
                 // ⇒ 先把结局**结算**成一个值，再进 `match`。

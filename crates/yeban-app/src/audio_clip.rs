@@ -62,6 +62,17 @@ pub(crate) struct DecodedAsset {
     frames: u64,
 }
 
+impl DecodedAsset {
+    /// 拆成交织样本 ＋ 声道数 ＋ 采样率（注入侧要 `Vec<f32>` 进 `Arc<[f32]>`）。
+    ///
+    /// `frames` 不进返回值：它是 `samples.len() / channels`，而引擎的
+    /// `AudioPcm::new` 会**现算**一次（同一份事实，⛔ 不搬第二份）。
+    #[must_use]
+    pub(crate) fn into_parts(self) -> (Vec<f32>, u16, u32) {
+        (self.samples, self.source_channels, self.sample_rate)
+    }
+}
+
 /// 一个资产的解析结果（`Skipped` 的原因会进导出报告）。
 #[derive(Clone, Debug)]
 pub(crate) enum AssetResolution {
@@ -378,13 +389,7 @@ fn decode_checked(
     bytes: &[u8],
     target_rate: u32,
 ) -> Result<DecodedAsset, String> {
-    let actual = AssetHash::of_bytes(bytes);
-    if actual != *hash {
-        return Err(format!(
-            "资产池里的字节与声明的 SHA-256 不符（声明 {hash}，实际 {actual}）"
-        ));
-    }
-    let decoded = decode_wav_bytes(bytes)?;
+    let decoded = decode_asset_bytes(hash, bytes)?;
     if decoded.sample_rate != target_rate {
         return Err(format!(
             "素材采样率 {} Hz ≠ 导出采样率 {} Hz；app 侧够不着重采样器\
@@ -393,6 +398,23 @@ fn decode_checked(
         ));
     }
     Ok(decoded)
+}
+
+/// 校验哈希 ⇒ 解码（**不**比对采样率）。
+///
+/// 任务单 `#136` 的实时注入侧复用它：采样率比对由引擎的
+/// `EngineSnapshot::with_audio_asset` 做（它要知道**快照自己的**采样率，且错误类型是
+/// `AudioClipError::SampleRateMismatch`）；这里只负责"字节是不是它声明的那个哈希"与
+/// "WAV 能不能解码"两件事 —— 与离线 `decode_checked` 的**前两步逐字相同**，
+/// ⛔ 没有第二份解码器。
+pub(crate) fn decode_asset_bytes(hash: &AssetHash, bytes: &[u8]) -> Result<DecodedAsset, String> {
+    let actual = AssetHash::of_bytes(bytes);
+    if actual != *hash {
+        return Err(format!(
+            "资产池里的字节与声明的 SHA-256 不符（声明 {hash}，实际 {actual}）"
+        ));
+    }
+    decode_wav_bytes(bytes)
 }
 
 /// 把资产字节写进唯一临时文件、用**本仓唯一的 WAV 读取器**解码、随即删除。

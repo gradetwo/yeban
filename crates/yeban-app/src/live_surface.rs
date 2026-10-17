@@ -518,7 +518,17 @@ impl LiveAdminSurface {
     }
 
     /// 引擎重建（`ui/reload_engine` 与 `apply_project` 共用同一条路径）。
+    ///
+    /// ⭐ 任务单 `#136`：来源是装配给本执行面的**同一个** `Rc<UndoPort>`（会话 CAS 池），
+    /// 在 `reload` **之前**接上 —— 第 1.3 步要当场注入 `ClipContent::Audio` 的 PCM。
+    /// 没有端口（`options.undo == None` 的旧装配）⇒ 不接来源，音频片段被逐条记为
+    /// "跳过"（可见，⛔ 不静默），与接线前逐位相同。
     fn rebuild_engine(&mut self) -> Result<yeban_app::engine_host::EngineRebuild, LiveWiringError> {
+        if let Some(undo) = self.undo.as_ref() {
+            let port = Rc::clone(undo);
+            self.engine
+                .set_audio_asset_source(Box::new(move |hash| port.asset_bytes(hash)));
+        }
         self.engine
             .reload(&self.project, self.engine_quanta)
             .map_err(LiveWiringError::from)
