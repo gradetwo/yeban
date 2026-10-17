@@ -1210,6 +1210,18 @@ struct BranchShare<'a> {
 ///
 /// 现状由判据 `audition_meter_reading_belongs_to_the_last_branch_rendered` 钉住
 /// （⛔ 防静默漂移）。
+///
+/// ## 任务单 `#135`：`block_start_frame`（音频片段的**绝对帧原点**）
+///
+/// 音频摆放的区间是**绝对帧**（快照在控制线程按 tick → 帧算好），因此逐轨音频混合
+/// 需要本量子第一帧的绝对位置。这个值由调用方从 [`crate::transport::Transport`]
+/// **推进之前**读出（走带是唯一的时钟事实源），本函数只读它、⛔ 不推进它。
+///
+/// ⚠ **默认口径逐位不变**：工程没有音频摆放（`current.audio_clip_schedule()` 全空）
+/// 或摆放没有注入 PCM 时，混合调用**整段跳过** ⇒ 本参数对输出零影响
+/// （这也是 `extracted_mix_path_matches_the_legacy_inline_path_bit_for_bit` 仍然成立的
+/// 理由：那份夹具没有音频摆放）。
+#[allow(clippy::too_many_arguments)]
 fn render_branch(
     share: &mut BranchShare<'_>,
     synth: &mut SynthEngine,
@@ -1218,6 +1230,7 @@ fn render_branch(
     frames: usize,
     running: bool,
     quantum: u64,
+    block_start_frame: u64,
 ) -> usize {
     let master = current.master();
     let mut produced = 0usize;
@@ -1297,6 +1310,28 @@ fn render_branch(
                 // ⭐ CC 探针（任务单 `#107`）：`None` ⇒ 整条 SFZ 包络路径与接线前逐位相同。
                 cc,
             );
+            // --- 3a⁰⁰) ⭐ 音频片段累加（任务单 `#135`）---
+            // 位置：**合成器之后、参数乘子与插入链之前** —— 与离线
+            // `render_core::TrackSource` 的口径一致（MIDI 基座先写、音频摆放
+            // 按 `(start, end, gain 位型)` 全序在其上**累加**）。
+            //
+            // ⚠ **为什么不需要逐样本游标**：span 的区间是**绝对帧**，素材帧由
+            // `block_start_frame − span.start` **导出**（走带是唯一时钟）⇒ 定位 /
+            // 暂停恢复 / 换快照都自动正确，`EngineRuntime` ⛔ 一个字节都不增长。
+            //
+            // **默认口径**：本轨没有音频摆放（不在表里）⇒ 整段跳过 ⇒ 输出与接线前
+            // **逐位相同**；有摆放但没注入 PCM ⇒ 逐 span 跳过，同样逐位相同。
+            //
+            // 逐样本只有整数比较 + 切片下标 + 一次乘加：**零分配、零释放、零锁、
+            // 零 I/O、零超越函数** [MUST-GATE-001]（判据：`tests/rt_zero_alloc.rs` 的
+            // 音频片段场景 ＋ `tests/audio_clip_render.rs`）。
+            if let Some(clips) = current.audio_clip_schedule(&track) {
+                crate::audio_clip::mix_into(
+                    clips,
+                    block_start_frame,
+                    &mut share.track_scratch[..frames],
+                );
+            }
         } else {
             // 停住：不碰声部池（不触发、不推进、不窃取），只把静音喂给电平表。
             share.track_scratch[..frames].fill(0.0);
@@ -3587,6 +3622,10 @@ impl EngineRuntime {
             }
 
             let running = transport.is_playing();
+            // ⭐ 本量子第一帧的**绝对帧**（走带推进之前读；任务单 `#135`）。
+            // 音频摆放的区间是绝对帧 ⇒ 逐轨混合只需要这一个读数，⛔ 不需要任何游标。
+            // 停住时 `running == false` ⇒ 该路径整段跳过，本读数不参与任何样本。
+            let block_start_frame = transport.position_frames();
             {
                 let mut share = BranchShare {
                     pdc: &mut *pdc,
@@ -3621,8 +3660,16 @@ impl EngineRuntime {
                     meter_capacity_drops: &mut *meter_capacity_drops,
                     pan_gains: &mut pan_gains,
                 };
-                produced =
-                    render_branch(&mut share, synth, block, current, frames, running, quantum);
+                produced = render_branch(
+                    &mut share,
+                    synth,
+                    block,
+                    current,
+                    frames,
+                    running,
+                    quantum,
+                    block_start_frame,
+                );
 
                 // ---- [ARCH-RT-005] 片 2b/2c：**并发渲染第二分支 + 等功率混合** ----
                 //
@@ -3655,6 +3702,7 @@ impl EngineRuntime {
                         frames,
                         running,
                         quantum,
+                        block_start_frame,
                     );
                     blend_equal_power(
                         block,
@@ -6540,6 +6588,7 @@ mod tests {
                 quanta,
                 block,
                 synth,
+                transport,
                 armed_pan_gains,
                 control_change,
                 pdc,
@@ -6573,6 +6622,8 @@ mod tests {
                 ..
             } = self;
             let quantum = *quanta;
+            // ⭐ 与生产路径同源：音频片段用它作**绝对帧原点**（任务单 `#135`）。
+            let block_start_frame = transport.position_frames();
             let out = block;
             let current = match snapshot.begin_block() {
                 Some(current) => current,
@@ -6615,7 +6666,16 @@ mod tests {
                 meter_capacity_drops,
                 pan_gains: &mut pan_gains,
             };
-            let _ = render_branch(&mut share, synth, out, current, frames, running, quantum);
+            let _ = render_branch(
+                &mut share,
+                synth,
+                out,
+                current,
+                frames,
+                running,
+                quantum,
+                block_start_frame,
+            );
             let _ = produced;
             let (left, right) = out.stereo_mut();
             left.iter()

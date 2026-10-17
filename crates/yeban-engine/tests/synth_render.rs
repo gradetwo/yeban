@@ -212,6 +212,12 @@ fn empty_and_noteless_projects_render_silence_without_panic() {
     assert_eq!(bare.stats.meter_frames, 32 * 2, "轨道 + 母线各一帧");
 
     // (c) 只有音频片段的工程：采样播放未接入 ⇒ 仍然静音（不是噪声底）
+    //
+    // ⭐ ⭐ **追加修订段（任务单 `#135`，台账第 278 条：⛔ 不改上一条与下面断言的原文）**：
+    // "未接入"描述的是 `#135` 之前的事实。现在 `from_project` 会把音频摆放投影进快照
+    // （`EngineSnapshot::audio_clips`），但**没有注入 PCM**（本夹具不调
+    // `with_audio_asset`）⇒ 逐位静音这条断言**仍然成立**，而且它正是"有摆放 ≠ 有声音"
+    // 的默认口径证据。发声侧的证据在 `tests/audio_clip_render.rs`（A1～A6）。
     let audio = audio_clip_project();
     let played = render(&audio.project, 32);
     assert_eq!(played.nonzero(), 0, "音频片段尚未接入 ⇒ 必须静音");

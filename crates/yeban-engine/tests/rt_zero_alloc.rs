@@ -60,6 +60,7 @@
 //! | ㉓ | 每轨**鼓机音源** 10 000 量子（两条轨：一条鼓机、一条复音）＋ 31 次同采样率重新武装 ＋ **1 次换采样率**（48 → 44.1 kHz）＋ **1 次换回复音合成器** | `SynthEngine::render_track` 的鼓机分支（`DrumNoteMap::voice_for` → `DrumMachine::trigger` → `DrumMachine::render`）与快照边界的 `DrumMachine::set_params` / `set_sample_rate`。⚠ 与 ㉒ **相反**：鼓机没有延迟线 ⇒ 换采样率**照常武装**（不分配），因此本场景是「换采样率也必须零分配」的唯一判据。行为判据在 `tests/drums_instrument.rs` |
 //! | ㉔ | 环音符**窃取淡出窗口**：16 条 `NoteOn` **先走一个量子**灌满池（⚠ 触发量子与窃取量子必须错开，否则被窃取者电平 ≈ 0 ⇒ 3 ms release 立刻 Idle、`pending` 被回收丢掉）＋ 第 17 条**软窃取** ＋ **窗口内**推新音符自己的 `NoteOff`（3 个窗口：窃取量子 / 松键量子 / 64 量子回收），全部走 `note_project(&[])`（**零**已调度音符 ⇒ 声音只可能来自环音符） | `rt.rs::render_block` 的 `EngineEvent::NoteOn` 分支（灌满 + 软窃取，`pending` 挂起）＋ `EngineEvent::NoteOff` 分支 ＋ ⭐ `polysynth.rs::PolySynth::note_off` 的**挂起匹配**支路（`pending.is_some() && pending_freq_hz == freq_hz` ⇒ `pending_released = true`）与提升点的 `Adsr::gate_off()`。⚠ ⭐ 本行曾写"既有场景没有一条走到这条支路"—— **注入实测证否**：在挂起支路注入一次 `Vec::with_capacity(1)` 时 ⑯ 也红（`alloc=15`）⇒ ⑯ **偶然**覆盖 15 次，但⛔ 不断言、⛔ 不确定、且池里混着已调度音符 ⇒ ㉔ 把它做成**确定性 + 带断言**的覆盖。行为判据在 `rt.rs` 的 `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion` 与 `tests/two_path_gain.rs` |
 //! | ㉙ | 每轨 **SFZ 音源** 10 000 量子（一条轨、两条区域覆盖两个音高）＋ **1 次换采样率**（48 → 44.1 kHz）＋ ⭐ **1 000 量子 CC 探针腿**（`#107`：先发一条 `ControlChange`，之后逐块读数的探针恒为 `Some`） | `SynthEngine::render_track_with_cc` 的 **SFZ 分支**（`SfzVoicePool::trigger_note` 的区域扫描 → `SfzVoicePool::render_into_with_cc` 的逐声部线性插值＋增益乘加＋`ampeg_run_with_cc_and_velocity(probe = Some)` 的 CC 求值分支）与快照边界（`begin_snapshot` 的器件重武装；⛔ **不**重建摊平表 —— 那是控制侧、窗口外）＋ `rt.rs::render_block` 的 `EngineEvent::ControlChange` 分支（写 `ControlChangeState`：一次表写 ＋ 一次位或）。⚠ 与 ㉓ 的**结构差别**：鼓机是"触发一次、器件内部推进"，SFZ 是"**多声部**（每条匹配区域一个）＋**跨量子延续的源位置**" ⇒ 池的扫描与逐声部循环都要落在零分配量程内。覆盖度见证＝窗口内总能量 > 0（③ 腿另有 `control_change(1) == Some(64)` 与 `events_applied` ＋1 两条）。行为判据在 `tests/sfz_instrument.rs` 的 S63／S64（起音帧数逐帧等于规范公式） |
+//! | ㊷ | **实时音频片段**（`ClipContent::Audio`，任务单 `#135`）1 000 量子：单声道 `0.5` 常量 PCM（`Arc<[f32]>`，48 kHz，5 s ⇒ 覆盖**整段**摆放）＋ 摆放起点 tick 0 / 时值 9 600 tick（240 000 帧） | `rt.rs::render_branch` 的 ⭐ 音频片段累加分支（`audio_clip::mix_into`：绝对帧 → 素材帧 → 交织下标 → 一次乘加）＋ 快照构造期的摆放投影（`project_audio_clips` 的 tick→帧换算、增益门、全序排序；这些在**窗口之外**，但窗口里读到的区间与 PCM 只来自它们）。⚠ **没有**逐样本游标可覆盖：位置由走带绝对帧导出 ⇒ `EngineRuntime` **＋0 B**。覆盖度见证＝窗口**最后一个**量子 256 个样本全非零且峰值 ≈ `0.5 × 1/√2`。行为判据在 `tests/audio_clip_render.rs` |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -109,6 +110,8 @@
 //! | I13 | `synth.rs::render_track` 的**鼓机触发分支**里加一次 `Vec::<u8>::with_capacity(1)` | **仅** ㉓（鼓机音源侧）的**分配/释放**分量；实测红行：`㉓ FAIL … 四元组[alloc=216 dealloc=216 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]` ⇒ 汇总 `45 / 46`。同一个注入也打红 `synth_rt_zero_alloc` 的 J11（`drum instrument 10_000 quanta: allocations=213 deallocations=213`；213 = 那个窗口的鼓击数）；还原后 `46 / 46` 与 J11 全窗 `allocations=0 deallocations=0` |
 //! | I14 | `rt.rs::stats()` 的 `meter_dropped_frames` 写死 `0`（`line/engine-12`） | **仅** ⑲d（新读数的精确分解）的**行为**分量（不是四元组）；同族判据同时红：`meter_rt_contract` 的 S8、`synth_rt_zero_alloc` 的 J19、`rt` 库单测；见下节 |
 //! | I15 | `rt.rs::render_block` 的 `metered_tracks > track_budget` 改成 `>=`（`line/engine-26`） | **仅** ⑲e（新判据）。⑲ 的夹具（300 条轨）两种写法同解 ⇒ 在本判据补上之前，这条注入让**全部**既有目标绿（本票注入 R17 实测） |
+//! | I16 | `audio_clip.rs::mix_into` 的 span 循环里加一次 `Vec::<u8>::with_capacity(1)`（任务单 `#135` 的注入 R1） | **仅** ㊷ 的分配/释放分量（音频片段是唯一跑到那条循环的场景）；实测红行见下节 |
+//! | I17 | `rt.rs::render_branch` 里把 `mix_into` 的 `block_start_frame` 实参写成 `0`（任务单 `#135` 的注入 R2：`block_end` 变成 128 ⇒ 起点 tick ≠ 0 的摆放整段被跳过） | **仅** `tests/audio_clip_render.rs` 的 A3／A4（行为分量；本文件的四元组全部不动 —— 分配/锁/I-O 与位置正确性无关） |
 //!
 //! # I14 的实测记录（`line/engine-12`：电平 SPSC 丢帧读数）
 //!
@@ -139,6 +142,44 @@
 //!
 //! **还原**：把注入前的副本 `cp` 回来之后 `cmp` 逐字节无差异，`shasum -a 256` 六个文件
 //! 全部与注入前**逐一相同**（哈希见本票交付报告）；重跑本判据 ⇒ **49 / 49 通过**。
+//!
+//! # I16 / I17 的实测记录（任务单 `#135`：实时音频片段的两条牙齿）
+//!
+//! **注入 R1**（`crates/yeban-engine/src/audio_clip.rs::mix_into` 的**有 PCM 的** span 里
+//! 加 `let _ = Vec::<u8>::with_capacity(1);`）后逐字重跑本判据：
+//!
+//! ```text
+//! [MUST-GATE-001] 判据 ㊷ FAIL [MUST-GATE-001] 实时音频片段 1 000 量子（Arc<[f32]> 读 + 逐帧乘加）：四元组全 0: ㊷音频片段；四元组[alloc=1000 dealloc=1000 lock_blocking=0 lock_waits=0 io_requests=0 io_ops=0]；子窗口=1 探针经过=1000（期望 1000）试探成功=1000 试探失败=0；纯计数诊断=0；PCM 单声道 0.5 @ 48000 Hz；最后量子的非零样本=256/256 峰值=0.353553385
+//! [MUST-GATE-001] 判据汇总: 76 / 77 通过
+//! ```
+//!
+//! ⚠ **第一版注入（如实登记）**：把分配放在 `let Some(pcm) = … else { continue }`
+//! **之前** ⇒ 全部"有音频摆放但没注入 PCM"的工程也每个量子分配一次 ⇒ 实测
+//! **17 条判据红**（`① alloc=10000`、`㊷ alloc=1000`、`㉑ alloc=2000` …，汇总
+//! `60 / 77`）。那不是判据的牙齿，是注入点放错了；⭐ 它反过来证明
+//! `filled_project` 里本来就有一条音频摆放（默认 `pcm == None` ⇒ 静音）。
+//! 把分配挪到取到 PCM **之后** ⇒ **只** ㊷ 红。
+//!
+//! **注入 R2**（`crates/yeban-engine/src/rt.rs::render_branch` 把 `mix_into` 的
+//! `block_start_frame` 实参写成 `0`）后重跑 `tests/audio_clip_render.rs`：
+//!
+//! ```text
+//! test the_play_cursor_is_derived_from_the_transport_position ... FAILED
+//! thread 'the_play_cursor_is_derived_from_the_transport_position' panicked at crates/yeban-engine/tests/audio_clip_render.rs:273:5:
+//! assertion `left == right` failed: 音频必须恰好在摆放起点（＋全链路固定 33 帧）开始
+//!   left: None
+//!  right: Some(12033)
+//! test a_short_asset_leaves_a_silent_tail ... FAILED
+//! assertion `left == right` failed: 素材区间内必须每一帧都出声
+//!   left: 0
+//!  right: 5000
+//! test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+//! ```
+//!
+//! **还原**：`cp` 回 `/tmp` 的两份备份之后 `cmp` 逐字节无差异，`shasum -a 256`
+//! 与注入前**逐一相同**：
+//! `audio_clip.rs = 4104e53d606ab726f7ed42c2f9f57f4d1354f3191f8583b818f91f09616ec671`、
+//! `rt.rs = 1ad214f8f60d8948292aeeb5b20ceac05425c5e3e16bc9b5b2ff2ffb528894a4`。
 //!
 //! # I9 的实测记录（`N6` 选项 A 的验收证据；本节只在本文件里留档，账本由集成者补记）
 //!
@@ -182,6 +223,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use yeban_engine::audio_clip::AudioPcm;
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::graph::{LatencyTable, PdcPlan};
 use yeban_engine::meter::{MeterCollector, MeterFrame, SCRATCH_METERS, meter_channel};
@@ -208,7 +250,9 @@ use yeban_model::{
 
 mod support;
 
-use support::{MixSpec, NoteSpec, note_project, tuned_project};
+use support::{
+    MixSpec, NoteSpec, audio_clip_asset, audio_clip_project_at, note_project, tuned_project,
+};
 
 // ---------------------------------------------------------------------------
 // 判据规模（改动这些常量就是改动判据强度，必须同步 notes）
@@ -601,7 +645,9 @@ impl Report {
                  环音符窃取淡出窗口）四元组全 0；两条溢出路径（N6 选项 A）\
                  走纯计数出口而**仍然** io_requests==0 && io_ops==0（且 suppressed_diag_events>0 ⇒ \
                  真的跑到了溢出）；控制面读取 EngineStats 的读取路径同样全 0；\
-                 探针有牙（正对照 + 注入）；线程归属与外线程活动已对账"
+                 探针有牙（正对照 + 注入）；线程归属与外线程活动已对账；\
+                 实时音频片段 1 000 量子（`Arc<[f32]>` 读 + 绝对帧 → 素材帧 → 逐帧乘加，\
+                 最后一个量子 256 个样本全非零作覆盖度见证）同样四元组全 0"
             );
             ExitCode::SUCCESS
         } else {
@@ -2421,6 +2467,80 @@ fn scenario_metronome(report: &mut Report) {
 }
 
 // ---------------------------------------------------------------------------
+// 场景 ㊷ 实时音频片段（任务单 `#135`）
+// ---------------------------------------------------------------------------
+
+/// ㊷ 的窗口量子数：1 000 量子 = 128 000 帧 < 摆放的 9 600 tick = 240 000 帧
+/// ⇒ **整窗**都落在摆放区间（与覆盖整段的 5 s PCM）内 ⇒ 最后一个量子也必须出声
+/// （覆盖度见证；素材比摆放短会留静音尾巴这个坑就是被它抓到的）。
+const AUDIO_CLIP_QUANTA: u64 = 1_000;
+/// ㊷ 的摆放时值（tick）：9 600 tick = 240 000 帧 = 5 s @120 BPM / 48 kHz。
+const AUDIO_CLIP_DURATION_TICKS: u64 = 9_600;
+
+/// ㊷：**实时音频片段**（`ClipContent::Audio`）在实时窗口内四元组全 0（任务单 `#135`）。
+///
+/// 覆盖的**新**代码：
+///
+/// 1. `rt.rs::render_branch` 的 ⭐ 音频片段累加分支（`audio_clip::mix_into`：
+///    绝对帧 → 素材帧 → 交织下标 → 一次乘加）；
+/// 2. 快照构造期的摆放投影（`project_audio_clips`：tick → 帧换算、增益门、全序排序；
+///    这些发生在**窗口之外**，但它们是"窗口里读到的 PCM/区间"的唯一来源）。
+///
+/// ⚠ **没有**逐样本游标可覆盖：播放位置由走带的**绝对帧**导出
+/// （`block_start_frame − span.start`）⇒ `EngineRuntime` **＋0 B**（判据 S9 / `rt_new_boxed`）。
+///
+/// **覆盖度见证**：窗口最后一个量子的 256 个样本**全部非零**、峰值 ≈ `0.5 × 1/√2`
+/// （单声道 0.5、居中声相、0 dB 片段增益）⇒ 不是"没跑到混合分支"的空转绿。
+fn scenario_audio_clip(report: &mut Report) {
+    let fixture = audio_clip_project_at(0, AUDIO_CLIP_DURATION_TICKS, 0.0);
+    let rate = fixture.project.audio_config.sample_rate.hz();
+    // PCM 必须覆盖**整段**摆放（9 600 tick = 5 s）：素材比摆放短会留静音尾巴
+    // ⇒ 最后一个量子就静音，"覆盖度见证"会（正确地）判为假绿。
+    let frames = usize::try_from(rate).expect("采样率放得进 usize") * 5;
+    let samples: Arc<[f32]> = Arc::from(vec![0.5f32; frames].into_boxed_slice());
+    let pcm = AudioPcm::new(samples, 1, rate).expect("单声道 5 s 常量 PCM 必须合法");
+    let snapshot = EngineSnapshot::from_project(&fixture.project, 1)
+        .expect("音频片段夹具必须能编译成快照")
+        .with_audio_asset(&audio_clip_asset(), pcm)
+        .expect("注入的 PCM 采样率必须与快照一致");
+    assert_eq!(snapshot.audio_spans(), 1, "夹具前提：一条音频摆放");
+    assert_eq!(snapshot.audio_pcm_spans(), 1, "夹具前提：该摆放已注入 PCM");
+
+    let mut rig = Rig::from_snapshot(snapshot, 4096, 64, 64);
+    rig.preheat();
+    let mut scenario = Scenario::new("㊷音频片段");
+    scenario.absorb(AUDIO_CLIP_QUANTA, &rig.pump(AUDIO_CLIP_QUANTA));
+
+    // 见证在**窗口之外**数（`pump` 已经关掉计数器）：`rig.output` 是**最后一个**量子。
+    let nonzero = rig.output.iter().filter(|sample| **sample != 0.0).count();
+    let peak = rig
+        .output
+        .iter()
+        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    let expected_peak = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+    let stats = rig.stats();
+    scenario.note(format!(
+        "PCM 单声道 0.5 @ {rate} Hz；最后量子的非零样本={nonzero}/{} 峰值={peak:.9}         （期望 {expected_peak:.9}）；走带位置帧={}",
+        rig.output.len(),
+        stats.position_ticks,
+    ));
+    report.scenario(
+        "㊷",
+        "[MUST-GATE-001] 实时音频片段 1 000 量子（Arc<[f32]> 读 + 逐帧乘加）：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㊷b",
+        "覆盖度：音频片段真的在实时窗口里出声（最后一个量子 256 个样本全非零、峰值 = 素材 × 居中声相增益）",
+        nonzero == rig.output.len() && (peak - expected_peak).abs() < 1e-6,
+        format!(
+            "非零样本={nonzero}（要求 {}）峰值={peak:.9}（要求 {expected_peak:.9}）",
+            rig.output.len()
+        ),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 场景 ㉒ 每轨插入混响（`line/engine-reverb`）
 // ---------------------------------------------------------------------------
 
@@ -3867,6 +3987,7 @@ fn judgement_body() -> ExitCode {
     #[cfg(feature = "device")]
     scenario_device_callback_body(&mut report);
     scenario_metronome(&mut report);
+    scenario_audio_clip(&mut report);
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
     scenario_sfz_instrument(&mut report);

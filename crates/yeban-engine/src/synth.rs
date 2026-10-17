@@ -97,6 +97,14 @@
 //!   不参与合成；
 //! - **没有采样播放/SFZ**：`ClipContent::Audio` 与 `yeban-sfz` 的乐器都还没有接到
 //!   声部池上（需要采样加载 + 重采样，见 notes 的 pending）；
+//! - ⭐ ⭐ **追加修订段（任务单 `#135`，台账第 278 条：⛔ 不改上一条原文）**：上一条
+//!   描述的是**接线之前**的事实，现仍逐字保留。自 `#135` 起 `ClipContent::Audio`
+//!   **已经在实时侧发声**，但它⛔ **不经过声部池**：音频摆放是**独立音源**，由
+//!   [`crate::audio_clip::mix_into`] 在 `rt::render_branch` 的**逐轨单声道暂存**上累加
+//!   （位置在 `render_track` 之后、插入链之前）。前提是控制侧已经把 PCM 注入快照
+//!   （[`crate::snapshot::EngineSnapshot::with_audio_asset`]）；⛔ 引擎不读盘、⛔ 不重采样。
+//!   `yeban-sfz` 那一半早已由 [`crate::sfz_instrument`] 接通；声部池本身仍然**只**做
+//!   复音波表合成，⛔ 不播采样。
 //! - **窃取淡出是 3 ms 指数淡出，不是 [ARCH-DSP-001] 的 5 ms 升余弦窗**：
 //!   这是**上移前就有**的差异，且 `tests/steal_fade.rs` 的 S4 把 144 帧
 //!   （3 ms @48 kHz）写成了既有期望值 ⇒ 本票不改，登记在

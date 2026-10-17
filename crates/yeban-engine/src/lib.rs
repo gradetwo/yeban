@@ -21,6 +21,7 @@
 //! | [`insert`] | **每轨插入器件**：`InternalEffect` 设备 → 通道条（`yeban_dsp::channel_strip` 的再导出 + 约定参数名投影；其动态级即 `yeban_dsp::compressor`）＋ 混响（`yeban_dsp::reverb` 的再导出；延迟线只在构造期分配） | [ARCH-RT-001]、[ARCH-DET-001]、[ROAD-M2-006] |
 //! | [`drums`] | **每轨鼓机音源**：`InternalInstrument` 设备 + **写全的五个键位名** → `yeban_dsp::drums`（再导出 + 约定参数名投影）。驱动源是**轨道自己的音符调度表**，位置在插入链**之前**；映射不完整 ⇒ 不武装 ⇒ 逐位不变 | [ARCH-RT-001]、[ARCH-RT-004]、[ARCH-DSP-001]、[ARCH-DET-001] |
 //! | [`sfz_instrument`] | **每轨 SFZ 音源**：`yeban-sfz` 的摊平表（`PreparedSfz`：区域位掩码 + 预计算速率/增益 + **去重的多采样样本表** ＋ `span` 起点/终点）＋ 定长声部池 `SfzVoicePool`；快照侧只读 `SfzPlan`、分派次序 **鼓机 ＞ SFZ ＞ 复音**；模型给**路径**（`TrackV3.sampler`）⇒ 快照携带"待摊平"项 `PendingSfz`，摊平仍全在**控制侧**（⛔ 引擎不读盘）后经 `EngineSnapshot::with_sfz` ＋ `SfzPlan::prepare_with_samples` 注入；⭐ 循环（`loop_mode`／`loop_start`／`loop_end`）**已实现**（任务 `#91`，判据 `S28`～`S33`）、⭐ 幅度包络（五个 `ampeg_*`）**已实现**（任务 `#92`，判据 `S34`～`S38`），详见 [`sfz_instrument`] 模块文档 | [ARCH-RT-001]、[ROAD-M2-005]、[MUST-GATE-001] |
+//! | [`audio_clip`] | ⭐ **每轨音频片段**（`ClipContent::Audio`，任务单 `#135`）：`from_project` 把摆放投影成**绝对帧区间 ＋ 增益 ＋ 素材哈希**，PCM 由控制侧解码后经 `EngineSnapshot::with_audio_asset` 以 `Arc<[f32]>` 注入 ⇒ 实时回调零分配/零 I/O；⛔ 无逐样本游标（位置由走带绝对帧导出）⇒ `EngineRuntime` **＋0 B** | [ARCH-RT-001]、[ARCH-DET-002]、[MUST-GATE-001] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`cc_state`] | **MIDI CC 的会话运行态表**（定长 `[u8; 128]` ＋ 128 位"收到过"位图）：`EngineEvent::ControlChange` 的落点，实时 SFZ 通路的 CC 探针来源 | [ARCH-RT-001]、[MODEL-ISO-001] |
 //! | [`param`] | **实时侧参数目标表**：`SetParam` 事件 → 逐样本**平滑**的增益乘子（逐轨槽位 ＋ **主总线**槽位；`yeban_dsp::smoothing` 的消费者） | [ARCH-DSP-001]、[ARCH-RT-001]、[ROAD-M2-007] |
@@ -43,7 +44,7 @@
 //! | :--- | :---: | :--- |
 //! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
 //!
-//! 关掉 `device` 后仍然可用的公共面：`block` / `fpu` / `graph` / `insert` / `latency` / `ring` /
+//! 关掉 `device` 后仍然可用的公共面：`audio_clip` / `block` / `fpu` / `graph` / `insert` / `latency` / `ring` /
 //! `snapshot` / `meter` / `synth` / `rt` / `rt_probe` / `param` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
 //! + **每轨插入** + **参数目标表** + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
 //!
@@ -86,6 +87,15 @@
 //!    —— `yeban_dsp::smoothing` 的消费者是 [`param`]，它把 `SetParam` 事件变成
 //!    逐样本平滑的逐轨增益乘子）。
 //!    详见 [`synth`] 的模块文档 §4 与 `docs/ledger/engine-sound-notes.md`。
+//!
+//!    ⭐ ⭐ **追加修订段（任务单 `#135`，台账第 278 条：⛔ 不改上一段原文）**：上段
+//!    "仍然没有的"里，`yeban-sfz` 接入**早已**由 [`sfz_instrument`] 落地（`#66` 起），
+//!    而 `ClipContent::Audio` 的采样播放**现在也已**在实时侧发声 —— 走
+//!    [`audio_clip`]，⛔ 不经过声部池：摆放被投影成绝对帧区间，PCM 由控制侧注入
+//!    （`Arc<[f32]>`），实时逐轨路径只做"绝对帧 → 素材帧 → 乘加"。
+//!    ⚠ 默认口径仍静音：控制侧**没有注入 PCM** 时（`from_project` 只投影事实、
+//!    解码与读盘在控制侧）`audio_clips` 里的摆放 `pcm == None` ⇒ 输出与接线前逐位相同；
+//!    ⛔ 引擎仍然不读盘、⛔ 不重采样、⛔ 不展开 `loop_config`。
 //! 2. **走带已实现（本切片）**：播放头由 [`rt::EngineRuntime`] 自己持有
 //!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），每量子按 [`transport`] 的
 //!    整数有理数推进 tick；`Play`/`Stop`/`Pause`/`SeekTicks` 经既有的无锁事件通道
@@ -122,6 +132,7 @@
 // 本 crate 需要 FTZ/DAZ 的 MXCSR/FPCR 写入与快照指针的引用计数操作, 因此**不能**
 // 加 forbid —— 但 guard G03 的名单里也没有它, 见 scripts/guards/policy_check.py。
 
+pub mod audio_clip;
 pub mod block;
 pub mod cc_state;
 #[cfg(feature = "device")]

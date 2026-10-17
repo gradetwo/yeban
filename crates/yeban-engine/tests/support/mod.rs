@@ -205,9 +205,28 @@ pub fn tuned_project(notes: &[NoteSpec], mix: MixSpec) -> Fixture {
     fixture
 }
 
-/// 主总线 + 一条**音频**轨 + 一个 `ClipContent::Audio` 摆放（采样播放未接入 ⇒ 静音）。
+/// 音频片段夹具用的**素材哈希**（`audio_clip_project` 的 `ClipContent::Audio` 引用的那个）。
+///
+/// 判据注入 PCM 时按它匹配；写成一个常量 ⇒ 夹具与注入侧不可能各写一个哈希。
+#[must_use]
+pub fn audio_clip_asset() -> yeban_model::AssetHash {
+    yeban_model::AssetHash::of_bytes(b"engine-sound-fixture")
+}
+
+/// 主总线 + 一条**音频**轨 + 一个 `ClipContent::Audio` 摆放（起点 tick 0、时值 960）。
+///
+/// ⚠ `from_project` 只把摆放投影成"带素材哈希、**没有** PCM"的 span ⇒ 不注入 PCM 时
+/// 仍然**静音**（判据 J6 钉住的就是这一条："有摆放 ≠ 有声音"）。
 #[must_use]
 pub fn audio_clip_project() -> Fixture {
+    audio_clip_project_at(0, 960, 0.0)
+}
+
+/// 同 [`audio_clip_project`]，但显式给出摆放的**起点 tick / 时值 / 片段增益 (dB)**。
+///
+/// 任务单 `#135` 的游标判据需要"起点 tick ≠ 0"的夹具（音频必须恰好在那一 tick 起声）。
+#[must_use]
+pub fn audio_clip_project_at(start_tick: u64, duration_ticks: u64, gain_db: f32) -> Fixture {
     let master = EntityId::new();
     let track = EntityId::new();
     let clip = EntityId::new();
@@ -220,8 +239,8 @@ pub fn audio_clip_project() -> Fixture {
             id: clip,
             name: "Kick".to_owned(),
             content: ClipContent::Audio {
-                asset: yeban_model::AssetHash::of_bytes(b"engine-sound-fixture"),
-                gain_db: 0.0,
+                asset: audio_clip_asset(),
+                gain_db,
             },
         },
     );
@@ -231,8 +250,8 @@ pub fn audio_clip_project() -> Fixture {
         ClipPlacement {
             id: placement,
             clip_id: clip,
-            start_tick: 0,
-            duration_ticks: 960,
+            start_tick,
+            duration_ticks,
             loop_config: LoopConfig::default(),
             muted: false,
         },

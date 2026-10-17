@@ -80,9 +80,11 @@ use thiserror::Error;
 use yeban_dsp::math::note_to_hz;
 use yeban_model::project::DEFAULT_BPM;
 use yeban_model::{
-    BlockSize, ClipContent, EntityId, ModelError, RoutingGraph, TrackKind, TrackV3, YebanProjectV1,
+    AssetHash, BlockSize, ClipContent, EntityId, ModelError, RoutingGraph, TrackKind, TrackV3,
+    YebanProjectV1,
 };
 
+use crate::audio_clip::{AudioClipError, AudioClipSchedule, AudioPcm, project_audio_clips};
 use crate::drums::DrumsParams;
 use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
@@ -445,6 +447,21 @@ pub struct EngineSnapshot {
     /// 只能在构造期算（与 [`TrackParams::pan_gains`] 的 `cos`/`sin`、
     /// [`Self::master_gain`] 的 `exp2` 同一条理由，见 `crate::metronome` 模块文档）。
     metronome: Option<MetronomePlan>,
+    /// ⭐ **每轨音频片段摆放表**（任务单 `#135`；`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
+    ///
+    /// 形状与分工见 [`crate::audio_clip`] 的模块文档：
+    ///
+    /// - **轻数据**：每条摆放只是"绝对帧区间 ＋ 增益 ＋ 素材哈希 ＋ 一个 PCM 细指针"
+    ///   （[`crate::audio_clip::AudioClipSpan`] 56 B，堆上；⛔ 不进 `size_of::<Self>()` 的
+    ///   字段面，本字段本身只占一个 `BTreeMap` ＝ 24 B）；
+    /// - **重数据**：PCM 是 `Arc<[f32]>`，由控制侧解码后经 [`Self::with_audio_asset`]
+    ///   注入（⛔ 引擎不读盘、⛔ 回调里不解码）；
+    /// - **只收录非空的轨**：一条音频摆放都没有的工程得到**空表** ⇒ 实时侧整段跳过
+    ///   ⇒ 输出与接线前**逐位相同**（`#134` 之前的全部判据、三条承重指纹都不动）。
+    ///
+    /// ⚠ **不携带播放游标**：播放位置由走带的**绝对帧**导出（见 [`crate::audio_clip`]），
+    /// 因此本表在快照生命周期内是不可变的、[MODEL-ISO-001] 也不被违反。
+    audio_clips: BTreeMap<EntityId, AudioClipSchedule>,
 }
 
 impl EngineSnapshot {
@@ -540,6 +557,10 @@ impl EngineSnapshot {
         }
         let block = project.audio_config.block_size.frames() as usize;
         let (schedules, dropped) = project_schedules(project);
+        // ⭐ 任务单 `#135`：`ClipContent::Audio` 的摆放**现在真的进快照**（绝对帧区间 ＋
+        // 增益 ＋ 素材哈希）；PCM 仍由控制侧解码后经 [`Self::with_audio_asset`] 注入
+        // ⇒ 引擎⛔ 不读盘、回调里⛔ 不解码（见 [`crate::audio_clip`]）。
+        let audio_clips = project_audio_clips(project);
         Self::from_parts(
             revision,
             project.audio_config.sample_rate.hz(),
@@ -557,6 +578,7 @@ impl EngineSnapshot {
                 .with_inserts(inserts)
                 .with_drums(drums)
                 .with_sfz_pending(sfz_pending)
+                .with_audio_clips(audio_clips)
                 .with_pan_law(PanLaw::from_model(project.audio_config.pan_law))
                 .with_bpm(project.bpm)
                 .with_metronome(project.transport.metronome_enabled.then(|| {
@@ -619,6 +641,9 @@ impl EngineSnapshot {
             note_schedule_drops: 0,
             pdc,
             metronome: None,
+            // ⛔ `from_parts` **不**填音频片段：摆放只能由 [`Self::from_project`] 投影、
+            // PCM 只能由 [`Self::with_audio_asset`] 注入（见 [`crate::audio_clip`]）。
+            audio_clips: BTreeMap::new(),
         })
     }
 
@@ -705,6 +730,54 @@ impl EngineSnapshot {
     pub const fn with_pan_law(mut self, law: PanLaw) -> Self {
         self.pan_law = law;
         self
+    }
+
+    /// ⭐ **附上每轨音频片段摆放表**（任务单 `#135`；见 [`Self::audio_clips`] 的字段文档）。
+    ///
+    /// 形状照 [`Self::with_tones`] / [`Self::with_drums`]：消费式构造器、整表替换。
+    /// ⚠ 生产路径应当用 [`Self::from_project`]（它把 `ClipContent::Audio` 投影成这张表）；
+    /// 本函数是给"离线渲染器/判据显式构造"用的低层入口。
+    ///
+    /// 它只搬**轻数据**（绝对帧区间 ＋ 增益 ＋ 素材哈希）：⛔ 不读盘、⛔ 不解码。
+    /// PCM 必须另经 [`Self::with_audio_asset`] 注入 —— 没有注入的摆放**静音**
+    /// （与接线前逐位相同），这是默认口径。
+    #[must_use]
+    pub fn with_audio_clips(mut self, clips: BTreeMap<EntityId, AudioClipSchedule>) -> Self {
+        self.audio_clips = clips;
+        self
+    }
+
+    /// ⭐ **按素材哈希注入 PCM**（任务单 `#135`；控制线程，允许分配）。
+    ///
+    /// 把**所有**引用 `asset` 的摆放接上同一份 [`AudioPcm`]（`Arc` 克隆一次，之后
+    /// 音频线程只解引用 ⇒ 回调内零分配）。返回 `Self` 供链式调用；"接上了几条"由
+    /// [`Self::audio_pcm_spans`] 读出（⛔ 不静默）。
+    ///
+    /// 多次调用**累加**（不同素材各注各的；同一素材再注一次 ⇒ 覆盖该素材那一份）。
+    ///
+    /// # Errors
+    ///
+    /// - [`AudioClipError::SampleRateMismatch`]：素材采样率与本快照不一致 ——
+    ///   引擎**不重采样**（那是 `yeban-decode` 的活），宁可拒绝也不改标签/丢帧。
+    ///
+    /// ⚠ 采样率不符时快照**原样返回**（没有任何摆放被接上）：调用方必须处理 `Err`，
+    /// ⛔ 不要把它当成"注入成功但静音"。
+    pub fn with_audio_asset(
+        mut self,
+        asset: &AssetHash,
+        pcm: AudioPcm,
+    ) -> Result<Self, AudioClipError> {
+        if pcm.sample_rate() != self.sample_rate {
+            return Err(AudioClipError::SampleRateMismatch {
+                pcm_rate: pcm.sample_rate(),
+                snapshot_rate: self.sample_rate,
+            });
+        }
+        let pcm = Arc::new(pcm);
+        for schedule in self.audio_clips.values_mut() {
+            let _ = schedule.attach_pcm(asset, &pcm);
+        }
+        Ok(self)
     }
 
     /// 覆盖工程速度（**投影自 `YebanProjectV1::bpm`**；低层构造默认 120 BPM）。
@@ -867,6 +940,40 @@ impl EngineSnapshot {
         self.sfz.get(id)
     }
 
+    /// ⭐ 全部轨道的**音频片段摆放表**（只含非空轨；`BTreeMap` ⇒ 顺序确定 [MODEL-AST-003]）。
+    ///
+    /// 形状与分工见 [`Self::audio_clips`] 的字段文档与 [`crate::audio_clip`]。
+    #[must_use]
+    pub const fn audio_clips(&self) -> &BTreeMap<EntityId, AudioClipSchedule> {
+        &self.audio_clips
+    }
+
+    /// ⭐ 单轨的音频片段摆放表（没有该轨的音频摆放时为 `None` ⇒ 实时侧整段跳过）。
+    ///
+    /// 实时侧的唯一用途是把它交给 [`crate::audio_clip::mix_into`]（⛔ 不 clone 任何 PCM）。
+    #[must_use]
+    pub fn audio_clip_schedule(&self, id: &EntityId) -> Option<&AudioClipSchedule> {
+        self.audio_clips.get(id)
+    }
+
+    /// ⭐ 全快照的音频摆放**条数**（诊断/判据用）。
+    #[must_use]
+    pub fn audio_spans(&self) -> usize {
+        self.audio_clips.values().map(AudioClipSchedule::len).sum()
+    }
+
+    /// ⭐ 全快照里**已注入 PCM** 的音频摆放条数。
+    ///
+    /// "有摆放"与"摆放能发声"是两件事：前者由 [`Self::audio_spans`] 读，后者由本函数读
+    /// ⇒ 注入失败/漏注不会被读成"静音的摆放"，而是读成 `0`（⛔ 不静默）。
+    #[must_use]
+    pub fn audio_pcm_spans(&self) -> usize {
+        self.audio_clips
+            .values()
+            .map(AudioClipSchedule::pcm_spans)
+            .sum()
+    }
+
     /// ⭐ 全部音轨的 **SFZ 待摊平项**（只带路径；`BTreeMap` ⇒ 迭代顺序确定 [MODEL-AST-003]）。
     ///
     /// ⚠ **轻数据**（几个路径字符串，⛔ 无区域表、⛔ 无 PCM）：它的语义是"**控制侧还欠
@@ -964,6 +1071,20 @@ impl Drop for EngineSnapshot {
 ///    ⇒ SFZ 声部与鼓机/复音**同径**吃到推子/静音/独奏（归属裁决见台账 R711）；
 /// 5. **`ClipContent::Audio` 不产生声音**（采样播放/SFZ 尚未接入，见 notes）；
 /// 6. 每轨超过 [`MAX_NOTES_PER_TRACK`] 的音符被丢弃并计数。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#135`，台账第 278 条：⛔ 不改上面第 5 条的原文）**：
+/// 第 5 条描述的是**本单之前**的事实，现仍逐字保留。自 `#135` 起：
+///
+/// - 音频摆放**不再被 `project_schedules` 消费**——本函数仍然只投影 MIDI（`ClipContent::Midi`），
+///   第 5 条对**本函数**依然成立；音频摆放改由 [`crate::audio_clip::project_audio_clips`]
+///   投影成**另一张表**（[`EngineSnapshot::audio_clips`]：绝对帧区间 ＋ 增益 ＋ 素材哈希），
+///   并在实时逐轨路径里经 [`crate::audio_clip::mix_into`] 累加进该轨的单声道暂存。
+/// - ⚠ **仍不发声的情形**（默认口径，逐位不变）：① 控制侧还没注入 PCM
+///   （[`EngineSnapshot::with_audio_asset`] 没被调用 ⇒ `audio_clips` 里 `pcm == None`）；
+///   ② 走带停住（`running == false` ⇒ 整条音源路径跳过）；③ 声道数不是 1/2 或采样率不符
+///   （注入期拒绝，见 [`crate::audio_clip::AudioClipError`]）。
+/// - ⚠ 本段的落点**只**是"音频摆放有了一张自己的表"：⛔ 不碰音符调度、⛔ 不碰事件面、
+///   ⛔ 不碰持久化 AST、⛔ 不给 [`EngineSnapshot`] 加游标。
 fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedule>, u64) {
     let sample_rate = project.audio_config.sample_rate.hz();
     #[allow(clippy::cast_precision_loss)]
