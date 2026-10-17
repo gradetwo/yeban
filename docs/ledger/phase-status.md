@@ -12278,3 +12278,22 @@ cargo run -q -p yeban-app --locked -- --open ~/Desktop/my.yeban
 ⭐ ⚠ **五、⭐ 一处如实登记的产品面**: ⭐ ⚠ ⭐ **CLI `--midi-in-render`** 那条诊断路径**没接**字节来源 ⇒ ⭐ 那里的音频片段仍"⭐ 跳过"（⭐ 可见日志，⭐ 不影响 GUI／录音链）；⭐ 要接 ⇒ ⭐ 同一 API **约 3 行** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回今晚各提交的 CI 判决**（⭐ 尤其 `fa2ee470`）＋ ⭐ **CLI `--midi-in-render` 的 3 行接线** ＋ ⭐ **`loop_config` 展开**／⭐ **>2 声道**／⭐ **重采样**（⭐ 44.1k 工程会整条跳过）＋ ⭐ **`project.assets` 元数据**（⭐ 面板显示真实字节数）＋ ⭐ **L1 状态文本** ＋ ⭐ **`NSMicrophoneUsageDescription`**（⭐ 找人）＋ ⭐ **`HD-64` 最小迁移器** ＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ Info.plist／⭐ BlackHole 直连／⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R832 实测追加（2026-10-17）：⭐⭐ **本夜第一次**CI 红**（⭐ 五条提交只在 `windows` 腿红，⭐ 本机全绿）＋ `#137` 修好 ＋ 一条新口径**
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 事实（⭐ 我用 `gh` 读回，⭐ 逐条）**: ⭐ ⭐ **`d6519ffa`／`7498d94f`／`8fcf76e6`／`d714ba6f`／`533ccd78` 五条全部 `failure`**，⭐ 而 ⭐ 同期文档提交（`a425b40e`／`50c74729`／`315bb633`／`a66c7cf6`／`4ff250c2`／`16f5a11c`／`321595a7`）**全 `success`** ⇒ ⭐ ⭐ **红点全在 `windows` 腿**（⭐ `macos` 腿全绿）✓ ⚠ ⭐ **教训（⭐ 我自己的）**：⭐ 我这几轮**先合并、⭐ 后读判决**（⭐ 判决要 ~20 分钟）⇒ ⭐ **红色随提交堆了 5 条** ⇒ ⭐ ⭐ **纠正：⭐ 一旦发现一条红，⭐ 先修它、⭐ 再继续新功能** ✓
+
+⭐ ⚠ **二、⭐ 根因（⭐ `#137` 从日志里抠出来并**本机复现**）**: ⭐ 失败步 ⭐ `windows` 腿第 **11** 步 ⭐ `test (yeban-app 的平台分支)` ⇒ ⭐ 逐字：⭐ `test the_new_project_button_is_registered_accessible_and_upward_only ... FAILED` ／ ⭐ `panicked at crates\yeban-app\tests\new_project_registration.rs:122:5` ⇒ ⭐ ⭐ **根因是**行尾（CRLF）**、⭐ ⛔ 不是路径分隔符** ✓ ⭐ `#129` 的判据用了 ⭐ **跨行 needle** ⭐ `"{action} => {{\n            root.{action}();"` ⇒ ⭐ Windows 检出的字节是 `{` `\r` `\n` ⇒ ⭐ **`{\n` 不是子串** ⇒ ⭐ `contains` **恒假** ⇒ panic ✓ ⭐ 而**前面所有 needle 都是单行** ⇒ ⭐ 所以恰好红在 `:122`（⭐ 第一条跨行 needle）✓
+⭐ ⭐ **为什么 Windows 是 CRLF**：⭐ 仓根 `.gitattributes` 唯一规则是 ⭐ `crates/yeban-render/tests/data/*.json -text`（⭐ 其注释自述 runner 的 `core.autocrlf=true`）；⭐ 那两个文件 ⭐ `text: unspecified` ⇒ ⭐ **会被转 CRLF** ✓
+⭐ ⭐ **本机复现（⭐ 强证据）**：⭐ 把 5 份被判源码全转 CRLF ⇒ ⭐ pre-fix 判据 ⭐ `rc=101`、⭐ `:122:5`、⭐ 报文与 CI `artifact` 的 `gate.log:4522-4543` ⭐ **逐字相同** ✓
+
+⭐ ⚠ **三、⭐ 修法（⭐ ⛔ 没削弱判据）**: ⭐ ① ⭐ 入口 ⭐ `lf(text)` 归一（⭐ ⛔ 裸 `\r` 不归一 —— 那是文件损坏、⭐ 不该被掩盖）；⭐ ② ⭐ `check_new_project_registration(...)` **抽成函数**，⭐ 原测试名不变；⭐ ③ ⭐ ⭐ **新增模拟腿** `the_criterion_holds_on_a_windows_crlf_checkout`：⭐ 把五份源码 `as_crlf` 后喂**同一个** `check_…`（⭐ ⛔ 不复制断言 ⇒ 删 `lf` 即红）✓ ⭐ 断言文本／缩进／needle 形状／反向断言**一字未动** ✓
+⭐ ⭐ **同族排查（⭐ 关键的第二条）**：⭐ `undo_tree_honesty.rs:273` 对**未归一**源码做 `split("\n}\n")` ⇒ ⭐ ⚠ **CRLF 下静默变弱**（⭐ `.next()` 返回**整份源码**、⭐ ⛔ 不 panic、⭐ 判据**退化**）⇒ ⭐ **已修**；⭐ 其余逐个判定（`roll_injection_registration.rs:293`／⭐ `roll_edit_tools.rs:2035` **安全**，⭐ 因为 needle 以"⭐ 上一行的 LF"⭐ 开头）✓
+
+⭐ ⚠ **四、⭐ 读数**: ⭐ 模拟 CRLF 状态 ＋ 修后 ⇒ ⭐ `new_project_registration` ⭐ **2 passed**（⭐ 真判据 ＋ 模拟腿）、⭐ `undo_tree_honesty` **4 passed**；⭐ **反面腿**（⭐ 拆 `console_tabs.slint` 的转发 ⇒ ⭐ **两条都红**；⭐ 删 `accessible-id` ⇒ ⭐ 红）⇒ ⭐ **判据仍有牙** ✓ ⭐ 本机全量 ⭐ **616 passed／0 failed**／⭐ 复合门 `全过 ✓`／⭐ 守卫 **18** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 一条可复用口径（⭐ 第 299 条）**: ⭐ ⭐ **判据里凡是**跨行**的 `contains`／⭐ `find`，⭐ 入口必须 `lf()` 归一；⭐ 并且**必须有一条把源码转 CRLF 再喂同一个检查函数的模拟腿**；⭐ ⚠ 而 `split("\n…\n")` 这类**不会 panic** ⇒ ⭐ 它在 CRLF 下是**静默退化**、⭐ 比 panic 更危险** —— ⚠ **因为**：⭐ ① ⭐ 本机 macOS 的检出是 LF ⇒ ⭐ **跨行 needle 在本机永远绿**、⭐ 只有 CI 的 Windows 腿能抓（⭐ 本条实测：⭐ 5 条提交红、⭐ 本机 5 次全绿）；⭐ ② ⭐ `contains` 失败会 **panic**（⭐ 可见），⭐ 而 `split(...).next()` 失败会**返回整份文本** ⇒ ⭐ 判据**照常绿**、⭐ 实质**已失效** ⇒ ⭐ ⛔ 这比红更坏；⭐ ③ ⭐ **模拟腿**是唯一能在本机复现 Windows 形状的办法（⭐ 本条：⭐ 转 CRLF 后 panic 行号与报文与 CI 逐字相同）✓ ⭐ **做法**: ⭐ ① ⭐ 判据里**所有**读源码的字符串比较，⭐ 入口先 `lf()`；⭐ ② ⭐ ⛔ 不把裸 `\r` 也归一（⭐ 那是损坏）；⭐ ③ ⭐ **加一条 CRLF 模拟腿**，⭐ 喂**同一个**检查函数；⭐ ④ ⭐ 排查 `split`／⭐ `find` 一类**不 panic** 的形态（⭐ 它们最危险）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **读回 `8f5a15b7` 的 `windows` 腿**（⭐ ⛔ 空绿不算、⭐ 要日志里有 `test result:` 行）＋ ⭐ **`d6519ffa` 的 windows 红**（⭐ 与 CRLF 无关，⭐ 待查：⭐ 那条只改脚本 ⇒ ⭐ 可能是 `bash -n`／light 门在 Windows 上的差异）＋ ⭐ **今晚各提交的判决**（⭐ 已读回 5 红 ＋ 7 绿）＋ ⭐ **CLI `--midi-in-render` 3 行接线** ＋ ⭐ **重采样**（⭐ 44.1k 工程整条跳过）＋ ⭐ **`project.assets` 元数据** ＋ ⭐ **`HD-64` 最小迁移器** ＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ Info.plist／⭐ BlackHole 直连／⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
