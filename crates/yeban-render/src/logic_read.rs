@@ -34,7 +34,9 @@
 //!   [`crate::logic::decode_note_lines`] —— **复用**仓内既有的事件行模型，⛔ 不复制。
 //!   只有 `payload[0] == 0x90` 的事件行会被算成音符，因此拍号/速度的 `qSvE`
 //!   （载荷 96 / 48 字节）不会污染计数。
-//! * **`AuRg`**：落盘 tag `gRuA` 的记录条数，**只计数、不解码**。
+//! * **`AuRg`**：落盘 tag `gRuA` 的记录条数；`#152` 起同时逐条解出**名字**
+//!   （载荷 `+0x4a`）、**长度帧**（`+0x16`）与**文件对象号**（记录头 `+0x08`，
+//!   与 `lFuA` 同号）。⚠ 起点**不在** `AuRg` 载荷里：它在音频摆放事件 `+0x04`。
 //!
 //! ## 区域摆放：起点 `rest+0xe0`、长度 `rest+0x3c`（`#148` 实测，8/8）
 //!
@@ -130,11 +132,11 @@ use std::str;
 
 use crate::logic::{
     LOGIC_ARRANGE_MIDI_MARKER, LOGIC_FIRST_RECORD_OFFSET, LOGIC_KART_TAG,
-    LOGIC_PLACEMENT_POSITION_OFFSET, LOGIC_PLACEMENT_REGION_OFFSET, LOGIC_PLACEMENT_TRACK_OFFSET,
-    LOGIC_RECORD_CLUSTER_OFFSET, LOGIC_RECORD_HEADER, LOGIC_RECORD_SIZE_OFFSET,
-    LOGIC_REGION_LENGTH_FROM_REST, LOGIC_REGION_NAME_PAYLOAD_OFFSET, LOGIC_REGION_ORIGIN_TICKS,
-    LOGIC_REGION_TAG, LOGIC_ROOT_HEADER, LOGIC_ROOT_MAGIC, LOGIC_SEQUENCE_TAG, decode_note_lines,
-    region_rest_start,
+    LOGIC_PLACEMENT_LINK_ID_OFFSET, LOGIC_PLACEMENT_POSITION_OFFSET, LOGIC_PLACEMENT_REGION_OFFSET,
+    LOGIC_PLACEMENT_TRACK_OFFSET, LOGIC_RECORD_CLUSTER_OFFSET, LOGIC_RECORD_HEADER,
+    LOGIC_RECORD_SIZE_OFFSET, LOGIC_REGION_LENGTH_FROM_REST, LOGIC_REGION_NAME_PAYLOAD_OFFSET,
+    LOGIC_REGION_ORIGIN_TICKS, LOGIC_REGION_TAG, LOGIC_ROOT_HEADER, LOGIC_ROOT_MAGIC,
+    LOGIC_SEQUENCE_TAG, decode_note_lines, region_rest_start,
 };
 
 /// Apple 演示工程在 macOS 上的**只读**默认位置（`#139` 实测，8/8）。
@@ -144,8 +146,32 @@ pub const DEFAULT_DEMOS_DIR: &str = "/Library/Application Support/Logic/Logic Pr
 
 /// `ProjectData` 里可读名为 `AuRg` 的音频区域记录（落盘字节是反序的 `gRuA`）。
 ///
-/// 本切片**只计数**：音频区域的载荷语义未勘察，⛔ 不解码。
+/// `#152` 起逐条解析：名字 `+0x4a`、长度帧 `+0x16`、文件槽位 = 记录头对象号。
 const AUDIO_REGION_TAG: [u8; 4] = *b"gRuA";
+
+/// `AuRg` 音频区域载荷里名字字段的偏移：`u16` **小端字节数** @ **+0x4a**，
+/// UTF-8 名字 @ **+0x4c**（`#152` 实测，8/8 台 **4,104/4,104** 条一致）。
+pub const AUDIO_REGION_NAME_PAYLOAD_OFFSET: usize = 0x4A;
+
+/// `AuRg` 音频区域载荷里**长度**的偏移：`u32` 小端，单位 = **音频帧**（不是 tick）。
+///
+/// `#152` 实测依据：① 源文件头声明的帧数 ≥ 该值（8/8 台、全部可解文件 0 例外）；
+/// ② 用**素材自身采样率**换成 tick（`frames × 960 × bpm / (60 × rate)`）后，
+/// Swing! **32/181**、Manzana **14/24** 条恰好落在 960 tick 的整数倍上（手算对照见报告）。
+pub const AUDIO_REGION_LENGTH_FRAMES_OFFSET: usize = 0x16;
+
+/// 音频摆放事件（`qSvE` 载荷里 `+0x00 == 0x24` 的 80 字节事件）里**区域槽**的偏移：
+/// `u32` 小端 = `AuRg` 记录头 `+0x08` 的对象号 `>> 16`（`#152`）。
+///
+/// ⚠ MIDI 摆放事件的槽位在 `+0x20`，音频在 **`+0x2c`**（`+0x20` 在音频事件里不是槽位；
+/// 实测它常是 `0xffff_ffff` 或一个与 `AuRg` 对象号无关的计数）。
+pub const AUDIO_PLACEMENT_LINK_OFFSET: usize = 0x2C;
+
+/// 音频摆放事件的类型标记（`qSvE` 载荷 `+0x00`）。
+pub const AUDIO_PLACEMENT_MARKER: u32 = 0x24;
+
+/// `lFuA`（可读名 `AuFl`）—— 音频文件引用记录（落盘字节是反序的 `lFuA`）。
+const AUDIO_FILE_TAG: [u8; 4] = *b"lFuA";
 
 /// 名字以这个字面后缀结尾的区域是 Logic 的自动化泳道，不计入音乐区域。
 const AUTOMATION_NAME_SUFFIX: &str = "*Automation";
@@ -298,7 +324,7 @@ pub struct LogicInspection {
     pub regions: usize,
     /// `qSvE` 音符事件数（[`crate::logic::decode_note_lines`] 的口径）。
     pub notes: usize,
-    /// `AuRg`（落盘 `gRuA`）记录条数；本切片**只计数**。
+    /// `AuRg`（落盘 `gRuA`）记录条数（`#152` 起同时逐条解析到 `LogicImport`）。
     pub audio_regions: usize,
     /// 成功读出摆放字段（起点/长度）的 `qeSM` 条数（应等于 [`Self::regions_all`]）。
     pub region_placements: usize,
@@ -868,6 +894,50 @@ const PLACEMENT_EVENT_CONST_17: u8 = 0x89;
 const PLACEMENT_EVENT_CONST_1C: u32 = 0x3fff_ffff;
 /// 摆放事件 `+0x24` 的实测常量：**MIDI** 是 `0x8800_0000`，音频是 `0xbc00_0000`。
 const PLACEMENT_EVENT_CONST_24_MIDI: u32 = 0x8800_0000;
+/// 音频摆放事件 `+0x24` 的实测常量（`#152`；MIDI 是 `0x8800_0000`）。
+const PLACEMENT_EVENT_CONST_24_AUDIO: u32 = 0xbc00_0000;
+
+/// 一条 `AuRg` 音频区域记录（只读读数）。
+///
+/// `#152` 实测：**起点不在 `AuRg` 载荷里**（8 台 4,104 条逐条扫过 `+0x00..+0x4a` 的
+/// `u8`/`u16`/`u32`，没有任何偏移等于摆放事件的 `+0x04 − 34560`）。起点只在**音频摆放
+/// 事件** [`ImportAudioPlacement`] 的 `+0x04`；本记录只提供**长度**（帧）与**文件槽位**
+/// （记录头 `+0x08` 的对象号，与 `lFuA` 的对象号相同）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportAudioRegion {
+    /// 区域显示名（载荷 `+0x4a` 的 `u16` 字节数 + `+0x4c` 起的 UTF-8）。
+    pub name: String,
+    /// 记录头 `+0x08` 的对象号（`>> 16` = 音频摆放事件 `+0x2c` 的区域槽）。
+    pub object: u32,
+    /// 同一对象号下的 take 序号（记录头 `+0x0c` 的 `u32 >> 16`；`0` = 第一条）。
+    pub take_index: u32,
+    /// 长度（载荷 `+0x16` 的 `u32`，单位 = **音频帧**）。
+    pub length_frames: u32,
+}
+
+/// 一条 `lFuA` 音频文件引用（`#152`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportAudioFile {
+    /// 记录头 `+0x08` 的对象号（与引用它的 `AuRg` 记录同号）。
+    pub object: u32,
+    /// 文件名（载荷 `+0x08` 的 `u16` **字符数** + `+0x0a` 起的 UTF-16LE）。
+    pub name: String,
+    /// 载荷 `+0x00` 的 `u32`：Logic 记录的**文件字节数**（与磁盘文件对照的独立读数）。
+    pub byte_size: u32,
+}
+
+/// 一条**音频摆放事件**（`qSvE` 里 `+0x00 == 0x24` 的 80 字节事件，`#152`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportAudioPlacement {
+    /// 区域起点（`+0x04` − 34560，**960 PPQ tick**）。
+    pub start_tick: u32,
+    /// `+0x14` 的 1 起轨道号。
+    pub track_1based: u32,
+    /// `+0x2c` 的区域槽（= `AuRg` 对象号 `>> 16`）。
+    pub region_slot: u32,
+    /// `+0x10` 的链接 id（读数；与 MIDI 摆放同一族编号）。
+    pub link_id: u32,
+}
 
 /// 一条**可导入**的 `qeSM` 区域（非内部、非空区域哨兵、非零长度）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -930,8 +1000,14 @@ pub struct LogicImport {
     pub regions: usize,
     /// 所有 `qSvE` 的音符条数（[`decode_note_lines`] 口径）。
     pub notes: usize,
-    /// `AuRg`（落盘 `gRuA`）记录条数（只计数）。
+    /// `AuRg`（落盘 `gRuA`）记录条数（`#152` 起**逐条解析**，不再只计数）。
     pub audio_regions: usize,
+    /// 全部 `AuRg` 区域的逐条读数（记录流顺序）。
+    pub audio_region_records: Vec<ImportAudioRegion>,
+    /// 全部 `lFuA` 音频文件引用（记录流顺序；对象号与 `AuRg` 同族）。
+    pub audio_files: Vec<ImportAudioFile>,
+    /// 全部**音频摆放事件**（`qSvE` 里 `24 00 00 00` 的 80 字节事件，记录流顺序）。
+    pub audio_placements: Vec<ImportAudioPlacement>,
     /// `GenM`（落盘 `MneG`）记录条数（只计数）。
     pub channel_states: usize,
     /// 可导入区域（非内部、长度 ≠ 空区域哨兵、长度 ≠ 0、长度落在
@@ -956,6 +1032,22 @@ pub struct LogicImport {
 }
 
 impl LogicImport {
+    /// 一个音频槽位对应的 **take 0** 区域（同一文件对象的多条 take 取序号最小的一条）。
+    #[must_use]
+    pub fn audio_region_for_slot(&self, slot: u32) -> Option<&ImportAudioRegion> {
+        self.audio_region_records
+            .iter()
+            .filter(|region| region.object >> 16 == slot)
+            .min_by_key(|region| (region.take_index, region.name.len()))
+    }
+
+    /// 一个音频槽位对应的文件引用（`lFuA` 对象号 == `AuRg` 对象号）。
+    #[must_use]
+    pub fn audio_file_for_slot(&self, slot: u32) -> Option<&ImportAudioFile> {
+        let object = slot << 16;
+        self.audio_files.iter().find(|file| file.object == object)
+    }
+
     /// 成功绑定到**合法**实测轨道（`1 ≤ 轨道号 ≤ 轨数`）的可导入区域条数（`#151`）。
     #[must_use]
     pub fn measured_track_regions(&self) -> usize {
@@ -1020,6 +1112,8 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
     let mut rba_sequences = 0usize;
     let mut notes = 0usize;
     let mut audio_regions = 0usize;
+    let mut audio_region_records: Vec<ImportAudioRegion> = Vec::new();
+    let mut audio_files: Vec<ImportAudioFile> = Vec::new();
     let mut channel_states = 0usize;
     let mut all_regions: Vec<ImportRegion> = Vec::new();
 
@@ -1068,6 +1162,9 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
             }
         } else if record.tag == AUDIO_REGION_TAG {
             audio_regions += 1;
+            audio_region_records.push(audio_region_record(record, &project_data_path)?);
+        } else if record.tag == AUDIO_FILE_TAG {
+            audio_files.push(audio_file_record(record, &project_data_path)?);
         } else if record.tag == CHANNEL_STATE_TAG {
             channel_states += 1;
         }
@@ -1107,6 +1204,7 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
 
     // 落在任何区域之外的音符：按"总数 − 各区域之和"算，⛔ 不猜它们属于谁。
     let unpaired_notes = notes.saturating_sub(paired_all);
+    let audio_placements = audio_placement_events_in(&records);
 
     Ok(LogicImport {
         bundle: bundle_name.to_owned(),
@@ -1123,6 +1221,9 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
         regions: regions_all - internal_regions,
         notes,
         audio_regions,
+        audio_region_records,
+        audio_files,
+        audio_placements,
         channel_states,
         imported_regions,
         skipped_empty_regions,
@@ -1131,6 +1232,127 @@ pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
         unpaired_notes,
         notes_outside_region,
     })
+}
+
+/// 从一条 `AuRg`（落盘 `gRuA`）记录读出名字/对象号/take/长度帧。
+fn audio_region_record(record: &RecordView<'_>, path: &Path) -> Result<ImportAudioRegion, String> {
+    let name_at = AUDIO_REGION_NAME_PAYLOAD_OFFSET;
+    let length_at = name_at
+        .checked_add(2)
+        .ok_or_else(|| format!("{}: 音频区域名偏移溢出", path.display()))?;
+    let length_bytes = record
+        .payload
+        .get(name_at..length_at)
+        .ok_or_else(|| format!("{}: AuRg 载荷短于 +0x4c", path.display()))?;
+    let name_len = usize::from(u16::from_le_bytes([length_bytes[0], length_bytes[1]]));
+    let name_end = length_at
+        .checked_add(name_len)
+        .ok_or_else(|| format!("{}: AuRg 名字长度溢出", path.display()))?;
+    let raw = record.payload.get(length_at..name_end).ok_or_else(|| {
+        format!(
+            "{}: AuRg 名字越过载荷（+0x4c + {} > {}）",
+            path.display(),
+            name_len,
+            record.payload.len()
+        )
+    })?;
+    let name = str::from_utf8(raw)
+        .map_err(|error| format!("{}: AuRg 名字不是 UTF-8: {error}", path.display()))?;
+    let frames_at = AUDIO_REGION_LENGTH_FRAMES_OFFSET;
+    let raw_frames = record
+        .payload
+        .get(frames_at..frames_at + 4)
+        .ok_or_else(|| format!("{}: AuRg 载荷短于 +0x1a", path.display()))?;
+    let length_frames =
+        u32::from_le_bytes([raw_frames[0], raw_frames[1], raw_frames[2], raw_frames[3]]);
+    Ok(ImportAudioRegion {
+        name: name.to_owned(),
+        object: record.object,
+        take_index: record.sub >> 16,
+        length_frames,
+    })
+}
+
+/// 从一条 `lFuA`（可读名 `AuFl`）记录读出文件名与 Logic 记录的文件字节数。
+fn audio_file_record(record: &RecordView<'_>, path: &Path) -> Result<ImportAudioFile, String> {
+    let payload = record.payload;
+    if payload.len() < 0x0a {
+        return Err(format!("{}: lFuA 载荷短于 +0x0a", path.display()));
+    }
+    let chars = usize::from(u16::from_le_bytes([payload[0x08], payload[0x09]]));
+    let end = 0x0ausize
+        .checked_add(
+            chars
+                .checked_mul(2)
+                .ok_or_else(|| format!("{}: lFuA 文件名字节数溢出", path.display()))?,
+        )
+        .ok_or_else(|| format!("{}: lFuA 文件名偏移溢出", path.display()))?;
+    if end > payload.len() {
+        return Err(format!(
+            "{}: lFuA 文件名越过载荷（+0x0a + {} > {}）",
+            path.display(),
+            chars * 2,
+            payload.len()
+        ));
+    }
+    let units: Vec<u16> = (0..chars)
+        .map(|index| {
+            let at = 0x0a + index * 2;
+            u16::from_le_bytes([payload[at], payload[at + 1]])
+        })
+        .collect();
+    let name = String::from_utf16(&units)
+        .map_err(|error| format!("{}: lFuA 文件名不是合法 UTF-16: {error}", path.display()))?;
+    let byte_size = le_u32(payload, 0);
+    Ok(ImportAudioFile {
+        object: record.object,
+        name,
+        byte_size,
+    })
+}
+
+/// 扫出全部**音频摆放事件**（`qSvE` 载荷里 `+0x00 == 0x24` 的 80 字节事件）。
+///
+/// 判据与 MIDI 摆放同一族（`#151`/`#152`）：`+0x17 == 0x89`、`+0x1c == 0x3fff_ffff`、
+/// `+0x24 == 0xbc00_0000`，并要求 `+0x04 ≥ 34560`。槽位在 `+0x2c`（**不是** `+0x20`）。
+fn audio_placement_events_in(records: &[RecordView<'_>]) -> Vec<ImportAudioPlacement> {
+    let origin = u32::try_from(LOGIC_REGION_ORIGIN_TICKS).unwrap_or(u32::MAX);
+    let marker = AUDIO_PLACEMENT_MARKER.to_le_bytes();
+    let mut events = Vec::new();
+    for record in records {
+        if record.tag != LOGIC_SEQUENCE_TAG {
+            continue;
+        }
+        let payload = record.payload;
+        let last = payload
+            .len()
+            .saturating_sub(AUDIO_PLACEMENT_LINK_OFFSET + 4);
+        for at in 0..=last {
+            if payload[at..at + 4] != marker {
+                continue;
+            }
+            if at + 0x28 > payload.len() {
+                break;
+            }
+            if payload[at + 0x17] != PLACEMENT_EVENT_CONST_17
+                || le_u32(payload, at + 0x1c) != PLACEMENT_EVENT_CONST_1C
+                || le_u32(payload, at + 0x24) != PLACEMENT_EVENT_CONST_24_AUDIO
+            {
+                continue;
+            }
+            let position_tick = le_u32(payload, at + LOGIC_PLACEMENT_POSITION_OFFSET);
+            if position_tick < origin {
+                continue;
+            }
+            events.push(ImportAudioPlacement {
+                start_tick: position_tick - origin,
+                track_1based: u32::from(payload[at + LOGIC_PLACEMENT_TRACK_OFFSET]),
+                region_slot: le_u32(payload, at + AUDIO_PLACEMENT_LINK_OFFSET),
+                link_id: le_u32(payload, at + LOGIC_PLACEMENT_LINK_ID_OFFSET),
+            });
+        }
+    }
+    events
 }
 
 /// `karT` 记录里"编排轨对象"的对象号（记录头 +0x08 的 `u32` 小端）。
@@ -1211,6 +1433,8 @@ struct RecordView<'a> {
     tag: [u8; 4],
     /// 记录头 +0x08 的对象号（`u32` 小端）。
     object: u32,
+    /// 记录头 +0x0c 的次级编号（`AuRg` 用它存 take 序号 `<< 16`）。
+    sub: u32,
     /// 记录头之后的载荷。
     payload: &'a [u8],
 }
@@ -1262,9 +1486,16 @@ fn walk_records(bytes: &[u8]) -> Result<Vec<RecordView<'_>>, String> {
             bytes[at + LOGIC_RECORD_CLUSTER_OFFSET + 2],
             bytes[at + LOGIC_RECORD_CLUSTER_OFFSET + 3],
         ]);
+        let sub = u32::from_le_bytes([
+            bytes[at + LOGIC_RECORD_CLUSTER_OFFSET + 4],
+            bytes[at + LOGIC_RECORD_CLUSTER_OFFSET + 5],
+            bytes[at + LOGIC_RECORD_CLUSTER_OFFSET + 6],
+            bytes[at + LOGIC_RECORD_CLUSTER_OFFSET + 7],
+        ]);
         records.push(RecordView {
             tag: [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]],
             object,
+            sub,
             payload: &bytes[header_end..end],
         });
         at = end;

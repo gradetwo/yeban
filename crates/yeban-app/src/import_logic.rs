@@ -1,6 +1,6 @@
-//! 真导入 `.logicx`：把 Logic Pro 工程 bundle 的**区域摆放 + 音符**映射成
+//! 真导入 `.logicx`：把 Logic Pro 工程 bundle 的**区域摆放 + 音符 + 音频区域**映射成
 //! `YebanProjectV1`，并原子落成一个可 `--headless --open` 的 `.yeban` 容器
-//! （任务单 `#149`，刀 2；`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
+//! （任务单 `#149`，刀 2；`#152` 补音频；`[ARCH-FMT-002]` / `[ROAD-M4-007]`）。
 //!
 //! ## 这不是探针
 //!
@@ -55,7 +55,7 @@
 //!
 //! | 级别 | 种类 | 处理 |
 //! | :--- | :--- | :--- |
-//! | region | `AuRg` 音频区域 | 只计数，⛔ 不导入（载荷语义未勘察） |
+//! | region | `AuRg` 音频区域（`#152`） | take 0 ⇒ `lFuA` 文件 ⇒ 源字节进 `assets/{sha256}` + `ClipContent::Audio`；起点来自音频摆放事件 `+0x04`，长度是 `+0x16` 的**帧数**换算成 tick |
 //! | channel | `GenM` 通道状态 | 只计数，⛔ 不导入（混音器状态） |
 //! | control | 自动化曲线 / `RBA Sequence` | 内部区域，⛔ 不导入 |
 //! | binding | **轨道归属（实测 + 余下 provisional）** | 651/864 条按摆放事件 `+0x14` 落轨；余下 213 条轮转（`#151`） |
@@ -85,19 +85,20 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 
-use yeban_model::ids::EntityId;
+use yeban_model::container::ProjectArchive;
+use yeban_model::ids::{AssetHash, EntityId};
 use yeban_model::music::MidiNote;
 use yeban_model::project::{
-    ClipContent, ClipPlacement, ClipPoolEntry, DEFAULT_RNG_SEED, DEFAULT_WRITER_VERSION,
-    LoopConfig, MIN_READER_VERSION, ProjectAudioConfig, ProjectMetadata, RoutingEdge, RoutingGraph,
-    RoutingKind, SCHEMA_VERSION, SampleRate, TimeSignature, TrackKind, TrackV3, TransportConfig,
-    YebanProjectV1,
+    AssetMetadata, ClipContent, ClipPlacement, ClipPoolEntry, DEFAULT_RNG_SEED,
+    DEFAULT_WRITER_VERSION, LoopConfig, MIN_READER_VERSION, MediaKind, ProjectAudioConfig,
+    ProjectMetadata, RoutingEdge, RoutingGraph, RoutingKind, SCHEMA_VERSION, SampleRate,
+    TimeSignature, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
 use yeban_render::logic_read::{
     LOGIC_REGION_LENGTH_MAX, LOGIC_REGION_LENGTH_MIN, LogicImport, import_bundle,
 };
 
-use crate::save::{SaveError, SaveReport, save_project_file};
+use crate::save::{SaveError, SaveReport};
 
 /// 导入产物的固定时间戳（Unix 毫秒）。
 ///
@@ -109,6 +110,71 @@ pub const IMPORTED_AT_UNIX_MS: u64 = 1_760_000_000_000;
 
 /// 报告里逐条打印的前 N 条摆放（`(start_tick, duration_ticks)` 的对照供人与判据读）。
 pub const PLACEMENT_REPORT_LIMIT: usize = 8;
+
+/// 导入选项（`#152`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportOptions {
+    /// 是否导入 `AuRg` 音频区域（默认 `true`；关掉只影响音频，MIDI 口径不变）。
+    pub import_audio: bool,
+    /// 容器里最多放多少**字节**的音频资产（默认 64 MiB）。
+    ///
+    /// 为什么有上限：Apple demo 的 `Media/Audio Files/` 是 131–538 MB/台，全量搬进
+    /// 一个 `.yeban` 会把"导入一台 demo"变成几百 MB 的容器。超限的那些**逐条**记损失，
+    /// ⛔ 不静默截断、⛔ 不假装导入成功。
+    pub max_audio_asset_bytes: u64,
+}
+
+impl Default for ImportOptions {
+    fn default() -> Self {
+        Self {
+            import_audio: true,
+            max_audio_asset_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+/// 一次音频导入的读数（已经落实进工程 / 容器的那部分）。
+#[derive(Debug, Default)]
+struct AudioImportStats {
+    /// 落进 `assets/` 的条目数。
+    assets: usize,
+    /// 落进 `assets/` 的字节数。
+    asset_bytes: u64,
+    /// 写进工程的音频摆放条数。
+    clips: usize,
+    /// 被采纳的 `AuRg` 区域条数（take 0；每条对应一个文件槽）。
+    regions_imported: usize,
+    /// 逐条损失（文件 / 解码 / 上限 / 轨道）。
+    losses: Vec<String>,
+    /// 没被采纳的 take 条数（同一槽位的 `.1/.2/...`）。
+    take_losses: usize,
+    /// 有摆放事件、但因文件/上限/解码/轨道原因没导入的 **take 0** 区域条数。
+    failed_regions: usize,
+    /// 没有任何音频摆放事件的 `AuRg` 条数。
+    no_placement: usize,
+}
+
+impl AudioImportStats {
+    /// 原因计数（报告的一行）。
+    fn reason_counts(&self) -> String {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for loss in &self.losses {
+            let reason = loss
+                .split("reason=")
+                .nth(1)
+                .unwrap_or("unknown")
+                .split_whitespace()
+                .next()
+                .unwrap_or("unknown");
+            *counts.entry(reason).or_default() += 1;
+        }
+        counts
+            .into_iter()
+            .map(|(reason, count)| format!("{reason}={count}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
 
 /// 导入失败的全部原因（每一种都**响亮**上报，⛔ 绝不"写了个空容器也算成功"）。
 #[derive(Debug)]
@@ -266,6 +332,8 @@ struct ImportReport {
     project_notes: usize,
     /// 每条摆放的 `(区域序号, 轨道序号, 起点, 长度, 音符数)`。
     placement_rows: Vec<(usize, usize, u64, u64, usize)>,
+    /// 音频导入读数（`#152`）。
+    audio: AudioImportStats,
     /// 保存读数。
     saved: SaveReport,
 }
@@ -298,7 +366,8 @@ impl ImportReport {
         ));
         lines.push(format!(
             "logic-import-counts: imported-regions={} placements={} project-tracks={} \
-             project-notes={} clips-pool={} internal={} automation={} rba={} gen_m={} \
+             project-notes={} clips-pool={} audio-assets={} audio-clips={} \
+             audio-regions-imported={} internal={} automation={} rba={} gen_m={} \
              skipped-empty={} skipped-zero-length={} skipped-out-of-range={} unpaired-notes={} \
              notes-outside-region={} measured-track-regions={} provisional-track-regions={}",
             data.imported_regions.len(),
@@ -306,6 +375,9 @@ impl ImportReport {
             self.project_tracks,
             self.project_notes,
             self.clips,
+            self.audio.assets,
+            self.audio.clips,
+            self.audio.regions_imported,
             data.internal_regions,
             data.automation_regions,
             data.rba_sequences,
@@ -317,6 +389,18 @@ impl ImportReport {
             data.notes_outside_region,
             data.measured_track_regions(),
             data.provisional_track_regions(),
+        ));
+        lines.push(format!(
+            "logic-import-audio: assets={} asset-bytes={} clips={} regions-imported={} \
+             takes-skipped={} no-placement-regions={} losses={} reasons={}",
+            self.audio.assets,
+            self.audio.asset_bytes,
+            self.audio.clips,
+            self.audio.regions_imported,
+            self.audio.take_losses,
+            self.audio.no_placement,
+            self.audio.losses.len(),
+            self.audio.reason_counts(),
         ));
         lines.push(format!(
             "logic-import-placements: count={} reported={}",
@@ -360,8 +444,27 @@ impl ImportReport {
         let data = &self.data;
         let mut losses = vec![
             format!(
-                "level=region kind=AuRg count={} 音频区域未导入（只计数；载荷语义未勘察）",
-                data.audio_regions
+                "level=region kind=AuRg count={} 音频区域：导入 {} 条（take 0）/ {} 个资产 / {} 条摆放；\
+                 其余逐条见下面 kind=AuRg-* 行",
+                data.audio_regions,
+                self.audio.regions_imported,
+                self.audio.assets,
+                self.audio.clips
+            ),
+            format!(
+                "level=region kind=AuRg-take count={} 同一文件槽位的其他 take / 片段未导入\
+                 （每个槽只取序号最小的 take 0）",
+                self.audio.take_losses
+            ),
+            format!(
+                "level=region kind=AuRg-failed count={} take 0 因文件格式/缺失/字节上限/解码/\
+                 轨道不合格而未导入（逐条见下面 kind=AuRg-*）",
+                self.audio.failed_regions
+            ),
+            format!(
+                "level=region kind=AuRg-no-placement count={} 没有任何音频摆放事件的 `AuRg` 区域\
+                 （起点只在摆放事件里，⛔ 不猜）",
+                self.audio.no_placement
             ),
             format!(
                 "level=channel kind=GenM count={} 通道状态未导入（混音器 / 通道状态）",
@@ -397,6 +500,8 @@ impl ImportReport {
                 data.notes_outside_region
             ),
         ];
+        // `#152`：音频文件 / 解码 / 上限 / 轨道不合格**逐条**列出。
+        losses.extend(self.audio.losses.iter().cloned());
         // `#150`：越界样本**逐条**列出（⛔ 不静默、⛔ 不只报总数）。
         for sample in &data.out_of_range_regions {
             losses.push(format!(
@@ -429,6 +534,19 @@ impl ImportReport {
 /// 见 [`ImportLogicError`]：路径类型 / 无 bundle / 读 demo / 采样率 / 无轨道 /
 /// 模型校验 / 落盘任一档失败都响亮上报。
 pub fn run(input: &Path, output: &Path) -> Result<Vec<String>, ImportLogicError> {
+    run_with_options(input, output, &ImportOptions::default())
+}
+
+/// 同 [`run`]，但显式给导入选项（`#152`：音频开关与资产字节上限）。
+///
+/// # Errors
+///
+/// 同 [`run`]。
+pub fn run_with_options(
+    input: &Path,
+    output: &Path,
+    options: &ImportOptions,
+) -> Result<Vec<String>, ImportLogicError> {
     if !input.exists() {
         // 路径门控：CI / 其它机器没有 Apple demo ⇒ 这不是失败。
         return Ok(vec![format!(
@@ -442,31 +560,79 @@ pub fn run(input: &Path, output: &Path) -> Result<Vec<String>, ImportLogicError>
         bundle: bundle.clone(),
         detail,
     })?;
-    let (project, project_tracks, placements, clips, project_notes, placement_rows) =
-        build_project(&data)?;
-    project
+    let built = build_project(&data, &bundle, options)?;
+    built
+        .project
         .validate()
         .map_err(|error| ImportLogicError::InvalidProject {
             detail: error.to_string(),
         })?;
 
-    let saved = save_project_file(&project, output).map_err(|source| ImportLogicError::Save {
-        path: output.to_path_buf(),
-        source: Box::new(source),
+    let archive = ProjectArchive {
+        project: built.project,
+        history_dag: Vec::new(),
+        assets: built.assets,
+    };
+    let saved = crate::save::save_archive_file(&archive, output).map_err(|source| {
+        ImportLogicError::Save {
+            path: output.to_path_buf(),
+            source: Box::new(source),
+        }
     })?;
 
     Ok(ImportReport {
         input: input.to_path_buf(),
         bundle,
         data,
-        project_tracks,
-        placements,
-        clips,
-        project_notes,
-        placement_rows,
+        project_tracks: built.project_tracks,
+        placements: built.placements,
+        clips: built.clips,
+        project_notes: built.project_notes,
+        placement_rows: built.placement_rows,
+        audio: built.audio,
         saved,
     }
     .lines())
+}
+
+/// [`build_project`] 的产物（工程 + 容器资产 + 逐项读数）。
+struct BuiltProject {
+    /// 建出的工程。
+    project: YebanProjectV1,
+    /// 要落进容器 `assets/{sha256}` 的字节（按哈希升序）。
+    assets: Vec<(AssetHash, Vec<u8>)>,
+    /// 音频读数。
+    audio: AudioImportStats,
+    /// 轨道总数（含 master）。
+    project_tracks: usize,
+    /// MIDI 摆放条数。
+    placements: usize,
+    /// MIDI 片段池条数。
+    clips: usize,
+    /// 工程里的音符数。
+    project_notes: usize,
+    /// 每条 MIDI 摆放的 `(区域序号, 轨道序号, 起点, 长度, 音符数)`。
+    placement_rows: Vec<(usize, usize, u64, u64, usize)>,
+}
+
+/// 音频资产写入面（字节 + 路径 + 已用字节；`#152`）。
+struct AudioAssetSink {
+    /// 待落进容器 `assets/{sha256}` 的字节。
+    assets: BTreeMap<AssetHash, Vec<u8>>,
+    /// 每个资产的留痕路径。
+    paths: BTreeMap<AssetHash, String>,
+    /// 已占用的源文件字节数（上限判断用）。
+    used_bytes: u64,
+}
+
+/// 一个已解析的音频槽位（一个文件 + 一条 take 0 区域）。
+struct ResolvedAudio {
+    /// 源文件字节的 SHA-256（容器 CAS 键）。
+    hash: AssetHash,
+    /// 区域名（片段显示名）。
+    name: String,
+    /// 区域长度换算成的 tick（按**素材自身采样率**）。
+    duration_ticks: u64,
 }
 
 /// 解析输入：bundle 直接用；目录取字典序第一台 `.logicx`。
@@ -503,22 +669,11 @@ fn resolve_bundle(input: &Path) -> Result<PathBuf, ImportLogicError> {
 }
 
 /// 把字节读数建成本仓的工程模型（纯函数，⛔ 不落盘）。
-///
-/// 返回 `(工程, 轨道总数含 master, 摆放数, 片段池数, 音符数, 逐条摆放读数)`。
-#[allow(clippy::type_complexity)]
 fn build_project(
     data: &LogicImport,
-) -> Result<
-    (
-        YebanProjectV1,
-        usize,
-        usize,
-        usize,
-        usize,
-        Vec<(usize, usize, u64, u64, usize)>,
-    ),
-    ImportLogicError,
-> {
+    bundle: &Path,
+    options: &ImportOptions,
+) -> Result<BuiltProject, ImportLogicError> {
     if data.tracks == 0 {
         return Err(ImportLogicError::NoTracks {
             bundle: PathBuf::from(&data.bundle),
@@ -627,6 +782,97 @@ fn build_project(
         ));
     }
 
+    // ------------------------------------------------------------------
+    // `#152`：`AuRg` 音频区域 ⇒ 容器资产 + 音频 clip + 摆放
+    // ------------------------------------------------------------------
+    let mut audio = AudioImportStats::default();
+    let mut sink = AudioAssetSink {
+        assets: BTreeMap::new(),
+        paths: BTreeMap::new(),
+        used_bytes: 0,
+    };
+    if options.import_audio {
+        let mut resolved: BTreeMap<u32, Result<ResolvedAudio, String>> = BTreeMap::new();
+        let mut clip_by_slot: BTreeMap<u32, EntityId> = BTreeMap::new();
+        for placement in &data.audio_placements {
+            let slot = placement.region_slot;
+            let resolved_slot = resolved.entry(slot).or_insert_with(|| {
+                resolve_audio_slot(data, bundle, slot, options, &mut sink, &mut audio)
+            });
+            let Ok(resolved_slot) = resolved_slot else {
+                // 解析失败的原因已经逐条写进 `audio.losses`（每个槽只写一次）。
+                continue;
+            };
+            let Some(track_index) = usize::try_from(placement.track_1based)
+                .ok()
+                .and_then(|track| track.checked_sub(1))
+                .filter(|index| *index < track_ids.len())
+            else {
+                audio.losses.push(format!(
+                    "level=region kind=AuRg-track slot={slot} start={} track={} reason=track-out-of-range",
+                    placement.start_tick, placement.track_1based
+                ));
+                continue;
+            };
+            let clip_id = match clip_by_slot.get(&slot) {
+                Some(id) => *id,
+                None => {
+                    let id = ids.next_id();
+                    clip_pool.insert(
+                        id,
+                        ClipPoolEntry {
+                            id,
+                            name: resolved_slot.name.clone(),
+                            content: ClipContent::Audio {
+                                asset: resolved_slot.hash.clone(),
+                                gain_db: 0.0,
+                            },
+                        },
+                    );
+                    clip_by_slot.insert(slot, id);
+                    id
+                }
+            };
+            let placement_id = ids.next_id();
+            let track = tracks
+                .get_mut(&track_ids[track_index])
+                .expect("track_ids 与 tracks 同源");
+            track.clips.insert(
+                placement_id,
+                ClipPlacement {
+                    id: placement_id,
+                    clip_id,
+                    start_tick: u64::from(placement.start_tick),
+                    duration_ticks: resolved_slot.duration_ticks,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                },
+            );
+            audio.clips += 1;
+        }
+    }
+
+    // 未被采纳的 `AuRg` 条数（take / 没有摆放事件）—— 逐槽统计，⛔ 不静默。
+    let placed_slots: std::collections::BTreeSet<u32> = data
+        .audio_placements
+        .iter()
+        .map(|placement| placement.region_slot)
+        .collect();
+    for region in &data.audio_region_records {
+        let slot = region.object >> 16;
+        if !placed_slots.contains(&slot) {
+            audio.no_placement += 1;
+            continue;
+        }
+        let chosen = data.audio_region_for_slot(slot);
+        let is_chosen = chosen.is_some_and(|chosen| {
+            chosen.take_index == region.take_index && chosen.name == region.name
+        });
+        if !is_chosen {
+            audio.take_losses += 1;
+        }
+    }
+
     let mut nodes: Vec<EntityId> = Vec::with_capacity(data.tracks + 1);
     nodes.push(master_id);
     nodes.extend(track_ids.iter().copied());
@@ -641,6 +887,24 @@ fn build_project(
                 destination_node: master_id,
                 kind: RoutingKind::TrackToBus,
                 gain_db: None,
+            },
+        );
+    }
+
+    let mut project_assets: BTreeMap<AssetHash, AssetMetadata> = BTreeMap::new();
+    for (hash, bytes) in &sink.assets {
+        project_assets.insert(
+            hash.clone(),
+            AssetMetadata {
+                hash: hash.clone(),
+                original_path: sink
+                    .paths
+                    .get(hash)
+                    .cloned()
+                    .unwrap_or_else(|| "Media/Audio Files".to_owned()),
+                byte_len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                media_kind: MediaKind::Audio,
+                license: "user-imported".to_owned(),
             },
         );
     }
@@ -673,17 +937,20 @@ fn build_project(
         metadata: ProjectMetadata {
             description: format!(
                 "Imported from Logic Pro project `{}`；{}/{} 条区域按摆放事件 +0x14 绑定到实测轨道，\
-                 余下 {} 条仍 provisional（无摆放事件）",
+                 余下 {} 条仍 provisional（无摆放事件）；音频资产 {} 个 / {} 条音频摆放（#152）",
                 data.bundle,
                 data.measured_track_regions(),
                 data.imported_regions.len(),
                 data.provisional_track_regions(),
+                audio.assets,
+                audio.clips,
             ),
             created_at_unix_ms: IMPORTED_AT_UNIX_MS,
             modified_at_unix_ms: IMPORTED_AT_UNIX_MS,
             tags: vec![
                 "logic-import".to_owned(),
                 "measured-track-binding".to_owned(),
+                "logic-audio-import".to_owned(),
             ],
         },
         transport: TransportConfig::default(),
@@ -693,19 +960,166 @@ fn build_project(
         routing_graph: RoutingGraph { nodes, edges },
         scenes: BTreeMap::new(),
         clip_pool,
-        assets: BTreeMap::new(),
+        assets: project_assets,
     };
-    Ok((
+    Ok(BuiltProject {
         project,
-        data.tracks + 1,
+        assets: sink.assets.into_iter().collect(),
+        audio,
+        project_tracks: data.tracks + 1,
         placements,
-        placements,
+        clips: placements,
         project_notes,
         placement_rows,
-    ))
+    })
 }
 
-/// 片段池里一个片段的音符数（用于逐条摆放读数）。
+/// 解析一个音频槽位：`AuRg` take 0 ⇒ `lFuA` 文件名 ⇒ 源文件字节 ⇒ 容器资产。
+///
+/// 失败原因写进 `audio.losses`（每个槽只写一次，⛔ 不按摆放事件重复刷屏）。
+fn resolve_audio_slot(
+    data: &LogicImport,
+    bundle: &Path,
+    slot: u32,
+    options: &ImportOptions,
+    sink: &mut AudioAssetSink,
+    audio: &mut AudioImportStats,
+) -> Result<ResolvedAudio, String> {
+    let loss = |audio: &mut AudioImportStats, detail: String| -> Result<ResolvedAudio, String> {
+        audio.failed_regions += 1;
+        audio
+            .losses
+            .push(format!("level=region kind=AuRg-file slot={slot} {detail}"));
+        Err(detail)
+    };
+    let Some(region) = data.audio_region_for_slot(slot) else {
+        return loss(audio, "reason=no-region".to_owned());
+    };
+    let Some(file) = data.audio_file_for_slot(slot) else {
+        return loss(audio, "reason=no-file-ref".to_owned());
+    };
+    let extension = Path::new(&file.name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "wav" | "aif" | "aiff") {
+        return loss(
+            audio,
+            format!(
+                "file={} reason=unsupported-format ext={extension}",
+                crate::cli::quoted(&file.name)
+            ),
+        );
+    }
+    let path = bundle.join("Media").join("Audio Files").join(&file.name);
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return loss(
+                audio,
+                format!(
+                    "file={} reason=missing-file detail={}",
+                    crate::cli::quoted(&file.name),
+                    error.kind()
+                ),
+            );
+        }
+    };
+    if !metadata.is_file() {
+        return loss(
+            audio,
+            format!("file={} reason=not-a-file", crate::cli::quoted(&file.name)),
+        );
+    }
+    if metadata.len() > crate::import_audio::MAX_AUDIO_FILE_BYTES {
+        return loss(
+            audio,
+            format!(
+                "file={} reason=too-large bytes={} max={}",
+                crate::cli::quoted(&file.name),
+                metadata.len(),
+                crate::import_audio::MAX_AUDIO_FILE_BYTES
+            ),
+        );
+    }
+    if sink.used_bytes.saturating_add(metadata.len()) > options.max_audio_asset_bytes {
+        return loss(
+            audio,
+            format!(
+                "file={} reason=asset-cap bytes={} used={} max={}",
+                crate::cli::quoted(&file.name),
+                metadata.len(),
+                sink.used_bytes,
+                options.max_audio_asset_bytes
+            ),
+        );
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return loss(
+                audio,
+                format!(
+                    "file={} reason=read-failed detail={}",
+                    crate::cli::quoted(&file.name),
+                    error.kind()
+                ),
+            );
+        }
+    };
+    let hash = AssetHash::of_bytes(&bytes);
+    let decoded = match crate::audio_clip::decode_asset_bytes(&hash, &bytes) {
+        Ok(decoded) => decoded,
+        Err(reason) => {
+            return loss(
+                audio,
+                format!(
+                    "file={} reason=decode-failed detail={}",
+                    crate::cli::quoted(&file.name),
+                    reason.replace(' ', "_")
+                ),
+            );
+        }
+    };
+    let ticks = frames_to_ticks(decoded.frames(), decoded.sample_rate(), data.bpm).max(1);
+    sink.used_bytes = sink.used_bytes.saturating_add(metadata.len());
+    // 内容寻址：同一份字节（可能被两个槽位引用）在容器里只有一条。
+    if sink.assets.insert(hash.clone(), bytes).is_none() {
+        audio.assets += 1;
+        audio.asset_bytes = audio.asset_bytes.saturating_add(metadata.len());
+    }
+    audio.regions_imported += 1;
+    let original_path = format!("Media/Audio Files/{}", file.name);
+    sink.paths.insert(hash.clone(), original_path);
+    Ok(ResolvedAudio {
+        hash,
+        name: region.name.clone(),
+        duration_ticks: ticks,
+    })
+}
+
+/// 帧数 ⇒ 960 PPQ tick（按**素材自身采样率**）：`round(frames × 960 × bpm / (60 × rate))`。
+///
+/// 这是 `#152` 的长度口径：`AuRg +0x16` 是帧数，不是 tick。`round` 是**四舍五入**
+/// （0.5 向上），`rate` 为 0 时返回 1（⛔ 除零）。
+fn frames_to_ticks(frames: u64, rate: u32, bpm: f64) -> u64 {
+    if rate == 0 || !bpm.is_finite() || bpm <= 0.0 {
+        return 1;
+    }
+    let numerator = (frames as f64) * 960.0 * bpm;
+    let denominator = 60.0 * f64::from(rate);
+    let ticks = (numerator / denominator).round();
+    if !ticks.is_finite() || ticks <= 0.0 {
+        1
+    } else {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            ticks.min(u64::MAX as f64) as u64
+        }
+    }
+}
+
 fn notes_count(clip_pool: &BTreeMap<EntityId, ClipPoolEntry>, clip_id: EntityId) -> usize {
     clip_pool
         .get(&clip_id)
@@ -735,6 +1149,9 @@ mod tests {
             regions: regions.len(),
             notes: regions.iter().map(|region| region.notes.len()).sum(),
             audio_regions: 0,
+            audio_region_records: Vec::new(),
+            audio_files: Vec::new(),
+            audio_placements: Vec::new(),
             channel_states: 0,
             imported_regions: regions,
             skipped_empty_regions: 0,
@@ -776,8 +1193,16 @@ mod tests {
                 region("D", 30_720, 960, 1),
             ],
         );
-        let (project, tracks, placements, clips, notes, rows) =
-            build_project(&data).expect("合成读数必须能建工程");
+        let built = build_project(&data, Path::new("."), &ImportOptions::default())
+            .expect("合成读数必须能建工程");
+        let project = built.project;
+        let (tracks, placements, clips, notes) = (
+            built.project_tracks,
+            built.placements,
+            built.clips,
+            built.project_notes,
+        );
+        let rows = built.placement_rows;
         assert_eq!(project.validate(), Ok(()), "建出的工程必须通过模型校验");
         assert_eq!(tracks, 4, "3 条内容轨 + 1 条 master");
         assert_eq!(placements, 4);
@@ -803,8 +1228,12 @@ mod tests {
     #[test]
     fn building_the_same_reading_twice_is_byte_identical() {
         let data = synthetic(2, vec![region("A", 0, 960, 2), region("B", 960, 1_920, 1)]);
-        let (first, ..) = build_project(&data).expect("第一次");
-        let (second, ..) = build_project(&data).expect("第二次");
+        let first = build_project(&data, Path::new("."), &ImportOptions::default())
+            .expect("第一次")
+            .project;
+        let second = build_project(&data, Path::new("."), &ImportOptions::default())
+            .expect("第二次")
+            .project;
         assert_eq!(
             serde_json::to_vec(&first).unwrap(),
             serde_json::to_vec(&second).unwrap(),
@@ -825,17 +1254,19 @@ mod tests {
             notes_outside_region: 2,
             ..synthetic(1, vec![region("A", 0, 960, 1)])
         };
-        let (project, project_tracks, placements, clips, project_notes, rows) =
-            build_project(&data).expect("合成读数");
+        let built =
+            build_project(&data, Path::new("."), &ImportOptions::default()).expect("合成读数");
+        let project = built.project;
         let report = ImportReport {
             input: PathBuf::from("in"),
             bundle: PathBuf::from("in/Synthetic.logicx"),
             data,
-            project_tracks,
-            placements,
-            clips,
-            project_notes,
-            placement_rows: rows,
+            project_tracks: built.project_tracks,
+            placements: built.placements,
+            clips: built.clips,
+            project_notes: built.project_notes,
+            placement_rows: built.placement_rows,
+            audio: built.audio,
             saved: SaveReport {
                 path: PathBuf::from("out.yeban"),
                 bytes: 1,
@@ -873,7 +1304,10 @@ mod tests {
             3,
             vec![measured, out_of_range, zero, region("P", 2_880, 960, 1)],
         );
-        let (project, .., rows) = build_project(&data).expect("合成读数");
+        let built =
+            build_project(&data, Path::new("."), &ImportOptions::default()).expect("合成读数");
+        let project = built.project;
+        let rows = built.placement_rows;
         assert_eq!(project.validate(), Ok(()));
         assert_eq!(
             rows.iter().map(|row| row.1).collect::<Vec<_>>(),
@@ -890,17 +1324,19 @@ mod tests {
         let mut data = synthetic(1, vec![region("A", 0, 960, 0)]);
         // 合成的两条 = `#150` 实测的两个垃圾字面量（Swing! 的记录流前两条）。
         data.out_of_range_regions = vec![region("", 0, 4, 0), region("TRASH", 0, 1_073_626_623, 0)];
-        let (project, project_tracks, placements, clips, project_notes, rows) =
-            build_project(&data).expect("合成读数");
+        let built =
+            build_project(&data, Path::new("."), &ImportOptions::default()).expect("合成读数");
+        let project = built.project;
         let report = ImportReport {
             input: PathBuf::from("in"),
             bundle: PathBuf::from("in/Synthetic.logicx"),
             data,
-            project_tracks,
-            placements,
-            clips,
-            project_notes,
-            placement_rows: rows,
+            project_tracks: built.project_tracks,
+            placements: built.placements,
+            clips: built.clips,
+            project_notes: built.project_notes,
+            placement_rows: built.placement_rows,
+            audio: built.audio,
             saved: SaveReport {
                 path: PathBuf::from("out.yeban"),
                 bytes: 1,
@@ -908,7 +1344,10 @@ mod tests {
             },
         };
         let text = report.lines().join("\n");
-        assert_eq!(placements, 1, "越界样本 ⛔ 不进工程（只有 1 条合法区域）");
+        assert_eq!(
+            report.placements, 1,
+            "越界样本 ⛔ 不进工程（只有 1 条合法区域）"
+        );
         assert!(text.contains("level=region kind=长度越界 count=2"));
         for sample in [
             "level=boundary kind=length-out-of-range start=0 length=4 ",

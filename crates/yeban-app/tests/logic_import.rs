@@ -16,9 +16,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use yeban_app::cli::{self, Options};
-use yeban_app::import_logic::{ImportLogicError, PLACEMENT_REPORT_LIMIT, run};
-use yeban_model::ids::EntityId;
-use yeban_model::project::YebanProjectV1;
+use yeban_app::import_logic::{
+    ImportLogicError, ImportOptions, PLACEMENT_REPORT_LIMIT, run, run_with_options,
+};
+use yeban_model::container::ProjectArchive;
+use yeban_model::ids::{AssetHash, EntityId};
+use yeban_model::project::{ClipContent, YebanProjectV1};
 use yeban_render::logic_read::{
     DEFAULT_DEMOS_DIR, LOGIC_REGION_EMPTY_LENGTH, LOGIC_REGION_LENGTH_MAX, LOGIC_REGION_LENGTH_MIN,
     is_region_length_in_range, region_placements,
@@ -94,6 +97,14 @@ impl Drop for Scratch {
     }
 }
 
+/// 关掉音频导入的选项（`#152` 之前的判据口径：只量 MIDI 映射，⛔ 不重复搬 67 MB 音频）。
+fn midi_only() -> ImportOptions {
+    ImportOptions {
+        import_audio: false,
+        ..ImportOptions::default()
+    }
+}
+
 /// `run` 的输出行里找一条以 `prefix` 开头的行。
 fn line_with<'a>(lines: &'a [String], prefix: &str) -> &'a str {
     lines
@@ -128,7 +139,8 @@ fn swing_import_readings_and_loss_table_match_the_measured_table() {
     let output = scratch.path("swing.yeban");
     let before = read_files_digest(&swing_bundle());
 
-    let lines = run(&swing_bundle(), &output).expect("Swing! 必须能导入");
+    let lines =
+        run_with_options(&swing_bundle(), &output, &midi_only()).expect("Swing! 必须能导入");
 
     // demo 只读：importer 读过的文件逐字节未变。
     assert_eq!(
@@ -228,7 +240,7 @@ fn the_imported_project_opens_through_the_headless_path() {
     }
     let scratch = Scratch::new("import-open");
     let output = scratch.path("swing.yeban");
-    run(&swing_bundle(), &output).expect("先导入");
+    run_with_options(&swing_bundle(), &output, &midi_only()).expect("先导入");
 
     let options = Options {
         headless: true,
@@ -263,7 +275,7 @@ fn placements_are_written_and_match_the_148_readings() {
     }
     let scratch = Scratch::new("import-placements");
     let output = scratch.path("swing.yeban");
-    run(&swing_bundle(), &output).expect("先导入");
+    run_with_options(&swing_bundle(), &output, &midi_only()).expect("先导入");
     let project: YebanProjectV1 =
         yeban_app::open::open_project_file(&output).expect("必须能打开导入产物");
 
@@ -345,8 +357,8 @@ fn importing_the_same_project_twice_is_byte_identical() {
     let scratch = Scratch::new("import-determinism");
     let first = scratch.path("first.yeban");
     let second = scratch.path("second.yeban");
-    run(&swing_bundle(), &first).expect("第一次导入");
-    run(&swing_bundle(), &second).expect("第二次导入");
+    run_with_options(&swing_bundle(), &first, &midi_only()).expect("第一次导入");
+    run_with_options(&swing_bundle(), &second, &midi_only()).expect("第二次导入");
     let first_bytes = std::fs::read(&first).expect("读第一次产物");
     let second_bytes = std::fs::read(&second).expect("读第二次产物");
     assert_eq!(
@@ -383,4 +395,189 @@ fn an_existing_path_that_is_not_a_bundle_is_an_error() {
         matches!(error, ImportLogicError::NoBundles { .. }),
         "实际：{error:?}"
     );
+}
+
+/// `#152`：音频区域真的落进容器（**源文件原样字节**）＋ 导出非静音 ＋ 反向腿静音。
+///
+/// 三件事实各自可伪证：
+/// 1. `assets/{sha256}` 的键 == 源 `.aif` 文件的 sha256（字节原样，⛔ 不是转码产物）；
+/// 2. 只留音频 clip 的工程 `--export-wav` 有非零样本；
+/// 3. 把音频 clip 也去掉 ⇒ 同一导出窗口**全零**。
+#[test]
+fn audio_regions_become_container_assets_and_play() {
+    if !demo_present() {
+        return;
+    }
+    let scratch = Scratch::new("import-audio");
+    let output = scratch.path("swing-audio.yeban");
+
+    // 默认选项 = 导入音频（64 MiB 资产上限）。⛔ 不用 `midi_only()`。
+    let lines = run(&swing_bundle(), &output).expect("带音频的导入必须成功");
+    let audio_line = line_with(&lines, "logic-import-audio:");
+    let number = |line: &str, key: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(key))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("`{key}` 不在 `{line}`"))
+    };
+    let assets = number(audio_line, "assets=");
+    let asset_bytes = number(audio_line, "asset-bytes=");
+    let clips = number(audio_line, "clips=");
+    assert!(assets > 0, "至少要有 1 个音频资产：{audio_line}");
+    assert!(asset_bytes > 0, "资产字节必须非零：{audio_line}");
+    assert!(clips > 0, "至少要有 1 条音频摆放：{audio_line}");
+    assert!(
+        audio_line.contains("asset-cap="),
+        "默认 64 MiB 上限在 Swing!（323 MB 源音频）上必须留下逐条损失：{audio_line}"
+    );
+    let container_bytes = output.metadata().expect("产物元数据").len();
+    println!(
+        "logic-audio-import: assets={assets} asset_bytes={asset_bytes} clips={clips} \
+         container_bytes={container_bytes}"
+    );
+    assert!(container_bytes > 1_000_000, "容器里必须真的多出音频字节");
+
+    // ① 容器资产 = 源文件原样字节（哈希与字节逐项相等）。
+    let archive = yeban_app::open::open_project_archive_file(
+        &output,
+        &yeban_app::open::ProjectOpenOptions::default(),
+    )
+    .expect("必须能打开归档");
+    assert_eq!(
+        archive.assets.len() as u64,
+        assets,
+        "`logic-import-audio:` 的条数必须与容器 `assets/` 条目数相等"
+    );
+    let (hash, bytes) = archive.assets.first().expect("至少一个资产");
+    let metadata = archive
+        .project
+        .assets
+        .get(hash)
+        .expect("工程资产索引必须登记每个 blob");
+    let source = swing_bundle().join(&metadata.original_path);
+    let source_bytes = std::fs::read(&source).expect("读源音频");
+    assert_eq!(
+        hash,
+        &AssetHash::of_bytes(&source_bytes),
+        "资产键必须是**源音频文件**的 sha256（字节原样，⛔ 转码）"
+    );
+    assert_eq!(
+        bytes, &source_bytes,
+        "`assets/{{sha256}}` 必须与源文件逐字节相等"
+    );
+    assert_eq!(metadata.byte_len, source_bytes.len() as u64);
+    assert!(matches!(
+        metadata.media_kind,
+        yeban_model::project::MediaKind::Audio
+    ));
+
+    // ② 只留音频 clip ⇒ 导出非静音。
+    let mut audio_only = archive.clone();
+    retain_clips(&mut audio_only, true);
+    let audio_only_path = scratch.path("audio-only.yeban");
+    yeban_app::save::save_archive_file(&audio_only, &audio_only_path).expect("保存音频-only 工程");
+    let audio_wav = scratch.path("audio-only.wav");
+    export_wav(&audio_only_path, &audio_wav);
+    let (peak, nonzero, samples) = peak_of(&audio_wav);
+    println!("logic-audio-export: peak={peak} nonzero={nonzero} samples={samples}");
+    assert!(peak > 0, "音频导出必须非静音（peak={peak}）");
+    assert!(nonzero > 0, "音频导出必须有非零样本（nonzero={nonzero}）");
+
+    // ③ 反向腿：去掉音频 clip ⇒ 同一窗口全零。
+    let mut silent = archive;
+    retain_clips(&mut silent, false);
+    let silent_path = scratch.path("silent.yeban");
+    yeban_app::save::save_archive_file(&silent, &silent_path).expect("保存空工程");
+    let silent_wav = scratch.path("silent.wav");
+    export_wav(&silent_path, &silent_wav);
+    let (silent_peak, silent_nonzero, silent_samples) = peak_of(&silent_wav);
+    println!(
+        "logic-audio-silent: peak={silent_peak} nonzero={silent_nonzero} samples={silent_samples}"
+    );
+    // ⚠ 24-bit 导出**总是**加 TPDF 抖动（`render_core` 第 4 步）⇒ "数字静音"是
+    // `|sample| ≤ 1 LSB`，不是逐样本 0。这条与音频腿的峰值（数百万）差 6 个数量级。
+    assert!(
+        silent_peak <= 1,
+        "去掉音频区域后只剩抖动噪声（|peak| ≤ 1 LSB），实际 peak={silent_peak} \
+         nonzero={silent_nonzero} samples={silent_samples}"
+    );
+    assert!(
+        peak > 1_000_000,
+        "音频腿的峰值必须远高于抖动（peak={peak} vs silent={silent_peak}）"
+    );
+    assert_eq!(silent_samples, samples, "两条腿的导出窗口必须同长");
+}
+
+/// `retain_audio = true` 只留音频 clip；`false` 去掉全部 clip。
+fn retain_clips(archive: &mut ProjectArchive, retain_audio: bool) {
+    let keep: std::collections::BTreeSet<EntityId> = archive
+        .project
+        .clip_pool
+        .iter()
+        .filter(|(_, entry)| matches!(entry.content, ClipContent::Audio { .. }) == retain_audio)
+        .map(|(id, _)| *id)
+        .collect();
+    for track in archive.project.tracks.values_mut() {
+        track
+            .clips
+            .retain(|_, placement| keep.contains(&placement.clip_id));
+    }
+    let _ = &archive.assets;
+}
+
+/// 走 CLI 的离线导出那条路（与用户 `--export-wav` 同一个入口）。
+fn export_wav(project: &Path, output: &Path) {
+    let options = Options {
+        headless: true,
+        open: Some(project.to_path_buf()),
+        export_wav: Some(output.to_path_buf()),
+        wav_seconds: Some(8.0),
+        ..Options::default()
+    };
+    let lines = cli::run_batch(&options).expect("`--export-wav` 必须成功");
+    assert!(
+        lines.iter().any(|line| line.starts_with("exported-wav:")),
+        "导出必须打印 `exported-wav:` 行：\n{}",
+        lines.join("\n")
+    );
+}
+
+/// 读回导出 WAV 的 `(峰值, 非零样本数, 样本数)`（默认 24-bit 立体声）。
+fn peak_of(path: &Path) -> (i64, usize, usize) {
+    let (format, buffer) = yeban_render::wav::read_plain_wav(path).expect("导出的 WAV 必须能读回");
+    assert_eq!(format.channels, 2);
+    let peak = |values: &[i64]| values.iter().copied().map(i64::abs).max().unwrap_or(0);
+    match buffer {
+        yeban_render::dither::PcmBuffer::Int16(values) => {
+            let values: Vec<i64> = values.into_iter().map(i64::from).collect();
+            (
+                peak(&values),
+                values.iter().filter(|value| **value != 0).count(),
+                values.len(),
+            )
+        }
+        yeban_render::dither::PcmBuffer::Int24(values) => {
+            let values: Vec<i64> = values.into_iter().map(i64::from).collect();
+            (
+                peak(&values),
+                values.iter().filter(|value| **value != 0).count(),
+                values.len(),
+            )
+        }
+        yeban_render::dither::PcmBuffer::Float32(values) => {
+            let peak = values
+                .iter()
+                .map(|value| value.abs())
+                .fold(0.0_f32, f32::max);
+            let nonzero = values.iter().filter(|value| **value != 0.0).count();
+            (
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    (peak * 8_388_607.0) as i64
+                },
+                nonzero,
+                values.len(),
+            )
+        }
+    }
 }

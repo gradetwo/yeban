@@ -82,6 +82,20 @@ impl DecodedAsset {
     pub(crate) fn into_parts(self) -> (Vec<f32>, u16, u32) {
         (self.samples, self.source_channels, self.sample_rate)
     }
+
+    /// 帧数（导入侧据此把区域帧长换成 tick）。
+    #[cfg(feature = "experimental-logic-import")]
+    #[must_use]
+    pub(crate) const fn frames(&self) -> u64 {
+        self.frames
+    }
+
+    /// 素材自身的采样率（Hz）。
+    #[cfg(feature = "experimental-logic-import")]
+    #[must_use]
+    pub(crate) const fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
 }
 
 /// 一个资产的解析结果（`Skipped` 的原因会进导出报告）。
@@ -449,7 +463,176 @@ pub(crate) fn decode_asset_bytes(hash: &AssetHash, bytes: &[u8]) -> Result<Decod
             "资产池里的字节与声明的 SHA-256 不符（声明 {hash}，实际 {actual}）"
         ));
     }
+    // ⭐ `#152`：容器里可以放**源文件原样字节**（Logic demo 的 `.aif` 就是 AIFF/PCM）。
+    // 这不改变"唯一一份归一化表"：解码后仍走下面同一个 `DecodedAsset` 形状。
+    if bytes.len() >= 12 && &bytes[..4] == b"FORM" {
+        if &bytes[8..12] == b"AIFC" {
+            return Err("AIFC（压缩 AIFF）不在本仓支持面内（只支持未压缩 AIFF/PCM）".to_owned());
+        }
+        if &bytes[8..12] == b"AIFF" {
+            return decode_aiff_bytes(bytes);
+        }
+    }
     decode_wav_bytes(bytes)
+}
+
+/// AIFF（`FORM`/`AIFF`，**未压缩 PCM**）解码：16 / 24 / 32-bit 大端整数。
+///
+/// 为什么 app 侧自己读：`yeban-render` 的 `read_plain_wav` 是 WAV 专用（`#152` 的
+/// 容器要放 Logic demo 的 `.aif` 原样字节，而 `yeban-decode` 明确不启用 AIFF）。
+/// 只覆盖 AIFF 的 PCM 子集；`AIFC`（压缩变体）**明确拒绝**，⛔ 不猜压缩格式。
+///
+/// 读法与公开的 AIFF 结构一致：`COMM` 给声道/帧/位深/80-bit 采样率，`SSND` 给
+/// 大端交织样本。所有长度都做边界检查 → 畸形文件返回逐字原因（⛔ 不 panic）。
+fn decode_aiff_bytes(bytes: &[u8]) -> Result<DecodedAsset, String> {
+    let mut channels: Option<u16> = None;
+    let mut declared_frames: Option<u64> = None;
+    let mut bits: Option<u16> = None;
+    let mut sample_rate: Option<u32> = None;
+    let mut sound: Option<(usize, usize)> = None;
+    let mut at = 12usize;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_be_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
+            as usize;
+        let body = at + 8;
+        let end = body.checked_add(size).ok_or("AIFF 块长度溢出")?;
+        if end > bytes.len() {
+            return Err(format!(
+                "AIFF 块 `{}` 越过文件末尾",
+                String::from_utf8_lossy(id)
+            ));
+        }
+        match id {
+            b"COMM" => {
+                if size < 18 {
+                    return Err(format!("AIFF COMM 块只有 {size} 字节（至少 18）"));
+                }
+                channels = Some(u16::from_be_bytes([bytes[body], bytes[body + 1]]));
+                declared_frames = Some(u64::from(u32::from_be_bytes([
+                    bytes[body + 2],
+                    bytes[body + 3],
+                    bytes[body + 4],
+                    bytes[body + 5],
+                ])));
+                bits = Some(u16::from_be_bytes([bytes[body + 6], bytes[body + 7]]));
+                sample_rate = Some(read_extended_80(&bytes[body + 8..body + 18])?);
+            }
+            b"SSND" => {
+                if size < 8 {
+                    return Err(format!("AIFF SSND 块只有 {size} 字节（至少 8）"));
+                }
+                let offset = u32::from_be_bytes([
+                    bytes[body],
+                    bytes[body + 1],
+                    bytes[body + 2],
+                    bytes[body + 3],
+                ]) as usize;
+                let start = body
+                    .checked_add(8)
+                    .and_then(|value| value.checked_add(offset))
+                    .ok_or("AIFF SSND 偏移溢出")?;
+                if start > end {
+                    return Err("AIFF SSND 的 offset 越过块末尾".to_owned());
+                }
+                sound = Some((start, end));
+            }
+            _ => {}
+        }
+        at = end.checked_add(size & 1).ok_or("AIFF 块对齐溢出")?;
+    }
+    let channels = channels.ok_or_else(|| "AIFF 缺 COMM 块".to_owned())?;
+    let declared_frames = declared_frames.ok_or_else(|| "AIFF 缺 COMM 块".to_owned())?;
+    let bits = bits.ok_or_else(|| "AIFF 缺 COMM 块".to_owned())?;
+    let sample_rate = sample_rate.ok_or_else(|| "AIFF 缺 COMM 块".to_owned())?;
+    let (start, end) = sound.ok_or_else(|| "AIFF 缺 SSND 块".to_owned())?;
+    if channels == 0 || channels > 64 {
+        return Err(format!("AIFF 声道数 {channels} 不在 1..=64"));
+    }
+    if !matches!(bits, 8 | 16 | 24 | 32) {
+        return Err(format!("AIFF 位深 {bits} 不是 8/16/24/32"));
+    }
+    if sample_rate == 0 || sample_rate > 768_000 {
+        return Err(format!("AIFF 采样率 {sample_rate} Hz 不在 1..=768000"));
+    }
+    let bytes_per_sample = usize::from(bits / 8);
+    let frame_bytes = bytes_per_sample
+        .checked_mul(usize::from(channels))
+        .ok_or("AIFF 帧字节数溢出")?;
+    if frame_bytes == 0 {
+        return Err("AIFF 帧字节数为 0".to_owned());
+    }
+    let available = (end - start) / frame_bytes;
+    let frames = usize::try_from(declared_frames).map_err(|_| "AIFF 帧数溢出".to_owned())?;
+    if available < frames {
+        return Err(format!(
+            "AIFF SSND 数据不足：声明 {frames} 帧，实际只有 {available} 帧"
+        ));
+    }
+    let total_samples = frames
+        .checked_mul(usize::from(channels))
+        .ok_or("AIFF 样本数溢出")?;
+    let mut samples = Vec::with_capacity(total_samples);
+    let scale = 1.0_f32 / (1u64 << (bits - 1)) as f32;
+    let mut cursor = start;
+    for _ in 0..total_samples {
+        let value = match bits {
+            8 => {
+                let raw = bytes[cursor] as i8;
+                cursor += 1;
+                f32::from(raw)
+            }
+            16 => {
+                let raw = i16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]);
+                cursor += 2;
+                f32::from(raw)
+            }
+            24 => {
+                let raw =
+                    i32::from_be_bytes([bytes[cursor], bytes[cursor + 1], bytes[cursor + 2], 0])
+                        >> 8;
+                cursor += 3;
+                raw as f32
+            }
+            _ => {
+                let raw = i32::from_be_bytes([
+                    bytes[cursor],
+                    bytes[cursor + 1],
+                    bytes[cursor + 2],
+                    bytes[cursor + 3],
+                ]);
+                cursor += 4;
+                raw as f32
+            }
+        };
+        samples.push(value * scale);
+    }
+    Ok(DecodedAsset {
+        samples,
+        source_channels: channels,
+        sample_rate,
+        frames: u64::try_from(frames).unwrap_or(u64::MAX),
+    })
+}
+
+/// AIFF 的 80-bit IEEE 754 扩展精度采样率（1 位符号 + 15 位指数 + 64 位尾数）。
+fn read_extended_80(bytes: &[u8]) -> Result<u32, String> {
+    if bytes.len() < 10 {
+        return Err("AIFF 采样率字段短于 10 字节".to_owned());
+    }
+    let exponent = u16::from_be_bytes([bytes[0], bytes[1]]);
+    let mantissa = u64::from_be_bytes([
+        bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
+    ]);
+    if exponent == 0 || mantissa == 0 {
+        return Ok(0);
+    }
+    let value = (mantissa as f64 / (1u64 << 63) as f64) * 2f64.powi(i32::from(exponent) - 16383);
+    if !value.is_finite() || value <= 0.0 {
+        return Err("AIFF 采样率不是有限正数".to_owned());
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(value.round() as u32)
 }
 
 /// 把资产字节写进唯一临时文件、用**本仓唯一的 WAV 读取器**解码、随即删除。
@@ -538,6 +721,64 @@ mod tests {
     use yeban_render::wav::write_plain_wav;
 
     use super::*;
+
+    /// 造一份**合成 AIFF**（16-bit / 2 声道 / 3 帧 / 48 kHz；⛔ 不含任何 demo 字节）。
+    ///
+    /// 结构：`FORM` + `AIFF` + `COMM`（channels / frames / bits / 80-bit rate）+ `SSND`。
+    fn synthetic_aiff() -> Vec<u8> {
+        let channels: u16 = 2;
+        let frames: u32 = 3;
+        let rate: u32 = 48_000;
+        // 80-bit extended：48000 = 1.46484375 × 2^15 ⇒ 指数 16383+15，尾数 = 48000 << 48。
+        let exponent = (16_383 + 15u16).to_be_bytes();
+        let mantissa = (u64::from(rate) << 48).to_be_bytes();
+        let mut comm = Vec::new();
+        comm.extend_from_slice(&channels.to_be_bytes());
+        comm.extend_from_slice(&frames.to_be_bytes());
+        comm.extend_from_slice(&16u16.to_be_bytes());
+        comm.extend_from_slice(&exponent);
+        comm.extend_from_slice(&mantissa);
+        assert_eq!(comm.len(), 18);
+        let samples: [i16; 6] = [0, 16_384, -16_384, 32_767, -32_768, 100];
+        let mut ssnd = Vec::new();
+        ssnd.extend_from_slice(&0u32.to_be_bytes()); // offset
+        ssnd.extend_from_slice(&0u32.to_be_bytes()); // block size
+        for sample in samples {
+            ssnd.extend_from_slice(&sample.to_be_bytes());
+        }
+        let mut file = Vec::new();
+        file.extend_from_slice(b"FORM");
+        file.extend_from_slice(&0u32.to_be_bytes()); // 回填
+        file.extend_from_slice(b"AIFF");
+        file.extend_from_slice(b"COMM");
+        file.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+        file.extend_from_slice(&comm);
+        file.extend_from_slice(b"SSND");
+        file.extend_from_slice(&(ssnd.len() as u32).to_be_bytes());
+        file.extend_from_slice(&ssnd);
+        let size = u32::try_from(file.len() - 8).expect("夹具长度");
+        file[4..8].copy_from_slice(&size.to_be_bytes());
+        file
+    }
+
+    /// 判据（`#152`）：AIFF/PCM 真的能解码，且事实来自字节本身。
+    #[test]
+    fn aiff_pcm_is_decoded_from_the_source_bytes() {
+        let bytes = synthetic_aiff();
+        let hash = AssetHash::of_bytes(&bytes);
+        let decoded = decode_asset_bytes(&hash, &bytes).expect("合成 AIFF 必须能解码");
+        assert_eq!(decoded.frames, 3);
+        assert_eq!(decoded.source_channels, 2);
+        assert_eq!(decoded.sample_rate, 48_000);
+        assert_eq!(decoded.samples.len(), 6);
+        assert!((decoded.samples[0] - 0.0).abs() < 1e-6);
+        assert!((decoded.samples[1] - 0.5).abs() < 1e-3);
+        assert!((decoded.samples[2] + 0.5).abs() < 1e-3);
+        assert!((decoded.samples[3] - 0.999_969).abs() < 1e-3);
+        assert!((decoded.samples[4] + 1.0).abs() < 1e-6);
+        // 哈希键仍必须是**源字节**的 sha256（⛔ 解码不改写它）。
+        assert_eq!(hash, AssetHash::of_bytes(&bytes));
+    }
 
     /// 写一份**真 WAV** 字节（440 Hz / 16-bit / 单声道；写完即删临时文件）。
     fn wav_bytes(tag: &str, rate: u32, frames: usize) -> Vec<u8> {

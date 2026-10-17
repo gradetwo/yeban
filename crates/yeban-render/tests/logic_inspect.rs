@@ -911,3 +911,181 @@ fn track_binding_comes_from_placement_events_and_is_partial_on_every_demo() {
         total_regions - total_bound
     );
 }
+
+/// `#152`：`AuRg`（音频区域）/ `lFuA`（文件引用）/ 音频摆放事件的逐台读数。
+///
+/// 三条**可伪证**的约束（全部来自字节，⛔ 不读实现里的表达式）：
+/// 1. 每条 `AuRg` 的记录头对象号都能找到**同号**的 `lFuA`（8/8 台，0 例外）；
+/// 2. 每条**音频摆放事件**的 `+0x2c` 槽位都能找到 `AuRg`（起点只在事件里）；
+/// 3. 区域名非空、take 序号 < 64、长度帧 > 0。
+///
+/// 逐台期望值是 `#152` 的实测条数（不是从实现里抄的）。
+#[test]
+fn audio_regions_files_and_placements_match_the_measured_inventory() {
+    if !Path::new(DEFAULT_DEMOS_DIR).is_dir() {
+        println!("logic-audio: 无 demo（{DEFAULT_DEMOS_DIR} 不存在），跳过（不红）");
+        return;
+    }
+    let demos = inspect_demos(Path::new(DEFAULT_DEMOS_DIR))
+        .expect("demo 目录存在 ⇒ 解析不得失败")
+        .expect("目录存在时必须有 8 台");
+    let mut total_regions = 0usize;
+    let mut total_placements = 0usize;
+    for inspection in &demos {
+        let (au_rg, files, placements, frames_exact, bad_tracks) = match inspection.bundle.as_str()
+        {
+            "Colors" => (697, 260, 351, 0, 0),
+            "MONTERO" => (1_014, 196, 720, 0, 0),
+            "MONTERO - Spatial Audio" => (1_013, 196, 715, 0, 0),
+            "Manzana" => (154, 26, 148, 14, 0),
+            "Manzana - Spatial Audio" => (195, 26, 148, 14, 0),
+            "Spatial Audio Demo Grid" => (102, 85, 98, 0, 0),
+            "Swing!" => (402, 181, 152, 32, 0),
+            // `#152` 实测：ocean eyes 有 4 条音频摆放写在轨道 43..46，
+            // 而 `karT` 的实测轨数只有 42 ⇒ 导入器逐条记损失（⛔ 不猜轨道）。
+            "ocean eyes" => (527, 144, 449, 0, 4),
+            other => panic!("未登记读数的 demo：{other}"),
+        };
+        let bundle = Path::new(DEFAULT_DEMOS_DIR).join(format!("{}.logicx", inspection.bundle));
+        let import = import_bundle(&bundle).expect("import_bundle 必须成功");
+        assert_eq!(
+            import.audio_regions, au_rg,
+            "{} 的 AuRg 条数",
+            inspection.bundle
+        );
+        assert_eq!(
+            import.audio_region_records.len(),
+            au_rg,
+            "{} 的 AuRg 逐条读数",
+            inspection.bundle
+        );
+        assert_eq!(
+            import.audio_files.len(),
+            files,
+            "{} 的 lFuA 条数",
+            inspection.bundle
+        );
+        assert_eq!(
+            import.audio_placements.len(),
+            placements,
+            "{} 的音频摆放事件条数",
+            inspection.bundle
+        );
+        // ① 每个 AuRg 对象号都有同号的 lFuA（8/8 台，0 例外）。
+        for region in &import.audio_region_records {
+            assert!(
+                import.audio_file_for_slot(region.object >> 16).is_some(),
+                "{} 的区域 `{}`（对象 {:08x}）没有 lFuA 文件引用",
+                inspection.bundle,
+                region.name,
+                region.object
+            );
+            assert!(
+                !region.name.is_empty(),
+                "{} 有空名字的 AuRg",
+                inspection.bundle
+            );
+            assert!(
+                region.take_index < 0x1_0000,
+                "{} 的 take 序号越界",
+                inspection.bundle
+            );
+            assert!(
+                region.length_frames > 0,
+                "{} 的 AuRg 长度帧为 0",
+                inspection.bundle
+            );
+        }
+        // ② 每个音频摆放事件的槽位都有 AuRg（起点只在事件里）。
+        let mut bad = 0usize;
+        for placement in &import.audio_placements {
+            assert!(
+                import
+                    .audio_region_for_slot(placement.region_slot)
+                    .is_some(),
+                "{} 的音频摆放（start={} track={}）槽位 {:x} 没有 AuRg",
+                inspection.bundle,
+                placement.start_tick,
+                placement.track_1based,
+                placement.region_slot
+            );
+            if !(1..=u32::try_from(import.tracks).expect("轨数")).contains(&placement.track_1based)
+            {
+                bad += 1;
+            }
+        }
+        assert_eq!(
+            bad, bad_tracks,
+            "{} 的越界轨道号音频摆放条数（实测表）",
+            inspection.bundle
+        );
+        // ③ 长度帧 → tick：采样的**长度**在 Swing!/Manzana 上有 `<frames_exact>` 条
+        //    恰好落在 960 tick 的整数倍上（素材率换算；见 `#152` 报告的手算对照）。
+        let mut exact = 0usize;
+        for region in &import.audio_region_records {
+            let Some(file) = import.audio_file_for_slot(region.object >> 16) else {
+                continue;
+            };
+            let path = bundle.join("Media").join("Audio Files").join(&file.name);
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Some(rate) = aiff_sample_rate(&bytes) else {
+                continue;
+            };
+            let ticks = (f64::from(region.length_frames) * 960.0 * import.bpm
+                / (60.0 * f64::from(rate)))
+            .round();
+            if (ticks / 960.0).fract().abs() < 0.000_1 {
+                exact += 1;
+            }
+        }
+        if frames_exact > 0 {
+            assert!(
+                exact >= frames_exact,
+                "{} 的 960 整数倍长度必须至少 {frames_exact} 条（实际 {exact}）",
+                inspection.bundle
+            );
+        }
+        println!(
+            "logic-audio: bundle={} au_rg={} files={} placements={} exact_bar_lengths={exact}",
+            inspection.bundle, au_rg, files, placements
+        );
+        total_regions += au_rg;
+        total_placements += placements;
+    }
+    assert_eq!(total_regions, 4_104, "8 台 AuRg 合计（#139 实测）");
+    assert_eq!(total_placements, 2_781, "8 台音频摆放事件合计");
+}
+
+/// AIFF `COMM` 块的采样率（只给判据用；非 AIFF/短文件 ⇒ `None`）。
+fn aiff_sample_rate(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() < 12 || &bytes[..4] != b"FORM" || &bytes[8..12] != b"AIFF" {
+        return None;
+    }
+    let mut at = 12usize;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_be_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
+            as usize;
+        let body = at + 8;
+        if id == b"COMM" && size >= 18 && body + 18 <= bytes.len() {
+            let exponent = u16::from_be_bytes([bytes[body + 8], bytes[body + 9]]);
+            let mantissa = u64::from_be_bytes([
+                bytes[body + 10],
+                bytes[body + 11],
+                bytes[body + 12],
+                bytes[body + 13],
+                bytes[body + 14],
+                bytes[body + 15],
+                bytes[body + 16],
+                bytes[body + 17],
+            ]);
+            let value =
+                (mantissa as f64 / (1u64 << 63) as f64) * 2f64.powi(i32::from(exponent) - 16383);
+            return u32::try_from(value.round() as i64).ok();
+        }
+        at = body.checked_add(size)?.checked_add(size & 1)?;
+    }
+    None
+}
