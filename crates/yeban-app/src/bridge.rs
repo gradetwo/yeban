@@ -1283,6 +1283,37 @@ pub struct SectionView {
     pub color: Option<String>,
 }
 
+/// 素材池面板一行里展示的**资产哈希前缀长度**（64 位十六进制的前 8 位）。
+///
+/// 面板只需"这一行指向哪份字节"的可辨认前缀；完整哈希属于工程文档，⛔ 不为它另造
+/// 一份数据面。判据读的是同一份投影（`AssetPoolRowView::detail`），不是这个常量。
+pub const ASSET_PREFIX_CHARS: usize = 8;
+
+/// 视图里的一个**素材池条目**（`YebanProjectV1::clip_pool` 的一行）。
+///
+/// ⭐ 任务单 `#133`：`clip_pool` 在 `.slint` 里此前是 **0 处**投影（本单之前
+/// `grep -rn clip_pool --include=*.slint crates/ | wc -l` = 0）⇒ 录音经 `#132`
+/// 落进 `clip_pool` 之后，用户在界面上**看不到它**。本结构是素材池的**唯一**
+/// 投影产物：面板的三个平行数组（[`ViewState::asset_pool_names`] /
+/// [`ViewState::asset_pool_kinds`] / [`ViewState::asset_pool_details`]）都由它派生。
+///
+/// 字段**只**来自工程文档：`ClipPoolEntry` ＋ `YebanProjectV1::assets` 的
+/// `AssetMetadata::byte_len`。`assets` 索引里没有登记元数据时，`detail` 如实写
+/// 「字节数未知」—— ⛔ 不按 WAV 头 / 帧数**推算**一个字节数（那会是第二个真相源）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetPoolRowView {
+    /// 片段池身份规范文本（`ClipPoolEntry::id`）。
+    pub clip_id: String,
+    /// 显示名（`ClipPoolEntry::name`）。
+    pub name: String,
+    /// 内容类型（`"音频"` / `"MIDI"`）。
+    pub kind: String,
+    /// 该行**拿得到**的字段：音频 = 字节数／资产前缀／增益；MIDI = 音符条数。
+    pub detail: String,
+    /// 一整行无障碍标签（`"{name} · {kind} · {detail}"`）。
+    pub label: String,
+}
+
 /// 视图里的一个场景（`SceneV3`，Session View 的行）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneView {
@@ -1399,6 +1430,13 @@ pub struct ViewState {
     pub sections: Vec<SectionView>,
     /// 全部场景（身份升序）。
     pub scenes: Vec<SceneView>,
+    /// 素材池（`clip_pool`）的行投影（身份升序 = `BTreeMap` 键序）。
+    ///
+    /// ⭐ 任务单 `#133`：这是素材池面板的唯一事实源。面板按
+    /// [`Self::asset_pool_names`] / [`Self::asset_pool_kinds`] /
+    /// [`Self::asset_pool_details`] 三个平行数组取数（同索引集）；空池投影成空 `Vec`
+    /// ⇒ 界面显示空态，而不是一片空白。
+    pub asset_pool: Vec<AssetPoolRowView>,
     /// 全部 MIDI 音符（片段池键序 → 音符键序，去重保序），**含**投影算出的 x / y / 宽 / 车道。
     ///
     /// 这是音符族唯一的权威投影产物；[`Self::note_ulids`] / [`Self::note_velocities`] 与
@@ -1592,6 +1630,10 @@ impl ViewState {
             scenes.push(scene_view(scene, index));
         }
 
+        // 素材池：`clip_pool` 的**逐条**投影（身份升序）。⛔ 不在这里筛掉 MIDI 条目 ——
+        // 面板的"类型"一列要把两种内容都如实标出来（音频 / MIDI）。
+        let asset_pool = asset_pool_rows(project);
+
         // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
         // 身份进 `note-{ulid}-rect`；力度进力度泳道；**位置**由 start_tick / pitch 经整数
         // 变换得到（复用 `tick_to_px` 与 `pitch_lane`，不在别处再写一套换算）。
@@ -1658,6 +1700,7 @@ impl ViewState {
             clips,
             sections,
             scenes,
+            asset_pool,
             note_x_order: {
                 // 一次性建索引：按 `x` 升序。`total_cmp` 对 NaN 也有全序, 不会 panic。
                 let mut order: Vec<u32> = (0..notes.len() as u32).collect();
@@ -1815,6 +1858,41 @@ impl ViewState {
     #[must_use]
     pub fn scene_names(&self) -> Vec<String> {
         self.scenes.iter().map(|scene| scene.name.clone()).collect()
+    }
+
+    /// 素材池每一行的显示名（与下面两个数组**同索引集**）。
+    ///
+    /// ⭐ 任务单 `#133`：`.slint` 面板的 `asset-pool-names` 就是它。
+    #[must_use]
+    pub fn asset_pool_names(&self) -> Vec<String> {
+        self.asset_pool.iter().map(|row| row.name.clone()).collect()
+    }
+
+    /// 素材池每一行的内容类型（`"音频"` / `"MIDI"`）。
+    #[must_use]
+    pub fn asset_pool_kinds(&self) -> Vec<String> {
+        self.asset_pool.iter().map(|row| row.kind.clone()).collect()
+    }
+
+    /// 素材池每一行**拿得到**的字段（音频：字节数／资产前缀／增益；MIDI：音符条数）。
+    ///
+    /// ⛔ 这一格不补算任何读数：字节数只来自 `project.assets` 的 `byte_len`，
+    /// 没有登记就写「字节数未知」（见 [`AssetPoolRowView`]）。
+    #[must_use]
+    pub fn asset_pool_details(&self) -> Vec<String> {
+        self.asset_pool
+            .iter()
+            .map(|row| row.detail.clone())
+            .collect()
+    }
+
+    /// 素材池每一行的整串无障碍标签（注册表与运行时两侧共用）。
+    #[must_use]
+    pub fn asset_pool_labels(&self) -> Vec<String> {
+        self.asset_pool
+            .iter()
+            .map(|row| row.label.clone())
+            .collect()
     }
 
     /// 剪辑摆放身份（`clip-{ulid}-header` 的 `{ulid}` 段）。
@@ -2661,6 +2739,50 @@ fn scene_view(scene: &SceneV3, index: usize) -> SceneView {
         tempo: scene.tempo,
         color: scene.color.clone(),
     }
+}
+
+/// 把 `clip_pool` 投影成素材池面板的行（`BTreeMap` 键序 = 身份升序）。
+///
+/// 每一行的字段都**只**来自工程文档：
+///
+/// * 音频：`ClipContent::Audio { asset, gain_db }`；字节数取
+///   `YebanProjectV1::assets[asset].byte_len`（⭐ `#132` 的录音只提交 `Op::AddClip`，
+///   **不**写 `assets` 索引 ⇒ 新录的那条如实显示「字节数未知」）；
+/// * MIDI：`ClipContent::Midi` 的音符条数。
+///
+/// ⛔ 这里不读盘、不打开容器、不按 WAV 头推算字节数 —— 投影的输入只有 `project`。
+fn asset_pool_rows(project: &YebanProjectV1) -> Vec<AssetPoolRowView> {
+    project
+        .clip_pool
+        .values()
+        .map(|entry| {
+            let (kind, detail) = match &entry.content {
+                ClipContent::Audio { asset, gain_db } => {
+                    let prefix: String =
+                        asset.to_string().chars().take(ASSET_PREFIX_CHARS).collect();
+                    let bytes = project.assets.get(asset).map_or_else(
+                        || "字节数未知".to_owned(),
+                        |meta| format!("{} 字节", meta.byte_len),
+                    );
+                    (
+                        "音频".to_owned(),
+                        format!("{bytes} · {prefix}… · {gain_db:.1} dB"),
+                    )
+                }
+                ClipContent::Midi { notes } => {
+                    ("MIDI".to_owned(), format!("音符 {} 条", notes.len()))
+                }
+            };
+            let label = format!("{} · {} · {}", entry.name, kind, detail);
+            AssetPoolRowView {
+                clip_id: entry.id.to_canonical_string(),
+                name: entry.name.clone(),
+                kind,
+                detail,
+                label,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

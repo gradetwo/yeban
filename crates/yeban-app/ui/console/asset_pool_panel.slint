@@ -1,0 +1,127 @@
+// 夜半 (Yeban) — 素材池面板（任务单 `#133`：让 `clip_pool` 在界面里可见）
+//
+// 规范来源 (Normative):
+//   - [UI-TEST-001] §12.2: 关键节点必须有稳定的 `accessible-id`；本面板的语义 ID 由
+//     `src/elements.rs` 的注册表与运行时控件树两侧对账。
+//   - [UI-MCP-003]: 5 张 Linux 基准只覆盖**默认帧**（控制台 Tab 0 = 钢琴卷帘）。
+//     本面板住在 `MixerConsole`（Tab 1）里 ⇒ 默认帧**一个像素都不画**，基准不需要重录。
+//
+// 数据流方向（与 `mixer_console.slint` 的 `track-*` 数组同一条纪律）:
+//   三个 `in` 数组由 `src/host.rs` 的 `apply_view` 单向注入，**唯一**事实源是
+//   `src/bridge.rs` 的 `ViewState::asset_pool`（`clip_pool` 的投影）。本文件不读盘、
+//   ⛔ 不造字节数、⛔ 不判断空态以外的任何业务条件。
+//
+// 为什么是三个平行数组而不是一个富对象数组: 与本仓既有投影面（`track-*` / `clip-*` /
+//   `note-*`）同形 —— 每个显示字段一个数组，**同一索引集**，`.slint` 只按下标取。
+
+import { Tokens, UiMediumText, UiText } from "../tokens.slint";
+
+export component AssetPoolPanel inherits Rectangle {
+    // 每一行的显示名 / 类型 / 可用字段（投影给出，同索引集）。
+    in property <[string]> asset-pool-names: [];
+    in property <[string]> asset-pool-kinds: [];
+    in property <[string]> asset-pool-details: [];
+
+    background: Tokens.bg-panel;
+    border-radius: Tokens.radius-md;
+    border-width: 1px;
+    border-color: Tokens.line;
+    clip: true;
+
+    accessible-role: region;
+    accessible-id: "asset-pool-panel";
+    accessible-label: "素材池";
+
+    // ---------------------------------------------------------------- 标题
+    UiMediumText {
+        x: Tokens.space-3;
+        y: Tokens.space-2;
+        width: parent.width - 12px;
+        height: 18px;
+        text: "素材池";
+        color: Tokens.ink-0;
+        font-size: Tokens.font-size-sm;
+        overflow: elide;
+    }
+
+    // ---------------------------------------------------------------- 条目数
+    // 读数是**投影的行数**（`asset-pool-names.length`），不是界面自己数的。
+    Rectangle {
+        x: Tokens.space-3;
+        y: 22px;
+        width: parent.width - 12px;
+        height: 16px;
+        accessible-role: text;
+        accessible-id: "asset-pool-count";
+        accessible-label: "素材 " + root.asset-pool-names.length + " 条";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "素材 " + root.asset-pool-names.length + " 条";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+
+    // ---------------------------------------------------------------- 空态
+    // 0 条素材 = 合法的工程状态（`#132` 之后新建工程就是这一档）⇒ 明确文案，
+    // ⛔ 不留一片空白。它与下面的行循环由**同一份**长度互斥。
+    Rectangle {
+        x: Tokens.space-3;
+        y: 44px;
+        width: parent.width - 12px;
+        height: 18px;
+        visible: root.asset-pool-names.length == 0;
+        accessible-role: text;
+        accessible-id: "asset-pool-empty";
+        accessible-label: "尚无素材";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "尚无素材";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+        }
+    }
+
+    // ---------------------------------------------------------------- 每条一行
+    // 行数**由投影决定**（`for … in root.asset-pool-names`），⛔ 不是写死的条数。
+    // 名字一行、类型 + 可用字段一行（面板窄，两行比省略号更容易读到字节数）。
+    for asset_name[row_index] in root.asset-pool-names : Rectangle {
+        x: Tokens.space-3;
+        y: 44px + 32px * row_index;
+        width: parent.width - 12px;
+        height: 30px;
+        accessible-role: list-item;
+        accessible-id: "asset-pool-row-" + row_index + "-row";
+        accessible-label: asset_name + " · " + root.asset-pool-kinds[row_index] + " · " + root.asset-pool-details[row_index];
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: 16px;
+            text: asset_name;
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+
+        UiText {
+            x: 0;
+            y: 15px;
+            width: parent.width;
+            height: 15px;
+            text: root.asset-pool-kinds[row_index] + " · " + root.asset-pool-details[row_index];
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+        }
+    }
+}

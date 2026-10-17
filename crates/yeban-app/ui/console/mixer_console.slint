@@ -33,6 +33,7 @@
 // 全在投影层与 `src/meters.rs`（零 Slint 依赖，本机可 `rustc --test` 真跑）。
 
 import { Tokens, UiText, UiMonoText, UiMediumText } from "../tokens.slint";
+import { AssetPoolPanel } from "asset_pool_panel.slint";
 
 export component MixerConsole inherits Rectangle {
     // ---- 由 src/host.rs 注入的**投影**数据 (默认空 = 没有内联演示数据) ----
@@ -48,6 +49,14 @@ export component MixerConsole inherits Rectangle {
     in property <[string]> track-sampler-paths: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
+
+    // ---- ⭐ 素材池（任务单 `#133`）---------------------------------------------
+    // 三个平行数组由 `src/host.rs` 的 `apply_view` 单向注入，唯一事实源是
+    // `ViewState::asset_pool`（`clip_pool` 的投影）。长度 = `clip_pool` 条目数。
+    // 本组件只把它们**透传**给 `AssetPoolPanel`，不做任何筛选或补算。
+    in property <[string]> asset-pool-names: [];
+    in property <[string]> asset-pool-kinds: [];
+    in property <[string]> asset-pool-details: [];
 
     // ---- 混音**写入面**的三条手势 + 两个开关（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`）----
     //
@@ -351,6 +360,29 @@ export component MixerConsole inherits Rectangle {
                 clicked => { root.new-project(); }
             }
         }
+    }
+
+    // ⭐ **素材池**（任务单 `#133`）—— `clip_pool` 在界面上的**可见**投影。
+    //
+    // 为什么长在混音台（控制台 Tab 1）里：与 `#90` 的「导出 MIDI」/ `#93` 的「打开工程」/
+    // `#129` 的「新建工程」**逐字同一条纪律** —— `MixerConsole` 只在 `active-tab == 1`
+    // 时可见，默认帧（Tab 0 卷帘 = 5 张 Linux 基准覆盖的那一帧）里**一个像素都不画**
+    // ⇒ 基准逐位不变（本机是 macOS、`tests/golden/<platform>` 只有 `linux`，无法重录）。
+    //
+    // 座位：紧贴「工程」面板**正下方**（同一个 `x` / 同一个宽度），`y = 120px`
+    // （= 上面那块 104px 面板 + `space-4` 起点 + `space-3` 间隙）。通道条永远在
+    // 本面板左侧的 `104px * track_index` 列里 ⇒ 互不重叠，且既有控件的几何一位不动。
+    //
+    // ⛔ 本组件不读盘、不造数据：三个数组**全部**来自投影（见 `src/bridge.rs` 的
+    // `AssetPoolRowView`），空池显示「尚无素材」。
+    AssetPoolPanel {
+        x: Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
+        y: Tokens.space-4 + 104px + Tokens.space-3;
+        width: 216px;
+        height: root.height - 128px;
+        asset-pool-names: root.asset-pool-names;
+        asset-pool-kinds: root.asset-pool-kinds;
+        asset-pool-details: root.asset-pool-details;
     }
 
     // ---------------------------------------------------------------- 通道条

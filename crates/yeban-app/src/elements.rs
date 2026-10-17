@@ -1014,6 +1014,41 @@ impl ElementRegistry {
             false,
         );
 
+        // ------------------------------------------------------------ 素材池（`#133`）
+        // 面板 / 条目数 / 空态是**单例**；行是**投影驱动的动态族**
+        // （`for asset_name[row_index] in root.asset-pool-names`）⇒ 条目数随
+        // `clip_pool` 变化（本判据的"派生不是硬编码"那一半就在这份循环里）。
+        registry.add(
+            "asset-pool-panel",
+            ElementKind::Region,
+            "console/asset_pool_panel.slint",
+            "素材池",
+            false,
+        );
+        registry.add(
+            "asset-pool-count",
+            ElementKind::Text,
+            "console/asset_pool_panel.slint",
+            &format!("素材 {} 条", view.asset_pool.len()),
+            false,
+        );
+        registry.add(
+            "asset-pool-empty",
+            ElementKind::Text,
+            "console/asset_pool_panel.slint",
+            "尚无素材",
+            false,
+        );
+        for (index, row) in view.asset_pool.iter().enumerate() {
+            registry.add(
+                &format!("asset-pool-row-{index}-row"),
+                ElementKind::ListItem,
+                "console/asset_pool_panel.slint",
+                &row.label,
+                false,
+            );
+        }
+
         // ------------------------------------------------------------ 设备机架
         registry.add(
             "device-rack",
@@ -1600,7 +1635,11 @@ mod tests {
     /// 装载 SFZ / 录音。它是**新增的独立组件**（不是往 `transport.slint` 里塞）——
     /// 理由是顶栏那三个文档键与录音键的"无点击处理器"被本文件自己的两条判据钉着
     /// （承载 `[ARCH-REC-001]` 的声卡录音缺口），本票不动它们。
-    const SLINT_MANIFEST: [&str; 14] = [
+    ///
+    /// `console/asset_pool_panel.slint`（15 号）是**任务单 `#133`** 加的素材池面板：
+    /// 独立组件（住在 `MixerConsole` 里，Tab 1 才可见）⇒ 默认帧像素不变。它与上面
+    /// 那一族同一条纪律：UI 加一个文件就必须在清单里显式改。
+    const SLINT_MANIFEST: [&str; 15] = [
         "app.slint",
         "transport.slint",
         "status_bar.slint",
@@ -1613,6 +1652,8 @@ mod tests {
         "console/piano_roll.slint",
         "console/mixer_console.slint",
         "console/device_rack.slint",
+        // 素材池面板（任务单 `#133`）。
+        "console/asset_pool_panel.slint",
         "dialogs/musical_pr_drawer.slint",
         "dialogs/undo_tree_modal.slint",
         // 四个模块入口（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）。

@@ -711,6 +711,12 @@ export component MainWindow inherits Window {
     // 钢琴卷帘的音符身份与力度（`MidiNote::id` / `MidiNote::velocity` ÷ 127）
     in property <[string]> note-ulids: [];
     in property <[float]> note-velocities: [];
+    // ⭐ 素材池（任务单 `#133`）：`clip_pool` 的行投影（名字 / 类型 / 可用字段）。
+    // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::asset_pool`。
+    // 面板住在控制台 Tab 1（`MixerConsole` 里的 `AssetPoolPanel`）⇒ 默认帧不画它。
+    in property <[string]> asset-pool-names: [];
+    in property <[string]> asset-pool-kinds: [];
+    in property <[string]> asset-pool-details: [];
     // 卷帘音符的位置（x / y / 宽，逻辑像素）—— 由 `start_tick` / `pitch` 整数派生，
     // 见 `src/bridge.rs` 的 `NoteView`（界面不做任何位置算术）。
     /// `[ROAD-M3-002]` 卷帘滚动手势（由宿主接管并重新注入）。
@@ -1080,6 +1086,10 @@ export component MainWindow inherits Window {
             note-drag-preview-velocity: root.note-drag-preview-velocity;
             note-ys: root.note-ys;
             note-widths: root.note-widths;
+            // ⭐ 素材池（`#133`）：透传到 `MixerConsole` 的 `AssetPoolPanel`（Tab 1）。
+            asset-pool-names: root.asset-pool-names;
+            asset-pool-kinds: root.asset-pool-kinds;
+            asset-pool-details: root.asset-pool-details;
             // 调音台通道条（Tab 2）：投影 + 引擎电平，全部由 host.rs 单向注入。
             track-names: root.track-names;
             track-volumes: root.track-volumes;

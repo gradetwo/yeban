@@ -67,6 +67,11 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> track-sampler-paths: [];
     in property <[color]> track-colors: [];
     in property <[string]> track-color-labels: [];
+    // ⭐ 素材池（任务单 `#133`）：`clip_pool` 投影的三个平行数组 —— 本组件只透传给
+    // `MixerConsole`（Tab 1 的 `AssetPoolPanel`），⛔ 不解释、不筛选、不计数。
+    in property <[string]> asset-pool-names: [];
+    in property <[string]> asset-pool-kinds: [];
+    in property <[string]> asset-pool-details: [];
     in property <[string]> track-meter-peaks: [];
     in property <[string]> track-meter-rmss: [];
     in property <[float]> track-meter-levels: [];
@@ -260,6 +265,10 @@ export component ConsoleTabs inherits Rectangle {
         track-sampler-paths: root.track-sampler-paths;
         track-colors: root.track-colors;
         track-color-labels: root.track-color-labels;
+        // ⭐ 素材池（`#133`）：同样只透传（`AssetPoolPanel` 住在 `MixerConsole` 里）。
+        asset-pool-names: root.asset-pool-names;
+        asset-pool-kinds: root.asset-pool-kinds;
+        asset-pool-details: root.asset-pool-details;
         track-meter-peaks: root.track-meter-peaks;
         track-meter-rmss: root.track-meter-rmss;
         track-meter-levels: root.track-meter-levels;

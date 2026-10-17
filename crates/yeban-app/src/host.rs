@@ -156,6 +156,14 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_clip_labels(strings(&view.clip_labels()));
     ui.set_clip_positions(lengths(&view.clip_positions()));
     ui.set_clip_widths(lengths(&view.clip_widths()));
+    // ⭐ 素材池（任务单 `#133`）：三个平行数组全部来自 `ViewState::asset_pool`
+    // （`clip_pool` 的**唯一**投影产物，见 `bridge.rs` 的 `AssetPoolRowView`）。
+    // 它们只在完整重投影（换工程 / 撤销 / 打开）时变化，但 `apply_view` 每次都会新建
+    // `VecModel` ⇒ 计入 `PER_FRAME_ARRAY_REWRITE_BUDGET`（见 `tests/perf_draw_budget.rs`
+    // 的读数与注释）。
+    ui.set_asset_pool_names(strings(&view.asset_pool_names()));
+    ui.set_asset_pool_kinds(strings(&view.asset_pool_kinds()));
+    ui.set_asset_pool_details(strings(&view.asset_pool_details()));
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
