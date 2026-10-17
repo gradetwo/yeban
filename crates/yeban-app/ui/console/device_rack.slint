@@ -52,11 +52,26 @@
 // ④ ⭐ **新增的显示值全部来自 `ViewState` 的真实投影**（`device-track-label` /
 //    `device-names` / `device-bypassed` / `device-recognised` / `device-unrecognised` /
 //    `device-eq-*`）：唯一写者是 `host::apply_view`；两个手势的唯一落点是
-//    `host::wire_device_rack`（一次手势 = 恰好一次 `commit_ops`）。
+//    `host::wire_device_rack`（`#163` 起是四个手势，见文末的追加修订段；
+//    一次手势 = 恰好一次 `commit_ops`）。
 // ⑤ ⚠ **展示的是哪条轨**：界面**没有**"选中轨"这一状态（`grep -rn
 //    'selected_track\|active-track\|current_track' crates/yeban-app` 命中 0；台账第 236 轮
 //    裁决 "the current track does not exist"）⇒ 投影用**唯一**规则（身份序第一条非主总线轨）
 //    并把结果显示在 `track-label` 上（`"轨 鼓 · 设备链"`），⛔ 不写"当前选中轨"。
+//
+// ⭐ ⭐ **追加修订段（任务单 `#163`，2026-10-18）**：
+//
+// ① ⭐ **新增四个手势**（全部只报"按了哪个按钮 / 哪台设备"，⛔ 不拼身份、⛔ 不写参数值）：
+//    `device-insert-eq()` / `device-insert-reverb()` / `device-remove(device-id)` /
+//    `clip-create()`。唯一落点：装 / 删在 `host::wire_device_rack`，建片段在
+//    `host::wire_clip_create` —— 每点一次 = **恰好一次** `commit_ops`。
+// ② ⭐ **删除按身份寻址**：每张卡一个 ✕，携带 `device-ids[device_index]`（与 `device-names`
+//    同索引集），⛔ 不是行下标 —— 下标会随设备链增删漂移，身份不会。
+// ③ ⚠ **空态文案更新**：旧句"无设备（用 MCP 或后续版本添加）"在界面已经能装置之后是**假的**
+//    ⇒ 改为 `"无设备（点上方「装 EQ」或「装混响」）"`。文案仍是投影侧逐字固定的字符串
+//    （`elements.rs` 与 `tests/device_rack_projection.rs` 同一条断言）。
+// ④ ⚠ **布局**：卡片链 / 空态 / 插件占位整体下移 40px（操作行 22px ＋ 原因行 14px ＋ 4px
+//    间隔），彼此**相对**几何一位未变；右侧「发送 / 轨路由」面板不动。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
@@ -64,8 +79,11 @@ export component DeviceRack inherits Rectangle {
     // ---------------------------------------------------------------- 只读投影
     /// 展示的是哪条轨（`"轨 鼓 · 设备链"` / `"没有可显示的音轨"`）—— 逐字来自投影。
     in property <string> track-label: "";
-    /// 设备链的显示名（与下面三个数组**同索引集**）。
+    /// 设备链的显示名（与下面四个数组**同索引集**）。
     in property <[string]> device-names: [];
+    /// 每台的**设备身份**（26 字符文本）—— 删除按钮只报它，⛔ 不报行下标
+    /// （下标会随设备链增删漂移，身份不会；⭐ 任务单 `#163`）。
+    in property <[string]> device-ids: [];
     /// 每台的旁通位（`DeviceDefinition::bypassed`，⛔ 不是界面状态）。
     in property <[bool]> device-bypassed: [];
     /// 每台的**已识别**参数读数（引擎白名单认得；空串 = 这一台没有）。
@@ -80,6 +98,16 @@ export component DeviceRack inherits Rectangle {
     in property <float> eq-min-db: 0.0;
     /// 值域上界 (dB) —— 同上。
     in property <float> eq-max-db: 0.0;
+
+    // ---------------------------------------------------------------- 设备增删 ＋ 建片段（⭐ 任务单 `#163`）
+    /// "装 EQ / 装混响"此刻能不能用（工程里得有一条展示轨）。
+    in property <bool> device-insert-available: false;
+    /// 不能装设备时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
+    in property <string> device-insert-reason: "";
+    /// "建空的 MIDI 片段"此刻能不能用（工程里得有一条展示轨）。
+    in property <bool> clip-create-available: false;
+    /// 不能建片段时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
+    in property <string> clip-create-reason: "";
 
     // ---------------------------------------------------------------- 发送条（⭐ 任务单 `#159`）
     /// 展示轨的发送边身份（`RoutingEdge::id` 的 26 字符文本；与下面三个数组**同索引集**）。
@@ -122,6 +150,14 @@ export component DeviceRack inherits Rectangle {
     callback device-eq-drag(float);
     /// EQ 低架增益收尾。
     callback device-eq-release();
+    /// 装一台内置 EQ（参数取契约缺省值；身份 / 追加位置由宿主从权威工程求）。
+    callback device-insert-eq();
+    /// 装一台内置混响（同上）。
+    callback device-insert-reverb();
+    /// 删除某一台设备（参数 = 设备身份，⛔ 不是行下标）。
+    callback device-remove(string);
+    /// 建一个空的 MIDI 片段并摆到展示轨的 tick 0（身份 / 名称 / 时长由宿主求）。
+    callback clip-create();
     /// 发送增益按下（参数 = 路由边身份 + 滑块面内的归一化位置）。
     callback send-gain-grab(string, float);
     /// 发送增益拖动。
@@ -836,11 +872,164 @@ export component DeviceRack inherits Rectangle {
         }
     }
 
+    // ---------------------------------------- 设备增删 ＋ 建片段（⭐ 任务单 `#163`）
+    // 三个按钮共用**同一**可用性口径：工程里得有一条展示轨（片段也要摆在它上面）。
+    // 身份 / 参数缺省值 / 片段时长全部由宿主从权威工程与共享契约求；⛔ 本文件不拼身份、
+    // ⛔ 不写任何 tick / 参数值，也⛔ 不提交。
+    Rectangle {
+        x: Tokens.space-4;
+        y: 136px;
+        width: 420px;
+        height: 22px;
+        background: transparent;
+        accessible-role: region;
+        accessible-id: "device-insert-actions";
+        accessible-label: "设备与片段操作";
+    }
+
+    Rectangle {
+        x: Tokens.space-4;
+        y: 136px;
+        width: 84px;
+        height: 20px;
+        background: root.device-insert-available ? Tokens.gold-deep : Tokens.bg-void;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: root.device-insert-available ? Tokens.gold : Tokens.line;
+        accessible-role: button;
+        accessible-id: "device-insert-eq-button";
+        accessible-label: "装 EQ";
+        accessible-action-default => { root.device-insert-eq(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "装 EQ";
+            color: root.device-insert-available ? Tokens.bg-void : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            enabled: root.device-insert-available;
+            clicked => {
+                root.device-insert-eq();
+            }
+        }
+    }
+
+    Rectangle {
+        x: 100px;
+        y: 136px;
+        width: 84px;
+        height: 20px;
+        background: root.device-insert-available ? Tokens.gold-deep : Tokens.bg-void;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: root.device-insert-available ? Tokens.gold : Tokens.line;
+        accessible-role: button;
+        accessible-id: "device-insert-reverb-button";
+        accessible-label: "装混响";
+        accessible-action-default => { root.device-insert-reverb(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "装混响";
+            color: root.device-insert-available ? Tokens.bg-void : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            enabled: root.device-insert-available;
+            clicked => {
+                root.device-insert-reverb();
+            }
+        }
+    }
+
+    Rectangle {
+        x: 192px;
+        y: 136px;
+        width: 120px;
+        height: 20px;
+        background: root.clip-create-available ? Tokens.gold-deep : Tokens.bg-void;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: root.clip-create-available ? Tokens.gold : Tokens.line;
+        accessible-role: button;
+        accessible-id: "clip-create-button";
+        accessible-label: "新建空的 MIDI 片段";
+        accessible-action-default => { root.clip-create(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "+ MIDI Clip";
+            color: root.clip-create-available ? Tokens.bg-void : Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            enabled: root.clip-create-available;
+            clicked => {
+                root.clip-create();
+            }
+        }
+    }
+
+    // 不可用时的**逐字**原因（可用时 `visible: false`，文本是空串）。⛔ 不静默禁用。
+    UiText {
+        x: Tokens.space-4;
+        y: 158px;
+        width: 196px;
+        height: 14px;
+        text: root.device-insert-reason;
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        overflow: elide;
+        visible: !root.device-insert-available;
+        accessible-role: text;
+        accessible-id: "device-insert-reason";
+        accessible-label: root.device-insert-reason;
+    }
+
+    UiText {
+        x: 208px;
+        y: 158px;
+        width: 220px;
+        height: 14px;
+        text: root.clip-create-reason;
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        overflow: elide;
+        visible: !root.clip-create-available;
+        accessible-role: text;
+        accessible-id: "clip-create-reason";
+        accessible-label: root.clip-create-reason;
+    }
+
     // ---------------------------------------------------------------- 设备卡片链
     // ⭐ `for … [i] in <model>`：条目数**就是**投影的设备数 —— 空链 ⇒ 一块卡片都不画。
+    // ⚠ 从 `136px` 下移到 `176px`：上面新增了 22px 的操作行 ＋ 14px 的不可用原因行
+    // （任务单 `#163`）⇒ 卡片 / 空态 / 插件占位整体下移 40px，彼此相对几何一位未变。
     for device_name[device_index] in root.device-names : Rectangle {
         x: Tokens.space-4;
-        y: 136px + 46px * device_index;
+        y: 176px + 46px * device_index;
         width: 420px;
         height: 44px;
         background: root.device-bypassed[device_index] ? Tokens.bg-void : Tokens.bg-panel;
@@ -858,7 +1047,7 @@ export component DeviceRack inherits Rectangle {
         UiText {
             x: Tokens.space-4;
             y: 2px;
-            width: parent.width - 104px;
+            width: parent.width - 136px;
             height: 16px;
             text: device_name;
             color: root.device-bypassed[device_index] ? Tokens.ink-2 : Tokens.ink-0;
@@ -870,7 +1059,7 @@ export component DeviceRack inherits Rectangle {
         UiMonoText {
             x: Tokens.space-4;
             y: 18px;
-            width: parent.width - 8px;
+            width: parent.width - 136px;
             height: 12px;
             text: root.device-recognised[device_index];
             color: Tokens.gold;
@@ -885,7 +1074,7 @@ export component DeviceRack inherits Rectangle {
         UiMonoText {
             x: Tokens.space-4;
             y: 30px;
-            width: parent.width - 8px;
+            width: parent.width - 136px;
             height: 12px;
             text: root.device-unrecognised[device_index];
             color: Tokens.ink-2;
@@ -899,7 +1088,7 @@ export component DeviceRack inherits Rectangle {
         // 旁通开关：`accessible-checked` 现在**有真实状态**（`TrackV3::devices[i].bypassed`），
         // 点击 = 一次 `commit_ops`（`host::wire_device_rack`）。
         Rectangle {
-            x: parent.width - 84px;
+            x: parent.width - 116px;
             y: 4px;
             width: 72px;
             height: 20px;
@@ -934,28 +1123,66 @@ export component DeviceRack inherits Rectangle {
                 }
             }
         }
+
+        // ⭐ 删除这一台（任务单 `#163`）：携带**设备身份**，⛔ 不是行下标。
+        // 一次点击 = 恰好一次 `commit_ops`（一个 `Op::RemoveDevice`）。
+        Rectangle {
+            x: parent.width - 28px;
+            y: 4px;
+            width: 20px;
+            height: 20px;
+            background: Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: Tokens.line;
+            accessible-role: button;
+            accessible-id: "device-" + device_index + "-remove-button";
+            accessible-label: "移除设备 " + device_name;
+            accessible-action-default => {
+                root.device-remove(root.device-ids[device_index]);
+            }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "✕";
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.device-remove(root.device-ids[device_index]);
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------- 空态
     // ⚠ 逐字文案固定（判据按这一句断言）：没有设备时**不画**任何卡片。
     UiText {
         x: Tokens.space-4;
-        y: 136px;
+        y: 176px;
         width: 420px;
         height: 20px;
-        text: "无设备（用 MCP 或后续版本添加）";
+        text: "无设备（点上方「装 EQ」或「装混响」）";
         color: Tokens.ink-2;
         font-size: Tokens.font-size-sm;
         visible: root.device-names.length == 0;
         accessible-role: text;
         accessible-id: "device-rack-empty";
-        accessible-label: "无设备（用 MCP 或后续版本添加）";
+        accessible-label: "无设备（点上方「装 EQ」或「装混响」）";
     }
 
     // 插件宿主卡片 [v2.0.0] —— 明确未实现, 只登记占位卡片与 ID
     Rectangle {
         x: Tokens.space-4;
-        y: 136px + 46px * root.device-names.length + 4px;
+        y: 176px + 46px * root.device-names.length + 4px;
         width: 420px;
         height: 22px;
         background: Tokens.bg-void;

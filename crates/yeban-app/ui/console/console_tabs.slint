@@ -76,6 +76,8 @@ export component ConsoleTabs inherits Rectangle {
     // 与上面三格同一条透传纪律 —— 本组件不解释、不筛选、⛔ 不持有第二份列表。
     in property <string> device-track-label: "";
     in property <[string]> device-names: [];
+    // ⭐ 设备增删（任务单 `#163`）：每台的**设备身份**（删除按钮的寻址单位）。
+    in property <[string]> device-ids: [];
     in property <[bool]> device-bypassed: [];
     in property <[string]> device-recognised: [];
     in property <[string]> device-unrecognised: [];
@@ -83,6 +85,12 @@ export component ConsoleTabs inherits Rectangle {
     in property <float> device-eq-gain-db: 0.0;
     in property <float> device-eq-min-db: 0.0;
     in property <float> device-eq-max-db: 0.0;
+    // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：两个按钮共用"装设备"的可用性，
+    // 建片段有自己的一格。四格都是**投影标量**，本组件只透传。
+    in property <bool> device-insert-available: false;
+    in property <string> device-insert-reason: "";
+    in property <bool> clip-create-available: false;
+    in property <string> clip-create-reason: "";
     // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
     // 与上面四格同一条透传纪律 —— 本组件不解释、不筛选、⛔ 不持有第二份列表 / 值域。
     in property <[string]> send-edge-ids: [];
@@ -142,6 +150,12 @@ export component ConsoleTabs inherits Rectangle {
     callback device-eq-grab(float);
     callback device-eq-drag(float);
     callback device-eq-release();
+    // ⭐ **设备增删 ＋ 建空片段**（任务单 `#163`）：同样只上抛 —— 唯一实现是
+    // `host::wire_device_rack`（装 / 删）与 `host::wire_clip_create`（建片段）。
+    callback device-insert-eq();
+    callback device-insert-reverb();
+    callback device-remove(string);
+    callback clip-create();
     // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 的两个手势，本组件只把
     // `DeviceRack` 的回调**原样上抛**给 `MainWindow`（宿主侧唯一实现是
     // `host::wire_send_strip`）—— ⛔ 不解释、⛔ 不提交、⛔ 不改任何工程值。
@@ -416,6 +430,7 @@ export component ConsoleTabs inherits Rectangle {
         // ⭐ 设备链（任务单 `#157`）：只透传投影，本组件不解释。
         track-label: root.device-track-label;
         device-names: root.device-names;
+        device-ids: root.device-ids;
         device-bypassed: root.device-bypassed;
         device-recognised: root.device-recognised;
         device-unrecognised: root.device-unrecognised;
@@ -423,6 +438,11 @@ export component ConsoleTabs inherits Rectangle {
         eq-gain-db: root.device-eq-gain-db;
         eq-min-db: root.device-eq-min-db;
         eq-max-db: root.device-eq-max-db;
+        // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：只透传投影。
+        device-insert-available: root.device-insert-available;
+        device-insert-reason: root.device-insert-reason;
+        clip-create-available: root.clip-create-available;
+        clip-create-reason: root.clip-create-reason;
         // ⭐ 发送条（任务单 `#159`）：同样只透传投影，本组件不解释。
         send-edge-ids: root.send-edge-ids;
         send-destination-names: root.send-destination-names;
@@ -450,6 +470,19 @@ export component ConsoleTabs inherits Rectangle {
         }
         device-eq-release() => {
             root.device-eq-release();
+        }
+        // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：原样上抛。
+        device-insert-eq() => {
+            root.device-insert-eq();
+        }
+        device-insert-reverb() => {
+            root.device-insert-reverb();
+        }
+        device-remove(device-id) => {
+            root.device-remove(device-id);
+        }
+        clip-create() => {
+            root.clip-create();
         }
         // ⭐ 发送条（任务单 `#159`）的写入面：三个滑块携带**路由边身份**（不是行下标）。
         send-gain-grab(edge-id, fraction) => {

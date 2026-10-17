@@ -1123,7 +1123,64 @@ impl ElementRegistry {
             "device-rack-empty",
             ElementKind::Text,
             "console/device_rack.slint",
-            "无设备（用 MCP 或后续版本添加）",
+            "无设备（点上方「装 EQ」或「装混响」）",
+            false,
+        );
+        // ⭐ 任务单 `#163`：设备增删 ＋ 建空片段的三个按钮与两句逐字原因。
+        // 三者都是**无条件声明**的（只有 `enabled` / `visible` 随投影变）⇒ 这里也
+        // 无条件登记（与 `send-create-button` / `track-create-*` 同一条纪律）。
+        registry.add(
+            "device-insert-actions",
+            ElementKind::Region,
+            "console/device_rack.slint",
+            "设备与片段操作",
+            false,
+        );
+        registry.add(
+            "device-insert-eq-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "装 EQ",
+            false,
+        );
+        registry.add(
+            "device-insert-reverb-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "装混响",
+            false,
+        );
+        registry.add(
+            "clip-create-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "新建空的 MIDI 片段",
+            false,
+        );
+        // 原因格在**可用**时文本是空串（`.slint` 里 `visible: false`）；注册表要求每条都有
+        // 非空无障碍名 ⇒ 可用时登记一句"可用"的说明，⛔ 不登记空串（与 `send-create-reason` 同款）。
+        let insert_reason_label = if view.device_insert_reason.is_empty() {
+            "装设备可用（无不可用原因）".to_owned()
+        } else {
+            view.device_insert_reason.clone()
+        };
+        registry.add(
+            "device-insert-reason",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &insert_reason_label,
+            false,
+        );
+        let clip_reason_label = if view.clip_create_reason.is_empty() {
+            "建片段可用（无不可用原因）".to_owned()
+        } else {
+            view.clip_create_reason.clone()
+        };
+        registry.add(
+            "clip-create-reason",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &clip_reason_label,
             false,
         );
         for row in &view.devices {
@@ -1156,6 +1213,14 @@ impl ElementRegistry {
                 ElementKind::Text,
                 "console/device_rack.slint",
                 &format!("设备 {} 的未识别参数", row.name),
+                false,
+            );
+            // ⭐ 任务单 `#163`：每台一个删除按钮（参数是**设备身份**，⛔ 不是行下标）。
+            registry.add(
+                &format!("device-{device_index}-remove-button"),
+                ElementKind::Button,
+                "console/device_rack.slint",
+                &format!("移除设备 {}", row.name),
                 false,
             );
         }

@@ -1933,6 +1933,10 @@ pub fn build_live_ui_with(
         // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_track_strip`，
         // 因此无头端口注入的建轨 / 删轨手势与用户点击走同一条链（`Op` + `UndoPort`）。
         host::wire_track_strip(&window, undo);
+        // ⭐ 建空的 MIDI 片段（控制台 Tab 3 的**同一面板**，任务单 `#163`）：与产品进程
+        // （`main.rs` 的 `wire_callbacks`）调的是**同一个** `host::wire_clip_create`，
+        // 因此无头端口注入的建片段手势与用户点击走同一条链（`Op` + `UndoPort`）。
+        host::wire_clip_create(&window, undo);
         // `[UI-NOTE-003]` 卷帘的工具派发（铅笔 / 橡皮擦）与产品进程
         // （`main.rs` 的 `host::wire_roll_edit`）调的是**同一个**函数。
         //

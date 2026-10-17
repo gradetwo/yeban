@@ -6,7 +6,7 @@
 //! | :--- | :--- | :--- |
 //! | ① 假数据已删 | `ui/console/device_rack.slint` 的**源码**里没有旧设备名 / `band-gains` / `for device_index in 3`；行循环是 `for … in root.device-names` | 证"界面不再自带一份列表"。⛔ 不证历史（旧字面量在 `scene.rs` 的删除登记里点名，不在本文件里复读） |
 //! | ② 投影是派生的 | 同一活窗口上把投影从 1 台设备换到 3 台 ⇒ 运行时 `device-*-card` 节点 1 → 3；`device-rack-count` 的逐字标签 `1 台设备` → `3 台设备` | 证"条目数随投影变"。⛔ 不证像素（见 ⑦） |
-//! | ③ 空态可判 | 空工程 ⇒ `device-rack-empty` 的**逐字**文案 `无设备（用 MCP 或后续版本添加）`、卡片 0 个、`0 台设备` | 证"没有设备时不是一片空白，也不是假条目" |
+//! | ③ 空态可判 | 空工程 ⇒ `device-rack-empty` 的**逐字**文案 `无设备（点上方「装 EQ」或「装混响」）`、卡片 0 个、`0 台设备` | 证"没有设备时不是一片空白，也不是假条目" |
 //! | ④ 旁通手势 = 恰好一次提交 | `invoke_device_bypass_toggle(0)` ⇒ `commit_count +1`、`undoable +1`、`TrackV3::devices[0].bypassed` 真的翻转、界面 `device-bypassed[0]` 跟着变 | 证"点击 → 一个 `Op::SetDeviceBypassed` → 一步撤销" |
 //! | ⑤ EQ 滑块 = 恰好一次提交 | `invoke_device_eq_grab(1.0)` ＋ `invoke_device_eq_release()` ⇒ `commit_count +1`、`undoable +1`，**读回的模型值** = `18.0`（值域上界来自契约）；再在同位置按下 / 松手 ⇒ `+0`（没变就不提交） | 证"拖动一次 = 一步撤销，且改的值进了 `TrackV3::devices`" |
 //! | ⑥ 预算三件套 | 不在本文件：读数在 `tests/perf_draw_budget.rs`（52 写点 / 38 数组，常量与原因同处） | — |
@@ -227,7 +227,7 @@ fn the_fake_rack_data_is_gone_and_the_chain_follows_the_projection() {
     );
     // 空态文案逐字固定（判据 ③ 在运行时再断一次）。
     assert!(
-        RACK_SOURCE.contains("无设备（用 MCP 或后续版本添加）"),
+        RACK_SOURCE.contains("无设备（点上方「装 EQ」或「装混响」）"),
         "空态文案缺失"
     );
 
@@ -377,7 +377,7 @@ fn an_empty_chain_shows_the_empty_state_and_zero_rows() {
         .find_by_id("device-rack-empty")
         .expect("空链必须显示 `device-rack-empty`（⛔ 不许一片空白）");
     assert_eq!(
-        empty.label, "无设备（用 MCP 或后续版本添加）",
+        empty.label, "无设备（点上方「装 EQ」或「装混响」）",
         "空态文案必须逐字一致"
     );
     let count = tree

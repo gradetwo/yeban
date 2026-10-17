@@ -55,8 +55,9 @@ pub use yeban_model::samples::{demo_id, demo_project};
 use yeban_model::music::MidiNote;
 pub use yeban_model::note_plan::{NotePlan, plan_to_add_note};
 use yeban_model::project::{
-    ClipContent, ClipPlacement, ClipPoolEntry, RoutingEdge, RoutingKind, SceneV3, SectionV3,
-    TimeSignature, TrackKind, TrackV3, YebanProjectV1,
+    ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, LoopConfig,
+    ParameterValue, RoutingEdge, RoutingKind, SceneV3, SectionV3, TimeSignature, TrackKind,
+    TrackV3, YebanProjectV1,
 };
 use yeban_model::{EntityId, Op};
 
@@ -1782,6 +1783,231 @@ pub fn track_delete_ops(project: &YebanProjectV1) -> Result<Vec<Op>, &'static st
     Ok(ops)
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#163`：装设备 / 删设备 / 建空的 MIDI 片段（控制台 Tab 3 的同一面板）
+// ---------------------------------------------------------------------------
+
+/// 界面能**一键装上**的内置效果器（`DeviceKind::InternalEffect`）。
+///
+/// 参数名 / 单位 / 缺省值 / 值域**全部**来自 [`crate::effect_params::EFFECT_GROUPS`]
+/// —— 那份契约是 `#[path]` 共享的 `yeban-mcp/src/effect_params.rs`（见 `src/lib.rs`），
+/// ⛔ 本模块不写第二份参数名表，也不硬编码任何缺省数字。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinEffect {
+    /// 三段塑形 EQ（契约分组 `eq`）—— 含 `eq_low_gain` ⇒ 装上之后 `#157` 的滑块立刻可用。
+    Eq,
+    /// 插入式 Freeverb（契约分组 `reverb`）—— 参数是 `reverb_*`。
+    Reverb,
+}
+
+impl BuiltinEffect {
+    /// 契约里的分组 id（[`crate::effect_params::EFFECT_GROUPS`] 的 `id` 字段）。
+    #[must_use]
+    pub const fn group_id(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Reverb => "reverb",
+        }
+    }
+
+    /// 写进 `DeviceDefinition::name` 的显示名。
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Eq => "EQ",
+            Self::Reverb => "Reverb",
+        }
+    }
+}
+
+/// "装设备"不可用时的**逐字**原因：工程里没有可显示的音轨（展示轨不存在）。
+pub const DEVICE_INSERT_NO_TRACK_REASON: &str = "没有可显示的音轨，无法装设备";
+
+/// "装设备"不可用时的**逐字**原因：共享参数契约里找不到该分组（契约被改坏时的响亮失败）。
+pub const DEVICE_INSERT_NO_CONTRACT_REASON: &str = "效果器契约里没有这一组参数，无法装设备";
+
+/// "删设备"不可用时的**逐字**原因：工程里没有可显示的音轨。
+pub const DEVICE_REMOVE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法删除设备";
+
+/// "删设备"不可用时的**逐字**原因：界面报的设备身份已经不在展示轨的设备链里。
+pub const DEVICE_REMOVE_NOT_FOUND_REASON: &str = "这台设备已不在工程里，无法删除";
+
+/// "建片段"不可用时的**逐字**原因：工程里没有可显示的音轨（片段要摆在它上面）。
+pub const CLIP_CREATE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法建片段";
+
+/// "建片段"不可用时的**逐字**原因：拍号分母为 0 / 小节长度溢出（算不出 4 小节）。
+pub const CLIP_CREATE_BAD_TIME_SIGNATURE_REASON: &str = "拍号非法，无法计算片段长度";
+
+/// 一键建出的空 MIDI 片段的**小节数**（4 小节；tick 数由工程的拍号算出，⛔ 不手抄）。
+pub const CLIP_CREATE_BARS: u64 = 4;
+
+/// "装设备"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
+///
+/// 唯一前置条件与投影**同一份**口径：存在展示轨（[`device_rack_track`]）。
+#[must_use]
+pub fn device_insert_availability(project: &YebanProjectV1) -> (bool, String) {
+    let reason = if device_rack_track(project).is_some() {
+        ""
+    } else {
+        DEVICE_INSERT_NO_TRACK_REASON
+    };
+    (reason.is_empty(), reason.to_owned())
+}
+
+/// "建片段"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
+///
+/// 片段摆在展示轨上 ⇒ 唯一前置条件与 [`device_insert_availability`] 相同。
+#[must_use]
+pub fn clip_create_availability(project: &YebanProjectV1) -> (bool, String) {
+    let reason = if device_rack_track(project).is_some() {
+        ""
+    } else {
+        CLIP_CREATE_NO_TRACK_REASON
+    };
+    (reason.is_empty(), reason.to_owned())
+}
+
+/// 按效果器契约构造一台内置效果器：参数逐条取 `spec.default` / `spec.unit`。
+///
+/// 返回 `None` = 契约里没有这个分组（⛔ 不落一台空参数设备冒充成功）。
+/// `latency_samples` 写 `0`：契约不公布内置效果器的延迟，`0` 与
+/// `DeviceDefinition` 的"零延迟上报值"同义（⛔ 不编一个数字）。
+#[must_use]
+pub fn builtin_effect_device(effect: BuiltinEffect) -> Option<DeviceDefinition> {
+    let group = crate::effect_params::EFFECT_GROUPS
+        .iter()
+        .find(|group| group.id == effect.group_id())?;
+    let params: Vec<ParameterValue> = group
+        .params
+        .iter()
+        .map(|spec| {
+            #[allow(clippy::cast_possible_truncation)] // 契约里的缺省值是 f64 字面量
+            let value = spec.default as f32;
+            ParameterValue {
+                name: spec.name.to_owned(),
+                value,
+                unit: if spec.unit.is_empty() {
+                    None
+                } else {
+                    Some(spec.unit.to_owned())
+                },
+            }
+        })
+        .collect();
+    Some(DeviceDefinition {
+        id: EntityId::new(),
+        name: effect.display_name().to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params,
+        latency_samples: 0,
+    })
+}
+
+/// 装一台内置效果器的**完整** `Op`：追加到展示轨设备链的**末尾**。
+///
+/// `slot_index = track.devices.len()`（`InsertDevice` 的文档：等于 `len` 表示追加）。
+/// 设备身份来自 [`EntityId::new`]，参数来自 [`builtin_effect_device`]。
+///
+/// # Errors
+///
+/// - 没有展示轨 ⇒ [`DEVICE_INSERT_NO_TRACK_REASON`]；
+/// - 契约里没有该分组 ⇒ [`DEVICE_INSERT_NO_CONTRACT_REASON`]。
+pub fn device_insert_ops(
+    project: &YebanProjectV1,
+    effect: BuiltinEffect,
+) -> Result<Vec<Op>, &'static str> {
+    let track = device_rack_track(project).ok_or(DEVICE_INSERT_NO_TRACK_REASON)?;
+    let device = builtin_effect_device(effect).ok_or(DEVICE_INSERT_NO_CONTRACT_REASON)?;
+    Ok(vec![Op::InsertDevice {
+        track_id: track.id,
+        slot_index: track.devices.len(),
+        device,
+    }])
+}
+
+/// 删一台设备的**完整** `Op`：按**设备身份**在展示轨里重新寻址。
+///
+/// 界面报的是 `DeviceDefinition::id` 的 26 字符文本（⛔ 不是行下标 —— 下标会随设备链
+/// 增删漂移）。`previous_device` 逐字来自权威工程，供撤销复原。
+///
+/// # Errors
+///
+/// - 没有展示轨 ⇒ [`DEVICE_REMOVE_NO_TRACK_REASON`]；
+/// - 身份不在这条轨的设备链里 ⇒ [`DEVICE_REMOVE_NOT_FOUND_REASON`]。
+pub fn device_remove_ops(
+    project: &YebanProjectV1,
+    device_id: EntityId,
+) -> Result<Vec<Op>, &'static str> {
+    let track = device_rack_track(project).ok_or(DEVICE_REMOVE_NO_TRACK_REASON)?;
+    let slot_index = track
+        .devices
+        .iter()
+        .position(|device| device.id == device_id)
+        .ok_or(DEVICE_REMOVE_NOT_FOUND_REASON)?;
+    let previous_device = track.devices[slot_index].clone();
+    Ok(vec![Op::RemoveDevice {
+        track_id: track.id,
+        slot_index,
+        previous_device,
+    }])
+}
+
+/// 新建空 MIDI 片段的显示名：`"Clip {现有 clip_pool 条目数 + 1}"`。
+///
+/// 名字**不是身份**（身份是 [`EntityId::new`]），因此删掉再建可能重名 ——
+/// 与 [`new_track_name`] 同一条口径。
+#[must_use]
+pub fn new_clip_name(project: &YebanProjectV1) -> String {
+    format!("Clip {}", project.clip_pool.len() + 1)
+}
+
+/// 建一个**空的 MIDI 片段**并把它摆到展示轨的 tick 0：一次提交里两条 `Op`。
+///
+/// 形状（`Op::AddClipPlacement` 要求片段**已经在** `clip_pool` 里 ⇒ 顺序承重）：
+///
+/// 1. `Op::AddClip { clip: ClipPoolEntry { content: Midi { notes: {} } } }`；
+/// 2. `Op::AddClipPlacement { start_tick: 0, duration_ticks: 4 小节 }`。
+///
+/// 时长**不写死**：`4 × bar_length_ticks(project.time_signature)`。4/4 下
+/// `bar = 4 × 960 = 3840` ⇒ `duration_ticks = 15360`（判据同时断言这个真值）。
+///
+/// # Errors
+///
+/// - 没有展示轨 ⇒ [`CLIP_CREATE_NO_TRACK_REASON`]；
+/// - 拍号分母为 0 / 小节长度溢出 ⇒ [`CLIP_CREATE_BAD_TIME_SIGNATURE_REASON`]。
+pub fn clip_create_ops(project: &YebanProjectV1) -> Result<Vec<Op>, &'static str> {
+    let track = device_rack_track(project).ok_or(CLIP_CREATE_NO_TRACK_REASON)?;
+    let bar_ticks = bar_length_ticks(project.time_signature)
+        .map_err(|_| CLIP_CREATE_BAD_TIME_SIGNATURE_REASON)?;
+    let duration_ticks = bar_ticks
+        .checked_mul(CLIP_CREATE_BARS)
+        .ok_or(CLIP_CREATE_BAD_TIME_SIGNATURE_REASON)?;
+    let clip_id = EntityId::new();
+    let clip = ClipPoolEntry {
+        id: clip_id,
+        name: new_clip_name(project),
+        content: ClipContent::Midi {
+            notes: BTreeMap::new(),
+        },
+    };
+    let placement = ClipPlacement {
+        id: EntityId::new(),
+        clip_id,
+        start_tick: 0,
+        duration_ticks,
+        loop_config: LoopConfig::default(),
+        muted: false,
+    };
+    Ok(vec![
+        Op::AddClip { clip },
+        Op::AddClipPlacement {
+            track_id: track.id,
+            placement,
+        },
+    ])
+}
+
 /// 视图里的一个场景（`SceneV3`，Session View 的行）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneView {
@@ -1915,14 +2141,31 @@ pub struct ViewState {
     pub device_track_label: String,
     /// 当前展示轨的设备链（`TrackV3::devices` 的逐条投影）—— 设备机架的**唯一**事实源。
     ///
-    /// ⭐ 任务单 `#157`：空链投影成空 `Vec` ⇒ 界面显示空态（`"无设备（用 MCP 或后续版本添加）"`），
-    /// 而不是旧版那三条编造的设备名。
+    /// ⭐ 任务单 `#157`：空链投影成空 `Vec` ⇒ 界面显示空态（`"无设备（点上方「装 EQ」或「装混响」）"`，
+    /// `#163` 起这句提示指向真实的装置按钮），而不是旧版那三条编造的设备名。
     pub devices: Vec<DeviceRowView>,
     /// 当前展示轨上**第一格** `eq_low_gain`（值域来自契约）；没有 ⇒ `None`。
     ///
     /// ⚠ 这是本切片**唯一**可编辑的设备参数（"最小可编辑"）。`None` 时界面禁用滑块
     /// 并如实写出"本轨没有 `eq_low_gain`"，⛔ 不落一个假的可编辑控件。
     pub eq_low_gain: Option<DeviceEqView>,
+    /// "装 EQ / 装混响"此刻能不能用（工程里得有一条展示轨）。
+    ///
+    /// ⭐ 任务单 `#163`：两个按钮共用这一格 —— 前置条件逐字相同（展示轨存在）。
+    /// `false` ⇒ 按钮禁用并逐字显示 [`Self::device_insert_reason`]，⛔ 不静默。
+    pub device_insert_available: bool,
+    /// "装设备"不可用时**逐字**写出的原因（可用时是空串）。
+    ///
+    /// 取值来自 [`DEVICE_INSERT_NO_TRACK_REASON`]。
+    pub device_insert_reason: String,
+    /// "建空的 MIDI 片段"此刻能不能用（工程里得有一条展示轨）。
+    ///
+    /// `false` ⇒ 按钮禁用并逐字显示 [`Self::clip_create_reason`]，⛔ 不静默。
+    pub clip_create_available: bool,
+    /// "建片段"不可用时**逐字**写出的原因（可用时是空串）。
+    ///
+    /// 取值来自 [`CLIP_CREATE_NO_TRACK_REASON`]。
+    pub clip_create_reason: String,
     /// 当前展示轨（[`send_strip_track`]，与设备机架**同一条轨**）的 `SendToAux` 边逐条投影
     /// —— 发送条的**唯一**事实源。
     ///
@@ -2163,6 +2406,10 @@ impl ViewState {
         let (device_track_label, devices, eq_low_gain) =
             device_rack_projection(device_rack_track(project));
 
+        // ⭐ 任务单 `#163`：设备增删 ＋ 建空片段的可用性（与投影**同一份**口径）。
+        let (device_insert_available, device_insert_reason) = device_insert_availability(project);
+        let (clip_create_available, clip_create_reason) = clip_create_availability(project);
+
         // 发送条（任务单 `#159`）：与设备机架**同一条**展示轨（[`send_strip_track`]）。
         // 条目逐条来自 `RoutingGraph::edges` 的 `SendToAux` 出边；目的地名字来自 `tracks`；
         // "新建发送"能不能用由 [`send_create_availability`] **唯一**决定（任务单 `#160`
@@ -2247,6 +2494,10 @@ impl ViewState {
             device_track_label,
             devices,
             eq_low_gain,
+            device_insert_available,
+            device_insert_reason,
+            clip_create_available,
+            clip_create_reason,
             sends,
             send_create_available,
             send_create_reason,
@@ -2456,6 +2707,18 @@ impl ViewState {
     #[must_use]
     pub fn device_names(&self) -> Vec<String> {
         self.devices.iter().map(|row| row.name.clone()).collect()
+    }
+
+    /// 设备机架每一格的**设备身份**（26 字符 `EntityId` 文本，与上面数组**同索引集**）。
+    ///
+    /// ⭐ 任务单 `#163`：删除按钮用它寻址 —— 与发送条的 `send-edge-ids` 同一条纪律
+    /// （身份不会随行下标漂移），宿主在提交前按身份重新从权威工程查一次。
+    #[must_use]
+    pub fn device_ids(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .map(|row| row.device_id.clone())
+            .collect()
     }
 
     /// 设备机架每一格的旁通位（`DeviceDefinition::bypassed`，⛔ 不是界面状态）。

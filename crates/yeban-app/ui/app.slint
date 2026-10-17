@@ -639,6 +639,19 @@ export component MainWindow inherits Window {
     callback device-eq-drag(float);
     /// EQ 低架增益收尾（松手 / 指针离开窗口）⇒ 值真的变了才提交一次。
     callback device-eq-release();
+    // ⭐ **设备增删 ＋ 建空片段**（任务单 `#163`）：控制台 **Tab 3** 同一面板里的三个按钮。
+    //
+    // 形状与 `device-*` / `track-*` 一族逐条同款：`.slint` 只报"按了哪个按钮 / 哪台设备"，
+    // 参数缺省值、身份分配、目标解析与**一次** `commit_ops` 全在宿主
+    // （`host::wire_device_rack` / `host::wire_clip_create`）。
+    /// 装一台内置 EQ（参数取共享契约的缺省值）。
+    callback device-insert-eq();
+    /// 装一台内置混响（同上）。
+    callback device-insert-reverb();
+    /// 删除某台设备（参数 = 设备身份，⛔ 不是行下标）。
+    callback device-remove(string);
+    /// 建一个空的 MIDI 片段并摆到展示轨的 tick 0。
+    callback clip-create();
     // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 设备机架面板里的"发送"区。
     //
     // 形状与 `device-*` 一族逐条同款：`.slint` 只报"哪一条边 / 滑块位置"，dB 换算 /
@@ -765,6 +778,8 @@ export component MainWindow inherits Window {
     // 面板住在控制台 Tab 3（`DeviceRack`）⇒ 默认帧不画它。
     in property <string> device-track-label: "";
     in property <[string]> device-names: [];
+    // ⭐ 设备增删（任务单 `#163`）：每台的设备身份（删除按钮的寻址单位）。
+    in property <[string]> device-ids: [];
     in property <[bool]> device-bypassed: [];
     in property <[string]> device-recognised: [];
     in property <[string]> device-unrecognised: [];
@@ -772,6 +787,12 @@ export component MainWindow inherits Window {
     in property <float> device-eq-gain-db: 0.0;
     in property <float> device-eq-min-db: 0.0;
     in property <float> device-eq-max-db: 0.0;
+    // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量。唯一写者是
+    // `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
+    in property <bool> device-insert-available: false;
+    in property <string> device-insert-reason: "";
+    in property <bool> clip-create-available: false;
+    in property <string> clip-create-reason: "";
     // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
     // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::sends` /
     // `ViewState::send_create_available` / `ViewState::send_create_reason`
@@ -1170,6 +1191,7 @@ export component MainWindow inherits Window {
             // 单向搬运，⛔ 不解释、⛔ 不持有第二份列表 / 值域。
             device-track-label: root.device-track-label;
             device-names: root.device-names;
+            device-ids: root.device-ids;
             device-bypassed: root.device-bypassed;
             device-recognised: root.device-recognised;
             device-unrecognised: root.device-unrecognised;
@@ -1177,6 +1199,11 @@ export component MainWindow inherits Window {
             device-eq-gain-db: root.device-eq-gain-db;
             device-eq-min-db: root.device-eq-min-db;
             device-eq-max-db: root.device-eq-max-db;
+            // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个投影标量，只做单向搬运。
+            device-insert-available: root.device-insert-available;
+            device-insert-reason: root.device-insert-reason;
+            clip-create-available: root.clip-create-available;
+            clip-create-reason: root.clip-create-reason;
             // ⭐ 发送条（任务单 `#159`）：同样只做单向搬运，⛔ 不解释、⛔ 不持有第二份
             // 发送列表 / 增益范围（值域来自模型，经 `host::apply_view` 注入）。
             send-edge-ids: root.send-edge-ids;
@@ -1236,6 +1263,20 @@ export component MainWindow inherits Window {
             }
             device-eq-release() => {
                 root.device-eq-release();
+            }
+            // ⭐ 设备增删 ＋ 建空片段（Tab 3，任务单 `#163`）：只上抛 —— 唯一落点是
+            // `host::wire_device_rack`（装 / 删）与 `host::wire_clip_create`（建片段）。
+            device-insert-eq() => {
+                root.device-insert-eq();
+            }
+            device-insert-reverb() => {
+                root.device-insert-reverb();
+            }
+            device-remove(device-id) => {
+                root.device-remove(device-id);
+            }
+            clip-create() => {
+                root.clip-create();
             }
             // ⭐ 发送条（Tab 3）的写入面：只上抛，唯一落点 `host::wire_send_strip`
             // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，⛔ 界面不改任何工程值）。

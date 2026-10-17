@@ -733,6 +733,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 三个建轨按钮 ＋ 删除展示轨。与上面三条同一条纪律 —— 每个手势**恰好一次**
     // `commit_ops`（建轨 / 删轨各自打包成一个 `Op::Batch`），共用同一个 `UndoPort`。
     host::wire_track_strip(&ui, &undo_port);
+    // ⭐ 建空的 MIDI 片段（控制台 Tab 3 的**同一面板**，任务单 `#163`）：一次点击 =
+    // **恰好一次** `commit_ops`（`AddClip` ＋ `AddClipPlacement` 一个原子批次），
+    // 共用同一个 `UndoPort`。设备的增删在同一条面板的 `host::wire_device_rack` 里。
+    host::wire_clip_create(&ui, &undo_port);
     // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与其余接线同款 ——
     // `host::wire_module_actions` 是它们的**唯一**实现，无头端口的装配
     // （`src/live_surface.rs` 的 `build_live_ui_with`）调的是**同一个**函数。

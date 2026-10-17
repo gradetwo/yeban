@@ -171,6 +171,7 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // 的读数与注释）。
     ui.set_device_track_label(view.device_track_label.clone().into());
     ui.set_device_names(strings(&view.device_names()));
+    ui.set_device_ids(strings(&view.device_ids()));
     ui.set_device_bypassed(booleans(&view.device_bypassed()));
     ui.set_device_recognised(strings(&view.device_recognised()));
     ui.set_device_unrecognised(strings(&view.device_unrecognised()));
@@ -178,6 +179,13 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_device_eq_gain_db(view.device_eq_gain_db());
     ui.set_device_eq_min_db(view.device_eq_min_db());
     ui.set_device_eq_max_db(view.device_eq_max_db());
+    // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个**标量**（可用性 ＋ 逐字原因）。
+    // ⛔ 没有新数组（设备 / 片段数都由既有的 `device-*` / 工程投影反映）⇒ 只增
+    // `APPLY_VIEW_WRITE_SITE_BUDGET`。唯一事实源是 `ViewState` 的同名字段。
+    ui.set_device_insert_available(view.device_insert_available);
+    ui.set_device_insert_reason(view.device_insert_reason.clone().into());
+    ui.set_clip_create_available(view.clip_create_available);
+    ui.set_clip_create_reason(view.clip_create_reason.clone().into());
     // ⭐ 发送条（任务单 `#159`）：`ViewState::sends` 是**唯一**事实源。四个平行数组同
     // 索引集（边身份 / 目的地 / 增益文本 / 滑块值）；四个标量给值域与"新建发送"的可用性。
     // 值域**来自模型**（`bridge::send_gain_range` ⇒ `NOMINAL_GAIN_MIN_DB/MAX_DB`），
@@ -1912,12 +1920,14 @@ fn wire_mixer_switch(
 
 /// 设备机架（控制台 **Tab 3**）的**写入面** —— 任务单 `#157` 的"最小可编辑"。
 ///
-/// 两个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]：
+/// 四个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]（前两个是 `#157`，后两个是 `#163`）：
 ///
 /// | 手势 | `.slint` 回调 | 提交的 `Op` | 撤销标签 |
 /// | :--- | :--- | :--- | :--- |
 /// | 旁通开关（逐台） | `device-bypass-toggle(slot)` | [`yeban_model::Op::SetDeviceBypassed`] | `toggle device bypass` |
 /// | EQ 低架增益拖动 | `device-eq-grab/drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam` | `set device eq low gain` |
+/// | 装一台内置效果器 | `device-insert-eq()` / `device-insert-reverb()` | [`yeban_model::Op::InsertDevice`]（参数取共享契约缺省值） | `insert device` |
+/// | 删一台设备 | `device-remove(device-id)` | [`yeban_model::Op::RemoveDevice`]（按**身份**寻址） | `remove device` |
 ///
 /// ## 为什么拖动期**不**提交（与推子同一条纪律）
 ///
@@ -1933,18 +1943,17 @@ fn wire_mixer_switch(
 /// （[`crate::bridge::device_rack_track`] / [`crate::bridge::device_eq_low_gain_target`]），
 /// 因此 `Op` 携带的 `old_*` 永远是**当前**值（陈旧会被模型的逐位比对拒掉）。
 ///
-/// ⚠ **如实登记的边界**：界面只报**下标**（`device-bypass-toggle(slot)`），而投影与那次
-/// 点击之间若设备链被**增删**（今天只有 MCP 能做到：`InsertDevice` / `RemoveDevice`），
-/// 同一个下标可能指向另一台设备 ⇒ 旁通会切到"此刻在那一格的那台"，而不是用户看到的那台。
-/// 本切片不为此加一份 `device-ids` 旁路（那是第二份身份副本，要跟投影同步）——
-/// 登记在这里，等设备增删有了界面入口时一起做。EQ 那条腿没有这个窗口：它在**按下**与
-/// **松手**两侧都重新求目标，且值变了就放弃提交。
+/// ⚠ **旁通的如实登记边界**：`device-bypass-toggle(slot)` 仍然只报**下标**，而投影与
+/// 那次点击之间若设备链被增删（`#163` 起界面自己就能增删！），同一个下标可能指向另一台
+/// 设备 ⇒ 旁通会切到"此刻在那一格的那台"，而不是用户看到的那台。⛔ 本单**没有**改旁通
+/// 的寻址口径（那会让 `#157` 的判据与 `.slint` 回调一起变）；**删除**那条腿已经按
+/// **身份**寻址（`device-remove(device-id)`，`device-ids` 与投影同索引集），EQ 那条腿在
+/// **按下**与**松手**两侧都重新求目标且值变了就放弃提交 —— 两者都没有这个窗口。
 ///
 /// ## 它**不**做什么
 ///
-/// ⛔ 不插入 / 删除设备（`Op::InsertDevice` / `RemoveDevice` 今天在 UI 侧 **0** 个构造点，
-/// 本单不造）；⛔ 不做多选、⛔ 不写第二个 EQ 参数；⛔ 不碰引擎（插入链在实时侧的路由
-/// 由 `yeban-engine` 自己的文档说清 —— 见交付报告的"能验与不能验"）。
+/// ⛔ 不做多选、⛔ 不写第二个 EQ 参数、⛔ 不改旁通的寻址口径；⛔ 不碰引擎（插入链在
+/// 实时侧的路由由 `yeban-engine` 自己的文档说清 —— 见交付报告的"能验与不能验"）。
 pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
 
@@ -2105,6 +2114,123 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
                 eprintln!("[yeban-app] EQ 提交被拒绝（工程未改）");
             }
             // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- ③ 装设备（⭐ `#163`）
+    //
+    // 两个按钮共用一处实现体（`effect` 是唯一自变量）⇒ 参数表 / 追加位置 / 提交标签
+    // 不可能在两处漂移。一次点击 = **恰好一次** `commit_ops`（一个 `Op::InsertDevice`）。
+    for (effect, callback) in [
+        (crate::bridge::BuiltinEffect::Eq, "eq"),
+        (crate::bridge::BuiltinEffect::Reverb, "reverb"),
+    ] {
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        let handler = move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            insert_builtin_device(&ui, &port, effect);
+        };
+        match callback {
+            "eq" => ui.on_device_insert_eq(handler),
+            _ => ui.on_device_insert_reverb(handler),
+        }
+    }
+
+    // ---------------------------------------------------------------- ④ 删设备（⭐ `#163`）
+    //
+    // 携带**设备身份**（`device-id` 数组，⛔ 不是行下标）：宿主按身份在权威工程的展示轨里
+    // 重新寻址；一次点击 = **恰好一次** `commit_ops`（一个 `Op::RemoveDevice`）。
+    ui.on_device_remove({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |device_id: SharedString| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Ok(device_id) = device_id.parse::<yeban_model::EntityId>() else {
+                eprintln!("[yeban-app] 删设备被拒绝：设备身份不是合法的 ULID 文本");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 删设备：权威会话此刻没有活跃工程");
+                return;
+            };
+            let ops = match crate::bridge::device_remove_ops(&project, device_id) {
+                Ok(ops) => ops,
+                Err(reason) => {
+                    eprintln!("[yeban-app] 删设备被拒绝：{reason}");
+                    refresh_undo_window(&ui, &port, true);
+                    return;
+                }
+            };
+            if port.commit_ops(now_ms(), "remove device", ops).is_err() {
+                eprintln!("[yeban-app] 删设备被拒绝（工程未改）");
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+}
+
+/// 装一台内置效果器的唯一实现体（两个按钮共用；`effect` 是唯一自变量）。
+///
+/// 参数缺省值 / 单位 / 追加位置全部由 [`crate::bridge::device_insert_ops`] 从权威工程与
+/// 共享契约求出 ⇒ 宿主不硬编码任何参数值，也不信任界面上的设备链长度。
+fn insert_builtin_device(ui: &MainWindow, port: &UndoPort, effect: crate::bridge::BuiltinEffect) {
+    let Some(project) = port.try_project() else {
+        eprintln!("[yeban-app] 装设备：权威会话此刻没有活跃工程");
+        return;
+    };
+    let ops = match crate::bridge::device_insert_ops(&project, effect) {
+        Ok(ops) => ops,
+        Err(reason) => {
+            eprintln!("[yeban-app] 装设备被拒绝：{reason}");
+            refresh_undo_window(ui, port, true);
+            return;
+        }
+    };
+    if port.commit_ops(now_ms(), "insert device", ops).is_err() {
+        eprintln!("[yeban-app] 装设备被拒绝（工程未改）");
+    }
+    refresh_undo_window(ui, port, true);
+}
+
+/// 建一个**空 MIDI 片段**（控制台 Tab 3 的同一面板，任务单 `#163`）的写入面。
+///
+/// 一次点击 = **恰好一次** [`UndoPort::commit_ops`]；那一次提交里是两条 `Op`
+/// （`AddClip` ＋ `AddClipPlacement`，`Op::Batch` 原子施加）⇒ 一步可撤销的编辑。
+/// 片段身份 / 名称 / 时长全部由 [`crate::bridge::clip_create_ops`] 从权威工程求出
+/// （时长 = 4 × 工程拍号的小节长度，⛔ 界面与宿主都不写 tick 字面量）。
+pub fn wire_clip_create(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_clip_create({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 建片段：权威会话此刻没有活跃工程");
+                return;
+            };
+            let ops = match crate::bridge::clip_create_ops(&project) {
+                Ok(ops) => ops,
+                Err(reason) => {
+                    eprintln!("[yeban-app] 建片段被拒绝：{reason}");
+                    refresh_undo_window(&ui, &port, true);
+                    return;
+                }
+            };
+            if port.commit_ops(now_ms(), "create midi clip", ops).is_err() {
+                eprintln!("[yeban-app] 建片段被拒绝（工程未改）");
+            }
             refresh_undo_window(&ui, &port, true);
         }
     });
