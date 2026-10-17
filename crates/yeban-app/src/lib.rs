@@ -111,6 +111,10 @@ pub mod open;
 // 它把"按录音键录到的是静音"从"**没人喂**的偶然"变成"要么真设备源、要么**显式**选静音腿"。
 pub mod record_device;
 pub mod record_wav;
+// ⭐ **录音落点**（任务单 `#132`，`#130` 分层分析的 L2 ＋ L3）：把停录后落盘的 WAV
+// 变成 `Op::AddClip` ＋ 容器资产池的字节（`assets/{sha256}`）。纯函数
+// `plan_recording` 让"WAV → 资产 ＋ clip"可以在无桌面会话下被判。
+pub mod record_landing;
 pub mod render_core;
 // ⭐ **路径 ⇒ 已摊平 SFZ 的控制侧缓存**（任务单 `#80`：实时／GUI 发布点的读盘复用）。
 pub mod sfz_cache;

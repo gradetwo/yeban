@@ -2190,7 +2190,7 @@ impl TransportHarness {
         })
         .expect("Tier-1 平台 + 主窗口");
 
-        host::wire_transport(port.ui(), Rc::clone(&engine), None);
+        host::wire_transport(port.ui(), Rc::clone(&engine), None, None);
         // 接线之后先把引擎读数注入一次界面（`main.rs` 的 GUI 路径做的是同一件事）。
         host::apply_transport(port.ui(), engine.borrow().transport());
         Self { port, engine, view }
@@ -3041,6 +3041,8 @@ fn pressing_the_record_button_starts_and_stops_a_session() {
     let _ = std::fs::remove_file(&record_path);
     host::wire_record(
         &ui,
+        None,
+        // ⭐ `#132`：本判据只读按钮／引擎读数，不接工程端口。
         None,
         yeban_app::record_wav::RecordPlan {
             path: record_path.clone(),

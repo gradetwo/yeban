@@ -74,10 +74,13 @@ type AuthorityParam<'a> = Option<&'a AuthorityHandle>;
 /// 那时如实报 [`SaveOutcome::Failed`]（"未配置保存路径"），而不是猜一个文件名。
 ///
 /// 为什么是**归档**（`project` + `history.dag` + 资产池）而不是一个裸工程：本地路径
-/// 就是 `.yeban` 的磁盘写者，而 `.yeban` 的第二层状态就是提交图谱。只拿得到一个
-/// `YebanProjectV1` 的调用方把图谱留空（[`SaveRequest::new`]），于是写出的容器是
-/// "空历史"——那是**如实**的空（样本没有历史），不是保存丢掉的。界面路径拿得到活会话的
-/// 图谱 ⇒ 用 [`SaveRequest::with_history_dag`] 把它一起交出去。
+/// 就是 `.yeban` 的磁盘写者，而 `.yeban` 的第二层状态就是提交图谱、第三层是 CAS 资产池
+/// （`assets/{sha256}`）。只拿得到一个 `YebanProjectV1` 的调用方把图谱留空
+/// （[`SaveRequest::new`]），于是写出的容器是"空历史"——那是**如实**的空（样本没有历史），
+/// 不是保存丢掉的。界面路径拿得到活会话的图谱 ⇒ 用 [`SaveRequest::with_history_dag`]
+/// 把它一起交出去；活会话**还有资产池** ⇒ 用
+/// [`SaveRequest::with_history_dag_and_assets`]（⭐ 任务单 `#132`：GUI 保存此前在这里
+/// 逐字写 `assets: Vec::new()`，于是录音／导入的字节**结构性**丢失）。
 #[derive(Debug, Clone)]
 pub struct SaveRequest {
     /// 保存目标。`None` = 这个会话没有磁盘对应物。
@@ -89,8 +92,10 @@ pub struct SaveRequest {
 impl SaveRequest {
     /// 有目标路径的请求：图谱与资产池留空。
     ///
-    /// 空图谱 = "这份文档没有历史"，与本入口此前的行为逐字相同（
-    /// [`crate::save::save_project_file`] 就是把容器写成"空历史 / 空资产"）。
+    /// 空图谱 = "这份文档没有历史"；空资产池 = "这个会话没有资产字节"
+    /// （`crate::save::save_project_file` 的老行为）。⭐ **活会话有资产池时不许用本入口**
+    /// —— 那会把 `assets/{sha256}` 静默写空（`#132` 修的就是这条）；
+    /// 用 [`Self::with_history_dag_and_assets`]。
     #[must_use]
     pub fn new(target: PathBuf, project: YebanProjectV1) -> Self {
         Self::with_history_dag(target, project, Vec::new())
@@ -100,6 +105,10 @@ impl SaveRequest {
     ///
     /// 调用方只能用它交出**已经编码好**的图谱字节，编码口径仍只有
     /// `yeban_model::commit::encode_history_dag` 一份（本模块不认识 JSON）。
+    ///
+    /// ⚠ 资产池是**空**的：本入口只服务"确实没有资产字节"的调用方（判据的夹具、
+    /// 无资产的样本工程）。有池的活会话（GUI 的 `UndoPort`）必须用
+    /// [`Self::with_history_dag_and_assets`]，否则容器里不会有 `assets/{sha256}`。
     #[must_use]
     pub fn with_history_dag(
         target: PathBuf,
@@ -112,6 +121,30 @@ impl SaveRequest {
                 project,
                 history_dag,
                 assets: Vec::new(),
+            },
+        }
+    }
+
+    /// ⭐ 有目标路径、**提交图谱**与**会话资产池**的请求（任务单 `#132`）。
+    ///
+    /// `assets` 的形状就是 [`ProjectArchive::assets`]：`(AssetHash, 字节)` 的序列。
+    /// 它来自活会话的唯一持有者 —— GUI 的
+    /// [`crate::undo::UndoPort::assets`]（录音／导入登记的 CAS 字节）。
+    /// 归档声明"按哈希升序"，`UndoPort` 的两个写入口已经守住那条不变式
+    /// （`replace_assets` / `insert_asset` 都是有序插入）。
+    #[must_use]
+    pub fn with_history_dag_and_assets(
+        target: PathBuf,
+        project: YebanProjectV1,
+        history_dag: Vec<u8>,
+        assets: Vec<(yeban_model::AssetHash, Vec<u8>)>,
+    ) -> Self {
+        Self {
+            target: Some(target),
+            archive: ProjectArchive {
+                project,
+                history_dag,
+                assets,
             },
         }
     }

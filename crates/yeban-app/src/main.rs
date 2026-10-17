@@ -234,6 +234,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         &loaded,
         now_ms,
     )?));
+    // ⭐ **会话资产池的装配点**（任务单 `#132`）：`--open` 的容器里若已有
+    // `assets/{sha256}`，它们必须活在这一份端口里 —— 否则"打开一个带资产的工程，
+    // 再按保存"会把资产池写空（`#132` 的 L2）。录音 / 导入随后往同一个池里加字节。
+    // ⚠ 控制面权威形态下保存走权威自己的字节；这里的池只服务本地保存那条腿
+    // （`UndoPort` 的文档已登记这条边界）。
+    undo_port.replace_assets(loaded.archive.assets.clone());
     let mut engine =
         host::ProductionLoop::start(&loaded.archive.project, 0).unwrap_or_else(|error| {
             // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），
@@ -416,6 +422,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         &production.borrow().engine_handle(),
         // ⭐ 当前工程（录音键用它算**预备拍**）。
         Some(Rc::new(loaded.archive.project.clone())),
+        // ⭐ 录音落进工程的写入面（`#132`）：活会话那个端口（⛔ 不是第二份）。
+        Some(Rc::clone(&undo_port)),
     );
     // `[UI-A11Y-002]` §7.2 的**事件源**：BPM 敲入控件里真 `TextInput` 的
     // `preedit-text` / `has-focus` 变化 → `ime-composition-changed` / `ime-focus-changed`
@@ -535,7 +543,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     None,
                 );
                 // ③ 走带 / 按键那两处静态快照（`on_*` setter 覆盖旧闭包）。
-                wire_callbacks(ui, &engine_after, Some(Rc::new(project.clone())));
+                wire_callbacks(
+                    ui,
+                    &engine_after,
+                    Some(Rc::new(project.clone())),
+                    Some(Rc::clone(&port_after)),
+                );
                 host::wire_keys(
                     ui,
                     Rc::clone(&input_after),
@@ -859,8 +872,9 @@ fn wire_callbacks(
     ui: &yeban_app::ui::MainWindow,
     engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
     project: Option<Rc<yeban_model::YebanProjectV1>>,
+    undo: Option<Rc<yeban_app::undo::UndoPort>>,
 ) {
-    host::wire_transport(ui, Rc::clone(engine), project);
+    host::wire_transport(ui, Rc::clone(engine), project, undo);
     host::wire_view_callbacks(ui);
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
     ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));

@@ -52,7 +52,7 @@ pub mod undo_session;
 
 use std::cell::{Cell, RefCell};
 
-use yeban_model::{CommitGraph, EntityId, Op, OpOrigin, YebanProjectV1};
+use yeban_model::{AssetHash, CommitGraph, EntityId, Op, OpOrigin, YebanProjectV1};
 
 // `ROAD-M4-008` 选项 (a) 第二片：挂载了控制面时，GUI 的写入口落到**那一个** `Domain` 上。
 // 这两个类型只存在于非默认 feature `in-process-mcp` 下（默认构建里没有 `yeban-mcp`）。
@@ -268,6 +268,28 @@ pub struct UndoPort {
     /// "这段编辑来自 MIDI 文件导入"），但 `Commit`（模型层）**不持久化**它 —— 提交请求带过去后
     /// 就没有读数了。导入这类"非界面来源"的判据必须能**读回**这个标记 ⇒ 端口把它记在最近一次提交上。
     last_origin: RefCell<Option<OpOrigin>>,
+    /// ⭐ **会话的 CAS 资产池**（容器里 `assets/{sha256}` 的字节；任务单 `#132`）。
+    ///
+    /// ## 为什么资产池住在端口上
+    ///
+    /// 资产字节**不是** `Op` 的载荷（`yeban-model` 的 `Op` 全集没有资产变体 ——
+    /// 见 `crate::import_audio` 模块文档第 3 条），而 `.yeban` 容器的第三层偏偏就是它。
+    /// 端口是**活会话的唯一持有者**（工程 / 图谱 / 游标都在它手里），因此"这一段录音的
+    /// 字节现在归谁"必须由同一个人回答：否则保存时只能写 `assets: Vec::new()`
+    /// ⇒ ⭐ 容器**结构性**丢掉全部资产字节（`#132` 之前 GUI 正是这个形态）。
+    ///
+    /// ## 不变式（与 [`yeban_model::container::ProjectArchive::assets`] 逐字相同）
+    ///
+    /// 按哈希升序；同键**不重复**（内容寻址 ⇒ 同键必同值）。两个写入口
+    /// （[`UndoPort::replace_assets`] / [`UndoPort::insert_asset`]）都守住它。
+    ///
+    /// ## 边界（如实登记）
+    ///
+    /// 控制面权威形态（非默认 feature `in-process-mcp`）下，**落盘字节由权威自己产出**
+    /// （`ProjectAuthorityHandle::save_to`，见 `crate::save_action` 的情形表）——
+    /// 那份字节里有没有资产池，不属于本端口能决定的事。本池只服务**本地活会话**的保存
+    /// （`crate::host::wire_save` 的 `live_port` 那条腿）。
+    assets: RefCell<Vec<(AssetHash, Vec<u8>)>>,
 }
 
 impl UndoPort {
@@ -279,6 +301,7 @@ impl UndoPort {
             actions: RefCell::new(Vec::new()),
             open: Cell::new(false),
             last_origin: RefCell::new(None),
+            assets: RefCell::new(Vec::new()),
         }
     }
 
@@ -297,7 +320,56 @@ impl UndoPort {
             actions: RefCell::new(Vec::new()),
             open: Cell::new(false),
             last_origin: RefCell::new(None),
+            assets: RefCell::new(Vec::new()),
         }
+    }
+
+    /// 用一份归档资产池**替换**会话的池（打开工程 = 新会话 ⇒ 换一池）。
+    ///
+    /// 方向是**替换**而不是合并：打开 B 之后保存，容器里不该出现 A 的资产 ——
+    /// 那是"跨工程的字节泄漏"，且会让 `assets/{sha256}` 与工程文档的引用面对不上。
+    ///
+    /// 输入可以无序、可以带重复键；本方法按 [`AssetHash`] 升序排列并保留同键的**第一份**
+    /// （内容寻址 ⇒ 同键必同值，保留哪一份字节都相同）。
+    pub fn replace_assets(&self, assets: impl IntoIterator<Item = (AssetHash, Vec<u8>)>) {
+        let mut pool: Vec<(AssetHash, Vec<u8>)> = assets.into_iter().collect();
+        pool.sort_by(|left, right| left.0.cmp(&right.0));
+        pool.dedup_by(|left, right| left.0 == right.0);
+        *self.assets.borrow_mut() = pool;
+    }
+
+    /// 内容寻址登记一份资产字节：同哈希已在池里 ⇒ ⛔ 不重复登记，返回 `false`。
+    ///
+    /// 用二分插入而不是 `push`：归档声明的不变式是"按哈希升序"
+    /// （与 `crate::cli::register_audio_asset` 同一手法）⇒ 保存时不必再排一次。
+    pub fn insert_asset(&self, asset: AssetHash, bytes: Vec<u8>) -> bool {
+        let mut pool = self.assets.borrow_mut();
+        match pool.binary_search_by(|(hash, _)| hash.cmp(&asset)) {
+            Ok(_) => false,
+            Err(index) => {
+                pool.insert(index, (asset, bytes));
+                true
+            }
+        }
+    }
+
+    /// 池的一份拷贝（保存时交给 [`yeban_model::container::ProjectArchive::assets`]）。
+    ///
+    /// 为什么给拷贝而不是借用：端口内部是 `RefCell`，借出去的切片会与
+    /// `commit_ops` 的借用撞车（与 [`Self::graph`] 同一条理由）。
+    #[must_use]
+    pub fn assets(&self) -> Vec<(AssetHash, Vec<u8>)> {
+        self.assets.borrow().clone()
+    }
+
+    /// 池里某个哈希的字节（判据 / 渲染读回用；不在池里 ⇒ `None`）。
+    #[must_use]
+    pub fn asset_bytes(&self, asset: &AssetHash) -> Option<Vec<u8>> {
+        self.assets
+            .borrow()
+            .iter()
+            .find(|(hash, _)| hash == asset)
+            .map(|(_, bytes)| bytes.clone())
     }
 
     /// ⭐ **打开一个工程 = 新会话**（任务单 `#93`）—— 把端口里的**本地**会话整体换掉。
@@ -332,6 +404,12 @@ impl UndoPort {
     /// `live_surface::LiveAdminSurface::open_project_now` 的既有一句**同一个理由**。
     /// 那时正确的出口是领域 MCP 的 `yeban_close_project` / `yeban_open_project`。
     ///
+    /// ## `assets`：新归档的 CAS 资产池（任务单 `#132`）
+    ///
+    /// 来自 `crate::open::open_project_document_file` 的 `archive.assets`（`assets/{sha256}`）。
+    /// 语义是**替换**（[`Self::replace_assets`]）：打开 B 之后保存，容器里不许出现 A 的字节。
+    /// 传空 `Vec` = 新工程没有资产（⛔ 不是"保留上一池"）。
+    ///
     /// # Errors
     ///
     /// 权威后端在场（原因原文），或新会话的根提交被模型拒绝（[`UndoRefusal`] 原文）。
@@ -339,6 +417,7 @@ impl UndoPort {
         &self,
         label: impl Into<String>,
         project: YebanProjectV1,
+        assets: Vec<(AssetHash, Vec<u8>)>,
         now_ms: u64,
     ) -> Result<(), String> {
         let session = UndoSession::open(label, "yeban-app", project, now_ms)
@@ -359,6 +438,10 @@ impl UndoPort {
         self.actions.borrow_mut().clear();
         *self.last_origin.borrow_mut() = None;
         self.open.set(false);
+        // ⭐ 资产池跟着**新工程**走（任务单 `#132`）：`assets` 来自新打开的那份归档
+        // （`crate::open::open_project_document_file` 的 `archive.assets`）。
+        // ⛔ 不合并到旧池：那会让保存把上一个工程的字节写进新容器。
+        self.replace_assets(assets);
         Ok(())
     }
 

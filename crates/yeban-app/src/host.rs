@@ -2378,6 +2378,10 @@ pub fn wire_transport(
     // `transport.count_in_bars` 算**预备拍长度** ⇒ ⭐ 它是该字段的**第一个读者**。
     // ⚠ `None` ⇒ 预备拍 0（⛔ 不假装知道工程）。
     project: Option<Rc<YebanProjectV1>>,
+    // ⭐ **录音落进工程的写入面**（任务单 `#132`）：停录成功后要提交一次 `Op::AddClip`
+    // ＋ 把那段 WAV 的字节登记进会话资产池 ⇒ 它必须是**活会话那个** `Rc<UndoPort>`。
+    // ⚠ `None` ⇒ 录音只落盘、不进工程（判据/无头装配的既有形态：⛔ 不假装提交过）。
+    undo: Option<Rc<UndoPort>>,
 ) {
     let toggle = Rc::clone(&engine);
     // UFCS（而不是 `ui.as_weak()`）：`slint::ComponentHandle` 不在本文件的 import 里，
@@ -2413,6 +2417,7 @@ pub fn wire_transport(
     wire_record(
         ui,
         project,
+        undo,
         crate::record_wav::RecordPlan::production(),
         crate::record_device::default_input_factory(),
         Rc::new(UiRecordOutcome),
@@ -2452,16 +2457,30 @@ impl RecordOutcomePort for UiRecordOutcome {
 ///                     │  ① 工厂开不了 ⇒ RecordError::Source ─┘（⭐ 响亮失败：无文件、不置 recording）
 ///                     ▼
 ///           Recorder ⇒ 建环 ⇒ 后台线程从**源**拉块 ⇒ push_block ⇒ RecordDrain ⇒ 落盘
-/// 再按一次 ──▶ Recorder::stop ⇒ 报告 ⇒ `outcome.report(ui, err)`
+/// 再按一次 ──▶ Recorder::stop ⇒ 报告 ⇒ ⭐ [`land_recording`](crate::record_landing::land_recording)
+///                                       （frames > 0 且给了 `undo`）⇒ `outcome.report(ui, err)`
 /// ```
 ///
-/// ## 三个注入点（⭐ 判据全部从**代码缝**进，⛔ 不读环境变量）
+/// ## 四个注入点（⭐ 判据全部从**代码缝**进，⛔ 不读环境变量）
 ///
 /// | 参数 | 产品给的 | 判据给的 |
 /// | :--- | :--- | :--- |
 /// | [`RecordPlan`](crate::record_wav::RecordPlan) | 默认路径 ＋ 默认参数 | 判据自己的 scratch 路径 |
 /// | `factory` | [`default_input_factory`](crate::record_device::default_input_factory)（真设备源） | 脚本化假源 / 返回 `Err` 的工厂 / [`SilenceFactory`](crate::record_device::SilenceFactory) |
+/// | `undo` | ⭐ 活会话那个 `Rc<UndoPort>`（`main.rs` 的 `undo_port`） | `None`（只落盘，不提交）或一个探针端口 |
 /// | `outcome` | [`UiRecordOutcome`] | 记录读数的观察端口（内部**仍**转调产品落点） |
+///
+/// ## ⭐ 停录之后：真的进工程（任务单 `#132`，`#130` 的 L2 ＋ L3）
+///
+/// `frames > 0` 且 `undo` 在场 ⇒ 调 [`land_recording`](crate::record_landing::land_recording)：
+/// 读回**那段 WAV 的字节** ⇒ 按内容哈希登记进会话资产池 ⇒ **一次** `Op::AddClip`
+/// （`ClipContent::Audio { asset }`）⇒ `clip_pool` 多一条。⛔ 0 帧**不**走这一步：
+/// 0 帧的 WAV 只有头（`#130` 已让它响亮），把它写进 `clip_pool` 会在工程里留下一条
+/// "播放时什么都没有"的片段。⛔ `undo` 为 `None` 时也不假装提交过（只打一行如实登记）。
+///
+/// ⚠ **L4 / L5 未做**（`crate::record_landing` 模块头已登记）：进去的那条 clip
+/// **不会**出现在任何素材池面板（`.slint` 对 `clip_pool` 的投影 0 处），也**不会**
+/// 自动摆到轨道上（⛔ 不写 `Op::AddClipPlacement`）。
 ///
 /// ⛔ **失败语义（裁决 §2.3）**：打开失败**绝不**退化成"录一条静音"。
 /// `recorder.start_with_factory` 返回 `Err` ⇒ `recording` 保持 `false`、
@@ -2469,6 +2488,7 @@ impl RecordOutcomePort for UiRecordOutcome {
 pub fn wire_record(
     ui: &MainWindow,
     project: Option<Rc<YebanProjectV1>>,
+    undo: Option<Rc<UndoPort>>,
     plan: crate::record_wav::RecordPlan,
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
     outcome: Rc<dyn RecordOutcomePort>,
@@ -2496,8 +2516,44 @@ pub fn wire_record(
                 )),
                 _ => None,
             };
+            // ⭐⭐ **停录成功 ⇒ 真的进工程**（任务单 `#132`；`#130` 分层分析的 L2 ＋ L3）。
+            //
+            // 只在 `frames > 0` 时落地：0 帧的 WAV 只有头（`#130` 已让它**响亮**），
+            // 把它写进 `clip_pool` 等于在工程里登记一条"播放时什么都没有"的片段 ——
+            // 判据据 `clip_pool.len()` **不变**读这件事。
+            //
+            // `undo = None`（判据 / 无头装配）⇒ ⛔ 不假装提交过：如实打一行。
+            let mut landing_report: Option<String> = None;
             match &stopped {
-                Ok(report) => eprintln!("[yeban-app] {}", report.summary()),
+                Ok(report) => {
+                    eprintln!("[yeban-app] {}", report.summary());
+                    if report.frames > 0 {
+                        match undo.as_ref() {
+                            Some(port) => {
+                                match crate::record_landing::land_recording(
+                                    port,
+                                    &report.path,
+                                    now_ms(),
+                                ) {
+                                    // 成功：`summary` 带 asset / clip / 字节数（可机械复核）。
+                                    Ok(landed) => eprintln!("[yeban-app] {}", landed.summary()),
+                                    // ⛔ 停录成功但进工程失败必须**出声**：文件在、工程却没变，
+                                    // 这正是本单要消灭的"看不见的丢数据"。
+                                    Err(error) => {
+                                        landing_report = Some(format!(
+                                            "录音已落盘但没有进工程（{}）: {error}",
+                                            report.path.display()
+                                        ));
+                                    }
+                                }
+                            }
+                            None => eprintln!(
+                                "[yeban-app] 录音落盘但未接入工程（这个装配没有 UndoPort）: {}",
+                                report.path.display()
+                            ),
+                        }
+                    }
+                }
                 Err(error) => eprintln!("[yeban-app] 停录失败: {error}"),
             }
             if let Some(ui) = record_ui.upgrade() {
@@ -2507,7 +2563,8 @@ pub fn wire_record(
                     stopped
                         .err()
                         .map(|error| error.to_string())
-                        .or(empty_report),
+                        .or(empty_report)
+                        .or(landing_report),
                 );
             }
         } else {
@@ -2835,30 +2892,34 @@ pub fn wire_save(
         let Some(target) = target else {
             return;
         };
-        // 保存的是**此刻**的活会话：工程 + 提交图谱。编码口径只有
+        // 保存的是**此刻**的活会话：工程 + 提交图谱 + ⭐ **会话资产池**
+        // （`assets/{sha256}`；任务单 `#132`）。编码口径只有
         // `yeban_model::commit::encode_history_dag` 一份（本处不写第二份序列化）。
         // 目标路径是**装配期**的知识（`--open` 的那个文件），不随会话变；它保持
         // `Option`，于是"没有磁盘对应物"仍然如实报 `SaveStage::NoTarget`。
         //
-        // ⚠ 工程与图谱**一次**从同一个端口读出（同一个 binding）：分两次读会给
-        // "保存的那一版"与"图谱的那一版"留下漂移的余地。
-        let live = live_port
-            .as_ref()
-            .and_then(|live| live.try_project().map(|project| (project, live.graph())));
-        let request = crate::save_action::SaveRequest {
-            target: Some(target),
-            archive: match live {
-                Some((project, graph)) => yeban_model::container::ProjectArchive {
+        // ⚠ 工程 / 图谱 / 资产池**一次**从同一个端口读出（同一个 `live` binding）：
+        // 分几次读会给"保存的那一版"与"图谱/资产的那一版"留下漂移的余地。
+        //
+        // ⭐ 资产池的来源：`UndoPort::assets()` —— 这是录音（`crate::record_landing`）与
+        // 导入（`crate::import_audio` 的调用方）登记字节的**唯一**会话池。此前这里逐字写
+        // `assets: Vec::new()` ⇒ ⭐ GUI 保存会**结构性**丢掉全部资产字节（`#132` 的 L2）。
+        let live = live_port.as_ref().and_then(|live| {
+            live.try_project()
+                .map(|project| (project, live.graph(), live.assets()))
+        });
+        let request = match live {
+            // ⭐ 活会话这一版：工程 ＋ 图谱 ＋ **资产池**（`#132` 补的第三层）。
+            Some((project, graph, assets)) => {
+                crate::save_action::SaveRequest::with_history_dag_and_assets(
+                    target,
                     project,
-                    history_dag: yeban_model::commit::encode_history_dag(&graph),
-                    assets: Vec::new(),
-                },
-                None => yeban_model::container::ProjectArchive {
-                    project: port.project.clone(),
-                    history_dag: Vec::new(),
-                    assets: Vec::new(),
-                },
-            },
+                    yeban_model::commit::encode_history_dag(&graph),
+                    assets,
+                )
+            }
+            // 没有活会话 ⇒ 退回装配时刻的快照，如实写"没有历史 / 没有资产"（既有语义）。
+            None => crate::save_action::SaveRequest::new(target, port.project.clone()),
         };
         let outcome = crate::save_action::dispatch_save(&request, authority);
         apply_save_outcome(&ui, &outcome);
@@ -2979,16 +3040,26 @@ pub struct PortOpenProject {
 impl OpenProjectRuntime for PortOpenProject {
     fn open_runtime(&self, ui: &MainWindow, path: &str) -> Result<(), String> {
         // ① 读盘（唯一读取核心）。读失败 ⇒ 到这里就返回：下面一个字节都没改。
-        let project = crate::open::open_project_file(path)
+        //
+        // ⭐ 任务单 `#132`：读的是**全保真归档**（工程 ＋ `history.dag` ＋ 资产池），
+        // ⛔ 不是裸工程 —— 否则运行期换工程之后再保存，新工程的 `assets/{sha256}`
+        // 会静默消失（保存写的是端口里那一池，而那一池从没被新归档填过）。
+        let document = crate::open::open_project_document_file(path, &Default::default())
             .map_err(|error| format!("打开 `{path}` 失败（当前工程一位没动）: {error}"))?;
+        let project = document.archive.project.clone();
         // ② 只读投影一次：把"投影不成"这种失败**挡在改状态之前**。
         //    用的是与 ③ 里 `apply_view` **同一个** `project_with_view_state`（不读第二份）。
         let view = project_with_view_state(&project, ui)
             .map_err(|error| format!("`{path}` 投影失败（当前工程一位没动）: {error}"))?;
         // ③ 换会话（「打开一个工程 = **新会话**」的唯一实现）。
         //    权威后端在场 / 根提交被模型拒绝 ⇒ 到这里就返回：界面与引擎都还没碰。
-        self.port
-            .open_project_session(format!("open {path}"), project.clone(), now_ms())?;
+        //    ⭐ 资产池跟着新归档走（替换，⛔ 不合并 —— 见 [`UndoPort::replace_assets`]）。
+        self.port.open_project_session(
+            format!("open {path}"),
+            project.clone(),
+            document.archive.assets,
+            now_ms(),
+        )?;
         // ④ 注入界面（唯一注入点）—— 视图态从**当前窗口**读回（行高 / 缩放不因换工程清零）。
         let width = slint::ComponentHandle::window(ui).size().width as f32;
         let scroll_x = ui.get_roll_scroll_x();

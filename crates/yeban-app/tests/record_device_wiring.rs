@@ -356,6 +356,8 @@ fn the_record_button_writes_the_scripted_device_samples_bit_for_bit() {
     wire_record(
         &ui,
         None,
+        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
+        None,
         RecordPlan {
             path: path.clone(),
             options,
@@ -548,6 +550,8 @@ fn an_unopenable_device_fails_loudly_and_writes_nothing() {
     wire_record(
         &ui,
         None,
+        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
+        None,
         RecordPlan {
             path: path.clone(),
             options: options(),
@@ -619,6 +623,8 @@ fn a_zero_frame_recording_is_reported_loudly_instead_of_looking_successful() {
     wire_record(
         &ui,
         None,
+        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
+        None,
         RecordPlan {
             path: path.clone(),
             options: options(),
@@ -683,6 +689,8 @@ fn a_mono_device_is_recorded_as_mono_instead_of_being_refused() {
     wire_record(
         &ui,
         None,
+        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
+        None,
         RecordPlan {
             path: path.clone(),
             options,
@@ -736,6 +744,8 @@ fn the_explicit_silence_leg_is_still_available_and_records_silence() {
     let _ = std::fs::remove_file(&path);
     wire_record(
         &ui,
+        None,
+        // ⭐ `#132`：这个装配没有工程端口 ⇒ 录音只落盘、不进工程（本文件判的是落盘）。
         None,
         RecordPlan {
             path: path.clone(),
