@@ -38,7 +38,7 @@
 use std::collections::BTreeMap;
 
 use crate::bridge::ViewState;
-use crate::scene::{CONSOLE_TABS, DEVICE_NAMES, EQ_BANDS, TOOL_NAMES};
+use crate::scene::{CONSOLE_TABS, TOOL_NAMES};
 
 /// 一个语义元素在无障碍树里的角色。
 ///
@@ -164,8 +164,14 @@ impl ElementRegistry {
     /// `yeban-ui-test-port` 的有窗实例对账 (见模块文档), 属于已登记的边界。
     ///
     /// 哪些族**不由**工程驱动（如实登记，见 `docs/ledger/app-binding-notes.md`）：
-    /// 侧栏资源 / 控制台标签 / 卷帘工具矩阵 / 设备机架 / 两个对话框 —— 它们要么是
-    /// 规范级常量（工具矩阵、EQ 频段），要么还没有对应的模型实体（设备链）。
+    /// 侧栏资源 / 控制台标签 / 卷帘工具矩阵 / 两个对话框 —— 它们要么是规范级常量
+    /// （工具矩阵），要么没有对应的模型实体。
+    ///
+    /// ⭐ **任务单 `#157` 移出了"设备机架"**：设备卡片现在**由** `ViewState::devices`
+    /// 驱动（条目数 / 名字 / 旁通 / 参数读数）⇒ 它不再是静态部件。⚠ 它**没有**被加进
+    /// [`MODEL_DRIVEN_FAMILIES`]：那份清单是**前缀**表，加 `"device-"` 会把
+    /// `device-rack`（区域本身）与 `device-rack-eq-curve`（占位图）也算成工程驱动；
+    /// 设备卡的"数据来自工程"由 `tests/device_rack_projection.rs` 直接钉住。
     #[must_use]
     pub fn from_view(view: &ViewState) -> Self {
         let mut registry = Self::default();
@@ -1050,11 +1056,30 @@ impl ElementRegistry {
         }
 
         // ------------------------------------------------------------ 设备机架
+        //
+        // ⭐ 任务单 `#157`：设备机架**不再是静态部件** —— 卡片数 / 标签 / 旁通位全部来自
+        // `ViewState::devices`（`TrackV3::devices` 的投影），空链 ⇒ 一块卡片都不登记
+        // （界面显示 `device-rack-empty` 的空态）。旧版这里遍历的 `scene::DEVICE_NAMES`
+        // 是三条编造的数据，已删除。
         registry.add(
             "device-rack",
             ElementKind::Region,
             "console/device_rack.slint",
             "设备效果链",
+            false,
+        );
+        registry.add(
+            "device-rack-track-label",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &view.device_track_label,
+            false,
+        );
+        registry.add(
+            "device-rack-count",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &format!("{} 台设备", view.devices.len()),
             false,
         );
         registry.add(
@@ -1064,28 +1089,73 @@ impl ElementRegistry {
             "4 段 EQ 频响曲线 (占位)",
             true,
         );
-        for band in EQ_BANDS {
-            registry.add(
-                &format!("device-rack-eq-{band}-knob"),
-                ElementKind::Slider,
-                "console/device_rack.slint",
-                &format!("{band} 频段增益"),
-                false,
-            );
-        }
-        for (device_index, name) in DEVICE_NAMES.iter().enumerate() {
+        registry.add(
+            "device-eq-low-gain-panel",
+            ElementKind::GroupBox,
+            "console/device_rack.slint",
+            "EQ 低架增益 (eq_low_gain)",
+            false,
+        );
+        // 注册表登记的是 `.slint` **声明过**的元素（不是"此刻可见"的元素）：滑块节点与
+        // 空态节点在 `.slint` 里是**无条件声明**的（只有 `visible` 随投影变），因此这里
+        // 也**无条件**登记 —— 否则 `slint_accessible_ids_and_registry_cover_each_other`
+        // 的方向 2（`.slint` → 注册表）会红。
+        registry.add(
+            "device-eq-low-gain-slider",
+            ElementKind::Slider,
+            "console/device_rack.slint",
+            "EQ 低架增益",
+            false,
+        );
+        let eq_value_label = if view.device_eq_available() {
+            format!("{} dB", view.device_eq_gain_db())
+        } else {
+            "本轨没有可编辑的 eq_low_gain".to_owned()
+        };
+        registry.add(
+            "device-eq-value",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &eq_value_label,
+            false,
+        );
+        registry.add(
+            "device-rack-empty",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            "无设备（用 MCP 或后续版本添加）",
+            false,
+        );
+        for row in &view.devices {
+            let device_index = row.slot_index;
             registry.add(
                 &format!("device-{device_index}-card"),
                 ElementKind::ListItem,
                 "console/device_rack.slint",
-                &format!("设备 {name}"),
+                &format!("设备 {}", row.label()),
                 false,
             );
             registry.add(
                 &format!("device-{device_index}-bypass-switch"),
                 ElementKind::Switch,
                 "console/device_rack.slint",
-                &format!("旁通 {name}"),
+                &format!("旁通 {}", row.name),
+                false,
+            );
+            // 两台参数行**无条件**登记（`.slint` 里每个设备都有这两个 `Text` 节点，
+            // 只是 `visible` 绑在读数非空上）。读数本身仍然逐字来自投影。
+            registry.add(
+                &format!("device-{device_index}-recognised"),
+                ElementKind::Text,
+                "console/device_rack.slint",
+                &format!("设备 {} 的已识别参数", row.name),
+                false,
+            );
+            registry.add(
+                &format!("device-{device_index}-unrecognised"),
+                ElementKind::Text,
+                "console/device_rack.slint",
+                &format!("设备 {} 的未识别参数", row.name),
                 false,
             );
         }
@@ -1340,9 +1410,15 @@ pub fn is_well_formed_id(id: &str) -> bool {
 ///
 /// 这份清单把"哪些部件的数据来自工程"从注释变成**可断言的事实**：
 /// 判据只允许对这些族做"不得出现演示数据"的负向断言；其余部件
-/// （侧栏资源库 / 设备机架 / 两个对话框 / 状态栏 / 走带）的静态标签是**已知的未实现项**
+/// （侧栏资源库 / 两个对话框 / 状态栏 / 走带）的静态标签是**已知的未实现项**
 /// （见 `docs/ledger/app-binding-notes.md`）—— 对它们做全局断言会假红，
 /// 例如侧栏里有 `Sub Bass 低频`。
+///
+/// ⚠ **设备效果链（任务单 `#157`）为什么不在本表**：它的卡片已经由
+/// `ViewState::devices` 驱动，但 `device-` 这个前缀还覆盖 `device-rack`（区域本身）与
+/// `device-rack-eq-curve`（占位图）—— 把整个前缀判成"工程驱动"会把两件非数据部件也
+/// 卷进负向断言。因此设备卡的"数据来自工程"由 `tests/device_rack_projection.rs` 直接钉住
+/// （条目数 / 名字 / 旁通位 / 参数读数四项），而不是加一条过宽的前缀。
 ///
 /// `mixer-` 是 app-mixer 工作线新加的一族：调音台的**通道条**（`track-{i}-*`）本来就在
 /// `track-` 族里，但**主控通道条**（`mixer-master-*`）不共享那个前缀 —— 它的名字 / 音量 /
@@ -3157,7 +3233,6 @@ mod tests {
     /// | :--- | :--- |
     /// | `"ai-rail-intent-button"` | 意图生成能力不存在: 没有 `callback`、没有宿主写者 |
     /// | `"console-maximize-button"` | 底部控制台最大化只有键盘路径（`Cmd/Ctrl+Alt+M`） |
-    /// | `"device-" + i + "-bypass-switch"` | 旁通没有宿主面（`device_rack.slint` 自己写着命中 0） |
     /// | `"mixer-master-mute-button"` | 主控静音只有**显示**（`apply_mixer` 写 `master-mute`），没有 `mixer-master-mute-toggle` 回调 |
     /// | `"mixer-master-solo-button"` | 同上（`master-solo`） |
     /// | `"sidebar-category-" + i + "-button"` | 分类切换状态机不存在（只有静态选中态 `category_index == 0`） |
@@ -3224,10 +3299,14 @@ mod tests {
     /// [`controls_without_any_click_source_are_exactly_the_known_empty_ones`] 的期望集合。
     ///
     /// 已排序（`BTreeMap` 口径的确定性: 判据的期望值不依赖文件系统迭代顺序）。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 10] = [
+    ///
+    /// ⭐ **任务单 `#157` 移出了一条**：`device-{i}-bypass-switch` 现在是**真的**
+    /// 可点控件（`TouchArea.clicked` + `accessible-action-default` 同一落点
+    /// `root.device-bypass-toggle(device_index)` ⇒ 一次 `Op::SetDeviceBypassed`）。
+    /// 按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），它不再属于"没有动作"的集合。
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 9] = [
         "app.slint :: \"ai-rail-intent-button\"",
         "console/console_tabs.slint :: \"console-maximize-button\"",
-        "console/device_rack.slint :: \"device-\" + device_index + \"-bypass-switch\"",
         "console/mixer_console.slint :: \"mixer-master-mute-button\"",
         "console/mixer_console.slint :: \"mixer-master-solo-button\"",
         "sidebar.slint :: \"sidebar-category-\" + category_index + \"-button\"",

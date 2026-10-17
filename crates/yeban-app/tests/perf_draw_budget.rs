@@ -150,8 +150,26 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 /// * 与 `#82` 同一路线：`apply_view` 只在"换工程 / 撤销 / 打开"这类**完整重投影**上跑，
 ///   不是 60Hz 心跳那一跳 ⇒ 多三个 `VecModel` 换实例的频率远低于每帧。
 /// * ⛔ 墙钟成本本机没测（要 GPU 档，`AGENTS.md` §5 不允许）。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 34;
-/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（现在 **43**）。
+///
+/// ## 34 → 38 的追加（任务单 `#157`，2026-10-17）
+///
+/// 新数组是设备效果链（控制台 **Tab 3**）的四个平行数组：`device-names` /
+/// `device-bypassed` / `device-recognised` / `device-unrecognised`
+/// （`ViewState::devices` 的 `TrackV3::devices` 投影）。实测（判据逐字打出整份清单）：
+/// 这一格在 `#157` 之前 **34**，加上四个数组之后是 **38**。
+///
+/// ⚠ **代价边界（如实说清）**：
+///
+/// * 它们的消费者是 `console/device_rack.slint`，实例化在 `ConsoleTabs` 里
+///   （`console_tabs.slint` 的 `visible: root.active-tab == 2`）⇒ 默认帧（Tab 0）的
+///   运行时树**不含** `device-rack`（`test_port_adapter.rs` 的 `DEFAULT_VIEW_MUST_NOT_HAVE`
+///   断言这一点）。⛔ 本机是 macOS、`golden/<platform>` 只有 `linux` ⇒ **未**做 Linux
+///   基准的逐像素复测；这里只给"默认帧不实例化它"的结构性依据。
+/// * 与 `#82` / `#133` 同一路线：`apply_view` 只在"换工程 / 撤销 / 打开"这类**完整重投影**
+///   （以及本单新增的一次设备手势提交之后）上跑，不是 60Hz 心跳那一跳。
+/// * ⛔ 墙钟成本本机没测（要 GPU 档，`AGENTS.md` §5 不允许）。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 38;
+/// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **52**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
 ///
@@ -188,7 +206,34 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 34;
 ///
 /// ⚠ **未测**（如实登记）：⛔ 绘制回调的**墙钟**成本没有在本机重量 —— 那要 `examples/fps_gpu.rs`
 /// 的 GPU 档（本机纪律不允许，见 `AGENTS.md` §5）。上面给的是数量侧读数与逐像素读数。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 43;
+///
+/// ## 43 → 52 的追加（任务单 `#157`，2026-10-17）
+///
+/// 那九格是设备效果链（控制台 **Tab 3**，`ui/console/device_rack.slint`）的**唯一**注入点：
+///
+/// * 四个平行数组：`ui.set_device_names` / `set_device_bypassed` /
+///   `set_device_recognised` / `set_device_unrecognised`（`ViewState::devices` 的投影）；
+/// * 一个标量标题：`ui.set_device_track_label`（"轨 X · 设备链" —— 界面没有"选中轨"
+///   状态，投影用**唯一**规则选轨并把它显示出来）；
+/// * 四个标量旋钮读数：`ui.set_device_eq_available` / `set_device_eq_gain_db` /
+///   `set_device_eq_min_db` / `set_device_eq_max_db`（**唯一**可编辑的设备参数
+///   `eq_low_gain`；值域来自 `crate::effect_params`，⛔ 不是界面里的第二份表）。
+///
+/// 它们必须住在 `apply_view` 里 —— 与 `#82` / `#133` 同一条理由（D28："投影 ⇒ 界面"
+/// 只有这一个实现，另一处写它就会多出第二个真相源）。
+///
+/// 数量侧的**本机实测**（Apple M2；判据逐字报 `从 43 变成了 52`）：
+///
+/// * 写入点：**43 → 52**（本常量，判据自报的真实新数）；
+/// * 四个数组同时把 `PER_FRAME_ARRAY_REWRITE_BUDGET` 从 34 推到 **38**（判据逐字打印
+///   整份"换掉模型实例"清单，38 条）；
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack`（面板在 Tab 3，`console_tabs.slint`
+///   的 `visible: root.active-tab == 2`）⇒ 结构上不参与默认帧绘制；
+///   `tests/test_port_adapter.rs` 的 `DEFAULT_VIEW_MUST_NOT_HAVE` 里 `device-rack` 仍在。
+///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
+///
+/// ⚠ **未测**（如实登记）：⛔ 与上面两档同款 —— 绘制回调的**墙钟**成本没有在本机重量。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 52;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -234,6 +279,12 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("asset-pool-names", get_asset_pool_names);
     push!("asset-pool-kinds", get_asset_pool_kinds);
     push!("asset-pool-details", get_asset_pool_details);
+    // ⭐ 任务单 `#157`：设备效果链（Tab 3）的四个平行数组同样在 `apply_view` 的每帧路径上
+    // （⛔ 不是手势路径）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
+    push!("device-names", get_device_names);
+    push!("device-bypassed", get_device_bypassed);
+    push!("device-recognised", get_device_recognised);
+    push!("device-unrecognised", get_device_unrecognised);
     push!("bar-positions", get_bar_positions);
     push!("note-ulids", get_note_ulids);
     push!("note-velocities", get_note_velocities);

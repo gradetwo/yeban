@@ -100,14 +100,17 @@ pub const CONSOLE_TABS: [ConsoleTab; 3] = [
 /// 卷帘工具矩阵 (`[UI-NOTE-003]` 规范 §3.3): 1 选择 / 2 铅笔 / 3 剪刀 / 4 力度 / 5 橡皮擦。
 pub const TOOL_NAMES: [&str; 5] = ["select", "pencil", "knife", "velocity", "eraser"];
 
-/// 4 段 EQ 的频段名 (`[UI-NOTE-004]` 规范 §5.1)。
-pub const EQ_BANDS: [&str; 4] = ["low", "low-mid", "high-mid", "high"];
-
-/// 设备链里的设备卡名。
-///
-/// **已知债**：它**没有**接到 `TrackV3::devices` 上（设备机架尚未由模型驱动，
-/// 见 `docs/ledger/app-binding-notes.md` 的未实现项）。
-pub const DEVICE_NAMES: [&str; 3] = ["EQ 4 段", "Compressor", "Space Reverb"];
+// ⭐ **删除登记（任务单 `#157`，2026-10-17）**：这里原先有两条**编造的数据面**常量 ——
+// 一条是三台设备的显示名（`DEVICE_NAMES`），另一条是四段 EQ 的频段名（`EQ_BANDS`）。
+// 前者被 `elements.rs` 的注册表与 `device_rack.slint` 的 `device-names` 默认值共同消费，
+// 后者只被四个**没有数据源**的静态旋钮消费（`band-gains` 无写者）。
+// 设备机架改为由 `ViewState::devices`（`TrackV3::devices` 的投影）驱动之后，两者都没有
+// 消费者 ⇒ 删除。⛔ 不在本文件复活任何设备 / 参数名表：参数名与值域的唯一事实源是
+// `crate::effect_params`（`#[path]` 共享 `yeban-mcp` 的那一份，见 `src/lib.rs`）。
+//
+// ⚠ 规范 §5.1 的 4 段 EQ 频段语义（`low` / `low-mid` / `high-mid` / `high`）**仍然存在
+// 于规范里**，但界面今天没有实现它（设备链只有一格真的 `eq_low_gain` 滑块）⇒ 本单
+// 不保留一份"看起来像实现"的词表。
 
 /// 演出用的推子位置 (0.0–1.0 归一化)。
 ///

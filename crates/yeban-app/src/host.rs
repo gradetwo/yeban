@@ -164,6 +164,20 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_asset_pool_names(strings(&view.asset_pool_names()));
     ui.set_asset_pool_kinds(strings(&view.asset_pool_kinds()));
     ui.set_asset_pool_details(strings(&view.asset_pool_details()));
+    // ⭐ 设备机架（任务单 `#157`）：`ViewState::devices` / `eq_low_gain` 是**唯一**事实源。
+    // 四个平行数组同索引集；五个标量来自同一次投影。它们只在完整重投影（换工程 /
+    // 撤销 / 打开 / 一次设备手势提交之后）时变化，但 `apply_view` 每次都会新建
+    // `VecModel` ⇒ 计入 `PER_FRAME_ARRAY_REWRITE_BUDGET`（见 `tests/perf_draw_budget.rs`
+    // 的读数与注释）。
+    ui.set_device_track_label(view.device_track_label.clone().into());
+    ui.set_device_names(strings(&view.device_names()));
+    ui.set_device_bypassed(booleans(&view.device_bypassed()));
+    ui.set_device_recognised(strings(&view.device_recognised()));
+    ui.set_device_unrecognised(strings(&view.device_unrecognised()));
+    ui.set_device_eq_available(view.device_eq_available());
+    ui.set_device_eq_gain_db(view.device_eq_gain_db());
+    ui.set_device_eq_min_db(view.device_eq_min_db());
+    ui.set_device_eq_max_db(view.device_eq_max_db());
     ui.set_section_positions(lengths(&view.section_positions()));
     ui.set_section_widths(lengths(&view.section_widths()));
     ui.set_bar_positions(lengths(&view.bar_positions));
@@ -1871,6 +1885,243 @@ fn wire_mixer_switch(
         MixerSwitch::Mute => ui.on_mixer_mute_toggle(handler),
         MixerSwitch::Solo => ui.on_mixer_solo_toggle(handler),
     }
+}
+
+/// 设备机架（控制台 **Tab 3**）的**写入面** —— 任务单 `#157` 的"最小可编辑"。
+///
+/// 两个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]：
+///
+/// | 手势 | `.slint` 回调 | 提交的 `Op` | 撤销标签 |
+/// | :--- | :--- | :--- | :--- |
+/// | 旁通开关（逐台） | `device-bypass-toggle(slot)` | [`yeban_model::Op::SetDeviceBypassed`] | `toggle device bypass` |
+/// | EQ 低架增益拖动 | `device-eq-grab/drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam` | `set device eq low gain` |
+///
+/// ## 为什么拖动期**不**提交（与推子同一条纪律）
+///
+/// 拖动期间只写**界面视图态**（`device-eq-gain-db`），松手时若值**真的变了**
+/// （逐位比较，`-0.0` 与 `0.0` 不是同一个值）才提交一次 ⇒ 一次拖动 = 一步可撤销的编辑。
+/// 按下就松手、拖出去又拖回同一个数、提交被模型拒绝 —— 三种情况都**不留下**撤销步。
+///
+/// ## 寻址：不信界面上的下标
+///
+/// 旁通用**设备身份**（`DeviceDefinition::id`）构造 `Op`，EQ 用
+/// `AutomationTarget::DeviceParam { track_id, slot_index, param_index }` —— 两者都在
+/// **提交前**从权威工程（`port.try_project()`）重新求一次
+/// （[`crate::bridge::device_rack_track`] / [`crate::bridge::device_eq_low_gain_target`]），
+/// 因此 `Op` 携带的 `old_*` 永远是**当前**值（陈旧会被模型的逐位比对拒掉）。
+///
+/// ⚠ **如实登记的边界**：界面只报**下标**（`device-bypass-toggle(slot)`），而投影与那次
+/// 点击之间若设备链被**增删**（今天只有 MCP 能做到：`InsertDevice` / `RemoveDevice`），
+/// 同一个下标可能指向另一台设备 ⇒ 旁通会切到"此刻在那一格的那台"，而不是用户看到的那台。
+/// 本切片不为此加一份 `device-ids` 旁路（那是第二份身份副本，要跟投影同步）——
+/// 登记在这里，等设备增删有了界面入口时一起做。EQ 那条腿没有这个窗口：它在**按下**与
+/// **松手**两侧都重新求目标，且值变了就放弃提交。
+///
+/// ## 它**不**做什么
+///
+/// ⛔ 不插入 / 删除设备（`Op::InsertDevice` / `RemoveDevice` 今天在 UI 侧 **0** 个构造点，
+/// 本单不造）；⛔ 不做多选、⛔ 不写第二个 EQ 参数；⛔ 不碰引擎（插入链在实时侧的路由
+/// 由 `yeban-engine` 自己的文档说清 —— 见交付报告的"能验与不能验"）。
+pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+
+    // ---------------------------------------------------------------- ① 旁通开关
+    ui.on_device_bypass_toggle({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |slot_index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Ok(slot_index) = usize::try_from(slot_index) else {
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 设备旁通：权威会话此刻没有活跃工程");
+                return;
+            };
+            let Some(track) = crate::bridge::device_rack_track(&project) else {
+                return;
+            };
+            let Some(device) = track.devices.get(slot_index) else {
+                return;
+            };
+            let op = yeban_model::Op::SetDeviceBypassed {
+                track_id: track.id,
+                device_id: device.id,
+                old_bypassed: device.bypassed,
+                new_bypassed: !device.bypassed,
+            };
+            if port
+                .commit_ops(now_ms(), "toggle device bypass", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] 设备旁通提交被拒绝（工程未改）");
+                return;
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ---------------------------------------------------------------- ② EQ 低架增益
+    let gesture = Rc::new(RefCell::new(DeviceEqGesture::Idle));
+    ui.on_device_eq_grab({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move |fraction| {
+            let Some(project) = port.try_project() else {
+                *gesture.borrow_mut() = DeviceEqGesture::Idle;
+                return;
+            };
+            let Some((_, _, _, value, min_db, max_db)) =
+                crate::bridge::device_eq_low_gain_target(&project)
+            else {
+                *gesture.borrow_mut() = DeviceEqGesture::Idle;
+                return;
+            };
+            // 按下即定位（点一下滑块就跳到那一格）⇒ 一次**单击**也是一次可撤销的编辑，
+            // 而不是"点了没反应"。`start_db` 仍是按下那一刻的工程值（提交的 `old_val`）。
+            let pressed_db = eq_db_from_fraction(fraction, min_db, max_db);
+            *gesture.borrow_mut() = DeviceEqGesture::Dragging {
+                start_db: value,
+                last_db: pressed_db,
+                min_db,
+                max_db,
+                moved: pressed_db.to_bits() != value.to_bits(),
+            };
+            if pressed_db.to_bits() != value.to_bits()
+                && let Some(ui) = weak.upgrade()
+            {
+                ui.set_device_eq_gain_db(pressed_db);
+            }
+        }
+    });
+    ui.on_device_eq_drag({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        move |fraction| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let mut state = gesture.borrow_mut();
+            let DeviceEqGesture::Dragging {
+                last_db,
+                min_db,
+                max_db,
+                moved,
+                ..
+            } = &mut *state
+            else {
+                return;
+            };
+            let next_db = eq_db_from_fraction(fraction, *min_db, *max_db);
+            if next_db.to_bits() == last_db.to_bits() {
+                return;
+            }
+            *last_db = next_db;
+            *moved = true;
+            // 拖动期只写**视图态**（投影下一次注入会覆盖它）—— ⛔ 不提交工程内容。
+            ui.set_device_eq_gain_db(next_db);
+        }
+    });
+    ui.on_device_eq_release({
+        let weak = weak.clone();
+        let gesture = Rc::clone(&gesture);
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let taken = std::mem::replace(&mut *gesture.borrow_mut(), DeviceEqGesture::Idle);
+            let DeviceEqGesture::Dragging {
+                start_db,
+                last_db,
+                moved,
+                ..
+            } = taken
+            else {
+                return;
+            };
+            if !moved || last_db.to_bits() == start_db.to_bits() {
+                return;
+            }
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] EQ 提交：权威会话此刻没有活跃工程");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            let Some((track_id, slot_index, param_index, current_db, _, _)) =
+                crate::bridge::device_eq_low_gain_target(&project)
+            else {
+                refresh_undo_window(&ui, &port, true);
+                return;
+            };
+            // 手势期间工程被撤销 / 换掉 ⇒ 起点已经不是当前值：⛔ 不按一个过期基线提交。
+            if current_db.to_bits() != start_db.to_bits() {
+                eprintln!("[yeban-app] EQ 提交被放弃：拖动期间工程值已变（陈旧基线）");
+                refresh_undo_window(&ui, &port, true);
+                return;
+            }
+            let op = yeban_model::Op::SetParam {
+                target: yeban_model::AutomationTarget::DeviceParam {
+                    track_id,
+                    slot_index,
+                    param_index,
+                },
+                old_val: start_db,
+                new_val: last_db,
+            };
+            if port
+                .commit_ops(now_ms(), "set device eq low gain", vec![op])
+                .is_err()
+            {
+                eprintln!("[yeban-app] EQ 提交被拒绝（工程未改）");
+            }
+            // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+}
+
+/// EQ 滑块手势的中间态（**会话运行态**，不进 `.yeban`）。
+///
+/// 与 [`MixerGesture`] 同一条纪律：`Idle` 是唯一的空态；`Escape` / 指针离开窗口走的是
+/// `.slint` 的上报（`PointerEventKind.cancel` ⇒ `device-eq-release`），因此不存在
+/// "黏住的拖动"。`start_db` 是**提交时的 `old_val`**，`last_db` 是收尾要提交的 `new_val`。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DeviceEqGesture {
+    /// 没有手势。
+    Idle,
+    /// 正在拖：起点 / 最近值 / 值域（来自契约）/ 是否真的动过。
+    Dragging {
+        /// 按下时的工程值（`old_val`）。
+        start_db: f32,
+        /// 最近一次算出的值（`new_val`）。
+        last_db: f32,
+        /// 值域下界 (dB)。
+        min_db: f32,
+        /// 值域上界 (dB)。
+        max_db: f32,
+        /// 是否收到过至少一次**改变数值**的 move。
+        moved: bool,
+    },
+}
+
+/// 滑块位置（0.0–1.0 归一化）→ dB：在契约给出的 `[min_db, max_db]` 上线性映射并夹紧。
+///
+/// `NaN` / `±∞` 归中值（`0.5`）而不是 `clamp` 的端点：越界输入本来就该被 `clamp`
+/// 拦掉，但"非数"不是"拖到最左"，把它当端点会制造一个没人拖出来的值。
+fn eq_db_from_fraction(fraction: f32, min_db: f32, max_db: f32) -> f32 {
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    min_db + fraction * (max_db - min_db)
 }
 
 /// `[string]` 属性 → `Vec<String>`（读回视图态；写方向是 [`strings`]）。

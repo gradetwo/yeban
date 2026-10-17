@@ -720,6 +720,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 松手 / 点击才 `commit_ops` **一次**，因此一次拖动 = 一步可撤销的编辑。
     // 与 `wire_roll_edit` 共用同一个 `UndoPort`（唯一可变权威）。
     host::wire_mixer_edit(&ui, &undo_port);
+    // ⭐ 设备效果链（控制台 Tab 3）的**写入面**（任务单 `#157`）：旁通开关 + 一格
+    // `eq_low_gain` 滑块。与混音台同一条纪律 —— 拖动期只写视图态，松手 / 点击才
+    // `commit_ops` **一次**（一次手势 = 一步可撤销的编辑），且共用同一个 `UndoPort`。
+    host::wire_device_rack(&ui, &undo_port);
     // **四个模块入口**（导出 WAV / 导入 MIDI / 装载 SFZ / 录音）：与其余接线同款 ——
     // `host::wire_module_actions` 是它们的**唯一**实现，无头端口的装配
     // （`src/live_surface.rs` 的 `build_live_ui_with`）调的是**同一个**函数。

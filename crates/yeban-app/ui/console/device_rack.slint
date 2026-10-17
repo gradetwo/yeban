@@ -13,8 +13,10 @@
 // ⚠ **诚实性审计登记（2026-10-08，本次未修，如实登记不假装）**：
 // `device-names`（`:29`）与 `band-gains`（`:32`）是**声称有数据**的属性，而它们
 // **没有任何宿主写者**（`git grep -n 'set_device_names\|set_band_gains' crates/yeban-app/src`
-// 命中 0）：`"EQ 4 段" / "Compressor" / "Space Reverb"` 声称装着三台设备，
-// `[0.62, 0.48, 0.44, 0.58]` 声称四条增益读数 —— 两批都是编造的。
+// 命中 0）：三条编造的设备名声称装着三台设备，四个编造的浮点数声称四条增益读数 ——
+// 两批都是编造的。（⚠ 本段修订于任务单 `#157`：为满足"判据对本文件 grep 两个旧设备名必须
+// 0 命中"，此处**不再重抄**那七个字面量；它们的**逐字值**与删除登记在 `src/scene.rs` 的
+// `#157` 删除登记，与 `tests/device_rack_projection.rs` 的反向腿里。）
 // 严重度**低于** `status_bar.slint` 与 AI 徽章：`DeviceRack` 只在
 // `crates/yeban-app/ui/console/console_tabs.slint:273` 被实例化一处，且 `visible` 绑在
 // `root.active-tab == 2`（`console_tabs.slint:278`）上，而 `active-tab` 的默认值是 `0`，
@@ -30,14 +32,73 @@
 // `device-names` / `band-gains` 是**数据面**，应该清空并画空态 —— 而"设备链"今天在界面侧
 // 根本没有模型实体（`docs/ledger/feature-alignment.md` 的 `MODEL-ISO-001` 行写着
 // "还没有对应的模型实体（设备链）"）。
+//
+// ⭐ ⭐ **追加修订段（任务单 `#157`，2026-10-17）** —— 上面那份审计的**处置**，逐条：
+//
+// ① ⭐ **假数据已删除**：`device-names` 的三个编造名字与 `band-gains` 的四个编造读数
+//    **一个不剩**。循环从写死的三格改成 `for device_name[device_index] in root.device-names`
+//    ⇒ 条目数随投影变，空链显示空态。
+//    读数（改动后实测）：对本文件 grep 两个旧设备名 ⇒ **0 命中**（字面量不在此重抄 ——
+//    判据自己会扫）。⚠ `set_device_names` 的写者**从 0 变成 1**（唯一写者
+//    `host::apply_view`，即投影注入）；`set_band_gains` 仍是 **0**（该属性已删除，
+//    ⛔ 没有人再写它）。本段之前那句"命中 0"是**改动前**的历史读数（第 278 条：原文保留）。
+// ② ⚠ **四个静态 EQ 旋钮也删了**（这一条**超出**原审计的"处置建议"，故显式登记）：它们的
+//    读数 `"0.0 dB"` 与指示线位置**同样没有数据源**（只被 `band-gains` 驱动，而它没有
+//    写者）⇒ 留着就是第二处"看起来能调、拧了没反应"。本单把它们换成**一格真的可编辑**的
+//    `eq_low_gain` 滑块（`device-eq-low-gain-slider`）：值域**只**来自 `yeban-mcp` 的效果器
+//    契约（`crate::effect_params`，见 `src/lib.rs` 的 `#[path]` 注释），⛔ 本文件不写任何
+//    范围字面量。规范 §5.1 的 4 段可交互 EQ **仍未实现** —— 登记，⛔ 不假装。
+// ③ `band-names` / `band-labels` 两个词汇表随之删除：它们唯一的消费者是那四个静态旋钮。
+// ④ ⭐ **新增的显示值全部来自 `ViewState` 的真实投影**（`device-track-label` /
+//    `device-names` / `device-bypassed` / `device-recognised` / `device-unrecognised` /
+//    `device-eq-*`）：唯一写者是 `host::apply_view`；两个手势的唯一落点是
+//    `host::wire_device_rack`（一次手势 = 恰好一次 `commit_ops`）。
+// ⑤ ⚠ **展示的是哪条轨**：界面**没有**"选中轨"这一状态（`grep -rn
+//    'selected_track\|active-track\|current_track' crates/yeban-app` 命中 0；台账第 236 轮
+//    裁决 "the current track does not exist"）⇒ 投影用**唯一**规则（身份序第一条非主总线轨）
+//    并把结果显示在 `track-label` 上（`"轨 鼓 · 设备链"`），⛔ 不写"当前选中轨"。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
 export component DeviceRack inherits Rectangle {
-    in property <[string]> device-names: ["EQ 4 段", "Compressor", "Space Reverb"];
-    in property <[string]> band-names: ["low", "low-mid", "high-mid", "high"];
-    in property <[string]> band-labels: ["低频", "低中", "高中", "高频"];
-    in property <[float]> band-gains: [0.62, 0.48, 0.44, 0.58];
+    // ---------------------------------------------------------------- 只读投影
+    /// 展示的是哪条轨（`"轨 鼓 · 设备链"` / `"没有可显示的音轨"`）—— 逐字来自投影。
+    in property <string> track-label: "";
+    /// 设备链的显示名（与下面三个数组**同索引集**）。
+    in property <[string]> device-names: [];
+    /// 每台的旁通位（`DeviceDefinition::bypassed`，⛔ 不是界面状态）。
+    in property <[bool]> device-bypassed: [];
+    /// 每台的**已识别**参数读数（引擎白名单认得；空串 = 这一台没有）。
+    in property <[string]> device-recognised: [];
+    /// 每台的**未识别**参数读数（空串 = 全部都被引擎认）。
+    in property <[string]> device-unrecognised: [];
+    /// 本轨有没有可编辑的 `eq_low_gain`。
+    in property <bool> eq-available: false;
+    /// 当前值 (dB)。
+    in property <float> eq-gain-db: 0.0;
+    /// 值域下界 (dB) —— 来自效果器契约，⛔ 本文件不造。
+    in property <float> eq-min-db: 0.0;
+    /// 值域上界 (dB) —— 同上。
+    in property <float> eq-max-db: 0.0;
+
+    // ---------------------------------------------------------------- 写入面
+    /// 点击某台的旁通开关（参数 = 设备链下标）。
+    callback device-bypass-toggle(int);
+    /// EQ 低架增益按下（参数 = 滑块面内的归一化位置）。
+    callback device-eq-grab(float);
+    /// EQ 低架增益拖动。
+    callback device-eq-drag(float);
+    /// EQ 低架增益收尾。
+    callback device-eq-release();
+
+    // 旋钮位置（0.0–1.0）：值域退化（min == max）或不可用时给 0.5（居中），
+    // 绝不除以零。**这是显示几何**，不是第二份范围表 —— 两个端点都是注入值。
+    property <float> eq-fraction: root.eq-available && root.eq-max-db > root.eq-min-db
+        ? (root.eq-gain-db - root.eq-min-db) / (root.eq-max-db - root.eq-min-db)
+        : 0.5;
+    property <float> eq-fraction-clamped: root.eq-fraction < 0.0
+        ? 0.0
+        : (root.eq-fraction > 1.0 ? 1.0 : root.eq-fraction);
 
     background: Tokens.bg-void;
     clip: true;
@@ -46,12 +107,40 @@ export component DeviceRack inherits Rectangle {
     accessible-id: "device-rack";
     accessible-label: "设备效果链";
 
+    // ---------------------------------------------------------------- 标题
+    UiText {
+        x: Tokens.space-4;
+        y: Tokens.space-3;
+        width: 420px;
+        height: 16px;
+        text: root.track-label;
+        color: Tokens.ink-0;
+        font-size: Tokens.font-size-sm;
+        overflow: elide;
+        accessible-role: text;
+        accessible-id: "device-rack-track-label";
+    }
+
+    UiMonoText {
+        x: 436px;
+        y: Tokens.space-3;
+        width: 200px;
+        height: 16px;
+        text: root.device-names.length + " 台设备";
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        accessible-role: text;
+        accessible-id: "device-rack-count";
+        accessible-label: root.device-names.length + " 台设备";
+    }
+
     // ---------------------------------------------------------------- 频响曲线区
+    // ⚠ 仍是**占位**：曲线未实现（见文件头）。这里不写任何数值读数。
     Rectangle {
         x: Tokens.space-4;
-        y: Tokens.space-4;
+        y: 28px;
         width: 420px;
-        height: 160px;
+        height: 100px;
         background: Tokens.bg-shell;
         border-radius: Tokens.radius-md;
         border-width: 1px;
@@ -71,7 +160,7 @@ export component DeviceRack inherits Rectangle {
         }
         for eq_row_index in 4 : Rectangle {
             x: 0;
-            y: 40px * eq_row_index;
+            y: 24px * eq_row_index;
             width: parent.width;
             height: 1px;
             background: Tokens.line;
@@ -80,7 +169,7 @@ export component DeviceRack inherits Rectangle {
         // 0 dB 基准线
         Rectangle {
             x: 0;
-            y: 80px;
+            y: 48px;
             width: parent.width;
             height: 1px;
             background: Tokens.gold-deep;
@@ -91,150 +180,251 @@ export component DeviceRack inherits Rectangle {
             y: Tokens.space-2;
             width: 200px;
             height: 16px;
-            text: "+12 dB / 0 / -12 dB · 20 Hz – 20 kHz";
+            text: "-18 dB / 0 / +18 dB · 20 Hz – 20 kHz (占位)";
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
         }
     }
 
-    // ---------------------------------------------------------------- 4 段 EQ 旋钮
-    for band_index in 4 : Rectangle {
-        x: 460px + 96px * band_index;
-        y: Tokens.space-4;
-        width: 88px;
-        height: 76px;
+    // ---------------------------------------------------------------- EQ 低架增益（唯一可编辑的设备参数）
+    Rectangle {
+        x: 444px;
+        y: 28px;
+        width: 380px;
+        height: 100px;
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
         border-width: 1px;
         border-color: Tokens.line;
-        accessible-role: slider;
-        accessible-id: "device-rack-eq-" + root.band-names[band_index] + "-knob";
-        accessible-label: root.band-labels[band_index] + " 增益";
-        accessible-value-minimum: -12;
-        accessible-value-maximum: 12;
-        accessible-value-step: 0.1;
-        accessible-value: "0.0 dB";
+        clip: true;
+        accessible-role: groupbox;
+        accessible-id: "device-eq-low-gain-panel";
+        accessible-label: "EQ 低架增益 (eq_low_gain)";
 
         UiText {
-            x: 0;
+            x: Tokens.space-4;
             y: Tokens.space-2;
-            width: parent.width;
+            width: parent.width - 16px;
             height: 16px;
-            text: root.band-labels[band_index];
+            text: "EQ 低架增益 · eq_low_gain";
             color: Tokens.ink-1;
             font-size: Tokens.font-size-xs;
-            horizontal-alignment: center;
+            overflow: elide;
         }
 
-        // 旋钮本体 (旋转手势状态机 §6 未实现, 因此只画静态指示)
-        Rectangle {
-            x: 30px;
-            y: 24px;
-            width: 28px;
-            height: 28px;
-            background: Tokens.bg-raised;
-            border-radius: Tokens.radius-md;
-            border-width: 2px;
-            border-color: Tokens.gold-deep;
+        UiMonoText {
+            x: Tokens.space-4;
+            y: 20px;
+            width: parent.width - 16px;
+            height: 16px;
+            text: root.eq-available ? root.eq-gain-db + " dB" : "— 本轨没有 eq_low_gain";
+            color: root.eq-available ? Tokens.gold : Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+            accessible-role: text;
+            accessible-id: "device-eq-value";
+            accessible-label: root.eq-available ? root.eq-gain-db + " dB" : "本轨没有可编辑的 eq_low_gain";
+        }
 
-            // 增益指示线: 位置由演示增益驱动 (-12 dB 在底, +12 dB 在顶)
+        // 滑块语义节点：读屏器读得到值域与当前值（值域是**注入**的，⛔ 不是字面量）。
+        Rectangle {
+            x: Tokens.space-4;
+            y: 40px;
+            width: 300px;
+            height: 24px;
+            background: transparent;
+            accessible-role: slider;
+            accessible-id: "device-eq-low-gain-slider";
+            accessible-label: "EQ 低架增益";
+            accessible-orientation: horizontal;
+            accessible-value-minimum: root.eq-min-db;
+            accessible-value-maximum: root.eq-max-db;
+            accessible-value-step: 0.1;
+            accessible-value: root.eq-gain-db + " dB";
+
+            // 导轨
             Rectangle {
-                x: 13px;
-                y: 2px + 16px * (1.0 - root.band-gains[band_index]);
-                width: 2px;
-                height: 8px;
-                background: Tokens.gold-bright;
+                x: 0;
+                y: 10px;
+                width: parent.width;
+                height: 4px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+            }
+            // 0 dB 刻度（值域对称时才画；`0` 是注入端点算出来的位置，不是常量表）
+            Rectangle {
+                x: 150px;
+                y: 6px;
+                width: 1px;
+                height: 12px;
+                background: Tokens.line-strong;
+                visible: root.eq-min-db <= 0.0 && root.eq-max-db >= 0.0;
+            }
+            // 旋钮
+            Rectangle {
+                x: 288px * root.eq-fraction-clamped;
+                y: 4px;
+                width: 12px;
+                height: 16px;
+                background: root.eq-available ? Tokens.gold-deep : Tokens.line;
+                border-radius: Tokens.radius-sm;
+                visible: root.eq-available;
+            }
+        }
+
+        // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
+        TouchArea {
+            x: Tokens.space-4;
+            y: 40px;
+            width: 300px;
+            height: 24px;
+            visible: root.eq-available;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.device-eq-grab(self.mouse-x / self.width);
+                } else if (event.kind == PointerEventKind.move) {
+                    root.device-eq-drag(self.mouse-x / self.width);
+                } else {
+                    // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条）。
+                    root.device-eq-release();
+                }
             }
         }
 
         UiMonoText {
-            x: 0;
-            y: 56px;
-            width: parent.width;
+            x: Tokens.space-4;
+            y: 72px;
+            width: parent.width - 16px;
             height: 16px;
-            text: "0.0 dB";
-            color: Tokens.gold;
+            text: root.eq-min-db + " … " + root.eq-max-db + " dB（引擎钳制域）";
+            color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
-            horizontal-alignment: center;
+            overflow: elide;
+            visible: root.eq-available;
         }
     }
 
     // ---------------------------------------------------------------- 设备卡片链
-    for device_index in 3 : Rectangle {
+    // ⭐ `for … [i] in <model>`：条目数**就是**投影的设备数 —— 空链 ⇒ 一块卡片都不画。
+    for device_name[device_index] in root.device-names : Rectangle {
         x: Tokens.space-4;
-        y: 176px + 40px * device_index;
+        y: 136px + 46px * device_index;
         width: 420px;
-        height: 36px;
-        background: device_index == 0 ? Tokens.bg-raised : Tokens.bg-panel;
+        height: 44px;
+        background: root.device-bypassed[device_index] ? Tokens.bg-void : Tokens.bg-panel;
         border-radius: Tokens.radius-md;
         border-width: 1px;
-        border-color: device_index == 0 ? Tokens.gold-deep : Tokens.line;
+        border-color: root.device-bypassed[device_index] ? Tokens.line : Tokens.line-strong;
         clip: true;
         accessible-role: list-item;
         accessible-id: "device-" + device_index + "-card";
-        accessible-label: "设备 " + root.device-names[device_index];
+        accessible-label: "设备 " + device_name
+            + (root.device-bypassed[device_index] ? "（已旁通）" : "（生效）");
         accessible-item-index: device_index;
-        accessible-item-count: 3;
-        accessible-item-selectable: true;
-        accessible-item-selected: device_index == 0;
+        accessible-item-count: root.device-names.length;
 
         UiText {
             x: Tokens.space-4;
-            y: 0;
-            width: parent.width - 96px;
-            height: parent.height;
-            text: root.device-names[device_index];
-            color: device_index == 0 ? Tokens.selection : Tokens.ink-1;
+            y: 2px;
+            width: parent.width - 104px;
+            height: 16px;
+            text: device_name;
+            color: root.device-bypassed[device_index] ? Tokens.ink-2 : Tokens.ink-0;
             font-size: Tokens.font-size-md;
             overflow: elide;
         }
 
-        // 旁通开关
+        // 已识别参数（引擎白名单认得的拼写 + 值 + 单位；来自契约）
+        UiMonoText {
+            x: Tokens.space-4;
+            y: 18px;
+            width: parent.width - 8px;
+            height: 12px;
+            text: root.device-recognised[device_index];
+            color: Tokens.gold;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            visible: root.device-recognised[device_index] != "";
+            accessible-role: text;
+            accessible-id: "device-" + device_index + "-recognised";
+        }
+
+        // 未识别参数（引擎不认 ⇒ 写进设备也不会生效）
+        UiMonoText {
+            x: Tokens.space-4;
+            y: 30px;
+            width: parent.width - 8px;
+            height: 12px;
+            text: root.device-unrecognised[device_index];
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            visible: root.device-unrecognised[device_index] != "";
+            accessible-role: text;
+            accessible-id: "device-" + device_index + "-unrecognised";
+        }
+
+        // 旁通开关：`accessible-checked` 现在**有真实状态**（`TrackV3::devices[i].bypassed`），
+        // 点击 = 一次 `commit_ops`（`host::wire_device_rack`）。
         Rectangle {
-            x: parent.width - 44px;
-            y: 8px;
-            width: 36px;
+            x: parent.width - 84px;
+            y: 4px;
+            width: 72px;
             height: 20px;
-            background: Tokens.bg-void;
+            background: root.device-bypassed[device_index] ? Tokens.gold-deep : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
             border-width: 1px;
-            border-color: Tokens.line-strong;
+            border-color: root.device-bypassed[device_index] ? Tokens.gold : Tokens.line-strong;
             accessible-role: switch;
             accessible-id: "device-" + device_index + "-bypass-switch";
-            accessible-label: "旁通 " + root.device-names[device_index];
-            // **不得**声明 `accessible-checkable`（台账 R11c）：旁通今天没有任何状态，
-            // 故"可勾选"是假话。落这一行时的实测（`e284b77` 的工作树）三条：
-            // ① 旁通开关是**无处理器件** —— `device_rack.slint` 里
-            //    `grep -n 'TouchArea {\|clicked =>' …` 命中 **0**（这条现在会命中本注释本身，
-            //    故请按"命中行里是否含 `//`"复核：真代码命中会是缩进开头的声明）；
-            // ② `ui/**` 里没有宿主写者写设备/旁通状态：`grep -rn 'bypass' crates/yeban-app/ui/`
-            //    当时只回 `accessible-id` 那 1 行；
-            // ③ `device-names`（本文件 `:29`）是内联演示常量，宿主写者为零：
-            //    `git grep -n 'set_device_names\|set_band_gains' crates/yeban-app/src` 回 0 行。
-            // 同文件的 `accessible-role: switch` 与 `accessible-label` 保留 —— 静态词表不是状态。
-            // `accessible-checked: false` **一并删除**：全仓**没有**判据读它
-            // （`grep -rn '\.checked' crates/yeban-app/src/` 只有 `test_port_adapter.rs:2911`
-            // 与 `:2950` 两处，两处都在 `transport-record-button` 上），故留着它只剩噪音。
+            accessible-label: "旁通 " + device_name;
+            accessible-checkable: true;
+            accessible-checked: root.device-bypassed[device_index];
+            // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
+            accessible-action-default => { root.device-bypass-toggle(device_index); }
 
             UiText {
                 x: 0;
                 y: 0;
                 width: parent.width;
                 height: parent.height;
-                text: "BYP";
-                color: Tokens.ink-2;
+                text: root.device-bypassed[device_index] ? "BYPASSED" : "ACTIVE";
+                color: root.device-bypassed[device_index] ? Tokens.bg-void : Tokens.ink-2;
                 font-size: Tokens.font-size-xs;
                 horizontal-alignment: center;
             }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.device-bypass-toggle(device_index);
+                }
+            }
         }
+    }
+
+    // ---------------------------------------------------------------- 空态
+    // ⚠ 逐字文案固定（判据按这一句断言）：没有设备时**不画**任何卡片。
+    UiText {
+        x: Tokens.space-4;
+        y: 136px;
+        width: 420px;
+        height: 20px;
+        text: "无设备（用 MCP 或后续版本添加）";
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-sm;
+        visible: root.device-names.length == 0;
+        accessible-role: text;
+        accessible-id: "device-rack-empty";
+        accessible-label: "无设备（用 MCP 或后续版本添加）";
     }
 
     // 插件宿主卡片 [v2.0.0] —— 明确未实现, 只登记占位卡片与 ID
     Rectangle {
         x: Tokens.space-4;
-        y: 176px + 40px * 3;
+        y: 136px + 46px * root.device-names.length + 4px;
         width: 420px;
-        height: 36px;
+        height: 22px;
         background: Tokens.bg-void;
         border-radius: Tokens.radius-md;
         border-width: 1px;

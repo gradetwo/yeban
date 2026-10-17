@@ -72,6 +72,17 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> asset-pool-names: [];
     in property <[string]> asset-pool-kinds: [];
     in property <[string]> asset-pool-details: [];
+    // ⭐ 设备效果链（任务单 `#157`）：`TrackV3::devices` 的逐条投影 ＋ 那一格 `eq_low_gain`。
+    // 与上面三格同一条透传纪律 —— 本组件不解释、不筛选、⛔ 不持有第二份列表。
+    in property <string> device-track-label: "";
+    in property <[string]> device-names: [];
+    in property <[bool]> device-bypassed: [];
+    in property <[string]> device-recognised: [];
+    in property <[string]> device-unrecognised: [];
+    in property <bool> device-eq-available: false;
+    in property <float> device-eq-gain-db: 0.0;
+    in property <float> device-eq-min-db: 0.0;
+    in property <float> device-eq-max-db: 0.0;
     in property <[string]> track-meter-peaks: [];
     in property <[string]> track-meter-rmss: [];
     in property <[float]> track-meter-levels: [];
@@ -107,6 +118,13 @@ export component ConsoleTabs inherits Rectangle {
     // ⭐ **③ 浏览…**（任务单 `#86` 乙）：与上面两条**不同** —— 它⛔ 不提交工程内容，
     // 只请求宿主"问一次原生对话框、把选中的路径填进输入框"。同样只上抛。
     callback mixer-sampler-browse(int);
+    // ⭐ **设备效果链的写入面**（任务单 `#157`）：控制台 **Tab 3** 的两个手势，本组件
+    // 只把 `DeviceRack` 的回调**原样上抛**给 `MainWindow`（宿主侧唯一实现是
+    // `host::wire_device_rack`）—— ⛔ 不解释、⛔ 不提交、⛔ 不改任何工程值。
+    callback device-bypass-toggle(int);
+    callback device-eq-grab(float);
+    callback device-eq-drag(float);
+    callback device-eq-release();
     // ⭐ **导出 MIDI**（任务单 `#90` 甲）：混音台（Tab 1）里的**控制台级**动作。
     // 与上面那一族同款 —— 本组件只上抛，⛔ 不写盘、⛔ 不判断成功与否。
     callback export-midi();
@@ -362,5 +380,28 @@ export component ConsoleTabs inherits Rectangle {
         width: parent.width;
         height: root.height - 28px;
         visible: root.active-tab == 2;
+        // ⭐ 设备链（任务单 `#157`）：只透传投影，本组件不解释。
+        track-label: root.device-track-label;
+        device-names: root.device-names;
+        device-bypassed: root.device-bypassed;
+        device-recognised: root.device-recognised;
+        device-unrecognised: root.device-unrecognised;
+        eq-available: root.device-eq-available;
+        eq-gain-db: root.device-eq-gain-db;
+        eq-min-db: root.device-eq-min-db;
+        eq-max-db: root.device-eq-max-db;
+        // 写入面：两个手势原样上抛（唯一落点 `host::wire_device_rack`）。
+        device-bypass-toggle(slot) => {
+            root.device-bypass-toggle(slot);
+        }
+        device-eq-grab(fraction) => {
+            root.device-eq-grab(fraction);
+        }
+        device-eq-drag(fraction) => {
+            root.device-eq-drag(fraction);
+        }
+        device-eq-release() => {
+            root.device-eq-release();
+        }
     }
 }

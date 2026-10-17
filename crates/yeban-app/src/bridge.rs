@@ -1314,6 +1314,70 @@ pub struct AssetPoolRowView {
     pub label: String,
 }
 
+/// 设备机架里的一格设备 —— **当前展示轨** `TrackV3::devices` 的一条。
+///
+/// ⭐ 任务单 `#157`：这是设备链在界面上的**唯一**数据形态。字段全部来自
+/// `DeviceDefinition`（`id` / `name` / `bypassed` / `params`）；"已识别 / 未识别"
+/// 的判定走 [`crate::effect_params::recognise`]（与 MCP 公布的是**同一份**契约）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRowView {
+    /// 在 `TrackV3::devices` 里的下标（`Op::InsertDevice` / `RemoveDevice` 的寻址单位）。
+    ///
+    /// ⚠ 它是 `Vec` 下标而不是身份：本字段只用于**显示顺序**与语义 ID
+    /// （`device-{slot}-card`），提交时宿主按**身份**重新寻址（`device_id`）。
+    pub slot_index: usize,
+    /// 设备身份规范文本（`DeviceDefinition::id`）。
+    pub device_id: String,
+    /// 显示名（`DeviceDefinition::name`）。
+    pub name: String,
+    /// 是否旁通（`DeviceDefinition::bypassed`）。
+    pub bypassed: bool,
+    /// 已识别参数的**逐字读数**：`"已识别 2 · EQ：eq_low_gain=6 dB, eq_low_freq=200 Hz"`；
+    /// 一个都没有时是空串（界面据此不画这一行）。
+    pub recognised: String,
+    /// 未识别参数的逐字读数：`"未识别 1 · cutoff=1200 Hz"`；一个都没有时是空串。
+    ///
+    /// "未识别"= 引擎的 `insert.rs` 不认这个拼写 ⇒ 写进设备也**不会**生效
+    /// （`effect_params` 的模块文档逐字写着这一点）。
+    pub unrecognised: String,
+}
+
+impl DeviceRowView {
+    /// 一整行无障碍标签：`"{name} · 已旁通/生效"`。
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!(
+            "{} · {}",
+            self.name,
+            if self.bypassed { "已旁通" } else { "生效" }
+        )
+    }
+}
+
+/// 设备机架上那一格**可编辑**的 EQ 低架增益（`eq_low_gain`）。
+///
+/// ⭐ 任务单 `#157` 的"最小可编辑"：本切片只有这一格参数可写。值域（[`Self::min_db`] /
+/// [`Self::max_db`]）来自 [`crate::effect_params::recognise`] 的 `min`/`max` ——
+/// ⛔ 界面层**没有**第二份范围表（见 `lib.rs` 里 `effect_params` 的模块注释）。
+///
+/// 寻址用 `slot_index` + `param_index`（`AutomationTarget::DeviceParam` 的两个下标），
+/// 宿主在提交时**重新**从权威工程求一次目标，⛔ 不信界面上的陈旧下标。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceEqView {
+    /// 设备链下标。
+    pub slot_index: usize,
+    /// 该设备 `params` 里的下标。
+    pub param_index: usize,
+    /// 设备显示名（界面标题用）。
+    pub device_name: String,
+    /// 当前值 (dB)，模型原值。
+    pub value_db: f32,
+    /// 有效值域下界 (dB)，来自契约。
+    pub min_db: f32,
+    /// 有效值域上界 (dB)，来自契约。
+    pub max_db: f32,
+}
+
 /// 视图里的一个场景（`SceneV3`，Session View 的行）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneView {
@@ -1437,6 +1501,24 @@ pub struct ViewState {
     /// [`Self::asset_pool_details`] 三个平行数组取数（同索引集）；空池投影成空 `Vec`
     /// ⇒ 界面显示空态，而不是一片空白。
     pub asset_pool: Vec<AssetPoolRowView>,
+    /// 设备机架展示的是**哪条轨**（`"轨 鼓 · 设备链"`；没有非主总线轨时是
+    /// `"没有可显示的音轨"`）。
+    ///
+    /// ⚠ 今天**没有**"选中轨"这一状态（`grep -rn 'selected_track\|active-track' crates/yeban-app`
+    /// 命中 0；台账第 236 轮已裁决"the current track does not exist"）⇒ 本投影把
+    /// [`device_rack_track`] 的**唯一规则**（身份序第一条非主总线轨）写成可见的标题，
+    /// ⛔ 不假装那是用户选中的轨道。
+    pub device_track_label: String,
+    /// 当前展示轨的设备链（`TrackV3::devices` 的逐条投影）—— 设备机架的**唯一**事实源。
+    ///
+    /// ⭐ 任务单 `#157`：空链投影成空 `Vec` ⇒ 界面显示空态（`"无设备（用 MCP 或后续版本添加）"`），
+    /// 而不是旧版那三条编造的设备名。
+    pub devices: Vec<DeviceRowView>,
+    /// 当前展示轨上**第一格** `eq_low_gain`（值域来自契约）；没有 ⇒ `None`。
+    ///
+    /// ⚠ 这是本切片**唯一**可编辑的设备参数（"最小可编辑"）。`None` 时界面禁用滑块
+    /// 并如实写出"本轨没有 `eq_low_gain`"，⛔ 不落一个假的可编辑控件。
+    pub eq_low_gain: Option<DeviceEqView>,
     /// 全部 MIDI 音符（片段池键序 → 音符键序，去重保序），**含**投影算出的 x / y / 宽 / 车道。
     ///
     /// 这是音符族唯一的权威投影产物；[`Self::note_ulids`] / [`Self::note_velocities`] 与
@@ -1634,6 +1716,12 @@ impl ViewState {
         // 面板的"类型"一列要把两种内容都如实标出来（音频 / MIDI）。
         let asset_pool = asset_pool_rows(project);
 
+        // 设备机架（任务单 `#157`）：展示轨由 [`device_rack_track`] **唯一**决定
+        // （身份序第一条非主总线轨 —— 与 `tracks[0]` 是同一条轨，判据逐项对账）。
+        // 设备逐条来自 `TrackV3::devices`，"已识别/未识别"走 `effect_params::recognise`。
+        let (device_track_label, devices, eq_low_gain) =
+            device_rack_projection(device_rack_track(project));
+
         // MIDI 音符：按片段池键序 → 音符键序，去重但保持首次出现顺序。
         // 身份进 `note-{ulid}-rect`；力度进力度泳道；**位置**由 start_tick / pitch 经整数
         // 变换得到（复用 `tick_to_px` 与 `pitch_lane`，不在别处再写一套换算）。
@@ -1701,6 +1789,9 @@ impl ViewState {
             sections,
             scenes,
             asset_pool,
+            device_track_label,
+            devices,
+            eq_low_gain,
             note_x_order: {
                 // 一次性建索引：按 `x` 升序。`total_cmp` 对 NaN 也有全序, 不会 panic。
                 let mut order: Vec<u32> = (0..notes.len() as u32).collect();
@@ -1893,6 +1984,65 @@ impl ViewState {
             .iter()
             .map(|row| row.label.clone())
             .collect()
+    }
+
+    /// 设备机架每一格的显示名（与下面三个数组**同索引集**）。
+    ///
+    /// ⭐ 任务单 `#157`：`.slint` 的 `device-names` 就是它 —— 旧版那三条
+    /// `"EQ 4 段"/"Compressor"/"Space Reverb"` 已删除（见 `device_rack.slint` 的修订段）。
+    #[must_use]
+    pub fn device_names(&self) -> Vec<String> {
+        self.devices.iter().map(|row| row.name.clone()).collect()
+    }
+
+    /// 设备机架每一格的旁通位（`DeviceDefinition::bypassed`，⛔ 不是界面状态）。
+    #[must_use]
+    pub fn device_bypassed(&self) -> Vec<bool> {
+        self.devices.iter().map(|row| row.bypassed).collect()
+    }
+
+    /// 设备机架每一格的**已识别**参数读数（空串 = 这一台没有已识别参数）。
+    #[must_use]
+    pub fn device_recognised(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .map(|row| row.recognised.clone())
+            .collect()
+    }
+
+    /// 设备机架每一格的**未识别**参数读数（空串 = 全部参数都被引擎认）。
+    #[must_use]
+    pub fn device_unrecognised(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .map(|row| row.unrecognised.clone())
+            .collect()
+    }
+
+    /// 本轨**有没有**可编辑的 `eq_low_gain`（`.slint` 的 `device-eq-available`）。
+    ///
+    /// `false` ⇒ 滑块禁用并如实写"本轨没有 eq_low_gain"，⛔ 不画一个假的可用控件。
+    #[must_use]
+    pub fn device_eq_available(&self) -> bool {
+        self.eq_low_gain.is_some()
+    }
+
+    /// 滑块当前值 (dB)；没有目标时给 `0.0`（配合 [`Self::device_eq_available`] 读）。
+    #[must_use]
+    pub fn device_eq_gain_db(&self) -> f32 {
+        self.eq_low_gain.as_ref().map_or(0.0, |eq| eq.value_db)
+    }
+
+    /// 滑块值域下界 (dB)；没有目标时给 `0.0`。
+    #[must_use]
+    pub fn device_eq_min_db(&self) -> f32 {
+        self.eq_low_gain.as_ref().map_or(0.0, |eq| eq.min_db)
+    }
+
+    /// 滑块值域上界 (dB)；没有目标时给 `0.0`。
+    #[must_use]
+    pub fn device_eq_max_db(&self) -> f32 {
+        self.eq_low_gain.as_ref().map_or(0.0, |eq| eq.max_db)
     }
 
     /// 剪辑摆放身份（`clip-{ulid}-header` 的 `{ulid}` 段）。
@@ -2783,6 +2933,157 @@ fn asset_pool_rows(project: &YebanProjectV1) -> Vec<AssetPoolRowView> {
             }
         })
         .collect()
+}
+
+/// 设备机架展示的那条轨 —— **唯一**规则：身份序（`BTreeMap` 键序）第一条**非主总线**轨。
+///
+/// ⚠ 为什么是这条规则（而不是"选中轨"）：界面里**没有**选中轨这一状态
+/// （`grep -rn 'selected_track\|active-track\|current_track' crates/yeban-app` 命中 0；
+/// 台账第 236 轮逐字裁决 "the current track does not exist"）。本切片不起一套新的选择
+/// 状态机，而是把**唯一**的确定性规则写进投影，并让标题把它**显示出来**
+/// （[`ViewState::device_track_label`]）⇒ 用户看到的是"轨 鼓"，不是一句"当前轨"。
+/// 换工程之后它随 `BTreeMap` 键序变化，不需要宿主再同步一份下标。
+#[must_use]
+pub fn device_rack_track(project: &YebanProjectV1) -> Option<&TrackV3> {
+    project
+        .tracks
+        .values()
+        .find(|track| track.id != project.master_bus_track_id)
+}
+
+/// 设备链 + EQ 旋钮的投影本体（[`ViewState`] 与宿主提交路径**共用**这一份口径）。
+///
+/// 返回 `(展示标题, 设备行, 第一格 eq_low_gain)`。
+#[must_use]
+fn device_rack_projection(
+    track: Option<&TrackV3>,
+) -> (String, Vec<DeviceRowView>, Option<DeviceEqView>) {
+    let Some(track) = track else {
+        return ("没有可显示的音轨".to_owned(), Vec::new(), None);
+    };
+    let mut devices = Vec::with_capacity(track.devices.len());
+    let mut eq_low_gain: Option<DeviceEqView> = None;
+    for (slot_index, device) in track.devices.iter().enumerate() {
+        let mut recognised_parts: Vec<String> = Vec::new();
+        let mut recognised_groups: Vec<&'static str> = Vec::new();
+        let mut unrecognised_parts: Vec<String> = Vec::new();
+        for (param_index, param) in device.params.iter().enumerate() {
+            match crate::effect_params::recognise(&param.name) {
+                Some((group, spec)) => {
+                    if !recognised_groups.contains(&group.title) {
+                        recognised_groups.push(group.title);
+                    }
+                    let unit = if spec.unit.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", spec.unit)
+                    };
+                    recognised_parts.push(format!(
+                        "{}= {}{}",
+                        param.name,
+                        format_param_number(param.value),
+                        unit
+                    ));
+                    // 最小可编辑的那一格：**第一台**带 eq_low_gain 的设备、它的第一个
+                    // 该名字的参数。值域**只**来自契约（`spec.min` / `spec.max`）。
+                    if spec.name == "eq_low_gain" && eq_low_gain.is_none() {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let (min_db, max_db) = (spec.min as f32, spec.max as f32);
+                        eq_low_gain = Some(DeviceEqView {
+                            slot_index,
+                            param_index,
+                            device_name: device.name.clone(),
+                            value_db: param.value,
+                            min_db,
+                            max_db,
+                        });
+                    }
+                }
+                None => {
+                    let unit = param
+                        .unit
+                        .as_deref()
+                        .map_or(String::new(), |unit| format!(" {unit}"));
+                    unrecognised_parts.push(format!(
+                        "{}= {}{}",
+                        param.name,
+                        format_param_number(param.value),
+                        unit
+                    ));
+                }
+            }
+        }
+        let recognised = if recognised_parts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "已识别 {} · {}：{}",
+                recognised_parts.len(),
+                recognised_groups.join("/"),
+                recognised_parts.join(", ")
+            )
+        };
+        let unrecognised = if unrecognised_parts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "未识别 {} · {}",
+                unrecognised_parts.len(),
+                unrecognised_parts.join(", ")
+            )
+        };
+        devices.push(DeviceRowView {
+            slot_index,
+            device_id: device.id.to_canonical_string(),
+            name: device.name.clone(),
+            bypassed: device.bypassed,
+            recognised,
+            unrecognised,
+        });
+    }
+    (format!("轨 {} · 设备链", track.name), devices, eq_low_gain)
+}
+
+/// 参数值的显示文本（**只有这一处**格式化）。
+///
+/// `f32` 的 `Display` 对整数值给出 `6`（⛔ 不是 `6.0`）、对小数给出最短可回读形态
+/// （`0.35`）⇒ 界面与判据读到的是同一个字符串。
+fn format_param_number(value: f32) -> String {
+    format!("{value}")
+}
+
+/// 设备机架上 `eq_low_gain` 那一格的**权威寻址**（宿主提交路径用它）。
+///
+/// 返回 `(轨身份, 设备链下标, 参数下标, 当前值, 值域下界, 值域上界)`。
+/// ⚠ 这是**唯一**的查找实现：投影（[`device_rack_projection`]）与宿主
+/// （`host::wire_device_rack`）都从同一条规则出发 ⇒ 界面显示的那一格与提交改的那一格
+/// 不可能漂移。值域同样**只**来自 [`crate::effect_params`]。
+#[must_use]
+pub fn device_eq_low_gain_target(
+    project: &YebanProjectV1,
+) -> Option<(yeban_model::ids::EntityId, usize, usize, f32, f32, f32)> {
+    let track = device_rack_track(project)?;
+    for (slot_index, device) in track.devices.iter().enumerate() {
+        for (param_index, param) in device.params.iter().enumerate() {
+            let Some((_, spec)) = crate::effect_params::recognise(&param.name) else {
+                continue;
+            };
+            if spec.name != "eq_low_gain" {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let (min_db, max_db) = (spec.min as f32, spec.max as f32);
+            return Some((
+                track.id,
+                slot_index,
+                param_index,
+                param.value,
+                min_db,
+                max_db,
+            ));
+        }
+    }
+    None
 }
 
 #[cfg(test)]

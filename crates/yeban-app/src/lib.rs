@@ -81,6 +81,26 @@ pub mod bridge;
 pub mod cli;
 pub mod elements;
 pub mod engine_host;
+// ⭐ **效果器参数契约（任务单 `#157`）—— 与 `yeban-mcp` **字面上同一份源码**。
+//
+// 设备机架要回答两件必须由契约回答的事：⭐ ① 某个参数名**引擎认不认**（"已识别 /
+// 未识别"）；⭐ ② 低架增益的**值域**（滑块两端的物理范围）。这两件事的唯一事实源是
+// `crates/yeban-mcp/src/effect_params.rs`（`#156` 发布到 MCP 的那 58 个拼写 + 钳制域），
+// 而 `yeban-app` **不能**依赖 `yeban-mcp` 这个包：默认构建里那条边是
+// `optional`／`in-process-mcp`（`Cargo.toml` 的 MUST-GATE-009 第一道开关），
+// 把它改成默认依赖会削弱那扇门。
+//
+// ⇒ 这里用 `#[path]` 把**那一份**源码装进来（与 `src/undo.rs` 装
+// `yeban-mcp/src/undo_session.rs`、`src/project_lock.rs` 装 `yeban-mcp/src/domain/lock.rs`
+// 是**同一条**既有手法），于是：
+//
+// * `cargo tree -p yeban-app -e normal --locked | grep -c yeban-mcp` 仍然 **0**
+//   （没有新增包依赖边）；
+// * 界面侧**没有**第二份参数名 / 范围表 —— 改契约时 UI 被动跟着变，不会漂移；
+// * ⚠ 它今天的**家**还在 `yeban-mcp`；把这份契约上提到 `yeban-model` 一层、
+//   让 MCP 与 UI 都从模型读，属 **S6**（本单登记，⛔ 不做）。
+#[path = "../../yeban-mcp/src/effect_params.rs"]
+pub mod effect_params;
 pub mod export_als;
 pub mod export_logic;
 pub mod export_midi;
