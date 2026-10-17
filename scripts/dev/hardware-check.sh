@@ -8,12 +8,18 @@
 #   bash scripts/dev/hardware-check.sh
 #   bash scripts/dev/hardware-check.sh --only 1        # 只跑第 1 项
 #   bash scripts/dev/hardware-check.sh --list          # 列出所有项
+#   bash scripts/dev/hardware-check.sh --self-test     # 无副作用自检：只核 CLI 认不认这些开关，不问 y/n
+#
+# 工程从哪来：GUI 里没有「新建工程」入口（只有「打开工程」）。先造一个空白工程：
+#   cargo run -p yeban-app --locked -- --project-sample empty --save-as /tmp/yeban-new.yeban
 #
 # 报告落在 /tmp/yeban-hardware-report-<时间戳>.txt。把报告发回即可。
 #
 # ⚠ 本脚本必须兼容 bash 3.2（本仓守卫 G14）。⛔ 不要用关联数组。
 
 set -u
+# 让 `cargo … | tee` 的失败真的进 `if` 的失败分支（旧写法只有 tee 的退出码 ⇒ 静默变绿）。
+set -o pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -24,7 +30,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY="${2:-}"; shift 2 ;;
     --list) ONLY="list"; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    --self-test) ONLY="self-test"; shift ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "未知参数: $1"; exit 2 ;;
   esac
 done
@@ -123,6 +130,9 @@ check_env() {
   else
     say "⚠ 环境不完整。后面的检查可能失败。"
   fi
+  say "工程从哪来：GUI 里没有「新建工程」入口（只有「打开工程」）。"
+  say "  先造一个空白工程：cargo run -p yeban-app --locked -- --project-sample empty --save-as /tmp/yeban-new.yeban"
+  say "  再打开它：cargo run -p yeban-app --locked -- --open /tmp/yeban-new.yeban"
   kv "环境预检" "$ok"
   note ENV "环境预检=$ok"
 }
@@ -135,10 +145,10 @@ check_record() {
   say "第 1 步：跑 CLI 录音（这一步由脚本执行，约 5 秒）。"
   local cli_out="/tmp/yeban-hc-cli-rec.wav"
   if need cargo; then
-    say "命令：cargo run -p yeban-app -- --record-wav $cli_out --seconds 5"
+    say "命令：cargo run -p yeban-app --locked -- --record-wav $cli_out --record-seconds 5"
     ask_yn "现在跑这条命令吗？（会占用约 1 分钟）" REC_RUN
     if [ "${ANS_REC_RUN:-no}" = "yes" ]; then
-      if ( cd "$REPO" && cargo run -p yeban-app --locked -- --record-wav "$cli_out" --seconds 5 ); then
+      if ( cd "$REPO" && cargo run -p yeban-app --locked -- --record-wav "$cli_out" --record-seconds 5 ); then
         say "CLI 录音完成。"
         kv "CLI 录音命令" "成功"
       else
@@ -152,7 +162,7 @@ check_record() {
   fi
   blank
   say "第 2 步：跑 GUI（另开一个终端，脚本不代跑）。"
-  say "命令：cargo run -p yeban-app -- --open <你的工程>"
+  say "命令：cargo run -p yeban-app --locked -- --open <你的工程>"
   say "然后：点录音键 → 录 5 秒 → 停止 → 找到落盘的 WAV。"
   ask_pause "GUI 录音"
   say "第 3 步：播放两个 WAV 文件，比较。"
@@ -170,7 +180,7 @@ check_sfz() {
   say "（FLAC/OGG 支持正在做，先只用 WAV 样本。）"
   blank
   say "步骤："
-  say "  1. cargo run -p yeban-app -- --open <你的工程>"
+  say "  1. cargo run -p yeban-app --locked -- --open <你的工程>"
   say "  2. 点「调音台」标签"
   say "  3. 通道条上找三个控件：路径文本框、SET、CLR"
   say "  4. 在文本框粘贴 SFZ 的绝对路径"
@@ -198,7 +208,9 @@ check_golden() {
   say "这一步补上它。命令由脚本执行。"
   ask_yn "现在跑补录命令吗？（约 1 分钟）" GOLD_RUN
   if [ "${ANS_GOLD_RUN:-no}" = "yes" ] && need cargo; then
-    if ( cd "$REPO" && YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --test test_port_adapter ); then
+    # `test_port_adapter` 挂在 `required-features = ["ui-test-port"]` 后面
+    # （crates/yeban-app/Cargo.toml:326-329）⇒ 不给 feature 时 cargo 直接拒绝（rc 101）。
+    if ( cd "$REPO" && YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --features ui-test-port --test test_port_adapter ); then
       say "补录命令完成。"
       kv "补录命令" "成功"
     else
@@ -226,9 +238,15 @@ check_fps() {
   ask_yn "现在跑帧率档吗？" FPS_RUN
   local log="/tmp/yeban-hc-fps.log"
   if [ "${ANS_FPS_RUN:-no}" = "yes" ] && need cargo; then
-    say "命令：cargo run -p yeban-app --example fps_gpu --release"
-    if ( cd "$REPO" && cargo run -p yeban-app --locked --example fps_gpu --release ) 2>&1 | tee "$log"; then
+    # 写法与 .github/workflows/gates-manual.yml:657 逐字对齐（--release 在 run 之后）。
+    say "命令：cargo run --release -p yeban-app --locked --example fps_gpu"
+    say "⚠ 前提：需 GPU ＋ 桌面会话。example 不解析 --help；它直接开窗口，"
+    say "   选不到 GPU 路径就非零退出（⛔ 不回退成软件读数）。"
+    if ( cd "$REPO" && cargo run --release -p yeban-app --locked --example fps_gpu ) 2>&1 | tee "$log"; then
       say "帧率档完成。"
+    else
+      say "⚠ 帧率档失败（非零退出）。多半是没有 GPU 路径或没有桌面会话。"
+      kv "帧率档" "失败（需 GPU／桌面会话）"
     fi
     say "读数（含 p50/p99 的行）："
     grep -i -E 'p50|p99|frame|ms' "$log" 2>/dev/null | tail -20 | sed 's/^/  /'
@@ -246,7 +264,12 @@ check_midi() {
   # 第 5 项：MIDI 键盘
   section "5 MIDI 键盘"
   say "前提：一个 MIDI 键盘。"
-  say "命令：cargo run -p yeban-app --features midi-input -- --open <你的工程>"
+  say "命令：cargo run -p yeban-app --locked --features midi-input -- --open <你的工程>"
+  say "然后：点右栏模块区的「MIDI 输入（硬件）」按钮（= CLI 的 --midi-in ＋ --midi-in-write-notes；"
+  say "      端口取 YEBAN_UI_MIDI_IN_PORT（默认 0），采集 3 秒，音符写进第一条非 master 音轨）。"
+  say "只读诊断（不开窗口，也要端口）：cargo run -p yeban-app --locked --features midi-input -- --midi-in 0 --midi-in-seconds 5"
+  say "⚠ --midi-in-write-notes / --midi-in-render / --midi-in-track 必须与 --midi-in <port> 一起给；"
+  say "   单独给 = 用法错误（退出码 2）—— 本仓⛔ 不静默忽略。"
   ask_pause "弹奏测试"
   ask_yn "识别到设备吗？" MIDI_DEV
   ask_yn "弹奏有响应吗？" MIDI_RESP
@@ -297,7 +320,7 @@ check_acoustic() {
   ask_yn "现在跑测量工具吗？（约 10 秒音频）" ACU_RUN
   local log="/tmp/yeban-hc-latency.log"
   if [ "${ANS_ACU_RUN:-no}" = "yes" ] && need cargo; then
-    say "命令：cargo run --release -p yeban-engine --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000"
+    say "命令：cargo run --release -p yeban-engine --locked --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000"
     if ( cd "$REPO" && cargo run --release -p yeban-engine --locked --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000 ) 2>&1 | tee "$log"; then
       say "测量完成。退出码 0 = 达标。"
     else
@@ -324,6 +347,136 @@ check_acoustic() {
   ask_text "缓冲区帧数与采样率" ACU_BUF
   ask_text "其他观察" ACU_MS
   note ACU "装BlackHole=${ANS_ACU_DEV:-} 多输出=${ANS_ACU_READY:-} 跑完=${ANS_ACU_DONE:-} 往返=${ANS_ACU_RTT:-}"
+}
+
+# ---------- 自检（--self-test） ----------
+
+USAGE=""
+SELF_FAIL=0
+
+self_ok()  { printf '  [ok]      %s\n' "$*"; }
+self_bad() { printf '  [MISSING] %s\n' "$*"; SELF_FAIL=$((SELF_FAIL + 1)); }
+
+self_has() {
+  # self_has <文本> <字面量子串> -> 0/1
+  # ⛔ 不用 `printf | grep -q`：`set -o pipefail` 下 grep 提前退出可能让写端吃 SIGPIPE。
+  case "$1" in
+    *"$2"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+self_flags() {
+  # self_flags <文本> <标题> <开关...>：逐个核文本里有没有这个开关。
+  local text="$1" title="$2" flag
+  shift 2
+  say "$title"
+  for flag in "$@"; do
+    if self_has "$text" "$flag"; then self_ok "$flag"; else self_bad "${flag}（usage 里没有）"; fi
+  done
+}
+
+self_test() {
+  local rc meta lat
+  section "自检（无副作用）：只核 CLI 认不认脚本里这些开关"
+  say "本档不跑录音 / 不开窗口 / 不写工程，也不问 y/n。"
+  blank
+
+  say "① 本脚本自身语法"
+  if bash -n "$REPO/scripts/dev/hardware-check.sh" 2>/dev/null; then
+    self_ok "bash -n scripts/dev/hardware-check.sh"
+  else
+    self_bad "bash -n 失败"
+  fi
+
+  say "② cargo metadata：target / feature 是否存在（零编译）"
+  if ! need cargo; then
+    self_bad "找不到 cargo"
+  else
+    meta="$( cd "$REPO" && cargo metadata --no-deps --format-version 1 2>/dev/null )"
+    if [ -z "$meta" ]; then
+      self_bad "cargo metadata 没有输出"
+    elif ! need python3; then
+      self_bad "找不到 python3（无法解析 cargo metadata）"
+    else
+      printf '%s' "$meta" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+by = {p["name"]: p for p in d["packages"]}
+def has_target(pkg, name):
+    return any(t["name"] == name for t in by[pkg]["targets"])
+checks = [
+    ("feature midi-input（yeban-app）", "midi-input" in by["yeban-app"]["features"]),
+    ("feature ui-test-port（yeban-app）", "ui-test-port" in by["yeban-app"]["features"]),
+    ("target yeban-app --example fps_gpu", has_target("yeban-app", "fps_gpu")),
+    ("target yeban-app --test test_port_adapter", has_target("yeban-app", "test_port_adapter")),
+    ("target yeban-engine --example measure_latency", has_target("yeban-engine", "measure_latency")),
+]
+bad = 0
+for name, ok in checks:
+    print(("  [ok]      " if ok else "  [MISSING] ") + name)
+    bad += 0 if ok else 1
+sys.exit(1 if bad else 0)
+'
+      rc=$?
+      if [ "$rc" -ne 0 ]; then SELF_FAIL=$((SELF_FAIL + 1)); fi
+    fi
+  fi
+
+  say "③ cargo run -q -p yeban-app --locked -- --help（首次会编译）"
+  if need cargo; then
+    USAGE="$( cd "$REPO" && cargo run -q -p yeban-app --locked -- --help 2>&1 )"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      self_ok "rc=0"
+    else
+      self_bad "rc=$rc"
+      printf '%s\n' "$USAGE" | tail -3 | sed 's/^/    /'
+    fi
+  else
+    self_bad "找不到 cargo"
+  fi
+  if [ -n "$USAGE" ]; then
+    self_flags "$USAGE" "  第 1 项（录音）将用：" --record-wav --record-seconds
+    self_flags "$USAGE" "  第 2 项（打开工程）将用：" --open
+    self_flags "$USAGE" "  第 5 项（MIDI）将用：" --midi-in --midi-in-seconds --midi-in-write-notes --midi-in-render --midi-in-track
+    self_flags "$USAGE" "  建工程（--project-sample empty --save-as）将用：" --project-sample --save-as
+  else
+    self_bad "没拿到 usage（见 ③）⇒ 跳过开关核对"
+  fi
+
+  say "④ cargo run -q -p yeban-engine --locked --features device --example measure_latency -- --help（首次会编译）"
+  if need cargo; then
+    lat="$( cd "$REPO" && cargo run -q -p yeban-engine --locked --features device --example measure_latency -- --help 2>&1 )"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      self_ok "rc=0"
+    else
+      self_bad "rc=$rc"
+      printf '%s\n' "$lat" | tail -3 | sed 's/^/    /'
+    fi
+    if [ -n "$lat" ]; then
+      self_flags "$lat" "  第 6 项（声学往返）将用：" --loopback --label --frames --seconds --sample-rate
+    fi
+  fi
+
+  say "⑤ 真档将执行这些命令（本自检不执行）："
+  say "  [0] cargo run -p yeban-app --locked -- --project-sample empty --save-as /tmp/yeban-new.yeban"
+  say "  [1] cargo run -p yeban-app --locked -- --record-wav /tmp/yeban-hc-cli-rec.wav --record-seconds 5"
+  say "  [2] cargo run -p yeban-app --locked -- --open <你的工程>"
+  say "  [3] YEBAN_WRITE_GOLDEN=1 cargo test -p yeban-app --locked --features ui-test-port --test test_port_adapter"
+  say "  [4] cargo run --release -p yeban-app --locked --example fps_gpu   （需 GPU ＋ 桌面会话）"
+  say "  [5] cargo run -p yeban-app --locked --features midi-input -- --open <你的工程>"
+  say "      只读诊断：cargo run -p yeban-app --locked --features midi-input -- --midi-in 0 --midi-in-seconds 5"
+  say "  [6] cargo run --release -p yeban-engine --locked --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000"
+
+  blank
+  if [ "$SELF_FAIL" -eq 0 ]; then
+    say "自检结论：全部通过。现在可以跑真档：bash scripts/dev/hardware-check.sh"
+    return 0
+  fi
+  say "自检结论：有 $SELF_FAIL 组失败（见上面的 [MISSING]）—— 先修脚本，⛔ 不要跑真档。"
+  return 1
 }
 
 # ---------- 主流程 ----------
@@ -371,6 +524,10 @@ report_close() {
 
 main() {
   say "夜半（yeban）硬件与真机验证 —— 交互式检查单"
+  if [ "$ONLY" = "self-test" ]; then
+    self_test
+    exit "$?"
+  fi
   say "每一项都会问你 y / n / s（跳过）。"
   say "答案写进报告文件。把报告发回即可。"
   report_open
