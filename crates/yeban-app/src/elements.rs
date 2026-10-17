@@ -2105,6 +2105,18 @@ mod tests {
             !patterns.is_empty(),
             "`ui/` 里一个 accessible-id 都没有 [UI-TEST-001]"
         );
+        // ⚠ 例外清单不许留"已经不存在的模板"：否则它会静默放行未来同名的空模板。
+        for (first, last) in EMPTY_DYNAMIC_TEMPLATES_ALLOWED {
+            assert!(
+                patterns
+                    .iter()
+                    .any(|(_, segments, is_template)| *is_template
+                        && segments.len() == 2
+                        && segments[0] == *first
+                        && segments[1] == *last),
+                "例外清单里的模板 `{first}<i>{last}` 在 ui/ 里不存在"
+            );
+        }
 
         let registries = [
             registry(),
@@ -2133,6 +2145,9 @@ mod tests {
 
         // 方向 2: .slint → 注册表
         for (file, segments, is_template) in &patterns {
+            if *is_template && empty_dynamic_template_is_documented(segments) {
+                continue;
+            }
             assert!(
                 registries
                     .iter()
@@ -2144,6 +2159,28 @@ mod tests {
                 "{file} 里的 accessible-id 模板 {segments:?} (template={is_template}) 在注册表里一个成员都没有"
             );
         }
+    }
+
+    /// `accessible-id` 模板允许**今天 0 个成员**的**逐条**例外（⛔ 不是静默放行）。
+    ///
+    /// ⭐ 任务单 `#165`：`instrument-install-<i>-button` 的成员来自**按样本字节过滤后的**
+    /// 内置乐器清单。仓内 `assets/samples/**` 有 1398 份 SFZ / **0 个样本字节** ⇒ 可装清单
+    /// 为空 ⇒ 控件树里一个按钮都没有。模板仍在 `.slint`（`for … in root.instrument-names`），
+    /// 样本入库后同一模板会实例化 —— 这是"**今天确实没有实例**"，⛔ 不是"UI 加了 ID
+    /// 却忘了登记"。
+    ///
+    /// ⚠ 例外必须**逐条**写理由，并且 `.slint` 里必须真有这个模板
+    /// （同一判据的上半段机械检查）。
+    const EMPTY_DYNAMIC_TEMPLATES_ALLOWED: &[(&str, &str)] = &[(
+        "instrument-install-",
+        "-button", // #165：清单按样本字节过滤，今天为空 ⇒ 0 个按钮
+    )];
+
+    /// 这个模板是不是在 [`EMPTY_DYNAMIC_TEMPLATES_ALLOWED`] 里登记过。
+    fn empty_dynamic_template_is_documented(segments: &[String]) -> bool {
+        EMPTY_DYNAMIC_TEMPLATES_ALLOWED.iter().any(|(first, last)| {
+            segments.len() == 2 && segments[0] == *first && segments[1] == *last
+        })
     }
 
     /// 判据: 注册表由**投影**驱动 —— 换一个工程, 三族结构随之改变, 且标签携带工程数据。

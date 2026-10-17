@@ -189,6 +189,8 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // ⭐ 任务单 `#164`：一键装乐器的投影 —— 一个数组（按钮名）＋ 三个标量（当前乐器 /
     // 可用性 / 逐字原因）。唯一事实源是 `ViewState` 的同名字段；⛔ 界面不持有第二份
     // 路径表，手势只上报下标，路径由宿主从 `bridge::builtin_instrument` 求。
+    // ⭐ `#165`：这个数组是**按样本字节过滤后**的可装清单（今天为空 ⇒ 0 个按钮）；
+    // 写点没有增减（数组仍在这里换实例），预算读数见 `tests/perf_draw_budget.rs`。
     ui.set_instrument_names(strings(&view.instrument_names));
     ui.set_instrument_label(view.instrument_label.clone().into());
     ui.set_instrument_install_available(view.instrument_install_available);
@@ -2188,6 +2190,10 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     // 取那条**确定的**仓库内路径，再经 `bridge::instrument_install_ops` 用权威工程的
     // `old_sampler` 构造一条 `Op::SetTrackSampler`；一次点击 = **恰好一次** `commit_ops`。
     // 值没变 ⇒ `ops` 为空 ⇒ **不提交**（⛔ 不制造"什么也没改"的撤销步）。
+    //
+    // ⭐ 任务单 `#165`：`builtin_instrument` 只索引**可装**清单（样本字节过滤后）。
+    // 今天该清单为空 ⇒ 界面 0 个按钮；万一有人直接调回调（判据会这么做），下标越界
+    // ⇒ **Δ0** 并把**清单为空**的逐字原因打出来（⛔ 不静默、⛔ 不装成静音）。
     ui.on_instrument_install({
         let weak = weak.clone();
         let port = Rc::clone(port);
@@ -2200,7 +2206,13 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
                 .ok()
                 .and_then(crate::bridge::builtin_instrument)
             else {
-                eprintln!("[yeban-app] 装乐器被拒绝：下标 {index} 不在内置乐器清单里");
+                // ⭐ `#165`：清单为空时把"为什么一个都不能装"逐字说出来。
+                let reason = if crate::bridge::installable_builtin_instruments().is_empty() {
+                    crate::bridge::INSTRUMENT_INSTALL_NO_BUILTIN_REASON
+                } else {
+                    "下标不在可装的内置乐器清单里"
+                };
+                eprintln!("[yeban-app] 装乐器被拒绝：{reason}（下标 {index}）");
                 return;
             };
             let Some(project) = port.try_project() else {

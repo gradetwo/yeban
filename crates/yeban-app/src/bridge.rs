@@ -2025,11 +2025,19 @@ pub struct BuiltinInstrument {
     pub path: &'static str,
 }
 
-/// 界面一键可装的 SFZ 乐器（**只有这一份**清单）。
+/// 界面一键可装的 SFZ 乐器**候选**清单（⛔ 不是按钮行的事实源）。
 ///
 /// 两份都在 `assets/samples/karoryfer-cowsynth/` 下、都覆盖中央 C（60）⇒ 同一份工程
 /// 换一份乐器时事件网格不用改。⚠ 本清单⛔ 不包含"已解析乐器"：装载永远走
 /// `crate::sfz_load`（`#79`／`#80` 的同一条管线），本模块只写路径。
+///
+/// ⭐ ⭐ **任务单 `#165`：候选 ≠ 可装。** 真正进按钮行的是
+/// [`installable_builtin_instruments`] —— 它把候选按"**样本字节是否存在**"过滤一遍，
+/// 判据只有 [`sfz_samples_present`]（`#164` 已有的读取路径）。
+///
+/// ⚠ **今天过滤结果是空**：仓内 `assets/samples/**` 有 **1398 份 `.sfz` 文本、0 个
+/// 样本字节** ⇒ 两份候选都没法解码出任何 PCM ⇒ 一份都不可装（⛔ 不显示按钮）。
+/// 这正是 `#165` 要的：⛔ 不许让"装乐器"把一条本来有声（恒备复音）的轨变成静音。
 pub const BUILTIN_INSTRUMENTS: [BuiltinInstrument; 2] = [
     BuiltinInstrument {
         name: "Shifty Pluck",
@@ -2044,16 +2052,109 @@ pub const BUILTIN_INSTRUMENTS: [BuiltinInstrument; 2] = [
 /// "装乐器"不可用时的**逐字**原因：工程里没有可显示的音轨（展示轨不存在）。
 pub const INSTRUMENT_INSTALL_NO_TRACK_REASON: &str = "没有可显示的音轨，无法装乐器";
 
-/// 第 `index` 份内置乐器（越界 ⇒ `None`，⛔ 不 panic、⛔ 不猜一份）。
-#[must_use]
-pub fn builtin_instrument(index: usize) -> Option<BuiltinInstrument> {
-    BUILTIN_INSTRUMENTS.get(index).copied()
+/// ⭐ **本单的核心逐字原因**：目标 SFZ 的样本字节不在仓库 ⇒ 装了会让本轨**静音**。
+///
+/// 引擎对没装采样器的轨槽**恒备一台复音合成器**（`yeban-engine/src/synth.rs` 的
+/// `armed_sources = 1 + …`）⇒ 不装乐器**有声**；而装一份全缺样本的 SFZ 会让
+/// `decoded_samples == 0`、每个区域 `NO_SAMPLE` ⇒ **静音**。所以这条路必须**拒绝**，
+/// 并把理由逐字说出来（⛔ 不静默禁用、⛔ 不装完再报"没声音"）。
+pub const INSTRUMENT_INSTALL_NO_SAMPLES_REASON: &str =
+    "该 SFZ 的样本文件不在仓库（0 个样本字节），装了会让本轨静音；请用自带样本的 SFZ";
+
+/// 目标 SFZ 文本本身读不到 / 不是合法 SFZ 时的**逐字**原因。
+///
+/// 与 [`INSTRUMENT_INSTALL_NO_SAMPLES_REASON`] 分开：一个是"文件在、样本不在"，
+/// 一个是"连 SFZ 都打不开"—— ⛔ 两种失败不共用一句假话。
+pub const INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON: &str =
+    "该 SFZ 读不出来（文件不在仓库或不是合法 SFZ），装了会让本轨静音；请用自带样本的 SFZ";
+
+/// 内置候选**一份都不可装**时的**逐字**原因（今天就是这一档：0 个样本字节）。
+pub const INSTRUMENT_INSTALL_NO_BUILTIN_REASON: &str =
+    "仓内没有带样本的 SFZ（内置清单为空）；请用自带样本的 SFZ（Tab 1 的 SFZ 路径 ＋ SET）";
+
+/// 判"样本字节是否存在"时交给 [`crate::sfz_load::decode_sfz_plan`] 的引擎采样率。
+///
+/// 它只影响 `InMemorySample` 的播放速率换算，⛔ 不影响"解没解出 PCM"这个判据；
+/// 与界面批量入口（`host::on_load_sfz` 的 `48_000.0`）同值。
+const INSTRUMENT_PROBE_ENGINE_HZ: f32 = 48_000.0;
+
+/// 内置 SFZ 路径的**唯一**解析：绝对路径原样；仓库相对路径按**仓库根**。
+///
+/// [`BuiltinInstrument::path`] 的契约就是"相对仓库根"（模型里逐字存这个字符串）⇒
+/// 探测/装载**不依赖进程 cwd**（`cargo test` 的 cwd 是 crate 目录，GUI 从仓根启动）。
+fn resolve_builtin_instrument_path(path: &str) -> std::path::PathBuf {
+    let raw = std::path::Path::new(path);
+    if raw.is_absolute() {
+        return raw.to_path_buf();
+    }
+    static REPO_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    REPO_ROOT
+        .get_or_init(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join(raw)
 }
 
-/// 内置乐器的**显示名**（与 [`BUILTIN_INSTRUMENTS`] 同序、同长度）。
+/// ⭐ 一份 SFZ 的**样本字节**读数：`Ok(())` = 它引用的每个样本都真的解出了 PCM。
+///
+/// ## 判据只有一条（⛔ 不新写"找 wav"的探测）
+///
+/// 走 [`crate::sfz_load::decode_sfz_plan`] —— 也就是 `#79`／`#80`／`#164` 的**同一条**
+/// 读取路径（`load_sfz_with_instrument` ＋ `read_sample_file`）。报告里
+/// `decoded_samples > 0` **且** `silent_region_count == 0` **且** 没有缺样本路径
+/// ⇒ 这份 SFZ 的每个区域都能出采样声。任一不满足 ⇒ 拒绝。
+///
+/// ⚠ 为什么要求 `silent_region_count == 0`（而不只是"至少解出一份"）：部分缺样本的
+/// SFZ 会把**一部分音符**变静音，那也是听感倒退；本单的口径是"要么整份能响，要么不装"。
+///
+/// # Errors
+///
+/// * 样本缺失 / 一份都解不出 ⇒ [`INSTRUMENT_INSTALL_NO_SAMPLES_REASON`]；
+/// * SFZ 文本本身读不到或非法 ⇒ [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]。
+pub fn sfz_samples_present(path: &str) -> Result<(), &'static str> {
+    let resolved = resolve_builtin_instrument_path(path);
+    match crate::sfz_load::decode_sfz_plan(&resolved, INSTRUMENT_PROBE_ENGINE_HZ) {
+        Ok((_plan, report))
+            if report.decoded_samples > 0
+                && report.silent_region_count == 0
+                && report.missing_sample_paths.is_empty() =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON),
+        Err(_) => Err(INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON),
+    }
+}
+
+/// ⭐ 内置候选里**真的可装**的那些（按样本字节过滤；顺序与 [`BUILTIN_INSTRUMENTS`] 一致）。
+///
+/// ⚠ **进程内只探一次**（`OnceLock`）：`ViewState::from_project` 每次完整重投影都会
+/// 读它，而探测要读 SFZ 文本 ＋ 逐个样本读盘 ⇒ 每帧重探会把投影变成 I/O 热点。
+/// 今天结果是**空切片**（仓内 0 个样本字节）；样本入库后无需改代码，下一进程自动出现。
+#[must_use]
+pub fn installable_builtin_instruments() -> &'static [BuiltinInstrument] {
+    fn probe() -> Vec<BuiltinInstrument> {
+        BUILTIN_INSTRUMENTS
+            .iter()
+            .copied()
+            .filter(|instrument| sfz_samples_present(instrument.path).is_ok())
+            .collect()
+    }
+    static INSTALLABLE: std::sync::OnceLock<Vec<BuiltinInstrument>> = std::sync::OnceLock::new();
+    INSTALLABLE.get_or_init(probe).as_slice()
+}
+
+/// 第 `index` 份**可装**的内置乐器（越界 ⇒ `None`，⛔ 不 panic、⛔ 不猜一份）。
+///
+/// ⚠ 下标指的是 [`installable_builtin_instruments`] 的顺序（= 界面按钮行），
+/// ⛔ 不是 [`BUILTIN_INSTRUMENTS`] 的候选顺序（今天前者为空 ⇒ 恒 `None`）。
+#[must_use]
+pub fn builtin_instrument(index: usize) -> Option<BuiltinInstrument> {
+    installable_builtin_instruments().get(index).copied()
+}
+
+/// 内置乐器的**显示名**（与 [`installable_builtin_instruments`] 同序、同长度）。
 #[must_use]
 pub fn instrument_names() -> Vec<String> {
-    BUILTIN_INSTRUMENTS
+    installable_builtin_instruments()
         .iter()
         .map(|instrument| instrument.name.to_owned())
         .collect()
@@ -2061,13 +2162,20 @@ pub fn instrument_names() -> Vec<String> {
 
 /// "装乐器"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
 ///
-/// 唯一前置条件与投影**同一份**口径：存在展示轨（[`device_rack_track`]）。
+/// 两个前置条件，顺序即优先级：
+/// 1. 存在展示轨（[`device_rack_track`]）—— 否则 [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]；
+/// 2. 内置清单里有**可装**的乐器（[`installable_builtin_instruments`] 非空）——
+///    否则 [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（今天就是这一档）。
+///
+/// ⚠ 第 2 条是本单新增：清单空时 **0 个按钮** ⇒ 界面必须看得见原因（⛔ 不静默禁用）。
 #[must_use]
 pub fn instrument_install_availability(project: &YebanProjectV1) -> (bool, String) {
-    let reason = if device_rack_track(project).is_some() {
-        ""
-    } else {
+    let reason = if device_rack_track(project).is_none() {
         INSTRUMENT_INSTALL_NO_TRACK_REASON
+    } else if installable_builtin_instruments().is_empty() {
+        INSTRUMENT_INSTALL_NO_BUILTIN_REASON
+    } else {
+        ""
     };
     (reason.is_empty(), reason.to_owned())
 }
@@ -2086,18 +2194,29 @@ pub fn instrument_label(track: Option<&TrackV3>) -> String {
 
 /// 给展示轨装一份 SFZ 乐器的**完整** `Op`（`Op::SetTrackSampler`）。
 ///
-/// - `path` 原样写进 [`SamplerBinding::path`]（⛔ 本函数不读盘、不解析、不规范化）；
 /// - `old_sampler` **逐字**来自权威工程 ⇒ 陈旧载荷会被模型逐字节拒掉；
-/// - 值没变 ⇒ 返回**空 `Vec`**（宿主据此**不提交**，⛔ 不在撤销树上留一步空编辑）。
+/// - 值没变 ⇒ 返回**空 `Vec`**（宿主据此**不提交**，⛔ 不在撤销树上留一步空编辑）；
+/// - ⭐ **本单新增（`#165`）**：装之前先用 [`sfz_samples_present`] 判"样本字节是否存在"，
+///   不满足就**拒绝** —— 否则这条轨会从"恒备复音 ⇒ 有声"变成"区域 `NO_SAMPLE` ⇒ 静音"。
+///
+/// ⚠ 本函数因此**读盘**（SFZ 文本 ＋ 样本解码）：只跑在**控制侧**的一次点击上
+/// （⛔ 不在音频回调里，红线 7 不涉及）。
+///
+/// ⚠ `path` 原样写进 [`SamplerBinding::path`]（⛔ 不规范化、⛔ 不改写）；相对路径按
+/// **仓库根**解析（[`BuiltinInstrument::path`] 的契约，见 [`resolve_builtin_instrument_path`]）。
 ///
 /// # Errors
 ///
-/// 没有展示轨 ⇒ [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]。
+/// 1. 没有展示轨 ⇒ [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]（先判，保持 `#164` 的口径）；
+/// 2. 样本字节不存在 ⇒ [`INSTRUMENT_INSTALL_NO_SAMPLES_REASON`]；
+/// 3. SFZ 文本读不到 / 非法 ⇒ [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]。
 pub fn instrument_install_ops(
     project: &YebanProjectV1,
     path: &str,
 ) -> Result<Vec<Op>, &'static str> {
     let track = device_rack_track(project).ok_or(INSTRUMENT_INSTALL_NO_TRACK_REASON)?;
+    // ⭐ `#165`：⛔ 不许把一条有声的轨装成静音 —— 拒绝发生在**构造 `Op` 之前**。
+    sfz_samples_present(path)?;
     let new_sampler = Some(SamplerBinding {
         path: path.to_owned(),
     });
@@ -2273,18 +2392,22 @@ pub struct ViewState {
     ///
     /// 路径逐字来自 `TrackV3::sampler.path`（[`instrument_label`] 是唯一格式化实现）。
     pub instrument_label: String,
-    /// 界面一键可装的 SFZ 乐器**显示名**（与 [`BUILTIN_INSTRUMENTS`] 同序、同长度）。
+    /// 界面一键可装的 SFZ 乐器**显示名**（与 [`installable_builtin_instruments`]
+    /// 同序、同长度）。
     ///
     /// ⭐ 它是按钮行的唯一事实源；点第 `i` 个按钮只上报下标，路径由宿主从
     /// [`builtin_instrument`] 求 —— ⛔ 界面不持有第二份路径表。
+    /// ⚠ 任务单 `#165` 起这里是**按样本字节过滤后**的清单：今天为空（0 个样本字节）
+    /// ⇒ 控件树里 `instrument-install-*-button` 一个都不存在。
     pub instrument_names: Vec<String>,
-    /// "装乐器"此刻能不能用（工程里得有一条展示轨）。
+    /// "装乐器"此刻能不能用（工程里得有展示轨 **且** 内置清单里有可装乐器）。
     ///
     /// `false` ⇒ 按钮禁用并逐字显示 [`Self::instrument_install_reason`]，⛔ 不静默。
     pub instrument_install_available: bool,
     /// "装乐器"不可用时**逐字**写出的原因（可用时是空串）。
     ///
-    /// 取值来自 [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]。
+    /// 取值来自 [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]（无展示轨）或
+    /// [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（清单为空 —— 今天这一档）。
     pub instrument_install_reason: String,
     /// 当前展示轨（[`send_strip_track`]，与设备机架**同一条轨**）的 `SendToAux` 边逐条投影
     /// —— 发送条的**唯一**事实源。
