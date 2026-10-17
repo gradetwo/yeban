@@ -90,8 +90,10 @@ for c in "$@"; do
   fi
   # CI: test (in-process-mcp 特性)
   if grep -q '^in-process-mcp' "crates/$c/Cargo.toml" 2>/dev/null; then
-    layer "check -p $c --all-targets --features in-process-mcp" \
-      cargo check -p "$c" --all-targets --locked --features in-process-mcp
+    # ⭐ `#167`：这一层原来是 **check**（注释却写 "CI: test"）⇒ 该 feature 下
+    # **63 个二进制 / 704 条判据一次都没在本机跑过**。⭐ 第 303 条同类洞的第二次出现。
+    layer "test -p $c --features in-process-mcp" \
+      cargo test -p "$c" --locked --no-fail-fast --features in-process-mcp
   fi
   # test (experimental-logic-import 特性) —— `#143` 的只读 Logic 探针腿。
   # ⚠ 这一条**必须是 test 而不止 check**：那 8 个 demo 的读数判据住在

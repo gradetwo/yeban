@@ -299,6 +299,8 @@ jobs:
           fi
 
       - name: test (midi-input 特性)
+        env:
+          CARGO_INCREMENTAL: "0"
         run: |
           set -euo pipefail
           set -o pipefail
@@ -321,7 +323,20 @@ jobs:
       # `gates-manual.yml` 的 `all-features` 只在 `inputs.gate == 'all-features'` 时跑
       # (定时触发只跑 `inventory`) ⇒ 这一整类判据在自动 CI 里**从未执行**。
       # 仍然用 **Cargo.toml 守卫**: 只有声明了该特性的 crate 才跑这一腿。
+      # ⭐ `#167`：同一 job 里有 4 条 test 腿，每条 63 个测试二进制（单个 105–112 MB）
+      # ⇒ 第 4 条（in-process-mcp）在 hosted runner 上把盘写满：CI 逐字
+      # `rustc-LLVM ERROR: IO failure on output stream: No space left on device`，
+      # 且该步 **0 条 `test result:`** ⇒ 不是测试红，是编译期爆盘。
+      - name: 释放增量目录 (前面三条 test 腿的 incremental 会叠加)
+        run: |
+          set -euo pipefail
+          du -sh target 2>/dev/null || true
+          rm -rf target/debug/incremental || true
+          df -h . || true
+
       - name: test (in-process-mcp 特性)
+        env:
+          CARGO_INCREMENTAL: "0"
         run: |
           set -euo pipefail
           set -o pipefail
