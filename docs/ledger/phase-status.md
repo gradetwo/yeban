@@ -12345,3 +12345,19 @@ cargo run -q -p yeban-app --locked -- --open ~/Desktop/my.yeban
 ⭐ ⚠ ⭐ ⭐ **三、⭐ `backend_errors` 现在**三次全现**（⭐ 各方向各 1）**: ⭐ `1／1`、⭐ `1／1`、⭐ `1／1` ⇒ ⭐ ⭐ **确认可复现**、⭐ ⛔ 不是偶发 ⇒ ⭐ **单开一票查成因**（⭐ 现象：⭐ 首块或某一次回调报错、⭐ 但读数与回环检出都正常）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`backend_errors=1` 三次可复现 ⇒ 查成因** ＋ ⭐ **`#138`（重采样）交单** ＋ ⭐ **`b95dbdf0`／`82dd464f` 判决** ＋ ⭐ **CLI `--midi-in-render` 3 行接线** ＋ ⭐ **`project.assets` 元数据** ＋ ⭐ **L1 状态文本** ＋ ⭐ **`HD-64` 最小迁移器** ＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ Info.plist（⭐ 麦克风用途说明）／⭐ `HD-48`（⭐ 装依赖）／⭐ `HD-52`（⭐ Logic 素材）／⭐ 真 MIDI／⭐ **物理回环线**（⭐ 声学往返）✓
+
+---
+
+## R836 实测追加（2026-10-17）：⭐⭐ **`#140`（macOS `.app` ＋ `NSMicrophoneUsageDescription`）落地 ＋ `#139`（8 个 Logic demo 勘察）交单** ⇒ ⚠ ⭐ **并纠正我"`HD-52` 已解除"⭐ 的说法**
+
+⭐ ⚠ **一、⭐ `#140`（⭐ 已合并 `735fbb95`，⭐ 2 文件 ＋204）**: ⭐ 新增 ⭐ `resources/macos/Info.plist`（⭐ 57 行）＋ ⭐ `scripts/dev/bundle-macos.sh`（⭐ 147 行）⇒ ⭐ ⭐ **`plutil -lint` OK**、⭐ ⭐ **`NSMicrophoneUsageDescription => "夜半需要访问麦克风以录制音频输入。"`**（⭐ `plutil -p` 逐字）⇒ ⭐ bundle 三文件 ⭐ `CodeResources 2200 B`／⭐`Info.plist 922 B`／⭐`MacOS/yeban 28544192 B` ＝ **28,547,314 B** ✓ ⭐ ⭐ **`Contents/MacOS/yeban --version` ⇒ `yeban-app 0.0.1`（⭐ 与 `Cargo.toml` 一致）** ＋ ⭐ `--headless` 冒烟 rc 0 ✓ ⭐ **版本单一来源**：⭐ 脚本用 ⭐ `cargo metadata --no-deps --locked` ⭐ 取解析后的版本 ⇒ ⭐ **模板里不写死** ✓ ⭐ **可重复**：⭐ 连跑 3 次三文件 `sha256` **完全一致** ✓ ⭐ `codesign`：⭐ `flags=0x2(adhoc)`、⭐ `--verify --deep --strict` **rc 0** ✓ ⚠ ⭐ **如实登记**：⭐ ad-hoc 的 TCC 身份是 **cdhash** ⇒ ⭐ ⭐ **每次重建 cdhash 都变 ⇒ 之前授予的麦克风权限可能失效**；⭐ 要跨重建稳定 ⇒ ⭐ 需 **Developer ID 证书**（⭐ 不在本单）✓
+⭐ ⚠ **本机验不了的一条（⭐ 已如实登记）**：⭐ **"⭐ 权限框会不会真弹"⭐ 只能由人类在桌面会话点一次** ⇒ ⭐ 本单**只证到**："⭐ plist 里有用途说明 ＋ ⭐ bundle 结构对 ＋ ⭐ 二进制能跑" ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ `#139`（⭐ 0 行代码，⭐ 纯勘察）⭐ 三条硬结论**: ⭐ ① ⭐ ⭐ **本仓没有 `.logicx` 导入器**（⭐ `--import-logic` 全仓 **0 处**、⭐ `import_logic` **0 处**、⭐ 真二进制 ⭐ ``无法识别的参数 `--import-logic` `` **RC=2**）⇒ ⭐ **我的预判成立**（⭐ 只有导出）✓ ⭐ ② ⚠ ⭐ **又纠正我一处**：⭐ 我说"⭐ `.logicx` 是 `NSKeyedArchiver` 的 plist"⭐ ⇒ ⭐ **只对 `DisplayStateArchive`（⭐ UI 状态）成立**；⭐ ⭐ **乐曲数据在 `ProjectData`（⭐ 自研分块二进制，⭐ 魔数 `23 47 C0 AB`）＋ ⭐ `MetaData.plist`／⭐ `ProjectInformation.plist`（⭐ 普通 bplist00）** ✓ ⭐ ③ ⭐ ⭐ **8 个 demo 全部量过**（⭐ 8/8 走到 EOF）：⭐ 轨道 **714** 条、⭐ `qeSM` 区域 **4,144**（⭐ ⚠ **其中 74.1% 是 `*Automation`／⭐ `RBA Sequence` 内部区域**，⭐ 必须过滤）、⭐ 音符 **9,825**（⭐ 用仓库同一算法 ⭐ `decode_note_lines`）、⭐ `AuRg` **4,104**、⭐ `GenM` 内嵌 bplist00 **1,943**／1,957 ✓ ⭐ 抽样对照：⭐ `NumberOfTracks` == `Trak`(payload[0]=1) 条数 ⭐ **8/8 逐条相等**（⭐ 714 == 714）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 我要纠正自己的一句话（⭐ 重要）**: ⭐ 我上一轮说"⭐ `HD-52` 的素材面**解除**"⭐ ⇒ ⭐ ⚠ ⭐ **不能这么说**。⭐ 交付线给了三条可查的理由：⭐ ① ⭐ `HD-52` 原文要的是**同一台机器、⭐ 同一 Logic Pro** 产的**三条 MIDI 轨**工程 ＋ ⭐ Logic **自己导出**的 `.mid`，⭐ 并与现有 1↔2 轨供体做**同工程受控差分**；⭐ 8 个 demo 是**不同歌曲**（⭐ 20–140 轨、⭐ 四个版本码）⇒ ⭐ ⭐ **给不出 2→3 的受控差分**；⭐ ② ⭐ ⭐ **Apple 演示工程有版权、⭐ ⛔ 不可提交**（⭐ `logic.rs` 与 ⭐ `assets/logic-donor/README.md` 都写明）；⭐ ③ ⭐ demo 里**没有 `.mid` 导出** ✓
+⭐ ⭐ **正确的说法**：⭐ `HD-52` **仍未解除**；⭐ 但**新增了一类资产** —— ⭐ ⭐ **本机参考语料**（⭐ 可用于导入器判据 ＋ ⭐ 结构对账 ＋ ⭐ 给第三槽公式做**旁证**，⭐ ⛔ 不是受控差分）✓
+
+⭐ ⚠ **四、⭐ `#139` 给的估量（⭐ 三刀）**: ⭐ **刀 1**（⭐ 低风险）：⭐ `--inspect-logic <dir>` 只读探针（⭐ 新 feature，⭐ 非默认）≈ **450–550 行** ⇒ ⭐ ⭐ **这一刀就能把"8 个 demo 逐个跑"变成可复跑的仓库判据**（⭐ 路径门控 skip，⭐ ⛔ 绝不红）；⭐ **刀 2**：⭐ MIDI 导入（⭐ 区域 ＋ ⭐ **摆放配对** ＋ ⭐ 音符 ⇒ `YebanProjectV1`）≈ **700–900 行**，⭐ ⚠ **前置测量**：⭐ 用 4,144 个 `qeSM` × 配对 `qSvE` 反推位置／长度字段；⭐ **刀 3**：⭐ `AuRg` ＋ ⭐ `GenM` ＋ ⭐ 导出→导入幂等 golden ≈ **400–600 行** ✓ ⭐ 合计 **≈1,470–1,800 行／5 文件** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`735fbb95` 的 CI 判决**（⭐ 我先等它）＋ ⭐ **刀 1 探针票**（⭐ 本条件裁：⭐ **做**）＋ ⭐ **`scripts/guards/policy_check.py` 加新 feature 到 `FORBIDDEN_DEFAULT_FEATURES`**（⭐ `scripts/**` 是我的）＋ ⭐ **`#138` 重采样交单** ＋ ⭐ **人类桌面验收 `.app` 权限框** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`HD-64` 迁移器** ＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ **桌面点一次权限框**／⭐ `HD-48`（装依赖）／⭐ `HD-52`（**仍缺**：⭐ 同机同版本三轨供体 ＋ `.mid`）／⭐ 真 MIDI／⭐ 物理回环线 ✓
