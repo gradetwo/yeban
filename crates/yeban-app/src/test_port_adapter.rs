@@ -526,8 +526,9 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
 ///
 /// ⭐ **`module-new-project-button`（任务单 `#129`）紧随其后**：同一个「工程」面板、
 /// 「打开工程」**正下方**（控制台 **Tab 1 = 调音台**）⇒ **默认帧里一个像素都不画**。
-/// 反方向（Tab 1 里**有**它、注入默认无障碍动作 ⇒ 问一次保存框 ⇒ 落一个 884 B／0 轨容器
-/// ⇒ 就地换成新工程；取消 / 没有对话框两条腿）在 `tests/new_project_ui.rs` 里断。
+/// 反方向（Tab 1 里**有**它、注入默认无障碍动作 ⇒ 问一次保存框 ⇒ 落一个
+/// 1136 B／0 音轨 ＋ 1 主总线容器 ⇒ 就地换成新工程；取消 / 没有对话框两条腿）在
+/// `tests/new_project_ui.rs` 里断。
 const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 11] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",

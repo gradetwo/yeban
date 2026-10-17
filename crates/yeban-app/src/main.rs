@@ -13,7 +13,7 @@
 //! | `yeban-app --export-midi <path>` | 把当前工程导出成标准 MIDI 文件（SMF 1，ADR-0001 **D47** 指定的唯一出口），字节出自 `yeban-render` 的**唯一** SMF 编码器 |
 //! | `yeban-app --dump-elements` / `--export-elements <path>` | 语义元素清单打到 stdout / 原子写到文件 |
 //! | `yeban-app --print-shortcuts` | 快捷键策略表（供 CI 与人类核对） |
-//! | `yeban-app --project-sample <default\|filled\|empty>` | 选择"没有 `--open` 时"用哪个工程（默认 `default` = `bridge::demo_project()`，6 轨；`empty` = 真的 0 轨空工程，即 `BASELINE-002` 所指的那个对象） |
+//! | `yeban-app --project-sample <default\|filled\|empty>` | 选择"没有 `--open` 时"用哪个工程（默认 `default` = `bridge::demo_project()`，6 轨；`empty` = 0 音轨 ＋ 1 主总线的空工程，即 `BASELINE-002` 所指的那个对象） |
 //! | `yeban-app --version` / `--help` | 真实版本 / 完整用法（含全部开关、组合语义、退出码） |
 //!
 //! 命令行语法、用法文本、报告格式与退出码**全部**住在 `yeban_app::cli`（零 Slint 依赖），
@@ -685,7 +685,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         //
         // 缺口（`#93` 之后仍然卡着人类实测）：GUI 只能"打开"一个**已经存在**的 `.yeban`；
         // 从零开始时唯一的出路是 CLI `--project-sample empty --save-as <path>`
-        // （`#128` 实测 884 B／0 轨）。入口 = `ui/console/mixer_console.slint` 的
+        // （`#128` 实测 884 B／0 轨；`#161` 起是 1136 B／0 音轨 ＋ 1 主总线）。
+        // 入口 = `ui/console/mixer_console.slint` 的
         // `module-new-project-button`（控制台 **Tab 1 = 调音台**，"打开工程"正下方）⇒
         // `host::wire_new_project`：问一次**同一个** `FilePicker` 的 `choose_save` ⇒
         // `host::create_new_project_file`（`samples::default_project()` ＋

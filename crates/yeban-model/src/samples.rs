@@ -144,10 +144,31 @@ pub(crate) fn midi_clip(id: EntityId) -> ClipPoolEntry {
     }
 }
 
-/// 默认工程样本（合法、可读、无音轨）。
+/// 默认工程样本（合法、可读、**0 条音轨 ＋ 恰 1 条主总线**）。
+///
+/// ⭐ `#161`：`default_project()` 是"新建工程"（GUI 与 CLI 的 `--project-sample empty`）
+/// 的**唯一来源**。它此前直接取 [`YebanProjectV1::default()`]（0 轨 ＋
+/// `master_bus_track_id = nil`），而 `Op` 全集**没有**能写 `master_bus_track_id` 的变体
+/// ⇒ 在新建出来的工程上建第一条音轨时，`bridge::track_create_ops` 只能依据
+/// `TRACK_CREATE_NO_MASTER_REASON` 响亮拒绝 ⇒ 用户从空工程开不了头。
+///
+/// 修法（本单裁决的 B 方案）：让样本自带主总线 —— 与 `filled_project()` 的主总线
+/// **同一个确定性身份** [`fixture_id`]`(1)`，因此 `model_isolation` 的递归键路径集合
+/// **不新增**路径（那一份 union 已经包含 `tracks.<master-ulid>.*`），只有逐字节 JSON 变。
+/// ⛔ 不新增 `Op`、⛔ 不改 `schemas/`：主总线是**工程出厂时就有**的骨架，不是一次可撤销编辑。
+///
+/// 留在 [`YebanProjectV1::default()`] 的 0 轨／nil 主总线形态**仍然合法**（`validate()`
+/// 的 0 轨分支要求主总线身份为 nil），并被 `bridge` 的"没有主总线 ⇒ 响亮拒绝"判据用作
+/// 反例夹具。
 #[must_use]
 pub fn default_project() -> YebanProjectV1 {
-    YebanProjectV1::default()
+    let master_id = fixture_id(1);
+    let mut project = YebanProjectV1::default();
+    project.tracks.insert(master_id, master_track(master_id));
+    project.master_bus_track_id = master_id;
+    // 主总线必须够得着（`validate()` 要求它出现在 `routing_graph.nodes` 里）。
+    project.routing_graph.nodes.push(master_id);
+    project
 }
 
 /// 构造一个把全部子类型都填满的规范样本（样本 JSON 必须逐字节稳定）。

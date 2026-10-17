@@ -253,26 +253,27 @@ fn slint_backend_headless_sentinel_alone_keeps_the_window_closed() {
     );
 }
 
-/// 判据 B3b: `--project-sample empty` 在**真二进制**上是 0 轨，`default` 是 6 条普通轨。
+/// 判据 B3b: `--project-sample empty` 在**真二进制**上是 0 条音轨 ＋ 1 条主总线，
+/// `default` 是 6 条普通轨。
 ///
 /// 为什么这条必须走真二进制：`BASELINE-002` 的读数是**进程级**的
 /// （`scripts/gates/measure_rss.py -- <本二进制> --project-sample empty --headless`），
 /// 所以"取样对象真的是空工程"必须在同一条进程命令上被钉住 —— 单元判据证明不了 argv 与
 /// 二进制一致。`tracks-all` **含**主总线，因此普通轨数 = `tracks-all - master-track`。
 #[test]
-fn empty_sample_reports_zero_tracks_and_default_reports_six() {
+fn empty_sample_reports_zero_audio_tracks_and_default_reports_six() {
     let empty = invoke(&["--project-sample", "empty", "--headless"]);
     assert_eq!(empty.code, 0, "stderr={}", empty.stderr);
     let counts = line_with(&empty.stdout, "project-counts:").expect("必须有 project-counts 行");
     assert_eq!(
         field(counts, "tracks-all").as_deref(),
-        Some("0"),
-        "empty 必须真的是 0 轨: {counts}"
+        Some("1"),
+        "empty 必须是 1 条轨（`#161` 起出厂自带主总线）: {counts}"
     );
     assert_eq!(
         field(counts, "master-track").as_deref(),
-        Some("0"),
-        "0 轨工程没有主总线: {counts}"
+        Some("1"),
+        "empty 的 1 条轨必须就是主总线: {counts}"
     );
     assert!(
         empty.stdout.contains("project-source: sample=empty"),
@@ -280,8 +281,8 @@ fn empty_sample_reports_zero_tracks_and_default_reports_six() {
         empty.stdout
     );
     assert!(
-        empty.stdout.contains("内置空工程 0 轨"),
-        "输出不许把 0 轨空工程说成演示工程:\n{}",
+        empty.stdout.contains("内置空工程 0 音轨 ＋ 1 主总线"),
+        "输出不许把空工程说成演示工程:\n{}",
         empty.stdout
     );
 
@@ -395,11 +396,16 @@ fn headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness() 
         .expect("元素数必须是整数");
     assert!(elements > 0, "非平凡的控件树的元素数必须 > 0: {witness}");
 
-    // ---- 取样对象真的是规范所指的那个（0 轨空工程）----
+    // ---- 取样对象真的是规范所指的那个（0 音轨 ＋ 1 主总线的空工程）----
     let counts = line_with(&empty.stdout, "project-counts:").expect("必须有 project-counts 行");
     assert_eq!(
         field(counts, "tracks-all").as_deref(),
-        Some("0"),
+        Some("1"),
+        "{counts}"
+    );
+    assert_eq!(
+        field(counts, "master-track").as_deref(),
+        Some("1"),
         "{counts}"
     );
     assert!(

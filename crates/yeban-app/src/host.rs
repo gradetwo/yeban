@@ -3860,9 +3860,12 @@ impl OpenProjectRuntime for PortOpenProject {
         //    而引擎还是旧一代 —— `live_surface::LiveAdminSurface::apply_project` 的第 3 步
         //    是同一条边界（同一个 `EngineHost::reload`），本处照旧，⛔ 不假装有回滚。
         //
-        // ⭐ **0 轨工程这一格**（任务单 `#129` 补的）：空工程没有主总线
-        //    （`samples::default_project()` 的 `master_bus_track_id` 是 nil），而
-        //    `EngineSnapshot::from_project` 的**既有**裁决是 `NoMasterBus`（引擎面一个字没改）。
+        // ⭐ **没有主总线的工程这一格**（任务单 `#129` 补的，`#161` 收窄了触发面）：
+        //    `#161` 起 `samples::default_project()` 出厂自带主总线 ⇒ **新建工程**走的是
+        //    下面的 `else` 分支（新快照照常换代）。仍会进这一格的是**真的没有主总线**的
+        //    工程（`master_bus_track_id` 为 nil，例如 `YebanProjectV1::default()`，或身份
+        //    指向一条不存在的轨），而 `EngineSnapshot::from_project` 的**既有**裁决是
+        //    `NoMasterBus`（引擎面一个字没改）。
         //    装配点对同一情况的处置是 [`ProductionLoop::without_engine`]：界面照常开、
         //    播放侧明确报"没有引擎"（`main.rs` 的 `ProductionLoop::start` 失败分支）。
         //    运行期换工程时等价的处置是**清空**这个 `Rc<RefCell<EngineHost>>` 的**内容**
@@ -4019,7 +4022,9 @@ pub fn wire_open_project(
 // `#93` 给了运行期「打开工程」一个可点的入口，于是 GUI 能**换**工程；但它要求磁盘上
 // **已经**有一个 `.yeban`。用户从零开始时唯一的出路是 CLI
 // `--project-sample empty --save-as <path>`（`#128` 实测：`saved: … bytes=884 …`，
-// `project-counts: tracks-all=0 master-track=0`）。本单把这同一个落点搬进 GUI。
+// `project-counts: tracks-all=0 master-track=0`；`#161` 起是
+// `bytes=1136` / `tracks-all=1 master-track=1`，因为空工程自带主总线）。
+// 本单把这同一个落点搬进 GUI。
 //
 // ## 它不新造任何东西（逐条点名复用了什么）
 //
@@ -4047,8 +4052,9 @@ pub fn wire_open_project(
 /// `history.dag` / 资产池为空是**如实置空**（样本本来就没有第二、第三层状态），
 /// 不是丢失 —— 与 [`crate::cli::load_project`] 的样本分支同一条口径。
 ///
-/// "规范空工程"的唯一来源是 [`yeban_model::samples::default_project()`]（`884 B／0 轨`
-/// 那一条的模型侧对象）—— ⛔ 本函数不手写第二份空工程夹具。
+/// "规范空工程"的唯一来源是 [`yeban_model::samples::default_project()`]（`#161` 起是
+/// `1136 B／0 音轨 ＋ 1 主总线` 那一条的模型侧对象；`#161` 前是 `884 B／0 轨`）
+/// —— ⛔ 本函数不手写第二份空工程夹具。
 #[must_use]
 pub fn new_project_archive() -> yeban_model::container::ProjectArchive {
     yeban_model::container::ProjectArchive {

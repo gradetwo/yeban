@@ -426,8 +426,8 @@ pub fn usage_text() -> String {
                            编译进来的 Slint 风格 (由 build.rs 注入, 不是从命令行推出来的)
   --project-sample <default|filled|empty>
                            选择\"没有 --open 时\"用哪个工程 (默认 default);
-                           empty = 真的 0 轨空工程 (规范 空工程空闲常驻内存 [BASELINE-002]
-                           所指的那个对象); 重复给以最后一个为准
+                           empty = 0 音轨 + 1 主总线的空工程 (规范 空工程空闲常驻内存
+                           [BASELINE-002] 所指的那个对象); 重复给以最后一个为准
   --headless-idle          无窗口模式下**真的**构造 Slint 控件树: 自研软件平台
                            (MinimalSoftwareWindow + SoftwareRenderer, 不需要显示器),
                            逐行光栅化一帧当见证, 空闲 N 秒后退出 (N 由 --idle-seconds 给)。
@@ -665,10 +665,11 @@ pub enum Sample {
     Filled,
     /// `yeban-model` 的规范级**空**工程样本（`samples::default_project()`）。
     ///
-    /// 逐项事实（由判据 `empty_sample_is_a_zero_track_project_with_witness` 钉住）：
-    /// `tracks` 为空、`master_bus_track_id` 为 nil、无片段 / 场景 / 段落 / 资产 / `history.dag`。
-    /// 它在模型侧**合法且可读**（`YebanProjectV1::validate()` 接受 0 轨工程），因此
-    /// app 侧不需要任何"空工程特例" —— 停用某个样本就等于没量到这个对象。
+    /// 逐项事实（由判据 `empty_sample_is_a_zero_audio_track_project_with_witness` 钉住）：
+    /// **0 条非主总线轨 ＋ 恰 1 条 `TrackKind::Master`**、`master_bus_track_id` 指向它、
+    /// `routing_graph.nodes` 里恰好有它；无片段 / 场景 / 段落 / 资产 / `history.dag`。
+    /// 它在模型侧**合法且可读**（`YebanProjectV1::validate()` 接受"只有主总线"的工程），
+    /// 因此 app 侧不需要任何"空工程特例" —— 停用某个样本就等于没量到这个对象。
     Empty,
 }
 
@@ -685,14 +686,15 @@ impl Sample {
 
     /// 报告行里对"这是哪种内置工程"的措辞。
     ///
-    /// `empty` **不**沿用 `default` 那句"内置演示工程"：它真的是 0 轨空工程，
-    /// 输出里不能出现与事实相反的描述（本仓库的第一条纪律是不写假话）。
+    /// `empty` **不**沿用 `default` 那句"内置演示工程"：它是**没有音轨**的空工程
+    /// （`#161` 起出厂自带 1 条主总线），输出里不能出现与事实相反的描述
+    /// （本仓库的第一条纪律是不写假话）。
     /// `default` / `filled` 的措辞保持**逐字不变** —— 改它们要同步
     /// `tests/cli_contract.rs` 与其它工作线的账本，超出本线范围。
     #[must_use]
     pub const fn origin_label(self) -> &'static str {
         match self {
-            Self::Empty => "内置空工程 0 轨",
+            Self::Empty => "内置空工程 0 音轨 ＋ 1 主总线",
             Self::Default | Self::Filled => "内置演示工程",
         }
     }
@@ -4927,27 +4929,47 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // 判据 37b: `--project-sample empty` = 真的 0 轨空工程（BASELINE-002 的取样对象）
+    // 判据 37b: `--project-sample empty` = 0 音轨 ＋ 1 主总线的空工程（BASELINE-002 的取样对象）
     // ------------------------------------------------------------------
 
     /// `BASELINE-002` 判据句是"**空**工程空闲常驻内存 ≤ 35 MB"。本判据钉住两件事：
     ///
-    /// ① `empty` 样本**真的是**空工程（0 轨 —— 不是"某个更小的演示工程"）；
+    /// ① `empty` 样本**真的是**没有音轨的空工程（0 条非主总线轨 ＋ 恰 1 条主总线 ——
+    ///    `#161` 起主总线是出厂骨架；不是"某个更小的演示工程"）；
     /// ② 无头路径**真的把它打印出来**（`project-counts:` 的轨道数是见证），
     ///    且与 `default` 的读数**不同**（否则就是空转，读数函数返回常数也能"绿"）。
     #[test]
-    fn empty_sample_is_a_zero_track_project_with_witness() {
+    fn empty_sample_is_a_zero_audio_track_project_with_witness() {
         let empty = Sample::Empty.project();
         assert_eq!(Sample::Empty.name(), "empty", "命令行取值必须是 `empty`");
         assert_eq!(
             empty,
-            YebanProjectV1::default(),
+            yeban_model::samples::default_project(),
             "empty 必须就是模型侧的规范空工程样本（不是另一份手写夹具）"
         );
-        assert!(empty.tracks.is_empty(), "empty 的轨道集合必须为空");
+        assert_eq!(empty.tracks.len(), 1, "empty 必须恰有 1 条轨（主总线）");
         assert!(
-            empty.master_bus_track_id.is_nil(),
-            "0 轨工程没有主总线身份（validate 的 0 轨分支要求它是 nil）"
+            !empty.master_bus_track_id.is_nil(),
+            "主总线身份不得是 nil（`#161` 起样本自带主总线）"
+        );
+        let master = empty
+            .tracks
+            .get(&empty.master_bus_track_id)
+            .expect("`master_bus_track_id` 必须指向一条存在的轨");
+        assert_eq!(
+            master.kind,
+            yeban_model::project::TrackKind::Master,
+            "主总线轨的类型必须是 `Master`"
+        );
+        assert_eq!(
+            empty.tracks.len() - 1,
+            0,
+            "empty 的**非主总线轨**必须是 0 条"
+        );
+        assert_eq!(
+            empty.routing_graph.nodes,
+            vec![empty.master_bus_track_id],
+            "主总线必须在 `routing_graph.nodes` 里（这样它才够得着）"
         );
         assert!(
             empty.clip_pool.is_empty() && empty.scenes.is_empty() && empty.sections.is_empty(),
@@ -4955,7 +4977,7 @@ mod tests {
         );
         empty
             .validate()
-            .expect("0 轨空工程必须通过模型层校验（合法且可读）");
+            .expect("0 音轨 ＋ 1 主总线工程必须通过模型层校验（合法且可读）");
 
         // 对照：`default` = 6 条普通轨 + 主总线（`tracks-all` **含**主总线 ⇒ 7）。
         let demo = Sample::Default.project();
@@ -4974,16 +4996,17 @@ mod tests {
         };
         let empty_text = report("empty");
         assert!(
-            empty_text.contains("project-counts: tracks-all=0 master-track=0"),
-            "empty 的轨道数见证必须是 0（tracks-all 含主总线 ⇒ 普通轨 = 0）:\n{empty_text}"
+            empty_text.contains("project-counts: tracks-all=1 master-track=1"),
+            "empty 的轨道数见证必须是 1（1 主总线 ＋ 0 音轨）:\n{empty_text}"
         );
         assert!(
-            empty_text.contains("project-source: sample=empty (内置空工程 0 轨"),
+            empty_text.contains("project-source: sample=empty (内置空工程 0 音轨 ＋ 1 主总线"),
             "来源行必须如实说明这是空工程（不许写成演示工程）:\n{empty_text}"
         );
+        // 投影把主总线放在 `master` 那一格，`tracks`（音轨行）仍然是 0。
         assert!(
-            empty_text.contains("view-counts: tracks=0 master=0"),
-            "0 轨空工程必须**能**被投影（不是被特判跳过、也不是投影失败被吞掉）:\n{empty_text}"
+            empty_text.contains("view-counts: tracks=0 master=1"),
+            "0 音轨空工程必须**能**被投影（主总线投影到 `master`）:\n{empty_text}"
         );
 
         let demo_text = report("default");

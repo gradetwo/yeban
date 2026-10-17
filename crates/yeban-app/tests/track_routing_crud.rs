@@ -25,9 +25,14 @@
 //! ## 它**不**证什么（见交付报告的"能验与不能验"）
 //!
 //! ⛔ 不证"人耳听到声音"：本判据只证工程里多了一条到 master 的边、引擎的
-//! `RoutingPlan` 把它编译成 `source → master`。⛔ 不证"0 轨空工程能建轨"：`Op` 全集
-//! 没有写 `master_bus_track_id` 的变体 ⇒ 那一路被 `TRACK_CREATE_NO_MASTER_REASON`
-//! 响亮拒绝（本文件不断言它之外的行为）。
+//! `RoutingPlan` 把它编译成 `source → master`。
+//!
+//! ⭐ `#161` 补的那一条：**0 音轨空工程能建轨**。`default_project()` 现在出厂自带
+//! 1 条主总线，`track_create_ops(&default_project(), Midi)` 不再是 `NoMaster`；
+//! 本文件用**纯函数腿**证明第一批 Op 真的落在空工程上（`tracks 1 → 2`、`edges 0 → 1`、
+//! `validate() == Ok`）。`Op` 全集仍然写不了 `master_bus_track_id`，所以
+//! `TRACK_CREATE_NO_MASTER_REASON` 保留，并被 `YebanProjectV1::default()`（0 轨 nil 主总线）
+//! 这个**反例夹具**继续钉住。
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -784,20 +789,74 @@ fn the_track_actions_are_wired_to_the_projection_not_a_fixed_list() {
 
     // 纯函数：建轨的前置条件 / 拒绝原因也走同一份口径。
     assert!(track_create_available(&filled_project()));
-    assert!(!track_create_available(&default_project()));
+    assert!(!track_create_available(&YebanProjectV1::default()));
     assert_eq!(
-        track_create_ops(&default_project(), NewTrackKind::Midi),
+        track_create_ops(&YebanProjectV1::default(), NewTrackKind::Midi),
         Err(yeban_app::bridge::TRACK_CREATE_NO_MASTER_REASON),
-        "0 轨空工程必须响亮拒绝（Op 全集写不了 `master_bus_track_id`）"
+        "**没有主总线**的工程必须响亮拒绝（`Op` 全集写不了 `master_bus_track_id`）"
     );
     assert_eq!(
-        master_bus_label(&default_project()),
+        master_bus_label(&YebanProjectV1::default()),
         yeban_app::bridge::TRACK_CREATE_NO_MASTER_REASON
     );
     assert_eq!(
-        yeban_app::bridge::track_delete_availability(&default_project()),
+        yeban_app::bridge::track_delete_availability(&YebanProjectV1::default()),
         (false, TRACK_DELETE_NO_TRACK_REASON.to_owned())
     );
+
+    // ⭐ `#161`：**0 音轨空工程**（`default_project()`）出厂自带主总线 ⇒ 建轨可用，
+    // 且第一批 Op 真的落得下去、「新建工程 → 加轨」这条用户路径在纯函数层面走通。
+    let empty = default_project();
+    assert!(
+        track_create_available(&empty),
+        "空工程必须能建轨（有主总线）"
+    );
+    let create_ops = track_create_ops(&empty, NewTrackKind::Midi)
+        .expect("0 音轨空工程（1 主总线）必须能建第一条轨 —— ⛔ 不再是 `NoMaster`");
+    let mut grown = empty.clone();
+    for op in &create_ops {
+        op.apply(&mut grown).expect("建轨 Op 必须落在空工程上");
+    }
+    assert_eq!(
+        grown.tracks.len(),
+        empty.tracks.len() + 1,
+        "一次建轨必须恰好多 1 条轨"
+    );
+    assert_eq!(
+        grown.routing_graph.edges.len(),
+        1,
+        "新轨必须有一条到主总线的显式边"
+    );
+    grown
+        .validate()
+        .expect("建完第一条轨的工程必须仍然通过模型层校验");
+    let first_track = grown
+        .tracks
+        .values()
+        .find(|track| track.kind == TrackKind::Midi)
+        .expect("新轨必须是 MIDI");
+    assert_eq!(first_track.name, "MIDI 1", "第一条 MIDI 轨的显示名");
+    assert_eq!(
+        master_bus_label(&empty),
+        "主总线：Master（不可删除）",
+        "空工程的投影行必须给出主总线说明"
+    );
+    assert_eq!(
+        yeban_app::bridge::track_delete_availability(&empty),
+        (false, TRACK_DELETE_MASTER_REASON.to_owned()),
+        "只剩主总线时删轨必须响亮拒绝（原因逐字）"
+    );
+    report_line(&format!(
+        "[#161] 空工程建轨：tracks {} → {}；nodes {} → {}；edges 0 → {}；\
+         新轨 {:?}；master={}",
+        empty.tracks.len(),
+        grown.tracks.len(),
+        empty.routing_graph.nodes.len(),
+        grown.routing_graph.nodes.len(),
+        grown.routing_graph.edges.len(),
+        first_track.name,
+        empty.master_bus_track_id.to_canonical_string(),
+    ));
 
     report_line(&format!(
         "[#160 源码腿] device_rack.slint：4 个按钮 / 原因 / 主总线行 / 删除发送都在；\

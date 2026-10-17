@@ -278,7 +278,8 @@ fn the_asset_pool_panel_is_declared_and_addressable() {
 // ===========================================================================
 #[test]
 fn an_empty_pool_shows_the_empty_state_and_zero_rows() {
-    // 新工程的**规范来源**是 `#129` 的 `new_project_archive()`（0 轨 / 0 片段 / 0 资产）。
+    // 新工程的**规范来源**是 `#129` 的 `new_project_archive()`
+    // （`#161` 起：0 条音轨 ＋ 1 条主总线 / 0 片段 / 0 资产）。
     let project = host::new_project_archive().project;
     let view = ViewState::from_project(&project).expect("空工程必须能投影");
     assert_eq!(

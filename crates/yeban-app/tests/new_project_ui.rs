@@ -1,6 +1,7 @@
 //! 判据（任务单 `#129`，界面腿）：GUI 里「打开工程」**旁边**有一个「新建工程」入口，
-//! 点下去 ⇒ 问一次保存对话框 ⇒ 落一个 **884 B／0 轨** 的 `.yeban` ⇒ **就地换成新工程**
-//! （视图清空 / 标题目标路径跟着走）；取消不动一位；**没有对话框** ⇒ 如实报错。
+//! 点下去 ⇒ 问一次保存对话框 ⇒ 落一个 **1136 B／0 音轨 ＋ 1 主总线** 的 `.yeban`
+//! ⇒ **就地换成新工程**（视图清空 / 标题目标路径跟着走）；取消不动一位；
+//! **没有对话框** ⇒ 如实报错。
 //!
 //! ## 判定量（每个数字都有单位）
 //!
@@ -27,7 +28,7 @@
 //! - `.slint` 的 `accessible-action-default` / `TouchArea.clicked` 不调 `root.new-project()`
 //!   （**断开入口**）⇒ 对话框一次没被问 ⇒ 正向腿红；
 //! - `host::wire_new_project` 不接回调 / 不写 `module-status` ⇒ 同上；
-//! - 落盘改成 `filled_project()`（3 轨）⇒ 884 B / `tracks=0` 两条红；
+//! - 落盘改成 `filled_project()`（3 轨）⇒ 1136 B / `tracks=0` 两条红；
 //! - **没有对话框**那一支改成静默 `return` ⇒ 反向腿红（回执为空）；
 //! - 新建后**不换工程**（只写文件）⇒ 指纹 / 行数 / `after` 三条红。
 //!
@@ -377,7 +378,8 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
     );
 
     // =====================================================================
-    // 判据 ⑤（正向腿）：点一下 ⇒ 问一次对话框 ⇒ **884 B** 落盘 ⇒ **换成 0 轨新工程**
+    // 判据 ⑤（正向腿）：点一下 ⇒ 问一次对话框 ⇒ **1136 B** 落盘
+    // ⇒ **换成 0 音轨 ＋ 1 主总线的新工程**
     // =====================================================================
     //
     // 对话框给的路径**没有后缀**（`brand-new`）—— 与 `wire_save` 同一条口径，必须补成
@@ -427,16 +429,17 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
         window.get_module_status_succeeded(),
         "界面上的新建必须成功: {receipt}"
     );
-    // ② 落盘：**884 B**（无后缀的落点被补成 `.yeban`）。
+    // ② 落盘：**1136 B**（无后缀的落点被补成 `.yeban`；`#161` 前是 884 B）。
     assert!(
         final_path.exists(),
         "⛔ 新建必须写出 `{}`（用户敲的 `brand-new` 必须被补成 `.yeban`）",
         final_path.display()
     );
     assert_eq!(
-        size, 884,
-        "新建工程的容器必须恰是 884 字节（`#128` 实测：`--project-sample empty --save-as` \
-         的 `saved: … bytes=884`）；实得 {size} 字节"
+        size, 1136,
+        "新建工程的容器必须恰是 1136 字节（`#161`：`default_project()` 自带主总线后，\
+         `--project-sample empty --save-as` 同样是 `saved: … bytes=1136`；`#161` 前是 884）；\
+         实得 {size} 字节"
     );
     // ③ 回执：成功的字段可读（`tracks` 是**回读**界面行数，不是回显入参）。
     assert!(receipt.contains("outcome=ok"), "{receipt}");
@@ -444,9 +447,10 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
         receipt.contains(&format!("path={}", final_path.display())),
         "{receipt}"
     );
-    assert!(receipt.contains("bytes=884"), "{receipt}");
+    assert!(receipt.contains("bytes=1136"), "{receipt}");
     assert!(receipt.contains("tracks=0"), "{receipt}");
-    // ④ **换成新工程**：端口里的工程 = `default_project()`（指纹逐字节相等），界面 0 轨。
+    // ④ **换成新工程**：端口里的工程 = `default_project()`（指纹逐字节相等），
+    //    工程里 0 条音轨 ＋ 1 条主总线；界面音轨行 0 行。
     assert_eq!(
         fingerprint_after.as_deref(),
         Some(default_fingerprint.as_str()),
@@ -454,10 +458,22 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
     );
     assert_eq!(
         port.project().tracks.len(),
-        0,
-        "新建之后端口里的轨道数必须归零"
+        1,
+        "新建之后端口里的轨道数必须恰是 1（主总线）"
     );
-    assert_eq!(rows(&window), 0, "⛔ 新建之后界面必须清空（0 行）");
+    assert!(
+        !port.project().master_bus_track_id.is_nil(),
+        "新建工程的 `master_bus_track_id` 必须非 nil（`#161` 起出厂自带主总线）"
+    );
+    assert_eq!(
+        port.project()
+            .tracks
+            .get(&port.project().master_bus_track_id)
+            .map(|track| track.kind),
+        Some(yeban_model::project::TrackKind::Master),
+        "那 1 条轨必须就是主总线"
+    );
+    assert_eq!(rows(&window), 0, "⛔ 新建之后界面音轨行必须清空（0 行）");
     // ⑤ 「新建 = 打开刚写的文件 = **新会话**」：可撤销步数归零。
     assert_eq!(
         port.display().undoable,
@@ -465,27 +481,33 @@ fn the_gui_new_project_entry_writes_an_empty_container_and_swaps_it_in() {
         "⭐ 新建工程 = **新会话**：`undoable` 必须从 {undoable_before} 归零"
     );
     // ⑥ **同一个** `after`（打开工程那条换工程路径的装配方最后一跳）被调用**恰好一次**，
-    //    而且它拿到的就是刚写出的那个路径 / 0 轨工程 / 0 轨投影。
+    //    而且它拿到的就是刚写出的那个路径 / 0 音轨 ＋ 1 主总线工程 / 0 音轨行投影。
     let after_now = after_readings.borrow().clone();
     assert_eq!(
         after_now,
-        vec![(final_path.to_string_lossy().into_owned(), 0, 0)],
+        vec![(final_path.to_string_lossy().into_owned(), 1, 0)],
         "⭐ 新建必须走 `OpenProjectRuntime::open_runtime`（`#93` 的换工程路径）—— \
-         `after` 应当恰好收到一次 (path=刚写出的文件, 0 轨工程, 0 轨投影)"
+         `after` 应当恰好收到一次 (path=刚写出的文件, 1 条轨[主总线], 0 条音轨行投影)"
     );
-    // ⑦ 引擎：0 轨工程没有主总线 ⇒ `EngineSnapshot` 的既有裁决是 `NoMasterBus`
-    //    （引擎面一个字没改）⇒ 换工程路径把引擎**清空**，⛔ 不让播放侧继续拿着旧快照。
+    // ⑦ 引擎：新工程**有主总线** ⇒ `EngineSnapshot::from_project` 的既有裁决是
+    //    "可用"（⛔ 不再 `NoMasterBus`）⇒ 换工程路径把引擎换到新快照（0 条音轨 ＋ 1 主总线），
+    //    且界面停在停止态。⛔ 不再清空引擎。
     {
         let engine = production.borrow().engine_handle();
         assert!(
-            !engine.borrow().has_engine(),
-            "0 轨工程不可能投影出快照（没有主总线）⇒ 播放侧必须明确变成『没有引擎』，\
-             而不是继续拿着上一份工程的快照"
+            engine.borrow().has_engine(),
+            "有主总线的新工程必须能投影出快照（`#161` 前是 `NoMasterBus` ⇒ 清空引擎）"
         );
-        assert!(
-            engine.borrow().current_snapshot().is_none(),
-            "清空之后不得残留旧工程的快照"
+        let snapshot = engine
+            .borrow()
+            .current_snapshot()
+            .expect("换代成功之后必须有当前快照");
+        assert_eq!(
+            snapshot.master(),
+            port.project().master_bus_track_id,
+            "快照的主总线必须是新工程的主总线"
         );
+        assert_eq!(snapshot.tracks().len(), 1, "快照里必须只有主总线那 1 条轨");
         assert!(!window.get_playing(), "新建之后界面必须停在停止态");
     }
     drop(tier1);

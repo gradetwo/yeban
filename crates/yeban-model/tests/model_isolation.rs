@@ -74,10 +74,20 @@ use yeban_model::{EntityId, PPQ, YebanProjectV1};
 ///
 /// 只要 `YebanProjectV1` 的序列化输出变了一个字节（加字段、改字段名、改顺序），
 /// 判据 ④ 立刻变红。
+///
+/// ⚠ `#161` 重钉（前 → 后 ＋ 原因）：
+/// - `project.default.json`：`6bd76fcb…30f0`（884 B 容器里的 0 轨／nil 主总线对象）
+///   → `20b20082…4172`；原因 = `samples::default_project()` 现在**自带一条主总线**
+///   （`tracks` 多一条 `Master`、`master_bus_track_id` 从 nil 变成
+///   `01J8ZQ00000000000000000001`、`routing_graph.nodes` 多一格）。这是**有意的**样本
+///   内容变化，不是序列化器漂移：`project.filled.json` 一位没动，递归键路径集合
+///   （223 条、`95f70eb8…`）也一位没动 —— 主总线复用了 `filled_project()` 的同一个
+///   `fixture_id(1)`，因此 union 里早已存在那些路径。
+/// - `project.filled.json`：不变。
 const FROZEN_PROJECT_JSON_SHA256: [(&str, &str); 2] = [
     (
         "project.default.json",
-        "6bd76fcba2ad050dad2f3d5d8e9b92399d23636a2d2fd79911f42f29f61430f0",
+        "20b2008210bb0dd0d509977af14a745b7f7e17f87b546741855a90276aa44172",
     ),
     (
         "project.filled.json",

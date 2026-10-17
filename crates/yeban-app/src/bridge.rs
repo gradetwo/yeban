@@ -1601,8 +1601,12 @@ impl NewTrackKind {
 /// 界面建轨失败时逐字写出的原因：工程里**没有主总线**。
 ///
 /// 模型的 `validate()` 要求"有音轨时 `master_bus_track_id` 必须指向一条 `Master` 轨"，
-/// 而 `Op` 全集**没有**写 `master_bus_track_id` 的变体 ⇒ 在 0 轨空工程（`new_project_archive`
-/// 的 `default_project()`）里建轨只会写出一份非法文档。这里**响亮拒绝**，⛔ 不写半份。
+/// 而 `Op` 全集**没有**写 `master_bus_track_id` 的变体 ⇒ 在**没有主总线**的工程里建轨只会
+/// 写出一份非法文档。这里**响亮拒绝**，⛔ 不写半份。
+///
+/// ⚠ `#161` 之后"新建工程"（`new_project_archive()` → `samples::default_project()`）
+/// **自带主总线** ⇒ 它不再触发这条拒绝。本常量仍然保留：`YebanProjectV1::default()`
+/// 这类 0 轨／nil 主总线的工程（以及将来任何造出 0-master 工程的路径）依旧是非法起点。
 pub const TRACK_CREATE_NO_MASTER_REASON: &str =
     "工程没有主总线，无法建轨（0 轨空工程请先打开一个带主总线的工程）";
 
@@ -1621,8 +1625,8 @@ pub fn track_create_available(project: &YebanProjectV1) -> bool {
 /// 轨 / 路由段里那一行主总线说明（**投影给界面看**，不是界面自己拼的）。
 ///
 /// - 有主总线 ⇒ `"主总线：{name}（不可删除）"`；
-/// - 没有主总线（0 轨空工程）⇒ [`TRACK_CREATE_NO_MASTER_REASON`]（同一行兼作
-///   建轨不可用的**逐字**原因）。
+/// - 没有主总线（`master_bus_track_id` 为 nil 或指向非 `Master` 轨）⇒
+///   [`TRACK_CREATE_NO_MASTER_REASON`]（同一行兼作建轨不可用的**逐字**原因）。
 #[must_use]
 pub fn master_bus_label(project: &YebanProjectV1) -> String {
     match project
@@ -3887,12 +3891,24 @@ mod tests {
         );
     }
 
-    /// 判据 3: **空工程不 panic**，且投影成空视图（轨道 / 剪辑 / 段落 / 场景全空）。
+    /// 判据 3: **0 音轨空工程不 panic**，且投影成"只有主总线"的视图
+    /// （音轨行 / 剪辑 / 段落 / 场景全空，`master` 有且只有一条）。
+    ///
+    /// `#161` 起 `default_project()` 出厂自带 1 条主总线 ⇒ `tracks`（音轨行）仍为空，
+    /// 但 `master` 是 `Some`。这正是"新建工程 → 加第一条轨"能走通的前提。
     #[test]
-    fn empty_project_projects_to_an_empty_view() {
+    fn empty_project_projects_to_a_master_only_view() {
         let view = ViewState::from_project(&default_project()).expect("空工程必须能投影");
         assert!(view.tracks.is_empty());
-        assert!(view.master.is_none());
+        let master = view
+            .master
+            .as_ref()
+            .expect("`#161` 起空工程必须投影出主总线");
+        assert!(master.is_master, "`master` 那一格必须标记为主总线");
+        assert_eq!(master.name, "Master");
+        assert_eq!(master.kind, "master");
+        assert_eq!(master.index, 0);
+        assert_eq!(master.row_height_px, 0, "主总线不占音轨行（没有行几何）");
         assert!(view.clips.is_empty());
         assert!(view.sections.is_empty());
         assert!(view.scenes.is_empty());
@@ -3903,7 +3919,12 @@ mod tests {
         assert_eq!(view.ppq, 960);
         assert_eq!(view.time_signature_display, "4/4");
         assert_eq!(view.bpm_display, "120.00");
-        assert_eq!(ViewState::empty().canonical_bytes(), view.canonical_bytes());
+        // 有主总线 ≠ 空视图：`ViewState::empty()` 连主总线都没有（那是另一种状态）。
+        assert_ne!(
+            ViewState::empty().canonical_bytes(),
+            view.canonical_bytes(),
+            "空工程（0 音轨 ＋ 1 主总线）不得退化成完全空的视图"
+        );
         // 标尺仍有 16 条（规范 §4.2 的最小可视密度）。
         assert_eq!(view.bar_positions.len(), MIN_BAR_COUNT);
         assert_eq!(view.bar_positions[0], 0.0);
