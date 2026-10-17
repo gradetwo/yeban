@@ -723,7 +723,7 @@ export component MainWindow inherits Window {
     //
     // 落点是宿主 `host::wire_new_project`：问一次**同一个** `FilePicker::choose_save`
     // ⇒ `host::create_new_project_file`（`samples::default_project()` ＋
-    // `save::save_archive_file`，与 CLI `--save-as` **同一条**写入口，884 B／0 轨）⇒
+    // `save::save_archive_file`，与 CLI `--save-as` **同一条**写入口，1136 B／0 音轨 ＋ 1 主总线）⇒
     // **打开工程那条**换工程路径（`OpenProjectRuntime::open_runtime`）。
     // ⛔ 界面不写盘、不猜路径、不判断成功与否；回执走**既有**的 `module-status` 通道。
     callback new-project();

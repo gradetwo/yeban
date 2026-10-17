@@ -136,7 +136,7 @@ export component MixerConsole inherits Rectangle {
     //
     // 本单补的是哪一格：上面那个 `#93` 的「打开工程」要磁盘上**已经**有一个 `.yeban`；
     // 用户从零开始时唯一的出路是 CLI `--project-sample empty --save-as <path>`（`#128`
-    // 实测 884 B／0 轨）。本回调就是 GUI 里"新建"那个按钮的**事件源**。
+    // 实测 1136 B／0 音轨 ＋ 1 主总线）。本回调就是 GUI 里"新建"那个按钮的**事件源**。
     //
     // 座位：与「打开工程」**同一个面板**、它**正下方**（`y: 56px`，同一宽度/高度）——
     // ⛔ 「打开工程」的 `x` / `y` / 宽 / 高**一位不动**（`#93` 的判据与几何不受影响），
@@ -145,7 +145,7 @@ export component MixerConsole inherits Rectangle {
     //
     // ⛔ 本回调**不**写盘、**不**弹窗、**不**判断成功与否、**不**猜路径：唯一落点是宿主
     // `host::wire_new_project`（问一次**可注入**的 `FilePicker::choose_save` ⇒
-    // `host::create_new_project_file` 落一个 884 B／0 轨容器 ⇒ 走**打开工程那条**
+    // `host::create_new_project_file` 落一个 1136 B／0 音轨 ＋ 1 主总线容器 ⇒ 走**打开工程那条**
     // 换工程路径 `OpenProjectRuntime::open_runtime`）。回执同样走 `module-status`。
     callback new-project();
 
