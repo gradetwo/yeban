@@ -1183,6 +1183,37 @@ impl ElementRegistry {
             &clip_reason_label,
             false,
         );
+        // ⭐ 任务单 `#164`：一键装乐器 —— 一格当前乐器读数 ＋ 不可用时的逐字原因 ＋
+        // 每个内置乐器一个按钮（按钮名来自投影的 `instrument_names`，与 `.slint` 的
+        // `for … in root.instrument-names` 同索引集）。
+        registry.add(
+            "instrument-label",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &view.instrument_label,
+            false,
+        );
+        let instrument_reason_label = if view.instrument_install_reason.is_empty() {
+            "装乐器可用（无不可用原因）".to_owned()
+        } else {
+            view.instrument_install_reason.clone()
+        };
+        registry.add(
+            "instrument-install-reason",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &instrument_reason_label,
+            false,
+        );
+        for (instrument_index, instrument_name) in view.instrument_names.iter().enumerate() {
+            registry.add(
+                &format!("instrument-install-{instrument_index}-button"),
+                ElementKind::Button,
+                "console/device_rack.slint",
+                &format!("装乐器 {instrument_name}"),
+                false,
+            );
+        }
         for row in &view.devices {
             let device_index = row.slot_index;
             registry.add(

@@ -59,7 +59,7 @@ use yeban_model::project::{
     ParameterValue, RoutingEdge, RoutingKind, SceneV3, SectionV3, TimeSignature, TrackKind,
     TrackV3, YebanProjectV1,
 };
-use yeban_model::{EntityId, Op};
+use yeban_model::{EntityId, Op, SamplerBinding};
 
 /// 960 PPQ 整数时钟（`[MODEL-AST-001]`）—— 从模型层再导出，避免两处各写一个字面量。
 pub use yeban_model::PPQ;
@@ -2008,6 +2008,109 @@ pub fn clip_create_ops(project: &YebanProjectV1) -> Result<Vec<Op>, &'static str
     ])
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#164`：给展示轨**一键装乐器**（`TrackV3::sampler` ⇒ `Op::SetTrackSampler`）
+// ---------------------------------------------------------------------------
+
+/// 界面能**一键装上**的一份 SFZ 乐器。
+///
+/// `path` 是仓库里**真实存在**的 SFZ 文本（相对仓库根，逐字写进 `TrackV3::sampler.path`）。
+/// ⚠ 模型把路径当**留痕字符串**：⛔ 不查存在性、⛔ 不规范化、⛔ 不解析
+/// （与 [`SamplerBinding`] 的字段文档同一口径）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuiltinInstrument {
+    /// 按钮上看得到的短名（⛔ 不是身份；身份仍是 [`TrackV3::sampler`] 的路径）。
+    pub name: &'static str,
+    /// 仓库内真实存在的 SFZ 路径（相对仓库根，逐字进模型）。
+    pub path: &'static str,
+}
+
+/// 界面一键可装的 SFZ 乐器（**只有这一份**清单）。
+///
+/// 两份都在 `assets/samples/karoryfer-cowsynth/` 下、都覆盖中央 C（60）⇒ 同一份工程
+/// 换一份乐器时事件网格不用改。⚠ 本清单⛔ 不包含"已解析乐器"：装载永远走
+/// `crate::sfz_load`（`#79`／`#80` 的同一条管线），本模块只写路径。
+pub const BUILTIN_INSTRUMENTS: [BuiltinInstrument; 2] = [
+    BuiltinInstrument {
+        name: "Shifty Pluck",
+        path: "assets/samples/karoryfer-cowsynth/cowsynth_shifty_pluck.sfz",
+    },
+    BuiltinInstrument {
+        name: "Lonely Organ",
+        path: "assets/samples/karoryfer-cowsynth/cowsynth_lonely_organ.sfz",
+    },
+];
+
+/// "装乐器"不可用时的**逐字**原因：工程里没有可显示的音轨（展示轨不存在）。
+pub const INSTRUMENT_INSTALL_NO_TRACK_REASON: &str = "没有可显示的音轨，无法装乐器";
+
+/// 第 `index` 份内置乐器（越界 ⇒ `None`，⛔ 不 panic、⛔ 不猜一份）。
+#[must_use]
+pub fn builtin_instrument(index: usize) -> Option<BuiltinInstrument> {
+    BUILTIN_INSTRUMENTS.get(index).copied()
+}
+
+/// 内置乐器的**显示名**（与 [`BUILTIN_INSTRUMENTS`] 同序、同长度）。
+#[must_use]
+pub fn instrument_names() -> Vec<String> {
+    BUILTIN_INSTRUMENTS
+        .iter()
+        .map(|instrument| instrument.name.to_owned())
+        .collect()
+}
+
+/// "装乐器"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
+///
+/// 唯一前置条件与投影**同一份**口径：存在展示轨（[`device_rack_track`]）。
+#[must_use]
+pub fn instrument_install_availability(project: &YebanProjectV1) -> (bool, String) {
+    let reason = if device_rack_track(project).is_some() {
+        ""
+    } else {
+        INSTRUMENT_INSTALL_NO_TRACK_REASON
+    };
+    (reason.is_empty(), reason.to_owned())
+}
+
+/// 展示轨当前乐器的**显示文本**：`"乐器：<sfz 路径>"` / `"未装乐器"`。
+///
+/// 路径**逐字**来自 `TrackV3::sampler.path`（⛔ 不取文件名、⛔ 不截断）—— 判据读到的
+/// 字符串与模型里的一模一样。
+#[must_use]
+pub fn instrument_label(track: Option<&TrackV3>) -> String {
+    match track.and_then(|track| track.sampler.as_ref()) {
+        Some(binding) => format!("乐器：{}", binding.path),
+        None => "未装乐器".to_owned(),
+    }
+}
+
+/// 给展示轨装一份 SFZ 乐器的**完整** `Op`（`Op::SetTrackSampler`）。
+///
+/// - `path` 原样写进 [`SamplerBinding::path`]（⛔ 本函数不读盘、不解析、不规范化）；
+/// - `old_sampler` **逐字**来自权威工程 ⇒ 陈旧载荷会被模型逐字节拒掉；
+/// - 值没变 ⇒ 返回**空 `Vec`**（宿主据此**不提交**，⛔ 不在撤销树上留一步空编辑）。
+///
+/// # Errors
+///
+/// 没有展示轨 ⇒ [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]。
+pub fn instrument_install_ops(
+    project: &YebanProjectV1,
+    path: &str,
+) -> Result<Vec<Op>, &'static str> {
+    let track = device_rack_track(project).ok_or(INSTRUMENT_INSTALL_NO_TRACK_REASON)?;
+    let new_sampler = Some(SamplerBinding {
+        path: path.to_owned(),
+    });
+    if track.sampler == new_sampler {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Op::SetTrackSampler {
+        track_id: track.id,
+        old_sampler: track.sampler.clone(),
+        new_sampler,
+    }])
+}
+
 /// 视图里的一个场景（`SceneV3`，Session View 的行）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneView {
@@ -2166,6 +2269,23 @@ pub struct ViewState {
     ///
     /// 取值来自 [`CLIP_CREATE_NO_TRACK_REASON`]。
     pub clip_create_reason: String,
+    /// ⭐ 任务单 `#164`：展示轨当前乐器的显示文本 —— `"乐器：<sfz 路径>"` / `"未装乐器"`。
+    ///
+    /// 路径逐字来自 `TrackV3::sampler.path`（[`instrument_label`] 是唯一格式化实现）。
+    pub instrument_label: String,
+    /// 界面一键可装的 SFZ 乐器**显示名**（与 [`BUILTIN_INSTRUMENTS`] 同序、同长度）。
+    ///
+    /// ⭐ 它是按钮行的唯一事实源；点第 `i` 个按钮只上报下标，路径由宿主从
+    /// [`builtin_instrument`] 求 —— ⛔ 界面不持有第二份路径表。
+    pub instrument_names: Vec<String>,
+    /// "装乐器"此刻能不能用（工程里得有一条展示轨）。
+    ///
+    /// `false` ⇒ 按钮禁用并逐字显示 [`Self::instrument_install_reason`]，⛔ 不静默。
+    pub instrument_install_available: bool,
+    /// "装乐器"不可用时**逐字**写出的原因（可用时是空串）。
+    ///
+    /// 取值来自 [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]。
+    pub instrument_install_reason: String,
     /// 当前展示轨（[`send_strip_track`]，与设备机架**同一条轨**）的 `SendToAux` 边逐条投影
     /// —— 发送条的**唯一**事实源。
     ///
@@ -2410,6 +2530,13 @@ impl ViewState {
         let (device_insert_available, device_insert_reason) = device_insert_availability(project);
         let (clip_create_available, clip_create_reason) = clip_create_availability(project);
 
+        // ⭐ 任务单 `#164`：一键装乐器的投影（与设备机架**同一条**展示轨）。
+        // 可用性 / 逐字原因与手势共用同一份口径；`instrument_names` 是按钮行的唯一清单。
+        let (instrument_install_available, instrument_install_reason) =
+            instrument_install_availability(project);
+        let instrument_label = instrument_label(device_rack_track(project));
+        let instrument_names = instrument_names();
+
         // 发送条（任务单 `#159`）：与设备机架**同一条**展示轨（[`send_strip_track`]）。
         // 条目逐条来自 `RoutingGraph::edges` 的 `SendToAux` 出边；目的地名字来自 `tracks`；
         // "新建发送"能不能用由 [`send_create_availability`] **唯一**决定（任务单 `#160`
@@ -2498,6 +2625,10 @@ impl ViewState {
             device_insert_reason,
             clip_create_available,
             clip_create_reason,
+            instrument_label,
+            instrument_names,
+            instrument_install_available,
+            instrument_install_reason,
             sends,
             send_create_available,
             send_create_reason,

@@ -186,6 +186,13 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_device_insert_reason(view.device_insert_reason.clone().into());
     ui.set_clip_create_available(view.clip_create_available);
     ui.set_clip_create_reason(view.clip_create_reason.clone().into());
+    // ⭐ 任务单 `#164`：一键装乐器的投影 —— 一个数组（按钮名）＋ 三个标量（当前乐器 /
+    // 可用性 / 逐字原因）。唯一事实源是 `ViewState` 的同名字段；⛔ 界面不持有第二份
+    // 路径表，手势只上报下标，路径由宿主从 `bridge::builtin_instrument` 求。
+    ui.set_instrument_names(strings(&view.instrument_names));
+    ui.set_instrument_label(view.instrument_label.clone().into());
+    ui.set_instrument_install_available(view.instrument_install_available);
+    ui.set_instrument_install_reason(view.instrument_install_reason.clone().into());
     // ⭐ 发送条（任务单 `#159`）：`ViewState::sends` 是**唯一**事实源。四个平行数组同
     // 索引集（边身份 / 目的地 / 增益文本 / 滑块值）；四个标量给值域与"新建发送"的可用性。
     // 值域**来自模型**（`bridge::send_gain_range` ⇒ `NOMINAL_GAIN_MIN_DB/MAX_DB`），
@@ -2171,6 +2178,52 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             if port.commit_ops(now_ms(), "remove device", ops).is_err() {
                 eprintln!("[yeban-app] 删设备被拒绝（工程未改）");
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+    // ---------------------------------------------------------------- ⑤ 装乐器（⭐ `#164`）
+    //
+    // 界面只上报**下标**（⛔ 不拼路径、⛔ 不写 Op）。宿主从 `bridge::builtin_instrument`
+    // 取那条**确定的**仓库内路径，再经 `bridge::instrument_install_ops` 用权威工程的
+    // `old_sampler` 构造一条 `Op::SetTrackSampler`；一次点击 = **恰好一次** `commit_ops`。
+    // 值没变 ⇒ `ops` 为空 ⇒ **不提交**（⛔ 不制造"什么也没改"的撤销步）。
+    ui.on_instrument_install({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(instrument) = usize::try_from(index)
+                .ok()
+                .and_then(crate::bridge::builtin_instrument)
+            else {
+                eprintln!("[yeban-app] 装乐器被拒绝：下标 {index} 不在内置乐器清单里");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 装乐器：权威会话此刻没有活跃工程");
+                return;
+            };
+            let ops = match crate::bridge::instrument_install_ops(&project, instrument.path) {
+                Ok(ops) => ops,
+                Err(reason) => {
+                    eprintln!("[yeban-app] 装乐器被拒绝：{reason}");
+                    refresh_undo_window(&ui, &port, true);
+                    return;
+                }
+            };
+            if ops.is_empty() {
+                // 已经是这份乐器：⛔ 不提交、⛔ 不重投影（工程一位没动）。
+                return;
+            }
+            if port
+                .commit_ops(now_ms(), "install instrument", ops)
+                .is_err()
+            {
+                eprintln!("[yeban-app] 装乐器被拒绝（工程未改）");
             }
             refresh_undo_window(&ui, &port, true);
         }

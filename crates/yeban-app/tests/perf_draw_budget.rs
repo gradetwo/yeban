@@ -190,7 +190,7 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 ///
 /// ⚠ 代价边界与 `#157` / `#159` 同款：消费者只在 Tab 3（默认帧 Tab 0 不实例化
 /// `device-rack`），`apply_view` 只在完整重投影上跑；⛔ 墙钟成本本机未测。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 43;
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 44;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -311,7 +311,25 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 43;
 /// * 每帧换模型实例的数组：**42 → 43**（只多 `device-ids`）；
 /// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
 ///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 70;
+///
+/// ## 70 → 74 的追加（任务单 `#164`，2026-10-18）
+///
+/// 那四格是**一键装乐器**（仍住 Tab 3 的 `DeviceRack` 面板，紧挨 `#163` 的三个按钮）的
+/// **唯一**注入点：
+///
+/// * `ui.set_instrument_names` —— 内置 SFZ 乐器的显示名数组（按钮行按它生成；
+///   同时把 `PER_FRAME_ARRAY_REWRITE_BUDGET` 从 43 推到 **44**）；
+/// * `ui.set_instrument_label` —— 当前乐器的逐字读数（`"乐器：<路径>"` / `"未装乐器"`）；
+/// * `ui.set_instrument_install_available` / `ui.set_instrument_install_reason` ——
+///   "装乐器"的可用性与不可用时的**逐字**原因（没有展示轨 ⇒ 禁用 ＋ 原因，⛔ 不静默）。
+///
+/// 数量侧的**本机实测**（判据逐字报 `从 70 变成了 74`）：
+///
+/// * 写入点：**70 → 74**（一个数组 ＋ 三个标量）；
+/// * 每帧换模型实例的数组：**43 → 44**（只多 `instrument-names`）；
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
+///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 74;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -366,6 +384,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("device-bypassed", get_device_bypassed);
     push!("device-recognised", get_device_recognised);
     push!("device-unrecognised", get_device_unrecognised);
+    // ⭐ 任务单 `#164`：内置乐器的按钮名数组也在 `apply_view` 的每帧路径上
+    // （⛔ 不是手势路径）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
+    push!("instrument-names", get_instrument_names);
     // ⭐ 任务单 `#159`：发送条（与设备链同住 Tab 3）的四个平行数组同样在 `apply_view`
     // 的每帧路径上（⛔ 不是手势路径）⇒ 必须计入这份清单，否则会漏数。
     push!("send-edge-ids", get_send_edge_ids);

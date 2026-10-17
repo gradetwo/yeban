@@ -91,6 +91,12 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> device-insert-reason: "";
     in property <bool> clip-create-available: false;
     in property <string> clip-create-reason: "";
+    // ⭐ 一键装乐器（任务单 `#164`）：当前乐器 ＋ 按钮名清单 ＋ 可用性 / 逐字原因。
+    // 同样只透传投影 —— 本组件不解释、⛔ 不持有第二份路径表。
+    in property <string> instrument-label: "未装乐器";
+    in property <[string]> instrument-names: [];
+    in property <bool> instrument-install-available: false;
+    in property <string> instrument-install-reason: "";
     // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
     // 与上面四格同一条透传纪律 —— 本组件不解释、不筛选、⛔ 不持有第二份列表 / 值域。
     in property <[string]> send-edge-ids: [];
@@ -156,6 +162,8 @@ export component ConsoleTabs inherits Rectangle {
     callback device-insert-reverb();
     callback device-remove(string);
     callback clip-create();
+    // ⭐ 一键装乐器（任务单 `#164`）：只上报内置清单下标，路径 / Op / 提交在宿主。
+    callback instrument-install(int);
     // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 的两个手势，本组件只把
     // `DeviceRack` 的回调**原样上抛**给 `MainWindow`（宿主侧唯一实现是
     // `host::wire_send_strip`）—— ⛔ 不解释、⛔ 不提交、⛔ 不改任何工程值。
@@ -443,6 +451,11 @@ export component ConsoleTabs inherits Rectangle {
         device-insert-reason: root.device-insert-reason;
         clip-create-available: root.clip-create-available;
         clip-create-reason: root.clip-create-reason;
+        // ⭐ 一键装乐器（任务单 `#164`）：只透传投影，本组件不解释。
+        instrument-label: root.instrument-label;
+        instrument-names: root.instrument-names;
+        instrument-install-available: root.instrument-install-available;
+        instrument-install-reason: root.instrument-install-reason;
         // ⭐ 发送条（任务单 `#159`）：同样只透传投影，本组件不解释。
         send-edge-ids: root.send-edge-ids;
         send-destination-names: root.send-destination-names;
@@ -483,6 +496,10 @@ export component ConsoleTabs inherits Rectangle {
         }
         clip-create() => {
             root.clip-create();
+        }
+        // ⭐ 一键装乐器（任务单 `#164`）：只上报下标，原样上抛。
+        instrument-install(index) => {
+            root.instrument-install(index);
         }
         // ⭐ 发送条（任务单 `#159`）的写入面：三个滑块携带**路由边身份**（不是行下标）。
         send-gain-grab(edge-id, fraction) => {
