@@ -376,6 +376,8 @@
 | `.worktrees/mod-engine` | `line/mod-engine` | 同上（**等规范**）|
 | `.worktrees/website` | `website` | ⚠ ⭐ **⛔ 不得删**（有未推提交）|
 | `.worktrees/mod-render` | `line/mod-render` | ⭐ **已并入**（`#143` 刀 1 探针）⇒ ⭐ **可拆**（⭐ 拆时按第 251 条删本行）|
+| `.worktrees/mod-migrate` | `line/mod-migrate` | ⭐ **临时树**（`#146` HD-64 迁移器；⭐ 并入后按第 302 条四件一起做）|
+| `.worktrees/mod-device` | `line/mod-device` | ⭐ **临时树**（`#147` backend_errors 查因；⭐ 并入后按第 302 条四件一起做）|
 
 ⚠ **worktree 的上游被普遍配成 `refs/heads/main`** ⇒ 裸 `git push` **默认会改主干** ⇒ ⭐ **一律写显式 refspec**（`command git push origin HEAD:main` 或 `origin <branch>:refs/heads/<branch>`）、**⛔ 永不用 `git push -u`**。
 ⚠ 删除前必验三条：`dirty=0` ＋ `unpushed=0` ＋ 已并入 `origin/main`。
