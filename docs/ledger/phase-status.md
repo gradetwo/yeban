@@ -13107,3 +13107,20 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **五、⭐ 我要立刻修的（⭐ 按代价/收益排）**: ⭐ ① ⭐ ⭐ **参数拼错必须报错**（⭐ 现在是静默失败 —— ⭐ 对 agent 最致命）；⭐ ② ⭐ ⭐ **`edit_notes` 的提案语义进 schema ＋ ⭐ 响应显式 `pendingMerge`**；⭐ ③ ⭐ **`render_master` 补 `clippedSamples`／⭐ `truePeakDbfs`**；⭐ ④ ⭐ **`outputSchema`（⭐ 至少 5 个主力工具）**；⭐ ⑤ ⭐ `clipId` 按 `kind` 条件必填；⭐ ⑥ ⭐ `list_proposals`（⭐ 或 `query_project.proposals[]`）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **上面六条** ＋ ⭐ **master 设备 UI 可编辑** ＋ ⭐ **宿主 libm 收口单** ＋ ⭐ **总线/边 PDC** ＋ ⭐ **人耳验收** ＋ ⭐ **矩阵腿 CI 判决读回** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ **样本字节**／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R876 实测追加（2026-10-18）：⭐ **`#175`（三个最致命的坑）落地 ＋ 快进合并**
+
+⭐ **合并**: ⭐ base `ad2612c4` ⇒ ⭐ `FINAL=c8188831`（⭐ 12 文件 ＋959／−16）⇒ ⭐ 主干 ff 合并 ✓ ⭐ **我独立复跑**：⭐ **`821 passed`／FAILED 0**（mcp）＋ ⭐ 守卫 **18** ＋ ⭐ 结构守卫 `[ok]` ✓ ⭐ 树已拆 ＋ `target` 已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 坑⑤ 的裁决（⭐ 交付线做得比我要求的更对）**: ⭐ ⭐ **距离 ≤ 2 ⇒ 硬拒 ＋ ⭐ 给最近邻建议**（⭐ `eq_low_gian` 距离 **2** ⇒ ⭐ 报错时报文逐字给 ⭐ `eq_low_gain`）★ ⭐ **距离更远的未知名 ⇒ ⭐ 照旧接受 ＋ ⭐ `warnings[]`**（⭐ ⛔ 仍不静默）✓
+⭐ ⚠ ⭐ ⭐ **为什么必须这样（⭐ 它给了三条硬理由）**: ⭐ ① ⭐ **`status:"success_with_warnings"`⭐ 做不了** —— ⭐ `schemas/**` 禁改、⭐ 而 ⭐ `ToolResponse.status` 已发布枚举只有 ⭐ `success|error` ⇒ ⭐ 改它 = **单方面撕毁 schema**；⭐ ② ⭐ ⭐ **"⭐ 未知就拒绝"⭐会打破 `#156` 的验收面** —— ⭐ `tests/effect_contract.rs` 刻意插 ⭐ `reverb_mix`（⭐ 引擎**不认但⛔ 不是拼错**）⭐ 并要求它进 `unrecognisedParams` ★ ⭐ 而 ⭐ `reverb_mix` 与 ⭐ `reverb_wet` 的距离 ＝ ⭐ **3** ⇒ ⭐ 阈值 2 下**不**触发拒绝 ⇒ ⭐ 那条判据逐字仍绿 ✓ ⭐ ③ ⭐ **只有"⭐ 够近"⭐时才能确定调用方想写谁** ✓
+
+⭐ ⚠ **二、⭐ 三条读数**: ⭐ ① ⭐ **`reverb_mix` 仍被接受**（⭐ `#156` 判据 6 passed）★ ⭐ ⭐ **58 拼写一个不少**（⭐ `recognised_names().len() = 58` ＝ **32＋26**）✓ ⭐ ② ⭐ **`pendingMerge:true` ＋ ⭐ `mergeTool`** 逐字入响应 ＋ ⭐ **描述那句话**（⭐ 判据用 `contains` 钉住）✓ ⭐ ③ ⭐ **削波可见**：⭐ 过载工程 ⭐ `clippedSamples = 91808`／⭐ `truePeakDbfs = 24.0`／⭐ `headroomDb = -24.0` ★ ⭐ 普通工程 ⭐ **`clippedSamples = 0`**／⭐ `truePeakDbfs = -2.076` ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 一处很讲究的细节**: ⭐ `truePeakDbfs` ⭐ 走 ⭐ `yeban-render::mastering::measure_master`（⭐ **16× 多相过采样**，⭐ `yeban-dsp` 的**唯一**实现）⇒ ⭐ ⛔ **MCP 不复制 DSP** ⇒ ⭐ 并 ⭐ **静音/测不出 ⇒ `null`**（⭐ ⛔ 不写假的 `0`）★ ⭐ 且 ⭐ 实测 ⭐ **192 kHz 下会如实返回 `null`**（⭐ K 加权只核验 44.1/48/88.2/96 kHz）✓
+
+⭐ ⚠ **四、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ ⭐ **只修了 3 个，⭐ `#174` 余下 **8 条**⭐ 逐条列出**（⭐ `list_proposals`／⭐ `outputSchema`／⭐ `clipId` 条件必填／⭐ 挑错轨＝静音／⭐ ID 随路径变／⭐ `fields` 无 `items`／⭐ `undoCursor` 口径／⭐ 跨进程 merge hint）✓ ⭐ ② ⭐ **`yeban-app` 未触及、⭐ 未跑**（⭐ CI 矩阵只在触及 app 时才跑 ⇒ ⭐ 预期，⛔ 不是漏跑）★ ⭐ ③ ⭐ payload 预算 ⭐ **+69 B**（⭐ 2747→2816／9456→9525／2708→2777）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **余下 8 个坑**（⭐ 优先 `list_proposals` ＋ ⭐ `outputSchema` ＋ ⭐ 挑错轨静音）＋ ⭐ **master 设备 UI 可编辑** ＋ ⭐ **宿主 libm 收口单** ＋ ⭐ **总线/边 PDC** ＋ ⭐ **矩阵腿 CI 判决读回** ＋ ⭐ **人耳验收** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ **样本字节**／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
