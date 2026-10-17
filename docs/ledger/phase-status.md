@@ -12873,3 +12873,16 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **另两处陈旧（⭐ 我的面）**: ⭐ ① ⭐ `ui/console/mixer_console.slint` 与 ⭐ `elements.rs` 的无障碍标签仍写 ⭐ `…写出 0 轨空容器…`（⭐ 与事实不符）；⭐ ② ⭐ `docs/ledger/model-session-state-notes.md:142` 仍写旧 SHA `6bd76fcb…` ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`yeban-render` 的 `mapped_tracks` 重钉**（⭐ 本条件裁）＋ ⭐ **无障碍文案 ＋ ⭐ 文档 SHA**（⭐ 我的面）＋ ⭐ **UI 设备装载 ＋ ⭐ 建 MIDI clip** ＋ ⭐ **master 插入链** ＋ ⭐ **总线 PDC** ＋ ⭐ **人耳验收** ＋ ⭐ **真实第三方 agent 试跑** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R864 实测追加（2026-10-18）：⭐ **`#162`（跨线重钉 ＋ 文案）已落地 ＋ 快进合并** ⇒ ⭐ **红清掉了**
+
+⭐ **合并**: ⭐ base `f4bf4ef3` ⇒ ⭐ `FINAL=2d76d114`（⭐ **4 文件 ＋5／−4**）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ 复合门 `全过 ✓`（⭐ **21 层**）／⭐ **`1112 passed`／FAILED 0**／⭐ 守卫 **18** ✓
+
+⭐ ⚠ **一、⭐ `mapped_tracks` 重钉（⭐ 三件套齐）**: ⭐ `0 → 1` ＋ ⭐ 原因注释 ⭐ `#161 起空样例含主总线 ⇒ .als 导出把它映射成 1 条 MasterTrack` ⇒ ⭐ ⚠ **同一条判据的其余断言逐条核过**：⭐ `xml == "Ableton"` ✓／⭐ `all(!bounced_to_audio)` ✓／⭐ `all(starts_with("project:"))` ✓（⭐ 主总线**不产损失**）／⭐ `!losses.is_empty()` ✓／⭐ **`mapped_clips == 0`** ✓／⭐ **`mapped_notes == 0`** ✓ ⇒ ⭐ **只有 `mapped_tracks` 一条变** ✓
+⭐ **文案三处同步**：⭐ `…写出 0 音轨 ＋ 1 主总线的空白容器…` ⇒ ⭐ ⭐ **`grep "0 轨空容器" crates/` ＝ 0** ✓ ⭐ 且 ⭐ `.slint` diff **只 1 行 `accessible-label:`**（⛔ 几何／⭐ id 未动）、⭐ `perf_draw_budget` 4 passed ✓
+
+⭐ ⚠ **二、⭐ 交付线如实列出的**残留陈旧注释**（⭐ 我的面，⭐ 待清）**: ⭐ `ui/app.slint:701`／⭐ `mixer_console.slint:139,148`／⭐ `console_tabs.slint:170`／⭐ `src/cli.rs:2510` ⭐ 仍写 ⭐ **`884 B／0 轨`**（⭐ 均为注释、⭐ 非无障碍标签）；⭐ 以及 ⭐ ⭐ **`docs/ledger/phase-status.md:12873`** 仍含旧串 ⭐ ⇒ ⭐ **下一轮我一次清完**（⭐ 第 302 条式收尾）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **陈旧注释／⭐ 文档旧串清理**（⭐ `884 B`／⭐ `0 轨` 共 6 处）＋ ⭐ **UI 设备装载 ＋ ⭐ 建 MIDI clip** ＋ ⭐ **master 插入链** ＋ ⭐ **总线 PDC** ＋ ⭐ **人耳验收** ＋ ⭐ **真实第三方 agent 试跑** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
