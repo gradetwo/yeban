@@ -12325,3 +12325,23 @@ cargo run -q -p yeban-app --locked -- --open ~/Desktop/my.yeban
 ⭐ ⚠ **四、⭐ 一条纪律的落地（⭐ 我自己的）**: ⭐ ⭐ **从本轮起：⭐ 每推一条**代码**提交 ⇒ ⭐ 先等它的 `windows` 腿判决、⭐ 绿了才开下一条**（⭐ 文档提交不受此限，⭐ 它们是空绿）⇒ ⚠ 因为 ⭐ 本机 macOS **永远**抓不到平台专属缺陷（⭐ R832 的教训）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`b95dbdf0`（⭐ 文档）的判决**（⭐ 应空绿）＋ ⭐ **重采样**（⭐ 44.1k 工程整条跳过 —— ⭐ 下一票）＋ ⭐ **CLI `--midi-in-render` 3 行接线** ＋ ⭐ **`project.assets` 元数据** ＋ ⭐ **L1 状态文本** ＋ ⭐ **`HD-64` 最小迁移器** ＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ Info.plist／⭐ BlackHole 直连／⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R835 实测追加（2026-10-17）：⭐⭐ **人类把输入输出都设成 BlackHole 后，第三次测 ⭐ `3.3520 ms`**（⭐ 三次一致 ⇒ 稳定）
+
+⭐ ⚠ **一、⭐ 读数（⭐ 我跑的，⭐ 命令逐字）**: ⭐ `cargo run -q --release -p yeban-engine --locked --features device --example measure_latency -- --loopback --label blackhole --frames 64 --seconds 2 --sample-rate 48000` ⇒
+| 项 | ⭐ 值 |
+| :--- | :--- |
+| ⭐ `verdict` | ⭐ ⭐ **`within-target`** |
+| ⭐ `measured_roundtrip_ms` | ⭐ ⭐ **3.3520**（⭐ 门限 5.5） |
+| ⭐ 回环证据 | ⭐ `chirp detected (delay_frames=12128 peak_ncc=`**`1.0000`**` peak_ratio=`**`6412.90`**`)` |
+| 标称／驱动侧 | ⭐ `nominal_out/in=1.3333`／⭐`driver_out/in_latency_p50=1.3333` |
+| 抖动 | ⭐ `jitter_out_max=0.0000`／⭐`jitter_in_max=2.6667` |
+| ⚠ 后端错误 | ⭐ ⭐ `backend_errors_out=`**`1`**、⭐`backend_errors_in=`**`1`** |
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 三次一致（⭐ 稳定性证据）**: ⭐ **`3.3336`（⭐ 10:50）／⭐ `3.3292`（⭐ 11:16）／⭐ `3.3520`（⭐ 本次）** ⇒ ⭐ **极差 0.023 ms**、⭐ 全部 `within-target` ⇒ ⭐ ⭐ **第 6 项结论稳固**（⭐ 虚拟回环**下限** 3.33–3.35 ms；⭐ ⛔ 不等于声学往返，⭐ 后者仍需物理回环线）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ `backend_errors` 现在**三次全现**（⭐ 各方向各 1）**: ⭐ `1／1`、⭐ `1／1`、⭐ `1／1` ⇒ ⭐ ⭐ **确认可复现**、⭐ ⛔ 不是偶发 ⇒ ⭐ **单开一票查成因**（⭐ 现象：⭐ 首块或某一次回调报错、⭐ 但读数与回环检出都正常）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`backend_errors=1` 三次可复现 ⇒ 查成因** ＋ ⭐ **`#138`（重采样）交单** ＋ ⭐ **`b95dbdf0`／`82dd464f` 判决** ＋ ⭐ **CLI `--midi-in-render` 3 行接线** ＋ ⭐ **`project.assets` 元数据** ＋ ⭐ **L1 状态文本** ＋ ⭐ **`HD-64` 最小迁移器** ＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ Info.plist（⭐ 麦克风用途说明）／⭐ `HD-48`（⭐ 装依赖）／⭐ `HD-52`（⭐ Logic 素材）／⭐ 真 MIDI／⭐ **物理回环线**（⭐ 声学往返）✓
