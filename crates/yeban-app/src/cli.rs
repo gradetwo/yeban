@@ -174,6 +174,20 @@ pub const LOGIC_EXPORT_SWITCH: &str = "--export-logic";
 /// `scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES` 成员。
 pub const LOGIC_EXPORT_FEATURE: &str = "experimental-logic-export";
 
+/// `--inspect-logic` 的字面值（Logic Pro `.logicx` bundle 的**只读探针**，`#143`）。
+///
+/// ⚠ 它**不是导入器**：不写工程、不写 demo、不产出 `.yeban` 文档。它只在
+/// [`LOGIC_INSPECT_FEATURE`] 打开的构建里存在；默认构建给它 = 一次点名 feature 的
+/// 用法错误（[`ParseError::InspectLogicNotCompiled`]）。
+pub const LOGIC_INSPECT_SWITCH: &str = "--inspect-logic";
+
+/// 让 `--inspect-logic` 真的可执行的那个**非默认** feature 名。
+///
+/// 与 [`LOGIC_EXPORT_FEATURE`] 同族：默认构建里 `yeban-render` 的 `logic_read`
+/// 模块不存在，用法错误必须**点名**它。⚠ 集成者待办：它也要进
+/// `scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES`。
+pub const LOGIC_INSPECT_FEATURE: &str = "experimental-logic-import";
+
 /// `--theme` 的字面值（运行期调色板切换的**唯一**用户出口）。
 pub const THEME_SWITCH: &str = "--theme";
 
@@ -324,6 +338,15 @@ pub fn usage_text() -> String {
                              (账本第 403、405 轮), 结论不覆盖其它 Logic 版本与其它机器; **只在**
                              `--features {logic_feature}` 的构建里存在 —— 默认构建给这个开关
                              = 用法错误 (退出码 {usage})
+  {logic_inspect_switch} <dir>
+                            Logic Pro demo bundle 的**只读探针** (⛔ **不是导入器**) [ARCH-FMT-002]
+                             / #143: 扫 <dir> 下的 Apple demo (`*.logicx` 目录), 逐台打印
+                             MetaData 七键 / 轨道 / 区域 (**过滤前后两个读数都给**) / 音符 / AuRg,
+                             最后一行是合计; 目录不存在 ⇒ 打印\"无 demo、跳过\"并退出 {ok}
+                             (CI/其它机器不受影响); 目录存在但解析失败 ⇒ 失败 (退出码 {open})
+                             —— ⛔ **不**静默跳过; ⛔ 不写 demo、不写工程、不产出可导入文档
+                             (Apple 演示工程有版权); **只在** `--features {logic_import_feature}`
+                             的构建里存在 —— 默认构建给这个开关 = 用法错误 (退出码 {usage})
   --print-shortcuts        打印快捷键策略表在本版本的判定结果 [UI-A11Y-001/002]
   --theme <{themes}>
                            选择界面主题; 重复给以最后一个为准 (默认 default = yeban 调色板)
@@ -482,7 +505,9 @@ pub fn usage_text() -> String {
       --enable-mcp-http 与无窗口开关同给或本次构建未编译 `in-process-mcp` /
       {ui_mcp_switch} 与不该组合的开关同给或本次构建未编译 `{ui_mcp_feature}` /
       --export-als 在本次构建未编译 `{als_feature}` /
-      --export-logic 在本次构建未编译 `{logic_feature}`)
+      --export-logic 在本次构建未编译 `{logic_feature}` /
+      {logic_inspect_switch} 在本次构建未编译 `{logic_import_feature}`,
+      或与其它参数组合 (它是独立只读探针))
   {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
   {open} --import-audio 失败 (读文件 / 超过 64 MiB 单文件上限 / 非 PCM-float WAV / 提交被拒)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
@@ -520,6 +545,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-wav song.wav
   yeban-app --open song.yeban --export-wav shaped.wav --wav-bit-depth 16 --wav-sample-rate 44100 --wav-seconds 4
   yeban-app --open song.yeban --export-logic out/Song.logicx
+  yeban-app --inspect-logic \"/Library/Application Support/Logic/Logic Pro X Demosongs\"
   yeban-app --print-theme
   yeban-app --theme material
   yeban-app --theme default
@@ -538,6 +564,8 @@ pub fn usage_text() -> String {
         mcp_switch = MCP_HTTP_SWITCH,
         als_feature = ALS_EXPORT_FEATURE,
         logic_feature = LOGIC_EXPORT_FEATURE,
+        logic_inspect_switch = LOGIC_INSPECT_SWITCH,
+        logic_import_feature = LOGIC_INSPECT_FEATURE,
         print_theme = PRINT_THEME_SWITCH,
         slint_style_env = SLINT_STYLE_ENV,
         theme_switch = THEME_SWITCH,
@@ -1457,6 +1485,18 @@ pub enum ParseError {
     /// 不存在，用户要的是一个 `.logicx` bundle 而二进制里根本没有那个出口 ——
     /// 那必须是一次**点名 feature 的**用法错误。
     LogicNotCompiled,
+    /// 给了 `--inspect-logic`，但这次构建**没有**编译 [`LOGIC_INSPECT_FEATURE`]（`#143`）。
+    ///
+    /// 与 [`Self::LogicNotCompiled`] 同一条纪律：默认构建里 `yeban-render` 的
+    /// `logic_read` 模块不存在，用户要读的是 demo 字节而二进制里根本没有那个读取器 ——
+    /// 那必须是一次**点名 feature 的**用法错误（退出码 [`EXIT_USAGE`]），⛔ 不静默忽略。
+    InspectLogicNotCompiled,
+    /// `--inspect-logic` 与别的参数组合了（`#143`）。
+    ///
+    /// 它是**独立的只读探针**：不需要工程，也不执行任何其它动作。接受组合只会把
+    /// 被组合的那个开关**静默丢掉**（例如 `--save-as` 什么都没保存却退出 0）——
+    /// 那正是本仓库最忌讳的假绿。payload 是第一个多余的参数。
+    InspectLogicConflict(String),
     /// `--wav-bit-depth` 的取值不是 `16` / `24` / `32f`。
     ///
     /// ⛔ 不接受 `32`：本仓只有 32-bit **浮点**一种 32 位容器，而 `32` 这个写法在
@@ -1559,6 +1599,17 @@ impl fmt::Display for ParseError {
                 "`{LOGIC_EXPORT_SWITCH}` 需要本次构建带 `--features {LOGIC_EXPORT_FEATURE}` \
                  (实验性 .logicx 导出默认关: AGENTS.md §2 红线 6 与 [MUST-GATE-009] 同一条纪律; \
                  它就是 [ARCH-FMT-002] / [ROAD-M4-007] 那条导出的唯一用户出口)"
+            ),
+            Self::InspectLogicNotCompiled => write!(
+                formatter,
+                "`{LOGIC_INSPECT_SWITCH}` 需要本次构建带 `--features {LOGIC_INSPECT_FEATURE}` \
+                 (只读探针默认关: AGENTS.md §2 红线 6 同一条纪律; ⚠ 它**不是导入器** —— \
+                 不写工程、不写 demo、不产出可导入文档, 只打印 demo 的实测读数)"
+            ),
+            Self::InspectLogicConflict(other) => write!(
+                formatter,
+                "`{LOGIC_INSPECT_SWITCH}` 是独立的只读探针, 不能与 `{other}` 组合 —— \
+                 接受它只会把 `{other}` 静默丢掉"
             ),
             Self::WavBitDepthInvalid(value) => write!(
                 formatter,
@@ -1964,6 +2015,72 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
     Ok(options)
 }
 
+/// 解析**独立**的 `--inspect-logic <dir>`（`#143`）。
+///
+/// 返回：
+/// - `None`：argv 里没有这个开关（照常走 [`parse`]）；
+/// - `Some(Err(_))`：开关在但用法不对 / 本次构建没有编译它；
+/// - `Some(Ok(dir))`：可以执行只读探针。
+///
+/// 为什么独立于 [`Options`]：探针不需要工程，也不执行任何其它动作。它**只接受**
+/// 这一个开关（连同它的取值）—— 与别的参数组合 = 用法错误，⛔ 不静默丢掉它们
+/// （否则 `--inspect-logic ... --save-as x` 会"成功"却什么都没保存）。
+/// `--help` / `--version` 是短路命令：出现时返回 `None`，让 [`parse`] 按既有契约先打印。
+#[must_use]
+pub fn parse_inspect_logic(args: &[String]) -> Option<Result<PathBuf, ParseError>> {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+    {
+        return None;
+    }
+
+    let mut consumed: Vec<usize> = Vec::new();
+    let mut target: Option<PathBuf> = None;
+    for (index, argument) in args.iter().enumerate() {
+        let inline = argument
+            .strip_prefix(LOGIC_INSPECT_SWITCH)
+            .and_then(|rest| rest.strip_prefix('='));
+        if argument != LOGIC_INSPECT_SWITCH && inline.is_none() {
+            continue;
+        }
+        if !consumed.is_empty() {
+            return Some(Err(ParseError::DuplicateOption(LOGIC_INSPECT_SWITCH)));
+        }
+        consumed.push(index);
+        match inline {
+            Some(value) if !value.is_empty() => target = Some(PathBuf::from(value)),
+            Some(_) => return Some(Err(ParseError::MissingValue(LOGIC_INSPECT_SWITCH))),
+            None => match args.get(index + 1) {
+                Some(value) if !value.starts_with('-') => {
+                    target = Some(PathBuf::from(value));
+                    consumed.push(index + 1);
+                }
+                _ => return Some(Err(ParseError::MissingValue(LOGIC_INSPECT_SWITCH))),
+            },
+        }
+    }
+
+    if consumed.is_empty() {
+        return None;
+    }
+    if let Some(extra) = args
+        .iter()
+        .enumerate()
+        .find(|(index, _)| !consumed.contains(index))
+        .map(|(_, argument)| argument.clone())
+    {
+        return Some(Err(ParseError::InspectLogicConflict(extra)));
+    }
+    let Some(dir) = target else {
+        return Some(Err(ParseError::MissingValue(LOGIC_INSPECT_SWITCH)));
+    };
+    if !cfg!(feature = "experimental-logic-import") {
+        return Some(Err(ParseError::InspectLogicNotCompiled));
+    }
+    Some(Ok(dir))
+}
+
 /// `--idle-seconds` 的取值：`1..=`[`MAX_IDLE_SECONDS`] 的**整数**秒。
 ///
 /// 明确拒绝小数（`1.5`）：空闲时长的判据是"两次读数是否相等"，秒级整数足够，
@@ -2242,6 +2359,16 @@ pub enum CliError {
         /// 导出层的原样裁决。
         source: LogicExportError,
     },
+    /// `--inspect-logic` 失败（读目录 / 读 demo / 解析 demo，`#143`）。
+    ///
+    /// 只读探针的失败只有一种语义：**读不动或读不懂**。目录不存在是 **skip**
+    /// （由 `run_inspect_logic` 正常返回一行"无 demo、跳过"），⛔ 不走这一档。
+    InspectLogic {
+        /// 被扫的 demo 目录。
+        path: PathBuf,
+        /// 读取/解析层的原样文案。
+        source: String,
+    },
     /// `--export-als` 被送进了**没有**编译 `experimental-als-export` 的 [`run_batch`]。
     ///
     /// 防假绿的第二道（第一道在 `parse()`）：那段导出代码在默认构建里根本不存在，
@@ -2286,6 +2413,7 @@ impl CliError {
             | Self::McpHttpNotBatch => EXIT_UI,
             Self::AlsNotCompiled => EXIT_USAGE,
             Self::LogicNotCompiled => EXIT_USAGE,
+            Self::InspectLogic { .. } => EXIT_OPEN,
             Self::Open { .. }
             | Self::ImportMidi { .. }
             | Self::ImportAudio { .. }
@@ -2367,6 +2495,13 @@ impl fmt::Display for CliError {
                     path.display()
                 )
             }
+            Self::InspectLogic { path, source } => {
+                write!(
+                    formatter,
+                    "只读扫描 demo 目录 `{}` 失败: {source}",
+                    path.display()
+                )
+            }
             Self::AlsNotCompiled => write!(
                 formatter,
                 "`{ALS_EXPORT_SWITCH}` 需要本次构建带 `--features {ALS_EXPORT_FEATURE}` \
@@ -2419,7 +2554,8 @@ impl std::error::Error for CliError {
             | Self::UiMcpHttpNotBatch
             | Self::McpHttpNotBatch
             | Self::AlsNotCompiled
-            | Self::LogicNotCompiled => None,
+            | Self::LogicNotCompiled
+            | Self::InspectLogic { .. } => None,
         }
     }
 }
@@ -3135,6 +3271,43 @@ pub fn theme_lines(theme: Theme) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
+/// `--inspect-logic <dir>` 的执行（`#143`）：**只读**，不装载工程、不写任何文件。
+///
+/// 输出契约（与判据共用，见 `yeban-render` 的 `tests/logic_inspect.rs`）：
+/// * 每台 demo 一行 [`LogicInspection::report_line`]（`logic-demo:` 前缀）；
+/// * 最后一行 [`LogicTotals::report_line`]（`logic-total:` 前缀）；
+/// * 目录不存在 ⇒ **只**返回一行 `logic-inspect: 无 demo（… 不存在），跳过（0 台）`
+///   并成功退出（路径门控：CI/其它机器没有 Apple demo 时 ⛔ 不变红）；
+/// * 目录在但解析失败 ⇒ `Err(CliError::InspectLogic)`（退出码 [`EXIT_OPEN`]）——
+///   ⛔ 不静默跳过。
+///
+/// # Errors
+///
+/// [`CliError::InspectLogic`]：目录存在但读不动、没有 `.logicx`、或任意一台解析失败。
+///
+/// ⚠ 本函数只在 `experimental-logic-import` 下编译：默认构建里
+/// `yeban_render::logic_read` 根本不存在。
+#[cfg(feature = "experimental-logic-import")]
+pub fn run_inspect_logic(dir: &std::path::Path) -> Result<Vec<String>, CliError> {
+    let inspections =
+        yeban_render::logic_read::inspect_demos(dir).map_err(|source| CliError::InspectLogic {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+    let Some(inspections) = inspections else {
+        return Ok(vec![format!(
+            "logic-inspect: 无 demo（{} 不存在），跳过（0 台）",
+            dir.display()
+        )]);
+    };
+    let mut lines: Vec<String> = inspections
+        .iter()
+        .map(yeban_render::logic_read::LogicInspection::report_line)
+        .collect();
+    lines.push(yeban_render::logic_read::LogicTotals::of(&inspections).report_line());
+    Ok(lines)
+}
+
 /// 无窗口路径的执行：返回**它应当打印的每一行**（打印由 [`emit`] / [`finish`] 做）。
 ///
 /// 顺序是契约的一部分：
@@ -5558,6 +5731,91 @@ mod tests {
             tail.contains("yeban-loss"),
             "截断行必须指出完整表在哪: {tail}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 50: --inspect-logic 是**独立只读探针** (#143)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_inspect_logic_probe_is_standalone_and_opt_in() {
+        let args = |raw: &[&str]| {
+            raw.iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // ① 字面值与 feature 名是**契约**。
+        assert_eq!(LOGIC_INSPECT_SWITCH, "--inspect-logic");
+        assert_eq!(LOGIC_INSPECT_FEATURE, "experimental-logic-import");
+
+        // ② 没有这个开关 ⇒ None（照常走 `parse`，⛔ 不影响既有命令行）。
+        assert_eq!(parse_inspect_logic(&args(&["--headless"])), None);
+
+        // ③ 编译期那道开关：默认构建里给了它 = 点名 feature 的用法错误。
+        let expected = if cfg!(feature = "experimental-logic-import") {
+            Some(Ok(PathBuf::from("/tmp/demos")))
+        } else {
+            Some(Err(ParseError::InspectLogicNotCompiled))
+        };
+        assert_eq!(
+            parse_inspect_logic(&args(&["--inspect-logic", "/tmp/demos"])),
+            expected
+        );
+        if cfg!(feature = "experimental-logic-import") {
+            assert_eq!(
+                parse_inspect_logic(&args(&["--inspect-logic=/tmp/demos"])),
+                Some(Ok(PathBuf::from("/tmp/demos"))),
+                "内联取值必须被接受"
+            );
+        } else {
+            let error = expected.expect("Some").expect_err("默认构建必须拒");
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            let text = error.to_string();
+            assert!(text.contains(LOGIC_INSPECT_SWITCH), "必须点名开关: {text}");
+            assert!(
+                text.contains(LOGIC_INSPECT_FEATURE),
+                "必须点名 feature: {text}"
+            );
+        }
+
+        // ④ 缺取值 / 重复 / 与别的参数组合 = 用法错误（⛔ 不静默忽略）。
+        assert_eq!(
+            parse_inspect_logic(&args(&["--inspect-logic"])),
+            Some(Err(ParseError::MissingValue(LOGIC_INSPECT_SWITCH)))
+        );
+        assert_eq!(
+            parse_inspect_logic(&args(&["--inspect-logic", "--headless"])),
+            Some(Err(ParseError::MissingValue(LOGIC_INSPECT_SWITCH))),
+            "下一个 token 是开关 ⇒ 缺取值（⛔ 不把它当路径）"
+        );
+        assert_eq!(
+            parse_inspect_logic(&args(&["--inspect-logic=a", "--inspect-logic=b"])),
+            Some(Err(ParseError::DuplicateOption(LOGIC_INSPECT_SWITCH)))
+        );
+        assert_eq!(
+            parse_inspect_logic(&args(&[
+                "--inspect-logic",
+                "/tmp/demos",
+                "--save-as",
+                "x.yeban"
+            ])),
+            Some(Err(ParseError::InspectLogicConflict(
+                "--save-as".to_owned()
+            ))),
+            "组合会把 --save-as 静默丢掉"
+        );
+
+        // ⑤ `--help` 短路：交给 `parse`，帮助永远打得开。
+        assert_eq!(
+            parse_inspect_logic(&args(&["--help", "--inspect-logic", "x"])),
+            None
+        );
+
+        // ⑥ 用法文本必须点名开关与 feature。
+        let usage = usage_text();
+        assert!(usage.contains(LOGIC_INSPECT_SWITCH), "用法文本缺开关");
+        assert!(usage.contains(LOGIC_INSPECT_FEATURE), "用法文本缺 feature");
     }
 
     // ------------------------------------------------------------------

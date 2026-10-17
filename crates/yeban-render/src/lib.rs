@@ -123,8 +123,21 @@ pub mod als;
 // **只在非默认 feature `experimental-logic-export` 下存在**（AGENTS.md §2 红线 6）。
 // 与 `als` 不同, 本 feature **没有可选依赖**（bplist00 编码器是本 crate 自研的）,
 // 因此默认构建与带 feature 构建的 `cargo tree -p yeban-app -e normal --locked` 逐包相同。
-#[cfg(feature = "experimental-logic-export")]
+//
+// ⚠ `experimental-logic-import`（只读探针, #143）**也**需要编译本模块：它复用
+// [`logic::decode_note_lines`] 与记录头/标记常量，⛔ 不复制第二份音符事件行模型。
+// 两个 feature 都**不是默认**，默认构建里本模块仍然一位不存在。
+#[cfg(any(
+    feature = "experimental-logic-export",
+    feature = "experimental-logic-import"
+))]
 pub mod logic;
+// 实验性 Logic Pro (`.logicx`) bundle 的**只读探针** [ARCH-FMT-002] / #143：
+// 只在非默认 feature `experimental-logic-import` 下存在。它读 Apple 演示工程的
+// `ProjectInformation.plist` / `MetaData.plist` / `ProjectData` 并数出实测读数，
+// **不写**工程、demo 或任何文件。见模块头对它**不是导入器**的边界声明。
+#[cfg(feature = "experimental-logic-import")]
+pub mod logic_read;
 
 #[cfg(test)]
 mod contract_tests {

@@ -30,6 +30,19 @@ experimental-als-export = ["dep:flate2"]
 # 因此默认构建与带本 feature 的构建，**依赖图逐包相同**（`cargo tree -p yeban-app -e normal --locked`）。
 experimental-logic-export = []
 
+# 实验性 Logic Pro (`.logicx`) bundle **只读探针** [ARCH-FMT-002] / #143。
+#
+# **默认关**（AGENTS.md §2 红线 6，与上面两个实验性导出 feature 同款）：
+# `default` 保持为空，`logic_read` 模块只在显式
+# `--features experimental-logic-import` 下才存在。⚠ 它**不是导入器**：不写工程、
+# 不写 demo、不产出任何可导入的 `.yeban` 文档；它只把 Apple 演示工程的
+# 实测读数（MetaData 七键 / 轨道 / 区域 / 音符 / `AuRg`）打成可复跑的判据。
+#
+# 本 feature **没有可选依赖**，因此默认构建与带本 feature 的构建，**依赖图逐包相同**。
+# ⚠ 集成者待办：`scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES`
+# 需要加上这个名字（`scripts/**` 不归本工作线改，见 #143 的报告）。
+experimental-logic-import = []
+
 [dependencies]
 # SMF 编解码（下移出的独立 crate; 本行只为保持 `yeban_render::midi::*` 可用）。
 yeban-midi = { path = "../yeban-midi" }

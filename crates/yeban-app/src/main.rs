@@ -95,6 +95,38 @@ const HEARTBEAT_PERIOD_MS: u64 = 16;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    // `--inspect-logic <dir>`（#143）是**独立**的只读探针：它不需要工程、不进 GUI、
+    // 也不与任何其它开关组合（组合 = 用法错误，⛔ 不静默丢掉别的开关）。
+    // 因此它在 `cli::parse` **之前**分流 —— `Options` 里没有它的字段，也不该有。
+    // 默认构建里 `parse_inspect_logic` 会把"开关在但没编译"变成一次点名 feature 的
+    // 用法错误（退出码 2）；带 feature 时 `run_inspect_logic` 只打印 demo 读数。
+    if let Some(request) = cli::parse_inspect_logic(&args) {
+        return match request {
+            Ok(dir) => {
+                #[cfg(feature = "experimental-logic-import")]
+                {
+                    cli::finish(cli::run_inspect_logic(&dir))
+                }
+                #[cfg(not(feature = "experimental-logic-import"))]
+                {
+                    // 不可达（默认构建的 `parse_inspect_logic` 已返回
+                    // `InspectLogicNotCompiled`）；保留响亮的兜底而不是静默成功。
+                    let _ = dir;
+                    eprintln!(
+                        "yeban-app: `{}` 需要本次构建带 `--features {}`",
+                        cli::LOGIC_INSPECT_SWITCH,
+                        cli::LOGIC_INSPECT_FEATURE
+                    );
+                    ExitCode::from(cli::EXIT_USAGE)
+                }
+            }
+            Err(error) => {
+                eprintln!("yeban-app: {error}\n\n{}", cli::usage_text());
+                ExitCode::from(error.exit_code())
+            }
+        };
+    }
+
     let mut options = match cli::parse(&args) {
         Ok(options) => options,
         Err(error) => {
