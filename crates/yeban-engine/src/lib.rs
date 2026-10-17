@@ -23,6 +23,7 @@
 //! | [`sfz_instrument`] | **每轨 SFZ 音源**：`yeban-sfz` 的摊平表（`PreparedSfz`：区域位掩码 + 预计算速率/增益 + **去重的多采样样本表** ＋ `span` 起点/终点）＋ 定长声部池 `SfzVoicePool`；快照侧只读 `SfzPlan`、分派次序 **鼓机 ＞ SFZ ＞ 复音**；模型给**路径**（`TrackV3.sampler`）⇒ 快照携带"待摊平"项 `PendingSfz`，摊平仍全在**控制侧**（⛔ 引擎不读盘）后经 `EngineSnapshot::with_sfz` ＋ `SfzPlan::prepare_with_samples` 注入；⭐ 循环（`loop_mode`／`loop_start`／`loop_end`）**已实现**（任务 `#91`，判据 `S28`～`S33`）、⭐ 幅度包络（五个 `ampeg_*`）**已实现**（任务 `#92`，判据 `S34`～`S38`），详见 [`sfz_instrument`] 模块文档 | [ARCH-RT-001]、[ROAD-M2-005]、[MUST-GATE-001] |
 //! | [`audio_clip`] | ⭐ **每轨音频片段**（`ClipContent::Audio`，任务单 `#135`）：`from_project` 把摆放投影成**绝对帧区间 ＋ 增益 ＋ 素材哈希**，PCM 由控制侧解码后经 `EngineSnapshot::with_audio_asset` 以 `Arc<[f32]>` 注入 ⇒ 实时回调零分配/零 I/O；⛔ 无逐样本游标（位置由走带绝对帧导出）⇒ `EngineRuntime` **＋0 B** | [ARCH-RT-001]、[ARCH-DET-002]、[MUST-GATE-001] |
 //! | [`ring`] | UI/模型 → 音频线程的批量无锁 SPSC 事件通道 | [ARCH-RT-001]、[ROAD-M2-007] |
+//! | [`routing`] | ⭐ **实时路由计划**（任务单 `#154`）：`RoutingGraph` 的边 → 每个可渲染节点的去向与线性增益；没有音频出边 ⇒ 直连 master（接线前行为） | [MODEL-AST-004]、[ARCH-RT-001] |
 //! | [`cc_state`] | **MIDI CC 的会话运行态表**（定长 `[u8; 128]` ＋ 128 位"收到过"位图）：`EngineEvent::ControlChange` 的落点，实时 SFZ 通路的 CC 探针来源 | [ARCH-RT-001]、[MODEL-ISO-001] |
 //! | [`param`] | **实时侧参数目标表**：`SetParam` 事件 → 逐样本**平滑**的增益乘子（逐轨槽位 ＋ **主总线**槽位；`yeban_dsp::smoothing` 的消费者） | [ARCH-DSP-001]、[ARCH-RT-001]、[ROAD-M2-007] |
 //! | [`snapshot`] | 不可变 `EngineSnapshot`、原子交换槽、退役回收队列 | [ARCH-RT-002]、[ROAD-M2-002] |
@@ -45,7 +46,7 @@
 //! | `device` | ✅ | 编译 `cpal` 与 `device` 模块（声卡宿主、配置协商、`NullBackend`） |
 //!
 //! 关掉 `device` 后仍然可用的公共面：`audio_clip` / `block` / `fpu` / `graph` / `insert` / `latency` / `ring` /
-//! `snapshot` / `meter` / `synth` / `rt` / `rt_probe` / `param` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
+//! `routing` / `snapshot` / `meter` / `synth` / `rt` / `rt_probe` / `param` —— 也就是说"PDC 算法 + 快照交换 + SPSC + **声部合成**
 //! + **每轨插入** + **参数目标表** + 渲染量子驱动 + `BASELINE-005` 的纯计算判定"全部可用，只是没有声卡。**判据全部跑在这一侧**（CI 与本机的主路径）。
 //!
 //! ⚠ [`latency`] 是 `BASELINE-005` 的**工具**那一半，**不是**门禁本身：门禁要求的是
@@ -149,6 +150,7 @@ pub mod mixer;
 pub mod param;
 pub use yeban_record as record;
 pub mod ring;
+pub mod routing;
 pub mod rt;
 pub mod rt_probe;
 pub mod sfz_instrument;

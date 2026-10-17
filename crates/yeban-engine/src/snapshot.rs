@@ -90,6 +90,7 @@ use crate::graph::{LatencyTable, PdcError, PdcPlan};
 use crate::insert::InsertParams;
 use crate::metronome::MetronomePlan;
 use crate::mixer::{PanLaw, pan_gains};
+use crate::routing::RoutingPlan;
 use crate::sfz_instrument::{PendingSfz, SfzPlan};
 use crate::synth::{
     MAX_NOTES_PER_TRACK, NoteSchedule, ScheduledNote, ToneParams, tick_to_sample, velocity_gain,
@@ -436,6 +437,16 @@ pub struct EngineSnapshot {
     /// 因 [`MAX_NOTES_PER_TRACK`] 容量上限而被丢弃的音符条数（构造期计数）。
     note_schedule_drops: u64,
     pdc: PdcPlan,
+    /// ⭐ **实时路由计划**（任务单 `#154`）：`routing_graph` 的边在这里被编译成
+    /// "每个可渲染节点送到哪里、乘多少线性增益"的纯数据。
+    ///
+    /// 为什么要进快照：图是**模型层**的事实（`RoutingGraph`），实时侧不能拿它
+    /// （`BTreeMap` + `Vec` + `exp2` 换算）逐块遍历；编译一次、每量子线性扫描
+    /// 至多 [`crate::synth::MAX_TRACK_SLOTS`] 项 ⇒ 零分配。
+    ///
+    /// ⚠ **默认口径**：没有任何音频出边的节点得到"直连 master、单位增益"一项
+    /// ⇒ [`RoutingPlan::uses_buses`] 为假 ⇒ 逐轨循环走**接线前那条路径**。
+    routing: RoutingPlan,
     /// **节拍器计划**（`transport.metronome_enabled` 的投影）。
     ///
     /// `None` = 关（`metronome_enabled = false`，**默认**）⇒ 实时侧整段咔哒声代码
@@ -612,6 +623,8 @@ impl EngineSnapshot {
         latencies: &LatencyTable,
     ) -> Result<Self, SnapshotError> {
         let pdc = PdcPlan::compute(routing, master, latencies)?;
+        // ⭐ 任务单 `#154`：把边编译成实时可消费的计划（构造期允许分配）。
+        let routing_plan = RoutingPlan::compile(routing, master, &tracks, pdc.order());
         // 主总线推子：**构造期**算一次（`dB → 线性` 含 `exp2`，属超越函数类，
         // 不进逐样本路径）。口径见 `EngineSnapshot::master_gain` 的字段文档。
         let master_gain = tracks
@@ -640,6 +653,7 @@ impl EngineSnapshot {
             scheduled_notes: 0,
             note_schedule_drops: 0,
             pdc,
+            routing: routing_plan,
             metronome: None,
             // ⛔ `from_parts` **不**填音频片段：摆放只能由 [`Self::from_project`] 投影、
             // PCM 只能由 [`Self::with_audio_asset`] 注入（见 [`crate::audio_clip`]）。
@@ -1021,6 +1035,12 @@ impl EngineSnapshot {
     #[must_use]
     pub const fn pdc(&self) -> &PdcPlan {
         &self.pdc
+    }
+
+    /// ⭐ 实时路由计划（任务单 `#154`）：`routing_graph` 的边 → 每节点的去向往哪、乘多少。
+    #[must_use]
+    pub const fn routing(&self) -> &RoutingPlan {
+        &self.routing
     }
 
     /// 模型层 `BlockSize` 枚举是否与本快照的块长一致（L1 契约自检）。

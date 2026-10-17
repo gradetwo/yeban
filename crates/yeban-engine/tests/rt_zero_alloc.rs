@@ -61,6 +61,7 @@
 //! | ㉔ | 环音符**窃取淡出窗口**：16 条 `NoteOn` **先走一个量子**灌满池（⚠ 触发量子与窃取量子必须错开，否则被窃取者电平 ≈ 0 ⇒ 3 ms release 立刻 Idle、`pending` 被回收丢掉）＋ 第 17 条**软窃取** ＋ **窗口内**推新音符自己的 `NoteOff`（3 个窗口：窃取量子 / 松键量子 / 64 量子回收），全部走 `note_project(&[])`（**零**已调度音符 ⇒ 声音只可能来自环音符） | `rt.rs::render_block` 的 `EngineEvent::NoteOn` 分支（灌满 + 软窃取，`pending` 挂起）＋ `EngineEvent::NoteOff` 分支 ＋ ⭐ `polysynth.rs::PolySynth::note_off` 的**挂起匹配**支路（`pending.is_some() && pending_freq_hz == freq_hz` ⇒ `pending_released = true`）与提升点的 `Adsr::gate_off()`。⚠ ⭐ 本行曾写"既有场景没有一条走到这条支路"—— **注入实测证否**：在挂起支路注入一次 `Vec::with_capacity(1)` 时 ⑯ 也红（`alloc=15`）⇒ ⑯ **偶然**覆盖 15 次，但⛔ 不断言、⛔ 不确定、且池里混着已调度音符 ⇒ ㉔ 把它做成**确定性 + 带断言**的覆盖。行为判据在 `rt.rs` 的 `a_release_for_the_stolen_note_works_inside_the_fade_window_and_after_promotion` 与 `tests/two_path_gain.rs` |
 //! | ㉙ | 每轨 **SFZ 音源** 10 000 量子（一条轨、两条区域覆盖两个音高）＋ **1 次换采样率**（48 → 44.1 kHz）＋ ⭐ **1 000 量子 CC 探针腿**（`#107`：先发一条 `ControlChange`，之后逐块读数的探针恒为 `Some`） | `SynthEngine::render_track_with_cc` 的 **SFZ 分支**（`SfzVoicePool::trigger_note` 的区域扫描 → `SfzVoicePool::render_into_with_cc` 的逐声部线性插值＋增益乘加＋`ampeg_run_with_cc_and_velocity(probe = Some)` 的 CC 求值分支）与快照边界（`begin_snapshot` 的器件重武装；⛔ **不**重建摊平表 —— 那是控制侧、窗口外）＋ `rt.rs::render_block` 的 `EngineEvent::ControlChange` 分支（写 `ControlChangeState`：一次表写 ＋ 一次位或）。⚠ 与 ㉓ 的**结构差别**：鼓机是"触发一次、器件内部推进"，SFZ 是"**多声部**（每条匹配区域一个）＋**跨量子延续的源位置**" ⇒ 池的扫描与逐声部循环都要落在零分配量程内。覆盖度见证＝窗口内总能量 > 0（③ 腿另有 `control_change(1) == Some(64)` 与 `events_applied` ＋1 两条）。行为判据在 `tests/sfz_instrument.rs` 的 S63／S64（起音帧数逐帧等于规范公式） |
 //! | ㊷ | **实时音频片段**（`ClipContent::Audio`，任务单 `#135`）1 000 量子：单声道 `0.5` 常量 PCM（`Arc<[f32]>`，48 kHz，5 s ⇒ 覆盖**整段**摆放）＋ 摆放起点 tick 0 / 时值 9 600 tick（240 000 帧） | `rt.rs::render_branch` 的 ⭐ 音频片段累加分支（`audio_clip::mix_into`：绝对帧 → 素材帧 → 交织下标 → 一次乘加）＋ 快照构造期的摆放投影（`project_audio_clips` 的 tick→帧换算、增益门、全序排序；这些在**窗口之外**，但窗口里读到的区间与 PCM 只来自它们）。⚠ **没有**逐样本游标可覆盖：位置由走带绝对帧导出 ⇒ `EngineRuntime` **＋0 B**。覆盖度见证＝窗口**最后一个**量子 256 个样本全非零且峰值 ≈ `0.5 × 1/√2`。行为判据在 `tests/audio_clip_render.rs` |
+//! | ㊸ | **发送/总线路由** 2 000 量子（任务单 `#154`：轨 A `SendToAux` → aux 总线暂存 → `BusToMaster` → master） | `rt.rs::render_branch` 的按边搬运（`render_panned_into` → `route_panned`）与逐轨循环之后的总线转发阶段；两段都只用**构造期预分配**的总线暂存池（`Box<[_; 16]>`）⇒ 四元组全 0。覆盖度见证＝`uses_buses == true` 且窗口内总能量 > 0。行为判据在 `tests/bus_routing.rs` |
 //!
 //! # 覆盖范围的**边界登记**（本判据没有覆盖什么，必须和"全 0"一起读）
 //!
@@ -245,7 +246,7 @@ use yeban_model::samples::filled_project;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, BlockSize, CurveType,
     DeviceDefinition, DeviceKind, EntityId, Op, ParameterValue, RoutingEdge, RoutingGraph,
-    RoutingKind, SampleRate, StampedOp, TrackV3, YebanProjectV1,
+    RoutingKind, SampleRate, StampedOp, TrackKind, TrackV3, YebanProjectV1,
 };
 
 mod support;
@@ -260,6 +261,8 @@ use support::{
 
 /// ① 纯渲染窗口的量子数（沿用第一版 `[MUST-GATE-001]` 的规模）。
 const PURE_QUANTA: u64 = 10_000;
+/// ⭐ ㊸ **总线路由**窗口的量子数（任务单 `#154`）。
+const BUS_ROUTING_QUANTA: u64 = 2_000;
 /// ② 逐步交换次数（每次交换后处理 1 个量子）。
 const SWAP_STEPWISE: u64 = 63;
 /// ② 高频交换次数（每量子一发一换）。
@@ -642,7 +645,7 @@ impl Report {
                 "[MUST-GATE-001] ok: 全部场景（纯渲染 / 快照交换 / 走带 / 电平计量 / 自动化 / 混音链 / \
                  回调缓冲长度边界 / 采样率与声明缓冲切换 / 播放中编辑-撤销 / 满批事件洪峰 / \
                  PDC 补偿延迟线 / 退役队列欠容 / 电平容量不足 / 节拍器 / 每轨插入混响 / 每轨鼓机音源 / \
-                 环音符窃取淡出窗口）四元组全 0；两条溢出路径（N6 选项 A）\
+                 环音符窃取淡出窗口 / 发送-总线路由）四元组全 0；两条溢出路径（N6 选项 A）\
                  走纯计数出口而**仍然** io_requests==0 && io_ops==0（且 suppressed_diag_events>0 ⇒ \
                  真的跑到了溢出）；控制面读取 EngineStats 的读取路径同样全 0；\
                  探针有牙（正对照 + 注入）；线程归属与外线程活动已对账；\
@@ -3956,6 +3959,87 @@ fn run_main_with_rt_stack(body: impl FnOnce() -> ExitCode + Send + 'static) -> E
         .expect("判据线程不得 panic")
 }
 
+/// ⭐ ㊸ **发送/总线路由**（任务单 `#154`）：一条轨 `SendToAux` 到一条 aux，
+/// aux `BusToMaster` 回主总线，2 000 个量子。
+///
+/// 为什么要这条场景：路由消费在实时侧多走两段——逐轨循环里的"按边搬运"与
+/// 循环之后的"按拓扑序转发总线累积信号"。两段都只碰**构造期预分配**的总线暂存池
+/// （`Box<[_; 16]>`）⇒ 四元组必须全 0；`energy > 0` 是"真的走到了那条路径"的覆盖度见证
+/// （否则"零分配"可能只是没跑）。
+fn scenario_bus_routing(report: &mut Report) {
+    let fixture = note_project(&[NoteSpec::at(0, 960, 60, 40)]);
+    let master = fixture.master;
+    let track = fixture.track;
+    let aux = EntityId::new();
+    let mut project = fixture.project;
+    project.tracks.insert(
+        aux,
+        TrackV3 {
+            id: aux,
+            name: "Aux".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    project.routing_graph.nodes.push(aux);
+    let send = EntityId::new();
+    project.routing_graph.edges.insert(
+        send,
+        RoutingEdge {
+            id: send,
+            source_node: track,
+            destination_node: aux,
+            kind: RoutingKind::SendToAux,
+            gain_db: None,
+        },
+    );
+    let back = EntityId::new();
+    project.routing_graph.edges.insert(
+        back,
+        RoutingEdge {
+            id: back,
+            source_node: aux,
+            destination_node: master,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        },
+    );
+    // 构造期（窗口之外）确认：这份夹具真的启用了总线暂存池。
+    let snapshot = EngineSnapshot::from_project(&project, 1).expect("夹具必须能编译成快照");
+    let uses_buses = snapshot.routing().uses_buses();
+    drop(snapshot);
+    let mut rig = Rig::new(&project, 1, 64);
+    rig.preheat();
+
+    let mut energy = 0.0f64;
+    let reading = window(|| {
+        for _ in 0..BUS_ROUTING_QUANTA {
+            rig.step();
+            energy += rig
+                .output
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+        }
+    });
+    let mut scenario = Scenario::new("㊸总线路由");
+    scenario.absorb(BUS_ROUTING_QUANTA, &reading);
+    scenario.note(format!(
+        "{BUS_ROUTING_QUANTA} 量子；uses_buses={uses_buses}；窗口内总能量={energy:.6}"
+    ));
+    report.scenario(
+        "㊸",
+        "[MUST-GATE-001] 发送/总线路由 2 000 量子（SendToAux → 总线暂存 → BusToMaster）：四元组全 0",
+        &scenario,
+    );
+    report.assert(
+        "㊸c",
+        "覆盖度：夹具启用总线暂存池且窗口内真的出声（⇒ 零分配读数不是空转分支）",
+        uses_buses && energy > 0.0,
+        format!("uses_buses={uses_buses}、窗口内总能量={energy:.6}"),
+    );
+}
+
 fn main() -> ExitCode {
     run_main_with_rt_stack(judgement_body)
 }
@@ -3991,6 +4075,7 @@ fn judgement_body() -> ExitCode {
     scenario_reverb_insert(&mut report);
     scenario_drum_instrument(&mut report);
     scenario_sfz_instrument(&mut report);
+    scenario_bus_routing(&mut report);
     scenario_audition_branch(&mut report);
     scenario_audition_zero_alloc(&mut report);
     scenario_audition_crossfade_window(&mut report);

@@ -132,6 +132,7 @@ use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantu
 use crate::mixer::{BusLimiter, PanLaw};
 use crate::param::{ParamTable, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
+use crate::routing::{RouteTarget, RoutingPlan};
 use crate::rt_probe::{self, RtDiagEvent};
 use crate::snapshot::{EngineSnapshot, RetireProducer, SnapshotReader, SnapshotSlot};
 use crate::stats_mirror::EngineStatsMirror;
@@ -1162,6 +1163,11 @@ struct BranchShare<'a> {
     armed_pan_slots: &'a mut usize,
     armed_pan_armed: &'a mut [bool; MAX_TRACK_SLOTS],
     track_scratch: &'a mut [f32; DEFAULT_BLOCK_FRAMES],
+    /// ⭐ **总线暂存池**（任务单 `#154`）：非 master 节点的立体声累积缓冲。
+    ///
+    /// 与 `track_scratch` 同一条纪律：**构造期**预分配、逐块复用 ⇒ 零分配。
+    /// 只有 `RoutingPlan::uses_buses()` 为真时才清空/使用（默认路径整段跳过）。
+    routing_buses: &'a mut [AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS],
     scratch_meters: &'a mut [MeterFrame; SCRATCH_METERS],
     insert_gain_reductions: &'a mut u64,
     insert_max_reduction_db: &'a mut f32,
@@ -1237,6 +1243,18 @@ fn render_branch(
     out.silence();
     out.set_frames(frames);
     share.bank.begin_quantum();
+    // ⭐ 任务单 `#154`：本快照的路由计划（构造期编译好的纯数据）。
+    //
+    // ⚠ **默认口径**：`uses_buses()` 为假（所有节点都只直连 master）⇒ 下面的
+    // 逐轨循环走**接线前那条求和路径**（一个字节都不改）；总线池既不清空也不遍历。
+    let routing = current.routing();
+    let buses_needed = routing.uses_buses();
+    if buses_needed {
+        for bus in share.routing_buses[..routing.len()].iter_mut() {
+            bus.silence();
+            bus.set_frames(frames);
+        }
+    }
 
     // --- 3a) 逐轨：渲染 → 电平 → 汇入母线 ---
     //
@@ -1512,13 +1530,49 @@ fn render_branch(
         let pan_index = share.pan_gains[..*share.armed_pan_slots]
             .iter()
             .position(|(id, _, _)| *id == track);
+        // ⭐ 本轨的去向（任务单 `#154`）。`routes` 在构造期编译好：
+        //   * 有音频出边 ⇒ 每条边一项（含增益）；
+        //   * 没有音频出边 ⇒ 一项"直连 master、单位增益"（接线前的行为）。
+        let routes = routing.routes(&track);
+        // ⚠ **逐位不变的快路**：只有一条"直连 master、单位增益"的出边时，走**原来那条**
+        // 求和路径（常量/平滑两个分支逐字未动）⇒ 既有工程与三条承重指纹都不受影响。
+        //
+        // ⚠ 计划里**没有**这条轨（第 17 条之后的轨：总线池与声部池的上限都是
+        // [`MAX_TRACK_SLOTS`]）时按**接线前的行为**直连 master —— 宁可忽略它那些
+        // 图边，也不让一条轨在混音里凭空消失（"容量不足不静默"的读数在声部池那侧）。
+        let single_unit_to_master = routes.is_empty()
+            || (routes.len() == 1 && routes[0].destination() == master && routes[0].gain() == 1.0);
         if let Some(index) = pan_index.filter(|index| share.armed_pan_armed[*index]) {
-            sum_into_bus_smoothed(
-                out,
-                &share.track_scratch[..frames],
-                &mut share.armed_pan_l[index],
-                &mut share.armed_pan_r[index],
-            );
+            if single_unit_to_master {
+                sum_into_bus_smoothed(
+                    out,
+                    &share.track_scratch[..frames],
+                    &mut share.armed_pan_l[index],
+                    &mut share.armed_pan_r[index],
+                );
+            } else {
+                // 声相自动化 + 非平凡路由：先把"声相之后"的立体声写进暂存
+                // （平滑器**每帧只推进一次**），再按边分别搬运。
+                {
+                    let (first, second) = share.reverb_scratch.split_at_mut(1);
+                    render_panned_into_smoothed(
+                        &mut first[0][..frames],
+                        &mut second[0][..frames],
+                        &share.track_scratch[..frames],
+                        &mut share.armed_pan_l[index],
+                        &mut share.armed_pan_r[index],
+                    );
+                }
+                route_panned(
+                    routes,
+                    routing,
+                    master,
+                    &share.reverb_scratch[0][..frames],
+                    &share.reverb_scratch[1][..frames],
+                    out,
+                    share.routing_buses,
+                );
+            }
             *share.pan_automation_frames = share.pan_automation_frames.wrapping_add(frames as u64);
         } else {
             let (gain_l, gain_r) = pan_index.map_or(
@@ -1528,7 +1582,67 @@ fn render_branch(
                 ),
                 |index| (share.pan_gains[index].1, share.pan_gains[index].2),
             );
-            sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
+            if single_unit_to_master {
+                sum_into_bus(out, &share.track_scratch[..frames], gain_l, gain_r);
+            } else {
+                {
+                    let (first, second) = share.reverb_scratch.split_at_mut(1);
+                    render_panned_into(
+                        &mut first[0][..frames],
+                        &mut second[0][..frames],
+                        &share.track_scratch[..frames],
+                        gain_l,
+                        gain_r,
+                    );
+                }
+                route_panned(
+                    routes,
+                    routing,
+                    master,
+                    &share.reverb_scratch[0][..frames],
+                    &share.reverb_scratch[1][..frames],
+                    out,
+                    share.routing_buses,
+                );
+            }
+        }
+    }
+
+    // --- ⭐ 3a⁗) 总线转发（任务单 `#154`）：按**拓扑序**把每条总线的累积信号送到它的
+    //     目的地 ----------------------------------------------------------------
+    //
+    // 为什么在逐轨循环**之后**：一条总线要等**所有**上游都送完才能转发（它的输入是
+    // 累积和）；拓扑序保证上游总线先于下游总线处理 ⇒ 多级总线（aux → aux → master）
+    // 一次遍历即可。
+    //
+    // 为什么先拷贝到 `reverb_scratch`：转发目标可能是**另一条总线**（`buses` 的可变
+    // 借用互相冲突）⇒ 先读进暂存再写目标，零分配。
+    //
+    // ⚠ **本片不处理总线上的插入链/PDC**：本片只让"路由真的被消费"（见提交信息与
+    // 报告 §7）；总线自身的音符源在逐轨循环里已按**它自己的出边**送出（与"先混进
+    // 总线再转发"等价），总线累积信号只乘边增益。效果器与总线 PDC 留给下一片。
+    if buses_needed {
+        let slots = routing.slots();
+        for (index, node) in slots.iter().enumerate() {
+            let routes = routing.routes(node);
+            if routes.is_empty() {
+                continue;
+            }
+            {
+                let (first, second) = share.reverb_scratch.split_at_mut(1);
+                let (bus_left, bus_right) = share.routing_buses[index].stereo_mut();
+                first[0][..frames].copy_from_slice(bus_left);
+                second[0][..frames].copy_from_slice(bus_right);
+            }
+            route_panned(
+                routes,
+                routing,
+                master,
+                &share.reverb_scratch[0][..frames],
+                &share.reverb_scratch[1][..frames],
+                out,
+                share.routing_buses,
+            );
         }
     }
 
@@ -1606,6 +1720,17 @@ pub struct EngineRuntime {
     scratch_meters: [MeterFrame; SCRATCH_METERS],
     /// 单轨渲染结果（声相之前、单声道）。复用同一个缓冲，避免每轨一份。
     track_scratch: [f32; DEFAULT_BLOCK_FRAMES],
+    /// ⭐ **总线暂存池**（任务单 `#154`）：最多 [`MAX_TRACK_SLOTS`] 条非 master 节点的
+    /// **立体声累积缓冲**。
+    ///
+    /// 为什么是堆上的定长数组（`Box<[_; 16]>`，值尺寸 = **一个瘦指针 8 B**）：
+    /// 内联 `[AudioBlock; 16]` 会把 `EngineRuntime` 抬 16 × 1032 B ≈ **16.1 KiB**
+    /// （仍是 180144 B 的同一量级，但每次按值搬运行时都多背一截）；而本单只需要
+    /// "预分配 + 零分配"，堆上那一块在 [`Self::new_boxed`] 的构造期分配一次。
+    ///
+    /// ⚠ 只在 [`crate::snapshot::EngineSnapshot::routing`] 的 `uses_buses()` 为真时
+    /// 清空/使用 ⇒ 默认工程（全部直连 master）**一个字节都不碰**。
+    routing_buses: Box<[AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS]>,
     /// 每节点电平状态机（峰值保持 / 平滑 RMS）。
     bank: MeterBank<SCRATCH_METERS>,
     /// 声部池 + 播放头（**真的合成**：见 [`crate::synth`]）。
@@ -2108,6 +2233,12 @@ impl EngineRuntime {
             put!(scratch_events, [EngineEvent::IDLE; SCRATCH_EVENTS]);
             put!(scratch_meters, [MeterFrame::default(); SCRATCH_METERS]);
             put!(track_scratch, [0.0; DEFAULT_BLOCK_FRAMES]);
+            // ⭐ 总线暂存池：**构造期**一次分配到堆上（`Box<[_; 16]>` = 瘦指针）
+            // ⇒ 回调内零分配 [MUST-GATE-001]。
+            put!(
+                routing_buses,
+                Box::new(core::array::from_fn(|_| AudioBlock::new()))
+            );
             put!(bank, MeterBank::new());
             // 采样率先按 48 kHz 武装；第一次武装快照时按快照校准（`begin_snapshot`）。
             put!(synth, SynthEngine::new(48_000));
@@ -3045,6 +3176,7 @@ impl EngineRuntime {
             scratch_events,
             scratch_meters,
             track_scratch,
+            routing_buses,
             bank,
             synth,
             transport,
@@ -3648,6 +3780,7 @@ impl EngineRuntime {
                     armed_pan_slots: &mut *armed_pan_slots,
                     armed_pan_armed: &mut *armed_pan_armed,
                     track_scratch: &mut *track_scratch,
+                    routing_buses: &mut *routing_buses,
                     scratch_meters: &mut *scratch_meters,
                     insert_gain_reductions: &mut *insert_gain_reductions,
                     insert_max_reduction_db: &mut *insert_max_reduction_db,
@@ -3878,8 +4011,9 @@ impl EngineRuntime {
 /// （`cos`/`sin` 属超越函数类，不进实时路径），实时侧这里只做两次乘加。
 /// 居中（默认律）时 `(√2/2, √2/2)` ⇒ 每声道 −3.01 dB，与 `yeban-mcp` 的离线渲染同口径。
 ///
-/// 仍然是**占位**的部分（本切片没做，见 notes 的 needs）：发送/辅助汇流、
-/// 路由边的 `gain_db`（`RoutingEdge::gain_db` 目前被忽略）。
+/// ⭐ 任务单 `#154` 之后本函数是**快路**：只有"一条直连 master、单位增益的出边"
+/// 才走它（逐位等价于接线前的求和）。有发送/多目的地/边增益的轨走
+/// [`render_panned_into`] + [`route_panned`]。
 /// PDC 延迟线对齐**已接线**（调用点见 [`EngineRuntime::render_block`] 步骤 3a'）。
 fn sum_into_bus(
     block: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
@@ -3915,6 +4049,79 @@ fn sum_into_bus_smoothed(
     for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono) {
         *l += *m * gain_l.process();
         *r += *m * gain_r.process();
+    }
+}
+
+/// ⭐ 把一条轨的**声相之后**立体声写进暂存（**赋值**，不是累加）—— 任务单 `#154`。
+///
+/// 用途：一条轨有**多条**出边（发送 + 直连）或边增益时，声相只算一次、然后按边
+/// 分别搬运（多次搬运用 [`route_panned`]）。`gain_l`/`gain_r` 与 [`sum_into_bus`]
+/// **同一把尺子**（构造期 `cos/sin`）。
+///
+/// 实时约束：逐样本两次乘，零分配、零锁、零 I/O [MUST-GATE-001]。
+fn render_panned_into(left: &mut [f32], right: &mut [f32], mono: &[f32], gain_l: f32, gain_r: f32) {
+    for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono) {
+        *l = *m * gain_l;
+        *r = *m * gain_r;
+    }
+}
+
+/// 与 [`render_panned_into`] 同形，但两个增益**逐帧**从各自的平滑器里取
+/// （声相自动化，裁决 P4=(b)）。每帧每个平滑器**恰好推进一次** ⇒ 多目的地不会
+/// 让平滑器按目的地数量加速。
+fn render_panned_into_smoothed(
+    left: &mut [f32],
+    right: &mut [f32],
+    mono: &[f32],
+    gain_l: &mut ParamSmoother,
+    gain_r: &mut ParamSmoother,
+) {
+    for ((l, r), m) in left.iter_mut().zip(right.iter_mut()).zip(mono) {
+        *l = *m * gain_l.process();
+        *r = *m * gain_r.process();
+    }
+}
+
+/// ⭐ **按边搬运**：把暂存里的立体声按每条出边的增益加到目的地（任务单 `#154`）。
+///
+/// * 目的地 = `master` ⇒ 加进母线块 `out`；
+/// * 目的地 = 另一条可渲染节点 ⇒ 加进它的**总线暂存块**（`buses[slot]`）；
+/// * 目的地不在计划里（例如 `routing_graph.nodes` 里没有对应音轨的节点）⇒ 跳过
+///   （没有可累积的实体；本片不发明"虚拟总线"）。
+///
+/// 逐样本一次"乘 + 加"，零分配、零锁、零 I/O [MUST-GATE-001]。
+fn route_panned(
+    routes: &[RouteTarget],
+    routing: &RoutingPlan,
+    master: EntityId,
+    source_left: &[f32],
+    source_right: &[f32],
+    out: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
+    buses: &mut [AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS],
+) {
+    for route in routes {
+        let gain = route.gain();
+        if route.destination() == master {
+            let (left, right) = out.stereo_mut();
+            for ((l, r), (sl, sr)) in left
+                .iter_mut()
+                .zip(right.iter_mut())
+                .zip(source_left.iter().zip(source_right))
+            {
+                *l += *sl * gain;
+                *r += *sr * gain;
+            }
+        } else if let Some(index) = routing.slot_of(&route.destination()) {
+            let (left, right) = buses[index].stereo_mut();
+            for ((l, r), (sl, sr)) in left
+                .iter_mut()
+                .zip(right.iter_mut())
+                .zip(source_left.iter().zip(source_right))
+            {
+                *l += *sl * gain;
+                *r += *sr * gain;
+            }
+        }
     }
 }
 
@@ -6609,6 +6816,7 @@ mod tests {
                 armed_pan_slots,
                 armed_pan_armed,
                 track_scratch,
+                routing_buses,
                 scratch_meters,
                 insert_gain_reductions,
                 insert_max_reduction_db,
@@ -6654,6 +6862,7 @@ mod tests {
                 armed_pan_slots,
                 armed_pan_armed,
                 track_scratch,
+                routing_buses,
                 scratch_meters,
                 insert_gain_reductions,
                 insert_max_reduction_db,
