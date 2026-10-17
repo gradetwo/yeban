@@ -44,6 +44,7 @@ use yeban_app::record_device::{
 use yeban_app::record_wav::{InputSource, RecordOptions, RecordPlan, Recorder, count_in_frames};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
+use yeban_engine::device::capture_callback;
 use yeban_engine::record::record_channel;
 use yeban_model::samples::filled_project;
 use yeban_render::dither::{BitDepth, PcmBuffer, quantize_i24};
@@ -498,12 +499,12 @@ fn the_device_source_drains_its_receiver_in_order_and_never_fabricates_silence()
 
     let (mut sender, receiver) = record_channel(64, CHANNELS);
     let dropped = Rc::new(Cell::new(false));
-    let mut source = DeviceInputSource::new(receiver, DropProbe(Rc::clone(&dropped)), CHANNELS);
+    let mut source = DeviceInputSource::new(receiver, DropProbe(Rc::clone(&dropped)));
     assert_eq!(source.channels(), CHANNELS);
     assert_eq!(
         source.receiver_channels(),
         CHANNELS,
-        "环与源的声道数必须一致"
+        "环与源的声道数必须一致（`#130`：源的宽度**取自环**，⛔ 不是另传一个参数）"
     );
 
     // ① 环空：返回 0，且**一个样本都不写**（⛔ 补静音就是伪造内容）。
@@ -598,6 +599,62 @@ fn an_unopenable_device_fails_loudly_and_writes_nothing() {
     assert_eq!(factory.calls.get(), 2, "第二次按键 ⇒ 第二次尝试");
     assert!(!ui.get_recording());
     assert!(!path.exists());
+}
+
+/// ⭐⭐ **判据 ⑨（任务单 `#130`：0 帧不许静默成功）**：设备**能开**但**一帧都不给**
+/// （`#130` 修好之前，macOS 内建麦克风那条腿的真实形态就是 `拉取 0 帧`）⇒ 停录仍然会落
+/// 一条**合法但空**的 WAV（0 帧 ⇒ 只有头）⇒ ⛔ **不许**把它画成"录成功了"：
+/// 落点必须收到一条**非空**文本，且文本里的计数器必须**如实**（`pushed=0`）。
+///
+/// 本判据⛔ 不声称"空文件不该存在"（那是 `Recorder` 的既有语义，本单没改）——
+/// 它钉的是**可见性**：人可以不知道文件在哪，但不该不知道"这次一帧都没录到"。
+#[test]
+fn a_zero_frame_recording_is_reported_loudly_instead_of_looking_successful() {
+    let (_tier1, ui) = assemble();
+    let path = scratch("zero-frames");
+    let _ = std::fs::remove_file(&path);
+    // ⭐ 空脚本源：`open` 成功、`next_block` 恒返回 0（= "设备开着但不送帧"）。
+    let shared = Arc::new(ScriptShared::default());
+    let outcome = Rc::new(SpyOutcome::default());
+    wire_record(
+        &ui,
+        None,
+        RecordPlan {
+            path: path.clone(),
+            options: options(),
+        },
+        Rc::new(ScriptedFactory::new(&[], CHANNELS, Arc::clone(&shared))),
+        outcome.clone(),
+    );
+
+    ui.invoke_toggle_record();
+    assert!(ui.get_recording(), "起录必须成功（工厂能开）");
+    ui.invoke_toggle_record();
+    assert!(!ui.get_recording(), "停录之后必须归零");
+
+    let reports = outcome.reports.borrow();
+    let text = reports
+        .last()
+        .and_then(Option::as_deref)
+        .expect("0 帧 ⇒ 落点必须收到一条**非空**文本（⛔ 静默成功就是 #130 的不可见形态）");
+    assert!(text.contains("0 帧"), "文本必须点明 0 帧，实得 `{text}`");
+    assert!(
+        text.contains("pushed=0"),
+        "文本必须带上**如实**的计数器（`pushed=0`），实得 `{text}`"
+    );
+    assert!(
+        text.contains(DeviceInputFactory::LABEL) || text.contains(SCRIPTED_LABEL),
+        "文本必须带上源的如实标签，实得 `{text}`"
+    );
+    drop(reports);
+
+    // 落盘仍是一条**空** WAV（0 帧 ⇒ 只有头；本判据只读字节数，⛔ 不假装它不该存在）。
+    let bytes = std::fs::metadata(&path).expect("停录必须落盘").len();
+    assert!(
+        (44..=100).contains(&bytes),
+        "0 帧的 WAV 应当只有头（44..=100 字节），实测 {bytes}"
+    );
+    let _ = std::fs::remove_file(&path);
 }
 
 /// ⭐ **判据 ⑤b**：设备只给 **1** 声道（macOS 内建麦克风的常态）⇒ 照实**录单声道**，
@@ -797,6 +854,64 @@ fn the_count_in_reading_is_identical_on_both_legs() {
     );
     let _ = std::fs::remove_file(&path_a);
     let _ = std::fs::remove_file(&path_b);
+}
+
+/// ⭐⭐ **判据 ⑧（任务单 `#130`：缺陷形态本身）**：设备回调的**块宽**与录音环的**环宽**
+/// 一旦分叉，`RecordSender::push_frame` 会**逐帧拒收** ⇒ 环永远空 ⇒ 拉到 0 帧 ⇒
+/// 落一条 0 帧 WAV（人类看到的"按录音键没用"）。
+///
+/// ## 这条判据证的是"为什么"，⛔ 不是复述症状
+///
+/// 产品的真设备源在 `#130` 之前把环建成 `RecordOptions::channels`（默认 **2**），
+/// 而 macOS 内建麦克风协商到 **1** 声道 ⇒ `capture_callback(..., 1)` 的每一帧都是
+/// `push_frame(&[x])`（`frame.len() == 1 != 2`）⇒ **全部被拒收**（且不计入 `pushed`）。
+/// 本判据按产品的两个宽度各跑一遍同一条链：
+///
+/// | 臂 | 环宽 | 回调宽 | 期望读数 |
+/// | :--- | :--- | :--- | :--- |
+/// | ① 缺陷形态 | 2（请求值） | 1（设备值） | **0 帧**进环、`pushed == 0` |
+/// | ② 修复形态 | 1（设备值） | 1（设备值） | **128 帧**逐样本到达 |
+///
+/// ⚠ 反向腿（本判据 + `[HARDWARE]` 一起）：把
+/// `record_device::DeviceInputFactory::open` 的环宽改回 `options.channels`
+/// ⇒ ⑥ 那条真设备判据立刻红（实测 `拉取 0 帧 / 落盘 0 帧`）。
+#[test]
+fn a_mono_device_block_into_a_stereo_ring_loses_every_frame() {
+    const DEVICE_CHANNELS: u16 = 1;
+    const BLOCK_FRAMES: usize = 128;
+    // 设备回调的真实形态：1 声道 × 128 帧。数值取非零 ⇒ "到没到"一眼可读。
+    let block = vec![0.5_f32; BLOCK_FRAMES];
+
+    // ① 缺陷形态：环按**请求**声道（2）建，回调按**设备**声道（1）推。
+    let (mut stereo_sender, mut stereo_receiver) = record_channel(1024, 2);
+    capture_callback(&mut stereo_sender, &block, DEVICE_CHANNELS);
+    let mut drained_frames = 0usize;
+    let drained = stereo_receiver.drain_frames(BLOCK_FRAMES, |_| drained_frames += 1);
+    assert_eq!(
+        (drained, drained_frames),
+        (0, 0),
+        "⭐ 宽度分叉 ⇒ 环里必须**一帧都没有** —— 这正是 `#130` 的 `拉取 0 帧 / 落盘 0 帧`"
+    );
+    assert_eq!(
+        stereo_sender.pushed_frames(),
+        0,
+        "被拒收的帧**不计入** `pushed_frames`（所以报告行里 `pushed=0` 也是这条缺陷的指纹）"
+    );
+
+    // ② 修复形态：环与回调同宽（1）⇒ 整块逐样本到达。
+    let (mut mono_sender, mut mono_receiver) = record_channel(1024, DEVICE_CHANNELS);
+    capture_callback(&mut mono_sender, &block, DEVICE_CHANNELS);
+    let mut arrived: Vec<f32> = Vec::new();
+    let drained = mono_receiver.drain_frames(BLOCK_FRAMES, |frame| {
+        arrived.extend_from_slice(frame);
+    });
+    assert_eq!(
+        drained, BLOCK_FRAMES,
+        "同宽 ⇒ 必须整块到达（实得 {drained}）"
+    );
+    assert_eq!(arrived, block, "同宽 ⇒ 逐样本相同（⛔ 不是「有数据」）");
+    assert_eq!(mono_sender.pushed_frames(), BLOCK_FRAMES as u64);
+    assert_eq!(mono_sender.dropped_frames(), 0);
 }
 
 /// ⭐ **判据 ⑦**：产品的**默认**究竟是哪条腿 —— 机械可判、零硬件、⛔ 不读环境。

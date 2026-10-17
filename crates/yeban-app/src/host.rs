@@ -2480,13 +2480,35 @@ pub fn wire_record(
         let mut recorder = recorder.borrow_mut();
         if recorder.is_recording() {
             let stopped = recorder.stop();
+            // ⭐⭐ **0 帧 ⇒ 响亮**（任务单 `#130`）：停录**成功**但**一帧都没录到**时，
+            // `stop` 仍会落一条 0 帧的合法 WAV（头 68 字节、音频 0 字节）并返回 `Ok` ——
+            // 这正是"按录音键没用"的**不可见**形态（文件在、内容是空、界面只归零）。
+            // ⛔ 不许把它画成成功：把"0 帧 ＋ 真实计数器（`pushed` / `dropped` / `source`）"
+            // 拼成一句人话，走**同一个** [`RecordOutcomePort`]（产品落点 = `stderr`）。
+            let empty_report = match &stopped {
+                Ok(report) if report.frames == 0 => Some(format!(
+                    "录音写入 0 帧（pushed={} dropped={} source={}）⇒ 输入设备没有送来任何帧；\
+                     {} 是一条**空** WAV",
+                    report.pushed,
+                    report.dropped,
+                    report.source,
+                    report.path.display()
+                )),
+                _ => None,
+            };
             match &stopped {
                 Ok(report) => eprintln!("[yeban-app] {}", report.summary()),
                 Err(error) => eprintln!("[yeban-app] 停录失败: {error}"),
             }
             if let Some(ui) = record_ui.upgrade() {
                 ui.set_recording(false);
-                outcome.report(&ui, stopped.err().map(|error| error.to_string()));
+                outcome.report(
+                    &ui,
+                    stopped
+                        .err()
+                        .map(|error| error.to_string())
+                        .or(empty_report),
+                );
             }
         } else {
             // ⭐ 预备拍（`transport.count_in_bars`）：长度由**工程**算出（⛔ 不靠墙钟）

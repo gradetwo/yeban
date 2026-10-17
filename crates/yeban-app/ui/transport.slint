@@ -174,7 +174,13 @@ export component Transport inherits Rectangle {
             width: parent.width;
             height: parent.height;
             text: "●";
-            color: Tokens.accent;
+            // ⭐ 任务单 `#130`：**正在录**时 ● 换成功能色 `record-red`（它的既有语义就是
+            // "录音激活"，见 `tokens.slint`），静置时仍是唯一那一处暖强调 `accent`
+            // （`HD-54` 的落点**未动**：本行仍只出现一次 `Tokens.accent`）。
+            // ⚠ 这是**表达式**级改动：不新增控件、不改几何 ⇒ 绘制预算与金标一位不动；
+            // 而它给了"按下去到底有没有在录"一个肉眼可读的状态（此前只有 a11y 的
+            // `accessible-checked`，看得见的界面全无变化）。
+            color: root.recording ? Tokens.record-red : Tokens.accent;
             font-size: Tokens.font-size-lg;
             horizontal-alignment: center;
         }

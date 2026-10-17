@@ -52,7 +52,7 @@ use std::rc::Rc;
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{EngineConfig, InputStreamHandle, ShareMode, open_input};
-use yeban_engine::record::{RecordReceiver, record_channel};
+use yeban_engine::record::{RecordReceiver, RecordSender, record_channel};
 
 use crate::record_wav::{InputSource, RecordOptions, SilenceSource};
 
@@ -101,23 +101,53 @@ impl DeviceInputFactory {
     /// 把它当设备缓冲请求会让输入延迟跟着抽取批走（默认 4096 帧 ≈ 85 ms）。
     #[must_use]
     pub fn engine_config(options: &RecordOptions) -> EngineConfig {
+        Self::engine_config_for(options, options.channels.max(1))
+    }
+
+    /// 同上，但**显式**给声道数（`#130`：按**协商到的**声道数请求第二次开流）。
+    #[must_use]
+    fn engine_config_for(options: &RecordOptions, channels: u16) -> EngineConfig {
         EngineConfig {
             sample_rate: options.sample_rate,
             block_frames: DEFAULT_BLOCK_FRAMES as u32,
-            channels: options.channels.max(1),
+            channels: channels.max(1),
             share_mode: ShareMode::default(),
         }
     }
 }
 
+/// ⭐⭐ **设备环的唯一建法**（任务单 `#130`）：宽度是**协商到的**声道数，⛔ 不是请求值。
+///
+/// ## 为什么这一行也要是一个**可判**的函数（⛔ 不是包装癖）
+///
+/// `RecordSender::push_frame` 的契约是 `frame.len() == self.channels`，**不等就整帧拒收**
+/// （`crates/yeban-record/src/lib.rs`：`if frame.len() != channels { return false }`），
+/// 而设备回调是按**设备**的声道数切块推的（`capture_callback(..., negotiated.channels)`）。
+/// 因此"环的宽度"与"回调的宽度"只要差一位 ⇒ **每一帧都被拒收、环永远是空的**，
+/// 而外部读数恰好是：设备打开成功、`play()` 成功、**拉到 0 帧**、落一条 **0 帧** WAV
+/// —— 也就是人类报的"GUI 录音没用"（`#130` 的实测形态）。
+///
+/// ⚠ 本函数就是那条不变式的**唯一**落点：调用方**必须**把 `negotiated.channels` 传进来。
+fn device_ring(options: &RecordOptions, channels: u16) -> (RecordSender, RecordReceiver) {
+    record_channel(options.capacity_frames.max(1), channels.max(1))
+}
+
 impl InputSourceFactory for DeviceInputFactory {
     fn open(&self, options: &RecordOptions) -> Result<Box<dyn InputSource + Send>, String> {
-        let channels = options.channels.max(1);
-        let config = Self::engine_config(options);
-        // ⭐ 建**设备环**：回调线程推、`DeviceInputSource::next_block` 取。
-        let (sender, receiver) = record_channel(options.capacity_frames.max(1), channels);
-        let handle =
-            open_input(&config, sender).map_err(|error| format!("打开输入设备失败（{error}）"))?;
+        let requested = options.channels.max(1);
+        // ⭐⭐ **环的宽度必须 ＝ 协商到的声道数**（任务单 `#130`）。
+        //
+        // 协商发生在 [`open_input`] **内部**，而它又**要求**先把发送端交进来 ⇒
+        // "先问协商、再建环"这条路只有两条腿：
+        //   ① 按**请求**声道建环试开一次（设备与请求一致 ⇒ 就是这一次，⛔ 不开第二次）；
+        //   ② 协商结果不同 ⇒ ⭐ **按协商值重建环并重开一次**。
+        // 为什么不能凑合：`push_frame` 的 `frame.len() != channels` 会**逐帧拒收**
+        // （见 [`device_ring`] 的文档）⇒ 拉到 0 帧、落 0 帧 WAV、人看到"录了没用"。
+        // 第一次那条流**从未 `play()`** ⇒ 丢掉它不占用设备（引擎自己的
+        // `opening_the_default_input_device_never_panics` 用的就是这条生命期口径）。
+        let (sender, receiver) = device_ring(options, requested);
+        let handle = open_input(&Self::engine_config_for(options, requested), sender)
+            .map_err(|error| format!("打开输入设备失败（{error}）"))?;
         // ⭐⭐ **协商结果的两条路，区别对待（都有实测依据）**：
         //
         // ① **通道数不同 ⇒ 照设备说的录**（⛔ 不拒绝、⛔ 不偷偷升降混）。
@@ -142,15 +172,34 @@ impl InputSourceFactory for DeviceInputFactory {
                 negotiated.sample_rate, options.sample_rate
             ));
         }
+        let (receiver, handle) = if negotiated.channels.max(1) == requested {
+            (receiver, handle)
+        } else {
+            // ① 的第一半：设备的声道数与请求值不同 ⇒ **按协商值重建环**。
+            let channels = negotiated.channels.max(1);
+            drop(handle);
+            let (sender, receiver) = device_ring(options, channels);
+            let handle = open_input(&Self::engine_config_for(options, channels), sender).map_err(
+                |error| format!("按设备协商到的 {channels} 声道重开输入流失败（{error}）"),
+            )?;
+            // ⭐ 第二次协商必须与第一次**逐项一致**（否则环的宽度又和回调宽度分叉）。
+            let again = *handle.negotiated();
+            if again.channels.max(1) != channels || again.sample_rate != options.sample_rate {
+                return Err(format!(
+                    "输入设备的第二次协商（{} 声道 / {} Hz）与第一次（{channels} 声道 / {} Hz）\
+                     不一致 ⇒ 拒绝录音（环的宽度必须与设备回调的宽度逐位一致）",
+                    again.channels, again.sample_rate, options.sample_rate
+                ));
+            }
+            (receiver, handle)
+        };
         // ⚠ **必须 `play()`**：`InputStreamHandle` 只是"流在场"，不起播 ⇒ 回调一帧都不来。
         handle
             .play()
             .map_err(|error| format!("启动输入流失败（{error}）"))?;
-        Ok(Box::new(DeviceInputSource::new(
-            receiver,
-            handle,
-            negotiated.channels.max(1),
-        )))
+        // ⭐ 声道数**取自环本身**（`DeviceInputSource::new`）：源报的宽度与环的宽度
+        // 因此在结构上不可能分叉 ⇒ `#130` 那条"逐帧拒收"的缺陷无法再出现。
+        Ok(Box::new(DeviceInputSource::new(receiver, handle)))
     }
 
     fn label(&self) -> &'static str {
@@ -179,14 +228,21 @@ pub struct DeviceInputSource<H> {
     receiver: RecordReceiver,
     /// ⭐ **生命期事实**：这个字段在场 = 流在跑（见类型文档）。
     handle: H,
-    /// 声道数（= 请求值 = 协商值，⛔ 两者不等时工厂就拒绝了）。
+    /// 声道数（⭐ **恒等于环的声道数**：`new` 从 `receiver.channels()` 取，
+    /// ⛔ 不是调用方另报一个数 —— 两者分叉就是 `#130` 的"逐帧拒收、拉到 0 帧"）。
     channels: u16,
 }
 
 impl<H> DeviceInputSource<H> {
     /// 组装一个设备源（⭐ `handle` 的所有权交给本类型）。
+    ///
+    /// ⭐ **声道数的唯一来源是环**（`#130`）：`RecordSender::push_frame` 按**环**的声道数
+    /// 判"整帧"（`frame.len() != channels` ⇒ 拒收），而设备回调按**设备**的声道数切块。
+    /// 因此让"源报的宽度"与"环的宽度"在类型构造处**结构上相等**，是这条链唯一的
+    /// 正确形状 —— 任何"另传一个 channels 参数"的写法都把分叉重新变成可能。
     #[must_use]
-    pub const fn new(receiver: RecordReceiver, handle: H, channels: u16) -> Self {
+    pub fn new(receiver: RecordReceiver, handle: H) -> Self {
+        let channels = receiver.channels().max(1);
         Self {
             receiver,
             handle,
@@ -281,4 +337,45 @@ pub fn input_factory_for(selector: Option<&str>) -> Rc<dyn InputSourceFactory> {
 pub fn default_input_factory() -> Rc<dyn InputSourceFactory> {
     let selector = std::env::var(RECORD_SOURCE_ENV).ok();
     input_factory_for(selector.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⭐⭐ **判据（任务单 `#130`）**：设备环的宽度**只**由调用方给的（协商到的）声道数决定，
+    /// ⛔ 不是 `RecordOptions::channels`（请求值）。
+    ///
+    /// 这条判据钉住的是"环宽 = 协商值"这个**唯一**构造点：产品的默认请求值是 **2** 声道，
+    /// 而 macOS 内建麦克风协商到 **1** ⇒ 若这里按请求值建环，回调的每帧都会被
+    /// `push_frame` 拒收（`frame.len() != channels`），表现为 `拉取 0 帧 / 落盘 0 帧`。
+    ///
+    /// 反向腿：把 `device_ring` 的第二参数改回 `options.channels` ⇒ 本判据在
+    /// `receiver.channels()` 那一行红（实得 2）。
+    #[test]
+    fn the_device_ring_takes_the_negotiated_channel_count_not_the_requested_one() {
+        let options = RecordOptions::default();
+        assert_eq!(
+            options.channels, 2,
+            "前提：`RecordOptions::default().channels == 2`（请求值，⛔ 不是设备值）"
+        );
+        // 设备协商到 1 声道（macOS 内建麦克风的实测形态）。
+        let (mut sender, mut receiver) = device_ring(&options, 1);
+        assert_eq!(
+            receiver.channels(),
+            1,
+            "⭐ 环的宽度必须 = **协商到的** 1 声道（⛔ 不是请求的 2）"
+        );
+        assert_eq!(sender.channels(), 1);
+
+        // 读数：按设备宽度推一整块 ⇒ 整块被接受、整块可取出（⛔ 不是逐帧拒收）。
+        let block = [0.25_f32; 8];
+        let accepted = yeban_engine::record::push_input_block(&mut sender, &block, 1);
+        assert_eq!(accepted, 8, "同宽 ⇒ 8 帧整块进环（实得 {accepted}）");
+        let mut frames = Vec::new();
+        let drained = receiver.drain_frames(8, |frame| frames.extend_from_slice(frame));
+        assert_eq!(drained, 8, "同宽 ⇒ 8 帧整块取出（实得 {drained}）");
+        assert_eq!(frames, block, "取出的样本必须逐样本相同");
+        assert_eq!(sender.dropped_frames(), 0);
+    }
 }
