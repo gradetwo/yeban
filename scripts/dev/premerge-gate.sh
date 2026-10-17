@@ -86,6 +86,14 @@ for c in "$@"; do
     layer "check -p $c --all-targets --features in-process-mcp" \
       cargo check -p "$c" --all-targets --locked --features in-process-mcp
   fi
+  # test (experimental-logic-import 特性) —— `#143` 的只读 Logic 探针腿。
+  # ⚠ 这一条**必须是 test 而不止 check**：那 8 个 demo 的读数判据住在
+  # `tests/logic_inspect.rs`，`check` 编译得出来但**不会跑**它。
+  # ⭐ 判据本身**路径门控**（demo 不在 ⇒ skip、不红）⇒ 无 demo 的机器上安全。
+  if grep -q '^experimental-logic-import' "crates/$c/Cargo.toml" 2>/dev/null; then
+    layer "test -p $c --features experimental-logic-import" \
+      cargo test -p "$c" --locked --features experimental-logic-import
+  fi
   # 收口：把**声明了但上面没覆盖**的特性（如 `ui-test-port` / `ui-mcp-http`）一并编一遍。
   # 手动档 `gates-manual.yml` 用的就是 `--all-features`；⚠ 它不替代上面逐条腿
   # （互斥特性组合与单项腿可能不同），只作兜底。⛔ 只对真声明了 `[features]` 的 crate 跑。
