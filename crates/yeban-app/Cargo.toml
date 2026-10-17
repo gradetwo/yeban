@@ -278,16 +278,19 @@ experimental-als-export = ["yeban-render/experimental-als-export"]
 # (默认 `cargo tree -p yeban-app -e normal --locked` 的逐包集合) **一位不变**。
 experimental-logic-export = ["yeban-render/experimental-logic-export"]
 
-# `experimental-logic-import`: `--inspect-logic <dir>` 的**只读探针**转发开关
-# (`[ARCH-FMT-002]` / #143)。
+# `experimental-logic-import`: Logic Pro `.logicx` 的**只读读取 + 真导入**转发开关
+# (`[ARCH-FMT-002]` / #143 / #149)。
 #
 # **不在 `default` 里** —— AGENTS.md §2 红线 6 与 `scripts/guards/policy_check.py` 的
-# `FORBIDDEN_DEFAULT_FEATURES` 都要点名这个特性。它只把 `yeban-render` 那一边的同名
-# feature 转发开: 真正的读取器住在 `yeban-render/src/logic_read.rs`, 本 crate 不复制
-# 第二份解析器。
-# ⚠ **它不是导入器**: 不写工程、不写 demo、不产出 `.yeban` 文档; 只把 Apple 演示工程的
-# 实测读数打成可复跑的判据。默认构建里这个开关是**一次点名 feature 的用法错误**
-# (退出码 2), 绝不静默忽略 —— 见 `ParseError::InspectLogicNotCompiled`。
+# `FORBIDDEN_DEFAULT_FEATURES` 都要点名这个特性。它把 `yeban-render` 那一边的同名
+# feature 转发开: 字节读取器住在 `yeban-render/src/logic_read.rs`, 本 crate 不复制
+# 第二份解析器; 建 `YebanProjectV1` 与落盘住在本 crate 的 `src/import_logic.rs`。
+# 两个开关共用这一个 feature:
+#   * `--inspect-logic <dir>`:**只读探针**, 不写工程、不产出 `.yeban`;
+#   * `--import-logic <demo> --save-as <out.yeban>`:**真导入**, 只写 `--save-as`。
+# 默认构建里这两个开关都是**一次点名 feature 的用法错误** (退出码 2),
+# 绝不静默忽略 —— 见 `ParseError::InspectLogicNotCompiled` /
+# `ParseError::ImportLogicNotCompiled`。
 experimental-logic-import = ["yeban-render/experimental-logic-import"]
 
 # ---------------------------------------------------------------------------

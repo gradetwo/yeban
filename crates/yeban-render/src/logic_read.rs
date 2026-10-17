@@ -4,12 +4,13 @@
 //! （见 `crates/yeban-render/Cargo.toml` 的 `[features]`）。AGENTS.md §2 红线 6 要求
 //! 实验性互操作能力不得进默认 release 构建，因此 `default` 保持为空。
 //!
-//! ## ⛔ 这不是导入器
+//! ## ⛔ 本模块不写工程
 //!
-//! 本仓**没有** `.logicx` 导入器：本模块**不写**工程、**不**产出 `.yeban` 文档、
-//! **不**创建片段、**不**触碰任何 demo 文件。它做的唯一一件事是：读 Apple 演示
-//! 工程的字节，把实测读数（[`LogicInspection`]）交给调用方/判据。名字里的
-//! `inspect` 是字面意思。
+//! 本模块**不写**工程、**不**产出 `.yeban` 文档、**不**创建片段、**不**触碰任何
+//! demo 文件。它只读 Apple 演示工程的字节：`inspect_*` 把实测读数
+//! （[`LogicInspection`]）交给判据，[`import_bundle`] 把"要建工程的那些字节"
+//! （区域摆放 + 音符）交给**导入器**。真正的导入器住在 `yeban-app` 的
+//! `import_logic`（建 `YebanProjectV1` + 原子落盘）—— 本模块不认识模型 crate。
 //!
 //! ## 读的是什么（8/8 Apple demo 实测，见 `#139`）
 //!
@@ -307,6 +308,86 @@ fn active_alternative(bundle: &Path) -> Result<(String, PathBuf), String> {
     Ok((alternative, alternative_dir))
 }
 
+/// 一台 bundle 的**元数据**（`ProjectInformation.plist` + `MetaData.plist` 的七键）。
+///
+/// [`inspect_bundle`] 与 [`import_bundle`] 共用这一份读取 —— ⛔ 不写第二份
+/// "`ActiveVariant` ⇒ 目录 ⇒ 七键"的实现（两处一旦漂移，读数与导入就会对不上）。
+struct BundleMeta {
+    /// `ActiveVariant` 对应的三位目录名。
+    alternative: String,
+    /// `Alternatives/<NNN>` 目录。
+    alternative_dir: PathBuf,
+    /// 采样率（Hz）。
+    sample_rate: u32,
+    /// 速度（BPM）。
+    bpm: f64,
+    /// `NumberOfTracks` 声明值。
+    declared_tracks: usize,
+    /// 拍号分子。
+    numerator: u32,
+    /// 拍号分母。
+    denominator: u32,
+    /// 调性。
+    song_key: String,
+    /// 格式版本。
+    version: i64,
+}
+
+/// 读一台 bundle 的 [`BundleMeta`]。
+fn bundle_meta(bundle: &Path) -> Result<BundleMeta, String> {
+    let (alternative, alternative_dir) = active_alternative(bundle)?;
+
+    let meta_path = alternative_dir.join("MetaData.plist");
+    let meta = read_plist(&meta_path)?;
+    let meta = meta.as_dict("MetaData.plist")?;
+
+    let sample_rate = required(meta, "SampleRate", &meta_path)?
+        .as_int()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|rate| *rate > 0)
+        .ok_or_else(|| format!("{}: SampleRate 不是正整数", meta_path.display()))?;
+    let bpm = required(meta, "BeatsPerMinute", &meta_path)?
+        .as_f64()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .ok_or_else(|| format!("{}: BeatsPerMinute 不是正的有限数", meta_path.display()))?;
+    let declared_tracks = required(meta, "NumberOfTracks", &meta_path)?
+        .as_int()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| format!("{}: NumberOfTracks 不是非负整数", meta_path.display()))?;
+    let numerator = required(meta, "SongSignatureNumerator", &meta_path)?
+        .as_int()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| format!("{}: SongSignatureNumerator 不是正整数", meta_path.display()))?;
+    let denominator = required(meta, "SongSignatureDenominator", &meta_path)?
+        .as_int()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            format!(
+                "{}: SongSignatureDenominator 不是正整数",
+                meta_path.display()
+            )
+        })?;
+    let song_key = required(meta, "SongKey", &meta_path)?
+        .as_str()
+        .ok_or_else(|| format!("{}: SongKey 不是字符串", meta_path.display()))?
+        .to_owned();
+    let version = required(meta, "Version", &meta_path)?
+        .as_int()
+        .ok_or_else(|| format!("{}: Version 不是整数", meta_path.display()))?;
+    Ok(BundleMeta {
+        alternative,
+        alternative_dir,
+        sample_rate,
+        bpm,
+        declared_tracks,
+        numerator,
+        denominator,
+        song_key,
+        version,
+    })
+}
+
 /// 一条正在累积音符的 `qeSM` 区域（`qeSM` 与下一个 `qeSM` 之间配对的 `qSvE`
 /// 都算这条区域的音符）。
 struct PendingRegion {
@@ -364,46 +445,17 @@ pub fn inspect_bundle(bundle: &Path) -> Result<LogicInspection, String> {
         .map_or_else(|| bundle.display().to_string(), str::to_owned);
     let bundle_name = bundle_name.strip_suffix(".logicx").unwrap_or(&bundle_name);
 
-    let (alternative, alternative_dir) = active_alternative(bundle)?;
-
-    let meta_path = alternative_dir.join("MetaData.plist");
-    let meta = read_plist(&meta_path)?;
-    let meta = meta.as_dict("MetaData.plist")?;
-
-    let sample_rate = required(meta, "SampleRate", &meta_path)?
-        .as_int()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|rate| *rate > 0)
-        .ok_or_else(|| format!("{}: SampleRate 不是正整数", meta_path.display()))?;
-    let bpm = required(meta, "BeatsPerMinute", &meta_path)?
-        .as_f64()
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .ok_or_else(|| format!("{}: BeatsPerMinute 不是正的有限数", meta_path.display()))?;
-    let declared_tracks = required(meta, "NumberOfTracks", &meta_path)?
-        .as_int()
-        .and_then(|value| usize::try_from(value).ok())
-        .ok_or_else(|| format!("{}: NumberOfTracks 不是非负整数", meta_path.display()))?;
-    let numerator = required(meta, "SongSignatureNumerator", &meta_path)?
-        .as_int()
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| format!("{}: SongSignatureNumerator 不是正整数", meta_path.display()))?;
-    let denominator = required(meta, "SongSignatureDenominator", &meta_path)?
-        .as_int()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| {
-            format!(
-                "{}: SongSignatureDenominator 不是正整数",
-                meta_path.display()
-            )
-        })?;
-    let song_key = required(meta, "SongKey", &meta_path)?
-        .as_str()
-        .ok_or_else(|| format!("{}: SongKey 不是字符串", meta_path.display()))?
-        .to_owned();
-    let version = required(meta, "Version", &meta_path)?
-        .as_int()
-        .ok_or_else(|| format!("{}: Version 不是整数", meta_path.display()))?;
+    let BundleMeta {
+        alternative,
+        alternative_dir,
+        sample_rate,
+        bpm,
+        declared_tracks,
+        numerator,
+        denominator,
+        song_key,
+        version,
+    } = bundle_meta(bundle)?;
 
     let project_data_path = alternative_dir.join("ProjectData");
     let bytes = fs::read(&project_data_path)
@@ -565,13 +617,13 @@ pub fn region_placements(bundle: &Path) -> Result<Vec<RegionPlacement>, String> 
                 note_span: 0,
                 internal: is_internal_region(name),
             });
-        } else if record.tag == LOGIC_SEQUENCE_TAG {
-            if let Some(region) = current.as_mut() {
-                let decoded = decode_note_lines(record.payload);
-                region.notes += decoded.len();
-                for (start, duration, _, _) in decoded {
-                    region.note_span = region.note_span.max(start + duration);
-                }
+        } else if record.tag == LOGIC_SEQUENCE_TAG
+            && let Some(region) = current.as_mut()
+        {
+            let decoded = decode_note_lines(record.payload);
+            region.notes += decoded.len();
+            for (start, duration, _, _) in decoded {
+                region.note_span = region.note_span.max(start + duration);
             }
         }
     }
@@ -579,6 +631,219 @@ pub fn region_placements(bundle: &Path) -> Result<Vec<RegionPlacement>, String> 
         placements.push(done);
     }
     Ok(placements)
+}
+
+/// `GenM`（可读名 `GenM`；落盘四个字节反过来是 `MneG`）—— 通道状态记录的 tag。
+///
+/// 导入器**不消费**它：本切片只计数并写进损失表（通道状态 / 混音器状态的含义未勘察）。
+const CHANNEL_STATE_TAG: [u8; 4] = *b"MneG";
+
+/// 一条可导入音符 —— [`decode_note_lines`] 的 `(起始, 时值, 音高, 力度)` 四元组。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportNote {
+    /// 区域相对起始 tick（`decode_note_lines` 已扣掉 `LOGIC_NOTE_ORIGIN_TICKS`）。
+    pub start_tick: u64,
+    /// 时值（tick）。
+    pub duration_ticks: u64,
+    /// 音高（0..=127）。
+    pub pitch: u8,
+    /// 力度（0..=127）。
+    pub velocity: u8,
+}
+
+/// 一条**可导入**的 `qeSM` 区域（非内部、非空区域哨兵、非零长度）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportRegion {
+    /// 区域名。
+    pub name: String,
+    /// 区域起点（`rest + 0xe0`，960 PPQ tick）。
+    pub start_tick: u32,
+    /// 区域长度（`rest + 0x3c`，960 PPQ tick）。
+    pub length_ticks: u32,
+    /// 该区域的音符（`decode_note_lines` 原样；区域**相对** tick）。
+    pub notes: Vec<ImportNote>,
+}
+
+/// 一台 `.logicx` 的**导入读取**（仍然是纯字节、只读）。
+///
+/// 与 [`LogicInspection`] 的区别只有一条：本结构**带上音符与可导入区域的字节读数**，
+/// 供导入器建工程；它⛔ 不写工程、⛔ 不写 demo、⛔ 不产出 `.yeban`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogicImport {
+    /// bundle 目录名（去掉 `.logicx` 后缀）。
+    pub bundle: String,
+    /// `ActiveVariant` 对应的三位目录名。
+    pub alternative: String,
+    /// `MetaData.plist` 的 `SampleRate`（Hz）。
+    pub sample_rate: u32,
+    /// `MetaData.plist` 的 `BeatsPerMinute`。
+    pub bpm: f64,
+    /// 拍号分子。
+    pub numerator: u32,
+    /// 拍号分母。
+    pub denominator: u32,
+    /// `payload[0] == 1` 的 `karT` 记录条数。
+    pub tracks: usize,
+    /// 所有 `qeSM` 条数（过滤前）。
+    pub regions_all: usize,
+    /// 内部区域条数（`*Automation` + `RBA Sequence`）。
+    pub internal_regions: usize,
+    /// 名字以 `*Automation` 结尾的区域条数。
+    pub automation_regions: usize,
+    /// 名字恰为 `RBA Sequence` 的区域条数。
+    pub rba_sequences: usize,
+    /// 非内部区域条数（含空区域哨兵）。
+    pub regions: usize,
+    /// 所有 `qSvE` 的音符条数（[`decode_note_lines`] 口径）。
+    pub notes: usize,
+    /// `AuRg`（落盘 `gRuA`）记录条数（只计数）。
+    pub audio_regions: usize,
+    /// `GenM`（落盘 `MneG`）记录条数（只计数）。
+    pub channel_states: usize,
+    /// 可导入区域（非内部、长度 ≠ 空区域哨兵、长度 ≠ 0；**记录流顺序**）。
+    pub imported_regions: Vec<ImportRegion>,
+    /// 因空区域哨兵（[`LOGIC_REGION_EMPTY_LENGTH`]）被跳过的条数。
+    pub skipped_empty_regions: usize,
+    /// 因长度为 0 被跳过的条数（模型要求摆放时值非零）。
+    pub skipped_zero_length_regions: usize,
+    /// 落在任何 `qeSM` 之外（或 `qeSM` 之前）的音符条数。
+    pub unpaired_notes: usize,
+    /// 可导入区域里**起点 ≥ 区域长度**的音符条数（读数；内容原样保留）。
+    pub notes_outside_region: usize,
+}
+
+/// 读一台 `.logicx` 的**可导入**字节（只读）。
+///
+/// 口径与 [`inspect_bundle`] / [`region_placements`] 完全一致：同一套记录行走、同一套
+/// 区域名/摆放字段、同一个 [`decode_note_lines`]。新增的只有"把音符与区域一起交出来"。
+///
+/// **跳过**：内部区域（`*Automation` / `RBA Sequence`）、空区域哨兵
+/// （`length == LOGIC_REGION_EMPTY_LENGTH`）、长度为 0 的区域。其余**全部**保留，
+/// 包括没有音符的区域 —— 它们是编排里真实存在的区域。
+///
+/// # Errors
+///
+/// 与 [`inspect_bundle`] 同：文件缺失、bplist00/记录流不合法、区域名不是 UTF-8、
+/// 或 `rest + 0xe0` / `rest + 0x3c` 越过载荷。
+pub fn import_bundle(bundle: &Path) -> Result<LogicImport, String> {
+    let bundle_name = bundle
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or_else(|| bundle.display().to_string(), str::to_owned);
+    let bundle_name = bundle_name.strip_suffix(".logicx").unwrap_or(&bundle_name);
+
+    let meta = bundle_meta(bundle)?;
+    let project_data_path = meta.alternative_dir.join("ProjectData");
+    let bytes = fs::read(&project_data_path)
+        .map_err(|error| format!("读 {} 失败: {error}", project_data_path.display()))?;
+    let records = walk_records(&bytes)
+        .map_err(|error| format!("{} 的记录流不合法: {error}", project_data_path.display()))?;
+
+    let mut tracks = 0usize;
+    let mut regions_all = 0usize;
+    let mut internal_regions = 0usize;
+    let mut automation_regions = 0usize;
+    let mut rba_sequences = 0usize;
+    let mut notes = 0usize;
+    let mut audio_regions = 0usize;
+    let mut channel_states = 0usize;
+    let mut all_regions: Vec<ImportRegion> = Vec::new();
+
+    for record in &records {
+        if record.tag == LOGIC_KART_TAG
+            && record.object == LOGIC_ARRANGE_OBJECT
+            && record.payload.first().copied() == Some(1)
+        {
+            tracks += 1;
+        } else if record.tag == LOGIC_REGION_TAG {
+            regions_all += 1;
+            let name = region_name(record.payload, &project_data_path)?;
+            if is_internal_region(name) {
+                internal_regions += 1;
+                if name.ends_with(AUTOMATION_NAME_SUFFIX) {
+                    automation_regions += 1;
+                } else {
+                    rba_sequences += 1;
+                }
+            }
+            let (start_tick, length_ticks) = region_timing(record.payload, &project_data_path)?;
+            all_regions.push(ImportRegion {
+                name: name.to_owned(),
+                start_tick,
+                length_ticks,
+                notes: Vec::new(),
+            });
+        } else if record.tag == LOGIC_SEQUENCE_TAG {
+            let decoded = decode_note_lines(record.payload);
+            notes += decoded.len();
+            if let Some(region) = all_regions.last_mut() {
+                region.notes.extend(decoded.into_iter().map(
+                    |(start_tick, duration_ticks, pitch, velocity)| ImportNote {
+                        start_tick,
+                        duration_ticks,
+                        pitch,
+                        velocity,
+                    },
+                ));
+            }
+        } else if record.tag == AUDIO_REGION_TAG {
+            audio_regions += 1;
+        } else if record.tag == CHANNEL_STATE_TAG {
+            channel_states += 1;
+        }
+    }
+
+    let paired_all: usize = all_regions.iter().map(|region| region.notes.len()).sum();
+    let mut imported_regions: Vec<ImportRegion> = Vec::new();
+    let mut skipped_empty_regions = 0usize;
+    let mut skipped_zero_length_regions = 0usize;
+    let mut notes_outside_region = 0usize;
+    for region in all_regions {
+        if is_internal_region(&region.name) {
+            continue;
+        }
+        if region.length_ticks == LOGIC_REGION_EMPTY_LENGTH {
+            skipped_empty_regions += 1;
+            continue;
+        }
+        if region.length_ticks == 0 {
+            skipped_zero_length_regions += 1;
+            continue;
+        }
+        let length = u64::from(region.length_ticks);
+        notes_outside_region += region
+            .notes
+            .iter()
+            .filter(|note| note.start_tick >= length)
+            .count();
+        imported_regions.push(region);
+    }
+
+    // 落在任何区域之外的音符：按"总数 − 各区域之和"算，⛔ 不猜它们属于谁。
+    let unpaired_notes = notes.saturating_sub(paired_all);
+
+    Ok(LogicImport {
+        bundle: bundle_name.to_owned(),
+        alternative: meta.alternative,
+        sample_rate: meta.sample_rate,
+        bpm: meta.bpm,
+        numerator: meta.numerator,
+        denominator: meta.denominator,
+        tracks,
+        regions_all,
+        internal_regions,
+        automation_regions,
+        rba_sequences,
+        regions: regions_all - internal_regions,
+        notes,
+        audio_regions,
+        channel_states,
+        imported_regions,
+        skipped_empty_regions,
+        skipped_zero_length_regions,
+        unpaired_notes,
+        notes_outside_region,
+    })
 }
 
 /// `karT` 记录里"编排轨对象"的对象号（记录头 +0x08 的 `u32` 小端）。
@@ -872,6 +1137,11 @@ impl<'a> BinaryPlist<'a> {
     }
 
     /// 解析一个对象；`depth` 是递归深度护栏。
+    ///
+    /// `chunks_exact(2)` 是 UTF-16 两字节单元的既有写法；clippy 1.99 的新
+    /// `chunks_exact_to_as_chunks` 纯风格提示在这里显式放行，⛔ 不为一个提示
+    /// 改读侧的字节解析。
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     fn object_at(&self, index: usize, depth: usize) -> Result<PlistValue, String> {
         if depth > BPLIST_MAX_DEPTH {
             return Err(format!("对象嵌套超过 {BPLIST_MAX_DEPTH} 层"));

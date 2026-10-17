@@ -91,6 +91,12 @@ pub mod file_picker;
 pub mod headless_idle;
 pub mod host;
 pub mod import_audio;
+// ⭐ **真导入 `.logicx`**（任务单 `#149`，刀 2）：读 `yeban-render` 的只读探针读数，
+// 建 `YebanProjectV1`，原子落成 `.yeban`。非默认 feature `experimental-logic-import`；
+// 默认构建里这个模块**不存在**（`yeban-render` 的 `logic_read` 也关着）。
+// ⚠ 轨道归属是 **provisional**（1/8 台有证据），逐字登记见该模块头。
+#[cfg(feature = "experimental-logic-import")]
+pub mod import_logic;
 pub mod import_midi;
 pub mod input;
 pub mod meters;

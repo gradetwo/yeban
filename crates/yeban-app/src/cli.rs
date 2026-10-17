@@ -188,6 +188,21 @@ pub const LOGIC_INSPECT_SWITCH: &str = "--inspect-logic";
 /// `scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES`。
 pub const LOGIC_INSPECT_FEATURE: &str = "experimental-logic-import";
 
+/// `--import-logic` 的字面值（**真导入** Logic Pro `.logicx`，任务单 `#149` / 刀 2）。
+///
+/// 它与 [`LOGIC_INSPECT_SWITCH`] 是两条命令：探针只打印读数、一个文件都不写；
+/// 本开关把读数建成本仓工程并**必须**配 `--save-as <out.yeban>`（⛔ 不猜落点）。
+/// 默认构建里给它 = 一次点名 feature 的用法错误
+/// （[`ParseError::ImportLogicNotCompiled`]，退出码 2）。
+pub const IMPORT_LOGIC_SWITCH: &str = "--import-logic";
+
+/// 让 `--import-logic` 真的可执行的那个**非默认** feature 名。
+///
+/// 与 [`LOGIC_INSPECT_FEATURE`] 是**同一个** feature：`yeban-render` 的只读读取器
+/// （`logic_read`）只在它打开时存在。本开关额外还要 app 侧的 [`crate::import_logic`]
+/// 模块 —— 两者都在这个 `cfg` 后面。
+pub const IMPORT_LOGIC_FEATURE: &str = "experimental-logic-import";
+
 /// `--migrate-groove` 的字面值（旧 `.groove` ⇒ 新 `.yeban` 的**唯一**用户出口，任务单 `#146`）。
 ///
 /// 它是**独立**的批处理命令：只读旧文件、只写 `--save-as` 指定的新容器，
@@ -261,6 +276,15 @@ pub fn usage_text() -> String {
                            migrated-groove-loss: (有损字段逐条) / migrated: ;
                            `format=groove-package` 或坏 JSON ⇒ 响亮报错 (退出码 {open}),
                            ⛔ 不产半成品; 本开关不与别的动作组合 (组合 = 用法错误)
+  --import-logic <demo>    把一台 Logic Pro `.logicx` bundle (或含 bundle 的目录 —— 取
+                           字典序第一台) **真导入**成 `.yeban` 工程; 必须与
+                           --save-as <out.yeban> 成对给出 (⛔ 不默认落点);
+                           默认构建不可用 (需 `experimental-logic-import` 特性);
+                           打印读数 (轨 / 区域 / 音符) + 损失表 (AuRg / GenM / 自动化 /
+                           轨道归属 provisional 逐条); 输入 demo **只读**;
+                           路径不存在 ⇒ 打印「跳过」并成功退出 (不红),
+                           路径在但读不懂 ⇒ 报错 (退出码 {open});
+                           本开关不与别的动作组合 (组合 = 用法错误)
   --dump-elements          把语义元素注册表打印到 stdout (每行一个元素, 稳定顺序) [UI-TEST-001]
   --export-elements <path> 把同一份元素注册表**原子**写到文件, 便于脚本 / AI 消费;
                            与 --dump-elements 同时给 = 既打印又落盘
@@ -523,9 +547,13 @@ pub fn usage_text() -> String {
       --export-als 在本次构建未编译 `{als_feature}` /
       --export-logic 在本次构建未编译 `{logic_feature}` /
       {logic_inspect_switch} 在本次构建未编译 `{logic_import_feature}`,
-      或与其它参数组合 (它是独立只读探针))
+      或与其它参数组合 (它是独立只读探针) /
+      {import_logic_switch} 在本次构建未编译 `{import_logic_feature}` /
+      没配 --save-as / 与其它参数组合 (它是独立导入命令))
   {open} --import-midi 失败 (读文件 / 解析 SMF / 空文件 / 没有目标音轨或摆放 / 提交被拒)
   {open} --import-audio 失败 (读文件 / 超过 64 MiB 单文件上限 / 非 PCM-float WAV / 提交被拒)
+  {open} --import-logic 失败 (读 demo / ProjectData 记录流不合法 / 采样率不在规范枚举 /
+     没有 karT 轨道 / 建出的工程未通过模型校验; 输入路径不存在是 skip, ⛔ 不算失败)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
   {open} --midi-in 失败 (端口不存在或名字有歧义 / 宿主不可用 / 本次构建未编译 `midi-input` 特性)
   {open} --midi-in-write-notes / --midi-in-render 失败 (一条音符都没有 / 没有可写目标 /
@@ -582,6 +610,8 @@ pub fn usage_text() -> String {
         logic_feature = LOGIC_EXPORT_FEATURE,
         logic_inspect_switch = LOGIC_INSPECT_SWITCH,
         logic_import_feature = LOGIC_INSPECT_FEATURE,
+        import_logic_switch = IMPORT_LOGIC_SWITCH,
+        import_logic_feature = IMPORT_LOGIC_FEATURE,
         print_theme = PRINT_THEME_SWITCH,
         slint_style_env = SLINT_STYLE_ENV,
         theme_switch = THEME_SWITCH,
@@ -1513,6 +1543,25 @@ pub enum ParseError {
     /// 被组合的那个开关**静默丢掉**（例如 `--save-as` 什么都没保存却退出 0）——
     /// 那正是本仓库最忌讳的假绿。payload 是第一个多余的参数。
     InspectLogicConflict(String),
+    /// 给了 `--import-logic`，但这次构建**没有**编译 [`IMPORT_LOGIC_FEATURE`]（`#149`）。
+    ///
+    /// 与 [`Self::InspectLogicNotCompiled`] 同一条纪律：默认构建里 `yeban-render` 的
+    /// `logic_read` 与 app 的 [`crate::import_logic`] 都不存在，用户要的是一个 `.yeban`
+    /// 文件而二进制里根本没有那个导入器 —— 那必须是一次**点名 feature 的**用法错误
+    /// （退出码 [`EXIT_USAGE`]），⛔ 不静默忽略。
+    ImportLogicNotCompiled,
+    /// `--import-logic` 与别的参数组合了（`#149`）。
+    ///
+    /// 它是一条**独立**命令：读一个 demo、写 `--save-as` 指定的容器，不打开当前工程、
+    /// 不导出任何别的东西。接受组合只会把被组合的开关**静默丢掉**。payload 是第一个
+    /// 多余的参数。唯一允许共存的开关是 `--headless`（本命令本来就不建窗口）。
+    ImportLogicConflict(String),
+    /// `--import-logic` 没配 `--save-as <out.yeban>`（`#149`）。
+    ///
+    /// 导入的产出**只能**是 `--save-as` 那一个路径：不给它就没有"导到哪里"，
+    /// 而"默认写到 demo 旁边"会让一条只读 demo 的命令突然变成写 demo 目录 ——
+    /// 本仓库不猜落点（与 [`Self::MigrateGrooveOutputMissing`] 同一条）。
+    ImportLogicOutputMissing,
     /// `--migrate-groove` 没配 `--save-as <new.yeban>`（`#146`）。
     ///
     /// 迁移器的产出**只能**是 `--save-as` 那一个路径：不给它就没有"迁移到哪里"，
@@ -1643,6 +1692,22 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`{LOGIC_INSPECT_SWITCH}` 是独立的只读探针, 不能与 `{other}` 组合 —— \
                  接受它只会把 `{other}` 静默丢掉"
+            ),
+            Self::ImportLogicNotCompiled => write!(
+                formatter,
+                "`{IMPORT_LOGIC_SWITCH}` 需要本次构建带 `--features {IMPORT_LOGIC_FEATURE}` \
+                 (实验性 .logicx 导入默认关: AGENTS.md §2 红线 6 同一条纪律; 它读 demo 字节 \
+                 建 `.yeban` 工程, 输出只写 `--save-as`)"
+            ),
+            Self::ImportLogicConflict(other) => write!(
+                formatter,
+                "`{IMPORT_LOGIC_SWITCH}` 是独立的导入命令, 不能与 `{other}` 组合 —— \
+                 接受它只会把 `{other}` 静默丢掉"
+            ),
+            Self::ImportLogicOutputMissing => write!(
+                formatter,
+                "`{IMPORT_LOGIC_SWITCH}` 必须配 `--save-as <out.yeban>` 指定工程落点 \
+                 (⛔ 不默认写到 demo 旁边: demo 只读, 落点必须由调用方给)"
             ),
             Self::MigrateGrooveOutputMissing => write!(
                 formatter,
@@ -2127,6 +2192,105 @@ pub fn parse_inspect_logic(args: &[String]) -> Option<Result<PathBuf, ParseError
         return Some(Err(ParseError::InspectLogicNotCompiled));
     }
     Some(Ok(dir))
+}
+
+/// 解析**独立**的 `--import-logic <demo> --save-as <out.yeban>`（`#149` / 刀 2）。
+///
+/// 返回：
+/// - `None`：argv 里没有这个开关（照常走 [`parse`]）；
+/// - `Some(Err(_))`：开关在但用法不对 / 本次构建没有编译它；
+/// - `Some(Ok((input, output)))`：可以执行真导入。
+///
+/// 为什么独立于 [`Options`]：导入器不需要当前工程，也不该与任何其它动作组合 ——
+/// 组合只会把另一个开关**静默丢掉**。唯一允许共存的开关是 `--headless`
+/// （它描述"不建窗口"，而本命令本来就不建窗口；接受它不是忽略，而是它的语义已经成立）。
+/// 与 `--migrate-groove` 同一形状：输入只读、输出只写 `--save-as`。
+#[must_use]
+pub fn parse_import_logic(args: &[String]) -> Option<Result<(PathBuf, PathBuf), ParseError>> {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+    {
+        return None;
+    }
+    let present = args.iter().any(|argument| {
+        argument == IMPORT_LOGIC_SWITCH
+            || argument
+                .strip_prefix(IMPORT_LOGIC_SWITCH)
+                .is_some_and(|rest| rest.starts_with('='))
+    });
+    if !present {
+        return None;
+    }
+
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut cursor = 0;
+    while cursor < args.len() {
+        let raw = args[cursor].as_str();
+        let (name, inline) = match raw.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_owned())),
+            None => (raw, None),
+        };
+        match name {
+            IMPORT_LOGIC_SWITCH => {
+                if input.is_some() {
+                    return Some(Err(ParseError::DuplicateOption(IMPORT_LOGIC_SWITCH)));
+                }
+                let value = match inline {
+                    Some(value) if !value.is_empty() => value,
+                    Some(_) => return Some(Err(ParseError::MissingValue(IMPORT_LOGIC_SWITCH))),
+                    None => {
+                        cursor += 1;
+                        match args.get(cursor) {
+                            Some(value) if !value.starts_with('-') => value.clone(),
+                            _ => {
+                                return Some(Err(ParseError::MissingValue(IMPORT_LOGIC_SWITCH)));
+                            }
+                        }
+                    }
+                };
+                input = Some(PathBuf::from(value));
+                cursor += 1;
+            }
+            "--save-as" => {
+                if output.is_some() {
+                    return Some(Err(ParseError::DuplicateOption("--save-as")));
+                }
+                let value = match inline {
+                    Some(value) if !value.is_empty() => value,
+                    Some(_) => return Some(Err(ParseError::MissingValue("--save-as"))),
+                    None => {
+                        cursor += 1;
+                        match args.get(cursor) {
+                            Some(value) if !value.starts_with('-') => value.clone(),
+                            _ => return Some(Err(ParseError::MissingValue("--save-as"))),
+                        }
+                    }
+                };
+                output = Some(PathBuf::from(value));
+                cursor += 1;
+            }
+            "--headless" => {
+                if inline.is_some() {
+                    return Some(Err(ParseError::UnexpectedValue("--headless")));
+                }
+                cursor += 1;
+            }
+            other => return Some(Err(ParseError::ImportLogicConflict(other.to_owned()))),
+        }
+    }
+
+    let Some(input) = input else {
+        return Some(Err(ParseError::MissingValue(IMPORT_LOGIC_SWITCH)));
+    };
+    let Some(output) = output else {
+        return Some(Err(ParseError::ImportLogicOutputMissing));
+    };
+    if !cfg!(feature = "experimental-logic-import") {
+        return Some(Err(ParseError::ImportLogicNotCompiled));
+    }
+    Some(Ok((input, output)))
 }
 
 /// 解析**独立**的 `--migrate-groove <old.groove> --save-as <new.yeban>`（`#146`）。
@@ -5964,6 +6128,112 @@ mod tests {
         let usage = usage_text();
         assert!(usage.contains(LOGIC_INSPECT_SWITCH), "用法文本缺开关");
         assert!(usage.contains(LOGIC_INSPECT_FEATURE), "用法文本缺 feature");
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 51: --import-logic 是**独立导入命令** (#149 / 刀 2)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_import_logic_command_is_standalone_and_opt_in() {
+        let args = |raw: &[&str]| {
+            raw.iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        // ① 字面值与 feature 名是**契约**。
+        assert_eq!(IMPORT_LOGIC_SWITCH, "--import-logic");
+        assert_eq!(IMPORT_LOGIC_FEATURE, "experimental-logic-import");
+
+        // ② 没有这个开关 ⇒ None（照常走 `parse`，⛔ 不影响既有命令行）。
+        assert_eq!(parse_import_logic(&args(&["--headless"])), None);
+
+        // ③ 编译期那道开关：默认构建里给了它 = 点名 feature 的用法错误。
+        let expected = if cfg!(feature = "experimental-logic-import") {
+            Some(Ok((
+                PathBuf::from("/tmp/Swing!.logicx"),
+                PathBuf::from("/tmp/out.yeban"),
+            )))
+        } else {
+            Some(Err(ParseError::ImportLogicNotCompiled))
+        };
+        assert_eq!(
+            parse_import_logic(&args(&[
+                "--import-logic",
+                "/tmp/Swing!.logicx",
+                "--save-as",
+                "/tmp/out.yeban"
+            ])),
+            expected
+        );
+        if cfg!(feature = "experimental-logic-import") {
+            assert_eq!(
+                parse_import_logic(&args(&[
+                    "--import-logic=/tmp/Swing!.logicx",
+                    "--save-as=/tmp/out.yeban",
+                    "--headless"
+                ])),
+                expected,
+                "内联取值 + --headless 必须被接受"
+            );
+        } else {
+            let error = expected.expect("Some").expect_err("默认构建必须拒");
+            assert_eq!(error.exit_code(), EXIT_USAGE);
+            let text = error.to_string();
+            assert!(text.contains(IMPORT_LOGIC_SWITCH), "必须点名开关: {text}");
+            assert!(
+                text.contains(IMPORT_LOGIC_FEATURE),
+                "必须点名 feature: {text}"
+            );
+        }
+
+        // ④ 缺 `--save-as` / 缺取值 / 重复 / 与别的参数组合 = 用法错误。
+        assert_eq!(
+            parse_import_logic(&args(&["--import-logic", "/tmp/Swing!.logicx"])),
+            Some(Err(ParseError::ImportLogicOutputMissing)),
+            "没有 --save-as ⇒ 不猜落点"
+        );
+        assert_eq!(
+            parse_import_logic(&args(&["--import-logic"])),
+            Some(Err(ParseError::MissingValue(IMPORT_LOGIC_SWITCH)))
+        );
+        assert_eq!(
+            parse_import_logic(&args(&[
+                "--import-logic",
+                "/tmp/Swing!.logicx",
+                "--import-logic",
+                "/tmp/ocean eyes.logicx",
+                "--save-as",
+                "/tmp/out.yeban"
+            ])),
+            Some(Err(ParseError::DuplicateOption(IMPORT_LOGIC_SWITCH)))
+        );
+        assert_eq!(
+            parse_import_logic(&args(&[
+                "--import-logic",
+                "/tmp/Swing!.logicx",
+                "--save-as",
+                "/tmp/out.yeban",
+                "--export-midi",
+                "/tmp/out.mid"
+            ])),
+            Some(Err(ParseError::ImportLogicConflict(
+                "--export-midi".to_owned()
+            ))),
+            "组合会把 --export-midi 静默丢掉"
+        );
+
+        // ⑤ `--help` 短路：交给 `parse`，帮助永远打得开。
+        assert_eq!(
+            parse_import_logic(&args(&["--help", "--import-logic", "x"])),
+            None
+        );
+
+        // ⑥ 用法文本必须点名开关与 feature。
+        let usage = usage_text();
+        assert!(usage.contains(IMPORT_LOGIC_SWITCH), "用法文本缺开关");
+        assert!(usage.contains(IMPORT_LOGIC_FEATURE), "用法文本缺 feature");
     }
 
     // ------------------------------------------------------------------

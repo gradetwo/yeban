@@ -15,8 +15,8 @@
 use std::path::Path;
 
 use yeban_render::logic_read::{
-    DEFAULT_DEMOS_DIR, LogicInspection, LogicTotals, RegionPlacement, inspect_demos,
-    region_placements,
+    DEFAULT_DEMOS_DIR, LogicInspection, LogicTotals, RegionPlacement, import_bundle,
+    inspect_bundle, inspect_demos, region_placements,
 };
 
 /// 一台 demo 的期望读数（`#139` 实测）。
@@ -568,6 +568,97 @@ fn region_placement_fields_are_measured_and_bounded() {
             note_regions.len(),
             max_end,
             max_note_end,
+        );
+    }
+}
+
+/// 判据（导入读取）：`import_bundle` 与只读探针逐项一致，且可导入区域/音符是实测的。
+///
+/// 这一条把 `#149` 的**读取侧**钉在 `#148` 的读数上：导入器如果换了记录行走、换了解码器、
+/// 或把空区域/内部区域的过滤写错，这里会红。⛔ 它不写任何文件。
+#[test]
+fn the_import_reader_agrees_with_the_probe_on_the_measured_demo() {
+    if !Path::new(DEFAULT_DEMOS_DIR).exists() {
+        println!("logic-import-reader: 无 demo（{DEFAULT_DEMOS_DIR} 不存在），跳过（不红）");
+        return;
+    }
+    let bundle = Path::new(DEFAULT_DEMOS_DIR).join("Swing!.logicx");
+    let probe = inspect_bundle(&bundle).expect("探针必须能读 Swing!");
+    let import = import_bundle(&bundle).expect("导入读取必须能读 Swing!");
+
+    assert_eq!(import.bundle, probe.bundle);
+    assert_eq!(import.alternative, probe.alternative);
+    assert_eq!(import.sample_rate, probe.sample_rate);
+    assert!((import.bpm - probe.bpm).abs() < 1e-9);
+    assert_eq!(import.numerator, probe.numerator);
+    assert_eq!(import.denominator, probe.denominator);
+    assert_eq!(import.tracks, probe.tracks, "轨道数（payload[0] == 1）");
+    assert_eq!(import.regions_all, probe.regions_all);
+    assert_eq!(import.internal_regions, probe.internal_regions);
+    assert_eq!(import.regions, probe.regions);
+    assert_eq!(import.notes, probe.notes);
+    assert_eq!(import.audio_regions, probe.audio_regions);
+
+    // 实测字面量（`#148` 同一台）。
+    assert_eq!(import.tracks, 76);
+    assert_eq!(import.regions_all, 545);
+    assert_eq!(import.regions, 200);
+    assert_eq!(import.notes, 2_903);
+    assert_eq!(import.internal_regions, 345);
+    assert_eq!(import.automation_regions, 170);
+    assert_eq!(import.rba_sequences, 175);
+    assert_eq!(import.audio_regions, 402);
+    assert_eq!(import.channel_states, 634);
+    assert_eq!(import.imported_regions.len(), 176);
+    assert_eq!(import.skipped_empty_regions, 24);
+    assert_eq!(import.skipped_zero_length_regions, 0);
+    assert_eq!(import.unpaired_notes, 0);
+    assert_eq!(import.notes_outside_region, 168);
+
+    // 音符没有在过滤里丢掉：可导入区域的音符数 == 探针的音符总数。
+    let imported_notes: usize = import
+        .imported_regions
+        .iter()
+        .map(|region| region.notes.len())
+        .sum();
+    assert_eq!(imported_notes, probe.notes, "可导入区域的音符数");
+
+    // 前 3 条的可导入区域（记录流顺序）与实测字面量。
+    let first: Vec<(&str, u32, u32, usize)> = import
+        .imported_regions
+        .iter()
+        .take(3)
+        .map(|region| {
+            (
+                region.name.as_str(),
+                region.start_tick,
+                region.length_ticks,
+                region.notes.len(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        first,
+        vec![
+            ("", 0, 4, 0),
+            ("TRASH", 0, 1_073_626_623, 0),
+            ("Swing!", 0, 316_800, 0)
+        ]
+    );
+
+    // 每条可导入区域都能在 `#148` 的摆放读数里逐条找到（同起点、同长度）。
+    let placements = region_placements(&bundle).expect("读 #148 的摆放");
+    for region in &import.imported_regions {
+        assert!(
+            placements.iter().any(|placement| {
+                !placement.internal
+                    && placement.start_tick == region.start_tick
+                    && placement.length_ticks == region.length_ticks
+            }),
+            "可导入区域 `{}`（{}+{}）必须能对应到 #148 的摆放读数",
+            region.name,
+            region.start_tick,
+            region.length_ticks
         );
     }
 }

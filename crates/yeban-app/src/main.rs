@@ -127,6 +127,42 @@ fn main() -> ExitCode {
         };
     }
 
+    // `--import-logic <demo> --save-as <out.yeban>`（#149 / 刀 2）也是**独立**命令：
+    // 它不打开当前工程、不进 GUI、不与别的动作组合。输入 demo 只读，产出只写
+    // `--save-as`；路径不存在 = skip（不红），路径在但读不懂 = 错误（红）。
+    if let Some(request) = cli::parse_import_logic(&args) {
+        return match request {
+            Ok((input, output)) => {
+                #[cfg(feature = "experimental-logic-import")]
+                {
+                    match yeban_app::import_logic::run(&input, &output) {
+                        Ok(lines) => cli::finish(Ok(lines)),
+                        Err(error) => {
+                            eprintln!("yeban-app: {error}");
+                            ExitCode::from(error.exit_code())
+                        }
+                    }
+                }
+                #[cfg(not(feature = "experimental-logic-import"))]
+                {
+                    // 不可达（默认构建的 `parse_import_logic` 已返回
+                    // `ImportLogicNotCompiled`）；保留响亮的兜底而不是静默成功。
+                    let _ = (input, output);
+                    eprintln!(
+                        "yeban-app: `{}` 需要本次构建带 `--features {}`",
+                        cli::IMPORT_LOGIC_SWITCH,
+                        cli::IMPORT_LOGIC_FEATURE
+                    );
+                    ExitCode::from(cli::EXIT_USAGE)
+                }
+            }
+            Err(error) => {
+                eprintln!("yeban-app: {error}\n\n{}", cli::usage_text());
+                ExitCode::from(error.exit_code())
+            }
+        };
+    }
+
     // `--migrate-groove <old.groove> --save-as <new.yeban>`（#146）同样是**独立**命令：
     // 它不打开当前工程、不进 GUI、也不与别的动作组合。旧文件是**只读**输入，
     // 产出只写 `--save-as`（旧文件前后逐字节比对，见 `migrate_groove::run`）。

@@ -132,10 +132,10 @@ pub mod als;
     feature = "experimental-logic-import"
 ))]
 pub mod logic;
-// 实验性 Logic Pro (`.logicx`) bundle 的**只读探针** [ARCH-FMT-002] / #143：
+// 实验性 Logic Pro (`.logicx`) bundle 的**只读读取器** [ARCH-FMT-002] / #143 / #149：
 // 只在非默认 feature `experimental-logic-import` 下存在。它读 Apple 演示工程的
-// `ProjectInformation.plist` / `MetaData.plist` / `ProjectData` 并数出实测读数，
-// **不写**工程、demo 或任何文件。见模块头对它**不是导入器**的边界声明。
+// `ProjectInformation.plist` / `MetaData.plist` / `ProjectData`，数出实测读数，
+// 并把可导入区域/音符交给 `yeban-app` 的导入器；**不写**工程、demo 或任何文件。
 #[cfg(feature = "experimental-logic-import")]
 pub mod logic_read;
 
