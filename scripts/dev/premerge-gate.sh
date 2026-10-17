@@ -85,8 +85,9 @@ for c in "$@"; do
   fi
   # CI: clippy/test (midi-input 特性)
   if grep -q '^midi-input' "crates/$c/Cargo.toml" 2>/dev/null; then
-    layer "check -p $c --all-targets --features midi-input" \
-      cargo check -p "$c" --all-targets --locked --features midi-input
+    # ⭐ 第 303 条的同款：这一层原来也是 **check** ⇒ `midi-input` 下的判据本机从未执行。
+    layer "test -p $c --features midi-input" \
+      cargo test -p "$c" --locked --no-fail-fast --features midi-input
   fi
   # CI: test (in-process-mcp 特性)
   if grep -q '^in-process-mcp' "crates/$c/Cargo.toml" 2>/dev/null; then
