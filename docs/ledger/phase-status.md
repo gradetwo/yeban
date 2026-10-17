@@ -12034,3 +12034,28 @@ cargo run --release -p yeban-engine --locked --features device --example measure
 ⭐ ⚠ **四、⭐ 硬件第 6 项：⭐ 状态变化** —— ⭐ 从 ⭐ **"⭐ 等待人类跑"**⭐ ⇒ ⭐ ⭐ **"⭐ 已测到 ＋ 达标（虚拟回环下限）"** ✓ ⭐ ⚠ **仍开放的一小条**：⭐ **声学／电气往返**（⭐ 要一根物理回环线；⭐ 或借一台音频接口）—— ⭐ 但 ⭐ **本项的验收判据已达**、⭐ ⛔ 不再阻塞 ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`81d648b1`（`#127`）的 CI 判决**（⭐ 写本条时仍在跑）＋ ⭐ **`bridge.rs:743`／`:761` 的"四个长度"残留** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 的行号引用**（⭐ 按第 295 条加锚点）＋ ⭐ **`HD-66`（SFZ 滤波器）**（⭐ 待裁；⭐ 我建议 C）＋ ⭐ **立体声路立项** ＋ ⭐ **`loop_type`**（⭐ 需批）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **`ROAD-M0-006`／`BASELINE-003`**（⭐ 正式读数只能在参考机 GPU 路径取）＋ ⭐ ⚠ **`backend_errors=1`⭐⭐ 的成因**（⭐ 各方向一次 ⇒ ⭐ 若复现 ⇒ ⭐ 单开一票）✓
+
+---
+
+## R821 实测追加（2026-10-17）：⭐⭐ **`#128`（硬件检查脚本参数修复 ＋ `--self-test`）已落地 ＋ 快进合并**（主干见下）⇒ ⭐ ⭐ **并查明"新建工程"⭐ 的真实路径**
+
+⭐ **合并**: ⭐ base `1b42b5b1` ⇒ ⭐ `FINAL=dce38a44`（⭐ **1 文件**：⭐ `scripts/dev/hardware-check.sh` ＋167／−10）⇒ ⭐ 主干快进合并 ✓ ⭐ **我独立复跑**：⭐ `bash -n` **rc 0**／⭐ ⭐ **`bash scripts/dev/hardware-check.sh --self-test` ⇒ 逐项 `[ok]` ＋ 尾行"⭐ 自检结论：全部通过。现在可以跑真档"**／⭐ `policy_check` **18 条**／⭐ `run-gates.sh light` **rc 0** ✓
+
+⭐ ⚠ **一、⭐ 修掉的**真参数错**（⭐ 人类撞的那个）**: ⭐ `--seconds 5` ⇒ ⭐ ⭐ **`--record-seconds 5`**（⭐ `cli.rs:240` 是唯一定义行）⇒ ⭐ **旧写法实测 `rc=2`**、⭐ stderr ⭐ ``无法识别的参数 `--seconds` `` ✓ ⭐ 并且 ⭐ **连带查出三处同类问题**：⭐ ① ⭐ 第 3 项（golden）**缺 `--features ui-test-port`** ⇒ ⭐ 旧命令 cargo **`rc=101`**（⭐ `Cargo.toml:326-329` 的 `required-features`）；⭐ ② ⭐ ⭐ **`set -o pipefail` 原来根本不存在**（⭐ 我派单说"⭐ 现有"⭐ ⇒ ⭐ **第 22 次"派单方写错"**）⇒ ⭐ 已加；⭐ ③ ⭐ `--release` 位置与门禁统一到 `gates-manual.yml:657` 的写法 ✓
+
+⭐ ⚠ **二、⭐ 新增 `--self-test`（⭐ 我要求的）**: ⭐ **无副作用、不问 y/n** ⇒ ⭐ 跑 ⭐ `bash -n`＋⭐ `cargo metadata`（⭐ feature／target）＋⭐ app `--help`＋⭐ `measure_latency --help` ⇒ ⭐ **逐条打印真档命令与开关接受性** ⇒ ⭐ **rc 0** ✓ ⇒ ⭐ ⭐ **参数错误现在挡在人类之前** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ "⭐ 新建工程"⭐ 的真实路径（⭐ 本单关键产出）**: ⭐ ⭐ **`--save-as` 单独给会保存**演示工程**（7,683 B／7 轨）** —— ⭐ ⚠ ⭐ **我上一轮给你的配方缺了一半**！⭐ ⭐ **真配方**：
+```
+cargo run -q -p yeban-app --locked -- --project-sample empty --save-as ~/Desktop/my.yeban
+#   rc=0；saved: … bytes=884 … from=sample=empty (内置空工程 0 轨, 不是从文件打开的)
+cargo run -q -p yeban-app --locked -- --open ~/Desktop/my.yeban
+#   （无桌面时用 --headless --open 自检：rc=0，project-counts: tracks-all=0 …）
+```
+⭐ `--project-sample <default|filled|empty>`（⭐ `cli.rs:364`）⭐ **在建工程时选模板** ⇒ ⭐ `empty` ＝ **884 B／0 轨** ✓
+
+⭐ ⚠ **四、⭐ GUI 缺口的实测（⭐ 交付线纠了我一处）**: ⭐ 我写"⭐ 现有按钮**只有**打开工程"⭐ ⇒ ⚠ **不全** —— ⭐ GUI 还有 ⭐ **`保存`**（⭐ `transport.slint:397`），⭐ 且 ⭐ 在样本会话里它会 ⭐ **弹原生保存框**（⭐ `host.rs:2799` 的 `picker.choose_save`）⇒ ⭐ **GUI 能把演示工程另存成文件**（⭐ 但那**不是"新建"**、⭐ 且默认工程是演示而非空白）✓ ⭐ 已建议**单开一票**：⭐ 在"⭐ 打开工程"⭐旁边加"⭐ 新建工程"，⭐ 落盘复用 ⭐ `save::save_archive_file`／`save_action::dispatch_save`，⭐ 工程对象取 ⭐ `samples::default_project()`（884 B／0 轨）✓ ⚠ 并发现**文档级不一致**：⭐ `main.rs:443`／`cli.rs:2095-2099`／`host.rs:69` 都说"⭐ 样本保存会如实报错"⭐，⭐ 而 `host.rs:2799` 已接真对话框 ⇒ ⭐ 建议同票统一措辞 ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 一条可复用口径（⭐ 第 296 条）**: ⭐ ⭐ **命令行开关的"存在性"⭐ 只能靠**实跑**（`--help`／⭐ 真调一次）确认，⭐ ⛔ 靠 `grep` 源码或猜** —— ⚠ **因为**：⭐ ① ⭐ 本条的 `--seconds` 与 `--record-seconds` 在**源码里都出现过**（⭐ 一个是错的、⭐ 一个有定义）⇒ ⭐ `grep` **无法分辨**；⭐ ② ⭐ 实跑会给**退出码与逐字 stderr**（⭐ 本条 `rc=2` ＋ ⭐ ``无法识别的参数 `--seconds` ``）⇒ ⭐ **那才是证据**；⭐ ③ ⭐ 脚本类缺陷的正确工序是 ⭐ ⭐ **先给脚本加一个 `--self-test`（⭐ 无副作用、⭐ 不问问题）** ⇒ ⭐ 让**机器**把参数错误挡在人类之前 ✓ ⭐ **做法**: ⭐ ① ⭐ 每个开关至少 ⭐ **实跑一次 `--help` ＋ 一次真调**；⭐ ② ⭐ 脚本必须有 `--self-test`；⭐ ③ ⭐ 把"⭐ 未实跑"⭐的部分**逐条登记**（⭐ 本单：⭐ GUI 窗口／⭐ `fps_gpu` 读数／⭐ golden 补录／⭐ 真 MIDI／⭐ BlackHole）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`81d648b1`／`dce38a44` 的 CI 判决** ＋ ⭐ ⭐ **"⭐ 新建工程"⭐UI 单**（⭐ 建议）＋ ⭐ **"⭐ 样本保存会报错"⭐三处文档 vs `host.rs:2799` 真对话框的措辞统一** ＋ ⭐ **`--only 0` 跑两遍 `check_env` 的小瑕** ＋ ⭐ **`bridge.rs:743`／`:761` 的"四个长度"残留** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号引用**（⭐ 第 295 条）＋ ⭐ **`HD-66`（SFZ 滤波器，⭐ 待裁；⭐ 我建议 C）** ＋ ⭐ **立体声路立项** ＋ ⭐ **`loop_type`**（⭐ 需批）＋ ⭐ **`HD-65`／`HD-64`／`ADR-0008`／`HD-48`／`HD-52`／`HD-58`** ＋ ⭐ **`ROAD-M0-006`／`BASELINE-003`** ＋ ⭐ **`backend_errors=1`⭐ 的成因** ✓
