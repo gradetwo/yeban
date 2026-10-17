@@ -3029,10 +3029,34 @@ impl ProductionLoop {
         quanta: u64,
         audio_source: Option<crate::audio_inject::AudioAssetSource>,
     ) -> Result<Self, EngineHostError> {
+        Self::start_with_audio_source_and_project_dir(project, quanta, audio_source, None)
+    }
+
+    /// ⭐ **生产方式 ＋ 音频片段字节来源 ＋ 工程文件所在目录**（任务单 `#168`）：
+    /// 与 [`Self::start_with_audio_source`] 逐字相同，但**先**把工程目录交给
+    /// [`EngineHost::set_project_dir`] **再** `reload`。
+    ///
+    /// 顺序同样是契约：第一份快照的 SFZ 摊平发生在 `reload` 里 ⇒ 目录晚一步写，
+    /// 那一份快照就会按"仓库根 ⇒ cwd"去解析工程旁边的样本（很可能找不到 ⇒ 响亮失败）。
+    ///
+    /// `project_dir = None` ⇒ 与 [`Self::start_with_audio_source`] **逐位相同**
+    /// （工程不是从文件打开的：内置样本 / 判据装配）。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Self::start`] 相同（外加相对 SFZ 路径找不到时的 [`EngineHostError::Sfz`]）。
+    pub fn start_with_audio_source_and_project_dir(
+        project: &yeban_model::YebanProjectV1,
+        quanta: u64,
+        audio_source: Option<crate::audio_inject::AudioAssetSource>,
+        project_dir: Option<&std::path::Path>,
+    ) -> Result<Self, EngineHostError> {
         let mut engine = EngineHost::new();
         if let Some(source) = audio_source {
             engine.set_audio_asset_source(source);
         }
+        // ⭐ `#168`：工程目录必须在 `reload` **之前**写下（见函数文档的顺序契约）。
+        engine.set_project_dir(project_dir.map(std::path::Path::to_path_buf));
         let rebuild = engine.reload(project, quanta)?;
         let mut meters = MeterRuntime::empty();
         // ⛔ 本票修的那一处。`adopt` 的语义是"引擎换代 ⇒ 旧读数全部作废"
@@ -4066,6 +4090,14 @@ impl OpenProjectRuntime for PortOpenProject {
         let mut reload_error = None;
         if let Some(production) = self.production.as_ref() {
             let engine = production.borrow().engine_handle();
+            // ⭐ 任务单 `#168`：相对 SFZ 路径从**新工程文件所在目录**开始解析。
+            //    必须在 `reload` **之前**写下（那一跳就要摊平第一份快照）；0 轨分支会把
+            //    宿主整体换成 `EngineHost::new()`，那里没有可解析的 SFZ，不重写也无害。
+            engine.borrow_mut().set_project_dir(
+                std::path::Path::new(path)
+                    .parent()
+                    .map(std::path::Path::to_path_buf),
+            );
             // ⚠ **先读成一个布尔**（⛔ 不写 `if engine.borrow().has_engine() { … }`）：那样写会让
             // 那个 `Ref` **活着穿过整个 `if` 体**，于是体内任何 `engine.borrow_mut()` 都会
             // `RefCell already borrowed` —— `tests/open_project_ui.rs` 的正向腿第一版实测抓到的

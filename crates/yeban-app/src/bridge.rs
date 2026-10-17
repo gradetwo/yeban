@@ -2078,39 +2078,25 @@ pub const INSTRUMENT_INSTALL_NO_BUILTIN_REASON: &str =
 /// 与界面批量入口（`host::on_load_sfz` 的 `48_000.0`）同值。
 const INSTRUMENT_PROBE_ENGINE_HZ: f32 = 48_000.0;
 
-/// 内置 SFZ 路径的**唯一**解析：绝对路径原样；仓库相对路径按**仓库根**。
+/// ⭐ **本模块不再有第二份路径解析**（任务单 `#168`）：探测与渲染都调
+/// [`crate::sfz_load::resolve_sampler_path`]。
 ///
-/// [`BuiltinInstrument::path`] 的契约就是"相对仓库根"（模型里逐字存这个字符串）⇒
-/// 探测/装载**不依赖进程 cwd**（`cargo test` 的 cwd 是 crate 目录，GUI 从仓根启动）。
-fn resolve_builtin_instrument_path(path: &str) -> std::path::PathBuf {
-    let raw = std::path::Path::new(path);
-    if raw.is_absolute() {
-        return raw.to_path_buf();
-    }
-    static REPO_ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    REPO_ROOT
-        .get_or_init(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .join(raw)
-}
-
-/// ⭐ 一份 SFZ 的**样本字节**读数：`Ok(())` = 它引用的每个样本都真的解出了 PCM。
-///
-/// ## 判据只有一条（⛔ 不新写"找 wav"的探测）
-///
-/// 走 [`crate::sfz_load::decode_sfz_plan`] —— 也就是 `#79`／`#80`／`#164` 的**同一条**
-/// 读取路径（`load_sfz_with_instrument` ＋ `read_sample_file`）。报告里
-/// `decoded_samples > 0` **且** `silent_region_count == 0` **且** 没有缺样本路径
-/// ⇒ 这份 SFZ 的每个区域都能出采样声。任一不满足 ⇒ 拒绝。
-///
-/// ⚠ 为什么要求 `silent_region_count == 0`（而不只是"至少解出一份"）：部分缺样本的
-/// SFZ 会把**一部分音符**变静音，那也是听感倒退；本单的口径是"要么整份能响，要么不装"。
+/// [`BuiltinInstrument::path`] 的契约是"相对仓库根"（模型里逐字存这个字符串）⇒
+/// 探测**不依赖进程 cwd**（`cargo test` 的 cwd 是 crate 目录，GUI 从仓根启动），
+/// 而"从别的目录启动"也不再改变解释。相对路径在候选根下都找不到时，本函数返回
+/// [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]（⛔ 不静默把它当成"有样本"）。
 ///
 /// # Errors
 ///
 /// * 样本缺失 / 一份都解不出 ⇒ [`INSTRUMENT_INSTALL_NO_SAMPLES_REASON`]；
-/// * SFZ 文本本身读不到或非法 ⇒ [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]。
+/// * SFZ 文本本身读不到、路径哪都找不到、或文本非法 ⇒
+///   [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]。
 pub fn sfz_samples_present(path: &str) -> Result<(), &'static str> {
-    let resolved = resolve_builtin_instrument_path(path);
+    let Ok(resolved) =
+        crate::sfz_load::resolve_sampler_path(path, crate::sfz_load::SfzRoots::none())
+    else {
+        return Err(INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON);
+    };
     match crate::sfz_load::decode_sfz_plan(&resolved, INSTRUMENT_PROBE_ENGINE_HZ) {
         Ok((_plan, report))
             if report.decoded_samples > 0
@@ -2202,8 +2188,9 @@ pub fn instrument_label(track: Option<&TrackV3>) -> String {
 /// ⚠ 本函数因此**读盘**（SFZ 文本 ＋ 样本解码）：只跑在**控制侧**的一次点击上
 /// （⛔ 不在音频回调里，红线 7 不涉及）。
 ///
-/// ⚠ `path` 原样写进 [`SamplerBinding::path`]（⛔ 不规范化、⛔ 不改写）；相对路径按
-/// **仓库根**解析（[`BuiltinInstrument::path`] 的契约，见 [`resolve_builtin_instrument_path`]）。
+/// ⚠ `path` 原样写进 [`SamplerBinding::path`]（⛔ 不规范化、⛔ 不改写）；相对路径的解析
+/// 与渲染共用 [`crate::sfz_load::resolve_sampler_path`]（绝对原样 ⇒ 工程目录 ⇒ 仓库根
+/// ⇒ cwd，见任务单 `#168`），⛔ 本模块不另写一份。
 ///
 /// # Errors
 ///

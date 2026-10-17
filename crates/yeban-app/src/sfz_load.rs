@@ -788,6 +788,180 @@ impl SfzDecodeReport {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#168`：SFZ 资产根的**唯一**解析
+// ---------------------------------------------------------------------------
+
+/// ⭐ **仓库根目录**（`CARGO_MANIFEST_DIR/../..`）—— 内置 SFZ 清单相对路径的契约根。
+///
+/// 它是 [`resolve_sampler_path`] 的第二个候选根，也是**唯一**一份"仓库根"取值：
+/// 探测（`bridge::sfz_samples_present`）与渲染（[`arm_pending_sfz`]）都经
+/// [`resolve_sampler_path`] 取它，⛔ 不各自写 `join("../..")`。
+///
+/// 优先 `canonicalize`（把 `..` 与符号链接消掉，错误信息里读得到真实的根）；
+/// 失败时退回**未规范化**的那条路径（宁可给出带 `..` 的根，也不静默换一个根）。
+#[must_use]
+pub fn repo_root() -> &'static Path {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let raw = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        raw.canonicalize().unwrap_or(raw)
+    })
+    .as_path()
+}
+
+/// ⭐ 解析一条 SFZ 路径时**按序试**的几个根（任务单 `#168`）。
+///
+/// | 字段 | 什么时候是 `Some` | 语义 |
+/// | :--- | :--- | :--- |
+/// | [`Self::project_dir`] | 工程是**从文件打开的** | 工程文件所在目录（用户写的相对路径通常相对它） |
+/// | [`Self::cwd`] | 判据要**显式注入** cwd；生产传 `None` | 进程当前目录（兼容旧行为） |
+///
+/// ⚠ `cwd: None` **不是**"没有 cwd 这个根"，而是"取 `std::env::current_dir()`"——
+/// 生产路径因此不必传它；判据传 `Some` 就能在**同一进程**里模拟三种 cwd
+/// （`set_current_dir` 是进程级副作用，并行判据会互相污染）。
+///
+/// ⚠ ⛔ **本结构不是"根的真相源"**：仓库根永远来自 [`repo_root`]，⛔ 调用方不能覆盖它。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SfzRoots<'a> {
+    /// 工程文件所在目录（`None` = 工程不是从文件打开的 / 装配方没给）。
+    pub project_dir: Option<&'a Path>,
+    /// 进程当前目录（`None` = 解析时读 `std::env::current_dir()`）。
+    pub cwd: Option<&'a Path>,
+}
+
+impl<'a> SfzRoots<'a> {
+    /// 只有仓库根 ＋ 进程 cwd（`#164`／`#165` 的旧口径；探测与离线导出用它）。
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            project_dir: None,
+            cwd: None,
+        }
+    }
+
+    /// 工程文件所在目录优先，其次仓库根，再次进程 cwd。
+    #[must_use]
+    pub const fn under_project(project_dir: &'a Path) -> Self {
+        Self {
+            project_dir: Some(project_dir),
+            cwd: None,
+        }
+    }
+
+    /// 判据用：显式指定 cwd（替代进程真实 cwd，避免并行判据互相污染）。
+    #[must_use]
+    pub const fn with_cwd(mut self, cwd: &'a Path) -> Self {
+        self.cwd = Some(cwd);
+        self
+    }
+}
+
+/// ⭐ 一条相对 SFZ 路径**在所有候选根下都找不到**时的逐个候选（任务单 `#168`）。
+///
+/// 它存在的唯一理由：⛔ **不许静默静音**。`Display` 逐字列出"试过：⟨根1⟩／⟨根2⟩／⟨根3⟩"，
+/// 于是用户/判据能从一条错误里读出"我到底在哪些目录下找过"，而不是只看到"加载失败"。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SfzPathError {
+    /// 模型里逐字存的那条路径（⛔ 不规范化 —— 用户看到的必须是他写下的那句）。
+    path: String,
+    /// 按**尝试顺序**排的候选绝对路径（去重后；通常 3 条，工程未知时 2 条）。
+    tried: Vec<PathBuf>,
+}
+
+impl SfzPathError {
+    /// 模型里逐字存的那条路径。
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// 按尝试顺序排的候选路径（错误信息的可机械断言形态）。
+    #[must_use]
+    pub fn tried(&self) -> &[PathBuf] {
+        &self.tried
+    }
+}
+
+impl core::fmt::Display for SfzPathError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "SFZ 路径 `{}` 找不到；试过：", self.path)?;
+        for (index, candidate) in self.tried.iter().enumerate() {
+            if index > 0 {
+                write!(formatter, "／")?;
+            }
+            write!(formatter, "{}", candidate.display())?;
+        }
+        Ok(())
+    }
+}
+
+impl core::error::Error for SfzPathError {}
+
+/// ⭐ ⭐ **SFZ 路径的唯一种解析**（任务单 `#168`）：探测与渲染都调它。
+///
+/// ## 规则（按序，**先命中先返回**）
+///
+/// 1. **绝对路径 ⇒ 原样返回**（⛔ 不查存在性、⛔ 不改写：模型里写的就是它；
+///    文件真的不在时，`decode_sfz_plan` 自己的 `Read` 错误带着这条路径 —— 仍**响亮**）；
+/// 2. **相对路径** ⇒ 依次试：
+///    ① 工程文件所在目录（若 [`SfzRoots::project_dir`] 给了）；
+///    ② **仓库根**（[`repo_root`]，内置清单的契约）；
+///    ③ 进程 cwd（[`SfzRoots::cwd`]，缺省读 `std::env::current_dir()`）；
+///    第一个 `is_file()` 的候选胜出；
+/// 3. **都找不到 ⇒ [`SfzPathError`]**（`Display` 逐字列出全部候选；⛔ 绝不静默静音）。
+///
+/// ## 为什么这个顺序
+///
+/// * **工程目录第一**：用户把样本放在工程旁边是**可迁移**的写法，且它比仓库根/ cwd
+///   更具体 —— 同一个相对字符串在两种解释下都存在时，选"跟工程走"的那份；
+/// * **仓库根第二**：内置清单（[`crate::bridge::BUILTIN_INSTRUMENTS`]）的路径**逐字
+///   相对仓库根**写进模型，这是 `#164` 的既有契约；
+/// * **cwd 最后**：它只是 `#79` 之前的历史行为，绝不优先于前两者 —— 否则"从别的目录
+///   启动"又会改变解释，正是 `#168` 要堵的那条路。
+///
+/// ⚠ 候选按 `PathBuf` **去重**（工程目录可能就是仓库根）⇒ 错误信息不会有重复行。
+/// ⚠ 本函数**只查存在性**（`is_file`），⛔ 不读文件内容、⛔ 不解析 SFZ。
+///
+/// # Errors
+///
+/// [`SfzPathError`]：相对路径在全部候选根下都不是一个文件。
+pub fn resolve_sampler_path(path: &str, roots: SfzRoots<'_>) -> Result<PathBuf, SfzPathError> {
+    let raw = Path::new(path);
+    // 规则 1：绝对路径原样（缺文件由 `decode_sfz_plan` 的 Read 错误兜住，仍响亮）。
+    if raw.is_absolute() {
+        return Ok(raw.to_path_buf());
+    }
+    // 规则 2：三个候选，按序。
+    let mut tried: Vec<PathBuf> = Vec::with_capacity(3);
+    if let Some(project_dir) = roots.project_dir {
+        push_unique_candidate(&mut tried, project_dir.join(raw));
+    }
+    push_unique_candidate(&mut tried, repo_root().join(raw));
+    let cwd = roots
+        .cwd
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok());
+    if let Some(cwd) = cwd {
+        push_unique_candidate(&mut tried, cwd.join(raw));
+    }
+    if let Some(found) = tried.iter().find(|candidate| candidate.is_file()) {
+        return Ok(found.clone());
+    }
+    // 规则 3：响亮（逐字列出试过的根）。
+    Err(SfzPathError {
+        path: path.to_owned(),
+        tried,
+    })
+}
+
+/// 按 `PathBuf` 逐字去重地追加一个候选（顺序 = 尝试顺序）。
+fn push_unique_candidate(tried: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !tried.contains(&candidate) {
+        tried.push(candidate);
+    }
+}
+
 /// ⭐ ⭐ **控制侧解码管线**（任务单 `#79`）：SFZ 文件路径 ⇒ 可发声的 [`SfzPlan`]。
 ///
 /// ## 六步（每一步都**复用既有形状**，⛔ 不另写一份解码）
@@ -873,13 +1047,18 @@ pub fn decode_sfz_plan(
 /// 报告里也看不见的内容错。缺**样本**（文件在、`sample=` 读不到）仍走既有口径
 /// （区域静音 ＋ 计数，见 [`decode_sfz_plan`]）。
 ///
+/// ⭐ **任务单 `#168`**：每条待摊平项的路径都先经 [`resolve_sampler_path`]（**唯一**解析：
+/// 绝对原样 ⇒ 工程目录 ⇒ 仓库根 ⇒ cwd）。相对路径在全部候选根下都找不到时，错误原文
+/// 逐字带"试过：⟨根1⟩／⟨根2⟩／⟨根3⟩"（⛔ 不静默静音）。
+///
 /// # Errors
 ///
-/// 任一 SFZ 文件读不到 / 文本非法 ⇒ 透出 [`SfzLoadError`]（消息含具体路径）。
+/// 任一 SFZ 文件读不到 / 文本非法 ⇒ 透出 [`SfzLoadError`]（消息含具体路径与试过的根）。
 pub fn arm_pending_sfz(
     snapshot: EngineSnapshot,
     engine_hz: f32,
     prebuilt: BTreeMap<EntityId, SfzPlan>,
+    roots: SfzRoots<'_>,
 ) -> Result<(EngineSnapshot, Vec<(EntityId, SfzDecodeReport)>), SfzLoadError> {
     let mut snapshot = snapshot;
     for (track, plan) in prebuilt {
@@ -893,7 +1072,10 @@ pub fn arm_pending_sfz(
         .collect();
     let mut reports = Vec::with_capacity(pending.len());
     for (track, path) in pending {
-        let (plan, report) = decode_sfz_plan(Path::new(&path), engine_hz)?;
+        // ⭐ `#168`：唯一解析（绝对原样 ⇒ 工程目录 ⇒ 仓库根 ⇒ cwd）；找不到 ⇒ 响亮。
+        let resolved = resolve_sampler_path(&path, roots)
+            .map_err(|error| SfzLoadError::Read(error.to_string()))?;
+        let (plan, report) = decode_sfz_plan(&resolved, engine_hz)?;
         snapshot = snapshot.with_sfz(track, plan);
         reports.push((track, report));
     }

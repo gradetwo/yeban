@@ -112,7 +112,7 @@
 //! [ARCH-RT-001 / MUST-GATE-001]。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use yeban_engine::block::DEFAULT_BLOCK_FRAMES;
 use yeban_engine::device::{DeviceError, EngineConfig, OutputStreamHandle, ShareMode};
@@ -491,6 +491,16 @@ pub struct EngineHost {
     /// `publish_project` 两条（都是 `&mut self` ⇒ 不需要 `Mutex`）、判据可隔离。
     /// 完整的设计与三条失效条件见 [`crate::sfz_cache`] 的模块文档。
     sfz_cache: SfzPlanCache,
+    /// ⭐ ⭐ **工程文件所在目录**（任务单 `#168`）：相对 SFZ 路径的**第一个**候选根。
+    ///
+    /// 为什么住在这里（⛔ 不放进 `EngineSnapshot`）：快照是**实时侧**读的不可变投影，
+    /// 而"工程从哪个文件打开"是**控制侧**的装配知识（引擎册 `#78` 的快照只带路径字符串）。
+    /// 装配方在**打开工程 / 另存为**时经 [`Self::set_project_dir`] 写下它；`reload` /
+    /// `publish_project` 用它调 [`crate::sfz_load::resolve_sampler_path`]。
+    ///
+    /// `None` = 工程不是从文件打开的（内置样本 / 判据装配）⇒ 解析从**仓库根**开始，
+    /// 与 `#164`／`#165` 的旧口径一致。
+    project_dir: Option<PathBuf>,
     /// ⭐ ⭐ **音频片段字节的只读来源**（任务单 `#136`）：`AssetHash ⇒ 会话 CAS 池里的字节`。
     ///
     /// 为什么住在这里：`reload` / `publish_project` 只拿得到 `&YebanProjectV1`，而 **PCM
@@ -540,6 +550,24 @@ impl EngineHost {
         self.runtime.is_some() || self.device.is_some()
     }
 
+    /// ⭐ **写下工程文件所在目录**（任务单 `#168`）：相对 SFZ 路径的第一个候选根。
+    ///
+    /// 装配方在**打开工程**（`--open` / 运行期打开）之后、下一次 `reload` 之前调用。
+    /// 传相对目录时按**进程 cwd** 先转绝对（`std::path::absolute`）—— 否则"之后改 cwd"
+    /// 会把同一个工程目录解释成另一个目录。
+    ///
+    /// `None` = 工程不是从文件打开的 ⇒ 解析从仓库根开始（`#164`／`#165` 的旧口径）。
+    pub fn set_project_dir(&mut self, project_dir: Option<PathBuf>) {
+        self.project_dir =
+            project_dir.map(|dir| std::path::absolute(&dir).unwrap_or_else(|_| dir.clone()));
+    }
+
+    /// 当前写下的工程文件所在目录（诊断/判据读数）。
+    #[must_use]
+    pub fn project_dir(&self) -> Option<&Path> {
+        self.project_dir.as_deref()
+    }
+
     /// **设备腿**是否活跃（`open_device` 成功且流已 `play()`）。
     #[must_use]
     pub const fn device_active(&self) -> bool {
@@ -583,7 +611,8 @@ impl EngineHost {
     /// ① 待摊平项 ← EngineSnapshot::sfz_pending()          // 键升序 ⇒ 确定性 [MODEL-AST-003]
     /// ② 路径 ⇒ 摊平表 ← SfzPlanCache::get_or_prepare(…)    // ⭐ 本单的缓存；未命中才读盘
     ///        build = crate::sfz_load::decode_sfz_plan(path, engine_hz)   // #79 的同一条管线
-    /// ③ 注入 ← crate::sfz_load::arm_pending_sfz(snapshot, hz, prebuilt)  // #79 的同一条入口
+    /// ③ 注入 ← crate::sfz_load::arm_pending_sfz(snapshot, hz, prebuilt, roots)  // #79 的同一条入口
+    ///    （`roots` = 本宿主的 `project_dir` ⇒ 仓库根 ⇒ cwd，任务单 `#168`）
     /// ```
     ///
     /// ## 缓存（本单的核心设计点）
@@ -605,6 +634,13 @@ impl EngineHost {
         snapshot: EngineSnapshot,
     ) -> Result<EngineSnapshot, EngineHostError> {
         let engine_hz = snapshot.sample_rate() as f32;
+        // ⭐ `#168`：相对路径的候选根（工程目录 ⇒ 仓库根 ⇒ cwd）。`project_dir` 先拷出来，
+        //    否则下面 `self.sfz_cache` 的可变借用会与 `self.project_dir` 的不可变借用冲突。
+        let project_dir = self.project_dir.clone();
+        let roots = match project_dir.as_deref() {
+            Some(dir) => crate::sfz_load::SfzRoots::under_project(dir),
+            None => crate::sfz_load::SfzRoots::none(),
+        };
         // ① 待摊平项（`BTreeMap` ⇒ 键升序；`Vec` 收集是因为 `with_sfz` 需要 `&mut self`）。
         let pending: Vec<(EntityId, String)> = snapshot
             .sfz_pending()
@@ -618,14 +654,19 @@ impl EngineHost {
         if pending.is_empty() {
             return Ok(snapshot);
         }
-        // ② 路径 ⇒ 摊平表（⭐ 命中 ⇒ 复用；未命中 ⇒ 走 `#79` 的唯一解码管线）。
+        // ② 路径 ⇒ 绝对路径（⭐ `#168` 的唯一解析）⇒ 摊平表（命中复用；未命中走 `#79` 管线）。
+        //
+        // ⚠ 缓存键用**解析后**的路径：同一条模型路径在不同 cwd/工程目录下可能指向不同文件，
+        //    键必须是"真的读了哪一份"，否则失效条件 ① 会被一个稳定但错误的字符串骗过。
         let mut prebuilt: BTreeMap<EntityId, SfzPlan> = BTreeMap::new();
         for (track, path) in pending {
+            let resolved = crate::sfz_load::resolve_sampler_path(&path, roots)
+                .map_err(|error| SfzLoadError::Read(error.to_string()))?;
+            let key = resolved.to_string_lossy().into_owned();
             let plan = self
                 .sfz_cache
-                .get_or_prepare(track, &path, engine_hz, |path, hz| {
-                    crate::sfz_load::decode_sfz_plan(Path::new(path), hz)
-                        .map(|(plan, _report)| plan)
+                .get_or_prepare(track, &key, engine_hz, |_key, hz| {
+                    crate::sfz_load::decode_sfz_plan(&resolved, hz).map(|(plan, _report)| plan)
                 })?;
             // ⚠ `PreparedSfz` 的 PCM 今天**没有** `Arc` 共享（引擎侧事实，见
             //    `PreparedSample` 的字段文档）⇒ 注入必须按值 clone 一份给快照，缓存留着
@@ -634,7 +675,8 @@ impl EngineHost {
         }
         // ③ 复用 `#79` 的注入入口：它先注入 `prebuilt`（并**取代**待摊平项），再解码剩余
         //    待摊平项（这里已经没有剩余 —— 全部由缓存供给 ⇒ ⛔ 不会重复读盘）。
-        let (snapshot, _reports) = crate::sfz_load::arm_pending_sfz(snapshot, engine_hz, prebuilt)?;
+        let (snapshot, _reports) =
+            crate::sfz_load::arm_pending_sfz(snapshot, engine_hz, prebuilt, roots)?;
         Ok(snapshot)
     }
 

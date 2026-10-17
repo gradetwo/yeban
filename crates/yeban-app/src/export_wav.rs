@@ -568,13 +568,42 @@ pub fn export_wav_with_sfz_file_and_assets(
     )>,
     assets: &[(yeban_model::AssetHash, Vec<u8>)],
 ) -> Result<WavExportReport, WavExportError> {
+    export_wav_with_sfz_file_and_assets_under(project, path, options, sfz, assets, None)
+}
+
+/// 与 [`export_wav_with_sfz_file_and_assets`] 相同，但**知道工程文件所在目录**
+/// （任务单 `#168`：相对 SFZ 路径的第一个候选根）。
+///
+/// `project_dir = None` ⇒ 与 [`export_wav_with_sfz_file_and_assets`] **逐位相同**。
+/// 生产 `--export-wav` 传 `--open` 那个文件的父目录。
+///
+/// # Errors
+///
+/// 与 [`export_wav`] 相同，外加"相对路径在全部候选根下都找不到"时的
+/// [`WavExportError::Sfz`]（原文逐字带"试过：⟨根1⟩／⟨根2⟩／⟨根3⟩"）。
+pub fn export_wav_with_sfz_file_and_assets_under(
+    project: &YebanProjectV1,
+    path: &Path,
+    options: WavExportOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+    assets: &[(yeban_model::AssetHash, Vec<u8>)],
+    project_dir: Option<&Path>,
+) -> Result<WavExportReport, WavExportError> {
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
     // ⭐ **一条真源**：导出与录音都走 `render_core::render_project_f32`
     // （慢路径校验 → 计划编译 → 音源装配 → 执行 → digest 全在那里）。
-    let rendered =
-        crate::render_core::render_project_f32_with_assets(project, options, sfz, assets)?;
+    let rendered = crate::render_core::render_project_f32_with_assets_under(
+        project,
+        options,
+        sfz,
+        assets,
+        project_dir,
+    )?;
     let (samples, frames, source_label, digest) = (
         rendered.samples,
         rendered.frames,

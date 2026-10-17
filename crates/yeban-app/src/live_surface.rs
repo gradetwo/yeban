@@ -967,6 +967,13 @@ impl LiveAdminSurface {
             self.save_now()?;
         }
         // ③ 唯一注入路径。
+        //
+        // ⭐ 任务单 `#168`：相对 SFZ 路径从**新工程文件所在目录**开始解析。
+        //    `apply_project` 会重建引擎（`reload`），目录必须在它**之前**写下。
+        let project_dir = PathBuf::from(path)
+            .parent()
+            .map(std::path::Path::to_path_buf);
+        self.engine.set_project_dir(project_dir);
         self.apply_project(&project).map_err(wiring_rejected)?;
         // ④ 落点跟着新工程走。
         self.save_path = Some(PathBuf::from(path));
@@ -1951,7 +1958,7 @@ pub fn build_live_ui_with(
     // 照常可用，只有 `import-midi` 会如实拒绝（`error=no-undo-port`）——
     // ⛔ 不静默用一个临时会话把编辑吞掉。
     host::wire_module_actions(&window, options.undo.clone());
-    let admin = LiveAdminSurface {
+    let mut admin = LiveAdminSurface {
         inner: surface,
         window,
         registry,
@@ -1974,6 +1981,14 @@ pub fn build_live_ui_with(
         // 因此 [`LiveAdminSurface::open_project_now`] 能如实判断"工程是不是还有别的持有者"。
         undo: options.undo.clone(),
     };
+    // ⭐ 任务单 `#168`：装配期给了保存落点（`--open` / `--save`）⇒ 那个文件所在目录
+    // 就是相对 SFZ 路径的第一个候选根。工程不是从文件打开的 ⇒ `None`（按仓库根 ⇒ cwd）。
+    let project_dir = admin
+        .save_path
+        .as_deref()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf);
+    admin.engine.set_project_dir(project_dir);
     Ok(LiveUi {
         reference,
         surface: admin,

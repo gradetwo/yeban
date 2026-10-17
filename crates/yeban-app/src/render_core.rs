@@ -66,7 +66,7 @@
 //! 与 [`crate::export_wav::export_wav`] 相同（选项非法 / 计划编译 / 引擎装载 / 执行失败）。
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
@@ -184,7 +184,30 @@ pub fn render_project_f32_with_assets(
     )>,
     assets: &[(AssetHash, Vec<u8>)],
 ) -> Result<RenderProjectOutput, WavExportError> {
-    render_project_f32_with_plans(project, options, sfz, assets, BTreeMap::new())
+    render_project_f32_with_assets_under(project, options, sfz, assets, None)
+}
+
+/// 与 [`render_project_f32_with_assets`] 相同，但**知道工程文件所在目录**
+/// （任务单 `#168`：相对 SFZ 路径的第一个候选根）。
+///
+/// `project_dir = None` ⇒ 与 [`render_project_f32_with_assets`] **逐位相同**
+/// （相对路径按仓库根 ⇒ cwd 解析）。生产 `--export-wav` 从 `--open` 的路径取父目录传进来，
+/// 于是"样本放在工程旁边"在**任意 cwd** 下都读得到。
+///
+/// # Errors
+///
+/// 与 [`render_project_f32_with_plans`] 相同。
+pub fn render_project_f32_with_assets_under(
+    project: &YebanProjectV1,
+    options: WavExportOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+    assets: &[(AssetHash, Vec<u8>)],
+    project_dir: Option<&Path>,
+) -> Result<RenderProjectOutput, WavExportError> {
+    render_project_f32_with_plans_under(project, options, sfz, assets, BTreeMap::new(), project_dir)
 }
 
 /// 与 [`render_project_f32_with_assets`] 相同，但可**额外注入已摊平的 SFZ 表**（任务单 `#79`）。
@@ -215,6 +238,34 @@ pub fn render_project_f32_with_plans(
     assets: &[(AssetHash, Vec<u8>)],
     plans: BTreeMap<EntityId, yeban_engine::sfz_instrument::SfzPlan>,
 ) -> Result<RenderProjectOutput, WavExportError> {
+    render_project_f32_with_plans_under(project, options, sfz, assets, plans, None)
+}
+
+/// 与 [`render_project_f32_with_plans`] 相同，但**知道工程文件所在目录**
+/// （任务单 `#168`：相对 SFZ 路径的第一个候选根）。
+///
+/// `project_dir = None` ⇒ 与 [`render_project_f32_with_plans`] **逐位相同**。
+///
+/// # Errors
+///
+/// 与 [`render_project_f32_with_plans`] 相同，外加"相对路径在全部候选根下都找不到"时的
+/// [`WavExportError::Sfz`]（原文逐字带"试过：⟨根1⟩／⟨根2⟩／⟨根3⟩"）。
+pub fn render_project_f32_with_plans_under(
+    project: &YebanProjectV1,
+    options: WavExportOptions,
+    sfz: Option<(
+        std::sync::Arc<yeban_engine::sfz_instrument::SfzInstrument>,
+        Option<PathBuf>,
+    )>,
+    assets: &[(AssetHash, Vec<u8>)],
+    plans: BTreeMap<EntityId, yeban_engine::sfz_instrument::SfzPlan>,
+    project_dir: Option<&Path>,
+) -> Result<RenderProjectOutput, WavExportError> {
+    // ⭐ `#168`：唯一的解析上下文（工程目录 ⇒ 仓库根 ⇒ cwd）。
+    let sfz_roots = match project_dir {
+        Some(dir) => crate::sfz_load::SfzRoots::under_project(dir),
+        None => crate::sfz_load::SfzRoots::none(),
+    };
     if options.frames == 0 {
         return Err(WavExportError::Empty("请求的帧数为 0".to_owned()));
     }
@@ -231,9 +282,13 @@ pub fn render_project_f32_with_plans(
         // ⭐ ⭐ **本单接线（`#79`）**：`TrackV3.sampler` 已经在快照里是"待摊平项"
         //    （`#78`，引擎⛔ 不读盘）⇒ 控制侧（**这里**，允许 I/O 与分配）把它走完六步，
         //    `with_sfz` 注入摊平表（并取代待摊平项）。失败 ⇒ `Sfz` 错误（⛔ 不静默）。
-        let (snapshot, decoded) =
-            crate::sfz_load::arm_pending_sfz(snapshot, options.sample_rate as f32, plans)
-                .map_err(|error| WavExportError::Sfz(error.to_string()))?;
+        let (snapshot, decoded) = crate::sfz_load::arm_pending_sfz(
+            snapshot,
+            options.sample_rate as f32,
+            plans,
+            sfz_roots,
+        )
+        .map_err(|error| WavExportError::Sfz(error.to_string()))?;
         sfz_decoded = decoded;
         // ⭐ 快照以 `Arc` 共享给逐轨音源：`render_track` 只**借用**里面的摊平表
         //    （⛔ 不 clone PCM —— 与实时路径同一条纪律）。

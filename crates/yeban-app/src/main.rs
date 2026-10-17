@@ -338,10 +338,18 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 录音（`#132`）与导入落进这一池的后续字节，下一次 edited-publish（`publish_project`
     // 的第 1.3 步）就会读到它 ⇒ "采得到 → 进工程 → 摆上轨道 → 听得到"闭环。
     let audio_asset_port = Rc::clone(&undo_port);
-    let mut engine = host::ProductionLoop::start_with_audio_source(
+    // ⭐ 任务单 `#168`：`--open` 的那个文件所在目录 = 相对 SFZ 路径的第一个候选根。
+    //    必须在 `start` **之前**给出（第一份快照的 SFZ 摊平就在 `reload` 里）。
+    //    `ProjectSource::Sample` 没有磁盘对应物 ⇒ `None`（解析从仓库根开始）。
+    let project_dir = match &loaded.source {
+        cli::ProjectSource::File { path, .. } => path.parent().map(std::path::Path::to_path_buf),
+        cli::ProjectSource::Sample(_) => None,
+    };
+    let mut engine = host::ProductionLoop::start_with_audio_source_and_project_dir(
         &loaded.archive.project,
         0,
         Some(Box::new(move |hash| audio_asset_port.asset_bytes(hash))),
+        project_dir.as_deref(),
     )
     .unwrap_or_else(|error| {
         // 引擎建不起来时**出声**：界面照常打开（工程投影本身是好的），

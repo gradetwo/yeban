@@ -43,7 +43,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use yeban_model::container::ProjectArchive;
@@ -2566,6 +2566,23 @@ pub struct Loaded {
     pub source: ProjectSource,
 }
 
+impl Loaded {
+    /// ⭐ **相对 SFZ 路径的工程目录根**（任务单 `#168`）：`--open` 那个文件的父目录。
+    ///
+    /// 工程不是从文件打开的（`--project-sample` / 不带 `--open`）⇒ `None` ⇒ 解析从
+    /// **仓库根**开始，再到 cwd（`#164`／`#165` 的旧口径）。
+    ///
+    /// ⚠ ⛔ 这不是"工程里的一个字段"：模型只存路径字符串，目录是**读文件这一侧**的知识
+    /// （工程必须可迁移，⛔ 不把绝对路径写进工程）。
+    #[must_use]
+    pub fn project_dir(&self) -> Option<PathBuf> {
+        match &self.source {
+            ProjectSource::File { path, .. } => path.parent().map(Path::to_path_buf),
+            ProjectSource::Sample(_) => None,
+        }
+    }
+}
+
 /// 命令行的失败（每一种都带**精确**原因与退出码）。
 #[derive(Debug)]
 pub enum CliError {
@@ -3916,7 +3933,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             options.wav_bit_depth,
             options.wav_seconds,
         );
-        let report = crate::export_wav::export_wav_with_sfz_file_and_assets(
+        // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
+        //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）
+        //    给 `None`，解析从仓库根开始（旧口径）。
+        let project_dir = loaded.project_dir();
+        let report = crate::export_wav::export_wav_with_sfz_file_and_assets_under(
             &loaded.archive.project,
             path,
             wav_options,
@@ -3924,6 +3945,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
                 .clone()
                 .map(|(instrument, sfz_path)| (instrument, Some(sfz_path))),
             &loaded.archive.assets,
+            project_dir.as_deref(),
         )
         .map_err(|source| CliError::ExportWav {
             path: path.clone(),
@@ -4024,6 +4046,8 @@ pub fn apply_captured_midi(
         };
         let defaults = crate::export_wav::WavExportOptions::default();
         let mut host = crate::engine_host::EngineHost::new();
+        // ⭐ 任务单 `#168`：与 `--export-wav` 同一个工程目录根（`--open` 的父目录）。
+        host.set_project_dir(loaded.project_dir());
         host.reload(&loaded.archive.project, 0)
             .map_err(|error| CliError::MidiNotes {
                 source: crate::midi_notes::MidiNoteError::Engine(error.to_string()),
