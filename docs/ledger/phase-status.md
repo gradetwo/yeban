@@ -13124,3 +13124,18 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **四、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ ⭐ **只修了 3 个，⭐ `#174` 余下 **8 条**⭐ 逐条列出**（⭐ `list_proposals`／⭐ `outputSchema`／⭐ `clipId` 条件必填／⭐ 挑错轨＝静音／⭐ ID 随路径变／⭐ `fields` 无 `items`／⭐ `undoCursor` 口径／⭐ 跨进程 merge hint）✓ ⭐ ② ⭐ **`yeban-app` 未触及、⭐ 未跑**（⭐ CI 矩阵只在触及 app 时才跑 ⇒ ⭐ 预期，⛔ 不是漏跑）★ ⭐ ③ ⭐ payload 预算 ⭐ **+69 B**（⭐ 2747→2816／9456→9525／2708→2777）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **余下 8 个坑**（⭐ 优先 `list_proposals` ＋ ⭐ `outputSchema` ＋ ⭐ 挑错轨静音）＋ ⭐ **master 设备 UI 可编辑** ＋ ⭐ **宿主 libm 收口单** ＋ ⭐ **总线/边 PDC** ＋ ⭐ **矩阵腿 CI 判决读回** ＋ ⭐ **人耳验收** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ **样本字节**／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R877 实测追加（2026-10-18）：⭐ **`#176`（提案列表 ＋ 5 个 `outputSchema`）落地 ＋ 快进合并** ⇒ ⭐ **11 坑中 5 个已封**
+
+⭐ **合并**: ⭐ base `5755422a` ⇒ ⭐ `9ea34c74`（⭐ 9 文件 ＋1654／−14）⇒ ⭐ 再加 ⭐ **文档对齐提交** ⭐ ⇒ ⭐ `FINAL=26a255c2` ✓ ⭐ 交付线读数：⭐ **`831 passed`／FAILED 0**（⭐ 默认档 与 ⭐ `--all-features` 档同数）＋ ⭐ 守卫 18 ＋ ⭐ `validate_schemas` 4 份 ＋ ⭐ 结构守卫 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 两件**: ⭐ ① ⭐ ⭐ **`yeban_list_proposals`（⭐ 第 22 个工具）** —— ⭐ 列未合并提案（⭐ `proposalId`／⭐ `title`／⭐ `opCount`／⭐ `opKinds`／⭐ `baseCommit`／⭐ `headCommit`／⭐ `branch`／⭐ `createdAt` ＋ ⭐ `index`）＋ ⭐ **空态逐字** ⭐ `当前没有未合并的提案。` ＋ ⭐ **`edit_notes` 描述里点名它** ✓ ⭐ 判据：⭐ `openCount` ⭐ **0 →（建提案）1 →（merge）0** ＋ ⭐ `totalCount` ⭐ 仍 **1**（⭐ 记录保留）✓ ⭐ ② ⭐ ⭐ **5 个主力工具各广播 `outputSchema`**（⭐ `edit_notes`／⭐ `merge_proposal`／⭐ `query_engine_state`／⭐ `render_master`／⭐ `undo`）＋ ⭐ ⭐ **一个最小校验器**（⭐ `validate`／⭐ `validate_complete`）⇒ ⭐ ⭐ **用**真实 `tools/call` 响应**反校自己的 schema** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 一处我必须点名的细节（⭐ 交付线主动做的）**: ⭐ ⭐ `merge` 的 `required` **只列两种成功形状共有的 4 个键**（⭐ `merged`／⭐ `alreadyMerged`／⭐ `appliedOps`／⭐ `proposal`）⇒ ⭐ 因为 ⭐ **幂等合并的**短形状**不含 `commit`／`baseCommitMoved`／`projectDigest`** ⇒ ⭐ ⚠ **写成"理想形状"⭐会让幂等合并的响应**违反自己的 schema**** ⇒ ⭐ ⭐ **并专门有一条判据跑 `alreadyMerged` 短形状** ✓ ⭐ **这是第 308 条的又一次正确落地**（⭐ schema 必须与**真实响应**一致、⭐ ⛔ 不是与理想一致）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 一条**顺序教训**（⭐ 我自己踩的，⭐ 记下来）**: ⚠ ⭐ 我先改了 ⭐ `phase-status.md` 的"⭐ 21 个 MCP 工具"⭐ → ⭐ 22 ⭐ **再去合并** ⇒ ⭐ ⚠ 守卫算出**还是 21**（⭐ 因为 `TOOL_COUNT=22` ⭐ 在**分支上**、⭐ 主干还没合并）⇒ ⭐ **我制造了新的不一致** ＋ ⭐ 又因新增一行**误把 78 改成 79**（⭐ 而新行落在矩阵**不计**的类别里 ⇒ ⭐ 守卫算出仍 **78**）⇒ ⭐ ⭐ **两次都是"⭐ 先写数、⭐ 后问守卫"** ✓
+⇒ ⭐ ⭐ **纪律（⭐ 第 311 条）**: ⭐ ⭐ **凡是被**对账守卫**管着的数字，⭐ 一律"⭐ 先改内容 → ⭐ 跑守卫 → ⭐ 照它报的数写"**、⭐ ⛔ **不许先写**；⭐ 且 ⭐ **改文档前先确认代码已在主干**（⭐ 否则守卫对着旧代码算）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **余下 6 条**（⭐ `clipId` 条件必填／⭐ 挑错轨静音／⭐ ID 随路径变／⭐ `fields` 无 items／⭐ `undoCursor` 口径／⭐ 跨进程 merge hint）＋ ⭐ **`undoCursor`⭐ 那条交付线**自己指出"⭐ doc 注释与实现不符"⭐（⭐ `domain/mod.rs:2538` ⭐ 注释说"⭐ 带上已知提案"⭐、⭐ 实际 `data` 只有 `{proposalId}`）＋ ⭐ **master 设备 UI 可编辑** ＋ ⭐ **宿主 libm 收口单** ＋ ⭐ **总线/边 PDC** ＋ ⭐ **人耳验收** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`／⭐ **样本字节**／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
