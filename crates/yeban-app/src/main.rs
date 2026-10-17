@@ -127,6 +127,30 @@ fn main() -> ExitCode {
         };
     }
 
+    // `--migrate-groove <old.groove> --save-as <new.yeban>`（#146）同样是**独立**命令：
+    // 它不打开当前工程、不进 GUI、也不与别的动作组合。旧文件是**只读**输入，
+    // 产出只写 `--save-as`（旧文件前后逐字节比对，见 `migrate_groove::run`）。
+    // 与 `--inspect-logic` 一样在 `cli::parse` **之前**分流 —— `Options` 里没有它的字段。
+    if let Some(request) = cli::parse_migrate_groove(&args) {
+        return match request {
+            Ok((input, output)) => {
+                match yeban_app::migrate_groove::run(&input, &output) {
+                    Ok(lines) => cli::finish(Ok(lines)),
+                    Err(error) => {
+                        // 失败只打一行：`MigrateError` 的 Display 已经带路径与逐字原因
+                        // （缺哪个字段 / 哪种 format / 保存层的原样裁决）。
+                        eprintln!("yeban-app: {error}");
+                        ExitCode::from(error.exit_code())
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("yeban-app: {error}\n\n{}", cli::usage_text());
+                ExitCode::from(error.exit_code())
+            }
+        };
+    }
+
     let mut options = match cli::parse(&args) {
         Ok(options) => options,
         Err(error) => {

@@ -96,6 +96,10 @@ pub mod input;
 pub mod meters;
 pub mod metronome;
 pub mod midi_in;
+// ⭐ **旧 `.groove` ⇒ 新 `.yeban` 的最小迁移器**（任务单 `#146`，`HD-64` 裁决 A）。
+// 旧格式是 **JSON**（`groove-project` v1/v2）⇒ 本模块把它映射成 `YebanProjectV1`
+// 并走 `save::save_archive_file` 落成容器；⛔ 不改旧文件、⛔ 不碰历史清理。
+pub mod migrate_groove;
 // ---------------------------------------------------------------------------
 // ⭐ **连续性**：`--midi-in` 收到的**已解析事件**在**到达时**泵进引擎的音符路径
 // （非默认 feature `midi-input`，ADR-0006 D5）`[ARCH-RT-001]`

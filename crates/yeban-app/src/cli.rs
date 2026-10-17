@@ -188,6 +188,13 @@ pub const LOGIC_INSPECT_SWITCH: &str = "--inspect-logic";
 /// `scripts/guards/policy_check.py` 的 `FORBIDDEN_DEFAULT_FEATURES`。
 pub const LOGIC_INSPECT_FEATURE: &str = "experimental-logic-import";
 
+/// `--migrate-groove` 的字面值（旧 `.groove` ⇒ 新 `.yeban` 的**唯一**用户出口，任务单 `#146`）。
+///
+/// 它是**独立**的批处理命令：只读旧文件、只写 `--save-as` 指定的新容器，
+/// 因此 [`parse_migrate_groove`] 在 [`parse`] **之前**分流，也不进 [`Options`]
+/// （它不需要当前工程，也不该让别的开关与它组合后被静默丢掉）。
+pub const MIGRATE_GROOVE_SWITCH: &str = "--migrate-groove";
+
 /// `--theme` 的字面值（运行期调色板切换的**唯一**用户出口）。
 pub const THEME_SWITCH: &str = "--theme";
 
@@ -245,6 +252,15 @@ pub fn usage_text() -> String {
                            同目录临时文件 → fsync → rename → 刷目录)。
                            没有 --open 时当前工程 = 内置演示工程, 输出里
                            `saved: ... from=sample=...` 会明说这一点。
+  --migrate-groove <old.groove>
+                           把旧 Groove Web 的 **JSON** 工程包 (`.groove`,
+                           `format=groove-project` v1/v2) **迁移**成新 `.yeban` 容器;
+                           必须与 --save-as <new.yeban> 成对给出 (⛔ 不默认落点);
+                           **只读**旧文件 (迁移前后逐字节比对), 输出行:
+                           migrated-groove: / migrated-groove-counts: /
+                           migrated-groove-loss: (有损字段逐条) / migrated: ;
+                           `format=groove-package` 或坏 JSON ⇒ 响亮报错 (退出码 {open}),
+                           ⛔ 不产半成品; 本开关不与别的动作组合 (组合 = 用法错误)
   --dump-elements          把语义元素注册表打印到 stdout (每行一个元素, 稳定顺序) [UI-TEST-001]
   --export-elements <path> 把同一份元素注册表**原子**写到文件, 便于脚本 / AI 消费;
                            与 --dump-elements 同时给 = 既打印又落盘
@@ -1497,6 +1513,23 @@ pub enum ParseError {
     /// 被组合的那个开关**静默丢掉**（例如 `--save-as` 什么都没保存却退出 0）——
     /// 那正是本仓库最忌讳的假绿。payload 是第一个多余的参数。
     InspectLogicConflict(String),
+    /// `--migrate-groove` 没配 `--save-as <new.yeban>`（`#146`）。
+    ///
+    /// 迁移器的产出**只能**是 `--save-as` 那一个路径：不给它就没有"迁移到哪里"，
+    /// 而"默认写回旧文件旁"会让一条只读命令突然变成写命令 —— 本仓库不猜落点。
+    MigrateGrooveOutputMissing,
+    /// `--migrate-groove` 与别的参数组合了（`#146`）。
+    ///
+    /// 它是一条**独立**的批处理命令：读旧文件、写新容器，不打开当前工程、不导出任何
+    /// 别的东西。接受组合只会把被组合的那个开关**静默丢掉**（例如
+    /// `--migrate-groove a.groove --save-as b.yeban --export-midi x.mid` 里 `.mid`
+    /// 根本不会写）。payload 是第一个多余的参数。
+    MigrateGrooveConflict(String),
+    /// `--migrate-groove` 的输入与 `--save-as` 输出是同一个路径（`#146`）。
+    ///
+    /// 旧文件是**只读**输入：原地改写会在迁移失败时同时失去旧工程与新工程。
+    /// 因此这在解析阶段就是用法错误，⛔ 不等到写盘时才判。
+    MigrateGrooveSamePath,
     /// `--wav-bit-depth` 的取值不是 `16` / `24` / `32f`。
     ///
     /// ⛔ 不接受 `32`：本仓只有 32-bit **浮点**一种 32 位容器，而 `32` 这个写法在
@@ -1610,6 +1643,21 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`{LOGIC_INSPECT_SWITCH}` 是独立的只读探针, 不能与 `{other}` 组合 —— \
                  接受它只会把 `{other}` 静默丢掉"
+            ),
+            Self::MigrateGrooveOutputMissing => write!(
+                formatter,
+                "`{MIGRATE_GROOVE_SWITCH}` 必须配 `--save-as <new.yeban>` 指定新容器落点 \
+                 (⛔ 不默认写回旧文件旁: 旧文件只读, 落点必须由调用方给)"
+            ),
+            Self::MigrateGrooveConflict(other) => write!(
+                formatter,
+                "`{MIGRATE_GROOVE_SWITCH}` 是独立的批处理命令, 不能与 `{other}` 组合 —— \
+                 接受它只会把 `{other}` 静默丢掉"
+            ),
+            Self::MigrateGrooveSamePath => write!(
+                formatter,
+                "`{MIGRATE_GROOVE_SWITCH}` 的输入与 `--save-as` 输出是同一个路径 ⇒ 拒绝 \
+                 (旧文件只读, 绝不原地改写)"
             ),
             Self::WavBitDepthInvalid(value) => write!(
                 formatter,
@@ -2079,6 +2127,106 @@ pub fn parse_inspect_logic(args: &[String]) -> Option<Result<PathBuf, ParseError
         return Some(Err(ParseError::InspectLogicNotCompiled));
     }
     Some(Ok(dir))
+}
+
+/// 解析**独立**的 `--migrate-groove <old.groove> --save-as <new.yeban>`（`#146`）。
+///
+/// 返回：
+/// - `None`：argv 里没有这个开关（照常走 [`parse`]）；
+/// - `Some(Err(_))`：开关在但用法不对；
+/// - `Some(Ok((input, output)))`：可以执行迁移。
+///
+/// 为什么独立于 [`Options`]：迁移器不需要当前工程，也不该与任何其它动作组合 ——
+/// 组合只会把另一个开关**静默丢掉**。唯一允许共存的开关是 `--headless`
+/// （它描述"不建窗口"，而本命令本来就不建窗口；接受它不是忽略，而是它的语义已经成立）。
+#[must_use]
+pub fn parse_migrate_groove(args: &[String]) -> Option<Result<(PathBuf, PathBuf), ParseError>> {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+    {
+        return None;
+    }
+    let present = args.iter().any(|argument| {
+        argument == MIGRATE_GROOVE_SWITCH
+            || argument
+                .strip_prefix(MIGRATE_GROOVE_SWITCH)
+                .is_some_and(|rest| rest.starts_with('='))
+    });
+    if !present {
+        return None;
+    }
+
+    let mut input: Option<PathBuf> = None;
+    let mut output: Option<PathBuf> = None;
+    let mut cursor = 0;
+    while cursor < args.len() {
+        let raw = args[cursor].as_str();
+        let (name, inline) = match raw.split_once('=') {
+            Some((name, value)) => (name, Some(value.to_owned())),
+            None => (raw, None),
+        };
+        match name {
+            MIGRATE_GROOVE_SWITCH => {
+                if input.is_some() {
+                    return Some(Err(ParseError::DuplicateOption(MIGRATE_GROOVE_SWITCH)));
+                }
+                let value = match inline {
+                    Some(value) if !value.is_empty() => value,
+                    Some(_) => {
+                        return Some(Err(ParseError::MissingValue(MIGRATE_GROOVE_SWITCH)));
+                    }
+                    None => {
+                        cursor += 1;
+                        match args.get(cursor) {
+                            Some(value) if !value.starts_with('-') => value.clone(),
+                            _ => {
+                                return Some(Err(ParseError::MissingValue(MIGRATE_GROOVE_SWITCH)));
+                            }
+                        }
+                    }
+                };
+                input = Some(PathBuf::from(value));
+                cursor += 1;
+            }
+            "--save-as" => {
+                if output.is_some() {
+                    return Some(Err(ParseError::DuplicateOption("--save-as")));
+                }
+                let value = match inline {
+                    Some(value) if !value.is_empty() => value,
+                    Some(_) => return Some(Err(ParseError::MissingValue("--save-as"))),
+                    None => {
+                        cursor += 1;
+                        match args.get(cursor) {
+                            Some(value) if !value.starts_with('-') => value.clone(),
+                            _ => return Some(Err(ParseError::MissingValue("--save-as"))),
+                        }
+                    }
+                };
+                output = Some(PathBuf::from(value));
+                cursor += 1;
+            }
+            "--headless" => {
+                if inline.is_some() {
+                    return Some(Err(ParseError::UnexpectedValue("--headless")));
+                }
+                cursor += 1;
+            }
+            other => return Some(Err(ParseError::MigrateGrooveConflict(other.to_owned()))),
+        }
+    }
+
+    let Some(input) = input else {
+        return Some(Err(ParseError::MissingValue(MIGRATE_GROOVE_SWITCH)));
+    };
+    let Some(output) = output else {
+        return Some(Err(ParseError::MigrateGrooveOutputMissing));
+    };
+    if input == output {
+        return Some(Err(ParseError::MigrateGrooveSamePath));
+    }
+    Some(Ok((input, output)))
 }
 
 /// `--idle-seconds` 的取值：`1..=`[`MAX_IDLE_SECONDS`] 的**整数**秒。
