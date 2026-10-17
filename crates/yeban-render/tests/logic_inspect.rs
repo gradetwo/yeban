@@ -14,7 +14,10 @@
 
 use std::path::Path;
 
-use yeban_render::logic_read::{DEFAULT_DEMOS_DIR, LogicInspection, LogicTotals, inspect_demos};
+use yeban_render::logic_read::{
+    DEFAULT_DEMOS_DIR, LogicInspection, LogicTotals, RegionPlacement, inspect_demos,
+    region_placements,
+};
 
 /// 一台 demo 的期望读数（`#139` 实测）。
 struct Expected {
@@ -129,6 +132,106 @@ const EXPECTED_TOTALS: LogicTotals = LogicTotals {
     notes: 9_825,
     audio_regions: 4_104,
 };
+
+/// `#148` 的区域摆放期望（8 台 demo 的**实测字面量**，不是从实现反算）。
+///
+/// 口径：
+/// * `note_regions` = 其后 `qSvE` 里 `decode_note_lines` 非空的 `qeSM` 条数；
+/// * `start_sum` / `length_sum` = 这些区域的 `rest+0xe0` / `rest+0x3c` 之和（tick）；
+/// * `beat_aligned` = 起点能被 960（一拍）整除的条数；
+/// * `start_max` = **所有** `qeSM`（含空区域/内部区域）起点的最大值（tick）。
+struct PlacementExpected {
+    /// `.logicx` 目录名（不含后缀）。
+    bundle: &'static str,
+    /// 所有 `qeSM` 条数（= `region_placements().len()`）。
+    regions_all: usize,
+    /// 有音符的区域条数。
+    note_regions: usize,
+    /// 有音符区域的起点之和。
+    start_sum: u64,
+    /// 有音符区域的长度之和。
+    length_sum: u64,
+    /// 起点是整拍的条数。
+    beat_aligned: usize,
+    /// 所有区域起点的最大值。
+    start_max: u32,
+}
+
+/// `#148` 实测表（8/8）。
+const PLACEMENT_EXPECTED: [PlacementExpected; 8] = [
+    PlacementExpected {
+        bundle: "Colors",
+        regions_all: 774,
+        note_regions: 122,
+        start_sum: 26_989_680,
+        length_sum: 2_568_720,
+        beat_aligned: 117,
+        start_max: 489_600,
+    },
+    PlacementExpected {
+        bundle: "Manzana",
+        regions_all: 464,
+        note_regions: 54,
+        start_sum: 9_968_640,
+        length_sum: 977_760,
+        beat_aligned: 54,
+        start_max: 422_400,
+    },
+    PlacementExpected {
+        bundle: "Manzana - Spatial Audio",
+        regions_all: 465,
+        note_regions: 54,
+        start_sum: 9_968_640,
+        length_sum: 977_760,
+        beat_aligned: 54,
+        start_max: 422_400,
+    },
+    PlacementExpected {
+        bundle: "MONTERO",
+        regions_all: 706,
+        note_regions: 1,
+        start_sum: 199_680,
+        length_sum: 24_960,
+        beat_aligned: 1,
+        start_max: 460_320,
+    },
+    PlacementExpected {
+        bundle: "MONTERO - Spatial Audio",
+        regions_all: 705,
+        note_regions: 1,
+        start_sum: 199_680,
+        length_sum: 24_960,
+        beat_aligned: 1,
+        start_max: 460_320,
+    },
+    PlacementExpected {
+        bundle: "ocean eyes",
+        regions_all: 245,
+        note_regions: 35,
+        start_sum: 6_481_920,
+        length_sum: 2_726_400,
+        beat_aligned: 35,
+        start_max: 424_720,
+    },
+    PlacementExpected {
+        bundle: "Spatial Audio Demo Grid",
+        regions_all: 240,
+        note_regions: 5,
+        start_sum: 0,
+        length_sum: 76_800,
+        beat_aligned: 5,
+        start_max: 92_160,
+    },
+    PlacementExpected {
+        bundle: "Swing!",
+        regions_all: 545,
+        note_regions: 154,
+        start_sum: 26_388_472,
+        length_sum: 1_592_610,
+        beat_aligned: 146,
+        start_max: 303_359,
+    },
+];
 
 /// 读 demo；目录不存在 ⇒ 打印"跳过"并返回 `None`（**不红**）。
 fn load_demos() -> Option<Vec<LogicInspection>> {
@@ -311,4 +414,160 @@ fn an_absent_demos_directory_is_skipped_not_failed() {
         "logic-inspect: 无 demo（{} 不存在），跳过（0 台，不红）",
         absent.display()
     );
+}
+
+/// 判据 5（`#148`）：**区域摆放字段**的路径门控判据。
+///
+/// 这一条量的是「`qeSM` 的起点/长度能不能读出来」，三条约束各自有读数：
+///
+/// 1. **字段存在且 8/8 一致**：每台 demo 的 `region_placements()` 条数必须等于
+///    `qeSM` 条数，且起点字段在同一偏移（`rest+0xe0`）上 —— 用**钉住的起点之和**
+///    与**起点最大值**判，错偏移会立刻变红；
+/// 2. **单位是 tick**：有音符区域里绝大多数起点是 960（一拍）的整数倍 ——
+///    钉住逐台的整拍条数（8 台合计 413/426 = 96.9%）；如果是「样本」或「拍」，不会这样；
+/// 3. **上界**：每台 `max(起点+长度)` 对 `max(起点+最后音符结束)` 的比值必须落在
+///    `[0.5, 1.10]`（实测 0.5517…1.0571）。空区域的哨兵长度 7,680,000 ⛔ 不参与。
+///
+/// **单调性读数**（不是断言）：记录流是**对象创建顺序**，不是时间顺序 ⇒ 全局
+/// 「起点非递减」不成立；本判据打印逐台下降数，避免把不成立的性质写成判据。
+#[test]
+fn region_placement_fields_are_measured_and_bounded() {
+    let Some(inspections) = load_demos() else {
+        return;
+    };
+
+    for expected in &PLACEMENT_EXPECTED {
+        let inspection = inspections
+            .iter()
+            .find(|inspection| inspection.bundle == expected.bundle)
+            .unwrap_or_else(|| panic!("缺少 demo `{}`", expected.bundle));
+        let bundle = Path::new(DEFAULT_DEMOS_DIR).join(format!("{}.logicx", expected.bundle));
+        let placements = region_placements(&bundle)
+            .unwrap_or_else(|error| panic!("{} 的区域摆放读取失败: {error}", expected.bundle));
+
+        // ① 字段存在 + 8/8 同一偏移：条数与起点汇总都必须等于实测字面量。
+        assert_eq!(
+            placements.len(),
+            expected.regions_all,
+            "{} 的摆放条数必须等于 qeSM 条数",
+            expected.bundle
+        );
+        assert_eq!(
+            inspection.region_placements,
+            placements.len(),
+            "{} 的 report_line 摆放条数必须与 region_placements() 一致",
+            expected.bundle
+        );
+        assert_eq!(
+            inspection.region_start_max, expected.start_max,
+            "{} 的所有区域起点最大值（rest+0xe0）",
+            expected.bundle
+        );
+        assert!(
+            inspection.report_line().contains("region_start_max=")
+                && inspection.report_line().contains("region_end_max=")
+                && inspection.report_line().contains("note_end_max="),
+            "{} 的 --inspect-logic 行必须打印 #148 的摆放读数",
+            expected.bundle
+        );
+
+        let note_regions: Vec<&RegionPlacement> = placements
+            .iter()
+            .filter(|region| region.notes > 0)
+            .collect();
+        assert_eq!(
+            note_regions.len(),
+            expected.note_regions,
+            "{} 的有音符区域条数",
+            expected.bundle
+        );
+        assert!(
+            !note_regions.is_empty(),
+            "{} 必须至少有一条有音符的区域（8/8）",
+            expected.bundle
+        );
+        assert!(
+            placements.iter().any(|region| region.start_tick > 0),
+            "{} 必须至少有一条非零起点的区域（8/8）",
+            expected.bundle
+        );
+
+        let start_sum: u64 = note_regions
+            .iter()
+            .map(|region| u64::from(region.start_tick))
+            .sum();
+        let length_sum: u64 = note_regions
+            .iter()
+            .map(|region| u64::from(region.length_ticks))
+            .sum();
+        assert_eq!(
+            start_sum, expected.start_sum,
+            "{} 的有音符区域起点之和（rest+0xe0）",
+            expected.bundle
+        );
+        assert_eq!(
+            length_sum, expected.length_sum,
+            "{} 的有音符区域长度之和（rest+0x3c）",
+            expected.bundle
+        );
+
+        // ② 单位：起点几乎都是整拍（960 tick）。
+        let beat_aligned = note_regions
+            .iter()
+            .filter(|region| region.start_tick % 960 == 0)
+            .count();
+        assert_eq!(
+            beat_aligned, expected.beat_aligned,
+            "{} 的整拍起点条数（960 tick）",
+            expected.bundle
+        );
+
+        // ③ 上界：有音符区域的 max(起点+长度) vs max(起点+最后音符结束)。
+        let max_end = note_regions
+            .iter()
+            .filter(|region| !region.is_empty())
+            .map(|region| region.end_tick())
+            .max()
+            .expect("至少一条有音符区域");
+        let max_note_end = note_regions
+            .iter()
+            .map(|region| region.note_end_tick())
+            .max()
+            .expect("至少一条有音符区域");
+        assert_eq!(
+            inspection.region_end_max, max_end,
+            "{} 的 report_line max(start+length)",
+            expected.bundle
+        );
+        assert_eq!(
+            inspection.note_end_max, max_note_end,
+            "{} 的 report_line max(start+note_end)",
+            expected.bundle
+        );
+        let ratio = max_end as f64 / max_note_end as f64;
+        assert!(
+            (0.5..=1.10).contains(&ratio),
+            "{} 的上界比 {ratio:.4} 必须落在 [0.5, 1.10]（max_end={max_end}, max_note_end={max_note_end}）",
+            expected.bundle
+        );
+
+        // 单调性：**只打印读数**（流的顺序不是时间顺序 —— 见模块文档）。
+        let violations = placements
+            .windows(2)
+            .filter(|pair| pair[1].start_tick < pair[0].start_tick)
+            .count();
+        println!(
+            "logic-placement: bundle={} placements={} note_regions={} start_sum={} length_sum={} \
+             beat_aligned={}/{} max_end={} max_note_end={} ratio={ratio:.4} stream_order_drops={violations}",
+            expected.bundle,
+            placements.len(),
+            note_regions.len(),
+            start_sum,
+            length_sum,
+            beat_aligned,
+            note_regions.len(),
+            max_end,
+            max_note_end,
+        );
+    }
 }

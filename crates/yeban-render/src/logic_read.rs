@@ -35,6 +35,32 @@
 //!   （载荷 96 / 48 字节）不会污染计数。
 //! * **`AuRg`**：落盘 tag `gRuA` 的记录条数，**只计数、不解码**。
 //!
+//! ## 区域摆放：起点 `rest+0xe0`、长度 `rest+0x3c`（`#148` 实测，8/8）
+//!
+//! `qeSM` 载荷里除名字之外的字段落在名字之后的定长结构 `rest`（起点
+//! [`region_rest_start`]）上。把它按偏移逐项扫过（`#148`），**只有一对**字段同时
+//! 满足「起点、长度、单位」三条约束：
+//!
+//! | 字段 | 偏移 | 类型 | 单位 | 实测依据 |
+//! | :--- | ---: | :--- | :--- | :--- |
+//! | **起点** | `rest + 0xe0` | `u32` 小端 | **960 PPQ tick** | 等于编排 `qSvE` 摆放事件 `+0x04 − 34560`：Swing! 的 **17/17** 个非零摆放逐条相等 |
+//! | **长度** | `rest + 0x3c` | `u32` 小端 | **960 PPQ tick** | `起点 + 长度` 与同轨下一条区域的起点连续：Swing! **17/17 对**成立（逐条 `start+length == next.start`）；有音符区域的上界比 8/8 台为 0.5517…1.0571 |
+//!
+//! 这两处正是 MIT 参考实现 §8.5 的**记录内** `+0x11c` / `+0x78` 的 `rest` 相对形式：
+//! `记录内 = 0x24 + rest 起点 + rest 偏移`；供体 `down:` 的 rest 起点是 `0x18`
+//! ⇒ `0x18 + 0x24 + 0xe0 = 0x11c`、`0x18 + 0x24 + 0x3c = 0x78`。
+//!
+//! ⚠ 读数口径（8 台 demo，逐条见 `tests/logic_inspect.rs`）：
+//!
+//! * **空区域**的长度是哨兵 [`LOGIC_REGION_EMPTY_LENGTH`] = **7,680,000**
+//!   （= 8000 拍 = 2000 小节），且起点恒 0、音符恒 0 ⇒ 它不是真实长度，
+//!   ⛔ 不得拿它算上界。
+//! * 记录流顺序是**对象创建顺序**，不是时间顺序 ⇒ 全局「区域起点非递减」**不成立**
+//!   （8 台按 bundle 名排序的下降数：**95 / 76 / 77 / 105 / 104 / 45 / 6 / 149**；
+//!   ⛔ 不要把它当判据）。把编排摆放事件按**轨道**分组后才是 0（Swing! 可解析的 170 组、0 处）。
+//! * 有音符的区域里，`起点+长度` 对 `起点+最后音符结束` 的比值在 8/8 台是
+//!   **0.5517…1.0571**（不是 1.0 整：Logic 的区域长度允许比内容短/长）。
+//!
 //! ## 版权（⛔ 不许提交 demo 或解析结果）
 //!
 //! Apple 演示工程有版权。本模块**只读** `/Library/Application Support/Logic/Logic Pro X
@@ -56,8 +82,9 @@ use std::str;
 
 use crate::logic::{
     LOGIC_FIRST_RECORD_OFFSET, LOGIC_KART_TAG, LOGIC_RECORD_CLUSTER_OFFSET, LOGIC_RECORD_HEADER,
-    LOGIC_RECORD_SIZE_OFFSET, LOGIC_REGION_NAME_PAYLOAD_OFFSET, LOGIC_REGION_TAG,
-    LOGIC_ROOT_HEADER, LOGIC_ROOT_MAGIC, LOGIC_SEQUENCE_TAG, decode_note_lines,
+    LOGIC_RECORD_SIZE_OFFSET, LOGIC_REGION_LENGTH_FROM_REST, LOGIC_REGION_NAME_PAYLOAD_OFFSET,
+    LOGIC_REGION_TAG, LOGIC_ROOT_HEADER, LOGIC_ROOT_MAGIC, LOGIC_SEQUENCE_TAG, decode_note_lines,
+    region_rest_start,
 };
 
 /// Apple 演示工程在 macOS 上的**只读**默认位置（`#139` 实测，8/8）。
@@ -75,6 +102,61 @@ const AUTOMATION_NAME_SUFFIX: &str = "*Automation";
 
 /// 这个名字的区域是 Logic 的 RBA 序列，不计入音乐区域。
 const RBA_SEQUENCE_NAME: &str = "RBA Sequence";
+
+/// `qeSM` 载荷里**区域起点**的偏移（相对名字之后的 `rest` 起点）：
+/// `u32` 小端，单位 = **960 PPQ tick**。
+///
+/// `#148` 实测依据（三条）：① 与编排 `qSvE` 摆放事件的 `+0x04 − 34560` 逐条相等
+/// （Swing! 17/17 非零）；② 有音符区域的 `起点+长度` 上界比 8/8 台为 0.5517…1.0571；
+/// ③ 换算成记录内偏移 `0x24 + 0x18 + 0xe0 = 0x11c`，正是 MIT 参考实现 §8.5 的起点字段。
+pub const LOGIC_REGION_START_FROM_REST: usize = 0xE0;
+
+/// **空区域**的长度哨兵：7,680,000 tick = 8000 拍 = 2000 小节（4/4）。
+///
+/// 8 台 demo 里 114…486 条/台的空 `qeSM`（起点 0、音符 0，绝大多数是
+/// `*Automation`）都用这个值；它**不是**真实长度，⛔ 不得参与上界计算。
+pub const LOGIC_REGION_EMPTY_LENGTH: u32 = 7_680_000;
+
+/// 一条 `qeSM` 区域的**摆放读数**（起点 + 长度 + 该区域自己的音符跨度）。
+///
+/// 只读、纯字节：全部来自 `ProjectData` 的 `qeSM` 载荷与其后配对的 `qSvE`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionPlacement {
+    /// 区域名（载荷 `+0x10` 的 `u16` 字节数 + `+0x12` 起的 UTF-8）。
+    pub name: String,
+    /// 区域起点（`rest + 0xe0`，960 PPQ tick）。
+    pub start_tick: u32,
+    /// 区域长度（`rest + 0x3c`，960 PPQ tick）；空区域是
+    /// [`LOGIC_REGION_EMPTY_LENGTH`]。
+    pub length_ticks: u32,
+    /// 该区域的音符条数（其后 `qSvE` 里 [`decode_note_lines`] 的条数）。
+    pub notes: usize,
+    /// 该区域最后一个音符的**区域相对**结束 tick（`max(起始 + 时值)`）；无音符 = 0。
+    pub note_span: u64,
+    /// 是否是 Logic 的内部区域（`*Automation` / `RBA Sequence`）。
+    pub internal: bool,
+}
+
+impl RegionPlacement {
+    /// `起点 + 长度`（tick）。空区域的哨兵长度也会被算进去，调用方须先排除
+    /// [`Self::is_empty`]。
+    #[must_use]
+    pub fn end_tick(&self) -> u64 {
+        u64::from(self.start_tick) + u64::from(self.length_ticks)
+    }
+
+    /// 是否是**空区域**（长度 = 哨兵，起点 0、音符 0）。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.length_ticks == LOGIC_REGION_EMPTY_LENGTH
+    }
+
+    /// 绝对的最后音符结束 tick（`起点 + note_span`）。
+    #[must_use]
+    pub fn note_end_tick(&self) -> u64 {
+        u64::from(self.start_tick) + self.note_span
+    }
+}
 
 /// bplist00 魔数（8 字节，含版本）。
 const BPLIST_MAGIC: &[u8; 8] = b"bplist00";
@@ -119,6 +201,14 @@ pub struct LogicInspection {
     pub notes: usize,
     /// `AuRg`（落盘 `gRuA`）记录条数；本切片**只计数**。
     pub audio_regions: usize,
+    /// 成功读出摆放字段（起点/长度）的 `qeSM` 条数（应等于 [`Self::regions_all`]）。
+    pub region_placements: usize,
+    /// 所有区域起点的最大值（`rest+0xe0`，960 PPQ tick）。
+    pub region_start_max: u32,
+    /// **有音符**区域的 `起点 + 长度` 最大值（tick；哨兵长度不计入）。
+    pub region_end_max: u64,
+    /// **有音符**区域的 `起点 + 最后音符结束` 最大值（tick）。
+    pub note_end_max: u64,
     /// `MetaData.plist` 的 `SongSignatureNumerator`。
     pub numerator: u32,
     /// `MetaData.plist` 的 `SongSignatureDenominator`。
@@ -137,7 +227,8 @@ impl LogicInspection {
         let _ = write!(
             line,
             "logic-demo: bundle={} alternative={} sample_rate={} bpm={} tracks={} \
-             regions={} non_internal={} notes={} au_rg={}",
+             regions={} non_internal={} notes={} au_rg={} region_placements={} \
+             region_start_max={} region_end_max={} note_end_max={}",
             self.bundle,
             self.alternative,
             self.sample_rate,
@@ -147,6 +238,10 @@ impl LogicInspection {
             self.regions,
             self.notes,
             self.audio_regions,
+            self.region_placements,
+            self.region_start_max,
+            self.region_end_max,
+            self.note_end_max,
         );
         line
     }
@@ -197,6 +292,65 @@ impl LogicTotals {
     }
 }
 
+/// 读一台 bundle 的 `ActiveVariant` 与对应的 `Alternatives/<NNN>` 目录。
+fn active_alternative(bundle: &Path) -> Result<(String, PathBuf), String> {
+    let project_information =
+        read_plist(&bundle.join("Resources").join("ProjectInformation.plist"))?;
+    let project_information = project_information.as_dict("ProjectInformation.plist")?;
+    let active_variant = required(project_information, "ActiveVariant", bundle)?;
+    let active_variant = active_variant
+        .as_int()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| format!("{}: ActiveVariant 不是非负整数", bundle.display()))?;
+    let alternative = format!("{active_variant:03}");
+    let alternative_dir = bundle.join("Alternatives").join(&alternative);
+    Ok((alternative, alternative_dir))
+}
+
+/// 一条正在累积音符的 `qeSM` 区域（`qeSM` 与下一个 `qeSM` 之间配对的 `qSvE`
+/// 都算这条区域的音符）。
+struct PendingRegion {
+    /// 区域起点（`rest + 0xe0`）。
+    start_tick: u32,
+    /// 区域长度（`rest + 0x3c`）。
+    length_ticks: u32,
+    /// 已数到的音符条数。
+    notes: usize,
+    /// 最后一个音符的区域相对结束 tick。
+    note_span: u64,
+}
+
+impl PendingRegion {
+    /// 把这条区域的读数并进汇总。
+    fn into_summary(self, summary: &mut RegionSummary) {
+        summary.regions += 1;
+        summary.start_max = summary.start_max.max(self.start_tick);
+        if self.notes > 0 {
+            if self.length_ticks != LOGIC_REGION_EMPTY_LENGTH {
+                summary.end_max = summary
+                    .end_max
+                    .max(u64::from(self.start_tick) + u64::from(self.length_ticks));
+            }
+            summary.note_end_max = summary
+                .note_end_max
+                .max(u64::from(self.start_tick) + self.note_span);
+        }
+    }
+}
+
+/// 摆放读数的汇总（`inspect_bundle` 填进 [`LogicInspection`]）。
+#[derive(Default)]
+struct RegionSummary {
+    /// 读出摆放字段的区域条数。
+    regions: usize,
+    /// 起点最大值。
+    start_max: u32,
+    /// 有音符区域的 `起点 + 长度` 最大值（哨兵长度不计入）。
+    end_max: u64,
+    /// 有音符区域的 `起点 + 最后音符结束` 最大值。
+    note_end_max: u64,
+}
+
 /// 读一台 `.logicx` bundle（目录）并数出读数。
 ///
 /// # Errors
@@ -210,16 +364,7 @@ pub fn inspect_bundle(bundle: &Path) -> Result<LogicInspection, String> {
         .map_or_else(|| bundle.display().to_string(), str::to_owned);
     let bundle_name = bundle_name.strip_suffix(".logicx").unwrap_or(&bundle_name);
 
-    let project_information =
-        read_plist(&bundle.join("Resources").join("ProjectInformation.plist"))?;
-    let project_information = project_information.as_dict("ProjectInformation.plist")?;
-    let active_variant = required(project_information, "ActiveVariant", bundle)?;
-    let active_variant = active_variant
-        .as_int()
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| format!("{}: ActiveVariant 不是非负整数", bundle.display()))?;
-    let alternative = format!("{active_variant:03}");
-    let alternative_dir = bundle.join("Alternatives").join(&alternative);
+    let (alternative, alternative_dir) = active_alternative(bundle)?;
 
     let meta_path = alternative_dir.join("MetaData.plist");
     let meta = read_plist(&meta_path)?;
@@ -273,6 +418,8 @@ pub fn inspect_bundle(bundle: &Path) -> Result<LogicInspection, String> {
     let mut internal_regions = 0usize;
     let mut notes = 0usize;
     let mut audio_regions = 0usize;
+    let mut summary = RegionSummary::default();
+    let mut pending: Option<PendingRegion> = None;
 
     for record in &records {
         if record.tag == LOGIC_KART_TAG && record.object == LOGIC_ARRANGE_OBJECT {
@@ -288,11 +435,31 @@ pub fn inspect_bundle(bundle: &Path) -> Result<LogicInspection, String> {
             if is_internal_region(name) {
                 internal_regions += 1;
             }
+            if let Some(done) = pending.take() {
+                done.into_summary(&mut summary);
+            }
+            let (start_tick, length_ticks) = region_timing(record.payload, &project_data_path)?;
+            pending = Some(PendingRegion {
+                start_tick,
+                length_ticks,
+                notes: 0,
+                note_span: 0,
+            });
         } else if record.tag == LOGIC_SEQUENCE_TAG {
-            notes += decode_note_lines(record.payload).len();
+            let decoded = decode_note_lines(record.payload);
+            notes += decoded.len();
+            if let Some(region) = pending.as_mut() {
+                region.notes += decoded.len();
+                for (start, duration, _, _) in decoded {
+                    region.note_span = region.note_span.max(start + duration);
+                }
+            }
         } else if record.tag == AUDIO_REGION_TAG {
             audio_regions += 1;
         }
+    }
+    if let Some(done) = pending.take() {
+        done.into_summary(&mut summary);
     }
 
     Ok(LogicInspection {
@@ -309,6 +476,10 @@ pub fn inspect_bundle(bundle: &Path) -> Result<LogicInspection, String> {
         regions: regions_all - internal_regions,
         notes,
         audio_regions,
+        region_placements: summary.regions,
+        region_start_max: summary.start_max,
+        region_end_max: summary.end_max,
+        note_end_max: summary.note_end_max,
         numerator,
         denominator,
         song_key,
@@ -359,6 +530,57 @@ pub fn inspect_demos(dir: &Path) -> Result<Option<Vec<LogicInspection>>, String>
     Ok(Some(inspections))
 }
 
+/// 读一台 `.logicx` bundle 的**区域摆放**：每条 `qeSM` 一条 [`RegionPlacement`]。
+///
+/// 这是 `#148` 的测量入口 —— **仍然只读**：不写工程、不造 `.yeban`、不改 demo。
+/// 每条区域的起点/长度来自 [`region_timing`]，音符跨度来自它后面、下一个 `qeSM`
+/// 之前的那条 `qSvE`（与 [`decode_note_lines`] 同一口径）。
+///
+/// # Errors
+///
+/// 与 [`inspect_bundle`] 同：文件缺失、bplist00/记录流不合法、区域名不是 UTF-8、
+/// 或 `rest + 0xe0` / `rest + 0x3c` 越过载荷。
+pub fn region_placements(bundle: &Path) -> Result<Vec<RegionPlacement>, String> {
+    let (_, alternative_dir) = active_alternative(bundle)?;
+    let project_data_path = alternative_dir.join("ProjectData");
+    let bytes = fs::read(&project_data_path)
+        .map_err(|error| format!("读 {} 失败: {error}", project_data_path.display()))?;
+    let records = walk_records(&bytes)
+        .map_err(|error| format!("{} 的记录流不合法: {error}", project_data_path.display()))?;
+
+    let mut placements: Vec<RegionPlacement> = Vec::new();
+    let mut current: Option<RegionPlacement> = None;
+    for record in &records {
+        if record.tag == LOGIC_REGION_TAG {
+            if let Some(done) = current.take() {
+                placements.push(done);
+            }
+            let name = region_name(record.payload, &project_data_path)?;
+            let (start_tick, length_ticks) = region_timing(record.payload, &project_data_path)?;
+            current = Some(RegionPlacement {
+                name: name.to_owned(),
+                start_tick,
+                length_ticks,
+                notes: 0,
+                note_span: 0,
+                internal: is_internal_region(name),
+            });
+        } else if record.tag == LOGIC_SEQUENCE_TAG {
+            if let Some(region) = current.as_mut() {
+                let decoded = decode_note_lines(record.payload);
+                region.notes += decoded.len();
+                for (start, duration, _, _) in decoded {
+                    region.note_span = region.note_span.max(start + duration);
+                }
+            }
+        }
+    }
+    if let Some(done) = current.take() {
+        placements.push(done);
+    }
+    Ok(placements)
+}
+
 /// `karT` 记录里"编排轨对象"的对象号（记录头 +0x08 的 `u32` 小端）。
 const LOGIC_ARRANGE_OBJECT: u32 = 0x0004_0000;
 
@@ -390,6 +612,44 @@ fn region_name<'a>(payload: &'a [u8], path: &Path) -> Result<&'a str, String> {
     })?;
     str::from_utf8(raw)
         .map_err(|error| format!("{}: 区域名不是合法 UTF-8: {error}", path.display()))
+}
+
+/// 从 `qeSM` 载荷读出**摆放**两个字段：`(起点, 长度)`，单位都是 960 PPQ tick。
+///
+/// 偏移相对名字之后的 `rest` 起点（[`region_rest_start`]）：
+/// 起点 `rest + 0xe0`（[`LOGIC_REGION_START_FROM_REST`]）、
+/// 长度 `rest + 0x3c`（[`LOGIC_REGION_LENGTH_FROM_REST`]，与 `logic.rs` 里
+/// 供体实测同一常量）。
+fn region_timing(payload: &[u8], path: &Path) -> Result<(u32, u32), String> {
+    let name = region_name(payload, path)?;
+    let rest = region_rest_start(name.len());
+    let start = read_u32(payload, rest, LOGIC_REGION_START_FROM_REST, path, "起点")?;
+    let length = read_u32(payload, rest, LOGIC_REGION_LENGTH_FROM_REST, path, "长度")?;
+    Ok((start, length))
+}
+
+/// 读 `payload[rest + offset..][..4]` 的 `u32` 小端；越界时报出**哪个字段**。
+fn read_u32(
+    payload: &[u8],
+    rest: usize,
+    offset: usize,
+    path: &Path,
+    what: &str,
+) -> Result<u32, String> {
+    let at = rest
+        .checked_add(offset)
+        .ok_or_else(|| format!("{}: 区域{what}偏移溢出", path.display()))?;
+    let end = at
+        .checked_add(4)
+        .ok_or_else(|| format!("{}: 区域{what}偏移溢出", path.display()))?;
+    let raw = payload.get(at..end).ok_or_else(|| {
+        format!(
+            "{}: 区域{what}越过载荷（rest {rest:#x} + {offset:#x} + 4 > {}）",
+            path.display(),
+            payload.len()
+        )
+    })?;
+    Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
 
 /// 一条按 36 字节记录头切出来的记录（只保留本探针用到的字段）。
@@ -779,4 +1039,89 @@ fn required<'a>(
 ) -> Result<&'a PlistValue, String> {
     dict.get(key)
         .ok_or_else(|| format!("{}: 缺少必需键 {key}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造一条最小 `qeSM` 载荷：名字字段 + `rest` 里的起点/长度。
+    fn synthetic_region(name: &str, start: u32, length: u32) -> Vec<u8> {
+        let rest = region_rest_start(name.len());
+        let mut payload = vec![0u8; rest + LOGIC_REGION_START_FROM_REST + 8];
+        let at = LOGIC_REGION_NAME_PAYLOAD_OFFSET;
+        payload[at..at + 2].copy_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+        payload[at + 2..at + 2 + name.len()].copy_from_slice(name.as_bytes());
+        let start_at = rest + LOGIC_REGION_START_FROM_REST;
+        payload[start_at..start_at + 4].copy_from_slice(&start.to_le_bytes());
+        let length_at = rest + LOGIC_REGION_LENGTH_FROM_REST;
+        payload[length_at..length_at + 4].copy_from_slice(&length.to_le_bytes());
+        payload
+    }
+
+    /// `#148` 的**偏移钉住**：起点在 `rest+0xe0`、长度在 `rest+0x3c`，
+    /// 对奇数名 / 偶数名都成立（`rest` 起点按偶数载荷偏移补齐）。
+    #[test]
+    fn region_timing_reads_the_measured_offsets_for_odd_and_even_names() {
+        let path = Path::new("synthetic/ProjectData");
+        for (name, start, length) in [
+            ("up:", 0, 30_720),
+            ("down:", 30_720, 15_360),
+            ("ABC", 103_680, 69_120),
+            ("Untitled", 380_160, 7_680_000),
+        ] {
+            let payload = synthetic_region(name, start, length);
+            assert_eq!(
+                region_timing(&payload, path).unwrap(),
+                (start, length),
+                "名字 {name:?}（{} 字节）的起点/长度",
+                name.len()
+            );
+        }
+    }
+
+    /// **有牙**：名字长度变 1 字节 ⇒ `rest` 起点平移 ⇒ 固定载荷偏移会读错。
+    ///
+    /// `"ABC"`（3 字节）rest 起点 `0x16`，`"AB"`（2 字节）是 `0x14`；把同一份
+    /// 起点值写在各自的 `rest+0xe0` 上，若实现误用固定偏移，其中一条必错。
+    #[test]
+    fn region_timing_moves_with_the_name_length_and_rejects_short_payloads() {
+        let path = Path::new("synthetic/ProjectData");
+        let odd = synthetic_region("ABC", 960, 1_920);
+        let even = synthetic_region("AB", 1_920, 960);
+        assert_ne!(region_rest_start(3), region_rest_start(2));
+        assert_eq!(region_timing(&odd, path).unwrap(), (960, 1_920));
+        assert_eq!(region_timing(&even, path).unwrap(), (1_920, 960));
+        assert!(
+            region_timing(&[0u8; 0x20], path).is_err(),
+            "短载荷必须报错，⛔ 不得读越界或返回 0"
+        );
+    }
+
+    /// 空区域的长度哨兵与 `end_tick` 的边界：哨兵必须能被 `is_empty()` 识别，
+    /// 调用方据此**不把** 7,680,000 当真实长度。
+    #[test]
+    fn empty_regions_use_the_measured_sentinel() {
+        let empty = RegionPlacement {
+            name: "*Automation".to_owned(),
+            start_tick: 0,
+            length_ticks: LOGIC_REGION_EMPTY_LENGTH,
+            notes: 0,
+            note_span: 0,
+            internal: true,
+        };
+        assert!(empty.is_empty());
+        assert_eq!(empty.end_tick(), 7_680_000);
+        let normal = RegionPlacement {
+            name: "Clip".to_owned(),
+            start_tick: 30_720,
+            length_ticks: 15_360,
+            notes: 1,
+            note_span: 15_360,
+            internal: false,
+        };
+        assert!(!normal.is_empty());
+        assert_eq!(normal.end_tick(), 46_080);
+        assert_eq!(normal.note_end_tick(), 46_080);
+    }
 }
