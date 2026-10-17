@@ -12176,3 +12176,21 @@ cargo run -q -p yeban-app --locked -- --open ~/Desktop/my.yeban
 ⭐ ⚠ ⭐ 第 6 项若要复现 `within-target` ⇒ ⭐ **把系统默认输出／输入切到 BlackHole 2ch** 再跑（⭐ 脚本本身 ⛔ 不改路由）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `0fe5e87b`／`eca69fe4`／`f2ac5d93`／`d6519ffa` 的 CI 判决** ＋ ⭐ **录音 L1＋L2＋L3 票**（⭐ 本条件裁）＋ ⭐ **`NSMicrophoneUsageDescription`**（⭐ 权限面 ⇒ ⭐ 找人）＋ ⭐ **`HD-64` 最小迁移器**（⭐ 本条件裁 A）＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`（装依赖）／⭐ `HD-52`（Logic 素材）／⭐ `HD-58`（口径）／⭐ 真 MIDI／⭐ 物理回环线／⭐ Info.plist 权限 ＋ ⭐ ⚠ **第 6 项的环境条件**（⭐ 切 BlackHole 直连）✓
+
+---
+
+## R827 实测追加（2026-10-17）：⭐⭐ **`#132`（录音落进资产池 ＋ 素材池）已落地 ＋ 快进合并**（主干见下）⇒ ⭐ **容器里真的出现 `assets/{sha256}`**
+
+⭐ **合并**: ⭐ base `16f5a11c` ⇒ ⭐ `FINAL=7498d94f`（⭐ 9 路径 ＋1073／−36）⇒ ⭐ 主干 ff 合并 ✓ ⭐ **我独立复跑**：⭐ 复合门 `全过 ✓`／⭐ **52 个 target 全 ok／FAILED 0**、⭐ ⭐ **`passed` 605**／⭐ 守卫 **18**／⭐ ⭐ **`perf_draw_budget.rs` diff ＝ 0 行**（⭐ 31／40／241／242／242／549／234／229 未动）✓
+
+⭐ ⚠ **一、⭐ 交付的读数（⭐ 三条判据逐字）**: ⭐ ① ⭐ 容器 ⭐ `/tmp/yeban-132-evidence/recorded.yeban` ＝ **194052 B**，⭐ 含 ⭐ **`assets/c78c21d3…a523` 187460 B** ⇒ ⭐ 与 ⭐ `take.wav` 的 `sha256` ⭐ **逐字相等** ✓ ⭐ ② ⭐ `clip_pool` ⭐ **2 → 3**，⭐ 新 clip ⭐ `01M540F9EEF2CFBZJRNFYN2ERW` ⭐ 指向**同一个** sha256 ✓ ⭐ ③ ⭐ **重开后** ⭐ `assets=1`、⭐ 字节 **187460 仍在**、⭐ `clip.content` 逐字相同 ✓ ⭐ ④ ⭐ **0 帧 ⇒ `clips 2 → 2`、⭐ `assets=0`**（⭐ ⛔ 不落池）＋ ⭐ `#130` 的**响亮错误仍在** ✓
+
+⭐ ⚠ **二、⭐ 设计（⭐ 可无头判据的关键）**: ⭐ ① ⭐ **新模块** `record_landing`：⭐ **纯函数** `plan_recording(path, project)`（⭐ 只读 WAV ⇒ ⭐ 资产 ＋ clip）＋ ⭐ `land_recording`（⭐ **一次** `Op::AddClip` ＋ ⭐ 资产池登记，⭐ `OpOrigin::UserUi`）；⭐ ② ⭐ **`UndoPort` 持有会话 CAS 资产池**（⭐ `replace_assets`／⭐ `insert_asset`／⭐ `asset_bytes`）⇒ ⭐ 打开工程时**替换**、⭐ 保存时**从同一端口一次读出** 工程 ＋ 图谱 ＋ 资产池；⭐ ③ ⭐ ⭐ **`wire_save` 不再写 `assets: Vec::new()`** ✓
+
+⭐ ⚠ **三、⭐ 我派单写错的两处（⭐ 第 24／25 次）**: ⭐ ① ⭐ 我指 `save_action.rs:96-115` 为资产丢弃点 ⭐ ⇒ ⭐ ⭐ **真正的产品丢弃点是 `host.rs:2854`／`:2859`**（⭐ GUI 保存**内联**构造 `ProjectArchive`，⭐ **根本不经过** `save_action` 的构造器）；⭐ ② ⭐ `wire_record` 的调用点我写 `main.rs:843`／`test_port_adapter.rs:2187` ⭐ ⇒ ⭐ 实际是 ⭐ `host.rs:2413`（⭐ 在 `wire_transport` 内）＋ ⭐ `main.rs:863`／`test_port_adapter.rs:2193` ✓ ⭐ ⭐ **两处都靠交付线实测纠正** ✓
+
+⭐ ⚠ **四、⭐ 如实登记的边界（⭐ 我接受）**: ⭐ ⚠ ⭐ **L1／L4／L5 未做** ⇒ ⭐ ⭐ **用户侧可见的仍只有 `stderr` 一行**；⭐ **那条 clip 不会出现在素材池面板**（⭐ `.slint` 对 `clip_pool` 投影 **0 处**）、⭐ **也不会摆到轨道上**（⭐ 不写 `AddClipPlacement`）⇒ ⭐ **播放不发声** ✓ ⭐ 模块头**已登记**（⭐ 第 278 条）✓ ⭐ ⭐ **我的判断：⭐ 这个切片是对的** —— ⭐ **数据真的进了容器**（⭐ 可被 `unzip` 核验），⭐ 而"⭐ 看得见"⭐是 L4 的独立活（⭐ 会动绘制预算 ⇒ ⭐ 需重测）✓
+
+⭐ ⚠ **五、⭐ 人类验收（⭐ 5 步）**: ⭐ ① ⭐ `cargo run -p yeban-app -- --open <工程.yeban>`（⭐ 可 ⭐ `YEBAN_RECORD_SOURCE=silence`）；⭐ ② ⭐ 按录音键 ⇒ ⭐ 再按一次停录 ⇒ ⭐ 终端出现 ⭐ `recorded-clip: path=… asset=<64hex> asset-bytes=… committed=true`；⭐ ③ ⭐ 按保存；⭐ ④ ⭐ `unzip -l <保存的.yeban>` ⇒ ⭐ **必须有 `assets/<同一个 64hex>`**；⭐ `shasum -a 256 <录音wav>` **应等于它**；⭐ ⑤ ⭐ 重开 ⇒ ⭐ `clips-pool` 比录音前 **+1**、⭐ `asset-blobs=1` ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `0fe5e87b`／`eca69fe4`／`f2ac5d93`／`d6519ffa`／`7498d94f` 的 CI 判决** ＋ ⭐ **L4（素材池面板）**（⭐ 会动 40 写点 ⇒ ⭐ 需重测预算；⭐ 我裁：⭐ **下一步做它**，⭐ 并**如实重测**预算）＋ ⭐ **L5（frames→tick 摆放）** ＋ ⭐ **L1（状态文本）** ＋ ⭐ **`NSMicrophoneUsageDescription`**（⭐ 权限面 ⇒ ⭐ 找人）＋ ⭐ **`HD-64` 最小迁移器**（⭐ 本条件裁 A）＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ Info.plist 权限／⭐ 系统路由切 BlackHole／⭐ `HD-48`／⭐ `HD-52`／⭐ 真 MIDI／⭐ 物理回环线 ✓
