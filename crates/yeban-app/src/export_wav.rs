@@ -173,7 +173,8 @@ pub struct WavExportReport {
     pub source: String,
     /// 真的进了母带的**音频摆放个数**（`ClipContent::Audio`；0 = 没有音频片段发声）。
     pub audio_clips_rendered: u64,
-    /// 被**如实跳过**的音频片段原因（例如素材采样率 ≠ 导出采样率 ⇒ 不重采样、不误放音高）。
+    /// 被**如实跳过**的音频片段原因（例如声道无法映射、坏 WAV、重采样失败）。
+    /// ⚠ 素材采样率 ≠ 导出采样率**不再**进这里：`#141` 起离线导出会重采样到导出率。
     pub audio_clips_skipped: Vec<String>,
     /// ⭐ 控制侧 SFZ 解码读数（任务单 `#79`；键 = 轨）。空 = 本次导出没走模型 SFZ 链条
     /// （没有 `TrackV3.sampler`，或走了 `--sfz` 旁路 / 最小音源）。

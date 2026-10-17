@@ -136,7 +136,8 @@ pub struct RenderProjectOutput {
     pub digest: String,
     /// 真的进了母带的音频摆放**个数**（不是素材个数）。
     pub audio_clips_rendered: u64,
-    /// 被**如实跳过**的音频片段原因（例如采样率不匹配）。
+    /// 被**如实跳过**的音频片段原因（例如声道无法映射、坏 WAV、重采样失败）。
+    /// ⚠ 采样率不符**不再**进这里：`#141` 起离线导出会重采样到导出率。
     pub audio_clips_skipped: Vec<String>,
     /// ⭐ 控制侧 SFZ 解码读数（任务单 `#79`；键 = 轨）。
     ///

@@ -60,9 +60,12 @@
 //! "必要时重采样"与"把结果搬进引擎形状"三件事。⛔ 没有第二份 WAV 解析器、
 //! ⛔ 没有第二份重采样器、⛔ 没有新依赖（`yeban-decode` 早在 `#85` 就是本 crate 的依赖）。
 //!
-//! ⚠ **离线导出那条支路仍然不重采样**（`crate::audio_clip` 的 `decode_checked`，`#134`）：
-//! 本单（`#138`）只接**实时注入侧**。离线导出的 44.1k 素材今天仍按"采样率不符 ⇒ 跳过"
-//! 如实登记 —— 那是**已知的剩余缺口**，⛔ 不假装它已闭合。
+//! ⭐ **离线导出那条支路也重采样**（任务单 `#141`）：`crate::audio_clip` 的
+//! `decode_checked` 现在调用**本模块的** [`resample_to_target`]（同一个函数、同一份
+//! `yeban_decode::resample_interleaved`、同一条"帧数钉到 `ceil(原帧 × 目标 / 源)`"口径），
+//! ⛔ 没有第二份重采样器。因此 `#138`（实时注入侧）与 `#141`（离线导出侧）在采样率换算上
+//! **是同一份实现**；离线侧仍不能处理的形态（声道无法映射 / 坏 WAV / 重采样失败）照旧
+//! **响亮跳过**，⛔ 不静默少一段。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -453,6 +456,9 @@ impl AudioPcmCache {
 ///
 /// 只在**两率不同**时被调用（同率素材由调用方原样搬进 `Arc`，⛔ 不复制、⛔ 不滤波）。
 ///
+/// ⭐ 两个调用方共用这一份：实时注入侧（本模块的 `AudioPcmCache::lookup`，`#138`）与
+/// 离线导出侧（[`crate::audio_clip`] 的 `decode_checked`，`#141`）。⛔ 不是复制两份。
+///
 /// # 为什么要把长度钉死
 ///
 /// 引擎的摆放帧区间按**工程率**换算，而 `rubato` 的长度契约带
@@ -467,7 +473,7 @@ impl AudioPcmCache {
 /// 上采样在镜像频段靠该窗衰减、下采样在目标 Nyquist 之上靠该窗衰减（**不是**砖墙）；
 /// 滤波器启动延迟由 `process_all_into_buffer` 裁掉（`PREFILL_FRAMES = 0`），
 /// 但片段两端各有 `SINC_LEN / 2 = 128` 帧量级的过渡带。末尾补零最多 1 帧。
-fn resample_to_target(
+pub(crate) fn resample_to_target(
     samples: &[f32],
     channels: u16,
     source_rate: u32,

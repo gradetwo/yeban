@@ -24,12 +24,15 @@
 //!    而资产字节在 `ProjectArchive.assets` 里。⇒ 本模块把字节写进 `std::env::temp_dir()` 的
 //!    唯一临时名、用**本仓唯一的 WAV 读取器**解码、随即删除（`TempFile` 的 `Drop`）。
 //!    ⛔ 不新增 `yeban-render` 的函数、⛔ 不引入新依赖边、⛔ 不另写第二份 WAV 解析器。
-//! 2. **离线导出这条支路不重采样 ⇒ 采样率不匹配的素材被跳过并如实报告**：
-//!    `yeban_decode::resample_interleaved`（rubato sinc，[ARCH-DSP-002] / D26 的唯一实现）
-//!    其实**在 app 侧够得着**（`#85` 起 `yeban-decode` 就是本 crate 的依赖）；本模块**没有**
-//!    接它 —— 实时注入侧由 `#138` 接了（`crate::audio_inject`），离线导出这一半仍是
-//!    "跳过并报告"（**已知剩余缺口**，⛔ 不假装已闭合）。
+//! 2. **离线导出这条支路也重采样**（⭐ 任务单 `#141` 闭合了 `#138` 留下的另一半）：
+//!    解码后的素材率 ≠ 导出率时，`decode_checked` 调用**实时注入侧同一个**
+//!    [`crate::audio_inject::resample_to_target`]（＝ `yeban_decode::resample_interleaved`，
+//!    rubato sinc，[ARCH-DSP-002] / D26 的唯一实现），把样本转到导出率再交给渲染。
+//!    ⛔ 没有第二份重采样器、⛔ 没有第二份"钉帧数"逻辑。
 //!    ⛔ 绝不"改个采样率标签"（那是改时长）或"丢帧"（那是改音高）—— 两者都是静默的错误音频。
+//!    ⚠ **仍不能处理的形态照旧响亮跳过**：声道无法映射（例如 3 声道 → 立体声母线）、
+//!    坏 WAV、重采样失败 ⇒ 逐字原因进 `audio_clips_skipped`，且导出报告里
+//!    `audio-clips(rendered=… skipped=…)` 的计数**明说少了几段**（⛔ 不静默少一段）。
 //! 3. **多声道归一化**：共享的 `read_plain_wav_mono_f32` 会把多声道折成**第 0 声道**，
 //!    而 MCP 支持 `Identity`（立体声素材进立体声母线）。⇒ 本模块用 `read_plain_wav` 取
 //!    **保留声道数**的交织样本，并用**同一张归一化表**（`BitDepth::full_scale_max`；
@@ -53,15 +56,18 @@ use yeban_render::dither::{BitDepth, PcmBuffer};
 use yeban_render::render::{AudioSource, BlockContext, RenderError, db_to_linear};
 use yeban_render::wav::read_plain_wav;
 
-/// 一份已解码（**未重采样**）的素材：交织 `f32` ＋ 原始声道数 ＋ 采样率 ＋ 帧数。
+/// 一份已解码的素材：交织 `f32` ＋ 声道数 ＋ 采样率 ＋ 帧数。
+///
+/// ⚠ 两个来源：`decode_asset_bytes`（实时注入侧）保留**素材自身**的采样率；
+/// `decode_checked`（离线导出侧）在两率不同时已把样本换成**导出率**（`#141`）。
 #[derive(Debug)]
 pub(crate) struct DecodedAsset {
     /// 交织 `f32`（归一化到 `[-1, 1]`）。
     samples: Vec<f32>,
     /// 素材原始声道数（决定声道布局映射）。
     source_channels: u16,
-    /// 素材自身的采样率（Hz）—— 实时注入侧按它决定是否重采样（`#138`）；
-    /// 离线导出侧与导出率不符 ⇒ 跳过（见模块文档第 2 条）。
+    /// 本份样本的采样率（Hz）—— 实时注入侧按它决定是否重采样（`#138`）；
+    /// 离线导出侧由 `decode_checked` 换算到导出率（`#141`）。
     sample_rate: u32,
     /// 帧数（= 样本数 / 声道数）。
     frames: u64,
@@ -388,20 +394,43 @@ fn resolve_asset(
     resolution
 }
 
-/// 校验哈希 ⇒ 解码 ⇒ 查采样率。
+/// 校验哈希 ⇒ 解码 ⇒ 采样率不符则**重采样到导出率**（⭐ `#141`）。
+///
+/// 重采样复用实时注入侧的 **同一个** [`crate::audio_inject::resample_to_target`]
+/// （＝ `yeban_decode::resample_interleaved`，rubato sinc）：输出帧数被钉到
+/// `ceil(源帧数 × 导出率 / 素材率)`，因此**时长不变、音高不变**（⛔ 不是"改标签"）。
+///
+/// 两率相同 ⇒ **原样返回解码结果**（⛔ 不复制、⛔ 不滤波 ⇒ 逐位不变；判据见本文件
+/// 单元测试 `same_rate_decode_is_bit_identical_to_the_plain_decoder`）。
+///
+/// 重采样失败 ⇒ 返回**逐字原因**（调用方 `AssetResolution::Skipped` ⇒ 进导出报告），
+/// ⛔ 不静默替换成静音。
 fn decode_checked(
     hash: &AssetHash,
     bytes: &[u8],
     target_rate: u32,
 ) -> Result<DecodedAsset, String> {
-    let decoded = decode_asset_bytes(hash, bytes)?;
-    if decoded.sample_rate != target_rate {
-        return Err(format!(
-            "素材采样率 {} Hz ≠ 导出采样率 {} Hz；离线导出这条支路不做重采样\
-             （#138 只接了实时注入侧），已**跳过**而不是按错误音高播放",
-            decoded.sample_rate, target_rate
-        ));
+    let mut decoded = decode_asset_bytes(hash, bytes)?;
+    if decoded.sample_rate == target_rate {
+        return Ok(decoded);
     }
+    let source_rate = decoded.sample_rate;
+    let channels = decoded.source_channels;
+    let samples = crate::audio_inject::resample_to_target(
+        &decoded.samples,
+        channels,
+        source_rate,
+        target_rate,
+    )
+    .map_err(|reason| {
+        format!(
+            "素材采样率 {source_rate} Hz ≠ 导出采样率 {target_rate} Hz，{reason}；\
+             已**跳过**而不是按错误音高播放"
+        )
+    })?;
+    decoded.frames = u64::try_from(samples.len() / usize::from(channels.max(1))).unwrap_or(0);
+    decoded.samples = samples;
+    decoded.sample_rate = target_rate;
     Ok(decoded)
 }
 
@@ -498,5 +527,118 @@ fn normalize_samples(buffer: &PcmBuffer) -> Vec<f32> {
             .collect(),
         PcmBuffer::Int24(values) => values.iter().map(|value| *value as f32 * scale).collect(),
         PcmBuffer::Float32(values) => values.iter().map(|value| *value * scale).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use yeban_render::rf64::PcmFormat;
+    use yeban_render::wav::write_plain_wav;
+
+    use super::*;
+
+    /// 写一份**真 WAV** 字节（440 Hz / 16-bit / 单声道；写完即删临时文件）。
+    fn wav_bytes(tag: &str, rate: u32, frames: usize) -> Vec<u8> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "yeban-141-audio-clip-{tag}-{}-{serial}.wav",
+            std::process::id()
+        ));
+        let samples: Vec<i16> = (0..frames)
+            .map(|index| {
+                let phase = core::f64::consts::TAU * 440.0 * (index as f64) / f64::from(rate);
+                (0.25 * 32_767.0 * phase.sin()).round() as i16
+            })
+            .collect();
+        write_plain_wav(
+            &path,
+            &PcmFormat::integer(1, rate, 16),
+            &PcmBuffer::Int16(samples),
+        )
+        .expect("写夹具 WAV");
+        let bytes = std::fs::read(&path).expect("读夹具 WAV");
+        std::fs::remove_file(&path).expect("删夹具 WAV");
+        bytes
+    }
+
+    /// 判据 §4③（单元级）：48k 素材 + 48k 导出 ⇒ **逐位相同**（`f32::to_bits`），
+    /// 即 `decode_checked` 在同率时不复制、不滤波、不改样本。
+    #[test]
+    fn same_rate_decode_is_bit_identical_to_the_plain_decoder() {
+        let bytes = wav_bytes("same", 48_000, 4_800);
+        let hash = AssetHash::of_bytes(&bytes);
+        let plain = decode_asset_bytes(&hash, &bytes).expect("纯解码必须成功");
+        let checked = decode_checked(&hash, &bytes, 48_000).expect("同率检查必须成功");
+        assert_eq!(checked.sample_rate, 48_000, "同率 ⇒ 采样率原样");
+        assert_eq!(checked.frames, plain.frames, "同率 ⇒ 帧数原样");
+        assert_eq!(checked.samples.len(), plain.samples.len());
+        let plain_bits: Vec<u32> = plain.samples.iter().map(|value| value.to_bits()).collect();
+        let checked_bits: Vec<u32> = checked
+            .samples
+            .iter()
+            .map(|value| value.to_bits())
+            .collect();
+        assert_eq!(
+            checked_bits, plain_bits,
+            "同率样本必须逐位相同（f32::to_bits）"
+        );
+        println!(
+            "[#141/same-rate] frames={} samples={} f32-bits-equal=true",
+            checked.frames,
+            checked.samples.len()
+        );
+    }
+
+    /// 判据 §4①②（单元级）：44.1k → 48k 的输出帧数被钉到
+    /// `ceil(源帧 × 48000 / 44100)` ⇒ 时长不变；样本数确实变了 ⇒ ⛔ 不是"只改标签"。
+    #[test]
+    fn a_44k1_decode_is_resampled_and_the_frame_count_is_pinned() {
+        let frames = 4_410usize;
+        let bytes = wav_bytes("up", 44_100, frames);
+        let hash = AssetHash::of_bytes(&bytes);
+        let checked = decode_checked(&hash, &bytes, 48_000).expect("44.1k ⇒ 48k 必须成功");
+        let expected = (frames as u128 * 48_000).div_ceil(44_100);
+        assert_eq!(checked.sample_rate, 48_000, "换算后采样率 = 导出率");
+        assert_eq!(
+            u128::from(checked.frames),
+            expected,
+            "帧数必须按时长口径 ceil 钉死"
+        );
+        assert_eq!(
+            checked.samples.len(),
+            usize::try_from(expected).expect("帧数放得进 usize")
+        );
+        assert_ne!(
+            checked.samples.len(),
+            frames,
+            "44.1k→48k 必须真的多出样本（⛔ 只改采样率标签）"
+        );
+        println!(
+            "[#141/44k1] frames {frames} → {}（{:.3} s 不变）；samples {frames} → {}",
+            checked.frames,
+            checked.frames as f64 / 48_000.0,
+            checked.samples.len()
+        );
+    }
+
+    /// 判据 §4④（单元级）：重采样失败必须是**逐字可读的 Err**（调用方据此记跳过），
+    /// ⛔ 不是静默静音。
+    #[test]
+    fn a_resample_failure_returns_a_loud_reason() {
+        let bytes = wav_bytes("fail", 44_100, 441);
+        let hash = AssetHash::of_bytes(&bytes);
+        let reason = decode_checked(&hash, &bytes, 0).expect_err("0 Hz 目标率必须失败");
+        assert!(
+            reason.contains("重采样失败"),
+            "失败原因必须明说重采样失败: {reason}"
+        );
+        assert!(
+            reason.contains("已**跳过**"),
+            "失败原因必须明说会跳过（⛔ 不静默）: {reason}"
+        );
+        println!("[#141/resample-failure] reason={reason}");
     }
 }
