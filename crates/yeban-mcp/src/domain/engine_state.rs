@@ -56,9 +56,12 @@
 
 use serde_json::{Map, Value};
 
-use yeban_model::{EntityId, SessionRuntimeState, TrackV3, YebanProjectV1};
+use yeban_model::{
+    DeviceKind, EntityId, RoutingKind, SessionRuntimeState, TrackV3, YebanProjectV1,
+};
 
 use super::error::Fault;
+use crate::effect_params;
 use crate::tools::ErrorCode;
 
 /// 会话里保留多少条**最近**的引擎读数（游标窗口）。
@@ -214,38 +217,78 @@ pub fn readings_stream_value(
 }
 
 /// 一条设备链的 JSON 形态（`slotIndex` 就是链上的位置，`ARCH-PDC-001` 的延迟逐台可见）。
+///
+/// ⭐ #156：每个参数多报三个只读键 —— `recognised` / `canonicalName` / `effect`，
+/// 并在轨对象上多一段 `inserts[]`（设备名 + 槽位 + 已识别/未识别的参数名）。
+/// 这是让 Agent **确认自己写对了**的验收面：写了 `reverb_mix` 会出现在
+/// `unrecognisedParams` 里，而不会被误认为生效。既有字段一个都不删。
 #[must_use]
 pub fn device_chain_value(track: &TrackV3) -> Value {
-    let devices: Vec<Value> = track
-        .devices
-        .iter()
-        .enumerate()
-        .map(|(slot_index, device)| {
-            serde_json::json!({
-                "slotIndex": slot_index,
-                "deviceId": device.id.to_canonical_string(),
-                "name": device.name.clone(),
-                "kind": enum_name(&device.kind),
-                "bypassed": device.bypassed,
-                // PDC 的唯一来源: 少报/漏报会造成汇合点的相位错位 (ARCH-PDC-001)。
-                "latencySamples": device.latency_samples,
-                "paramCount": device.params.len(),
-                "params": device
-                    .params
-                    .iter()
-                    .enumerate()
-                    .map(|(param_index, param)| {
-                        serde_json::json!({
-                            "paramIndex": param_index,
-                            "name": param.name.clone(),
-                            "value": param.value,
-                            "unit": param.unit.clone(),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
+    let mut devices: Vec<Value> = Vec::with_capacity(track.devices.len());
+    let mut inserts: Vec<Value> = Vec::with_capacity(track.devices.len());
+    for (slot_index, device) in track.devices.iter().enumerate() {
+        let mut effects: Vec<&'static str> = Vec::new();
+        let mut recognised_params: Vec<&'static str> = Vec::new();
+        let mut unrecognised_params: Vec<String> = Vec::new();
+        for param in &device.params {
+            match effect_params::recognise(&param.name) {
+                Some((group, canonical)) => {
+                    recognised_params.push(canonical.name);
+                    if !effects.contains(&group.id) {
+                        effects.push(group.id);
+                    }
+                }
+                None => unrecognised_params.push(param.name.clone()),
+            }
+        }
+        // 引擎只从**非旁通的内置效果器**上取参数（`insert.rs` 的规则 1+2）。
+        let active = !device.bypassed && device.kind == DeviceKind::InternalEffect;
+        let params: Vec<Value> = device
+            .params
+            .iter()
+            .enumerate()
+            .map(|(param_index, param)| {
+                let recognised = effect_params::recognise(&param.name);
+                serde_json::json!({
+                    "paramIndex": param_index,
+                    "name": param.name.clone(),
+                    "value": param.value,
+                    "unit": param.unit.clone(),
+                    // ⭐ 只读验收读数（既有四个键不动）。
+                    "recognised": recognised.is_some(),
+                    "canonicalName": recognised.map(|(_, canonical)| canonical.name),
+                    "effect": recognised.map(|(group, _)| group.id),
+                })
             })
-        })
-        .collect();
+            .collect();
+        devices.push(serde_json::json!({
+            "slotIndex": slot_index,
+            "deviceId": device.id.to_canonical_string(),
+            "name": device.name.clone(),
+            "kind": enum_name(&device.kind),
+            "bypassed": device.bypassed,
+            // PDC 的唯一来源: 少报/漏报会造成汇合点的相位错位 (ARCH-PDC-001)。
+            "latencySamples": device.latency_samples,
+            "paramCount": device.params.len(),
+            "params": params,
+            // ⭐ #156：这台设备是否真的会武装引擎内置效果器。
+            "active": active,
+            "effects": effects,
+            "recognisedParamCount": recognised_params.len(),
+            "unrecognisedParamCount": unrecognised_params.len(),
+        }));
+        inserts.push(serde_json::json!({
+            "slotIndex": slot_index,
+            "deviceId": device.id.to_canonical_string(),
+            "deviceName": device.name.clone(),
+            "deviceKind": enum_name(&device.kind),
+            "bypassed": device.bypassed,
+            "active": active,
+            "effects": effects,
+            "recognisedParams": recognised_params,
+            "unrecognisedParams": unrecognised_params,
+        }));
+    }
     // 链的总延迟 = 逐台求和（u64 饱和: 病态文档不会把读数掀翻成 panic）。
     let total_latency: u64 = track
         .devices
@@ -259,7 +302,44 @@ pub fn device_chain_value(track: &TrackV3) -> Value {
         "deviceCount": track.devices.len(),
         "totalLatencySamples": total_latency,
         "devices": devices,
+        // ⭐ #156：每轨 insert 摘要（设备名 + 槽位 + 已识别/未识别的参数名）。
+        "inserts": inserts,
     })
+}
+
+/// 一条路由边是不是**发送**（`SendToAux`）—— 只看种类，不看增益。
+///
+/// `source` 给定时只报这条音轨发出的边；缺省 = 报工程里的全部发送边。
+/// 增益是 `Option<f32>` 的**字面**形态：`null` = 单位增益（与 `0.0` 可区分）。
+#[must_use]
+pub fn send_edges_value(project: &YebanProjectV1, source: Option<EntityId>) -> Value {
+    let name_of = |id: EntityId| {
+        project
+            .track(&id)
+            .ok()
+            .map(|track| track.name.clone())
+            .map_or(Value::Null, Value::from)
+    };
+    let sends: Vec<Value> = project
+        .routing_graph
+        .edges
+        .values()
+        .filter(|edge| edge.kind == RoutingKind::SendToAux)
+        .filter(|edge| source.is_none_or(|id| edge.source_node == id))
+        .map(|edge| {
+            serde_json::json!({
+                "edgeId": edge.id.to_canonical_string(),
+                "kind": enum_name(&edge.kind),
+                "sourceNode": edge.source_node.to_canonical_string(),
+                "sourceName": name_of(edge.source_node),
+                "destinationNode": edge.destination_node.to_canonical_string(),
+                "destinationName": name_of(edge.destination_node),
+                "gainDb": edge.gain_db,
+                "gainSource": "project.routing_graph.edges[].gain_db (null = 单位增益)",
+            })
+        })
+        .collect();
+    Value::Array(sends)
 }
 
 /// 读数**游标**的三样东西：当前修订号、保留窗口、以及客户端的游标。
@@ -326,8 +406,28 @@ pub fn snapshot(
     }
     data.insert(
         "track".to_owned(),
-        track.map_or(Value::Null, device_chain_value),
+        track.map_or(Value::Null, |track| {
+            let mut value = device_chain_value(track);
+            // ⭐ #156：这条音轨**发出**的发送边（目的地 + 增益 + edgeId）。
+            if let Value::Object(fields) = &mut value {
+                fields.insert(
+                    "sends".to_owned(),
+                    send_edges_value(project, Some(track.id)),
+                );
+            }
+            value
+        }),
     );
+    // ⭐ #156：工程里的**全部**发送边（edgeId / gainDb / 目的地）。
+    //
+    // ⚠ **只在点名了一条音轨时**给出：发送边带着音轨身份与显示名（工程内容），
+    // 而缺省调用（`trackId` 不带）同时是 `yeban_export_diagnostics` 喂
+    // `engine-state.json` 的那条路径 —— 那个包承诺 `projectIncluded:false`，
+    // 它的判据（`diagnostics_bundle_content_matches_the_project_included_flag`）
+    // 逐字节扫描工程标记。缺省把工程标记写进诊断包就是**隐私读数说谎**。
+    if track_id.is_some() {
+        data.insert("sends".to_owned(), send_edges_value(project, None));
+    }
     data.insert(
         "stateSources".to_owned(),
         serde_json::json!({
@@ -335,6 +435,8 @@ pub fn snapshot(
             "sampleRate": "project.audio_config.sample_rate",
             "bufferFrames": "host injected EngineReadings mirror",
             "devices": "project.tracks[].devices",
+            "inserts": "project.tracks[].devices (recognised against crate::effect_params)",
+            "sends": "project.routing_graph.edges where kind == SendToAux",
             "undoCursor": "undo_session::UndoState",
             "readingsRevision": "host injected EngineReadings mirror (monotonic)",
         }),

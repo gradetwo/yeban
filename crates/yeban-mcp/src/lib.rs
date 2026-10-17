@@ -128,7 +128,9 @@
 
 pub mod dispatch;
 pub mod domain;
+pub mod effect_params;
 pub mod jsonrpc;
+pub mod op_schema;
 pub mod payload;
 pub mod samples;
 pub mod security;
