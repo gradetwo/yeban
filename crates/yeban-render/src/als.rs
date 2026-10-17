@@ -1630,8 +1630,25 @@ mod tests {
     }
 
     /// `filled_project()` 导出一次的**字节数**（实测, `stat` 口径: `Vec<u8>::len`）。
-    const ALS_FILLED_BYTES: usize = 2909;
+    ///
+    /// **引脚修订（任务单 `#145`）**: 前 **2909** → 后 **2908**（**−1 字节**）。
+    /// 原因: `#142` 给 `filled_project()` 的音频片段补上了**合成音频字节**
+    /// （`yeban_model::samples::filled_project_assets()` 与 `FILLED_KICK_FRAMES`），
+    /// clip 的 `asset` 从冻结的 17 字节 ASCII 标签（`yeban-kick-sample`）哈希变成
+    /// 44_100 字节 WAV 的现算哈希，
+    /// `project.assets` 索引也随之写入 ⇒ 导出 XML 的文本内容变了 ⇒ 同一
+    /// [`Compression::default`] 下的 deflate 流恰好短 1 字节。
+    /// ⚠ 第 298 条三件套: ① 判据自报实测新数（2908）；② 常量改成该数；③ 常量旁写明
+    /// "前→后 ＋ 原因"。⛔ 判定逻辑（下面两条 `assert_eq!`）本单**一行未改**、判据一条未删。
+    const ALS_FILLED_BYTES: usize = 2908;
     /// 同一份字节流的 SHA-256（实测）。
+    ///
+    /// **引脚修订（任务单 `#145`）**: 前
+    /// `9219c074428e471db3183108f70489b7c18545b74beacbbcb5f7b679cab29cb8` → 后
+    /// `09e37ea6d6b05fc89db548ce1068e1b8c0662e0a6a37b77a9a635cca914268a8`。
+    /// 原因同上: `#142` 改动了 `filled_project()` 的样例内容（合成音频字节 ⇒ clip 的
+    /// `asset` 哈希 ＋ `project.assets` 索引进入 XML），压缩后的字节流随之变化。
+    /// ⚠ 长度与摘要是**两个独立读数**，两者都按同一份实测字节流重钉。
     const ALS_FILLED_SHA256: &str =
-        "9219c074428e471db3183108f70489b7c18545b74beacbbcb5f7b679cab29cb8";
+        "09e37ea6d6b05fc89db548ce1068e1b8c0662e0a6a37b77a9a635cca914268a8";
 }

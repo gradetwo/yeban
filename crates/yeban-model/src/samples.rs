@@ -25,6 +25,24 @@
 //!
 //! 样本里刻意使用**确定性 ULID**（`fixture_id`）而不是 `EntityId::new()`：
 //! 样本因此逐字节稳定，可以被 diff、被缓存、被 CI 断言"两次导出完全一致"。
+//!
+//! ## ⚠ 改本文件的样例内容 ⇒ 必须一并重钉下游引脚
+//!
+//! 本模块的样例字节是**下游引脚判据的输入**。改动 `filled_project()` / `demo_project()`
+//! 的任何字段（尤其音频片段的 `asset` 哈希、`project.assets` 索引、`byte_len`）都会改变
+//! `yeban-render` 导出的字节流 ⇒ 引脚判据必须**一并重钉**：
+//!
+//! - `als::tests::the_filled_project_als_byte_stream_is_pinned` —— 逐字节引脚
+//!   （`ALS_FILLED_BYTES` ＋ `ALS_FILLED_SHA256`）：样例内容一变**就红**，这是**有意**的；
+//! - `logic::tests::filled_project_bundle_is_byte_deterministic` 是**自比**（同一工程
+//!   导出两遍），不会因样例内容变化而红 —— 但任何**新增**的 Logic 引脚常量同样要重钉。
+//!
+//! 重钉口径 = 第 298 条三件套：① 判据自报实测新值；② 常量改成该值；③ 常量旁写
+//! "前→后 ＋ 原因"。⛔ 不许只改期望值而不写原因、⛔ 不许删判据、⛔ 不许把判据宽松成
+//! "只比长度"或"只比自比"。
+//!
+//! 先例: `#142` 给 `filled_project()` 补了合成音频字节 ⇒ `#145` 把 `.als` 引脚从
+//! 2909 字节 / `9219c074…` 重钉成 2908 字节 / `09e37ea6…`（见 `als.rs` 常量旁的"前→后"）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
