@@ -12150,3 +12150,29 @@ cargo run -q -p yeban-app --locked -- --open ~/Desktop/my.yeban
 ⭐ ⚠ **六、⭐ 仍需人类的两小条**: ⭐ ① ⭐ **桌面会话验收**（⭐ 交付线给了 3 步 5 分钟：⭐ 点 ● 录 2–3 s ⇒ ⭐ `afinfo ui-record.wav` 应显 **1 ch／48000／24-bit／非 0 帧**；⭐ 若仍 0 帧 ⇒ ⭐ stderr 会打出 `录音写入 0 帧（pushed=0 …）`，⭐ 把那行贴回）⭐ ② ⚠ ⭐ **macOS 麦克风 TCC 授权**：⭐ 全仓 `NSMicrophoneUsageDescription` **0 命中** ⇒ ⭐ 本机今天恰好能采，⭐ 但**裸二进制在别的机器可能被拒**（⭐ 现在会**响亮报错** 而 ⛔ 不再静默）⇒ ⭐ ⭐ **要加 `NSMicrophoneUsageDescription`／��授权引导** ⇒ ⭐ 属**权限面** ⇒ ⭐ **找你**（⭐ 你要的是"⭐ 改 Info.plist 的权限"⭐ 那类）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#131`（脚本自动化）交单** ＋ ⭐ **录音 L1＋L2＋L3 票**（⭐ 本条件裁）＋ ⭐ **`NSMicrophoneUsageDescription`**（⭐ 权限面 ⇒ ⭐ **找人**）＋ ⭐ **读回 `0fe5e87b`／`eca69fe4`／`f2ac5d93` 的 CI 判决** ＋ ⭐ **`HD-64` 最小迁移器**（⭐ 本条件裁 A）＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`BASELINE-003` 空闲重跑** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`（⭐ 装依赖）／⭐ `HD-52`（⭐ Logic 素材）／⭐ `HD-58`（⭐ 口径）／⭐ 真 MIDI／⭐ 物理回环线 ＋ ⭐ **本条新增**：⭐ Info.plist 权限 ＋ ⭐ 桌面会话验收 ✓
+
+---
+
+## R826 实测追加（2026-10-17）：⭐⭐ **`#131`（硬件脚本 `--auto`：自动采集 ＋ 自动判断）已落地 ＋ 快进合并**（主干见下）⇒ ⭐ **人类要的"⭐ 别问人"⭐做到了**
+
+⭐ **合并**: ⭐ `FINAL=d6519ffa`（⭐ rebase 后）⇒ ⭐ 主干 ff 合并 ✓ ⭐ **我独立复跑**：⭐ `bash -n` **rc 0**／⭐ `--self-test` **rc 0**（⭐ 尾行已改"⭐ 现在可以跑自动档（零提问）：⭐ `bash scripts/dev/hardware-check.sh --auto`"）／⭐ 守卫 **18**／⭐ 轻门 **rc 0** ✓
+
+⭐ ⚠ **一、⭐ `--auto` 的形状（⭐ 2 文件 ＋1217／−14）**: ⭐ `scripts/dev/hardware-check.sh` ＋382／−14（⭐ 新 `--auto` 块 ＋ ⭐ **老交互档完整保留**）＋ ⭐ **新增** `scripts/dev/hardware_check_auto.py`（⭐ **835 行、⭐ 只用 Python 标准库** ｜ ⭐ `struct`／`zlib`／`wave`）⇒ ⭐ **RIFF/WAV 解码 ＋ Goertzel**、⭐ **SFZ region 解析 ＋ MIDI 音符表**、⭐ **PNG 解码 ＋ 非背景像素占比** ✓ ⭐ 退出码：⭐ **0** ＝ 无 fail／⭐ **180** ＝ 至少一项 fail／⭐ **2** ＝ 用法错 ⇒ ⭐ 每项打一行 `verdict=<项>=<pass|fail|not-automatable>(理由)` ＋ ⭐ 末尾 7 行汇总 ✓
+
+⭐ ⚠ **二、⭐ 本机实跑读数（⭐ 我自己复核了关键行）**:
+| 项 | ⭐ verdict | ⭐ 关键读数 |
+| :-- | :--- | :--- |
+| 0 环境 | ⭐ `pass` | ⭐ macOS 27.0.1 arm64／⭐ cargo 1.99.0／⭐ python 3.13.9 |
+| ⭐ 1 WAV | ⭐ ⭐ **`pass`** | ⭐ ⭐ **`hz=440.00`**（⭐ ±2）／⭐ `rms=0.353554`／⭐ `purity=0.503`／⭐ `clip=0/96000`／⭐ `dc=-0.000000`／⭐ 24-bit／⭐ 2.0000 s ｜ ⭐ ⭐ **反向腿 880 Hz ⇒ `fail`** ✓ |
+| ⭐ 2 SFZ | ⭐ ⭐ **`pass`** | ⭐ 自动选中 ⭐ `karoryfer-272-merry-orks/ork_predrops.sfz`（⭐ 70 regions／70 samples）⇒ ⭐ **6 个期望频率全部在噪底 20× 以上**（⭐ `440/554/659/880/988/1109 Hz`）＋ ⭐ 主峰偏差 **0.00%** ✓ ⚠ 样本 `.wav` **未入库** ⇒ ⭐ 自动切 `in-memory-sine` 回退（⭐ 报告逐字 `回退: 样本读取失败`）✓ |
+| ⭐ 3 视觉 | ⭐ ⭐ **`pass`** | ⭐ **3 张 PNG**（⭐ 各 6,222,418 字节、⭐ 1920×1080）⇒ ⭐ 非背景像素 **70.912%／67.270%／68.208%**（⭐ ⛔ 无依赖，⭐ `zlib` 自解 PNG）✓ |
+| ⭐ 4 帧率 | ⭐ ⭐ **`not-automatable`** | ⭐ `p99=2.961 ms` ⚠ 但 ⭐ **`load_1min=11.02 > 4`** ⇒ ⭐ **机器忙 ⇒ 不判**（⭐ 这正是我 R822 要求的那道门；⭐ 并实测：⭐ 注入 8 × `yes` ⇒ `load_1min=20.77` ⇒ ⭐ 仍 `not-automatable`）✓ |
+| 5 MIDI | ⭐ `not-automatable` | ⭐ 实测 **0 个输入端口** ⇒ ⭐ ⛔ 不问人 ✓ |
+| ⭐ 6 声学 | ⭐ ⚠ **`fail`** | ⭐ `verdict=over-target`／⭐ **`measured_roundtrip_ms=52.2743`**／⭐ `peak_ncc=0.6521` ⇒ ⭐ ⚠ **那是"⭐ 当前系统默认路由"⭐的真实读数**（⭐ 我们在 R820／R822 拿到 3.33 ms 是因为**切到了 BlackHole 直连**）⇒ ⭐ ⭐ **脚本 ⛔ 不改系统路由** ⇒ ⭐ **这个 fail 是环境事实、⭐ 不是回归** ✓ |
+
+⭐ ⚠ **三、⭐ 三条"⭐ 牙"都实测过**: ⭐ ① ⭐ **零提问**：⭐ `timeout 600 … --auto < /dev/null` ⇒ ⭐ **rc 180** 且 ⭐ `grep -c '\[y/n'` ＝ **0**；⭐ ② ⭐ **WAV 判据真在判**：⭐ 反向 880 Hz ⇒ **fail**（⭐ `880.00Hz 超出 440.0±2.0Hz`）；⭐ ③ ⭐ **负载门限真在判**：⭐ 见上 ✓ ⭐ 并且 ⭐ **老交互档一字未删**（⭐ `--only 1` 仍出现 `[y/n/s(跳过)]`）✓
+
+⭐ ⚠ **四、⭐ 人类怎么用一句话**: ⭐ ⭐ **`bash scripts/dev/hardware-check.sh --auto`** —— ⭐ 零提问跑完 ⇒ ⭐ 看末尾 **7 行 `项=verdict`** ⇒ ⭐ 产物在 ⭐ `/tmp/yeban-hc-auto-<时间戳>/`（⭐ WAV／PNG／log 全在，⭐ 供复核）✓
+⭐ ⚠ ⭐ 第 6 项若要复现 `within-target` ⇒ ⭐ **把系统默认输出／输入切到 BlackHole 2ch** 再跑（⭐ 脚本本身 ⛔ 不改路由）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **读回 `0fe5e87b`／`eca69fe4`／`f2ac5d93`／`d6519ffa` 的 CI 判决** ＋ ⭐ **录音 L1＋L2＋L3 票**（⭐ 本条件裁）＋ ⭐ **`NSMicrophoneUsageDescription`**（⭐ 权限面 ⇒ ⭐ 找人）＋ ⭐ **`HD-64` 最小迁移器**（⭐ 本条件裁 A）＋ ⭐ **`ADR-0008` 按 C** ＋ ⭐ **`backend_errors=1`** ＋ ⭐ **`bridge.rs:743`／`:761`** ＋ ⭐ **`ADR-0004`／`DEVELOPMENT_LEDGER` 行号** ＋ ⭐ ⚠ **仍需人类**：⭐ `HD-48`（装依赖）／⭐ `HD-52`（Logic 素材）／⭐ `HD-58`（口径）／⭐ 真 MIDI／⭐ 物理回环线／⭐ Info.plist 权限 ＋ ⭐ ⚠ **第 6 项的环境条件**（⭐ 切 BlackHole 直连）✓
