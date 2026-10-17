@@ -632,6 +632,26 @@ impl Sample {
             Self::Empty => yeban_model::samples::default_project(),
         }
     }
+
+    /// 构造样本自带的**会话资产池字节**（任务单 `#142`）。
+    ///
+    /// 为什么需要这一层：`ClipContent::Audio` 在工程模型里只有 `AssetHash`，PCM 住在
+    /// `ProjectArchive.assets`（会话资产池）。内置样本此前把这一层**如实置空** ⇒
+    /// 样本里那条音频片段引用一份谁也没有的字节，`EngineHost` 第 1.3 步（`#136`）
+    /// 只能把它记成"跳过" ⇒ **演示工程出厂即静音**。
+    ///
+    /// 现在字节由 `yeban-model` 在**运行期合成**（⛔ 不入库二进制，⛔ 不加依赖），
+    /// 且哈希与 `Sample::project()` 的引用**同源**：两者都调用同一个合成器。
+    ///
+    /// `empty` 没有片段 ⇒ 空池（如实置空，⛔ 不是丢失）。
+    #[must_use]
+    pub fn assets(self) -> Vec<(yeban_model::AssetHash, Vec<u8>)> {
+        match self {
+            Self::Default => yeban_model::samples::demo_project_assets(),
+            Self::Filled => yeban_model::samples::filled_project_assets(),
+            Self::Empty => Vec::new(),
+        }
+    }
 }
 
 /// `--theme` 可选的主题（运行期调色板选择）。
@@ -2406,8 +2426,12 @@ impl std::error::Error for CliError {
 
 /// 取出当前工程：`--open` 的文件，或 `--project-sample` 选中的内置样本。
 ///
-/// 内置样本的归档 `history.dag` / 资产池为**空**（样本本来就没有这两层；
-/// `[MODEL-ISO-001]` 的三层状态里它们是第二、第三层）—— 这是如实置空，不是丢失。
+/// 内置样本的 `history.dag` 为**空**（样本本来就没有这一层；
+/// `[MODEL-ISO-001]` 的三层状态里它是第二层）—— 这是如实置空，不是丢失。
+///
+/// ⭐ 资产池**不再**一律置空（任务单 `#142`）：`default` / `filled` 两个样本自带
+/// 运行期合成的音频字节，走 [`Sample::assets`] 进同一份归档；`empty` 没有片段 ⇒
+/// 仍是空池。
 ///
 /// # Errors
 ///
@@ -2434,7 +2458,7 @@ pub fn load_project(options: &Options) -> Result<Loaded, CliError> {
             archive: ProjectArchive {
                 project: options.sample.project(),
                 history_dag: Vec::new(),
-                assets: Vec::new(),
+                assets: options.sample.assets(),
             },
             source: ProjectSource::Sample(options.sample),
         }),

@@ -81,7 +81,7 @@ const FROZEN_PROJECT_JSON_SHA256: [(&str, &str); 2] = [
     ),
     (
         "project.filled.json",
-        "0218fa7d620d48e23363f3a49621d8af647f6abb10f8423feeaebafce057265b",
+        "08fa2a9ec3ce6955f87307a2d6e122d188152cd41a1e4c46c1ab89fe9408c411",
     ),
 ];
 
@@ -110,7 +110,7 @@ const FROZEN_PROJECT_TOP_LEVEL_KEYS: [&str; 19] = [
 
 /// 工程 JSON 的**递归键路径集合**（`a.b.*` 形式，已排序）的 SHA-256。
 const FROZEN_PROJECT_KEY_PATH_SHA256: &str =
-    "067b6c04205ba26cc1ff049c8bccd03938841b7e81736194ac18b4413febdfbc";
+    "95f70eb8b25de522229bca832ca2d48ebbfe55cbc46db9260defbc1f689bcbd4";
 
 /// 上面那个集合的元素个数（防止"哈希对了但集合空了"这类退化）。
 const FROZEN_PROJECT_KEY_PATH_COUNT: usize = 223;
@@ -2078,7 +2078,7 @@ fn session_writers_do_not_rewrite_the_payload_they_are_given() {
 fn history_dag_and_container_zip_bytes_are_frozen() {
     const DAG_SHA256: &str = "54c9212169a07d34e54ab58114090e88d86f06371c53002f91f3295e8c5cbc32";
     const DAG_LEN: usize = 911;
-    const ZIP_SHA256: &str = "a025fdfe020d690e04d1221e5c0beef14c4cf6a16245f9db65a277c0db98f844";
+    const ZIP_SHA256: &str = "ff233cbbf667a1e1a831a439f0730ad7bd17f5adf4117ec5eb1ec37393ac661a";
     const ZIP_LEN: usize = 5448;
 
     let id1 = EntityId::from_str("01J8ZQ00000000000000000001").expect("id1");

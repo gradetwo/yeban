@@ -12,15 +12,16 @@ python3 crates/yeban-mcp/verify/e2e_audio_clip_seed.py --out target/e2e-audio-cl
 
 | 文件 | 内容 | 用途 |
 | :--- | :--- | :--- |
-| `seed-clean.yeban` | 模型样本 `project.filled.json` **去掉**那条"只声明、没有字节"的音频资产（片段 + 摆放 + `assets` 索引项），打进 `ARCH-SEC-003` 容器（`project.json` + `history.dag`，`stored`） | 端到端主链路的起点：有音轨、有 MIDI 材料、**没有**悬空的资产声明 |
-| `seed-dangling.yeban` | 同一个样本**原样**（`assets` 索引声明了 `8bce…2c33`，容器里没有 `assets/8bce…2c33`） | 证明渲染的 `bytesPresent` 判据读的是**会话 CAS 池**，不是 `project.assets` 索引 |
+| `seed-clean.yeban` | 模型样本 `project.filled.json` **去掉**那条"只声明、样本 JSON 里没有载荷"的音频资产（片段 + 摆放 + `assets` 索引项），打进 `ARCH-SEC-003` 容器（`project.json` + `history.dag`，`stored`） | 端到端主链路的起点：有音轨、有 MIDI 材料、**没有**悬空的资产声明 |
+| `seed-dangling.yeban` | 同一个样本**原样**（`assets` 索引声明了一条资产，容器里没有对应 `assets/{sha256}` 载荷） | 证明渲染的 `bytesPresent` 判据读的是**会话 CAS 池**，不是 `project.assets` 索引 |
 | `kick.wav` | 48 kHz / 单声道 / 16-bit PCM，样本由公式生成（不用随机数） | `yeban_import_audio` 的 `path` 来源 |
 
 ## 为什么主链路起点要"去掉那条声明"
 
-`project.filled.json` 里的音频片段指向 `AssetHash::of_bytes(b"yeban-kick-sample")` ——
-那 17 个字节**不是**音频容器，样本里也没有它的载荷。把它留在起点，渲染就会如实地为
-它报一次 `bytesPresent: false`；而端到端判据要证明的是"**本次导入的**片段被真的渲染"，
+`project.filled.json` 里的音频片段指向一条**由模型在运行期合成**的 WAV 资产
+（`samples::filled_project_assets()`；任务单 `#142`）—— JSON 样本本身只带索引与
+`byte_len`，**不带载荷**。把它留在起点，渲染就会如实地为它报一次
+`bytesPresent: false`；而端到端判据要证明的是"**本次导入的**片段被真的渲染"，
 所以起点必须**没有**悬空声明。这不是掩盖缺陷：`seed-dangling.yeban` 与既有判据
 `tests/render_audio_clips.rs::a_declared_asset_without_payload_is_registered_rather_than_faked`
 都保留着那条如实上报的路径。
@@ -44,8 +45,8 @@ import zipfile
 PROJECT_JSON_NAME = "project.json"
 HISTORY_DAG_NAME = "history.dag"
 
-# 样本里那条"只声明、没有字节"的音频资产（见模块文档）。
-DANGLING_HASH = "8bce5ff4ef4d123c308027f18c51101d4925d1194c3f4ef98248923cde682c33"
+# 样本里那条"只声明、样本 JSON 里没有载荷"的音频资产。
+# ⚠ 哈希从样本**现读**（任务单 `#142` 之后它由运行期合成器决定）—— ⛔ 不手抄。
 AUDIO_CLIP_ID = "01J8ZQ00000000000000000011"
 AUDIO_PLACEMENT_ID = "01J8ZQ00000000000000000051"
 AUDIO_TRACK_ID = "01J8ZQ00000000000000000003"
@@ -62,14 +63,20 @@ def default_project_json() -> pathlib.Path:
     return repo / "target" / "schema-samples" / "project.filled.json"
 
 
+def dangling_hash(project: dict) -> str:
+    """样本里那条音频片段引用的资产哈希（从样本现读，⛔ 不手抄）。"""
+    return project["clip_pool"][AUDIO_CLIP_ID]["content"]["Audio"]["asset"]
+
+
 def strip_dangling_audio(project: dict) -> dict:
-    """去掉那条"只声明、没有字节"的音频资产（片段 + 摆放 + `assets` 索引项）。
+    """去掉那条"只声明、样本 JSON 里没有载荷"的音频资产（片段 + 摆放 + `assets` 索引项）。
 
     只删键、不改键序：`project.json` 的字段顺序因此与模型写出的一致。
     """
     pool = project["clip_pool"]
     if AUDIO_CLIP_ID not in pool:
         raise SystemExit(f"样本里没有音频片段 {AUDIO_CLIP_ID}（样本已变，请更新本脚本）")
+    hash_value = dangling_hash(project)
     del pool[AUDIO_CLIP_ID]
 
     clips = project["tracks"][AUDIO_TRACK_ID]["clips"]
@@ -78,9 +85,9 @@ def strip_dangling_audio(project: dict) -> dict:
     del clips[AUDIO_PLACEMENT_ID]
 
     assets = project["assets"]
-    if DANGLING_HASH not in assets:
-        raise SystemExit(f"样本里没有资产声明 {DANGLING_HASH}")
-    del assets[DANGLING_HASH]
+    if hash_value not in assets:
+        raise SystemExit(f"样本里没有资产声明 {hash_value}")
+    del assets[hash_value]
     return project
 
 

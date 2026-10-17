@@ -231,12 +231,19 @@ pub fn filled_project() -> YebanProjectV1 {
         }
     }
 
+    // ⭐ 任务单 `#142`：音频片段必须引用**真实存在的字节**。字节在运行期合成
+    // （⛔ 不入库二进制），哈希由 `AssetHash::of_bytes(&bytes)` 现算 ⇒
+    // clip 的引用、`project.assets` 的键／内嵌哈希三者同源，不可能互相漂移。
+    let kick_bytes = filled_kick_wav();
+    let asset_hash = AssetHash::of_bytes(&kick_bytes);
+    let asset_byte_len = u64::try_from(kick_bytes.len()).expect("WAV 字节数必然放得进 u64");
+
     let audio_clip_id = fixture_id(11);
     let audio_clip = ClipPoolEntry {
         id: audio_clip_id,
         name: "Kick".to_owned(),
         content: ClipContent::Audio {
-            asset: AssetHash::of_bytes(b"yeban-kick-sample"),
+            asset: asset_hash.clone(),
             gain_db: -1.5,
         },
     };
@@ -330,7 +337,6 @@ pub fn filled_project() -> YebanProjectV1 {
         );
     }
 
-    let asset_hash = AssetHash::of_bytes(b"yeban-kick-sample");
     YebanProjectV1 {
         schema_version: SCHEMA_VERSION,
         min_reader_version: MIN_READER_VERSION,
@@ -409,7 +415,9 @@ pub fn filled_project() -> YebanProjectV1 {
             AssetMetadata {
                 hash: asset_hash,
                 original_path: "samples/kick.wav".to_owned(),
-                byte_len: 44_100,
+                // ⭐ 与运行期合成的字节长度**同一个读数**（`#142`）；不再写一个
+                // 没有字节支撑的手抄值。
+                byte_len: asset_byte_len,
                 media_kind: MediaKind::Audio,
                 license: "CC0-1.0".to_owned(),
             },
@@ -720,6 +728,14 @@ pub fn demo_project() -> YebanProjectV1 {
     let midi_clip_id = demo_id("K1");
     let audio_clip_id = demo_id("K2");
 
+    // ⭐ 任务单 `#142`：演示工程（`--project-sample default`）的音频片段引用
+    // **运行期合成的真实字节**（⛔ 不入库二进制）。此前这里写的是
+    // `AssetHash::of_bytes(b"yeban-demo-kick")` —— 一个 15 字节 ASCII 标签的
+    // 摘要，全仓没有任何文件与之对应 ⇒ 出厂即静音（`#136` 的跳过行是正确报错）。
+    let kick_bytes = demo_kick_wav();
+    let kick_hash = AssetHash::of_bytes(&kick_bytes);
+    let kick_byte_len = u64::try_from(kick_bytes.len()).expect("WAV 字节数必然放得进 u64");
+
     // 六个音符的身份与 `scene::NOTE_ULIDS` 逐字一致。
     let note_ids: [EntityId; 6] = [
         "01J8Z5Q0R7K3M9X2V4B6N8P1A2",
@@ -875,7 +891,7 @@ pub fn demo_project() -> YebanProjectV1 {
             id: audio_clip_id,
             name: "909 鼓组".to_owned(),
             content: ClipContent::Audio {
-                asset: crate::ids::AssetHash::of_bytes(b"yeban-demo-kick"),
+                asset: kick_hash.clone(),
                 gain_db: -1.5,
             },
         },
@@ -892,8 +908,145 @@ pub fn demo_project() -> YebanProjectV1 {
         sections,
         scenes,
         clip_pool,
+        // ⭐ `#142`：素材索引与簇字节**同时**存在，且键／内嵌哈希都来自同一份字节
+        // （`project.validate()` 的 `AssetKeyMismatch` 之外，判据再钉一次哈希自洽）。
+        assets: BTreeMap::from([(
+            kick_hash.clone(),
+            AssetMetadata {
+                hash: kick_hash,
+                original_path: "samples/909-kick.wav".to_owned(),
+                byte_len: kick_byte_len,
+                media_kind: MediaKind::Audio,
+                license: "CC0-1.0".to_owned(),
+            },
+        )]),
         ..YebanProjectV1::default()
     }
+}
+
+// ---------------------------------------------------------------------------
+// 内置样例的音频字节（任务单 `#142`）：运行期合成，⛔ 不入库二进制
+// ---------------------------------------------------------------------------
+
+/// 演示工程（`--project-sample default`）那一脚 909 kick 的源帧数。
+///
+/// 0.5 s @ 48 kHz = 120 BPM 的 1 拍 ⇒ 第一个音频摆放（960 tick）恰好被覆盖。
+pub const DEMO_KICK_FRAMES: u32 = 24_000;
+
+/// `filled_project()` 音频片段的源帧数：产物**恰好 44_100 字节**。
+///
+/// 计算：44 字节 RIFF 头 + 11_014 帧 × 2 声道 × 2 字节 = 44_100 字节 ——
+/// 与 `filled_project()` 既有元数据里的 `byte_len` 同一口径（本单把它从手抄值
+/// 换成从真实字节量出来的读数）。
+pub const FILLED_KICK_FRAMES: u32 = 11_014;
+
+/// `default` 演示工程（[`demo_project`]）的**会话资产池字节**。
+///
+/// 返回 `(AssetHash, WAV 字节)`；哈希由 [`AssetHash::of_bytes`] 从**同一份字节**
+/// 现算 ⇒ 与 [`demo_project`] 的 `ClipContent::Audio { asset }` 和
+/// `project.assets` 的键／内嵌哈希**同源**，不可能互相漂移。
+///
+/// ⛔ **不入库二进制**：每次调用现场合成（见 [`synthesized_kick_wav`] 的整数口径）。
+/// 产品把这份返回值放进 `ProjectArchive.assets`（`crate::cli::Sample::assets()`）
+/// ⇒ `UndoPort::replace_assets` / `--export-wav` 都拿到同一份字节。
+#[must_use]
+pub fn demo_project_assets() -> Vec<(AssetHash, Vec<u8>)> {
+    let bytes = demo_kick_wav();
+    let hash = AssetHash::of_bytes(&bytes);
+    vec![(hash, bytes)]
+}
+
+/// `filled` 样本（[`filled_project`]）的**会话资产池字节**。
+///
+/// 口径与 [`demo_project_assets`] 逐条相同，只是字节长度取 [`FILLED_KICK_FRAMES`]。
+#[must_use]
+pub fn filled_project_assets() -> Vec<(AssetHash, Vec<u8>)> {
+    let bytes = filled_kick_wav();
+    let hash = AssetHash::of_bytes(&bytes);
+    vec![(hash, bytes)]
+}
+
+/// 演示工程的 kick 字节（见 [`DEMO_KICK_FRAMES`]）。
+fn demo_kick_wav() -> Vec<u8> {
+    synthesized_kick_wav(DEMO_KICK_FRAMES)
+}
+
+/// `filled` 样本的 kick 字节（见 [`FILLED_KICK_FRAMES`]）。
+fn filled_kick_wav() -> Vec<u8> {
+    synthesized_kick_wav(FILLED_KICK_FRAMES)
+}
+
+/// 合成一脚 909 kick 的**真实 WAV 字节**（48 kHz / 16-bit / 立体声，RIFF-PCM）。
+///
+/// ## 为什么在 `yeban-model` 里手写一个最小 WAV 写入器
+///
+/// 1. 本仓的 WAV 能力（`yeban_app::record_wav::record_frames`、
+///    `yeban_render::wav::write_plain_wav`）都在**依赖本 crate 的上层** ——
+///    依赖方向不允许本 crate 调它们；
+/// 2. 硬边界要求**零新依赖**（`Cargo.lock` 不变）⇒ 不能为 96 KB 的夹具引入编码器；
+/// 3. 硬边界禁止**入库二进制** ⇒ 只能在构造样例时现场生成。
+///
+/// ## 确定性（跨平台逐字节一致）
+///
+/// 全程只用整数：64 点正弦表（Q15）＋ 16.16 定点频率 ＋ 二次衰减包络。
+/// 刻意**不用** `f32::sin` —— 它的末位会随平台 libm 漂移，而 `AssetHash` 会把
+/// 那个漂移写进工程 JSON。
+///
+/// 音色：150 Hz → 42 Hz 的线性下滑 ＋ 二次衰减（0.5 s 版本听感接近 909 kick；
+/// 短版本是同一合成器的 11_014 帧裁剪，仍非静音）。
+fn synthesized_kick_wav(frames: u32) -> Vec<u8> {
+    const SAMPLE_RATE: u32 = 48_000;
+    const CHANNELS: u16 = 2;
+    const BITS_PER_SAMPLE: u16 = 16;
+    const RIFF_HEADER_BYTES: u32 = 44;
+    /// 64 点正弦表，Q15（`sin(2πk/64) × 32767`，四舍五入）。
+    const SINE_Q15: [i32; 64] = [
+        0, 3212, 6393, 9512, 12539, 15446, 18204, 20787, 23170, 25329, 27245, 28898, 30273, 31356,
+        32137, 32609, 32767, 32609, 32137, 31356, 30273, 28898, 27245, 25329, 23170, 20787, 18204,
+        15446, 12539, 9512, 6393, 3212, 0, -3212, -6393, -9512, -12539, -15446, -18204, -20787,
+        -23170, -25329, -27245, -28898, -30273, -31356, -32137, -32609, -32767, -32609, -32137,
+        -31356, -30273, -28898, -27245, -25329, -23170, -20787, -18204, -15446, -12539, -9512,
+        -6393, -3212,
+    ];
+
+    let bytes_per_sample = u32::from(BITS_PER_SAMPLE / 8);
+    let data_bytes = frames * u32::from(CHANNELS) * bytes_per_sample;
+    let mut wav = Vec::with_capacity(usize::try_from(RIFF_HEADER_BYTES + data_bytes).unwrap_or(0));
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&CHANNELS.to_le_bytes());
+    wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    let byte_rate = SAMPLE_RATE * u32::from(CHANNELS) * bytes_per_sample;
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&(CHANNELS * (BITS_PER_SAMPLE / 8)).to_le_bytes());
+    wav.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+
+    let total = u64::from(frames.max(1));
+    // 从四分之一周期起步 ⇒ 第一帧就是峰值（kick 的起音，不是从 0 爬升）。
+    let mut phase: u32 = 1 << 30;
+    for index in 0..frames {
+        let elapsed = u64::from(index);
+        // 16.16 定点：150 Hz 线性落到 42 Hz。
+        let frequency_q16 = 150 * 65_536 - ((150 - 42) * 65_536) * elapsed / total;
+        let increment = frequency_q16 * (1_u64 << 32) / (65_536 * u64::from(SAMPLE_RATE));
+        phase = phase.wrapping_add(u32::try_from(increment).unwrap_or(u32::MAX));
+        let table_index = usize::try_from((phase >> 26) & 63).unwrap_or(0);
+        let sine_q15 = i64::from(SINE_Q15[table_index]);
+        // 二次衰减包络（Q15）：尾帧自然归零，不留截断爆音。
+        let remaining = total - elapsed;
+        let envelope_q15 = remaining * remaining * 32_767 / (total * total);
+        let mixed_q15 = (sine_q15 * envelope_q15 as i64) >> 15;
+        let sample = mixed_q15.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+        for _ in 0..CHANNELS {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+    }
+    wav
 }
 
 /// 演示工程的实体身份：`01J8Z5Q0R7K3M9X2V4B6N8P0` + 2 字符尾段。
@@ -1326,6 +1479,71 @@ mod tests {
             assert!(content.ends_with('\n'));
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐ 任务单 `#142` 的**出厂判据**：每个内置样例里，每条 `ClipContent::Audio` 的
+    /// `AssetHash` 都必须在 `project.assets` 里有元数据、且在样例资产池里有**真实字节**；
+    /// 字节的 `AssetHash::of_bytes` 必须**等于**被引用的哈希（判据 4 的模型侧一半）。
+    ///
+    /// 数的是：样例数（3）× 每条音频片段 1 次检查 ⇒ 缺失元数据数 / 缺失字节数。
+    /// 此前 `default` 引用 `of_bytes(b"yeban-demo-kick")`（没有任何文件的 ASCII 标签）、
+    /// `filled` 有元数据但池里没有字节 —— 两个样例都会让"缺失字节"变成 1，不是 0。
+    #[test]
+    fn every_builtin_sample_audio_reference_has_metadata_and_bytes() {
+        let samples = [
+            ("default", demo_project(), demo_project_assets()),
+            ("filled", filled_project(), filled_project_assets()),
+            ("empty", default_project(), Vec::new()),
+        ];
+        let mut sample_count = 0_usize;
+        let mut clip_count = 0_usize;
+        let mut missing_metadata = 0_usize;
+        let mut missing_bytes = 0_usize;
+        for (name, project, pool) in samples {
+            sample_count += 1;
+            assert_eq!(project.validate(), Ok(()), "{name}: 样例必须合法");
+            for entry in project.clip_pool.values() {
+                let ClipContent::Audio { asset, .. } = &entry.content else {
+                    continue;
+                };
+                clip_count += 1;
+                match project.assets.get(asset) {
+                    Some(metadata) => assert_eq!(
+                        &metadata.hash, asset,
+                        "{name}: `project.assets` 的内嵌哈希必须等于键"
+                    ),
+                    None => missing_metadata += 1,
+                }
+                match pool.iter().find(|(hash, _)| hash == asset) {
+                    Some((hash, bytes)) => {
+                        assert_eq!(
+                            &AssetHash::of_bytes(bytes),
+                            hash,
+                            "{name}: 池里字节的 SHA-256 必须等于 clip 引用的哈希"
+                        );
+                        if let Some(metadata) = project.assets.get(asset) {
+                            assert_eq!(
+                                u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                                metadata.byte_len,
+                                "{name}: `byte_len` 必须等于真实字节数（⛔ 手抄值）"
+                            );
+                        }
+                    }
+                    None => missing_bytes += 1,
+                }
+            }
+        }
+        println!(
+            "[#142/factory] samples={sample_count} audio-clips={clip_count} \
+             missing-metadata={missing_metadata} missing-bytes={missing_bytes}"
+        );
+        assert_eq!(missing_metadata, 0, "出厂样例不得引用没有元数据的素材");
+        assert_eq!(missing_bytes, 0, "出厂样例不得引用没有字节的素材");
+        assert_eq!(
+            (sample_count, clip_count),
+            (3, 2),
+            "内置样例数 / 音频片段数（default 1 + filled 1 + empty 0）"
+        );
     }
 
     #[test]
