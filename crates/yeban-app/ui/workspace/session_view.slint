@@ -15,12 +15,23 @@
 // 循环规模由数组长度决定，Scene Launch 列的 x 也由 `root.tracks.length` 算出
 // （上一版写死 `128px * 6`，轨道数一变就错位）。
 
-import { Tokens, UiText, UiMediumText } from "../tokens.slint";
+import { Tokens, UiText, UiMonoText, UiMediumText } from "../tokens.slint";
 
 export component SessionView inherits Rectangle {
     // 由 src/host.rs 注入: 轨道名 / 场景名 (默认空 = 没有内联演示数据)
     in property <[string]> scenes: [];
     in property <[string]> tracks: [];
+
+    // ⭐ 任务单 `#190`：画布装得下的轨道列数 —— **算出来**，⛔ 不写死。
+    //
+    // 场景列左沿 = `8 + 128 × 列数`、宽 `104` ⇒ 一列轨道加场景列共 `128 × N + 112`
+    // 必须 ≤ 画布宽。1920 档画布 1400 ⇒ 10 列（6 轨全装得下，几何与 `#189` 逐像素一致）；
+    // 1440 档画布 920 ⇒ 6 列（**第 7 轨起**必须报数）；1024 展开态画布 504 ⇒ 3 列。
+    // ⛔ 超出这个数的列不画（`visible` 摘掉）—— 但由下面的截断报数**说出还有几轨**。
+    property <int> visible-track-count: min(
+        root.tracks.length,
+        max(0, floor((root.width - 112px) / 1px / 128)),
+    );
 
     callback back-to-arrangement();
 
@@ -37,6 +48,8 @@ export component SessionView inherits Rectangle {
         y: 0;
         width: 120px;
         height: 28px;
+        // ⭐ `#190`：装不下的列不画（⛔ 不再是"画出去被画布 clip 掉、用户看不见"）。
+        visible: track_index < root.visible-track-count;
         background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-sm;
         clip: true;
@@ -67,6 +80,8 @@ export component SessionView inherits Rectangle {
         height: 68px * root.scenes.length;
         background: Tokens.bg-shell;
         border-radius: Tokens.radius-sm;
+        // ⭐ `#190`：与包头行同一批列（包头不画的列，插槽也不画）。
+        visible: track_index < root.visible-track-count;
 
         // 纵向轨道列: 每条轨道一个插槽行对应一个场景
         for scene_name[scene_index] in root.scenes : Rectangle {
@@ -114,7 +129,7 @@ export component SessionView inherits Rectangle {
 
     // ------------------------------------------------------------ Scene Launch 列
     Rectangle {
-        x: 8px + 128px * root.tracks.length;
+        x: 8px + 128px * root.visible-track-count;
         y: 0;
         width: 104px;
         height: 28px;
@@ -136,7 +151,7 @@ export component SessionView inherits Rectangle {
     }
 
     for scene_name[scene_index] in root.scenes : Rectangle {
-        x: 8px + 128px * root.tracks.length;
+        x: 8px + 128px * root.visible-track-count;
         y: 32px + 68px * scene_index;
         width: 104px;
         height: 64px;
@@ -171,7 +186,7 @@ export component SessionView inherits Rectangle {
     // ------------------------------------------------------------ Back to Arrangement
     // 规范 §2.2: 仅在 Session 即兴触发后浮现。骨架里先常驻 (状态机等引擎)。
     Rectangle {
-        x: 8px + 128px * root.tracks.length;
+        x: 8px + 128px * root.visible-track-count;
         y: 32px + 68px * root.scenes.length + 8px;
         width: 104px;
         height: 28px;
@@ -200,6 +215,32 @@ export component SessionView inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.back-to-arrangement(); }
+        }
+    }
+
+    // ------------------------------------------------------ 截断的**如实报数**（⭐ `#190`）
+    // 缺口②：场景列左沿原来由 `tracks.length` 算 ⇒ 1440 档第 7 轨起、1024 展开态第 4 轨起
+    // 被推出画布、被 `clip` 吃掉，用户看不到。现在只画装得下的列，并**说出还有几轨**
+    // （数字来自 `tracks.length − visible-track-count`，不是估计）。⛔ 不静默截断。
+    // 位置：插槽矩阵与「→ 编曲」键**下方**（`+44px` 让开 28px 的返回键），⛔ 不压任何控件。
+    if root.tracks.length > root.visible-track-count : Rectangle {
+        x: 8px;
+        y: 32px + 68px * root.scenes.length + 44px;
+        width: 200px;
+        height: 16px;
+        accessible-role: text;
+        accessible-id: "session-track-truncation-note";
+        accessible-label: "还有 " + (root.tracks.length - root.visible-track-count) + " 轨未显示";
+
+        UiMonoText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "还有 " + (root.tracks.length - root.visible-track-count) + " 轨未显示";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
         }
     }
 }

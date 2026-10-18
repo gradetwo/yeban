@@ -1490,6 +1490,22 @@ export component DeviceRack inherits Rectangle {
     /// 面板与原因行不可能再各自漂移。
     property <length> master-eq-panel-x: root.master-rack-width - root.master-eq-panel-width - 16px;
 
+    // ------------------------ 主总线段高 / 卡片容量（⭐ 任务单 `#190`，缺口①）
+    //
+    // 缺口①：段高**上限** 260px、卡片 `y = 72 + 46n`（高 44 ＋ 2px 间隙）⇒ 第 5 张卡
+    // `256..300` 越过段底 `260`，被段的 `clip` 吃掉 —— 用户看不到第 5 台及以后。
+    //
+    // 处置（产品裁决：截断 ＋ 显式报数，⛔ 不做滚动）：
+    //   - 段高与下面容器**共用同一个算式**（⛔ 不复制第二个 `260`）；
+    //   - 容量 `N = floor((段高 − 72) / 46)` —— **算出来**，⛔ 不写死（1920 档 260 ⇒ 4）；
+    //   - 只画前 N 张卡，第 N+1 台起不画；腾出的**标题行右侧计数格**改画截断报数
+    //     （见下面 `master-device-truncation-note`）⇒ 几何一位不动、⛔ 不与卡片相交。
+    property <length> master-segment-height: min(260px, root.height - 28px);
+    property <int> master-visible-card-count: max(
+        0,
+        floor((root.master-segment-height - 72px) / 1px / 46),
+    );
+
     // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`）
     //
     // ⭐ **第二段、第二个目标**：主总线（`master_bus_track_id`）上的设备可以在这里
@@ -1508,7 +1524,8 @@ export component DeviceRack inherits Rectangle {
         width: root.master-rack-width;
         // 面板矮于 288px 时先收自己的高度（`#180` 的 260 是**上限**，不是下限）——
         // 否则容器底边会被面板的 `clip` 切掉 7px（1280×800 档实测）。
-        height: min(260px, root.height - 28px);
+        // ⭐ `#190`：与 `master-segment-height` **同一个值**（容量 `N` 从它算出）。
+        height: root.master-segment-height;
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
         border-width: 1px;
@@ -1540,12 +1557,31 @@ export component DeviceRack inherits Rectangle {
             y: Tokens.space-2;
             width: 144px;
             height: 16px;
+            // ⭐ `#190`：装不下时这一格让给下面的截断报数（两者**互斥**，几何同一格）。
+            visible: root.master-device-names.length <= root.master-visible-card-count;
             text: root.master-device-names.length + " 台设备";
             color: Tokens.ink-2;
             font-size: Tokens.font-size-xs;
             accessible-role: text;
             accessible-id: "master-device-rack-count";
             accessible-label: root.master-device-names.length + " 台设备";
+        }
+
+        // ---- 截断的**如实报数**（⭐ 任务单 `#190`，缺口①）----
+        // 卡片只画前 `master-visible-card-count` 张（第 N+1 张起本来会被段底 `clip` 吃掉）；
+        // 没画出来多少台必须**说出来**（数字来自 `names.length − 容量`，不是估计）。
+        // 与计数格互斥占同一格 ⇒ ⛔ 不新增几何、⛔ 不压卡片。
+        if root.master-device-names.length > root.master-visible-card-count : UiMonoText {
+            x: parent.width - 160px;
+            y: Tokens.space-2;
+            width: 144px;
+            height: 16px;
+            text: "还有 " + (root.master-device-names.length - root.master-visible-card-count) + " 台设备未显示";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            accessible-role: text;
+            accessible-id: "master-device-truncation-note";
+            accessible-label: "还有 " + (root.master-device-names.length - root.master-visible-card-count) + " 台设备未显示";
         }
 
         // ---- 两个装设备按钮：可用性由 `master-device-insert-available` 单一决定 ----
@@ -1778,11 +1814,14 @@ export component DeviceRack inherits Rectangle {
         }
 
         // ---- 设备卡片链：条目数**就是**投影的主总线设备数（空链 ⇒ 一块都不画）----
+        // ⭐ `#190`：只画前 `master-visible-card-count` 张（第 N+1 张起越过段底、会被
+        // `clip` 吃掉）—— 少画的台数由上面的截断报数**逐字说出**，⛔ 不静默消失。
         for master_device_name[master_device_index] in root.master-device-names : Rectangle {
             x: Tokens.space-2;
             y: 72px + 46px * master_device_index;
             width: parent.width - 16px;
             height: 44px;
+            visible: master_device_index < root.master-visible-card-count;
             background: root.master-device-bypassed[master_device_index]
                 ? Tokens.bg-void
                 : Tokens.bg-shell;

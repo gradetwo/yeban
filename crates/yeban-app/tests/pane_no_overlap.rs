@@ -202,6 +202,31 @@
 //!   段底被 `clip` 掉（本单只验 0 / 1 / 2 台，未验 5+；这是溢出，不是重叠）；
 //! ⛔ 装饰性文本（无 `accessible-id`）之间的包围盒重叠不可判（发现 1 处，见上）；
 //! ⛔ 覆盖层"盖住下面"是设计（不判，也不许判成 0）；⛔ 1024 以下未测；⛔ 没人耳听。
+//!
+//! ---
+//!
+//! # ⭐ 任务单 `#190`：`#189` 登记的两条**溢出**缺口 —— 截断 ＋ 显式报数
+//!
+//! 产品裁决（人类）：**截断 ＋ 显式报数**，⛔ 不做滚动（`ScrollView` / 纵向可滚控制台会
+//! 动 1920 基准帧且是大改；"装不下就明确告诉用户装了几台"诚实且便宜；滚动以后再加）。
+//!
+//! | 缺口 | 修前 | 修后 |
+//! | :--- | :--- | :--- |
+//! | ① 主总线卡片 | 段高 260、卡片 `72 + 46n` ⇒ 第 5 张 `256..300` 越过段底被 `clip` | 只画前 `N = floor((段高−72)/46)` 张（1920 档 **4**）；第 N+1 张不画；计数格改画 `"还有 N 台设备未显示"` |
+//! | ② Session 场景列 | 场景列 `x = 8 + 128 × tracks.length` ⇒ 1440 档第 7 轨起 / 1024 展开态第 4 轨起被推出画布 | 列数 `N = floor((画布宽−112)/128)`；只画前 N 列；场景列由 N 定位（始终落在画布内）；下方报 `"还有 N 轨未显示"` |
+//!
+//! ## 判据（`#190` §2）
+//!
+//! | §2 | 断言 | 读数在哪 |
+//! | :--- | :--- | :--- |
+//! | ① 4 装得下 / 5 截断 | `check_master_device_truncation` 4 台 ⇒ 4 卡无提示；5 台 ⇒ 4 卡 ＋ 提示 | 报告 §4 |
+//! | ② 文案逐字 ＋ id | `"还有 1 台设备未显示"` / `"还有 1 轨未显示"`；`master-device-truncation-note` / `session-track-truncation-note` | 上表 ＋ 运行时树 |
+//! | ③ N 算出来 | 从运行时 `master-device-rack` 高度 / `workspace-session-canvas` 宽度反算，与 `.slint` 同一算术 | `report_line` |
+//! | ④ 不重叠 | 5 台 / 7 轨两档夹具逐对 `0 相交`（提示计入清单） | `assert_pairwise*` |
+//! | ⑥ 不动模型 | `master-device-names` / `track-names` 的 `row_count` 仍等于工程条目数 | `check_*_truncation` |
+//!
+//! **1920 基准帧**：`#315` 的回答 —— 演示工程主总线 0 台（≤ 4）、Session 6 轨（画布 1400
+//! ⇒ 容量 10 ≥ 6）⇒ 两处的条件分支都不成立，1920 画面的几何/文案一位不动（见报告 §3）。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -817,6 +842,23 @@ fn project_with_tracks(with_display_track: bool) -> YebanProjectV1 {
         tracks,
         ..YebanProjectV1::default()
     }
+}
+
+/// ⭐ `#190` 的 7 轨夹具：演示工程（6 条非主总线轨 ＋ 主总线）再插一条空 MIDI 轨。
+/// 1440 档画布 920 ⇒ 容量 6 ⇒ **第 7 轨**必须被截断报数（1920 档容量 10 ⇒ 全显示）。
+fn project_with_seven_tracks() -> YebanProjectV1 {
+    let mut project = yeban_model::samples::demo_project();
+    let track = EntityId::new();
+    project.tracks.insert(
+        track,
+        TrackV3 {
+            id: track,
+            name: "第 7 轨".to_owned(),
+            kind: TrackKind::Midi,
+            ..TrackV3::default()
+        },
+    );
+    project
 }
 
 /// ① 设备链卡片区：演示工程（1 台设备，含未识别参数行）在宽档的 7 个叶子控件。
@@ -1700,40 +1742,34 @@ const SIDEBAR_COMPACT: &[&str] = &[
     "sidebar-item-7",
 ];
 
-/// ③ Session 视图的 36 个控件：6 条轨道包头 ＋ 6 × 4 个插槽 ＋ 4 个场景键
-/// ＋ 场景列头 ＋ 返回编曲键。
-fn session_controls() -> Vec<String> {
+/// ③ Session 视图的控件清单（⭐ `#190` 起**按画布装得下的列数**生成）：
+/// `visible` 条轨道包头 ＋ 每列 `scenes` 个插槽 ＋ `scenes` 个场景键 ＋ 场景列头
+/// ＋ 返回编曲键 ＋（`visible < total` 时）截断报数。
+fn session_controls(visible: usize, total: usize, scenes: usize) -> Vec<String> {
     let mut ids = Vec::new();
-    for track in 0..6 {
+    for track in 0..visible {
         ids.push(format!("session-track-{track}-header"));
     }
-    for track in 0..6 {
-        for scene in 0..4 {
+    for track in 0..visible {
+        for scene in 0..scenes {
             ids.push(format!("slot-{track}-{scene}-cell"));
         }
     }
-    for scene in 0..4 {
+    for scene in 0..scenes {
         ids.push(format!("scene-launch-{scene}-button"));
     }
     ids.push("scene-launch-column-header".to_owned());
     ids.push("session-back-to-arrangement-button".to_owned());
+    if visible < total {
+        ids.push("session-track-truncation-note".to_owned());
+    }
     ids
 }
 
-/// ③ **展开态** 1024 档的 20 个控件：主工作区被左栏 240 ＋ 右栏 280 夹到 504px，
-/// `workspace-session-canvas` 有 `clip: true` ⇒ 第 5 / 6 列与场景列被裁掉（不是静默消失：
-/// 本判据同时断言它们**仍在树里**、只是左沿落在画布外）。
-fn session_controls_clipped_1024() -> Vec<String> {
-    let mut ids = Vec::new();
-    for track in 0..4 {
-        ids.push(format!("session-track-{track}-header"));
-    }
-    for track in 0..4 {
-        for scene in 0..4 {
-            ids.push(format!("slot-{track}-{scene}-cell"));
-        }
-    }
-    ids
+/// ③ 画布装得下的轨道列数 —— 与 `session_view.slint` 的 `visible-track-count` **同一条
+/// 算式**（场景列左沿 `8 + 128N` ＋ 宽 `104` ⇒ `N = (画布宽 − 112) / 128`，向下取整）。
+fn session_track_capacity(canvas_width: u32) -> usize {
+    (canvas_width.saturating_sub(112) / 128) as usize
 }
 
 /// ④ 主总线第二段（演示工程 / 0 台设备）的 6 个叶子控件。
@@ -1878,6 +1914,37 @@ fn project_master_with_two_devices() -> YebanProjectV1 {
     }
 }
 
+/// ⭐ `#190` 夹具：主总线上 **`count` 台**无参数设备（只用来量"装得下几张卡"）。
+/// 设备名逐台不同，便于从标签读出"画的是哪一台"。
+fn project_master_with_devices(count: usize) -> YebanProjectV1 {
+    let master = EntityId::new();
+    let devices = (0..count)
+        .map(|index| DeviceDefinition {
+            id: EntityId::new(),
+            name: format!("主总线设备 {index}"),
+            kind: DeviceKind::InternalEffect,
+            bypassed: index % 2 == 1,
+            params: vec![],
+            latency_samples: 0,
+        })
+        .collect();
+    let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
+    tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            devices,
+            ..TrackV3::default()
+        },
+    );
+    YebanProjectV1 {
+        master_bus_track_id: master,
+        tracks,
+        ..YebanProjectV1::default()
+    }
+}
 /// 覆盖层的取法：段盒子内 **且** `id` 以本段前缀开头（见文件头 §「为什么用 id 前缀」）。
 fn select_owned<'a>(
     tree: &'a ControlTree,
@@ -2125,40 +2192,92 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
     let pane = bounds(&tree, "workspace-session-canvas");
 
     let compact = live.ui().get_compact();
-    let expected: Vec<String> = if width == 1024 && !compact {
-        session_controls_clipped_1024()
-    } else {
-        session_controls()
-    };
+    // ⭐ `#190`：清单按**画布装得下的列数**生成（演示工程 6 轨、4 个场景）。
+    let capacity = session_track_capacity(pane.2);
+    let total = 6;
+    let visible = capacity.min(total);
+    let expected = session_controls(visible, total, 4);
     let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
     report_line(&assert_pairwise(
         &tree,
         pane,
         Selection::Intersect,
         &expected_refs,
-        &format!("#189 Session {width}x{height} breakpoint={breakpoint} compact={compact}"),
+        &format!(
+            "#190 Session {width}x{height} breakpoint={breakpoint} compact={compact} \
+             画布 {}px ⇒ 容量 {capacity} 列 / 显示 {visible} 列",
+            pane.2
+        ),
     ));
 
-    // ---- 判据 ⑤：1024 **展开态**少掉的 16 个不是"没画"，是被画布的 `clip` 裁掉。
-    if width == 1024 && !compact {
-        // 上游语义（`inspect.rs` 文件头）：`visit_descendants` 只收"绝对裁剪矩形 ∩ 元素几何
-        // ≠ ∅"的元素 ⇒ 被画布 `clip` 掉的子节点**根本不在树里**（与 `#187` 的
-        // `module-last-status` 同一条语义）。所以这里断言"不在树里"，而不是"在树里但越界"。
-        for id in ["slot-4-0-cell", "scene-launch-0-button"] {
-            assert!(
-                tree.find_by_id(id).is_none(),
-                "[#189 Session {width}x{height}] `{id}` 必须在画布 `clip` 之外（不在树里）"
-            );
-        }
+    // ---- 判据 ①：装不下的列**不画**（不是画出去被 `clip` 掉、用户看不见）。
+    if visible < total {
+        let first_hidden = format!("session-track-{visible}-header");
+        assert!(
+            tree.find_by_id(&first_hidden).is_none(),
+            "[#190 Session {width}x{height}] 容量 {capacity} 列 ⇒ `{first_hidden}` 不许在树里"
+        );
+        assert!(
+            tree.find_by_id(&format!("slot-{visible}-0-cell")).is_none(),
+            "[#190 Session {width}x{height}] 容量 {capacity} 列 ⇒ 第 {visible} 列的插槽不许在树里"
+        );
+    }
+
+    // ---- 判据 ②：场景列由**显示列数**定位，右沿必须落在画布内（缺口②的反向证明）。
+    let scene_header = bounds(&tree, "scene-launch-column-header");
+    assert_eq!(
+        scene_header.0 - pane.0,
+        8 + 128 * visible as i32,
+        "[#190 Session {width}x{height}] 场景列左沿必须是 `8 + 128 × 显示列数`"
+    );
+    assert!(
+        scene_header.0 + scene_header.2 as i32 <= pane.0 + pane.2 as i32,
+        "[#190 Session {width}x{height}] 场景列右沿 {} 越过画布右沿 {}",
+        scene_header.0 + scene_header.2 as i32,
+        pane.0 + pane.2 as i32
+    );
+
+    // ---- 判据 ②：演示工程 6 轨：显示 < 6 时必须有截断报数，否则不许喊狼来了。
+    if visible < total {
+        let note = tree
+            .find_by_id("session-track-truncation-note")
+            .expect("显示列数 < 6 ⇒ 必须有截断报数");
+        assert_eq!(
+            note.label,
+            format!("还有 {} 轨未显示", total - visible),
+            "[#190 Session {width}x{height}] 截断报数文案必须逐字"
+        );
         report_line(&format!(
-            "[#189 Session {width}x{height}] 展开态画布仅 {}px（右沿 {}）：第 5/6 列与场景列\
-             被 `clip` 裁掉 ⇒ 不在树里（清单 36 → 20，⛔ 不是静默消失）",
+            "[#190 Session {width}x{height}] 画布 {}px / 容量 {capacity} 列 / 显示 {visible} 列 / \
+             场景列 (x={} y={} w={} h={}) 右沿 {} ≤ 画布右沿 {}；截断报数 {:?}",
             pane.2,
-            pane.0 + pane.2 as i32
+            scene_header.0,
+            scene_header.1,
+            scene_header.2,
+            scene_header.3,
+            scene_header.0 + scene_header.2 as i32,
+            pane.0 + pane.2 as i32,
+            note.label
+        ));
+    } else {
+        assert!(
+            tree.find_by_id("session-track-truncation-note").is_none(),
+            "[#190 Session {width}x{height}] 显示 {visible}/6 列 ⇒ 截断报数不许在场"
+        );
+        report_line(&format!(
+            "[#190 Session {width}x{height}] 画布 {}px / 容量 {capacity} 列 / 显示 {visible} 列 / \
+             场景列 (x={} y={} w={} h={}) 右沿 {} ≤ 画布右沿 {}；{total} 轨全显示 ⇒ 无截断提示",
+            pane.2,
+            scene_header.0,
+            scene_header.1,
+            scene_header.2,
+            scene_header.3,
+            scene_header.0 + scene_header.2 as i32,
+            pane.0 + pane.2 as i32,
         ));
     }
 
-    // ---- 断点态 1024：画布 988px ⇒ 36 个全部在场（与展开态的差集就是上面那 16 个）。
+    // ---- 断点态 1024：画布 988px ⇒ 容量 6 列（与展开态的差集就是被截断的列）。
     if breakpoint && width < 1920 {
         assert_eq!(
             pane.2,
@@ -2166,6 +2285,81 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
             "[#189 Session {width}x{height}] 折叠态画布宽必须是 `窗口宽 − 36`"
         );
     }
+}
+
+/// ③ ⭐ `#190` 的 7 轨夹具：第 7 轨在 1440 档（画布 920 ⇒ 容量 6）起必须被**截断报数**，
+/// 而 1920 档（画布 1400 ⇒ 容量 10）全装得下、⛔ 不许出现提示。
+fn check_session_track_truncation(width: u32, height: u32) {
+    let live = live_window_for(project_with_seven_tracks(), (width, height), 0);
+    live.ui().set_arrangement_view(false);
+    let tree = runtime_tree(live.ui());
+    let pane = bounds(&tree, "workspace-session-canvas");
+
+    let capacity = session_track_capacity(pane.2);
+    let total = 7;
+    let visible = capacity.min(total);
+    let label = format!("#190 Session 7 轨 {width}x{height}");
+
+    // ---- 判据 ①：7 轨只画装得下的前 N 列；第 N+1 轨不在树里。
+    let expected = session_controls(visible, total, 4);
+    let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
+    report_line(&assert_pairwise(
+        &tree,
+        pane,
+        Selection::Intersect,
+        &expected_refs,
+        &format!(
+            "{label} 画布 {}px ⇒ 容量 {capacity} 列 / 显示 {visible} 列 / 隐藏 {} 列",
+            pane.2,
+            total - visible
+        ),
+    ));
+    assert!(
+        tree.find_by_id(&format!("session-track-{visible}-header"))
+            .is_none(),
+        "[{label}] 容量 {capacity} 列 ⇒ `session-track-{visible}-header` 不许在树里"
+    );
+
+    // ---- 判据 ②：截断报数**逐字** + 有 `accessible-id`；数字 = 7 − 显示列数。
+    if visible < total {
+        let note = tree
+            .find_by_id("session-track-truncation-note")
+            .expect("7 轨 > 容量 ⇒ 必须有截断报数");
+        let expected_text = format!("还有 {} 轨未显示", total - visible);
+        assert_eq!(
+            note.label, expected_text,
+            "[{label}] 截断报数文案必须逐字；实际 {:?}",
+            note.label
+        );
+        let note_bounds = note.bounds.expect("截断报数必须有几何");
+        assert!(
+            note_bounds.y + note_bounds.height as i32 <= pane.1 + pane.3 as i32,
+            "[{label}] 截断报数底沿 {} 越过画布底沿 {}",
+            note_bounds.y + note_bounds.height as i32,
+            pane.1 + pane.3 as i32
+        );
+        report_line(&format!(
+            "[{label}] 截断报数 `session-track-truncation-note` label={:?} \
+             bounds=(x={} y={} w={} h={})",
+            note.label, note_bounds.x, note_bounds.y, note_bounds.width, note_bounds.height
+        ));
+    } else {
+        assert!(
+            tree.find_by_id("session-track-truncation-note").is_none(),
+            "[{label}] 7 列全装得下 ⇒ 截断报数不许在场"
+        );
+    }
+
+    // ---- 判据 ⑥：截断只是显示层 —— 注入的轨道名一个不少（工程没被删轨）。
+    assert_eq!(
+        slint::Model::row_count(&live.ui().get_track_names()),
+        total,
+        "[{label}] 截断后注入的轨道数必须仍是 {total}（⛔ 显示层不许改模型）"
+    );
+    report_line(&format!(
+        "[{label}] 注入 `track-names` row_count={}（工程 7 轨不变）",
+        slint::Model::row_count(&live.ui().get_track_names())
+    ));
 }
 
 // ===========================================================================
@@ -2180,12 +2374,92 @@ fn check_master_device_segment(
     cards: &[&str],
     child_pairs: &[(&str, &str)],
 ) {
+    // 判据 ⑥ 的正向基线：**权威工程里**设备数（截断前后都必须等于它）。
+    let total_devices = project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .map(|track| track.devices.len())
+        .unwrap_or(0);
     let live = live_window_for(project, (width, height), 2);
     assert_eq!(live.ui().get_console_tab(), 2, "夹具必须是 Tab 2（设备架）");
     let tree = runtime_tree(live.ui());
 
     let rack = bounds(&tree, "master-device-rack");
-    let label = format!("#189 主总线第二段 {tag} {width}x{height}");
+    let label = format!("#190 主总线第二段 {tag} {width}x{height}");
+
+    // ---- ⭐ `#190` 判据 ③：容量 `N` 由**段高 / 卡片步长**算出，⛔ 不写死。
+    // `master-device-rack` 的高度就是段容器高度（与 `.slint` 的 `master-segment-height` 同值）。
+    let capacity = ((rack.3 as i32 - 72) / 46).max(0) as usize;
+    let visible = capacity.min(total_devices);
+    report_line(&format!(
+        "[{label}] 段高 {}px / 卡片步长 46px ⇒ N = floor(({} − 72) / 46) = {capacity} 台；\
+         工程 {total_devices} 台 ⇒ 画 {visible} 张",
+        rack.3, rack.3
+    ));
+
+    // ---- ⭐ `#190` 判据 ①＋②：第 N+1 张卡不画；截断报数**逐字**、有 id；计数格让位。
+    assert_eq!(
+        cards.len(),
+        visible,
+        "[{label}] 卡片组应有 {visible} 张（容量 {capacity} / 工程 {total_devices}）"
+    );
+    if total_devices > capacity {
+        let hidden = total_devices - capacity;
+        let note = tree
+            .find_by_id("master-device-truncation-note")
+            .expect("设备数 > 容量 ⇒ 必须有截断报数");
+        let expected_text = format!("还有 {hidden} 台设备未显示");
+        assert_eq!(
+            note.label, expected_text,
+            "[{label}] 截断报数文案必须逐字；实际 {:?}",
+            note.label
+        );
+        assert!(
+            tree.find_by_id(&format!("master-device-{capacity}-card"))
+                .is_none(),
+            "[{label}] 容量 {capacity} 台 ⇒ `master-device-{capacity}-card` 不许在树里"
+        );
+        assert!(
+            tree.find_by_id("master-device-rack-count").is_none(),
+            "[{label}] 截断时计数格让给报数（两者互斥）⇒ `master-device-rack-count` 不许在场"
+        );
+        let note_bounds = note.bounds.expect("截断报数必须有几何");
+        assert!(
+            note_bounds.y + note_bounds.height as i32 <= rack.1 + rack.3 as i32,
+            "[{label}] 截断报数底沿 {} 越过段底 {}",
+            note_bounds.y + note_bounds.height as i32,
+            rack.1 + rack.3 as i32
+        );
+        report_line(&format!(
+            "[{label}] 截断报数 `master-device-truncation-note` label={:?} \
+             bounds=(x={} y={} w={} h={})；第 {capacity} 张卡不在树里",
+            note.label, note_bounds.x, note_bounds.y, note_bounds.width, note_bounds.height
+        ));
+    } else {
+        assert!(
+            tree.find_by_id("master-device-truncation-note").is_none(),
+            "[{label}] 设备数 {total_devices} ≤ 容量 {capacity} ⇒ 截断报数不许在场"
+        );
+        let count = tree
+            .find_by_id("master-device-rack-count")
+            .expect("未截断 ⇒ 计数格必须在场");
+        assert_eq!(
+            count.label,
+            format!("{total_devices} 台设备"),
+            "[{label}] 未截断时计数格文案必须逐字"
+        );
+    }
+
+    // ---- 判据 ⑥：截断只是显示层 —— 注入的设备数不变（⛔ 不删设备）。
+    assert_eq!(
+        slint::Model::row_count(&live.ui().get_master_device_names()),
+        total_devices,
+        "[{label}] 截断后注入的设备数必须仍是 {total_devices}（⛔ 显示层不许改模型）"
+    );
+    report_line(&format!(
+        "[{label}] 注入 `master-device-names` row_count={}（工程 {total_devices} 台不变）",
+        slint::Model::row_count(&live.ui().get_master_device_names())
+    ));
 
     // ---- 叶子：`list-item` 卡片按设计包住子节点 ⇒ 从叶子集里摘掉，进下面的容器组。
     let excluded: Vec<String> = cards.iter().map(|id| (*id).to_owned()).collect();
@@ -2267,6 +2541,159 @@ fn check_master_device_segment(
             panel.0
         ));
     }
+}
+
+// ===========================================================================
+// ④b ⭐ `#190` 主总线卡片容量 / 截断报数：4 台与 5 台两档
+// ===========================================================================
+///
+/// 判据（逐条对应 `#190` §2）：
+/// ① 容量 `N = floor((段高 − 72) / 46)`（段高由运行时 `master-device-rack` 量出，⛔ 不写死）；
+/// ② 只画前 `N` 张卡；第 `N+1` 张**不在树里**；
+/// ③ `5 台 ⇒ 4 张卡 ＋ "还有 1 台设备未显示"`（1920 档；文案逐字、有 accessible-id）；
+/// ④ 段内非容器叶子两两不相交（含截断报数）；
+/// ⑥ 注入的设备数不变（显示层截断，⛔ 不删设备）。
+fn check_master_device_truncation(width: u32, height: u32, device_count: usize) {
+    let project = project_master_with_devices(device_count);
+    let model_devices = project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .map(|track| track.devices.len())
+        .unwrap_or(0);
+    let live = live_window_for(project, (width, height), 2);
+    let tree = runtime_tree(live.ui());
+    let rack = bounds(&tree, "master-device-rack");
+    let label = format!("#190 主总线容量 {device_count} 台 {width}x{height}");
+
+    let capacity = ((rack.3 as i32 - 72) / 46).max(0) as usize;
+    let visible = capacity.min(device_count);
+    report_line(&format!(
+        "[{label}] 段高 {}px / 卡片首行 72px / 步长 46px ⇒ N = floor(({} − 72) / 46) = {capacity}；\
+         工程 {device_count} 台 ⇒ 画 {visible} 张 / 隐藏 {} 台",
+        rack.3,
+        rack.3,
+        device_count.saturating_sub(visible)
+    ));
+
+    // ---- 判据 ①：卡片组恰好是前 `visible` 张；第 `visible` 张不在树里。
+    let cards: Vec<String> = (0..visible)
+        .map(|index| format!("master-device-{index}-card"))
+        .collect();
+    assert!(
+        tree.find_by_id(&format!("master-device-{visible}-card"))
+            .is_none(),
+        "[{label}] 容量 {capacity} ⇒ `master-device-{visible}-card` 不许在树里"
+    );
+
+    // ---- 判据 ④：段内非容器叶子清单（卡片是 `list-item` 容器 ⇒ 摘出，进容器组）。
+    let mut leaves: Vec<String> = [
+        "master-device-track-label",
+        "master-device-insert-eq-button",
+        "master-device-insert-reverb-button",
+        "master-device-eq-reason",
+    ]
+    .iter()
+    .map(|id| (*id).to_owned())
+    .collect();
+    if device_count > capacity {
+        leaves.push("master-device-truncation-note".to_owned());
+    } else {
+        leaves.push("master-device-rack-count".to_owned());
+    }
+    let mut child_pairs: Vec<(String, String)> = Vec::new();
+    for index in 0..visible {
+        leaves.push(format!("master-device-{index}-bypass-switch"));
+        leaves.push(format!("master-device-{index}-remove-button"));
+        child_pairs.push((
+            format!("master-device-{index}-bypass-switch"),
+            format!("master-device-{index}-card"),
+        ));
+        child_pairs.push((
+            format!("master-device-{index}-remove-button"),
+            format!("master-device-{index}-card"),
+        ));
+    }
+    let leaf_refs: Vec<&str> = leaves.iter().map(String::as_str).collect();
+    let card_refs: Vec<&str> = cards.iter().map(String::as_str).collect();
+    report_line(&assert_pairwise_excluding(
+        &tree,
+        rack,
+        Selection::Intersect,
+        &leaf_refs,
+        &cards,
+        &label,
+    ));
+    report_line(&assert_ids_pairwise(
+        &tree,
+        &card_refs,
+        &format!("主总线卡片组 {device_count} 台 {width}x{height}"),
+    ));
+    for (child, card) in &child_pairs {
+        assert_inside(&tree, child, card, &label);
+    }
+    assert_container_clear_of(
+        &tree,
+        "master-device-eq-panel",
+        &leaf_refs,
+        MASTER_EQ_PANEL_CHILDREN,
+        &label,
+    );
+    for card in &cards {
+        let b = bounds(&tree, card);
+        assert!(
+            b.1 + b.3 as i32 <= rack.1 + rack.3 as i32,
+            "[{label}] `{card}` 底沿 {} 越过段底 {}（半张卡被 clip 吃掉）",
+            b.1 + b.3 as i32,
+            rack.1 + rack.3 as i32
+        );
+    }
+
+    // ---- 判据 ②＋③：截断报数逐字 / 在场性；未截断时计数格逐字。
+    if device_count > capacity {
+        let note = tree
+            .find_by_id("master-device-truncation-note")
+            .expect("设备数 > 容量 ⇒ 必须有截断报数");
+        let expected_text = format!("还有 {} 台设备未显示", device_count - capacity);
+        assert_eq!(
+            note.label, expected_text,
+            "[{label}] 截断报数文案必须逐字；实际 {:?}",
+            note.label
+        );
+        assert!(
+            tree.find_by_id("master-device-rack-count").is_none(),
+            "[{label}] 截断时计数格必须让位（两者互斥）"
+        );
+        report_line(&format!(
+            "[{label}] 卡片 {visible} 张；`master-device-truncation-note` label={:?}",
+            note.label
+        ));
+    } else {
+        assert!(
+            tree.find_by_id("master-device-truncation-note").is_none(),
+            "[{label}] {device_count} 台 ≤ 容量 {capacity} ⇒ 截断报数不许在场"
+        );
+        assert_eq!(
+            tree.find_by_id("master-device-rack-count")
+                .expect("未截断 ⇒ 计数格在场")
+                .label,
+            format!("{device_count} 台设备"),
+            "[{label}] 未截断时计数格文案必须逐字"
+        );
+        report_line(&format!(
+            "[{label}] 卡片 {visible} 张；无截断报数（计数格逐字 \"{device_count} 台设备\"）"
+        ));
+    }
+
+    // ---- 判据 ⑥：显示层截断，模型里的设备数**不变**。
+    assert_eq!(
+        model_devices, device_count,
+        "[{label}] 权威工程的设备数必须仍是 {device_count}"
+    );
+    assert_eq!(
+        slint::Model::row_count(&live.ui().get_master_device_names()),
+        device_count,
+        "[{label}] 注入的设备数必须仍是 {device_count}（⛔ 不删设备）"
+    );
 }
 
 // ===========================================================================
@@ -2474,6 +2901,20 @@ fn the_session_view_has_no_two_controls_in_the_same_place() {
 }
 
 // ===========================================================================
+// ③b ⭐ `#190` Session 7 轨：截断报数 ＋ 段内 0 相交
+// ===========================================================================
+#[test]
+fn the_session_view_reports_tracks_that_did_not_fit() {
+    for &(width, height) in TIERS {
+        if let Err(payload) =
+            std::thread::spawn(move || check_session_track_truncation(width, height)).join()
+        {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+// ===========================================================================
 // ④ 主总线第二段段内：三档 × 三种夹具
 // ===========================================================================
 #[test]
@@ -2532,6 +2973,16 @@ fn the_master_device_segment_has_no_two_controls_in_the_same_place() {
         .join()
         {
             std::panic::resume_unwind(payload);
+        }
+        // (d) ⭐ `#190`：4 台（1920 档容量 4 ⇒ 全装下、无提示）与 5 台（⇒ 4 张卡 ＋ 提示）。
+        for device_count in [4_usize, 5] {
+            if let Err(payload) = std::thread::spawn(move || {
+                check_master_device_truncation(width, height, device_count);
+            })
+            .join()
+            {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 }

@@ -630,6 +630,16 @@ impl ElementRegistry {
             "返回编曲 (Back to Arrangement)",
             false,
         );
+        // ⭐ 任务单 `#190`：画布装不下的轨道列**如实报数**（场景列原先按 `tracks.length`
+        // 定位 ⇒ 1440 档第 7 轨起 / 1024 展开态第 4 轨起被推出画布）。只在
+        // `轨道数 > 容量` 时在场；注册表按"无条件声明"登记（缺失不算红）。
+        registry.add(
+            "session-track-truncation-note",
+            ElementKind::Text,
+            "workspace/session_view.slint",
+            "Session 轨道列截断报数（还有几轨未显示）",
+            false,
+        );
 
         // ------------------------------------------------------------ Arrangement View
         registry.add(
@@ -1206,6 +1216,16 @@ impl ElementRegistry {
             ElementKind::Text,
             "console/device_rack.slint",
             &format!("{} 台设备", view.master_devices.len()),
+            false,
+        );
+        // ⭐ 任务单 `#190`：装不下的主总线设备**如实报数**（段高 260、卡片 `72 + 46n`
+        // ⇒ 第 5 张起越过段底被 `clip`）。与计数格互斥，只在 `设备数 > 容量` 时在场；
+        // 注册表按"无条件声明"登记（与 `.slint` 的 `if` 同一条口径：运行时缺失不算红）。
+        registry.add(
+            "master-device-truncation-note",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            "主总线设备链截断报数（还有几台未显示）",
             false,
         );
         registry.add(
