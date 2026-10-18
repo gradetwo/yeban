@@ -1384,6 +1384,30 @@ impl ElementRegistry {
             &instrument_reason_label,
             false,
         );
+        // ⭐ 任务单 `#196`：采样库的下载入口 ＋ 逐字提示（未安装 / 运行期回执）。
+        registry.add(
+            "sample-library-download-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            if view.sample_library_installed {
+                "校验采样库"
+            } else {
+                "下载采样库"
+            },
+            false,
+        );
+        let sample_library_label = if view.sample_library_notice.is_empty() {
+            "采样库已安装（无提示）".to_owned()
+        } else {
+            view.sample_library_notice.clone()
+        };
+        registry.add(
+            "sample-library-status",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &sample_library_label,
+            false,
+        );
         for (instrument_index, instrument_name) in view.instrument_names.iter().enumerate() {
             registry.add(
                 &format!("instrument-install-{instrument_index}-button"),

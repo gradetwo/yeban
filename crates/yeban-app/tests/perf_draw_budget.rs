@@ -403,7 +403,25 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 49;
 /// * 每帧换模型实例的数组：**49 → 49**（一条都不动）；
 /// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
 ///   ⛔ 墙钟成本本机未测（要 GPU 档，`AGENTS.md` §5 不允许）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 89;
+///
+/// ## `#196` 追加（2026-10-18）：**89 → 93** ／ **49 → 49**
+///
+/// 那四格是**采样库**（仍住 Tab 3 的 `DeviceRack` 面板"装乐器"区）的投影读数：
+///
+/// * `ui.set_sample_library_installed` —— 是否已按清单校验安装（Bool）；
+/// * `ui.set_sample_library_notice` —— 未安装时逐字 `"采样库未安装，点此下载（9.4 GiB）"`；
+/// * `ui.set_sample_library_download_visible` —— 下载按钮是否在场（Bool）；
+/// * `ui.set_sample_library_root` —— 程序预设的库根（字符串，判据据此证明落点）。
+///
+/// ⭐ 为什么**必须**加这四格：下载按钮的可用性 / 逐字提示 / 落点全部由 Rust 投影决定
+/// （⛔ 界面不拼平台路径、⛔ 不猜"装没装"）。四个都是**标量**，⛔ 没有新数组。
+///
+/// 数量侧的**本机实测**（本机 macOS，判据逐字报）：
+///
+/// * 写入点：**89 → 93**（四个标量；`apply_view` 里只多了四行 `ui.set_*`）；
+/// * 每帧换模型实例的数组：**49 → 49**（一条都不动）。
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 93;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {

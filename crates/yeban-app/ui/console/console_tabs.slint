@@ -120,6 +120,12 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> instrument-names: [];
     in property <bool> instrument-install-available: false;
     in property <string> instrument-install-reason: "";
+    // ⭐ 采样库（任务单 `#196`）：投影的四个标量 ＋ 运行期下载状态，原样透传。
+    in property <bool> sample-library-installed: false;
+    in property <string> sample-library-notice: "";
+    in property <bool> sample-library-download-visible: false;
+    in property <string> sample-library-root: "";
+    in property <string> sample-library-status: "";
     // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
     // 与上面四格同一条透传纪律 —— 本组件不解释、不筛选、⛔ 不持有第二份列表 / 值域。
     in property <[string]> send-edge-ids: [];
@@ -199,6 +205,9 @@ export component ConsoleTabs inherits Rectangle {
     callback master-device-eq-release();
     // ⭐ 一键装乐器（任务单 `#164`）：只上报内置清单下标，路径 / Op / 提交在宿主。
     callback instrument-install(int);
+    // ⭐ 下载采样库（任务单 `#196`）：只上抛，落点 `host::wire_device_rack`。
+    callback sample-library-download();
+    callback sample-library-download-drain-requested();
     // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 的两个手势，本组件只把
     // `DeviceRack` 的回调**原样上抛**给 `MainWindow`（宿主侧唯一实现是
     // `host::wire_send_strip`）—— ⛔ 不解释、⛔ 不提交、⛔ 不改任何工程值。
@@ -511,6 +520,12 @@ export component ConsoleTabs inherits Rectangle {
         instrument-names: root.instrument-names;
         instrument-install-available: root.instrument-install-available;
         instrument-install-reason: root.instrument-install-reason;
+        // ⭐ 采样库（任务单 `#196`）：只透传，本组件不解释。
+        sample-library-installed: root.sample-library-installed;
+        sample-library-notice: root.sample-library-notice;
+        sample-library-download-visible: root.sample-library-download-visible;
+        sample-library-root: root.sample-library-root;
+        sample-library-status: root.sample-library-status;
         // ⭐ 发送条（任务单 `#159`）：同样只透传投影，本组件不解释。
         send-edge-ids: root.send-edge-ids;
         send-destination-names: root.send-destination-names;
@@ -578,6 +593,12 @@ export component ConsoleTabs inherits Rectangle {
         // ⭐ 一键装乐器（任务单 `#164`）：只上报下标，原样上抛。
         instrument-install(index) => {
             root.instrument-install(index);
+        }
+        sample-library-download() => {
+            root.sample-library-download();
+        }
+        sample-library-download-drain-requested() => {
+            root.sample-library-download-drain-requested();
         }
         // ⭐ 发送条（任务单 `#159`）的写入面：三个滑块携带**路由边身份**（不是行下标）。
         send-gain-grab(edge-id, fraction) => {

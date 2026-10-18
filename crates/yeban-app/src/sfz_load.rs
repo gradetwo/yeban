@@ -794,7 +794,8 @@ impl SfzDecodeReport {
 
 /// ⭐ **仓库根目录**（`CARGO_MANIFEST_DIR/../..`）—— 内置 SFZ 清单相对路径的契约根。
 ///
-/// 它是 [`resolve_sampler_path`] 的第二个候选根，也是**唯一**一份"仓库根"取值：
+/// 它是 [`resolve_sampler_path`] 的**仓库根**候选（顺序见该函数的规则 2），也是**唯一**一份
+/// "仓库根"取值：
 /// 探测（`bridge::sfz_samples_present`）与渲染（[`arm_pending_sfz`]）都经
 /// [`resolve_sampler_path`] 取它，⛔ 不各自写 `join("../..")`。
 ///
@@ -815,38 +816,59 @@ pub fn repo_root() -> &'static Path {
 /// | 字段 | 什么时候是 `Some` | 语义 |
 /// | :--- | :--- | :--- |
 /// | [`Self::project_dir`] | 工程是**从文件打开的** | 工程文件所在目录（用户写的相对路径通常相对它） |
+/// | [`Self::library_root`] | 判据要**显式注入**库根；生产传 `None` | 采样库根（[`crate::samples::library_root`]，任务单 `#196`） |
 /// | [`Self::cwd`] | 判据要**显式注入** cwd；生产传 `None` | 进程当前目录（兼容旧行为） |
 ///
 /// ⚠ `cwd: None` **不是**"没有 cwd 这个根"，而是"取 `std::env::current_dir()`"——
 /// 生产路径因此不必传它；判据传 `Some` 就能在**同一进程**里模拟三种 cwd
 /// （`set_current_dir` 是进程级副作用，并行判据会互相污染）。
 ///
-/// ⚠ ⛔ **本结构不是"根的真相源"**：仓库根永远来自 [`repo_root`]，⛔ 调用方不能覆盖它。
+/// ⚠ `library_root: None` **不是**"没有库根这个候选"，而是"取
+/// [`crate::samples::library_root`]"（`YEBAN_SAMPLE_LIBRARY` 覆盖在同一处生效）。
+/// 判据用 [`Self::with_library_root`] 显式注入时**不读环境变量** ⇒ 并行判据互不污染。
+///
+/// ⚠ ⛔ **本结构不是"根的真相源"**：仓库根永远来自 [`repo_root`]，库根永远来自
+/// [`crate::samples::library_root`]（未显式注入时），⛔ 调用方不能各写一份平台路径。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SfzRoots<'a> {
     /// 工程文件所在目录（`None` = 工程不是从文件打开的 / 装配方没给）。
     pub project_dir: Option<&'a Path>,
+    /// 采样库根（`None` = 解析时取 [`crate::samples::library_root`]）。
+    pub library_root: Option<&'a Path>,
     /// 进程当前目录（`None` = 解析时读 `std::env::current_dir()`）。
     pub cwd: Option<&'a Path>,
 }
 
 impl<'a> SfzRoots<'a> {
-    /// 只有仓库根 ＋ 进程 cwd（`#164`／`#165` 的旧口径；探测与离线导出用它）。
+    /// 仓库根 ＋ 默认采样库根 ＋ 进程 cwd（探测与离线导出用它）。
+    ///
+    /// ⚠ 任务单 `#196` 起**多了一个库根**：它不是"仓库里的另一个目录"，而是
+    /// 用户数据目录（[`crate::samples::library_root`]）—— 内置 SFZ 的样本字节
+    /// 按需下载到那里，于是"装了却静音"（`#164`／`#165`）有了修复路径。
     #[must_use]
     pub const fn none() -> Self {
         Self {
             project_dir: None,
+            library_root: None,
             cwd: None,
         }
     }
 
-    /// 工程文件所在目录优先，其次仓库根，再次进程 cwd。
+    /// 工程文件所在目录优先，其次采样库根、仓库根，最后进程 cwd。
     #[must_use]
     pub const fn under_project(project_dir: &'a Path) -> Self {
         Self {
             project_dir: Some(project_dir),
+            library_root: None,
             cwd: None,
         }
+    }
+
+    /// 判据用：显式指定采样库根（⛔ 不读 `YEBAN_SAMPLE_LIBRARY`，⛔ 不碰用户真实目录）。
+    #[must_use]
+    pub const fn with_library_root(mut self, library_root: &'a Path) -> Self {
+        self.library_root = Some(library_root);
+        self
     }
 
     /// 判据用：显式指定 cwd（替代进程真实 cwd，避免并行判据互相污染）。
@@ -865,7 +887,7 @@ impl<'a> SfzRoots<'a> {
 pub struct SfzPathError {
     /// 模型里逐字存的那条路径（⛔ 不规范化 —— 用户看到的必须是他写下的那句）。
     path: String,
-    /// 按**尝试顺序**排的候选绝对路径（去重后；通常 3 条，工程未知时 2 条）。
+    /// 按**尝试顺序**排的候选绝对路径（去重后；通常 4 条，工程未知时 3 条）。
     tried: Vec<PathBuf>,
 }
 
@@ -906,18 +928,23 @@ impl core::error::Error for SfzPathError {}
 ///    文件真的不在时，`decode_sfz_plan` 自己的 `Read` 错误带着这条路径 —— 仍**响亮**）；
 /// 2. **相对路径** ⇒ 依次试：
 ///    ① 工程文件所在目录（若 [`SfzRoots::project_dir`] 给了）；
-///    ② **仓库根**（[`repo_root`]，内置清单的契约）；
-///    ③ 进程 cwd（[`SfzRoots::cwd`]，缺省读 `std::env::current_dir()`）；
+///    ② **采样库根**（[`SfzRoots::library_root`]，缺省取 [`crate::samples::library_root`]；
+///    `assets/samples/` 前缀会先剥掉 ⇒ 库内布局是 `<库根>/<乐器>/…`）；
+///    ③ **仓库根**（[`repo_root`]，内置清单的契约）；
+///    ④ 进程 cwd（[`SfzRoots::cwd`]，缺省读 `std::env::current_dir()`）；
 ///    第一个 `is_file()` 的候选胜出；
 /// 3. **都找不到 ⇒ [`SfzPathError`]**（`Display` 逐字列出全部候选；⛔ 绝不静默静音）。
 ///
 /// ## 为什么这个顺序
 ///
-/// * **工程目录第一**：用户把样本放在工程旁边是**可迁移**的写法，且它比仓库根/ cwd
-///   更具体 —— 同一个相对字符串在两种解释下都存在时，选"跟工程走"的那份；
-/// * **仓库根第二**：内置清单（[`crate::bridge::BUILTIN_INSTRUMENTS`]）的路径**逐字
+/// * **工程目录第一**：用户把样本放在工程旁边是**可迁移**的写法，且它比库根 / 仓库根 /
+///   cwd 更具体 —— 同一个相对字符串在两种解释下都存在时，选"跟工程走"的那份；
+/// * **库根第二**（任务单 `#196`）：内置清单的样本字节**不随仓库分发**，按需下载进
+///   用户数据目录；它比仓库根更"用户可写"，所以排在仓库里的静态文本之前 ——
+///   同一条 `assets/samples/…` 路径，下载后的库内样本优先于仓内的空目录；
+/// * **仓库根第三**：内置清单（[`crate::bridge::BUILTIN_INSTRUMENTS`]）的路径**逐字
 ///   相对仓库根**写进模型，这是 `#164` 的既有契约；
-/// * **cwd 最后**：它只是 `#79` 之前的历史行为，绝不优先于前两者 —— 否则"从别的目录
+/// * **cwd 最后**：它只是 `#79` 之前的历史行为，绝不优先于前三者 —— 否则"从别的目录
 ///   启动"又会改变解释，正是 `#168` 要堵的那条路。
 ///
 /// ⚠ 候选按 `PathBuf` **去重**（工程目录可能就是仓库根）⇒ 错误信息不会有重复行。
@@ -932,11 +959,18 @@ pub fn resolve_sampler_path(path: &str, roots: SfzRoots<'_>) -> Result<PathBuf, 
     if raw.is_absolute() {
         return Ok(raw.to_path_buf());
     }
-    // 规则 2：三个候选，按序。
-    let mut tried: Vec<PathBuf> = Vec::with_capacity(3);
+    // 规则 2：四个候选，按序。
+    let mut tried: Vec<PathBuf> = Vec::with_capacity(4);
     if let Some(project_dir) = roots.project_dir {
         push_unique_candidate(&mut tried, project_dir.join(raw));
     }
+    // ⭐ 任务单 `#196`：采样库根。库内布局剥掉 `assets/samples/` 前缀
+    // （下载脚本 `--dest` 用**同一条**规则）⇒ `<库根>/<乐器>/…`。
+    let library = roots
+        .library_root
+        .map_or_else(crate::samples::library_root, Path::to_path_buf);
+    let library_relative = raw.strip_prefix("assets/samples").unwrap_or(raw);
+    push_unique_candidate(&mut tried, library.join(library_relative));
     push_unique_candidate(&mut tried, repo_root().join(raw));
     let cwd = roots
         .cwd

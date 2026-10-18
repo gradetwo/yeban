@@ -80,7 +80,7 @@
 //! | 段 | 段盒子（取控件的那一格） | 取法 | 清单 |
 //! | :--- | :--- | :--- | :--- |
 //! | ① 设备链卡片区 | 第一段左列 `x ∈ [0, 428)`、`y ∈ [插入行顶, 面板底)` | 相交 | 演示工程 7（1024 档 6）/ 空链 5 / 只有主总线 7 |
-//! | ② 装乐器行 | `instrument-label` 那一行（20 ＋ 2 ＋ 14 ＝ 36px） | 相交 | 2（今天内置清单为空 ⇒ **0 个按钮**，如实登记） |
+//! | ② 装乐器行 | `instrument-label` 那一行（20 ＋ 2 ＋ 14 ＝ 36px） | 相交 | 3（内置清单为空 ⇒ **0 个装乐器按钮**；⭐ `#196` 起同一行有"下载采样库"按钮 ＋ 未安装提示，如实登记） |
 //! | ③ 轨路由四键区 | `track-routing-panel` 的包围盒（`#160`） | 相交 | 6 / 只有主总线时 7（多逐字原因） |
 //! | ④ 编曲画布 | 三组：轨道头列 / 剪辑头 / 自动化泳道 / 章节卡 | 分组逐对 | 头 6、头内子节点 18、剪辑 3、泳道 3、章节 4/3/2 |
 //! | ⑤ 状态栏 | 24px 带 `y ∈ [h−24, h)` | **Inside** | 4（提示态）/ 4（保存回执态） |
@@ -925,8 +925,14 @@ const CARD_AREA_MASTER_ONLY: &[&str] = &[
     "device-plugin-host-placeholder-card",
 ];
 
-/// ② 装乐器行：今天内置清单为空（`installable_builtin_instruments` 0 条）⇒ 两个语义节点。
-const INSTRUMENT_ROW: &[&str] = &["instrument-label", "instrument-install-reason"];
+/// ② 装乐器行：内置清单为空（`installable_builtin_instruments` 0 条）⇒ 三个语义节点。
+/// ⭐ 任务单 `#196`：清单为空时"下载采样库"按钮占右侧那一格，左下是"采样库未安装"提示
+/// （`instrument-install-reason` 让位给它 —— 两句原因互斥可见，⛔ 不叠字）。
+const INSTRUMENT_ROW: &[&str] = &[
+    "instrument-label",
+    "sample-library-download-button",
+    "sample-library-status",
+];
 
 /// ③ 轨路由四键区：三个建轨键 ＋ 删除键 ＋ 两格读数（演示工程有展示轨 ⇒ 原因行不在场）。
 const ROUTING_DEMO: &[&str] = &[
@@ -1239,13 +1245,19 @@ fn check_instrument_row(width: u32, height: u32) {
     }
     let label_node = tree.find_by_id("instrument-label").expect("乐器读数行");
     assert_eq!(label_node.label, "未装乐器", "没装乐器时读数必须逐字如此");
-    let reason = tree
-        .find_by_id("instrument-install-reason")
-        .expect("0 个按钮时**必须**看得见逐字原因（⛔ 不静默禁用）");
+    // ⭐ `#196`：0 个装乐器按钮时，界面**必须**给出"采样库未安装"的逐字提示与下载入口
+    // （⛔ 不静默禁用；原 `instrument-install-reason` 已被这条更可操作的提示取代）。
+    let status = tree
+        .find_by_id("sample-library-status")
+        .expect("0 个按钮时**必须**看得见逐字提示（⛔ 不静默禁用）");
     assert!(
-        reason.label.contains("SFZ"),
-        "[#187 装乐器行 {width}x{height}] 原因行必须逐字说出缺什么，实测: {}",
-        reason.label
+        status.label.contains("采样库未安装"),
+        "[#187 装乐器行 {width}x{height}] 提示必须逐字说出缺什么，实测: {}",
+        status.label
+    );
+    assert!(
+        tree.find_by_id("sample-library-download-button").is_some(),
+        "[#187 装乐器行 {width}x{height}] 未安装时下载按钮必须在场"
     );
     // 行盒子 36px：读数行 20 ＋ 2 ＋ 原因行 14（与 `pane` 的取法同一个算术）。
     assert_eq!(pane.3, 36, "[#187 装乐器行 {width}x{height}] 行盒子高");

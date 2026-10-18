@@ -162,6 +162,7 @@ pub mod save;
 // 产品路径上的普通模块：它只拿 `save::save_project_file` 与（有 feature 时）
 // `ProjectAuthorityHandle::save_to`，因此**不**把 dev-dependency 的测试装配拉进发行图。
 // 见该模块文档的"为什么是一个函数而不是搬 `live_surface.rs`"。
+pub mod samples;
 pub mod save_action;
 pub mod scene;
 pub mod undo;

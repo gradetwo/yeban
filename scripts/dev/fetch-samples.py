@@ -10,8 +10,17 @@
     python3 scripts/dev/fetch-samples.py --limit 20      # 取回**最小**的 20 个文件并校验（有界，CI 手动档用）
     python3 scripts/dev/fetch-samples.py --all           # 全部 20594 个文件（9.4 GiB，只在参考机上做）
     python3 scripts/dev/fetch-samples.py --check-only    # 只校验磁盘上已有的
+    # ⭐ 任务单 #196: 下载到**程序预设的采样库根**（逻辑与 --all 同一份，只是落点不同）
+    python3 scripts/dev/fetch-samples.py --all --dest "$HOME/Library/Application Support/dev.yeban.app/Samples"
+    # ⭐ 判据用**本地假源**（⛔ 不联网、⛔ 不写仓库）:
+    python3 scripts/dev/fetch-samples.py --all --manifest /tmp/fake.json --dest /tmp/lib \
+        --source-root file:///tmp/fake-source
 退出口径（与 check_vendor.sh / check_release_defaults.sh 同一纪律）:
     0 = 取回的文件**全部**校验通过; 1 = 有字节不符; 2 = **无法判定**（离线/被沙箱拦/没有可校验的项）
+落点口径:
+    --dest 缺省 = 仓库根（`relative_path` 原样，如 `assets/samples/...`）；
+    --dest DIR = **库布局**：先剥掉 `assets/samples/` 前缀，文件落到 `DIR/<乐器>/...`
+    （与 `crates/yeban-app/src/sfz_load.rs` 的库根候选**同一条**规则）。
 """
 
 from __future__ import annotations
@@ -47,9 +56,15 @@ UPSTREAM_STRIP: dict[str, int] = {
 }
 
 
-def upstream_url(instrument: dict, item: dict) -> str | None:
-    """由 `repo` + `pin` + 相对于乐器根的上游路径拼出 raw URL。"""
+def upstream_url(instrument: dict, item: dict, source_root: str = "") -> str | None:
+    """由 `repo` + `pin` + 相对于乐器根的上游路径拼出 raw URL。
+
+    `source_root` 非空 ⇒ 用**本地源根**替换 `raw.githubusercontent.com`（判据的假源；
+    ⛔ 不联网）。源根可以是目录，也可以是 `file://` URL。
+    """
     repo, pin = instrument.get("repo"), instrument.get("pin")
+    if source_root:
+        repo, pin = repo or "local/mirror", pin or "local"
     if not repo or not pin:
         return None
     relative_root = (instrument.get("relative_root") or instrument.get("prefix") or "").strip("/")
@@ -68,7 +83,29 @@ def upstream_url(instrument: dict, item: dict) -> str | None:
         if len(parts) > strip:
             upstream_path = "/".join(parts[strip:])
     encoded = urllib.parse.quote(upstream_path, safe="/")
+    if source_root:
+        base = source_root
+        if "://" not in base:
+            base = pathlib.Path(base).resolve().as_uri()
+        return base.rstrip("/") + "/" + encoded
     return f"https://raw.githubusercontent.com/{repo}/{pin}/{encoded}"
+
+
+# 仓库内路径的固定前缀（库布局把它剥掉；与 Rust 解析器的库根候选同一条规则）。
+LIBRARY_PREFIX = "assets/samples/"
+
+
+def library_relative(item: dict) -> str:
+    """`item.relative_path` ⇒ 库布局里的相对路径（剥掉 `assets/samples/`）。"""
+    relative = item.get("relative_path", "")
+    return relative[len(LIBRARY_PREFIX):] if relative.startswith(LIBRARY_PREFIX) else relative
+
+
+def target_for(item: dict, dest: str) -> pathlib.Path:
+    """落点：不给 `--dest` ⇒ 仓库内原路径（旧口径）；给 `--dest` ⇒ `<dest>/<乐器>/...`。"""
+    if dest:
+        return pathlib.Path(dest) / library_relative(item)
+    return REPO / item.get("relative_path", "")
 
 
 def main() -> int:
@@ -86,21 +123,41 @@ def main() -> int:
         action="store_true",
         help="把上游 404 记为警告而不是失败（临时：清单尚未登记上游路径，见 needs）",
     )
+    parser.add_argument(
+        "--manifest",
+        default=str(MANIFEST),
+        help="清单文件（缺省 = 仓库的 assets/samples/manifest.json；判据用本地假清单）",
+    )
+    parser.add_argument(
+        "--dest",
+        default="",
+        help="落点库根：给了就按库布局写 `<dest>/<乐器>/...`（缺省 = 仓库内原路径）",
+    )
+    parser.add_argument(
+        "--source-root",
+        default="",
+        help="本地源根（目录或 file:// URL）：给了就从它取字节，⛔ 不访问 GitHub（判据用）",
+    )
     args = parser.parse_args()
 
-    if not MANIFEST.is_file():
-        print("没有 assets/samples/manifest.json", file=sys.stderr)
+    manifest = pathlib.Path(args.manifest)
+    if not manifest.is_file():
+        print(f"没有清单文件: {manifest}", file=sys.stderr)
         return 2
-    doc = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    doc = json.loads(manifest.read_text(encoding="utf-8"))
     instruments = {i["id"]: i for i in doc.get("instruments", [])}
     items = doc.get("items", [])
     if not items:
         print("[unknown] 清单里没有条目", file=sys.stderr)
         return 2
+    if args.dest:
+        print(f"[fetch-samples] 落点库根: {pathlib.Path(args.dest)}（库布局，剥掉 {LIBRARY_PREFIX}）")
+    if args.source_root:
+        print(f"[fetch-samples] 源根: {args.source_root}（⛔ 不访问 GitHub）")
 
     present: list[dict] = []
     for item in items:
-        target = REPO / item.get("relative_path", "")
+        target = target_for(item, args.dest)
         if target.is_file():
             present.append(item)
 
@@ -120,7 +177,7 @@ def main() -> int:
     not_found_ids: list[str] = []
     offline = False
     for item in todo:
-        target = REPO / item.get("relative_path", "")
+        target = target_for(item, args.dest)
         instrument = instruments.get(item.get("instrument", ""), {})
         if target.is_file():
             data = target.read_bytes()
@@ -128,7 +185,7 @@ def main() -> int:
             if args.check_only:
                 skipped += 1
                 continue
-            url = upstream_url(instrument, item)
+            url = upstream_url(instrument, item, args.source_root)
             if url is None:
                 skipped += 1
                 continue

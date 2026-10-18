@@ -179,6 +179,16 @@ export component DeviceRack inherits Rectangle {
     in property <bool> instrument-install-available: false;
     /// 不能装乐器时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
     in property <string> instrument-install-reason: "";
+    // ⭐ 采样库（任务单 `#196`）：投影的四个标量 ＋ 运行期下载状态，只透传。
+    in property <bool> sample-library-installed: false;
+    /// 未安装时逐字 `"采样库未安装，点此下载（9.4 GiB）"`；已安装时是空串。
+    in property <string> sample-library-notice: "";
+    /// 下载按钮此刻是否在场（可装清单为空时那一格才是空的）。
+    in property <bool> sample-library-download-visible: false;
+    /// 预设库根（程序给的路径，逐字来自 Rust；⛔ 界面不拼平台路径）。
+    in property <string> sample-library-root: "";
+    /// 运行期下载状态；非空时**优先于** `sample-library-notice` 显示。
+    in property <string> sample-library-status: "";
 
     // ---------------------------------------------------------------- 发送条（⭐ 任务单 `#159`）
     /// 展示轨的发送边身份（`RoutingEdge::id` 的 26 字符文本；与下面三个数组**同索引集**）。
@@ -245,6 +255,10 @@ export component DeviceRack inherits Rectangle {
     callback clip-create();
     /// 装第 `i` 份内置 SFZ 乐器（参数 = 内置清单下标；路径 / Op / 提交由宿主求）。
     callback instrument-install(int);
+    /// ⭐ 下载采样库到预设库根（任务单 `#196`；体积约 9.4 GiB，只在用户点击时发生）。
+    callback sample-library-download();
+    /// 内部：工作线程完成 ⇒ 请求 UI 线程排空结果。
+    callback sample-library-download-drain-requested();
     /// 发送增益按下（参数 = 路由边身份 + 滑块面内的归一化位置）。
     callback send-gain-grab(string, float);
     /// 发送增益拖动。
@@ -339,6 +353,14 @@ export component DeviceRack inherits Rectangle {
     /// 那是本单修掉的那一处。
     property <length> send-create-y: 82px + 40px * root.send-destination-names.length
         + (root.send-destination-names.length == 0 ? 22px : 0px);
+    /// ⭐ 任务单 `#196`：采样库那一格的**整串文本**（运行期状态优先于"未安装"提示）。
+    ///
+    /// 抽成属性而不是在 `accessible-label` 里写三元：无障碍名称不得出现空字面量
+    /// （`elements::tests::no_accessible_name_may_be_the_empty_literal`），而本属性
+    /// 的两支都**非空**（未安装提示 / 运行期状态）。
+    property <string> sample-library-message: root.sample-library-status != ""
+        ? root.sample-library-status
+        : root.sample-library-notice;
 
     /// ⭐ 任务单 `#187`：插件宿主占位卡片的上沿（见下面「插件宿主卡片」那段）。
     /// 空设备链时让到 `240`（空态文案 `216..236` ＋ 4px）；有设备时仍是 `#163` 的
@@ -1104,7 +1126,48 @@ export component DeviceRack inherits Rectangle {
         }
     }
 
+    // ⭐ 下载采样库（任务单 `#196`）：落在"装乐器"按钮行右侧那一格。
+    // 可装清单为空时那一格才是空的（投影的 `sample-library-download-visible` 说了算）；
+    // 点击只上抛，取回脚本 / 落点 / 校验 / 安装戳全在宿主（`host::wire_device_rack`）。
+    Rectangle {
+        x: 244px;
+        y: 136px;
+        width: 176px;
+        height: 20px;
+        background: Tokens.gold-deep;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.gold;
+        visible: root.sample-library-download-visible;
+        accessible-role: button;
+        accessible-id: "sample-library-download-button";
+        accessible-label: root.sample-library-installed ? "校验采样库" : "下载采样库";
+        accessible-action-default => { root.sample-library-download(); }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.sample-library-installed ? "校验采样库" : "下载采样库";
+            color: Tokens.bg-void;
+            font-size: Tokens.font-size-xs;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                root.sample-library-download();
+            }
+        }
+    }
+
     // 不可用时的**逐字**原因（可用时 `visible: false`，文本是空串）。⛔ 不静默禁用。
+    // ⚠ 采样库未安装时这一格让给下面那条"未安装"提示（同一位置，互斥可见）——
+    //    "仓内清单为空"与"采样库没下载"是两句话，⛔ 不合并成一句假话。
     UiText {
         x: Tokens.space-4;
         y: 158px;
@@ -1114,10 +1177,29 @@ export component DeviceRack inherits Rectangle {
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         overflow: elide;
-        visible: !root.instrument-install-available;
+        visible: !root.instrument-install-available
+            && root.sample-library-notice == ""
+            && root.sample-library-status == "";
         accessible-role: text;
         accessible-id: "instrument-install-reason";
         accessible-label: root.instrument-install-reason;
+    }
+
+    // ⭐ 采样库读数（任务单 `#196`）：未安装 ⇒ 逐字 `"采样库未安装，点此下载（9.4 GiB）"`；
+    // 下载中 / 完成后 ⇒ 运行期状态（"下载中…" / "下载完成：下载 N｜校验通过 N/M｜失败 0"）。
+    UiText {
+        x: Tokens.space-4;
+        y: 158px;
+        width: 420px;
+        height: 14px;
+        text: root.sample-library-message;
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        overflow: elide;
+        visible: root.sample-library-message != "";
+        accessible-role: text;
+        accessible-id: "sample-library-status";
+        accessible-label: root.sample-library-message;
     }
 
     // ---------------------------------------- 设备增删 ＋ 建片段（⭐ 任务单 `#163`）

@@ -2494,6 +2494,10 @@ const INSTRUMENT_PROBE_ENGINE_HZ: f32 = 48_000.0;
 /// 而"从别的目录启动"也不再改变解释。相对路径在候选根下都找不到时，本函数返回
 /// [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]（⛔ 不静默把它当成"有样本"）。
 ///
+/// ⭐ 任务单 `#196`：`SfzRoots::none()` 的候选根里**包含采样库根**
+/// （[`crate::samples::library_root`]）⇒ 样本按需下载到预设路径后，本谓词
+/// **不需要改第二行**就会转真；"装乐器"清单随之从空变非空。
+///
 /// # Errors
 ///
 /// * 样本缺失 / 一份都解不出 ⇒ [`INSTRUMENT_INSTALL_NO_SAMPLES_REASON`]；
@@ -2520,20 +2524,40 @@ pub fn sfz_samples_present(path: &str) -> Result<(), &'static str> {
 
 /// ⭐ 内置候选里**真的可装**的那些（按样本字节过滤；顺序与 [`BUILTIN_INSTRUMENTS`] 一致）。
 ///
-/// ⚠ **进程内只探一次**（`OnceLock`）：`ViewState::from_project` 每次完整重投影都会
-/// 读它，而探测要读 SFZ 文本 ＋ 逐个样本读盘 ⇒ 每帧重探会把投影变成 I/O 热点。
-/// 今天结果是**空切片**（仓内 0 个样本字节）；样本入库后无需改代码，下一进程自动出现。
+/// ⚠ **进程内缓存**：`ViewState::from_project` 每次完整重投影都会读它，而探测要读
+/// SFZ 文本 ＋ 逐个样本读盘 ⇒ 每次重探会把投影变成 I/O 热点。缓存键是
+/// `(采样库根, 安装戳指纹)`（[`crate::samples::stamp_signature`]）：
+///
+/// * 下载完成 ⇒ 安装戳出现 ⇒ 键变 ⇒ **同进程**下一次投影就重新探测（⛔ 不要求重启）；
+/// * 手工把样本拷进库根但**没有**安装戳 ⇒ 键不变 ⇒ 本进程可能仍显示旧读数；
+///   重启进程后恢复（这是"缓存"的诚实边界，⛔ 不是"永远对"）。
+///
+/// ⚠ 返回 `Vec`（2 份候选的拷贝，成本可忽略）而**不是** `&'static`：缓存必须能在
+/// 库根 / 安装戳变化时被替换，静态引用做不到这一点。
 #[must_use]
-pub fn installable_builtin_instruments() -> &'static [BuiltinInstrument] {
-    fn probe() -> Vec<BuiltinInstrument> {
-        BUILTIN_INSTRUMENTS
-            .iter()
-            .copied()
-            .filter(|instrument| sfz_samples_present(instrument.path).is_ok())
-            .collect()
+pub fn installable_builtin_instruments() -> Vec<BuiltinInstrument> {
+    type CacheKey = (std::path::PathBuf, Option<(u64, u128)>);
+    static CACHE: std::sync::Mutex<Option<(CacheKey, Vec<BuiltinInstrument>)>> =
+        std::sync::Mutex::new(None);
+    let key: CacheKey = (
+        crate::samples::library_root(),
+        crate::samples::stamp_signature(),
+    );
+    let mut guard = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((cached, instruments)) = guard.as_ref()
+        && *cached == key
+    {
+        return instruments.clone();
     }
-    static INSTALLABLE: std::sync::OnceLock<Vec<BuiltinInstrument>> = std::sync::OnceLock::new();
-    INSTALLABLE.get_or_init(probe).as_slice()
+    let instruments: Vec<BuiltinInstrument> = BUILTIN_INSTRUMENTS
+        .iter()
+        .copied()
+        .filter(|instrument| sfz_samples_present(instrument.path).is_ok())
+        .collect();
+    *guard = Some((key, instruments.clone()));
+    instruments
 }
 
 /// 第 `index` 份**可装**的内置乐器（越界 ⇒ `None`，⛔ 不 panic、⛔ 不猜一份）。
@@ -2901,6 +2925,26 @@ pub struct ViewState {
     /// 取值来自 [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]（无展示轨）或
     /// [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（清单为空 —— 今天这一档）。
     pub instrument_install_reason: String,
+    /// ⭐ 任务单 `#196`：采样库**是否已按清单校验安装**（安装戳存在，或可装清单非空）。
+    ///
+    /// "装乐器"清单非空也算已安装 —— 否则手工拷贝样本（没有安装戳）的用户会看到
+    /// "未安装"的提示与已经出现的按钮互相矛盾。
+    pub sample_library_installed: bool,
+    /// ⭐ 任务单 `#196`：未安装时**逐字**是
+    /// [`crate::samples::SAMPLE_LIBRARY_NOT_INSTALLED_HINT`]；已安装时是空串。
+    ///
+    /// 它与 [`Self::instrument_install_reason`] **分开**两格：后者回答"为什么按钮不可用"，
+    /// 这一格回答"少了哪个可下载的东西"（并带体积）⇒ 界面不会把两句原因合成一句假话。
+    pub sample_library_notice: String,
+    /// ⭐ 任务单 `#196`：界面上要不要显示"下载采样库"按钮。
+    ///
+    /// 今天等于"可装清单为空"（按钮行右侧那一格空着才放得下）；库装好后按钮行被
+    /// `instrument-install-*-button` 占用 ⇒ 下载入口收起（仍有 CLI：
+    /// `scripts/dev/fetch-samples.py --all --dest <库根>`）。
+    pub sample_library_download_visible: bool,
+    /// ⭐ 任务单 `#196`：预设库根的**展示路径**（[`crate::samples::library_root`] 的原文；
+    /// 判据据此证明"落点是程序预设路径"，⛔ 界面不自己拼平台路径）。
+    pub sample_library_root: String,
     /// 当前展示轨（[`send_strip_track`]，与设备机架**同一条轨**）的 `SendToAux` 边逐条投影
     /// —— 发送条的**唯一**事实源。
     ///
@@ -3220,6 +3264,18 @@ impl ViewState {
             instrument_install_availability_on(display);
         let instrument_label = instrument_label(display);
         let instrument_names = instrument_names();
+        // ⭐ 任务单 `#196`：采样库读数**与按钮清单同一份来源**
+        // （`installable_builtin_instruments` 已经按库根探过字节）⇒ 不会出现
+        // "清单非空但界面说未安装"的自相矛盾。
+        let sample_library_installed =
+            crate::samples::is_library_installed() || !instrument_names.is_empty();
+        let sample_library_notice = if sample_library_installed {
+            String::new()
+        } else {
+            crate::samples::SAMPLE_LIBRARY_NOT_INSTALLED_HINT.to_owned()
+        };
+        let sample_library_download_visible = instrument_names.is_empty();
+        let sample_library_root = crate::samples::library_root().display().to_string();
 
         // 发送条（任务单 `#159`）：与设备机架**同一条**展示轨（`display`，
         // ⭐ `#192` 起是"选中轨 or 兜底"）。条目逐条来自 `RoutingGraph::edges` 的
@@ -3321,6 +3377,10 @@ impl ViewState {
             instrument_names,
             instrument_install_available,
             instrument_install_reason,
+            sample_library_installed,
+            sample_library_notice,
+            sample_library_download_visible,
+            sample_library_root,
             sends,
             send_create_available,
             send_create_reason,

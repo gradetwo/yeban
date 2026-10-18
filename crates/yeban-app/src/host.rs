@@ -225,6 +225,14 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_instrument_label(view.instrument_label.clone().into());
     ui.set_instrument_install_available(view.instrument_install_available);
     ui.set_instrument_install_reason(view.instrument_install_reason.clone().into());
+    // ⭐ 任务单 `#196`：采样库的**投影读数**（是否已安装 / 逐字提示 / 按钮可见性 / 预设路径）。
+    // 四个都是标量 ⇒ 只增 `APPLY_VIEW_WRITE_SITE_BUDGET`，⛔ 没有新数组。
+    // ⚠ 运行期的下载状态（"下载中…" / 结果）**不在这里**：它住在
+    // `sample-library-status`，只由下载回调写（换工程 / 撤销不会清掉一条正在进行的回执）。
+    ui.set_sample_library_installed(view.sample_library_installed);
+    ui.set_sample_library_notice(view.sample_library_notice.clone().into());
+    ui.set_sample_library_download_visible(view.sample_library_download_visible);
+    ui.set_sample_library_root(view.sample_library_root.clone().into());
     // ⭐ 发送条（任务单 `#159`）：`ViewState::sends` 是**唯一**事实源。四个平行数组同
     // 索引集（边身份 / 目的地 / 增益文本 / 滑块值）；四个标量给值域与"新建发送"的可用性。
     // 值域**来自模型**（`bridge::send_gain_range` ⇒ `NOMINAL_GAIN_MIN_DB/MAX_DB`），
@@ -2064,6 +2072,94 @@ fn wire_mixer_switch(
     }
 }
 
+/// ⭐ 任务单 `#196`：采样库下载的**跨线程槽**（工作线程只写这里，⛔ 不碰 Slint 对象）。
+///
+/// 与 `MidiInState` 同一条形状：`in_flight` 挡住"第二次点击开第二个下载"，
+/// 结果留在槽里等 UI 线程排空（没有事件循环的平台由下一次点击 / 判据排空）。
+#[derive(Clone, Default)]
+struct SampleLibraryDownloadState {
+    slot: std::sync::Arc<std::sync::Mutex<SampleLibraryDownloadSlot>>,
+}
+
+/// 下载槽的内容（`in_flight` 与"上一次的结果"互斥地活着）。
+#[derive(Default)]
+struct SampleLibraryDownloadSlot {
+    in_flight: bool,
+    outcome: Option<Result<crate::samples::DownloadOutcome, crate::samples::DownloadError>>,
+}
+
+impl SampleLibraryDownloadState {
+    fn begin(&self) -> bool {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.in_flight {
+            return false;
+        }
+        slot.in_flight = true;
+        true
+    }
+
+    fn is_in_flight(&self) -> bool {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .in_flight
+    }
+
+    fn finish(
+        &self,
+        outcome: Result<crate::samples::DownloadOutcome, crate::samples::DownloadError>,
+    ) {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.in_flight = false;
+        slot.outcome = Some(outcome);
+    }
+
+    fn take(
+        &self,
+    ) -> Option<Result<crate::samples::DownloadOutcome, crate::samples::DownloadError>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .outcome
+            .take()
+    }
+}
+
+/// 把**已交回**的下载结果落到界面（唯一写 `sample-library-status` 的地方）。
+///
+/// 生产路径：工作线程完成 ⇒ `upgrade_in_event_loop` ⇒ 本函数；没有事件循环的环境由
+/// 下一次点击 / 判据调本函数（自愈，⛔ 不把"结果没落界面"变成永久 pending）。
+///
+/// 成功（退出码 `0`）⇒ 重新投影：安装戳已经由 [`crate::samples::run_download`] 写好，
+/// `installable_builtin_instruments` 的缓存键随之变化 ⇒ "装乐器"按钮**同进程**出现。
+fn apply_pending_sample_library_download(
+    ui: &MainWindow,
+    state: &SampleLibraryDownloadState,
+    port: &UndoPort,
+) -> bool {
+    let Some(outcome) = state.take() else {
+        return false;
+    };
+    match outcome {
+        Ok(outcome) => {
+            ui.set_sample_library_status(outcome.summary().into());
+            if outcome.ok() {
+                refresh_undo_window(ui, port, true);
+            }
+        }
+        Err(error) => {
+            ui.set_sample_library_status(format!("采样库下载失败：{error}").into());
+        }
+    }
+    true
+}
+
 /// 设备机架（控制台 **Tab 3**）的**写入面** —— 任务单 `#157` 的"最小可编辑"。
 ///
 /// 八个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]（前两个是 `#157`，接下来两个是
@@ -2110,6 +2206,7 @@ fn wire_mixer_switch(
 /// 实时侧的路由由 `yeban-engine` 自己的文档说清 —— 见交付报告的"能验与不能验"）。
 pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
+    let sample_download = SampleLibraryDownloadState::default();
 
     // ---------------------------------------------------------------- ① 旁通开关
     //
@@ -2396,6 +2493,60 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
                 eprintln!("[yeban-app] 装乐器被拒绝（工程未改）");
             }
             refresh_undo_window(&ui, &port, true);
+        }
+    });
+
+    // ------------------------------------------------- ⑥ 下载采样库（⭐ `#196`）
+    //
+    // ⭐ **只在用户显式点按钮时联网**：启动 / 投影 / 判据都不调这里。
+    // 工作线程只做三件事：跑 `fetch-samples.py --all --dest <库根>`、把结果放进
+    // Send 槽、请求 UI 线程排空 ⇒ ⛔ 它一个 Slint 对象都不碰。
+    {
+        let weak_for_drain = weak.clone();
+        let state = sample_download.clone();
+        let port = Rc::clone(port);
+        ui.on_sample_library_download_drain_requested(move || {
+            let Some(ui) = weak_for_drain.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            apply_pending_sample_library_download(&ui, &state, &port);
+        });
+    }
+    ui.on_sample_library_download({
+        let weak = weak.clone();
+        let state = sample_download;
+        let port = Rc::clone(port);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 自愈：先排空上一次的结果（即使上次没有事件循环来排空）。
+            apply_pending_sample_library_download(&ui, &state, &port);
+            if state.is_in_flight() {
+                ui.set_sample_library_status(
+                    "采样库下载已在进行中⏳（⛔ 不并发、⛔ 不排队）".into(),
+                );
+                return;
+            }
+            let options = crate::samples::DownloadOptions::for_app();
+            // 中间态：在 spawn **之前**同步写 ⇒ 点击后立刻可观察。
+            ui.set_sample_library_status(crate::samples::in_flight_status(&options.dest).into());
+            if !state.begin() {
+                return;
+            }
+            let worker_state = state.clone();
+            let worker_weak = weak.clone();
+            std::thread::spawn(move || {
+                let outcome = crate::samples::run_download(&options);
+                worker_state.finish(outcome);
+                // 唯一跨线程的一跳：`Weak` 是 `Send`，升级后的写入仍发生在 UI 线程。
+                // 没有事件循环的平台这里返回 `Err` —— 结果仍在槽里，下一次点击排空。
+                let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                    ui.invoke_sample_library_download_drain_requested();
+                });
+            });
         }
     });
 }

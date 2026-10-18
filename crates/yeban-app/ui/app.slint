@@ -725,6 +725,12 @@ export component MainWindow inherits Window {
     // （`host::wire_device_rack`）。
     /// 装第 `i` 份内置 SFZ 乐器（参数 = 内置清单下标）。
     callback instrument-install(int);
+    // ⭐ **下载采样库**（任务单 `#196`）：唯一落点 `host::wire_device_rack`。
+    // ⛔ 启动时不联网、⛔ 判据里不点它 —— 只有用户显式点击才跑取回脚本。
+    /// 用户点了"下载采样库"（下载到程序预设的库根；体积约 9.4 GiB）。
+    callback sample-library-download();
+    /// 内部：工作线程完成 ⇒ 请求 UI 线程排空（与 `midi-in-drain-requested` 同一条手法）。
+    callback sample-library-download-drain-requested();
     // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 设备机架面板里的"发送"区。
     //
     // 形状与 `device-*` 一族逐条同款：`.slint` 只报"哪一条边 / 滑块位置"，dB 换算 /
@@ -897,6 +903,14 @@ export component MainWindow inherits Window {
     in property <[string]> instrument-names: [];
     in property <bool> instrument-install-available: false;
     in property <string> instrument-install-reason: "";
+    // ⭐ 采样库（任务单 `#196`）：是否已按清单安装 ＋ 逐字提示 ＋ 下载按钮可见性 ＋ 预设路径。
+    // 唯一写者是 `host::apply_view`（四个投影标量）与下载回调（`sample-library-status`）。
+    in property <bool> sample-library-installed: false;
+    in property <string> sample-library-notice: "";
+    in property <bool> sample-library-download-visible: false;
+    in property <string> sample-library-root: "";
+    /// 运行期下载状态（"下载中…" / "下载完成：…"）；空串 ⇒ 显示 `sample-library-notice`。
+    in property <string> sample-library-status: "";
     // ⭐ 发送条（任务单 `#159`）：展示轨的 `SendToAux` 边逐条投影 ＋ "新建发送"的可用性。
     // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState::sends` /
     // `ViewState::send_create_available` / `ViewState::send_create_reason`
@@ -1347,6 +1361,12 @@ export component MainWindow inherits Window {
             instrument-names: root.instrument-names;
             instrument-install-available: root.instrument-install-available;
             instrument-install-reason: root.instrument-install-reason;
+            // ⭐ 采样库（任务单 `#196`）：四个投影标量 ＋ 运行期下载状态，原样透传。
+            sample-library-installed: root.sample-library-installed;
+            sample-library-notice: root.sample-library-notice;
+            sample-library-download-visible: root.sample-library-download-visible;
+            sample-library-root: root.sample-library-root;
+            sample-library-status: root.sample-library-status;
             // ⭐ 发送条（任务单 `#159`）：同样只做单向搬运，⛔ 不解释、⛔ 不持有第二份
             // 发送列表 / 增益范围（值域来自模型，经 `host::apply_view` 注入）。
             send-edge-ids: root.send-edge-ids;
@@ -1450,6 +1470,12 @@ export component MainWindow inherits Window {
             }
             instrument-install(index) => {
                 root.instrument-install(index);
+            }
+            sample-library-download() => {
+                root.sample-library-download();
+            }
+            sample-library-download-drain-requested() => {
+                root.sample-library-download-drain-requested();
             }
             // ⭐ 发送条（Tab 3）的写入面：只上抛，唯一落点 `host::wire_send_strip`
             // （`ADR-0005`：工程内容必须走 `Op` + `UndoPort`，⛔ 界面不改任何工程值）。

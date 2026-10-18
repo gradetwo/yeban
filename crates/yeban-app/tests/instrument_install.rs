@@ -5,7 +5,7 @@
 //!
 //! | 工单 | 断言 | 证什么 / 不证什么 |
 //! | :--- | :--- | :--- |
-//! | `#165` ① 清单为空且原因可见 | `installable_builtin_instruments()` 为空；投影 `instrument_names` 为空；控件树里 `instrument-install-0-button` **不存在**；`instrument-install-reason` 逐字等于 `INSTRUMENT_INSTALL_NO_BUILTIN_REASON` | 证"按钮数 0 ＋ 不静默禁用" |
+//! | `#165` ① 清单为空且原因可见 | `installable_builtin_instruments()` 为空；投影 `instrument_names` 为空；控件树里 `instrument-install-0-button` **不存在**；`instrument-install-reason`（纯函数层）逐字等于 `INSTRUMENT_INSTALL_NO_BUILTIN_REASON`；⭐ `#196` 起控件树那一格显示 `sample-library-status == "采样库未安装，点此下载（9.4 GiB）"` ＋ 下载按钮在场 | 证"按钮数 0 ＋ 不静默禁用 ＋ 有可操作的下一步" |
 //! | `#165` ② 装不掉 | 直接调 `invoke_instrument_install(0)`（宿主回调）⇒ `commit_count` Δ0、`sampler` 仍 `None`；纯函数 `instrument_install_ops` 对两份候选都 `Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON)` | 证"界面之外的入口也拒绝" |
 //! | `#165` ③ 有声未被破坏 | 没装乐器时引擎渲染 `peak ≈ 0.774…`（恒备复音）；装不掉之后再渲一次 ⇒ `digest`／`non-zero`／`peak` **逐位相同** | 证"不再有'装了却静音'的路径" |
 //! | `#164` 正路 = Δ1 | 一份**带真实 WAV 样本**的夹具 SFZ ⇒ `instrument_install_ops` 恰好 1 条 `Op::SetTrackSampler`，`commit_ops` 之后 `commit_count +1`、`undoable +1`；读回 `path` 逐字；该轨其余字段不变 | 证"样本存在时那条装乐器的路仍然是**一次**提交" |
@@ -62,6 +62,7 @@ use yeban_app::bridge::{
 use yeban_app::export_wav::WavExportOptions;
 use yeban_app::host;
 use yeban_app::render_core::render_project_f32_with_assets;
+use yeban_app::samples::SAMPLE_LIBRARY_NOT_INSTALLED_HINT;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
@@ -318,7 +319,7 @@ fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
         INSTRUMENT_INSTALL_NO_BUILTIN_REASON
     );
 
-    // ---- 控件树：0 个按钮；原因那一行逐字可见。
+    // ---- 控件树：0 个装乐器按钮；⭐ `#196` 起那一格显示"采样库未安装"＋下载按钮。
     let (live, port) = live_window_with_undo(&project, "#165 空清单");
     assert!(!live.ui().get_instrument_install_available());
     assert_eq!(
@@ -333,12 +334,17 @@ fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
             "可装清单为空 ⇒ 第 {index} 个装乐器按钮不得存在"
         );
     }
+    // ⭐ `#196`：清单为空时界面不再"只说不做"——同一行给出可下载的入口与逐字提示。
     assert_eq!(
-        tree.find_by_id("instrument-install-reason")
-            .expect("原因行必须在树里")
+        tree.find_by_id("sample-library-status")
+            .expect("未安装时必须在树里逐字说'采样库未安装'")
             .label,
-        INSTRUMENT_INSTALL_NO_BUILTIN_REASON
+        SAMPLE_LIBRARY_NOT_INSTALLED_HINT
     );
+    let download = tree
+        .find_by_id("sample-library-download-button")
+        .expect("未安装时下载按钮必须在场");
+    assert_eq!(download.label, "下载采样库");
 
     // ---- 直接调回调也 Δ0（界面之外还有宿主这道门）。
     let before = port.display();
@@ -764,7 +770,7 @@ fn the_sample_presence_predicate_is_the_shared_decode_path() {
         .copied()
         .filter(|candidate| sfz_samples_present(candidate.path).is_ok())
         .collect();
-    assert_eq!(installable_builtin_instruments(), expected.as_slice());
+    assert_eq!(installable_builtin_instruments(), expected);
     assert_eq!(
         instrument_names(),
         expected

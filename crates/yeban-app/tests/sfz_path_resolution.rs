@@ -19,7 +19,7 @@
 //! | `decoded` | [`SfzDecodeReport::decoded_samples`] | 解出 PCM 的样本**份数** |
 //! | `silent` | [`SfzDecodeReport::silent_region_count`] | 缺样本的区域数 |
 //! | `missing` | [`SfzDecodeReport::missing_sample_paths`] | 缺样本路径**条数** |
-//! | `tried` | [`SfzPathError::tried`] | 候选根**条数**（通常 3） |
+//! | `tried` | [`SfzPathError::tried`] | 候选根**条数**（通常 4；任务单 `#196` 起含采样库根） |
 //!
 //! ## 反向腿（注入 ⇒ 哪条红）
 //!
@@ -365,22 +365,28 @@ fn a_missing_relative_path_is_loud_and_lists_every_root() {
     let fixture = Fixture::new("missing");
     let project_dir = fixture.dir.clone();
     let cwd = PathBuf::from("/tmp/yeban-168-missing-cwd");
-    let roots = SfzRoots::under_project(&project_dir).with_cwd(&cwd);
+    // ⭐ 任务单 `#196`：显式注入一个**空的临时库根**（⛔ 不读用户真实目录），
+    // 于是"试过"列表里的第四条是一个确定的路径。
+    let library = fixture.dir.join("empty-library");
+    let roots = SfzRoots::under_project(&project_dir)
+        .with_library_root(&library)
+        .with_cwd(&cwd);
     let missing = "samples/definitely-missing.sfz";
 
-    // ① 解析层：错误里逐字列出三个候选。
+    // ① 解析层：错误里逐字列出四个候选。
     let path_error = resolve_sampler_path(missing, roots).expect_err("找不到必须报错");
     let text = path_error.to_string();
     assert!(text.contains("试过："), "错误必须逐字说试过哪些根：{text}");
     let expected_candidates = [
         project_dir.join(missing),
+        library.join(missing),
         repo_root().join(missing),
         cwd.join(missing),
     ];
     assert_eq!(
         path_error.tried(),
         expected_candidates.as_slice(),
-        "候选顺序必须是 工程目录 ⇒ 仓库根 ⇒ cwd"
+        "候选顺序必须是 工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd"
     );
     for candidate in &expected_candidates {
         assert!(
@@ -442,7 +448,10 @@ fn absolute_paths_are_returned_verbatim() {
     // 若实现"改写绝对路径"，这里必然红。
     let elsewhere = platform_absolute_nonexistent("yeban-171-elsewhere");
     let elsewhere_cwd = platform_absolute_nonexistent("yeban-171-cwd");
-    let roots = SfzRoots::under_project(Path::new(&elsewhere)).with_cwd(Path::new(&elsewhere_cwd));
+    let library = platform_absolute_nonexistent("yeban-196-library");
+    let roots = SfzRoots::under_project(Path::new(&elsewhere))
+        .with_library_root(Path::new(&library))
+        .with_cwd(Path::new(&elsewhere_cwd));
     let resolved = resolve_sampler_path(&text, roots).expect("绝对路径必须原样返回");
     assert_eq!(
         resolved,
@@ -500,8 +509,11 @@ fn a_project_adjacent_sfz_is_readable_from_any_cwd() {
     let fixture = Fixture::new("adjacent");
     let expected = fixture.sfz();
     let relative = "samples/tone.sfz";
+    let library = fixture.dir.join("empty-library");
     for cwd in [Path::new("/tmp"), Path::new(env!("CARGO_MANIFEST_DIR"))] {
-        let roots = SfzRoots::under_project(&fixture.dir).with_cwd(cwd);
+        let roots = SfzRoots::under_project(&fixture.dir)
+            .with_library_root(&library)
+            .with_cwd(cwd);
         let resolved = resolve_sampler_path(relative, roots).expect("工程旁的相对路径必须解析得到");
         assert_eq!(
             resolved, expected,
