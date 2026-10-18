@@ -486,6 +486,88 @@ fn s2_the_voice_retires_when_the_sample_runs_out() {
     );
 }
 
+/// ⭐ S1c（任务单 `#222`）：**块中间起音的音符必须从它自己的帧起振**。
+///
+/// # 量什么
+///
+/// 同一块（512 帧）里两个**首尾相接**的音符（`[0,100)` 与 `[100,200)`），
+/// 样本是常量 `0.5` ⇒ 期望输出：`[0,100) = 0.5`、`[100,200) = 0.5`、其余 `0`，
+/// **峰值 = 0.5**。
+///
+/// # 怎么变红
+///
+/// 旧实现把"本块内起音"的音符全部在**块首**触发，而池从块首写 `out` ⇒ 第二个音符
+/// 被提前 100 帧、与前一个**叠加** ⇒ `[0,100) = 1.0`、峰值 = **1.0**（恰好 2 倍）。
+/// 这正是 `#221` 在 CLI 导出里实测到的 2.000000×（同一 MIDI 音符的 `ratchet=2`
+/// 拆出的两个脉冲，第二个起点不在块边界上）。
+#[test]
+fn s1c_a_mid_block_note_starts_on_its_own_frame_and_does_not_double() {
+    let sfz = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("SFZ 必须解析成功");
+    let sample = InMemorySample {
+        pcm: vec![0.5; 4_096],
+        sample_hz: 48_000.0,
+    };
+    let prepared = PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平必须成功");
+    let track = EntityId::new();
+    let mut engine = engine_with_track(track);
+    let schedule = NoteSchedule::from_sorted(vec![
+        support::scheduled(0, 100, 60, 1.0, 48_000.0),
+        support::scheduled(100, 200, 60, 1.0, 48_000.0),
+    ]);
+
+    let mut out = vec![0.0f32; BLOCK];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut out);
+    let peak = out.iter().fold(0.0f32, |acc, value| acc.max(value.abs()));
+    let nonzero_after = out[200..].iter().filter(|value| **value != 0.0).count();
+    let active_after_first = engine.sfz_active_voices(track);
+    engine.advance(BLOCK);
+    let mut second = vec![0.0f32; BLOCK];
+    engine.render_track(track, Some(&schedule), Some(&prepared), &mut second);
+    println!(
+        "[engine-sfz/S1c] 第一段 = {:.9}、第二段 = {:.9}、峰值 = {peak:.9}、\
+         尾段非零 = {nonzero_after}、第一块后活声部 = {active_after_first:?}、\
+         第二块后活声部 = {:?}",
+        out[0],
+        out[100],
+        engine.sfz_active_voices(track)
+    );
+
+    assert_eq!(
+        out[..100]
+            .iter()
+            .filter(|v| (**v - 0.5).abs() > 1e-6)
+            .count(),
+        0,
+        "第一个音符的幅度必须是 0.5（⛔ 不是两个声部叠加的 1.0）"
+    );
+    assert_eq!(
+        out[100..200]
+            .iter()
+            .filter(|v| (**v - 0.5).abs() > 1e-6)
+            .count(),
+        0,
+        "第二个音符必须从**第 100 帧**起振且幅度 0.5（⛔ 不是从块首提前发声）"
+    );
+    assert_eq!(nonzero_after, 0, "两个音符都在第 200 帧前结束");
+    assert!(
+        second.iter().all(|value| *value == 0.0),
+        "两个音符都结束后，下一块必须**逐位静音**"
+    );
+    assert_eq!(
+        engine.sfz_active_voices(track),
+        Some(0),
+        "两个音符结束后不许留下声部"
+    );
+    assert_eq!(
+        peak, 0.5,
+        "⭐ 峰值必须是单声部的 0.5（旧实现是 1.0 = 2.000000×）"
+    );
+}
+
 /// S3：⭐ **显式 `span` 终点两侧同口径**（步 3 把离线/摊平侧补齐 ⇒ sfz-needs-4 **闭合**）。
 ///
 /// `end=200`（含端点）⇒ 半开区间 `[0, 201)` ⇒ 三条路都写到 `floor(pos) + 1 >= 201`

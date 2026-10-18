@@ -1937,6 +1937,75 @@ impl SynthEngine {
         // SFZ 分支同办：为**每条匹配区域**占一个声部（多匹配 ＝ 叠加，与摊平表同口径）。
         if let Some(schedule) = schedule {
             let notes = schedule.notes();
+            // ⭐ ⭐ **SFZ 支路：按音符自己的起始帧分段渲染**（任务单 `#222`）。
+            //
+            // 缺陷（`#221` 实测）：本循环把"本块内起音"的音符**全部在块首触发**，
+            // 而 `SfzVoicePool` 从块首开始写 `out` ⇒ 一个起点在块中间的音符会**提前**
+            // 最多 `block_frames − 1` 帧发声。两个相邻的短音符（例如 `ratchet=2`
+            // 拆出的两个脉冲）于是**重叠叠加**：实测 `block=468 first=59904` 时
+            // `starts=[0,48000,60000,95400,144000]` 中 60000 那个脉冲被提前 96 帧，
+            // 活声部 = **2**、峰值 = 单声部的**恰好 2 倍**（常量样本 ⇒ 0.219463661 → 0.438927323）。
+            //
+            // 修法：把本块按"音符起始帧"切成若干段；每段用该段的**绝对位置**渲染，
+            // 段边界处才触发下一批音符 ⇒ 每个声部都从自己的帧起振，且**不新增**任何
+            // 逐声部字段（`SfzVoice` 仍 40 B、池仍 1712 B）。
+            // ⚠ 事件次序仍与旧实现一致（先触发再渲染该段）；块内没有中途起音时
+            // 只渲染一段、输出与接线前**逐位相同**。
+            if drum_map.is_none()
+                && let Some(plan) = sfz
+            {
+                let mut offset = 0usize;
+                let mut cursor_frame = position;
+                loop {
+                    while let Some(note) = notes.get(slot.cursor) {
+                        if note.start_sample >= end {
+                            break;
+                        }
+                        if note.start_sample > cursor_frame {
+                            break;
+                        }
+                        if note.end_sample > cursor_frame
+                            && slot.sfz.trigger_note(
+                                plan,
+                                note.pitch,
+                                note.velocity,
+                                note.end_sample,
+                                schedule.track_gain(),
+                                cc,
+                            ) > 0
+                        {
+                            *notes_triggered = notes_triggered.saturating_add(1);
+                        }
+                        slot.cursor += 1;
+                    }
+                    let boundary = match notes.get(slot.cursor) {
+                        Some(note) if note.start_sample < end => {
+                            note.start_sample.max(cursor_frame)
+                        }
+                        _ => end,
+                    };
+                    if boundary > cursor_frame {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let length = (boundary - cursor_frame) as usize;
+                        let length = length.min(out.len().saturating_sub(offset));
+                        if length == 0 {
+                            break;
+                        }
+                        slot.sfz.render_into_with_cc(
+                            plan,
+                            cursor_frame,
+                            &mut out[offset..offset + length],
+                            cc,
+                        );
+                        offset += length;
+                        cursor_frame = boundary;
+                    }
+                    if cursor_frame >= end || offset >= out.len() {
+                        break;
+                    }
+                }
+                return;
+            }
             while let Some(note) = notes.get(slot.cursor) {
                 if note.start_sample >= end {
                     break;

@@ -58,12 +58,20 @@ const I24_SCALE: f32 = 8_388_608.0;
 ///   前进 ⇒ 这份多块渲染的指纹**必然**变；WAV 解码路径本身（`read_plain_wav_mono_f32`）
 ///   一个字都没动。
 ///
+/// ⭐ **任务单 `#222` 重钉（第 298 条三件套）**：
+/// * 自报旧数：`0xdf1a_272b_6155_9795`（`#209` 的读数，上面那一段）；
+/// * 自报新数：`0xe8da_0829_d81c_2115`（本机 `aarch64/macos` 实测，判据输出见下）；
+/// * 原因：`SynthEngine::render_track` 的 SFZ 支路改为**按音符起始帧分段触发/渲染**
+///   —— 旧实现把块内起音提前到块首（`#221` 实测 2.000000× 的根因）⇒ `filled_project`
+///   里 `ratchet=2` 的第二个脉冲（起点不在块边界）不再提前 96 帧叠加。**WAV 解码路径
+///   本身（`read_plain_wav_mono_f32`）一个字都没动**；变的只是 SFZ 声部的起振帧。
+///
 /// ⚠ 它是**某台机器上的实测值**，⛔ 不是规范常数（同 `sfz_model_chain::BASELINE_APP` 的口径）：
 /// [ARCH-DET-001] 的 L1 只在"相同 OS ＋ CPU 架构 ＋ 纯 Rust libm"下承诺逐位一致。
 /// ⚠ 为什么需要它：既有判据 `sfz_model_chain::the_model_chain_is_bit_identical_to_the_hand_built_plan`
 /// 的两条腿（`decode_sfz_plan` 与手搭 `read_sample_file`）**都要经过被本单改动的那个函数**
 /// ⇒ 它对"WAV 路径被改坏了"**不独立**。本常量是那条腿的**独立**见证。
-const BASELINE_WAV_READ: u64 = 0xdf1a_272b_6155_9795;
+const BASELINE_WAV_READ: u64 = 0xe8da_0829_d81c_2115;
 
 /// 指纹的**测量平台**。
 const MEASURED_PLATFORM: &str = "aarch64/macos";
@@ -196,7 +204,7 @@ where
 /// **两次**都成立）：`#83` 只增加**读失败之后**的分类信息；`#85` 只**新增**一条
 /// `非 wav/wave 后缀` 的解码腿 —— 两者都⛔ 一个字节都不碰 `read_plain_wav_mono_f32`
 /// 的调用与它的成功路径（`.wav` 后缀仍走 hound）。⇒ 指纹必须等于**本修复后重钉的**
-/// 基线（字面值 `0xdf1a272b61559795`，`#209` 因离线播放头修复而重钉；见常量旁的三件套）。
+/// 基线（字面值 `0xe8da0829d81c2115`，`#222` 因 SFZ 起振帧修复而重钉；见常量旁的三件套）。
 /// 它变红 = 改动了 WAV 路径或离线播放头语义 —— 本判据要求前者不变、后者由 `#209` 明确改变。
 #[test]
 fn the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint() {

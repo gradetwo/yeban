@@ -264,16 +264,13 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
     let sfz = scratch.write_sfz("sampler.sfz", FULL_RANGE_SFZ);
     let sfz_path = sfz.display().to_string();
 
-    // ⚠ **已知口径差（本单实测，不是本单引入）**：CLI 的 `track_notes_in_frames` 按
-    // "960 tick = 1 秒"换算（⛔ 不看 `bpm`），而 MCP 的 `note_frame_span` 用
-    // `tick × sr × 60 / (bpm × PPQ)`。两者只在 **`bpm == 60`** 时同解
-    // （`60 / (60 × 960) = 1 / 960`）。本判据要比的是**音源路径**（谁在发声），
-    // 不是 tick→帧的换算 ⇒ 夹具把 `bpm` 设为 60，让两条腿只差引擎、不差时间映射。
-    // ⛔ 这不是"为了绿灯调参"：`bpm != 60` 时两条腿的峰值差异会被这条口径差污染，
-    // 那样的相等断言反而没有意义。该差已记进报告，交集成者裁决。
+    // ⭐ `#222`：本判据以前把 `bpm` 钉成 60 来回避两条口径差（CLI 的
+    // `track_notes_in_frames` 不看 `bpm`；引擎 SFZ 支路把块内起音提前到块首 ⇒
+    // 两个相邻脉冲叠加成 2.000000×）。两条都已修（见 `render_core`／`synth.rs`
+    // 的 `#222` 段），因此现在直接用夹具自己的 **120 BPM** 跑，⛔ 不再调参回避。
     let parity_project = {
         let mut project = project_without_note_probability();
-        project.bpm = 60.0;
+        project.bpm = 120.0;
         project.validate().expect("夹具合法");
         project
     };
@@ -309,14 +306,13 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
 
     // ---- CLI 腿：`render_core` →（`TrackV3.sampler` ⇒ `arm_pending_sfz`） ----
     //
-    // ⚠ **本单实测到的一处 2× 口径差（已量、未改）**：同一份工程、同一份 SFZ，
-    // CLI 腿（引擎 SFZ 支路 `SynthEngine::render_track` ＋ `PreparedSfz`）的峰值
-    // **恰好是** MCP 腿（`domain::sfz::prepare_sampler`）的 2.000 倍。两档样本幅度
-    // （0.5 / 0.25）实测都是 2.000 ⇒ 它是个**与样本内容无关的常数因子**，不是
-    // 区域选择/速率/增益的差异（那三样的读数由下面那条逐字相同的 `sfz(...)` 行证明）。
-    // 疑似"同一个音符在引擎里被触发两次（两个声部相加）"，**未取证**，⛔ 本单不改
-    // `yeban-engine`（越界）⇒ 交集成者裁决。本判据因此断言的是**可证的那一半**：
-    // ① 读数行逐字相同；② 峰值之比是**同一个常数**（两档一致），⛔ 不是"差不多"。
+    // ⭐ `#222` 的取证与修法（本判据现在钉的是**修后**的 1.000000×）：
+    // 旧实现实测 `block=468 first=59904 voices=2 starts=[0,48000,60000,95400,144000]`
+    // —— 同一 MIDI 音符（`ratchet=2`）拆出的两个脉冲里，起点 60000 的那个被
+    // `render_track` 在**块首**触发，而 `SfzVoicePool` 从块首写 `out` ⇒ 它提前 96 帧
+    // 与前一脉冲叠加，峰值 = 单声部 `0.219463661` 的**恰好 2 倍**
+    // （`0.438927323`）。修法见 `synth.rs` 的 `#222` 段：按音符起始帧**分段**触发/渲染
+    // ⇒ 每个声部从自己的帧起振，块内无中途起音时输出逐位不变。
     let mut ratios: Vec<f64> = Vec::new();
     let mut labels: Vec<(String, String)> = Vec::new();
     for (value, tag) in [(0.5_f64, "half"), (0.25_f64, "quarter")] {
@@ -376,18 +372,21 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
             "CLI 的 source_label 必须包含与 MCP 逐字相同的 sfz(...) 行: {cli_label} vs {mcp_label}"
         );
     }
-    // ② 峰值之比是**同一个常数**（两档样本一致）⇒ 差的是常数因子，不是采样路径。
+    // ② 两档样本的 CLI/MCP 峰值比必须**相等**（同一个比值，不是"差不多"）。
     assert!(
         (ratios[0] - ratios[1]).abs() < 1.0e-5,
-        "两档样本的 CLI/MCP 峰值比必须相同（常数因子）: {:?}",
+        "两档样本的 CLI/MCP 峰值比必须相同: {:?}",
         ratios
     );
-    // ③ 实测该常数为 2.000000（逐字记在报告里；⛔ 不用它掩盖"没有相等"这件事）。
-    assert!(
-        (ratios[0] - 2.0).abs() < 1.0e-5,
-        "本单实测的 CLI/MCP 幅度比是 2.000000（未取证、未修）: {:?}",
-        ratios
-    );
+    // ③ ⭐ `#222` 修后的目标值：**1.000000**（两档都是）。旧值 2.000000 的取证见
+    //    `synth.rs` 的 `#222` 段与报告：`voices=2`、第二个脉冲提前 96 帧叠加。
+    for (index, ratio) in ratios.iter().enumerate() {
+        assert!(
+            (ratio - 1.0).abs() < 1.0e-5,
+            "⭐ CLI/MCP 峰值比必须是 1.000000（第 {index} 档实测 {ratio:.9}）: {:?}",
+            ratios
+        );
+    }
     // ④ 两条 MCP 装配（内嵌 / stdio 形）逐字节一致 —— 时钟与 read_only 不进音频。
     assert_eq!(
         sha_embedded, sha_stdio,
@@ -399,4 +398,146 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
         "两条装配的峰值必须相同"
     );
     let _ = bearer(&embedded_dispatcher);
+}
+
+/// ⭐ 判据 4（任务单 `#222`）：**CLI 的 tick→帧换算必须看 `bpm`**，且与 MCP 的
+/// `render_math::note_frame_span` **逐值同解**。
+///
+/// # 量什么
+///
+/// 一条只有一个音符（tick 960，时值 480 tick）的工程，在 `bpm = 60 / 90 / 120 / 174`
+/// 四个值下：
+/// * `track_notes_in_frames` 给出的 `(起始帧, 时值帧)`；
+/// * `note_frame_span(960, 480, 0, PPQ, bpm, 48000)` 给出的 `(start, end)`。
+///
+/// 两者必须**逐值相等**（单位：帧 @ 48 kHz）。
+///
+/// # 怎么变红
+///
+/// 把 `export_wav::ticks_to_frames` 改回 `tick * sample_rate / 960`（旧口径）⇒
+/// 四个值里只有 `bpm = 60` 仍然相等，其余三个的起始帧全部偏小
+/// （例如 `bpm = 174`：旧 48000 vs 新 16552）。
+#[test]
+fn the_cli_note_frames_follow_tempo_like_the_mcp_converter() {
+    let mut project = project_without_note_probability();
+    let track_id = project
+        .tracks
+        .values()
+        .find(|track| {
+            track.kind == yeban_model::TrackKind::Midi
+                && track.clips.values().any(|placement| {
+                    project
+                        .clip_pool
+                        .get(&placement.clip_id)
+                        .is_some_and(|entry| entry.content.notes().is_some())
+                })
+        })
+        .expect("夹具必须有一条带 MIDI 片段的轨")
+        .id;
+    let clip_id = project.tracks[&track_id]
+        .clips
+        .values()
+        .next()
+        .expect("轨必须有摆放")
+        .clip_id;
+    let notes = project
+        .clip_pool
+        .get_mut(&clip_id)
+        .expect("夹具片段必须存在")
+        .content
+        .notes_mut()
+        .expect("夹具片段必须是 MIDI");
+    notes.clear();
+    let note_id = yeban_model::EntityId::new();
+    notes.insert(note_id, yeban_model::MidiNote::new(note_id, 960, 60, 480));
+
+    let mut readings: Vec<(f64, u64, u64, u64, u64)> = Vec::new();
+    for bpm in [60.0_f64, 90.0, 120.0, 174.0] {
+        project.bpm = bpm;
+        project.validate().expect("夹具必须合法");
+        let cli = crate::export_wav::track_notes_in_frames(&project, track_id, 48_000);
+        assert_eq!(cli.len(), 1, "夹具必须只有一个音符: {cli:?}");
+        let (start, duration, _, _) = cli[0];
+        let (mcp_start, mcp_end) = yeban_mcp::domain::render_math::note_frame_span(
+            960,
+            480,
+            0,
+            yeban_model::PPQ,
+            bpm,
+            48_000,
+        );
+        let mcp_start = u64::try_from(mcp_start).expect("非负起始帧");
+        let mcp_duration =
+            u64::try_from(mcp_end - i64::try_from(mcp_start).expect("非负")).expect("非负时值");
+        println!("### bpm={bpm}: CLI=({start},{duration}) MCP=({mcp_start},{mcp_duration})");
+        assert_eq!(
+            (start, duration),
+            (mcp_start, mcp_duration),
+            "⭐ bpm={bpm} 时 CLI 的 (起始帧, 时值帧) 必须与 MCP 的 note_frame_span 相等"
+        );
+        readings.push((bpm, start, duration, mcp_start, mcp_duration));
+    }
+    // 目标值之一（`bpm = 60`）：**旧口径**在这里恰好同解 ⇒ 修 bpm 不许破坏它。
+    let (_, start, duration, _, _) = readings[0];
+    assert_eq!(
+        (start, duration),
+        (48_000, 24_000),
+        "⛔ bpm=60 时旧口径 `tick × 48000 / 960` 与 MCP 同解 ⇒ 必须逐值不变"
+    );
+    // 反向对照：非 60 BPM 的读数必须**真的变**（否则上面的四个相等可能是空转）。
+    assert_ne!(
+        readings[1].1, start,
+        "bpm=90 的起始帧必须与 bpm=60 不同（旧口径会相同）"
+    );
+}
+
+/// ⭐ 判据 5（任务单 `#222`）：`bpm == 60` 时新换算必须与**旧算式逐值相同**。
+///
+/// 旧算式（`#222` 之前）：`start = tick × sr / 960`、
+/// `duration = duration_ticks × sr / 960`（整数除法）。
+/// 新算式在 `bpm = 60` 时 `60 / (960 × 60) = 1 / 960` ⇒ 数学上同解；本判据把
+/// **整个夹具的每一个音符**逐值对一遍，证明"bpm=60 的导出字节不变"不是抽样结论。
+#[test]
+fn the_tempo_fix_is_a_no_op_at_sixty_bpm() {
+    let mut project = project_without_note_probability();
+    project.bpm = 60.0;
+    let track_id = project
+        .tracks
+        .values()
+        .find(|track| {
+            track.kind == yeban_model::TrackKind::Midi
+                && track.clips.values().any(|placement| {
+                    project
+                        .clip_pool
+                        .get(&placement.clip_id)
+                        .is_some_and(|entry| entry.content.notes().is_some())
+                })
+        })
+        .expect("夹具必须有一条带 MIDI 片段的轨")
+        .id;
+    let new = crate::export_wav::track_notes_in_frames(&project, track_id, 48_000);
+    let mut old: Vec<(u64, u64, u8, u8)> = Vec::new();
+    for placement in project.tracks[&track_id].clips.values() {
+        let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+            continue;
+        };
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for note in notes.values() {
+            let start_tick = placement.start_tick + note.start_tick;
+            let start = start_tick.saturating_mul(48_000) / 960;
+            let duration = (note.duration_ticks.max(1)).saturating_mul(48_000) / 960;
+            old.push((start, duration.max(1), note.pitch, note.velocity));
+        }
+    }
+    old.sort_unstable();
+    println!(
+        "### bpm=60 旧算式 vs 新算式：音符数 = {}（new={} old={}）",
+        new.len(),
+        new.len(),
+        old.len()
+    );
+    assert_eq!(new, old, "⛔ bpm=60 时新换算必须与旧算式逐值相同");
+    assert!(!new.is_empty(), "夹具必须真的带音符（否则相等是空转）");
 }

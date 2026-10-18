@@ -260,6 +260,32 @@ pub(crate) struct NoteToneSource {
 /// 首尾包络长度（帧）：避免方波起止的爆音。
 const TONE_FADE_FRAMES: u64 = 64;
 
+/// ⭐ **960 PPQ 的 tick → 帧**（任务单 `#222`；与 MCP 的
+/// `render_math::note_frame_span` **同一算式**）。
+///
+/// `seconds = tick × 60 / (PPQ × bpm)`、`frames = round(seconds × sample_rate)`。
+/// 旧实现是 `tick × sample_rate / 960`（整数除法），等价于把 `bpm` 钉死为 60
+/// ⇒ 任何非 60 BPM 的工程，CLI 导出的音符时间全错。
+///
+/// 守卫与 MCP **逐条同口径**：`bpm` 非有限／`<= 0`、采样率 `0`、结果非有限或
+/// `<= 0` ⇒ `0`；`>= u64::MAX` ⇒ `u64::MAX`。
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn ticks_to_frames(tick: u64, bpm: f64, sample_rate: u32) -> u64 {
+    if !bpm.is_finite() || bpm <= 0.0 || sample_rate == 0 {
+        return 0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = (tick as f64) * 60.0 / (yeban_model::PPQ as f64) / bpm;
+    let frames = (seconds * f64::from(sample_rate)).round();
+    if !frames.is_finite() || frames <= 0.0 {
+        return 0;
+    }
+    if frames >= u64::MAX as f64 {
+        return u64::MAX;
+    }
+    frames as u64
+}
+
 impl NoteToneSource {
     /// 从一条轨道的全部片段收集音符（绝对帧 = 片段起点 ＋ 音符起点，960 PPQ 换算）。
     pub(crate) fn from_track(
@@ -277,12 +303,13 @@ impl NoteToneSource {
                     continue;
                 };
                 for note in map.values() {
-                    // 960 PPQ ⇒ 帧：`tick * sample_rate / 960`（整数运算，⛔ 不引入浮点漂移）。
-                    let start_tick = placement.start_tick + note.start_tick;
-                    let start = start_tick.saturating_mul(u64::from(sample_rate)) / 960;
-                    let duration =
-                        (note.duration_ticks.max(1)).saturating_mul(u64::from(sample_rate)) / 960;
-                    let end = start + duration.max(1);
+                    // ⭐ `#222`：tick ⇒ 帧**必须看 `bpm`**（旧口径按"960 tick = 1 秒"
+                    //    换算 ⇒ 只有 `bpm == 60` 才与引擎／MCP 同解）。
+                    let start_tick = placement.start_tick.saturating_add(note.start_tick);
+                    let end_tick = start_tick.saturating_add(note.duration_ticks.max(1));
+                    let start = ticks_to_frames(start_tick, project.bpm, sample_rate);
+                    let end = ticks_to_frames(end_tick, project.bpm, sample_rate)
+                        .max(start.saturating_add(1));
                     // 预先计算频率及 `2 * f / fs`（供渲染循环廉价算相位），以及幅度。
                     let frequency = 440.0_f64 * 2.0_f64.powf((f64::from(note.pitch) - 69.0) / 12.0);
                     let phase_step = frequency / (sample_rate as f64) * 2.0;
@@ -479,7 +506,12 @@ impl AudioSource for NoteToneSource {
     }
 }
 
-/// 一条轨道的音符，按 960 PPQ 换算成 `(起始帧, 时值帧, 音高, 力度)`（⛔ 与最小音源同一口径）。
+/// 一条轨道的音符，按 **960 PPQ ＋ 工程 `bpm`** 换算成
+/// `(起始帧, 时值帧, 音高, 力度)`（⛔ 与最小音源同一口径）。
+///
+/// ⭐ `#222`：旧实现按"960 tick ＝ 1 秒"换算（⛔ 不看 `bpm`），只有 `bpm == 60`
+/// 才与 MCP 的 `render_math::note_frame_span` 同解 ⇒ 非 60 BPM 的 `--sfz` 导出
+/// 音符时间全错。现在两边走**同一个** [`ticks_to_frames`] 口径。
 pub(crate) fn track_notes_in_frames(
     project: &YebanProjectV1,
     track_id: EntityId,
@@ -495,11 +527,12 @@ pub(crate) fn track_notes_in_frames(
                 continue;
             };
             for note in map.values() {
-                let start_tick = placement.start_tick + note.start_tick;
-                let start = start_tick.saturating_mul(u64::from(sample_rate)) / 960;
-                let duration =
-                    (note.duration_ticks.max(1)).saturating_mul(u64::from(sample_rate)) / 960;
-                notes.push((start, duration.max(1), note.pitch, note.velocity));
+                let start_tick = placement.start_tick.saturating_add(note.start_tick);
+                let end_tick = start_tick.saturating_add(note.duration_ticks.max(1));
+                let start = ticks_to_frames(start_tick, project.bpm, sample_rate);
+                let end = ticks_to_frames(end_tick, project.bpm, sample_rate)
+                    .max(start.saturating_add(1));
+                notes.push((start, end.saturating_sub(start), note.pitch, note.velocity));
             }
         }
     }
