@@ -12,6 +12,9 @@
 //! | ⑥ 完整性 | 故意把一项 sha256 写错 ⇒ 退出码 `1`、`mismatch 1`、**不写安装戳**、旧戳被删 | 证"⛔ 不静默算成功" |
 //! | ⑦ 不联网 | [`DownloadOutcome::command`] 含 `--source-root file://…`，⛔ 不含 `raw.githubusercontent.com` | 证"跑的是假源" |
 //! | ⑩ 无头可判 | 全部判据走 Tier-1 控件树 / 纯函数，无需显示器 | —— |
+//! | Ⓐ 没解释器（⭐`#202`） | `YEBAN_PYTHON` 指向不存在的名字 ⇒ `Err(NoInterpreter)`，`tried` 逐字；⛔ 不写戳、⛔ 一个字节不落地 | 证"找不到解释器⛔不算通过" |
+//! | Ⓑ 假解释器（⭐`#202`） | 只 `exit 0` ＋ 打印假回执（`7/7/9`）⇒ 读数逐字来自它，`command` 首段是它 | 证"真的执行了被选中的那个可执行文件" |
+//! | Ⓒ 崩在判定前（⭐`#202`） | 假解释器 `exit 1` ＋ stdout 空 ⇒ `Err(NoReceipt)`，**旧安装戳原样保留** | 证"崩溃⛔不是字节不符" |
 //!
 //! ## 反向腿（注入 ⇒ 哪条红）
 //!
@@ -19,14 +22,21 @@
 //!   [`the_parser_reads_a_relative_path_from_the_library_root`] 与
 //!   [`the_presence_predicate_and_the_install_list_follow_the_library`] 红；
 //! - **注入乙**：让 `ViewState::from_project` 把 `sample_library_notice` 恒置空 ⇒
-//!   [`the_uninstalled_library_is_words_plus_a_button`] 红（提示消失）。
+//!   [`the_uninstalled_library_is_words_plus_a_button`] 红（提示消失）；
+//! - **注入丙**（⭐`#202`，实测）：删掉 [`DownloadOptions::command`] 的两条
+//!   `.env("PYTHONUTF8"/"PYTHONIOENCODING", …)`，并在 `PYTHONIOENCODING=cp1252` 下跑本文件 ⇒
+//!   [`a_fake_manifest_and_file_source_download_and_verify`] 与
+//!   [`a_byte_mismatch_is_a_failure_and_never_leaves_an_installed_stamp`] 红
+//!   （`Err(NoReceipt { exit_code: 1, … UnicodeEncodeError … })`）—— 与 Windows 腿同一条。
 //!
 //! ## ⚠ 它**不**证什么
 //!
 //! ⛔ 不证真实 9.4 GiB 下载（网络 ＋ 体积；人类命令见报告 §8）；
 //! ⛔ 不证"下载完成后 GUI 那条异步回执"真的落屏（Tier-1 没有事件循环；本文件测的是
 //! 同一段 `run_download`，宿主接线以行号留证）；
-//! ⛔ 不证人耳听到声音（判据只读样本解码读数与控件树）。
+//! ⛔ 不证人耳听到声音（判据只读样本解码读数与控件树）；
+//! ⛔ 不证"Windows 托管 runner 上到底有没有 `python3`"——本机查不到（见报告 §7）：
+//! Ⓐ/Ⓑ/Ⓒ 证的是**逻辑**（探测顺序 / 显式失败 / 崩溃不是字节不符），平台事实只能由 CI 读回。
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -34,9 +44,9 @@ use std::sync::Mutex;
 use yeban_app::bridge::{BUILTIN_INSTRUMENTS, ViewState, instrument_names, sfz_samples_present};
 use yeban_app::host;
 use yeban_app::samples::{
-    DOWNLOAD_SCRIPT_RELATIVE, DownloadOptions, LibraryPlatform, SAMPLE_LIBRARY_ENV,
-    SAMPLE_LIBRARY_NOT_INSTALLED_HINT, SAMPLE_LIBRARY_STAMP, library_root, preset_library_root,
-    run_download,
+    DOWNLOAD_SCRIPT_RELATIVE, DownloadError, DownloadOptions, INTERPRETER_ENV, LibraryPlatform,
+    SAMPLE_LIBRARY_ENV, SAMPLE_LIBRARY_NOT_INSTALLED_HINT, SAMPLE_LIBRARY_STAMP, library_root,
+    preset_library_root, run_download,
 };
 use yeban_app::scene::DemoScene;
 use yeban_app::sfz_load::{SfzRoots, repo_root, resolve_sampler_path};
@@ -119,6 +129,38 @@ impl Drop for LibraryEnv {
             match &self.previous {
                 Some(value) => std::env::set_var(SAMPLE_LIBRARY_ENV, value),
                 None => std::env::remove_var(SAMPLE_LIBRARY_ENV),
+            }
+        }
+    }
+}
+
+/// `YEBAN_PYTHON` 的 RAII 守卫（⭐ `#202`；与 [`LibraryEnv`] 同一条纪律：
+/// 调用方**必须**先持 [`ENV_LOCK`]，`Drop` 在同一把锁内恢复原值）。
+struct InterpreterEnv {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl InterpreterEnv {
+    /// ⚠ 调用方**必须**先持有 [`ENV_LOCK`]（本函数不再锁一次：那是同一把非重入锁）。
+    fn set(value: &Path) -> Self {
+        let previous = std::env::var_os(INTERPRETER_ENV);
+        // SAFETY: 调用方持有 ENV_LOCK；本进程内没有别的线程读 `YEBAN_PYTHON`
+        // （本文件的判据全部串行），恢复发生在同一把锁内。
+        unsafe {
+            std::env::set_var(INTERPRETER_ENV, value);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for InterpreterEnv {
+    fn drop(&mut self) {
+        // SAFETY: 守卫比调用方的 ENV_LOCK 先析构（同一测试内后声明者先 drop），
+        // 且恢复的是进入时读到的原值。
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(INTERPRETER_ENV, value),
+                None => std::env::remove_var(INTERPRETER_ENV),
             }
         }
     }
@@ -536,4 +578,208 @@ fn a_byte_mismatch_is_a_failure_and_never_leaves_an_installed_stamp() {
     ));
     // 证据腿：脚本确实存在（不是"没跑所以没红"）。
     assert!(repo_root().join(DOWNLOAD_SCRIPT_RELATIVE).is_file());
+}
+
+/// 判据 Ⓐ（⭐ `#202`）：**一个能跑的解释器都没有** ⇒ 显式错误，⛔ 不是通过、⛔ 不是"字节不符"。
+///
+/// 怎么造"没有解释器"而不动这台机器的 `PATH`：把 `YEBAN_PYTHON` 指向一个**不存在的名字**
+/// （覆盖值是**唯一**解释器，⛔ 不回退）。这条判据在三平台都跑：Windows 上就是
+/// `python3` / `py -3` / `python` 全都没有的那种机器。
+#[test]
+fn a_missing_interpreter_is_an_explicit_error_and_never_a_pass() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let temp = TempDir::new("no-interpreter");
+    let (manifest, source) = fake_mirror(&temp.path, None);
+    let dest = temp.path.join("library");
+    let options = DownloadOptions {
+        manifest,
+        dest: dest.clone(),
+        source_root: Some(PathBuf::from(file_url(&source))),
+    };
+    // 一个**只在这条判据里存在**的非空覆盖值：⛔ 不回退到 python3。
+    let imaginary = "yeban-202-no-such-python3";
+    let outcome = {
+        let _interpreter = InterpreterEnv::set(Path::new(imaginary));
+        run_download(&options)
+    };
+    let error = outcome.expect_err("⛔ 找不到解释器不许算成功（这就是 v1 静默假绿的那条路）");
+    let DownloadError::NoInterpreter { tried } = &error else {
+        panic!("必须是 NoInterpreter（不是字节不符、不是启动失败）：{error:?}");
+    };
+    assert_eq!(
+        tried,
+        &vec![imaginary.to_owned()],
+        "报错必须逐字列出试过的解释器"
+    );
+    let text = error.to_string();
+    assert!(text.contains(imaginary), "报错必须点名试过的名字：{text}");
+    assert!(
+        text.contains("找不到能跑 Python 3 的解释器"),
+        "报错必须逐字说清是什么没了：{text}"
+    );
+    assert!(
+        !dest.join(SAMPLE_LIBRARY_STAMP).exists(),
+        "⛔ 没跑成不许写安装戳"
+    );
+    assert!(
+        !dest.exists(),
+        "⛔ 取回一个字节都不该落地：{}",
+        dest.display()
+    );
+    report_line(&format!(
+        "[#202 Ⓐ] 解释器覆盖={imaginary}｜结果=Err({})｜stamp_exists={}｜dest_exists={}",
+        error,
+        dest.join(SAMPLE_LIBRARY_STAMP).exists(),
+        dest.exists(),
+    ));
+}
+
+/// 判据 Ⓑ（⭐ `#202`，unix 腿）：**假解释器**（只 `exit 0` ＋ 打印一行假回执）⇒
+/// 证明我们真的执行了**被选中**的那个可执行文件，而且回执是它给的（⛔ 不是 `python3` 给的）。
+///
+/// 为什么回执里的数字与假清单（3 项）**故意不一致**：`7/7/9` 只可能来自假解释器。
+/// ⛔ Windows 腿跳过（`.bat` 不能直接 `CreateProcess`；Windows 侧的"顺序 ＋ 显式失败"
+/// 由 `samples.rs` 的纯函数判据与判据 Ⓐ 覆盖）。
+#[cfg(unix)]
+#[test]
+fn a_fake_interpreter_is_really_used_and_its_receipt_is_what_we_read() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let temp = TempDir::new("fake-interpreter");
+    let (manifest, source) = fake_mirror(&temp.path, None);
+    let dest = temp.path.join("library");
+    let fake = write_fake_interpreter(
+        &temp.path,
+        "fake-python-ok",
+        "#!/bin/sh\n\
+         printf 'fetch-samples: 取回 7 | 校验通过 7 | 不符 0 | 上游 404（路径推不出来）0 | 跳过 0（清单共 9 项，磁盘上原有 0 项）\\n'\n\
+         exit 0\n",
+    );
+    let options = DownloadOptions {
+        manifest,
+        dest: dest.clone(),
+        source_root: Some(PathBuf::from(file_url(&source))),
+    };
+    let outcome = {
+        let _interpreter = InterpreterEnv::set(&fake);
+        run_download(&options).expect("假解释器必须能跑（它只会 exit 0）")
+    };
+    assert_eq!(outcome.exit_code, 0);
+    assert_eq!(
+        (
+            outcome.fetched,
+            outcome.verified,
+            outcome.total,
+            outcome.mismatched
+        ),
+        (7, 7, 9, 0),
+        "回执必须逐字来自假解释器；stdout={}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.command.starts_with(&fake.display().to_string()),
+        "命令行首段必须是被选中的解释器：{}",
+        outcome.command
+    );
+    assert!(
+        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
+        "退出码 0 ⇒ 安装戳必须写（与生产路径同一个 `write_or_clear_stamp`）"
+    );
+    assert!(
+        is_executable(&fake),
+        "假解释器必须是可执行的（否则这条判据会退化成'跑不起来'）"
+    );
+    report_line(&format!(
+        "[#202 Ⓑ] 解释器={}｜exit_code={}｜下载 {}｜校验通过 {}/{}｜stamp_exists={}｜command={}",
+        fake.display(),
+        outcome.exit_code,
+        outcome.fetched,
+        outcome.verified,
+        outcome.total,
+        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
+        outcome.command,
+    ));
+}
+
+/// 判据 Ⓒ（⭐ `#202`，unix 腿）：**解释器崩在判定之前**（退出码 `1` ＋ stdout 空）⇒
+/// [`DownloadError::NoReceipt`]，⛔ **不许**被读成"有字节不符"，⛔ 不许删掉旧安装戳。
+///
+/// 这条判据逐字复刻 `#202` 的 Windows 腿读数：`exit_code == 1` 但 stdout 里没有汇总行。
+#[cfg(unix)]
+#[test]
+fn an_interpreter_that_dies_before_the_receipt_is_not_a_byte_mismatch() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let temp = TempDir::new("fake-interpreter-dies");
+    let (manifest, source) = fake_mirror(&temp.path, Some(0));
+    let dest = temp.path.join("library");
+    // 先放一个**旧**安装戳：崩溃 ⛔ 不许把它当成"已证实的字节不符"删掉。
+    std::fs::create_dir_all(&dest).expect("建落点");
+    std::fs::write(dest.join(SAMPLE_LIBRARY_STAMP), b"{\"verified\":3}").expect("写旧戳");
+    let fake = write_fake_interpreter(
+        &temp.path,
+        "fake-python-dies",
+        "#!/bin/sh\nprintf 'Traceback (most recent call last):\\nUnicodeEncodeError\\n' >&2\nexit 1\n",
+    );
+    let options = DownloadOptions {
+        manifest,
+        dest: dest.clone(),
+        source_root: Some(PathBuf::from(file_url(&source))),
+    };
+    let outcome = {
+        let _interpreter = InterpreterEnv::set(&fake);
+        run_download(&options)
+    };
+    let error = outcome.expect_err("没有回执 ⇒ ⛔ 不是判定");
+    let DownloadError::NoReceipt {
+        exit_code,
+        command,
+        stderr,
+    } = &error
+    else {
+        panic!("必须是 NoReceipt（⛔ 不许是 'Ok(exit_code=1)'）：{error:?}");
+    };
+    assert_eq!(
+        *exit_code, 1,
+        "崩溃的退出码与'字节不符'同码，这正是要分开的原因"
+    );
+    assert!(command.contains(&fake.display().to_string()), "{command}");
+    assert!(stderr.contains("UnicodeEncodeError"), "{stderr}");
+    assert!(
+        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
+        "判不了 ≠ 字节坏了 ⇒ ⛔ 不许删旧安装戳"
+    );
+    assert!(
+        !dest.join("fake").exists(),
+        "⛔ 假解释器一个字节都没取回，落点不该出现乐器目录"
+    );
+    report_line(&format!(
+        "[#202 Ⓒ] 解释器={}｜结果=Err({error})｜exit_code={exit_code}｜stamp_exists={}｜stderr={stderr}",
+        fake.display(),
+        dest.join(SAMPLE_LIBRARY_STAMP).is_file(),
+    ));
+}
+
+/// 写一个**假解释器**（`#!/bin/sh` 脚本，`755`）并返回它的路径。
+#[cfg(unix)]
+fn write_fake_interpreter(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join(name);
+    std::fs::write(&path, body).expect("写假解释器");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("假解释器必须可执行");
+    path
+}
+
+/// 假解释器可执行位的读数（`0o111` 非零 ⇒ 能被执行）。
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
 }
