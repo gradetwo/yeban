@@ -14126,3 +14126,32 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ ⭐ ⭐ **五、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ **没人耳听** ② ⭐ ⚠ ⭐ ⭐ **这 3 条只在 `--features in-process-mcp` 下编译/执行** —— ⭐ **默认 `cargo test -p yeban-app` ⛔ 不跑它们**（⭐ 但 ⭐ **`premerge-gate.sh` 的 `in-process-mcp` 腿 ＋ ⭐ CI 同一腿会跑**）⇒ ⭐ **集成者必须保留那条腿** ✓ ③ ⭐ ⚠ **未证**：⭐ `start_for_project` 的**锁/⭐ 端口/⭐ 线程**那一段（⭐ 有既有 `in_process_mcp*.rs` 覆盖）＋ ⭐ **HTTP socket 层** ＋ ⭐ `WritableFile`/⭐ `File` 两种 `SessionSource` 的端到端（⭐ 本单直接以 `read_only=true/false` 调 `session_dispatcher`、⭐ 未经 `SessionSource` 与 `.yeban.lock`）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **内容寻址纳入 include** ＋ ⭐ **宿主 libm** ＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ 换乐器听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R927 实测追加（2026-10-19）：⭐⭐⭐ **`#220` MCP 完整创作验收（⭐ 第二轮）：⭐ 结论**不能**、⭐ 但查出 6 条真缺陷**
+
+⭐ ⚠ **一、⭐ 判决（⭐ 逐字）**: ⭐ ⭐ **"⭐ 站外 agent 能否只用 MCP 编出一首有多轨真采样、⭐ 有发送、⭐ 能导出、⭐ 可复现的短曲？"** ⇒ ⭐ ⭐ **不能**（⭐ 按严格形状）✓ ⭐ ⚠ **能的一半**：⭐ **4 轨（Master ＋ 2 MIDI ＋ 1 AuxReturn）／⭐ 8 音符（⭐ 每 MIDI 轨 4 个不同音高）／⭐ `SendToAux -6.0 dB` ＋ ⭐ Freeverb ＋ ⭐ 2 段 EQ ／⭐ 导出 `1,440,694 B`／⭐ `240,000` 帧／⭐ **`峰值 0.721654`**／⭐ `truePeak -2.833 dBFS`／⭐ `clipped 0` ＋ ⭐ **两次 `sha256` 相同**（`3bc72f15…`）＋ ⭐ **8 个分段 f0 全部对上**（±6.4 cents）＋ ⭐ 保存工程 `34,708 B`／⭐ `created_at>0`** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 六条缺陷（⭐ 按代价排序、⭐ 全部有逐字证据）**:
+| # | ⭐ 缺陷 | ⭐ 逐字证据 |
+| :-- | :--- | :--- |
+| ⭐ 1 | ⭐ ⭐ **MCP 没有采样器绑定通路** | ⭐ `tools/list` **22 工具**／⭐ `edit_notes` **35 op kind** ⭐ **均无 sampler** ★ ⭐ `setTrackSampler` ⇒ ⭐ **`INVALID_PARAMETER_RANGE / 未知 kind`** ★ ⭐ `op_reachability.rs:136-153` ⭐ 登记为 `KNOWN_UNREACHABLE` |
+| ⭐ 2 | ⭐ ⭐ **`render_master` **静默忽略** `TrackV3.sampler`** | ⭐ ⭐ CLI 已绑真 double-bass 的工程经 MCP 渲染 ⇒ ⭐ **与"去掉 sampler"逐字节相同**（`7ac40d4a…`）＋ ⭐ **`unsupported=[]`** ★ ⭐ ⚠ **而 `render.rs:60` 的文档承诺会登记 `sfzSampler`** ⇒ ⭐ ⭐ **文档与实现矛盾** ★ ⭐ CLI 侧同一工程 ⭐ **峰值 0.279464** ＋ ⭐ `sfz(tracks=1 regions=210 samples=210 silent=0 missing=[])` ✓ |
+| ⭐ 3 | ⭐ **`render_sfz_wav` 不是 per-track** | ⭐ 一次只用一个 session instrument ＋ ⭐ `unsupported` 含 `deviceChainDsp` ⇒ ⭐ **不走发送/混响** |
+| ⭐ 4 | ⭐ **MCP 解码面窄** | ⭐ `sfz.rs:167-190` **只读 PCM WAV**（⭐ `hound … Ill-formed WAVE`）＋ ⭐ `:194-203` **不归一 `\`** ⇒ ⭐ 21 个里 ⭐ **Spanish guitar（FLAC）／⭐ cowsynth／⭐ double-bass（反斜杠）全部回退正弦**、⭐ 只有正斜杠 WAV（bear-sax／body-percussion）真读 |
+| ⭐ 5 | ⭐ **MCP 没有 per-track `sfz(...)` 读数** | ⭐ 只有 `sampleSource`／`sampleFailures`／`notesUsingFileSample` |
+| ⭐ 6 | ⭐ ⭐ **CLI 自己也撑不住"多轨 ＋ send ＋ sampler"** | ⭐ ⭐ `yeban-app: 导出 WAV … 失败: 渲染失败: 节点 <AuxReturn id> 有入边, 不能注册样本源` ★ ⭐ 且 ⭐ `--track-sampler` **只能装第一条非 master 轨**（`cli.rs:323-325`） |
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 反向验证（⭐ 很硬）**: ⭐ ① ⭐ ⭐ **sampler 被丢弃**：⭐ 同一工程 ⭐ with／without sampler ⇒ ⭐ **`sha256` 逐字节相同** ★ ⭐ ② ⭐ **缺样本被四处发现**（`sampleFailures`／`sampleSource`／`sampleFilesRead`／⭐ 峰值）★ ⭐ ③ ⭐ ⭐ **设备/发送真的进渲染**：⭐ 三设备 bypass ⇒ ⭐ `峰值 0.785618` ＋ ⭐ 不同 `sha`；⭐ ⭐ **还原 ⇒ ⭐ `sha` 回到 `3bc72f15…`** ★ ⭐ Send `-60 dB` ⇒ ⭐ `峰值 0.649535` ＋ ⭐ 不同 `sha`；⭐ ⭐ **还原 ⇒ ⭐ 同 `sha`** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 站外客户端（⭐ 形状正确）**: ⭐ ⭐ Python 3.13.9 ＋ ⭐ `Popen([… "--stdio"])` ＋ ⭐ **stdin/stdout 逐行 JSON-RPC** ＋ ⭐ **62 行**（1 `tools/list` ＋ 61 `tools/call`）★ ⭐ 服务器自证逐字 ⭐ `处理 62 行, 写出 62 条响应 (跳过 0 个空行, 模式 production)` ★ ⭐ ⛔ **无 Rust 链接／⭐ 无 in-process／⭐ 无 GUI** ✓
+
+⭐ ⚠ **五、⭐ 一条**方法论（⭐ 新纪律 **第 324 条**）**: ⚠ ⭐ ⭐ **"⭐ 文档承诺"⭐必须与"⭐ 代码行为"⭐对账** —— ⭐ `render.rs:60` 写着"⭐ 会把 `sfzSampler` 放进 `unsupported`"⭐ ⇒ ⭐ ⚠ **而代码里**没有任何地方读 `sampler`**** ⇒ ⭐ ⭐ **于是这个缺失**连 `unsupported` 都不报**、⭐ ⭐ **静默丢功能** ✓
+⇒ ⭐ ⭐ **纪律**: ⭐ ⭐ **凡"⭐ 响应里声明会报告不支持项"⭐的机制，⭐ 必须有一条判据**逼它列出**全部**已知不支持项** ⇒ ⭐ 否则 ⭐ **"⭐ 静默"⭐就是默认行为** ✓
+
+⭐ ⚠ **六、⭐ 它给的整改清单（⭐ 我按代价排序）**: ⭐ ① ⭐ ⭐ **`setTrackSampler` 进 MCP 工具面 ＋ ⭐ schema**（⭐ 需动 `schemas/**` ⇒ ⭐ 我批）② ⭐ ⭐ **`render_master` 真消费 `sampler`**（⭐ 否则 ⭐ **补了工具也听不到采样**）③ ⭐ **MCP 解码面**（⭐ `\` 归一 ＋ ⭐ FLAC/OGG 复用 `yeban-decode`）④ ⭐ **`render_sfz_wav` per-track** ⑤ ⭐ **per-track `sfz(...)` 读数** ⑥ ⭐ **CLI AuxReturn 入边 ＋ ⭐ `--track-sampler` 轨选择器** ✓
+
+⭐ ⚠ **七、⭐ 只能人听的一条（⭐ 它给了一对文件）**: ⭐ ⭐ **`/tmp/accept220/work/diag2-cli.wav`**（⭐ 有真低音、⭐ 峰值 `0.279464`）⭐ vs ⭐ **`diag2-mcp.wav`**（⭐ 同一工程、⭐ 纯合成、⭐ 峰值 `0.787402`、⭐ 与"无 sampler"⭐逐字节相同）⇒ ⭐ ⭐ **那一对就是缺口的声音** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **上面六条**（⭐ 我下一单从 ①② 开始）＋ ⭐ 内容寻址 ＋ ⭐ 宿主 libm ＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ **听 `diag2-cli.wav` vs `diag2-mcp.wav`** ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
