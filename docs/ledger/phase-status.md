@@ -13907,3 +13907,26 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **八、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ **没人耳听** —— ⭐ 本单只证"⭐ 多音符能不能导、⭐ 位置对不对"、⭐ ⛔ **不证音色/包络/响度/削波** ✓ ⭐ ② ⭐ f0 是 **12 kHz 降采样自相关**、⭐ 量化误差约 **2.2%** ⇒ ⭐ **只判音高类别、⛔ 不是实验室级** ✓ ⭐ ③ ⭐ ⚠ **MCP 的 WAV 字节跨运行不稳定**（⭐ `masterDigest` 相同但 **WAV sha256 不同**、⭐ `bwf.originationTime` 每次不同）⇒ ⭐ **建议另开一票** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#210`（GUI 换乐器听）交单** ＋ ⭐ **MCP WAV 跨运行不稳** ＋ ⭐ **`sfz_arm_perf` 的 advance 遗漏** ＋ ⭐ **内容寻址纳入 include** ＋ ⭐ `vcsl`／⭐ `*silence` ＋ ⭐ ⚠ **仍需人类**：⭐ GUI 换乐器听 ＋ ⭐ 再听几个乐器 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R917 实测追加（2026-10-18）：⭐⭐ **`#210`（GUI 换乐器试听 ＋ ⭐ `--track-sampler`）落地 ＋ 快进合并**
+
+⭐ **合并**: ⭐ base `289e83bf` ⇒ ⭐ `FINAL=a7de0f0f`（⭐ 6 文件 ＋926／−29）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`780 passed`／FAILED 0**（76 二进制）＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **全层 0** ＋ ⭐ ⭐ **`pane_no_overlap` 18 passed（⭐ 各段 `相交 0`）** ＋ ⭐ **预算 93/49 未涨** ✓ ⭐ 树已拆 ＋ `target`（39 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 列表从"⭐ 硬编码 2 个"⭐变成"⭐ 清单驱动"**: ⭐ `bridge::library_instruments()` ⭐ 读 ⭐ `assets/samples/manifest.json` × ⭐ 库根**唯一解析**（⭐ 库根优先于仓根）⇒ ⭐ ⭐ **真机 28 条**（⭐ 前 3：⭐ `AliExpress erhu`／⭐ `Body Percussion`／⭐ `Cithara barbarica`）★ ⭐ ⚠ **它特意**不在投影里跑 `sfz_samples_present`** —— ⭐ ⭐ **因为实测全库严格探针合计 597,530 ms**（⭐ 最慢 `Big Rusty Drums` **253,973 ms**、⭐ `Salamander` **124,822 ms**）⇒ ⭐ **每次投影会冻结界面** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 点击 ⇒ ⭐ 一条 op ＋ ⭐ 一次 commit**: ⭐ `invoke_instrument_install` ⇒ ⭐ `instrument_install_ops_on(display_track(…), path)` ⇒ ⭐ ⭐ **恰好一条 `Op::SetTrackSampler`、⭐ 恰好一次 `commit_ops`**（⭐ 值没变 ⇒ ⭐ ops 空 ⇒ ⭐ 不提交）⇒ ⭐ ⭐ **进撤销栈、⭐ 撤销回到**上一个音色**（⛔ 不是 None）** ✓
+⭐ 真机：⭐ `A<-cow` → ⭐ `A<-guitar` → ⭐ 选 B 点 cow ⇒ ⭐ `B<-cow` ＋ ⭐ **`A-kept guitar`**（⭐ 只改那条）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 第 315 条：⭐ 1920 帧**逐字节不动**（⭐ sha256 前后同 `b8d3adba…`、⭐ 6,222,418 B、⭐ `cmp` 相同）⇒ ⭐ **5 张 golden 未动、⭐ 轻门 `golden-manifest` 全过** ✓ ⭐ 并 ⭐ **Tab 3 的 1920 注册几何 24 节点仍逐格相等** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 新增 `--track-sampler <path>`（⭐ Batch 动作）** ⇒ ⭐ 导出读数 ⭐ `sfz(tracks=1 regions=48 samples=48 silent=0 missing=[])` ＋ ⭐ `source=引擎乐器…`（⭐ ⛔ 无正弦回退）⇒ ⭐ ⭐ **无头也能验"⭐ 换音色"** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ UI 形状（⭐ 有代价）**: ⚠ **每页 2 条 ＋ ⭐ `‹`/`›` 翻页**（⭐ 28 条 = 14 页）★ ⭐ ⚠ **因为 6 条会压住右列**（⭐ `#185` 那种重叠）⇒ ⭐ **页码是界面局部属性、⛔ 不占 `apply_view` 写点** ✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 它纠正我一处（⭐ 第 63 次）**: ⚠ 我说"⭐ **24 个可装**"⭐ ⇒ ⭐ ⭐ **实测：⭐ 28 个 SFZ 在位／⭐ **21** 个严格字节谓词通过** ⇒ ⭐ ⚠ **7 个"⭐ 点了没反应"**（`Cithara barbarica`／⭐ `Hungarian zither`／⭐ `Big Rusty Drums`／⭐ `Black And Blue Basses`／⭐ `Squidpipes`／⭐ `VCSL`／⭐ `Virtuosity Drums`）★ ⚠ **且拒绝原因只进 `stderr`（⭐ 界面无 toast）** ＋ ⭐ ⚠ **大乐器首次点击在 UI 线程**同步解码**（⭐ 最慢 253,973 ms）⇒ ⭐ **界面会卡死** ✓
+
+⭐ ⚠ **七、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ **没人耳听** ② ⭐ ⚠ **GUI 鼠标点击本机不能真注入**（⭐ 1.18.1 无 `send_mouse_click`）⇒ ⭐ 判据调的是**生产同一回调**（⭐ 与 `#164`／⭐ `#165` 同款）★ ⭐ 翻页键只能断言"在场/不在场" ③ ⭐ 真机读数来自本机（⭐ 20,542 文件、⭐ 无安装戳）；⭐ 判据本体用**临时假库根**、⭐ 任何机器可跑 ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **后台探针 ＋ ⭐ 界面拒绝原因**（⭐ 那 7 个 ＋ ⭐ 253 s 冻结）＋ ⭐ **MCP WAV 跨运行不稳** ＋ ⭐ **`sfz_arm_perf` 的 advance 遗漏** ＋ ⭐ **内容寻址纳入 include** ＋ ⭐ `vcsl`／⭐ `*silence` ＋ ⭐ ⚠ **仍需人类**：⭐ 换乐器顺不顺 ＋ ⭐ 卡不卡 ＋ ⭐ 再听几个乐器 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
