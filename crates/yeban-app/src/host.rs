@@ -2437,14 +2437,14 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
 
     // ---------------------------------------------------------------- ⑤ 装乐器（⭐ `#164`）
     //
-    // 界面只上报**下标**（⛔ 不拼路径、⛔ 不写 Op）。宿主从 `bridge::builtin_instrument`
-    // 取那条**确定的**仓库内路径，再经 `bridge::instrument_install_ops` 用权威工程的
+    // 界面只上报**下标**（⛔ 不拼路径、⛔ 不写 Op）。宿主从 `bridge::library_instrument`
+    // 取那条**确定的**库内路径，再经 `bridge::instrument_install_ops_on` 用权威工程的
     // `old_sampler` 构造一条 `Op::SetTrackSampler`；一次点击 = **恰好一次** `commit_ops`。
     // 值没变 ⇒ `ops` 为空 ⇒ **不提交**（⛔ 不制造"什么也没改"的撤销步）。
     //
-    // ⭐ 任务单 `#165`：`builtin_instrument` 只索引**可装**清单（样本字节过滤后）。
-    // 今天该清单为空 ⇒ 界面 0 个按钮；万一有人直接调回调（判据会这么做），下标越界
-    // ⇒ **Δ0** 并把**清单为空**的逐字原因打出来（⛔ 不静默、⛔ 不装成静音）。
+    // ⭐ 任务单 `#210`：下标索引的是**库内全部**可装乐器（`manifest.json` × 库根），
+    // 不再是 2 份硬编码候选。库根为空 ⇒ 0 个按钮；万一有人直接调回调（判据会这么做），
+    // 下标越界 ⇒ **Δ0** 并把**清单为空**的逐字原因打出来（⛔ 不静默、⛔ 不装成静音）。
     ui.on_instrument_install({
         let weak = weak.clone();
         let port = Rc::clone(port);
@@ -2455,13 +2455,13 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             };
             let Some(instrument) = usize::try_from(index)
                 .ok()
-                .and_then(crate::bridge::builtin_instrument)
+                .and_then(crate::bridge::library_instrument)
             else {
-                // ⭐ `#165`：清单为空时把"为什么一个都不能装"逐字说出来。
-                let reason = if crate::bridge::installable_builtin_instruments().is_empty() {
+                // ⭐ `#165`／`#210`：清单为空时把"为什么一个都不能装"逐字说出来。
+                let reason = if crate::bridge::library_instruments().is_empty() {
                     crate::bridge::INSTRUMENT_INSTALL_NO_BUILTIN_REASON
                 } else {
-                    "下标不在可装的内置乐器清单里"
+                    "下标不在库内可装乐器清单里"
                 };
                 eprintln!("[yeban-app] 装乐器被拒绝：{reason}（下标 {index}）");
                 return;
@@ -2473,7 +2473,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             // ⭐ `#192`：乐器装到**选中轨 or 兜底**（与服务面板的那条轨同一条）。
             let ops = match crate::bridge::instrument_install_ops_on(
                 display_track(&ui, &project),
-                instrument.path,
+                &instrument.path,
             ) {
                 Ok(ops) => ops,
                 Err(reason) => {

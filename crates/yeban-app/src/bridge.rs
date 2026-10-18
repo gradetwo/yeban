@@ -2578,14 +2578,133 @@ pub fn instrument_names() -> Vec<String> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#210`：**库内全部**可装乐器（按钮行的清单从此不是 2 份硬编码候选）
+// ---------------------------------------------------------------------------
+
+/// 采样库里**有一份 SFZ** 的一份乐器（显示名 ＋ 逐字进模型的路径）。
+///
+/// `path` 的形态与 [`BuiltinInstrument::path`] **逐字同一种**：`assets/samples/<乐器>/<sfz>`，
+/// 由 [`crate::sfz_load::resolve_sampler_path`] **唯一**解析到库根里的那个文件。
+/// 它**就是**写进 [`TrackV3::sampler`] 的字符串 —— ⛔ 不转绝对路径（工程可迁移）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryInstrument {
+    /// 界面按钮上的短名（`manifest.json` 的 `name` 原文；⛔ 不是身份）。
+    pub name: String,
+    /// 逐字进模型的 SFZ 路径（相对仓库根，见类型文档）。
+    pub path: String,
+}
+
+/// 清单解析结果 → 库内**真的有一份 SFZ** 的乐器（`manifest.json` 的顺序）。
+///
+/// 判据只有一条、且复用**唯一**的路径解析：`resolve_sampler_path(path, SfzRoots::none())`
+/// 的第 ② 个候选是库根（`#196`），且**排在仓库根之前** ⇒ 解析结果落在库根下 ⇔
+/// 库里有这份 SFZ。⛔ 本函数不另写"库根 + 相对路径"的拼接（那会是第二份解析）。
+///
+/// ⚠ 为什么不在这里调 [`sfz_samples_present`]：那个谓词会把该乐器的**全部样本解码**
+/// 一遍（库内最大一份 4,466 个样本）⇒ 放进每次投影会冻结界面。本函数只回答
+/// "库里有这份 SFZ"；**点击时**那条既有入口（[`instrument_install_ops_on`]）仍会做
+/// 完整的字节级校验，缺样本 ⇒ 响亮拒绝（⛔ 不静默装成静音）。
+fn scan_library_instruments(library: &std::path::Path) -> Vec<LibraryInstrument> {
+    let manifest = crate::sfz_load::repo_root().join(crate::samples::MANIFEST_RELATIVE);
+    let Ok(text) = std::fs::read_to_string(&manifest) else {
+        return Vec::new();
+    };
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(entries) = document
+        .get("instruments")
+        .and_then(|value| value.as_array())
+    else {
+        return Vec::new();
+    };
+    let mut instruments = Vec::new();
+    for entry in entries {
+        let Some(sfz) = entry.get("sfz").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(root) = entry.get("relative_root").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if sfz.is_empty() || root.is_empty() {
+            continue;
+        }
+        let path = format!("{}/{}", root.trim_end_matches('/'), sfz);
+        // ⭐ 唯一解析：库根优先于仓库根 ⇒ 落在库根下 = 库里有这份 SFZ。
+        let Ok(resolved) =
+            crate::sfz_load::resolve_sampler_path(&path, crate::sfz_load::SfzRoots::none())
+        else {
+            continue;
+        };
+        if !resolved.starts_with(library) {
+            continue;
+        }
+        let name = entry
+            .get("name")
+            .and_then(|value| value.as_str())
+            .filter(|name| !name.is_empty())
+            .or_else(|| entry.get("id").and_then(|value| value.as_str()))
+            .unwrap_or("未命名乐器");
+        instruments.push(LibraryInstrument {
+            name: name.to_owned(),
+            path,
+        });
+    }
+    instruments
+}
+
+/// 库内**可装**乐器的完整清单（`manifest.json` 顺序；仓库 `assets/samples/**` 里的
+/// SFZ 文本**不算** —— 必须真的落在库根里，样本字节才可能在旁边）。
+///
+/// ⚠ **进程内缓存**：键 = `(采样库根, 安装戳指纹)`（与
+/// [`installable_builtin_instruments`] 同一条纪律）。下载完成 ⇒ 安装戳出现 ⇒ 键变 ⇒
+/// **同进程**下一次投影就重扫（⛔ 不要求重启）。⚠ 手工把样本拷进库根但**没有**安装戳
+/// ⇒ 键不变 ⇒ 本进程可能仍显示旧读数；重启进程后恢复（与既有的诚实边界同款）。
+#[must_use]
+pub fn library_instruments() -> Vec<LibraryInstrument> {
+    type CacheKey = (std::path::PathBuf, Option<(u64, u128)>);
+    static CACHE: std::sync::Mutex<Option<(CacheKey, Vec<LibraryInstrument>)>> =
+        std::sync::Mutex::new(None);
+    let library = crate::samples::library_root();
+    let key: CacheKey = (library.clone(), crate::samples::stamp_signature());
+    let mut guard = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((cached, instruments)) = guard.as_ref()
+        && *cached == key
+    {
+        return instruments.clone();
+    }
+    let instruments = scan_library_instruments(&library);
+    *guard = Some((key, instruments.clone()));
+    instruments
+}
+
+/// 第 `index` 份**库内可装**的乐器（越界 ⇒ `None`，⛔ 不 panic、⛔ 不猜一份）。
+#[must_use]
+pub fn library_instrument(index: usize) -> Option<LibraryInstrument> {
+    library_instruments().get(index).cloned()
+}
+
+/// 库内可装乐器的**显示名**（与 [`library_instruments`] 同序、同长度）。
+#[must_use]
+pub fn library_instrument_names() -> Vec<String> {
+    library_instruments()
+        .into_iter()
+        .map(|instrument| instrument.name)
+        .collect()
+}
+
 /// "装乐器"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
 ///
 /// 两个前置条件，顺序即优先级：
 /// 1. 存在展示轨（[`device_rack_track`]）—— 否则 [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]；
-/// 2. 内置清单里有**可装**的乐器（[`installable_builtin_instruments`] 非空）——
-///    否则 [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（今天就是这一档）。
+/// 2. 库内清单里有**可装**的乐器（[`library_instruments`] 非空）——
+///    否则 [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（逐字原文保留；它说的"内置清单为空"
+///    就是这一档）。
 ///
-/// ⚠ 第 2 条是本单新增：清单空时 **0 个按钮** ⇒ 界面必须看得见原因（⛔ 不静默禁用）。
+/// ⚠ 清单空时 **0 个按钮** ⇒ 界面必须看得见原因（⛔ 不静默禁用）。
 ///
 /// ⭐ 任务单 `#192`：生产路径走 [`instrument_install_availability_on`]（主语 = 选中轨 or
 /// 兜底）；本入口是 `selected = None` 的旧路径（既有判据用它）。
@@ -2596,12 +2715,12 @@ pub fn instrument_install_availability(project: &YebanProjectV1) -> (bool, Strin
 
 /// ⭐ 任务单 `#192`：**主语显式**的"装乐器"可用性（选中轨 or 兜底）。
 ///
-/// 第 1 条判"**这条**轨存在"；第 2 条与轨无关（内置清单是全局的）。
+/// 第 1 条判"**这条**轨存在"；第 2 条与轨无关（库内清单是全局的）。
 #[must_use]
 pub fn instrument_install_availability_on(track: Option<&TrackV3>) -> (bool, String) {
     let reason = if track.is_none() {
         INSTRUMENT_INSTALL_NO_TRACK_REASON
-    } else if installable_builtin_instruments().is_empty() {
+    } else if library_instruments().is_empty() {
         INSTRUMENT_INSTALL_NO_BUILTIN_REASON
     } else {
         ""
@@ -2908,22 +3027,22 @@ pub struct ViewState {
     ///
     /// 路径逐字来自 `TrackV3::sampler.path`（[`instrument_label`] 是唯一格式化实现）。
     pub instrument_label: String,
-    /// 界面一键可装的 SFZ 乐器**显示名**（与 [`installable_builtin_instruments`]
-    /// 同序、同长度）。
+    /// 界面一键可装的 SFZ 乐器**显示名**（与 [`library_instruments`] 同序、同长度）。
     ///
     /// ⭐ 它是按钮行的唯一事实源；点第 `i` 个按钮只上报下标，路径由宿主从
-    /// [`builtin_instrument`] 求 —— ⛔ 界面不持有第二份路径表。
-    /// ⚠ 任务单 `#165` 起这里是**按样本字节过滤后**的清单：今天为空（0 个样本字节）
-    /// ⇒ 控件树里 `instrument-install-*-button` 一个都不存在。
+    /// [`library_instrument`] 求 —— ⛔ 界面不持有第二份路径表。
+    /// ⭐ 任务单 `#210` 起这里是**库内全部**可装乐器（`manifest.json` × 库根），
+    /// 不再是 2 份硬编码候选；库根为空 ⇒ 空清单 ⇒ 控件树里 `instrument-install-*-button`
+    /// 一个都不存在（逐字原因见 [`Self::instrument_install_reason`]）。
     pub instrument_names: Vec<String>,
-    /// "装乐器"此刻能不能用（工程里得有展示轨 **且** 内置清单里有可装乐器）。
+    /// "装乐器"此刻能不能用（工程里得有展示轨 **且** 库内清单里有可装乐器）。
     ///
     /// `false` ⇒ 按钮禁用并逐字显示 [`Self::instrument_install_reason`]，⛔ 不静默。
     pub instrument_install_available: bool,
     /// "装乐器"不可用时**逐字**写出的原因（可用时是空串）。
     ///
     /// 取值来自 [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]（无展示轨）或
-    /// [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（清单为空 —— 今天这一档）。
+    /// [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（库内清单为空）。
     pub instrument_install_reason: String,
     /// ⭐ 任务单 `#196`：采样库**是否已按清单校验安装**（安装戳存在，或可装清单非空）。
     ///
@@ -3263,9 +3382,11 @@ impl ViewState {
         let (instrument_install_available, instrument_install_reason) =
             instrument_install_availability_on(display);
         let instrument_label = instrument_label(display);
-        let instrument_names = instrument_names();
-        // ⭐ 任务单 `#196`：采样库读数**与按钮清单同一份来源**
-        // （`installable_builtin_instruments` 已经按库根探过字节）⇒ 不会出现
+        // ⭐ 任务单 `#210`：按钮行 = **库内全部**可装乐器（`manifest.json` × 库根），
+        // ⛔ 不再是 2 份硬编码候选（那两份仍在 `BUILTIN_INSTRUMENTS` 里，供既有判据用）。
+        let instrument_names = library_instrument_names();
+        // ⭐ 任务单 `#196`／`#210`：采样库读数**与按钮清单同一份来源**
+        // （`library_instruments` 的候选根就是库根）⇒ 不会出现
         // "清单非空但界面说未安装"的自相矛盾。
         let sample_library_installed =
             crate::samples::is_library_installed() || !instrument_names.is_empty();

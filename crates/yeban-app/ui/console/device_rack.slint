@@ -179,6 +179,14 @@ export component DeviceRack inherits Rectangle {
     in property <bool> instrument-install-available: false;
     /// 不能装乐器时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
     in property <string> instrument-install-reason: "";
+    /// ⭐ 任务单 `#210`：按钮行的**页号**（每页 `instrument-per-page` 条）。
+    ///
+    /// 纯界面运行态：不进工程、不进投影 ⇒ ⛔ 不占 `host::apply_view` 的写点
+    /// （预算 93/49 因此不变）。库内清单有 20+ 条，一条 84px 的行放不下全部。
+    property <int> instrument-page: 0;
+    /// ⭐ 每页几条 = **2**：按钮行住在第一段**左列**（宽 428px），`244 + 88×2 = 420`
+    /// 已是那条列能放下的全部 —— 再多就压住右列（`#185` 的发送条 ／ 轨路由键）。
+    property <int> instrument-per-page: 2;
     // ⭐ 采样库（任务单 `#196`）：投影的四个标量 ＋ 运行期下载状态，只透传。
     in property <bool> sample-library-installed: false;
     /// 未安装时逐字 `"采样库未安装，点此下载（9.4 GiB）"`；已安装时是空串。
@@ -1072,14 +1080,17 @@ export component DeviceRack inherits Rectangle {
     }
 
     // ---------------------------------------- 一键装乐器（⭐ 任务单 `#164`）
-    // 两格读数：当前乐器（`乐器：<路径>` / `未装乐器`）＋ 两个"装 <名字>"按钮。
+    // 两格读数：当前乐器（`乐器：<路径>` / `未装乐器`）＋ 一页"装 <名字>"按钮。
     // 按钮只上报**下标**：路径 / `Op` / `commit_ops` 全在宿主（`host::wire_device_rack`）。
+    // ⭐ 任务单 `#210`：清单从"2 份硬编码候选"变成**库内全部**乐器（今天 20+ 条）
+    // ⇒ 同一行改成**分页**（每页 4~6 条 ＋ 两个翻页键），页面是**界面运行态**，
+    // ⛔ 不进工程、⛔ 不占 `apply_view` 的写点。
     // ⚠ 这一行把下面整块（设备增删 / 建片段 / 设备卡片链 / 空态 / 插件占位）整体下移
     //    40px（当前乐器行 20px ＋ 逐字原因行 14px ＋ 6px 间隔）—— 彼此的**相对**几何一位未变。
     UiText {
         x: Tokens.space-4;
         y: 136px;
-        width: 236px;
+        width: 180px;
         height: 20px;
         text: root.instrument-label;
         color: Tokens.ink-0;
@@ -1091,7 +1102,10 @@ export component DeviceRack inherits Rectangle {
     }
 
     for instrument_name[index] in root.instrument-names : Rectangle {
-        x: 244px + 88px * index;
+        // ⭐ `#210`：只有当前页那几条在场（`index` 仍是**全清单**下标 ⇒ 上报不漂移）。
+        visible: index >= root.instrument-page * root.instrument-per-page
+            && index < root.instrument-page * root.instrument-per-page + root.instrument-per-page;
+        x: 244px + 88px * (index - root.instrument-page * root.instrument-per-page);
         y: 136px;
         width: 84px;
         height: 20px;
@@ -1122,6 +1136,91 @@ export component DeviceRack inherits Rectangle {
             enabled: root.instrument-install-available;
             clicked => {
                 root.instrument-install(index);
+            }
+        }
+    }
+
+    // ⭐ `#210`：翻页键（只在真的还有上一页 / 下一页时在场）。位置紧接最后一格按钮：
+    // `244 + 88×每页条数`，两个 24px 键 ⇒ 宽档右沿 824 ＝ 第一段右沿（⛔ 不越界）。
+    if root.instrument-page > 0 : Rectangle {
+        x: 188px;
+        y: 136px;
+        width: 24px;
+        height: 20px;
+        background: Tokens.bg-raised;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        accessible-id: "instrument-page-prev-button";
+        accessible-label: "上一页乐器";
+        accessible-action-default => {
+            if root.instrument-page > 0 {
+                root.instrument-page = root.instrument-page - 1;
+            }
+        }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "‹";
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                if root.instrument-page > 0 {
+                    root.instrument-page = root.instrument-page - 1;
+                }
+            }
+        }
+    }
+
+    if root.instrument-page * root.instrument-per-page + root.instrument-per-page
+        < root.instrument-names.length : Rectangle {
+        x: 212px;
+        y: 136px;
+        width: 24px;
+        height: 20px;
+        background: Tokens.bg-raised;
+        border-radius: Tokens.radius-sm;
+        border-width: 1px;
+        border-color: Tokens.line;
+        accessible-role: button;
+        accessible-id: "instrument-page-next-button";
+        accessible-label: "下一页乐器";
+        accessible-action-default => {
+            if root.instrument-page * root.instrument-per-page + root.instrument-per-page
+                < root.instrument-names.length {
+                root.instrument-page = root.instrument-page + 1;
+            }
+        }
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: "›";
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            horizontal-alignment: center;
+        }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => {
+                if root.instrument-page * root.instrument-per-page + root.instrument-per-page
+                    < root.instrument-names.length {
+                    root.instrument-page = root.instrument-page + 1;
+                }
             }
         }
     }

@@ -299,6 +299,11 @@ pub fn usage_text() -> String {
                            与 --export-wav 同时给 ⇒ **导出的声音来自这份 SFZ**;
                            `sample=<path>` 会被**真读** (只支持本仓 read_plain_wav 能读的
                            PCM WAV; 读不到 ⇒ 如实回退到内存正弦并把原因写进 source=)
+  --track-sampler <path>   把这份 SFZ **装到当前展示轨** (TrackV3::sampler), 走既有的
+                           Op::SetTrackSampler ⇒ 一次提交、可撤销; 目标轨 = 身份序第一条
+                           非主总线轨 (CLI 没有选中态, 与 GUI 的兜底同一档);
+                           样本字节缺失 ⇒ 响亮拒绝 (不把一条有声的轨装成静音);
+                           与 --export-wav / --save-as 同给 ⇒ 它们看到的是装好之后的工程
   --midi-in <port>         打开一个**物理 MIDI 输入端口**并采集 (**需要** midi-input 特性;
                            默认构建会给出结构化错误并说明怎么开)
                            <port> = 端口序号 (全十进制) 或端口名**子串** (大小写敏感);
@@ -479,7 +484,7 @@ pub fn usage_text() -> String {
   任一\"无窗口开关\"(--headless / --dump-elements / --print-shortcuts /
   --print-theme / --export-elements / --export-midi / --export-wav /
   --export-als / --export-logic / --save-as / --record-wav / --sfz /
-  --midi-in / --midi-in-render / --midi-in-write-notes)
+  --track-sampler / --midi-in / --midi-in-render / --midi-in-write-notes)
   都不构造窗口、不进事件循环, 并打印握手行 `{handshake}`。
   `--headless-idle` 是**另一档**: 它同样不创建 OS 窗口、不进阻塞事件循环, 但它**会**
   构造一个软件窗口 + 真控件树并光栅化一帧, 因此握手行是 `{idle_handshake}`
@@ -568,6 +573,7 @@ pub fn usage_text() -> String {
   {open} --import-logic 失败 (读 demo / ProjectData 记录流不合法 / 采样率不在规范枚举 /
      没有 karT 轨道 / 建出的工程未通过模型校验; 输入路径不存在是 skip, ⛔ 不算失败)
   {open} --sfz 失败 (读文件 / SFZ 文本非法)
+  {open} --track-sampler 失败 (没有展示轨 / 路径不是 UTF-8 / 样本字节缺失 / 提交被拒)
   {open} --midi-in 失败 (端口不存在或名字有歧义 / 宿主不可用 / 本次构建未编译 `midi-input` 特性)
   {open} --midi-in-write-notes / --midi-in-render 失败 (一条音符都没有 / 没有可写目标 /
      没有可发声的目标音轨 / 音轨选择器命中 0 或多条 / 提交被拒 / 引擎重建失败)
@@ -596,6 +602,7 @@ pub fn usage_text() -> String {
   yeban-app --record-wav tone.wav --record-seconds 3 --record-source tone
   yeban-app --open p.yeban --sfz strings.sfz --record-wav take.wav --record-seconds 8
   yeban-app --sfz strings.sfz --export-wav out.wav   # 导出的音源 = 该 SFZ
+  yeban-app --open song.yeban --track-sampler p.sfz --export-wav out.wav  # 轨上的乐器先装好再导出
   yeban-app --import-midi take.mid --save-as song.yeban
   yeban-app --open song.yeban --import-audio kick.wav --save-as song.yeban
   yeban-app --open song.yeban --export-midi song.mid
@@ -1062,6 +1069,21 @@ pub struct Options {
     /// 读不到才**如实回退**到内存正弦并把原因写进报告行。
     /// 本开关**只读**（不建会话、不改工程）⇒ 与导出/保存可以任意组合。
     pub sfz: Option<PathBuf>,
+    /// ⭐ 任务单 `#210`：`--track-sampler <path>`：把一份 SFZ **装到当前展示轨**
+    /// （`TrackV3::sampler`），走**既有**的 `Op::SetTrackSampler`。
+    ///
+    /// 它是 GUI"点一下换乐器"的**命令行等价路径**：
+    /// 1. 目标轨 = [`crate::bridge::device_rack_track`]（身份序第一条非主总线轨；
+    ///    GUI 用"选中轨 or 兜底"——CLI 没有选中态，取同一个兜底）；
+    /// 2. `Op` 由 [`crate::bridge::instrument_install_ops_on`] 构造 ⇒ **同一条**
+    ///    样本字节谓词（缺样本 ⇒ 响亮拒绝，⛔ 不把有声轨装成静音）；
+    /// 3. 经 [`crate::undo::UndoPort`] **一次提交**（进提交史、可撤销），
+    ///    并把结果落回归档 ⇒ 同一命令里的 `--export-wav` / `--save-as` 看得见它。
+    ///
+    /// **执行顺序**：与 `--import-midi` 同一条契约（编辑 ⇒ 在导出与保存**之前**）。
+    /// 只给本开关（没有别的批处理开关）也走 `run_batch`（[`ACTION_SWITCHES`] 里是
+    /// `Batch`）：它会真的改内存里的工程并打印一行读数，然后退出。
+    pub track_sampler: Option<PathBuf>,
     /// `--midi-in <端口>`：⭐ **打开一个物理 MIDI 输入端口并采集**（⭐ 本仓第一条
     /// **用户可触发**的硬件 MIDI 入口）。
     ///
@@ -1371,6 +1393,13 @@ pub const ACTION_SWITCHES: &[ActionSwitch] = &[
         name: "--sfz",
         present: |options| options.sfz.is_some(),
         grant: |options| options.sfz = Some(PathBuf::from("probe")),
+        path: SwitchPath::Batch,
+    },
+    // ⭐ 任务单 `#210`：装乐器是**编辑**（不是只读装载）⇒ 自己就把进程推离 GUI 路径。
+    ActionSwitch {
+        name: "--track-sampler",
+        present: |options| options.track_sampler.is_some(),
+        grant: |options| options.track_sampler = Some(PathBuf::from("probe")),
         path: SwitchPath::Batch,
     },
     ActionSwitch {
@@ -1878,6 +1907,14 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
             "--sfz" => {
                 let value = take_value("--sfz", inline, args, &mut cursor)?;
                 set_once(&mut options.sfz, "--sfz", PathBuf::from(value))?;
+            }
+            "--track-sampler" => {
+                let value = take_value("--track-sampler", inline, args, &mut cursor)?;
+                set_once(
+                    &mut options.track_sampler,
+                    "--track-sampler",
+                    PathBuf::from(value),
+                )?;
             }
             "--midi-in" => {
                 let value = take_value("--midi-in", inline, args, &mut cursor)?;
@@ -2666,6 +2703,17 @@ pub enum CliError {
         /// 装载层的原样裁决。
         source: crate::sfz_load::SfzLoadError,
     },
+    /// ⭐ 任务单 `#210`：`--track-sampler` 失败（没有展示轨 / 路径不是 UTF-8 /
+    /// 样本字节缺失 / 提交被拒）。
+    ///
+    /// `reason` **逐字**来自 [`crate::bridge::instrument_install_ops_on`] 的拒绝原因
+    /// （或提交层的裁决）—— ⛔ 不换成一句通用错误。
+    TrackSampler {
+        /// 调用方给的 SFZ 路径。
+        path: PathBuf,
+        /// 拒绝 / 失败原因（逐字）。
+        reason: String,
+    },
     /// `--import-midi` 失败（读文件 / 解析 / 没有目标 / 提交被拒）。
     ImportMidi {
         /// 源文件路径。
@@ -2767,6 +2815,7 @@ impl CliError {
             | Self::ImportMidi { .. }
             | Self::ImportAudio { .. }
             | Self::Sfz { .. }
+            | Self::TrackSampler { .. }
             | Self::MidiIn { .. } => EXIT_OPEN,
             // ⭐ `--midi-in-*` 的写音符 / 渲染：退出码由 `MidiNoteError` 自己按变体给
             //（WAV 落盘失败 ⇒ `EXIT_EXPORT`，其余 ⇒ `EXIT_OPEN`）⇒ ⛔ 不在这里再写第二张表。
@@ -2810,6 +2859,11 @@ impl fmt::Display for CliError {
             Self::Sfz { path, source } => {
                 write!(formatter, "装载 SFZ `{}` 失败: {source}", path.display())
             }
+            Self::TrackSampler { path, reason } => write!(
+                formatter,
+                "把 `{}` 装到展示轨失败: {reason}",
+                path.display()
+            ),
             Self::ImportMidi { path, source } => {
                 write!(
                     formatter,
@@ -2903,6 +2957,7 @@ impl std::error::Error for CliError {
             | Self::UiMcpHttpNotBatch
             | Self::McpHttpNotBatch
             | Self::AlsNotCompiled
+            | Self::TrackSampler { .. }
             | Self::LogicNotCompiled
             | Self::InspectLogic { .. } => None,
         }
@@ -3920,6 +3975,58 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // 登记进归档的资产池，`--save-as` 才会把它写成 `assets/{sha256}`。
         register_audio_asset(&mut loaded.archive, &report);
         lines.push(report.summary());
+    }
+
+    // ⭐ 任务单 `#210`：`--track-sampler` —— **装乐器**是编辑 ⇒ 与两条导入同一位次
+    // （导出与保存都能看到它）。一次装 ＝ **恰好一次** `Op::SetTrackSampler` ＋ 一次提交。
+    if let Some(path) = options.track_sampler.as_ref() {
+        let sfz_text = path.to_str().ok_or_else(|| CliError::TrackSampler {
+            path: path.clone(),
+            reason: "路径不是 UTF-8，无法逐字写进 `TrackV3::sampler.path`".to_owned(),
+        })?;
+        // 目标轨 = 展示轨（身份序第一条非主总线轨）；CLI 没有选中态 ⇒ 与 GUI 的兜底同一档。
+        let track = crate::bridge::device_rack_track(&loaded.archive.project).cloned();
+        let track_label = track
+            .as_ref()
+            .map_or_else(|| "<无>".to_owned(), |track| track.name.clone());
+        let ops = crate::bridge::instrument_install_ops_on(track.as_ref(), sfz_text).map_err(
+            |reason| CliError::TrackSampler {
+                path: path.clone(),
+                reason: reason.to_owned(),
+            },
+        )?;
+        if ops.is_empty() {
+            // 已经是这份乐器：⛔ 不提交（不制造"什么也没改"的提交）。
+            lines.push(format!(
+                "track-sampler: track={track_label} path={sfz_text} ops=0 (已经是这份乐器, 工程未改)"
+            ));
+        } else {
+            let now = crate::host::now_ms();
+            let session = crate::undo::UndoSession::open(
+                "<cli:track-sampler>",
+                "yeban-app",
+                loaded.archive.project.clone(),
+                now,
+            )
+            .map_err(|error| CliError::TrackSampler {
+                path: path.clone(),
+                reason: format!("建会话失败: {error}"),
+            })?;
+            let port = crate::undo::UndoPort::new(session);
+            port.commit_ops(now, "set track sampler", ops)
+                .map_err(|error| CliError::TrackSampler {
+                    path: path.clone(),
+                    reason: format!("提交被拒: {error}"),
+                })?;
+            let display = port.display();
+            // 会话是权威 ⇒ 落回归档：同一命令里的 `--export-wav` / `--save-as` 看的是这一份。
+            loaded.archive.project = port.project();
+            lines.push(format!(
+                "track-sampler: track={track_label} path={sfz_text} ops=1 \
+                 commit_count={} undoable={}",
+                display.commit_count, display.undoable
+            ));
+        }
     }
 
     if let Some(path) = options.export_elements.as_ref() {

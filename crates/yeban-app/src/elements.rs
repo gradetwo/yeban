@@ -1417,6 +1417,24 @@ impl ElementRegistry {
                 false,
             );
         }
+        // ⭐ 任务单 `#210`：按钮行**分页**（每页 2 条）⇒ 两个翻页键。
+        // ⚠ 它们的**在场**是界面运行态（当前页 > 0 / 还有下一页），投影只能给出"清单有
+        // 20+ 条"这件事 ⇒ 注册表无条件登记（与 `.slint` 的模板一一对应）；运行时树里
+        // 只有真的在场的那一两个节点。`tools-domain` 的 `ui/coverage` 允许注册表 ⊇ 运行时。
+        registry.add(
+            "instrument-page-prev-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "上一页乐器",
+            false,
+        );
+        registry.add(
+            "instrument-page-next-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "下一页乐器",
+            false,
+        );
         for row in &view.devices {
             let device_index = row.slot_index;
             registry.add(
