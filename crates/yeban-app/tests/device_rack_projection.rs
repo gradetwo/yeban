@@ -7,8 +7,8 @@
 //! | ① 假数据已删 | `ui/console/device_rack.slint` 的**源码**里没有旧设备名 / `band-gains` / `for device_index in 3`；行循环是 `for … in root.device-names` | 证"界面不再自带一份列表"。⛔ 不证历史（旧字面量在 `scene.rs` 的删除登记里点名，不在本文件里复读） |
 //! | ② 投影是派生的 | 同一活窗口上把投影从 1 台设备换到 3 台 ⇒ 运行时 `device-*-card` 节点 1 → 3；`device-rack-count` 的逐字标签 `1 台设备` → `3 台设备` | 证"条目数随投影变"。⛔ 不证像素（见 ⑦） |
 //! | ③ 空态可判 | 空工程 ⇒ `device-rack-empty` 的**逐字**文案 `无设备（点上方「装 EQ」或「装混响」）`、卡片 0 个、`0 台设备` | 证"没有设备时不是一片空白，也不是假条目" |
-//! | ④ 旁通手势 = 恰好一次提交 | `invoke_device_bypass_toggle(0)` ⇒ `commit_count +1`、`undoable +1`、`TrackV3::devices[0].bypassed` 真的翻转、界面 `device-bypassed[0]` 跟着变 | 证"点击 → 一个 `Op::SetDeviceBypassed` → 一步撤销" |
-//! | ⑤ EQ 滑块 = 恰好一次提交 | `invoke_device_eq_grab(1.0)` ＋ `invoke_device_eq_release()` ⇒ `commit_count +1`、`undoable +1`，**读回的模型值** = `18.0`（值域上界来自契约）；再在同位置按下 / 松手 ⇒ `+0`（没变就不提交） | 证"拖动一次 = 一步撤销，且改的值进了 `TrackV3::devices`" |
+//! | ④ 旁通手势 = 恰好一次提交 | `invoke_device_bypass_toggle(device-ids[0])`（⭐ `#182` 按身份）⇒ `commit_count +1`、`undoable +1`、`TrackV3::devices[0].bypassed` 真的翻转、界面 `device-bypassed[0]` 跟着变 | 证"点击 → 一个 `Op::SetDeviceBypassed` → 一步撤销" |
+//! | ⑤ EQ 滑块 = 恰好一次提交 | `invoke_device_eq_grab(device-eq-device-id, 1.0)` ＋ `invoke_device_eq_release()` ⇒ `commit_count +1`、`undoable +1`，**读回的模型值** = `18.0`（值域上界来自契约）；再在同位置按下 / 松手 ⇒ `+0`（没变就不提交） | 证"拖动一次 = 一步撤销，且改的值进了 `TrackV3::devices`" |
 //! | ⑥ 预算三件套 | 不在本文件：读数在 `tests/perf_draw_budget.rs`（52 写点 / 38 数组，常量与原因同处） | — |
 //! | ⑦ 无头可判 | Tier-1 窗口（`LivePort`）＋ 运行时控件树 ＋ 一张 Tab 3 截图（非黑 / 多色） | 证"真的有一个窗口在画它"；⛔ 不证墙钟成本（本机不许跑 GPU 档） |
 //! | ⑧ 主总线（`#173`） | `master_bus_track_id` 上挂一台 EQ ⇒ `ViewState::master_devices` 出现 1 行且"已识别 eq_low_gain"；**展示轨**的 `devices` 一动不动（可编辑面仍只属于展示轨） | 证"主总线的设备进了控制面投影"；⛔ 不证 `.slint` 布局（本单**刻意**不改布局，避免 golden 重录） |
@@ -397,6 +397,17 @@ fn an_empty_chain_shows_the_empty_state_and_zero_rows() {
     ));
 }
 
+/// 界面里第 `index` 台展示轨设备的**身份**（`.slint` 的 `device-ids` 数组）。
+///
+/// ⭐ 任务单 `#182`：旁通 / EQ 手势按**身份**寻址 ⇒ 判据也从界面数组里取身份（⛔ 不手抄
+/// ULID、⛔ 不传行下标）。
+fn device_id_at(window: &MainWindow, index: usize) -> slint::SharedString {
+    window
+        .get_device_ids()
+        .row_data(index)
+        .unwrap_or_else(|| panic!("`device-ids[{index}]` 必须存在"))
+}
+
 // ===========================================================================
 // 判据 ④：旁通手势 = 恰好一次提交
 // ===========================================================================
@@ -409,7 +420,8 @@ fn the_bypass_gesture_commits_exactly_once() {
     // 初始读数：两台都未旁通。
     assert_eq!(model_bypassed(live.ui()), vec![false, false]);
 
-    live.ui().invoke_device_bypass_toggle(0);
+    live.ui()
+        .invoke_device_bypass_toggle(device_id_at(live.ui(), 0));
     let after = port.display();
     assert_eq!(
         after.commit_count,
@@ -480,7 +492,8 @@ fn the_eq_slider_commits_exactly_once_and_writes_the_model() {
 
     // ---- 一次拖动（按下在最右端 ⇒ +18 dB，松手提交一次）----
     let before = port.display();
-    live.ui().invoke_device_eq_grab(1.0);
+    live.ui()
+        .invoke_device_eq_grab(device_id_at(live.ui(), 0), 1.0);
     live.ui().invoke_device_eq_release();
     let after = port.display();
     assert_eq!(
@@ -503,7 +516,8 @@ fn the_eq_slider_commits_exactly_once_and_writes_the_model() {
 
     // ---- 没变的第二次手势：按下再松手 ⇒ **不提交**（⛔ 不留一步什么都没改的撤销）----
     let quiet = port.display();
-    live.ui().invoke_device_eq_grab(1.0);
+    live.ui()
+        .invoke_device_eq_grab(device_id_at(live.ui(), 0), 1.0);
     live.ui().invoke_device_eq_release();
     let still = port.display();
     assert_eq!(
@@ -513,7 +527,8 @@ fn the_eq_slider_commits_exactly_once_and_writes_the_model() {
     assert_eq!(still.undoable, quiet.undoable);
 
     // ---- 单击中点 ⇒ 0 dB，仍是一次提交 ----
-    live.ui().invoke_device_eq_grab(0.5);
+    live.ui()
+        .invoke_device_eq_grab(device_id_at(live.ui(), 0), 0.5);
     live.ui().invoke_device_eq_release();
     let clicked = port.display();
     assert_eq!(clicked.commit_count, still.commit_count + 1);

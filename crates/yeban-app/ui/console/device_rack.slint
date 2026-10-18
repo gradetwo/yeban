@@ -72,6 +72,19 @@
 //    （`elements.rs` 与 `tests/device_rack_projection.rs` 同一条断言）。
 // ④ ⚠ **布局**：卡片链 / 空态 / 插件占位整体下移 40px（操作行 22px ＋ 原因行 14px ＋ 4px
 //    间隔），彼此**相对**几何一位未变；右侧「发送 / 轨路由」面板不动。
+//
+// ⭐ ⭐ **追加修订段（任务单 `#182`，2026-10-18）**：
+//
+// ① ⭐ **两条旁通腿改按身份寻址**：展示轨的 `device-bypass-toggle` 与主总线的
+//    `master-device-bypass-toggle` 都从 `int`（行下标）改成 `string`（设备身份），落点是
+//    同一个 `device-ids[device_index]` / `master-device-ids[master_device_index]`
+//    —— 与删除按钮同一条纪律。窗口（"投影之后、点击之前链被增删 ⇒ 同一个下标指向
+//    另一台"）因此在宿主侧关掉：宿主按身份在权威链里查，查不到就**拒绝**（Δ0）。
+// ② ⭐ **两条 EQ 腿也按身份寻址**：`device-eq-grab` / `master-device-eq-grab` 的第一个
+//    参数是新增的 `eq-device-id` / `master-device-eq-device-id`（投影那一格的
+//    `DeviceDefinition::id`）。`drag` / `release` 不变（拖动期只写视图态）。
+// ③ ⚠ **几何一位未动**：本单只改回调参数类型与落点表达式，控件树的 `bounds` 与
+//    无障碍 id（仍带 `device_index`，那是**显示顺序**不是寻址单位）都没有变。
 
 import { Tokens, UiText, UiMonoText } from "../tokens.slint";
 
@@ -98,6 +111,9 @@ export component DeviceRack inherits Rectangle {
     in property <float> eq-min-db: 0.0;
     /// 值域上界 (dB) —— 同上。
     in property <float> eq-max-db: 0.0;
+    /// ⭐ 任务单 `#182`：可编辑那一格的**设备身份**（`DeviceDefinition::id`，`""` = 没有
+    /// 目标）。EQ 手势只报它（⛔ 不报行下标）—— 宿主按身份在权威链里现查槽位。
+    in property <string> eq-device-id: "";
 
     // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`，第二段）
     /// 主总线设备链那一栏的标题（`"主总线 Master · 设备链"`；没有主总线时是逐字原因）。
@@ -129,6 +145,9 @@ export component DeviceRack inherits Rectangle {
     in property <float> master-device-eq-max-db: 0.0;
     /// 不可用时的**逐字**原因（可用时是空串）—— ⛔ 不静默隐藏滑块。
     in property <string> master-device-eq-reason: "";
+    /// ⭐ 任务单 `#182`：主总线可编辑那一格的**设备身份**（`""` = 没有目标）。
+    /// EQ 手势只报它（⛔ 不报行下标）。
+    in property <string> master-device-eq-device-id: "";
 
     // ---------------------------------------------------------------- 设备增删 ＋ 建片段（⭐ 任务单 `#163`）
     /// "装 EQ / 装混响"此刻能不能用（工程里得有一条展示轨）。
@@ -183,10 +202,10 @@ export component DeviceRack inherits Rectangle {
     in property <string> routing-delete-reason: "";
 
     // ---------------------------------------------------------------- 写入面
-    /// 点击某台的旁通开关（参数 = 设备链下标）。
-    callback device-bypass-toggle(int);
-    /// EQ 低架增益按下（参数 = 滑块面内的归一化位置）。
-    callback device-eq-grab(float);
+    /// 点击某台的旁通开关（参数 = **设备身份**，⛔ 不是设备链下标）。
+    callback device-bypass-toggle(string);
+    /// EQ 低架增益按下（参数 = **设备身份** + 滑块面内的归一化位置）。
+    callback device-eq-grab(string, float);
     /// EQ 低架增益拖动。
     callback device-eq-drag(float);
     /// EQ 低架增益收尾。
@@ -203,10 +222,10 @@ export component DeviceRack inherits Rectangle {
     callback master-device-insert-reverb();
     /// ⭐ 删除**主总线**上的某一台设备（参数 = 设备身份，⛔ 不是行下标）。
     callback master-device-remove(string);
-    /// ⭐ 点击**主总线**某台的旁通开关（参数 = 主总线设备链下标）。
-    callback master-device-bypass-toggle(int);
-    /// ⭐ 主总线 EQ 低架增益按下（参数 = 滑块面内的归一化位置）。
-    callback master-device-eq-grab(float);
+    /// ⭐ 点击**主总线**某台的旁通开关（参数 = **设备身份**，⛔ 不是设备链下标）。
+    callback master-device-bypass-toggle(string);
+    /// ⭐ 主总线 EQ 低架增益按下（参数 = **设备身份** + 滑块面内的归一化位置）。
+    callback master-device-eq-grab(string, float);
     /// ⭐ 主总线 EQ 低架增益拖动。
     callback master-device-eq-drag(float);
     /// ⭐ 主总线 EQ 低架增益收尾。
@@ -425,6 +444,7 @@ export component DeviceRack inherits Rectangle {
         }
 
         // 手势面：位置**不随数值动**（读 `self.mouse-x`，若控件自己也动就自己喂自己）。
+        // ⭐ 任务单 `#182`：按下携带**设备身份**（`eq-device-id`），⛔ 不是行下标。
         TouchArea {
             x: Tokens.space-4;
             y: 40px;
@@ -433,7 +453,7 @@ export component DeviceRack inherits Rectangle {
             visible: root.eq-available;
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.down) {
-                    root.device-eq-grab(self.mouse-x / self.width);
+                    root.device-eq-grab(root.eq-device-id, self.mouse-x / self.width);
                 } else if (event.kind == PointerEventKind.move) {
                     root.device-eq-drag(self.mouse-x / self.width);
                 } else {
@@ -1240,7 +1260,10 @@ export component DeviceRack inherits Rectangle {
             accessible-checkable: true;
             accessible-checked: root.device-bypassed[device_index];
             // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
-            accessible-action-default => { root.device-bypass-toggle(device_index); }
+            // ⭐ 任务单 `#182`：落点报**设备身份**（`device-ids[device_index]`，⛔ 不是下标）。
+            accessible-action-default => {
+                root.device-bypass-toggle(root.device-ids[device_index]);
+            }
 
             UiText {
                 x: 0;
@@ -1257,7 +1280,7 @@ export component DeviceRack inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 clicked => {
-                    root.device-bypass-toggle(device_index);
+                    root.device-bypass-toggle(root.device-ids[device_index]);
                 }
             }
         }
@@ -1596,6 +1619,7 @@ export component DeviceRack inherits Rectangle {
             }
 
             // 手势面：位置**不随数值动**（读 `self.mouse-x`，否则自己喂自己）。
+            // ⭐ 任务单 `#182`：按下携带**设备身份**（`master-device-eq-device-id`）。
             TouchArea {
                 x: 8px;
                 y: 28px;
@@ -1604,7 +1628,10 @@ export component DeviceRack inherits Rectangle {
                 visible: root.master-device-eq-available;
                 pointer-event(event) => {
                     if (event.kind == PointerEventKind.down) {
-                        root.master-device-eq-grab(self.mouse-x / self.width);
+                        root.master-device-eq-grab(
+                            root.master-device-eq-device-id,
+                            self.mouse-x / self.width,
+                        );
                     } else if (event.kind == PointerEventKind.move) {
                         root.master-device-eq-drag(self.mouse-x / self.width);
                     } else {
@@ -1703,8 +1730,11 @@ export component DeviceRack inherits Rectangle {
                 accessible-checkable: true;
                 accessible-checked: root.master-device-bypassed[master_device_index];
                 // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
+                // ⭐ 任务单 `#182`：落点报**设备身份**（⛔ 不是下标）。
                 accessible-action-default => {
-                    root.master-device-bypass-toggle(master_device_index);
+                    root.master-device-bypass-toggle(
+                        root.master-device-ids[master_device_index],
+                    );
                 }
 
                 UiText {
@@ -1724,7 +1754,9 @@ export component DeviceRack inherits Rectangle {
                     width: parent.width;
                     height: parent.height;
                     clicked => {
-                        root.master-device-bypass-toggle(master_device_index);
+                        root.master-device-bypass-toggle(
+                            root.master-device-ids[master_device_index],
+                        );
                     }
                 }
             }

@@ -5,7 +5,7 @@
 //! | §2 | 断言 | 证什么 / 不证什么 |
 //! | :--- | :--- | :--- |
 //! | ① 装 EQ = Δ1 | `invoke_device_insert_eq()` ⇒ `commit_count +1`、`undoable +1`；读回设备数 +1、`kind == InternalEffect`、`params` 非空、**含 `eq_low_gain`**（值 = 契约缺省值 0.0） | 证"点击 → 一个 `Op::InsertDevice` → 一步撤销" |
-//! | ② 装完 `#157` 的滑块可用 | 同一个活窗口：`device_insert_available` 前 `true`；装完 `eq_available` 由 `false` → `true`；`invoke_device_eq_grab(1.0)` ＋ `invoke_device_eq_release()` ⇒ `commit_count +1`，读回值 = 契约上界 18.0 | 证"装完设备，那条滑块立刻可用"（⛔ 只证工程值变了，不证能听见） |
+//! | ② 装完 `#157` 的滑块可用 | 同一个活窗口：`device_insert_available` 前 `true`；装完 `eq_available` 由 `false` → `true`；`invoke_device_eq_grab(device-eq-device-id, 1.0)`（⭐ `#182` 按身份）＋ `invoke_device_eq_release()` ⇒ `commit_count +1`，读回值 = 契约上界 18.0 | 证"装完设备，那条滑块立刻可用"（⛔ 只证工程值变了，不证能听见） |
 //! | ③ 装混响 = Δ1 | 同上；读回 `name == "Reverb"`、参数是 `reverb_*`（含 `reverb_wet` 0.25） | 证"同一形状能装第二种效果器" |
 //! | ④ 删设备 = Δ1 | `invoke_device_remove(身份)` ⇒ `commit_count +1`；读回设备数 −1、身份消失 | 证"每台一个 ✕，且按**身份**寻址" |
 //! | ⑤ 建 clip = Δ1 | `invoke_clip_create()` ⇒ `commit_count +1`；`clip_pool` +1、展示轨 `clips` +1、placement `start_tick=0` / `duration_ticks=15360`（4/4 的 4 小节）、文档 `validate() Ok` | 证"一个原子批次 = 一步撤销"；⛔ 不证钢琴卷帘里画出来 |
@@ -271,7 +271,9 @@ fn the_eq_slider_is_available_and_editable_after_installing_the_eq() {
     let (_, max_db, default_db) = contract_spec("eq_low_gain");
     assert_eq!(live.ui().get_device_eq_gain_db(), default_db);
     let before_drag = port.display();
-    live.ui().invoke_device_eq_grab(1.0);
+    // ⭐ 任务单 `#182`：EQ 手势按**设备身份**寻址 ⇒ 从界面数组里取身份（⛔ 不传下标）。
+    let eq_device_id = live.ui().get_device_eq_device_id();
+    live.ui().invoke_device_eq_grab(eq_device_id, 1.0);
     live.ui().invoke_device_eq_release();
     let after_drag = port.display();
     assert_eq!(

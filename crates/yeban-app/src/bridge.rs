@@ -1364,9 +1364,16 @@ impl DeviceRowView {
 ///
 /// 寻址用 `slot_index` + `param_index`（`AutomationTarget::DeviceParam` 的两个下标），
 /// 宿主在提交时**重新**从权威工程求一次目标，⛔ 不信界面上的陈旧下标。
+///
+/// ⭐ 任务单 `#182`：**手势**的寻址单位是 [`Self::device_id`]（26 字符文本，
+/// `DeviceDefinition::id`）—— `.slint` 把投影里的身份原样带回宿主，宿主在**按下**与
+/// **松手**两侧都按这个身份重解析 `slot_index`。`slot_index` 仍是模型层
+/// `AutomationTarget::DeviceParam` 要求的形态，但⛔ 不再是"界面与宿主之间的约定"。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceEqView {
-    /// 设备链下标。
+    /// ⭐ `#182`：设备身份（`DeviceDefinition::id` 的 26 字符文本）—— 手势唯一的寻址单位。
+    pub device_id: String,
+    /// 设备链下标（模型层 `AutomationTarget::DeviceParam` 的字段；⛔ 不用来寻址）。
     pub slot_index: usize,
     /// 该设备 `params` 里的下标。
     pub param_index: usize,
@@ -1859,16 +1866,20 @@ pub const MASTER_DEVICE_REMOVE_NOT_FOUND_REASON: &str = "这台设备已不在�
 /// "切换设备旁通"不可用时的**逐字**原因：工程里没有可显示的音轨（展示轨不存在）。
 pub const DEVICE_BYPASS_NO_TRACK_REASON: &str = "没有可显示的音轨，无法切换设备旁通";
 
-/// "切换设备旁通"不可用时的**逐字**原因：界面报的那一格已经不在设备链里。
-pub const DEVICE_BYPASS_NO_DEVICE_REASON: &str = "这一格设备已不在设备链里，无法切换旁通";
+/// "切换设备旁通"不可用时的**逐字**原因：界面报的设备身份已经不在设备链里。
+///
+/// ⭐ 任务单 `#182`：措辞从"这一格"改成"这台" —— 寻址单位已经是
+/// `DeviceDefinition::id`（⛔ 不是行下标），所以"这一格"是**旧口径的残留**。
+pub const DEVICE_BYPASS_NO_DEVICE_REASON: &str = "这台设备已不在设备链里，无法切换旁通";
 
 /// ⭐ 任务单 `#181`：切换**主总线**设备旁通时没有主总线的**逐字**原因。
 pub const MASTER_DEVICE_BYPASS_NO_MASTER_REASON: &str = "工程没有主总线，无法切换主总线设备的旁通";
 
-/// ⭐ 任务单 `#181`：**主总线**上那一格已经不在了的**逐字**原因。
+/// ⭐ 任务单 `#181`：**主总线**上那一台已经不在了的**逐字**原因。
 ///
 /// 与 [`DEVICE_BYPASS_NO_DEVICE_REASON`] 只差主语：两条腿共用同一个
-/// [`bypass_op_on`]，`not_found_reason` 是唯一自变量。
+/// [`bypass_op_on`]，`not_found_reason` 是唯一自变量（`#182` 起两条腿都按
+/// **设备身份**查，⛔ 不按下标）。
 pub const MASTER_DEVICE_BYPASS_NO_DEVICE_REASON: &str =
     "这台设备已不在主总线的设备链里，无法切换旁通";
 
@@ -1878,6 +1889,17 @@ pub const MASTER_DEVICE_EQ_NO_MASTER_REASON: &str = "工程没有主总线，无
 /// ⭐ 任务单 `#181`：主总线 EQ 滑块不可用时的**逐字**原因：主总线上没有带
 /// `eq_low_gain` 的设备（空链，或链上每一台都没有这个参数）。
 pub const MASTER_DEVICE_EQ_NO_TARGET_REASON: &str = "主总线上没有带 eq_low_gain 的设备";
+
+/// ⭐ 任务单 `#182`：EQ 手势**按身份**解析不到目标时的**逐字**原因（展示轨那条腿）。
+///
+/// 身份不在链里（设备被删 / 换了工程）或那一台已经没有 `eq_low_gain` ⇒ **拒绝**
+/// （Δ0），⛔ 不退回按下标找"此刻停在同一格的那台"。
+pub const DEVICE_EQ_DEVICE_GONE_REASON: &str =
+    "这台设备已不在设备链里或已没有 eq_low_gain，无法调节";
+
+/// ⭐ 任务单 `#182`：同上，主语换成主总线那条腿。
+pub const MASTER_DEVICE_EQ_DEVICE_GONE_REASON: &str =
+    "这台设备已不在主总线的设备链里或已没有 eq_low_gain，无法调节";
 
 /// "建片段"不可用时的**逐字**原因：工程里没有可显示的音轨（片段要摆在它上面）。
 pub const CLIP_CREATE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法建片段";
@@ -2106,18 +2128,23 @@ fn remove_device_op_on(
 /// —— `track_id` / `device_id` / `old_bypassed` / `new_bypassed` 的算术**只有一处**，
 /// 两条腿的差别只有**目标轨**（[`device_rack_track`] vs [`master_device_track`]）。
 ///
+/// ⭐ 任务单 `#182`：寻址单位是**设备身份**（`DeviceDefinition::id`），⛔ 不是行下标
+/// —— 闭掉 `#157`／`#181` 登记的那个窗口："投影与点击之间若经 MCP 增删设备，
+/// 同一个下标可能指向另一台"。`slot_index` 在这里**现查**（只用于拼
+/// `Op::SetDeviceBypassed` 的载荷，`Op` 自己也是按 `device_id` 寻址的）。
+///
 /// # Errors
 ///
 /// - 没有展示轨 ⇒ [`DEVICE_BYPASS_NO_TRACK_REASON`]；
-/// - 下标不在设备链里 ⇒ [`DEVICE_BYPASS_NO_DEVICE_REASON`]。
+/// - 身份不在设备链里 ⇒ [`DEVICE_BYPASS_NO_DEVICE_REASON`]（Δ0，⛔ 不作用到另一台）。
 pub fn device_bypass_ops(
     project: &YebanProjectV1,
-    slot_index: usize,
+    device_id: EntityId,
 ) -> Result<Vec<Op>, &'static str> {
     let track = device_rack_track(project).ok_or(DEVICE_BYPASS_NO_TRACK_REASON)?;
     Ok(vec![bypass_op_on(
         track,
-        slot_index,
+        device_id,
         DEVICE_BYPASS_NO_DEVICE_REASON,
     )?])
 }
@@ -2125,36 +2152,46 @@ pub fn device_bypass_ops(
 /// ⭐ 任务单 `#181`：切换**主总线**某台设备旁通的 `Op`。
 ///
 /// 与 [`device_bypass_ops`] 的差别**只有主语**：`track_id = master_bus_track_id`，
-/// `slot_index` 在**主总线**的设备链里现查（⛔ 不复用 [`device_rack_track`] ——
+/// 身份在**主总线**的设备链里现查（⛔ 不复用 [`device_rack_track`] ——
 /// 那条规则**排除**主总线）。
+///
+/// ⭐ 任务单 `#182`：与本文件上面那条腿一样，寻址单位是**设备身份**。
 ///
 /// # Errors
 ///
 /// - 没有主总线 ⇒ [`MASTER_DEVICE_BYPASS_NO_MASTER_REASON`]；
-/// - 下标不在主总线的设备链里 ⇒ [`MASTER_DEVICE_BYPASS_NO_DEVICE_REASON`]。
+/// - 身份不在主总线的设备链里 ⇒ [`MASTER_DEVICE_BYPASS_NO_DEVICE_REASON`]。
 pub fn master_device_bypass_ops(
     project: &YebanProjectV1,
-    slot_index: usize,
+    device_id: EntityId,
 ) -> Result<Vec<Op>, &'static str> {
     let track = master_device_track(project).ok_or(MASTER_DEVICE_BYPASS_NO_MASTER_REASON)?;
     Ok(vec![bypass_op_on(
         track,
-        slot_index,
+        device_id,
         MASTER_DEVICE_BYPASS_NO_DEVICE_REASON,
     )?])
 }
 
-/// 旁通 Op 的**唯一**构造点（展示轨与主总线共用；`track` / `not_found_reason` 是唯一
-/// 自变量）。
+/// 旁通 Op 的**唯一**构造点（展示轨与主总线共用；`track` / `device_id` /
+/// `not_found_reason` 是唯一自变量）。
+///
+/// ⭐ 任务单 `#182`：按 `DeviceDefinition::id` 在**权威链**里查那一台，⛔ 不用下标取
+/// `track.devices[slot_index]` —— 下标会在"投影之后、点击之前"被增删漂移，身份不会。
+/// 查不到 ⇒ `not_found_reason`（调用方响亮报出，Δ0）。
 ///
 /// `old_bypassed` / `new_bypassed` 逐字来自权威工程的那一台设备 ⇒ 陈旧值会被模型的
 /// 逐位比对拒掉，⛔ 不会静默改成"另一台此刻的相反值"。
 fn bypass_op_on(
     track: &TrackV3,
-    slot_index: usize,
+    device_id: EntityId,
     not_found_reason: &'static str,
 ) -> Result<Op, &'static str> {
-    let device = track.devices.get(slot_index).ok_or(not_found_reason)?;
+    let device = track
+        .devices
+        .iter()
+        .find(|device| device.id == device_id)
+        .ok_or(not_found_reason)?;
     Ok(Op::SetDeviceBypassed {
         track_id: track.id,
         device_id: device.id,
@@ -3345,6 +3382,17 @@ impl ViewState {
         self.master_eq_low_gain.as_ref().map_or(0.0, |eq| eq.max_db)
     }
 
+    /// ⭐ 任务单 `#182`：**主总线** EQ 那一格的**设备身份**（`""` = 没有目标）。
+    ///
+    /// `.slint` 的 `master-device-eq-device-id` 就是它 —— 手势把这一格原样带回来，
+    /// 宿主按身份重解析 `slot_index`（⛔ 不信任何界面侧下标）。
+    #[must_use]
+    pub fn master_device_eq_device_id(&self) -> String {
+        self.master_eq_low_gain
+            .as_ref()
+            .map_or_else(String::new, |eq| eq.device_id.clone())
+    }
+
     /// 本轨**有没有**可编辑的 `eq_low_gain`（`.slint` 的 `device-eq-available`）。
     ///
     /// `false` ⇒ 滑块禁用并如实写"本轨没有 eq_low_gain"，⛔ 不画一个假的可用控件。
@@ -3369,6 +3417,17 @@ impl ViewState {
     #[must_use]
     pub fn device_eq_max_db(&self) -> f32 {
         self.eq_low_gain.as_ref().map_or(0.0, |eq| eq.max_db)
+    }
+
+    /// ⭐ 任务单 `#182`：展示轨 EQ 那一格的**设备身份**（`""` = 没有目标）。
+    ///
+    /// `.slint` 的 `device-eq-device-id` 就是它 —— 与
+    /// [`Self::master_device_eq_device_id`] 同一条口径，主语换成展示轨。
+    #[must_use]
+    pub fn device_eq_device_id(&self) -> String {
+        self.eq_low_gain
+            .as_ref()
+            .map_or_else(String::new, |eq| eq.device_id.clone())
     }
 
     /// 发送条每一行的**路由边身份**（与下面三个数组**同索引集**）。
@@ -4383,6 +4442,7 @@ fn device_rack_projection(
                         #[allow(clippy::cast_possible_truncation)]
                         let (min_db, max_db) = (spec.min as f32, spec.max as f32);
                         eq_low_gain = Some(DeviceEqView {
+                            device_id: device.id.to_canonical_string(),
                             slot_index,
                             param_index,
                             device_name: device.name.clone(),
@@ -4514,6 +4574,16 @@ pub fn master_device_eq_low_gain_target(
 fn device_eq_low_gain_target_on(
     track: &TrackV3,
 ) -> Option<(yeban_model::ids::EntityId, usize, usize, f32, f32, f32)> {
+    let (slot_index, param_index, value, min_db, max_db) = device_eq_low_gain_slot_on(track)?;
+    Some((track.id, slot_index, param_index, value, min_db, max_db))
+}
+
+/// 第一台带 `eq_low_gain` 的设备在**这条轨**上的 `(slot_index, param_index, 值, 下界, 上界)`。
+///
+/// [`device_eq_low_gain_target_on`] 与 [`device_eq_low_gain_address_on_device`] 共用这一份
+/// 值域 / 参数下标口径；投影（[`device_rack_projection`]）按**同一条规则**在自己的循环里
+/// 填 [`DeviceEqView`]（它同时还要拼已识别 / 未识别读数）⇒ 三处不会各说一套。
+fn device_eq_low_gain_slot_on(track: &TrackV3) -> Option<(usize, usize, f32, f32, f32)> {
     for (slot_index, device) in track.devices.iter().enumerate() {
         for (param_index, param) in device.params.iter().enumerate() {
             let Some((_, spec)) = crate::effect_params::recognise(&param.name) else {
@@ -4524,15 +4594,45 @@ fn device_eq_low_gain_target_on(
             }
             #[allow(clippy::cast_possible_truncation)]
             let (min_db, max_db) = (spec.min as f32, spec.max as f32);
-            return Some((
-                track.id,
-                slot_index,
-                param_index,
-                param.value,
-                min_db,
-                max_db,
-            ));
+            return Some((slot_index, param_index, param.value, min_db, max_db));
         }
+    }
+    None
+}
+
+/// ⭐ 任务单 `#182`：EQ 手势**按身份**寻址 —— 在 `track` 的设备链里找
+/// `device_id` 那一台，返回 `(slot_index, param_index, 当前值, 下界, 上界)`。
+///
+/// 为什么需要它：模型层的 `AutomationTarget::DeviceParam` 只吃
+/// `{ track_id, slot_index, param_index }`（`Vec` 的槽位），而槽位会随增删漂移。
+/// 界面在**按下**时把投影里的 `DeviceDefinition::id` 带过来 ⇒ 宿主在**按下**与
+/// **松手**两侧都用这个身份重解析槽位 ⇒ 链被增删之后**不可能**改到"此刻停在同一格
+/// 的那台"。
+///
+/// # Errors
+///
+/// 返回 `None` = 身份不在链里（设备被删 / 换了工程）**或**那一台已经没有
+/// `eq_low_gain` ⇒ 调用方必须**响亮拒绝**（Δ0），⛔ 不退回按下标找一台替代品。
+#[must_use]
+pub fn device_eq_low_gain_address_on_device(
+    track: &TrackV3,
+    device_id: yeban_model::ids::EntityId,
+) -> Option<(usize, usize, f32, f32, f32)> {
+    let (slot_index, device) = track
+        .devices
+        .iter()
+        .enumerate()
+        .find(|(_, device)| device.id == device_id)?;
+    for (param_index, param) in device.params.iter().enumerate() {
+        let Some((_, spec)) = crate::effect_params::recognise(&param.name) else {
+            continue;
+        };
+        if spec.name != "eq_low_gain" {
+            continue;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let (min_db, max_db) = (spec.min as f32, spec.max as f32);
+        return Some((slot_index, param_index, param.value, min_db, max_db));
     }
     None
 }

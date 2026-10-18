@@ -383,7 +383,27 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 49;
 /// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
 ///   `src/test_port_adapter.rs` 的 `DEFAULT_VIEW_MUST_NOT_HAVE` 仍钉住这一点；
 ///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 87;
+/// ## `#182` 追加（2026-10-18）：**87 → 89** ／ **49 → 49**
+///
+/// 那两格是 **EQ 手势的设备身份**（仍住 Tab 3 的 `DeviceRack` 面板）的**唯一**注入点：
+///
+/// * `ui.set_device_eq_device_id` —— 展示轨那一格 `eq_low_gain` 的
+///   `DeviceDefinition::id`（`.slint` 的 `device-eq-device-id`）；
+/// * `ui.set_master_device_eq_device_id` —— 主总线那一格的身份
+///   （`master-device-eq-device-id`）。
+///
+/// ⭐ 为什么**必须**加这两个属性：`#157`／`#181` 的 EQ 手势只报归一化位置，宿主按"第一台
+/// 带 `eq_low_gain` 的设备"现求目标 ⇒ "投影之后、按下之前"链被增删时，按下会落到**另一台**。
+/// `#182` 把投影里的身份带回来、在按下 / 松手两侧按身份重解析槽位（模型层的
+/// `AutomationTarget::DeviceParam` 只吃槽位）⇒ 窗口关闭。两个都是**标量**，⛔ 没有新数组。
+///
+/// 数量侧的**本机实测**（本机 macOS，判据逐字报）：
+///
+/// * 写入点：**87 → 89**（两个标量；`apply_view` 里只多了两行 `ui.set_*`）；
+/// * 每帧换模型实例的数组：**49 → 49**（一条都不动）；
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
+///   ⛔ 墙钟成本本机未测（要 GPU 档，`AGENTS.md` §5 不允许）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 89;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {

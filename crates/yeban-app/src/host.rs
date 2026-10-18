@@ -45,7 +45,7 @@ use std::rc::Rc;
 
 use slint::{ModelRc, SharedString, VecModel};
 use yeban_engine::transport::TransportReading;
-use yeban_model::YebanProjectV1;
+use yeban_model::{EntityId, YebanProjectV1};
 
 use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
 use crate::engine_host::{DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings};
@@ -200,10 +200,15 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_master_device_eq_min_db(view.master_device_eq_min_db());
     ui.set_master_device_eq_max_db(view.master_device_eq_max_db());
     ui.set_master_device_eq_reason(view.master_device_eq_reason.clone().into());
+    // ⭐ 任务单 `#182`：两个 EQ 滑块的**设备身份**（`""` = 没有目标）。手势把它原样带回
+    // 宿主（`device-eq-grab(device-id, fraction)`），宿主在按下 / 松手两侧按身份重解析槽位
+    // ⇒ 投影与点击之间链被增删也⛔ 不会改到另一台。两个**标量**，⛔ 没有新数组。
+    ui.set_master_device_eq_device_id(view.master_device_eq_device_id().into());
     ui.set_device_eq_available(view.device_eq_available());
     ui.set_device_eq_gain_db(view.device_eq_gain_db());
     ui.set_device_eq_min_db(view.device_eq_min_db());
     ui.set_device_eq_max_db(view.device_eq_max_db());
+    ui.set_device_eq_device_id(view.device_eq_device_id().into());
     // ⭐ 设备增删 ＋ 建空片段（任务单 `#163`）：四个**标量**（可用性 ＋ 逐字原因）。
     // ⛔ 没有新数组（设备 / 片段数都由既有的 `device-*` / 工程投影反映）⇒ 只增
     // `APPLY_VIEW_WRITE_SITE_BUDGET`。唯一事实源是 `ViewState` 的同名字段。
@@ -1961,14 +1966,14 @@ fn wire_mixer_switch(
 ///
 /// | 手势 | `.slint` 回调 | 提交的 `Op` | 撤销标签 |
 /// | :--- | :--- | :--- | :--- |
-/// | 旁通开关（逐台） | `device-bypass-toggle(slot)` | [`yeban_model::Op::SetDeviceBypassed`] | `toggle device bypass` |
-/// | EQ 低架增益拖动 | `device-eq-grab/drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam` | `set device eq low gain` |
+/// | 旁通开关（逐台） | `device-bypass-toggle(device-id)` | [`yeban_model::Op::SetDeviceBypassed`]（按**身份**寻址） | `toggle device bypass` |
+/// | EQ 低架增益拖动 | `device-eq-grab(device-id, fraction)` / `drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam`（槽位由身份在两侧重解析） | `set device eq low gain` |
 /// | 装一台内置效果器 | `device-insert-eq()` / `device-insert-reverb()` | [`yeban_model::Op::InsertDevice`]（参数取共享契约缺省值） | `insert device` |
 /// | 删一台设备 | `device-remove(device-id)` | [`yeban_model::Op::RemoveDevice`]（按**身份**寻址） | `remove device` |
 /// | ⭐ 给**主总线**装一台（`#180`） | `master-device-insert-eq()` / `master-device-insert-reverb()` | [`yeban_model::Op::InsertDevice`]，`track_id = master_bus_track_id` | `insert master device` |
 /// | ⭐ 删**主总线**上的一台（`#180`） | `master-device-remove(device-id)` | [`yeban_model::Op::RemoveDevice`]，`track_id = master_bus_track_id`，按**身份**寻址 | `remove master device` |
-/// | ⭐ 主总线旁通开关（`#181`） | `master-device-bypass-toggle(slot)` | [`yeban_model::Op::SetDeviceBypassed`]，`track_id = master_bus_track_id` | `toggle master device bypass` |
-/// | ⭐ 主总线 EQ 低架增益（`#181`） | `master-device-eq-grab/drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam`，目标在主总线上 | `set master device eq low gain` |
+/// | ⭐ 主总线旁通开关（`#181` / `#182`） | `master-device-bypass-toggle(device-id)` | [`yeban_model::Op::SetDeviceBypassed`]，`track_id = master_bus_track_id`，按**身份**寻址 | `toggle master device bypass` |
+/// | ⭐ 主总线 EQ 低架增益（`#181` / `#182`） | `master-device-eq-grab(device-id, fraction)` / `drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam`，目标在主总线上 | `set master device eq low gain` |
 ///
 /// ## 为什么拖动期**不**提交（与推子同一条纪律）
 ///
@@ -1976,29 +1981,25 @@ fn wire_mixer_switch(
 /// （逐位比较，`-0.0` 与 `0.0` 不是同一个值）才提交一次 ⇒ 一次拖动 = 一步可撤销的编辑。
 /// 按下就松手、拖出去又拖回同一个数、提交被模型拒绝 —— 三种情况都**不留下**撤销步。
 ///
-/// ## 寻址：不信界面上的下标
+/// ## 寻址：三条腿都按**设备身份**（⭐ 任务单 `#182`）
 ///
-/// 旁通用**设备身份**（`DeviceDefinition::id`）构造 `Op`，EQ 用
-/// `AutomationTarget::DeviceParam { track_id, slot_index, param_index }` —— 两者都在
-/// **提交前**从权威工程（`port.try_project()`）重新求一次
-/// （[`crate::bridge::device_rack_track`] / [`crate::bridge::device_eq_low_gain_target`]），
-/// 因此 `Op` 携带的 `old_*` 永远是**当前**值（陈旧会被模型的逐位比对拒掉）。
+/// `#157`／`#181` 登记过一个真实窗口：界面只报**下标**，而"投影之后、点击之前"若设备链
+/// 被增删（`#163` 起界面自己就能增删，MCP 也能），同一个下标可能指向**另一台**。
 ///
-/// ⚠ **旁通的如实登记边界**：`device-bypass-toggle(slot)` 仍然只报**下标**，而投影与
-/// 那次点击之间若设备链被增删（`#163` 起界面自己就能增删！），同一个下标可能指向另一台
-/// 设备 ⇒ 旁通会切到"此刻在那一格的那台"，而不是用户看到的那台。⛔ 本单**没有**改旁通
-/// 的寻址口径（那会让 `#157` 的判据与 `.slint` 回调一起变）；**删除**那条腿已经按
-/// **身份**寻址（`device-remove(device-id)`，`device-ids` 与投影同索引集），EQ 那条腿在
-/// **按下**与**松手**两侧都重新求目标且值变了就放弃提交 —— 两者都没有这个窗口。
+/// `#182` 起：
+/// - **两条旁通腿**（展示轨 / 主总线）的 `.slint` 回调携带 `device-ids[i]` /
+///   `master-device-ids[i]`（投影里那台设备的 `DeviceDefinition::id`）⇒ 宿主在权威链里
+///   **按 id 查**，查不到就**响亮拒绝**（Δ0 ＋ 逐字原因），⛔ 不作用到另一台；
+/// - **两条 EQ 腿**的回调携带 `device-eq-device-id` / `master-device-eq-device-id`
+///   （同样是身份）⇒ [`DeviceEqWiring`] 在**按下**与**松手**两侧都用这个身份重解析
+///   `slot_index`（模型层的 `AutomationTarget::DeviceParam` 只吃槽位），解析不到就拒绝。
 ///
-/// ⭐ 任务单 `#181`：**主总线**的旁通仍按同一条口径（`master-device-bypass-toggle(slot)`），
-/// 因此它与展示轨那条腿有**同一个**窗口；EQ 那条腿与展示轨共用 [`DeviceEqWiring`]
-/// （按下 / 松手两侧都重求目标）⇒ 没有这个窗口。⛔ 本单没有把旁通改成身份寻址
-/// （那会改 `#157` 的判据与 `.slint` 回调名）。
+/// 因此"下标 → 身份"的换算只发生在**投影内部**（`.slint` 的数组下标只用于显示顺序与
+/// 无障碍 id），工程提交的那一格永远由身份定位。
 ///
 /// ## 它**不**做什么
 ///
-/// ⛔ 不做多选、⛔ 不写第二个 EQ 参数、⛔ 不改旁通的寻址口径；⛔ 不碰引擎（插入链在
+/// ⛔ 不做多选、⛔ 不写第二个 EQ 参数；⛔ 不碰引擎（插入链在
 /// 实时侧的路由由 `yeban-engine` 自己的文档说清 —— 见交付报告的"能验与不能验"）。
 pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
@@ -2009,32 +2010,38 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     // 是 [`DeviceTarget`]：`DisplayTrack` ⇒ `bridge::device_bypass_ops`（`device_rack_track`），
     // `Master` ⇒ `bridge::master_device_bypass_ops`（`master_device_track`）。
     // ⛔ 没有"默认 = 展示轨"的回退；两个回调各自**点名**目标。
+    //
+    // ⭐ 任务单 `#182`：两个回调的参数都是**设备身份**（`DeviceDefinition::id` 的 26 字符
+    // 文本），⛔ 不是行下标 —— 下标在"投影之后、点击之前"会随增删漂移。
     ui.on_device_bypass_toggle({
         let weak = weak.clone();
         let port = Rc::clone(port);
-        move |slot_index| {
+        move |device_id: SharedString| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let Ok(slot_index) = usize::try_from(slot_index) else {
+            let Ok(device_id) = device_id.parse::<yeban_model::EntityId>() else {
+                // 身份无法解析 ⇒ **Δ0**，⛔ 不退回按下标找一台替代品。
+                eprintln!("[yeban-app] 展示轨设备旁通被拒绝：设备身份不是合法的 ULID 文本");
                 return;
             };
-            bypass_device(&ui, &port, DeviceTarget::DisplayTrack, slot_index);
+            bypass_device(&ui, &port, DeviceTarget::DisplayTrack, device_id);
         }
     });
     ui.on_master_device_bypass_toggle({
         let weak = weak.clone();
         let port = Rc::clone(port);
-        move |slot_index| {
+        move |device_id: SharedString| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let Ok(slot_index) = usize::try_from(slot_index) else {
+            let Ok(device_id) = device_id.parse::<yeban_model::EntityId>() else {
+                eprintln!("[yeban-app] 主总线设备旁通被拒绝：设备身份不是合法的 ULID 文本");
                 return;
             };
-            bypass_device(&ui, &port, DeviceTarget::Master, slot_index);
+            bypass_device(&ui, &port, DeviceTarget::Master, device_id);
         }
     });
 
@@ -2043,6 +2050,10 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     // ⭐ 任务单 `#181`：两条腿共用 [`DeviceEqWiring`]（同一份手势状态机 + 同一份提交
     // 逻辑），唯一自变量是 [`DeviceTarget`] 与"预览写到哪个界面属性"。
     // 拖动期只写**视图态**；松手且值**逐位变了**才提交一次。
+    //
+    // ⭐ 任务单 `#182`：按下的回调携带**设备身份**（`device-eq-device-id` /
+    // `master-device-eq-device-id`，投影里那一台设备的 `DeviceDefinition::id`）——
+    // 宿主在按下 / 松手两侧都用它重解析 `slot_index`（⛔ 不用下标寻址）。
     let display_eq = Rc::new(DeviceEqWiring::new(
         Rc::clone(port),
         DeviceTarget::DisplayTrack,
@@ -2051,7 +2062,13 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     ui.on_device_eq_grab({
         let weak = weak.clone();
         let wiring = Rc::clone(&display_eq);
-        move |fraction| wiring.grab(&weak, fraction)
+        move |device_id: SharedString, fraction| {
+            let Ok(device_id) = device_id.parse::<yeban_model::EntityId>() else {
+                eprintln!("[yeban-app] EQ 按下被拒绝：设备身份不是合法的 ULID 文本");
+                return;
+            };
+            wiring.grab(&weak, device_id, fraction);
+        }
     });
     ui.on_device_eq_drag({
         let weak = weak.clone();
@@ -2072,7 +2089,13 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     ui.on_master_device_eq_grab({
         let weak = weak.clone();
         let wiring = Rc::clone(&master_eq);
-        move |fraction| wiring.grab(&weak, fraction)
+        move |device_id: SharedString, fraction| {
+            let Ok(device_id) = device_id.parse::<yeban_model::EntityId>() else {
+                eprintln!("[yeban-app] 主总线 EQ 按下被拒绝：设备身份不是合法的 ULID 文本");
+                return;
+            };
+            wiring.grab(&weak, device_id, fraction);
+        }
     });
     ui.on_master_device_eq_drag({
         let weak = weak.clone();
@@ -2281,7 +2304,7 @@ enum DeviceTarget {
 
 impl DeviceTarget {
     /// 撤销标签 / 日志里的主语（⛔ 只是文案；寻址仍走 [`bypass_device`] /
-    /// [`device_eq_target`] 的显式 `match`）。
+    /// [`device_eq_track`] 的显式 `match`）。
     fn label(self) -> &'static str {
         match self {
             Self::DisplayTrack => "展示轨设备",
@@ -2289,20 +2312,22 @@ impl DeviceTarget {
         }
     }
 }
-/// 切换一台设备旁通的**唯一**实现体（展示轨与主总线共用；`target` ＋ `slot_index` 是
+/// 切换一台设备旁通的**唯一**实现体（展示轨与主总线共用；`target` ＋ `device_id` 是
 /// 唯一自变量）。
 ///
+/// ⭐ 任务单 `#182`：`device_id` 是**设备身份**（`DeviceDefinition::id`），⛔ 不是行下标
+/// —— 权威链在"投影之后、点击之前"可能被增删，身份不会漂移。
 /// `Op` 由 [`crate::bridge::device_bypass_ops`] / [`crate::bridge::master_device_bypass_ops`]
-/// 从权威工程现求（`old_bypassed` 永远是当前值），宿主⛔ 不硬编码任何设备身份。
-/// 一次点击 = **恰好一次** `commit_ops`。
-fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, slot_index: usize) {
+/// 从权威工程按身份现查（`old_bypassed` 永远是当前值），宿主⛔ 不硬编码任何设备身份。
+/// 一次点击 = **恰好一次** `commit_ops`；身份查不到 ⇒ **Δ0** ＋ 逐字原因。
+fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, device_id: EntityId) {
     let Some(project) = port.try_project() else {
         eprintln!("[yeban-app] 设备旁通：权威会话此刻没有活跃工程");
         return;
     };
     let ops = match target {
-        DeviceTarget::DisplayTrack => crate::bridge::device_bypass_ops(&project, slot_index),
-        DeviceTarget::Master => crate::bridge::master_device_bypass_ops(&project, slot_index),
+        DeviceTarget::DisplayTrack => crate::bridge::device_bypass_ops(&project, device_id),
+        DeviceTarget::Master => crate::bridge::master_device_bypass_ops(&project, device_id),
     };
     let commit_label = match target {
         DeviceTarget::DisplayTrack => "toggle device bypass",
@@ -2324,18 +2349,26 @@ fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, slot_in
     refresh_undo_window(ui, port, true);
 }
 
-/// `eq_low_gain` 那一格的权威目标（展示轨 / 主总线；`target` 是唯一自变量）。
+/// EQ 手势的**目标轨**（展示轨 / 主总线；`target` 是唯一自变量）。
 ///
-/// 返回 `(轨身份, 设备链下标, 参数下标, 当前值, 值域下界, 值域上界)`；值域逐条来自
-/// 效果器契约（[`crate::bridge::device_eq_low_gain_target`] /
-/// [`crate::bridge::master_device_eq_low_gain_target`]）。
-fn device_eq_target(
+/// ⭐ 任务单 `#182`：EQ 不再按"第一台带 `eq_low_gain` 的设备"寻址 —— 目标由界面带回来的
+/// **设备身份**钉住（[`crate::bridge::device_eq_low_gain_address_on_device`]）。本函数只
+/// 回答"身份该在哪条轨里查"，⛔ 不返回下标（那会重新引入窗口）。
+fn device_eq_track(
     project: &yeban_model::project::YebanProjectV1,
     target: DeviceTarget,
-) -> Option<(yeban_model::EntityId, usize, usize, f32, f32, f32)> {
+) -> Option<&yeban_model::project::TrackV3> {
     match target {
-        DeviceTarget::DisplayTrack => crate::bridge::device_eq_low_gain_target(project),
-        DeviceTarget::Master => crate::bridge::master_device_eq_low_gain_target(project),
+        DeviceTarget::DisplayTrack => crate::bridge::device_rack_track(project),
+        DeviceTarget::Master => crate::bridge::master_device_track(project),
+    }
+}
+
+/// ⭐ 任务单 `#182`：EQ 手势**按身份**解析不到目标时的逐字原因（按目标轨选主语）。
+fn eq_device_gone_reason(target: DeviceTarget) -> &'static str {
+    match target {
+        DeviceTarget::DisplayTrack => crate::bridge::DEVICE_EQ_DEVICE_GONE_REASON,
+        DeviceTarget::Master => crate::bridge::MASTER_DEVICE_EQ_DEVICE_GONE_REASON,
     }
 }
 
@@ -2348,6 +2381,12 @@ fn device_eq_target(
 ///    `Op::SetParam`，成功与失败都重投影一次（成功读新值 / 失败抹掉预览）；
 /// 3. **不信界面**：目标在 `grab` 与 `release` 两侧都从权威工程现求；起点不再是
 ///    当前值（撤销 / 换工程）⇒ ⛔ 不按过期基线提交。
+///
+/// ⭐ 任务单 `#182`：寻址单位是**设备身份**（界面在 `grab` 时带回来的
+/// `DeviceDefinition::id`）。`AutomationTarget::DeviceParam` 只吃 `slot_index`，
+/// 所以槽位在按下 / 松手两侧都用身份**重解析**
+/// （[`crate::bridge::device_eq_low_gain_address_on_device`]）—— 身份查不到 ⇒ 拒绝
+/// （Δ0 ＋ 逐字原因），⛔ 不改到"此刻停在同一格的那台"。
 struct DeviceEqWiring {
     /// 权威撤销端口（提交与重投影的唯一出口）。
     port: Rc<UndoPort>,
@@ -2377,19 +2416,48 @@ impl DeviceEqWiring {
         }
     }
 
-    fn grab(&self, weak: &slint::Weak<MainWindow>, fraction: f32) {
+    /// 日志里的主语（与撤销标签同一条口径，⛔ 不各写一套）。
+    fn log_label(&self) -> &'static str {
+        match self.target {
+            DeviceTarget::DisplayTrack => "EQ",
+            DeviceTarget::Master => "主总线 EQ",
+        }
+    }
+
+    /// 按下：用界面带回来的**设备身份**在权威链里解析 `slot_index` / 当前值 / 值域。
+    ///
+    /// ⭐ 任务单 `#182`：解析不到（身份被删 / 那一台已经没有 `eq_low_gain` / 没有目标轨）
+    /// ⇒ **Δ0** ＋ 逐字原因，并重投影一次把界面拉回权威状态。
+    fn grab(
+        &self,
+        weak: &slint::Weak<MainWindow>,
+        device_id: yeban_model::EntityId,
+        fraction: f32,
+    ) {
         let Some(project) = self.port.try_project() else {
             *self.gesture.borrow_mut() = DeviceEqGesture::Idle;
             return;
         };
-        let Some((_, _, _, value, min_db, max_db)) = device_eq_target(&project, self.target) else {
+        let resolved = device_eq_track(&project, self.target).and_then(|track| {
+            crate::bridge::device_eq_low_gain_address_on_device(track, device_id)
+        });
+        let Some((_, _, value, min_db, max_db)) = resolved else {
             *self.gesture.borrow_mut() = DeviceEqGesture::Idle;
+            // 单行：`tests/mixer_toggle_labels.rs` 用"整行就是字面量"的形状扫这段源码
+            // （`fn wire_mixer_switch` 之后到 `fn read_strings` 之前），多行字面量会被数成
+            // 第三 / 第四条提交消息 ⇒ 这里⛔ 不换行。
+            let reason = eq_device_gone_reason(self.target);
+            eprintln!("[yeban-app] {} 按下被拒绝：{reason}", self.log_label());
+            if let Some(ui) = weak.upgrade() {
+                refresh_undo_window(&ui, &self.port, true);
+            }
             return;
         };
         // 按下即定位（点一下滑块就跳到那一格）⇒ 一次**单击**也是一次可撤销的编辑，
         // 而不是"点了没反应"。`start_db` 仍是按下那一刻的工程值（提交的 `old_val`）。
         let pressed_db = db_from_fraction(fraction, min_db, max_db);
         *self.gesture.borrow_mut() = DeviceEqGesture::Dragging {
+            device_id,
             start_db: value,
             last_db: pressed_db,
             min_db,
@@ -2429,6 +2497,9 @@ impl DeviceEqWiring {
         (self.set_gain)(&ui, next_db);
     }
 
+    /// 松手：用**同一个设备身份**重解析槽位 / 参数下标，再提交一次 `Op::SetParam`。
+    ///
+    /// ⭐ 任务单 `#182`：身份查不到 ⇒ 拒绝（Δ0 ＋ 逐字原因）并重投影。
     fn release(&self, weak: &slint::Weak<MainWindow>) {
         let Some(ui) = weak.upgrade() else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
@@ -2436,6 +2507,7 @@ impl DeviceEqWiring {
         };
         let taken = std::mem::replace(&mut *self.gesture.borrow_mut(), DeviceEqGesture::Idle);
         let DeviceEqGesture::Dragging {
+            device_id,
             start_db,
             last_db,
             moved,
@@ -2447,19 +2519,21 @@ impl DeviceEqWiring {
         if !moved || last_db.to_bits() == start_db.to_bits() {
             return;
         }
-        let log_label = match self.target {
-            DeviceTarget::DisplayTrack => "EQ",
-            DeviceTarget::Master => "主总线 EQ",
-        };
+        let log_label = self.log_label();
         let commit_label = self.commit_label();
         let Some(project) = self.port.try_project() else {
             eprintln!("[yeban-app] {log_label} 提交：权威会话此刻没有活跃工程");
             refresh_undo_window(&ui, &self.port, true);
             return;
         };
-        let Some((track_id, slot_index, param_index, current_db, _, _)) =
-            device_eq_target(&project, self.target)
-        else {
+        let resolved = device_eq_track(&project, self.target).and_then(|track| {
+            crate::bridge::device_eq_low_gain_address_on_device(track, device_id)
+                .map(|address| (track.id, address.0, address.1, address.2))
+        });
+        let Some((track_id, slot_index, param_index, current_db)) = resolved else {
+            // 同上：单行字面量（⛔ 不换行，见 `grab` 里的注释）。
+            let reason = eq_device_gone_reason(self.target);
+            eprintln!("[yeban-app] {log_label} 提交被拒绝：{reason}");
             refresh_undo_window(&ui, &self.port, true);
             return;
         };
@@ -2568,12 +2642,17 @@ pub fn wire_clip_create(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// 与 [`MixerGesture`] 同一条纪律：`Idle` 是唯一的空态；`Escape` / 指针离开窗口走的是
 /// `.slint` 的上报（`PointerEventKind.cancel` ⇒ `device-eq-release`），因此不存在
 /// "黏住的拖动"。`start_db` 是**提交时的 `old_val`**，`last_db` 是收尾要提交的 `new_val`。
+///
+/// ⭐ 任务单 `#182`：`device_id` 是按下时界面带回来的**设备身份** —— 松手时用它重解析
+/// `slot_index`（⛔ 不用按下那一刻的下标）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum DeviceEqGesture {
     /// 没有手势。
     Idle,
-    /// 正在拖：起点 / 最近值 / 值域（来自契约）/ 是否真的动过。
+    /// 正在拖：身份 / 起点 / 最近值 / 值域（来自契约）/ 是否真的动过。
     Dragging {
+        /// 目标设备的身份（`DeviceDefinition::id`）—— 松手时按它重解析槽位。
+        device_id: yeban_model::EntityId,
         /// 按下时的工程值（`old_val`）。
         start_db: f32,
         /// 最近一次算出的值（`new_val`）。

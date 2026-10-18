@@ -7,13 +7,13 @@
 //!
 //! | §2 | 断言 | 证什么 / 不证什么 |
 //! | :--- | :--- | :--- |
-//! | ① 旁通作用于 master | `invoke_master_device_bypass_toggle(0)` ⇒ `commit_count +1`；主总线 `devices[0].bypassed` **false → true**，**展示轨 `devices[0].bypassed` 不动**；界面 `master-device-bypassed=[true]` / `device-bypassed=[false]` | 证"旁通落在主总线，⛔ 不是展示轨"（注入：把目标改回 `device_rack_track` ⇒ 这条红） |
-//! | ② 滑块作用于 master | `invoke_master_device_eq_grab(1.0)` ＋ `release()` ⇒ `commit_count +1`；读回主总线 `eq_low_gain = 18.0`（契约上界），**展示轨仍是 0.0**；界面 `master-device-eq-gain-db = 18` / `device-eq-gain-db = 0` | 同上，滑块那条腿 |
+//! | ① 旁通作用于 master | `invoke_master_device_bypass_toggle(master-device-ids[0])`（⭐ `#182` 按身份）⇒ `commit_count +1`；主总线 `devices[0].bypassed` **false → true**，**展示轨 `devices[0].bypassed` 不动**；界面 `master-device-bypassed=[true]` / `device-bypassed=[false]` | 证"旁通落在主总线，⛔ 不是展示轨"（注入：把目标改回 `device_rack_track` ⇒ 这条红） |
+//! | ② 滑块作用于 master | `invoke_master_device_eq_grab(master-device-eq-device-id, 1.0)` ＋ `release()` ⇒ `commit_count +1`；读回主总线 `eq_low_gain = 18.0`（契约上界），**展示轨仍是 0.0**；界面 `master-device-eq-gain-db = 18` / `device-eq-gain-db = 0` | 同上，滑块那条腿 |
 //! | ③ 注入 | 把 `master_device_eq_low_gain_target` / `master_device_bypass_ops` 的目标改回 `device_rack_track` ⇒ ①② 各自变红（读数见交付报告，⛔ 未提交） | 证这两条腿真的靠"显式的目标轨"工作 |
-//! | ④ 同位置再按 Δ0 | 值已经是上界时再 `grab(1.0)` ＋ `release()` ⇒ `commit_count` / `undoable` 一位不动 | 证"没变不产生空提交" |
+//! | ④ 同位置再按 Δ0 | 值已经是上界时再 `grab(身份, 1.0)` ＋ `release()` ⇒ `commit_count` / `undoable` 一位不动 | 证"没变不产生空提交" |
 //! | ⑤ 旁通真的关掉处理 | `master_insert_frames`：未旁通 = `400 × 128`；UI 旁通之后 = **0** | 证器件的武装位真的被旁通位关掉；⛔ 不证人耳听感 |
 //! | ⑥ 无 master 设备 | 主总线存在但 0 台 ⇒ `master-device-eq-available=false`、滑块 / 旁通开关**不出现**、原因逐字 = [`MASTER_DEVICE_EQ_NO_TARGET_REASON`]；没有主总线 ⇒ 逐字 = [`MASTER_DEVICE_EQ_NO_MASTER_REASON`] | 证"没有假的可编辑控件，也不静默" |
-//! | ⑦ 预算 ＋ 几何 | 预算在 `tests/perf_draw_budget.rs`（**87** 写点 / **49** 数组）；本文件在**运行时控件树**里读新控件的 `bounds`：`x + width ≤ 1384`（第二段右沿） | 证"没有把第二段往右扩" |
+//! | ⑦ 预算 ＋ 几何 | 预算在 `tests/perf_draw_budget.rs`（⭐ `#182` 起 **89** 写点 / **49** 数组）；本文件在**运行时控件树**里读新控件的 `bounds`：`x + width ≤ 1384`（第二段右沿） | 证"没有把第二段往右扩" |
 //! | ⑧ 不退化 | 不在本文件：`cargo test -p yeban-app --locked --no-fail-fast` 的 rc 与通过数 | — |
 //!
 //! ## 它**不**证什么（见交付报告的"能验与不能验"）
@@ -240,6 +240,21 @@ fn model_display_bypassed(window: &MainWindow) -> Vec<bool> {
     window.get_device_bypassed().iter().collect()
 }
 
+/// 界面里第 `index` 台**主总线**设备的**身份**（`.slint` 的 `master-device-ids`）。
+///
+/// ⭐ 任务单 `#182`：主总线旁通 / EQ 手势都按**身份**寻址 ⇒ 判据也从界面数组里取身份。
+fn master_device_id_at(window: &MainWindow, index: usize) -> slint::SharedString {
+    window
+        .get_master_device_ids()
+        .row_data(index)
+        .unwrap_or_else(|| panic!("`master-device-ids[{index}]` 必须存在"))
+}
+
+/// 界面里**主总线 EQ 那一格**的设备身份（`.slint` 的 `master-device-eq-device-id`）。
+fn master_eq_device_id(window: &MainWindow) -> slint::SharedString {
+    window.get_master_device_eq_device_id()
+}
+
 /// 渲染一段音频（产品路径：`EngineSnapshot::from_project` → `EngineRuntime::process_quantum`）。
 ///
 /// 返回 `(左声道样本, 统计读数)`。与 `#173` / `#180` 的判据同一条链 —— 本文件只复制驱动
@@ -283,7 +298,8 @@ fn the_master_bypass_gesture_lands_on_the_master_and_commits_exactly_once() {
         "旁通位数组必须与名字数组同索引集"
     );
 
-    live.ui().invoke_master_device_bypass_toggle(0);
+    live.ui()
+        .invoke_master_device_bypass_toggle(master_device_id_at(live.ui(), 0));
 
     let after = port.display();
     assert_eq!(
@@ -383,7 +399,8 @@ fn the_master_eq_slider_commits_exactly_once_and_writes_the_master_param() {
     assert!((live.ui().get_device_eq_gain_db() - 0.0).abs() < f32::EPSILON);
 
     // ---- 一次拖动（按下在最右端 ⇒ +18 dB，松手提交一次）----
-    live.ui().invoke_master_device_eq_grab(1.0);
+    live.ui()
+        .invoke_master_device_eq_grab(master_eq_device_id(live.ui()), 1.0);
     live.ui().invoke_master_device_eq_release();
     let after = port.display();
     assert_eq!(
@@ -448,7 +465,8 @@ fn the_master_eq_slider_commits_exactly_once_and_writes_the_master_param() {
 
     // ---- 判据 ④：同一个位置再按一次 ⇒ **不提交**（⛔ 不留一步什么都没改的撤销）----
     let quiet = port.display();
-    live.ui().invoke_master_device_eq_grab(1.0);
+    live.ui()
+        .invoke_master_device_eq_grab(master_eq_device_id(live.ui()), 1.0);
     live.ui().invoke_master_device_eq_release();
     let still = port.display();
     assert_eq!(
@@ -458,7 +476,8 @@ fn the_master_eq_slider_commits_exactly_once_and_writes_the_master_param() {
     assert_eq!(still.undoable, quiet.undoable);
 
     // ---- 回到中点 ⇒ 0 dB，仍是一次提交（证明值真的往返）----
-    live.ui().invoke_master_device_eq_grab(0.5);
+    live.ui()
+        .invoke_master_device_eq_grab(master_eq_device_id(live.ui()), 0.5);
     live.ui().invoke_master_device_eq_release();
     let clicked = port.display();
     assert_eq!(clicked.commit_count, still.commit_count + 1);
@@ -519,7 +538,8 @@ fn the_master_bypass_really_stops_master_processing() {
 
     // 同一个活窗口上按旁通 ⇒ 权威工程里那一台被旁通。
     let before = port.display();
-    live.ui().invoke_master_device_bypass_toggle(0);
+    live.ui()
+        .invoke_master_device_bypass_toggle(master_device_id_at(live.ui(), 0));
     let after = port.display();
     assert_eq!(after.commit_count, before.commit_count + 1);
     let bypassed = port.project();
@@ -582,7 +602,7 @@ fn no_master_device_means_no_slider_no_switch_and_a_verbatim_reason() {
     );
     assert!(master_device_eq_low_gain_target(&project).is_none());
     assert_eq!(
-        master_device_bypass_ops(&project, 0),
+        master_device_bypass_ops(&project, EntityId::new()),
         Err(MASTER_DEVICE_BYPASS_NO_DEVICE_REASON)
     );
 
@@ -631,7 +651,7 @@ fn no_master_device_means_no_slider_no_switch_and_a_verbatim_reason() {
         (false, MASTER_DEVICE_EQ_NO_MASTER_REASON.to_owned())
     );
     assert_eq!(
-        master_device_bypass_ops(&empty, 0),
+        master_device_bypass_ops(&empty, EntityId::new()),
         Err(MASTER_DEVICE_BYPASS_NO_MASTER_REASON)
     );
     assert!(master_device_track(&empty).is_none());
@@ -652,7 +672,7 @@ fn no_master_device_means_no_slider_no_switch_and_a_verbatim_reason() {
          无主总线：available=false · reason={:?} · bypass_ops={:?}；注册表 4 个静态 ID 全在",
         MASTER_DEVICE_EQ_NO_TARGET_REASON,
         MASTER_DEVICE_EQ_NO_MASTER_REASON,
-        master_device_bypass_ops(&empty, 0)
+        master_device_bypass_ops(&empty, EntityId::new())
     ));
 }
 
@@ -713,14 +733,18 @@ fn the_new_master_controls_live_inside_the_second_segment() {
     }
 
     // 源码腿（⛔ 不是靠"我写的时候算过"）：回调 / 属性名与两段的手势落点逐字在 `.slint` 里。
+    // ⭐ `#182`：旁通 / EQ 按下的第一个参数是**设备身份**（⛔ 不是下标）。
     for needle in [
-        "callback master-device-bypass-toggle(int);",
-        "callback master-device-eq-grab(float);",
+        "callback master-device-bypass-toggle(string);",
+        "callback master-device-eq-grab(string, float);",
         "callback master-device-eq-drag(float);",
         "callback master-device-eq-release();",
         "in property <[bool]> master-device-bypassed: [];",
-        "root.master-device-bypass-toggle(master_device_index)",
-        "root.master-device-eq-grab(self.mouse-x / self.width)",
+        "in property <string> master-device-eq-device-id: \"\";",
+        "root.master-device-bypass-toggle(",
+        "root.master-device-ids[master_device_index]",
+        "root.master-device-eq-grab(",
+        "root.master-device-eq-device-id,",
         "root.master-device-eq-drag(self.mouse-x / self.width)",
         "root.master-device-eq-release()",
     ] {

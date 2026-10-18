@@ -2909,6 +2909,7 @@ mod tests {
         let mut wanted: Vec<String> = [
             "master-device-bypassed",
             "master-device-eq-available",
+            "master-device-eq-device-id",
             "master-device-eq-gain-db",
             "master-device-eq-max-db",
             "master-device-eq-min-db",
@@ -2927,7 +2928,8 @@ mod tests {
         wanted.sort();
         assert_eq!(
             to_rack, wanted,
-            "ConsoleTabs 转给 DeviceRack 的 `master-device-*` 注入面必须恰好是这十三格"
+            "ConsoleTabs 转给 DeviceRack 的 `master-device-*` 注入面必须恰好是这十四格\
+             （`#182` 多了 `master-device-eq-device-id`）"
         );
         for name in &to_rack {
             assert!(
@@ -3830,7 +3832,8 @@ mod tests {
     ///
     /// ⭐ **任务单 `#157` 移出了一条**：`device-{i}-bypass-switch` 现在是**真的**
     /// 可点控件（`TouchArea.clicked` + `accessible-action-default` 同一落点
-    /// `root.device-bypass-toggle(device_index)` ⇒ 一次 `Op::SetDeviceBypassed`）。
+    /// `root.device-bypass-toggle(root.device-ids[device_index])` ⇒ 一次
+    /// `Op::SetDeviceBypassed`）。⭐ `#182` 起落点报的是**设备身份**（⛔ 不是下标）。
     /// 按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），它不再属于"没有动作"的集合。
     const KNOWN_ACTIONLESS_CONTROLS: [&str; 9] = [
         "app.slint :: \"ai-rail-intent-button\"",
