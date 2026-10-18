@@ -45,6 +45,14 @@
     归档里**未登记**的成员**不落地、也不算失败**，只计数
     （`归档内未登记且未落地的文件 N 个`）；已登记但不在本次范围
     （`--limit` / `--only-ext`）的成员同样不落地。
+清单自洽（⭐ `#204`）:
+    每次运行末尾都核对两条不变量，并把读数打成 `[fetch-samples] 清单自洽: ...`:
+    ① 同一个 `sha256` 只能对应一个 `size_bytes`（纯清单，不需要联网/字节）；
+    ② 不同 instrument 的**同一上游相对路径**登记了**同一个 `sha256`** ⇒ 实测摘要必须一致；
+       若实测彼此一致却**不等于登记值**，说明登记值来自另一份制品（本例: Release zip 的
+       CRLF 副本 vs pin tarball 的 LF 字节）⇒ 同样判不自洽。
+    任何一条不自洽 ⇒ 退出码 `1`（与"字节不符"同级）；`--check-only` 下缺失的条目不参与 ②。
+    这条判据只修**数据自洽**，⛔ 不是许可合规的依据（依据是 `instruments[].licence_upstream`）。
 """
 
 from __future__ import annotations
@@ -233,6 +241,77 @@ class Tally:
         self.archives_skipped = 0  # 全部已通过 ⇒ 整个 tarball 都没下
         self.archive_errors = 0  # 归档本身打不开/不可解包
         self.offline = False
+        # ⭐ `#204`: 每个**实测过**的条目 -> (状态, 实际 sha256, 实际字节数)。
+        # 只用于最后的"清单自洽"判据（⛔ 不参与落盘/续传判断，那是 `local_check` 的唯一职权）。
+        self.measured: dict[str, tuple[str, str, int]] = {}
+
+
+def record_measured(
+    tally: Tally, item: dict, state: str, digest: str, size: int
+) -> None:
+    """记下一条的实测读数（`missing` 也记，但 `digest` 为空 ⇒ 自洽判据会跳过它）。"""
+    tally.measured[str(item.get("id"))] = (state, digest, size)
+
+
+def manifest_self_consistency(
+    items: list[dict], instruments: dict[str, dict], tally: Tally
+) -> list[str]:
+    """⭐ `#204` 的判据：**清单自洽**（两个不变量）。
+
+    ① **纯清单**：同一个 `sha256` 只能对应一个 `size_bytes`。
+       （同一串字节不可能有两种长度；登记里出现两种长度 ⇒ 至少一条是抄错的。）
+
+    ② **跨 instrument 的共享文件**：若**不同 instrument** 的**同一上游相对路径**登记了
+       **同一个 `sha256`**，那实测（`sha256`）也应当相同 —— 因为同一份字节不可能在两处
+       得到不同的摘要。两种破法都要报：
+         - 各仓库实测**彼此不同** ⇒ 登记把它们当成同一份，但事实上不是；
+         - 各仓库实测**彼此相同、却不等于登记值** ⇒ 登记值来自**另一份制品**
+           （本例：Release zip 内的 CRLF 副本 vs pin git 树的 LF 字节），是登记口径漂移。
+       ⚠ 这条判据**只**在实测过的条目上生效（`--check-only` 下缺失的条目不参与），
+       因此它永远不可能把"没下到"误判成"不自洽"。
+    """
+    problems: list[str] = []
+
+    by_sha: dict[str, set[int]] = {}
+    for item in items:
+        by_sha.setdefault(str(item.get("sha256", "")), set()).add(
+            int(item.get("size_bytes", -1))
+        )
+    for sha, sizes in sorted(by_sha.items()):
+        if sha and len(sizes) > 1:
+            problems.append(
+                f"同一 sha256 登记了不同的 size_bytes: {sha[:12]}… -> {sorted(sizes)}"
+            )
+
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for item in items:
+        instrument = instruments.get(str(item.get("instrument", "")), {})
+        key = (upstream_relative(instrument, item), str(item.get("sha256", "")))
+        groups.setdefault(key, []).append(item)
+
+    for (path, sha), members in sorted(groups.items()):
+        if len({str(m.get("instrument", "")) for m in members}) < 2:
+            continue
+        measured = [
+            tally.measured[str(m.get("id"))]
+            for m in members
+            if str(m.get("id")) in tally.measured
+        ]
+        digests = {digest for _state, digest, _size in measured if digest}
+        if not digests:
+            continue
+        if len(digests) > 1:
+            problems.append(
+                f"同一上游路径 {path} + 同一登记 sha256 {sha[:12]}… ⇒ 实测却不同: "
+                + ", ".join(sorted(d[:12] + "…" for d in digests))
+            )
+        elif sha not in digests:
+            problems.append(
+                f"同一上游路径 {path} + 同一登记 sha256 {sha[:12]}… ⇒ "
+                f"各仓库实测一致为 {next(iter(digests))[:12]}… ≠ 登记值"
+                "（登记可能来自另一份制品，例如 Release zip 副本 vs pin tarball）"
+            )
+    return problems
 
 
 def report_mismatch(item: dict, digest: str, size: int, tally: Tally) -> None:
@@ -249,6 +328,7 @@ def verify_local_only(todo: list[dict], dest_root: pathlib.Path | None, tally: T
     """`--check-only`：只校验磁盘上已有的（⛔ 不联网、⛔ 不动磁盘）。"""
     for item in todo:
         state, digest, size = local_check(target_for(item, dest_root), item)
+        record_measured(tally, item, state, digest, size)
         if state == "ok":
             tally.verified += 1
         elif state == "bad":
@@ -269,6 +349,7 @@ def fetch_per_file(
     for item in todo:
         target = target_for(item, dest_root)
         state, digest, size = local_check(target, item)
+        record_measured(tally, item, state, digest, size)
         if state == "ok":
             # ⭐ 续传：已存在且一致 ⇒ 直接算"已通过"、⛔ 不重下。
             tally.verified += 1
@@ -298,8 +379,10 @@ def fetch_per_file(
         if digest == item.get("sha256") and len(data) == item.get("size_bytes"):
             land_bytes(target, data, root)
             tally.verified += 1
+            record_measured(tally, item, "ok", digest, len(data))
         else:
             # 上游这份字节也不对 ⇒ ⛔ 不落地（本地原来那份若是坏的，仍然留在盘点里报不符）。
+            record_measured(tally, item, "bad", digest, len(data))
             report_mismatch(item, digest, len(data), tally)
 
 
@@ -368,7 +451,9 @@ def _stream_archive(
                 if digest == item.get("sha256") and len(data) == item.get("size_bytes"):
                     land_bytes(target_for(item, dest_root), data, root)
                     tally.verified += 1
+                    record_measured(tally, item, "ok", digest, len(data))
                 else:
+                    record_measured(tally, item, "bad", digest, len(data))
                     report_mismatch(item, digest, len(data), tally)
 
 
@@ -410,7 +495,8 @@ def fetch_archives(
         instrument = instruments.get(instrument_id, {})
         pending: list[dict] = []
         for item in group:
-            state, _digest, _size = local_check(target_for(item, dest_root), item)
+            state, digest, size = local_check(target_for(item, dest_root), item)
+            record_measured(tally, item, state, digest, size)
             if state == "ok":
                 tally.verified += 1
                 tally.resumed += 1
@@ -579,6 +665,24 @@ def main() -> int:
         )
         for ident in tally.not_found_ids[:10]:
             print(f"      - {ident}", file=sys.stderr)
+    # ⭐ `#204`: 清单自洽判据（纯清单不变量 + 跨 instrument 共享文件的实测一致性）。
+    # 它**不替代**逐文件校验: 只在实测过的条目上生效，且单独决定退出码 1。
+    problems = manifest_self_consistency(items, instruments, tally)
+    if problems:
+        print(
+            f"[fetch-samples] 清单自洽: ✗ {len(problems)} 条不自洽（同一 sha256 必须同一 "
+            f"size_bytes；跨 instrument 的同路径同 sha256 实测必须一致）",
+            file=sys.stderr,
+        )
+        for problem in problems[:10]:
+            print(f"  ⚠ {problem}", file=sys.stderr)
+    else:
+        print(
+            f"[fetch-samples] 清单自洽: ok（{len(items)} 条；sha256→size_bytes 一对一；"
+            f"实测读数 {len(tally.measured)} 条无跨 instrument 冲突）"
+        )
+    if problems:
+        return 1
     if tally.mismatched:
         return 1
     if tally.archive_errors:
