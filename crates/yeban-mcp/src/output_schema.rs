@@ -490,7 +490,12 @@ fn render_master() -> Value {
             "全部字段都是实测值（帧数 / 字节数 / SHA-256 / 块数 / 削波样本数 / 真峰值）。\
              `peak.before|after` 是**归一化前后**的浮点母带样本峰值（⛔ 不是文件峰值）；\
              文件层面的削波读数是顶层 `clippedSamples`，样本间过冲是顶层 `truePeakDbfs`。\
-             `truePeakDbfs` / `headroomDb` 在无法测量时是 `null`（不编造 0）。",
+             `truePeakDbfs` / `headroomDb` 在无法测量时是 `null`（不编造 0）。\
+             ⭐ `#225`：`warnings[]` 是**结果质量**提示（非阻断）—— `clippedSamples > 0` 时\
+             恰好一条 `code:\"exportClipping\"`（含 `clippedSamples` / `truePeakDbfs` /\
+             `suggestedTrimDb`（公式 `-(ceil(truePeakDbfs * 2) / 2)`）/ `loudestSource` /\
+             `hint`），否则**空数组**。⛔ 它不自动改增益；`sources[].peak` / `.peakDbfs`\
+             是逐源峰值（源节点输出，⛔ 不含插入链与路由边增益）。",
         ),
         &[
             "rendered",
@@ -522,6 +527,7 @@ fn render_master() -> Value {
             "clippedSamples",
             "truePeakDbfs",
             "headroomDb",
+            "warnings",
             "normalize",
             "loudness",
             "atomic",
@@ -563,6 +569,7 @@ fn render_master() -> Value {
             "clippedSamples": {"type": "integer"},
             "truePeakDbfs": {"type": ["number", "null"]},
             "headroomDb": {"type": ["number", "null"]},
+            "warnings": {"type": "array", "items": {"type": "object"}},
             "normalize": {"type": "object"},
             "loudness": {"type": "object"},
             "atomic": {"type": "boolean"},

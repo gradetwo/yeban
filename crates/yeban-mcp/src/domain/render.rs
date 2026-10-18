@@ -196,6 +196,41 @@
 //! 峰值，也⛔ 不是真峰值。这句话同时写在响应的 `peak.semantics` 与
 //! `tools/list` 的 `yeban_render_master` 描述里，不让调用方去猜。
 //!
+//! ## 削波**预警 + 建议 trim**（⭐ `#225`；⛔ **不自动改增益**）
+//!
+//! `#224` 的第三轮验收实测：**不加任何推子**、agent 编完直接导出，单轨峰值就达到
+//! `1.874512`、`clippedSamples = 21634` —— 工具面当时**没有任何预警**，用户拿到一份
+//! 削波的 WAV 还以为是正常的。`#175` 已经把**测量**补齐了（上表三个读数），缺的
+//! 不是测量，是**提示 + 可执行建议**。
+//!
+//! 裁决（`#224`，本单照做）：给"削波预警 + 建议 trim"，⛔ **不是自动改增益**
+//! —— 自动改就是**静默改用户意图**（`#224` 的实测参照正是靠手工
+//! `track −6 dB` / `aux −12 dB` / `send −12 dB` 才把 `clippedSamples` 降到 0）。
+//!
+//! 交付形态：
+//!
+//! - `data.warnings[]`（**结果质量提示**通道，与提案响应的 `#175`/`#178` 同名同义）：
+//!   `clippedSamples > 0` 时**恰好一条** `code:"exportClipping"`；否则**空数组**。
+//!   为什么**不**进 `unsupported` / [`KNOWN_UNSUPPORTED_KEYS`]：那份清单的口径是
+//!   "我们会静默少做什么"（第 324 条：清单里的每一项都必须在一个具体输入下真的
+//!   出现）。削波不是"少做了什么"—— 渲染把工程算对了，**结果本身**过载。塞进去会
+//!   让清单含义漂移，也会让"每项可触发"的判据去构造一个不是功能缺口的输入。
+//! - 每条预警可寻址：`clippedSamples` / `truePeakDbfs` / `headroomDb` /
+//!   `suggestedTrimDb` / `suggestedTrimDbFormula` / `basis` / `loudestSource` / `hint`。
+//! - **建议值公式（逐字）**：`suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)`
+//!   （向上取整到 0.5 dB ⇒ 减完保证 `truePeakDbfs <= 0`，最多多减 0.5 dB）。
+//! - **最响的源**：`data.sources[]` 每条新增 `peak`（源节点输出的样本峰值，线性幅度）
+//!   与 `peakDbfs`；预警的 `loudestSource` 点名其中最大的一条（并列取 `node`
+//!   字典序最小 ⇒ 每次点同一个名字）。
+//! - ⛔ **不动音频**：整文件 `sha256` / `masterDigest` 与加预警之前**逐字节相同**
+//!   （判据 `tests/render_master.rs::the_clipping_warning_does_not_change_a_single_byte`
+//!   用**加预警前**测到的常量钉住）。
+//!
+//! ⚠ 边界：逐源峰值的测点是**源节点输出**（含轨音量 / 声相 / 采样器与片段增益），
+//! ⛔ 不含该轨插入链（EQ / 混响 / 卷积）与路由边增益 ⇒ 它与 `peak.after` 不是同一个数。
+//! `suggestedTrimDb` 是**母带级**建议（减母带增益保证不削波）；只减最响的一条源
+//! ⛔ **不保证**母带不削波（其余源仍在求和）—— 这句话逐字进 `warnings[].hint`。
+//!
 //! ## `targetLufs` 的口径（本切片新增；"能测的那一半"）
 //!
 //! **响度目标不是一个新工具，是 `yeban_render_master` 的一个可选参数**，因为
@@ -297,6 +332,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::{Map, Value};
 
@@ -722,6 +758,128 @@ fn json_f32(value: Option<f32>) -> Value {
     }
 }
 
+/// ⭐ `#225`：削波时**唯一**的那条预警（`data.warnings[]` 的一个元素，可寻址）。
+///
+/// ## 为什么走 `warnings[]` 而不是 `unsupported`
+///
+/// `unsupported` / `KNOWN_UNSUPPORTED_KEYS`（`#221`/`#223`，现 18 项）的口径是
+/// "**我们会静默少做什么**"（第 324 条：清单必须逐项可触发）。削波不是"少做了什么"
+/// —— 渲染把工程里的一切都算对了，**结果本身**就是过载的。把它塞进
+/// `KNOWN_UNSUPPORTED_KEYS` 会让那份清单的含义漂移（"不支持削波"？说不通），
+/// 也会让"每项可触发"的判据去构造一个**不是功能缺口**的输入。
+/// `warnings[]` 是**结果质量提示**的既有通道（`#175`/`#178` 用在提案响应上），
+/// 语义正好：**非阻断、可寻址、不影响落盘**。
+///
+/// ## ⛔ 它不改增益
+///
+/// 本函数只读 `clipped_samples` / `true_peak_dbfs` / `peak_after` / `reports`，
+/// 返回一个 JSON 值。一个样本都不碰 —— 整文件 `sha256` 与加预警之前**逐字节相同**
+/// （判据 `tests/render_master.rs::the_clipping_warning_does_not_change_a_single_byte`）。
+///
+/// ## 建议值
+///
+/// `suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)`（公式逐字进响应，见
+/// [`math::suggested_trim_db`]）。`clippedSamples == 0` ⇒ `None`（**没有这条预警**，
+/// 判据钉住"不是恒报"）。
+fn clipping_warning(
+    clipped_samples: u64,
+    true_peak_dbfs: Option<f32>,
+    headroom_db: Option<f32>,
+    peak_after: f32,
+    reports: &[SourceReport],
+) -> Option<Value> {
+    if clipped_samples == 0 {
+        return None;
+    }
+    // 建议值必须**算得出来**：真峰值可测就用它；测不出（本渲染链只在"采样率没有
+    // 核验系数"或"全零"时发生）就退到样本峰值，并在 `basis` 里逐字说明用的是哪个。
+    let (basis, basis_dbfs) = match true_peak_dbfs {
+        Some(peak) if peak.is_finite() => ("truePeakDbfs", peak),
+        _ => (
+            "samplePeakDbfs",
+            math::amplitude_dbfs(peak_after).unwrap_or(0.0),
+        ),
+    };
+    let suggested_trim_db = math::suggested_trim_db(basis_dbfs);
+    // 公式逐字进响应；`basis` 缺省是 `truePeakDbfs`，只有在真峰值测不出时
+    // 才如实换成 `samplePeakDbfs`（⛔ 不把两种口径混成一句）。
+    let formula = format!("suggestedTrimDb = -(ceil({basis} * 2) / 2)");
+    // 最响的源：逐源峰值里最大的那条；并列时取 `node` 字典序**最小**的
+    // （`max_by` 的"更大"⇒ 反向比较 node），保证同一工程每次点同一个名字。
+    let loudest = reports
+        .iter()
+        .filter(|report| report.peak > 0.0)
+        .max_by(|left, right| {
+            left.peak.total_cmp(&right.peak).then_with(|| {
+                right
+                    .node
+                    .to_canonical_string()
+                    .cmp(&left.node.to_canonical_string())
+            })
+        });
+    let loudest_value = loudest.map_or(Value::Null, |report| {
+        let source_dbfs = math::amplitude_dbfs(report.peak);
+        serde_json::json!({
+            "node": report.node.to_canonical_string(),
+            "track": report.track.clone(),
+            "kind": report.kind,
+            "peak": report.peak,
+            "peakDbfs": json_f32(source_dbfs),
+            // 只把**这一条源**压到 0 dBFS 以下需要的量；⛔ 不是母带保证（见 hint）。
+            "suggestedSourceTrimDb": json_f32(source_dbfs.map(math::suggested_trim_db)),
+        })
+    });
+    let loudest_hint = loudest.map_or_else(
+        || "本次没有任何源产生非零样本（母带过载来自别处？）".to_owned(),
+        |report| {
+            let source_dbfs = math::amplitude_dbfs(report.peak);
+            let source_dbfs_text = source_dbfs
+                .map_or_else(|| "null".to_owned(), |value| format!("{value:.6}"));
+            // ⚠ 实测：`#224` 那种"多源求和"的工程里，最响的**单条源**自己可能
+            // 根本没有过满量程（`peakDbfs <= 0`）⇒ 单独减它**不会**解决。
+            // 这一句必须说出来，否则"点名最响的源"会被误读成"减它就对了"。
+            let summing = source_dbfs.is_none_or(|value| math::suggested_trim_db(value) == 0.0);
+            let summing_note = if summing {
+                "；⚠ 它**自己**没有过满量程 ⇒ 削波来自**多源求和**，⛔ 单独减这一条不会解决，\
+                 请按 suggestedTrimDb 减母带（或逐条配平）"
+            } else {
+                ""
+            };
+            format!(
+                "最响的源是 `{}`（node `{}`, kind `{}`, peakDbfs = {source_dbfs_text}{summing_note}）",
+                report.track,
+                report.node.to_canonical_string(),
+                report.kind
+            )
+        },
+    );
+    let hint = format!(
+        "这次导出的母带会削波: clippedSamples = {clipped_samples}（这些样本会被 \
+         24-bit 量化器钳在 ±1.0）({basis} = {basis_dbfs:.6} dBFS, headroomDb = {} dB)。\
+         建议把母带增益减 {:.1} dB（{formula}）。\
+         {loudest_hint}；想从源上减就改那条轨的 volumeDb \
+         (yeban_edit_notes 的 `{{\"kind\":\"setParam\",\"lane\":\"TrackVolume\",\"value\":<新 dB>}}`)。\
+         ⚠ 只减最响的一条源 ⛔ 不保证母带因此不削波（其余源仍在求和）；\
+         ⛔ 本工具**不自动改增益** —— 这里只是读数 + 建议，音频一个字节都没动。\
+         逐源峰值见 data.sources[].peak / .peakDbfs。",
+        headroom_db.map_or_else(|| "null".to_owned(), |value| format!("{value:.6}")),
+        suggested_trim_db.abs()
+    );
+    Some(serde_json::json!({
+        "code": "exportClipping",
+        "severity": "warning",
+        "blocking": false,
+        "clippedSamples": clipped_samples,
+        "truePeakDbfs": json_f32(true_peak_dbfs),
+        "headroomDb": json_f32(headroom_db),
+        "suggestedTrimDb": suggested_trim_db,
+        "suggestedTrimDbFormula": formula,
+        "basis": basis,
+        "loudestSource": loudest_value,
+        "hint": hint,
+    }))
+}
+
 /// 校验渲染参数。
 ///
 /// # Errors
@@ -964,6 +1122,13 @@ pub struct SourceReport {
     pub ratchet_pulses: u64,
     /// 该源贡献的时间轴末端（tick）。
     pub end_tick: u64,
+    /// ⭐ `#225`：这个源节点输出的**样本峰值**（`max |sample|`，线性幅度，两声道合计）。
+    ///
+    /// 测点是 `yeban-render` 的源节点输出（[`PeakTap`] 在 `render_block` 返回后扫一遍），
+    /// 因此**含**轨音量 / 声相 / 采样器与音频片段增益，⛔ **不含**该轨的插入链
+    /// （EQ / 混响 / 卷积在 `render_node` 里、探针之后才处理）与路由边增益。
+    /// 单位与 `peak.after` 相同（满刻度线性幅度，⛔ 不是 dB、⛔ 不是文件峰值）。
+    pub peak: f32,
     /// ⭐ 采样器绑定（`TrackV3.sampler`）的实测读数；`None` = 这条轨没有绑采样器。
     pub sampler: Option<SamplerReport>,
 }
@@ -985,6 +1150,9 @@ impl SourceReport {
             "notesRatcheted": self.notes_ratcheted,
             "ratchetPulses": self.ratchet_pulses,
             "endTick": self.end_tick,
+            // ⭐ #225：逐源峰值 —— 削波预警要能点名"该减谁"。
+            "peak": self.peak,
+            "peakDbfs": json_f32(math::amplitude_dbfs(self.peak)),
             "sampler": self.sampler.as_ref().map(SamplerReport::to_value),
         })
     }
@@ -1148,6 +1316,15 @@ pub struct RenderArtifact {
     /// 正值 = 真峰值在 0 dBFS 之下（还有余量）；负值 = 已过载（该削波了）。
     /// 真峰值测不出 ⇒ `None`。
     pub headroom_db: Option<f32>,
+    /// ⭐ `#225`：**结果质量**提示（`data.warnings[]`，非阻断）。
+    ///
+    /// 当前只有一条：`code:"exportClipping"`（`clippedSamples > 0` 时才出现，
+    /// 含 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` / `loudestSource`）。
+    /// `clippedSamples == 0` ⇒ **空数组**（⛔ 不是恒报）。
+    ///
+    /// ⚠ 它**不是** `unsupported`：那份清单的口径是"我们会静默少做什么"，
+    /// 削波是"算对了、但结果过载"。两者的判据与消费者都不同（见 [`clipping_warning`]）。
+    pub warnings: Vec<Value>,
     /// 归一化是否真的改变了样本。
     pub normalize_applied: bool,
     /// 归一化的补充说明（全零信号等边界）。
@@ -1366,6 +1543,9 @@ impl RenderArtifact {
                 "loudness": "unknown (bext v2 哨兵)",
             }),
         );
+        // ⭐ #225：结果质量预警（非阻断、可寻址）。`clippedSamples == 0` 时是空数组。
+        // 它与 `unsupported` **不是一回事**：那条口径是"我们会静默少做什么"。
+        map.insert("warnings".to_owned(), Value::Array(self.warnings.clone()));
         map.insert(
             "unsupported".to_owned(),
             Value::Array(
@@ -1547,11 +1727,18 @@ pub fn build(
     }
     // 7b. 音频片段的帧区间在**知道总帧数之后**才能夹住（避免区间越过母带末端）。
     //     这一步只改内存里的 `TrackSource`，不重新解码。
+    //
+    // ⭐ #225：每个源外面套一个只读的 [`PeakTap`]（逐源峰值），句柄留在
+    // `peak_taps` 里，渲染结束后把读数填回 `reports[]`。探针**只读** `out`。
+    let mut peak_taps: BTreeMap<EntityId, Arc<AtomicU32>> = BTreeMap::new();
     for (node, mut source) in pending {
         source.clamp_to(frames);
-        // 显式标注类型: 让 `Box<TrackSource> -> Box<dyn AudioSource>` 的强制转换
-        // 出现在插槽类型已知的位置, 而不是依赖 `insert` 的参数推断。
-        let boxed: Box<dyn AudioSource> = Box::new(source);
+        let peak_bits = Arc::new(AtomicU32::new(0));
+        peak_taps.insert(node, Arc::clone(&peak_bits));
+        let boxed: Box<dyn AudioSource> = Box::new(PeakTap {
+            inner: source,
+            peak_bits,
+        });
         registry.insert(node, boxed);
     }
     // 8. 真编译 + 真执行。
@@ -1583,6 +1770,13 @@ pub fn build(
         }
         if master.pan != 0.0 {
             note_unsupported(&mut unsupported, &mut counts, "masterPan");
+        }
+    }
+    // 9a. ⭐ #225：把逐源峰值从探针里取回来（**只读**：渲染已经结束，一个样本都不再改）。
+    //     它们进 `sources[].peak` / `.peakDbfs`，也是削波预警点名"最响的源"的依据。
+    for report in &mut reports {
+        if let Some(bits) = peak_taps.get(&report.node) {
+            report.peak = f32::from_bits(bits.load(Ordering::Relaxed));
         }
     }
     // 10. 峰值归一化(抖动之前)。
@@ -1623,6 +1817,17 @@ pub fn build(
             _ => (None, None),
         }
     };
+    // 10a-bis. ⭐ #225：**削波预警**（只在 `clippedSamples > 0` 时出现一条）。
+    //           ⛔ 只生成 JSON：不改样本 / 不改 `bytes` / 不改 `sha256`。
+    let warnings: Vec<Value> = clipping_warning(
+        clipped_samples,
+        true_peak_dbfs,
+        headroom_db,
+        peak_after,
+        &reports,
+    )
+    .into_iter()
+    .collect();
     // 10b. 响度读数 + 对 `targetLufs` 的判定（**只读**：在抖动之前的浮点母带上测）。
     //      刻意**在**抖动/量化之前：响度计量的对象是母带信号本身, 而抖动是
     //      "降位深"的伴生步骤（与 `normalize` 同一条理由, 见模块文档）。
@@ -1691,6 +1896,7 @@ pub fn build(
         clipped_samples,
         true_peak_dbfs,
         headroom_db,
+        warnings,
         normalize_applied,
         normalize_note,
         loudness,
@@ -2148,6 +2354,47 @@ struct TrackSource {
     midi: MidiSynthSource,
     sampler: Option<SamplerTrackSource>,
     clips: Vec<AudioClipSource>,
+}
+
+/// ⭐ `#225`：**只读**的逐源峰值探针（包装一个 [`TrackSource`]）。
+///
+/// ## 为什么需要它
+///
+/// `sources[]` 此前只有"响了几个音符 / 几个片段"，没有"这条轨多响" ⇒
+/// 削波预警**点不出名字**（只能让调用方自己去猜该减谁）。本探针在每块渲染之后扫一遍
+/// 已经写进 `out` 的样本，取 `max |sample|`。
+///
+/// ## 它为什么**不改音频**
+///
+/// - 只调一次 `inner.render_block`，写进去的字节一个不改；
+/// - 只读 `out`，不写；
+/// - 峰值存进 `AtomicU32`（`fetch_max`），⛔ 不参与增益、⛔ 不参与归一化。
+///
+/// 判据：`tests/render_master.rs` 的
+/// `the_clipping_warning_does_not_change_a_single_byte` 用**加预警前**整文件
+/// `sha256` 的常量钉住这一点。
+///
+/// ## 测点口径（写进响应，⛔ 不让人猜）
+///
+/// `out` 是**源节点**的输出：含轨音量 / 声相 / 采样器与片段增益；
+/// ⛔ **不含**该轨插入链（`render_node` 在探针之后才 `inserts.process`）
+/// 与路由边增益。因此 `sources[].peak` 与 `peak.after` 不是同一个数：
+/// 前者是单条轨的输出，后者是母带求和之后的样本峰值。
+struct PeakTap {
+    inner: TrackSource,
+    /// 峰值位型（非负有限 `f32` 的位型与数值同序 ⇒ `fetch_max` 就是"取更大"）。
+    peak_bits: Arc<AtomicU32>,
+}
+
+impl AudioSource for PeakTap {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        self.inner.render_block(context, out)?;
+        let peak = math::peak_of(out);
+        if peak > 0.0 {
+            self.peak_bits.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        }
+        Ok(())
+    }
 }
 
 impl TrackSource {
@@ -2928,6 +3175,8 @@ fn build_source(
         notes_ratcheted,
         ratchet_pulses,
         end_tick,
+        // ⭐ #225：真实值由渲染期的 `PeakTap` 填回（见 `build` 的 9a）。
+        peak: 0.0,
         sampler: sampler_report,
     };
     Ok((source, report))

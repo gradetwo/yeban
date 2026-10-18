@@ -296,6 +296,82 @@ fn dispatcher_with(project: &YebanProjectV1, path: &Path) -> (Dispatcher, String
     (dispatcher, auth)
 }
 
+/// 一个**空**的分发器（不注入工程）—— 供 `#225` 复跑 `#224` 那条
+/// "`open_project create` ⇒ `propose_section` ⇒ `merge` ⇒ `render_master`"的调用序列。
+fn fresh_dispatcher() -> (Dispatcher, String) {
+    let token = BearerToken::generate().token;
+    let auth = format!("Bearer {}", token.expose());
+    let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
+    dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    (dispatcher, auth)
+}
+
+/// ⭐ `#225` 判据夹具：**两条**源轨（`Lead` 与 `Pad`）汇入 Master，音量不同。
+///
+/// 用途：证明 `sources[].peak` / `loudestSource` 真的按**每一条源**量、而不是
+/// 单源工程里"反正只有它"。两条轨的音符起点/时值完全相同，只有音高与轨音量不同。
+fn two_track_clip_project(lead_volume_db: f32, pad_volume_db: f32) -> YebanProjectV1 {
+    let mut project = project(&Spec {
+        volume_db: lead_volume_db,
+        ..Spec::default()
+    });
+    let pad = id(3);
+    let clip = id(11);
+    let placement = id(21);
+    let note = id(31);
+    let mut track = TrackV3 {
+        id: pad,
+        name: "Pad".to_owned(),
+        kind: TrackKind::Midi,
+        volume_db: pad_volume_db,
+        ..TrackV3::default()
+    };
+    track.clips.insert(
+        placement,
+        ClipPlacement {
+            id: placement,
+            clip_id: clip,
+            start_tick: 0,
+            duration_ticks: Spec::default().end_tick,
+            loop_config: LoopConfig::default(),
+            muted: false,
+        },
+    );
+    let mut notes = BTreeMap::new();
+    notes.insert(note, MidiNote::new(note, 0, 57, Spec::default().end_tick));
+    project.clip_pool.insert(
+        clip,
+        ClipPoolEntry {
+            id: clip,
+            name: "PadClip".to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    );
+    project.tracks.insert(pad, track);
+    project.routing_graph.nodes.push(pad);
+    let edge = id(41);
+    project.routing_graph.edges.insert(
+        edge,
+        RoutingEdge {
+            id: edge,
+            source_node: pad,
+            destination_node: id(1),
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    project
+        .validate()
+        .unwrap_or_else(|error| panic!("两轨夹具必须合法: {error}"));
+    project
+}
+
+/// 磁盘上这份文件的 SHA-256（**从字节读**，不是回抄响应）。
+fn file_sha256(path: &Path) -> String {
+    let bytes = fs::read(path).expect("读产物");
+    yeban_model::AssetHash::of_bytes(&bytes).as_str().to_owned()
+}
+
 /// 走真实 `tools/call` 管线；工具路径上**不允许**任何 JSON-RPC 层错误。
 fn call(dispatcher: &mut Dispatcher, auth: &str, arguments: Value) -> Value {
     call_tool(dispatcher, auth, "yeban_render_master", arguments)
@@ -3251,6 +3327,391 @@ fn a_normal_master_reports_zero_clipped_samples_and_no_overshoot() {
     );
     let headroom = data["headroomDb"].as_f64().expect("headroomDb 必须是数");
     assert!(headroom >= 0.0, "普通工程余量必须 >= 0 dB，实测 {headroom}");
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#225`：削波预警 ＋ 建议 trim（⛔ 不自动改增益）
+// ---------------------------------------------------------------------------
+//
+// ## 这一节量什么（对象 ＋ 单位）
+//
+// | 量 | 来源 | 单位 |
+// | :--- | :--- | :--- |
+// | `warnings[]` 的条数 | `data.warnings`（结果质量提示） | 条 |
+// | `suggestedTrimDb` | 预警字段（建议把母带增益减多少） | dB（负值 = 减） |
+// | `sources[].peak` | 每个源节点输出的样本峰值 | 满刻度线性幅度 |
+// | `sources[].peakDbfs` | 同一个峰值的 dBFS 读数 | dBFS |
+// | `loudestSource.track` | 逐源峰值最大的那条轨 | 字符串 |
+//
+// ## 为什么这几条必须一起写
+//
+// 只断言"有 warnings 字段"对缺陷是**瞎的**：恒报一条空警告也能通过。
+// 因此这里同时钉住 ① 削波时**恰好一条**（且带公式与最响源）、② 不削波时**空数组**、
+// ③ 加预警前后整文件 `sha256` **逐字节相同**（用**加预警之前**在 `main` 上测到的常量）、
+// ④ 两源工程里 `loudestSource` 真的指向更响的那条轨（不是"只有一条源所以永远对"）。
+
+/// 过载夹具（`velocity=127` ＋ `volume_db=+24`）的 RIFF **文件字节** SHA-256
+/// —— 在加 `#225` 预警**之前**（`main` @ 78e92246）实测、之后照抄的锚。
+///
+/// 它证明"预警只提示、不动音频"：如果探针写了样本、改了增益或改了落盘顺序，
+/// 这个值立刻变红。
+const CLIPPING_MASTER_SHA256: &str =
+    "7de139f48023de6118a30263510920675d5f26dba9fb1298f014ce6673d9927c";
+
+/// 同一份过载夹具的**母带样本位级摘要**（也测自加预警之前）。
+const CLIPPING_MASTER_DIGEST: &str =
+    "246bb7f76d116b26a34fb8f9b7b7057045a0b995370c8d3dfcfd4abb17429f47";
+
+/// 过载工程 ⇒ `data.warnings[]` **恰好一条** `exportClipping`，带
+/// `clippedSamples` / `truePeakDbfs` / **建议 trim** / **最响的源**。
+#[test]
+fn a_clipping_master_gets_a_clipping_warning_with_a_trim_suggestion() {
+    let scratch = Scratch::new("clip-warning");
+    let loud = Spec {
+        velocity: 127,
+        volume_db: 24.0,
+        ..Spec::default()
+    };
+    let (mut dispatcher, auth) = dispatcher_with(&project(&loud), &scratch.join("loud.yeban"));
+    let path = scratch.join("loud.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    println!(
+        "### #225 过载工程（逐字）\n{}",
+        serde_json::to_string_pretty(data).expect("pretty")
+    );
+
+    let warnings = data["warnings"]
+        .as_array()
+        .expect("warnings 必须是数组（不削波时是空数组）");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "过载工程必须有**恰好一条**削波预警: {data}"
+    );
+    let warning = &warnings[0];
+    assert_eq!(warning["code"], "exportClipping", "{warning}");
+    assert_eq!(warning["severity"], "warning", "{warning}");
+    assert_eq!(
+        warning["blocking"], false,
+        "预警不得阻断成功导出: {warning}"
+    );
+    assert_eq!(
+        warning["clippedSamples"], data["clippedSamples"],
+        "{warning}"
+    );
+    assert_eq!(warning["truePeakDbfs"], data["truePeakDbfs"], "{warning}");
+    assert_eq!(warning["headroomDb"], data["headroomDb"], "{warning}");
+
+    // ④ 建议值可算：公式逐字 + 按公式验算 + "减完不削波、最多多减 0.5 dB"。
+    assert_eq!(
+        warning["suggestedTrimDbFormula"], "suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)",
+        "{warning}"
+    );
+    let true_peak = warning["truePeakDbfs"]
+        .as_f64()
+        .expect("truePeakDbfs 必须是数");
+    assert!(true_peak > 0.0, "夹具必须过载，实测 {true_peak}");
+    let suggested = warning["suggestedTrimDb"]
+        .as_f64()
+        .expect("suggestedTrimDb 必须是数");
+    let expected = -((true_peak * 2.0).ceil() / 2.0);
+    assert!(
+        (suggested - expected).abs() < 1.0e-9,
+        "建议值必须等于公式: expected {expected}, actual {suggested}"
+    );
+    assert!(
+        true_peak + suggested <= 1.0e-6,
+        "按建议减完不得再削波: truePeak={true_peak}, trim={suggested}"
+    );
+    assert!(
+        true_peak + suggested >= -0.5 - 1.0e-6,
+        "最多多减 0.5 dB: truePeak={true_peak}, trim={suggested}"
+    );
+
+    // ② 每源峰值 + 点名最响的源。
+    let sources = data["sources"].as_array().expect("sources");
+    assert!(!sources.is_empty(), "过载母带不可能没有源: {data}");
+    for source in sources {
+        let peak = source["peak"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("sources[].peak 必须是数: {source}"));
+        assert!(peak > 0.0, "这条源的峰值必须 > 0: {source}");
+        assert!(
+            source["peakDbfs"].is_number(),
+            "sources[].peakDbfs 必须是数: {source}"
+        );
+    }
+    let loudest = &warning["loudestSource"];
+    assert_eq!(loudest["track"], "Lead", "最响的源必须是 Lead: {warning}");
+    assert_eq!(
+        loudest["node"], data["sources"][0]["node"],
+        "单源夹具里最响的源就是唯一那条源: {warning}"
+    );
+    assert!(
+        loudest["peakDbfs"].as_f64().expect("peakDbfs") > 0.0,
+        "最响的源自己也过了满量程: {warning}"
+    );
+    assert!(
+        loudest["suggestedSourceTrimDb"]
+            .as_f64()
+            .expect("suggestedSourceTrimDb")
+            < 0.0,
+        "最响的源必须给出负的 trim 建议: {warning}"
+    );
+    // `hint` 必须**逐字**说清"不自动改增益"（agent 读得到的那一句）。
+    let hint = warning["hint"].as_str().expect("hint 必须是字符串");
+    assert!(hint.contains("不自动改增益"), "{hint}");
+    assert!(hint.contains("clippedSamples"), "{hint}");
+}
+
+/// ② 不削波 ⇒ **没有**那条预警（`warnings == []`），证明不是恒报。
+#[test]
+fn a_normal_master_reports_an_empty_warnings_array() {
+    let scratch = Scratch::new("clip-warning-normal");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("normal.yeban"));
+    let path = scratch.join("normal.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    println!(
+        "### #225 普通工程（逐字）: clippedSamples={} truePeakDbfs={} warnings={}",
+        data["clippedSamples"], data["truePeakDbfs"], data["warnings"]
+    );
+    assert_eq!(data["clippedSamples"], 0, "夹具必须不削波: {data}");
+    assert_eq!(
+        data["warnings"],
+        json!([]),
+        "不削波时 warnings 必须是空数组（⛔ 不是恒报）: {data}"
+    );
+}
+
+/// ③ ⛔ 不改音频：同一份过载工程，加预警前后整文件 `sha256`（与母带摘要）逐字节相同。
+///
+/// 两个常量都在 `main` @ 78e92246（**加预警之前**）实测，运行时的响应必须与它们相等。
+/// 这一条与上面那条**同一次响应**里还断言了 `warnings.len() == 1` ——
+/// 证明"发生预警"与"字节不变"是同一份产物上的两件事，而不是两次跑的巧合。
+#[test]
+fn the_clipping_warning_does_not_change_a_single_byte() {
+    let scratch = Scratch::new("clip-warning-bytes");
+    let loud = Spec {
+        velocity: 127,
+        volume_db: 24.0,
+        ..Spec::default()
+    };
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&loud), &scratch.join("loud-bytes.yeban"));
+    let path = scratch.join("loud-bytes.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    assert_eq!(
+        data["warnings"].as_array().map(Vec::len),
+        Some(1),
+        "这一条必须在**真有一条预警**的响应上量字节: {data}"
+    );
+    assert_eq!(
+        data["sha256"], CLIPPING_MASTER_SHA256,
+        "加预警前后整文件 sha256 必须逐字节相同"
+    );
+    assert_eq!(
+        data["masterDigest"], CLIPPING_MASTER_DIGEST,
+        "母带样本的位级摘要也必须逐位相同"
+    );
+    // 落盘字节也不能被改写：磁盘上的文件摘要 == 响应里的常量。
+    assert_eq!(
+        file_sha256(&path),
+        CLIPPING_MASTER_SHA256,
+        "磁盘上的母带必须与加预警之前的字节相同"
+    );
+}
+
+/// ②b 两源工程 ⇒ `loudestSource` 真的指向更响的那条轨（不是"只有一条源"）。
+#[test]
+fn the_loudest_source_is_the_loudest_track() {
+    let scratch = Scratch::new("clip-warning-loudest");
+    // Lead +6 dB / Pad −18 dB ⇒ Lead 的逐源峰值约为 Pad 的 16 倍，母带因此削波。
+    let (mut dispatcher, auth) = dispatcher_with(
+        &two_track_clip_project(6.0, -18.0),
+        &scratch.join("two.yeban"),
+    );
+    let path = scratch.join("two.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": path.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    let sources = data["sources"].as_array().expect("sources");
+    assert_eq!(sources.len(), 2, "两轨夹具必须报两条源: {data}");
+    let lead = sources
+        .iter()
+        .find(|source| source["track"] == "Lead")
+        .expect("Lead 必须在 sources 里");
+    let pad = sources
+        .iter()
+        .find(|source| source["track"] == "Pad")
+        .expect("Pad 必须在 sources 里");
+    let lead_peak = lead["peak"].as_f64().expect("lead peak");
+    let pad_peak = pad["peak"].as_f64().expect("pad peak");
+    println!(
+        "### #225 两源工程（逐字）: lead.peak={lead_peak} lead.peakDbfs={} pad.peak={pad_peak} pad.peakDbfs={} warnings={}",
+        lead["peakDbfs"], pad["peakDbfs"], data["warnings"]
+    );
+    assert!(
+        lead_peak > pad_peak,
+        "Lead (+6 dB) 必须比 Pad (−18 dB) 响: {lead_peak} vs {pad_peak}"
+    );
+    let warning = &data["warnings"][0];
+    assert_eq!(warning["code"], "exportClipping", "{warning}");
+    assert_eq!(
+        warning["loudestSource"]["track"], "Lead",
+        "预警必须点名更响的 Lead: {warning}"
+    );
+    assert_eq!(
+        warning["loudestSource"]["node"], lead["node"],
+        "点名的 node 必须是 Lead 的 node: {warning}"
+    );
+    // 最响源的 trim 建议 = 同一个公式作用在它的 peakDbfs 上。
+    let lead_dbfs = lead["peakDbfs"].as_f64().expect("lead peakDbfs");
+    let expected = -((lead_dbfs * 2.0).ceil() / 2.0);
+    let suggested = warning["loudestSource"]["suggestedSourceTrimDb"]
+        .as_f64()
+        .expect("suggestedSourceTrimDb");
+    assert!(
+        (suggested - expected).abs() < 1.0e-9,
+        "逐源建议必须同一条公式: expected {expected}, actual {suggested}"
+    );
+}
+
+/// ① 复跑 `#224` 的实测场景：**不加任何推子**，`open_project create` ⇒
+/// `propose_section` ⇒ `merge` ⇒ `render_master` —— 响应必须带削波预警。
+///
+/// 这是本单的**起因**：agent 编完直接导出就会削波，而工具面此前一个字节都不提。
+#[test]
+fn a_no_fader_project_gets_a_clipping_warning_through_the_tool_chain() {
+    let scratch = Scratch::new("no-fader-clip");
+    let (mut dispatcher, auth) = fresh_dispatcher();
+    let project_path = scratch.join("no-fader.yeban");
+    let created = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": project_path.display().to_string(),
+            "create": true,
+            "title": "No Fader",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let proposed = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_propose_section",
+        json!({ "sectionName": "Intro", "stylePreset": "pop", "bars": 2 }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+    let proposal_id = proposed["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({ "proposalId": proposal_id, "commitMessage": "#225 no fader" }),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+
+    let wav = scratch.join("no-fader.wav");
+    let rendered = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "path": wav.display().to_string(),
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    let warnings = data["warnings"].as_array().expect("warnings");
+    println!(
+        "### #224 式无推子工程（逐字）: clippedSamples={} truePeakDbfs={} headroomDb={} warnings={}",
+        data["clippedSamples"],
+        data["truePeakDbfs"],
+        data["headroomDb"],
+        serde_json::to_string(warnings).expect("warnings")
+    );
+    assert!(
+        data["clippedSamples"].as_u64().unwrap_or(0) > 0,
+        "#224 的夹具必须真的削波（否则本条没有前提）: {data}"
+    );
+    assert_eq!(warnings.len(), 1, "无推子工程必须有一条削波预警: {data}");
+    let warning = &warnings[0];
+    assert_eq!(warning["code"], "exportClipping", "{warning}");
+    assert_eq!(
+        warning["clippedSamples"], data["clippedSamples"],
+        "{warning}"
+    );
+    assert!(
+        warning["suggestedTrimDb"]
+            .as_f64()
+            .is_some_and(|value| value < 0.0),
+        "必须给出负的 trim 建议: {warning}"
+    );
+    assert!(
+        warning["loudestSource"]["track"].is_string(),
+        "必须点名最响的源: {warning}"
+    );
+    // ⭐ 这条实测很重要：`#224` 那种**多源求和**的工程里，最响的**单条源**
+    // 自己可能没过满量程 ⇒ 逐源建议是 `0.0`，`hint` 必须明说"过载来自求和"。
+    let loudest_dbfs = warning["loudestSource"]["peakDbfs"].as_f64();
+    let source_trim = warning["loudestSource"]["suggestedSourceTrimDb"]
+        .as_f64()
+        .expect("suggestedSourceTrimDb");
+    if loudest_dbfs.is_some_and(|value| value <= 0.0) {
+        assert_eq!(
+            source_trim, 0.0,
+            "单条源没过满量程 ⇒ 逐源 trim 建议必须是 0: {warning}"
+        );
+        assert!(
+            warning["hint"].as_str().expect("hint").contains("多源求和"),
+            "必须说清过载来自求和、单独减最响源没用: {warning}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

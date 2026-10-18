@@ -144,6 +144,59 @@ pub fn clipped_sample_count(samples: &[f32]) -> u64 {
         .count() as u64
 }
 
+/// ⭐ `#225`：削波时建议的 **trim 量**（dB；负值 = 减增益，`0.0` = 不需要减）。
+///
+/// ## 公式（逐字，响应里的 `suggestedTrimDbFormula` 就是这一行）
+///
+/// ```text
+/// suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)
+/// ```
+///
+/// 语义：把真峰值**向上取整到 0.5 dB 的整数倍**再取负 ⇒ 按这个量减增益后
+/// `truePeakDbfs <= 0`（不会差 0.1 dB 又削一次），且**最多多减 0.5 dB**
+/// （不会把一段只过载 0.2 dB 的母带砍掉 1 dB）。
+///
+/// ## 为什么是「向上」而不是四舍五入
+///
+/// 四舍五入没有保证：`truePeakDbfs = 5.44` 会给出 `5.5`（够），但 `5.46` 会给出
+/// `5.5`（**不够**）。`ceil(x * 2) / 2 >= x` 对所有有限 `x` 成立，才是"按这个量减
+/// 之后不削波"的保证。
+///
+/// 非有限值与 `<= 0` 的输入返回 `0.0`（不需要 trim）—— 这一条让"没有削波"
+/// 与"测不出真峰值"都不会被翻译成一个正数（那是**提升**增益，语义正好相反）。
+///
+/// 判据：`render_math.rs` 的 `suggested_trim_is_ceiled_to_half_a_db` 与
+/// `tests/render_master.rs` 的
+/// `a_clipping_master_gets_a_clipping_warning_with_a_trim_suggestion`（后者在真实响应上验算
+/// 同一个公式）。
+#[must_use]
+pub fn suggested_trim_db(true_peak_dbfs: f32) -> f32 {
+    if !true_peak_dbfs.is_finite() || true_peak_dbfs <= 0.0 {
+        return 0.0;
+    }
+    let trimmed = (true_peak_dbfs * 2.0).ceil() / 2.0;
+    if trimmed <= 0.0 { 0.0 } else { -trimmed }
+}
+
+/// 线性幅度 → dBFS（`20 * log10(amplitude)`）。
+///
+/// 返回 `None` 而不是 `-inf`：`0`（静音）与"测不出"在 JSON 里都写成 `null`，
+/// ⛔ 不写 `-Infinity`（JSON 没有它）也⛔ 不写 `0 dBFS`（那是满量程，语义相反）。
+///
+/// ⚠ 这里用 `libm::log10f`（纯 Rust 实现）而不是宿主 `log10f`：同一份工程在
+/// 不同平台上必须给出同一个读数 [ARCH-DET-001]。`libm` 已在依赖里（见
+/// `crates/yeban-mcp/Cargo.toml` 的那条注释），本模块此前"只允许 `+ - * /` 与
+/// `round`"的口径**不适用于本函数** —— 它不参与 bit-exact 渲染，只把已经算完的
+/// 峰值换个单位报出来；判据只钉住"单调 + 边界"，不钉住 LSB。
+#[must_use]
+pub fn amplitude_dbfs(amplitude: f32) -> Option<f32> {
+    if amplitude.is_finite() && amplitude > 0.0 {
+        Some(20.0 * libm::log10f(amplitude))
+    } else {
+        None
+    }
+}
+
 /// 线性起音 / 释音包络（`(0, 1]`，区间外为 `0`）。
 ///
 /// `offset` 是相对音符起点的帧偏移，`length` 是音符总帧数。
@@ -400,6 +453,56 @@ mod tests {
         assert_eq!(normalize_gain(0.5, 0.0), 1.0);
         assert_eq!(normalize_gain(0.25, 1.0), 4.0);
         assert_eq!(normalize_gain(0.25, 0.5), 2.0);
+    }
+
+    /// ⭐ `#225` 判据: trim 建议**向上取整到 0.5 dB**，且"按它减完不削波"有保证。
+    #[test]
+    fn suggested_trim_is_ceiled_to_half_a_db() {
+        // 任务单里的两个逐字例子。
+        assert_eq!(suggested_trim_db(5.45), -5.5);
+        assert_eq!(suggested_trim_db(1.874_512), -2.0);
+        // 正好落在 0.5 网格上时不额外多减。
+        assert_eq!(suggested_trim_db(24.0), -24.0);
+        assert_eq!(suggested_trim_db(0.5), -0.5);
+        // 小于 0.5 dB 的过载也至少减 0.5（否则仍会削）。
+        assert_eq!(suggested_trim_db(0.02), -0.5);
+        // 没有过载 / 测不出 ⇒ 不需要 trim（⛔ 不是"提升"）。
+        assert_eq!(suggested_trim_db(0.0), 0.0);
+        assert_eq!(suggested_trim_db(-3.666_596_4), 0.0);
+        assert_eq!(suggested_trim_db(f32::NAN), 0.0);
+        assert_eq!(suggested_trim_db(f32::INFINITY), 0.0);
+        // **保证**：减完之后真峰值 <= 0，且最多多减 0.5 dB（含 f32 舍入余量）。
+        for peak in [0.01f32, 0.2, 0.5, 2.001, 5.45, 5.46, 24.0, 31.123] {
+            let trim = suggested_trim_db(peak);
+            assert!(trim < 0.0, "过载 {peak} 必须给负 trim，实际 {trim}");
+            assert!(
+                peak + trim <= 1.0e-4,
+                "按建议减完必须不削波: peak={peak} trim={trim}"
+            );
+            assert!(
+                (peak + trim).abs() <= 0.5 + 1.0e-4,
+                "最多多减 0.5 dB: peak={peak} trim={trim}"
+            );
+        }
+    }
+
+    /// ⭐ `#225` 判据: 幅度 → dBFS 的边界（静音 ⇒ `None`，满量程 ⇒ `0`）。
+    #[test]
+    fn amplitude_dbfs_is_none_for_silence_and_zero_at_full_scale() {
+        assert_eq!(amplitude_dbfs(0.0), None);
+        assert_eq!(amplitude_dbfs(-0.0), None);
+        assert_eq!(amplitude_dbfs(-1.0), None);
+        assert_eq!(amplitude_dbfs(f32::NAN), None);
+        assert_eq!(amplitude_dbfs(f32::INFINITY), None);
+        let full_scale = amplitude_dbfs(1.0).expect("1.0 是可测的");
+        assert!(full_scale.abs() < 1.0e-6, "1.0 ⇒ 0 dBFS，实际 {full_scale}");
+        let double = amplitude_dbfs(2.0).expect("2.0 是可测的");
+        assert!(
+            (double - 6.020_6).abs() < 1.0e-3,
+            "2.0 ⇒ +6.02 dBFS，实际 {double}"
+        );
+        // 单调：更响的源读数更大。
+        assert!(amplitude_dbfs(0.5).unwrap() < amplitude_dbfs(0.6).unwrap());
     }
 
     /// 判据 5: 归一化后峰值命中目标（f32 乘法的舍入误差上界）。

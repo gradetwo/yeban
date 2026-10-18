@@ -1645,3 +1645,121 @@ fn the_stdio_binary_really_renders_a_bound_sampler() {
         "采样器已经真的被渲染 ⇒ 不许再报 sfzSampler"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#225`：**stdio 装配**（真二进制）也真的报削波预警
+// ---------------------------------------------------------------------------
+//
+// 这是"两条装配都要验"里的 stdio 那一半：内嵌装配（`mcp_mount::session_dispatcher`）
+// 那一半住在 `crates/yeban-app/src/mcp_mount/embedded_sampler.rs`。
+//
+// 量什么（对象 ＋ 单位）：
+// - `data.warnings`：削波预警条数（`clippedSamples > 0` 时恰好 1 条）；
+// - `data.warnings[].suggestedTrimDb`：建议的母带 trim（dB，负值 = 减）；
+// - `data.sources[].peakDbfs`：逐源峰值（dBFS）。
+
+/// 写一份**每条轨都 +24 dB** 的真容器工程（必然削波），返回 `(路径, 响应用的 wav 路径)`。
+fn write_clipping_container_project(name: &str) -> PathBuf {
+    let mut project = yeban_model::samples::filled_project();
+    // 母带轨也一起推 ⇒ "母带增益在求和之后"这条路径也被推到过载（不依赖某条轨是否发声）。
+    for track in project.tracks.values_mut() {
+        track.volume_db = 24.0;
+    }
+    project.validate().expect("过载夹具工程必须合法");
+    let history = serde_json::to_vec(&CommitGraph::new()).expect("空图谱 JSON");
+    let bytes = write_project_container(&project, &history, &BTreeMap::new()).expect("写真容器");
+    let path = scratch().join(name);
+    std::fs::write(&path, bytes).expect("写容器工程");
+    path
+}
+
+/// ⭐ 判据 5（stdio 腿）：真二进制渲染一份**会削波**的工程 ⇒ 响应里恰好一条
+/// `exportClipping` 预警，带建议 trim 与逐源峰值。
+///
+/// 它挡的回归：预警被整条删掉 / stdio 装配丢了 `warnings` 字段 / 逐源峰值没接出去。
+/// 承重断言是**削波工程**上的三件事同时成立：
+/// `clippedSamples > 0`、`warnings.len() == 1`、`suggestedTrimDb < 0`。
+/// ⚠ "不削波时必须是空数组"由 `tests/render_master.rs` 的
+/// `a_normal_master_reports_an_empty_warnings_array` 钉住（那条在 dispatcher 层，快而准）。
+#[test]
+fn the_stdio_binary_warns_when_the_export_clips() {
+    let project_path = write_clipping_container_project("clip-warning.yeban");
+    let out = scratch().join("clip-warning.wav");
+    let res = session(&[
+        req(
+            1,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": project_path.display().to_string()},
+            }),
+        ),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_render_master",
+                "arguments": {
+                    "format": "wav",
+                    "sampleRate": 48000,
+                    "path": out.display().to_string(),
+                },
+            }),
+        ),
+    ]);
+    assert_eq!(res.len(), 2, "两行请求 ⇒ 两行响应");
+    let opened = &res[0]["result"];
+    assert_eq!(opened["status"], "success", "{opened}");
+    let rendered = &res[1]["result"];
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let data = &rendered["data"];
+    let warnings = data["warnings"].as_array().expect("warnings");
+    println!(
+        "### stdio 腿削波读数（逐字）: clippedSamples={} truePeakDbfs={} suggestedTrimDb={} warnings={}",
+        data["clippedSamples"],
+        data["truePeakDbfs"],
+        warnings.first().map_or(serde_json::Value::Null, |warning| {
+            warning["suggestedTrimDb"].clone()
+        }),
+        serde_json::to_string(warnings).expect("warnings")
+    );
+    assert!(
+        data["clippedSamples"].as_u64().unwrap_or(0) > 0,
+        "夹具必须真的削波（否则本条没有前提）: {data}"
+    );
+    assert_eq!(warnings.len(), 1, "削波工程必须恰好一条预警: {data}");
+    let warning = &warnings[0];
+    assert_eq!(warning["code"], "exportClipping", "{warning}");
+    assert_eq!(
+        warning["suggestedTrimDbFormula"], "suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)",
+        "{warning}"
+    );
+    assert!(
+        warning["suggestedTrimDb"]
+            .as_f64()
+            .is_some_and(|value| value < 0.0),
+        "必须给出负的 trim 建议: {warning}"
+    );
+    assert!(
+        warning["loudestSource"]["track"].is_string(),
+        "必须点名最响的源: {warning}"
+    );
+    // 逐源峰值真的出现在 stdio 响应里（不是只有直接调 dispatcher 才有）。
+    let sources = data["sources"].as_array().expect("sources");
+    assert!(!sources.is_empty(), "{data}");
+    for source in sources {
+        let peak = source["peak"].as_f64().expect("sources[].peak 必须是数");
+        if peak > 0.0 {
+            assert!(
+                source["peakDbfs"].is_number(),
+                "有信号的源必须有 peakDbfs: {source}"
+            );
+        } else {
+            assert_eq!(
+                source["peakDbfs"],
+                serde_json::Value::Null,
+                "静音源的 peakDbfs 必须是 null（⛔ 不写 -inf / 0）: {source}"
+            );
+        }
+    }
+}

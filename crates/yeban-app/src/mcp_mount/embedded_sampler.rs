@@ -541,3 +541,98 @@ fn the_tempo_fix_is_a_no_op_at_sixty_bpm() {
     assert_eq!(new, old, "⛔ bpm=60 时新换算必须与旧算式逐值相同");
     assert!(!new.is_empty(), "夹具必须真的带音符（否则相等是空转）");
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#225`：**内嵌装配**也真的把削波预警带出来（⛔ 不自动改增益）
+// ---------------------------------------------------------------------------
+//
+// ## 这一条量什么（对象 ＋ 单位）
+//
+// | 量 | 来源 | 单位 |
+// | :--- | :--- | :--- |
+// | `data.warnings` 的条数 | 内嵌会话的 `yeban_render_master` 响应 | 条 |
+// | `data.warnings[].suggestedTrimDb` | 同上（建议的母带 trim） | dB（负值 = 减） |
+// | `data.sources[].peakDbfs` | 同上（逐源峰值） | dBFS |
+//
+// ## 它**不**证什么
+//
+// ⛔ 没人耳听；⛔ 不证"减完就好听"（预警只说明"会削波"与"减多少能不过载"）。
+// ⚠ 本判据在 `yeban-app`（含 slint / cpal 重依赖）里 ⇒ **本机不编译**，判决由 CI 给。
+// stdio 那一半在 `crates/yeban-mcp/tests/stdio_e2e.rs` 的
+// `the_stdio_binary_warns_when_the_export_clips`（本机可跑）。
+
+/// ⭐ `#225` 判据 5（内嵌腿）：`session_dispatcher` 造出来的会话在**会削波**的工程上
+/// 返回恰好一条 `exportClipping` 预警，带建议 trim 与逐源峰值。
+///
+/// 夹具：`filled_project` 的**每一条轨**（含母带轨）推子 +24 dB ⇒ 必然过载。
+/// 承重断言：`clippedSamples > 0` ＋ `warnings.len() == 1` ＋ `suggestedTrimDb < 0`。
+#[test]
+fn the_embedded_dispatcher_surfaces_the_clipping_warning() {
+    let scratch = Scratch::new("clip-warning");
+    let mut project = project_without_note_probability();
+    // 母带轨也一起推 ⇒ "母带增益在求和之后"那条路径也被推到过载。
+    for track in project.tracks.values_mut() {
+        track.volume_db = 24.0;
+    }
+    project.validate().expect("过载夹具工程必须合法");
+
+    let mut dispatcher =
+        super::session_dispatcher(&project, &scratch.join("clip-warning.yeban"), false)
+            .expect("内嵌会话装配");
+
+    let (sha, peak, response) = render(&mut dispatcher, Channel::Http, &scratch, "clip-warning");
+    let data = &response["data"];
+    let warnings = data["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("warnings 必须是数组: {response}"));
+    println!(
+        "### 内嵌腿削波读数（逐字）: sha256={sha} peak.before={peak:.9} clippedSamples={} truePeakDbfs={} suggestedTrimDb={} warnings={}",
+        data["clippedSamples"],
+        data["truePeakDbfs"],
+        warnings
+            .first()
+            .map_or(Value::Null, |warning| warning["suggestedTrimDb"].clone()),
+        serde_json::to_string(warnings).expect("warnings")
+    );
+    assert!(
+        data["clippedSamples"].as_u64().unwrap_or(0) > 0,
+        "夹具必须真的削波（否则本条没有前提）: {response}"
+    );
+    assert_eq!(warnings.len(), 1, "削波工程必须恰好一条预警: {response}");
+    let warning = &warnings[0];
+    assert_eq!(warning["code"], "exportClipping", "{warning}");
+    assert_eq!(
+        warning["suggestedTrimDbFormula"], "suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)",
+        "{warning}"
+    );
+    assert!(
+        warning["suggestedTrimDb"]
+            .as_f64()
+            .is_some_and(|value| value < 0.0),
+        "必须给出负的 trim 建议: {warning}"
+    );
+    assert!(
+        warning["loudestSource"]["track"].is_string(),
+        "必须点名最响的源: {warning}"
+    );
+    // ⛔ 不自动改增益：响应里只有读数与建议；音频字节由同一次响应的 sha256 报出，
+    // 这里断言它是 64 位十六进制（真落盘了）而不是"改过增益后的另一份"。
+    assert_eq!(sha.len(), 64, "sha256 必须是 64 位十六进制: {sha}");
+    let sources = data["sources"].as_array().expect("sources");
+    assert!(!sources.is_empty(), "{response}");
+    for source in sources {
+        let peak = source["peak"].as_f64().expect("sources[].peak 必须是数");
+        if peak > 0.0 {
+            assert!(
+                source["peakDbfs"].is_number(),
+                "有信号的源必须有 peakDbfs: {source}"
+            );
+        } else {
+            assert_eq!(
+                source["peakDbfs"],
+                Value::Null,
+                "静音源的 peakDbfs 必须是 null（⛔ 不写 -inf / 0）: {source}"
+            );
+        }
+    }
+}
