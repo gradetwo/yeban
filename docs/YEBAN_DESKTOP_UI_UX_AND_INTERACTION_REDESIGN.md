@@ -96,7 +96,7 @@
 ### 1.2 视口几何约束与响应式折叠规则
 
 `[UI-GRID-002]` **响应式断点与自适应折叠 (Responsive Breakpoints)**：
-1. **高分宽屏显示器 (≥ 1920×1080, FHD / 2K / 4K)**：全展开模式，Left Browser (固定 240px)、Main Timeline (弹性填充)、Right AI Co-pilot (固定 280px)、Bottom Console 完整就绪；
+1. **高分宽屏显示器 (≥ 1180 宽)**：全展开模式 ⚠ **2026-10-18 负责人裁决（B）：断点由 1920 改为 1180** —— 故 1440 与 1280 笔记本屏也是**展开**态（与下文"1366–1919 折叠"原文相反，原文保留作历史），Left Browser (固定 240px)、Main Timeline (弹性填充)、Right AI Co-pilot (固定 280px)、Bottom Console 完整就绪；
 2. **笔记本屏幕 (1366×768 ～ 1919×1079)**：Main Workspace 具备最高展示优先级。AI Co-pilot 自动折叠为右侧抽屉（快捷键 `Cmd/Ctrl + \` 呼出）；Left Browser 默认收起为 36px 图标导轨；
 3. **分栏拖拽与极值保护**：上下主工作区与底部控制台之间的 Splitter Bar 支持双击自动居中，拖拽范围硬限制在 Min 220px 至 Max 600px，防止极端拖拽导致任一视口退化不可见。
 
