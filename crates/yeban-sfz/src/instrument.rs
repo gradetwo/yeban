@@ -741,7 +741,60 @@ pub struct Region<'a> {
     pub source_line: usize,
 }
 
+/// ⭐ 任务单 `#217`：SFZ 的**内建静音伪样本** —— `sample=*silence`。
+///
+/// ## 规范逐字（<https://sfzformat.com/opcodes/sample/>）
+///
+/// > Each engine can also support custom oscillators. For example, ARIA supports using
+/// > this opcode for some basic synthesized sound waves such as:
+/// > `sample=*sine` / `sample=*saw` / `sample=*square` / `sample=*triangle` /
+/// > `sample=*tri` / `sample=*noise` / `sample=*silence`
+/// >
+/// > "Tri is an alias for triangle. For cases where we don't want to actually play a
+/// > sample but want a region to exist and be played (for example, to mute other sounds
+/// > when using group and off_by), the silence value can be very convenient."
+/// >
+/// > "Note that in this case the `*` is a real character and not a wildcard."
+///
+/// ⇒ `*silence` **不是一个文件**：它是一个**内建值**，表示"这个 region 存在、会被触发、
+/// 但⛔ 不产生采样输出"。把它当文件名去找（⇒ 找不到 ⇒ 回退内存正弦）会让**本该静音的
+/// region 反而出声** —— 这正是任务单 `#217` 修的那条。
+///
+/// ⚠ 本仓**只**把 `*silence` 认成静音。同页列出的其它 ARIA 合成波形（`*sine` / `*saw` /
+/// `*square` / `*triangle` / `*tri` / `*noise`）**未实现**，仍按普通样本路径处理
+/// （⛔ 不在这里偷偷发明振荡器）。登记语料（`~/Library/Application Support/dev.yeban.app/
+/// Samples` 的 1398 份 `.sfz`）里 `sample=*…` 共 **95 处、全部是 `*silence`**；
+/// `*sine` / `*saw` / … 各 **0 处**。
+pub const BUILTIN_SILENCE_SAMPLE: &str = "*silence";
+
+/// 一个 `sample=` 值是不是**内建静音伪样本**（[`BUILTIN_SILENCE_SAMPLE`]）。
+///
+/// ⚠ **逐字、大小写敏感**：
+///
+/// * 规范只给出小写 `*silence`；登记语料 95 处**全为小写**，大小写变体 **0 处**；
+/// * `sample=` 是文件名（规范逐字："the `*` is a real character"）⇒ 把 `*Silence`
+///   也认成内建值会**重新解释**作者写下的一个文件名（本仓不发明语义）。
+///
+/// ⇒ `*Silence` / `*SILENCE` 仍按普通样本路径处理（读不到 ⇒ 走各自的"缺样本/回退"口径）。
+#[must_use]
+pub fn is_builtin_silence_sample(sample: &str) -> bool {
+    sample == BUILTIN_SILENCE_SAMPLE
+}
+
 impl<'a> Region<'a> {
+    /// 本区域的 `sample=` 是不是**内建静音伪样本** [`BUILTIN_SILENCE_SAMPLE`]
+    /// （⭐ 任务单 `#217`）。
+    ///
+    /// ⚠ 判的是 **`sample=` 的原始值**（[`Self::sample`]），⛔ 不是
+    /// [`Self::sample_path`]：后者会拼上 `<control> default_path=` 前缀，而内建值
+    /// 不是相对路径。登记语料里 3 个受影响乐器的 `default_path` 出现 **0 次**，
+    /// 所以这两种判法在当前语料上读数相同；判原始值是为了**语义正确**
+    /// （`default_path=samples/` ＋ `sample=*silence` 仍是静音，⛔ 不是 `samples/*silence`）。
+    #[must_use]
+    pub fn is_builtin_silence(&self) -> bool {
+        is_builtin_silence_sample(self.sample.as_ref())
+    }
+
     /// 播放路径：把 `default_path` 拼到 `sample` 上（`sample` 以 `/` 开头时不拼）。
     #[must_use]
     pub fn sample_path(&self) -> Cow<'_, str> {
@@ -7501,5 +7554,76 @@ v127=1
         )
         .expect("不属本族的名字不构成错误");
         assert_eq!(ignored.regions()[0].ampeg_vel2(AmpegParam::Attack), None);
+    }
+
+    /// ⭐ 任务单 `#217`：`sample=*silence` 是**内建伪样本**，且判据**逐字大小写敏感**。
+    ///
+    /// 读数（每个断言都是机械读数）：
+    /// * `*silence` ⇒ `is_builtin_silence() == true`；
+    /// * `*Silence` / `*SILENCE` ⇒ `false`（规范只给 lowercase；语料变体 0 处）；
+    /// * `*sine` / `*saw` / `*square` / `*triangle` / `*tri` / `*noise` ⇒ `false`
+    ///   （同页的 ARIA 合成波形，本仓**未实现** ⇒ 仍按普通样本路径）；
+    /// * `silence.wav` / `*silence.wav` ⇒ `false`（不是"包含/前缀"匹配）。
+    #[test]
+    fn the_silence_pseudo_sample_is_recognized_verbatim_and_case_sensitively() {
+        let cases: [(&str, bool); 11] = [
+            ("*silence", true),
+            ("*Silence", false),
+            ("*SILENCE", false),
+            ("*sine", false),
+            ("*saw", false),
+            ("*square", false),
+            ("*triangle", false),
+            ("*tri", false),
+            ("*noise", false),
+            ("silence.wav", false),
+            ("*silence.wav", false),
+        ];
+        for (sample, want) in cases {
+            let text = format!("<region> key=60 sample={sample}");
+            let instrument = parse_text(&text, &Default::default())
+                .unwrap_or_else(|error| panic!("`{sample}` 必须可解析：{error}"));
+            let region = &instrument.regions()[0];
+            println!(
+                "[sfz/silence] sample={sample} ⇒ sample={:?} sample_path={:?} builtin_silence={} \
+                 (want {want})",
+                region.sample,
+                region.sample_path(),
+                region.is_builtin_silence()
+            );
+            assert_eq!(
+                region.is_builtin_silence(),
+                want,
+                "`sample={sample}` 的内建静音判定"
+            );
+            assert_eq!(
+                is_builtin_silence_sample(sample),
+                want,
+                "自由函数与 Region 方法必须同口径"
+            );
+        }
+    }
+
+    /// ⭐ 任务单 `#217`：判据是 **`sample=` 原值**，⛔ 不是拼了 `default_path` 的
+    /// [`Region::sample_path`] —— 因此 `default_path` 不会把内建静音变成一条假路径。
+    #[test]
+    fn default_path_does_not_hide_the_builtin_silence_value() {
+        let instrument = parse_text(
+            "<control> default_path=samples/\n<region> key=60 sample=*silence",
+            &Default::default(),
+        )
+        .expect("解析");
+        let region = &instrument.regions()[0];
+        println!(
+            "[sfz/silence+default_path] sample={:?} sample_path={:?} builtin_silence={}",
+            region.sample,
+            region.sample_path(),
+            region.is_builtin_silence()
+        );
+        assert_eq!(region.sample_path(), "samples/*silence");
+        assert!(
+            region.is_builtin_silence(),
+            "`default_path` 只作用于文件路径，⛔ 不改变内建值判定"
+        );
     }
 }

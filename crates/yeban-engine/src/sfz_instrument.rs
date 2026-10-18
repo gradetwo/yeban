@@ -487,6 +487,12 @@
 //! "用什么替代"是**控制侧**的产品决定（归属裁决见台账 `R711`；旧行为"回退到 `samples[0]`"
 //! 是**内容错**，已删除 ⇒ `needs-7` 闭合）。
 //!
+//! ⭐ **任务单 `#217`（`sample=*silence`）**：SFZ 的内建静音伪样本**不是缺文件**。
+//! `flatten_regions` 在调用方的解析闭包**之前**把它截住 ⇒ `sample_index = NO_SAMPLE`、
+//! 计入 [`PreparedSfz::silent_region_count`]、⛔ **不**进 `missing_sample_paths`；
+//! 离线 [`SfzInstrument::render_note_into`] 也在选区域后直接 `continue`（否则探测/导出
+//! 会把调用方给的**内存正弦**灌进本该静音的 region）。判据：`tests/sfz_silence_sample.rs`。
+//!
 //! ## needs 汇总（⭐ 本步闭合的标注"已闭合"，未闭合的说明卡在哪）
 //!
 //! | # | 缺口 | 为什么需要裁决 |
@@ -1881,6 +1887,16 @@ impl SfzInstrument {
             let mut written = 0usize;
             for region in instrument.regions() {
                 if !region.matches_query(&query) {
+                    continue;
+                }
+                // ⭐ 任务单 `#217`：`sample=*silence` 的 region **存在、会被选中**，但
+                // ⛔ **不产生任何采样输出**。必须在**这里**判，⛔ 不能靠"PCM 为空"：
+                // 本函数与 [`crate::sfz_instrument::probe_note_energy`] 的调用方给的是
+                // **同一个 `source`**（通常是内存正弦），`sample=` 根本不参与
+                // `render_note_into` ⇒ 不在这里截住，探测/离线导出会让**本该静音**的
+                // region 出正弦声（这正是 `#217` 修的那条）。
+                // 出口与"`end=-1` / 空 span"同一条（`continue` ⇒ 该 region 写 0 帧）。
+                if region.is_builtin_silence() {
                     continue;
                 }
                 // ⭐ 复用 `yeban-sfz` 自己的换算：速率与总增益都来自它的 `PlaybackSpec`。
@@ -3474,7 +3490,16 @@ pub struct PreparedSfz {
     samples: Vec<PreparedSample>,
     /// 建表口径：`true` ⇒ 单样本重载 [`Self::prepare`] 的**广播**路径（⛔ 内容错，已登记）。
     broadcast: bool,
-    /// ⭐ 缺样本 ⇒ 标 `NO_SAMPLE`（**不产生采样输出**）的区域数（**计数**，⛔ 不静默）。
+    /// ⭐ **不产生采样输出**的区域数（**计数**，⛔ 不静默）。
+    ///
+    /// 自任务单 `#217` 起它由**两类**相加：
+    ///
+    /// 1. **缺样本**：`provided_samples` 里没有该 `sample_path` ⇒ 同时进
+    ///    [`Self::missing_samples`]（那是**非预期**静音）；
+    /// 2. **内建静音伪样本** `sample=*silence` ⇒ 只计入本计数、
+    ///    ⛔ **不**进 `missing_samples`（那是 SFZ 作者**明确要求**的静音）。
+    ///
+    /// ⇒ 报告里 `silent` 与 `missing` 分得开：前者是"不发声"，后者是"缺文件"。
     ///
     /// ⚠ 归属裁决（台账 R711）：引擎只出**静音** ＋ 计数，⛔ **不发明替代内容**
     /// （旧行为"回退到 `samples[0]`"是**内容错**，已删除）。
@@ -3771,13 +3796,15 @@ impl PreparedSfz {
         // 广播：只有**一份**样本（路径身份为空串），所有区域都指它。
         let samples = vec![PreparedSample::from_in_memory(String::new(), source)];
         let sample_hz = source.sample_hz;
-        let (regions, cc_seeds) =
+        let (regions, cc_seeds, builtin_silent_regions) =
             flatten_regions(instrument, engine_hz, |_region| (0u16, sample_hz))?;
         Ok(Self {
             regions,
             samples,
             broadcast: true,
-            silent_regions: 0,
+            // ⭐ `#217`：广播重载也**不**把内建静音 region 指向 `samples[0]` ——
+            // `flatten_regions` 已把它们标成 `NO_SAMPLE`，这里只把计数带出来。
+            silent_regions: builtin_silent_regions,
             missing_samples: Vec::new(),
             engine_hz,
             cc_seeds,
@@ -3824,35 +3851,41 @@ impl PreparedSfz {
         let mut samples: Vec<PreparedSample> = Vec::new();
         let mut index_of: BTreeMap<String, u16> = BTreeMap::new();
         let mut missing: Vec<String> = Vec::new();
-        let mut silent_regions = 0usize;
-        let (regions, cc_seeds) = flatten_regions(instrument, engine_hz, |region| {
-            let path = region.sample_path();
-            // 已 materialize 过 ⇒ 直接复用（**去重**：同一路径只解码/只 clone 一次）。
-            if let Some(index) = index_of.get(path.as_ref()) {
-                return (*index, samples[usize::from(*index)].sample_hz);
-            }
-            // 提供表里有这份路径 ⇒ materialize 一份新的（按**首次引用顺序**编号）。
-            if let Some(provided) = provided_index.get(path.as_ref()).copied() {
-                let (path, source) = &provided_samples[provided];
-                let index = u16::try_from(samples.len()).unwrap_or(PreparedRegion::NO_SAMPLE - 1);
-                samples.push(PreparedSample::from_in_memory(path.clone(), source));
-                let sample_hz = samples[usize::from(index)].sample_hz;
-                index_of.insert(path.clone(), index);
-                return (index, sample_hz);
-            }
-            // ⭐ 缺样本：**静音 ＋ 计数**（⛔ 不静默、⛔ 不去播别人的采样）。
-            missing.push(path.clone().into_owned());
-            silent_regions += 1;
-            // 没有样本 ⇒ 速率表用引擎采样率（该区域**永不渲染**，读数不进结论）。
-            (PreparedRegion::NO_SAMPLE, engine_hz)
-        })?;
+        // ⚠ 这里只数**缺样本**的区域；内建静音由 `flatten_regions` 另行计数
+        // （两者在 `Self::silent_region_count` 里相加，`missing` 只收前者）。
+        let mut missing_regions = 0usize;
+        let (regions, cc_seeds, builtin_silent_regions) =
+            flatten_regions(instrument, engine_hz, |region| {
+                let path = region.sample_path();
+                // 已 materialize 过 ⇒ 直接复用（**去重**：同一路径只解码/只 clone 一次）。
+                if let Some(index) = index_of.get(path.as_ref()) {
+                    return (*index, samples[usize::from(*index)].sample_hz);
+                }
+                // 提供表里有这份路径 ⇒ materialize 一份新的（按**首次引用顺序**编号）。
+                if let Some(provided) = provided_index.get(path.as_ref()).copied() {
+                    let (path, source) = &provided_samples[provided];
+                    let index =
+                        u16::try_from(samples.len()).unwrap_or(PreparedRegion::NO_SAMPLE - 1);
+                    samples.push(PreparedSample::from_in_memory(path.clone(), source));
+                    let sample_hz = samples[usize::from(index)].sample_hz;
+                    index_of.insert(path.clone(), index);
+                    return (index, sample_hz);
+                }
+                // ⭐ 缺样本：**静音 ＋ 计数**（⛔ 不静默、⛔ 不去播别人的采样）。
+                missing.push(path.clone().into_owned());
+                missing_regions += 1;
+                // 没有样本 ⇒ 速率表用引擎采样率（该区域**永不渲染**，读数不进结论）。
+                (PreparedRegion::NO_SAMPLE, engine_hz)
+            })?;
         missing.sort();
         missing.dedup();
         Ok(Self {
             regions,
             samples,
             broadcast: false,
-            silent_regions,
+            // ⭐ 两类静音分开数、报告里合并：`silent = 缺样本 + 内建静音`；
+            // `missing_samples` **只**收缺样本的路径（`#217`：`*silence` 绝不在其中）。
+            silent_regions: missing_regions + builtin_silent_regions,
             missing_samples: missing,
             engine_hz,
             cc_seeds,
@@ -4014,23 +4047,24 @@ impl PreparedSfz {
         self.broadcast
     }
 
-    /// ⭐ 缺样本 ⇒ 标 [`PreparedRegion::NO_SAMPLE`]（**不产生采样输出**）的**区域数**。
+    /// ⭐ **不产生采样输出**的区域数：**缺样本 ＋ 内建静音**（见字段文档）。
     ///
-    /// ⚠ 这就是"缺样本"的**唯一**计数口径（⛔ 不再有第二个"回退"计数）：
-    /// 引擎只出静音 ＋ 计数、⛔ 不发明替代内容（归属裁决见台账 R711）。
+    /// ⚠ 它不是"缺样本"的同义词：缺样本的**路径**只走 [`Self::missing_sample_paths`]
+    /// （内建静音 `sample=*silence` ⛔ 不在其中）。
     #[must_use]
     pub const fn silent_region_count(&self) -> usize {
         self.silent_regions
     }
 
-    /// ⭐ 缺样本的**路径**（排序 ＋ 去重）。
+    /// ⭐ 缺样本的**路径**（排序 ＋ 去重；⛔ 不含内建静音 `*silence`）。
     #[must_use]
     pub fn missing_sample_paths(&self) -> &[String] {
         &self.missing_samples
     }
 
     /// ⭐ **样本内容读数**（报告用）：
-    /// `broadcast(N)` / `distinct(N)`，缺样本时追加 `+silent(M)`。
+    /// `broadcast(N)` / `distinct(N)`，有**不产生采样输出**的区域时追加 `+silent(M)`
+    /// （`M` ＝ 缺样本 ＋ 内建静音 `*silence` 的区域数）。
     #[must_use]
     pub fn sample_content_label(&self) -> String {
         let mut label = if self.broadcast {
@@ -4184,14 +4218,23 @@ fn flatten_regions(
     instrument: &SfzInstrument,
     engine_hz: f32,
     mut resolve: impl FnMut(&Region<'_>) -> (u16, f32),
-) -> Result<(Vec<PreparedRegion>, CcSeedTable), SfzError> {
+) -> Result<(Vec<PreparedRegion>, CcSeedTable, usize), SfzError> {
     instrument.with_instrument(|parsed| {
         // ⭐ `set_ccN` 的初值：`<control>` 作用域、同名后者覆盖前者（解析层已归约）
         // ⇒ 这里只做"抄进会话 CC 域"与"域外计数"（见 [`CcSeedTable`]）。
         let cc_seeds = CcSeedTable::from_cc_defaults(parsed.cc_defaults());
         let mut regions = Vec::with_capacity(parsed.regions().len());
+        // ⭐ 任务单 `#217`：内建静音伪样本（`sample=*silence`）的区域数。
+        // 它在**调用方的解析闭包之前**被截住 ⇒ 既⛔ 不会被当成文件路径去查提供表
+        // （⇒ 不进 `missing`），也不受广播重载影响（⇒ 广播它也不会播 `samples[0]`）。
+        let mut builtin_silent_regions = 0usize;
         for region in parsed.regions() {
-            let (sample_index, sample_hz) = resolve(region);
+            let (sample_index, sample_hz) = if region.is_builtin_silence() {
+                builtin_silent_regions += 1;
+                (PreparedRegion::NO_SAMPLE, engine_hz)
+            } else {
+                resolve(region)
+            };
             let rates = RenderRates::new(sample_hz, engine_hz);
             let mut key_mask = [0u64; 2];
             let mut vel_mask = [0u64; 2];
@@ -4385,7 +4428,7 @@ fn flatten_regions(
                 direction: region.direction,
             });
         }
-        (regions, cc_seeds)
+        (regions, cc_seeds, builtin_silent_regions)
     })
 }
 

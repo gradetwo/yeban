@@ -2614,16 +2614,17 @@ pub fn sfz_samples_present(path: &str) -> Result<(), &'static str> {
 /// 折成既有那两句逐字原因（既有判据与 CLI 的 `--track-sampler` 一位不变）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstrumentSampleProbe {
-    /// 每个区域都解出了 PCM、且没有任何缺样本 ⇒ **可装**。
+    /// 每个 `sample=`（**内建 `*silence` 除外**）都解出了 PCM、且没有任何缺样本 ⇒ **可装**。
     Installable {
         /// 真的解出的样本份数（只用于报告，⛔ 不是判据的替代）。
         decoded_samples: usize,
     },
     /// 样本缺失 / 解不出 PCM ⇒ 不可装（装了会让本轨静音）。
     MissingSamples {
-        /// `SfzDecodeReport::missing_sample_paths` 的条数（引擎口径的缺样本路径数）。
+        /// `SfzDecodeReport::missing_sample_paths` 的条数（引擎口径的**缺文件**路径数）。
         missing_files: usize,
-        /// `SfzDecodeReport::silent_region_count`（有区域没有样本）。
+        /// `SfzDecodeReport::silent_region_count`（不产生采样输出的区域数；
+        /// ⚠ 含内建静音 `*silence`，见 `#217`）。
         silent_regions: usize,
         /// 真的解出的样本份数（可能是 0）。
         decoded_samples: usize,
@@ -2648,10 +2649,11 @@ pub fn probe_instrument_samples(path: &str) -> InstrumentSampleProbe {
     };
     match crate::sfz_load::decode_sfz_plan(&resolved, INSTRUMENT_PROBE_ENGINE_HZ) {
         Ok((_plan, report)) => {
-            if report.decoded_samples > 0
-                && report.silent_region_count == 0
-                && report.missing_sample_paths.is_empty()
-            {
+            // ⭐ 任务单 `#217`：判据是"**真的有样本** ＋ **没有缺文件**"。
+            // ⛔ 不再要求 `silent_region_count == 0`：内建静音 `sample=*silence` 会计入
+            // `silent`（它是"不发声"的区域），但它**不是缺件** ⇒ 不该让一份正常乐器
+            // （`cithara-barbarica` 等）在清单里变"装不了"。
+            if report.decoded_samples > 0 && report.missing_sample_paths.is_empty() {
                 InstrumentSampleProbe::Installable {
                     decoded_samples: report.decoded_samples,
                 }

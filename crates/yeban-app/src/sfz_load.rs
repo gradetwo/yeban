@@ -102,6 +102,28 @@
 //! [`SfzDecodeReport::referenced_sample_paths`] 与引擎的 `missing_sample_paths` 仍逐字是
 //! SFZ 写的东西（它们是**事实记录**，不是路径）；`label=`／`sw_label=` 等文本字段里的
 //! `\` 也**一个都不动**。
+//!
+//! ## ⭐ ⑥ **`sample=*silence` 是内建伪样本**（任务单 `#217`）
+//!
+//! 规范逐字（<https://sfzformat.com/opcodes/sample/>）：ARIA 把 `sample=` 用于内建波形，
+//! 其中 `*silence` 表示"region 存在、会被触发、但⛔ 不播任何采样"（典型用途：用
+//! `group`/`off_by` 关掉别的 region）。同页并写明 "the `*` is a real character and not
+//! a wildcard"。⇒ 它**不是文件名**，⛔ 不能交给 [`read_sample_file`] 去找。
+//!
+//! 修前（`#206` 实测）：`*silence` 被当文件 ⇒ `回退: …/Programs/*silence: No such file`
+//! ⇒ 回退内存正弦 ⇒ **本该静音的 region 反而出声**。
+//!
+//! 修后两条消费腿都分得开：
+//!
+//! | 腿 | 位置 | 行为 |
+//! | :--- | :--- | :--- |
+//! | **摊平表**（`TrackV3.sampler` ⇒ 导出/录音） | [`decode_sfz_plan`] 跳过解码；引擎 `flatten_regions` 标 `NO_SAMPLE` | 进 `silent`、⛔ 不进 `missing`／`unreadable` ⇒ `sfz(... silent=1 missing=[])` |
+//! | **`--sfz` 旁路** | [`region_sample_for`] 返回空 PCM ＋ [`BUILTIN_SILENCE_SOURCE`]；`render_note_into` 也跳过该 region | `source=sfz(builtin-silence(*silence))`，输出能量/峰值 **0** |
+//!
+//! ⚠ **只认小写 `*silence`**（规范只给 lowercase；登记语料 95 处全小写、大小写变体 0 处）。
+//! `*Silence` 仍是一条普通样本路径（本仓不发明"大小写不敏感的内建值"）。
+//! ⚠ 同页列出的其它 ARIA 波形（`*sine`/`*saw`/`*square`/`*triangle`/`*tri`/`*noise`）
+//! **未实现**（语料 0 处）⇒ 仍按样本路径处理，⛔ 不假装有振荡器。
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -112,6 +134,7 @@ use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
 use yeban_render::wav::WavError;
+use yeban_sfz::instrument::is_builtin_silence_sample;
 use yeban_sfz::parser::{IncludeIssue, ParseLimits};
 
 /// ⭐ **控制侧读盘计数器**（任务单 `#80` 的缓存判据的**可观测量**）。
@@ -194,6 +217,13 @@ pub mod read_probe {
 
 /// 探测用的样本源（440 Hz 内存正弦）的文案——报告行里逐字使用。
 pub const SAMPLE_SOURCE: &str = "in-memory-sine(440Hz)";
+
+/// ⭐ 任务单 `#217`：`source=` 里**内建静音伪样本**的文案。
+///
+/// 它必须与三种既有来源**一眼分得开**（⛔ 不混淆）：
+/// `file(<path> frames=… rate=…)`（真读到文件）、[`SAMPLE_SOURCE`]（回退正弦）、
+/// 以及带 `回退:` 的原因版。`*silence` 是规范内建值，⛔ 不是"读不到的文件"。
+pub const BUILTIN_SILENCE_SOURCE: &str = "builtin-silence(*silence)";
 
 /// 探测音符的默认音高（A4）。
 pub const DEFAULT_PROBE_NOTE: u8 = 60;
@@ -695,6 +725,11 @@ pub fn classify_decode_failure(path: &Path, error: &DecodeError) -> SampleReadFa
 /// 已含 `default_path` 前缀）；绝对路径原样使用。⭐ 读盘前先把 `\` 归一成 `/`
 /// （[`resolve_sample_path`]，任务单 `#205`）。
 ///
+/// ⭐ 任务单 `#217`：`sample=*silence` 是**内建静音伪样本**（⛔ 不是文件、⛔ 不读盘、
+/// ⛔ 不回退正弦）⇒ 返回**空 PCM** ＋ [`BUILTIN_SILENCE_SOURCE`] 文案。引擎的
+/// [`SfzInstrument::render_note_into`] 本身也会跳过这类 region（双保险：即便调用方
+/// 给的样本非空，它也一帧不写）。
+///
 /// 返回 `(样本, 来源文案)`；`None` = 该音符没有匹配区域（合法：不发声）。
 ///
 /// # Errors
@@ -709,16 +744,34 @@ pub fn region_sample_for(
     note: u8,
     velocity: u8,
 ) -> Option<(InMemorySample, String)> {
+    // `Some(path)` ＝ 该 region 要读文件；`None` ＝ 该 region 是内建静音 `*silence`。
     let sample = instrument
         .with_instrument(|parsed| {
             parsed
                 .regions()
                 .iter()
                 .find(|region| region.matches_key(note) && region.matches_velocity(velocity))
-                .map(|region| region.sample_path().into_owned())
+                .map(|region| {
+                    if region.is_builtin_silence() {
+                        None
+                    } else {
+                        Some(region.sample_path().into_owned())
+                    }
+                })
         })
         .ok()
         .flatten()?;
+    let Some(sample) = sample else {
+        // ⭐ `#217`：内建静音 —— 空 PCM ＋ 明说来源。⛔ 不走 `read_sample_file`
+        // （那会记一次"解码尝试"并把它登记成 `NotFound`），⛔ 不回退正弦。
+        return Some((
+            InMemorySample {
+                pcm: Vec::new(),
+                sample_hz: 48_000.0,
+            },
+            BUILTIN_SILENCE_SOURCE.to_owned(),
+        ));
+    };
     let raw = Path::new(&sample);
     let resolved = resolve_sample_path(sfz_path, raw);
     match read_sample_file(&resolved) {
@@ -822,11 +875,19 @@ pub struct SfzDecodeReport {
     pub referenced_sample_paths: Vec<String>,
     /// 真的解码成功、进了提供表的样本**份数**。
     pub decoded_samples: usize,
-    /// ⭐ 引擎口径的缺样本路径（[`yeban_engine::sfz_instrument::PreparedSfz::missing_sample_paths`]；
-    /// 排序 ＋ 去重，元素是 `sample=` 原样字符串）。
+    /// ⭐ 缺样本的**路径**（排序 ＋ 去重，元素是 `sample=` 原样字符串）。
     pub missing_sample_paths: Vec<String>,
-    /// ⭐ 缺样本 ⇒ `NO_SAMPLE`（**不产生采样输出**）的**区域数**（引擎口径）。
+    /// ⭐ **不产生采样输出**的**区域数**（引擎口径）：缺样本 ＋ 内建静音（`#217`）。
+    ///
+    /// ⚠ 它与 [`Self::missing_sample_paths`] **不是**同义词：内建静音
+    /// `sample=*silence` 会计入这里、但⛔ **不**进 `missing`（见
+    /// [`Self::builtin_silent_region_count`]）。
     pub silent_region_count: usize,
+    /// ⭐ 任务单 `#217`：`sample=*silence` 的**区域数**（[`Self::silent_region_count`] 的子集）。
+    ///
+    /// ⚠ 这些区域：① 不是缺文件（⛔ 不进 `missing_sample_paths`）；
+    /// ② 不是读盘失败（⛔ 不进 `unreadable_samples`）；③ 真的不产生采样输出。
+    pub builtin_silent_region_count: usize,
     /// 读盘失败的样本（`"<解析后路径>: <原因>"` 逐条登记；⛔ 不静默）。
     ///
     /// ⚠ **逐字与接线前相同**（既有判据按它断言）。结构化视图见
@@ -847,13 +908,14 @@ impl SfzDecodeReport {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "path={} bytes={} regions={} samples={} silent={} missing={:?} unreadable={} \
-             unreadable_kind(not_found={},unsupported={},other={}) plan_bytes={}",
+            "path={} bytes={} regions={} samples={} silent={} builtin_silent={} missing={:?} \
+             unreadable={} unreadable_kind(not_found={},unsupported={},other={}) plan_bytes={}",
             self.path.display(),
             self.bytes,
             self.regions,
             self.decoded_samples,
             self.silent_region_count,
+            self.builtin_silent_region_count,
             self.missing_sample_paths,
             self.unreadable_samples.len(),
             self.unreadable_not_found_count(),
@@ -1117,6 +1179,11 @@ fn push_unique_candidate(tried: &mut Vec<PathBuf>, candidate: PathBuf) {
 /// `NO_SAMPLE`（触发时**不建声部**）＋ 计数 ⇒ 路径进 `missing_sample_paths`。
 /// ⛔ 本函数**不发明替代内容**（不回退内存正弦、不去播别人的采样）—— 归属裁决见台账 `R711`。
 ///
+/// ⭐ 任务单 `#217`：`sample=*silence` **⛔ 不是缺样本** —— 它在 ④ 之前被跳过
+/// （⛔ 不读盘、⛔ 不进 `unreadable`），引擎在摊平期把它标 `NO_SAMPLE` 并计入
+/// `silent_region_count`／`builtin_silent_region_count`，⛔ **不**进 `missing_sample_paths`。
+/// ⇒ 报告读数是 `silent=<含内建静音> missing=[]`。
+///
 /// ⚠ **红线 7**：本函数读盘 ＋ 分配（解析、PCM）⇒ **只**用于离线/控制侧（导出、装载、
 /// 判据），⛔ 绝不在音频回调里调用。
 ///
@@ -1139,6 +1206,13 @@ pub fn decode_sfz_plan(
     let mut provided: Vec<(String, InMemorySample)> = Vec::new();
     let mut unreadable_sample_reasons: Vec<UnreadableSample> = Vec::new();
     for raw in &referenced {
+        // ⭐ 任务单 `#217`：`sample=*silence` 是**内建静音**，⛔ 不是文件 ——
+        // ① ⛔ 不读盘（不增加 `sample_decodes`）、② ⛔ 不进 `unreadable`、
+        // ③ ⛔ 不进提供表（引擎摊平期会把它标成 `NO_SAMPLE` 并计入 `silent`）。
+        // ⚠ `referenced_sample_paths` 仍**逐字保留**它（那是事实记录，不是读取用的路径）。
+        if is_builtin_silence_sample(raw) {
+            continue;
+        }
         let resolved = resolve_sample_path(sfz_path, Path::new(raw));
         match decode_sample_classified(&resolved) {
             Ok((sample, _frames, _describe)) => provided.push((raw.clone(), sample)),
@@ -1152,6 +1226,17 @@ pub fn decode_sfz_plan(
         .iter()
         .map(UnreadableSample::row)
         .collect();
+    // ⭐ 任务单 `#217`：内建静音**区域数**（按区域数，⛔ 不是按去重路径数）。
+    // 与 `silent_region_count` 的关系：后者 ＝ 缺样本区域数 ＋ 本读数（引擎口径）。
+    let builtin_silent_region_count = instrument
+        .with_instrument(|parsed| {
+            parsed
+                .regions()
+                .iter()
+                .filter(|region| region.is_builtin_silence())
+                .count()
+        })
+        .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
     // ⑤：引擎口径的摊平（去重键 = `sample_path` 原样字符串；缺样本 ⇒ `NO_SAMPLE` ＋ 计数）。
     let plan = SfzPlan::prepare_with_samples(&instrument, &provided, engine_hz)
         .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
@@ -1164,6 +1249,7 @@ pub fn decode_sfz_plan(
         decoded_samples: provided.len(),
         missing_sample_paths: prepared.missing_sample_paths().to_vec(),
         silent_region_count: prepared.silent_region_count(),
+        builtin_silent_region_count,
         unreadable_samples,
         unreadable_sample_reasons,
         plan_bytes: plan.memory_bytes(),
