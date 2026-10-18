@@ -14107,3 +14107,22 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **七、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ **没人耳听** ② ⭐ ⚠ **app **内嵌** `session_dispatcher` 对这两个工具的**端到端**调用未验**（⭐ 只证了**结构共享**同一 `Dispatcher`／`Domain`／`sfz.rs` ＋ ⭐ 另跑 app 自己的 4 passed）③ ⭐ ⚠ **测试夹具与样本工程耦合**：⭐ `tests/sfz_silence_sample.rs` 依赖 `filled_project()` 的音符 60/64/67/72、⭐ 并清掉第 4 个音符的 `probability=0.75`（⭐ 固定 seed 下否则不触发）、⭐ 64 的 `ratchet=2` 使 `notesScheduled=5`、`notesUnmatched=3` ⇒ ⭐ **若样本工程改音符，这三个数要同步** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **内容寻址纳入 include** ＋ ⭐ **宿主 libm** ＋ ⭐ **MCP 内嵌端到端** ＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ 换乐器听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R926 实测追加（2026-10-19）：⭐ **`#219`（内嵌 `session_dispatcher` 端到端）落地 ＋ 快进合并** ⇒ ⭐ **"⭐ 结构共享"升级成"⭐ 真驱动"**
+
+⭐ **合并**: ⭐ base `431d22bc` ⇒ ⭐ `FINAL=004e4fc8`（⭐ 2 文件 ＋531／−1）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ ⭐ **`1670 passed`／FAILED 0**（113 targets）＋ ⭐ **app `--features in-process-mcp` 825 passed** ＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **app＋mcp 全层 0** ✓ ⭐ 树已拆 ＋ `target`（23 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 修法（⭐ 很小、⭐ 但正中要害）**: ⭐ `session_dispatcher` ⭐ 从私有 `fn` ⭐ 放宽到 ⭐ ⭐ **`pub(crate)`**（⭐ ⛔ 不出 crate）＋ ⭐ 新增 ⭐ `#[cfg(test)] mod embedded_sfz_tools;` ⇒ ⭐ ⭐ **判据 `use super::session_dispatcher`（⭐ 直接拿生产符号）**、⭐ ⛔ **测试里没有任何第二份 `Dispatcher::new` 充当被测对象**（⭐ `:160 fn stdio_shaped` ⭐ 只是**对照装配**、⭐ 注释与命名都标了）✓
+⭐ ⚠ ⭐ **生产行为零改动**：⭐ `:914`／⭐ `:917` 的函数体与 base **逐字相同** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 对照表（⭐ 整份 `data` JSON `assert_eq!` 全等，⭐ ⛔ 不是挑字段）**: ⭐ `regions`／⭐ `silentRegionCount`／⭐ `sampleFilesReadCount`／⭐ `instrumentId`／⭐ `reused`／⭐ `sampleSource`／⭐ `notesScheduled`／⭐ `notesUsingBuiltinSilence`／⭐ `notesUsingFileSample`／⭐ `notesUsingSineFallback`／⭐ `frames`／⭐ `bytes`／⭐ `sha256`（`8fc28792…`）／⭐ `peak` ⇒ ⭐ ⭐ **内嵌 vs stdio 镜像 逐项相等** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 两个**真正的发现**（⭐ 都验了）**: ⭐ ① ⭐ ⭐ **`read_only` 真被传进去、⭐ 且**只闸落盘** —— `true`／`false` 的**两工具 `data` 全等** ★ ⭐ 而 ⭐ **反向对照**：⭐ `read_only=true` 的 `yeban_save_project` ⇒ ⭐ **`IO_ERROR`**、⭐ `false` ⇒ ⭐ **`saved=true`**（⭐ 5704 B）⇒ ⭐ **证明 `read_only` 没被吞掉** ✓ ⭐ ② ⭐ ⭐ **内嵌"⭐ 从不 `set_now_ms`"⭐无害** —— ⭐ 内嵌 `now_ms=0` vs ⭐ stdio 镜像 `1_760_000_000_000` ⇒ ⭐ ⭐ **两工具 `data` 全等** ＋ ⭐ **显式断言**该报文中**不存在** `renderedAtUnixMs`（⭐ 那字段只在 `yeban_render_master`）✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 双注入（⭐ 这两次红就是与 `#218` 的分界线）**: ⭐ **A**（⭐ `ScopeSet::all()` → ⭐ `empty()`）⇒ ⭐ ⭐ **`http_status: 403`／⭐ `code: -32003`／⭐ `作用域不足: 需要 app:admin, 实际授予 []`** ★ ⭐ **B**（⭐ `open_in_memory(…, read_only)` → ⭐ `…, false)`）⇒ ⭐ ⭐ **`只读会话必须拒绝落盘` 失败**（⭐ 真的写盘了：`bytes=5704 saved=true`）⇒ ⭐ ⭐ **证明判据观测的**确实是那条生产装配****、⭐ ⛔ 不是自己的 Dispatcher ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ **没人耳听** ② ⭐ ⚠ ⭐ ⭐ **这 3 条只在 `--features in-process-mcp` 下编译/执行** —— ⭐ **默认 `cargo test -p yeban-app` ⛔ 不跑它们**（⭐ 但 ⭐ **`premerge-gate.sh` 的 `in-process-mcp` 腿 ＋ ⭐ CI 同一腿会跑**）⇒ ⭐ **集成者必须保留那条腿** ✓ ③ ⭐ ⚠ **未证**：⭐ `start_for_project` 的**锁/⭐ 端口/⭐ 线程**那一段（⭐ 有既有 `in_process_mcp*.rs` 覆盖）＋ ⭐ **HTTP socket 层** ＋ ⭐ `WritableFile`/⭐ `File` 两种 `SessionSource` 的端到端（⭐ 本单直接以 `read_only=true/false` 调 `session_dispatcher`、⭐ 未经 `SessionSource` 与 `.yeban.lock`）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **内容寻址纳入 include** ＋ ⭐ **宿主 libm** ＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ 换乐器听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
