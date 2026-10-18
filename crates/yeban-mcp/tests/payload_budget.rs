@@ -17,8 +17,9 @@
 //!
 //! `docs/ledger/gate-status.md` 记 `BASELINE-006` 为 PENDING，理由是"需要生成 16 小节
 //! 段落的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**"。本文件接上
-//! **JSON 那半边**。Token 那半边需要分词器口径（人类已明示延后），本文件**不**
-//! 用"字节 ÷ 常数"冒充它（见 `crate::payload` 的文件头）。
+//! **JSON 那半边**。Token 那半边按 `HD-48` **选项 B** 处理：**不新增分词器依赖**，
+//! 用**字节 / 4** 估算并在读数里**明说这是近似**（判据 ⑦ 钉公式与标注）；
+//! 若要用真实分词值判定"≤ 600 Tokens"，那是**另一单**。
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test payload_budget -- --nocapture`。
 
@@ -392,15 +393,100 @@ fn the_reading_counts_utf8_bytes_not_characters() {
     );
 }
 
+/// **判据 ⑦（`HD-48` 选项 B）**：token 读数是**字节 / 4 的估算**（不是真实分词），
+/// 且口径说明**逐字在场**、与数字一起显示。
+///
+/// 测法：跑一条**真实**的 16 小节 `tools/call`；字节数**不从读数里抄** —— 请求取
+/// `line.len()`、响应在测试里**重新** `serde_json::to_string` 取长度，用这串真实字节
+/// 反算 `bytes / 4`，再与报出的 token 比。取整关系逐字：
+/// `tokens * 4 ≤ bytes < (tokens + 1) * 4`。
+///
+/// 变红的方式（两条注入实测见文件末 §注入证据）：
+/// ① 把 `from_bytes` 的除数 `4` 改成 `5` ⇒ `left/right` 不等；
+/// ② 把 `TOKEN_ESTIMATOR` 换成别的文案 ⇒ 标注断言红。
+#[test]
+fn the_token_figure_is_an_explicit_byte_based_estimate() {
+    let (mut dispatcher, authorization) = dispatcher();
+    let line = payload::baseline_006_section_line(payload::BASELINE_006_SECTION_BARS);
+    let (reading, outcome) =
+        payload::measure(&mut dispatcher, Channel::Stdio, Some(&authorization), &line);
+    assert_eq!(outcome.http_status, 200, "这条调用必须成功: {reading}");
+
+    // 真实字节：请求行 + 响应**重新序列化**后的文本（不信任 `reading` 的自报）。
+    let response = outcome.response.as_ref().expect("必须产生响应");
+    let response_text = serde_json::to_string(response).expect("响应可序列化");
+    let measured_bytes = line.len() + response_text.len();
+    assert_eq!(
+        reading.request,
+        line.len(),
+        "请求字节必须等于输入行的真实字节"
+    );
+    assert_eq!(
+        reading.response,
+        response_text.len(),
+        "响应字节必须等于重新序列化后的真实字节"
+    );
+    assert_eq!(reading.total(), measured_bytes, "合计必须等于真实字节数");
+
+    let estimate = reading.estimated_tokens();
+    println!(
+        "HD-48 B · 真实字节 {measured_bytes} B（请求 {} + 响应 {}）⇒ token ≈ {} · 口径: {}",
+        line.len(),
+        response_text.len(),
+        estimate.tokens,
+        estimate.estimator
+    );
+    assert_eq!(
+        payload::TOKEN_ESTIMATOR_BYTES_PER_TOKEN,
+        4,
+        "估算口径必须是字节/4"
+    );
+    assert_eq!(
+        estimate.tokens,
+        measured_bytes / payload::TOKEN_ESTIMATOR_BYTES_PER_TOKEN,
+        "token 读数必须等于真实字节数 / 4（整数除法、向下取整）"
+    );
+    assert!(
+        estimate.tokens * 4 <= measured_bytes,
+        "token * 4 不得大于真实字节数: tokens={}, bytes={measured_bytes}",
+        estimate.tokens
+    );
+    assert!(
+        measured_bytes - estimate.tokens * 4 < 4,
+        "向下取整的余数必须 < 4: tokens={}, bytes={measured_bytes}",
+        estimate.tokens
+    );
+
+    // 标注**逐字**在场：字段值 + 显示文案都带着它。
+    assert_eq!(estimate.estimator, payload::TOKEN_ESTIMATOR);
+    assert_eq!(
+        payload::TOKEN_ESTIMATOR,
+        "按字节/4 估算、非真实分词",
+        "口径说明必须逐字含\"按字节/4 估算\"与\"非真实分词\""
+    );
+    let rendered = reading.to_string();
+    assert!(
+        rendered.contains("按字节/4 估算、非真实分词"),
+        "读数行必须明说这是近似: {rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("token ≈ {}", estimate.tokens)),
+        "读数行必须给出估算数字: {rendered}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // §注入证据（先红后还原；刻度说明见 `docs/DEVELOPMENT_LEDGER.md` 的纪律）
 // ---------------------------------------------------------------------------
 //
-// 五条注入逐个施加在**生产代码**上，读回**字面**红行，再用 `cp` 还原并用
-// `cmp` + sha256 证明逐字节相同。下表是**最终代码上重跑一遍**的读数（行号即本
-// 文件/`src/payload.rs` 当前的行号）。注入期写在源码里的临时标记注释（形如
-// `INJECT-I1`）**已随还原全部消失**：还原后 `grep -rn 'INJECT-I[1-5]' crates/`
+// 五条历史注入（I1–I5）＋ `#193` 两条（I6/I7）逐个施加在**生产代码**上，读回**字面**
+// 红行，再用 `cp` 还原并用 `cmp` + sha256 证明逐字节相同。下表是**最终代码上重跑
+// 一遍**的读数（行号即本文件/`src/payload.rs` 当前的行号）。注入期写在源码里的临时
+// 标记注释（形如 `INJECT-I1`）**已随还原全部消失**：还原后 `grep -rn 'INJECT-I[1-5]' crates/`
 // 只命中本段文档（即这两处提到标记名字的地方），源码与测试代码里一处都不剩。
+//
+// ⚠ `#193` 在 `src/payload.rs` 加了 `TokenEstimate`、在本文件加了判据 ⑦ ⇒ 下表
+// I1–I5 的行号是**当时**的行号，语义判据不变；I6/I7 是 `#193` 的注入读数。
 //
 // | # | 注入（生产代码） | 字面红行 | 还原证明 |
 // | --- | :--- | :--- | :--- |
@@ -409,6 +495,8 @@ fn the_reading_counts_utf8_bytes_not_characters() {
 // | I3 | `payload::measure` 的请求计数改用 `chars().count()` | `panicked at tests/payload_budget.rs:373`：`请求计数必须是 UTF-8 字节数`，`left: 192 / right: 196`；`FAILED. 5 passed; 1 failed` | `cmp` 相同 / sha256 `7b5b343f…` |
 // | I4 | `RoundTripPayload::total` 去掉饱和加法 | `panicked at src/payload.rs:80`：`attempt to add with overflow`；lib `FAILED. 4 passed; 1 failed`（集成侧 6 条仍绿 —— 它们不碰溢出路径） | `cmp` 相同 / sha256 `7b5b343f…` |
 // | I5 | `BASELINE_006_JSON_LIMIT_BYTES` `4096` → `1024` | `panicked at tests/payload_budget.rs:145`：`往返 JSON 必须 ≤ 1024 B, 实测 request 196 B + response 2747 B = 2943 B`、`:305`：`dryRun 往返也必须 ≤ 1024 B, 实测 … 2918 B`；`FAILED. 4 passed; 2 failed`；lib 侧 `left: 1024 / right: 4096` | `cmp` 相同 / sha256 `7b5b343f…` |
+// | I6 | `TOKEN_ESTIMATOR_BYTES_PER_TOKEN` `4` → `5` | `panicked at tests/payload_budget.rs:439:5`：`估算口径必须是字节/4`，`left: 5 / right: 4`；同一行读数变成 `真实字节 3012 B … token ≈ 602`；`FAILED. 0 passed; 1 failed` | `cmp` 相同 / sha256 `84b6b58b…`（`touch` 后 `Compiling yeban-mcp`） |
+// | I7 | `TOKEN_ESTIMATOR` 文案去掉"、非真实分词" | `panicked at tests/payload_budget.rs:462:5`：`口径说明必须逐字含"按字节/4 估算"与"非真实分词"`，`left: "按字节/4 估算" / right: "按字节/4 估算、非真实分词"`；`FAILED. 0 passed; 1 failed` | `cmp` 相同 / sha256 `84b6b58b…`（`touch` 后 `Compiling yeban-mcp`） |
 //
 // **I3 值得单独说**：只有它变红，其余五条判据全绿 —— 因为 BASELINE-006 的
 // 场景载荷全是 ASCII，此时"字节数"与"字符数"相等。判据 ⑥ 用一条含 CJK 的请求
