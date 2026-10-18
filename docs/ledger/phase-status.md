@@ -13854,3 +13854,22 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ ⭐ ⭐ **三、⭐ 仍然**未**被这轮确认的（⭐ ⛔ 不跟着升级）**: ⭐ ① ⭐ **力度层**（⭐ 单音短句听不出 pp/ff 的差别）⭐ ② ⭐ **循环点**（⭐ 长音有没有接缝）⭐ ③ ⭐ **包络**（⭐ 起音/⭐ 释放是否自然）⭐ ④ ⭐ **其它 23 个乐器**（⭐ 只听了 `freepats-spanish-classical-guitar` 一个）⭐ ⑤ ⭐ ⭐ **MCP 侧装载**（⭐ `yeban_load_sfz` 仍报 0 regions ⇒ ⭐ `#208` 在做）⭐ ⑥ ⭐ **离线导出引擎路径的 `advance` 缺陷**（⭐ 多音符只出第一个 ⇒ ⭐ 已排队）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#208`（MCP 接 include）** ＋ ⭐ **`export_wav` 缺 `advance`** ＋ ⭐ **`vcsl`（`fmt` chunk 20）／⭐ `*silence`（3 个）／⭐ 5 个 probe 不命中** ＋ ⭐ **力度层/⭐ 循环点/⭐ 包络的人类确认** ＋ ⭐ **另 23 个乐器的试听** ＋ ⭐ ⚠ **仍需人类**：⭐ 真 MIDI 键盘 ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R915 实测追加（2026-10-18）：⭐⭐ **`#208`（MCP 接 include）落地 ＋ 快进合并** ⇒ ⭐ **MCP 侧的路也通了**
+
+⭐ **合并**: ⭐ base `e90c8df2` ⇒ ⭐ `FINAL=2d641d82`（⭐ 2 文件 ＋660／−55）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`859 passed`／FAILED 0**（⭐ mcp 33 suites）＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **`yeban-mcp yeban-sfz` 全 0** ＋ ⭐ ⭐ **依赖方向守卫逐字**：⭐ `被禁 5 个 crate 里 0 条未登记违规、1 条已登记例外（yeban-render）` ✓ ⭐ 树已拆 ＋ `target`（3.9 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 修法（⭐ 没有新增依赖边 —— 这点最关键）**: ⭐ 走**既有** ⭐ `yeban-mcp → yeban-sfz`（⭐ `Cargo.toml:97` 早已有）⭐ 用它的 ⭐ `IncludeResolver` ＋ ⭐ `parse_sources` ⇒ ⭐ ⛔ **没有 MCP 侧第二套展开器** ＋ ⭐ ⛔ **没有引入 `yeban-engine`**（⭐ 它在 `FORBIDDEN` 里）＋ ⭐ ⛔ **没动那条目 例外登记** ✓
+⭐ ⚠ 而 ⭐ **守卫是 fail-closed 的**：⭐ `validate_exception_registry` ⭐ 拒绝通配/正则/射程外/重复；⭐ 未登记命中判违规、⭐ **陈旧例外判 rc=1** ⇒ ⭐ ⭐ **"⛔ 不许静默改依赖方向"⭐这条真的有人守** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 读数（⭐ 修前 → ⭐ 修后）**: ⭐ 临时夹具（⭐ 两层 include）⭐ ⭐ **`regions=0` → ⭐ `3`** ＋ ⭐ `sampleFilesReadCount=0` → ⭐ **`3`** ＋ ⭐ `sampleFramesLoaded` → ⭐ **`1440`** ＋ ⭐ `includeIssueCount=1` ✓ ⭐ 真库：⭐ `salamander-grand` ⭐ **`regions=1121`**／⭐ `body-percussion` ⭐ **`regions=356`** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 三条语义（⭐ 都验了）**: ⭐ ① ⭐ **缺失 include ⇒ ⭐ 装载成功 ＋ ⭐ 逐条透出**（⭐ `{"line":2,"path":"ghost.sfz","kind":"notFound","display":…}`）★ ⭐ ② ⭐ **循环 ⇒ ⭐ `INVALID_PARAMETER_RANGE` ＋ ⭐ `include cycle detected at \`a.sfz\``**（⭐ 不挂死）★ ⭐ ③ ⭐ ⭐ **渲染路径命中**被 include 的** region** ⇒ ⭐ `peak=1530732`（⭐ ⛔ 不是抖动地板）✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 我做的收尾（⭐ `schemas/**` 归我）**: ⚠ 它指出 ⭐ `yeban_load_sfz` 的 **description 仍写"⭐ 走 `parse_text`"**⭐ ⇒ ⭐ ⭐ **我改了**（⭐ 改成"⭐ 展开 `#include` 后按 `parse_sources` 重放、⭐ 与 app 同一实现"⭐ ＋ ⭐ **明写"⭐ 缺失只记不失败／⭐ 成环是错误"** ＋ ⭐ ⚠ **明写"⭐ 别用 `probe` 的能量判断样本是否真读"**）⇒ ⭐ `validate_schemas` ⭐ **契约校验通过** ＋ ⭐ 轻门 ＋ ⭐ 守卫 **18** ✓
+
+⭐ ⚠ **五、⭐ 它如实登记的三条缺口（⭐ 都值得记）**: ⭐ ① ⭐ ⚠ ⭐ ⭐ **内容寻址只按"⭐ 根文件字节"⭐算 `sha256`** ⇒ ⭐ **同一会话里根文本不变、⭐ 而被 include 的文件变了 ⇒ ⭐ 重装可能复用旧 `sources`** ⇒ ⭐ **待裁决** ✓ ⭐ ② ⭐ ⚠ **渲染的 `sample=` 仍相对**根 SFZ 目录**解析**（⭐ ⛔ 不是被包含文件所在目录）⇒ ⭐ **待裁决的语义点** ✓ ⭐ ③ ⭐ **本机真库的 `sampleFilesReadCount=0`**（⭐ 因为**仓库里只有 SFZ 文本、⭐ 没有 WAV**）⇒ ⭐ **"⭐ 样本真读"⭐只由临时夹具证明** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`export_wav` 缺 `advance`**（⭐ 离线导出多音符只出第一个）＋ ⭐ **内容寻址纳入 include** ＋ ⭐ **`sample=` 相对目录** ＋ ⭐ `vcsl`／⭐ `*silence` ＋ ⭐ ⚠ **仍需人类**：⭐ 再听 2–3 个乐器 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓

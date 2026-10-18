@@ -663,7 +663,7 @@
         "yeban_load_sfz": {
           "title": "yeban_load_sfz",
           "type": "object",
-          "description": "装载一份 SFZ v2 乐器（走 yeban-sfz 的 parse_text，唯一实现），会话内记住它并返回区域数与来源读数。 采样文件本体不参与：本仓没有采样文件读取/解码，region 的 sample= 只是路径字符串。",
+          "description": "装载一份 SFZ v2 乐器（走 yeban-sfz 的解析层：展开 `#include` 后按 `parse_sources` 重放，与 app 侧同一个实现），会话内记住它并返回区域数、样本读数与 include 读账（`includeIssues` / `includeIssueCount`）。缺失的 include 只记一条、不失败；成环/超深度是错误。采样文件是否被真读看 `sampleFilesRead` 一族读数，不要用 `probe` 的能量判断。",
           "properties": {
             "path": {
               "type": "string",
