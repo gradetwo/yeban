@@ -1022,6 +1022,24 @@ pub const OP_KINDS: &[&str] = &[
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &["add", "delete", "move", "velocity", REMOVE_CLIP_KIND];
 
+/// **读/写音符**的 kind 清单 —— [`NoteOp::is_note_level`] 的**唯一发布面**。
+///
+/// ⭐ `#179`：本集合**恰好是四个**（`add` / `delete` / `move` / `velocity`），也就是
+/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的四个。其余 31 个形态
+/// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
+/// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
+///
+/// ⚠ 与 [`ENVELOPE_CLIP_KINDS`] **不是**同一个清单：`removeClip` 读顶层 `clipId`
+/// 却**不**读音符（它取走整条池条目，音频条目同样取得走）；反过来，本清单里的
+/// 四个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
+/// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
+///
+/// 两份真相（本清单 vs 谓词的 `match`）由判据
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 35 个 kind** 上
+/// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
+/// kind 却忘了决定它读不读音符"会立刻变红。
+pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity"];
+
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
 ///
 /// 为什么单列一个二值枚举而不是直接收 [`LaneKind`]：`SendGain` 的模型语义是
@@ -3035,43 +3053,32 @@ impl NoteOp {
         }
     }
 
-    /// 该形态是否**读/写音符**（即是否必须在一条 MIDI 片段上施加）。
+    /// 该形态是否**读/写音符**（即是否必须真的施加在一条带音符的 MIDI 片段上）。
     ///
-    /// [`Self::SetParam`] / [`Self::SetTrackFlag`] / [`Self::SetLane`] / [`Self::RemovePoint`]
-    /// 都是**音轨级**的、[`Self::RemoveClip`] 是**池级**的、
-    /// [`Self::SetRoutingGain`] / [`Self::DisconnectRouting`] / [`Self::RemoveRoutingNode`]
-    /// 是**路由级**的、[`Self::RemoveSection`] 是**段落级**的、[`Self::RemoveScene`]
-    /// 是**场景级**的、[`Self::RemoveTrack`] 是**音轨实体级**的、
-    /// [`Self::InsertDevice`] / [`Self::RemoveDevice`] 是**设备级**的：它们跟片段内容无关。
-    /// 这条区分让 [`compile`] 的"必须是 MIDI 片段"断言只在真的有音符操作时成立
-    /// （旧行为逐字节不变：四个音符形态的调用仍然要求 MIDI 材料）。
+    /// ⭐ `#179`：本谓词收窄到**四个音符形态**（`add` / `delete` / `move` /
+    /// `velocity`）—— 它们恰好是 [`ENVELOPE_CLIP_KINDS`] 去掉池级 `removeClip`
+    /// 之后的四个（与 [`NOTE_LEVEL_KINDS`] 同一份真相）。其余 **31** 个形态一个音符
+    /// 都不读：音轨属性级（`setParam` / `setTrackFlag` / `setLane` / `removePoint`）、
+    /// 设备级（`insertDevice` / `removeDevice` / `setDeviceName` /
+    /// `setDeviceBypassed`）、摆放属性级（`setClipPlacementMuted` /
+    /// `setClipPlacementDuration`）、片段名 / 音轨名 / 音轨色（`setClipName` /
+    /// `setTrackName` / `setTrackColor`）、池级（`removeClip`）、路由级、段落级、
+    /// 场景级、资产级、文档级与音轨实体级。
+    ///
+    /// ⚠ `#177` 之后 [`compile`] 只在批里真有形态读顶层 `clipId` 时才查片段池，而
+    /// "必须是 MIDI 片段"那条断言挂在 `entry` 上 ⇒ 那 31 个形态里**读 `clipId` 的
+    /// 只有 `removeClip`**，其余 30 个此前虽然 `is_note_level() == true`（反选清单
+    /// 漏掉了它们），断言也**不可达**。本票把谓词改成与**语义**一致：它们从来不该
+    /// 被算作音符级 ⇒ `domain::plan_edit_notes` 的提案描述也不再把这些属性写入报成
+    /// "音符编辑"（它们落到"音轨级编辑"桶里，与 `setParam` 同口径）。
+    ///
+    /// 旧行为逐字节不变：四个音符形态在 MIDI 片段上的编译产物仍是同一条
+    /// `Op::{AddNote, DeleteNote, MoveNote, ModifyNoteVelocity}`。
     #[must_use]
     pub const fn is_note_level(&self) -> bool {
-        !matches!(
+        matches!(
             self,
-            Self::SetParam { .. }
-                | Self::SetTransportConfig { .. }
-                | Self::SetTempo { .. }
-                | Self::SetAuthor { .. }
-                | Self::SetTrackFlag { .. }
-                | Self::SetLane { .. }
-                | Self::RemovePoint { .. }
-                | Self::RemoveClip
-                | Self::SetRoutingGain { .. }
-                | Self::ConnectRouting { .. }
-                | Self::DisconnectRouting { .. }
-                | Self::AddTrack { .. }
-                | Self::AddRoutingNode { .. }
-                | Self::RemoveRoutingNode { .. }
-                | Self::RemoveSection { .. }
-                | Self::SetAsset { .. }
-                | Self::RemoveAsset { .. }
-                | Self::RemoveScene { .. }
-                | Self::SetSection { .. }
-                | Self::SetScene { .. }
-                | Self::RemoveTrack { .. }
-                | Self::InsertDevice { .. }
-                | Self::RemoveDevice { .. }
+            Self::Add { .. } | Self::Delete { .. } | Self::Move { .. } | Self::Velocity { .. }
         )
     }
 
@@ -6162,6 +6169,10 @@ pub fn compile(
     // 四个音符形态的调用因此逐字节等于旧行为（它们总是走到这条断言）。
     // ⚠ `#177` 之后 `entry` 只在读 `clipId` 的批里是 `Some`，而四个音符形态是它的
     // 子集 ⇒ 这条断言的可达集合逐条不变（`removeClip` 不读音符，故不受影响）。
+    // ⭐ `#179` 把 `is_note_level` 收窄到**恰好**这四个（见 `NOTE_LEVEL_KINDS`）：
+    // 六个属性级形态（名字 / 旁通 / 静音 / 颜色 / 时长）与 `setTrackName` 不再被算作
+    // 音符级 —— 它们在 `#177` 之后本来就走不到这里（`entry == None`），本票只是让
+    // 谓词与语义对齐（判据 `note_level_is_exactly_the_four_note_forms` 钉住）。
     if ops.iter().any(NoteOp::is_note_level)
         && entry.is_some_and(|entry| entry.content.notes().is_none())
     {
@@ -8569,6 +8580,103 @@ mod tests {
         let fault = compile(&project, &track_id, &clip_id, &note_ops)
             .expect_err("音符操作仍然要求 MIDI 材料");
         assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
+    }
+
+    /// ⭐ `#179`：`is_note_level()` **恰好**是四个音符形态。
+    ///
+    /// 六个**属性级**形态（`setClipName` / `setDeviceName` / `setDeviceBypassed` /
+    /// `setClipPlacementMuted` / `setTrackColor` / `setClipPlacementDuration`）改的是
+    /// 名字 / 旁通 / 静音 / 颜色 / 时长，**一个音符都不读**；`setTrackName` 同理。
+    /// 它们此前落在反选清单的**漏网**一侧（`is_note_level() == true`），本票改成与
+    /// `NOTE_LEVEL_KINDS` 同一份真相：**只有**四个音符形态为真。
+    ///
+    /// 注入（实测红）：把谓词改回"反选清单"（即删掉本票的收窄）⇒ 七条 `!is_note_level`
+    /// 全红；把 `Add`/`Delete`/`Move`/`Velocity` 任一从正选里去掉 ⇒ 对应的
+    /// `is_note_level` 断言红。
+    #[test]
+    fn note_level_is_exactly_the_four_note_forms() {
+        let ulid = "01J8ZQ00000000000000000999";
+        // 四个音符形态：解析后 `is_note_level()` 必须为真。
+        let four = [
+            (
+                "add",
+                serde_json::json!({"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
+            ),
+            (
+                "delete",
+                serde_json::json!({"kind": "delete", "noteId": ulid}),
+            ),
+            (
+                "move",
+                serde_json::json!({"kind": "move", "noteId": ulid, "deltaTick": 0, "deltaPitch": 0}),
+            ),
+            (
+                "velocity",
+                serde_json::json!({"kind": "velocity", "noteId": ulid, "velocity": 64}),
+            ),
+        ];
+        for (kind, payload) in four {
+            let ops = parse_ops(&serde_json::json!([payload]))
+                .unwrap_or_else(|fault| panic!("`{kind}` 必须能解析: {fault:?}"));
+            assert_eq!(ops.len(), 1);
+            assert_eq!(ops[0].kind_name(), kind);
+            assert!(ops[0].is_note_level(), "`{kind}` 必须**仍然**是音符级");
+        }
+        // 六个属性级形态 + `setTrackName`：`is_note_level()` 必须为假。
+        let not_note = [
+            (
+                "setClipName",
+                serde_json::json!({"kind": "setClipName", "clipId": ulid, "name": "A"}),
+            ),
+            (
+                "setDeviceName",
+                serde_json::json!({"kind": "setDeviceName", "trackId": ulid, "deviceId": ulid, "name": "A"}),
+            ),
+            (
+                "setDeviceBypassed",
+                serde_json::json!({"kind": "setDeviceBypassed", "trackId": ulid, "deviceId": ulid, "bypassed": true}),
+            ),
+            (
+                "setClipPlacementMuted",
+                serde_json::json!({"kind": "setClipPlacementMuted", "trackId": ulid, "placementId": ulid, "muted": true}),
+            ),
+            (
+                "setTrackColor",
+                serde_json::json!({"kind": "setTrackColor", "trackId": ulid, "color": "#22AA88"}),
+            ),
+            (
+                "setClipPlacementDuration",
+                serde_json::json!({"kind": "setClipPlacementDuration", "trackId": ulid, "placementId": ulid, "durationTicks": 960}),
+            ),
+            (
+                "setTrackName",
+                serde_json::json!({"kind": "setTrackName", "trackId": ulid, "name": "A"}),
+            ),
+        ];
+        for (kind, payload) in not_note {
+            let ops = parse_ops(&serde_json::json!([payload]))
+                .unwrap_or_else(|fault| panic!("`{kind}` 必须能解析: {fault:?}"));
+            assert_eq!(ops.len(), 1);
+            assert_eq!(ops[0].kind_name(), kind);
+            assert!(
+                !ops[0].is_note_level(),
+                "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
+            );
+        }
+        // 发布清单本身：逐字 + 恰好四个（⛔ 不是常量自比）。
+        assert_eq!(
+            NOTE_LEVEL_KINDS,
+            ["add", "delete", "move", "velocity"],
+            "音符级清单必须逐字是这四个"
+        );
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 4);
+        // 四个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        for kind in NOTE_LEVEL_KINDS {
+            assert!(
+                ENVELOPE_CLIP_KINDS.contains(kind),
+                "`{kind}` 在音符级清单里 ⇒ 必然也在 ENVELOPE_CLIP_KINDS 里"
+            );
+        }
     }
 
     /// `ops[].kind == "setTrackMute"` / `"setTrackSolo"` 的**规范**形状：
@@ -14345,12 +14453,23 @@ mod tests {
         );
 
         let mut seen: Vec<&str> = Vec::new();
+        // ⭐ `#179`：在**全部 35 个 kind**上对账 `is_note_level()` 与发布的
+        // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
+        let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
             let mut object = payload.as_object().expect("对象").clone();
             let kind = label.split('#').next().expect("标签有 kind 前缀");
             object.insert("kind".to_owned(), Value::from(kind));
             let ops = parse_ops(&serde_json::json!([Value::Object(object)]))
                 .unwrap_or_else(|fault| panic!("`{label}` 的规范形状必须能解析: {fault:?}"));
+            assert_eq!(
+                ops[0].is_note_level(),
+                NOTE_LEVEL_KINDS.contains(&kind),
+                "`{kind}` 的音符级口径必须与发布的 NOTE_LEVEL_KINDS 一致"
+            );
+            if ops[0].is_note_level() && !note_level_seen.contains(&kind) {
+                note_level_seen.push(kind);
+            }
             let use_clip = clip_override.unwrap_or(clip);
             // ⭐ 每一行都注入那条**没人引用**的合成资产（`removeAsset` 的目标）；
             // `preset` 再额外插一条片段池条目（有的行需要）。
@@ -14379,6 +14498,22 @@ mod tests {
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
         assert_eq!(seen.len(), 36);
+        // ⭐ `#179`：收窄后的音符级分支集合**恰好是四个**，且逐字等于发布清单。
+        assert_eq!(
+            NOTE_LEVEL_KINDS,
+            ["add", "delete", "move", "velocity"],
+            "音符级 kind 必须恰好是四个音符形态（字面表，⛔ 不是常量自比）"
+        );
+        assert_eq!(
+            note_level_seen.len(),
+            4,
+            "全部 35 个 kind 里 `is_note_level()` 为真的必须**恰好四个**，实际: {note_level_seen:?}"
+        );
+        assert_eq!(
+            note_level_seen,
+            NOTE_LEVEL_KINDS.to_vec(),
+            "逐个 kind 收集到的音符级集合必须逐项等于 NOTE_LEVEL_KINDS"
+        );
     }
 
     /// `setTransportConfig`：解析三个字段、拒绝未知键/缺字段、并把 `old_config`
