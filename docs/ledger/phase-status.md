@@ -14155,3 +14155,38 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **七、⭐ 只能人听的一条（⭐ 它给了一对文件）**: ⭐ ⭐ **`/tmp/accept220/work/diag2-cli.wav`**（⭐ 有真低音、⭐ 峰值 `0.279464`）⭐ vs ⭐ **`diag2-mcp.wav`**（⭐ 同一工程、⭐ 纯合成、⭐ 峰值 `0.787402`、⭐ 与"无 sampler"⭐逐字节相同）⇒ ⭐ ⭐ **那一对就是缺口的声音** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **上面六条**（⭐ 我下一单从 ①② 开始）＋ ⭐ 内容寻址 ＋ ⭐ 宿主 libm ＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ **听 `diag2-cli.wav` vs `diag2-mcp.wav`** ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R928 实测追加（2026-10-19）：⭐⭐ **`#221`（⭐ 采样器进 MCP ＋ ⭐ 渲染真消费）落地 ＋ 快进合并** ⇒ ⭐ 验收缺陷 ①②**修了**
+
+⭐ **合并**: ⭐ base `a12f1a82` ⇒ ⭐ `FINAL=3f812e93`（⭐ 14 文件 ＋2415／−133）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **113 个 `test result: ok`／FAILED 0**（mcp ＋ app）＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **20 层全 0** ＋ ⭐ `validate_schemas` **4 份通过** ＋ ⭐ 两 crate clippy 全 0 ✓ ⭐ 树已拆 ＋ `target`（42 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ ① 工具面（⭐ 35 → 36）**: ⭐ `setTrackSampler` ⭐ 成为 ⭐ `edit_notes` 的**第 36 个 kind**（⭐ 与 `setTrackColor` 同形：⭐ `kind + trackId + sampler`、⭐ `sampler: string|null`、⭐ **`null` ＝ 解绑**、⭐ **缺键响亮拒绝**）★ ⭐ `old_sampler` **从当前文档读**（⛔ 不信调用方）★ ⭐ ⭐ **`KNOWN_UNREACHABLE` **清空**（⭐ 43 → 44 条可达、⭐ 欠账 0）** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ ② 渲染真消费（⭐ 三个 `sha256` 互不相同）**:
+| ⭐ 工程 | ⭐ `sha256` | ⭐ 峰值 |
+| :-- | :--- | ---: |
+| ⭐ 无 sampler | ⭐ `874f532a…` | ⭐ 0.787401557 |
+| ⭐ 绑 A | ⭐ ⭐ `7c54cfed…` | ⭐ 0.310000658 |
+| ⭐ 绑 B | ⭐ ⭐ `a8c1c85c…` | ⭐ 0.155000329 |
+＋ ⭐ 每次 ⭐ **per-track `sfz(tracks=1 regions=1 samples=1 silent=0 missing=[])`** ★ ⭐ 且 ⭐ **A/B 峰值比 ＝ 2.000000**（⭐ 样本幅度 0.5／0.25 ⇒ ⭐ 比例可独立算出）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 抽成**唯一实现**（⭐ 好设计）**: ⭐ 把 `domain/sfz.rs` 里"⭐ 一个音符怎么响"⭐内联块 ⭐ 抽成 ⭐ ⭐ **`note_wave()`**（⭐ 区域选择／⭐ 播放速率／⭐ 总增益／⭐ 样本来源）⇒ ⭐ `render_sfz_wav` 与 ⭐ `render_master` ⭐ **共用** ⇒ ⭐ ⭐ **两条工具不可能在"⭐ 哪个样本、⭐ 多快、⭐ 多响"⭐上漂移** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ `unsupported` 变真话（⭐ 第 324 条落地）**: ⭐ 新增 ⭐ **`KNOWN_UNSUPPORTED_KEYS`（14 项）** ＋ ⭐ `debug_assert!(清单.contains(key))`（⭐ 清单外的键 ⇒ ⭐ **判据当场红**）＋ ⭐ ⭐ **一条判据为每一项构造一个只触发它的输入**、⭐ 断言它**真的出现在 `unsupported` 里**、⭐ 并反查"⭐ 出现过的键都必须在清单里" ★ ⭐ **退役 `sfzSampler`**（⭐ 现在真支持了、⭐ 报它**就是假话**）✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 顺带修好的**真缺陷**（⭐ 很值）**: ⭐ `sfz::resolve_sample_path` ⭐ 原来**不归一** `\`（⭐ 与 app `#205` 同一条）⇒ ⭐ 真实库 `dsmolken-double-bass` ⭐ **210 个区域全部读不到、⭐ 静默回退正弦** ★ ⭐ 归一后实测：⭐ `real-arco` **`samples=1`** ＋ ⭐ `peak=0.129847`（⭐ 修前 `samples=0 missing=["…arco\arco_f2_mf_down.wav"]`）✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 三条**必须上报**的发现（⭐ 它主动点的）**:
+| # | ⭐ 发现 | ⭐ 严重度 |
+| :-- | :--- | :--- |
+| ⭐ 1 | ⚠ ⭐ ⭐ **CLI 的引擎 SFZ 支路**恒为 MCP 的 **2.000000×**（⭐ 两档样本幅度下**比例同一个常数**）⇒ ⭐ 疑似**同一音符被触发两次**（⭐ 两声部相加）★ ⭐ ⚠ **未取证、⭐ 未改 engine**（⭐ 越界） | ⭐ ⭐ **高** —— ⭐ 若成立 ⭐ **CLI 导出的采样轨**响度是错的**、⭐ 有削波风险** |
+| ⭐ 2 | ⚠ ⭐ **CLI `track_notes_in_frames` 不看 `bpm`** ⇒ ⭐ 与 MCP `note_frame_span` 只在 **`bpm == 60`** 时同解 | ⭐ ⭐ **高** —— ⭐ 即 **CLI 导出的音符**时间**在非 60 BPM 下是错的** |
+| ⭐ 3 | ⭐ MCP 采样器路径**不应用** `amplitude`／⭐ `tune`-CC／⭐ `volume`-CC／⭐ `offset`-`end` ⇒ ⭐ 4 类"⭐ 已知但不逐项报" | ⭐ 中 |
+
+⭐ ⚠ ⭐ ⭐ **七、⭐ 它如实说的一条（⭐ 很关键）**: ⭐ ⚠ ⭐ `schemas/mcp-tools.schema.json` ⭐ ⭐ **不枚举 op kind**（`grep -c setTrackColor schemas/… = 0``）⇒ ⭐ kind 的发布面在 ⭐ `tools/list` 的 `inputSchema` ⇒ ⭐ ⭐ **"⭐ 同步 schema"⭐在本契约上是**空操作**（⭐ `git diff HEAD -- schemas` ＝ 空）** ✓ ★ ⚠ **若要把 op-kind 写进契约 ⇒ ⭐ 那是**新契约面**、⭐ 本单不擅自发明** ✓
+
+⭐ ⚠ ⭐ ⭐ **八、⭐ 它抓到自己一处**假绿**（⭐ 值得记）**: ⚠ ⭐ "⭐ 第一版判据漏了 `merge_proposal`"⭐ ⇒ ⭐ 因为 ⭐ **`edit_notes` 只建**提案**、⭐ `merge_proposal` 才施加** ⇒ ⭐ 已修 ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`2.000000×` 的取证**（⭐ 下一单）＋ ⭐ ⭐ **`track_notes_in_frames` 不看 bpm** ＋ ⭐ 4 类不支持项登记 ＋ ⭐ `#222`（⭐ FLAC/OGG）＋ ⭐ `#224`（⭐ CLI AuxReturn）＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ 听 `diag2-cli.wav` vs `diag2-mcp.wav` ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
