@@ -3048,23 +3048,29 @@ impl DeviceEqWiring {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
             return;
         };
-        let mut state = self.gesture.borrow_mut();
-        let DeviceEqGesture::Dragging {
-            last_db,
-            min_db,
-            max_db,
-            moved,
-            ..
-        } = &mut *state
-        else {
-            return;
+        // ⭐ `#212`：**借的作用域只包住状态本身** —— 记下这一移的新值，然后**放借**，
+        // 再调界面（`set_gain` 是 `ui.set_*`）。持借调界面正是 `#212` 的崩法：
+        // 界面写入若回调到同一份 `RefCell`，`borrow_mut()` 就会 panic。
+        let next_db = {
+            let mut state = self.gesture.borrow_mut();
+            let DeviceEqGesture::Dragging {
+                last_db,
+                min_db,
+                max_db,
+                moved,
+                ..
+            } = &mut *state
+            else {
+                return;
+            };
+            let next_db = db_from_fraction(fraction, *min_db, *max_db);
+            if next_db.to_bits() == last_db.to_bits() {
+                return;
+            }
+            *last_db = next_db;
+            *moved = true;
+            next_db
         };
-        let next_db = db_from_fraction(fraction, *min_db, *max_db);
-        if next_db.to_bits() == last_db.to_bits() {
-            return;
-        }
-        *last_db = next_db;
-        *moved = true;
         // 拖动期只写**视图态**（投影下一次注入会覆盖它）—— ⛔ 不提交工程内容。
         (self.set_gain)(&ui, next_db);
     }
@@ -3357,26 +3363,31 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let mut state = gesture.borrow_mut();
-            let SendGainGesture::Dragging {
-                edge_id,
-                last_db,
-                min_db,
-                max_db,
-                moved,
-                ..
-            } = &mut *state
-            else {
-                return;
+            // ⭐ `#212`：借的作用域只包住状态本身；**先放借，再写界面**
+            // （`preview_send_gain` 会 `ui.set_*`）。持借调界面 = 重入 panic 的形态。
+            let (edge_id, next_db) = {
+                let mut state = gesture.borrow_mut();
+                let SendGainGesture::Dragging {
+                    edge_id,
+                    last_db,
+                    min_db,
+                    max_db,
+                    moved,
+                    ..
+                } = &mut *state
+                else {
+                    return;
+                };
+                let next_db = db_from_fraction(fraction, *min_db, *max_db);
+                if next_db.to_bits() == last_db.to_bits() {
+                    return;
+                }
+                *last_db = next_db;
+                *moved = true;
+                (*edge_id, next_db)
             };
-            let next_db = db_from_fraction(fraction, *min_db, *max_db);
-            if next_db.to_bits() == last_db.to_bits() {
-                return;
-            }
-            *last_db = next_db;
-            *moved = true;
             // 拖动期只写**视图态**（下一次完整重投影会覆盖它）—— ⛔ 不提交工程内容。
-            preview_send_gain(&ui, *edge_id, next_db);
+            preview_send_gain(&ui, edge_id, next_db);
         }
     });
     ui.on_send_gain_release({
@@ -4099,8 +4110,12 @@ impl ProductionLoop {
         mark: EditMark,
         project: Option<&yeban_model::YebanProjectV1>,
     ) -> ProductionTick {
+        // ⭐ `#212`：**借只包住引擎调用**，界面写入（[`apply_engine_error`] /
+        // [`pump_meters`]）一律在 `drop(engine)` 之后 ⇒ 界面回调（若将来有）不可能
+        // 重入同一份 `RefCell`。持借调界面正是 `#212` 崩溃的形态。
         let mut engine = self.engine.borrow_mut();
         if !engine.has_engine() {
+            drop(engine);
             // 没有引擎 ⇒ 这一跳"没有发布" ⇒ 横幅**一位不动**（⛔ 不因为"引擎没起来"
             // 就清掉上一次的错误：那不是"错误已解决"的证据）。见 [`EnginePublishOutcome`]。
             apply_engine_error(ui, EnginePublishOutcome::Unchanged);
@@ -4153,6 +4168,7 @@ impl ProductionLoop {
         // ⛔ 顺序：必须在 `publish_project` 之后 —— 它读的就是那一步的结局。
         // ⛔ 它**不是**第 5 个"必做步骤"：它只写一个 Slint 属性（无 I/O、无分配上限、
         //   不阻塞），即使失败也不影响前三步的读数。
+        drop(engine);
         apply_engine_error(
             ui,
             match (&publish_error, published_revision) {
@@ -4161,7 +4177,6 @@ impl ProductionLoop {
                 (None, None) => EnginePublishOutcome::Unchanged,
             },
         );
-        drop(engine);
         ProductionTick {
             published_revision,
             publish_error,
@@ -4284,7 +4299,23 @@ pub fn wire_transport(
     // 又不引入一个可能变成 unused import 的 trait（`-D warnings` 下会直接失败）。
     let toggle_ui = slint::ComponentHandle::as_weak(ui);
     ui.on_toggle_play(move || {
-        let reading = toggle.borrow_mut().toggle_play();
+        // ⭐⭐ 任务单 `#212` 的**边界兜底**：本回调与 [`wire_keys`] 拿的是**同一个**
+        // `Rc<RefCell<EngineHost>>`，而 `wire_keys` 的 `Action::PlayPause` 臂会
+        // `ui.invoke_toggle_play()` —— 若那边在**持借**期间调进来，`borrow_mut()` 就会
+        // `RefCell already borrowed`。这个回调跑在 `winit` 的 `key_down`（FFI 边界，
+        // **panic 不能 unwind**）里 ⇒ 一次重入 = **进程 abort**。
+        //
+        // ⇒ 根因已在 [`wire_keys`]（`action_needs_engine`：借的范围只包要动引擎的动作）；
+        //   这里是**第二道防线**：借不到就**降级**（打一行、引擎与界面都一位不动），
+        //   ⛔ 不 panic、⛔ 不 abort、⛔ 不假装切换过。
+        let Ok(mut engine) = toggle.try_borrow_mut() else {
+            eprintln!("[yeban-app] 忽略 toggle-play：引擎正被同一线程借用（重入）⇒ 本次按键无效");
+            return;
+        };
+        let reading = engine.toggle_play();
+        // ⭐ 作用域纪律：**先放借，再碰界面**（`apply_transport` 写两个属性；将来若有人在
+        // 属性变更里回调引擎，这里也不会重入）。`#212` 的根因就是"持借调界面"。
+        drop(engine);
         if let Some(ui) = toggle_ui.upgrade() {
             apply_transport(&ui, reading);
         } else {
@@ -4298,7 +4329,15 @@ pub fn wire_transport(
     ui.on_stop(move || {
         // UI 的"停止"按钮的语义（`transport.slint` 的 accessible-label）是
         // **停止并回到起始点** ⇒ 引擎侧是 `Stop` + `SeekTicks(0)` 两条命令。
-        let reading = stop.borrow_mut().stop_and_rewind();
+        //
+        // ⭐ `#212`：与 `on_toggle_play` 同款的两道防线（边界 `try_borrow_mut` ＋ 先放借
+        // 再写界面）—— 这两个回调是 `wire_keys` 唯一会重入的两个落点。
+        let Ok(mut engine) = stop.try_borrow_mut() else {
+            eprintln!("[yeban-app] 忽略 stop：引擎正被同一线程借用（重入）⇒ 本次按键无效");
+            return;
+        };
+        let reading = engine.stop_and_rewind();
+        drop(engine);
         if let Some(ui) = stop_ui.upgrade() {
             apply_transport(&ui, reading);
         } else {
@@ -4667,6 +4706,38 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
     });
 }
 
+/// ⭐ **这个动作要不要动引擎**（⭐ 任务单 `#212`：`wire_keys` **借不借宿主**的唯一判据）。
+///
+/// ## 为什么它是**安全属性**的一部分（⛔ 不是分类癖）
+///
+/// [`wire_keys`] 手里的 `engine` 与 [`wire_transport`] 的两个回调
+/// （`on_toggle_play` / `on_stop`）拿的是**同一个** `Rc<RefCell<EngineHost>>`。
+/// 凡是在**持借期间**调到界面的动作，都会让那个回调重入 `borrow_mut()` ⇒
+/// `RefCell already borrowed`；而按键链从 `winit` 的 `key_down` 进来，那里
+/// **panic 不能 unwind** ⇒ 进程 **abort**（`#212` 的真机现象：`Space` 一按就崩）。
+///
+/// ⇒ 允许在"借内"执行的动作集合必须**一个界面回调都不碰**。
+///
+/// ## 与 [`apply_engine_command`] 的对应（⭐ 两处必须同时改）
+///
+/// 返回 `true` 的集合必须**恰好等于** [`apply_engine_command`] 处理的那几条
+/// （今天：`Action::ToggleMetronome` / `Action::ToggleCountIn` —— 它们只碰
+/// `metronome::set_enabled` / `set_count_in_bars`，那两个函数的入参是 `&mut EngineHost`
+/// ＋ `&YebanProjectV1`，**不碰界面**）。
+///
+/// ⚠ 这条耦合由 `src/test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow`
+/// 从**源码文本**对账（两个函数的 `Action::*` 集合必须逐条相同）—— 新增一条"要动引擎"
+/// 的动作时，忘记改这里会红，而不是在真机上再崩一次。
+///
+/// ⚠ **为什么这里不列 `Action::PlayPause` / `Action::ResumeFromCursor`**：它们各自在
+/// `host.rs` 的代码里**只能出现一次**（`src/elements.rs` 的
+/// `space_and_shift_space_share_one_host_arm_today` 钉住了"两键共用一个臂"）⇒ 在这里
+/// 再列一遍会让那条判据红。它们的"不借宿主"由**本函数的 `_ => false`** 保证。
+#[must_use]
+pub fn action_needs_engine(action: Action) -> bool {
+    matches!(action, Action::ToggleMetronome | Action::ToggleCountIn)
+}
+
 /// 把界面的**键盘事件源**接到动作上（`N2` 裁决 **(1)**：GUI 绑**逻辑键**）。
 ///
 /// ## 为什么是逻辑键
@@ -4724,12 +4795,40 @@ pub fn wire_keys(
             alt,
             meta,
         };
-        match context.borrow().resolve_logical(key, modifiers) {
+        // ⭐ `#212`：**先结算成一个值**，再进 `match`。
+        //
+        // ⚠ `match context.borrow().resolve_logical(..) { … }` 会让那个 `Ref`
+        // **活着穿过整个 match 体**（scrutinee 的临时值活到 match 结束）⇒ 体内任何
+        // `context.borrow_mut()` 都会 panic（`Already borrowed`）。今天体内不碰
+        // `context`，但 `wire_input` 的两个回调会 `borrow_mut()` 同一份
+        // `InputContext`，而体内会调界面回调（`ui.invoke_toggle_play()` 等）——
+        // 这正是 `#212` 那类"持借调界面"的形态。⇒ 结算成值，借在语句结束就放掉。
+        let resolution = context.borrow().resolve_logical(key, modifiers);
+        match resolution {
             Resolution::PassThrough => false,
             Resolution::ConsumedByIme => true,
             Resolution::Action(action) => {
-                // ⭐ 借用**只活在这条臂里**（⛔ 不跨回调、⛔ 不存起来）。
-                // ⚠ 已经在借用中就**不消费**（⛔ 不 panic）—— 控制线程上不会嵌套到同一份。
+                // ⭐⭐ 任务单 `#212`：**只有"要动引擎"的动作才借宿主**。
+                //
+                // ## 为什么"先借住、再看动作"是崩溃（真机 abort 的根因）
+                //
+                // 这里的 `host` 与 [`wire_transport`] 的 `on_toggle_play` / `on_stop`
+                // 拿的是**同一个** `Rc<RefCell<EngineHost>>`（`main.rs` 传的
+                // `Some(engine_handle)`）。走带那两条动作的落点是
+                // `ui.invoke_toggle_play()` —— 一次**界面回调**，而那个回调自己就要
+                // `borrow_mut()` 同一份宿主 ⇒ 持借期间的重入 ⇒ `RefCell already borrowed`。
+                // 崩溃点还落在 `winit::platform_impl::macos::view::WinitView::key_down`
+                // （FFI 边界，**不能 unwind**）⇒ `thread caused non-unwinding panic. aborting.`
+                //
+                // ⇒ 借用范围必须与 [`action_needs_engine`] **同集**：那个集合里的动作
+                // **一个界面回调都不调**（见该函数的文档）。走带 / 撤销 / 取消族在
+                // **借外**执行，因此它们随时可以 `ui.invoke_*`。
+                //
+                // ⚠ 借到的这一段仍然只活在这条臂里（⛔ 不跨回调、⛔ 不存起来），并且
+                // 已经在借用中就**不消费**（⛔ 不 panic）。
+                if !action_needs_engine(action) {
+                    return apply_action(&ui, undo.as_ref(), None, action);
+                }
                 match (engine.as_ref(), project.as_ref()) {
                     (Some(host), Some(project)) => match host.try_borrow_mut() {
                         Ok(mut host) => {
@@ -8072,24 +8171,29 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
             // ---- 第一段：命中 + 选区（**总是**执行）----
             // 音符框高与 `.slint` 的矩形一致；值写在一处, 免得命中测试去猜（账本第 495 轮）。
             let hit = view.hit_test_visible(scroll, width, x, y, NOTE_HEIGHT_PX);
-            {
+            // ⭐ `#212`：**借只包住选区的内存镜像** —— 先算出要写的三个读数，放借，
+            // 再写界面。持借调界面（`ui.set_selected_*`）是同一类重入形态：
+            // 界面写入若回调到同一份 `RefCell`，`borrow_mut()` 就会 panic。
+            let (selected_count, selected_ids, note_flags) = {
                 let mut sel = selection.borrow_mut();
                 match hit {
                     Some(index) => sel.select_only(&view.notes[index].id),
                     None => sel.clear(),
                 }
-                ui.set_selected_note_count(i32::try_from(sel.len()).unwrap_or(i32::MAX));
+                let count = i32::try_from(sel.len()).unwrap_or(i32::MAX);
                 // 把选中 id 写回界面属性 —— `apply_view` 由它重算标志, 保证重注入后仍对齐。
                 let ids: Vec<slint::SharedString> =
                     sel.iter().map(|id| id.as_str().into()).collect();
-                ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(ids)));
                 let visible = view.visible_notes(scroll, width);
                 let flags = crate::input::flags_for_ids(
                     &sel.iter().cloned().collect::<Vec<_>>(),
                     &visible.ulids,
                 );
-                ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(flags)));
-            }
+                (count, ids, flags)
+            };
+            ui.set_selected_note_count(selected_count);
+            ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(selected_ids)));
+            ui.set_note_selected(slint::ModelRc::new(slint::VecModel::from(note_flags)));
             // 台账 R9：这一次点击**改的就是** `selected-ulids`，而这条回调**不**重投影
             // ⇒ 状态栏那一格必须在这里同步刷新，否则点击之后它停在旧选区上（= 新的假话）。
             publish_status_bar(&ui, view);

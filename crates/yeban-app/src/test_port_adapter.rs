@@ -3000,6 +3000,425 @@ fn shift_space_and_space_are_the_same_transport_path_today() {
     ));
 }
 
+/// 判据（⭐ 任务单 `#212` 的**无头复现**）：`Space` 在**生产接线**（`wire_keys` 拿到引擎）
+/// 下不得重入 `EngineHost` 的借用。
+///
+/// ## 复现的是什么
+///
+/// `main.rs` 的 `wire_keys` 传的是 `Some(engine_handle)` ＋ `Some(project)`（与
+/// `wire_transport` 拿的是**同一个** `Rc<RefCell<EngineHost>>`）。按键那条链是：
+///
+/// ```text
+/// key-action → wire_keys 闭包 → host.try_borrow_mut()   （⭐ 借在这里就活着）
+///            → apply_action → Action::PlayPause => ui.invoke_toggle_play()
+///            → wire_transport 的 on_toggle_play → toggle.borrow_mut()  ← 同一个 RefCell
+/// ```
+///
+/// 于是 `Space` 在真机上直接 panic（`RefCell already borrowed`），而它落在 `key_down`
+/// 这个 FFI 边界里 ⇒ **非 unwinding panic ⇒ 进程 abort**。
+///
+/// ## 为什么既有判据没抓住
+///
+/// [`TransportHarness::wire_keyboard`] 传的是 `wire_keys(…, None, None, None)`（判据装配
+/// 的既有形态：没有撤销会话、没有引擎上下文）⇒ 那条臂根本不借引擎 ⇒ 同一键在判据里绿。
+/// 本判据把生产的那两个 `Some(..)` **照抄**进来，因此它与真机是**同一形状**。
+#[test]
+fn space_with_the_production_engine_wiring_does_not_re_enter_the_engine_borrow() {
+    let mut harness = TransportHarness::new();
+    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+    host::wire_input(harness.port.ui(), Rc::clone(&context));
+    // ⭐ 生产形状：引擎上下文 ＋ 当前工程都**在场**（`main.rs` 的 `wire_keys` 调用同款）。
+    host::wire_keys(
+        harness.port.ui(),
+        Rc::clone(&context),
+        None,
+        Some(Rc::clone(&harness.engine)),
+        Some(Rc::new(yeban_model::samples::filled_project())),
+    );
+    assert_eq!(
+        context.borrow().focus(),
+        yeban_app::input::Focus::MainCanvas,
+        "注入前焦点必须在主画布"
+    );
+    assert!(
+        !context.borrow().is_composing(),
+        "注入前不得处于输入法合成态（否则 Space 会被吞掉）"
+    );
+    let before = harness.reading();
+    assert_eq!(
+        before.state,
+        TransportState::Stopped,
+        "夹具起点必须是停住（否则 Space 的语义是暂停）"
+    );
+    let base = harness.journal().len();
+
+    // ⭐ 这一行在修好之前会 panic（`RefCell already borrowed`，位置是 `host.rs` 的
+    // `on_toggle_play`）—— panic 在 Slint 回调里，产品二进制里它就是**进程 abort**。
+    harness
+        .port
+        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
+        .expect("注入 Space");
+
+    let after = harness.reading();
+    assert_eq!(
+        after.state,
+        TransportState::Playing,
+        "`Space` 必须真的起播（引擎读数）"
+    );
+    assert_eq!(
+        harness.journal()[base..]
+            .iter()
+            .map(|record| record.command)
+            .collect::<Vec<_>>(),
+        vec![TransportCommand::Play],
+        "一次 `Space` = 一条 `Play`"
+    );
+    let ui = harness.port.ui();
+    assert_eq!(
+        ui.get_playing(),
+        after.state.is_running(),
+        "显示态 `playing` 必须跟着引擎读数走"
+    );
+    observe(&format!(
+        "[transport-e2e] ⑤ 生产接线（`wire_keys` 拿到引擎）下 `Space` ⇒ 状态={:?} \
+         位置={} tick 命令={:?} 显示 playing={}（⭐ 不 panic；修好之前这一行到不了）",
+        after.state,
+        after.position_ticks,
+        vec!["Play"],
+        ui.get_playing(),
+    ));
+}
+
+/// 判据（⭐ `#212` 判据 ⑤：走带**仍正确**）：生产接线（`wire_keys` 拿到引擎）下，
+/// `Space` 播放 → `Space` 暂停（位置保留）→ 停止按钮回起点 → 播放按钮再起播。
+///
+/// 这条与 [`space_with_the_production_engine_wiring_does_not_re_enter_the_engine_borrow`]
+/// 的分工：那条证明"不崩"，这条证明"**修完之后语义一位没变**"（状态机 ＋ `apply_transport`
+/// 写下的时间码都跟着引擎读数走）。
+#[test]
+fn space_pause_and_stop_stay_correct_on_the_production_wiring() {
+    let mut harness = TransportHarness::new();
+    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+    host::wire_input(harness.port.ui(), Rc::clone(&context));
+    host::wire_keys(
+        harness.port.ui(),
+        Rc::clone(&context),
+        None,
+        Some(Rc::clone(&harness.engine)),
+        Some(Rc::new(yeban_model::samples::filled_project())),
+    );
+    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+    assert!(!ui.get_playing(), "初始显示态是停住");
+
+    // ① `Space` ⇒ 播放（真端口事件：`WindowEvent::KeyPressed` → `.slint` 的 `key-handler`）。
+    harness
+        .port
+        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
+        .expect("注入 Space");
+    let played = harness.reading();
+    assert_eq!(played.state, TransportState::Playing, "① Space 必须起播");
+    assert!(played.position_ticks > 0, "播放必须真的推进 tick");
+    assert!(ui.get_playing(), "显示态必须跟着引擎");
+    assert_eq!(
+        ui.get_timecode(),
+        harness.view.timecode_at(played.position_ticks),
+        "时间码必须等于投影在这个 tick 上的读数（`apply_transport` 的唯一写点）"
+    );
+
+    // ② 再按 `Space` ⇒ 暂停（引擎的 `Stop`，位置保留）。
+    harness
+        .port
+        .dispatch_key_press(yeban_ui_test_port::KeyCode::Space)
+        .expect("注入 Space");
+    let paused = harness.reading();
+    assert_eq!(paused.state, TransportState::Stopped, "② Space 必须暂停");
+    assert_eq!(
+        paused.position_ticks, played.position_ticks,
+        "暂停保留位置（\"回到起点\"是停止按钮的语义）"
+    );
+    assert!(!ui.get_playing(), "显示态必须跟着回到停住");
+
+    // ③ 停止按钮 ⇒ 停住 ＋ 回到 tick 0（`on_stop` 的 `stop_and_rewind`）。
+    harness.seek_and_inject(2880);
+    assert_eq!(
+        ui.get_timecode(),
+        harness.view.timecode_at(2880),
+        "定位后时间码跟着走"
+    );
+    ui.invoke_stop();
+    let rewound = harness.reading();
+    assert_eq!(rewound.state, TransportState::Stopped);
+    assert_eq!(rewound.position_ticks, 0, "停止按钮必须回到 tick 0");
+    assert_eq!(
+        ui.get_timecode(),
+        "001.01.000",
+        "回到起点后是第 1 小节第 1 拍"
+    );
+    assert!(!ui.get_playing());
+
+    // ④ 播放按钮 ⇒ 再起播（回调链在 ③ 之后仍然通）。
+    ui.invoke_toggle_play();
+    let replayed = harness.reading();
+    assert_eq!(
+        replayed.state,
+        TransportState::Playing,
+        "④ 播放按钮必须起播"
+    );
+    assert!(ui.get_playing());
+    observe(&format!(
+        "[transport-e2e] ⑨ 生产接线下的走带全链：① Space→{:?}@{} tick ② Space→{:?}@{}\
+         （暂停保留位置）③ 停止按钮→{:?}@{}（回起点，时间码 001.01.000）④ 播放按钮→{:?}@{}",
+        played.state,
+        played.position_ticks,
+        paused.state,
+        paused.position_ticks,
+        rewound.state,
+        rewound.position_ticks,
+        replayed.state,
+        replayed.position_ticks,
+    ));
+}
+
+/// 判据（⭐ `#212` 的**同类扫描 ①**：键盘全键）：`wire_keys` 里**每一个**快捷键在
+/// **生产接线**（引擎上下文 ＋ 工程都在场）下各过一遍。
+///
+/// ## 两条断言为什么正好覆盖 `#212`
+///
+/// 崩法的共同形状是"按键回调**持借**期间调界面" ⇒ 被调的界面回调 `borrow_mut()` 重入
+/// ⇒ `RefCell already borrowed`，而它落在 `key_down`（FFI 边界）⇒ **进程 abort**。
+///
+/// 1. **不 panic**：每一键都真的调一次 `key-action`（`.slint` 的 `key-handler` 调的就是
+///    这**一个**回调），并且顺序覆盖**全部**策略表分支（`input.rs` 的
+///    `resolve_logical` 第 1–6 步）；
+/// 2. **借还回来了**：每次返回之后 `try_borrow_mut()` 必须成功 —— 这就是"没有长借留在
+///    回调外"的机械读数。任何新增的"持借跨界面调用"都在这里红，而不是在真机上崩。
+///
+/// ⚠ 带 `Cmd/Ctrl` 的组合经 `invoke_key_action` 注入（端口表达不了 chord，仓库既有的
+/// `Cmd+Z` 判据用的是同一格）；裸键那条链由 [`TransportHarness::wire_keyboard`] 的
+/// 端口真事件路覆盖（见 `shift_space_and_space_are_the_same_transport_path_today`）。
+#[test]
+fn every_wired_key_returns_without_panicking_and_without_keeping_the_engine_borrow() {
+    let harness = TransportHarness::new();
+    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+    host::wire_input(harness.port.ui(), Rc::clone(&context));
+    host::wire_keys(
+        harness.port.ui(),
+        Rc::clone(&context),
+        None,
+        Some(Rc::clone(&harness.engine)),
+        Some(Rc::new(yeban_model::samples::filled_project())),
+    );
+    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+
+    // (`text`, shift, ctrl, alt, meta, 标签) —— 顺序就是 `input.rs` 策略表的顺序：
+    // 直达视图 → Cmd/Ctrl 组合 → Alt 组合 → Shift 组合 → 无修饰单键 → 未绑定键。
+    let keys: &[(&str, bool, bool, bool, bool, &str)] = &[
+        ("\u{f708}", false, false, false, false, "F5"),
+        ("\u{f709}", false, false, false, false, "F6"),
+        ("z", false, true, false, false, "Cmd+Z"),
+        ("z", true, true, false, false, "Cmd+Shift+Z"),
+        ("h", true, true, false, false, "Cmd+Shift+H"),
+        ("d", false, true, false, false, "Cmd+D"),
+        ("b", false, true, true, false, "Cmd+Alt+B"),
+        ("m", false, true, true, false, "Cmd+Alt+M"),
+        ("n", false, true, true, false, "Cmd+Alt+N（节拍器）"),
+        ("d", false, true, true, false, "Cmd+Alt+D（预备拍）"),
+        ("1", false, false, true, false, "Alt+1"),
+        ("2", false, false, true, false, "Alt+2"),
+        ("\u{f702}", false, false, true, false, "Alt+Left"),
+        ("\u{f703}", false, false, true, false, "Alt+Right"),
+        (" ", true, false, false, false, "Shift+Space"),
+        ("\n", true, false, false, false, "Shift+Enter"),
+        ("z", true, false, false, false, "Shift+Z"),
+        ("\u{f700}", true, false, false, false, "Shift+Up"),
+        ("\u{f701}", true, false, false, false, "Shift+Down"),
+        ("\t", false, false, false, false, "Tab"),
+        (" ", false, false, false, false, "Space"),
+        ("\u{1b}", false, false, false, false, "Escape"),
+        ("\u{7f}", false, false, false, false, "Delete"),
+        ("\u{8}", false, false, false, false, "Backspace"),
+        ("\u{f702}", false, false, false, false, "Left"),
+        ("\u{f703}", false, false, false, false, "Right"),
+        ("\u{f700}", false, false, false, false, "Up"),
+        ("\u{f701}", false, false, false, false, "Down"),
+        ("b", false, false, false, false, "B"),
+        ("z", false, false, false, false, "Z"),
+        ("[", false, false, false, false, "["),
+        ("]", false, false, false, false, "]"),
+        ("1", false, false, false, false, "1"),
+        ("2", false, false, false, false, "2"),
+        ("3", false, false, false, false, "3"),
+        ("4", false, false, false, false, "4"),
+        ("5", false, false, false, false, "5"),
+        ("q", false, false, false, false, "Q（未绑定）"),
+        ("hello", false, false, false, false, "多字符文本"),
+    ];
+
+    let mut consumed = Vec::new();
+    for (text, shift, ctrl, alt, meta, label) in keys {
+        let accepted = ui.invoke_key_action((*text).into(), *shift, *ctrl, *alt, *meta);
+        if accepted {
+            consumed.push(*label);
+        }
+        assert!(
+            harness.engine.try_borrow_mut().is_ok(),
+            "`{label}` 返回之后引擎**仍被借用** ⇒ 有一条长借跨过了界面调用；\
+             这正是 `#212` 的崩法（下一个 `borrow_mut()` 会 panic，在 `key_down` 里 = abort）"
+        );
+    }
+    assert!(
+        consumed.len() >= 8,
+        "策略表里被消费的键不可能这么少（只数到 {} 条：{consumed:?}）—— \
+         这条判据本身可能没接上生产接线",
+        consumed.len()
+    );
+    observe(&format!(
+        "[transport-e2e] ⑥ 键盘全键 × {} 条 ⇒ 全部返回，且每次返回后引擎借用可再取 \
+         （0 次 `RefCell already borrowed`）；被消费的键={consumed:?}",
+        keys.len()
+    ));
+}
+
+/// 判据（⭐ `#212` 的**同类扫描 ②**：`try_borrow` 兜底）：**故意持借**时调走带回调 ⇒
+/// **降级**（打一行 ＋ 一位不动），⛔ 不是 panic、⛔ 更不是 abort。
+///
+/// ## 这条判据造的是**真机那个形状**
+///
+/// `#212` 的崩溃是"进入 `on_toggle_play` 时 `engine` 已经被借走且没释放"。修根因
+/// （`wire_keys` 只给"要动引擎"的动作上借）之后这条路径不该再出现；但按键回调跑在
+/// `winit` 的 `key_down`（FFI 边界，**不能 unwind**）⇒ 一旦回归，代价是**整个进程**。
+/// 因此那道边界上还有第二道防线：`try_borrow_mut()` 失败 ⇒ 打一行 ＋ 直接返回。
+///
+/// 本判据**手工持借**（不经过 `wire_keys`）来钉住那道防线：它必须给出**读数**
+/// （引擎一 tick 没动、一条命令没收到、界面一位没变），而不是把测试进程打死。
+#[test]
+fn toggle_play_and_stop_degrade_instead_of_aborting_when_the_engine_is_already_borrowed() {
+    let harness = TransportHarness::new();
+    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+    assert!(!ui.get_playing(), "初始显示态是停住");
+    let base = harness.journal().len();
+
+    {
+        // ⭐ **故意持借** = `#212` 的重入形状（持借期间调界面回调）。
+        let engine = Rc::clone(&harness.engine);
+        let _guard = engine.borrow_mut();
+        // ⛔ 修好之前这两行各自会 `RefCell already borrowed`（`host.rs` 的
+        // `on_toggle_play` / `on_stop`），在真机上就是**进程 abort**。
+        ui.invoke_toggle_play();
+        ui.invoke_stop();
+    }
+
+    let after = harness.reading();
+    assert_eq!(
+        after.state,
+        TransportState::Stopped,
+        "被降级的两次回调**不得**改动引擎状态"
+    );
+    assert_eq!(
+        after.position_ticks, 0,
+        "被降级的两次回调**不得**推动播放头"
+    );
+    assert!(
+        !ui.get_playing(),
+        "被降级的两次回调**不得**改动显示态（⛔ 不假装切换过）"
+    );
+    assert_eq!(
+        harness.journal().len(),
+        base,
+        "被降级的两次回调**不得**向引擎发任何命令"
+    );
+    assert!(
+        harness.engine.try_borrow_mut().is_ok(),
+        "回调返回之后借用必须已经放掉（降级路径也不许把守卫带走）"
+    );
+    observe(&format!(
+        "[transport-e2e] ⑦ 故意持借 ⇒ `invoke_toggle_play()` ＋ `invoke_stop()` 都降级：\
+         状态={:?} 位置={} tick 命令增量={} 显示 playing={}，且没有 panic / abort",
+        after.state,
+        after.position_ticks,
+        harness.journal().len() - base,
+        ui.get_playing(),
+    ));
+}
+
+/// 判据（⭐ `#212` 的**结构耦合**）：**借宿主**的动作集必须与**引擎命令**的动作集逐条相同。
+///
+/// ## 为什么要有这条（而不是只靠运行时）
+///
+/// `wire_keys` 的 `if !action_needs_engine(action)` 与 `apply_engine_command` 的 `match`
+/// 是**两处**必须同步的名单：前者决定"借不借"，后者决定"借来做什么"。若有人把一条
+/// **会调界面**的新动作加进前者（或把一条引擎命令只加进后者），运行时判据不一定当场红，
+/// 但 `#212` 的崩法会以另一种形式回来。
+///
+/// 本判据从**源码文本**取两个函数体里的 `Action::*` 名字集合，要求**逐条相等**；
+/// 并钉住"界面回调族不在借内"这条安全属性（它们各自在 `host.rs` 的代码里只出现一次，
+/// 见 `src/elements.rs` 的 `space_and_shift_space_share_one_host_arm_today`）。
+#[test]
+fn only_engine_commands_take_the_engine_borrow() {
+    /// 取 `host.rs` 里一个顶层 `pub fn {name}(` 的**代码区**（剥掉 `//` 注释），
+    /// 用于源码级对账。
+    fn host_function_code(name: &str) -> String {
+        let source = include_str!("host.rs");
+        let marker = format!("pub fn {name}(");
+        let start = source
+            .find(&marker)
+            .unwrap_or_else(|| panic!("`host.rs` 里必须有 `pub fn {name}(`"));
+        let rest = &source[start..];
+        let end = rest
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("`pub fn {name}` 必须以 `\\n}}\\n` 结束"));
+        rest[..end]
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 函数体里出现过的 `Action::<变体>` 名字（去重、排序）。
+    fn action_variants_in(code: &str) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut rest = code;
+        while let Some(index) = rest.find("Action::") {
+            let tail = &rest[index + "Action::".len()..];
+            let name: String = tail
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .collect();
+            if !name.is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+            rest = tail;
+        }
+        names.sort();
+        names
+    }
+
+    let borrow_predicate = action_variants_in(&host_function_code("action_needs_engine"));
+    let engine_command = action_variants_in(&host_function_code("apply_engine_command"));
+    assert_eq!(
+        borrow_predicate, engine_command,
+        "`action_needs_engine`（决定**借不借**宿主）与 `apply_engine_command`（决定**借来\
+         做什么**）必须处理同一组 `Action`：一边改了、另一边没改 ⇒ 要么引擎命令拿不到\
+         上下文（静默不生效），要么一条会调界面的动作被塞进了借内（`#212` 的崩法）"
+    );
+    assert!(
+        !borrow_predicate.is_empty(),
+        "两个动作集不可能都是空的 —— 节拍器 / 预备拍今天就在这条链上"
+    );
+    // ⭐ 安全属性：落点里有 `ui.invoke_*` 的动作**一律**不在借内。
+    for ui_calling in ["PlayPause", "ResumeFromCursor", "Cancel"] {
+        assert!(
+            !borrow_predicate.iter().any(|name| name == ui_calling),
+            "`Action::{ui_calling}` 的落点会调界面回调（`ui.invoke_*`）⇒ 它**必须**在\
+             借外执行；把它加进 `action_needs_engine` 就是 `#212` 的重入"
+        );
+    }
+    observe(&format!(
+        "[transport-e2e] ⑧ 借宿主的动作集={borrow_predicate:?} == 引擎命令集={engine_command:?}；\
+         界面回调族（PlayPause / ResumeFromCursor / Cancel）均不在借内"
+    ));
+}
+
 /// 判据（**本票的端到端 ③：录音键真的接线**）：真指针点录音键 ⇒ **起录**（`recording` 置位、
 /// 落盘路径被创建）⇒ 再点一次 ⇒ **停录**（`recording` 归零）；而**引擎读数一位不动**。
 ///
