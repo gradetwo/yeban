@@ -318,6 +318,16 @@ export component DeviceRack inherits Rectangle {
     /// 「N 条发送」的左沿 / 宽度（默认 240 / 128）—— 两者一起收，⛔ 不互相压。
     property <length> send-count-x: root.send-label-width + 20px;
     property <length> send-count-width: max(0px, root.first-side-width - root.send-count-x - 12px);
+    /// ⭐ 任务单 `#185`：**「新建发送」按钮的上沿**。
+    ///
+    /// 有发送时逐位等于 `#159` 的原式 `82px + 40px × n`（⛔ 一格不动）；
+    /// 空态（`n == 0`）时整体再下移 **22px** —— 空态文案 `send-empty` 住 `80..100`
+    /// （20px 高），按钮住 `104..126`，两者之间留 4px。
+    /// ⚠ `#159` 的原式在 `n == 0` 时把按钮放在 `82..104`，正好压在 `send-empty` 的
+    /// `80..100` 上（`#184` 实测 `(452,711,220,20)` vs `(452,713,160,22)`）——
+    /// 那是本单修掉的那一处。
+    property <length> send-create-y: 82px + 40px * root.send-destination-names.length
+        + (root.send-destination-names.length == 0 ? 22px : 0px);
 
     // ---------------------------------------------------------------- 标题
     UiText {
@@ -534,7 +544,11 @@ export component DeviceRack inherits Rectangle {
         // ⭐ `#184`：默认 380；窄面板让位（与 EQ 低架面板同一列、同一可见性）。
         width: root.first-side-width;
         visible: root.first-side-visible;
-        height: 126px + 40px * root.send-destination-names.length;
+        // ⭐ `#185`：空态时这一块也要多 22px —— 按钮下移 22px（`send-create-y`）后，
+        // 逐字原因那一行 (`send-create-y + 26`) 仍必须留在裁剪区里（`clip: true`）。
+        // 有发送时逐位等于 `#159` 的 `126px + 40px × n`（⛔ 一格不动）。
+        height: 126px + 40px * root.send-destination-names.length
+            + (root.send-destination-names.length == 0 ? 22px : 0px);
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
         border-width: 1px;
@@ -796,6 +810,8 @@ export component DeviceRack inherits Rectangle {
         }
 
         // 空态：无发送时**不画**任何行，只写这一句（逐字，判据按它断言）。
+        // ⭐ `#185`：它住 `80..100`，而「新建发送」在空态被 `send-create-y` 让到
+        // `104..126` ⇒ 两者**上下分开**，⛔ 不再压在同一格（`#184` 的旧账）。
         UiText {
             x: Tokens.space-4;
             y: 80px;
@@ -960,7 +976,8 @@ export component DeviceRack inherits Rectangle {
         // 没有 aux 轨时 `enabled: false` ＋ 下方逐字原因（⛔ 不静默）。
         Rectangle {
             x: Tokens.space-4;
-            y: 82px + 40px * root.send-destination-names.length;
+            // ⭐ `#185`：有发送时 `82 + 40n`（`#159` 原式），空态再下移 22px。
+            y: root.send-create-y;
             width: 160px;
             height: 22px;
             background: root.send-create-available ? Tokens.gold-deep : Tokens.bg-void;
@@ -999,7 +1016,9 @@ export component DeviceRack inherits Rectangle {
         // 不可用时的**逐字**原因（可用时 `visible: false`，文本是空串）。
         UiText {
             x: Tokens.space-4;
-            y: 108px + 40px * root.send-destination-names.length;
+            // ⭐ `#185`：跟着按钮走 —— 有发送时仍是 `108 + 40n`（`#159` 原式），
+            // 空态 `send-create-y = 104` ⇒ `130..144`，仍在 `height` 之内（⛔ 不被裁掉）。
+            y: root.send-create-y + 26px;
             width: parent.width - 16px;
             height: 14px;
             text: root.send-create-reason;
