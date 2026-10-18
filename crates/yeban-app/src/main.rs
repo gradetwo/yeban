@@ -726,7 +726,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         //
         // 缺口（`#93` 之后仍然卡着人类实测）：GUI 只能"打开"一个**已经存在**的 `.yeban`；
         // 从零开始时唯一的出路是 CLI `--project-sample empty --save-as <path>`
-        // （`#128` 实测 884 B／0 轨；`#161` 起是 1136 B／0 音轨 ＋ 1 主总线）。
+        // （`#128` 实测 884 B／0 轨；`#161` 起是 1136 B／0 音轨 ＋ 1 主总线；
+        // `#215` 起是 1148 B，因为创建时刻不再是 `0`）。
         // 入口 = `ui/console/mixer_console.slint` 的
         // `module-new-project-button`（控制台 **Tab 1 = 调音台**，"打开工程"正下方）⇒
         // `host::wire_new_project`：问一次**同一个** `FilePicker` 的 `choose_save` ⇒

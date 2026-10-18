@@ -1,5 +1,6 @@
 //! 判据（任务单 `#129`，无头腿）：**"新建工程"的落盘部分真的写出
-//! 1136 B／0 音轨 ＋ 1 主总线**（`#161` 前是 884 B／0 轨）。
+//! 1148 B／0 音轨 ＋ 1 主总线 ＋ 一个真实的创建时刻**（`#161` 前是 884 B／0 轨，
+//! `#215` 前是 1136 B／创建时刻 `0`）。
 //!
 //! ## 这个文件为什么存在（以及它**不**测什么）
 //!
@@ -61,15 +62,20 @@ impl Drop for Scratch {
 }
 
 /// ⭐ 本单的**核心读数**：`host::create_new_project_file` 写出的文件是
-/// **1136 字节 / 0 音轨 ＋ 1 主总线**，且它与 CLI `--project-sample empty --save-as <path>`
+/// **1148 字节 / 0 音轨 ＋ 1 主总线**，且它与 CLI `--project-sample empty --save-as <path>`
 /// 是同一条落点（`save::save_archive_file` + `samples::default_project()`）。
 ///
 /// ⚠ `#161` 重钉（前 → 后 ＋ 原因）：884 B → **1136 B**。原因 = `default_project()`
 /// 现在自带主总线（`tracks` 多一条 `Master`、`master_bus_track_id` 非 nil、
 /// `routing_graph.nodes` 多一格）。**不是**容器格式变化：同一对象写两遍仍逐字节相同，
 /// 且 CLI `--save-as` 走同一条写入口给出同一个 1136。
+///
+/// ⚠ `#215` 重钉（前 → 后 ＋ 原因）：**1136 B → 1148 B**（`+12 B`）。原因 = 新建工程
+/// 现在写真实创建时刻：`"created_at_unix_ms":0`（1 位）→ 13 位 UNIX 毫秒。
+/// `modified_at_unix_ms` 仍是 `0`（本单**不**改"保存时刷新修改时刻"那条裁决）
+/// ⇒ 只差这一个数字的 12 个字符。同一份**文件**导出两次仍逐字节相同。
 #[test]
-fn create_new_project_file_writes_the_1136_byte_master_bus_container() {
+fn create_new_project_file_writes_the_1148_byte_master_bus_container() {
     let scratch = Scratch::new();
     let path = scratch.join("brand-new.yeban");
 
@@ -83,12 +89,13 @@ fn create_new_project_file_writes_the_1136_byte_master_bus_container() {
         report.temp_name,
     ));
 
-    // ---- ② 字节数：1136（与 CLI `--save-as` 的产物同一条落点；`#161` 前是 884）----
+    // ---- ② 字节数：1148（与 CLI `--save-as` 的产物同一条落点；`#161` 前是 884，
+    //          `#215` 前是 1136）----
     assert_eq!(
-        size, 1136,
-        "新建工程的容器必须恰是 1136 字节（`#161`：`default_project()` 自带主总线后，\
-         `--project-sample empty --save-as` 同样是 `saved: … bytes=1136`；`#161` 前是 884）；\
-         实得 {size} 字节 ⇒ 空工程对象 / 图谱 / 资产池有一项变了"
+        size, 1148,
+        "新建工程的容器必须恰是 1148 字节（`#161`：自带主总线 → 1136；`#215`：\
+         创建时刻 0 → 13 位毫秒数 ⇒ +12 B）；\
+         实得 {size} 字节 ⇒ 空工程对象 / 图谱 / 资产池 / 创建时刻有一项变了"
     );
     assert_eq!(
         report.bytes as u64, size,
@@ -137,19 +144,38 @@ fn create_new_project_file_writes_the_1136_byte_master_bus_container() {
     project
         .validate()
         .expect("0 音轨 ＋ 1 主总线工程必须通过模型层校验");
+    // ⭐ `#215`：创建时刻必须真的写进文件（否则 BWF 的 `OriginationDate` 会退回
+    // `1970-01-01`），且它**不在** `default_project()` 里 —— 那个纯样本必须保持
+    // 逐字节稳定（schema 对账用）。因此这里按"除创建时刻外逐字段相等"判定。
+    assert!(
+        project.metadata.created_at_unix_ms > 0,
+        "新建工程必须写真实创建时刻；实得 {} ⇒ 导出会把 BWF 写成 1970-01-01",
+        project.metadata.created_at_unix_ms
+    );
+    yeban_ui_test_port::render::report_line(&format!(
+        "[#215/file] 新建: 新建前 created_at={}（`samples::default_project()` 源对象）\
+         → 新建后 created_at={}",
+        yeban_model::samples::default_project()
+            .metadata
+            .created_at_unix_ms,
+        project.metadata.created_at_unix_ms,
+    ));
+    let mut expected = yeban_model::samples::default_project();
+    expected.metadata.created_at_unix_ms = project.metadata.created_at_unix_ms;
     assert_eq!(
-        project,
-        yeban_model::samples::default_project(),
-        "写出去又读回来的工程必须**逐字段**等于 `samples::default_project()` \
-         （`default_project()` 就是 1136 B／0 音轨 ＋ 1 主总线那条的模型侧对象）"
+        project, expected,
+        "写出去又读回来的工程必须**除创建时刻外逐字段**等于 `samples::default_project()` \
+         （它就是 1148 B／0 音轨 ＋ 1 主总线那条的模型侧对象）；\
+         实得 created_at={}",
+        project.metadata.created_at_unix_ms
     );
     let fingerprint = yeban_app::undo::project_fingerprint(&project).expect("工程指纹");
     assert_eq!(
         Some(fingerprint.as_str()),
-        yeban_app::undo::project_fingerprint(&yeban_model::samples::default_project())
+        yeban_app::undo::project_fingerprint(&expected)
             .ok()
             .as_deref(),
-        "指纹必须与 `default_project()` 相同（这是与界面那条腿对账的同一个量）"
+        "指纹必须与同一个创建时刻的 `default_project()` 相同（与界面那条腿对账的同一个量）"
     );
 
     // ---- ④ `project-counts: tracks-all=1 master-track=1`（与 CLI **同一条**报告投影）----
@@ -200,5 +226,34 @@ fn create_new_project_file_writes_the_1136_byte_master_bus_container() {
         !filled_counts.contains("tracks-all=1 "),
         "对照工程的 `tracks-all` 必须**非** 1（否则『0 音轨 ＋ 1 主总线』这条判据没有对照）；\
          实得 {filled_counts:?}"
+    );
+}
+
+/// ⭐ `#215` 判据：新建归档**取时钟恰好一次**，取到的值原样落进
+/// `metadata.created_at_unix_ms`。
+///
+/// 牙长在"计数"上：把 `clock()` 挪到别处（或再补一次）⇒ 计数不是 1；
+/// 把字段留在 `0` ⇒ 第二条断言红。`default_project()` 本身保持**纯**（时钟在
+/// `new_project_archive_with_clock` 里才取），因此 schema 对账的样本字节不受影响。
+#[test]
+fn the_new_project_clock_is_read_exactly_once() {
+    let calls = std::cell::Cell::new(0_u32);
+    let archive = yeban_app::host::new_project_archive_with_clock(|| {
+        calls.set(calls.get() + 1);
+        1_760_000_000_123
+    });
+    assert_eq!(
+        calls.get(),
+        1,
+        "新建工程的创建时刻必须只取一次（实得 {} 次）",
+        calls.get()
+    );
+    assert_eq!(
+        archive.project.metadata.created_at_unix_ms, 1_760_000_000_123,
+        "创建时刻必须原样落进工程元数据"
+    );
+    assert_eq!(
+        archive.project.metadata.modified_at_unix_ms, 0,
+        "本单不写 `modified_at`（那是『保存时刷新修改时刻』的另一条裁决）"
     );
 }

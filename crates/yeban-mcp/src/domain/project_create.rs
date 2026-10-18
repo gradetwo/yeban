@@ -326,16 +326,38 @@ const PPQ: u64 = yeban_model::PPQ;
 
 /// 从零构造一份"可渲染、可配器"的工程。
 ///
+/// ⭐ `#215`：这是**创建**，因此创建时刻取**恰好一次**写进
+/// `metadata.created_at_unix_ms`（时钟来自 [`yeban_model::project::now_unix_ms`]）。
+/// 没有这一步时该字段恒为 `0` ⇒ 导出的 BWF `OriginationDate` 永远是 `1970-01-01`
+/// （`#214` 已把两条 ASCII 戳改取工程元数据，本函数补上"谁来写这个字段"）。
+///
 /// # Errors
 ///
 /// - 文档自校验失败（模型层 `validate()` 拒绝）⇒ 对应契约错误码；
 /// - 内容批次的前置条件失败 ⇒ 模型层判决（**绝不**写一份半成品）。
 pub fn build(config: &CreateConfig, path: &Path) -> Result<CreatedProject, Fault> {
+    build_with_clock(config, path, yeban_model::project::now_unix_ms)
+}
+
+/// [`build`] 的**可注入时钟**形态：`clock` 只在建模板文档时被读**恰好一次**。
+///
+/// 判据用它在"次数"上做证：一个计数闭包传进来，`build_with_clock` 返回后计数必须是 1。
+/// 同一个 `clock` 值 ⇒ 文档逐字节相同（判据 `building_twice_is_byte_for_byte_identical`）；
+/// 两个不同时刻 ⇒ 文档只差 `metadata.created_at_unix_ms` 这一个字段。
+///
+/// # Errors
+///
+/// 同 [`build`]。
+pub fn build_with_clock(
+    config: &CreateConfig,
+    path: &Path,
+    clock: impl FnOnce() -> u64,
+) -> Result<CreatedProject, Fault> {
     // 1. 模板文档（作者定型的那一层）：主总线音轨 + 它在路由图里的节点。
     //
     //    ⚠ 这一步**刻意不经 `Op`** —— 模型 `Op` 全集没有写 `master_bus_track_id`
     //    的变体（模块头逐条列了证据）。身份由 (title|path) 确定性派生，
-    //    因此同一个请求两次建出的文档逐字节相同。
+    //    因此同一个请求（＋ 同一个创建时刻）两次建出的文档逐字节相同。
     let label = if config.title.is_empty() {
         path.display().to_string()
     } else {
@@ -343,6 +365,8 @@ pub fn build(config: &CreateConfig, path: &Path) -> Result<CreatedProject, Fault
     };
     let master_id = deterministic_id(&format!("project:{label}:master"));
     let mut project = YebanProjectV1::default();
+    // ⭐ `#215`：创建时刻 —— 本次调用里**唯一**一次取时钟，之后它就在文档里。
+    project.record_creation_time(clock());
     project.title = if config.title.is_empty() {
         project.title.clone()
     } else {
@@ -505,6 +529,10 @@ mod tests {
         std::path::PathBuf::from("/tmp/yeban-create-unit/demo.yeban")
     }
 
+    /// 判据用的固定创建时刻（2025-10-09T08:53:20Z）—— 与 `render_master.rs` 的
+    /// `FIXTURE_CREATED_AT_MS` 同一个量级：足够大、非 `0`、十进制 13 位。
+    const FIXED_CREATED_AT_MS: u64 = 1_760_000_000_000;
+
     #[test]
     fn default_config_builds_a_renderable_project_with_a_master_bus() {
         let created = build(&CreateConfig::default(), &path()).expect("建工程");
@@ -536,15 +564,51 @@ mod tests {
         project.validate().expect("新建的工程必须自校验通过");
     }
 
+    /// ⭐ `#215`：**同一请求 ＋ 同一创建时刻** ⇒ 同一文档。
+    ///
+    /// 创建时刻是**输入**（不是"建的时候顺便读的墙钟"）：判据把时钟钉死成一个值，
+    /// 两次建出的文档才该逐字节相同。换成 [`build`]（真时钟）时这条判据会把
+    /// "两次跨越毫秒边界"变成偶发红 —— 那不是本判据想量的东西。
     #[test]
     fn building_twice_is_byte_for_byte_identical() {
-        let first = build(&CreateConfig::default(), &path()).expect("第一次");
-        let second = build(&CreateConfig::default(), &path()).expect("第二次");
+        let first = build_with_clock(&CreateConfig::default(), &path(), || FIXED_CREATED_AT_MS)
+            .expect("第一次");
+        let second = build_with_clock(&CreateConfig::default(), &path(), || FIXED_CREATED_AT_MS)
+            .expect("第二次");
         assert_eq!(first.project, second.project, "同一请求 ⇒ 同一文档");
         assert_eq!(
             serde_json::to_string(&first.project).expect("序列化"),
             serde_json::to_string(&second.project).expect("序列化"),
             "规范化 JSON 必须逐字节相同"
+        );
+        assert_eq!(
+            first.project.metadata.created_at_unix_ms, FIXED_CREATED_AT_MS,
+            "创建时刻必须真的落进文档（否则 BWF 会写 1970-01-01）"
+        );
+    }
+
+    /// ⭐ `#215` 判据：新建工程**取时钟恰好一次**，且取到的值原样落进
+    /// `metadata.created_at_unix_ms`。
+    ///
+    /// 牙长在"计数"上：把 `clock()` 挪到循环里、或者在 `build` 外面再补一次，
+    /// 计数立刻不是 1；把字段写成 `0` / 写成另一个时刻，第二条断言立刻红。
+    #[test]
+    fn creating_a_project_reads_the_clock_exactly_once() {
+        let calls = std::cell::Cell::new(0_u32);
+        let created = build_with_clock(&CreateConfig::default(), &path(), || {
+            calls.set(calls.get() + 1);
+            FIXED_CREATED_AT_MS
+        })
+        .expect("建工程");
+        assert_eq!(
+            calls.get(),
+            1,
+            "创建时刻必须只取一次（实得 {} 次）",
+            calls.get()
+        );
+        assert_eq!(
+            created.project.metadata.created_at_unix_ms, FIXED_CREATED_AT_MS,
+            "文档里的创建时刻必须就是那一次取到的值"
         );
     }
 

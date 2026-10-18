@@ -712,10 +712,16 @@ fn save_as_without_open_says_it_saved_the_demo_project() {
         saved.contains("from=sample=default") && saved.contains("不是从文件打开的"),
         "saved: 行必须说清来源: {saved}"
     );
-    assert_eq!(
-        yeban_app::open::open_project_file(&target).expect("读回"),
-        yeban_app::bridge::demo_project()
+    // ⭐ `#215`：`--save-as` 不给 `--open` 是**创建**一份新工程 ⇒ 创建时刻写真实时间。
+    // 因此对账口径是"除创建时刻外逐字段等于演示工程"，并单独断言时刻真的非 0。
+    let read_back = yeban_app::open::open_project_file(&target).expect("读回");
+    assert!(
+        read_back.metadata.created_at_unix_ms > 0,
+        "新建工程必须写真实创建时刻（实得 0 ⇒ BWF 起源日期会退回 1970-01-01）"
     );
+    let mut expected = yeban_app::bridge::demo_project();
+    expected.metadata.created_at_unix_ms = read_back.metadata.created_at_unix_ms;
+    assert_eq!(read_back, expected, "除创建时刻外必须逐字段等于演示工程");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

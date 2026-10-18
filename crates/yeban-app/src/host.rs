@@ -5397,7 +5397,8 @@ pub fn wire_open_project(
 // **已经**有一个 `.yeban`。用户从零开始时唯一的出路是 CLI
 // `--project-sample empty --save-as <path>`（`#128` 实测：`saved: … bytes=884 …`，
 // `project-counts: tracks-all=0 master-track=0`；`#161` 起是
-// `bytes=1136` / `tracks-all=1 master-track=1`，因为空工程自带主总线）。
+// `bytes=1136` / `tracks-all=1 master-track=1`，因为空工程自带主总线；
+// `#215` 起是 `bytes=1148`，因为创建时刻不再是 `0`）。
 // 本单把这同一个落点搬进 GUI。
 //
 // ## 它不新造任何东西（逐条点名复用了什么）
@@ -5422,17 +5423,36 @@ pub fn wire_open_project(
 
 /// ⭐ **一份"新建工程"的归档**（任务单 `#129`）= 模型侧的规范空工程 + 空图谱 + 空资产池。
 ///
-/// 与 CLI `--project-sample empty --save-as <path>` 写出的归档**逐字段相同**：
-/// `history.dag` / 资产池为空是**如实置空**（样本本来就没有第二、第三层状态），
+/// 与 CLI `--project-sample empty --save-as <path>` 写出的归档**除创建时刻外**逐字段
+/// 相同：`history.dag` / 资产池为空是**如实置空**（样本本来就没有第二、第三层状态），
 /// 不是丢失 —— 与 [`crate::cli::load_project`] 的样本分支同一条口径。
 ///
 /// "规范空工程"的唯一来源是 [`yeban_model::samples::default_project()`]（`#161` 起是
-/// `1136 B／0 音轨 ＋ 1 主总线` 那一条的模型侧对象；`#161` 前是 `884 B／0 轨`）
+/// `1148 B／0 音轨 ＋ 1 主总线` 那一条的模型侧对象；`#161` 前是 `884 B／0 轨`，
+/// `#215` 前是 `1136 B` —— 创建时刻从 `0` 变成 13 位毫秒数 ⇒ `+12 B`）。
 /// —— ⛔ 本函数不手写第二份空工程夹具。
+///
+/// ⭐ `#215`：创建时刻就是**此刻**，由 [`new_project_archive_with_clock`] 取一次；
+/// 同一份归档写两遍仍逐字节相同（时刻是**数据**，不是写盘时取的）。
 #[must_use]
 pub fn new_project_archive() -> yeban_model::container::ProjectArchive {
+    new_project_archive_with_clock(yeban_model::project::now_unix_ms)
+}
+
+/// [`new_project_archive`] 的**可注入时钟**形态：新建工程的创建时刻从 `clock` 取
+/// **恰好一次**（判据用它把次数数出来）。
+///
+/// 为什么创建时刻要在这里落：`default_project()` 是**纯**样本（同一对象喂给
+/// schema 对账与投影判据，必须逐字节稳定），因此时钟⛔ 不能藏在它里面；
+/// "这一份工程是刚建出来的"这件事只有本函数知道（`#215`）。
+#[must_use]
+pub fn new_project_archive_with_clock(
+    clock: impl FnOnce() -> u64,
+) -> yeban_model::container::ProjectArchive {
+    let mut project = yeban_model::samples::default_project();
+    project.record_creation_time(clock());
     yeban_model::container::ProjectArchive {
-        project: yeban_model::samples::default_project(),
+        project,
         history_dag: Vec::new(),
         assets: Vec::new(),
     }
@@ -7733,10 +7753,10 @@ pub const ROLL_SNAP_GRID_TICKS: u64 = 240;
 /// 当前 UNIX 毫秒（提交时间戳）。溢出与时钟倒退都夹到 `0` / `u64::MAX`，**不 panic**。
 ///
 /// 抽出来是因为它有两个调用点（铅笔与删除）：两处各写一遍 `SystemTime` 就是第二个真相源。
+/// `#215` 起实现委托给 [`yeban_model::project::now_unix_ms`]：全仓只有**那一份**
+/// `SystemTime::now()`，新建工程的创建时刻与提交时间戳因此同源、不会各走一套夹取口径。
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    yeban_model::project::now_unix_ms()
 }
 
 /// `[UI-NOTE-003]` 把"选中的音符身份"解析成待提交的 **`Op::DeleteNote` 集合**（纯函数, 有判据）。

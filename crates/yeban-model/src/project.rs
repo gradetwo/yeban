@@ -1676,7 +1676,38 @@ impl Default for YebanProjectV1 {
     }
 }
 
+/// 当前 UNIX 毫秒 —— **创建时刻**的唯一取值器（任务单 `#215`）。
+///
+/// 模型层自身**不**调用它：取时钟是调用方（`yeban-app` 的"新建工程" /
+/// `yeban-mcp` 的 `create: true`）在"创建那一刻"做、且只做一次的事；之后时刻就住在
+/// [`ProjectMetadata::created_at_unix_ms`] 里。放在模型里只是为了让 app 与 MCP 有
+/// **同一份**实现，而不是各抄一段 `SystemTime::now()`（第二份真相源）。
+///
+/// 溢出与时钟倒退都夹到 `0` / `u64::MAX`，**不 panic**。
+#[must_use]
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 impl YebanProjectV1 {
+    /// 把一个**新建**工程的创建时刻写进元数据 —— 全仓**唯一**的写入口（`#215`）。
+    ///
+    /// 只由"创建"这一刻调用一次：内置样本落成新工程（GUI 的新建按钮 / CLI 的
+    /// `--project-sample` / `--save-as`）与 MCP 的 `yeban_open_project {create: true}`
+    /// 把 [`now_unix_ms`] 取一次传进来。
+    ///
+    /// ⛔ **打开与保存不调用它**：旧文件里 `created_at_unix_ms == 0`（"未知"）是它
+    /// 自己的历史；打开/保存时补写会改变旧文件的字节，破坏"打开 → 保存"的字节稳定性。
+    /// 也⛔ 不写 `modified_at_unix_ms`：那是"保存时刷新修改时刻"的**另一条**裁决，
+    /// 同样会改旧文件字节，不在本单范围内。
+    pub fn record_creation_time(&mut self, now_unix_ms: u64) {
+        self.metadata.created_at_unix_ms = now_unix_ms;
+    }
+
     /// 版本门：判断本文档能否被本读取器安全读取 [ROAD-M1-001, RSK-16]。
     ///
     /// 规则（拒绝而不是猜测）：

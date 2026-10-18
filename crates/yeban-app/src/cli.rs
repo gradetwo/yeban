@@ -3050,10 +3050,27 @@ impl std::error::Error for CliError {
 /// 运行期合成的音频字节，走 [`Sample::assets`] 进同一份归档；`empty` 没有片段 ⇒
 /// 仍是空池。
 ///
+/// ⭐ `#215`：样本分支没有磁盘对应物 ⇒ 这一份工程是**此刻**创建出来的，因此创建时刻
+/// 由 [`load_project_with_clock`] 取**一次**写进 `metadata.created_at_unix_ms`。
+/// `--open` 分支⛔ 一次都不取时钟：文件里的创建时刻是既有事实，打开不改写它。
+///
 /// # Errors
 ///
 /// [`CliError::Open`]：读文件失败 / 超过上限 / 不是 `.yeban` 容器 / 容器拒绝。
 pub fn load_project(options: &Options) -> Result<Loaded, CliError> {
+    load_project_with_clock(options, yeban_model::project::now_unix_ms)
+}
+
+/// [`load_project`] 的**可注入时钟**形态（判据用）：样本分支把 `clock` 读**恰好一次**，
+/// `--open` 分支一次都不读 —— 两个读数都可以被数出来。
+///
+/// # Errors
+///
+/// 同 [`load_project`]。
+pub fn load_project_with_clock(
+    options: &Options,
+    clock: impl FnOnce() -> u64,
+) -> Result<Loaded, CliError> {
     match options.open.as_ref() {
         Some(path) => {
             let opened: OpenedProject =
@@ -3071,14 +3088,18 @@ pub fn load_project(options: &Options) -> Result<Loaded, CliError> {
                 },
             })
         }
-        None => Ok(Loaded {
-            archive: ProjectArchive {
-                project: options.sample.project(),
-                history_dag: Vec::new(),
-                assets: options.sample.assets(),
-            },
-            source: ProjectSource::Sample(options.sample),
-        }),
+        None => {
+            let mut project = options.sample.project();
+            project.record_creation_time(clock());
+            Ok(Loaded {
+                archive: ProjectArchive {
+                    project,
+                    history_dag: Vec::new(),
+                    assets: options.sample.assets(),
+                },
+                source: ProjectSource::Sample(options.sample),
+            })
+        }
     }
 }
 
@@ -5209,9 +5230,19 @@ mod tests {
             "--save-as 不需要投影 ⇒ 不该有 view-counts（省掉与保存无关的失败面）\n{text}"
         );
 
-        // 存下来的确实是演示工程。
+        // 存下来的确实是演示工程 —— ⭐ `#215`：**除创建时刻外**逐字段相等，
+        // 且创建时刻必须真的写进去（不再是 `0` ⇒ BWF 不再写 1970-01-01）。
         let read_back = crate::open::open_project_file(&target).expect("读回");
-        assert_eq!(read_back, crate::bridge::demo_project());
+        assert!(
+            read_back.metadata.created_at_unix_ms > 0,
+            "新建工程必须写入真实创建时刻（实得 0 ⇒ BWF 起源日期会退回 1970-01-01）"
+        );
+        let mut expected = crate::bridge::demo_project();
+        expected.metadata.created_at_unix_ms = read_back.metadata.created_at_unix_ms;
+        assert_eq!(
+            read_back, expected,
+            "除创建时刻外，存下来的必须逐字段等于演示工程"
+        );
 
         // `--project-sample filled` 换工程 ⇒ 换内容（同一条路径，没有第二个分支）。
         let filled = dir.join("filled.yeban");
@@ -5226,8 +5257,68 @@ mod tests {
         )
         .expect("保存 filled 样本");
         let filled_project = crate::open::open_project_file(&filled).expect("读回");
-        assert_eq!(filled_project, yeban_model::samples::filled_project());
+        assert!(
+            filled_project.metadata.created_at_unix_ms > 0,
+            "`--project-sample filled --save-as` 同样是创建，必须写真实时刻"
+        );
+        let mut expected_filled = yeban_model::samples::filled_project();
+        expected_filled.metadata.created_at_unix_ms = filled_project.metadata.created_at_unix_ms;
+        assert_eq!(filled_project, expected_filled);
         assert_ne!(filled_project, read_back);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // 判据 37a（`#215`）：样本分支取时钟**一次**，`--open` 分支**一次都不取**
+    // ------------------------------------------------------------------
+
+    /// 两条腿用同一个计数闭包量"时钟被读了几次"：
+    ///
+    /// - 样本（没有磁盘对应物）⇒ **1** 次，值原样落进 `created_at_unix_ms`；
+    /// - `--open`（文件里的创建时刻是既有事实）⇒ **0** 次，且旧文件的 `0` 不被补写。
+    ///
+    /// 这条防的是"把墙钟塞进打开/保存路径" —— 那会让旧文件在每次打开后都换一个
+    /// 创建时刻，导出的 BWF 也就不再逐字节可复现。
+    #[test]
+    fn the_sample_path_reads_the_clock_once_and_the_file_path_never() {
+        let calls = std::cell::Cell::new(0_u32);
+        let options = parse(&["--project-sample".to_owned(), "empty".to_owned()]).expect("解析");
+        let loaded = load_project_with_clock(&options, || {
+            calls.set(calls.get() + 1);
+            1_760_000_000_123
+        })
+        .expect("样本工程");
+        assert_eq!(calls.get(), 1, "样本分支必须只取一次时钟");
+        assert_eq!(
+            loaded.archive.project.metadata.created_at_unix_ms, 1_760_000_000_123,
+            "样本分支取到的时刻必须落进工程元数据"
+        );
+
+        // 旧文件：`created_at_unix_ms == 0`（本单之前所有新工程的样子）。
+        let dir = scratch_dir("clock");
+        let path = dir.join("old.yeban");
+        crate::save::save_archive_file(
+            &yeban_model::container::ProjectArchive {
+                project: yeban_model::samples::default_project(),
+                history_dag: Vec::new(),
+                assets: Vec::new(),
+            },
+            &path,
+        )
+        .expect("写旧文件");
+        let calls = std::cell::Cell::new(0_u32);
+        let options = parse(&["--open".to_owned(), path.display().to_string()]).expect("解析");
+        let loaded = load_project_with_clock(&options, || {
+            calls.set(calls.get() + 1);
+            1
+        })
+        .expect("打开旧文件");
+        assert_eq!(calls.get(), 0, "`--open` 分支不得读时钟");
+        assert_eq!(
+            loaded.archive.project.metadata.created_at_unix_ms, 0,
+            "打开旧文件不得补写创建时刻（补写会改字节 ⇒ 破坏打开-保存的稳定性）"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
