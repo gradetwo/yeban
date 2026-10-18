@@ -232,6 +232,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
+use yeban_app::samples::SAMPLE_LIBRARY_ENV;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_model::EntityId;
@@ -344,6 +345,24 @@ fn runtime_tree(window: &MainWindow) -> ControlTree {
     ControlTree::from_json(&json).expect("JSON 必须能被同一套校验读回")
 }
 
+/// ⭐ `#205`：把采样库根固定到**不存在**的路径（= CI 的形态）。
+///
+/// 本文件测的是"采样库**未安装**"时的装乐器行布局（`#187` 的 `#196` 形态）。
+/// 已经下载过库的机器上 `sample-library-download-button` 会按产品行为隐藏 ⇒
+/// 同一个判据会读到另一个状态。⇒ 每个窗口构造前先隔离库根。
+///
+/// ⚠ 用 [`std::sync::Once`]：`set_var` 在 Rust 2024 是 `unsafe`（要求没有并发读者）。
+/// 本文件的全部 `ViewState::from_project` 都经 `live_window_for` /
+/// `live_window_at_breakpoint` ⇒ 写发生在任何一次读之前，进程内只有这一次写。
+fn isolate_uninstalled_library() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let path = std::env::temp_dir().join("yeban-pane-no-overlap-no-library");
+        // SAFETY: 唯一一次写，且在所有窗口构造之前（见函数文档）。
+        unsafe { std::env::set_var(SAMPLE_LIBRARY_ENV, path) };
+    });
+}
+
 /// 一条生产形态的 Tier-1 活窗口（唯一构造入口 `build_main_window_with_console_tab`）。
 ///
 /// ⚠ 返回值里的 `LivePort` 必须被持有到判据结束；Tier-1 平台是**线程局部**的，
@@ -354,6 +373,7 @@ fn live_window(size: (u32, u32), tab: i32) -> LivePort<MainWindow> {
 
 /// 同 [`live_window`]，但换成指定的工程（`#187` 的空链 / 只有主总线两种夹具）。
 fn live_window_for(project: YebanProjectV1, size: (u32, u32), tab: i32) -> LivePort<MainWindow> {
+    isolate_uninstalled_library();
     let view = ViewState::from_project(&project).expect("演示工程必须能投影");
     let scene = DemoScene::from_view(&view);
     LivePort::new(
@@ -1925,6 +1945,7 @@ fn live_window_at_breakpoint(
     size: (u32, u32),
     tab: i32,
 ) -> LivePort<MainWindow> {
+    isolate_uninstalled_library();
     let view = ViewState::from_project(&project).expect("演示工程必须能投影");
     let mut scene = DemoScene::from_view(&view);
     scene.viewport_width = size.0;

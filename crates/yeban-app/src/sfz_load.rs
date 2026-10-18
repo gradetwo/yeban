@@ -81,7 +81,27 @@
 //! `crates/yeban-app/Cargo.toml` 新增一条**工作区内部**边，并重生成
 //! `docs/ledger/dependency-licenses.md`。⛔ 没有引入任何新的第三方包
 //! （`symphonia`／`rubato` 早由 `yeban-mcp` 那条边进了 `Cargo.lock`）。
+//!
+//! ## ⭐ ⑤ **样本路径里的 Windows 反斜杠**（任务单 `#205`）
+//!
+//! SFZ 是 Windows 工具链的格式，`sample=arco\arco_c4_mf_down.wav` 是合法写法。在
+//! macOS／Linux 上 `\` 只是**普通文件名字符** ⇒ `Path::join` 出一个不存在的名字 ⇒
+//! 解码失败 ⇒ 如实回退内存正弦（`#203` 实测到的静音）。归一只发生在
+//! [`resolve_sample_path`]（**读取前的路径解析**，两条消费腿共用）：
+//!
+//! * ① `sample=` 的值：由 [`normalize_sample_path`] 把 `\` 换成 `/`；
+//! * ② `<control> default_path=`：`Region::sample_path()` 先拼前缀再交给同一个解析函数
+//!   ⇒ **同一处归一**覆盖（`vsco2ce` 就是这种：`sample=` 干净，`default_path` 带 `\`）；
+//! * ③ `#include`：**不归本模块管** —— `yeban-sfz` 的 include 沙箱早已在
+//!   `parser.rs:1667` 做过 `raw.replace('\\', "/")`，且本模块的 `SfzInstrument::load`
+//!   走 `parse_text`（纯文本模式，**忽略** `#include`，见 `parser.rs:316`）。
+//!
+//! ⛔ **本层不改原样字符串**：`Region::sample`／`sample_path()`／
+//! [`SfzDecodeReport::referenced_sample_paths`] 与引擎的 `missing_sample_paths` 仍逐字是
+//! SFZ 写的东西（它们是**事实记录**，不是路径）；`label=`／`sw_label=` 等文本字段里的
+//! `\` 也**一个都不动**。
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -646,7 +666,8 @@ pub fn classify_decode_failure(path: &Path, error: &DecodeError) -> SampleReadFa
 /// 为一个音符**解析它的区域样本**：优先读 `sample=` 指到的文件，读不到则**如实回退**到内存正弦。
 ///
 /// ⚠ 路径语义：`sample=` 相对路径按 SFZ 惯例**相对 SFZ 文件所在目录**解析（`sample_path()`
-/// 已含 `default_path` 前缀）；绝对路径原样使用。
+/// 已含 `default_path` 前缀）；绝对路径原样使用。⭐ 读盘前先把 `\` 归一成 `/`
+/// （[`resolve_sample_path`]，任务单 `#205`）。
 ///
 /// 返回 `(样本, 来源文案)`；`None` = 该音符没有匹配区域（合法：不发声）。
 ///
@@ -688,14 +709,70 @@ pub fn region_sample_for(
 ///
 /// ⚠ 路径语义（SFZ 惯例）：相对路径**相对 SFZ 文件所在目录**；绝对路径原样使用。
 /// `sample=` 里已经带了 `default_path` 前缀（见 `Region::sample_path`）。
+///
+/// ⭐ 任务单 `#205`：`\` 先按**分隔符**归一成 `/`（见 [`normalize_sample_path`]），
+/// 然后再判相对／绝对。⭐ 这是**唯一**的归一插入点：`--sfz` 的探测／导出
+/// （[`region_sample_for`]）与摊平表管线（[`decode_sfz_plan`]）都经过这里。
 fn resolve_sample_path(sfz_path: &Path, sample: &Path) -> PathBuf {
-    if sample.is_absolute() {
-        sample.to_path_buf()
+    let normalized = normalize_sample_path(sample);
+    let normalized = normalized.as_ref();
+    if normalized.is_absolute() || is_windows_drive_absolute(normalized) {
+        normalized.to_path_buf()
     } else {
-        sfz_path
-            .parent()
-            .map_or_else(|| sample.to_path_buf(), |parent| parent.join(sample))
+        sfz_path.parent().map_or_else(
+            || normalized.to_path_buf(),
+            |parent| parent.join(normalized),
+        )
     }
+}
+
+/// ⭐ 把 SFZ 样本路径里的 Windows 分隔符 `\` 归一成 `/`（任务单 `#205`）。
+///
+/// # 为什么这是**唯一**正确的语义（不是"猜"）
+///
+/// SFZ 的 `opcode=value` 值里**没有转义语法**：解析器只去掉一层成对双引号
+/// （`yeban-sfz/src/parser.rs` 的 `unquote`），其余字节原样进 `Region::sample`。
+/// 所以 `sample=arco\c4.wav` 里的 `\` 就是作者写的**路径分隔符**，不是转义符。
+/// 同一件事在 `#include` 的沙箱里已经是既定口径（`parser.rs:1667` 的
+/// `raw.replace('\\', "/")`）—— 本函数只是把同一条口径补到**样本路径**上。
+///
+/// # `\\` 怎么算
+///
+/// 两个连续 `\` ⇒ 两个 `/`（`a\\b.wav` ⇒ `a//b.wav`）。既然没有转义语法，这**不是**
+/// "一个转义反斜杠"；操作系统把连续分隔符折叠成同一个（POSIX 下 `a//b` 与 `a/b` 同指），
+/// 因此行为正确。⚠ 本函数**不**折叠 `//`，也⛔ 不动 `\` 以外的任何字符。
+///
+/// # 绝对路径
+///
+/// * POSIX `/x/y`：`Path::is_absolute()` 为真 ⇒ 原样（既有口径，⛔ 不拼 SFZ 目录）。
+/// * Windows 盘符 `C:\x` ⇒ `C:/x`：Unix 上 `Path::is_absolute()` 为假，但它显然不是
+///   "相对 SFZ 目录"的路径；join 会造出 `<sfzdir>/C:/x` 这种作者没写过的路径。因此
+///   [`is_windows_drive_absolute`] 把它认成**外来绝对路径**原样交出 —— 读取失败时错误
+///   消息里是 `C:/x`，不伪装成本地文件。
+/// * UNC `\\server\share\x` ⇒ `//server/share/x`：以 `/` 开头 ⇒ 本来就 absolute，原样。
+///
+/// # 为什么用 [`Cow`]
+///
+/// 绝大多数 `sample=` 没有 `\`（本仓 `#203` 的 26 个完整 instrument 里 20 个没有）⇒
+/// **零分配**地借用原 `Path`；只有真的含 `\` 时才分配一份归一后的 [`PathBuf`]。
+#[must_use]
+fn normalize_sample_path(sample: &Path) -> Cow<'_, Path> {
+    match sample.to_str() {
+        Some(text) if text.contains('\\') => Cow::Owned(PathBuf::from(text.replace('\\', "/"))),
+        // 非 UTF-8 路径不可能来自 `Region::sample`（它本身是 `str`）；原样借用。
+        _ => Cow::Borrowed(sample),
+    }
+}
+
+/// 归一之后，`C:/…` 形式（盘符 ＋ 分隔符）算**绝对路径** —— 即使宿主是 Unix。
+///
+/// 只认 `字母:` 后紧跟 `/` 的形式（`C:foo` 是盘符相对路径，不在此列）。
+#[must_use]
+fn is_windows_drive_absolute(sample: &Path) -> bool {
+    sample.to_str().is_some_and(|text| {
+        let bytes = text.as_bytes();
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+    })
 }
 
 /// ⭐ **一次控制侧解码的读数**（任务单 `#79`；形状照 [`SfzLoadReport`]：路径／字节／区域数／
@@ -1441,6 +1518,135 @@ mod tests {
         assert!(
             sfz_files.is_empty(),
             "load_sfz 失败时⛔ 不得写出 .sfz：{sfz_files:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // ⭐ 任务单 `#205`：SFZ 样本路径里的 Windows 反斜杠
+    // -----------------------------------------------------------------------
+
+    /// 判据 1（读数表）：`\` 是**分隔符**；相对路径拼在 SFZ 目录之后。
+    ///
+    /// 数什么：`resolve_sample_path` 的返回值（一个路径，字符串形态）。单位 = 路径。
+    #[test]
+    fn a_backslash_in_a_sample_path_is_a_separator() {
+        let base = Path::new("sfzdir/inst.sfz");
+        // #203 的逐字样例（dsmolken-double-bass）。
+        assert_eq!(
+            resolve_sample_path(base, Path::new("arco\\arco_c4_mf_down.wav")),
+            PathBuf::from("sfzdir/arco/arco_c4_mf_down.wav"),
+        );
+        // 两级（karoryfer-pastabass 的 `samples\linguine\…`）。
+        assert_eq!(
+            resolve_sample_path(base, Path::new("samples\\linguine\\db2_vl1_rr1.wav")),
+            PathBuf::from("sfzdir/samples/linguine/db2_vl1_rr1.wav"),
+        );
+        // `default_path` 先拼前缀（vsco2ce 的形态）：拼接后的整串仍由同一处归一覆盖。
+        assert_eq!(
+            resolve_sample_path(
+                base,
+                Path::new("Woodwinds\\Bassoon\\stac\\PSBassoon_A1.wav")
+            ),
+            PathBuf::from("sfzdir/Woodwinds/Bassoon/stac/PSBassoon_A1.wav"),
+        );
+        // `\\`：SFZ 没有转义语法 ⇒ 两个分隔符 ⇒ 两个 `/`（OS 折叠，行为与 `a/b` 同）。
+        assert_eq!(
+            resolve_sample_path(base, Path::new("a\\\\b.wav")),
+            PathBuf::from("sfzdir/a//b.wav"),
+        );
+        // 正斜杠（本来就好）逐字不变。
+        assert_eq!(
+            resolve_sample_path(base, Path::new("arco/c4.wav")),
+            PathBuf::from("sfzdir/arco/c4.wav"),
+        );
+    }
+
+    /// 判据 1（绝对路径的处置）：`/x/y` 与 `C:\…`／UNC 各自**不拼** SFZ 目录。
+    #[test]
+    fn absolute_sample_paths_are_not_joined_to_the_sfz_directory() {
+        let base = Path::new("sfzdir/inst.sfz");
+        // POSIX 绝对：原样（既有口径）。
+        #[cfg(unix)]
+        assert_eq!(
+            resolve_sample_path(base, Path::new("/x/y/kick.wav")),
+            PathBuf::from("/x/y/kick.wav"),
+        );
+        // Windows 盘符绝对：归一成 `C:/…` 后按**外来绝对路径**原样交出（⛔ 拼 SFZ 目录）。
+        assert_eq!(
+            resolve_sample_path(base, Path::new("C:\\dir\\kick.wav")),
+            PathBuf::from("C:/dir/kick.wav"),
+        );
+        // UNC：`\\server\share` ⇒ `//server/share`（本身以 `/` 开头 ⇒ absolute）。
+        assert_eq!(
+            resolve_sample_path(base, Path::new("\\\\server\\share\\kick.wav")),
+            PathBuf::from("//server/share/kick.wav"),
+        );
+    }
+
+    /// 判据 2（端到端）：反斜杠样本**真的被解码成文件**，⛔ 不是回退。
+    ///
+    /// 这是本单的承重判据：`decode_sfz_plan` 的 `decoded_samples` ＋ 导出源的
+    /// `source=`（逐字 `file(`、不含 `回退`）。⚠ 能量 > 0 **不是**解码证据。
+    #[test]
+    fn a_backslash_sample_path_is_decoded_from_the_file_not_fallen_back() {
+        let dir = temp_dir("bslash-decode");
+        let arco = dir.join("arco");
+        std::fs::create_dir_all(&arco).expect("建样本目录");
+        let wav = arco.join("c4.wav");
+        let format = yeban_render::rf64::PcmFormat::integer(1, 48_000, 16);
+        let buffer = yeban_render::dither::PcmBuffer::Int16(vec![1_000_i16; 48]);
+        yeban_render::wav::write_plain_wav(&wav, &format, &buffer).expect("写夹具 WAV");
+
+        let sfz = dir.join("inst.sfz");
+        // 两条区域：一条反斜杠、一条正斜杠 —— 后者是**不退化**的对照。
+        std::fs::write(
+            &sfz,
+            "<region> sample=arco\\c4.wav key=60\n<region> sample=arco/c4.wav key=64\n",
+        )
+        .expect("写夹具 SFZ");
+
+        let (_plan, report) = decode_sfz_plan(&sfz, 48_000.0).expect("装载");
+        println!("[bslash-decode] {}", report.summary());
+        assert_eq!(
+            report.decoded_samples, 2,
+            "两条 sample= 都必须解码成功（反斜杠＋正斜杠各一）: {report:?}"
+        );
+        assert!(
+            report.missing_sample_paths.is_empty(),
+            "⛔ 不得有缺样本: {:?}",
+            report.missing_sample_paths
+        );
+        assert!(
+            report.unreadable_samples.is_empty(),
+            "⛔ 不得有读不动的样本: {:?}",
+            report.unreadable_samples
+        );
+        // ⭐ 原样字符串**不改**：事实记录仍逐字是 SFZ 写的东西。
+        assert_eq!(
+            report.referenced_sample_paths,
+            vec!["arco/c4.wav".to_owned(), "arco\\c4.wav".to_owned()],
+            "报告里的 sample= 必须原样（排序后）"
+        );
+
+        // 导出腿（`region_sample_for`）同一处解析：来源必须逐字是 `file(…)`。
+        let (_load, instrument) = load_sfz_with_instrument(&sfz, None, 48_000.0).expect("装载");
+        let source = SfzTrackSource::new_from_sfz_path(
+            std::sync::Arc::new(instrument),
+            &sfz,
+            &[(0, 960, 60, 100)],
+            48_000.0,
+            2,
+        );
+        let described = source.sample_source();
+        println!("[bslash-decode] 导出 source={described}");
+        assert!(
+            described.starts_with("file("),
+            "反斜杠样本必须真读文件（source=file(…)）: {described}"
+        );
+        assert!(
+            !described.contains("回退"),
+            "⛔ 不得回退到内存正弦: {described}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

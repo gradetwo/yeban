@@ -62,7 +62,7 @@ use yeban_app::bridge::{
 use yeban_app::export_wav::WavExportOptions;
 use yeban_app::host;
 use yeban_app::render_core::render_project_f32_with_assets;
-use yeban_app::samples::SAMPLE_LIBRARY_NOT_INSTALLED_HINT;
+use yeban_app::samples::{SAMPLE_LIBRARY_ENV, SAMPLE_LIBRARY_NOT_INSTALLED_HINT};
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
 use yeban_app::undo::{UndoPort, UndoSession};
@@ -133,6 +133,25 @@ impl Drop for AudioFixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// ⭐ `#205`：把采样库根固定到**不存在**的路径（= CI 的形态）。
+///
+/// 本文件的判据写的是"**仓库内** 0 个样本字节 ⇒ 内置清单一律不可装"（`#165`）。
+/// `#196` 起装乐器谓词**也认采样库根** ⇒ 一台已经下载过库的开发机会把两份内置候选
+/// 判成可装（那是产品想要的，但**不是**本文件要测的那一档）。所以判据开始前先把
+/// 库根隔离掉，让它无论在哪种机器上都测同一件事。
+///
+/// ⚠ 用 [`std::sync::Once`]：`set_var` 在 Rust 2024 是 `unsafe`（要求没有并发读者）。
+/// 本文件**每个**判据的第一行都调本函数 ⇒ 写发生在任何一次读之前（`Once` 的
+/// happens-before），进程内只有这一次写，之后不再改。
+fn isolate_repo_only_library() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let path = std::env::temp_dir().join("yeban-instrument-install-no-library");
+        // SAFETY: 见函数文档 —— 唯一一次写，且所有读都发生在本函数返回之后。
+        unsafe { std::env::set_var(SAMPLE_LIBRARY_ENV, path) };
+    });
 }
 
 /// 一个最小可播放工程：主总线 ＋ 一条 MIDI 轨 ＋ 一个摆好的 MIDI 片段 ＋ 1 个音符。
@@ -297,6 +316,7 @@ fn install_fixture(port: &UndoPort, fixture: &AudioFixture, message: &str) -> St
 // ===========================================================================
 #[test]
 fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
+    isolate_repo_only_library();
     let (project, track_id) = project_with_one_note("empty");
     let view = ViewState::from_project(&project).expect("投影");
 
@@ -376,6 +396,7 @@ fn the_builtin_list_is_empty_and_the_reason_is_visible_with_zero_buttons() {
 // ===========================================================================
 #[test]
 fn a_sample_bearing_sfz_installs_as_one_step_and_the_label_follows() {
+    isolate_repo_only_library();
     let (project, track_id) = project_with_one_note("install");
     let before_track = project.tracks.get(&track_id).expect("轨在").clone();
     assert_eq!(before_track.sampler, None, "夹具起手必须没有乐器");
@@ -441,6 +462,7 @@ fn a_sample_bearing_sfz_installs_as_one_step_and_the_label_follows() {
 // ===========================================================================
 #[test]
 fn changing_the_instrument_is_one_more_step_and_repeating_it_is_free() {
+    isolate_repo_only_library();
     let (project, track_id) = project_with_one_note("change");
     let (live, port) = live_window_with_undo(&project, "#164 换乐器");
 
@@ -502,6 +524,7 @@ fn changing_the_instrument_is_one_more_step_and_repeating_it_is_free() {
 // ===========================================================================
 #[test]
 fn without_a_display_track_the_gesture_is_disabled_and_a_direct_call_changes_nothing() {
+    isolate_repo_only_library();
     let project = project_with_master_only();
     let view = ViewState::from_project(&project).expect("投影");
     assert!(device_rack_track(&project).is_none());
@@ -562,6 +585,7 @@ fn without_a_display_track_the_gesture_is_disabled_and_a_direct_call_changes_not
 // ===========================================================================
 #[test]
 fn an_installed_instrument_drives_the_engines_sfz_branch_to_a_non_silent_output() {
+    isolate_repo_only_library();
     let (mut project, track_id) = project_with_one_note("audio");
     let fixture = AudioFixture::new("audio");
     let fixture_path = fixture
@@ -667,6 +691,7 @@ fn an_installed_instrument_drives_the_engines_sfz_branch_to_a_non_silent_output(
 // ===========================================================================
 #[test]
 fn a_sample_less_sfz_is_refused_so_the_track_never_goes_silent() {
+    isolate_repo_only_library();
     let (project, track_id) = project_with_one_note("reject");
 
     // ---- 装之前：这条轨有声（恒备复音），读数留档。
@@ -738,6 +763,7 @@ fn a_sample_less_sfz_is_refused_so_the_track_never_goes_silent() {
 // ===========================================================================
 #[test]
 fn the_sample_presence_predicate_is_the_shared_decode_path() {
+    isolate_repo_only_library();
     let fixture = AudioFixture::new("predicate");
     let fixture_path = fixture.sfz.to_str().expect("临时路径必须是 UTF-8");
     assert_eq!(

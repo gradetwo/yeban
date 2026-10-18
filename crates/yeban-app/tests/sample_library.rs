@@ -302,6 +302,10 @@ fn the_presence_predicate_and_the_install_list_follow_the_library() {
         let file_name = source.file_name().expect("有文件名");
         std::fs::write(instrument_dir.join(file_name), &text).expect("写库内 SFZ");
         for sample in sample_references(&text) {
+            // ⭐ `#205`：仓内 cowsynth 的 `sample=` 写的是 Windows 分隔符
+            // （逐字 `tuned\g2.wav`）；读取层把它归一成 `tuned/g2.wav`。
+            // 夹具必须落在**同一个**位置，否则这条判据会在"归一已生效"时假红。
+            let sample = sample.replace('\\', "/");
             let target = instrument_dir.join(sample);
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent).expect("建样本子目录");
