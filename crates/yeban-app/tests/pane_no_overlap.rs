@@ -735,14 +735,35 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
             tree.find_by_id("transport-ai-proposal-badge").is_none(),
             "[#186 {width}x{height}] 窄档徽章必须 visible:false ⇒ 不在树里"
         );
-        assert!(
-            tree.find_by_id("ai-rail-musical-pr-button").is_some(),
-            "[#186 {width}x{height}] 窄档徽章隐藏后，右栏的同动作入口必须在树里（⛔ 不是把功能藏没了）"
-        );
-        report_line(&format!(
-            "[#186 走带 {width}x{height}] save {save:?} ≤ session {session:?} ⇒ 不相交；\
-             徽章不在树里（visible:false）；替代入口 ai-rail-musical-pr-button 在树里 = true"
-        ));
+        // ⭐ `#191`：折叠档（1024 < 1920）的右栏是抽屉，默认不在树里 ⇒ 同动作入口
+        // 经 `transport-ai-drawer-button` 打开抽屉后必须在场（⛔ 不是把功能藏没了）。
+        if live.ui().get_compact() {
+            assert!(
+                tree.find_by_id("transport-ai-drawer-button").is_some(),
+                "[#186 {width}x{height}] 折叠档必须留下抽屉入口 `transport-ai-drawer-button`"
+            );
+            live.ui().set_ai_drawer_open(true);
+            let drawer_tree = runtime_tree(live.ui());
+            assert!(
+                drawer_tree
+                    .find_by_id("ai-rail-musical-pr-button")
+                    .is_some(),
+                "[#186 {width}x{height}] 打开抽屉后 `ai-rail-musical-pr-button` 必须在场（⛔ 不是把功能藏没了）"
+            );
+            report_line(&format!(
+                "[#186 走带 {width}x{height} compact] save {save:?} ≤ session {session:?} ⇒ 不相交；\
+                 徽章不在树里（visible:false）；打开抽屉后 ai-rail-musical-pr-button 在树里 = true"
+            ));
+        } else {
+            assert!(
+                tree.find_by_id("ai-rail-musical-pr-button").is_some(),
+                "[#186 {width}x{height}] 窄档徽章隐藏后，右栏的同动作入口必须在树里（⛔ 不是把功能藏没了）"
+            );
+            report_line(&format!(
+                "[#186 走带 {width}x{height}] save {save:?} ≤ session {session:?} ⇒ 不相交；\
+                 徽章不在树里（visible:false）；替代入口 ai-rail-musical-pr-button 在树里 = true"
+            ));
+        }
     }
     (
         expected.len(),
@@ -1308,12 +1329,23 @@ fn check_arrangement(width: u32, height: u32) {
     let tree = runtime_tree(live.ui());
 
     let canvas = bounds(&tree, "workspace-arrangement-canvas");
-    let right_rail = bounds(&tree, "ai-rail");
-    assert_eq!(
-        canvas.0 + canvas.2 as i32,
-        right_rail.0,
-        "[#187 编曲画布 {width}x{height}] 画布右沿必须 = 右栏左沿（画布 clip 的边界）"
-    );
+    // ⭐ `#191`：`compact` 跟真实窗口宽走之后，右栏在 1366–1919 是**抽屉**
+    //（默认 `ai-drawer-open = false` ⇒ 不在树里）⇒ 画布右沿不再等于右栏左沿，
+    // 而是撑到窗口右沿。展开档仍按原不变量钉住。
+    if live.ui().get_compact() {
+        assert_eq!(
+            canvas.0 + canvas.2 as i32,
+            width as i32,
+            "[#187 编曲画布 {width}x{height} compact] 折叠档右栏是抽屉，画布必须撑满到窗口右沿"
+        );
+    } else {
+        let right_rail = bounds(&tree, "ai-rail");
+        assert_eq!(
+            canvas.0 + canvas.2 as i32,
+            right_rail.0,
+            "[#187 编曲画布 {width}x{height}] 画布右沿必须 = 右栏左沿（画布 clip 的边界）"
+        );
+    }
 
     // ---- ④-1 轨道头（容器组）：两两不相交。
     let label = format!("编曲画布 轨道头 {width}x{height}");
@@ -1362,7 +1394,9 @@ fn check_arrangement(width: u32, height: u32) {
         tree.find_by_id("arrangement-loop-brace").is_some(),
         "[#187 编曲画布 {width}] 循环选区把手必须在场（它是标尺带**内**的滑块，按设计压在带上）"
     );
-    if width >= 1440 {
+    // ⭐ `#191`：折叠档（1024）右栏变抽屉后画布撑到窗口右沿（944px 宽），播放头
+    // x = 768 落在画布内 ⇒ 它在树里；只有**展开档**的 1024（画布 504px）才整条被 clip。
+    if live.ui().get_compact() || width >= 1440 {
         let playhead = bounds(&tree, "arrangement-playhead");
         assert_eq!(
             playhead.2, 1,
@@ -1465,22 +1499,35 @@ fn check_status_bar(width: u32, height: u32, save_status: bool) {
 // ===========================================================================
 fn check_ai_rail(width: u32, height: u32) {
     let live = live_window((width, height), 0);
+    // ⭐ `#191`：折叠档的右栏是抽屉（`visible: compact && ai-drawer-open`）。要检查
+    // 同一个 `AiRail` 实例，就先把它打开 —— 这同时把 `#189` 报告里"compact 下的
+    // `AiRail` 抽屉实例未扫"这一格补上了。
+    let drawer = live.ui().get_compact();
+    if drawer {
+        live.ui().set_ai_drawer_open(true);
+    }
     let tree = runtime_tree(live.ui());
 
     let pane = bounds(&tree, "ai-rail");
-    assert_eq!(pane.2, 280, "[#187 AI 右栏 {width}] 右栏宽必须 280");
+    assert_eq!(
+        pane.2, 280,
+        "[#187 AI 右栏 {width} drawer={drawer}] 右栏/抽屉宽必须 280"
+    );
     let expected = if width >= 1440 {
         AI_RAIL_WIDE
     } else {
         AI_RAIL_NARROW
     };
-    let reading = assert_pairwise(
-        &tree,
-        pane,
-        Selection::LeftEdgeInside,
-        expected,
-        &format!("#187 AI 右栏 {width}x{height}"),
-    );
+    // ⭐ `#191`：折叠档的抽屉是**覆盖层**（整窗高、压在画布/走带上）⇒ 几何取法
+    // `LeftEdgeInside` 会把被盖住的下层控件也扫进来（实测 1440 档多出 5 个
+    // `transport-*` / `status-bar-device` / `console-maximize-button`）。抽屉实例改用
+    // **按清单**两两判据：它证明的仍是"右栏这一组控件互不相交"，并且清单缺项会红。
+    let label = format!("#187 AI 右栏 {width}x{height} drawer={drawer}");
+    let reading = if drawer {
+        assert_ids_pairwise(&tree, expected, &label)
+    } else {
+        assert_pairwise(&tree, pane, Selection::LeftEdgeInside, expected, &label)
+    };
     report_line(&reading);
 
     // ---- 判据 ②：诊断卡下沿 ≤ 导出键上沿；导出键与审查键同一行、左右分开。
@@ -1541,11 +1588,13 @@ fn check_ai_rail(width: u32, height: u32) {
         );
     }
 
-    // ---- 1024 档：回执行被右栏裁剪区排掉（完全在树外），如实登记而不是静默。
-    if width < 1440 {
+    // ---- 1024 档（**常驻栏**）：回执行被右栏裁剪区排掉（完全在树外），如实登记而不是静默。
+    // ⭐ `#191`：折叠档的抽屉是 `height: root.height`（整窗高 800），回执行在树里 ——
+    // 这条 415px 的裁剪只属于常驻栏实例，⛔ 不能套到抽屉上。
+    if width < 1440 && !drawer {
         assert!(
             tree.find_by_id("module-last-status").is_none(),
-            "[#187 AI 右栏 {width}] 1024 档 `module-last-status`（424..440 > 栏高 415）必须在树外"
+            "[#187 AI 右栏 {width}] 1024 档常驻栏 `module-last-status`（424..440 > 栏高 415）必须在树外"
         );
     }
 }

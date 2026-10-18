@@ -215,7 +215,12 @@ impl DemoScene {
         viewport_width < BREAKPOINT_FULL_HD
     }
 
-    /// 演示场景自身的断点判定结果 (main.rs 用它初始化 `MainWindow::compact`)。
+    /// 演示场景自身的断点判定结果 (**模型侧口径**)。
+    ///
+    /// ⭐ `#191`：界面运行时**不再**由宿主在装配时写入这个值 —— `ui/app.slint` 的
+    /// `MainWindow.compact` 是 `self.width < 1920px` 的表达式绑定，跟的是**真实窗口宽**。
+    /// 本方法保留为纯函数判据（`scene.rs` 的单测与测试夹具用它推算"这个宽度应当是哪一档"），
+    /// ⛔ 不是 `MainWindow.compact` 的唯一事实源。
     #[must_use]
     pub const fn compact(&self) -> bool {
         Self::is_compact(self.viewport_width)

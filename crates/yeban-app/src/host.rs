@@ -8448,7 +8448,10 @@ pub fn build_main_window_with_console_tab(
     ui.set_arrangement_view(scene.arrangement_by_default);
     ui.set_playing(false);
     ui.set_console_tab(console_tab);
-    ui.set_compact(scene.compact());
+    // ⭐ `#191`：这里**不再**写 `compact`。`ui/app.slint` 的 `MainWindow.compact` 是
+    // `width < 1920px` 的表达式绑定 ⇒ 断点跟着**真实窗口宽**走。原来这一行写的是
+    // `ui.set_compact(scene.compact())`，而 `scene.viewport_width` 恒为 1920
+    //（`scene.rs:188`）且只在装配时算一次 —— 那正是"窗口拉窄、左栏不折叠"的根因。
     apply_view(&ui, view, ui.window().size().width as f32, 0.0);
     // `[ROAD-M3-002]` 滚动手势（账本第 199 轮）：偏移由**宿主**拥有 —— 因为裁剪也在宿主侧。
     // 卷帘只报告增量, 宿主 clamp + 累加后**重新注入**；不用 `Flickable`, 否则会与宿主偏移双重计算。

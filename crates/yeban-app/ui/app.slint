@@ -345,9 +345,20 @@ component EngineErrorBanner inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    // [UI-GRID-002] 1366–1919 断点。宿主 Rust 按 §1.2 的规则写入 (见 main.rs 的
-    // `DemoScene::compact()`); 真实屏幕尺寸探测 + 缩放比换算待接线, 见 notes 的 pending。
-    in property <bool> compact: false;
+    // [UI-GRID-002] 断点: `width < 1920px` ⇒ 折叠 (1366–1919 左栏 36px、右栏变抽屉)。
+    //
+    // ⭐ `#191`：这里是**表达式绑定**, ⛔ 不是宿主在装配时写入一次的常量。`#183` 之后
+    // `root.width` 是**后端给出的真实窗口宽**（根尺寸不再钉死 1920px）, 因此窗口被拉窄 /
+    // 拉宽时 Slint 会自己重算这一条 —— 左栏 240↔36、右栏在场性都跟着走。
+    //
+    // 原 `host.rs:8451` 的 `ui.set_compact(scene.compact())` 已删除: 那个写法用的视口是
+    // `DemoScene::viewport_width`（恒 1920, 见 `scene.rs:188`）, 且只在装配时算一次 ⇒
+    // 窗口拉窄时左栏不会折叠。**装配点不再写这个属性**（生产路径唯一写者 = 本条绑定）。
+    //
+    // 仍声明为 `in-out` 而不是 `out`: 测试夹具可以在固定尺寸下显式渲染折叠态
+    // （例如 `app-main-window-arrangement-compact-1920x1080.png`）。从 Rust 写一次会
+    // 覆盖该实例的绑定（Slint 语义），因此它**只**是测试旁路, ⛔ 不是生产写者。
+    in-out property <bool> compact: self.width < Tokens.breakpoint-full-hd * 1px;
 
     in-out property <bool> playing: false;
     /// ⭐ 录音键的显示态（`[ARCH-REC-001]`）：唯一写者 = `host::wire_transport`

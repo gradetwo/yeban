@@ -71,7 +71,10 @@ const MODULE_STATUS_ID: &str = "module-last-status";
 const NOW_MS: u64 = 1_760_000_000_000;
 
 /// 窗口尺寸（非零即合法；判据只要求"窗口真的建起来过"）。
-const WINDOW: Size = Size::new(1440, 900);
+// ⭐ `#191`：`compact` 现在跟**真实窗口宽**走。右栏（`module-*` 入口所在的
+// `AiRail`）在 1366–1919 折叠档是**抽屉**（`visible: root.compact && root.ai-drawer-open`），
+// 默认不在树里 ⇒ 本判据要用的是**全展开档**的窗口（≥1920）。
+const WINDOW: Size = Size::new(1920, 1080);
 
 /// 临时目录（`Drop` 时清理，**绝不污染仓库**）。形态照 `open_project_ui.rs`。
 struct Scratch {

@@ -348,17 +348,23 @@ fn check_width(width: u32, height: u32) {
         assert_eq!(master_x, 696, "1024 档第二段左沿必须是 696");
     }
     if width == 800 {
-        // 第 3 条边界（`compact` 断点不跟窗口）的**读数** —— 本单**未修**（见 `#184` 报告）：
-        // `host.rs:8451` 的 `ui.set_compact(scene.compact())` 读的是 `DemoScene` 的视口宽
-        //（`scene.rs:188` 恒 1920），所以把窗口拉窄到 800 时 `compact` 仍是 false，
-        // 左栏仍按 240px 常驻而不是 36px 导轨。这里只**读数**，⛔ 不把缺陷钉成断言。
+        // ⭐ `#191` 关闭了这里的第 3 条边界：`compact` 现在是 `ui/app.slint` 里
+        // `self.width < 1920px` 的**绑定**，跟的是真实窗口宽（`#184` 时是宿主写入的
+        // 常量视口 `scene.rs:188` ⇒ 800 档仍 false）。现在 800 < 1920 ⇒ 折叠档，
+        // 左栏 36px 图标导轨 —— 这是判据，不再是"只读数"。
         let compact = live.ui().get_compact();
         let sidebar_width = tree
             .find_by_id("sidebar")
             .and_then(|node| node.bounds)
             .map(|b| b.width);
+        assert!(compact, "[#191] 800×800 必须落在折叠档（compact == true）");
+        assert_eq!(
+            sidebar_width,
+            Some(36),
+            "[#191] 800×800 左栏必须是 36px 图标导轨"
+        );
         report_line(&format!(
-            "[#184 compact 读数] 800×800：ui.get_compact() = {compact}；sidebar 宽 = {sidebar_width:?}（未做 resize 钩子）"
+            "[#191 compact 读数] 800×800：ui.get_compact() = {compact}；sidebar 宽 = {sidebar_width:?}（断点跟真实窗口宽）"
         ));
     }
     if width == 848 || width == 800 {
