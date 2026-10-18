@@ -4260,6 +4260,76 @@ fn timecode_grid_of(ui: &MainWindow) -> Option<crate::bridge::TimecodeGrid> {
     )
 }
 
+/// ⭐ **走带切换的语义**（任务单 `#227`：负责人裁决"用 Logic 方案"）。
+///
+/// 三选一，`wire_transport` 的 `on_toggle_play` 是**唯一**消费者：
+///
+/// | 当前 | 按 `Space` | 命令 |
+/// | :--- | :--- | :--- |
+/// | 播放中 | 停住（**位置保留**） | `Stop` |
+/// | 停住 ＋ 上一次 `Space` 停住在 [`HEAD_DOUBLE_TAP_WINDOW`] 内 | **回到起点** | `SeekTicks(0)` |
+/// | 其余停住（含在起点、或上一次停住已过期 / 不是 `Space` 停的） | 从当前位置起播 | `Play` |
+///
+/// ## 为什么"连按"必须带时间窗（⛔ 不是随便挑的 1.5 s）
+///
+/// 任务单给的表里第 3 / 第 4 行**都是**"停在中途 ＋ `Space`"这一个状态与同一个键：
+/// 第一次 ⇒ 继续、连按第二次 ⇒ 回起点。**只有时间**能把这两行区分开 —— 不判时间的
+/// 实现会让两行变成同一条规则（要么永远继续、要么永远回起点），那张表就自相矛盾。
+/// 因此本实现采用"停住时刻 ＋ 时间窗"：**窗内的下一次 `Space` 是第二次**（回起点），
+/// **窗外的是新的一次**（继续）。窗口取 `1.5 s`（任务单举例值；双击的肌肉记忆一般
+/// ≤ 500 ms，取 1.5 s 是为了不让手慢的人**丢掉**回起点这个动作）。
+///
+/// ## 为什么它是纯函数
+///
+/// 判据要覆盖窗口**两侧**（`1.499 s` ⇒ 回起点、`1.501 s` ⇒ 继续）而不睡两秒；
+/// 纯函数让判据能用合成的时间戳把边界逐点钉住。生产路径把 `Instant::now()` 传进来。
+///
+/// ⚠ `host.rs` **不能**包含内联测试模块（`tests/roll_edit_tools.rs` 用"测试模块标记"的
+/// 字面子串划分"生产区"）⇒ 本条判据住在 `src/test_port_adapter.rs`，因此本函数是 `pub`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadCommand {
+    /// 从**当前位置**起播（`EngineHost::play`，位置保留）。
+    Play,
+    /// 停住、**位置保留**（`EngineHost::stop`；引擎的 `Stop` 本就是暂停语义）。
+    Stop,
+    /// **回到起点**并保持停住（`EngineHost::seek(0)`）。
+    RewindToStart,
+}
+
+/// Logic 的"连按 `Space` 回起点"时间窗：**1.5 s**（含边界）。
+///
+/// 口径 = 从"上一次 `Space` 停住"到"这一次 `Space`"的**单调时钟**间隔（`Instant`，
+/// 不受墙钟跳变影响）。
+pub const HEAD_DOUBLE_TAP_WINDOW: std::time::Duration = std::time::Duration::from_millis(1_500);
+
+/// 一次 `Space`（或 `Shift+Space`）在给定走带状态 / 上一次停住时刻下**该做什么**。
+///
+/// `running` = 引擎此刻的走带读数（⛔ 不是界面属性 —— 界面属性只是它的镜面）；
+/// `last_space_stop` = 上一次由 `Space` 停住的时刻（`None` = 没有待配对的停住）。
+///
+/// ⚠ 时间比较用 [`std::time::Instant::saturating_duration_since`]：若传进来的
+/// `last_space_stop` 在 `now` 之后（合成时间戳写错 / 时钟异常），按"刚停住"处理
+/// （保守 → 回到起点），⛔ 不 panic。
+#[must_use]
+pub fn head_command(
+    running: bool,
+    last_space_stop: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> HeadCommand {
+    if running {
+        // 播放中：停住、位置保留（Logic 的第一次 `Space`）。
+        return HeadCommand::Stop;
+    }
+    if last_space_stop
+        .is_some_and(|stopped| now.saturating_duration_since(stopped) <= HEAD_DOUBLE_TAP_WINDOW)
+    {
+        // 停在中途 ＋ 连按的第二次：回到起点（仍是停住）。
+        return HeadCommand::RewindToStart;
+    }
+    // 在起点 / 上一次停住已过期 / 上一次停住不是 `Space` 停的 ⇒ 从当前位置继续。
+    HeadCommand::Play
+}
+
 /// 把 `MainWindow` 的**走带回调**接到引擎（[`crate::engine_host::EngineHost`]）。
 ///
 /// ## 为什么它住在 `host.rs`
@@ -4281,6 +4351,16 @@ fn timecode_grid_of(ui: &MainWindow) -> Option<crate::bridge::TimecodeGrid> {
 /// - `toggle-play` 触发引擎状态变化，显示态跟着引擎走；
 /// - 直接改引擎状态（例如测试里的 `host.play()`）之后调用 [`apply_transport`]，
 ///   显示态同样跟着变 —— 显示态**没有**自己的状态机。
+///
+/// ## 走带语义（⭐ 任务单 `#227`：负责人裁决"用 Logic 方案"）
+///
+/// `on_toggle_play`（`Space` / `Shift+Space` / 播放按钮）**不是**"把引擎状态取反"，
+/// 而是 [`head_command`] 的三选一：播放中 ⇒ 停住（位置保留）；停住且上一次 `Space`
+/// 停住在 [`HEAD_DOUBLE_TAP_WINDOW`]（1.5 s）内 ⇒ **回到起点**；其余停住 ⇒ 继续播放。
+/// 三者的时刻判定用的是**引擎读数**与回调自己记的停住时刻（⛔ 不读界面属性）。
+///
+/// `on_stop`（停止按钮）仍是**停止 ＋ 回起点**（`Stop` + `SeekTicks(0)`），并**清掉**
+/// 那个停住时刻 —— 停止按钮本身就是"回起点"，后面的 `Space` 必须是新的第一次。
 pub fn wire_transport(
     ui: &MainWindow,
     engine: Rc<RefCell<EngineHost>>,
@@ -4293,11 +4373,19 @@ pub fn wire_transport(
     // ⚠ `None` ⇒ 录音只落盘、不进工程（判据/无头装配的既有形态：⛔ 不假装提交过）。
     undo: Option<Rc<UndoPort>>,
 ) {
+    // ⭐ 任务单 `#227`：**连按 `Space` 回起点**的唯一状态。
+    //
+    // 只存"上一次 `Space` 停住"的时刻（`Cell<Option<Instant>>`：`Instant` 是 `Copy`，
+    // 单线程 UI 线程上不需要 `RefCell`）。`on_toggle_play` 写 / 读它，`on_stop`
+    // **清掉**它（停止按钮 = 明确的回起点动作 ⇒ 下一下 `Space` 必须是"新的第一次"，
+    // ⛔ 不让一个陈旧的停住时刻把用户的下一次起播变成 `SeekTicks(0)`）。
+    let head_stop = Rc::new(std::cell::Cell::new(None::<std::time::Instant>));
     let toggle = Rc::clone(&engine);
     // UFCS（而不是 `ui.as_weak()`）：`slint::ComponentHandle` 不在本文件的 import 里，
     // 与 `main.rs` 的 `slint::ComponentHandle::run(&ui)` 是同一个理由 —— 既拿到方法，
     // 又不引入一个可能变成 unused import 的 trait（`-D warnings` 下会直接失败）。
     let toggle_ui = slint::ComponentHandle::as_weak(ui);
+    let toggle_head = Rc::clone(&head_stop);
     ui.on_toggle_play(move || {
         // ⭐⭐ 任务单 `#212` 的**边界兜底**：本回调与 [`wire_keys`] 拿的是**同一个**
         // `Rc<RefCell<EngineHost>>`，而 `wire_keys` 的 `Action::PlayPause` 臂会
@@ -4312,7 +4400,30 @@ pub fn wire_transport(
             eprintln!("[yeban-app] 忽略 toggle-play：引擎正被同一线程借用（重入）⇒ 本次按键无效");
             return;
         };
-        let reading = engine.toggle_play();
+        // ⭐ 任务单 `#227`：判定只读**引擎读数**（`transport().state`）＋ 本回调自己
+        // 记下的停住时刻，⛔ 不读界面属性（`playing` 只是引擎的镜面，不能当第二事实源）。
+        let now = std::time::Instant::now();
+        let reading = match head_command(
+            engine.transport().state.is_running(),
+            toggle_head.get(),
+            now,
+        ) {
+            HeadCommand::Stop => {
+                // 停住时刻只在这里写：它是"连按"的另一半。
+                toggle_head.set(Some(now));
+                engine.stop()
+            }
+            HeadCommand::RewindToStart => {
+                // 已经停住 ⇒ 只需要定位；清掉时刻，因此**下一下** `Space` 是新的第一次
+                //（否则用户会被困在"回起点"里，永远起播不了）。
+                toggle_head.set(None);
+                engine.seek(0)
+            }
+            HeadCommand::Play => {
+                toggle_head.set(None);
+                engine.play()
+            }
+        };
         // ⭐ 作用域纪律：**先放借，再碰界面**（`apply_transport` 写两个属性；将来若有人在
         // 属性变更里回调引擎，这里也不会重入）。`#212` 的根因就是"持借调界面"。
         drop(engine);
@@ -4326,6 +4437,7 @@ pub fn wire_transport(
 
     let stop = Rc::clone(&engine);
     let stop_ui = slint::ComponentHandle::as_weak(ui);
+    let stop_head = Rc::clone(&head_stop);
     ui.on_stop(move || {
         // UI 的"停止"按钮的语义（`transport.slint` 的 accessible-label）是
         // **停止并回到起始点** ⇒ 引擎侧是 `Stop` + `SeekTicks(0)` 两条命令。
@@ -4337,6 +4449,10 @@ pub fn wire_transport(
             return;
         };
         let reading = engine.stop_and_rewind();
+        // ⭐ `#227`：停止按钮已经**回起点** ⇒ 清掉"待配对的停住时刻"。否则用户在
+        // 按下停止按钮之后 1.5 s 内按 `Space`，会被当成"连按的第二次"而**只是**再定位一次，
+        // 看起来像"按了播放却不动"。
+        stop_head.set(None);
         drop(engine);
         if let Some(ui) = stop_ui.upgrade() {
             apply_transport(&ui, reading);
@@ -4796,6 +4912,13 @@ pub fn wire_input(ui: &MainWindow, context: Rc<RefCell<InputContext>>) {
 /// `host.rs` 的代码里**只能出现一次**（`src/elements.rs` 的
 /// `space_and_shift_space_share_one_host_arm_today` 钉住了"两键共用一个臂"）⇒ 在这里
 /// 再列一遍会让那条判据红。它们的"不借宿主"由**本函数的 `_ => false`** 保证。
+///
+/// ⚠ **为什么这里也不列 `Action::GoToBeginning`（任务单 `#227` 的 `Return`）**：它的
+/// 落点会调 `ui.invoke_stop()` / `ui.invoke_toggle_play()` 两个界面回调 ⇒ 必须在**借外**
+/// 执行。把它加进来就是 `#212` 的重入（`on_stop` 里 `stop.try_borrow_mut()` 会失败，
+/// 结果"按了 `Return` 引擎一位不动"）。它的"不借宿主"由本函数的 `matches!` **不列它**
+/// 保证；`test_port_adapter.rs` 的 `only_engine_commands_take_the_engine_borrow` 把
+/// `GoToBeginning` 放进"界面回调族"逐条断言它不在借内。
 #[must_use]
 pub fn action_needs_engine(action: Action) -> bool {
     matches!(action, Action::ToggleMetronome | Action::ToggleCountIn)
@@ -7155,6 +7278,34 @@ fn apply_action(
         }
         Action::ToggleConsoleMaximize => {
             ui.set_console_expanded(!ui.get_console_expanded());
+            true
+        }
+        // ⭐ 任务单 `#227`（Logic 的 `Go to Beginning`）：`Return` / `Enter`（裸键）。
+        //
+        // 落点**只能是界面回调**：`apply_action` 手里没有引擎（`context` 只在
+        // `action_needs_engine` 的集合里才给），而"回起点"必须同时把**引擎位置**与
+        // **时间码显示**一起改 —— 二者唯一同步的入口就是 `wire_transport` 的那两个回调。
+        //
+        // 语义（Logic 口径）：
+        // - 停住 ⇒ `invoke_stop()` =`Stop` + `SeekTicks(0)`（停住并回到起点）；
+        // - 播放中 ⇒ 先 `invoke_stop()`（回起点、停住），再 `invoke_toggle_play()`
+        //   （从起点起播）⇒ 命令序列 `Stop` / `SeekTicks(0)` / `Play`，**继续播放**。
+        //
+        // ⚠ 为什么读 `ui.get_playing()` 而不是引擎：本动作**不在** `action_needs_engine`
+        // 集合里（它要调界面回调，进那个集合就是 `#212` 的重入）⇒ 借不到引擎；而
+        // `playing` 是 `apply_transport` 从**引擎读数**写下的镜面（本仓唯一写者），
+        // 不是界面自己的状态机。`test_port_adapter.rs` 的判据逐状态对账两者相等。
+        //
+        // ⚠ 位置：**必须**在这条 `Action::PlayPause | Action::ResumeFromCursor` 臂
+        // **之前**任意处、且**不得**插进该臂与 `Action::Undo` 之间 —— `elements.rs` 的
+        // `space_and_shift_space_share_one_host_arm_today` 用 `Action::Undo` 当那一条臂的
+        // 右边界（把本臂插进去会让它把"回起点"的代码当成走带臂的一部分）。
+        Action::GoToBeginning => {
+            let was_playing = ui.get_playing();
+            ui.invoke_stop();
+            if was_playing {
+                ui.invoke_toggle_play();
+            }
             true
         }
         // 走带：两条都落到界面**已有**的 `toggle-play`（`wire_transport` 接到引擎的那一个

@@ -622,10 +622,25 @@ pub enum NudgeStep {
 /// 那属于宿主/引擎的职责。本状态机只回答"这个键在当前焦点与 IME 状态下代表哪个动作"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// `Space`: 播放 / 暂停切换 (暂停时播放头回起始点)。
+    /// `Space`: 走带切换（**Logic 口径**，任务单 `#227`）。
+    ///
+    /// 落点是 `wire_transport` 的 `on_toggle_play`，语义由那一个回调**唯一**决定：
+    /// 播放中 ⇒ 停住（**位置保留**）；停住且上一次停住是 `Space`（1.5 s 内连按）⇒
+    /// 回到起点；其余停住 ⇒ 从当前位置起播。⛔ 本状态机不判断走带状态。
     PlayPause,
     /// `Shift+Space`: 从当前光标停留处继续播放。
+    ///
+    /// ⚠ 今天与 [`Self::PlayPause`] 落到**同一个**宿主臂、同一个界面回调（`Space` 与
+    /// `Shift+Space` 仍不可区分；见 `elements.rs` 的
+    /// `space_and_shift_space_share_one_host_arm_today`），因此上面的 Logic 连按语义
+    /// 对两者**同样**生效。
     ResumeFromCursor,
+    /// `Return` / `Enter`（裸键）: **回到起点**（Logic 的 `Go to Beginning`，任务单 `#227`）。
+    ///
+    /// 落点是 [`crate::host`] 的 `apply_action`：停住时 = 停止 ＋ 回起点；播放中 =
+    /// 回起点 ＋ **继续播放**（Logic 行为；引擎侧就是 `Stop` + `SeekTicks(0)` + `Play`）。
+    /// ⚠ `Shift+Enter` 仍是 [`Self::AcceptAiSuggestion`]（未实现 ⇒ 不消费），两者不冲突。
+    GoToBeginning,
     /// `Tab` (仅画布): 在两个视图之间切换。
     ToggleView,
     /// `F5`/`F6`/`Alt+1`/`Alt+2`: 直达某个视图。
@@ -864,6 +879,11 @@ impl InputContext {
                 }
             }
             Key::Space => Resolution::Action(Action::PlayPause),
+            // ⭐ 任务单 `#227`（Logic 口径）：裸 `Return` / `Enter` = **回到起点**。
+            // ⚠ 此前它在第 6 步落到 `PassThrough`（"裸 Enter 不采纳 AI 建议"，那条理由
+            // 仍然成立 —— `Shift+Enter` 才是采纳，见上面第 5 步）。这一格**没有**被任何
+            // 既有键占用：`input.rs` 的 `Enter` 此前只出现在 `Shift` 组合里。
+            Key::Enter => Resolution::Action(Action::GoToBeginning),
             Key::Escape => Resolution::Action(Action::Cancel),
             Key::Delete | Key::Backspace => Resolution::Action(Action::DeleteSelection),
             // `[UI-NOTE-005]` §3.5 项 1：`←` / `→` = 一个吸附网格；项 2：`↑` / `↓` = 一个半音。
@@ -908,9 +928,9 @@ mod tests {
 
     use Action::{
         AcceptAiSuggestion, AuditionMain, AuditionProposal, Cancel, DeleteSelection, Duplicate,
-        NudgeSelection, OpenTimeMachine, PlayPause, Redo, ResumeFromCursor, SelectTool, ShowView,
-        ToggleConsoleMaximize, TogglePencilTool, ToggleSidebar, ToggleView, Undo, ZoomToFit,
-        ZoomToSelection,
+        GoToBeginning, NudgeSelection, OpenTimeMachine, PlayPause, Redo, ResumeFromCursor,
+        SelectTool, ShowView, ToggleConsoleMaximize, TogglePencilTool, ToggleSidebar, ToggleView,
+        Undo, ZoomToFit, ZoomToSelection,
     };
     use Focus::{MainCanvas, Other, TextInput};
     use PhysicalKey::{
@@ -1250,16 +1270,25 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------- AI / 取消
+    // ---------------------------------------------------------------- AI / 取消 / 回起点
     #[test]
-    fn shift_enter_accepts_and_escape_cancels() {
+    fn shift_enter_accepts_bare_enter_rewinds_and_escape_cancels() {
         assert_eq!(
             canvas().resolve(Enter, Modifiers::shift()),
             Act(AcceptAiSuggestion)
         );
         assert_eq!(canvas().resolve(Escape, Modifiers::none()), Act(Cancel));
-        // 裸 Enter 不采纳 (避免误固化 AI 建议)
-        assert_eq!(canvas().resolve(Enter, Modifiers::none()), PassThrough);
+        // ⭐ 任务单 `#227`：裸 `Enter` / `Return` = **回到起点**（Logic 的 `Go to Beginning`）。
+        // ⚠ 它**不是** `AcceptAiSuggestion` —— 采纳 AI 建议仍然只由 `Shift+Enter` 承担
+        //（避免误固化，这条理由一位没变）。
+        assert_eq!(
+            canvas().resolve(Enter, Modifiers::none()),
+            Act(GoToBeginning)
+        );
+        assert_ne!(
+            canvas().resolve(Enter, Modifiers::none()),
+            Act(AcceptAiSuggestion)
+        );
     }
 
     #[test]

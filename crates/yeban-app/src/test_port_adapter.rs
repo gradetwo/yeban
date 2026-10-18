@@ -3235,6 +3235,8 @@ fn every_wired_key_returns_without_panicking_and_without_keeping_the_engine_borr
         ("\u{f701}", true, false, false, false, "Shift+Down"),
         ("\t", false, false, false, false, "Tab"),
         (" ", false, false, false, false, "Space"),
+        // ⭐ 任务单 `#227`：裸 `Return` / `Enter` = 回到起点（界面回调族，借外执行）。
+        ("\n", false, false, false, false, "Return（回起点）"),
         ("\u{1b}", false, false, false, false, "Escape"),
         ("\u{7f}", false, false, false, false, "Delete"),
         ("\u{8}", false, false, false, false, "Backspace"),
@@ -3342,6 +3344,634 @@ fn toggle_play_and_stop_degrade_instead_of_aborting_when_the_engine_is_already_b
     ));
 }
 
+// ===========================================================================
+// 任务单 `#227`：**Logic 的播放头语义**（停止 / 连按回起点 / `Return`）
+// ===========================================================================
+//
+// 负责人报的缺陷：「现在 GUI 播放我按停止后没法回到从头开始播放」；裁决「用 Logic 方案」。
+//
+// 这一节的判据一律走**生产装配**（第 321 条）：`wire_transport`（引擎句柄）＋
+// `wire_keys(…, Some(engine), Some(project))` ＋ `.slint` 的 `key-action` 回调 ——
+// 与 `main.rs` 的 `run_gui` 是同一对函数、同一份 `Rc<RefCell<EngineHost>>`。
+// 因此"按键 → 状态机 → 引擎命令 → `apply_transport` → 时间码"整条链都在判据里，
+// ⛔ 不是把某个内部函数单独拎出来测。
+//
+// ## 语义表（任务单 §1 逐行）
+//
+// | # | 当前状态 | 按键 | 期望 |
+// | :--- | :--- | :--- | :--- |
+// | 1 | 停止（在起点） | `Space` | 开始播放 |
+// | 2 | 播放中 | `Space` | 停止、**停在中途**（位置保留） |
+// | 3 | 停止（在中途，无待配对停住） | `Space`（第一次） | 从停止处继续 |
+// | 4 | 停止（在中途，上一次 `Space` 停住在 1.5 s 内） | `Space`（连按第二次） | 回到起点 |
+// | 5 | 任意停住 | `Return` / `Enter` | 回到起点 |
+// | 6 | 播放中 | `Return` / `Enter` | 回到起点 ＋ **继续播放** |
+
+/// `#227` 的夹具：生产形状的键盘接线（与 `main.rs` 的 `wire_input` + `wire_keys` 同款）。
+///
+/// `wire_keys` 拿到 **`Some(engine)` ＋ `Some(project)`** —— 判据 5（第 321 条）要求的
+/// 生产装配；若引擎上下文缺席，`wire_keys` 会走"借外"分支，那就测不到真实的借用形状。
+fn logic_head_harness() -> (TransportHarness, MainWindow) {
+    let harness = TransportHarness::new();
+    let context = Rc::new(RefCell::new(yeban_app::input::InputContext::new()));
+    host::wire_input(harness.port.ui(), Rc::clone(&context));
+    host::wire_keys(
+        harness.port.ui(),
+        context,
+        None,
+        Some(Rc::clone(&harness.engine)),
+        Some(Rc::new(yeban_model::samples::filled_project())),
+    );
+    let ui = slint::ComponentHandle::clone_strong(harness.port.ui());
+    (harness, ui)
+}
+
+/// 按一次**裸键**：`text` 是 Slint `KeyEvent.text` 的词表（`" "` / `"\n"` / `"\t"`…）。
+fn press(ui: &MainWindow, text: &str) -> bool {
+    ui.invoke_key_action(text.into(), false, false, false, false)
+}
+
+/// 自 `base`（调用前的日志长度）起，引擎真的收到的命令序列。
+fn commands_since(harness: &TransportHarness, base: usize) -> Vec<TransportCommand> {
+    harness.journal()[base..]
+        .iter()
+        .map(|record| record.command)
+        .collect()
+}
+
+/// 逐状态对账：**显示的时间码 / `playing`** 必须等于**引擎位置 / 状态**的投影。
+///
+/// 这是根因 ③（"显示回 0、引擎没回"）的机械否定：`apply_transport` 是唯一写者，
+/// 它只读 [`TransportReading`] ⇒ 两个方向都必须一致，没有第二份状态。
+fn assert_display_follows_engine(harness: &TransportHarness, ui: &MainWindow, label: &str) {
+    let reading = harness.reading();
+    assert_eq!(
+        ui.get_timecode(),
+        harness.view.timecode_at(reading.position_ticks),
+        "{label}: 显示时间码必须等于引擎位置（{} tick）在投影上的读数 —— 显示与状态分叉了",
+        reading.position_ticks,
+    );
+    assert_eq!(
+        ui.get_playing(),
+        reading.state.is_running(),
+        "{label}: 显示 `playing` 必须等于引擎状态 {:?} —— 显示与状态分叉了",
+        reading.state,
+    );
+}
+
+/// 根因 ①②③ 的**逐状态读数**（任务单 §2 第 1 条 ＋ §1 的三条可能根因）。
+///
+/// 判据形状：每换一次状态，就把**显示时间码**与**引擎 `position_ticks`** 并排读出来，
+/// 断言两者一致；最后把全部状态里的 `(显示时间码, 引擎位置)` 收集起来，断言
+/// **不存在**"显示 `001.01.000` 而引擎位置 ≠ 0"的那一格（根因 ③ 的反例）。
+#[test]
+fn head_root_causes_display_and_engine_positions_are_measured_in_every_state() {
+    let (mut harness, ui) = logic_head_harness();
+    let mut readings: Vec<(String, u64, String, bool)> = Vec::new();
+
+    fn record(
+        harness: &TransportHarness,
+        ui: &MainWindow,
+        label: &str,
+        out: &mut Vec<(String, u64, String, bool)>,
+    ) {
+        assert_display_follows_engine(harness, ui, label);
+        let reading = harness.reading();
+        let timecode = ui.get_timecode().to_string();
+        out.push((
+            label.to_string(),
+            reading.position_ticks,
+            timecode.clone(),
+            ui.get_playing(),
+        ));
+        observe(&format!(
+            "[logic-head] {label}: 显示时间码={timecode} 引擎位置={} tick 显示 playing={} \
+             引擎状态={:?}",
+            reading.position_ticks,
+            ui.get_playing(),
+            reading.state,
+        ));
+    }
+
+    // ① 初始：停止、在起点。
+    record(
+        &harness,
+        &ui,
+        "根因读数 1/7 初始（停止，在起点）",
+        &mut readings,
+    );
+    assert_eq!(harness.reading().position_ticks, 0);
+    assert_eq!(ui.get_timecode(), "001.01.000");
+
+    // ② `Space` ⇒ 播放中（引擎真的推进了 tick）。
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    record(&harness, &ui, "根因读数 2/7 Space ⇒ 播放中", &mut readings);
+    let playing_at = harness.reading().position_ticks;
+    assert!(playing_at > 0, "播放必须真的推进 tick");
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![TransportCommand::Play],
+        "根因读数：起播只发 `Play`"
+    );
+
+    // ③ 再按 `Space` ⇒ 停住。**根因 ② 的证据**：位置保留（`stop()` 是暂停语义）。
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    record(
+        &harness,
+        &ui,
+        "根因读数 3/7 Space ⇒ 停住（位置保留）",
+        &mut readings,
+    );
+    let stopped = harness.reading();
+    assert_eq!(stopped.state, TransportState::Stopped);
+    assert_eq!(
+        stopped.position_ticks, playing_at,
+        "根因 ② 的证据：引擎 `stop()` **保留**位置（它是暂停语义，不是停止）"
+    );
+    assert_ne!(
+        ui.get_timecode(),
+        "001.01.000",
+        "根因 ③ 的反证：停在中途时显示**不是** 0（它等于引擎位置）"
+    );
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![TransportCommand::Stop],
+        "根因读数：停住只发 `Stop`（不带 `SeekTicks`）"
+    );
+
+    // ④ 停止按钮。**根因 ① 的证据**：它发 `Stop` + `SeekTicks(0)`，⛔ 不是只调 `stop()`。
+    let base = harness.journal().len();
+    ui.invoke_stop();
+    record(
+        &harness,
+        &ui,
+        "根因读数 4/7 停止按钮 ⇒ 停止 ＋ 回起点",
+        &mut readings,
+    );
+    assert_eq!(harness.reading().position_ticks, 0);
+    assert_eq!(ui.get_timecode(), "001.01.000");
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![TransportCommand::Stop, TransportCommand::SeekTicks(0)],
+        "根因 ① 的反证：停止按钮的回调是 `stop_and_rewind()`（两条命令），⛔ 不是只调 `stop()`"
+    );
+
+    // ⑤ 外部定位（拖播放头 / 打开工程那种"停在中途"）⇒ 显示跟着引擎。
+    harness.seek_and_inject(2880);
+    record(
+        &harness,
+        &ui,
+        "根因读数 5/7 seek(2880) ⇒ 停在中途",
+        &mut readings,
+    );
+    assert_eq!(harness.reading().position_ticks, 2880);
+    assert_ne!(ui.get_timecode(), "001.01.000");
+
+    // ⑥ `Return` ⇒ 回到起点（新键映射）。
+    assert!(press(&ui, "\n"), "`Return` 必须被消费");
+    record(
+        &harness,
+        &ui,
+        "根因读数 6/7 Return ⇒ 回到起点",
+        &mut readings,
+    );
+    assert_eq!(harness.reading().position_ticks, 0);
+    assert_eq!(ui.get_timecode(), "001.01.000");
+
+    // ⑦ `Space` 起播 ⇒ `Return`（播放中）⇒ 回起点并继续。
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    assert!(press(&ui, "\n"), "`Return` 必须被消费");
+    record(
+        &harness,
+        &ui,
+        "根因读数 7/7 播放中 Return ⇒ 回起点 ＋ 继续播放",
+        &mut readings,
+    );
+
+    // ③ 的**反例扫描**：所有状态里都不存在"显示 0 而引擎非 0"。
+    for (label, position, timecode, _) in &readings {
+        assert!(
+            !(timecode.as_str() == "001.01.000" && *position != 0),
+            "根因 ③ 成立（应当没有这一格）：{label} 显示 `001.01.000` 而引擎位置 = {position} tick \
+             —— 显示与状态不一致"
+        );
+    }
+    observe(&format!(
+        "[logic-head] ③ 反例扫描：{} 个状态全部满足「显示时间码 == timecode_at(引擎 position_ticks)」；\
+         『显示 001.01.000 而引擎非 0』出现 0 次",
+        readings.len()
+    ));
+}
+
+/// 任务单 §1 的**状态机全表**（六行逐行一条读数：状态 / 位置 / 命令序列）。
+///
+/// 行 1 / 2 / 4 必须在**同一条时间线**上（"连按"是两次真实的 `Space` 相隔几百毫秒，
+/// 而不是两个互不相干的夹具）；行 3 用一条**全新**的装配（没有待配对的停住时刻 = "第一次"）；
+/// 行 5 / 6 回到同一条时间线。
+#[test]
+fn head_state_machine_full_table_is_measured_on_the_production_wiring() {
+    let (mut harness, ui) = logic_head_harness();
+
+    // ---- 行 1：停止（在起点）＋ `Space` ⇒ 开始播放 ----
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    let row1 = harness.reading();
+    assert_eq!(row1.state, TransportState::Playing, "行 1：必须开始播放");
+    assert!(row1.position_ticks > 0, "行 1：必须真的推进 tick");
+    assert_eq!(commands_since(&harness, base), vec![TransportCommand::Play]);
+    observe(&format!(
+        "[logic-head] 行1 状态=停止@0 ＋ Space ⇒ 状态={:?} 位置={} tick 命令={:?} 显示 playing={} \
+         时间码={}",
+        row1.state,
+        row1.position_ticks,
+        commands_since(&harness, base),
+        ui.get_playing(),
+        ui.get_timecode(),
+    ));
+
+    // ---- 行 2：播放中 ＋ `Space` ⇒ 停止、**停在中途**（位置保留）----
+    let playing_at = row1.position_ticks;
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    let row2 = harness.reading();
+    assert_eq!(row2.state, TransportState::Stopped, "行 2：必须停住");
+    assert_eq!(
+        row2.position_ticks, playing_at,
+        "行 2：位置必须保留（停在中途）"
+    );
+    assert_eq!(commands_since(&harness, base), vec![TransportCommand::Stop]);
+    observe(&format!(
+        "[logic-head] 行2 状态=播放中@{} ＋ Space ⇒ 状态={:?} 位置={} tick（== 停住前）命令={:?} \
+         显示 playing={} 时间码={}",
+        playing_at,
+        row2.state,
+        row2.position_ticks,
+        commands_since(&harness, base),
+        ui.get_playing(),
+        ui.get_timecode(),
+    ));
+
+    // ---- 行 4：停止（在中途）＋ `Space`（连按第二次，**无时间窗等待**）⇒ 回到起点 ----
+    // ⚠ 顺序：行 4 必须先于"行 3 的继续"—— 行 2 的 `Stop` 刚刚写下了停住时刻，
+    // 紧接着的这一下就是任务单说的"连按第二次"（1.5 s 窗口内，见 [`HEAD_DOUBLE_TAP_WINDOW`]）。
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    let row4 = harness.reading();
+    assert_eq!(row4.state, TransportState::Stopped, "行 4：仍是停住");
+    assert_eq!(row4.position_ticks, 0, "行 4：必须回到起点");
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![TransportCommand::SeekTicks(0)],
+        "行 4：已经停住 ⇒ 只需定位（`SeekTicks(0)`）"
+    );
+    assert_eq!(ui.get_timecode(), "001.01.000");
+    observe(&format!(
+        "[logic-head] 行4 状态=停止@{} ＋ Space（连按第二次，1.5 s 内）⇒ 状态={:?} 位置={} tick \
+         命令={:?} 时间码={}",
+        playing_at,
+        row4.state,
+        row4.position_ticks,
+        commands_since(&harness, base),
+        ui.get_timecode(),
+    ));
+
+    // ---- 行 1（复验）：回起点之后的下一下 `Space` 必须是**新的第一次**（起播）----
+    // 若实现忘了在回起点后清掉停住时刻，这一下会被困在"回起点"里 ⇒ 下面立刻红。
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    let replay = harness.reading();
+    assert_eq!(
+        replay.state,
+        TransportState::Playing,
+        "行 1（复验）：回起点之后 `Space` 必须起播（不能被连按状态困住）"
+    );
+    assert_eq!(commands_since(&harness, base), vec![TransportCommand::Play]);
+    observe(&format!(
+        "[logic-head] 行1 复验 状态=停止@0 ＋ Space ⇒ 状态={:?} 位置={} tick 命令={:?}",
+        replay.state,
+        replay.position_ticks,
+        commands_since(&harness, base),
+    ));
+
+    // ---- 行 3：停止（在中途，**没有**待配对的停住时刻）＋ `Space`（第一次）⇒ 从停止处继续 ----
+    // 到达这个状态的方式：**停止按钮**（它回起点，并清掉待配对的停住时刻）＋ `seek(2880)`
+    // —— 这正是"打开工程 / 拖播放头之后停在中途"的形态。
+    //
+    // ⚠ 本测试**只有一个活窗口**：Tier-1 平台是**线程级**的一次性安装（同一条测试线程上
+    //   第二次 `set_platform` 会 `PlatformUnavailable`）⇒ 行 3 不能另起一个
+    //   `TransportHarness`（第一版实测正是这样红的：`The platform has already been
+    //   initialized`）。状态的**形状**才是判据的对象，不是"怎么走到那里"。
+    ui.invoke_stop();
+    assert_eq!(harness.reading().position_ticks, 0, "前置：停止按钮回起点");
+    harness.seek_and_inject(2880);
+    assert_eq!(harness.reading().state, TransportState::Stopped);
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    let row3 = harness.reading();
+    assert_eq!(row3.state, TransportState::Playing, "行 3：必须起播");
+    assert!(
+        row3.position_ticks >= 2880,
+        "行 3：必须从停止处（2880）继续，而不是从 0 —— 实际 {} tick",
+        row3.position_ticks
+    );
+    assert_eq!(commands_since(&harness, base), vec![TransportCommand::Play]);
+    observe(&format!(
+        "[logic-head] 行3 状态=停止@2880（无待配对停住）＋ Space（第一次）⇒ 状态={:?} \
+         位置={} tick 命令={:?} 时间码={}",
+        row3.state,
+        row3.position_ticks,
+        commands_since(&harness, base),
+        ui.get_timecode(),
+    ));
+
+    // ---- 行 5：任意停住 ＋ `Return` ⇒ 回到起点 ----
+    // 先把上面那条时间线停住并挪到中途（拖动播放头 / 打开工程的形态）。
+    assert!(press(&ui, " "), "前置：停住");
+    assert_eq!(harness.reading().state, TransportState::Stopped);
+    harness.seek_and_inject(2880);
+    let base = harness.journal().len();
+    assert!(press(&ui, "\n"), "`Return` 必须被消费");
+    let row5 = harness.reading();
+    assert_eq!(row5.state, TransportState::Stopped, "行 5：停止态保持不变");
+    assert_eq!(row5.position_ticks, 0, "行 5：必须回到起点");
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![TransportCommand::Stop, TransportCommand::SeekTicks(0)],
+        "行 5：`Return` 落到 `on_stop`（停止 ＋ 回起点）"
+    );
+    assert_eq!(ui.get_timecode(), "001.01.000");
+    observe(&format!(
+        "[logic-head] 行5 状态=停止@2880 ＋ Return ⇒ 状态={:?} 位置={} tick 命令={:?} 时间码={}",
+        row5.state,
+        row5.position_ticks,
+        commands_since(&harness, base),
+        ui.get_timecode(),
+    ));
+
+    // ---- 行 6：播放中 ＋ `Return` ⇒ 回到起点 ＋ **继续播放** ----
+    // 先把播放头推远（`drive_audio` = 控制面驱动，与判据夹具的"每次动作 1 个量子"同一条
+    // `process_quantum`），证明 `Return` **不是**"从当前播放位置附近继续"。
+    assert!(press(&ui, " "), "`Space` 必须被消费");
+    harness.engine.borrow_mut().drive_audio(200);
+    let before_return = harness.reading();
+    assert_eq!(before_return.state, TransportState::Playing);
+    assert!(
+        before_return.position_ticks > 1_000,
+        "前置：播放头必须已经远离起点"
+    );
+    let base = harness.journal().len();
+    assert!(press(&ui, "\n"), "`Return` 必须被消费");
+    let row6 = harness.reading();
+    assert_eq!(row6.state, TransportState::Playing, "行 6：必须继续播放");
+    assert!(
+        row6.position_ticks < before_return.position_ticks,
+        "行 6：必须从**起点**继续（{} tick），而不是停在原处（{} tick）",
+        row6.position_ticks,
+        before_return.position_ticks,
+    );
+    assert!(
+        row6.position_ticks < 1_000,
+        "行 6：回到起点后只应推进一个量子（实际 {} tick）",
+        row6.position_ticks
+    );
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![
+            TransportCommand::Stop,
+            TransportCommand::SeekTicks(0),
+            TransportCommand::Play
+        ],
+        "行 6：`Stop` + `SeekTicks(0)` + `Play`"
+    );
+    assert_eq!(
+        ui.get_timecode(),
+        harness.view.timecode_at(row6.position_ticks),
+        "行 6：时间码必须跟着新位置走"
+    );
+    observe(&format!(
+        "[logic-head] 行6 状态=播放中@{} ＋ Return ⇒ 状态={:?} 位置={} tick 命令={:?} 时间码={}",
+        before_return.position_ticks,
+        row6.state,
+        row6.position_ticks,
+        commands_since(&harness, base),
+        ui.get_timecode(),
+    ));
+}
+
+/// 任务单 §2 第 4 条（a）：**连按窗口的边界** —— 纯函数在 1.5 s 前后逐点读数。
+///
+/// 判据不必睡 1.5 s 就能把边界钉死：`head_command` 是纯函数，时间戳是入参。
+#[test]
+fn head_double_tap_window_boundary_is_measured_on_the_pure_function() {
+    use std::time::{Duration, Instant};
+    use yeban_app::host::{HEAD_DOUBLE_TAP_WINDOW, HeadCommand, head_command};
+
+    // ---- 纯函数：1.5 s 窗口的两侧与边界（单位 = 毫秒）----
+    let now = Instant::now();
+    let at = |ms: u64| {
+        now.checked_sub(Duration::from_millis(ms))
+            .expect("合成时间戳")
+    };
+    assert_eq!(
+        HEAD_DOUBLE_TAP_WINDOW,
+        Duration::from_millis(1_500),
+        "窗口必须钉在 1.5 s（任务单举例值；改它要重新量边界）"
+    );
+    assert_eq!(
+        head_command(true, None, now),
+        HeadCommand::Stop,
+        "播放中 ⇒ 停住"
+    );
+    assert_eq!(
+        head_command(true, Some(at(0)), now),
+        HeadCommand::Stop,
+        "播放中优先于连按判定（第一次 Space 永远是停住）"
+    );
+    assert_eq!(
+        head_command(false, None, now),
+        HeadCommand::Play,
+        "没有停住时刻 ⇒ 继续"
+    );
+    assert_eq!(
+        head_command(false, Some(at(0)), now),
+        HeadCommand::RewindToStart,
+        "刚停住 ⇒ 连按第二次 ⇒ 回起点"
+    );
+    assert_eq!(
+        head_command(false, Some(at(1_499)), now),
+        HeadCommand::RewindToStart,
+        "1.499 s ⇒ 仍在窗内"
+    );
+    assert_eq!(
+        head_command(false, Some(at(1_500)), now),
+        HeadCommand::RewindToStart,
+        "1.500 s ⇒ 边界含（<=）"
+    );
+    assert_eq!(
+        head_command(false, Some(at(1_501)), now),
+        HeadCommand::Play,
+        "1.501 s ⇒ 窗外 ⇒ 新的第一次 ⇒ 继续"
+    );
+    assert_eq!(
+        head_command(
+            false,
+            Some(now.checked_add(Duration::from_millis(5)).expect("未来时刻")),
+            now
+        ),
+        HeadCommand::RewindToStart,
+        "时钟异常（停住时刻在未来）⇒ 保守按刚停住处理，⛔ 不 panic"
+    );
+    observe(&format!(
+        "[logic-head] 连按窗口（纯函数，单位 ms）：0/1499/1500 ⇒ RewindToStart；1501/None ⇒ Play；\
+         窗口={} ms",
+        HEAD_DOUBLE_TAP_WINDOW.as_millis()
+    ));
+}
+
+/// 任务单 §2 第 4 条（b）：**生产装配**里窗口的两侧读数（同一时间线、一个活窗口）。
+///
+/// 窗内：`Space` 停住 → 紧接着 `Space` ⇒ 回起点（`SeekTicks(0)`）。
+/// 窗外：真实等待 1.55 s → `Space` ⇒ 从停住处继续（`Play`，位置不回退）。
+///
+/// ⚠ 一个测试只建一个活窗口（Tier-1 平台是**线程级**的一次性安装）。
+#[test]
+fn head_double_tap_is_measured_inside_and_outside_the_window_on_the_production_wiring() {
+    use std::time::Duration;
+    use yeban_app::host::HEAD_DOUBLE_TAP_WINDOW;
+
+    // ---- 窗内连按（行 2 的停住 → 紧接着 Space）⇒ 回起点 ----
+    let (harness, ui) = logic_head_harness();
+    assert!(press(&ui, " "), "起播");
+    assert!(press(&ui, " "), "停住（写下停住时刻）");
+    let stopped_at = harness.reading().position_ticks;
+    assert!(stopped_at > 0, "前置：必须停在中途");
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "窗内第二次");
+    assert_eq!(harness.reading().position_ticks, 0, "窗内 ⇒ 回起点");
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![TransportCommand::SeekTicks(0)]
+    );
+    observe(&format!(
+        "[logic-head] 窗内连按（生产装配）：停住@{} ⇒ 第二次 Space ⇒ 位置={} tick 命令={:?}",
+        stopped_at,
+        harness.reading().position_ticks,
+        commands_since(&harness, base),
+    ));
+
+    // ---- 窗外（真实等待 1.55 s）⇒ 继续（**位置不回退**）----
+    // 上一步停在起点（回起点之后状态是停住）；先起播、再停住（写下新的停住时刻），
+    // 然后等窗口真的过期 —— 用的是生产回调里的 `Instant::now()`，⛔ 不是合成时间戳。
+    assert!(press(&ui, " "), "起播");
+    assert!(press(&ui, " "), "停住（写下停住时刻）");
+    let stopped_at = harness.reading().position_ticks;
+    assert!(stopped_at > 0, "前置：必须停在中途");
+    std::thread::sleep(HEAD_DOUBLE_TAP_WINDOW + Duration::from_millis(50));
+    let base = harness.journal().len();
+    assert!(press(&ui, " "), "窗外");
+    let resumed = harness.reading();
+    assert_eq!(
+        resumed.state,
+        TransportState::Playing,
+        "窗外 ⇒ 从停住处继续"
+    );
+    assert!(
+        resumed.position_ticks >= stopped_at,
+        "窗外 ⇒ 必须从停住处（{} tick）继续，实际 {} tick",
+        stopped_at,
+        resumed.position_ticks
+    );
+    assert_eq!(commands_since(&harness, base), vec![TransportCommand::Play]);
+    observe(&format!(
+        "[logic-head] 窗外连按（生产装配，真实等待 {} ms）：停住@{} ⇒ Space ⇒ 状态={:?} 位置={} tick \
+         命令={:?}",
+        HEAD_DOUBLE_TAP_WINDOW.as_millis() + 50,
+        stopped_at,
+        resumed.state,
+        resumed.position_ticks,
+        commands_since(&harness, base),
+    ));
+}
+
+/// 任务单 §2 第 3 条：**`Return` 的新键映射** ＋ "它**不**借引擎"的证据。
+///
+/// 三层证据，彼此独立：
+/// 1. **解析层**：`input.rs` 的裸 `Enter` 解析成 `Action::GoToBeginning`；
+/// 2. **分类层**：`host::action_needs_engine(GoToBeginning) == false`（⛔ 不在借内）；
+/// 3. **运行层**：**故意持借**引擎时按 `Return` —— 它仍被消费、不 panic、借用没被带走；
+///    放掉借用之后再按一次，引擎真的回 0（落点是 `on_stop` 的 `Stop` + `SeekTicks(0)`）。
+#[test]
+fn return_is_mapped_to_go_to_beginning_and_does_not_take_the_engine_borrow() {
+    use yeban_app::input::{
+        Action as InputAction, InputContext, LogicalKey, Modifiers as InputModifiers, Resolution,
+    };
+
+    // ① 解析层。
+    let context = InputContext::new();
+    assert_eq!(
+        context.resolve_logical(LogicalKey::Enter, InputModifiers::none()),
+        Resolution::Action(InputAction::GoToBeginning),
+        "裸 `Enter` / `Return` 必须解析成 `GoToBeginning`"
+    );
+    assert_eq!(
+        context.resolve_logical(LogicalKey::Enter, InputModifiers::shift()),
+        Resolution::Action(InputAction::AcceptAiSuggestion),
+        "`Shift+Enter` 仍是 AI 采纳（未实现 ⇒ 不消费），⛔ 不得被 `Return` 抢走"
+    );
+
+    // ② 分类层：它**不在**借宿主的集合里。
+    assert!(
+        !host::action_needs_engine(InputAction::GoToBeginning),
+        "`GoToBeginning` 的落点会调 `ui.invoke_stop()` / `ui.invoke_toggle_play()` ⇒ 必须在借外"
+    );
+
+    // ③ 运行层：故意持借 ⇒ 降级（不 panic、不带走守卫），放借后可用。
+    let (mut harness, ui) = logic_head_harness();
+    harness.seek_and_inject(2880);
+    {
+        let engine = Rc::clone(&harness.engine);
+        let _guard = engine.borrow_mut();
+        // ⛔ 若 `GoToBeginning` 在借内被分发（或 `wire_keys` 先借后判），这一行就是
+        // `#212` 的重入 ⇒ 在真机上 = `key_down` 里的进程 abort。
+        assert!(
+            ui.invoke_key_action("\n".into(), false, false, false, false),
+            "持借时的 `Return` 仍必须被消费（它的落点在借外）"
+        );
+    }
+    // ⚠ 读数必须在守卫**作用域之外**：`TransportHarness::reading()` 自己也要 `borrow()`，
+    // 持借期间读它就是 `RefCell already mutably borrowed`（第一版实测踩过）。
+    assert_eq!(
+        harness.reading().position_ticks,
+        2880,
+        "持借时 `on_stop` 降级 ⇒ 引擎一位不动（⛔ 不假装回起点）"
+    );
+    assert!(
+        harness.engine.try_borrow_mut().is_ok(),
+        "`Return` 返回之后借用必须已经放掉"
+    );
+    let base = harness.journal().len();
+    assert!(press(&ui, "\n"), "放借后 `Return` 必须被消费");
+    assert_eq!(
+        harness.reading().position_ticks,
+        0,
+        "放借后必须真的回到起点"
+    );
+    assert_eq!(
+        commands_since(&harness, base),
+        vec![TransportCommand::Stop, TransportCommand::SeekTicks(0)],
+        "`Return` 落到 `on_stop`（停止 ＋ 回起点）"
+    );
+    observe(&format!(
+        "[logic-head] Return 映射：解析={:?} needs_engine=false；持借时消费=true 且引擎一位不动 \
+         （命令增量 0）；放借后位置 2880 → {} tick 命令={:?}",
+        Resolution::Action(InputAction::GoToBeginning),
+        harness.reading().position_ticks,
+        commands_since(&harness, base),
+    ));
+}
+
 /// 把 **Windows 检出**（`core.autocrlf=true` ⇒ 每行 CRLF）的行尾归一到 LF。
 ///
 /// ⚠ **第 299 条**（`#216` 的根因）：`include_str!` 把工作树里的字节**原样**编进来 ⇒
@@ -3414,7 +4044,9 @@ fn engine_action_sets(source: &str, label: &str) -> (Vec<String>, Vec<String>) {
         "两个动作集不可能都是空的 —— 节拍器 / 预备拍今天就在这条链上（{label} 源码）"
     );
     // ⭐ 安全属性：落点里有 `ui.invoke_*` 的动作**一律**不在借内。
-    for ui_calling in ["PlayPause", "ResumeFromCursor", "Cancel"] {
+    // ⭐ 任务单 `#227` 追加 `GoToBeginning`：它的落点是 `ui.invoke_stop()` /
+    // `ui.invoke_toggle_play()`（两个界面回调）⇒ 与上面三条同族，必须在借外。
+    for ui_calling in ["PlayPause", "ResumeFromCursor", "Cancel", "GoToBeginning"] {
         assert!(
             !borrow_predicate.iter().any(|name| name == ui_calling),
             "`Action::{ui_calling}` 的落点会调界面回调（`ui.invoke_*`）⇒ 它**必须**在\
@@ -3436,12 +4068,14 @@ fn engine_action_sets(source: &str, label: &str) -> (Vec<String>, Vec<String>) {
 /// 本判据从**源码文本**取两个函数体里的 `Action::*` 名字集合，要求**逐条相等**；
 /// 并钉住"界面回调族不在借内"这条安全属性（它们各自在 `host.rs` 的代码里只出现一次，
 /// 见 `src/elements.rs` 的 `space_and_shift_space_share_one_host_arm_today`）。
+/// ⭐ 任务单 `#227` 追加 `GoToBeginning`（`Return` 的落点会调 `ui.invoke_stop()` /
+/// `ui.invoke_toggle_play()`）。
 #[test]
 fn only_engine_commands_take_the_engine_borrow() {
     let (borrow_predicate, engine_command) = engine_action_sets(include_str!("host.rs"), "LF");
     observe(&format!(
         "[transport-e2e] ⑧ 借宿主的动作集={borrow_predicate:?} == 引擎命令集={engine_command:?}；\
-         界面回调族（PlayPause / ResumeFromCursor / Cancel）均不在借内"
+         界面回调族（PlayPause / ResumeFromCursor / Cancel / GoToBeginning）均不在借内"
     ));
 }
 
