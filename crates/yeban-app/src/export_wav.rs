@@ -66,6 +66,7 @@
 
 use std::path::{Path, PathBuf};
 
+use yeban_engine::level::dbfs;
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, SynthEngine};
 use yeban_model::project::SampleRate;
@@ -152,8 +153,58 @@ impl WavExportOptions {
     }
 }
 
+/// ⭐ 任务单 `#226`：**最响的源**（照 MCP `warnings[].loudestSource` 的口径）。
+///
+/// ## 测点口径（与 MCP 逐条同义）
+///
+/// - `node` = 源节点 = 轨道身份；`track` = `TrackV3.name`（给读数的**人**看的名字）；
+/// - `peak` = 该源输出的 `max |sample|`（线性幅度）；`peak_dbfs` = `20·log10(peak)`
+///   （测不出 ⇒ `None`，⛔ 不写 `0 dBFS`，那是满量程、语义正好相反）；
+/// - `suggested_source_trim_db` = **同一条公式**作用在 `peak_dbfs` 上（只减这一条源需要的量）；
+///   `peak_dbfs <= 0` ⇒ `Some(0.0)`（⛔ 不是减一个正数 —— 那会变成**提升**增益）。
+///
+/// ⚠ **最响的源 ≠ 过载的原因**：多源求和的工程里，最响的**单条源**自己可能根本没到满量程，
+/// 削波来自求和。因此 `suggested_source_trim_db == 0.0` 是合法读数，`hint`（见
+/// [`WavExportReport::clipping_note`]）会**逐字**说清"单独减它不会解决"。
+#[derive(Clone, Debug, PartialEq)]
+pub struct WavLoudestSource {
+    /// 源节点（= 轨道身份）。
+    pub node: EntityId,
+    /// 轨道名（`TrackV3.name`；读数里的人话名字）。
+    pub track: String,
+    /// 该源输出的样本峰值（线性幅度，`max |sample|`）。
+    pub peak: f32,
+    /// `peak` 的 dBFS；`None` = 测不出（本源没有非零样本）。
+    pub peak_dbfs: Option<f32>,
+    /// 只把**这一条源**压到 0 dBFS 以下需要的量（dB，负值 = 减）。
+    ///
+    /// ⚠ 这是**逐源**建议，⛔ 不是母带保证：见 [`WavLoudestSource`] 类型文档。
+    pub suggested_source_trim_db: Option<f32>,
+}
+
 /// 导出报告（形态照 `MidiExportReport`：路径／帧数／采样率／声道／位深／字节数）。
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// ## ⭐ 削波读数与建议 trim（任务单 `#226`；与 MCP 的 `data.*`／`warnings[]` 同名同义）
+///
+/// | 本结构字段 | MCP 字段 | 单位／语义 |
+/// | :--- | :--- | :--- |
+/// | [`Self::clipped_samples`] | `clippedSamples` | 会被 24-bit 量化器钳住的**样本数**（`\|s\| > 1.0`） |
+/// | [`Self::true_peak_dbfs`] | `truePeakDbfs` | 16× 多相过采样的真峰值（dBFS；`0` = 满量程，正 = 过载） |
+/// | [`Self::headroom_db`] | `headroomDb` | `-true_peak_dbfs`（负 = 已过载） |
+/// | [`Self::suggested_trim_db`] | `suggestedTrimDb` | 建议的母带 trim（dB，负 = 减；`0.0` = 不用减） |
+/// | [`Self::loudest_source`] | `warnings[].loudestSource` | 最响的源（见 [`WavLoudestSource`]） |
+///
+/// ⚠ **只读**：这些字段在渲染与落盘**之后**从同一份样本上量出来，⛔ 不参与增益、⛔ 不参与
+/// 量化 ⇒ 加了读数之后整文件 `sha256` 逐字节不变（判据
+/// `reporting_readings_does_not_change_a_single_byte` 用**加读数之前**的常量钉住）。
+///
+/// ⚠ 为什么 `suggested_trim_db` 是 `f32` 而不是 `Option<f32>`：MCP 的 `suggestedTrimDb`
+/// 在"没削波"时是 `0.0`（**数字**），不是 `null`；只有"测不出"才是 `null` 的那两个字段
+/// （`truePeakDbfs` / `headroomDb`）才用 `Option`。两侧形状因此一一对应。
+///
+/// ⚠ `Eq` 被去掉：报告里现在有 `f32` 读数（真峰值／建议 trim），`Eq` 对浮点不成立。
+/// 既有判据只用 `PartialEq`（`assert_eq!`）⇒ 语义不变。
+#[derive(Clone, Debug, PartialEq)]
 pub struct WavExportReport {
     /// 落盘路径。
     pub path: PathBuf,
@@ -181,13 +232,41 @@ pub struct WavExportReport {
     ///
     /// ⚠ **缺样本在这里可见**（`missing_sample_paths` / `silent_region_count`）⇒ 报告⛔ 不静默。
     pub sfz_decoded: Vec<(EntityId, crate::sfz_load::SfzDecodeReport)>,
+    /// ⭐ 会被 24-bit 量化器钳住的**样本数**（`|sample| > 1.0`；严格大于 —— `±1.0`
+    /// 恰好落在满量程端点，不需要钳位）。对象是抖动／量化**之前**的浮点母带。
+    pub clipped_samples: u64,
+    /// ⭐ 真峰值（dBFS；16× 多相过采样，与 MCP 走**同一个** `measure_master`）。
+    ///
+    /// `0` = 满量程，正值 = 过载；`None` = 测不出（静音或采样率没有核验系数），
+    /// ⛔ **不是** `0 dBFS`。
+    pub true_peak_dbfs: Option<f32>,
+    /// ⭐ 余量（dB）= `-true_peak_dbfs`（负值 = 已过载）；测不出 ⇒ `None`。
+    pub headroom_db: Option<f32>,
+    /// ⭐ 建议的**母带** trim（dB；负值 = 减，`0.0` = 不用减）。
+    ///
+    /// 公式逐字：`suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)`
+    /// （向上取整到 0.5 dB ⇒ 按它减完必然不再过载，最多多减 0.5 dB）。⛔ 本导出**不自动改**
+    /// 增益 —— 那会静默改用户意图。
+    pub suggested_trim_db: f32,
+    /// ⭐ 公式的输入值（dBFS）与它的来源口径（`"truePeakDbfs"` / `"samplePeakDbfs"`，
+    /// 与 MCP 的 `basis` 同义：真峰值测不出时如实退到样本峰值，⛔ 不混成一句）。
+    pub trim_basis_dbfs: f32,
+    /// ⭐ [`Self::trim_basis_dbfs`] 的来源口径。
+    pub trim_basis: &'static str,
+    /// ⭐ 最响的源（逐源峰值最大者；并列取 `node` 字典序**最小**的 ⇒ 每次点同一个名字）。
+    ///
+    /// `None` = 本次没有任何源产生非零样本。
+    pub loudest_source: Option<WavLoudestSource>,
 }
 
 impl WavExportReport {
     /// 一行可读摘要（CLI 打印它）。
+    ///
+    /// ⭐ `#226`：**削波时多打一行**（[`Self::clipping_note`]）；⛔ **不削波时逐字不变**
+    /// —— 既有的文本判据不会被这一单改动（判据见 `a_clean_project_keeps_the_legacy_summary`）。
     #[must_use]
     pub fn summary(&self) -> String {
-        format!(
+        let legacy = format!(
             "WAV 已写出: {}（{} 帧 / {} Hz / {} 声道 / {} bit / {} 字节 / 音源 {} / digest {}）",
             self.path.display(),
             self.frames,
@@ -197,8 +276,150 @@ impl WavExportReport {
             self.bytes,
             self.source,
             self.digest
-        )
+        );
+        match self.clipping_note() {
+            Some(note) => format!("{legacy}\n{note}"),
+            None => legacy,
+        }
     }
+
+    /// ⭐ `#226`：**削波提示行**（恰好一行；`clipped_samples == 0` ⇒ `None`）。
+    ///
+    /// 这是 CLI 与控制台唯一的"用户真的看得到"的落点：
+    /// - [`Self::summary`] 把它接在既有摘要**之后**（多一行）；
+    /// - `--export-wav` 的批处理输出把它作为**额外一行**打印（⛔ 不削波时不打印 ⇒
+    ///   既有 stdout 逐字不变）。
+    ///
+    /// ## 它必须说清的三件事（少一件就是误导）
+    ///
+    /// 1. **多少样本会被钳**（`clippedSamples`）＋ 真峰值／余量；
+    /// 2. **该减多少**（`suggestedTrimDb`，公式逐字进文案）—— 以及这是**母带级**建议；
+    /// 3. **最响的源 ≠ 过载的原因**：多源求和时单条源可能自己没过满量程，
+    ///    `suggestedSourceTrimDb == 0` ⇒ 单独减它没用（逐字进文案）。
+    ///
+    /// ⛔ 文案**不**承诺"改完就好听"：它只说"按这个量减完不会钳位"。
+    #[must_use]
+    pub fn clipping_note(&self) -> Option<String> {
+        if self.clipped_samples == 0 {
+            return None;
+        }
+        let true_peak = self
+            .true_peak_dbfs
+            .map_or_else(|| "null".to_owned(), |value| format!("{value:.6}"));
+        let headroom = self
+            .headroom_db
+            .map_or_else(|| "null".to_owned(), |value| format!("{value:.6}"));
+        let loudest = self.loudest_source.as_ref().map_or_else(
+            || "最响的源 = null（本次没有任何源产生非零样本；过载来自别处？）".to_owned(),
+            |source| {
+                let dbfs_text = source
+                    .peak_dbfs
+                    .map_or_else(|| "null".to_owned(), |value| format!("{value:.6}"));
+                // 与 MCP 的 `hint` 同一条判定：按逐源建议是否为 0 区分"自己过载"与"求和过载"。
+                let summing = source.suggested_source_trim_db.unwrap_or(0.0) == 0.0;
+                let note = if summing {
+                    "；⚠ 它**自己**没有过满量程 ⇒ 削波来自**多源求和**，⛔ 单独减这一条不会解决，\
+                     请按 suggestedTrimDb 减母带（或逐条配平）"
+                } else {
+                    "；⚠ 它自己也过了满量程 ⇒ 可以先考虑减它；母带级建议仍以 suggestedTrimDb 为准"
+                };
+                format!(
+                    "最响的源 = `{}`（node `{}`, peakDbfs = {dbfs_text}{note}）",
+                    source.track,
+                    source.node.to_canonical_string()
+                )
+            },
+        );
+        Some(format!(
+            "⚠ WAV 母带削波: clippedSamples = {}（这些样本会被 24-bit 量化器钳在 ±1.0）；\
+             truePeakDbfs = {true_peak} dBFS / headroomDb = {headroom} dB；\
+             建议把母带增益减 {:.1} dB（suggestedTrimDb = -(ceil({} * 2) / 2) = {:.6} dB）；\
+             {loudest}；⛔ 本工具**不自动改增益** —— 这里只是读数 + 建议，音频一个字节都没动",
+            self.clipped_samples,
+            self.suggested_trim_db.abs(),
+            self.trim_basis,
+            self.suggested_trim_db
+        ))
+    }
+}
+
+/// ⭐ `#226`：削波时建议的 **trim 量**（dB；负值 = 减，`0.0` = 不需要减）。
+///
+/// ## 公式（逐字）
+///
+/// ```text
+/// suggestedTrimDb = -(ceil(truePeakDbfs * 2) / 2)
+/// ```
+///
+/// 语义与 MCP 的 `render_math::suggested_trim_db` **逐字相同**：把真峰值向上取整到
+/// 0.5 dB 的整数倍再取负 ⇒ 按它减完 `truePeakDbfs <= 0`（不会差 0.1 dB 又削一次），
+/// 且**最多多减 0.5 dB**。非有限值或 `<= 0` ⇒ `0.0`（⛔ 不返回正数 —— 那会变成提增益）。
+///
+/// ## 为什么是**复制**而不是引用
+///
+/// `yeban-app` 的默认档**不依赖** `yeban-mcp`（依赖方向见 `crates/yeban-app/Cargo.toml`
+/// 的 `in-process-mcp` 段；MUST-GATE-009 的第一道开关是"默认构建里没有 yeban-mcp"）。
+/// 为了复用这 3 行而引一条默认依赖边，会把整个 MCP 依赖图拖进 release 二进制 ——
+/// 代价远大于 3 行。⇒ ⭐ **两处同式、各一份 copy**，由判据对账：
+/// - 本文件的 `suggested_trim_matches_the_mcp_formula`（公式字面量 ＋ 半 dB 边界）；
+/// - 集成判据 `the_readings_match_the_mcp_side_on_the_same_audio`（同一份音频上 CLI 的
+///   `suggestedTrimDb` 必须等于 MCP 侧在**同一段样本**上的读数）。
+#[must_use]
+fn suggested_trim_db(true_peak_dbfs: f32) -> f32 {
+    if !true_peak_dbfs.is_finite() || true_peak_dbfs <= 0.0 {
+        return 0.0;
+    }
+    let trimmed = (true_peak_dbfs * 2.0).ceil() / 2.0;
+    if trimmed <= 0.0 { 0.0 } else { -trimmed }
+}
+
+/// 会被 24-bit 量化器钳住的样本数（`|sample| > 1.0`；口径逐字同 MCP）。
+#[must_use]
+fn clipped_sample_count(samples: &[f32]) -> u64 {
+    samples
+        .iter()
+        .filter(|sample| sample.is_finite() && sample.abs() > 1.0)
+        .count() as u64
+}
+
+/// 样本峰值（`max |sample|`；非有限样本忽略）。
+#[must_use]
+fn sample_peak(samples: &[f32]) -> f32 {
+    let mut peak = 0.0_f32;
+    for sample in samples {
+        if sample.is_finite() {
+            peak = peak.max(sample.abs());
+        }
+    }
+    peak
+}
+
+/// 真峰值（dBFS）：与 MCP **同一个**测量实现（`yeban-render::mastering::measure_master`，
+/// 母带口径 **16×** 多相过采样）。
+///
+/// 声道布局：`channels >= 2` ⇒ 左 = 声道 0、右 = 声道 1（MCP 的 `MASTER_CHANNELS` 口径）；
+/// `channels == 1` ⇒ 同一路喂两个检测器（单声道的真峰值就是它自己）。
+/// `measure_master` 拒绝采样率 / 全零 ⇒ `None`（⛔ 不编造 `0 dBFS`）。
+#[must_use]
+fn measure_true_peak(samples: &[f32], channels: usize, sample_rate: u32) -> Option<f32> {
+    let channels = channels.max(1);
+    let frames = samples.len() / channels;
+    let mut left = Vec::with_capacity(frames);
+    let mut right = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let base = frame * channels;
+        left.push(samples[base]);
+        right.push(if channels >= 2 {
+            samples[base + 1]
+        } else {
+            samples[base]
+        });
+    }
+    let master = yeban_render::mastering::measure_master(sample_rate, &left, &right)?;
+    master
+        .true_peak_dbtp
+        .is_finite()
+        .then_some(master.true_peak_dbtp)
 }
 
 /// 导出失败的原因。
@@ -656,6 +877,46 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         rendered.digest,
     );
     // 本函数只负责**报告**：量化 ＋ 一次落盘走 [`write_interleaved_wav`]（唯一实现）。
+    // ⭐ `#226`：削波读数（**只读**：在抖动／量化**之前**的浮点母带上量，⛔ 不改一个样本）。
+    //    口径与 MCP 的 `data.clippedSamples` / `truePeakDbfs` / `headroomDb` 逐条相同
+    //    （真峰值走**同一个** `measure_master`；`clipped_sample_count` 是同一判据）。
+    let clipped_samples = clipped_sample_count(&samples);
+    let (true_peak_dbfs, headroom_db) =
+        match measure_true_peak(&samples, options.channels, options.sample_rate) {
+            Some(peak) => (Some(peak), Some(-peak)),
+            None => (None, None),
+        };
+    // 建议值的输入：真峰值可测就用它；测不出就如实退到样本峰值（`basis` 逐字说明）。
+    let trim_basis = if true_peak_dbfs.is_some() {
+        "truePeakDbfs"
+    } else {
+        "samplePeakDbfs"
+    };
+    let trim_basis_dbfs = true_peak_dbfs.unwrap_or_else(|| dbfs(sample_peak(&samples)));
+    let suggested_trim = suggested_trim_db(trim_basis_dbfs);
+    // ⭐ 最响的源：并列时取 `node` 字典序**最小**的（与 MCP 的 `max_by` 同一条 tie-break）。
+    let loudest_source = rendered
+        .source_peaks
+        .iter()
+        .filter(|(_, peak)| *peak > 0.0)
+        .max_by(|(left_node, left_peak), (right_node, right_peak)| {
+            left_peak.total_cmp(right_peak).then_with(|| {
+                right_node
+                    .to_canonical_string()
+                    .cmp(&left_node.to_canonical_string())
+            })
+        })
+        .and_then(|(track_id, peak)| {
+            let track = project.tracks.get(track_id)?;
+            let peak_dbfs = Some(dbfs(*peak));
+            Some(WavLoudestSource {
+                node: *track_id,
+                track: track.name.clone(),
+                peak: *peak,
+                peak_dbfs,
+                suggested_source_trim_db: peak_dbfs.map(suggested_trim_db),
+            })
+        });
     let (bytes, bits) = write_interleaved_wav(
         path,
         &samples,
@@ -676,6 +937,13 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         audio_clips_rendered: rendered.audio_clips_rendered,
         audio_clips_skipped: rendered.audio_clips_skipped,
         sfz_decoded: rendered.sfz_decoded,
+        clipped_samples,
+        true_peak_dbfs,
+        headroom_db,
+        suggested_trim_db: suggested_trim,
+        trim_basis_dbfs,
+        trim_basis,
+        loudest_source,
     })
 }
 
@@ -719,6 +987,69 @@ pub fn write_interleaved_wav(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⭐ `#226`：建议 trim 公式与 MCP 的 `render_math::suggested_trim_db` **逐字同式**
+    /// （本 crate 复制了那 3 行 —— 理由见 [`suggested_trim_db`] 的文档）。
+    ///
+    /// 钉三件事：① 公式的边界（含 `#224` 的实测值 `1.874512 → −2.0` 与"四舍五入会不够"
+    /// 的 `5.46`）；② 减完 `truePeak + trim <= 0`；③ 最多多减 0.5 dB。
+    #[test]
+    fn suggested_trim_matches_the_mcp_formula() {
+        // `(truePeakDbfs, 期望 trim)`；期望值全部手算自 `-(ceil(x * 2) / 2)`。
+        let cases: [(f32, f32); 8] = [
+            (1.874_512, -2.0), // #224 实测：1.874512 × 2 = 3.749024 ⇒ ceil = 4 ⇒ -2.0
+            (0.2, -0.5),
+            (5.44, -5.5),
+            (5.46, -5.5), // 四舍五入会给 −5.5、ceil 也给 −5.5；关键是下面的 5.4
+            (5.4, -5.5),
+            (0.0, 0.0),
+            (-3.0, 0.0), // 负值（不削波）⛔ 不能变成"提增益"
+            (f32::NAN, 0.0),
+        ];
+        for (peak, expected) in cases {
+            assert_eq!(
+                suggested_trim_db(peak),
+                expected,
+                "公式必须逐字相同: peak = {peak}"
+            );
+        }
+        // 两个保证（对一批有限正值逐一验算）。
+        for peak in [
+            0.01_f32, 0.2, 0.5, 1.0, 1.874_512, 2.907_095, 5.46, 23.886_497,
+        ] {
+            let trim = suggested_trim_db(peak);
+            assert!(
+                peak + trim <= 1.0e-6,
+                "按建议减完不得再削波: peak = {peak}, trim = {trim}"
+            );
+            assert!(
+                peak + trim >= -0.5 - 1.0e-6,
+                "最多多减 0.5 dB: peak = {peak}, trim = {trim}"
+            );
+            assert_eq!(trim, -((peak * 2.0).ceil() / 2.0));
+        }
+        // 非有限值不制造正数（那是提增益）。
+        assert_eq!(suggested_trim_db(f32::INFINITY), 0.0);
+        assert_eq!(suggested_trim_db(f32::NEG_INFINITY), 0.0);
+    }
+
+    /// ⭐ `#226`：`clippedSamples` 的口径 = `|sample| > 1.0`（**严格大于**），
+    /// 与 MCP 的 `clipped_sample_count` 逐条相同；`±1.0` 恰好在满量程端点，不算削波。
+    #[test]
+    fn clipped_sample_count_is_strictly_greater_than_full_scale() {
+        let samples = [
+            0.0_f32,
+            1.0,
+            -1.0,
+            1.000_001,
+            -1.000_001,
+            f32::NAN,
+            f32::INFINITY,
+        ];
+        assert_eq!(clipped_sample_count(&samples), 2, "只有 |s| 严格 > 1.0 算");
+        assert_eq!(clipped_sample_count(&[]), 0);
+        assert_eq!(clipped_sample_count(&[0.999_999_f32]), 0);
+    }
 
     /// 判据 a（**真的换了音源**）：引擎乐器路径非静音，且与最小音源路径**逐字节不同**。
     ///

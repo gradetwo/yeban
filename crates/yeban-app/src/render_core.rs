@@ -68,6 +68,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
@@ -95,6 +97,43 @@ impl AudioSource for TrackSource {
         self.base.render_block(context, out)?;
         for clip in &mut self.clips {
             clip.render_block(context, out)?;
+        }
+        Ok(())
+    }
+}
+
+/// ⭐ 任务单 `#226`：**逐源峰值探针**（只读）。
+///
+/// 与 MCP 的 `PeakTap`（`crates/yeban-mcp/src/domain/render.rs`）**同一形态、同一测点**：
+/// 每块渲染之后扫一遍已经写进 `out` 的样本，取 `max |sample|`，存进 `AtomicU32`
+/// （非负有限 `f32` 的位型与数值同序 ⇒ `fetch_max` 就是"取更大"）。
+///
+/// ## 它为什么**不改音频**
+///
+/// - 只调一次 `inner.render_block`，写进去的字节一个不改；
+/// - 只读 `out`，⛔ 不写；
+/// - 峰值⛔ 不参与增益／归一化／量化。
+///
+/// 判据：`reporting_readings_does_not_change_a_single_byte` 用**加读数之前**的整文件
+/// `sha256` 常量钉住（实测于 `main` @ `95bdfec3`）。
+struct PeakTap {
+    /// 真正的音源（引擎乐器 / SFZ / 最小音源 ＋ 音频片段）。
+    inner: Box<dyn AudioSource>,
+    /// 峰值位型（见类型文档）。
+    peak_bits: Arc<AtomicU32>,
+}
+
+impl AudioSource for PeakTap {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        self.inner.render_block(context, out)?;
+        let mut peak = 0.0_f32;
+        for sample in out.iter() {
+            if sample.is_finite() {
+                peak = peak.max(sample.abs());
+            }
+        }
+        if peak > 0.0 {
+            self.peak_bits.fetch_max(peak.to_bits(), Ordering::Relaxed);
         }
         Ok(())
     }
@@ -145,6 +184,16 @@ pub struct RenderProjectOutput {
     /// 空 = 本次渲染**没有**走模型 SFZ 链条（没有 `TrackV3.sampler`，或走了 `--sfz` 旁路 /
     /// 最小音源）。有内容 = 每条 `PendingSfz` 都真的读了盘并摊平（缺样本也**如实登记**）。
     pub sfz_decoded: Vec<(EntityId, crate::sfz_load::SfzDecodeReport)>,
+    /// ⭐ 任务单 `#226`：**逐源峰值**（键 = 源节点 = 轨，值 = 该源输出的 `max |sample|`），
+    /// 按 `EntityId` 升序（与计划节点同序 ⇒ 同一工程每次同一顺序）。
+    ///
+    /// 口径与 MCP 的 `sources[].peak` **逐条相同**：测点是**源节点输出**（含轨音量／声像／
+    /// 采样器与片段增益），⛔ **不含**该轨插入链与路由边增益，也⛔ **不是**母带峰值。
+    ///
+    /// ⚠ 这是**只读**读数：探针只读 `out`，⛔ 不写样本、⛔ 不参与增益 ⇒ 产物逐字节不变
+    /// （判据 `reporting_readings_does_not_change_a_single_byte` 用加读数之前的
+    /// 整文件 `sha256` 常量钉住）。
+    pub source_peaks: Vec<(EntityId, f32)>,
 }
 
 /// 把工程渲染成交错 `f32`：`(样本, 帧数, 音源文案, digest 十六进制)`。
@@ -447,10 +496,34 @@ pub fn render_project_f32_with_plans_under(
         ));
     }
 
+    // ---- 2c. 逐源峰值探针（⭐ `#226`；只读）----
+    //
+    // ⚠ 必须在**全部源都装配完**（含音频片段）之后套：峰值要涵盖这一条轨真正进母带的
+    // 全部贡献。⛔ 探针只读 `out`、不改一个样本（见 [`PeakTap`] 的文档）。
+    let mut peak_bits: BTreeMap<EntityId, Arc<AtomicU32>> = BTreeMap::new();
+    let mut tapped: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+    for (track_id, source) in std::mem::take(&mut sources) {
+        let bits = Arc::new(AtomicU32::new(0));
+        peak_bits.insert(track_id, Arc::clone(&bits));
+        tapped.insert(
+            track_id,
+            Box::new(PeakTap {
+                inner: source,
+                peak_bits: bits,
+            }),
+        );
+    }
+
     // ---- 3. 执行（全部在内存里）----
     let output = plan
-        .execute(sources)
+        .execute(tapped)
         .map_err(|error| WavExportError::Render(error.to_string()))?;
+
+    // 渲染结束后取回读数：⛔ 此后一个样本都不再改（只生成报告字段）。
+    let source_peaks: Vec<(EntityId, f32)> = peak_bits
+        .iter()
+        .map(|(track_id, bits)| (*track_id, f32::from_bits(bits.load(Ordering::Relaxed))))
+        .collect();
 
     // ---- 4. 逐个样本量化（TPDF 抖动；位深 24 bit 整数 PCM）----
     let mut digest = String::with_capacity(output.digest.len() * 2);
@@ -466,6 +539,7 @@ pub fn render_project_f32_with_plans_under(
         audio_clips_rendered: audio_rendered,
         audio_clips_skipped: audio_skipped,
         sfz_decoded,
+        source_peaks,
     })
 }
 

@@ -4244,6 +4244,11 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
             source,
         })?;
         lines.push(exported_wav_line(&report, &loaded));
+        // ⭐ 任务单 `#226`：削波时**多打一行**（含 `clippedSamples` / `suggestedTrimDb`）。
+        //    ⛔ 不削波时**一行都不多** ⇒ `--export-wav` 的既有 stdout 逐字不变。
+        if let Some(note) = report.clipping_note() {
+            lines.push(note);
+        }
     }
 
     // 顺序契约（`--help` 的"组合语义"一节）：元素 → MIDI → .als → .logicx → 保存工程。
