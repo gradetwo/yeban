@@ -13772,3 +13772,28 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **五、⭐ 它如实登记的两条**: ⭐ ① ⭐ **中途两处编辑误落在主检出**、⭐ 已 `git checkout --` 还原（⭐ `git diff` 0 行）⇒ ⭐ ⚠ **这条要记：⭐ 编辑前先 `pwd` 确认在 worktree 里** ✓ ⭐ ② ⭐ ⚠ **Windows 上那个 `python3` ⭐ 到底是真解释器/⭐ 坏 shim/⭐ 商店别名** —— ⭐ 本机查不到 ⇒ ⭐ ⭐ **下一轮 CI 会按三种形状之一告诉我们**（⭐ ① ⭐ 绿 ⇒ 编码是根因；⭐ ② ⭐ `NoInterpreter{tried}` ⇒ 一个都没有；⭐ ③ ⭐ `NoReceipt{…stderr}` ⇒ 又崩在判定前）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`#205`（反斜杠 —— 6 个乐器）交单** ＋ ⭐ **`56f399ac` 的 Windows 判决**（⭐ 按三种形状归类）＋ ⭐ **11 个 `regions=0`／⭐ 5 个 `energy=0` 的分类** ＋ ⭐ **2 个 LICENSE 补件**（⭐ 下次 `--archives` 会落地）＋ ⭐ **许可字段机械执行闭环** ＋ ⭐ **"⭐ 三轨"样例档** ＋ ⭐ ⚠ **仍需人类**：⭐ 装 `freepats-button-accordion-hn` ＋ ⭐ 听 ✓
+
+---
+
+## R911 实测追加（2026-10-18）：⭐⭐ **`#205`（⭐ SFZ 反斜杠）落地 ＋ 快进合并** ⇒ ⭐ **6 个乐器从"假声"变"真解码"**
+
+⭐ **合并**: ⭐ base `7392557c` ⇒ ⭐ `FINAL=159d24ce`（⭐ 4 文件 ＋264／−7）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`768 passed`／FAILED 0**（74 suites）＋ ⭐ 守卫 **18** ＋ ⭐ 轻门 `门禁通过` ＋ ⭐ 复合门 **全层 0** ✓ ⭐ 树已拆 ＋ `target` 已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 修法（⭐ 很干净）**: ⭐ `resolve_sample_path` ⭐ 先归一、⭐ 再判绝对、⭐ 再 `parent().join()` ⇒ ⭐ `normalize_sample_path(&Path) -> Cow<Path>` ⭐ **只在含 `\` 时分配**（⭐ 无 `\` ⇒ ⭐ `Cow::Borrowed` **零分配**）★ ⭐ ⭐ **且它只归一"路径"**、⭐ ⛔ **不动 `label=`／`sw_label=` 这类文本字段**、⭐ ⛔ **不动"原样字符串"**（⭐ `referenced_sample_paths`／⭐ `Region::sample`／⭐ `missing_sample_paths` ⭐ 是**事实记录**、⭐ 不是读取用的路径）⇒ ⭐ **判得很细** ✓
+⭐ 绝对路径：⭐ `/x/y` 原样；⭐ `C:\…` 归一后由 ⭐ `is_windows_drive_absolute` ⭐ 认作**外来绝对路径**、⭐ ⛔ **不拼 `<sfzdir>/C:/…`**（⭐ 那作者没写过）；⭐ UNC ⭐ `\\server\share` ⇒ ⭐ `//server/share` ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 它纠正我两处（⭐ 第 61／62 次）**: ⚠ ⭐ ① ⭐ `#203` 点名的 6 个里 ⭐ ⭐ **`vcsl` **不是**反斜杠问题**（⭐ 它的 SFZ 含 `\` **0 个**、⭐ 路径是正斜杠、⭐ 文件也在）⇒ ⭐ 它回退的真因是 ⭐ ⭐ **`hound` 报 `Ill-formed WAVE file: unexpected fmt chunk size`**（⭐ `fmt` chunk **20** 字节的 PCM16 stereo、⭐ `file` 认它是**合法 WAV**）⇒ ⭐ **另一类缺陷** ✓ ⭐ ② ⭐ 真正的第 6 个反斜杠库是 ⭐ ⭐ **`karoryfer-272-merry-orks`**（⭐ **358 个 `\`**，⭐ `#203` 把它归到 `energy=0` 里了）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 6 个 fallback → file（⭐ 逐条 `source=` 变了）**: ⭐ `dsmolken-double-bass`（210 regions）／⭐ `ganjo`（58）／⭐ `karoryfer-cowsynth`（51）／⭐ `karoryfer-pastabass`（204）／⭐ `vcsl`（⭐ **未变**）／⭐ `vsco2ce`（1 行、⭐ 走 `default_path`）／⭐ ⭐ **`karoryfer-272-merry-orks`（358）** ⇒ ⭐ **26 个里 `file` 从 3 → **9****、⭐ `fallback` 从 8 → **2** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ ⭐ 它给出一条**铁证**（⭐ 这条最有力）**: ⭐ ⭐ **26 个库的 `regions／frames／energy／rc` 前后**逐位相同**（`scan-pre.tsv` vs `scan-post.tsv` **零差异**）**（⭐ 例：⭐ dsmolken `11534.05` 修前=修后、⭐ cowsynth `2880.0125` 修前=修后）⇒ ⭐ ⭐ **即"⭐ 能量"⭐这个数**完全不反映**解码与否** ⇒ ⭐ **只有 `source=` 变了** ✓ ⇒ ⭐ **这条把"⭐ 能量不是解码证据"⭐从"⭐ 一个论断"⭐变成"⭐ 26 个样本的实测"** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 11 个 `regions=0` 的**分类**（⭐ 全部一类）**: ⭐ ⭐ **都是 `#include` 根文件**、⭐ 而 ⭐ `SfzInstrument::load` ⭐ 走 ⭐ `parse_text` ⭐ ⇒ ⭐ ⭐ **`#include` 被忽略**（⭐ `parser.rs:316` 逐字 "ignored in plain-text mode"）⇒ ⭐ 根文件里 inline `<region>` 计数 **= 0** ✓ ⭐ 11 个 ＋ ⭐ 各自 include 数（`aliexpress-erhu` 14／⭐ `body-percussion` 2／⭐ `ixox-flute` 11／⭐ `karoryfer-bear-sax` 10／⭐ `karoryfer-big-rusty-drums` 70／⭐ `karoryfer-bigcat-cello` 15／⭐ `karoryfer-black-and-blue-basses` 65／⭐ `karoryfer-string-cyborgs` 8／⭐ `mtg-solo-sax` 6／⭐ `salamander-grand` 7／⭐ `virtuosity-drums-basic` 7）✓ ⭐ ⛔ **不是缺样本、⛔ 不是音区不覆盖** ✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 5 个 `energy=0` 的**分类**（⭐ 逐个不同）**: ⭐ ① ⭐ `cithara-barbarica` ⭐ **CC 门控**（⭐ 唯一 region 挂 ⭐ `locc105=64`、⭐ 探测无 CC 状态）；⭐ ② ⭐ `freepats-electric-bass-yr` ⭐ **键域**（⭐ `lokey 26…hikey 45`、⭐ note 60 不覆盖）；⭐ ③ ⭐ `hungarian-zither` ⭐ **键域**（⭐ `sw_lokey 36…39`、⭐ region `key=40`）；⭐ ④ ⭐ `karoryfer-272-merry-orks` ⭐ **`trigger=first|legato`**（⭐ 孤立探测音符不满足）；⭐ ⑤ ⭐ `karoryfer-squidpipes` ⭐ **keyswitch**（⭐ 37 region 全带 `sw_last=`）⇒ ⭐ ⭐ **全部是"⭐ 探测音符不命中"、⭐ ⛔ 不是样本缺失** ✓
+
+⭐ ⚠ ⭐ ⭐ **七、⭐ 另两条**发现**（⭐ 它顺手查出来）**: ⭐ ① ⭐ ⭐ **`*silence`** ⭐ 是 SFZ **内建伪样本**、⭐ ⭐ **而三个根 SFZ 用了它**（`cithara`／⭐ `hungarian`／⭐ `squidpipes`）⇒ ⭐ 当前被当**文件**去找 ⇒ ⭐ `回退: …/Programs/*silence: No such file` ⇒ ⭐ **该做内建静音** ✓ ⭐ ② ⭐ `discord-gm-sitar` ⭐ rc=3：⭐ `line 27: lokey expects an integer, got c0` ⇒ ⭐ **SFZ 方言**（⭐ `c0` 不是整数）✓
+
+⭐ ⚠ ⭐ ⭐ **八、⭐ 它做了一件**该做但需登记**的事（⭐ 库隔离）**: ⚠ ⭐ 因为**开发机上现在真有库了**（⭐ 20,540 文件）⇒ ⭐ 三条既有判据会**因为"⭐ 库里有样本"⭐而改变行为** ⇒ ⭐ 它给 3 个测试文件加了库根隔离（`instrument_install.rs` 7 条各调 `isolate_repo_only_library()`／⭐ `pane_no_overlap.rs` 两个入口调 `isolate_uninstalled_library()`／⭐ `sample_library.rs` 夹具归一 `sample=` 的 `\`）★ ⭐ ⭐ **且断言没有放宽** —— 隔离后仍逐字断言"⭐ 仓库 0 样本 ⇒ 空清单／⭐ 未安装 ⇒ 下载按钮在场" ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **11 个 `#include`（⭐ 最大的下一单）** ＋ ⭐ **`*silence` 内建静音** ＋ ⭐ **vcsl 的 `fmt` chunk 20** ＋ ⭐ **`discord` 的 `lokey=c0`** ＋ ⭐ **5 个 probe 覆盖** ＋ ⭐ **2 个 LICENSE 补件** ＋ ⭐ ⚠ **仍需人类**：⭐ 装一个 ＋ ⭐ 听（⭐ 现在 9 个能出声了）✓
