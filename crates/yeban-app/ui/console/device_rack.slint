@@ -279,6 +279,46 @@ export component DeviceRack inherits Rectangle {
     accessible-id: "device-rack";
     accessible-label: "设备效果链";
 
+    // ------------------------------------ 两段的水平分离（⭐ 任务单 `#184`）
+    //
+    // `#183` 收掉了"第二段越出面板右沿"，留下两条边界，这一块是它们的落点：
+    //
+    // ① 第一段的内容右沿原来还是常量 `824`（= 右列 `x: 444` ＋ `width: 380`）
+    //    ⇒ 面板窄于 `848` 时**第一段自己**越界（`#183` 实测）；
+    // ② 第二段有 `320` 下限 ⇒ 面板窄于 `1168` 时它左移，压住第一段右侧
+    //    （1024 档实测 `696..1016` 压住 `696..824`）。
+    //
+    // ⭐ 裁决（`#184`）：**第一段让位** —— 不做上下堆叠，因为堆叠要求控制台高度
+    // 可纵向滚动（那是另一个单）。第一段的右列（EQ 低架面板 ＋ 发送条）从 380 起
+    // 按第二段左沿收窄，**收到 236（1024 档的实测最小值）以下就整列撤下**，
+    // ⛔ 不画 8–60px 的碎片（那既不可读、又会让"不重叠"变成靠 `clip` 掩盖）。
+    //
+    // | 面板宽 | `master-rack-x` | 第一段宽 | 右列宽 | 读数 |
+    // | :--- | :--- | :--- | :--- | :--- |
+    // | 1920 / 1440 / 1280 / 1168 | 840 | 824 | 380 | 与 `#183`／`#180` **逐格相同** |
+    // | 1024 | 696 | 680 | 236 | 右沿 `680 = 696 − 16` ⇒ ⛔ 不相交 |
+    // | 848 | 520 | 504 | —（撤下） | 第一段右沿 496（计数标签），第二段 `520..840` |
+    // | 800 | 472 | 456 | —（撤下） | 第一段右沿 448，第二段 `472..792` |
+    //
+    // ⚠ 两个量**只由面板宽算出**（`root.width` → `master-rack-x`）；宽面板上它们
+    // 恒等于 `#183` 的常量，所以 1920/1440 的几何与像素一位不动。
+    property <length> first-rack-width: max(
+        0px,
+        min(824px, root.master-rack-x - Tokens.space-6),
+    );
+    /// 第一段右列（`device-eq-low-gain-panel` / `send-strip`）的宽度：默认 380。
+    property <length> first-side-width: max(0px, root.first-rack-width - 444px);
+    /// 右列的最小可读宽度 = **236**（1024 档实测：四键各 52px ＋ 3×4px 间距 ＋ 两侧 8px）。
+    /// 小于它就整列撤下 —— ⛔ 不留"看起来还在、其实只剩一条边"的碎片。
+    property <bool> first-side-visible: root.first-side-width >= 236px;
+    /// 轨 / 路由那四个按钮的宽度：380 宽时恒 88（`#159` 的原值），窄面板上均分。
+    property <length> routing-button-width: min(88px, (root.first-side-width - 28px) / 4);
+    /// 发送段标题「发送」的宽度（默认 220）。
+    property <length> send-label-width: max(0px, min(220px, root.first-side-width - 152px));
+    /// 「N 条发送」的左沿 / 宽度（默认 240 / 128）—— 两者一起收，⛔ 不互相压。
+    property <length> send-count-x: root.send-label-width + 20px;
+    property <length> send-count-width: max(0px, root.first-side-width - root.send-count-x - 12px);
+
     // ---------------------------------------------------------------- 标题
     UiText {
         x: Tokens.space-4;
@@ -294,7 +334,9 @@ export component DeviceRack inherits Rectangle {
     }
 
     UiMonoText {
-        x: 436px;
+        // ⭐ `#184`：默认仍 436（`#157` 的原值）；第一段窄于 644 时右沿钉在
+        // `第一段宽 − 8`，⛔ 不让这一格伸出第一段（它是最右的那条标签）。
+        x: min(436px, max(Tokens.space-4, root.first-rack-width - 208px));
         y: Tokens.space-3;
         width: 200px;
         height: 16px;
@@ -361,8 +403,10 @@ export component DeviceRack inherits Rectangle {
     // ---------------------------------------------------------------- EQ 低架增益（唯一可编辑的设备参数）
     Rectangle {
         x: 444px;
+        // ⭐ `#184`：默认 380（= 824 − 444，`#181` 的原值）；窄面板让给第二段。
+        width: root.first-side-width;
+        visible: root.first-side-visible;
         y: 28px;
-        width: 380px;
         height: 100px;
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
@@ -401,7 +445,8 @@ export component DeviceRack inherits Rectangle {
         Rectangle {
             x: Tokens.space-4;
             y: 40px;
-            width: 300px;
+            // ⭐ `#184`：380 宽面板上仍是 300（`#181` 的原值）；窄面板收到 `面板宽 − 16`。
+            width: min(300px, parent.width - Tokens.space-6);
             height: 24px;
             background: transparent;
             accessible-role: slider;
@@ -424,7 +469,7 @@ export component DeviceRack inherits Rectangle {
             }
             // 0 dB 刻度（值域对称时才画；`0` 是注入端点算出来的位置，不是常量表）
             Rectangle {
-                x: 150px;
+                x: parent.width / 2;
                 y: 6px;
                 width: 1px;
                 height: 12px;
@@ -433,7 +478,8 @@ export component DeviceRack inherits Rectangle {
             }
             // 旋钮
             Rectangle {
-                x: 288px * root.eq-fraction-clamped;
+                // 300 宽时 `(300 − 12) × f = 288f` —— 与 `#181` 的原式**逐位相同**。
+                x: (parent.width - 12px) * root.eq-fraction-clamped;
                 y: 4px;
                 width: 12px;
                 height: 16px;
@@ -485,7 +531,9 @@ export component DeviceRack inherits Rectangle {
     Rectangle {
         x: 444px;
         y: 136px;
-        width: 380px;
+        // ⭐ `#184`：默认 380；窄面板让位（与 EQ 低架面板同一列、同一可见性）。
+        width: root.first-side-width;
+        visible: root.first-side-visible;
         height: 126px + 40px * root.send-destination-names.length;
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
@@ -554,9 +602,10 @@ export component DeviceRack inherits Rectangle {
 
         // ---- 三个建轨按钮（可用性由 `routing-create-available` 单一决定）----
         Rectangle {
-            x: 8px;
+            // ⭐ `#184`：380 宽时 `8 / 100 / 192 / 284` 与 `#159` 逐格相同。
+            x: Tokens.space-4;
             y: 22px;
-            width: 88px;
+            width: root.routing-button-width;
             height: 20px;
             background: root.routing-create-available ? Tokens.gold-deep : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
@@ -589,9 +638,9 @@ export component DeviceRack inherits Rectangle {
         }
 
         Rectangle {
-            x: 100px;
+            x: Tokens.space-4 + (root.routing-button-width + Tokens.space-2);
             y: 22px;
-            width: 88px;
+            width: root.routing-button-width;
             height: 20px;
             background: root.routing-create-available ? Tokens.gold-deep : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
@@ -624,9 +673,9 @@ export component DeviceRack inherits Rectangle {
         }
 
         Rectangle {
-            x: 192px;
+            x: Tokens.space-4 + (root.routing-button-width + Tokens.space-2) * 2;
             y: 22px;
-            width: 88px;
+            width: root.routing-button-width;
             height: 20px;
             background: root.routing-create-available ? Tokens.gold-deep : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
@@ -660,9 +709,9 @@ export component DeviceRack inherits Rectangle {
 
         // ---- 删除展示轨（目标只认展示轨；主总线不是目标）----
         Rectangle {
-            x: 284px;
+            x: Tokens.space-4 + (root.routing-button-width + Tokens.space-2) * 3;
             y: 22px;
-            width: 88px;
+            width: root.routing-button-width;
             height: 20px;
             background: root.routing-delete-available ? Tokens.bg-shell : Tokens.bg-void;
             border-radius: Tokens.radius-sm;
@@ -723,7 +772,8 @@ export component DeviceRack inherits Rectangle {
         UiText {
             x: Tokens.space-4;
             y: 60px;
-            width: 220px;
+            // ⭐ `#184`：380 宽时仍是 220（`#159` 的原值）；窄面板与计数一起均分。
+            width: root.send-label-width;
             height: 16px;
             text: "发送";
             color: Tokens.ink-1;
@@ -732,9 +782,9 @@ export component DeviceRack inherits Rectangle {
         }
 
         UiMonoText {
-            x: 240px;
+            x: root.send-count-x;
             y: 60px;
-            width: parent.width - 252px;
+            width: root.send-count-width;
             height: 16px;
             text: root.send-destination-names.length + " 条发送";
             color: Tokens.ink-2;
@@ -781,6 +831,9 @@ export component DeviceRack inherits Rectangle {
             property <float> gain-fraction-clamped: self.gain-fraction < 0.0
                 ? 0.0
                 : (self.gain-fraction > 1.0 ? 1.0 : self.gain-fraction);
+            // ⭐ `#184`：行宽 364 时仍是 300（`#159` 的原值）；窄面板收到 `行宽 − 44`
+            //（= 删除键 20 ＋ 间距 16 ＋ 右沿 8），⛔ 不压住删除键。
+            property <length> slider-width: max(0px, min(300px, self.width - 44px));
 
             UiText {
                 x: 0;
@@ -811,7 +864,7 @@ export component DeviceRack inherits Rectangle {
             Rectangle {
                 x: 0;
                 y: 20px;
-                width: 300px;
+                width: parent.slider-width;
                 height: 16px;
                 background: transparent;
                 accessible-role: slider;
@@ -828,7 +881,7 @@ export component DeviceRack inherits Rectangle {
             Rectangle {
                 x: 0;
                 y: 26px;
-                width: 300px;
+                width: parent.slider-width;
                 height: 4px;
                 background: Tokens.bg-void;
                 border-radius: Tokens.radius-sm;
@@ -836,7 +889,8 @@ export component DeviceRack inherits Rectangle {
 
             // 旋钮（位置只读注入的 dB 与注入的值域）
             Rectangle {
-                x: 288px * parent.gain-fraction-clamped;
+                // 300 宽时 `(300 − 12) × f = 288f` —— 与 `#159` 的原式**逐位相同**。
+                x: (parent.slider-width - 12px) * parent.gain-fraction-clamped;
                 y: 22px;
                 width: 12px;
                 height: 12px;
@@ -848,7 +902,7 @@ export component DeviceRack inherits Rectangle {
             TouchArea {
                 x: 0;
                 y: 20px;
-                width: 300px;
+                width: parent.slider-width;
                 height: 20px;
                 pointer-event(event) => {
                     if (event.kind == PointerEventKind.down) {
@@ -1378,10 +1432,12 @@ export component DeviceRack inherits Rectangle {
     // | 1920 | 840 | 544 | 1384 | 与 `#180` **逐像素一致**（面板 ≥ 1392 时公式恒等于常量） |
     // | 1440 | 840 | 544 | 1384 | 同上（1440 ≥ 1392） |
     // | 1280 | 840 | 432 | 1272 | 宽度让给面板右沿，⛔ 不越界、⛔ 不与第一段重叠（第一段止于 824） |
-    // | 1024 | 696 | 320 | 1016 | 触到 320 下限后左沿才开始左移（此时与第一段右侧**重叠**，如实登记） |
+    // | 1024 | 696 | 320 | 1016 | 触到 320 下限后左沿才开始左移 —— ⭐ `#184` 起第一段同时收窄到 680，⛔ 不再重叠 |
     //
     // ⛔ 本文件仍然只有一套绝对坐标；这里只是把两段里**唯一越界的那两个常量**换成
     // "宽面板恒等于常量"的算式 —— 所以 1920/1440 两档的几何与像素一位不动。
+    // ⭐ `#184`：第一段那一侧由上面的 `first-rack-width` / `first-side-width` 负责，
+    // 两段的间隔恒为 `Tokens.space-6`（16px）。
     property <length> master-rack-width: max(320px, min(544px, root.width - 848px));
     property <length> master-rack-x: min(
         840px,
@@ -1399,9 +1455,10 @@ export component DeviceRack inherits Rectangle {
     // （`master_device_track`）。⛔ 本文件不拼身份、⛔ 不写参数值、⛔ 不提交；
     // 每台的身份来自 `master-device-ids[master_device_index]`，Op 与值域由宿主求。
     //
-    // ⚠ 几何：它住在面板右侧（第一段止于 824px），左沿 / 宽度由上面的
+    // ⚠ 几何：它住在面板右侧（宽面板上第一段止于 824px），左沿 / 宽度由上面的
     // `master-rack-x` / `master-rack-width` 按面板宽度算 —— 宽面板上仍是 `840/544`
     // （`#180` 的原值），窄面板上右沿贴到 `面板宽 − 8`，⛔ 不再被父级 `clip` 裁掉。
+    // ⭐ `#184`：窄面板上第一段先收窄（`first-side-width`），两者之间**恒留 16px**。
     Rectangle {
         x: root.master-rack-x;
         y: 28px;
