@@ -37,7 +37,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use yeban_app::bridge::{ViewState, demo_project};
-use yeban_app::host::{RecordOutcomePort, UiRecordOutcome, build_main_window, wire_record};
+use yeban_app::host::{
+    RecordOutcomePort, UiRecordOutcome, build_main_window, wire_record, wire_record_at,
+};
 use yeban_app::record_device::{
     DeviceInputFactory, DeviceInputSource, InputSourceFactory, SilenceFactory, input_factory_for,
 };
@@ -988,4 +990,196 @@ fn a_real_input_device_feeds_the_recorder_through_the_product_factory() {
         }
     }
     let _ = std::fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#213`：录音回调的**借用边界**（与 `#212` 的 `engine` 崩溃同形）
+// ---------------------------------------------------------------------------
+
+/// 降级时那**一行** stderr 的逐字正文（判据按它数行）。
+const DEGRADE_LINE: &str = "忽略 toggle-record：录音器正被同一线程借用（重入）⇒ 本次按键无效";
+
+/// ⭐ `#213` 判据 ① 的**界面落点探针**：在 `report` 执行的那一刻去要录音器的借。
+///
+/// 这正是"有人在录音状态变化上挂了一个要碰录音器的回调"的形状：
+/// * 修之前 `RefMut` 跨过 `ui.set_recording` / `outcome.report` ⇒ 这里
+///   `borrow_mut()` 直接 panic（`RefCell already borrowed`）；
+/// * 修之后借已经放开 ⇒ 借得到，计数 +1。
+#[derive(Debug, Default)]
+struct BorrowProbeOutcome {
+    recorder: RefCell<Option<Rc<RefCell<Recorder>>>>,
+    reports: AtomicUsize,
+    borrow_free_reports: AtomicUsize,
+}
+
+impl BorrowProbeOutcome {
+    /// 接线返回句柄之后挂上来（报告在第一次按键之后才可能发生）。
+    fn attach(&self, recorder: Rc<RefCell<Recorder>>) {
+        *self.recorder.borrow_mut() = Some(recorder);
+    }
+}
+
+impl RecordOutcomePort for BorrowProbeOutcome {
+    fn report(&self, ui: &MainWindow, error: Option<String>) {
+        self.reports.fetch_add(1, Ordering::SeqCst);
+        let recorder = self
+            .recorder
+            .borrow()
+            .clone()
+            .expect("探针必须在第一次 report 之前拿到录音器句柄");
+        {
+            // ⭐ 承重的一行：修前在这里 panic，修后借得到。
+            let recorder = recorder.borrow_mut();
+            let _ = recorder.is_recording();
+        }
+        self.borrow_free_reports.fetch_add(1, Ordering::SeqCst);
+        UiRecordOutcome.report(ui, error);
+    }
+}
+
+/// 判据 ①（**能红**）：界面落点执行时，录音器的借**已经**放开。
+///
+/// 修前的红是 **panic**（`RefCell already borrowed`，点就在上面那个 `borrow_mut()`）——
+/// 不是断言失败，因此它同时证明"修前确实持借跨了界面写"。修后起录 / 停录各一次落点，
+/// 两次都必须落在借外。
+#[test]
+fn the_record_callback_releases_the_recorder_borrow_before_writing_the_interface() {
+    let (_tier1, ui) = assemble();
+    let path = scratch("borrow-scope");
+    let _ = std::fs::remove_file(&path);
+    let outcome = Rc::new(BorrowProbeOutcome::default());
+    let recorder = wire_record_at(
+        &ui,
+        None,
+        None,
+        RecordPlan {
+            path: path.clone(),
+            options: options(),
+        },
+        Rc::new(SilenceFactory),
+        outcome.clone(),
+        Rc::new(|| 0),
+    );
+    outcome.attach(Rc::clone(&recorder));
+    assert!(!ui.get_recording(), "起录之前 `recording` 必须是 false");
+
+    ui.invoke_toggle_record(); // ① 起录
+    assert!(ui.get_recording(), "起录成功 ⇒ `recording` 必须为 true");
+    ui.invoke_toggle_record(); // ② 停录
+    assert!(!ui.get_recording(), "停录之后必须回到 false");
+
+    let reports = outcome.reports.load(Ordering::SeqCst);
+    let free = outcome.borrow_free_reports.load(Ordering::SeqCst);
+    assert_eq!(reports, 2, "起录 + 停录应各有恰好一次界面落点");
+    assert_eq!(
+        free, reports,
+        "每一次界面落点执行时录音器的借都必须已经放开（修前这里是 0/2 且第一条就 panic）"
+    );
+    println!(
+        "[record-borrow-scope] reports={reports} 借外落点={free} \
+         （起录/停录两次 UI 写都不在录音器的借内）"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 判据 ②（**兜底生效**）：**故意持借**时按录音键 ⇒ 降级（一行 stderr、状态一位不动），
+/// ⛔ 不是 panic、⛔ 更不是 abort。
+///
+/// 与 `#212` 的 `toggle_play_and_stop_degrade_instead_of_aborting_when_the_engine_is_already_borrowed`
+/// 同形：手工持借模拟"同一线程上已有一份借"，回调必须走 `try_borrow_mut()` 的失败臂。
+#[test]
+fn a_held_recorder_borrow_degrades_the_toggle_and_leaves_the_state_untouched() {
+    let (_tier1, ui) = assemble();
+    let path = scratch("borrow-held");
+    let _ = std::fs::remove_file(&path);
+    let outcome = Rc::new(SpyOutcome::default());
+    let recorder = wire_record_at(
+        &ui,
+        None,
+        None,
+        RecordPlan {
+            path: path.clone(),
+            options: options(),
+        },
+        Rc::new(SilenceFactory),
+        outcome.clone(),
+        Rc::new(|| 0),
+    );
+    {
+        // ⭐ **故意持借** = 那个未来回调的形状。
+        let held = recorder.borrow_mut();
+        ui.invoke_toggle_record();
+        drop(held);
+    }
+    assert!(!ui.get_recording(), "被降级的按键不得改动界面状态");
+    assert!(!path.exists(), "被降级的按键不得创建落盘文件");
+    assert!(
+        outcome.reports.borrow().is_empty(),
+        "被降级的按键不得调用界面落点（⛔ 不假装切换过）"
+    );
+    // ⭐ 降级不是坏状态：借放开之后同一个回调仍然可用。
+    ui.invoke_toggle_record();
+    assert!(ui.get_recording(), "降级之后正常起录必须仍可用");
+    ui.invoke_toggle_record();
+    assert!(!ui.get_recording(), "降级之后正常停录必须仍可用");
+    println!(
+        "[record-borrow-degrade] 持借时一次按键 ⇒ recording=false、文件不存在、落点 0 次；\
+         放借后起/停录均正常"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 判据 ③（**stderr 恰好一行**）：在子进程里跑判据 ②，读回真实 stderr。
+///
+/// 为什么要子进程：`eprintln!` 的落点是进程级的 fd 2；测试进程里并行跑着别的判据，
+/// 进程内重定向既不可靠也会吞掉别人的输出。子进程用 libtest 的 `--exact` 只跑那一条，
+/// 父进程读回它的 stderr —— 这是"**一行**"这个数量事实的直接证据。
+#[test]
+fn a_held_recorder_borrow_emits_exactly_one_stderr_line() {
+    const CHILD: &str = "record_borrow_degrade_child_when_invoked_directly";
+    let exe = std::env::current_exe().expect("current_exe 必须可读");
+    let output = std::process::Command::new(exe)
+        .args(["--exact", CHILD, "--nocapture", "--test-threads=1"])
+        .output()
+        .expect("降级子进程必须能启动");
+    assert!(
+        output.status.success(),
+        "降级子进程失败（判据 ② 在子进程里红了）：\nstdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let count = stderr.matches(DEGRADE_LINE).count();
+    assert_eq!(
+        count, 1,
+        "降级必须**恰好**打一行 stderr；实测 {count} 行。stderr 逐字：\n{stderr}"
+    );
+    println!("[record-borrow-degrade] 子进程 stderr 命中降级行 {count} 次（期望 1）");
+}
+
+/// 判据 ③ 的**子进程角色**（正常跑也通过；父判据用 `--exact` 只跑它并读 stderr）。
+#[test]
+fn record_borrow_degrade_child_when_invoked_directly() {
+    let (_tier1, ui) = assemble();
+    let path = scratch("borrow-child");
+    let _ = std::fs::remove_file(&path);
+    let outcome = Rc::new(SpyOutcome::default());
+    let recorder = wire_record_at(
+        &ui,
+        None,
+        None,
+        RecordPlan {
+            path: path.clone(),
+            options: options(),
+        },
+        Rc::new(SilenceFactory),
+        outcome.clone(),
+        Rc::new(|| 0),
+    );
+    let held = recorder.borrow_mut();
+    ui.invoke_toggle_record();
+    drop(held);
+    assert!(!ui.get_recording(), "降级不得改动界面状态");
+    assert!(!path.exists(), "降级不得创建落盘文件");
+    assert!(outcome.reports.borrow().is_empty(), "降级不得调用界面落点");
 }

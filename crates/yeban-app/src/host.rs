@@ -4387,6 +4387,13 @@ impl RecordOutcomePort for UiRecordOutcome {
     }
 }
 
+/// ⭐ 任务单 `#213`：录音器已被同一线程借用时的**一行**降级文案。
+///
+/// 单独提成常量：① 判据按**逐字子串**数 stderr 行数（子进程读回）；② 让这条边界的
+/// 文案只有一个真相源（⛔ 两处手抄）。
+const RECORD_REENTRY_STDERR: &str =
+    "[yeban-app] 忽略 toggle-record：录音器正被同一线程借用（重入）⇒ 本次按键无效";
+
 /// ⭐⭐ **录音键的接线**（任务单 `#88`）：把"按下去"这件事接到**可注入的源工厂**上。
 ///
 /// ## 形状（与 `[ARCH-REC-001]` 的三段链一一对应）
@@ -4436,9 +4443,9 @@ pub fn wire_record(
     plan: crate::record_wav::RecordPlan,
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
     outcome: Rc<dyn RecordOutcomePort>,
-) {
+) -> Rc<RefCell<crate::record_wav::Recorder>> {
     // 兼容形态：起点 tick 取 0（见 [`wire_record_at`] 的说明）。
-    wire_record_at(ui, project, undo, plan, factory, outcome, Rc::new(|| 0));
+    wire_record_at(ui, project, undo, plan, factory, outcome, Rc::new(|| 0))
 }
 
 /// [`wire_record`] 的**播放头形态**（任务单 `#134`）：停录落点需要一个起点 tick。
@@ -4453,6 +4460,22 @@ pub fn wire_record(
 /// 判据给固定值 ⇒ 读数可复现；⛔ 不读环境变量。
 ///
 /// 其余语义与 [`wire_record`] 逐字相同（0 帧 ⇒ 不落地；`undo = None` ⇒ 只落盘）。
+///
+/// ## ⭐ 借用边界（任务单 `#213`）
+///
+/// **返回**本回调手里那个 `Rc<RefCell<Recorder>>`（⛔ 不是副本）：产品调用方可以忽略；
+/// 判据用它把"界面落点执行时录音器是否仍被借用"变成**可读的**事实（第 5 个注入面）。
+///
+/// 回调里 `try_borrow_mut()` **只包住** `is_recording()` ＋ **一次**状态变更
+/// （`stop` / `start_with_factory`）—— 结果装进 [`RecordToggle`]，`};` 处放借；
+/// `ui.set_recording` / `outcome.report` / 停录后的落盘进工程全在**借外**。
+/// 借不到（同一线程上已有借）⇒ 打**一行** stderr 后直接返回：⛔ 不 panic、⛔ 不 abort、
+/// ⛔ 不假装切换过（与 `#212` 给 `on_toggle_play` / `on_stop` 加的第二道防线同款）。
+///
+/// ⚠ 修之前 `borrow_mut()` 写在闭包第一行 ⇒ `RefMut` 活到闭包结束，**跨过**了
+/// `ui.set_recording` 与 `outcome.report`。今天同一份 `Recorder` 只有本回调一个借用点，
+/// 所以撞不上；但只要将来有人在"录音状态变化"上挂一个要碰录音器的回调，就是
+/// `RefCell already borrowed`（`#212` 已实测：落在 FFI 边界 ⇒ **进程 abort**）。
 pub fn wire_record_at(
     ui: &MainWindow,
     project: Option<Rc<YebanProjectV1>>,
@@ -4461,111 +4484,151 @@ pub fn wire_record_at(
     factory: Rc<dyn crate::record_device::InputSourceFactory>,
     outcome: Rc<dyn RecordOutcomePort>,
     playhead_tick: Rc<dyn Fn() -> u64>,
-) {
+) -> Rc<RefCell<crate::record_wav::Recorder>> {
     let recorder = Rc::new(RefCell::new(crate::record_wav::Recorder::new()));
+    // ⭐ 闭包要持有句柄、函数末尾还要把它**原样**交回去 ⇒ 先克隆（`Rc` 计数 +1）。
+    let recorder_cell = Rc::clone(&recorder);
     // ⭐ 闭包要读工程算预备拍 ⇒ 先克隆（`Rc` 计数 +1）。
     let record_ui = slint::ComponentHandle::as_weak(ui);
     ui.on_toggle_record(move || {
-        let mut recorder = recorder.borrow_mut();
-        if recorder.is_recording() {
-            let stopped = recorder.stop();
-            // ⭐⭐ **0 帧 ⇒ 响亮**（任务单 `#130`）：停录**成功**但**一帧都没录到**时，
-            // `stop` 仍会落一条 0 帧的合法 WAV（头 68 字节、音频 0 字节）并返回 `Ok` ——
-            // 这正是"按录音键没用"的**不可见**形态（文件在、内容是空、界面只归零）。
-            // ⛔ 不许把它画成成功：把"0 帧 ＋ 真实计数器（`pushed` / `dropped` / `source`）"
-            // 拼成一句人话，走**同一个** [`RecordOutcomePort`]（产品落点 = `stderr`）。
-            let empty_report = match &stopped {
-                Ok(report) if report.frames == 0 => Some(format!(
-                    "录音写入 0 帧（pushed={} dropped={} source={}）⇒ 输入设备没有送来任何帧；\
-                     {} 是一条**空** WAV",
-                    report.pushed,
-                    report.dropped,
-                    report.source,
-                    report.path.display()
-                )),
-                _ => None,
+        // ⭐⭐ 任务单 `#213`：**借只包住"状态变更 / 取结果"**，放借后再碰界面。
+        //
+        // 崩法与 `#212` 的 `engine` 逐字同形：持借期间调界面 ⇒ 界面回调（若将来有人
+        // 在 `recording` 变化上挂）重入同一个 `RefCell` ⇒ `RefCell already borrowed`；
+        // 录音键若从 `winit::key_down` 一类 FFI 边界进来，panic 不能 unwind ⇒ **abort**。
+        // 因此这里同时上两道防线：① 作用域收窄（[`RecordToggle`] 只装结果）；
+        // ② `try_borrow_mut()` 兜底（借不到 ⇒ 一行 stderr ＋ 本次按键无效）。
+        let count_in = project.as_ref().map_or(0, |project| {
+            crate::record_wav::count_in_frames(project, plan.options.sample_rate)
+        });
+        let toggle = {
+            let mut recorder = match recorder_cell.try_borrow_mut() {
+                Ok(recorder) => recorder,
+                Err(_) => {
+                    eprintln!("{RECORD_REENTRY_STDERR}");
+                    return;
+                }
             };
-            // ⭐⭐ **停录成功 ⇒ 真的进工程**（任务单 `#132`；`#130` 分层分析的 L2 ＋ L3）。
-            //
-            // 只在 `frames > 0` 时落地：0 帧的 WAV 只有头（`#130` 已让它**响亮**），
-            // 把它写进 `clip_pool` 等于在工程里登记一条"播放时什么都没有"的片段 ——
-            // 判据据 `clip_pool.len()` **不变**读这件事。
-            //
-            // `undo = None`（判据 / 无头装配）⇒ ⛔ 不假装提交过：如实打一行。
-            let mut landing_report: Option<String> = None;
-            match &stopped {
-                Ok(report) => {
-                    eprintln!("[yeban-app] {}", report.summary());
-                    if report.frames > 0 {
-                        match undo.as_ref() {
-                            Some(port) => {
-                                // 起点 = **停录落地这一刻**的播放头（音频时钟读数）。
-                                // ⚠ 读点在 `recorder.stop()` **之后**（走带若在播放，它会比
-                                // 按下录音键那一刻更靠后）—— 本单的口径是"当前播放头"，
-                                // ⛔ 不假装知道起录位置。只读一次：随后播放头会继续走。
-                                let playhead = playhead_tick();
-                                match crate::record_landing::land_recording_at(
-                                    port,
-                                    &report.path,
-                                    now_ms(),
-                                    playhead,
-                                ) {
-                                    // 成功：`summary` 带 asset / clip / 字节数（可机械复核）。
-                                    Ok(landed) => eprintln!("[yeban-app] {}", landed.summary()),
-                                    // ⛔ 停录成功但进工程失败必须**出声**：文件在、工程却没变，
-                                    // 这正是本单要消灭的"看不见的丢数据"。
-                                    Err(error) => {
-                                        landing_report = Some(format!(
-                                            "录音已落盘但没有进工程（{}）: {error}",
-                                            report.path.display()
-                                        ));
+            if recorder.is_recording() {
+                RecordToggle::Stopped(recorder.stop())
+            } else {
+                // ⭐ **源从工厂缝拿**：打不开 ⇒ `Err`（⛔ 不静默换成静音源）。
+                RecordToggle::Started(recorder.start_with_factory(
+                    &plan.path,
+                    &plan.options,
+                    factory.as_ref(),
+                    count_in,
+                ))
+            }
+        }; // ⭐ 借在这里释放（⛔ 不再跨 `ui.` / `outcome.report`）
+        match toggle {
+            RecordToggle::Stopped(stopped) => {
+                // ⭐⭐ **0 帧 ⇒ 响亮**（任务单 `#130`）：停录**成功**但**一帧都没录到**时，
+                // `stop` 仍会落一条 0 帧的合法 WAV（头 68 字节、音频 0 字节）并返回 `Ok` ——
+                // 这正是"按录音键没用"的**不可见**形态（文件在、内容是空、界面只归零）。
+                // ⛔ 不许把它画成成功：把"0 帧 ＋ 真实计数器（`pushed` / `dropped` / `source`）"
+                // 拼成一句人话，走**同一个** [`RecordOutcomePort`]（产品落点 = `stderr`）。
+                let empty_report = match &stopped {
+                    Ok(report) if report.frames == 0 => Some(format!(
+                        "录音写入 0 帧（pushed={} dropped={} source={}）⇒ 输入设备没有送来任何帧；\
+                     {} 是一条**空** WAV",
+                        report.pushed,
+                        report.dropped,
+                        report.source,
+                        report.path.display()
+                    )),
+                    _ => None,
+                };
+                // ⭐⭐ **停录成功 ⇒ 真的进工程**（任务单 `#132`；`#130` 分层分析的 L2 ＋ L3）。
+                //
+                // 只在 `frames > 0` 时落地：0 帧的 WAV 只有头（`#130` 已让它**响亮**），
+                // 把它写进 `clip_pool` 等于在工程里登记一条"播放时什么都没有"的片段 ——
+                // 判据据 `clip_pool.len()` **不变**读这件事。
+                //
+                // `undo = None`（判据 / 无头装配）⇒ ⛔ 不假装提交过：如实打一行。
+                let mut landing_report: Option<String> = None;
+                match &stopped {
+                    Ok(report) => {
+                        eprintln!("[yeban-app] {}", report.summary());
+                        if report.frames > 0 {
+                            match undo.as_ref() {
+                                Some(port) => {
+                                    // 起点 = **停录落地这一刻**的播放头（音频时钟读数）。
+                                    // ⚠ 读点在 `recorder.stop()` **之后**（走带若在播放，它会比
+                                    // 按下录音键那一刻更靠后）—— 本单的口径是"当前播放头"，
+                                    // ⛔ 不假装知道起录位置。只读一次：随后播放头会继续走。
+                                    let playhead = playhead_tick();
+                                    match crate::record_landing::land_recording_at(
+                                        port,
+                                        &report.path,
+                                        now_ms(),
+                                        playhead,
+                                    ) {
+                                        // 成功：`summary` 带 asset / clip / 字节数（可机械复核）。
+                                        Ok(landed) => eprintln!("[yeban-app] {}", landed.summary()),
+                                        // ⛔ 停录成功但进工程失败必须**出声**：文件在、工程却没变，
+                                        // 这正是本单要消灭的"看不见的丢数据"。
+                                        Err(error) => {
+                                            landing_report = Some(format!(
+                                                "录音已落盘但没有进工程（{}）: {error}",
+                                                report.path.display()
+                                            ));
+                                        }
                                     }
                                 }
+                                None => eprintln!(
+                                    "[yeban-app] 录音落盘但未接入工程（这个装配没有 UndoPort）: {}",
+                                    report.path.display()
+                                ),
                             }
-                            None => eprintln!(
-                                "[yeban-app] 录音落盘但未接入工程（这个装配没有 UndoPort）: {}",
-                                report.path.display()
-                            ),
                         }
                     }
+                    Err(error) => eprintln!("[yeban-app] 停录失败: {error}"),
                 }
-                Err(error) => eprintln!("[yeban-app] 停录失败: {error}"),
+                if let Some(ui) = record_ui.upgrade() {
+                    ui.set_recording(false);
+                    outcome.report(
+                        &ui,
+                        stopped
+                            .err()
+                            .map(|error| error.to_string())
+                            .or(empty_report)
+                            .or(landing_report),
+                    );
+                }
             }
-            if let Some(ui) = record_ui.upgrade() {
-                ui.set_recording(false);
-                outcome.report(
-                    &ui,
-                    stopped
-                        .err()
-                        .map(|error| error.to_string())
-                        .or(empty_report)
-                        .or(landing_report),
-                );
-            }
-        } else {
-            // ⭐ 预备拍（`transport.count_in_bars`）：长度由**工程**算出（⛔ 不靠墙钟）
-            // ⇒ 确定性、可本地验。⭐ 它与"用哪条源"**无关**（两条腿读数一致，见判据）。
-            let count_in = project.as_ref().map_or(0, |project| {
-                crate::record_wav::count_in_frames(project, plan.options.sample_rate)
-            });
-            // ⭐ **源从工厂缝拿**：打不开 ⇒ `Err`（⛔ 不静默换成静音源）。
-            let started =
-                recorder.start_with_factory(&plan.path, &plan.options, factory.as_ref(), count_in);
-            match &started {
-                Ok(()) => eprintln!(
-                    "[yeban-app] 开始录音 ⇒ {}（源={}）",
-                    plan.path.display(),
-                    factory.label()
-                ),
-                Err(error) => eprintln!("[yeban-app] 起录失败: {error}"),
-            }
-            if let Some(ui) = record_ui.upgrade() {
-                // ⭐ 起录失败 ⇒ `recording` 保持 `false`（⛔ 不许把失败画成"正在录"）。
-                ui.set_recording(started.is_ok());
-                outcome.report(&ui, started.err().map(|error| error.to_string()));
+            RecordToggle::Started(started) => {
+                match &started {
+                    Ok(()) => eprintln!(
+                        "[yeban-app] 开始录音 ⇒ {}（源={}）",
+                        plan.path.display(),
+                        factory.label()
+                    ),
+                    Err(error) => eprintln!("[yeban-app] 起录失败: {error}"),
+                }
+                if let Some(ui) = record_ui.upgrade() {
+                    // ⭐ 起录失败 ⇒ `recording` 保持 `false`（⛔ 不许把失败画成"正在录"）。
+                    ui.set_recording(started.is_ok());
+                    outcome.report(&ui, started.err().map(|error| error.to_string()));
+                }
             }
         }
     });
+    recorder
+}
+
+/// ⭐ 任务单 `#213`：**一次按录音键的结果** —— 借用作用域里只算出这个值。
+///
+/// 它存在的唯一理由是**把"借"与"界面"分开**：`stop` / `start_with_factory` 在借内
+/// 执行并产出结果，`match` 在借外执行并负责落盘进工程、`eprintln!`、`ui.set_recording`、
+/// `outcome.report`。⛔ 不要把这两个变体合并回"先借、再 if/else 顺手写界面"的形状 ——
+/// 那正是 `#213` 修的形态。
+#[derive(Debug)]
+enum RecordToggle {
+    /// 本次是**停录**：`Recorder::stop` 的返回值（含 0 帧判定所需的计数器读数）。
+    Stopped(Result<crate::record_wav::RecordReport, crate::record_wav::RecordError>),
+    /// 本次是**起录**：`Recorder::start_with_factory` 的返回值。
+    Started(Result<(), crate::record_wav::RecordError>),
 }
 
 /// ⭐ 把录音结果写进界面（⭐ 失败**出声**：⛔ 不静默）。
