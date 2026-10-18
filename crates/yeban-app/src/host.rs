@@ -480,10 +480,11 @@ pub fn set_roll_ticks_per_pixel(ui: &MainWindow, ticks_per_pixel: u64) -> bool {
 
 /// **窗口的视图态 → 一份投影**（唯一的"从窗口造投影"入口）。
 ///
-/// 它把两个视图态拼在一起：横向缩放（[`roll_ticks_per_pixel`]）与行高布局
-/// （[`track_height_layout`]），一起交给 [`ViewState::from_project_with_zoom_and_layout`]。
+/// 它把**三个**视图态拼在一起：横向缩放（[`roll_ticks_per_pixel`]）、行高布局
+/// （[`track_height_layout`]）与 ⭐ 选中轨（[`selected_track_id`]，任务单 `#192`），
+/// 一起交给 [`ViewState::from_project_with_zoom_layout_and_selection`]。
 /// 存在的理由是**别让每个重投影点各拼一遍** —— 拼漏一处，那一条路径就会
-/// 把用户调过的缩放静默清零（行高在 `ADR-0004` S1 已经付过同一种学费）。
+/// 把用户调过的缩放 / 行高 / 选中轨静默清零（行高在 `ADR-0004` S1 已经付过同一种学费）。
 ///
 /// # Errors
 ///
@@ -492,11 +493,45 @@ pub fn project_with_view_state(
     project: &yeban_model::YebanProjectV1,
     ui: &MainWindow,
 ) -> Result<ViewState, crate::bridge::BridgeError> {
-    ViewState::from_project_with_zoom_and_layout(
+    let selected = selected_track_id(ui);
+    ViewState::from_project_with_zoom_layout_and_selection(
         project,
         roll_ticks_per_pixel(ui),
         &track_height_layout(ui),
+        selected.as_deref(),
     )
+}
+
+/// ⭐ 任务单 `#192`：窗口上的**选中轨原文**（编辑器视图态）—— 唯一的读点。
+///
+/// 事实源是窗口属性 `selected-track-id`（默认空串 = 没有明确选中 ⇒ 面板走兜底）。
+/// **空串 ⇒ `None`**，于是"没点过任何轨"与"点了一条已经不存在的轨"由
+/// [`crate::bridge::display_track`] 的兜底规则**同一个出口**处理。
+///
+/// ⛔ 它不是工程内容：不进 `.yeban`、不进 `projectDigest`、不进撤销栈、不碰
+/// `UndoPort::commit_ops`（判据：选中前后的 `commit_count` / `undoable` / 摘要全 Δ0）。
+/// ⛔ 它也不在这里被"归一化"成一条现存的轨 —— 归一化会把"被删的选中轨在撤销后回来"
+/// 这条恢复路径一起抹掉；面板的回落由 [`crate::bridge::display_track`] 每次解析时给出。
+#[must_use]
+fn selected_track_id(ui: &MainWindow) -> Option<String> {
+    let id = ui.get_selected_track_id();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// ⭐ 任务单 `#192`：面板服务的那条轨 —— 宿主侧**唯一**的解析点。
+///
+/// 与投影里的解析是**同一个** [`crate::bridge::display_track`] ⇒ 界面显示哪条轨
+/// 与设备 / 发送 / 片段 / 铅笔提交到哪条轨不可能各说一套。
+fn display_track<'a>(
+    ui: &MainWindow,
+    project: &'a yeban_model::YebanProjectV1,
+) -> Option<&'a yeban_model::project::TrackV3> {
+    let selected = selected_track_id(ui);
+    crate::bridge::display_track(project, selected.as_deref())
 }
 
 /// 拖拽手势的**像素换算**（纯函数，可判据）：把"从按下点开始的指针纵向位移"换算成这一轨的
@@ -741,6 +776,78 @@ fn cancel_track_height_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>) -> boo
         reproject_track_heights(ui, port);
     }
     true
+}
+
+// ===========================================================================
+// ⭐ 任务单 `#192`：**选中轨**（编辑器视图态）的接线
+// ===========================================================================
+//
+// 数据流（与横向缩放 / 行高**同一款**："宿主拥有、重新注入"）：
+//
+// ```text
+// arrangement_view.slint 的轨道头（TouchArea 的 pointer down / 无障碍默认动作）
+//   └─ track-select(index)                    ← 界面只报**下标**
+//        └─ host::wire_track_select           ← 下标 → 身份（track-ids，唯一查表）
+//             ├─ ui.set_selected-track-id(id) ← 视图态的唯一写点
+//             └─ project_with_view_state      ← 选中轨 + 缩放 + 行高 → 一次投影
+//                  └─ apply_view              ← 设备架 / 发送条 / 轨路由 / 乐器 / 可用性
+// ```
+//
+// ⛔ 本函数**不**调用 `UndoPort::commit_ops`：选中轨是**视图状态**（与滚动位置、缩放、
+// 行高同级），⛔ 不进 `.yeban`、⛔ 不进 `projectDigest`、⛔ 不进撤销栈 —— 否则"每点一下
+// 轨道头就多一步撤销"、摘要会因为点了一下就变。判据在 `tests/track_selection.rs`。
+//
+// 兜底不在**这里**做：`selected-track-id` 保留用户点的**原文**，投影每次经
+// [`crate::bridge::display_track`] 解析 ⇒ 选中轨被删 / 被撤销掉 / 换工程时自然回落到
+// 身份序第一条非主总线轨，⛔ 不 panic、⛔ 不空面板（原因由各面板的可用性字段给出）。
+// 保留原文还有一个可观测的好处：撤销掉的那条轨若被重做回来（身份相同），选中态自动恢复。
+
+/// ⭐ 任务单 `#192`：轨道头点击 → **选中那条轨**（唯一写点），然后重投影。
+///
+/// 界面报的是**下标**（`track-{i}-header` 的 `i`）；宿主用 `apply_view` 注入的
+/// `track-ids` 把下标翻成**身份**（⛔ 不拿装配期快照猜）—— 与行高拖拽同一条"下标 → 身份"
+/// 查表（[`track_id_at`]）。下标越界 / 身份为空 ⇒ 什么都不做（⛔ 不 panic）。
+///
+/// 点的是**已经选中**的那条轨 ⇒ 不重投影（画面本来就对，与 `zoom_action` 的"已经有这个
+/// 缩放"同一条取向）。
+pub fn wire_track_select(ui: &MainWindow, port: &Rc<UndoPort>) {
+    let weak = ui.as_weak();
+    ui.on_track_select({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // 下标 → 身份：唯一查表（与行高拖拽共用 `track_id_at`）。
+            let Some(track_id) = track_id_at(&ui, index) else {
+                return;
+            };
+            // 同一条轨再点一次 = 一位不动（⛔ 不白重投影一帧）。
+            if selected_track_id(&ui).as_deref() == Some(track_id.as_str()) {
+                return;
+            }
+            ui.set_selected_track_id(track_id.into());
+            // 权威会话可能被控制面关掉工程（`try_project` 如实返回 `None`）——
+            // 那时**出声不画**：选中态已经记在窗口上，下一次投影会带上它。
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 选轨：权威会话此刻没有活跃工程（选中态已记下）");
+                return;
+            };
+            match project_with_view_state(&project, &ui) {
+                Ok(view) => {
+                    // 与撤销刷新同款：复用当前横向偏移，选轨⛔ 不把卷帘滚回起点。
+                    let scroll_x = ui.get_roll_scroll_x();
+                    apply_view(&ui, &view, ui.window().size().width as f32, scroll_x);
+                }
+                Err(error) => {
+                    // 投影失败**出声**：选中态在内存里已经变了，但这一帧画不出来。
+                    eprintln!("[yeban-app] 选轨后重新投影失败: {error}");
+                }
+            }
+        }
+    });
 }
 
 // ===========================================================================
@@ -2007,7 +2114,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     // ---------------------------------------------------------------- ① 旁通开关
     //
     // ⭐ 任务单 `#181`：展示轨与主总线共用**同一个**实现体 [`bypass_device`]，唯一自变量
-    // 是 [`DeviceTarget`]：`DisplayTrack` ⇒ `bridge::device_bypass_ops`（`device_rack_track`），
+    // 是 [`DeviceTarget`]：`DisplayTrack` ⇒ `bridge::device_bypass_ops_on`（`display_track`），
     // `Master` ⇒ `bridge::master_device_bypass_ops`（`master_device_track`）。
     // ⛔ 没有"默认 = 展示轨"的回退；两个回调各自**点名**目标。
     //
@@ -2151,7 +2258,11 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
                 eprintln!("[yeban-app] 删设备：权威会话此刻没有活跃工程");
                 return;
             };
-            let ops = match crate::bridge::device_remove_ops(&project, device_id) {
+            // ⭐ `#192`：主语 = 选中轨 or 兜底（与投影同一次解析的口径）。
+            let ops = match crate::bridge::device_remove_ops_on(
+                display_track(&ui, &project),
+                device_id,
+            ) {
                 Ok(ops) => ops,
                 Err(reason) => {
                     eprintln!("[yeban-app] 删设备被拒绝：{reason}");
@@ -2262,7 +2373,11 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
                 eprintln!("[yeban-app] 装乐器：权威会话此刻没有活跃工程");
                 return;
             };
-            let ops = match crate::bridge::instrument_install_ops(&project, instrument.path) {
+            // ⭐ `#192`：乐器装到**选中轨 or 兜底**（与服务面板的那条轨同一条）。
+            let ops = match crate::bridge::instrument_install_ops_on(
+                display_track(&ui, &project),
+                instrument.path,
+            ) {
                 Ok(ops) => ops,
                 Err(reason) => {
                     eprintln!("[yeban-app] 装乐器被拒绝：{reason}");
@@ -2288,7 +2403,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
 /// 设备机架的**目标轨**（⭐ 任务单 `#180` 起：装 / 删；⭐ `#181` 起：旁通 / EQ 滑块）。
 ///
 /// ⚠ 两个变体各自绑定一条**显式**的轨：
-/// - [`Self::DisplayTrack`] ⇒ [`crate::bridge::device_rack_track`]（身份序第一条非主总线轨）；
+/// - [`Self::DisplayTrack`] ⇒ [`crate::bridge::display_track`]（⭐ `#192`：选中轨 or 兜底）；
 /// - [`Self::Master`] ⇒ [`crate::bridge::master_device_track`]（`master_bus_track_id`）。
 ///
 /// ⛔ 不存在"默认 = 展示轨"的回退：主总线的四个手势（装 / 删 / 旁通 / EQ）都必须
@@ -2326,7 +2441,10 @@ fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, device_
         return;
     };
     let ops = match target {
-        DeviceTarget::DisplayTrack => crate::bridge::device_bypass_ops(&project, device_id),
+        // ⭐ `#192`：展示轨那条腿的主语 = 选中轨 or 兜底（与投影同一次解析的口径）。
+        DeviceTarget::DisplayTrack => {
+            crate::bridge::device_bypass_ops_on(display_track(ui, &project), device_id)
+        }
         DeviceTarget::Master => crate::bridge::master_device_bypass_ops(&project, device_id),
     };
     let commit_label = match target {
@@ -2349,17 +2467,21 @@ fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, device_
     refresh_undo_window(ui, port, true);
 }
 
-/// EQ 手势的**目标轨**（展示轨 / 主总线；`target` 是唯一自变量）。
+/// EQ 手势的**目标轨**（展示轨 / 主总线；`target` ＋ `selected` 是唯一自变量）。
 ///
 /// ⭐ 任务单 `#182`：EQ 不再按"第一台带 `eq_low_gain` 的设备"寻址 —— 目标由界面带回来的
 /// **设备身份**钉住（[`crate::bridge::device_eq_low_gain_address_on_device`]）。本函数只
 /// 回答"身份该在哪条轨里查"，⛔ 不返回下标（那会重新引入窗口）。
-fn device_eq_track(
-    project: &yeban_model::project::YebanProjectV1,
+///
+/// ⭐ 任务单 `#192`：展示轨那一条腿由 [`crate::bridge::display_track`] 解析
+/// （选中轨 or 兜底），`selected` 是窗口属性 `selected-track-id` 的原文。
+fn device_eq_track<'a>(
+    project: &'a yeban_model::project::YebanProjectV1,
     target: DeviceTarget,
-) -> Option<&yeban_model::project::TrackV3> {
+    selected: Option<&str>,
+) -> Option<&'a yeban_model::project::TrackV3> {
     match target {
-        DeviceTarget::DisplayTrack => crate::bridge::device_rack_track(project),
+        DeviceTarget::DisplayTrack => crate::bridge::display_track(project, selected),
         DeviceTarget::Master => crate::bridge::master_device_track(project),
     }
 }
@@ -2438,9 +2560,12 @@ impl DeviceEqWiring {
             *self.gesture.borrow_mut() = DeviceEqGesture::Idle;
             return;
         };
-        let resolved = device_eq_track(&project, self.target).and_then(|track| {
-            crate::bridge::device_eq_low_gain_address_on_device(track, device_id)
-        });
+        // ⭐ `#192`：目标轨的主语由窗口上的选中轨决定（读不到窗口 ⇒ 走兜底 = 旧行为）。
+        let selected = weak.upgrade().and_then(|ui| selected_track_id(&ui));
+        let resolved =
+            device_eq_track(&project, self.target, selected.as_deref()).and_then(|track| {
+                crate::bridge::device_eq_low_gain_address_on_device(track, device_id)
+            });
         let Some((_, _, value, min_db, max_db)) = resolved else {
             *self.gesture.borrow_mut() = DeviceEqGesture::Idle;
             // 单行：`tests/mixer_toggle_labels.rs` 用"整行就是字面量"的形状扫这段源码
@@ -2526,10 +2651,13 @@ impl DeviceEqWiring {
             refresh_undo_window(&ui, &self.port, true);
             return;
         };
-        let resolved = device_eq_track(&project, self.target).and_then(|track| {
-            crate::bridge::device_eq_low_gain_address_on_device(track, device_id)
-                .map(|address| (track.id, address.0, address.1, address.2))
-        });
+        // ⭐ `#192`：松手侧读**同一个**窗口选中轨 ⇒ 与按下时的目标轨同一条。
+        let selected = selected_track_id(&ui);
+        let resolved =
+            device_eq_track(&project, self.target, selected.as_deref()).and_then(|track| {
+                crate::bridge::device_eq_low_gain_address_on_device(track, device_id)
+                    .map(|address| (track.id, address.0, address.1, address.2))
+            });
         let Some((track_id, slot_index, param_index, current_db)) = resolved else {
             // 同上：单行字面量（⛔ 不换行，见 `grab` 里的注释）。
             let reason = eq_device_gone_reason(self.target);
@@ -2584,7 +2712,10 @@ fn insert_builtin_device(
         DeviceTarget::Master => ("insert master device", "给主总线装设备"),
     };
     let ops = match target {
-        DeviceTarget::DisplayTrack => crate::bridge::device_insert_ops(&project, effect),
+        // ⭐ `#192`：展示轨那条腿的主语 = 选中轨 or 兜底（与投影同一次解析的口径）。
+        DeviceTarget::DisplayTrack => {
+            crate::bridge::device_insert_ops_on(display_track(ui, &project), effect)
+        }
         DeviceTarget::Master => crate::bridge::master_device_insert_ops(&project, effect),
     };
     let ops = match ops {
@@ -2621,14 +2752,16 @@ pub fn wire_clip_create(ui: &MainWindow, port: &Rc<UndoPort>) {
                 eprintln!("[yeban-app] 建片段：权威会话此刻没有活跃工程");
                 return;
             };
-            let ops = match crate::bridge::clip_create_ops(&project) {
-                Ok(ops) => ops,
-                Err(reason) => {
-                    eprintln!("[yeban-app] 建片段被拒绝：{reason}");
-                    refresh_undo_window(&ui, &port, true);
-                    return;
-                }
-            };
+            // ⭐ `#192`：片段摆到**选中轨 or 兜底**上（与设备架 / 发送条同一条）。
+            let ops =
+                match crate::bridge::clip_create_ops_on(&project, display_track(&ui, &project)) {
+                    Ok(ops) => ops,
+                    Err(reason) => {
+                        eprintln!("[yeban-app] 建片段被拒绝：{reason}");
+                        refresh_undo_window(&ui, &port, true);
+                        return;
+                    }
+                };
             if port.commit_ops(now_ms(), "create midi clip", ops).is_err() {
                 eprintln!("[yeban-app] 建片段被拒绝（工程未改）");
             }
@@ -2743,8 +2876,11 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 *gesture.borrow_mut() = SendGainGesture::Idle;
                 return;
             };
+            // ⭐ `#192`：边的源必须是**面板服务的那条轨**（选中轨 or 兜底）。
+            let selected = weak.upgrade().and_then(|ui| selected_track_id(&ui));
+            let track = crate::bridge::display_track(&project, selected.as_deref());
             let Some((current_db, min_db, max_db)) =
-                crate::bridge::send_gain_target(&project, edge_id)
+                crate::bridge::send_gain_target_on(&project, track, edge_id)
             else {
                 *gesture.borrow_mut() = SendGainGesture::Idle;
                 return;
@@ -2824,7 +2960,9 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 refresh_undo_window(&ui, &port, true);
                 return;
             };
-            let Some((current_db, _, _)) = crate::bridge::send_gain_target(&project, edge_id)
+            // ⭐ `#192`：松手侧重新解析"选中轨 or 兜底"，与投影同一份口径。
+            let Some((current_db, _, _)) =
+                crate::bridge::send_gain_target_on(&project, display_track(&ui, &project), edge_id)
             else {
                 // 手势期间边被删掉 / 展示轨换了 ⇒ 目标已不存在，⛔ 不按一个过期基线提交。
                 refresh_undo_window(&ui, &port, true);
@@ -2866,14 +3004,16 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             };
             // ⭐ 任务单 `#160`：可用性（含**防重复**）与投影**同一份**口径
-            // （`bridge::send_create_availability`）。⛔ 不在这里写第二份判定。
-            let (available, reason) = crate::bridge::send_create_availability(&project);
+            // （`bridge::send_create_availability_on`）。⛔ 不在这里写第二份判定。
+            // ⭐ `#192`：主语 = 选中轨 or 兜底（与发送条 / 设备架同一条）。
+            let track = display_track(&ui, &project);
+            let (available, reason) = crate::bridge::send_create_availability_on(&project, track);
             if !available {
                 eprintln!("[yeban-app] 新建发送被拒绝：{reason}");
                 refresh_undo_window(&ui, &port, true);
                 return;
             }
-            let Some(track) = crate::bridge::send_strip_track(&project) else {
+            let Some(track) = track else {
                 eprintln!("[yeban-app] 新建发送被拒绝：没有可显示的音轨");
                 return;
             };
@@ -2931,8 +3071,8 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 return;
             };
             // 权重检查与增益手势**同一条**：边必须存在、类型是 `SendToAux`、源是展示轨。
-            // ⛔ 不信界面上的行下标。
-            let Some(track) = crate::bridge::send_strip_track(&project) else {
+            // ⛔ 不信界面上的行下标。⭐ `#192`：源 = 选中轨 or 兜底。
+            let Some(track) = display_track(&ui, &project) else {
                 eprintln!("[yeban-app] 删除发送被拒绝：没有可显示的音轨");
                 return;
             };
@@ -2977,17 +3117,18 @@ pub fn wire_send_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
 ///
 /// - 建轨的 `Op` 批次由 [`crate::bridge::track_create_ops`] 构造：新轨身份来自项目既有的
 ///   分配器 [`yeban_model::EntityId::new`]，并且**同时**给它一条到主总线的显式路由边；
-/// - 删轨的目标**只**是展示轨（身份序第一条非主总线轨，`bridge::track_delete_target`）
+/// - 删轨的目标是**面板服务的那条轨**（⭐ `#192`：选中轨 or 兜底，`host::display_track`）
 ///   ⇒ 主总线**永远**不是目标；只剩主总线时按钮禁用并逐字写出
 ///   [`crate::bridge::TRACK_DELETE_MASTER_REASON`]；直接调用回调也会被
-///   [`crate::bridge::track_delete_ops`] 拒掉（Δ0 提交）；
+///   [`crate::bridge::track_delete_ops_on`] 拒掉（Δ0 提交）；
 /// - 没有主总线的 0 轨空工程 ⇒ 建轨被 [`crate::bridge::TRACK_CREATE_NO_MASTER_REASON`]
 ///   拒绝（`Op` 全集写不了 `master_bus_track_id`，写下去就是一份非法文档）。
 ///
 /// ## 它**不**做什么
 ///
 /// ⛔ 不改音量 / 声相 / 静音 / 独奏（那是 `wire_mixer_edit`）；⛔ 不碰引擎；
-/// ⛔ 不猜"选中轨"（界面没有这个状态，展示轨由 `bridge::device_rack_track` 唯一决定）。
+/// ⛔ 不猜轨：展示轨由 `host::display_track` **唯一**解析（⭐ `#192` 起 = 选中轨 or 兜底；
+/// 原文住在窗口属性 `selected-track-id`，⛔ 不是工程内容）。
 pub fn wire_track_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
 
@@ -3039,15 +3180,17 @@ pub fn wire_track_strip(ui: &MainWindow, port: &Rc<UndoPort>) {
                 eprintln!("[yeban-app] 删除轨：权威会话此刻没有活跃工程");
                 return;
             };
-            let ops = match crate::bridge::track_delete_ops(&project) {
-                Ok(ops) => ops,
-                Err(reason) => {
-                    // 主总线 / 没有展示轨：**逐字**原因进日志（界面另有一份同样的原因）。
-                    eprintln!("[yeban-app] 删除轨被拒绝：{reason}");
-                    refresh_undo_window(&ui, &port, true);
-                    return;
-                }
-            };
+            // ⭐ `#192`：删的是**选中轨 or 兜底**（界面按钮的可用性也由同一次解析给出）。
+            let ops =
+                match crate::bridge::track_delete_ops_on(&project, display_track(&ui, &project)) {
+                    Ok(ops) => ops,
+                    Err(reason) => {
+                        // 主总线 / 没有展示轨：**逐字**原因进日志（界面另有一份同样的原因）。
+                        eprintln!("[yeban-app] 删除轨被拒绝：{reason}");
+                        refresh_undo_window(&ui, &port, true);
+                        return;
+                    }
+                };
             if port.commit_ops(now_ms(), "delete track", ops).is_err() {
                 eprintln!("[yeban-app] 删除轨被拒绝（工程未改）");
             }
@@ -6830,7 +6973,7 @@ pub const PENCIL_NO_CLIP_ON_DISPLAYED_TRACK_REASON: &str =
 /// 铅笔拒绝的逐字原因：点击位置吸附不出计划（不在卷帘的音高范围内）。
 pub const PENCIL_NO_PLAN_REASON: &str = "该位置不在卷帘的音符范围内，未写入音符";
 
-/// 铅笔拒绝的逐字原因：工程里没有可显示的音轨（与 [`crate::bridge::device_rack_track`] 同一条规则）。
+/// 铅笔拒绝的逐字原因：工程里没有可显示的音轨（与 [`crate::bridge::display_track`] 同一条规则）。
 pub const PENCIL_NO_DISPLAYED_TRACK_REASON: &str = "工程里没有可显示的音轨，未写入音符";
 
 /// 铅笔拒绝的逐字原因：工程无法投影（拍号 / 缩放退化）。
@@ -6869,10 +7012,11 @@ impl PencilRefusal {
 ///
 /// 规则（账本第 234/237 轮；⭐ 任务单 `#166` 补上**轨**这一半）：音符进"**点击 tick 所在片段**"、
 /// 落在"**设备架 / 界面正在显示的那条轨**"—— 即 [`crate::bridge::device_rack_track`] 的**同一条**
-/// 规则（身份序第一条非主总线轨）。⭐ 展示轨上**没有**覆盖该 tick 的片段 ⇒ **拒绝**：
+/// 规则（身份序第一条非主总线轨；⭐ `#192` 起这条规则降级为**兜底**，主语由
+/// [`crate::bridge::display_track`] 解析成"选中轨 or 兜底"）。⭐ 展示轨上**没有**覆盖该 tick 的片段 ⇒ **拒绝**：
 /// ⛔ 不回退到别的轨（那正是 `#166` 的缺陷：多轨时写到 B 轨）、⛔ 不新建片段。
 /// 任务单 `#164` 的账本把"现在选**第一条有片段覆盖的 tick**、⛔ 不是设备架展示轨"登记为待修项
-/// ⇒ 本单把**两套规则并成一套**（设备架 / 发送条 / 面板 / 铅笔共用 `device_rack_track`）。
+/// ⇒ 本单把**两套规则并成一套**（设备架 / 发送条 / 面板 / 铅笔共用 `display_track`）。
 ///
 /// 撤销与提交图由 `commit_ops` 提供, 无需另写反向逻辑。
 /// `grid` 取 1/16（240 tick）作为当前吸附口径 —— 吸附设置将来若可配, 它应来自配置而不是这里。
@@ -6899,14 +7043,36 @@ pub fn pencil_op_for(
 
 /// 同 [`pencil_op_for`]，但把**拒绝的原因**结构化返回 —— 界面据此写可见反馈（`#166`）。
 ///
-/// 它是铅笔寻址的**唯一**实现：`pencil_op_for` 只是它的 `.ok()` 包装，因此
-/// "拒绝对不对"与"原因说不说得出来"不可能各有一套规则。
+/// 它是铅笔寻址的"无选中态"入口：转发到 [`pencil_attempt_for_selected`] 并传
+/// `selected = None`（⇒ 兜底轨 = 旧行为），因此既有判据的语义一位不变。
 ///
 /// # Errors
 ///
 /// 见 [`PencilRefusal`]：工具门 / 投影失败 / 吸附不出计划 / 没有展示轨 / ⭐ 展示轨无覆盖。
 pub fn pencil_attempt_for(
     project: &yeban_model::YebanProjectV1,
+    scroll_x: f32,
+    x: f32,
+    y: f32,
+    grid_ticks: u64,
+    active_tool: i32,
+) -> Result<yeban_model::ops::Op, PencilRefusal> {
+    pencil_attempt_for_selected(project, None, scroll_x, x, y, grid_ticks, active_tool)
+}
+
+/// ⭐ 任务单 `#192`：铅笔寻址的**唯一**实现 —— 轨由 [`crate::bridge::display_track`]
+/// （选中轨 or 兜底）决定，与设备架 / 发送条 / 轨路由**同一次解析**。
+///
+/// `selected` 是窗口属性 `selected-track-id` 的原文；`None` / 空串 / 已不存在的身份 /
+/// 主总线都回落到兜底（身份序第一条非主总线轨），⛔ 不回退到"第一条有片段覆盖"的轨
+/// —— 那正是 `#166` 的缺陷（面板说 A、铅笔写 B）。
+///
+/// # Errors
+///
+/// 见 [`PencilRefusal`]。
+pub fn pencil_attempt_for_selected(
+    project: &yeban_model::YebanProjectV1,
+    selected: Option<&str>,
     scroll_x: f32,
     x: f32,
     y: f32,
@@ -6923,9 +7089,11 @@ pub fn pencil_attempt_for(
     let plan = view
         .pencil_plan(scroll_x, x, y, grid_ticks)
         .ok_or(PencilRefusal::NoPlan)?;
-    // ⭐ 任务单 `#166` 的**唯一**改动点：轨由 `device_rack_track` 决定（设备架 / 发送条 /
-    // 面板正在显示的那一条），⛔ 不再遍历 `project.tracks` 找"第一条有片段覆盖"的轨。
-    let track = crate::bridge::device_rack_track(project).ok_or(PencilRefusal::NoDisplayedTrack)?;
+    // ⭐ 任务单 `#166` 的**唯一**改动点：轨由展示轨决定（设备架 / 发送条 / 面板正在显示的
+    // 那一条），⛔ 不再遍历 `project.tracks` 找"第一条有片段覆盖"的轨。
+    // ⭐ 任务单 `#192`：展示轨 = **选中轨 or 兜底**（`display_track`，与投影同一份实现）。
+    let track =
+        crate::bridge::display_track(project, selected).ok_or(PencilRefusal::NoDisplayedTrack)?;
     let triples: Vec<(u64, u64, yeban_model::EntityId)> = track
         .clips
         .values()
@@ -7496,11 +7664,13 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     let (Some(project), Some(port)) = (project.as_ref(), port.as_ref()) else {
                         return;
                     };
-                    // ⭐ `#166`：寻址只认**展示轨**（`bridge::device_rack_track`）。展示轨没有
+                    // ⭐ `#166`：寻址只认**展示轨**（`bridge::display_track`）。展示轨没有
                     // 覆盖该 tick 的片段 ⇒ **不写**（⛔ 不回退到别的轨）＋ 把逐字原因写进可见的
-                    // `roll-edit-status`（⛔ 不静默丢弃）。
-                    match pencil_attempt_for(
+                    // `roll-edit-status`（⛔ 不静默丢弃）。⭐ `#192`：展示轨 = 选中轨 or 兜底。
+                    let selected = selected_track_id(&ui);
+                    match pencil_attempt_for_selected(
                         project,
+                        selected.as_deref(),
                         scroll,
                         x,
                         y,

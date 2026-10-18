@@ -732,6 +732,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 端口在这里的作用与 `wire_roll_edit` 逐字相同：给出此刻权威的工程。
     // `Escape`（`Action::Cancel`）也经同一个 `wire_keys` 端口取消这一拖（见 `apply_action`）。
     host::wire_track_height_drag(&ui, &undo_port);
+    // ⭐ 任务单 `#192`：轨道头点击 ⇒ **选中这条轨**（编辑器视图态）。
+    //
+    // 与行高同一条纪律：选中态不进 `.yeban`、不进 `projectDigest`、不进撤销栈 ⇒
+    // 落点是 `ui.set_selected-track-id`（唯一写点）+ 用同一个端口重投影，
+    // ⛔ 不调用 `UndoPort::commit_ops`。端口在这里只用来取"此刻权威的工程"。
+    host::wire_track_select(&ui, &undo_port);
     // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏。
     //
     // 工程内容是**领域内容** ⇒ 走 `Op` + `UndoPort`（`ADR-0005`）：拖动期间只写视图态，

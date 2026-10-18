@@ -1451,12 +1451,18 @@ pub fn send_gain_range() -> (f32, f32) {
     )
 }
 
-/// 发送条展示的那条轨 —— 与设备机架**同一条**规则（[`device_rack_track`]：
+/// 发送条展示的**兜底**轨 —— 与设备机架**同一条**规则（[`device_rack_track`]：
 /// 身份序第一条非主总线轨）。
 ///
 /// ⚠ 界面没有"选中轨"状态（台账第 236 轮："the current track does not exist"）
 /// ⇒ 发送区与上方设备链永远指同一条轨；换工程之后两者一起随 `BTreeMap` 键序变化，
 /// 不需要宿主再同步一份下标。
+///
+/// ## 追加修订段（任务单 `#192`，2026-10-18）
+///
+/// 上段的"没有选中轨"是历史状态；`#192` 起生产路径的主语由调用方解析
+/// （[`display_track`]），本函数只作**兜底 / 无选中态**的入口（投影的 `selected = None`
+/// 与既有判据都走它）。发送条与设备架仍由**同一次**解析给出同一条轨 —— 这一点未变。
 #[must_use]
 pub fn send_strip_track(project: &YebanProjectV1) -> Option<&TrackV3> {
     device_rack_track(project)
@@ -1500,7 +1506,7 @@ fn send_strip_projection(
             gain_display: send_gain_display(edge.gain_db),
         })
         .collect();
-    let (available, reason) = send_create_availability(project);
+    let (available, reason) = send_create_availability_on(project, Some(track));
     (sends, available, reason)
 }
 
@@ -1516,9 +1522,24 @@ fn send_strip_projection(
 ///    一条新边"）。
 ///
 /// ⛔ 不按名字猜目的地（类型是唯一判据），⛔ 不看界面上的行数（边是唯一事实源）。
+///
+/// ⭐ 任务单 `#192`：主语由调用方给（[`send_create_availability_on`]）；本入口传
+/// [`send_strip_track`]（= 无选中态的兜底），供既有判据与 `selected = None` 的路径使用。
 #[must_use]
 pub fn send_create_availability(project: &YebanProjectV1) -> (bool, String) {
-    let Some(track) = send_strip_track(project) else {
+    send_create_availability_on(project, send_strip_track(project))
+}
+
+/// ⭐ 任务单 `#192`：同 [`send_create_availability`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// `track` 由 [`display_track`] 解析（宿主）或由投影的同一次解析给出（`ViewState`）⇒
+/// "新建发送"的可用性、发送条的行、宿主提交时用的源轨三者**不可能**各说一条轨。
+#[must_use]
+pub fn send_create_availability_on(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+) -> (bool, String) {
+    let Some(track) = track else {
         return (false, SEND_CREATE_NO_TRACK_REASON.to_owned());
     };
     let Some(aux) = send_aux_target(project) else {
@@ -1537,14 +1558,30 @@ pub fn send_create_availability(project: &YebanProjectV1) -> (bool, String) {
 
 /// 发送增益手势的**权威寻址**（宿主提交路径用它，⛔ 不信界面上的行下标）。
 ///
-/// 返回 `(当前增益, 值域下界, 值域上界)`。只认**展示轨**上的一条 `SendToAux` 边：
+/// 返回 `(当前增益, 值域下界, 值域上界)`。只认**兜底展示轨**上的一条 `SendToAux` 边：
 /// 边不存在 / 类型不对 / 源不是展示轨 ⇒ `None`（调用方据此放弃提交）。
+///
+/// ⭐ 任务单 `#192`：生产路径走 [`send_gain_target_on`]（主语 = 选中轨 or 兜底）；
+/// 本入口是 `selected = None` 的旧路径（既有判据用它）。
 #[must_use]
 pub fn send_gain_target(
     project: &YebanProjectV1,
     edge_id: yeban_model::ids::EntityId,
 ) -> Option<(Option<f32>, f32, f32)> {
-    let track = send_strip_track(project)?;
+    send_gain_target_on(project, send_strip_track(project), edge_id)
+}
+
+/// ⭐ 任务单 `#192`：同 [`send_gain_target`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// 边的源必须是**这条**轨 —— 于是"选中 B 之后拖 B 的发送滑块"不会因为兜底规则
+/// 变成改 A 的发送（反过来也一样：A 的边在选中 B 时不接受手势）。
+#[must_use]
+pub fn send_gain_target_on(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+    edge_id: yeban_model::ids::EntityId,
+) -> Option<(Option<f32>, f32, f32)> {
+    let track = track?;
     let edge = project.routing_graph.edges.get(&edge_id)?;
     if edge.kind != RoutingKind::SendToAux || edge.source_node != track.id {
         return None;
@@ -1731,28 +1768,49 @@ pub fn track_create_ops(
     Ok(ops)
 }
 
-/// 删轨的目标 —— 与设备机架 / 发送条**同一条**展示轨（[`device_rack_track`]）。
+/// 删轨的**兜底**目标 —— 与设备机架 / 发送条**同一条**兜底轨（[`device_rack_track`]）。
+///
+/// ⭐ 任务单 `#192`：生产路径的目标是"选中轨 or 兜底"（[`display_track`]），
+/// 由调用方解析后交给 [`track_delete_ops_on`]；本入口是 `selected = None` 的旧路径。
 #[must_use]
 pub fn track_delete_target(project: &YebanProjectV1) -> Option<&TrackV3> {
     device_rack_track(project)
 }
 
-/// 删轨的可用性 ＋ 不可用时的**逐字**原因。
+/// 删轨的可用性 ＋ 不可用时的**逐字**原因（兜底目标；见 [`track_delete_availability_on`]）。
 ///
 /// 唯一的目标是展示轨（身份序第一条非主总线轨）⇒ 主总线**永远**不是目标；
 /// 当工程里只剩主总线时给出 [`TRACK_DELETE_MASTER_REASON`]，空工程给出
 /// [`TRACK_DELETE_NO_TRACK_REASON`]。
 #[must_use]
 pub fn track_delete_availability(project: &YebanProjectV1) -> (bool, String) {
-    let reason = track_delete_reason(project);
+    track_delete_availability_on(project, track_delete_target(project))
+}
+
+/// ⭐ 任务单 `#192`：删轨的可用性，**主语显式**（选中轨 or 兜底）。
+#[must_use]
+pub fn track_delete_availability_on(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+) -> (bool, String) {
+    let reason = track_delete_reason_on(project, track);
     (reason.is_empty(), reason.to_owned())
 }
 
-/// 删轨不可用时的**逐字**原因（可用时是空串）—— [`track_delete_availability`] 的
-/// `&'static str` 形态，让 [`track_delete_ops`] 不必为一句静态文案分配。
+/// 删轨不可用时的**逐字**原因（兜底目标；见 [`track_delete_reason_on`]）——
+/// [`track_delete_availability`] 的 `&'static str` 形态，让 [`track_delete_ops`]
+/// 不必为一句静态文案分配。
 #[must_use]
 pub fn track_delete_reason(project: &YebanProjectV1) -> &'static str {
-    if track_delete_target(project).is_some() {
+    track_delete_reason_on(project, track_delete_target(project))
+}
+
+/// ⭐ 任务单 `#192`：删轨不可用时的**逐字**原因，**主语显式**。
+///
+/// `track = None` 时才需要区分"空工程"与"只剩主总线"；有目标轨 ⇒ 空串。
+#[must_use]
+pub fn track_delete_reason_on(project: &YebanProjectV1, track: Option<&TrackV3>) -> &'static str {
+    if track.is_some() {
         return "";
     }
     if project.tracks.is_empty() {
@@ -1772,13 +1830,32 @@ pub fn track_delete_reason(project: &YebanProjectV1) -> &'static str {
 /// ⛔ 主总线不可删：模型自己的 `Op::RemoveTrack` 前置条件就拒绝（`OpStateMismatch`），
 /// 这里在**更早**的地方用 [`TRACK_DELETE_MASTER_REASON`] 给出人话原因。
 ///
+/// ⭐ 任务单 `#192`：生产路径走 [`track_delete_ops_on`]（主语 = 选中轨 or 兜底）；
+/// 本入口是 `selected = None` 的旧路径（既有判据用它）。
+///
 /// # Errors
 ///
 /// - 没有展示轨 ⇒ [`TRACK_DELETE_MASTER_REASON`]（只剩主总线）或
 ///   [`TRACK_DELETE_NO_TRACK_REASON`]（空工程）。
 pub fn track_delete_ops(project: &YebanProjectV1) -> Result<Vec<Op>, &'static str> {
-    let Some(track) = track_delete_target(project) else {
-        return Err(track_delete_reason(project));
+    track_delete_ops_on(project, track_delete_target(project))
+}
+
+/// ⭐ 任务单 `#192`：同 [`track_delete_ops`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// `track` 由 [`display_track`] 解析 ⇒ 界面删的是**选中**那条轨，⛔ 不是永远第一条。
+/// 主总线仍不可删（[`TRACK_DELETE_MASTER_REASON`]）—— 调用方传进来的轨若恰好是主总线，
+/// 这里也拒绝（防御，不依赖"解析已经排除了它"这一个前提）。
+///
+/// # Errors
+///
+/// 同 [`track_delete_ops`]。
+pub fn track_delete_ops_on(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+) -> Result<Vec<Op>, &'static str> {
+    let Some(track) = track else {
+        return Err(track_delete_reason_on(project, None));
     };
     // 防御：展示轨按定义不是主总线；万一将来规则变了，这里也不会把主总线删掉。
     if track.id == project.master_bus_track_id {
@@ -1913,9 +1990,21 @@ pub const CLIP_CREATE_BARS: u64 = 4;
 /// "装设备"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
 ///
 /// 唯一前置条件与投影**同一份**口径：存在展示轨（[`device_rack_track`]）。
+///
+/// ⭐ 任务单 `#192`：投影与宿主都用 [`device_insert_availability_on`]（主语 = 选中轨 or
+/// 兜底）；本入口是 `selected = None` 的旧路径（既有判据用它）。
 #[must_use]
 pub fn device_insert_availability(project: &YebanProjectV1) -> (bool, String) {
-    let reason = if device_rack_track(project).is_some() {
+    device_insert_availability_on(device_rack_track(project))
+}
+
+/// ⭐ 任务单 `#192`：**主语显式**的"装设备"可用性（选中轨 or 兜底）。
+///
+/// 判据只有一个：**这条**轨存在。⛔ 不再各查一遍 `project`，因此"面板显示哪条轨"
+/// 与"装设备装到哪条轨"由同一个 `track` 决定。
+#[must_use]
+pub fn device_insert_availability_on(track: Option<&TrackV3>) -> (bool, String) {
+    let reason = if track.is_some() {
         ""
     } else {
         DEVICE_INSERT_NO_TRACK_REASON
@@ -1926,9 +2015,18 @@ pub fn device_insert_availability(project: &YebanProjectV1) -> (bool, String) {
 /// "建片段"的可用性 ＋ 不可用时的**逐字**原因（可用时是空串）。
 ///
 /// 片段摆在展示轨上 ⇒ 唯一前置条件与 [`device_insert_availability`] 相同。
+///
+/// ⭐ 任务单 `#192`：投影与宿主都用 [`clip_create_availability_on`]（主语 = 选中轨 or
+/// 兜底）；本入口是 `selected = None` 的旧路径（既有判据用它）。
 #[must_use]
 pub fn clip_create_availability(project: &YebanProjectV1) -> (bool, String) {
-    let reason = if device_rack_track(project).is_some() {
+    clip_create_availability_on(device_rack_track(project))
+}
+
+/// ⭐ 任务单 `#192`：**主语显式**的"建片段"可用性（选中轨 or 兜底）。
+#[must_use]
+pub fn clip_create_availability_on(track: Option<&TrackV3>) -> (bool, String) {
+    let reason = if track.is_some() {
         ""
     } else {
         CLIP_CREATE_NO_TRACK_REASON
@@ -2014,6 +2112,9 @@ pub fn builtin_effect_device(effect: BuiltinEffect) -> Option<DeviceDefinition> 
 /// [`master_device_insert_ops`] —— 两条腿共用同一个 [`insert_device_op_on`]，因此
 /// 参数 / 追加位置的规则不会在两处漂移，而**目标轨**由调用方**显式**选择。
 ///
+/// ⭐ 任务单 `#192`：生产路径走 [`device_insert_ops_on`]（主语 = 选中轨 or 兜底）；
+/// 本入口是 `selected = None` 的旧路径（既有判据用它）。
+///
 /// # Errors
 ///
 /// - 没有展示轨 ⇒ [`DEVICE_INSERT_NO_TRACK_REASON`]；
@@ -2022,7 +2123,20 @@ pub fn device_insert_ops(
     project: &YebanProjectV1,
     effect: BuiltinEffect,
 ) -> Result<Vec<Op>, &'static str> {
-    let track = device_rack_track(project).ok_or(DEVICE_INSERT_NO_TRACK_REASON)?;
+    device_insert_ops_on(device_rack_track(project), effect)
+}
+
+/// ⭐ 任务单 `#192`：同 [`device_insert_ops`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// # Errors
+///
+/// - `track = None` ⇒ [`DEVICE_INSERT_NO_TRACK_REASON`]；
+/// - 契约里没有该分组 ⇒ [`DEVICE_INSERT_NO_CONTRACT_REASON`]。
+pub fn device_insert_ops_on(
+    track: Option<&TrackV3>,
+    effect: BuiltinEffect,
+) -> Result<Vec<Op>, &'static str> {
+    let track = track.ok_or(DEVICE_INSERT_NO_TRACK_REASON)?;
     Ok(vec![insert_device_op_on(track, effect)?])
 }
 
@@ -2064,6 +2178,9 @@ fn insert_device_op_on(track: &TrackV3, effect: BuiltinEffect) -> Result<Op, &'s
 ///
 /// ⭐ 任务单 `#180`：本函数**只**认展示轨；主总线走 [`master_device_remove_ops`]。
 ///
+/// ⭐ 任务单 `#192`：生产路径走 [`device_remove_ops_on`]（主语 = 选中轨 or 兜底）；
+/// 本入口是 `selected = None` 的旧路径（既有判据用它）。
+///
 /// # Errors
 ///
 /// - 没有展示轨 ⇒ [`DEVICE_REMOVE_NO_TRACK_REASON`]；
@@ -2072,7 +2189,19 @@ pub fn device_remove_ops(
     project: &YebanProjectV1,
     device_id: EntityId,
 ) -> Result<Vec<Op>, &'static str> {
-    let track = device_rack_track(project).ok_or(DEVICE_REMOVE_NO_TRACK_REASON)?;
+    device_remove_ops_on(device_rack_track(project), device_id)
+}
+
+/// ⭐ 任务单 `#192`：同 [`device_remove_ops`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// # Errors
+///
+/// 同 [`device_remove_ops`]。
+pub fn device_remove_ops_on(
+    track: Option<&TrackV3>,
+    device_id: EntityId,
+) -> Result<Vec<Op>, &'static str> {
+    let track = track.ok_or(DEVICE_REMOVE_NO_TRACK_REASON)?;
     Ok(vec![remove_device_op_on(
         track,
         device_id,
@@ -2137,11 +2266,26 @@ fn remove_device_op_on(
 ///
 /// - 没有展示轨 ⇒ [`DEVICE_BYPASS_NO_TRACK_REASON`]；
 /// - 身份不在设备链里 ⇒ [`DEVICE_BYPASS_NO_DEVICE_REASON`]（Δ0，⛔ 不作用到另一台）。
+///
+/// ⭐ 任务单 `#192`：生产路径走 [`device_bypass_ops_on`]（主语 = 选中轨 or 兜底）；
+/// 本入口是 `selected = None` 的旧路径（既有判据用它）。
 pub fn device_bypass_ops(
     project: &YebanProjectV1,
     device_id: EntityId,
 ) -> Result<Vec<Op>, &'static str> {
-    let track = device_rack_track(project).ok_or(DEVICE_BYPASS_NO_TRACK_REASON)?;
+    device_bypass_ops_on(device_rack_track(project), device_id)
+}
+
+/// ⭐ 任务单 `#192`：同 [`device_bypass_ops`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// # Errors
+///
+/// 同 [`device_bypass_ops`]。
+pub fn device_bypass_ops_on(
+    track: Option<&TrackV3>,
+    device_id: EntityId,
+) -> Result<Vec<Op>, &'static str> {
+    let track = track.ok_or(DEVICE_BYPASS_NO_TRACK_REASON)?;
     Ok(vec![bypass_op_on(
         track,
         device_id,
@@ -2223,8 +2367,25 @@ pub fn new_clip_name(project: &YebanProjectV1) -> String {
 ///
 /// - 没有展示轨 ⇒ [`CLIP_CREATE_NO_TRACK_REASON`]；
 /// - 拍号分母为 0 / 小节长度溢出 ⇒ [`CLIP_CREATE_BAD_TIME_SIGNATURE_REASON`]。
+///
+/// ⭐ 任务单 `#192`：生产路径走 [`clip_create_ops_on`]（主语 = 选中轨 or 兜底）；
+/// 本入口是 `selected = None` 的旧路径（既有判据用它）。
 pub fn clip_create_ops(project: &YebanProjectV1) -> Result<Vec<Op>, &'static str> {
-    let track = device_rack_track(project).ok_or(CLIP_CREATE_NO_TRACK_REASON)?;
+    clip_create_ops_on(project, device_rack_track(project))
+}
+
+/// ⭐ 任务单 `#192`：同 [`clip_create_ops`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// 片段摆在**这条**轨的 tick 0 ⇒ 选中 B 之后"建片段"落在 B 上，⛔ 不是永远第一条。
+///
+/// # Errors
+///
+/// 同 [`clip_create_ops`]。
+pub fn clip_create_ops_on(
+    project: &YebanProjectV1,
+    track: Option<&TrackV3>,
+) -> Result<Vec<Op>, &'static str> {
+    let track = track.ok_or(CLIP_CREATE_NO_TRACK_REASON)?;
     let bar_ticks = bar_length_ticks(project.time_signature)
         .map_err(|_| CLIP_CREATE_BAD_TIME_SIGNATURE_REASON)?;
     let duration_ticks = bar_ticks
@@ -2401,9 +2562,20 @@ pub fn instrument_names() -> Vec<String> {
 ///    否则 [`INSTRUMENT_INSTALL_NO_BUILTIN_REASON`]（今天就是这一档）。
 ///
 /// ⚠ 第 2 条是本单新增：清单空时 **0 个按钮** ⇒ 界面必须看得见原因（⛔ 不静默禁用）。
+///
+/// ⭐ 任务单 `#192`：生产路径走 [`instrument_install_availability_on`]（主语 = 选中轨 or
+/// 兜底）；本入口是 `selected = None` 的旧路径（既有判据用它）。
 #[must_use]
 pub fn instrument_install_availability(project: &YebanProjectV1) -> (bool, String) {
-    let reason = if device_rack_track(project).is_none() {
+    instrument_install_availability_on(device_rack_track(project))
+}
+
+/// ⭐ 任务单 `#192`：**主语显式**的"装乐器"可用性（选中轨 or 兜底）。
+///
+/// 第 1 条判"**这条**轨存在"；第 2 条与轨无关（内置清单是全局的）。
+#[must_use]
+pub fn instrument_install_availability_on(track: Option<&TrackV3>) -> (bool, String) {
+    let reason = if track.is_none() {
         INSTRUMENT_INSTALL_NO_TRACK_REASON
     } else if installable_builtin_instruments().is_empty() {
         INSTRUMENT_INSTALL_NO_BUILTIN_REASON
@@ -2444,11 +2616,26 @@ pub fn instrument_label(track: Option<&TrackV3>) -> String {
 /// 1. 没有展示轨 ⇒ [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]（先判，保持 `#164` 的口径）；
 /// 2. 样本字节不存在 ⇒ [`INSTRUMENT_INSTALL_NO_SAMPLES_REASON`]；
 /// 3. SFZ 文本读不到 / 非法 ⇒ [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]。
+///
+/// ⭐ 任务单 `#192`：生产路径走 [`instrument_install_ops_on`]（主语 = 选中轨 or 兜底）；
+/// 本入口是 `selected = None` 的旧路径（既有判据用它）。
 pub fn instrument_install_ops(
     project: &YebanProjectV1,
     path: &str,
 ) -> Result<Vec<Op>, &'static str> {
-    let track = device_rack_track(project).ok_or(INSTRUMENT_INSTALL_NO_TRACK_REASON)?;
+    instrument_install_ops_on(device_rack_track(project), path)
+}
+
+/// ⭐ 任务单 `#192`：同 [`instrument_install_ops`]，但**主语显式**（选中轨 or 兜底）。
+///
+/// # Errors
+///
+/// 同 [`instrument_install_ops`]。
+pub fn instrument_install_ops_on(
+    track: Option<&TrackV3>,
+    path: &str,
+) -> Result<Vec<Op>, &'static str> {
+    let track = track.ok_or(INSTRUMENT_INSTALL_NO_TRACK_REASON)?;
     // ⭐ `#165`：⛔ 不许把一条有声的轨装成静音 —— 拒绝发生在**构造 `Op` 之前**。
     sfz_samples_present(path)?;
     let new_sampler = Some(SamplerBinding {
@@ -2587,6 +2774,17 @@ pub struct ViewState {
     /// [`Self::asset_pool_details`] 三个平行数组取数（同索引集）；空池投影成空 `Vec`
     /// ⇒ 界面显示空态，而不是一片空白。
     pub asset_pool: Vec<AssetPoolRowView>,
+    /// ⭐ 任务单 `#192`：面板**实际服务**的那条轨的 26 字符身份（[`display_track`] 的解析
+    /// 结果：选中轨 or 兜底）；工程里没有非主总线轨 ⇒ `None`。
+    ///
+    /// ⚠ 这一格是**解析后**的读数，⛔ 不是用户点击的原文：原文住在窗口属性
+    /// `selected-track-id`（编辑器视图态）。当选中轨被删 / 被撤销掉 / 换工程 ⇒ 这里
+    /// 回落到身份序第一条非主总线轨（= [`device_rack_track`] 的旧行为），而原文可以暂时
+    /// 是一个已不存在的身份 —— 于是"撤销掉的那条轨再重做回来"时选中态自然恢复。
+    ///
+    /// ⛔ **不是工程内容**：不进 `.yeban`、不进 `projectDigest`、不进撤销栈。判据：
+    /// 选中一条轨的前后 `commit_count` / `undoable` / `projectDigest` 全部 Δ0。
+    pub selected_track: Option<String>,
     /// 设备机架展示的是**哪条轨**（`"轨 鼓 · 设备链"`；没有非主总线轨时是
     /// `"没有可显示的音轨"`）。
     ///
@@ -2594,6 +2792,13 @@ pub struct ViewState {
     /// 命中 0；台账第 236 轮已裁决"the current track does not exist"）⇒ 本投影把
     /// [`device_rack_track`] 的**唯一规则**（身份序第一条非主总线轨）写成可见的标题，
     /// ⛔ 不假装那是用户选中的轨道。
+    ///
+    /// ## 追加修订段（任务单 `#192`，2026-10-18）—— 只修订"没有选中轨"这一句
+    ///
+    /// 上段是 `#157` 的**历史状态**，原文保留。`#192` 起标题里那条轨是
+    /// [`display_track`] 的解析结果（选中轨 or 兜底，见 [`Self::selected_track`]）；
+    /// 文案格式 `"轨 {名字} · 设备链"` 一位未改（默认帧像素不变），只是"哪条轨"
+    /// 现在可能来自用户点的那一下。
     pub device_track_label: String,
     /// 当前展示轨的设备链（`TrackV3::devices` 的逐条投影）—— 设备机架的**唯一**事实源。
     ///
@@ -2715,8 +2920,8 @@ pub struct ViewState {
     /// 工程轨数（**含主总线**）的显示文本：`"共 {n} 条轨"`。
     ///
     /// ⭐ 任务单 `#160`：它是"建轨 / 删轨真的发生了"在**同一面板**里的可见读数
-    /// —— 新轨按 `EntityId` 排序通常落在末尾，展示轨（身份序第一条非主总线轨）可能
-    /// 不变，所以只靠 `device_track_label` 看不出轨数变了。
+    /// —— 新轨按 `EntityId` 排序通常落在末尾，展示轨（⭐ `#192` 起 = 选中轨 or 兜底）
+    /// 可能不变，所以只靠 `device_track_label` 看不出轨数变了。
     pub track_count_label: String,
     /// 建轨此刻能不能用（工程里得有一条 `TrackKind::Master` 轨）。
     ///
@@ -2726,8 +2931,10 @@ pub struct ViewState {
     pub master_bus_label: String,
     /// "删除展示轨"此刻能不能用（展示轨存在）。
     ///
-    /// ⭐ 任务单 `#160`：目标**只**是展示轨（身份序第一条非主总线轨）⇒ 主总线不可删；
+    /// ⭐ 任务单 `#160`：目标**只**是展示轨 ⇒ 主总线不可删；
     /// `false` ⇒ 界面禁用按钮并逐字显示 [`Self::track_delete_reason`]。
+    /// ⭐ 任务单 `#192`：这里的"展示轨"是 [`display_track`] 的解析结果（选中轨 or 兜底）
+    /// —— 删的是**选中**那条，⛔ 不是永远第一条。
     pub track_delete_available: bool,
     /// "删除展示轨"不可用时**逐字**写出的原因（可用时是空串）。
     ///
@@ -2853,19 +3060,43 @@ impl ViewState {
         ticks_per_pixel: u64,
         layout: &TrackHeightLayout,
     ) -> Result<Self, BridgeError> {
-        Self::from_project_with_zoom_cursor_and_layout(
+        Self::from_project_with_zoom_layout_and_selection(project, ticks_per_pixel, layout, None)
+    }
+
+    /// ⭐ 任务单 `#192`：投影 ＋ **选中轨**（宽度缩放 ＋ 行高布局 ＋ 光标 tick 取默认）。
+    ///
+    /// `selected` 是窗口属性 `selected-track-id` 的原文（⛔ 不是工程内容）；解析规则住在
+    /// [`display_track`]：选中轨仍在工程里且不是主总线 ⇒ 选中那条，否则回落到
+    /// 身份序第一条非主总线轨（= 旧行为）。生产调用点是 `host::project_with_view_state`。
+    ///
+    /// ⛔ 本参数**不写**任何状态、不进 [`ViewState`] 的摘要：它只决定哪条轨的读数进投影。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。
+    pub fn from_project_with_zoom_layout_and_selection(
+        project: &YebanProjectV1,
+        ticks_per_pixel: u64,
+        layout: &TrackHeightLayout,
+        selected: Option<&str>,
+    ) -> Result<Self, BridgeError> {
+        Self::from_project_with_zoom_cursor_layout_and_selection(
             project,
             ticks_per_pixel,
             crate::automation::AUTOMATION_CURSOR_TICK,
             layout,
+            selected,
         )
     }
 
-    /// 投影的本体：缩放 + 光标 tick + 轨道高度布局**全部**显式给全。
+    /// 投影的本体：缩放 + 光标 tick + 轨道高度布局**全部**显式给全（选中轨取 `None`）。
     ///
     /// 另外三个入口（[`Self::from_project`] / [`Self::from_project_with_zoom`] /
     /// [`Self::from_project_with_zoom_and_cursor`]）都转发到这里并传**默认布局**，
     /// 因此"默认路径"与"自定义布局路径"走的是同一段代码 —— 不存在第二条投影实现。
+    ///
+    /// ⭐ 任务单 `#192`：本入口是"无选中态"（`selected = None` ⇒ 兜底）的旧路径；
+    /// 生产路径走 [`Self::from_project_with_zoom_cursor_layout_and_selection`]。
     ///
     /// # Errors
     ///
@@ -2876,11 +3107,40 @@ impl ViewState {
         cursor_tick: u64,
         layout: &TrackHeightLayout,
     ) -> Result<Self, BridgeError> {
+        Self::from_project_with_zoom_cursor_layout_and_selection(
+            project,
+            ticks_per_pixel,
+            cursor_tick,
+            layout,
+            None,
+        )
+    }
+
+    /// ⭐ 任务单 `#192`：投影的**唯一**本体 —— 缩放 + 光标 tick + 行高布局 + 选中轨全给全。
+    ///
+    /// 全部六个公开入口最终都落到这里 ⇒ "有选中态 / 无选中态"共享同一条轨道解析
+    /// （[`display_track`]），⛔ 不存在第二套"当前轨"。
+    ///
+    /// # Errors
+    ///
+    /// 见 [`BridgeError`]。
+    pub fn from_project_with_zoom_cursor_layout_and_selection(
+        project: &YebanProjectV1,
+        ticks_per_pixel: u64,
+        cursor_tick: u64,
+        layout: &TrackHeightLayout,
+        selected: Option<&str>,
+    ) -> Result<Self, BridgeError> {
         if ticks_per_pixel == 0 {
             return Err(BridgeError::ZeroTicksPerPixel);
         }
 
         let bar_ticks = bar_length_ticks(project.time_signature)?;
+
+        // ⭐ 任务单 `#192`：**投影里解析一次**"选中轨 or 兜底"。设备架第一段 / 发送条 /
+        // 轨路由四键 / 乐器 / 建片段 / 各可用性全部读这**一个** `display` ⇒
+        // 面板之间不可能各说一条轨。
+        let display = display_track(project, selected);
 
         // 行几何：**投影算一次**（前缀和），包头 / 车道 / 剪辑 / 自动化带全部读它。
         // `ADR-0004` S0 把这三处收敛到一条 `track_rows`；S1 让行高来自布局参数
@@ -2930,11 +3190,10 @@ impl ViewState {
         // 面板的"类型"一列要把两种内容都如实标出来（音频 / MIDI）。
         let asset_pool = asset_pool_rows(project);
 
-        // 设备机架（任务单 `#157`）：展示轨由 [`device_rack_track`] **唯一**决定
-        // （身份序第一条非主总线轨 —— 与 `tracks[0]` 是同一条轨，判据逐项对账）。
-        // 设备逐条来自 `TrackV3::devices`，"已识别/未识别"走 `effect_params::recognise`。
-        let (device_track_label, devices, eq_low_gain) =
-            device_rack_projection(device_rack_track(project));
+        // 设备机架（任务单 `#157`）：展示轨由 [`display_track`] **唯一**决定
+        // （⭐ `#192`：选中轨 or 走 [`device_rack_track`] 兜底）。设备逐条来自
+        // `TrackV3::devices`，"已识别/未识别"走 `effect_params::recognise`。
+        let (device_track_label, devices, eq_low_gain) = device_rack_projection(display);
         // ⭐ 任务单 `#173`：主总线的设备链 —— 第二段。`#181` 起这一段也**可编辑**
         // （旁通 / EQ 滑块），但两段仍各用**各自**那条轨寻址（见 `master_devices` 文档）。
         // 行与 EQ 那一格来自**同一份** `master_device_projection`（⛔ 不各查一遍）。
@@ -2950,27 +3209,30 @@ impl ViewState {
         let (_, master_device_eq_reason) = master_device_eq_availability(project);
 
         // ⭐ 任务单 `#163`：设备增删 ＋ 建空片段的可用性（与投影**同一份**口径）。
-        let (device_insert_available, device_insert_reason) = device_insert_availability(project);
-        let (clip_create_available, clip_create_reason) = clip_create_availability(project);
+        // ⭐ `#192`：主语是上面那**一次**解析出来的 `display`（选中轨 or 兜底）。
+        let (device_insert_available, device_insert_reason) =
+            device_insert_availability_on(display);
+        let (clip_create_available, clip_create_reason) = clip_create_availability_on(display);
 
         // ⭐ 任务单 `#164`：一键装乐器的投影（与设备机架**同一条**展示轨）。
         // 可用性 / 逐字原因与手势共用同一份口径；`instrument_names` 是按钮行的唯一清单。
         let (instrument_install_available, instrument_install_reason) =
-            instrument_install_availability(project);
-        let instrument_label = instrument_label(device_rack_track(project));
+            instrument_install_availability_on(display);
+        let instrument_label = instrument_label(display);
         let instrument_names = instrument_names();
 
-        // 发送条（任务单 `#159`）：与设备机架**同一条**展示轨（[`send_strip_track`]）。
-        // 条目逐条来自 `RoutingGraph::edges` 的 `SendToAux` 出边；目的地名字来自 `tracks`；
-        // "新建发送"能不能用由 [`send_create_availability`] **唯一**决定（任务单 `#160`
-        // 起还要求"源 → 目的地"没有重复的 `SendToAux` 边）。
+        // 发送条（任务单 `#159`）：与设备机架**同一条**展示轨（`display`，
+        // ⭐ `#192` 起是"选中轨 or 兜底"）。条目逐条来自 `RoutingGraph::edges` 的
+        // `SendToAux` 出边；目的地名字来自 `tracks`；"新建发送"能不能用由
+        // [`send_create_availability_on`] **唯一**决定（任务单 `#160` 起还要求
+        // "源 → 目的地"没有重复的 `SendToAux` 边）。
         let (sends, send_create_available, send_create_reason) =
-            send_strip_projection(project, send_strip_track(project));
+            send_strip_projection(project, display);
 
         // 轨 / 路由（任务单 `#160`）：轨数读数 ＋ 建轨 / "删除展示轨"的可用性。
-        // 删轨的目标只认展示轨（[`track_delete_target`] = 身份序第一条非主总线轨）
-        // ⇒ 主总线永远不可删。
-        let (track_delete_available, track_delete_reason) = track_delete_availability(project);
+        // 删轨的目标只认展示轨（⭐ `#192`：`display` = 选中轨 or 兜底）⇒ 主总线永远不可删。
+        let (track_delete_available, track_delete_reason) =
+            track_delete_availability_on(project, display);
         let track_create_available = track_create_available(project);
         let master_bus_label = master_bus_label(project);
 
@@ -3041,6 +3303,7 @@ impl ViewState {
             sections,
             scenes,
             asset_pool,
+            selected_track: display.map(|track| track.id.to_canonical_string()),
             device_track_label,
             devices,
             master_devices,
@@ -4371,20 +4634,56 @@ fn asset_pool_rows(project: &YebanProjectV1) -> Vec<AssetPoolRowView> {
         .collect()
 }
 
-/// 设备机架展示的那条轨 —— **唯一**规则：身份序（`BTreeMap` 键序）第一条**非主总线**轨。
+/// **兜底**展示轨 —— 身份序（`BTreeMap` 键序）第一条**非主总线**轨。
 ///
-/// ⚠ 为什么是这条规则（而不是"选中轨"）：界面里**没有**选中轨这一状态
+/// ⚠ 为什么是这条规则（而不是"选中轨"）：`#157` 落地时界面里**没有**选中轨这一状态
 /// （`grep -rn 'selected_track\|active-track\|current_track' crates/yeban-app` 命中 0；
 /// 台账第 236 轮逐字裁决 "the current track does not exist"）。本切片不起一套新的选择
 /// 状态机，而是把**唯一**的确定性规则写进投影，并让标题把它**显示出来**
 /// （[`ViewState::device_track_label`]）⇒ 用户看到的是"轨 鼓"，不是一句"当前轨"。
 /// 换工程之后它随 `BTreeMap` 键序变化，不需要宿主再同步一份下标。
+///
+/// ## 追加修订段（任务单 `#192`，2026-10-18）—— 只修订"没有选中轨"这一句
+///
+/// 上段的"界面里没有选中轨"是 `#157` 的**历史状态**，原文保留。`#192` 起界面有了
+/// 编辑器级的选中轨（窗口属性 `selected-track-id`，⛔ 不进工程、⛔ 不进撤销栈、
+/// ⛔ 不进 `projectDigest`）⇒ 面板服务的轨由 [`display_track`] **唯一**解析：
+/// 选中轨仍在工程里且不是主总线 ⇒ 选中那条；否则回落到**本函数**（= 旧行为）。
+/// 本函数因此从"唯一规则"降级为"兜底规则"，其余语义（排除主总线、身份序、
+/// 换工程自动变）一位未动。
 #[must_use]
 pub fn device_rack_track(project: &YebanProjectV1) -> Option<&TrackV3> {
     project
         .tracks
         .values()
         .find(|track| track.id != project.master_bus_track_id)
+}
+
+/// ⭐ 任务单 `#192`：面板服务的那条轨 —— **唯一**的"选中轨 or 兜底"解析实现。
+///
+/// 规则（顺序即优先级）：
+/// 1. `selected` 非空、是合法的 26 字符身份、真的在 `tracks` 里、且**不是**主总线
+///    ⇒ 返回那一条（选中态生效）；
+/// 2. 否则回落到 [`device_rack_track`]（身份序第一条非主总线轨 = `#157` 的旧行为）。
+///
+/// 三条"回落"都走 (2)，且都**不**是错误：① 没选（`selected = None` / 空串）；
+/// ② 选中的轨被删 / 被撤销掉（身份查不到）；③ 换了工程（身份不属于新工程）。
+/// ⇒ ⛔ 不 panic、⛔ 不返回一个"空面板却没有解释"的状态（空工程时 (2) 也是 `None`，
+/// 面板的逐字原因由各自的 availability 给出）。
+///
+/// `selected` 是窗口属性 `selected-track-id` 的**原文**（视图态，见 `host.rs`）；
+/// 本函数只读、⛔ 不写任何状态。设备架 / 发送条 / 轨路由 / 铅笔 / 乐器全部经本函数
+/// 或它的 `_on` 变体取主语，⛔ 没有第二份"当前轨"。
+#[must_use]
+pub fn display_track<'a>(
+    project: &'a YebanProjectV1,
+    selected: Option<&str>,
+) -> Option<&'a TrackV3> {
+    selected
+        .and_then(|text| text.parse::<EntityId>().ok())
+        .and_then(|id| project.tracks.get(&id))
+        .filter(|track| track.id != project.master_bus_track_id)
+        .or_else(|| device_rack_track(project))
 }
 
 /// ⭐ 任务单 `#180`：**主总线**那条轨 —— 设备增删的第二个（也是最后一个）目标。
@@ -4544,7 +4843,9 @@ fn format_param_number(value: f32) -> String {
 /// （`host::wire_device_rack`）都从同一条规则出发 ⇒ 界面显示的那一格与提交改的那一格
 /// 不可能漂移。值域同样**只**来自 [`crate::effect_params`]。
 ///
-/// ⭐ 任务单 `#181`：本函数只认**展示轨**；主总线走
+/// ⭐ 任务单 `#181`：本函数只认**展示轨**（⭐ `#192` 起它的语义是**兜底**轨 ——
+/// 生产路径由 `host::display_track` 解析"选中轨 or 兜底"，再经
+/// [`device_eq_low_gain_target_on`] 取那一格）；主总线走
 /// [`master_device_eq_low_gain_target`] —— 两条腿共用同一个
 /// [`device_eq_low_gain_target_on`]，**目标轨**由调用方显式选择（⛔ 没有"默认 = 展示轨"）。
 #[must_use]

@@ -38,6 +38,14 @@ export component ArrangementView inherits Rectangle {
     in property <[length]> clip-heights: [];
 
     in property <[string]> tracks: [];
+    // ⭐ 任务单 `#192`：与 `tracks` **同索引集**的轨道身份（26 字符 `EntityId` 文本）。
+    // 只用于**无障碍选中态**（`accessible-item-selected` 绑"身份 == 选中身份"）——
+    // 选中态按**身份**键控而不是下标：删轨 / 撤销之后下标会指向另一条轨，身份不会。
+    // 它由 `app.slint` 从根属性转发（宿主 `apply_view` 本来就在注入 `track-ids`）⇒ ⛔ 没有第二份表。
+    in property <[string]> track-ids: [];
+    // 宿主拥有的选中轨身份（空串 = 没有明确选中 ⇒ 面板走兜底）。界面**只读**它，
+    // 唯一写者是 `host::wire_track_select`（⛔ 界面不改选中态）。
+    in property <string> selected-track-id: "";
     // 每条非主总线轨道的行几何 (投影的**前缀和**; ADR-0004 S0)。
     // 与 `tracks` **同索引集**: 包头用 `track_index`、时间轴车道用 `lane_index`。
     in property <[length]> track-ys: [];
@@ -107,6 +115,20 @@ export component ArrangementView inherits Rectangle {
     callback track-height-drag(int, length);
     /// 收尾：松开 / 指针离开窗口（上游把离开导出成 `PointerEventKind.cancel`）/ 打断。
     callback track-height-release(int);
+
+    // ---------------------------------------------------------------- ⭐ 选中轨（任务单 `#192`）
+    //
+    // 选中态是**编辑器视图态**（⛔ 不进工程 / ⛔ 不进摘要 / ⛔ 不进撤销栈）：
+    //
+    // - 事实源 = 窗口属性 `selected-track-id`（宿主拥有，唯一写点是 `host::wire_track_select`）；
+    // - 界面**只报下标**（`track-select(track_index)`），"下标 → 身份"由宿主经 `track-ids` 查表；
+    // - 界面**不画**新的高亮：默认帧（没有任何选中）逐像素不变。选中之后面板（设备架 /
+    //   发送条 / 轨路由）显示的那条轨换掉，这是**已有像素**的内容变化，不是新控件；
+    // - 无障碍上，包头本来是 `accessible-item-selectable: true`，这里把
+    //   `accessible-item-selected` 绑到"身份 == 选中身份" ⇒ 屏读器能读出哪条被选中
+    //   （无障碍属性不是像素）。
+    /// 点击轨道头 ⇒ 选中这条轨（宿主写 `selected-track-id` 并重投影）。
+    callback track-select(int);
 
     // ---------------------------------------------------------------- 静音 / 独奏开关
     //
@@ -215,7 +237,12 @@ export component ArrangementView inherits Rectangle {
         accessible-item-index: track_index;
         accessible-item-count: root.tracks.length;
         accessible-item-selectable: true;
-        accessible-item-selected: false;
+        // ⭐ 任务单 `#192`：无障碍选中态（**不是像素**）。选中态按**身份**键控 ⇒
+        // 删轨 / 撤销之后不会因为下标重排而指到另一条轨。
+        accessible-item-selected: root.selected-track-id == root.track-ids[track_index];
+        // 无障碍默认动作 = 选中这条轨（与下面 `TouchArea` 的 down 逐字同一个回调）。
+        // 屏读器 / 自动化因此**不需要**点像素坐标就能选中一条轨。
+        accessible-action-default => { root.track-select(track_index); }
 
         // 轨道头拖拽面（`ADR-0004` S1 的纵向入口）。
         //
@@ -230,6 +257,10 @@ export component ArrangementView inherits Rectangle {
             height: parent.height;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
+                    // ⭐ 任务单 `#192`：按下即选中（一次点击 = 选中这条轨，⛔ 不提交工程）。
+                    // 与拖行高共用**同一个** TouchArea ⇒ 零新像素、零新命中区域；
+                    // 静音 / 独奏两个 `TouchArea` 仍先拿到点击（见上面的排序说明）。
+                    root.track-select(track_index);
                     root.track-height-grab(track_index, self.mouse-y);
                 } else if event.kind == PointerEventKind.move {
                     root.track-height-drag(track_index, self.mouse-y);

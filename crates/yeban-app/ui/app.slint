@@ -591,6 +591,13 @@ export component MainWindow inherits Window {
     // **身份**键控，而拖拽手势落在轨道头上时只能报告**下标** ⇒ 宿主需要"下标 → 身份"
     // 这一格。没有它，宿主只能拿一个会在换工程后过期的快照去猜身份。
     in property <[string]> track-ids: [];
+    // ⭐ 任务单 `#192`：**选中轨**（编辑器视图态）—— 26 字符身份文本，空串 = 没有明确选中。
+    //
+    // 唯一写者 = `host::wire_track_select`（轨道头点击）；唯一读点 = `host::selected_track_id`
+    // （投影 / 设备 / 发送 / 铅笔的主语解析）。⛔ 它不是工程数据：不进 `.yeban`、
+    // 不进 `projectDigest`、不进撤销栈、不进 `ViewState` 的摘要 —— 与 `roll-scroll-x` /
+    // `roll-ticks-per-pixel` / `selected-ulids` 同属"进程退出即失"的视图态。
+    in-out property <string> selected-track-id: "";
     // =====================================================================
     // 轨道高度**拖拽手势的进行态**（ADR-0004 S1 的纵向入口）：宿主拥有、界面只报事件。
     // =====================================================================
@@ -613,6 +620,13 @@ export component MainWindow inherits Window {
     callback track-height-drag(int, length);
     /// 收尾：松开 / 指针离开窗口（`PointerEventKind.cancel`）/ 打断。
     callback track-height-release(int);
+    // ⭐ 任务单 `#192`：轨道头点击 ⇒ **选中这条轨**（界面只报下标；身份查表与
+    // `selected-track-id` 的写入全在 `host::wire_track_select`）。
+    //
+    // ⛔ 它不是一次编辑：宿主**不**调用 `UndoPort::commit_ops`，因此 `commit_count` /
+    // `undoable` / `projectDigest` 全部 Δ0 —— 选中是视图态，不是工程内容。
+    /// 点击轨道头：`(轨道下标)`。
+    callback track-select(int);
     // 混音台的**写入面**（`ADR-0005`：工程内容必须走 `Op` + `UndoPort`）。
     //
     // 形状与上面三个 `track-height-*` 同款：`.slint` 只报"哪一个下标 + 本地坐标"，
@@ -1165,8 +1179,16 @@ export component MainWindow inherits Window {
                     height: parent.height;
                     visible: root.arrangement-view;
                     tracks: root.track-names;
+                    // ⭐ 任务单 `#192`：选中态按**身份**键控（无障碍 `accessible-item-selected`
+                    // 读它）。两个属性都是从根转发的**同一份**注入（⛔ 界面不造第二份表）。
+                    track-ids: root.track-ids;
+                    selected-track-id: root.selected-track-id;
                     track-ys: root.track-ys;
                     track-heights: root.track-heights;
+                    // ⭐ 任务单 `#192`：轨道头点击 ⇒ 选中（界面只报下标）。
+                    track-select(track_index) => {
+                        root.track-select(track_index);
+                    }
                     // `ADR-0004` S1 的纵向入口：轨道头 `TouchArea` 的事件原样转给宿主
                     // （界面不做位移 / 像素 / 夹紧中的任何一件）。
                     track-height-grab(track_index, pointer_y) => {
