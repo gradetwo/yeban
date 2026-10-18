@@ -13967,3 +13967,24 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ **七、⭐ 如实**: ⭐ ⚠ **macOS 上真机按键不能从本进程注入** ⇒ ⭐ **"⭐ 负责人按 Space 不崩"⭐只能人复验**（⭐ 6 步：⭐ 连按 Space ×2／⭐ `Shift+Space`／⭐ 停止→播放／⭐ `F5`/`F6`/`Tab`/`1–5`/`B`/`Esc`/`Delete`／⭐ `Cmd+Alt+N`／⭐ `Cmd+Alt+D`／⭐ 拖推子/⭐ 点音量格/⭐ 点卷帘音符）⇒ ⭐ ⚠ **期望进程不退出**、⭐ 且 ⭐ **stderr 不出现 `忽略 toggle-play…`**（⭐ 出现即说明还有谁持借调界面）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`on_toggle_record` 的 `recorder` 借跨界面写**（⭐ 形态相同）＋ ⭐ **MCP WAV 跨运行不稳** ＋ ⭐ **内容寻址纳入 include** ＋ ⭐ `vcsl`／⭐ `*silence` ＋ ⭐ ⚠ **仍需人类**：⭐ **按 Space 复验** ＋ ⭐ 换乐器听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R920 实测追加（2026-10-18）：⭐ **`#213`（录音器的借跨界面写）落地 ＋ 快进合并** ⇒ ⭐ **下一个雷拆了**
+
+⭐ **合并**: ⭐ base `39b7833c` ⇒ ⭐ `FINAL=6a586710`（⭐ 2 文件 ＋350／−93）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`795 passed`／FAILED 0**（77 targets）＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **12 层全 0** ＋ ⭐ `pane_no_overlap` **18/18** ＋ ⭐ 预算 **93/49** ✓ ⭐ 树已拆 ＋ `target`（35 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 形态与 `#212` 一模一样（⭐ 只是今天撞不上）**: ⭐ 修前 ⭐ `host.rs:4469` ⭐ `let mut recorder = recorder.borrow_mut();` ⭐ ⇒ ⭐ ⭐ **`RefMut` 活到闭包末（⭐ 4568）** ⇒ ⭐ 期间 ⭐ `4535 ui.set_recording(false)`／⭐ `4536 outcome.report(`／⭐ `4564`／⭐ `4565` ⭐ ⭐ **四次界面写** ⇒ ⭐ ⚠ **只要将来有人在"⭐ 录音状态变化"⭐上挂回调 ⇒ ⭐ 同样的 abort** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 修法（⭐ 照 `#212` 的三条口径）**: ⭐ ① ⭐ **借只包"⭐ `is_recording()` ＋ ⭐ 一次状态变更"** ⇒ ⭐ 结果装进 ⭐ `RecordToggle::{Stopped,Started}` ⇒ ⭐ **`};` 处放借**（⭐ `:4523`），⭐ 界面写移到 ⭐ `4589/4590/4611/4612` ✓ ⭐ ② ⭐ **`try_borrow_mut()` 兜底** ⇒ ⭐ 逐字 ⭐ `[yeban-app] 忽略 toggle-record：录音器正被同一线程借用（重入）⇒ 本次按键无效` ⭐ ＋ ⭐ **return**（⛔ 不 panic/⭐ 不假装切换）✓ ⭐ ③ ⭐ **落盘语义一位未改**（⭐ `empty_report`／⭐ `land_recording_at`／⭐ 顺序仍是 `stop → summary → land → set_recording → report`，⭐ **只是后三者在借外**）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 判据**（⭐ 这正是我要求的"⭐ 能红"）**: ⭐ ⭐ `the_record_callback_releases_the_recorder_borrow_before_writing_the_interface` ⭐ ⇒ ⭐ **在 `outcome.report` 内 `borrow_mut()` 同一录音器**（⭐ 即"⭐ 录音状态变化挂回调"⭐的形状）★ ⭐ 注入 M1（⭐ 把借扩到 UI 之后）⇒ ⭐ ⭐ **逐字红 `RefCell already borrowed`** ★ ⭐ 修好后绿：⭐ ⭐ `[record-borrow-scope] reports=2 借外落点=2`** ✓
+⭐ **M2**（⭐ 去掉 `try_`）⇒ ⭐ 红在 ⭐ `host.rs:4505:46` ⇒ ⭐ 修好后 ⭐ ⭐ **子进程 stderr 命中降级行恰好 1 次** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 全扫（⭐ 53 代码点 ＋ ⭐ `#211` 的增量）**: ⭐ ⭐ **`#211` 给 `host.rs` 加了 325 行、⭐ 其中 `borrow*` 增量 ＝ **0****（⭐ 因为它用的是 `Arc<Mutex<…>>`、⭐ 锁在返回值前释放、⭐ `ui.set_*` 全在锁外）⇒ ⭐ ⭐ **"⭐ 53 ＋ ⭐ 0"** ✓ ⭐ 并 ⭐ **留了两条**残余低危**登记**：⭐ ① ⭐ `host.rs:8204` ⭐ 在 `selection.borrow_mut()` 内做 ⭐ `ui.get_selected_ulids()`（⭐ **只读、⭐ getter 不回调**）② ⭐ `host.rs:4363` `playhead_tick` 用 `borrow()` 而非 `try_borrow()`（⭐ 闭包内无 UI）★ ⚠ **它并写明了触发条件**：⭐ **"⭐ 若将来给 `wire_keys` 加录音动作，⭐ 必须把它排除在 `action_needs_engine` 之外"** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 录音仍正确（⭐ 逐字读数）**: ⭐ `record_device_wiring` **14 passed／1 ignored** ⇒ ⭐ `注入 1024 帧（峰值 7977759 码）⇒ 落盘 2048 码` ★ ⭐ `record_lands_in_pools` **5 passed** ⇒ ⭐ `clips 2 → 3`／⭐ `asset-bytes=187460`／⭐ `committed=true` ★ ⭐ `record_places_clip_on_track` **2 passed** ⇒ ⭐ `start-tick=960 duration-ticks=1311` ＋ ⭐ **正向渲染 `peak=0.24276264 audio-clips-rendered=1`** ★ ⭐ **0 帧仍拒**（⭐ `clips 2 → 2 placements=0`）✓
+
+⭐ ⚠ **六、⭐ 如实**: ⭐ ① ⭐ **没人耳听** ② ⭐ ⚠ **真机录音本机不能注入**（⭐ 真麦克风用例 `#[ignore]`）③ ⭐ **本机 macOS 无 golden ⇒ 5 张"⭐ 未被判定"**、⭐ ⛔ 不声称本地逐字节 ④ ⭐ 未 push ⇒ ⭐ 无 CI 判决 ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **MCP WAV 跨运行不稳** ＋ ⭐ **内容寻址纳入 include** ＋ ⭐ `vcsl`／⭐ `*silence` ＋ ⭐ ⚠ **仍需人类**：⭐ **按 Space 复验** ＋ ⭐ 换乐器听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
