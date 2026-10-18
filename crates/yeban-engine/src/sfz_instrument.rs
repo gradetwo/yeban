@@ -1566,6 +1566,8 @@
 //! **没有**这两行，登记语料出现 0 次 ⇒ 本片不识别，按未知 opcode 忽略）。
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 
 // ⭐ 窃取淡出的**帧数口径**：引擎里 PolySynth 用的就是这一个（3 ms × 采样率，
 // 上限 0.5 s、下限 1 帧）⇒ SFZ 池与复音池共用**同一个**舵，⛔ 不是第二份常数。
@@ -1589,7 +1591,7 @@ use yeban_sfz::modulation::{
 };
 // ⚠ 这两个是 **lib 构建**就需要的（`load` / `with_instrument` 都调用它们）⇒ ⛔ 不能放在 `#[cfg(test)]` 下，
 // 否则非测试构建会报 "cannot find type `ParseLimits`"（本批实测过一次：三项门全红）。
-use yeban_sfz::parser::{ParseLimits, parse_text};
+use yeban_sfz::parser::{IncludeIssue, ParseLimits, SfzSource, parse_sources, parse_text};
 use yeban_sfz::playback::{LoopWindow, RenderRates, SampleSpan};
 // ⭐ 衰减底（−60 dBFS）取自 `yeban-sfz` 的 [`StealFade`](yeban_sfz::voice_pool::StealFade)：
 // 引擎侧的 SFZ 窃取淡出与该库的 3 ms 指数淡出**同形状**（`FLOOR^(n/N)`），
@@ -1605,10 +1607,27 @@ use yeban_sfz::voice_pool::STEAL_FADE_FLOOR;
 pub const AMPLITUDE_PERCENT_SCALE: f32 = 100.0;
 
 /// 已加载的 SFZ 乐器：**文本 + 元数据**（⛔ 不含借用式解析结果）。
+///
+/// ## ⭐ `#include`（任务单 `#206`）
+///
+/// [`Self::load`] 只接收文本 ⇒ 走 `parse_text`（**纯文本模式**，`#include` 被忽略，
+/// 与既有行为逐字一致）。需要展开 `#include` 的调用方走
+/// [`Self::load_with_includes`]：它把**根文件文本**＋基准目录交给
+/// `yeban_sfz::IncludeResolver`，把展开后的片段序列保存在 [`Self::sources`] 里，
+/// 之后每次 [`Self::with_instrument`] 都用 `parse_sources` 重放同一份片段
+/// （行号、跨片段作用域、`default_path` 全部与一次性解析逐位一致）。
+///
+/// ⚠ 为什么不保存"展开后的拼接文本"：`SfzSource` 各自带**原文件行号**，错误/告警
+/// 才能指回真正的位置；拼接会把这些信息压成一份假的单文件。
 #[derive(Debug, Clone)]
 pub struct SfzInstrument {
-    /// 原始 SFZ 文本（自己持有 ⇒ 无生命周期参数）。
+    /// 根 SFZ 文件原文（自己持有 ⇒ 无生命周期参数）。
     text: String,
+    /// `Some` ⇒ 已展开 `#include` 的片段（`parse_sources` 的输入）；
+    /// `None` ⇒ 纯文本（`parse_text` 的输入，既有 `load` 路径）。
+    sources: Option<Arc<[SfzSource]>>,
+    /// 容错展开时被跳过的 `#include`（每条都带行号与路径）。
+    include_issues: Vec<IncludeIssue>,
     /// 构造期解析得到的**区域数**（元数据，供控制侧快速查询）。
     region_count: usize,
 }
@@ -1618,11 +1637,67 @@ impl SfzInstrument {
     ///
     /// ⚠ 本函数会分配（`String` 已由调用方给出；解析器内部有分配）⇒ **只允许在控制侧调用**。
     ///
+    /// ⚠ 纯文本模式**不展开** `#include`（`parse_text` 的既有契约：不做 I/O）。
+    /// 需要 include 的调用方用 [`Self::load_with_includes`]。
+    ///
     /// # Errors
     /// 文本非法（语法、超限等）时原样透出 [`SfzError`]，⛔ 不 panic。
     pub fn load(text: String, limits: &ParseLimits) -> Result<Self, SfzError> {
         let region_count = parse_text(&text, limits)?.regions().len();
-        Ok(Self { text, region_count })
+        Ok(Self {
+            text,
+            sources: None,
+            include_issues: Vec::new(),
+            region_count,
+        })
+    }
+
+    /// ⭐ 构造期**展开 `#include`** 再解析（任务单 `#206`）。
+    ///
+    /// * `text`：根文件原文（调用方已读盘；⛔ 本函数不读根文件第二遍）；
+    /// * `base_dir`：**沙箱基准目录**＝根 SFZ 所在目录（规范与 `IncludeResolver` 的
+    ///   既有口径：include 路径**相对基准目录**，⛔ 不相对被包含文件）；
+    /// * `entry`：根文件相对 `base_dir` 的文件名（用于沙箱检查与环检测）。
+    ///
+    /// ## 展开语义（逐条）
+    ///
+    /// | 情形 | 行为 |
+    /// | :--- | :--- |
+    /// | 嵌套 include（A→B→C） | 递归展开，按**粘贴顺序**进入片段序列 |
+    /// | include 夹在一行中间 | 在**出现位置**切片段，其余文本照常解析 |
+    /// | 重复 include 同一文件 | **每次都展开**（粘贴语义；⛔ 不去重） |
+    /// | 循环（A→B→A） | `IncludeCycle` 错误（`stack` 已访问集），⛔ 不递归 |
+    /// | 超深 / 超文件数 | `IncludeDepthExceeded` / `IncludeCountExceeded` |
+    /// | 目标不存在 / glob 无匹配 | **记一条** [`Self::include_issues`] 并继续 |
+    ///
+    /// `default_path`：`<control>` 在根/被包含片段里都写进**同一个**解析器状态 ⇒
+    /// 跨片段继承与单文件解析**同一条**规则（`Region::sample_path()` 仍先拼前缀）。
+    ///
+    /// # Errors
+    ///
+    /// 沙箱逃逸 / 非 UTF-8 / 循环 / 超上限 / 语法错误 ⇒ [`SfzError`]。
+    /// **缺失的 include 不是错误**（见上表）。
+    pub fn load_with_includes(
+        text: String,
+        base_dir: &Path,
+        entry: &str,
+        limits: &ParseLimits,
+    ) -> Result<Self, SfzError> {
+        let resolver = yeban_sfz::IncludeResolver::new(base_dir, *limits)?;
+        let resolution = resolver.resolve_text_lossy(entry, &text)?;
+        let region_count = parse_sources(&resolution.sources, limits)?.regions().len();
+        Ok(Self {
+            text,
+            sources: Some(Arc::from(resolution.sources)),
+            include_issues: resolution.issues,
+            region_count,
+        })
+    }
+
+    /// 容错展开时被跳过的 `#include`（空 ⇒ 全部目标都读到了）。
+    #[must_use]
+    pub fn include_issues(&self) -> &[IncludeIssue] {
+        &self.include_issues
     }
 
     /// 区域数（规范里的 `region` 条目个数）。
@@ -1631,7 +1706,10 @@ impl SfzInstrument {
         self.region_count
     }
 
-    /// 原始文本（调用方可能需要原样回写/哈希）。
+    /// 原始文本（根文件；调用方可能需要原样回写/哈希）。
+    ///
+    /// ⚠ 它**不含**被 include 的文件内容 —— 展开后的片段见内部 `sources`
+    /// （`#include` 的展开结果对调用方不可见，只通过区域/样本读数体现）。
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
@@ -1645,7 +1723,12 @@ impl SfzInstrument {
     /// 若文本在此期间变得非法（正常路径不会发生），透出 [`SfzError`]。
     pub fn with_instrument<R>(&self, f: impl FnOnce(&Instrument<'_>) -> R) -> Result<R, SfzError> {
         let limits = ParseLimits::default();
-        let instrument = parse_text(&self.text, &limits)?;
+        // ⭐ `#206`：include 展开过的乐器按**同一份片段序列**重放（⛔ 不是拿根文本
+        //    再 `parse_text` —— 那会把 include 悄悄丢掉）。
+        let instrument = match self.sources.as_deref() {
+            Some(sources) => parse_sources(sources, &limits)?,
+            None => parse_text(&self.text, &limits)?,
+        };
         Ok(f(&instrument))
     }
 

@@ -1047,7 +1047,19 @@ impl ModTarget {
     #[must_use]
     pub const fn delta_range(self) -> (f32, f32) {
         match self {
-            Self::Ampeg(_) | Self::Amplitude => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
+            Self::Ampeg(_) => (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
+            // ⭐⭐ **追加修订段（任务单 `#206`）** —— 被修订的是上面那句「
+            // [`Self::Ampeg`] ／ [`Self::Amplitude`] ⇒ `-100..=100`」里的
+            // **`Amplitude` 那一支**（⛔ 原文一字未删）：`amplitude` 族改为
+            // **任意有限值**（[`MIN_AMPLITUDE_MODULATION_DELTA`] /
+            // [`MAX_AMPLITUDE_MODULATION_DELTA`]）。理由见那两条常数的文档
+            // （规范正文自己写"some players such as Aria/Sforzando do not clamp
+            // the range"；`#206` 实测 3 个完整乐器的 `amplitude_onccN` 用了
+            // **200 / 400**）。`ampeg_*` 一族**逐字未变**（仍是 `±100`）。
+            Self::Amplitude => (
+                MIN_AMPLITUDE_MODULATION_DELTA,
+                MAX_AMPLITUDE_MODULATION_DELTA,
+            ),
             Self::Tune => (MIN_TUNE_MODULATION_DELTA, MAX_TUNE_MODULATION_DELTA),
             Self::Volume => (MIN_VOLUME_MODULATION_DELTA, MAX_VOLUME_MODULATION_DELTA),
         }
@@ -1065,6 +1077,29 @@ pub const MIN_MODULATION_DELTA: f32 = -100.0;
 
 /// `delta` 的上界（同上）。
 pub const MAX_MODULATION_DELTA: f32 = 100.0;
+
+/// ⭐⭐ `amplitude_*ccN` 的 `delta` 下界（任务单 `#206`）：**负无穷**（只受
+/// finite 检查约束）。
+///
+/// 出处与理由：
+/// 1. `amplitude` 页表行写 `-100 to 100`，但**同页正文**逐字写
+///    「Note: Range in the table below is 0 to 100, but some players such as
+///    Aria/Sforazando do not clamp the range. Negative values invert the signal.」
+///    ⇒ 规范自己声明这个域**不是**播放器实际执行的域；
+/// 2. `#206` 实测（26 个完整乐器）：`amplitude_onccN` 出现 **200**（`salamander-grand`
+///    `amplitude_oncc$STR_RES=200`、`mtg-solo-sax` `amplitude_oncc$NOISE=200`）与
+///    **400**（`ixox-flute` `amplitude_oncc$F2_VOL=400`）—— 若沿用 `±100`，这 3 个
+///    乐器在 include 展开后**整份不可加载**（`FloatOutOfRange`）；
+/// 3. `amplitude` 的消费公式是纯线性百分比（`amplitude_value / 100`），200/400 有
+///    明确含义（＋200 %／＋400 % 调制量），⛔ 不需要新单位。
+///
+/// ⚠ 与 [`MIN_MODULATION_DELTA`] 的关系：那条仍然服务 `ampeg_*` 一族（逐字未变）。
+/// ⚠ `NaN` / `±Inf` 仍由 [`crate::instrument::read_modulation_delta`] 的 finite 检查拒掉。
+pub const MIN_AMPLITUDE_MODULATION_DELTA: f32 = -f32::MAX;
+
+/// ⭐⭐ `amplitude_*ccN` 的 `delta` 上界（`+f32::MAX`；依据同
+/// [`MIN_AMPLITUDE_MODULATION_DELTA`]）。
+pub const MAX_AMPLITUDE_MODULATION_DELTA: f32 = f32::MAX;
 
 /// ⭐⭐ `tune_*ccN` 的 `delta` 下界（**音分**；任务单 `#116`）。
 ///
@@ -2012,7 +2047,17 @@ mod tests {
         );
         assert_eq!(
             ModTarget::Amplitude.delta_range(),
-            (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA)
+            (
+                MIN_AMPLITUDE_MODULATION_DELTA,
+                MAX_AMPLITUDE_MODULATION_DELTA
+            ),
+            "⭐ `#206`：`amplitude_*ccN` 接受任意有限值（规范正文自己写 Aria 不钳位；\
+             实测语料有 200/400）"
+        );
+        assert_eq!(
+            ModTarget::Ampeg(AmpegParam::Attack).delta_range(),
+            (MIN_MODULATION_DELTA, MAX_MODULATION_DELTA),
+            "⭐ `ampeg_*` 仍是 ±100（`#206` 只改了 `Amplitude` 那一支）"
         );
         assert_eq!(ModTarget::Amplitude.unit(), "%");
         assert_eq!(ModTarget::Ampeg(AmpegParam::Attack).unit(), "seconds");

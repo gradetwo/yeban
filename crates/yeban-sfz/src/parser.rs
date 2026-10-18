@@ -27,12 +27,31 @@
 //! - **相对路径**：绝对路径（`/...`、`C:\...`）一律拒绝；
 //! - **不含 `..` 组件**；
 //! - 规范化（`fs::canonicalize`）后仍位于基准目录之内 —— 这条同时挡住**符号链接逃逸**；
-//! - 扩展名必须是 `.sfz` / `.sfzh`；
+//! - 扩展名必须是 `.sfz` / `.sfzh` / `.txt`（`#205` 语料实测：2 675 条 include 里
+//!   **150** 条指向 `.txt` 数据片段，例如 `salamander-grand` 与 `mtg-solo-sax`；
+//!   `.txt` 只是**文本片段**，仍走同一套沙箱检查）；
 //! - 递归展开时不得成环、不得超过深度 / 文件数上限。
+//!
+//! `#include` 是**文本粘贴**：它既可以独占一行，也可以出现在一行的中间（语料里有
+//! `<group> #include "Data/vel_01.txt" lovel=1 hivel=26 #include "Data/region.txt"`
+//! 这种写法，共 84 处），展开时在被引用点**原地**插入目标文件的文本。
 //!
 //! glob 形式（`*` / `?` / `**`）只从基准目录向下遍历，**不跟随符号链接**，并受
 //! [`ParseLimits::max_glob_matches`] / [`ParseLimits::max_glob_scanned`] /
 //! [`ParseLimits::max_glob_depth`] 三重上限约束。
+//!
+//! ## 两档错误口径
+//!
+//! - [`IncludeResolver::resolve`]：**严格**（既有口径）—— 缺失的 include 就是
+//!   [`SfzError::IncludeNotFound`]；
+//! - [`IncludeResolver::resolve_lossy`] / [`IncludeResolver::resolve_text_lossy`]：
+//!   **容错**（装载真实乐器用）—— 文件不存在 / glob 无匹配**记进
+//!   [`IncludeResolution::issues`] 并继续**（其余 include 与 inline `<region>` 照常），
+//!   但**成环 / 超深度 / 超文件数仍然是错误**（⛔ 不无限递归、⛔ 不静默吞掉）。
+//!
+//! 为什么需要容错档：一个乐器常有几十条 include，其中一条指向作者私有目录时，
+//! 整份乐器**不应该**因此完全不可加载 —— 缺失项必须是**可读的一条记录**，而不是
+//! 把其余 region 一起丢掉。
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -432,6 +451,56 @@ pub struct SfzSource {
     /// 加两行以上文本曾让 debug 构建 panic）。`first_line + 行偏移` 可表示的
     /// 输入逐位不变。
     pub first_line: usize,
+}
+
+/// 一条 `#include` 在**容错展开**（[`IncludeResolver::resolve_lossy`]）里被跳过的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncludeIssueKind {
+    /// 目标文件不存在（或不可规范化）。
+    NotFound,
+    /// glob 形式没有匹配到任何文件。
+    NoMatch,
+}
+
+impl core::fmt::Display for IncludeIssueKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "does not exist"),
+            Self::NoMatch => write!(f, "matched no file"),
+        }
+    }
+}
+
+/// 一条**被跳过的** `#include`（容错展开的记录）。
+///
+/// 「记一条、继续」的载体：装载器把它逐条交出，⛔ 不静默。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeIssue {
+    /// 指令所在的 1-based 行号（相对**包含它的那个文件**）。
+    pub line: usize,
+    /// 请求的相对路径（glob 模式对 [`IncludeIssueKind::NoMatch`]）。
+    pub path: String,
+    /// 跳过原因。
+    pub kind: IncludeIssueKind,
+}
+
+impl core::fmt::Display for IncludeIssue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "line {}: `#include \"{}\"` {} (skipped)",
+            self.line, self.path, self.kind
+        )
+    }
+}
+
+/// 一次容错展开的结果：已展开的片段 ＋ 被跳过的 include 记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeResolution {
+    /// 按粘贴顺序排列的源片段（交给 [`parse_sources`]）。
+    pub sources: Vec<SfzSource>,
+    /// 被跳过的 include（空 = 全部目标都读到了）。
+    pub issues: Vec<IncludeIssue>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1633,16 +1702,85 @@ impl IncludeResolver {
     /// # Ok::<(), yeban_sfz::SfzError>(())
     /// ```
     pub fn resolve(&self, entry: &str) -> Result<Vec<SfzSource>, SfzError> {
+        Ok(self.resolve_inner(entry, None, false)?.sources)
+    }
+
+    /// **容错**展开（与 [`Self::resolve`] 同一套沙箱与递归保护）：
+    ///
+    /// * 目标不存在 ⇒ 记一条 [`IncludeIssue`]（[`IncludeIssueKind::NotFound`]）并**继续**；
+    /// * glob 无匹配 ⇒ 记一条 [`IncludeIssueKind::NoMatch`] 并**继续**；
+    /// * **成环 / 超深度 / 超文件数 / 非 UTF-8 / 超长行 / 沙箱逃逸 ⇒ 仍然是错误**
+    ///   （这些是结构性问题，继续展开只会读到半份乐器或无限递归）。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Self::resolve`]（但 [`SfzError::IncludeNotFound`] /
+    /// [`SfzError::IncludeNoMatch`] 被降级为 [`IncludeResolution::issues`]）。
+    pub fn resolve_lossy(&self, entry: &str) -> Result<IncludeResolution, SfzError> {
+        self.resolve_inner(entry, None, true)
+    }
+
+    /// 与 [`Self::resolve_lossy`] 相同，但根文件文本由**调用方**提供（已读盘）。
+    ///
+    /// 为什么有它：装载器（[`crate::parser::parse_sources`] 的调用方）通常已经为了
+    /// 字节数 / UTF-8 校验读过根文件；这里复用那份 `text`，⛔ 不读第二遍。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Self::resolve_lossy`]；另外根文本超过
+    /// [`ParseLimits::max_source_bytes`] 时是 [`SfzError::SourceTooLarge`]。
+    pub fn resolve_text_lossy(
+        &self,
+        entry: &str,
+        text: &str,
+    ) -> Result<IncludeResolution, SfzError> {
+        self.resolve_inner(entry, Some(text), true)
+    }
+
+    /// [`Self::resolve`] / [`Self::resolve_lossy`] / [`Self::resolve_text_lossy`] 的共同实现。
+    fn resolve_inner(
+        &self,
+        entry: &str,
+        provided: Option<&str>,
+        lossy: bool,
+    ) -> Result<IncludeResolution, SfzError> {
         let mut state = ResolveState {
             sources: Vec::new(),
             macros: BTreeMap::new(),
             stack: Vec::new(),
             files: 0,
+            issues: Vec::new(),
+            lossy,
         };
         let relative = self.check_relative(entry, 0)?;
         let canonical = self.canonical_include(&relative, 0)?;
-        self.expand_file(&canonical, &relative, 0, &mut state)?;
-        Ok(state.sources)
+        match provided {
+            Some(text) => {
+                if text.len() > self.limits.max_source_bytes {
+                    return Err(SfzError::SourceTooLarge {
+                        path: relative,
+                        len: text.len(),
+                        limit: self.limits.max_source_bytes,
+                    });
+                }
+                // 根文件与 `expand_file` 同一条预算口径：文件数**含入口本身**。
+                state.files = 1;
+                if state.files > self.limits.max_include_files {
+                    return Err(SfzError::IncludeCountExceeded {
+                        limit: self.limits.max_include_files,
+                    });
+                }
+                state.stack.push(canonical);
+                let result = self.scan_and_expand(text, &relative, 0, &mut state);
+                state.stack.pop();
+                result?;
+            }
+            None => self.expand_file(&canonical, &relative, 0, &mut state)?,
+        }
+        Ok(IncludeResolution {
+            sources: state.sources,
+            issues: state.issues,
+        })
     }
 
     /// 词法检查：拒绝绝对路径、`..`、NUL、非法扩展名。
@@ -1679,7 +1817,7 @@ impl IncludeResolver {
                 });
             }
         }
-        if !has_sfz_extension(&normalized) {
+        if !has_include_extension(&normalized) {
             return Err(SfzError::IncludeUnsupportedExtension {
                 line,
                 path: truncate_for_error(raw),
@@ -1756,7 +1894,11 @@ impl IncludeResolver {
         result
     }
 
-    /// 扫描一个文件的文本，按行处理 `#define` 与 `#include`，并把非 include 行切成片段。
+    /// 扫描一个文件的文本：处理 `#define`，并把**每一个** `#include`（无论独占一行
+    /// 还是夹在一行中间）在出现位置展开成片段序列。
+    ///
+    /// 片段切分点 = include 指令的**前**与**后**（`SfzSource` 的 `first_line` 因此
+    /// 指向该片段在原文件里的真实行号）。展开是递归的：被包含文件的文本再来一遍。
     fn scan_and_expand(
         &self,
         text: &str,
@@ -1778,60 +1920,84 @@ impl IncludeResolver {
                     limit: limits.max_line_bytes,
                 });
             }
-            let line = strip_comment(raw_line).trim();
-            if is_directive(line) {
-                let (directive, argument) = split_directive(line);
-                if directive.eq_ignore_ascii_case("include") {
-                    // include 行之前的文本先落成片段（保证粘贴顺序）。
-                    if offset > segment_start {
-                        state.sources.push(SfzSource {
-                            path: display.to_string(),
-                            text: text[segment_start..offset].to_string(),
-                            first_line: segment_first_line,
-                        });
-                    }
-                    self.handle_include(argument, line_no, depth, state)?;
-                    segment_start = offset + raw_line.len();
-                    segment_first_line = line_no + 1;
-                } else if directive.eq_ignore_ascii_case("define") {
+            // 注释之外的全部文本（`#include "a//b.sfz"` 的 `//` 被引号保护）。
+            let stripped = strip_comment(raw_line);
+            let trimmed = stripped.trim();
+            if is_directive(trimmed) {
+                let (directive, argument) = split_directive(trimmed);
+                if directive.eq_ignore_ascii_case("define") {
+                    // resolver 自己也要一份宏表：include 路径里可以出现 `$VAR`。
+                    // 文本里那行 `#define` **保留**（解析器会再处理一次，语义相同）。
                     handle_resolver_define(argument, line_no, limits, state)?;
                 }
+            }
+
+            // 一行里可能有**多个** include（语料里有 `#include … #include …`）。
+            let mut cursor = 0usize;
+            while let Some(token_start) = find_include_directive(stripped, cursor) {
+                let argument = &stripped[token_start + INCLUDE_DIRECTIVE.len()..];
+                let (raw_path, consumed) = parse_include_target(argument, line_no)?;
+                let after = token_start + INCLUDE_DIRECTIVE.len() + consumed;
+
+                // include 之前的文本先落成片段（保证粘贴顺序）。
+                // ⚠ 纯空白片段**不落**：它不含任何 opcode，却会让 `SfzSource`
+                // 序列（以及它的规范化摘要）随"include 所在行的空白"抖动。
+                let before = offset + token_start;
+                if before > segment_start {
+                    push_segment(
+                        state,
+                        display,
+                        &text[segment_start..before],
+                        segment_first_line,
+                    );
+                }
+
+                match self.expand_include_path(raw_path, line_no, depth, state) {
+                    Ok(()) => {}
+                    // 容错档：缺失只记一条，其余文本／include 照常。
+                    Err(SfzError::IncludeNotFound { line, path }) if state.lossy => {
+                        state.issues.push(IncludeIssue {
+                            line,
+                            path,
+                            kind: IncludeIssueKind::NotFound,
+                        });
+                    }
+                    Err(SfzError::IncludeNoMatch { line, pattern }) if state.lossy => {
+                        state.issues.push(IncludeIssue {
+                            line,
+                            path: pattern,
+                            kind: IncludeIssueKind::NoMatch,
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
+
+                segment_start = offset + after;
+                segment_first_line = line_no;
+                cursor = after;
             }
             offset += raw_line.len();
         }
 
         if offset > segment_start {
-            state.sources.push(SfzSource {
-                path: display.to_string(),
-                text: text[segment_start..offset].to_string(),
-                first_line: segment_first_line,
-            });
+            push_segment(
+                state,
+                display,
+                &text[segment_start..offset],
+                segment_first_line,
+            );
         }
         Ok(())
     }
 
-    /// 处理一个 `#include "path"`：glob 展开 / 单文件递归。
-    fn handle_include(
+    /// 展开一个**已经解析出路径**的 `#include`：宏展开 → 沙箱 → glob / 单文件递归。
+    fn expand_include_path(
         &self,
-        argument: &str,
+        raw_path: &str,
         line: usize,
         depth: usize,
         state: &mut ResolveState,
     ) -> Result<(), SfzError> {
-        let trimmed = argument.trim();
-        let Some(after_quote) = trimmed.strip_prefix('"') else {
-            return Err(SfzError::IncludeNotQuoted {
-                line,
-                text: truncate_for_error(trimmed),
-            });
-        };
-        let Some(end) = after_quote.find('"') else {
-            return Err(SfzError::IncludeUnterminated { line });
-        };
-        let raw_path = &after_quote[..end];
-        if raw_path.is_empty() {
-            return Err(SfzError::IncludeEmptyPath { line });
-        }
         // include 路径里的宏：单遍展开；未定义则原样保留（通常随后变成 NotFound）。
         let macros = &state.macros;
         let expanded = expand_macros(
@@ -1886,6 +2052,86 @@ struct ResolveState {
     macros: BTreeMap<String, String>,
     stack: Vec<PathBuf>,
     files: usize,
+    /// 容错档下被跳过的 include（严格档下永远为空）。
+    issues: Vec<IncludeIssue>,
+    /// `true` ⇒ 缺失的 include 只记不报（见 [`IncludeResolver::resolve_lossy`]）。
+    lossy: bool,
+}
+
+/// `#include` 指令字面量（长度即扫描步长；大小写不敏感比较）。
+const INCLUDE_DIRECTIVE: &str = "#include";
+
+/// 在**已去注释**的一行里找下一个 `#include`（大小写不敏感，跳过双引号内的文本）。
+///
+/// 返回 `#` 的字节下标。边界规则：`#` 必须在行首或空白之后，且 `include` 之后必须是
+/// 空白或 `"`（⛔ 不把 `#included` 当成指令）。
+fn find_include_directive(line: &str, from: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut i = from;
+    let mut in_quotes = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => in_quotes = !in_quotes,
+            b'#' if !in_quotes => {
+                let end = i + INCLUDE_DIRECTIVE.len();
+                let starts_ok = i == 0 || bytes[i - 1].is_ascii_whitespace();
+                let ends_ok = bytes
+                    .get(end)
+                    .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'"');
+                if starts_ok
+                    && ends_ok
+                    && bytes[i..]
+                        .get(..INCLUDE_DIRECTIVE.len())
+                        .is_some_and(|token| {
+                            token.eq_ignore_ascii_case(INCLUDE_DIRECTIVE.as_bytes())
+                        })
+                {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 从一个指令的**参数区**（`#include` 之后）解析出 `"路径"`，返回
+/// `(路径原文, 从参数区起点到闭合引号的字节数)`。
+fn parse_include_target(argument: &str, line: usize) -> Result<(&str, usize), SfzError> {
+    let trimmed = argument.trim_start();
+    let leading = argument.len() - trimmed.len();
+    let Some(after_quote) = trimmed.strip_prefix('"') else {
+        return Err(SfzError::IncludeNotQuoted {
+            line,
+            text: truncate_for_error(trimmed),
+        });
+    };
+    let Some(end) = after_quote.find('"') else {
+        return Err(SfzError::IncludeUnterminated { line });
+    };
+    let raw_path = &after_quote[..end];
+    if raw_path.is_empty() {
+        return Err(SfzError::IncludeEmptyPath { line });
+    }
+    // 前导空白 + 开引号 + 路径 + 闭引号。
+    Ok((raw_path, leading + 1 + end + 1))
+}
+
+/// 把一段扫描结果落成 [`SfzSource`]；**纯空白片段直接丢弃**。
+///
+/// 为什么：`#include` 独占一行时，它的前后都会切出"只有换行/空格"的片段；这些片段
+/// 对解析没有任何作用，但会让 `SfzSource` 的条数与文本随空白抖动（`#205` 的
+/// 规范化摘要判据正是钉这个序列的）。非空白片段逐字保留（注释行也算非空白）。
+fn push_segment(state: &mut ResolveState, display: &str, text: &str, first_line: usize) {
+    if text.trim().is_empty() {
+        return;
+    }
+    state.sources.push(SfzSource {
+        path: display.to_string(),
+        text: text.to_string(),
+        first_line,
+    });
 }
 
 /// resolver 侧的 `#define`（宏表拥有所有权，避免自引用借用）。
@@ -1969,7 +2215,7 @@ impl GlobWalker<'_> {
                 let child = dir.join(&name);
                 let child_prefix = join_prefix(prefix, &name);
                 if is_last {
-                    if child.is_file() && has_sfz_extension(&name) {
+                    if child.is_file() && has_include_extension(&name) {
                         self.push(child_prefix)?;
                     }
                 } else if child.is_dir() && !is_symlink(&child) {
@@ -1980,7 +2226,7 @@ impl GlobWalker<'_> {
             let child = dir.join(segment);
             let child_prefix = join_prefix(prefix, segment);
             if is_last {
-                if child.is_file() && has_sfz_extension(segment) {
+                if child.is_file() && has_include_extension(segment) {
                     self.push(child_prefix)?;
                 }
             } else if child.is_dir() && !is_symlink(&child) {
@@ -2042,9 +2288,18 @@ fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
-fn has_sfz_extension(name: &str) -> bool {
-    name.rsplit_once('.')
-        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("sfz") || ext.eq_ignore_ascii_case("sfzh"))
+/// `#include` 允许的目标扩展名：`.sfz` / `.sfzh` / `.txt`（大小写不敏感）。
+///
+/// ⚠ `.txt` 不是随手放宽：真实语料（`#205` 实测，26 个完整乐器）有 150 条 include
+/// 指向 `.txt` 数据片段（`salamander-grand` 的 `Data/*.txt`、`mtg-solo-sax` 的
+/// `Data/*.txt`、`ixox-flute` 的 `Data/*.txt`）。它们与 `.sfz` 走同一套沙箱检查，
+/// 只是内容更像"片段"而不是"完整乐器"。
+fn has_include_extension(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        ext.eq_ignore_ascii_case("sfz")
+            || ext.eq_ignore_ascii_case("sfzh")
+            || ext.eq_ignore_ascii_case("txt")
+    })
 }
 
 /// 单段 glob 匹配：`*` 匹配任意（含空）字符序列，`?` 匹配一个字符。

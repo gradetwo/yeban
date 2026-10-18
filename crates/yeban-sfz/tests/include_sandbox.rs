@@ -1488,3 +1488,153 @@ fn a_duplicate_define_overrides_identically_on_both_insertion_paths() {
         "R215③ behaviour arm: the SECOND define points at a missing dir, so `other.wav` must NOT appear"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#206`：文本粘贴（inline）／`.txt` 片段／三层递归／容错缺失
+// ---------------------------------------------------------------------------
+
+/// `#include` 夹在一行中间（真实语料 `salamander-grand/Data/notes.txt` 的写法）：
+/// 目标文件的内容在**出现位置**插入，前后文本仍按原作用域解析。
+#[test]
+fn an_inline_include_is_pasted_at_its_position_in_the_line() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "parts/key.sfz", "key=36\n");
+    write_file(root, "parts/region.sfz", "<region>sample=inline.wav\n");
+    write_file(
+        root,
+        "main.sfz",
+        "<group> #include \"parts/key.sfz\" lovel=1 hivel=26 #include \"parts/region.sfz\"\n",
+    );
+
+    let instrument = resolve_and_parse(root, "main.sfz").expect("inline includes resolve");
+    assert_eq!(
+        instrument.regions().len(),
+        1,
+        "被 include 的 `<region>` 必须生效"
+    );
+    let region = &instrument.regions()[0];
+    assert_eq!(
+        (region.lokey, region.hikey),
+        (36, 36),
+        "前一个 include 的 key 作用于 group"
+    );
+    assert_eq!(
+        (region.lovel, region.hivel),
+        (1, 26),
+        "include 之后的行内文本仍是同一个 group"
+    );
+    assert_eq!(region.sample, "inline.wav");
+}
+
+/// `.txt` 是合法的 include 目标（150 条真实语料；`salamander-grand` / `mtg-solo-sax`）。
+#[test]
+fn a_txt_fragment_can_be_included_and_contributes_regions() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "Data/region.txt", "<region>sample=from_txt.wav\n");
+    write_file(root, "main.sfz", "#include \"Data/region.txt\"\n");
+
+    let instrument = resolve_and_parse(root, "main.sfz").expect("txt include resolves");
+    assert_eq!(instrument.regions()[0].sample, "from_txt.wav");
+}
+
+/// A → B → C 三层：第三层的 `<region>` 必须出现在最终乐器里（递归真的走到底）。
+#[test]
+fn recursive_includes_reach_three_levels() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "c.sfz", "<region>sample=c.wav\n");
+    write_file(root, "b.sfz", "#include \"c.sfz\"\n");
+    write_file(root, "a.sfz", "#include \"b.sfz\"\n<region>sample=a.wav\n");
+
+    // 走**引擎会用**的那条入口：根文本由调用方给出（`resolve_text_lossy`）。
+    let limits = ParseLimits::default();
+    let resolver = IncludeResolver::new(root, limits).expect("base");
+    let resolution = resolver
+        .resolve_text_lossy("a.sfz", "#include \"b.sfz\"\n<region>sample=a.wav\n")
+        .expect("resolves");
+    assert!(resolution.issues.is_empty(), "三层都读得到 ⇒ 无 issue");
+    let instrument = parse_sources(&resolution.sources, &limits).expect("parses");
+    let samples: Vec<String> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.sample.to_string())
+        .collect();
+    assert_eq!(
+        samples,
+        vec!["c.wav".to_string(), "a.wav".to_string()],
+        "C 在 A 之前"
+    );
+}
+
+/// 容错展开：缺失的 include **记一条**，其余 include／inline region 照常。
+#[test]
+fn lossy_resolution_records_a_missing_include_and_keeps_the_rest() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "inc.sfz", "<region>sample=inc.wav\n");
+    write_file(
+        root,
+        "main.sfz",
+        "<region>sample=main.wav\n#include \"missing.sfz\"\n#include \"inc.sfz\"\n",
+    );
+
+    let limits = ParseLimits::default();
+    let resolver = IncludeResolver::new(root, limits).expect("base");
+    let resolution = resolver
+        .resolve_lossy("main.sfz")
+        .expect("lossy resolve succeeds");
+    assert_eq!(resolution.issues.len(), 1, "恰好一条缺失");
+    assert_eq!(resolution.issues[0].line, 2);
+    assert_eq!(resolution.issues[0].path, "missing.sfz");
+    assert_eq!(
+        resolution.issues[0].kind,
+        yeban_sfz::IncludeIssueKind::NotFound
+    );
+
+    let instrument = parse_sources(&resolution.sources, &limits).expect("parses");
+    let samples: Vec<String> = instrument
+        .regions()
+        .iter()
+        .map(|region| region.sample.to_string())
+        .collect();
+    assert_eq!(samples, vec!["main.wav".to_string(), "inc.wav".to_string()]);
+    assert!(
+        format!("{}", resolution.issues[0]).contains("missing.sfz"),
+        "记录必须可读"
+    );
+}
+
+/// 容错档**不**吞掉结构性问题：成环与超深度仍然是 `Err`（⛔ 不无限递归）。
+#[test]
+fn lossy_resolution_still_rejects_cycles_and_depth_overruns() {
+    let dir = TempDir::new("sfz");
+    let root = dir.path();
+    write_file(root, "a.sfz", "#include \"b.sfz\"\n");
+    write_file(root, "b.sfz", "#include \"a.sfz\"\n");
+
+    let limits = ParseLimits::default();
+    let error = IncludeResolver::new(root, limits)
+        .expect("base")
+        .resolve_lossy("a.sfz")
+        .expect_err("cycle must be an error even in lossy mode");
+    assert!(matches!(error, SfzError::IncludeCycle { .. }), "{error:?}");
+
+    // 深度：A → B → C，限额 2 ⇒ 入口 + 一层（`max_include_depth` 是闭上界）。
+    write_file(root, "c.sfz", "<region>sample=c.wav\n");
+    write_file(root, "a.sfz", "#include \"b.sfz\"\n");
+    write_file(root, "b.sfz", "#include \"c.sfz\"\n");
+    let limits = ParseLimits {
+        max_include_depth: 2,
+        ..ParseLimits::default()
+    };
+    let error = IncludeResolver::new(root, limits)
+        .expect("base")
+        .resolve_lossy("a.sfz")
+        .expect_err("depth 2 must be an error");
+    assert!(
+        matches!(error, SfzError::IncludeDepthExceeded { limit: 2 }),
+        "{error:?}"
+    );
+}

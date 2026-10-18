@@ -1648,12 +1648,17 @@ pub(crate) fn build_region<'a>(
     };
     let trigger_by_note = key != Some(-1);
     let derived = key.filter(|value| *value >= 0);
+    // ⭐ 任务单 `#206`：`lokey` / `hikey` 与 `key` 一样接受 **`-1`**（"无键"哨兵：
+    // `salamander-grand` 的 `Data/pedal.txt` 用 `lokey=-1 hikey=-1` 声明只在 CC
+    // 事件上发声的踏板噪声 region）。`Region::lokey/hikey` 是 i32，`matches_key`
+    // 拿 0..=127 的音符比较 ⇒ `-1..=-1` 永远不匹配，行为与 `key=-1` 一致。
+    // 同时接受音名（与 `key` 同一条 `as_note` 路径）。
     let lokey = match scopes.get("lokey") {
-        Some(value) => value.as_int(0, 127)? as i32,
+        Some(value) => value.as_note(-1, 127)?,
         None => derived.unwrap_or(0),
     };
     let hikey = match scopes.get("hikey") {
-        Some(value) => value.as_int(0, 127)? as i32,
+        Some(value) => value.as_note(-1, 127)?,
         None => derived.unwrap_or(127),
     };
     let pitch_keycenter = match scopes.get("pitch_keycenter") {
@@ -1763,8 +1768,18 @@ pub(crate) fn build_region<'a>(
         Some(value) => Some(value.as_note(0, 127)? as u8),
         None => None,
     };
-    let sw_lokey = read_u8(&scopes, "sw_lokey", 0, 127, 0)?;
-    let sw_hikey = read_u8(&scopes, "sw_hikey", 0, 127, 127)?;
+    // ⭐ 任务单 `#206`：keyswitch 音域的**两个端点**与 `sw_last` / `sw_default` 同族，
+    // 音名（`C0`）也是合法写法（`salamander-grand` 的 `sw_lokey=$NATURAL` → `C0`，
+    // 该文件此前因为 include 被忽略而从未走到这里）。走同一条 `as_note` 路径：
+    // 整数与音名都接受，越界仍是 `IntegerOutOfRange`（⛔ 不钳位）。
+    let sw_lokey = match scopes.get("sw_lokey") {
+        Some(value) => value.as_note(0, 127)? as u8,
+        None => 0,
+    };
+    let sw_hikey = match scopes.get("sw_hikey") {
+        Some(value) => value.as_note(0, 127)? as u8,
+        None => 127,
+    };
     let sw_down = match scopes.get("sw_down") {
         Some(value) => Some(value.as_note(0, 127)? as u8),
         None => None,
@@ -2617,14 +2632,11 @@ fn read_modulation_delta(
         // [`crate::modulation`] §8.1／§8.2）。
         ModUnit::Decibels => (raw, 1.0_f32),
     };
-    let parsed = number
-        .trim()
-        .parse::<f32>()
-        .map_err(|_| SfzError::InvalidFloat {
-            line,
-            opcode: name.to_string(),
-            value: raw.to_string(),
-        })?;
+    let parsed = parse_modulation_float(number).ok_or_else(|| SfzError::InvalidFloat {
+        line,
+        opcode: name.to_string(),
+        value: raw.to_string(),
+    })?;
     if !parsed.is_finite() {
         return Err(SfzError::NonFiniteFloat {
             line,
@@ -2633,7 +2645,8 @@ fn read_modulation_delta(
         });
     }
     let value = parsed * scale;
-    // ⭐⭐ `#116`：域的**唯一**来源（`tune` ⇒ ±9600 音分；其余目标 ⇒ ±100）。
+    // ⭐⭐ `#116`：域的**唯一**来源（`tune` ⇒ ±9600 音分；`volume` ⇒ -144..=48 dB；
+    // `amplitude` ⇒ 任意有限值（`#206`）；`ampeg_*` ⇒ ±100）。
     let (min, max) = target.delta_range();
     if !(min..=max).contains(&value) {
         return Err(SfzError::FloatOutOfRange {
@@ -2645,6 +2658,24 @@ fn read_modulation_delta(
         });
     }
     Ok(value)
+}
+
+/// 读调制量的浮点：**严格 `parse::<f32>()` 优先**；只有严格解析失败、且文本以
+/// **一个** `.` 结尾时，去掉那个点再试一次。
+///
+/// 为什么（任务单 `#206`）：`karoryfer-big-rusty-drums` 的
+/// `Programs/mappings/tom_14_map_brush.sfz:49` / `tom_15_map_brush.sfz:49` 写的是
+/// `ampeg_decay_oncc49=-1.6.`（作者笔误）。ARIA 用 C `atof` 语义读到 `-1.6` 就停
+/// ⇒ 这类笔误在真实乐器里**能响**；若我们硬报 `InvalidFloat`，70 条 include 的
+/// 8 016 个 region 会整份不可加载。容忍范围**只到"末尾多一个点"**：
+/// `abc` / `1,6` / `1.2.3` 仍然响亮 `InvalidFloat`（⛔ 不把任意前缀当数字）。
+fn parse_modulation_float(text: &str) -> Option<f32> {
+    let trimmed = text.trim();
+    if let Ok(value) = trimmed.parse::<f32>() {
+        return Some(value);
+    }
+    let without_trailing_dot = trimmed.strip_suffix('.')?;
+    without_trailing_dot.parse::<f32>().ok()
 }
 
 /// 读 `_curveccN` 的**曲线下标**（整数，`0..=255`；`ampeg_attackccN` 页 Modulation 表）。

@@ -93,8 +93,10 @@
 //! * ② `<control> default_path=`：`Region::sample_path()` 先拼前缀再交给同一个解析函数
 //!   ⇒ **同一处归一**覆盖（`vsco2ce` 就是这种：`sample=` 干净，`default_path` 带 `\`）；
 //! * ③ `#include`：**不归本模块管** —— `yeban-sfz` 的 include 沙箱早已在
-//!   `parser.rs:1667` 做过 `raw.replace('\\', "/")`，且本模块的 `SfzInstrument::load`
-//!   走 `parse_text`（纯文本模式，**忽略** `#include`，见 `parser.rs:316`）。
+//!   `parser.rs` 的 `check_relative` 做过 `raw.replace('\\', "/")`。⭐ 任务单 `#206`
+//!   起 include 由**装载入口**（[`load_sfz_with_instrument`]）交给
+//!   `SfzInstrument::load_with_includes` 真正展开；本模块只把被跳过的目标
+//!   （缺失 / glob 无匹配）逐条放进 [`SfzLoadReport::include_issues`]。
 //!
 //! ⛔ **本层不改原样字符串**：`Region::sample`／`sample_path()`／
 //! [`SfzDecodeReport::referenced_sample_paths`] 与引擎的 `missing_sample_paths` 仍逐字是
@@ -110,7 +112,7 @@ use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_model::EntityId;
 use yeban_render::wav::WavError;
-use yeban_sfz::parser::ParseLimits;
+use yeban_sfz::parser::{IncludeIssue, ParseLimits};
 
 /// ⭐ **控制侧读盘计数器**（任务单 `#80` 的缓存判据的**可观测量**）。
 ///
@@ -263,6 +265,11 @@ pub struct SfzLoadReport {
     /// 是否已经接到导出/录音的音源上：默认 `false`（本次装载**没有请求**导出/录音），
     /// 调用方（CLI 的 `run_batch`）在真的要用它导出/录音时改写为 `true`。
     pub wired_to_export: bool,
+    /// ⭐ `#206`：`#include` **容错展开时被跳过的**目标（文件不存在 / glob 无匹配）。
+    ///
+    /// 空 ⇒ 全部 include 都读到了。每条都带**行号 + 请求路径 + 原因**；装载本身
+    /// **不会**因为一条缺失就失败（其余 include 与 inline `<region>` 照常）。
+    pub include_issues: Vec<IncludeIssue>,
 }
 
 impl SfzLoadReport {
@@ -277,10 +284,11 @@ impl SfzLoadReport {
             None => "-".to_owned(),
         };
         format!(
-            "loaded-sfz: path={} bytes={} regions={} sample_source={} probe(note:vel:frames:energy)={probe} wired_to_export={}",
+            "loaded-sfz: path={} bytes={} regions={} include_issues={} sample_source={} probe(note:vel:frames:energy)={probe} wired_to_export={}",
             self.path.display(),
             self.bytes,
             self.regions,
+            self.include_issues.len(),
             self.sample_source,
             if self.wired_to_export { "yes" } else { "no" },
         )
@@ -302,6 +310,11 @@ pub fn load_sfz(
 
 /// 与 [`load_sfz`] 相同，但**同时交出乐器本体**（`--sfz` ＋ `--export-wav` 接线要用它发声）。
 ///
+/// ⭐ 任务单 `#206`：本函数是**唯一**的 SFZ 读入口，因此 `#include` 展开也在这里接线：
+/// 根文本仍在**这里**读（读盘计数与字节数口径不变），但解析交给
+/// [`SfzInstrument::load_with_includes`]（`base_dir` ＝ 根文件所在目录）。
+/// 缺失的 include 只记进 [`SfzLoadReport::include_issues`]，⛔ 不让整份乐器失败。
+///
 /// # Errors
 ///
 /// 与 [`load_sfz`] 相同。
@@ -315,9 +328,21 @@ pub fn load_sfz_with_instrument(
     let text = std::fs::read_to_string(path)
         .map_err(|error| SfzLoadError::Read(format!("读 `{}` 失败: {error}", path.display())))?;
     let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
+    let limits = ParseLimits::default();
     // 控制侧专用（会分配）—— 见模块文档 ②。
-    let instrument = SfzInstrument::load(text, &ParseLimits::default())
-        .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
+    // ⭐ `#206`：有目录 + UTF-8 文件名 ⇒ 走 include 展开；否则退回纯文本（既有行为）。
+    let base_dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let entry = path.file_name().and_then(|name| name.to_str());
+    let instrument = match entry {
+        Some(entry) if !entry.is_empty() => {
+            SfzInstrument::load_with_includes(text, base_dir, entry, &limits)
+        }
+        _ => SfzInstrument::load(text, &limits),
+    }
+    .map_err(|error| SfzLoadError::Parse(error.to_string()))?;
     let probe = probe_note
         .map(|note| probe_note_energy(&instrument, note, engine_hz))
         .transpose()?;
@@ -330,6 +355,7 @@ pub fn load_sfz_with_instrument(
             sample_source: SAMPLE_SOURCE.to_owned(),
             // 默认 `false`（本次装载没有请求导出/录音）；调用方（CLI）在真的要用它导出/录音时改写为 `true`。
             wired_to_export: false,
+            include_issues: instrument.include_issues().to_vec(),
         },
         instrument,
     ))

@@ -3765,6 +3765,10 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // 导出**或录音**真的会用到它，才报 `wired_to_export=yes`（⛔ 不夸大）。
         report.wired_to_export = options.export_wav.is_some() || options.record_wav.is_some();
         lines.push(report.summary());
+        // ⭐ `#206`：被跳过的 `#include` **逐条**打印（`loaded-sfz` 汇总行里只有条数）。
+        for issue in &report.include_issues {
+            lines.push(format!("sfz-include-issue: {issue}"));
+        }
         loaded_sfz = Some((std::sync::Arc::new(instrument), path.clone()));
     }
 

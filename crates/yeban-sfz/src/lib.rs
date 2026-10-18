@@ -372,8 +372,8 @@ pub use instrument::{
 pub use label::{Labels, MAX_CC_LABEL_INDEX, parse_cc_label_name};
 pub use midi::{MidiOpcode, MidiSection};
 pub use parser::{
-    Header, IncludeResolver, OpcodeValue, ParseLimits, SfzSource, Warning, parse_f32, parse_int,
-    parse_note, parse_sources, parse_text,
+    Header, IncludeIssue, IncludeIssueKind, IncludeResolution, IncludeResolver, OpcodeValue,
+    ParseLimits, SfzSource, Warning, parse_f32, parse_int, parse_note, parse_sources, parse_text,
 };
 pub use playback::{
     FALLBACK_SAMPLE_RATE, LoopWindow, PlaybackSpec, RegionPlay, RenderRates, SampleSpan,
