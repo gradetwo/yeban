@@ -1021,14 +1021,21 @@ export component MainWindow inherits Window {
     // 中段与底部控制台各占弹性区的 60% / 40% (规范要 55–65% / 35–45%)。
     // 与 `DemoScene::demo()` 的 viewport_width/height 保持一致 —— 不一致会让
     // `compact` 的取值和实际窗口宽度对不上。
-    width: 1920px;
-    height: 1080px;
+    // ⭐ `#183`：这里原来钉着 `width: 1920px; height: 1080px;`。钉死的根尺寸 = **窗口不可
+    // 缩小**：窗口被拉到 1440×900 时，Slint 仍按 1920×1080 排版，再**裁掉**右下角 ⇒
+    // 底部控制台的下沿（以及设备架两段的下半部分）落在窗口外。现在尺寸交给**后端**
+    // （下面那个 `VerticalLayout` 的 `preferred-*` 只给**初值** 1920×1080），
+    // `root.width` / `root.height` 从此是**真实窗口尺寸**。
     background: Tokens.bg-void;
 
     // =====================================================================
     // 外壳网格 [UI-GRID-001]
     // =====================================================================
     VerticalLayout {
+        // ⭐ `#183`：初值仍是 1920×1080（= §1.2 的"全展开"档与 `DemoScene::demo()` 的
+        // viewport），但它是**首选**尺寸而不是硬约束 —— 窗口被拉小时布局跟着缩。
+        preferred-width: 1920px;
+        preferred-height: 1080px;
         x: 0;
         y: 0;
         width: root.width;

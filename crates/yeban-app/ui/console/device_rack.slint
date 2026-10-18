@@ -1367,6 +1367,30 @@ export component DeviceRack inherits Rectangle {
         }
     }
 
+    // ------------------------------------ 第二段的水平贴合（⭐ 任务单 `#183`）
+    //
+    // ⚠ 原来这里是**两条常量**（`x: 840px; width: 544px` ⇒ 右沿 1384）。窗口宽于 1392 时
+    // 整栏可见，**窄于 1392 就被父级 `clip` 裁掉** —— 那正是 `#180`／`#181` 逐字登记的
+    // 已知边界。现在两个值由面板宽度算出：
+    //
+    // | 面板宽 | 左沿 | 宽 | 右沿 | 读数 |
+    // | :--- | :--- | :--- | :--- | :--- |
+    // | 1920 | 840 | 544 | 1384 | 与 `#180` **逐像素一致**（面板 ≥ 1392 时公式恒等于常量） |
+    // | 1440 | 840 | 544 | 1384 | 同上（1440 ≥ 1392） |
+    // | 1280 | 840 | 432 | 1272 | 宽度让给面板右沿，⛔ 不越界、⛔ 不与第一段重叠（第一段止于 824） |
+    // | 1024 | 696 | 320 | 1016 | 触到 320 下限后左沿才开始左移（此时与第一段右侧**重叠**，如实登记） |
+    //
+    // ⛔ 本文件仍然只有一套绝对坐标；这里只是把两段里**唯一越界的那两个常量**换成
+    // "宽面板恒等于常量"的算式 —— 所以 1920/1440 两档的几何与像素一位不动。
+    property <length> master-rack-width: max(320px, min(544px, root.width - 848px));
+    property <length> master-rack-x: min(
+        840px,
+        max(Tokens.space-4, root.width - self.master-rack-width - Tokens.space-4),
+    );
+    /// 第二段里 EQ 那一格（`master-device-eq-panel`）的宽度：宽面板 328（`#181` 的原值），
+    /// 窄面板让到"插设备按钮（止于 192）之后、右沿留 16"。**唯一**算这一格的地方。
+    property <length> master-eq-panel-width: min(328px, root.master-rack-width - 208px);
+
     // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`）
     //
     // ⭐ **第二段、第二个目标**：主总线（`master_bus_track_id`）上的设备可以在这里
@@ -1375,14 +1399,16 @@ export component DeviceRack inherits Rectangle {
     // （`master_device_track`）。⛔ 本文件不拼身份、⛔ 不写参数值、⛔ 不提交；
     // 每台的身份来自 `master-device-ids[master_device_index]`，Op 与值域由宿主求。
     //
-    // ⚠ 几何：它住在面板右侧**此前完全空白**的区域（第一段止于 824px；控制台在
-    // 1920×1080 默认窗口里宽 1400px）。绝对坐标与本文件其余部件同一条纪律，
-    // ⛔ 不引入第二套布局；窗口窄于默认档时它会被父级 `clip` 裁掉（如实登记在交付报告）。
+    // ⚠ 几何：它住在面板右侧（第一段止于 824px），左沿 / 宽度由上面的
+    // `master-rack-x` / `master-rack-width` 按面板宽度算 —— 宽面板上仍是 `840/544`
+    // （`#180` 的原值），窄面板上右沿贴到 `面板宽 − 8`，⛔ 不再被父级 `clip` 裁掉。
     Rectangle {
-        x: 840px;
+        x: root.master-rack-x;
         y: 28px;
-        width: 544px;
-        height: 260px;
+        width: root.master-rack-width;
+        // 面板矮于 288px 时先收自己的高度（`#180` 的 260 是**上限**，不是下限）——
+        // 否则容器底边会被面板的 `clip` 切掉 7px（1280×800 档实测）。
+        height: min(260px, root.height - 28px);
         background: Tokens.bg-panel;
         border-radius: Tokens.radius-md;
         border-width: 1px;
@@ -1396,7 +1422,8 @@ export component DeviceRack inherits Rectangle {
         UiText {
             x: Tokens.space-4;
             y: Tokens.space-2;
-            width: 360px;
+            // 右沿留出计数那一格（144 ＋ 16 间距）⇒ 544 宽时仍是 360（`#180` 的原值）。
+            width: parent.width - 184px;
             height: 16px;
             text: root.master-device-label;
             color: Tokens.ink-0;
@@ -1408,7 +1435,8 @@ export component DeviceRack inherits Rectangle {
         }
 
         UiMonoText {
-            x: 384px;
+            // 右沿钉在 `宽度 − 16`（544 宽时 = 384，`#180` 的原值）。
+            x: parent.width - 160px;
             y: Tokens.space-2;
             width: 144px;
             height: 16px;
@@ -1515,9 +1543,10 @@ export component DeviceRack inherits Rectangle {
         // ⚠ 它与"装设备不可用原因行"（y=52..66）在 x 上有重叠，但两者**互斥**：
         // 装设备不可用只在"没有主总线"时发生，而那时 EQ 目标必然不存在 ⇒ 这一组不画。
         Rectangle {
-            x: 200px;
+            // 右沿钉在 `本段宽度 − 16`（544 宽时 x=200 / 宽 328 ⇒ `#181` 的原值）。
+            x: root.master-rack-width - root.master-eq-panel-width - 16px;
             y: 22px;
-            width: 328px;
+            width: root.master-eq-panel-width;
             height: 48px;
             background: Tokens.bg-shell;
             border-radius: Tokens.radius-md;
@@ -1575,7 +1604,8 @@ export component DeviceRack inherits Rectangle {
             Rectangle {
                 x: 8px;
                 y: 28px;
-                width: 300px;
+                // 滑轨宽 = 本格宽 − 28（328 宽时仍是 300，`#181` 的原值）。
+                width: parent.width - 28px;
                 height: 18px;
                 background: transparent;
                 visible: root.master-device-eq-available;
@@ -1599,7 +1629,7 @@ export component DeviceRack inherits Rectangle {
                 }
                 // 0 dB 刻度（值域跨过 0 时才画；位置由注入端点算出）
                 Rectangle {
-                    x: 150px;
+                    x: (parent.width - 28px) / 2;
                     y: 3px;
                     width: 1px;
                     height: 12px;
@@ -1609,7 +1639,7 @@ export component DeviceRack inherits Rectangle {
                 }
                 // 旋钮
                 Rectangle {
-                    x: 288px * root.master-eq-fraction-clamped;
+                    x: (parent.width - 40px) * root.master-eq-fraction-clamped;
                     y: 1px;
                     width: 12px;
                     height: 16px;
@@ -1623,7 +1653,7 @@ export component DeviceRack inherits Rectangle {
             TouchArea {
                 x: 8px;
                 y: 28px;
-                width: 300px;
+                width: parent.width - 28px;
                 height: 18px;
                 visible: root.master-device-eq-available;
                 pointer-event(event) => {
