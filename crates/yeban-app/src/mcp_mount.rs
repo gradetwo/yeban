@@ -898,7 +898,12 @@ fn acquire_session_lock(source: &SessionSource) -> Result<Option<AcquiredLock>, 
 /// 内存样本是 `true`，单一写者挂载（[`SessionSource::WritableFile`]）是 `false`。
 ///
 /// 高熵令牌在**这里**生成（[`BearerToken::generate`]，256 bit）—— 没有第二个生成点。
-fn session_dispatcher(
+///
+/// ⭐ `#219`：可见性从**私有**放宽到 `pub(crate)`，唯一目的是让**同文件树**的判据
+/// `mcp_mount/embedded_sfz_tools.rs` 直接调用这**一个**函数（⛔ 不在测试里复制装配）。
+/// 它仍然不是公开 API（`pub(crate)` 不出 crate），生产调用点仍只有
+/// [`InProcessMcp::start_for_project`] 一处。
+pub(crate) fn session_dispatcher(
     project: &YebanProjectV1,
     path: &Path,
     read_only: bool,
@@ -930,3 +935,8 @@ pub fn publish_token(token: &BearerToken) -> Result<PathBuf, MountError> {
         .map_err(|error| MountError::Domain(error.to_string()))?;
     Ok(file.path().to_path_buf())
 }
+
+// ⭐ `#219`：**内嵌装配**的端到端判据。子模块因此能直接调用父模块的
+// `session_dispatcher`（同一个符号，⛔ 不复制装配）。只在 `cargo test` 下编译。
+#[cfg(test)]
+mod embedded_sfz_tools;
