@@ -14226,3 +14226,26 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ ⭐ ⭐ **二、⭐ 一条**记账口径**（⭐ 沿用第 322 条）**: ⭐ 本轮的 8 条里 ⭐ `2dec598e`／⭐ `9b5032c1` 之类**docs 提交**的绿 ⭐ **可能是空绿**（⭐ 平台腿 `skipped`）⇒ ⭐ ⚠ **它们⛔ 不能算"⭐ 代码绿"** ⇒ ⭐ **我这一夜只把"⭐ 含代码改动"⭐的那几条当判决** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`0c4d0ff7` 判决** ＋ ⭐ `#223`（⭐ FLAC/OGG ＋ ⭐ 4 类不支持项）＋ ⭐ `#224`（⭐ CLI AuxReturn ＋ ⭐ 轨选择器）＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ 听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R931 实测追加（2026-10-19）：⭐ **`#223`（MCP 解码面）落地 ＋ 快进合并** ⇒ ⭐ **28/28 个库都能读到样本**
+
+⭐ **合并**: ⭐ base `6944483e` ⇒ ⭐ `FINAL=e909799e`（⭐ 9 文件 ＋763／−21）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **mcp 879 ／⭐ decode 196 passed／FAILED 0** ＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **decode＋mcp 全层 0** ＋ ⭐ `validate_schemas` 4 份通过 ＋ ⭐ ⭐ **依赖方向守卫**：⭐ `0 条未登记违规、1 条已登记例外（yeban-render）` ✓ ⭐ 树已拆 ＋ `target`（5.1 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 复用而⛔ 不新造（⭐ 关键）**: ⭐ `yeban-decode` ⭐ ⭐ **本来就在 `yeban-mcp` 的依赖里**（⭐ `Cargo.toml:85`）＋ ⭐ **不在 `FORBIDDEN`**（⭐ `FORBIDDEN` ＝ `yeban-app/dsp/render/engine/audio`）⇒ ⭐ ⭐ **没有新增依赖边、⭐ 没改守卫、⭐ 没加例外** ✓
+⭐ 新增的共享件：⭐ `MonoSample` ＋ ⭐ **`decode_mono_channel0`**（⭐ `decode_path` → ⭐ `step_by(channels)` ⭐ 取声道 0 ⇒ ⭐ `sample_hz` ＝ ⭐ 文件自身采样率）⇒ ⭐ ⭐ **`describe()` 与 WAV 腿 `read_plain_wav_mono_f32` 逐字同形**（⭐ `file(<path> frames=N rate=R)`）✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 真实库的前后对照（⭐ 这张表最值钱）**: ⭐ ⭐ **`samples>0` 的库 17/28 → **28/28**** ＋ ⭐ ⭐ **有读数的 SFZ 361/1398 → **397/1398**** ✓
+⭐ 逐例：⭐ `freepats-spanish-classical-guitar` **0/48 → 26 读**（⭐ `+22` 被 `MAX_SAMPLE_FILES_READ=32` **上限**卡住、⭐ **且不静默**：⭐ 逐字 `已有 33 个不同样本文件, 达到本次调用的上限 32 ⇒ 不再读盘 (⛔ 不静默截断)`）★ ⭐ `vcsl` 的 OGG **0/18 → 18/18**（⭐ `frames=6126823`）★ ⭐ `discord-gm-sitar` ⭐ `failedFiles 71 → 19`、⭐ `mtu-solo-sax` `1014 → 822` 等 ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ PCM WAV **零退化**（⭐ 判法很硬）**: ⭐ **1398 行前后对比** ⇒ ⭐ ⭐ **changed ＝ 36 行、⭐ 且这 36 行**before 的 `readCount` 全为 0**** ★ ⭐ ⭐ **before 已读的 361 行**逐字段（⭐ 含 `sampleSource` 整串）**完全相同**** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 那 4 类**全部进清单并可触发**（⭐ 第 324 条落地）**: ⭐ `KNOWN_UNSUPPORTED_KEYS` ⭐ **14 → 18** ⇒ ⭐ 新增 ⭐ **`sfzAmplitude`／⭐ `sfzTuneCcModulation`／⭐ `sfzVolumeCcModulation`／⭐ `sfzSampleSpan`** ★ ⭐ 逐字读数：⭐ `### sfzAmplitude 的 unsupported: [String("sfzAmplitude")]`（⭐ 其余三个同形）★ ⭐ **控制臂**：⭐ 同 SFZ **去掉四 opcode** ⇒ ⭐ **四键一个都不出现** ⇒ ⭐ ⭐ **证明"⭐ 只在真声明时才报"**、⛔ 不是恒报 ✓
+⭐ ⭐ **它给的理由（⭐ 逐类）**: ⭐ ① ⭐ 若只乘静态 `amplitude/100` ⇒ ⭐ **`amplitude_onccN` 会变成"半实现且静默漏 CC"** ⇒ ⭐ **整族登记** ②③ ⭐ **MCP 工具面**没有 CC/自动化状态**（⭐ 没有输入通道）⇒ ⭐ **无法真求值** ④ ⭐ 实现 span 还要连带 `direction=reverse` 语义 ＋ ⭐ **会改既有渲染字节** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 一条**好消息**（⭐ 它查的）**: ⭐ ⭐ **app 侧本来就能读 FLAC/OGG**（⭐ 用 prebuilt 二进制验：⭐ `source=sfz(file(…chimes_C1.ogg frames=505575 rate=44100))`）⇒ ⭐ ⭐ **不是更大的洞** ✓
+
+⭐ ⚠ **六、⭐ 如实（⭐ 四条）**: ⭐ ① ⭐ **没人耳听** ② ⭐ ⚠ **FLAC/OGG 只到"⭐ 帧数/采样率/可解码"**（⭐ 合成 FLAC 是常量直流、⭐ OGG 夹具是**静音**）⇒ ⭐ **没有波形级正确性判定** ③ ⭐ ⚠ ⭐ ⭐ **`MAX_SAMPLE_FILES_READ=32` 未动** ⇒ ⭐ Spanish guitar 仍有 **22/48** 单次装载读不到（⭐ 已登记待裁）④ ⭐ ⚠ **四类只登记未实现** ⇒ ⭐ **作者真写 `amplitude`/CC/`offset`/`end` 时 MCP 输出仍与 app 分叉**（⭐ 现在会在 `unsupported` 里说出来、⭐ 但**音频差异仍在**）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`MAX_SAMPLE_FILES_READ` 要不要提高**（⭐ 待裁）＋ ⭐ **真实现 `amplitude`／⭐ `offset-end`** ＋ ⭐ **app 腿迁到 `decode_mono_channel0`** ＋ ⭐ **真实 FLAC 走 `render_master` 的端到端** ＋ ⭐ `#224`（⭐ CLI AuxReturn ＋ ⭐ 轨选择器）＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ 听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
