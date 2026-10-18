@@ -35,13 +35,21 @@ use yeban_render::dither::{BitDepth, PcmBuffer};
 use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
 
-/// **接线前**（HEAD `e4f00a37`，本单第一条命令之后）实测：`filled_project` ＋
-/// [`WavExportOptions::default`] 在 `render_project_f32_with_assets(sampler = None)` 上的
-/// FNV-1a 指纹（逐位；样本 = `RenderProjectOutput::samples` 的交错 `f32`）。
+/// **上一基线**：`filled_project` ＋ [`WavExportOptions::default`] 在
+/// `render_project_f32_with_assets(sampler = None)` 上的 FNV-1a 指纹（逐位；
+/// 样本 = `RenderProjectOutput::samples` 的交错 `f32`）。
+///
+/// ⭐ **任务单 `#209` 重钉（第 298 条三件套）**：
+/// * 自报旧数：`0x442c_774e_81dc_2bd1`（接线前 `e4f00a37` 实测）；
+/// * 自报新数：`0xa0a7_0aab_b72b_b369`（本机 `aarch64/macos` 实测，判据输出见下）；
+/// * 原因：离线 `EngineTrackSource::render_block` 补上了 `self.engine.advance(frames)`
+///   —— `#207` 实测 `--export-wav` 的多音符只出第一个（`distinct=1`），因为每个块都
+///   从位置 0 渲染。修复后多块渲染的播放头真的前进 ⇒ 这份指纹**必然**变。
+///   本判据钉的是"`sampler = None` 的渲染输出逐位稳定"，⛔ 不是"播放头永不前进"。
 ///
 /// ⚠ 它是**某台机器上的实测值**，⛔ 不是规范常数（同 `yeban-engine` 的 S21 口径）：
 /// [ARCH-DET-001] 的 L1 只在"相同 OS ＋ CPU 架构 ＋ 纯 Rust libm"下承诺逐位一致。
-const BASELINE_APP: u64 = 0x442c_774e_81dc_2bd1;
+const BASELINE_APP: u64 = 0xa0a7_0aab_b72b_b369;
 
 /// 指纹的**测量平台**。
 const MEASURED_PLATFORM: &str = "aarch64/macos";
@@ -354,7 +362,7 @@ fn an_absent_sampler_is_bit_identical_to_before_the_wiring() {
         assert_eq!(
             actual, BASELINE_APP,
             "⭐ 同平台（本机 == {MEASURED_PLATFORM}）⇒ `sampler = None` 的输出必须逐位等于\
-             **接线前**实测指纹 0x{BASELINE_APP:016x}（实得 0x{actual:016x}）"
+             **`#209` 重钉后的**实测指纹 0x{BASELINE_APP:016x}（实得 0x{actual:016x}）"
         );
     } else {
         println!(

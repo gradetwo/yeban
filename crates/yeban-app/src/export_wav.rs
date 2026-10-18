@@ -416,7 +416,10 @@ impl AudioSource for EngineTrackSource {
         if self.mono.len() < frames {
             self.mono.resize(frames, 0.0);
         }
-        // `render_track` 复用内部游标推进（与实时路径同一个函数）。
+        // `render_track` 从引擎**当前**播放头渲染，它**不**推进游标（契约见
+        // `SynthEngine::render_track` 与 `unknown_track_renders_silence` 的
+        // "渲染不推进播放头（由 advance 负责）"）；推进由本函数紧随其后的
+        // `advance(frames)` 负责 —— 与实时路径 `rt.rs` 的同一量子同一顺序一致。
         // ⭐ ⭐ 第 3 参（SFZ 摊平表）**从快照借用**（任务单 `#79`）：这条轨在快照 `sfz()` 表里
         //    ⇒ 走引擎的第三条音源支路（鼓机 ＞ SFZ ＞ 复音）；不在表里 ⇒ `None` ⇒ 退回复音，
         //    输出与接线前**逐位相同**（`TrackV3.sampler = None` 的反向对照）。
@@ -432,6 +435,14 @@ impl AudioSource for EngineTrackSource {
             sfz,
             &mut self.mono[..frames],
         );
+        // ⭐ 任务单 `#209`：**必须**推进播放头，否则每个块都从位置 0 渲染
+        //    ⇒ 只有 tick 0 的音符会被触发一次并一直拖长，其余音符永不发声
+        //    （`#207` 实测 `--export-wav` ⇒ `distinct=1`）。
+        // ⚠ `render_track` 自带 `out.fill(0.0)` 与内部游标读取，但**不**推进位置：
+        //    推进只在 `advance`（`synth.rs` 的契约；实时路径见 `rt.rs` 的
+        //    `if running { transport.advance_frames(frames as u64); synth.advance(frames); }`）。
+        // ⚠ 本函数每块恰好渲染一次、推进一次 ⇒ 与 `first_frame` 同步，⛔ 不会推进两次。
+        self.engine.advance(frames);
         out.fill(0.0);
         for index in 0..frames {
             let value = self.mono[index];
@@ -737,6 +748,70 @@ mod tests {
             engine.bytes, fallback.bytes
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// ⭐⭐ 任务单 `#209` 的**回归判据**：离线源必须**每块推进**引擎播放头。
+    ///
+    /// # 量什么（先说再跑）
+    ///
+    /// 演示工程第一条有声轨的**第二**个音符起于 tick 480（48 kHz / 120 BPM ⇒ 第
+    /// 12000 帧）。逐块（512 帧）渲染 **30** 块 ⇒ 引擎的 `notes_triggered` 必须
+    /// **≥ 2**、`position` 必须等于 30 × 512 = **15360**。
+    ///
+    /// # 怎么变红
+    ///
+    /// 删掉 `render_block` 里的 `self.engine.advance(frames)` ⇒ 每块都从位置 0
+    /// 渲染 ⇒ `position == 0`、只有 tick 0 的 C4 触发一次 ⇒ 两个断言同时红
+    /// （`#207` 的 `--export-wav ⇒ distinct=1` 正是这个形状）。
+    #[test]
+    fn the_offline_source_advances_the_engine_so_later_notes_fire() {
+        let project = yeban_model::samples::demo_project();
+        let snapshot = std::sync::Arc::new(
+            EngineSnapshot::from_project(&project, 1).expect("演示工程必须成快照"),
+        );
+        let track = snapshot
+            .schedules()
+            .iter()
+            .find(|(_, schedule)| !schedule.notes().is_empty())
+            .map(|(track, _)| *track)
+            .expect("演示工程必须至少有一条有声轨");
+        let mut source = EngineTrackSource::new(snapshot, track).expect("必须能武装");
+
+        const FRAMES: usize = 512;
+        const BLOCKS: usize = 30;
+        let mut out = vec![0.0_f32; FRAMES];
+        for index in 0..BLOCKS {
+            source
+                .render_block(
+                    BlockContext {
+                        block_index: index as u64,
+                        first_frame: (index * FRAMES) as u64,
+                        frames: FRAMES,
+                        channels: 1,
+                        sample_rate: 48_000,
+                        seed: 1,
+                    },
+                    &mut out,
+                )
+                .expect("离线块渲染不得失败");
+        }
+        println!(
+            "[wav-advance] blocks={BLOCKS} frames={} position={} notes_triggered={}",
+            BLOCKS * FRAMES,
+            source.engine.position(),
+            source.engine.notes_triggered()
+        );
+        assert_eq!(
+            source.engine.position(),
+            (BLOCKS * FRAMES) as u64,
+            "⭐ 每块必须推进 {FRAMES} 帧（漏掉 advance ⇒ 位置停在 0）"
+        );
+        assert!(
+            source.engine.notes_triggered() >= 2,
+            "⭐ 渲染越过第二个音符的起点（第 12000 帧）后必须至少触发 2 个音符；\
+             实测 {}（漏掉 advance ⇒ 只有 tick 0 的 C4）",
+            source.engine.notes_triggered()
+        );
     }
 
     /// 判据（`sample=` **真读文件**）：把一条**常量**样本（`0.25` 的 24-bit PCM）当区域样本，
