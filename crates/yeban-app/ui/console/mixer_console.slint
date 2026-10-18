@@ -190,6 +190,21 @@ export component MixerConsole inherits Rectangle {
     in property <string> master-meter-rms: "-120.0";
     in property <float> master-meter-level: 0.0;
 
+    // ⭐ 任务单 `#186`：**窄档判定**（本文件唯一一处几何断点）。
+    //
+    // 判据（全部是 `root.width` 的像素算术，`Tokens.space-3 = 6px / space-4 = 8px`）：
+    //   宽档（当前生产布局）三块面板**并排**：通道条 `0..(8 + 104n)`，导出面板从
+    //   `8 + 104n` 起宽 216 ⇒ `..(8 + 104n + 216)`，工程面板再让一个 `space-3` 从
+    //   `8 + 104n + 222` 起宽 216 ⇒ 右沿 `8 + 104n + 438`。主控通道条钉在
+    //   `root.width - 112`。两者不相交的条件是 `root.width - 112 ≥ 8 + 104n + 438`
+    //   ⇒ 演示工程 `n = 6` 时 `root.width ≥ 1182`。
+    //   窄档（`< 1182px`）改为**竖排**：三块面板都从 `8 + 104n` 起（与导出面板同列），
+    //   工程面板 `y = 8 + 76 + 6`、素材池 `y = 90 + 104 + 6 = 200`，右沿全部
+    //   `8 + 104n + 216` ⇒ 演示工程在 1024 档右沿 848 < 主控左沿 912，**不相交**。
+    //
+    // ⛔ 这里不隐藏任何控件：窄档只是换座位（`#186` 的判据要求所有控件仍在树里）。
+    property <bool> narrow: root.width < 1182px;
+
     background: Tokens.bg-void;
     clip: true;
 
@@ -276,9 +291,14 @@ export component MixerConsole inherits Rectangle {
     // ⭐ 任务单 `#129` 在同一面板里向下加了一格「新建工程」（`y: 56px`）：
     // 「打开工程」按钮的 `x` / `y` / 宽 / 高**一位不动**，本面板只从 76px 变成 104px
     // （下面没有任何控件，`for` 通道条都在本面板**左侧**的 `104px * track_index` 列里）。
+    // ⭐ 任务单 `#186`：宽档座位一位未动；窄档（`root.narrow`）时这块面板移到
+    // 「导出 MIDI」面板**正下方**、与它同列（`x = 8 + 104n`，`y = 8 + 76 + space-3`），
+    // 让整列右沿停在主控通道条左侧（见文件上方 `narrow` 的算术）。
     Rectangle {
-        x: Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
-        y: Tokens.space-4;
+        x: root.narrow
+            ? Tokens.space-4 + 104px * root.track-names.length
+            : Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
+        y: root.narrow ? Tokens.space-4 + 76px + Tokens.space-3 : Tokens.space-4;
         width: 216px;
         height: 104px;
         background: Tokens.bg-panel;
@@ -375,11 +395,20 @@ export component MixerConsole inherits Rectangle {
     //
     // ⛔ 本组件不读盘、不造数据：三个数组**全部**来自投影（见 `src/bridge.rs` 的
     // `AssetPoolRowView`），空池显示「尚无素材」。
+    // ⭐ 任务单 `#186`：宽档仍是「工程」面板正下方（`y = 8 + 104 + space-3 = 118px`）；
+    // 窄档（`root.narrow`）时它排在**竖排后的「工程」面板**正下方（`y = 200px`），
+    // 高度随之收成 `root.height - 200`（下沿贴到调音台底，仍被 `clip: true` 裁住），
+    // 使整列的右沿/下沿都不越出主控通道条与调音台裁剪区，且两行素材（`y = 44/76`、高 30）
+    // 都在面板内。
     AssetPoolPanel {
-        x: Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
-        y: Tokens.space-4 + 104px + Tokens.space-3;
+        x: root.narrow
+            ? Tokens.space-4 + 104px * root.track-names.length
+            : Tokens.space-4 + 104px * root.track-names.length + 216px + Tokens.space-3;
+        y: root.narrow
+            ? Tokens.space-4 + 76px + Tokens.space-3 + 104px + Tokens.space-3
+            : Tokens.space-4 + 104px + Tokens.space-3;
         width: 216px;
-        height: root.height - 128px;
+        height: root.narrow ? root.height - 200px : root.height - 128px;
         asset-pool-names: root.asset-pool-names;
         asset-pool-kinds: root.asset-pool-kinds;
         asset-pool-details: root.asset-pool-details;

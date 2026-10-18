@@ -447,7 +447,16 @@ export component Transport inherits Rectangle {
     // 愁眠 / 愁眠 / 归雁的**冷**色（对 bg-panel-alt 4.89 / 6.10 / 5.93:1，≥ 3:1），
     // 暖强调确实不在徽章上了。`ai-suggestion` 本身仍按 §9.1 的语义用在钢琴卷帘的
     // AI 建议层（45% 半透明 + 虚线描边），**没有**改语义。
+    // ⭐ 任务单 `#186`：**窄档不画这枚徽章**（不是删控件 —— 它在宽档仍在树里）。
+    //
+    // 算术：徽章 `x = 640 / w = 120` ⇒ 右沿 760；视图组 `Session` 钉在
+    // `root.width - 304`。两者不相交的条件是 `root.width - 304 ≥ 760` ⇒ `≥ 1064px`。
+    // 1024 档实测：徽章 `(640,8,120,32)` ⟂ `transport-view-session-button (720,8,92,32)`
+    // —— 40px 宽、32px 高的真实重叠（`#186` 判据的负方向正对照）。
+    // 窄档下同一个动作仍有入口：右栏 `ai-rail-musical-pr-button`（1024 档在树里），
+    // 以及 `Cmd/Ctrl + \` 的抽屉键 —— 所以这里隐藏的是**重复入口**，不是唯一入口。
     Rectangle {
+        visible: root.width >= 1064px;
         x: 640px;
         y: Tokens.space-4;
         width: 120px;
