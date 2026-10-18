@@ -200,7 +200,11 @@ export component MusicalPrDrawer inherits Rectangle {
 
         UiMonoText {
             x: 152px;
-            y: 28px;
+            // ⭐ 任务单 `#189`：原来是 `y: 28px` —— 与上一行「↑ 微调」（`y: 16..32`，
+            // 横跨 `x: 216..312`）的包围盒竖向重叠 4px。图例行高 16、两条横排各占一行：
+            // 28px 是"第三行"的起点，与第二行的 16px 行高撞上。挪到 40px（40 + 16 = 56 ≤
+            // 图例高 68），与 `16..32` / `28..44` 两行都不再相交。
+            y: 40px;
             width: parent.width - 160px;
             height: 16px;
             text: "遮罩 #000000 (无头截图动态区域)";

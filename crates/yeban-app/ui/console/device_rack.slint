@@ -1482,6 +1482,13 @@ export component DeviceRack inherits Rectangle {
     /// 第二段里 EQ 那一格（`master-device-eq-panel`）的宽度：宽面板 328（`#181` 的原值），
     /// 窄面板让到"插设备按钮（止于 192）之后、右沿留 16"。**唯一**算这一格的地方。
     property <length> master-eq-panel-width: min(328px, root.master-rack-width - 208px);
+    /// 第二段里 EQ 面板的**左沿**（相对本段）：`段宽 − 面板宽 − 16`。
+    ///
+    /// ⭐ 任务单 `#189`：它同时是"装设备不可用原因行"宽度的唯一依据 —— 那一行原来写
+    /// `parent.width - 16px`（整段宽），右边 328px 钻到**不透明**的面板底下被盖住
+    /// （1920 档实测 `(848,743,528,14) ⟂ (1040,713,328,48)`）。两处都从这一格算 ⇒
+    /// 面板与原因行不可能再各自漂移。
+    property <length> master-eq-panel-x: root.master-rack-width - root.master-eq-panel-width - 16px;
 
     // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`）
     //
@@ -1616,7 +1623,10 @@ export component DeviceRack inherits Rectangle {
         UiText {
             x: Tokens.space-4;
             y: 52px;
-            width: parent.width - 16px;
+            // ⭐ 任务单 `#189`：右沿**收在面板左沿之前**（留 `space-4` 间隙）。
+            // 原来这里是 `parent.width - 16px` —— 面板不透明且后绘制，原因行右侧
+            // 328px 被它盖住（三档实测均相交）。完整文案仍挂在 `accessible-label`。
+            width: max(96px, root.master-eq-panel-x - Tokens.space-4 - Tokens.space-4);
             height: 14px;
             text: root.master-device-insert-reason;
             color: Tokens.ink-2;
@@ -1633,11 +1643,13 @@ export component DeviceRack inherits Rectangle {
         //
         // 几何：住在标题行右侧此前**空白**的区域（x=200..528，相对本段）⇒ 绝对
         // x=1040..1368，右沿 1368 ≤ 1384（本段的右沿）—— ⛔ 没有把第二段往右扩。
-        // ⚠ 它与"装设备不可用原因行"（y=52..66）在 x 上有重叠，但两者**互斥**：
-        // 装设备不可用只在"没有主总线"时发生，而那时 EQ 目标必然不存在 ⇒ 这一组不画。
+        // ⚠ **`#189` 更正**：这里曾经写着"与装设备原因行在 x 上重叠，但两者互斥"。
+        // 那句是错的：互斥的只是面板**里面的** value / slider，**面板自己**（`groupbox`）
+        // 无条件画。没有主总线时原因行（y=52..66）右侧 328px 就钻到这块不透明面板底下
+        // 被盖住（三档实测均相交）。现在原因行的宽度从 `master-eq-panel-x` 算 ⇒ 互不相交。
         Rectangle {
             // 右沿钉在 `本段宽度 − 16`（544 宽时 x=200 / 宽 328 ⇒ `#181` 的原值）。
-            x: root.master-rack-width - root.master-eq-panel-width - 16px;
+            x: root.master-eq-panel-x;
             y: 22px;
             width: root.master-eq-panel-width;
             height: 48px;
