@@ -96,9 +96,9 @@ const MODULE_STATUS_ID: &str = "module-last-status";
 const NOW_MS: u64 = 1_760_000_000_000;
 
 /// 窗口尺寸（非零即合法；判据只要求"窗口真的建起来过"）。
-// ⭐ `#191`：`compact` 现在跟**真实窗口宽**走 ⇒ 右栏在 1440 是抽屉（默认不在树里）。
-// 本判据要的是全展开档（≥1920）的右栏入口。
-const WINDOW: Size = Size::new(1920, 1080);
+// ⭐ `#191`：`compact` 现在跟**真实窗口宽**走（`ui/app.slint` 的表达式绑定）。
+// ⭐ `#195`：阈值 `1920 → 1180` ⇒ `1440` 是**展开档**，右栏常驻 ⇒ 本判据翻回 `1440`。
+const WINDOW: Size = Size::new(1440, 900);
 
 /// 临时目录（`Drop` 时清理，**绝不污染仓库**）。形态照 `file_picker_dialogs.rs`。
 struct Scratch {

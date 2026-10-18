@@ -7,7 +7,8 @@
 //
 // 规范来源 (Normative):
 //   - [UI-GRID-001] docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md §1.1 网格拓扑
-//   - [UI-GRID-002] 同上一节 §1.2 响应式断点 (≥1920 全展开 / 1366–1919 折叠) 与 splitter 极值
+//   - [UI-GRID-002] 同上一节 §1.2 响应式断点 (规范原文 ≥1920 全展开 / 1366–1919 折叠;
+//     ⭐ 任务单 `#195` 由负责人裁决把阈值移到 **1180** —— 规范本身 ⛔ 未改) 与 splitter 极值
 //   - [UI-A11Y-004] 同上 §7.4 色盲友好与高对比度
 //   - 同上 §10.2 视觉化差异表现 (新增 #22c55e / 删除 #ef4444 / 微调 #f59e0b)
 //   - [UI-MCP-002] 同上 §12.5 动态区域遮罩 (遮罩色 #000000)
@@ -141,7 +142,9 @@ export global Tokens {
     out property <length> splitter-max-height: 600px;
 
     // [UI-GRID-002] 断点阈值 (以逻辑像素计; 物理像素→逻辑像素换算在宿主 Rust 侧做)
-    out property <int> breakpoint-full-hd: 1920;
+    // ⭐ `#195`：全展开阈值 `1920 → 1180`（负责人裁决选 B）⇒ `width < 1180px` 才折叠;
+    // `1180` 本身、`1440`、`1920` 都展开。`breakpoint-min` 已无读者（保留为规范锚点）。
+    out property <int> breakpoint-full-hd: 1180;
     out property <int> breakpoint-min: 1366;
 
     // 中段与底部控制台的弹性比 3:2 = 60% / 40%, 落在规范的 55–65% / 35–45% 区间正中

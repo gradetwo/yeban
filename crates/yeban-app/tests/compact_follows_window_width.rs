@@ -1,29 +1,31 @@
 //! ⭐ 任务单 `#191`：**`compact` 断点跟着真实窗口宽走**。
+//! ⭐ 任务单 `#195`：断点阈值 `1920 → 1180` ⇒ `1440` 由折叠**翻成展开**。
 //!
 //! `#184` / `#189` 都逐字登记过同一个缺口：`host.rs:8451` 的
 //! `ui.set_compact(scene.compact())` 读的是 `DemoScene::viewport_width`（恒 `1920`,
-//! `scene.rs:188`），而 `DemoScene::compact()` 只在装配时算一次 ⇒ 用户把窗口拉窄，
-//! 左栏**不会**自动折叠。
+//! 现在是 `DEMO_VIEWPORT_WIDTH`），而 `DemoScene::compact()` 只在装配时算一次 ⇒
+//! 用户把窗口拉窄，左栏**不会**自动折叠。
 //!
 //! 本判据只走**生产构造入口** [`host::build_main_window`]，不碰 `set_compact`：
 //!
 //! | 判据 | 读数 |
 //! | :--- | :--- |
-//! | ① 三档断点值 | `1920 ⇒ false`、`1440 ⇒ true`、`1024 ⇒ true`（`[UI-GRID-002]` 的断点是 `1920`, `scene.rs:50`） |
-//! | ② 左栏宽随之变 | `240 → 36 → 36 → 240`（`Tokens.left-rail-width` / `left-rail-collapsed-width`） |
-//! | ③ 节点在场性随之变 | 只在展开态出现的 `sidebar-search-field`：`true → false → false → true` |
-//! | ④ 真窗口 resize | 同一实例 `1920 → 1440 → 1024 → 1920`，每次都是 `Tier1Window::resize`（= 平台适配器的 `WindowEvent::Resized`） |
+//! | ① 五档断点值 | `800 ⇒ true`、`1024 ⇒ true`、**`1180 ⇒ false`**、`1440 ⇒ false`、`1920 ⇒ false`（阈值 = `1180`, `scene.rs` 的 `BREAKPOINT_FULL_HD`） |
+//! | ② 左栏宽随之变 | `240 → 240 → 240 → 36 → 36 → 240`（`Tokens.left-rail-width` / `left-rail-collapsed-width`） |
+//! | ③ 节点在场性随之变 | 只在展开态出现的 `sidebar-search-field`：`true → true → true → false → false → true` |
+//! | ④ 真窗口 resize | 同一实例 `1920 → 1440 → 1180 → 1024 → 800 → 1920`，每次都是 `Tier1Window::resize`（= 平台适配器的 `WindowEvent::Resized`） |
 //!
 //! ## 它证什么 / 不证什么
 //!
-//! - 证：`MainWindow.compact` 是 `width < 1920px` 的绑定，**窗口尺寸真的变了**它就会翻；
+//! - 证：`MainWindow.compact` 是 `width < 1180px` 的绑定，**窗口尺寸真的变了**它就会翻；
 //!   两次翻向（宽→窄、窄→宽）都测，⛔ 不是一次性的初值巧合。
 //! - 证：折叠不只是 `compact` 这个布尔变了 —— 左栏几何与展开态节点**同时**跟着变。
+//! - 证（`#195`）：`1180` 这一档**恰好**判 —— `width < 1180` ⇒ `1180` 本身是 `false`。
 //! - ⛔ 不证：真 winit 窗口被人类用手拖动。本机没有可交互的桌面会话，判据是
 //!   **无头 Tier-1** 平台；`resize` 走的是 `MinimalSoftwareWindow::set_size` ⇒
 //!   `WindowEvent::Resized`，与 OS 侧 resize 在 Slint 的 `WindowAdapter` 上是**同一条**
-//!   事件。人类验收仍是"拉窗口看左栏是否折叠"（见交付报告 §10）。
-//! - ⛔ 不证：1920 基准帧（见 `#191` 的 1920 帧哈希对照，不在本文件里）。
+//!   事件。人类验收仍是"拉到 1440 看左栏是否 240"（见交付报告 §10）。
+//! - ⛔ 不证：1920 基准帧（见 `#191` / `#195` 的 1920 帧哈希对照，不在本文件里）。
 
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
@@ -81,78 +83,76 @@ fn observe(port: &LivePort<MainWindow>, label: &str) -> (bool, u32, bool, usize)
     let rails = right_rail_count(&tree);
     let window = port.window().size();
     report_line(&format!(
-        "[#191 {label}] 窗口 {}×{} ⇒ compact={compact}；sidebar 宽={sidebar}；\
+        "[#195 {label}] 窗口 {}×{} ⇒ compact={compact}；sidebar 宽={sidebar}；\
          `sidebar-search-field` 在场={search}；`ai-rail`={rails}",
         window.width, window.height
     ));
     (compact, sidebar, search, rails)
 }
 
+/// 一档的**全部**期望值（断点值 / 左栏宽 / 展开态节点 / 常驻右栏）。
+fn assert_tier(label: &str, got: (bool, u32, bool, usize), compact: bool) {
+    let (got_compact, sidebar, search, rails) = got;
+    let want_sidebar = if compact { 36 } else { 240 };
+    let want_rails = usize::from(!compact);
+    assert_eq!(
+        got_compact, compact,
+        "[#195 {label}] compact 读数必须 {compact}（阈值 1180：`width < 1180`）"
+    );
+    assert_eq!(
+        sidebar, want_sidebar,
+        "[#195 {label}] 左栏宽必须 {want_sidebar}px（compact={compact}）"
+    );
+    assert_eq!(
+        search, !compact,
+        "[#195 {label}] `sidebar-search-field` 的在场性必须恰好是 `!compact`"
+    );
+    assert_eq!(
+        rails, want_rails,
+        "[#195 {label}] 常驻 `ai-rail` 的个数必须 {want_rails}（窗口宽 >= 1180 时它常驻）"
+    );
+}
+
 // ===========================================================================
-// 判据 ①–④：同一实例上真 resize 扫三档，再回到 1920
+// 判据 ①–④：同一实例上真 resize 扫五档（800 / 1024 / 1180 / 1440 / 1920），再回到 1920
 // ===========================================================================
 #[test]
 fn the_compact_breakpoint_follows_the_real_window_width() {
     std::thread::spawn(|| {
         let port = build(Size::new(1920, 1080));
 
-        // 1920：`[UI-GRID-002]` 的全展开档 ⇒ `width < 1920px` 求值为 false。
-        let (compact, sidebar, search, rails) = observe(&port, "1920");
-        assert!(
-            !compact,
-            "[#191 1920] 1920 宽必须落在全展开档（compact == false）"
-        );
-        assert_eq!(sidebar, 240, "[#191 1920] 展开态左栏必须是 240px");
-        assert!(
-            search,
-            "[#191 1920] `sidebar-search-field` 在展开态必须在场"
-        );
-        assert_eq!(rails, 1, "[#191 1920] 展开态必须恰有 1 个常驻 `ai-rail`");
+        // 1920：全展开 ⇒ `width < 1180px` 求值为 false。
+        assert_tier("1920", observe(&port, "1920"), false);
 
-        // 1440：1366–1919 折叠档 ⇒ true（`1440 < 1920`）。
+        // 1440：⭐ `#195` 翻回**展开**（`1440 < 1180` 为假）。`#191` 时这里是折叠。
         port.window()
             .resize(Size::new(1440, 900))
             .expect("resize 1440");
-        let (compact, sidebar, search, rails) = observe(&port, "1440");
-        assert!(
-            compact,
-            "[#191 1440] 1440 宽必须落在折叠档（compact == true）"
-        );
-        assert_eq!(sidebar, 36, "[#191 1440] 折叠态左栏必须是 36px 图标导轨");
-        assert!(
-            !search,
-            "[#191 1440] 折叠态 `sidebar-search-field` 必须离树"
-        );
-        assert_eq!(
-            rails, 0,
-            "[#191 1440] 折叠态常驻右栏离树（抽屉未打开时为 0）"
-        );
+        assert_tier("1440", observe(&port, "1440"), false);
 
-        // 1024：规范未定义更窄档，实现取保守解 ⇒ 仍折叠。
+        // 1180：⭐ 阈值本身 —— `1180 < 1180` 为假 ⇒ **展开**（恰好判在这一档）。
+        port.window()
+            .resize(Size::new(1180, 800))
+            .expect("resize 1180");
+        assert_tier("1180", observe(&port, "1180"), false);
+
+        // 1024：`1024 < 1180` ⇒ 仍折叠（与 `#191` 的期望一致，未翻）。
         port.window()
             .resize(Size::new(1024, 800))
             .expect("resize 1024");
-        let (compact, sidebar, search, rails) = observe(&port, "1024");
-        assert!(
-            compact,
-            "[#191 1024] 1024 宽必须落在折叠档（compact == true）"
-        );
-        assert_eq!(sidebar, 36, "[#191 1024] 折叠态左栏必须是 36px");
-        assert!(
-            !search,
-            "[#191 1024] 折叠态 `sidebar-search-field` 必须离树"
-        );
-        assert_eq!(rails, 0, "[#191 1024] 折叠态常驻右栏离树");
+        assert_tier("1024", observe(&port, "1024"), true);
+
+        // 800：比 1024 更窄 ⇒ 仍折叠（保守解）。
+        port.window()
+            .resize(Size::new(800, 800))
+            .expect("resize 800");
+        assert_tier("800", observe(&port, "800"), true);
 
         // 再拉回 1920：⛔ 不是"只能折叠一次" —— 绑定必须能翻回来。
         port.window()
             .resize(Size::new(1920, 1080))
             .expect("resize 回 1920");
-        let (compact, sidebar, search, rails) = observe(&port, "1920-again");
-        assert!(!compact, "[#191 1920-again] 拉回 1920 必须回到展开档");
-        assert_eq!(sidebar, 240, "[#191 1920-again] 左栏必须回到 240px");
-        assert!(search, "[#191 1920-again] `sidebar-search-field` 必须回树");
-        assert_eq!(rails, 1, "[#191 1920-again] 常驻 `ai-rail` 必须回树");
+        assert_tier("1920-again", observe(&port, "1920-again"), false);
     })
     .join()
     .expect("判据线程");
@@ -165,19 +165,11 @@ fn the_compact_breakpoint_follows_the_real_window_width() {
 fn windows_born_at_1024_and_1920_start_in_their_own_breakpoint() {
     let narrow = std::thread::spawn(|| {
         let port = build(Size::new(1024, 800));
-        let (compact, sidebar, search, rails) = observe(&port, "born-1024");
-        assert!(compact, "[#191 born-1024] 1024 窗口出生时必须 compact");
-        assert_eq!(sidebar, 36, "[#191 born-1024] 左栏必须是 36px");
-        assert!(!search, "[#191 born-1024] 展开态节点必须不在树里");
-        assert_eq!(rails, 0, "[#191 born-1024] 常驻右栏必须不在树里");
+        assert_tier("born-1024", observe(&port, "born-1024"), true);
     });
     let wide = std::thread::spawn(|| {
         let port = build(Size::new(1920, 1080));
-        let (compact, sidebar, search, rails) = observe(&port, "born-1920");
-        assert!(!compact, "[#191 born-1920] 1920 窗口出生时必须非 compact");
-        assert_eq!(sidebar, 240, "[#191 born-1920] 左栏必须是 240px");
-        assert!(search, "[#191 born-1920] 展开态节点必须在场");
-        assert_eq!(rails, 1, "[#191 born-1920] 常驻右栏必须在场");
+        assert_tier("born-1920", observe(&port, "born-1920"), false);
     });
     narrow.join().expect("1024 判据线程");
     wide.join().expect("1920 判据线程");

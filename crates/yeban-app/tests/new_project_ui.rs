@@ -71,10 +71,10 @@ const MODULE_STATUS_ID: &str = "module-last-status";
 const NOW_MS: u64 = 1_760_000_000_000;
 
 /// 窗口尺寸（非零即合法；判据只要求"窗口真的建起来过"）。
-// ⭐ `#191`：`compact` 现在跟**真实窗口宽**走。右栏（`module-*` 入口所在的
-// `AiRail`）在 1366–1919 折叠档是**抽屉**（`visible: root.compact && root.ai-drawer-open`），
-// 默认不在树里 ⇒ 本判据要用的是**全展开档**的窗口（≥1920）。
-const WINDOW: Size = Size::new(1920, 1080);
+// ⭐ `#191`：`compact` 现在跟**真实窗口宽**走（`ui/app.slint` 的表达式绑定）。
+// ⭐ `#195`：阈值 `1920 → 1180` ⇒ `1440 × 900` 是**展开档**（左栏 240 ＋ 右栏常驻），
+// 右栏里的 `module-*` 入口默认就在树里 ⇒ 本判据翻回 `1440`（`#191` 曾临时改成 1920）。
+const WINDOW: Size = Size::new(1440, 900);
 
 /// 临时目录（`Drop` 时清理，**绝不污染仓库**）。形态照 `open_project_ui.rs`。
 struct Scratch {

@@ -1,8 +1,10 @@
 //! 演示场景数据 —— 界面外壳的**夹具**，现在由 [`crate::bridge`] 的投影层产出。
 //!
 //! 规范来源 (Normative):
-//! - `[UI-GRID-002]` UI/UX 规范 §1.2: ≥1920 全展开 / 1366–1919 折叠 —— 断点判定在
-//!   [`DemoScene::is_compact`] 里落成可测的纯函数。
+//! - `[UI-GRID-002]` UI/UX 规范 §1.2: 规范原文是 `≥ 1920×1080 全展开 / 1366–1919 折叠`
+//!   (`docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:99-100`)。⭐ 任务单 `#195`
+//!   由**负责人裁决**把阈值移到 [`BREAKPOINT_FULL_HD`] = `1180` (规范本身 ⛔ 未改)。
+//!   断点判定在 [`DemoScene::is_compact`] 里落成可测的纯函数。
 //! - `[UI-TEST-001]` §12.2: `note-{ulid}` / `clip-{ulid}` 里的 ULID 必须真实合法
 //!   (26 字符 Crockford Base32), 否则语义 ID 就成了编造的字符串。
 //! - `[MODEL-AST-002]` `YebanProjectV1` 是唯一权威工程结构。
@@ -43,10 +45,23 @@ pub const NOTE_COUNT: usize = 6;
 /// 演示剪辑数。
 pub const CLIP_COUNT: usize = 3;
 
-/// `[UI-GRID-002]` 全展开断点: ≥1920 逻辑像素宽 → 左栏 240px + 右栏常驻 280px。
-pub const BREAKPOINT_FULL_HD: u32 = 1920;
+/// `[UI-GRID-002]` 全展开断点: `>= 1180` 逻辑像素宽 → 左栏 240px + 右栏常驻 280px。
+///
+/// ⭐ `#195`：阈值由 `1920` 移到 `1180`（**负责人裁决选 B**）⇒ `1024` 仍折叠、
+/// `1180` 本身即展开、`1440` / `1920` 都展开。规范原文 `≥ 1920` 见
+/// `docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:99`（⛔ 本单未改 docs）。
+pub const BREAKPOINT_FULL_HD: u32 = 1180;
+
+/// ⚠ 这是**尺寸**，⛔ 不是断点：演示视口 / 基准帧的宽（规范 §1.2 的全展开档 `1920×1080`）。
+///
+/// 5 张基准帧与 `DPR` 换算都以它为准；断点降到 `1180` **不动**这个数
+/// （否则 1920 基准帧会变成 1180 宽，`#195` 的第 315 条就破了）。
+pub const DEMO_VIEWPORT_WIDTH: u32 = 1920;
 
 /// `[UI-GRID-002]` 折叠区间下界: 1366–1919 逻辑像素宽 → 左栏 36px 图标导轨 + 右栏变抽屉。
+///
+/// ⚠ `#195` 之后**没有任何读者**：判定已统一由 [`BREAKPOINT_FULL_HD`] = `1180` 承担，
+/// 本值（规范原文的下界 `1366`）高于现行阈值 ⇒ 保留为规范对齐的锚点，⛔ 不参与判定。
 pub const BREAKPOINT_MIN: u32 = 1366;
 
 /// 演示轨道名 —— **现在只是判据锚点**：值由 `bridge::demo_project()` 的投影复现。
@@ -157,7 +172,8 @@ pub struct DemoScene {
     pub branch_name: String,
     /// 启动时是否直接进 Arrangement 视图 (规范的默认视图是线性编曲)。
     pub arrangement_by_default: bool,
-    /// 演示视口宽度 (逻辑像素) —— 1920 落在 `[UI-GRID-002]` 的全展开档。
+    /// 演示视口宽度 (逻辑像素) —— 恒 [`DEMO_VIEWPORT_WIDTH`] = `1920`（规范 §1.2 的
+    /// 全展开档 / 基准帧口径）。⚠ 它是**尺寸**，⛔ 不跟 [`BREAKPOINT_FULL_HD`] 走。
     pub viewport_width: u32,
     /// 演示视口高度 (逻辑像素)。
     pub viewport_height: u32,
@@ -185,7 +201,7 @@ impl DemoScene {
             bpm_display: view.bpm_display.clone(),
             branch_name: SESSION_BRANCH_NAME.to_owned(),
             arrangement_by_default: true,
-            viewport_width: BREAKPOINT_FULL_HD,
+            viewport_width: DEMO_VIEWPORT_WIDTH,
             viewport_height: 1080,
         }
     }
@@ -203,11 +219,15 @@ impl DemoScene {
 
     /// `[UI-GRID-002]` 响应式断点判定: 视口宽度是否落在「折叠」档。
     ///
-    /// 规范原文:
+    /// 规范原文 (`docs/YEBAN_DESKTOP_UI_UX_AND_INTERACTION_REDESIGN.md:99-100`):
     /// - `≥ 1920×1080`: 全展开 (左栏 240px, 右栏常驻 280px);
     /// - `1366×768 ～ 1919×1079`: 左栏默认收起为 36px 图标导轨, 右栏自动折叠为抽屉。
     ///
-    /// 规范没有规定 `< 1366` 时怎么办。本实现取**保守解**: 仍然折叠 (与 1366–1919 同档),
+    /// ⭐ `#195`：实际阈值由**负责人裁决选 B** 移到 `1180`（见 [`BREAKPOINT_FULL_HD`]）：
+    /// - `>= 1180`: 展开 —— `1180` 本身即展开（`1180 < 1180` 为假）、`1440` / `1920` 展开;
+    /// - `< 1180`: 折叠 —— `1024` / `800` 都仍折叠。
+    ///
+    /// 规范没有规定 `< 1366` 时怎么办。本实现取**保守解**: 仍然折叠 (与更窄的档同一条),
     /// 因为"更窄的屏幕要求更多折叠"是唯一不会破坏可用性的方向。这一条属于规范缺口,
     /// 已登记在 `docs/ledger/ui-shell-notes.md` 的 needs 里等人类裁决。
     #[must_use]
@@ -218,7 +238,7 @@ impl DemoScene {
     /// 演示场景自身的断点判定结果 (**模型侧口径**)。
     ///
     /// ⭐ `#191`：界面运行时**不再**由宿主在装配时写入这个值 —— `ui/app.slint` 的
-    /// `MainWindow.compact` 是 `self.width < 1920px` 的表达式绑定，跟的是**真实窗口宽**。
+    /// `MainWindow.compact` 是 `self.width < 1180px` 的表达式绑定，跟的是**真实窗口宽**。
     /// 本方法保留为纯函数判据（`scene.rs` 的单测与测试夹具用它推算"这个宽度应当是哪一档"），
     /// ⛔ 不是 `MainWindow.compact` 的唯一事实源。
     #[must_use]
@@ -296,26 +316,34 @@ mod tests {
         assert_eq!(before, all.len(), "演示 ULID 有重复 —— 元素 ID 会因此撞车");
     }
 
-    /// `[UI-GRID-002]` 断点判据。三档边界逐个钉死, 不靠"看起来对"。
+    /// `[UI-GRID-002]` 断点判据。边界逐个钉死, 不靠"看起来对"。
+    ///
+    /// ⭐ `#195`：阈值 `1920 → 1180`，所以边界值也随之移。`1180` 这一档要**恰好**判：
+    /// `width < 1180` ⇒ `1180` 本身是 `false`（展开），`1179` 才是 `true`（折叠）。
     #[test]
     fn compact_breakpoint_matches_the_spec_table() {
-        // ≥1920: 全展开
+        assert_eq!(BREAKPOINT_FULL_HD, 1180, "断点常量必须就是 1180");
+        // >=1180: 全展开（含 1180 本身、1440、1920）
+        assert!(!DemoScene::is_compact(1180));
+        assert!(!DemoScene::is_compact(1440));
         assert!(!DemoScene::is_compact(1920));
         assert!(!DemoScene::is_compact(2560));
         assert!(!DemoScene::is_compact(3840));
-        // 1366–1919: 折叠
-        assert!(DemoScene::is_compact(1919));
-        assert!(DemoScene::is_compact(1600));
-        assert!(DemoScene::is_compact(1366));
-        // <1366: 规范未定义, 实现取保守解 (仍折叠) —— 见函数文档
-        assert!(DemoScene::is_compact(1365));
+        // <1180: 折叠（原规范 1366–1919 折叠档在 1180 以上已被裁决为展开）
+        assert!(DemoScene::is_compact(1179));
+        assert!(DemoScene::is_compact(1168));
         assert!(DemoScene::is_compact(1024));
+        assert!(DemoScene::is_compact(800));
     }
 
     #[test]
     fn demo_scene_starts_expanded() {
         let scene = DemoScene::demo();
-        assert_eq!(scene.viewport_width, BREAKPOINT_FULL_HD);
+        assert_eq!(
+            scene.viewport_width, DEMO_VIEWPORT_WIDTH,
+            "演示视口宽是**尺寸**（基准帧 1920），⛔ 不跟断点走"
+        );
+        assert!(scene.viewport_width >= BREAKPOINT_FULL_HD);
         assert!(!scene.compact(), "1920 宽的演示视口必须落在全展开档");
         assert!(scene.arrangement_by_default);
     }

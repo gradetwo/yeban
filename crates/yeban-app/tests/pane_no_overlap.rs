@@ -735,8 +735,9 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
             tree.find_by_id("transport-ai-proposal-badge").is_none(),
             "[#186 {width}x{height}] 窄档徽章必须 visible:false ⇒ 不在树里"
         );
-        // ⭐ `#191`：折叠档（1024 < 1920）的右栏是抽屉，默认不在树里 ⇒ 同动作入口
-        // 经 `transport-ai-drawer-button` 打开抽屉后必须在场（⛔ 不是把功能藏没了）。
+        // ⭐ `#191`：折叠档（`width < 1180`，⭐ `#195` 之后 1024 / 800）的右栏是抽屉，
+        // 默认不在树里 ⇒ 同动作入口经 `transport-ai-drawer-button` 打开抽屉后必须在场
+        //（⛔ 不是把功能藏没了）。
         if live.ui().get_compact() {
             assert!(
                 tree.find_by_id("transport-ai-drawer-button").is_some(),
@@ -1341,9 +1342,10 @@ fn check_arrangement(width: u32, height: u32) {
     let tree = runtime_tree(live.ui());
 
     let canvas = bounds(&tree, "workspace-arrangement-canvas");
-    // ⭐ `#191`：`compact` 跟真实窗口宽走之后，右栏在 1366–1919 是**抽屉**
+    // ⭐ `#191`：`compact` 跟真实窗口宽走之后，右栏在折叠档（`width < 1180`，
+    // ⭐ `#195` 之后即 1024 / 800）是**抽屉**
     //（默认 `ai-drawer-open = false` ⇒ 不在树里）⇒ 画布右沿不再等于右栏左沿，
-    // 而是撑到窗口右沿。展开档仍按原不变量钉住。
+    // 而是撑到窗口右沿。展开档仍按原不变量钉住（1440 也是展开档）。
     if live.ui().get_compact() {
         assert_eq!(
             canvas.0 + canvas.2 as i32,
@@ -1910,9 +1912,14 @@ const BANNER: &[&str] = &["engine-error-banner"];
 
 /// 断点按**窗口宽**的活窗口（`#189` 的 compact 夹具）。
 ///
-/// `#186`/`#187` 的 [`live_window`] 把 `DemoScene.viewport_width` 留在 1920，因此
-/// 1440 / 1024 两档跑的是"窄窗口 ＋ 展开布局"（保守解）；本函数让
-/// `scene.compact()` 与窗口宽一致 —— 才是真实 app 在 1440 / 1024 的形态。
+/// ⚠ ⭐ `#191` 起 `MainWindow.compact` 是 `width < Tokens.breakpoint-full-hd` 的表达式
+/// 绑定，本函数对 `scene.viewport_*` 的覆写**不再改变断点**（`build_main_window` 只读
+/// `timecode` / `branch_name` / `arrangement_by_default`）。因此它现在与 [`live_window`]
+/// 是**同一个形态**：两套夹具跑同一个窗口宽，读数必须逐字相同 —— 这本身是一条判据
+/// （证明"没有第三个写者"）。函数保留是为了不改 `#189`/`#190` 的夹具命名与差集口径。
+///
+/// ⭐ `#195`：阈值 `1920 → 1180` ⇒ 1440 落**展开**档（左栏 240 ＋ 右栏常驻 280），
+/// 1024 / 800 仍折叠（左栏 36 ＋ 右栏抽屉）。
 fn live_window_at_breakpoint(
     project: YebanProjectV1,
     size: (u32, u32),
@@ -2338,8 +2345,10 @@ fn check_session_view(width: u32, height: u32, breakpoint: bool) {
         ));
     }
 
-    // ---- 断点态 1024：画布 988px ⇒ 容量 6 列（与展开态的差集就是被截断的列）。
-    if breakpoint && width < 1920 {
+    // ---- 折叠档（⭐ `#195` 之后只有 1024 / 800）：画布 `窗口宽 − 36`（右栏是抽屉、不占位）。
+    // ⭐ `#195` 阈值 `1920 → 1180`：1440 现在**展开**（画布 920 = 窗口宽 − 240 − 280）⇒
+    // 这条断言的口径从"所有`breakpoint`夹具"收窄成"真的 `compact` 的档"。
+    if breakpoint && compact {
         assert_eq!(
             pane.2,
             width - 36,
@@ -2919,7 +2928,8 @@ fn the_sidebar_has_no_two_controls_in_the_same_place() {
     for &(width, height) in TIERS {
         for breakpoint in [false, true] {
             if width == 1920 && breakpoint {
-                continue; // 1920 已 ≥ 断点，两种夹具是同一个形态
+                // ⭐ `#191` 起两套夹具都按窗口宽判断点 ⇒ 1920 下必然同形态，跳过重复那趟。
+                continue;
             }
             if let Err(payload) =
                 std::thread::spawn(move || check_sidebar(width, height, breakpoint)).join()

@@ -349,9 +349,9 @@ fn check_width(width: u32, height: u32) {
     }
     if width == 800 {
         // ⭐ `#191` 关闭了这里的第 3 条边界：`compact` 现在是 `ui/app.slint` 里
-        // `self.width < 1920px` 的**绑定**，跟的是真实窗口宽（`#184` 时是宿主写入的
-        // 常量视口 `scene.rs:188` ⇒ 800 档仍 false）。现在 800 < 1920 ⇒ 折叠档，
-        // 左栏 36px 图标导轨 —— 这是判据，不再是"只读数"。
+        // `self.width < Tokens.breakpoint-full-hd` 的**绑定**，跟的是真实窗口宽
+        //（`#184` 时是宿主写入的常量视口 ⇒ 800 档仍 false）。
+        // ⭐ `#195`：阈值 `1920 → 1180` ⇒ `800 < 1180` **仍为假**，本档期望**不变**（仍折叠）。
         let compact = live.ui().get_compact();
         let sidebar_width = tree
             .find_by_id("sidebar")
@@ -364,7 +364,7 @@ fn check_width(width: u32, height: u32) {
             "[#191] 800×800 左栏必须是 36px 图标导轨"
         );
         report_line(&format!(
-            "[#191 compact 读数] 800×800：ui.get_compact() = {compact}；sidebar 宽 = {sidebar_width:?}（断点跟真实窗口宽）"
+            "[#195 compact 读数] 800×800：ui.get_compact() = {compact}；sidebar 宽 = {sidebar_width:?}（阈值 1180，800 仍折叠）"
         ));
     }
     if width == 848 || width == 800 {
