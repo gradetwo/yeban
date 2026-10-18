@@ -4049,6 +4049,82 @@ fn the_known_unsupported_list_is_not_decoration() {
             render_or_ok(&project, "sfz-pan")
         }),
     ));
+    // ⑮ `sfzAmplitude`：命中区域声明了 `amplitude=50`（线性百分比，不在 `total_gain()` 里）。
+    triggers.push((
+        "sfzAmplitude",
+        Box::new({
+            let scratch = &scratch;
+            move || {
+                let dir = scratch.join("amp-sfz");
+                fs::create_dir_all(&dir).expect("建目录");
+                write_constant_wav(&dir.join("m.wav"), 0.5, 480, 48_000);
+                fs::write(
+                    dir.join("m.sfz"),
+                    "<region> sample=m.wav key=69 amplitude=50\n",
+                )
+                .expect("写带 amplitude 的 sfz");
+                let path = dir.join("m.sfz").display().to_string();
+                render_or_ok(&project_with_sampler(Some(&path)), "sfz-amplitude")
+            }
+        }),
+    ));
+    // ⑯ `sfzTuneCcModulation`：命中区域声明了 `tune_oncc1`（CC 调制，本层没有 CC 状态）。
+    triggers.push((
+        "sfzTuneCcModulation",
+        Box::new({
+            let scratch = &scratch;
+            move || {
+                let dir = scratch.join("tune-cc-sfz");
+                fs::create_dir_all(&dir).expect("建目录");
+                write_constant_wav(&dir.join("t.wav"), 0.5, 480, 48_000);
+                fs::write(
+                    dir.join("t.sfz"),
+                    "<region> sample=t.wav key=69 tune_oncc1=50\n",
+                )
+                .expect("写带 tune_oncc 的 sfz");
+                let path = dir.join("t.sfz").display().to_string();
+                render_or_ok(&project_with_sampler(Some(&path)), "sfz-tune-cc")
+            }
+        }),
+    ));
+    // ⑰ `sfzVolumeCcModulation`：命中区域声明了 `volume_oncc1`（CC 调制，本层没有 CC 状态）。
+    triggers.push((
+        "sfzVolumeCcModulation",
+        Box::new({
+            let scratch = &scratch;
+            move || {
+                let dir = scratch.join("volume-cc-sfz");
+                fs::create_dir_all(&dir).expect("建目录");
+                write_constant_wav(&dir.join("v.wav"), 0.5, 480, 48_000);
+                fs::write(
+                    dir.join("v.sfz"),
+                    "<region> sample=v.wav key=69 volume_oncc1=-6\n",
+                )
+                .expect("写带 volume_oncc 的 sfz");
+                let path = dir.join("v.sfz").display().to_string();
+                render_or_ok(&project_with_sampler(Some(&path)), "sfz-volume-cc")
+            }
+        }),
+    ));
+    // ⑱ `sfzSampleSpan`：命中区域声明了 `offset` / `end`（本渲染器不按 span 切片）。
+    triggers.push((
+        "sfzSampleSpan",
+        Box::new({
+            let scratch = &scratch;
+            move || {
+                let dir = scratch.join("span-sfz");
+                fs::create_dir_all(&dir).expect("建目录");
+                write_constant_wav(&dir.join("s.wav"), 0.5, 480, 48_000);
+                fs::write(
+                    dir.join("s.sfz"),
+                    "<region> sample=s.wav key=69 offset=100 end=400\n",
+                )
+                .expect("写带 offset/end 的 sfz");
+                let path = dir.join("s.sfz").display().to_string();
+                render_or_ok(&project_with_sampler(Some(&path)), "sfz-span")
+            }
+        }),
+    ));
 
     // 清单与触发器**逐条重合**（两方向都查：少一个触发器 ⇒ 清单腐烂；多一个 ⇒ 清单漏登记）。
     let listed: Vec<&str> = KNOWN_UNSUPPORTED_KEYS.to_vec();

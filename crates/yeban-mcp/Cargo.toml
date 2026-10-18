@@ -111,5 +111,12 @@ yeban-record.workspace = true
 # 规范要求"统一启用纯 Rust libm", 禁止落到宿主 libm —— 否则同一工程的母带会随平台差 LSB。
 libm.workspace = true
 
+[dev-dependencies]
+# ⭐ `#223` 判据用：`yeban-decode` 的 `testfix` 用**代码生成**最小 FLAC / OGG 字节
+# （⛔ 不把音频样本入库；与 `yeban-app` 侧的十六进制夹具同源，理由见 `yeban-decode`
+# 的 `testfix` 模块文档）。`test-fixtures` 是**判据专用** feature ⇒ 只在测试里打开，
+# 正常构建与下游依赖都看不到它。零新增第三方包 ⇒ `Cargo.lock` 的包集合不变。
+yeban-decode = { workspace = true, features = ["test-fixtures"] }
+
 [lints]
 workspace = true

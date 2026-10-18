@@ -137,8 +137,12 @@ pub mod resample;
 #[cfg(test)]
 mod propcheck;
 
-#[cfg(test)]
-mod testfix;
+// ⚠ `testfix` 是**判据夹具**，⛔ 不是产品 API：默认只在单元测试里编译；
+// `test-fixtures` feature 让**下游 crate 的集成判据**也能用同一份夹具构造器
+// （`#223`：`yeban-mcp` 的 FLAC/OGG 读取判据）。`#[doc(hidden)]` 把它挡在文档之外。
+#[cfg(any(test, feature = "test-fixtures"))]
+#[doc(hidden)]
+pub mod testfix;
 
 pub use asset::{
     DecodeFacts, DecodedAsset, ImportedAsset, PcmFormat, asset_index, import_bytes, import_path,
@@ -148,7 +152,8 @@ pub use asset::{
 // 返回 `AssetHash`，`pcm_hash` 内部就是对 `AssetHasher` 的分块喂入。重新导出一次，
 // 调用方（含本 crate 的集成判据）因此不必自己声明 `yeban-model` 依赖就能写出类型。
 pub use decode::{
-    DecodeOptions, MeasuredSource, decode_bytes, decode_path, decode_reader, decode_source,
+    DecodeOptions, MeasuredSource, MonoSample, decode_bytes, decode_mono_channel0, decode_path,
+    decode_reader, decode_source,
 };
 pub use duration::{Mismatch, Reconciliation, reconcile};
 pub use error::{DecodeError, DecodeResult};

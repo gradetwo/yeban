@@ -99,6 +99,72 @@ pub fn decode_path(path: &Path, options: &DecodeOptions) -> DecodeResult<Decoded
     decode_source(Box::new(file), &hint, options)
 }
 
+/// 一份样本的**单声道（声道 0）**读数，SFZ 的样本口径。
+///
+/// 存在的理由（`#223`）：`yeban_app` 与 `yeban_mcp` 各自的 SFZ 读取器都要把
+/// [`DecodedAsset::samples`]（**交织**样本）折成「声道 0 ＋ 文件自身采样率」。
+/// 两边若各写一遍 `step_by(channels)`，任何一处改动都会让另一处静默漂移。
+/// 折法、采样率口径与 `describe` 文案因此收在这一个地方。
+///
+/// ⚠ 取声道 0 而不是下混：本仓的 SFZ 播放按单声道叠加，⛔ 不自己发明下混规则
+/// （与既有的 WAV 腿 `read_plain_wav_mono_f32` 的 `step_by(channels)` 同一口径）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonoSample {
+    /// 声道 0 的样本（线性幅度，已按解码器的归一化口径）。
+    pub pcm: Vec<f32>,
+    /// 文件**自身**的采样率（Hz）；⛔ 不重采样。
+    pub sample_hz: u32,
+    /// 文件声道数（折单声道**之前**的读数；0 声道的布局在解码闸门处已被拒）。
+    pub channels: u16,
+}
+
+impl MonoSample {
+    /// 折单声道之后的帧数（= `pcm.len()`）。
+    #[must_use]
+    pub fn frames(&self) -> u64 {
+        u64::try_from(self.pcm.len()).unwrap_or(u64::MAX)
+    }
+
+    /// 与 WAV 腿**逐字同形**的如实描述：`file(<path> frames=<折后帧数> rate=<文件采样率>)`。
+    ///
+    /// 与 `yeban-render::wav::read_plain_wav_mono_f32` 的 `describe` 串一字不差
+    /// ⇒ 响应里的 `sampleSource` / `sampleFileState` 不因容器不同而变形。
+    #[must_use]
+    pub fn describe(&self, path: &Path) -> String {
+        format!(
+            "file({} frames={} rate={})",
+            path.display(),
+            self.pcm.len(),
+            self.sample_hz
+        )
+    }
+}
+
+/// 解码任意受支持的容器，并**折成声道 0**（SFZ 样本的唯一解码口径）。
+///
+/// `yeban-mcp::domain::sfz` 的非 WAV 腿直接调它（`#223` 之前 MCP 只认 PCM WAV）。
+/// `yeban-app::sfz_load` 的非 WAV 腿仍是 `decode_path` ＋ 就地 `step_by(channels)` ——
+/// 折法、采样率口径与 `describe` 文案与这里**逐字相同**，但那处代码本单**没有改动**
+/// （只改 `yeban-mcp` 需要的面；app 的同等迁移留给它自己的下一次改动）。
+///
+/// ⛔ 本函数**不**做重采样：采样率原样上报，由调用方用既有的播放速率口径换算
+/// （与 WAV 腿从来就是同一条口径）。
+///
+/// # Errors
+///
+/// 同 [`decode_path`]：I/O、格式不支持、畸形流、超预算、声明时长不一致等。
+pub fn decode_mono_channel0(path: &Path, options: &DecodeOptions) -> DecodeResult<MonoSample> {
+    let asset = decode_path(path, options)?;
+    let channels = asset.channels().max(1);
+    let stride = usize::from(channels);
+    let pcm: Vec<f32> = asset.samples().iter().step_by(stride).copied().collect();
+    Ok(MonoSample {
+        pcm,
+        sample_hz: asset.sample_rate(),
+        channels,
+    })
+}
+
 /// 解码内存里的一段字节（不复制输入，借用即可）。
 ///
 /// # Errors

@@ -60,6 +60,10 @@
 //! | `sfzLoopExpansion` | ⭐ `#221`：采样器区域要求的**循环**没有展开（每个音符只响一遍，与 `yeban_render_sfz_wav` 同一句登记）。只在真的遇到循环区域时出现 |
 //! | `sfzRegionEnvelope` | ⭐ `#221`：命中的采样器区域声明了 `ampeg_*` 幅度包络，**本渲染器不应用**（缺省值 ⇒ 与引擎逐位相同）。只在真的声明了包络时出现 |
 //! | `sfzTrackPan` | ⭐ `#221`：**采样器轨**的 `pan` 没有应用 —— 与 app 的 SFZ 导出分支（`SfzTrackSource`）同口径：那条路没有声相通路。只在"绑了采样器且 `pan != 0`"时出现，⛔ 不静默 |
+//! | `sfzAmplitude` | ⭐ `#223`：命中区域的 **`amplitude` 一族**（静态值 ≠ 100，或 `amplitude*ccN`）没有应用。`PlaybackSpec::total_gain()` 只含 `volume × 力度 × 交叉淡化`；引擎在它**之外**另乘 `(amplitude + Σ delta)/100` ⇒ 本渲染器与引擎分叉。只在真的声明时出现 |
+//! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
+//! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
+//! | `sfzSampleSpan` | ⭐ `#223`：命中区域的 **`offset` / `end` 播放区间**没有归约 —— `PlaybackSpec::span` 已由 `yeban-sfz` 算好，但本渲染器把整份样本从 0 播到末尾。只在偏离缺省（`offset=0` ＋ `end=unspecified`）时出现 |
 //!
 //! ⚠ **`sfzSampler` 这个键已经退役**（`#221`）：`#220` 的第 324 条指出，模块文档
 //! 曾承诺"会把 `sfzSampler` 放进 `unsupported`"，而代码里**没有任何地方读 `sampler`**
@@ -446,7 +450,7 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 ///
 /// ⚠ `#221` 之后 `sfzSampler` **不在**这里：采样器绑定现在真的被渲染（见
 /// [`SamplerTrackSource`]），报它就是在说假话。
-pub const KNOWN_UNSUPPORTED_KEYS: [&str; 14] = [
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 18] = [
     "audioClips",
     "automationLanes",
     "busTrackClips",
@@ -458,9 +462,13 @@ pub const KNOWN_UNSUPPORTED_KEYS: [&str; 14] = [
     "notePitchBend",
     "noteSlide",
     "sidechainRouting",
+    "sfzAmplitude",
     "sfzLoopExpansion",
     "sfzRegionEnvelope",
+    "sfzSampleSpan",
     "sfzTrackPan",
+    "sfzTuneCcModulation",
+    "sfzVolumeCcModulation",
 ];
 
 /// 资产字节的只读提供者（`ARCH-SEC-003` 的 `assets/{sha256}` 会话 CAS 池）。
@@ -2837,6 +2845,21 @@ fn build_source(
             // ⇒ 作者真的写了包络就必须登记（第 324 条）。
             if prepared.regions_with_envelope > 0 {
                 note_unsupported(unsupported, counts, "sfzRegionEnvelope");
+            }
+            // ⭐ `#223`：四类已知但不生效的区域参数 —— 逐类登记，⛔ 不许"不生效也不报"。
+            // 它们的共同点是**不在 `total_gain()` 里**（或需要本层没有的 CC 状态 /
+            // 样本区间切片）；只要作者真的声明了，输出就与 app/引擎路径分叉。
+            if prepared.regions_with_amplitude > 0 {
+                note_unsupported(unsupported, counts, "sfzAmplitude");
+            }
+            if prepared.regions_with_tune_cc > 0 {
+                note_unsupported(unsupported, counts, "sfzTuneCcModulation");
+            }
+            if prepared.regions_with_volume_cc > 0 {
+                note_unsupported(unsupported, counts, "sfzVolumeCcModulation");
+            }
+            if prepared.regions_with_sample_span > 0 {
+                note_unsupported(unsupported, counts, "sfzSampleSpan");
             }
             let report = SamplerReport {
                 path: binding.path.clone(),

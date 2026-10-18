@@ -12,6 +12,16 @@ publish.workspace = true
 name = "yeban_decode"
 path = "src/lib.rs"
 
+[features]
+# ⚠ **只给判据用**，⛔ 不是产品开关：打开后公开 `testfix`（用代码生成最小 WAV/FLAC/OGG
+# 字节的夹具构造器），让**下游 crate 的集成判据**（`yeban-mcp` 的 `#223` FLAC/OGG 读取判据）
+# 用同一份夹具，而不是把音频字节入库或各写一份生成器。
+#
+# - 默认关闭 ⇒ 正常构建/下游依赖都看不到它（`testfix` 的 `#[cfg]` 见 `src/lib.rs`）；
+# - 零第三方依赖 ⇒ `Cargo.lock` 的包集合不变；
+# - 夹具本身的合法性由本 crate 自己的判据钉住（`testfix` 模块文档说明了这一点）。
+test-fixtures = []
+
 [dependencies]
 # 依赖图与 feature 决策 (逐条理由见 src/lib.rs "支持的格式" 与
 # docs/ledger/decode-core-notes.md §3):

@@ -42,10 +42,12 @@
 //! ## 六条诚实登记（⛔ 不假装）
 //!
 //! 1. **采样文件会被真读**：`Region::sample_path()`（含 `<control> default_path=` 前缀的
-//!    **有效路径**）指向的 PCM WAV 由 [`read_sample_file`]
-//!    （→ `yeban_render::wav::read_plain_wav_mono_f32`，与 `app` 侧**同一份**归一化）解码，
-//!    经 [`SampleCache`] 去重并受三条上限约束；响应里的 `sampleSource` / `sampleFilesRead`
-//!    逐字反映读了哪些文件。⚠ 读不到（或没有区域声明 `sample=`）时**如实回退**到
+//!    **有效路径**）指向的样本由 [`read_sample_file`] 解码（`#223` 起与 app 的
+//!    `sfz_load::read_sample_file` **同一条分派**：`.wav`/`.wave` 走既有 hound 腿
+//!    `yeban_render::wav::read_plain_wav_mono_f32`，其余走 `yeban_decode::decode_mono_channel0`
+//!    ＝ symphonia ＋ 声道 0 折叠），经 [`SampleCache`] 去重并受三条上限约束；
+//!    响应里的 `sampleSource` / `sampleFilesRead` 逐字反映读了哪些文件。
+//!    ⚠ 读不到（或没有区域声明 `sample=`）时**如实回退**到
 //!    [`InMemorySfzSample::sine`]（内存正弦）并把原因写进 `sampleSource`。
 //!    ⛔ 内建静音伪样本**不走这条路**（它没有文件可读，见第 6 条）。
 //! 2. **工具面没有设备链**：`DeviceKind` 没有 SFZ 变体，本模块**不**往
@@ -81,7 +83,9 @@ use std::sync::Arc;
 
 use yeban_model::{AssetHash, ClipContent, PPQ, YebanProjectV1};
 use yeban_render::wav::read_plain_wav_mono_f32;
-use yeban_sfz::instrument::{Instrument, Region};
+use yeban_sfz::SampleEnd;
+use yeban_sfz::instrument::{AMPLITUDE_DEFAULT_PERCENT, Instrument, Region};
+use yeban_sfz::modulation::ModTarget;
 use yeban_sfz::parser::{
     IncludeIssue, IncludeIssueKind, IncludeResolver, ParseLimits, SfzSource, parse_sources,
     parse_text,
@@ -150,15 +154,24 @@ pub struct SampleFileReading {
     pub describe: String,
 }
 
-/// 读一份 WAV 样本文件（先过**单文件字节上限**，再交给共享读取器）。
+/// 读一份样本文件（先过**单文件字节上限**，再交给共享读取器）。
 ///
-/// ⚠ 归一化**不在本函数里**：它调 `yeban_render::wav::read_plain_wav_mono_f32`
-/// （集成者裁决：归一化的**唯一**自然归属是 `yeban-render` —— `app` 与 `mcp`
-/// **都**依赖它，那不是新 crate、也不是第二份实现）。⇒ 全仓的"WAV → 单声道 f32"
-/// 只有一份口径。
+/// ## 格式面（⭐ `#223`：与 `yeban-app` 的 `sfz_load::read_sample_file` **同一条**）
+///
+/// | 后缀 | 解码腿 | 依据 |
+/// | :--- | :--- | :--- |
+/// | `wav` / `wave`（大小写不敏感） | [`yeban_render::wav::read_plain_wav_mono_f32`]（hound） | ⭐ **既有 WAV 路径逐位不变**（归一化口径与读数都靠它） |
+/// | **其余**（含 `.flac` / `.ogg` / 无后缀） | [`yeban_decode::decode_mono_channel0`]（symphonia） | 与 app 的非 WAV 腿**同一份**实现（`#223` 把它下移到 `yeban-decode`） |
+///
+/// ⚠ **为什么按后缀而不是按内容嗅探**：与 app 的 `decode_sample_classified` 逐字同一条
+/// 理由 —— 内容嗅探会给 `.wav` 增加一次探测，并让"哪个读取器先认领"变成隐含规则；
+/// 按后缀分派让"WAV 走老腿、读数逐字不变"这条**可判据的**承诺成立。
+///
+/// ⚠ **归一化不在本函数里**：WAV 腿的归一化在 `yeban-render`，非 WAV 腿的归一化在
+/// `yeban-decode`（symphonia）＋ `decode_mono_channel0` 的声道 0 折叠。
 ///
 /// 本函数只多做两件属于 MCP 侧的事：
-/// ① **先看 `metadata.len()`** 再决定读不读（`read_plain_wav` 会把整份 PCM 读进内存）；
+/// ① **先看 `metadata.len()`** 再决定读不读（两条腿都会把整份 PCM 读进内存）；
 /// ② 把读数包成 [`SampleFileReading`]（`Arc` 让同一份样本被多个音符共享）。
 ///
 /// # Errors
@@ -178,8 +191,17 @@ pub fn read_sample_file(path: &Path) -> Result<SampleFileReading, String> {
             MAX_SAMPLE_FILE_BYTES
         ));
     }
-    let (pcm, sample_rate, describe) =
-        read_plain_wav_mono_f32(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let (pcm, sample_rate, describe) = if is_plain_wav_suffix(path) {
+        read_plain_wav_mono_f32(path).map_err(|error| format!("{}: {error}", path.display()))?
+    } else {
+        // ⭐ `#223`：FLAC／OGG 等由 `yeban-decode` 按**内容**探测容器；折成声道 0 与
+        // 描述串的唯一实现都在那里（⛔ 本层不写第二份 `step_by(channels)`）。
+        let mono =
+            yeban_decode::decode_mono_channel0(path, &yeban_decode::DecodeOptions::default())
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+        let describe = mono.describe(path);
+        (mono.pcm, mono.sample_hz, describe)
+    };
     let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
     Ok(SampleFileReading {
         pcm: Arc::new(pcm),
@@ -187,6 +209,19 @@ pub fn read_sample_file(path: &Path) -> Result<SampleFileReading, String> {
         frames,
         describe,
     })
+}
+
+/// 后缀是不是**既有 hound WAV 腿**的那一族（`wav` / `wave`，大小写不敏感）。
+///
+/// ⚠ 只决定**走哪条腿**，⛔ 不决定成功与否（与 app 的 `is_wav_suffix` 逐字同一条判据）。
+/// ⛔ 不用内容嗅探：那会给 `.wav` 多一次读盘/探测，见 [`read_sample_file`] 的文档。
+#[must_use]
+fn is_plain_wav_suffix(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("wav") || extension.eq_ignore_ascii_case("wave")
+        })
 }
 
 /// `sample=` 的路径解析：绝对路径原样用；相对路径**相对 SFZ 文件所在目录**（SFZ 惯例）。
@@ -1085,6 +1120,17 @@ pub struct SfzWavArtifact {
     pub sample_reads_truncated: bool,
     /// 累计解码帧数。
     pub sample_frames_loaded: u64,
+    // ⭐ `#223`：四类**已知但不生效**的区域参数（本工具与 `yeban_render_master`
+    // 共用同一条 [`note_wave`] 音源路径 ⇒ 同样不应用它们）。键名与
+    // `render::KNOWN_UNSUPPORTED_KEYS` 的同一族逐字相同；这里按**音符数**计。
+    /// 命中区域声明了 `amplitude` 一族的音符数。
+    pub notes_with_amplitude: u64,
+    /// 命中区域声明了 `tune` 的 CC 调制的音符数。
+    pub notes_with_tune_cc: u64,
+    /// 命中区域声明了 `volume` 的 CC 调制的音符数。
+    pub notes_with_volume_cc: u64,
+    /// 命中区域声明了 `offset` / `end` 播放区间的音符数。
+    pub notes_with_sample_span: u64,
 }
 
 impl SfzWavArtifact {
@@ -1095,6 +1141,20 @@ impl SfzWavArtifact {
         // 只有**一个音符都没用上**文件样本时，才登记"样本文件解码没做"。
         if self.notes_using_file_sample == 0 {
             keys.insert(0, "samplerFileDecode");
+        }
+        // ⭐ `#223`：四条与 `yeban_render_master` **同名**的已知不支持项。
+        // 只在真的命中时登记（与那个工具的动态口径同一条纪律：⛔ 不无条件报）。
+        if self.notes_with_amplitude > 0 {
+            keys.push("sfzAmplitude");
+        }
+        if self.notes_with_tune_cc > 0 {
+            keys.push("sfzTuneCcModulation");
+        }
+        if self.notes_with_volume_cc > 0 {
+            keys.push("sfzVolumeCcModulation");
+        }
+        if self.notes_with_sample_span > 0 {
+            keys.push("sfzSampleSpan");
         }
         keys
     }
@@ -1386,6 +1446,14 @@ pub struct SfzRenderOutcome {
     pub sample_reads_truncated: bool,
     /// 累计解码帧数。
     pub sample_frames_loaded: u64,
+    /// ⭐ `#223`：命中区域声明了 `amplitude` 一族的音符数（本渲染器不应用）。
+    pub notes_with_amplitude: u64,
+    /// ⭐ `#223`：命中区域声明了 `tune` 的 CC 调制的音符数（本层没有 CC 状态）。
+    pub notes_with_tune_cc: u64,
+    /// ⭐ `#223`：命中区域声明了 `volume` 的 CC 调制的音符数（本层没有 CC 状态）。
+    pub notes_with_volume_cc: u64,
+    /// ⭐ `#223`：命中区域声明了 `offset` / `end` 播放区间的音符数（不按 span 切片）。
+    pub notes_with_sample_span: u64,
 }
 
 /// 把工程里的音符经一份**已解析**的 SFZ 渲染成交织立体声浮点母带。
@@ -1431,6 +1499,11 @@ pub fn render(
     let mut notes_using_builtin_silence = 0u64;
     let mut notes_using_file_sample = 0u64;
     let mut notes_using_sine_fallback = 0u64;
+    // ⭐ `#223`：四类已知但不生效的区域参数（判据函数与 `prepare_sampler` **同一份**）。
+    let mut notes_with_amplitude = 0u64;
+    let mut notes_with_tune_cc = 0u64;
+    let mut notes_with_volume_cc = 0u64;
+    let mut notes_with_sample_span = 0u64;
     let mut cache = SampleCache::new();
     for note in notes {
         // ⭐ `#221`：区域选择 / 速率 / 增益 / 样本来源**只有一份实现**
@@ -1442,6 +1515,21 @@ pub fn render(
             continue;
         };
         regions_used.insert(wave.region_index);
+        // ⭐ `#223`：四类已知但不生效的区域参数，逐音符数出来（键进 `unsupported`）。
+        if let Some(region) = instrument.regions().get(wave.region_index) {
+            if region_declares_amplitude(region) {
+                notes_with_amplitude = notes_with_amplitude.saturating_add(1);
+            }
+            if region_declares_cc_target(region, ModTarget::Tune) {
+                notes_with_tune_cc = notes_with_tune_cc.saturating_add(1);
+            }
+            if region_declares_cc_target(region, ModTarget::Volume) {
+                notes_with_volume_cc = notes_with_volume_cc.saturating_add(1);
+            }
+            if region_declares_sample_span(region) {
+                notes_with_sample_span = notes_with_sample_span.saturating_add(1);
+            }
+        }
         if wave.looping {
             notes_looping = notes_looping.saturating_add(1);
         }
@@ -1521,6 +1609,10 @@ pub fn render(
         },
         sample_reads_truncated: cache.truncated(),
         sample_frames_loaded: cache.frames_loaded(),
+        notes_with_amplitude,
+        notes_with_tune_cc,
+        notes_with_volume_cc,
+        notes_with_sample_span,
     })
 }
 
@@ -1684,6 +1776,33 @@ pub(super) struct PreparedSampler {
     /// `yeban_render_master` 能把 `sfzRegionEnvelope` 登记进 `unsupported`
     /// （第 324 条：已知不支持项必须能列出来，⛔ 不许"心知肚明地不报"）。
     pub regions_with_envelope: u64,
+    // -----------------------------------------------------------------
+    // ⭐ `#223`：四类**已知但不生效**的区域参数，各自数出来，供 `unsupported` 逐项登记。
+    //
+    // 共同点：它们都**不在** `PlaybackSpec::total_gain()` 里，而本渲染器只消费
+    // `total_gain()` ＋ `playback_rate()` ＋ 样本数据 ⇒ 若作者写了它们，输出与
+    // app/引擎路径（那里确实应用它们）**分叉**。第 324 条要求这种分叉必须能列出来。
+    // -----------------------------------------------------------------
+    /// ⭐ 命中的区域里**声明了 `amplitude` 一族**的个数（静态 `amplitude != 100`，
+    /// 或 `amplitude*ccN` 的 CC 调制项）。
+    ///
+    /// `total_gain()` 只含 `volume × 力度 × 交叉淡化`；引擎在它**之外**另乘
+    /// `(amplitude + Σ delta)/100` ⇒ 本渲染器不乘 = 静默比引擎响/轻。
+    pub regions_with_amplitude: u64,
+    /// ⭐ 命中的区域里声明了 **`tune` 的 CC 调制**（`pitch*ccN` 亦归入此族）的个数。
+    ///
+    /// 基准 `tune` 已烘进 `pitch_ratio`；CC 贡献的是**逐块可变增量**，本渲染器没有
+    /// CC 状态 ⇒ 不应用。
+    pub regions_with_tune_cc: u64,
+    /// ⭐ 命中的区域里声明了 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）的个数。
+    ///
+    /// 基准 `volume` 已折进 `total_gain()`；CC 增量（单位 dB）本渲染器没有 CC 状态 ⇒ 不应用。
+    pub regions_with_volume_cc: u64,
+    /// ⭐ 命中的区域里声明了 **`offset` / `end` 播放区间**的个数。
+    ///
+    /// `PlaybackSpec::span` 已由 `yeban-sfz` 归约好，但本渲染器把整份样本从 0 播到末尾
+    /// （⛔ 不按 `span` 切片）⇒ 起点/终点与作者写的不一致。
+    pub regions_with_sample_span: u64,
 }
 
 /// 用一份已解析的 SFZ 把一组 `(起始帧, 时值帧, 音高, 力度)` 造成**每音符一段 PCM**。
@@ -1715,6 +1834,10 @@ pub(super) fn prepare_sampler(
         sample_failures: Vec::new(),
         sample_frames_loaded: 0,
         regions_with_envelope: 0,
+        regions_with_amplitude: 0,
+        regions_with_tune_cc: 0,
+        regions_with_volume_cc: 0,
+        regions_with_sample_span: 0,
     };
     for &(start, frames, pitch, velocity) in notes {
         let note = SfzNote {
@@ -1736,10 +1859,24 @@ pub(super) fn prepare_sampler(
             prepared.notes_looping = prepared.notes_looping.saturating_add(1);
         }
         // ⭐ 区域级**幅度包络**：本渲染器不应用（见字段文档）⇒ 如实数出来。
-        if let Some(region) = instrument.regions().get(wave.region_index)
-            && region_declares_envelope(region)
-        {
-            prepared.regions_with_envelope = prepared.regions_with_envelope.saturating_add(1);
+        if let Some(region) = instrument.regions().get(wave.region_index) {
+            if region_declares_envelope(region) {
+                prepared.regions_with_envelope = prepared.regions_with_envelope.saturating_add(1);
+            }
+            // ⭐ `#223`：四类已知但不生效的区域参数，逐类数出来（登记见 `render.rs`）。
+            if region_declares_amplitude(region) {
+                prepared.regions_with_amplitude = prepared.regions_with_amplitude.saturating_add(1);
+            }
+            if region_declares_cc_target(region, ModTarget::Tune) {
+                prepared.regions_with_tune_cc = prepared.regions_with_tune_cc.saturating_add(1);
+            }
+            if region_declares_cc_target(region, ModTarget::Volume) {
+                prepared.regions_with_volume_cc = prepared.regions_with_volume_cc.saturating_add(1);
+            }
+            if region_declares_sample_span(region) {
+                prepared.regions_with_sample_span =
+                    prepared.regions_with_sample_span.saturating_add(1);
+            }
         }
         match wave.kind {
             NoteSampleKind::BuiltinSilence => {
@@ -1791,6 +1928,38 @@ fn region_declares_envelope(region: &Region<'_>) -> bool {
         || region.ampeg_decay > 0.0
         || region.ampeg_release > 0.0
         || region.ampeg_sustain < 100.0
+}
+
+/// 该区域是否声明了 **`amplitude` 一族**（静态值非缺省，或有 `amplitude*ccN` 调制项）。
+///
+/// 判据的两半各有出处：
+/// - 静态：`yeban-sfz` 的 [`AMPLITUDE_DEFAULT_PERCENT`]（规范缺省 100 ⇒ 乘子恰 1.0，
+///   即"没声明"）；
+/// - CC：`Region::cc_mods` 里 `target == ModTarget::Amplitude`。**不**按 `delta == 0`
+///   过滤：本渲染器**没有任何 CC 状态**，任何一条声明都无法求值。
+#[must_use]
+fn region_declares_amplitude(region: &Region<'_>) -> bool {
+    region.amplitude != AMPLITUDE_DEFAULT_PERCENT
+        || region_declares_cc_target(region, ModTarget::Amplitude)
+}
+
+/// 该区域是否声明了**某个目标**的 CC 调制项（`ccN` / `_ccN` / `_onccN` / `_curveccN`）。
+///
+/// ⚠ 只数"声明"，⛔ 不按 `delta == 0` 过滤：本渲染器没有 CC 状态，任何一条声明都
+/// 无法求值；而"作者写了 `delta=0`"与"作者没写"是两件事（与 `off_time` 的
+/// `None` / `Some(0.0)` 同一条区分口径）。
+#[must_use]
+fn region_declares_cc_target(region: &Region<'_>, target: ModTarget) -> bool {
+    region.cc_mods.iter().any(|item| item.target == target)
+}
+
+/// 该区域是否声明了 **`offset` / `end`**（播放区间会被归约，而本渲染器不切片）。
+///
+/// 缺省是 `offset = 0` ＋ `end = unspecified`（播到样本末尾）—— 那恰好是本渲染器的
+/// 行为，因此**只有**偏离这对缺省值才算"声明了区间"。
+#[must_use]
+fn region_declares_sample_span(region: &Region<'_>) -> bool {
+    region.offset != 0 || !matches!(region.end, SampleEnd::Unspecified)
 }
 
 /// 把**一个**区域渲染进 `out`（`+=` 叠加），返回实际写入的帧数。

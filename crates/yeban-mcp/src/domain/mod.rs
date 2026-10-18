@@ -2930,6 +2930,11 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             sample_failures: outcome.sample_failures,
             sample_reads_truncated: outcome.sample_reads_truncated,
             sample_frames_loaded: outcome.sample_frames_loaded,
+            // ⭐ `#223`：四类已知但不生效的区域参数（键进 `unsupported`）。
+            notes_with_amplitude: outcome.notes_with_amplitude,
+            notes_with_tune_cc: outcome.notes_with_tune_cc,
+            notes_with_volume_cc: outcome.notes_with_volume_cc,
+            notes_with_sample_span: outcome.notes_with_sample_span,
         }),
     })
 }
