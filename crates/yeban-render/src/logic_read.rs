@@ -16,7 +16,7 @@
 //!
 //! | 文件 | 读取口径 |
 //! | :--- | :--- |
-//! | `Resources/ProjectInformation.plist` | bplist00 字典的 `ActiveVariant`（int）⇒ 目录是 `Alternatives/{:03}`，⛔ **不硬编码 `000`** |
+//! | `Resources/ProjectInformation.plist` | bplist00 字典的 `ActiveVariant`（int）⇒ 目录是 `Alternatives/{:03}`，⛔ **不硬编码 `000`**；该键缺失时（`#194` 实测：负责人的 `track3.logicx` 没有它）**只在 `Alternatives/` 下恰好一个三位目录时**按目录唯一性取那个目录，0 个/多个仍报错 |
 //! | `Alternatives/<NNN>/MetaData.plist` | bplist00 字典的**七个必需键**：`NumberOfTracks` / `BeatsPerMinute` / `SampleRate` / `SongSignatureNumerator` / `SongSignatureDenominator` / `SongKey` / `Version` |
 //! | `Alternatives/<NNN>/ProjectData` | 自研分块二进制：根头 0x18 字节、单条记录头 0x24 字节（载荷长 `u32` 小端 @+0x1c），**按载荷长度走到 EOF**；⛔ 不用魔数/EOF 猜切分（魔数在文件里出现 2–3 次） |
 //!
@@ -418,18 +418,62 @@ impl LogicTotals {
 }
 
 /// 读一台 bundle 的 `ActiveVariant` 与对应的 `Alternatives/<NNN>` 目录。
+///
+/// **`ActiveVariant` 缺失时的回退（`#194` 实测新增）**：负责人的 `track3.logicx`
+/// （Logic Pro 12.2，`2026-10-18`，`HasProjectFolder = false`）的
+/// `Resources/ProjectInformation.plist` **没有** `ActiveVariant` 键，只有
+/// `VariantNames = {"0" = "track3"}`，而 `Alternatives/` 下**恰好一个**三位目录 `000`。
+/// 这种情况下按**目录唯一性**取那一个目录 —— 仍然**不硬编码 `000`**：
+/// 0 个或多于 1 个三位目录都**仍然报错**（错误串点名缺的键与实际目录数）。
 fn active_alternative(bundle: &Path) -> Result<(String, PathBuf), String> {
     let project_information =
         read_plist(&bundle.join("Resources").join("ProjectInformation.plist"))?;
     let project_information = project_information.as_dict("ProjectInformation.plist")?;
-    let active_variant = required(project_information, "ActiveVariant", bundle)?;
-    let active_variant = active_variant
-        .as_int()
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| format!("{}: ActiveVariant 不是非负整数", bundle.display()))?;
-    let alternative = format!("{active_variant:03}");
+    let alternative = match project_information.get("ActiveVariant") {
+        Some(active_variant) => {
+            let active_variant = active_variant
+                .as_int()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| format!("{}: ActiveVariant 不是非负整数", bundle.display()))?;
+            format!("{active_variant:03}")
+        }
+        None => single_alternative_dir(bundle)?,
+    };
     let alternative_dir = bundle.join("Alternatives").join(&alternative);
     Ok((alternative, alternative_dir))
+}
+
+/// `ActiveVariant` 缺失时：`Alternatives/` 下**恰好一个**三位数字目录 ⇒ 用它。
+///
+/// 这是 [`active_alternative`] 的回退；它把"哪个 alternative 是活动的"从"plist 声明"
+/// 降级成"目录唯一性"，因此**只在唯一时才成立**，并且错误串会点名缺的键与目录读数。
+fn single_alternative_dir(bundle: &Path) -> Result<String, String> {
+    let alternatives = bundle.join("Alternatives");
+    let mut found: Vec<String> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&alternatives) {
+        for entry in entries.flatten() {
+            let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if is_dir && name.len() == 3 && name.bytes().all(|byte| byte.is_ascii_digit()) {
+                found.push(name.to_owned());
+            }
+        }
+    }
+    found.sort();
+    match found.as_slice() {
+        [only] => Ok(only.clone()),
+        _ => Err(format!(
+            "{}: 缺少必需键 ActiveVariant（`Resources/ProjectInformation.plist`），\
+             且 `Alternatives/` 下不是恰好一个三位目录（实测 {} 个：{:?}）\
+             ⇒ 无法确定活动 alternative（⛔ 不硬编码 000）",
+            bundle.display(),
+            found.len(),
+            found
+        )),
+    }
 }
 
 /// 一台 bundle 的**元数据**（`ProjectInformation.plist` + `MetaData.plist` 的七键）。
@@ -1832,6 +1876,50 @@ fn required<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `#194` 实测：`ActiveVariant` 缺失时，**恰好一个**三位目录才算数。
+    ///
+    /// 这条判据只测回退本身（不造 bplist）：0 个、1 个、2 个目录三种形态，
+    /// 正向必须取到 `000`，反向必须**报错**（⛔ 不静默挑一个）。
+    #[test]
+    fn single_alternative_dir_requires_exactly_one_candidate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // 0 个：必须是错误。
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(empty.join("Alternatives")).expect("mkdir");
+        let error = single_alternative_dir(&empty).expect_err("0 个目录必须报错");
+        assert!(
+            error.contains("ActiveVariant"),
+            "错误串必须点名缺的键: {error}"
+        );
+
+        // 1 个：取它（不硬编码 000 —— 这里故意用 `007`）。
+        let one = dir.path().join("one");
+        std::fs::create_dir_all(one.join("Alternatives/007")).expect("mkdir");
+        assert_eq!(
+            single_alternative_dir(&one).expect("唯一目录必须可用"),
+            "007"
+        );
+
+        // 2 个：仍然必须报错（唯一性不成立）。
+        let two = dir.path().join("two");
+        std::fs::create_dir_all(two.join("Alternatives/000")).expect("mkdir");
+        std::fs::create_dir_all(two.join("Alternatives/001")).expect("mkdir");
+        let error = single_alternative_dir(&two).expect_err("两个目录必须报错");
+        assert!(
+            error.contains("实测 2 个"),
+            "错误串必须写出目录读数: {error}"
+        );
+
+        // 非三位 / 非数字目录不参与（例如 `Alternatives/backup`）。
+        let mixed = dir.path().join("mixed");
+        std::fs::create_dir_all(mixed.join("Alternatives/000")).expect("mkdir");
+        std::fs::create_dir_all(mixed.join("Alternatives/backup")).expect("mkdir");
+        assert_eq!(
+            single_alternative_dir(&mixed).expect("非三位目录必须被忽略"),
+            "000"
+        );
+    }
 
     /// 造一条最小 `qeSM` 载荷：名字字段 + `rest` 里的起点/长度。
     fn synthetic_region(name: &str, start: u32, length: u32) -> Vec<u8> {

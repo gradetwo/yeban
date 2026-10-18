@@ -1118,6 +1118,35 @@ pub const LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR: &str = concat!(
     "chunk 名小端存放，`Song` 落盘为 `gnoS`）。"
 );
 
+/// **3 轨产物**的打开结论适用范围（`HD-52` / #194）—— ⚠ **这一条还没有任何打开实测**。
+///
+/// 2 轨那份的 [`LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR`] 只覆盖**两条轨道**；3 轨产物换了骨架
+/// （`track3.logicx` 的 515 条记录），且第 3 个槽是供体的 `control track` region
+/// （见 [`LOGIC_OWNER_DONOR_3T_TRACK_REGIONS`]）—— **Logic 能不能打开、会不会把第 3 条轨道
+/// 画出来、会不会把 `control track` 当普通 MIDI 轨播放，本仓库没有观测**，所以本条**只登记范围**，
+/// 不冒充打开结论。负责人验收步骤写在 `#194` 的报告里（导出 → Logic 打开 → 看三条轨道的名字与
+/// 第 3 条轨的音符）。
+pub const LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR_3T: &str = concat!(
+    "非等价: 打开结论的适用范围 —— 本产物走的是**负责人 3 轨供体**（`track3.logicx`，",
+    "Logic Pro 12.2 `(6644)`，2026-10-18 存出，515 条记录 / 282,527 字节 / sha256 ",
+    "`192d440e…`），**断言范围只到字节与结构**：",
+    "① 供体是 Logic **自己**存的，且它自己的 `export.mid`（6,788 字节 / 4 个 `MTrk` / 480 PPQ）",
+    "带三条命名轨 `control track` / `up:` / `down:`（note-on 0 / 517 / 388）—— 本模块用它做语义对账；",
+    "② 第 3 个槽的 `qeSM`（对象号 `0x001c_0000`，名字逐字 `control track`，载荷 311 字节）与它的",
+    "配对 `qSvE`（176 字节）与 `up:` / `down:` **同形**（`kind=5` / `subtype=23`、`kind=1` / 同 subtype、",
+    "变长名字 + `rest`），因此音符写入器按同一套规则重建它；",
+    "③ **没有**任何 Logic/人读过本模块的 3 轨产物 ⇒ **能不能打开、三条轨道画不画得出来、第 3 条轨道",
+    "有没有声音，全部未验证**。负责人报的 2 轨打开结论（`低音轨是 C2 G2 C2 D2  高音轨 C5 D5 E5 F5 G5 A5`）",
+    "**不**外推到第 3 条轨道。",
+    "④ 第 3 个槽的 region **长度字段**仍是供体的 `3,840` tick（`rest+0x3c`；960 PPQ 下 1 小节），",
+    "本模块**不改**它（`rest` 逐字节是供体的）：超过 1 小节的音符可能被 region 边界裁掉 ——",
+    "这是第三个槽已知的功能限制，不是打开结论。",
+    "Scope **没有**放宽：只覆盖本机 Logic Pro 12.2 与这份供体的字节；不覆盖其它 Logic 版本/机器，",
+    "也不声称 4 轨以上（容量仍是 3 条 MIDI 轨，第 4 条仍 `未映射:`）。",
+    "供体音符序列 `b0`/`b1` 头行编码的每 region MIDI 通道没有复现（本写入器恒写 0x90）",
+    "⇒ **播放通道/音色路由仍未验证**，见 `NOTE_EVENT_SHAPE_CAVEAT`。"
+);
+
 /// 每一次导出都会登记的那条"轨道对象未写入"警告。
 ///
 /// ⚠ **第 404 轮把这条从"语义未知"改成了"语义已知、但参考实现说不能凭空合成"。** 这是重点：
@@ -2143,8 +2172,10 @@ pub const LOGIC_OWNER_DONOR_REALIZED_INSTRUMENT_SLOTS: [u8; 3] = [0x07, 0x09, 0x
 /// 负责人 2 轨供体里**仍然空闲**的预分配乐器通道槽（实测 `AuCO` 载荷 **201** 字节、名字
 /// `Inst 2`/`Inst 4`）。
 ///
-/// ⚠ 这两个空槽**不能**换成第三条轨道：一条能画出来的轨道还需要一条 `karT` 编排轨行与一个
-/// region 三元组，而那一半的配方在本仓库的测量里**没有**（见 [`LOGIC_ACTIVATION_UNMAPPED`]）。
+/// ⚠ 这两个空槽**不能**换成第三条轨道（`HD-52` 起也不再用它们凑第 3 条轨）：一条能画出来的
+/// 轨道还需要一条 `karT` 编排轨行与一个 region 三元组。第 3 个槽的实测配方改由
+/// [`LOGIC_OWNER_DONOR_3T_TRACK_REGIONS`]（负责人的 3 轨供体）提供；本条常量只描述 **2 轨那份**
+/// 的空闲槽，`3 轨` 模板不套用它。
 pub const LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS: [u8; 2] = [0x08, 0x0A];
 
 /// 空闲通道槽的 `AuCO` 载荷字节数（实测 201）。
@@ -2213,6 +2244,185 @@ pub const LOGIC_OWNER_DONOR_1T_CHUNK_FAMILIES: [(&str, usize); 18] = [
     ("Vide", 1),
     ("GenM", 1),
 ];
+
+/* ------------------------------------------------------------------ *
+ * 负责人 **3 轨**供体（`track3.logicx`，Logic Pro 12.2，2026-10-18）—— 第 3 个槽
+ * ------------------------------------------------------------------ *
+ *
+ * `HD-52` (#194)：把多轨容量从 2 推到 3。这份工程与 1 轨 / 2 轨那两份**同机、同版本**
+ * （`Resources/ProjectInformation.plist` 的 `LastSavedFrom` = `Logic Pro 12.2 (6644)`），
+ * 而且 `up:` / `down:` 两个 region 的 `qSvE` 载荷与 2 轨那份**逐字节相同**
+ * （16,592 / 12,448 字节）⇒ 2 轨 ↔ 3 轨的**家族条数差**是结构增量，不是内容差异
+ * （见 [`owner_donor_three_track_differential`]）。
+ *
+ * ⚠ **实测到的第 3 条轨道不是一条带音符的 MIDI 轨**：它是一条 `control track`
+ * （`qeSM` 名字逐字 `control track`、对象号 `0x001c_0000`、`qSvE` 176 字节 / 0 条音符；
+ * Logic **自己**导出的 `export.mid` 里它是一条 0 note-on 的 `MTrk`，名字逐字 `control track`）。
+ * 本模块把它当作**第 3 个可填的 region 槽**：结构上它与 `up:` / `down:` 同形
+ * （`qeSM kind=5` / `subtype=23`、配对 `qSvE kind=1` / 同一 subtype、变长名字 + `rest`），
+ * 因此第 3 条轨的音符可以写进去；**Logic 是否会把它当一条普通 MIDI 轨播放，只有人能验**
+ * （见 [`LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR_3T`]）。
+ * ------------------------------------------------------------------ */
+
+/// 负责人的 **3 轨**供体 `ProjectData`（`stat -f%z` = {@link LOGIC_OWNER_DONOR_3T_BYTES}）。
+pub const LOGIC_OWNER_DONOR_3T_PROJECT_DATA: &[u8] =
+    include_bytes!("../assets/logic-donor-owner/track3-3tracks/ProjectData");
+
+/// 负责人**自己**从 3 轨那份工程导出的标准 MIDI 文件（交叉核对用，不进产物）。
+pub const LOGIC_OWNER_DONOR_3T_EXPORT_MID: &[u8] =
+    include_bytes!("../assets/logic-donor-owner/track3-3tracks/export.mid");
+
+/// 3 轨供体**自己的** `MetaData.plist`（1,806 字节；只用于**读回判据**）。
+///
+/// ⚠ 它**不是**本模块的产物，也不进 `.logicx`：`logic_read` 的读取契约要求 `MetaData.plist`
+/// 的七键（含本模块刻意不写的 `SongKey`），因此"用生产读取器读回我们导出的 3 轨
+/// `ProjectData`"这条判据需要一份合法的 MetaData —— 用供体自己那份，而不是伪造一个调性。
+pub const LOGIC_OWNER_DONOR_3T_META_DATA: &[u8] =
+    include_bytes!("../assets/logic-donor-owner/track3-3tracks/MetaData.plist");
+
+/// 上面那份 `MetaData.plist` 的字节数（实测 1,806）。
+pub const LOGIC_OWNER_DONOR_3T_META_DATA_BYTES: usize = 1_806;
+
+/// 上面那份 `MetaData.plist` 的 sha256（实测）。
+pub const LOGIC_OWNER_DONOR_3T_META_DATA_SHA256: &str =
+    "092e5470e7de7ea586868e42e411f626da48a87a58cbdcaf16c59f34b7178e42";
+
+/// 3 轨供体**自己的** `Resources/ProjectInformation.plist`（258 字节；只用于**读回判据**）。
+///
+/// ⚠ 它**没有** `ActiveVariant` 键（`HasProjectFolder = false`，只有 `VariantNames =
+/// {"0" = "track3"}`）—— 这正是 `logic_read::active_alternative` 新增"目录唯一性回退"的
+/// 实测依据；它**不**进位图产物。
+pub const LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION: &[u8] =
+    include_bytes!("../assets/logic-donor-owner/track3-3tracks/ProjectInformation.plist");
+
+/// 上面那份 `ProjectInformation.plist` 的字节数（实测 258）。
+pub const LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION_BYTES: usize = 258;
+
+/// 上面那份 `ProjectInformation.plist` 的 sha256（实测）。
+pub const LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION_SHA256: &str =
+    "741cc6775e2662eac659334e9f4b86ab11313e0c68246c892a73010cd464d2fd";
+
+/// 3 轨供体的字节数（实测 282,527）。
+pub const LOGIC_OWNER_DONOR_3T_BYTES: usize = 282_527;
+
+/// 3 轨供体的记录条数（实测 515；行走恰好停在 EOF）。
+pub const LOGIC_OWNER_DONOR_3T_RECORDS: usize = 515;
+
+/// 3 轨供体的 sha256（`shasum -a 256`，实测）。
+pub const LOGIC_OWNER_DONOR_3T_SHA256: &str =
+    "192d440eccd64943f5fc92d06df7c4f99e0e85c5e2507760b065b77183fe4bb8";
+
+/// 3 轨供体那份 **Logic 自己导出的** `.mid` 的字节数（实测 6,788）。
+pub const LOGIC_OWNER_DONOR_3T_MID_BYTES: usize = 6_788;
+
+/// 3 轨供体那份 **Logic 自己导出的** `.mid` 的 sha256（实测）。
+pub const LOGIC_OWNER_DONOR_3T_MID_SHA256: &str =
+    "653cf2e3a3a4040390ca0a9be721a192fe4d8b29407c618057693bf52a121414";
+
+/// 负责人存这份工程时用的 Logic 版本（逐字 `Logic Pro 12.2 (6644)`）。
+pub const LOGIC_OWNER_DONOR_3T_SAVED_FROM: &str = "Logic Pro 12.2 (6644)";
+
+/// 负责人存这份工程的日期（`track3.logicx` 目录的日期：**2026-10-18**）。
+pub const LOGIC_OWNER_DONOR_3T_SAVED_ON: &str = "2026-10-18";
+
+/// 3 轨供体自带的**可映射 region 槽**数（实测：`MetaData.plist NumberOfTracks` = **3**、
+/// `Trak`（对象号 `0x0004_0000`）的非 0 载荷 **4** 条 − 1 条 master = **3** 条编排轨行、
+/// 3 个 region 三元组（2 条带音符 + 1 条 `control track`）⇒ 3 个可填槽）。
+pub const LOGIC_OWNER_DONOR_3T_TRACK_CAPACITY: usize = 3;
+
+/// 3 轨供体里**属于用户轨道的 region 三元组**（`qeSM` + 配对 `qSvE`）。
+///
+/// 每项 = (region 的对象号, `qeSM` 供体载荷字节数, **供体 `rest` 起点**, 名字之后第一个非零载荷偏移)。
+/// **顺序 = 槽号**：第 1 / 2 项与 2 轨那份的 `up:` / `down:` 完全一致（同一对象号、同一载荷长、
+/// 同一 `rest` 起点），第 3 项是这份供体**新增**的 `control track` region
+/// （对象号 `0x001c_0000`、载荷 311 字节、名字 13 字节 ⇒ `rest` = `0x20`、第一个非零字段在 `0x5d`）。
+/// 因此 3 条 MIDI 轨的前两条仍落到与 2 轨路线**相同的槽**，第 3 条落到第 3 个槽。
+pub const LOGIC_OWNER_DONOR_3T_TRACK_REGIONS: [(u32, usize, usize, usize); 3] = [
+    (0x0020_0000, 301, 0x16, 0x1F),
+    (0x0024_0000, 303, 0x18, 0x21),
+    (0x001C_0000, 311, 0x20, 0x5D),
+];
+
+/// 3 轨供体的编排摆放事件把三个槽绑到**哪一条轨道行**（1 起；实测）：
+/// `up:`（`0x0020_0000`）→ track **2**、`down:`（`0x0024_0000`）→ track **3**、
+/// `control track`（`0x001c_0000`）→ track **1**。
+///
+/// ⚠ 这条绑定是**供体的**、本模块不改：因此第 3 个槽的音符在 Logic 的轨道表里落在**第 1 行**
+/// （名字由我们改写）。它**不**影响"第 3 条 MIDI 轨的音符落在第 3 个槽"这条判据
+/// （判据按**槽**读，不按轨道行读），但它是人工验收时必须知道的一件事。
+pub const LOGIC_OWNER_DONOR_3T_PLACEMENT_TRACKS: [u32; 3] = [2, 3, 1];
+
+/// 3 轨供体逐 chunk 家族的实测条数（合计 = [`LOGIC_OWNER_DONOR_3T_RECORDS`]）。
+pub const LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES: [(&str, usize); 18] = [
+    ("AuCO", 286),
+    ("Envi", 46),
+    ("TxSt", 32),
+    ("Styl", 32),
+    ("Trak", 33),
+    ("AuCU", 22),
+    ("MSeq", 19),
+    ("EvSq", 19),
+    ("AuCn", 13),
+    ("Hypr", 3),
+    ("SngO", 2),
+    ("CorM", 2),
+    ("Song", 1),
+    ("InSt", 1),
+    ("Layr", 1),
+    ("ScSt", 1),
+    ("Vide", 1),
+    ("GenM", 1),
+];
+
+/// 3 轨供体那份 `.mid` 的 SMF **格式**（实测 **1** = 并行多条 `MTrk`，第 1 块是纯 meta 的指挥轨）。
+pub const LOGIC_OWNER_DONOR_3T_MID_FORMAT: u8 = 1;
+
+/// 3 轨供体那份 `.mid` 的 `MThd` division（实测 **480 PPQ**，与 1 轨 / 2 轨两份相同）。
+pub const LOGIC_OWNER_DONOR_3T_MID_DIVISION: u16 = 480;
+
+/// 3 轨供体那份 `.mid` 的 `MTrk` 块数（实测 **4** = 1 条纯 meta 指挥轨 + `control track` +
+/// `up:` + `down:`）。
+pub const LOGIC_OWNER_DONOR_3T_MID_CHUNKS: usize = 4;
+
+/// 3 轨供体那份 `.mid` 里**三条命名轨**的轨道名（文件顺序，逐字）：
+/// `control track`（0 条 note-on）+ `up:`（517）+ `down:`（388）。
+pub const LOGIC_OWNER_DONOR_3T_MID_TRACK_NAMES: [&str; 3] = ["control track", "up:", "down:"];
+
+/// 3 轨供体那份 `.mid` 里三条命名轨**各自**的 note-on 条数（实测 `0 / 517 / 388`）。
+///
+/// ⚠ 第 3 条轨道（`control track`）**没有音符**：这是这份供体与"三条带音符的 MIDI 轨"
+/// 之间唯一的事实差距；本模块把第 3 个槽当成**可填**的 region 使用，而不是假装供体带音符。
+pub const LOGIC_OWNER_DONOR_3T_MID_TRACK_NOTE_ONS: [usize; 3] = [0, 517, 388];
+
+/// 2 轨 → 3 轨的**记录**差（实测 `515 − 507` = **8**）。
+///
+/// ⚠ 与 [`LOGIC_OWNER_DONOR_ACTIVATION_RECORDS`]（1→2 的 13）**不同**，原因已实测：
+/// 3 轨那份的第 3 条轨道是 `control track`，它的通道条只多 **3** 条 `AuCU`，而 2 轨那份
+/// 多出来的是普通乐器轨的 **8** 条 `AuCU`。两段的**结构核**相同：`Trak` +2、`Envi` +1、
+/// `MSeq` +1、`EvSq` +1；`AuCU` 的条数随通道条内容变化（见
+/// [`owner_donor_three_track_differential`] 的剔除说明）。
+pub const LOGIC_OWNER_DONOR_3T_ACTIVATION_RECORDS: usize = 8;
+
+/// 2 轨 → 3 轨的**字节**差（实测 `282,527 − 227,309` = **55,218**）。
+///
+/// ⚠ 这个差**不是**"一个槽的净成本"：它包含内容差异（工程名 `track3` vs `r Elise 2 tracks`、
+/// 通道重编号 `0x58 → 0xe8`、`Song` 载荷 +40 字节、`GenM` 状态 +343 字节、乐器/插件载荷）。
+/// 结构增量的逐条字节见 [`LOGIC_OWNER_DONOR_3T_GATE_BYTES`]。
+pub const LOGIC_OWNER_DONOR_3T_ACTIVATION_BYTES: usize = 55_218;
+
+/// 第 3 个槽**结构增量**逐条的字节数合计（含 36 字节记录头）：**49,960**。
+///
+/// 逐条（全部是 3 轨供体在 2 轨供体之外**新增**的结构记录，按 `载荷 + 36 字节记录头` 计入）：
+/// `Trak` +2（1 条 58 字节编排行 = 94，加 1 条 **0 字节** `Trak` = 36）**130** +
+/// `Envi` +1（483 + 36）**519** + `EvSq` +1（`control track` region 176 + 36 = 212，加编排放置
+/// `qSvE` 176 → 256 的**第三条摆放事件** +80）**292** + `MSeq` +1（`control track` region
+/// 311 + 36）**347** + `AuCU` +3（192 / 256 / 48,116 + 36 → 684 / 292 / 48,152）**48,672**
+/// ⇒ **49,960**。
+///
+/// 与 [`LOGIC_OWNER_DONOR_3T_ACTIVATION_BYTES`]（55,218）的差额 **5,258** 字节**全部**可归因到
+/// 内容差异、已逐项对账：`Song` +40、`GenM` −343、`MSeq` 工程名（`r Elise 2 tracks` → `track3`）+6、
+/// `AuCO` +16、既有 `AuCU` 载荷的内容漂移 +5,539（例：3,422 → 3,191、1,921 → 1,431）。
+pub const LOGIC_OWNER_DONOR_3T_GATE_BYTES: usize = 49_960;
 
 /// 供体记录（只读视图：整条记录 + 解码后的头字段）。
 struct DonorRecord<'a> {
@@ -2519,10 +2729,166 @@ pub fn owner_donor_differential() -> Option<LogicOwnerDifferential> {
     })
 }
 
+/// 负责人 **2 轨 ↔ 3 轨**两份供体量出来的**第 3 个槽配方**（从字节本身重算，不是抄常量）。
+///
+/// 与 [`LogicOwnerDifferential`]（1↔2）**同一个格式**：记录条数、逐家族条数、总字节数。
+/// 额外带上**逐家族的记录字节数**，因为 2↔3 这一对的两份工程内容不同（工程名、乐器/插件载荷、
+/// 通道编号），只有把「条数差」与「字节差」分开，才能把结构增量与内容差异分开 ——
+/// 见 [`Self::gained_families`] / [`Self::content_only_families`]。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicOwnerThreeTrackDifferential {
+    /// 2 轨那份的记录条数（实测 507）。
+    pub records_2tracks: usize,
+    /// 3 轨那份的记录条数（实测 515）。
+    pub records_3tracks: usize,
+    /// 2 轨那份的字节数（实测 227,309）。
+    pub bytes_2tracks: usize,
+    /// 3 轨那份的字节数（实测 282,527）。
+    pub bytes_3tracks: usize,
+    /// 2 轨那份逐家族的条数（按家族名升序）。
+    pub families_2tracks: Vec<(String, usize)>,
+    /// 3 轨那份逐家族的条数（按家族名升序）。
+    pub families_3tracks: Vec<(String, usize)>,
+    /// 2 轨那份逐家族的**记录字节数**（载荷 + 36 字节记录头，按家族名升序）。
+    pub family_bytes_2tracks: Vec<(String, usize)>,
+    /// 3 轨那份逐家族的**记录字节数**（载荷 + 36 字节记录头，按家族名升序）。
+    pub family_bytes_3tracks: Vec<(String, usize)>,
+}
+
+impl LogicOwnerThreeTrackDifferential {
+    /// 记录条数之差（实测 8）。
+    #[must_use]
+    pub fn gained_records(&self) -> usize {
+        self.records_3tracks.saturating_sub(self.records_2tracks)
+    }
+
+    /// 字节数之差（实测 55,218；**含**内容差异，结构部分见 [`LOGIC_OWNER_DONOR_3T_GATE_BYTES`]）。
+    #[must_use]
+    pub fn gained_bytes(&self) -> usize {
+        self.bytes_3tracks.saturating_sub(self.bytes_2tracks)
+    }
+
+    /// **获得了记录**的家族及其条数差（实测 `AuCU +3`、`Envi +1`、`EvSq +1`、`MSeq +1`、
+    /// `Trak +2`；其余 13 族差为 0）。
+    ///
+    /// **为什么条数差可以当结构增量**：两份供体的 `up:` / `down:` 两个 region 的 `qSvE`
+    /// 载荷**逐字节相同**（16,592 + 12,448 字节），因此"多出来的一条轨道"没有改变任何
+    /// 音符内容；条数差只可能来自第 3 条轨道带来的结构记录。
+    #[must_use]
+    pub fn gained_families(&self) -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        for (name, three) in &self.families_3tracks {
+            let two = self
+                .families_2tracks
+                .iter()
+                .find(|(other, _)| other == name)
+                .map_or(0, |(_, count)| *count);
+            if *three > two {
+                out.push((name.clone(), three - two));
+            }
+        }
+        out
+    }
+
+    /// 逐家族的**记录字节数**差（含 36 字节记录头；负值 = 3 轨那份更小）。
+    ///
+    /// 实测：`AuCU +54,211`、`Envi +519`、`EvSq +292`、`MSeq +353`、`Trak +130`、
+    /// `AuCO +16`、`GenM −343`、`Song +40`；其余 10 族 0。
+    #[must_use]
+    pub fn gained_family_bytes(&self) -> Vec<(String, isize)> {
+        let mut out = Vec::new();
+        for (name, three) in &self.family_bytes_3tracks {
+            let two = self
+                .family_bytes_2tracks
+                .iter()
+                .find(|(other, _)| other == name)
+                .map_or(0, |(_, bytes)| *bytes);
+            if *three != two {
+                out.push((name.clone(), *three as isize - two as isize));
+            }
+        }
+        for (name, two) in &self.family_bytes_2tracks {
+            if !self
+                .family_bytes_3tracks
+                .iter()
+                .any(|(other, _)| other == name)
+                && *two != 0
+            {
+                out.push((name.clone(), -(*two as isize)));
+            }
+        }
+        out
+    }
+
+    /// **条数不变、只有字节变了**的家族（= 内容差异，不是结构增量）。
+    ///
+    /// 实测：`AuCO +16`、`GenM −343`、`Song +40`（3 个；`AuCU` 另有 5,539 字节是
+    /// 既有记录的内容漂移，但它的条数也变了，故不在此列）。
+    #[must_use]
+    pub fn content_only_families(&self) -> Vec<(String, isize)> {
+        let counts: BTreeMap<&str, usize> = self
+            .families_3tracks
+            .iter()
+            .map(|(name, count)| (name.as_str(), *count))
+            .collect();
+        self.gained_family_bytes()
+            .into_iter()
+            .filter(|(name, _)| {
+                let two = self
+                    .families_2tracks
+                    .iter()
+                    .find(|(other, _)| other == name)
+                    .map_or(0, |(_, count)| *count);
+                counts.get(name.as_str()).copied().unwrap_or(0) == two
+            })
+            .collect()
+    }
+}
+
+/// 从**负责人 2 轨 / 3 轨两份供体的字节本身**量出第 3 个槽的配方。
+///
+/// 两份供体的形状与本模块钉住的不符时返回 `None`（判据会红，而不是静默用常量）。
+#[must_use]
+pub fn owner_donor_three_track_differential() -> Option<LogicOwnerThreeTrackDifferential> {
+    fn families(parsed: &[DonorRecord<'_>]) -> Vec<(String, usize)> {
+        let mut map: BTreeMap<String, usize> = BTreeMap::new();
+        for record in parsed {
+            let mut tag = record.tag;
+            tag.reverse();
+            *map.entry(String::from_utf8_lossy(&tag).into_owned())
+                .or_default() += 1;
+        }
+        map.into_iter().collect()
+    }
+    fn family_bytes(parsed: &[DonorRecord<'_>]) -> Vec<(String, usize)> {
+        let mut map: BTreeMap<String, usize> = BTreeMap::new();
+        for record in parsed {
+            let mut tag = record.tag;
+            tag.reverse();
+            *map.entry(String::from_utf8_lossy(&tag).into_owned())
+                .or_default() += record.full.len();
+        }
+        map.into_iter().collect()
+    }
+    let two = donor_records(LOGIC_OWNER_DONOR_2T_PROJECT_DATA).ok()?;
+    let three = donor_records(LOGIC_OWNER_DONOR_3T_PROJECT_DATA).ok()?;
+    Some(LogicOwnerThreeTrackDifferential {
+        records_2tracks: two.len(),
+        records_3tracks: three.len(),
+        bytes_2tracks: LOGIC_OWNER_DONOR_2T_PROJECT_DATA.len(),
+        bytes_3tracks: LOGIC_OWNER_DONOR_3T_PROJECT_DATA.len(),
+        families_2tracks: families(&two),
+        families_3tracks: families(&three),
+        family_bytes_2tracks: family_bytes(&two),
+        family_bytes_3tracks: family_bytes(&three),
+    })
+}
+
 /// 一份可用的供体**模板**：字节 + 由实测钉住的形状 + 逐族读数 + 出处。
 ///
-/// 两个实例：[`LOGIC_F0_TEMPLATE`]（MIT 夹具，容量 1，**被 Logic Pro 12.2 打开过的那份**
-/// 产物的骨架）与 [`LOGIC_OWNER_DONOR_TEMPLATE`]（负责人的 2 轨工程，容量 2）。
+/// 三个实例：[`LOGIC_F0_TEMPLATE`]（MIT 夹具，容量 1，**被 Logic Pro 12.2 打开过的那份**
+/// 产物的骨架）、[`LOGIC_OWNER_DONOR_TEMPLATE`]（负责人的 2 轨工程，容量 2，也被打开过）与
+/// [`LOGIC_OWNER_DONOR_3T_TEMPLATE`]（负责人的 3 轨工程，容量 3，`HD-52` / #194，**尚未被打开验证**）。
 struct DonorTemplate {
     bytes: &'static [u8],
     byte_len: usize,
@@ -2592,6 +2958,24 @@ static LOGIC_OWNER_DONOR_TEMPLATE: DonorTemplate = DonorTemplate {
     owner_supplied: true,
 };
 
+/// 负责人的 **3 轨**工程（容量 3）—— `HD-52` (#194) 起 **3 条及以上 MIDI 轨走这条**。
+static LOGIC_OWNER_DONOR_3T_TEMPLATE: DonorTemplate = DonorTemplate {
+    bytes: LOGIC_OWNER_DONOR_3T_PROJECT_DATA,
+    byte_len: LOGIC_OWNER_DONOR_3T_BYTES,
+    record_count: LOGIC_OWNER_DONOR_3T_RECORDS,
+    sha256: LOGIC_OWNER_DONOR_3T_SHA256,
+    version_code: LOGIC_OWNER_DONOR_VERSION_CODE,
+    saved_from: LOGIC_OWNER_DONOR_3T_SAVED_FROM,
+    saved_on: LOGIC_OWNER_DONOR_3T_SAVED_ON,
+    capacity: LOGIC_OWNER_DONOR_3T_TRACK_CAPACITY,
+    regions: &LOGIC_OWNER_DONOR_3T_TRACK_REGIONS,
+    patched_records: 2 + 2 * LOGIC_OWNER_DONOR_3T_TRACK_REGIONS.len(),
+    families: &LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES,
+    label: "负责人自己用 Logic Pro 12.2 存的三轨工程（`track3.logicx`）",
+    carried_phrase: "3 条 `Inst` 乐器轨（第 3 条在供体里是 `control track`）+ 预分配混音槽 + 环境对象",
+    owner_supplied: true,
+};
+
 /// 负责人供体路线的 `非等价:` 出处行（**这一份**供体的字节、sha256、版本与日期）。
 fn owner_donor_provenance(template: &DonorTemplate) -> String {
     format!(
@@ -2620,6 +3004,44 @@ fn owner_donor_provenance(template: &DonorTemplate) -> String {
     )
 }
 
+/// **3 轨模板**的出处行：第 3 个槽的配方 = 2 轨那份 ↔ 这份 3 轨那份的字节差。
+///
+/// 与 [`owner_donor_provenance`]（1↔2）同一格式，但**多一句剔除说明**：两份工程的
+/// `up:` / `down:` 音符载荷逐字节相同，因此家族**条数**差是结构增量；字节差里含的内容差异
+/// 逐项列在 [`LOGIC_OWNER_DONOR_3T_GATE_BYTES`]。
+fn owner_donor_three_track_provenance(template: &DonorTemplate) -> String {
+    format!(
+        "{LOSS_NOT_EQUIVALENT_PREFIX} 本次产物是**供体克隆**（3 轨路线，`HD-52` / #194）：`ProjectData` 的 \
+         {} 条记录里最多 {} 条被改动（全局拍号 `qSvE`、全局速度 `qSvE`、每条被映射 region 的 `qeSM` 名字\
+         与该 region 的配对音符 `qSvE`；本次映射 {} 条轨道），其余 {} 条**逐字节是供体的** —— 供体 = {}，\
+         由**本仓库负责人**（人类责任人）用 **{saved_from}** 在 **{saved_on}** 存出（`Resources/\
+         ProjectInformation.plist` 的 `LastSavedFrom`），sha256 `{}`，{} 字节，根头版本码 {:#06x}。\
+         它与同批的 **2 轨**那份（{} 字节 / {} 条记录 / sha256 `{}`）构成第 2 次**受控实验**：\
+         实测差 = {} 条记录 / {} 字节（见 [`owner_donor_three_track_differential`]）；\
+         其中**结构增量**逐条 = `Trak` +2、`Envi` +1、`MSeq` +1、`EvSq` +1、`AuCU` +3，\
+         结构字节合计 {}（`AuCU` +3 的载荷随通道条内容变化：本次是 192 / 256 / 48,116 字节）；\
+         剩下的字节差是可归因的内容差异（`Song` +40、`GenM` −343、工程名 +6、`AuCO` +16、\
+         既有 `AuCU` 载荷漂移 +5,539）—— 两份工程的前两个 region（`up:` / `down:`）的 `qSvE`\
+         载荷**逐字节相同**（16,592 + 12,448 字节），所以音符内容没有参与这条差分。",
+        template.record_count,
+        template.patched_records,
+        template.capacity,
+        template.record_count - template.patched_records,
+        template.label,
+        template.sha256,
+        template.byte_len,
+        template.version_code,
+        LOGIC_OWNER_DONOR_2T_BYTES,
+        LOGIC_OWNER_DONOR_2T_RECORDS,
+        LOGIC_OWNER_DONOR_2T_SHA256,
+        LOGIC_OWNER_DONOR_3T_ACTIVATION_RECORDS,
+        LOGIC_OWNER_DONOR_3T_ACTIVATION_BYTES,
+        LOGIC_OWNER_DONOR_3T_GATE_BYTES,
+        saved_from = template.saved_from,
+        saved_on = template.saved_on,
+    )
+}
+
 /// 工程里 `TrackKind::Midi` 的轨道条数（**指标**：条）。
 fn midi_track_count(project: &YebanProjectV1) -> usize {
     project
@@ -2629,14 +3051,17 @@ fn midi_track_count(project: &YebanProjectV1) -> usize {
         .count()
 }
 
-/// 选哪份供体：够装下工程的 MIDI 轨就用负责人的 2 轨那份，否则用 MIT 的 1 轨那份。
+/// 选哪份供体：3 条及以上 MIDI 轨走负责人的 3 轨那份，2 条走 2 轨那份，否则走 MIT 的 1 轨那份。
 ///
 /// **为什么单轨仍走 MIT 那份**：`--export-logic` 在单 MIDI 轨工程上的产物是**唯一**被
 /// Logic 实测打开过的字节（第 407 轮；`filled` 样本的 `ProjectData` sha256
 /// `aa5db6c9…`）。换骨架会让那份字节不可复现，收益却是零（1 轨两份供体都装得下），
-/// 因此单轨路径**一个字节都不动**。
+/// 因此单轨路径**一个字节都不动**。2 轨同理：已被负责人打开过、逐字节钉住，也不动。
 fn donor_template_for(project: &YebanProjectV1) -> &'static DonorTemplate {
-    if midi_track_count(project) >= LOGIC_OWNER_DONOR_TRACK_CAPACITY {
+    let midi_tracks = midi_track_count(project);
+    if midi_tracks >= LOGIC_OWNER_DONOR_3T_TRACK_CAPACITY {
+        &LOGIC_OWNER_DONOR_3T_TEMPLATE
+    } else if midi_tracks >= LOGIC_OWNER_DONOR_TRACK_CAPACITY {
         &LOGIC_OWNER_DONOR_TEMPLATE
     } else {
         &LOGIC_F0_TEMPLATE
@@ -3272,16 +3697,30 @@ impl LogicBuilder {
     fn write_donor_losses(&mut self, project: &YebanProjectV1, splice: &DonorSplice) {
         let entity = project_entity(project);
         let template = splice.template;
+        // 2 轨那份的打开结论只覆盖 2 条轨道（`LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR`）；
+        // 3 轨那份**没有任何打开实测**，用另一条只写范围的常量，⛔ 不把 2 轨的结论外推。
+        let three_track = template.capacity >= LOGIC_OWNER_DONOR_3T_TRACK_CAPACITY;
         self.loss(
             entity.clone(),
             if template.owner_supplied {
-                LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR.to_owned()
+                if three_track {
+                    LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR_3T.to_owned()
+                } else {
+                    LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR.to_owned()
+                }
             } else {
                 LOGIC_OPEN_SCOPE_CAVEAT.to_owned()
             },
         );
         if template.owner_supplied {
-            self.loss(entity.clone(), owner_donor_provenance(template));
+            self.loss(
+                entity.clone(),
+                if three_track {
+                    owner_donor_three_track_provenance(template)
+                } else {
+                    owner_donor_provenance(template)
+                },
+            );
         } else {
             self.loss(
                 entity.clone(),
@@ -3486,6 +3925,39 @@ impl LogicBuilder {
             ),
         );
         // 激活本身：这是**已实施**的那一半（供体自带），逐项写清哪一半有货、哪一半没有。
+        if template.capacity >= LOGIC_OWNER_DONOR_3T_TRACK_CAPACITY {
+            self.loss(
+                entity.to_owned(),
+                format!(
+                    "{LOSS_NOT_EQUIVALENT_PREFIX} **通道槽激活已实施的那一半**（3 轨路线）：所选供体自带 {} 条\
+                     **已绘制**的轨道槽（实测：`MetaData.plist NumberOfTracks` = {}，`Trak` 对象号 \
+                     `0x0004_0000` 的非 0 载荷 {} 条 − 1 条 master = {} 条编排轨行，配 {} 个 region 三元组），\
+                     本次映射了 {} 条。第 3 个槽是供体的 `control track` region（对象号 `0x001c_0000`）：\
+                     它在供体里 0 条音符（Logic 自己的 `.mid` 里那条 `MTrk` 的 note-on = 0），本模块把我们的\
+                     第 3 条轨写进去 —— 这是**可填槽**的结构用法，**不是**供体自带第 3 条音符轨的证据。\
+                     2 轨 ↔ 3 轨两份供体实测出的「多一个槽」差是 \
+                     {LOGIC_OWNER_DONOR_3T_ACTIVATION_RECORDS} 条记录 / \
+                     {LOGIC_OWNER_DONOR_3T_ACTIVATION_BYTES} 字节（家族条数：`AuCU` +3、`Trak` +2、\
+                     `Envi` +1、`MSeq` +1、`EvSq` +1）；其中**结构增量**逐条 = \
+                     {LOGIC_OWNER_DONOR_3T_GATE_BYTES} 字节（`Trak` +2 = 130、`Envi` +1 = 519、\
+                     `EvSq` +1 = 292、`MSeq` +1 = 347、`AuCU` +3 = 48,672），其余 5,258 字节是内容差异\
+                     （`Song` +40、`GenM` −343、工程名 +6、`AuCO` +16、既有 `AuCU` 载荷漂移 +5,539）。\
+                     两份供体的 `up:` / `down:` 音符载荷逐字节相同（16,592 + 12,448 字节），因此音符内容\
+                     没有参与这条差分。**未证实的字段**（因此留供体的值、不改）：`AuCO` 载荷 `+0xcc` 的 16 \
+                     字节 time-UUID、`+0x06`/`+0x51`/`+0x80` 三个随槽变化的字节、3 条 `AuCU` 通道条状态\
+                     （插件/发送/音量，含 48,116 字节的大件）的语义、`Envi` 环境对象的 483 字节、`GenM` 的\
+                     轨道状态 JSON、以及 `Trak` 编排轨行载荷里 `u16@+0x02`/`u32@+0x08`/`u32@+0x28`/16 字节 \
+                     time-UUID 的含义 —— 它们的**用途未证实**，本模块只原样携带（或对多出来的轨道**不写**）。",
+                    template.capacity,
+                    template.capacity,
+                    template.capacity + 1,
+                    template.capacity,
+                    template.regions.len(),
+                    splice.mapped_regions,
+                ),
+            );
+            return;
+        }
         self.loss(
             entity.to_owned(),
             format!(
@@ -3528,6 +4000,27 @@ impl LogicBuilder {
         }
         if template.owner_supplied {
             let extra = midi_tracks - template.capacity;
+            if template.capacity >= LOGIC_OWNER_DONOR_3T_TRACK_CAPACITY {
+                self.loss(
+                    entity.to_owned(),
+                    format!(
+                        "{LOGIC_ACTIVATION_UNMAPPED} —— 本工程有 {midi_tracks} 条 `TrackKind::Midi` 轨，所选供体\
+                         （{}）自带的**已绘制**轨道槽是 {} 条 ⇒ 多出来的 {extra} 条没有槽。**原因不是「没时间」**：\
+                         负责人供体对目前只覆盖 `1 轨 → 2 轨`（13 条记录 / 46,204 字节）与 \
+                         `2 轨 → 3 轨`（{LOGIC_OWNER_DONOR_3T_ACTIVATION_RECORDS} 条记录 / \
+                         {LOGIC_OWNER_DONOR_3T_ACTIVATION_BYTES} 字节，结构增量 \
+                         {LOGIC_OWNER_DONOR_3T_GATE_BYTES} 字节）这两件事；**第 4 个槽的配方没有实测** —— \
+                         仓库里没有一份 4 轨供体，因此无法把「第 4 条轨道的编排行 / region 三元组 / `Envi` / \
+                         `AuCU` 组合」从字节里量出来。本模块**不发明**它，只把多出来的轨道逐条登记\
+                         （见 `track:` 条目）。要解锁 4 轨：需要负责人再提供一份 **4 轨** `.logicx`（同一个\
+                         Logic 版本、最好与 3 轨那份只差一条轨道）＋ Logic 自己导出的 `.mid`，然后按 \
+                         `HD-52` 的同一套判据量 `3 轨 → 4 轨` 的家族条数与字节差。",
+                        template.label,
+                        template.capacity,
+                    ),
+                );
+                return;
+            }
             let free_slots = LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS;
             self.loss(
                 entity.to_owned(),
@@ -3675,21 +4168,29 @@ impl LogicBuilder {
                     && midi_seen > template.capacity
                 {
                     let step = midi_seen - template.capacity;
-                    match LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS.get(step - 1) {
-                        Some(slot) => format!(
-                            "；本条在实测的空闲乐器槽里排第 {step} 号 = 槽字节 {slot:#04x}\
+                    if template.capacity >= LOGIC_OWNER_DONOR_3T_TRACK_CAPACITY {
+                        format!(
+                            "；本条是容量（{} 条）之外的第 {step} 条 ⇒ **第 4 个槽的配方未实测**\
+                             （仓库里没有 4 轨供体；已实测的是 `1→2` 与 `2→3` 两段）",
+                            template.capacity
+                        )
+                    } else {
+                        match LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS.get(step - 1) {
+                            Some(slot) => format!(
+                                "；本条在实测的空闲乐器槽里排第 {step} 号 = 槽字节 {slot:#04x}\
                              （`AuCO` 载荷 {LOGIC_OWNER_DONOR_AUCO_FREE_BYTES} 字节，已激活的同族槽是 \
                              {LOGIC_OWNER_DONOR_AUCO_ACTIVE_BYTES} 字节）"
-                        ),
-                        None => format!(
-                            "；实测的空闲乐器槽只有 {} 个（{}），第 {step} 号没有实测到的槽",
-                            LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS.len(),
-                            LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS
-                                .iter()
-                                .map(|slot| format!("{slot:#04x}"))
-                                .collect::<Vec<_>>()
-                                .join("/"),
-                        ),
+                            ),
+                            None => format!(
+                                "；实测的空闲乐器槽只有 {} 个（{}），第 {step} 号没有实测到的槽",
+                                LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS.len(),
+                                LOGIC_OWNER_DONOR_FREE_INSTRUMENT_SLOTS
+                                    .iter()
+                                    .map(|slot| format!("{slot:#04x}"))
+                                    .collect::<Vec<_>>()
+                                    .join("/"),
+                            ),
+                        }
                     }
                 } else {
                     String::new()
@@ -6781,10 +7282,13 @@ mod tests {
         );
     }
 
-    /// **判据（有牙）**：第三条 MIDI 轨**必须被点名**，`NumberOfTracks` 不许被抬到 3。
+    /// **判据（有牙）**：第 4 条 MIDI 轨必须被点名（容量已到 **3**），`NumberOfTracks` 不许被抬到 4。
+    ///
+    /// `HD-52` / #194 之前这条判据问的是第 3 条（容量 2）；第 3 条现在**有槽**了，因此判据
+    /// 顺着容量上移一条 —— 不是把"第 3 条仍不导出"改宽，而是把边界推到新的容量。
     #[test]
-    fn a_third_midi_track_is_registered_as_unmapped() {
-        let project = project_with_midi_tracks(3);
+    fn a_fourth_midi_track_is_registered_as_unmapped() {
+        let project = project_with_midi_tracks(4);
         let data = project_data_from_donor(&project);
         let text = data
             .losses
@@ -6794,14 +7298,14 @@ mod tests {
             .join("\n");
         assert!(
             text.contains(LOGIC_ACTIVATION_UNMAPPED),
-            "第三条轨道必须登记槽激活未映射"
+            "第 4 条轨道必须登记槽激活未映射"
         );
-        assert!(text.contains("Track 3"), "多出来的轨道必须被点名：{text}");
+        assert!(text.contains("Track 4"), "多出来的轨道必须被点名：{text}");
         assert!(
-            text.contains("本条在实测的空闲乐器槽里排第 1 号 = 槽字节 0x08"),
-            "必须点名它对应的实测空闲槽（0x08）：{text}"
+            text.contains("第 4 个槽的配方未实测"),
+            "必须点名 4 轨以上缺的那块测量：{text}"
         );
-        assert_eq!(data.mapped_regions, 2, "容量是 2，只有前两条被映射");
+        assert_eq!(data.mapped_regions, 3, "容量是 3，只有前三条被映射");
         let bundle = build_bundle_from_donor(&project, "000", "Fixture");
         let meta = read_bplist(
             bundle
@@ -6811,8 +7315,560 @@ mod tests {
         );
         assert_eq!(
             dict_of(&meta).get("NumberOfTracks"),
-            Some(&TestPlist::Integer(2)),
-            "NumberOfTracks 必须是映射数 2，而不是工程 MIDI 轨总数 3"
+            Some(&TestPlist::Integer(3)),
+            "NumberOfTracks 必须是映射数 3，而不是工程 MIDI 轨总数 4"
+        );
+    }
+
+    /// **判据（有牙，#194 的核心）**：3 条 MIDI 轨走 3 轨供体（515 条记录），
+    /// 第 3 条轨的音符落在**第 3 个槽**（对象号 `0x001c_0000`，供体里是 `control track`），
+    /// 并且三个槽的 region 名逐条是我们三条轨道的名字。
+    #[test]
+    fn three_midi_tracks_use_the_three_track_donor_and_fill_the_third_slot() {
+        let project = project_with_midi_tracks(3);
+        let data = project_data_from_donor(&project);
+        assert_eq!(
+            record_slices(&data.bytes).len(),
+            LOGIC_OWNER_DONOR_3T_RECORDS,
+            "3 条 MIDI 轨必须走负责人 3 轨供体的 515 条记录"
+        );
+        assert_eq!(
+            u16_le(&data.bytes, LOGIC_FORMAT_VERSION_OFFSET),
+            LOGIC_OWNER_DONOR_VERSION_CODE,
+            "保留供体自己的根头版本码 0x09D0"
+        );
+        assert_eq!(data.mapped_regions, 3, "三条轨道各映射一个 region");
+        assert_eq!(
+            data.mapped_notes,
+            (1..=3)
+                .map(|index| midi_spec_for_track(index).len())
+                .sum::<usize>(),
+            "三条轨道的音符条数之和"
+        );
+
+        let text = data
+            .losses
+            .iter()
+            .map(|loss| format!("{}: {}", loss.entity, loss.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains(LOGIC_ACTIVATION_UNMAPPED),
+            "容量（3）之内不得出现槽激活未映射条目"
+        );
+        assert!(
+            text.contains(LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR_3T),
+            "3 轨产物必须登记**它自己的**打开范围（尚无打开实测）"
+        );
+        assert!(
+            !text.contains(LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR),
+            "3 轨产物不得冒充 2 轨那份的打开结论"
+        );
+        assert!(
+            text.contains(LOGIC_OWNER_DONOR_3T_SHA256),
+            "损失表必须点名 3 轨供体的 sha256"
+        );
+
+        let records = read_records(&data.bytes);
+        let placements = read_placements(&data.bytes);
+        let arrangement = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG
+                    && record.cluster == LOGIC_ARRANGE_CLUSTER
+                    // 同一对象号下还有一条 16 字节的空 `qSvE`；编排列表是长的那条。
+                    && record.body.len() > LOGIC_ARRANGE_EVENT_LEN
+            })
+            .expect("编排区 `qSvE`");
+        assert_eq!(
+            (arrangement.body.len() - LOGIC_EVENT_SEQUENCE_TAIL.len()) / LOGIC_ARRANGE_EVENT_LEN,
+            3,
+            "3 轨供体自带三条**编排**摆放事件"
+        );
+        assert!(placements.len() >= 3, "摆放读取器至少看到三条");
+        for (index, (cluster, payload_bytes, donor_rest_start, _)) in
+            LOGIC_OWNER_DONOR_3T_TRACK_REGIONS.iter().enumerate()
+        {
+            let region = records
+                .iter()
+                .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == *cluster)
+                .unwrap_or_else(|| panic!("第 {} 个槽的 `qeSM`", index + 1));
+            assert_eq!(
+                read_region_name(region),
+                format!("Clip {}", index + 1),
+                "第 {} 个槽的 region 名",
+                index + 1
+            );
+            let name_len = usize::from(u16_le(&region.body, LOGIC_REGION_NAME_PAYLOAD_OFFSET));
+            let rest = region_rest_start(name_len);
+            assert_eq!(
+                region.body.len(),
+                rest + (payload_bytes - donor_rest_start),
+                "第 {} 个槽的载荷长 = 新 rest 起点 + 供体 rest 长度",
+                index + 1
+            );
+
+            // 第 3 轨（= 第 3 个槽）的音符必须逐条是 `midi_spec_for_track(3)`；前两条同理。
+            let seq = records
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == *cluster)
+                .unwrap_or_else(|| panic!("第 {} 个槽的配对 `qSvE`", index + 1));
+            let mut ours: Vec<(u32, u8, u8, u32)> = read_note_events(&seq.body)
+                .into_iter()
+                .map(|(start, pitch, velocity, duration)| {
+                    (
+                        start - LOGIC_NOTE_ORIGIN_TICKS as u32,
+                        pitch,
+                        velocity,
+                        duration,
+                    )
+                })
+                .collect();
+            let mut want: Vec<(u32, u8, u8, u32)> = midi_spec_for_track(index + 1)
+                .into_iter()
+                .map(|(start, pitch, duration, velocity)| {
+                    (start as u32, pitch, velocity, duration as u32)
+                })
+                .collect();
+            ours.sort_unstable();
+            want.sort_unstable();
+            assert_eq!(
+                ours,
+                want,
+                "第 {} 个槽的音符（起始/音高/力度/时值）",
+                index + 1
+            );
+
+            // 摆放绑定：链接 id 命中、轨道号与槽字节都是供体的实测值。
+            let link = u32_le(&region.body, rest + LOGIC_REGION_LINK_ID_FROM_REST);
+            let placement = placements
+                .iter()
+                .find(|placement| placement.0 == link)
+                .unwrap_or_else(|| panic!("第 {} 个槽的链接 id {link:#x} 没有摆放事件", index + 1));
+            assert_eq!(
+                placement.1,
+                LOGIC_OWNER_DONOR_3T_PLACEMENT_TRACKS[index],
+                "第 {} 个槽被供体绑到哪条轨道行（实测：槽 3 绑到 track 1）",
+                index + 1
+            );
+            assert_eq!(placement.3, *cluster >> 16, "摆放事件的 region 槽字节");
+        }
+
+        let bundle = build_bundle_from_donor(&project, "000", "Fixture");
+        let meta = read_bplist(
+            bundle
+                .files
+                .get("Alternatives/000/MetaData.plist")
+                .expect("MetaData.plist"),
+        );
+        assert_eq!(
+            dict_of(&meta).get("NumberOfTracks"),
+            Some(&TestPlist::Integer(3)),
+            "NumberOfTracks 必须是映射数 3"
+        );
+    }
+
+    /// **判据（有牙）**：3 条 MIDI 轨的产物 = 3 轨供体的 **515** 条记录，除**声明的那 8 条**外
+    /// **逐字节**是供体的。
+    #[test]
+    fn owner_donor_three_track_output_reproduces_the_owners_record_stream() {
+        let project = project_with_midi_tracks(3);
+        let data = project_data_from_donor(&project);
+        let donor = record_slices(LOGIC_OWNER_DONOR_3T_PROJECT_DATA);
+        let output = record_slices(&data.bytes);
+        assert_eq!(donor.len(), LOGIC_OWNER_DONOR_3T_RECORDS, "供体记录条数");
+        assert_eq!(output.len(), donor.len(), "记录条数必须与供体相同");
+
+        let meter_first = LOGIC_METER_MARKER as u8;
+        let tempo_first = LOGIC_TEMPO_MARKER as u8;
+        let mut allowed: Vec<usize> = Vec::new();
+        for (index, record) in donor.iter().enumerate() {
+            let tag = [record[0], record[1], record[2], record[3]];
+            let cluster = u32_le(record, LOGIC_RECORD_CLUSTER_OFFSET);
+            let first = record.get(LOGIC_RECORD_HEADER).copied();
+            if (tag == LOGIC_SEQUENCE_TAG && cluster == 0 && first == Some(meter_first))
+                || (tag == LOGIC_SEQUENCE_TAG && cluster == 0 && first == Some(tempo_first))
+            {
+                allowed.push(index);
+                continue;
+            }
+            if LOGIC_OWNER_DONOR_3T_TRACK_REGIONS
+                .iter()
+                .any(|(region_cluster, _, _, _)| {
+                    *region_cluster == cluster
+                        && (tag == LOGIC_REGION_TAG || tag == LOGIC_SEQUENCE_TAG)
+                })
+            {
+                allowed.push(index);
+            }
+        }
+        assert_eq!(
+            allowed.len(),
+            LOGIC_OWNER_DONOR_3T_TEMPLATE.patched_records,
+            "允许不同的记录条数必须等于钉住的 patched_records（8）"
+        );
+        let changed: Vec<usize> = (0..donor.len())
+            .filter(|index| donor[*index] != output[*index])
+            .collect();
+        assert_eq!(changed, allowed, "**只有**这 8 条记录可以与 3 轨供体不同");
+
+        for (name, count) in LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES {
+            let measured = output
+                .iter()
+                .filter(|record| readable_tag(record) == name)
+                .count();
+            assert_eq!(measured, count, "家族 `{name}` 的条数（条）");
+        }
+        let records = read_records(&data.bytes);
+        let names: Vec<String> = LOGIC_OWNER_DONOR_3T_TRACK_REGIONS
+            .iter()
+            .map(|(cluster, _, _, _)| {
+                let region = records
+                    .iter()
+                    .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == *cluster)
+                    .expect("产物 region");
+                read_region_name(region)
+            })
+            .collect();
+        assert_eq!(names, vec!["Clip 1", "Clip 2", "Clip 3"], "三个槽的轨名");
+
+        let text = data
+            .losses
+            .iter()
+            .map(|loss| format!("{}: {}", loss.entity, loss.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains(LOGIC_OWNER_DONOR_3T_SHA256),
+            "损失表必须点名 3 轨供体"
+        );
+        assert!(
+            text.contains("55218"),
+            "损失表必须写下 2→3 的字节差（55218）"
+        );
+        assert!(text.contains("49960"), "损失表必须写下结构增量（49960）");
+    }
+
+    /// **差分判据（有牙，离线可跑）**：从**2 轨 / 3 轨两份供体的字节本身**重新量出第 3 个槽
+    /// 的配方，并把 2→3 的「结构增量 vs 内容差异」逐项钉回常量。
+    #[test]
+    fn owner_donor_three_track_differential_matches_the_measured_recipe() {
+        let diff = owner_donor_three_track_differential().expect("2↔3 差分必须能从字节量出来");
+        assert_eq!(diff.records_2tracks, LOGIC_OWNER_DONOR_2T_RECORDS);
+        assert_eq!(diff.records_3tracks, LOGIC_OWNER_DONOR_3T_RECORDS);
+        assert_eq!(diff.bytes_2tracks, LOGIC_OWNER_DONOR_2T_BYTES);
+        assert_eq!(diff.bytes_3tracks, LOGIC_OWNER_DONOR_3T_BYTES);
+        assert_eq!(
+            diff.gained_records(),
+            LOGIC_OWNER_DONOR_3T_ACTIVATION_RECORDS,
+            "2→3 的记录差（条）"
+        );
+        assert_eq!(
+            diff.gained_bytes(),
+            LOGIC_OWNER_DONOR_3T_ACTIVATION_BYTES,
+            "2→3 的字节差（字节）"
+        );
+        // 与 1↔2 **同一格式**：家族 + 条数。
+        assert_eq!(
+            diff.gained_families(),
+            vec![
+                ("AuCU".to_owned(), 3),
+                ("Envi".to_owned(), 1),
+                ("EvSq".to_owned(), 1),
+                ("MSeq".to_owned(), 1),
+                ("Trak".to_owned(), 2),
+            ],
+            "2→3 的家族条数差"
+        );
+        // 逐家族字节差（含 36 字节记录头）；负值 = 3 轨那份更小。
+        assert_eq!(
+            diff.gained_family_bytes(),
+            vec![
+                ("AuCO".to_owned(), 16),
+                ("AuCU".to_owned(), 54_211),
+                ("Envi".to_owned(), 519),
+                ("EvSq".to_owned(), 292),
+                ("GenM".to_owned(), -343),
+                ("MSeq".to_owned(), 353),
+                ("Song".to_owned(), 40),
+                ("Trak".to_owned(), 130),
+            ],
+            "2→3 的逐家族字节差"
+        );
+        // 条数不变、只有字节变的 = 内容差异（不是结构增量）。
+        assert_eq!(
+            diff.content_only_families(),
+            vec![
+                ("AuCO".to_owned(), 16),
+                ("GenM".to_owned(), -343),
+                ("Song".to_owned(), 40),
+            ],
+            "内容差异家族"
+        );
+
+        // **剔除内容差异的证据**：两份供体的 `up:` / `down:` 音符载荷逐字节相同。
+        let two = read_records(LOGIC_OWNER_DONOR_2T_PROJECT_DATA);
+        let three = read_records(LOGIC_OWNER_DONOR_3T_PROJECT_DATA);
+        for (index, (cluster, _, _, _)) in LOGIC_OWNER_DONOR_3T_TRACK_REGIONS
+            .iter()
+            .take(2)
+            .enumerate()
+        {
+            let a = two
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == *cluster)
+                .expect("2 轨供体的 region 音符");
+            let b = three
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == *cluster)
+                .expect("3 轨供体的 region 音符");
+            assert_eq!(
+                a.body.len(),
+                [16_592usize, 12_448][index],
+                "供体 region 音符载荷长（up: / down: 的实测值）"
+            );
+            assert_eq!(
+                a.body, b.body,
+                "两份供体在槽 {cluster:#010x} 的音符必须逐字节相同"
+            );
+        }
+
+        // 结构增量 = 130（Trak）+ 519（Envi）+ 292（EvSq）+ 347（MSeq）+ 48,672（AuCU）
+        assert_eq!(
+            130 + 519 + 292 + 347 + 48_672,
+            LOGIC_OWNER_DONOR_3T_GATE_BYTES,
+            "结构增量逐条字节合计（含 36 字节记录头）"
+        );
+        assert_eq!(
+            LOGIC_OWNER_DONOR_3T_GATE_BYTES + 5_258,
+            LOGIC_OWNER_DONOR_3T_ACTIVATION_BYTES,
+            "结构增量 + 内容差异 = 总字节差（内容：Song 40、GenM −343、工程名 6、AuCO 16、\
+             既有 AuCU 漂移 5,539）"
+        );
+
+        for (name, count) in LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES {
+            let measured = diff
+                .families_3tracks
+                .iter()
+                .find(|(other, _)| other == name)
+                .map_or(0, |(_, count)| *count);
+            assert_eq!(measured, count, "3 轨供体家族 `{name}` 的条数（条）");
+        }
+    }
+
+    /// **判据**：vendeored 的 3 轨供体字节 / `.mid` 与常量逐项一致，且出处文件点名它。
+    #[test]
+    fn vendored_three_track_donor_matches_the_embedded_bytes_and_carries_its_provenance() {
+        assert_eq!(
+            LOGIC_OWNER_DONOR_3T_PROJECT_DATA.len(),
+            LOGIC_OWNER_DONOR_3T_BYTES,
+            "3 轨供体字节数"
+        );
+        assert_eq!(
+            sha256_hex(LOGIC_OWNER_DONOR_3T_PROJECT_DATA),
+            LOGIC_OWNER_DONOR_3T_SHA256,
+            "3 轨供体 sha256"
+        );
+        assert_eq!(
+            record_slices(LOGIC_OWNER_DONOR_3T_PROJECT_DATA).len(),
+            LOGIC_OWNER_DONOR_3T_RECORDS,
+            "3 轨供体记录条数"
+        );
+        assert_eq!(
+            u16_le(
+                LOGIC_OWNER_DONOR_3T_PROJECT_DATA,
+                LOGIC_FORMAT_VERSION_OFFSET
+            ),
+            LOGIC_OWNER_DONOR_VERSION_CODE,
+            "3 轨供体的根头版本码（与 1/2 轨那份同为 0x09D0）"
+        );
+        assert_eq!(
+            LOGIC_OWNER_DONOR_3T_EXPORT_MID.len(),
+            LOGIC_OWNER_DONOR_3T_MID_BYTES,
+            "3 轨参考 .mid 字节数"
+        );
+        assert_eq!(
+            sha256_hex(LOGIC_OWNER_DONOR_3T_EXPORT_MID),
+            LOGIC_OWNER_DONOR_3T_MID_SHA256,
+            "3 轨参考 .mid sha256"
+        );
+
+        let mid = read_reference_midi(LOGIC_OWNER_DONOR_3T_EXPORT_MID);
+        assert_eq!(mid.format, LOGIC_OWNER_DONOR_3T_MID_FORMAT, ".mid 格式");
+        assert_eq!(mid.division, LOGIC_OWNER_DONOR_3T_MID_DIVISION, ".mid PPQ");
+        assert_eq!(
+            usize::from(mid.declared_tracks),
+            LOGIC_OWNER_DONOR_3T_MID_CHUNKS,
+            ".mid 声明的轨道数"
+        );
+        assert_eq!(
+            mid.tracks.len(),
+            LOGIC_OWNER_DONOR_3T_MID_CHUNKS,
+            ".mid 实际 MTrk 块数"
+        );
+        let named: Vec<&ReferenceTrack> = mid
+            .tracks
+            .iter()
+            .filter(|track| track.name.is_some())
+            .collect();
+        assert_eq!(named.len(), 3, "命名轨条数");
+        for (index, name) in LOGIC_OWNER_DONOR_3T_MID_TRACK_NAMES.iter().enumerate() {
+            assert_eq!(
+                named[index].name.as_deref(),
+                Some(*name),
+                "第 {} 条命名轨",
+                index + 1
+            );
+            assert_eq!(
+                named[index].notes.len(),
+                LOGIC_OWNER_DONOR_3T_MID_TRACK_NOTE_ONS[index],
+                "第 {} 条命名轨的 note-on 条数",
+                index + 1
+            );
+        }
+
+        // 3 个槽在供体里的形状（第三个是 `control track`，但它与 `up:` / `down:` 同形）。
+        let records = read_records(LOGIC_OWNER_DONOR_3T_PROJECT_DATA);
+        for (cluster, payload_bytes, rest_start, first_other) in LOGIC_OWNER_DONOR_3T_TRACK_REGIONS
+        {
+            let region = records
+                .iter()
+                .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == cluster)
+                .unwrap_or_else(|| panic!("供体 region {cluster:#010x}"));
+            assert_eq!(
+                region.body.len(),
+                payload_bytes,
+                "槽 {cluster:#010x} 载荷长"
+            );
+            let name_len = usize::from(u16_le(&region.body, LOGIC_REGION_NAME_PAYLOAD_OFFSET));
+            assert_eq!(
+                region_rest_start(name_len),
+                rest_start,
+                "槽 {cluster:#010x} 的 rest 起点"
+            );
+            assert!(
+                region.body[rest_start..first_other]
+                    .iter()
+                    .all(|byte| *byte == 0),
+                "槽 {cluster:#010x} 的 rest..first_other 必须全 0"
+            );
+            let seq = records
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == cluster)
+                .unwrap_or_else(|| panic!("供体配对 qSvE {cluster:#010x}"));
+            // ⚠ 供体的音符载荷形状与**我们写出去**的形状不同（供体有 `b0`/`b1` 头行与续行），
+            // 这里只要求"存在且非空"；形状判据针对产物（见 `read_note_events` 的调用方）。
+            assert!(!seq.body.is_empty(), "供体配对 qSvE 不得为空");
+        }
+        let third = records
+            .iter()
+            .find(|record| record.tag == LOGIC_REGION_TAG && record.cluster == 0x001C_0000)
+            .expect("第 3 个槽");
+        assert_eq!(
+            read_region_name(third),
+            "control track",
+            "第 3 个槽在供体里的名字（逐字）"
+        );
+
+        let provenance = include_str!("../assets/logic-donor-owner/PROVENANCE.md");
+        assert!(
+            provenance.contains("track3-3tracks/ProjectData"),
+            "PROVENANCE.md 必须点名路径"
+        );
+        assert!(
+            provenance.contains("282,527"),
+            "PROVENANCE.md 必须登记字节数"
+        );
+        assert!(
+            provenance.contains("control track"),
+            "PROVENANCE.md 必须写下第 3 条轨道是 control track"
+        );
+    }
+
+    /// **交叉核对（有牙，离线可跑）**：把 Logic **自己**导出的 `track3.mid` 的三条命名轨
+    /// （含 0 音符的 `control track`）装进工程，走**正常 3 轨出口**，再从三个槽逐条读回来。
+    ///
+    /// 这条验的是"我们的 3 轨语义"：3 条轨道 / 每轨音符数 / 音高集合与 Logic 自己的导出一致。
+    /// ⚠ 它**不是** Logic 往返：`.mid` 是 Logic 写的，`.logicx` 是本模块写的。
+    #[test]
+    fn owner_donor_three_track_mid_cross_check() {
+        let reference = read_reference_midi(LOGIC_OWNER_DONOR_3T_EXPORT_MID);
+        let named: Vec<&ReferenceTrack> = reference
+            .tracks
+            .iter()
+            .filter(|track| track.name.is_some())
+            .collect();
+        assert_eq!(named.len(), 3, "`.mid` 的三条命名轨");
+        for (index, name) in LOGIC_OWNER_DONOR_3T_MID_TRACK_NAMES.iter().enumerate() {
+            assert_eq!(named[index].name.as_deref(), Some(*name));
+            assert_eq!(
+                named[index].notes.len(),
+                LOGIC_OWNER_DONOR_3T_MID_TRACK_NOTE_ONS[index]
+            );
+        }
+
+        let project = project_from_reference_tracks(&named);
+        let data = project_data_from_donor(&project);
+        assert_eq!(data.mapped_regions, 3, "三条轨各映射一个槽");
+        assert_eq!(
+            data.mapped_notes,
+            LOGIC_OWNER_DONOR_3T_MID_TRACK_NOTE_ONS
+                .iter()
+                .sum::<usize>(),
+            "出口报告的映射音符总数（个）"
+        );
+        let records = read_records(&data.bytes);
+        let ratio = LOGIC_TICKS_PER_QUARTER / u64::from(reference.division);
+        assert_eq!(ratio, 2, "960 / 480");
+        for (index, (cluster, _, _, _)) in LOGIC_OWNER_DONOR_3T_TRACK_REGIONS.iter().enumerate() {
+            let seq = records
+                .iter()
+                .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == *cluster)
+                .unwrap_or_else(|| panic!("第 {} 个槽的产物音符", index + 1));
+            let ours = read_note_events(&seq.body);
+            assert_eq!(
+                ours.len(),
+                LOGIC_OWNER_DONOR_3T_MID_TRACK_NOTE_ONS[index],
+                "第 {} 个槽的 note 条数",
+                index + 1
+            );
+            let mut ours_pitches: Vec<u8> = ours.iter().map(|note| note.1).collect();
+            let mut reference_pitches: Vec<u8> =
+                named[index].notes.iter().map(|note| note.1).collect();
+            ours_pitches.sort_unstable();
+            reference_pitches.sort_unstable();
+            assert_eq!(
+                ours_pitches,
+                reference_pitches,
+                "第 {} 个槽的音高多重集必须等于 Logic 自己在 `.mid` 里写的那条轨",
+                index + 1
+            );
+            let mut ours_ticks: Vec<u32> = ours.iter().map(|note| note.0).collect();
+            let mut reference_ticks: Vec<u32> = named[index]
+                .notes
+                .iter()
+                .map(|(start, _, _, _)| (LOGIC_NOTE_ORIGIN_TICKS + start * ratio) as u32)
+                .collect();
+            ours_ticks.sort_unstable();
+            reference_ticks.sort_unstable();
+            assert_eq!(
+                ours_ticks,
+                reference_ticks,
+                "第 {} 个槽的起始 tick 多重集必须等于 38,400 + 2 × .mid tick",
+                index + 1
+            );
+        }
+
+        // 第 3 个槽（供体的 `control track`）在 `.mid` 里 0 音符；本出口把第 3 条轨写进去后
+        // 它必须有**第 3 条轨**的音符 —— 两者不矛盾：前者是"供体没带音符"，后者是"槽可填"。
+        let third = records
+            .iter()
+            .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == 0x001C_0000)
+            .expect("第 3 个槽的产物音符");
+        assert_eq!(
+            read_note_events(&third.body).len(),
+            LOGIC_OWNER_DONOR_3T_MID_TRACK_NOTE_ONS[2],
+            "第 3 个槽在被我们写入后必须带第 3 条轨的音符（388）"
         );
     }
 
@@ -8029,7 +9085,7 @@ mod tests {
     }
 
     /// **判据（有牙）**：供体选择只由 **MIDI 轨条数**决定 —— 1 轨（及 0 轨）仍走 MIT 那份
-    /// （**唯一被 Logic 打开过**的字节），2 轨起走负责人的 2 轨那份。
+    /// （**唯一被 Logic 打开过**的字节），2 轨走负责人的 2 轨那份，3 轨起走 3 轨那份。
     #[test]
     fn donor_selection_switches_at_two_midi_tracks() {
         for (count, expected_records, expected_code) in [
@@ -8041,8 +9097,18 @@ mod tests {
                 LOGIC_OWNER_DONOR_VERSION_CODE,
             ),
             (
+                3,
+                LOGIC_OWNER_DONOR_3T_RECORDS,
+                LOGIC_OWNER_DONOR_VERSION_CODE,
+            ),
+            (
+                4,
+                LOGIC_OWNER_DONOR_3T_RECORDS,
+                LOGIC_OWNER_DONOR_VERSION_CODE,
+            ),
+            (
                 5,
-                LOGIC_OWNER_DONOR_2T_RECORDS,
+                LOGIC_OWNER_DONOR_3T_RECORDS,
                 LOGIC_OWNER_DONOR_VERSION_CODE,
             ),
         ] {
@@ -8057,6 +9123,245 @@ mod tests {
                 u16_le(&data.bytes, LOGIC_FORMAT_VERSION_OFFSET),
                 expected_code,
                 "{count} 条 MIDI 轨的根头版本码"
+            );
+        }
+    }
+
+    /// **判据（有牙，`HD-52` 新增）**：2 轨出口**逐字节**等于改动前 `main` 的基线。
+    ///
+    /// 基线取自 `git archive main`（`6dc76a65`）在**临时树**里跑**同一组夹具**得到的 sha256
+    /// （4 个文件 + 损失表文本），因此这条判据**不是**自证：它比的是"改前 vs 改后"。
+    #[test]
+    fn two_track_output_is_byte_identical_to_the_pre_change_main_baseline() {
+        let project = project_with_midi_tracks(2);
+        let data = project_data_from_donor(&project);
+        assert_eq!(
+            data.bytes.len(),
+            198_623,
+            "2 轨 ProjectData 字节数（改前基线）"
+        );
+        assert_eq!(
+            sha256_hex(&data.bytes),
+            "a10722cff195005ba5872f33859047cd15c63799025c6e25b96a7b911dcf2004",
+            "2 轨 `ProjectData` 的 sha256 必须与改前 `main` 逐字节相同"
+        );
+        assert_eq!(data.mapped_regions, 2, "2 轨仍映射 2 个槽");
+        assert_eq!(data.mapped_notes, 10, "2 轨仍映射 10 个音符");
+
+        let bundle = build_bundle_from_donor(&project, "000", "Fixture");
+        for (path, expected) in [
+            (
+                "Alternatives/000/ProjectData",
+                "a10722cff195005ba5872f33859047cd15c63799025c6e25b96a7b911dcf2004",
+            ),
+            (
+                "Alternatives/000/MetaData.plist",
+                "104df2a326ffdd779aabd651d6bd138586e3a5690d68cc93bef5202daf9342e8",
+            ),
+            (
+                "Alternatives/000/DisplayState.plist",
+                "2659ca9f518b7fa72fa7b9adfc9846b2d46dd9a4c0b6532e522bd83f2fee3d8c",
+            ),
+            (
+                "Resources/ProjectInformation.plist",
+                "fa276ea02f4d8c755fdd4af9480f116e3778eae25e70d90f14218a2fd0ee5f99",
+            ),
+        ] {
+            assert_eq!(
+                sha256_hex(&bundle.files[path]),
+                expected,
+                "2 轨 bundle 的 `{path}` 必须与改前 `main` 逐字节相同"
+            );
+        }
+        let text = data
+            .losses
+            .iter()
+            .map(|loss| format!("{}: {}", loss.entity, loss.reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            sha256_hex(text.as_bytes()),
+            "fc77a811df36c903bfd46357590ec8fb25c597f603cc1c80b27ac4f1533d5ae8",
+            "2 轨产物的损失表文本必须与改前 `main` 逐字节相同"
+        );
+    }
+
+    /// **读回判据（有牙，走生产读取器）**：我们导出的 3 轨 `ProjectData` 能被
+    /// `logic_read::inspect_bundle` / `import_bundle` 读回 3 条轨道、12 个音符，并且
+    /// 第 3 个槽（region 名 `Clip 3`）**从槽里**读回 2 个音符。
+    ///
+    /// ⚠ `logic_read` 的读取契约要求 `MetaData.plist` 的七键（含本模块刻意不写的
+    /// `SongKey`）⇒ 临时 bundle 用**供体自己那份** MetaData（`LOGIC_OWNER_DONOR_3T_META_DATA`）
+    /// 组装；被测的 `ProjectData` 是我们的产物，一个字节没换。
+    #[cfg(feature = "experimental-logic-import")]
+    #[test]
+    fn three_track_export_reads_back_through_the_production_reader() {
+        use crate::logic_read::{import_bundle, inspect_bundle};
+
+        let project = project_with_midi_tracks(3);
+        let bundle = build_bundle_from_donor(&project, "000", "Fixture");
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (path, bytes) in &bundle.files {
+            if path.ends_with("MetaData.plist") {
+                continue;
+            }
+            let target = dir.path().join(path);
+            std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&target, bytes).expect("write");
+        }
+        std::fs::write(
+            dir.path().join("Alternatives/000/MetaData.plist"),
+            LOGIC_OWNER_DONOR_3T_META_DATA,
+        )
+        .expect("write donor metadata");
+
+        let inspection = inspect_bundle(dir.path()).expect("生产读取器必须读得动 3 轨产物");
+        assert_eq!(inspection.alternative, "000");
+        assert_eq!(inspection.declared_tracks, 3);
+        assert_eq!(inspection.tracks, 3, "轨道数（`karT` `payload[0]==1`）");
+        assert_eq!(inspection.master_tracks, 1, "master 行");
+        assert_eq!(inspection.regions_all, 19, "所有 `qeSM` 条数");
+        assert_eq!(inspection.internal_regions, 5, "内部区域条数");
+        assert_eq!(inspection.regions, 14, "非内部区域条数");
+        assert_eq!(inspection.notes, 12, "我们三条轨的音符总数");
+        assert_eq!(inspection.region_placements, 19, "成功读出摆放字段的条数");
+
+        let imported = import_bundle(dir.path()).expect("导入读取器必须读得动 3 轨产物");
+        assert_eq!(imported.tracks, 3);
+        assert_eq!(imported.notes, 12);
+        for (name, notes, track) in [("Clip 1", 6usize, 2u32), ("Clip 2", 4, 3), ("Clip 3", 2, 1)] {
+            let region = imported
+                .imported_regions
+                .iter()
+                .find(|region| region.name == name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "从产物里必须读回 `{name}`；实际区域名 = {:?}",
+                        imported
+                            .imported_regions
+                            .iter()
+                            .map(|region| region.name.as_str())
+                            .collect::<Vec<_>>()
+                    )
+                });
+            assert_eq!(region.notes.len(), notes, "`{name}` 从槽里读回的音符数");
+            assert_eq!(
+                region.track_1based,
+                Some(track),
+                "`{name}` 的实测轨道绑定（供体的摆放事件，1 起）"
+            );
+        }
+    }
+
+    /// **判据（有牙，`#194` 第一条）**：读得动负责人的 3 轨工程（用**入库的三份供体字节**
+    /// 组装 bundle，因此 CI 上可跑）—— 读数：轨数 / 片段数 / 音符数 / `active_alternative`。
+    ///
+    /// 先量出"第 3 轨在哪、长什么样"，再谈容量。⚠ 该工程的
+    /// `ProjectInformation.plist` **没有** `ActiveVariant` 键 ⇒ 这里同时验
+    /// `logic_read::active_alternative` 的**目录唯一性回退**（`Alternatives/` 下恰一个 `000`）。
+    #[cfg(feature = "experimental-logic-import")]
+    #[test]
+    fn logic_read_inspects_the_vendored_three_track_bundle() {
+        use crate::logic_read::{import_bundle, inspect_bundle};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("Alternatives/000")).expect("mkdir");
+        std::fs::create_dir_all(dir.path().join("Resources")).expect("mkdir");
+        std::fs::write(
+            dir.path().join("Alternatives/000/ProjectData"),
+            LOGIC_OWNER_DONOR_3T_PROJECT_DATA,
+        )
+        .expect("write ProjectData");
+        std::fs::write(
+            dir.path().join("Alternatives/000/MetaData.plist"),
+            LOGIC_OWNER_DONOR_3T_META_DATA,
+        )
+        .expect("write MetaData");
+        std::fs::write(
+            dir.path().join("Resources/ProjectInformation.plist"),
+            LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION,
+        )
+        .expect("write ProjectInformation");
+
+        let inspection = inspect_bundle(dir.path()).expect("3 轨供体必须读得动");
+        assert_eq!(
+            inspection.alternative, "000",
+            "active_alternative（ActiveVariant 缺失 ⇒ 目录唯一性回退）"
+        );
+        assert_eq!(
+            inspection.declared_tracks, 3,
+            "`MetaData.plist NumberOfTracks`"
+        );
+        assert_eq!(inspection.tracks, 3, "实测轨道数（`karT` `payload[0]==1`）");
+        assert_eq!(inspection.master_tracks, 1, "master 行");
+        assert_eq!(inspection.regions_all, 19, "所有 `qeSM` 条数");
+        assert_eq!(inspection.internal_regions, 5, "内部区域条数");
+        assert_eq!(inspection.regions, 14, "非内部区域条数");
+        // ⚠ 读数口径：`decode_note_lines` 只认**恰好 `0x90`** 的音符行（既有定义，8 台 demo
+        // 的 9,825 就是按它量的）。这份供体的 `down:` 音符行是 **`0x91`**（MIDI 通道 1）⇒
+        // 生产读取器读到 **517**，而 Logic 自己的 `.mid` 里 `up:` 517 + `down:` 388 = **905**。
+        // 本条把这个**既有的**口径差钉成读数，⛔ 不为了让数字好看去改 8 台 demo 的定义。
+        assert_eq!(
+            inspection.notes, 517,
+            "生产读取器的音符数（只认 0x90；down: 是 0x91）"
+        );
+        assert_eq!(inspection.region_placements, 19, "成功读出摆放字段的条数");
+        assert_eq!(inspection.sample_rate, 48_000);
+        assert_eq!(inspection.bpm, 72.0);
+        assert_eq!(inspection.numerator, 3);
+        assert_eq!(inspection.denominator, 8);
+        assert_eq!(inspection.song_key, "C");
+        assert_eq!(inspection.version, 3);
+
+        // 口径差的字节证据：`down:` 的头行是 `0xb1`，音符行是 `0x91`（388 条）；
+        // Logic 自己的 `.mid` 在 `down:` 那条轨上有 388 个 note-on。
+        let records = read_records(LOGIC_OWNER_DONOR_3T_PROJECT_DATA);
+        let down = records
+            .iter()
+            .find(|record| record.tag == LOGIC_SEQUENCE_TAG && record.cluster == 0x0024_0000)
+            .expect("`down:` 的 `qSvE`");
+        assert_eq!(down.body[0], 0xB1, "`down:` 头行的状态字节（实测 0xB1）");
+        let down_note_lines = down
+            .body
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .filter(|line| line[0] & 0xF0 == 0x90)
+            .count();
+        assert_eq!(
+            down_note_lines, 388,
+            "`down:` 的 0x9? 音符行条数（实测 388）"
+        );
+        let reference = read_reference_midi(LOGIC_OWNER_DONOR_3T_EXPORT_MID);
+        let mid_down = reference
+            .tracks
+            .iter()
+            .find(|track| track.name.as_deref() == Some("down:"))
+            .expect("`.mid` 的 `down:`");
+        assert_eq!(
+            mid_down.notes.len(),
+            down_note_lines,
+            "Logic 自己的 `.mid` 与 `.logicx` 在 `down:` 上必须同为 388 条"
+        );
+
+        let imported = import_bundle(dir.path()).expect("3 轨供体必须读得动");
+        assert_eq!(imported.tracks, 3);
+        assert_eq!(imported.notes, 517, "导入读取器用的也是同一套 0x90 口径");
+        for (name, notes, track) in [
+            ("control track", 0usize, 1u32),
+            ("up:", 517, 2),
+            ("down:", 0, 3),
+        ] {
+            let region = imported
+                .imported_regions
+                .iter()
+                .find(|region| region.name == name)
+                .unwrap_or_else(|| panic!("供体里必须有 `{name}`"));
+            assert_eq!(region.notes.len(), notes, "`{name}` 的音符数");
+            assert_eq!(
+                region.track_1based,
+                Some(track),
+                "`{name}` 的轨道绑定（摆放事件 +0x14，1 起）"
             );
         }
     }
@@ -8295,8 +9600,34 @@ mod tests {
             "容量之内不得出现槽激活未映射条目"
         );
 
-        // 3 条 MIDI 轨：超出容量 1 条 ⇒ 必须逐条登记实测的阻塞点。
-        let data = project_data_from_donor(&project_with_midi_tracks(3));
+        // 3 条 MIDI 轨：`HD-52` 起**容量之内** ⇒ 与 2 轨一样一个字都不加。
+        let three = project_data_from_donor(&project_with_midi_tracks(3));
+        assert!(
+            !three.losses.is_empty(),
+            "R125: 空的 `three.losses` 会让下面的量词真空通过"
+        );
+        assert!(
+            !three
+                .losses
+                .iter()
+                .any(|loss| loss.reason.contains(LOGIC_ACTIVATION_UNMAPPED)),
+            "3 条在容量（3）之内 ⇒ 不得出现槽激活未映射条目"
+        );
+        assert!(
+            three
+                .losses
+                .iter()
+                .any(|loss| loss.reason.contains(LOGIC_OPEN_SCOPE_CAVEAT_OWNER_DONOR_3T)),
+            "3 条必须走 3 轨供体的打开范围登记"
+        );
+        assert_eq!(
+            record_slices(&three.bytes).len(),
+            LOGIC_OWNER_DONOR_3T_RECORDS,
+            "3 条必须走 3 轨供体的 515 条记录"
+        );
+
+        // 4 条 MIDI 轨：超出容量 1 条 ⇒ 必须逐条登记**实测的**阻塞点（第 4 个槽的配方未实测）。
+        let data = project_data_from_donor(&project_with_midi_tracks(4));
         // R125/R131: 本判据对 `data.losses` 做量词断言 ⇒ 先钉它的域。
         assert!(
             !data.losses.is_empty(),
@@ -8313,47 +9644,36 @@ mod tests {
         assert!(
             data.losses.iter().any(|loss| {
                 loss.reason.starts_with(LOSS_UNMAPPED_PREFIX)
-                    && loss.reason.contains("本工程有 3 条 `TrackKind::Midi` 轨")
+                    && loss.reason.contains("本工程有 4 条 `TrackKind::Midi` 轨")
             }),
             "必须有 project 级槽激活登记并点名工程的 MIDI 轨条数：{text}"
         );
         assert!(text.contains(LOGIC_ACTIVATION_UNMAPPED), "多轨工程必须登记");
         assert!(
-            text.contains("槽字节 0x08/0x0a"),
-            "必须写出实测的空闲乐器槽字节：{text}"
+            text.contains("第 4 个槽的配方未实测"),
+            "必须点名 4 轨以上缺的那块测量：{text}"
         );
         assert!(
-            text.contains("`AuCO` 载荷 201 字节"),
-            "必须写出空闲槽的实测载荷长"
+            text.contains("没有一份 4 轨供体"),
+            "必须写出缺的是什么：{text}"
         );
         assert!(
-            text.contains("载荷 201 → 253 即 +52 字节"),
-            "必须写出实测的激活配方（201 → 253 = +52 字节）"
+            text.contains("已实测的是 `1→2` 与 `2→3` 两段"),
+            "必须写出已实测的是哪两段：{text}"
         );
         assert!(
-            text.contains("新出现 8 条 `AuCU` 与 1 条 `Envi`"),
-            "必须写出实测新增的 AuCU / Envi 条数"
+            text.contains("本条是容量（3 条）之外的第 1 条"),
+            "每条多出来的 MIDI 轨必须点名它在容量之外的名次：{text}"
         );
-        assert!(
-            text.contains("从 160 字节长到 503 字节"),
-            "必须写出 GenM 状态 JSON 的实测增长"
-        );
-        assert!(
-            text.contains("u16@+0x02` 从 21 变成 20"),
-            "必须写出编排轨行被重写的那一处实测"
-        );
-        assert!(
-            text.contains("本条在实测的空闲乐器槽里排第 1 号 = 槽字节 0x08"),
-            "每条多出来的 MIDI 轨必须点名它对应的实测空闲槽：{text}"
-        );
-        // 产物本身**记录流仍逐字节是供体的**（只是不再记录第三条轨道）。
+        assert_eq!(data.mapped_regions, 3, "容量是 3，只映射前三条");
+        // 产物本身**记录流仍逐字节是供体的**（只是不再记录第 4 条轨道）。
         let output = record_slices(&data.bytes);
         assert_eq!(
             output.len(),
-            LOGIC_OWNER_DONOR_2T_RECORDS,
+            LOGIC_OWNER_DONOR_3T_RECORDS,
             "登记不得改变记录条数"
         );
-        let donor = record_slices(LOGIC_OWNER_DONOR_2T_PROJECT_DATA);
+        let donor = record_slices(LOGIC_OWNER_DONOR_3T_PROJECT_DATA);
         assert_eq!(
             u16_le(&data.bytes, LOGIC_FORMAT_VERSION_OFFSET),
             LOGIC_OWNER_DONOR_VERSION_CODE,
@@ -8394,15 +9714,15 @@ mod tests {
     ///
     /// # 真探针（R69）
     ///
-    /// - **两两不同**: 5 条记录的摘要成对 `assert_ne!` ⇒ "恒返回同一个串"的假实现必红;
+    /// - **两两不同**: 9 条记录的摘要成对 `assert_ne!` ⇒ "恒返回同一个串"的假实现必红;
     /// - **单字节差异**: 复制 1 轨 `ProjectData` 并翻转**一个字节**（长度不变）⇒
     ///   摘要必须与记录值不同 ⇒ "只看长度/只看前几字节"的实现必红。
     ///
     /// # 量的是什么（对象 + 单位）
     ///
-    /// 对象: 5 份嵌入字节（MIT 供体的 `ProjectData`／负责人 1 轨与 2 轨的 `ProjectData`
-    /// ／两份 Logic 自己导出的 `.mid`）。读数: 5 个 SHA-256 串 ＋ 5 个字节数 ＋
-    /// 两份文档里出现的对应串。
+    /// 对象: 9 份嵌入字节（MIT 供体的 `ProjectData`／负责人 1 轨、2 轨、3 轨的 `ProjectData`
+    /// ／三份 Logic 自己导出的 `.mid`／3 轨那份的 `MetaData.plist` 与 `ProjectInformation.plist`）。
+    /// 读数: 9 个 SHA-256 串 ＋ 9 个字节数 ＋ 两份文档里出现的对应串。
     #[test]
     fn every_embedded_donor_byte_block_matches_its_recorded_sha256() {
         let provenance = include_str!("../assets/logic-donor-owner/PROVENANCE.md");
@@ -8411,7 +9731,7 @@ mod tests {
         // 与文件里既有的做法一致: **用别名把类型写清楚**, 而不是加 `#[allow]` 弱化门禁。
         /// 一行夹具: (标签, 嵌入字节, 记录的 sha256, 期望字节数, 文档正文, 表里的路径描述)。
         type Case<'a> = (&'a str, &'a [u8], &'a str, usize, &'a str, &'a str);
-        let cases: [Case<'_>; 5] = [
+        let cases: [Case<'_>; 9] = [
             (
                 "MIT 供体 ProjectData",
                 LOGIC_DONOR_PROJECT_DATA,
@@ -8452,6 +9772,38 @@ mod tests {
                 provenance,
                 "furelise-2tracks/export.mid",
             ),
+            (
+                "3 轨 ProjectData",
+                LOGIC_OWNER_DONOR_3T_PROJECT_DATA,
+                LOGIC_OWNER_DONOR_3T_SHA256,
+                LOGIC_OWNER_DONOR_3T_BYTES,
+                provenance,
+                "track3-3tracks/ProjectData",
+            ),
+            (
+                "3 轨 export.mid",
+                LOGIC_OWNER_DONOR_3T_EXPORT_MID,
+                LOGIC_OWNER_DONOR_3T_MID_SHA256,
+                LOGIC_OWNER_DONOR_3T_MID_BYTES,
+                provenance,
+                "track3-3tracks/export.mid",
+            ),
+            (
+                "3 轨 MetaData.plist",
+                LOGIC_OWNER_DONOR_3T_META_DATA,
+                LOGIC_OWNER_DONOR_3T_META_DATA_SHA256,
+                LOGIC_OWNER_DONOR_3T_META_DATA_BYTES,
+                provenance,
+                "track3-3tracks/MetaData.plist",
+            ),
+            (
+                "3 轨 ProjectInformation.plist",
+                LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION,
+                LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION_SHA256,
+                LOGIC_OWNER_DONOR_3T_PROJECT_INFORMATION_BYTES,
+                provenance,
+                "track3-3tracks/ProjectInformation.plist",
+            ),
         ];
         let mut digests: Vec<(&str, String)> = Vec::new();
         for (label, bytes, recorded, expected_len, doc, row_label) in cases {
@@ -8471,8 +9823,8 @@ mod tests {
             );
             digests.push((label, digest));
         }
-        assert_eq!(digests.len(), 5, "5 份嵌入字节");
-        // 真探针 ①: 五条记录两两不同。
+        assert_eq!(digests.len(), 9, "9 份嵌入字节");
+        // 真探针 ①: 八条记录两两不同。
         for (index, (left_label, left)) in digests.iter().enumerate() {
             for (right_label, right) in &digests[index + 1..] {
                 assert_ne!(
@@ -8514,6 +9866,6 @@ mod tests {
             .iter()
             .filter(|(_, _, _, _, doc, row_label)| documented_sha256(doc, row_label).is_some())
             .count();
-        assert_eq!(located, 5, "五条路径都必须能在文档表里定位到唯一一行");
+        assert_eq!(located, 9, "九条路径都必须能在文档表里定位到唯一一行");
     }
 }
