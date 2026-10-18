@@ -14085,3 +14085,25 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ ⭐ ⭐ **七、⭐ 如实（⭐ 两条待办）**: ⭐ ① ⭐ ⚠ ⭐ ⭐ **`crates/yeban-mcp/src/domain/sfz.rs:1341` 仍直接读 `sample_path()`** ⇒ ⭐ **MCP 的两个工具仍会把 `*silence` 当缺文件** ⇒ ⭐ **下一单**（⭐ 本单范围不含 mcp）✓ ⭐ ② ⭐ 其它 ARIA 内建波形（`*sine`／`*saw`／…）⭐ **语料里 0 处** ⇒ ⭐ **未实现、⭐ 按文件路径处理**（⭐ 明确登记）✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **MCP 侧 `*silence`** ＋ ⭐ **内容寻址纳入 include** ＋ ⭐ **宿主 libm** ＋ ⭐ ⚠ **仍需人类**：⭐ **按 Space 复验**（⭐ 唯一只有人能给的读数）＋ ⭐ 换乐器听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R925 实测追加（2026-10-19）：⭐ **`#218`（MCP 侧 `*silence`）落地 ＋ 快进合并** ⇒ ⭐ `#217` 的遗留**闭合**
+
+⭐ **合并**: ⭐ base `2ce2165c` ⇒ ⭐ `FINAL=9b9330c9`（⭐ 2 文件 ＋133／−29 ＋ ⭐ 新测试 560）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`868 passed`／FAILED 0**（35 targets）＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **mcp/sfz 全 0** ✓ ⭐ 树已拆 ＋ `target`（6.7 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 修法（⭐ 复用**同一个谓词**、⭐ ⛔ 不另写一套）**: ⭐ MCP 调 ⭐ `yeban-sfz` 的 ⭐ `Region::is_builtin_silence()`（⭐ `grep is_builtin_silence crates/yeban-mcp/src` ⭐ **只有调用点**）★ ⭐ 两层：⭐ ① ⭐ **装载** ⇒ ⭐ `sample_file_state = "builtin-silence(*silence)"`、⭐ **⛔ 不读盘**、⭐ **⛔ 不进 `sampleFailures`**、⭐ 新增 `silentRegionCount` ② ⭐ **渲染** ⇒ ⭐ 在 `sfz_path.and_then` **之前**截住 ⇒ ⭐ **不回退正弦**、⭐ 新增 `notesUsingBuiltinSilence` ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 一处**判得对**（⭐ 值得记）**: ⭐ `summarize()` ⭐ 原来用 ⭐ `region.sample_path().to_string()` ⭐ ⇒ ⚠ **与字段契约"⭐ 原值"⭐矛盾**（⭐ `default_path` 下它会变成拼好的路径）⇒ ⭐ 改成 ⭐ `region.sample.as_ref()` ⭐ ⭐ **原值**、⭐ 于是 ⭐ **`default_path` 下仍是 `*silence`** ⇒ ⭐ 判据 ⭐ `load-prefixed` 逐字 ⭐ `sample="*silence" state="builtin-silence(*silence)"` ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 读数（⭐ 修前 → ⭐ 修后）**: ⭐ 修前 ⭐ `missing=[unreadable(…*silence): … (entity not found)]` ＋ ⭐ **渲染 `peak=0.18247734010219574`**（⭐ 回退正弦）★ ⭐ 修后 ⭐ `regions=2 silent=1 samples=1 missing=[] failed_count=0` ＋ ⭐ **静音区域 WAV `peak=1`／⭐ `energy=2518`**（⭐ ⭐ **抖动底 1 LSB，⛔ 不是信号**）＋ ⭐ ⭐ **正对照 `peak=765366`／⭐ `energy=3.70e14`** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 与 app 口径对照（⭐ 逐项表）**: ⭐ 区域 ／⭐ 样本份数 ／⭐ 静音计数 ／⭐ 缺文件 ／⭐ 读盘失败 ／⭐ 声明过的 `sample=` ／⭐ 渲染静音 ／⭐ 渲染正对照 ⭐ ⭐ **八项全一致**（⭐ 单位不同已注明）★ ⚠ ⭐ **唯一差异**：⭐ ⭐ **MCP 没有 `NO_SAMPLE` 摊平 ⇒ 缺样本仍**回退正弦****（⭐ app 是静音）⇒ ⭐ ⚠ **这是**既有差异**、⭐ 本单未改**、⭐ 且 ⭐ **写进了字段文档**（⭐ ⛔ 不把回退正弦说成静音）✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 双注入（⭐ 两层各自有牙）**: ⭐ A（摘装载跳过）⇒ ⭐ `*silence` 又进 `missing`；⭐ B（摘渲染守卫）⇒ ⭐ `notesUsingSineFallback=1` ＋ ⭐ `peak=0.18247734…`（⭐ 即**正弦回来了**）✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 第 323 条的应用（⭐ 它写得很清楚）**: ⭐ ⭐ **"⭐ 判的对象是'静音'、⭐ 目标值就是 0 ⇒ ⭐ 能量/峰值是直接量"** ＋ ⭐ **同夹具正对照排除"⭐ 整条夹具都不发声"** ★ ⭐ 而 ⭐ **"有没有解码"⛔ 不用能量** —— ⭐ 用 ⭐ `sampleFailures`／⭐ `sampleFilesReadCount`／⭐ `notesUsingBuiltinSilence` ✓
+
+⭐ ⚠ **七、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ **没人耳听** ② ⭐ ⚠ **app **内嵌** `session_dispatcher` 对这两个工具的**端到端**调用未验**（⭐ 只证了**结构共享**同一 `Dispatcher`／`Domain`／`sfz.rs` ＋ ⭐ 另跑 app 自己的 4 passed）③ ⭐ ⚠ **测试夹具与样本工程耦合**：⭐ `tests/sfz_silence_sample.rs` 依赖 `filled_project()` 的音符 60/64/67/72、⭐ 并清掉第 4 个音符的 `probability=0.75`（⭐ 固定 seed 下否则不触发）、⭐ 64 的 `ratchet=2` 使 `notesScheduled=5`、`notesUnmatched=3` ⇒ ⭐ **若样本工程改音符，这三个数要同步** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **内容寻址纳入 include** ＋ ⭐ **宿主 libm** ＋ ⭐ **MCP 内嵌端到端** ＋ ⭐ ⚠ **仍需人类**：⭐ 按 Space 复验 ＋ ⭐ 换乐器听 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
