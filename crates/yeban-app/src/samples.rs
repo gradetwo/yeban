@@ -19,6 +19,11 @@
 //! （新依赖 ＋ 第二份校验逻辑）—— 本单因此只给脚本加 `--dest` / `--manifest` /
 //! `--source-root` 三个**落点**参数，校验逻辑仍然只有一份。
 //!
+//! ⭐ 任务单 `#201`：脚本的取回方式多了一个**归档模式**（每个 instrument 一次
+//! `…/archive/<pin>.tar.gz` ⇒ **30** 次请求，而不是逐文件的 **20 594** 次），且它是**缺省**。
+//! 本模块因此由 [`DownloadOptions::retrieval_mode_flag`] **显式**传模式：真下载带 `--archives`，
+//! 假源（`#196` 的扁平文件树）带 `--per-file` —— ⛔ 不靠缺省值，GUI 侧零行为变化。
+//!
 //! ## ⚠ 本模块**不**做的事
 //!
 //! - ⛔ 不解析 SFZ、⛔ 不决定"哪条路径在哪找"——那是 [`crate::sfz_load::resolve_sampler_path`]
@@ -215,6 +220,23 @@ impl DownloadOptions {
         crate::sfz_load::repo_root().join(DOWNLOAD_SCRIPT_RELATIVE)
     }
 
+    /// ⭐ `#201`：取回模式的**显式**选择（⛔ 不依赖脚本的缺省值）。
+    ///
+    /// `fetch-samples.py` 的缺省已是**归档模式**（每个 instrument 一个 tarball ⇒ **30** 次请求，
+    /// 而不是逐文件的 **20 594** 次）。但 `#196` 的判据桩是**扁平的假上游文件树**（不是 tarball）⇒
+    /// 有 [`Self::source_root`] 时必须显式要 `--per-file`；真下载（无假源）显式要 `--archives`。
+    ///
+    /// ⚠ 两条路径都**写明**模式：脚本日后改缺省，也不会悄悄换掉这条命令的语义
+    /// （这正是任务单要求在"默认值变了"之后**显式传参**的那一条）。
+    #[must_use]
+    pub const fn retrieval_mode_flag(&self) -> &'static str {
+        if self.source_root.is_some() {
+            "--per-file"
+        } else {
+            "--archives"
+        }
+    }
+
     /// 组装**将要执行**的命令（判据用 [`Self::command_line`] 留证，⛔ 不靠猜）。
     ///
     /// ⚠ 固定带 `--all`：这是"下载整个采样库"（不是 `--limit` 的有界档）。
@@ -224,6 +246,7 @@ impl DownloadOptions {
         command
             .arg(Self::script_path())
             .arg("--all")
+            .arg(self.retrieval_mode_flag())
             .arg("--manifest")
             .arg(&self.manifest)
             .arg("--dest")
@@ -241,6 +264,7 @@ impl DownloadOptions {
             "python3".to_owned(),
             quote_path(&Self::script_path()),
             "--all".to_owned(),
+            self.retrieval_mode_flag().to_owned(),
             "--manifest".to_owned(),
             quote_path(&self.manifest),
             "--dest".to_owned(),
@@ -471,5 +495,37 @@ mod tests {
         assert_eq!(parse_count(line, "不符 "), 1);
         assert_eq!(parse_count(line, "清单共 "), 3);
         assert_eq!(parse_count("", "取回 "), 0);
+    }
+
+    /// ⭐ `#201` 判据③的 GUI 侧：取回模式**显式**写进命令行，⛔ 不靠脚本缺省值。
+    ///
+    /// 无假源（真下载）⇒ `--archives`（脚本缺省也是它，但这里必须**写明**）；
+    /// 有假源（`#196` 的扁平假上游树）⇒ `--per-file`，否则脚本会去找 tarball 而全 404。
+    #[test]
+    fn the_command_line_names_the_retrieval_mode_explicitly() {
+        let mut options = DownloadOptions {
+            manifest: PathBuf::from("/tmp/manifest.json"),
+            dest: PathBuf::from("/tmp/library"),
+            source_root: None,
+        };
+        let production = options.command_line();
+        assert!(production.contains("--archives"), "{production}");
+        assert!(!production.contains("--per-file"), "{production}");
+        assert_eq!(options.retrieval_mode_flag(), "--archives");
+
+        options.source_root = Some(PathBuf::from("file:///tmp/fake-source"));
+        let judged = options.command_line();
+        assert!(judged.contains("--per-file"), "{judged}");
+        assert!(!judged.contains("--archives"), "{judged}");
+        assert_eq!(options.retrieval_mode_flag(), "--per-file");
+        // ⚠ 模式开关必须落在 `--all` 之后、`--manifest` 之前（与 `command()` 同序同参）。
+        assert_eq!(
+            judged.split(' ').take(3).collect::<Vec<_>>(),
+            vec![
+                "python3",
+                &quote_path(&DownloadOptions::script_path()),
+                "--all"
+            ]
+        );
     }
 }
