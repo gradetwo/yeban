@@ -57,7 +57,19 @@
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
 //! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界） |
 //! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定） |
-//! | `sfzSampler` | 本模型版本（`DeviceKind`）里**没有** SFZ 设备变体；该能力不在本切片内 |
+//! | `sfzLoopExpansion` | ⭐ `#221`：采样器区域要求的**循环**没有展开（每个音符只响一遍，与 `yeban_render_sfz_wav` 同一句登记）。只在真的遇到循环区域时出现 |
+//! | `sfzRegionEnvelope` | ⭐ `#221`：命中的采样器区域声明了 `ampeg_*` 幅度包络，**本渲染器不应用**（缺省值 ⇒ 与引擎逐位相同）。只在真的声明了包络时出现 |
+//! | `sfzTrackPan` | ⭐ `#221`：**采样器轨**的 `pan` 没有应用 —— 与 app 的 SFZ 导出分支（`SfzTrackSource`）同口径：那条路没有声相通路。只在"绑了采样器且 `pan != 0`"时出现，⛔ 不静默 |
+//!
+//! ⚠ **`sfzSampler` 这个键已经退役**（`#221`）：`#220` 的第 324 条指出，模块文档
+//! 曾承诺"会把 `sfzSampler` 放进 `unsupported`"，而代码里**没有任何地方读 `sampler`**
+//! ⇒ 缺失连 `unsupported` 都不报。现在的处置是**真的支持**（`TrackV3.sampler` 走
+//! [`sfz::prepare_sampler`] 发声，读数进 `data.sources[].sampler`），因此那个键
+//! **不能**再出现在 `unsupported` 里 —— 报一个已经做到的键就是假话。
+//!
+//! 已知不支持项的**全集**由 [`KNOWN_UNSUPPORTED_KEYS`] 唯一列出，并由
+//! `render::tests::every_known_unsupported_key_is_actually_reported` 逐条逼出读数
+//! （清单里的每一项都必须在一个**具体输入**下真的出现在 `unsupported` 里）。
 //!
 //! "工程里有 MIDI 音符或音频片段"这一条是渲染的**前提**：完全没有可渲染内容（0 帧）
 //! 时返回 `RENDER_FAILED`，而不是写一个 0 帧的文件冒充成功。
@@ -310,6 +322,9 @@ use yeban_render::rng::{DeterministicDitherRng, dither_rng_for};
 use super::error::Fault;
 use super::render_clip_math as clip_math;
 use super::render_math as math;
+// ⭐ `#221`：采样器音源**复用** `domain::sfz` 的那一份实现（区域选择 / 播放速率 /
+// 总增益 / 样本来源）—— ⛔ 这里不写第二套"一个音符怎么响"。
+use super::sfz;
 use super::store;
 use crate::tools::ErrorCode;
 
@@ -407,6 +422,46 @@ pub const MIXED_SOURCE_KIND: &str = "midi-synth-osc+audio-clip";
 
 /// 音频源种类：既没有音符也没有可渲染的音频片段（静音源）。
 pub const SILENT_SOURCE_KIND: &str = "silent";
+
+/// 音频源种类：⭐ `TrackV3.sampler` 绑定的**采样器音源**（`#221`）。
+///
+/// 与 [`SOURCE_KIND`] 的区别是**发声体不同**：这个源不再用本 crate 的正弦振荡器，
+/// 而是按 SFZ 区域从样本文件（或内存正弦回退）取音 —— 与 app 的
+/// `--track-sampler` / `--export-wav` **同一条音源路径**（`domain::sfz` 的
+/// `note_wave`／`prepare_sampler`）。
+pub const SAMPLER_SOURCE_KIND: &str = "sfz-sampler";
+
+/// 音频源种类：采样器音符与音频片段**都有**的源。
+pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
+
+/// ⭐ **已知不支持项的全集**（第 324 条：`unsupported` 必须能列出全部已知不支持项）。
+///
+/// 这是本工具**唯一**的"我们会静默少做什么"的清单：
+///
+/// - [`note_unsupported`] 在 debug 断言里要求每一次登记都用**这里面的**键
+///   ⇒ 加一个新键却忘了登记 ⇒ 判据当场红（而不是悄悄多一个没人知道的口径）；
+/// - `render::tests::every_known_unsupported_key_is_actually_reported` 反过来逼：
+///   清单里的**每一项**都必须在一个**具体输入**下真的出现在 `unsupported` 里
+///   ⇒ 清单不会腐烂成一张"反正也不会被检查"的装饰表。
+///
+/// ⚠ `#221` 之后 `sfzSampler` **不在**这里：采样器绑定现在真的被渲染（见
+/// [`SamplerTrackSource`]），报它就是在说假话。
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 14] = [
+    "audioClips",
+    "automationLanes",
+    "busTrackClips",
+    "clipLoopRepetition",
+    "deviceChainDsp",
+    "externalPlugins",
+    "masterPan",
+    "noteLyrics",
+    "notePitchBend",
+    "noteSlide",
+    "sidechainRouting",
+    "sfzLoopExpansion",
+    "sfzRegionEnvelope",
+    "sfzTrackPan",
+];
 
 /// 资产字节的只读提供者（`ARCH-SEC-003` 的 `assets/{sha256}` 会话 CAS 池）。
 ///
@@ -769,6 +824,102 @@ pub fn require_project(project: Option<&YebanProjectV1>) -> Result<(), Fault> {
     Ok(())
 }
 
+/// 一条**采样器轨**的实测读数（进响应 `data.sources[].sampler`，⭐ `#221`）。
+///
+/// ⚠ 这些字段的**存在理由**是让"绑了采样器"与"绑了但没生效"在响应里长得不一样：
+/// `#220` 的缺陷 ② 正是这两者**逐字节相同**（同一工程经 MCP 渲染与"去掉 sampler"
+/// 相同，且 `unsupported=[]`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SamplerReport {
+    /// 绑定的路径（模型里的原样字符串）。
+    pub path: String,
+    /// 实际读的那份 SFZ 文件（路径解析后的绝对/相对形态）。
+    pub resolved_path: String,
+    /// SFZ 区域总数。
+    pub regions: usize,
+    /// 内建静音（`sample=*silence`）区域数。
+    pub silent_regions: usize,
+    /// 排程进采样器的音符数。
+    pub notes: u64,
+    /// 没匹配到任何区域的音符数（合法：该音高在这份 SFZ 里不发声）。
+    pub notes_unmatched: u64,
+    /// 用文件样本发声的音符数。
+    pub notes_using_file_sample: u64,
+    /// 回退内存正弦的音符数。
+    pub notes_using_sine_fallback: u64,
+    /// 落在内建静音区域上的音符数。
+    pub notes_using_builtin_silence: u64,
+    /// 落在要求循环的区域上的音符数（本实现不展开循环）。
+    pub notes_looping: u64,
+    /// 真的读到的样本文件来源（升序去重）。
+    pub sample_sources: Vec<String>,
+    /// 读失败的样本文件（升序去重）。
+    pub sample_failures: Vec<String>,
+    /// 累计解码帧数。
+    pub sample_frames_loaded: u64,
+    /// 命中的区域里声明了 `ampeg_*`（本渲染器**不应用**幅度包络）的个数。
+    pub regions_with_envelope: u64,
+}
+
+impl SamplerReport {
+    /// ⭐ 与 app 的 `--export-wav` **同形**的 `sfz(...)` 读数行（`#221` 判据 3/4 直接比它）。
+    ///
+    /// 形态逐字照 `yeban-app` 的 `render_core::sfz_decode_label`：
+    /// `sfz(tracks=1 regions=R samples=S silent=N missing=[…] unreadable(not_found=A,unsupported=B,other=C))`。
+    ///
+    /// ⚠ 两条读数**口径差**如实登记：
+    /// - `samples` 在这里数的是"**真的读到**的不同样本文件数"（`sampleSources` 的长度）；
+    /// - `missing` 数的是"**声明了 `sample=` 却读不到**的不同文件路径"（从
+    ///   `sampleFailures` 里取路径，不是整条原因串）；
+    /// - `unreadable(...)` 的三档分类 MCP 不做（它没有 app 侧的 `SampleReadFailure`
+    ///   分档）：三档恒为 `0`，**原因串**逐条在 `sampleFailures` 里。
+    #[must_use]
+    pub fn label(&self) -> String {
+        let missing: Vec<&str> = self
+            .sample_failures
+            .iter()
+            .map(|failure| missing_path_of(failure))
+            .collect();
+        format!(
+            "sfz(tracks=1 regions={} samples={} silent={} missing={missing:?} \
+             unreadable(not_found=0,unsupported=0,other=0))",
+            self.regions,
+            self.sample_sources.len(),
+            self.silent_regions,
+        )
+    }
+
+    /// 进响应的 JSON 形状。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "path": self.path,
+            "resolvedPath": self.resolved_path,
+            "regions": self.regions,
+            "silentRegionCount": self.silent_regions,
+            "notes": self.notes,
+            "notesUnmatched": self.notes_unmatched,
+            "notesUsingFileSample": self.notes_using_file_sample,
+            "notesUsingSineFallback": self.notes_using_sine_fallback,
+            "notesUsingBuiltinSilence": self.notes_using_builtin_silence,
+            "notesLooping": self.notes_looping,
+            "sampleSources": self.sample_sources,
+            "sampleFailures": self.sample_failures,
+            "sampleFramesLoaded": self.sample_frames_loaded,
+            "regionsWithEnvelope": self.regions_with_envelope,
+            "label": self.label(),
+        })
+    }
+}
+
+/// 从 `unreadable(<path>): <原因>` 里取回 `<path>`（[`SamplerReport::label`] 用）。
+fn missing_path_of(failure: &str) -> &str {
+    failure
+        .strip_prefix("unreadable(")
+        .and_then(|rest| rest.split("): ").next())
+        .unwrap_or(failure)
+}
+
 /// 一个源节点的渲染报告（进响应 `data.sources`）。
 #[derive(Clone, Debug)]
 pub struct SourceReport {
@@ -805,6 +956,8 @@ pub struct SourceReport {
     pub ratchet_pulses: u64,
     /// 该源贡献的时间轴末端（tick）。
     pub end_tick: u64,
+    /// ⭐ 采样器绑定（`TrackV3.sampler`）的实测读数；`None` = 这条轨没有绑采样器。
+    pub sampler: Option<SamplerReport>,
 }
 
 impl SourceReport {
@@ -824,6 +977,7 @@ impl SourceReport {
             "notesRatcheted": self.notes_ratcheted,
             "ratchetPulses": self.ratchet_pulses,
             "endTick": self.end_tick,
+            "sampler": self.sampler.as_ref().map(SamplerReport::to_value),
         })
     }
 }
@@ -1338,6 +1492,7 @@ pub fn build(
         let (source, report) = build_source(
             project,
             track,
+            project_path,
             sample_rate,
             any_solo,
             assets,
@@ -1978,8 +2133,12 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 /// 一个 `AudioSource` 对应一个源节点（= 一条音轨），而一条音轨上可以同时有
 /// MIDI 片段与音频片段 —— 因此需要一个把两者按**固定顺序**叠起来的容器。
 /// 顺序是"先 MIDI、后音频片段"，与块边界无关，因此逐位可复现。
+///
+/// ⭐ `#221`：`sampler` 为 `Some` 时，这条轨的音符**不再**进 `midi`
+/// （[`MidiSynthSource`] 只在没有采样器时才是发声体），改由采样器音源发声。
 struct TrackSource {
     midi: MidiSynthSource,
+    sampler: Option<SamplerTrackSource>,
     clips: Vec<AudioClipSource>,
 }
 
@@ -1993,13 +2152,19 @@ impl TrackSource {
 
     /// 源种类（响应 `sources[].kind`）。
     fn kind(&self) -> &'static str {
+        let has_sampler = self
+            .sampler
+            .as_ref()
+            .is_some_and(|sampler| !sampler.notes.is_empty());
         let has_midi = !self.midi.notes.is_empty();
         let has_audio = self.clips.iter().any(|clips| !clips.spans.is_empty());
-        match (has_midi, has_audio) {
-            (true, true) => MIXED_SOURCE_KIND,
-            (true, false) => SOURCE_KIND,
-            (false, true) => AUDIO_SOURCE_KIND,
-            (false, false) => SILENT_SOURCE_KIND,
+        match (has_sampler, has_midi, has_audio) {
+            (true, _, true) => SAMPLER_MIXED_SOURCE_KIND,
+            (true, _, false) => SAMPLER_SOURCE_KIND,
+            (false, true, true) => MIXED_SOURCE_KIND,
+            (false, true, false) => SOURCE_KIND,
+            (false, false, true) => AUDIO_SOURCE_KIND,
+            (false, false, false) => SILENT_SOURCE_KIND,
         }
     }
 }
@@ -2008,8 +2173,85 @@ impl AudioSource for TrackSource {
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // 调用方（`yeban-render` 的 `render_node`）已经把缓冲清零；这里只累加。
         self.midi.render_block(context, out)?;
+        if let Some(sampler) = &mut self.sampler {
+            sampler.render_block(context, out)?;
+        }
         for clips in &mut self.clips {
             clips.render_block(context, out)?;
+        }
+        Ok(())
+    }
+}
+
+/// ⭐ 一条**采样器轨**的音源（`#221`）：构造期已算好的逐音符单声道 PCM。
+///
+/// ## 与 app 的 `--track-sampler` 同一条音源（口径差如实登记）
+///
+/// | 维度 | app 的 `SfzTrackSource`（CLI 导出） | 本类型 |
+/// | :--- | :--- | :--- |
+/// | 区域选择 / 速率 / 总增益 | `yeban-sfz` 的公开读数（`playback_rate` / `playback_spec`） | **同一份**（`domain::sfz::note_wave`） |
+/// | 样本数据 | 读到文件 PCM，读不到回退内存正弦 | **同一份**（`domain::sfz::SampleCache`） |
+/// | 轨增益 | `track_gain_scale`（`mute`/`solo` × `volume_db`） | **同一个公式**（`audible` × `db_to_linear`） |
+/// | 声相 | 不应用（SFZ 分支没有 pan 通路） | 不应用（否则峰值与 CLI 不可能相等）⇒ **`pan != 0` 时登记 `sfzTrackPan`** |
+/// | 末尾淡出 | 无 | 无（同上：与 CLI 逐位可比） |
+///
+/// ⚠ 因此本类型**刻意**不乘 `pan_gains`：`render_master` 的 MIDI 路径乘它，
+/// 采样器路径不乘 —— 这个差别不是疏漏，是"与 CLI 同一条音源"的直接后果，
+/// 并且由 `sfzTrackPan` 在 `unsupported` 里**说出来**（第 324 条：不许静默）。
+struct SamplerTrackSource {
+    /// 逐音符的 `(起始帧, 单声道 PCM)`（PCM 已含区域增益；⛔ 不含轨增益）。
+    notes: Vec<(u64, Vec<f32>)>,
+    /// 左声道轨增益（= 右声道：采样器路径不应用声相）。
+    gain_l: f32,
+    /// 右声道轨增益。
+    gain_r: f32,
+}
+
+impl AudioSource for SamplerTrackSource {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        let channels = context.channels;
+        if channels == 0 {
+            return Ok(());
+        }
+        let frames = context.frames.min(out.len() / channels);
+        let block_start = context.first_frame;
+        let block_end = block_start.saturating_add(frames as u64);
+        for (note_start, pcm) in &self.notes {
+            let note_start = *note_start;
+            if block_end <= note_start {
+                continue;
+            }
+            let window_start = block_start.saturating_sub(note_start);
+            let window_end = (block_end - note_start).min(pcm.len() as u64);
+            if window_end <= window_start {
+                continue;
+            }
+            let lo = usize::try_from(window_start).unwrap_or(usize::MAX);
+            let hi = usize::try_from(window_end)
+                .unwrap_or(usize::MAX)
+                .min(pcm.len());
+            for (offset, sample) in pcm.iter().enumerate().take(hi).skip(lo) {
+                let frame_in_block = if note_start >= block_start {
+                    usize::try_from(note_start - block_start).unwrap_or(usize::MAX) + offset
+                } else {
+                    offset - lo
+                };
+                if frame_in_block >= frames {
+                    break;
+                }
+                let value = *sample;
+                let base = frame_in_block * channels;
+                for (channel, slot) in out[base..base + channels].iter_mut().enumerate() {
+                    let gain = if channel == 0 {
+                        self.gain_l
+                    } else if channel == 1 {
+                        self.gain_r
+                    } else {
+                        0.0
+                    };
+                    *slot += value * gain;
+                }
+            }
         }
         Ok(())
     }
@@ -2246,11 +2488,60 @@ pub(crate) fn decode_error_class(error: &DecodeError) -> &'static str {
     }
 }
 
+/// 解析 `TrackV3.sampler.path` 到一份**真的存在**的文件（⭐ `#221`）。
+///
+/// 候选次序与 app 侧 `SfzRoots::under_project` 的**第一条**同口径：
+/// 相对路径**先试工程文件所在目录**，再试"原样"（= 相对进程 cwd）。
+/// ⛔ 本层不发明第三套根（app 的仓库根 / cwd 两条是 CLI 的口径，工具面不复制它）。
+///
+/// # Errors
+///
+/// 两个候选都不是文件 ⇒ `RENDER_FAILED` + `data.reason = "samplerUnreadable"`
+/// （带 `tried` 列表）。⛔ **绝不**静默回退成正弦 —— 那正是 `#220` 缺陷 ② 的形状。
+fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault> {
+    let candidate = Path::new(raw);
+    let mut tried: Vec<PathBuf> = Vec::new();
+    if candidate.is_absolute() {
+        tried.push(candidate.to_path_buf());
+    } else {
+        if let Some(dir) = project_path.parent() {
+            tried.push(dir.join(candidate));
+        }
+        tried.push(candidate.to_path_buf());
+    }
+    for path in &tried {
+        if path.is_file() {
+            return Ok(path.clone());
+        }
+    }
+    Err(render_failed(
+        format!(
+            "音轨绑定的采样器定义文件不存在: `{raw}`（试过 {}）",
+            tried
+                .iter()
+                .map(|path| format!("{}", path.display()))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        ),
+        serde_json::json!({
+            "reason": "samplerUnreadable",
+            "path": raw,
+            "tried": tried
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>(),
+            "hint": "`setTrackSampler` 只把路径当留痕字符串（不查存在性）; \
+                     相对路径先按工程文件所在目录解析",
+        }),
+    ))
+}
+
 /// 由一条音轨构造音频源 + 报告，并把"没渲染的部分"登记进 `unsupported`。
 #[allow(clippy::too_many_arguments)]
 fn build_source(
     project: &YebanProjectV1,
     track: &TrackV3,
+    project_path: &Path,
     sample_rate: u32,
     any_solo: bool,
     assets: &dyn AssetStore,
@@ -2267,6 +2558,10 @@ fn build_source(
     } else {
         0.0
     };
+    // ⭐ `#221`：绑了采样器 ⇒ 这条轨的音符走**采样器音源**（⛔ 不走正弦振荡器）。
+    //    这条判据只看 `TrackV3.sampler` 是否为 `Some`，与 app 的
+    //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
+    let sampler_bound = track.sampler.is_some();
     // 设备链: EQ / Freeverb / 卷积已经由 `yeban-render` 消费；只有**本切片没有消费**
     // 的参数（滤波 / 压缩 / 增益 / 未知旋钮 / 外部器件）仍要如实登记。
     if track_has_unhandled_dsp(track) {
@@ -2287,6 +2582,9 @@ fn build_source(
     let attack_frames = math::ms_to_frames(ATTACK_MS, sample_rate);
     let release_frames = math::ms_to_frames(RELEASE_MS, sample_rate);
     let mut scheduled: Vec<ScheduledNote> = Vec::new();
+    // ⭐ `#221`：采样器轨的音符（`(起始帧, 时值帧, 音高, 力度)`）—— 与 `scheduled`
+    // **互斥**：绑了采样器就不排正弦振荡器的音符。
+    let mut sampler_notes: Vec<(u64, u64, u8, u8)> = Vec::new();
     // 每个资产 → 它在这条音轨上的摆放区间（同一资产的多个摆放共用一个源对象）。
     let mut per_asset: BTreeMap<AssetHash, (Arc<PreparedAsset>, Vec<ClipSpan>)> = BTreeMap::new();
     let mut clips_unrendered = 0u64;
@@ -2369,12 +2667,20 @@ fn build_source(
                             project.bpm,
                             sample_rate,
                         );
-                        scheduled.push(ScheduledNote {
-                            start,
-                            end,
-                            frequency: pitch_to_hz(note.pitch),
-                            amplitude: f32::from(note.velocity) / 127.0,
-                        });
+                        if sampler_bound {
+                            // 采样器音源要的是"起在哪、多长、多高、多重"——
+                            // 帧区间与正弦路径**同一个** `note_frame_span`。
+                            let origin = u64::try_from(start.max(0)).unwrap_or(0);
+                            let span = u64::try_from((end - start).max(1)).unwrap_or(1);
+                            sampler_notes.push((origin, span, note.pitch, note.velocity));
+                        } else {
+                            scheduled.push(ScheduledNote {
+                                start,
+                                end,
+                                frequency: pitch_to_hz(note.pitch),
+                                amplitude: f32::from(note.velocity) / 127.0,
+                            });
+                        }
                     }
                     let shifted_micro = u64::try_from(micro.max(0)).unwrap_or(0);
                     end_tick = end_tick.max(
@@ -2474,6 +2780,91 @@ fn build_source(
             source
         })
         .collect();
+    // ⭐ `#221`：**真的消费** `TrackV3.sampler`。
+    //
+    // 这一段就是 `#220` 缺陷 ② 的修复点：在它之前，`sampler` 字段一个字节都不参与
+    // 渲染 ⇒ "绑了采样器的工程"与"去掉 sampler"导出**逐字节相同**，而且
+    // `unsupported=[]`（连"没支持"都不说）。现在：
+    //
+    // 1. 路径**读不到** ⇒ `RENDER_FAILED`（`reason: "samplerUnreadable"`，带 tried），
+    //    ⛔ 绝不静默回退成正弦；
+    // 2. 读到 ⇒ 走 [`sfz::prepare_sampler`]（与 `yeban_render_sfz_wav` **同一份**
+    //    区域选择 / 速率 / 增益 / 样本来源），再乘**轨增益**（与 CLI 的
+    //    `track_gain_scale` 同一个 `mute`/`solo` × `volume_db` 口径）；
+    // 3. 读数进 `data.sources[].sampler`（含与 CLI 同形的 `sfz(...)` 行）。
+    let (sampler, sampler_report) = match &track.sampler {
+        None => (None, None),
+        Some(binding) => {
+            let resolved = resolve_sampler_path(&binding.path, project_path)?;
+            let loaded = sfz::load(&resolved, sample_rate as f32, 0, false).map_err(|fault| {
+                let cause = fault.into_result().map_or_else(
+                    |error| serde_json::json!({ "code": error.code, "message": error.message }),
+                    |value| value["error"].clone(),
+                );
+                render_failed(
+                    format!(
+                        "采样器定义文件读不到或解析不了: {} (工程里登记的是 `{}`)",
+                        resolved.display(),
+                        binding.path
+                    ),
+                    serde_json::json!({
+                        "reason": "samplerUnreadable",
+                        "path": binding.path,
+                        "resolvedPath": resolved.display().to_string(),
+                        "cause": cause,
+                    }),
+                )
+            })?;
+            let prepared = loaded.with_instrument(|instrument| {
+                sfz::prepare_sampler(
+                    instrument,
+                    &sampler_notes,
+                    sfz::FALLBACK_SINE_HZ,
+                    sample_rate as f32,
+                    // `sample=` 是**相对 SFZ 文件**的路径 ⇒ 必须把文件路径传进去。
+                    Some(&resolved),
+                )
+            })?;
+            // 循环区域只响一遍（与 `yeban_render_sfz_wav` 同一句如实登记）。
+            if prepared.notes_looping > 0 {
+                note_unsupported(unsupported, counts, "sfzLoopExpansion");
+            }
+            // 采样器路径**不应用声相**（与 CLI 的 SFZ 分支同口径）⇒ 有 pan 就必须说出来。
+            if track.pan.is_finite() && track.pan != 0.0 {
+                note_unsupported(unsupported, counts, "sfzTrackPan");
+            }
+            // ⭐ 区域级 `ampeg_*` 包络**本渲染器不应用**（只有缺省值时两条路才逐位相同）
+            // ⇒ 作者真的写了包络就必须登记（第 324 条）。
+            if prepared.regions_with_envelope > 0 {
+                note_unsupported(unsupported, counts, "sfzRegionEnvelope");
+            }
+            let report = SamplerReport {
+                path: binding.path.clone(),
+                resolved_path: resolved.display().to_string(),
+                regions: prepared.regions,
+                silent_regions: prepared.silent_regions,
+                notes: prepared.notes_total,
+                notes_unmatched: prepared.notes_unmatched,
+                notes_using_file_sample: prepared.notes_using_file_sample,
+                notes_using_sine_fallback: prepared.notes_using_sine_fallback,
+                notes_using_builtin_silence: prepared.notes_using_builtin_silence,
+                notes_looping: prepared.notes_looping,
+                sample_sources: prepared.sample_sources,
+                sample_failures: prepared.sample_failures,
+                sample_frames_loaded: prepared.sample_frames_loaded,
+                regions_with_envelope: prepared.regions_with_envelope,
+            };
+            (
+                Some(SamplerTrackSource {
+                    notes: prepared.notes,
+                    // ⚠ 两个声道同值：采样器路径不应用声相（见该类型的文档表）。
+                    gain_l: track_gain,
+                    gain_r: track_gain,
+                }),
+                Some(report),
+            )
+        }
+    };
     let midi = MidiSynthSource {
         notes: scheduled,
         gain_l: if track.pan.is_finite() && track.pan != 0.0 {
@@ -2489,13 +2880,24 @@ fn build_source(
         attack_frames,
         release_frames,
     };
-    let source = TrackSource { midi, clips };
+    let source = TrackSource {
+        midi,
+        sampler,
+        clips,
+    };
     let report = SourceReport {
         node: track.id,
         track: track.name.clone(),
         kind: source.kind(),
         audible,
-        notes: u64::try_from(source.midi.notes.len()).unwrap_or(u64::MAX),
+        notes: u64::try_from(source.midi.notes.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(
+                source
+                    .sampler
+                    .as_ref()
+                    .map_or(0, |sampler| u64::try_from(sampler.notes.len()).unwrap_or(0)),
+            ),
         audio_clips,
         audio_clips_unrendered: clips_unrendered,
         audio_clips_gated: clips_gated,
@@ -2503,6 +2905,7 @@ fn build_source(
         notes_ratcheted,
         ratchet_pulses,
         end_tick,
+        sampler: sampler_report,
     };
     Ok((source, report))
 }
@@ -2528,6 +2931,12 @@ fn note_unsupported(
     counts: &mut BTreeMap<&'static str, u64>,
     key: &'static str,
 ) {
+    // ⭐ 第 324 条：登记用的键必须来自 [`KNOWN_UNSUPPORTED_KEYS`] —— 否则"已知不支持项
+    // 的全集"就不再是全集（清单漏一条，判据也数不到它）。
+    debug_assert!(
+        KNOWN_UNSUPPORTED_KEYS.contains(&key),
+        "`{key}` 不在 KNOWN_UNSUPPORTED_KEYS 里: 先登记清单, 再登记这条读数"
+    );
     unsupported.insert(key);
     let counter = counts.entry(key).or_insert(0);
     *counter = counter.saturating_add(1);

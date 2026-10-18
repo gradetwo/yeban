@@ -3252,3 +3252,852 @@ fn a_normal_master_reports_zero_clipped_samples_and_no_overshoot() {
     let headroom = data["headroomDb"].as_f64().expect("headroomDb 必须是数");
     assert!(headroom >= 0.0, "普通工程余量必须 >= 0 dB，实测 {headroom}");
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#221`：`TrackV3.sampler` 真的被渲染（验收 `#220` 的缺陷 ① ②）
+// ---------------------------------------------------------------------------
+//
+// ## 这一节量什么（对象 ＋ 单位）
+//
+// | 量 | 来源 | 单位 |
+// | :--- | :--- | :--- |
+// | `sha256` | `data.sha256`（母带文件字节） | 64 位十六进制 |
+// | `peak.before` | `data.peak.before`（抖动/量化**之前**的浮点母带峰值） | 满刻度线性幅度 |
+// | `sources[].sampler.label` | 本单新增的 per-track 读数 | 与 app `--export-wav` 同形的 `sfz(...)` 行 |
+// | `sources[].kind` | 音频源种类 | `sfz-sampler` / `midi-synth-osc` |
+//
+// ## 为什么这三条判据必须一起写
+//
+// `#220` 的缺陷 ② 是"**绑了采样器与去掉 sampler 导出逐字节相同**，且 `unsupported=[]`"。
+// 只断言"能渲染成功"对这条缺陷是**瞎的** —— 修复前它也成功。所以这里的承重断言是
+// **不相等**：三个 `sha256` 两两不同、峰值有差异、且每个响应都带 per-track `sfz(...)`。
+
+/// 一条**采样器轨**的测试 SFZ：单区域，`key=69`（夹具音符的音高），指向给定的样本文件。
+fn sampler_sfz_body(sample_file: &str) -> String {
+    format!("<region> sample={sample_file} key=69 pitch_keycenter=69\n")
+}
+
+/// 手写一份 24-bit 单声道 PCM WAV（常量值；⛔ 不用被测写入器自证）。
+fn write_constant_wav(path: &Path, value: f64, frames: usize, sample_rate: u32) {
+    let scaled = (value * ((1_i32 << 23) - 1) as f64).round() as i32;
+    let mut data = Vec::with_capacity(frames * 3);
+    for _ in 0..frames {
+        let bytes = scaled.to_le_bytes();
+        data.extend_from_slice(&bytes[..3]);
+    }
+    let mut out = Vec::with_capacity(44 + data.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&u32::try_from(36 + data.len()).expect("小").to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1_u16.to_le_bytes()); // 单声道
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * 3).to_le_bytes());
+    out.extend_from_slice(&3_u16.to_le_bytes());
+    out.extend_from_slice(&24_u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&u32::try_from(data.len()).expect("小").to_le_bytes());
+    out.extend_from_slice(&data);
+    fs::write(path, &out).expect("写常量样本夹具");
+}
+
+/// 造两份**不同**的采样器（A = 0.5 常量样本，B = 0.25 常量样本），返回 `(A, B)` 路径。
+///
+/// 为什么用常量：峰值可以由测试**独立算出**（0.5 与 0.25），不依赖被测渲染器的任何读数
+/// —— 这样"峰值真的变了"不是自我确认。
+fn two_samplers(scratch: &Scratch) -> (String, String) {
+    let a_dir = scratch.join("sampler-a");
+    let b_dir = scratch.join("sampler-b");
+    fs::create_dir_all(&a_dir).expect("建 A 目录");
+    fs::create_dir_all(&b_dir).expect("建 B 目录");
+    write_constant_wav(&a_dir.join("a.wav"), 0.5, 48_000, 48_000);
+    write_constant_wav(&b_dir.join("b.wav"), 0.25, 48_000, 48_000);
+    fs::write(a_dir.join("a.sfz"), sampler_sfz_body("a.wav")).expect("写 A.sfz");
+    fs::write(b_dir.join("b.sfz"), sampler_sfz_body("b.wav")).expect("写 B.sfz");
+    (
+        a_dir.join("a.sfz").display().to_string(),
+        b_dir.join("b.sfz").display().to_string(),
+    )
+}
+
+/// 把夹具工程的那条 MIDI 轨绑上采样器（`None` = 不绑）。
+fn project_with_sampler(sampler: Option<&str>) -> YebanProjectV1 {
+    let mut project = project(&Spec::default());
+    let lead = id(2);
+    project
+        .tracks
+        .get_mut(&lead)
+        .expect("夹具必须有 Lead 轨")
+        .sampler = sampler.map(|path| yeban_model::SamplerBinding {
+        path: path.to_owned(),
+    });
+    project.validate().expect("夹具工程必须合法");
+    project
+}
+
+/// 渲染一次并返回 `(sha256, peakBefore, 响应)`。
+fn render_once(scratch: &Scratch, tag: &str, project: &YebanProjectV1) -> (String, f64, Value) {
+    let (mut dispatcher, auth) = dispatcher_with(project, &scratch.join(&format!("{tag}.yeban")));
+    let out = scratch.join(&format!("{tag}.wav"));
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(result["status"], "success", "{tag}: {result}");
+    let sha = result["data"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_owned();
+    let peak = result["data"]["peak"]["before"]
+        .as_f64()
+        .expect("peak.before");
+    (sha, peak, result)
+}
+
+/// ⭐ 判据 3：**同一工程** ① 无 sampler ② 绑 A ③ 绑 B ⇒ 三个 `sha256` 互不相同、
+/// 峰值有差异、每次响应都带 per-track `sfz(...)` 读数（`silent=0` / `missing=[]`）。
+///
+/// 注入（实测红）：把 [`crate::domain::render`] 里 `build_source` 的 `sampler` 段删掉
+/// （= 回到 `#220` 缺陷 ② 的代码形状）⇒ `sha256` 三者**全相等**、峰值全相等、
+/// `sources[].sampler` 全为 `null` ⇒ 本判据当场红。
+#[test]
+fn a_bound_sampler_changes_the_export_and_the_per_track_reading_says_so() {
+    let scratch = Scratch::new("sampler-three-way");
+    let (a, b) = two_samplers(&scratch);
+    let no_sampler = project_with_sampler(None);
+    let with_a = project_with_sampler(Some(&a));
+    let with_b = project_with_sampler(Some(&b));
+
+    let (sha_none, peak_none, none) = render_once(&scratch, "none", &no_sampler);
+    let (sha_a, peak_a, resp_a) = render_once(&scratch, "a", &with_a);
+    let (sha_b, peak_b, resp_b) = render_once(&scratch, "b", &with_b);
+
+    println!("### 三个 sha256（逐字）: 无sampler={sha_none} 绑A={sha_a} 绑B={sha_b}");
+    println!("### 三个峰值: 无sampler={peak_none:.9} 绑A={peak_a:.9} 绑B={peak_b:.9}");
+    println!(
+        "### A 的 per-track 读数: kind={} label={}",
+        resp_a["data"]["sources"][0]["kind"], resp_a["data"]["sources"][0]["sampler"]["label"]
+    );
+    println!(
+        "### B 的 per-track 读数: kind={} label={}",
+        resp_b["data"]["sources"][0]["kind"], resp_b["data"]["sources"][0]["sampler"]["label"]
+    );
+
+    // ① 三个文件**两两不同**（这是 `#220` 缺陷 ② 的正面证据）。
+    assert_ne!(sha_none, sha_a, "绑了采样器的导出必须与'不绑'不同");
+    assert_ne!(sha_none, sha_b, "绑了采样器的导出必须与'不绑'不同");
+    assert_ne!(sha_a, sha_b, "两个**不同**的采样器必须导出不同的字节");
+    // ② 峰值也必须有差异（独立性：sha 会因容器元数据不同而不同，峰值不会）。
+    assert_ne!(
+        peak_a.to_bits(),
+        peak_b.to_bits(),
+        "A(0.5 常量) 与 B(0.25 常量) 的峰值必须不同: {peak_a} vs {peak_b}"
+    );
+    assert_ne!(
+        peak_none.to_bits(),
+        peak_a.to_bits(),
+        "无采样器 vs A 的峰值必须不同"
+    );
+    // ③ 峰值比例可以**独立算出**：两份样本是 0.5 与 0.25 常量、区域参数完全相同
+    //    ⇒ 峰值之比必须是 2.0（`amp_veltrack` 那一档对两个音符是**同一个**乘子，
+    //    因此被比例消掉 —— 这正是"不自我确认"的写法）。
+    let ratio = peak_a / peak_b;
+    assert!(
+        (ratio - 2.0).abs() < 1.0e-3,
+        "A/B 的样本幅度是 0.5/0.25 ⇒ 峰值之比应当是 2.0, 实测 {ratio}（{peak_a} / {peak_b}）"
+    );
+    assert!(
+        peak_a < 0.5 && peak_b < 0.25,
+        "区域增益（含 `amp_veltrack`）只会**缩小**幅度: {peak_a} / {peak_b}"
+    );
+    // ④ per-track `sfz(...)` 读数：形状与 app 的 `--export-wav` 同形，且 `silent=0`、`missing=[]`。
+    for (tag, response) in [("A", &resp_a), ("B", &resp_b)] {
+        let sampler = &response["data"]["sources"][0]["sampler"];
+        assert!(
+            !sampler.is_null(),
+            "{tag}: 绑了采样器就必须有 per-track 读数: {response}"
+        );
+        let label = sampler["label"].as_str().expect("label");
+        assert!(
+            label.starts_with("sfz(tracks=1 regions=1 samples=1 silent=0"),
+            "{tag}: 读数行必须以 sfz(tracks=1 regions=1 samples=1 silent=0 开头: {label}"
+        );
+        assert!(
+            label.contains("missing=[]"),
+            "{tag}: 不得有缺失样本: {label}"
+        );
+        assert!(
+            label.contains("unreadable(not_found=0,unsupported=0,other=0)"),
+            "{tag}: 读失败三档必须为 0: {label}"
+        );
+        assert_eq!(
+            sampler["notesUsingFileSample"], 1,
+            "{tag}: 必须真的用了文件样本"
+        );
+        assert_eq!(sampler["notesUsingSineFallback"], 0, "{tag}: 不许回退正弦");
+        assert_eq!(sampler["silentRegionCount"], 0, "{tag}: 本夹具没有内建静音");
+    }
+    // ⑤ 源种类说真话（`#220` 缺陷 ② 的另一半：以前这里永远是 `midi-synth-osc`）。
+    assert_eq!(
+        resp_a["data"]["sources"][0]["kind"], "sfz-sampler",
+        "绑了采样器 ⇒ 源种类必须点名采样器"
+    );
+    assert_eq!(
+        none["data"]["sources"][0]["kind"], "midi-synth-osc",
+        "不绑采样器 ⇒ 仍走正弦振荡器（⛔ 不是把默认路径也换掉）"
+    );
+    // ⑥ `sfzSampler` **不得**出现在 `unsupported` 里：它现在真的被渲染了，报它就是假话。
+    for (tag, response) in [("none", &none), ("A", &resp_a), ("B", &resp_b)] {
+        let unsupported = response["data"]["unsupported"]
+            .as_array()
+            .expect("unsupported");
+        assert!(
+            !unsupported.iter().any(|key| key == "sfzSampler"),
+            "{tag}: 采样器已经真的被渲染 ⇒ 不许再报 sfzSampler: {unsupported:?}"
+        );
+    }
+    // ⑦ 干净工程（pan=0、无循环、无设备）的 `unsupported` 必须是空数组。
+    assert_eq!(
+        resp_a["data"]["unsupported"],
+        json!([]),
+        "绑了采样器的干净工程不该有任何 unsupported 项"
+    );
+}
+
+/// ⭐ 判据 3b：绑定的路径**读不到** ⇒ 响亮拒绝（⛔ 静默回退成正弦）。
+///
+/// 这条是"不许静默"的正面判据：`#220` 缺陷 ② 的形状正是"读不到也不说，照常导出"。
+#[test]
+fn an_unreadable_sampler_path_is_a_loud_failure_not_a_silent_sine() {
+    let scratch = Scratch::new("sampler-missing");
+    let missing = scratch.join("no-such.sfz").display().to_string();
+    let project = project_with_sampler(Some(&missing));
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("missing.yeban"));
+    let out = scratch.join("missing.wav");
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_domain_error(&result, "RENDER_FAILED", "采样器路径不存在");
+    assert_eq!(
+        result["error"]["data"]["reason"], "samplerUnreadable",
+        "必须点名是采样器读不到: {result}"
+    );
+    assert!(
+        result["error"]["data"]["tried"].is_array(),
+        "必须报出试过哪些路径: {result}"
+    );
+    assert!(
+        !out.exists(),
+        "失败时不许留下半成品（⛔ 不许写一个'静音'或'正弦'的替身）"
+    );
+}
+
+/// ⭐ 判据 3c：`sfzTrackPan` —— **采样器轨**的 `pan` 没有应用（与 CLI 的 SFZ 分支同口径），
+/// 因此它必须出现在 `unsupported` 里（第 324 条：`unsupported` 要说真话）。
+#[test]
+fn a_sampler_track_with_pan_reports_the_unapplied_pan() {
+    let scratch = Scratch::new("sampler-pan");
+    let (a, _b) = two_samplers(&scratch);
+    let mut project = project_with_sampler(Some(&a));
+    let lead = id(2);
+    project.tracks.get_mut(&lead).expect("Lead").pan = 0.5;
+    project.validate().expect("夹具工程必须合法");
+    let (_sha, _peak, response) = render_once(&scratch, "pan", &project);
+    let unsupported = response["data"]["unsupported"]
+        .as_array()
+        .expect("unsupported");
+    assert!(
+        unsupported.iter().any(|key| key == "sfzTrackPan"),
+        "采样器轨的 pan 没有应用 ⇒ 必须登记 sfzTrackPan: {unsupported:?}"
+    );
+    println!("### 采样器轨 pan != 0 的 unsupported（逐字）: {unsupported:?}");
+}
+
+/// 一次 **JSON-RPC 方法**调用（不是 `tools/call`）—— `tools/list` 这类协议方法用。
+fn request(dispatcher: &mut Dispatcher, auth: &str, method: &str, params: Value) -> Value {
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": "r",
+        "method": method,
+        "params": params,
+    })
+    .to_string();
+    let outcome = dispatcher.handle_line(Channel::Http, Some(auth), &line);
+    assert_eq!(
+        outcome.error_code(),
+        None,
+        "`{method}` 不得产出 JSON-RPC 层错误: {outcome:?}"
+    );
+    outcome.response.expect("响应").result.expect("result")
+}
+
+/// "Master + 两条 MIDI 轨 → Master"的工程（判据 2 用它，两条轨绑**不同**的采样器）。
+fn two_track_project() -> YebanProjectV1 {
+    let mut project = project(&Spec::default());
+    let master = id(1);
+    let lead = id(2);
+    let rhythm = id(3);
+    let clip = id(11);
+    let placement = id(21);
+    let note = id(31);
+    let edge = id(41);
+    let mut track = TrackV3 {
+        id: rhythm,
+        name: "Rhythm".to_owned(),
+        kind: TrackKind::Midi,
+        ..TrackV3::default()
+    };
+    track.clips.insert(
+        placement,
+        ClipPlacement {
+            id: placement,
+            clip_id: clip,
+            start_tick: 0,
+            duration_ticks: 1_920,
+            loop_config: LoopConfig::default(),
+            muted: false,
+        },
+    );
+    let mut notes = BTreeMap::new();
+    notes.insert(
+        note,
+        MidiNote {
+            velocity: 100,
+            probability: None,
+            ratchet: None,
+            ..MidiNote::new(note, 0, 69, 1_920)
+        },
+    );
+    project.clip_pool.insert(
+        clip,
+        ClipPoolEntry {
+            id: clip,
+            name: "RhythmClip".to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    );
+    project.tracks.insert(rhythm, track);
+    project.routing_graph.nodes = vec![lead, rhythm, master];
+    project.routing_graph.edges.insert(
+        edge,
+        RoutingEdge {
+            id: edge,
+            source_node: rhythm,
+            destination_node: master,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    project.validate().expect("两轨夹具必须合法");
+    project
+}
+
+/// ⭐ 判据 1 ＋ 2：**工具面逐字**（22 个工具、36 个 kind、含 `setTrackSampler`），
+/// 且经这条通路给**两轨绑不同采样器**后 `query_project` 逐轨读得回来。
+///
+/// 注入（实测红）：
+/// - 把 `setTrackSampler` 从 `OP_KINDS` 删掉 ⇒ 第一条断言红（kind 表少一个），
+///   且 `yeban_edit_notes` 会逐字报 `未知 kind: setTrackSampler`（`#220` 缺陷 ①）；
+/// - 把 `compile` 的 `Op::SetTrackSampler` 臂改成别的东西 ⇒ 第二条断言红
+///   （`query_project` 的逐轨读数不变）。
+#[test]
+fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
+    use yeban_mcp::domain::notes::OP_KINDS;
+    use yeban_mcp::tools::TOOL_COUNT;
+
+    let scratch = Scratch::new("sampler-bind");
+    let (a, b) = two_samplers(&scratch);
+    let project = two_track_project();
+    let lead = id(2).to_canonical_string();
+    let rhythm = id(3).to_canonical_string();
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("bind.yeban"));
+
+    // ---- ① tools/list：22 个工具，逐字 ----
+    let listed = request(&mut dispatcher, &auth, "tools/list", json!({}));
+    let tools = listed["tools"].as_array().expect("tools");
+    println!(
+        "### tools/list 条数（逐字）: {} (TOOL_COUNT={TOOL_COUNT})",
+        tools.len()
+    );
+    assert_eq!(tools.len(), TOOL_COUNT, "工具面条数必须等于 TOOL_COUNT");
+    assert_eq!(tools.len(), 22, "验收 `#220` 的逐字读数：22 个工具");
+
+    // ---- ② `yeban_edit_notes` 的 kind 表：与 `OP_KINDS` 逐字同序 ----
+    let edit = tools
+        .iter()
+        .find(|tool| tool["name"] == "yeban_edit_notes")
+        .expect("必须有 yeban_edit_notes");
+    let branches = edit["inputSchema"]["properties"]["ops"]["items"]["oneOf"]
+        .as_array()
+        .expect("ops.items.oneOf");
+    let kinds: Vec<&str> = branches
+        .iter()
+        .map(|branch| branch["title"].as_str().expect("分支 title 是 kind"))
+        .collect();
+    println!(
+        "### edit_notes 的 kind 表（逐字，{} 个）: {kinds:?}",
+        kinds.len()
+    );
+    assert_eq!(kinds.len(), OP_KINDS.len(), "分支数必须等于 OP_KINDS");
+    assert_eq!(kinds.len(), 36, "验收 `#220` 的 35 个 ⇒ 本单 +1");
+    // ⚠ 发布的**分支顺序**与 `OP_KINDS` 的顺序**不同**（`op_schema::ops_items` 按
+    // 可读性分组，`OP_KINDS` 按桶分组；`#177` 的判据只要求"集合相同 + 分支数相同"）
+    // ⇒ 这里比**集合**，并按 `OP_KINDS` 的桶序钉住 `setTrackSampler` 紧跟在
+    // `setTrackColor` 之后（本单那一处插入点）。
+    let mut sorted_kinds = kinds.clone();
+    sorted_kinds.sort_unstable();
+    let mut sorted_catalog = OP_KINDS.to_vec();
+    sorted_catalog.sort_unstable();
+    assert_eq!(
+        sorted_kinds, sorted_catalog,
+        "kind 表必须与 OP_KINDS 集合相同"
+    );
+    let color_at = kinds
+        .iter()
+        .position(|kind| *kind == "setTrackColor")
+        .expect("setTrackColor");
+    assert_eq!(
+        kinds[color_at + 1],
+        "setTrackSampler",
+        "`setTrackSampler` 必须紧跟在 `setTrackColor` 之后（同一个音轨属性桶）"
+    );
+    assert!(
+        kinds.contains(&"setTrackSampler"),
+        "`setTrackSampler` 必须真的在 kind 表里"
+    );
+    let branch = branches
+        .iter()
+        .find(|branch| branch["title"] == "setTrackSampler")
+        .expect("setTrackSampler 分支");
+    assert_eq!(
+        branch["properties"]["sampler"]["type"],
+        json!(["string", "null"])
+    );
+    assert_eq!(
+        branch["required"],
+        json!(["kind", "trackId", "sampler"]),
+        "三个字段全部必填（缺键 ⛔ 不等于解绑）"
+    );
+    assert_eq!(
+        branch["x-envelope"]["clipId"], "ignored",
+        "采样器形态不读顶层 clipId"
+    );
+
+    // ---- ③ 经 MCP 给两条轨绑**不同**的采样器（同一次调用） ----
+    let edited = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "ops": [
+                {"kind": "setTrackSampler", "trackId": lead, "sampler": a},
+                {"kind": "setTrackSampler", "trackId": rhythm, "sampler": b},
+            ],
+        }),
+    );
+    assert_eq!(edited["status"], "success", "绑定必须成功: {edited}");
+    // ⚠ 生产流的形状：`yeban_edit_notes` **建提案**，`yeban_merge_proposal` 才施加
+    // （⛔ 不是"调用返回 success 就等于写进去了" —— 本判据第一版就是这么假绿的）。
+    let proposal = edited["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal, "commitMessage": "绑定两轨采样器"}),
+    );
+    assert_eq!(
+        merged["data"]["merged"], true,
+        "提案必须真的被施加: {merged}"
+    );
+
+    // ---- ④ query_project 逐轨读数：两条轨的 `sampler` 不同且逐字等于给的值 ----
+    let queried = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["tracks"]}),
+    );
+    assert_eq!(queried["status"], "success", "{queried}");
+    let tracks = &queried["data"]["project"]["tracks"];
+    let lead_path = tracks[&lead]["sampler"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Lead 轨必须读得回 sampler: {queried}"));
+    let rhythm_path = tracks[&rhythm]["sampler"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Rhythm 轨必须读得回 sampler: {queried}"));
+    println!("### query_project 逐轨 sampler（逐字）: lead={lead_path} rhythm={rhythm_path}");
+    assert_eq!(lead_path, a, "Lead 轨的采样器必须是 A");
+    assert_eq!(rhythm_path, b, "Rhythm 轨的采样器必须是 B");
+    assert_ne!(lead_path, rhythm_path, "两条轨必须绑不同的采样器");
+
+    // ---- ⑤ 解绑：`sampler: null` ⇒ 该轨的 `sampler` 键**消失**（`None` 是一等状态） ----
+    let unbound = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead,
+            "ops": [{"kind": "setTrackSampler", "trackId": lead, "sampler": null}],
+        }),
+    );
+    assert_eq!(unbound["status"], "success", "{unbound}");
+    let proposal = unbound["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal, "commitMessage": "解绑一轨"}),
+    );
+    assert_eq!(merged["data"]["merged"], true, "{merged}");
+    let queried = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["tracks"]}),
+    );
+    assert!(
+        queried["data"]["project"]["tracks"][&lead]
+            .get("sampler")
+            .is_none(),
+        "解绑后不得再写出 `sampler` 键: {queried}"
+    );
+    assert_eq!(
+        queried["data"]["project"]["tracks"][&rhythm]["sampler"]["path"], b,
+        "解绑一轨不得碰另一轨"
+    );
+}
+
+/// ⭐ 判据 6/7（第 324 条）：**已知不支持项的全集**里的每一项，都必须在一个**具体输入**下
+/// 真的出现在 `unsupported` 里。
+///
+/// 这是"清单不会腐烂"的机械保证：谁删掉某条登记（或把键改名），这条判据就点名它是哪一条。
+/// 反方向由 `note_unsupported` 的 `debug_assert` 守住（不许登记清单外的键）。
+#[test]
+fn the_known_unsupported_list_is_not_decoration() {
+    use yeban_mcp::domain::render::KNOWN_UNSUPPORTED_KEYS;
+
+    let scratch = Scratch::new("known-unsupported");
+    let (a, _b) = two_samplers(&scratch);
+    let lead = id(2);
+
+    // 每一项 → 一个**只触发它**的具体输入（其余项在这条输入下不出现）。
+    // 一项"已知不支持键 → 只触发它的具体输入"。⚠ 触发器捕获 `scratch` / 夹具路径的
+    // 引用 ⇒ `dyn Fn` 必须带生命周期参数（否则会要求 `'static`）。
+    #[allow(clippy::type_complexity)]
+    let mut triggers: Vec<(&str, Box<dyn Fn() -> Value + '_>)> = Vec::new();
+    // ① `clipLoopRepetition`：循环区间短于摆放跨度。
+    triggers.push((
+        "clipLoopRepetition",
+        Box::new(|| {
+            let spec = Spec {
+                loop_config: LoopConfig {
+                    enabled: true,
+                    start_tick: 0,
+                    end_tick: 960,
+                },
+                ..Spec::default()
+            };
+            render_or_ok(&project(&spec), "loop")
+        }),
+    ));
+    // ② `deviceChainDsp`：设备链里带本切片没有消费的参数。
+    triggers.push((
+        "deviceChainDsp",
+        Box::new(|| {
+            let mut device = device(70, 0, false);
+            device.params.push(yeban_model::ParameterValue {
+                name: "filter_cutoff_hz".to_owned(),
+                value: 1_000.0,
+                unit: Some("Hz".to_owned()),
+            });
+            let spec = Spec {
+                devices: vec![device],
+                ..Spec::default()
+            };
+            render_or_ok(&project(&spec), "dsp")
+        }),
+    ));
+    // ③ `externalPlugins`：未旁通的外部乐器。
+    triggers.push((
+        "externalPlugins",
+        Box::new(|| {
+            let mut device = device(71, 0, false);
+            device.kind = DeviceKind::ExternalInstrument;
+            let spec = Spec {
+                devices: vec![device],
+                ..Spec::default()
+            };
+            render_or_ok(&project(&spec), "external")
+        }),
+    ));
+    // ④ `automationLanes`：音轨上有自动化泳道。
+    triggers.push((
+        "automationLanes",
+        Box::new(|| {
+            let mut project = project(&Spec::default());
+            let lane = yeban_model::AutomationLane {
+                target: yeban_model::AutomationTarget::TrackVolume { track_id: lead },
+                points: BTreeMap::new(),
+                read_enabled: true,
+                write_mode: yeban_model::AutomationWriteMode::Latch,
+                domain: None,
+            };
+            project
+                .tracks
+                .get_mut(&lead)
+                .expect("Lead")
+                .automation_lanes
+                .insert(lane.target, lane);
+            project.validate().expect("夹具合法");
+            render_or_ok(&project, "automation")
+        }),
+    ));
+    // ⑤ `noteSlide` / ⑥ `notePitchBend` / ⑦ `noteLyrics`：音符上的三种没有实现的表达。
+    for (key, mutate) in [("noteSlide", 0u8), ("notePitchBend", 1), ("noteLyrics", 2)] {
+        triggers.push((
+            key,
+            Box::new(move || {
+                let mut project = project(&Spec::default());
+                for clip in project.clip_pool.values_mut() {
+                    if let ClipContent::Midi { notes } = &mut clip.content {
+                        for note in notes.values_mut() {
+                            match mutate {
+                                0 => {
+                                    note.slide = Some(yeban_model::SlideConfig {
+                                        duration_ticks: 240,
+                                        target_pitch: 72,
+                                        curve: yeban_model::CurveType::Linear,
+                                    });
+                                }
+                                1 => note.pitch_bend_curve = vec![(0, 0), (240, 200)],
+                                _ => note.syllable = Some("la".to_owned()),
+                            }
+                        }
+                    }
+                }
+                project.validate().expect("夹具合法");
+                render_or_ok(&project, key)
+            }),
+        ));
+    }
+    // ⑧ `busTrackClips`：主总线轨上摆一个片段。
+    triggers.push((
+        "busTrackClips",
+        Box::new(|| {
+            let mut project = project(&Spec::default());
+            let master = id(1);
+            let clip = id(12);
+            let placement = id(22);
+            let note = id(32);
+            let mut notes = BTreeMap::new();
+            notes.insert(note, MidiNote::new(note, 0, 69, 480));
+            project.clip_pool.insert(
+                clip,
+                ClipPoolEntry {
+                    id: clip,
+                    name: "BusClip".to_owned(),
+                    content: ClipContent::Midi { notes },
+                },
+            );
+            project
+                .tracks
+                .get_mut(&master)
+                .expect("Master")
+                .clips
+                .insert(
+                    placement,
+                    ClipPlacement {
+                        id: placement,
+                        clip_id: clip,
+                        start_tick: 0,
+                        duration_ticks: 480,
+                        loop_config: LoopConfig::default(),
+                        muted: false,
+                    },
+                );
+            project.validate().expect("夹具合法");
+            render_or_ok(&project, "bus")
+        }),
+    ));
+    // ⑨ `sidechainRouting`：路由图里有一条侧链边。
+    triggers.push((
+        "sidechainRouting",
+        Box::new(|| {
+            let mut project = project(&Spec::default());
+            let edge = id(42);
+            project.routing_graph.edges.insert(
+                edge,
+                RoutingEdge {
+                    id: edge,
+                    source_node: id(2),
+                    destination_node: id(1),
+                    kind: RoutingKind::Sidechain,
+                    gain_db: None::<f32>,
+                },
+            );
+            project.validate().expect("夹具合法");
+            render_or_ok(&project, "sidechain")
+        }),
+    ));
+    // ⑩ `masterPan`：主总线轨的 pan != 0。
+    triggers.push((
+        "masterPan",
+        Box::new(|| {
+            let mut project = project(&Spec::default());
+            project.tracks.get_mut(&id(1)).expect("Master").pan = 0.5;
+            project.validate().expect("夹具合法");
+            render_or_ok(&project, "master-pan")
+        }),
+    ));
+    // ⑪ `audioClips`：工程**声明**了资产、会话池里没有它的字节。
+    triggers.push((
+        "audioClips",
+        Box::new(|| {
+            let mut project = project(&Spec::default());
+            let hash = yeban_model::AssetHash::of_bytes(b"declared-but-absent");
+            project.assets.insert(
+                hash.clone(),
+                yeban_model::AssetMetadata {
+                    hash: hash.clone(),
+                    original_path: "absent.wav".to_owned(),
+                    byte_len: 4,
+                    media_kind: yeban_model::MediaKind::Audio,
+                    license: "CC0-1.0".to_owned(),
+                },
+            );
+            let clip = id(13);
+            let placement = id(23);
+            project.clip_pool.insert(
+                clip,
+                ClipPoolEntry {
+                    id: clip,
+                    name: "AudioClip".to_owned(),
+                    content: ClipContent::Audio {
+                        asset: hash,
+                        gain_db: 0.0,
+                    },
+                },
+            );
+            project.tracks.get_mut(&lead).expect("Lead").clips.insert(
+                placement,
+                ClipPlacement {
+                    id: placement,
+                    clip_id: clip,
+                    start_tick: 0,
+                    duration_ticks: 480,
+                    loop_config: LoopConfig::default(),
+                    muted: false,
+                },
+            );
+            project.validate().expect("夹具合法");
+            render_or_ok(&project, "audio-absent")
+        }),
+    ));
+    // ⑫ `sfzLoopExpansion`：采样器区域要求循环（`loop_mode=loop_continuous`）。
+    triggers.push((
+        "sfzLoopExpansion",
+        Box::new(|| {
+            let dir = scratch.join("loop-sfz");
+            fs::create_dir_all(&dir).expect("建目录");
+            write_constant_wav(&dir.join("c.wav"), 0.5, 480, 48_000);
+            fs::write(
+                dir.join("l.sfz"),
+                "<region> sample=c.wav key=69 loop_mode=loop_continuous loop_start=0 loop_end=400\n",
+            )
+            .expect("写 loop sfz");
+            let path = dir.join("l.sfz").display().to_string();
+            render_or_ok(&project_with_sampler(Some(&path)), "sfz-loop")
+        }),
+    ));
+    // ⑭ `sfzRegionEnvelope`：命中的区域声明了 `ampeg_*`（本渲染器不应用幅度包络）。
+    triggers.push((
+        "sfzRegionEnvelope",
+        Box::new({
+            let scratch = &scratch;
+            move || {
+                let dir = scratch.join("env-sfz");
+                fs::create_dir_all(&dir).expect("建目录");
+                write_constant_wav(&dir.join("e.wav"), 0.5, 480, 48_000);
+                fs::write(
+                    dir.join("e.sfz"),
+                    "<region> sample=e.wav key=69 ampeg_attack=0.5 ampeg_release=0.5\n",
+                )
+                .expect("写带包络的 sfz");
+                let path = dir.join("e.sfz").display().to_string();
+                render_or_ok(&project_with_sampler(Some(&path)), "sfz-env")
+            }
+        }),
+    ));
+    // ⑬ `sfzTrackPan`：采样器轨的 pan != 0。
+    triggers.push((
+        "sfzTrackPan",
+        Box::new(|| {
+            let mut project = project_with_sampler(Some(&a));
+            project.tracks.get_mut(&lead).expect("Lead").pan = 0.5;
+            project.validate().expect("夹具合法");
+            render_or_ok(&project, "sfz-pan")
+        }),
+    ));
+
+    // 清单与触发器**逐条重合**（两方向都查：少一个触发器 ⇒ 清单腐烂；多一个 ⇒ 清单漏登记）。
+    let listed: Vec<&str> = KNOWN_UNSUPPORTED_KEYS.to_vec();
+    let covered: Vec<&str> = triggers.iter().map(|(key, _)| *key).collect();
+    println!(
+        "### KNOWN_UNSUPPORTED_KEYS（逐字，{} 项）: {listed:?}",
+        listed.len()
+    );
+    assert_eq!(covered.len(), listed.len(), "每一项都必须有触发器");
+    for key in &listed {
+        assert!(covered.contains(key), "`{key}` 没有触发器 ⇒ 清单在腐烂");
+    }
+    for (key, trigger) in &triggers {
+        let response = trigger();
+        let unsupported = response["data"]["unsupported"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key}: 响应必须带 unsupported: {response}"));
+        println!("### `{key}` 的 unsupported（逐字）: {unsupported:?}");
+        assert!(
+            unsupported.iter().any(|value| value == key),
+            "`{key}` 的输入没有把它登记进 unsupported: {unsupported:?}"
+        );
+        // 反方向：**出现过的每一个键都必须在清单里**（⛔ 不许有清单外的键）。
+        // ⚠ 刻意**不**要求"只出现它自己"：有些输入天然同时触发两条
+        // （例如未旁通的外部乐器既算 `externalPlugins`、也算 `deviceChainDsp`），
+        // 那种重叠是**如实**的，不是漏登记。
+        for value in unsupported {
+            let observed = value.as_str().expect("unsupported 的元素是字符串");
+            assert!(
+                listed.contains(&observed),
+                "`{key}` 的输入登记了清单外的键 `{observed}` ⇒ KNOWN_UNSUPPORTED_KEYS 少了它"
+            );
+        }
+    }
+}
+
+/// 渲染一次并要求成功（`unsupported` 判据用；失败即点名叫测试红）。
+fn render_or_ok(project: &YebanProjectV1, tag: &str) -> Value {
+    let scratch = Scratch::new(&format!("known-{tag}"));
+    let (mut dispatcher, auth) = dispatcher_with(project, &scratch.join("p.yeban"));
+    let out = scratch.join("out.wav");
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(
+        result["status"], "success",
+        "`{tag}` 必须渲染成功: {result}"
+    );
+    result
+}

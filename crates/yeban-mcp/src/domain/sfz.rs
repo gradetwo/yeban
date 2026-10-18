@@ -192,14 +192,50 @@ pub fn read_sample_file(path: &Path) -> Result<SampleFileReading, String> {
 /// `sample=` 的路径解析：绝对路径原样用；相对路径**相对 SFZ 文件所在目录**（SFZ 惯例）。
 #[must_use]
 pub fn resolve_sample_path(sfz_path: &Path, sample: &str) -> PathBuf {
-    let raw = Path::new(sample);
-    if raw.is_absolute() {
+    // ⭐ ⭐ `#221`（照抄 app 的 `#205` 口径，⛔ 不另立一套）：SFZ 的
+    // `opcode=value` 值里**没有转义语法**（解析器只去掉一层成对双引号），
+    // 所以 `sample=arco\\c4.wav` 里的 `\` 是作者写的**路径分隔符**，不是转义符。
+    // 同一条口径在 `#include` 的沙箱里早已是既定事实（`yeban-sfz` 的
+    // `parser.rs` 用 `raw.replace('\\', "/")`）。
+    //
+    // ⚠ **本单实测到它的后果**：真实库 `dsmolken-double-bass` 的 SFZ 里 `sample=`
+    // 全部写成 `arco\\arco_f2_mf_down.wav` 这种 Windows 分隔符 ⇒ 归一之前
+    // `SampleCache` 一律读不到、静默回退到内存正弦（读数会如实报
+    // `samples=0 missing=["…"]`，但**听见的不是那个音色**）。归一之后
+    // 同一份 SFZ 读到 210 份样本（见报告里的实测数字）。
+    let normalized = normalize_sample_path(sample);
+    let raw = Path::new(normalized.as_ref());
+    if raw.is_absolute() || is_windows_drive_absolute(raw) {
         raw.to_path_buf()
     } else {
         sfz_path
             .parent()
             .map_or_else(|| raw.to_path_buf(), |parent| parent.join(raw))
     }
+}
+
+/// 把 SFZ 样本路径里的 Windows 分隔符 `\` 归一成 `/`（与 app 的
+/// `sfz_load::normalize_sample_path` **同一份语义**、**同一份实现**）。
+///
+/// **零分配**地借用原字符串；只有真的含 `\` 时才分配一份归一后的副本。
+#[must_use]
+fn normalize_sample_path(sample: &str) -> std::borrow::Cow<'_, str> {
+    if sample.contains('\\') {
+        std::borrow::Cow::Owned(sample.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(sample)
+    }
+}
+
+/// 归一之后，`C:/…` 形式（盘符 ＋ 分隔符）算**绝对路径** —— 即使宿主是 Unix。
+///
+/// 只认 `字母:` 后紧跟 `/` 的形式（`C:foo` 是盘符相对路径，不在此列）。
+#[must_use]
+fn is_windows_drive_absolute(sample: &Path) -> bool {
+    sample.to_str().is_some_and(|text| {
+        let bytes = text.as_bytes();
+        bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+    })
 }
 
 /// 一次调用里的**样本文件缓存**（去重 + 上界 + 逐条如实记账）。
@@ -1387,9 +1423,8 @@ pub fn render(
     // 下面的 `InMemorySfzSample::sine(tone_hz, engine_hz, ..)` 就是在 `engine_hz`
     // 上生成的，所以它的步进比恰好是 `pitch_ratio * engine_hz / engine_hz`。
     // ⛔ **文件样本不走这对**：它有自己的采样率（`SampleFileReading::sample_hz`），
-    // 见下面的 `file_rate` —— 拿 `engine_hz` 当 `sample_hz` 会让 44.1 kHz 样本在
-    // 48 kHz 输出上快 48/44.1 ≈ 8.8%（≈ +1.47 半音）并提前耗尽。
-    let rates = RenderRates::new(engine_hz, engine_hz);
+    // 见 [`note_wave`] 里的 `file_rate` —— 拿 `engine_hz` 当 `sample_hz` 会让
+    // 44.1 kHz 样本在 48 kHz 输出上快 48/44.1 ≈ 8.8%（≈ +1.47 半音）并提前耗尽。
     let mut regions_used: BTreeSet<usize> = BTreeSet::new();
     let mut notes_unmatched = 0u64;
     let mut notes_looping = 0u64;
@@ -1398,78 +1433,32 @@ pub fn render(
     let mut notes_using_sine_fallback = 0u64;
     let mut cache = SampleCache::new();
     for note in notes {
-        let Some((region_index, region)) =
-            instrument.regions().iter().enumerate().find(|(_, region)| {
-                region.matches_key(note.pitch) && region.matches_velocity(note.velocity)
-            })
+        // ⭐ `#221`：区域选择 / 速率 / 增益 / 样本来源**只有一份实现**
+        // （[`note_wave`]）。`yeban_render_sfz_wav` 与 `yeban_render_master` 的
+        // 采样器音源都走它 —— 两条路径因此不可能在"哪个样本、多快、多响"上漂移。
+        let Some(wave) = note_wave(instrument, note, tone_hz, engine_hz, sfz_path, &mut cache)
         else {
             notes_unmatched = notes_unmatched.saturating_add(1);
             continue;
         };
-        regions_used.insert(region_index);
-        let rate = region.playback_rate(note.pitch, rates);
-        let gain = region
-            .playback_spec(note.pitch, note.velocity, rates)
-            .total_gain();
-        if region
-            .playback_spec(note.pitch, note.velocity, rates)
-            .loops()
-        {
+        regions_used.insert(wave.region_index);
+        if wave.looping {
             notes_looping = notes_looping.saturating_add(1);
         }
-        if !(rate.is_finite() && rate > 0.0) || gain == 0.0 {
-            notes_unmatched = notes_unmatched.saturating_add(1);
-            continue;
+        match wave.kind {
+            NoteSampleKind::BuiltinSilence => {
+                notes_using_builtin_silence = notes_using_builtin_silence.saturating_add(1);
+            }
+            NoteSampleKind::FileSample => {
+                notes_using_file_sample = notes_using_file_sample.saturating_add(1);
+            }
+            NoteSampleKind::SineFallback => {
+                notes_using_sine_fallback = notes_using_sine_fallback.saturating_add(1);
+            }
         }
-        // ---- 样本来源：**能读文件就用文件**，否则回退内存正弦（如实记账）----
-        //
-        // ⚠ 区域选择 / 播放速率 / 总增益**一位不改**：它们仍全部来自 `yeban-sfz`
-        // 的公开读数（上面三行）。这里换的**只有样本数据**。
-        //
-        // ⭐ `#218`：`sample=*silence` 是**内建静音**（⛔ 不是文件）——
-        // 判定用 `yeban-sfz` 的 `Region::is_builtin_silence()`（判 `sample=` 原值），
-        // 在**任何读盘之前**截住 ⇒ ⛔ 不进 `sample_failures`、⛔ 不回退内存正弦；
-        // 下面写零帧（该音符照常排程、照常计入 `regionsUsed`）。
-        let builtin_silence = region.is_builtin_silence();
-        let file_sample = if builtin_silence {
-            None
-        } else {
-            sfz_path.and_then(|sfz| {
-                let raw = region.sample_path();
-                if raw.trim().is_empty() {
-                    return None;
-                }
-                let resolved = resolve_sample_path(sfz, &raw);
-                // 读不到 ⇒ `None` ⇒ 回退内存正弦（原因已进 cache，渲染完由
-                // `sample_failures` 如实报出）。
-                cache.get(&resolved).ok()
-            })
-        };
         let span = usize::try_from(note.frames.max(1)).unwrap_or(0);
-        let mut mono = vec![0.0_f32; span];
-        let written = if builtin_silence {
-            notes_using_builtin_silence = notes_using_builtin_silence.saturating_add(1);
-            // `mono` 全是 0.0；写 `span` 帧等价于"这个音符真的响，但样本值为 0"。
-            span
-        } else if let Some(reading) = &file_sample {
-            notes_using_file_sample = notes_using_file_sample.saturating_add(1);
-            // ⭐ 文件样本的步进比按**它自己的**采样率换算（`yeban-sfz` 的
-            // `playback_rate` = `pitch_ratio * sample_hz / engine_hz`），与
-            // `yeban-engine::SfzInstrument::render_note_into` 的
-            // `RenderRates::new(source.sample_hz, engine_hz)` **同一口径**。
-            let file_rate =
-                region.playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz));
-            render_pcm_into(reading.pcm.as_slice(), file_rate, gain, &mut mono)
-        } else {
-            notes_using_sine_fallback = notes_using_sine_fallback.saturating_add(1);
-            // 样本长度 = 这个音符的时值（外加一个淡出尾巴）⇒ 内存正弦在整段时值里都有
-            // 数据可播。为什么按音符造：读到样本末尾就停的语义下，用一个固定 1 秒的
-            // 样本会让长音符在第 1 秒之后静音（那是**静默的错误音频**）。
-            let want = note.frames.saturating_add(NOTE_FADE_FRAMES).max(1);
-            let sample_frames = usize::try_from(want.min(8_000_000)).unwrap_or(0).max(2);
-            let sample = InMemorySfzSample::sine(tone_hz, engine_hz, sample_frames);
-            render_pcm_into(&sample.pcm, rate, gain, &mut mono)
-        };
+        let mono = &wave.mono;
+        let written = wave.written;
         let start = usize::try_from(note.start_frame).unwrap_or(usize::MAX);
         if start >= samples.len() / channels {
             continue;
@@ -1533,6 +1522,275 @@ pub fn render(
         sample_reads_truncated: cache.truncated(),
         sample_frames_loaded: cache.frames_loaded(),
     })
+}
+
+/// 一个音符的**样本来源裁决**（三种互斥出口；读数按它们分类计数）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NoteSampleKind {
+    /// `sample=*silence`：按设计不产生采样输出（写零帧）。
+    BuiltinSilence,
+    /// 真的读到了文件样本并用它发声。
+    FileSample,
+    /// 读不到文件 ⇒ 回退到内存正弦（如实记账）。
+    SineFallback,
+}
+
+/// 一个音符经采样器算出的**最终单声道波形**（已含区域增益）。
+///
+/// ⛔ 不含轨增益 / 声相 / 末尾淡出 —— 那三样是**调用方**的口径
+/// （`yeban_render_sfz_wav` 乘音符自己的 `gain_l`/`gain_r` 并加淡出；
+/// `yeban_render_master` 乘轨增益 `mute/solo × volume_db`）。
+pub(super) struct NoteWave {
+    /// 单声道波形（长度 = 该音符的时值帧；`written` 之后是 0）。
+    pub mono: Vec<f32>,
+    /// 实际写入的帧数（读到样本末尾就停）。
+    pub written: usize,
+    /// 命中的区域下标。
+    pub region_index: usize,
+    /// 该区域是否要求循环（本实现**不**展开循环，只响一遍）。
+    pub looping: bool,
+    /// 样本来源裁决。
+    pub kind: NoteSampleKind,
+}
+
+/// **唯一的**"一个音符怎么响"实现：区域选择 → 播放速率 → 总增益 → 样本来源。
+///
+/// 返回 `None` 的唯一情形是"这个音符在这份 SFZ 里不发声"：没有区域匹配它的
+/// 键/力度，或区域的播放速率/增益不可用（沿用既有的那一条守卫）。
+///
+/// 为什么抽出来（`#221`）：`yeban_render_master` 现在**真的消费**
+/// `TrackV3.sampler`，而它必须与 `yeban_render_sfz_wav` 用的是**同一条**音源路径。
+/// 如果各自写一遍区域选择，两条路会在"哪个样本、多快、多响"上漂移 —— 那正是
+/// "监听/导出的不是同一个作品"那一族缺陷。
+pub(super) fn note_wave(
+    instrument: &Instrument<'_>,
+    note: &SfzNote,
+    tone_hz: f32,
+    engine_hz: f32,
+    sfz_path: Option<&Path>,
+    cache: &mut SampleCache,
+) -> Option<NoteWave> {
+    let rates = RenderRates::new(engine_hz, engine_hz);
+    let (region_index, region) = instrument
+        .regions()
+        .iter()
+        .enumerate()
+        .find(|(_, region)| {
+            region.matches_key(note.pitch) && region.matches_velocity(note.velocity)
+        })?;
+    let rate = region.playback_rate(note.pitch, rates);
+    let spec = region.playback_spec(note.pitch, note.velocity, rates);
+    let gain = spec.total_gain();
+    let looping = spec.loops();
+    if !(rate.is_finite() && rate > 0.0) || gain == 0.0 {
+        return None;
+    }
+    // ---- 样本来源：**能读文件就用文件**，否则回退内存正弦（如实记账）----
+    //
+    // ⚠ 区域选择 / 播放速率 / 总增益**一位不改**：它们仍全部来自 `yeban-sfz`
+    // 的公开读数（上面三行）。这里换的**只有样本数据**。
+    //
+    // ⭐ `#218`：`sample=*silence` 是**内建静音**（⛔ 不是文件）——
+    // 判定用 `yeban-sfz` 的 `Region::is_builtin_silence()`（判 `sample=` 原值），
+    // 在**任何读盘之前**截住 ⇒ ⛔ 不进 `sample_failures`、⛔ 不回退内存正弦；
+    // 下面写零帧（该音符照常排程、照常计入 `regionsUsed`）。
+    let builtin_silence = region.is_builtin_silence();
+    let file_sample = if builtin_silence {
+        None
+    } else {
+        sfz_path.and_then(|sfz| {
+            let raw = region.sample_path();
+            if raw.trim().is_empty() {
+                return None;
+            }
+            let resolved = resolve_sample_path(sfz, &raw);
+            // 读不到 ⇒ `None` ⇒ 回退内存正弦（原因已进 cache，渲染完由
+            // `sample_failures` 如实报出）。
+            cache.get(&resolved).ok()
+        })
+    };
+    let span = usize::try_from(note.frames.max(1)).unwrap_or(0);
+    let mut mono = vec![0.0_f32; span];
+    let (written, kind) = if builtin_silence {
+        // `mono` 全是 0.0；写 `span` 帧等价于"这个音符真的响，但样本值为 0"。
+        (span, NoteSampleKind::BuiltinSilence)
+    } else if let Some(reading) = &file_sample {
+        // ⭐ 文件样本的步进比按**它自己的**采样率换算（`yeban-sfz` 的
+        // `playback_rate` = `pitch_ratio * sample_hz / engine_hz`），与
+        // `yeban-engine::SfzInstrument::render_note_into` 的
+        // `RenderRates::new(source.sample_hz, engine_hz)` **同一口径**。
+        let file_rate =
+            region.playback_rate(note.pitch, RenderRates::new(reading.sample_hz, engine_hz));
+        (
+            render_pcm_into(reading.pcm.as_slice(), file_rate, gain, &mut mono),
+            NoteSampleKind::FileSample,
+        )
+    } else {
+        // 样本长度 = 这个音符的时值（外加一个淡出尾巴）⇒ 内存正弦在整段时值里都有
+        // 数据可播。为什么按音符造：读到样本末尾就停的语义下，用一个固定 1 秒的
+        // 样本会让长音符在第 1 秒之后静音（那是**静默的错误音频**）。
+        let want = note.frames.saturating_add(NOTE_FADE_FRAMES).max(1);
+        let sample_frames = usize::try_from(want.min(8_000_000)).unwrap_or(0).max(2);
+        let sample = InMemorySfzSample::sine(tone_hz, engine_hz, sample_frames);
+        (
+            render_pcm_into(&sample.pcm, rate, gain, &mut mono),
+            NoteSampleKind::SineFallback,
+        )
+    };
+    Some(NoteWave {
+        mono,
+        written,
+        region_index,
+        looping,
+        kind,
+    })
+}
+
+/// 一条**采样器轨**（`TrackV3.sampler`）的已就绪产物：每音符一段单声道 PCM。
+///
+/// 全部在**构造期**算完（读盘 / 解析 / 内插都在离线控制侧，`[ARCH-RT-001]` 的同一条
+/// 纪律：`render_block` 里⛔ 不读盘）。
+pub(super) struct PreparedSampler {
+    /// 逐音符的 `(起始帧, 单声道 PCM)`（PCM 已含区域增益；⛔ 不含轨增益）。
+    pub notes: Vec<(u64, Vec<f32>)>,
+    /// 音符总数（含没匹配到区域的）。
+    pub notes_total: u64,
+    /// 没匹配到区域的音符数。
+    pub notes_unmatched: u64,
+    /// 落在要求循环的区域上的音符数（本实现不展开 ⇒ 只响一遍）。
+    pub notes_looping: u64,
+    /// 用文件样本发声的音符数。
+    pub notes_using_file_sample: u64,
+    /// 回退内存正弦的音符数。
+    pub notes_using_sine_fallback: u64,
+    /// 落在内建静音区域上的音符数。
+    pub notes_using_builtin_silence: u64,
+    /// SFZ 的区域总数。
+    pub regions: usize,
+    /// 内建静音（`sample=*silence`）区域数。
+    pub silent_regions: usize,
+    /// 真的读到的样本文件来源（升序去重）。
+    pub sample_sources: Vec<String>,
+    /// 读失败的样本文件（升序去重）。
+    pub sample_failures: Vec<String>,
+    /// 累计解码帧数。
+    pub sample_frames_loaded: u64,
+    /// ⭐ 命中的区域里**声明了 `ampeg_*`**（非缺省值）的个数。
+    ///
+    /// ⚠ 本渲染器（[`note_wave`]）**不**应用 SFZ 的幅度包络 —— 它只取区域选择 /
+    /// 播放速率 / 总增益 / 样本数据。缺省 `ampeg_*`（attack/hold/decay/release 全 0、
+    /// sustain 100）等于"无包络" ⇒ 这些区域的输出与引擎路径**逐位相同**；
+    /// 一旦作者真的写了 `ampeg_*`，两条路就分叉 ⇒ 这个读数让
+    /// `yeban_render_master` 能把 `sfzRegionEnvelope` 登记进 `unsupported`
+    /// （第 324 条：已知不支持项必须能列出来，⛔ 不许"心知肚明地不报"）。
+    pub regions_with_envelope: u64,
+}
+
+/// 用一份已解析的 SFZ 把一组 `(起始帧, 时值帧, 音高, 力度)` 造成**每音符一段 PCM**。
+///
+/// `tone_hz` 只服务"没有文件样本时的内存正弦回退"（与 [`render`] 同一口径）。
+pub(super) fn prepare_sampler(
+    instrument: &Instrument<'_>,
+    notes: &[(u64, u64, u8, u8)],
+    tone_hz: f32,
+    engine_hz: f32,
+    sfz_path: Option<&Path>,
+) -> PreparedSampler {
+    let mut cache = SampleCache::new();
+    let mut prepared = PreparedSampler {
+        notes: Vec::with_capacity(notes.len()),
+        notes_total: u64::try_from(notes.len()).unwrap_or(u64::MAX),
+        notes_unmatched: 0,
+        notes_looping: 0,
+        notes_using_file_sample: 0,
+        notes_using_sine_fallback: 0,
+        notes_using_builtin_silence: 0,
+        regions: instrument.regions().len(),
+        silent_regions: instrument
+            .regions()
+            .iter()
+            .filter(|region| region.is_builtin_silence())
+            .count(),
+        sample_sources: Vec::new(),
+        sample_failures: Vec::new(),
+        sample_frames_loaded: 0,
+        regions_with_envelope: 0,
+    };
+    for &(start, frames, pitch, velocity) in notes {
+        let note = SfzNote {
+            start_frame: start,
+            frames,
+            pitch,
+            velocity,
+            // ⛔ 采样器轨的左右增益是**轨级**的（`volume_db`/`mute`/`solo`），
+            // 由 `render::SamplerTrackSource` 乘在这一段之外。
+            gain_l: 1.0,
+            gain_r: 1.0,
+        };
+        let Some(wave) = note_wave(instrument, &note, tone_hz, engine_hz, sfz_path, &mut cache)
+        else {
+            prepared.notes_unmatched = prepared.notes_unmatched.saturating_add(1);
+            continue;
+        };
+        if wave.looping {
+            prepared.notes_looping = prepared.notes_looping.saturating_add(1);
+        }
+        // ⭐ 区域级**幅度包络**：本渲染器不应用（见字段文档）⇒ 如实数出来。
+        if let Some(region) = instrument.regions().get(wave.region_index)
+            && region_declares_envelope(region)
+        {
+            prepared.regions_with_envelope = prepared.regions_with_envelope.saturating_add(1);
+        }
+        match wave.kind {
+            NoteSampleKind::BuiltinSilence => {
+                prepared.notes_using_builtin_silence =
+                    prepared.notes_using_builtin_silence.saturating_add(1);
+            }
+            NoteSampleKind::FileSample => {
+                prepared.notes_using_file_sample =
+                    prepared.notes_using_file_sample.saturating_add(1);
+            }
+            NoteSampleKind::SineFallback => {
+                prepared.notes_using_sine_fallback =
+                    prepared.notes_using_sine_fallback.saturating_add(1);
+            }
+        }
+        prepared.notes.push((start, wave.mono));
+    }
+    let mut sources: Vec<String> = cache
+        .entries_iter()
+        .filter_map(|(_, entry)| entry.as_ref().ok().map(|reading| reading.describe.clone()))
+        .collect();
+    sources.sort_unstable();
+    sources.dedup();
+    let mut failures: Vec<String> = cache
+        .entries_iter()
+        .filter_map(|(path, entry)| {
+            entry
+                .as_ref()
+                .err()
+                .map(|reason| format!("unreadable({}): {reason}", path.display()))
+        })
+        .collect();
+    failures.sort_unstable();
+    failures.dedup();
+    prepared.sample_sources = sources;
+    prepared.sample_failures = failures;
+    prepared.sample_frames_loaded = cache.frames_loaded();
+    prepared
+}
+
+/// 该区域是否**声明了** SFZ 的幅度包络（`ampeg_*` 非缺省值）。
+///
+/// 缺省值由 `yeban-sfz` 的 `AMPEG_*` 常量钉住：attack/hold/decay/release 全 `0`、
+/// sustain `100`（= 全程保持）⇒ 那是"没有包络"，⛔ 不算声明。
+#[must_use]
+fn region_declares_envelope(region: &Region<'_>) -> bool {
+    region.ampeg_attack > 0.0
+        || region.ampeg_hold > 0.0
+        || region.ampeg_decay > 0.0
+        || region.ampeg_release > 0.0
+        || region.ampeg_sustain < 100.0
 }
 
 /// 把**一个**区域渲染进 `out`（`+=` 叠加），返回实际写入的帧数。

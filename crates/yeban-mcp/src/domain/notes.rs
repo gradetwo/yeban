@@ -748,7 +748,7 @@ use yeban_model::{
     AssetHash, AutomationLane, AutomationTarget, AutomationValueDomain, AutomationWriteMode,
     ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId,
     LaunchQuantization, LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind,
-    SceneV3, SectionV3, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
+    SamplerBinding, SceneV3, SectionV3, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
 
 use super::error::{Fault, from_model};
@@ -995,6 +995,7 @@ pub const OP_KINDS: &[&str] = &[
     SET_DEVICE_BYPASSED_KIND,
     SET_CLIP_PLACEMENT_MUTED_KIND,
     SET_TRACK_COLOR_KIND,
+    SET_TRACK_SAMPLER_KIND,
     SET_CLIP_PLACEMENT_DURATION_KIND,
     SET_AUTOMATION_LANE_KIND,
     REMOVE_AUTOMATION_POINT_KIND,
@@ -1017,7 +1018,7 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 35 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 36 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
 pub const ENVELOPE_CLIP_KINDS: &[&str] = &["add", "delete", "move", "velocity", REMOVE_CLIP_KIND];
@@ -1035,7 +1036,7 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &["add", "delete", "move", "velocity", 
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 35 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 36 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity"];
@@ -1642,6 +1643,36 @@ pub const SET_TRACK_COLOR_FIELDS: [&str; 3] = [
     "kind",
     SET_TRACK_COLOR_TRACK_FIELD,
     SET_TRACK_COLOR_COLOR_FIELD,
+];
+
+/// `ops[].kind` 的**绑定采样器**形态名（写 [`Op::SetTrackSampler`]，⭐ 任务单 `#221`）。
+///
+/// ⚠ ⭐ **它补上的缺口是 `#220` 的缺陷 ①**：在它之前 `TrackV3::sampler` 在**工具面**
+/// 完全不可达 —— `tools/list` 的 22 个工具与 `yeban_edit_notes` 当时的 **35** 个
+/// kind 里一个 `sampler` 字段都没有，于是 `setTrackSampler` 只能报
+/// `INVALID_PARAMETER_RANGE` / `未知 kind: setTrackSampler`，而**模型里
+/// `Op::SetTrackSampler` 早就存在**（`crates/yeban-model/src/ops.rs`）。
+pub const SET_TRACK_SAMPLER_KIND: &str = "setTrackSampler";
+
+/// 绑定采样器形态的**目标音轨**字段名（`ops[].trackId`，必填，ULID）。
+pub const SET_TRACK_SAMPLER_TRACK_FIELD: &str = "trackId";
+
+/// 绑定采样器形态的**采样器路径**字段名（`ops[].sampler`，**必填**，非空字符串或 `null`）。
+///
+/// ⚠ `null` = **解绑**（回到"这条轨不用采样器"）—— 模型的 `None` 是**一等状态**；
+/// ⚠ **缺键 ⛔ 不等于解绑**（本形态是单字段设值、⛔ 不是合并式 patch）。
+///
+/// ⚠ ⭐ **本层不发明路径语义**：不查存在性、不查扩展名、不规范化 —— 与
+/// [`SamplerBinding`] 的字段文档逐字同口径（模型把路径当留痕字符串）。
+/// "这个路径读不到"由**渲染**那一侧响亮拒绝（`RENDER_FAILED` / `samplerUnreadable`），
+/// ⛔ 不在解析期猜。
+pub const SET_TRACK_SAMPLER_SAMPLER_FIELD: &str = "sampler";
+
+/// 绑定采样器形态允许出现的**全部**键（判别键 + 目标音轨 + 采样器路径）。
+pub const SET_TRACK_SAMPLER_FIELDS: [&str; 3] = [
+    "kind",
+    SET_TRACK_SAMPLER_TRACK_FIELD,
+    SET_TRACK_SAMPLER_SAMPLER_FIELD,
 ];
 
 /// `ops[].kind` 的**设置摆放长度**形态名（写 [`Op::SetClipPlacementDuration`]）。
@@ -2548,6 +2579,29 @@ pub enum NoteOp {
         /// 修改后的色标（`None` = 清除 = 回到主题默认色）。
         new_color: Option<String>,
     },
+    /// 给一条音轨**绑定采样器**（[`Op::SetTrackSampler`]，寻址到一条音轨）。
+    ///
+    /// ⭐ **本形态补上了什么**（`#221`，验收 `#220` 的缺陷 ①）：⭐ 在它之前
+    /// `TrackV3::sampler` 在**工具面完全不可达** —— 模型里 `Op::SetTrackSampler` 早就
+    /// 存在（`#76` / `crates/yeban-model/src/ops.rs`），`yeban-app` 侧也有构造先例
+    /// （`bridge.rs` 的 `instrument_install_ops_on` ＋ `#210` 的 `--track-sampler`），
+    /// 但 22 个工具 / 36 个 kind 里**一个 `sampler` 字段都没有** ⇒ 唯一能"设采样器"的
+    /// 办法是删轨重建（会换掉 `EntityId`，连带丢掉设备链 / 自动化 / 路由边）。
+    ///
+    /// ⚠ **载荷是路径字符串 + 可空**：⭐ `null` = **解绑**（回"这条轨不用采样器"）；
+    /// ⭐ **缺键 ⛔ 不等于解绑**（单字段设值、⛔ 不是合并式 patch）。
+    /// ⚠ 本层⛔ **不发明路径语义**（不查存在性 / 不查扩展名 / 不规范化）—— 与
+    /// [`SamplerBinding`] 的字段文档同口径；"这个路径读不到"由**渲染**响亮拒绝。
+    /// 撤销载荷 `old_sampler` 由 [`compile`] 从**当前文档**读 ⇒ ⛔ 不信调用方。
+    /// ⛔ 不碰 `id` / `name` / `kind` / `color` / `devices` / 混音标量 / 其它轨。
+    SetTrackSampler {
+        /// 目标音轨。
+        track_id: EntityId,
+        /// 修改前的绑定（来自当前文档；`None` = 该轨本来不用采样器）。
+        old_sampler: Option<SamplerBinding>,
+        /// 修改后的绑定（`None` = 解绑）。
+        new_sampler: Option<SamplerBinding>,
+    },
     /// 切换**摆放静音**（[`Op::SetClipPlacementMuted`]，寻址到一条音轨上的一个摆放）。
     ///
     /// ⭐ **本形态补上了什么**：⭐ 在它之前 `ClipPlacement::muted` **只在创建时**能给
@@ -3031,6 +3085,7 @@ impl NoteOp {
             Self::SetDeviceBypassed { .. } => SET_DEVICE_BYPASSED_KIND,
             Self::SetClipPlacementMuted { .. } => SET_CLIP_PLACEMENT_MUTED_KIND,
             Self::SetTrackColor { .. } => SET_TRACK_COLOR_KIND,
+            Self::SetTrackSampler { .. } => SET_TRACK_SAMPLER_KIND,
             Self::SetClipPlacementDuration { .. } => SET_CLIP_PLACEMENT_DURATION_KIND,
             Self::SetLane { .. } => SET_AUTOMATION_LANE_KIND,
             Self::RemovePoint { .. } => REMOVE_AUTOMATION_POINT_KIND,
@@ -3471,6 +3526,32 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
                 },
             })
         }
+        SET_TRACK_SAMPLER_KIND => {
+            reject_set_track_sampler_fields(object)?;
+            Ok(NoteOp::SetTrackSampler {
+                track_id: read_id(object, SET_TRACK_SAMPLER_TRACK_FIELD)?,
+                // ⚠ `old_sampler` 是**占位**：真值由 `compile` 从当前文档读。
+                old_sampler: None,
+                new_sampler: match object.get(SET_TRACK_SAMPLER_SAMPLER_FIELD) {
+                    // ⚠ **缺键 ≠ 解绑**：本形态是单字段设值 ⇒ 缺键响亮拒绝。
+                    None => {
+                        return Err(missing(
+                            SET_TRACK_SAMPLER_SAMPLER_FIELD,
+                            "非空字符串或 null（null 表示解绑、这条轨回到不用采样器）",
+                        ));
+                    }
+                    Some(Value::Null) => None,
+                    Some(value) => Some(SamplerBinding {
+                        path: read_non_empty_string(
+                            SET_TRACK_SAMPLER_KIND,
+                            value,
+                            SET_TRACK_SAMPLER_SAMPLER_FIELD,
+                            "trackSamplerMustBeNonEmptyString",
+                        )?,
+                    }),
+                },
+            })
+        }
         SET_CLIP_PLACEMENT_MUTED_KIND => {
             reject_set_clip_placement_muted_fields(object)?;
             Ok(NoteOp::SetClipPlacementMuted {
@@ -3886,6 +3967,21 @@ fn reject_set_track_color_fields(object: &Map<String, Value>) -> Result<(), Faul
         &SET_TRACK_COLOR_FIELDS,
         SET_TRACK_COLOR_KIND,
         "unknownSetTrackColorField",
+    )
+}
+
+/// 拒绝 `setTrackSampler` 里 [`SET_TRACK_SAMPLER_FIELDS`] 之外的键。
+///
+/// 与 [`reject_set_track_color_fields`] 同一口径（"拼错的键必须被拒绝，⛔ 不能静默
+/// 忽略"）：最像"写对了"的两种错法是把工具**顶层**的 `trackId` 当成载荷的一部分
+/// 再写一遍，或把路径写成 `path` / `sfzPath` —— 两种都会被静默忽略，而调用方以为
+/// 采样器已经绑上（这正是 `#220` 缺陷 ① 的形状：**静默不生效**）。
+fn reject_set_track_sampler_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_TRACK_SAMPLER_FIELDS,
+        SET_TRACK_SAMPLER_KIND,
+        "unknownSetTrackSamplerField",
     )
 }
 
@@ -6384,6 +6480,30 @@ pub fn compile(
                     new_color: new_color.clone(),
                 }
             }
+            NoteOp::SetTrackSampler {
+                track_id,
+                new_sampler,
+                ..
+            } => {
+                // 撤销载荷来自**当前文档**（模型的前置条件只查"陈旧载荷"这一条，
+                // `Option<SamplerBinding>` 逐字节比对）。
+                let track = project.track(track_id).map_err(|_| {
+                    Fault::domain_with_data(
+                        ErrorCode::EntityNotFound,
+                        format!("工程里没有身份 {track_id} 的音轨, 没有采样器可以绑"),
+                        serde_json::json!({
+                            "trackId": track_id.to_canonical_string(),
+                            "reason": "trackNotFound",
+                            "hint": "音轨的身份由 `yeban_query_project` 的 `tracks` 字段报出",
+                        }),
+                    )
+                })?;
+                Op::SetTrackSampler {
+                    track_id: *track_id,
+                    old_sampler: track.sampler.clone(),
+                    new_sampler: new_sampler.clone(),
+                }
+            }
             NoteOp::SetClipPlacementMuted {
                 track_id,
                 placement_id,
@@ -8878,7 +8998,7 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 35);
+        assert_eq!(OP_KINDS.len(), 36);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -13626,7 +13746,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 35] = [
+        let table: [(&str, serde_json::Value); 36] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -13720,6 +13840,11 @@ mod tests {
                 "setTrackColor",
                 serde_json::json!({"trackId": ulid, "color": "#22AA88"}),
             ),
+            // ⭐ `#221`：采样器绑定形态（`null` 与字符串两种载荷都合法；这里取字符串）。
+            (
+                "setTrackSampler",
+                serde_json::json!({"trackId": ulid, "sampler": "/x/inst.sfz"}),
+            ),
             (
                 "setClipPlacementDuration",
                 serde_json::json!({
@@ -13788,6 +13913,7 @@ mod tests {
                 "setDeviceBypassed",
                 "setClipPlacementMuted",
                 "setTrackColor",
+                "setTrackSampler",
                 "setClipPlacementDuration",
                 "setAutomationLane",
                 "removeAutomationPoint",
@@ -13822,7 +13948,7 @@ mod tests {
                 "解析出来的 `NoteOp` 必须回环到同一个 `kind`"
             );
             // ⭐ `#177` 坑④：发布的"读顶层 `clipId` 的 kind 清单"必须与谓词**在全部
-            // 35 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
+            // 36 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
             // 全集，谓词是 `compile` 真正用的那一份）。任一方向漂移都会在这里变红：
             // 清单里多一个 ⇒ `reads_envelope_clip` 为 `false`；谓词里多一个而清单
             // 没跟上 ⇒ 清单漏报（调用方会以为它不需要，而 `compile` 会读）。
@@ -14157,7 +14283,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 36] = [
+        let rows: [Row<'_>; 37] = [
             (
                 "add",
                 None,
@@ -14445,15 +14571,25 @@ mod tests {
                                           "name": "Probe"}}),
                 "SetScene",
             ),
+            // ⭐ `#221`：`setTrackSampler` ⇒ `Op::SetTrackSampler`（这条行同时钉住
+            // "工具面真的有采样器绑定通路"，而 `#220` 缺陷 ① 正是"没有"）。
+            (
+                "setTrackSampler",
+                None,
+                None,
+                serde_json::json!({"trackId": track.to_canonical_string(),
+                                   "sampler": "/samples/dsmolken-double-bass.sfz"}),
+                "SetTrackSampler",
+            ),
         ];
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "28 个 kind ＋ 1 个额外载荷分支"
+            "36 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
-        // ⭐ `#179`：在**全部 35 个 kind**上对账 `is_note_level()` 与发布的
+        // ⭐ `#179`：在**全部 36 个 kind**上对账 `is_note_level()` 与发布的
         // `NOTE_LEVEL_KINDS`（⛔ 不是手抄的第二份清单，也不是"断言它非空"）。
         let mut note_level_seen: Vec<&str> = Vec::new();
         for (label, clip_override, preset, payload, expected) in rows {
@@ -14497,7 +14633,7 @@ mod tests {
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
         // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 36);
+        assert_eq!(seen.len(), 37);
         // ⭐ `#179`：收窄后的音符级分支集合**恰好是四个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
@@ -14507,7 +14643,7 @@ mod tests {
         assert_eq!(
             note_level_seen.len(),
             4,
-            "全部 35 个 kind 里 `is_note_level()` 为真的必须**恰好四个**，实际: {note_level_seen:?}"
+            "全部 36 个 kind 里 `is_note_level()` 为真的必须**恰好四个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

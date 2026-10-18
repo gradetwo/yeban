@@ -1448,3 +1448,200 @@ fn two_processes_render_the_same_wav_bytes() {
         second["data"]["bwf"]["originationTime"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#221`：**stdio 装配**（真二进制）也能绑采样器并把它渲染出来
+// ---------------------------------------------------------------------------
+//
+// 这是"两条装配都要验"里的 stdio 那一半：内嵌装配（`mcp_mount::session_dispatcher`）
+// 那一半住在 `crates/yeban-app/src/mcp_mount/embedded_sampler.rs`。
+//
+// 量什么（对象 ＋ 单位）：
+// - `data.sha256`：母带文件字节的 SHA-256（64 位十六进制）；
+// - `data.peak.before`：抖动/量化之前的浮点母带峰值（满刻度线性幅度）；
+// - `data.sources[].sampler.label`：与 `--export-wav` 同形的 `sfz(...)` 读数行。
+
+/// 手写一份 24-bit 单声道 PCM WAV（常量值；⛔ 不用被测写入器自证）。
+fn write_constant_wav_24(path: &std::path::Path, value: f64, frames: usize, sample_rate: u32) {
+    let scaled = (value * ((1_i32 << 23) - 1) as f64).round() as i32;
+    let mut data = Vec::with_capacity(frames * 3);
+    for _ in 0..frames {
+        data.extend_from_slice(&scaled.to_le_bytes()[..3]);
+    }
+    let mut out = Vec::with_capacity(44 + data.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&u32::try_from(36 + data.len()).expect("小").to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * 3).to_le_bytes());
+    out.extend_from_slice(&3_u16.to_le_bytes());
+    out.extend_from_slice(&24_u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&u32::try_from(data.len()).expect("小").to_le_bytes());
+    out.extend_from_slice(&data);
+    std::fs::write(path, &out).expect("写常量样本夹具");
+}
+
+/// 写一份**绑了采样器**的真容器工程，返回 `(工程路径, 期望的 sfz 读数行前缀)`。
+fn write_sampler_container_project(name: &str) -> PathBuf {
+    let dir = scratch().join("sampler-e2e");
+    std::fs::create_dir_all(&dir).expect("建采样器夹具目录");
+    write_constant_wav_24(&dir.join("tone.wav"), 0.5, 48_000, 48_000);
+    std::fs::write(
+        dir.join("tone.sfz"),
+        "<region> sample=tone.wav lokey=0 hikey=127 pitch_keycenter=60\n",
+    )
+    .expect("写 SFZ 夹具");
+    let mut project = yeban_model::samples::filled_project();
+    let track_id = project
+        .tracks
+        .values()
+        .find(|track| {
+            track.kind == yeban_model::TrackKind::Midi
+                && track.clips.values().any(|placement| {
+                    project
+                        .clip_pool
+                        .get(&placement.clip_id)
+                        .is_some_and(|entry| entry.content.notes().is_some())
+                })
+        })
+        .expect("样本工程必须有一条带音符的 MIDI 轨")
+        .id;
+    project.tracks.get_mut(&track_id).expect("轨").sampler = Some(yeban_model::SamplerBinding {
+        path: dir.join("tone.sfz").display().to_string(),
+    });
+    project.validate().expect("夹具工程必须合法");
+    let history = serde_json::to_vec(&CommitGraph::new()).expect("空图谱 JSON");
+    let bytes = write_project_container(&project, &history, &BTreeMap::new()).expect("写真容器");
+    let path = scratch().join(name);
+    std::fs::write(&path, bytes).expect("写容器工程");
+    path
+}
+
+/// ⭐ 判据 5（stdio 腿）：**真二进制**读一份绑了采样器的容器工程，`yeban_render_master`
+/// 的读数里必须出现 per-track `sfz(...)`，且峰值/字节与"未绑"的那一份不同。
+///
+/// 注入（实测红）：让 `build_source` 忽略 `TrackV3.sampler`（= `#220` 缺陷 ②）
+/// ⇒ `sources[].sampler` 全是 `null`、`unsupported=[]`、且两次渲染逐字节相同。
+#[test]
+fn the_stdio_binary_really_renders_a_bound_sampler() {
+    let bound = write_sampler_container_project("sampler-bound.yeban");
+    let plain = write_container_project("sampler-plain.yeban");
+    let out_bound = scratch().join("sampler-bound.wav");
+    let out_plain = scratch().join("sampler-plain.wav");
+
+    let res = session(&[
+        req(
+            1,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": bound.display().to_string()},
+            }),
+        ),
+        req(
+            2,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_render_master",
+                "arguments": {
+                    "format": "wav",
+                    "sampleRate": 48000,
+                    "path": out_bound.display().to_string(),
+                },
+            }),
+        ),
+        // ⚠ 必须先关掉前一个会话：同一个会话里**不能**并开两份工程
+        // （`CONFLICT`，实测：不关的话 `open` 失败、第二次 `render` 会**继续渲染
+        // 第一份**，于是两次 sha256 逐字节相同 —— 那会让本判据变成假绿）。
+        req(
+            3,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_close_project",
+                "arguments": {},
+            }),
+        ),
+        req(
+            4,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_open_project",
+                "arguments": {"path": plain.display().to_string()},
+            }),
+        ),
+        req(
+            5,
+            "tools/call",
+            serde_json::json!({
+                "name": "yeban_render_master",
+                "arguments": {
+                    "format": "wav",
+                    "sampleRate": 48000,
+                    "path": out_plain.display().to_string(),
+                },
+            }),
+        ),
+    ]);
+
+    assert_eq!(
+        res[2]["result"]["status"], "success",
+        "关闭前一个会话必须成功: {}",
+        res[2]["result"]
+    );
+    assert_eq!(
+        res[3]["result"]["status"], "success",
+        "打开未绑采样器的工程必须成功: {}",
+        res[3]["result"]
+    );
+    // 5 行请求 ⇒ 5 行响应（notification 一条都没有）。
+    assert_eq!(res.len(), 5, "响应条数必须等于请求条数");
+    let bound_result = &res[1]["result"];
+    let plain_result = &res[4]["result"];
+    assert_eq!(bound_result["status"], "success", "{bound_result}");
+    assert_eq!(plain_result["status"], "success", "{plain_result}");
+    let sha_bound = bound_result["data"]["sha256"].as_str().expect("sha256");
+    let sha_plain = plain_result["data"]["sha256"].as_str().expect("sha256");
+    let peak_bound = bound_result["data"]["peak"]["before"]
+        .as_f64()
+        .expect("peak");
+    let peak_plain = plain_result["data"]["peak"]["before"]
+        .as_f64()
+        .expect("peak");
+    let label = bound_result["data"]["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .find(|source| !source["sampler"].is_null())
+        .unwrap_or_else(|| panic!("stdio 腿必须报出 per-track 采样器读数: {bound_result}"))
+        ["sampler"]["label"]
+        .as_str()
+        .expect("label")
+        .to_owned();
+    println!("### stdio 腿 sha256（逐字）: 绑={sha_bound} 未绑={sha_plain}");
+    println!("### stdio 腿峰值: 绑={peak_bound:.9} 未绑={peak_plain:.9}");
+    println!("### stdio 腿 per-track 读数（逐字）: {label}");
+
+    assert_ne!(sha_bound, sha_plain, "绑了采样器的导出必须真的不同");
+    assert_ne!(
+        peak_bound.to_bits(),
+        peak_plain.to_bits(),
+        "峰值必须真的不同"
+    );
+    assert!(
+        label.starts_with("sfz(tracks=1 regions=1 samples=1 silent=0"),
+        "per-track 读数形状必须与 --export-wav 同形: {label}"
+    );
+    assert!(label.contains("missing=[]"), "不得有缺失样本: {label}");
+    assert!(
+        !bound_result["data"]["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|key| key == "sfzSampler"),
+        "采样器已经真的被渲染 ⇒ 不许再报 sfzSampler"
+    );
+}

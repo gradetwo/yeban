@@ -940,3 +940,6 @@ pub fn publish_token(token: &BearerToken) -> Result<PathBuf, MountError> {
 // `session_dispatcher`（同一个符号，⛔ 不复制装配）。只在 `cargo test` 下编译。
 #[cfg(test)]
 mod embedded_sfz_tools;
+// ⭐ `#221`：**采样器绑定 ＋ 渲染**的内嵌装配判据（与 CLI 导出腿并排比读数）。
+#[cfg(test)]
+mod embedded_sampler;

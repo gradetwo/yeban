@@ -41,7 +41,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 /// 黄金表：每个 `Op` 变体**必须**在哪些工具模块里有一个构造点。
 ///
 /// 读法：删掉任一处登记的构造点 ⇒ 本判据红。
-pub const EXPECTED_SITES: [(&str, &[&str]); 43] = [
+pub const EXPECTED_SITES: [(&str, &[&str]); 44] = [
     ("AddNote", &["domain/notes.rs"]),
     ("DeleteNote", &["domain/notes.rs"]),
     ("MoveNote", &["domain/notes.rs"]),
@@ -124,6 +124,10 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 43] = [
     // ⚠ 本轮补登记：它在 `domain/notes.rs` 的 `compile` 臂有构造点，
     // 此前**只是漏登记**（由 `mod-mcp` 实测发现）。见本文件新增的反向断言。
     ("SetTransportConfig", &["domain/notes.rs"]),
+    // ⭐ `#221`：`SetTrackSampler` 从下面的 `KNOWN_UNREACHABLE` **移到这里** ——
+    // `domain/notes.rs` 的 `parse_one` / `compile` 现在有它的构造点
+    // （`NoteOp::SetTrackSampler` ⇒ `Op::SetTrackSampler`），工具面因此**可达**。
+    ("SetTrackSampler", &["domain/notes.rs"]),
 ];
 
 /// **模型里有、而工具面**确实**没有构造点**的 `Op` 变体（显式欠账清单）。
@@ -133,24 +137,17 @@ pub const EXPECTED_SITES: [(&str, &[&str]); 43] = [
 /// 就要**如实登记**，⛔ 不许为了过判据而伪造一个构造点。
 ///
 /// ⚠ 每一条都必须带理由；清空它意味着"工具面覆盖了模型全集"。
-const KNOWN_UNREACHABLE: [(&str, &str); 1] = [
-    // ⚠ 本轮（任务单 `#77`）**不再为空**：模型 `#76`（`20b3987d`）新增
-    // `Op::SetTrackSampler`（`TrackV3.sampler` 的单字段 setter）⇒ 本清单登记一条。
+///
+/// ⭐ `#221`：本清单**重新清空** —— 最后一条欠账 `SetTrackSampler` 还完了
+/// （`yeban_edit_notes` 的 `setTrackSampler` 有 `parse_one` / `compile` 构造点，
+/// 已移进上面的 `EXPECTED_SITES`）。判据仍双向守着：谁把一条**可达**的变体塞回这里，
+/// 或把一条**不可达**的变体写进 `EXPECTED_SITES`，都会红。
+const KNOWN_UNREACHABLE: [(&str, &str); 0] = [
+    // ⭐ 历史（不再有活条目，保留形状让下一条欠账有地方登记）：
+    // - `#77` 登记 `SetTrackSampler`（"工具面还没有采样器绑定通路"）；
+    // - `#221` 还清它 —— 工具面现在有通路，因此这条理由**已经不成立**，必须删掉。
     //
-    // ⭐ 选**甲**（登记欠账）、⛔ 不选乙（补 `setTrackSampler` 的 `OP_KINDS` ＋
-    // `parse_one` 臂 ＋ 构造点 ＋ 帮助文本）：工具面**确实没有**采样器绑定通路；
-    // 模型面字段已就位（`#76`）、工具面由 `mod-mcp` 后续补。乙是**更大的单**
-    // （含参数校验／边界／错误文案／golden 表）⇒ 另开单，⛔ 不在此伪造一个构造点。
-    //
-    // ⚠ 该条由本文件末尾的反向判据**双向**守住：一旦工具面补上通路却忘了删本条，
-    // 或模型删掉该变体，都会红。
-    (
-        "SetTrackSampler",
-        "工具面还没有采样器绑定通路；模型面字段已就位（#76）、工具面由 mod-mcp 后续补",
-    ),
-    // ⭐ 历史: 本清单**曾经清空过一次**（`SetTempo`／`SetAuthor`／`SetAsset`（步 ②）／
-    // `RemoveAsset`（步 ③）四条欠账由线补齐后删掉）。**清空**意味着"工具面覆盖了
-    // 模型全集"，而那条反向判据会替我们守住它 —— ⭐ 清空**不是**被绕过，而是欠账真的还完了。
+    // ⭐ 更早还清过的四条：`SetTempo` / `SetAuthor` / `SetAsset`（步 ②）/ `RemoveAsset`（步 ③）。
 ];
 // ⭐ 历史: 本清单的清空**是证明过的**（临时加回一条 ⇒ 反向断言逐字报"`SetTempo` 既在
 // `KNOWN_UNREACHABLE` 又在 `EXPECTED_SITES` ⇒ 两处矛盾，请二选一" ⇒ 然后恢复）。
@@ -411,8 +408,8 @@ fn every_op_variant_has_a_registered_construction_site() {
     assert_eq!(names.len(), EXPECTED_SITES.len(), "变体名不得重复");
     assert_eq!(
         names.len(),
-        43,
-        "登记表有 43 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
+        44,
+        "登记表有 44 条（⭐ 它**不是**模型变体数 —— 模型全集由 \
          `every_model_op_variant_is_registered_or_declared_unreachable` 管）"
     );
 }

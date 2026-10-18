@@ -33,7 +33,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（字面 `json!` 第一层键，含顺序） | 141 | 635 | `253f0aefe6db0c060c82e5445934a6bf2cf265392f4ab08642f0bf9ea2538dc4` |
+//! | `reason`（字面 `json!` 第一层键，含顺序） | 142 | 642 | `3b2d33b502f837264bca1905720f494721ce2a9a4add6b52ad15d6bb2e43ff45` |
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -42,7 +42,7 @@ use yeban_mcp::undo_session::read_rust_sources;
 
 /// 本轮开工基线上**生产区**里出现的全部 `reason` 字面量（排序）。
 /// 这是黄金表：任何改名 / 新增 / 删除都必须**故意**改这一行。
-pub const GOLDEN_REASONS: [&str; 137] = [
+pub const GOLDEN_REASONS: [&str; 138] = [
     "assetChannelLayout",
     "assetDecodeFailed",
     "assetHashMismatch",
@@ -122,6 +122,7 @@ pub const GOLDEN_REASONS: [&str; 137] = [
     "routingEdgeNotFound",
     "routingNodeAlreadyExists",
     "routingNodeNotFound",
+    "samplerUnreadable",
     "sceneAlreadyExists",
     "sceneNameRequiredWhenCreating",
     "sceneNotFound",
@@ -487,7 +488,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 137] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 138] = [
     (
         "assetChannelLayout",
         &[
@@ -758,6 +759,11 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 137] = [
     ("sfzParseFailed", &["parser", "reason"]),
     ("sfzPathIsDirectory", &["path", "reason"]),
     ("sfzReadFailed", &["ioError", "path", "reason"]),
+    // ⭐ `#221`：音轨绑定的采样器定义文件读不到/解析不了（渲染期唯一的新 reason）。
+    (
+        "samplerUnreadable",
+        &["cause", "hint", "path", "reason", "resolvedPath", "tried"],
+    ),
     (
         "staticLaneNotApplicable",
         &["allowed", "field", "reason", "received"],
@@ -1323,12 +1329,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 规范形式：**文件按路径排序** → 每个 `reason` 按**首次出现**顺序 →
 /// 每个键按**源码顺序**（只收字面 `json!` 对象第一层的键）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "253f0aefe6db0c060c82e5445934a6bf2cf265392f4ab08642f0bf9ea2538dc4";
+    "3b2d33b502f837264bca1905720f494721ce2a9a4add6b52ad15d6bb2e43ff45";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 141;
+pub const REASON_SURFACE_REASONS: usize = 142;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 635;
+pub const REASON_SURFACE_LINES: usize = 642;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///

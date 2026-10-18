@@ -13,7 +13,7 @@
 //! | [`an_unknown_field_selector_is_refused_loudly`] | `fields:["notAField"]` | 1 个 `code` + 1 份 `availableSelectors` |
 //! | [`the_undo_cursor_and_the_undo_readback_are_the_same_number`] | 同一会话两处读数 | **2 对**数字（1/1 与 0/0） |
 //! | [`proposal_not_found_lists_the_known_proposals`] | 坏 `proposalId` 的 merge | `knownProposals` 里的**真 id 出现次数**（1） |
-//! | [`every_ops_branch_publishes_the_envelope_clip_rule`] | `ops.items.oneOf` 的 35 个分支 | 分支数（35）+ 逐分支 `x-envelope.clipId` |
+//! | [`every_ops_branch_publishes_the_envelope_clip_rule`] | `ops.items.oneOf` 的 36 个分支 | 分支数（35）+ 逐分支 `x-envelope.clipId` |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_177 -- --nocapture`
 

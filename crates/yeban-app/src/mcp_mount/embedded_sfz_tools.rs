@@ -63,12 +63,12 @@ const INJECTED_NOW_MS: u64 = 1_760_000_000_000;
 const MIXED_SFZ: &str = "<region> key=60 sample=*silence\n<region> key=72 sample=tone.wav\n";
 
 /// 临时夹具目录（`Drop` 删掉自己；工作树里不留临时文件）。
-struct Scratch {
+pub(super) struct Scratch {
     dir: PathBuf,
 }
 
 impl Scratch {
-    fn new(tag: &str) -> Self {
+    pub(super) fn new(tag: &str) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "yeban-app-embed-sfz-{tag}-{}-{}",
             std::process::id(),
@@ -79,11 +79,16 @@ impl Scratch {
         Self { dir }
     }
 
-    fn join(&self, name: &str) -> PathBuf {
+    pub(super) fn join(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
 
-    fn write_sfz(&self, name: &str, body: &str) -> PathBuf {
+    /// 夹具目录本身（CLI 腿把它当 `project_dir` 传进去）。
+    pub(super) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub(super) fn write_sfz(&self, name: &str, body: &str) -> PathBuf {
         let path = self.join(name);
         std::fs::write(&path, body).expect("写 SFZ 夹具");
         path
@@ -97,7 +102,7 @@ impl Drop for Scratch {
 }
 
 /// **手写**一份常量值的 24-bit 单声道 WAV（⛔ 不用被测写入器自证）。
-fn write_constant_wav(path: &Path, value: f64, frames: usize, sample_rate: u32) {
+pub(super) fn write_constant_wav(path: &Path, value: f64, frames: usize, sample_rate: u32) {
     let scaled = (value * ((1_i32 << 23) - 1) as f64).round() as i32;
     let mut data = Vec::with_capacity(frames * 3);
     for _ in 0..frames {
@@ -126,7 +131,7 @@ fn write_constant_wav(path: &Path, value: f64, frames: usize, sample_rate: u32) 
 /// ⚠ 与 `#218` 同一条理由：`filled_project()` 的第 4 个音符（`pitch=72`）带
 /// `probability=Some(0.75)` ⇒ 固定 `rng_seed` 下会挑一个随机结果；清掉之后
 /// `pitch=72` 必然触发，正对照才不会红在"没有音符被排程"。
-fn project_without_note_probability() -> YebanProjectV1 {
+pub(super) fn project_without_note_probability() -> YebanProjectV1 {
     let mut project = filled_project();
     for clip in project.clip_pool.values_mut() {
         if let ClipContent::Midi { notes } = &mut clip.content {
@@ -144,7 +149,7 @@ fn fixture_sfz(scratch: &Scratch) -> PathBuf {
 }
 
 /// ⭐ **内嵌装配本体**：只调 [`session_dispatcher`]（生产路径的同一个符号）。
-fn embedded(scratch: &Scratch, read_only: bool) -> Dispatcher {
+pub(super) fn embedded(scratch: &Scratch, read_only: bool) -> Dispatcher {
     session_dispatcher(
         &project_without_note_probability(),
         &scratch.join("session.yeban"),
@@ -157,7 +162,7 @@ fn embedded(scratch: &Scratch, read_only: bool) -> Dispatcher {
 ///
 /// 只出现在**对照**里：判据 5 要证明两套装配给出同一批读数。⚠ 它不是被测对象 ——
 /// 被测对象永远是 [`embedded`]。
-fn stdio_shaped(scratch: &Scratch, now_ms: u64, read_only: bool) -> Dispatcher {
+pub(super) fn stdio_shaped(scratch: &Scratch, now_ms: u64, read_only: bool) -> Dispatcher {
     let mut dispatcher = Dispatcher::new(
         BearerToken::generate().token,
         ScopeSet::from_scopes([Scope::AppAdmin]),
@@ -175,12 +180,17 @@ fn stdio_shaped(scratch: &Scratch, now_ms: u64, read_only: bool) -> Dispatcher {
     dispatcher
 }
 
-fn bearer(dispatcher: &Dispatcher) -> String {
+pub(super) fn bearer(dispatcher: &Dispatcher) -> String {
     format!("Bearer {}", dispatcher.expected_token().expose())
 }
 
 /// 走**各自通道**的一条 `tools/call`：HTTP 带 Bearer，stdio 不带头（`LocalProcess`）。
-fn call_tool(dispatcher: &mut Dispatcher, channel: Channel, name: &str, arguments: Value) -> Value {
+pub(super) fn call_tool(
+    dispatcher: &mut Dispatcher,
+    channel: Channel,
+    name: &str,
+    arguments: Value,
+) -> Value {
     let authorization = (channel == Channel::Http).then(|| bearer(dispatcher));
     let line = json!({
         "jsonrpc": "2.0",

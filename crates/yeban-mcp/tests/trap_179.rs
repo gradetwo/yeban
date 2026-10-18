@@ -426,7 +426,7 @@ fn the_four_note_forms_are_byte_identical_on_a_midi_clip() {
 /// 且它与"读顶层 `clipId` 的清单"的包含关系成立（四个音符形态必然是 `clipId`
 /// 的消费者；池级 `removeClip` 读 `clipId` 却**不**读音符）。
 ///
-/// ⚠ 谓词与清单在**全部 35 个 kind**上的对账住在 `src/domain/notes.rs` 的
+/// ⚠ 谓词与清单在**全部 36 个 kind**上的对账住在 `src/domain/notes.rs` 的
 /// `every_catalog_kind_compiles_to_exactly_one_op_variant`（那里才有 kind → 规范
 /// 形状的完整表）。本判据钉住**发布面**的逐字值。
 ///

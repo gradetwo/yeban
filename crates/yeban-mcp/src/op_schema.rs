@@ -476,6 +476,21 @@ pub fn ops_items() -> Value {
                 true,
             ),
             op(
+                "setTrackSampler",
+                "给一条音轨绑定采样器定义文件（`null` = 解绑）。⚠ 这是**模型里早就有、工具面此前不可达**的那条路（`Op::SetTrackSampler` ⇒ `TrackV3.sampler`）；`yeban_render_master` 会**真的**用它发声（与 app 的 `--track-sampler` 同一条音源）",
+                &["kind", "trackId", "sampler"],
+                json!({
+                    "kind": kind("setTrackSampler"),
+                    "trackId": id("目标音轨身份"),
+                    "sampler": {
+                        "type": ["string", "null"],
+                        "minLength": 1,
+                        "description": "非空字符串 = SFZ 定义文件路径（原样留痕，不查存在性）；null = 解绑（缺键 ≠ 解绑）",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "setClipPlacementMuted",
                 "切换一条摆放的静音",
                 &["kind", "trackId", "placementId", "muted"],
