@@ -1384,6 +1384,17 @@ impl ElementRegistry {
             &instrument_reason_label,
             false,
         );
+        // ⭐ 任务单 `#211`：点击之后的**运行期回执**（"检查中…" / "已装上" / "装不了：…"）。
+        // ⚠ 它不是投影：`ViewState` 不携带它，初始态是空串 ⇒ 注册表给一句稳定的占位
+        // （⛔ 不能是空字面量，见 `no_accessible_name_may_be_the_empty_literal`）；
+        // 运行时树里的真实文本由控件树的 `label` 读。
+        registry.add(
+            "instrument-install-status",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            "装乐器的运行期回执（点击后出现；投影不携带）",
+            false,
+        );
         // ⭐ 任务单 `#196`：采样库的下载入口 ＋ 逐字提示（未安装 / 运行期回执）。
         registry.add(
             "sample-library-download-button",

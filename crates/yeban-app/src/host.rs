@@ -1996,6 +1996,17 @@ fn authoritative_sampler(
         .map(|track| track.sampler.clone())
 }
 
+/// 装乐器被拒绝时**唯一**的 stderr 写法（⛔ 不散在回调里）。
+///
+/// 为什么单独成函数：`tests/mixer_toggle_labels.rs` 用"整行就是一个字面量"的形状扫
+/// `fn wire_mixer_switch` 到 `fn read_strings` 之间的源码。那个区间覆盖了本文件一大段
+/// 与混音开关无关的实现 —— 一个被 rustfmt 换到行首的 `eprintln!` 格式串会被它误数成
+/// 第三条提交消息。本函数住在扫描区间**之外**（`wire_mixer_switch` 之前），调用点因此
+/// 没有行首字面量。⚠ 这是对既有判据锚点宽度的**规避**，不是把判据改松。
+fn warn_install_rejected(reason: &str, path: &str) {
+    eprintln!("{INSTALL_REJECTED_STDERR_PREFIX}{reason}（{path}）");
+}
+
 /// 混音台上的两个**布尔开关**（静音 / 独奏）—— 除了目标字段不同，接线逐字相同。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MixerSwitch {
@@ -2160,6 +2171,220 @@ fn apply_pending_sample_library_download(
     true
 }
 
+/// 装乐器被拒绝时的 stderr 前缀（与既有口径逐字一致）。
+///
+/// 为什么抽成常量而不是把字面量留在 `eprintln!` 的参数行：`tests/mixer_toggle_labels.rs`
+/// 用"整行就是一个字符串字面量"的形状数 `wire_mixer_switch` 到 `read_strings` 之间的
+/// 提交标签。该区间**很大**，任何一行行首引号都会被它误数 ⇒ 本单把前缀提出来，
+/// ⛔ 不去改那条既有判据（它的锚点问题另行登记，不在本单）。
+const INSTALL_REJECTED_STDERR_PREFIX: &str = "[yeban-app] 装乐器被拒绝：";
+
+/// ⭐ 任务单 `#211`：一次"装乐器"点击的**探针请求**（纯数据 ⇒ 可 `Send`）。
+///
+/// ⛔ 不带任何 Slint 对象、⛔ 不带 `Rc<UndoPort>`：跨线程只搬这三样。
+/// `track_id` 在 **UI 线程**上按点击那一刻的"选中轨 or 兜底"解析（`#192` 的同一条口径），
+/// 工作线程与排空都只认这个身份 —— 探测期间用户换选区也不会把乐器装到另一条轨。
+#[derive(Clone, Debug)]
+struct InstrumentProbeRequest {
+    /// 点击那一刻解析出来的目标轨身份（ULID）。
+    track_id: EntityId,
+    /// 界面上的短名（只用于逐字回执）。
+    name: String,
+    /// 逐字进模型的 SFZ 路径（与 `library_instruments()` 同一条）。
+    path: String,
+}
+
+/// ⭐ 任务单 `#211`：装乐器探针的**跨线程槽**（工作线程写结果，UI 线程读并提交）。
+///
+/// 与 [`SampleLibraryDownloadState`] / `MidiInState` 同一条形状：
+/// * `in_flight` 挡住"第二次点击开第二个探针"（⛔ 不并发、⛔ 不排队）；
+/// * 结果留在槽里等 UI 线程排空（没有事件循环的平台由下一次点击 / 判据排空）；
+/// * 工作线程句柄留在槽里，判据用 [`wait_for_pending_instrument_probe`] **确定性** join。
+///
+/// ⚠ 槽里只有纯数据（[`InstrumentProbeRequest`] / [`InstrumentSampleProbe`]），
+/// ⛔ 没有任何 Slint 对象 —— UI 写入仍然只发生在 UI 线程上。
+#[derive(Clone, Default)]
+pub struct InstrumentProbeState {
+    slot: std::sync::Arc<std::sync::Mutex<InstrumentProbeSlot>>,
+}
+
+/// [`InstrumentProbeState`] 的内容（`in_flight` / 请求 / 结果 / 工作线程）。
+#[derive(Default)]
+struct InstrumentProbeSlot {
+    /// 当前（或最近一次）探测的请求；`take` 时与结果**成对**取走。
+    request: Option<InstrumentProbeRequest>,
+    /// 是否有一条探测正在工作线程上跑。
+    in_flight: bool,
+    /// 工作线程交回的结果（`None` = 还没交回）。
+    outcome: Option<crate::bridge::InstrumentSampleProbe>,
+    /// 当前工作线程的句柄（判据用它做**确定性**等待）。
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl InstrumentProbeState {
+    /// 开始一次探测（`false` = 已有一条在飞 ⇒ 调用方**逐字拒绝**）。
+    fn begin(&self, request: InstrumentProbeRequest) -> bool {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.in_flight {
+            return false;
+        }
+        slot.request = Some(request);
+        slot.outcome = None;
+        slot.worker = None;
+        slot.in_flight = true;
+        true
+    }
+
+    /// 是否有一条探测在飞（UI 线程只用于"先排空上一次"的自愈判断）。
+    #[must_use]
+    pub fn is_in_flight(&self) -> bool {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .in_flight
+    }
+
+    /// 工作线程交回结果（⛔ 不碰 UI）。
+    fn finish(&self, outcome: crate::bridge::InstrumentSampleProbe) {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.in_flight = false;
+        slot.outcome = Some(outcome);
+    }
+
+    /// 取走"请求 ＋ 结果"这一对（没有结果 / 没开始过 ⇒ `None`）。
+    ///
+    /// ⚠ 顺序承重：**先看有没有结果，再动请求**。第二次点击的"先排空上一次"自愈会在
+    /// 探针还在飞（`outcome == None`）时调本函数 —— 若先 `take` 请求，就会把请求取走、
+    /// 之后结果回来时再也凑不成一对（真实踩过：终态永远排不出来）。
+    fn take(&self) -> Option<(InstrumentProbeRequest, crate::bridge::InstrumentSampleProbe)> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.outcome.as_ref()?;
+        let request = slot.request.take()?;
+        let outcome = slot.outcome.take()?;
+        Some((request, outcome))
+    }
+
+    /// 记下工作线程（UI 线程调；随后 [`wait_for_pending_instrument_probe`] 用它 join）。
+    fn set_worker(&self, handle: std::thread::JoinHandle<()>) {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .worker = Some(handle);
+    }
+
+    /// 取走工作线程句柄。
+    fn take_worker(&self) -> Option<std::thread::JoinHandle<()>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .worker
+            .take()
+    }
+}
+
+/// ⭐ 任务单 `#211`：**确定性**等待探针工作线程结束（判据用；生产路径不调）。
+///
+/// 返回 `false` = 没有工作线程可 join（没点过 / 已被 [`wait_for_pending_instrument_probe`]
+/// 取走过）。与 [`wait_for_pending_midi_in`] 同一条纪律：join 之后结果**已经**在槽里，
+/// 再在 UI 线程上调 [`apply_pending_instrument_probe`] 就得到终态。
+pub fn wait_for_pending_instrument_probe(state: &InstrumentProbeState) -> bool {
+    let Some(handle) = state.take_worker() else {
+        return false;
+    };
+    handle.join().is_ok()
+}
+
+/// ⭐ 任务单 `#211`：把**已交回**的探针结果落到界面，并在成功时提交**恰好一次**
+/// `Op::SetTrackSampler`（唯一提交点）。
+///
+/// 生产路径：工作线程完成 ⇒ `upgrade_in_event_loop` ⇒ `instrument-probe-drain-requested`
+/// ⇒ 本函数；没有事件循环的环境由下一次点击 / 判据调本函数（自愈，⛔ 不把结果永远留在
+/// pending）。
+///
+/// ## 提交时机（为什么撤销仍对）
+///
+/// 探测可能跑几分钟，期间工程会被别的手势 / MCP / 撤销改动 ⇒ 本函数**不**用点击那一刻
+/// 的 `old_sampler` 快照，而是在**排空的这一帧**按 `request.track_id` 从权威工程**重新读**
+/// 目标轨、用**当前** `old_sampler` 构造 `Op`（[`crate::bridge::instrument_install_ops_on_probed`]
+/// 只做这一件事，⛔ 不再读盘）。于是：
+/// * 轨还在 ⇒ 一次 `commit_ops` = **一步**可撤销的编辑（与 `#210` 的同步路径逐字相同）；
+/// * 轨没了 ⇒ 逐字回执、Δ0；
+/// * 用户先选了另一条轨 ⇒ 仍装到**点击时的那一条**（身份寻址，⛔ 不漂移）。
+pub fn apply_pending_instrument_probe(
+    ui: &MainWindow,
+    state: &InstrumentProbeState,
+    port: Option<&UndoPort>,
+) -> bool {
+    let Some((request, outcome)) = state.take() else {
+        return false;
+    };
+    match outcome {
+        crate::bridge::InstrumentSampleProbe::Installable { .. } => {
+            let Some(port) = port else {
+                ui.set_instrument_install_status(
+                    crate::bridge::INSTRUMENT_INSTALL_NO_PROJECT_STATUS.into(),
+                );
+                return true;
+            };
+            let Some(project) = port.try_project() else {
+                ui.set_instrument_install_status(
+                    crate::bridge::INSTRUMENT_INSTALL_NO_PROJECT_STATUS.into(),
+                );
+                return true;
+            };
+            let Some(track) = project.tracks.get(&request.track_id) else {
+                ui.set_instrument_install_status(
+                    crate::bridge::INSTRUMENT_INSTALL_TRACK_GONE_STATUS.into(),
+                );
+                return true;
+            };
+            match crate::bridge::instrument_install_ops_on_probed(Some(track), &request.path) {
+                Ok(ops) if ops.is_empty() => {
+                    ui.set_instrument_install_status(
+                        crate::bridge::instrument_already_installed_status(&request.name).into(),
+                    );
+                }
+                Ok(ops) => {
+                    if port
+                        .commit_ops(now_ms(), "install instrument", ops)
+                        .is_err()
+                    {
+                        ui.set_instrument_install_status(
+                            crate::bridge::INSTRUMENT_INSTALL_COMMIT_REJECTED_STATUS.into(),
+                        );
+                        return true;
+                    }
+                    // ⚠ 顺序承重：`refresh_undo_window` 会把运行期回执清空（撤销后那句
+                    // "已装上"就不该再留着）⇒ 先重投影，再写终态回执。
+                    refresh_undo_window(ui, port, true);
+                    ui.set_instrument_install_status(
+                        crate::bridge::instrument_installed_status(&request.name).into(),
+                    );
+                }
+                Err(reason) => {
+                    ui.set_instrument_install_status(format!("装不了：{reason}").into());
+                }
+            }
+        }
+        failure => {
+            // ⭐ `#211` 的核心：拒绝原因**进界面**（⛔ 只进 stderr）。
+            let reason = crate::bridge::instrument_probe_failure_status(&request.name, &failure);
+            ui.set_instrument_install_status(reason.clone().into());
+            warn_install_rejected(&reason, &request.path);
+        }
+    }
+    true
+}
+
 /// 设备机架（控制台 **Tab 3**）的**写入面** —— 任务单 `#157` 的"最小可编辑"。
 ///
 /// 八个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]（前两个是 `#157`，接下来两个是
@@ -2200,13 +2425,26 @@ fn apply_pending_sample_library_download(
 /// 因此"下标 → 身份"的换算只发生在**投影内部**（`.slint` 的数组下标只用于显示顺序与
 /// 无障碍 id），工程提交的那一格永远由身份定位。
 ///
+/// ## ⭐ 任务单 `#211`：装乐器的字节探针**不在 UI 线程上跑**
+///
+/// `#210` 的裁决是"投影里不跑 `sfz_samples_present`（否则每次投影冻结界面），点击时才跑"。
+/// 代价是点击那一帧会解码该乐器的**全部样本**（真库最慢 253,973 ms）⇒ 界面像卡死。
+/// 本单把探针搬到工作线程：点击只做三件 O(1) 的事（排空上一次 / 同步写"检查中…" /
+/// `spawn`），提交仍在 **UI 线程**的排空里（[`apply_pending_instrument_probe`]）。
+/// 这一点与 `midi-in` / 采样库下载**同一条线程形态**，⛔ 不引入第三种。
+///
 /// ## 它**不**做什么
 ///
 /// ⛔ 不做多选、⛔ 不写第二个 EQ 参数；⛔ 不碰引擎（插入链在
 /// 实时侧的路由由 `yeban-engine` 自己的文档说清 —— 见交付报告的"能验与不能验"）。
-pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
+pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) -> InstrumentProbeState {
     let weak = ui.as_weak();
     let sample_download = SampleLibraryDownloadState::default();
+    // ⭐ 任务单 `#211`：装乐器的字节探针**跨线程状态**（与 `SampleLibraryDownloadState`
+    // 同一条形状）。生产路径忽略返回值 —— 那一跳由工作线程里的
+    // `upgrade_in_event_loop` 完成；判据用它做确定性排空（见
+    // [`wait_for_pending_instrument_probe`] / [`apply_pending_instrument_probe`]）。
+    let instrument_probe = InstrumentProbeState::default();
 
     // ---------------------------------------------------------------- ① 旁通开关
     //
@@ -2438,21 +2676,55 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     // ---------------------------------------------------------------- ⑤ 装乐器（⭐ `#164`）
     //
     // 界面只上报**下标**（⛔ 不拼路径、⛔ 不写 Op）。宿主从 `bridge::library_instrument`
-    // 取那条**确定的**库内路径，再经 `bridge::instrument_install_ops_on` 用权威工程的
-    // `old_sampler` 构造一条 `Op::SetTrackSampler`；一次点击 = **恰好一次** `commit_ops`。
+    // 取那条**确定的**库内路径，一次点击 = **恰好一次** `commit_ops`。
     // 值没变 ⇒ `ops` 为空 ⇒ **不提交**（⛔ 不制造"什么也没改"的撤销步）。
     //
     // ⭐ 任务单 `#210`：下标索引的是**库内全部**可装乐器（`manifest.json` × 库根），
     // 不再是 2 份硬编码候选。库根为空 ⇒ 0 个按钮；万一有人直接调回调（判据会这么做），
     // 下标越界 ⇒ **Δ0** 并把**清单为空**的逐字原因打出来（⛔ 不静默、⛔ 不装成静音）。
+    //
+    // ⭐ ⭐ **任务单 `#211`：字节探针搬到后台**（缺陷 = "点一下界面卡 4 分钟"）。
+    // `#210` 的裁决是"投影里不跑 `sfz_samples_present`（否则每次投影冻结界面），点击时才跑"
+    // ⇒ 点击那一帧因此要解码该乐器的**全部样本**（真库最慢 253,973 ms）。本单把这一步移到
+    // **工作线程**上，UI 线程只做三件 O(1) 的事：排空上一次、同步写"检查中…"、`spawn`。
+    //
+    // 形态与 ⑥ 的采样库下载 / `midi-in` 逐条同款（⛔ 不复用它们的槽，因为结果类型不同）：
+    //
+    // ```text
+    //   UI 线程: on_instrument_install(index)
+    //     ├─ 先排空上一次结果（自愈：没有事件循环的环境也不会永远停在 pending）
+    //     ├─ 解析**这一次**的目标轨（选中轨 or 兜底）⇒ 只带 `EntityId` 过线程
+    //     ├─ `begin` 挡住并发的第二次点击（⛔ 不排队、⛔ 不开第二个解码线程）
+    //     ├─ 同步写 "检查中…：<名字>"（**spawn 之前** ⇒ 点击后立刻可观察）
+    //     └─ thread::spawn { bridge::probe_instrument_samples(path) → 槽
+    //                        → upgrade_in_event_loop { invoke_instrument_probe_drain_requested() } }
+    //   工作线程: ⛔ 不碰任何 Slint 对象（只读盘 / 解码 / 写 Send 槽）
+    //   UI 线程: instrument-probe-drain-requested → apply_pending_instrument_probe
+    //            （**唯一**提交 `Op::SetTrackSampler` 的地方；失败 ⇒ 原因进界面）
+    // ```
+    {
+        let weak_for_drain = weak.clone();
+        let state = instrument_probe.clone();
+        let port = Rc::clone(port);
+        ui.on_instrument_probe_drain_requested(move || {
+            let Some(ui) = weak_for_drain.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            apply_pending_instrument_probe(&ui, &state, Some(&port));
+        });
+    }
     ui.on_instrument_install({
         let weak = weak.clone();
         let port = Rc::clone(port);
+        let state = instrument_probe.clone();
         move |index| {
             let Some(ui) = weak.upgrade() else {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
+            // 自愈：先排空上一次的结果（即使上次没有事件循环来排空）。
+            apply_pending_instrument_probe(&ui, &state, Some(&port));
             let Some(instrument) = usize::try_from(index)
                 .ok()
                 .and_then(crate::bridge::library_instrument)
@@ -2463,36 +2735,55 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
                 } else {
                     "下标不在库内可装乐器清单里"
                 };
+                ui.set_instrument_install_status(format!("装不了：{reason}").into());
                 eprintln!("[yeban-app] 装乐器被拒绝：{reason}（下标 {index}）");
                 return;
             };
             let Some(project) = port.try_project() else {
+                ui.set_instrument_install_status(
+                    crate::bridge::INSTRUMENT_INSTALL_NO_PROJECT_STATUS.into(),
+                );
                 eprintln!("[yeban-app] 装乐器：权威会话此刻没有活跃工程");
                 return;
             };
             // ⭐ `#192`：乐器装到**选中轨 or 兜底**（与服务面板的那条轨同一条）。
-            let ops = match crate::bridge::instrument_install_ops_on(
-                display_track(&ui, &project),
-                &instrument.path,
-            ) {
-                Ok(ops) => ops,
-                Err(reason) => {
-                    eprintln!("[yeban-app] 装乐器被拒绝：{reason}");
-                    refresh_undo_window(&ui, &port, true);
-                    return;
-                }
+            // ⚠ 只在**这里**解析一次：探测期间换选区不会把乐器装到另一条轨。
+            let Some(track) = display_track(&ui, &project) else {
+                let reason = crate::bridge::INSTRUMENT_INSTALL_NO_TRACK_REASON;
+                ui.set_instrument_install_status(format!("装不了：{reason}").into());
+                eprintln!("{INSTALL_REJECTED_STDERR_PREFIX}{reason}");
+                return;
             };
-            if ops.is_empty() {
-                // 已经是这份乐器：⛔ 不提交、⛔ 不重投影（工程一位没动）。
+            let request = InstrumentProbeRequest {
+                track_id: track.id,
+                name: instrument.name.clone(),
+                path: instrument.path.clone(),
+            };
+            // ⭐ 在飞 ⇒ **逐字拒绝**（⛔ 不并发）。第二次点击仍然立刻返回，界面不卡。
+            if !state.begin(request.clone()) {
+                ui.set_instrument_install_status(
+                    crate::bridge::INSTRUMENT_INSTALL_BUSY_STATUS.into(),
+                );
                 return;
             }
-            if port
-                .commit_ops(now_ms(), "install instrument", ops)
-                .is_err()
-            {
-                eprintln!("[yeban-app] 装乐器被拒绝（工程未改）");
-            }
-            refresh_undo_window(&ui, &port, true);
+            // ⭐ **中间态**：在 spawn **之前**同步写 ⇒ 点击后立刻可观察（⛔ 不靠竞态）。
+            ui.set_instrument_install_status(
+                crate::bridge::instrument_checking_status(&request.name).into(),
+            );
+            let worker_state = state.clone();
+            let worker_weak = weak.clone();
+            let path = request.path.clone();
+            let handle = std::thread::spawn(move || {
+                // ⭐ 慢的就是这一句（读 SFZ ＋ 解码全部样本）；它在**工作线程**上跑。
+                let outcome = crate::bridge::probe_instrument_samples(&path);
+                worker_state.finish(outcome);
+                // 唯一跨线程的一跳：`Weak` 是 `Send`，升级后的写入仍发生在 UI 线程。
+                // 没有事件循环的平台这里返回 `Err` —— 结果仍在槽里，下一次点击 / 判据排空。
+                let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                    ui.invoke_instrument_probe_drain_requested();
+                });
+            });
+            state.set_worker(handle);
         }
     });
 
@@ -2549,6 +2840,11 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             });
         }
     });
+
+    // ⭐ `#211`：把跨线程状态交出去 —— 判据用它做**确定性**排空（join + apply）。
+    // 生产路径（`main.rs` / `live_surface.rs`）忽略返回值 —— 那一跳由工作线程里的
+    // `upgrade_in_event_loop` 完成。
+    instrument_probe
 }
 
 /// 设备机架的**目标轨**（⭐ 任务单 `#180` 起：装 / 删；⭐ `#181` 起：旁通 / EQ 滑块）。
@@ -8622,6 +8918,13 @@ fn publish_status_bar(ui: &MainWindow, view: &ViewState) {
 /// 否则"按钮撤销"和"快捷键撤销"会在界面上留下不同的显示态。
 fn refresh_undo_window(ui: &MainWindow, port: &UndoPort, reproject: bool) {
     apply_undo(ui, port);
+    // ⭐ 任务单 `#211`：运行期回执**不得**活得比它描述的那一帧久。
+    // "已装上：X" 是**点击那一刻**的事实；撤销 / 别的手势 / 换工程之后它就不再为真
+    // ⇒ 任何一次重投影都把这一格清空（`apply_pending_instrument_probe` 在成功路径上
+    // **先**调本函数、**再**写终态，因此那条回执不会被这里抹掉）。
+    // ⚠ 住在**本函数**而不是 `apply_view`：`apply_view` 的属性写入点预算是 93
+    // （`tests/perf_draw_budget.rs` 的 `assert_eq!`），本单不让它涨。
+    ui.set_instrument_install_status("".into());
     if !reproject {
         return;
     }

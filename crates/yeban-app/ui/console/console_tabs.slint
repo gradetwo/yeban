@@ -120,6 +120,8 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> instrument-names: [];
     in property <bool> instrument-install-available: false;
     in property <string> instrument-install-reason: "";
+    /// ⭐ 任务单 `#211`：点击之后的运行期回执（非投影，宿主写；初始空串）。
+    in property <string> instrument-install-status: "";
     // ⭐ 采样库（任务单 `#196`）：投影的四个标量 ＋ 运行期下载状态，原样透传。
     in property <bool> sample-library-installed: false;
     in property <string> sample-library-notice: "";
@@ -520,6 +522,7 @@ export component ConsoleTabs inherits Rectangle {
         instrument-names: root.instrument-names;
         instrument-install-available: root.instrument-install-available;
         instrument-install-reason: root.instrument-install-reason;
+        instrument-install-status: root.instrument-install-status;
         // ⭐ 采样库（任务单 `#196`）：只透传，本组件不解释。
         sample-library-installed: root.sample-library-installed;
         sample-library-notice: root.sample-library-notice;

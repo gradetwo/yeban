@@ -187,6 +187,30 @@ fn main() -> ExitCode {
         };
     }
 
+    // ⭐ 任务单 `#211`：`--probe-instruments` 是**独立**的只读探针：不需要工程、
+    // 不进 GUI、不写任何文件，也不与任何其它开关组合（组合 = 用法错误，⛔ 不静默丢掉
+    // 别的开关）。与 `--inspect-logic` / `--migrate-groove` 同一条分流形状。
+    //
+    // ⚠ 它逐条**真的读盘解码**（与点击装乐器同一条判据）⇒ 真库全量一次约 10 分钟。
+    // 因此每一行算完就 `println!` + `flush`，而不是攒到最后 —— 让终端看得见进度。
+    if let Some(request) = cli::parse_probe_instruments(&args) {
+        return match request {
+            Ok(()) => {
+                use std::io::Write as _;
+                cli::run_probe_instruments(|line| {
+                    println!("{line}");
+                    // 管道 / 重定向时 stdout 是块缓冲的：不 flush 就看不见进度。
+                    let _ = std::io::stdout().flush();
+                });
+                ExitCode::from(cli::EXIT_OK)
+            }
+            Err(error) => {
+                eprintln!("yeban-app: {error}\n\n{}", cli::usage_text());
+                ExitCode::from(error.exit_code())
+            }
+        };
+    }
+
     let mut options = match cli::parse(&args) {
         Ok(options) => options,
         Err(error) => {

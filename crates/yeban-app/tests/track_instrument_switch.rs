@@ -23,6 +23,11 @@
 //! - ⛔ 不证 GUI 里的**鼠标点击**能触发：Tier-1 端口没有 `send_mouse_click`（上游 1.18.1 不存在），
 //!   本文件调的是生产同一个回调 `invoke_instrument_install`（与 `#164`/`#165` 的既有判据同款）；
 //! - ⛔ 不证 1920 基准帧：那是 Tab 0（本单只动 Tab 3）；读数见交付报告 §3。
+//!
+//! ⭐ **`#211` 起点击是异步的**：回调只起工作线程并写"检查中…"；提交发生在
+//! `instrument-probe-drain-requested` 的排空里。因此本文件用
+//! [`click_and_settle`]（`wait_for_pending_instrument_probe` ＋ `apply_pending_instrument_probe`）
+//! 做**确定性**排空，⛔ 不再假设"回调返回时工程已改"。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +37,7 @@ use std::sync::OnceLock;
 use slint::Model as _;
 
 use yeban_app::bridge::{ViewState, library_instrument_names, library_instruments};
-use yeban_app::host;
+use yeban_app::host::{self, InstrumentProbeState};
 use yeban_app::samples::SAMPLE_LIBRARY_ENV;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
@@ -208,10 +213,15 @@ fn project_with_two_tracks() -> (YebanProjectV1, EntityId, EntityId) {
 }
 
 /// 一条生产形态的 Tab 3 活窗口（接线走**生产同一个** `host::wire_device_rack`）。
+///
+/// ⭐ `#211` 起第三个返回值是**探针跨线程槽**：点击是异步的，判据必须
+/// [`wait_for_pending_instrument_probe`](yeban_app::host::wait_for_pending_instrument_probe)
+/// ＋ [`apply_pending_instrument_probe`](yeban_app::host::apply_pending_instrument_probe)
+/// 才能确定性地看到终态（与 `ui_module_actions_async.rs` 的 MIDI 手法同款）。
 fn live_window_with_undo(
     project: &YebanProjectV1,
     tag: &str,
-) -> (LivePort<MainWindow>, Rc<UndoPort>) {
+) -> (LivePort<MainWindow>, Rc<UndoPort>, InstrumentProbeState) {
     let view = ViewState::from_project(project).expect("投影");
     let port = Rc::new(UndoPort::new(
         UndoSession::open(
@@ -227,8 +237,24 @@ fn live_window_with_undo(
         host::build_main_window_with_console_tab(&view, &scene, 2)
     })
     .expect("Tier-1 平台 + 生产窗口构造入口");
-    host::wire_device_rack(live.ui(), &port);
-    (live, port)
+    let probe = host::wire_device_rack(live.ui(), &port);
+    (live, port, probe)
+}
+
+/// ⭐ `#211`：点一下 + **确定性**等后台探针跑完 + 在 UI 线程上排空。
+///
+/// 这就是生产路径（`upgrade_in_event_loop` → `instrument-probe-drain-requested`）在
+/// Tier-1 平台上的等价形态：那个平台**没有**事件循环代理，所以结果留在槽里，由判据排空。
+fn click_and_settle(ui: &MainWindow, probe: &InstrumentProbeState, port: &UndoPort, index: i32) {
+    ui.invoke_instrument_install(index);
+    assert!(
+        host::wait_for_pending_instrument_probe(probe),
+        "点第 {index} 条必须**立刻**起一个探针工作线程（⛔ 不在 UI 线程上解码）"
+    );
+    assert!(
+        host::apply_pending_instrument_probe(ui, probe, Some(port)),
+        "探针跑完之后必须有一个结果可排空（第 {index} 条）"
+    );
 }
 
 /// 运行时控件树（`[UI-DoD §3.6]` 的唯一载体）。
@@ -284,7 +310,7 @@ fn the_list_is_what_the_library_has_and_the_view_and_tree_follow_it() {
         "前三条名字逐字来自 manifest 的 `name`"
     );
 
-    let (live, port) = live_window_with_undo(&project, "#210 列表");
+    let (live, port, _probe) = live_window_with_undo(&project, "#210 列表");
     assert_eq!(
         live.ui().get_instrument_names().row_count(),
         3,
@@ -384,13 +410,13 @@ fn intersects(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
 fn clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
     let _library = fake_library();
     let (project, lead, bass) = project_with_two_tracks();
-    let (live, port) = live_window_with_undo(&project, "#210 点击");
+    let (live, port, probe) = live_window_with_undo(&project, "#210 点击");
 
     let before = port.display();
 
     // ---- ② 同一条选中轨：点 0 ⇒ A，点 1 ⇒ B（`sampler.path` 逐字）。
     select_track(live.ui(), lead);
-    live.ui().invoke_instrument_install(0);
+    click_and_settle(live.ui(), &probe, &port, 0);
     let after_a = port.project();
     assert_eq!(
         after_a.tracks.get(&lead).expect("Lead 在").sampler,
@@ -409,7 +435,7 @@ fn clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
         format!("乐器：{COWSYNTH_SFZ}")
     );
 
-    live.ui().invoke_instrument_install(1);
+    click_and_settle(live.ui(), &probe, &port, 1);
     let after_b = port.project();
     assert_eq!(
         after_b.tracks.get(&lead).expect("Lead 在").sampler,
@@ -434,7 +460,7 @@ fn clicking_instruments_switches_the_selected_track_only_and_undo_restores() {
 
     // ---- ③ 换到另一条轨：只有那条变。
     select_track(live.ui(), bass);
-    live.ui().invoke_instrument_install(0);
+    click_and_settle(live.ui(), &probe, &port, 0);
     let after_third = port.project();
     assert_eq!(
         after_third.tracks.get(&bass).expect("Bass 在").sampler,

@@ -210,6 +210,21 @@ pub const IMPORT_LOGIC_FEATURE: &str = "experimental-logic-import";
 /// （它不需要当前工程，也不该让别的开关与它组合后被静默丢掉）。
 pub const MIGRATE_GROOVE_SWITCH: &str = "--migrate-groove";
 
+/// ⭐ 任务单 `#211`：`--probe-instruments` 的字面值（"哪些能装"的**只读**读数）。
+///
+/// 它把库内 `manifest.json × 库根` 的每一条 SFZ 都跑一遍**字节探针**
+/// （`bridge::probe_instrument_samples` —— 与点击装乐器**同一条**判据，⛔ 不是
+/// `probe` 的内存正弦），逐条打印"可装 / 缺样本（N 个文件）/ SFZ 读不出来"，
+/// 最后一行给 `installable/total` 读数。
+///
+/// ⚠ **慢**：真库全量一次约 10 分钟（`#210` 实测 597,530 ms）。它是给人**偶尔**核对的
+/// 只读探针，⛔ 不进启动路径、⛔ 不进投影。
+///
+/// 与 `--inspect-logic` / `--migrate-groove` 同一条形状：**独立**命令，
+/// 在 [`parse`] **之前**分流，也不进 [`Options`]（它不需要工程，也不该让别的开关
+/// 与它组合后被静默丢掉）。
+pub const PROBE_INSTRUMENTS_SWITCH: &str = "--probe-instruments";
+
 /// `--theme` 的字面值（运行期调色板切换的**唯一**用户出口）。
 pub const THEME_SWITCH: &str = "--theme";
 
@@ -285,6 +300,12 @@ pub fn usage_text() -> String {
                            路径不存在 ⇒ 打印「跳过」并成功退出 (不红),
                            路径在但读不懂 ⇒ 报错 (退出码 {open});
                            本开关不与别的动作组合 (组合 = 用法错误)
+  --probe-instruments      【⭐ 任务单 #211】**只读**读数: 把库内 `manifest.json × 库根`
+                           的每一条 SFZ 逐条跑**字节探针** (与点击装乐器**同一条**判据,
+                           ⛔ 不是 `probe` 的内存正弦), 逐条打印可装 / 缺样本(逐字原因) /
+                           SFZ 读不出来, 最后一行给 total=… installable=… missing=…;
+                           ⚠ 慢: 真库全量一次约 10 分钟 (#210 实测 597,530 ms);
+                           **不写**库根 / 工程, 不开窗口; 不与别的参数组合 (组合 = 用法错误)
   --dump-elements          把语义元素注册表打印到 stdout (每行一个元素, 稳定顺序) [UI-TEST-001]
   --export-elements <path> 把同一份元素注册表**原子**写到文件, 便于脚本 / AI 消费;
                            与 --dump-elements 同时给 = 既打印又落盘
@@ -611,6 +632,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-logic out/Song.logicx
   yeban-app --open song.yeban --export-logic out/hello   # ⭐ 缺 `.logicx` 会补成 out/hello.logicx
   yeban-app --inspect-logic \"/Library/Application Support/Logic/Logic Pro X Demosongs\"
+  yeban-app --probe-instruments   # ⭐ 逐条读库内 SFZ 的样本字节 (约 10 分钟), 末尾给 total=
   yeban-app --print-theme
   yeban-app --theme material
   yeban-app --theme default
@@ -1628,6 +1650,12 @@ pub enum ParseError {
     /// 旧文件是**只读**输入：原地改写会在迁移失败时同时失去旧工程与新工程。
     /// 因此这在解析阶段就是用法错误，⛔ 不等到写盘时才判。
     MigrateGrooveSamePath,
+    /// ⭐ 任务单 `#211`：`--probe-instruments` 与别的参数组合了。
+    ///
+    /// 它是一条**独立**的只读读数：不打开工程、不进 GUI、不写任何文件。接受组合只会把
+    /// 被组合的开关**静默丢掉**（例如 `--probe-instruments --save-as x` 里 `x` 根本不会写）
+    /// —— 那正是本仓库最忌讳的假绿。payload 是第一个多余的参数。
+    ProbeInstrumentsConflict(String),
     /// `--wav-bit-depth` 的取值不是 `16` / `24` / `32f`。
     ///
     /// ⛔ 不接受 `32`：本仓只有 32-bit **浮点**一种 32 位容器，而 `32` 这个写法在
@@ -1772,6 +1800,11 @@ impl fmt::Display for ParseError {
                 formatter,
                 "`{MIGRATE_GROOVE_SWITCH}` 的输入与 `--save-as` 输出是同一个路径 ⇒ 拒绝 \
                  (旧文件只读, 绝不原地改写)"
+            ),
+            Self::ProbeInstrumentsConflict(other) => write!(
+                formatter,
+                "`{PROBE_INSTRUMENTS_SWITCH}` 是独立的只读读数, 不能与 `{other}` 组合 —— \
+                 接受它只会把 `{other}` 静默丢掉"
             ),
             Self::WavBitDepthInvalid(value) => write!(
                 formatter,
@@ -2448,6 +2481,50 @@ pub fn parse_migrate_groove(args: &[String]) -> Option<Result<(PathBuf, PathBuf)
         return Some(Err(ParseError::MigrateGrooveSamePath));
     }
     Some(Ok((input, output)))
+}
+
+/// 解析**独立**的 `--probe-instruments`（⭐ 任务单 `#211`）。
+///
+/// 返回：
+/// - `None`：argv 里没有这个开关（照常走 [`parse`]）；
+/// - `Some(Err(_))`：开关在但与别的参数组合了（⛔ 不静默丢掉别的开关）；
+/// - `Some(Ok(()))`：可以执行只读探针。
+///
+/// 为什么独立于 [`Options`]：探针不需要工程、不建窗口、不写文件，也不该与任何动作组合
+/// —— 与 `--inspect-logic` / `--migrate-groove` 同一条纪律。
+/// `--help` / `--version` 是短路命令：出现时返回 `None`，让 [`parse`] 按既有契约先打印。
+#[must_use]
+pub fn parse_probe_instruments(args: &[String]) -> Option<Result<(), ParseError>> {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+    {
+        return None;
+    }
+    let (first, inline) = args.iter().enumerate().find_map(|(index, argument)| {
+        if argument == PROBE_INSTRUMENTS_SWITCH {
+            Some((index, false))
+        } else {
+            argument
+                .strip_prefix(PROBE_INSTRUMENTS_SWITCH)
+                .filter(|rest| rest.starts_with('='))
+                .map(|_| (index, true))
+        }
+    })?;
+    // 这个开关**不接受取值**：`--probe-instruments=1` 是用法错误。
+    if inline {
+        return Some(Err(ParseError::UnexpectedValue(PROBE_INSTRUMENTS_SWITCH)));
+    }
+    if args.len() != 1 {
+        let extra = args
+            .iter()
+            .enumerate()
+            .find(|(index, _)| *index != first)
+            .map(|(_, argument)| argument.clone())
+            .unwrap_or_default();
+        return Some(Err(ParseError::ProbeInstrumentsConflict(extra)));
+    }
+    Some(Ok(()))
 }
 
 /// `--idle-seconds` 的取值：`1..=`[`MAX_IDLE_SECONDS`] 的**整数**秒。
@@ -3710,6 +3787,64 @@ pub fn run_inspect_logic(dir: &std::path::Path) -> Result<Vec<String>, CliError>
         .collect();
     lines.push(yeban_render::logic_read::LogicTotals::of(&inspections).report_line());
     Ok(lines)
+}
+
+/// ⭐ 任务单 `#211`：`--probe-instruments` 的**执行** —— 逐条跑字节探针并**立即**交出一行。
+///
+/// 为什么用回调而不是返回 `Vec<String>`：真库全量一次约 **10 分钟**（`#210` 实测
+/// 597,530 ms）。把 28 行全部攒到结束再打印，终端会安静 10 分钟 —— 那看起来正好像
+/// "卡死"。回调让每一行**算完就出去**，人能看见进度。
+///
+/// 输出契约（判据逐字断言）：
+/// * `lib: <库根>` —— 先声明这次读的是哪个库；
+/// * `instrument-ok: <名字> | <路径> | decoded=<n>` —— 可装；
+/// * `instrument-fail: <名字> | <路径> | <逐字原因>` —— 不可装（原因与界面**同一份核心
+///   措辞**，来自 [`crate::bridge::instrument_probe_failure_reason`]；终端里没有"右侧按钮"，
+///   因此界面那一层多加的"点右侧…"指引**不**出现在这里）；
+/// * `instrument-total: total=<n> installable=<n> missing=<n> unreadable=<n>` —— 最后一行。
+///
+/// 返回四元组 `(total, installable, missing, unreadable)`，判据不必解析文本。
+///
+/// ⚠ 只读：不写库根、不写工程、不开窗口。
+pub fn run_probe_instruments(mut emit: impl FnMut(String)) -> (usize, usize, usize, usize) {
+    emit(format!("lib: {}", crate::samples::library_root().display()));
+    let (mut installable, mut missing, mut unreadable) = (0_usize, 0_usize, 0_usize);
+    let instruments = crate::bridge::library_instruments();
+    let total = instruments.len();
+    for instrument in instruments {
+        match crate::bridge::probe_instrument_samples(&instrument.path) {
+            crate::bridge::InstrumentSampleProbe::Installable { decoded_samples } => {
+                installable += 1;
+                emit(format!(
+                    "instrument-ok: {} | {} | decoded={decoded_samples}",
+                    instrument.name, instrument.path
+                ));
+            }
+            outcome @ crate::bridge::InstrumentSampleProbe::MissingSamples { .. } => {
+                missing += 1;
+                emit(format!(
+                    "instrument-fail: {} | {} | {}",
+                    instrument.name,
+                    instrument.path,
+                    crate::bridge::instrument_probe_failure_reason(&instrument.name, &outcome)
+                ));
+            }
+            outcome @ crate::bridge::InstrumentSampleProbe::UnreadableSfz => {
+                unreadable += 1;
+                emit(format!(
+                    "instrument-fail: {} | {} | {}",
+                    instrument.name,
+                    instrument.path,
+                    crate::bridge::instrument_probe_failure_reason(&instrument.name, &outcome)
+                ));
+            }
+        }
+    }
+    emit(format!(
+        "instrument-total: total={total} installable={installable} missing={missing} \
+         unreadable={unreadable}"
+    ));
+    (total, installable, missing, unreadable)
 }
 
 /// 无窗口路径的执行：返回**它应当打印的每一行**（打印由 [`emit`] / [`finish`] 做）。

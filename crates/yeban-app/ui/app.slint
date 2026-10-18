@@ -729,6 +729,9 @@ export component MainWindow inherits Window {
     // （`host::wire_device_rack`）。
     /// 装第 `i` 份内置 SFZ 乐器（参数 = 内置清单下标）。
     callback instrument-install(int);
+    // ⭐ 任务单 `#211`：字节探针在工作线程上跑完 ⇒ 请求 UI 线程排空并提交。
+    // 与 `sample-library-download-drain-requested` / `midi-in-drain-requested` 同一条手法。
+    callback instrument-probe-drain-requested();
     // ⭐ **下载采样库**（任务单 `#196`）：唯一落点 `host::wire_device_rack`。
     // ⛔ 启动时不联网、⛔ 判据里不点它 —— 只有用户显式点击才跑取回脚本。
     /// 用户点了"下载采样库"（下载到程序预设的库根；体积约 9.4 GiB）。
@@ -907,6 +910,10 @@ export component MainWindow inherits Window {
     in property <[string]> instrument-names: [];
     in property <bool> instrument-install-available: false;
     in property <string> instrument-install-reason: "";
+    // ⭐ 任务单 `#211`：**点击之后的运行期回执**（"检查中…：X" / "已装上：X" /
+    // "装不了：缺样本（N 个文件）…"）。⛔ 不是投影：唯一写者是宿主（点击 / 排空回调），
+    // `apply_view` 不碰它（属性写入点预算 93 因此一位不动）。默认空串 ⇒ 初始帧不画它。
+    in property <string> instrument-install-status: "";
     // ⭐ 采样库（任务单 `#196`）：是否已按清单安装 ＋ 逐字提示 ＋ 下载按钮可见性 ＋ 预设路径。
     // 唯一写者是 `host::apply_view`（四个投影标量）与下载回调（`sample-library-status`）。
     in property <bool> sample-library-installed: false;
@@ -1365,6 +1372,7 @@ export component MainWindow inherits Window {
             instrument-names: root.instrument-names;
             instrument-install-available: root.instrument-install-available;
             instrument-install-reason: root.instrument-install-reason;
+            instrument-install-status: root.instrument-install-status;
             // ⭐ 采样库（任务单 `#196`）：四个投影标量 ＋ 运行期下载状态，原样透传。
             sample-library-installed: root.sample-library-installed;
             sample-library-notice: root.sample-library-notice;

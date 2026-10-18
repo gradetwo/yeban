@@ -2480,6 +2480,97 @@ pub const INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON: &str =
 pub const INSTRUMENT_INSTALL_NO_BUILTIN_REASON: &str =
     "仓内没有带样本的 SFZ（内置清单为空）；请用自带样本的 SFZ（Tab 1 的 SFZ 路径 ＋ SET）";
 
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#211`：点击之后的**运行期回执**文案（唯一格式化处）
+//
+// 为什么文案住在这里、而不是 `.slint` 里拼字符串：界面只负责显示一格 `string`；
+// "缺几份 / 下一步点哪里"是一条语义，不是布局。与 `#196` 的下载回执同一条纪律 ——
+// 宿主写**整串**，`.slint` 只 `text: root.instrument-install-status`。
+// ---------------------------------------------------------------------------
+
+/// 点击之后、后台线程还在读样本时的**中间态**前缀。
+pub const INSTRUMENT_INSTALL_CHECKING_PREFIX: &str = "检查中…：";
+
+/// 已经有一条探测在飞时的**逐字**回执（⛔ 不并发、⛔ 不静默丢掉第二次点击）。
+pub const INSTRUMENT_INSTALL_BUSY_STATUS: &str =
+    "检查中…：上一条还在后台读样本（⛔ 不并发；完成后再点）";
+
+/// 探测完成、但目标轨在这期间被删掉时的**逐字**回执。
+pub const INSTRUMENT_INSTALL_TRACK_GONE_STATUS: &str =
+    "装不了：目标轨已经不在了（工程在这期间变了）";
+
+/// 探测通过、但 `commit_ops` 被模型拒绝时的**逐字**回执。
+pub const INSTRUMENT_INSTALL_COMMIT_REJECTED_STATUS: &str = "装不了：提交被模型拒绝（工程未改）";
+
+/// 权威会话此刻没有活跃工程时的**逐字**回执。
+pub const INSTRUMENT_INSTALL_NO_PROJECT_STATUS: &str = "装不了：权威会话此刻没有活跃工程";
+
+/// 探测开始时的**中间态**整串（点击后**同步**写进界面 ⇒ 立刻可观察）。
+#[must_use]
+pub fn instrument_checking_status(name: &str) -> String {
+    format!("{INSTRUMENT_INSTALL_CHECKING_PREFIX}{name}（后台读样本，界面不卡）")
+}
+
+/// 装成功之后的整串回执。
+#[must_use]
+pub fn instrument_installed_status(name: &str) -> String {
+    format!("已装上：{name}")
+}
+
+/// 目标轨上**已经是**这份乐器（值没变 ⇒ 不提交、⛔ 不留空撤销步）时的回执。
+#[must_use]
+pub fn instrument_already_installed_status(name: &str) -> String {
+    format!("已经是这份乐器：{name}（工程未改）")
+}
+
+/// 字节级探测**失败**时的**核心原因**（⛔ 不含"点哪里"的界面指引）。
+///
+/// 界面与 CLI `--probe-instruments` **共用**这一份措辞：终端里没有"右侧的按钮"，
+/// 因此"下一步点哪里"只加在界面那一层（[`instrument_probe_failure_status`]）。
+///
+/// 三档缺样本口径**分开说**，⛔ 不合并成一句"缺样本"：
+/// 1. 有缺文件 ⇒ `缺样本（N 个文件）`；
+/// 2. 没缺文件但有静音区域 ⇒ `有 M 个区域没有样本`；
+/// 3. 两者都没有、却一份 PCM 都没解出 ⇒ `N 份样本都解不出 PCM`。
+#[must_use]
+pub fn instrument_probe_failure_reason(name: &str, outcome: &InstrumentSampleProbe) -> String {
+    match outcome {
+        InstrumentSampleProbe::Installable { .. } => String::new(),
+        InstrumentSampleProbe::UnreadableSfz => {
+            format!("装不了：{name} 的 SFZ 读不出来（文件不在库里或不是合法 SFZ）")
+        }
+        InstrumentSampleProbe::MissingSamples {
+            missing_files,
+            silent_regions,
+            decoded_samples,
+        } => {
+            if *missing_files > 0 {
+                format!("装不了：{name} 缺样本（{missing_files} 个文件）")
+            } else if *silent_regions > 0 {
+                format!("装不了：{name} 有 {silent_regions} 个区域没有样本")
+            } else {
+                format!("装不了：{name} 的 {decoded_samples} 份样本都解不出 PCM")
+            }
+        }
+    }
+}
+
+/// 字节级探测**失败**时的**界面整串**回执 —— ⭐ `#211` 的核心：拒绝原因进界面。
+///
+/// = [`instrument_probe_failure_reason`] ＋ 下一步指引。只有"缺样本（有具体缺失文件）"
+/// 那一档需要指路（右侧就是采样库下载按钮）；其余两档的下一步是"换一份 SFZ"，
+/// 已经写在原因里。
+#[must_use]
+pub fn instrument_probe_failure_status(name: &str, outcome: &InstrumentSampleProbe) -> String {
+    let reason = instrument_probe_failure_reason(name, outcome);
+    match outcome {
+        InstrumentSampleProbe::MissingSamples {
+            missing_files: 1.., ..
+        } => format!("{reason}—— 点右侧“下载采样库”补齐后重试"),
+        _ => reason,
+    }
+}
+
 /// 判"样本字节是否存在"时交给 [`crate::sfz_load::decode_sfz_plan`] 的引擎采样率。
 ///
 /// 它只影响 `InMemorySample` 的播放速率换算，⛔ 不影响"解没解出 PCM"这个判据；
@@ -2504,21 +2595,75 @@ const INSTRUMENT_PROBE_ENGINE_HZ: f32 = 48_000.0;
 /// * SFZ 文本本身读不到、路径哪都找不到、或文本非法 ⇒
 ///   [`INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON`]。
 pub fn sfz_samples_present(path: &str) -> Result<(), &'static str> {
+    match probe_instrument_samples(path) {
+        InstrumentSampleProbe::Installable { .. } => Ok(()),
+        InstrumentSampleProbe::MissingSamples { .. } => Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON),
+        InstrumentSampleProbe::UnreadableSfz => Err(INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON),
+    }
+}
+
+/// ⭐ 任务单 `#211`：一次字节级探测的**结构化**结果（⛔ 不是 `bool`）。
+///
+/// 为什么加这一层（而不是继续只回 `&'static str`）：界面要**逐字**说出
+/// "缺样本（N 个文件）"，而旧口径只够说"缺样本"这一句。缺的**数量**只有探测内部
+/// 读得到（`SfzDecodeReport::missing_sample_paths` 的长度）⇒ 在**唯一的**探测函数里
+/// 把它带出来，界面侧再做一次纯格式化即可 —— ⛔ 不重跑探测、⛔ 不另写第二份"找 wav"
+/// 的实现。
+///
+/// [`sfz_samples_present`] 仍是"可装 / 不可装"的**唯一**判据：它在这里只是把三种结果
+/// 折成既有那两句逐字原因（既有判据与 CLI 的 `--track-sampler` 一位不变）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentSampleProbe {
+    /// 每个区域都解出了 PCM、且没有任何缺样本 ⇒ **可装**。
+    Installable {
+        /// 真的解出的样本份数（只用于报告，⛔ 不是判据的替代）。
+        decoded_samples: usize,
+    },
+    /// 样本缺失 / 解不出 PCM ⇒ 不可装（装了会让本轨静音）。
+    MissingSamples {
+        /// `SfzDecodeReport::missing_sample_paths` 的条数（引擎口径的缺样本路径数）。
+        missing_files: usize,
+        /// `SfzDecodeReport::silent_region_count`（有区域没有样本）。
+        silent_regions: usize,
+        /// 真的解出的样本份数（可能是 0）。
+        decoded_samples: usize,
+    },
+    /// SFZ 文本本身读不到 / 路径解析不到 / 文本非法。
+    UnreadableSfz,
+}
+
+/// ⭐ 任务单 `#211`：**唯一**的字节级探测实现 —— [`sfz_samples_present`] 与后台线程、
+/// CLI `--probe-instruments` 全都调它。
+///
+/// 它做的事与 `#165` 的谓词**逐字节相同**（同一条 `resolve_sampler_path` ＋
+/// `decode_sfz_plan`），唯一区别是返回值带出了"缺几份 / 解出几份"这两个读数。
+/// ⚠ 它**读盘并解码全部样本**（库内最大一份 4,466 份）⇒ ⛔ 不许在 UI 线程 / 投影里调；
+/// 生产路径由 `host::wire_device_rack` 的**工作线程**调用（任务单 `#211`）。
+#[must_use]
+pub fn probe_instrument_samples(path: &str) -> InstrumentSampleProbe {
     let Ok(resolved) =
         crate::sfz_load::resolve_sampler_path(path, crate::sfz_load::SfzRoots::none())
     else {
-        return Err(INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON);
+        return InstrumentSampleProbe::UnreadableSfz;
     };
     match crate::sfz_load::decode_sfz_plan(&resolved, INSTRUMENT_PROBE_ENGINE_HZ) {
-        Ok((_plan, report))
+        Ok((_plan, report)) => {
             if report.decoded_samples > 0
                 && report.silent_region_count == 0
-                && report.missing_sample_paths.is_empty() =>
-        {
-            Ok(())
+                && report.missing_sample_paths.is_empty()
+            {
+                InstrumentSampleProbe::Installable {
+                    decoded_samples: report.decoded_samples,
+                }
+            } else {
+                InstrumentSampleProbe::MissingSamples {
+                    missing_files: report.missing_sample_paths.len(),
+                    silent_regions: report.silent_region_count,
+                    decoded_samples: report.decoded_samples,
+                }
+            }
         }
-        Ok(_) => Err(INSTRUMENT_INSTALL_NO_SAMPLES_REASON),
-        Err(_) => Err(INSTRUMENT_INSTALL_UNREADABLE_SFZ_REASON),
+        Err(_) => InstrumentSampleProbe::UnreadableSfz,
     }
 }
 
@@ -2687,6 +2832,25 @@ pub fn library_instrument(index: usize) -> Option<LibraryInstrument> {
     library_instruments().get(index).cloned()
 }
 
+/// ⭐ 任务单 `#211`：一次“哪些能装”的**只读**读数 —— 库内 28 条逐条跑字节探针。
+///
+/// 它就是 CLI `--probe-instruments` 的数据面：`library_instruments()`（清单 × 库根，
+/// **不读样本**）逐条交给 [`probe_instrument_samples`]（**真的读盘解码**）。
+/// 返回顺序与按钮行**逐条同序**，因此“第 N 条按钮”与“第 N 条读数”不会错位。
+///
+/// ⚠ 慢：真库全量一次约 **10 分钟**（`#210` 实测 597,530 ms）。本函数**只**给 CLI 与
+/// 判据用；⛔ 不许接进投影 / `apply_view`（那正是 `#210` 裁决“投影里不跑探针”的理由）。
+#[must_use]
+pub fn probe_library_instruments() -> Vec<(LibraryInstrument, InstrumentSampleProbe)> {
+    library_instruments()
+        .into_iter()
+        .map(|instrument| {
+            let outcome = probe_instrument_samples(&instrument.path);
+            (instrument, outcome)
+        })
+        .collect()
+}
+
 /// 库内可装乐器的**显示名**（与 [`library_instruments`] 同序、同长度）。
 #[must_use]
 pub fn library_instrument_names() -> Vec<String> {
@@ -2781,6 +2945,28 @@ pub fn instrument_install_ops_on(
     let track = track.ok_or(INSTRUMENT_INSTALL_NO_TRACK_REASON)?;
     // ⭐ `#165`：⛔ 不许把一条有声的轨装成静音 —— 拒绝发生在**构造 `Op` 之前**。
     sfz_samples_present(path)?;
+    instrument_install_ops_on_probed(Some(track), path)
+}
+
+/// ⭐ 任务单 `#211`：**探针已经在别处跑过**时的 `Op` 构造（⛔ 不再读盘、⛔ 不再解码）。
+///
+/// 为什么必须有这一层：后台线程跑完 [`probe_instrument_samples`] 之后，UI 线程要提交
+/// 同一条 `Op`。若在这里再调一次 [`instrument_install_ops_on`]，那就会**第二次**读盘解码
+/// —— 等于把"点了卡 4 分钟"从点击时搬到了提交时（只是换了卡的那一帧），本单的修复作废。
+///
+/// 唯一的探针判据仍然是 [`probe_instrument_samples`]（`sfz_samples_present` 与它同源）；
+/// 本函数只是把"判据已通过"这个前提**显式化**在签名旁边，并保留与
+/// [`instrument_install_ops_on`] **逐字相同**的两条防线：
+/// 1. 没有目标轨 ⇒ [`INSTRUMENT_INSTALL_NO_TRACK_REASON`]；
+/// 2. 值没变 ⇒ 空 `Vec`（宿主据此**不提交**，⛔ 不留空撤销步）。
+///
+/// ⚠ 调用者**必须**已经收到 `InstrumentSampleProbe::Installable`；本函数不重复证明它。
+#[must_use = "调用者要么提交这些 Op，要么明确拒绝（⛔ 不要静默丢掉）"]
+pub fn instrument_install_ops_on_probed(
+    track: Option<&TrackV3>,
+    path: &str,
+) -> Result<Vec<Op>, &'static str> {
+    let track = track.ok_or(INSTRUMENT_INSTALL_NO_TRACK_REASON)?;
     let new_sampler = Some(SamplerBinding {
         path: path.to_owned(),
     });

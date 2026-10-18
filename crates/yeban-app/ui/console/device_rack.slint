@@ -179,6 +179,12 @@ export component DeviceRack inherits Rectangle {
     in property <bool> instrument-install-available: false;
     /// 不能装乐器时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
     in property <string> instrument-install-reason: "";
+    /// ⭐ 任务单 `#211`：**点击之后的运行期回执** —— "检查中…：X" / "已装上：X" /
+    /// "装不了：缺样本（N 个文件）…"。默认空串 ⇒ 初始帧不画它（⛔ 不动 1920 基准帧）。
+    ///
+    /// ⛔ 这不是投影：`apply_view` 不写它（属性写入点预算 93 一位不动）；唯一写者是
+    /// 宿主 `host::wire_device_rack` 的点击 / 排空回调。
+    in property <string> instrument-install-status: "";
     /// ⭐ 任务单 `#210`：按钮行的**页号**（每页 `instrument-per-page` 条）。
     ///
     /// 纯界面运行态：不进工程、不进投影 ⇒ ⛔ 不占 `host::apply_view` 的写点
@@ -1278,10 +1284,31 @@ export component DeviceRack inherits Rectangle {
         overflow: elide;
         visible: !root.instrument-install-available
             && root.sample-library-notice == ""
-            && root.sample-library-status == "";
+            && root.sample-library-status == ""
+            && root.instrument-install-status == "";
         accessible-role: text;
         accessible-id: "instrument-install-reason";
         accessible-label: root.instrument-install-reason;
+    }
+
+    // ⭐ 任务单 `#211`：**点击之后**的回执行（"检查中…：X" / "已装上：X" /
+    // "装不了：缺样本（N 个文件）…"）。它**复用** `#196` 那一行 14px 的槽位，
+    // 优先级最高：有回执时，另外两句（可用性原因 / 采样库回执）让位。
+    // ⚠ 默认空串 + `visible: false` ⇒ 初始帧这一格一个像素都不画（⛔ 不动 1920 基准帧）；
+    //   也⛔ 不占布局（三个 `UiText` 都是绝对坐标，不是 `VerticalLayout` 的成员）。
+    UiText {
+        x: Tokens.space-4;
+        y: 158px;
+        width: 420px;
+        height: 14px;
+        text: root.instrument-install-status;
+        color: Tokens.ink-2;
+        font-size: Tokens.font-size-xs;
+        overflow: elide;
+        visible: root.instrument-install-status != "";
+        accessible-role: text;
+        accessible-id: "instrument-install-status";
+        accessible-label: root.instrument-install-status;
     }
 
     // ⭐ 采样库读数（任务单 `#196`）：未安装 ⇒ 逐字 `"采样库未安装，点此下载（9.4 GiB）"`；
@@ -1295,7 +1322,7 @@ export component DeviceRack inherits Rectangle {
         color: Tokens.ink-2;
         font-size: Tokens.font-size-xs;
         overflow: elide;
-        visible: root.sample-library-message != "";
+        visible: root.sample-library-message != "" && root.instrument-install-status == "";
         accessible-role: text;
         accessible-id: "sample-library-status";
         accessible-label: root.sample-library-message;
