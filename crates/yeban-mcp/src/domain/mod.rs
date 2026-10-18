@@ -80,8 +80,8 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use yeban_model::{
-    AssetHash, CommitDraft, CommitGraph, EntityId, Op, OpOrigin, SessionRuntimeState, StampedOp,
-    YebanProjectV1,
+    AssetHash, ClipContent, CommitDraft, CommitGraph, EntityId, Op, OpOrigin, SessionRuntimeState,
+    StampedOp, TrackV3, YebanProjectV1,
 };
 
 use crate::jsonrpc::ErrorObject;
@@ -838,6 +838,14 @@ pub enum Plan {
         /// 这个标志放在 [`Plan`] 上而不是 [`ProposalDraft`] 上：它是**响应的形状**，
         /// 不是提案的领域内容（提案在两种取值下逐字节相同）。
         include_ops: bool,
+        /// 本次提案的 `warnings[]`（**规划期**对模拟施加后的工程求值一次）。
+        ///
+        /// ⭐ `#178`：警告取决于工程内容（设备落在那条轨上有没有东西可发声），
+        /// 而 [`ProposalDraft`] 只带 `base_digest`、不带工程本体。把它算在 `plan`
+        /// 阶段随 [`Plan`] 一路带到响应，`dryRun` 预览与真正创建提案才**不可能**
+        /// 各算一份、各说一套（`#175` 的 `warnings[]` 只依赖 `ops`，所以能在两处
+        /// 各自调一次；本票的警告依赖文档，不能再走那条路）。
+        warnings: Vec<Value>,
     },
     /// `yeban_merge_proposal`
     Merge {
@@ -1303,7 +1311,11 @@ impl Plan {
                     }),
                 );
             }
-            Self::Propose { draft, include_ops } => {
+            Self::Propose {
+                draft,
+                include_ops,
+                warnings,
+            } => {
                 preview.insert("kind".to_owned(), Value::from(draft.kind));
                 preview.insert("title".to_owned(), Value::from(draft.title.clone()));
                 preview.insert(
@@ -1329,10 +1341,8 @@ impl Plan {
                 // ⭐ #175：`dryRun` 也必须说清"这是一份提案, 还要 merge"。
                 preview.insert("pendingMerge".to_owned(), Value::from(true));
                 preview.insert("mergeTool".to_owned(), Value::from("yeban_merge_proposal"));
-                preview.insert(
-                    "warnings".to_owned(),
-                    Value::Array(effect_param_warnings(&draft.ops)),
-                );
+                // ⭐ #178：预览与真正创建提案用的是**同一份** `warnings`（规划期算好的）。
+                preview.insert("warnings".to_owned(), Value::Array(warnings.clone()));
             }
             Self::Merge {
                 proposal_id,
@@ -2131,6 +2141,9 @@ fn propose_draft(
     simulated
         .validate()
         .map_err(|failure| error::from_model("提案结果校验", &failure))?;
+    // ⭐ #178：警告在**模拟施加之后**的工程上求值（同批里给这条轨摆片段 ⇒ 不误报），
+    // 且只算这一次：预览与响应共用这份读数。
+    let warnings = proposal_warnings(&simulated, &ops);
     let base_digest = store::digest_of(store::serialize_project(project)?.as_bytes());
     Ok(Plan::Propose {
         draft: Box::new(ProposalDraft {
@@ -2142,6 +2155,7 @@ fn propose_draft(
             base_digest,
         }),
         include_ops,
+        warnings,
     })
 }
 
@@ -3169,7 +3183,11 @@ fn apply_inner(domain: &mut Domain, plan: Plan) -> Result<ToolResponse, Fault> {
             path,
         } => apply_close(domain, save_first, save, path),
         Plan::Query { data } => Ok(ToolResponse::success(data)),
-        Plan::Propose { draft, include_ops } => apply_propose(domain, *draft, include_ops),
+        Plan::Propose {
+            draft,
+            include_ops,
+            warnings,
+        } => apply_propose(domain, *draft, include_ops, &warnings),
         Plan::Merge {
             proposal_id,
             commit_message,
@@ -3579,10 +3597,14 @@ fn apply_close(
 /// op 载荷，审查用途）；`false`（缺省）⇒ [`Proposal::summary`]（结构化字段）
 /// `[BASELINE-006]`。两种取值下**被创建的提案逐字节相同** —— 同一份 `record` 先插进
 /// `domain.proposals`，只有回传的那一份 JSON 不同。
+///
+/// `warnings` 是 `plan` 阶段算好的那一份（`#178`）：本函数**不**重算，因此 `dryRun`
+/// 预览与真正创建提案的 `warnings[]` 是同一批读数。
 fn apply_propose(
     domain: &mut Domain,
     draft: ProposalDraft,
     include_ops: bool,
+    warnings: &[Value],
 ) -> Result<ToolResponse, Fault> {
     let project = domain
         .active_project()
@@ -3677,7 +3699,9 @@ fn apply_propose(
         // ⭐ #175：本批写入里**引擎不认但又不是错字**的参数名（例如 `reverb_mix`）。
         // 它们被存储、不生效，因此逐条报出来 —— 远距离未知名字的唯一写入侧读数。
         // 拼错的（编辑距离 ≤ 2）在解析期就 `INVALID_PARAMETER_RANGE`，到不了这里。
-        "warnings": effect_param_warnings(&draft.ops),
+        // ⭐ #178：同一数组里还有"设备落在没有东西可发声的音轨上"那一条
+        // （`deviceOnSilentTrack`）；它是 `plan` 阶段对模拟后工程算好的同一份读数。
+        "warnings": Value::Array(warnings.to_vec()),
         "proposal": wire_projection,
     })))
 }
@@ -3714,6 +3738,138 @@ fn effect_param_warnings(ops: &[Op]) -> Vec<Value> {
                          `yeban_query_engine_state` 的 tracks[].inserts[].unrecognisedParams",
             }));
         }
+    }
+    warnings
+}
+
+/// 本次提案的完整 `warnings[]`（`#175` 的未识别参数名 ＋ `#178` 的"设备落在静音轨上"）。
+fn proposal_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<Value> {
+    let mut warnings = effect_param_warnings(ops);
+    warnings.extend(device_on_silent_track_warnings(project, ops));
+    warnings
+}
+
+/// 一条音轨"有没有东西可发声"的**实测读数**（`#178` 的警告条件只读它）。
+///
+/// 逐项与 `yeban_render_master` 的 `sources[].kind` 同源：
+/// - 摆放被 `muted` ⇒ 渲染器 `continue`，这里也不计；
+/// - MIDI 片段：音符要先过 [`yeban_model::MidiNote::triggers`]（**同一个**概率判定
+///   入口，本层不另掷骰子）才算"会发声"；
+/// - 音频片段：非静音摆放即算（资产字节在不在会话 CAS 池里是**渲染期**才知道的事，
+///   见 [`render`] 的 `sources[].audioClipsUnrendered` —— 写入侧不假装知道）。
+#[derive(Clone, Copy, Debug)]
+struct TrackPlayableSurvey {
+    /// 该轨的摆放总数（含被静音的）。
+    placements: usize,
+    /// 其中**能发声**的摆放数（有 ≥ 1 个会触发的音符，或是音频片段）。
+    sounding_placements: usize,
+    /// 非静音摆放引用的 MIDI 片段里的音符总数（含不会触发的）。
+    notes: u64,
+    /// 其中过得了 `triggers()` 的音符数。
+    triggering_notes: u64,
+}
+
+/// 数一条音轨的 [`TrackPlayableSurvey`]。
+fn survey_track_playable(project: &YebanProjectV1, track: &TrackV3) -> TrackPlayableSurvey {
+    let mut survey = TrackPlayableSurvey {
+        placements: 0,
+        sounding_placements: 0,
+        notes: 0,
+        triggering_notes: 0,
+    };
+    for placement in track.clips.values() {
+        survey.placements += 1;
+        if placement.muted {
+            continue;
+        }
+        let Some(clip) = project.clip_pool.get(&placement.clip_id) else {
+            // 悬空引用是工程损坏，不是"静音轨"：模型校验/提案模拟会先响亮失败。
+            continue;
+        };
+        match &clip.content {
+            ClipContent::Midi { notes } => {
+                survey.notes = survey.notes.saturating_add(count_u64(notes.len()));
+                let triggering = count_u64(
+                    notes
+                        .values()
+                        .filter(|note| note.triggers(project.rng_seed))
+                        .count(),
+                );
+                survey.triggering_notes = survey.triggering_notes.saturating_add(triggering);
+                if triggering > 0 {
+                    survey.sounding_placements += 1;
+                }
+            }
+            ClipContent::Audio { .. } => {
+                survey.sounding_placements += 1;
+            }
+        }
+    }
+    survey
+}
+
+/// `usize` → `u64`（`saturating` 口径；读数是给人看的，不因平台宽度变化而回绕）。
+fn count_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+/// 一批 `Op` 里"设备装到了一条**没有东西可发声**的音轨上"的警告（`#178`）。
+///
+/// ## 补的是哪一半（`#174` 坑⑦）
+///
+/// `yeban_render_master` 的 `sources[]` 早在渲染时就把这类轨报成
+/// `{"track":"Track 2","kind":"silent"}`，但**装设备时一个字都不说** ⇒ 外部 agent
+/// 按 `tracks` 顺序取第一条（验收线实测：`trackCount:2`、只有一条有摆放）时，
+/// 设备落在静音轨上、渲染**毫无变化**，白跑一轮。
+///
+/// ## 条件（裁决的是"没有东西可发声"，不是"没有摆放行"）
+///
+/// 对 `Op::InsertDevice` 的 `track_id`，在**本批模拟施加之后**的工程上数
+/// [`TrackPlayableSurvey`]：`sounding_placements == 0` 就报一条。
+/// ⇒ **0 clip** 与 **有 clip 但音符全空 / 全被静音 / 概率判定全不触发** 都算静音，
+/// 因为渲染器的 `kind` 也只看"排程到的音符 + 真的渲染的音频片段"：
+/// 两处若采用不同的口径，就会出现"装设备时不说、渲染时才说"的第二条裂缝。
+/// ⭐ 同一批里给这条轨摆了片段 ⇒ 模拟后的工程里有东西可发声 ⇒ **不误报**。
+///
+/// ⚠ **不阻断**：装是合法的（先装设备、后写片段是正常顺序），`proposalCount` /
+/// `commitCount` 照常前进，`code` 不是 `reason`。
+/// ⚠ 已知边界：音频片段只按"非静音摆放"计数，不查会话 CAS 池里有没有字节 ——
+/// 那个读数只有渲染期才有（`sources[].audioClipsUnrendered` 已如实报出）。
+fn device_on_silent_track_warnings(project: &YebanProjectV1, ops: &[Op]) -> Vec<Value> {
+    let mut warnings = Vec::new();
+    for op in ops {
+        let Op::InsertDevice {
+            track_id, device, ..
+        } = op
+        else {
+            continue;
+        };
+        let Some(track) = project.tracks.get(track_id) else {
+            continue;
+        };
+        let survey = survey_track_playable(project, track);
+        if survey.sounding_placements > 0 {
+            continue;
+        }
+        // 两句话都只陈述**实测到的**事实：0 摆放与"有摆放但都发不出声"不是一回事，
+        // 用同一句话会把前者的"没有任何片段"说成假话。
+        let hint = if survey.placements == 0 {
+            "该轨没有任何片段 ⇒ 这台设备对该轨的输出不会产生影响；若你是想给别的轨装、请核对 `trackId`"
+        } else {
+            "该轨的摆放里没有任何可发声内容（片段里没有会触发的音符 / 摆放全被静音）⇒ 这台设备对该轨的输出不会产生影响；若你是想给别的轨装、请核对 `trackId`"
+        };
+        warnings.push(serde_json::json!({
+            "code": "deviceOnSilentTrack",
+            "trackId": track.id.to_canonical_string(),
+            "track": track.name.clone(),
+            "deviceId": device.id.to_canonical_string(),
+            "deviceName": device.name.clone(),
+            "placements": survey.placements,
+            "soundingPlacements": survey.sounding_placements,
+            "notes": survey.notes,
+            "triggeringNotes": survey.triggering_notes,
+            "hint": hint,
+        }));
     }
     warnings
 }
