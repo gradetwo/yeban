@@ -167,10 +167,20 @@ component AiRail inherits Rectangle {
         }
     }
 
+    // ⭐ 任务单 `#187`：`diagnostics-export-action` 与「审查提案」改成**同一行并排**。
+    //
+    // 修前（`21592ff` 起）：导出诊断包住 `y: 148px`、高 28 ⇒ `148..176`；
+    // 而「声学诊断」卡住 `y: 104px`、高 64 ⇒ `104..168` ⇒ **两键相交 20px**
+    // （1920 档实测 `(1648,152,272,64)` ⟂ `(1648,196,272,28)`；三档全中）。
+    // 为什么不是"整体下移 28px"：`AiRail` 的竖向预算在 1440 档只剩 7px
+    // （内容 440 < 栏高 475）、1024 档本来就已溢出（415）⇒ 再下移 28 会在 1440
+    // 把最后一条回执行推出裁剪区，是拿一个缺陷换另一个。
+    // 因此改为**不占新高度**的并排：两个键同住 `y: 172..200`（诊断卡下沿 168 ＋ 4px），
+    // 下面 `ModuleActions` 的 `212px` 标题一位不动。
     Rectangle {
         x: Tokens.space-4;
-        y: 148px;
-        width: parent.width - 8px;
+        y: 172px;
+        width: 108px;
         height: 28px;
         background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
@@ -198,9 +208,9 @@ component AiRail inherits Rectangle {
     }
 
     Rectangle {
-        x: Tokens.space-4;
-        y: 176px;
-        width: parent.width - 8px;
+        x: Tokens.space-4 + 108px + Tokens.space-2;
+        y: 172px;
+        width: parent.width - 2 * Tokens.space-4 - 108px - Tokens.space-2;
         height: 28px;
         background: Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
@@ -229,8 +239,8 @@ component AiRail inherits Rectangle {
     }
 
     // ---------------------------------------------------------- 四个模块入口
-    // 本票新增。它占据右栏 y=208..380 这一段**此前完全空白**的区域（既有三条
-    // 控件止于 y=204）⇒ 不改任何既有控件的坐标，也不改任何容器的尺寸。
+    // 本票新增。它占据右栏 y=208..380 这一段**此前完全空白**的区域（`#187` 起
+    // 上面四条控件止于 y=200）⇒ 不改任何既有控件的坐标，也不改任何容器的尺寸。
     // 四个回调与两条注入属性各自**原样**转给 `MainWindow`（与上面三条同款）。
     ModuleActions {
         x: 0;

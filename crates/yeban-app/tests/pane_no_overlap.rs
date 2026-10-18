@@ -62,19 +62,85 @@
 //!
 //! ## 它**不**证什么
 //!
-//! ⛔ 只扫了这四段：设备架（`#184` 已证）、发送条（`#185` 已证）、走带以外的左栏 / 右栏 /
-//! 编曲画布 / Tab 3 的装乐器行 / 轨路由四键区**仍未扫**（详见交付报告 §8）；
+//! ⛔ `#186` **当时**只扫了这四段：设备架两段（`#184`）、发送条（`#185`）、
+//! 以及本文件的四段；左栏 / 右栏 / 编曲画布 / 装乐器行 / 轨路由四键区
+//! **当时未扫** —— 那五段由 `#187` 补扫（见下面的 `#187` 一节）；
 //! ⛔ 没人耳听过（本机 Tier-1 软件光栅化，没有声卡）；⛔ 不证 Linux Golden：
 //! 本机没有 `tests/golden/macos/**`；⛔ 不证 1024 以下——`#186` 只验三档，更窄档未登记。
 //! ⛔ 不证轨道数 > 6 时的调音台：窄档竖排的算术是按演示工程 `n = 6` 推的，
 //! 更多轨道会把通道条推过主控通道条（本判据不覆盖，如实登记）。
+//!
+//! ---
+//!
+//! # ⭐ 任务单 `#187`：**同一文件扩段** —— 剩余六段
+//!
+//! `#186` 的四段（钢琴卷帘 / 调音台 / 素材池 / 走带）之外，本单把同一条
+//! **跨节点**判据铺到 `#186` 清单里剩下的段：
+//!
+//! | 段 | 段盒子（取控件的那一格） | 取法 | 清单 |
+//! | :--- | :--- | :--- | :--- |
+//! | ① 设备链卡片区 | 第一段左列 `x ∈ [0, 428)`、`y ∈ [插入行顶, 面板底)` | 相交 | 演示工程 7（1024 档 6）/ 空链 5 / 只有主总线 7 |
+//! | ② 装乐器行 | `instrument-label` 那一行（20 ＋ 2 ＋ 14 ＝ 36px） | 相交 | 2（今天内置清单为空 ⇒ **0 个按钮**，如实登记） |
+//! | ③ 轨路由四键区 | `track-routing-panel` 的包围盒（`#160`） | 相交 | 6 / 只有主总线时 7（多逐字原因） |
+//! | ④ 编曲画布 | 三组：轨道头列 / 剪辑头 / 自动化泳道 / 章节卡 | 分组逐对 | 头 6、头内子节点 18、剪辑 3、泳道 3、章节 4/3/2 |
+//! | ⑤ 状态栏 | 24px 带 `y ∈ [h−24, h)` | **Inside** | 4（提示态）/ 4（保存回执态） |
+//! | ⑥ AI 右栏 | `ai-rail` 的包围盒 | 左沿在盒子内 | 12（1024 档 11，少的是被裁剪的 `module-last-status`） |
+//!
+//! ## 本单实测发现（修前 → 修后，逐条）
+//!
+//! ### 1. AI 右栏：导出诊断包 ⟂ 声学诊断卡（**三档全中**，20 × 272 px²）
+//!
+//! ```text
+//! 修前（1920）：ai-rail-diagnose-button   (1648, 152, 272, 64) ⟂
+//!              diagnostics-export-action (1648, 196, 272, 28)   ⇒ 相交 y 196..216
+//! 修后（1920）：diagnose (1648,152,272,64) / export (1648,220,108,28) /
+//!              musical-pr (1756,220,148,28) ⇒ export ⟂ musical-pr 也不交（x 分开）
+//! ```
+//!
+//! 根因：`21592ff` 把导出键插在 `y: 148px`，而诊断卡住 `104..168`。竖向预算在
+//! 1440 档只剩 7px ⇒ 不能整体下移，改成**同一行并排**（不占新高度）。
+//!
+//! ### 2. 设备链卡片区：插件占位卡 ⟂ 空态文案（空链时，16 × 420 px²）
+//!
+//! ```text
+//! 修前（1024 空链）：device-rack-empty (8, 711, 420, 20) ⟂
+//!                  device-plugin-host-placeholder-card (8, 715, 420, 22)
+//! 修后（1024 空链）：empty (8,711,420,20) / placeholder (8,735,420,22) ⇒ 4px 间隙
+//! 顺带（1024 演示 1 台设备）：占位卡原式 761..783 越过面板底 776（7px 被 clip 吃掉）
+//!                  ⇒ 放不下就整张撤下（该档清单从 7 变 6，⛔ 不是静默消失）
+//! ```
+//!
+//! ### 3. 状态栏：快捷键提示 ⟂ 音频配置（**只有 1024 档**，68 × 24 px²）
+//!
+//! ```text
+//! 修前（1024）：status-bar-shortcut-tip (344, 776, 480, 24) ⟂
+//!              status-bar-device       (756, 776, 256, 24)   ⇒ 相交 x 756..824
+//! 修后（1024）：shortcut-tip (344,776,412,24) / device (756,776,256,24)
+//!              ⇒ 右沿 756 = 左沿 756（边贴边，⛔ 不算相交）
+//! 保存回执态同样收窄（两格共用 `tip-width`）；1920/1440 的 480px 一位未动。
+//! ```
+//!
+//! ## 反向腿（去掉本片改动 ⇒ 哪条红；读数见交付报告 §5）
+//!
+//! - 注入 A：把 `status_bar.slint` 的 `tip-width` 换回 `480px` ⇒ **⑤ 红**（1024 档 1 对，bounds 同上）；
+//! - 注入 B：把 `device_rack.slint` 的 `placeholder-y` 换回 `216 + 46n + 4` 并去掉
+//!   `visible` ⇒ **① 红**（空链 1024 档 1 对；演示 1024 档另加"越出面板底"1 条）；
+//! - 注入 C：把 `app.slint` 的导出键 `y` 换回 `148px` ⇒ **⑥ 红**（三档各 1 对）。
+//!
+//! ## 它**不**证什么（`#187` 追加）
+//!
+//! ⛔ 左栏 `sidebar*`、`console-tab-rail` / `tab-*`、Session 视图、模块动作面板的
+//!   **横向**邻居（`module-*` 已由 `app.slint` 的绝对定位钉住，但本单只按右栏盒子判）；
+//! ⛔ 1024 以下（`#186` 只验三档）；⛔ 没人耳听；⛔ 无 Linux Golden 重录。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_app::bridge::ViewState;
 use yeban_app::host;
 use yeban_app::scene::DemoScene;
 use yeban_app::ui::MainWindow;
+use yeban_model::EntityId;
+use yeban_model::project::{TrackKind, TrackV3, YebanProjectV1};
 use yeban_ui_test_port::Size;
 use yeban_ui_test_port::inspect::tree_from_element_root;
 use yeban_ui_test_port::port::Permission;
@@ -186,7 +252,11 @@ fn runtime_tree(window: &MainWindow) -> ControlTree {
 /// ⚠ 返回值里的 `LivePort` 必须被持有到判据结束；Tier-1 平台是**线程局部**的，
 /// 一根线程只能装一次 ⇒ 每个 `(档, 标签)` 在自己的线程里跑。
 fn live_window(size: (u32, u32), tab: i32) -> LivePort<MainWindow> {
-    let project = yeban_model::samples::demo_project();
+    live_window_for(yeban_model::samples::demo_project(), size, tab)
+}
+
+/// 同 [`live_window`]，但换成指定的工程（`#187` 的空链 / 只有主总线两种夹具）。
+fn live_window_for(project: YebanProjectV1, size: (u32, u32), tab: i32) -> LivePort<MainWindow> {
     let view = ViewState::from_project(&project).expect("演示工程必须能投影");
     let scene = DemoScene::from_view(&view);
     LivePort::new(
@@ -250,11 +320,23 @@ fn is_container_role(role: &str) -> bool {
 }
 
 /// 取法：`Intersect` = 与段盒子相交即算段内（面板可能比窗口宽 / 被裁剪）；
-/// `Inside` = 完全落在段盒子内（走带那条 48px 顶栏带，用它排除任何跨带节点）。
+/// `Inside` = 完全落在段盒子内（走带那条 48px 顶栏带、状态栏那条 24px 带，用它排除
+/// 任何跨带节点）；
+/// `LeftEdgeInside` = 与盒子相交**且左沿在盒子内**（⭐ `#187`）。
+///
+/// ⚠ `LeftEdgeInside` 为什么存在：运行时树给的是**未裁剪**的包围盒。编曲画布
+/// `workspace-arrangement-canvas` 有 `clip: true`，它的越界子节点（`section-*-card`、
+/// `arrangement-loop-brace`）在树里仍带着**越过画布右沿**的宽度 —— 1024 档
+/// `arrangement-loop-brace (648,68,480,22)` 一直伸到 `1128`，而画布右沿是 `744`。
+/// 这些像素被画布 clip 掉了，**⛔ 不与右栏重叠**，但它们的**包围盒**会落进右栏的段盒子。
+/// 右栏的控件全部从 `ai-rail.x + 8` 起（左沿在盒子内），被裁剪的越界节点左沿在盒子外
+/// ⇒ 这条取法把"像素真的在段内"与"包围盒越界"分开。这不是放宽：同一段内左沿在盒子里的
+/// 控件**仍然逐对**断言（见下面的读数）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Selection {
     Intersect,
     Inside,
+    LeftEdgeInside,
 }
 
 fn select_controls(
@@ -275,6 +357,7 @@ fn select_controls(
                     && b.0 + b.2 as i32 <= right
                     && b.1 + b.3 as i32 <= bottom
             }
+            Selection::LeftEdgeInside => intersect(*b, pane) && b.0 >= pane.0 && b.0 <= right,
         })
         .collect()
 }
@@ -289,20 +372,40 @@ fn assert_pairwise(
     expected: &[&str],
     label: &str,
 ) -> String {
-    let controls = select_controls(tree, pane, selection);
+    assert_pairwise_excluding(tree, pane, selection, expected, &[], label)
+}
+
+/// 同 [`assert_pairwise`]，但先把 `excluded` 里的 id 从段内摘掉。
+///
+/// ⭐ `#187` 用它处理**按设计包住子节点**的 `list-item`（设备卡片 `device-{i}-card`）：
+/// 它自己有语义 id、会与自己的子节点相交，但那是"容器包住内容"，不是缺陷。
+/// ⛔ 被摘掉的 id 必须**逐条**在报告 §3 里给出理由，并且仍然参与"在场"断言
+/// （见 [`assert_ids_pairwise`] 的容器组）。
+fn assert_pairwise_excluding(
+    tree: &ControlTree,
+    pane: Bounds,
+    selection: Selection,
+    expected: &[&str],
+    excluded: &[String],
+    label: &str,
+) -> String {
+    let controls: Vec<(&ControlNode, Bounds)> = select_controls(tree, pane, selection)
+        .into_iter()
+        .filter(|(node, _)| !excluded.iter().any(|id| id == &node.id))
+        .collect();
 
     // ---- 判据 ⑤：清单必须**一个不少**，且不许有清单外的节点混进来。
     let got: BTreeSet<&str> = controls.iter().map(|(node, _)| node.id.as_str()).collect();
     for id in expected {
         assert!(
             got.contains(id),
-            "[#186 {label}] 段内控件清单缺 `{id}` —— 两两判据会漏掉它（⛔ 不许 0 控件假绿）"
+            "[{label}] 段内控件清单缺 `{id}` —— 两两判据会漏掉它（⛔ 不许 0 控件假绿）"
         );
     }
     assert_eq!(
         controls.len(),
         expected.len(),
-        "[#186 {label}] 段内控件数 {} ≠ 清单 {} ⇒ 有控件没登记（树里多出：{:?}）",
+        "[{label}] 段内控件数 {} ≠ 清单 {} ⇒ 有控件没登记（树里多出：{:?}）",
         controls.len(),
         expected.len(),
         got.iter()
@@ -334,7 +437,7 @@ fn assert_pairwise(
     }
     assert!(
         hits.is_empty(),
-        "[#186 {label}] 段内**有重叠**（{} 对）：\n{}",
+        "[{label}] 段内**有重叠**（{} 对）：\n{}",
         hits.len(),
         hits.join("\n")
     );
@@ -345,7 +448,7 @@ fn assert_pairwise(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "[#186 {label}] 控件 {} 个 / {pair_count} 对 / 相交 {} 对（容器按 role 排除）\n{dump}",
+        "[{label}] 控件 {} 个 / {pair_count} 对 / 相交 {} 对（容器按 role 排除）\n{dump}",
         controls.len(),
         hits.len()
     )
@@ -362,7 +465,7 @@ fn check_piano_roll(width: u32, height: u32) -> (usize, usize) {
         pane,
         Selection::Intersect,
         PIANO_CONTROLS,
-        &format!("钢琴卷帘 {width}x{height}"),
+        &format!("#186 钢琴卷帘 {width}x{height}"),
     );
     report_line(&reading);
     // 骨架里的静态读数也在场（两两判据之外再钉一次，防"整段消失 ⇒ 0 相交"）。
@@ -387,7 +490,7 @@ fn check_mixer_console(width: u32, height: u32) -> (usize, usize) {
         pane,
         Selection::Intersect,
         &expected_refs,
-        &format!("调音台 {width}x{height}"),
+        &format!("#186 调音台 {width}x{height}"),
     );
     report_line(&reading);
 
@@ -482,7 +585,7 @@ fn check_asset_pool(width: u32, height: u32) -> (usize, usize) {
         pane,
         Selection::Intersect,
         ASSET_CONTROLS,
-        &format!("素材池 {width}x{height}"),
+        &format!("#186 素材池 {width}x{height}"),
     );
     report_line(&reading);
     (ASSET_CONTROLS.len(), 3)
@@ -506,7 +609,7 @@ fn check_transport(width: u32, height: u32) -> (usize, usize) {
         band,
         Selection::Inside,
         &expected,
-        &format!("走带 {width}x{height}"),
+        &format!("#186 走带 {width}x{height}"),
     );
     report_line(&reading);
 
@@ -594,6 +697,890 @@ fn the_asset_pool_has_no_two_controls_in_the_same_place() {
 fn the_transport_has_no_two_controls_in_the_same_place() {
     for &(width, height) in TIERS {
         if let Err(payload) = std::thread::spawn(move || check_transport(width, height)).join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+// ===========================================================================
+// ⭐ 任务单 `#187`：剩余六段 —— 夹具、清单、通用分组断言
+// ===========================================================================
+
+/// 夹具：一条展示轨（MIDI，无设备）＋ 主总线 ⇒ **空设备链**（`device-rack-empty` 在场）。
+fn project_without_devices() -> YebanProjectV1 {
+    project_with_tracks(true)
+}
+
+/// 夹具：只有主总线（没有展示轨）⇒ 装乐器 / 装设备 / 建片段 / 删轨四条"逐字原因"都在场。
+fn project_master_only() -> YebanProjectV1 {
+    project_with_tracks(false)
+}
+
+fn project_with_tracks(with_display_track: bool) -> YebanProjectV1 {
+    let master = EntityId::new();
+    let track = EntityId::new();
+    let mut tracks: BTreeMap<EntityId, TrackV3> = BTreeMap::new();
+    if with_display_track {
+        tracks.insert(
+            track,
+            TrackV3 {
+                id: track,
+                name: "展示轨".to_owned(),
+                kind: TrackKind::Midi,
+                ..TrackV3::default()
+            },
+        );
+    }
+    tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+    YebanProjectV1 {
+        master_bus_track_id: master,
+        tracks,
+        ..YebanProjectV1::default()
+    }
+}
+
+/// ① 设备链卡片区：演示工程（1 台设备，含未识别参数行）在宽档的 7 个叶子控件。
+/// `device-0-card` **不在这里**：它是 `list-item` 且**按设计包住** recognised /
+/// unrecognised / bypass / remove 四个语义子节点 ⇒ 属于容器组（见 `assert_ids_pairwise`）。
+const CARD_AREA_DEMO_WIDE: &[&str] = &[
+    "device-insert-eq-button",
+    "device-insert-reverb-button",
+    "clip-create-button",
+    "device-0-unrecognised",
+    "device-0-bypass-switch",
+    "device-0-remove-button",
+    "device-plugin-host-placeholder-card",
+];
+
+/// 同上的 1024 档：占位卡 `266..288` 越出面板底 `281` ⇒ **按设计撤下**（清单 7 → 6）。
+const CARD_AREA_DEMO_NARROW: &[&str] = &[
+    "device-insert-eq-button",
+    "device-insert-reverb-button",
+    "clip-create-button",
+    "device-0-unrecognised",
+    "device-0-bypass-switch",
+    "device-0-remove-button",
+];
+
+/// ① 空设备链（三档同清单）：空态文案 ＋ 占位卡（让到 `240..262` 后不再压文案）。
+const CARD_AREA_EMPTY: &[&str] = &[
+    "device-insert-eq-button",
+    "device-insert-reverb-button",
+    "clip-create-button",
+    "device-rack-empty",
+    "device-plugin-host-placeholder-card",
+];
+
+/// ① 只有主总线：插设备 / 建片段两条**逐字原因**都在场（`#163` 的原因行）。
+const CARD_AREA_MASTER_ONLY: &[&str] = &[
+    "device-insert-eq-button",
+    "device-insert-reverb-button",
+    "clip-create-button",
+    "device-insert-reason",
+    "clip-create-reason",
+    "device-rack-empty",
+    "device-plugin-host-placeholder-card",
+];
+
+/// ② 装乐器行：今天内置清单为空（`installable_builtin_instruments` 0 条）⇒ 两个语义节点。
+const INSTRUMENT_ROW: &[&str] = &["instrument-label", "instrument-install-reason"];
+
+/// ③ 轨路由四键区：三个建轨键 ＋ 删除键 ＋ 两格读数（演示工程有展示轨 ⇒ 原因行不在场）。
+const ROUTING_DEMO: &[&str] = &[
+    "track-routing-count",
+    "master-bus-label",
+    "track-create-midi-button",
+    "track-create-audio-button",
+    "track-create-aux-button",
+    "track-delete-button",
+];
+
+/// ③ 只有主总线：多一条"不可删除的逐字原因"，仍与四键不相交。
+const ROUTING_MASTER_ONLY: &[&str] = &[
+    "track-routing-count",
+    "master-bus-label",
+    "track-create-midi-button",
+    "track-create-audio-button",
+    "track-create-aux-button",
+    "track-delete-button",
+    "track-delete-reason",
+];
+
+/// ⑤ 状态栏：默认（没按过保存）⇒ 快捷键提示那一格在场。
+const STATUS_BAR_DEFAULT: &[&str] = &[
+    "status-bar-selection",
+    "status-bar-chord",
+    "status-bar-shortcut-tip",
+    "status-bar-device",
+];
+
+/// ⑤ 状态栏：保存回执态 ⇒ 提示格换成回执格（两者 `visible` 互斥）。
+const STATUS_BAR_SAVED: &[&str] = &[
+    "status-bar-selection",
+    "status-bar-chord",
+    "status-bar-save-status",
+    "status-bar-device",
+];
+
+/// ⑥ AI 右栏：宽档 12 个叶子控件。
+const AI_RAIL_WIDE: &[&str] = &[
+    "ai-rail-intent-button",
+    "ai-rail-diagnose-button",
+    "diagnostics-export-action",
+    "ai-rail-musical-pr-button",
+    "module-actions-title",
+    "module-export-wav-button",
+    "module-import-midi-button",
+    "module-load-sfz-button",
+    "module-record-wav-button",
+    "module-midi-in-button",
+    "module-midi-in-status",
+    "module-last-status",
+];
+
+/// ⑥ AI 右栏 1024 档 11 个：`module-last-status` 住 `424..440`（右栏高 415）⇒
+/// 完全落在裁剪区外 ⇒ 上游**不进运行时树**（与走带徽章同一种"按设计不在场"）。
+const AI_RAIL_NARROW: &[&str] = &[
+    "ai-rail-intent-button",
+    "ai-rail-diagnose-button",
+    "diagnostics-export-action",
+    "ai-rail-musical-pr-button",
+    "module-actions-title",
+    "module-export-wav-button",
+    "module-import-midi-button",
+    "module-load-sfz-button",
+    "module-record-wav-button",
+    "module-midi-in-button",
+    "module-midi-in-status",
+];
+
+/// ④ 轨道头（`list-item`，按设计包住色标 / 静音 / 独奏 ⇒ 容器组，单独两两断言）。
+const TRACK_HEADERS: &[&str] = &[
+    "track-0-header",
+    "track-1-header",
+    "track-2-header",
+    "track-3-header",
+    "track-4-header",
+    "track-5-header",
+];
+
+/// ④ 剪辑头（`list-item` **叶子**：子节点没有语义 id ⇒ ⛔ 不排）。
+const CLIP_HEADERS: &[&str] = &[
+    "clip-01J8Z5Q0R7K3M9X2V4B6N8P1F9-header",
+    "clip-01J8Z5Q0R7K3M9X2V4B6N8P1G6-header",
+    "clip-01J8Z5Q0R7K3M9X2V4B6N8P1H3-header",
+];
+
+/// ④ 自动化泳道（`image` 角色，一条一泳道；彼此是相邻带，⛔ 不许交）。
+const AUTOMATION_LANES: &[&str] = &[
+    "track-0-automation-device-0-0-lane",
+    "track-0-automation-volume-lane",
+    "track-1-automation-pan-lane",
+];
+
+/// ④ 章节卡：逐档清单（演示工程的 4 张各 256px，从 `x = 408` 排到画布右沿）。
+fn section_cards_for(width: u32) -> &'static [&'static str] {
+    if width >= 1600 {
+        &[
+            "section-0-card",
+            "section-1-card",
+            "section-2-card",
+            "section-3-card",
+        ]
+    } else if width >= 1200 {
+        &["section-0-card", "section-1-card", "section-2-card"]
+    } else {
+        &["section-0-card", "section-1-card"]
+    }
+}
+
+/// 分组断言：清单里的 id **一个不少**，且组内**两两**包围盒不相交。
+///
+/// ⭐ 它与 [`assert_pairwise`] 的分工：`assert_pairwise` 判"段内非容器叶子"，
+/// 本函数判**容器与容器**（轨道头）、以及**本来就不该混进叶子的同族控件**
+/// （剪辑头 / 自动化泳道 / 章节卡）。两边的"控件数 ＝ 清单"都是**硬断言**。
+fn assert_ids_pairwise(tree: &ControlTree, ids: &[&str], label: &str) -> String {
+    let mut controls: Vec<(&str, Bounds)> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let node = tree.find_by_id(id).unwrap_or_else(|| {
+            panic!("[#187 {label}] 组内缺 `{id}` —— 清单与运行时树不一致（⛔ 不许静默跳过）")
+        });
+        assert!(
+            node.bounds.is_some(),
+            "[#187 {label}] 组内 `{id}` 没有包围盒 ⇒ 判据会漏掉它"
+        );
+        controls.push((id, bounds_of(node)));
+    }
+
+    let mut pair_count = 0_usize;
+    let mut hits = Vec::new();
+    for (index, (a_id, a)) in controls.iter().enumerate() {
+        for (b_id, b) in controls.iter().skip(index + 1) {
+            pair_count += 1;
+            if intersect(*a, *b) {
+                hits.push(format!("`{a_id}` {a:?} ⟂ `{b_id}` {b:?}"));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "[#187 {label}] 组内有重叠（{} 对）：\n{}",
+        hits.len(),
+        hits.join("\n")
+    );
+
+    let dump = controls
+        .iter()
+        .map(|(id, b)| format!("{id}: x={} y={} w={} h={}", b.0, b.1, b.2, b.3))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "[#187 {label}] 控件 {} 个 / {pair_count} 对 / 相交 {} 对\n{dump}",
+        controls.len(),
+        hits.len()
+    )
+}
+
+/// 包容断言：`child` 的包围盒必须整个落在 `parent` 之内（容器包住子节点的**正向**证明）。
+fn assert_inside(tree: &ControlTree, child: &str, parent: &str, label: &str) {
+    let c = bounds(tree, child);
+    let p = bounds(tree, parent);
+    assert!(
+        c.0 >= p.0
+            && c.1 >= p.1
+            && c.0 + c.2 as i32 <= p.0 + p.2 as i32
+            && c.1 + c.3 as i32 <= p.1 + p.3 as i32,
+        "[#187 {label}] `{child}` {c:?} 必须落在 `{parent}` {p:?} 之内"
+    );
+}
+
+// ===========================================================================
+// ① 设备链卡片区
+// ===========================================================================
+fn check_device_card_area(
+    width: u32,
+    height: u32,
+    project: YebanProjectV1,
+    tag: &str,
+    expected: &[&str],
+    device_count: usize,
+) {
+    let live = live_window_for(project, (width, height), 2);
+    assert_eq!(live.ui().get_console_tab(), 2, "夹具必须是 Tab 2（设备架）");
+    let tree = runtime_tree(live.ui());
+
+    let rack = bounds(&tree, "device-rack");
+    let actions = bounds(&tree, "device-insert-actions");
+    let rack_bottom = rack.1 + rack.3 as i32;
+    // 段盒子：第一段左列 `0..428`，从插入行顶到面板底（含卡片链 / 空态 / 占位卡）。
+    let pane: Bounds = (
+        rack.0,
+        actions.1,
+        428,
+        (rack_bottom - actions.1).max(0) as u32,
+    );
+    assert!(
+        actions.1 >= rack.1 && rack_bottom > actions.1,
+        "[#187 卡片区 {tag} {width}x{height}] 段盒子退化：rack {rack:?} / actions {actions:?}"
+    );
+
+    let excluded: Vec<String> = (0..device_count)
+        .map(|index| format!("device-{index}-card"))
+        .collect();
+    let reading = assert_pairwise_excluding(
+        &tree,
+        pane,
+        Selection::Intersect,
+        expected,
+        &excluded,
+        &format!("#187 设备链卡片区 {tag} {width}x{height}"),
+    );
+    report_line(&reading);
+
+    // ---- 判据 ⑤：占位卡要么在场且完整落在面板里，要么按设计撤下（⛔ 不留半张）。
+    let placeholder = tree.find_by_id("device-plugin-host-placeholder-card");
+    if expected.contains(&"device-plugin-host-placeholder-card") {
+        let card = placeholder
+            .and_then(|node| node.bounds)
+            .expect("清单要求占位卡在场 ⇒ 它必须有包围盒");
+        assert!(
+            card.y + card.height as i32 <= rack_bottom,
+            "[#187 卡片区 {tag} {width}x{height}] 占位卡底沿 {} 越过面板底 {rack_bottom} \
+             （半张卡被 clip 吃掉）",
+            card.y + card.height as i32
+        );
+    } else {
+        assert!(
+            placeholder.is_none(),
+            "[#187 卡片区 {tag} {width}x{height}] 本档的清单说占位卡放不下、应整张撤下，\
+             但它仍在树里（几何放不下时不许半画）"
+        );
+    }
+
+    // ---- 容器组：设备卡片（`list-item` 包装）与占位卡（叶子）同族，逐个两两断言。
+    let mut container_ids: Vec<String> = (0..device_count)
+        .map(|index| format!("device-{index}-card"))
+        .collect();
+    if expected.contains(&"device-plugin-host-placeholder-card") {
+        container_ids.push("device-plugin-host-placeholder-card".to_owned());
+    }
+    let container_refs: Vec<&str> = container_ids.iter().map(String::as_str).collect();
+    report_line(&assert_ids_pairwise(
+        &tree,
+        &container_refs,
+        &format!("设备卡片组 {tag} {width}x{height}"),
+    ));
+
+    // ---- 每张卡片的语义子节点必须落在卡内（容器被排除 ≠ 不检查）。
+    for index in 0..device_count {
+        let card_id = format!("device-{index}-card");
+        for suffix in [
+            "recognised",
+            "unrecognised",
+            "bypass-switch",
+            "remove-button",
+        ] {
+            let child = format!("device-{index}-{suffix}");
+            if tree.find_by_id(&child).is_some() {
+                assert_inside(
+                    &tree,
+                    &child,
+                    &card_id,
+                    &format!("设备卡片区 {tag} {width}x{height}"),
+                );
+            }
+        }
+    }
+
+    // ---- 防假绿：空链时空态文案逐字在场；有设备时它必须不在。
+    if device_count == 0 {
+        let empty = tree
+            .find_by_id("device-rack-empty")
+            .expect("空链必须有 `device-rack-empty`（⛔ 不许一片空白）");
+        assert_eq!(empty.label, "无设备（点上方「装 EQ」或「装混响」）");
+    } else {
+        assert!(
+            tree.find_by_id("device-rack-empty").is_none(),
+            "[#187 卡片区 {tag} {width}x{height}] 有设备时空态文案必须在树外"
+        );
+    }
+}
+
+// ===========================================================================
+// ② 装乐器行（`#163`）
+// ===========================================================================
+fn check_instrument_row(width: u32, height: u32) {
+    let live = live_window((width, height), 2);
+    let tree = runtime_tree(live.ui());
+
+    let label = bounds(&tree, "instrument-label");
+    // 行盒子：当前乐器（20）＋ 2px ＋ 不可用原因（14）＝ 36px。
+    let pane: Bounds = (label.0, label.1, 428, 36);
+    let reading = assert_pairwise(
+        &tree,
+        pane,
+        Selection::Intersect,
+        INSTRUMENT_ROW,
+        &format!("#187 装乐器行 {width}x{height}"),
+    );
+    report_line(&reading);
+
+    // ---- 防假绿：内置清单为空 ⇒ **0 个按钮**（这是读数，不是"扫不到"）。
+    for index in 0..3 {
+        let id = format!("instrument-install-{index}-button");
+        assert!(
+            tree.find_by_id(&id).is_none(),
+            "[#187 装乐器行 {width}x{height}] 内置清单为空时不该有 `{id}`；\
+             它出现了 ⇒ 清单与 `INSTRUMENT_ROW` 都要重核"
+        );
+    }
+    let label_node = tree.find_by_id("instrument-label").expect("乐器读数行");
+    assert_eq!(label_node.label, "未装乐器", "没装乐器时读数必须逐字如此");
+    let reason = tree
+        .find_by_id("instrument-install-reason")
+        .expect("0 个按钮时**必须**看得见逐字原因（⛔ 不静默禁用）");
+    assert!(
+        reason.label.contains("SFZ"),
+        "[#187 装乐器行 {width}x{height}] 原因行必须逐字说出缺什么，实测: {}",
+        reason.label
+    );
+    // 行盒子 36px：读数行 20 ＋ 2 ＋ 原因行 14（与 `pane` 的取法同一个算术）。
+    assert_eq!(pane.3, 36, "[#187 装乐器行 {width}x{height}] 行盒子高");
+}
+
+// ===========================================================================
+// ③ 轨路由四键区（`#160`）
+// ===========================================================================
+fn check_track_routing(
+    width: u32,
+    height: u32,
+    project: YebanProjectV1,
+    tag: &str,
+    expected: &[&str],
+) {
+    let live = live_window_for(project, (width, height), 2);
+    let tree = runtime_tree(live.ui());
+
+    let pane = bounds(&tree, "track-routing-panel");
+    let reading = assert_pairwise(
+        &tree,
+        pane,
+        Selection::Intersect,
+        expected,
+        &format!("#187 轨路由四键区 {tag} {width}x{height}"),
+    );
+    report_line(&reading);
+
+    let midi = bounds(&tree, "track-create-midi-button");
+    let audio = bounds(&tree, "track-create-audio-button");
+    let aux = bounds(&tree, "track-create-aux-button");
+    let delete = bounds(&tree, "track-delete-button");
+    let pane_right = pane.0 + pane.2 as i32;
+
+    // ---- 四键几何：左起 8px、等距 `宽 + 4`、末键右沿钉在 `面板右沿 − 8`。
+    assert_eq!(midi.0 - pane.0, 8, "[#187 轨路由 {width}] 首键 x");
+    assert_eq!(midi.1, audio.1, "[#187 轨路由 {width}] 四键必须同一行");
+    assert_eq!(aux.1, delete.1, "[#187 轨路由 {width}] 四键必须同一行");
+    assert_eq!(
+        audio.0 - midi.0,
+        midi.2 as i32 + 4,
+        "[#187 轨路由 {width}] 键距必须 = 键宽 + 4"
+    );
+    assert_eq!(
+        aux.0 - audio.0,
+        audio.2 as i32 + 4,
+        "[#187 轨路由 {width}] 键距必须 = 键宽 + 4"
+    );
+    assert_eq!(
+        delete.0 - aux.0,
+        aux.2 as i32 + 4,
+        "[#187 轨路由 {width}] 键距必须 = 键宽 + 4"
+    );
+    assert_eq!(
+        delete.0 + delete.2 as i32,
+        pane_right - 8,
+        "[#187 轨路由 {width}] 末键右沿必须钉在面板右沿 − 8"
+    );
+    assert_eq!(
+        midi.1 - pane.1,
+        22,
+        "[#187 轨路由 {width}] 四键上沿必须钉在面板内 y=22"
+    );
+    assert_eq!(midi.3, 20, "[#187 轨路由 {width}] 四键高必须 20");
+    assert_eq!(delete.3, 20, "[#187 轨路由 {width}] 删除键高必须 20");
+
+    if expected.contains(&"track-delete-reason") {
+        let reason = bounds(&tree, "track-delete-reason");
+        assert!(
+            reason.1 + reason.3 as i32 <= pane.1 + pane.3 as i32,
+            "[#187 轨路由 {width}] 原因行底沿必须留在面板内"
+        );
+    }
+}
+
+// ===========================================================================
+// ④ 编曲画布（`workspace-arrangement-canvas` / `clip-*` / `track-*` / 自动化泳道）
+// ===========================================================================
+fn check_arrangement(width: u32, height: u32) {
+    let live = live_window((width, height), 0);
+    let tree = runtime_tree(live.ui());
+
+    let canvas = bounds(&tree, "workspace-arrangement-canvas");
+    let right_rail = bounds(&tree, "ai-rail");
+    assert_eq!(
+        canvas.0 + canvas.2 as i32,
+        right_rail.0,
+        "[#187 编曲画布 {width}x{height}] 画布右沿必须 = 右栏左沿（画布 clip 的边界）"
+    );
+
+    // ---- ④-1 轨道头（容器组）：两两不相交。
+    let label = format!("编曲画布 轨道头 {width}x{height}");
+    report_line(&assert_ids_pairwise(&tree, TRACK_HEADERS, &label));
+
+    // ---- ④-2 头内子节点（叶子组）：两两不相交 ＋ 各自落在自己的头里。
+    let mut child_ids: Vec<String> = Vec::new();
+    for track in 0..6 {
+        for suffix in ["color-swatch", "mute-button", "solo-button"] {
+            child_ids.push(format!("track-{track}-{suffix}"));
+        }
+    }
+    let child_refs: Vec<&str> = child_ids.iter().map(String::as_str).collect();
+    let label = format!("编曲画布 轨道头子节点 {width}x{height}");
+    report_line(&assert_ids_pairwise(&tree, &child_refs, &label));
+    for track in 0..6 {
+        let header = format!("track-{track}-header");
+        for suffix in ["color-swatch", "mute-button", "solo-button"] {
+            let child = format!("track-{track}-{suffix}");
+            assert_inside(
+                &tree,
+                &child,
+                &header,
+                &format!("编曲画布 {width}x{height}"),
+            );
+        }
+    }
+
+    // ---- ④-3 剪辑头（`list-item` 叶子，⛔ 不排）/ ④-4 自动化泳道 / ④-5 章节卡。
+    let label = format!("编曲画布 剪辑头 {width}x{height}");
+    report_line(&assert_ids_pairwise(&tree, CLIP_HEADERS, &label));
+    let label = format!("编曲画布 自动化泳道 {width}x{height}");
+    report_line(&assert_ids_pairwise(&tree, AUTOMATION_LANES, &label));
+    let sections = section_cards_for(width);
+    let label = format!("编曲画布 章节卡 {width}x{height}");
+    report_line(&assert_ids_pairwise(&tree, sections, &label));
+
+    // ---- 排除项（按设计覆盖，逐条登记在报告 §3）：
+    //   `arrangement-ruler` 是标尺**带**，按设计包住 `arrangement-loop-brace`；
+    //   `arrangement-playhead` 是 1px 竖向走带光标，按设计压在剪辑 / 泳道上。
+    assert!(
+        tree.find_by_id("arrangement-ruler").is_some(),
+        "[#187 编曲画布 {width}] 标尺带必须在场"
+    );
+    assert!(
+        tree.find_by_id("arrangement-loop-brace").is_some(),
+        "[#187 编曲画布 {width}] 循环选区把手必须在场（它是标尺带**内**的滑块，按设计压在带上）"
+    );
+    if width >= 1440 {
+        let playhead = bounds(&tree, "arrangement-playhead");
+        assert_eq!(
+            playhead.2, 1,
+            "[#187 编曲画布 {width}] 播放头必须是 1px 竖线"
+        );
+        assert_eq!(
+            playhead.1,
+            canvas.1 + 20,
+            "[#187 编曲画布 {width}] 播放头上沿"
+        );
+    } else {
+        // 1024 档：播放头 x = 画布左沿 + 528 = 768 > 画布右沿 744 ⇒ 完全被 clip ⇒ 不进树。
+        assert!(
+            tree.find_by_id("arrangement-playhead").is_none(),
+            "[#187 编曲画布 {width}] 播放头整条落在画布外 ⇒ 必须在树外（⛔ 不许越界画出）"
+        );
+    }
+}
+
+// ===========================================================================
+// ⑤ 状态栏（`status-bar*`）
+// ===========================================================================
+fn check_status_bar(width: u32, height: u32, save_status: bool) {
+    let mut live = live_window((width, height), 0);
+    if save_status {
+        live.ui()
+            .set_save_status("已保存工程 · 写盘 1 次 · 校验 0 项失败".into());
+    }
+    let tree = if save_status {
+        live.refresh_tree(None).expect("运行时控件树").clone()
+    } else {
+        runtime_tree(live.ui())
+    };
+
+    let pane = bounds(&tree, "status-bar");
+    assert_eq!(pane.3, 24, "[#187 状态栏 {width}] 带高必须是 24px");
+    assert_eq!(
+        pane.1 + pane.3 as i32,
+        height as i32,
+        "状态栏必须贴着窗口底沿"
+    );
+
+    let expected = if save_status {
+        STATUS_BAR_SAVED
+    } else {
+        STATUS_BAR_DEFAULT
+    };
+    // ⚠ `status-bar` 本身是这一段的**段根**（`accessible-role: content-info`，不在
+    // `is_container_role` 的容器表里）⇒ 按"段盒子本身不参与两两"的口径逐条摘掉；
+    // 它是 `content-info`，⛔ 不是叶子控件。
+    let reading = assert_pairwise_excluding(
+        &tree,
+        pane,
+        Selection::Inside,
+        expected,
+        &["status-bar".to_owned()],
+        &format!("#187 状态栏 {width}x{height}"),
+    );
+    report_line(&reading);
+
+    // ---- 判据 ②：中间那一格的右沿必须 ≤ 音频配置格的左沿（半开区间：贴边不算交）。
+    let mid_id = if save_status {
+        "status-bar-save-status"
+    } else {
+        "status-bar-shortcut-tip"
+    };
+    let mid = bounds(&tree, mid_id);
+    let device = bounds(&tree, "status-bar-device");
+    assert_eq!(mid.0, pane.0 + 344, "[#187 状态栏 {width}] 中间格左沿");
+    assert_eq!(
+        device.0,
+        pane.0 + width as i32 - 268,
+        "[#187 状态栏 {width}] 音频配置格左沿"
+    );
+    assert!(
+        mid.0 + mid.2 as i32 <= device.0,
+        "[#187 状态栏 {width}] `{mid_id}` 右沿 {} 必须 ≤ `status-bar-device` 左沿 {}（实测相交 {}px）",
+        mid.0 + mid.2 as i32,
+        device.0,
+        mid.0 + mid.2 as i32 - device.0
+    );
+    report_line(&format!(
+        "[#187 状态栏 {width}x{height} 回执态={save_status}] `{mid_id}` {mid:?} ≤ `status-bar-device` {device:?} ⇒ 不相交"
+    ));
+
+    // ---- 两格 `visible` 互斥：同一时刻只有一格在树里（另一格不画）。
+    let other = if save_status {
+        "status-bar-shortcut-tip"
+    } else {
+        "status-bar-save-status"
+    };
+    assert!(
+        tree.find_by_id(other).is_none(),
+        "[#187 状态栏 {width}] 另一格 `{other}` 必须按 design 不在树里（两格共用同一块矩形）"
+    );
+}
+
+// ===========================================================================
+// ⑥ AI 右栏（`ai-rail*` ＋ 模块入口）
+// ===========================================================================
+fn check_ai_rail(width: u32, height: u32) {
+    let live = live_window((width, height), 0);
+    let tree = runtime_tree(live.ui());
+
+    let pane = bounds(&tree, "ai-rail");
+    assert_eq!(pane.2, 280, "[#187 AI 右栏 {width}] 右栏宽必须 280");
+    let expected = if width >= 1440 {
+        AI_RAIL_WIDE
+    } else {
+        AI_RAIL_NARROW
+    };
+    let reading = assert_pairwise(
+        &tree,
+        pane,
+        Selection::LeftEdgeInside,
+        expected,
+        &format!("#187 AI 右栏 {width}x{height}"),
+    );
+    report_line(&reading);
+
+    // ---- 判据 ②：诊断卡下沿 ≤ 导出键上沿；导出键与审查键同一行、左右分开。
+    let diagnose = bounds(&tree, "ai-rail-diagnose-button");
+    let export = bounds(&tree, "diagnostics-export-action");
+    let musical_pr = bounds(&tree, "ai-rail-musical-pr-button");
+    assert!(
+        diagnose.1 + diagnose.3 as i32 <= export.1,
+        "[#187 AI 右栏 {width}] 声学诊断卡底沿 {} 必须 ≤ 导出诊断包上沿 {}（修前相交 20px）",
+        diagnose.1 + diagnose.3 as i32,
+        export.1
+    );
+    assert_eq!(
+        export.1, musical_pr.1,
+        "[#187 AI 右栏 {width}] 导出键与审查键必须同一行"
+    );
+    assert_eq!(
+        export.3, musical_pr.3,
+        "[#187 AI 右栏 {width}] 导出键与审查键同高"
+    );
+    assert!(
+        export.0 + export.2 as i32 <= musical_pr.0,
+        "[#187 AI 右栏 {width}] 导出键右沿 {} 必须 ≤ 审查键左沿 {}",
+        export.0 + export.2 as i32,
+        musical_pr.0
+    );
+    assert_eq!(export.0 - pane.0, 8, "[#187 AI 右栏 {width}] 导出键左沿");
+    assert_eq!(
+        musical_pr.0 + musical_pr.2 as i32,
+        pane.0 + pane.2 as i32 - 8,
+        "[#187 AI 右栏 {width}] 审查键右沿必须钉在右栏右沿 − 8"
+    );
+    report_line(&format!(
+        "[#187 AI 右栏 {width}x{height}] diagnose {diagnose:?} / export {export:?} / musical-pr {musical_pr:?} ⇒ 两键上下分开、左右分开"
+    ));
+
+    // ---- 判据 ⑤：模块入口标题**一位没动**（仍是右栏内 y=212），证明修法不靠下移。
+    let title = bounds(&tree, "module-actions-title");
+    assert_eq!(
+        title.1 - pane.1,
+        212,
+        "[#187 AI 右栏 {width}] `module-actions-title` 必须仍在 y=212（⛔ 不靠整体下移换绿）"
+    );
+
+    // ---- 取法的守卫：1024 档 `arrangement-loop-brace` 的包围盒伸进右栏，但左沿在
+    //     画布内（被画布 clip）⇒ `LeftEdgeInside` 必须把它挡在段外。
+    if width == 1024 {
+        let brace = bounds(&tree, "arrangement-loop-brace");
+        assert!(
+            brace.0 < pane.0,
+            "[#187 AI 右栏 {width}] 这条取法的前提变了：`arrangement-loop-brace` 左沿 {} \
+             不再落在右栏外 —— 请重核 `Selection::LeftEdgeInside` 的裁决",
+            brace.0
+        );
+        assert!(
+            brace.0 + brace.2 as i32 > pane.0,
+            "[#187 AI 右栏 {width}] 前提也要求它**仍然**越界伸进右栏（否则这条守卫是空的）"
+        );
+    }
+
+    // ---- 1024 档：回执行被右栏裁剪区排掉（完全在树外），如实登记而不是静默。
+    if width < 1440 {
+        assert!(
+            tree.find_by_id("module-last-status").is_none(),
+            "[#187 AI 右栏 {width}] 1024 档 `module-last-status`（424..440 > 栏高 415）必须在树外"
+        );
+    }
+}
+
+// ===========================================================================
+// 判据 ⑤（设备链卡片区）：三档 ＋ 三种夹具
+// ===========================================================================
+#[test]
+fn the_device_card_chain_has_no_two_controls_in_the_same_place() {
+    for &(width, height) in TIERS {
+        // (a) 演示工程：1 台设备；1024 档占位卡放不下 ⇒ 整张撤下（清单少一个）。
+        let expected_wide: &[&str] = CARD_AREA_DEMO_WIDE;
+        let expected_narrow: &[&str] = CARD_AREA_DEMO_NARROW;
+        if let Err(payload) = std::thread::spawn(move || {
+            // 三档里只有 1024 档的裁剪区（281px）放不下占位卡的 288px 底沿。
+            let expected = if width >= 1440 {
+                expected_wide
+            } else {
+                expected_narrow
+            };
+            check_device_card_area(
+                width,
+                height,
+                yeban_model::samples::demo_project(),
+                "演示",
+                expected,
+                1,
+            );
+        })
+        .join()
+        {
+            std::panic::resume_unwind(payload);
+        }
+        // (b) 空设备链：空态文案 ＋ 占位卡（三档同清单）。
+        if let Err(payload) = std::thread::spawn(move || {
+            check_device_card_area(
+                width,
+                height,
+                project_without_devices(),
+                "空链",
+                CARD_AREA_EMPTY,
+                0,
+            );
+        })
+        .join()
+        {
+            std::panic::resume_unwind(payload);
+        }
+        // (c) 只有主总线：两条"逐字原因"行都出现（三档同清单）。
+        if let Err(payload) = std::thread::spawn(move || {
+            check_device_card_area(
+                width,
+                height,
+                project_master_only(),
+                "只有主总线",
+                CARD_AREA_MASTER_ONLY,
+                0,
+            );
+        })
+        .join()
+        {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+// ===========================================================================
+// 判据 ②（装乐器行）：三档
+// ===========================================================================
+#[test]
+fn the_instrument_install_row_has_no_two_controls_in_the_same_place() {
+    for &(width, height) in TIERS {
+        if let Err(payload) = std::thread::spawn(move || check_instrument_row(width, height)).join()
+        {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+// ===========================================================================
+// 判据 ③（轨路由四键区）：三档 ＋ 只有主总线（原因行）一档
+// ===========================================================================
+#[test]
+fn the_track_routing_buttons_have_no_two_controls_in_the_same_place() {
+    for &(width, height) in TIERS {
+        if let Err(payload) = std::thread::spawn(move || {
+            check_track_routing(
+                width,
+                height,
+                yeban_model::samples::demo_project(),
+                "演示",
+                ROUTING_DEMO,
+            );
+        })
+        .join()
+        {
+            std::panic::resume_unwind(payload);
+        }
+        if let Err(payload) = std::thread::spawn(move || {
+            check_track_routing(
+                width,
+                height,
+                project_master_only(),
+                "只有主总线",
+                ROUTING_MASTER_ONLY,
+            );
+        })
+        .join()
+        {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+// ===========================================================================
+// 判据 ④（编曲画布）：三档，分组两两不相交
+// ===========================================================================
+#[test]
+fn the_arrangement_canvas_has_no_two_controls_in_the_same_place() {
+    for &(width, height) in TIERS {
+        if let Err(payload) = std::thread::spawn(move || check_arrangement(width, height)).join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+// ===========================================================================
+// 判据 ⑤（状态栏）：三档 × (提示态 / 保存回执态)
+// ===========================================================================
+#[test]
+fn the_status_bar_has_no_two_controls_in_the_same_place() {
+    for &(width, height) in TIERS {
+        for save_status in [false, true] {
+            if let Err(payload) =
+                std::thread::spawn(move || check_status_bar(width, height, save_status)).join()
+            {
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// 判据 ⑥（AI 右栏）：三档
+// ===========================================================================
+#[test]
+fn the_ai_rail_has_no_two_controls_in_the_same_place() {
+    for &(width, height) in TIERS {
+        if let Err(payload) = std::thread::spawn(move || check_ai_rail(width, height)).join() {
             std::panic::resume_unwind(payload);
         }
     }

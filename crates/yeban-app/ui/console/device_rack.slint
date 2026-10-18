@@ -329,6 +329,12 @@ export component DeviceRack inherits Rectangle {
     property <length> send-create-y: 82px + 40px * root.send-destination-names.length
         + (root.send-destination-names.length == 0 ? 22px : 0px);
 
+    /// ⭐ 任务单 `#187`：插件宿主占位卡片的上沿（见下面「插件宿主卡片」那段）。
+    /// 空设备链时让到 `240`（空态文案 `216..236` ＋ 4px）；有设备时仍是 `#163` 的
+    /// `216 + 46n + 4`（逐位不动）。
+    property <length> placeholder-y: 216px + 46px * root.device-names.length
+        + (root.device-names.length == 0 ? 24px : 4px);
+
     // ---------------------------------------------------------------- 标题
     UiText {
         x: Tokens.space-4;
@@ -1414,9 +1420,19 @@ export component DeviceRack inherits Rectangle {
     }
 
     // 插件宿主卡片 [v2.0.0] —— 明确未实现, 只登记占位卡片与 ID
+    //
+    // ⭐ 任务单 `#187`（同文件扩段，两处几何修）：
+    //   ① **空设备链**（`n == 0`）时，空态文案 `device-rack-empty` 住 `216..236`，
+    //      而 `#163` 的原式把这张卡放在 `216 + 4 = 220..242` ⇒ **压住文案 16px**
+    //      （1024 档实测 `(8,711,420,20)` ⟂ `(8,715,420,22)`）。空链时整体让到
+    //      `240`（与文案留 4px）；有设备时仍是 `216 + 46n + 4`，一位不动。
+    //   ② **卡片底沿不许越过第一段裁剪区**：1024 档 `device-rack` 高 281，
+    //      `n == 1` 时原式落在 `266..288` ⇒ 底部 7px 被 `clip: true` 吃掉＝半张卡。
+    //      放不下就整张撤下（与 `#184`「⛔ 不留碎片」同一条纪律）；1440/1920 上
+    //      `288 ≤ 367/393` ⇒ 照旧在场、几何一位不动。
     Rectangle {
         x: Tokens.space-4;
-        y: 216px + 46px * root.device-names.length + 4px;
+        y: root.placeholder-y;
         width: 420px;
         height: 22px;
         background: Tokens.bg-void;
@@ -1424,6 +1440,7 @@ export component DeviceRack inherits Rectangle {
         border-width: 1px;
         border-color: Tokens.line;
         clip: true;
+        visible: root.placeholder-y + 22px <= root.height;
         accessible-role: list-item;
         accessible-id: "device-plugin-host-placeholder-card";
         accessible-label: "商业插件宿主卡片 (v2.0.0, 未实现)";

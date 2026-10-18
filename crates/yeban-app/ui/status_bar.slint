@@ -138,6 +138,19 @@ export component StatusBar inherits Rectangle {
     // 保存成功 / 被拒（宿主注入的读数，`.slint` 只用来选颜色）。
     in property <bool> save-succeeded: false;
 
+    // ⭐ 任务单 `#187`：中间那一格（快捷键提示 / 最近一次保存回执）的**宽度**。
+    //
+    // 宽档仍是 `ROAD-M4-008` 的 480px（⛔ 一位不动）；窗口窄到 `root.width < 1092` 时
+    // 收到 `root.width - 612px` —— 612 = 本格左沿 344 + 右格（`status-bar-device`）
+    // 左沿偏移 268，于是**本格右沿恒 ≤ 右格左沿**。
+    // 1024 档实测（`#187` 修前）：本格 `(344, 776, 480, 24)` ⟂
+    // `status-bar-device (756, 776, 256, 24)` ⇒ 相交 **68 × 24 px²**；
+    // 修后本格 `(344, 776, 412, 24)`，右沿 `756 = 756` ⇒ 边贴边、⛔ 不算相交。
+    // ⚠ 两格（`status-bar-shortcut-tip` / `status-bar-save-status`）**共用**这一条宽度：
+    // 它们按设计同住一块矩形、`visible` 互斥 ⇒ 修一格必须同时修另一格，否则保存过之后
+    // 同一个缺陷会以另一个 id 回来。
+    property <length> tip-width: max(0px, min(480px, root.width - 612px));
+
     min-height: Tokens.status-bar-height;
     max-height: Tokens.status-bar-height;
     background: Tokens.bg-panel;
@@ -182,7 +195,7 @@ export component StatusBar inherits Rectangle {
     UiText {
         x: 344px;
         y: 0;
-        width: 480px;
+        width: root.tip-width;
         height: parent.height;
         visible: root.save-status == "";
         text: root.tip;
@@ -197,7 +210,7 @@ export component StatusBar inherits Rectangle {
     UiText {
         x: 344px;
         y: 0;
-        width: 480px;
+        width: root.tip-width;
         height: parent.height;
         visible: root.save-status != "";
         text: root.save-status;
