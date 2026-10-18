@@ -166,8 +166,22 @@ const DEFAULT_MASTER_DIGEST: &str =
     "b242d510d581541732134d3c0e233a11d6045ffb65535675adc73501fb28eefb";
 
 /// 同一份默认夹具的 RIFF **文件字节** SHA-256 —— 钉死的常量。
+///
+/// **`#214` 重钉（基线三件套）**：旧值 `b9472fcd…` 是在"BWF 的
+/// `OriginationDate`/`OriginationTime` 取自注入墙钟（`1_760_000_000_000`
+/// = 2025-10-09T08:53:20Z）"时测到的；现在两条戳取自**工程创建时刻**
+/// [`FIXTURE_CREATED_AT_MS`]（2023-11-14T22:13:20Z）⇒ 文件字节变了、母带样本
+/// 一位没变（`DEFAULT_MASTER_DIGEST` 仍是旧值）。判据逻辑、断言条数、`#[ignore]`
+/// 一概未动；新值由判据自己报出后照抄。
 const DEFAULT_MASTER_SHA256: &str =
-    "b9472fcd20086efd4953d457dde26169d1374f592bc90a0cf7b81304e0b69cc4";
+    "874f532af830421529af8c3ba5a37175a85553aa954c25abd54d09a9ee25cb96";
+
+/// 夹具工程的创建时刻 —— BWF 两条 ASCII 戳（`OriginationDate` / `OriginationTime`）
+/// 的**唯一**来源（`#214`）。
+///
+/// 刻意**不等于**注入的墙钟（`1_760_000_000_000`）：若两者相等，"戳来自工程还是
+/// 来自墙钟"在读数上不可区分，判据就没有牙。`1_700_000_000_000` = 2023-11-14T22:13:20Z。
+const FIXTURE_CREATED_AT_MS: u64 = 1_700_000_000_000;
 
 /// 设备夹具。
 fn device(seed: u32, latency_samples: u32, bypassed: bool) -> DeviceDefinition {
@@ -198,6 +212,10 @@ fn project(spec: &Spec) -> YebanProjectV1 {
         ..YebanProjectV1::default()
     };
     project.audio_config.sample_rate = SampleRate::Hz48000;
+    // `#214`：BWF 的两条 ASCII 戳取自工程创建时刻，不是墙钟 ⇒ 夹具必须显式给它，
+    // 否则默认的 `0`（未知）会写成 1970-01-01，与"戳来自工程"这条判据混在一起。
+    project.metadata.created_at_unix_ms = FIXTURE_CREATED_AT_MS;
+    project.metadata.modified_at_unix_ms = FIXTURE_CREATED_AT_MS;
     project.tracks.insert(
         master,
         TrackV3 {
@@ -555,20 +573,21 @@ fn two_renders_of_the_same_project_are_byte_identical() {
 }
 
 // ---------------------------------------------------------------------------
-// 判据 2b：墙钟字段必须来自**注入的时钟**，且换时钟只许改墙钟
+// 判据 2b：墙钟只进报文（`renderedAtUnixMs`），⛔ 不进文件字节（#214）
 // ---------------------------------------------------------------------------
 
-/// `renderedAtUnixMs` 是渲染报文里的墙钟来源之一（另一个是 BEXT 的
-/// `originationDate` / `originationTime`，它们按 BWF 规范**写进容器字节**）。
-/// 类别③（重开与全新实例一致）把墙钟登记为**允许的**跨进程差异 —— 允许差异不等于
-/// 没有契约：本条要求读数**等于注入时钟**（`Domain::set_now_ms`，夹具注入
-/// `1_760_000_000_000`），并机械枚举**换一个注入时钟到底改动了哪几个字段**。
+/// `#214` 的**结论判据**：换注入时钟（`Domain::set_now_ms`；夹具固定注入
+/// `1_760_000_000_000`）⇒ 报文 `renderedAtUnixMs` 跟着变，**文件字节一位不变**。
 ///
-/// 为什么单列：BEXT 的两条 ASCII 口径被**文件字节**的摘要常量间接钉住了
-/// （判据 2 的 `DEFAULT_MASTER_SHA256` 会因为它们变化而变红），而
-/// `renderedAtUnixMs` **不进文件字节** ⇒ 把它写死成 `0` 全仓没有一条判据会红。
+/// 修前行为（`#209` 实测）：BWF 的 `OriginationDate` / `OriginationTime` 取自这个
+/// 墙钟 ⇒ 同一命令跑两次、两次落在不同的秒 ⇒ 整文件 `sha256` 不同（`masterDigest`
+/// 却相同，因为 PCM 没变）。修后两条戳取自工程创建时刻
+/// （[`FIXTURE_CREATED_AT_MS`]），墙钟只进报文。
+///
+/// 为什么单列：`renderedAtUnixMs` **不进文件字节** ⇒ 把它写死成 `0` 全仓没有一条
+/// 判据会红；而 BWF 的两条戳现在由工程夹具 + `DEFAULT_MASTER_SHA256` 共同钉住。
 #[test]
-fn the_render_report_carries_the_injected_clock_and_only_that() {
+fn the_wall_clock_reaches_the_report_but_not_the_file() {
     const INJECTED_MS: u64 = 1_760_000_000_000; // 2025-10-09T08:53:20Z
     let scratch = Scratch::new("injected-clock");
     let (mut dispatcher, auth) =
@@ -588,19 +607,20 @@ fn the_render_report_carries_the_injected_clock_and_only_that() {
         first["data"]["renderedAtUnixMs"], INJECTED_MS,
         "报文必须带上注入时钟: {first}"
     );
-    // 同一个注入时钟也算出 BEXT 的两条 ASCII 口径（`civil_from_unix_ms` 的消费者）。
-    assert_eq!(first["data"]["bwf"]["originationDate"], "2025-10-09");
-    assert_eq!(first["data"]["bwf"]["originationTime"], "08:53:20");
+    // 两条 ASCII 戳来自**工程**（`1_700_000_000_000` = 2023-11-14T22:13:20Z），
+    // 与注入的墙钟（2025-10-09T08:53:20Z）刻意不同 ⇒ 来源可区分。
+    assert_eq!(first["data"]["bwf"]["originationDate"], "2023-11-14");
+    assert_eq!(first["data"]["bwf"]["originationTime"], "22:13:20");
     let first_bytes = fs::read(&out).expect("第一轮产物");
 
-    // 换一个注入时钟（+1 天 +1 秒 ⇒ 日期与时刻**两条**都变，枚举才完整）。
+    // 换一个注入时钟（+1 天 +1 秒 ⇒ 修前这会让两条 BWF 戳都变）。
     const SHIFTED_MS: u64 = INJECTED_MS + 86_401_000; // 2025-10-10T08:53:21Z
     dispatcher.domain_mut().set_now_ms(SHIFTED_MS);
     let second = call(&mut dispatcher, &auth, arguments);
     assert_eq!(second["status"], "success", "{second}");
     assert_eq!(second["data"]["renderedAtUnixMs"], SHIFTED_MS);
-    assert_eq!(second["data"]["bwf"]["originationDate"], "2025-10-10");
-    assert_eq!(second["data"]["bwf"]["originationTime"], "08:53:21");
+    assert_eq!(second["data"]["bwf"]["originationDate"], "2023-11-14");
+    assert_eq!(second["data"]["bwf"]["originationTime"], "22:13:20");
 
     /// 两份 JSON 对象里**取值不同**的键（排序后）。
     fn changed_keys(left: &Value, right: &Value) -> Vec<String> {
@@ -617,37 +637,175 @@ fn the_render_report_carries_the_injected_clock_and_only_that() {
         keys
     }
 
-    // 机械枚举: `data` 里**恰好**三个顶层键随注入时钟变 —— `bwf` 这一项出现，
-    // 只是因为**它内部**的两条戳变了（下面单独枚举），不是多出来一个字段。
+    // 机械枚举: `data` 里**恰好**一个顶层键随注入时钟变 —— `renderedAtUnixMs`。
+    // 修前 `sha256` 与 `bwf` 也会出现在这里（`#214` 的缺陷本体）。
     let top_changed = changed_keys(&first["data"], &second["data"]);
     assert_eq!(
         top_changed,
-        vec![
-            "bwf".to_owned(),
-            "renderedAtUnixMs".to_owned(),
-            "sha256".to_owned()
-        ],
-        "换注入时钟只许改这三个顶层字段, 实际 {top_changed:?}"
+        vec!["renderedAtUnixMs".to_owned()],
+        "换注入时钟只许改报文里的墙钟读数, 实际 {top_changed:?}"
     );
-    // `data.bwf` 里恰好两条 ASCII 戳随它变。
+    // BWF 的两条 ASCII 戳**不**随墙钟变。
     assert_eq!(
         changed_keys(&first["data"]["bwf"], &second["data"]["bwf"]),
-        vec!["originationDate".to_owned(), "originationTime".to_owned()],
-        "换注入时钟只许改 BEXT 的两条戳"
+        Vec::<String>::new(),
+        "BWF 的两条戳不许跟着墙钟走"
     );
-    // 时钟**不许**碰音频：浮点母带摘要、帧数、容器长度都不动；BEXT 戳在**文件字节**
-    // 里（BWF 规范要求的字段）⇒ 容器字节会变，但长度不变。
+    // 墙钟**不许**碰音频，也不许碰文件字节：母带摘要、帧数、容器长度、整文件都相同。
     assert_eq!(
         second["data"]["masterDigest"],
         first["data"]["masterDigest"]
     );
     assert_eq!(second["data"]["frames"], first["data"]["frames"]);
     assert_eq!(second["data"]["bytes"], first["data"]["bytes"]);
+    assert_eq!(second["data"]["sha256"], first["data"]["sha256"]);
     let second_bytes = fs::read(&out).expect("第二轮产物");
-    assert_eq!(second_bytes.len(), first_bytes.len());
-    assert_ne!(
+    assert_eq!(
         second_bytes, first_bytes,
-        "BEXT 的日期/时间戳必须真的写进容器字节（换时钟就该改动它们）"
+        "换墙钟不许改动产物的任何一个字节（#214 的缺陷就是这一条为假）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 2c：分离读数 —— chunk 表（#214 判据 1 / 2 / 3）
+// ---------------------------------------------------------------------------
+
+/// 两次渲染（墙钟相差一天一秒）的 **chunk 表**逐项相同、`data` 载荷逐字节相同、
+/// 整文件 `sha256` 相同。
+///
+/// 为什么先分离再修：`#209` 的读数只有"整文件 `sha256` 不同 + `masterDigest` 相同"，
+/// 这留下两种可能 —— ① PCM 真的变了（抖动 / 未初始化缓冲），② 只有封装里的时间戳
+/// 变了。逐 chunk 的读数把两者分开。**修前实测**（同一条命令、两次进程）：
+/// `fmt ` 16 B 相同；`data` 540000 B 相同（`sha256 = 73092e20ada70c6f…`）；
+/// `bext` 641 B **不同**，且只有负载偏移 337（= `OriginationTime` 的秒个位）
+/// 这 1 个字节在动（`'4'` → `'7'`）。⇒ PCM 没有差异，缺陷只在封装。
+///
+/// 本判据钉住修后的读数：**三个 chunk 全部逐项相同**。
+#[test]
+fn two_renders_under_different_wall_clocks_are_byte_identical_chunk_by_chunk() {
+    const INJECTED_MS: u64 = 1_760_000_000_000; // 2025-10-09T08:53:20Z
+    let scratch = Scratch::new("chunk-table");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let first_path = scratch.join("a.wav");
+    let second_path = scratch.join("b.wav");
+    let first = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": first_path.display().to_string()}),
+    );
+    assert_eq!(first["status"], "success", "{first}");
+    // 墙钟跨秒（修前 `bext` 的秒个位必变）。
+    dispatcher.domain_mut().set_now_ms(INJECTED_MS + 86_401_000);
+    let second = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": second_path.display().to_string()}),
+    );
+    assert_eq!(second["status"], "success", "{second}");
+
+    /// `(fourcc, 负载长度, 负载 SHA-256)`，按文件顺序。
+    fn chunk_table(path: &Path) -> Vec<(String, usize, String)> {
+        let bytes = fs::read(path).expect("读产物");
+        let parsed = parse_container(&bytes).expect("产物必须是合法容器");
+        parsed
+            .chunks
+            .iter()
+            .map(|chunk| {
+                let payload =
+                    &bytes[chunk.payload_offset..chunk.payload_offset + chunk.payload_len];
+                (
+                    String::from_utf8_lossy(&chunk.fourcc).into_owned(),
+                    chunk.payload_len,
+                    yeban_model::AssetHash::of_bytes(payload)
+                        .as_str()
+                        .to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    let a = chunk_table(&first_path);
+    let b = chunk_table(&second_path);
+    // chunk 名字与长度：RIFF + `fmt ` + `bext` + `data`。
+    assert_eq!(
+        a.iter()
+            .map(|(name, len, _)| (name.as_str(), *len))
+            .collect::<Vec<_>>(),
+        vec![
+            ("fmt ", 16),
+            ("bext", BEXT_FIXED_LEN + 39),
+            // 夹具：1 秒 @ 48 kHz × 2 声道 × 3 字节 = 288000。
+            ("data", 288_000)
+        ],
+        "chunk 表: {a:?}"
+    );
+    // 整表逐项相同（名字、长度、负载摘要）⇒ `data` 相同、`bext` 也相同。
+    assert_eq!(a, b, "两次渲染（墙钟不同）的 chunk 表必须逐项相同");
+    assert_eq!(a[2].2, b[2].2, "`data` 载荷必须逐字节相同");
+    assert_eq!(first["data"]["sha256"], second["data"]["sha256"]);
+    assert_eq!(
+        first["data"]["masterDigest"],
+        second["data"]["masterDigest"]
+    );
+    // 而墙钟确实不同 —— 否则这条判据可能只是因为两次落在同一秒而假绿。
+    assert_ne!(
+        first["data"]["renderedAtUnixMs"], second["data"]["renderedAtUnixMs"],
+        "两次渲染的注入墙钟必须不同, 判据才有牙"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 2d：判据不是恒真 —— 改一个音符，文件必须变
+// ---------------------------------------------------------------------------
+
+/// 同一份工程、只把**一个音符的力度**从 100 改成 101 ⇒ 文件 `sha256` 与母带
+/// `masterDigest` **都必须变**，而 BWF 元数据不变（差异在 PCM 里，不在戳里）。
+///
+/// 为什么需要它：判据 2 / 2b / 2c 断言的是"两次渲染相同"。若文件写入被换成写常量
+/// （或渲染被短路成静音），那些判据**全部仍然绿**。本判据是它们的反向对照。
+#[test]
+fn a_one_note_change_moves_the_file_hash() {
+    let scratch = Scratch::new("one-note-change");
+    let (mut base, auth) = dispatcher_with(&project(&Spec::default()), &scratch.join("base.yeban"));
+    let base_path = scratch.join("base.wav");
+    let plain = call(
+        &mut base,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": base_path.display().to_string()}),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+
+    let varied_spec = Spec {
+        velocity: 101,
+        ..Spec::default()
+    };
+    let (mut varied, varied_auth) =
+        dispatcher_with(&project(&varied_spec), &scratch.join("varied.yeban"));
+    let varied_path = scratch.join("varied.wav");
+    let changed = call(
+        &mut varied,
+        &varied_auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": varied_path.display().to_string()}),
+    );
+    assert_eq!(changed["status"], "success", "{changed}");
+
+    assert_ne!(
+        plain["data"]["sha256"], changed["data"]["sha256"],
+        "改一个音符力度必须改变整文件 sha256"
+    );
+    assert_ne!(
+        plain["data"]["masterDigest"], changed["data"]["masterDigest"],
+        "改一个音符力度必须改变母带样本摘要"
+    );
+    assert_eq!(
+        plain["data"]["bwf"], changed["data"]["bwf"],
+        "差异必须在 PCM 里, 不在 BWF 元数据里"
+    );
+    assert_eq!(
+        fs::read(&base_path).expect("base").len(),
+        fs::read(&varied_path).expect("varied").len(),
+        "改力度只改样本值, 不改文件长度"
     );
 }
 
@@ -1194,8 +1352,8 @@ fn the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attache
         "默认路径的母带样本摘要必须与本切片之前逐位相同"
     );
     assert_eq!(
-        plain["data"]["sha256"], "b9472fcd20086efd4953d457dde26169d1374f592bc90a0cf7b81304e0b69cc4",
-        "默认路径的文件摘要必须与本切片之前逐位相同"
+        plain["data"]["sha256"], DEFAULT_MASTER_SHA256,
+        "默认路径的文件摘要必须与判据 2 钉死的那一个逐位相同"
     );
 
     let measured = plain["data"]["loudness"]["measuredIntegratedLufs"]

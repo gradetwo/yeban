@@ -1358,3 +1358,93 @@ fn the_test_mode_flag_is_reported_by_the_process() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// **`#214` 的生产形状判据**：真的 spawn **两次** `yeban-mcp`（每个进程在启动时各读一次
+/// 墙钟），对**同一份容器工程**跑同一条 `yeban_render_master`，两次落盘的 WAV 必须逐字节
+/// 相同。
+///
+/// 两次会话之间**故意隔 1.1 秒**：修前 `bext` 的 `OriginationTime` 取自进程启动墙钟，
+/// 两次必然落在不同的秒 ⇒ 整文件 `sha256` 不同（这正是 `#209` 的现象）。若两次恰好落在
+/// 同一秒，修前的实现也会绿 —— 所以这段延迟就是判据的牙；同时断言两次的
+/// `renderedAtUnixMs` 确实不同。
+///
+/// 单位 = 两个进程各一次 `yeban_render_master`（响应 + 落盘文件）。墙钟由**进程自己**取，
+/// 不靠 `Domain::set_now_ms` 注入 —— 注入时钟在修前会被两次调用共享，缺陷根本不会出现，
+/// 那等于没测。
+#[test]
+fn two_processes_render_the_same_wav_bytes() {
+    let project = write_container_project("e2e-wav-repro.yeban");
+    let dir = scratch().join("wav-repro");
+    std::fs::create_dir_all(&dir).expect("建 wav-repro 目录");
+
+    let mut results = Vec::new();
+    for (index, name) in ["first.wav", "second.wav"].into_iter().enumerate() {
+        if index == 1 {
+            std::thread::sleep(Duration::from_millis(1_100));
+        }
+        let out = dir.join(name);
+        let responses = session(&[
+            req(
+                1,
+                "tools/call",
+                serde_json::json!({
+                    "name": "yeban_open_project",
+                    "arguments": {"path": project.display().to_string()},
+                }),
+            ),
+            req(
+                2,
+                "tools/call",
+                serde_json::json!({
+                    "name": "yeban_render_master",
+                    "arguments": {
+                        "format": "wav",
+                        "sampleRate": 48000,
+                        "path": out.display().to_string(),
+                    },
+                }),
+            ),
+        ]);
+        assert_eq!(
+            responses.len(),
+            2,
+            "open + render 必须各有一行响应: {responses:?}"
+        );
+        let rendered = responses[1]["result"].clone();
+        assert_eq!(rendered["status"], "success", "{rendered}");
+        results.push((out, rendered));
+    }
+
+    let (first_path, first) = &results[0];
+    let (second_path, second) = &results[1];
+    let first_bytes = std::fs::read(first_path).expect("第一份产物");
+    let second_bytes = std::fs::read(second_path).expect("第二份产物");
+    assert_eq!(
+        first_bytes.len(),
+        second_bytes.len(),
+        "两次的文件长度必须相同"
+    );
+    assert_eq!(
+        first_bytes, second_bytes,
+        "两次独立进程渲染同一工程必须逐字节相同 (#214)"
+    );
+    assert_eq!(first["data"]["sha256"], second["data"]["sha256"]);
+    assert_eq!(
+        first["data"]["masterDigest"], second["data"]["masterDigest"],
+        "PCM 摘要也必须相同"
+    );
+    // 两次进程的墙钟读数**必须**不同，否则"跨秒"这一条没有被验到。
+    assert_ne!(
+        first["data"]["renderedAtUnixMs"], second["data"]["renderedAtUnixMs"],
+        "两次进程必须读到不同的墙钟，判据才有牙"
+    );
+    // BWF 的两条戳来自工程创建时刻 ⇒ 两次相同。
+    assert_eq!(
+        first["data"]["bwf"]["originationDate"],
+        second["data"]["bwf"]["originationDate"]
+    );
+    assert_eq!(
+        first["data"]["bwf"]["originationTime"],
+        second["data"]["bwf"]["originationTime"]
+    );
+}

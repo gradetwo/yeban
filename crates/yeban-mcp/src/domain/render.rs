@@ -998,9 +998,10 @@ pub struct RenderArtifact {
     pub loudness: LoudnessTarget,
     /// `bext` 的 `OriginatorReference`（工程 ULID，`ARCH-FMT-001` 要求的映射）。
     pub originator_reference: String,
-    /// `bext` 的 `OriginationDate`。
+    /// `bext` 的 `OriginationDate` —— 取自**工程创建时刻**
+    /// （`metadata.created_at_unix_ms`），⛔ 不是导出时刻（`#214`）。
     pub origination_date: String,
-    /// `bext` 的 `OriginationTime`。
+    /// `bext` 的 `OriginationTime` —— 同 [`Self::origination_date`]。
     pub origination_time: String,
     /// `bext` 的 `CodingHistory`（写进文件的那一份）。
     pub coding_history: String,
@@ -1488,7 +1489,6 @@ pub fn build(
         &output.samples,
         sample_rate,
         project,
-        now_ms,
         request.format(),
         // 母带导出写 BWF 元数据（与 SFZ 导出刻意不同的**唯一**一处，见该函数的表）。
         true,
@@ -1557,6 +1557,21 @@ pub fn build(
 /// 返回 `(容器字节, 容器种类, 头部字节数, 载荷字节数, bext 日期, bext 时间,
 /// originatorReference, codingHistory)`；`with_bext == false` 时后四项为空串。
 ///
+/// # BWF 的两条 ASCII 戳**不取墙钟**（`#214`）
+///
+/// `OriginationDate` / `OriginationTime` 的唯一来源是
+/// [`YebanProjectV1::metadata`]`.created_at_unix_ms` —— 工程创建时刻**是输入的一部分**，
+/// 因此"同一份工程 ⇒ 同一串字节"。墙钟（`Domain::now_ms`）只进响应的
+/// `renderedAtUnixMs`，⛔ 一个字节都不进文件。
+///
+/// 之前的实现把导出时刻（墙钟）写进这两条戳：`masterDigest` 稳定而整文件
+/// `sha256` 每次不同（`#209` 实测：`58ec4f71…` vs `9b5d79e6…`），缺陷表现为
+/// "同一命令跑两次得到两份不同的 WAV"，而 PCM 一位没差。本函数的签名**不收**
+/// 墙钟参数，就是为了让那条路径在类型系统上不可能被重新接回来。
+///
+/// `created_at_unix_ms == 0`（未知/未记录）⇒ 写 `bext` 的默认纪元
+/// `1970-01-01` / `00:00:00`：那是**确定**的"未知"，而不是每次不同的"现在"。
+///
 /// # Errors
 ///
 /// 容器编码失败 ⇒ `RENDER_FAILED`（与调用方原来的出口同一个码）。
@@ -1565,7 +1580,6 @@ pub(super) fn write_master_container(
     samples: &[f32],
     sample_rate: u32,
     project: &YebanProjectV1,
-    now_ms: u64,
     format: &str,
     with_bext: bool,
 ) -> Result<
@@ -1585,7 +1599,8 @@ pub(super) fn write_master_container(
     let pcm = quantize(samples, BitDepth::Int24, &mut rng);
     let payload = pcm.to_le_bytes();
     let (origination_date, origination_time) = if with_bext {
-        math::bext_stamp(now_ms)
+        // 墙钟**不**在这里：见函数文档"BWF 的两条 ASCII 戳不取墙钟"。
+        math::bext_stamp(project.metadata.created_at_unix_ms)
     } else {
         (String::new(), String::new())
     };

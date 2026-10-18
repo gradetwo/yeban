@@ -2905,7 +2905,6 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             &outcome.samples,
             request.sample_rate,
             project,
-            domain.now_ms(),
             "wav",
             false,
         )?;

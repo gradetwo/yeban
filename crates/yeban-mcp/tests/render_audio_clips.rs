@@ -785,7 +785,14 @@ const PINNED_PAYLOAD_SHA256: &str =
     "1c6747217c02b1c93c3d24673568be2dc5ea58c5644552fb4fd5ca7a92775f31";
 
 /// 整份 RIFF 文件的 SHA-256。
-const PINNED_FILE_SHA256: &str = "6d290a90a091128c1842c6a7ce10f044773dafdcfc919b534f441f42d7522c37";
+///
+/// **`#214` 重钉（基线三件套）**：旧值
+/// `6d290a90a091128c1842c6a7ce10f044773dafdcfc919b534f441f42d7522c37` 是在 BWF 的
+/// `OriginationDate`/`OriginationTime` 取**注入墙钟**时测到的。现在两条戳取自工程
+/// 创建时刻（本夹具的工程没有创建时刻 ⇒ `0` ⇒ 纪元哨兵 `1970-01-01`/`00:00:00`）
+/// ⇒ **只有文件字节变了**；`PINNED_MASTER_DIGEST` 与 `PINNED_PAYLOAD_SHA256`
+/// **一位都没变**，这正是"缺陷在封装、不在 DSP"的读数。新值由判据自己报出后照抄。
+const PINNED_FILE_SHA256: &str = "f54069ab895a3f454c0101980b3e94c7ff0bee380b944b38e55a110462632f31";
 
 // ---------------------------------------------------------------------------
 // 判据 7 / 8 / 9：资产缺失、完整性、以及"声明了但没有字节"
@@ -1526,16 +1533,17 @@ fn a_placed_audio_clip_survives_save_close_reopen_with_its_assets_index() {
         second["data"]["audio"]["assets"][0]["bytesPresent"], true,
         "重开之后字节仍然在会话 CAS 池里: {second}"
     );
-    // 两次渲染：注入时钟固定 ⇒ `bext` 的墙钟字段也固定 ⇒ 产物逐字节相同。
+    // 两次渲染：`bext` 的两条戳取自**工程创建时刻**（`#214` 起，不再取墙钟）
+    // ⇒ 与注入时钟无关，产物逐字节相同。
     let first_bytes = fs::read(&first_out).expect("第一次产物");
     let second_bytes = fs::read(&second_out).expect("第二次产物");
     assert_eq!(
         first_bytes, second_bytes,
-        "同一工程 + 同一注入时钟 ⇒ 两次渲染必须逐字节相同"
+        "同一工程 ⇒ 两次渲染必须逐字节相同"
     );
     assert_eq!(
         first["data"]["sha256"], second["data"]["sha256"],
-        "同一工程 + 同一注入时钟 ⇒ 同一 sha256"
+        "同一工程 ⇒ 同一 sha256"
     );
 }
 
