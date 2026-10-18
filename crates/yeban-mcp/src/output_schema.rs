@@ -412,7 +412,9 @@ fn query_engine_state() -> Value {
             "yeban_query_engine_state 成功响应的 data",
             "三份状态各有唯一来源（`stateSources` 逐条给出）。`track` 只在给了 `trackId` 时是对象，\
              缺省是 `null`；`sends` 同样只在点名音轨时出现（缺省调用是诊断包 `projectIncluded:false` 的路径，\
-             不把工程内容写进去）。`readingsStream` 只在给了 `since` 时出现，故不在 `properties` 里。",
+             不把工程内容写进去）。`readingsStream` 只在给了 `since` 时出现，故不在 `properties` 里。\
+             ⭐ `session.undoCursor` 的口径（`#177`）= 可撤销步数 = 已应用的 op 数，与 `yeban_undo` 响应的 \
+             `before.undoable` 同一个数（旧的'已撤销步数'口径已废弃）。",
         ),
         &["session", "engine", "track", "stateSources"],
         json!({
@@ -433,7 +435,12 @@ fn query_engine_state() -> Value {
                     "taskCount": {"type": "integer"},
                     "pluginPids": {"type": "array", "items": {"type": "integer"}},
                     "openWindowCount": {"type": "integer"},
-                    "undoCursor": {"type": "integer"}
+                    // ⭐ `#177` 坑⑪：口径 = 可撤销步数（= 从根算起已应用的 op 数），
+                    // 与 `yeban_undo` 响应的 `before.undoable` **逐值相同**。
+                    "undoCursor": {
+                        "type": "integer",
+                        "description": "撤销游标位置 = 从根算起**已应用**的 op 数 = 现在还能撤销的步数（与 `yeban_undo` 的 `before.undoable` 同一个数；`#177` 之前是'已撤销步数'，两个读数会差一个数）"
+                    }
                 }
             },
             "engine": {

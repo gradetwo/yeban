@@ -1010,6 +1010,18 @@ pub const OP_KINDS: &[&str] = &[
     SET_SCENE_KIND,
 ];
 
+/// **读**工具顶层 `clipId` 的 kind 清单（`#177` 坑④：`clipId` 从无条件必填改成条件必需）。
+///
+/// 这就是 [`NoteOp::reads_envelope_clip`] 的**发布面**：`crate::op_schema::ops_items`
+/// 用它给每个 `oneOf` 分支打 `x-envelope.clipId`（并写进分支描述），
+/// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
+///
+/// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 35 个 kind** 上对账
+/// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
+/// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
+pub const ENVELOPE_CLIP_KINDS: &[&str] = &["add", "delete", "move", "velocity", REMOVE_CLIP_KIND];
+
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
 ///
 /// 为什么单列一个二值枚举而不是直接收 [`LaneKind`]：`SendGain` 的模型语义是
@@ -3133,6 +3145,53 @@ impl NoteOp {
     #[must_use]
     pub fn all_self_addressed(ops: &[Self]) -> bool {
         !ops.is_empty() && ops.iter().all(Self::is_self_addressed)
+    }
+
+    /// 该形态**读**工具顶层的 `clipId`（`#177` 坑④：`clipId` 从无条件必填改成条件必需）。
+    ///
+    /// 只有四个音符形态与池级取走读它 —— 这四个半正是 [`compile`] 里 `clip_id` 的
+    /// **全部**消费者（`Op::AddNote` / `DeleteNote` / `MoveNote` /
+    /// `ModifyNoteVelocity` / `RemoveClip` 的载荷，以及"片段池里必须有它"那次查找）。
+    /// ⚠ 与 [`Self::is_self_addressed`] **不是**同一问：音轨属性级 / 路由级 / 段落级 /
+    /// 场景级 / 资产级 / 文档级形态的寻址也在操作对象里，但它们只读顶层 `trackId`
+    /// （或什么都不读），**不读** `clipId`（`addTrack` 连 `trackId` 都不读）。
+    ///
+    /// 本谓词是"顶层 `clipId` 是否必需"的**唯一**真相：
+    /// `domain::plan_edit_notes` 的缺参守卫、[`compile`] 的片段池查找、以及
+    /// `crate::op_schema::ops_items` 广播给 `tools/list` 的逐 kind 标记都从它派生。
+    #[must_use]
+    pub const fn reads_envelope_clip(&self) -> bool {
+        matches!(
+            self,
+            Self::Add { .. }
+                | Self::Delete { .. }
+                | Self::Move { .. }
+                | Self::Velocity { .. }
+                | Self::RemoveClip
+        )
+    }
+
+    /// 批内**有没有**形态读顶层 `clipId`。
+    #[must_use]
+    pub fn envelope_clip_required(ops: &[Self]) -> bool {
+        ops.iter().any(Self::reads_envelope_clip)
+    }
+
+    /// 本批里**读**顶层 `clipId` 的 kind（按出现顺序、去重）——
+    /// 缺参报文用 `requiredByKinds` 点名"到底哪一条需要"。
+    #[must_use]
+    pub fn envelope_clip_kinds(ops: &[Self]) -> Vec<&'static str> {
+        let mut kinds: Vec<&'static str> = Vec::new();
+        for kind in ops
+            .iter()
+            .filter(|op| op.reads_envelope_clip())
+            .map(Self::kind_name)
+        {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        kinds
     }
 
     /// 该形态改的是**路由图**（而不是音符 / 音轨 / 泳道 / 片段池 / 段落）。
@@ -6076,6 +6135,13 @@ pub fn compile(
     // `device_ops_do_not_need_the_envelope_ids_or_midi` 钉住这条。
     // 空批不算"全是"（`parse_ops` 本来就挡空数组）。
     let self_addressed_only = NoteOp::all_self_addressed(ops);
+    // ⭐ `#177` 坑④：片段池查找**只**在批里真的有形态读顶层 `clipId` 时发生。
+    // 这正是"`clipId` 按 `ops[].kind` 条件必需"在编译层的另一半：不读它的形态
+    // （`addTrack` / 路由级 / 段落级 / 场景级 / 资产级 / 文档级 / 音轨属性级）拿到的是
+    // 占位身份 ⇒ 这里**不查池**，因此"省略 `clipId`"不会变成 `CLIP_NOT_FOUND`。
+    // ⚠ 调用方（`domain::plan_edit_notes`）用**同一个**谓词决定要不要响亮拒绝缺参，
+    // 因此"谁需要它"只有一份真相。
+    let reads_clip = NoteOp::envelope_clip_required(ops);
     let track = if self_addressed_only {
         None
     } else {
@@ -6085,7 +6151,7 @@ pub fn compile(
                 .map_err(|error| from_model("音轨查找", &error))?,
         )
     };
-    let entry = if self_addressed_only {
+    let entry = if self_addressed_only || !reads_clip {
         None
     } else {
         Some(project.clip_pool.get(clip_id).ok_or_else(|| {
@@ -6094,6 +6160,8 @@ pub fn compile(
     };
     // "必须是 MIDI 片段"这条断言只在**真的有音符操作**时成立：`setParam` 一个音符都不读。
     // 四个音符形态的调用因此逐字节等于旧行为（它们总是走到这条断言）。
+    // ⚠ `#177` 之后 `entry` 只在读 `clipId` 的批里是 `Some`，而四个音符形态是它的
+    // 子集 ⇒ 这条断言的可达集合逐条不变（`removeClip` 不读音符，故不受影响）。
     if ops.iter().any(NoteOp::is_note_level)
         && entry.is_some_and(|entry| entry.content.notes().is_none())
     {
@@ -13644,6 +13712,16 @@ mod tests {
                 ops[0].kind_name(),
                 *kind,
                 "解析出来的 `NoteOp` 必须回环到同一个 `kind`"
+            );
+            // ⭐ `#177` 坑④：发布的"读顶层 `clipId` 的 kind 清单"必须与谓词**在全部
+            // 35 个 kind 上**逐条一致（两份真相：本测试的 `table` 覆盖 `OP_KINDS`
+            // 全集，谓词是 `compile` 真正用的那一份）。任一方向漂移都会在这里变红：
+            // 清单里多一个 ⇒ `reads_envelope_clip` 为 `false`；谓词里多一个而清单
+            // 没跟上 ⇒ 清单漏报（调用方会以为它不需要，而 `compile` 会读）。
+            assert_eq!(
+                ops[0].reads_envelope_clip(),
+                ENVELOPE_CLIP_KINDS.contains(kind),
+                "`{kind}` 的顶层 `clipId` 口径必须与发布的 ENVELOPE_CLIP_KINDS 一致"
             );
         }
         // 阴性对照：目录外的名字必须响亮拒绝，且报文里列出**整张**目录。

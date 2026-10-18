@@ -61,6 +61,21 @@ pub const DEFAULT_LIMIT: u64 = 100;
 /// `limit` 上限（超过则**夹紧**并在 `page.limitClamped` 里如实报告）。
 pub const MAX_LIMIT: u64 = 1000;
 
+/// `tools/list` 里 `yeban_query_project.fields.items` 的 schema（`#177` 坑⑩）。
+///
+/// 此前 `fields` 只广播 `{"type": "array"}` ⇒ 合法字段名**无从得知**，外部 Agent
+/// 只能猜，而猜错一律 `INVALID_FIELD_SELECTOR`。这里的 `enum` **就是** [`SELECTORS`]
+/// 本身：白名单只有一份，广播面与解析面因此不可能漂移（判据 `tests/trap_177.rs`
+/// 逐字对账 —— 不是手抄一份 24 项的清单）。
+#[must_use]
+pub fn selector_items() -> Value {
+    serde_json::json!({
+        "type": "string",
+        "enum": SELECTORS,
+        "description": "字段选择器白名单 (与解析器的 SELECTORS 同一份常量); 不在枚举里的名字一律 `INVALID_FIELD_SELECTOR`",
+    })
+}
+
 /// 一次解析并校验过的查询请求。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {

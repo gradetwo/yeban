@@ -1681,6 +1681,51 @@ fn arg_id(call: &ToolCall, name: &str) -> Result<EntityId, Fault> {
     })
 }
 
+/// ⭐ `#177` 坑④：**需要 `clipId` 的形态**缺它时**响亮拒绝**（不是含糊的 ULID 解析失败）。
+///
+/// `yeban_edit_notes` 的顶层 `clipId` 现在是**条件必需**：`required: false` 之后，
+/// 只要批里有一条读它的形态（[`notes::NoteOp::reads_envelope_clip`]）或 `placement`
+/// 在场 / `create:true`，缺参就必须报出"**为什么**缺"—— `reason: "clipIdRequired"`
+/// 逐条点名 `requiredByKinds`，调用方一眼能看懂要补哪一个 kind 的寻址。
+///
+/// 不需要它的形态**走不到这里**（调用方用**同一个**谓词短路），因此
+/// "不可能出现在这里的形态"不会借这条错误变成"看起来需要 `clipId`"。
+fn require_envelope_clip(
+    call: &ToolCall,
+    ops: &[notes::NoteOp],
+    placement: bool,
+    creating: bool,
+) -> Result<EntityId, Fault> {
+    if call.arguments.get("clipId").is_none() {
+        let mut required_by = notes::NoteOp::envelope_clip_kinds(ops);
+        if placement {
+            required_by.push(notes::PLACEMENT_FIELD);
+        }
+        if creating {
+            required_by.push(notes::CREATE_PARAM);
+        }
+        let kinds = if required_by.is_empty() {
+            "(未知)".to_owned()
+        } else {
+            required_by.join(" / ")
+        };
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`clipId` 是必需的: 这次调用含 {kinds} —— 该形态读顶层 `clipId` (目标片段)。\
+                 不读它的形态 (`addTrack` / 设备 / 路由 / 段落 / 场景 / 资产 / 音轨属性 / 文档级) \
+                 可以省略它 (省略 = 占位身份, 给了也接受但忽略)。"
+            ),
+            serde_json::json!({
+                "reason": "clipIdRequired",
+                "requiredByKinds": required_by,
+                "hint": "给 `clipId` (26 字符 ULID), 或改用不读它的形态 (例如 `addTrack`)",
+            }),
+        ));
+    }
+    arg_id(call, "clipId")
+}
+
 /// 取活跃工程，否则 `NO_ACTIVE_PROJECT`。
 fn require_active(domain: &Domain) -> Result<&YebanProjectV1, Fault> {
     domain.active_project().ok_or_else(no_active_project)
@@ -2235,6 +2280,16 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         notes::parse_ops(raw_ops)?
     };
     let self_addressed_only = notes::NoteOp::all_self_addressed(&note_ops);
+    let creating = arg_bool(call, notes::CREATE_PARAM, false);
+    let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
+    // ⭐ `#177` 坑④：顶层 `clipId` 从"无条件必填"改成"按 `ops[].kind` 条件必需"。
+    // 唯一真相是 `NoteOp::reads_envelope_clip()`（`compile` 真正读 `clip_id` 的那几个臂）
+    // ∪ `placement` 在场（摆放编辑要核对它引用的片段）∪ `create:true`（它是新建身份）。
+    // 其余形态（`addTrack` / 设备 / 路由 / 段落 / 场景 / 资产 / 音轨属性 / 文档级）
+    // 一个字节都不读它 ⇒ 缺省用**占位** nil 身份；给了也**接受但忽略**
+    // （不解析 ULID、也不查片段池 —— 与"省略"逐字节同一条路）。
+    let needs_clip =
+        notes::NoteOp::envelope_clip_required(&note_ops) || placement_raw.is_some() || creating;
     let (track_id, clip_id) = if self_addressed_only {
         // 缺省的两个身份在这里取**占位**的 nil 身份：本分支下它们一个都不会被读
         // （`compile` 走的是"不查音轨与片段池"的那条路），而且它们**不**参与
@@ -2243,10 +2298,14 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         // `device_ops_do_not_need_the_envelope_ids_or_midi` 钉住这条。
         (EntityId::default(), EntityId::default())
     } else {
-        (arg_id(call, "trackId")?, arg_id(call, "clipId")?)
+        let track_id = arg_id(call, "trackId")?;
+        let clip_id = if needs_clip {
+            require_envelope_clip(call, &note_ops, placement_raw.is_some(), creating)?
+        } else {
+            EntityId::default()
+        };
+        (track_id, clip_id)
     };
-    let creating = arg_bool(call, notes::CREATE_PARAM, false);
-    let placement_raw = call.arguments.get(notes::PLACEMENT_FIELD);
     if creating && placement_raw.is_some() {
         return Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -2434,10 +2493,14 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     };
     // 音轨实体级形态自带寻址：顶层 `clip_id` 在这个分支下是**占位**的 nil 身份，
     // 因此标题点的是自带的那条音轨，而不是一个假身份。
+    // ⭐ `#177`：不读 `clipId` 的形态（`addTrack` / 路由 / 段落 / 场景 / 资产 /
+    // 文档级 / 音轨属性级）现在也拿占位身份 ⇒ 标题点顶层 `trackId`，而不是 nil ULID。
     let title_target = if removing_track {
         removed_track.expect("removing_track 蕴含批里只有一条 removeTrack")
-    } else {
+    } else if needs_clip {
         clip_id
+    } else {
+        track_id
     };
     propose_draft(
         domain,
@@ -2509,7 +2572,7 @@ fn plan_merge(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let proposal_id = arg_id(call, "proposalId")?;
     let snapshot = domain
         .proposal(&proposal_id)
-        .ok_or_else(|| proposal_not_found(&proposal_id))?;
+        .ok_or_else(|| proposal_not_found(domain, &proposal_id))?;
     let commit_message = arg_str(call, "commitMessage")
         .map_or_else(|| format!("merge proposal {proposal_id}"), str::to_owned);
     Ok(Plan::Merge {
@@ -2524,7 +2587,7 @@ fn plan_reject(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let proposal_id = arg_id(call, "proposalId")?;
     let snapshot = domain
         .proposal(&proposal_id)
-        .ok_or_else(|| proposal_not_found(&proposal_id))?;
+        .ok_or_else(|| proposal_not_found(domain, &proposal_id))?;
     let reason =
         arg_str(call, "reason").map_or_else(|| String::from("(未提供原因)"), str::to_owned);
     Ok(Plan::Reject {
@@ -2535,11 +2598,39 @@ fn plan_reject(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
 }
 
 /// `PROPOSAL_NOT_FOUND` 的载荷（带上已知提案，便于调用方自纠）。
-fn proposal_not_found(id: &EntityId) -> Fault {
+///
+/// ⭐ `#177` 坑⑥'：这句注释此前**在撒谎** —— `data` 只有 `{proposalId}`，
+/// 而它承诺的是"带上已知提案"。现在兑现：`knownProposals` 是**未合并**提案的
+/// 摘要（与 `yeban_list_proposals` 的 `proposals[]` 同一份 `Proposal::summary()`，
+/// 顺序同 (createdAt, proposalId)），外加 `knownCount` / `listTool` 与
+/// `reason: "proposalNotFound"`。提案表是**会话运行态**（`Domain::proposals`），
+/// 本层直接可达 ⇒ 不需要改注释的诚实版本（没有出现"不可达"的情形）。
+fn proposal_not_found(domain: &Domain, id: &EntityId) -> Fault {
+    let mut open: Vec<&Proposal> = domain
+        .proposal_ids()
+        .into_iter()
+        .filter_map(|known| domain.proposal(&known))
+        .filter(|record| record.status == ProposalStatus::Open)
+        .collect();
+    open.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let known: Vec<Value> = open.iter().map(|record| record.summary()).collect();
+    let known_count = known.len();
     Fault::domain_with_data(
         ErrorCode::ProposalNotFound,
-        format!("提案不存在: {id}"),
-        serde_json::json!({ "proposalId": id.to_canonical_string() }),
+        format!(
+            "提案不存在: {id}（当前有 {known_count} 个未合并的提案，见 knownProposals / yeban_list_proposals）"
+        ),
+        serde_json::json!({
+            "reason": "proposalNotFound",
+            "proposalId": id.to_canonical_string(),
+            "knownProposals": known,
+            "knownCount": known_count,
+            "listTool": "yeban_list_proposals",
+        }),
     )
 }
 
@@ -2568,6 +2659,12 @@ fn plan_edit_automation(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
 ///
 /// 可选的 `since` 是**读数游标**（客户端上一个见过的 `readingsRevision`）：给了它，
 /// 响应里就多一段 `readingsStream`（只含游标之后注入的读数）。缺省 ⇒ 形状不变。
+///
+/// ⭐ `#177` 坑⑪：`session.undoCursor` 之前取 `undo_state().undone()`（**已撤销**步数），
+/// 而 `yeban_undo` 响应给的是 `before.undoable`（**还能撤销**步数）⇒ 同一会话读到
+/// `0` 与 `1` 两个不同的数。现在两处都取**同一个**函数
+/// （[`Domain::undo_display`] 的 `undoable`）⇒ 游标口径 = "已应用的 op 数"（从根算起
+/// 的位置），它**等于**还能撤销的步数（每次提交一条 op）。判据见 `tests/trap_177.rs`。
 fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
     let project = require_active(domain)?;
     let track_id = match call.arguments.get("trackId") {
@@ -2579,7 +2676,7 @@ fn plan_query_engine_state(domain: &Domain, call: &ToolCall) -> Result<Plan, Fau
         project,
         domain.session(),
         domain.engine_readings(),
-        domain.undo_state().undone(),
+        domain.undo_display().undoable,
         track_id,
         engine_state::ReadingsCursor {
             revision: domain.readings_revision(),

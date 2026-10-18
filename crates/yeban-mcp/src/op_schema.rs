@@ -301,7 +301,7 @@ fn scene_object() -> Value {
 /// `ops` 数组的 item schema：`OP_KINDS` 里的每个 kind 一个分支。
 #[must_use]
 pub fn ops_items() -> Value {
-    json!({
+    let mut items = json!({
         "oneOf": [
             op(
                 "add",
@@ -743,8 +743,72 @@ pub fn ops_items() -> Value {
             ),
         ],
         "description": format!(
-            "逐 kind 的 op 形状（`OP_KINDS` 全集，共 {} 个）。要写 EQ / 混响 / 卷积混响见 `insertDevice` 分支的 `device.params.items`；要建发送见 `connectRouting` 的 `edgeKind:\"SendToAux\"`。",
+            "逐 kind 的 op 形状（`OP_KINDS` 全集，共 {} 个）。要写 EQ / 混响 / 卷积混响见 `insertDevice` 分支的 `device.params.items`；要建发送见 `connectRouting` 的 `edgeKind:\"SendToAux\"`。⭐ 顶层 `clipId` 的逐 kind 口径见根上的 `x-envelope` 与每个分支的 `x-envelope.clipId`。",
             OP_KINDS.len(),
         ),
-    })
+    });
+    publish_envelope_clip(&mut items);
+    items
+}
+
+/// ⭐ `#177` 坑④：把"顶层 `clipId` 在**这个** kind 上是否必需"逐分支广播出去。
+///
+/// 真相只有一份（[`crate::domain::notes::ENVELOPE_CLIP_KINDS`]，由
+/// `NoteOp::reads_envelope_clip` 派生）；本函数只负责把它**写成可读的形状**：
+///
+/// - 每个 `oneOf` 分支的描述末尾多一句（人读）；
+/// - 每个分支多一个 `x-envelope.clipId`（机器读：`"required"` / `"ignored"`）；
+/// - 根上多一个 `x-envelope`（两个 kind 清单 + 两条"不在 `ops` 里"的附加条件）。
+///
+/// ⚠ 用 `x-` 前缀：JSON Schema 允许未知关键字（它们是注解）。分支里**无法**表达
+/// "顶层实参"——这正是本票选"顶层条件必需 ＋ 运行期校验"而不是 `if/then` 的原因
+/// （`if/then` 的 `if` 只能看 `ops`，而 `required` 在顶层 ⇒ 两者不在同一层）。
+fn publish_envelope_clip(items: &mut Value) {
+    use crate::domain::notes::{ENVELOPE_CLIP_KINDS, OP_KINDS};
+
+    if let Some(branches) = items.get_mut("oneOf").and_then(Value::as_array_mut) {
+        for branch in branches {
+            let Some(kind) = branch
+                .get("properties")
+                .and_then(|properties| properties.get("kind"))
+                .and_then(|kind| kind.get("const"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let required = ENVELOPE_CLIP_KINDS.contains(&kind.as_str());
+            let note = if required {
+                "⭐ 顶层 `clipId`: **必需**（本 kind 读它；缺 ⇒ `INVALID_PARAMETER_RANGE` / `clipIdRequired`）"
+            } else {
+                "⭐ 顶层 `clipId`: **不读**（省略 = 占位；给了 = 接受但忽略，不解析、不查片段池）"
+            };
+            let Value::Object(map) = branch else {
+                continue;
+            };
+            let description = map
+                .get("description")
+                .and_then(Value::as_str)
+                .map_or_else(String::new, |text| format!("{text} {note}"));
+            map.insert("description".to_owned(), Value::from(description));
+            map.insert(
+                "x-envelope".to_owned(),
+                json!({ "clipId": if required { "required" } else { "ignored" } }),
+            );
+        }
+    }
+    let ignored: Vec<&str> = OP_KINDS
+        .iter()
+        .copied()
+        .filter(|kind| !ENVELOPE_CLIP_KINDS.contains(kind))
+        .collect();
+    items["x-envelope"] = json!({
+        "clipIdRequiredKinds": ENVELOPE_CLIP_KINDS,
+        "clipIdIgnoredKinds": ignored,
+        "alsoRequiredWhen": {
+            "placement": "任何 `placement` 在场（摆放编辑要核对它引用的片段）",
+            "create": "`create:true`（顶层 `clipId` 是**将要新建的**片段身份）",
+        },
+        "runtimeCheck": "需要而缺 ⇒ `INVALID_PARAMETER_RANGE`（reason `clipIdRequired`）；不读它的 kind 给了 = 接受但忽略",
+    });
 }

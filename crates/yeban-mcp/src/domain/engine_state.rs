@@ -9,7 +9,7 @@
 //! | :--- | :--- | :--- |
 //! | `engine.sampleRate` | `project.audio_config.sample_rate`（[`YebanProjectV1::sample_rate`]） | 顶层刻意没有 `sample_rate` 冗余副本；设备层注释也点名"采样率唯一事实源是 `audio_config.sample_rate`" |
 //! | `session.playheadTicks` / `isPlaying` | [`yeban_model::SessionRuntimeState`]（第 2 层会话运行态，**不落盘**） | 走带位置进持久化文档就会让"同一工程 ⇒ 同一文档"失效 |
-//! | `session.undoCursor` | `crate::undo_session::UndoState`（MCP 侧的会话态；`apply` 之后单向同步进 `SessionRuntimeState`） | 两个游标都必须来自**同一**事实（[`super::Domain::session`] 的同步在 `apply` 里做） |
+//! | `session.undoCursor` | `crate::undo_session::UndoState::display` 的 `undoable`（= 从根算起**已应用**的 op 数；⭐ `#177` 与 `yeban_undo` 响应的 `before.undoable` **同一个**数） | 两个读数必须同源：`undone`（已撤销步数）曾是这里的旧口径，与 `undo` 响应差一个"还能撤几步" ⇒ 同一会话读出 `0` / `1` 两个数（坑⑪）。⚠ `SessionRuntimeState::undo_cursor`（模型层会话态的 `UndoCursor`）仍是"已撤销步数"，它**不是**本字段的来源 |
 //! | `track.devices[]` | `TrackV3::devices`（工程文档） | `DeviceDefinition::latency_samples` 是 PDC 的唯一来源（`ARCH-PDC-001`） |
 //! | `engine.bufferFrames` | 宿主**注入**的 [`EngineReadings`] 镜像 | 缓冲帧数住在 `yeban-engine` 的设备协商结果里；本 crate **不依赖** `yeban-engine`（零新增依赖），因此只能读宿主交进来的**只读快照** |
 //!
@@ -106,8 +106,15 @@ impl Default for EngineReadings {
 
 /// 会话读数的 JSON 形态。
 ///
-/// 参数里的 `session` 是**模型层**的会话运行态（唯一权威），`undo_cursor` 是 MCP
-/// 侧撤销会话态的读数 —— 两者在 `Domain::apply` 之后必然一致（`Domain::sync_session`）。
+/// 参数里的 `session` 是**模型层**的会话运行态（唯一权威）。
+///
+/// ⭐ `#177` 坑⑪：`undo_cursor` 现在是 **`UndoState::display().undoable`**
+/// （= 还能撤销的步数 = 从根算起已应用的 op 数），**不是**旧口径
+/// `UndoState::undone()`（已撤销步数）。它与 `yeban_undo` 响应的
+/// `before.undoable` 是**同一个**数（两处都走 `Domain::undo_display`）。
+/// ⚠ 模型层 `SessionRuntimeState::undo_cursor` 仍是 `UndoCursor`（已撤销步数）——
+/// 本字段**不**从它读，两者语义不同（这是"改名不改口径"之外的诚实边界：
+/// 工具面的 `undoCursor` 回答"现在处在历史第几步"，模型字段回答"撤了几步"）。
 #[must_use]
 pub fn session_value(
     session: &SessionRuntimeState,
@@ -128,6 +135,9 @@ pub fn session_value(
         "taskCount": session.tasks.len(),
         "pluginPids": session.plugin_pids().into_iter().collect::<Vec<_>>(),
         "openWindowCount": session.open_windows.len(),
+        // `#177`：口径 = 可撤销步数（= 已应用 op 数），与 `yeban_undo` 的
+        // `before.undoable` 逐值相同 —— 由 `Domain::plan_query_engine_state`
+        // 用同一个 `undo_display().undoable` 传入。
         "undoCursor": undo_cursor,
     })
 }
@@ -437,7 +447,7 @@ pub fn snapshot(
             "devices": "project.tracks[].devices",
             "inserts": "project.tracks[].devices (recognised against crate::effect_params)",
             "sends": "project.routing_graph.edges where kind == SendToAux",
-            "undoCursor": "undo_session::UndoState",
+            "undoCursor": "undo_session::UndoState::display().undoable (applied op count; same value as yeban_undo before.undoable) [#177]",
             "readingsRevision": "host injected EngineReadings mirror (monotonic)",
         }),
     );
