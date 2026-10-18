@@ -115,6 +115,20 @@ export component DeviceRack inherits Rectangle {
     in property <bool> master-device-insert-available: false;
     /// 不能装时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
     in property <string> master-device-insert-reason: "";
+    // ------------------------------------- 主总线设备的旁通 ＋ EQ（⭐ 任务单 `#181`）
+    /// 主总线每台的旁通位（`DeviceDefinition::bypassed`，⛔ 不是界面状态；与
+    /// `master-device-names` **同索引集**）。
+    in property <[bool]> master-device-bypassed: [];
+    /// 主总线上有没有可编辑的 `eq_low_gain`（没有 ⇒ 滑块**不出现**，只显示逐字原因）。
+    in property <bool> master-device-eq-available: false;
+    /// 主总线 EQ 滑块的当前值 (dB)。
+    in property <float> master-device-eq-gain-db: 0.0;
+    /// 值域下界 (dB) —— 来自效果器契约，⛔ 本文件不造。
+    in property <float> master-device-eq-min-db: 0.0;
+    /// 值域上界 (dB) —— 同上。
+    in property <float> master-device-eq-max-db: 0.0;
+    /// 不可用时的**逐字**原因（可用时是空串）—— ⛔ 不静默隐藏滑块。
+    in property <string> master-device-eq-reason: "";
 
     // ---------------------------------------------------------------- 设备增删 ＋ 建片段（⭐ 任务单 `#163`）
     /// "装 EQ / 装混响"此刻能不能用（工程里得有一条展示轨）。
@@ -189,6 +203,14 @@ export component DeviceRack inherits Rectangle {
     callback master-device-insert-reverb();
     /// ⭐ 删除**主总线**上的某一台设备（参数 = 设备身份，⛔ 不是行下标）。
     callback master-device-remove(string);
+    /// ⭐ 点击**主总线**某台的旁通开关（参数 = 主总线设备链下标）。
+    callback master-device-bypass-toggle(int);
+    /// ⭐ 主总线 EQ 低架增益按下（参数 = 滑块面内的归一化位置）。
+    callback master-device-eq-grab(float);
+    /// ⭐ 主总线 EQ 低架增益拖动。
+    callback master-device-eq-drag(float);
+    /// ⭐ 主总线 EQ 低架增益收尾。
+    callback master-device-eq-release();
     /// 建一个空的 MIDI 片段并摆到展示轨的 tick 0（身份 / 名称 / 时长由宿主求）。
     callback clip-create();
     /// 装第 `i` 份内置 SFZ 乐器（参数 = 内置清单下标；路径 / Op / 提交由宿主求）。
@@ -220,6 +242,16 @@ export component DeviceRack inherits Rectangle {
     property <float> eq-fraction-clamped: root.eq-fraction < 0.0
         ? 0.0
         : (root.eq-fraction > 1.0 ? 1.0 : root.eq-fraction);
+
+    // ⭐ 主总线 EQ 的旋钮位置（与上面两格**同一段**算术，只是主语不同；值域同样来自注入）。
+    property <float> master-eq-fraction: root.master-device-eq-available
+        && root.master-device-eq-max-db > root.master-device-eq-min-db
+        ? (root.master-device-eq-gain-db - root.master-device-eq-min-db)
+            / (root.master-device-eq-max-db - root.master-device-eq-min-db)
+        : 0.5;
+    property <float> master-eq-fraction-clamped: root.master-eq-fraction < 0.0
+        ? 0.0
+        : (root.master-eq-fraction > 1.0 ? 1.0 : root.master-eq-fraction);
 
     background: Tokens.bg-void;
     clip: true;
@@ -1452,20 +1484,156 @@ export component DeviceRack inherits Rectangle {
             accessible-label: root.master-device-insert-reason;
         }
 
+        // ⭐ 主总线 EQ 低架增益（任务单 `#181`）：与展示轨那一格**同一副**滑块
+        // （当前值 / 值域 / 归一化位置全部是**注入**值，⛔ 本文件不造范围表）。
+        //
+        // 几何：住在标题行右侧此前**空白**的区域（x=200..528，相对本段）⇒ 绝对
+        // x=1040..1368，右沿 1368 ≤ 1384（本段的右沿）—— ⛔ 没有把第二段往右扩。
+        // ⚠ 它与"装设备不可用原因行"（y=52..66）在 x 上有重叠，但两者**互斥**：
+        // 装设备不可用只在"没有主总线"时发生，而那时 EQ 目标必然不存在 ⇒ 这一组不画。
+        Rectangle {
+            x: 200px;
+            y: 22px;
+            width: 328px;
+            height: 48px;
+            background: Tokens.bg-shell;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-id: "master-device-eq-panel";
+            accessible-label: "主总线 EQ 低架增益 (eq_low_gain)";
+
+            UiText {
+                x: 8px;
+                y: 2px;
+                width: parent.width - 16px;
+                height: 12px;
+                text: "主总线 EQ 低架增益 · eq_low_gain";
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+            }
+
+            // 当前值（可用时）—— 逐字来自投影。
+            UiMonoText {
+                x: 8px;
+                y: 14px;
+                width: parent.width - 16px;
+                height: 12px;
+                text: root.master-device-eq-gain-db + " dB";
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+                visible: root.master-device-eq-available;
+                accessible-role: text;
+                accessible-id: "master-device-eq-value";
+                accessible-label: root.master-device-eq-gain-db + " dB";
+            }
+
+            // 不可用时的**逐字**原因（同一个槽位；⛔ 不静默隐藏滑块）。
+            UiText {
+                x: 8px;
+                y: 14px;
+                width: parent.width - 16px;
+                height: 12px;
+                text: root.master-device-eq-reason;
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+                visible: !root.master-device-eq-available;
+                accessible-role: text;
+                accessible-id: "master-device-eq-reason";
+                accessible-label: root.master-device-eq-reason;
+            }
+
+            // 滑块语义节点：读屏器读得到值域与当前值（两个端点都是注入值）。
+            Rectangle {
+                x: 8px;
+                y: 28px;
+                width: 300px;
+                height: 18px;
+                background: transparent;
+                visible: root.master-device-eq-available;
+                accessible-role: slider;
+                accessible-id: "master-device-eq-slider";
+                accessible-label: "主总线 EQ 低架增益";
+                accessible-orientation: horizontal;
+                accessible-value-minimum: root.master-device-eq-min-db;
+                accessible-value-maximum: root.master-device-eq-max-db;
+                accessible-value-step: 0.1;
+                accessible-value: root.master-device-eq-gain-db + " dB";
+
+                // 导轨
+                Rectangle {
+                    x: 0;
+                    y: 7px;
+                    width: parent.width;
+                    height: 4px;
+                    background: Tokens.bg-void;
+                    border-radius: Tokens.radius-sm;
+                }
+                // 0 dB 刻度（值域跨过 0 时才画；位置由注入端点算出）
+                Rectangle {
+                    x: 150px;
+                    y: 3px;
+                    width: 1px;
+                    height: 12px;
+                    background: Tokens.line-strong;
+                    visible: root.master-device-eq-min-db <= 0.0
+                        && root.master-device-eq-max-db >= 0.0;
+                }
+                // 旋钮
+                Rectangle {
+                    x: 288px * root.master-eq-fraction-clamped;
+                    y: 1px;
+                    width: 12px;
+                    height: 16px;
+                    background: Tokens.gold-deep;
+                    border-radius: Tokens.radius-sm;
+                }
+            }
+
+            // 手势面：位置**不随数值动**（读 `self.mouse-x`，否则自己喂自己）。
+            TouchArea {
+                x: 8px;
+                y: 28px;
+                width: 300px;
+                height: 18px;
+                visible: root.master-device-eq-available;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        root.master-device-eq-grab(self.mouse-x / self.width);
+                    } else if (event.kind == PointerEventKind.move) {
+                        root.master-device-eq-drag(self.mouse-x / self.width);
+                    } else {
+                        // `up` 与 `cancel` 都是收尾（拖到窗口外松手也走这条）。
+                        root.master-device-eq-release();
+                    }
+                }
+            }
+        }
+
         // ---- 设备卡片链：条目数**就是**投影的主总线设备数（空链 ⇒ 一块都不画）----
         for master_device_name[master_device_index] in root.master-device-names : Rectangle {
             x: Tokens.space-2;
             y: 72px + 46px * master_device_index;
             width: parent.width - 16px;
             height: 44px;
-            background: Tokens.bg-shell;
+            background: root.master-device-bypassed[master_device_index]
+                ? Tokens.bg-void
+                : Tokens.bg-shell;
             border-radius: Tokens.radius-md;
             border-width: 1px;
-            border-color: Tokens.line-strong;
+            border-color: root.master-device-bypassed[master_device_index]
+                ? Tokens.line
+                : Tokens.line-strong;
             clip: true;
             accessible-role: list-item;
             accessible-id: "master-device-" + master_device_index + "-card";
-            accessible-label: "主总线设备 " + master_device_name;
+            accessible-label: "主总线设备 " + master_device_name
+                + (root.master-device-bypassed[master_device_index] ? "（已旁通）" : "（生效）");
             accessible-item-index: master_device_index;
             accessible-item-count: root.master-device-names.length;
 
@@ -1475,7 +1643,9 @@ export component DeviceRack inherits Rectangle {
                 width: parent.width - 136px;
                 height: 16px;
                 text: master_device_name;
-                color: Tokens.ink-0;
+                color: root.master-device-bypassed[master_device_index]
+                    ? Tokens.ink-2
+                    : Tokens.ink-0;
                 font-size: Tokens.font-size-md;
                 overflow: elide;
             }
@@ -1508,6 +1678,55 @@ export component DeviceRack inherits Rectangle {
                 visible: root.master-device-unrecognised[master_device_index] != "";
                 accessible-role: text;
                 accessible-id: "master-device-" + master_device_index + "-unrecognised";
+            }
+
+            // ⭐ 旁通开关（任务单 `#181`）：与展示轨那一段**同一副**开关（`accessible-checked`
+            // 有真实状态，点击 = 一次 `commit_ops`），只是目标轨是主总线 —— 宿主用
+            // `DeviceTarget::Master` **显式**寻址。⛔ 不在这里判断"有没有主总线"：
+            // 卡片本身只按主总线的设备数生成 ⇒ 0 台时这个开关**不出现**。
+            Rectangle {
+                x: parent.width - 116px;
+                y: 4px;
+                width: 72px;
+                height: 20px;
+                background: root.master-device-bypassed[master_device_index]
+                    ? Tokens.gold-deep
+                    : Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: root.master-device-bypassed[master_device_index]
+                    ? Tokens.gold
+                    : Tokens.line-strong;
+                accessible-role: switch;
+                accessible-id: "master-device-" + master_device_index + "-bypass-switch";
+                accessible-label: "旁通主总线设备 " + master_device_name;
+                accessible-checkable: true;
+                accessible-checked: root.master-device-bypassed[master_device_index];
+                // `[UI-A11Y-003]` §7.3：无障碍动作与下面 `TouchArea.clicked` **逐字同一落点**。
+                accessible-action-default => {
+                    root.master-device-bypass-toggle(master_device_index);
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: root.master-device-bypassed[master_device_index] ? "BYPASSED" : "ACTIVE";
+                    color: root.master-device-bypassed[master_device_index]
+                        ? Tokens.bg-void
+                        : Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.master-device-bypass-toggle(master_device_index);
+                    }
+                }
             }
 
             // ⭐ 删除这一台：携带**设备身份**（⛔ 不是行下标）。

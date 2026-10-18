@@ -1856,6 +1856,29 @@ pub const MASTER_DEVICE_REMOVE_NO_MASTER_REASON: &str = "工程没有主总线�
 /// 已经不在主总线的设备链里。
 pub const MASTER_DEVICE_REMOVE_NOT_FOUND_REASON: &str = "这台设备已不在主总线上，无法删除";
 
+/// "切换设备旁通"不可用时的**逐字**原因：工程里没有可显示的音轨（展示轨不存在）。
+pub const DEVICE_BYPASS_NO_TRACK_REASON: &str = "没有可显示的音轨，无法切换设备旁通";
+
+/// "切换设备旁通"不可用时的**逐字**原因：界面报的那一格已经不在设备链里。
+pub const DEVICE_BYPASS_NO_DEVICE_REASON: &str = "这一格设备已不在设备链里，无法切换旁通";
+
+/// ⭐ 任务单 `#181`：切换**主总线**设备旁通时没有主总线的**逐字**原因。
+pub const MASTER_DEVICE_BYPASS_NO_MASTER_REASON: &str = "工程没有主总线，无法切换主总线设备的旁通";
+
+/// ⭐ 任务单 `#181`：**主总线**上那一格已经不在了的**逐字**原因。
+///
+/// 与 [`DEVICE_BYPASS_NO_DEVICE_REASON`] 只差主语：两条腿共用同一个
+/// [`bypass_op_on`]，`not_found_reason` 是唯一自变量。
+pub const MASTER_DEVICE_BYPASS_NO_DEVICE_REASON: &str =
+    "这台设备已不在主总线的设备链里，无法切换旁通";
+
+/// ⭐ 任务单 `#181`：主总线 EQ 滑块不可用时的**逐字**原因：工程里没有主总线。
+pub const MASTER_DEVICE_EQ_NO_MASTER_REASON: &str = "工程没有主总线，无法调节主总线的 eq_low_gain";
+
+/// ⭐ 任务单 `#181`：主总线 EQ 滑块不可用时的**逐字**原因：主总线上没有带
+/// `eq_low_gain` 的设备（空链，或链上每一台都没有这个参数）。
+pub const MASTER_DEVICE_EQ_NO_TARGET_REASON: &str = "主总线上没有带 eq_low_gain 的设备";
+
 /// "建片段"不可用时的**逐字**原因：工程里没有可显示的音轨（片段要摆在它上面）。
 pub const CLIP_CREATE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法建片段";
 
@@ -1902,6 +1925,23 @@ pub fn master_device_insert_availability(project: &YebanProjectV1) -> (bool, Str
         ""
     } else {
         MASTER_DEVICE_INSERT_NO_MASTER_REASON
+    };
+    (reason.is_empty(), reason.to_owned())
+}
+
+/// ⭐ 任务单 `#181`：**主总线**的 EQ 滑块可用性 ＋ 不可用时的**逐字**原因。
+///
+/// 两档原因都从**同一份**目标查找（[`master_device_eq_low_gain_target`]）出发：
+/// 没有主总线 ⇒ [`MASTER_DEVICE_EQ_NO_MASTER_REASON`]；主总线在、但没有一台设备带
+/// `eq_low_gain` ⇒ [`MASTER_DEVICE_EQ_NO_TARGET_REASON`]。⛔ 不返回一个"静默禁用"。
+#[must_use]
+pub fn master_device_eq_availability(project: &YebanProjectV1) -> (bool, String) {
+    let reason = if master_device_track(project).is_none() {
+        MASTER_DEVICE_EQ_NO_MASTER_REASON
+    } else if master_device_eq_low_gain_target(project).is_none() {
+        MASTER_DEVICE_EQ_NO_TARGET_REASON
+    } else {
+        ""
     };
     (reason.is_empty(), reason.to_owned())
 }
@@ -2057,6 +2097,69 @@ fn remove_device_op_on(
         track_id: track.id,
         slot_index,
         previous_device,
+    })
+}
+
+/// 切换**展示轨**某台设备旁通的 `Op`（旁通手势的唯一入口）。
+///
+/// ⭐ 任务单 `#181`：与 [`master_device_bypass_ops`] 共用同一个 [`bypass_op_on`]
+/// —— `track_id` / `device_id` / `old_bypassed` / `new_bypassed` 的算术**只有一处**，
+/// 两条腿的差别只有**目标轨**（[`device_rack_track`] vs [`master_device_track`]）。
+///
+/// # Errors
+///
+/// - 没有展示轨 ⇒ [`DEVICE_BYPASS_NO_TRACK_REASON`]；
+/// - 下标不在设备链里 ⇒ [`DEVICE_BYPASS_NO_DEVICE_REASON`]。
+pub fn device_bypass_ops(
+    project: &YebanProjectV1,
+    slot_index: usize,
+) -> Result<Vec<Op>, &'static str> {
+    let track = device_rack_track(project).ok_or(DEVICE_BYPASS_NO_TRACK_REASON)?;
+    Ok(vec![bypass_op_on(
+        track,
+        slot_index,
+        DEVICE_BYPASS_NO_DEVICE_REASON,
+    )?])
+}
+
+/// ⭐ 任务单 `#181`：切换**主总线**某台设备旁通的 `Op`。
+///
+/// 与 [`device_bypass_ops`] 的差别**只有主语**：`track_id = master_bus_track_id`，
+/// `slot_index` 在**主总线**的设备链里现查（⛔ 不复用 [`device_rack_track`] ——
+/// 那条规则**排除**主总线）。
+///
+/// # Errors
+///
+/// - 没有主总线 ⇒ [`MASTER_DEVICE_BYPASS_NO_MASTER_REASON`]；
+/// - 下标不在主总线的设备链里 ⇒ [`MASTER_DEVICE_BYPASS_NO_DEVICE_REASON`]。
+pub fn master_device_bypass_ops(
+    project: &YebanProjectV1,
+    slot_index: usize,
+) -> Result<Vec<Op>, &'static str> {
+    let track = master_device_track(project).ok_or(MASTER_DEVICE_BYPASS_NO_MASTER_REASON)?;
+    Ok(vec![bypass_op_on(
+        track,
+        slot_index,
+        MASTER_DEVICE_BYPASS_NO_DEVICE_REASON,
+    )?])
+}
+
+/// 旁通 Op 的**唯一**构造点（展示轨与主总线共用；`track` / `not_found_reason` 是唯一
+/// 自变量）。
+///
+/// `old_bypassed` / `new_bypassed` 逐字来自权威工程的那一台设备 ⇒ 陈旧值会被模型的
+/// 逐位比对拒掉，⛔ 不会静默改成"另一台此刻的相反值"。
+fn bypass_op_on(
+    track: &TrackV3,
+    slot_index: usize,
+    not_found_reason: &'static str,
+) -> Result<Op, &'static str> {
+    let device = track.devices.get(slot_index).ok_or(not_found_reason)?;
+    Ok(Op::SetDeviceBypassed {
+        track_id: track.id,
+        device_id: device.id,
+        old_bypassed: device.bypassed,
+        new_bypassed: !device.bypassed,
     })
 }
 
@@ -2499,6 +2602,20 @@ pub struct ViewState {
     ///
     /// 取值来自 [`MASTER_DEVICE_INSERT_NO_MASTER_REASON`]。
     pub master_device_insert_reason: String,
+    /// ⭐ 任务单 `#181`：**主总线**上第一格 `eq_low_gain`（值域来自契约）；没有 ⇒ `None`。
+    ///
+    /// 与 [`Self::eq_low_gain`] **同一份**查找实现
+    /// （[`device_eq_low_gain_target_on`]），主语是 [`master_device_track`] ⇒ 展示轨的
+    /// 那一格与主总线的那一格不可能各说一套。`None` 时界面禁用滑块并用
+    /// [`Self::master_device_eq_reason`] **逐字**说明原因，⛔ 不落一个假的可编辑控件。
+    ///
+    /// 值域（`min_db` / `max_db`）**只**来自 [`crate::effect_params`] 的效果器契约。
+    pub master_eq_low_gain: Option<DeviceEqView>,
+    /// ⭐ 任务单 `#181`：主总线 EQ 滑块不可用时的**逐字**原因（可用时是空串）。
+    ///
+    /// 取值来自 [`MASTER_DEVICE_EQ_NO_MASTER_REASON`]（没有主总线）或
+    /// [`MASTER_DEVICE_EQ_NO_TARGET_REASON`]（主总线在，但没有一台设备带 `eq_low_gain`）。
+    pub master_device_eq_reason: String,
     /// 当前展示轨上**第一格** `eq_low_gain`（值域来自契约）；没有 ⇒ `None`。
     ///
     /// ⚠ 这是本切片**唯一**可编辑的设备参数（"最小可编辑"）。`None` 时界面禁用滑块
@@ -2781,15 +2898,19 @@ impl ViewState {
         // 设备逐条来自 `TrackV3::devices`，"已识别/未识别"走 `effect_params::recognise`。
         let (device_track_label, devices, eq_low_gain) =
             device_rack_projection(device_rack_track(project));
-        // ⭐ 任务单 `#173`：主总线的设备链 —— **只读**的第二段（可编辑面仍只属于展示轨，
-        // 见 `ViewState::master_devices` 的文档）。
-        let master_devices = master_device_rows(project);
+        // ⭐ 任务单 `#173`：主总线的设备链 —— 第二段。`#181` 起这一段也**可编辑**
+        // （旁通 / EQ 滑块），但两段仍各用**各自**那条轨寻址（见 `master_devices` 文档）。
+        // 行与 EQ 那一格来自**同一份** `master_device_projection`（⛔ 不各查一遍）。
+        let (master_devices, master_eq_low_gain) = master_device_projection(project);
         // ⭐ 任务单 `#180`：主总线设备链的标题 ＋ "装设备"的可用性 / 逐字原因。
         // 三者与上面那段投影**同一份**主语（`master_bus_track_id`）⇒ 标题、列表、
         // 可用性不可能互相指错轨。
         let master_device_label = master_device_track_label(project);
         let (master_device_insert_available, master_device_insert_reason) =
             master_device_insert_availability(project);
+        // ⭐ 任务单 `#181`：主总线 EQ 滑块的**逐字**不可用原因（可用时是空串）。
+        // 可用性本身由 `master_eq_low_gain.is_some()` 给出 ⇒ 两者同一份判定。
+        let (_, master_device_eq_reason) = master_device_eq_availability(project);
 
         // ⭐ 任务单 `#163`：设备增删 ＋ 建空片段的可用性（与投影**同一份**口径）。
         let (device_insert_available, device_insert_reason) = device_insert_availability(project);
@@ -2889,6 +3010,8 @@ impl ViewState {
             master_device_label,
             master_device_insert_available,
             master_device_insert_reason,
+            master_eq_low_gain,
+            master_device_eq_reason,
             eq_low_gain,
             device_insert_available,
             device_insert_reason,
@@ -3183,6 +3306,43 @@ impl ViewState {
             .iter()
             .map(|row| row.unrecognised.clone())
             .collect()
+    }
+
+    /// ⭐ 任务单 `#181`：主总线每一格的**旁通位**（`DeviceDefinition::bypassed`，
+    /// ⛔ 不是界面状态；与 [`Self::device_bypassed`] 同一条口径，主语换成主总线）。
+    #[must_use]
+    pub fn master_device_bypassed(&self) -> Vec<bool> {
+        self.master_devices.iter().map(|row| row.bypassed).collect()
+    }
+
+    /// ⭐ 任务单 `#181`：主总线**有没有**可编辑的 `eq_low_gain`
+    /// （`.slint` 的 `master-device-eq-available`）。
+    ///
+    /// `false` ⇒ 滑块不出现，并逐字显示 [`Self::master_device_eq_reason`]。
+    #[must_use]
+    pub fn master_device_eq_available(&self) -> bool {
+        self.master_eq_low_gain.is_some()
+    }
+
+    /// ⭐ 任务单 `#181`：主总线 EQ 滑块的当前值 (dB)；没有目标时给 `0.0`
+    /// （配合 [`Self::master_device_eq_available`] 读）。
+    #[must_use]
+    pub fn master_device_eq_gain_db(&self) -> f32 {
+        self.master_eq_low_gain
+            .as_ref()
+            .map_or(0.0, |eq| eq.value_db)
+    }
+
+    /// ⭐ 任务单 `#181`：主总线 EQ 滑块值域下界 (dB)；没有目标时给 `0.0`。
+    #[must_use]
+    pub fn master_device_eq_min_db(&self) -> f32 {
+        self.master_eq_low_gain.as_ref().map_or(0.0, |eq| eq.min_db)
+    }
+
+    /// ⭐ 任务单 `#181`：主总线 EQ 滑块值域上界 (dB)；没有目标时给 `0.0`。
+    #[must_use]
+    pub fn master_device_eq_max_db(&self) -> f32 {
+        self.master_eq_low_gain.as_ref().map_or(0.0, |eq| eq.max_db)
     }
 
     /// 本轨**有没有**可编辑的 `eq_low_gain`（`.slint` 的 `device-eq-available`）。
@@ -4277,7 +4437,7 @@ fn device_rack_projection(
     (format!("轨 {} · 设备链", track.name), devices, eq_low_gain)
 }
 
-/// ⭐ 任务单 `#173`：**主总线**上的设备链投影（只读；设备架面板的第二段事实源）。
+/// ⭐ 任务单 `#173`：**主总线**上的设备链投影（设备架面板的第二段事实源）。
 ///
 /// 口径与 [`Self::devices`]（原名 `devices`）**逐字相同** —— 同一份
 /// [`device_rack_projection`]、同一份 `effect_params::recognise` 的"已识别/未识别"
@@ -4287,12 +4447,26 @@ fn device_rack_projection(
 /// ⚠ 主总线**不在** [`device_rack_track`] 的候选里（那条规则排除了它）⇒ 这个函数
 /// 是主总线设备进入 UI 投影的**唯一**入口；`#173` 之前它根本不存在（主总线的设备
 /// 在面板上不可见，即使引擎侧现在已经会处理它）。
+///
+/// ⭐ 任务单 `#181`：主语改成 [`master_device_track`] —— 与 `#180` 的装 / 删、
+/// `#181` 的旁通 / EQ 滑块**同一份**谓词（`tracks.get(master_bus_track_id)` **且**
+/// `kind == TrackKind::Master`）。`#173` 的旧实现只做了 `tracks.get(...)` ⇒
+/// "主总线身份指向一条非 Master 轨"时，列表与标题 / 手势会各说一套；本单把它对齐。
 #[must_use]
 pub fn master_device_rows(project: &YebanProjectV1) -> Vec<DeviceRowView> {
-    project
-        .tracks
-        .get(&project.master_bus_track_id)
-        .map_or_else(Vec::new, |track| device_rack_projection(Some(track)).1)
+    master_device_projection(project).0
+}
+
+/// ⭐ 任务单 `#181`：主总线设备链的投影本体 —— `(行, 第一格 eq_low_gain)`。
+///
+/// 与 [`device_rack_projection`] **同一份**实现，主语是 [`master_device_track`]；
+/// 行的口径与 [`master_device_rows`] 逐字相同（后者就是本函数的 `.0`）。
+#[must_use]
+pub fn master_device_projection(
+    project: &YebanProjectV1,
+) -> (Vec<DeviceRowView>, Option<DeviceEqView>) {
+    let (_, devices, eq_low_gain) = device_rack_projection(master_device_track(project));
+    (devices, eq_low_gain)
 }
 
 /// 参数值的显示文本（**只有这一处**格式化）。
@@ -4309,11 +4483,37 @@ fn format_param_number(value: f32) -> String {
 /// ⚠ 这是**唯一**的查找实现：投影（[`device_rack_projection`]）与宿主
 /// （`host::wire_device_rack`）都从同一条规则出发 ⇒ 界面显示的那一格与提交改的那一格
 /// 不可能漂移。值域同样**只**来自 [`crate::effect_params`]。
+///
+/// ⭐ 任务单 `#181`：本函数只认**展示轨**；主总线走
+/// [`master_device_eq_low_gain_target`] —— 两条腿共用同一个
+/// [`device_eq_low_gain_target_on`]，**目标轨**由调用方显式选择（⛔ 没有"默认 = 展示轨"）。
 #[must_use]
 pub fn device_eq_low_gain_target(
     project: &YebanProjectV1,
 ) -> Option<(yeban_model::ids::EntityId, usize, usize, f32, f32, f32)> {
-    let track = device_rack_track(project)?;
+    device_eq_low_gain_target_on(device_rack_track(project)?)
+}
+
+/// ⭐ 任务单 `#181`：**主总线**上 `eq_low_gain` 那一格的权威寻址。
+///
+/// 与 [`device_eq_low_gain_target`] 的差别**只有主语**：在
+/// [`master_device_track`]（`master_bus_track_id` 指的那条轨）的设备链里找第一台带
+/// `eq_low_gain` 的设备。值域仍然**只**来自 [`crate::effect_params`] 的契约 ——
+/// 界面上的 `master-device-eq-min-db` / `-max-db` 就是这两个数，⛔ 不是界面里的第二份表。
+#[must_use]
+pub fn master_device_eq_low_gain_target(
+    project: &YebanProjectV1,
+) -> Option<(yeban_model::ids::EntityId, usize, usize, f32, f32, f32)> {
+    device_eq_low_gain_target_on(master_device_track(project)?)
+}
+
+/// `eq_low_gain` 目标的**唯一**查找实现（展示轨与主总线共用；`track` 是唯一自变量）。
+///
+/// 规则：**第一台**带 `eq_low_gain` 的设备、它的**第一个**该名字的参数。值域逐条来自
+/// `effect_params::recognise` 的 `spec.min` / `spec.max`（契约是唯一事实源）。
+fn device_eq_low_gain_target_on(
+    track: &TrackV3,
+) -> Option<(yeban_model::ids::EntityId, usize, usize, f32, f32, f32)> {
     for (slot_index, device) in track.devices.iter().enumerate() {
         for (param_index, param) in device.params.iter().enumerate() {
             let Some((_, spec)) = crate::effect_params::recognise(&param.name) else {

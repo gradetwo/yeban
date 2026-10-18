@@ -102,6 +102,14 @@ export component ConsoleTabs inherits Rectangle {
     in property <[string]> master-device-unrecognised: [];
     in property <bool> master-device-insert-available: false;
     in property <string> master-device-insert-reason: "";
+    // ⭐ 主总线设备的旁通 ＋ EQ（任务单 `#181`）：逐台旁通位 ＋ 那一格 EQ 的五个标量。
+    // 同样只透传投影 —— 本组件不解释、⛔ 不持有第二份设备列表 / 值域。
+    in property <[bool]> master-device-bypassed: [];
+    in property <bool> master-device-eq-available: false;
+    in property <float> master-device-eq-gain-db: 0.0;
+    in property <float> master-device-eq-min-db: 0.0;
+    in property <float> master-device-eq-max-db: 0.0;
+    in property <string> master-device-eq-reason: "";
     // ⭐ 一键装乐器（任务单 `#164`）：当前乐器 ＋ 按钮名清单 ＋ 可用性 / 逐字原因。
     // 同样只透传投影 —— 本组件不解释、⛔ 不持有第二份路径表。
     in property <string> instrument-label: "未装乐器";
@@ -178,6 +186,12 @@ export component ConsoleTabs inherits Rectangle {
     callback master-device-insert-eq();
     callback master-device-insert-reverb();
     callback master-device-remove(string);
+    // ⭐ **主总线设备的旁通 ＋ EQ**（任务单 `#181`）：同样只上抛 —— 唯一实现是
+    // `host::wire_device_rack`（与展示轨那两条手势**同一份**实现体，`DeviceTarget` 不同）。
+    callback master-device-bypass-toggle(int);
+    callback master-device-eq-grab(float);
+    callback master-device-eq-drag(float);
+    callback master-device-eq-release();
     // ⭐ 一键装乐器（任务单 `#164`）：只上报内置清单下标，路径 / Op / 提交在宿主。
     callback instrument-install(int);
     // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 的两个手势，本组件只把
@@ -476,6 +490,13 @@ export component ConsoleTabs inherits Rectangle {
         master-device-unrecognised: root.master-device-unrecognised;
         master-device-insert-available: root.master-device-insert-available;
         master-device-insert-reason: root.master-device-insert-reason;
+        // ⭐ 主总线设备的旁通 ＋ EQ（任务单 `#181`）：只透传投影，本组件不解释。
+        master-device-bypassed: root.master-device-bypassed;
+        master-device-eq-available: root.master-device-eq-available;
+        master-device-eq-gain-db: root.master-device-eq-gain-db;
+        master-device-eq-min-db: root.master-device-eq-min-db;
+        master-device-eq-max-db: root.master-device-eq-max-db;
+        master-device-eq-reason: root.master-device-eq-reason;
         // ⭐ 一键装乐器（任务单 `#164`）：只透传投影，本组件不解释。
         instrument-label: root.instrument-label;
         instrument-names: root.instrument-names;
@@ -531,6 +552,19 @@ export component ConsoleTabs inherits Rectangle {
         }
         master-device-remove(device-id) => {
             root.master-device-remove(device-id);
+        }
+        // ⭐ 主总线设备的旁通 ＋ EQ（任务单 `#181`）：原样上抛。
+        master-device-bypass-toggle(slot) => {
+            root.master-device-bypass-toggle(slot);
+        }
+        master-device-eq-grab(fraction) => {
+            root.master-device-eq-grab(fraction);
+        }
+        master-device-eq-drag(fraction) => {
+            root.master-device-eq-drag(fraction);
+        }
+        master-device-eq-release() => {
+            root.master-device-eq-release();
         }
         // ⭐ 一键装乐器（任务单 `#164`）：只上报下标，原样上抛。
         instrument-install(index) => {

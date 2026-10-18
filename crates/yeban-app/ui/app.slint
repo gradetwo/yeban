@@ -669,6 +669,17 @@ export component MainWindow inherits Window {
     callback master-device-insert-reverb();
     /// 删除主总线上的某台设备（参数 = 设备身份，⛔ 不是行下标）。
     callback master-device-remove(string);
+    // ⭐ ⭐ **主总线设备的旁通 ＋ EQ 低架增益**（任务单 `#181`）：与上面 `#157` 的两条
+    // 展示轨手势**逐条同款**（同一个 `DeviceEqWiring` / `bypass_device`），唯一差别是
+    // 目标轨 = `master_bus_track_id`。`.slint` 只报下标 / 归一化位置，⛔ 不写工程值。
+    /// 点击主总线某台的旁通开关（参数 = 主总线设备链下标）。
+    callback master-device-bypass-toggle(int);
+    /// 主总线 EQ 低架增益按下（参数 = 滑块面内的归一化位置 0.0–1.0）。
+    callback master-device-eq-grab(float);
+    /// 主总线 EQ 低架增益拖动。
+    callback master-device-eq-drag(float);
+    /// 主总线 EQ 低架增益收尾（值真的变了才提交一次）。
+    callback master-device-eq-release();
     // ⭐ **一键装乐器**（任务单 `#164`）：控制台 Tab 3 的 `DeviceRack` 里。
     // 与上面两条同款 —— 只上报内置清单下标，路径 / Op / 一次 `commit_ops` 全在宿主
     // （`host::wire_device_rack`）。
@@ -826,6 +837,15 @@ export component MainWindow inherits Window {
     in property <[string]> master-device-unrecognised: [];
     in property <bool> master-device-insert-available: false;
     in property <string> master-device-insert-reason: "";
+    // ⭐ 主总线设备的两个可编辑面（任务单 `#181`）：逐台旁通位数组 ＋ 那一格 EQ 的
+    // 可用性 / 当前值 / 值域 / 逐字原因。唯一写者是 `host::apply_view`，唯一事实源是
+    // `ViewState::master_devices` 与 `ViewState::master_eq_low_gain`；值域来自效果器契约。
+    in property <[bool]> master-device-bypassed: [];
+    in property <bool> master-device-eq-available: false;
+    in property <float> master-device-eq-gain-db: 0.0;
+    in property <float> master-device-eq-min-db: 0.0;
+    in property <float> master-device-eq-max-db: 0.0;
+    in property <string> master-device-eq-reason: "";
     // ⭐ 一键装乐器（任务单 `#164`）：当前乐器读数 ＋ 按钮名清单 ＋ 可用性 / 逐字原因。
     // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
     in property <string> instrument-label: "未装乐器";
@@ -1252,6 +1272,13 @@ export component MainWindow inherits Window {
             master-device-unrecognised: root.master-device-unrecognised;
             master-device-insert-available: root.master-device-insert-available;
             master-device-insert-reason: root.master-device-insert-reason;
+            // ⭐ 主总线设备的旁通 ＋ EQ（任务单 `#181`）：同样只做单向搬运。
+            master-device-bypassed: root.master-device-bypassed;
+            master-device-eq-available: root.master-device-eq-available;
+            master-device-eq-gain-db: root.master-device-eq-gain-db;
+            master-device-eq-min-db: root.master-device-eq-min-db;
+            master-device-eq-max-db: root.master-device-eq-max-db;
+            master-device-eq-reason: root.master-device-eq-reason;
             instrument-label: root.instrument-label;
             instrument-names: root.instrument-names;
             instrument-install-available: root.instrument-install-available;
@@ -1340,6 +1367,21 @@ export component MainWindow inherits Window {
             }
             master-device-remove(device-id) => {
                 root.master-device-remove(device-id);
+            }
+            // ⭐ 主总线设备的旁通 ＋ EQ（Tab 3，任务单 `#181`）：只上抛 —— 唯一落点是
+            // `host::wire_device_rack` 的 `bypass_device` / `DeviceEqWiring`（与展示轨
+            // 那两条手势**同一份**实现体，`DeviceTarget` 不同）。
+            master-device-bypass-toggle(slot) => {
+                root.master-device-bypass-toggle(slot);
+            }
+            master-device-eq-grab(fraction) => {
+                root.master-device-eq-grab(fraction);
+            }
+            master-device-eq-drag(fraction) => {
+                root.master-device-eq-drag(fraction);
+            }
+            master-device-eq-release() => {
+                root.master-device-eq-release();
             }
             instrument-install(index) => {
                 root.instrument-install(index);

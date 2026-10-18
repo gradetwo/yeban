@@ -190,7 +190,14 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 ///
 /// ⚠ 代价边界与 `#157` / `#159` 同款：消费者只在 Tab 3（默认帧 Tab 0 不实例化
 /// `device-rack`），`apply_view` 只在完整重投影上跑；⛔ 墙钟成本本机未测。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 48;
+///
+/// ## 48 → 49 的追加（任务单 `#181`，2026-10-18）
+///
+/// 那一格是 `ui.set_master_device_bypassed`（`ViewState::master_devices` 逐条的旁通位，
+/// 与 `master-device-names` 同索引集 —— 主总线每台一个旁通开关）。读数（判据逐字打印
+/// 整份清单）：**48 → 49**。`#181` 的其余五格（EQ 的可用性 / 当前值 / 值域两端 /
+/// 逐字原因）都是**标量** ⇒ 只动 `APPLY_VIEW_WRITE_SITE_BUDGET`（81 → 87）。
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 49;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -357,7 +364,26 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 48;
 /// * 每帧换模型实例的数组：**44 → 48**（只多 `master-device-*` 四个）；
 /// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
 ///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 81;
+/// ## `#181` 追加（2026-10-18）：**81 → 87** ／ **48 → 49**
+///
+/// 那六格是**主总线设备的旁通 ＋ EQ 滑杆**（仍住 Tab 3 的 `DeviceRack` 面板第二段）的
+/// **唯一**注入点：
+///
+/// * 一个平行数组：`ui.set_master_device_bypassed`
+///   （`ViewState::master_devices` 逐条的 `bypassed`，与 `master-device-names` 同索引集）；
+/// * 五个标量：`ui.set_master_device_eq_available` / `set_master_device_eq_gain_db` /
+///   `set_master_device_eq_min_db` / `set_master_device_eq_max_db` /
+///   `set_master_device_eq_reason`（那一格 `eq_low_gain` 的可用性 / 当前值 / 值域两端 /
+///   不可用时的逐字原因；值域**只**来自 `crate::effect_params` 的契约）。
+///
+/// 数量侧的**本机实测**（判据逐字报 `从 81 变成了 87` / `每帧换掉模型实例的数组 = 49`）：
+///
+/// * 写入点：**81 → 87**（一个数组 ＋ 五个标量）；
+/// * 每帧换模型实例的数组：**48 → 49**（只多 `master-device-bypassed`）；
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
+///   `src/test_port_adapter.rs` 的 `DEFAULT_VIEW_MUST_NOT_HAVE` 仍钉住这一点；
+///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 87;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -418,6 +444,9 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("master-device-ids", get_master_device_ids);
     push!("master-device-recognised", get_master_device_recognised);
     push!("master-device-unrecognised", get_master_device_unrecognised);
+    // ⭐ 任务单 `#181`：主总线每台的**旁通位**（第二个可编辑面的读数）也在 `apply_view`
+    // 的每帧路径上（⛔ 不是手势路径）⇒ 必须计入这份清单，否则会漏数。
+    push!("master-device-bypassed", get_master_device_bypassed);
     // ⭐ 任务单 `#164`：内置乐器的按钮名数组也在 `apply_view` 的每帧路径上
     // （⛔ 不是手势路径）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
     push!("instrument-names", get_instrument_names);

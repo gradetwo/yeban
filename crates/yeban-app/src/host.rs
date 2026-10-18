@@ -188,6 +188,18 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_master_device_unrecognised(strings(&view.master_device_unrecognised()));
     ui.set_master_device_insert_available(view.master_device_insert_available);
     ui.set_master_device_insert_reason(view.master_device_insert_reason.clone().into());
+    // ⭐ 任务单 `#181`：**主总线**设备的两个可编辑面（旁通 / EQ 低架增益）。
+    // 一个平行数组（逐台旁通位，与 `master-device-names` 同索引集）＋ 五个标量
+    // （可用性 / 当前值 / 值域下界 / 值域上界 / 逐字原因）。唯一事实源是
+    // `ViewState::master_devices` 与 `ViewState::master_eq_low_gain` 及其访问器；
+    // 值域**只**来自效果器契约（`effect_params::recognise` 的 `spec.min/max`），
+    // ⛔ 界面不造第二份表。这一个数组计入 `PER_FRAME_ARRAY_REWRITE_BUDGET`。
+    ui.set_master_device_bypassed(booleans(&view.master_device_bypassed()));
+    ui.set_master_device_eq_available(view.master_device_eq_available());
+    ui.set_master_device_eq_gain_db(view.master_device_eq_gain_db());
+    ui.set_master_device_eq_min_db(view.master_device_eq_min_db());
+    ui.set_master_device_eq_max_db(view.master_device_eq_max_db());
+    ui.set_master_device_eq_reason(view.master_device_eq_reason.clone().into());
     ui.set_device_eq_available(view.device_eq_available());
     ui.set_device_eq_gain_db(view.device_eq_gain_db());
     ui.set_device_eq_min_db(view.device_eq_min_db());
@@ -1942,7 +1954,10 @@ fn wire_mixer_switch(
 
 /// 设备机架（控制台 **Tab 3**）的**写入面** —— 任务单 `#157` 的"最小可编辑"。
 ///
-/// 四个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]（前两个是 `#157`，后两个是 `#163`）：
+/// 八个手势，每个 = **恰好一次** [`UndoPort::commit_ops`]（前两个是 `#157`，接下来两个是
+/// `#163`，主总线那四个是 `#180` 的增删 ＋ `#181` 的旁通 / EQ）：
+/// ⭐ `#181` 起**展示轨与主总线的旁通 / EQ 各走同一份实现体**
+/// （[`bypass_device`] / [`DeviceEqWiring`]），`DeviceTarget` 是唯一自变量。
 ///
 /// | 手势 | `.slint` 回调 | 提交的 `Op` | 撤销标签 |
 /// | :--- | :--- | :--- | :--- |
@@ -1952,6 +1967,8 @@ fn wire_mixer_switch(
 /// | 删一台设备 | `device-remove(device-id)` | [`yeban_model::Op::RemoveDevice`]（按**身份**寻址） | `remove device` |
 /// | ⭐ 给**主总线**装一台（`#180`） | `master-device-insert-eq()` / `master-device-insert-reverb()` | [`yeban_model::Op::InsertDevice`]，`track_id = master_bus_track_id` | `insert master device` |
 /// | ⭐ 删**主总线**上的一台（`#180`） | `master-device-remove(device-id)` | [`yeban_model::Op::RemoveDevice`]，`track_id = master_bus_track_id`，按**身份**寻址 | `remove master device` |
+/// | ⭐ 主总线旁通开关（`#181`） | `master-device-bypass-toggle(slot)` | [`yeban_model::Op::SetDeviceBypassed`]，`track_id = master_bus_track_id` | `toggle master device bypass` |
+/// | ⭐ 主总线 EQ 低架增益（`#181`） | `master-device-eq-grab/drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam`，目标在主总线上 | `set master device eq low gain` |
 ///
 /// ## 为什么拖动期**不**提交（与推子同一条纪律）
 ///
@@ -1974,6 +1991,11 @@ fn wire_mixer_switch(
 /// **身份**寻址（`device-remove(device-id)`，`device-ids` 与投影同索引集），EQ 那条腿在
 /// **按下**与**松手**两侧都重新求目标且值变了就放弃提交 —— 两者都没有这个窗口。
 ///
+/// ⭐ 任务单 `#181`：**主总线**的旁通仍按同一条口径（`master-device-bypass-toggle(slot)`），
+/// 因此它与展示轨那条腿有**同一个**窗口；EQ 那条腿与展示轨共用 [`DeviceEqWiring`]
+/// （按下 / 松手两侧都重求目标）⇒ 没有这个窗口。⛔ 本单没有把旁通改成身份寻址
+/// （那会改 `#157` 的判据与 `.slint` 回调名）。
+///
 /// ## 它**不**做什么
 ///
 /// ⛔ 不做多选、⛔ 不写第二个 EQ 参数、⛔ 不改旁通的寻址口径；⛔ 不碰引擎（插入链在
@@ -1982,6 +2004,11 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     let weak = ui.as_weak();
 
     // ---------------------------------------------------------------- ① 旁通开关
+    //
+    // ⭐ 任务单 `#181`：展示轨与主总线共用**同一个**实现体 [`bypass_device`]，唯一自变量
+    // 是 [`DeviceTarget`]：`DisplayTrack` ⇒ `bridge::device_bypass_ops`（`device_rack_track`），
+    // `Master` ⇒ `bridge::master_device_bypass_ops`（`master_device_track`）。
+    // ⛔ 没有"默认 = 展示轨"的回退；两个回调各自**点名**目标。
     ui.on_device_bypass_toggle({
         let weak = weak.clone();
         let port = Rc::clone(port);
@@ -1993,153 +2020,69 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             let Ok(slot_index) = usize::try_from(slot_index) else {
                 return;
             };
-            let Some(project) = port.try_project() else {
-                eprintln!("[yeban-app] 设备旁通：权威会话此刻没有活跃工程");
+            bypass_device(&ui, &port, DeviceTarget::DisplayTrack, slot_index);
+        }
+    });
+    ui.on_master_device_bypass_toggle({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |slot_index| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let Some(track) = crate::bridge::device_rack_track(&project) else {
+            let Ok(slot_index) = usize::try_from(slot_index) else {
                 return;
             };
-            let Some(device) = track.devices.get(slot_index) else {
-                return;
-            };
-            let op = yeban_model::Op::SetDeviceBypassed {
-                track_id: track.id,
-                device_id: device.id,
-                old_bypassed: device.bypassed,
-                new_bypassed: !device.bypassed,
-            };
-            if port
-                .commit_ops(now_ms(), "toggle device bypass", vec![op])
-                .is_err()
-            {
-                eprintln!("[yeban-app] 设备旁通提交被拒绝（工程未改）");
-                return;
-            }
-            refresh_undo_window(&ui, &port, true);
+            bypass_device(&ui, &port, DeviceTarget::Master, slot_index);
         }
     });
 
     // ---------------------------------------------------------------- ② EQ 低架增益
-    let gesture = Rc::new(RefCell::new(DeviceEqGesture::Idle));
+    //
+    // ⭐ 任务单 `#181`：两条腿共用 [`DeviceEqWiring`]（同一份手势状态机 + 同一份提交
+    // 逻辑），唯一自变量是 [`DeviceTarget`] 与"预览写到哪个界面属性"。
+    // 拖动期只写**视图态**；松手且值**逐位变了**才提交一次。
+    let display_eq = Rc::new(DeviceEqWiring::new(
+        Rc::clone(port),
+        DeviceTarget::DisplayTrack,
+        MainWindow::set_device_eq_gain_db,
+    ));
     ui.on_device_eq_grab({
         let weak = weak.clone();
-        let gesture = Rc::clone(&gesture);
-        let port = Rc::clone(port);
-        move |fraction| {
-            let Some(project) = port.try_project() else {
-                *gesture.borrow_mut() = DeviceEqGesture::Idle;
-                return;
-            };
-            let Some((_, _, _, value, min_db, max_db)) =
-                crate::bridge::device_eq_low_gain_target(&project)
-            else {
-                *gesture.borrow_mut() = DeviceEqGesture::Idle;
-                return;
-            };
-            // 按下即定位（点一下滑块就跳到那一格）⇒ 一次**单击**也是一次可撤销的编辑，
-            // 而不是"点了没反应"。`start_db` 仍是按下那一刻的工程值（提交的 `old_val`）。
-            let pressed_db = db_from_fraction(fraction, min_db, max_db);
-            *gesture.borrow_mut() = DeviceEqGesture::Dragging {
-                start_db: value,
-                last_db: pressed_db,
-                min_db,
-                max_db,
-                moved: pressed_db.to_bits() != value.to_bits(),
-            };
-            if pressed_db.to_bits() != value.to_bits()
-                && let Some(ui) = weak.upgrade()
-            {
-                ui.set_device_eq_gain_db(pressed_db);
-            }
-        }
+        let wiring = Rc::clone(&display_eq);
+        move |fraction| wiring.grab(&weak, fraction)
     });
     ui.on_device_eq_drag({
         let weak = weak.clone();
-        let gesture = Rc::clone(&gesture);
-        move |fraction| {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            let mut state = gesture.borrow_mut();
-            let DeviceEqGesture::Dragging {
-                last_db,
-                min_db,
-                max_db,
-                moved,
-                ..
-            } = &mut *state
-            else {
-                return;
-            };
-            let next_db = db_from_fraction(fraction, *min_db, *max_db);
-            if next_db.to_bits() == last_db.to_bits() {
-                return;
-            }
-            *last_db = next_db;
-            *moved = true;
-            // 拖动期只写**视图态**（投影下一次注入会覆盖它）—— ⛔ 不提交工程内容。
-            ui.set_device_eq_gain_db(next_db);
-        }
+        let wiring = Rc::clone(&display_eq);
+        move |fraction| wiring.drag(&weak, fraction)
     });
     ui.on_device_eq_release({
         let weak = weak.clone();
-        let gesture = Rc::clone(&gesture);
-        let port = Rc::clone(port);
-        move || {
-            let Some(ui) = weak.upgrade() else {
-                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-                return;
-            };
-            let taken = std::mem::replace(&mut *gesture.borrow_mut(), DeviceEqGesture::Idle);
-            let DeviceEqGesture::Dragging {
-                start_db,
-                last_db,
-                moved,
-                ..
-            } = taken
-            else {
-                return;
-            };
-            if !moved || last_db.to_bits() == start_db.to_bits() {
-                return;
-            }
-            let Some(project) = port.try_project() else {
-                eprintln!("[yeban-app] EQ 提交：权威会话此刻没有活跃工程");
-                refresh_undo_window(&ui, &port, true);
-                return;
-            };
-            let Some((track_id, slot_index, param_index, current_db, _, _)) =
-                crate::bridge::device_eq_low_gain_target(&project)
-            else {
-                refresh_undo_window(&ui, &port, true);
-                return;
-            };
-            // 手势期间工程被撤销 / 换掉 ⇒ 起点已经不是当前值：⛔ 不按一个过期基线提交。
-            if current_db.to_bits() != start_db.to_bits() {
-                eprintln!("[yeban-app] EQ 提交被放弃：拖动期间工程值已变（陈旧基线）");
-                refresh_undo_window(&ui, &port, true);
-                return;
-            }
-            let op = yeban_model::Op::SetParam {
-                target: yeban_model::AutomationTarget::DeviceParam {
-                    track_id,
-                    slot_index,
-                    param_index,
-                },
-                old_val: start_db,
-                new_val: last_db,
-            };
-            if port
-                .commit_ops(now_ms(), "set device eq low gain", vec![op])
-                .is_err()
-            {
-                eprintln!("[yeban-app] EQ 提交被拒绝（工程未改）");
-            }
-            // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
-            refresh_undo_window(&ui, &port, true);
-        }
+        let wiring = Rc::clone(&display_eq);
+        move || wiring.release(&weak)
+    });
+
+    let master_eq = Rc::new(DeviceEqWiring::new(
+        Rc::clone(port),
+        DeviceTarget::Master,
+        MainWindow::set_master_device_eq_gain_db,
+    ));
+    ui.on_master_device_eq_grab({
+        let weak = weak.clone();
+        let wiring = Rc::clone(&master_eq);
+        move |fraction| wiring.grab(&weak, fraction)
+    });
+    ui.on_master_device_eq_drag({
+        let weak = weak.clone();
+        let wiring = Rc::clone(&master_eq);
+        move |fraction| wiring.drag(&weak, fraction)
+    });
+    ui.on_master_device_eq_release({
+        let weak = weak.clone();
+        let wiring = Rc::clone(&master_eq);
+        move || wiring.release(&weak)
     });
 
     // ---------------------------------------------------------------- ③ 装设备（⭐ `#163`）
@@ -2319,20 +2262,232 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     });
 }
 
-/// 装设备的**目标轨**（⭐ 任务单 `#180` 的唯一自变量）。
+/// 设备机架的**目标轨**（⭐ 任务单 `#180` 起：装 / 删；⭐ `#181` 起：旁通 / EQ 滑块）。
 ///
 /// ⚠ 两个变体各自绑定一条**显式**的轨：
 /// - [`Self::DisplayTrack`] ⇒ [`crate::bridge::device_rack_track`]（身份序第一条非主总线轨）；
 /// - [`Self::Master`] ⇒ [`crate::bridge::master_device_track`]（`master_bus_track_id`）。
 ///
-/// ⛔ 不存在"默认 = 展示轨"的回退：主总线的两个按钮必须**点名** `Master`，
-/// 否则 `InsertDevice` / `RemoveDevice` 的 `slot_index` 会指错轨（`#163` 的洞）。
+/// ⛔ 不存在"默认 = 展示轨"的回退：主总线的四个手势（装 / 删 / 旁通 / EQ）都必须
+/// **点名** `Master`，否则 `InsertDevice` / `RemoveDevice` / `SetDeviceBypassed` /
+/// `SetParam` 会指错轨（`#163` 的洞）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DeviceTarget {
     /// 设备架面板第一段（展示轨）。
     DisplayTrack,
     /// 设备架面板第二段（主总线）。
     Master,
+}
+
+impl DeviceTarget {
+    /// 撤销标签 / 日志里的主语（⛔ 只是文案；寻址仍走 [`bypass_device`] /
+    /// [`device_eq_target`] 的显式 `match`）。
+    fn label(self) -> &'static str {
+        match self {
+            Self::DisplayTrack => "展示轨设备",
+            Self::Master => "主总线设备",
+        }
+    }
+}
+/// 切换一台设备旁通的**唯一**实现体（展示轨与主总线共用；`target` ＋ `slot_index` 是
+/// 唯一自变量）。
+///
+/// `Op` 由 [`crate::bridge::device_bypass_ops`] / [`crate::bridge::master_device_bypass_ops`]
+/// 从权威工程现求（`old_bypassed` 永远是当前值），宿主⛔ 不硬编码任何设备身份。
+/// 一次点击 = **恰好一次** `commit_ops`。
+fn bypass_device(ui: &MainWindow, port: &UndoPort, target: DeviceTarget, slot_index: usize) {
+    let Some(project) = port.try_project() else {
+        eprintln!("[yeban-app] 设备旁通：权威会话此刻没有活跃工程");
+        return;
+    };
+    let ops = match target {
+        DeviceTarget::DisplayTrack => crate::bridge::device_bypass_ops(&project, slot_index),
+        DeviceTarget::Master => crate::bridge::master_device_bypass_ops(&project, slot_index),
+    };
+    let commit_label = match target {
+        DeviceTarget::DisplayTrack => "toggle device bypass",
+        DeviceTarget::Master => "toggle master device bypass",
+    };
+    let log_label = target.label();
+    let ops = match ops {
+        Ok(ops) => ops,
+        Err(reason) => {
+            eprintln!("[yeban-app] {log_label}旁通被拒绝：{reason}");
+            refresh_undo_window(ui, port, true);
+            return;
+        }
+    };
+    if port.commit_ops(now_ms(), commit_label, ops).is_err() {
+        eprintln!("[yeban-app] {log_label}旁通提交被拒绝（工程未改）");
+        return;
+    }
+    refresh_undo_window(ui, port, true);
+}
+
+/// `eq_low_gain` 那一格的权威目标（展示轨 / 主总线；`target` 是唯一自变量）。
+///
+/// 返回 `(轨身份, 设备链下标, 参数下标, 当前值, 值域下界, 值域上界)`；值域逐条来自
+/// 效果器契约（[`crate::bridge::device_eq_low_gain_target`] /
+/// [`crate::bridge::master_device_eq_low_gain_target`]）。
+fn device_eq_target(
+    project: &yeban_model::project::YebanProjectV1,
+    target: DeviceTarget,
+) -> Option<(yeban_model::EntityId, usize, usize, f32, f32, f32)> {
+    match target {
+        DeviceTarget::DisplayTrack => crate::bridge::device_eq_low_gain_target(project),
+        DeviceTarget::Master => crate::bridge::master_device_eq_low_gain_target(project),
+    }
+}
+
+/// EQ 低架增益滑块的**唯一**手势实现（展示轨与主总线共用；`target` ＋ 预览落点是唯一
+/// 自变量）。
+///
+/// 三条纪律与 `#157` 逐字相同：
+/// 1. **拖动期不提交**：`grab` / `drag` 只写界面视图态（`set_gain` 指向的属性）；
+/// 2. **松手才提交**：`release` 只在"值逐位变了且不等于起点"时提交一次
+///    `Op::SetParam`，成功与失败都重投影一次（成功读新值 / 失败抹掉预览）；
+/// 3. **不信界面**：目标在 `grab` 与 `release` 两侧都从权威工程现求；起点不再是
+///    当前值（撤销 / 换工程）⇒ ⛔ 不按过期基线提交。
+struct DeviceEqWiring {
+    /// 权威撤销端口（提交与重投影的唯一出口）。
+    port: Rc<UndoPort>,
+    /// 目标轨（展示轨 / 主总线）。
+    target: DeviceTarget,
+    /// 拖动期的预览写到哪个界面属性（`device-eq-gain-db` / `master-device-eq-gain-db`）。
+    set_gain: fn(&MainWindow, f32),
+    /// 当前手势（每次拖动一份；`Idle` 之外的状态只在三条回调之间传递）。
+    gesture: RefCell<DeviceEqGesture>,
+}
+
+impl DeviceEqWiring {
+    fn new(port: Rc<UndoPort>, target: DeviceTarget, set_gain: fn(&MainWindow, f32)) -> Self {
+        Self {
+            port,
+            target,
+            set_gain,
+            gesture: RefCell::new(DeviceEqGesture::Idle),
+        }
+    }
+
+    /// 提交成功时写进撤销栈的标签（按目标轨命名；⛔ 不含来源视图前缀）。
+    fn commit_label(&self) -> &'static str {
+        match self.target {
+            DeviceTarget::DisplayTrack => "set device eq low gain",
+            DeviceTarget::Master => "set master device eq low gain",
+        }
+    }
+
+    fn grab(&self, weak: &slint::Weak<MainWindow>, fraction: f32) {
+        let Some(project) = self.port.try_project() else {
+            *self.gesture.borrow_mut() = DeviceEqGesture::Idle;
+            return;
+        };
+        let Some((_, _, _, value, min_db, max_db)) = device_eq_target(&project, self.target) else {
+            *self.gesture.borrow_mut() = DeviceEqGesture::Idle;
+            return;
+        };
+        // 按下即定位（点一下滑块就跳到那一格）⇒ 一次**单击**也是一次可撤销的编辑，
+        // 而不是"点了没反应"。`start_db` 仍是按下那一刻的工程值（提交的 `old_val`）。
+        let pressed_db = db_from_fraction(fraction, min_db, max_db);
+        *self.gesture.borrow_mut() = DeviceEqGesture::Dragging {
+            start_db: value,
+            last_db: pressed_db,
+            min_db,
+            max_db,
+            moved: pressed_db.to_bits() != value.to_bits(),
+        };
+        if pressed_db.to_bits() != value.to_bits()
+            && let Some(ui) = weak.upgrade()
+        {
+            (self.set_gain)(&ui, pressed_db);
+        }
+    }
+
+    fn drag(&self, weak: &slint::Weak<MainWindow>, fraction: f32) {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let mut state = self.gesture.borrow_mut();
+        let DeviceEqGesture::Dragging {
+            last_db,
+            min_db,
+            max_db,
+            moved,
+            ..
+        } = &mut *state
+        else {
+            return;
+        };
+        let next_db = db_from_fraction(fraction, *min_db, *max_db);
+        if next_db.to_bits() == last_db.to_bits() {
+            return;
+        }
+        *last_db = next_db;
+        *moved = true;
+        // 拖动期只写**视图态**（投影下一次注入会覆盖它）—— ⛔ 不提交工程内容。
+        (self.set_gain)(&ui, next_db);
+    }
+
+    fn release(&self, weak: &slint::Weak<MainWindow>) {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        let taken = std::mem::replace(&mut *self.gesture.borrow_mut(), DeviceEqGesture::Idle);
+        let DeviceEqGesture::Dragging {
+            start_db,
+            last_db,
+            moved,
+            ..
+        } = taken
+        else {
+            return;
+        };
+        if !moved || last_db.to_bits() == start_db.to_bits() {
+            return;
+        }
+        let log_label = match self.target {
+            DeviceTarget::DisplayTrack => "EQ",
+            DeviceTarget::Master => "主总线 EQ",
+        };
+        let commit_label = self.commit_label();
+        let Some(project) = self.port.try_project() else {
+            eprintln!("[yeban-app] {log_label} 提交：权威会话此刻没有活跃工程");
+            refresh_undo_window(&ui, &self.port, true);
+            return;
+        };
+        let Some((track_id, slot_index, param_index, current_db, _, _)) =
+            device_eq_target(&project, self.target)
+        else {
+            refresh_undo_window(&ui, &self.port, true);
+            return;
+        };
+        // 手势期间工程被撤销 / 换掉 ⇒ 起点已经不是当前值：⛔ 不按一个过期基线提交。
+        if current_db.to_bits() != start_db.to_bits() {
+            eprintln!("[yeban-app] {log_label} 提交被放弃：拖动期间工程值已变（陈旧基线）");
+            refresh_undo_window(&ui, &self.port, true);
+            return;
+        }
+        let op = yeban_model::Op::SetParam {
+            target: yeban_model::AutomationTarget::DeviceParam {
+                track_id,
+                slot_index,
+                param_index,
+            },
+            old_val: start_db,
+            new_val: last_db,
+        };
+        if self
+            .port
+            .commit_ops(now_ms(), commit_label, vec![op])
+            .is_err()
+        {
+            eprintln!("[yeban-app] {log_label} 提交被拒绝（工程未改）");
+        }
+        // 成功与失败都重投影一次：成功 ⇒ 读新值；失败 ⇒ 把拖动期的预览值抹掉。
+        refresh_undo_window(&ui, &self.port, true);
+    }
 }
 
 /// 装一台内置效果器的唯一实现体（展示轨与主总线共用；`effect` ＋ `target` 是唯一自变量）。

@@ -1243,12 +1243,69 @@ impl ElementRegistry {
             "无设备（点上方「装 EQ」或「装混响」）",
             false,
         );
+        // ⭐ 任务单 `#181`：主总线设备的两个可编辑面 —— 那一格 EQ 面板 / 滑块 / 读数 /
+        // 逐字原因都是**无条件声明**的（只有 `visible` 随投影变）⇒ 这里无条件登记。
+        registry.add(
+            "master-device-eq-panel",
+            ElementKind::GroupBox,
+            "console/device_rack.slint",
+            "主总线 EQ 低架增益 (eq_low_gain)",
+            false,
+        );
+        registry.add(
+            "master-device-eq-slider",
+            ElementKind::Slider,
+            "console/device_rack.slint",
+            "主总线 EQ 低架增益",
+            false,
+        );
+        let master_eq_value_label = if view.master_device_eq_available() {
+            format!("{} dB", view.master_device_eq_gain_db())
+        } else {
+            "主总线没有可编辑的 eq_low_gain".to_owned()
+        };
+        registry.add(
+            "master-device-eq-value",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &master_eq_value_label,
+            false,
+        );
+        let master_eq_reason_label = if view.master_device_eq_reason.is_empty() {
+            "主总线 EQ 可用（无不可用原因）".to_owned()
+        } else {
+            view.master_device_eq_reason.clone()
+        };
+        registry.add(
+            "master-device-eq-reason",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &master_eq_reason_label,
+            false,
+        );
         for (index, row) in view.master_devices.iter().enumerate() {
             registry.add(
                 &format!("master-device-{index}-card"),
                 ElementKind::ListItem,
                 "console/device_rack.slint",
-                &format!("主总线设备 {}", row.name),
+                &format!(
+                    "主总线设备 {}{}",
+                    row.name,
+                    if row.bypassed {
+                        "（已旁通）"
+                    } else {
+                        "（生效）"
+                    }
+                ),
+                false,
+            );
+            // ⭐ 任务单 `#181`：每台一个旁通开关（与展示轨 `device-{i}-bypass-switch`
+            // 同一副语义；`.slint` 里它只随 `master-device-names` 的条目数生成）。
+            registry.add(
+                &format!("master-device-{index}-bypass-switch"),
+                ElementKind::Switch,
+                "console/device_rack.slint",
+                &format!("旁通主总线设备 {}", row.name),
                 false,
             );
             // 识别读数在"没有"时 `.slint` 里是空串 + `visible: false`；注册表要求每条都有
@@ -2837,8 +2894,8 @@ mod tests {
             "MixerConsole 声明的注入属性与收到的转发必须一一对应"
         );
 
-        // 方向 4（⭐ 任务单 `#180`）：**主总线设备链**的注入面有**第三级目标**
-        // （`ConsoleTabs → DeviceRack`，Tab 3）。集合与三级声明逐条对齐 ——
+        // 方向 4（⭐ 任务单 `#180`，`#181` 扩充）：**主总线设备链**的注入面有**第三级
+        // 目标**（`ConsoleTabs → DeviceRack`，Tab 3）。集合与三级声明逐条对齐 ——
         // 少一个就是某级断了，多一个就是界面上多了一个没有宿主的属性。
         let rack = std::fs::read_to_string(ui.join("console/device_rack.slint"))
             .expect("读 device_rack.slint");
@@ -2850,6 +2907,12 @@ mod tests {
         to_rack.sort();
         to_rack.dedup();
         let mut wanted: Vec<String> = [
+            "master-device-bypassed",
+            "master-device-eq-available",
+            "master-device-eq-gain-db",
+            "master-device-eq-max-db",
+            "master-device-eq-min-db",
+            "master-device-eq-reason",
             "master-device-ids",
             "master-device-insert-available",
             "master-device-insert-reason",
@@ -2864,7 +2927,7 @@ mod tests {
         wanted.sort();
         assert_eq!(
             to_rack, wanted,
-            "ConsoleTabs 转给 DeviceRack 的 `master-device-*` 注入面必须恰好是这七格"
+            "ConsoleTabs 转给 DeviceRack 的 `master-device-*` 注入面必须恰好是这十三格"
         );
         for name in &to_rack {
             assert!(
