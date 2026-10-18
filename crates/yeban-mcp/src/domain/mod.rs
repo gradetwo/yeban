@@ -2923,6 +2923,7 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             regions_used: outcome.regions_used,
             notes_silenced,
             notes_looping: outcome.notes_looping,
+            notes_using_builtin_silence: outcome.notes_using_builtin_silence,
             notes_using_file_sample: outcome.notes_using_file_sample,
             notes_using_sine_fallback: outcome.notes_using_sine_fallback,
             sample_sources: outcome.sample_sources,

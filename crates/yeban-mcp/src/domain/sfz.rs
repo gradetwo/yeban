@@ -39,13 +39,15 @@
 //!          ⇒ store::write_project_atomic(临时文件) ⇒ rename  [ARCH-SEC-004]
 //! ```
 //!
-//! ## 五条诚实登记（⛔ 不假装）
+//! ## 六条诚实登记（⛔ 不假装）
 //!
-//! 1. **采样文件会被真读**：`Region::sample_path()` 指向的 PCM WAV 由 [`read_sample_file`]
+//! 1. **采样文件会被真读**：`Region::sample_path()`（含 `<control> default_path=` 前缀的
+//!    **有效路径**）指向的 PCM WAV 由 [`read_sample_file`]
 //!    （→ `yeban_render::wav::read_plain_wav_mono_f32`，与 `app` 侧**同一份**归一化）解码，
 //!    经 [`SampleCache`] 去重并受三条上限约束；响应里的 `sampleSource` / `sampleFilesRead`
 //!    逐字反映读了哪些文件。⚠ 读不到（或没有区域声明 `sample=`）时**如实回退**到
 //!    [`InMemorySfzSample::sine`]（内存正弦）并把原因写进 `sampleSource`。
+//!    ⛔ 内建静音伪样本**不走这条路**（它没有文件可读，见第 6 条）。
 //! 2. **工具面没有设备链**：`DeviceKind` 没有 SFZ 变体，本模块**不**往
 //!    `TrackV3::devices` 里塞任何东西（塞一个就是发明规范）。SFZ 音色只在这一条
 //!    **显式**导出路径上取代 MIDI 合成源。
@@ -62,6 +64,13 @@
 //!    沙箱逃逸仍是错误。展开后的片段序列随 [`SfzLoad::sources`] 一起登记，因此
 //!    `yeban_render_sfz_wav` 的 `with_instrument` 重放的是**同一份**片段（⛔ 不是拿根文本
 //!    再 `parse_text` 把 include 悄悄丢掉）。
+//! 6. ⭐ **只认 `*silence`**（任务单 `#218`）：`sample=*silence` 是 SFZ 的**内建静音伪样本**
+//!    （⛔ 不是文件）。判据**只有一份**：`yeban-sfz` 的 [`Region::is_builtin_silence()`]
+//!    （判 `sample=` **原值**，⛔ 不判拼过 `default_path` 的 `sample_path()`；也⛔ 不判
+//!    `*Silence` 这类大小写变体）。装载期：**⛔ 不读盘**、⛔ 不进 `sampleFailures`、
+//!    计入 [`SfzLoad::silent_region_count`]、区域状态逐字 [`BUILTIN_SILENCE_SOURCE`]；
+//!    渲染期：该区域**真的写零**（⛔ 不回退内存正弦）。其它 ARIA 内建波形
+//!    （`*sine` / `*saw` / `*square` / …）**未实现** —— 仍按普通样本路径处理。
 //!
 //! 本模块是**离线/控制侧**代码：`parse_text` / `parse_sources` 会分配 ⇒ ⛔ 不得在音频
 //! 回调里调用（红线 7 / `MUST-GATE-001`）。
@@ -98,6 +107,13 @@ pub const DEFAULT_TONE_HZ: f32 = 440.0;
 
 /// 样本来源的**如实**文案（⛔ 不是采样文件名）。
 pub const SAMPLE_SOURCE: &str = "in-memory-sine";
+
+/// ⭐ 内建静音伪样本的来源/状态文案（任务单 `#218`）。
+///
+/// 与 `yeban-app::sfz_load::BUILTIN_SILENCE_SOURCE` **逐字相同**（本 crate 不依赖 app，
+/// 因此这里是同一个显示字面量；**判定逻辑**仍只有 `yeban-sfz` 一份）。
+/// 它描述的区域状态是 `builtin-silence(*silence)` —— ⛔ 不是 `unreadable(...)`。
+pub const BUILTIN_SILENCE_SOURCE: &str = "builtin-silence(*silence)";
 
 /// 每个音符末尾的淡出帧数（去咔哒；与 `render.rs` 的 `RELEASE_MS` 同族的最小实现）。
 const NOTE_FADE_FRAMES: u64 = 64;
@@ -319,8 +335,14 @@ pub struct RegionSummary {
     pub trigger_by_note: bool,
     /// 该区域是否要求循环（`loop_mode` 命中且窗口有效）——本实现**不**展开循环。
     pub loops: bool,
+    /// ⭐ `sample=` 是**内建静音伪样本** `*silence`（任务单 `#218`）。
+    ///
+    /// 判定来自 [`Region::is_builtin_silence()`]（与引擎/app **同一份**）；为真时该区域
+    /// 不读盘、不计入 `sampleFailures`、渲染时写零。
+    pub builtin_silence: bool,
     /// `sample=` 指向的文件的**读取真相**：`file(<path> frames=N rate=R)`（读到了）
-    /// 或 `unreadable(<path>): <原因>`（没读到 ⇒ 渲染时回退内存正弦）。
+    /// 或 `unreadable(<path>): <原因>`（没读到 ⇒ 渲染时回退内存正弦）；
+    /// ⭐ 内建静音则是 [`BUILTIN_SILENCE_SOURCE`]（没有文件可读）。
     pub sample_file_state: String,
 }
 
@@ -334,6 +356,7 @@ impl RegionSummary {
             "pitchKeycenter": self.pitch_keycenter,
             "triggerByNote": self.trigger_by_note,
             "loops": self.loops,
+            "builtinSilence": self.builtin_silence,
             "sampleFileState": self.sample_file_state,
         })
     }
@@ -359,6 +382,14 @@ pub struct SfzLoad {
     pub include_issues: Vec<IncludeIssue>,
     /// 区域摘要（顺序 = 文件里的顺序）。
     pub regions: Vec<RegionSummary>,
+    /// ⭐ 内建静音区域数（`sample=*silence`；任务单 `#218`）。
+    ///
+    /// 与 app 的 `silent_region_count` **口径差别如实登记**：app 的 `silent` 是引擎摊平
+    /// 口径（缺样本 ＋ 内建静音都不产生输出）；MCP **没有** `NO_SAMPLE` 摊平 —— 读不到的
+    /// 样本会**回退内存正弦**（模块头第 1 条），因此这里**只**数"按设计就不产生采样输出"
+    /// 的内建静音区域，⛔ 不把回退正弦的区域算成静音（那会是假话）。缺样本另有
+    /// [`Self::sample_failures`] / `sampleFilesFailedCount` 两个读数。
+    pub silent_region_count: usize,
     /// 是否复用了已装载的同一份内容（内容寻址 ⇒ 同文本同一个 instrumentId）。
     pub reused: bool,
     /// 请求的样本侧采样率（进报告；它只用于**回退正弦**与报告口径）。
@@ -377,20 +408,28 @@ impl SfzLoad {
     /// 装载的样本来源**汇总文案**（如实：读到就点名文件，读不到就说原因）。
     ///
     /// - 读到了至少一个文件 ⇒ `file(<第一个来源>)`（其余进 `sampleSources` 数组）；
-    /// - 一个都没读到 ⇒ [`SAMPLE_SOURCE`]（内存正弦）＋**回退原因**（若有区域声明了 `sample=`）。
+    /// - 一个都没读到 ⇒ [`SAMPLE_SOURCE`]（内存正弦）＋**回退原因**（若有区域声明了 `sample=`）；
+    /// - ⭐ 只有内建静音区域、既无文件也无失败 ⇒ [`BUILTIN_SILENCE_SOURCE`]
+    ///   （⛔ 不说成 `in-memory-sine` —— 那会把"按设计静音"说成"缺文件回退"）。
     #[must_use]
     pub fn sample_source(&self) -> String {
+        let silence_note = if self.silent_region_count > 0 {
+            format!("; {} 个区域内建静音", self.silent_region_count)
+        } else {
+            String::new()
+        };
         match (self.sample_sources.first(), self.sample_failures.first()) {
             // `describe` 自己就以 `file(` 开头 ⇒ ⛔ 不再包一层 `file(...)`。
             (Some(first), _) => format!(
-                "{first}{}",
+                "{first}{}{silence_note}",
                 if self.sample_sources.len() > 1 {
                     format!("; 另 {} 个见 sampleSources", self.sample_sources.len() - 1)
                 } else {
                     String::new()
                 }
             ),
-            (None, Some(reason)) => format!("{SAMPLE_SOURCE} (回退: {reason})"),
+            (None, Some(reason)) => format!("{SAMPLE_SOURCE} (回退: {reason}){silence_note}"),
+            (None, None) if self.silent_region_count > 0 => BUILTIN_SILENCE_SOURCE.to_owned(),
             (None, None) => SAMPLE_SOURCE.to_owned(),
         }
     }
@@ -424,6 +463,7 @@ impl SfzLoad {
             "bytes": self.bytes,
             "sha256": self.digest,
             "regions": self.regions.len(),
+            "silentRegionCount": self.silent_region_count,
             "regionDetails": self.regions.iter().map(RegionSummary::to_value).collect::<Vec<_>>(),
             "includeIssues": self.include_issues_value(),
             "includeIssueCount": self.include_issues.len(),
@@ -450,6 +490,7 @@ impl SfzLoad {
             "bytes": self.bytes,
             "sha256": self.digest,
             "regions": self.regions.len(),
+            "silentRegionCount": self.silent_region_count,
             "regionDetails": self.regions.iter().map(RegionSummary::to_value).collect::<Vec<_>>(),
             "includeIssues": self.include_issues_value(),
             "includeIssueCount": self.include_issues.len(),
@@ -674,7 +715,16 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
     // ⭐ `#208`：先把 `#include` 展开（缺失只记一条、循环/超深报错），再解析片段序列。
     let resolution = resolve_include_sources(&text, path)?;
     // ---- 逐区域**真读** `sample=<path>`（有界；读不到如实回退，⛔ 不让装载失败）----
-    let (regions, sample_sources, sample_failures, sample_reads_truncated, sample_frames_loaded) = {
+    // ⭐ `#218`：`sample=*silence` **⛔ 不读盘**（它不是文件）—— 区域状态记内建静音，
+    // ⛔ 不进 `sampleFailures`。判定只有一份：`yeban-sfz` 的 `Region::is_builtin_silence()`。
+    let (
+        regions,
+        silent_region_count,
+        sample_sources,
+        sample_failures,
+        sample_reads_truncated,
+        sample_frames_loaded,
+    ) = {
         let instrument = match resolution.as_ref() {
             Some((sources, _)) => parse_expanded(&text, Some(sources.as_slice())),
             None => parse_expanded(&text, None),
@@ -683,18 +733,28 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
         let mut regions: Vec<RegionSummary> = Vec::new();
         for (index, region) in instrument.regions().iter().enumerate() {
             let mut summary = summarize(index, region);
-            let sample = summary.sample.clone();
-            summary.sample_file_state = if sample.trim().is_empty() {
-                "noSampleOpcode".to_owned()
+            summary.sample_file_state = if summary.builtin_silence {
+                BUILTIN_SILENCE_SOURCE.to_owned()
             } else {
-                let resolved = resolve_sample_path(path, &sample);
-                match cache.get(&resolved) {
-                    Ok(reading) => reading.describe,
-                    Err(reason) => format!("unreadable({}): {reason}", resolved.display()),
+                // ⚠ 读盘用**有效路径**（`sample_path()` 会拼 `default_path=`）；
+                // 内建静音的判定用**原值**（上面 `builtin_silence`，`#217` 的裁决）。
+                let sample = region.sample_path();
+                if sample.trim().is_empty() {
+                    "noSampleOpcode".to_owned()
+                } else {
+                    let resolved = resolve_sample_path(path, &sample);
+                    match cache.get(&resolved) {
+                        Ok(reading) => reading.describe,
+                        Err(reason) => format!("unreadable({}): {reason}", resolved.display()),
+                    }
                 }
             };
             regions.push(summary);
         }
+        let silent_region_count = regions
+            .iter()
+            .filter(|region| region.builtin_silence)
+            .count();
         let mut sample_sources: Vec<String> = cache
             .entries_iter()
             .filter_map(|(_, entry)| entry.as_ref().ok().map(|reading| reading.describe.clone()))
@@ -712,6 +772,7 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
         sample_failures.sort_unstable();
         (
             regions,
+            silent_region_count,
             sample_sources,
             sample_failures,
             cache.truncated(),
@@ -732,6 +793,7 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
         sources,
         include_issues,
         regions,
+        silent_region_count,
         reused,
         sample_hz,
         sample_sources,
@@ -745,7 +807,10 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
 fn summarize(index: usize, region: &Region<'_>) -> RegionSummary {
     RegionSummary {
         index,
-        sample: region.sample_path().to_string(),
+        // ⚠ 读 `Region::sample`（`sample=` 的**原值**），⛔ 不读 `sample_path()`：
+        // 后者拼了 `<control> default_path=` 前缀，而本字段的契约是"原样登记"。
+        // 内建静音的判定同理判原值（`#217` 的裁决）。
+        sample: region.sample.as_ref().to_owned(),
         key_low: region.lokey,
         key_high: region.hikey,
         velocity_low: region.lovel,
@@ -759,6 +824,7 @@ fn summarize(index: usize, region: &Region<'_>) -> RegionSummary {
                 RenderRates::default(),
             )
             .loops(),
+        builtin_silence: region.is_builtin_silence(),
         // 由 `load` 的读盘那一步填（`summarize` 只做纯解析摘要，⛔ 不碰文件系统）。
         sample_file_state: "notProbed".to_owned(),
     }
@@ -967,6 +1033,10 @@ pub struct SfzWavArtifact {
     pub notes_silenced: u64,
     /// 是否有音符落在要求的循环区域上（本实现**不**展开循环 ⇒ 该音符只响一遍）。
     pub notes_looping: u64,
+    /// ⭐ 落在**内建静音**区域（`sample=*silence`）上的音符数（任务单 `#218`）。
+    ///
+    /// 这些音符**不读盘**、⛔ 不计入 [`Self::notes_using_sine_fallback`]，写零帧。
+    pub notes_using_builtin_silence: u64,
     /// 用**文件样本**发声的音符数。
     pub notes_using_file_sample: u64,
     /// 回退到**内存正弦**的音符数。
@@ -993,12 +1063,17 @@ impl SfzWavArtifact {
         keys
     }
 
-    /// 音源**汇总文案**（如实：有文件样本就点名，全回退就说回退）。
+    /// 音源**汇总文案**（如实：有文件样本就点名，全回退就说回退，内建静音单独点名）。
     #[must_use]
     pub fn sample_source(&self) -> String {
+        let silence_note = if self.notes_using_builtin_silence > 0 {
+            format!("; {} 个音符内建静音", self.notes_using_builtin_silence)
+        } else {
+            String::new()
+        };
         match (self.sample_sources.first(), self.sample_failures.first()) {
             (Some(first), _) => format!(
-                "{first}{}{}",
+                "{first}{}{}{silence_note}",
                 if self.sample_sources.len() > 1 {
                     format!("; 另 {} 个见 sampleSources", self.sample_sources.len() - 1)
                 } else {
@@ -1010,7 +1085,13 @@ impl SfzWavArtifact {
                     String::new()
                 }
             ),
-            (None, Some(reason)) => format!("{SAMPLE_SOURCE} (回退: {reason})"),
+            (None, Some(reason)) => {
+                format!("{SAMPLE_SOURCE} (回退: {reason}){silence_note}")
+            }
+            // ⭐ 只有内建静音（⛔ 不说成 `in-memory-sine`：没有回退，是设计如此）。
+            (None, None) if self.notes_using_builtin_silence > 0 => {
+                BUILTIN_SILENCE_SOURCE.to_owned()
+            }
             (None, None) => SAMPLE_SOURCE.to_owned(),
         }
     }
@@ -1028,6 +1109,7 @@ impl SfzWavArtifact {
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
             "notesUsingFileSample": self.notes_using_file_sample,
+            "notesUsingBuiltinSilence": self.notes_using_builtin_silence,
             "notesUsingSineFallback": self.notes_using_sine_fallback,
             "notesScheduled": self.notes_scheduled,
             "notesUnmatched": self.notes_unmatched,
@@ -1079,6 +1161,7 @@ impl SfzWavArtifact {
             "sampleReadsTruncated": self.sample_reads_truncated,
             "sampleFramesLoaded": self.sample_frames_loaded,
             "notesUsingFileSample": self.notes_using_file_sample,
+            "notesUsingBuiltinSilence": self.notes_using_builtin_silence,
             "notesUsingSineFallback": self.notes_using_sine_fallback,
             "dither": "TPDF (ARCH-FMT-001)",
             "bwf": false,
@@ -1251,6 +1334,10 @@ pub struct SfzRenderOutcome {
     pub regions_used: Vec<usize>,
     /// 落在**要求循环**的区域上的音符数（本实现不展开循环 ⇒ 只响一遍）。
     pub notes_looping: u64,
+    /// ⭐ 落在**内建静音**区域（`sample=*silence`）上的音符数（任务单 `#218`）。
+    ///
+    /// 这些音符 ⛔ 不读盘、⛔ 不回退内存正弦，写入的样本恒为 0。
+    pub notes_using_builtin_silence: u64,
     /// 用**文件样本**发声的音符数。
     pub notes_using_file_sample: u64,
     /// 回退到**内存正弦**的音符数。
@@ -1306,6 +1393,7 @@ pub fn render(
     let mut regions_used: BTreeSet<usize> = BTreeSet::new();
     let mut notes_unmatched = 0u64;
     let mut notes_looping = 0u64;
+    let mut notes_using_builtin_silence = 0u64;
     let mut notes_using_file_sample = 0u64;
     let mut notes_using_sine_fallback = 0u64;
     let mut cache = SampleCache::new();
@@ -1337,19 +1425,33 @@ pub fn render(
         //
         // ⚠ 区域选择 / 播放速率 / 总增益**一位不改**：它们仍全部来自 `yeban-sfz`
         // 的公开读数（上面三行）。这里换的**只有样本数据**。
-        let file_sample = sfz_path.and_then(|sfz| {
-            let raw = region.sample_path();
-            if raw.trim().is_empty() {
-                return None;
-            }
-            let resolved = resolve_sample_path(sfz, &raw);
-            // 读不到 ⇒ `None` ⇒ 回退内存正弦（原因已进 cache，渲染完由
-            // `sample_failures` 如实报出）。
-            cache.get(&resolved).ok()
-        });
+        //
+        // ⭐ `#218`：`sample=*silence` 是**内建静音**（⛔ 不是文件）——
+        // 判定用 `yeban-sfz` 的 `Region::is_builtin_silence()`（判 `sample=` 原值），
+        // 在**任何读盘之前**截住 ⇒ ⛔ 不进 `sample_failures`、⛔ 不回退内存正弦；
+        // 下面写零帧（该音符照常排程、照常计入 `regionsUsed`）。
+        let builtin_silence = region.is_builtin_silence();
+        let file_sample = if builtin_silence {
+            None
+        } else {
+            sfz_path.and_then(|sfz| {
+                let raw = region.sample_path();
+                if raw.trim().is_empty() {
+                    return None;
+                }
+                let resolved = resolve_sample_path(sfz, &raw);
+                // 读不到 ⇒ `None` ⇒ 回退内存正弦（原因已进 cache，渲染完由
+                // `sample_failures` 如实报出）。
+                cache.get(&resolved).ok()
+            })
+        };
         let span = usize::try_from(note.frames.max(1)).unwrap_or(0);
         let mut mono = vec![0.0_f32; span];
-        let written = if let Some(reading) = &file_sample {
+        let written = if builtin_silence {
+            notes_using_builtin_silence = notes_using_builtin_silence.saturating_add(1);
+            // `mono` 全是 0.0；写 `span` 帧等价于"这个音符真的响，但样本值为 0"。
+            span
+        } else if let Some(reading) = &file_sample {
             notes_using_file_sample = notes_using_file_sample.saturating_add(1);
             // ⭐ 文件样本的步进比按**它自己的**采样率换算（`yeban-sfz` 的
             // `playback_rate` = `pitch_ratio * sample_hz / engine_hz`），与
@@ -1400,6 +1502,7 @@ pub fn render(
         notes_unmatched,
         regions_used: regions_used.into_iter().collect(),
         notes_looping,
+        notes_using_builtin_silence,
         notes_using_file_sample,
         notes_using_sine_fallback,
         sample_sources: {
