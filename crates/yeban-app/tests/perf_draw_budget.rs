@@ -190,7 +190,7 @@ const RUNTIME_VELOCITY_BARS: usize = 229;
 ///
 /// ⚠ 代价边界与 `#157` / `#159` 同款：消费者只在 Tab 3（默认帧 Tab 0 不实例化
 /// `device-rack`），`apply_view` 只在完整重投影上跑；⛔ 墙钟成本本机未测。
-const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 44;
+const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 48;
 /// `host.rs` 的 `apply_view` 函数体里的属性写入点个数上限（本单之后 **60**）。
 ///
 /// ## 39 → 40 的追加（任务单 `#82`，2026-10-16）
@@ -338,7 +338,26 @@ const PER_FRAME_ARRAY_REWRITE_BUDGET: usize = 44;
 /// ⇒ 写入点**74**、每帧换模型实例的数组**44**（判据逐字报 `= 74` / `= 44`，清单里
 /// `instrument-names` 仍在）。⛔ 因此本单**不**改小这两个常量：改小会删掉一个仍然必需的
 /// 注入点。⚠ 若将来整块"装乐器"被移除，请按三件套重新测量并**改小**。
-const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 74;
+/// ## `#180` 追加（2026-10-18）：**74 → 81** ／ **44 → 48**
+///
+/// 那七格是**主总线设备链**（仍住 Tab 3 的 `DeviceRack` 面板，面板右侧新增第二段）的
+/// **唯一**注入点：
+///
+/// * 四个平行数组：`ui.set_master_device_names` / `set_master_device_ids` /
+///   `set_master_device_recognised` / `set_master_device_unrecognised`
+///   （`ViewState::master_devices` 的投影，与展示轨那四个数组同一份
+///   `device_rack_projection`）；
+/// * 三个标量：`ui.set_master_device_label`（`"主总线 Master · 设备链"`；没有主总线时
+///   **就是**装设备的逐字原因）、`ui.set_master_device_insert_available` /
+///   `ui.set_master_device_insert_reason`（可用性与不可用时的**逐字**原因）。
+///
+/// 数量侧的**本机实测**（判据逐字报 `从 74 变成了 81` / `每帧换掉模型实例的数组 = 48`）：
+///
+/// * 写入点：**74 → 81**（四个数组 ＋ 三个标量）；
+/// * 每帧换模型实例的数组：**44 → 48**（只多 `master-device-*` 四个）；
+/// * 默认帧（Tab 0）的运行时树不含 `device-rack` ⇒ 结构上不参与默认帧绘制；
+///   ⛔ Linux 基准**未**逐像素复测（本机 macOS 无法重录，见上）。
+const APPLY_VIEW_WRITE_SITE_BUDGET: usize = 81;
 
 /// 取 `[BASELINE-003]` 第 `frame` 帧的滚动偏移（与 `examples/fps_gpu.rs` 同款换算）。
 fn scroll_at(frame: usize) -> f32 {
@@ -393,6 +412,12 @@ fn array_instance_addrs(ui: &yeban_app::ui::MainWindow) -> Vec<(&'static str, us
     push!("device-bypassed", get_device_bypassed);
     push!("device-recognised", get_device_recognised);
     push!("device-unrecognised", get_device_unrecognised);
+    // ⭐ 任务单 `#180`：主总线设备链（同一面板第二段）的四个平行数组同样在
+    // `apply_view` 的每帧路径上（⛔ 不是手势路径）⇒ 必须计入这份清单，否则会漏数。
+    push!("master-device-names", get_master_device_names);
+    push!("master-device-ids", get_master_device_ids);
+    push!("master-device-recognised", get_master_device_recognised);
+    push!("master-device-unrecognised", get_master_device_unrecognised);
     // ⭐ 任务单 `#164`：内置乐器的按钮名数组也在 `apply_view` 的每帧路径上
     // （⛔ 不是手势路径）⇒ 必须计入这份清单，否则"又加了一个每帧换模型实例的数组"会漏数。
     push!("instrument-names", get_instrument_names);

@@ -1183,6 +1183,108 @@ impl ElementRegistry {
             &clip_reason_label,
             false,
         );
+        // ⭐ 任务单 `#180`：**主总线**设备链 —— 设备架面板的第二段（装 / 删）。
+        // 三个标量元素（标题 / 条目数 / 原因）与两个按钮是**无条件声明**的 ⇒ 这里无条件
+        // 登记；卡片 / 识别读数 / 删除按钮**按条目**登记（与 `.slint` 的 `for … in
+        // root.master-device-names` 同索引集）—— 0 台时一个都不登记。
+        registry.add(
+            "master-device-rack",
+            ElementKind::Region,
+            "console/device_rack.slint",
+            "主总线设备链",
+            false,
+        );
+        registry.add(
+            "master-device-track-label",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &view.master_device_label,
+            false,
+        );
+        registry.add(
+            "master-device-rack-count",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &format!("{} 台设备", view.master_devices.len()),
+            false,
+        );
+        registry.add(
+            "master-device-insert-eq-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "给主总线装 EQ",
+            false,
+        );
+        registry.add(
+            "master-device-insert-reverb-button",
+            ElementKind::Button,
+            "console/device_rack.slint",
+            "给主总线装混响",
+            false,
+        );
+        let master_insert_reason_label = if view.master_device_insert_reason.is_empty() {
+            "给主总线装设备可用（无不可用原因）".to_owned()
+        } else {
+            view.master_device_insert_reason.clone()
+        };
+        registry.add(
+            "master-device-insert-reason",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            &master_insert_reason_label,
+            false,
+        );
+        // 与第一段同一条口径：空态节点是**无条件声明**的（只有 `visible` 随投影变）⇒
+        // 这里也无条件登记，否则 `.slint` → 注册表的方向会红。
+        registry.add(
+            "master-device-rack-empty",
+            ElementKind::Text,
+            "console/device_rack.slint",
+            "无设备（点上方「装 EQ」或「装混响」）",
+            false,
+        );
+        for (index, row) in view.master_devices.iter().enumerate() {
+            registry.add(
+                &format!("master-device-{index}-card"),
+                ElementKind::ListItem,
+                "console/device_rack.slint",
+                &format!("主总线设备 {}", row.name),
+                false,
+            );
+            // 识别读数在"没有"时 `.slint` 里是空串 + `visible: false`；注册表要求每条都有
+            // 非空无障碍名 ⇒ 空串登记一句说明，⛔ 不登记空串（与 `send-create-reason` 同款）。
+            let recognised_label = if row.recognised.is_empty() {
+                "无已识别参数".to_owned()
+            } else {
+                row.recognised.clone()
+            };
+            registry.add(
+                &format!("master-device-{index}-recognised"),
+                ElementKind::Text,
+                "console/device_rack.slint",
+                &recognised_label,
+                false,
+            );
+            let unrecognised_label = if row.unrecognised.is_empty() {
+                "无未识别参数".to_owned()
+            } else {
+                row.unrecognised.clone()
+            };
+            registry.add(
+                &format!("master-device-{index}-unrecognised"),
+                ElementKind::Text,
+                "console/device_rack.slint",
+                &unrecognised_label,
+                false,
+            );
+            registry.add(
+                &format!("master-device-{index}-remove-button"),
+                ElementKind::Button,
+                "console/device_rack.slint",
+                &format!("移除主总线设备 {}", row.name),
+                false,
+            );
+        }
         // ⭐ 任务单 `#164`：一键装乐器 —— 一格当前乐器读数 ＋ 不可用时的逐字原因 ＋
         // 每个内置乐器一个按钮（按钮名来自投影的 `instrument_names`，与 `.slint` 的
         // `for … in root.instrument-names` 同索引集）。
@@ -2118,6 +2220,17 @@ mod tests {
             );
         }
 
+        let mut with_master_device = yeban_model::samples::filled_project();
+        let master_id = with_master_device.master_bus_track_id;
+        let master_device = crate::bridge::builtin_effect_device(crate::bridge::BuiltinEffect::Eq)
+            .expect("契约里必须有 EQ 分组");
+        with_master_device
+            .tracks
+            .get_mut(&master_id)
+            .expect("filled_project 必须有主总线轨")
+            .devices
+            .push(master_device);
+
         let registries = [
             registry(),
             // ⭐ 任务单 `#159`：`demo_project` 里**没有**发送（也没有 `AuxReturn` 轨），
@@ -2127,6 +2240,14 @@ mod tests {
             ElementRegistry::from_view(
                 &ViewState::from_project(&yeban_model::samples::filled_project())
                     .expect("filled_project 必须能投影"),
+            ),
+            // ⭐ 任务单 `#180`：`filled_project` 的主总线**没有设备** ⇒ 主总线卡片 /
+            // 识别读数 / 删除按钮的动态模板（`master-device-{i}-*`）在上一个注册表里
+            // 一个成员都没有。这里给它挂一台真的 EQ（走 `builtin_effect_device`，⛔ 不手写
+            // 参数表）⇒ 同一套 `from_view` 就能实例化那四个模板。
+            ElementRegistry::from_view(
+                &ViewState::from_project(&with_master_device)
+                    .expect("挂了主总线设备的 filled_project 必须能投影"),
             ),
         ];
 
@@ -2409,7 +2530,12 @@ mod tests {
     /// 只对这两族做"两侧逐一对应"的断言：内建属性（`x` / `visible` / `width`…）与
     /// 别的注入面（`note-*` / `clip-*`）各有自己的判据，混在一起会让这条检查失真。
     fn is_injection_property(name: &str) -> bool {
-        name.starts_with("track-") || name.starts_with("master-")
+        // ⭐ 任务单 `#180`：`master-device-*` 也是 `master-` 前缀，但它的目标组件是
+        // **`DeviceRack`**（Tab 3 设备架的第二段），⛔ 不是 `MixerConsole` ⇒ 不参与
+        // 本判据的"app → ConsoleTabs → MixerConsole 两级对齐"口径。它的三级转发由
+        // 本测试末尾的**方向 4** 单独钉住（`ConsoleTabs → DeviceRack`），⛔ 不是放行。
+        (name.starts_with("track-") || name.starts_with("master-"))
+            && !name.starts_with("master-device-")
     }
 
     /// 读出实例化块里**第一层**的属性赋值名（跳过嵌套元素与回调）。
@@ -2710,6 +2836,47 @@ mod tests {
             declared_injection, to_mixer,
             "MixerConsole 声明的注入属性与收到的转发必须一一对应"
         );
+
+        // 方向 4（⭐ 任务单 `#180`）：**主总线设备链**的注入面有**第三级目标**
+        // （`ConsoleTabs → DeviceRack`，Tab 3）。集合与三级声明逐条对齐 ——
+        // 少一个就是某级断了，多一个就是界面上多了一个没有宿主的属性。
+        let rack = std::fs::read_to_string(ui.join("console/device_rack.slint"))
+            .expect("读 device_rack.slint");
+        let rack_declared = declared_properties(&rack);
+        let mut to_rack: Vec<String> = assigned_properties(&tabs, "DeviceRack")
+            .into_iter()
+            .filter(|name| name.starts_with("master-device-"))
+            .collect();
+        to_rack.sort();
+        to_rack.dedup();
+        let mut wanted: Vec<String> = [
+            "master-device-ids",
+            "master-device-insert-available",
+            "master-device-insert-reason",
+            "master-device-label",
+            "master-device-names",
+            "master-device-recognised",
+            "master-device-unrecognised",
+        ]
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+        wanted.sort();
+        assert_eq!(
+            to_rack, wanted,
+            "ConsoleTabs 转给 DeviceRack 的 `master-device-*` 注入面必须恰好是这七格"
+        );
+        for name in &to_rack {
+            assert!(
+                rack_declared.contains(name),
+                "console_tabs.slint 把 `{name}` 转发给 DeviceRack, 但后者没有声明它"
+            );
+            assert!(
+                tabs_declared.contains(name),
+                "ConsoleTabs 必须声明被转发的 `{name}`"
+            );
+            assert!(main_declared.contains(name), "MainWindow 必须声明 `{name}`");
+        }
     }
 
     /// 判据（文本层）：`host.rs` 里每一个 `ui.set_x_y(...)` 都能在 `MainWindow` 找到

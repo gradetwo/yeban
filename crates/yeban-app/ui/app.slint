@@ -659,6 +659,16 @@ export component MainWindow inherits Window {
     callback device-remove(string);
     /// 建一个空的 MIDI 片段并摆到展示轨的 tick 0。
     callback clip-create();
+    // ⭐ **主总线设备增删**（任务单 `#180`）：控制台 **Tab 3** 面板的**第二段**。
+    //
+    // 形状与上面三个设备手势逐条同款 —— 唯一的差别是**目标轨**：宿主显式选
+    // `master_bus_track_id`（⛔ 不是展示轨）。一次点击 = 恰好一次 `commit_ops`。
+    /// 给主总线装一台内置 EQ（参数取共享契约的缺省值）。
+    callback master-device-insert-eq();
+    /// 给主总线装一台内置混响（同上）。
+    callback master-device-insert-reverb();
+    /// 删除主总线上的某台设备（参数 = 设备身份，⛔ 不是行下标）。
+    callback master-device-remove(string);
     // ⭐ **一键装乐器**（任务单 `#164`）：控制台 Tab 3 的 `DeviceRack` 里。
     // 与上面两条同款 —— 只上报内置清单下标，路径 / Op / 一次 `commit_ops` 全在宿主
     // （`host::wire_device_rack`）。
@@ -805,6 +815,17 @@ export component MainWindow inherits Window {
     in property <string> device-insert-reason: "";
     in property <bool> clip-create-available: false;
     in property <string> clip-create-reason: "";
+    // ⭐ 主总线设备链（任务单 `#180`）：四个平行数组（名字 / 身份 / 已识别 / 未识别）
+    // ＋ 三个投影标量（标题 / 可用性 / 逐字原因）。唯一写者是 `host::apply_view`，
+    // 唯一事实源是 `ViewState::master_devices` 与同名字段 —— ⛔ 界面上没有第二份
+    // 主总线设备列表。与设备链同住控制台 Tab 3 ⇒ 默认帧不画它。
+    in property <string> master-device-label: "";
+    in property <[string]> master-device-names: [];
+    in property <[string]> master-device-ids: [];
+    in property <[string]> master-device-recognised: [];
+    in property <[string]> master-device-unrecognised: [];
+    in property <bool> master-device-insert-available: false;
+    in property <string> master-device-insert-reason: "";
     // ⭐ 一键装乐器（任务单 `#164`）：当前乐器读数 ＋ 按钮名清单 ＋ 可用性 / 逐字原因。
     // 唯一写者是 `host::apply_view`，唯一事实源是 `ViewState` 的同名字段。
     in property <string> instrument-label: "未装乐器";
@@ -1223,6 +1244,14 @@ export component MainWindow inherits Window {
             device-insert-reason: root.device-insert-reason;
             clip-create-available: root.clip-create-available;
             clip-create-reason: root.clip-create-reason;
+            // ⭐ 主总线设备链（任务单 `#180`）：同样只做单向搬运。
+            master-device-label: root.master-device-label;
+            master-device-names: root.master-device-names;
+            master-device-ids: root.master-device-ids;
+            master-device-recognised: root.master-device-recognised;
+            master-device-unrecognised: root.master-device-unrecognised;
+            master-device-insert-available: root.master-device-insert-available;
+            master-device-insert-reason: root.master-device-insert-reason;
             instrument-label: root.instrument-label;
             instrument-names: root.instrument-names;
             instrument-install-available: root.instrument-install-available;
@@ -1300,6 +1329,17 @@ export component MainWindow inherits Window {
             }
             clip-create() => {
                 root.clip-create();
+            }
+            // ⭐ 主总线设备增删（Tab 3，任务单 `#180`）：只上抛 —— 唯一落点仍是
+            // `host::wire_device_rack`（与展示轨那两个手势同一份实现体，目标轨不同）。
+            master-device-insert-eq() => {
+                root.master-device-insert-eq();
+            }
+            master-device-insert-reverb() => {
+                root.master-device-insert-reverb();
+            }
+            master-device-remove(device-id) => {
+                root.master-device-remove(device-id);
             }
             instrument-install(index) => {
                 root.instrument-install(index);

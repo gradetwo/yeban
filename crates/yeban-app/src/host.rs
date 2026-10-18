@@ -175,6 +175,19 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     ui.set_device_bypassed(booleans(&view.device_bypassed()));
     ui.set_device_recognised(strings(&view.device_recognised()));
     ui.set_device_unrecognised(strings(&view.device_unrecognised()));
+    // ⭐ 任务单 `#180`：**主总线**设备链 —— 设备架面板的第二段（可编辑面：装 / 删）。
+    // 四个平行数组同索引集（名字 / 身份 / 已识别 / 未识别）＋ 三个标量（标题 / 可用性 /
+    // 逐字原因）。唯一事实源是 `ViewState::master_devices` 与同名字段；⛔ 界面不拼身份、
+    // ⛔ 不持有第二份设备列表。它们只在完整重投影上变化，但 `apply_view` 每次都会新建
+    // `VecModel` ⇒ 计入 `PER_FRAME_ARRAY_REWRITE_BUDGET`（见 `tests/perf_draw_budget.rs`
+    // 的读数与注释）。
+    ui.set_master_device_label(view.master_device_label.clone().into());
+    ui.set_master_device_names(strings(&view.master_device_names()));
+    ui.set_master_device_ids(strings(&view.master_device_ids()));
+    ui.set_master_device_recognised(strings(&view.master_device_recognised()));
+    ui.set_master_device_unrecognised(strings(&view.master_device_unrecognised()));
+    ui.set_master_device_insert_available(view.master_device_insert_available);
+    ui.set_master_device_insert_reason(view.master_device_insert_reason.clone().into());
     ui.set_device_eq_available(view.device_eq_available());
     ui.set_device_eq_gain_db(view.device_eq_gain_db());
     ui.set_device_eq_min_db(view.device_eq_min_db());
@@ -1937,6 +1950,8 @@ fn wire_mixer_switch(
 /// | EQ 低架增益拖动 | `device-eq-grab/drag/release(fraction)` | [`yeban_model::Op::SetParam`] + `AutomationTarget::DeviceParam` | `set device eq low gain` |
 /// | 装一台内置效果器 | `device-insert-eq()` / `device-insert-reverb()` | [`yeban_model::Op::InsertDevice`]（参数取共享契约缺省值） | `insert device` |
 /// | 删一台设备 | `device-remove(device-id)` | [`yeban_model::Op::RemoveDevice`]（按**身份**寻址） | `remove device` |
+/// | ⭐ 给**主总线**装一台（`#180`） | `master-device-insert-eq()` / `master-device-insert-reverb()` | [`yeban_model::Op::InsertDevice`]，`track_id = master_bus_track_id` | `insert master device` |
+/// | ⭐ 删**主总线**上的一台（`#180`） | `master-device-remove(device-id)` | [`yeban_model::Op::RemoveDevice`]，`track_id = master_bus_track_id`，按**身份**寻址 | `remove master device` |
 ///
 /// ## 为什么拖动期**不**提交（与推子同一条纪律）
 ///
@@ -2142,7 +2157,7 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            insert_builtin_device(&ui, &port, effect);
+            insert_builtin_device(&ui, &port, effect, DeviceTarget::DisplayTrack);
         };
         match callback {
             "eq" => ui.on_device_insert_eq(handler),
@@ -2184,6 +2199,68 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
             refresh_undo_window(&ui, &port, true);
         }
     });
+
+    // ------------------------------------------------- ③b / ④b 主总线设备（⭐ `#180`）
+    //
+    // ⭐ 与上面 ③ / ④ **同一份实现体**，唯一自变量是 `DeviceTarget::Master`：
+    // 目标轨 = `master_bus_track_id`（`bridge::master_device_track`），⛔ 不是展示轨
+    // （`device_rack_track` **排除**主总线 —— 用它就会把设备装到展示轨上）。
+    // 一次点击 = **恰好一次** `commit_ops`（一个 `Op::InsertDevice` / `RemoveDevice`）。
+    for (effect, callback) in [
+        (crate::bridge::BuiltinEffect::Eq, "eq"),
+        (crate::bridge::BuiltinEffect::Reverb, "reverb"),
+    ] {
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        let handler = move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            insert_builtin_device(&ui, &port, effect, DeviceTarget::Master);
+        };
+        match callback {
+            "eq" => ui.on_master_device_insert_eq(handler),
+            _ => ui.on_master_device_insert_reverb(handler),
+        }
+    }
+
+    // 携带**设备身份**（`master-device-ids`，⛔ 不是行下标）：宿主按身份在权威工程的
+    // **主总线**设备链里重新寻址；一次点击 = 恰好一次 `commit_ops`。
+    ui.on_master_device_remove({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |device_id: SharedString| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Ok(device_id) = device_id.parse::<yeban_model::EntityId>() else {
+                eprintln!("[yeban-app] 删主总线设备被拒绝：设备身份不是合法的 ULID 文本");
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                eprintln!("[yeban-app] 删主总线设备：权威会话此刻没有活跃工程");
+                return;
+            };
+            let ops = match crate::bridge::master_device_remove_ops(&project, device_id) {
+                Ok(ops) => ops,
+                Err(reason) => {
+                    eprintln!("[yeban-app] 删主总线设备被拒绝：{reason}");
+                    refresh_undo_window(&ui, &port, true);
+                    return;
+                }
+            };
+            if port
+                .commit_ops(now_ms(), "remove master device", ops)
+                .is_err()
+            {
+                eprintln!("[yeban-app] 删主总线设备被拒绝（工程未改）");
+            }
+            refresh_undo_window(&ui, &port, true);
+        }
+    });
+
     // ---------------------------------------------------------------- ⑤ 装乐器（⭐ `#164`）
     //
     // 界面只上报**下标**（⛔ 不拼路径、⛔ 不写 Op）。宿主从 `bridge::builtin_instrument`
@@ -2242,25 +2319,55 @@ pub fn wire_device_rack(ui: &MainWindow, port: &Rc<UndoPort>) {
     });
 }
 
-/// 装一台内置效果器的唯一实现体（两个按钮共用；`effect` 是唯一自变量）。
+/// 装设备的**目标轨**（⭐ 任务单 `#180` 的唯一自变量）。
 ///
-/// 参数缺省值 / 单位 / 追加位置全部由 [`crate::bridge::device_insert_ops`] 从权威工程与
-/// 共享契约求出 ⇒ 宿主不硬编码任何参数值，也不信任界面上的设备链长度。
-fn insert_builtin_device(ui: &MainWindow, port: &UndoPort, effect: crate::bridge::BuiltinEffect) {
+/// ⚠ 两个变体各自绑定一条**显式**的轨：
+/// - [`Self::DisplayTrack`] ⇒ [`crate::bridge::device_rack_track`]（身份序第一条非主总线轨）；
+/// - [`Self::Master`] ⇒ [`crate::bridge::master_device_track`]（`master_bus_track_id`）。
+///
+/// ⛔ 不存在"默认 = 展示轨"的回退：主总线的两个按钮必须**点名** `Master`，
+/// 否则 `InsertDevice` / `RemoveDevice` 的 `slot_index` 会指错轨（`#163` 的洞）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeviceTarget {
+    /// 设备架面板第一段（展示轨）。
+    DisplayTrack,
+    /// 设备架面板第二段（主总线）。
+    Master,
+}
+
+/// 装一台内置效果器的唯一实现体（展示轨与主总线共用；`effect` ＋ `target` 是唯一自变量）。
+///
+/// 参数缺省值 / 单位 / 追加位置全部由 [`crate::bridge::device_insert_ops`] /
+/// [`crate::bridge::master_device_insert_ops`] 从权威工程与共享契约求出 ⇒ 宿主不硬编码
+/// 任何参数值，也不信任界面上的设备链长度。
+fn insert_builtin_device(
+    ui: &MainWindow,
+    port: &UndoPort,
+    effect: crate::bridge::BuiltinEffect,
+    target: DeviceTarget,
+) {
     let Some(project) = port.try_project() else {
         eprintln!("[yeban-app] 装设备：权威会话此刻没有活跃工程");
         return;
     };
-    let ops = match crate::bridge::device_insert_ops(&project, effect) {
+    let (commit_label, log_label) = match target {
+        DeviceTarget::DisplayTrack => ("insert device", "装设备"),
+        DeviceTarget::Master => ("insert master device", "给主总线装设备"),
+    };
+    let ops = match target {
+        DeviceTarget::DisplayTrack => crate::bridge::device_insert_ops(&project, effect),
+        DeviceTarget::Master => crate::bridge::master_device_insert_ops(&project, effect),
+    };
+    let ops = match ops {
         Ok(ops) => ops,
         Err(reason) => {
-            eprintln!("[yeban-app] 装设备被拒绝：{reason}");
+            eprintln!("[yeban-app] {log_label}被拒绝：{reason}");
             refresh_undo_window(ui, port, true);
             return;
         }
     };
-    if port.commit_ops(now_ms(), "insert device", ops).is_err() {
-        eprintln!("[yeban-app] 装设备被拒绝（工程未改）");
+    if port.commit_ops(now_ms(), commit_label, ops).is_err() {
+        eprintln!("[yeban-app] {log_label}被拒绝（工程未改）");
     }
     refresh_undo_window(ui, port, true);
 }

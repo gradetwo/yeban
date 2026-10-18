@@ -99,6 +99,23 @@ export component DeviceRack inherits Rectangle {
     /// 值域上界 (dB) —— 同上。
     in property <float> eq-max-db: 0.0;
 
+    // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`，第二段）
+    /// 主总线设备链那一栏的标题（`"主总线 Master · 设备链"`；没有主总线时是逐字原因）。
+    in property <string> master-device-label: "";
+    /// 主总线设备链的显示名（与下面三个数组**同索引集**）—— 逐条来自投影。
+    in property <[string]> master-device-names: [];
+    /// 每台的**设备身份**（26 字符文本）—— 删除按钮只报它，⛔ 不报行下标
+    /// （这台设备链自己也能增删，下标会漂移；身份不会）。
+    in property <[string]> master-device-ids: [];
+    /// 每台的**已识别**参数读数（引擎白名单认得；空串 = 这一台没有）。
+    in property <[string]> master-device-recognised: [];
+    /// 每台的**未识别**参数读数（空串 = 全部都被引擎认）。
+    in property <[string]> master-device-unrecognised: [];
+    /// "给主总线装 EQ / 装混响"此刻能不能用（工程里得有一条主总线）。
+    in property <bool> master-device-insert-available: false;
+    /// 不能装时**逐字**写出的原因（可用时是空串）—— ⛔ 不静默禁用。
+    in property <string> master-device-insert-reason: "";
+
     // ---------------------------------------------------------------- 设备增删 ＋ 建片段（⭐ 任务单 `#163`）
     /// "装 EQ / 装混响"此刻能不能用（工程里得有一条展示轨）。
     in property <bool> device-insert-available: false;
@@ -166,6 +183,12 @@ export component DeviceRack inherits Rectangle {
     callback device-insert-reverb();
     /// 删除某一台设备（参数 = 设备身份，⛔ 不是行下标）。
     callback device-remove(string);
+    /// ⭐ 给**主总线**装一台内置 EQ（参数取契约缺省值；身份 / 追加位置由宿主从权威工程求）。
+    callback master-device-insert-eq();
+    /// ⭐ 给**主总线**装一台内置混响（同上）。
+    callback master-device-insert-reverb();
+    /// ⭐ 删除**主总线**上的某一台设备（参数 = 设备身份，⛔ 不是行下标）。
+    callback master-device-remove(string);
     /// 建一个空的 MIDI 片段并摆到展示轨的 tick 0（身份 / 名称 / 时长由宿主求）。
     callback clip-create();
     /// 装第 `i` 份内置 SFZ 乐器（参数 = 内置清单下标；路径 / Op / 提交由宿主求）。
@@ -1286,6 +1309,259 @@ export component DeviceRack inherits Rectangle {
             color: Tokens.ink-2;
             font-size: Tokens.font-size-sm;
             overflow: elide;
+        }
+    }
+
+    // ---------------------------------------- 主总线设备链（⭐ 任务单 `#180`）
+    //
+    // ⭐ **第二段、第二个目标**：主总线（`master_bus_track_id`）上的设备可以在这里
+    // 增 / 删。它**不是**第一段的另一种画法 —— 两段的寻址单位不同：
+    // 第一段的装 / 删落在展示轨（`device_rack_track`），这一段的装 / 删落在主总线
+    // （`master_device_track`）。⛔ 本文件不拼身份、⛔ 不写参数值、⛔ 不提交；
+    // 每台的身份来自 `master-device-ids[master_device_index]`，Op 与值域由宿主求。
+    //
+    // ⚠ 几何：它住在面板右侧**此前完全空白**的区域（第一段止于 824px；控制台在
+    // 1920×1080 默认窗口里宽 1400px）。绝对坐标与本文件其余部件同一条纪律，
+    // ⛔ 不引入第二套布局；窗口窄于默认档时它会被父级 `clip` 裁掉（如实登记在交付报告）。
+    Rectangle {
+        x: 840px;
+        y: 28px;
+        width: 544px;
+        height: 260px;
+        background: Tokens.bg-panel;
+        border-radius: Tokens.radius-md;
+        border-width: 1px;
+        border-color: Tokens.line;
+        clip: true;
+        accessible-role: region;
+        accessible-id: "master-device-rack";
+        accessible-label: "主总线设备链";
+
+        // 标题 —— 逐字来自投影（没有主总线时**就是**不能装的逐字原因）。
+        UiText {
+            x: Tokens.space-4;
+            y: Tokens.space-2;
+            width: 360px;
+            height: 16px;
+            text: root.master-device-label;
+            color: Tokens.ink-0;
+            font-size: Tokens.font-size-sm;
+            overflow: elide;
+            accessible-role: text;
+            accessible-id: "master-device-track-label";
+            accessible-label: root.master-device-label;
+        }
+
+        UiMonoText {
+            x: 384px;
+            y: Tokens.space-2;
+            width: 144px;
+            height: 16px;
+            text: root.master-device-names.length + " 台设备";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            accessible-role: text;
+            accessible-id: "master-device-rack-count";
+            accessible-label: root.master-device-names.length + " 台设备";
+        }
+
+        // ---- 两个装设备按钮：可用性由 `master-device-insert-available` 单一决定 ----
+        Rectangle {
+            x: Tokens.space-4;
+            y: 28px;
+            width: 84px;
+            height: 20px;
+            background: root.master-device-insert-available ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.master-device-insert-available ? Tokens.gold : Tokens.line;
+            accessible-role: button;
+            accessible-id: "master-device-insert-eq-button";
+            accessible-label: "给主总线装 EQ";
+            accessible-action-default => { root.master-device-insert-eq(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "装 EQ";
+                color: root.master-device-insert-available ? Tokens.bg-void : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.master-device-insert-available;
+                clicked => {
+                    root.master-device-insert-eq();
+                }
+            }
+        }
+
+        Rectangle {
+            x: 108px;
+            y: 28px;
+            width: 84px;
+            height: 20px;
+            background: root.master-device-insert-available ? Tokens.gold-deep : Tokens.bg-void;
+            border-radius: Tokens.radius-sm;
+            border-width: 1px;
+            border-color: root.master-device-insert-available ? Tokens.gold : Tokens.line;
+            accessible-role: button;
+            accessible-id: "master-device-insert-reverb-button";
+            accessible-label: "给主总线装混响";
+            accessible-action-default => { root.master-device-insert-reverb(); }
+
+            UiText {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: "装混响";
+                color: root.master-device-insert-available ? Tokens.bg-void : Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                horizontal-alignment: center;
+            }
+
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.master-device-insert-available;
+                clicked => {
+                    root.master-device-insert-reverb();
+                }
+            }
+        }
+
+        // 不可用时的**逐字**原因（可用时 `visible: false`，文本是空串）。⛔ 不静默禁用。
+        UiText {
+            x: Tokens.space-4;
+            y: 52px;
+            width: parent.width - 16px;
+            height: 14px;
+            text: root.master-device-insert-reason;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
+            visible: !root.master-device-insert-available;
+            accessible-role: text;
+            accessible-id: "master-device-insert-reason";
+            accessible-label: root.master-device-insert-reason;
+        }
+
+        // ---- 设备卡片链：条目数**就是**投影的主总线设备数（空链 ⇒ 一块都不画）----
+        for master_device_name[master_device_index] in root.master-device-names : Rectangle {
+            x: Tokens.space-2;
+            y: 72px + 46px * master_device_index;
+            width: parent.width - 16px;
+            height: 44px;
+            background: Tokens.bg-shell;
+            border-radius: Tokens.radius-md;
+            border-width: 1px;
+            border-color: Tokens.line-strong;
+            clip: true;
+            accessible-role: list-item;
+            accessible-id: "master-device-" + master_device_index + "-card";
+            accessible-label: "主总线设备 " + master_device_name;
+            accessible-item-index: master_device_index;
+            accessible-item-count: root.master-device-names.length;
+
+            UiText {
+                x: Tokens.space-3;
+                y: 2px;
+                width: parent.width - 136px;
+                height: 16px;
+                text: master_device_name;
+                color: Tokens.ink-0;
+                font-size: Tokens.font-size-md;
+                overflow: elide;
+            }
+
+            // 已识别参数（与展示轨那一段**同一份** `effect_params::recognise` 分档）
+            UiMonoText {
+                x: Tokens.space-3;
+                y: 18px;
+                width: parent.width - 136px;
+                height: 12px;
+                text: root.master-device-recognised[master_device_index];
+                color: Tokens.gold;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+                visible: root.master-device-recognised[master_device_index] != "";
+                accessible-role: text;
+                accessible-id: "master-device-" + master_device_index + "-recognised";
+            }
+
+            // 未识别参数（引擎不认 ⇒ 写进主总线也不会生效）
+            UiMonoText {
+                x: Tokens.space-3;
+                y: 30px;
+                width: parent.width - 136px;
+                height: 12px;
+                text: root.master-device-unrecognised[master_device_index];
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-xs;
+                overflow: elide;
+                visible: root.master-device-unrecognised[master_device_index] != "";
+                accessible-role: text;
+                accessible-id: "master-device-" + master_device_index + "-unrecognised";
+            }
+
+            // ⭐ 删除这一台：携带**设备身份**（⛔ 不是行下标）。
+            // 一次点击 = 恰好一次 `commit_ops`（一个 `Op::RemoveDevice`，目标主总线）。
+            Rectangle {
+                x: parent.width - 28px;
+                y: 4px;
+                width: 20px;
+                height: 20px;
+                background: Tokens.bg-void;
+                border-radius: Tokens.radius-sm;
+                border-width: 1px;
+                border-color: Tokens.line;
+                accessible-role: button;
+                accessible-id: "master-device-" + master_device_index + "-remove-button";
+                accessible-label: "移除主总线设备 " + master_device_name;
+                accessible-action-default => {
+                    root.master-device-remove(root.master-device-ids[master_device_index]);
+                }
+
+                UiText {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    text: "✕";
+                    color: Tokens.ink-2;
+                    font-size: Tokens.font-size-xs;
+                    horizontal-alignment: center;
+                }
+
+                TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    clicked => {
+                        root.master-device-remove(root.master-device-ids[master_device_index]);
+                    }
+                }
+            }
+        }
+
+        // 空态：没有设备时**不画**任何卡片。
+        UiText {
+            x: Tokens.space-3;
+            y: 72px;
+            width: parent.width - 16px;
+            height: 20px;
+            text: "无设备（点上方「装 EQ」或「装混响」）";
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-sm;
+            visible: root.master-device-names.length == 0;
+            accessible-role: text;
+            accessible-id: "master-device-rack-empty";
+            accessible-label: "无设备（点上方「装 EQ」或「装混响」）";
         }
     }
 }

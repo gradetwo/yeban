@@ -93,6 +93,15 @@ export component ConsoleTabs inherits Rectangle {
     in property <string> device-insert-reason: "";
     in property <bool> clip-create-available: false;
     in property <string> clip-create-reason: "";
+    // ⭐ 主总线设备链（任务单 `#180`）：四个平行数组 ＋ 三个标量。同样只透传投影 ——
+    // 本组件不解释、⛔ 不持有第二份主总线设备列表、⛔ 不自己算"能不能装"。
+    in property <string> master-device-label: "";
+    in property <[string]> master-device-names: [];
+    in property <[string]> master-device-ids: [];
+    in property <[string]> master-device-recognised: [];
+    in property <[string]> master-device-unrecognised: [];
+    in property <bool> master-device-insert-available: false;
+    in property <string> master-device-insert-reason: "";
     // ⭐ 一键装乐器（任务单 `#164`）：当前乐器 ＋ 按钮名清单 ＋ 可用性 / 逐字原因。
     // 同样只透传投影 —— 本组件不解释、⛔ 不持有第二份路径表。
     in property <string> instrument-label: "未装乐器";
@@ -164,6 +173,11 @@ export component ConsoleTabs inherits Rectangle {
     callback device-insert-reverb();
     callback device-remove(string);
     callback clip-create();
+    // ⭐ **主总线设备增删**（任务单 `#180`）：同样只上抛 —— 唯一实现是
+    // `host::wire_device_rack`（与展示轨那两个手势**同一份**实现体，目标轨不同）。
+    callback master-device-insert-eq();
+    callback master-device-insert-reverb();
+    callback master-device-remove(string);
     // ⭐ 一键装乐器（任务单 `#164`）：只上报内置清单下标，路径 / Op / 提交在宿主。
     callback instrument-install(int);
     // ⭐ **发送条的写入面**（任务单 `#159`）：控制台 **Tab 3** 的两个手势，本组件只把
@@ -454,6 +468,14 @@ export component ConsoleTabs inherits Rectangle {
         device-insert-reason: root.device-insert-reason;
         clip-create-available: root.clip-create-available;
         clip-create-reason: root.clip-create-reason;
+        // ⭐ 主总线设备链（任务单 `#180`）：只透传投影，本组件不解释。
+        master-device-label: root.master-device-label;
+        master-device-names: root.master-device-names;
+        master-device-ids: root.master-device-ids;
+        master-device-recognised: root.master-device-recognised;
+        master-device-unrecognised: root.master-device-unrecognised;
+        master-device-insert-available: root.master-device-insert-available;
+        master-device-insert-reason: root.master-device-insert-reason;
         // ⭐ 一键装乐器（任务单 `#164`）：只透传投影，本组件不解释。
         instrument-label: root.instrument-label;
         instrument-names: root.instrument-names;
@@ -499,6 +521,16 @@ export component ConsoleTabs inherits Rectangle {
         }
         clip-create() => {
             root.clip-create();
+        }
+        // ⭐ 主总线设备增删（任务单 `#180`）：原样上抛。
+        master-device-insert-eq() => {
+            root.master-device-insert-eq();
+        }
+        master-device-insert-reverb() => {
+            root.master-device-insert-reverb();
+        }
+        master-device-remove(device-id) => {
+            root.master-device-remove(device-id);
         }
         // ⭐ 一键装乐器（任务单 `#164`）：只上报下标，原样上抛。
         instrument-install(index) => {

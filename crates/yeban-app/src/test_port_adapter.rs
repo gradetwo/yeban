@@ -529,12 +529,15 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
 /// 反方向（Tab 1 里**有**它、注入默认无障碍动作 ⇒ 问一次保存框 ⇒ 落一个
 /// 1136 B／0 音轨 ＋ 1 主总线容器 ⇒ 就地换成新工程；取消 / 没有对话框两条腿）在
 /// `tests/new_project_ui.rs` 里断。
-const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 11] = [
+const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 12] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",
     "scene-launch-column-header",
     "mixer-console",
     "device-rack",
+    // ⭐ 任务单 `#180`：主总线设备链是 `DeviceRack` 里面的第二段 ⇒ 默认帧（Tab 0）
+    // 同样一个像素都不画。加这一条是把"面板还在 Tab 3"这件事从推断变成机械读数。
+    "master-device-rack",
     "musical-pr-drawer",
     "undo-tree-modal",
     "engine-error-banner",

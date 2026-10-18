@@ -765,8 +765,8 @@ pub struct VisibleNotes {
     /// **为什么不给它消费者**（代价读数，⛔ 不是判断）：`ys` 已经是同一事实的像素形态
     /// （`pitch_lane` 一次乘法），宿主与 `.slint` 的绘制/命中路径都只读 `ys`；要真消费
     /// `rows` 就得新增 `note-rows` 属性 ＋ `apply_view` 里多一个写入点 ⇒ 会动
-    /// `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET`（现 **40**）与
-    /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（现 **31**）⇒ ⛔ 本单禁改那两个读数。
+    /// `tests/perf_draw_budget.rs` 的 `APPLY_VIEW_WRITE_SITE_BUDGET`（现 **81**）与
+    /// `PER_FRAME_ARRAY_REWRITE_BUDGET`（现 **48**）⇒ ⛔ 本单禁改那两个读数。
     ///
     /// **判据**：`crates/yeban-app/tests/roll_injection_registration.rs` 从 `host.rs`
     /// 源码**派生**"注入面恰是那 5 个名字 ＋ `rows` 不在其中"（⛔ 不读判据自己所在的文件，
@@ -1640,6 +1640,19 @@ pub fn master_bus_label(project: &YebanProjectV1) -> String {
     }
 }
 
+/// ⭐ 任务单 `#180`：主总线设备链那一栏的标题（**投影给界面看**，不是界面自己拼的）。
+///
+/// - 有主总线 ⇒ `"主总线 {name} · 设备链"`；
+/// - 没有主总线 ⇒ [`MASTER_DEVICE_INSERT_NO_MASTER_REASON`]（同一格兼作"不能装"的
+///   **逐字**原因 ⇒ 界面不会出现"空白标题 + 禁用按钮但不说为什么"）。
+#[must_use]
+pub fn master_device_track_label(project: &YebanProjectV1) -> String {
+    match master_device_track(project) {
+        Some(master) => format!("主总线 {} · 设备链", master.name),
+        None => MASTER_DEVICE_INSERT_NO_MASTER_REASON.to_owned(),
+    }
+}
+
 /// 界面删轨失败时逐字写出的原因：工程里**没有可显示的音轨**。
 pub const TRACK_DELETE_NO_TRACK_REASON: &str = "工程里没有可显示的音轨，无法删除";
 
@@ -1832,6 +1845,17 @@ pub const DEVICE_REMOVE_NO_TRACK_REASON: &str = "没有可显示的音轨，无�
 /// "删设备"不可用时的**逐字**原因：界面报的设备身份已经不在展示轨的设备链里。
 pub const DEVICE_REMOVE_NOT_FOUND_REASON: &str = "这台设备已不在工程里，无法删除";
 
+/// ⭐ 任务单 `#180`："给**主总线**装设备"不可用时的**逐字**原因：工程里没有主总线
+/// （`master_bus_track_id` 为 nil，或它指向的轨不是 `TrackKind::Master`）。
+pub const MASTER_DEVICE_INSERT_NO_MASTER_REASON: &str = "工程没有主总线，无法给主总线装设备";
+
+/// ⭐ 任务单 `#180`："删**主总线**上的设备"不可用时的**逐字**原因：工程里没有主总线。
+pub const MASTER_DEVICE_REMOVE_NO_MASTER_REASON: &str = "工程没有主总线，无法删除主总线上的设备";
+
+/// ⭐ 任务单 `#180`："删**主总线**上的设备"不可用时的**逐字**原因：界面报的设备身份
+/// 已经不在主总线的设备链里。
+pub const MASTER_DEVICE_REMOVE_NOT_FOUND_REASON: &str = "这台设备已不在主总线上，无法删除";
+
 /// "建片段"不可用时的**逐字**原因：工程里没有可显示的音轨（片段要摆在它上面）。
 pub const CLIP_CREATE_NO_TRACK_REASON: &str = "没有可显示的音轨，无法建片段";
 
@@ -1863,6 +1887,21 @@ pub fn clip_create_availability(project: &YebanProjectV1) -> (bool, String) {
         ""
     } else {
         CLIP_CREATE_NO_TRACK_REASON
+    };
+    (reason.is_empty(), reason.to_owned())
+}
+
+/// ⭐ 任务单 `#180`："给**主总线**装设备"的可用性 ＋ 不可用时的**逐字**原因。
+///
+/// 唯一前置条件与主总线投影**同一份**口径：存在主总线（[`master_device_track`]）。
+/// ⛔ 与展示轨的 [`device_insert_availability`] **分开**两格 —— 两条轨的可用性
+/// 互不蕴含（有展示轨不等于有主总线，反之亦然）。
+#[must_use]
+pub fn master_device_insert_availability(project: &YebanProjectV1) -> (bool, String) {
+    let reason = if master_device_track(project).is_some() {
+        ""
+    } else {
+        MASTER_DEVICE_INSERT_NO_MASTER_REASON
     };
     (reason.is_empty(), reason.to_owned())
 }
@@ -1909,6 +1948,10 @@ pub fn builtin_effect_device(effect: BuiltinEffect) -> Option<DeviceDefinition> 
 /// `slot_index = track.devices.len()`（`InsertDevice` 的文档：等于 `len` 表示追加）。
 /// 设备身份来自 [`EntityId::new`]，参数来自 [`builtin_effect_device`]。
 ///
+/// ⭐ 任务单 `#180`：本函数**只**认展示轨（[`device_rack_track`]）。主总线走
+/// [`master_device_insert_ops`] —— 两条腿共用同一个 [`insert_device_op_on`]，因此
+/// 参数 / 追加位置的规则不会在两处漂移，而**目标轨**由调用方**显式**选择。
+///
 /// # Errors
 ///
 /// - 没有展示轨 ⇒ [`DEVICE_INSERT_NO_TRACK_REASON`]；
@@ -1918,18 +1961,46 @@ pub fn device_insert_ops(
     effect: BuiltinEffect,
 ) -> Result<Vec<Op>, &'static str> {
     let track = device_rack_track(project).ok_or(DEVICE_INSERT_NO_TRACK_REASON)?;
+    Ok(vec![insert_device_op_on(track, effect)?])
+}
+
+/// ⭐ 任务单 `#180`：装一台内置效果器到**主总线**设备链的**末尾**。
+///
+/// 与 [`device_insert_ops`] 的差别**只有主语**：`track_id = master_bus_track_id`，
+/// `slot_index = master.devices.len()`。⛔ 绝不复用 [`device_rack_track`]（那条规则
+/// **排除**主总线 ⇒ 对 master 增删会作用到展示轨上 —— 那正是本单要关掉的洞）。
+///
+/// # Errors
+///
+/// - 没有主总线 ⇒ [`MASTER_DEVICE_INSERT_NO_MASTER_REASON`]；
+/// - 契约里没有该分组 ⇒ [`DEVICE_INSERT_NO_CONTRACT_REASON`]。
+pub fn master_device_insert_ops(
+    project: &YebanProjectV1,
+    effect: BuiltinEffect,
+) -> Result<Vec<Op>, &'static str> {
+    let track = master_device_track(project).ok_or(MASTER_DEVICE_INSERT_NO_MASTER_REASON)?;
+    Ok(vec![insert_device_op_on(track, effect)?])
+}
+
+/// 设备插入 Op 的**唯一**构造点（展示轨与主总线共用；`track` 是唯一自变量）。
+///
+/// `slot_index = track.devices.len()` 表示追加到链尾；设备身份 / 参数缺省值来自
+/// [`builtin_effect_device`]（契约是唯一事实源）。
+fn insert_device_op_on(track: &TrackV3, effect: BuiltinEffect) -> Result<Op, &'static str> {
     let device = builtin_effect_device(effect).ok_or(DEVICE_INSERT_NO_CONTRACT_REASON)?;
-    Ok(vec![Op::InsertDevice {
+    Ok(Op::InsertDevice {
         track_id: track.id,
         slot_index: track.devices.len(),
         device,
-    }])
+    })
 }
 
 /// 删一台设备的**完整** `Op`：按**设备身份**在展示轨里重新寻址。
 ///
 /// 界面报的是 `DeviceDefinition::id` 的 26 字符文本（⛔ 不是行下标 —— 下标会随设备链
 /// 增删漂移）。`previous_device` 逐字来自权威工程，供撤销复原。
+///
+/// ⭐ 任务单 `#180`：本函数**只**认展示轨；主总线走 [`master_device_remove_ops`]。
 ///
 /// # Errors
 ///
@@ -1940,17 +2011,53 @@ pub fn device_remove_ops(
     device_id: EntityId,
 ) -> Result<Vec<Op>, &'static str> {
     let track = device_rack_track(project).ok_or(DEVICE_REMOVE_NO_TRACK_REASON)?;
+    Ok(vec![remove_device_op_on(
+        track,
+        device_id,
+        DEVICE_REMOVE_NOT_FOUND_REASON,
+    )?])
+}
+
+/// ⭐ 任务单 `#180`：按**设备身份**删一台**主总线**上的设备。
+///
+/// 与 [`device_remove_ops`] 的差别**只有主语**：`track_id = master_bus_track_id`，
+/// `slot_index` 在**主总线**的设备链里现查（⛔ 不信任界面上可能过期的下标）。
+/// `previous_device` 逐字来自权威工程，供撤销复原。
+///
+/// # Errors
+///
+/// - 没有主总线 ⇒ [`MASTER_DEVICE_REMOVE_NO_MASTER_REASON`]；
+/// - 身份不在主总线的设备链里 ⇒ [`MASTER_DEVICE_REMOVE_NOT_FOUND_REASON`]。
+pub fn master_device_remove_ops(
+    project: &YebanProjectV1,
+    device_id: EntityId,
+) -> Result<Vec<Op>, &'static str> {
+    let track = master_device_track(project).ok_or(MASTER_DEVICE_REMOVE_NO_MASTER_REASON)?;
+    Ok(vec![remove_device_op_on(
+        track,
+        device_id,
+        MASTER_DEVICE_REMOVE_NOT_FOUND_REASON,
+    )?])
+}
+
+/// 设备删除 Op 的**唯一**构造点（展示轨与主总线共用；`track` / `not_found_reason`
+/// 是唯一自变量）。寻址单位是**设备身份**，`slot_index` 在这里现查。
+fn remove_device_op_on(
+    track: &TrackV3,
+    device_id: EntityId,
+    not_found_reason: &'static str,
+) -> Result<Op, &'static str> {
     let slot_index = track
         .devices
         .iter()
         .position(|device| device.id == device_id)
-        .ok_or(DEVICE_REMOVE_NOT_FOUND_REASON)?;
+        .ok_or(not_found_reason)?;
     let previous_device = track.devices[slot_index].clone();
-    Ok(vec![Op::RemoveDevice {
+    Ok(Op::RemoveDevice {
         track_id: track.id,
         slot_index,
         previous_device,
-    }])
+    })
 }
 
 /// 新建空 MIDI 片段的显示名：`"Clip {现有 clip_pool 条目数 + 1}"`。
@@ -2363,7 +2470,35 @@ pub struct ViewState {
     ///
     /// ⚠ 引擎侧（`rt.rs` 的 3a⁗⁗）与离线侧（`yeban-render` 的 `render_node`）在
     /// `#173` 起都**真的处理**主总线的设备 ⇒ 这里列出的每一台都不是装饰。
+    ///
+    /// ## 追加修订段（任务单 `#180`，2026-10-18）—— 只修订"只读"这一句
+    ///
+    /// 上面两句（"第二段（只读）事实源" / "本字段只让面板看得见"）是 `#173` 的**历史
+    /// 状态**，原文保留。`#180` 起主总线这一段**可增删**：装 / 删走
+    /// [`master_device_insert_ops`] / [`master_device_remove_ops`]（`track_id =
+    /// master_bus_track_id`，**按身份**寻址），界面手势是 `master-device-insert-eq` /
+    /// `master-device-insert-reverb` / `master-device-remove`。
+    ///
+    /// ⛔ **仍然分开两段**的原因没有变（这是本条修订的边界）：两段的寻址单位是**各自的
+    /// 那条轨** —— 第一段是 [`device_rack_track`]（排除主总线），这一段是
+    /// [`master_device_track`]。把两段并成一个数组才会让 `slot_index` 指错轨；
+    /// "可编辑"不等于"可以共用一个数组"。旁通 / EQ 滑块**仍只属于第一段**。
     pub master_devices: Vec<DeviceRowView>,
+    /// ⭐ 任务单 `#180`：主总线设备链那一栏的标题（`"主总线 Master · 设备链"`；没有主总线时
+    /// 是 [`MASTER_DEVICE_INSERT_NO_MASTER_REASON`] 的**逐字**原因）。
+    ///
+    /// 与 [`Self::device_track_label`] 的差别只有主语：那一段是展示轨，这一段是
+    /// `master_bus_track_id` 指的主总线轨。⛔ 界面不拼第二份标题。
+    pub master_device_label: String,
+    /// ⭐ 任务单 `#180`："给主总线装 EQ / 装混响"此刻能不能用（工程里得有一条主总线）。
+    ///
+    /// `false` ⇒ 两个按钮禁用并逐字显示 [`Self::master_device_insert_reason`]，⛔ 不静默。
+    /// ⚠ 它与 [`Self::device_insert_available`] **分开**两格：有展示轨不代表有主总线。
+    pub master_device_insert_available: bool,
+    /// ⭐ 任务单 `#180`："给主总线装设备"不可用时**逐字**写出的原因（可用时是空串）。
+    ///
+    /// 取值来自 [`MASTER_DEVICE_INSERT_NO_MASTER_REASON`]。
+    pub master_device_insert_reason: String,
     /// 当前展示轨上**第一格** `eq_low_gain`（值域来自契约）；没有 ⇒ `None`。
     ///
     /// ⚠ 这是本切片**唯一**可编辑的设备参数（"最小可编辑"）。`None` 时界面禁用滑块
@@ -2649,6 +2784,12 @@ impl ViewState {
         // ⭐ 任务单 `#173`：主总线的设备链 —— **只读**的第二段（可编辑面仍只属于展示轨，
         // 见 `ViewState::master_devices` 的文档）。
         let master_devices = master_device_rows(project);
+        // ⭐ 任务单 `#180`：主总线设备链的标题 ＋ "装设备"的可用性 / 逐字原因。
+        // 三者与上面那段投影**同一份**主语（`master_bus_track_id`）⇒ 标题、列表、
+        // 可用性不可能互相指错轨。
+        let master_device_label = master_device_track_label(project);
+        let (master_device_insert_available, master_device_insert_reason) =
+            master_device_insert_availability(project);
 
         // ⭐ 任务单 `#163`：设备增删 ＋ 建空片段的可用性（与投影**同一份**口径）。
         let (device_insert_available, device_insert_reason) = device_insert_availability(project);
@@ -2745,6 +2886,9 @@ impl ViewState {
             device_track_label,
             devices,
             master_devices,
+            master_device_label,
+            master_device_insert_available,
+            master_device_insert_reason,
             eq_low_gain,
             device_insert_available,
             device_insert_reason,
@@ -2996,6 +3140,46 @@ impl ViewState {
     #[must_use]
     pub fn device_unrecognised(&self) -> Vec<String> {
         self.devices
+            .iter()
+            .map(|row| row.unrecognised.clone())
+            .collect()
+    }
+
+    /// ⭐ 任务单 `#180`：**主总线**设备链每一格的显示名（与下面三个数组**同索引集**）。
+    ///
+    /// 口径与 [`Self::device_names`] **逐字相同**，只是主语换成 [`Self::master_devices`]
+    /// ⇒ 两段面板不会各说一套（同一份 [`device_rack_projection`]）。
+    #[must_use]
+    pub fn master_device_names(&self) -> Vec<String> {
+        self.master_devices
+            .iter()
+            .map(|row| row.name.clone())
+            .collect()
+    }
+
+    /// ⭐ 任务单 `#180`：主总线每一格的**设备身份**（26 字符文本）—— 删除按钮只报它，
+    /// ⛔ 不报行下标（下标会随设备链增删漂移，身份不会）。
+    #[must_use]
+    pub fn master_device_ids(&self) -> Vec<String> {
+        self.master_devices
+            .iter()
+            .map(|row| row.device_id.clone())
+            .collect()
+    }
+
+    /// ⭐ 任务单 `#180`：主总线每一格的**已识别**参数读数（空串 = 这一台没有）。
+    #[must_use]
+    pub fn master_device_recognised(&self) -> Vec<String> {
+        self.master_devices
+            .iter()
+            .map(|row| row.recognised.clone())
+            .collect()
+    }
+
+    /// ⭐ 任务单 `#180`：主总线每一格的**未识别**参数读数（空串 = 全部参数都被引擎认）。
+    #[must_use]
+    pub fn master_device_unrecognised(&self) -> Vec<String> {
+        self.master_devices
             .iter()
             .map(|row| row.unrecognised.clone())
             .collect()
@@ -3982,6 +4166,22 @@ pub fn device_rack_track(project: &YebanProjectV1) -> Option<&TrackV3> {
         .tracks
         .values()
         .find(|track| track.id != project.master_bus_track_id)
+}
+
+/// ⭐ 任务单 `#180`：**主总线**那条轨 —— 设备增删的第二个（也是最后一个）目标。
+///
+/// 口径与 [`track_create_available`] / [`master_bus_label`] / [`master_device_rows`]
+/// **同一份**：`tracks.get(master_bus_track_id)` **且** `kind == TrackKind::Master`。
+/// ⛔ 不用 [`device_rack_track`]（它**排除**主总线）—— 那是"指错轨"的唯一来源。
+///
+/// 返回 `None` = 工程没有主总线（`master_bus_track_id` 为 nil 或指向非 `Master` 轨）
+/// ⇒ 三个主总线设备手势都以**逐字原因**响亮拒绝，⛔ 不静默改到别的轨上。
+#[must_use]
+pub fn master_device_track(project: &YebanProjectV1) -> Option<&TrackV3> {
+    project
+        .tracks
+        .get(&project.master_bus_track_id)
+        .filter(|track| track.kind == TrackKind::Master)
 }
 
 /// 设备链 + EQ 旋钮的投影本体（[`ViewState`] 与宿主提交路径**共用**这一份口径）。
