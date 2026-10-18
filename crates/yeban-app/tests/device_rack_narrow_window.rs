@@ -409,13 +409,19 @@ fn the_three_gestures_still_commit_exactly_once_at_1440x900() {
 // ===========================================================================
 #[test]
 fn the_layout_probes_pin_the_two_sources() {
+    // ⚠ **行尾归一**（`#216` / 第 299 条）：下面第一条 needle 是**跨行**的；Windows 腿
+    // （`core.autocrlf=true`）里 `SHELL_SOURCE` 每行是 CRLF ⇒ 写死 `\n` 的 needle 匹配不上。
+    // ⛔ 更糟的是它长在**否定**断言里：匹配不上 = `!contains` 恒真 ⇒ 判据在 Windows 上
+    // **静默变弱**（比红更危险）。归一放在读入处，钉的字节一个字不改。
+    let shell = SHELL_SOURCE.replace("\r\n", "\n");
+
     // `app.slint` 的根**不许**再有硬编码尺寸。
     assert!(
-        !SHELL_SOURCE.contains("    width: 1920px;\n    height: 1080px;"),
+        !shell.contains("    width: 1920px;\n    height: 1080px;"),
         "`app.slint` 的根不许再钉死 `width: 1920px; height: 1080px;`（窗口会被裁成 1920×1080 的左上角）"
     );
     assert!(
-        SHELL_SOURCE.contains("preferred-width: 1920px;"),
+        shell.contains("preferred-width: 1920px;"),
         "初值必须由 `preferred-width` 给出（1920×1080 仍是启动尺寸）"
     );
 

@@ -3342,6 +3342,88 @@ fn toggle_play_and_stop_degrade_instead_of_aborting_when_the_engine_is_already_b
     ));
 }
 
+/// 把 **Windows 检出**（`core.autocrlf=true` ⇒ 每行 CRLF）的行尾归一到 LF。
+///
+/// ⚠ **第 299 条**（`#216` 的根因）：`include_str!` 把工作树里的字节**原样**编进来 ⇒
+/// Windows 腿里同一份 `host.rs` 每行是 CRLF。跨行 `contains` / `find` 的 needle 若写死
+/// `\n`，`\r` 会夹在中间 ⇒ **永远匹配不上**。凡按源码文本做结构对账，**入口先归一**。
+///
+/// ⛔ 只动 `\r\n`：裸 `\r` 是文件损坏，不该被归一掩盖（与 `yeban-mcp/tests/op_reachability.rs`
+/// 的 R51 纪律同一条）。
+fn lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// 反过来：把 LF 源码换成 **Windows 检出**的字节（防线判据用，幂等）。
+fn as_crlf(text: &str) -> String {
+    lf(text).replace('\n', "\r\n")
+}
+
+/// 取 `host.rs` 里一个顶层 `pub fn {name}(` 的**代码区**（剥掉 `//` 注释），
+/// 用于源码级对账。⭐ **入口先归一**（`#216`）⇒ LF / CRLF 检出得到同一份文本。
+fn host_function_code(source: &str, name: &str) -> String {
+    let source = lf(source);
+    let marker = format!("pub fn {name}(");
+    let start = source
+        .find(&marker)
+        .unwrap_or_else(|| panic!("`host.rs` 里必须有 `pub fn {name}(`"));
+    let rest = &source[start..];
+    let end = rest
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("`pub fn {name}` 必须以 `\\n}}\\n` 结束"));
+    rest[..end]
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 函数体里出现过的 `Action::<变体>` 名字（去重、排序）。
+fn action_variants_in(code: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = code;
+    while let Some(index) = rest.find("Action::") {
+        let tail = &rest[index + "Action::".len()..];
+        let name: String = tail
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+        rest = tail;
+    }
+    names.sort();
+    names
+}
+
+/// 借宿主 / 引擎命令两个动作集的全部断言 —— LF 与 CRLF 两条腿**共用这一份**，
+/// 因此"CRLF 下仍绿"证明的是**同一套探针**，不是另写一套更松的。
+fn engine_action_sets(source: &str, label: &str) -> (Vec<String>, Vec<String>) {
+    let borrow_predicate = action_variants_in(&host_function_code(source, "action_needs_engine"));
+    let engine_command = action_variants_in(&host_function_code(source, "apply_engine_command"));
+    assert_eq!(
+        borrow_predicate, engine_command,
+        "`action_needs_engine`（决定**借不借**宿主）与 `apply_engine_command`（决定**借来\
+         做什么**）必须处理同一组 `Action`：一边改了、另一边没改 ⇒ 要么引擎命令拿不到\
+         上下文（静默不生效），要么一条会调界面的动作被塞进了借内（`#212` 的崩法）\
+         （{label} 源码）"
+    );
+    assert!(
+        !borrow_predicate.is_empty(),
+        "两个动作集不可能都是空的 —— 节拍器 / 预备拍今天就在这条链上（{label} 源码）"
+    );
+    // ⭐ 安全属性：落点里有 `ui.invoke_*` 的动作**一律**不在借内。
+    for ui_calling in ["PlayPause", "ResumeFromCursor", "Cancel"] {
+        assert!(
+            !borrow_predicate.iter().any(|name| name == ui_calling),
+            "`Action::{ui_calling}` 的落点会调界面回调（`ui.invoke_*`）⇒ 它**必须**在\
+             借外执行；把它加进 `action_needs_engine` 就是 `#212` 的重入（{label} 源码）"
+        );
+    }
+    (borrow_predicate, engine_command)
+}
+
 /// 判据（⭐ `#212` 的**结构耦合**）：**借宿主**的动作集必须与**引擎命令**的动作集逐条相同。
 ///
 /// ## 为什么要有这条（而不是只靠运行时）
@@ -3356,67 +3438,52 @@ fn toggle_play_and_stop_degrade_instead_of_aborting_when_the_engine_is_already_b
 /// 见 `src/elements.rs` 的 `space_and_shift_space_share_one_host_arm_today`）。
 #[test]
 fn only_engine_commands_take_the_engine_borrow() {
-    /// 取 `host.rs` 里一个顶层 `pub fn {name}(` 的**代码区**（剥掉 `//` 注释），
-    /// 用于源码级对账。
-    fn host_function_code(name: &str) -> String {
-        let source = include_str!("host.rs");
-        let marker = format!("pub fn {name}(");
-        let start = source
-            .find(&marker)
-            .unwrap_or_else(|| panic!("`host.rs` 里必须有 `pub fn {name}(`"));
-        let rest = &source[start..];
-        let end = rest
-            .find("\n}\n")
-            .unwrap_or_else(|| panic!("`pub fn {name}` 必须以 `\\n}}\\n` 结束"));
-        rest[..end]
-            .lines()
-            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// 函数体里出现过的 `Action::<变体>` 名字（去重、排序）。
-    fn action_variants_in(code: &str) -> Vec<String> {
-        let mut names: Vec<String> = Vec::new();
-        let mut rest = code;
-        while let Some(index) = rest.find("Action::") {
-            let tail = &rest[index + "Action::".len()..];
-            let name: String = tail
-                .chars()
-                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                .collect();
-            if !name.is_empty() && !names.contains(&name) {
-                names.push(name);
-            }
-            rest = tail;
-        }
-        names.sort();
-        names
-    }
-
-    let borrow_predicate = action_variants_in(&host_function_code("action_needs_engine"));
-    let engine_command = action_variants_in(&host_function_code("apply_engine_command"));
-    assert_eq!(
-        borrow_predicate, engine_command,
-        "`action_needs_engine`（决定**借不借**宿主）与 `apply_engine_command`（决定**借来\
-         做什么**）必须处理同一组 `Action`：一边改了、另一边没改 ⇒ 要么引擎命令拿不到\
-         上下文（静默不生效），要么一条会调界面的动作被塞进了借内（`#212` 的崩法）"
-    );
-    assert!(
-        !borrow_predicate.is_empty(),
-        "两个动作集不可能都是空的 —— 节拍器 / 预备拍今天就在这条链上"
-    );
-    // ⭐ 安全属性：落点里有 `ui.invoke_*` 的动作**一律**不在借内。
-    for ui_calling in ["PlayPause", "ResumeFromCursor", "Cancel"] {
-        assert!(
-            !borrow_predicate.iter().any(|name| name == ui_calling),
-            "`Action::{ui_calling}` 的落点会调界面回调（`ui.invoke_*`）⇒ 它**必须**在\
-             借外执行；把它加进 `action_needs_engine` 就是 `#212` 的重入"
-        );
-    }
+    let (borrow_predicate, engine_command) = engine_action_sets(include_str!("host.rs"), "LF");
     observe(&format!(
         "[transport-e2e] ⑧ 借宿主的动作集={borrow_predicate:?} == 引擎命令集={engine_command:?}；\
          界面回调族（PlayPause / ResumeFromCursor / Cancel）均不在借内"
+    ));
+}
+
+/// 判据（`#216` 的**防线**）：源码被 Windows 检出成 **CRLF** 时，同一套源码探针必须仍绿。
+///
+/// ## 为什么要有这条（它守的是第 299 条）
+///
+/// `#212` 加的 [`only_engine_commands_take_the_engine_borrow`] 在 `#212` / `#213` / `#214`
+/// 三条提交的 `windows` 腿上**连续三次红**：`find("\n}\n")` 的 needle 里是 LF，而
+/// `core.autocrlf=true` 的检出把 `host.rs` 变成 CRLF ⇒ `\r` 夹在 `}` 与 `\n` 之间，
+/// 锚点永远找不到（实测 panic 见报告）。修法是在探针**入口**做 [`lf`] 归一。
+///
+/// 本判据把**同一份 `host.rs`** 人工换成 CRLF，喂给**同一个** [`engine_action_sets`]
+/// （不是另写一条更松的比较），要求结果与 LF 时逐条相同 ⇒ 将来谁再在探针里写死 `\n`，
+/// 这条判据先红。⛔ 它不碰被测函数、不碰装配夹具：动的只是**文本输入**。
+#[test]
+fn source_probes_hold_on_a_crlf_checkout() {
+    let lf_source = lf(include_str!("host.rs"));
+    let crlf_source = as_crlf(&lf_source);
+
+    assert!(!lf_source.contains('\r'), "仓库里的 `host.rs` 必须是 LF");
+    assert!(crlf_source.contains("\r\n"), "防线夹具必须真的带 CRLF");
+    assert_eq!(
+        crlf_source.matches("\r\n").count(),
+        lf_source.matches('\n').count(),
+        "每一行都必须被换成 CRLF（⛔ 不许只换一半，否则这条防线只测到局部）"
+    );
+
+    let lf_sets = engine_action_sets(&lf_source, "LF");
+    let crlf_sets = engine_action_sets(&crlf_source, "CRLF");
+    assert_eq!(
+        crlf_sets, lf_sets,
+        "CRLF 检出下的探针结果必须与 LF 逐条相同 —— 若这里红，说明某个源码探针又写死了 `\\n`"
+    );
+    // 防空：两个集合都空时上面的相等是恒真，不能算数。
+    assert!(
+        !lf_sets.0.is_empty() && !lf_sets.1.is_empty(),
+        "LF 探针必须真的抽到动作名（防空，⛔ 不是恒真）"
+    );
+    observe(&format!(
+        "[#216] 同一份 `host.rs` 的 CRLF 副本 ⇒ 借宿主/引擎命令集与 LF 逐条相同：{:?}",
+        lf_sets.0
     ));
 }
 
