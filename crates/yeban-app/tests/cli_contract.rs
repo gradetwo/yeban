@@ -130,6 +130,35 @@ fn line_with<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     text.lines().find(|line| line.starts_with(prefix))
 }
 
+/// 从 `yeban_render` 的**公开**逐族常量里取某个 chunk 家族在**可读序**下的实测条数。
+///
+/// ⭐ `#199`（落实 `#197` 的建议①）：族条数不再抄字面量 —— 供体的逐族条数由
+/// **产出它的那个 crate** 公开（`yeban_render::logic::LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES`），
+/// 判据读它。这样容量 3 → 4 时，render 侧那份表随新供体一起改，本判据**自动跟随**，
+/// 而"产物里的族条数 == 供体声明的族条数"**仍是真判据**（常量被改错 ⇒ 本判据红）。
+///
+/// ⚠ 落盘字节是**可读名的反序**（`Envi` 落盘为 `ivnE`），那个常量用可读序 ⇒ 这里翻转 4 字节再查表。
+/// ⚠ 查不到就 panic（⛔ 不返回 `None`）：否则"产物里没有该族"与"常量表里没有该族"
+/// 会一起退化成 `None == None`，把一条真判据变成**恒真**。
+///
+/// ⚠ **必须带 `#[cfg]`**：`yeban_render::logic` 那个模块本身在
+/// `experimental-logic-export` / `experimental-logic-import` 后面
+/// （`crates/yeban-render/src/lib.rs`）⇒ 默认特性腿里它**不存在**。
+/// 不带这道门时默认腿是 `error[E0433]: cannot find `logic` in `yeban_render``
+/// （本线实测：`clippy --lib --tests` / `check --all-targets` / `test --features midi-input` /
+/// `test --features in-process-mcp` 四条**同时红**）。门与它服务的那条判据同款。
+#[cfg(feature = "experimental-logic-export")]
+fn donor_family_count(landed_tag: &[u8; 4]) -> usize {
+    let readable = [landed_tag[3], landed_tag[2], landed_tag[1], landed_tag[0]];
+    let name = std::str::from_utf8(&readable).expect("落盘 chunk 名必须是 ASCII");
+    yeban_render::logic::LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES
+        .iter()
+        .find_map(|(tag, count)| (*tag == name).then_some(*count))
+        .unwrap_or_else(|| {
+            panic!("`LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES` 里必须有 `{name}`（`#199`）")
+        })
+}
+
 /// 造一个**真容器**（含 `history.dag` 与一个 CAS 资产）并写盘。
 ///
 /// 用 `yeban_model::container::write_project_container` —— 与生产写出路径**同一个**函数，
@@ -2018,26 +2047,43 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
         at += 0x24 + size;
     }
     assert_eq!(at, bytes.len(), "记录流必须恰好铺满声明载荷");
+    // ⭐ `#199`（落实 `#197` 的建议①）：记录数**不再抄字面量**，改读产出它的那个 crate 的
+    //    公开常量 `yeban_render::logic::LOGIC_OWNER_DONOR_3T_RECORDS`（3 轨供体 = 515）。
+    //    判据本身仍是真判据：「**产物**里走出来的记录条数 == **供体**声明的记录条数」——
+    //    常量被改错 ⇒ 这里红（见 `#199` 的注入读数），所以 ⛔ 不是恒真；
+    //    未来容量 3 → 4 时 render 侧随新供体改常量，本判据**自动跟随**。
     assert_eq!(
-        records, 515,
-        "负责人 3 轨供体的记录条数实测 515 条（`#194` 把容量 2 提到 3：2 轨的 507 + 8）"
+        records,
+        yeban_render::logic::LOGIC_OWNER_DONOR_3T_RECORDS,
+        "产物记录条数必须等于 3 轨供体声明的记录条数（`#199`：读 render 的公开常量，\
+         不再抄 515；`#194` 把容量 2 提到 3 时 2 轨的 507 + 8 = 515）"
     );
     // 落盘字节是**可读名的反序**（`Envi` 落盘为 `ivnE`），与 `yeban_render::logic` 的记录模型一致。
+    // ⭐ 五个族条数同样改读 render 的公开逐族表（`LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES`），
+    //    经 `donor_family_count` 反序查表 ⇒ 容量变化时自动跟随，且常量被改错仍会红。
     assert_eq!(
-        families.get(b"ivnE"),
-        Some(&46),
-        "ivnE 环境对象条数必须是负责人 3 轨那份的实测值（`#194`：2 轨 45 → 3 轨 46）"
+        families.get(b"ivnE").copied(),
+        Some(donor_family_count(b"ivnE")),
+        "ivnE 环境对象条数必须是供体逐族表里的值（`#199` 读 render 常量；`#194`：2 轨 45 → 3 轨 46）"
     );
-    assert_eq!(families.get(b"OCuA"), Some(&286), "OCuA 混音条必须来自供体");
-    assert_eq!(families.get(b"MneG"), Some(&1), "MneG 必须来自供体");
     assert_eq!(
-        families.get(b"karT"),
-        Some(&33),
+        families.get(b"OCuA").copied(),
+        Some(donor_family_count(b"OCuA")),
+        "OCuA 混音条必须来自供体"
+    );
+    assert_eq!(
+        families.get(b"MneG").copied(),
+        Some(donor_family_count(b"MneG")),
+        "MneG 必须来自供体"
+    );
+    assert_eq!(
+        families.get(b"karT").copied(),
+        Some(donor_family_count(b"karT")),
         "karT 轨道家族必须来自供体（`#194`：2 轨 31 → 3 轨 33，`Trak +2`）"
     );
     assert_eq!(
-        families.get(b"UCuA"),
-        Some(&22),
+        families.get(b"UCuA").copied(),
+        Some(donor_family_count(b"UCuA")),
         "UCuA 通道条状态必须来自供体（`#194`: 2 轨 19 → 3 轨 22，`AuCU +3`；\
          2 轨那份的 19 含第二条轨道新激活的 8 条，第 3 条 `control track` 只多 3 条）"
     );
