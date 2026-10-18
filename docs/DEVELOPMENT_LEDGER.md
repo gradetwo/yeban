@@ -6800,7 +6800,7 @@ rows carry reasons that still match the tree:
 | row | reason given | verdict |
 | :--- | :--- | :--- |
 | `BASELINE-003` (10 万音符滚动帧率) | "帧率判据需要固定刷新率/无噪声硬件（`spikes/README.md` 已登记）；**不得**用托管 runner 读数宣布通过", with the round-114 note recording that the负责人 named a reference machine (M2 Max) - which is exactly what HD-49 is about | **current** |
-| `BASELINE-006` (AI 交互效率: JSON ≤4 KB, Token 中位数 ≤600) | "需要'生成 16 小节段落'的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**，且 Token 口径需人类裁决用哪个 tokenizer" - matching HD-47/HD-48's deferral | **current** |
+| `BASELINE-006` (AI 交互效率: JSON ≤4 KB, Token 中位数 ≤600) | "需要'生成 16 小节段落'的完整 MCP 往返统计；十个工具已能真做事，但**载荷统计未接**，且 Token 口径需人类裁决用哪个 tokenizer" - matching HD-47/HD-48's deferral（⚠ 2026-10-18：`HD-48` 已裁 **选项 B** —— 不引入 tokenizer，报 **bytes/4 近似并显式标注**；见 `payload.rs` 的 `TOKEN_ESTIMATOR`） | **current** |
 
 The table's own legend (line 50) is also accurate: `PENDING` 不等于"没做" - 006/007/008 are in progress, while 003/005/BASELINE-003/005 are
 "当前硬件条件下做不出有意义结论".
