@@ -371,10 +371,23 @@ pub fn usage_text() -> String {
                              (含父目录), 里面写 `Alternatives/<NNN>/ProjectData` +
                              `MetaData.plist` + `DisplayState.plist` 与
                              `Resources/ProjectInformation.plist`;
+                             **后缀**: 目标**必须**以 `.logicx` 结尾 —— 缺了会**自动补**
+                             (`hello` ⇒ `hello.logicx`; macOS 的 `open -a` 靠扩展名认
+                             bundle, `open -a \"Logic Pro\" hello` 会报错); 已带则**不**重复加
+                             (`foo.logicx` 不变 `foo.logicx.logicx`), 回执的 `path=` 打印
+                             **实际**路径 (见下面的用法示例);
                              **映射损失表逐条打到 stdout** (`logic-losses:` / `logic-loss:` 行),
                              因此\"哪些构造没被映射\"对用户可见 (太长时礼貌截断并写明还剩几条);
                              **打开结论（实测，勿外推）**: 本机 **Logic Pro 12.2** 能打开**供体拼接**
-                             产物 (负责人实测, 2026-10-06); 自研 (无供体) 写入器的产物被拒绝过两次
+                             产物 (负责人实测, 2026-10-06); **3 轨**那份另有一次人类验收 ——
+                             负责人 2026-10-18 在真机 Logic Pro 12.2 上报\"三条轨正常播放\",
+                             且**三条轨各有自己的音色** (`Studio Grand` / `Studio Grand` /
+                             `Epic Cloud Formation`); ⚠ 但那三个音色来自**供体**的通道条,
+                             ⛔ **不是用户工程的设备链** —— 用户挂的 EQ / 混响 / 采样器**不会**
+                             出现在 `.logicx` 里 (我们自己的设备链另按 `未映射:` 条目逐条点名);
+                             仍**未验**: 第 3 槽 1 小节 region 长度 / 其它版本与机器 /
+                             `b0`/`b1` 的 16 字节结构 (已证明**不是**音色路由的必要条件);
+                             自研 (无供体) 写入器的产物被拒绝过两次
                              (账本第 403、405 轮), 结论不覆盖其它 Logic 版本与其它机器; **只在**
                              `--features {logic_feature}` 的构建里存在 —— 默认构建给这个开关
                              = 用法错误 (退出码 {usage})
@@ -589,6 +602,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-wav song.wav
   yeban-app --open song.yeban --export-wav shaped.wav --wav-bit-depth 16 --wav-sample-rate 44100 --wav-seconds 4
   yeban-app --open song.yeban --export-logic out/Song.logicx
+  yeban-app --open song.yeban --export-logic out/hello   # ⭐ 缺 `.logicx` 会补成 out/hello.logicx
   yeban-app --inspect-logic \"/Library/Application Support/Logic/Logic Pro X Demosongs\"
   yeban-app --print-theme
   yeban-app --theme material
@@ -1129,6 +1143,10 @@ pub struct Options {
     /// **只在** [`LOGIC_EXPORT_FEATURE`] 打开的构建里可执行；默认构建给它 =
     /// [`ParseError::LogicNotCompiled`]（退出码 [`EXIT_USAGE`]）—— 与 [`Self::export_als`] 同款。
     /// 取值是目录而不是文件：bundle 会被**创建**（含父目录）。它**不需要**界面投影。
+    ///
+    /// ⭐ `#200`：这里的值是**用户在命令行里写的字面值**（`parse()` 不补后缀）；真正落盘的
+    /// 目录**必然**以 `.logicx` 结尾 —— 补全发生在导出侧
+    /// （[`crate::export_logic::logic_bundle_directory`]），回执的 `path=` 打印实际路径。
     pub export_logic: Option<PathBuf>,
     /// `--open <path>`：当前工程来自这个文件（否则来自 [`Self::sample`]）。
     pub open: Option<PathBuf>,
@@ -3976,11 +3994,20 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     #[cfg(feature = "experimental-logic-export")]
     if let Some(path) = options.export_logic.as_ref() {
-        let report = crate::export_logic::export_project_to_bundle(&loaded.archive.project, path)
+        // ⭐ `#200`：目标目录**强制**以 `.logicx` 结尾。原因是 macOS 的 `open -a`
+        //    （LaunchServices）靠**扩展名**认 bundle —— 负责人跑 `--export-logic hello`
+        //    导出成功、紧接着 `open -a "Logic Pro" hello` 却报错。用户不该为这个后缀踩坑，
+        //    所以缺后缀时**自动补**（已有则不加，`foo.logicx` ⛔ 不变 `foo.logicx.logicx`），
+        //    回执的 `path=` 打印**实际**路径（见 `exported_logic_line`）。
+        //    ⚠ 补全点刻意放在**导出侧**而不是 `parse()`：`Options::export_logic` 保持用户在
+        //    命令行里写的字面值（`parse()` 的既有契约，判据在 `parse_export_logic` 一族里），
+        //    而错误文案用的是**补全后**的实际目标 —— 那才是用户需要去看的路径。
+        let path = crate::export_logic::logic_bundle_directory(path);
+        let report = crate::export_logic::export_project_to_bundle(&loaded.archive.project, &path)
             .map_err(|source| CliError::ExportLogic {
-            path: path.clone(),
-            source,
-        })?;
+                path: path.clone(),
+                source,
+            })?;
         lines.push(exported_logic_line(&report, &loaded));
         lines.extend(logic_loss_lines(&report.losses));
     }

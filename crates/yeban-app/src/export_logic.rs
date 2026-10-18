@@ -44,6 +44,55 @@ use std::path::{Path, PathBuf};
 /// 本切片固定写 `000`，并把这条限制写进导出器的损失表。
 pub const LOGIC_ALTERNATIVE: &str = "000";
 
+/// `.logicx` bundle 的**扩展名**（含点）。
+///
+/// `#200`：`open -a "Logic Pro" hello` 在 macOS 上**报错** —— LaunchServices 靠**扩展名**
+/// 认 bundle，不是靠目录内容。于是"用户给了一个目录名、我们写出一个 bundle"这件事
+/// 在**打开那一步**才失败，而失败点离原因很远（用户的命令行里根本没有 `.logicx` 这个词）。
+/// 因此本模块把后缀当成**导出的组成部分**而不是用户的义务，见
+/// [`logic_bundle_directory`]。
+pub const LOGIC_BUNDLE_EXTENSION: &str = ".logicx";
+
+/// 把 `--export-logic` 的取值补成**以 `.logicx` 结尾**的目录（`#200`）。
+///
+/// 三条语义，逐条都有判据钉住：
+///
+/// 1. **缺后缀 ⇒ 补**：`hello` → `hello.logicx`。理由见 [`LOGIC_BUNDLE_EXTENSION`]：
+///    没有这个后缀，`open -a "Logic Pro" hello` 会报错，而报错点离"用户少打了一个后缀"
+///    很远 —— 用户不该为它踩坑。
+/// 2. **已有后缀 ⇒ **不**重复加**：`foo.logicx` 仍是 `foo.logicx`（⛔ 不是
+///    `foo.logicx.logicx`）。比较是 **ASCII 大小写不敏感**的：macOS 的 LaunchServices
+///    按大小写不敏感匹配扩展名，`Foo.LOGICX` 一样能被认出来，补成
+///    `Foo.LOGICX.logicx` 只会让名字变丑而不增加任何兼容性。
+/// 3. **幂等**：对返回值再调一次不变 —— 这条让调用方（CLI 与库内两条路径）都能安全地补。
+///
+/// 名字里**已有的点不会丢**：`foo.bar` → `foo.bar.logicx`（⛔ 不用 `set_extension`，
+/// 那会把 `.bar` 换成 `.logicx`，等于替用户改名）。
+///
+/// 末尾带分隔符的路径（`hello.logicx/`）按**最后一个组件**判断，因此不会补成
+/// `hello.logicx/.logicx`。没有任何文件名的路径（`/`、`..`）原样返回 —— 那种取值会在
+/// 建目录那一步失败，用不着在这里替它编一个名字。
+#[must_use]
+pub fn logic_bundle_directory(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    let Some(name) = path.file_name() else {
+        return path.to_path_buf();
+    };
+    if name
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .ends_with(LOGIC_BUNDLE_EXTENSION)
+    {
+        return path.to_path_buf();
+    }
+    let mut suffixed = name.to_os_string();
+    suffixed.push(LOGIC_BUNDLE_EXTENSION);
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(suffixed),
+        _ => PathBuf::from(suffixed),
+    }
+}
+
 /// `.logicx` 导出失败的原因。
 ///
 /// 映射 / 编码（`yeban-render` 的 `logic` 模块）是**纯函数、无错**，因此这里只有 I/O 两档。
@@ -94,7 +143,8 @@ impl From<crate::save::SaveError> for LogicExportError {
 #[cfg(feature = "experimental-logic-export")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogicExportReport {
-    /// 目标 bundle 目录（调用方给的那个路径）。
+    /// **实际落盘**的 bundle 目录 —— 用户给的值缺 `.logicx` 时这里是**补过**的路径
+    /// （[`logic_bundle_directory`]，`#200`）。回执的 `path=` 打印的就是它。
     pub directory: PathBuf,
     /// 包内相对路径 → 实际落盘的字节数（按 `BTreeMap` 键序）。
     pub files: Vec<(String, usize)>,
@@ -112,6 +162,10 @@ pub struct LogicExportReport {
 /// **同一份**原子落盘实现 —— 任何一步失败都会让整次导出返回 `Err`（已写出的文件保留，
 /// 因为 bundle 是多文件产物；本函数**不**声称整目录的原子性）。
 ///
+/// ⭐ `#200`：目标目录**强制**以 `.logicx` 结尾 —— 入参先过 [`logic_bundle_directory`]
+/// （缺后缀补上、已有的不重复加），因此**库这一层**也不可能有调用方绕过它。
+/// 返回值里的 [`LogicExportReport::directory`] 是**实际**路径，回执照它打印。
+///
 /// # Errors
 ///
 /// [`LogicExportError::Directory`]：建目录失败；
@@ -121,7 +175,7 @@ pub fn export_project_to_bundle(
     project: &yeban_model::YebanProjectV1,
     directory: impl AsRef<Path>,
 ) -> Result<LogicExportReport, LogicExportError> {
-    let directory = directory.as_ref().to_path_buf();
+    let directory = logic_bundle_directory(directory);
     let variant = if project.title.trim().is_empty() {
         "Yeban Arrangement".to_owned()
     } else {
@@ -156,4 +210,69 @@ pub fn export_project_to_bundle(
         mapped_notes: bundle.mapped_notes,
         losses: bundle.losses,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::*;
+
+    /// ⭐ **判据（`#200`）**：缺后缀 ⇒ 补 `.logicx`；名字里**已有的点不丢**。
+    ///
+    /// 这张表是"用户会怎么打"的清单：裸名字、相对目录、绝对目录、带点的名字、带空格的名字。
+    /// 每一条都断言**整条结果**（不是 `ends_with`），这样"补错位置"（例如补到父目录上）
+    /// 也会红。
+    #[test]
+    fn logic_bundle_directory_appends_the_suffix_when_missing() {
+        for (given, expected) in [
+            ("hello", "hello.logicx"),
+            ("out/Song", "out/Song.logicx"),
+            ("/tmp/yeban-x/Song", "/tmp/yeban-x/Song.logicx"),
+            ("foo.bar", "foo.bar.logicx"), // ⛔ 不许用 `set_extension` 把 `.bar` 换掉
+            ("hello world", "hello world.logicx"),
+            ("Song v2.1", "Song v2.1.logicx"),
+            ("logicx", "logicx.logicx"), // 只有**扩展名**才算，光有词不算
+        ] {
+            assert_eq!(
+                logic_bundle_directory(given),
+                PathBuf::from(expected),
+                "`{given}` 必须补成 `{expected}`"
+            );
+        }
+    }
+
+    /// ⭐ **判据（`#200`）**：末尾已经是 `.logicx` ⇒ **不重复加**（`foo.logicx` ⛔ 不变
+    /// `foo.logicx.logicx`），且**幂等**（对结果再补一次不变）。
+    ///
+    /// 大小写不敏感这一条单独钉：macOS 的 LaunchServices 按大小写不敏感匹配扩展名，
+    /// 因此 `Foo.LOGICX` 已经是"能被 `open -a` 认出"的名字，补成 `Foo.LOGICX.logicx`
+    /// 只会让名字变丑。
+    #[test]
+    fn logic_bundle_directory_never_doubles_the_suffix() {
+        for given in [
+            "foo.logicx",
+            "out/Song.logicx",
+            "/tmp/yeban-x/Song.logicx",
+            "Foo.LOGICX",
+            "Foo.LogicX",
+            ".logicx", // 隐藏文件名，整体就是后缀
+        ] {
+            let once = logic_bundle_directory(given);
+            assert_eq!(once, PathBuf::from(given), "`{given}` 必须原样返回");
+            assert_eq!(
+                logic_bundle_directory(&once),
+                once,
+                "幂等：`{given}` 再补一次不许变"
+            );
+        }
+
+        // 末尾带分隔符时按**最后一个组件**判断（不能变成 `Song.logicx/.logicx`）。
+        let trailing = logic_bundle_directory("out/Song.logicx/");
+        assert_eq!(
+            trailing.file_name(),
+            Some(OsStr::new("Song.logicx")),
+            "带尾分隔符的路径不许被补成 `Song.logicx/.logicx`"
+        );
+    }
 }

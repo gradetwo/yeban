@@ -2151,3 +2151,126 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 判据 B15b（`#200`）: `--export-logic` 的目标目录**必须**以 `.logicx` 结尾。
+///
+/// 为什么这条判据存在：macOS 的 `open -a "Logic Pro" hello` **报错** —— LaunchServices
+/// 靠**扩展名**认 bundle。而"导出成功"离"打不开"只有一步之遥：`--export-logic hello` 曾经
+/// 写出一个叫 `hello` 的目录、回执 `path=hello files=4` 看起来完全正常。因此本判据钉三件事：
+///
+/// ① 缺后缀 ⇒ 落在 `<给的目录>.logicx`（且**不在**无后缀的那个名字上留任何东西）；
+/// ② 回执的 `path=` 打印的是**实际**路径（以 `.logicx` 结尾）—— 用户照它敲 `open -a` 能认；
+/// ③ 已带后缀 ⇒ 路径**不变**（不重复加：`foo.logicx` ⛔ 不变 `foo.logicx.logicx`）。
+///
+/// ⚠ 本条**不**调用 `open -a`：真开 Logic 是人的事（本文件只跑无窗口参数）。
+#[cfg(feature = "experimental-logic-export")]
+#[test]
+fn export_logic_forces_the_logicx_suffix_and_prints_the_actual_path() {
+    let dir = scratch_dir("export-logic-suffix");
+    let source = write_real_container(&dir, "song.yeban");
+    let source = source.to_str().expect("utf8");
+
+    // ① 缺后缀：`hello` ⇒ `hello.logicx`。
+    let bare = dir.join("hello");
+    let run = invoke(&[
+        "--open",
+        source,
+        "--export-logic",
+        bare.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+    let line = line_with(&run.stdout, "exported-logic:").expect("exported-logic: 行");
+    let actual = field(line, "path").expect("path=");
+    assert!(
+        actual.ends_with(".logicx"),
+        "回执的 path= 必须以 .logicx 结尾（`open -a` 靠它认 bundle）: {line}"
+    );
+    assert_eq!(
+        actual,
+        format!("{}.logicx", bare.display()),
+        "实际路径必须恰好是 `<给的目录>.logicx`: {line}"
+    );
+    assert!(!bare.exists(), "⛔ 无后缀的那个名字上不许留任何东西");
+    assert!(
+        Path::new(&actual)
+            .join("Alternatives/000/ProjectData")
+            .is_file(),
+        "产物必须真的落在补过后缀的目录里: {actual}"
+    );
+    assert_eq!(field(line, "files").as_deref(), Some("4"), "{line}");
+
+    // ② 已带后缀：`foo.logicx` ⇒ 路径**不变**，不重复加。
+    let named = dir.join("foo.logicx");
+    let again = invoke(&[
+        "--open",
+        source,
+        "--export-logic",
+        named.to_str().expect("utf8"),
+    ]);
+    assert_eq!(again.code, 0, "stderr={}", again.stderr);
+    let line = line_with(&again.stdout, "exported-logic:").expect("exported-logic: 行");
+    assert_eq!(
+        field(line, "path"),
+        Some(named.display().to_string()),
+        "已带后缀的路径必须**原样**落盘: {line}"
+    );
+    assert!(
+        !dir.join("foo.logicx.logicx").exists(),
+        "⛔ 不许出现 `foo.logicx.logicx`"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据 B15c（`#200`）: 3 轨产物的**损失表文本**必须同时写明「已验的音色」「音色来自**供体**」
+/// 「⛔ **不是用户工程的设备链**」。
+///
+/// 为什么这条判据住在**真二进制**这一层：音色验收是**人类**给的读数（负责人 2026-10-18：
+/// 三条轨分别是 `Studio Grand` / `Studio Grand` / `Epic Cloud Formation`），而"这三个音色其实
+/// 是**供体**的三个通道条"是本产物**最容易被误读**的一条 —— 用户看不到这条就会以为
+/// "我挂的混响导出后还在"。因此它必须是**用户能读到的 stdout 文本**，而不是只活在代码注释里。
+///
+/// 四个片段是**跨模块契约**（`yeban_render::logic` 的 3 轨打开范围常量 ⇄ 本判据）。
+#[cfg(feature = "experimental-logic-export")]
+#[test]
+fn export_logic_loss_table_names_the_donor_timbres_and_the_device_chain_gap() {
+    let dir = scratch_dir("export-logic-timbre");
+    let source = write_real_container(&dir, "song.yeban");
+    let target = dir.join("timbre.logicx");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-logic",
+        target.to_str().expect("utf8"),
+    ]);
+    assert_eq!(run.code, 0, "stderr={}", run.stderr);
+
+    for fragment in [
+        "Studio Grand",
+        "Epic Cloud Formation",
+        "供体",
+        "不是用户工程的设备链",
+    ] {
+        assert!(
+            run.stdout.contains(fragment),
+            "损失表文本必须逐字含 `{fragment}`; stdout={}",
+            run.stdout
+        );
+    }
+    // 且这四个片段必须落在**同一条** `logic-loss:` 行上（否则"同时出现"只是碰巧）。
+    let line = run
+        .stdout
+        .lines()
+        .find(|text| {
+            text.starts_with("logic-loss: ")
+                && text.contains("Studio Grand")
+                && text.contains("Epic Cloud Formation")
+        })
+        .expect("打开范围那条 logic-loss: 行必须同时点名两条音色");
+    assert!(
+        line.contains("供体") && line.contains("不是用户工程的设备链"),
+        "音色与设备链缺口必须写在同一行: {line}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
