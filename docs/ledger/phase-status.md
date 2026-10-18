@@ -13812,3 +13812,31 @@ BENCH … verdict=within-target measured_roundtrip_ms=3.3314 … backend_errors_
 ⭐ ⚠ ⭐ ⭐ **三、⭐ 仍未验／仍待办（⭐ ⛔ 不因"⭐ 有声音"⭐而放宽）**: ⭐ ① ⭐ ⭐ **11 个 `#include` 乐器仍 `regions=0`**（⭐ `#206` 在做）⇒ ⭐ **它们仍然装不了** ✓ ⭐ ② ⭐ **`vcsl`**（⭐ `fmt` chunk 20）＋ ⭐ **`discord`**（⭐ `lokey=c0`）＋ ⭐ **`*silence`**（⭐ 3 个）＋ ⭐ **5 个 probe 不命中** ⇒ ⭐ **仍是已知缺陷** ✓ ⭐ ③ ⭐ ⚠ ⭐ ⭐ **"⭐ 有声音/⭐ 有旋律" ⛔ 不等于"⭐ 音高正确/⭐ 力度层正确/⭐ 无爆音"**（⭐ 那些要**逐音**听、⭐ 且要**对照原厂采样**）⇒ ⭐ ⭐ **本轮只登记"⭐ 能听见"，⭐ ⛔ 不登记"⭐ 好听/⭐ 正确"** ✓ ⭐ ④ ⭐ **GUI 侧"⭐ 装乐器 → ⭐ 播放"** 那条链**仍未由人确认**（⭐ 本轮走的是 CLI 渲染 ＋ ⭐ 系统播放器）⇒ ⭐ **`#207` 在做** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **`#206`（`#include` 11 个）** ＋ ⭐ **`#207`（听音乐路径 ＋ ⭐ GUI 一键）** ＋ ⭐ **`vcsl`／⭐ `discord`／⭐ `*silence`／⭐ 5 个 probe** ＋ ⭐ **GUI 装乐器链路的人类确认** ＋ ⭐ ⚠ **仍需人类**：⭐ GUI 里按播放听一次 ＋ ⭐ 真 MIDI／⭐ 物理回环线 ✓
+
+---
+
+## R913 实测追加（2026-10-18）：⭐⭐⭐ **`#206`（⭐ `#include` 展开）落地 ＋ 快进合并** ⇒ ⭐ **15 个乐器从"⭐ 装不了"⭐变"⭐ 能装"**
+
+⭐ **合并**: ⭐ base `b6363958` ⇒ ⭐ `FINAL=b1290f38`（⭐ 11 文件 ＋832／−112）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ ⭐ **`1892 passed`／FAILED 0**（⭐ **112 suites、⭐ 三个 crate**）＋ ⭐ 守卫 **18** ＋ ⭐ 轻门过 ＋ ⭐ 复合门 **`yeban-sfz yeban-engine yeban-app` 三层全 0** ✓ ⭐ 树已拆 ＋ `target`（39 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 11 个 `regions` **0 → 正数**（⭐ 逐条）**: ⭐ `aliexpress-erhu` **360**／⭐ `body-percussion` **356**／⭐ `ixox-flute` **3113**／⭐ `karoryfer-bear-sax` **1551**／⭐ `karoryfer-big-rusty-drums` **8016**／⭐ `karoryfer-bigcat-cello` **2446**／⭐ `karoryfer-black-and-blue-basses` **8448**／⭐ `karoryfer-string-cyborgs` **246**／⭐ `mtg-solo-sax` **504**／⭐ `salamander-grand` **1121**／⭐ `virtuosity-drums-basic` **1676** ⇒ ⭐ ⭐ **全部 `rc=0` ＋ ⭐ `source=sfz(file(...))` ＋ ⭐ `include_issues=0`** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 另有 4 个**顺带变好**（⭐ 非退化）**: ⭐ `cithara-barbarica` **1 → 81**／⭐ `hungarian-zither` **1 → 331**／⭐ `karoryfer-squidpipes` **37 → 1045**（⭐ 它们的根文件也**另有 inline region**、⭐ 所以不在 #205 那 11 个里）★ ⭐ ⭐ **`discord-gm-sitar` ⭐ `rc 3 → 0`、⭐ `regions → 78`**（⭐ 根因正是 ⭐ `#205` 待办的 `lokey=c0`、⭐ 被本单的音名修复**顺带解决**）✓
+⭐ 而 ⭐ **其余 10 个** ⭐ **`regions／frames／energy／rc` 逐位不变**（⭐ 零退化）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 三条语义（⭐ 都验了）**: ⭐ ① ⭐ **递归**（⭐ A→B→C、⭐ `regions=3`、⭐ ⭐ **`<control> default_path` 跨片段生效**）② ⭐ ⭐ **循环 ⇒ ⭐ `rc=3` ＋ ⭐ `include cycle detected at \`a.sfz\``**（⭐ 不死循环）③ ⭐ ⭐ **缺失 ⇒ ⭐ `include_issues=1` ＋ ⭐ `does not exist (skipped)`、⭐ 其余照常**（⭐ `regions=2`）✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 一处**必须登记**的语义放宽（⭐ 它写得非常清楚）**: ⚠ ⭐ include 展开后，⭐ **原本被"⭐ 忽略 include"⭐掩盖的 4 条解析严格性变成可触发** ⇒ ⭐ 它**逐条修了**：
+| # | ⭐ 宽松 | ⭐ 语料证据 |
+| :-- | :--- | :--- |
+| 1 | ⭐ `sw_lokey/sw_hikey` ⭐ 接受**音名** | ⭐ `salamander` 的 `C0` |
+| 2 | ⭐ `amplitude_*ccN` ⭐ delta 域 ⭐ **放宽为任意有限值** | ⭐ `ixox`/`mtg`/`salamander` 的 `200`/`400`（⭐ **规范正文自述 Aria 不钳位**） |
+| 3 | ⭐ 调制量容忍末尾多一个 `.` | ⭐ `big-rusty` 的 `-1.6.` |
+| 4 | ⭐ `lokey/hikey` ⭐ 接受 `-1` 哨兵 ＋ ⭐ 音名 | ⭐ `salamander` 踏板噪声／⭐ `discord` 的 `c0` |
+⭐ ⚠ ⭐ 而 ⭐ ⭐ **`ampeg_*` 仍 ±100／⭐ `tune` ±9600／⭐ `volume` −144..48 保留** 作**对照腿** ⇒ ⭐ ⛔ **没有无差别放宽** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 语料读数同步（⭐ 它重测了）**: ⭐ `S116` ⭐ 的 include 展开档因语义变化重测 ⇒ ⭐ resolve 成功 **1301**／⭐ 失败 **97**／⭐ `parse_sources` 报错 **23**；⭐ 子串 **5233 次／363 文件**；⭐ token **1053 次／324 文件** ⇒ ⭐ 并 ⭐ **在 `control.rs` 加"⭐ 追加修订段"**（⭐ 原文未删）✓
+
+⭐ ⚠ **六、⭐ 如实（⭐ 三条）**: ⭐ ① ⭐ **没人耳听**（⭐ 音色/⭐ 循环点/⭐ 包络听感都未验）② ⭐ ⭐ **`energy` 仍不是解码证据**（⭐ 7 个 probe `frames=0` 是因为**探测固定用内存正弦、⭐ 音高 60 不覆盖那些乐器的音区**、⭐ ⛔ 不是解码失败）③ ⭐ ⚠ ⭐ ⭐ **`crates/yeban-mcp/src/domain/sfz.rs:447` 仍走 `parse_text`** ⇒ ⭐ ⭐ **MCP 的 `yeban_load_sfz` 报的 regions 仍是 0** ⇒ ⭐ **下一单**（⭐ 本单范围不含 mcp）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ ⭐ **MCP 侧接 include** ＋ ⭐ ⭐ **`export_wav` 缺 `advance`**（⭐ `#207` 发现：⭐ 离线导出引擎路径**只触发第 0 帧附近的音符**）＋ ⭐ `vcsl`／⭐ `*silence`／⭐ 5 个 probe ＋ ⭐ ⚠ **仍需人类**：⭐ 听（⭐ 现在能听的乐器从 9 个变成 **24 个**）✓
