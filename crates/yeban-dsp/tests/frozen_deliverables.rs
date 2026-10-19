@@ -18,10 +18,15 @@
 //! | 模块 | 类别 | 判定依据 | 断言形态 |
 //! | :-- | :-- | :-- | :-- |
 //! | `oversample` | **③ 我们定输入与运算** | 运行期只有查表与乘加（该文件里的 `sin`／`cos` 全在 `mod tests` 内） | **硬断言**字面摘要（IEEE 精确类） |
-//! | `compressor` | **① 上游定运算** | 运行期有 `(-1/(t·fs)).exp()` 与 `10·log10(ms)`（宿主 libm 的超越函数） | **平台感知**：冻结架构 aarch64 硬断言，其它架构**点名跳过并打印**（⚠ 跳过**不是**通过） |
-//! | `polysynth` | **①** | 其滤波级在 `configure` 里用 `tan(π·fc/fs)`（宿主 libm） | 同上 |
-//! | `drums` | **①** | 其声部滤波级同样是 `LadderFilter::configure`（`tan`） | 同上 |
-//! | `loudness` | **①** | K 加权与读数走 `log10`（宿主 libm） | 同上 |
+//! | `compressor` | **① 上游定运算** | 运行期有 `(-1/(t·fs))` 的 `exp` 与 `10·log10(ms)` —— ⭐ `#233` 起**一律走纯 Rust `libm`**（`expf`／`log10f`） | 冻结架构硬断言；其它架构**点名跳过并打印实得摘要**（⚠ 跳过**不是**通过） |
+//! | `polysynth` | **①** | 其滤波级在 `configure` 里用 `tan(π·fc/fs)` —— `#233` 起走 `libm::tanf` | 同上 |
+//! | `drums` | **①** | 其声部滤波级同样是 `LadderFilter::configure`（`tan`），定点相位正弦走 `libm::sinf` | 同上 |
+//! | `loudness` | **①** | K 加权与读数走 `log10` —— `#233` 起走 `libm::log10` | 同上 |
+//!
+//! ⭐ **`#233` 的读数变化**：在本机（macOS aarch64）实测，`tan`／`sin`／`exp`／`log10`
+//! 从宿主 libm 换成纯 Rust `libm` 之后，`polysynth`／`drums`／`wavetable` 三条摘要**都变了**
+//! （见各判据里的 `#233` 基线注），`compressor`／`loudness` 两条**没变** ——
+//! 这正是"哪些字节由超越函数决定"的机械读数，而不是推测。
 //!
 //! ⚠ **本文件不改变任何既有判据的"自比"性质** —— 自比判据作为**结构性质**（分块不变性、
 //! 幂等性）仍然有效；本文件补的是它们**缺的那一层**：交付字节的**绝对**锚点。
@@ -125,8 +130,10 @@ fn the_compressor_output_digest_is_frozen_on_the_frozen_architecture() {
 
 /// 量什么：`PolySynth` 在 **2 048 帧** A4 上的输出位型摘要。
 ///
-/// **类别 ①**：其滤波级在 `configure` 里用 `tan(π·fc/fs)`（宿主 libm）
-/// ⇒ 平台感知。
+/// **类别 ①**：其滤波级在 `configure` 里用 `tan(π·fc/fs)` —— `#233` 起走
+/// `libm::tanf`（纯 Rust）⇒ 值本身跨平台唯一；断言形态仍按裁决 R24 只在冻结架构硬比对。
+///
+/// ⭐ **#233 基线**：`0x2aea_c93d_99c5_72f5`（宿主 `tan`）→ `0x3e4f_73fc_57d0_ee9d`（`libm::tanf`）。
 #[test]
 fn the_polysynth_output_digest_is_frozen_on_the_frozen_architecture() {
     /// 观测帧数。
@@ -139,13 +146,15 @@ fn the_polysynth_output_digest_is_frozen_on_the_frozen_architecture() {
     synth.render(&tables, 0, &mut out);
     let digest = fnv1a64(&out);
     assert_ne!(digest, 0, "夹具必须真的产生输出");
-    assert_frozen("polysynth", digest, 0x2aea_c93d_99c5_72f5, FRAMES);
+    assert_frozen("polysynth", digest, 0x3e4f_73fc_57d0_ee9d, FRAMES);
 }
 
 /// 量什么：`DrumMachine` 触发一次底鼓后 **2 048 帧**的输出位型摘要。
 ///
-/// **类别 ①**：鼓声部的滤波级同样是 `LadderFilter::configure`（`tan`，宿主 libm）
-/// ⇒ 平台感知。
+/// **类别 ①**：鼓声部的滤波级同样是 `LadderFilter::configure`（`tan`），
+/// 定点相位正弦走 `libm::sinf` —— `#233` 起两者都是纯 Rust。
+///
+/// ⭐ **#233 基线**：`0x04fb_663a_9c48_0348`（宿主）→ `0x65a8_a514_8b40_c651`（`libm`）。
 #[test]
 fn the_drum_machine_output_digest_is_frozen_on_the_frozen_architecture() {
     /// 观测帧数。
@@ -157,7 +166,7 @@ fn the_drum_machine_output_digest_is_frozen_on_the_frozen_architecture() {
     machine.render(0, &mut out);
     let digest = fnv1a64(&out);
     assert_ne!(digest, 0, "夹具必须真的产生输出");
-    assert_frozen("drums", digest, 0x04fb_663a_9c48_0348, FRAMES);
+    assert_frozen("drums", digest, 0x65a8_a514_8b40_c651, FRAMES);
 }
 
 /// 量什么：`GatedLoudness` 在 **8 192 帧**确定序列上的两个读数（`momentary_lufs`、
@@ -197,6 +206,10 @@ fn the_gated_loudness_digest_is_frozen_on_the_frozen_architecture() {
 /// ⇒ 改为平台感知：冻结架构硬断言，其它架构**点名跳过并打印**（跳过不是通过）。
 ///
 /// （同批的 `oversample` 硬断言**通过了**两个平台 ⇒ 那个"类别 ③"的判定成立。）
+///
+/// ⭐ **`#233` 的收口**：`render_level` 的 `phase.sin()` 改走 `libm::sinf`（纯 Rust）
+/// ⇒ 表值现在由纯 Rust 决定，跨平台唯一。⭐ **#233 基线**：
+/// `0x3ece_b129_9f3a_6006`（宿主 `sin`，三平台三值）→ `0xd5a4_3e09_109f_a224`（`libm::sinf`）。
 #[test]
 fn the_factory_wavetable_digest_is_frozen_on_the_frozen_architecture() {
     let table = Wavetable::from_recipe(HOLLOW);
@@ -209,7 +222,7 @@ fn the_factory_wavetable_digest_is_frozen_on_the_frozen_architecture() {
     assert_frozen(
         "wavetable",
         digest,
-        0x3ece_b129_9f3a_6006,
+        0xd5a4_3e09_109f_a224,
         table.level_count(),
     );
 }

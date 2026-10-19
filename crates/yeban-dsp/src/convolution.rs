@@ -306,8 +306,8 @@ impl Convolution {
             self.tw_im = Vec::with_capacity(half);
             for k in 0..half {
                 let angle = -core::f32::consts::TAU * k as f32 / CONV_FFT_FRAMES as f32;
-                self.tw_re.push(angle.cos());
-                self.tw_im.push(angle.sin());
+                self.tw_re.push(libm::cosf(angle));
+                self.tw_im.push(libm::sinf(angle));
             }
         }
 

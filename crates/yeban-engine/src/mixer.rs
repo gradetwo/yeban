@@ -196,14 +196,14 @@ pub fn pan_gains(pan: f32, law: PanLaw) -> (f32, f32) {
     // θ = (pan + 1) · π/4：pan = -1 ⇒ 0（全左），pan = 0 ⇒ π/4（居中），pan = +1 ⇒ π/2（全右）。
     let angle = (clamped + 1.0) * core::f32::consts::FRAC_PI_4;
     match law {
-        PanLaw::ConstantPowerMinus3dB => (angle.cos(), angle.sin()),
+        PanLaw::ConstantPowerMinus3dB => (libm::cosf(angle), libm::sinf(angle)),
         // ⚠ 未实现：缺"居中给 (0.5, 0.5)（−6.02 dB）还是 (1, 1)（不衰减）"的定义。
         // 回落到**默认律的曲线**（而不是 line 之前的等增益复制 —— 那会涨 3 dB）。
-        PanLaw::Linear => (angle.cos(), angle.sin()),
+        PanLaw::Linear => (libm::cosf(angle), libm::sinf(angle)),
         // ⚠ 未实现：缺"−4.5 dB 指居中额外衰减，还是另一族曲线"的定义。
-        PanLaw::ConstantPowerMinus4_5dB => (angle.cos(), angle.sin()),
+        PanLaw::ConstantPowerMinus4_5dB => (libm::cosf(angle), libm::sinf(angle)),
         // ⚠ 未实现：同上（若指居中衰减 ⇒ 居中 `(0.5, 0.5)`）。
-        PanLaw::ConstantPowerMinus6dB => (angle.cos(), angle.sin()),
+        PanLaw::ConstantPowerMinus6dB => (libm::cosf(angle), libm::sinf(angle)),
     }
 }
 
@@ -278,7 +278,7 @@ pub fn crossfade_gains(t: f32) -> (f32, f32) {
         0.0
     };
     let angle = clamped * core::f32::consts::FRAC_PI_2;
-    (angle.cos(), angle.sin())
+    (libm::cosf(angle), libm::sinf(angle))
 }
 
 #[cfg(test)]

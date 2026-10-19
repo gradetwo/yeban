@@ -14,6 +14,11 @@
 //! - 来源的 `exp2` 只是 `x.exp2()` 的别名（为 wasm 无 libm 构建服务）。
 //!   夜半不是 `no_std`，因此保留它作为**语义命名**（音高换算全部以 2 的幂表达），
 //!   但让它做参数钳制，避免 `NaN` 静默传播。
+//! - ⭐ **本模块的超越函数一律走纯 Rust `libm`**（`libm::exp2f` / `libm::log2f` /
+//!   `libm::expf` / `libm::sin` / `libm::cos`），⛔ 不再调用宿主 `f32::exp2`
+//!   之类 [ARCH-DET-001]：宿主实现随平台而变 ⇒ 同一输入的增益/表值逐位不同 ⇒
+//!   导出的 PCM 不可复现（任务单 `#233`）。`sqrt` 不在其列 —— IEEE 754 要求它
+//!   **正确舍入**，各平台逐位相同。
 //! - 新增 [`db_to_gain`] / [`gain_to_db`]：来源把 dB 换算散落在 `fx_shaping.rs`
 //!   与 `engine` 里，夜半把它收敛成一处，并钉死"0 dB = 1.0、−∞ dB = 0.0"。
 
@@ -26,7 +31,7 @@ use crate::MIN_SAMPLE_RATE;
 #[inline]
 #[must_use]
 pub fn exp2(x: f32) -> f32 {
-    let value = x.exp2();
+    let value = libm::exp2f(x);
     if value.is_finite() { value } else { 0.0 }
 }
 
@@ -66,7 +71,7 @@ pub fn gain_to_db(gain: f32) -> f32 {
     if gain <= 0.0 {
         f32::NEG_INFINITY
     } else {
-        DB_PER_OCTAVE * gain.log2()
+        DB_PER_OCTAVE * libm::log2f(gain)
     }
 }
 
@@ -95,7 +100,7 @@ pub fn soft_limit(x: f32) -> f32 {
         return x;
     }
     let over = (magnitude - KNEE) / (1.0 - KNEE);
-    let shaped = KNEE + (1.0 - KNEE) * (1.0 - (-over).exp());
+    let shaped = KNEE + (1.0 - KNEE) * (1.0 - libm::expf(-over));
     if shaped >= 1.0 {
         x.signum()
     } else {
@@ -196,7 +201,7 @@ pub fn fft(re: &mut [f64], im: &mut [f64], inverse: bool) {
     while half < n {
         let span = half * 2;
         let angle = core::f64::consts::TAU / span as f64 * if inverse { 1.0 } else { -1.0 };
-        let (twiddle_re, twiddle_im) = (angle.cos(), angle.sin());
+        let (twiddle_re, twiddle_im) = (libm::cos(angle), libm::sin(angle));
         let mut base = 0usize;
         while base < n {
             let (mut wr, mut wi) = (1.0f64, 0.0f64);

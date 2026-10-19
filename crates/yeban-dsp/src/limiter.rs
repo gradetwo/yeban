@@ -466,7 +466,8 @@ fn soft_knee(sample: f32) -> f32 {
     // `LIMITER_THRESHOLD` 本身。**不要**用 `1e-6` 之类的小量做保护 ——
     // 那会在阈值处引入一个 1e-6 量级的下陷（实测：`soft_knee(0.9) == 0.89999986`），
     // 让函数在边界上不单调，而判据 `>` 与 `<=` 在同一处断言时就会互相打架。
-    let shaped = LIMITER_THRESHOLD + knee * (1.0 - (-(magnitude - LIMITER_THRESHOLD) / knee).exp());
+    let shaped =
+        LIMITER_THRESHOLD + knee * (1.0 - libm::expf(-(magnitude - LIMITER_THRESHOLD) / knee));
     shaped.copysign(sample)
 }
 

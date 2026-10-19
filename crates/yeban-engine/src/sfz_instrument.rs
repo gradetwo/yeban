@@ -1803,7 +1803,7 @@ impl InMemorySample {
         let pcm = (0..frames)
             .map(|index| {
                 let phase = core::f32::consts::TAU * freq_hz * (index as f32) / sample_hz;
-                phase.sin() * 0.5
+                libm::sinf(phase) * 0.5
             })
             .collect();
         Self { pcm, sample_hz }
@@ -4546,7 +4546,7 @@ impl FadeRamp {
         if frames == 0 {
             return Self::NONE;
         }
-        let decay = f64::from(STEAL_FADE_FLOOR).powf(1.0 / f64::from(frames)) as f32;
+        let decay = libm::pow(f64::from(STEAL_FADE_FLOOR), 1.0 / f64::from(frames)) as f32;
         Self {
             fading: true,
             remaining: frames,

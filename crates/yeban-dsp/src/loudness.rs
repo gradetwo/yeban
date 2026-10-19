@@ -407,7 +407,7 @@ impl LoudnessMeter {
 #[must_use]
 fn lufs_f64(mean_square: f64) -> f64 {
     if mean_square > 0.0 {
-        LUFS_OFFSET_DB + 10.0 * mean_square.log10()
+        LUFS_OFFSET_DB + 10.0 * libm::log10(mean_square)
     } else {
         f64::NEG_INFINITY
     }

@@ -173,8 +173,12 @@
 //!
 //! | 夹具 | 帧数 | 非零样本 | 峰值 | 指纹（FNV-1a 64，逐位） |
 //! | :--- | :--- | :--- | :--- | :--- |
-//! | 两个音符、无设备链 | 2560 | 5052 | 0.5478619 | `0x71dca4dc55b44df5` |
+//! | 两个音符、无设备链 | 2560 | 5052 | 0.5478619 | `0x990c72e1fcce091d` |
 //! | 两个音符、`cutoff_hz = 800` / `resonance = 0.3` | 2560 | 5052 | 0.32756245 | `0x6eee378072730521` |
+//!
+//! ⭐ **`#233` 基线更新**：哨兵正弦/滤波 `tan` 从宿主 libm 改为纯 Rust `libm`
+//! ⇒ 第一行由 `0x71dca4dc55b44df5` 变为 `0x990c72e1fcce091d`（第二行 `0x6eee378072730521`
+//! 不变：它只受 `tan` 影响，而 `tan` 在这批输入上与宿主同值）。
 //!
 //! ⚠ 这两个字面值**不是**规范常数，而是本机 libm/LLVM 的一次实现读数：它们的作用是
 //! **跨提交对账**（接线前 vs 接线后同一个夹具给出同一个数），⛔ 不是"跨架构必须相等"
@@ -216,7 +220,10 @@ use yeban_sfz::CcGate;
 /// ⭐ 步 2 **实测**（本机 `aarch64/macos`、HEAD `6ae70ef8` 的 `prepare` 广播路径）：
 /// span-free 夹具 [`TWO_MATCH_ONE_MISS`] 在 `(60, 127)`、512 帧上的 FNV-1a 指纹。
 /// ⚠ 它的作用是**跨提交对账**（步 2 vs 步 3 的同一条广播路径逐位不变），⛔ 不是规范常数。
-const BROADCAST_STEP2_FINGERPRINT: u64 = 0xa933_ddab_286b_df5e;
+///
+/// ⭐ **`#233` 基线**：`0xa933_ddab_286b_df5e`（宿主 `sin` 造的内存样本）→
+/// `0xb030_1cef_3046_6c00`（`InMemorySample::sine` 改走 `libm::sinf`）。
+const BROADCAST_STEP2_FINGERPRINT: u64 = 0xb030_1cef_3046_6c00;
 
 /// ⭐ **改动前实测**（任务 `#91` 的 §4.4）：既有夹具 [`TWO_MATCH_ONE_MISS`]（**不带任何
 /// `loop_*`**）经 `render_track` **实时路径**渲染 512 帧 @ `(60,127)` 的 FNV-1a 指纹。
@@ -225,7 +232,9 @@ const BROADCAST_STEP2_FINGERPRINT: u64 = 0xa933_ddab_286b_df5e;
 /// 的文档：在 HEAD `5ac570eb`、**工作树干净**时用一次性探针测得，探针随后删除。
 /// ⚠ 与 [`BROADCAST_STEP2_FINGERPRINT`]（摊平路径）同值 —— 两条独立来路的交叉印证
 /// （`S1` 曾把"引擎逐样本 == 摊平逐样本"钉成 `max|Δ| = 0`）。
-const NO_LOOP_FIXTURE_FINGERPRINT: u64 = 0xa933_ddab_286b_df5e;
+///
+/// ⭐ **`#233` 基线**：与上面同一次变化（同一个正弦样本源）。
+const NO_LOOP_FIXTURE_FINGERPRINT: u64 = 0xb030_1cef_3046_6c00;
 
 /// FNV-1a 64（逐位；把每个 `f32` 的 4 个字节按小端卷进哈希）。
 fn fnv1a_64(samples: &[f32]) -> u64 {
@@ -267,9 +276,9 @@ const E2E_SFZ: &str = "<region> sample=a.wav key=60 pitch_keycenter=60\n\
 const SFZ_QUANTA: usize = 20;
 
 /// **接线前**实测：无设备链（见模块头）。
-const BASELINE_PLAIN: u64 = 8_204_613_887_399_841_269;
+const BASELINE_PLAIN: u64 = 11_028_315_902_458_071_325;
 /// **接线前**实测：`cutoff_hz = 800` / `resonance = 0.3`（见模块头）。
-const BASELINE_TUNED: u64 = 7_993_387_413_444_691_233;
+const BASELINE_TUNED: u64 = 13_417_093_981_089_486_633;
 
 /// 指纹的**测量平台**（`[ARCH-DET-001]` 的 L1 只承诺"相同 OS ＋ CPU 架构 ＋
 /// 纯 Rust libm"下的逐位一致）。
@@ -9843,7 +9852,7 @@ fn s99_the_direction_reverse_legs_the_alternate_leg_and_the_three_fingerprints()
         nonzero_frames(&rendered)
     );
     assert_eq!(nonzero_frames(&rendered), 478, "S33 的非零帧数");
-    check_fingerprint("S33／S14 广播路径", fp3, 0xa933_ddab_286b_df5e);
+    check_fingerprint("S33／S14 广播路径", fp3, BROADCAST_STEP2_FINGERPRINT);
 }
 
 // ---------------------------------------------------------------------------

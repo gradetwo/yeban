@@ -333,7 +333,7 @@ fn render_level(recipe: WaveRecipe, len: usize, top: u32) -> Vec<f32> {
         }
         for (index, value) in out.iter_mut().enumerate() {
             let phase = core::f32::consts::TAU * (*harmonic as f32) * index as f32 / len as f32;
-            *value += amplitude * phase.sin();
+            *value += amplitude * libm::sinf(phase);
         }
     }
     for value in out.iter() {
@@ -405,7 +405,7 @@ impl Lfo {
     #[must_use]
     pub fn shape(wave: LfoWave, phase: f32) -> f32 {
         match wave {
-            LfoWave::Sine => (phase * core::f32::consts::TAU).sin(),
+            LfoWave::Sine => libm::sinf(phase * core::f32::consts::TAU),
             LfoWave::Triangle => {
                 if phase < 0.25 {
                     phase * 4.0
@@ -621,6 +621,55 @@ mod tests {
     }
 
     // ---------------------------------------------------------------- 波表
+
+    /// **判据（新写，可红）**：工厂波表的表值**由纯 Rust `libm::sinf` 决定**，且
+    /// **同一输入连算两次逐位相同**（任务单 `#233`）。
+    ///
+    /// 量什么：`HOLLOW` 第 1 级的 `BASE_LEN` 个 `f32` 位型，与一份**独立参照**
+    /// （在判据里用 `libm::sinf` 逐谐波重算、同一峰值归一化）逐项比较。
+    ///
+    /// 为什么这不是自比：两条路径的**唯一**共同输入是配方与级号；参照实现**不调用**
+    /// `render_level`。若把 `render_level` 换回宿主 `phase.sin()`，本判据立刻红 ——
+    /// ⭐ 本机（macOS aarch64）注入实测就红：第 16 项 `got 0.31091365 / want 0.31091362`
+    /// （宿主 `sin` 与纯 Rust `sinf` 差 1 ulp），⛔ 不是"只有别的平台才看得出来"。
+    #[test]
+    fn the_wavetable_is_built_by_pure_rust_libm_bit_for_bit() {
+        let level = 1usize;
+        let top = level_top(level);
+        let first = render_level(HOLLOW, BASE_LEN, top);
+        let second = render_level(HOLLOW, BASE_LEN, top);
+        for (index, (a, b)) in first.iter().zip(second.iter()).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "第 {index} 项连算两次不一致");
+        }
+
+        // 独立参照：同一公式，但超越函数**只**走 `libm::sinf`。
+        let mut reference = vec![0.0f32; BASE_LEN];
+        for (harmonic, amplitude) in HOLLOW.iter() {
+            if *harmonic > top {
+                continue;
+            }
+            for (index, value) in reference.iter_mut().enumerate() {
+                let phase =
+                    core::f32::consts::TAU * (*harmonic as f32) * index as f32 / BASE_LEN as f32;
+                *value += amplitude * libm::sinf(phase);
+            }
+        }
+        let peak = reference.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        if peak > 0.0 {
+            let gain = 1.0 / peak;
+            for value in reference.iter_mut() {
+                *value *= gain;
+            }
+        }
+        assert_eq!(first.len(), reference.len(), "参照与产线的表长不一致");
+        for (index, (got, want)) in first.iter().zip(reference.iter()).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "第 {index} 项与 libm::sinf 参照不一致（got {got:?} / want {want:?}）"
+            );
+        }
+    }
 
     /// 高于某频率的能量，用对该级自身的直接 DFT 测量。
     fn energy_above(table: &[f32], hz_above: f32, sample_rate: f32) -> f32 {

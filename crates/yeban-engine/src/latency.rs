@@ -993,14 +993,14 @@ pub fn loopback_chirp(sample_rate_hz: u32, chirp_ms: f64) -> Vec<f32> {
         let t = index as f64 / rate;
         let phase = std::f64::consts::TAU
             * (LOOPBACK_CHIRP_START_HZ * t + sweep * t * t / (2.0 * total / rate));
-        let mut value = phase.sin() as f32;
+        let mut value = libm::sin(phase) as f32;
         if index < fade {
-            let ramp = 0.5 - 0.5 * (std::f64::consts::PI * index as f64 / fade as f64).cos();
+            let ramp = 0.5 - 0.5 * libm::cos(std::f64::consts::PI * index as f64 / fade as f64);
             value *= ramp as f32;
         }
         if index + fade >= length {
             let tail = (length - 1 - index) as f64 / fade as f64;
-            let ramp = 0.5 - 0.5 * (std::f64::consts::PI * tail).cos();
+            let ramp = 0.5 - 0.5 * libm::cos(std::f64::consts::PI * tail);
             value *= ramp as f32;
         }
         samples.push(value);

@@ -32,9 +32,9 @@ src/meter.rs|2018|literal|.is_sane|by_design|前后缀分类器（starts_with/en
 src/noise.rs|313|variable|&hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/noise.rs|384|variable|&x|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/noise.rs|397|variable|&unit|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/oscillator.rs|1081|variable|&oscillator.phase(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/oscillator.rs|1152|variable|&v|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
-src/oscillator.rs|1217|variable|&value|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/oscillator.rs|1130|variable|&oscillator.phase(|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/oscillator.rs|1201|variable|&v|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
+src/oscillator.rs|1266|variable|&value|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/polysynth.rs|1391|variable||voice| voice.active && voice.freq_hz == freq_hz|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/polysynth.rs|1764|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点
 src/polysynth.rs|1829|variable||index| {|variable_needle|needle 非字面量：本表只分类，⛔ 不判孪生点

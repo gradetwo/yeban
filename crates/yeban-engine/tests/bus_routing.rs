@@ -11,11 +11,15 @@
 //! | R4 | 多总线：两条轨分别送两条 aux，两条 aux→master 的增益分别 0.5/0.25 ⇒ 左/右峰值比 **2×** | 只支持一条总线 / 串错目的地 |
 //! | R5 | 路由计划本身：发送边的目的地与线性增益、默认直连、拓扑序 | 计划构造漏边 / 默认项缺失 |
 //!
-//! 基线（改动前、同一夹具、同一量子数）：`sha256 = 9ca8bdcd…8065e0`、
+//! 基线（`#169` 时代、同一夹具、同一量子数）：`sha256 = 9ca8bdcd…8065e0`、
 //! `FNV-1a 64 = 0x39d201894a7a3dfd` —— 这两个都是 **`aarch64`/macOS** 的读数，
 //! 在 `4ed3adf3` 上逐字复现。⭐ `#169` 的取证：同一份代码在 `x86_64` 上不是这两个数，
 //! 且 Linux（glibc）与 Windows（ucrt）**彼此也不同**（宿主 libm 的最后一位）
-//! ⇒ 指纹按平台钉，见 [`existing_mix_fnv`]；与平台无关的那条判据在 R1b。
+//! ⇒ 那时指纹只能按平台钉。
+//!
+//! ⭐ **`#233` 收口**：那些宿主 libm 调用点（`pan_gains` 的 `cos`/`sin`、波表的 `sin`、
+//! `math` 的 `exp2`/`log2`）已全部改为纯 Rust `libm` ⇒ 指纹**不再按平台分叉**，
+//! 见 [`existing_mix_fnv`] 与 [`EXISTING_MIX_SHA256`]。
 //!
 //! ⚠ **本片（`#154`）不证明**"aux 上能听到混响"：那时总线上还没有效果器调用点
 //! （报告 §7）。本片证明的是"信号真的被搬到了那条总线上"。⭐ **`#158` 已把那条
@@ -35,11 +39,11 @@ use yeban_model::{
     RoutingGraph, RoutingKind, TrackKind, TrackV3, YebanProjectV1,
 };
 
-/// 既有混音夹具在**改动前**实测的 FNV-1a 64（逐位指纹）—— **按平台**各钉一个读数。
+/// 既有混音夹具的逐位指纹 —— ⭐ **`#233` 之后只剩一个值**。
 ///
-/// ## 为什么不是一个常数（`#169` 的取证，⭐ 推翻了"`#161` 让基线过期"的假设）
+/// ## 历史：`#169` 的三平台三值（保留作证据，⛔ 不再是断言口径）
 ///
-/// 渲染链路里仍有**宿主 libm** 调用：[`yeban_engine::mixer::pan_gains`] 的 `cos`/`sin`、
+/// 渲染链路里曾有**宿主 libm** 调用：[`yeban_engine::mixer::pan_gains`] 的 `cos`/`sin`、
 /// `yeban_dsp::oscillator` 的波表 `sin`、`yeban_dsp::math` 的 `exp2`/`log2`。
 /// 它们的最后一位随宿主 libm 实现而变 —— 正是 [ARCH-DET-001] 想禁用的那一类。
 /// **同一份代码**（`4ed3adf3`）三档实测：
@@ -50,37 +54,21 @@ use yeban_model::{
 /// | `x86_64` / Linux（glibc） | `0xc3cd006ff3a94365` | run `39067449297`（`4ed3adf3`）＝ `14108933688450958181`；run `39039576568`（`fd33ff0f`）同值 |
 /// | `x86_64` / Windows（ucrt） | `0xca85e11740967fad` | run `39067449297`（`4ed3adf3`）＝ `14593317657548062637`；run `39039576568`（`fd33ff0f`）同值 |
 ///
-/// 三档的 `peak` **逐位相同**（`0.9000465`）⇒ 差异只落在最低位，**不是**路由或增益变化。
-/// ⚠ Linux 与 Windows **不是同一个值** ⇒ 一个常数在三档里必然有两档红，
-/// "重钉一个数"在这三档上不可能同时成立（`#169` 的核心读数）。
+/// ## `#233` 之后
 ///
-/// ⚠ 这条红**早于 `#161`**：`#154` 自己的 CI（`fd33ff0f`，run `39039576568`）在
-/// Linux/Windows 两腿就红了；而 `#161` 只改 `samples::default_project()`，
-/// 本文件的夹具是 [`build_project`] **自造**的（`..YebanProjectV1::default()` ＋ 显式
-/// 轨/节点/边），**从不调用**那个样本 ⇒ `#161` 不可能改变这里的一个样本。
-///
-/// 未实测的平台返回 `None` ⇒ 只跑**与平台无关**的那两条（默认路径 == 显式单位直连、
-/// 峰值容差），并打印本机读数（与 `crates/yeban-render/tests/l1_digest_parity.rs`
-/// 的"未测平台 SKIP"同一口径）。
+/// 上面三处宿主调用已改为纯 Rust `libm`（`libm::cosf`/`sinf`、`libm::sinf`、
+/// `libm::exp2f`/`log2f`）⇒ **一个常数对三档都成立**。本机（macOS aarch64）实测
+/// `0x28f6507e83c45b3d`；⭐ 下一轮 CI 的 Linux/Windows 腿必须读出**同一个值**，
+/// 若不同 ⇒ 链路上还有**别的宿主依赖**（是本判据要抓的真缺陷，不是本文件的错）。
 const fn existing_mix_fnv() -> Option<u64> {
-    if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
-        Some(0x39d2_0189_4a7a_3dfd)
-    } else if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
-        Some(0xc3cd_006f_f3a9_4365)
-    } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
-        Some(0xca85_e117_4096_7fad)
-    } else {
-        None
-    }
+    Some(0x28f6_507e_83c4_5b3d)
 }
 
-/// 既有混音夹具在**改动前**实测的 `sha256`（外部 `shasum -a 256` 对原始 `f32` 字节，
+/// 既有混音夹具在 **`#233` 之前**实测的 `sha256`（外部 `shasum -a 256` 对原始 `f32` 字节，
 /// 布局为 `left` 全部在前、`right` 全部在后，各 61 440 字节）。
 ///
-/// ⚠ 这个值与 [`existing_mix_fnv`] 一样是**平台读数**（它就是对同一批样本做的哈希）：
-/// 本轮在 `aarch64`/macOS 上对 HEAD 重算，逐字复现 `9ca8bdcd…8065e0`
-/// ⇒ `#154` 的这一档**没有**陈旧（`#158`/`#161` 都没碰到默认路径）。
-/// x86_64 上不是这个数（同一根因）⇒ 本文件**只打印、不断言**它；断言的是指纹。
+/// ⚠ 这是 `#169` 时代 **`aarch64`/macOS** 的历史锚（`#233` 改了波表 `sin` 之后这个
+/// 字节序列已不同）⇒ 本文件**只打印、不断言**它：断言的是指纹 [`existing_mix_fnv`]。
 const EXISTING_MIX_SHA256: &str =
     "9ca8bdcdb48409257d05609630ca975012fe0cf7d33d1aa83f49ec00818065e0";
 
@@ -327,7 +315,7 @@ fn r1b_existing_mix_fixture_matches_the_pre_change_baseline() {
         assert_eq!(
             out.fingerprint(),
             expected,
-            "既有混音夹具的逐位指纹必须等于本平台的改动前基线（sha256 {EXISTING_MIX_SHA256} 是 aarch64/macOS 的读数）"
+            "既有混音夹具的逐位指纹必须等于 `#233` 之后的单值基线（三平台应当相同）"
         );
     }
 }

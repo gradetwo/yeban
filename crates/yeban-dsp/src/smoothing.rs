@@ -227,7 +227,7 @@ impl ParamSmoother {
             return;
         }
         let samples = self.time_constant_s * self.sample_rate;
-        let alpha = (-1.0 / samples).exp();
+        let alpha = libm::expf(-1.0 / samples);
         // 极端参数（τ 极短或 fs 极低）下 α 可能舍入到 1，那会让平滑器永久卡住。
         self.alpha = alpha.clamp(0.0, 1.0 - f32::EPSILON);
     }

@@ -232,8 +232,8 @@ impl BitCrusher {
         // 抗混叠转折在抽取后的 Nyquist；插值转折略低一点，
         // 那是单极点给不出的额外阻带衰减。
         let decimated = sample_rate / down;
-        let pre_coeff = (1.0 - (-TAU * 0.45 * decimated / sample_rate).exp()).clamp(0.0, 1.0);
-        let post_coeff = (1.0 - (-TAU * 0.30 * decimated / sample_rate).exp()).clamp(0.0, 1.0);
+        let pre_coeff = (1.0 - libm::expf(-TAU * 0.45 * decimated / sample_rate)).clamp(0.0, 1.0);
+        let post_coeff = (1.0 - libm::expf(-TAU * 0.30 * decimated / sample_rate)).clamp(0.0, 1.0);
         for i in 0..frames {
             // 入口守卫见模块文档"非有限输入样本"一节。有限样本逐位不变。
             let raw = [finite_or_zero(in_l[i]), finite_or_zero(in_r[i])];
@@ -603,7 +603,7 @@ impl Default for TransientShaper {
 /// 转折频率 `hz` 处的单极点系数。
 #[inline]
 fn one_pole(hz: f32, sample_rate: f32) -> f32 {
-    (1.0 - (-TAU * hz / sample_rate).exp()).clamp(0.0, 1.0)
+    (1.0 - libm::expf(-TAU * hz / sample_rate)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

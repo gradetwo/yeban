@@ -38,7 +38,7 @@ pub fn raised_cosine(index: usize) -> f32 {
     let last = LOOP_WINDOW_LEN - 1;
     let position = index.min(last) as f32 / last as f32;
     let angle = core::f32::consts::PI * position;
-    0.5 * (1.0 - angle.cos())
+    0.5 * (1.0 - libm::cosf(angle))
 }
 
 /// 64 点升余弦循环微平滑窗（值在构造期算好，之后只读）。

@@ -114,7 +114,7 @@ impl LadderFilter {
         } else {
             20.0
         };
-        let w = (core::f32::consts::PI * cutoff_hz / sample_rate).tan();
+        let w = libm::tanf(core::f32::consts::PI * cutoff_hz / sample_rate);
         self.coeff = (w / (1.0 + w)).clamp(0.0, 0.999_99);
         self.feedback = if resonance.is_finite() {
             resonance.clamp(0.0, 1.0) * 3.9

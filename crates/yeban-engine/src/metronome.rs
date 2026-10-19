@@ -114,7 +114,7 @@ impl ClickWave {
             let t = index as f32 / span;
             let envelope = (1.0 - t) * (1.0 - t);
             let phase = core::f32::consts::TAU * CLICK_HZ * index as f32 / sample_rate as f32;
-            *sample = phase.sin() * envelope;
+            *sample = libm::sinf(phase) * envelope;
             peak = peak.max(sample.abs());
         }
         if peak > 0.0 {

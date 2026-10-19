@@ -125,7 +125,7 @@ const HALF_PHASE: u32 = 0x8000_0000;
 #[must_use]
 pub(super) fn sine_from_phase(phase: u32) -> f32 {
     let turns = (phase >> 8) as f32 * (1.0 / TWO_POW_24);
-    (turns * core::f32::consts::TAU).sin()
+    libm::sinf(turns * core::f32::consts::TAU)
 }
 
 /// 频率 → 相位增量（`2³²` 定标，`f32`）。

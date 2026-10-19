@@ -93,7 +93,7 @@ pub fn sanitize_sample(sample: f32) -> f32 {
 #[must_use]
 pub fn dbfs(amplitude: f32) -> f32 {
     if amplitude > 0.0 {
-        20.0 * amplitude.log10()
+        20.0 * libm::log10f(amplitude)
     } else {
         f32::NEG_INFINITY
     }
@@ -270,9 +270,9 @@ impl LevelDetector {
             1.0 / qps
         };
         // 1 秒后的幅度乘子 = 10^(-decay/20) ⇒ 每量子乘子取 qps 次根。
-        self.peak_release = 10f32.powf(-decay / 20.0 / qps).clamp(0.0, 1.0);
+        self.peak_release = libm::powf(10.0, -decay / 20.0 / qps).clamp(0.0, 1.0);
         // 一阶低通：y ← c·y + (1-c)·x，c = exp(-1/(τ·qps))。
-        self.rms_coeff = (-1.0 / (tau * qps)).exp().clamp(0.0, 1.0);
+        self.rms_coeff = libm::expf(-1.0 / (tau * qps)).clamp(0.0, 1.0);
     }
 
     /// 按 `sample_rate / block_frames` 重设弹道（沿用默认 dB/s 与 τ）。
@@ -2171,7 +2171,10 @@ mod tests {
             ("tau.at_tau.rms_smoothed", 0x3ecbcc41),
             ("tau.at_tau.peak_dbfs", 0xc0c0a8c2),
             ("tau.at_tau.peak_hold_dbfs", 0xc0c0a8c2),
-            ("tau.at_tau.rms_dbfs", 0xc10005c3),
+            // ⭐ `#233`：`dbfs` 的 `log10` 改走纯 Rust `libm::log10f` ⇒ 这一项从
+            // "宿主 libm 的 1 ulp 漂移"变成**跨平台唯一值**。旧值 `0xc10005c3`
+            // 是 macOS 宿主 `log10` 的读数；纯 Rust 给出 `0xc10005c2`（低 1 ulp）。
+            ("tau.at_tau.rms_dbfs", 0xc10005c2),
             ("tau.at_tau.is_sane", 0x3f800000),
             ("tau.steady.peak", 0x3f000000),
             ("tau.steady.peak_hold", 0x3f000000),

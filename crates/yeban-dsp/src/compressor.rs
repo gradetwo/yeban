@@ -443,7 +443,7 @@ fn one_pole_alpha(time_s: f32, sample_rate: f32) -> f32 {
     } else {
         MIN_TIME_S
     };
-    1.0 - (-1.0 / (time_s * sample_rate)).exp()
+    1.0 - libm::expf(-1.0 / (time_s * sample_rate))
 }
 
 /// [`one_pole_alpha`] 的**纯 Rust 参照实现**，只用于判据（不在实时路径上）。
