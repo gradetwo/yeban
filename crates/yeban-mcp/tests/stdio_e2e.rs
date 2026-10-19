@@ -498,6 +498,119 @@ fn a_new_project_can_be_created_over_stdio_and_reaches_a_rendered_master() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// ⭐ `#241`（stdio 腿）：**真二进制**打开一份带循环的容器工程，`yeban_render_master`
+/// 导出的帧数必须是"关循环"那一份的 **N=2 倍**，且 `unsupported` 不含
+/// `clipLoopRepetition`。
+///
+/// 夹具 = `yeban_model::samples::filled_project()`（128 BPM / 960 PPQ / 48 kHz）：
+/// Lead 的摆放 `0..3840`，循环区间 `0..3840`（恰好覆盖 ⇒ 单遍）。判据只把
+/// **长度**改成 `0..7680`（循环终点仍是 3840）⇒ 循环区间重复 2 遍 ⇒ 母带
+/// `90000` 帧 → `180000` 帧。两边的 Lead `sources[].notes` 也必须恰好 2 倍
+/// （证明是"复制音符"而不是"把缓冲撑长"）。
+#[test]
+fn a_looping_container_project_renders_n_times_over_stdio() {
+    let dir = scratch().join(format!("loop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("建 scratch 子目录");
+    let write = |name: &str, duration_ticks: u64| {
+        let mut project = yeban_model::samples::filled_project();
+        let lead = project
+            .tracks
+            .values_mut()
+            .find(|track| track.name == "Lead")
+            .expect("filled_project 有 Lead 轨");
+        let placement = lead.clips.values_mut().next().expect("Lead 有摆放");
+        placement.duration_ticks = duration_ticks;
+        let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+            .into_iter()
+            .collect();
+        let history = serde_json::to_vec(&CommitGraph::new()).expect("空图谱 JSON");
+        let bytes = write_project_container(&project, &history, &assets).expect("写真容器");
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("写容器工程");
+        path
+    };
+    let render = |path: &std::path::Path, out_name: &str| {
+        let out = dir.join(out_name);
+        let res = session(&[
+            req(
+                1,
+                "tools/call",
+                serde_json::json!({
+                    "name": "yeban_open_project",
+                    "arguments": {"path": path.display().to_string()},
+                }),
+            ),
+            req(
+                2,
+                "tools/call",
+                serde_json::json!({
+                    "name": "yeban_render_master",
+                    "arguments": {"format": "wav", "sampleRate": 48000,
+                                  "path": out.display().to_string()},
+                }),
+            ),
+        ]);
+        assert_eq!(res.len(), 2, "{res:?}");
+        assert_eq!(
+            res[0]["result"]["status"], "success",
+            "打开容器工程必须成功: {}",
+            res[0]
+        );
+        assert_eq!(
+            res[1]["result"]["status"], "success",
+            "渲染必须成功: {}",
+            res[1]
+        );
+        assert!(out.exists(), "母带必须真的落盘: {}", out.display());
+        res[1]["result"]["data"].clone()
+    };
+
+    let plain = write("plain.yeban", 3_840);
+    let looping = write("looping.yeban", 7_680);
+    let plain = render(&plain, "plain.wav");
+    let looping = render(&looping, "looping.wav");
+    println!(
+        "### stdio 循环读数: plain frames={} notes={} / loop frames={} notes={} / unsupported={:?}",
+        plain["frames"],
+        plain["sources"]
+            .as_array()
+            .and_then(|sources| sources.iter().find(|s| s["track"] == "Lead"))
+            .map_or(Value::Null, |lead| lead["notes"].clone()),
+        looping["frames"],
+        looping["sources"]
+            .as_array()
+            .and_then(|sources| sources.iter().find(|s| s["track"] == "Lead"))
+            .map_or(Value::Null, |lead| lead["notes"].clone()),
+        looping["unsupported"],
+    );
+    assert_eq!(
+        looping["frames"].as_u64().expect("frames"),
+        2 * plain["frames"].as_u64().expect("frames"),
+        "N=2 ⇒ 导出帧数必须是关循环的 2 倍"
+    );
+    let notes = |data: &Value| {
+        data["sources"]
+            .as_array()
+            .and_then(|sources| sources.iter().find(|source| source["track"] == "Lead"))
+            .and_then(|lead| lead["notes"].as_u64())
+            .expect("Lead 源的 notes 读数")
+    };
+    assert_eq!(
+        notes(&looping),
+        2 * notes(&plain),
+        "N=2 ⇒ Lead 的排程音符数也必须恰好 2 倍（不是只撑长缓冲）"
+    );
+    assert!(
+        !looping["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|key| key == "clipLoopRepetition"),
+        "循环已展开 ⇒ unsupported 不许再含 clipLoopRepetition: {looping}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **19 个 `ops[].kind` 逐个走一次真 `tools/call`**（真进程 / 真 stdio 批处理）。
 ///
 /// 单位 = 一次 `tools/call` 的**响应对象**（以及 [`session`] 已经断言的**子进程退出码 0**）。

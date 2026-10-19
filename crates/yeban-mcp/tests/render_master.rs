@@ -23,7 +23,8 @@
 //! | 10 | 延迟表来自 `DeviceDefinition::latency_samples`（含旁通不算） | 自建第二延迟来源 |
 //! | 11 | `format` 只改容器字节，不改音频负载 | 在音频路径上按格式分叉 |
 //! | 12 | 实测数字自洽：frames/blocks/bytes/header/payload/sha256 | 报估算值 |
-//! | 12b | 循环区间短于摆放跨度 ⇒ 登记 `clipLoopRepetition`，且母带与"关循环"逐位相同 | 只在区间越过摆放末端时才报（静默丢掉重复） |
+//! | 12b | 循环区间短于摆放跨度 ⇒ **真的展开** N 遍；区间终点 `>=` 摆放跨度 ⇒ 与"关循环"逐字节相同 | 只撑长度不复制音符 / 明明不回卷却复制 |
+//! | 12c | 循环展开：N=4 的四个分段峰值相等且 > 0，`unsupported` 不含 `clipLoopRepetition` | 用 floor 算遍数 / 尾音跨遍叠加 |
 //! | 13a | 音频导出的 `bext` **不含作者字段**（`bwf` **实测键名**里无 `author`/`artist`/`credit`/`copyright`），且 `originatorReference` == 工程 ULID | 往 `bwf` 加一个作者键 |
 //! | 13b | 工程作者（`setAuthor` 真的写进去的唯一标记）**不出现在音频产物字节里** | 把 `project.author` 写进 `bext` / `codingHistory` / 任何 chunk |
 //! | 13c | 同一标记**不出现在 MIDI 导出字节里**（解回真字节后 `windows(n)` 找） | 把 `project.author` 写进任何 SMF 元事件（轨道名/文本/版权） |
@@ -2287,16 +2288,19 @@ fn the_requested_format_changes_the_container_but_not_the_audio() {
 #[test]
 fn unsupported_features_are_named_and_counted_only_when_present() {
     let scratch = Scratch::new("unsupported");
-    // 循环配置请求重复播放, 而本渲染器只渲染第一遍 ⇒ 必须登记 `clipLoopRepetition`。
-    let looping = Spec {
-        loop_config: LoopConfig {
-            enabled: true,
-            start_tick: 0,
-            end_tick: 3_840,
-        },
+    // 一条带了本切片没有消费的设备参数 ⇒ 必须登记 `deviceChainDsp`
+    // （`#241` 之后循环重复不再登记，所以这条判据改用设备链做触发器）。
+    let mut device = device(70, 0, false);
+    device.params.push(yeban_model::ParameterValue {
+        name: "filter_cutoff_hz".to_owned(),
+        value: 1_000.0,
+        unit: Some("Hz".to_owned()),
+    });
+    let spec = Spec {
+        devices: vec![device],
         ..Spec::default()
     };
-    let (mut dispatcher, auth) = dispatcher_with(&project(&looping), &scratch.join("demo.yeban"));
+    let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
     let out = scratch.join("master.wav");
     let result = call(
         &mut dispatcher,
@@ -2308,16 +2312,20 @@ fn unsupported_features_are_named_and_counted_only_when_present() {
         .as_array()
         .expect("unsupported");
     assert!(
-        unsupported.iter().any(|key| key == "clipLoopRepetition"),
-        "循环重复没有渲染, 必须登记: {result}"
+        unsupported.iter().any(|key| key == "deviceChainDsp"),
+        "未消费的设备参数必须登记: {result}"
     );
     assert_eq!(
-        result["data"]["unsupportedCounts"]["clipLoopRepetition"], 1,
+        result["data"]["unsupportedCounts"]["deviceChainDsp"], 1,
         "出现次数也要如实给出"
     );
     assert!(
         !unsupported.iter().any(|key| key == "audioClips"),
         "这个夹具里没有音频片段, 不许凭空登记: {unsupported:?}"
+    );
+    assert!(
+        !unsupported.iter().any(|key| key == "clipLoopRepetition"),
+        "循环重复已经展开, 但这条夹具没开循环 ⇒ 更不许登记: {unsupported:?}"
     );
 
     // 干净的工程(无循环/无设备)的 unsupported 必须是空数组 —— 证明上面那条不是套话。
@@ -2359,17 +2367,20 @@ fn render_with_loop(scratch: &Scratch, tag: &str, loop_config: LoopConfig) -> (V
     (result, out)
 }
 
-/// 循环区间 `0..960` 落在摆放跨度 `0..1920` **之内** ⇒ 摆放结束前必然回卷一次，
-/// 也就是"作者请求了重复播放"。本渲染器只渲染第一遍（`0..duration_ticks`），
-/// 因此这一条**必须**登记 `clipLoopRepetition`；同时母带字节必须与"循环关掉"
-/// 的那一次渲染**逐位相同** —— 后者是"重复真的没有被展开"的机械证据。
+/// 循环区间 `0..960` 落在摆放跨度 `0..1920` **之内** ⇒ 必然回卷一次
+/// ⇒ 循环区间按周期重复、铺满摆放（`N = 1920 / 960 = 2`）。
+///
+/// 默认夹具的音符横跨 `0..1920`，但循环区间是 `0..960` ⇒ 每一遍的时值裁到
+/// 区间末端 `960`，于是母带里是**两个 960 tick 的音符**（0 与 960 起音），
+/// 而不是一个 1920 tick 的长音。`unsupported` 必须是空数组：展开之后不再登记
+/// `clipLoopRepetition`。
 ///
 /// 可被什么注入破坏：
-/// - 把登记条件写回 `end_tick > duration_ticks`（只在区间越过摆放末端时才报）
-///   ⇒ 本条第一段红：区间短于摆放这个**真会回卷**的形态被静默；
-/// - 哪一天渲染器真的展开了重复 ⇒ 第二条 `masterDigest` 相等断言红。
+/// - 只把长度撑长、不复制音符 ⇒ `sources[].notes` 仍是 1，且第 2 段静音；
+/// - 复制时不裁尾巴 ⇒ 第 2 段叠加前一遍的尾音，`masterDigest` 与"两段相同"
+///   的预期不符（`#241` 的分段峰值判据会红）。
 #[test]
-fn a_loop_shorter_than_the_placement_is_reported_and_not_expanded() {
+fn a_loop_shorter_than_the_placement_is_expanded() {
     let scratch = Scratch::new("loop-short");
     let short_loop = LoopConfig {
         enabled: true,
@@ -2377,16 +2388,23 @@ fn a_loop_shorter_than_the_placement_is_reported_and_not_expanded() {
         end_tick: 960,
     };
     let (result, out) = render_with_loop(&scratch, "short", short_loop);
-    let unsupported = result["data"]["unsupported"]
-        .as_array()
-        .expect("unsupported");
-    assert!(
-        unsupported.iter().any(|key| key == "clipLoopRepetition"),
-        "区间短于摆放跨度 = 请求重复, 本渲染器只播第一遍 ⇒ 必须登记: {result}"
+    assert_eq!(
+        result["data"]["unsupported"],
+        json!([]),
+        "循环重复已经展开 ⇒ 不许再登记 clipLoopRepetition: {result}"
     );
     assert_eq!(
-        result["data"]["unsupportedCounts"]["clipLoopRepetition"], 1,
-        "一个摆放出现一次: {result}"
+        result["data"]["unsupportedCounts"],
+        json!({}),
+        "没有登记项 ⇒ 计数表为空: {result}"
+    );
+    assert_eq!(
+        result["data"]["sources"][0]["notes"], 2,
+        "一个 1920 tick 的音符在 0..960 的循环里排成两遍: {result}"
+    );
+    assert_eq!(
+        result["data"]["frames"], 48_000,
+        "N=2 遍 × 960 tick (0.5 秒) 恰好铺满 1 秒: {result}"
     );
 
     // 循环关掉的那一次渲染：同一份夹具，唯一差别是 `loop_config`。
@@ -2400,56 +2418,229 @@ fn a_loop_shorter_than_the_placement_is_reported_and_not_expanded() {
         plain["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
         "关循环的那一次就是既有默认夹具 (常量锚)"
     );
-    assert_eq!(
+    assert_ne!(
         result["data"]["masterDigest"], plain["data"]["masterDigest"],
-        "重复**没有**被展开: 母带样本摘要必须与关循环时相同"
+        "循环展开必须改变母带样本 (两遍起音 ≠ 一个长音)"
     );
-    assert_eq!(
+    assert_ne!(
         result["data"]["sha256"], plain["data"]["sha256"],
         "文件字节摘要同理"
     );
-    assert_eq!(
+    assert_ne!(
         fs::read(&out).expect("产物"),
         fs::read(&plain_out).expect("产物"),
-        "产物文件必须逐字节相同"
+        "产物文件必须不同（重复真的被展开了）"
     );
 }
 
-/// 循环登记的**边界**：只有"恰好覆盖整个摆放跨度"的启用区间才不登记。
+/// 循环**不回卷**的边界：区间终点 `>= 摆放跨度`（含恰好覆盖）⇒ 单遍播放，
+/// 与"不循环"逐字节相同、且不登记任何东西。
 ///
-/// - `0..1920`（== 摆放跨度）⇒ 回卷点与摆放末端重合 ⇒ 播放结果与不循环相同 ⇒ 不登记；
-/// - `480..1920`（区间不覆盖，且 `end_tick == duration_ticks`）⇒ **保守登记**：
-///   坐标语义在规范里未裁决，本层不为"看起来更准"而少报。
+/// - `0..1920`（== 摆放跨度）⇒ 回卷点与摆放末端重合；
+/// - `480..1920`（区间不覆盖，但 `end_tick == duration_ticks`）⇒ 摆放内不会回卷；
+/// - `0..3840`（终点越过摆放末端）⇒ 更不会回卷。
 ///
-/// 可被什么注入破坏：把条件写成 `end_tick >= duration_ticks`（丢掉 `start_tick == 0`
-/// 那一半）⇒ 第二段红；写成恒真 ⇒ 第一段红。
+/// 可被什么注入破坏：把 `loop_plan` 的条件写成 `end_tick > duration_ticks`
+/// （丢掉 `==` 那一半）⇒ `0..1920` 那一段会开始"重复"、字节与关循环不同 ⇒ 红。
 #[test]
-fn only_a_loop_that_covers_the_whole_placement_is_silent() {
+fn a_loop_that_does_not_wrap_before_the_placement_ends_is_bit_identical() {
     let scratch = Scratch::new("loop-covers");
-    let covering = LoopConfig {
+    let (plain, plain_out) = render_with_loop(&scratch, "plain", LoopConfig::default());
+    assert_eq!(
+        plain["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "关循环的那一次就是既有默认夹具 (常量锚)"
+    );
+    for (tag, loop_config) in [
+        (
+            "covering",
+            LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: 1_920,
+            },
+        ),
+        (
+            "offset",
+            LoopConfig {
+                enabled: true,
+                start_tick: 480,
+                end_tick: 1_920,
+            },
+        ),
+        (
+            "beyond",
+            LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: 3_840,
+            },
+        ),
+    ] {
+        let (result, out) = render_with_loop(&scratch, tag, loop_config);
+        assert_eq!(
+            result["data"]["unsupported"],
+            json!([]),
+            "{tag}: 没有回卷 ⇒ 不许登记任何东西: {result}"
+        );
+        assert_eq!(
+            result["data"]["masterDigest"], plain["data"]["masterDigest"],
+            "{tag}: 摆放内不会回卷 ⇒ 必须与关循环逐位相同"
+        );
+        assert_eq!(
+            fs::read(&out).expect("产物"),
+            fs::read(&plain_out).expect("产物"),
+            "{tag}: 产物文件必须逐字节相同"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 判据 12c：循环重复**真的展开**成 N 遍音符（不只是把长度撑长）
+// ---------------------------------------------------------------------------
+
+/// 把默认夹具改成"短音符 + 指定循环配置"：默认夹具的音符横跨整个摆放，
+/// 看不出"分段峰值相同"；这一条要的是**每一遍都有一响**。
+fn project_with_loop_note(
+    loop_config: LoopConfig,
+    placement_duration: u64,
+    note_start: u64,
+    note_duration: u64,
+) -> YebanProjectV1 {
+    let mut project = project(&Spec {
+        end_tick: placement_duration,
+        loop_config,
+        ..Spec::default()
+    });
+    let clip = id(10);
+    let note_id = id(30);
+    let entry = project.clip_pool.get_mut(&clip).expect("默认夹具的片段");
+    let ClipContent::Midi { notes } = &mut entry.content else {
+        panic!("默认夹具必须是 MIDI 片段");
+    };
+    let mut note = notes.get(&note_id).expect("默认夹具的音符").clone();
+    note.start_tick = note_start;
+    note.duration_ticks = note_duration;
+    notes.insert(note_id, note);
+    project
+        .validate()
+        .unwrap_or_else(|error| panic!("循环夹具工程必须合法: {error}"));
+    project
+}
+
+/// ⭐ `#241`：启用循环 ⇒ 循环区间按 `duration_ticks` 重复，音符**真的**排 N 遍。
+///
+/// 夹具：摆放 `0..1920`（= 1 秒 @ 120 BPM / 960 PPQ / 48 kHz = 48000 帧），
+/// 循环区间 `0..480`（= 12000 帧 ⇒ N = 4），音符 `0..240`。
+/// ⇒ 期望：4 个音符分别在 0 / 480 / 960 / 1440 tick 起音，四个 12000 帧分段
+/// 的峰值相等且 > 0；`unsupported` 不再登记 `clipLoopRepetition`。
+///
+/// 可被什么注入破坏：
+/// - 只把 `end_tick` 撑长、不复制音符 ⇒ 第 2/3/4 段峰值落回抖动底噪；
+/// - 复制时漏掉最后一轮（`iterations` 用 floor 而不是 ceil）⇒ 第 4 段静音；
+/// - 复制时不裁剪音符尾巴到循环区间末端 ⇒ 分段峰值被前一遍的尾音叠加。
+#[test]
+fn a_loop_is_expanded_into_n_repetitions() {
+    let scratch = Scratch::new("loop-expand");
+    let loop_config = LoopConfig {
         enabled: true,
         start_tick: 0,
-        end_tick: 1_920,
+        end_tick: 480,
     };
-    let (covers, _) = render_with_loop(&scratch, "covers", covering);
-    assert_eq!(
-        covers["data"]["unsupported"],
-        json!([]),
-        "区间 == 摆放跨度 ⇒ 没有重复可丢, 不许凭空登记: {covers}"
+    let project = project_with_loop_note(loop_config, 1_920, 0, 240);
+    let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("loop.yeban"));
+    let out = scratch.join("loop.wav");
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
     );
-
-    let offset = LoopConfig {
-        enabled: true,
-        start_tick: 480,
-        end_tick: 1_920,
-    };
-    let (shifted, _) = render_with_loop(&scratch, "offset", offset);
-    let unsupported = shifted["data"]["unsupported"]
+    assert_eq!(result["status"], "success", "{result}");
+    let unsupported = result["data"]["unsupported"]
         .as_array()
         .expect("unsupported");
+    println!(
+        "### 循环展开读数: frames={} notes={} unsupported={:?} sha256={}",
+        result["data"]["frames"],
+        result["data"]["sources"][0]["notes"],
+        unsupported,
+        result["data"]["sha256"],
+    );
+    assert_eq!(
+        result["data"]["frames"], 48_000,
+        "帧数 = 摆放跨度 (1 秒 @ 48 kHz): {result}"
+    );
+    assert_eq!(
+        result["data"]["sources"][0]["notes"], 4,
+        "一个音符 × N=4 遍 ⇒ 排程 4 个音符: {result}"
+    );
     assert!(
-        unsupported.iter().any(|key| key == "clipLoopRepetition"),
-        "区间不是 0..duration_ticks 就不是覆盖, 保守登记: {shifted}"
+        !unsupported.iter().any(|key| key == "clipLoopRepetition"),
+        "循环重复已经展开, 再报它就是假话: {unsupported:?}"
+    );
+
+    // 分段峰值：每段 = 一个循环区间（480 tick = 12000 帧）。
+    let bytes = fs::read(&out).expect("产物");
+    let parsed = yeban_render::rf64::parse_container(&bytes).expect("容器");
+    let samples = decode_i24(&bytes[parsed.data.clone()]);
+    let segment_frames = 480 * frames_per_tick();
+    assert_eq!(
+        segment_frames * 4,
+        result["data"]["frames"].as_u64().expect("frames") as usize,
+        "N=4 段恰好铺满母带 ⇒ 帧数就是 N 倍循环长度"
+    );
+    let peaks: Vec<f32> = (0..4)
+        .map(|index| window_peak(&samples, 2, index * segment_frames, segment_frames))
+        .collect();
+    println!("### 四段峰值（逐字）: {peaks:?}");
+    assert!(
+        peaks.iter().all(|value| *value > DITHER_ONLY_PEAK),
+        "每一遍都必须真的发声: {peaks:?}"
+    );
+    for (index, value) in peaks.iter().enumerate() {
+        assert!(
+            (value - peaks[0]).abs() < 1.0e-6,
+            "第 {} 段的峰值必须与第 1 段相同（真的重复同一内容）: {peaks:?}",
+            index + 1
+        );
+    }
+
+    // 正对照：同一份工程**关掉循环** ⇒ 只有第 1 段发声，且字节不同
+    // （证明上面的分段读数不是"母带本来就长这样"）。
+    let plain_project = project_with_loop_note(LoopConfig::default(), 1_920, 0, 240);
+    let (mut plain_dispatcher, plain_auth) =
+        dispatcher_with(&plain_project, &scratch.join("plain.yeban"));
+    let plain_out = scratch.join("plain.wav");
+    let plain = call(
+        &mut plain_dispatcher,
+        &plain_auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": plain_out.display().to_string()}),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+    assert_eq!(
+        plain["data"]["unsupported"],
+        json!([]),
+        "关循环的工程不许有任何登记: {plain}"
+    );
+    let plain_bytes = fs::read(&plain_out).expect("正对照产物");
+    let plain_parsed = yeban_render::rf64::parse_container(&plain_bytes).expect("容器");
+    let plain_samples = decode_i24(&plain_bytes[plain_parsed.data.clone()]);
+    let plain_peaks: Vec<f32> = (0..4)
+        .map(|index| window_peak(&plain_samples, 2, index * segment_frames, segment_frames))
+        .collect();
+    println!("### 关循环的四段峰值（逐字）: {plain_peaks:?}");
+    assert!(
+        plain_peaks[0] > DITHER_ONLY_PEAK,
+        "正对照的第一段必须发声: {plain_peaks:?}"
+    );
+    assert!(
+        plain_peaks[1..]
+            .iter()
+            .all(|value| *value <= DITHER_ONLY_PEAK),
+        "关循环后第 2..4 段必须静音: {plain_peaks:?}"
+    );
+    assert_ne!(
+        result["data"]["sha256"], plain["data"]["sha256"],
+        "展开循环必须改变母带字节（否则只是撑长度）"
     );
 }
 
@@ -4257,21 +4448,6 @@ fn the_known_unsupported_list_is_not_decoration() {
     // 引用 ⇒ `dyn Fn` 必须带生命周期参数（否则会要求 `'static`）。
     #[allow(clippy::type_complexity)]
     let mut triggers: Vec<(&str, Box<dyn Fn() -> Value + '_>)> = Vec::new();
-    // ① `clipLoopRepetition`：循环区间短于摆放跨度。
-    triggers.push((
-        "clipLoopRepetition",
-        Box::new(|| {
-            let spec = Spec {
-                loop_config: LoopConfig {
-                    enabled: true,
-                    start_tick: 0,
-                    end_tick: 960,
-                },
-                ..Spec::default()
-            };
-            render_or_ok(&project(&spec), "loop")
-        }),
-    ));
     // ② `deviceChainDsp`：设备链里带本切片没有消费的参数。
     triggers.push((
         "deviceChainDsp",

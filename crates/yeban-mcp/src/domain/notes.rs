@@ -847,7 +847,37 @@ pub const PLACEMENT_FIELD: &str = "placement";
 /// （[`reject_placement_fields`]），绝不静默丢弃 —— 与 [`NOTE_FIELDS`] 同一口径。
 ///
 /// 这个词表**只**管 `add` 形态的**内容键**：`kind` 是形态判别键，不在本表里。
-pub const PLACEMENT_FIELDS: &[&str] = &["startTick", "durationTicks", "placementId", "muted"];
+pub const PLACEMENT_FIELDS: &[&str] = &[
+    "startTick",
+    "durationTicks",
+    "placementId",
+    "muted",
+    LOOP_ENABLED_FIELD,
+    LOOP_START_TICK_FIELD,
+    LOOP_END_TICK_FIELD,
+];
+
+/// ⭐ `#241`：`add` 摆放的循环开关（`placement.loopEnabled`，可选；缺省 `false`）。
+///
+/// 语义与展开规则在**渲染层唯一一份**（`crate::domain::render` 的 `loop_plan`）：
+/// 启用且 `loopStartTick < loopEndTick < durationTicks` 时，区间按
+/// `loopEndTick - loopStartTick` 为周期重复、铺满摆放（`N = ceil((duration - start) / L)`）。
+///
+/// 为什么这个旋钮值得工具面：渲染器**已经**能展开循环（`#241`），但在这个字段
+/// 之前**没有任何工具**能写 `ClipPlacement::loop_config` —— 一个 4 小节 loop
+/// 只能让 agent 把音符手写 N 遍。交付形态：只搬字面值进 `LoopConfig`，
+/// "怎么展开"不在这层另立第二份规则（与 `ratchet`/`probability` 同一纪律）。
+pub const LOOP_ENABLED_FIELD: &str = "loopEnabled";
+
+/// ⭐ `#241`：循环区间起点（`placement.loopStartTick`，可选；缺省 0，摆放相对 tick）。
+///
+/// 给出 `loopStartTick`/`loopEndTick` 时必须同时 `loopEnabled: true`：
+/// 关闭循环却给区间是**自相矛盾**的载荷，响亮拒绝（不静默丢弃）。
+pub const LOOP_START_TICK_FIELD: &str = "loopStartTick";
+
+/// ⭐ `#241`：循环区间终点（`placement.loopEndTick`，可选；启用时缺省 = 片段内容长度，
+/// 推不出内容长度时 = `durationTicks`）。
+pub const LOOP_END_TICK_FIELD: &str = "loopEndTick";
 
 /// `placement.kind` 的字段名（形态判别键，可选；缺省 = [`PLACEMENT_KIND_ADD`]）。
 ///
@@ -882,6 +912,9 @@ pub const PLACEMENT_ADD_FIELDS: &[&str] = &[
     "durationTicks",
     "placementId",
     "muted",
+    LOOP_ENABLED_FIELD,
+    LOOP_START_TICK_FIELD,
+    LOOP_END_TICK_FIELD,
 ];
 
 /// `move` 形态允许的键：判别键 + 被平移的摆放身份 + **新的**起点。
@@ -2541,9 +2574,10 @@ pub enum NoteOp {
     /// ⭐ **本形态补上了什么**：⭐ 在它之前 `ClipPlacement::duration_ticks` **只在创建时**能给
     /// ⇒ ⭐ **创建之后改不了长度**（修剪/拉伸都做不了）；⭐ `move` 形态**只写 `startTick`**。
     /// ⚠ ⭐ **与 `loopConfig` 的关系（已核实）**：⭐ **校验层解耦**（`loopConfig` 用自己的
-    /// 绝对 tick 区间、⛔ 无"必须与长度一致"的校验）⇒ ⭐ 本形态⛔ 不动 `loopConfig`；
-    /// ⚠ 但 `clipLoopRepetition` 的登记口径是「启用中且区间**不是恰好 `0..durationTicks`**」
-    /// ⇒ ⭐ 改长度会改变那个判定（⭐ 那是**长度本来就该决定的量**）。
+    /// 摆放相对 tick 区间、⛔ 无"必须与长度一致"的校验）⇒ ⭐ 本形态⛔ 不动 `loopConfig`；
+    /// ⚠ 但渲染器 `#241` 之后**真的展开**循环：`N = ceil((duration_ticks - start) / (end - start))`
+    /// ⇒ ⭐ 改长度会改变重复遍数（⭐ 那是**长度本来就该决定的量**；区间落到新末端之外时
+    /// 按"不重复"播放 —— 见 `render::loop_plan`）。
     /// ⚠ **值域**：⭐ **必须 ≥ 1**（⭐ `0` 由模型 `ZeroDuration` 响亮拒绝）。
     /// ⚠ **为何完全可逆**：⭐ 长度只是**播放窗口**；⭐ 音符住在片段内容里，⭐ 引擎的裁剪发生在
     /// **快照构建期**、⛔ 不是在应用时截断 ⇒ ⭐ **改短再改长⛔ 不丢音符**。
@@ -7891,11 +7925,19 @@ pub fn parse_placement_edit(
 ///
 /// ```json
 /// {"placement": {"startTick": 0, "durationTicks": 3840,
-///                "placementId": "<可选 26 字符 ULID>", "muted": false}}
+///                "placementId": "<可选 26 字符 ULID>", "muted": false,
+///                "loopEnabled": true, "loopStartTick": 0, "loopEndTick": 960}}
 /// ```
 ///
-/// 四个内容键全部**可选**：`startTick` 缺省 0；`durationTicks` 缺省由片段内容推导；
-/// `placementId` 缺省由 [`placement_label`] 确定性派生；`muted` 缺省 `false`。
+/// 七个内容键全部**可选**：`startTick` 缺省 0；`durationTicks` 缺省由片段内容推导；
+/// `placementId` 缺省由 [`placement_label`] 确定性派生；`muted` 缺省 `false`；
+/// `loopEnabled` 缺省 `false`；`loopStartTick` 缺省 0；`loopEndTick` 在启用时
+/// 缺省 = 片段内容长度（推不出时 = `durationTicks`）。
+///
+/// ⭐ `#241`：`loopEnabled: true` + `durationTicks = N * (loopEndTick - loopStartTick)`
+/// ⇒ 渲染器把循环区间**真的展开 N 遍**（语义唯一一份在 `crate::domain::render`
+/// 的 `loop_plan`）。给区间却不给 `loopEnabled: true` 是自相矛盾的载荷
+/// （`placementFieldNotApplicable`：字段已知、但在这个形态下不适用），响亮拒绝。
 /// `kind` 可写可不写；写了必须是 [`PLACEMENT_KIND_ADD`]（其余形态由
 /// [`parse_placement_edit`] 分发，不走本函数）。
 ///
@@ -7945,6 +7987,14 @@ pub fn parse_placement(
         .ok_or_else(|| Fault::domain(ErrorCode::ClipNotFound, format!("片段不存在: {clip_id}")))?;
 
     let start_tick = read_optional_u64(object, "startTick")?.unwrap_or(0);
+    // 片段内容自己的长度（MIDI = 最后一个音符的结束 tick）；音频片段/空片段 = `None`。
+    // 它有两个用途：`durationTicks` 的缺省、以及 `loopEndTick` 的缺省。
+    let content_extent = entry.content.notes().and_then(|notes| {
+        notes
+            .values()
+            .map(|note| note.start_tick.saturating_add(note.duration_ticks))
+            .max()
+    });
     let duration_ticks = match read_optional_u64(object, "durationTicks")? {
         Some(0) => {
             return Err(Fault::domain_with_data(
@@ -7960,12 +8010,7 @@ pub fn parse_placement(
         // 缺省 = 片段内容自己的长度（MIDI 片段 = 最后一个音符的结束 tick）。
         // **推不出就不猜**：非 MIDI 片段（音频片段由 `yeban_import_audio` 的
         // `durationTicks` 承载，那里的时值来自素材帧数）与空 MIDI 片段都必须显式给。
-        None => match entry.content.notes().and_then(|notes| {
-            notes
-                .values()
-                .map(|note| note.start_tick.saturating_add(note.duration_ticks))
-                .max()
-        }) {
+        None => match content_extent {
             Some(extent) if extent > 0 => extent,
             _ => {
                 return Err(Fault::domain_with_data(
@@ -7981,6 +8026,43 @@ pub fn parse_placement(
                 ));
             }
         },
+    };
+    // ⭐ `#241`：循环旋钮。只搬字面值进 `LoopConfig`；展开语义在渲染层唯一一份。
+    let loop_enabled = read_optional_bool(object, LOOP_ENABLED_FIELD)?.unwrap_or(false);
+    let loop_start_tick = read_optional_u64(object, LOOP_START_TICK_FIELD)?.unwrap_or(0);
+    let loop_end_tick = read_optional_u64(object, LOOP_END_TICK_FIELD)?;
+    if !loop_enabled
+        && (object.contains_key(LOOP_START_TICK_FIELD) || object.contains_key(LOOP_END_TICK_FIELD))
+    {
+        // 与 `reject_placement_fields` 同一句：字段**已知**，但在"循环关闭"这个
+        // 形态下不适用。复用既有 `reason`（不新增一个词表外的值）。
+        let reason = "placementFieldNotApplicable";
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{PLACEMENT_FIELD}.{LOOP_START_TICK_FIELD}` / `{LOOP_END_TICK_FIELD}` 只在 \
+                 `{LOOP_ENABLED_FIELD}: true` 时有意义"
+            ),
+            serde_json::json!({
+                "reason": reason,
+                "field": format!("{PLACEMENT_FIELD}.{LOOP_START_TICK_FIELD}"),
+                "placementKind": PLACEMENT_KIND_ADD,
+                "supportedPlacementFields": [
+                    "startTick",
+                    "durationTicks",
+                    "placementId",
+                    "muted",
+                ],
+                "hint": "给 `loopEnabled: true` 与循环区间; 关闭循环就别给区间（不静默丢弃）",
+            }),
+        ));
+    }
+    let loop_end_tick = match loop_end_tick {
+        Some(value) => value,
+        // 启用但没给终点 ⇒ 缺省为片段内容长度（"整段循环"）；推不出就取摆放跨度
+        // （此时区间恰好覆盖 ⇒ 单遍，除非调用方另外把 `durationTicks` 拉长）。
+        None if loop_enabled => content_extent.unwrap_or(duration_ticks),
+        None => 0,
     };
     let placement_id = match object.get("placementId") {
         Some(value) => {
@@ -8009,10 +8091,12 @@ pub fn parse_placement(
         start_tick,
         duration_ticks,
         // 循环配置是模型的**必需**子结构 [ADR-0001 D43]：缺省 = 关闭（不重复）。
-        // "循环重复"不在渲染的已支持面里（响应 `unsupported: clipLoopRepetition`），
-        // 因此这里刻意不暴露 `loopEnabled` —— 那会给出一个渲染不了的旋钮
-        // （与 `yeban_import_audio` 同一个理由）。
-        loop_config: LoopConfig::default(),
+        // ⭐ `#241`：渲染器**真的**展开它（`loop_plan`），所以这个旋钮可以暴露。
+        loop_config: LoopConfig {
+            enabled: loop_enabled,
+            start_tick: loop_start_tick,
+            end_tick: loop_end_tick,
+        },
         muted: read_optional_bool(object, "muted")?.unwrap_or(false),
     };
     placement
@@ -8066,7 +8150,7 @@ pub fn parse_placement(
 ///
 /// | 情形 | `reason` |
 /// | :--- | :--- |
-/// | 键不在**任何**形态的词表里（拼错 / 根本不支持，例如 `loopEnabled`） | `unknownPlacementField` |
+/// | 键不在**任何**形态的词表里（拼错 / 根本不支持，例如 `repeatCount`） | `unknownPlacementField` |
 /// | 键在别的形态里合法、但**本**形态不适用（例如 `move` 里的 `muted`） | `placementFieldNotApplicable` |
 ///
 /// 分开的理由：把"这个形态改不了静音"报成"静音不是一个键"会让调用方去猜一个不存在的
@@ -12949,7 +13033,15 @@ mod tests {
         assert_eq!(PLACEMENT_FIELD, "placement");
         assert_eq!(
             PLACEMENT_FIELDS,
-            ["startTick", "durationTicks", "placementId", "muted"]
+            [
+                "startTick",
+                "durationTicks",
+                "placementId",
+                "muted",
+                "loopEnabled",
+                "loopStartTick",
+                "loopEndTick",
+            ]
         );
     }
 
@@ -13109,7 +13201,7 @@ mod tests {
     #[test]
     fn unknown_placement_fields_are_rejected_with_the_supported_set() {
         let (project, track_id, clip_id) = unplaced_midi_clip();
-        for unknown in ["start", "starttick", "loopEnabled", "clipId"] {
+        for unknown in ["start", "starttick", "repeatCount", "clipId"] {
             let mut payload = serde_json::json!({"startTick": 0});
             payload[unknown] = serde_json::json!(1);
             let fault = parse_placement(&project, &track_id, &clip_id, &placement_args(payload))
@@ -13128,6 +13220,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ⭐ `#241`：三个循环键**逐字**落进 `LoopConfig`，且边界响亮拒绝。
+    #[test]
+    fn loop_fields_reach_the_placement() {
+        let (project, track_id, clip_id) = unplaced_midi_clip();
+        let looping = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "durationTicks": 1_920,
+                "loopEnabled": true,
+                "loopStartTick": 0,
+                "loopEndTick": 480,
+            })),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(
+            looping.loop_config,
+            LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: 480,
+            }
+        );
+
+        // 启用但没给终点 ⇒ 缺省 = 片段内容长度（"整段循环"）。
+        let extent = project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("MIDI")
+            .values()
+            .map(|note| note.start_tick + note.duration_ticks)
+            .max()
+            .expect("至少一个音符");
+        let defaulted = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({
+                "durationTicks": 1_920,
+                "loopEnabled": true,
+            })),
+        )
+        .expect("解析")
+        .expect("在场");
+        assert_eq!(
+            defaulted.loop_config,
+            LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: extent,
+            }
+        );
+
+        // 给区间却不给 `loopEnabled: true` ⇒ 自相矛盾，响亮拒绝（不静默丢弃）。
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"loopStartTick": 0, "loopEndTick": 480})),
+        )
+        .expect_err("区间缺开关必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(
+            value["error"]["data"]["reason"], "placementFieldNotApplicable",
+            "{value}"
+        );
+
+        // 启用但区间非正 ⇒ 模型层 `ZeroDuration`（不是本层另造一条规则）。
+        let fault = parse_placement(
+            &project,
+            &track_id,
+            &clip_id,
+            &placement_args(serde_json::json!({"loopEnabled": true, "loopEndTick": 0})),
+        )
+        .expect_err("非正区间必须被拒");
+        // 模型层 `ZeroDuration` 走 `from_model` 映射到 `OUT_OF_RANGE`（不是本层另造码）。
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
     }
 
     /// 形状错（不是对象 / 键类型不对 / 身份不是 ULID / 负数）都是参数错误，不是静默缺省。
@@ -13285,7 +13459,16 @@ mod tests {
         );
         assert_eq!(
             PLACEMENT_ADD_FIELDS,
-            ["kind", "startTick", "durationTicks", "placementId", "muted"]
+            [
+                "kind",
+                "startTick",
+                "durationTicks",
+                "placementId",
+                "muted",
+                "loopEnabled",
+                "loopStartTick",
+                "loopEndTick",
+            ]
         );
         assert_eq!(PLACEMENT_MOVE_FIELDS, ["kind", "startTick", "placementId"]);
         assert_eq!(PLACEMENT_REMOVE_FIELDS, ["kind", "placementId"]);
@@ -13293,7 +13476,15 @@ mod tests {
         // 仍逐字成立）。
         assert_eq!(
             PLACEMENT_FIELDS,
-            ["startTick", "durationTicks", "placementId", "muted"]
+            [
+                "startTick",
+                "durationTicks",
+                "placementId",
+                "muted",
+                "loopEnabled",
+                "loopStartTick",
+                "loopEndTick",
+            ]
         );
         for fields in [PLACEMENT_MOVE_FIELDS, PLACEMENT_REMOVE_FIELDS] {
             assert!(
@@ -13639,8 +13830,8 @@ mod tests {
                 "报出来的字段不得出现在本形态的支持集合里: {payload}"
             );
         }
-        // 真拼错 / 根本不支持的键（`mutedd` / `loopEnabled`）仍报 `unknownPlacementField`。
-        for unknown in ["mutedd", "loopEnabled"] {
+        // 真拼错 / 根本不支持的键（`mutedd` / `repeatCount`）仍报 `unknownPlacementField`。
+        for unknown in ["mutedd", "repeatCount"] {
             let mut payload = serde_json::json!({
                 "kind": PLACEMENT_KIND_MOVE,
                 "placementId": id,

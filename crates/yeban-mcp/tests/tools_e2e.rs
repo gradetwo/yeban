@@ -5560,7 +5560,7 @@ fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it(
         "yeban_edit_notes",
         json!({
             "trackId": track, "clipId": pool_clip, "ops": [],
-            "placement": {"startTick": 0, "loopEnabled": true},
+            "placement": {"startTick": 0, "repeatCount": 4},
         }),
     );
     assert_domain_error(&typo, "INVALID_PARAMETER_RANGE", "未知摆放键不得静默丢弃");
@@ -5568,11 +5568,19 @@ fn needs_6_placement_puts_pool_material_on_the_timeline_and_the_master_hears_it(
         typo["error"]["data"]["reason"], "unknownPlacementField",
         "{typo}"
     );
-    assert_eq!(typo["error"]["data"]["field"], "loopEnabled", "{typo}");
+    assert_eq!(typo["error"]["data"]["field"], "repeatCount", "{typo}");
     let supported = typo["error"]["data"]["supportedPlacementFields"]
         .as_array()
         .expect("supportedPlacementFields 必须是数组");
-    for expected in ["startTick", "durationTicks", "placementId", "muted"] {
+    for expected in [
+        "startTick",
+        "durationTicks",
+        "placementId",
+        "muted",
+        "loopEnabled",
+        "loopStartTick",
+        "loopEndTick",
+    ] {
         assert!(
             supported.iter().any(|value| value == expected),
             "支持集合必须含 {expected}: {typo}"

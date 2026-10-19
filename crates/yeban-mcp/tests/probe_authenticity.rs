@@ -614,8 +614,8 @@ const UPSTREAM_DSP_HARD_ASSERTIONS: [(&str, &str); 5] = [
         "换格式只改容器、不改音频（跨越上游编码链）",
     ),
     (
-        "only_a_loop_that_covers_the_whole_placement_is_silent",
-        "整段覆盖的循环才静音（冻结样本摘要）",
+        "a_loop_that_does_not_wrap_before_the_placement_ends_is_bit_identical",
+        "循环终点 >= 摆放跨度 ⇒ 与关循环逐字节相同（冻结样本摘要）",
     ),
     (
         "ratchet_renders_are_bit_identical_and_the_default_path_is_unchanged",

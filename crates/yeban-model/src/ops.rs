@@ -348,12 +348,12 @@ pub enum Op {
     ///
     /// ⚠ ⭐ **与 `loop_config` 的关系（已核实、如实登记）**：⭐ **校验层**上两者**解耦** ——
     /// [`ClipPlacement::validate`] 只做两件独立的事（`duration_ticks == 0 ⇒ ZeroDuration`
-    /// 与 `loop_config.validate()`），⭐ 而 [`LoopConfig`] 用的是它**自己的绝对 tick 区间**
+    /// 与 `loop_config.validate()`），⭐ 而 [`LoopConfig`] 用的是它**自己的摆放相对 tick 区间**
     /// （`{enabled, start_tick, end_tick}`）、⭐ **没有任何"必须与 `duration_ticks` 一致"的校验**
-    /// ⇒ ⭐ **本变体⛔ 不动 `loop_config`**。⚠ ⭐ **但有一处**判定关联**（仅登记）**：
-    /// `yeban-mcp` 的离线渲染把"循环重复未展开"登记为 `clipLoopRepetition`，⭐ 其口径是
-    /// 「**启用中**且**区间不是恰好 `0..duration_ticks`**」⇒ ⭐ **改长度会改变那个判定的结果**
-    /// （⭐ 那是**长度本来就该决定的量**、⭐ 两个字段改后仍各自自洽）。
+    /// ⇒ ⭐ **本变体⛔ 不动 `loop_config`**。⚠ ⭐ **但有一处**行为关联**（`#241`）**：
+    /// `yeban-mcp` 的离线渲染**真的展开**循环，`N = ceil((duration_ticks - start) / (end - start))`
+    /// ⇒ ⭐ **改长度会改变重复遍数**（⭐ 那是**长度本来就该决定的量**、⭐ 两个字段改后仍各自自洽；
+    /// 区间落到新末端之外时按"不重复"播放，见 `render::loop_plan`）。
     ///
     /// ⚠ **值域**：⭐ `new_duration_ticks` **必须 ≥ 1** ⇒ ⭐ `0` 复用既有
     /// [`ModelError::ZeroDuration`]（⭐ 与 [`ClipPlacement::validate`] 同一口径、⛔ 不自造新错误）。

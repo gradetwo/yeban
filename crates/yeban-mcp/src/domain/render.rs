@@ -50,7 +50,6 @@
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（滤波/压缩/增益/未知旋钮）没有求值；EQ、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
-//! | `clipLoopRepetition` | `loop_config` 的**重复**没有展开（只渲染摆放的第一遍）。登记口径 = "启用中**且**区间不是恰好 `0..duration_ticks`"（覆盖才静默；见下面的 `loop_requests_repetition`） |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -77,6 +76,28 @@
 //!
 //! "工程里有 MIDI 音符或音频片段"这一条是渲染的**前提**：完全没有可渲染内容（0 帧）
 //! 时返回 `RENDER_FAILED`，而不是写一个 0 帧的文件冒充成功。
+//!
+//! ## 循环重复：在**渲染层**展开（`#241`，`clipLoopRepetition` 已退役）
+//!
+//! `ClipPlacement::loop_config` 的 tick 坐标按**摆放相对**解释（与
+//! `note.start_tick` / `placement.duration_ticks` 同一坐标系；旧的
+//! `loop_requests_repetition` 本来就是这样读的，`yeban-render` 的两个导出器也
+//! 用同一句"是否恰好覆盖摆放"）。展开规则**只有这一份**：
+//!
+//! - 启用且 `start_tick < end_tick < duration_ticks` ⇒ 循环区间
+//!   `[start_tick, end_tick)` 以 `L = end_tick - start_tick` 为周期重复，第 `k`
+//!   遍的相位是 `start_tick + k*L`，直到铺满 `duration_ticks`（`N = ceil((duration - start) / L)`）；
+//! - **每一遍以循环区间末端为硬切边界**：区间内起音的音符尾巴裁到 `end_tick`，
+//!   音频片段只搬 `[start, end)` 对应的那一段素材 ⇒ 每一遍逐位相同；最后一遍
+//!   再裁到摆放末端（`start_tick + duration_ticks`）；
+//! - `start_tick > 0` 时区间**之前**的内容播放**一遍**（不复制）；区间之后
+//!   （起音 `>= end_tick`）的内容不参与循环演奏 —— 循环区间就是被演奏的内容；
+//! - 区间终点 `>= duration_ticks`（含"恰好覆盖 `0..duration_ticks`"）⇒ 摆放内
+//!   不会回卷 ⇒ 单遍播放，与"不循环"**逐位相同**；`enabled == false` 同理。
+//!
+//! ⇒ 任务单 `#241` 之后 [`KNOWN_UNSUPPORTED_KEYS`] 里**没有** `clipLoopRepetition`：
+//! 报一个已经做到的键就是假话。MIDI 音符与音频片段走**同一个** [`loop_plan`]，
+//! 音频的每一遍靠 `ClipSpan::source_offset` 指向素材里循环区间的那一段。
 //!
 //! ## 概率触发：判定的**唯一**入口在模型层（本线接线）
 //!
@@ -486,11 +507,10 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 ///
 /// ⚠ `#221` 之后 `sfzSampler` **不在**这里：采样器绑定现在真的被渲染（见
 /// [`SamplerTrackSource`]），报它就是在说假话。
-pub const KNOWN_UNSUPPORTED_KEYS: [&str; 18] = [
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 17] = [
     "audioClips",
     "automationLanes",
     "busTrackClips",
-    "clipLoopRepetition",
     "deviceChainDsp",
     "externalPlugins",
     "masterPan",
@@ -762,7 +782,7 @@ fn json_f32(value: Option<f32>) -> Value {
 ///
 /// ## 为什么走 `warnings[]` 而不是 `unsupported`
 ///
-/// `unsupported` / `KNOWN_UNSUPPORTED_KEYS`（`#221`/`#223`，现 18 项）的口径是
+/// `unsupported` / `KNOWN_UNSUPPORTED_KEYS`（`#221`/`#223`，现 17 项）的口径是
 /// "**我们会静默少做什么**"（第 324 条：清单必须逐项可触发）。削波不是"少做了什么"
 /// —— 渲染把工程里的一切都算对了，**结果本身**就是过载的。把它塞进
 /// `KNOWN_UNSUPPORTED_KEYS` 会让那份清单的含义漂移（"不支持削波"？说不通），
@@ -2079,23 +2099,102 @@ pub(super) fn is_source_node(plan: &RenderPlan, node: EntityId) -> bool {
         .is_none_or(|inputs| inputs.is_empty())
 }
 
-/// 一个摆放的循环配置是否**请求了重复播放**（= 本渲染器没有展开的东西）。
+/// 一个摆放的循环展开计划（`#241`）。
 ///
-/// 本层只渲染摆放的**第一遍**：时间轴区间 `0..duration_ticks`，内容一位都不回卷。
-/// 一个启用中的循环区间，只有当它**恰好覆盖**整个摆放跨度（`start_tick == 0` 且
-/// `end_tick == duration_ticks`）时，回卷点才与摆放末端重合 ⇒ 播放结果与"不循环"
-/// 逐位相同，可以**静默**；其余任何形态都可能在摆放结束前回卷 ⇒ 必须登记。
+/// 语义**只有这一份**：`loop_config` 的 tick 是**摆放相对**坐标；启用且
+/// `start_tick < end_tick < duration_ticks` 时，区间 `[start, end)` 以
+/// `end - start` 为周期重复，直到铺满 `duration_ticks`。
 ///
-/// 为什么是"覆盖才静默"而不是"越过末端才登记"：`loop_config` 的 tick 坐标语义
-/// （相对摆放还是相对片段内容）在规范里未裁决（`docs/ledger/mcp-render-notes.md`
-/// 的 pending 与 `yeban-engine` 的 `loop_config` 边界都如实登记了这一点）。本层因此
-/// 取**保守**的一侧：只有"两种解释下都不可能回卷"的形态才不报，绝不拿未裁决的语义
-/// 去少报。判据与 `yeban-render` 的两个导出器（`logic.rs` 与 `als.rs` 的
-/// `loop_covers`）同一条口径，本层不另立第二种"什么算覆盖"。
-fn loop_requests_repetition(placement: &yeban_model::ClipPlacement) -> bool {
+/// - `end_tick >= duration_ticks`（含恰好覆盖 `0..duration_ticks`）⇒ 摆放内不会
+///   回卷 ⇒ `None`（单遍播放，与"不循环"逐位相同）；
+/// - `enabled == false` ⇒ `None`；
+/// - `start == end` 是模型层拒绝的非法配置（`LoopConfig::validate`）；这里再防御
+///   一次（不 panic、按"没有可重复的区间"处理）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LoopRepeat {
+    /// 循环区间起点（摆放相对 tick）。
+    start_tick: u64,
+    /// 循环区间终点（摆放相对 tick，**不含**）。
+    end_tick: u64,
+    /// 循环周期（tick）= `end_tick - start_tick`。
+    period_ticks: u64,
+    /// 铺满摆放所需的遍数 `ceil((duration_ticks - start_tick) / period_ticks)`。
+    iterations: u64,
+}
+
+/// 由摆放算出循环展开计划；`None` = 单遍播放（逐位等于不循环）。
+fn loop_plan(placement: &yeban_model::ClipPlacement) -> Option<LoopRepeat> {
     let loop_config = placement.loop_config;
-    let covers = loop_config.start_tick == 0 && loop_config.end_tick == placement.duration_ticks;
-    loop_config.enabled && !covers
+    if !loop_config.enabled {
+        return None;
+    }
+    let start_tick = loop_config.start_tick;
+    let end_tick = loop_config.end_tick;
+    // 模型层 `LoopConfig::validate` 已经拒绝 `end <= start`；这里防御性短路，
+    // 避免非法文档（手改容器）把 `end - start` 变成下溢。
+    if end_tick <= start_tick {
+        return None;
+    }
+    if end_tick >= placement.duration_ticks {
+        // 回卷点在摆放末端之外（或恰好重合）⇒ 播放期间不会回卷。
+        return None;
+    }
+    let period_ticks = end_tick - start_tick;
+    let remaining = placement.duration_ticks.saturating_sub(start_tick);
+    // `remaining > 0`：因为 `end_tick < duration_ticks` 且 `start_tick < end_tick`
+    // ⇒ `start_tick < duration_ticks`。`div_ceil` 让最后一遍不完整时也发出。
+    let iterations = remaining.div_ceil(period_ticks).max(1);
+    Some(LoopRepeat {
+        start_tick,
+        end_tick,
+        period_ticks,
+        iterations,
+    })
+}
+
+/// `u64` 帧数 → `i64` 的饱和转换（`ClipSpan` 用 `i64`；上限远小于 `i64::MAX`）。
+fn frames_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// 一个 MIDI 音符在一个摆放里要排的**每一遍** `(起点 tick, 时值 tick)`。
+///
+/// - 没有循环计划 ⇒ 原样一遍（`vec![(start, duration)]`，与旧路径逐位相同）；
+/// - 循环计划在场且音符起音**在区间之前** ⇒ 原样一遍（pickup，不复制）；
+/// - 起音在 `[start, end)` ⇒ `N` 遍，每遍时值裁到区间末端 `end`（前 N-1 遍）
+///   或摆放末端（最后一遍）；
+/// - 起音 `>= end` ⇒ 空（循环区间就是被演奏的内容）。
+///
+/// 时值裁到区间末端是**有意的**：不裁的话前一遍的尾音会叠进下一遍，
+/// 分段峰值就不再相等 —— 那正是"只把长度撑长"与"真的重复"的分界。
+fn note_copies(
+    placement: &yeban_model::ClipPlacement,
+    plan: Option<LoopRepeat>,
+    note_start: u64,
+    note_duration: u64,
+) -> Vec<(u64, u64)> {
+    let Some(repeat) = plan else {
+        return vec![(note_start, note_duration)];
+    };
+    if note_start < repeat.start_tick {
+        return vec![(note_start, note_duration)];
+    }
+    if note_start >= repeat.end_tick {
+        return Vec::new();
+    }
+    let clipped = note_duration.min(repeat.end_tick - note_start);
+    let mut copies = Vec::with_capacity(usize::try_from(repeat.iterations).unwrap_or(0));
+    for iteration in 0..repeat.iterations {
+        let start = note_start.saturating_add(iteration.saturating_mul(repeat.period_ticks));
+        if start >= placement.duration_ticks {
+            break;
+        }
+        let duration = clipped.min(placement.duration_ticks - start);
+        if duration > 0 {
+            copies.push((start, duration));
+        }
+    }
+    copies
 }
 
 /// 音轨上**可闻内容**的时间轴末端（没有内容时为 `None`）。
@@ -2206,6 +2305,9 @@ struct ClipSpan {
     start: i64,
     /// 结束帧（不含）。
     end: i64,
+    /// 素材里的起始帧（`#241`）：循环重复时每一遍只搬循环区间那一段素材。
+    /// 非循环摆放恒为 `0` ⇒ 与加循环展开之前逐位相同。
+    source_offset: i64,
     /// 左声道增益（片段 `gain_db` + 音轨 `volume_db` → 线性，× 等功率声相）。
     gain_l: f32,
     /// 右声道增益。
@@ -2263,6 +2365,7 @@ impl AudioClipSource {
             a.start
                 .cmp(&b.start)
                 .then(a.end.cmp(&b.end))
+                .then(a.source_offset.cmp(&b.source_offset))
                 .then(a.gain_l.to_bits().cmp(&b.gain_l.to_bits()))
                 .then(a.gain_r.to_bits().cmp(&b.gain_r.to_bits()))
         });
@@ -2270,7 +2373,7 @@ impl AudioClipSource {
 
     /// 本块内某一帧在**素材**里的下标（超出素材则 `None`）。
     fn asset_frame(&self, span: &ClipSpan, global: i64) -> Option<usize> {
-        let offset = global - span.start;
+        let offset = global - span.start + span.source_offset;
         if offset < 0 || offset >= self.asset.frames {
             return None;
         }
@@ -2847,6 +2950,7 @@ fn build_source(
     let mut notes_silenced = 0u64;
     let mut notes_ratcheted = 0u64;
     let mut ratchet_pulses = 0u64;
+    let mut audio_placements = 0u64;
     let mut end_tick = 0u64;
     for placement in track.clips.values() {
         if placement.muted {
@@ -2866,9 +2970,9 @@ fn build_source(
                 .start_tick
                 .saturating_add(placement.duration_ticks),
         );
-        if loop_requests_repetition(placement) {
-            note_unsupported(unsupported, counts, "clipLoopRepetition");
-        }
+        // ⭐ `#241`：循环展开计划在**每一条摆放**上算一次。
+        // `None` = 单遍播放（逐位等于加循环展开之前）；`Some` = 区间重复。
+        let plan = loop_plan(placement);
         match &clip.content {
             ClipContent::Midi { notes } => {
                 for note in notes.values() {
@@ -2907,44 +3011,51 @@ fn build_source(
                             .unwrap_or(RATCHET_MIN)
                             .clamp(RATCHET_MIN, RATCHET_MAX),
                     );
-                    let step = (note.duration_ticks / ratchet).max(1);
-                    if ratchet > 1 {
-                        notes_ratcheted = notes_ratcheted.saturating_add(1);
-                        ratchet_pulses = ratchet_pulses.saturating_add(ratchet);
-                    }
-                    let base_tick = placement.start_tick.saturating_add(note.start_tick);
-                    for pulse in 0..ratchet {
-                        let (start, end) = math::note_frame_span(
-                            base_tick.saturating_add(pulse.saturating_mul(step)),
-                            step,
-                            micro,
-                            PPQ,
-                            project.bpm,
-                            sample_rate,
-                        );
-                        if sampler_bound {
-                            // 采样器音源要的是"起在哪、多长、多高、多重"——
-                            // 帧区间与正弦路径**同一个** `note_frame_span`。
-                            let origin = u64::try_from(start.max(0)).unwrap_or(0);
-                            let span = u64::try_from((end - start).max(1)).unwrap_or(1);
-                            sampler_notes.push((origin, span, note.pitch, note.velocity));
-                        } else {
-                            scheduled.push(ScheduledNote {
-                                start,
-                                end,
-                                frequency: pitch_to_hz(note.pitch),
-                                amplitude: f32::from(note.velocity) / 127.0,
-                            });
+                    // ⭐ `#241`：循环区间内的音符按周期复制 N 遍；每遍以循环区间
+                    // 末端为硬切边界（尾巴裁到 `end_tick`），最后一遍再裁到摆放末端。
+                    // 区间之前的内容播放一遍；区间之后的内容不参与循环演奏。
+                    for (copy_start, copy_duration) in
+                        note_copies(placement, plan, note.start_tick, note.duration_ticks)
+                    {
+                        let step = (copy_duration / ratchet).max(1);
+                        if ratchet > 1 {
+                            notes_ratcheted = notes_ratcheted.saturating_add(1);
+                            ratchet_pulses = ratchet_pulses.saturating_add(ratchet);
                         }
+                        let base_tick = placement.start_tick.saturating_add(copy_start);
+                        for pulse in 0..ratchet {
+                            let (start, end) = math::note_frame_span(
+                                base_tick.saturating_add(pulse.saturating_mul(step)),
+                                step,
+                                micro,
+                                PPQ,
+                                project.bpm,
+                                sample_rate,
+                            );
+                            if sampler_bound {
+                                // 采样器音源要的是"起在哪、多长、多高、多重"——
+                                // 帧区间与正弦路径**同一个** `note_frame_span`。
+                                let origin = u64::try_from(start.max(0)).unwrap_or(0);
+                                let span = u64::try_from((end - start).max(1)).unwrap_or(1);
+                                sampler_notes.push((origin, span, note.pitch, note.velocity));
+                            } else {
+                                scheduled.push(ScheduledNote {
+                                    start,
+                                    end,
+                                    frequency: pitch_to_hz(note.pitch),
+                                    amplitude: f32::from(note.velocity) / 127.0,
+                                });
+                            }
+                        }
+                        let shifted_micro = u64::try_from(micro.max(0)).unwrap_or(0);
+                        end_tick = end_tick.max(
+                            placement
+                                .start_tick
+                                .saturating_add(copy_start)
+                                .saturating_add(shifted_micro)
+                                .saturating_add(copy_duration),
+                        );
                     }
-                    let shifted_micro = u64::try_from(micro.max(0)).unwrap_or(0);
-                    end_tick = end_tick.max(
-                        placement
-                            .start_tick
-                            .saturating_add(note.start_tick)
-                            .saturating_add(shifted_micro)
-                            .saturating_add(note.duration_ticks),
-                    );
                 }
             }
             ClipContent::Audio { asset, gain_db } => {
@@ -2985,7 +3096,7 @@ fn build_source(
                         }),
                     ));
                 };
-                let (start, end) = clip_math::clip_frame_span(
+                let (base_start, base_end) = clip_math::clip_frame_span(
                     placement.start_tick,
                     placement.duration_ticks,
                     PPQ,
@@ -2995,12 +3106,84 @@ fn build_source(
                 let entry = per_asset
                     .entry(asset.clone())
                     .or_insert_with(|| (Arc::clone(&prepared), Vec::new()));
-                entry.1.push(ClipSpan {
-                    start,
-                    end,
-                    gain_l,
-                    gain_r,
-                });
+                if let Some(repeat) = plan {
+                    // ⭐ `#241`：音频片段走**同一份** `loop_plan`。每一遍只搬
+                    // 循环区间 `[start, end)` 对应的素材段（`source_offset`），
+                    // 第一遍之前的内容（若有）原样播一遍。
+                    let base_start_frames =
+                        math::ticks_to_frames(placement.start_tick, PPQ, project.bpm, sample_rate);
+                    let region_start_frames = math::ticks_to_frames(
+                        placement.start_tick.saturating_add(repeat.start_tick),
+                        PPQ,
+                        project.bpm,
+                        sample_rate,
+                    );
+                    let region_end_frames = math::ticks_to_frames(
+                        placement.start_tick.saturating_add(repeat.end_tick),
+                        PPQ,
+                        project.bpm,
+                        sample_rate,
+                    );
+                    let period_frames = region_end_frames.saturating_sub(region_start_frames);
+                    let base_end_frames = math::ticks_to_frames(
+                        placement
+                            .start_tick
+                            .saturating_add(placement.duration_ticks),
+                        PPQ,
+                        project.bpm,
+                        sample_rate,
+                    );
+                    if period_frames == 0 {
+                        // tick 太短、帧换算后不足一帧 ⇒ 没有可重复的区间，
+                        // 按单遍播放（不静默丢内容）。
+                        entry.1.push(ClipSpan {
+                            start: base_start,
+                            end: base_end,
+                            source_offset: 0,
+                            gain_l,
+                            gain_r,
+                        });
+                    } else {
+                        // 区间之前的内容：播放一遍（素材从 0 开始）。
+                        if region_start_frames > base_start_frames {
+                            entry.1.push(ClipSpan {
+                                start: frames_i64(base_start_frames),
+                                end: frames_i64(region_start_frames),
+                                source_offset: 0,
+                                gain_l,
+                                gain_r,
+                            });
+                        }
+                        let source_offset =
+                            frames_i64(region_start_frames.saturating_sub(base_start_frames));
+                        let mut iteration = 0u64;
+                        loop {
+                            let start = region_start_frames
+                                .saturating_add(iteration.saturating_mul(period_frames));
+                            if start >= base_end_frames || iteration >= repeat.iterations {
+                                break;
+                            }
+                            let end = start.saturating_add(period_frames).min(base_end_frames);
+                            entry.1.push(ClipSpan {
+                                start: frames_i64(start),
+                                end: frames_i64(end),
+                                source_offset,
+                                gain_l,
+                                gain_r,
+                            });
+                            iteration = iteration.saturating_add(1);
+                        }
+                    }
+                } else {
+                    entry.1.push(ClipSpan {
+                        start: base_start,
+                        end: base_end,
+                        source_offset: 0,
+                        gain_l,
+                        gain_r,
+                    });
+                }
+                audio_placements = audio_placements.saturating_add(1);
             }
         }
     }
@@ -3013,10 +3196,9 @@ fn build_source(
             .then(a.frequency.to_bits().cmp(&b.frequency.to_bits()))
             .then(a.amplitude.to_bits().cmp(&b.amplitude.to_bits()))
     });
-    let audio_clips: u64 = per_asset
-        .values()
-        .map(|(_, spans)| u64::try_from(spans.len()).unwrap_or(u64::MAX))
-        .sum();
+    // `#241`：一个摆放可能产生多个 `ClipSpan`（循环的每一遍），但响应里的
+    // `audioClips` 口径是**摆放数** ⇒ 用逐摆放计数器，不用 span 数。
+    let audio_clips = audio_placements;
     // 一条音轨可能引用多个资产（本模型允许）: 为每个资产建一个源，
     // 由 `TrackSource` 按**哈希字典序**（`BTreeMap` 的键序）叠加 ——
     // 顺序确定且与输入顺序无关，因此逐位可复现。
@@ -3476,11 +3658,11 @@ mod tests {
         assert_eq!(audible_end_tick(&track), Some(2_880));
     }
 
-    /// `loop_requests_repetition` 的**穷尽边界**（纯函数, 不需要渲染）。
+    /// `loop_plan` 的**穷尽边界**（纯函数, 不需要渲染）。
     ///
-    /// 摆放跨度固定为 `0..1920`；逐个形态钉住"登记 / 静默"的判定。
+    /// 摆放跨度固定为 `0..1920`。
     #[test]
-    fn loop_repetition_is_claimed_unless_the_region_covers_the_placement() {
+    fn loop_plan_covers_every_boundary() {
         fn placed(enabled: bool, start_tick: u64, end_tick: u64) -> yeban_model::ClipPlacement {
             yeban_model::ClipPlacement {
                 duration_ticks: 1_920,
@@ -3492,16 +3674,88 @@ mod tests {
                 ..yeban_model::ClipPlacement::default()
             }
         }
-        // 关掉的循环从来不登记（哪怕区间形态怪异）。
-        assert!(!loop_requests_repetition(&placed(false, 0, 0)));
-        assert!(!loop_requests_repetition(&placed(false, 480, 960)));
-        // 恰好覆盖 `0..duration_ticks` ⇒ 回卷点与末端重合 ⇒ 静默。
-        assert!(!loop_requests_repetition(&placed(true, 0, 1_920)));
-        // 区间短于摆放 ⇒ 摆放内一定回卷 ⇒ 登记（这正是旧实现的静默口）。
-        assert!(loop_requests_repetition(&placed(true, 0, 960)));
-        // 起点不为 0 ⇒ 不是覆盖 ⇒ 保守登记。
-        assert!(loop_requests_repetition(&placed(true, 480, 1_920)));
-        // 终点越过摆放末端 ⇒ 同样不是覆盖 ⇒ 保守登记（既有的判据 12 钉住这一形态）。
-        assert!(loop_requests_repetition(&placed(true, 0, 3_840)));
+        // 关掉的循环 ⇒ 单遍（哪怕区间形态怪异）。
+        assert_eq!(loop_plan(&placed(false, 0, 0)), None);
+        assert_eq!(loop_plan(&placed(false, 480, 960)), None);
+        // 恰好覆盖 `0..duration_ticks` ⇒ 回卷点与末端重合 ⇒ 单遍。
+        assert_eq!(loop_plan(&placed(true, 0, 1_920)), None);
+        // 区间短于摆放 ⇒ 真的重复：N = ceil(1920 / 960) = 2。
+        assert_eq!(
+            loop_plan(&placed(true, 0, 960)),
+            Some(LoopRepeat {
+                start_tick: 0,
+                end_tick: 960,
+                period_ticks: 960,
+                iterations: 2,
+            })
+        );
+        // 起点不为 0：先播 480 tick 的 pickup，然后 `480..960` 重复 3 遍。
+        assert_eq!(
+            loop_plan(&placed(true, 480, 960)),
+            Some(LoopRepeat {
+                start_tick: 480,
+                end_tick: 960,
+                period_ticks: 480,
+                iterations: 3,
+            })
+        );
+        // 终点正好是摆放末端 ⇒ 不会回卷 ⇒ 单遍（旧实现在这里保守登记）。
+        assert_eq!(loop_plan(&placed(true, 480, 1_920)), None);
+        // 终点越过摆放末端 ⇒ 同样不会回卷 ⇒ 单遍。
+        assert_eq!(loop_plan(&placed(true, 0, 3_840)), None);
+        // 模型层拒绝 `end <= start`；这里防御性返回 None（不下溢、不 panic）。
+        assert_eq!(loop_plan(&placed(true, 960, 960)), None);
+        assert_eq!(loop_plan(&placed(true, 1_920, 960)), None);
+    }
+
+    /// `note_copies`：区间内的音符复制 N 遍且尾巴裁到区间末端；
+    /// pickup 只播一遍；区间之后的音符不参与循环演奏。
+    #[test]
+    fn note_copies_repeat_only_the_loop_region() {
+        let placed = yeban_model::ClipPlacement {
+            duration_ticks: 1_920,
+            loop_config: yeban_model::LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: 480,
+            },
+            ..yeban_model::ClipPlacement::default()
+        };
+        let plan = loop_plan(&placed).expect("区间短于摆放 ⇒ 有重复");
+        assert_eq!(
+            note_copies(&placed, Some(plan), 0, 240),
+            vec![(0, 240), (480, 240), (960, 240), (1_440, 240)],
+            "区间内的音符复制 N=4 遍"
+        );
+        assert_eq!(
+            note_copies(&placed, Some(plan), 0, 600),
+            vec![(0, 480), (480, 480), (960, 480), (1_440, 480)],
+            "尾巴裁到区间末端 (480), 否则前一遍会叠进后一遍"
+        );
+        assert_eq!(
+            note_copies(&placed, Some(plan), 600, 240),
+            Vec::<(u64, u64)>::new(),
+            "区间之后的音符不参与循环演奏"
+        );
+        // pickup：区间起点之前的内容只播一遍。
+        let shifted = yeban_model::ClipPlacement {
+            loop_config: yeban_model::LoopConfig {
+                enabled: true,
+                start_tick: 480,
+                end_tick: 960,
+            },
+            ..placed
+        };
+        let shifted_plan = loop_plan(&shifted).expect("有重复");
+        assert_eq!(
+            note_copies(&shifted, Some(shifted_plan), 0, 240),
+            vec![(0, 240)],
+            "pickup 只播一遍"
+        );
+        assert_eq!(
+            note_copies(&shifted, Some(shifted_plan), 480, 240),
+            vec![(480, 240), (960, 240), (1_440, 240)],
+            "区间内的音符从起点开始重复"
+        );
     }
 }

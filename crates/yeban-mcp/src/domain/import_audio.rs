@@ -739,8 +739,9 @@ fn plan_placement(
         start_tick,
         duration_ticks,
         // 循环配置是模型的**必需**子结构 [ADR-0001 D43]：缺省 = 关闭（不重复）。
-        // "循环重复"本来就不在渲染的已支持面里（`unsupported: clipLoopRepetition`），
-        // 因此这里刻意不暴露 `loopEnabled`：那会给出一个渲染不了的旋钮。
+        // ⭐ `#241` 之后渲染器**真的展开**循环；但本工具的四个摆放实参是既有
+        // 工具契约（与 `schemas/**` 同步），循环旋钮放在 `yeban_edit_notes` 的
+        // `placement` 上（`loopEnabled` / `loopStartTick` / `loopEndTick`）。
         loop_config: LoopConfig::default(),
         muted: parse_optional_bool("muted", muted_raw)?.unwrap_or(false),
     };

@@ -44,8 +44,8 @@ use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
     AssetHash, AssetMetadata, ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition,
-    DeviceKind, EntityId, MediaKind, RoutingEdge, RoutingKind, SampleRate, TrackKind, TrackV3,
-    YebanProjectV1,
+    DeviceKind, EntityId, LoopConfig, MediaKind, RoutingEdge, RoutingKind, SampleRate, TrackKind,
+    TrackV3, YebanProjectV1,
 };
 use yeban_render::rf64::parse_container;
 
@@ -206,6 +206,8 @@ struct Tune {
     declare_in_index: bool,
     /// 音轨设备链的延迟（帧）。
     device_latency: u32,
+    /// ⭐ `#241`：摆放的循环配置（缺省 = 关闭）。
+    loop_config: LoopConfig,
 }
 
 impl Default for Tune {
@@ -220,6 +222,7 @@ impl Default for Tune {
             provide_bytes: true,
             declare_in_index: true,
             device_latency: 0,
+            loop_config: LoopConfig::default(),
         }
     }
 }
@@ -288,7 +291,7 @@ fn fixture(bytes: Vec<u8>, tune: &Tune) -> Fixture {
             start_tick: tune.start_tick,
             duration_ticks: tune.duration_ticks,
             muted: tune.placement_muted,
-            ..ClipPlacement::default()
+            loop_config: tune.loop_config,
         },
     );
     project.clip_pool.insert(
@@ -731,6 +734,79 @@ fn a_sample_rate_mismatch_is_no_longer_an_error() {
         .expect("resampler.method");
     assert!(method.contains("rubato"), "{method}");
     assert!(method.contains("BlackmanHarris2"), "{method}");
+}
+
+// ---------------------------------------------------------------------------
+// 判据 5b（`#241`）：音频片段的循环重复**真的展开**（source_offset 指向素材里的区间）
+// ---------------------------------------------------------------------------
+
+/// 素材 0.5 秒恒定 0.5，摆在 `0..1920`（1 秒），循环区间 `0..960`（0.5 秒）。
+///
+/// ⇒ `N = 2`：两遍都搬素材的 `[0, 24000)` 帧，母带整段恒定 0.5；
+/// 关掉循环的同一个工程在第 2 段只有抖动。`audioClips` 必须仍是 **1 条摆放**
+/// （循环展开成两个 span 不能把摆放数报成 2）。
+#[test]
+fn an_audio_loop_is_expanded_into_n_repetitions() {
+    let scratch = Scratch::new("audio-loop");
+    let samples = constant(24_000, 0.5);
+    let looped = fixture(
+        wav_f32(2, 48_000, &samples),
+        &Tune {
+            loop_config: LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: 960,
+            },
+            ..Tune::default()
+        },
+    );
+    let out = scratch.join("looped.wav");
+    let artifact = build_with(&looped.project, &pool(&looped), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    assert_eq!(
+        data["unsupported"],
+        json!([]),
+        "循环重复已展开 ⇒ 不许登记 clipLoopRepetition: {data}"
+    );
+    assert_eq!(data["frames"], 48_000);
+    assert_eq!(
+        data["audio"]["clipsRendered"], 1,
+        "展开成两个 span 不能把**摆放数**报成 2: {data}"
+    );
+    let rendered = payload_samples(&artifact);
+    let segment = 24_000;
+    let peaks: Vec<f32> = (0..2)
+        .map(|index| peak(&rendered[index * segment * 2..(index + 1) * segment * 2]))
+        .collect();
+    println!("### 音频循环两段峰值（逐字）: {peaks:?}");
+    for (index, value) in peaks.iter().enumerate() {
+        assert!(
+            (value - 0.5).abs() < 1.0e-6,
+            "第 {} 段必须搬同一段素材 (峰值 0.5), 实测 {value}",
+            index + 1
+        );
+    }
+
+    // 正对照：同一份素材关掉循环 ⇒ 第 2 段静音（素材只有 0.5 秒）。
+    let plain = fixture(
+        wav_f32(2, 48_000, &samples),
+        &Tune {
+            loop_config: LoopConfig::default(),
+            ..Tune::default()
+        },
+    );
+    let plain_out = scratch.join("plain.wav");
+    let plain_artifact =
+        build_with(&plain.project, &pool(&plain), &plain_out, args(&plain_out)).expect("渲染");
+    let plain_samples = payload_samples(&plain_artifact);
+    let first = peak(&plain_samples[..segment * 2]);
+    let second = peak(&plain_samples[segment * 2..]);
+    println!("### 关循环两段峰值（逐字）: {first} / {second}");
+    assert!((first - 0.5).abs() < 1.0e-6, "正对照第 1 段应为 0.5");
+    assert!(
+        second <= 2.0 / 8_388_608.0,
+        "关循环后第 2 段必须只有抖动, 实测 {second}"
+    );
 }
 
 // ---------------------------------------------------------------------------
