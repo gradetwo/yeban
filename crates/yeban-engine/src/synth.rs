@@ -1815,6 +1815,39 @@ impl SynthEngine {
         }
     }
 
+    /// ⭐ **定位之后把游标搬回新位置**（任务单 `#231`）。
+    ///
+    /// 与 [`Self::align_cursors`] 的唯一差别：这里的赋值**不是** `max`。快照边界上
+    /// 位置只增 ⇒ `max` 是对的（"已经触发过的音符绝不重复触发"）；定位
+    /// （`TransportCommand::SeekTicks`）不同 —— 它允许**向后**跳（回起点），
+    /// 而游标只增不减会把"新位置之后仍应发声"的音符**永久消费掉**：
+    /// 回 0 之后触发循环从旧游标往后看，一个音符都不再起音 ⇒ 再按播放**没声音**。
+    ///
+    /// 实测（`demo_project`、48 kHz、120 BPM、`#231` 的复现矩阵）：初次播放峰值
+    /// `0.324276` / 不定位继续播 `0.249923`；`Stop + SeekTicks(0)` 之后同样渲染
+    /// ⇒ 非零样本 **0** / 峰值 **0.000000**。
+    ///
+    /// 调用契约：调用方必须先 [`Self::seek`] —— 它释放全部声部并把播放头写到新位置。
+    /// 本函数只搬游标，⛔ 不碰声部、⛔ 不分配、⛔ 不触发：触发仍由下一个量子的
+    /// 正常窗口判定（"本量子窗口内起音"）完成 ⇒ "定位到音符之后不得补触发"
+    /// 这条既有语义**一位不变**（`tests/transport_contract.rs` 判据 ④ 仍成立）。
+    pub fn realign_cursors<'a, I>(&mut self, schedules: I)
+    where
+        I: IntoIterator<Item = (&'a EntityId, &'a NoteSchedule)>,
+    {
+        let position = self.position;
+        for (id, schedule) in schedules {
+            let Some(slot) = self
+                .slots
+                .iter_mut()
+                .find(|slot| slot.assigned && slot.present && slot.id == *id)
+            else {
+                continue;
+            };
+            slot.cursor = schedule.first_sounding_index(position);
+        }
+    }
+
     /// 渲染一条轨道的本量子输出（单声道、声相之前）。**实时路径**。
     ///
     /// `schedule` 为 `None`（本轨没有调度表）时输出静音但不 panic；

@@ -181,9 +181,7 @@ mod tests {
     }
 
     /// ⭐ 推进 `quanta` 个量子并返回**累加的 tick 数**（⛔ 不读走带、只推进）。
-    /// ⚠ **必须拼接全部量子**：早期版本每轮覆盖 ⇒ 只留下**最后一量子**（128 帧），
-    /// 而 8 个量子覆盖 1024 帧 > 1 拍（960 tick @48k）⇒ 咔哒声发生在**前面**的量子里，
-    /// 于是"开着的输出"看起来与关着的一模一样。实测踩过，⛔ 不要再覆盖。
+    /// ⚠ **必须拼接全部量子**：早期版本每轮覆盖 ⇒ 只留下**最后一量子**（128 帧）。
     fn pump(host: &mut EngineHost, quanta: usize) -> Vec<f32> {
         let mut block = vec![0.0_f32; BLOCK_FRAMES * 2];
         let mut all = Vec::new();
@@ -202,11 +200,23 @@ mod tests {
             .map_or(0, |runtime| runtime.stats().metronome_clicks)
     }
 
+    /// 判据 ③ 的比较窗口必须**真的包含一次咔哒**：`filled_project` 是 120 BPM / 960 PPQ
+    /// / 48 kHz ⇒ **1 拍 = 24_000 帧**，而一个运行时量子只有 128 帧。
+    ///
+    /// ⚠ 本判据原先只推 **8** 个量子（1024 帧）就逐字节比较开关两种输出。那个窗口里
+    /// **没有**任何一拍 ⇒ "开着"的那段音频**本来就不该有咔哒**，逐字节不同只能靠
+    /// 别的差异（实测 `#231` 之前它靠的是"换引擎后音符被永久消费 ⇒ 开着那段是静音"
+    /// 这个**缺陷**；`#231` 把游标搬回之后两段都从音符起点渲染 ⇒ 逐位相同、
+    /// 判据当场变红）。窗口取 `200 × 128 = 25_600` 帧 > 24_000 帧（1 拍）⇒
+    /// 咔哒声**在窗口内**，逐字节差异才有意义，且可直接数出窗口内的 clicks 增量。
+    const QUANTA_UNTIL_THE_NEXT_CLICK: usize = 200;
+
     /// ⭐ **判据 ①**：开节拍器 ⇒ `metronome_clicks` 由 0 变 >0，且**音频输出真的变了**。
     ///
     /// ⭐ **判据 ②（控制臂）**：关着 ⇒ 恒为 0。
     ///
-    /// ⭐ **判据 ③**：逐字节比较开/关两种输出（⭐ `to_bits()`，⛔ 不是只看计数）。
+    /// ⭐ **判据 ③**：在**含一次咔哒**的窗口里逐字节比较开/关两种输出
+    /// （⭐ `to_bits()`，⛔ 不是只看计数）。
     #[test]
     fn enabling_the_metronome_clicks_and_changes_the_audio_output() {
         let project = fixture();
@@ -217,7 +227,7 @@ mod tests {
 
         // ---- 关着的时候（⭐ 控制臂本身在**独立判据** `the_control_arm_never_clicks`
         //      里，⛔ 不混在本条里 —— 否则控制臂无法被独立演示"仍绿"）----
-        let off_audio = pump(&mut host, 8);
+        let off_audio = pump(&mut host, QUANTA_UNTIL_THE_NEXT_CLICK);
         assert!(
             !off_audio.iter().all(|s| *s == 0.0),
             "前置：工程必须有声音（否则'输出变了'就没意义）"
@@ -226,11 +236,20 @@ mod tests {
         // ---- 开节拍器（换一代引擎 + 无损恢复走带）----
         let outcome = set_enabled(&mut host, &project, true).expect("开节拍器");
         assert!(outcome.enabled, "新快照的投影结果必须是开");
-        let on_audio = pump(&mut host, 8);
+        // ⚠ 换引擎/恢复走带那几步自己也会推量子（第 0 拍的咔哒在那里被打包丢弃）
+        // ⇒ 只能数**本窗口内**的增量，⛔ 不能用累计值冒充"这段音频里有咔哒"。
+        let clicks_before_window = clicks(&mut host);
+        let on_audio = pump(&mut host, QUANTA_UNTIL_THE_NEXT_CLICK);
         let on_clicks = clicks(&mut host);
+        let window_clicks = on_clicks.saturating_sub(clicks_before_window);
         assert!(
             on_clicks > 0,
             "⭐ 判据 ①：开着并推进之后 metronome_clicks 必须 >0（实测 {on_clicks}）"
+        );
+        assert!(
+            window_clicks > 0,
+            "⭐ 判据 ③ 的前提：比较窗口内必须真的响过咔哒（增量 = {window_clicks}）—— \
+             否则'输出不同'与节拍器无关"
         );
 
         // ---- ⭐ 判据 ③：逐字节比较（⭐ to_bits，⛔ 不用 ==）----

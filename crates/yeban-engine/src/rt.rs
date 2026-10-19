@@ -3745,6 +3745,11 @@ impl EngineRuntime {
         // 三类"没有生效"的裁决各自计数 ⇒ "事件到了但什么都没发生"永远可见
         // [ARCH-DSP-001, MUST-GATE-001]。
         let mut applied = 0usize;
+        // ⭐ 任务单 `#231`：本量子有没有**定位**（`SeekTicks`）。定位只搬了播放头，
+        // 音频侧的音符游标还得在快照借出来之后**逐轨搬回**（见下面的
+        // [`SynthEngine::realign_cursors`]）—— ⛔ 不在这里重建游标：游标表的
+        // 迭代需要快照里的调度表，而那是下一步才借得到的。
+        let mut seeked = false;
         events.drain_with(scratch_events, |event| {
             if !event.is_idle() {
                 applied += 1;
@@ -3794,6 +3799,9 @@ impl EngineRuntime {
                 && let TransportEffect::Seeked { frames, .. } = transport.apply(command)
             {
                 synth.seek(frames);
+                // ⭐ `#231`：记下"本量子定位过"。游标的实际搬回在快照借出之后
+                // （见下面 `synth.realign_cursors(...)` 的调用点）。
+                seeked = true;
                 // 节拍器也要重新对齐：从第 8 小节跳回第 1 小节之后，下一拍必须落在
                 // 新位置之后的拍栅格上，而不是继续等第 9 小节的强拍（`ticks_per_beat`
                 // 为 0 = 还没有任何快照被武装 ⇒ `resync` 不发明栅格）。
@@ -3840,6 +3848,26 @@ impl EngineRuntime {
             // stereo-linked 的母线电平，绝不按"轨道"重复计量；它也不参与声部合成
             // （母线是汇流点，没有自己的声源）。
             let master = current.master();
+
+            // ⭐ ⭐ 任务单 `#231`：**定位之后把音频侧的音符游标搬回新位置**。
+            //
+            // 为什么必须在这里：上面的 `synth.seek(frames)` 只搬播放头并释放声部，
+            // 而 `SynthEngine` 的逐轨游标**只增不减**（那是快照边界
+            // `align_cursors` 的纪律）。向后定位（回起点）之后，游标仍停在
+            // "上一次播到哪" ⇒ 下一个量子的触发循环从旧游标往后看，起点处的音符
+            // **一个都不再起音** ⇒ 再按播放**没声音**。
+            //
+            // 实测（`#231` 的复现矩阵，真音频腿 `process_quantum`）：
+            // * 初次播放峰值 `0.324276`、不定位的"停→继续" `0.249923`；
+            // * `Stop + SeekTicks(0)` 后播放 ⇒ 非零样本 **0** / 峰值 **0.000000**；
+            // * 本调用补上之后 ⇒ 非零样本 / 峰值回到与初次播放同量级（判据
+            //   `tests/rewind_sound.rs` 逐格钉住）。
+            //
+            // ⚠ 只在**定位过的量子**里搬：正常播放时游标与位置同步前进，每量子重扫
+            // 调度表既是白花钱、也会破坏"只增"这条已被判据钉住的纪律。
+            if seeked {
+                synth.realign_cursors(current.schedules().iter().filter(|(id, _)| **id != master));
+            }
 
             // 采样率/块长变了 ⇒ 电平弹道系数按新的"量子/秒"折算(保留电平状态)。
             let revision = current.revision();
