@@ -859,7 +859,7 @@ pub const PLACEMENT_FIELDS: &[&str] = &[
 
 /// ⭐ `#241`：`add` 摆放的循环开关（`placement.loopEnabled`，可选；缺省 `false`）。
 ///
-/// 语义与展开规则在**渲染层唯一一份**（`crate::domain::render` 的 `loop_plan`）：
+/// 语义与展开规则**只有一份**（`yeban-model` 的 `ClipPlacement::loop_repeat` / `note_copies`，[ADR-0010 D5]）：
 /// 启用且 `loopStartTick < loopEndTick < durationTicks` 时，区间按
 /// `loopEndTick - loopStartTick` 为周期重复、铺满摆放（`N = ceil((duration - start) / L)`）。
 ///
@@ -2577,7 +2577,7 @@ pub enum NoteOp {
     /// 摆放相对 tick 区间、⛔ 无"必须与长度一致"的校验）⇒ ⭐ 本形态⛔ 不动 `loopConfig`；
     /// ⚠ 但渲染器 `#241` 之后**真的展开**循环：`N = ceil((duration_ticks - start) / (end - start))`
     /// ⇒ ⭐ 改长度会改变重复遍数（⭐ 那是**长度本来就该决定的量**；区间落到新末端之外时
-    /// 按"不重复"播放 —— 见 `render::loop_plan`）。
+    /// 按"不重复"播放 —— 见 `yeban_model::ClipPlacement::loop_repeat`）。
     /// ⚠ **值域**：⭐ **必须 ≥ 1**（⭐ `0` 由模型 `ZeroDuration` 响亮拒绝）。
     /// ⚠ **为何完全可逆**：⭐ 长度只是**播放窗口**；⭐ 音符住在片段内容里，⭐ 引擎的裁剪发生在
     /// **快照构建期**、⛔ 不是在应用时截断 ⇒ ⭐ **改短再改长⛔ 不丢音符**。
@@ -7936,7 +7936,7 @@ pub fn parse_placement_edit(
 ///
 /// ⭐ `#241`：`loopEnabled: true` + `durationTicks = N * (loopEndTick - loopStartTick)`
 /// ⇒ 渲染器把循环区间**真的展开 N 遍**（语义唯一一份在 `crate::domain::render`
-/// 的 `loop_plan`）。给区间却不给 `loopEnabled: true` 是自相矛盾的载荷
+/// 的 `ClipPlacement::loop_repeat`）。给区间却不给 `loopEnabled: true` 是自相矛盾的载荷
 /// （`placementFieldNotApplicable`：字段已知、但在这个形态下不适用），响亮拒绝。
 /// `kind` 可写可不写；写了必须是 [`PLACEMENT_KIND_ADD`]（其余形态由
 /// [`parse_placement_edit`] 分发，不走本函数）。
@@ -8091,7 +8091,7 @@ pub fn parse_placement(
         start_tick,
         duration_ticks,
         // 循环配置是模型的**必需**子结构 [ADR-0001 D43]：缺省 = 关闭（不重复）。
-        // ⭐ `#241`：渲染器**真的**展开它（`loop_plan`），所以这个旋钮可以暴露。
+        // ⭐ `#241`：渲染器**真的**展开它（`#246` 起由 `yeban_model::ClipPlacement::loop_repeat` 决定），所以这个旋钮可以暴露。
         loop_config: LoopConfig {
             enabled: loop_enabled,
             start_tick: loop_start_tick,

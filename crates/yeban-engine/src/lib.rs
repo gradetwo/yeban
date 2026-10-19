@@ -97,6 +97,13 @@
 //!    ⚠ 默认口径仍静音：控制侧**没有注入 PCM** 时（`from_project` 只投影事实、
 //!    解码与读盘在控制侧）`audio_clips` 里的摆放 `pcm == None` ⇒ 输出与接线前逐位相同；
 //!    ⛔ 引擎仍然不读盘、⛔ 不重采样、⛔ 不展开 `loop_config`。
+//!
+//!    ⭐ ⭐ **追加修订段（任务单 `#246`，台账第 278 条：⛔ 不改上一段原文）**：上段
+//!    最后一句的 `loop_config` 部分描述的是 `#246` 之前的事实，现仍逐字保留。自
+//!    `#246` 起片段循环语义由 [ADR-0010] D1–D3 落定并**下移到 `yeban-model`**
+//!    （`ClipPlacement::loop_repeat` / `note_copies`）；[`snapshot`] 的 MIDI 排程
+//!    按它**真的展开**多条副本 ⇒ 监听音频真的重复。⚠ 音频循环仍不做（D4 的
+//!    `source_offset` 是二期）。
 //! 2. **走带已实现（本切片）**：播放头由 [`rt::EngineRuntime`] 自己持有
 //!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），每量子按 [`transport`] 的
 //!    整数有理数推进 tick；`Play`/`Stop`/`Pause`/`SeekTicks` 经既有的无锁事件通道

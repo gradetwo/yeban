@@ -105,6 +105,12 @@
 //!   （[`crate::snapshot::EngineSnapshot::with_audio_asset`]）；⛔ 引擎不读盘、⛔ 不重采样。
 //!   `yeban-sfz` 那一半早已由 [`crate::sfz_instrument`] 接通；声部池本身仍然**只**做
 //!   复音波表合成，⛔ 不播采样。
+//! - ⭐ ⭐ **追加修订段（任务单 `#246`，台账第 278 条：⛔ 不改上面"没有循环片段展开"原文）**：
+//!   上一条描述的是 `#246` 之前的事实，现仍逐字保留。自 `#246` 起片段循环语义由
+//!   [ADR-0010] D1–D3 落定，并**下移到 `yeban-model`**（`ClipPlacement::loop_repeat` /
+//!   `note_copies`）；[`crate::snapshot`] 的 MIDI 排程按它**真的展开**多条副本，
+//!   每条副本再走本模块的 ratchet/pulse 路径 ⇒ 监听音频**真的重复**。
+//!   ⚠ 音频片段的循环仍**不在**本票范围（[ADR-0010] D4 的 `source_offset` 引擎侧不存在）。
 //! - **窃取淡出是 3 ms 指数淡出，不是 [ARCH-DSP-001] 的 5 ms 升余弦窗**：
 //!   这是**上移前就有**的差异，且 `tests/steal_fade.rs` 的 S4 把 144 帧
 //!   （3 ms @48 kHz）写成了既有期望值 ⇒ 本票不改，登记在

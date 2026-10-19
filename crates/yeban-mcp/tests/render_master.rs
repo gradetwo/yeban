@@ -2441,7 +2441,8 @@ fn a_loop_shorter_than_the_placement_is_expanded() {
 /// - `480..1920`（区间不覆盖，但 `end_tick == duration_ticks`）⇒ 摆放内不会回卷；
 /// - `0..3840`（终点越过摆放末端）⇒ 更不会回卷。
 ///
-/// 可被什么注入破坏：把 `loop_plan` 的条件写成 `end_tick > duration_ticks`
+/// 可被什么注入破坏：把 `yeban_model::ClipPlacement::loop_repeat` 的条件写成
+/// `end_tick > duration_ticks`
 /// （丢掉 `==` 那一半）⇒ `0..1920` 那一段会开始"重复"、字节与关循环不同 ⇒ 红。
 #[test]
 fn a_loop_that_does_not_wrap_before_the_placement_ends_is_bit_identical() {

@@ -96,7 +96,7 @@
 //!   不会回卷 ⇒ 单遍播放，与"不循环"**逐位相同**；`enabled == false` 同理。
 //!
 //! ⇒ 任务单 `#241` 之后 [`KNOWN_UNSUPPORTED_KEYS`] 里**没有** `clipLoopRepetition`：
-//! 报一个已经做到的键就是假话。MIDI 音符与音频片段走**同一个** [`loop_plan`]，
+//! 报一个已经做到的键就是假话。MIDI 音符与音频片段走**同一个** `yeban_model::ClipPlacement::loop_repeat`，
 //! 音频的每一遍靠 `ClipSpan::source_offset` 指向素材里循环区间的那一段。
 //!
 //! ## 概率触发：判定的**唯一**入口在模型层（本线接线）
@@ -2373,102 +2373,9 @@ pub(super) fn is_source_node(plan: &RenderPlan, node: EntityId) -> bool {
         .is_none_or(|inputs| inputs.is_empty())
 }
 
-/// 一个摆放的循环展开计划（`#241`）。
-///
-/// 语义**只有这一份**：`loop_config` 的 tick 是**摆放相对**坐标；启用且
-/// `start_tick < end_tick < duration_ticks` 时，区间 `[start, end)` 以
-/// `end - start` 为周期重复，直到铺满 `duration_ticks`。
-///
-/// - `end_tick >= duration_ticks`（含恰好覆盖 `0..duration_ticks`）⇒ 摆放内不会
-///   回卷 ⇒ `None`（单遍播放，与"不循环"逐位相同）；
-/// - `enabled == false` ⇒ `None`；
-/// - `start == end` 是模型层拒绝的非法配置（`LoopConfig::validate`）；这里再防御
-///   一次（不 panic、按"没有可重复的区间"处理）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LoopRepeat {
-    /// 循环区间起点（摆放相对 tick）。
-    start_tick: u64,
-    /// 循环区间终点（摆放相对 tick，**不含**）。
-    end_tick: u64,
-    /// 循环周期（tick）= `end_tick - start_tick`。
-    period_ticks: u64,
-    /// 铺满摆放所需的遍数 `ceil((duration_ticks - start_tick) / period_ticks)`。
-    iterations: u64,
-}
-
-/// 由摆放算出循环展开计划；`None` = 单遍播放（逐位等于不循环）。
-fn loop_plan(placement: &yeban_model::ClipPlacement) -> Option<LoopRepeat> {
-    let loop_config = placement.loop_config;
-    if !loop_config.enabled {
-        return None;
-    }
-    let start_tick = loop_config.start_tick;
-    let end_tick = loop_config.end_tick;
-    // 模型层 `LoopConfig::validate` 已经拒绝 `end <= start`；这里防御性短路，
-    // 避免非法文档（手改容器）把 `end - start` 变成下溢。
-    if end_tick <= start_tick {
-        return None;
-    }
-    if end_tick >= placement.duration_ticks {
-        // 回卷点在摆放末端之外（或恰好重合）⇒ 播放期间不会回卷。
-        return None;
-    }
-    let period_ticks = end_tick - start_tick;
-    let remaining = placement.duration_ticks.saturating_sub(start_tick);
-    // `remaining > 0`：因为 `end_tick < duration_ticks` 且 `start_tick < end_tick`
-    // ⇒ `start_tick < duration_ticks`。`div_ceil` 让最后一遍不完整时也发出。
-    let iterations = remaining.div_ceil(period_ticks).max(1);
-    Some(LoopRepeat {
-        start_tick,
-        end_tick,
-        period_ticks,
-        iterations,
-    })
-}
-
 /// `u64` 帧数 → `i64` 的饱和转换（`ClipSpan` 用 `i64`；上限远小于 `i64::MAX`）。
 fn frames_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
-}
-
-/// 一个 MIDI 音符在一个摆放里要排的**每一遍** `(起点 tick, 时值 tick)`。
-///
-/// - 没有循环计划 ⇒ 原样一遍（`vec![(start, duration)]`，与旧路径逐位相同）；
-/// - 循环计划在场且音符起音**在区间之前** ⇒ 原样一遍（pickup，不复制）；
-/// - 起音在 `[start, end)` ⇒ `N` 遍，每遍时值裁到区间末端 `end`（前 N-1 遍）
-///   或摆放末端（最后一遍）；
-/// - 起音 `>= end` ⇒ 空（循环区间就是被演奏的内容）。
-///
-/// 时值裁到区间末端是**有意的**：不裁的话前一遍的尾音会叠进下一遍，
-/// 分段峰值就不再相等 —— 那正是"只把长度撑长"与"真的重复"的分界。
-fn note_copies(
-    placement: &yeban_model::ClipPlacement,
-    plan: Option<LoopRepeat>,
-    note_start: u64,
-    note_duration: u64,
-) -> Vec<(u64, u64)> {
-    let Some(repeat) = plan else {
-        return vec![(note_start, note_duration)];
-    };
-    if note_start < repeat.start_tick {
-        return vec![(note_start, note_duration)];
-    }
-    if note_start >= repeat.end_tick {
-        return Vec::new();
-    }
-    let clipped = note_duration.min(repeat.end_tick - note_start);
-    let mut copies = Vec::with_capacity(usize::try_from(repeat.iterations).unwrap_or(0));
-    for iteration in 0..repeat.iterations {
-        let start = note_start.saturating_add(iteration.saturating_mul(repeat.period_ticks));
-        if start >= placement.duration_ticks {
-            break;
-        }
-        let duration = clipped.min(placement.duration_ticks - start);
-        if duration > 0 {
-            copies.push((start, duration));
-        }
-    }
-    copies
 }
 
 /// 音轨上**可闻内容**的时间轴末端（没有内容时为 `None`）。
@@ -3254,9 +3161,9 @@ fn build_source(
                 .start_tick
                 .saturating_add(placement.duration_ticks),
         );
-        // ⭐ `#241`：循环展开计划在**每一条摆放**上算一次。
-        // `None` = 单遍播放（逐位等于加循环展开之前）；`Some` = 区间重复。
-        let plan = loop_plan(placement);
+        // ⭐ `#246` / [ADR-0010 D5]：循环展开**只**由 `yeban-model` 决定
+        // （`ClipPlacement::loop_repeat` / `note_copies`）。没有循环计划时
+        // `note_copies` 返回原样一遍 ⇒ 与展开之前逐位相同。
         match &clip.content {
             ClipContent::Midi { notes } => {
                 for note in notes.values() {
@@ -3299,7 +3206,7 @@ fn build_source(
                     // 末端为硬切边界（尾巴裁到 `end_tick`），最后一遍再裁到摆放末端。
                     // 区间之前的内容播放一遍；区间之后的内容不参与循环演奏。
                     for (copy_start, copy_duration) in
-                        note_copies(placement, plan, note.start_tick, note.duration_ticks)
+                        placement.note_copies(note.start_tick, note.duration_ticks)
                     {
                         let step = (copy_duration / ratchet).max(1);
                         if ratchet > 1 {
@@ -3390,8 +3297,9 @@ fn build_source(
                 let entry = per_asset
                     .entry(asset.clone())
                     .or_insert_with(|| (Arc::clone(&prepared), Vec::new()));
-                if let Some(repeat) = plan {
-                    // ⭐ `#241`：音频片段走**同一份** `loop_plan`。每一遍只搬
+                if let Some(repeat) = placement.loop_repeat() {
+                    // ⭐ `#246`：音频片段走**同一份** `ClipPlacement::loop_repeat`。
+                    // 每一遍只搬
                     // 循环区间 `[start, end)` 对应的素材段（`source_offset`），
                     // 第一遍之前的内容（若有）原样播一遍。
                     let base_start_frames =
@@ -3945,61 +3853,14 @@ mod tests {
         assert_eq!(audible_end_tick(&track), Some(2_880));
     }
 
-    /// `loop_plan` 的**穷尽边界**（纯函数, 不需要渲染）。
+    /// `#246` S6（MCP 端）：循环展开**只**调 `yeban-model` 的纯函数。
     ///
-    /// 摆放跨度固定为 `0..1920`。
+    /// 夹具与引擎侧 `crates/yeban-engine/tests/clip_loop_expansion.rs` 的 S2
+    /// **逐字相同**（`D=1920 / 循环 0..480 / 音符 0..240 / 120 BPM / 48 kHz`），
+    /// 因此两端断言的是同一张 tick 表与同一张帧表。
     #[test]
-    fn loop_plan_covers_every_boundary() {
-        fn placed(enabled: bool, start_tick: u64, end_tick: u64) -> yeban_model::ClipPlacement {
-            yeban_model::ClipPlacement {
-                duration_ticks: 1_920,
-                loop_config: yeban_model::LoopConfig {
-                    enabled,
-                    start_tick,
-                    end_tick,
-                },
-                ..yeban_model::ClipPlacement::default()
-            }
-        }
-        // 关掉的循环 ⇒ 单遍（哪怕区间形态怪异）。
-        assert_eq!(loop_plan(&placed(false, 0, 0)), None);
-        assert_eq!(loop_plan(&placed(false, 480, 960)), None);
-        // 恰好覆盖 `0..duration_ticks` ⇒ 回卷点与末端重合 ⇒ 单遍。
-        assert_eq!(loop_plan(&placed(true, 0, 1_920)), None);
-        // 区间短于摆放 ⇒ 真的重复：N = ceil(1920 / 960) = 2。
-        assert_eq!(
-            loop_plan(&placed(true, 0, 960)),
-            Some(LoopRepeat {
-                start_tick: 0,
-                end_tick: 960,
-                period_ticks: 960,
-                iterations: 2,
-            })
-        );
-        // 起点不为 0：先播 480 tick 的 pickup，然后 `480..960` 重复 3 遍。
-        assert_eq!(
-            loop_plan(&placed(true, 480, 960)),
-            Some(LoopRepeat {
-                start_tick: 480,
-                end_tick: 960,
-                period_ticks: 480,
-                iterations: 3,
-            })
-        );
-        // 终点正好是摆放末端 ⇒ 不会回卷 ⇒ 单遍（旧实现在这里保守登记）。
-        assert_eq!(loop_plan(&placed(true, 480, 1_920)), None);
-        // 终点越过摆放末端 ⇒ 同样不会回卷 ⇒ 单遍。
-        assert_eq!(loop_plan(&placed(true, 0, 3_840)), None);
-        // 模型层拒绝 `end <= start`；这里防御性返回 None（不下溢、不 panic）。
-        assert_eq!(loop_plan(&placed(true, 960, 960)), None);
-        assert_eq!(loop_plan(&placed(true, 1_920, 960)), None);
-    }
-
-    /// `note_copies`：区间内的音符复制 N 遍且尾巴裁到区间末端；
-    /// pickup 只播一遍；区间之后的音符不参与循环演奏。
-    #[test]
-    fn note_copies_repeat_only_the_loop_region() {
-        let placed = yeban_model::ClipPlacement {
+    fn loop_expansion_is_delegated_to_the_model() {
+        let placement = yeban_model::ClipPlacement {
             duration_ticks: 1_920,
             loop_config: yeban_model::LoopConfig {
                 enabled: true,
@@ -4008,41 +3869,52 @@ mod tests {
             },
             ..yeban_model::ClipPlacement::default()
         };
-        let plan = loop_plan(&placed).expect("区间短于摆放 ⇒ 有重复");
         assert_eq!(
-            note_copies(&placed, Some(plan), 0, 240),
+            placement.loop_repeat(),
+            Some(yeban_model::LoopRepeat {
+                start_tick: 0,
+                end_tick: 480,
+                period_ticks: 480,
+                iterations: 4,
+            }),
+            "计划由模型给（本层不再有本地 loop_plan）"
+        );
+        let table = placement.note_copies(0, 240);
+        assert_eq!(
+            table,
             vec![(0, 240), (480, 240), (960, 240), (1_440, 240)],
-            "区间内的音符复制 N=4 遍"
+            "MCP 端的 tick 表"
         );
+        let frames: Vec<(i64, i64)> = table
+            .iter()
+            .map(|(start_tick, duration)| {
+                math::note_frame_span(*start_tick, *duration, 0, PPQ, 120.0, 48_000)
+            })
+            .collect();
         assert_eq!(
-            note_copies(&placed, Some(plan), 0, 600),
-            vec![(0, 480), (480, 480), (960, 480), (1_440, 480)],
-            "尾巴裁到区间末端 (480), 否则前一遍会叠进后一遍"
+            frames,
+            vec![
+                (0, 6_000),
+                (12_000, 18_000),
+                (24_000, 30_000),
+                (36_000, 42_000)
+            ],
+            "48 kHz / 120 BPM ⇒ 1 tick = 25 样本；与引擎侧同一张帧表"
         );
+        // `(start_tick, end_tick, pitch)`：与引擎侧 `s2` 的 tick 表逐项相同。
+        let ticks: Vec<(u64, u64, u8)> = table
+            .iter()
+            .map(|(start_tick, duration)| (*start_tick, start_tick + duration, 60))
+            .collect();
         assert_eq!(
-            note_copies(&placed, Some(plan), 600, 240),
-            Vec::<(u64, u64)>::new(),
-            "区间之后的音符不参与循环演奏"
-        );
-        // pickup：区间起点之前的内容只播一遍。
-        let shifted = yeban_model::ClipPlacement {
-            loop_config: yeban_model::LoopConfig {
-                enabled: true,
-                start_tick: 480,
-                end_tick: 960,
-            },
-            ..placed
-        };
-        let shifted_plan = loop_plan(&shifted).expect("有重复");
-        assert_eq!(
-            note_copies(&shifted, Some(shifted_plan), 0, 240),
-            vec![(0, 240)],
-            "pickup 只播一遍"
-        );
-        assert_eq!(
-            note_copies(&shifted, Some(shifted_plan), 480, 240),
-            vec![(480, 240), (960, 240), (1_440, 240)],
-            "区间内的音符从起点开始重复"
+            ticks,
+            vec![
+                (0, 240, 60),
+                (480, 720, 60),
+                (960, 1_200, 60),
+                (1_440, 1_680, 60)
+            ],
+            "MCP 与引擎同一张 (start_tick, end_tick, pitch) 表"
         );
     }
 }

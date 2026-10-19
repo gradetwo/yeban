@@ -1105,6 +1105,15 @@ impl Drop for EngineSnapshot {
 ///   （注入期拒绝，见 [`crate::audio_clip::AudioClipError`]）。
 /// - ⚠ 本段的落点**只**是"音频摆放有了一张自己的表"：⛔ 不碰音符调度、⛔ 不碰事件面、
 ///   ⛔ 不碰持久化 AST、⛔ 不给 [`EngineSnapshot`] 加游标。
+///
+/// ⭐ ⭐ **追加修订段（任务单 `#246`，台账第 278 条：⛔ 不改上面第 2 条的原文）**：
+/// 第 2 条描述的是 `#246` 之前的事实，现仍逐字保留。自 `#246` 起 `loop_config` 由
+/// `yeban-model` 的 `ClipPlacement::loop_repeat` / `note_copies` 按 [ADR-0010]
+/// D1–D3 展开：区间 `[start, end)` 按 `L = end − start` 平铺
+/// `N = ceil((D − start) / L)` 遍，每遍以 `end` 硬切，`start > 0` 时区间之前的内容
+/// 播一遍（pickup）；`enabled == false`、`end <= start`、`end >= D`（含恰好覆盖）
+/// 仍**逐位单遍**。每条副本逐遍走原来的 ratchet/pulse 路径，副本计入
+/// [`MAX_NOTES_PER_TRACK`] 的丢弃计数（[`EngineSnapshot::note_schedule_drops`]）。
 fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedule>, u64) {
     let sample_rate = project.audio_config.sample_rate.hz();
     #[allow(clippy::cast_precision_loss)]
@@ -1146,44 +1155,54 @@ fn project_schedules(project: &YebanProjectV1) -> (BTreeMap<EntityId, NoteSchedu
                     continue;
                 }
                 let ratchet = u64::from(note.ratchet.unwrap_or(1).clamp(1, 16));
-                let step = (note.duration_ticks / ratchet).max(1);
-                let offset =
-                    i128::from(note.start_tick) + i128::from(note.micro_timing_ticks.unwrap_or(0));
+                let micro = i128::from(note.micro_timing_ticks.unwrap_or(0));
 
-                for pulse in 0..ratchet {
-                    #[allow(clippy::cast_possible_wrap)]
-                    let raw_start = placement_start + offset + (pulse * step) as i128;
-                    let start_tick = raw_start.clamp(0, placement_end).min(i128::from(u64::MAX));
-                    let end_tick = (start_tick + i128::from(step))
-                        .min(placement_end)
-                        .min(i128::from(u64::MAX));
-                    if end_tick <= start_tick {
-                        continue;
+                // ⭐ `#246` / [ADR-0010 D5]：循环展开**只**由 `yeban-model` 决定
+                // （`ClipPlacement::note_copies`）。没有循环计划时它返回原样一遍
+                // ⇒ 本段与展开之前**逐位相同**；副本同样逐遍走下面的 ratchet 与
+                // 容量检查（副本计入 `note_schedule_drops`）。
+                for (copy_start, copy_duration) in
+                    placement.note_copies(note.start_tick, note.duration_ticks)
+                {
+                    let step = (copy_duration / ratchet).max(1);
+                    let offset = i128::from(copy_start) + micro;
+
+                    for pulse in 0..ratchet {
+                        #[allow(clippy::cast_possible_wrap)]
+                        let raw_start = placement_start + offset + (pulse * step) as i128;
+                        let start_tick =
+                            raw_start.clamp(0, placement_end).min(i128::from(u64::MAX));
+                        let end_tick = (start_tick + i128::from(step))
+                            .min(placement_end)
+                            .min(i128::from(u64::MAX));
+                        if end_tick <= start_tick {
+                            continue;
+                        }
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let (start_tick, end_tick) = (start_tick as u64, end_tick as u64);
+                        let (Some(start_sample), Some(end_sample)) = (
+                            tick_to_sample(start_tick, samples_per_tick),
+                            tick_to_sample(end_tick, samples_per_tick),
+                        ) else {
+                            continue;
+                        };
+                        if end_sample <= start_sample {
+                            continue;
+                        }
+                        if notes.len() >= MAX_NOTES_PER_TRACK {
+                            dropped = dropped.saturating_add(1);
+                            continue;
+                        }
+                        notes.push(ScheduledNote::new(
+                            start_sample,
+                            end_sample,
+                            note.pitch,
+                            note.velocity,
+                            note_to_hz(f32::from(note.pitch)),
+                            velocity_gain(note.velocity) * gain,
+                            sample_rate_f32,
+                        ));
                     }
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let (start_tick, end_tick) = (start_tick as u64, end_tick as u64);
-                    let (Some(start_sample), Some(end_sample)) = (
-                        tick_to_sample(start_tick, samples_per_tick),
-                        tick_to_sample(end_tick, samples_per_tick),
-                    ) else {
-                        continue;
-                    };
-                    if end_sample <= start_sample {
-                        continue;
-                    }
-                    if notes.len() >= MAX_NOTES_PER_TRACK {
-                        dropped = dropped.saturating_add(1);
-                        continue;
-                    }
-                    notes.push(ScheduledNote::new(
-                        start_sample,
-                        end_sample,
-                        note.pitch,
-                        note.velocity,
-                        note_to_hz(f32::from(note.pitch)),
-                        velocity_gain(note.velocity) * gain,
-                        sample_rate_f32,
-                    ));
                 }
             }
         }

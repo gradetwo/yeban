@@ -353,7 +353,7 @@ pub enum Op {
     /// ⇒ ⭐ **本变体⛔ 不动 `loop_config`**。⚠ ⭐ **但有一处**行为关联**（`#241`）**：
     /// `yeban-mcp` 的离线渲染**真的展开**循环，`N = ceil((duration_ticks - start) / (end - start))`
     /// ⇒ ⭐ **改长度会改变重复遍数**（⭐ 那是**长度本来就该决定的量**、⭐ 两个字段改后仍各自自洽；
-    /// 区间落到新末端之外时按"不重复"播放，见 `render::loop_plan`）。
+    /// 区间落到新末端之外时按"不重复"播放，见 [`crate::ClipPlacement::loop_repeat`]）。
     ///
     /// ⚠ **值域**：⭐ `new_duration_ticks` **必须 ≥ 1** ⇒ ⭐ `0` 复用既有
     /// [`ModelError::ZeroDuration`]（⭐ 与 [`ClipPlacement::validate`] 同一口径、⛔ 不自造新错误）。

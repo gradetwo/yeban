@@ -41,6 +41,7 @@ pub mod container;
 pub mod error;
 pub mod ids;
 pub mod local_config;
+pub mod loop_plan;
 pub mod music;
 pub mod note_plan;
 pub mod ops;
@@ -66,6 +67,7 @@ pub use local_config::{
     LocalMachineConfig, MAX_SECRET_REF_LEN, SecretMaterial, SecretRef, SecretStore,
     SecretStoreError, UnavailableSecretStore, load_default, secret_store_for,
 };
+pub use loop_plan::LoopRepeat;
 pub use music::{CurveType, MidiNote, SlideConfig};
 pub use ops::{Op, OpOrigin, StampedOp};
 pub use project::{
