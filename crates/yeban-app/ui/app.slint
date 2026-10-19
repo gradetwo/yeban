@@ -1650,6 +1650,14 @@ export component MainWindow inherits Window {
         open-musical-pr => { root.open-musical-pr(); }
         run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
         export-diagnostics => { root.export-diagnostics(); }
+        // ⭐ `#235`：抽屉是 `AiRail` 的**第二个实例** —— 四条模块回执属性也必须读到
+        // **同一格** `MainWindow.module-*`（`#230` 只转了警示行，这四条漏转 ⇒ 1024 档
+        // 在抽屉里按导出，宿主写了回执、抽屉的回执行却仍是默认空串）。
+        // 绑定是单向只读、与常驻栏实例逐字同款；抽屉默认关 ⇒ 默认帧零像素。
+        module-status: root.module-status;
+        module-status-succeeded: root.module-status-succeeded;
+        module-midi-in-status: root.module-midi-in-status;
+        module-midi-in-status-succeeded: root.module-midi-in-status-succeeded;
         // ⭐ `#230`：抽屉是 `AiRail` 的第二个实例；警示行必须读到**同一格**
         // `MainWindow.module-clipping-warning`（否则 1024 档抽屉里的导出点不出提示）。
         module-clipping-warning: root.module-clipping-warning;
