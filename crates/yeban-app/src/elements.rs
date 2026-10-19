@@ -511,9 +511,9 @@ impl ElementRegistry {
             ElementKind::Text,
             "module_actions.slint",
             // 标签与 `.slint` 的 `accessible-label` **逐字相同**（`test_port_adapter`
-            // 的运行时对账断言 label 相等）。它是**静态**的：内容（回执原文）在可见
-            // `text` 与 `MainWindow.module-status` 上，不在无障碍名里 —— 同
-            // `status-bar-save-status`。
+            // 的运行时对账断言 label 相等）。标签是**静态**的（内容默认空串，绑上去会
+            // 让节点无名字）；回执原文住在可见 `text`、`MainWindow.module-status` 与
+            // `accessible-value` 上（`#236`：三处绑同一个属性）。
             "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）",
             // 动态区：回执每次按下都变 ⇒ 截图比对的遮罩要按它的包围盒置黑。
             true,

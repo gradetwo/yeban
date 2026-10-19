@@ -267,6 +267,9 @@ export component ModuleActions inherits Rectangle {
         // ⚠ 标签**静态**（与 `module-last-status` 同款理由：`[TEST-SPEC-005]` 要求
         // 可见且可寻址的节点必须有非空无障碍名，而默认是空串）。
         accessible-label: "最近一次硬件 MIDI 输入的采集结果（端口 / 事件数 / 不支持数 / 丢弃事件数 / 抖动 / 错误码）";
+        // ⭐ 任务单 `#236`：可见文本 = `accessible-value` ⇒ 屏幕阅读器读到的是这一串
+        // 回执原文（与下面的通用回执行、`module-clipping-warning` 同款绑定）。
+        accessible-value: root.midi-in-status;
     }
 
     // ------------------------------------------------------------- 回执行
@@ -286,9 +289,12 @@ export component ModuleActions inherits Rectangle {
         // ⚠ 标签是**静态**的，不绑 `root.status`：`[TEST-SPEC-005]` 要求"可见且可寻址的
         // 节点必须有非空无障碍名"（`tests/a11y_screen_reader.rs` 遍历整棵树断言），
         // 而回执在没人按之前是空串 ⇒ 绑上去会让这个节点**无名字**。
-        // 动态内容仍然可读：判据读 `MainWindow.module-status`，人手/屏读器读可见的 `text`。
-        // 这与同族的 `status-bar-save-status`（静态标签 + 动态可见文本）逐字同款。
+        // 动态内容仍然可读：判据读 `MainWindow.module-status`，屏幕阅读器读下面的
+        // `accessible-value`（与可见 `text` 绑同一个属性）。
         accessible-label: "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）";
+        // ⭐ 任务单 `#236`：可见文本 = `accessible-value`（读屏与判据读同一串字节，
+        // ⛔ 不是第二份）。默认空串 ⇒ 值是 `""` 而不是"没有值"。
+        accessible-value: root.status;
     }
 
     // ----------------------------------------------------- 母带削波警示行（#230）

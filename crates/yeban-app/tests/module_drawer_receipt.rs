@@ -27,10 +27,12 @@
 //! | ③ | 抽屉里削波导出 ⇒ `module-clipping-warning` 节点在树里、`value` = 导出报告两个字段拼出的**逐字**短句；与相邻模块行两两不相交 | 证 `#230` 不退化 |
 //! | ④ | 抽屉开关前后两帧差分：空回执的抽屉帧与导出后的抽屉帧，差异**全部**落在回执行包围盒内（区域外 `0` px）；默认（抽屉关）帧开关前后 `sha256` 相同 | 证"看得见"不是一句断言；⛔ 不替代 Linux Golden |
 //! | ⑤ | 1920 默认帧 / 1920 compact 帧（抽屉关）/ 1024 默认帧（抽屉关）逐字节 `sha256` 在注入前后相同 | 第 315 条：先算两档基准帧 |
+//! | ⑥ | `#236`：`module-last-status` / `module-midi-in-status` 的运行时 `value`（= `accessible-value`）**逐字**等于宿主写的回执原文；两档几何各自断言 | 屏幕阅读器读得到回执；⛔ 不证屏幕阅读器真的人耳可闻 |
 //!
-//! ⚠ 读法口径：`module-last-status` **没有** `accessible-value`（`.slint` 只把可见 `text`
-//! 绑到 `AiRail.status`，无障碍名是静态的），因此回执行"非空"的机械读数是**像素**，
-//! ⛔ 不是控件树的 `value`（那条恒为空串，对**两个实例**都一样）。
+//! ⚠ 读法口径（`#236` 之后）：两条回执行的**可见 `text` 与 `accessible-value` 绑的是
+//! 同一个属性**（`AiRail.status` / `AiRail.midi-in-status`）⇒ 回执行"非空"既有像素读数、
+//! 也有控件树 `value` 读数。无障碍**名**（`accessible-label`）仍是静态的（理由见
+//! `module_actions.slint`：默认空串会让节点无名字）。
 //!
 //! ## 平台约束
 //!
@@ -360,9 +362,9 @@ fn resident_arm() -> Result<(), String> {
 
     // ---- 按「导出 WAV」：回执行必须画出宿主写的那一串 ----
     //
-    // 回执行没有 `accessible-value`（`module_actions.slint` 只把可见 `text` 绑到
-    // `AiRail.status`，无障碍名是静态的）⇒ 判据读**像素**：导出前后同一实例的
-    // 帧差必须**只**落在回执行那一行里，且行内差异 > 0（= 真的画出字了）。
+    // `#236` 之后回执行的 `accessible-value` 也绑到 `AiRail.status` ⇒ 判据同时读
+    // **像素**（导出前后同一实例的帧差必须**只**落在回执行那一行里，且行内差异 > 0）
+    // 与**控件树 `value`**（逐字等于回执原文）。
     let pre_export = live
         .port
         .window()
@@ -378,12 +380,25 @@ fn resident_arm() -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     let tree = tree_of(window);
     let row_box = bounds_of(&tree, RECEIPT_ID);
+    let receipt_node = node_of(&tree, RECEIPT_ID);
+    let receipt_value = receipt_node.value.as_deref();
+    report_line(&format!(
+        "[#236 常驻栏 a11y 回执] id={} role={} label={:?} value={:?}",
+        receipt_node.id, receipt_node.role, receipt_node.label, receipt_value
+    ));
     let (inside, rightmost) = diff_inside(&pre_export, &post_export, row_box);
     let outside = diff_outside(&pre_export, &post_export, row_box);
     let right_edge = row_box.x + i32::try_from(row_box.width).expect("宽");
     report_line(&format!(
         "[#235 常驻栏 1920x1080] 导出成功={succeeded} 回执行={row_box:?} 回执长度={}",
         receipt.len()
+    ));
+    report_line(&format!(
+        "[#236 第315条 1920x1080 有回执帧] {}x{} sha256={} 字节={}",
+        post_export.width(),
+        post_export.height(),
+        frame_sha(&post_export),
+        post_export.pixels().len()
     ));
     report_line(&format!(
         "[#235 常驻栏帧差] 导出前 → 导出后：行内差异 {inside} px（右沿 x={} / 行右沿 {right_edge}）；行外差异 {outside} px",
@@ -396,6 +411,11 @@ fn resident_arm() -> Result<(), String> {
     }
     if receipt.is_empty() {
         return Err("常驻栏导出后 `MainWindow.module-status` 不得为空".to_owned());
+    }
+    if receipt_value != Some(receipt.as_str()) {
+        return Err(format!(
+            "`#236` 常驻栏 `module-last-status` 的 `accessible-value` 必须逐字等于回执原文：value={receipt_value:?} 回执={receipt:?}"
+        ));
     }
     if inside == 0 || outside != 0 {
         return Err(format!(
@@ -458,12 +478,23 @@ fn drawer_arm() -> Result<(), String> {
     let receipt = window.get_module_status().to_string();
     let tree = tree_of(window);
     let row_box = bounds_of(&tree, RECEIPT_ID);
+    let receipt_node = node_of(&tree, RECEIPT_ID);
+    let receipt_value = receipt_node.value.as_deref();
     let row_inside_rail = inside_rect(row_box, rail);
     let after_frame = live
         .port
         .window()
         .capture()
         .map_err(|err| err.to_string())?;
+    report_line(&format!(
+        "[#236 抽屉 a11y 回执] id={} role={} label={:?} value={:?}",
+        receipt_node.id, receipt_node.role, receipt_node.label, receipt_value
+    ));
+    report_line(&format!(
+        "[#236 第315条 1024x800 有回执帧（抽屉开）] sha256={} 字节={}",
+        frame_sha(&after_frame),
+        after_frame.pixels().len()
+    ));
     let (inside, rightmost) = diff_inside(&open_frame, &after_frame, row_box);
     let outside = diff_outside(&open_frame, &after_frame, row_box);
     let right_edge = row_box.x + i32::try_from(row_box.width).expect("宽");
@@ -487,6 +518,14 @@ fn drawer_arm() -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     let tree = tree_of(window);
     let midi_box = bounds_of(&tree, MIDI_ID);
+    let midi_node = node_of(&tree, MIDI_ID);
+    let midi_value = midi_node.value.as_deref();
+    let receipt_node_after_midi = node_of(&tree, RECEIPT_ID);
+    let receipt_value_after_midi = receipt_node_after_midi.value.as_deref();
+    report_line(&format!(
+        "[#236 抽屉 a11y MIDI] id={} role={} label={:?} value={:?}；通用回执行 value={:?}",
+        midi_node.id, midi_node.role, midi_node.label, midi_value, receipt_value_after_midi
+    ));
     // 「MIDI 输入」同时改写通用回执（同一串字节）⇒ 两行都会变；两行之外必须 0 差异。
     let (midi_inside, _) = diff_inside(&after_frame, &midi_frame, midi_box);
     let (receipt_inside, _) = diff_inside(&after_frame, &midi_frame, row_box);
@@ -585,6 +624,11 @@ fn drawer_arm() -> Result<(), String> {
     if receipt.is_empty() {
         return Err("抽屉导出后 `MainWindow.module-status` 不得为空".to_owned());
     }
+    if receipt_value != Some(receipt.as_str()) {
+        return Err(format!(
+            "`#236` 抽屉 `module-last-status` 的 `accessible-value` 必须逐字等于回执原文：value={receipt_value:?} 回执={receipt:?}"
+        ));
+    }
     if !row_inside_rail {
         return Err(format!(
             "抽屉回执行必须完整落在抽屉内：行 {row_box:?} / 抽屉 {rail:?}"
@@ -598,6 +642,16 @@ fn drawer_arm() -> Result<(), String> {
     if midi_receipt.is_empty() || !midi_receipt.contains("action=midi-in") {
         return Err(format!(
             "抽屉 MIDI 专属行必须收到结构化回执: {midi_receipt:?}"
+        ));
+    }
+    if midi_value != Some(midi_receipt.as_str()) {
+        return Err(format!(
+            "`#236` 抽屉 `module-midi-in-status` 的 `accessible-value` 必须逐字等于 MIDI 回执原文：value={midi_value:?} 回执={midi_receipt:?}"
+        ));
+    }
+    if receipt_value_after_midi != Some(midi_receipt.as_str()) {
+        return Err(format!(
+            "`#236` MIDI 输入也写通用回执 ⇒ `module-last-status` 的 value 必须同步：value={receipt_value_after_midi:?} 回执={midi_receipt:?}"
         ));
     }
     if midi_inside == 0 || receipt_inside == 0 || midi_outside != 0 {
