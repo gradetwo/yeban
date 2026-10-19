@@ -18,7 +18,7 @@
 //! | ④ | 削波时节点在树里：`role == "text"`、`label` 逐字、`value` == 属性、`bounds` 在右栏内、宽高非零 | `[UI-TEST-001]` + a11y 的可寻址落点 |
 //! | ⑤ | 三档 `1920×1080 / 1440×900 / 1024×800`：削波时警示行的包围盒与相邻模块行**两两不相交**（1024 档打开右栏抽屉） | 证"多一行没有把 1024 档挤重叠" |
 //! | ⑥ | 同一窗口里两帧差分：差异像素**全部**落在警示行包围盒内；清空后与默认帧逐字节相同 | 证"看得见"不是一句断言 |
-//! | ⑦ | 两条臂的 WAV `sha256` 等于 `#229` 的常量 | 证"提示不改音频一个字节" |
+//! | ⑦ | 两条臂的 WAV `sha256` 与**同一台机器上直接调用** [`export_wav`] 的产物相同（**自比**） | 证"提示不改音频一个字节"；⛔ 不钉绝对常量（机器相关，第 313 条） |
 //!
 //! ## 平台约束
 //!
@@ -57,11 +57,8 @@ use yeban_ui_test_port::tree::ControlTree;
 /// 警示行的语义 ID（`ui/module_actions.slint` ↔ `src/elements.rs` 两处逐字相同）。
 const WARNING_ID: &str = "module-clipping-warning";
 
-/// 过载夹具（`volume_db = +24`、力度 127）的整文件 SHA-256 —— 与 `#226` / `#229` 的常量相同。
-const CLIPPING_WAV_SHA256: &str =
-    "36918563041549eac27ed22121188d64b1ab98ee533216bc8ed47c85030c1a3c";
-/// 不削波夹具（同一条轨、`volume_db = 0`）的整文件 SHA-256。
-const CLEAN_WAV_SHA256: &str = "fa98b7a3c623b8e6b6d9929eabdc062b4f9179b2e8f7a2c443d3d9bb86eaedf0";
+// ⚠ 这里**没有** WAV 的绝对 `sha256` 常量：绝对字节是机器相关的（第 313 条），
+//   两条臂都用**同一台机器上的自比**（GUI 产物 vs 直接调用同一导出器）。
 
 /// 默认帧对照用的**非空**文本（与宿主真实写出的那一句同一形状；仅用于"空 ⇒ 零像素"的
 /// 两帧差分，不参与削波臂的逐字断言）。
@@ -472,10 +469,11 @@ fn the_clipping_warning_is_a_visible_row_only_when_the_master_clips() {
             outside, 0,
             "默认帧 → 削波帧只许改警示行与通用回执行两块"
         );
+        // 自比（⛔ 不钉绝对常量）：GUI 产物必须与同一次运行里直接调用的产物逐字节相同。
         assert_eq!(
             sha_hex(&clip_path),
-            CLIPPING_WAV_SHA256,
-            "提示不得改动音频字节（GUI 产物必须等于 #229 的基线）"
+            sha_hex(&clip_oracle),
+            "提示不得改动音频字节：GUI 路径与直接调用必须逐字节相同"
         );
 
         // ---- ④ 干净臂：同一窗口换不削波工程 ⇒ 属性清空 + 节点消失 ----
@@ -513,13 +511,14 @@ fn the_clipping_warning_is_a_visible_row_only_when_the_master_clips() {
         );
         let (clean_clipped, _) = report_for(&clean_project, &clean_oracle);
         assert_eq!(clean_clipped, 0, "干净夹具必须真的不削波");
+        // 自比（⛔ 不钉绝对常量）：干净臂同样与直接调用逐字节相同。
         assert_eq!(
             sha_hex(&clean_path),
-            CLEAN_WAV_SHA256,
-            "干净臂的音频字节必须等于 #229 的基线"
+            sha_hex(&clean_oracle),
+            "干净臂的音频字节必须与直接调用逐字节相同"
         );
         report_line(&format!(
-            "[#230 干净] warning={:?}；树里 {} 节点；sha256 两条臂 = #229 常量",
+            "[#230 干净] warning={:?}；树里 {} 节点；sha256 两条臂 = GUI 与直接调用相同（自比）",
             warning_of(&window),
             clean_tree.len()
         ));

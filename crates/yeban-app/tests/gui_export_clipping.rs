@@ -15,14 +15,18 @@
 //! | :--- | :--- |
 //! | ①（削波臂） | 经**真窗口的回调**（`invoke_export_wav`）导出过载工程 ⇒ 回执多一条 `clipping_note`，且它含 `clippedSamples` / `suggestedTrimDb` / 最响的源 |
 //! | ②（干净臂） | 同一装配导出不削波工程 ⇒ 回执**逐字等于** `#226` 之前的九字段形状（⛔ 没有 `clipping_note`、⛔ 没有"削波"） |
-//! | ③（不改音频） | 两条臂的 WAV `sha256` 都等于 `#226` 之前（`main` @ `95bdfec3`）实测的常量 ⇒ 提示只加文字、一个字节都没动 |
+//! | ③（不改音频） | 两条臂的 GUI 产物与**同一次运行里直接调用** [`export_wav`] 的产物 `sha256` 相同（**自比**）⇒ 提示只加文字、一个字节都没动 |
 //!
 //! ## 判据怎么变红
 //!
 //! - 回执里删掉 `clipping_note`（或只在调试输出里打）⇒ ① 红；
 //! - 把 `clipping_note` 无条件加进回执 ⇒ ② 红（干净臂多了一条）；
-//! - 提示路径碰了样本 / 增益 / 量化 / 落盘顺序 ⇒ ③ 红；
-//! - GUI 换一条**不是** `export_wav_with_sfz_file` 的导出器 ⇒ ③ 的字节与 CLI 常量不再相同 ⇒ 红。
+//! - 提示路径碰了样本 / 增益 / 量化 / 落盘顺序 ⇒ ③ 红（GUI 产物与直接调用的产物不再逐字节相同）；
+//! - GUI 换一条**不是** `export_wav_with_sfz_file` 的导出器 ⇒ ③ 的自比不再相同 ⇒ 红。
+//!
+//! ⚠ ③ **不**钉绝对 `sha256`：绝对字节来自 `sin`/`libm`/FMA，**机器相关**（第 313 条），
+//! 钉常量只能描述某一台机器（`#232` 的 Linux/Windows 红）。自比证明的是"GUI 路径与
+//! 直接调用在这台机器上产出同一串字节"，可跨平台成立。
 //!
 //! ## 平台约束：本文件只有一个 `#[test]`
 //!
@@ -50,15 +54,8 @@ use yeban_model::{
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::report_line;
 
-/// 过载夹具（`volume_db = +24`、力度 127）的整文件 SHA-256 —— 测自**加读数之前**
-/// （`main` @ `95bdfec3`，与 `tests/export_wav_clipping.rs` 的 `CLIPPING_WAV_SHA256` **同一个**常量）。
-const CLIPPING_WAV_SHA256: &str =
-    "36918563041549eac27ed22121188d64b1ab98ee533216bc8ed47c85030c1a3c";
-/// 同一夹具的母带位级摘要（同上，CLI 侧常量）。
-const CLIPPING_WAV_DIGEST: &str =
-    "93827504fa8bfb2833b6185712c1a2f6a53accd8ddaad4358c89b60f40e940dd";
-/// 不削波夹具（同一条轨、`volume_db = 0`）的整文件 SHA-256（测自 `main`）。
-const CLEAN_WAV_SHA256: &str = "fa98b7a3c623b8e6b6d9929eabdc062b4f9179b2e8f7a2c443d3d9bb86eaedf0";
+// ⚠ 这里**没有** WAV 的绝对 `sha256`/`digest` 常量：绝对字节是机器相关的（第 313 条），
+//   "不改音频"一律用**同一台机器上的自比**（GUI 产物 vs 直接调用同一导出器）。
 
 /// 回执字段名闭集（只用于把"值里自带的冒号"排除在切分边界之外；口径照
 /// `tests/ui_module_actions.rs` 的 `receipt_field_end`）。⭐ 本单新增 `clipping_note`。
@@ -258,12 +255,10 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
     assert!(note.contains("最响的源"), "必须点名最响的源: {note}");
     assert!(note.contains("Lead"), "必须点名最响源的轨道名: {note}");
     assert!(note.contains("-24"), "建议 trim 必须进文案: {note}");
-    assert!(
-        receipt.contains(&format!("digest={CLIPPING_WAV_DIGEST}")),
-        "回执里的 digest 必须是母带样本摘要: {receipt}"
-    );
+    // ⚠ 这里**不**把 `digest` 钉成绝对常量（机器相关，第 313 条）：下面的整条回执等值断言
+    //    会用**同一次运行里直接导出**的 `clip_report.digest` 逐字对上它。
 
-    // ③ 不改音频：GUI 这条路径的产物与 `#226` 之前 CLI 的常量逐字节相同。
+    // ③ 不改音频：GUI 这条路径的产物与**同一台机器上直接调用**同一导出器的产物逐字节相同。
     //    对照导出同时给出**同一份工程**的九字段回执（用来钉"恰好多一条"）。
     let clip_oracle = dir.join("clip-oracle.wav");
     let clip_report = export_wav(
@@ -294,15 +289,11 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
         format!("{clip_legacy}:clipping_note=\"{report_note}\""),
         "削波回执必须**恰好**是既有九字段 ＋ 一条 `clipping_note`"
     );
-    assert_eq!(
-        sha_hex(&clip_path),
-        CLIPPING_WAV_SHA256,
-        "削波提示不得改动音频字节（GUI 产物必须等于 CLI 基线）"
-    );
+    // 自比（⛔ 不钉绝对常量）：同一次运行里 GUI 路径与直接调用必须产出同一串字节。
     assert_eq!(
         sha_hex(&clip_path),
         sha_hex(&clip_oracle),
-        "GUI 路径与直接调用必须是同一份产物"
+        "削波提示不得改动音频字节：GUI 路径与直接调用必须逐字节相同"
     );
     assert_eq!(
         std::fs::metadata(&clip_path)
@@ -361,16 +352,11 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
         clean_receipt, legacy,
         "不削波时 GUI 回执必须与 `#226` 之前的九字段形状**逐字相同**"
     );
-    // 两份导出器（GUI 与直接调用）的音频逐字节相同。
+    // 自比（⛔ 不钉绝对常量）：GUI 与直接调用的音频逐字节相同。
     assert_eq!(
         sha_hex(&clean_path),
         sha_hex(&oracle_path),
-        "GUI 路径与直接调用必须是同一份产物"
-    );
-    assert_eq!(
-        sha_hex(&clean_path),
-        CLEAN_WAV_SHA256,
-        "干净夹具的字节必须与 `main` 的基线相同"
+        "GUI 路径与直接调用必须是同一份产物（干净臂自比）"
     );
 
     std::fs::remove_dir_all(&dir).ok();

@@ -5,8 +5,9 @@
 //! | 判据 | 钉住的事实 |
 //! | :--- | :--- |
 //! | [`a_clipping_project_reports_clipped_samples_and_a_suggested_trim`] | 削波工程 ⇒ 四个读数 ＋ `summary()` 的**第二行**（含 `clippedSamples` / `suggestedTrimDb`） |
-//! | [`a_clean_project_keeps_the_legacy_summary_byte_for_byte`] | ⛔ 不削波 ⇒ `summary()` **逐字不变**（既有文本判据不破）＋ 整文件 `sha256` 仍是基线 |
-//! | [`reporting_readings_does_not_change_a_single_byte`] | 加读数前后整文件 `sha256` / 母带 `digest` **逐字节相同**（常量测于 `main` @ `95bdfec3`） |
+//! | [`a_clean_project_keeps_the_legacy_summary_byte_for_byte`] | ⛔ 不削波 ⇒ `summary()` **逐字不变**（既有文本判据不破） |
+//! | [`a_clean_export_is_byte_identical_when_repeated`] | 干净夹具**连导两次** ⇒ 整文件 `sha256` / 母带 `digest` 逐字节相同（**自比**） |
+//! | [`reporting_readings_does_not_change_a_single_byte`] | 削波夹具**连导两次** ⇒ 整文件 `sha256` / 母带 `digest` 逐字节相同（**自比**；绝对字节是机器相关的） |
 //! | [`a_single_source_below_full_scale_can_still_clip_the_sum`] | 最响源 ≠ 过载原因：单源 `peakDbfs <= 0` 但母带削波 ⇒ 逐源建议 `0.0`、文案逐字说"多源求和" |
 //! | [`the_readings_match_the_mcp_side_on_the_same_audio`] | 同一段音频（音频片段夹具）CLI vs MCP 的 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` **逐项相等** |
 //! | [`the_real_cli_prints_the_warning_only_when_the_master_clips`] | 真二进制：削波 ⇒ stdout 多一行；不削波 ⇒ stdout 逐字不变 |
@@ -15,8 +16,13 @@
 //!
 //! - 夹具是**代码里构造的最小工程**（master ＋ N 条 MIDI 轨，音符完全相同），⛔ 不读仓库外文件；
 //! - 读数全部来自 [`yeban_app::export_wav`] 的**真导出产物**（不是手算的假数）；
-//! - "不改音频"用**加读数之前**（`main` @ `95bdfec3`）在同一个夹具上量到的常量钉住 —— 见
-//!   [`CLIPPING_WAV_SHA256`] 的文档。
+//! - "不改音频"用**同一台机器上的自比**钉住：同一份夹具**连导两次**，整文件 `sha256` 与母带
+//!   `digest` 必须逐字节相同（见 [`reporting_readings_does_not_change_a_single_byte`] 与
+//!   [`a_clean_export_is_byte_identical_when_repeated`]）。
+//! - ⭐ **绝对字节是机器相关的**：不同平台/CPU 的 `sin`/`libm`/FMA 会让渲染出的样本位型不同
+//!   ⇒ WAV 的 `sha256` 与母带 `digest` 也不同（台账第 313 条）。⛔ 因此本文件**不**钉任何
+//!   WAV 的绝对哈希常量 —— 那种常量只描述"某一台机器上的值"，换一台机器就红（`#232`）。
+//!   自比证明的是**可跨平台成立**的那一半：同一二进制、同一机器、同一输入 ⇒ 同一串字节。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,26 +41,11 @@ use yeban_render::rf64::PcmFormat;
 use yeban_render::wav::write_plain_wav;
 
 // ---------------------------------------------------------------------------
-// 夹具与基线常量
+// 夹具
 // ---------------------------------------------------------------------------
 
-/// 过载夹具（`one_plus24`：`volume_db = +24`、力度 127）的 RIFF **文件字节** SHA-256
-/// —— 在**加读数之前**（`main` @ `95bdfec3`）实测、之后照抄的锚。
-///
-/// 它证明"读数只提示、不动音频"：如果探针写了样本、改了增益或改了落盘顺序，
-/// 这个值立刻变红。同一夹具的母带摘要见 [`CLIPPING_WAV_DIGEST`]。
-const CLIPPING_WAV_SHA256: &str =
-    "36918563041549eac27ed22121188d64b1ab98ee533216bc8ed47c85030c1a3c";
-
-/// 同一份过载夹具的**母带样本**位级摘要（`RenderOutput::digest`，也测自 `main` @ `95bdfec3`）。
-const CLIPPING_WAV_DIGEST: &str =
-    "93827504fa8bfb2833b6185712c1a2f6a53accd8ddaad4358c89b60f40e940dd";
-
-/// 不削波夹具（`one_zero`：同一条轨、`volume_db = 0`）的整文件 SHA-256（测自 `main`）。
-const CLEAN_WAV_SHA256: &str = "fa98b7a3c623b8e6b6d9929eabdc062b4f9179b2e8f7a2c443d3d9bb86eaedf0";
-
-/// 不削波夹具的母带位级摘要（测自 `main`）。
-const CLEAN_WAV_DIGEST: &str = "71b8e614543a8837537d394b19a7c4e69c0538550ce8f071636bd2896605488e";
+// ⚠ 这里**没有** WAV 的绝对 `sha256`/`digest` 常量：绝对字节是机器相关的（第 313 条），
+//   判据一律用同一台机器上的**自比**（导出两次，比两次的字节/摘要）。
 
 /// ⭐ MCP 侧（`yeban-mcp --stdio` → `yeban_render_master`）在**同一份**音频片段夹具上
 /// 实测的三项读数（`#226` 的证据；夹具与 [`audio_clip_project`] 逐字节同源）。
@@ -390,10 +381,53 @@ fn a_clean_project_keeps_the_legacy_summary_byte_for_byte() {
     assert_eq!(report.summary(), legacy);
     assert_eq!(report.summary().lines().count(), 1);
 
-    // 音频也没被动过：与 `main` 上同一夹具的字节相同。
-    assert_eq!(sha_hex(&path), CLEAN_WAV_SHA256);
-    assert_eq!(report.digest, CLEAN_WAV_DIGEST);
+    // ⚠ 这里**不**比 WAV 的绝对 `sha256`：绝对字节是机器相关的（第 313 条）。
+    //    字节侧的事实由 [`a_clean_export_is_byte_identical_when_repeated`] 用**自比**钉住；
+    //    本判据只钉**文本** —— 不削波时 `summary()` 与旧格式逐字相同，这一条跨平台成立。
+    std::fs::remove_dir_all(&dir).ok();
+}
 
+/// 干净夹具的**字节自比**：同一份工程连导两次，整文件 `sha256` 与母带 `digest` 逐字节相同。
+///
+/// 为什么是自比而不是绝对常量：样本位型来自 `sin`/`libm`/FMA，**机器相关**（第 313 条）。
+/// 绝对常量只能证明"某一台机器上是这个值"，换一台机器就红（`#232`：Linux/Windows/macOS
+/// 三个平台三个 `sha256`）；自比证明的是**可跨平台成立**的那一半 —— 同一二进制、同一机器、
+/// 同一输入 ⇒ 同一串字节。
+///
+/// ⚠ 边界：它**不**证明"与 `#226` 之前的历史版本逐字节相同"。那需要一台机器上的绝对锚，
+/// 而绝对锚跨平台不成立；本判据如实只声明"连导两次不变"。
+#[test]
+fn a_clean_export_is_byte_identical_when_repeated() {
+    let dir = scratch_dir("clean-bytes");
+    let project = project_with_tracks(&[("Lead", 0.0)]);
+    let path = dir.join("clean-bytes.wav");
+
+    let before =
+        export_wav(&project, &path, WavExportOptions::default()).expect("第一次导出必须成功");
+    assert_eq!(before.clipped_samples, 0, "干净夹具不得报削波样本");
+    let sha_before = sha_hex(&path);
+    let digest_before = before.digest.clone();
+    let bytes_before = before.bytes;
+
+    let after =
+        export_wav(&project, &path, WavExportOptions::default()).expect("第二次导出必须成功");
+    assert_eq!(after.clipped_samples, 0, "第二次也必须不削波");
+    let sha_after = sha_hex(&path);
+    let digest_after = after.digest.clone();
+    let bytes_after = after.bytes;
+
+    println!(
+        "### #226 干净自比: sha_before={sha_before} sha_after={sha_after} digest_before={digest_before} digest_after={digest_after} bytes_before={bytes_before} bytes_after={bytes_after}"
+    );
+    assert_eq!(
+        sha_before, sha_after,
+        "同一台机器连导两次，整文件 sha256 必须逐字节相同"
+    );
+    assert_eq!(
+        digest_before, digest_after,
+        "母带样本的位级摘要也必须逐位相同"
+    );
+    assert_eq!(bytes_before, bytes_after, "字节数必须相同");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -401,36 +435,66 @@ fn a_clean_project_keeps_the_legacy_summary_byte_for_byte() {
 // ③ ⛔ 不改音频
 // ---------------------------------------------------------------------------
 
-/// 加读数前后整文件 `sha256` / 母带 `digest` **逐字节相同**。
+/// 同一份削波夹具**连导两次**（同一二进制、同一路径）的整文件 `sha256` / 母带 `digest`
+/// 必须逐字节相同 —— 这是"读数不写样本"的可跨平台口径。
 ///
-/// 两个常量都在 `main` @ `95bdfec3`（**本单的改动之前**）用同一个夹具实测 —— 不是
-/// "跑两遍都一样"（那只能证明确定性，不能证明改动没碰字节）。
+/// # 为什么是自比，而不是钉常量
+///
+/// **绝对字节是机器相关的**（第 313 条）：样本位型来自 `sin`/`libm`/FMA，不同平台的
+/// 结果可以在低位不同 ⇒ WAV 的 `sha256` 与母带 `digest` 也随之不同。`#226` 曾在 macOS 上
+/// 量到 `36918563…` / `93827504…` 并钉成常量，Linux 与 Windows 立刻红（`#232`：同一个夹具
+/// 在三个平台产出三个不同的 `sha256`）。⇒ 判据改成**自比**：
+///
+/// 1. 第一次导出 ⇒ `sha_before` / `digest_before`；
+/// 2. 第二次导出 ⇒ `sha_after` / `digest_after`；
+/// 3. 断言两次相等，⛔ 不与任何绝对常量比。
+///
+/// # 它证明什么、不证明什么
+///
+/// - 证明：读数只从同一份渲染结果里读；**同一二进制、同一机器、同一输入 ⇒ 同一串字节**
+///   （两次导出里读数都参与，第二次没有因为"已经量过一次"而改样本）。
+/// - ⛔ 不证明："与 `#226` 之前的历史版本逐字节相同"。那需要一台机器上的绝对锚，而绝对锚
+///   跨平台不成立 —— 那条断言本来就不该是跨平台判据；它的跨平台部分只能是自比。
 #[test]
 fn reporting_readings_does_not_change_a_single_byte() {
     let dir = scratch_dir("bytes");
     let project = project_with_tracks(&[("Lead", 24.0)]);
     let path = dir.join("bytes.wav");
-    let report = export_wav(&project, &path, WavExportOptions::default()).expect("导出必须成功");
+
+    let before =
+        export_wav(&project, &path, WavExportOptions::default()).expect("第一次导出必须成功");
     assert!(
-        report.clipped_samples > 0,
+        before.clipped_samples > 0,
         "这一条必须在**真有一条读数**的产物上量字节"
     );
-    assert_eq!(
-        sha_hex(&path),
-        CLIPPING_WAV_SHA256,
-        "加读数前后整文件 sha256 必须逐字节相同"
+    let sha_before = sha_hex(&path);
+    let digest_before = before.digest.clone();
+    let bytes_before = before.bytes;
+
+    let after =
+        export_wav(&project, &path, WavExportOptions::default()).expect("第二次导出必须成功");
+    assert!(
+        after.clipped_samples > 0,
+        "第二次也必须真有一条读数（⛔ 不是空夹具上的恒等）"
+    );
+    let sha_after = sha_hex(&path);
+    let digest_after = after.digest.clone();
+    let bytes_after = after.bytes;
+
+    println!(
+        "### #226 不改音频自比: sha_before={sha_before} sha_after={sha_after} digest_before={digest_before} digest_after={digest_after} bytes_before={bytes_before} bytes_after={bytes_after}"
     );
     assert_eq!(
-        report.digest, CLIPPING_WAV_DIGEST,
+        sha_before, sha_after,
+        "同一台机器连导两次，整文件 sha256 必须逐字节相同"
+    );
+    assert_eq!(
+        digest_before, digest_after,
         "母带样本的位级摘要也必须逐位相同"
     );
-    println!(
-        "### #226 不改音频: sha256={} digest={} bytes={}",
-        sha_hex(&path),
-        report.digest,
-        report.bytes
-    );
-    assert_eq!(report.bytes, 2_304_068);
+    // 结构事实（⛔ 不是指纹）：384000 帧 × 2 声道 × 3 字节 ＋ 68 字节 RIFF 头。
+    assert_eq!(bytes_before, 2_304_068, "字节数是结构事实，跨平台成立");
+    assert_eq!(bytes_after, bytes_before, "两次导出的字节数必须相同");
     std::fs::remove_dir_all(&dir).ok();
 }
 
