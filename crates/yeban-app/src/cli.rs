@@ -3868,6 +3868,70 @@ pub fn run_probe_instruments(mut emit: impl FnMut(String)) -> (usize, usize, usi
     (total, installable, missing, unreadable)
 }
 
+/// ⭐ 任务单 `#210`／`#239`：`--track-sampler` 的**唯一**应用实现。
+///
+/// 一次装 ＝ **恰好一次** `Op::SetTrackSampler` ＋ 一次提交（已经装有这份乐器 ⇒ 0 次提交）。
+/// 返回**应用之后的工程**与**回执行**；由调用方决定把它落到哪里。
+///
+/// ## 为什么返回值里带工程（`#239`）
+///
+/// `--record-wav` 读的是**工程快照**，而绑定原先排在录音块之后（`#222` 实测：录制在旧
+/// `cli.rs:3986`、绑定在 `4138`）⇒ `--record-wav --track-sampler X` 录到的是**绑定前**的
+/// 音源。录音块因此在**副本**上先跑一次本函数（`run_batch` 的 `recorded_bound_project`），
+/// 真身仍在导入之后的原位置应用 ⇒ 其它组合的次序与字节不变。
+fn apply_track_sampler(
+    project: &YebanProjectV1,
+    path: &Path,
+) -> Result<(YebanProjectV1, String), CliError> {
+    let sfz_text = path.to_str().ok_or_else(|| CliError::TrackSampler {
+        path: path.to_path_buf(),
+        reason: "路径不是 UTF-8，无法逐字写进 `TrackV3::sampler.path`".to_owned(),
+    })?;
+    // 目标轨 = 展示轨（身份序第一条非主总线轨）；CLI 没有选中态 ⇒ 与 GUI 的兜底同一档。
+    let track = crate::bridge::device_rack_track(project).cloned();
+    let track_label = track
+        .as_ref()
+        .map_or_else(|| "<无>".to_owned(), |track| track.name.clone());
+    let ops =
+        crate::bridge::instrument_install_ops_on(track.as_ref(), sfz_text).map_err(|reason| {
+            CliError::TrackSampler {
+                path: path.to_path_buf(),
+                reason: reason.to_owned(),
+            }
+        })?;
+    if ops.is_empty() {
+        // 已经是这份乐器：⛔ 不提交（不制造"什么也没改"的提交）。
+        return Ok((
+            project.clone(),
+            format!(
+                "track-sampler: track={track_label} path={sfz_text} ops=0 (已经是这份乐器, 工程未改)"
+            ),
+        ));
+    }
+    let now = crate::host::now_ms();
+    let session =
+        crate::undo::UndoSession::open("<cli:track-sampler>", "yeban-app", project.clone(), now)
+            .map_err(|error| CliError::TrackSampler {
+                path: path.to_path_buf(),
+                reason: format!("建会话失败: {error}"),
+            })?;
+    let port = crate::undo::UndoPort::new(session);
+    port.commit_ops(now, "set track sampler", ops)
+        .map_err(|error| CliError::TrackSampler {
+            path: path.to_path_buf(),
+            reason: format!("提交被拒: {error}"),
+        })?;
+    let display = port.display();
+    let line = format!(
+        "track-sampler: track={track_label} path={sfz_text} ops=1 \
+         commit_count={} undoable={}",
+        display.commit_count, display.undoable
+    );
+    // 会话是权威 ⇒ 交给调用方落回归档：同一命令里的 `--export-wav` / `--save-as` /
+    // `--record-wav` 看的是这一份。
+    Ok((port.project(), line))
+}
+
 /// 无窗口路径的执行：返回**它应当打印的每一行**（打印由 [`emit`] / [`finish`] 做）。
 ///
 /// 顺序是契约的一部分：
@@ -3983,6 +4047,27 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         loaded_sfz = Some((std::sync::Arc::new(instrument), path.clone()));
     }
 
+    // ⭐ 任务单 `#239`（缺陷 F3）：`--record-wav` 与 `--track-sampler` **同一调用**时，录音块
+    // 原先排在绑定之前（`#222` 实测：录制在旧 `cli.rs:3986`、绑定在 `4138`）⇒ 用户写
+    // `--record-wav … --track-sampler X` 却录到**绑定前**的音源（默认音源）。
+    // 录音读的是**工程快照**，所以这里先在**副本**上把本次绑定应用一次，只喂给录音；真身仍在
+    // 原位置（导入之后）应用到归档 ⇒ 单独 `--record-wav`、`--export-wav` ＋绑定、导入次序
+    // **逐字节不变**（§1.2／§2.3–§2.5 的判据）。
+    //
+    // ⚠ 两条**不做**预应用（录音根本不读工程绑定，预应用只会挪动失败位次）：
+    //   * `--record-source tone` ⇒ 录的是内存正弦，⛔ 不读工程；
+    //   * 给了 `--sfz` ⇒ 录音走 SFZ 旁路（`record_project_under` 的 `sfz` 参数），
+    //     `TrackV3.sampler` 不参与该次渲染。
+    let recorded_bound_project: Option<YebanProjectV1> =
+        match (options.record_wav.as_ref(), options.track_sampler.as_ref()) {
+            (Some(_), Some(sampler))
+                if options.record_source.as_deref() != Some("tone") && options.sfz.is_none() =>
+            {
+                Some(apply_track_sampler(&loaded.archive.project, sampler)?.0)
+            }
+            _ => None,
+        };
+
     if let Some(path) = options.record_wav.as_ref() {
         let mut record_options = crate::record_wav::RecordOptions::default();
         if let Some(seconds) = options.record_seconds {
@@ -3996,12 +4081,15 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         //    （与 `--export-wav` **同一个** `Loaded::project_dir()`）⇒ "样本放在工程旁边"
         //    在**任意 cwd** 下对录制也成立。样本形态（没有 `--open`）给 `None` ⇒ 旧口径
         //    （仓库根 ⇒ cwd），⛔ 不假装有一个工程目录。
+        // ⭐ 任务单 `#239`：工程参数取 `recorded_bound_project`（本次绑定已应用）优先。
         let project_dir = loaded.project_dir();
         let report = if options.record_source.as_deref() == Some("tone") {
             crate::record_wav::record_test_tone(path, &record_options)
         } else {
             crate::record_wav::record_project_under(
-                &loaded.archive.project,
+                recorded_bound_project
+                    .as_ref()
+                    .unwrap_or(&loaded.archive.project),
                 path,
                 &record_options,
                 loaded_sfz
@@ -4135,54 +4223,13 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     // ⭐ 任务单 `#210`：`--track-sampler` —— **装乐器**是编辑 ⇒ 与两条导入同一位次
     // （导出与保存都能看到它）。一次装 ＝ **恰好一次** `Op::SetTrackSampler` ＋ 一次提交。
+    // ⭐ 任务单 `#239`：应用逻辑唯一实现在 [`apply_track_sampler`] —— 录音块在**副本**上先用
+    // 同一份实现（`recorded_bound_project`），这里仍是**真身**的落点（导入之后）。
     if let Some(path) = options.track_sampler.as_ref() {
-        let sfz_text = path.to_str().ok_or_else(|| CliError::TrackSampler {
-            path: path.clone(),
-            reason: "路径不是 UTF-8，无法逐字写进 `TrackV3::sampler.path`".to_owned(),
-        })?;
-        // 目标轨 = 展示轨（身份序第一条非主总线轨）；CLI 没有选中态 ⇒ 与 GUI 的兜底同一档。
-        let track = crate::bridge::device_rack_track(&loaded.archive.project).cloned();
-        let track_label = track
-            .as_ref()
-            .map_or_else(|| "<无>".to_owned(), |track| track.name.clone());
-        let ops = crate::bridge::instrument_install_ops_on(track.as_ref(), sfz_text).map_err(
-            |reason| CliError::TrackSampler {
-                path: path.clone(),
-                reason: reason.to_owned(),
-            },
-        )?;
-        if ops.is_empty() {
-            // 已经是这份乐器：⛔ 不提交（不制造"什么也没改"的提交）。
-            lines.push(format!(
-                "track-sampler: track={track_label} path={sfz_text} ops=0 (已经是这份乐器, 工程未改)"
-            ));
-        } else {
-            let now = crate::host::now_ms();
-            let session = crate::undo::UndoSession::open(
-                "<cli:track-sampler>",
-                "yeban-app",
-                loaded.archive.project.clone(),
-                now,
-            )
-            .map_err(|error| CliError::TrackSampler {
-                path: path.clone(),
-                reason: format!("建会话失败: {error}"),
-            })?;
-            let port = crate::undo::UndoPort::new(session);
-            port.commit_ops(now, "set track sampler", ops)
-                .map_err(|error| CliError::TrackSampler {
-                    path: path.clone(),
-                    reason: format!("提交被拒: {error}"),
-                })?;
-            let display = port.display();
-            // 会话是权威 ⇒ 落回归档：同一命令里的 `--export-wav` / `--save-as` 看的是这一份。
-            loaded.archive.project = port.project();
-            lines.push(format!(
-                "track-sampler: track={track_label} path={sfz_text} ops=1 \
-                 commit_count={} undoable={}",
-                display.commit_count, display.undoable
-            ));
-        }
+        let (project, line) = apply_track_sampler(&loaded.archive.project, path)?;
+        // 会话是权威 ⇒ 落回归档：同一命令里的 `--export-wav` / `--save-as` 看的是这一份。
+        loaded.archive.project = project;
+        lines.push(line);
     }
 
     if let Some(path) = options.export_elements.as_ref() {
