@@ -518,6 +518,20 @@ impl ElementRegistry {
             // 动态区：回执每次按下都变 ⇒ 截图比对的遮罩要按它的包围盒置黑。
             true,
         );
+        // ⭐ 任务单 `#230`：**母带削波警示行**（`module_actions.slint` 的
+        // `module-clipping-warning`，`y = 448`）。
+        //
+        // 它与上面两条状态行不是同一格：只放一行短句（削波样本数 / 建议减多少 dB），
+        // 空串 ⇒ `visible: false` ⇒ 默认帧里不在运行时树、不画像素。
+        // 动态区：导出不同的工程 / 削波读数不同 ⇒ 截图遮罩按它的包围盒置黑。
+        registry.add(
+            "module-clipping-warning",
+            ElementKind::Text,
+            "module_actions.slint",
+            // 与 `.slint` 的 `accessible-label` 逐字相同。
+            "母带削波警示（削波样本数 / 建议减多少 dB）",
+            true,
+        );
 
         // ⭐ **导出 MIDI**（任务单 `#90` 甲）—— 第六条模块入口。
         //

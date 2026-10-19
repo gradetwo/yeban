@@ -76,6 +76,9 @@ component AiRail inherits Rectangle {
     // MIDI 输入的**专属**结果行（同一串字节、同一个写者 ⇒ ⛔ 不是第二个真相源）。
     in property <string> module-midi-in-status: "";
     in property <bool> module-midi-in-status-succeeded: false;
+    // ⭐ 任务单 `#230`：母带削波警示行的**可见短句**（空串 = 不显示）。
+    // 唯一写者 = 宿主 `host::wire_module_actions` 的 `export-wav` 分支。
+    in property <string> module-clipping-warning: "";
 
     background: Tokens.bg-panel;
     border-width: 1px;
@@ -253,6 +256,7 @@ component AiRail inherits Rectangle {
         status-succeeded: root.module-status-succeeded;
         midi-in-status: root.module-midi-in-status;
         midi-in-status-succeeded: root.module-midi-in-status-succeeded;
+        clipping-warning: root.module-clipping-warning;
 
         export-wav => { root.export-wav(); }
         import-midi => { root.import-midi(); }
@@ -458,6 +462,10 @@ export component MainWindow inherits Window {
     // 默认空串 = "还没按过这个入口"，**不是**一个编造的读数。
     in-out property <string> module-midi-in-status: "";
     in-out property <bool> module-midi-in-status-succeeded: false;
+    // ⭐ 任务单 `#230`：母带削波警示行（`ui/module_actions.slint` 的
+    // `module-clipping-warning`）。空串 = 不显示；削波导出 ⇒ 一行短句。
+    // 完整读数仍在 `module-status` 的 `clipping_note="…"` 字段里（`#229` 的数据通道）。
+    in-out property <string> module-clipping-warning: "";
     // 六条入口回调（事件源 = `ui/module_actions.slint` 的五个 `TouchArea` ＋
     // `ui/console/mixer_console.slint` 的 `midi_export_area`）。
     // 宿主 `host::wire_module_actions` 把它们落到**已经存在的**六个模块实现上：
@@ -1278,6 +1286,8 @@ export component MainWindow inherits Window {
                 module-status-succeeded: root.module-status-succeeded;
                 module-midi-in-status: root.module-midi-in-status;
                 module-midi-in-status-succeeded: root.module-midi-in-status-succeeded;
+                // ⭐ `#230`：母带削波警示行（空串 ⇒ 不显示）。
+                module-clipping-warning: root.module-clipping-warning;
                 export-wav => { root.export-wav(); }
                 import-midi => { root.import-midi(); }
                 load-sfz => { root.load-sfz(); }
@@ -1640,6 +1650,9 @@ export component MainWindow inherits Window {
         open-musical-pr => { root.open-musical-pr(); }
         run-acoustic-diagnosis => { root.run-acoustic-diagnosis(); }
         export-diagnostics => { root.export-diagnostics(); }
+        // ⭐ `#230`：抽屉是 `AiRail` 的第二个实例；警示行必须读到**同一格**
+        // `MainWindow.module-clipping-warning`（否则 1024 档抽屉里的导出点不出提示）。
+        module-clipping-warning: root.module-clipping-warning;
     }
 
     // AI 编曲提案审核抽屉 (§10 Musical PR)

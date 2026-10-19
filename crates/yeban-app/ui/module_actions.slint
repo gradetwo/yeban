@@ -41,6 +41,15 @@ export component ModuleActions inherits Rectangle {
     // ⇒ ⛔ 不是第二个真相源。
     in property <string> midi-in-status: "";
     in property <bool> midi-in-status-succeeded: false;
+    // ⭐ 任务单 `#230`：**母带削波警示行**的可见文本（空串 = 不显示）。
+    //
+    // 它**只**放一行短句（削波样本数 ＋ 建议减多少 dB）；完整读数仍然留在通用回执
+    // `status` 的 `clipping_note="…"` 字段里（`#229` 的数据通道保持不变）。
+    // 为什么要另起一行：回执行宽 264px，光 `module:action=export-wav:outcome=ok:` 就占
+    // 216px，而 `clipping_note` 是**最后一个**字段 ⇒ 它被 `elide` 掉（`#229` 实测）。
+    // 这一行不再与那 216px 的前缀抢宽度。唯一写者 = 宿主 `host::wire_module_actions`
+    // 的 `export-wav` 分支：削波 ⇒ 写短句；不削波 / 其它模块动作 ⇒ 写空串。
+    in property <string> clipping-warning: "";
 
     // 五个入口各一条回调。**都不带参数**：目标路径 / 端口由宿主解析
     // （`YEBAN_UI_<动作>_PATH`、`YEBAN_UI_MIDI_IN_PORT`，缺省在工作目录 / 端口 `0`），
@@ -280,5 +289,30 @@ export component ModuleActions inherits Rectangle {
         // 动态内容仍然可读：判据读 `MainWindow.module-status`，人手/屏读器读可见的 `text`。
         // 这与同族的 `status-bar-save-status`（静态标签 + 动态可见文本）逐字同款。
         accessible-label: "最近一次模块入口动作的回执（路径 / 帧数 / 来源 / 错误码）";
+    }
+
+    // ----------------------------------------------------- 母带削波警示行（#230）
+    // 与上面那条回执行**分开**的一行：`x = 8`、`width = 264`、`height = 16`。
+    // 默认空串 ⇒ `visible: false` ⇒ 不进运行时控件树、不参与布局、不画任何像素
+    // （与 `engine-error-banner` 同一条纪律；默认帧因此逐像素不变）。
+    // `overflow: clip`（⛔ 不是 `elide`）：这一行的文案被刻意压到一行能放下
+    // （⚠ / 母带削波 / N 个样本 / 建议减 X dB），不会出现"末尾被省略号吃掉"的形态。
+    UiText {
+        x: Tokens.space-4;
+        y: 448px;
+        width: parent.width - 2 * Tokens.space-4;
+        height: 16px;
+        visible: root.clipping-warning != "";
+        text: root.clipping-warning;
+        color: Tokens.record-red;
+        font-size: Tokens.font-size-xs;
+        overflow: clip;
+        accessible-role: text;
+        accessible-id: "module-clipping-warning";
+        // 静态标签：`[TEST-SPEC-005]` 要求可见且可寻址的节点必须有非空无障碍名，
+        // 而默认是空串 ⇒ ⛔ 不把 label 绑到动态文本上。
+        accessible-label: "母带削波警示（削波样本数 / 建议减多少 dB）";
+        // 可见文本 = `accessible-value`（读屏与判据读同一串字节，⛔ 不是第二份）。
+        accessible-value: root.clipping-warning;
     }
 }

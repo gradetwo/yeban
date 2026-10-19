@@ -5926,9 +5926,42 @@ fn module_error_fields(code: &str, message: &str) -> Vec<String> {
 }
 
 /// 把一条回执写进界面（**唯一**的写入点：成功与失败都从这里过）。
+///
+/// 它同时把母带削波警示行清空 —— 除 `export-wav` 的成功分支以外，任何模块动作
+/// 都不该留下上一条导出的削波提示（否则"打开工程"之后窗口里还挂着旧工程的读数）。
 fn apply_module_receipt(ui: &MainWindow, receipt: &str, ok: bool) {
+    apply_module_receipt_with_clipping_warning(ui, receipt, ok, "");
+}
+
+/// 与 [`apply_module_receipt`] 相同，但**同一次**写入里带上削波警示行的文本。
+///
+/// 空串 = 不显示（`.slint` 侧 `visible: text != ""`）。这条短句只属于
+/// `export-wav` 的成功分支；完整读数（`clippedSamples` / `suggestedTrimDb` /
+/// 最响的源）仍然在回执最后那一条 `clipping_note="…"` 字段里（`#229`）。
+fn apply_module_receipt_with_clipping_warning(
+    ui: &MainWindow,
+    receipt: &str,
+    ok: bool,
+    clipping_warning: &str,
+) {
     ui.set_module_status(receipt.into());
     ui.set_module_status_succeeded(ok);
+    ui.set_module_clipping_warning(clipping_warning.into());
+}
+
+/// 母带削波警示行的**可见短句**（`""` = 不削波 ⇒ 不显示）。
+///
+/// 为什么只留三件事：回执行宽 264px，`#229` 实测光
+/// `module:action=export-wav:outcome=ok:` 就占 216px ⇒ 完整 `clipping_note`
+/// 会被 `elide`。这一行是**独立的一行**（`module_actions.slint` 的
+/// `module-clipping-warning`，`y = 448`、宽 264），文案压到一行放得下：
+/// 削波样本数 ＋ 建议减多少 dB。完整读数照旧在回执字段与
+/// `YEBAN_UI_MODULE_TRACE=1` 的 stderr 行里。
+fn clipping_warning_line(clipped_samples: u64, suggested_trim_db: f32) -> String {
+    format!(
+        "⚠ 母带削波：{clipped_samples} 个样本，建议减 {:.1} dB",
+        suggested_trim_db.abs()
+    )
 }
 
 /// `YEBAN_UI_MODULE_TRACE=1` 时把每一步的墙钟读数打到 stderr。
@@ -6070,7 +6103,7 @@ pub fn wire_module_actions_with_capture(
                 None::<yeban_render::dither::BitDepth>,
                 None::<f32>,
             );
-            let (receipt, ok) = match crate::export_wav::export_wav_with_sfz_file(
+            let (receipt, ok, clipping_warning) = match crate::export_wav::export_wav_with_sfz_file(
                 &project,
                 &target,
                 wav_options,
@@ -6102,7 +6135,14 @@ pub fn wire_module_actions_with_capture(
                     if let Some(note) = report.clipping_note() {
                         fields.push(format!("clipping_note=\"{note}\""));
                     }
-                    (module_receipt("export-wav", &fields), true)
+                    // ⭐ 任务单 `#230`：窗口里**看得见**的那一行（与上面那条回执字段
+                    // 是同一份报告的两个显示位，⛔ 不是第二份读数）。
+                    let warning = if report.clipped_samples == 0 {
+                        String::new()
+                    } else {
+                        clipping_warning_line(report.clipped_samples, report.suggested_trim_db)
+                    };
+                    (module_receipt("export-wav", &fields), true, warning)
                 }
                 Err(error) => (
                     module_receipt(
@@ -6110,9 +6150,10 @@ pub fn wire_module_actions_with_capture(
                         &module_error_fields("export-wav", &error.to_string()),
                     ),
                     false,
+                    String::new(),
                 ),
             };
-            apply_module_receipt(&ui, &receipt, ok);
+            apply_module_receipt_with_clipping_warning(&ui, &receipt, ok, &clipping_warning);
             module_trace("export-wav", started, &receipt);
         });
     }

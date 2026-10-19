@@ -530,7 +530,12 @@ const VISIBLE_FAMILY_MEMBERS: [&str; 12] = [
 /// 1148 B／0 音轨 ＋ 1 主总线容器（`#215`：创建时刻已写进文件）⇒ 就地换成新工程；
 /// 取消 / 没有对话框两条腿）在
 /// `tests/new_project_ui.rs` 里断。
-const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 12] = [
+///
+/// ⭐ **`module-clipping-warning`（任务单 `#230`）是最后一位**：它是右栏模块入口条里
+/// 的**母带削波警示行**（`visible: 属性 != ""`），默认文本是空串 ⇒ 默认帧里不在运行时
+/// 树、一个像素都不画。反方向（削波导出之后它在树里、文本逐字、几何在右栏内）在
+/// `tests/gui_clipping_warning.rs` 里断。
+const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 13] = [
     "workspace-session-canvas",
     "session-back-to-arrangement-button",
     "scene-launch-column-header",
@@ -545,6 +550,7 @@ const DEFAULT_VIEW_MUST_NOT_HAVE: [&str; 12] = [
     "module-export-midi-button",
     "module-open-project-button",
     "module-new-project-button",
+    "module-clipping-warning",
 ];
 
 fn demo_registry() -> ElementRegistry {
