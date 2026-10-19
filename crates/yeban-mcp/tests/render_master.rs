@@ -48,7 +48,8 @@ use yeban_mcp::domain::render::MAX_RENDER_FRAMES;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
-    ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
+    AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
+    ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
     MidiNote, RoutingEdge, RoutingKind, SampleRate, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_render::rf64::{BEXT_FIXED_LEN, parse_container};
@@ -4478,16 +4479,24 @@ fn the_known_unsupported_list_is_not_decoration() {
             render_or_ok(&project(&spec), "external")
         }),
     ));
-    // ④ `automationLanes`：音轨上有自动化泳道。
+    // ④ `automationLanes`：**有可求值点**、但目标不在首期支持集合里（`TrackPan`）。
+    //    ⚠ 空泳道**不**触发（#243 修的第一处谎）：一条没有点的曲线没有“少做了什么”。
     triggers.push((
         "automationLanes",
         Box::new(|| {
             let mut project = project(&Spec::default());
-            let lane = yeban_model::AutomationLane {
-                target: yeban_model::AutomationTarget::TrackVolume { track_id: lead },
-                points: BTreeMap::new(),
+            let target = AutomationTarget::TrackPan { track_id: lead };
+            let point = AutomationPoint {
+                id: id(120),
+                tick: 0,
+                value: 0.25,
+                curve: CurveType::Linear,
+            };
+            let lane = AutomationLane {
+                target,
+                points: BTreeMap::from([(point.id, point)]),
                 read_enabled: true,
-                write_mode: yeban_model::AutomationWriteMode::Latch,
+                write_mode: AutomationWriteMode::Latch,
                 domain: None,
             };
             project
@@ -4495,7 +4504,7 @@ fn the_known_unsupported_list_is_not_decoration() {
                 .get_mut(&lead)
                 .expect("Lead")
                 .automation_lanes
-                .insert(lane.target, lane);
+                .insert(target, lane);
             project.validate().expect("夹具合法");
             render_or_ok(&project, "automation")
         }),
@@ -4813,4 +4822,465 @@ fn render_or_ok(project: &YebanProjectV1, tag: &str) -> Value {
         "`{tag}` 必须渲染成功: {result}"
     );
     result
+}
+
+// ===========================================================================
+// 任务单 `#243`：音量自动化（`TrackVolume`）在离线导出里真的被求值
+// ===========================================================================
+
+/// 给一条轨加一条 `TrackVolume` 泳道（点按 tick 升序插入）。
+fn with_volume_lane(
+    mut project: YebanProjectV1,
+    track_id: EntityId,
+    points: &[(u64, f32)],
+    read_enabled: bool,
+    first_point_seed: u32,
+) -> YebanProjectV1 {
+    let target = AutomationTarget::TrackVolume { track_id };
+    let mut map = BTreeMap::new();
+    for (index, (tick, value)) in points.iter().enumerate() {
+        let point = AutomationPoint {
+            id: id(first_point_seed + index as u32),
+            tick: *tick,
+            value: *value,
+            curve: CurveType::Linear,
+        };
+        map.insert(point.id, point);
+    }
+    let lane = AutomationLane {
+        target,
+        points: map,
+        read_enabled,
+        write_mode: AutomationWriteMode::Off,
+        domain: None,
+    };
+    project
+        .tracks
+        .get_mut(&track_id)
+        .expect("目标音轨必须存在")
+        .automation_lanes
+        .insert(target, lane);
+    project.validate().expect("带自动化泳道的夹具必须合法");
+    project
+}
+
+/// 渲染并把磁盘字节解回浮点样本。
+fn render_samples(
+    scratch: &Scratch,
+    tag: &str,
+    project: &YebanProjectV1,
+) -> (Value, Vec<f32>, String) {
+    let (mut dispatcher, auth) = dispatcher_with(project, &scratch.join(&format!("{tag}.yeban")));
+    let out = scratch.join(&format!("{tag}.wav"));
+    let result = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(result["status"], "success", "{tag}: {result}");
+    let samples = verify_file_shape(&result, &out);
+    let sha = result["data"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_owned();
+    (result, samples, sha)
+}
+
+/// 4 等段的左声道峰值。
+fn four_window_peaks(samples: &[f32], frames: u64) -> [f32; 4] {
+    let window = usize::try_from(frames / 4).expect("窗口");
+    let mut peaks = [0.0f32; 4];
+    for (index, peak) in peaks.iter_mut().enumerate() {
+        *peak = window_peak(samples, 2, index * window, window);
+    }
+    peaks
+}
+
+fn assert_strictly_increasing(peaks: &[f32; 4], context: &str) {
+    println!("### {context}: 4 段峰值 = {peaks:?}");
+    assert!(
+        peaks[0] < peaks[1] && peaks[1] < peaks[2] && peaks[2] < peaks[3],
+        "{context}: 4 段必须严格单调递增，实测 {peaks:?}"
+    );
+}
+
+/// ⭐ 判据 1（核心）：`tick 0 = −24 dB → tick 1920 = 0 dB` 的渐强。
+///
+/// 4 等段 `window_peak` 严格递增，且 `peak[3]/peak[0] >= 3.0`（理论 15.8×，
+/// 下界留余量）。
+#[test]
+fn a_volume_ramp_is_strictly_monotonic_and_the_last_window_is_at_least_three_times_the_first() {
+    let scratch = Scratch::new("automation-ramp");
+    let lead = id(2);
+    let project = with_volume_lane(
+        project(&Spec::default()),
+        lead,
+        &[(0, -24.0), (1_920, 0.0)],
+        true,
+        120,
+    );
+    let (result, samples, sha) = render_samples(&scratch, "ramp", &project);
+    let frames = result["data"]["frames"].as_u64().expect("frames");
+    assert_eq!(frames, 48_000, "1920 tick @120 BPM / 960 PPQ == 1 秒");
+    let peaks = four_window_peaks(&samples, frames);
+    assert_strictly_increasing(&peaks, "渐强");
+    let ratio = peaks[3] / peaks[0];
+    println!("### 渐强 peak[3]/peak[0] = {ratio:.6} / sha256={sha}");
+    assert!(ratio >= 3.0, "渐强比值 {ratio} 必须 >= 3.0");
+    // 读数：这条泳道真的被应用；没有不支持的自动化目标。
+    let data = &result["data"];
+    assert_eq!(data["automation"]["lanes"], 1);
+    assert_eq!(data["automation"]["evaluableLanes"], 1);
+    assert_eq!(data["automation"]["appliedLanes"], 1);
+    assert_eq!(data["automation"]["unsupportedLanes"], 0);
+    assert_eq!(
+        data["automation"]["tracks"][0]["lanes"][0]["target"],
+        "TrackVolume"
+    );
+    assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["applied"], true);
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "被应用的 TrackVolume 泳道不许再报 automationLanes: {data}"
+    );
+}
+
+/// ⭐ 判据 2（正对照）：同工程**删掉泳道** ⇒ 4 段峰值相等（相对差 ≤ 1e-6）且
+/// `sha256` == 基线 `DEFAULT_MASTER_SHA256` ⇒ 单调性来自泳道。
+#[test]
+fn without_the_volume_lane_the_four_windows_are_equal_and_the_baseline_digest_is_unchanged() {
+    let scratch = Scratch::new("automation-control");
+    let project = project(&Spec::default());
+    let (result, samples, sha) = render_samples(&scratch, "control", &project);
+    let frames = result["data"]["frames"].as_u64().expect("frames");
+    let peaks = four_window_peaks(&samples, frames);
+    println!(
+        "### 正对照 4 段峰值 = {peaks:?} / sha={sha} / digest={}",
+        result["data"]["masterDigest"]
+    );
+    for index in 1..4 {
+        let relative = (peaks[index] - peaks[0]).abs() / peaks[0].max(f32::MIN_POSITIVE);
+        assert!(
+            relative <= 1e-6,
+            "正对照第 {index} 段与第 0 段必须相等（相对差 {relative}）: {peaks:?}"
+        );
+    }
+    assert_eq!(sha, DEFAULT_MASTER_SHA256, "无自动化路径必须逐字节等于基线");
+    assert_eq!(
+        result["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "无自动化路径的母带样本摘要必须不变"
+    );
+}
+
+/// ⭐ 判据 4：`readEnabled:false` 与“删掉泳道”逐字节相同。
+#[test]
+fn a_disabled_volume_lane_is_byte_identical_to_removing_it() {
+    let scratch = Scratch::new("automation-disabled");
+    let lead = id(2);
+    let project = with_volume_lane(
+        project(&Spec::default()),
+        lead,
+        &[(0, -24.0), (1_920, 0.0)],
+        false,
+        130,
+    );
+    let (result, samples, sha) = render_samples(&scratch, "disabled", &project);
+    assert_eq!(sha, DEFAULT_MASTER_SHA256, "关掉的泳道必须等于不存在");
+    let frames = result["data"]["frames"].as_u64().expect("frames");
+    let peaks = four_window_peaks(&samples, frames);
+    for index in 1..4 {
+        assert!((peaks[index] - peaks[0]).abs() <= 1e-6, "{peaks:?}");
+    }
+    assert_eq!(result["data"]["automation"]["appliedLanes"], 0);
+    assert_eq!(result["data"]["automation"]["evaluableLanes"], 0);
+    assert_eq!(result["data"]["automation"]["lanes"], 1, "读数里仍可见");
+}
+
+/// ⭐ 判据 5：所有点值 == 静态推子 ⇒ 与无泳道**逐字节相同**（走快路径，不是乘 1.0）。
+#[test]
+fn a_lane_that_is_flat_at_the_static_value_is_byte_identical_to_no_lane() {
+    let scratch = Scratch::new("automation-flat");
+    let lead = id(2);
+    // 静态推子非 0（-3 dB）⇒ 恒等判断不能只靠“值是不是 0”，必须真的比较线性增益。
+    let baseline = project(&Spec {
+        volume_db: -3.0,
+        ..Spec::default()
+    });
+    let (baseline_result, _, baseline_sha) = render_samples(&scratch, "flat-base", &baseline);
+    let project = with_volume_lane(
+        project(&Spec {
+            volume_db: -3.0,
+            ..Spec::default()
+        }),
+        lead,
+        &[(0, -3.0), (960, -3.0), (1_920, -3.0)],
+        true,
+        140,
+    );
+    let (result, _samples, sha) = render_samples(&scratch, "flat", &project);
+    assert_eq!(sha, baseline_sha, "静态恒等必须逐字节相同");
+    assert_eq!(
+        result["data"]["masterDigest"], baseline_result["data"]["masterDigest"],
+        "静态恒等必须逐位相同"
+    );
+    assert_eq!(result["data"]["automation"]["appliedLanes"], 1);
+    assert_eq!(result["data"]["automation"]["unsupportedLanes"], 0);
+}
+
+/// ⭐ 判据 6：`mute:true` + 一条 0 dB 的音量泳道 ⇒ 仍全静音、`audible:false`。
+#[test]
+fn a_zero_db_lane_does_not_resurrect_a_muted_track() {
+    let scratch = Scratch::new("automation-mute");
+    let lead = id(2);
+    // 静态推子 -6 dB、静音；泳道 0 dB ⇒ **非恒等**（比率 ≈ 1.995），真的走到自动化乘法。
+    let mut muted_baseline = project(&Spec {
+        volume_db: -6.0,
+        ..Spec::default()
+    });
+    muted_baseline.tracks.get_mut(&lead).expect("Lead").mute = true;
+    let (_, _, baseline_sha) = render_samples(&scratch, "mute-base", &muted_baseline);
+    let mut project = project(&Spec {
+        volume_db: -6.0,
+        ..Spec::default()
+    });
+    project.tracks.get_mut(&lead).expect("Lead").mute = true;
+    let project = with_volume_lane(project, lead, &[(0, 0.0), (1_920, 0.0)], true, 150);
+    let (result, samples, sha) = render_samples(&scratch, "mute", &project);
+    assert_eq!(result["data"]["sources"][0]["audible"], false);
+    let peak = samples
+        .iter()
+        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    println!("### 静音轨 + 0 dB 泳道: peak={peak} sha={sha}");
+    // 量化前是逐位 0；24-bit TPDF 抖动会给全零信号留下 ≤ 1 LSB
+    // （1/8388608 = 1.1920929e-7）。判据：≤ 2 LSB 且与无泳道的静音版逐字节相同。
+    assert!(
+        peak <= 2.0 / 8_388_608.0,
+        "静音轨 + 0 dB 泳道必须仍全静音（peak={peak}）"
+    );
+    assert_eq!(sha, baseline_sha, "自动化不许改变静音轨的字节");
+}
+
+/// ⭐ 判据 7：点超出内容末端 ⇒ `frames` 与无泳道相同（自动化不延长母带）。
+#[test]
+fn points_past_the_end_do_not_extend_the_master() {
+    let scratch = Scratch::new("automation-length");
+    let lead = id(2);
+    let baseline = project(&Spec::default());
+    let (baseline_result, _, _) = render_samples(&scratch, "length-base", &baseline);
+    let project = with_volume_lane(
+        project(&Spec::default()),
+        lead,
+        &[(0, -12.0), (99_999, 0.0)],
+        true,
+        160,
+    );
+    let (result, _, _) = render_samples(&scratch, "length-auto", &project);
+    assert_eq!(
+        result["data"]["frames"], baseline_result["data"]["frames"],
+        "超出末端的点不许延长母带"
+    );
+}
+
+/// ⭐ 主总线是**第二个站点**：master 上的 `TrackVolume` 泳道也真的改变母带。
+#[test]
+fn a_master_volume_ramp_is_monotonic_and_applied() {
+    let scratch = Scratch::new("automation-master");
+    let master = id(1);
+    let project = with_volume_lane(
+        project(&Spec::default()),
+        master,
+        &[(0, -24.0), (1_920, 0.0)],
+        true,
+        170,
+    );
+    let (result, samples, _sha) = render_samples(&scratch, "master-ramp", &project);
+    let frames = result["data"]["frames"].as_u64().expect("frames");
+    let peaks = four_window_peaks(&samples, frames);
+    assert_strictly_increasing(&peaks, "主总线渐强");
+    assert!(peaks[3] / peaks[0] >= 3.0, "{peaks:?}");
+    let lanes = &result["data"]["automation"]["tracks"][0]["lanes"];
+    assert_eq!(lanes[0]["target"], "TrackVolume");
+    assert_eq!(lanes[0]["applied"], true);
+    assert_eq!(result["data"]["automation"]["unsupportedLanes"], 0);
+}
+
+/// ⭐ 判据 9（第一处谎）：**空泳道不进 `unsupported`**，但读数里可见。
+#[test]
+fn an_empty_lane_is_visible_in_the_reading_but_not_reported_as_unsupported() {
+    let scratch = Scratch::new("automation-empty");
+    let master = id(1);
+    let project = with_volume_lane(project(&Spec::default()), master, &[], true, 180);
+    let (result, _, sha) = render_samples(&scratch, "empty", &project);
+    println!(
+        "### 空泳道: sha={sha} automation={}",
+        result["data"]["automation"]
+    );
+    assert_eq!(sha, DEFAULT_MASTER_SHA256, "空泳道等于不存在");
+    let data = &result["data"];
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "空泳道不许进 unsupported: {data}"
+    );
+    assert_eq!(data["automation"]["lanes"], 1);
+    assert_eq!(data["automation"]["evaluableLanes"], 0);
+    assert_eq!(data["automation"]["appliedLanes"], 0);
+    assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["points"], 0);
+    assert_eq!(
+        data["automation"]["tracks"][0]["lanes"][0]["evaluable"],
+        false
+    );
+}
+
+/// ⭐ 判据 9（第二处谎）：**master-only** 的不可支持泳道（`TrackPan`）必须被报出来。
+#[test]
+fn a_master_only_unsupported_lane_is_reported() {
+    let scratch = Scratch::new("automation-master-pan");
+    let master = id(1);
+    let mut project = project(&Spec::default());
+    let target = AutomationTarget::TrackPan { track_id: master };
+    let point = AutomationPoint {
+        id: id(190),
+        tick: 0,
+        value: 0.5,
+        curve: CurveType::Linear,
+    };
+    project
+        .tracks
+        .get_mut(&master)
+        .expect("Master")
+        .automation_lanes
+        .insert(
+            target,
+            AutomationLane {
+                target,
+                points: BTreeMap::from([(point.id, point)]),
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+    project.validate().expect("夹具合法");
+    let (result, _, _) = render_samples(&scratch, "master-pan-auto", &project);
+    let data = &result["data"];
+    println!(
+        "### master-only TrackPan: unsupported={} automation={}",
+        data["unsupported"], data["automation"]
+    );
+    assert!(
+        data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "master-only 的不可支持泳道必须被报出来: {data}"
+    );
+    assert_eq!(data["automation"]["unsupportedLanes"], 1);
+    assert_eq!(
+        data["automation"]["tracks"][0]["lanes"][0]["applied"],
+        false
+    );
+    assert_eq!(
+        data["automation"]["tracks"][0]["lanes"][0]["evaluable"],
+        true
+    );
+}
+
+/// ⭐ 判据 9（第二处谎）：**bus-only** 的 `TrackVolume` 泳道（总线没有源、静态音量也
+/// 没有落点）必须被报出来，而不是静默丢掉。
+#[test]
+fn a_bus_only_volume_lane_is_reported_as_unsupported() {
+    let scratch = Scratch::new("automation-bus");
+    let master = id(1);
+    let lead = id(2);
+    let bus = id(3);
+    let mut project = project(&Spec::default());
+    project.tracks.insert(
+        bus,
+        TrackV3 {
+            id: bus,
+            name: "Bus".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    project.routing_graph.nodes.push(bus);
+    let to_bus = id(50);
+    project.routing_graph.edges.insert(
+        to_bus,
+        RoutingEdge {
+            id: to_bus,
+            source_node: lead,
+            destination_node: bus,
+            kind: RoutingKind::SendToAux,
+            gain_db: None,
+        },
+    );
+    let from_bus = id(51);
+    project.routing_graph.edges.insert(
+        from_bus,
+        RoutingEdge {
+            id: from_bus,
+            source_node: bus,
+            destination_node: master,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        },
+    );
+    let project = with_volume_lane(project, bus, &[(0, -24.0), (1_920, 0.0)], true, 200);
+    let (result, _, _) = render_samples(&scratch, "bus-auto", &project);
+    let data = &result["data"];
+    println!(
+        "### bus-only TrackVolume: unsupported={} automation={}",
+        data["unsupported"], data["automation"]
+    );
+    assert!(
+        data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "bus-only 的音量泳道必须被报出来: {data}"
+    );
+    let bus_report = data["automation"]["tracks"]
+        .as_array()
+        .expect("tracks")
+        .iter()
+        .find(|track| track["node"] == bus.to_canonical_string())
+        .expect("读数必须包含 bus 轨");
+    assert_eq!(bus_report["lanes"][0]["target"], "TrackVolume");
+    assert_eq!(bus_report["lanes"][0]["evaluable"], true);
+    assert_eq!(bus_report["lanes"][0]["applied"], false);
+    assert_eq!(bus_report["lanes"][0]["supported"], false);
+}
+
+/// ⭐ 判据 10：同工程两次渲染的 `masterDigest` 相同（自动化不引入熵源）。
+#[test]
+fn volume_automation_is_deterministic_across_two_renders() {
+    let scratch = Scratch::new("automation-determinism");
+    let lead = id(2);
+    let project = with_volume_lane(
+        project(&Spec::default()),
+        lead,
+        &[(0, -24.0), (1_920, 0.0)],
+        true,
+        210,
+    );
+    let (first, _, sha_a) = render_samples(&scratch, "det-a", &project);
+    let (second, _, sha_b) = render_samples(&scratch, "det-b", &project);
+    println!(
+        "### 确定性: sha_a={sha_a} sha_b={sha_b} digest_a={} digest_b={}",
+        first["data"]["masterDigest"], second["data"]["masterDigest"]
+    );
+    assert_eq!(sha_a, sha_b, "两次渲染必须逐字节相同");
+    assert_eq!(
+        first["data"]["masterDigest"], second["data"]["masterDigest"],
+        "两次渲染的母带摘要必须相同"
+    );
 }

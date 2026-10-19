@@ -49,13 +49,13 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（滤波/压缩/增益/未知旋钮）没有求值；EQ、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | 自动化曲线没有求值（静态值也不代偿） |
+//! | `automationLanes` | ⭐ `#243`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`TrackPan` / `SendGain` / `DeviceParam` / `Macro`），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
 //! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界） |
-//! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定） |
+//! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定）。⚠ `master` 的 `volume_db` **有**应用，`TrackVolume` 自动化也走第二个站点（执行之后） |
 //! | `sfzLoopExpansion` | ⭐ `#221`：采样器区域要求的**循环**没有展开（每个音符只响一遍，与 `yeban_render_sfz_wav` 同一句登记）。只在真的遇到循环区域时出现 |
 //! | `sfzRegionEnvelope` | ⭐ `#221`：命中的采样器区域声明了 `ampeg_*` 幅度包络，**本渲染器不应用**（缺省值 ⇒ 与引擎逐位相同）。只在真的声明了包络时出现 |
 //! | `sfzTrackPan` | ⭐ `#221`：**采样器轨**的 `pan` 没有应用 —— 与 app 的 SFZ 导出分支（`SfzTrackSource`）同口径：那条路没有声相通路。只在"绑了采样器且 `pan != 0`"时出现，⛔ 不静默 |
@@ -360,17 +360,18 @@ use serde_json::{Map, Value};
 use yeban_decode::{DecodeError, DecodeOptions, resample_interleaved};
 use yeban_model::music::{RATCHET_MAX, RATCHET_MIN};
 use yeban_model::{
-    AssetHash, ClipContent, DeviceKind, EntityId, PPQ, RoutingKind, SampleRate, TrackV3,
-    YebanProjectV1,
+    AssetHash, AutomationTarget, AutomationWriteMode, ClipContent, DeviceKind, EntityId, PPQ,
+    RoutingKind, SampleRate, TrackV3, YebanProjectV1,
 };
 use yeban_render::dither::{BitDepth, quantize};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
+use yeban_render::automation::TrackGainAutomation;
 use yeban_render::inserts::{project_inserts, track_has_unhandled_dsp};
 use yeban_render::mastering;
 use yeban_render::render::{
-    AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderPlan, db_to_linear,
-    track_latencies,
+    AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderOutput, RenderPlan,
+    db_to_linear, track_latencies,
 };
 // **响度计量的唯一实现**在 `yeban-dsp::loudness`（ITU-R BS.1770-4 的 K 加权 +
 // 门限积分）。本模块**不复制**它一个表达式：走 `yeban-render` 的再导出，因为
@@ -495,6 +496,12 @@ pub const SAMPLER_SOURCE_KIND: &str = "sfz-sampler";
 /// 音频源种类：采样器音符与音频片段**都有**的源。
 pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 
+/// ⭐ `#243`：**音量自动化的读数块**（`data.automation`）与上面的 `unsupported`
+/// 是**互补**的。`unsupported` 只说“少了什么”，`data.automation` 把每条泳道的
+/// `points` / `readEnabled` / `writeMode` / `supported` / `evaluable` / `applied`
+/// 与首末点逐条列出 —— 因此空泳道（`points: 0`）、关掉的泳道、master-only 与
+/// bus-only 的泳道都**可见**，而不是靠一条布尔键去猜。
+///
 /// ⭐ **已知不支持项的全集**（第 324 条：`unsupported` 必须能列出全部已知不支持项）。
 ///
 /// 这是本工具**唯一**的"我们会静默少做什么"的清单：
@@ -1247,6 +1254,229 @@ impl AudioAssetReport {
     }
 }
 
+/// 一条自动化泳道的**只读**读数（`data.automation.tracks[].lanes[]`）。
+///
+/// 口径（与求值入口逐条对齐）：
+///
+/// - `evaluable` = 泳道有点 **且** `readEnabled == true`（`automation_value_at` 的
+///   三个“无值”出口里的两个）；空泳道与关掉的泳道因此**不可求值**；
+/// - `supported` = 本渲染器真的消费这个目标。首期只支持 `TrackVolume`，且只支持
+///   两类落点：源节点（源侧乘 R55 比率）与主总线（执行后乘静态主推子 × 比率）；
+/// - `applied` = `evaluable && supported`；
+/// - `unsupported` = `evaluable && !supported`（调用方据此登记 `automationLanes`）。
+///
+/// ⚠ 空泳道会出现在读数里（`points: 0`, `evaluable: false`），但**不**进
+/// `unsupported` —— 一条没有点的曲线没有“少做了什么”。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutomationLaneReport {
+    /// 目标变体名（`TrackVolume` / `TrackPan` / `SendGain` / `DeviceParam` / `Macro`）。
+    pub target: &'static str,
+    /// 采样点数。
+    pub points: usize,
+    /// `readEnabled` 开关。
+    pub read_enabled: bool,
+    /// 写模式（`Off` / `Write` / `Touch` / `Latch`）。
+    pub write_mode: &'static str,
+    /// 目标的静态值（dB / 双极 / 归一化；不可对账时为 `None`）。
+    pub static_value: Option<f32>,
+    /// 本渲染器是否消费该目标。
+    pub supported: bool,
+    /// 是否有可求值点（有点且读开关打开）。
+    pub evaluable: bool,
+    /// 是否真的被应用到这次渲染。
+    pub applied: bool,
+    /// 首点 tick。
+    pub first_tick: Option<u64>,
+    /// 末点 tick。
+    pub last_tick: Option<u64>,
+    /// 首点值。
+    pub first_value: Option<f32>,
+    /// 末点值。
+    pub last_value: Option<f32>,
+}
+
+impl AutomationLaneReport {
+    /// 进响应的 JSON 形状。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "target": self.target,
+            "points": self.points,
+            "readEnabled": self.read_enabled,
+            "writeMode": self.write_mode,
+            "staticValue": json_f32(self.static_value),
+            "supported": self.supported,
+            "evaluable": self.evaluable,
+            "applied": self.applied,
+            "firstTick": self.first_tick,
+            "lastTick": self.last_tick,
+            "firstValue": json_f32(self.first_value),
+            "lastValue": json_f32(self.last_value),
+        })
+    }
+}
+
+/// 一条音轨的自动化读数（`data.automation.tracks[]`）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutomationTrackReport {
+    /// 音轨身份。
+    pub node: EntityId,
+    /// 音轨名。
+    pub track: String,
+    /// 泳道（按目标序）。
+    pub lanes: Vec<AutomationLaneReport>,
+}
+
+impl AutomationTrackReport {
+    /// 进响应的 JSON 形状。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "node": self.node.to_canonical_string(),
+            "track": self.track.clone(),
+            "lanes": self.lanes.iter().map(AutomationLaneReport::to_value).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// `data.automation`：**音量自动化**在这次渲染里的全部读数。
+///
+/// 为什么需要它：`unsupported` 只说“少了什么”，说不清“自动化到底看没看、看了哪几条”。
+/// 这份读数把每条泳道的**可求值性**、**支持性**与**是否真的应用**逐条列出 ——
+/// 于是“空泳道不报 / master-only 与 bus-only 泳道必须可见”这两件事都有同一份证据。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutomationReport {
+    /// 有泳道的音轨（按 `EntityId` 升序；没有泳道的轨不出现）。
+    pub tracks: Vec<AutomationTrackReport>,
+    /// 泳道总数（含空泳道与关掉的泳道）。
+    pub lanes: usize,
+    /// 有可求值点的泳道数。
+    pub evaluable: usize,
+    /// 真的被应用的泳道数。
+    pub applied: usize,
+    /// 有可求值点、但本渲染器不消费的泳道数（⇒ 调用方登记 `automationLanes`）。
+    pub unsupported: usize,
+}
+
+impl AutomationReport {
+    /// 扫描工程，生成读数。`source_nodes` 用来判定 `TrackVolume` 的落点是否可应用。
+    #[must_use]
+    pub fn from_project(project: &YebanProjectV1, source_nodes: &[EntityId]) -> Self {
+        let master = project.master_bus_track_id;
+        let mut tracks = Vec::with_capacity(project.tracks.len());
+        let mut lanes = 0usize;
+        let mut evaluable = 0usize;
+        let mut applied = 0usize;
+        let mut unsupported = 0usize;
+        for track in project.tracks.values() {
+            let mut lane_reports = Vec::with_capacity(track.automation_lanes.len());
+            for (target, lane) in &track.automation_lanes {
+                lanes += 1;
+                let is_evaluable = lane.read_enabled && !lane.points.is_empty();
+                if is_evaluable {
+                    evaluable += 1;
+                }
+                // 首期唯一支持的目标。落点：源节点（源侧）或主总线（执行后）。
+                let supported = match target {
+                    AutomationTarget::TrackVolume { track_id } => {
+                        *track_id == master || source_nodes.contains(track_id)
+                    }
+                    _ => false,
+                };
+                let is_applied = is_evaluable && supported;
+                if is_applied {
+                    applied += 1;
+                }
+                if is_evaluable && !supported {
+                    unsupported += 1;
+                }
+                let ordered = lane.points_in_tick_order();
+                let first = ordered.first().copied();
+                let last = ordered.last().copied();
+                lane_reports.push(AutomationLaneReport {
+                    target: automation_target_name(*target),
+                    points: lane.points.len(),
+                    read_enabled: lane.read_enabled,
+                    write_mode: automation_write_mode_name(lane.write_mode),
+                    static_value: target.static_value(project).ok(),
+                    supported,
+                    evaluable: is_evaluable,
+                    applied: is_applied,
+                    first_tick: first.map(|point| point.tick),
+                    last_tick: last.map(|point| point.tick),
+                    first_value: first.map(|point| point.value),
+                    last_value: last.map(|point| point.value),
+                });
+            }
+            if !lane_reports.is_empty() {
+                tracks.push(AutomationTrackReport {
+                    node: track.id,
+                    track: track.name.clone(),
+                    lanes: lane_reports,
+                });
+            }
+        }
+        Self {
+            tracks,
+            lanes,
+            evaluable,
+            applied,
+            unsupported,
+        }
+    }
+
+    /// 进响应的 JSON 形状。
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        serde_json::json!({
+            "wired": true,
+            "evaluator": "YebanProjectV1::automation_value_at",
+            "targetsSupported": ["TrackVolume"],
+            "targetsUnsupported": ["TrackPan", "SendGain", "DeviceParam", "Macro"],
+            "granularity": {
+                "blockSize": L1_BLOCK_SIZE,
+                "curve": "每块起点取一次曲线值（tick = floor(frame * PPQ * bpm / (sample_rate * 60))）",
+                "smoothing": "块内逐样本一阶低通；时间常数 5 ms",
+            },
+            "domainTransfer": {
+                "ratio": "db_to_linear(自动化 dB) / db_to_linear(track.volume_db)",
+                "adr": "R55",
+                "denominator": "静态推子（⛔ 不是 mute/solo 之后的轨增益；静音时为 0.0 会除零）",
+            },
+            "smoother": "yeban_dsp::smoothing::ParamSmoother",
+            "timeConstantSeconds": 0.005,
+            "lanes": self.lanes,
+            "evaluableLanes": self.evaluable,
+            "appliedLanes": self.applied,
+            "unsupportedLanes": self.unsupported,
+            "tracks": self.tracks.iter().map(AutomationTrackReport::to_value).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// 目标变体的稳定名字（读数用；与 `yeban_edit_automation` 的词表同字）。
+#[must_use]
+fn automation_target_name(target: AutomationTarget) -> &'static str {
+    match target {
+        AutomationTarget::TrackVolume { .. } => "TrackVolume",
+        AutomationTarget::TrackPan { .. } => "TrackPan",
+        AutomationTarget::SendGain { .. } => "SendGain",
+        AutomationTarget::DeviceParam { .. } => "DeviceParam",
+        AutomationTarget::Macro { .. } => "Macro",
+    }
+}
+
+/// 写模式的稳定名字。
+#[must_use]
+fn automation_write_mode_name(mode: AutomationWriteMode) -> &'static str {
+    match mode {
+        AutomationWriteMode::Off => "Off",
+        AutomationWriteMode::Write => "Write",
+        AutomationWriteMode::Touch => "Touch",
+        AutomationWriteMode::Latch => "Latch",
+    }
+}
+
 /// 渲染产物：**已经编码好的容器字节** + 全部实测数字。
 ///
 /// 它由 [`build`] 产出（只读计算），由 `domain::apply` 落盘。
@@ -1368,6 +1598,11 @@ pub struct RenderArtifact {
     pub project_digest: String,
     /// 渲染时刻（注入时钟的 Unix 毫秒）。
     pub rendered_at_unix_ms: u64,
+    /// ⭐ 音量自动化（`TrackVolume`）的逐泳道读数。
+    ///
+    /// 这份读数与 `unsupported` 是**互补**的：`automationLanes` 只说“有没消费的泳道”，
+    /// 这里把每条泳道的 `points` / `readEnabled` / `supported` / `applied` 逐条列出。
+    pub automation: AutomationReport,
     /// 明确没渲染的部分（键序字典序，来自 `BTreeSet`）。
     pub unsupported: BTreeSet<&'static str>,
     /// 每个"没渲染"部分的出现次数。
@@ -1563,6 +1798,9 @@ impl RenderArtifact {
                 "loudness": "unknown (bext v2 哨兵)",
             }),
         );
+        // ⭐ 音量自动化的逐泳道读数。空泳道会出现在这里（`evaluable:false`），但
+        // **不**进 `unsupported`；master-only / bus-only 的泳道也在这份读数里可见。
+        map.insert("automation".to_owned(), self.automation.to_value());
         // ⭐ #225：结果质量预警（非阻断、可寻址）。`clippedSamples == 0` 时是空数组。
         // 它与 `unsupported` **不是一回事**：那条口径是"我们会静默少做什么"。
         map.insert("warnings".to_owned(), Value::Array(self.warnings.clone()));
@@ -1671,7 +1909,7 @@ pub fn build(
         .copied()
         .filter(|node| is_source_node(&probe_plan, *node))
         .collect();
-    // 4. 组装音源 + 采集"明确没渲染"的部分 + 得到时间轴末端。
+    // 4b. 组装音源 + 采集"明确没渲染"的部分 + 得到时间轴末端。
     let mut unsupported: BTreeSet<&'static str> = BTreeSet::new();
     let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let any_solo = project.tracks.values().any(|track| track.solo);
@@ -1682,6 +1920,18 @@ pub fn build(
         .any(|edge| edge.kind == RoutingKind::Sidechain)
     {
         note_unsupported(&mut unsupported, &mut counts, "sidechainRouting");
+    }
+    // 4. ⭐ 音量自动化读数：扫描**全部**音轨（含主总线与总线轨），而不是只扫源节点
+    //    —— 旧实现只在 `build_source` 里看 `automation_lanes`，于是 master / bus 上
+    //    唯一的泳道连报都不报；空泳道又会被一律报成 `automationLanes`。现在：
+    //    - 空泳道 / `readEnabled:false` / 所有点都等于静态推子 ⇒ 可求值但无效果，
+    //      读数里可见，**不**进 `unsupported`；
+    //    - 有可求值点、但不是 `TrackVolume`，或 `TrackVolume` 落在不可应用的总线轨上
+    //      ⇒ 进 `unsupported`（`automationLanes`）；
+    //    - 源节点与主总线上的 `TrackVolume` 真的被应用（见 `TrackSource` 与第 9 步）。
+    let automation = AutomationReport::from_project(project, &source_nodes);
+    if automation.unsupported > 0 {
+        note_unsupported(&mut unsupported, &mut counts, "automationLanes");
     }
     // 资产上下文: 每个资产**解码/重采样一次**, 供所有音轨共享（`Arc<[f32]>` 只读）。
     let mut asset_cache: BTreeMap<AssetHash, Option<Arc<PreparedAsset>>> = BTreeMap::new();
@@ -1779,19 +2029,41 @@ pub fn build(
         .execute(registry)
         .map_err(|error| render_error("渲染执行", &error))?;
     // 9. Master 轨增益 (在源侧无法表达: 它是总线节点)。pan 无法应用 ⇒ 登记。
+    //
+    //    ⭐ 这是音量自动化的**第二个站点**：主总线没有源，`TrackVolume` 泳道不能在
+    //    `TrackSource` 里乘。这里在整段母带上按 128 帧块求值 + 逐样本平滑，乘
+    //    `静态主推子 × R55 比率`（`mute` 时静态主推子是 0.0）。
+    //    恒等快路径仍走**原来那一句** `scale_in_place`，因此没有自动化的工程逐字节不变。
     if let Some(master) = project.tracks.get(&project.master_bus_track_id) {
         let master_gain = if master.mute {
             0.0
         } else {
             db_to_linear(master.volume_db)
         };
-        if master_gain != 1.0 {
-            math::scale_in_place(&mut output.samples, master_gain);
+        let mut automation = TrackGainAutomation::new(project, master.id, sample_rate);
+        if automation.is_identity() {
+            if master_gain != 1.0 {
+                math::scale_in_place(&mut output.samples, master_gain);
+            }
+        } else {
+            let frames = output.samples.len() / MASTER_CHANNELS;
+            automation.apply_gain_block(
+                &mut output.samples,
+                0,
+                frames,
+                MASTER_CHANNELS,
+                master_gain,
+            );
         }
         if master.pan != 0.0 {
             note_unsupported(&mut unsupported, &mut counts, "masterPan");
         }
     }
+    // 9-master-digest. 主总线增益/自动化是**执行之后**才乘的，而 `RenderOutput::digest`
+    // 在 `execute` 里就按当时（未乘主推子）的样本算好了。`masterDigest` 的文档是
+    // “母带样本的位级 SHA-256” ⇒ 必须对**最终**样本重算，否则主推子/主自动化改变
+    // 了音频而摘要不变，读数与产物分叉。
+    output.digest = RenderOutput::digest_of(&output.samples);
     // 9a. ⭐ #225：把逐源峰值从探针里取回来（**只读**：渲染已经结束，一个样本都不再改）。
     //     它们进 `sources[].peak` / `.peakDbfs`，也是削波预警点名"最响的源"的依据。
     for report in &mut reports {
@@ -1926,6 +2198,7 @@ pub fn build(
         coding_history,
         project_digest,
         rendered_at_unix_ms: now_ms,
+        automation,
         unsupported,
         unsupported_counts: counts,
     })
@@ -2457,6 +2730,10 @@ struct TrackSource {
     midi: MidiSynthSource,
     sampler: Option<SamplerTrackSource>,
     clips: Vec<AudioClipSource>,
+    /// ⭐ 本轨的 `TrackVolume` 自动化；`None` = 恒等快路径（没有可求值点 / 曲线处处
+    /// 等于静态推子）。它在源输出**之后**乘 R55 比率，因此包含 MIDI、采样器与音频片段
+    /// 三路的全部贡献。
+    automation: Option<TrackGainAutomation>,
 }
 
 /// ⭐ `#225`：**只读**的逐源峰值探针（包装一个 [`TrackSource`]）。
@@ -2536,6 +2813,15 @@ impl AudioSource for TrackSource {
         }
         for clips in &mut self.clips {
             clips.render_block(context, out)?;
+        }
+        // ⭐ 音量自动化乘在**源输出之外**（含上面三路）；`None` 时整段不碰。
+        if let Some(automation) = &mut self.automation {
+            automation.apply_ratio_block(
+                out,
+                context.first_frame,
+                context.frames,
+                context.channels,
+            );
         }
         Ok(())
     }
@@ -2934,9 +3220,6 @@ fn build_source(
     }) {
         note_unsupported(unsupported, counts, "externalPlugins");
     }
-    if !track.automation_lanes.is_empty() {
-        note_unsupported(unsupported, counts, "automationLanes");
-    }
     let attack_frames = math::ms_to_frames(ATTACK_MS, sample_rate);
     let release_frames = math::ms_to_frames(RELEASE_MS, sample_rate);
     let mut scheduled: Vec<ScheduledNote> = Vec::new();
@@ -3332,10 +3615,13 @@ fn build_source(
         attack_frames,
         release_frames,
     };
+    // ⭐ 本轨的 `TrackVolume` 自动化：构造期判定恒等快路径，非恒等才挂到源上。
+    let automation = TrackGainAutomation::new(project, track.id, sample_rate);
     let source = TrackSource {
         midi,
         sampler,
         clips,
+        automation: (!automation.is_identity()).then_some(automation),
     };
     let report = SourceReport {
         node: track.id,

@@ -66,13 +66,16 @@
 //!
 //! 与 [`crate::export_wav::export_wav`] 相同（选项非法 / 计划编译 / 引擎装载 / 执行失败）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
-use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
+use yeban_render::automation::TrackGainAutomation;
+use yeban_render::render::{
+    AudioSource, BlockContext, RenderError, RenderOptions, RenderOutput, RenderPlan, db_to_linear,
+};
 
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::SynthEngine;
@@ -98,6 +101,31 @@ impl AudioSource for TrackSource {
         for clip in &mut self.clips {
             clip.render_block(context, out)?;
         }
+        Ok(())
+    }
+}
+
+/// ⭐ 本条任务的**音量自动化门**：在源输出之后乘 R55 比率（含 MIDI 基座与音频片段）。
+///
+/// 与 MCP 的 `TrackSource` 里的 `automation` 字段**同一份**实现
+/// （[`yeban_render::automation::TrackGainAutomation`]）：块级求值 + 逐样本 5 ms 平滑。
+/// 只对**非恒等**的轨包这一层；恒等的轨直接返回原源，一个样本都不碰。
+struct AutomationGain {
+    /// 既有音源（引擎乐器 / SFZ / 最小音源 ＋ 音频片段）。
+    inner: Box<dyn AudioSource>,
+    /// 本轨的 `TrackVolume` 自动化（构造期已排除恒等快路径）。
+    automation: TrackGainAutomation,
+}
+
+impl AudioSource for AutomationGain {
+    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
+        self.inner.render_block(context, out)?;
+        self.automation.apply_ratio_block(
+            out,
+            context.first_frame,
+            context.frames,
+            context.channels,
+        );
         Ok(())
     }
 }
@@ -512,6 +540,40 @@ pub fn render_project_f32_with_plans_under(
         ));
     }
 
+    // ---- 2b-bis. ⭐ 音量自动化（`TrackVolume`）：每条可渲染轨一个门 ----
+    //
+    // 挂点与 MCP 的 `TrackSource` 相同：**源输出之后**（引擎乐器 / SFZ / 最小音源
+    // ＋ 音频片段三路都已相加），因此自动化对这条轨的全部贡献一视同仁。
+    // 恒等的轨**不包**这一层（没有泳道 / 关掉 / 空泳道 / 曲线处处等于静态推子）。
+    // MCP 的 `TrackVolume` 只有两个落点：源节点（没有入边）与主总线（执行后）。
+    // 有入边的总线轨在 MCP 里被登记为 `automationLanes` 不支持（总线没有“整条输出”
+    // 的增益落点：`RenderPlan` 只在源输出与主总线上能乘）。app 侧**不发明第三种落点**
+    // —— 对这类轨不包自动化门，行为与 MCP 一致（不把自动化只乘到它自己的源上）。
+    let bus_nodes: BTreeSet<EntityId> = renderable
+        .iter()
+        .copied()
+        .filter(|track_id| {
+            plan.bus_reduction_order(*track_id)
+                .is_some_and(|inputs| !inputs.is_empty())
+        })
+        .collect();
+    let mut automated: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+    for (track_id, source) in std::mem::take(&mut sources) {
+        let automation = TrackGainAutomation::new(project, track_id, options.sample_rate);
+        if automation.is_identity() || bus_nodes.contains(&track_id) {
+            automated.insert(track_id, source);
+        } else {
+            automated.insert(
+                track_id,
+                Box::new(AutomationGain {
+                    inner: source,
+                    automation,
+                }),
+            );
+        }
+    }
+    let mut sources = automated;
+
     // ---- 2c. 逐源峰值探针（⭐ `#226`；只读）----
     //
     // ⚠ 必须在**全部源都装配完**（含音频片段）之后套：峰值要涵盖这一条轨真正进母带的
@@ -531,9 +593,47 @@ pub fn render_project_f32_with_plans_under(
     }
 
     // ---- 3. 执行（全部在内存里）----
-    let output = plan
+    let mut output = plan
         .execute(tapped)
         .map_err(|error| WavExportError::Render(error.to_string()))?;
+
+    // ---- 3b. ⭐ 主总线的音量（含 `TrackVolume` 自动化）----
+    //
+    // 主总线没有源：它的静态推子在任何源侧都无法表达，只能在执行之后乘。这是音量
+    // 自动化的**第二个站点**（MCP 的 `build` 第 9 步是同一条口径）：
+    //   - 恒等（没有可求值点 / 曲线处处等于静态值）⇒ 保留原来的“乘静态主推子”，
+    //     `1.0` 时一个样本都不碰 ⇒ 没有自动化的工程逐字节不变；
+    //   - 非恒等 ⇒ 按 128 帧块求值 + 逐样本平滑，乘 `静态主推子 × R55 比率`。
+    // ⚠ `mute` 与 MCP 同口径：主总线静音 ⇒ 静态主推子 `0.0`（全静音）。
+    if let Some(master) = project.tracks.get(&project.master_bus_track_id) {
+        let master_gain = if master.mute {
+            0.0
+        } else {
+            db_to_linear(master.volume_db)
+        };
+        let mut automation = TrackGainAutomation::new(project, master.id, options.sample_rate);
+        if automation.is_identity() {
+            if master_gain != 1.0 {
+                for sample in &mut output.samples {
+                    *sample *= master_gain;
+                }
+            }
+        } else {
+            let frames = output.samples.len() / options.channels.max(1);
+            automation.apply_gain_block(
+                &mut output.samples,
+                0,
+                frames,
+                options.channels,
+                master_gain,
+            );
+        }
+    }
+
+    // 主总线增益/自动化是**执行之后**才乘的，而 `RenderOutput::digest` 在 `execute`
+    // 里就按当时（未乘主推子）的样本算好了。`RenderProjectOutput::digest` 的文档是
+    // “渲染输出的位级摘要” ⇒ 对**最终**样本重算，否则摘要与 `samples` 分叉。
+    output.digest = RenderOutput::digest_of(&output.samples);
 
     // 渲染结束后取回读数：⛔ 此后一个样本都不再改（只生成报告字段）。
     let source_peaks: Vec<(EntityId, f32)> = peak_bits

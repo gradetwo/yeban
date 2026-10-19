@@ -285,6 +285,11 @@ fn write_sfz(dir: &Path, name: &str, pitches: &[u8], sample: &str) -> PathBuf {
 /// 把工程那条 MIDI 轨的 `sampler` 指向 `sample` 的 SFZ，然后**导出一次**。
 fn render_bound(dir: &Path, sfz_name: &str, sample: &str) -> RenderProjectOutput {
     let mut project = yeban_model::samples::filled_project();
+    // ⭐ `#243`：WAV/FLAC 两条腿的**逐样本差**只应来自解码器的归一化分母；自动化
+    // 是另一个自变量 ⇒ 在夹具里清掉（两条腿仍然同一条增益路径，但没有自动化包络）。
+    for track in project.tracks.values_mut() {
+        track.automation_lanes.clear();
+    }
     let lead = midi_track_of(&project);
     let pitches = pitches_of(&project, lead);
     let sfz = write_sfz(dir, sfz_name, &pitches, sample);

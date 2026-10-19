@@ -34,6 +34,7 @@
 //! | 模块 | 内容 | 规范 ID |
 //! | :--- | :--- | :--- |
 //! | [`render`] | 拓扑分层并行调度 + 按 `EntityId` 字典序的确定性串行归约 | `ROAD-M4-004/005`, `ARCH-DET-002` |
+//! | [`automation`] | `TrackVolume` 音量自动化：模型唯一求值入口 + 5 ms 平滑 + R55 换域；两条导出共用 | `ARCH-DSP-001`, `ARCH-DET-001` |
 //! | [`pdc`] | 关键路径延迟分析与环形延迟线（**引擎已有 PDC API, 但两者不是同一个式子 —— 见该模块文档的状态一节**） | `ARCH-PDC-001/002` |
 //! | [`rf64`] | RF64/BW64 容器与 `bext`(v1/v2) 的自研读写（零第三方依赖） | `ARCH-FMT-001` |
 //! | [`dither`] | TPDF 抖动与 16/24/32f 位深转换 | `ARCH-FMT-001`, `ARCH-DET-001` |
@@ -88,6 +89,9 @@
 #![deny(missing_docs)]
 
 pub mod dither;
+// 离线导出里的**音量自动化**：模型层唯一求值入口 + 5 ms 平滑 + R55 换域。
+// 两个导出（MCP 的 `yeban_render_master` 与 app 的 `--export-wav`）共用这一份。
+pub mod automation;
 // 母带导出的**LRA 测量**与**响度归一化预设**（本 crate 新增; 补 `yeban-dsp` 侧
 // `N4`（LRA 未实现）与仓库里"没有响度归一化"这两个缺口, 见该模块头的规范状态一节）。
 pub mod mastering;

@@ -340,7 +340,12 @@ fn the_model_sampler_path_is_decoded_and_sounds_only_through_the_new_chain() {
 /// * 结构腿：同一份工程的 `sampler` 显式清回 `None` ⇒ 再渲染仍是同一指纹。
 #[test]
 fn an_absent_sampler_is_bit_identical_to_before_the_wiring() {
-    let project = yeban_model::samples::filled_project();
+    // ⭐ `#243`：这条判据的对象是“sampler 接线不改变非 sampler 路径”，自动化是另一个
+    // 自变量 ⇒ 在这里把它清掉，让指纹仍能逐位对上 `#209` 的基线（隔离变量，不重钉）。
+    let mut project = yeban_model::samples::filled_project();
+    for track in project.tracks.values_mut() {
+        track.automation_lanes.clear();
+    }
     let out = render_project_f32_with_assets(&project, WavExportOptions::default(), None, &[])
         .expect("默认工程必须能导出");
     let actual = fnv1a_64(&out.samples);

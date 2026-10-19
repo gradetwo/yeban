@@ -211,6 +211,11 @@ fn the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint() {
     let dir = scratch("wav-fingerprint");
     write_const_sample(&dir.join("present.wav"), 0.25);
     let mut project = yeban_model::samples::filled_project();
+    // ⭐ `#243`：这条判据钉的是 SFZ 解码路径的指纹，自动化是另一个自变量 ⇒ 清掉，
+    // 让 WAV 样本路径仍能逐位对上接线前的基线（隔离变量，不重钉）。
+    for track in project.tracks.values_mut() {
+        track.automation_lanes.clear();
+    }
     let lead = midi_track_of(&project);
     let pitches = pitches_of(&project, lead);
     let sfz = write_sfz(&dir, "wav.sfz", &pitches, |_| "present.wav".to_owned());
