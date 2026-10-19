@@ -513,7 +513,8 @@ fn an_audio_clip_renders_into_the_master_matching_the_asset_samples() {
 /// 判据 2 [②]：片段落在 `placement.start_tick` 换算出的帧上，起止误差 ≤ 1 帧。
 ///
 /// 判据取**恰好相等**（比"≤ 1 个 L1 处理量子（128 帧）"严格一百多倍）：
-/// `ticks_to_frames` 是纯整数 + 一次 `round` 的换算，没有理由差一帧。
+/// `ticks_to_frames` 是 IEEE-754 乘除 + 一次 `round` 的换算（唯一实现在
+/// `yeban_model::time_math`，`#247`），没有理由差一帧。
 #[test]
 fn the_clip_lands_exactly_on_the_placement_start_frame() {
     let scratch = Scratch::new("landing");

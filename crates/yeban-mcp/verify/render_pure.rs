@@ -24,6 +24,26 @@
 // `cargo clippy -p yeban-mcp --all-targets -- -D warnings` 在 lib crate 上执行。
 #![allow(dead_code)]
 
+// `render_math.rs` 现在把 tick→帧 委托给 `yeban_model`（`#247`）：这里用
+// `#[path]` 引入**模型层的真实源文件**，而不是再造一份副本。裸 `rustc` 没有
+// `--extern`，所以用 `extern crate self as …` 把本 crate 同时暴露成那两个
+// 依赖名；`PPQ` 也补齐（模型文件的单元测试写的是 `crate::PPQ`）。
+extern crate self as libm;
+extern crate self as yeban_model;
+
+/// 裸 `rustc` 的验证专用 shim：生产构建用的是 `yeban-mcp` 依赖里的纯 Rust
+/// `libm`。这里只服务 `amplitude_dbfs` 的边界判据（容差 1e-3），不参与
+/// tick→帧，也不冒充位级确定性的证据。
+pub fn log10f(value: f32) -> f32 {
+    value.log10()
+}
+
+#[path = "../../yeban-model/src/time_math.rs"]
+pub mod time_math;
+
+/// 模型层 `crate::PPQ` 在裸 `rustc` 里的等价物（只被 `time_math.rs` 的测试用）。
+const PPQ: u64 = 960;
+
 #[path = "../src/domain/render_clip_math.rs"]
 mod render_clip_math;
 #[path = "../src/domain/render_math.rs"]
@@ -82,7 +102,9 @@ mod tests {
         let mut checked = 0usize;
         for bpm in [20u64, 60, 90, 120, 128, 140, 200, 999] {
             for tick in [
-                0u64, 1, 2, 480, 959, 960, 961, 1_920, 3_840, 7_680, 10_000_000,
+                // `168 @ 60 BPM @ 44.1 kHz` 是 `#247` 的第一例一帧级分歧：
+                // 整数有理数参考实现给 7718，旧的 MCP 浮点顺序给 7717。
+                0u64, 1, 2, 168, 480, 959, 960, 961, 1_920, 3_840, 7_680, 10_000_000,
             ] {
                 for rate in [44_100u32, 48_000, 96_000, 192_000] {
                     let ours = math::ticks_to_frames(tick, 960, bpm as f64, rate);

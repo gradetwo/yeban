@@ -14,34 +14,34 @@
 //! 在本机**真的执行**（与 `crates/yeban-render/verify/pure_modules.rs` 同一手法：
 //! `#[path]` 引入**真实源文件**，不是抄一份会漂移的副本）。
 //!
-//! ## 这一层允许什么运算
+//! ## tick → 帧 的唯一实现不在本模块（`#247`）
 //!
-//! 只用 `+ - * /` 与 `f64::round`。[IEEE 754] 把 `round` 指定为
-//! `roundToIntegralTiesAway` —— 它不是超越函数，在所有符合 IEEE 754 的目标上逐位相同。
-//! 需要 `sin`/`powf`/`cos` 的地方（振荡器、等程律频率、等功率声相）留在
-//! [`super::render`]，统一走 `libm` [ARCH-DET-001]。
+//! [`ticks_to_frames`] 现在只是 [`yeban_model::time_math::ticks_to_frames`] 的
+//! **`None → 0` 适配器**：算式（先算 `samples_per_tick = 60 × sr / (bpm × ppq)`，
+//! 再乘 tick 并 `round`）只有模型层一份。本模块其余算术仍只用 `+ - * /` 与
+//! `f64::round`。[IEEE 754] 把 `round` 指定为 `roundToIntegralTiesAway` —— 它不是
+//! 超越函数，在所有符合 IEEE 754 的目标上逐位相同。需要 `sin`/`powf`/`cos` 的地方
+//! （振荡器、等程律频率、等功率声相）留在 [`super::render`]，统一走 `libm`
+//! [ARCH-DET-001]。
 //!
 //! [IEEE 754]: https://en.wikipedia.org/wiki/IEEE_754
 
-/// tick → 帧（四舍五入到最近帧）。
+/// tick → 帧（四舍五入到最近帧；**唯一实现在** [`yeban_model::time_math::ticks_to_frames`]）。
 ///
-/// `seconds = tick / ppq * 60 / bpm`，再乘采样率。病态输入（`ppq == 0`、`bpm <= 0`、
-/// 非有限 `bpm`、采样率 0、非有限结果）一律返回 `0` —— 调用方随后会把它当成
-/// "没有可渲染内容"（`RENDER_FAILED`），而不是悄悄渲染一段垃圾长度。
+/// 本函数只做 **`None → 0` 的哨兵适配**：病态输入（`ppq == 0`、`bpm <= 0`、
+/// 非有限 `bpm`、采样率 0）在模型层返回 `None`，这里映射成 `0` —— 调用方随后会
+/// 把它当成"没有可渲染内容"（`RENDER_FAILED`），而不是悄悄渲染一段垃圾长度。
+/// `tick == 0` 仍然返回 `0`（合法的零帧，不是病态）。
+///
+/// ⚠ `#247` 之前这里是一份**独立的**浮点算式
+/// （`tick × 60 / ppq / bpm × sr`）：与引擎的
+/// `tick × (60 × sr / (bpm × ppq))` 代数等价、浮点求值不等价，在 44.1 kHz 上
+/// 实测 **118 处**一帧级分歧。第一例 `bpm=60, ppq=960, sr=44100, tick=168`：
+/// 旧实现 **7717**、引擎 **7718**。收口后本函数用模型层的求值顺序，因此这一例
+/// 现在给出 **7718**；48/96 kHz 上两种顺序逐位相同，读数不变。
 #[must_use]
 pub fn ticks_to_frames(end_tick: u64, ppq: u64, bpm: f64, sample_rate: u32) -> u64 {
-    if ppq == 0 || !bpm.is_finite() || bpm <= 0.0 || sample_rate == 0 {
-        return 0;
-    }
-    let seconds = (end_tick as f64) * 60.0 / (ppq as f64) / bpm;
-    let frames = (seconds * f64::from(sample_rate)).round();
-    if !frames.is_finite() || frames <= 0.0 {
-        return 0;
-    }
-    if frames >= u64::MAX as f64 {
-        return u64::MAX;
-    }
-    frames as u64
+    yeban_model::time_math::ticks_to_frames(end_tick, bpm, ppq, sample_rate).unwrap_or(0)
 }
 
 /// 帧 → tick（**向上取整**）。
@@ -356,6 +356,43 @@ mod tests {
         // 1 tick @ 20 BPM = 3s / 960 = 0.003125s ⇒ 150 帧。
         assert_eq!(ticks_to_frames(1, 960, 20.0, 48_000), 150);
         assert_eq!(ticks_to_frames(0, 960, 120.0, 48_000), 0);
+    }
+
+    /// ⭐ `#247` 判据: 44.1 kHz 的 `.5` 取引擎的值（7718），⛔ 不是旧 MCP 的 7717。
+    ///
+    /// 这是 118 处分歧里的第一例；把本函数改回
+    /// `tick × 60 / ppq / bpm × sr` 的旧顺序，本行立刻变红。
+    #[test]
+    fn the_44_1_khz_half_frame_is_the_engine_value_not_the_old_mcp_value() {
+        assert_eq!(ticks_to_frames(168, 960, 60.0, 44_100), 7_718);
+        // 48/96 kHz 是整数，收口前后都必须是这两个值（摘要不变的基线）。
+        assert_eq!(ticks_to_frames(168, 960, 60.0, 48_000), 8_400);
+        assert_eq!(ticks_to_frames(168, 960, 60.0, 96_000), 16_800);
+    }
+
+    /// ⭐ `#247` 判据: 本包装器与模型层在 **11 BPM × 3 采样率 × tick 0..=4000**
+    /// 上逐项相同（0 分歧）。
+    ///
+    /// 这条判据在 MCP 侧钉住"只剩一次调用、没有第二份算式"：若有人把旧公式搬回来，
+    /// 44.1 kHz 的 118 个点会立刻红。
+    #[test]
+    fn the_wrapper_agrees_with_the_model_on_the_whole_tick_grid() {
+        const BPMS: [f64; 11] = [
+            30.0, 60.0, 72.0, 100.0, 110.0, 120.0, 128.0, 130.0, 140.0, 174.0, 200.0,
+        ];
+        let mut checked = 0usize;
+        for bpm in BPMS {
+            for rate in [44_100u32, 48_000, 96_000] {
+                for tick in 0..=4_000u64 {
+                    let ours = ticks_to_frames(tick, 960, bpm, rate);
+                    let model =
+                        yeban_model::time_math::ticks_to_frames(tick, bpm, 960, rate).unwrap_or(0);
+                    assert_eq!(ours, model, "bpm={bpm} rate={rate} tick={tick}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 11 * 3 * 4_001);
     }
 
     /// 判据 2: 病态输入返回 0，而不是 panic / 天文数字。

@@ -8,8 +8,10 @@
 //! **全程静音**。`#134` 只在**离线**渲染（`yeban-app` 的
 //! `render_project_f32_with_assets` → `audio_clip::AudioClipSource`）里接通了它。
 //! 本模块把同一条语义搬到**实时侧**，并**不复制**离线实现的任何代码：它只依赖
-//! 引擎自己的 tick → 样本换算（[`crate::synth::samples_per_tick`] /
-//! [`crate::synth::tick_to_sample`]）与轨增益门（[`crate::synth::track_gain_scale`]）。
+//! tick → 样本换算（[`crate::synth::samples_per_tick`] /
+//! [`crate::synth::tick_to_sample`]，算式与 `round` 的唯一实现自 `#247` 起在
+//! [`yeban_model::time_math::ticks_to_frames`]）与轨增益门
+//! （[`crate::synth::track_gain_scale`]）。
 //!
 //! ## 形状（⭐ 本单的核心裁决）
 //!

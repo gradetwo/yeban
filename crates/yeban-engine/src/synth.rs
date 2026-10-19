@@ -66,7 +66,7 @@
 //! | 运算 | 位置 | 类别 |
 //! | :--- | :--- | :--- |
 //! | `phase_increment(freq, sr)` | [`ScheduledNote::new`]（构造期） | IEEE 精确类（`f64` 乘除 + `round`） |
-//! | `tick × samples_per_tick`（`round`） | [`crate::snapshot`] 的投影 | IEEE 精确类 |
+//! | `tick × samples_per_tick`（`round`） | [`crate::snapshot`] 的投影（算式在 [`yeban_model::time_math::ticks_to_frames`]） | IEEE 精确类 |
 //! | `Adsr::set_params` / `LadderFilter::configure` | 快照边界（每修订一次） | **超越函数类**（`exp`/`tan`） |
 //! | `note_to_hz` / `db_to_gain` | 控制线程 | **超越函数类**（`2^x`） |
 //!
@@ -2148,32 +2148,21 @@ fn sanitise_sample_rate(sample_rate: u32) -> f32 {
     }
 }
 
-/// tick → 样本位置的一次性换算（**构造期**，不在实时路径上）。
+/// tick → 样本位置（**构造期**，不在实时路径上）。
 ///
-/// `samples_per_tick = 60 × sample_rate / (bpm × PPQ)`。
-/// 乘/除/`round` 都是 IEEE-754 精确类运算 ⇒ 同一 `f64` 输入在任何架构上给出
-/// **同一**样本位置（D32 §1）。
+/// 唯一实现已经下移到 [`yeban_model::time_math::tick_to_sample`]（`#247`）：
+/// 本文件不再持有"乘 tick + `round` + 饱和"这份算式。这里用 `pub use` 保留
+/// 既有导入路径（`crate::synth::tick_to_sample`），并让引擎与 MCP 的
+/// `render_math::ticks_to_frames` 落在**同一份** IEEE-754 运算顺序上。
 ///
-/// 非有限/非正值输入返回 `None`（调用方跳过该音符，绝不 panic）。
-#[must_use]
-pub fn tick_to_sample(tick: u64, samples_per_tick: f64) -> Option<u64> {
-    if !samples_per_tick.is_finite() || samples_per_tick <= 0.0 {
-        return None;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let samples = (tick as f64 * samples_per_tick).round();
-    if !samples.is_finite() || samples < 0.0 {
-        return None;
-    }
-    if samples >= (u64::MAX as f64) {
-        return Some(u64::MAX);
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let samples = samples as u64;
-    Some(samples)
-}
+/// 非有限/非正值 `samples_per_tick` 返回 `None`（调用方跳过该音符，绝不 panic）。
+pub use yeban_model::time_math::tick_to_sample;
 
 /// 每 tick 的样本数（`bpm` 非法时退回 120 BPM；`sample_rate == 0` 时退回 48 kHz）。
+///
+/// 算式本身只有一份：[`yeban_model::time_math::samples_per_tick`]（`#247`）。
+/// 本函数只保留**引擎的兜底口径**（与 MCP 的"病态 ⇒ 0"不同），因此调用方看到的
+/// 数值与 `#247` 之前逐位相同。
 #[must_use]
 pub fn samples_per_tick(bpm: f64, sample_rate: u32) -> f64 {
     let bpm = if bpm.is_finite() && bpm > 0.0 {
@@ -2186,9 +2175,7 @@ pub fn samples_per_tick(bpm: f64, sample_rate: u32) -> f64 {
     } else {
         sample_rate
     };
-    #[allow(clippy::cast_precision_loss)]
-    let ppq = PPQ as f64;
-    60.0 * f64::from(sample_rate) / (bpm * ppq)
+    yeban_model::time_math::samples_per_tick(bpm, PPQ, sample_rate)
 }
 
 /// 线性增益：`velocity / 127`（IEEE 精确类除法）。
@@ -2305,6 +2292,39 @@ mod tests {
         assert_eq!(tick_to_sample(960, spt), Some(24_000));
         assert_eq!(tick_to_sample(u64::MAX, f64::NAN), None);
         assert_eq!(tick_to_sample(10, 0.0), None);
+    }
+
+    /// ⭐ `#247` 判据：引擎的公开换算与模型层在
+    /// **11 BPM × 3 采样率 × tick 0..=4000** 上逐项相同（0 分歧）。
+    ///
+    /// 引擎保留 `samples_per_tick` 的兜底口径（非法速度 ⇒ 120 BPM、采样率 0 ⇒
+    /// 48 kHz），但算式与 `round` 只有模型层一份；本判据让"有人把旧算式搬回
+    /// `synth.rs`"或"兜底改动碰了正常路径"都立刻变红。
+    #[test]
+    fn the_engine_agrees_with_the_model_on_the_whole_tick_grid() {
+        const BPMS: [f64; 11] = [
+            30.0, 60.0, 72.0, 100.0, 110.0, 120.0, 128.0, 130.0, 140.0, 174.0, 200.0,
+        ];
+        let mut checked = 0usize;
+        for bpm in BPMS {
+            for rate in [44_100u32, 48_000, 96_000] {
+                let spt = samples_per_tick(bpm, rate);
+                for tick in 0..=4_000u64 {
+                    let ours = tick_to_sample(tick, spt).expect("合法速度/采样率");
+                    let model =
+                        yeban_model::time_math::ticks_to_frames(tick, bpm, yeban_model::PPQ, rate)
+                            .expect("合法速度/采样率");
+                    assert_eq!(ours, model, "bpm={bpm} rate={rate} tick={tick}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 11 * 3 * 4_001);
+        // ⭐ 44.1 kHz 的第一例分歧：引擎仍是 7718（收口没有改引擎的读数）。
+        assert_eq!(
+            tick_to_sample(168, samples_per_tick(60.0, 44_100)),
+            Some(7_718)
+        );
     }
 
     /// 判据：同输入两次渲染**逐位**相同（L1，模块文档 §2）。

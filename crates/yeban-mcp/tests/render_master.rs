@@ -5285,3 +5285,60 @@ fn volume_automation_is_deterministic_across_two_renders() {
         "两次渲染的母带摘要必须相同"
     );
 }
+
+/// ⭐ `#247` 端到端判据：**同一 tick 表**在 44.1 / 48 / 96 kHz 上收口后，
+/// 48/96 kHz 的三件套（`frames` / `masterDigest` / `sha256`）与收口前**逐字相同**，
+/// 而 44.1 kHz 的 `frames` 从 7717 变为 7718（母带摘要与文件摘要随之改变）。
+///
+/// 夹具：60 BPM / 960 PPQ，一条 MIDI 音符与摆放都是 `0..168` tick。
+/// `168 × 45.9375 = 7717.5` ⇒ 半值远离零 ⇒ **7718**；旧的 MCP 求值顺序
+/// （`tick × 60 / ppq / bpm × sr`）在浮点上得 `7717.4999999999995` ⇒ 7717。
+/// 48 kHz 是 8400 帧、96 kHz 是 16800 帧，两种顺序都逐位相同。
+///
+/// 可被什么注入弄红：
+/// - 把 `yeban_model::time_math::ticks_to_frames` 的求值顺序改回旧 MCP 顺序
+///   ⇒ 44.1 kHz 的 `frames` 变回 7717；
+/// - 改坏模型层的 `round`/`samples_per_tick` ⇒ 48/96 kHz 的摘要也变。
+#[test]
+fn tick_conversion_is_shared_and_keeps_the_48_and_96_khz_summaries() {
+    let expected = [
+        (
+            44_100u32,
+            7_718u64,
+            "eb2ece44c5056505df7dd49013c2aa66781b7803aaa88bb9e79dd7d85e964d6e",
+            "6eb2160f5689fc712e4075238f820fa130de0d7bf2c18504f19beb711c340059",
+        ),
+        (
+            48_000,
+            8_400,
+            "34190cd965f0ef36f0df4e0002e28c152473d8f63f5700b9967d9cfd00834bce",
+            "8a0f1b98fb76fc3c5987b7906be790ff76f735d98ee3df212c2ce8f9a49bab57",
+        ),
+        (
+            96_000,
+            16_800,
+            "7c60f06116398384d54a10b00291eaa1a40c3ed47cd1db4921134272fe745317",
+            "37b1c0bbe17a56339c669493906f2cfd72f6372a29ba855c912c967723a5abaa",
+        ),
+    ];
+    for (rate, frames, digest, sha256) in expected {
+        let scratch = Scratch::new("tickconv");
+        let spec = Spec {
+            bpm: 60.0,
+            end_tick: 168,
+            ..Spec::default()
+        };
+        let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
+        let out = scratch.join("master.wav");
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": rate, "path": out.display().to_string()}),
+        );
+        assert_eq!(result["status"], "success", "{result}");
+        let data = &result["data"];
+        assert_eq!(data["frames"], frames, "{rate} Hz 的帧数");
+        assert_eq!(data["masterDigest"], digest, "{rate} Hz 的母带摘要");
+        assert_eq!(data["sha256"], sha256, "{rate} Hz 的文件摘要");
+    }
+}
