@@ -39,6 +39,15 @@ use yeban_render::wav::write_plain_wav;
 /// `render_project_f32_with_assets(sampler = None)` 上的 FNV-1a 指纹（逐位；
 /// 样本 = `RenderProjectOutput::samples` 的交错 `f32`）。
 ///
+/// ⭐ **任务单 `#251` 重钉（第 298／315／323 条三件套）**：
+/// * 自报旧数：`0xe872_e762_b159_a33d`（`#233` 的读数，见下一段）；
+/// * 自报新数：`0x21a4_feeb_8ed1_95a9`（本机 `aarch64/macos` 实测，判据输出见下）；
+/// * 原因：`#251` 给离线导出的 **MIDI 路径**补上轨声相 —— `filled_project` 的 lead 轨
+///   `pan = -0.25`（`crates/yeban-model/src/samples.rs:183`）。旧实现把单声道**铺到
+///   左右两个声道**（pan 被整个丢掉），现在按等功率曲线分配 `(cos θ, sin θ)` ⇒
+///   左右样本不再相等 ⇒ 这份指纹**必然**变。`pan = 0` 的工程**逐位不变**
+///   （`track_pan_gains` 在 `pan == 0` 时返回 `(1.0, 1.0)`，乘上去是 IEEE 恒等）。
+///
 /// ⭐ **任务单 `#233` 重钉（第 298／323 条三件套）**：
 /// * 自报旧数：`0xa0a7_0aab_b72b_b369`（`#209` 的读数，见下一段）；
 /// * 自报新数：`0xe872_e762_b159_a33d`（本机 `aarch64/macos` 实测，判据输出见下）；
@@ -57,7 +66,7 @@ use yeban_render::wav::write_plain_wav;
 ///
 /// ⚠ 它是**某台机器上的实测值**，⛔ 不是规范常数（同 `yeban-engine` 的 S21 口径）：
 /// [ARCH-DET-001] 的 L1 只在"相同 OS ＋ CPU 架构 ＋ 纯 Rust libm"下承诺逐位一致。
-const BASELINE_APP: u64 = 0xe872_e762_b159_a33d;
+const BASELINE_APP: u64 = 0x21a4_feeb_8ed1_95a9;
 
 /// 指纹的**测量平台**。
 const MEASURED_PLATFORM: &str = "aarch64/macos";

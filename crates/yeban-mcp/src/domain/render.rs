@@ -217,6 +217,18 @@
 //! 峰值，也⛔ 不是真峰值。这句话同时写在响应的 `peak.semantics` 与
 //! `tools/list` 的 `yeban_render_master` 描述里，不让调用方去猜。
 //!
+//! ## MIDI 音源**明说**是内置正弦振荡器（⭐ `#251`）
+//!
+//! 此前响应里只有 `sources[].kind = "midi-synth-osc"` —— 一个**间接**标签，读的人
+//! 不会去查它是什么。于是 agent / 用户容易以为听到的是引擎音色。现在顶层
+//! `data.midiSource` 用**一句话**说清：`kind = "builtin-sine"`、`engineTimbre = false`，
+//! 并在 `note` 里逐字写"内置正弦振荡器、**不是**引擎音色"。
+//!
+//! ⛔ 本字段**只加文案**：一个样本都不动 ⇒ `sha256` / `masterDigest` 与加它之前**逐位
+//! 相同**（判据 `tests/render_master.rs` 的 pan / 逐字节判据）。绑定了 SFZ 采样器的
+//! 轨由 `SamplerTrackSource` 发声，`sources[].sampler` 里另有读数 —— `note` 里点名这条
+//! 边界，⛔ 不写成"与引擎一致"那种假话。
+//!
 //! ## 削波**预警 + 建议 trim**（⭐ `#225`；⛔ **不自动改增益**）
 //!
 //! `#224` 的第三轮验收实测：**不加任何推子**、agent 编完直接导出，单轨峰值就达到
@@ -1687,6 +1699,23 @@ impl RenderArtifact {
         map.insert(
             "sources".to_owned(),
             Value::Array(self.sources.iter().map(SourceReport::to_value).collect()),
+        );
+        // ⭐ `#251`（S0）：MIDI 音源**显式**说明 —— 不再只靠 `sources[].kind` 的间接标签。
+        //    ⛔ 纯文案：一个样本都不动 ⇒ `sha256` / `masterDigest` 与加它之前逐位相同。
+        map.insert(
+            "midiSource".to_owned(),
+            serde_json::json!({
+                "kind": "builtin-sine",
+                "label": "内置正弦振荡器",
+                // 逐字：这不是引擎音色。⛔ 不写"与引擎一致"这种假话。
+                "engineTimbre": false,
+                "oscillator": "sin(2π · phase)",
+                "note": "MCP 的 MIDI 音符音源是内置正弦振荡器、不是引擎音色\
+                         （MidiSynthSource: amplitude × envelope × sin(2π·phase)）；\
+                         ⛔ 本次渲染不装载 yeban-engine 的乐器。绑定了 SFZ 采样器的轨\
+                         由采样器发声，见 sources[].sampler。",
+                "appliesTo": "sources[].kind == \"midi-synth-osc\"",
+            }),
         );
         // 概率触发的**实测**读数：`probability < 1.0` 的音符里有多少被判为不触发。
         // 这是"母带里少了的音符"的可见证据 —— 判定走模型层唯一入口

@@ -209,6 +209,17 @@ fn track_gain_of(project: &YebanProjectV1, track_id: EntityId, any_solo: bool) -
     })
 }
 
+/// 一条轨的**声相增益** `(左, 右)` —— ⭐ `#251`：MIDI 路径与音频片段路径的**同一个**入口。
+///
+/// 唯一实现住在 [`crate::audio_clip::track_pan_gains`]（`pan == 0` ⇒ `(1.0, 1.0)`，
+/// 否则走引擎的等功率曲线）。本函数只补"轨道不在表里 ⇒ 居中"的兜底 ——
+/// `renderable` 已按 `project.tracks` 过滤，正常不会走到。
+fn track_pan_of(project: &YebanProjectV1, track_id: EntityId) -> (f32, f32) {
+    project.tracks.get(&track_id).map_or((1.0, 1.0), |track| {
+        crate::audio_clip::track_pan_gains(project, track)
+    })
+}
+
 /// 一次离线渲染的**全部读数**（含音频片段的渲染 / 跳过计数）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderProjectOutput {
@@ -496,6 +507,10 @@ pub fn render_project_f32_with_plans_under(
                 ),
             }
             // ⭐ 与引擎侧同形（`NoteSchedule::with_track_gain`）：轨增益乘在**乐器层输出之外**。
+            // ⚠ `#251` 的边界：`--sfz` 是**采样器**替换（不是振荡器 MIDI 路径），MCP 的
+            //    `SamplerTrackSource` 也不应用声相（`render.rs` 的同一张登记表）⇒ 这里
+            //    同样不乘 pan，两条采样器路径才继续逐位一致（判据
+            //    `mcp_mount::embedded_sampler::the_mcp_export_and_the_cli_leg_agree_about_the_sampler`）。
             .with_track_gain(track_gain);
             labels.push(track_source.sample_source());
             sources.insert(track_id, Box::new(track_source));
@@ -505,14 +520,24 @@ pub fn render_project_f32_with_plans_under(
             .map_or_else(|| "sfz(无区域)".to_owned(), |label| format!("sfz({label})"))
     } else if let Some(snapshot) = snapshot.as_ref() {
         for track_id in renderable.clone() {
+            // ⭐ `#251` 的**分流边界**（与 MCP 的 `build_source` 同一条）：
+            // 绑定了采样器的轨（在快照 `sfz()` 表里）在 MCP 走 `SamplerTrackSource`，
+            // 那个源**不应用声相** ⇒ CLI 这里也保持 `(1.0, 1.0)`；只有**振荡器**轨
+            // （不在表里，MCP 走 `MidiSynthSource`）才乘 pan。
+            let pan = if snapshot.sfz().contains_key(&track_id) {
+                (1.0, 1.0)
+            } else {
+                track_pan_of(project, track_id)
+            };
             sources.insert(
                 track_id,
                 // ⭐ `Arc::clone` 是**指针复制**（ADR：实时侧只借快照）：摊平表的 PCM 留在
                 //    快照里，⛔ 不按源再 clone 一份（见 `EngineTrackSource` 的字段文档）。
-                Box::new(EngineTrackSource::new(
-                    std::sync::Arc::clone(snapshot),
-                    track_id,
-                )?),
+                // ⭐ `#251`：`render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan。
+                Box::new(
+                    EngineTrackSource::new(std::sync::Arc::clone(snapshot), track_id)?
+                        .with_pan(pan),
+                ),
             );
         }
         let mut label = "引擎乐器（SynthEngine::arm_from_snapshot + render_track）".to_owned();
@@ -533,7 +558,9 @@ pub fn render_project_f32_with_plans_under(
                     NoteToneSource::from_track(project, track_id, options.sample_rate)
                         // ⭐ 与 SFZ 侧同形（`SfzTrackSource::with_track_gain`）：轨增益乘在
                         //    **本源输出之外**；`1.0` ⇒ 跳过乘法、读数逐位不变。
-                        .with_track_gain(track_gain),
+                        .with_track_gain(track_gain)
+                        // ⭐ `#251`：与音频片段**同一条**等功率曲线（`pan = 0` ⇒ 恒等）。
+                        .with_pan(track_pan_of(project, track_id)),
                 ),
             );
         }

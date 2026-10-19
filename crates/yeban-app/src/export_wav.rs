@@ -59,6 +59,12 @@
 //! `--export-wav` 真的渲染音频摆放。⛔ 没有资产池的入口（本文件的旧签名 / `record_wav`）
 //! 会**如实跳过**并计数，⛔ 不是静默。
 //!
+//! ⭐ **声相**（`#251`）：MIDI **振荡器**路径（引擎乐器／最小音源）与音频片段路径**都**应用
+//! 轨声相，且共用 [`crate::audio_clip::track_pan_gains`]（`pan = 0` ⇒ `(1.0, 1.0)`，
+//! 乘上去**逐位恒等**；否则走与 MCP **同一条**等功率曲线 `θ = (pan + 1)·π/4`）。
+//! ⚠ 采样器轨（`--sfz` 旁路或 `TrackV3.sampler`）**不**应用声相 —— 与 MCP 的
+//! `SamplerTrackSource` 同一条登记差异，两条采样器路径因此继续逐位一致。
+//!
 //! ## "拒绝时不留半成品"
 //!
 //! `write_plain_wav` 自带该纪律（先 `check_match` 校验，再建文件）。本文件在**调用顺序**上
@@ -478,6 +484,12 @@ pub(crate) struct NoteToneSource {
     notes: Vec<(u64, u64, f64, f32)>,
     /// ⭐ **引擎层的轨增益门**（可闻门 ＝ 静音/独奏 × 推子；默认 **`1.0`＝单位增益**）。
     track_gain: f32,
+    /// ⭐ **轨声相**（`(左, 右)`；默认 **`(1.0, 1.0)`＝居中**，`#251`）。
+    ///
+    /// 值由 [`crate::render_core`] 从 [`crate::audio_clip::track_pan_gains`] 注入 ——
+    /// 与音频片段**同一条**等功率曲线，⛔ 本类型不自己算 `cos`/`sin`。
+    /// `(1.0, 1.0)` ⇒ 走原来的"单声道铺到所有声道"分支，读数逐位不变。
+    pan: (f32, f32),
 }
 
 /// 首尾包络长度（帧）：避免方波起止的爆音。
@@ -546,6 +558,8 @@ impl NoteToneSource {
             // ⭐ 默认**单位增益**（⛔ 不是 `0.0`）—— 与引擎侧
             // `NoteSchedule::from_sorted`／`SfzTrackSource::new` 的默认同口径。
             track_gain: 1.0,
+            // ⭐ 默认**居中**（`1.0, 1.0`）：没注入时导出字节与接线前逐位相同（`#251`）。
+            pan: (1.0, 1.0),
         }
     }
 
@@ -568,6 +582,17 @@ impl NoteToneSource {
     #[must_use]
     pub(crate) const fn track_gain(&self) -> f32 {
         self.track_gain
+    }
+
+    /// ⭐ 写入**轨声相**（`(左, 右)`；构造期一次，`#251`）。
+    ///
+    /// 值必须来自 [`crate::audio_clip::track_pan_gains`]（音频片段路径的**同一个**
+    /// 函数）—— ⛔ 本类型不接受"这里自己写一条曲线"。缺省 `(1.0, 1.0)` ⇒
+    /// 原来的单声道铺放分支，导出字节逐位不变。
+    #[must_use]
+    pub(crate) const fn with_pan(mut self, pan: (f32, f32)) -> Self {
+        self.pan = pan;
+        self
     }
 
     /// 该帧上所有正在发声的音符之和（`[-1, 1]` 之外的削波交给渲染层的母线）。
@@ -629,6 +654,12 @@ pub(crate) struct EngineTrackSource {
     snapshot: std::sync::Arc<EngineSnapshot>,
     /// 单声道暂存（`render_track` 输出"声相之前"的单声道）。
     mono: Vec<f32>,
+    /// ⭐ **轨声相**（`(左, 右)`；默认 **`(1.0, 1.0)`＝居中**，`#251`）。
+    ///
+    /// `render_track` 产出的是**声相之前**的单声道 ⇒ 声相必须在本源补上，否则
+    /// CLI 的 MIDI 路径把用户拉过的 pan 完全丢掉（`#250` 勘察的实测缺陷）。
+    /// 值来自 [`crate::audio_clip::track_pan_gains`]（与音频片段同一条曲线）。
+    pan: (f32, f32),
 }
 
 impl EngineTrackSource {
@@ -655,7 +686,19 @@ impl EngineTrackSource {
             schedule: snapshot.schedules().get(&track).cloned(),
             snapshot,
             mono: Vec::new(),
+            // ⭐ 默认**居中**（`1.0, 1.0`）：没注入时导出字节与接线前逐位相同（`#251`）。
+            pan: (1.0, 1.0),
         })
+    }
+
+    /// ⭐ 写入**轨声相**（`(左, 右)`；构造期一次，`#251`）。
+    ///
+    /// 值必须来自 [`crate::audio_clip::track_pan_gains`] —— 与音频片段路径**同一个**
+    /// 函数（同一条等功率曲线）。缺省 `(1.0, 1.0)` ⇒ 原来的单声道铺放分支。
+    #[must_use]
+    pub(crate) const fn with_pan(mut self, pan: (f32, f32)) -> Self {
+        self.pan = pan;
+        self
     }
 }
 
@@ -694,10 +737,22 @@ impl AudioSource for EngineTrackSource {
         // ⚠ 本函数每块恰好渲染一次、推进一次 ⇒ 与 `first_frame` 同步，⛔ 不会推进两次。
         self.engine.advance(frames);
         out.fill(0.0);
+        let (gain_l, gain_r) = self.pan;
         for index in 0..frames {
             let value = self.mono[index];
-            for channel in 0..channels {
-                out[index * channels + channel] = value;
+            let base = index * channels;
+            if gain_l == 1.0 && gain_r == 1.0 {
+                // ⭐ 居中（绝大多数工程）：原来的"单声道铺到所有声道"，逐位不变。
+                for channel in 0..channels {
+                    out[base + channel] = value;
+                }
+            } else {
+                // ⭐ `#251`：等功率声相。第 0 声道左、第 1 声道右，其余保持 0
+                //    （与 MCP 的 `MidiSynthSource::render_block` 逐声道口径相同）。
+                out[base] = value * gain_l;
+                if channels > 1 {
+                    out[base + 1] = value * gain_r;
+                }
             }
         }
         Ok(())
@@ -710,6 +765,7 @@ impl AudioSource for NoteToneSource {
         let channels = context.channels.max(1);
         let frames = context.frames.min(out.len() / channels);
         let track_gain = self.track_gain();
+        let (gain_l, gain_r) = self.pan;
         for index in 0..frames {
             let frame = context.first_frame + index as u64;
             let mut value = self.sample_at(frame);
@@ -718,11 +774,20 @@ impl AudioSource for NoteToneSource {
             if track_gain != 1.0 {
                 value *= track_gain;
             }
-            for channel in 0..channels {
-                // ⭐ 累加进**已清零**的缓冲（与 `SfzTrackSource`／音频片段同口径）：这样
-                //    `-x * 0.0 = -0.0` 会被 `+0.0` 归一 ⇒ 静音档是**逐位** 0（`to_bits() == 0`），
-                //    而不是 `0x8000_0000`。非零样本上 `0.0 + x == x` 逐位相等。
-                out[index * channels + channel] += value;
+            let base = index * channels;
+            if gain_l == 1.0 && gain_r == 1.0 {
+                for channel in 0..channels {
+                    // ⭐ 累加进**已清零**的缓冲（与 `SfzTrackSource`／音频片段同口径）：这样
+                    //    `-x * 0.0 = -0.0` 会被 `+0.0` 归一 ⇒ 静音档是**逐位** 0（`to_bits() == 0`），
+                    //    而不是 `0x8000_0000`。非零样本上 `0.0 + x == x` 逐位相等。
+                    out[base + channel] += value;
+                }
+            } else {
+                // ⭐ `#251`：与引擎乐器源同一个形状（第 0 声道左、第 1 声道右、其余 0）。
+                out[base] += value * gain_l;
+                if channels > 1 {
+                    out[base + 1] += value * gain_r;
+                }
             }
         }
         Ok(())
@@ -1573,5 +1638,138 @@ mod tests {
         assert_eq!(tone_48k.notes.first().expect("至少一条音符").0, 8_400);
         let frames_48k = track_notes_in_frames(&project, track_id, 48_000);
         assert_eq!(frames_48k.first().expect("至少一条音符").0, 8_400);
+    }
+
+    /// ⭐ `#251`（S3）：CLI 的 MIDI 路径**真的**应用声相，且与音频片段**同一条**曲线。
+    ///
+    /// 量什么：每条导出 WAV 的**左右声道峰值**（线性幅度），以及它们的比值 `L/R`。
+    ///
+    /// 三组 MIDI 输入 ＋ 一组音频片段输入（同一 `pan = -0.5`，同一导出选项）：
+    /// ① `pan = -1.0` ⇒ 右峰值**逐位 0**、左峰值 > 0（等功率：`cos(0)=1`、`sin(0)=0`）；
+    /// ② `pan = -0.5`（MIDI）⇒ `L/R = tan(3π/8)`；
+    /// ③ 同 `pan = -0.5` 的**音频片段**轨 ⇒ 与 ② 的左右比相同（证明同一条 `track_pan_gains`）；
+    /// ④ 正对照 `pan = 0` ⇒ [`track_pan_gains`] 逐位等于 `(1.0, 1.0)`（乘上去是恒等）。
+    ///
+    /// 这条判据的牙齿：把 `render_core` 里任一条 `.with_pan(...)` 删掉 ⇒ ② 退化成 1.0，
+    /// 与 ③ 不再相等；把左/右声道写反 ⇒ 比值变成倒数。
+    #[test]
+    fn midi_panning_matches_the_audio_clip_curve() {
+        use yeban_render::dither::PcmBuffer;
+
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-wav-pan-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let base = yeban_model::samples::demo_project();
+        let assets = yeban_model::samples::demo_project_assets();
+        let master = base.master_bus_track_id;
+        let midi_track = base
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Midi && !track.clips.is_empty())
+            .map(|track| track.id)
+            .expect("演示工程必须有一条带音符的 MIDI 轨");
+        let clip_track = base
+            .tracks
+            .values()
+            .find(|track| track.kind == yeban_model::TrackKind::Audio && !track.clips.is_empty())
+            .map(|track| track.id)
+            .expect("演示工程必须有一条带摆放的音频轨");
+
+        // 只留一条可闻轨（其余 mute、目标轨 solo）—— 把"本轨的声相"从总线的求和里隔离出来。
+        let render = |track_id: EntityId, pan: f32, tag: &str| -> Vec<f32> {
+            let mut project = base.clone();
+            for (id, track) in &mut project.tracks {
+                if *id == master {
+                    continue;
+                }
+                track.mute = *id != track_id;
+                track.solo = *id == track_id;
+                track.solo_safe = false;
+                track.pan = if *id == track_id { pan } else { 0.0 };
+            }
+            let path = dir.join(format!("{tag}.wav"));
+            let options = WavExportOptions {
+                frames: 96_000,
+                sample_rate: 48_000,
+                channels: 2,
+                seed: 1,
+                use_engine_source: true,
+                bit_depth: BitDepth::Float32,
+            };
+            export_wav_with_sfz_file_and_assets(&project, &path, options, None, &assets)
+                .unwrap_or_else(|error| panic!("{tag} 必须导出成功: {error}"));
+            match yeban_render::wav::read_plain_wav(&path)
+                .expect("回读 32f WAV")
+                .1
+            {
+                PcmBuffer::Float32(samples) => samples,
+                other => panic!("32f 导出必须是 Float32: {other:?}"),
+            }
+        };
+        let peaks = |samples: &[f32]| {
+            let mut left = 0.0_f32;
+            let mut right = 0.0_f32;
+            for frame in samples.as_chunks::<2>().0 {
+                left = left.max(frame[0].abs());
+                right = right.max(frame[1].abs());
+            }
+            (left, right)
+        };
+        let ratio = |samples: &[f32]| {
+            let (left, right) = peaks(samples);
+            assert!(right > 0.0, "这一路的右声道不该是 0（比值无定义）");
+            (left / right, left, right)
+        };
+
+        // ① 全左：右声道必须是**逐位** 0（不是"很小"）。
+        let (left_peak, right_peak) = peaks(&render(midi_track, -1.0, "midi-left"));
+        assert!(left_peak > 0.0, "全左的 MIDI 轨左声道必须有信号");
+        assert_eq!(
+            right_peak, 0.0,
+            "全左（pan = -1）⇒ 右声道必须逐位 0；实测右峰值 = {right_peak}"
+        );
+
+        // ② / ③ MIDI 与音频片段在同一个 pan 上必须有同一个左右比。
+        let (midi_ratio, midi_l, midi_r) = ratio(&render(midi_track, -0.5, "midi-half"));
+        let (clip_ratio, clip_l, clip_r) = ratio(&render(clip_track, -0.5, "clip-half"));
+        let (gain_l, gain_r) = yeban_engine::mixer::pan_gains(
+            -0.5,
+            yeban_engine::mixer::PanLaw::ConstantPowerMinus3dB,
+        );
+        let expected = f64::from(gain_l) / f64::from(gain_r);
+        assert!(
+            (f64::from(midi_ratio) - expected).abs() < 1.0e-5,
+            "MIDI 的左右比必须落在等功率曲线上: 实测 {midi_ratio}（L={midi_l} R={midi_r}）vs 期望 {expected}"
+        );
+        assert!(
+            (f64::from(clip_ratio) - expected).abs() < 1.0e-5,
+            "音频片段的左右比必须落在同一条曲线上: 实测 {clip_ratio}（L={clip_l} R={clip_r}）vs 期望 {expected}"
+        );
+        assert!(
+            (f64::from(midi_ratio) - f64::from(clip_ratio)).abs() < 1.0e-5,
+            "MIDI 与音频片段必须是同一条曲线: MIDI={midi_ratio} clip={clip_ratio}"
+        );
+
+        // ④ 正对照：pan = 0 ⇒ 单位增益（乘上去逐位恒等）。
+        let mut centered = base.clone();
+        centered
+            .tracks
+            .get_mut(&midi_track)
+            .expect("MIDI 轨存在")
+            .pan = 0.0;
+        let track = centered.tracks.get(&midi_track).expect("MIDI 轨存在");
+        assert_eq!(
+            crate::audio_clip::track_pan_gains(&centered, track),
+            (1.0, 1.0),
+            "pan = 0 必须是单位增益（绝大多数工程靠这条恒等保持逐位不变）"
+        );
+
+        println!(
+            "[wav-pan] midi-left: L={left_peak} R={right_peak}; midi(-0.5): L={midi_l} R={midi_r} ratio={midi_ratio}; clip(-0.5): L={clip_l} R={clip_r} ratio={clip_ratio}; expected={expected}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

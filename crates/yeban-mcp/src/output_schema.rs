@@ -484,7 +484,10 @@ fn query_engine_state() -> Value {
 
 /// `yeban_render_master` 的成功响应 `data`（全部是**实测**数字）。
 fn render_master() -> Value {
-    finish(
+    // ⭐ `#251`：`midiSource` 在 `finish` 之后单独插入 —— 这份 `json!` 的键数已经贴着
+    // `serde_json` 宏的递归上限（默认 128），再往字面量里加一个键就会
+    // `recursion limit reached`。单独插入与写在字面量里是**同一份** schema。
+    let mut schema = finish(
         envelope(
             "yeban_render_master 成功响应的 data",
             "全部字段都是实测值（帧数 / 字节数 / SHA-256 / 块数 / 削波样本数 / 真峰值）。\
@@ -495,7 +498,10 @@ fn render_master() -> Value {
              恰好一条 `code:\"exportClipping\"`（含 `clippedSamples` / `truePeakDbfs` /\
              `suggestedTrimDb`（公式 `-(ceil(truePeakDbfs * 2) / 2)`）/ `loudestSource` /\
              `hint`），否则**空数组**。⛔ 它不自动改增益；`sources[].peak` / `.peakDbfs`\
-             是逐源峰值（源节点输出，⛔ 不含插入链与路由边增益）。",
+             是逐源峰值（源节点输出，⛔ 不含插入链与路由边增益）。\
+             ⭐ `#251`：顶层 `midiSource` **明说** MIDI 音源是内置正弦振荡器\
+             （`kind:\"builtin-sine\"`、`engineTimbre:false`），⛔ 不是引擎音色；\
+             带 SFZ 采样器的轨见 `sources[].sampler`。",
         ),
         &[
             "rendered",
@@ -520,6 +526,7 @@ fn render_master() -> Value {
             "nodeCount",
             "sourceNodes",
             "sources",
+            "midiSource",
             "probability",
             "ratchet",
             "audio",
@@ -581,7 +588,13 @@ fn render_master() -> Value {
             "projectDigest": {"type": "string"},
             "renderedAtUnixMs": {"type": "integer"}
         }),
-    )
+    );
+    if let Value::Object(map) = &mut schema
+        && let Some(Value::Object(properties)) = map.get_mut("properties")
+    {
+        properties.insert("midiSource".to_owned(), json!({"type": "object"}));
+    }
+    schema
 }
 
 /// `yeban_undo` 的成功响应 `data`。

@@ -1814,6 +1814,22 @@ fn the_master_is_not_silent_and_panning_moves_the_image() {
     assert_eq!(result["data"]["sources"][0]["audible"], true);
     assert_eq!(result["data"]["sources"][0]["notes"], 1);
 
+    // ⭐ `#251`（S0）：MIDI 音源必须**显式**说明是内置正弦振荡器，⛔ 不是引擎音色。
+    let midi_source = &result["data"]["midiSource"];
+    assert_eq!(midi_source["kind"], "builtin-sine", "{midi_source}");
+    assert_eq!(midi_source["engineTimbre"], false, "{midi_source}");
+    let note = midi_source["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("`midiSource.note` 必须是字符串: {midi_source}"));
+    assert!(
+        note.contains("内置正弦振荡器、不是引擎音色"),
+        "文案必须逐字说明音源与边界: {note}"
+    );
+    assert!(
+        !note.contains("与引擎一致"),
+        "⛔ 不许把内置振荡器说成引擎音色: {note}"
+    );
+
     // 居中时左右对称。
     let (mut dispatcher, auth) =
         dispatcher_with(&project(&Spec::default()), &scratch.join("c.yeban"));

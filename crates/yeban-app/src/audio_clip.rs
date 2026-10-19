@@ -243,6 +243,34 @@ pub(crate) struct TrackClips {
     pub(crate) span_count: u64,
 }
 
+/// 一条轨道的**声相增益**（`(左, 右)`）—— 离线导出里**唯一**的声相入口。
+///
+/// ⭐ `#251`：音频片段路径与 MIDI 振荡器路径（引擎乐器 / 最小音源）都调本函数，
+/// 因此两边不可能漂移成两条曲线。
+///
+/// ⚠ 采样器轨**不调**本函数：MCP 的 `SamplerTrackSource` 不应用声相，因此 CLI 的
+/// `--sfz` 旁路、以及绑定了 `TrackV3.sampler` 的引擎轨都保持 `(1.0, 1.0)` ——
+/// 两条采样器路径必须继续逐位一致（`#251` 明确**不动**这条登记差异）。
+///
+/// - `pan == 0`（或非有限）⇒ `(1.0, 1.0)`。乘 `1.0` 是 IEEE 恒等 ⇒ 居中工程的导出
+///   字节与接线前**逐位相同**（`pan = 0` 是绝大多数工程；这条恒等也是正对照的判据）。
+/// - 否则走引擎的等功率曲线 [`pan_gains`]（`θ = (pan + 1)·π/4`）。它与 MCP 的
+///   `render.rs::pan_gains` 是**同一条**曲线、衰减律同源于
+///   `project.audio_config.pan_law` —— ⛔ 本模块不另写第二份 `cos`/`sin`。
+///
+/// ⚠ 只返回**声相**那一半：轨增益（推子 × 可闻门）由调用方另乘，⛔ 不在这里重复。
+#[must_use]
+pub(crate) fn track_pan_gains(
+    project: &YebanProjectV1,
+    track: &yeban_model::TrackV3,
+) -> (f32, f32) {
+    if track.pan.is_finite() && track.pan != 0.0 {
+        pan_gains(track.pan, PanLaw::from_model(project.audio_config.pan_law))
+    } else {
+        (1.0, 1.0)
+    }
+}
+
 /// 判定声道布局；不支持的组合返回 `None`（调用方据此**跳过并报告**）。
 fn channel_layout(asset_channels: u16, out_channels: usize) -> Option<ChannelLayout> {
     if asset_channels == 0 || out_channels == 0 {
@@ -335,13 +363,10 @@ pub(crate) fn resolve_track_clips(
         }
         let clip_gain_db = if gain_db.is_finite() { *gain_db } else { 0.0 };
         let gain = db_to_linear(clip_gain_db + track_volume_db);
-        let (gain_l, gain_r) = if track.pan.is_finite() && track.pan != 0.0 {
-            let (left, right) =
-                pan_gains(track.pan, PanLaw::from_model(project.audio_config.pan_law));
-            (gain * left, gain * right)
-        } else {
-            (gain, gain)
-        };
+        // ⭐ `#251`：声相走 [`track_pan_gains`] —— 与 MIDI 路径**同一条**曲线
+        //    （`pan == 0` ⇒ `(1.0, 1.0)`，乘上去逐位不变）。
+        let (pan_l, pan_r) = track_pan_gains(project, track);
+        let (gain_l, gain_r) = (gain * pan_l, gain * pan_r);
         let resolution = resolve_asset(asset, sample_rate, assets, cache);
         let prepared = match resolution {
             AssetResolution::Ready(prepared) => prepared,
