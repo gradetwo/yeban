@@ -5,6 +5,22 @@
 //! ⚠ 本会话的机械教训：把新增的公开项**追加在 `#[cfg(test)] mod tests` 之后**会触发
 //! `clippy::items_after_test_module`（已咬过两次）。把新增项放进**独立模块**可以一次性避开该形态。
 //!
+//! ## ⭐ 插入链（任务单 `#244`）：导出与 MCP 走**同一条**生产装配
+//!
+//! 修前本节目的计划编译是 `RenderPlan::compile(...)` —— 它内部把**延迟表与插入表都传空**
+//! （`crates/yeban-render/src/render.rs:439`）⇒ `TrackV3.devices` 里的 EQ / Freeverb / 卷积
+//! 一个都不进导出（`#226`／`#240` 已登记的口径）。修法**不是**在这里写一份"设备链 → 插入链"
+//! 的转换，而是复用两条既有设施：
+//!
+//! - [`track_latencies`]：`DeviceDefinition::latency_samples` 的唯一累加处（[ARCH-PDC-001]，
+//!   旁通设备不计入）；
+//! - [`project_inserts`]：设备链 → 插入链的唯一转换器（`yeban-render/tests/insert_chain.rs`
+//!   与 MCP 的 `domain/render.rs` 都在用它）。
+//!
+//! ⇒ 计划编译改调 `RenderPlan::compile_with_latencies_and_inserts`。无设备的工程
+//! （两张表都为空）逐字节不变；有设备的工程才会变（本单的判据在
+//! `tests/export_wav_inserts.rs`）。
+//!
 //! ## 与 `export_wav.rs` 的关系（**去重已完成**）
 //!
 //! 本函数是导出与录音的**单一真源**（同一批步骤：慢路径校验 → 计划编译 → 音源装配 → 执行 →
@@ -73,8 +89,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::automation::TrackGainAutomation;
+use yeban_render::inserts::project_inserts;
 use yeban_render::render::{
     AudioSource, BlockContext, RenderError, RenderOptions, RenderOutput, RenderPlan, db_to_linear,
+    track_latencies,
 };
 
 use yeban_engine::snapshot::EngineSnapshot;
@@ -396,10 +414,26 @@ pub fn render_project_f32_with_plans_under(
     };
 
     // ---- 1. 编译计划（图与 master 都来自工程本身，⛔ 不猜）----
-    let mut plan = RenderPlan::compile(
+    //
+    // ⭐ 任务单 `#244`：离线导出与 MCP（`yeban-mcp/src/domain/render.rs:2020`）走
+    // **同一条生产装配** —— 延迟表与插入链都从同一份 `TrackV3.devices` 投影：
+    //
+    // - [`track_latencies`] 是 `DeviceDefinition::latency_samples` 的**唯一累加处**
+    //   （[ARCH-PDC-001]；旁通设备不计入 ⇒ 旁通 = 没有那台设备）；
+    // - [`project_inserts`] 是"设备链 → 插入链"的**唯一转换器**（EQ / Freeverb / 卷积），
+    //   `yeban-render/tests/insert_chain.rs` 与 MCP 都在用它 ⇒ ⛔ 这里不写第二份。
+    //
+    // 修前这里调 `RenderPlan::compile(...)`，它内部等价于传**两张空表**
+    // （`crates/yeban-render/src/render.rs:439` 的 `&BTreeMap::new()`）⇒ 用户装的
+    // EQ / 混响 / 卷积**完全不进导出**（`#226`／`#240` 登记的口径）。
+    let latencies = track_latencies(&project.tracks);
+    let inserts = project_inserts(&project.tracks, options.sample_rate);
+    let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
         project.master_bus_track_id,
         options_render,
+        &latencies,
+        &inserts,
     )
     .map_err(|error| WavExportError::Render(error.to_string()))?;
 
