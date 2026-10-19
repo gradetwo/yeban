@@ -19,3 +19,8 @@ Architecture Decision Record。当 Normative 规范之间冲突、或规范对�
 | [ADR-0003](./ADR-0003-save-button-top-bar-slot.md) | 顶栏保存按钮的槽位（挪徽章 vs 改规范序列） | Proposed（待人类裁决）|
 | [ADR-0004](./ADR-0004-track-height-timeline-zoom-and-folding.md) | 编排视图的轨道高度、横向时间轴缩放与轨道折叠（每轨持久数据 vs 视图缩放级；文件夹实体 vs 视图语义） | Proposed（待人类裁决）|
 | [ADR-0005](./ADR-0005-single-mutable-project-authority.md) | GUI 进程里唯一可变的工程权威（选项 (a) 的追认、投影注入面与 `.yeban.lock` 写者边界） | Proposed（待人类裁决）|
+| [ADR-0006](./ADR-0006-hardware-midi-input-via-midir.md) | 硬件 MIDI 输入经 `midir` | Accepted（负责人 2026-10-08 `HD-40`）|
+| [ADR-0007](./ADR-0007-red-line-6-feature-wording.md) | 红线 6 的 feature 措辞 | Accepted（负责人 `HD-44`）|
+| [ADR-0008](./ADR-0008-sfz-off-time-versus-arch-rt-004.md) | SFZ `off_time` 6 ms vs `ARCH-RT-004` 3 ms | Proposed（待人类裁决）|
+| [ADR-0009](./ADR-0009-road-m1-005-historical-migration-scope.md) | `ROAD-M1-005` 历史迁移器的范围（条目是②，输入是③） | Proposed（待人类裁决）|
+| [ADR-0010](./ADR-0010-clip-loop-semantics.md) | 片段循环的坐标语义（`start_tick`/`end_tick` 是**摆放相对**坐标，按区间长度平铺） | **Accepted**（集成者，负责人 2026-10-15 授权"择优自行裁决"）|
