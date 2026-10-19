@@ -4084,13 +4084,17 @@ impl ProductionLoop {
 
     /// **一跳**（`run_gui` 的 16 ms 定时器体）。
     ///
-    /// 顺序是契约，三步在**同一个** tick 上：
+    /// 顺序是契约，四步在**同一个** tick 上：
     ///
     /// 1. 标记变了且有工程可发 ⇒ [`EngineHost::publish_project`] **增量**发布
     ///    （只换快照；**不用** `reload`，那会改掉 `ui/reload_engine` 的 `quanta` 契约）；
     /// 2. 不论改没改 ⇒ [`EngineHost::heartbeat`]：`SnapshotSlot::prune` ＋ `RetireQueue::drain`
     ///    （⛔ 不做 ② ⇒ ①就是一条"只涨不回收"的慢泄漏）；
-    /// 3. 不论改没改 ⇒ [`pump_meters`]：抽干 SPSC → 对齐投影 → 写 Slint 属性。
+    /// 3. 不论改没改 ⇒ [`pump_meters`]：抽干 SPSC → 对齐投影 → 写 Slint 属性；
+    /// 4. 不论改没改 ⇒ 把 [`EngineHost::transport`] 的读数交给 [`apply_transport`]。
+    ///    它是 `playing` 与 `timecode` 的**唯一**写者（任务单 `#228`）⇒ ⛔ 少了这一跳，
+    ///    引擎在播而界面上的数字**一位不动**（用户以为卡了）。停止时同样写：引擎的
+    ///    `Stop` 是暂停语义（位置保留）⇒ 停住后的显示与引擎 `position_ticks` 一致。
     ///
     /// ## 为什么电平与发布**共用**这一个 tick
     ///
@@ -4098,8 +4102,10 @@ impl ProductionLoop {
     /// - 共用一跳给出一个**顺序保证**：电平永远在"快照已经换过"之后被抽。
     ///   两个定时器要做到同一件事，得再论证一次两者的先后；
     /// - 成本上没有拆的理由：标记没变时 ① 是一次 `u64` 比较，② 是两条队列的长度检查，
-    ///   ③ 是一次 SPSC 抽干（空队列时零拷贝）。三件都是 O(1)～O(轨道数)，且都不分配
-    ///   （分配只发生在 `MeterRuntime::poll` 第一次扩容搬运缓冲时，那也在 UI 线程上）。
+    ///   ③ 是一次 SPSC 抽干（空队列时零拷贝），④ 是一次走带镜面读 ＋ 两个标量属性
+    ///   （`playing` / `timecode`，⛔ 不换任何数组模型实例）。四件都是 O(1)～O(轨道数)，
+    ///   且都不分配（分配只发生在 `MeterRuntime::poll` 第一次扩容搬运缓冲时，那也在 UI
+    ///   线程上；`timecode` 的格式化是每跳一次的小字符串，见 `apply_transport`）。
     ///
     /// 没有引擎 ⇒ **一位不动**（不发布、不回收、不注入），与接电平之前逐字相同。
     #[must_use]
@@ -4163,6 +4169,9 @@ impl ProductionLoop {
         // 其余各跳传的是 `None`；`EngineHost` 缓存最近一份工程 ⇒ 采样**每一跳都进行**。
         // 在这里判 `Some` 会让自动化只在工程改动的那一跳生效（静默丢失）。
         engine.publish_automation(project);
+        // ⭐ `#228`：**走带读数**（`Copy` 的一帧，一次原子镜面读）。
+        // ⛔ 在借内只读、不写界面：界面写入一律在 `drop(engine)` 之后（`#212`）。
+        let transport = engine.transport();
         // ⭐ `#86` 甲：**引擎发布腿 ⇒ 界面**的投影点（与上面三步同一个 tick、同一个 UI 线程）。
         //
         // ⛔ 顺序：必须在 `publish_project` 之后 —— 它读的就是那一步的结局。
@@ -4177,6 +4186,10 @@ impl ProductionLoop {
                 (None, None) => EnginePublishOutcome::Unchanged,
             },
         );
+        // ⭐ `#228`：**播放推进期间时间码跟着走**。读数是上面在借内取好的
+        // （`drop(engine)` 之后才写界面 ⇒ ⛔ 不重新引入持借写界面，`#212` 的崩法）。
+        // 每一跳都写：播放中数字每帧变；停止后 `position_ticks` 保留 ⇒ 显示与引擎一致。
+        apply_transport(ui, transport);
         ProductionTick {
             published_revision,
             publish_error,
@@ -4242,6 +4255,13 @@ pub fn pump_meters(ui: &MainWindow, meters: &mut MeterRuntime, view: &ViewState)
 ///
 /// 唯一的换算实现在 [`crate::bridge::timecode_for_ticks`]（投影层、零 Slint），
 /// 本文件只做"把投影算好的两个整数读出来、把算好的字符串写回去"。
+///
+/// ## 调用点（任务单 `#228`）
+///
+/// - 走带动作之后（[`wire_transport`] / [`wire_keys`]）—— 动作的即时回写；
+/// - **每一跳**：`ProductionLoop::tick` 在 `drop(engine)` 之后调它 ⇒ 播放推进期间
+///   界面上的数字跟着引擎的 `position_ticks` 走；停住时同样写，显示与引擎一致。
+///   ⛔ 心跳里不调它就是本单的缺陷形态："按了播放、数字不动"。
 pub fn apply_transport(ui: &MainWindow, reading: TransportReading) {
     ui.set_playing(reading.state.is_running());
     let grid = timecode_grid_of(ui);

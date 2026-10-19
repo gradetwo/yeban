@@ -77,6 +77,12 @@ use yeban_ui_test_port::image::Size;
 use yeban_ui_test_port::port::Permission;
 use yeban_ui_test_port::render::report_line;
 
+/// 顶栏高度（`ui/tokens.slint` 的 `top-bar-height`；与 `tests/pane_no_overlap.rs` 同一格）。
+///
+/// ⭐ 任务单 `#228`：60Hz 心跳现在把引擎的走带读数写回顶栏的 `timecode`（播放推进
+/// ⇒ 数字每帧变）⇒ 顶栏那一带的像素变化是**合法**的，下面的"默认帧"判据把它排除。
+const TOP_BAR_HEIGHT: u32 = 48;
+
 /// `[string]` 属性 → `Vec<String>`（**读回注入面**，与生产写入面配对）。
 fn strings_of(model: &slint::ModelRc<slint::SharedString>) -> Vec<String> {
     use slint::Model as _;
@@ -638,9 +644,18 @@ fn the_default_frame_is_byte_reproducible_and_unaffected_by_the_meter_leg() {
         lit > 0,
         "这 8 跳里至少有一跳的电平必须离开下限（否则本条没有搭建出前提）"
     );
-    assert!(
-        before == after,
-        "编曲视图那一档不含电平条 ⇒ 这一帧**不该**随电平变化（变了说明有别的写入者）: 不同像素 {changed} 个"
+    // ⭐ `#228`：心跳现在把引擎的走带读数写回**顶栏的时间码**（播放推进 ⇒ 数字变）。
+    // 本判据要证的仍是"电平腿不碰编曲视图" ⇒ 顶栏那一带不计（它是走带读数的合法
+    // 写入面）。实测：整帧差异全部落在 `y < TOP_BAR_HEIGHT` 的时间码文字带；
+    // 顶栏以下**必须**一位不变（变了才是"别的写入者"）。
+    let (below, below_bbox) = pixel_diff_from_row(&first, &after_image, TOP_BAR_HEIGHT);
+    report_line(&format!(
+        "[meter-leg] 顶栏（y < {TOP_BAR_HEIGHT}）以下: 不同像素 {below} 个, 包围盒 {below_bbox:?}"
+    ));
+    assert_eq!(
+        below, 0,
+        "顶栏以下（编曲视图）这一帧**不该**随电平变化（变了说明有别的写入者）: \
+         不同像素 {below} 个, 包围盒 {below_bbox:?}；整帧差异 = {changed} 个 / {bbox:?}"
     );
 }
 
@@ -685,6 +700,18 @@ fn pixel_diff(
     left: &yeban_ui_test_port::Rgb8Image,
     right: &yeban_ui_test_port::Rgb8Image,
 ) -> (usize, Option<(u32, u32, u32, u32)>) {
+    pixel_diff_from_row(left, right, 0)
+}
+
+/// 同 [`pixel_diff`]，但**只统计 `y >= from_row` 的行**。
+///
+/// 用法：`#228` 之后顶栏的时间码会随播放推进而变 ⇒ "电平腿不碰编曲视图"这条判据
+/// 把顶栏那一带排除（⛔ 不是放宽整帧：顶栏以下仍要求 0 个不同像素）。
+fn pixel_diff_from_row(
+    left: &yeban_ui_test_port::Rgb8Image,
+    right: &yeban_ui_test_port::Rgb8Image,
+    from_row: u32,
+) -> (usize, Option<(u32, u32, u32, u32)>) {
     assert_eq!(
         (left.width(), left.height()),
         (right.width(), right.height())
@@ -692,7 +719,7 @@ fn pixel_diff(
     let (lhs, rhs) = (left.pixels(), right.pixels());
     let mut changed = 0usize;
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
-    for y in 0..left.height() {
+    for y in from_row..left.height() {
         for x in 0..left.width() {
             let offset = (y as usize * left.stride()) + (x as usize * 3);
             if lhs[offset..offset + 3] != rhs[offset..offset + 3] {

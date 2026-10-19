@@ -441,7 +441,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 60Hz 主线程心跳：**编辑 ⇒ 发声** 的发布点 ＋ 退役回收 ＋ **电平抽干**
     // -----------------------------------------------------------------------
     //
-    // 这一跳做三件事，缺一不可（实现住在 [`host::ProductionLoop::tick`]，
+    // 这一跳做五件事，缺一不可（实现住在 [`host::ProductionLoop::tick`]，
     // 生产窗口与判据因此走**同一段**代码）：
     //
     // ① 读撤销端口的**模型读数**（`UndoPort::display` 的 `head` / `undone`）：一次提交会
@@ -458,8 +458,12 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     //    `host::apply_meters` 写 Slint 属性。⛔ 没有 ④，引擎侧的队列没有消费者，
     //    而界面上的电平表永远不动（本票修的就是这一条；消费端的采纳在
     //    [`host::ProductionLoop::start`]）。
+    // ⑤ 不论改没改，`host::apply_transport` 也要跑（任务单 `#228`）：把引擎的
+    //    `transport()` 读数写回 `playing` ＋ `timecode`。⛔ 没有 ⑤，引擎在播而顶栏的
+    //    数字**一位不动** ⇒ 用户以为卡了。`apply_transport` 是这两个属性的唯一写者，
+    //    且它在 `drop(engine)` 之后才写界面（⛔ 不持借写界面，`#212` 的崩法）。
     //
-    // 为什么 ②③④ 共用**同一个** tick：见 `host::ProductionLoop::tick` 的文档
+    // 为什么 ②③④⑤ 共用**同一个** tick：见 `host::ProductionLoop::tick` 的文档
     // （同为 60Hz 一条腿 ⇒ 拆开只会多一次唤醒，还要另证"电平在快照之后被抽"）。
     //
     // 线程：Slint 事件循环线程 —— 它就是建这一代引擎（= 建退役队列）的那一个线程，
