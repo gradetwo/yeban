@@ -40,10 +40,10 @@
 //! 2. **不摆放**：本片只在 `clip_pool` 登记片段，⛔ 不写 `Op::AddClipPlacement`。
 //!    这正是台账已登记的 UI 计划（`docs/ledger/feature-alignment.md:105` 逐字：
 //!    「UI 接一条导入动作（同一个 `Op::AddClip` + 同一份 CAS 池）」）。摆放需要一个
-//!    **目的地策略**，以及"帧 → tick（向上取整）"的换算 —— 后者的**唯一实现**在
-//!    `crates/yeban-mcp/src/domain/render_math.rs::frames_to_ticks_ceil`，app 够不着
-//!    （`yeban-mcp` 是默认关闭的可选依赖）⇒ 在 app 里照抄会造出**第二份 tick 换算**。
-//!    因此摆放留作下一片，与那条依赖边一起裁决。
+//!    **目的地策略**，以及"帧 → tick（向上取整）"的换算 —— 后者的**唯一实现**自
+//!    `#247` 起在模型层 [`yeban_model::time_math::frames_to_ticks_ceil`]（`#248`
+//!    删掉了 MCP 的那份副本；app 已依赖 `yeban-model`，`record_landing` 就在用）。
+//!    因此摆放留作下一片。
 //! 3. **撤销不回收资产池里的字节**：会话 CAS 池的字节**不是** `Op` 的载荷（模型的 `Op`
 //!    全集没有资产变体）⇒ `AddClip` 的逆只移除池里的条目，⛔ 不会删掉容器的
 //!    `assets/{sha256}`。登记进 CAS 的是**容器字节**（内容寻址，重复导入同一份字节

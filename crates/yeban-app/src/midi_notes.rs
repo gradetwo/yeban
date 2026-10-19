@@ -523,25 +523,18 @@ pub fn default_track(project: &YebanProjectV1) -> Result<EntityId, MidiNoteError
         .ok_or_else(|| MidiNoteError::Destination("工程里没有非 master 的音轨".to_owned()))
 }
 
-/// ⭐ 一个 tick 等于多少帧（整数算式；`bpm_millis = 0` 时按 120 BPM 兜底）。
+/// 帧 ⇒ tick（**整数向下取整**；只用于离线渲染的**块边界**，⛔ 不是摆放时值）。
 ///
-/// 口诀：`帧/tick = 采样率 × 60_000 / (bpm_millis × 960)` —— 48000 Hz / 120 BPM ⇒ **25 帧/tick**。
-#[must_use]
-pub fn frames_per_tick(sample_rate: u32, bpm_millis: u32) -> u64 {
-    let bpm_millis = u64::from(if bpm_millis == 0 { 120_000 } else { bpm_millis });
-    u64::from(sample_rate)
-        .saturating_mul(60_000)
-        .checked_div(bpm_millis.saturating_mul(MODEL_PPQ))
-        .unwrap_or(0)
-}
-
-/// tick ⇒ 帧（整数乘法 + 整数除法 ⇒ 确定性，⛔ 不引入浮点漂移）。
-#[must_use]
-pub fn ticks_to_frames(tick: u64, sample_rate: u32, bpm_millis: u32) -> u64 {
-    tick.saturating_mul(frames_per_tick(sample_rate, bpm_millis))
-}
-
-/// 帧 ⇒ tick（[`ticks_to_frames`] 的逆式；整数算式）。
+/// ⚠ ⭐ `#248`：tick → 帧的换算已**不在本模块**（唯一实现是
+/// [`yeban_model::time_math::ticks_to_frames`]，四舍五入 + IEEE-754 固定求值顺序）。
+/// 本函数保留整数算式，因为它的作用对象是 [`render_engine_offline`] 的**块尾**：
+/// `block_end_frame = (i+1) × quantum`，只用它回答"这一块结束时是否已经越过某条
+/// 事件的 tick"。这条判定不产出音频样本，也不落盘；保留整数 floor 让块边界与
+/// 既有调度读数**逐字不变**（⛔ 不借收口之名改事件送达时刻）。
+///
+/// 摆放时值（录音落点、音频导入的 `durationTicks`）走的是模型层的
+/// [`yeban_model::time_math::frames_to_ticks_ceil`]（**向上**取整），两者**语义不同**：
+/// 那里 `ceil` 保证素材尾部不被切掉，这里 `floor` 只保证块边界不越过事件。
 #[must_use]
 pub fn frames_to_ticks(frame: u64, sample_rate: u32, bpm_millis: u32) -> u64 {
     let bpm_millis = u64::from(if bpm_millis == 0 { 120_000 } else { bpm_millis });
@@ -554,8 +547,9 @@ pub fn frames_to_ticks(frame: u64, sample_rate: u32, bpm_millis: u32) -> u64 {
 
 /// ⭐ 把速度折算成**千分之一 BPM 的整数**（与 `bridge` 的 `bpm_millis` 同口径）。
 ///
-/// 为什么不用浮点算帧：`[ARCH-DET-001]` 要求"同一输入 ⇒ 同一产物"，而浮点在两架构上可能
-/// 差 1 ULP（`ADR-0001 D32`）⇒ tick↔帧一律**整数**算。
+/// 它是 bridge／离线渲染共用的**整数速度单位**，⛔ 不是 tick↔帧的换算实现：
+/// 那条换算在模型层 [`yeban_model::time_math`]（`f64` ＋ IEEE-754 固定顺序，
+/// 跨平台逐位可复现，见该模块文档「为什么跨平台可复现」）。
 #[must_use]
 pub fn bpm_millis(bpm: f64) -> u32 {
     let millis = (bpm * 1000.0).round();
@@ -1246,20 +1240,31 @@ mod tests {
         assert!(matches!(schedule[3].1, EngineEvent::NoteOff { .. }));
     }
 
-    /// 判据 ⑥（**时间口径**）：⭐ tick↔帧换算是**整数**且互为逆式；速度变了帧/tick 跟着变。
+    /// 判据 ⑥（**时间口径**）：⭐ tick → 帧的唯一实现在模型层；本模块只保留
+    /// **块边界**用的整数 floor 反向（[`frames_to_ticks`]）。
+    ///
+    /// `#248` 之前这里有一份整数 `frames_per_tick` / `ticks_to_frames` 副本 ——
+    /// 它在 48 kHz/72 BPM 这类除不尽的网格上按 **floor(帧/tick)** 累计误差
+    /// （`tick=168`：副本 6888，模型 7000），且产品路径上唯一的使用者是本文件
+    /// 自己的测试。删掉它之后，"某条路径偷偷绕开模型"会直接编译失败。
     #[test]
-    fn the_tick_frame_conversion_is_integer_and_round_trips() {
-        // 48 kHz / 120 BPM ⇒ 一个 4 分音符（960 tick）= 0.5 s = 24000 帧 ⇒ 25 帧/tick。
-        assert_eq!(frames_per_tick(48_000, 120_000), 25);
-        assert_eq!(ticks_to_frames(960, 48_000, 120_000), 24_000);
+    fn the_tick_frame_conversion_comes_from_the_model() {
+        // 48 kHz / 120 BPM：960 tick = 0.5 s = 24000 帧（模型层四舍五入）。
+        assert_eq!(
+            yeban_model::time_math::ticks_to_frames(960, 120.0, MODEL_PPQ, 48_000),
+            Some(24_000)
+        );
         assert_eq!(frames_to_ticks(24_000, 48_000, 120_000), 960);
         for tick in [0_u64, 1, 7, 960, 3_840] {
-            let frames = ticks_to_frames(tick, 48_000, 120_000);
+            let frames = yeban_model::time_math::ticks_to_frames(tick, 120.0, MODEL_PPQ, 48_000)
+                .expect("合法速度/采样率");
             assert_eq!(frames_to_ticks(frames, 48_000, 120_000), tick, "往返一致");
         }
-        assert_eq!(frames_per_tick(48_000, 240_000), 12, "240 BPM 是一半");
-        assert_eq!(frames_per_tick(48_000, 0), 25, "坏输入兜底 120 BPM");
-        assert_eq!(frames_per_tick(0, 120_000), 0);
+        // 44.1 kHz 的半帧：模型层给 7718；旧整数副本给 168 × 45 = 7560。
+        assert_eq!(
+            yeban_model::time_math::ticks_to_frames(168, 60.0, MODEL_PPQ, 44_100),
+            Some(7_718)
+        );
     }
 
     /// 判据 ⑦（**时间口径**）：⭐ 本模块的 `bpm_millis` 与 `bridge` 投影**逐值相同**

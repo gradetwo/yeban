@@ -14,11 +14,17 @@
 //! 在本机**真的执行**（与 `crates/yeban-render/verify/pure_modules.rs` 同一手法：
 //! `#[path]` 引入**真实源文件**，不是抄一份会漂移的副本）。
 //!
-//! ## tick → 帧 的唯一实现不在本模块（`#247`）
+//! ## tick ↔ 帧的唯一实现都不在本模块（`#247` 正向、`#248` 反向）
 //!
-//! [`ticks_to_frames`] 现在只是 [`yeban_model::time_math::ticks_to_frames`] 的
+//! [`ticks_to_frames`] 只是 [`yeban_model::time_math::ticks_to_frames`] 的
 //! **`None → 0` 适配器**：算式（先算 `samples_per_tick = 60 × sr / (bpm × ppq)`，
-//! 再乘 tick 并 `round`）只有模型层一份。本模块其余算术仍只用 `+ - * /` 与
+//! 再乘 tick 并 `round`）只有模型层一份。反向的「帧 → tick（向上取整）」自
+//! `#248` 起由调用方**直接调用** [`yeban_model::time_math::frames_to_ticks_ceil`]，
+//! 本模块**不再持有**第二份 `ceil` 算式（`#247` 时它还是一条逐字同式的副本）。
+//! 验证脚手架（`verify/render_pure.rs`）用 `extern crate self as yeban_model`
+//! ＋ `#[path]` 引入模型层的真实源文件，因此两个方向在裸 `rustc` 下同样可执行。
+//!
+//! 本模块其余算术仍只用 `+ - * /` 与
 //! `f64::round`。[IEEE 754] 把 `round` 指定为 `roundToIntegralTiesAway` —— 它不是
 //! 超越函数，在所有符合 IEEE 754 的目标上逐位相同。需要 `sin`/`powf`/`cos` 的地方
 //! （振荡器、等程律频率、等功率声相）留在 [`super::render`]，统一走 `libm`
@@ -42,42 +48,6 @@
 #[must_use]
 pub fn ticks_to_frames(end_tick: u64, ppq: u64, bpm: f64, sample_rate: u32) -> u64 {
     yeban_model::time_math::ticks_to_frames(end_tick, bpm, ppq, sample_rate).unwrap_or(0)
-}
-
-/// 帧 → tick（**向上取整**）。
-///
-/// 这是 [`ticks_to_frames`] 的反函数，用在"把一段音频的全部帧数换算成摆放时值"这件事上
-/// （`yeban_import_audio` 的 `durationTicks` 缺省值）：**向上**取整保证素材尾部的
-/// 不足一 tick 不会被切掉 —— 向下取整会让最后几帧永远听不到，那是一种静默的丢音。
-///
-/// ⚠⭐ **作用对象: 本函数只影响**时值**（`duration_ticks`），⛔ 不影响摆放**起点****：
-/// 起点是 `yeban_import_audio` 的 `startTick`，由**调用方给出的整数 `u64`** 直接落成
-/// （`import_audio.rs` 的 `parse_optional_u64("startTick", …).unwrap_or(0)`）——
-/// 那条路上**没有任何取整**。⭐ 因此本处的 `ceil`/`floor` 取舍**只**作用于**尾部**：
-/// `ceil` 让边界不短于素材（保守），`floor` 会让尾部不足一 tick 的部分落在边界之外
-/// （**丢尾部**）。⚠ 裁这个取舍时**先量作用对象**，⛔ 别按"哪个名字听起来更保守"选 ——
-/// 以"`ceil` 会切掉开头"为由裁成 `floor` 会造出**静默丢音**。
-///
-/// `seconds = frames / sample_rate`，再换算成 tick：`frames * ppq * bpm / (sample_rate * 60)`。
-/// 病态输入（`ppq == 0`、`bpm <= 0`、非有限 `bpm`、采样率 0、非有限结果）返回 `None` ——
-/// 与 [`ticks_to_frames`] 返回 `0` 不同，这里**没有**一个安全的哨兵值：
-/// [`yeban_model::ClipPlacement::validate`] 拒绝零时值的摆放，因此调用方必须明确拒绝，
-/// 而不是悄悄写一个会被模型层拒掉的 `0`。
-///
-/// 结果的下界是 1（0 帧素材也不产出 0 tick）。
-#[must_use]
-pub fn frames_to_ticks_ceil(frames: u64, ppq: u64, bpm: f64, sample_rate: u32) -> Option<u64> {
-    if ppq == 0 || !bpm.is_finite() || bpm <= 0.0 || sample_rate == 0 {
-        return None;
-    }
-    let ticks = (frames as f64) * (ppq as f64) * bpm / (f64::from(sample_rate) * 60.0);
-    if !ticks.is_finite() || ticks < 0.0 {
-        return None;
-    }
-    if ticks >= u64::MAX as f64 {
-        return Some(u64::MAX);
-    }
-    Some((ticks.ceil() as u64).max(1))
 }
 
 /// 峰值（最大绝对值）。
@@ -345,6 +315,8 @@ pub fn default_output_file_name(stem: &str, format: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `#248`：反向换算的唯一实现在模型层；本模块的副本已删除，判据直接对模型层测。
+    use yeban_model::time_math::frames_to_ticks_ceil;
 
     /// 判据 1: 时间轴换算在整数关系上精确（120 BPM / 960 PPQ ⇒ 1920 tick = 1 秒）。
     #[test]

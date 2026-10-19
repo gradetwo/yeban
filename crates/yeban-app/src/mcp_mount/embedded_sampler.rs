@@ -414,7 +414,7 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
 ///
 /// # 怎么变红
 ///
-/// 把 `export_wav::ticks_to_frames` 改回 `tick * sample_rate / 960`（旧口径）⇒
+/// 把 `track_notes_in_frames` 里的模型调用改回 `tick * sample_rate / 960`（旧口径）⇒
 /// 四个值里只有 `bpm = 60` 仍然相等，其余三个的起始帧全部偏小
 /// （例如 `bpm = 174`：旧 48000 vs 新 16552）。
 #[test]

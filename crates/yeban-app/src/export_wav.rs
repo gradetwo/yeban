@@ -481,31 +481,14 @@ pub(crate) struct NoteToneSource {
 /// 首尾包络长度（帧）：避免方波起止的爆音。
 const TONE_FADE_FRAMES: u64 = 64;
 
-/// ⭐ **960 PPQ 的 tick → 帧**（任务单 `#222`；与 MCP 的
-/// `render_math::note_frame_span` **同一算式**）。
-///
-/// `seconds = tick × 60 / (PPQ × bpm)`、`frames = round(seconds × sample_rate)`。
-/// 旧实现是 `tick × sample_rate / 960`（整数除法），等价于把 `bpm` 钉死为 60
-/// ⇒ 任何非 60 BPM 的工程，CLI 导出的音符时间全错。
-///
-/// 守卫与 MCP **逐条同口径**：`bpm` 非有限／`<= 0`、采样率 `0`、结果非有限或
-/// `<= 0` ⇒ `0`；`>= u64::MAX` ⇒ `u64::MAX`。
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn ticks_to_frames(tick: u64, bpm: f64, sample_rate: u32) -> u64 {
-    if !bpm.is_finite() || bpm <= 0.0 || sample_rate == 0 {
-        return 0;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let seconds = (tick as f64) * 60.0 / (yeban_model::PPQ as f64) / bpm;
-    let frames = (seconds * f64::from(sample_rate)).round();
-    if !frames.is_finite() || frames <= 0.0 {
-        return 0;
-    }
-    if frames >= u64::MAX as f64 {
-        return u64::MAX;
-    }
-    frames as u64
-}
+// ⭐ tick → 帧的**唯一实现**在 [`yeban_model::time_math::ticks_to_frames`]（`#248`）。
+//
+// `#222` 起这条换算必须看工程的 `bpm`（旧口径 `tick × sample_rate / 960` 把 BPM
+// 钉死为 60 ⇒ 非 60 BPM 的工程音符时间全错）。⚠ 本文件旧副本的求值顺序是
+// `tick × 60 / PPQ / bpm × sr`（与 `#247` 之前的 MCP 相同）：在 44.1 kHz 上与引擎
+// 差 **118 处一帧**（`bpm=60, tick=168`：旧副本 **7717** vs 模型 **7718**）。
+// 本文件因此不再持有第二份算式；病态输入仍按本调用点的既有口径映射成 `0`
+// （模型返回 `None`），溢出仍饱和到 `u64::MAX`（模型层保证）。
 
 impl NoteToneSource {
     /// 从一条轨道的全部片段收集音符（绝对帧 = 片段起点 ＋ 音符起点，960 PPQ 换算）。
@@ -528,9 +511,21 @@ impl NoteToneSource {
                     //    换算 ⇒ 只有 `bpm == 60` 才与引擎／MCP 同解）。
                     let start_tick = placement.start_tick.saturating_add(note.start_tick);
                     let end_tick = start_tick.saturating_add(note.duration_ticks.max(1));
-                    let start = ticks_to_frames(start_tick, project.bpm, sample_rate);
-                    let end = ticks_to_frames(end_tick, project.bpm, sample_rate)
-                        .max(start.saturating_add(1));
+                    let start = yeban_model::time_math::ticks_to_frames(
+                        start_tick,
+                        project.bpm,
+                        yeban_model::PPQ,
+                        sample_rate,
+                    )
+                    .unwrap_or(0);
+                    let end = yeban_model::time_math::ticks_to_frames(
+                        end_tick,
+                        project.bpm,
+                        yeban_model::PPQ,
+                        sample_rate,
+                    )
+                    .unwrap_or(0)
+                    .max(start.saturating_add(1));
                     // 预先计算频率及 `2 * f / fs`（供渲染循环廉价算相位），以及幅度。
                     // ⭐ `#234`：音高换算走纯 Rust `libm::pow`（⛔ 不是宿主 `f64::powf`）
                     // —— 这是**音频字节路径**，同一工程必须在每个平台渲染出同一串字节
@@ -737,7 +732,7 @@ impl AudioSource for NoteToneSource {
 ///
 /// ⭐ `#222`：旧实现按"960 tick ＝ 1 秒"换算（⛔ 不看 `bpm`），只有 `bpm == 60`
 /// 才与 MCP 的 `render_math::note_frame_span` 同解 ⇒ 非 60 BPM 的 `--sfz` 导出
-/// 音符时间全错。现在两边走**同一个** [`ticks_to_frames`] 口径。
+/// 音符时间全错。现在两边走**同一个** [`yeban_model::time_math::ticks_to_frames`] 口径。
 pub(crate) fn track_notes_in_frames(
     project: &YebanProjectV1,
     track_id: EntityId,
@@ -755,9 +750,21 @@ pub(crate) fn track_notes_in_frames(
             for note in map.values() {
                 let start_tick = placement.start_tick.saturating_add(note.start_tick);
                 let end_tick = start_tick.saturating_add(note.duration_ticks.max(1));
-                let start = ticks_to_frames(start_tick, project.bpm, sample_rate);
-                let end = ticks_to_frames(end_tick, project.bpm, sample_rate)
-                    .max(start.saturating_add(1));
+                let start = yeban_model::time_math::ticks_to_frames(
+                    start_tick,
+                    project.bpm,
+                    yeban_model::PPQ,
+                    sample_rate,
+                )
+                .unwrap_or(0);
+                let end = yeban_model::time_math::ticks_to_frames(
+                    end_tick,
+                    project.bpm,
+                    yeban_model::PPQ,
+                    sample_rate,
+                )
+                .unwrap_or(0)
+                .max(start.saturating_add(1));
                 notes.push((start, end.saturating_sub(start), note.pitch, note.velocity));
             }
         }
@@ -1511,5 +1518,57 @@ mod tests {
             BitDepth::Int24,
             "缺省位深仍是 24-bit 整数"
         );
+    }
+
+    /// ⭐ `#248`：最小音源（`--export-wav` 的**回退**路径）取模型层的 tick → 帧，
+    /// ⛔ 不再用本地副本的 `tick × 60 / PPQ / bpm × sr` 求值顺序。
+    ///
+    /// `bpm=60, tick=168` 在 44.1 kHz 上恰好是 `.5` 帧：模型 **7718**（半值远离零），
+    /// 旧副本 **7717**（先除后乘在浮点上得 `7717.4999999999995`）。48 kHz 上两种顺序
+    /// 都是 **8400** ⇒ 同一判据同时钉住"该变的变了、不该变的没变"。
+    ///
+    /// 这条测试的牙齿：把 `NoteToneSource::from_track` 或 `track_notes_in_frames`
+    /// 换回任何"先算秒数再乘采样率"的本地算式，44.1 kHz 行立刻变红。
+    #[test]
+    fn the_fallback_tone_source_uses_the_model_tick_grid() {
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 60.0;
+        let (track_id, placement_id) = project
+            .tracks
+            .iter()
+            .flat_map(|(track_id, track)| {
+                track
+                    .clips
+                    .iter()
+                    .map(move |(placement_id, placement)| (*track_id, *placement_id, placement))
+            })
+            .find(|(_, _, placement)| {
+                placement.start_tick == 0 && placement.duration_ticks == 3_840
+            })
+            .map(|(track_id, placement_id, _)| (track_id, placement_id))
+            .expect("规范工程里有一条 3840 tick 的 MIDI 摆放");
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨存在")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放存在")
+            .start_tick = 168;
+
+        let tone = NoteToneSource::from_track(&project, track_id, 44_100);
+        assert_eq!(
+            tone.notes.first().expect("至少一条音符").0,
+            7_718,
+            "44.1 kHz：模型层给 7718（旧副本给 7717）"
+        );
+        let frames = track_notes_in_frames(&project, track_id, 44_100);
+        assert_eq!(frames.first().expect("至少一条音符").0, 7_718);
+
+        // 正对照：48 kHz 上模型与旧副本都是 8400（这条路径的字节不该因收口而变）。
+        let tone_48k = NoteToneSource::from_track(&project, track_id, 48_000);
+        assert_eq!(tone_48k.notes.first().expect("至少一条音符").0, 8_400);
+        let frames_48k = track_notes_in_frames(&project, track_id, 48_000);
+        assert_eq!(frames_48k.first().expect("至少一条音符").0, 8_400);
     }
 }

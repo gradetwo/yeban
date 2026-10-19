@@ -49,8 +49,9 @@
 //! 1. **不给 `trackId` 就不许给其余四个**（`INVALID_PARAMETER_RANGE` +
 //!    `data.reason = "placementWithoutTrack"`）：没有轨道就无处摆放，静默忽略会让
 //!    调用方以为片段已经落轨；
-//! 2. **时值缺省是"素材全长"**：`ceil(frames * PPQ * bpm / (sampleRate * 60))`（见
-//!    [`super::render_math::frames_to_ticks_ceil`]）。向上取整保证尾部的不足一 tick
+//! 2. **时值缺省是"素材全长"**：`ceil(frames * PPQ * bpm / (sampleRate * 60))`（唯一实现
+//!    [`yeban_model::time_math::frames_to_ticks_ceil`]，`#248` 前它在本模块的
+//!    `render_math` 里还有一份逐字副本）。向上取整保证尾部的不足一 tick
 //!    不被切掉；工程速度不可用时**明确拒绝**，而不是写一个会被模型层拒掉的 `0`；
 //! 3. **确认（幂等）按"片段 + 摆放"两段各自判定**：片段逐字段相同就不重复登记，
 //!    摆放逐字段相同就不重复摆放。两次调用因此**一位都不改**（`unchanged: true`）。
@@ -120,7 +121,6 @@ use super::error::{self, Fault};
 use super::extension_pure::{self, ImportSource};
 use super::ids::deterministic_id;
 use super::render::AssetStore;
-use super::render_math;
 use crate::tools::{ErrorCode, ToolResponse};
 
 /// 一次音频导入的**完整只读规划**（`dryRun` 与真做共用）。
@@ -695,7 +695,7 @@ fn plan_placement(
             }
             Some(value) => (value, false),
             None => {
-                let derived = render_math::frames_to_ticks_ceil(
+                let derived = yeban_model::time_math::frames_to_ticks_ceil(
                     facts.frames,
                     PPQ,
                     project.bpm,
@@ -1711,7 +1711,7 @@ mod tests {
     /// 工程 BPM 或素材采样率**推不出** tick 数、而调用方又没给 `durationTicks` ⇒
     /// **响亮拒绝**（`reason = "tempoUnusable"`），**不猜**一个假时长。
     ///
-    /// 为什么必须有这一条：`frames_to_ticks_ceil` 在 `bpm <= 0` / `sample_rate == 0` 时
+    /// 为什么必须有这一条：模型层 `frames_to_ticks_ceil` 在 `bpm <= 0` / `sample_rate == 0` 时
     /// 返回 `None`（合法工程走不到 —— `YebanProjectV1::validate` 与
     /// `SampleRate::from_hz` 已经把关），但 `plan` 是**公开函数**，
     /// 一份手工构造的工程仍能到这一步。静默当成 0 或 1 tick 会让音频片段落在错的位置。

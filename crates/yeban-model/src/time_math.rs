@@ -31,12 +31,17 @@
 //! ⇒ 同一组输入在任何目标上得到同一组 `f64` 位型，再转成同一个 `u64`。
 //! 这与 `#233` 的口径一致：**只有**超越函数才必须走 `libm`，这里一个都没有。
 //!
-//! ⚠ **重复实现登记（反向，如实）**：`yeban-mcp` 的
-//! `src/domain/render_math.rs::frames_to_ticks_ceil` 与本模块的
-//! [`frames_to_ticks_ceil`] 仍是**两份逐字同式**的实现。合并它需要改写
-//! `crates/yeban-mcp/verify/render_pure.rs` 的裸 `rustc` 脚手架（该脚手架用
-//! `#[path]` 引入真实源码、不带 `--extern`），那是**独立于 `#247` 的另一票**；
-//! 本单只收口 tick → 帧，**没有**动反向的那一份。
+//! ## 反向：唯一实现在这里（`#248` 收口）
+//!
+//! [`frames_to_ticks_ceil`] 最初只有 `yeban-mcp::domain::render_math` 一份；`#247`
+//! 把它逐字搬进本模块时，两边仍然各留一份（本模块文档当时如实登记了这条重复）。
+//! `#248` 删掉 MCP 的那份副本：`yeban_import_audio` 的 `durationTicks` 缺省值**直接
+//! 调用**本函数。`yeban-app` 的录音落点（`record_landing`）本来就调用这里。
+//!
+//! ⚠ **它只回答"摆放时值"，不回答"事件送达时刻"**：`yeban-app` 的
+//! `midi_notes::frames_to_ticks`（块边界）与 `import_logic::frames_to_ticks`
+//! （素材时长）是另外两种**取整方向**（floor／round），⛔ 不是本函数的副本，
+//! 也没有被 `#248` 改动 —— 它们的作用对象不是 `ClipPlacement.duration_ticks`。
 //!
 //! ## 公式（帧 → tick）
 //!
@@ -49,7 +54,9 @@
 //!
 //! **向上取整**（不是四舍五入、也不是向下）：换算的对象是**摆放时值**，向上取整
 //! 保证素材尾部不足一 tick 的部分不会被切掉；向下取整会让最后几帧永远听不到，
-//! 那是一种静默丢音（同一取舍的论证见 `yeban-mcp/.../render_math.rs` 的文档）。
+//! 那是一种静默丢音。`frames × PPQ × bpm / (sample_rate × 60)` 只有 `+ - * /` 与
+//! `f64::ceil`（`roundToIntegralTiesAway`），没有超越函数，求值顺序固定 ⇒ 与
+//! 正向同一套跨平台可复现论证（见上节）。
 //!
 //! 结果下界是 **1**：`ClipPlacement::validate` 拒绝零时值，而 0 帧素材也不该产出
 //! 一个会被模型层拒掉的 0（本函数对 0 帧返回 `Some(1)`，与既有实现对账）。
@@ -127,6 +134,11 @@ pub fn ticks_to_frames(tick: u64, bpm: f64, ppq: u64, sample_rate: u32) -> Optio
 }
 
 /// 帧 → tick（**向上取整**，下界 1）。
+///
+/// **唯一实现**（`#248`）：`yeban-mcp` 的 `yeban_import_audio`（`durationTicks`
+/// 缺省值）与 `yeban-app` 的录音落点（`record_landing`）都调用这里，⛔ 不再各留
+/// 一份 `ceil` 算式。`ceil` 而不是 `round`／`floor` 的理由见模块文档：它保护的是
+/// **摆放时值的尾部**（向下取整会让最后几帧永远听不到）。
 ///
 /// `sample_rate` 是**这些帧自己的**采样率（Hz）：`frames` 是它在那个速率下数出来的
 /// 样本数，把它换成秒必须除它自己的速率。产品路径上录音 WAV 与工程同为 48 kHz
