@@ -224,6 +224,8 @@ pub struct WavExportReport {
     pub source: String,
     /// 真的进了母带的**音频摆放个数**（`ClipContent::Audio`；0 = 没有音频片段发声）。
     pub audio_clips_rendered: u64,
+    /// ⭐ `#249`：循环展开后的 **span 数**（与上面的摆放数分开报；非循环时两者相等）。
+    pub audio_clip_spans: u64,
     /// 被**如实跳过**的音频片段原因（例如声道无法映射、坏 WAV、重采样失败）。
     /// ⚠ 素材采样率 ≠ 导出采样率**不再**进这里：`#141` 起离线导出会重采样到导出率。
     pub audio_clips_skipped: Vec<String>,
@@ -947,6 +949,7 @@ pub fn export_wav_with_sfz_file_and_assets_under(
         digest,
         source: source_label,
         audio_clips_rendered: rendered.audio_clips_rendered,
+        audio_clip_spans: rendered.audio_clip_spans,
         audio_clips_skipped: rendered.audio_clips_skipped,
         sfz_decoded: rendered.sfz_decoded,
         clipped_samples,

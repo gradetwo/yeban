@@ -220,8 +220,13 @@ pub struct RenderProjectOutput {
     pub source_label: String,
     /// 渲染输出的位级摘要（十六进制）。
     pub digest: String,
-    /// 真的进了母带的音频摆放**个数**（不是素材个数）。
+    /// 真的进了母带的音频摆放**个数**（不是素材个数、⛔ 也不是 span 数）。
     pub audio_clips_rendered: u64,
+    /// ⭐ `#249`：循环展开后实际搬进母带的 **span 数**（与上面的摆放数分开报）。
+    ///
+    /// 非循环工程恒等于 `audio_clips_rendered`；一个 `0..960 / 摆放 1920` 的
+    /// 循环摆放 ⇒ `audio_clips_rendered = 1`、`audio_clip_spans = 2`。
+    pub audio_clip_spans: u64,
     /// 被**如实跳过**的音频片段原因（例如声道无法映射、坏 WAV、重采样失败）。
     /// ⚠ 采样率不符**不再**进这里：`#141` 起离线导出会重采样到导出率。
     pub audio_clips_skipped: Vec<String>,
@@ -543,6 +548,9 @@ pub fn render_project_f32_with_plans_under(
     let mut audio_cache = BTreeMap::new();
     let mut audio_skipped: Vec<String> = Vec::new();
     let mut audio_rendered = 0_u64;
+    // `#249`：`audio_rendered` 保持 `#241` 的**摆放数**口径；循环展开出的
+    // span 数单独计（⛔ 两个口径不混）。
+    let mut audio_clip_spans = 0_u64;
     for track_id in renderable.clone() {
         let clips = audio_clip::resolve_track_clips(
             project,
@@ -556,7 +564,8 @@ pub fn render_project_f32_with_plans_under(
         if clips.sources.is_empty() {
             continue;
         }
-        audio_rendered = audio_rendered.saturating_add(clips.spans);
+        audio_rendered = audio_rendered.saturating_add(clips.placements);
+        audio_clip_spans = audio_clip_spans.saturating_add(clips.span_count);
         if let Some(base) = sources.remove(&track_id) {
             sources.insert(
                 track_id,
@@ -569,7 +578,7 @@ pub fn render_project_f32_with_plans_under(
     }
     if audio_rendered > 0 || !audio_skipped.is_empty() {
         source_label.push_str(&format!(
-            " + audio-clips(rendered={audio_rendered} skipped={})",
+            " + audio-clips(rendered={audio_rendered} skipped={}) spans={audio_clip_spans}",
             audio_skipped.len()
         ));
     }
@@ -687,6 +696,7 @@ pub fn render_project_f32_with_plans_under(
         source_label,
         digest,
         audio_clips_rendered: audio_rendered,
+        audio_clip_spans,
         audio_clips_skipped: audio_skipped,
         sfz_decoded,
         source_peaks,

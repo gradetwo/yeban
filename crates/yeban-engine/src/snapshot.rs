@@ -463,7 +463,7 @@ pub struct EngineSnapshot {
     /// 形状与分工见 [`crate::audio_clip`] 的模块文档：
     ///
     /// - **轻数据**：每条摆放只是"绝对帧区间 ＋ 增益 ＋ 素材哈希 ＋ 一个 PCM 细指针"
-    ///   （[`crate::audio_clip::AudioClipSpan`] 56 B，堆上；⛔ 不进 `size_of::<Self>()` 的
+    ///   （[`crate::audio_clip::AudioClipSpan`] 64 B，堆上；⛔ 不进 `size_of::<Self>()` 的
     ///   字段面，本字段本身只占一个 `BTreeMap` ＝ 24 B）；
     /// - **重数据**：PCM 是 `Arc<[f32]>`，由控制侧解码后经 [`Self::with_audio_asset`]
     ///   注入（⛔ 引擎不读盘、⛔ 回调里不解码）；
@@ -970,16 +970,31 @@ impl EngineSnapshot {
         self.audio_clips.get(id)
     }
 
-    /// ⭐ 全快照的音频摆放**条数**（诊断/判据用）。
+    /// ⭐ 全快照的音频 **span 条数**（诊断/判据用）。
+    ///
+    /// ⚠ `#249` 之后这是 **span 数**，⛔ 不是摆放数：一个循环摆放会展开成 N 个 span。
+    /// 要读"工程里摆了几个音频片段"用 [`Self::audio_placements`]（两个口径分开报）。
     #[must_use]
     pub fn audio_spans(&self) -> usize {
         self.audio_clips.values().map(AudioClipSchedule::len).sum()
     }
 
-    /// ⭐ 全快照里**已注入 PCM** 的音频摆放条数。
+    /// ⭐ 全快照的音频**摆放数**（`#249`；⛔ 不随循环展开增长）。
     ///
-    /// "有摆放"与"摆放能发声"是两件事：前者由 [`Self::audio_spans`] 读，后者由本函数读
-    /// ⇒ 注入失败/漏注不会被读成"静音的摆放"，而是读成 `0`（⛔ 不静默）。
+    /// 与 [`Self::audio_spans`] 是两个口径：一个循环摆放 ⇒ `placements = 1`、
+    /// `spans = N`（`#241` 在 MCP 的 `audioClips` 上踩过同一坑）。
+    #[must_use]
+    pub fn audio_placements(&self) -> usize {
+        self.audio_clips
+            .values()
+            .map(AudioClipSchedule::placements)
+            .sum()
+    }
+
+    /// ⭐ 全快照里**已注入 PCM** 的音频 span 条数。
+    ///
+    /// "有 span"与"span 能发声"是两件事：前者由 [`Self::audio_spans`] 读，后者由本函数读
+    /// ⇒ 注入失败/漏注不会被读成"静音的 span"，而是读成 `0`（⛔ 不静默）。
     #[must_use]
     pub fn audio_pcm_spans(&self) -> usize {
         self.audio_clips

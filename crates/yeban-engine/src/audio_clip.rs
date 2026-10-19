@@ -25,6 +25,7 @@
 //!   └─ asset 哈希 ──► [AudioClipSpan]        mix_into(schedule, block_start, out)
 //!                         │                     span.start ≤ 绝对帧 < span.end
 //!                         │                       ⇒ 素材帧 = 绝对帧 − span.start
+//!                         │                                   + span.source_offset
 //!                         └► Option<Arc<AudioPcm>>  ⇒ out[frame] += pcm[素材帧] × gain
 //! ```
 //!
@@ -57,6 +58,13 @@
 //!   `note_copies`）；MIDI 音符一侧已由 [`crate::snapshot`] 按它展开。⚠ **本模块的
 //!   音频路径仍不展开** —— [ADR-0010] D4 的 `source_offset`（按遍指向素材内的循环
 //!   区间）引擎侧不存在，音频循环是二期工作，不是本票的语义。
+//! - ⭐ ⭐ **追加修订段（任务单 `#249` / `[ADR-0010 D4]`：⛔ 不改上两条原文）**：上一条
+//!   描述的是 `#249` 之前的事实，现仍逐字保留。自 `#249` 起 `AudioClipSpan` 带
+//!   [`AudioClipSpan::source_offset`]，[`project_audio_clips`] 用**与 MCP、app 同一份**
+//!   [`yeban_model::ClipPlacement::loop_repeat`] 按遍展开，[`mix_into`] 读
+//!   `素材帧 = 绝对帧 − span.start + span.source_offset` ⇒ 实时监听里音频片段**真的循环**。
+//!   非循环 / `end >= duration` / `loop_config.enabled == false` 的工程仍只产生一个
+//!   `source_offset == 0` 的 span ⇒ 与展开之前**逐位相同**。
 //! - ⚠ **声相在 `pan == 0` 时与离线路径差 −3.01 dB**（如实登记，⛔ 不是本单引入）：
 //!   离线 `yeban-app::audio_clip` 在 `pan == 0.0` 时用 `(gain, gain)`（单位增益），
 //!   而引擎的**逐轨混音**对**所有**音源（含 MIDI）都用等功率居中
@@ -200,6 +208,11 @@ pub struct AudioClipSpan {
     asset: AssetHash,
     /// 已注入的 PCM（共享；`None` ＝ 尚未注入 ⇒ 静音）。
     pcm: Option<Arc<AudioPcm>>,
+    /// 本 span 从素材的**第几帧**开始读（`#249` / `[ADR-0010 D4]`）。
+    ///
+    /// 非循环摆放恒为 `0` ⇒ 与加循环展开之前**逐位相同**；循环展开后每一遍都从
+    /// 循环区间起点对应的素材帧读（见 [`project_audio_clips`]）。
+    source_offset: u64,
 }
 
 impl AudioClipSpan {
@@ -227,6 +240,12 @@ impl AudioClipSpan {
         &self.asset
     }
 
+    /// 本 span 从素材的第几帧开始读（`#249`；非循环恒为 `0`）。
+    #[must_use]
+    pub const fn source_offset(&self) -> u64 {
+        self.source_offset
+    }
+
     /// 已注入的 PCM（`None` ＝ 尚未注入）。
     #[must_use]
     pub fn pcm(&self) -> Option<&AudioPcm> {
@@ -246,21 +265,35 @@ impl AudioClipSpan {
 /// 结合律 ⇒ 同一素材的多个摆放必须有**确定的**累加顺序，与离线路径同一条口径）。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AudioClipSchedule {
-    /// 摆放（全序排好）。
+    /// span（一个摆放可以展开成多遍；非循环摆放是 1:1）。
     spans: Vec<AudioClipSpan>,
+    /// 产生这些 span 的**摆放数**（`#249` 的读数口径，与 [`Self::len`] 分开）。
+    ///
+    /// 循环展开后一个摆放 ⇒ N 个 span；报告里的"摆放数"仍读这个字段，
+    /// ⛔ 不能拿 `spans.len()` 冒充（`#241` 在 MCP 的 `audioClips` 上踩过同一坑）。
+    placements: usize,
 }
 
 impl AudioClipSchedule {
-    /// 全部摆放（全序）。
+    /// 全部 span（全序）。
     #[must_use]
     pub fn spans(&self) -> &[AudioClipSpan] {
         &self.spans
     }
 
-    /// 摆放条数。
+    /// **span 条数**（循环展开后可能多于摆放数）。
+    ///
+    /// ⚠ 与 [`Self::placements`] 是两个口径：前者数的是搬进混音的区间，
+    /// 后者数的是工程里的摆放。
     #[must_use]
     pub fn len(&self) -> usize {
         self.spans.len()
+    }
+
+    /// 产生本表全部 span 的**摆放数**（`#249`；⛔ 不随循环展开增长）。
+    #[must_use]
+    pub const fn placements(&self) -> usize {
+        self.placements
     }
 
     /// 是否一个摆放都没有。
@@ -297,11 +330,13 @@ impl AudioClipSchedule {
 /// | 维度 | 口径 |
 /// | :--- | :--- |
 /// | 帧区间 | `[tick_to_sample(start), tick_to_sample(start + max(duration, 1)))`，四舍五入，终点至少 `start + 1` |
-/// | 硬切 | 摆放时值之外不加（素材更长就截断、更短就留静音尾巴） |
+/// | 循环展开 | 用**模型层唯一那份** [`yeban_model::ClipPlacement::loop_repeat`]（`[ADR-0010 D4]`）：一个摆放展开成 pickup（若有）＋ N 遍循环区间，每遍的 [`AudioClipSpan::source_offset`] 指向素材里的循环区间起点 |
+/// | 硬切 | 摆放时值之外不加（素材更长就截断、更短就留静音尾巴）；每一遍裁到循环区间末端 |
 /// | 增益 | `track_gain(clip.gain_db) × track_gain_scale(mute, solo, solo_safe, any_solo, volume_db)`（**单一来源**：与声部槽同一函数） |
 /// | 静音摆放 | `placement.muted` ⇒ 不进表（与离线一致） |
-/// | 排序 | `(start, end, gain 位型)` 全序 ⇒ 累加顺序确定 [ARCH-DET-002] |
+/// | 排序 | `(start, end, source_offset, gain 位型)` 全序 ⇒ 累加顺序确定 [ARCH-DET-002] |
 /// | 声道 | 单声道直读；立体声 `(L+R)/2`（见 [`mix_into`]） |
+/// | 读数 | [`AudioClipSchedule::len`] = span 数；[`AudioClipSchedule::placements`] = **摆放数**（⛔ 两个口径不混） |
 ///
 /// ⚠ **只收录非空的轨**：一条音频摆放都没有的工程得到**空表** ⇒ 实时侧整段跳过
 /// ⇒ 输出与接线前**逐位相同**。
@@ -321,6 +356,7 @@ pub fn project_audio_clips(project: &YebanProjectV1) -> BTreeMap<EntityId, Audio
             track.volume_db,
         );
         let mut spans: Vec<AudioClipSpan> = Vec::new();
+        let mut placements = 0usize;
         for placement in track.clips.values() {
             if placement.muted {
                 continue;
@@ -344,13 +380,71 @@ pub fn project_audio_clips(project: &YebanProjectV1) -> BTreeMap<EntityId, Audio
             let end = end.max(start.saturating_add(1));
             // 非有限增益按 `0` 处理（[`track_gain`] 的口径）。⚠ 已校验的工程走不到这里：
             // `ClipContent::validate` 拒绝非有限增益 —— 这条只是"不 panic、不发疯"的兜底。
-            spans.push(AudioClipSpan {
-                start,
-                end,
-                gain: track_gain(*gain_db) * track_gain_scale,
-                asset: asset.clone(),
-                pcm: None,
-            });
+            let gain = track_gain(*gain_db) * track_gain_scale;
+            let push =
+                |spans: &mut Vec<AudioClipSpan>, start: u64, end: u64, source_offset: u64| {
+                    spans.push(AudioClipSpan {
+                        start,
+                        end,
+                        gain,
+                        asset: asset.clone(),
+                        pcm: None,
+                        source_offset,
+                    });
+                };
+            match placement.loop_repeat() {
+                // `None` ＝ 不循环（含 `end >= duration` / 关掉 / 非法区间）⇒
+                // 单 span、`source_offset = 0` ⇒ 逐位等于加循环展开之前。
+                None => push(&mut spans, start, end, 0),
+                Some(repeat) => {
+                    // `[ADR-0010 D4]`：与 MCP 的 `render.rs` 逐条同式 —— 第一遍之前
+                    // 的内容（pickup）原样播一遍；循环区间 `[start, end)` 的每一遍
+                    // 都从素材的 `region_start - base_start` 帧开始读。
+                    let region_start_tick = placement.start_tick.saturating_add(repeat.start_tick);
+                    let region_end_tick = placement.start_tick.saturating_add(repeat.end_tick);
+                    let Some(region_start) = tick_to_sample(region_start_tick, per_tick) else {
+                        push(&mut spans, start, end, 0);
+                        placements = placements.saturating_add(1);
+                        continue;
+                    };
+                    let Some(region_end) = tick_to_sample(region_end_tick, per_tick) else {
+                        push(&mut spans, start, end, 0);
+                        placements = placements.saturating_add(1);
+                        continue;
+                    };
+                    let period = region_end.saturating_sub(region_start);
+                    let base_end = tick_to_sample(
+                        placement
+                            .start_tick
+                            .saturating_add(placement.duration_ticks),
+                        per_tick,
+                    )
+                    .unwrap_or(end);
+                    if period == 0 {
+                        // tick 太短、帧换算后不足一帧 ⇒ 没有可重复的区间，
+                        // 按单遍播放（不静默丢内容；与 MCP 同一条守卫）。
+                        push(&mut spans, start, end, 0);
+                    } else {
+                        if region_start > start {
+                            // 区间之前的内容只播一遍（素材从 0 开始）。
+                            push(&mut spans, start, region_start, 0);
+                        }
+                        let source_offset = region_start.saturating_sub(start);
+                        let mut iteration = 0u64;
+                        loop {
+                            let span_start =
+                                region_start.saturating_add(iteration.saturating_mul(period));
+                            if span_start >= base_end || iteration >= repeat.iterations {
+                                break;
+                            }
+                            let span_end = span_start.saturating_add(period).min(base_end);
+                            push(&mut spans, span_start, span_end, source_offset);
+                            iteration = iteration.saturating_add(1);
+                        }
+                    }
+                }
+            }
+            placements = placements.saturating_add(1);
         }
         if spans.is_empty() {
             continue;
@@ -360,9 +454,10 @@ pub fn project_audio_clips(project: &YebanProjectV1) -> BTreeMap<EntityId, Audio
             a.start
                 .cmp(&b.start)
                 .then(a.end.cmp(&b.end))
+                .then(a.source_offset.cmp(&b.source_offset))
                 .then(a.gain.to_bits().cmp(&b.gain.to_bits()))
         });
-        schedules.insert(*id, AudioClipSchedule { spans });
+        schedules.insert(*id, AudioClipSchedule { spans, placements });
     }
 
     schedules
@@ -406,7 +501,9 @@ pub fn mix_into(schedule: &AudioClipSchedule, block_start: u64, out: &mut [f32])
         let channels = usize::from(pcm.channels);
         let samples = pcm.samples();
         for frame in from..to {
-            let asset_frame = frame - span.start;
+            // `#249` / `[ADR-0010 D4]`：循环展开后每一遍从素材的 `source_offset`
+            // 开始读；非循环 span 的该字段恒为 `0` ⇒ 与展开之前逐位相同。
+            let asset_frame = frame.saturating_sub(span.start) + span.source_offset;
             if asset_frame >= frames {
                 // 素材比摆放区间短 ⇒ 之后的帧是静音尾巴（不是"继续读越界"）。
                 break;

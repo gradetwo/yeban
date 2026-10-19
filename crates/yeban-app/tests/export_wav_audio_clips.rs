@@ -88,6 +88,22 @@ fn synth_asset(dir: &Path, rate: u32) -> (Vec<u8>, f32) {
     )
 }
 
+/// 合成一份 **32-bit float / 0.5 常量**素材（`#249` 的三端对照用）。
+///
+/// 0.5 在 f32 与 24-bit 整数量化下都可精确表示 ⇒ 引擎 / MCP / app 三端的
+/// 左声道段峰值可以**直接比数值**，不需要各自再乘一次增益系数。
+fn synth_asset_half(dir: &Path) -> Vec<u8> {
+    let path = dir.join("half-48000.wav");
+    let samples: Vec<f32> = vec![0.5; 24_000];
+    write_plain_wav(
+        &path,
+        &PcmFormat::float(1, 48_000, 32),
+        &PcmBuffer::Float32(samples),
+    )
+    .expect("写 0.5 常量浮点 WAV");
+    std::fs::read(&path).expect("读 0.5 常量浮点 WAV")
+}
+
 /// 合成一份 **440 Hz 正弦**（16-bit / 单声道，振幅 0.25 ⇒ 峰值样本 ≈ 8192）。
 ///
 /// 频率与采样率**解耦**：44.1 kHz 素材按 440/44100 的相位步进写盘，导出到 48 kHz 后
@@ -595,6 +611,175 @@ fn a_corrupt_wav_is_skipped_loudly_and_counted() {
         "报告行必须明说少了一段（rendered=0 skipped=1）: {}",
         report.source
     );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 判据 7（`#249` / `[ADR-0010 D4]`）：音频片段按遍展开（离线导出真的循环）
+// ---------------------------------------------------------------------------
+
+/// 把夹具工程的唯一摆放改成"起点 0 / 时值 1920 / 给定循环配置"。
+fn project_with_audio_loop(
+    asset: AssetHash,
+    gain_db: f32,
+    loop_config: LoopConfig,
+) -> YebanProjectV1 {
+    let mut project = project_with_audio_clip(asset, gain_db);
+    for track in project.tracks.values_mut() {
+        for placement in track.clips.values_mut() {
+            placement.start_tick = 0;
+            placement.duration_ticks = 1_920;
+            placement.loop_config = loop_config;
+        }
+    }
+    project
+}
+
+/// 导出一次并返回 `(WAV 字节的 SHA-256, 左声道样本, 命令行输出)`。
+///
+/// 用 `AssetHash::of_bytes`：它是**本仓唯一的 SHA-256 实现**（`yeban-model::ids`），
+/// ⛔ 不在这里另写一份摘要。
+fn export_audio_loop(
+    dir: &Path,
+    tag: &str,
+    project: &YebanProjectV1,
+    bytes: &[u8],
+) -> (AssetHash, Vec<f32>, Vec<String>) {
+    let container = write_container(dir, &format!("{tag}.yeban"), project, bytes);
+    let out = dir.join(format!("{tag}.wav"));
+    let lines = export_via_cli(&container, &out);
+    let wav = std::fs::read(&out).expect("导出 WAV 必须存在");
+    let sha = AssetHash::of_bytes(&wav);
+    let left = left_channel_of(&out);
+    (sha, left, lines)
+}
+
+/// `0..960 / 摆放 1920` 的音频片段在 app 离线导出里 ⇒ 两段峰值相等。
+///
+/// 素材：20 000 帧常量（约 0.4167 s）；循环区间 24 000 帧 ⇒ 每一遍只有前
+/// 20 000 帧发声、后 4 000 帧是静音尾巴，但两遍的**峰值相同**。
+/// "关掉循环"的同一工程第 2 段静音（＝修前口径的现场复现）。
+///
+/// 同时钉住两个口径：`rendered=1`（摆放数）＋ `spans=2`（span 数）。
+#[test]
+fn an_audio_loop_is_expanded_in_the_app_export() {
+    let dir = scratch("audioloop");
+    let bytes = synth_asset_half(&dir);
+    let source_sample = 0.5_f32;
+    let hash = AssetHash::of_bytes(&bytes);
+
+    // 正腿：循环 0..960 / 摆放 1920 ⇒ N = 2。
+    let looped = project_with_audio_loop(
+        hash.clone(),
+        0.0,
+        LoopConfig {
+            enabled: true,
+            start_tick: 0,
+            end_tick: 960,
+        },
+    );
+    let (looped_sha, looped_left, looped_lines) =
+        export_audio_loop(&dir, "looped", &looped, &bytes);
+    let exported = looped_lines
+        .iter()
+        .find(|line| line.starts_with("exported-wav:"))
+        .expect("必须打印 exported-wav 行");
+    println!("[#249/app] 循环导出行（逐字）: {exported}");
+    assert!(
+        exported.contains("audio-clips(rendered=1"),
+        "摆放数仍必须是 1: {exported}"
+    );
+    assert!(
+        exported.contains("spans=2"),
+        "循环展开出的 span 数必须是 2: {exported}"
+    );
+    let segment = 24_000usize;
+    let peak_first = peak_in(&looped_left, 0..segment);
+    let peak_second = peak_in(&looped_left, segment..2 * segment);
+    let expected = source_sample * db_to_linear(0.0);
+    let relative = (peak_first - peak_second).abs() / expected;
+    println!(
+        "[#249/app] 循环两段峰值（逐字）：第1段={peak_first:.9} 第2段={peak_second:.9} \
+         期望={expected:.9} 相对差={relative:e} 文件 sha256={looped_sha}"
+    );
+    assert!(
+        (peak_first - expected).abs() <= 2.0 / 8_388_608.0,
+        "第 1 段峰值必须 ≈ 素材 × 增益（实测 {peak_first}，期望 {expected}）"
+    );
+    assert!(
+        (peak_second - expected).abs() <= 2.0 / 8_388_608.0,
+        "第 2 段峰值必须与第 1 段相同（实测 {peak_second}，期望 {expected}）"
+    );
+    assert!(
+        relative <= 1e-6,
+        "两段相对差必须 ≤ 1e-6（实测 {relative:e}）"
+    );
+
+    // 控制腿：同一夹具关掉循环 ⇒ 第 2 段静音（旧代码不读 loop_config ⇒ 行为相同）。
+    let plain = project_with_audio_loop(hash, 0.0, LoopConfig::default());
+    let (_plain_sha, plain_left, plain_lines) = export_audio_loop(&dir, "plain", &plain, &bytes);
+    let plain_exported = plain_lines
+        .iter()
+        .find(|line| line.starts_with("exported-wav:"))
+        .expect("必须打印 exported-wav 行");
+    let plain_first = peak_in(&plain_left, 0..segment);
+    let plain_second = peak_in(&plain_left, segment..2 * segment);
+    println!(
+        "[#249/app] 关掉循环（＝修前口径）两段峰值：{plain_first:.9} / {plain_second:.9}；\
+         报告行={plain_exported}"
+    );
+    assert!(plain_exported.contains("spans=1"), "关掉循环 ⇒ span 数 1");
+    assert!((plain_first - expected).abs() <= 2.0 / 8_388_608.0);
+    assert!(
+        plain_second <= 2.0 / 8_388_608.0,
+        "关掉循环后第 2 段必须只剩抖动（实测 {plain_second}）"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 正对照：不循环 / 恰好覆盖 / 越过末端 / 关掉 ⇒ 导出 **SHA-256 逐字节相同**。
+#[test]
+fn a_non_looping_app_export_is_byte_identical_under_every_non_wrapping_config() {
+    let dir = scratch("audioloop-positive");
+    let (bytes, _source_sample) = synth_asset(&dir, EXPORT_RATE);
+    let hash = AssetHash::of_bytes(&bytes);
+
+    let baseline = project_with_audio_loop(hash.clone(), CLIP_GAIN_DB, LoopConfig::default());
+    let (baseline_sha, baseline_left, _) = export_audio_loop(&dir, "baseline", &baseline, &bytes);
+    println!("[#249/app-positive] 基线（不循环）sha256={baseline_sha}");
+
+    for (tag, loop_config) in [
+        ("disabled", LoopConfig::default()),
+        (
+            "covering",
+            LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: 1_920,
+            },
+        ),
+        (
+            "beyond",
+            LoopConfig {
+                enabled: true,
+                start_tick: 0,
+                end_tick: 3_840,
+            },
+        ),
+    ] {
+        let project = project_with_audio_loop(hash.clone(), CLIP_GAIN_DB, loop_config);
+        let (sha, left, lines) = export_audio_loop(&dir, tag, &project, &bytes);
+        let exported = lines
+            .iter()
+            .find(|line| line.starts_with("exported-wav:"))
+            .expect("必须打印 exported-wav 行");
+        println!("[#249/app-positive] {tag}：sha256={sha}；{exported}");
+        assert_eq!(sha, baseline_sha, "{tag} 的导出文件必须与不循环逐字节相同");
+        assert_eq!(left, baseline_left, "{tag} 的左声道必须逐帧等于不循环");
+        assert!(exported.contains("spans=1"), "{tag} 必须仍是单 span");
+    }
 
     std::fs::remove_dir_all(&dir).ok();
 }

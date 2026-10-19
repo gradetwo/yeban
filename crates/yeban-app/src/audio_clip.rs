@@ -12,8 +12,9 @@
 //! | 维度 | 口径 |
 //! | :--- | :--- |
 //! | 帧区间 | `[ticks_to_frames(start), ticks_to_frames(start + max(duration, 1)))`，四舍五入、终点至少 `start + 1`。这里**复用引擎的** [`samples_per_tick`] / [`tick_to_sample`]（与 `EngineSnapshot` 的排程同一个函数），而不另写一份换算。 |
+//! | 循环展开 | ⭐ `#249` / `[ADR-0010 D4]`：与引擎、MCP **同一份** `ClipPlacement::loop_repeat()`；循环区间 `[start, end)` 每一遍只搬对应素材段（`source_offset`），区间之前的内容（pickup）原样播一遍。不循环 / `end >= D` / 关掉 ⇒ 单个 `source_offset == 0` 的区间 ⇒ **逐位等于**展开之前。 |
 //! | 硬切 | 摆放时值之外一律不加；素材比区间长就截断，比区间短就留静音尾巴。 |
-//! | 叠加 | **累加**（调用方已清零）；同一素材的多个摆放按 `(start, end, gain 位型)` 全序依次累加（[ARCH-DET-002]，浮点加法不满足结合律）。 |
+//! | 叠加 | **累加**（调用方已清零）；同一素材的多个 span 按 `(start, end, source_offset, 增益位型)` 全序依次累加（[ARCH-DET-002]，浮点加法不满足结合律）。 |
 //! | 增益 | `db_to_linear(clip.gain_db + track.volume_db)`（一次超越函数；非有限按 0 dB），`mute`/`solo` 门控与 MCP 的 `combined_gain_db` 同式。 |
 //! | 声相 | `pan == 0` ⇒ `(gain, gain)`；否则 `yeban_engine::mixer::pan_gains`（与 MCP 同一条等功率曲线）。 |
 //! | 声道 | `Identity` / `MonoToAll` / `StereoToMono`；其余组合**拒绝**（⛔ 不悄悄丢声道）。 |
@@ -125,6 +126,9 @@ struct ClipSpan {
     start: i64,
     /// 结束帧（不含）。
     end: i64,
+    /// 素材里的起始帧（`#249` / `[ADR-0010 D4]`）：循环重复时每一遍只搬循环区间
+    /// 那一段素材。非循环摆放恒为 `0` ⇒ 与加循环展开之前逐位相同。
+    source_offset: i64,
     /// 左声道增益。
     gain_l: f32,
     /// 右声道增益。
@@ -139,26 +143,27 @@ pub(crate) struct AudioClipSource {
     asset: Arc<DecodedAsset>,
     /// 声道布局。
     layout: ChannelLayout,
-    /// 摆放区间，**已按 `(start, end, gain 位型)` 全序排好**。
+    /// 摆放区间，**已按 `(start, end, source_offset, 增益位型)` 全序排好**。
     spans: Vec<ClipSpan>,
 }
 
 impl AudioClipSource {
     /// 本块内某一帧在**素材**里的下标（超出素材则 `None`）。
     fn asset_frame(&self, span: &ClipSpan, global: i64) -> Option<usize> {
-        let offset = global - span.start;
+        let offset = global - span.start + span.source_offset;
         if offset < 0 || u64::try_from(offset).ok()? >= self.asset.frames {
             return None;
         }
         usize::try_from(offset).ok()
     }
 
-    /// 按 `[ARCH-DET-002]` 的固定全序排好区间。
+    /// 按 `[ARCH-DET-002]` 的固定全序排好区间（与 MCP 的 `sort_spans` 同一个 key 序列）。
     fn sort_spans(&mut self) {
         self.spans.sort_by(|a, b| {
             a.start
                 .cmp(&b.start)
                 .then(a.end.cmp(&b.end))
+                .then(a.source_offset.cmp(&b.source_offset))
                 .then(a.gain_l.to_bits().cmp(&b.gain_l.to_bits()))
                 .then(a.gain_r.to_bits().cmp(&b.gain_r.to_bits()))
         });
@@ -228,12 +233,14 @@ impl AudioSource for AudioClipSource {
     }
 }
 
-/// 一条轨道解析出的音频片段音源 ＋ 被搬进母带的**摆放个数**。
+/// 一条轨道解析出的音频片段音源 ＋ 两个**分开的读数**。
 pub(crate) struct TrackClips {
     /// 每份素材一个源（同一素材的多个摆放共用一个源）。
     pub(crate) sources: Vec<AudioClipSource>,
-    /// 真的进了母带的摆放**个数**（判据与报告都读它）。
-    pub(crate) spans: u64,
+    /// 真的进了母带的**摆放数**（`#241` 的口径；⛔ 不随循环展开增长）。
+    pub(crate) placements: u64,
+    /// 实际搬进母带的 **span 数**（`#249`；一个循环摆放 ⇒ N 个 span）。
+    pub(crate) span_count: u64,
 }
 
 /// 判定声道布局；不支持的组合返回 `None`（调用方据此**跳过并报告**）。
@@ -251,6 +258,15 @@ fn channel_layout(asset_channels: u16, out_channels: usize) -> Option<ChannelLay
         return Some(ChannelLayout::StereoToMono);
     }
     None
+}
+
+/// 单个 tick 的绝对帧（与 [`clip_frame_span`] 及引擎快照同一个换算）。
+///
+/// `#249` 的循环展开要用它算"循环区间起点 / 终点"的帧位置（与 MCP 的
+/// `math::ticks_to_frames` 同一个 `yeban_model::time_math` 实现）。
+fn tick_frame(tick: u64, bpm: f64, sample_rate: u32) -> i64 {
+    let per_tick = samples_per_tick(bpm, sample_rate);
+    i64::try_from(tick_to_sample(tick, per_tick).unwrap_or(0)).unwrap_or(i64::MAX)
 }
 
 /// 摆放的帧区间 `[start, end)`：**复用引擎的**每 tick 帧数（与快照排程同一个函数）。
@@ -278,7 +294,8 @@ pub(crate) fn resolve_track_clips(
 ) -> TrackClips {
     let empty = TrackClips {
         sources: Vec::new(),
-        spans: 0,
+        placements: 0,
+        span_count: 0,
     };
     let Some(track) = project.tracks.get(&track_id) else {
         return empty;
@@ -293,6 +310,8 @@ pub(crate) fn resolve_track_clips(
     };
     // 每个资产 → 它在这条轨道上的摆放区间（BTreeMap 的哈希序 = 确定的叠加顺序）。
     let mut per_asset: BTreeMap<AssetHash, (Arc<DecodedAsset>, Vec<ClipSpan>)> = BTreeMap::new();
+    // `#241` 的口径：`placements` 数**摆放**，`span_count` 数**循环展开后的区间**。
+    let mut placements_total = 0u64;
     for placement in track.clips.values() {
         if placement.muted {
             continue;
@@ -345,7 +364,7 @@ pub(crate) fn resolve_track_clips(
             ));
             continue;
         }
-        let (start, end) = clip_frame_span(
+        let (base_start, base_end) = clip_frame_span(
             placement.start_tick,
             placement.duration_ticks,
             project.bpm,
@@ -354,14 +373,84 @@ pub(crate) fn resolve_track_clips(
         let entry = per_asset
             .entry(asset.clone())
             .or_insert_with(|| (Arc::clone(&prepared), Vec::new()));
-        entry.1.push(ClipSpan {
-            start,
-            end,
-            gain_l,
-            gain_r,
-        });
+        if let Some(repeat) = placement.loop_repeat() {
+            // `#249` / `[ADR-0010 D4]`：与 MCP 的 `render.rs` 逐条同式 ——
+            // 循环区间 `[start, end)` 对应的素材段（`source_offset`），
+            // 第一遍之前的内容（若有）原样播一遍。
+            let base_start_frames = tick_frame(placement.start_tick, project.bpm, sample_rate);
+            let region_start_frames = tick_frame(
+                placement.start_tick.saturating_add(repeat.start_tick),
+                project.bpm,
+                sample_rate,
+            );
+            let region_end_frames = tick_frame(
+                placement.start_tick.saturating_add(repeat.end_tick),
+                project.bpm,
+                sample_rate,
+            );
+            let period_frames = region_end_frames.saturating_sub(region_start_frames);
+            let base_end_frames = tick_frame(
+                placement
+                    .start_tick
+                    .saturating_add(placement.duration_ticks),
+                project.bpm,
+                sample_rate,
+            );
+            if period_frames == 0 {
+                // tick 太短、帧换算后不足一帧 ⇒ 没有可重复的区间，
+                // 按单遍播放（不静默丢内容；与 MCP 同一条守卫）。
+                entry.1.push(ClipSpan {
+                    start: base_start,
+                    end: base_end,
+                    source_offset: 0,
+                    gain_l,
+                    gain_r,
+                });
+            } else {
+                // 区间之前的内容：播放一遍（素材从 0 开始）。
+                if region_start_frames > base_start_frames {
+                    entry.1.push(ClipSpan {
+                        start: base_start_frames,
+                        end: region_start_frames,
+                        source_offset: 0,
+                        gain_l,
+                        gain_r,
+                    });
+                }
+                let source_offset = region_start_frames.saturating_sub(base_start_frames);
+                let max_iterations = i64::try_from(repeat.iterations).unwrap_or(i64::MAX);
+                let mut iteration = 0i64;
+                loop {
+                    let start =
+                        region_start_frames.saturating_add(iteration.saturating_mul(period_frames));
+                    if start >= base_end_frames || iteration >= max_iterations {
+                        break;
+                    }
+                    let end = start.saturating_add(period_frames).min(base_end_frames);
+                    entry.1.push(ClipSpan {
+                        start,
+                        end,
+                        source_offset,
+                        gain_l,
+                        gain_r,
+                    });
+                    iteration = iteration.saturating_add(1);
+                }
+            }
+        } else {
+            // `None` ＝ 不循环（含 `end >= duration` / 关掉 / 非法区间）⇒
+            // 单 span、`source_offset = 0` ⇒ 逐位等于加循环展开之前。
+            entry.1.push(ClipSpan {
+                start: base_start,
+                end: base_end,
+                source_offset: 0,
+                gain_l,
+                gain_r,
+            });
+        }
+        placements_total = placements_total.saturating_add(1);
     }
-    let spans_total: u64 = per_asset
+    let span_count: u64 = per_asset
         .values()
         .map(|(_, spans)| u64::try_from(spans.len()).unwrap_or(u64::MAX))
         .sum();
@@ -381,7 +470,8 @@ pub(crate) fn resolve_track_clips(
         .collect();
     TrackClips {
         sources,
-        spans: spans_total,
+        placements: placements_total,
+        span_count,
     }
 }
 
