@@ -1251,11 +1251,16 @@ fn parse_time_signature(value: &str, path: &Path) -> Result<TimeSignature, Migra
 }
 
 /// 旧工程的音量是 **0..1 的线性增益**，新模型是 dB。
+///
+/// ⭐ `#234`：`log10` 走纯 Rust `libm::log10f`（⛔ 不是宿主 `f32::log10`）。它虽
+/// **不进音频字节**，但迁移结果会**落盘成 `.yeban` 容器** ⇒ 同一份旧工程必须在每个
+/// 平台迁移出同一串字节（[ARCH-DET-001]）；`libm` 已因最后两条音频路径成为本 crate
+/// 的依赖 ⇒ 顺手收口，不留第二套口径。
 fn volume_to_db(volume: f32) -> f32 {
     if volume <= 0.0 {
         -60.0
     } else {
-        (20.0 * volume.log10()).clamp(-60.0, 24.0)
+        (20.0 * libm::log10f(volume)).clamp(-60.0, 24.0)
     }
 }
 

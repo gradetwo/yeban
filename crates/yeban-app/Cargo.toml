@@ -109,6 +109,18 @@ yeban-decode = { workspace = true }
 # (D19 的字面要求)。离线渲染器 `yeban-render` 走的是另一条路
 # (`default-features = false`), 与本条无关。
 yeban-engine = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# libm: 纯 Rust 超越函数 (L1 确定性 [ARCH-DET-001])
+# ---------------------------------------------------------------------------
+# `#233` 已把 dsp/engine 的 `sin`/`cos`/`exp`/`log`/`pow`/`tan` 收口到根
+# `[workspace.dependencies]` 里登记的这个包；`#234` 收掉 app 最后两条**音频字节**
+# 路径（最小音源导出的音高换算、录音测试音的正弦）。版本的唯一事实源在根
+# (ADR-0001 D5) ⇒ 这里只写 `workspace = true`。`Cargo.lock` 会多**一行**
+# (`"libm"` 进 `yeban-app` 的依赖列表 —— 锁文件也记每条成员依赖边)，⛔ 不是新包
+# (`libm 0.2.16` 早已在树里)。
+libm.workspace = true
+
 # [D56] 诊断包: UI 与 MCP 调**同一个** `export_diagnostics`。
 yeban-diagnostics = { path = "../yeban-diagnostics" }
 

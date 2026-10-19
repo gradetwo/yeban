@@ -206,7 +206,10 @@ pub fn record_test_tone(path: &Path, options: &RecordOptions) -> Result<RecordRe
     let mut phase = 0.0_f32;
     let step = core::f32::consts::TAU * options.tone_hz / options.sample_rate as f32;
     for index in 0..total_frames {
-        let value = phase.sin() * TEST_TONE_AMPLITUDE;
+        // ⭐ `#234`：正弦走纯 Rust `libm::sinf`（⛔ 不是宿主 `f32::sin`）—— 测试音
+        // 会被量化成 WAV 字节落盘，同一请求必须在每个平台产出同一串字节
+        // （[ARCH-DET-001]；`#233` 的同一条口径）。
+        let value = libm::sinf(phase) * TEST_TONE_AMPLITUDE;
         // clippy 要求用 `fill` 而不是手写循环。
         frame.fill(value);
         // ⚠ 引擎已把 `push_frame` 修成**整帧原子**（`faaa7240`）⇒ ⛔ 不再需要自己先问

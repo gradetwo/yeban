@@ -532,7 +532,11 @@ impl NoteToneSource {
                     let end = ticks_to_frames(end_tick, project.bpm, sample_rate)
                         .max(start.saturating_add(1));
                     // 预先计算频率及 `2 * f / fs`（供渲染循环廉价算相位），以及幅度。
-                    let frequency = 440.0_f64 * 2.0_f64.powf((f64::from(note.pitch) - 69.0) / 12.0);
+                    // ⭐ `#234`：音高换算走纯 Rust `libm::pow`（⛔ 不是宿主 `f64::powf`）
+                    // —— 这是**音频字节路径**，同一工程必须在每个平台渲染出同一串字节
+                    // （[ARCH-DET-001]；`#233` 的同一条口径）。
+                    let frequency =
+                        440.0_f64 * libm::pow(2.0, (f64::from(note.pitch) - 69.0) / 12.0);
                     let phase_step = frequency / (sample_rate as f64) * 2.0;
                     let amp = (f32::from(note.velocity) / 127.0) * 0.2;
                     notes.push((start, end, phase_step, amp));
@@ -577,7 +581,8 @@ impl NoteToneSource {
                 continue;
             }
             let offset = frame - start;
-            // 通过整数取模判定方波正负半周，免去 `f64 % f64` 的浮点求余与 `powf`。
+            // 通过整数取模判定方波正负半周，免去 `f64 % f64` 的浮点求余与逐帧重算
+            // （音高换算的 `pow` 只在 `from_track` 里做一次，见 `#234`）。
             let half_cycles = (offset as f64 * phase_step) as u64;
             let square = if half_cycles.is_multiple_of(2) {
                 1.0_f32

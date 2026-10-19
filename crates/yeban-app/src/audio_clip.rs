@@ -627,6 +627,10 @@ fn read_extended_80(bytes: &[u8]) -> Result<u32, String> {
     if exponent == 0 || mantissa == 0 {
         return Ok(0);
     }
+    // ⭐ `#234`：这里的 `powi` **不**换成 `libm` —— 底数恒为 `2`、指数是整数 ⇒ 结果
+    // 是 2 的整数次幂；对**全部有效采样率**（1 Hz–384 kHz ⇒ 指数 `0..=18`）逐位精确、
+    // 与宿主 libm 的实现无关（`powi` 是整数指数求幂，不是超越函数）⇒ 不进 `libm` 收口面。
+    // 极端非规格化输入（|指数| > 1022）由下面的有限性／正数检查兜住，同样不产生音频字节。
     let value = (mantissa as f64 / (1u64 << 63) as f64) * 2f64.powi(i32::from(exponent) - 16383);
     if !value.is_finite() || value <= 0.0 {
         return Err("AIFF 采样率不是有限正数".to_owned());
