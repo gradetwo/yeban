@@ -136,7 +136,7 @@ const MINIMAL_SFZ: &str = "<region> sample=tone.wav lokey=0 hikey=127 pitch_keyc
 /// 回执的字段名闭集（唯一的一份：名字在这里，切分就按这里）。
 ///
 /// 加一个字段就加一行 —— 漏加不会静默：那个字段取不到值，判据会失败并打印整条回执。
-const RECEIPT_KEYS: [&str; 31] = [
+const RECEIPT_KEYS: [&str; 32] = [
     "action",
     "outcome",
     "error",
@@ -172,6 +172,10 @@ const RECEIPT_KEYS: [&str; 31] = [
     // `field_of(&receipt, "first")` 这类取值会**静默多带一截**（与本注释记录的两种错法同族）。
     "landing",
     "unclosed",
+    // ⭐ 任务单 `#229`：GUI 导出的**削波提示**（只在削波时出现；值是整段带引号的
+    // `WavExportReport::clipping_note()`）。它在 `digest` **之后** ⇒ 不登记的话
+    // `field_of(&receipt, "digest")` 会静默多带一截。
+    "clipping_note",
 ];
 
 /// 一条回执里，从 `at` 起**第一个** `:<已知字段名>=` 的冒号位置。

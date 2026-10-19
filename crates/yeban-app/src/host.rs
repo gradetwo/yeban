@@ -6076,23 +6076,34 @@ pub fn wire_module_actions_with_capture(
                 wav_options,
                 sfz,
             ) {
-                Ok(report) => (
-                    module_receipt(
-                        "export-wav",
-                        &[
-                            "outcome=ok".to_owned(),
-                            format!("path={}", report.path.display()),
-                            format!("frames={}", report.frames),
-                            format!("sample_rate={}", report.sample_rate),
-                            format!("channels={}", report.channels),
-                            format!("bits={}", report.bits),
-                            format!("bytes={}", report.bytes),
-                            format!("source={}", report.source),
-                            format!("digest={}", report.digest),
-                        ],
-                    ),
-                    true,
-                ),
+                Ok(report) => {
+                    let mut fields = vec![
+                        "outcome=ok".to_owned(),
+                        format!("path={}", report.path.display()),
+                        format!("frames={}", report.frames),
+                        format!("sample_rate={}", report.sample_rate),
+                        format!("channels={}", report.channels),
+                        format!("bits={}", report.bits),
+                        format!("bytes={}", report.bytes),
+                        format!("source={}", report.source),
+                        format!("digest={}", report.digest),
+                    ];
+                    // ⭐ 任务单 `#229`：**削波时多一条字段**，内容是 CLI 的同一条
+                    // [`crate::export_wav::WavExportReport::clipping_note`]（`clippedSamples` /
+                    // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**一个字段都不加**
+                    // ⇒ 既有回执逐字不变（判据
+                    // `tests/gui_export_clipping.rs` 的干净臂：整条字符串等值断言）。
+                    //
+                    // 为什么放在**末尾**而不是把字段拆开：① 与 CLI `--export-wav` 的
+                    // "多一行"同一个口径（`#226`），区别只是这一行的行首有字段名；
+                    // ② `module-status` 是**一行**文本，再拆成几个字段只会让这一行更长、
+                    // 可见部分更少；③ 长文案里的 `:` / `=` 不参与回执语法 —— 它整体被
+                    // 双引号包住（与 `module_error_fields` 的 `message="…"` 同款）。
+                    if let Some(note) = report.clipping_note() {
+                        fields.push(format!("clipping_note=\"{note}\""));
+                    }
+                    (module_receipt("export-wav", &fields), true)
+                }
                 Err(error) => (
                     module_receipt(
                         "export-wav",

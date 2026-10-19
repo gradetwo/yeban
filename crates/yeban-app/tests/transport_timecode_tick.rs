@@ -60,7 +60,7 @@ impl Window {
 fn production_and_window() -> (ProductionLoop, Window) {
     let project = demo_project();
     let window = Window::new(&project);
-    let mut production = ProductionLoop::start(&project, 0).expect("引擎重建");
+    let production = ProductionLoop::start(&project, 0).expect("引擎重建");
     assert!(production.has_engine(), "引擎应当活着");
     production
         .engine_handle()
@@ -171,7 +171,7 @@ fn one_tick_after_stop_shows_the_engines_position() {
     production.engine_handle().borrow_mut().play();
     for frame in 1..=4u64 {
         production.engine_handle().borrow_mut().drive_audio(1);
-        production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
+        let _ = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
         report_line(&format!(
             "[timecode-stop] tick={frame} playing={} ui_timecode={}",
             window.ui().get_playing(),
@@ -200,7 +200,7 @@ fn one_tick_after_stop_shows_the_engines_position() {
     assert!(!stopped.state.is_running(), "`Stop` 之后引擎必须停住");
     // 再让边界到来一次（控制驱动的形态），然后走**下一跳**。
     production.engine_handle().borrow_mut().drive_audio(1);
-    production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
+    let _ = production.tick(window.ui(), &window.view, EditMark::new(None, 0), None);
     let reading = production.engine_handle().borrow().transport();
     report_line(&format!(
         "[timecode-stop] after_stop engine_position_ticks={} engine_state={:?} \
