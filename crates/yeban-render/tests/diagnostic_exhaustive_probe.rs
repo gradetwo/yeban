@@ -88,7 +88,6 @@ fn r_label(error: &RenderError) -> &'static str {
         RenderError::ZeroFrames => "Render::ZeroFrames",
         RenderError::SizeOverflow { .. } => "Render::SizeOverflow",
         RenderError::MissingSource(_) => "Render::MissingSource",
-        RenderError::SourceOnBusNode(_) => "Render::SourceOnBusNode",
         RenderError::UnknownNode(_) => "Render::UnknownNode",
         RenderError::ThreadPool(_) => "Render::ThreadPool",
         RenderError::Source { .. } => "Render::Source",
@@ -221,10 +220,6 @@ fn every_golden_table_enum_variant_has_an_exhaustive_label() {
             RenderError::MissingSource(ulid(0xFFFF)),
         ),
         (
-            "Render::SourceOnBusNode",
-            RenderError::SourceOnBusNode(ulid(0xFFFF)),
-        ),
-        (
             "Render::UnknownNode",
             RenderError::UnknownNode(ulid(0xFFFF)),
         ),
@@ -320,18 +315,18 @@ fn every_golden_table_enum_variant_has_an_exhaustive_label() {
     // 计数与唯一性: 与黄金表的"按枚举 18/4/12/3/8"对齐。
     assert_eq!(f_cases.len(), 18, "Rf64Error 的变体数");
     assert_eq!(w_cases.len(), 4, "WavError 的变体数");
-    assert_eq!(r_cases.len(), 13, "RenderError 的变体数");
+    assert_eq!(r_cases.len(), 12, "RenderError 的变体数");
     assert_eq!(p_cases.len(), 3, "PdcError 的变体数");
     assert_eq!(m_cases.len(), 8, "MasterExportError 的变体数");
-    let mut all: Vec<&str> = Vec::with_capacity(46);
+    let mut all: Vec<&str> = Vec::with_capacity(45);
     all.extend(f_cases.iter().map(|(label, _)| *label));
     all.extend(w_cases.iter().map(|(label, _)| *label));
     all.extend(r_cases.iter().map(|(label, _)| *label));
     all.extend(p_cases.iter().map(|(label, _)| *label));
     all.extend(m_cases.iter().map(|(label, _)| *label));
-    assert_eq!(all.len(), 46, "5 个枚举的变体总数");
+    assert_eq!(all.len(), 45, "5 个枚举的变体总数");
     let unique: BTreeSet<&str> = all.iter().copied().collect();
-    assert_eq!(unique.len(), 46, "一行一变体: 标签不得重复");
+    assert_eq!(unique.len(), 45, "一行一变体: 标签不得重复");
     // 非空证明: 5 个枚举的规模互不相同, 因此"把某一族的计数写错"不会恰好被另一族掩盖。
     assert_ne!(f_cases.len(), r_cases.len());
     assert_ne!(r_cases.len(), m_cases.len());

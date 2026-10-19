@@ -11,21 +11,27 @@
 //! [`yeban_render::render::RenderPlan::execute`] 按定义拒绝（总线输出 = 入边归约，
 //! 不是某个源）。因此**任何**含 `AuxReturn` ＋ 入边的工程都导不出来，与是否装采样器无关。
 //!
+//! ⭐ `#240`（Logic Pro 的通道条语义）**取代**了 `#237` 的绕法：渲染器的输入端现在
+//! 把自己的源与全部入边**同权相加**，再进插入链 ⇒ aux 既注册源、也仍接受入边。
+//! 本文件保留 `#237` 的端到端判据（CLI 能导出、发送仍生效），并把它对"aux 是源"的
+//! 断言从**否定**改成**肯定**（那是语义改进，不是放宽）。
+//!
 //! # 判据与文件头的对应
 //!
 //! | 判据 | 钉住的事实 |
 //! | :--- | :--- |
 //! | [`the_cli_exports_a_project_whose_aux_return_carries_a_sampler`] | 真二进制：`--open` ＋ `--track-sampler` ＋ `--export-wav` ⇒ 退出码 0、`frames=`、产物峰值 > 0 |
 //! | [`the_aux_send_still_reaches_the_master`] | aux 的发送**仍然生效**：`SendToAux` 增益 `-60 dB` ⇒ 母带峰值**必然变小** |
-//! | [`the_aux_return_is_not_registered_as_a_sample_source`] | 修法本身：逐源峰值表里**没有** aux 那个节点（它是总线，由入边归约） |
-//! | [`an_aux_return_without_a_send_still_exports`] | 修法的另一半：**无入边**的 aux 仍是源节点（⛔ 不能一并拿掉，否则 `MissingSource`） |
+//! | [`the_aux_return_is_registered_as_a_sample_source`] | ⭐ `#240`：aux 仍**注册自己的源**（`#237` 的绕法已删）⇒ 逐源峰值表里**有** aux；它的源为空时峰值为 0、但节点在表里 |
+//! | [`an_aux_return_without_a_send_still_exports`] | **无入边**的 aux 也是源节点，能导出（`MissingSource` 不会炸） |
 //! | [`a_project_without_an_aux_return_exports_the_same_bytes_twice`] | 正对照：无 aux 的同形工程连导两次逐字节相同（同时给报告行 sha256，供修前/修后对比） |
 //!
 //! # 边界（⛔ 不声称）
 //!
 //! - ⛔ 不证"人耳听到混响"：只证**样本**上 aux 的贡献存在且随发送增益变化；
 //! - ⛔ 不钉 WAV 的绝对 `sha256`（机器相关，台账第 313 条）—— 正对照用同一台机器的自比；
-//! - aux 轨上的**片段摆放**仍不渲染（与 MCP 的 `busTrackClips` 同一条口径），本文件不覆盖它。
+//! - ⭐ `#240` 起 aux 的源（含片段/采样器）**会**进输出：本夹具的 aux 没有 MIDI 内容，
+//!   所以源峰值为 0；"源 ＋ 发送两路都响"的分路读数在 `export_wav_bus_sum.rs`。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -371,9 +377,13 @@ fn the_aux_send_still_reaches_the_master() {
     );
 }
 
-/// ⭐ 判据 ③：修法的机制 —— aux 是**总线**，逐源峰值表里不应有它（否则 `execute` 会拒）。
+/// ⭐ 判据 ③（`#240` 的语义改进）：aux 是**既有自己的源、又有入边**的通道条 ——
+/// 它的源**仍注册**（不再是 `#237` 的"从源表里拿掉"），入边也仍然归约。
+///
+/// 本夹具的 aux 没有 MIDI 内容 ⇒ 源的峰值为 **0**，但节点必须在表里：这正是
+/// "两路都在"的静态证据（动态的分路读数见 `export_wav_bus_sum.rs`）。
 #[test]
-fn the_aux_return_is_not_registered_as_a_sample_source() {
+fn the_aux_return_is_registered_as_a_sample_source() {
     let project = fixture_project(true, None);
     let aux = fixture_id("A0");
     let output = render_project_f32_with_assets_under(
@@ -394,16 +404,26 @@ fn the_aux_return_is_not_registered_as_a_sample_source() {
             .map(EntityId::to_canonical_string)
             .collect::<Vec<_>>()
     );
-    assert!(!ids.contains(&aux), "aux 是有入边的总线，不能注册样本源");
+    assert!(
+        ids.contains(&aux),
+        "aux 是有入边的通道条，但它的源仍必须注册（#240）"
+    );
     assert!(ids.contains(&fixture_id("T1")), "MIDI 轨仍必须是源");
     assert!(ids.contains(&fixture_id("T2")), "MIDI 轨仍必须是源");
+    let aux_peak = output
+        .source_peaks
+        .iter()
+        .find(|(id, _)| *id == aux)
+        .map(|(_, peak)| *peak)
+        .expect("aux 必须在逐源峰值表里");
+    assert_eq!(aux_peak, 0.0, "本夹具的 aux 没有 MIDI 内容 ⇒ 源必须静音");
 }
 
-/// ⭐ 判据 ⑤（修法的**另一半**）：**没有**发送（⇒ 没有入边）的 `AuxReturn` 仍然能导出。
+/// ⭐ 判据 ⑤：**没有**发送（⇒ 没有入边）的 `AuxReturn` 仍然能导出。
 ///
-/// 它钉住 `aux_return_is_a_bus` 的第二半判据：aux 只有在计划里**真的有入边**时才是总线；
-/// 无入边的 aux 是"没有声部的源"，计划要求它注册一个（静音）源，⛔ 不能一并拿掉
+/// 无入边的 aux 是"没有入边的源节点"，计划要求它注册一个（静音）源，⛔ 不能拿掉
 /// （否则 `execute` 会报 `MissingSource`）。界面「+辅助返回」刚建完就是这种形状。
+/// `#240` 之后这条与"有入边的 aux"走**同一个**渲染形状（源进输入端，入边为空）。
 #[test]
 fn an_aux_return_without_a_send_still_exports() {
     let mut project = fixture_project(true, None);

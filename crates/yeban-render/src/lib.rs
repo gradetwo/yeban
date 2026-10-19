@@ -441,7 +441,7 @@ mod contract_tests {
         );
     }
 
-    /// 判据 (**诊断文案黄金表**): 本 crate 默认构建里 5 个错误枚举的**全部 46 个变体**
+    /// 判据 (**诊断文案黄金表**): 本 crate 默认构建里 5 个错误枚举的**全部 45 个变体**
     /// 的 `Display` 文案, 逐条钉死在同一张表里。
     ///
     /// # 为什么是一张**表**（本机实测的缺口）
@@ -456,20 +456,21 @@ mod contract_tests {
     ///
     /// 对象: 5 个枚举的**全部**变体（单位: 一个变体）, 每个给一个固定的构造值。
     /// 读数: 对该值 `to_string()` 得到的字符串（单位: 一个 UTF-8 字符串）。
-    /// 覆盖面由数组长度 `46` 与下面那条去重断言一起守住。
+    /// 覆盖面由数组长度 `45` 与下面那条去重断言一起守住。
     ///
     /// # 表的来源
     ///
     /// 右列是**本机实测读数**（一个临时探针在 `469cedd` 上打印全部 45 条, 探针已删;
-    /// `#155` 新增 `Render::UnsupportedInsertChannels` 一条）,
+    /// `#155` 新增 `Render::UnsupportedInsertChannels` 一条; ⭐ 任务单 `#240` 删掉
+    /// `Render::SourceOnBusNode` 一条 —— 源 ＋ 入边现在是合法语义, 那个错误不再存在）,
     /// 不是从实现里抄的表达式。表的用途正是: **以后任何一字改动都必须显式改这张表**。
     ///
     /// # 非空证明
     ///
-    /// ① 46 条文案里**恰有一对相同** —— `Rf64Error::ZeroChannels` 与
+    /// ① 45 条文案里**恰有一对相同** —— `Rf64Error::ZeroChannels` 与
     /// `RenderError::ZeroChannels` 都是 `声道数为 0` ⇒ 去重后是 **44** 条
     /// （下面把这两个数与那一对一起断言）;
-    /// ② 五个枚举各自的变体数必须是 **18 / 4 / 13 / 3 / 8** —— 哪个枚举少一个变体进表就红;
+    /// ② 五个枚举各自的变体数必须是 **18 / 4 / 12 / 3 / 8** —— 哪个枚举少一个变体进表就红;
     /// ③ 其中 6 条带运行时参数（`Truncated` / `DataSizeMismatch` /
     /// `UnrepresentableBlockAlign` / `UnsupportedFormatTag` / `BadStartTimecode` /
     /// `NonFiniteSamples`）⇒ 改插值而不是改字面量也会红。
@@ -480,7 +481,7 @@ mod contract_tests {
         use crate::rf64::Rf64Error;
         use crate::wav::WavError;
 
-        let cases: [(&str, String, &str); 46] = [
+        let cases: [(&str, String, &str); 45] = [
             (
                 "Rf64::Io",
                 Rf64Error::Io("磁盘满了".to_owned()).to_string(),
@@ -662,11 +663,6 @@ mod contract_tests {
                 r#"节点 00000000000000000000001ZZZ 没有注册样本源"#,
             ),
             (
-                "Render::SourceOnBusNode",
-                RenderError::SourceOnBusNode(ulid(0xFFFF)).to_string(),
-                r#"节点 00000000000000000000001ZZZ 有入边, 不能注册样本源"#,
-            ),
-            (
                 "Render::UnknownNode",
                 RenderError::UnknownNode(ulid(0xFFFF)).to_string(),
                 r#"节点 00000000000000000000001ZZZ 不在渲染计划里（未知或被剪枝）"#,
@@ -766,12 +762,12 @@ mod contract_tests {
             assert_eq!(actual.as_str(), *golden, "诊断文案变了: {label}");
         }
 
-        // 覆盖面: 46 个变体, 按枚举分别是 18 / 4 / 13 / 3 / 8。
-        assert_eq!(cases.len(), 46, "黄金表必须覆盖全部 46 个变体");
+        // 覆盖面: 45 个变体, 按枚举分别是 18 / 4 / 12 / 3 / 8。
+        assert_eq!(cases.len(), 45, "黄金表必须覆盖全部 45 个变体");
         for (prefix, expected) in [
             ("Rf64::", 18usize),
             ("Wav::", 4),
-            ("Render::", 13),
+            ("Render::", 12),
             ("Pdc::", 3),
             ("Mst::", 8),
         ] {
@@ -785,14 +781,14 @@ mod contract_tests {
             );
         }
 
-        // 文案的唯一一处重合: 两个不同的枚举都用了 `声道数为 0` ⇒ 去重后 45 条。
+        // 文案的唯一一处重合: 两个不同的枚举都用了 `声道数为 0` ⇒ 去重后 44 条。
         let mut golden_texts: Vec<&str> = cases.iter().map(|(_, _, golden)| *golden).collect();
         golden_texts.sort_unstable();
         golden_texts.dedup();
         assert_eq!(
             golden_texts.len(),
-            45,
-            "46 条文案里恰有一对相同 ⇒ 去重后必须是 45"
+            44,
+            "45 条文案里恰有一对相同 ⇒ 去重后必须是 44"
         );
         assert_eq!(
             Rf64Error::ZeroChannels.to_string(),

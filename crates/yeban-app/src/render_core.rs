@@ -71,7 +71,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use yeban_model::{AssetHash, EntityId, TrackKind, YebanProjectV1};
+use yeban_model::{AssetHash, EntityId, YebanProjectV1};
 use yeban_render::render::{AudioSource, BlockContext, RenderError, RenderOptions, RenderPlan};
 
 use yeban_engine::snapshot::EngineSnapshot;
@@ -383,21 +383,25 @@ pub fn render_project_f32_with_plans_under(
     // 计划**自己**的节点表是唯一权威：`RenderPlan::nodes()`（图里存在但不可达的节点会被剪枝，
     // 给它塞源会得到"节点 … 不在渲染计划里（未知或被剪枝）" —— 本机实测踩过两次）。
     //
-    // ⭐ 任务单 `#237`（缺陷 F6）：**有入边的辅助返回轨是总线，不是声部**。
-    // `SendToAux` 一接上，aux 节点就不再是"源"而是"入边归约"的汇点；`execute` 按定义
-    // 拒绝给它注册样本源（`RenderError::SourceOnBusNode` ⇒ 逐字"节点 … 有入边, 不能注册样本源"）
-    // ⇒ **整首**导不出来。`#220` 的失败正是这条，而 `--track-sampler` 只是恰好把
-    // "身份序第一条非主总线轨"（aux）写成报错里的那个 id —— **采样器不是必要条件**：
-    // aux 一旦有入边，不装采样器也一样失败（本单判据的修前读数就是如此）。
-    // ⇒ 修法只做一件事：把"有入边的 `AuxReturn`"从源表里拿掉（它的声音由入边归约得到）。
-    // ⚠ **不**放宽成"任何有入边的节点都不注册源"：`Sidechain` 指向一条 MIDI 轨时，那条轨
-    // 的音符今天会**响亮失败**；若在这里一并放行，它会变成"音符被静默丢掉"——
-    // 把响亮缺陷换成静音缺陷，不是修。判定见 [`aux_return_is_a_bus`]。
+    // ⭐ 任务单 `#240`（Logic Pro 的通道条语义）：**每一条非主总线轨都注册自己的源**，
+    // 包括有入边的 `AuxReturn`。Logic 的通道条只有一种形状：
+    // `输入端求和（送进来的 send ＋ 自己的音源输出）→ 插入链 → 输出`
+    // ⇒ "总线既有自己的音源、又接别处的发送"是常态，两路相加。
+    //
+    // 历史：`#237` 曾把"有入边的 `AuxReturn`"从源表里**拿掉**（`aux_return_is_a_bus`），
+    // 因为当时的 `RenderPlan::execute` 拒绝"源 ＋ 入边"（`RenderError::SourceOnBusNode`
+    // ⇒ 逐字"节点 … 有入边, 不能注册样本源"），于是 aux 的采样器被整个跳过。
+    // 本单在渲染器里定义了那个缺失的语义（源进输入端、与入边同权相加），因此这层
+    // 绕法**不再需要**：aux 既注册源，也仍然接受入边。
+    //
+    // ⚠ `Sidechain`：渲染器一直把它当**普通音频边**处理（`render.rs` 模块头已登记
+    // "侧链键控语义未实现"）。因此侧链的目标节点现在也能有自己的源 —— 两路会在输入端
+    // 相加，而不是像修前那样报"有入边, 不能注册样本源"。**键控**仍然未实现，
+    // 这条边界没有变化；没有把任何一路**丢掉**。
     let renderable: Vec<EntityId> = plan
         .nodes()
         .into_iter()
         .filter(|id| *id != project.master_bus_track_id && project.tracks.contains_key(id))
-        .filter(|id| !aux_return_is_a_bus(project, &plan, *id))
         .collect();
     let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut source_label: String = if let Some((instrument, sfz_path)) = sfz.as_ref() {
@@ -553,31 +557,6 @@ pub fn render_project_f32_with_plans_under(
         sfz_decoded,
         source_peaks,
     })
-}
-
-/// `id` 是不是一条**有入边的辅助返回轨**（＝ 总线节点，声音由入边归约得到）。
-///
-/// 两半判据缺一不可：
-///
-/// 1. **`TrackKind::AuxReturn`** —— 只有辅助返回在语义上是总线。`Midi`／`Audio` 轨被
-///    `Sidechain` 指向时**不**在这里被放行：那会让它的音符被静默丢掉（本单刻意保留它
-///    今天的**响亮失败**，见调用点的注释）；
-/// 2. **渲染计划里确实有入边** —— 没有入边的 aux 是一个"没有声部的源"，计划要求每个
-///    入边为空的节点都注册一个源，否则 `execute` 报 [`RenderError::MissingSource`]
-///    ⇒ 不能把无入边的 aux 也从源表里拿掉。
-///
-/// `bus_reduction_order` 是计划对"这个节点的入边"的**唯一读数**（`None` = 不在计划里、
-/// 空 = 源节点），因此这里不另读一份 `RoutingGraph`（两份必然漂移）。
-///
-/// ⚠ 只影响"有入边的 aux"：其它任何工程走到这里的 `renderable` 与修前**逐元素相同**。
-fn aux_return_is_a_bus(project: &YebanProjectV1, plan: &RenderPlan, id: EntityId) -> bool {
-    project
-        .tracks
-        .get(&id)
-        .is_some_and(|track| track.kind == TrackKind::AuxReturn)
-        && plan
-            .bus_reduction_order(id)
-            .is_some_and(|inputs| !inputs.is_empty())
 }
 
 /// ⭐ 模型 SFZ 链条的**读数文案**（进 `source_label` ⇒ ⛔ 缺样本不静默）。

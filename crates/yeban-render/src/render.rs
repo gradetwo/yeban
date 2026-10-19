@@ -205,8 +205,6 @@ pub enum RenderError {
     },
     /// 某条源节点没有注册样本源。
     MissingSource(EntityId),
-    /// 给一个**有入边**的节点注册了样本源 —— 那是总线, 不是声部。
-    SourceOnBusNode(EntityId),
     /// 给一个不在（剪枝后的）渲染计划里的节点注册了样本源。
     UnknownNode(EntityId),
     /// 线程池构建失败。
@@ -237,7 +235,6 @@ impl core::fmt::Display for RenderError {
             Self::ZeroFrames => f.write_str("总帧数为 0"),
             Self::SizeOverflow { what } => write!(f, "{what} 溢出 usize"),
             Self::MissingSource(node) => write!(f, "节点 {node} 没有注册样本源"),
-            Self::SourceOnBusNode(node) => write!(f, "节点 {node} 有入边, 不能注册样本源"),
             Self::UnknownNode(node) => {
                 write!(f, "节点 {node} 不在渲染计划里（未知或被剪枝）")
             }
@@ -756,8 +753,11 @@ impl RenderPlan {
 
     /// 执行渲染。
     ///
-    /// `sources` 只需为**真正的源节点** (无入边的保留节点) 提供实现; 给总线注册源
-    /// 会被拒绝 ([`RenderError::SourceOnBusNode`])。
+    /// `sources` 为计划里**每一条需要发声的节点**提供实现。⭐ 任务单 `#240`
+    /// （Logic Pro 的通道条语义）：**有入边的节点同样可以注册自己的源** ——
+    /// 源输出与全部入边在节点的**输入端按单位权重线性相加**，再进插入链。
+    /// 只有"既没有入边、也没有源"的节点会被拒绝
+    /// ([`RenderError::MissingSource`])。
     ///
     /// # 可重复执行 (复位契约)
     ///
@@ -809,15 +809,16 @@ impl RenderPlan {
         // 分两遍是刻意的: 校验失败时计划必须留在**定义明确**的状态 (一个源都没装载),
         // 而不是"装到一半就返回"。旧实现在同一个循环里边查边装, 于是被拒的源表会在
         // `states` 里留下排在它前面的那几个源, 下一次执行就把它们当成"调用方给的源"。
+        //
+        // ⭐ 任务单 `#240`: 这里**不再**拒绝"给有入边的节点注册源"。Logic Pro 的通道条
+        // 只有一种形状 —— 输入端求和 → 插入链 → 输出, 软件音源的输出就接在输入端
+        // ⇒ "总线既有自己的音源、又接别处的发送"是常态, 两路相加。`render_node` 的
+        // 输入端求和负责那一步; 本层只保留"未知节点"的校验。
         for &node in sources.keys() {
-            let slot = self
-                .slot_of
+            self.slot_of
                 .get(&node)
                 .copied()
                 .ok_or(RenderError::UnknownNode(node))?;
-            if !self.states[slot].incoming.is_empty() {
-                return Err(RenderError::SourceOnBusNode(node));
-            }
         }
         for (node, source) in sources {
             let slot = self.slot_of[&node];
@@ -890,7 +891,15 @@ impl RenderPlan {
     }
 }
 
-/// 渲染一个节点的一块: 源节点调样本源, 总线节点做固定顺序的串行归约。
+/// 渲染一个节点的一块：**输入端求和**（自己的源 ＋ 全部入边）→ 插入链 → 输出。
+///
+/// ⭐ 任务单 `#240`（Logic Pro 的通道条语义）：Logic 的通道条只有一种形状 ——
+/// `输入端求和 → 插入链 → 输出`，软件音源的输出就接在**输入端**。因此这里**不是**
+/// 两条分支（"源节点" vs "总线节点"），而是一条：`buffer` 先装自己的源（若有），
+/// 再把全部入边按固定顺序累加到**同一个** `buffer` 上，最后过插入链。
+///
+/// 关键性质（判据 `insert_chain.rs::the_source_and_the_incoming_edge_are_summed_before_the_insert_chain`
+/// 钉住）：两路在插入链**之前**已经合并 ⇒ 插入链同时处理两路，而不是只处理入边。
 fn render_node(
     state: &mut NodeState,
     done: &[NodeState],
@@ -907,21 +916,24 @@ fn render_node(
         inserts,
     } = state;
 
-    if incoming.is_empty() {
-        buffer[..width].fill(0.0);
-        let source = source.as_mut().ok_or(RenderError::MissingSource(*node))?;
+    // ---- 输入端: 自己的源（若有）先写进来 ----
+    //
+    // 与 Logic 同形: 软件音源的输出进入通道条的**输入端**（与 send 同一个加法点）,
+    // 而不是在插入链之后另加一路。源节点的 `inserts` 因此也处理自己的源
+    // （这正是 `#173` 主总线挂链之后一直没变的那条路径）。
+    buffer[..width].fill(0.0);
+    if let Some(source) = source.as_mut() {
         source.render_block(context, &mut buffer[..width])?;
-        // 插入点: **声源渲染之后**。源节点没有"求和", 但位置语义相同 ——
-        // 声源（含声相）已经写进 `buffer`, 插入链是它之后的最后一级。
-        if let Some(inserts) = inserts.as_mut() {
-            inserts.process(&mut buffer[..width]);
-        }
-        return Ok(());
+    } else if incoming.is_empty() {
+        // 源槽为空且没有入边 ⇒ 没有声音可发; 保留 `MissingSource` 的响亮失败
+        // （编译期不拒绝源槽为空的总线, 因为它的声音由入边归约得到）。
+        return Err(RenderError::MissingSource(*node));
     }
 
+    // ---- 输入端: 全部入边累加到同一个 buffer（含自己的源） ----
+    //
     // [ARCH-DET-002] 固定顺序的**单线程串行累加**。`incoming` 在编译期已按
     // (source_node, edge_id) 字典序排好, 这里的 for 循环顺序就是全部。
-    buffer[..width].fill(0.0);
     for (index, contribution) in incoming.iter().enumerate() {
         let upstream = &done[contribution.source_slot].buffer[..width];
         let line = &mut delay_lines[index];
@@ -933,9 +945,10 @@ fn render_node(
             sum::accumulate_into(&scratch[..width], &mut buffer[..width], contribution.gain);
         }
     }
-    // 插入点: **求和之后**（本票的裁决 —— Aux 返回轨因此也能被它自己的链处理）。
+    // 插入点: **输入端求和之后**（本票的裁决 —— Aux 返回轨因此也能被它自己的链处理）。
     // ⭐ 任务单 `#173`：主总线也走这一行（`inserts` 不再是 `None`）⇒ 导出里
     // master 上的设备真的生效；顺序与实时侧同一条链：EQ → 混响 → 卷积。
+    // ⭐ 任务单 `#240`：自己的源也已经在上面进了 `buffer` ⇒ 同一条链同时处理两路。
     if let Some(inserts) = inserts.as_mut() {
         inserts.process(&mut buffer[..width]);
     }
@@ -1236,26 +1249,26 @@ mod tests {
 
     /// 判据: 源表被拒绝之后, 计划里**不许残留**任何已装载的源。
     ///
-    /// 本判据的图只有一个源节点, 且 `master` 的 ULID 排在它后面。被拒的源表里同时
-    /// 有一个合法源和一个总线源: 若"被拒时装载一半"的残留能跨执行存活, 那么随后用
-    /// 空表执行会**静默成功** (源"还在"); 正确行为是报 [`RenderError::MissingSource`]。
+    /// 本判据的图只有一个活节点, 被拒的源表里同时有一个合法源和一个**被剪掉的**
+    /// 节点。若"被拒时装载一半"的残留能跨执行存活, 那么随后用空表执行会**静默成功**
+    /// (源"还在"); 正确行为是报 [`RenderError::MissingSource`]。
     ///
     /// 兜住这条性质的是每次执行开始时的那一段复位 (源槽清空); `execute` 里"先整表校验、
     /// 再装载"的两遍写法把同一条性质收紧到**调用内部也成立**, 但它**单独不可观测** ——
     /// 实测把两遍合并成一遍时本判据仍然绿 (复位已经兜住了跨执行的那一半)。
     #[test]
     fn a_rejected_source_map_loads_nothing() {
-        let (routing, master, sources) = star_graph(1);
+        let master = ulid(0xFFFF);
+        let live = ulid(1);
+        let dead = ulid(2);
+        let routing = graph(&[master, live, dead], vec![edge(live, master, None)]);
         let options = RenderOptions::l1(128, 1, 48_000, 0);
         let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
 
         let mut mixed: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
-        mixed.insert(sources[0], Box::new(ConstantSource(1.0)));
-        mixed.insert(master, Box::new(ConstantSource(1.0)));
-        assert!(
-            matches!(plan.execute(mixed), Err(RenderError::SourceOnBusNode(_))),
-            "给总线注册源必须被拒绝"
-        );
+        mixed.insert(live, Box::new(ConstantSource(1.0)));
+        mixed.insert(dead, Box::new(ConstantSource(1.0)));
+        assert_eq!(plan.execute(mixed), Err(RenderError::UnknownNode(dead)));
 
         let empty: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
         assert!(
@@ -1498,9 +1511,10 @@ mod tests {
         assert_eq!(plan.execute(sources), Err(RenderError::UnknownNode(dead)));
     }
 
-    /// 判据: 缺源与"给总线注册源"必须各自被拒绝。
+    /// 判据: 缺源必须被拒绝; ⭐ 任务单 `#240` 起, **总线可以有自己的源** ——
+    /// 源输出与入边在输入端线性相加（Logic Pro 的通道条语义）。
     #[test]
-    fn missing_source_and_source_on_bus_are_rejected() {
+    fn missing_source_is_rejected_and_a_bus_can_carry_its_own_source() {
         let (routing, master, sources) = star_graph(2);
         let options = RenderOptions::l1(128, 1, 48_000, 0);
 
@@ -1511,11 +1525,15 @@ mod tests {
         );
 
         let mut plan = RenderPlan::compile(&routing, master, options).expect("编译");
-        let mut registry = synthetic_sources(&sources, 1);
-        registry.insert(master, Box::new(ConstantSource(0.0)));
-        assert_eq!(
-            plan.execute(registry),
-            Err(RenderError::SourceOnBusNode(master))
+        let mut registry: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+        registry.insert(sources[0], Box::new(ConstantSource(0.25)));
+        registry.insert(sources[1], Box::new(ConstantSource(0.125)));
+        // ⭐ 给**有入边**的 master 注册自己的源：这不再被拒绝。
+        registry.insert(master, Box::new(ConstantSource(0.5)));
+        let output = plan.execute(registry).expect("源 ＋ 入边必须合法");
+        assert!(
+            !output.samples.is_empty() && output.samples.iter().all(|&s| s == 0.875),
+            "输入端求和必须是 0.5（自己的源）＋ 0.25 ＋ 0.125（两条入边）= 0.875"
         );
     }
 

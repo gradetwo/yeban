@@ -664,6 +664,115 @@ fn a_non_stereo_target_refuses_a_non_empty_insert_chain() {
 }
 
 // ---------------------------------------------------------------------------
+// ⭐ 任务单 `#240`：源与入边在**插入链之前**的同一个输入端相加（Logic 通道条）
+// ---------------------------------------------------------------------------
+
+/// 判据：总线自己的源与入边**在插入链之前**已经合并。
+///
+/// 形状（与 Logic 的通道条同形）：`source_node ─SendToAux→ bus_node → master`，
+/// `bus_node` 自己也有一个源。BUS 上挂一段 `eq_low_gain = -12 dB @ 120 Hz`。
+///
+/// 区分的两种实现：
+///
+/// - **输入端合并（本单）**：`EQ(source + send)`。无 EQ 时两路和 = `0.75`；
+///   挂 EQ 后稳态 ≈ `0.75 × g`（g ≈ -12 dB）。
+/// - **输出端另加源（错误形状）**：`EQ(send) + source` ⇒ 稳态 ≈ `0.25 × g + 0.5`，
+///   会比 `0.5` **大**。
+///
+/// 判据因此同时钉住两件事：① 两路都进了同一条链；② 不是"源在链后另加"。
+#[test]
+fn the_source_and_the_incoming_edge_are_summed_before_the_insert_chain() {
+    let master = node(0xFF);
+    let send_source = node(1);
+    let bus = node(2);
+    let routing = graph(
+        &[master, send_source, bus],
+        &[
+            (send_source, bus, RoutingKind::SendToAux),
+            (bus, master, RoutingKind::TrackToBus),
+        ],
+    );
+    let frames = 48_000;
+
+    let mut tracks = BTreeMap::new();
+    tracks.insert(
+        bus,
+        track(vec![effect(&[
+            ("eq_low_gain", -12.0),
+            ("eq_low_freq", 120.0),
+        ])]),
+    );
+    let inserts = project_inserts(&tracks, SR);
+
+    // (bus 自己的源, 入边源) ⇒ 母带。`with_eq = false` 是输入端求和的直接读数。
+    let render_pair = |bus_source: f32, incoming: f32, with_eq: bool| -> RenderOutput {
+        let options = RenderOptions::l1(frames as u64, 2, SR, 0x240).with_threads(1);
+        let plan_inserts = if with_eq {
+            inserts.clone()
+        } else {
+            BTreeMap::new()
+        };
+        let mut plan = RenderPlan::compile_with_latencies_and_inserts(
+            &routing,
+            master,
+            options,
+            &BTreeMap::new(),
+            &plan_inserts,
+        )
+        .expect("编译");
+        let mut sources: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
+        sources.insert(
+            send_source,
+            Box::new(BufferSource::new(vec![incoming; frames])),
+        );
+        sources.insert(bus, Box::new(BufferSource::new(vec![bus_source; frames])));
+        plan.execute(sources).expect("渲染")
+    };
+
+    // 左声道在末尾窗口的均值（避开 EQ 的起始瞬态）。
+    let tail = |output: &RenderOutput| -> f64 {
+        let start = frames - 480;
+        let mut sum = 0.0f64;
+        for frame in start..frames {
+            sum += f64::from(output.samples[frame * 2]);
+        }
+        sum / 480.0
+    };
+
+    // bus → master 是单位增益边、master 没有插入链 ⇒ 母带读数就是 **bus 插入链入口**的读数
+    // （无 EQ 时 0.75 即两路在输入端相加的结果）。
+    let both_dry = render_pair(0.5, 0.25, false);
+    let dry = tail(&both_dry);
+    println!("[240/input-sum] 无 EQ 的两路和（左声道末尾均值）= {dry:.9}");
+    assert!(
+        (dry - 0.75).abs() < 1e-6,
+        "输入端求和必须 = 0.5（自己的源）+ 0.25（入边）= 0.75，实际 {dry:.9}"
+    );
+
+    let both_wet = render_pair(0.5, 0.25, true);
+    let source_wet = render_pair(0.5, 0.0, true);
+    let send_wet = render_pair(0.0, 0.25, true);
+    let (combined, only_source, only_send) = (tail(&both_wet), tail(&source_wet), tail(&send_wet));
+    println!(
+        "[240/before-inserts] 合 = {combined:.9} / 只源 = {only_source:.9} / \
+         只发送 = {only_send:.9} / 源+发送 = {:.9} / 差 = {:.3e}",
+        only_source + only_send,
+        combined - (only_source + only_send)
+    );
+
+    assert!(
+        // f32 的 IIR 在 48 000 帧上有累积舍入；6.1e-5 是实测读数，1e-3 是判据余量。
+        (combined - (only_source + only_send)).abs() < 1e-3,
+        "插入链必须作用在**合并后**的输入端信号上: 合 {combined:.9} vs 源+发送 {:.9}",
+        only_source + only_send
+    );
+    assert!(
+        combined < 0.5,
+        "源若被放到插入链之后另加, 合会 ≥ 0.5（当前 {combined:.9}）—— 那不是 Logic 的形状"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // ⭐ 修订登记（任务单 `#173`）：判据 6a 从"master **不**处理"改为"master 处理"
 // ---------------------------------------------------------------------------
 //
