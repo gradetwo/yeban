@@ -2014,8 +2014,9 @@ pub fn build(
     // 8. 真编译 + 真执行。
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
     // 每轨插入链：从 `TrackV3.devices` 投影（EQ + Freeverb + 卷积混响）。
-    // ⚠ 主总线上的设备链**不挂**（实时引擎的逐轨循环跳过 master），见
-    // `yeban_render::render::RenderPlan::compile_with_latencies_and_inserts` 的文档。
+    // ⚠ **主总线也挂**（`#173` 起 `project_inserts` 不过滤 master，`inserts.rs:263`）——
+    // 旧注释写"主总线上的设备链不挂"已陈（`#244` 实测点出，此处更正）。
+    // 实时引擎的逐轨循环跳过 master 是**另一件事**，不要拿它推这条行为的结论。
     let inserts = project_inserts(&project.tracks, sample_rate);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
