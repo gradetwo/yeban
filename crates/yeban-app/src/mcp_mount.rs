@@ -943,3 +943,7 @@ mod embedded_sfz_tools;
 // ⭐ `#221`：**采样器绑定 ＋ 渲染**的内嵌装配判据（与 CLI 导出腿并排比读数）。
 #[cfg(test)]
 mod embedded_sampler;
+// ⭐ `#253`：**C1 判据** —— 同一份工程 ⇒ MCP 的 `masterDigest` vs CLI 的 `digest`
+// （三个夹具 ＋ 四条前置条件反证）。与上面两个子模块同一条 `session_dispatcher` 装配。
+#[cfg(test)]
+mod embedded_digest;
