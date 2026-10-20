@@ -10,13 +10,16 @@
 //! `src/inserts.rs` 的模块头 §2。本文件的 EQ 判据用**逐声道线性等价**的那条
 //! （纯正弦的基频带能量），混响/卷积判据量的是**尾音**，不声称与实时侧逐位相同。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_model::{
     DeviceDefinition, DeviceKind, EntityId, ParameterValue, RoutingEdge, RoutingGraph, RoutingKind,
     TrackV3,
 };
-use yeban_render::inserts::{InsertChain, project_inserts, track_has_unhandled_dsp};
+use yeban_render::inserts::{
+    InsertChain, project_inserts, project_inserts_with_forced_strips, strip_source_params,
+    strip_source_slot, track_has_unhandled_dsp,
+};
 use yeban_render::render::{
     AudioSource, BlockContext, RenderError, RenderOptions, RenderOutput, RenderPlan,
 };
@@ -1029,3 +1032,85 @@ fn the_source_and_the_incoming_edge_are_summed_before_the_insert_chain() {
 //    总线走同一条"求和之后 → 插入"；非立体声守卫改为**包含** master。
 // 3. `crates/yeban-render/src/inserts.rs` §1：登记"为什么改"与"仍存的形状差"
 //    （实时单声道插入 vs 离线立体声插入 ⇒ 宽度/尾巴形状差异，与 `#155`/`#158` 同族）。
+
+// ---------------------------------------------------------------------------
+// ⭐ 任务单 `#266`：设备参数自动化的**编译期强制实例化**
+// ---------------------------------------------------------------------------
+
+/// 只写 `output_gain_db: 0.0` 的设备：`from_devices` 的"已识别"兜底
+/// （`params != DEFAULT`）不认它 ⇒ 静态投影是 `None`；但设备参数泳道要改它。
+#[test]
+fn a_forced_strip_exists_even_when_the_projection_is_the_identity() {
+    let track_id = node(2);
+    let mut tracks = BTreeMap::new();
+    tracks.insert(track_id, track(vec![effect(&[("output_gain_db", 0.0)])]));
+    assert!(
+        !project_inserts(&tracks, SR).contains_key(&track_id),
+        "静态投影是恒等 ⇒ 默认不挂运行态"
+    );
+    let forced = project_inserts_with_forced_strips(&tracks, SR, &BTreeSet::from([track_id]));
+    let chain = forced.get(&track_id).expect("强制实例化必须留下一条链");
+    assert!(chain.is_forced_strip());
+    assert!(!chain.is_empty(), "有器件可改 ⇒ 不是空链");
+    // 投影原样仍是 `None`（⛔ 本单不改引擎镜像）；强制位让**运行态**用 DEFAULT
+    // 参数（三级全关、增益 0 dB）实例化一台恒等通道条 —— 泳道随后在块边界改它。
+    assert!(chain.strip().is_none());
+    assert_eq!(
+        strip_source_slot(&tracks[&track_id]),
+        None,
+        "引擎的投影规则仍认为本轨没有通道条来源（⛔ 本单不改引擎镜像）"
+    );
+}
+
+/// "来源设备"只有一处判定：`strip_source_slot` / `strip_source_params` 必须与
+/// `from_devices` 选出**同一台**设备（首个含已识别名字的非旁通内置效果器）。
+#[test]
+fn strip_source_lookup_matches_the_projection_source() {
+    // 槽位 0 只有一个不认识的旋钮；槽位 1 才是通道条来源。
+    let track_id = node(3);
+    let mut tracks = BTreeMap::new();
+    tracks.insert(
+        track_id,
+        track(vec![
+            effect(&[("mix", 0.5)]),
+            effect(&[("output_gain_db", -6.0), ("eq_low_gain", 3.0)]),
+        ]),
+    );
+    assert_eq!(strip_source_slot(&tracks[&track_id]), Some(1));
+    let projected = strip_source_params(&tracks[&track_id]).expect("槽位 1 是来源");
+    assert_eq!(projected.output_gain_db.to_bits(), (-6.0f32).to_bits());
+    let chain = project_inserts(&tracks, SR);
+    let raw = chain[&track_id].strip().expect("投影出通道条");
+    assert_eq!(
+        raw.output_gain_db.to_bits(),
+        projected.output_gain_db.to_bits()
+    );
+    assert_eq!(
+        raw.input_gain_db.to_bits(),
+        projected.input_gain_db.to_bits()
+    );
+    assert_eq!(raw.eq_enabled, projected.eq_enabled);
+}
+
+/// 强制实例化**不改变**恒等判定以外的东西：没有强制的轨仍按原规则（空链被剔除）。
+#[test]
+fn forcing_one_track_does_not_materialise_other_tracks() {
+    let quiet = node(4);
+    let loud = node(5);
+    let mut tracks = BTreeMap::new();
+    tracks.insert(quiet, track(vec![effect(&[("output_gain_db", 0.0)])]));
+    tracks.insert(loud, track(vec![effect(&[("output_gain_db", -12.0)])]));
+    let forced = project_inserts_with_forced_strips(&tracks, SR, &BTreeSet::from([quiet]));
+    assert!(forced.contains_key(&quiet));
+    assert!(forced.contains_key(&loud), "-12 dB 静态投影本来就非空");
+    let untouched = project_inserts(&tracks, SR);
+    assert!(!untouched.contains_key(&quiet));
+    assert!(untouched.contains_key(&loud));
+    // 空集 ⇒ 与 `project_inserts` 逐项相同。
+    let empty = project_inserts_with_forced_strips(&tracks, SR, &BTreeSet::new());
+    assert_eq!(empty.len(), untouched.len());
+    for (id, chain) in &untouched {
+        assert_eq!(empty[id].is_empty(), chain.is_empty());
+        assert_eq!(empty[id].is_forced_strip(), chain.is_forced_strip());
+    }
+}

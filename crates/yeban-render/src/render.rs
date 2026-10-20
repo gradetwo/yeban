@@ -57,7 +57,7 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use yeban_model::{EntityId, RoutingEdge, RoutingGraph, TrackV3};
 
-use crate::automation::SendGainAutomation;
+use crate::automation::{AUTOMATION_BLOCK_SIZE, DeviceParamAutomation, SendGainAutomation};
 use crate::inserts::{InsertChain, InsertRuntime};
 use crate::pdc::{self, DelayLine, PdcError};
 use crate::sum;
@@ -302,13 +302,21 @@ struct NodeState {
     /// [`sum::accumulate_into`]（逐位不变）；`Some` 且恒等 ⇒ 同样走静态路径；
     /// `Some` 且非恒等 ⇒ 每块求值一次 + 逐样本平滑后累加。
     send_automations: Vec<Option<SendGainAutomation>>,
+    /// 本节点的**设备参数**自动化（任务单 `#266`；本切片只接 `output_gain_db`）。
+    ///
+    /// 与发送/声相不同，它们不乘样本：每 128 帧块起点求值一次，把**原生 dB 值**
+    /// 交给插入链运行态的 `set_params`（重算系数）。空表 ⇒ 插入链的调用形状
+    /// 与接线前**逐位相同**。
+    device_param_automations: Vec<DeviceParamAutomation>,
     /// 与 `incoming` 一一对应的延迟线 (零延迟时走旁路, 不使用 `scratch`)。
     delay_lines: Vec<DelayLine>,
     /// 延迟路径用的中转缓冲。
     scratch: Vec<f32>,
-    /// 本节点的插入链运行态 (EQ → Freeverb → 卷积) —— **主总线恒为 `None`**。
+    /// 本节点的插入链运行态 (通道条 → Freeverb → 卷积)。
     ///
     /// `None` 表示"本节点没有可执行器件" ⇒ `render_node` 整段跳过 ⇒ 逐位不退化。
+    /// ⚠ 主总线**也**挂链（`#173`；旧注释写"主总线恒为 `None`"已陈）。
+    /// 有**非恒等**设备参数泳道的轨，链在编译期被强制实例化（`#266`）⇒ 有器件可改。
     inserts: Option<InsertRuntime>,
 }
 
@@ -664,6 +672,7 @@ impl RenderPlan {
                     source: None,
                     incoming: Vec::new(),
                     send_automations: Vec::new(),
+                    device_param_automations: Vec::new(),
                     delay_lines: Vec::new(),
                     scratch: vec![0.0; block_width],
                     inserts,
@@ -800,6 +809,26 @@ impl RenderPlan {
             .collect()
     }
 
+    /// 把一条**设备参数**自动化接到计划上（任务单 `#266`）。
+    ///
+    /// 落点是该节点的插入链运行态（通道条）。恒等泳道可以挂（`value_at_block`
+    /// 返回 `None`，一个参数都不改）；非恒等泳道要求该节点**已经有**插入链运行态
+    /// （调用方必须先用 `project_inserts_with_forced_strips` 强制实例化，见
+    /// `crate::inserts` 模块头 §3.1），否则返回 `false` —— 调用方据此如实登记，
+    /// 而不是谎称应用了。
+    pub fn attach_device_param_automation(&mut self, automation: DeviceParamAutomation) -> bool {
+        let track_id = automation.track_id();
+        let Some(slot) = self.slot_of.get(&track_id).copied() else {
+            return false;
+        };
+        let state = &mut self.states[slot];
+        if !automation.is_identity() && state.inserts.is_none() {
+            return false;
+        }
+        state.device_param_automations.push(automation);
+        true
+    }
+
     /// 执行渲染。
     ///
     /// `sources` 为计划里**每一条需要发声的节点**提供实现。⭐ 任务单 `#240`
@@ -848,6 +877,11 @@ impl RenderPlan {
             // 发送增益自动化的 5 ms 平滑器也是**跨执行存活**的时间状态 ⇒ 一起复位
             // （回到“tick 0 的曲线值”，与全新构造逐位一致）。
             for automation in state.send_automations.iter_mut().flatten() {
+                automation.reset_for_execution();
+            }
+            // 设备参数自动化的读数（任务单 `#266`）也是跨执行存活的；器件状态在
+            // `inserts.reset()` 里复位（`set_params` 不清状态，`reset` 才清）。
+            for automation in &mut state.device_param_automations {
                 automation.reset_for_execution();
             }
             // 插入器件（EQ 的双二阶状态、混响的梳状/全通线、卷积的分块尾）也是
@@ -966,6 +1000,7 @@ fn render_node(
         source,
         incoming,
         send_automations,
+        device_param_automations,
         delay_lines,
         scratch,
         inserts,
@@ -1022,8 +1057,31 @@ fn render_node(
     // ⭐ 任务单 `#173`：主总线也走这一行（`inserts` 不再是 `None`）⇒ 导出里
     // master 上的设备真的生效；顺序与实时侧同一条链：EQ → 混响 → 卷积。
     // ⭐ 任务单 `#240`：自己的源也已经在上面进了 `buffer` ⇒ 同一条链同时处理两路。
+    // ⭐ 任务单 `#266`：有**非恒等**设备参数泳道时，把本块按 128 帧切段，每段**起点**
+    // 求一次曲线值 → `apply_device_params`（`ChannelStrip::set_params` 重算系数）→
+    // 再跑那一段。⛔ 不逐样本平滑：改的是参数，不是增益。没有设备参数泳道（或全是恒等）
+    // 时走**原来那一句** `inserts.process` ⇒ 产物逐位不变（含任意 `block_size`）。
     if let Some(inserts) = inserts.as_mut() {
-        inserts.process(&mut buffer[..width]);
+        if device_param_automations
+            .iter()
+            .all(DeviceParamAutomation::is_identity)
+        {
+            inserts.process(&mut buffer[..width]);
+        } else {
+            let channels = context.channels;
+            let mut offset = 0usize;
+            while offset < context.frames {
+                let chunk = (context.frames - offset).min(AUTOMATION_BLOCK_SIZE);
+                let block_first = context.first_frame.saturating_add(offset as u64);
+                for automation in device_param_automations.iter_mut() {
+                    if let Some(db) = automation.value_at_block(block_first) {
+                        inserts.apply_device_params(db);
+                    }
+                }
+                inserts.process(&mut buffer[offset * channels..(offset + chunk) * channels]);
+                offset += chunk;
+            }
+        }
     }
     Ok(())
 }

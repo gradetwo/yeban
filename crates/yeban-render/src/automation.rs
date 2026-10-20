@@ -20,8 +20,8 @@
 //! ## 恒等快路径（一个样本都不碰）
 //!
 //! 没有泳道、`read_enabled == false`、泳道没有点，或者**每个点的值都等于静态值**
-//! （音量/发送比的是线性增益的位型，声相比的是位置的位型）⇒ `is_identity` 为真，
-//! 整段跳过。
+//! （音量/发送比的是线性增益的位型，声相比的是位置的位型，设备参数比的是**钳制后**
+//! 的 dB 位型）⇒ `is_identity` 为真，整段跳过。
 //! 这与 `crates/yeban-engine/src/param.rs` 的“整段跳过”是同一口径：不是乘 `1.0`
 //! （那会动 `-0.0` 的符号与次正规位型），而是**一条样本都不读不写**。
 //!
@@ -34,9 +34,13 @@
 //!
 //! ## 边界（本模块没有证明什么）
 //!
-//! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]
-//!   与 [`AutomationTarget::TrackPan`]；`DeviceParam` / `Macro` 仍由调用方如实登记为
-//!   不支持；
+//! - 只接 [`AutomationTarget::TrackVolume`]（含主总线）、[`AutomationTarget::SendGain`]、
+//!   [`AutomationTarget::TrackPan`] 与 [`AutomationTarget::DeviceParam`] 里**一个名字**
+//!   （[`APPLIED_DEVICE_PARAM_NAMES`] = `output_gain_db`）；`Macro` 仍由调用方如实登记
+//!   为不支持，`DeviceParam` 的其它名字（含白名单里的）也如实登记（⛔ 不冒充已支持）；
+//! - 设备参数自动化的形状**不同**（任务单 `#266`）：它改的是**器件参数**、要重算系数
+//!   ⇒ 只在**块边界**调 [`crate::inserts::InsertRuntime::apply_device_params`]，
+//!   ⛔ 不逐样本平滑，也 ⛔ 不乘样本；单位是**原生绝对值**（`dB`），没有 R55 换域；
 //! - 主总线的第二个站点在调用方（主总线没有源，它的 `volume_db` 在源侧无法表达）；
 //! - 发送量的落点在 [`crate::render::RenderPlan`] 的**入边归约**里（见
 //!   [`SendGainAutomation`]）：它乘的是该边的**静态增益**，与源节点的 `TrackVolume`
@@ -46,11 +50,14 @@
 //!   提供那个乘子，⛔ 不替调用方改源；
 //! - 没有把“自动化值”写回快照或模型：这是**离线渲染的一次性读数**。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::{AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
 
+use crate::inserts::{
+    resolve_device_param, sanitised_output_gain_db, strip_source_params, strip_source_slot,
+};
 use crate::render::{L1_BLOCK_SIZE, db_to_linear};
 
 /// 自动化求值的块大小（帧）。与 [ARCH-DET-001] 的统一处理块一致。
@@ -790,6 +797,350 @@ impl TrackPanAutomation {
     }
 }
 
+/// 本切片**真的会落点**的设备参数名（小写；任务单 `#266` 只开一个名字）。
+///
+/// ⛔ 不是"白名单"：`crates/yeban-render/src/inserts.rs::is_supported_param` 的 44 个
+/// 名字是**静态投影**消费的全集；本表是**自动化**这一层接上的子集。白名单里的
+/// `cutoff_hz` / `reverb_wet` 等名字仍不落点（理由：本单只裁到 `output_gain_db`）。
+pub const APPLIED_DEVICE_PARAM_NAMES: &[&str] = &["output_gain_db"];
+
+/// 名字是否是本切片会落点的设备参数（**大小写不敏感**，与 `strip_of` 的同一口径）。
+#[must_use]
+pub fn is_applied_device_param_name(name: &str) -> bool {
+    APPLIED_DEVICE_PARAM_NAMES
+        .iter()
+        .any(|applied| name.eq_ignore_ascii_case(applied))
+}
+
+/// 把一条 `DeviceParam` 泳道**解析成落点**：`(参数名原文, 设备身份, 静态输出增益 dB)`。
+///
+/// 返回 `None` 的四种情形（全部是"不落点"，⛔ 不是沉默）：
+///
+/// 1. 序数地址解析失败（轨 / 插槽 / 参数下标越界）；
+/// 2. 参数名不在 [`APPLIED_DEVICE_PARAM_NAMES`]；
+/// 3. 设备被旁通 / 不是内置效果器（规则同 `from_devices`）；
+/// 4. 该插槽**不是**本轨通道条的来源设备（`strip_source_slot`）—— 那台设备的参数
+///    根本不会进 DSP，改它没有落点。
+///
+/// ## "全恒等设备"也是来源（`#266` 的边界裁决）
+///
+/// [`crate::inserts::InsertChain::from_devices`] 的"已识别"规则有一条兜底：
+/// `params != DEFAULT`（与实时引擎 `InsertParams::from_devices` 的 `into_params`
+/// 逐字同式）。于是**只写 `output_gain_db: 0.0`** 的设备投影成 `None` —— 它在引擎侧
+/// **不武装**通道条。但它的静态投影**恰好就是恒等**（只有 `0 dB` 的增益名能落进这个
+/// 缝里），所以一条 `output_gain_db` 泳道指向它时，"强制实例化一台 DEFAULT 参数
+/// （三级全关）的通道条"就是它的忠实静态基值。本函数因此在这一个缝里承认它是来源：
+/// **仅当整条轨没有任何其它通道条来源**时（有来源 ⇒ 只认那台，⛔ 不把参数改到
+/// 另一台设备上）。
+///
+/// 这是**唯一**的判定处：`DeviceParamAutomation::new` 与 MCP 的 `AutomationReport`
+/// 都调它 ⇒ "报告说应用了"与"真的挂上了"不会各判一套。
+fn applicable_device_param(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    slot_index: usize,
+    param_index: usize,
+) -> Option<(String, EntityId, f32)> {
+    let resolved = resolve_device_param(project, track_id, slot_index, param_index).ok()?;
+    if !is_applied_device_param_name(&resolved.param_name) {
+        return None;
+    }
+    let track = project.tracks.get(&track_id)?;
+    let slot_is_source = match strip_source_slot(track) {
+        Some(source) => source == slot_index,
+        None => track.devices.get(slot_index).is_some_and(|device| {
+            !device.bypassed && device.kind == yeban_model::DeviceKind::InternalEffect
+        }),
+    };
+    if !slot_is_source {
+        return None;
+    }
+    // 有投影来源 ⇒ 静态值就是投影的 `output_gain_db`；全恒等缝里投影是 `DEFAULT`
+    // （`output_gain_db == 0.0`），`strip_source_params` 为 `None` 时取 `0.0` 是同值。
+    let static_db = strip_source_params(track).map_or(0.0, |params| params.output_gain_db);
+    Some((resolved.param_name, resolved.device_id, static_db))
+}
+
+/// 一条 `DeviceParam` 泳道是否**会被**接上（MCP 的 `AutomationReport` 用）。
+///
+/// 与 [`DeviceParamAutomation::new`] 的 `applicable` 位**同一处判定**
+/// （[`applicable_device_param`]），⛔ 不写第二套规则。
+#[must_use]
+pub fn device_param_lane_is_applicable(
+    project: &YebanProjectV1,
+    target: &AutomationTarget,
+) -> bool {
+    match target {
+        AutomationTarget::DeviceParam {
+            track_id,
+            slot_index,
+            param_index,
+        } => applicable_device_param(project, *track_id, *slot_index, *param_index).is_some(),
+        _ => false,
+    }
+}
+
+/// 一条音轨上的**设备参数**自动化（`AutomationTarget::DeviceParam`）。
+///
+/// ## 与增益 / 声相自动化的形状差别（任务单 `#262` 逐条，本类型必须照它）
+///
+/// `TrackVolume` / `SendGain` 是"**逐样本乘一个标量**"，所以它们走
+/// [`ParamSmoother`]（5 ms）；`TrackPan` 平滑的是位置、乘的是两个绝对增益。而
+/// `DeviceParam` 改的是**一台器件的参数**，器件换参数就要**重算系数**
+/// （[`crate::inserts::InsertRuntime::apply_device_params`] 走
+/// `ChannelStrip::set_params`）⇒ 只能在**块边界**做一次，⛔ 不能逐样本线性插值
+/// "效果"。本类型因此：
+///
+/// - 每 [`AUTOMATION_BLOCK_SIZE`]（128）帧求值一次，把原生绝对值（`dB`）交给运行态；
+/// - **不持有** `ParamSmoother`，也**不**乘任何样本；
+/// - 恒等（没有落点 / 没有泳道 / `read_enabled:false` / 空泳道 / 每个点的
+///   **钳制后**值都等于静态值）⇒ 调用方一个器件都不实例化。
+///
+/// ## 单位
+///
+/// **原生绝对值**（`dB`），与 `TrackPan`／`SendGain` 同一条先例：⛔ 没有 0..1
+/// 归一化，也 ⛔ 没有 R55 换域 —— 交出去的数直接就是器件参数。
+///
+/// ## 为什么求值器仍是一份"只含本轨的模型工程"
+///
+/// 与 [`TrackGainAutomation`] 同一手法：泳道与**设备链**（目标对账要按下标取设备）
+/// 在构造期克隆，之后只读；每块对同一份 [`YebanProjectV1::automation_value_at`] 求值。
+#[derive(Clone, Debug)]
+pub struct DeviceParamAutomation {
+    /// 被自动化的目标（永远是 `DeviceParam`）。
+    target: AutomationTarget,
+    /// 目标所属音轨（`target.track_id()` 的只读副本）。
+    track_id: EntityId,
+    /// 是否**有落点**（名字/来源设备/序数都对得上）；`false` ⇒ 恒等。
+    applicable: bool,
+    /// 参数名**原文**（读数用）。
+    param_name: String,
+    /// 通道条投影的静态输出增益（`dB`，已 `sanitised`）。
+    static_db: f32,
+    /// 曲线是否**处处**等于静态值（或本就没有落点）⇒ 恒等快路径。
+    identity: bool,
+    /// 只含本轨的最小求值工程（含设备链，`validate_against` 要按序数取）。
+    evaluator: YebanProjectV1,
+    /// 工程速度（tick ↔ 帧）。
+    bpm: f64,
+    /// 采样率。
+    sample_rate: u32,
+    /// 泳道是否可求值（有点且 `read_enabled`）。
+    evaluable: bool,
+    /// 泳道的点数（读数用）。
+    points: usize,
+    /// 已被求值的块数（只统计非恒等路径）。
+    blocks: u64,
+    /// 最近一次块级曲线值（`dB`）。
+    last_db: Option<f32>,
+}
+
+impl DeviceParamAutomation {
+    /// 构造一条设备参数自动化求值器。
+    ///
+    /// 没有落点 / 没有泳道 / `read_enabled == false` / 空泳道 / 每个点的钳制后值都
+    /// 等于静态值 ⇒ [`Self::is_identity`] 为真（调用方应整段跳过、且不强制实例化器件）。
+    #[must_use]
+    pub fn new(
+        project: &YebanProjectV1,
+        track_id: EntityId,
+        slot_index: usize,
+        param_index: usize,
+        sample_rate: u32,
+    ) -> Self {
+        let target = AutomationTarget::DeviceParam {
+            track_id,
+            slot_index,
+            param_index,
+        };
+        let resolved = applicable_device_param(project, track_id, slot_index, param_index);
+        let applicable = resolved.is_some();
+        let (param_name, static_db) = resolved.map_or_else(
+            || (String::new(), 0.0),
+            |(name, _device_id, static_db)| (name, static_db),
+        );
+        let lane = project.automation_lane(&target);
+        let (evaluable, points, curve_identity) = match lane {
+            None => (false, 0, true),
+            Some(lane) if !lane.read_enabled => (false, lane.points.len(), true),
+            Some(lane) if lane.points.is_empty() => (false, 0, true),
+            Some(lane) => {
+                // 与 `TrackGainAutomation` 同一条充要条件：分段插值在两端相等时整段恒定，
+                // 边界是保持 ⇒ 所有点钳制后相等就等于整条曲线处处相等。
+                let identity = lane.points.values().all(|point| {
+                    sanitised_output_gain_db(point.value).to_bits() == static_db.to_bits()
+                });
+                (true, lane.points.len(), identity)
+            }
+        };
+        // 最小求值工程：只放本轨，**设备链也克隆**（`validate_against` 要按序数取设备）。
+        // 泳道数据原样克隆 ⇒ 求值语义没有第二份。
+        let mut evaluator = YebanProjectV1::default();
+        let mut track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        if let Some(track_ref) = project.tracks.get(&track_id) {
+            track.automation_lanes = track_ref.automation_lanes.clone();
+            track.devices = track_ref.devices.clone();
+        }
+        evaluator.tracks.insert(track_id, track);
+        Self {
+            target,
+            track_id,
+            applicable,
+            param_name,
+            static_db,
+            identity: !applicable || curve_identity,
+            evaluator,
+            bpm: project.bpm,
+            sample_rate,
+            evaluable,
+            points,
+            blocks: 0,
+            last_db: None,
+        }
+    }
+
+    /// 目标（永远是 `DeviceParam`）。
+    #[must_use]
+    pub const fn target(&self) -> AutomationTarget {
+        self.target
+    }
+
+    /// 目标所属音轨。
+    #[must_use]
+    pub const fn track_id(&self) -> EntityId {
+        self.track_id
+    }
+
+    /// 是否有落点（名字 ∈ [`APPLIED_DEVICE_PARAM_NAMES`] 且指向通道条来源设备）。
+    #[must_use]
+    pub const fn is_applicable(&self) -> bool {
+        self.applicable
+    }
+
+    /// 参数名原文（没有落点时为 `""`）。
+    #[must_use]
+    pub fn param_name(&self) -> &str {
+        &self.param_name
+    }
+
+    /// 通道条投影的静态输出增益（`dB`）。
+    #[must_use]
+    pub const fn static_db(&self) -> f32 {
+        self.static_db
+    }
+
+    /// 曲线是否**处处**等于静态值（或没有落点）⇒ 一个器件都不用实例化。
+    #[must_use]
+    pub const fn is_identity(&self) -> bool {
+        self.identity
+    }
+
+    /// 泳道是否有可求值点（有点且 `read_enabled`）。
+    #[must_use]
+    pub const fn is_evaluable(&self) -> bool {
+        self.evaluable
+    }
+
+    /// 泳道的点数。
+    #[must_use]
+    pub const fn points(&self) -> usize {
+        self.points
+    }
+
+    /// 已被求值的块数（只统计非恒等路径）。
+    #[must_use]
+    pub const fn evaluated_blocks(&self) -> u64 {
+        self.blocks
+    }
+
+    /// 最近一次块级曲线值（`dB`）；恒等路径不更新。
+    #[must_use]
+    pub const fn last_db(&self) -> Option<f32> {
+        self.last_db
+    }
+
+    /// 复位到"全新构造"的状态（同一个 [`crate::render::RenderPlan`] 连续执行时调用）。
+    ///
+    /// 本类型**没有**跨块时间状态（没有平滑器、器件状态在 [`crate::inserts`] 里），
+    /// 因此只清读数；器件的复位由 `RenderPlan::execute` 对 `InsertRuntime::reset` 做。
+    pub fn reset_for_execution(&mut self) {
+        self.blocks = 0;
+        self.last_db = None;
+    }
+
+    /// 一块开始：求一次曲线值（**块边界**调用一次，⛔ 不是逐样本）。
+    ///
+    /// 恒等 ⇒ `None`（调用方不改任何参数）。非恒等但此刻没有曲线值
+    /// （`Ok(None)` / `Err(_)`）⇒ 退回静态值（与 `TrackGainAutomation` 同一条兜底）。
+    pub fn value_at_block(&mut self, first_frame: u64) -> Option<f32> {
+        if self.identity {
+            return None;
+        }
+        self.blocks = self.blocks.saturating_add(1);
+        let tick = tick_at_frame(first_frame, self.bpm, self.sample_rate);
+        // 唯一入口：目标对账 + `read_enabled` 闸 + 曲线插值都在模型层。
+        let db = match self.evaluator.automation_value_at(&self.target, tick) {
+            Ok(Some(value)) if value.is_finite() => value,
+            _ => self.static_db,
+        };
+        self.last_db = Some(db);
+        Some(db)
+    }
+}
+
+/// 扫描工程里**全部** `DeviceParam` 泳道，按轨分组（按轨身份升序）。
+///
+/// 两个导出（MCP 的 `yeban_render_master` 与 app 的 `--export-wav`）都调它 ⇒
+/// "哪些设备参数泳道要被接上"只有一份实现。**没有落点的泳道也会返回**（恒等）：
+/// 调用方按 [`DeviceParamAutomation::is_identity`] 决定是否强制实例化器件。
+#[must_use]
+pub fn device_param_automations(
+    project: &YebanProjectV1,
+    sample_rate: u32,
+) -> BTreeMap<EntityId, Vec<DeviceParamAutomation>> {
+    let mut out: BTreeMap<EntityId, Vec<DeviceParamAutomation>> = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for target in track.automation_lanes.keys() {
+            if let AutomationTarget::DeviceParam {
+                slot_index,
+                param_index,
+                ..
+            } = target
+            {
+                out.entry(*track_id)
+                    .or_default()
+                    .push(DeviceParamAutomation::new(
+                        project,
+                        *track_id,
+                        *slot_index,
+                        *param_index,
+                        sample_rate,
+                    ));
+            }
+        }
+    }
+    out
+}
+
+/// 需要**强制实例化通道条**的轨（有任何一条非恒等的设备参数泳道）。
+///
+/// 这就是"编译期开关"的数据：`project_inserts_with_forced_strips` 用它让
+/// `effective_strip` 在全恒等参数下也返回 `Some`（任务单 `#266`；理由见
+/// `crate::inserts` 模块头 §3.1）。
+#[must_use]
+pub fn forced_strip_tracks(
+    automations: &BTreeMap<EntityId, Vec<DeviceParamAutomation>>,
+) -> BTreeSet<EntityId> {
+    automations
+        .iter()
+        .filter(|(_, list)| list.iter().any(|automation| !automation.is_identity()))
+        .map(|(track_id, _)| *track_id)
+        .collect()
+}
+
 /// 扫描工程里**全部** `SendGain` 泳道，给每条边构造一个求值器（按边身份升序）。
 ///
 /// 两个导出（MCP 的 `yeban_render_master` 与 app 的 `--export-wav`）都调它 ⇒
@@ -858,8 +1209,8 @@ mod tests {
     use std::str::FromStr as _;
 
     use yeban_model::{
-        AutomationLane, AutomationPoint, AutomationWriteMode, CurveType, RoutingEdge, RoutingKind,
-        TrackKind,
+        AutomationLane, AutomationPoint, AutomationWriteMode, CurveType, DeviceDefinition,
+        DeviceKind, ParameterValue, RoutingEdge, RoutingKind, TrackKind,
     };
 
     fn point(id: u128, tick: u64, value: f32) -> AutomationPoint {
@@ -1233,5 +1584,261 @@ mod tests {
         let automations = pan_automations(&project, 48_000);
         assert_eq!(automations.len(), 1, "只有带泳道的那条轨被接上");
         assert!(!automations[&track].is_identity());
+    }
+
+    // -----------------------------------------------------------------------
+    // ⭐ `#266`：`DeviceParam`（本单只接 `output_gain_db`）
+    // -----------------------------------------------------------------------
+
+    /// 一条轨 + 一台设备（给定的参数表）+ 可选的 `DeviceParam { slot: 0, param: 0 }` 泳道。
+    fn project_with_device_lane(
+        params: &[(&str, f32)],
+        values: &[(u64, f32)],
+        read_enabled: bool,
+        bypassed: bool,
+    ) -> (YebanProjectV1, EntityId) {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P004").expect("ULID");
+        let device_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8D001").expect("ULID");
+        let mut project = YebanProjectV1::default();
+        let mut track = TrackV3 {
+            id: track_id,
+            devices: vec![DeviceDefinition {
+                id: device_id,
+                name: "strip".to_owned(),
+                kind: DeviceKind::InternalEffect,
+                bypassed,
+                params: params
+                    .iter()
+                    .map(|(name, value)| ParameterValue {
+                        name: (*name).to_owned(),
+                        value: *value,
+                        unit: None,
+                    })
+                    .collect(),
+                latency_samples: 0,
+            }],
+            ..TrackV3::default()
+        };
+        if !values.is_empty() {
+            let target = AutomationTarget::DeviceParam {
+                track_id,
+                slot_index: 0,
+                param_index: 0,
+            };
+            let mut points = std::collections::BTreeMap::new();
+            for (index, (tick, value)) in values.iter().enumerate() {
+                let point = point(index as u128, *tick, *value);
+                points.insert(point.id, point);
+            }
+            track.automation_lanes.insert(
+                target,
+                AutomationLane {
+                    target,
+                    points,
+                    read_enabled,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        }
+        project.tracks.insert(track_id, track);
+        (project, track_id)
+    }
+
+    #[test]
+    fn a_device_param_ramp_is_evaluated_once_per_block_and_touches_no_sample() {
+        // 设备只写 `output_gain_db: 0.0` ⇒ 静态投影是恒等（`from_devices` 的
+        // `params != DEFAULT` 兜底不认它）——这正是"强制实例化"要覆盖的缝。
+        let (project, track) = project_with_device_lane(
+            &[("output_gain_db", 0.0)],
+            &[(0, 0.0), (1_920, -12.0)],
+            true,
+            false,
+        );
+        let mut automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+        assert!(automation.is_applicable(), "全恒等设备也是来源");
+        assert!(automation.is_evaluable());
+        assert!(!automation.is_identity());
+        assert_eq!(automation.points(), 2);
+        assert_eq!(automation.static_db().to_bits(), 0.0f32.to_bits());
+        assert_eq!(automation.param_name(), "output_gain_db");
+        // 块 0：曲线起点（⛔ 不"淡入"）。
+        assert_eq!(
+            automation.value_at_block(0).expect("块 0").to_bits(),
+            0.0f32.to_bits()
+        );
+        // 24 000 帧 = 0.5 s = 960 tick ⇒ 曲线中点 −6 dB。
+        let mid = automation.value_at_block(24_000).expect("中点");
+        assert!((mid - -6.0).abs() < 1e-5, "中点必须是 −6 dB，实测 {mid}");
+        // 96 000 帧 = 1 s = 1920 tick ⇒ 末点（保持）。
+        assert_eq!(
+            automation.value_at_block(96_000).expect("末端").to_bits(),
+            (-12.0f32).to_bits()
+        );
+        assert_eq!(automation.evaluated_blocks(), 3);
+        assert_eq!(automation.last_db(), Some(-12.0));
+        automation.reset_for_execution();
+        assert_eq!(automation.evaluated_blocks(), 0);
+        assert_eq!(automation.last_db(), None);
+    }
+
+    #[test]
+    fn a_disabled_or_flat_device_param_lane_is_the_identity() {
+        let (project, track) = project_with_device_lane(
+            &[("output_gain_db", 0.0)],
+            &[(0, 0.0), (1_920, -12.0)],
+            false,
+            false,
+        );
+        let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+        assert!(automation.is_identity(), "readEnabled:false 等于没有泳道");
+        assert!(!automation.is_evaluable());
+        assert_eq!(automation.points(), 2);
+
+        let (project, track) = project_with_device_lane(
+            &[("output_gain_db", 0.0)],
+            &[(0, 0.0), (960, 0.0), (1_920, 0.0)],
+            true,
+            false,
+        );
+        let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+        assert!(automation.is_identity(), "处处等于静态值 ⇒ 恒等");
+        assert!(automation.is_evaluable());
+        assert!(automation.is_applicable());
+
+        // `output_gain_db: -60` 投影后钳到 -60；`-100` 钳到同一个值 ⇒ 仍恒等。
+        let (project, track) =
+            project_with_device_lane(&[("output_gain_db", -60.0)], &[(0, -100.0)], true, false);
+        let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+        assert!(automation.is_identity(), "恒等比的是**钳制后**的值");
+    }
+
+    #[test]
+    fn only_the_strip_source_device_can_be_automated() {
+        // 槽位 0 是通道条来源（-6 dB 让 `strip_of` 认它）；槽位 1 也是同名列的
+        // 另一台设备 ⇒ 它的参数不进 DSP ⇒ 泳道不落点。
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P005").expect("ULID");
+        let mut project = YebanProjectV1::default();
+        let mut track = TrackV3 {
+            id: track_id,
+            devices: vec![
+                DeviceDefinition {
+                    id: EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8D001").expect("ULID"),
+                    name: "first".to_owned(),
+                    kind: DeviceKind::InternalEffect,
+                    bypassed: false,
+                    params: vec![ParameterValue {
+                        name: "output_gain_db".to_owned(),
+                        value: -6.0,
+                        unit: None,
+                    }],
+                    latency_samples: 0,
+                },
+                DeviceDefinition {
+                    id: EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8D002").expect("ULID"),
+                    name: "second".to_owned(),
+                    kind: DeviceKind::InternalEffect,
+                    bypassed: false,
+                    params: vec![ParameterValue {
+                        name: "output_gain_db".to_owned(),
+                        value: -3.0,
+                        unit: None,
+                    }],
+                    latency_samples: 0,
+                },
+            ],
+            ..TrackV3::default()
+        };
+        let target = AutomationTarget::DeviceParam {
+            track_id,
+            slot_index: 1,
+            param_index: 0,
+        };
+        let lane = AutomationLane {
+            target,
+            points: std::collections::BTreeMap::new(),
+            read_enabled: true,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        };
+        track.automation_lanes.insert(target, lane);
+        project.tracks.insert(track_id, track);
+        assert!(!device_param_lane_is_applicable(&project, &target));
+        let automation = DeviceParamAutomation::new(&project, track_id, 1, 0, 48_000);
+        assert!(automation.is_identity(), "非来源设备 ⇒ 恒等（不落点）");
+
+        let source = AutomationTarget::DeviceParam {
+            track_id,
+            slot_index: 0,
+            param_index: 0,
+        };
+        assert!(device_param_lane_is_applicable(&project, &source));
+        assert!(!device_param_lane_is_applicable(
+            &project,
+            &AutomationTarget::TrackVolume { track_id }
+        ));
+    }
+
+    #[test]
+    fn a_bypassed_or_unapplied_device_param_lane_is_never_applicable() {
+        // 旁通设备：`from_devices` 当它不存在 ⇒ 泳道也不落点。
+        let (project, track) = project_with_device_lane(
+            &[("output_gain_db", -6.0)],
+            &[(0, 0.0), (1_920, -12.0)],
+            true,
+            true,
+        );
+        let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+        assert!(!automation.is_applicable());
+        assert!(automation.is_identity());
+
+        // 白名单外的名字（`mix`）：解析成功、名字仍报，但不落点。
+        let (project, track) =
+            project_with_device_lane(&[("mix", 0.5)], &[(0, 1.0), (1_920, 0.0)], true, false);
+        let automation = DeviceParamAutomation::new(&project, track, 0, 0, 48_000);
+        assert!(!automation.is_applicable());
+        assert!(automation.is_identity());
+        assert_eq!(automation.param_name(), "");
+    }
+
+    #[test]
+    fn the_scanner_forces_a_strip_only_for_non_identity_device_param_lanes() {
+        let (ramp, track) = project_with_device_lane(
+            &[("output_gain_db", 0.0)],
+            &[(0, 0.0), (1_920, -12.0)],
+            true,
+            false,
+        );
+        let automations = device_param_automations(&ramp, 48_000);
+        assert_eq!(automations.len(), 1);
+        assert_eq!(automations[&track].len(), 1);
+        assert!(!automations[&track][0].is_identity());
+        assert_eq!(
+            forced_strip_tracks(&automations),
+            std::collections::BTreeSet::from([track]),
+            "有非恒等泳道 ⇒ 必须强制实例化通道条"
+        );
+
+        let (flat, track) = project_with_device_lane(
+            &[("output_gain_db", 0.0)],
+            &[(0, 0.0), (1_920, 0.0)],
+            true,
+            false,
+        );
+        let automations = device_param_automations(&flat, 48_000);
+        assert!(automations[&track][0].is_identity());
+        assert!(
+            forced_strip_tracks(&automations).is_empty(),
+            "恒等泳道不强制实例化（否则产物会变）"
+        );
+
+        let (disabled, _track) = project_with_device_lane(
+            &[("output_gain_db", 0.0)],
+            &[(0, 0.0), (1_920, -12.0)],
+            false,
+            false,
+        );
+        let automations = device_param_automations(&disabled, 48_000);
+        assert!(forced_strip_tracks(&automations).is_empty());
     }
 }

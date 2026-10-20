@@ -45,8 +45,8 @@ use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
     AssetHash, AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget,
     AutomationWriteMode, ClipContent, ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition,
-    DeviceKind, EntityId, LoopConfig, MediaKind, RoutingEdge, RoutingKind, SampleRate, TrackKind,
-    TrackV3, YebanProjectV1,
+    DeviceKind, EntityId, LoopConfig, MediaKind, ParameterValue, RoutingEdge, RoutingKind,
+    SampleRate, TrackKind, TrackV3, YebanProjectV1,
 };
 use yeban_render::rf64::parse_container;
 
@@ -1827,8 +1827,8 @@ fn a_send_gain_ramp_is_strictly_monotonic_and_reported_applied() {
     assert_eq!(data["automation"]["unsupportedLanes"], 0);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain"]),
-        "⭐ #257：TrackPan 也进了支持集合"
+        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"]),
+        "⭐ #257：TrackPan 也进了支持集合；⭐ #266：DeviceParam 进集合（只到 output_gain_db）"
     );
     assert_eq!(
         data["automation"]["tracks"][0]["lanes"][0]["target"],
@@ -2079,8 +2079,8 @@ fn send_gain_applies_while_device_param_and_macro_stay_unsupported() {
     );
     assert_eq!(
         data["automation"]["targetsUnsupported"],
-        json!(["DeviceParam", "Macro"]),
-        "⭐ #257：TrackPan 已支持 ⇒ 不再出现在 targetsUnsupported（DeviceParam/Macro 仍不支持）"
+        json!(["Macro"]),
+        "⭐ #257：TrackPan 已支持；⭐ #266：DeviceParam 已支持（只到 output_gain_db）⇒ 只剩 Macro"
     );
     // 判据 2 的另一半：同一条渲染里发送渐强仍然生效。
     let peaks = four_window_peaks(&payload_samples(&artifact), 48_000);
@@ -2176,7 +2176,7 @@ fn a_track_pan_ramp_moves_left_to_right_and_matches_the_cli_digest() {
     assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["applied"], true);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "TrackPan", "SendGain"])
+        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"])
     );
     assert!(
         !data["unsupported"]
@@ -2185,5 +2185,200 @@ fn a_track_pan_ramp_moves_left_to_right_and_matches_the_cli_digest() {
             .iter()
             .any(|value| value == "automationLanes"),
         "被应用的 TrackPan 泳道不许再报 automationLanes: {data}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ `#266`：`DeviceParam`（本单只接 `output_gain_db`）在 `yeban_render_master` 里生效
+// ---------------------------------------------------------------------------
+
+/// 给一条轨的**槽位 0** 放一台只写了一个参数的内置效果器，并（可选）给它挂一条
+/// `DeviceParam { slot: 0, param: 0 }` 泳道。
+fn with_device_param_lane(
+    project: &mut YebanProjectV1,
+    track_id: EntityId,
+    param_name: &str,
+    static_value: f32,
+    points: &[(u64, f32)],
+    read_enabled: bool,
+    first_point_seed: u32,
+) {
+    let track = project.tracks.get_mut(&track_id).expect("目标音轨必须存在");
+    track.devices.push(DeviceDefinition {
+        id: id(101),
+        name: "strip".to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: vec![ParameterValue {
+            name: param_name.to_owned(),
+            value: static_value,
+            unit: None,
+        }],
+        latency_samples: 0,
+    });
+    let target = AutomationTarget::DeviceParam {
+        track_id,
+        slot_index: 0,
+        param_index: 0,
+    };
+    let mut map = BTreeMap::new();
+    for (index, (tick, value)) in points.iter().enumerate() {
+        let point = AutomationPoint {
+            id: id(first_point_seed + index as u32),
+            tick: *tick,
+            value: *value,
+            curve: CurveType::Linear,
+        };
+        map.insert(point.id, point);
+    }
+    track.automation_lanes.insert(
+        target,
+        AutomationLane {
+            target,
+            points: map,
+            read_enabled,
+            write_mode: AutomationWriteMode::Off,
+            domain: None,
+        },
+    );
+    project.validate().expect("带设备参数泳道的夹具必须合法");
+}
+
+/// ⭐ `#266` 判据 1/2/4/6：`output_gain_db` 从 `0` 渐降到 `−12 dB` ⇒ 四段峰值严格
+/// 单调递减，`data.automation` 报 `DeviceParam applied:true`，浮点母带与 CLI 逐位相同。
+#[test]
+fn a_device_param_ramp_lowers_the_master_and_matches_the_cli_digest() {
+    const DEVICE_RAMP_MASTER_DIGEST: &str =
+        "a47b0538ec3a4355c5349ef855fae5a1bfae92533aa84dc2591119abf4494157";
+    let scratch = Scratch::new("device-param-ramp");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let mut fixture = fixture(bytes, &Tune::default());
+    let lead = id(2);
+    with_device_param_lane(
+        &mut fixture.project,
+        lead,
+        "output_gain_db",
+        0.0,
+        &[(0, 0.0), (ONE_SECOND_TICKS, -12.0)],
+        true,
+        310,
+    );
+    let out = scratch.join("device-param-ramp.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    let samples = payload_samples(&artifact);
+    let frames = usize::try_from(artifact.frames).expect("帧数");
+    let peaks = four_window_peaks(&samples, frames);
+    println!(
+        "### MCP device-param ramp: digest={} sha={} peaks={peaks:?}\n\
+         ###   automation={}",
+        data["masterDigest"],
+        data["sha256"],
+        serde_json::to_string(&data["automation"]).expect("JSON")
+    );
+    assert!(
+        peaks[0] > peaks[1] && peaks[1] > peaks[2] && peaks[2] > peaks[3],
+        "四段峰值必须严格单调递减: {peaks:?}"
+    );
+    assert_eq!(
+        data["masterDigest"].as_str().expect("masterDigest"),
+        DEVICE_RAMP_MASTER_DIGEST,
+        "设备参数渐降的浮点母带必须与 CLI 侧逐位相同"
+    );
+    let lanes = data["automation"]["tracks"][0]["lanes"]
+        .as_array()
+        .expect("lanes");
+    assert_eq!(lanes.len(), 1);
+    let lane = &lanes[0];
+    assert_eq!(lane["target"], "DeviceParam");
+    assert_eq!(lane["supported"], true);
+    assert_eq!(lane["applied"], true);
+    assert_eq!(lane["resolvedParamName"], "output_gain_db");
+    assert_eq!(lane["unresolved"], Value::Null);
+    assert_eq!(
+        data["automation"]["targetsSupported"],
+        json!(["TrackVolume", "TrackPan", "SendGain", "DeviceParam"]),
+        "⭐ #266：DeviceParam 已支持（只到 output_gain_db）"
+    );
+    assert_eq!(
+        data["automation"]["targetsUnsupported"],
+        json!(["Macro"]),
+        "⭐ #266：收掉 DeviceParam，Macro 仍不支持"
+    );
+    assert_eq!(data["automation"]["appliedLanes"], 1);
+    assert_eq!(data["automation"]["unsupportedLanes"], 0);
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "被应用的 DeviceParam 泳道不许再报 automationLanes: {data}"
+    );
+}
+
+/// ⭐ `#266` 判据 7：泳道指向**白名单外**的名字（`mix`）⇒ **不落点**（母带与无泳道
+/// 逐字节相同），但 `deviceChainDsp` **仍然登记**（⛔ 不沉默）。
+#[test]
+fn a_device_param_lane_on_an_unhandled_name_does_not_land_but_registers_device_chain_dsp() {
+    let scratch = Scratch::new("device-param-mix");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let mut fixture = fixture(bytes.clone(), &Tune::default());
+    let lead = id(2);
+    with_device_param_lane(
+        &mut fixture.project,
+        lead,
+        "mix",
+        0.5,
+        &[(0, 1.0), (ONE_SECOND_TICKS, 0.0)],
+        true,
+        320,
+    );
+    let out = scratch.join("device-param-mix.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    // 同一个工程、同一台设备，只是**没有泳道**（对照）。
+    let mut without_lane = fixture;
+    without_lane
+        .project
+        .tracks
+        .get_mut(&lead)
+        .expect("Lead")
+        .automation_lanes
+        .clear();
+    without_lane.project.validate().expect("对照夹具合法");
+    let base_out = scratch.join("device-param-mix-baseline.wav");
+    let base = build_with(
+        &without_lane.project,
+        &pool(&without_lane),
+        &base_out,
+        args(&base_out),
+    )
+    .expect("对照渲染");
+    println!(
+        "### MCP device-param mix: digest={} base_digest={} unsupported={}",
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        data["unsupported"]
+    );
+    assert_eq!(
+        data["masterDigest"],
+        base.response_data()["masterDigest"],
+        "白名单外的名字不许改母带一个字节"
+    );
+    let lane = &data["automation"]["tracks"][0]["lanes"][0];
+    assert_eq!(lane["target"], "DeviceParam");
+    assert_eq!(lane["resolvedParamName"], "mix");
+    assert_eq!(lane["unresolved"], "paramNotSupported");
+    assert_eq!(lane["supported"], false);
+    assert_eq!(lane["applied"], false);
+    let unsupported = data["unsupported"].as_array().expect("unsupported");
+    assert!(
+        unsupported.iter().any(|value| value == "deviceChainDsp"),
+        "设备链里仍有未消费的名字 ⇒ 必须登记 deviceChainDsp: {data}"
+    );
+    assert!(
+        unsupported.iter().any(|value| value == "automationLanes"),
+        "不可落点的泳道必须登记 automationLanes: {data}"
     );
 }

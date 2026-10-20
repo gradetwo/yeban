@@ -77,12 +77,22 @@
 //! 设备写了 `eq_enabled: 0` / `reverb_wet: 0` ⇒ 链里的该级为 `None` ⇒ 同样整级跳过
 //! （器件状态**不推进**，与 `Reverb::is_active` / `ConvolutionReverb::is_active` 同口径）。
 //!
+//! ### 3.1 设备参数自动化的**编译期强制实例化**（任务单 `#266`）
+//!
+//! 一条 `DeviceParam` 泳道（本切片只接 `output_gain_db`）要改的是**通道条器件的
+//! 参数**，不是增益乘子。若静态参数恰好是"全恒等"（`0 dB` ＋ 三级全关），
+//! [`InsertChain::effective_strip`] 会返回 `None` ⇒ 编译期根本没有器件可改。
+//! 因此调用方在**编译计划之前**用 [`project_inserts_with_forced_strips`] 声明
+//! "本轨有非恒等的设备参数泳道" ⇒ 该轨的通道条被**强制实例化**（参数取投影值）。
+//! 恒等泳道（无点 / `read_enabled:false` / 处处等于静态值）**不**强实例化 ⇒ 产物
+//! 与没有泳道逐字节相同。
+//!
 //! ## 4. 音频线程边界
 //!
 //! [`InsertRuntime`] 的全部缓冲在构造期分配（[`InsertRuntime::new`]）。逐块
 //! [`InsertRuntime::process`] 只有环形缓冲读写与乘加：**零分配、零锁、零 I/O**。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams};
 use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
@@ -181,6 +191,12 @@ pub struct InsertChain {
     reverb: Option<ReverbParams>,
     /// 卷积混响计划；`None` = 本轨没有卷积混响。
     convolution: Option<ConvolutionPlan>,
+    /// **编译期强制实例化通道条**（任务单 `#266`）。
+    ///
+    /// `true` = 本轨有**非恒等**的 `DeviceParam` 泳道 ⇒ 即使投影结果是"全恒等"
+    /// （`0 dB` ＋ 三级全关，[`Self::effective_strip`] 本来会返回 `None`），也必须有
+    /// 一台器件让块边界的 `set_params` 有落点。恒等泳道**不**置这一位。
+    force_strip: bool,
 }
 
 impl InsertChain {
@@ -191,6 +207,7 @@ impl InsertChain {
             strip: None,
             reverb: None,
             convolution: None,
+            force_strip: false,
         }
     }
 
@@ -229,7 +246,24 @@ impl InsertChain {
             strip: strip.map(ChannelStripParams::sanitised),
             reverb,
             convolution,
+            force_strip: false,
         }
+    }
+
+    /// 置"强制实例化通道条"位（任务单 `#266`；见模块头 §3.1）。
+    ///
+    /// 调用方在**编译渲染计划之前**按"本轨有没有非恒等的设备参数泳道"设置它；
+    /// `project_inserts_with_forced_strips` 是唯一的生产调用者。
+    #[must_use]
+    pub const fn with_forced_strip(mut self, force: bool) -> Self {
+        self.force_strip = force;
+        self
+    }
+
+    /// 本链是否被编译期强制实例化了通道条（读数用）。
+    #[must_use]
+    pub const fn is_forced_strip(&self) -> bool {
+        self.force_strip
     }
 
     /// 本链是否为空（没有任何**离线会执行**的器件）。
@@ -249,9 +283,25 @@ impl InsertChain {
     }
 
     /// 实际会交给运行态的通道条参数：压缩级关掉，且"三级全关 + 增益 0 dB"⇒ `None`。
+    ///
+    /// 例外：[`Self::force_strip`] 为真时**恒返回 `Some`** —— 那是"有设备参数泳道要改
+    /// 这台器件"的编译期声明（任务单 `#266`），此时"全恒等参数"不是"没有器件"，
+    /// 而是"器件此刻是恒等、等泳道来改它"。
     fn effective_strip(&self) -> Option<ChannelStripParams> {
-        let mut params = self.strip?;
+        let mut params = match self.strip {
+            Some(params) => params,
+            None if self.force_strip => ChannelStripParams {
+                eq_enabled: false,
+                filter_enabled: false,
+                compressor_enabled: false,
+                ..ChannelStripParams::DEFAULT
+            },
+            None => return None,
+        };
         params.compressor_enabled = false;
+        if self.force_strip {
+            return Some(params);
+        }
         let identity = params.input_gain_db == 0.0
             && params.output_gain_db == 0.0
             && !params.eq_enabled
@@ -298,10 +348,26 @@ pub fn project_inserts(
     tracks: &BTreeMap<EntityId, TrackV3>,
     sample_rate: u32,
 ) -> BTreeMap<EntityId, InsertChain> {
+    project_inserts_with_forced_strips(tracks, sample_rate, &BTreeSet::new())
+}
+
+/// 与 [`project_inserts`] 相同，但给 `forced_strip` 里的每条轨**强制实例化通道条**
+/// （任务单 `#266`；理由见模块头 §3.1）。
+///
+/// `forced_strip` 由 `yeban_render::automation::forced_strip_tracks` 从
+/// "非恒等的 `DeviceParam` 泳道"算出来 —— 两个导出（MCP / app）用**同一份**扫描器。
+/// 空集等价于 [`project_inserts`]（逐字节不退化）。
+#[must_use]
+pub fn project_inserts_with_forced_strips(
+    tracks: &BTreeMap<EntityId, TrackV3>,
+    sample_rate: u32,
+    forced_strip: &BTreeSet<EntityId>,
+) -> BTreeMap<EntityId, InsertChain> {
     tracks
         .iter()
         .filter_map(|(&id, track)| {
-            let chain = InsertChain::from_devices(&track.devices, sample_rate);
+            let chain = InsertChain::from_devices(&track.devices, sample_rate)
+                .with_forced_strip(forced_strip.contains(&id));
             if chain.is_empty() {
                 None
             } else {
@@ -395,6 +461,44 @@ fn is_supported_param(name: &str) -> bool {
             | "conv_ir_decay"
             | "conv_ir_seed"
     )
+}
+
+/// 本轨通道条的**来源设备下标**：`from_devices` 的"首个含已识别通道条名字的设备"规则。
+///
+/// 与 [`InsertChain::from_devices`] 同式：跳过**旁通**设备与非 [`DeviceKind::InternalEffect`]
+/// 设备，再要求 `strip_of` 认出一组通道条名字。`None` = 本轨没有通道条来源。
+///
+/// 设备参数自动化（任务单 `#266`）只能落在**这一台**设备上：`AutomationTarget::DeviceParam`
+/// 的 `slot_index` 若是别的下标，那个参数**不是**进 DSP 的那一份 ⇒ 不落点
+/// （由 [`crate::automation::device_param_lane_is_applicable`] 如实回答）。
+#[must_use]
+pub fn strip_source_slot(track: &TrackV3) -> Option<usize> {
+    track.devices.iter().position(|device| {
+        !device.bypassed && device.kind == DeviceKind::InternalEffect && strip_of(device).is_some()
+    })
+}
+
+/// 本轨通道条**来源设备**的投影参数（已 `sanitised`，与 `from_devices` 交给器件的同一份）。
+#[must_use]
+pub fn strip_source_params(track: &TrackV3) -> Option<ChannelStripParams> {
+    let slot = strip_source_slot(track)?;
+    strip_of(&track.devices[slot]).map(ChannelStripParams::sanitised)
+}
+
+/// 通道条**实际会用的**输出增益值（`dB`）—— 与器件内部同一次钳制
+/// （[`ChannelStripParams::sanitised`]，非有限值归 `0 dB`）。
+///
+/// 设备参数自动化的恒等判定必须比这个值，而不是比原始参数：`-100 dB` 与
+/// `-60 dB` 交给器件是**同一个值**，把它们当"不同"会让恒等快路径漏掉一次
+/// 不必要的器件实例化。
+#[must_use]
+pub fn sanitised_output_gain_db(value: f32) -> f32 {
+    ChannelStripParams {
+        output_gain_db: value,
+        ..ChannelStripParams::DEFAULT
+    }
+    .sanitised()
+    .output_gain_db
 }
 
 /// 一次**成功解析**的设备参数地址（序数 → 稳定身份）。
@@ -835,6 +939,25 @@ impl InsertRuntime {
         }
         if let Some(convolution) = &mut self.convolution {
             convolution.reset();
+        }
+    }
+
+    /// 把一个新的**输出增益**（`dB`，原生绝对值）交给通道条并**重算系数**
+    /// （任务单 `#266`；[`ChannelStrip::set_params`] 是唯一入口）。
+    ///
+    /// 调用纪律（通道条自己不做平滑，模块头 §4 的器件纪律）：
+    ///
+    /// - **只在块边界**调用（自动化块的 128 帧起点）—— 改的是**参数**，⛔ 不是逐样本
+    ///   乘一个增益；
+    /// - `ChannelStrip::set_params` **不清状态**（EQ 双二阶 / 滤波器 / 压缩器记忆保留），
+    ///   因此块与块之间没有复位爆音；
+    /// - 本单只开 `output_gain_db` 一个字段：`strip` 为 `None` 时什么都没发生
+    ///   （恒等泳道根本不会走到这里）。
+    pub(crate) fn apply_device_params(&mut self, output_gain_db: f32) {
+        if let Some(strip) = &mut self.strip {
+            let mut params = strip.params();
+            params.output_gain_db = output_gain_db;
+            strip.set_params(params);
         }
     }
 

@@ -49,7 +49,7 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243` / `#256` / `#257`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`DeviceParam` / `Macro`），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256` / `#257` / `#266`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`Macro`；`DeviceParam` 里**不是** `output_gain_db` 的名字、或指向旁通/非通道条来源设备的情形），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；`DeviceParam` 的 `output_gain_db` 在该节点的通道条上**真的被求值**（任务单 `#266`，块边界 `set_params`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -414,9 +414,12 @@ use yeban_render::dither::{BitDepth, quantize};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
-    TrackGainAutomation, TrackPanAutomation, centered_pan_gains, send_gain_automations,
+    TrackGainAutomation, TrackPanAutomation, centered_pan_gains, device_param_automations,
+    device_param_lane_is_applicable, forced_strip_tracks, send_gain_automations,
 };
-use yeban_render::inserts::{project_inserts, resolve_device_param, track_has_unhandled_dsp};
+use yeban_render::inserts::{
+    project_inserts_with_forced_strips, resolve_device_param, track_has_unhandled_dsp,
+};
 use yeban_render::mastering;
 use yeban_render::render::{
     AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderOutput, RenderPlan,
@@ -1568,12 +1571,16 @@ impl AutomationReport {
     ///
     /// - `source_nodes` 用来判定 `TrackVolume` 的落点是否可应用（源节点 / 主总线）；
     /// - `rendered_edges` 是**保留子图里的入边身份**（`RenderPlan::edge_ids()`）——
-    ///   `SendGain` 只有落在这张表里才算“会被累加”（任务单 `#256`）。
+    ///   `SendGain` 只有落在这张表里才算“会被累加”（任务单 `#256`）；
+    /// - `rendered_nodes` 是**保留子图里的全部节点**（`RenderPlan::nodes()`）——
+    ///   `DeviceParam` 的落点是该节点的插入链（通道条），因此只有节点在计划里、
+    ///   且参数名有落点（`device_param_lane_is_applicable`）才算“会被应用”（`#266`）。
     #[must_use]
     pub fn from_project(
         project: &YebanProjectV1,
         source_nodes: &[EntityId],
         rendered_edges: &[EntityId],
+        rendered_nodes: &[EntityId],
     ) -> Self {
         let master = project.master_bus_track_id;
         let mut tracks = Vec::with_capacity(project.tracks.len());
@@ -1593,7 +1600,9 @@ impl AutomationReport {
                 // - `TrackVolume`：源节点（源侧）或主总线（执行后）；
                 // - `SendGain`：这条边在保留子图的入边归约里（`#256`）；
                 // - `TrackPan`：源节点（源输出之后；主总线没有声相落点，`#257`）；
-                // - `DeviceParam` / `Macro` 仍不支持。
+                // - `DeviceParam`：节点在计划里（插入链落点）且参数名有落点（`#266`，
+                //   只接 `output_gain_db`；其它名字/旁通设备/非通道条来源设备一律不落点）；
+                // - `Macro` 仍不支持。
                 let supported = match target {
                     AutomationTarget::TrackVolume { track_id } => {
                         *track_id == master || source_nodes.contains(track_id)
@@ -1602,7 +1611,11 @@ impl AutomationReport {
                     AutomationTarget::TrackPan { track_id } => {
                         *track_id != master && source_nodes.contains(track_id)
                     }
-                    AutomationTarget::DeviceParam { .. } | AutomationTarget::Macro { .. } => false,
+                    AutomationTarget::DeviceParam { track_id, .. } => {
+                        rendered_nodes.contains(track_id)
+                            && device_param_lane_is_applicable(project, target)
+                    }
+                    AutomationTarget::Macro { .. } => false,
                 };
                 let is_applied = is_evaluable && supported;
                 if is_applied {
@@ -1677,15 +1690,18 @@ impl AutomationReport {
         serde_json::json!({
             "wired": true,
             "evaluator": "YebanProjectV1::automation_value_at",
-            "targetsSupported": ["TrackVolume", "TrackPan", "SendGain"],
-            "targetsUnsupported": ["DeviceParam", "Macro"],
+            "targetsSupported": ["TrackVolume", "TrackPan", "SendGain", "DeviceParam"],
+            "targetsUnsupported": ["Macro"],
+            // ⭐ `#266`：`DeviceParam` 这一族只接了**一个名字**；哪些名字有落点必须可读
+            // （⛔ 不让 "DeviceParam 支持了" 这句话被读成 44 个名字全通）。
+            "appliedDeviceParamNames": ["output_gain_db"],
             "granularity": {
                 "blockSize": L1_BLOCK_SIZE,
                 "curve": "每块起点取一次曲线值（tick = floor(frame * PPQ * bpm / (sample_rate * 60))）",
-                "smoothing": "块内逐样本一阶低通；时间常数 5 ms",
+                "smoothing": "TrackVolume / SendGain / TrackPan：块内逐样本一阶低通（时间常数 5 ms）；DeviceParam：只在块边界 set_params（⛔ 不逐样本插值，⛔ 没有平滑器）",
             },
             "domainTransfer": {
-                "ratio": "db_to_linear(自动化 dB) / db_to_linear(静态值 dB)（TrackVolume 取 track.volume_db；SendGain 取 edge.gain_db.unwrap_or(0.0)）；TrackPan 不换域：平滑的是位置（-1..=1），乘的是等功率曲线的绝对左右增益",
+                "ratio": "db_to_linear(自动化 dB) / db_to_linear(静态值 dB)（TrackVolume 取 track.volume_db；SendGain 取 edge.gain_db.unwrap_or(0.0)）；TrackPan 不换域：平滑的是位置（-1..=1），乘的是等功率曲线的绝对左右增益；DeviceParam 不换域：原生绝对值（dB）直接交给器件参数",
                 "adr": "R55",
                 "denominator": "静态值（⛔ 不是 mute/solo 之后的增益；TrackVolume 静音时为 0.0 会除零）",
             },
@@ -2189,13 +2205,16 @@ pub fn build(
     //    唯一的泳道连报都不报；空泳道又会被一律报成 `automationLanes`。现在：
     //    - 空泳道 / `readEnabled:false` / 所有点都等于静态推子 ⇒ 可求值但无效果，
     //      读数里可见，**不**进 `unsupported`；
-    //    - 有可求值点、但不是 `TrackVolume`/`SendGain`，或 `TrackVolume` 落在不可
-    //      应用的总线轨上、`SendGain` 落在被剪枝的边上 ⇒ 进 `unsupported`
-    //      （`automationLanes`）；
-    //    - 源节点与主总线上的 `TrackVolume`、保留子图入边上的 `SendGain` 真的被应用
-    //      （见 `TrackSource`、第 9 步与 `RenderPlan::attach_send_automation`）。
+    //    - 有可求值点、但不是 `TrackVolume`/`SendGain`/`TrackPan`/`DeviceParam`，或
+    //      `TrackVolume` 落在不可应用的总线轨上、`SendGain` 落在被剪枝的边上 ⇒
+    //      进 `unsupported`（`automationLanes`）；
+    //    - 源节点与主总线上的 `TrackVolume`、保留子图入边上的 `SendGain`、源节点上的
+    //      `TrackPan`、计划节点上的 `DeviceParam`（本切片只接 `output_gain_db`）真的
+    //      被应用（见 `TrackSource`、第 9 步、`RenderPlan::attach_send_automation`
+    //      与 `RenderPlan::attach_device_param_automation`）。
     let rendered_edges = probe_plan.edge_ids();
-    let automation = AutomationReport::from_project(project, &source_nodes, &rendered_edges);
+    let automation =
+        AutomationReport::from_project(project, &source_nodes, &rendered_edges, &nodes);
     if automation.unsupported > 0 {
         note_unsupported(&mut unsupported, &mut counts, "automationLanes");
     }
@@ -2280,10 +2299,16 @@ pub fn build(
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
     // 每轨插入链：从 `TrackV3.devices` 投影（通道条增益/EQ/低通 + Freeverb + 卷积混响；
     // 压缩级缺省不执行，见 `yeban_render::inserts` 模块头 §1）。
-    // ⚠ **主总线也挂**（`#173` 起 `project_inserts` 不过滤 master，`inserts.rs:263`）——
-    // 旧注释写"主总线上的设备链不挂"已陈（`#244` 实测点出，此处更正）。
-    // 实时引擎的逐轨循环跳过 master 是**另一件事**，不要拿它推这条行为的结论。
-    let inserts = project_inserts(&project.tracks, sample_rate);
+    // ⚠ **主总线也挂**（`#173` 起 `project_inserts` 不过滤 master）——旧注释写
+    // "主总线上的设备链不挂"已陈（`#244` 实测点出，此处更正）。实时引擎的逐轨循环
+    // 跳过 master 是**另一件事**，不要拿它推这条行为的结论。
+    //
+    // ⭐ 任务单 `#266`：有**非恒等** `DeviceParam` 泳道的轨，通道条被**强制实例化**
+    // （`effective_strip` 在全恒等参数下也会返回 `Some`）⇒ 块边界的 `set_params`
+    // 有器件可改。扫描器与 app 的 `--export-wav` 共用同一份（`yeban-render::automation`）。
+    let device_automations = device_param_automations(project, sample_rate);
+    let forced_strips = forced_strip_tracks(&device_automations);
+    let inserts = project_inserts_with_forced_strips(&project.tracks, sample_rate, &forced_strips);
     let mut plan = RenderPlan::compile_with_latencies_and_inserts(
         &project.routing_graph,
         project.master_bus_track_id,
@@ -2297,6 +2322,12 @@ pub fn build(
     // 它不能依赖 `yeban-dsp`）；这里只负责“哪条边”。没有泳道的工程一个槽都不改。
     for automation in send_gain_automations(project, sample_rate).into_values() {
         plan.attach_send_automation(automation);
+    }
+    // ⭐ 任务单 `#266`：把每条 `DeviceParam` 泳道接到**该节点的插入链**上。
+    // 求值（模型唯一入口）、恒等判定与块级落点都在 `yeban-render`；这里只负责“哪些轨”。
+    // 恒等泳道也挂（`value_at_block` 返回 `None`，一个参数都不改）。
+    for automation in device_automations.into_values().flatten() {
+        plan.attach_device_param_automation(automation);
     }
     let mut output = plan
         .execute(registry)
@@ -4550,7 +4581,7 @@ mod tests {
                 device_param(track_id, 0, 0),
             ],
         );
-        let report = AutomationReport::from_project(&project, &[], &[]);
+        let report = AutomationReport::from_project(&project, &[], &[], &[]);
         let lane = lane_of(&report, "DeviceParam");
         println!(
             "判据 1 读数: {}",
@@ -4595,7 +4626,7 @@ mod tests {
             vec![device(node(101), &[("input_gain_db", -3.0)])],
             &[device_param(track_id, 99, 0), device_param(track_id, 0, 99)],
         );
-        let report = AutomationReport::from_project(&project, &[], &[]);
+        let report = AutomationReport::from_project(&project, &[], &[], &[]);
         let lanes = lanes_of(&report);
         println!(
             "判据 2 读数: {}",
@@ -4627,7 +4658,7 @@ mod tests {
             vec![device(device_id, &[("mix", 0.5)])],
             &[device_param(track_id, 0, 0)],
         );
-        let report = AutomationReport::from_project(&project, &[], &[]);
+        let report = AutomationReport::from_project(&project, &[], &[], &[]);
         let lane = lane_of(&report, "DeviceParam");
         println!(
             "判据 3 读数: {}",
@@ -4655,7 +4686,7 @@ mod tests {
         );
         target.validate_against(&project).expect("插设备前目标合法");
         let before = lane_of(
-            &AutomationReport::from_project(&project, &[], &[]),
+            &AutomationReport::from_project(&project, &[], &[], &[]),
             "DeviceParam",
         );
 
@@ -4673,7 +4704,7 @@ mod tests {
             .validate_against(&project)
             .expect("插设备后 validate_against 仍然 Ok（这正是隐患）");
         let after = lane_of(
-            &AutomationReport::from_project(&project, &[], &[]),
+            &AutomationReport::from_project(&project, &[], &[], &[]),
             "DeviceParam",
         );
         println!(

@@ -447,9 +447,12 @@ pub struct TransportActionRecord {
 /// 只会制造假读数。`TrackVolume` / `TrackPan` **不**计入 —— 它们已经被
 /// [`EngineHost::publish_automation`] 真的落到引擎里了。
 ///
-/// `DeviceParam` / `Macro` 与 `SendGain` **不是**同一类：它们连离线渲染也没有落点
-/// （`yeban_render::automation` 对这两个目标返回 `0.0`，MCP 的 `targetsUnsupported`
-/// 至今含这两个名字）⇒ 读数里**分开列**，⛔ 不混进 `send-gain`。
+/// `DeviceParam` / `Macro` 与 `SendGain` **不是**同一类：实时引擎没有槽位。
+/// ⚠ ⭐ **任务单 `#266` 修订了这段话的"连离线也没有落点"那一半**：`DeviceParam` 里
+/// **只有 `output_gain_db` 一个名字**现在有离线落点（`yeban_render` 的
+/// `DeviceParamAutomation` → `InsertRuntime::apply_device_params`，只在导出/MCP 渲染里）；
+/// 其它名字与 `Macro` **仍然**没有落点，MCP 的 `targetsUnsupported` 现在只剩 `Macro`。
+/// ⇒ 读数里**分开列**，⛔ 不混进 `send-gain`。
 ///
 /// ⚠ **这是一个 gauge（每跳重采的当前值），不是累计计数器**：它与
 /// [`EngineHost::automation_counts`] 的两个数（累计事件条数）形状不同 ——
@@ -471,7 +474,8 @@ pub struct UnappliedAutomationLanes {
     /// ⇒ 它们不计入本列；本列只剩"边根本不在可搬运音频的图里"的那一类
     /// （离线导出 / MCP 渲染按边求值，但对这类边同样没有落点）。
     pub send_gain: u64,
-    /// 开着的 `DeviceParam` 泳道数（实时与离线**都**没有落点）。
+    /// 开着的 `DeviceParam` 泳道数（实时**没有**落点；离线只有 `output_gain_db` 有，
+    /// 见任务单 `#266`）。
     pub device_param: u64,
     /// 开着的 `Macro` 泳道数（实时与离线**都**没有落点）。
     pub macro_lanes: u64,
@@ -571,7 +575,8 @@ pub fn automation_unapplied_line(lanes: UnappliedAutomationLanes) -> String {
     format!(
         "automation-engine: unapplied-lanes={} send-gain={} device-param={} macro={} \
          note=\"有 {} 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
-         （离线导出/MCP 按边求值），DeviceParam/Macro 没有任何生效路径\"",
+         （离线导出/MCP 按边求值），DeviceParam 只有 output_gain_db 在离线导出/MCP \
+         渲染里有落点，Macro 没有任何生效路径\"",
         lanes.total(),
         lanes.send_gain,
         lanes.device_param,
