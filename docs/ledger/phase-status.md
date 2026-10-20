@@ -15254,3 +15254,24 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⭐ ⚠ ⭐ ⭐ **五、⭐ 现状（⭐ 一行）**: ⭐ ⭐ **主干 `e444d387` 绿** ／ ⭐ 工作区干净 ／ ⭐ 远端多 3 条线（`line/mcp-note-timing`／⭐ `line/render-bext-parity`／⭐ `line/render-insert-strip`）⇒ ⭐ ⚠ **其中 `line/render-insert-strip` **还没落**** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`line/render-insert-strip`**（⭐ 未落）＋ ⭐ **E1 本体**（⭐ 待裁）＋ ⭐ **采样器声相** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R976 实测追加（2026-10-20）：⚠ **`line/render-insert-strip` 已可合、⭐ 但未落** ⇒ ⭐ **我⛔ 不替它合**
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 读数（⭐ 本单只读、⭐ 未合）**: ⭐ ⭐ **`git rev-list --count main..origin/line/render-insert-strip` ＝ 3**（⭐ `main` 与 `origin/main` **齐平**、⭐ behind **0**）⇒ ⭐ 三笔逐字:
+| ⭐ 提交 | ⭐ 内容 |
+| :-- | :--- |
+| ⭐ **`4a5fecba`** | ⭐ ⭐ **`feat(render): run gain, EQ and low-pass in offline insert chains`** |
+| ⭐ `59107566` | ⭐ `docs(render): refresh the offline DSP coverage comment` |
+| ⭐ `8fc20497` | ⭐ `test(mcp): pin gain/filter consumption and compressor deferral end to end` |
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 可合性（⭐ 机器判）**: ⭐ ⭐ **`git merge-tree --write-tree main origin/line/render-insert-strip` ⇒ rc＝0**、⭐ 树 `71684310…`** ⇒ ⭐ **无冲突** ✓（⭐ 第 332 条的正确用法）
+★ ⭐ **diffstat**: ⭐ `inserts.rs` **+374／−113** ＋ ⭐ `insert_chain.rs` **+233** ＋ ⭐ `render_master.rs` **+92** ＋ ⭐ `mcp/render.rs` **+9** ⇒ ⭐ ⚠ **那是 `#244`（⭐ 插入链进导出）⭐ 的实质扩展**：⭐ **增益／⭐ EQ／⭐ 低通 真的在离线链里跑** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 判决（⭐ 早前读过）**: ⭐ ⭐ **`8fc20497` ＝ success**（⭐ 它最新那笔）★ ⚠ 而 ⭐ `4a5fecba`／⭐ `59107566` 那两次 run ＝ **cancelled**（⭐ 被更新的 run 取代、⭐ 不是失败）✓
+
+⭐ ⚠ ⭐ ⭐ **四、⚠ 我为什么**不**替它合**: ⚠ ⭐ ⭐ **它是**别的线**在飞的分支** ⇒ ⭐ 若它还在推、⭐ 我一合就多一个 merge commit 要它去解 ⇒ ⭐ ⚠ **合它的收益（⭐ 早几分钟落主干）⭐ 小于**制造一次冲突**的代价** ✓
+⇒ ⭐ ⭐ **所以本单只登记"⭐ 它已可合 ＋ ⭐ 无冲突 ＋ ⭐ 最新一笔 CI 绿"、⭐ 合的动作留给它或留给人类一句话** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`line/render-insert-strip` 落地**（⭐ 已可合、⭐ 等人）＋ ⭐ **E1 本体**（⭐ 待裁、⭐ 材料已齐）＋ ⭐ **采样器声相** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
