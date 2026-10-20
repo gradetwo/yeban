@@ -808,6 +808,11 @@ pub(crate) fn track_notes_in_frames(
     let mut notes = Vec::new();
     if let Some(track) = project.tracks.get(&track_id) {
         for placement in track.clips.values() {
+            // 与引擎（`snapshot::project_schedules`）和 MCP 排程同一条口径：
+            // 静音的摆放**不发声**（此前这里会把静音摆放也排进去）。
+            if placement.muted {
+                continue;
+            }
             let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
                 continue;
             };
@@ -815,24 +820,47 @@ pub(crate) fn track_notes_in_frames(
                 continue;
             };
             for note in map.values() {
-                let start_tick = placement.start_tick.saturating_add(note.start_tick);
-                let end_tick = start_tick.saturating_add(note.duration_ticks.max(1));
-                let start = yeban_model::time_math::ticks_to_frames(
-                    start_tick,
-                    project.bpm,
-                    yeban_model::PPQ,
-                    sample_rate,
-                )
-                .unwrap_or(0);
-                let end = yeban_model::time_math::ticks_to_frames(
-                    end_tick,
-                    project.bpm,
-                    yeban_model::PPQ,
-                    sample_rate,
-                )
-                .unwrap_or(0)
-                .max(start.saturating_add(1));
-                notes.push((start, end.saturating_sub(start), note.pitch, note.velocity));
+                // 概率触发：判定入口只有模型的 `MidiNote::triggers`（确定性、不掷骰子）。
+                if !note.triggers(project.rng_seed) {
+                    continue;
+                }
+                let micro = i64::from(note.micro_timing_ticks.unwrap_or(0));
+                let ratchet = u64::from(note.ratchet.unwrap_or(1).clamp(1, 16));
+                // 循环展开只由 `yeban-model` 决定；没有循环计划时原样一遍
+                // ⇒ 与展开之前逐位相同（ADR-0010 D5）。
+                for (copy_start, copy_duration) in
+                    placement.note_copies(note.start_tick, note.duration_ticks)
+                {
+                    let step = (copy_duration / ratchet).max(1);
+                    let base_tick = placement.start_tick.saturating_add(copy_start);
+                    for pulse in 0..ratchet {
+                        let start_tick = base_tick.saturating_add(pulse.saturating_mul(step));
+                        // 微时值偏移作用在**起点 tick** 上（与 MCP 的
+                        // `render_math::note_frame_span` 同解）；负到越界就夹到 0。
+                        let shifted = i128::from(start_tick) + i128::from(micro);
+                        let clamped = if shifted <= 0 {
+                            0
+                        } else {
+                            u64::try_from(shifted).unwrap_or(u64::MAX)
+                        };
+                        let start = yeban_model::time_math::ticks_to_frames(
+                            clamped,
+                            project.bpm,
+                            yeban_model::PPQ,
+                            sample_rate,
+                        )
+                        .unwrap_or(0);
+                        let end = yeban_model::time_math::ticks_to_frames(
+                            clamped.saturating_add(step),
+                            project.bpm,
+                            yeban_model::PPQ,
+                            sample_rate,
+                        )
+                        .unwrap_or(0)
+                        .max(start.saturating_add(1));
+                        notes.push((start, end.saturating_sub(start), note.pitch, note.velocity));
+                    }
+                }
             }
         }
     }
@@ -1638,6 +1666,166 @@ mod tests {
         assert_eq!(tone_48k.notes.first().expect("至少一条音符").0, 8_400);
         let frames_48k = track_notes_in_frames(&project, track_id, 48_000);
         assert_eq!(frames_48k.first().expect("至少一条音符").0, 8_400);
+    }
+
+    /// 把夹具收窄成"一条轨、一个 MIDI 摆放、一颗音符 `start=480, pitch=60, dur=480`"，
+    /// 供排程展开的判据共用（120 BPM、960 PPQ、48 kHz ⇒ 1 tick = 25 帧）。
+    fn one_note_fixture() -> (YebanProjectV1, EntityId, EntityId, EntityId, EntityId) {
+        use yeban_model::music::MidiNote;
+        use yeban_model::project::ClipContent;
+
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 120.0;
+        let (track_id, placement_id) = project
+            .tracks
+            .iter()
+            .flat_map(|(track_id, track)| {
+                track
+                    .clips
+                    .iter()
+                    .map(move |(placement_id, placement)| (*track_id, *placement_id, placement))
+            })
+            .find(|(_, _, placement)| {
+                placement.start_tick == 0 && placement.duration_ticks == 3_840
+            })
+            .map(|(track_id, placement_id, _)| (track_id, placement_id))
+            .expect("规范工程里有一条 3840 tick 的 MIDI 摆放");
+        for (id, track) in &mut project.tracks {
+            if *id == track_id {
+                track.clips.retain(|id, _| *id == placement_id);
+            } else {
+                track.clips.clear();
+            }
+        }
+        let clip_id = project.tracks[&track_id].clips[&placement_id].clip_id;
+        let entry = project.clip_pool.get_mut(&clip_id).expect("片段存在");
+        let ClipContent::Midi { notes } = &mut entry.content else {
+            panic!("夹具必须是 MIDI 片段");
+        };
+        let note_id = *notes.keys().next().expect("夹具至少一条音符");
+        notes.clear();
+        notes.insert(note_id, MidiNote::new(note_id, 480, 60, 480));
+        (project, track_id, placement_id, clip_id, note_id)
+    }
+
+    /// `F2`：`track_notes_in_frames` 必须按**引擎／MCP 的同一份排程**展开
+    /// `ratchet` 与 `micro_timing_ticks`（修前两者都被忽略 ⇒ `--sfz` 与内嵌采样器
+    /// 在带这两个字段的工程上时值错误）。
+    ///
+    /// 口径（120 BPM、960 PPQ、48 kHz ⇒ 1 tick = 25 帧）：
+    /// `startTick=480, durationTicks=480` ⇒ 从 12000 帧起、长 12000 帧；
+    /// `microTimingTicks=-240` ⇒ 起点前移 6000 帧；`ratchet=4` ⇒ 四等分，
+    /// 每份 120 tick = 3000 帧。
+    #[test]
+    fn sampler_note_frames_expand_ratchet_and_micro_timing() {
+        use yeban_model::project::ClipContent;
+
+        let (mut project, track_id, _placement_id, clip_id, note_id) = one_note_fixture();
+
+        // 对照：默认字段（无 ratchet/micro）⇒ 与修前同解。
+        assert_eq!(
+            track_notes_in_frames(&project, track_id, 48_000),
+            vec![(12_000, 12_000, 60, 100)]
+        );
+
+        let ClipContent::Midi { notes } = &mut project.clip_pool.get_mut(&clip_id).unwrap().content
+        else {
+            unreachable!("夹具是 MIDI 片段");
+        };
+        notes.get_mut(&note_id).unwrap().micro_timing_ticks = Some(-240);
+        assert_eq!(
+            track_notes_in_frames(&project, track_id, 48_000),
+            vec![(6_000, 12_000, 60, 100)],
+            "微时值必须作用在起点 tick 上（-240 tick = -6000 帧）"
+        );
+
+        let ClipContent::Midi { notes } = &mut project.clip_pool.get_mut(&clip_id).unwrap().content
+        else {
+            unreachable!("夹具是 MIDI 片段");
+        };
+        let note = notes.get_mut(&note_id).unwrap();
+        note.micro_timing_ticks = None;
+        note.ratchet = Some(4);
+        assert_eq!(
+            track_notes_in_frames(&project, track_id, 48_000),
+            vec![
+                (12_000, 3_000, 60, 100),
+                (15_000, 3_000, 60, 100),
+                (18_000, 3_000, 60, 100),
+                (21_000, 3_000, 60, 100),
+            ],
+            "ratchet=4 必须等分成四个 120 tick 的脉冲"
+        );
+    }
+
+    /// 同一条排程口径的另外三条：静音摆放、概率触发、循环展开。
+    /// 修前 `track_notes_in_frames` **三条都不看** ⇒ `--sfz`/内嵌采样器与引擎不一致。
+    #[test]
+    fn sampler_note_frames_skip_muted_and_untriggered_notes_and_expand_loops() {
+        use yeban_model::project::{ClipContent, LoopConfig};
+
+        let (mut project, track_id, placement_id, clip_id, note_id) = one_note_fixture();
+
+        // ① 静音摆放 ⇒ 不发声。
+        project
+            .tracks
+            .get_mut(&track_id)
+            .unwrap()
+            .clips
+            .get_mut(&placement_id)
+            .unwrap()
+            .muted = true;
+        assert!(
+            track_notes_in_frames(&project, track_id, 48_000).is_empty(),
+            "静音摆放必须整条跳过"
+        );
+        project
+            .tracks
+            .get_mut(&track_id)
+            .unwrap()
+            .clips
+            .get_mut(&placement_id)
+            .unwrap()
+            .muted = false;
+
+        // ② probability = 0 ⇒ 确定性不触发（判定入口是模型的 `triggers`）。
+        let ClipContent::Midi { notes } = &mut project.clip_pool.get_mut(&clip_id).unwrap().content
+        else {
+            unreachable!("夹具是 MIDI 片段");
+        };
+        notes.get_mut(&note_id).unwrap().probability = Some(0.0);
+        assert!(
+            track_notes_in_frames(&project, track_id, 48_000).is_empty(),
+            "probability=0 的音符必须不排程"
+        );
+
+        // ③ 循环展开：区间 0..960、摆放 1920 tick、音符 0..240 ⇒ 两遍。
+        let ClipContent::Midi { notes } = &mut project.clip_pool.get_mut(&clip_id).unwrap().content
+        else {
+            unreachable!("夹具是 MIDI 片段");
+        };
+        let note = notes.get_mut(&note_id).unwrap();
+        note.probability = None;
+        note.start_tick = 0;
+        note.duration_ticks = 240;
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .unwrap()
+            .clips
+            .get_mut(&placement_id)
+            .unwrap();
+        placement.duration_ticks = 1_920;
+        placement.loop_config = LoopConfig {
+            enabled: true,
+            start_tick: 0,
+            end_tick: 960,
+        };
+        assert_eq!(
+            track_notes_in_frames(&project, track_id, 48_000),
+            vec![(0, 6_000, 60, 100), (24_000, 6_000, 60, 100)],
+            "循环区间内的音符必须复制到摆放末端（每遍 960 tick = 24000 帧）"
+        );
     }
 
     /// ⭐ `#251`（S3）：CLI 的 MIDI 路径**真的**应用声相，且与音频片段**同一条**曲线。

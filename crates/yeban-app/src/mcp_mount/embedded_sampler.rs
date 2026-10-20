@@ -501,6 +501,23 @@ fn the_cli_note_frames_follow_tempo_like_the_mcp_converter() {
 fn the_tempo_fix_is_a_no_op_at_sixty_bpm() {
     let mut project = project_without_note_probability();
     project.bpm = 60.0;
+    // 本判据量的是 **tick→帧换算**，不是排程展开。`filled_project` 自带
+    // `ratchet=2` / `micro_timing_ticks=-12`（排程展开另有判据）⇒ 先归一成
+    // "一颗音符、一遍、不偏移"，否则这里的比较对象不再是换算本身。
+    for track in project.tracks.values_mut() {
+        for placement in track.clips.values_mut() {
+            placement.muted = false;
+            placement.loop_config.enabled = false;
+        }
+    }
+    for entry in project.clip_pool.values_mut() {
+        if let Some(notes) = entry.content.notes_mut() {
+            for note in notes.values_mut() {
+                note.ratchet = None;
+                note.micro_timing_ticks = None;
+            }
+        }
+    }
     let track_id = project
         .tracks
         .values()
