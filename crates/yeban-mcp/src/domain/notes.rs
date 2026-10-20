@@ -125,7 +125,8 @@
 //! 语义与模型**同源**，本层不另立第二份：
 //!
 //! - 目标名用 `yeban_edit_automation` 的同一份词汇表（[`LaneKind`]），只放行
-//!   [`StaticLane::NAMES`] 这两个"有静态值"的目标；另外三个仍是**响亮失败**；
+//!   [`StaticLane::NAMES`] 这三个"有静态值"的目标（音轨音量 / 声相 / 设备参数）；
+//!   `SendGain`（走 `setRoutingGain`）与 `Macro`（仍没有通路）是**响亮失败**；
 //! - `old_val`（撤销载荷）从**当前文档**读，走 [`AutomationTarget::static_value`]
 //!   （与 `yeban_edit_automation` 的 `staticValue` 读数**同一个**入口），
 //!   因此撤销是模型自己的 [`Op::invert`]，本层不写逆操作；
@@ -355,7 +356,8 @@
 //! 为什么是**新形态**而不是给 `setParam` 的 `lane` 再加一个目标名：
 //! `setParam` 编译成 [`Op::SetParam`]，而模型**明文拒绝**它写 `SendGain`。
 //! 把 `SendGain` 塞进那个形态等于在工具面说一套、在模型层做另一套
-//! （[`StaticLane`] 用二值枚举把"哪三个不可写"做成**不可表达**，正是为了这件事）。
+//! （[`StaticLane`] 把 `SendGain` 与 `Macro` 都排除在外 —— 前者由本形态承载，
+//! 后者在工具面仍没有通路，正是为了这件事）。
 //! 本形态的名字与 [`Op::SetRoutingGain`] 同词（变体名的小驼峰），与其余 kind 同一规则。
 //!
 //! 形态：`{"kind":"setRoutingGain","edgeId":"<ULID>","value":<数字 | null>}` ——
@@ -732,10 +734,11 @@
 //! | 目标音轨不存在 | `ENTITY_NOT_FOUND`（`deviceTrackNotFound`） |
 //! | `removeDevice` 的身份不在链上 | `ENTITY_NOT_FOUND`（`deviceNotFound`） |
 //!
-//! 不碰的东西（逐条给理由，不冒充已完成）：**不改设备参数**（`setParam` 的目标
-//! `DeviceParam` 走的是自动化那条线，本形态只增删整台设备）；**不校验设备链的 DSP 语义**
-//! （渲染器对设备链只有延迟进 PDC，参数求值没有实现 —— 那是 `domain/render.rs` 的
-//! `unsupported` 登记面）；**不允许插入重复身份**（模型 `Op::validate` 的
+//! 不碰的东西（逐条给理由，不冒充已完成）：**本形态只增删整台设备**，不夹带参数修改 ——
+//! 改现有设备的静态参数走 `setParam` 的 `DeviceParam` 目标（那个目标会先过
+//! `yeban_render::inserts::resolve_device_param` 的白名单）；**不校验设备链的 DSP 语义**
+//! （`yeban-render/src/inserts.rs` 对通道条 / 混响 / 卷积混响**真的**求值，但压缩与
+//! 未知旋钮仍不执行 —— 那是 `domain/render.rs` 的 `deviceChainDsp` 登记面）；**不允许插入重复身份**（模型 `Op::validate` 的
 //! `DuplicateEntityId`，本层提前报 `deviceIdAlreadyInTrack`）。
 
 use std::collections::BTreeMap;
@@ -750,6 +753,9 @@ use yeban_model::{
     LaunchQuantization, LoopConfig, MidiNote, Op, ParameterValue, RoutingEdge, RoutingKind,
     SamplerBinding, SceneV3, SectionV3, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
+// 设备参数的**序数 → 稳定身份**解析与**名字白名单**只有一份：`#263` 落在 render 里。
+// ⛔ 本层不复制第二份（否则 `paramNotSupported` 会有两个字面量来源）。
+use yeban_render::inserts::{UnresolvedReason, resolve_device_param};
 
 use super::error::{Fault, from_model};
 use super::extension_pure::LaneKind;
@@ -977,6 +983,17 @@ pub const SET_PARAM_LANE_FIELD: &str = "lane";
 /// `setParam` 的**新值**字段名（`ops[].value`，必填，数字）。
 pub const SET_PARAM_VALUE_FIELD: &str = "value";
 
+/// `setParam` 写**设备参数**时的**槽位下标**字段名（`ops[].slotIndex`，`lane == "DeviceParam"` 时必填）。
+///
+/// 与 `yeban_edit_automation` / `insertDevice` 的同一字段逐字同词：它们是同一份
+/// `track.devices` 的同一个序数（`ADR-0001` D48）。
+pub const SET_PARAM_SLOT_FIELD: &str = "slotIndex";
+
+/// `setParam` 写**设备参数**时的**参数下标**字段名（`ops[].paramIndex`，`lane == "DeviceParam"` 时必填）。
+///
+/// 与 `yeban_edit_automation` 的同一字段逐字同词：它们是同一份 `device.params` 的同一个序数。
+pub const SET_PARAM_PARAM_FIELD: &str = "paramIndex";
+
 /// `ops[].kind` 的**音轨静音**形态名（写 [`Op::SetTrackMute`]）。
 ///
 /// 与模型 `Op` 变体名同词（`SetTrackMute` 的小驼峰），与 [`SET_PARAM_KIND`] 同一条规则。
@@ -1117,13 +1134,16 @@ pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
 /// kind 却忘了决定它读不读音符"会立刻变红。
 pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity", SET_NOTE_TIMING_KIND];
 
-/// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
+/// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那三个）。
 ///
-/// 为什么单列一个二值枚举而不是直接收 [`LaneKind`]：`SendGain` 的模型语义是
+/// 为什么单列一个枚举而不是直接收 [`LaneKind`]：`SendGain` 的模型语义是
 /// `Option<f32>`（`None` = 单位增益），`SetParam` **明文拒绝**它（必须走
-/// `Op::SetRoutingGain`）；`DeviceParam` / `Macro` 的静态写入在本工具面**没有**
-/// 通路。用二值类型把"哪三个不可写"变成**不可表达**，比在 `compile` 里补一条
-/// 不可达分支更诚实。
+/// `Op::SetRoutingGain`）；`Macro` 的静态写入在本工具面**没有**通路。用类型把
+/// "哪两个不可写"变成**不可表达**，比在 `compile` 里补一条不可达分支更诚实。
+///
+/// `DeviceParam` 是**设备级**目标：寻址是两个下标（`slotIndex` / `paramIndex`），
+/// 因此变体自带这两个字段；参数名是否被离线渲染器消费由
+/// `yeban_render::inserts::resolve_device_param` 回答（⛔ 本层不复制白名单）。
 ///
 /// `SendGain` 的静态增益由 [`SET_ROUTING_GAIN_KIND`] 承载（那是**另一个**模型变体，
 /// 因此仍然**不**属于本枚举 —— 把它并进来就是让本枚举的名字说谎）。
@@ -1133,14 +1153,24 @@ pub enum StaticLane {
     TrackVolume,
     /// 音轨静态声相（`TrackV3::pan`，-1.0..=1.0）。
     TrackPan,
+    /// 设备静态参数（`track.devices[slotIndex].params[paramIndex].value`）。
+    DeviceParam {
+        /// `track.devices` 里的槽位下标。
+        slot_index: usize,
+        /// 该设备 `params` 里的参数下标。
+        param_index: usize,
+    },
 }
 
 impl StaticLane {
     /// 允许的目标名，**规范顺序**（错误信息的 `allowed` 与判据共用）。
     ///
     /// 从 [`LaneKind`] 自己的 `as_str` 派生 ⇒ 词汇表**只有一份**（不是第二张手写表）。
-    pub const NAMES: [&'static str; 2] =
-        [LaneKind::TrackVolume.as_str(), LaneKind::TrackPan.as_str()];
+    pub const NAMES: [&'static str; 3] = [
+        LaneKind::TrackVolume.as_str(),
+        LaneKind::TrackPan.as_str(),
+        LaneKind::DeviceParam.as_str(),
+    ];
 
     /// 把目标落到具体音轨上（[`Op::SetParam`] 的载荷）。
     #[must_use]
@@ -1148,6 +1178,14 @@ impl StaticLane {
         match self {
             Self::TrackVolume => AutomationTarget::TrackVolume { track_id },
             Self::TrackPan => AutomationTarget::TrackPan { track_id },
+            Self::DeviceParam {
+                slot_index,
+                param_index,
+            } => AutomationTarget::DeviceParam {
+                track_id,
+                slot_index,
+                param_index,
+            },
         }
     }
 }
@@ -2523,15 +2561,17 @@ pub enum NoteOp {
         /// 新时值（tick，必须 ≥ 1；`0` 由模型拒绝）。
         duration_ticks: u64,
     },
-    /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量或声相。
+    /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量 / 声相，或设备参数。
     ///
     /// 这是本枚举里第一个**音轨级**（而非音符级）的形态：它不读、不写任何音符，
     /// 目标音轨由调用方的 `trackId` 给出（见 [`compile`]）。值域判定在模型层
-    /// （[`Op::SetParam`] 的 `apply` → `validate_param_value`）。
+    /// （[`Op::SetParam`] 的 `apply` → `validate_param_value`）；设备参数的**寻址**
+    /// 与**名字白名单**在 [`compile`] 里交给 `yeban_render::inserts::resolve_device_param`。
     SetParam {
-        /// 目标（只有"有静态值"的两个变体）。
+        /// 目标（"有静态值"的三个变体）。
         lane: StaticLane,
-        /// 目标值；`TrackVolume` 单位 dB（有限值），`TrackPan` ∈ -1.0..=1.0。
+        /// 目标值；`TrackVolume` 单位 dB（有限值），`TrackPan` ∈ -1.0..=1.0，
+        /// `DeviceParam` 由该设备参数的既有值域决定（模型 `SetParam` 不另设范围）。
         value: f32,
     },
     /// 写一个**音轨开关**（[`Op::SetTrackMute`] / [`Op::SetTrackSolo`]）。
@@ -3448,8 +3488,9 @@ impl NoteOp {
 /// `setParam` / `setTrackMute` / `setTrackSolo` / `setAutomationLane` /
 /// `removeAutomationPoint` 是**音轨级**形态
 /// （见 [`NoteOp::is_note_level`]）：`setParam` 的 `lane` 只认 [`StaticLane::NAMES`]，
-/// 其余三个自动化目标名（`SendGain` / `DeviceParam` / `Macro`）与未知名字都是
-/// **响亮失败**（`INVALID_PARAMETER_RANGE`，`data.allowed` 给出全集）。
+/// 另外两个自动化目标名（`SendGain` / `Macro`）与未知名字都是**响亮失败**
+/// （`INVALID_PARAMETER_RANGE`，`data.allowed` 给出全集）；`lane == "DeviceParam"`
+/// 时 `slotIndex` / `paramIndex` 必填，越界与名字不在白名单同样响亮失败。
 /// 值的范围判定**不在本层**（见 [`compile`]）；两个开关形态的 `value` 只收 JSON 布尔。
 /// `setAutomationLane` 的**载荷**是 `lane` 对象（见 [`parse_lane_edit`]），
 /// 三个属性键各自可选（缺省 = 保留文档现值）；`removeAutomationPoint` 的**载荷**是
@@ -5352,15 +5393,16 @@ fn read_routing_gain(object: &Map<String, Value>) -> Result<Option<f32>, Fault> 
 
 /// 解析 `setParam` 的 `lane`（只认 [`StaticLane::NAMES`]）。
 ///
-/// 词汇表与 `yeban_edit_automation` **同一份**（[`LaneKind`]）：已知但不可写的三个目标是
+/// 词汇表与 `yeban_edit_automation` **同一份**（[`LaneKind`]）：已知但不可写的两个目标是
 /// **响亮失败**，未知名字（别名 / 拼错）是另一条响亮失败，两条都不静默回退到默认值。
 ///
 /// | 情形 | `data.reason` |
 /// | :--- | :--- |
 /// | `lane` 不是字符串 | `laneMustBeString` |
-/// | 名字是另外三个自动化目标（`SendGain` / `DeviceParam` / `Macro`） | `staticLaneNotApplicable` |
+/// | 名字是另外两个自动化目标（`SendGain` / `Macro`） | `staticLaneNotApplicable` |
 /// | 名字不在 [`LaneKind`] 的词汇表里（别名 / 拼错） | `unknownStaticLane` |
 /// | `lane` 缺失 | 统一的缺字段错误（无 `data`） |
+/// | `lane == "DeviceParam"` 而 `slotIndex` / `paramIndex` 缺失或不是非负整数 | 统一的缺字段 / 非负整数错误 |
 fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
     let raw = object
         .get(SET_PARAM_LANE_FIELD)
@@ -5389,11 +5431,17 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
             }),
         ));
     };
-    // 另外三个目标是**已知但此形态不适用**：说清楚它们各自为什么不适用，
+    // 另外两个目标是**已知但此形态不适用**：说清楚它们各自为什么不适用，
     // 而不是笼统地报"未知名字"。
     match kind {
         LaneKind::TrackVolume => Ok(StaticLane::TrackVolume),
         LaneKind::TrackPan => Ok(StaticLane::TrackPan),
+        LaneKind::DeviceParam => Ok(StaticLane::DeviceParam {
+            // ⚠ 两个下标都**必填**（缺省不是 0）：缺一个却静默写第 0 槽 / 第 0 个参数
+            // 会改到调用方没点名的东西。
+            slot_index: read_usize(object, SET_PARAM_SLOT_FIELD)?,
+            param_index: read_usize(object, SET_PARAM_PARAM_FIELD)?,
+        }),
         LaneKind::SendGain => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             "`setParam` 不接受目标 `SendGain`: `SendGain` 的取值是 `Option<f32>` \
@@ -5405,11 +5453,11 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
                 "allowed": StaticLane::NAMES,
             }),
         )),
-        LaneKind::DeviceParam | LaneKind::Macro => Err(Fault::domain_with_data(
+        LaneKind::Macro => Err(Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
             format!(
-                "`{SET_PARAM_KIND}` 不接受目标 `{}`: 本形态只写**音轨**的静态音量/声相; \
-                 设备参数与宏的静态写入在工具面没有通路",
+                "`{SET_PARAM_KIND}` 不接受目标 `{}`: 本形态写音轨静态音量/声相与设备参数; \
+                 宏的静态写入在工具面没有通路",
                 kind.as_str()
             ),
             serde_json::json!({
@@ -5420,6 +5468,90 @@ fn parse_static_lane(object: &Map<String, Value>) -> Result<StaticLane, Fault> {
             }),
         )),
     }
+}
+
+/// 把 `setParam` 的设备参数寻址**交给 render 的唯一解析入口**，并把它回答的三种
+/// 失败原样抬成领域错误。
+///
+/// - 越界 / 音轨不存在：复用 [`UnresolvedReason`] 的**逐字原因串**（⛔ 不新造词）；
+/// - 名字不在离线渲染器消费的白名单里：复用 `ResolvedDeviceParam::unresolved_reason`
+///   的**唯一字面量** `paramNotSupported` —— 写完导出不会变声的参数，必须在**提案期**
+///   就响亮拒绝，而不是让调用方以为写进去了。
+///
+/// 返回值永远是**已确认可写**的 `StaticLane::DeviceParam`；`device_id` 只用于错误读数
+/// （模型 `Op::SetParam` 的寻址仍是两个序数，与 `#263` 的解析口径一致）。
+fn resolve_set_param_device(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    slot_index: usize,
+    param_index: usize,
+) -> Result<StaticLane, Fault> {
+    let track_text = track_id.to_canonical_string();
+    let resolved = match resolve_device_param(project, track_id, slot_index, param_index) {
+        Ok(resolved) => resolved,
+        Err(reason) => {
+            let (code, field, detail) = match reason {
+                UnresolvedReason::TrackNotFound => (
+                    ErrorCode::EntityNotFound,
+                    "trackId",
+                    format!("`{SET_PARAM_KIND}` 的设备参数寻址失败: 音轨 {track_text} 不存在"),
+                ),
+                UnresolvedReason::SlotOutOfRange => (
+                    ErrorCode::OutOfRange,
+                    SET_PARAM_SLOT_FIELD,
+                    format!(
+                        "`{SET_PARAM_KIND}` 的设备参数寻址越界: 音轨 {track_text} 的第 \
+                         {slot_index} 槽不存在"
+                    ),
+                ),
+                UnresolvedReason::ParamIndexOutOfRange => (
+                    ErrorCode::OutOfRange,
+                    SET_PARAM_PARAM_FIELD,
+                    format!(
+                        "`{SET_PARAM_KIND}` 的设备参数寻址越界: 音轨 {track_text} 第 \
+                         {slot_index} 槽的设备没有第 {param_index} 个参数"
+                    ),
+                ),
+            };
+            return Err(Fault::domain_with_data(
+                code,
+                detail,
+                serde_json::json!({
+                    "field": field,
+                    "reason": reason.as_str(),
+                    "trackId": track_text,
+                    "slotIndex": slot_index,
+                    "paramIndex": param_index,
+                }),
+            ));
+        }
+    };
+    if let Some(reason) = resolved.unresolved_reason() {
+        return Err(Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            format!(
+                "`{SET_PARAM_KIND}` 不接受设备参数 `{}` (设备 {}): 该名字不在离线渲染器\
+                 消费的参数名白名单里, 写进去导出的声音不会变",
+                resolved.param_name,
+                resolved.device_id.to_canonical_string()
+            ),
+            serde_json::json!({
+                "field": SET_PARAM_PARAM_FIELD,
+                "reason": reason,
+                "trackId": track_text,
+                "slotIndex": slot_index,
+                "paramIndex": param_index,
+                "deviceId": resolved.device_id.to_canonical_string(),
+                "paramName": resolved.param_name,
+                "hint": "参数名与单位见 `insertDevice` 的 `device.params.items`; \
+                         大小写不敏感, 但必须是渲染器真的消费的名字",
+            }),
+        ));
+    }
+    Ok(StaticLane::DeviceParam {
+        slot_index,
+        param_index,
+    })
 }
 
 /// 读一个**音轨开关**的目标态（`ops[].value`，只收 JSON 布尔）。
@@ -6496,9 +6628,18 @@ pub fn compile(
                 }
             }
             NoteOp::SetParam { lane, value } => {
+                // 设备参数先过 render 的**唯一**解析入口（越界 / 名字不在白名单都在这里
+                // 变成带 `reason` 的领域错误），再落到模型目标上。
+                let lane = match *lane {
+                    StaticLane::DeviceParam {
+                        slot_index,
+                        param_index,
+                    } => resolve_set_param_device(project, *track_id, slot_index, param_index)?,
+                    other => other,
+                };
                 let target = lane.target(*track_id);
                 // 撤销载荷来自**唯一**的静态值入口 (`AutomationTarget::static_value`)：
-                // 本层不自己读 `track.volume_db` / `track.pan`（那会是第二份真相）。
+                // 本层不自己读 `track.volume_db` / `track.pan` / 设备参数（那会是第二份真相）。
                 let old_val = target
                     .static_value(project)
                     .map_err(|error| from_model("静态值读取", &error))?;
@@ -7487,11 +7628,11 @@ pub fn compile(
                             "deviceId": device.id.to_canonical_string(),
                             "existingSlotIndex": existing,
                             "reason": "deviceIdAlreadyInTrack",
-                            "hint": "`setParam` **不接受**目标 `DeviceParam` \
-                                     (设备参数的静态写入在工具面没有通路); \
-                                     要改现有设备的静态参数, 只能先 `removeDevice` 取走它, \
-                                     再 `insertDevice` 重插一台带新参数的设备; \
-                                     想换一台也先 `removeDevice`",
+                            "hint": "⭐ `setParam` 现在可以写目标 `DeviceParam`: \
+                                     `{\"kind\":\"setParam\",\"lane\":\"DeviceParam\",\
+                                     \"slotIndex\":<槽位>,\"paramIndex\":<参数下标>,\"value\":<数字>}`; \
+                                     要改现有设备的静态参数就用它, ⛔ 不必先 `removeDevice` 再重插; \
+                                     想**换一台设备**才需要先 `removeDevice`(那会丢掉整台设备的其它参数)",
                         }),
                     ));
                 }
@@ -8801,16 +8942,12 @@ mod tests {
         );
     }
 
-    /// 另外三个自动化目标名与别名都是**响亮失败**：不静默回退、不猜。
+    /// 另外两个自动化目标名、别名与设备参数缺失下标都是**响亮失败**：不静默回退、不猜。
     #[test]
     fn set_param_rejects_non_static_lanes_and_aliases() {
         for (payload, expected_reason) in [
             (
                 serde_json::json!([{"kind": "setParam", "lane": "SendGain", "value": 0.0}]),
-                Some("staticLaneNotApplicable"),
-            ),
-            (
-                serde_json::json!([{"kind": "setParam", "lane": "DeviceParam", "value": 0.0}]),
                 Some("staticLaneNotApplicable"),
             ),
             (
@@ -8820,6 +8957,21 @@ mod tests {
             (
                 serde_json::json!([{"kind": "setParam", "lane": "trackVolume", "value": 0.0}]),
                 Some("unknownStaticLane"),
+            ),
+            // `DeviceParam` 的两个下标都**必填**（缺省不是 0）。
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "DeviceParam", "value": 0.0}]),
+                None,
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "DeviceParam",
+                                    "slotIndex": 0, "value": 0.0}]),
+                None,
+            ),
+            (
+                serde_json::json!([{"kind": "setParam", "lane": "DeviceParam",
+                                    "slotIndex": "0", "paramIndex": 0, "value": 0.0}]),
+                None,
             ),
             // 缺 `value` / `value` 不是数字 / `lane` 不是字符串 / 缺 `lane`。
             (
@@ -8900,6 +9052,115 @@ mod tests {
         let fault = compile(&project, &track_id, &clip_id, &note_ops)
             .expect_err("音符操作仍然要求 MIDI 材料");
         assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
+    }
+
+    /// ⭐ `#265`：`setParam` 的 `DeviceParam` 目标真的**写进模型**，且：
+    ///
+    /// - 撤销载荷 `old_val` 来自当前文档（不是调用方声明）；
+    /// - 名字不在 `yeban_render::inserts::resolve_device_param` 的白名单里 ⇒
+    ///   `INVALID_PARAMETER_RANGE` + `reason == "paramNotSupported"`（唯一字面量在 render）；
+    /// - `slotIndex` / `paramIndex` 越界 ⇒ `OUT_OF_RANGE` + render 的
+    ///   `slotOutOfRange` / `paramIndexOutOfRange`（⛔ 本层不新造词）。
+    ///
+    /// 夹具：`filled_project` 的 lead 第 0 槽是 `InternalInstrument`，
+    /// `params[0] = cutoff`（不在白名单）、`params[1] = resonance`（在白名单）。
+    ///
+    /// 注入（实测红）：删掉 `compile` 里对 `resolve_set_param_device` 的调用 ⇒
+    /// 不支持的名字也会被接受（`paramNotSupported` 断言红）；把 `old_val` 改成
+    /// 调用方声明 ⇒ 撤销载荷断言红；把 `slot_index` / `param_index` 的解析写死成 0
+    /// ⇒ 越界断言与写后读数红。
+    #[test]
+    fn set_param_writes_a_whitelisted_device_parameter_and_rejects_the_rest() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let device_id = project.track(&track_id).expect("音轨").devices[0].id;
+        let before = project.track(&track_id).expect("音轨").devices[0].params[1].value;
+        assert_eq!(before, 0.35, "夹具的 resonance 初值");
+
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramIndex": 1, "value": 0.8}
+        ]))
+        .expect("规范形状必须被接受");
+        assert!(!ops[0].is_note_level(), "设备参数写入不读音符");
+        let compiled = compile(&project, &track_id, &clip_id, &ops).expect("白名单内的名字");
+        match &compiled[0] {
+            Op::SetParam {
+                target:
+                    AutomationTarget::DeviceParam {
+                        track_id: target_track,
+                        slot_index,
+                        param_index,
+                    },
+                old_val,
+                new_val,
+            } => {
+                assert_eq!(*target_track, track_id);
+                assert_eq!((*slot_index, *param_index), (0, 1));
+                assert_eq!(*old_val, before, "撤销载荷必须来自当前文档");
+                assert_eq!(*new_val, 0.8);
+            }
+            other => panic!("应当是 DeviceParam 的 SetParam: {other:?}"),
+        }
+        assert_eq!(
+            project.track(&track_id).expect("音轨").devices[0].id,
+            device_id,
+            "目标仍是同一台设备"
+        );
+
+        Op::Batch {
+            ops: compiled.clone(),
+            description: "setParam(DeviceParam)".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("施加");
+        assert_eq!(
+            project.track(&track_id).expect("音轨").devices[0].params[1].value,
+            0.8,
+            "模型里的设备参数必须真的变了"
+        );
+        for op in compiled.iter().rev() {
+            op.apply_inverse(&mut project).expect("逆操作");
+        }
+        assert_eq!(
+            project.track(&track_id).expect("音轨").devices[0].params[1].value,
+            before,
+            "逆操作必须逐字节回原值"
+        );
+
+        // ① 名字不在白名单（`cutoff` 是乐器旋钮，不是渲染器消费的 `cutoff_hz`）。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramIndex": 0, "value": 0.5}
+        ]))
+        .expect("形状合法");
+        let fault =
+            compile(&project, &track_id, &clip_id, &ops).expect_err("不在白名单必须响亮拒绝");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["reason"], "paramNotSupported", "{data}");
+        assert_eq!(data["paramName"], "cutoff", "{data}");
+        assert_eq!(data["deviceId"], device_id.to_canonical_string(), "{data}");
+
+        // ② `slotIndex` 越界（render 的 `UnresolvedReason` 原样抬上来）。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 99, "paramIndex": 0, "value": 0.5}
+        ]))
+        .expect("形状合法");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("槽位越界必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        assert_eq!(lane_fault_data(&fault)["reason"], "slotOutOfRange");
+
+        // ③ `paramIndex` 越界。
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": "setParam", "lane": "DeviceParam",
+             "slotIndex": 0, "paramIndex": 99, "value": 0.5}
+        ]))
+        .expect("形状合法");
+        let fault = compile(&project, &track_id, &clip_id, &ops).expect_err("参数下标越界必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::OutOfRange));
+        assert_eq!(lane_fault_data(&fault)["reason"], "paramIndexOutOfRange");
     }
 
     /// ⭐ `#179`：`is_note_level()` **恰好**是五个音符形态。
@@ -12403,24 +12664,27 @@ mod tests {
             lane_fault_data(&fault)["existingSlotIndex"],
             serde_json::json!(0)
         );
-        // ⭐ `#264`：hint 不得把调用方指向一条**同一个工具面明确拒绝**的路。
-        // `parse_static_lane` 对目标 `DeviceParam` 报 `staticLaneNotApplicable`，
-        // 因此这里逐条钉住"实话"：说清不接受、不出现"请用 `setParam`"、并给出
-        // 真的可行的手段（先 `removeDevice` 再 `insertDevice`）。
+        // ⭐ `#265`：`setParam` 已经能写 `DeviceParam`，因此 hint 必须把调用方指向
+        // **真的可行**的那条路（`slotIndex` + `paramIndex`），⛔ 不得再说"没有通路"
+        // 或"不接受"；`removeDevice` 只保留给"换一台设备"。
         let hint = lane_fault_data(&fault)["hint"]
             .as_str()
             .expect("hint 必须是字符串");
         assert!(
-            hint.contains("不接受") && hint.contains("`DeviceParam`"),
-            "hint 必须说清 `setParam` 不接受 `DeviceParam`: {hint}"
+            hint.contains("现在可以") && hint.contains("`DeviceParam`"),
+            "hint 必须说清 `setParam` 现在可以写 `DeviceParam`: {hint}"
         );
         assert!(
-            !hint.contains("请用 `setParam`"),
-            "hint 不得让调用方去用 `setParam` (同一个工具面会拒绝它): {hint}"
+            hint.contains("slotIndex") && hint.contains("paramIndex"),
+            "hint 必须给出 `slotIndex` / `paramIndex` 两个下标: {hint}"
         );
         assert!(
-            hint.contains("removeDevice") && hint.contains("insertDevice"),
-            "hint 必须给出真的可行的手段 (removeDevice + insertDevice): {hint}"
+            !hint.contains("没有通路") && !hint.contains("不接受"),
+            "hint 不得再声称 `setParam` 没有通路 / 不接受 `DeviceParam`: {hint}"
+        );
+        assert!(
+            hint.contains("removeDevice"),
+            "换一台设备仍要先 `removeDevice`: {hint}"
         );
 
         // 音轨不存在（自带寻址的那条 `trackId` 打错了）。

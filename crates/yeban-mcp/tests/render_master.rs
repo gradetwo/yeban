@@ -20,6 +20,7 @@
 //! | 9 | 母带不是静音且声相真的生效（左右 RMS 不对称） | 静音产物/忽略 pan |
 //! | 9b | 经 `yeban_edit_notes` 写的静音真的让源轨不发声（`audible=false`、浮点母带为 0），写回 `false` ⇒ 产物逐字节相同 | 工具面写不了开关 / 渲染器忽略 `mute` |
 //! | 9c | 经工具面写的极值起始 tick（`note.startTick` / `placement.startTick` 取到 tick→帧**饱和**的那一个值）⇒ `RENDER_FAILED`（帧数超限），不是整数溢出 panic | 把 `note_frame_span` 的 `start.saturating_add(1)` 写回 `start + 1` |
+//! | 9d | 经 `setParam` 的 `DeviceParam` 写的 `output_gain_db` 真的改变 `sha256` / `masterDigest`，写回原值 ⇒ 逐字节相同；白名单外名字与越界下标响亮失败 | 工具面写不进设备参数 / `resolve_device_param` 未被调用 / 渲染器不消费该名字 |
 //! | 10 | 延迟表来自 `DeviceDefinition::latency_samples`（含旁通不算） | 自建第二延迟来源 |
 //! | 11 | `format` 只改容器字节，不改音频负载 | 在音频路径上按格式分叉 |
 //! | 12 | 实测数字自洽：frames/blocks/bytes/header/payload/sha256 | 报估算值 |
@@ -50,7 +51,8 @@ use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
     ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition, DeviceKind, EntityId, LoopConfig,
-    MidiNote, RoutingEdge, RoutingKind, SampleRate, TrackKind, TrackV3, YebanProjectV1,
+    MidiNote, ParameterValue, RoutingEdge, RoutingKind, SampleRate, TrackKind, TrackV3,
+    YebanProjectV1,
 };
 use yeban_render::rf64::{BEXT_FIXED_LEN, parse_container};
 
@@ -2176,6 +2178,249 @@ fn a_mute_written_through_the_tool_face_silences_the_source_in_the_master() {
         fs::read(&plain_path).expect("基线产物"),
         "静音写回 false 之后, 母带产物必须与写之前逐字节相同"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 判据 9d：经工具面写的**设备参数**真的改变母带（`#265`）
+// ---------------------------------------------------------------------------
+
+/// 一台**内部效果器**：`params[0] = output_gain_db`（渲染器消费），
+/// `params[1] = reverb_mix`（渲染器**刻意不认**，用来钉 `paramNotSupported`）。
+///
+/// ⚠ 名字都取自 `yeban_render/src/inserts.rs` 的白名单/黑名单口径，不是随便编的。
+fn strip_effect(seed: u32) -> DeviceDefinition {
+    DeviceDefinition {
+        id: id(seed),
+        name: "Strip".to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: vec![
+            ParameterValue {
+                name: "output_gain_db".to_owned(),
+                value: 0.0,
+                unit: Some("dB".to_owned()),
+            },
+            ParameterValue {
+                name: "reverb_mix".to_owned(),
+                value: 0.5,
+                unit: None,
+            },
+        ],
+        latency_samples: 0,
+    }
+}
+
+/// ⭐ `#265`：`ops[].kind == "setParam"` + `lane:"DeviceParam"` 走完
+/// `tools/call` → 提案 → 合并 → 渲染，且：
+///
+/// 1. `query_project` 读回的参数值**真的变了**（`0.0` → `-12.0` → `0.0`）；
+/// 2. 写进去之后母带的 `sha256` / `masterDigest` **必须变化**（不是"写进去但不响"）；
+/// 3. 写回原值 ⇒ 产物与基线**逐字节相同**；
+/// 4. 白名单外的名字 / 越界的两个下标**响亮失败**，`data.reason` 逐字来自 render
+///    （`paramNotSupported` / `slotOutOfRange` / `paramIndexOutOfRange`）。
+///
+/// 可被什么注入破坏：`compile` 不调用 `resolve_device_param`（不支持的名字也接受）、
+/// `Op::SetParam` 的 `target` 没有落进模型（`query_project` 读数不变）、或渲染器不消费
+/// `output_gain_db`（两个 `sha256` 相等 ⇒ 本判据当场红）。
+#[test]
+fn a_device_parameter_written_through_the_tool_face_changes_the_master() {
+    let scratch = Scratch::new("device-param-tool-face");
+    let spec = Spec {
+        devices: vec![strip_effect(50)],
+        ..Spec::default()
+    };
+    let (mut dispatcher, auth) = dispatcher_with(&project(&spec), &scratch.join("demo.yeban"));
+    let lead = id(2).to_canonical_string();
+    let clip = id(10).to_canonical_string();
+
+    // ---- 基线：参数 0.0 dB（链为空 ⇒ 不做任何插入处理）----
+    let plain_path = scratch.join("plain-device.wav");
+    let plain = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": plain_path.display().to_string()}),
+    );
+    assert_eq!(plain["status"], "success", "{plain}");
+    let plain_sha = plain["data"]["sha256"].as_str().expect("sha256").to_owned();
+    let plain_digest = plain["data"]["masterDigest"]
+        .as_str()
+        .expect("masterDigest")
+        .to_owned();
+    let plain_peak = plain["data"]["peak"]["before"].as_f64().expect("peak");
+    let before = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["tracks"]}),
+    );
+    assert_eq!(before["status"], "success", "{before}");
+    assert_eq!(
+        before["data"]["project"]["tracks"][&lead]["devices"][0]["params"][0]["value"],
+        json!(0.0),
+        "基线参数必须是 0.0 dB: {before}"
+    );
+
+    // ---- 白名单外 / 越界：三种响亮失败，reason 逐字来自 render ----
+    let unsupported = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead, "clipId": clip,
+            "ops": [{"kind": "setParam", "lane": "DeviceParam",
+                     "slotIndex": 0, "paramIndex": 1, "value": 0.2}]
+        }),
+    );
+    assert_domain_error(&unsupported, "INVALID_PARAMETER_RANGE", "白名单外参数名");
+    assert_eq!(
+        unsupported["error"]["data"]["reason"], "paramNotSupported",
+        "{unsupported}"
+    );
+    assert_eq!(
+        unsupported["error"]["data"]["paramName"], "reverb_mix",
+        "{unsupported}"
+    );
+    println!("### #265 paramNotSupported => {unsupported}");
+
+    for (slot, param, reason) in [
+        (99_u64, 0_u64, "slotOutOfRange"),
+        (0, 99, "paramIndexOutOfRange"),
+    ] {
+        let out = call_tool(
+            &mut dispatcher,
+            &auth,
+            "yeban_edit_notes",
+            json!({
+                "trackId": lead, "clipId": clip,
+                "ops": [{"kind": "setParam", "lane": "DeviceParam",
+                         "slotIndex": slot, "paramIndex": param, "value": 0.2}]
+            }),
+        );
+        assert_domain_error(&out, "OUT_OF_RANGE", "设备参数下标越界");
+        assert_eq!(out["error"]["data"]["reason"], reason, "{out}");
+        println!("### #265 {reason} => {out}");
+    }
+
+    // ---- 真的写进去：提案的撤销载荷来自当前文档，合并后 query_project 读得回 ----
+    let written = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead, "clipId": clip, "includeOps": true,
+            "ops": [{"kind": "setParam", "lane": "DeviceParam",
+                     "slotIndex": 0, "paramIndex": 0, "value": -12.0}]
+        }),
+    );
+    assert_eq!(written["status"], "success", "{written}");
+    assert_eq!(
+        written["data"]["proposal"]["ops"][0]["op"]["SetParam"]["old_val"],
+        json!(0.0),
+        "撤销载荷必须等于文档现值: {written}"
+    );
+    let proposal_id = written["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal_id, "commitMessage": "设备参数 -12 dB"}),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+
+    let after = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_query_project",
+        json!({"fields": ["tracks"]}),
+    );
+    println!(
+        "### #265 query_project tracks[lead].devices[0].params[0] = {}",
+        after["data"]["project"]["tracks"][&lead]["devices"][0]["params"][0]
+    );
+    assert_eq!(
+        after["data"]["project"]["tracks"][&lead]["devices"][0]["params"][0]["value"],
+        json!(-12.0),
+        "合并后 query_project 必须读回 -12.0: {after}"
+    );
+
+    // ---- 它真的响吗：导出哈希与母带摘要必须变化 ----
+    let changed_path = scratch.join("changed-device.wav");
+    let changed = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": changed_path.display().to_string()}),
+    );
+    assert_eq!(changed["status"], "success", "{changed}");
+    let changed_sha = changed["data"]["sha256"]
+        .as_str()
+        .expect("sha256")
+        .to_owned();
+    let changed_digest = changed["data"]["masterDigest"]
+        .as_str()
+        .expect("masterDigest")
+        .to_owned();
+    let changed_peak = changed["data"]["peak"]["before"].as_f64().expect("peak");
+    println!(
+        "### #265 device param: plain sha256={plain_sha} masterDigest={plain_digest} peak={plain_peak}"
+    );
+    println!(
+        "### #265 device param: -12dB sha256={changed_sha} masterDigest={changed_digest} peak={changed_peak}"
+    );
+    assert_ne!(plain_sha, changed_sha, "写设备参数后导出 sha256 必须变化");
+    assert_ne!(
+        plain_digest, changed_digest,
+        "写设备参数后 masterDigest 必须变化"
+    );
+    assert!(
+        changed_peak < plain_peak,
+        "output_gain_db=-12 后峰值必须更低: plain={plain_peak} changed={changed_peak}"
+    );
+
+    // ---- 写回 0.0 ⇒ 产物与基线逐字节相同（链重新变为空）----
+    let restored = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": lead, "clipId": clip,
+            "ops": [{"kind": "setParam", "lane": "DeviceParam",
+                     "slotIndex": 0, "paramIndex": 0, "value": 0.0}]
+        }),
+    );
+    assert_eq!(restored["status"], "success", "{restored}");
+    let proposal_id = restored["data"]["proposal"]["proposalId"]
+        .as_str()
+        .expect("proposalId")
+        .to_owned();
+    let merged = call_tool(
+        &mut dispatcher,
+        &auth,
+        "yeban_merge_proposal",
+        json!({"proposalId": proposal_id, "commitMessage": "设备参数回 0 dB"}),
+    );
+    assert_eq!(merged["status"], "success", "{merged}");
+    let restored_path = scratch.join("restored-device.wav");
+    let again = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": restored_path.display().to_string()}),
+    );
+    assert_eq!(again["status"], "success", "{again}");
+    println!(
+        "### #265 device param: restored sha256={} masterDigest={}",
+        again["data"]["sha256"].as_str().unwrap_or("?"),
+        again["data"]["masterDigest"].as_str().unwrap_or("?")
+    );
+    assert_eq!(
+        fs::read(&restored_path).expect("产物"),
+        fs::read(&plain_path).expect("基线产物"),
+        "写回 0.0 dB 之后, 母带产物必须与写之前逐字节相同"
+    );
+    assert_eq!(again["data"]["sha256"], plain["data"]["sha256"]);
+    assert_eq!(again["data"]["masterDigest"], plain["data"]["masterDigest"]);
 }
 
 // ---------------------------------------------------------------------------

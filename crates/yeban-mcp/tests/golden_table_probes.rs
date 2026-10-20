@@ -22,7 +22,7 @@
 //! | `CURVE_NAMES` | `CurveType`（**模型** 4） | `curve_name` 4 臂 |
 //! | `LANE_WRITE_MODES` | `AutomationWriteMode`（**模型** 4） | `write_mode` 4 臂 |
 //! | `DEVICE_KINDS` | `DeviceKind`（**模型** 4） | `device_kind` 4 臂 |
-//! | `StaticLane::NAMES` | `StaticLane`（本地 2） | `static_lane` 2 臂 |
+//! | `StaticLane::NAMES` | `StaticLane`（本地 3） | `static_lane` 3 臂 |
 //! | `TrackFlag::NAMES` | `TrackFlag`（本地 2） | `track_flag` 2 臂 |
 //!
 //! `Channel` / `RunMode` / `ChannelLayout` / `Violation` / `ContainerRejection` **没有**
@@ -131,11 +131,12 @@ fn device_kind_name(kind: DeviceKind) -> &'static str {
     }
 }
 
-/// `StaticLane` 的规范名 —— 无通配符（2 臂）。
+/// `StaticLane` 的规范名 —— 无通配符（3 臂）。
 fn static_lane_name(lane: StaticLane) -> &'static str {
     match lane {
         StaticLane::TrackVolume => "TrackVolume",
         StaticLane::TrackPan => "TrackPan",
+        StaticLane::DeviceParam { .. } => "DeviceParam",
     }
 }
 
@@ -342,11 +343,18 @@ fn the_device_kind_table_is_probed_without_a_wildcard() {
 
 #[test]
 fn the_small_local_tables_are_probed_without_a_wildcard() {
-    assert_eq!(StaticLane::NAMES.len(), 2);
-    let statics: BTreeSet<&str> = [StaticLane::TrackVolume, StaticLane::TrackPan]
-        .into_iter()
-        .map(static_lane_name)
-        .collect();
+    assert_eq!(StaticLane::NAMES.len(), 3);
+    let statics: BTreeSet<&str> = [
+        StaticLane::TrackVolume,
+        StaticLane::TrackPan,
+        StaticLane::DeviceParam {
+            slot_index: 0,
+            param_index: 0,
+        },
+    ]
+    .into_iter()
+    .map(static_lane_name)
+    .collect();
     assert_eq!(statics, StaticLane::NAMES.into_iter().collect());
     assert_eq!(TrackFlag::NAMES.len(), 2);
     let flags: BTreeSet<&str> = [TrackFlag::Mute, TrackFlag::Solo]

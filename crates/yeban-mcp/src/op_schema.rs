@@ -389,18 +389,28 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "setParam",
-                "写音轨的**静态**混音值：`lane:\"TrackVolume\"`（dB，有限值）或 `lane:\"TrackPan\"`（-1.0..=1.0）。目标音轨是工具顶层的 `trackId`；多余键被静默忽略",
+                "写**静态**参数：`lane:\"TrackVolume\"`（dB，有限值）/ `lane:\"TrackPan\"`（-1.0..=1.0）/ `lane:\"DeviceParam\"`（设备参数，另需 `slotIndex` + `paramIndex`）。目标音轨是工具顶层的 `trackId`；设备参数的 `value` 必须是离线渲染器**真的消费**的名字所指的那个参数（名字不在白名单 ⇒ `paramNotSupported`，⛔ 不静默写入）；多余键被静默忽略",
                 &["kind", "lane", "value"],
                 json!({
                     "kind": kind("setParam"),
                     "lane": {
                         "type": "string",
-                        "enum": ["TrackVolume", "TrackPan"],
-                        "description": "只认这两个规范名（SendGain/DeviceParam/Macro 与未知名字都响亮拒绝）",
+                        "enum": ["TrackVolume", "TrackPan", "DeviceParam"],
+                        "description": "只认这三个规范名（SendGain/Macro 与未知名字都响亮拒绝）",
+                    },
+                    "slotIndex": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "仅 `lane:\"DeviceParam\"`：`track.devices` 的槽位下标（必填，越界 ⇒ `slotOutOfRange`）",
+                    },
+                    "paramIndex": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "仅 `lane:\"DeviceParam\"`：该设备 `params` 的参数下标（必填，越界 ⇒ `paramIndexOutOfRange`）",
                     },
                     "value": {
                         "type": "number",
-                        "description": "TrackVolume 单位 dB（有限值）；TrackPan 单位 1.0 = 右、-1.0 = 左",
+                        "description": "TrackVolume 单位 dB（有限值）；TrackPan 单位 1.0 = 右、-1.0 = 左；DeviceParam 是目标参数的绝对值",
                     },
                 }),
                 false,
