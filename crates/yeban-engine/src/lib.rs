@@ -104,6 +104,12 @@
 //!    （`ClipPlacement::loop_repeat` / `note_copies`）；[`snapshot`] 的 MIDI 排程
 //!    按它**真的展开**多条副本 ⇒ 监听音频真的重复。⚠ 音频循环仍不做（D4 的
 //!    `source_offset` 是二期）。
+//!
+//!    ⭐ ⭐ **追加修订段（任务单 `#249` / `[ADR-0010 D4]`：⛔ 不改上一段原文）**：上一段
+//!    最后一句描述的是 `#249` 之前的事实，现仍逐字保留。自 `#249` 起 [`audio_clip`]
+//!    按**同一份** `ClipPlacement::loop_repeat` 展开音频摆放，
+//!    `AudioClipSpan::source_offset` 指向每遍的素材起点 ⇒ 实时监听里音频片段**真的循环**。
+//!    非循环工程仍只产生一个 `source_offset == 0` 的 span ⇒ 与展开之前**逐位相同**。
 //! 2. **走带已实现（本切片）**：播放头由 [`rt::EngineRuntime`] 自己持有
 //!    （[MODEL-ISO-001] 禁止把挥发性走带状态放进快照），每量子按 [`transport`] 的
 //!    整数有理数推进 tick；`Play`/`Stop`/`Pause`/`SeekTicks` 经既有的无锁事件通道
