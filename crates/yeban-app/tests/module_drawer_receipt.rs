@@ -182,7 +182,7 @@ fn report_for(project: &YebanProjectV1, path: &Path) -> (u64, f32) {
     let report = export_wav(
         project,
         path,
-        WavExportOptions::resolve(project, None, None, None),
+        WavExportOptions::resolve(project, None, None, None, None),
     )
     .expect("对照导出必须成功");
     (report.clipped_samples, report.suggested_trim_db)

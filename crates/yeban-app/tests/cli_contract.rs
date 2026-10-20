@@ -1667,12 +1667,15 @@ fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 判据 B16: `--export-wav` 的**位深 / 采样率 / 时长**可被 CLI 选，且**缺省兼容**。
+/// 判据 B16: `--export-wav` 的**位深 / 采样率 / 时长 / 精确帧数**可被 CLI 选，
+/// 且**缺省兼容**。
 ///
-/// 本条钉三件事（都**回读真文件**，⛔ 不读 stdout 的自报值）：
+/// 本条钉四件事（都**回读真文件**，⛔ 不读 stdout 的自报值）：
 /// ① 不给 `--wav-*` ⇒ 与旧行为一致（48 kHz / 立体声 / 24-bit / 8 秒）—— 演示工程
 ///    的 `audio_config.sample_rate` 就是 48 kHz，所以"跟随工程"在缺省档**不改变产物**；
 /// ② 显式给三条 ⇒ 产物形状**逐条**跟着变（16-bit / 44.1 kHz / 1 秒）；
+///    ②b `--wav-frames` 原样生效（与 MCP `render_master.frames` 同量纲）；
+///    ②c `--wav-frames` 与 `--wav-seconds` 互斥（两种顺序都是用法错误）；
 /// ③ `--wav-*` 单独给（没有 `--export-wav`）⇒ 用法错误退出码 **2**，
 ///    ⛔ 不是"静默忽略"（本仓对修饰开关的一贯纪律）。
 #[test]
@@ -1738,6 +1741,57 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
     assert_eq!(field(line, "bits").as_deref(), Some("16"), "{line}");
     assert_eq!(field(line, "frames").as_deref(), Some("44100"), "{line}");
 
+    // ---- ②b 精确帧数：`--wav-frames` 原样用（⛔ 不再做秒×采样率换算）----
+    //
+    // 与 MCP `render_master.frames` 同一量纲 ⇒ 两侧的产物长度可以逐字节对齐。
+    // 取一个**不是**任何整秒 × 48 kHz 的帧数（12345），钉住"原样"而不是"取整后碰巧相等"。
+    let exact_out = dir.join("exact.wav");
+    let run = invoke(&[
+        "--open",
+        source.to_str().expect("utf8"),
+        "--export-wav",
+        exact_out.to_str().expect("utf8"),
+        "--wav-frames",
+        "12345",
+    ]);
+    assert_eq!(run.code, 0, "精确帧数导出必须成功; stderr={}", run.stderr);
+    let (format, buffer) = yeban_render::wav::read_plain_wav(&exact_out).expect("回读精确档");
+    assert_eq!(format.sample_rate, 48_000, "帧数不改变采样率缺省");
+    assert_eq!(format.bits_per_sample, 24, "帧数不改变位深缺省");
+    assert_eq!(
+        buffer.len(),
+        12_345 * 2,
+        "产物的**帧数**必须逐帧等于 --wav-frames（× 声道）"
+    );
+    let line = line_with(&run.stdout, "exported-wav:").expect("必须有 exported-wav: 行");
+    assert_eq!(field(line, "frames").as_deref(), Some("12345"), "{line}");
+
+    // ---- ②c `--wav-frames` 与 `--wav-seconds` 互斥（⛔ 不靠"谁优先"发明语义）----
+    for pair in [
+        ["--wav-frames", "100", "--wav-seconds", "1"],
+        ["--wav-seconds", "1", "--wav-frames", "100"],
+    ] {
+        let run = invoke(&[
+            "--headless",
+            "--export-wav",
+            dir.join("never.wav").to_str().expect("utf8"),
+            pair[0],
+            pair[1],
+            pair[2],
+            pair[3],
+        ]);
+        assert_eq!(
+            run.code, 2,
+            "两种顺序都必须被拒 (退出码 2); stderr={}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains("--wav-frames") && run.stderr.contains("--wav-seconds"),
+            "错误必须点名两个开关; stderr={}",
+            run.stderr
+        );
+    }
+
     // ---- ③ 修饰开关单独给 = 用法错误（⛔ 不静默忽略）----
     //
     // ⚠ 必须带一个**选无窗口路径**的开关（这里用 `--headless`）：`--wav-*` 是**修饰**
@@ -1748,6 +1802,7 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         ("--wav-bit-depth", "16"),
         ("--wav-sample-rate", "44100"),
         ("--wav-seconds", "1"),
+        ("--wav-frames", "100"),
     ] {
         let run = invoke(&["--headless", flag, value]);
         assert_eq!(
@@ -1770,6 +1825,10 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
         ("--wav-sample-rate", "abc"),
         ("--wav-seconds", "0"),
         ("--wav-seconds", "-1"),
+        ("--wav-frames", "0"), // 空产物
+        ("--wav-frames", "-1"),
+        ("--wav-frames", "abc"),
+        ("--wav-frames", "1.5"),
     ] {
         let run = invoke(&[
             "--headless",

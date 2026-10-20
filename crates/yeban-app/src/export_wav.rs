@@ -126,7 +126,7 @@ impl WavExportOptions {
     /// 从**可选参数**解析出一次导出真正用的选项（CLI 的 `--wav-*` 与 UI 的缺省
     /// 共用这一处 ⇒ ⛔ 不会出现"同一份渲染、两种字节"）。
     ///
-    /// 三个参数全 `None` 时的口径（＝旧行为的**语义**）：
+    /// 四个参数全 `None` 时的口径（＝旧行为的**语义**）：
     ///
     /// - **采样率跟随工程** `project.audio_config.sample_rate`
     ///   （[`MODEL-AST-002`] 的唯一来源；工程缺省 48 kHz）。为什么必须跟随：
@@ -138,6 +138,9 @@ impl WavExportOptions {
     /// - **时长 8 秒**（[`DEFAULT_WAV_SECONDS`]）⇒ 帧数 = `round(秒 × 采样率)`。
     ///   ⛔ 缺省**不**改成"工程可闻末端"：那不是接线而是**新能力**（导出路径今天没有
     ///   "工程有多长"的唯一权威读数），且会改变既有判据钉住的产物长度。
+    /// - **精确帧数**（`--wav-frames`）：与 MCP `render_master` 的 `frames` 同一量纲，
+    ///   用来逐字节对齐两侧的产物长度。给了它就**不再**做秒×采样率的换算；
+    ///   与 `seconds` 互斥由 CLI 的解析层守卫（⛔ 不在这里靠"谁优先"发明语义）。
     /// - **位深 24-bit 整数**（旧行为）。
     #[must_use]
     pub fn resolve(
@@ -145,11 +148,14 @@ impl WavExportOptions {
         sample_rate: Option<SampleRate>,
         bit_depth: Option<BitDepth>,
         seconds: Option<f32>,
+        frames: Option<u64>,
     ) -> Self {
         let sample_rate = sample_rate.unwrap_or_else(|| project.sample_rate()).hz();
-        let seconds = seconds.unwrap_or(DEFAULT_WAV_SECONDS);
         // f64 而不是 f32：192 kHz × 长时长时 f32 的尾数不够（32 bit 只到 ~7 位十进制）。
-        let frames = (f64::from(seconds) * f64::from(sample_rate)).round() as u64;
+        let frames = frames.unwrap_or_else(|| {
+            let seconds = seconds.unwrap_or(DEFAULT_WAV_SECONDS);
+            (f64::from(seconds) * f64::from(sample_rate)).round() as u64
+        });
         Self {
             frames,
             sample_rate,
@@ -1572,7 +1578,7 @@ mod tests {
         let project_48k = yeban_model::samples::demo_project();
         assert_eq!(project_48k.sample_rate(), SampleRate::Hz48000);
         assert_eq!(
-            WavExportOptions::resolve(&project_48k, None, None, None),
+            WavExportOptions::resolve(&project_48k, None, None, None, None),
             WavExportOptions::default(),
             "48 kHz 工程 + 全缺省 必须与旧行为逐字段相同"
         );
@@ -1580,7 +1586,7 @@ mod tests {
         // ② 44.1 kHz 工程 ⇒ 跟随工程，且**时长仍是 8 秒**（352800 帧，⛔ 不是 384000）。
         let mut project_44k = project_48k.clone();
         project_44k.audio_config.sample_rate = SampleRate::Hz44100;
-        let followed = WavExportOptions::resolve(&project_44k, None, None, None);
+        let followed = WavExportOptions::resolve(&project_44k, None, None, None, None);
         assert_eq!(followed.sample_rate, 44_100, "缺省采样率必须跟随工程");
         assert_eq!(
             followed.frames,
@@ -1595,6 +1601,7 @@ mod tests {
             Some(SampleRate::Hz96000),
             Some(BitDepth::Int16),
             Some(1.5),
+            None,
         );
         assert_eq!(chosen.sample_rate, 96_000);
         assert_eq!(chosen.bit_depth, BitDepth::Int16);
@@ -1606,14 +1613,20 @@ mod tests {
 
         // ④ 32f 与 24-bit 都能表达（下层 `quantize` 接受三者）。
         assert_eq!(
-            WavExportOptions::resolve(&project_48k, None, Some(BitDepth::Float32), None).bit_depth,
+            WavExportOptions::resolve(&project_48k, None, Some(BitDepth::Float32), None, None)
+                .bit_depth,
             BitDepth::Float32
         );
         assert_eq!(
-            WavExportOptions::resolve(&project_48k, None, None, None).bit_depth,
+            WavExportOptions::resolve(&project_48k, None, None, None, None).bit_depth,
             BitDepth::Int24,
             "缺省位深仍是 24-bit 整数"
         );
+
+        // ⑤ 精确帧数原样生效，⛔ 不再按秒×采样率换算（MCP `render_master.frames` 的量纲）。
+        let exact = WavExportOptions::resolve(&project_48k, None, None, Some(1.5), Some(12_345));
+        assert_eq!(exact.frames, 12_345, "给了帧数就原样用");
+        assert_eq!(exact.sample_rate, 48_000, "帧数覆盖不影响采样率");
     }
 
     /// ⭐ `#248`：最小音源（`--export-wav` 的**回退**路径）取模型层的 tick → 帧，
