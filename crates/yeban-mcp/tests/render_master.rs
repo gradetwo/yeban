@@ -175,8 +175,12 @@ const DEFAULT_MASTER_DIGEST: &str =
 /// [`FIXTURE_CREATED_AT_MS`]（2023-11-14T22:13:20Z）⇒ 文件字节变了、母带样本
 /// 一位没变（`DEFAULT_MASTER_DIGEST` 仍是旧值）。判据逻辑、断言条数、`#[ignore]`
 /// 一概未动；新值由判据自己报出后照抄。
+///
+/// **`#255` 重钉（`bext` 奇长度互通修复）**：该夹具的 `CodingHistory` 是奇数长度,
+/// 写入器现在把 NUL 终止符计入 `bext` 负载（chunk 外不再有补位）⇒ 长度字段 +1。
+/// 母带样本摘要（`DEFAULT_MASTER_DIGEST`）**逐位未变**；文件总长与补位位置也未变。
 const DEFAULT_MASTER_SHA256: &str =
-    "874f532af830421529af8c3ba5a37175a85553aa954c25abd54d09a9ee25cb96";
+    "6aa337744aad2b0dafb77bb687d5465f4420548143e93824d00ba151adc41d5d";
 
 /// 夹具工程的创建时刻 —— BWF 两条 ASCII 戳（`OriginationDate` / `OriginationTime`）
 /// 的**唯一**来源（`#214`）。
@@ -999,7 +1003,9 @@ fn two_renders_under_different_wall_clocks_are_byte_identical_chunk_by_chunk() {
             .collect::<Vec<_>>(),
         vec![
             ("fmt ", 16),
-            ("bext", BEXT_FIXED_LEN + 39),
+            // 39 字节 CodingHistory 是奇数 ⇒ 写入器补 1 字节 NUL 终止符并计入负载
+            // （chunk 外不再有补位; 文件总长与补位位置都不变）。
+            ("bext", BEXT_FIXED_LEN + 40),
             // 夹具：1 秒 @ 48 kHz × 2 声道 × 3 字节 = 288000。
             ("data", 288_000)
         ],
@@ -3751,8 +3757,12 @@ fn a_normal_master_reports_zero_clipped_samples_and_no_overshoot() {
 ///
 /// 它证明"预警只提示、不动音频"：如果探针写了样本、改了增益或改了落盘顺序，
 /// 这个值立刻变红。
+///
+/// **`#255` 重钉（`bext` 奇长度互通修复）**：该夹具的 `CodingHistory` 是奇数长度,
+/// 写入器现在把 NUL 终止符计入 `bext` 负载 ⇒ 长度字段 +1。母带样本摘要
+/// （`CLIPPING_MASTER_DIGEST`）逐位未变。
 const CLIPPING_MASTER_SHA256: &str =
-    "7de139f48023de6118a30263510920675d5f26dba9fb1298f014ce6673d9927c";
+    "210876d64480f82274986854a1741b85acc0e0cab48d978d4e83eb6ef2c49013";
 
 /// 同一份过载夹具的**母带样本位级摘要**（也测自加预警之前）。
 const CLIPPING_MASTER_DIGEST: &str =
@@ -5509,19 +5519,22 @@ fn tick_conversion_is_shared_and_keeps_the_48_and_96_khz_summaries() {
             44_100u32,
             7_718u64,
             "eb2ece44c5056505df7dd49013c2aa66781b7803aaa88bb9e79dd7d85e964d6e",
-            "6eb2160f5689fc712e4075238f820fa130de0d7bf2c18504f19beb711c340059",
+            // `#255`: 奇数长度 CodingHistory 的 bext 长度字段 +1（样本摘要不变）。
+            "21e2981eef52c3f3819ce7bca8f8425c67aadbe33420e9e8158b9b675e144652",
         ),
         (
             48_000,
             8_400,
             "34190cd965f0ef36f0df4e0002e28c152473d8f63f5700b9967d9cfd00834bce",
-            "8a0f1b98fb76fc3c5987b7906be790ff76f735d98ee3df212c2ce8f9a49bab57",
+            // `#255`: 奇数长度 CodingHistory 的 bext 长度字段 +1（样本摘要不变）。
+            "89020abb9e7df39b1b8ca8f6196b7eb7b707fce5ed204cb47dfee008343b227b",
         ),
         (
             96_000,
             16_800,
             "7c60f06116398384d54a10b00291eaa1a40c3ed47cd1db4921134272fe745317",
-            "37b1c0bbe17a56339c669493906f2cfd72f6372a29ba855c912c967723a5abaa",
+            // `#255`: 奇数长度 CodingHistory 的 bext 长度字段 +1（样本摘要不变）。
+            "bd4d15a79be58c99b4aa3c4fb2dff93a8e81bc40bba372ffa31f7c475186555e",
         ),
     ];
     for (rate, frames, digest, sha256) in expected {

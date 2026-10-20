@@ -869,7 +869,11 @@ const PINNED_PAYLOAD_SHA256: &str =
 /// 创建时刻（本夹具的工程没有创建时刻 ⇒ `0` ⇒ 纪元哨兵 `1970-01-01`/`00:00:00`）
 /// ⇒ **只有文件字节变了**；`PINNED_MASTER_DIGEST` 与 `PINNED_PAYLOAD_SHA256`
 /// **一位都没变**，这正是"缺陷在封装、不在 DSP"的读数。新值由判据自己报出后照抄。
-const PINNED_FILE_SHA256: &str = "f54069ab895a3f454c0101980b3e94c7ff0bee380b944b38e55a110462632f31";
+///
+/// **`#255` 重钉（`bext` 奇长度互通修复）**：该夹具的 `CodingHistory` 是奇数长度,
+/// 写入器现在把 NUL 终止符计入 `bext` 负载（chunk 外不再有补位）⇒ 长度字段 +1。
+/// `PINNED_MASTER_DIGEST` 与 `PINNED_PAYLOAD_SHA256` **一位都没变** —— 仍然只动封装。
+const PINNED_FILE_SHA256: &str = "07d5e34c5af6cba4855281ae0b0eb36ecd083ddabd46da68bd8f290b49f45704";
 
 // ---------------------------------------------------------------------------
 // 判据 7 / 8 / 9：资产缺失、完整性、以及"声明了但没有字节"
