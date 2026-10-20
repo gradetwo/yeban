@@ -472,9 +472,23 @@ impl Reconcile {
     }
 }
 
+/// 本机 Python 解释器候选（顺序即尝试顺序）。
+///
+/// 与 `yeban-app` 的 `samples::interpreter_candidates` 同一口径：Windows 的
+/// `python.org` 安装器默认**只装 `py` 启动器**，`python3` 往往不存在。少了后两个
+/// 候选，本函数在 Windows 上会永远 loud-skip —— 跨语言契约对账等于没跑，
+/// 而 skip 的文案会把原因归到"环境里没有 python3"，掩盖真正的原因。
+fn python_candidates() -> &'static [(&'static str, &'static [&'static str])] {
+    if cfg!(windows) {
+        &[("python3", &[]), ("py", &["-3"]), ("python", &[])]
+    } else {
+        &[("python3", &[]), ("python", &[])]
+    }
+}
+
 /// 跑 `scripts/gates/validate_schemas.py --samples-dir <dir>`。
 ///
-/// 缺 `python3` / `jsonschema` 时返回 [`Reconcile::Skipped`]（**响亮**，不是静默通过）——
+/// 缺 Python / `jsonschema` 时返回 [`Reconcile::Skipped`]（**响亮**，不是静默通过）——
 /// 与 `yeban-mcp` 的做法一致（`docs/ledger/mcp-core-notes.md` §3.2 的诚实边界 (a)）。
 #[must_use]
 pub fn reconcile_with_schemas(dir: &Path) -> Reconcile {
@@ -484,21 +498,35 @@ pub fn reconcile_with_schemas(dir: &Path) -> Reconcile {
             detail: format!("找不到对账脚本: {}", script.display()),
         };
     }
-    let output = Command::new("python3")
-        .arg(&script)
-        .arg("--samples-dir")
-        .arg(dir)
-        .current_dir(repo_root())
-        .output();
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => {
-            return Reconcile::Skipped {
-                detail: format!(
-                    "LOUD SKIP: 无法执行 python3 ({error}); 跨语言契约对账在本机**没有跑**"
-                ),
-            };
+    let mut last_error = None;
+    let mut output = None;
+    for &(program, pre_args) in python_candidates() {
+        match Command::new(program)
+            .args(pre_args)
+            .arg(&script)
+            .arg("--samples-dir")
+            .arg(dir)
+            .current_dir(repo_root())
+            .output()
+        {
+            Ok(captured) => {
+                output = Some(captured);
+                break;
+            }
+            // 只有"解释器不存在"才值得换下一个候选; 其它错误同样换,
+            // 因为候选表本身按可用性排序, 代价至多是一次失败的系统调用。
+            Err(error) => last_error = Some((program, error)),
         }
+    }
+    let Some(output) = output else {
+        return Reconcile::Skipped {
+            detail: match last_error {
+                Some((program, error)) => format!(
+                    "LOUD SKIP: 无法执行 {program} ({error}); 跨语言契约对账在本机**没有跑**"
+                ),
+                None => "LOUD SKIP: 解释器候选表为空; 跨语言契约对账在本机**没有跑**".to_owned(),
+            },
+        };
     };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
