@@ -122,6 +122,16 @@
         },
         {
           "required": [
+            "SetNoteTiming"
+          ],
+          "properties": {
+            "SetNoteTiming": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "required": [
             "AddClipPlacement"
           ],
           "properties": {

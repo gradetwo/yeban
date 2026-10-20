@@ -210,6 +210,46 @@ pub enum Op {
         /// 修改后力度。
         new_vel: u8,
     },
+    /// 设置音符的**时间位置**（起点 tick 与时值），不改任何其他字段。
+    ///
+    /// ⚠ **本变体补上了什么**：⭐ 在它出现之前，[`MidiNote::start_tick`] /
+    /// [`MidiNote::duration_ticks`] **只能在 [`Op::AddNote`] 时**给定 ——
+    /// [`Op::MoveNote`] 只按增量平移起点、⛔ 改不了时值，而"删 + 加"会在操作日志层
+    /// 留下**两条** op，并要求调用方自己把音高 / 力度 / 概率 / 连击 / 微时序 / 滑音 /
+    /// 弯音曲线等全部表现力字段抄一遍（漏抄一个就是**静默的表现力丢失**）。
+    ///
+    /// ⚠ **为何安全（完全可逆）**：⭐ 两个字段都是**标量** ⇒ 自带
+    /// `old_start_tick` / `old_duration_ticks` 就能逐字节还原，⛔ 不读历史。
+    /// 本变体**只写**这两个字段：⛔ 不碰 `id` / `pitch` / `velocity` / `probability` /
+    /// `ratchet` / `micro_timing_ticks` / `slide` / `pitch_bend_curve` / `syllable` /
+    /// `phonemes`。
+    ///
+    /// ⚠ **前置条件**：① 音轨与音符都必须存在；② 文档现值必须**逐字段**等于
+    /// `old_start_tick` / `old_duration_ticks`（陈旧载荷 ⇒ [`ModelError::OpStateMismatch`]，
+    /// 与 [`Op::ModifyNoteVelocity`] 同口径）；③ `new_duration_ticks` **必须 ≥ 1**
+    /// （⭐ 复用 [`MidiNote::validate`] 已有的 [`ModelError::ZeroDuration`]，
+    /// ⛔ 不自造新错误变体）。`new_start_tick` 是 `u64` 全域 —— 起点没有上界，
+    /// 与 [`Op::AddNote`] 的口径一致。
+    ///
+    /// ⚠ **与摆放窗口的关系**：音符住在 `ClipPoolEntry::content` 里，播放时引擎把音符
+    /// **裁剪到摆放区间** ⇒ 把时值拉长到超出摆放末端**不会**改写摆放，也⛔ 不会让
+    /// 文档非法；要改摆放长度请用 [`Op::SetClipPlacementDuration`]。
+    SetNoteTiming {
+        /// 所属音轨。
+        track_id: EntityId,
+        /// 所属片段。
+        clip_id: EntityId,
+        /// 音符身份。
+        note_id: EntityId,
+        /// 修改前的起点 tick（来自当前文档）。
+        old_start_tick: u64,
+        /// 修改前的时值 tick（来自当前文档）。
+        old_duration_ticks: u64,
+        /// 修改后的起点 tick。
+        new_start_tick: u64,
+        /// 修改后的时值 tick（必须 ≥ 1）。
+        new_duration_ticks: u64,
+    },
     /// 在音轨时间轴上摆放片段。
     AddClipPlacement {
         /// 目标音轨。
@@ -875,6 +915,7 @@ impl Op {
             Self::DeleteNote { .. } => "DeleteNote",
             Self::MoveNote { .. } => "MoveNote",
             Self::ModifyNoteVelocity { .. } => "ModifyNoteVelocity",
+            Self::SetNoteTiming { .. } => "SetNoteTiming",
             Self::AddClip { .. } => "AddClip",
             Self::RemoveClip { .. } => "RemoveClip",
             Self::SetClipName { .. } => "SetClipName",
@@ -988,6 +1029,29 @@ impl Op {
                     return Err(ModelError::VelocityOutOfRange {
                         value: u16::from(*new_vel),
                     });
+                }
+                Ok(())
+            }
+            Self::SetNoteTiming {
+                track_id,
+                clip_id,
+                note_id,
+                old_start_tick,
+                old_duration_ticks,
+                new_duration_ticks,
+                ..
+            } => {
+                doc.track(track_id)?;
+                let current = doc.note(clip_id, note_id)?;
+                // 两个旧值必须**同时**对上：它们是一次时间变换的完整撤销载荷。
+                if current.start_tick != *old_start_tick
+                    || current.duration_ticks != *old_duration_ticks
+                {
+                    return Err(ModelError::OpStateMismatch { op: self.name() });
+                }
+                // 与 `MidiNote::validate` 同一条 `ZeroDuration` 口径（⛔ 不自造新错误变体）。
+                if *new_duration_ticks == 0 {
+                    return Err(ModelError::ZeroDuration);
                 }
                 Ok(())
             }
@@ -1668,6 +1732,23 @@ impl Op {
                 old_vel: *new_vel,
                 new_vel: *old_vel,
             },
+            Self::SetNoteTiming {
+                track_id,
+                clip_id,
+                note_id,
+                old_start_tick,
+                old_duration_ticks,
+                new_start_tick,
+                new_duration_ticks,
+            } => Self::SetNoteTiming {
+                track_id: *track_id,
+                clip_id: *clip_id,
+                note_id: *note_id,
+                old_start_tick: *new_start_tick,
+                old_duration_ticks: *new_duration_ticks,
+                new_start_tick: *old_start_tick,
+                new_duration_ticks: *old_duration_ticks,
+            },
             Self::AddClipPlacement {
                 track_id,
                 placement,
@@ -2088,6 +2169,19 @@ impl Op {
                 ..
             } => {
                 doc.note_mut(clip_id, note_id)?.velocity = *new_vel;
+                Ok(())
+            }
+            // 只写那**两个**时间字段：⛔ 不碰 `id` / `pitch` / 力度 / 任何表现力字段。
+            Self::SetNoteTiming {
+                clip_id,
+                note_id,
+                new_start_tick,
+                new_duration_ticks,
+                ..
+            } => {
+                let note = doc.note_mut(clip_id, note_id)?;
+                note.start_tick = *new_start_tick;
+                note.duration_ticks = *new_duration_ticks;
                 Ok(())
             }
             Self::AddClipPlacement {
@@ -2901,6 +2995,17 @@ mod tests {
                 note_id: f.note,
                 old_vel: 100,
                 new_vel: 64,
+            },
+            // 音符时间位置：**此前只能"删 + 加"** —— `MoveNote` 只平移起点、
+            // 时值没有任何字段级通路。0/480 ⇒ 240/960（后移 240 tick、拉长到两倍）。
+            Op::SetNoteTiming {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_start_tick: 0,
+                old_duration_ticks: 480,
+                new_start_tick: 240,
+                new_duration_ticks: 960,
             },
             Op::AddClipPlacement {
                 track_id: f.bass,
@@ -5874,6 +5979,102 @@ mod tests {
             doc.validate().expect("撤销到底后文档必须仍然合法");
             prop_assert_eq!(&doc, &initial);
         }
+    }
+
+    /// `SetNoteTiming` 只改起点与时值，且旧值对不上时**逐字节不动**。
+    ///
+    /// 为什么需要：这条 op 的存在理由就是"不经过删 + 加" ⇒ 若它顺手丢掉别的字段，
+    /// 或陈旧载荷被放行，它就比删 + 加更危险（调用方以为只是改时间）。这里把
+    /// "表现力字段原样保留"与"两个旧值必须同时对上"都钉住。
+    #[test]
+    fn set_note_timing_moves_and_resizes_without_touching_other_fields() {
+        let f = fixture();
+        let mut doc = fixture_document();
+        // 给音符塞满**非默认**表现力字段，任何一处被覆盖都会在下面被抓到。
+        {
+            let note = doc.note_mut(&f.clip, &f.note).expect("音符存在");
+            note.velocity = 33;
+            note.probability = Some(0.25);
+            note.ratchet = Some(3);
+            note.micro_timing_ticks = Some(-17);
+            note.syllable = Some("la".to_owned());
+            note.phonemes.push("L".to_owned());
+        }
+        let before = doc.note(&f.clip, &f.note).expect("音符存在").clone();
+        assert_eq!((before.start_tick, before.duration_ticks), (0, 480));
+        let before_doc = doc.clone();
+
+        let timing = Op::SetNoteTiming {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            old_start_tick: 0,
+            old_duration_ticks: 480,
+            new_start_tick: 1920,
+            new_duration_ticks: 240,
+        };
+        timing.apply(&mut doc).expect("合法的时间写入必须被接受");
+        let after = doc.note(&f.clip, &f.note).expect("音符存在");
+        assert_eq!((after.start_tick, after.duration_ticks), (1920, 240));
+        assert_eq!(after.id, before.id, "身份不能变");
+        assert_eq!(after.pitch, before.pitch, "音高不能变");
+        assert_eq!(after.velocity, before.velocity, "力度不能变");
+        assert_eq!(after.probability, before.probability, "概率不能变");
+        assert_eq!(after.ratchet, before.ratchet, "连击不能变");
+        assert_eq!(
+            after.micro_timing_ticks, before.micro_timing_ticks,
+            "微时序不能变"
+        );
+        assert_eq!(after.syllable, before.syllable, "歌词不能变");
+        assert_eq!(after.phonemes, before.phonemes, "音素不能变");
+
+        // 逆操作由自带旧值构造：必须逐字节还原（含上面塞满的表现力字段）。
+        timing.apply_inverse(&mut doc).expect("逆操作可应用");
+        assert_eq!(doc, before_doc, "撤销必须逐字节还原");
+
+        // 两个旧值**各自**对不上都必须被拒，且文档逐字节不动。
+        let mut fresh = fixture_document();
+        for stale in [
+            Op::SetNoteTiming {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_start_tick: 1,
+                old_duration_ticks: 480,
+                new_start_tick: 0,
+                new_duration_ticks: 480,
+            },
+            Op::SetNoteTiming {
+                track_id: f.lead,
+                clip_id: f.clip,
+                note_id: f.note,
+                old_start_tick: 0,
+                old_duration_ticks: 479,
+                new_start_tick: 0,
+                new_duration_ticks: 480,
+            },
+        ] {
+            assert_eq!(
+                stale.apply(&mut fresh),
+                Err(ModelError::OpStateMismatch {
+                    op: "SetNoteTiming"
+                })
+            );
+            assert_eq!(fresh, fixture_document(), "被拒的写入不得改文档");
+        }
+
+        // 零时值：复用 `MidiNote::validate` 的 `ZeroDuration`，⛔ 不新增错误变体。
+        let zero = Op::SetNoteTiming {
+            track_id: f.lead,
+            clip_id: f.clip,
+            note_id: f.note,
+            old_start_tick: 0,
+            old_duration_ticks: 480,
+            new_start_tick: 0,
+            new_duration_ticks: 0,
+        };
+        assert_eq!(zero.apply(&mut fresh), Err(ModelError::ZeroDuration));
+        assert_eq!(fresh, fixture_document(), "零时值不得改文档");
     }
 
     /// 时间轴平移的 **`u64` 上界**：越过 `u64::MAX` 必须被拒。

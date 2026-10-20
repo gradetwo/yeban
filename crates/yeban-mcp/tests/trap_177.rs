@@ -7,13 +7,13 @@
 //! | :--- | :--- | :--- |
 //! | [`add_track_no_longer_needs_a_clip_id`] | 一次 `addTrack`（不传 `clipId`） | 1 个 `status` + 提案数 +1 |
 //! | [`the_old_call_with_a_clip_id_still_works`] | 同一次调用但**带** `clipId` | 1 个 `status`（向后兼容） |
-//! | [`kinds_that_read_the_envelope_clip_report_a_loud_missing_error`] | 4 个音符形态缺 `clipId` | 4 条 `reason` + 4 份 `requiredByKinds` |
+//! | [`kinds_that_read_the_envelope_clip_report_a_loud_missing_error`] | 5 个音符形态缺 `clipId` | 5 条 `reason` + 5 份 `requiredByKinds` |
 //! | [`a_clip_id_is_ignored_by_kinds_that_do_not_read_it`] | `addTrack` 给了**非法** ULID | 1 个 `status`（接受但忽略） |
 //! | [`the_published_fields_enum_is_the_parser_whitelist`] | `tools/list` 的 `fields.items.enum` | **枚举成员个数**（= `SELECTORS` 的 24） |
 //! | [`an_unknown_field_selector_is_refused_loudly`] | `fields:["notAField"]` | 1 个 `code` + 1 份 `availableSelectors` |
 //! | [`the_undo_cursor_and_the_undo_readback_are_the_same_number`] | 同一会话两处读数 | **2 对**数字（1/1 与 0/0） |
 //! | [`proposal_not_found_lists_the_known_proposals`] | 坏 `proposalId` 的 merge | `knownProposals` 里的**真 id 出现次数**（1） |
-//! | [`every_ops_branch_publishes_the_envelope_clip_rule`] | `ops.items.oneOf` 的 36 个分支 | 分支数（35）+ 逐分支 `x-envelope.clipId` |
+//! | [`every_ops_branch_publishes_the_envelope_clip_rule`] | `ops.items.oneOf` 的 37 个分支 | 分支数（37）+ 逐分支 `x-envelope.clipId` |
 //!
 //! 复跑读数：`cargo test -p yeban-mcp --test trap_177 -- --nocapture`
 
@@ -140,13 +140,13 @@ fn the_old_call_with_a_clip_id_still_works() {
     );
 }
 
-/// 判据 ②（§2.2）：**需要 `clipId` 的 kind 缺它 ⇒ 响亮**（四个音符形态各一条）。
+/// 判据 ②（§2.2）：**需要 `clipId` 的 kind 缺它 ⇒ 响亮**（五个音符形态各一条）。
 #[test]
 fn kinds_that_read_the_envelope_clip_report_a_loud_missing_error() {
     let (mut dispatcher, auth, project) = dispatcher();
     let (track_id, _clip_id) = track_and_clip(&project);
     let note_id = "01J8ZQ0000000000000000B177";
-    let cases: [(&str, Value); 4] = [
+    let cases: [(&str, Value); 5] = [
         (
             "add",
             json!({"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -159,6 +159,13 @@ fn kinds_that_read_the_envelope_clip_report_a_loud_missing_error() {
         (
             "velocity",
             json!({"kind": "velocity", "noteId": note_id, "velocity": 64}),
+        ),
+        (
+            "setNoteTiming",
+            json!({
+                "kind": "setNoteTiming", "noteId": note_id,
+                "startTick": 0, "durationTicks": 480,
+            }),
         ),
     ];
     for (kind, op) in cases {
