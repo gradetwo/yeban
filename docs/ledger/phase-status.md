@@ -15439,7 +15439,7 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 
 ⭐ **合并**: ⭐ base `81123ef5` ⇒ ⭐ `FINAL=f5c81528`（⭐ 3 文件 ＋488／−1）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`868 passed`／FAILED 0** ＋ ⭐ **`--features in-process-mcp` `905 passed`** ＋ ⭐ 门 **全层 0** ＋ ⭐ 守卫 **18** ＋ ⭐ 轻门 ＋ ⭐ `validate_schemas` 4 份 ✓ ⭐ 树已拆 ✓
 
-⭐ ⚠ ⭐ ⭐ **一、⭐ 读数（⭐ 逐字）**: ⭐ ⭐ **`automation-engine: unapplied-lanes=1 send-gain=1 device-param=0 macro=0 note="有 1 条自动化泳道在监听里没落地；SendGain 只在离线导出/MCP 渲染里生效，DeviceParam/Macro 没有任何生效路径"`**** ✓
+⭐ ⚠ ⭐ ⭐ **一、⭐ 读数（⭐ 逐字）**: ⭐ ⭐ **`automation-engine: unapplied-lanes=1 send-gain=1 device-param=0 macro=0 note="有 1 条自动化泳道在监听里没落地；SendGain 只在离线导出/MCP 渲染里生效，DeviceParam/Macro 没有任何生效路径"`**** ✓ ⚠ ⭐ **该 `note` 文案已由 `#261` 修订**（⭐ `send-gain` 现在数"⭐ **边在监听里没有落点**"⭐的泳道，⭐ 文案改为 ⭐ `"SendGain 的边在监听里没有落点（离线导出/MCP 按边求值）"`）⇒ ⭐ 原文保留、⭐ 以此注为准 ✓
 ★ ⭐ **它是**gauge、⭐ 不是累计****（⭐ 逐字理由：⭐ ⭐ "⭐ 若照 `published`/`dropped` 那样累计，⭐ 60 Hz 会**每秒 +60**、⭐ 读不出'⭐ 有几条'"**）⇒ ⭐ ⭐ **那是个好判断** ✓
 ★ ⭐ **`read_enabled:false` 不计** ＋ ⭐ **`TrackVolume`/⭐ `TrackPan` 不计**（⭐ 它们已落地）＋ ⭐ `DeviceParam`/⭐ `Macro` **分开列**（⭐ ⛔ 不混进 send-gain）✓
 ★ ⭐ ⭐ **音频零改动**: ⭐ 带 `SendGain` 渐强泳道的工程 `sha256` **修前/修后同为 `d22e6bf8…`**、⭐ `masterDigest` 同为 `b0897bc0…` ✓
@@ -15535,3 +15535,13 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⭐ ⚠ ⭐ ⭐ **六、⭐ 待办（⭐ 它点出的、⭐ 我做）**: ⚠ ⭐ ⭐ **`#259` 的 `send-gain` 读数**口径**已变**（⭐ 现在数"⭐ 边在监听里没有落点"⭐的泳道）⇒ ⭐ **代码与测试已改**、⭐ ⚠ **`docs/**`⭐侧需同步** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`#259` 的 `send-gain` 口径同步**（⭐ 我做）＋ ⭐ **`EngineRuntime` 尺寸余量** ＋ ⭐ **A/B 第二分支的判据**（⭐ 要先给 `audition_active` 公开驱动面）＋ ⭐ `DeviceParam`／⭐ `Macro` ＋ ⭐ **E1 本体** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R988 实测追加（2026-10-21）：⭐ **同步 `#259` 的读数口径 ＋ 交接刷到 R987**
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ `send-gain` 读数**口径**随 `#261` 变了****（⭐ 它点出的待办、⭐ 我落）: ⭐ ⭐ **R984 那条 `note` 文案**已被修订****（⭐ 现在数的是"⭐ **边在监听里没有落点**"⭐的泳道，⭐ 文案改为 ⭐ `"SendGain 的边在监听里没有落点（离线导出/MCP 按边求值）"`）⇒ ⭐ ⚠ **我在 R984 的原文后**追加了一句注**（⭐ 第 278 条：⭐ 旧记录不删、⭐ 以注为准）✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 交接**: ⭐ `§1.9` ⭐ **R979 → R987**（⭐ 并 ⭐ 追加 `§1.9.0c` 三条：⭐ R985 `TrackPan` 嵌套修复／⭐ R986 判决拆解／⭐ R987 实时发送量槽位）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`db379064`／⭐ `db99b035` 判决** ＋ ⭐ `EngineRuntime` 尺寸余量 ＋ ⭐ `DeviceParam`／⭐ `Macro` ＋ ⭐ **E1 本体** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
