@@ -50,6 +50,20 @@ pub const MAX_REQUEST_HEAD_BYTES: usize = 16 * 1024;
 /// 请求体上限（1 MiB）。超限一律 `413`，且在**分配之前**就判掉。
 pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
+/// 单条连接上读 / 写各自允许阻塞的最长时间。
+///
+/// `serve_forever` 是**每连接一条线程**：没有这个超时，一个连上却不发完整请求头的
+/// 本地客户端就能把那一条线程永久占住。环回绑定把可达面压到本机，但不改变这条
+/// 退化路径。30 秒远大于本机一次 JSON-RPC 往返，也远小于"永久"。
+#[cfg(feature = "mcp-http")]
+pub const CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `serve_forever` 同时存在的处理线程上限；超出的连接**直接关闭**，不再分配线程。
+///
+/// 线程数有界 ⇒ 栈内存有界。本控制面是单用户环回服务，64 条并发远大于真实需求。
+#[cfg(feature = "mcp-http")]
+pub const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+
 /// 唯一接受的 HTTP 方法。
 pub const SUPPORTED_METHOD: &str = "POST";
 
@@ -902,23 +916,53 @@ impl HttpServer {
 
     /// 永久服务（**只在 `mcp-http` feature 下存在**）。
     ///
-    /// 每个连接一条线程（`std::thread::scope`，不需要 `Arc`）。
+    /// 每个连接一条线程（`std::thread::scope`，不需要 `Arc`）。线程数有界
+    /// （[`MAX_CONCURRENT_CONNECTIONS`]），每条连接的读 / 写各有
+    /// [`CONNECTION_TIMEOUT`] 超时；超出上限或设置超时失败的连接直接关闭。
+    /// 这两条一起把"本地进程/页面开一堆只连不发的 socket"从**无界线程增长**
+    /// 压成"固定上限 + 固定超时"。
     ///
     /// # Errors
     ///
-    /// accept 失败。
+    /// accept 失败（`Interrupted` 除外 —— 信号打断会重试）。
     #[cfg(feature = "mcp-http")]
     pub fn serve_forever(&self) -> Result<(), HttpError> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = AtomicUsize::new(0);
+        let active_connections = &active;
         std::thread::scope(|scope| -> Result<(), HttpError> {
             loop {
-                let (mut stream, peer) = self
-                    .listener
-                    .accept()
-                    .map_err(|source| HttpError::Io { source })?;
+                let (mut stream, peer) = match self.listener.accept() {
+                    Ok(accepted) => accepted,
+                    // 信号打断不是故障: 重试 accept, ⛔ 不把整个服务带走。
+                    Err(source) if source.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(source) => return Err(HttpError::Io { source }),
+                };
+                if assert_loopback_peer(peer).is_err() {
+                    continue;
+                }
+                // 阻塞语义是 `handle_stream` 的读法前提（BSD/macOS 上 accepted socket
+                // 可能继承监听 socket 的标志）；超时保证线程最迟 30 秒后回收。
+                if stream.set_nonblocking(false).is_err()
+                    || stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+                    || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+                {
+                    continue;
+                }
+                if active_connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONCURRENT_CONNECTIONS
+                {
+                    active_connections.fetch_sub(1, Ordering::AcqRel);
+                    continue;
+                }
                 scope.spawn(move || {
-                    if assert_loopback_peer(peer).is_err() {
-                        return;
+                    struct Active<'a>(&'a AtomicUsize);
+                    impl Drop for Active<'_> {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, Ordering::AcqRel);
+                        }
                     }
+                    let _active = Active(active_connections);
                     // 客户端提前断开是常态, 不是错误。
                     let _ = self.handle_stream(&mut stream);
                 });
