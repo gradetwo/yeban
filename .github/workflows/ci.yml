@@ -260,6 +260,17 @@ jobs:
           set -o pipefail
           cargo test -p "${{ matrix.crate }}" --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
+      # `--all-targets` **不包含 doctest**（Cargo 的既定行为）。本仓把大量语义写在
+      # 文档示例里（`yeban-sfz` 的 SFZ 语义、`yeban-mcp` 的工具面、`yeban-render`
+      # 的容器 API）。矩阵腿是大多数 PR 唯一会跑的腿 ⇒ 缺了这一步，"改了文档示例"
+      # 在 PR 里**没有任何信号**（本地 `run-gates.sh crate` 的 `cargo test` 不带
+      # `--all-targets`，会跑 doctest；CI 只直调 cargo，所以 CI 此前是盲的）。
+      - name: test (doctests)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test -p "${{ matrix.crate }}" --doc --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
       # ⭐ #172: 把 app 的三条 feature test 腿**合并成一条**（clippy 也从两条合并成一条）。
       #
       # 为什么合并（#167 的 `CARGO_INCREMENTAL=0` + 清 incremental **不够**）:
@@ -392,6 +403,14 @@ jobs:
           set -euo pipefail
           set -o pipefail
           cargo test --workspace --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+
+      # 同矩阵腿：`--all-targets` 不含 doctest。宽运行这一跳覆盖全部成员，
+      # 因此它也是"一次把整个工作区文档示例编译一遍"的唯一位置。
+      - name: test --workspace (doctests)
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cargo test --workspace --doc --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
 
       # 宽运行这一跳的 `test --workspace` 会留下 incremental; 下面这条 app 合并特性腿
       # 是本 job 最重的一次链接, 先清掉并打印盘读数（与矩阵腿同一条纪律）。
