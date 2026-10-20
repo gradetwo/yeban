@@ -10676,7 +10676,7 @@ error: could not compile `yeban-app` (test "production_save_ui") due to 1 previo
 | ⭐ ⭐ **缺口闭合** | ⭐ ⭐ **`#85` 逐字登记的"⚠ OGG 未做端到端（⭐ 仓内没有真 Ogg 夹具）"⭐ 由本单的**甲组 4 条**闭合**：⭐ 真 Ogg/Vorbis（⭐ `ffmpeg 8.1.2 --enable-libvorbis`、⭐ `-c:a libvorbis -q:a 10`）经 SFZ 样本路径端到端 ⇒ ⭐ 报告 `samples=1 silent=0 unreadable=0` ✓ |
 | ⭐ ⭐ ⭐ **最强的一条（⭐ 我要求的那条）** | ⭐ ⭐ **`the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg`**：⭐ **`fnv1a_leg == fnv1a_decode == 0xb242c829a67e1884`**（⭐ **逐位恒等式**）⇒ ⭐ ⭐ **它把"⭐ OGG 走同一条腿"⭐ 从**推断**变成**恒等式**** ✓ ⭐ 并断言两个 `!=`（⭐ ≠`raw/2²³−1` 且 ≠`raw/2²³`）也成立 ✓ |
 | ⭐ **其余甲组** | ⭐ **① 端到端**：⭐ `768000/768000`、⭐ `differing=1598`、⭐ `max_abs_diff=6.628990173e-3`、⭐ **差 `≥` 分母差 1.192093038e-7 且 `≤` 实测容差**、⭐ `wav_nonzero=ogg_nonzero=1598`；⭐ **④ 立体声折声道 0**：⭐ `channels=2`、⭐ 交织 `1600` ⇒ **折后 800**、⭐ `s0=0.25238612 ≠ s1=−0.5052742`、⭐ `sample_hz=44100`；⭐ **⑤ 44.1k 原样上报**：⭐ `frames=800`（⛔ **不是 871 ⇒ 未重采样**）✓ |
-| ⭐ ⭐ **乙组（⭐ 我批准保留的那条）** | ⭐ **`an_ogg_container_with_a_lossless_flac_payload_lands_on_the_flac_denominator_side`**：⭐ `max_abs_diff = **5.960464478e-8**` ＝ ⭐ ⭐ **与 `#85` 的 FLAC 判据**同一个读数**** ⇒ ⭐ 两个公式（⭐ `raw×1/8388607` vs ⭐ `raw×1/8388608`）**逐位全过** ⇒ ⭐ **"⭐ 分母口径没漂"⭐ 的机械对照** ✓ |
+| ⭐ ⭐ **乙组（⭐ 我批准保留的那条）** | ⭐ **`an_ogg_container_with_a_lossless_flac_payload_lands_on_the_flac_denominator_side`**（⭐ `#254` 后改名为 ⭐ `an_ogg_container_with_a_lossless_flac_payload_is_bit_identical_to_the_wav_leg`）：⭐ `max_abs_diff = **5.960464478e-8**` ＝ ⭐ ⭐ **与 `#85` 的 FLAC 判据**同一个读数**** ⇒ ⭐ 两个公式（⭐ `raw×1/8388607` vs ⭐ `raw×1/8388608`）**逐位全过** ⇒ ⭐ **"⭐ 分母口径没漂"⭐ 的机械对照** ✓ |
 | ⭐ **可判别性（⭐ 实测）** | ⭐ ⭐ **截断真 Ogg（⭐ 去最后 1 字节）⇒ `Unreadable`**（⭐ detail `io error: unexpected end of file`）；⭐ **假 Ogg（⭐ 文本）⇒ `UnsupportedFormat`**；⭐ **同批合法被接受**；⭐ 并附**截断扫描**（⭐ 去 1／⭐2／⭐27／⭐28／⭐100／⭐500／⭐1000／⭐2000／⭐1286／⭐2573 字节）**全部 `Unreadable`**、⭐ 剩 1 字节 ⇒ `UnsupportedFormat` ✓ |
 | ⭐ ⭐ **我的独立复核** | ⭐ ⭐ **复合门 10 层全 0**（⭐ `全过 ✓`）／⭐ ⭐ **`test --no-fail-fast` ＝ 47 二进制・590 passed・0 failed・4 ignored**（⭐ = 594 总条，⭐ 与它报的 `588 ⇒ 594`、⭐`added 恰好 6`⭐ 一致）✓ |
 | ⭐ **它登记的余项（⭐ 照实）** | ⭐ `sfz_load.rs` 里一处**陈旧注释**（⭐ 指向已改名的 `sfz_flac_ogg::…`）**本单⛔ 未动**（⭐ 只报事实）⇒ ⭐ **我登记为小单** ✓ |
@@ -15214,3 +15214,21 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ★ ⭐ 另 4 条：⭐ `sfz_decoded_formats` ①／⭐ `sfz_ogg_decoded` ③ 的"⭐ 必然有差"⭐断言**被删**、⭐ A2 三条旧断言删、⭐ 三处测试**改名**（⭐ 名字里的"⭐ 差"⭐已不成立）★ ⭐ 并 ⭐ 两处公式注释 `32767→32768`／`8_388_607→8_388_608` ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **文档指针陈旧**（⭐ `app-sfz-sample-formats-notes.md:110`／⭐ `phase-status.md:10679` 的**测试名已改** ⇒ ⭐ **我下一轮顺手修**）＋ ⭐ **`hound`/⭐ `bext` 奇长度**（⭐ 新缺陷）＋ ⭐ **E1 本体**（⭐ 待裁）＋ ⭐ **采样器声相** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R974 实测追加（2026-10-20）：⭐ 两条工作线快进落地 —— `setNoteTiming`（模型 ＋ MCP）＋ `--wav-frames`（CLI）
+
+⭐ **合并**: ⭐ base `a59551f5` ⇒ ⭐ `FINAL=32447cfa`（⭐ 两次 `--no-ff`: ⭐ `3e91a1ad` ⭐ 9 文件 ＋516／−68；⭐ `32447cfa` ⭐ 8 文件 ＋145／−21）⇒ ⭐ 合并前 ⭐ `git merge-tree --write-tree` **exit 0**（⭐ 两线互不冲突）⇒ ⭐ 主推 `a59551f5..32447cfa` ✓
+★ ⭐ **判决（⭐ 逐提交读回）**: ⭐ 线 CI **`39386947334` = success @ `6aa5c312`**、⭐ **`39388581249` = success @ `11b3117f`**；⭐ 主干 CI **`39391998786` = success @ `32447cfa`**（⭐ workspace ＋ macOS ＋ Windows **三腿均实际执行**并通过; checks／lockfile／plan／deny 全绿）✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ `setNoteTiming`（⭐ 模型 ＋ MCP）**: ⭐ 模型新增 ⭐ `Op::SetNoteTiming`（⭐ 起点／时值**两个绝对值** ＋ ⭐ 两个旧值 ⇒ **逐字节可逆**；⭐ 旧值不符 ⇒ `OpStateMismatch`；⭐ 时值 0 ⇒ **复用** `ZeroDuration`，⛔ 无新错误变体）★ ⭐ MCP 侧: ⭐ `yeban_edit_notes` 的**第五个音符级 kind**（⭐ `SET_NOTE_TIMING_KIND`，⭐ 旧值由服务端从当前文档读取；⭐ 未知键 ⇒ `unknownSetNoteTimingField` **响亮拒绝**）＋ ⭐ `op_schema` / 帮助文本 / `ops.schema.json` 同步；⭐ `op_reachability` 金表 **45 条**；⭐ 目录 kind **36 → 37** ✓
+★ ⭐ **为什么值钱（⭐ 逐字动机）**: ⭐ 此前改时值只能 ⭐ **"删除 ＋ 添加"**（⭐ 日志留**两条 op**、⭐ 且要求调用方手抄**全部表现力字段** —— 漏抄一个就是 **静默丢失**）★ ⭐ `move` 只按增量平移起点、⭐ 改不了时值 ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ `--wav-frames`（⭐ CLI）**: ⭐ `WavExportOptions::resolve` 增第五个可选参数; ⭐ 给了帧数就 ⛔ **不再**按秒 × 采样率换算（⭐ 与 MCP `render_master.frames` **同一量纲**）★ ⭐ CLI 解析层**双向**拒绝与 `--wav-seconds` 同给（⭐ `WavFramesConflict`）; ⭐ `0`／负数／小数／非数字 ⇒ `WavFramesInvalid`; ⭐ 单独给出（⭐ 不给 `--export-wav`）仍是**用法错误**; ⭐ 默认路径**位级不变**（⭐ 8 s × 工程率、24-bit、工程率）✓
+★ ⭐ **注入读数（⭐ 有牙）**: ⭐ 把 `frames` 分支接回"秒换算" ⇒ ⭐ B16 ②b 红（⭐ `left 768000` vs ⭐ `right 24690`），⭐ 恢复后绿 ✓
+★ ⭐ ⭐ **两侧对齐入口**: ⭐ MCP `render_master` 的 `frames` 实参提示改为与 CLI `--wav-frames` **逐帧**对齐（⭐ `11b3117f`）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 文档指针（⭐ 本提交顺手修，⭐ R973 登记的那两处）**: ⭐ `app-sfz-sample-formats-notes.md` 判据 ① 的**测试名**（⭐ `#254` 改名后）＋ ⭐ `phase-status.md` R762 条目里的 OGG 测试名**标注** ✓
+
+⭐ ⚠ **仍待补**: ⭐ **`hound`/⭐ `bext` 奇长度互通**（⭐ 已开 `line/render-bext-parity`，⭐ 修复推送 `7e446d09`，⭐ 判决**待读**）＋ ⭐ **E1 本体**（⭐ 待裁）＋ ⭐ **采样器声相** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓

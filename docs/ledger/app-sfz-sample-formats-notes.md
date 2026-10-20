@@ -107,13 +107,17 @@ let (channels, rate) = (asset.channels(), asset.sample_rate());           // ③
 
 | # | 判据 | 作用 | 状态 |
 | :--- | :--- | :--- | :--- |
-| ① | `the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint` | **应绿的反向腿**：WAV 路径逐位不变 | ok |
+| ① | `the_wav_sample_path_fingerprint_is_repinned_after_the_full_scale_fix` | **重钉的见证腿**：WAV 解码路径的输出指纹（`#254` 改分母后；旧名 `the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint`） | ok |
 | ② | `the_unreadable_reason_separates_missing_files_from_unsupported_formats` | **乙核心**：`.xyz`／FLAC 与"文件不存在"分得开 | ok |
 | ③ | `the_export_report_line_carries_the_reason_counts` | 用户可见：CLI 报告行带可判别计数 | ok |
 
 ## 5. 实测读数
 
 ### 5.1 判据 ①：WAV 路径**逐位**指纹（反向对照）
+
+> ⚠ `#254` 把整数素材的分母从 `2^(n−1)−1` 改成 `2^(n−1)` ⇒ 该判据改名为
+> `the_wav_sample_path_fingerprint_is_repinned_after_the_full_scale_fix`，
+> `BASELINE_WAV_READ` 重钉为 `0x684c580cf970b275`。下表读数保留为 `#83` 时点。
 
 **指标**：`RenderProjectOutput::samples`（交错 `f32`）的 FNV-1a 64 指纹。
 
