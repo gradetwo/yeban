@@ -651,6 +651,193 @@ fn two_renders_of_the_same_project_are_byte_identical() {
 }
 
 // ---------------------------------------------------------------------------
+// ⭐ 判据 2c（`#252`）：显式帧数 / 时长
+// ---------------------------------------------------------------------------
+
+/// ⭐ `#252` 判据 1（**缺省不变**）：先不给新实参（按工程末端推导 = 48 000 帧），
+/// 再显式给 `frames: 48000` ⇒ 整文件 `sha256` 与 `masterDigest` **逐位相同**，且
+/// 两者都等于**加这个实参之前**钉死的常量。
+///
+/// 为什么这是"零默认改动"的硬证据：常量 [`DEFAULT_MASTER_DIGEST`] /
+/// [`DEFAULT_MASTER_SHA256`] 是修改前就存在的；本判据同时证明"缺省路径没变"与
+/// "显式帧数只改长度、不改算出来的样本"。
+#[test]
+fn the_default_rendering_path_stays_bit_identical_with_an_explicit_frame_count() {
+    let scratch = Scratch::new("explicit-frames-default");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let out = scratch.join("master.wav");
+    let legacy = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+    );
+    assert_eq!(legacy["status"], "success", "{legacy}");
+    assert_eq!(legacy["data"]["frames"], 48_000);
+    assert_eq!(legacy["data"]["request"]["frames"], Value::Null);
+    assert_eq!(legacy["data"]["request"]["framesSource"], "projectEnd");
+    assert_eq!(legacy["data"]["masterDigest"], DEFAULT_MASTER_DIGEST);
+    assert_eq!(legacy["data"]["sha256"], DEFAULT_MASTER_SHA256);
+
+    // 同一个输出路径 + 显式帧数 = 工程末端推导出的同一个数。
+    let explicit = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 48_000,
+            "path": out.display().to_string(),
+        }),
+    );
+    assert_eq!(explicit["status"], "success", "{explicit}");
+    assert_eq!(explicit["data"]["frames"], 48_000);
+    assert_eq!(explicit["data"]["request"]["frames"], 48_000);
+    assert_eq!(explicit["data"]["request"]["framesSource"], "frames");
+    assert_eq!(
+        explicit["data"]["sha256"], legacy["data"]["sha256"],
+        "显式帧数等于工程末端时, 整文件必须逐字节相同"
+    );
+    assert_eq!(
+        explicit["data"]["masterDigest"], legacy["data"]["masterDigest"],
+        "显式帧数等于工程末端时, 母带样本必须逐位相同"
+    );
+    assert_eq!(entries(&scratch.dir), vec!["master.wav"]);
+}
+
+/// ⭐ `#252` 判据 3（**帧数真的生效**）：不同 `frames` ⇒ 输出长度不同、摘要不同；
+/// `durationSeconds` 与 `frames` 两条入口在同一个采样率下**等价**（同一份摘要）。
+#[test]
+fn an_explicit_frame_count_really_sets_the_output_length() {
+    let scratch = Scratch::new("explicit-frames-effect");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let short_path = scratch.join("short.wav");
+    let short = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 24_000,
+            "path": short_path.display().to_string(),
+        }),
+    );
+    assert_eq!(short["status"], "success", "{short}");
+    assert_eq!(short["data"]["frames"], 24_000, "显式帧数必须真的生效");
+    assert_eq!(short["data"]["durationSeconds"], 0.5);
+    let samples = verify_file_shape(&short, &short_path);
+    assert_eq!(samples.len(), 24_000 * 2, "负载必须缩短到 24 000 帧");
+
+    // 秒数入口：0.5 s × 48 kHz = 24 000 帧 ⇒ 与上面**同一份**母带样本。
+    let seconds_path = scratch.join("seconds.wav");
+    let by_seconds = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "durationSeconds": 0.5,
+            "path": seconds_path.display().to_string(),
+        }),
+    );
+    assert_eq!(by_seconds["status"], "success", "{by_seconds}");
+    assert_eq!(by_seconds["data"]["frames"], 24_000);
+    assert_eq!(by_seconds["data"]["request"]["durationSeconds"], 0.5);
+    assert_eq!(
+        by_seconds["data"]["request"]["framesSource"],
+        "durationSeconds"
+    );
+    assert_eq!(
+        by_seconds["data"]["masterDigest"], short["data"]["masterDigest"],
+        "两条入口指向同一个帧数时必须产出同一份母带样本"
+    );
+    assert_eq!(by_seconds["data"]["sha256"], short["data"]["sha256"]);
+
+    // 与缺省（48 000 帧）比：长度、字节数、摘要都必须不同。
+    let default = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "dryRun": true}),
+    );
+    assert_eq!(default["data"]["preview"]["wouldWrite"]["frames"], 48_000);
+    assert_ne!(default["data"]["frames"], short["data"]["frames"]);
+    assert_ne!(default["data"]["bytes"], short["data"]["bytes"]);
+    assert_ne!(
+        default["data"]["masterDigest"], short["data"]["masterDigest"],
+        "长度不同 ⇒ 样本流不同 ⇒ 摘要必须不同"
+    );
+}
+
+/// ⭐ `#252` 判据 4（**非法输入被拒**）：0 帧 / 超上限 / 两个都给且冲突 ⇒ 显式错误，
+/// 且**一个文件都不写**（连临时文件都没有）。`dryRun` 也走同一条校验。
+#[test]
+fn illegal_explicit_frames_are_refused_without_writing_a_file() {
+    let scratch = Scratch::new("explicit-frames-illegal");
+    let (mut dispatcher, auth) =
+        dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
+    let out = scratch.join("master.wav");
+    let path = out.display().to_string();
+
+    let zero = call(
+        &mut dispatcher,
+        &auth,
+        json!({"format": "wav", "sampleRate": 48000, "frames": 0, "path": path}),
+    );
+    assert_domain_error(&zero, "INVALID_PARAMETER_RANGE", "frames = 0");
+    assert!(
+        format!("{zero}").contains("`frames` 必须是 > 0 的整数"),
+        "报文必须点名 `frames`: {zero}"
+    );
+
+    let over = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": MAX_RENDER_FRAMES + 1,
+            "path": path,
+        }),
+    );
+    assert_domain_error(&over, "RENDER_FAILED", "frames 超上限");
+    assert_eq!(over["error"]["data"]["maxFrames"], 172_800_000);
+
+    let conflict = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 48_000,
+            "durationSeconds": 0.5,
+            "path": path,
+        }),
+    );
+    assert_domain_error(&conflict, "INVALID_PARAMETER_RANGE", "两个都给且冲突");
+    assert_eq!(conflict["error"]["data"]["durationFrames"], 24_000.0);
+    assert_eq!(conflict["error"]["data"]["frames"], 48_000);
+
+    // `dryRun` 也拒绝（同一条 `validate`），且同样不落盘。
+    let dry = call(
+        &mut dispatcher,
+        &auth,
+        json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 0,
+            "dryRun": true,
+        }),
+    );
+    assert_domain_error(&dry, "INVALID_PARAMETER_RANGE", "dryRun + frames = 0");
+    assert!(
+        entries(&scratch.dir).is_empty(),
+        "被拒绝的渲染不得留下任何文件: {:?}",
+        entries(&scratch.dir)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 判据 2b：墙钟只进报文（`renderedAtUnixMs`），⛔ 不进文件字节（#214）
 // ---------------------------------------------------------------------------
 

@@ -837,7 +837,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-008",
         name: "yeban_render_master",
-        summary: "触发 `yeban-render` 多核并行导出广播级 WAV 并返回哈希与路径; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; 不削波时 `warnings` 是**空数组**。⛔ 本工具**不自动改增益** (那会静默改用户意图) —— 只是读数 + 建议; 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值",
+        summary: "触发 `yeban-render` 多核并行导出广播级 WAV 并返回哈希与路径; 响应带实测削波读数: `data.clippedSamples` (会被 24-bit 量化器钳住的样本数, 整数) / `data.truePeakDbfs` (16x 多相过采样的真峰值, 0 = 满量程, >0 = 过载) / `data.headroomDb` (= -truePeakDbfs, 负值 = 已过载)。⭐ 削波时 `data.warnings[]` 里**恰好一条** `code:\"exportClipping\"`: 带 `clippedSamples` / `truePeakDbfs` / `suggestedTrimDb` (= -(ceil(truePeakDbfs * 2) / 2), 向上取整到 0.5 dB) / `loudestSource` (最响的源: `node` / `track` / `peakDbfs`) / `hint`; 不削波时 `warnings` 是**空数组**。⛔ 本工具**不自动改增益** (那会静默改用户意图) —— 只是读数 + 建议; 逐源峰值见 `data.sources[].peak` / `.peakDbfs` (源节点输出, ⛔ 不含该轨插入链与路由边增益)。⚠ `data.peak.before` / `data.peak.after` 是**归一化前 / 归一化后的样本峰值** (`max |sample|`), 作用在 TPDF 抖动与量化**之前**的浮点母带上 —— ⛔ 不是写盘文件的峰值, 也⛔ 不是真峰值。⭐ `#252`: 可选 `frames` (整数) / `durationSeconds` (秒) 显式指定总长度 —— 缺省仍按工程末端推导 (与加这个实参之前逐字节相同), 用途是把本工具与 CLI `--export-wav --wav-seconds` 的帧数对齐",
         scope: Scope::AppAdmin,
         side_effect: SideEffect::Disk,
         params: &[
@@ -870,6 +870,18 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "string",
                 false,
                 "输出路径; 缺省为 <工程文件 stem>.master.<format> (与工程同目录)",
+            ),
+            param(
+                "frames",
+                "integer",
+                false,
+                "⭐ 显式总帧数 (整数, 1..=172800000 即 1 小时 @ 48 kHz)。缺省 = 按工程末端推导 (默认路径, 与加这个实参之前逐字节相同)。⭐ 用途: 把本工具与 CLI `--export-wav --wav-seconds` 的帧数对齐 (帧数是 `#250` 的 `C1` 判据\"两侧同 masterDigest\"的六个前置条件之一)。与 `durationSeconds` 二选一: 同给必须指向同一个帧数, 否则 INVALID_PARAMETER_RANGE。大于工程末端 ⇒ 末尾补静音; 小于 ⇒ 裁掉末端",
+            ),
+            param(
+                "durationSeconds",
+                "number",
+                false,
+                "⭐ 显式总时长 (秒, 有限且 > 0)。帧数 = round(秒 × sampleRate) (请求的采样率, ⛔ 不是工程采样率)。与 `frames` 二选一 (同给必须一致); 换算后 0 帧或超过 172800000 帧 ⇒ 显式拒绝",
             ),
         ],
         // 这里声明的仍然是**规范表格那一行**的错误码。实现还会真实产出

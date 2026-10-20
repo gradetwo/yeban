@@ -316,6 +316,36 @@
 //! `SampleRate` 枚举还有 192 kHz：那时**不硬套 48 kHz 系数**（那会给出错 0.8 dB 的
 //! "说谎"读数），读数写 `null` + `measurementNote`，给了目标则判 `unmeasurable`。
 //!
+//! ## 显式帧数（⭐ `#252`；`frames` / `durationSeconds`，⛔ 缺省不变）
+//!
+//! 缺陷（`#250` 勘察）：CLI 的 `--export-wav` 缺省导出**8 秒固定**
+//! （`crates/yeban-app/src/export_wav.rs` 的 `frames: 48_000 * 8`），而本工具按
+//! **工程末端**推导（[`math::ticks_to_frames`]）⇒ 同一工程两条导出的缓冲长度不同，
+//! `masterDigest` 因此**永远比不了**。帧数是 `#250` 的 `C1` 判据（"两侧同
+//! `masterDigest`"）的六个前置条件之一；其余五个里声相／采样率／归一化／无音频片段
+//! 是**可对齐**的，抖动与容器是**刻意差异**（判据只比 `masterDigest`，⛔ 不比整文件
+//! `sha256`）。本切片补的正是帧数这一条：让调用方把两侧的长度对齐。
+//!
+//! | 实参 | 类型 | 语义 |
+//! | :--- | :--- | :--- |
+//! | `frames` | 整数 | 显式总帧数（`1..=` 单次渲染帧数上限，1 小时 @ 48 kHz） |
+//! | `durationSeconds` | 数字（秒） | 帧数 = `round(秒 × sampleRate)`（请求的采样率，⛔ 不是工程采样率） |
+//!
+//! 规则（[`validate`] 是唯一解析处；[`build`] 只读解析结果）：
+//!
+//! - 两个都不给 ⇒ `None` ⇒ **仍按工程末端推导**（＝修改前逐字节相同的默认路径）；
+//! - 只给一个 ⇒ 用它；两个都给且换算结果**不同** ⇒ `INVALID_PARAMETER_RANGE`
+//!   （报文带两个原值与换算出的帧数）；
+//! - `frames <= 0`／`durationSeconds` 非有限或 `<= 0`／换算后 `0` 帧 ⇒
+//!   `INVALID_PARAMETER_RANGE`（⛔ 不写哨兵、⛔ 不落盘）；
+//! - 显式帧数超过单次渲染帧数上限 ⇒ 与工程末端推导**同一个**闸门
+//!   （[`frame_ceiling`]）、同一条报文（`RENDER_FAILED` + `maxFrames`）。
+//!
+//! ⚠ `frames` 是**输出**采样率下的帧数（请求的 `sampleRate`）。显式帧数**大于**
+//! 工程末端 ⇒ 末尾补静音；**小于** ⇒ 裁掉末端（音频片段的帧区间也被同一处夹住）。
+//! ⛔ 本切片**不**改任何缺省：既有钉死常量一位不动（判据
+//! `the_default_rendering_path_stays_bit_identical_with_an_explicit_frame_count`）。
+//!
 //! ## 可观测性（响应 `data` 里的数字全部是实测值）
 //!
 //! `frames` / `channels` / `sampleRate` / `bytes`（容器总字节）/ `headerBytes` /
@@ -329,9 +359,9 @@
 //!
 //! | 状况 | 出口 |
 //! | :--- | :--- |
-//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
+//! | `format` 不在白名单 / `sampleRate` 不在模型集合 / `normalize` 非布尔 / `path` 非字符串 / **`targetLufs` 非数字或不在 `[-70, 0]`** / **⭐ `frames` 非正整数或 `durationSeconds` 非有限正数或两者冲突** / 输出路径为工程或锁文件 | `INVALID_PARAMETER_RANGE`（带内） |
 //! | 没有活跃工程 | `NO_ACTIVE_PROJECT`（带内） |
-//! | 0 帧、超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID） |
+//! | 0 帧、**显式帧数或工程末端推导**超出帧数上限、路由图非法、缺音轨/片段 | `RENDER_FAILED`（带内，`data` 带原因与规范 ID；超限带 `maxFrames`） |
 //! | **母带响度未达标或测不出** | `RENDER_FAILED`（`data.reason = "loudnessTargetMissed"`，`data` 带实测/目标/差值/容差） |
 //! | 片段引用的资产既不在会话 CAS 池里、工程 `assets` 索引里也没有 | `RENDER_FAILED`（`data.reason = "assetMissing"`） |
 //! | 会话 CAS 池里的字节与它声明的 SHA-256 不符（完整性破坏） | `RENDER_FAILED`（`data.reason = "assetHashMismatch"`） |
@@ -572,6 +602,17 @@ pub struct RenderRequest {
     pub sample_rate: SampleRate,
     /// 是否做峰值归一化。
     pub normalize: bool,
+    /// ⭐ `#252`：显式总帧数（`None` = 按工程末端推导 ＝ **默认路径**）。
+    ///
+    /// 给了 `durationSeconds` 时，这里存的是**换算结果**
+    /// （`round(秒 × sampleRate)`）⇒ 渲染路径只需读这一个字段；原始秒数另存
+    /// [`Self::duration_seconds_bits`] 供回显（⛔ 不用它参与渲染，避免两处换算）。
+    pub frames: Option<u64>,
+    /// ⭐ `#252`：调用方给的显式时长（秒）的 `f64` 位型。
+    ///
+    /// 为什么存位型：`#[derive(Eq)]` 对 `f64` 不成立，而本类型要能整体比较。
+    /// 读出时用 [`Self::duration_seconds`]。
+    pub duration_seconds_bits: Option<u64>,
     /// 响度目标（LUFS）；`None` = **只报读数、不做判定**（也是默认路径）。
     ///
     /// 用「`f32` 的位型」参与 `Eq`（`#[derive(Eq)]` 对 `f32` 不成立），因此这里存
@@ -594,6 +635,29 @@ impl RenderRequest {
         self.target_lufs_bits.map(f32::from_bits)
     }
 
+    /// ⭐ `#252`：调用方给的显式时长（秒）；`None` = 没给 `durationSeconds`。
+    ///
+    /// 只用于回显。渲染用的帧数是 [`Self::frames`]（已在校验期换算好）。
+    #[must_use]
+    pub fn duration_seconds(&self) -> Option<f64> {
+        self.duration_seconds_bits.map(f64::from_bits)
+    }
+
+    /// ⭐ `#252`：这次请求的帧数从哪来（回显用：`"frames"` / `"durationSeconds"` /
+    /// `"projectEnd"`）。
+    ///
+    /// 默认路径（两个实参都没给）是 `"projectEnd"` —— 与修改前**同一条**推导。
+    #[must_use]
+    pub fn frames_source(&self) -> &'static str {
+        match (self.frames.is_some(), self.duration_seconds_bits.is_some()) {
+            (false, false) => "projectEnd",
+            (true, true) => "durationSeconds",
+            (true, false) => "frames",
+            // 校验期不会造出「只给了秒数却没换算成帧」的请求；万一有，如实说没有显式帧数。
+            (false, true) => "projectEnd",
+        }
+    }
+
     /// 诚实描述这次请求（`dryRun` 与响应共用的 `request` 字段）。
     #[must_use]
     pub fn to_value(&self) -> Value {
@@ -601,6 +665,11 @@ impl RenderRequest {
             "format": self.format(),
             "sampleRate": self.sample_rate.hz(),
             "normalize": self.normalize,
+            // ⭐ `#252`：`frames` = **显式**帧数（`null` = 按工程末端推导）；与响应
+            //   顶层的 `data.frames`（实际长度）不是同一个含义 ⇒ 两者都报。
+            "frames": self.frames,
+            "durationSeconds": self.duration_seconds(),
+            "framesSource": self.frames_source(),
             "targetLufs": self.target_lufs(),
             "targetToleranceLu": if self.target_lufs_bits.is_some() {
                 Some(TARGET_TOLERANCE_LU)
@@ -927,7 +996,10 @@ fn clipping_warning(
 /// - `sampleRate` 不在模型层允许集合 → `INVALID_PARAMETER_RANGE`；
 /// - `normalize` 不是布尔 / `path` 不是非空字符串 → `INVALID_PARAMETER_RANGE`；
 /// - `targetLufs` 不是有限数、或不在 [`TARGET_LUFS_RANGE`] 内 →
-///   `INVALID_PARAMETER_RANGE`（带区间）。
+///   `INVALID_PARAMETER_RANGE`（带区间）；
+/// - ⭐ `#252`：`frames` 不是 `> 0` 的整数 / `durationSeconds` 不是有限正数 /
+///   两者换算到**不同**帧数 → `INVALID_PARAMETER_RANGE`；显式帧数超过
+///   单次渲染帧数上限 → 与工程末端推导同一个 `RENDER_FAILED`（带 `maxFrames`）。
 pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> {
     let format = arguments
         .get("format")
@@ -1003,10 +1075,102 @@ pub fn validate(arguments: &Map<String, Value>) -> Result<RenderRequest, Fault> 
             ));
         }
     };
+    // ⭐ `#252`：显式帧数 / 时长。两者都不给 ⇒ `None` ⇒ 仍按工程末端推导（默认路径）。
+    let requested_frames = match arguments.get("frames") {
+        None => None,
+        Some(Value::Number(number)) => Some(
+            number
+                .as_u64()
+                .filter(|frames| *frames > 0)
+                .ok_or_else(|| {
+                    Fault::domain(
+                        ErrorCode::InvalidParameterRange,
+                        format!("`frames` 必须是 > 0 的整数, 实际收到 {number}"),
+                    )
+                })?,
+        ),
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`frames` 必须是 > 0 的整数, 实际收到 {other}"),
+            ));
+        }
+    };
+    let duration_seconds_bits = match arguments.get("durationSeconds") {
+        None => None,
+        Some(Value::Number(number)) => {
+            // `as_f64` 覆盖整数与浮点两种 JSON 形状（与 `targetLufs` 同一收窄口径）。
+            let seconds = number.as_f64().unwrap_or(f64::NAN);
+            if !seconds.is_finite() || seconds <= 0.0 {
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!("`durationSeconds` 必须是 > 0 的有限秒数, 实际收到 {seconds}"),
+                    serde_json::json!({
+                        "field": "durationSeconds",
+                        "received": seconds,
+                    }),
+                ));
+            }
+            Some(seconds.to_bits())
+        }
+        Some(other) => {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!("`durationSeconds` 必须是 > 0 的有限秒数, 实际收到 {other}"),
+            ));
+        }
+    };
+    // 秒数 ⇒ 帧数用**请求的**采样率（⛔ 不是工程采样率）：渲染路径按它重采样。
+    let duration_frames = duration_seconds_bits
+        .map(|bits| (f64::from_bits(bits) * f64::from(sample_rate.hz())).round());
+    let frames = match (requested_frames, duration_frames) {
+        (None, None) => None,
+        (Some(frames), None) => Some(frames),
+        (None, Some(derived)) => Some(derived as u64),
+        // 两个都给 ⇒ 必须指向**同一个**帧数；否则拒绝（⛔ 不悄悄选一个）。
+        (Some(frames), Some(derived)) => {
+            if derived < 1.0 || derived as u64 != frames {
+                let seconds = duration_seconds_bits.map_or(0.0, f64::from_bits);
+                return Err(Fault::domain_with_data(
+                    ErrorCode::InvalidParameterRange,
+                    format!(
+                        "`frames` = {frames} 与 `durationSeconds` = {seconds} 冲突: \
+                         按 sampleRate = {} Hz 换算得到 {derived} 帧; 只给一个, \
+                         或让两者指向同一个帧数",
+                        sample_rate.hz()
+                    ),
+                    serde_json::json!({
+                        "frames": frames,
+                        "durationSeconds": seconds,
+                        "durationFrames": derived,
+                        "sampleRate": sample_rate.hz(),
+                    }),
+                ));
+            }
+            Some(frames)
+        }
+    };
+    if let Some(frames) = frames {
+        // 0 帧（秒数太小被 round 成 0）在参数层就是**非法**，⛔ 不交给渲染去"渲染 0 帧"。
+        if frames == 0 {
+            return Err(Fault::domain(
+                ErrorCode::InvalidParameterRange,
+                format!(
+                    "`durationSeconds` = {} 按 {} Hz 换算后是 0 帧; 需要至少 1 帧",
+                    duration_seconds_bits.map_or(0.0, f64::from_bits),
+                    sample_rate.hz()
+                ),
+            ));
+        }
+        // 上限与工程末端推导**同一处**闸门（`RENDER_FAILED` + `maxFrames`）。
+        frame_ceiling(frames)?;
+    }
     Ok(RenderRequest {
         format_index,
         sample_rate,
         normalize,
+        frames,
+        duration_seconds_bits,
         target_lufs_bits,
         path,
     })
@@ -2003,8 +2167,11 @@ pub fn build(
             note_unsupported(&mut unsupported, &mut counts, "busTrackClips");
         }
     }
-    // 7. 帧数: 由时间轴末端与工程量纲唯一决定。
-    let frames = math::ticks_to_frames(end_tick, PPQ, project.bpm, sample_rate);
+    // 7. 帧数: ⭐ `#252` 显式 `frames`／`durationSeconds` 优先；缺省仍由时间轴末端与
+    //    工程量纲唯一决定（＝修改前的同一条公式，逐字节不变）。
+    let frames = request
+        .frames
+        .unwrap_or_else(|| math::ticks_to_frames(end_tick, PPQ, project.bpm, sample_rate));
     if frames == 0 {
         return Err(render_failed(
             "工程里没有可渲染的内容 (0 帧)",
@@ -2018,12 +2185,8 @@ pub fn build(
             }),
         ));
     }
-    if frames > MAX_RENDER_FRAMES {
-        return Err(render_failed(
-            "渲染帧数超出单次上限 (1 小时 @ 48 kHz)",
-            serde_json::json!({ "frames": frames, "maxFrames": MAX_RENDER_FRAMES }),
-        ));
-    }
+    //    上限对**两条**来源（显式帧数 / 工程末端推导）是同一处闸门、同一条报文。
+    frame_ceiling(frames)?;
     // 7b. 音频片段的帧区间在**知道总帧数之后**才能夹住（避免区间越过母带末端）。
     //     这一步只改内存里的 `TrackSource`，不重新解码。
     //
@@ -3634,6 +3797,26 @@ fn render_failed(message: impl Into<String>, data: Value) -> Fault {
     Fault::domain_with_data(ErrorCode::RenderFailed, message, data)
 }
 
+/// 单次渲染的帧数上限闸门（⭐ `#252`：**显式帧数**与**工程末端推导**共用这一处）。
+///
+/// 为什么抽成一个函数：`#252` 让 `validate` 也能拿到显式 `frames` ⇒ 参数层就要拒绝
+/// 超限。两处各写一份 `if frames > …` 会让"上限"有两个来源（迟早漂移），而源码级判据
+/// `the_frame_ceiling_gate_uses_the_constant_itself` 钉住"闸门紧贴常量"与"常量只出现
+/// 三次（定义 + 比较 + 报文）" ⇒ 抽成一处后两条仍然成立，且**两处出口逐字相同**。
+///
+/// 出口故意是 `RENDER_FAILED`（不是 `INVALID_PARAMETER_RANGE`）：它与"工程自己的末端
+/// 就超过上限"是**同一个**条件，调用方拿到的报文（`frames` + `maxFrames`）因此不因
+/// 帧数从哪来而变。⛔ 不新增 `reason` 词：那会把 `fault_vocabulary` 的冻结摘要也拖进来。
+fn frame_ceiling(frames: u64) -> Result<(), Fault> {
+    if frames > MAX_RENDER_FRAMES {
+        return Err(render_failed(
+            "渲染帧数超出单次上限 (1 小时 @ 48 kHz)",
+            serde_json::json!({ "frames": frames, "maxFrames": MAX_RENDER_FRAMES }),
+        ));
+    }
+    Ok(())
+}
+
 /// [`RenderError`] → `RENDER_FAILED`。
 fn render_error(context: &str, error: &RenderError) -> Fault {
     render_failed(
@@ -3732,6 +3915,120 @@ mod tests {
         .expect("合法");
         assert!(!default.normalize);
         assert_eq!(default.to_value()["format"], "wav");
+    }
+
+    #[test]
+    fn an_absent_frame_override_keeps_the_project_end_default() {
+        let request = validate(&args(
+            serde_json::json!({"format": "wav", "sampleRate": 48000}),
+        ))
+        .expect("合法");
+        assert_eq!(request.frames, None, "缺省不得有任何显式帧数");
+        assert_eq!(request.duration_seconds(), None);
+        assert_eq!(request.frames_source(), "projectEnd");
+        let echoed = request.to_value();
+        assert_eq!(echoed["frames"], Value::Null);
+        assert_eq!(echoed["durationSeconds"], Value::Null);
+        assert_eq!(echoed["framesSource"], "projectEnd");
+    }
+
+    #[test]
+    fn frames_and_duration_seconds_resolve_to_the_same_output_length() {
+        let by_frames = validate(&args(serde_json::json!({
+            "format": "wav", "sampleRate": 48000, "frames": 8_400,
+        })))
+        .expect("合法");
+        assert_eq!(by_frames.frames, Some(8_400));
+        assert_eq!(by_frames.frames_source(), "frames");
+        assert_eq!(by_frames.to_value()["frames"], 8_400);
+        // ⛔ 秒数不是"只回显"：换算用的是**请求的**采样率。
+        let by_seconds = validate(&args(serde_json::json!({
+            "format": "wav", "sampleRate": 48000, "durationSeconds": 0.175,
+        })))
+        .expect("合法");
+        assert_eq!(by_seconds.frames, Some(8_400));
+        assert_eq!(by_seconds.duration_seconds(), Some(0.175));
+        assert_eq!(by_seconds.frames_source(), "durationSeconds");
+        assert_eq!(by_seconds.to_value()["frames"], 8_400);
+        // 同给且一致 ⇒ 接受（只保留一个帧数，⛔ 不造第二个真相）。
+        let both = validate(&args(serde_json::json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 8_400,
+            "durationSeconds": 0.175,
+        })))
+        .expect("一致");
+        assert_eq!(both.frames, Some(8_400));
+        assert_eq!(both.frames_source(), "durationSeconds");
+        // 另一个采样率下同一段秒数换算到另一个帧数（证明用的是请求率，不是工程率）。
+        let at_96k = validate(&args(serde_json::json!({
+            "format": "wav", "sampleRate": 96000, "durationSeconds": 0.175,
+        })))
+        .expect("合法");
+        assert_eq!(at_96k.frames, Some(16_800));
+    }
+
+    #[test]
+    fn illegal_frame_overrides_are_refused_explicitly() {
+        // `frames <= 0` / 非整数 / 非数字。
+        for bad in [
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "frames": 0}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "frames": -1}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "frames": 1.5}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "frames": "48000"}),
+        ] {
+            let fault = validate(&args(bad.clone())).expect_err("坏 frames");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{bad}"
+            );
+            assert!(
+                !format!("{fault:?}").is_empty(),
+                "拒绝必须带报文（⛔ 不写哨兵）"
+            );
+        }
+        // `durationSeconds` 非正 / 换算成 0 帧 / 非数字。
+        for bad in [
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "durationSeconds": 0}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "durationSeconds": -0.5}),
+            // 1e-9 s × 48 kHz = 4.8e-5 帧 ⇒ round 到 0 帧。
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "durationSeconds": 1e-9}),
+            serde_json::json!({"format": "wav", "sampleRate": 48000, "durationSeconds": "1"}),
+        ] {
+            let fault = validate(&args(bad.clone())).expect_err("坏时长");
+            assert_eq!(
+                fault.domain_code(),
+                Some(ErrorCode::InvalidParameterRange),
+                "{bad}"
+            );
+        }
+        // 两个都给且冲突 ⇒ 拒绝，报文带两个原值与换算值。
+        let fault = validate(&args(serde_json::json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 8_400,
+            "durationSeconds": 0.5,
+        })))
+        .expect_err("冲突");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["frames"], 8_400);
+        assert_eq!(value["error"]["data"]["durationSeconds"], 0.5);
+        assert_eq!(value["error"]["data"]["durationFrames"], 24_000.0);
+        // 上限：与工程末端推导**同一个**出口（`RENDER_FAILED` + `maxFrames`）。
+        // ⚠ 这里用**字面量**而不是常量：源码级判据 `the_frame_ceiling_gate_uses_the_
+        // constant_itself` 要求常量在 render.rs 里只出现三次（定义 + 比较 + 报文）。
+        let fault = validate(&args(serde_json::json!({
+            "format": "wav",
+            "sampleRate": 48000,
+            "frames": 172_800_001u64,
+        })))
+        .expect_err("超限");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::RenderFailed));
+        let value = fault.into_result().expect("带内");
+        assert_eq!(value["error"]["data"]["maxFrames"], 172_800_000);
+        assert_eq!(value["error"]["data"]["frames"], 172_800_001);
     }
 
     #[test]
