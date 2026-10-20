@@ -28,6 +28,8 @@
 //! 且与 CLI 同一条音源给出**同一个峰值**）。⛔ 不证用户机器上的真 SFZ 库
 //! （夹具全部写在 `std::env::temp_dir()` 下，`Drop` 删除）。
 
+use std::path::Path;
+
 use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
@@ -398,6 +400,220 @@ fn the_mcp_export_and_the_cli_leg_agree_about_the_sampler() {
         "两条装配的峰值必须相同"
     );
     let _ = bearer(&embedded_dispatcher);
+}
+
+/// ⭐ 任务单 `#255`：**同一份工程、同一个 `pan` ⇒ CLI 腿与 MCP 腿的左右比相同**。
+///
+/// 判据的载体是**一条只有一个音符的采样器轨**（Master ＋ Lead，Lead 绑 `TrackV3.sampler`）：
+/// 只有一条发声轨 ⇒ 母带左右峰值就是这条轨的左右输出，⛔ 不会被别的轨混掉。
+///
+/// 两条腿：
+/// * **MCP 腿**：`session_dispatcher` → `yeban_render_master` → 24-bit WAV 逐声道峰值；
+/// * **CLI 腿**：`render_core::render_project_f32_with_assets_under` 的 `f32` 样本逐声道峰值。
+///
+/// 读数：
+/// * `pan = -0.5` ⇒ 两条腿的 `L/R` 都等于 `tan(3π/8)`，两值之差 < 1e-6；
+/// * `pan = -1` ⇒ CLI 的右声道**逐位 0**；MCP 的右声道只剩 TPDF 抖动（≤ 1 LSB，量化前
+///   逐位 0 由 `render::tests` 的源级判据钉住）。
+#[test]
+fn the_two_sides_agree_about_a_panned_sampler_track() {
+    let scratch = Scratch::new("sampler-pan-agree");
+    write_constant_wav(&scratch.join("sampler.wav"), 0.5, 48_000, 48_000);
+    let sfz = scratch.write_sfz("sampler.sfz", FULL_RANGE_SFZ);
+    let sfz_path = sfz.display().to_string();
+    let expected = core::f64::consts::FRAC_PI_8.cos() / core::f64::consts::FRAC_PI_8.sin();
+    let one_lsb = 1.0_f64 / 8_388_607.0;
+
+    for (pan, tag) in [(-0.5_f32, "pan-minus-0.5"), (-1.0, "pan-full-left")] {
+        let project = single_track_sampler_project(pan, &sfz_path);
+
+        // ---- MCP 腿 ----
+        let mut dispatcher =
+            super::session_dispatcher(&project, &scratch.join(&format!("{tag}-mcp.yeban")), false)
+                .expect("内嵌会话装配");
+        let (sha, peak, response) = render(&mut dispatcher, Channel::Http, &scratch, tag);
+        let (mcp_l, mcp_r) = channel_peaks(&scratch.join(&format!("{tag}.wav")));
+        assert_eq!(
+            response["data"]["sources"][0]["kind"], "sfz-sampler",
+            "MCP 腿必须走采样器音源: {response}"
+        );
+
+        // ---- CLI 腿 ----
+        let options = crate::export_wav::WavExportOptions {
+            frames: 48_000,
+            sample_rate: 48_000,
+            channels: 2,
+            use_engine_source: true,
+            ..crate::export_wav::WavExportOptions::default()
+        };
+        let rendered = crate::render_core::render_project_f32_with_assets_under(
+            &project,
+            options,
+            None,
+            &[],
+            Some(scratch.dir()),
+        )
+        .expect("CLI 腿必须能渲染");
+        let (cli_l, cli_r) = peaks(&rendered.samples);
+
+        println!(
+            "[#255/agree] pan={pan}: MCP L={mcp_l:.9} R={mcp_r:.9} ratio={:.9} sha={sha} peak={peak:.9}；\
+             CLI L={cli_l:.9} R={cli_r:.9} ratio={:.9}；理论={expected:.9}",
+            mcp_l / mcp_r,
+            cli_l / cli_r
+        );
+
+        assert!(cli_l > 0.0 && mcp_l > 0.0, "pan={pan}: 左声道必须有信号");
+        if pan == -1.0 {
+            assert_eq!(
+                cli_r.to_bits(),
+                0.0_f64.to_bits(),
+                "pan=-1: CLI 右声道必须逐位 0：R={cli_r}"
+            );
+            assert!(
+                mcp_r <= one_lsb,
+                "pan=-1: MCP 右声道必须只剩抖动（≤ 1 LSB）：R={mcp_r:.12e}"
+            );
+            println!(
+                "[#255/agree] pan=-1: CLI R(bits)={:#x}；MCP R={mcp_r:.12e}（抖动地板 {one_lsb:.12e}）",
+                cli_r.to_bits()
+            );
+        } else {
+            let difference = (cli_l / cli_r - mcp_l / mcp_r).abs();
+            assert!(
+                difference < 1.0e-6,
+                "⭐ 同一工程同一 pan ⇒ CLI 与 MCP 的左右比必须相同：CLI={:.9} MCP={:.9} 差={difference:.3e}",
+                cli_l / cli_r,
+                mcp_l / mcp_r
+            );
+            assert!(
+                (cli_l / cli_r - expected).abs() < 1.0e-6,
+                "CLI 的左右比必须落在等功率曲线上：{:.9} vs {expected:.9}",
+                cli_l / cli_r
+            );
+            assert!(
+                (mcp_l / mcp_r - expected).abs() < 1.0e-6,
+                "MCP 的左右比必须落在等功率曲线上：{:.9} vs {expected:.9}",
+                mcp_l / mcp_r
+            );
+            println!("[#255/agree] CLI/MCP 左右比之差 = {difference:.3e}");
+        }
+        assert!(
+            !response["data"]["unsupported"]
+                .as_array()
+                .expect("unsupported")
+                .iter()
+                .any(|key| key == "sfzTrackPan"),
+            "采样器轨的 pan 已生效 ⇒ 不许再报 sfzTrackPan: {response}"
+        );
+    }
+}
+
+/// 一条**只有一个音符**的采样器轨工程（Master ＋ Lead）。
+fn single_track_sampler_project(pan: f32, sampler: &str) -> yeban_model::YebanProjectV1 {
+    use std::collections::BTreeMap;
+
+    use yeban_model::{
+        ClipContent, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, MidiNote, RoutingEdge,
+        RoutingKind, SamplerBinding, TrackKind, TrackV3, YebanProjectV1,
+    };
+
+    let master = EntityId::new();
+    let track_id = EntityId::new();
+    let clip = EntityId::new();
+    let placement = EntityId::new();
+    let note = EntityId::new();
+    let edge = EntityId::new();
+    let mut project = YebanProjectV1 {
+        id: EntityId::new(),
+        title: "panned sampler".to_owned(),
+        bpm: 120.0,
+        rng_seed: 0x5945_4241_4E00_0255,
+        master_bus_track_id: master,
+        ..YebanProjectV1::default()
+    };
+    project.tracks.insert(
+        master,
+        TrackV3 {
+            id: master,
+            name: "Master".to_owned(),
+            kind: TrackKind::Master,
+            ..TrackV3::default()
+        },
+    );
+    project.routing_graph.nodes.push(master);
+    let mut track = TrackV3 {
+        id: track_id,
+        name: "Lead".to_owned(),
+        kind: TrackKind::Midi,
+        pan,
+        sampler: Some(SamplerBinding {
+            path: sampler.to_owned(),
+        }),
+        ..TrackV3::default()
+    };
+    track.clips.insert(
+        placement,
+        ClipPlacement {
+            id: placement,
+            clip_id: clip,
+            start_tick: 0,
+            duration_ticks: 960,
+            loop_config: LoopConfig::default(),
+            muted: false,
+        },
+    );
+    let mut notes = BTreeMap::new();
+    notes.insert(note, MidiNote::new(note, 0, 60, 960));
+    project.clip_pool.insert(
+        clip,
+        ClipPoolEntry {
+            id: clip,
+            name: "clip".to_owned(),
+            content: ClipContent::Midi { notes },
+        },
+    );
+    project.tracks.insert(track_id, track);
+    project.routing_graph.nodes.push(track_id);
+    project.routing_graph.edges.insert(
+        edge,
+        RoutingEdge {
+            id: edge,
+            source_node: track_id,
+            destination_node: master,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    project.routing_graph.nodes.sort_unstable();
+    project.validate().expect("夹具工程必须合法");
+    project
+}
+
+/// 交错 `f32` 的左右峰值（满刻度线性幅度）。
+fn peaks(samples: &[f32]) -> (f64, f64) {
+    let mut left = 0.0_f64;
+    let mut right = 0.0_f64;
+    for frame in samples.as_chunks::<2>().0 {
+        left = left.max(f64::from(frame[0]).abs());
+        right = right.max(f64::from(frame[1]).abs());
+    }
+    (left, right)
+}
+
+/// 从 MCP 渲染出的 24-bit 立体声 WAV 里读左右峰值（满刻度线性幅度）。
+fn channel_peaks(path: &Path) -> (f64, f64) {
+    let (_format, pcm) = yeban_render::wav::read_plain_wav(path).expect("读回 MCP 产物");
+    let yeban_render::dither::PcmBuffer::Int24(samples) = pcm else {
+        panic!("MCP 母带必须是 24-bit 整数 PCM");
+    };
+    let scale = 8_388_607.0_f64;
+    let mut peaks = [0.0_f64; 2];
+    for (index, sample) in samples.iter().enumerate() {
+        let slot = &mut peaks[index % 2];
+        *slot = slot.max((f64::from(*sample) / scale).abs());
+    }
+    (peaks[0], peaks[1])
 }
 
 /// ⭐ 判据 4（任务单 `#222`）：**CLI 的 tick→帧换算必须看 `bpm`**，且与 MCP 的

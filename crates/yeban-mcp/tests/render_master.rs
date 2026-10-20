@@ -4453,25 +4453,115 @@ fn an_unreadable_sampler_path_is_a_loud_failure_not_a_silent_sine() {
     );
 }
 
-/// ⭐ 判据 3c：`sfzTrackPan` —— **采样器轨**的 `pan` 没有应用（与 CLI 的 SFZ 分支同口径），
-/// 因此它必须出现在 `unsupported` 里（第 324 条：`unsupported` 要说真话）。
+/// 从 MCP 渲染出的 WAV 里读**逐声道峰值**（24-bit 立体声，单位：满刻度线性幅度）。
+///
+/// 用 [`parse_container`] 定位 `data` 负载（产物带 `bext`，⛔ 不能假设 44 字节头）。
+fn channel_peaks(path: &Path) -> (f64, f64) {
+    let bytes = fs::read(path).expect("读回渲染产物");
+    let container = parse_container(&bytes).expect("产物必须是合法容器");
+    assert_eq!(container.format.channels, 2, "判据要立体声产物");
+    assert_eq!(container.format.bits_per_sample, 24, "MCP 母带是 24-bit");
+    assert!(!container.format.is_float, "MCP 母带是整数 PCM");
+    let payload = &bytes[container.data.clone()];
+    let scale = f64::from((1_i32 << 23) - 1);
+    let mut peaks = [0.0_f64; 2];
+    for frame in payload.as_chunks::<6>().0 {
+        for (channel, slot) in peaks.iter_mut().enumerate() {
+            let base = channel * 3;
+            let raw = i32::from(frame[base])
+                | (i32::from(frame[base + 1]) << 8)
+                | (i32::from(frame[base + 2]) << 16);
+            // 24-bit 小端有符号 ⇒ 符号扩展到 i32。
+            let sample = (raw << 8) >> 8;
+            *slot = slot.max((f64::from(sample) / scale).abs());
+        }
+    }
+    (peaks[0], peaks[1])
+}
+
+/// ⭐ 判据 3c（任务单 `#255`）：**采样器轨的 `pan` 真的生效** —— 与 MIDI 轨**同一条**曲线。
+///
+/// 修前（`#221` 的登记）：采样器源刻意不乘 `pan_gains`，`pan != 0` 时登记
+/// `sfzTrackPan` 说"没应用"。`#255` 把 CLI 与 MCP **两侧一起**接上同一条等功率曲线
+/// ⇒ 本判据现在钉三件事：
+///
+/// - `pan = -1` ⇒ 右声道**只剩抖动**（≤ 1 LSB；量化前的浮点右声道逐位 0 由
+///   `render::tests::a_hard_left_sampler_source_writes_a_bitwise_zero_right_channel` 钉住）、
+///   左声道 > 0；
+/// - `pan = -0.5` ⇒ 采样器轨的左右比 == MIDI 轨的左右比 == `tan(3π/8)`；
+/// - `unsupported` **不再**出现 `sfzTrackPan`（报一个已经做到的键就是假话）。
 #[test]
-fn a_sampler_track_with_pan_reports_the_unapplied_pan() {
+fn a_sampler_track_with_pan_applies_the_same_curve_as_midi() {
     let scratch = Scratch::new("sampler-pan");
     let (a, _b) = two_samplers(&scratch);
-    let mut project = project_with_sampler(Some(&a));
     let lead = id(2);
-    project.tracks.get_mut(&lead).expect("Lead").pan = 0.5;
-    project.validate().expect("夹具工程必须合法");
-    let (_sha, _peak, response) = render_once(&scratch, "pan", &project);
+
+    // ---- pan = -0.5：采样器轨 ----
+    let mut sampler = project_with_sampler(Some(&a));
+    sampler.tracks.get_mut(&lead).expect("Lead").pan = -0.5;
+    sampler.validate().expect("夹具工程必须合法");
+    let (_sha, _peak, response) = render_once(&scratch, "pan-half", &sampler);
+    let (sampler_l, sampler_r) = channel_peaks(&scratch.join("pan-half.wav"));
+
+    // ---- pan = -0.5：同一工程、只是不绑采样器 ⇒ MIDI 振荡器路径 ----
+    let mut midi = project_with_sampler(None);
+    midi.tracks.get_mut(&lead).expect("Lead").pan = -0.5;
+    midi.validate().expect("夹具工程必须合法");
+    let (_sha_midi, _peak_midi, _resp_midi) = render_once(&scratch, "pan-half-midi", &midi);
+    let (midi_l, midi_r) = channel_peaks(&scratch.join("pan-half-midi.wav"));
+
+    // ---- pan = -1：满分离（右声道必须逐位 0）----
+    let mut full_left = project_with_sampler(Some(&a));
+    full_left.tracks.get_mut(&lead).expect("Lead").pan = -1.0;
+    full_left.validate().expect("夹具工程必须合法");
+    let (_sha_left, _peak_left, _resp_left) = render_once(&scratch, "pan-full-left", &full_left);
+    let (left_l, left_r) = channel_peaks(&scratch.join("pan-full-left.wav"));
+
+    let sampler_ratio = sampler_l / sampler_r;
+    let midi_ratio = midi_l / midi_r;
+    let expected = (core::f64::consts::FRAC_PI_8).cos() / (core::f64::consts::FRAC_PI_8).sin();
+    println!(
+        "### 采样器 pan=-0.5: L={sampler_l:.9} R={sampler_r:.9} ratio={sampler_ratio:.9}；\
+         MIDI: L={midi_l:.9} R={midi_r:.9} ratio={midi_ratio:.9}；\
+         理论 tan(3π/8)={expected:.9}；差={:.3e}",
+        (sampler_ratio - midi_ratio).abs()
+    );
+    println!("### 采样器 pan=-1: L={left_l:.9} R={left_r:.9}（R 必须 == 0）");
     let unsupported = response["data"]["unsupported"]
         .as_array()
         .expect("unsupported");
+    println!("### 采样器轨 pan=-0.5 的 unsupported（逐字）: {unsupported:?}");
+
     assert!(
-        unsupported.iter().any(|key| key == "sfzTrackPan"),
-        "采样器轨的 pan 没有应用 ⇒ 必须登记 sfzTrackPan: {unsupported:?}"
+        sampler_l > 0.0 && sampler_r > 0.0,
+        "pan = -0.5 ⇒ 两个声道都必须有信号：L={sampler_l} R={sampler_r}"
     );
-    println!("### 采样器轨 pan != 0 的 unsupported（逐字）: {unsupported:?}");
+    assert!(
+        (sampler_ratio - expected).abs() < 1.0e-6,
+        "采样器轨的左右比必须落在等功率曲线上：实得 {sampler_ratio:.9} vs {expected:.9}"
+    );
+    assert!(
+        (sampler_ratio - midi_ratio).abs() < 1.0e-6,
+        "⭐ 采样器轨与 MIDI 轨必须同一条曲线：{sampler_ratio:.9} vs {midi_ratio:.9}"
+    );
+    assert!(left_l > 0.0, "pan = -1 ⇒ 左声道必须仍有信号：L={left_l}");
+    // ⚠ 母带**一律做 TPDF 抖动**再落 24-bit ⇒ 零声道在文件里是 ±1 LSB 的抖动底噪，
+    //    ⛔ 不是"pan 没生效"。量化**之前**的浮点右声道逐位 0 由 `render.rs` 的
+    //    `a_hard_left_sampler_source_writes_a_bitwise_zero_right_channel` 钉住；
+    //    这里钉的是文件层面"右声道只剩抖动"（≤ 1 LSB）。
+    let one_lsb = 1.0_f64 / f64::from((1_i32 << 23) - 1);
+    println!(
+        "### 采样器 pan=-1 的右声道峰值 = {left_r:.12e}（TPDF 抖动地板 = {one_lsb:.12e}；\
+         量化前应为 0）"
+    );
+    assert!(
+        left_r <= one_lsb,
+        "⭐ pan = -1 ⇒ 右声道必须只剩抖动（≤ 1 LSB）：R={left_r:.12e} LSB={one_lsb:.12e}"
+    );
+    assert!(
+        !unsupported.iter().any(|key| key == "sfzTrackPan"),
+        "⭐ 采样器轨的 pan 已经生效 ⇒ 不许再报 sfzTrackPan: {unsupported:?}"
+    );
 }
 
 /// 一次 **JSON-RPC 方法**调用（不是 `tools/call`）—— `tools/list` 这类协议方法用。
@@ -4745,7 +4835,8 @@ fn the_known_unsupported_list_is_not_decoration() {
     use yeban_mcp::domain::render::KNOWN_UNSUPPORTED_KEYS;
 
     let scratch = Scratch::new("known-unsupported");
-    let (a, _b) = two_samplers(&scratch);
+    // `#255`：`sfzTrackPan` 的触发器已删 ⇒ 采样器夹具不再被这条判据使用。
+    let _ = two_samplers(&scratch);
     let lead = id(2);
 
     // 每一项 → 一个**只触发它**的具体输入（其余项在这条输入下不出现）。
@@ -4989,16 +5080,9 @@ fn the_known_unsupported_list_is_not_decoration() {
             }
         }),
     ));
-    // ⑬ `sfzTrackPan`：采样器轨的 pan != 0。
-    triggers.push((
-        "sfzTrackPan",
-        Box::new(|| {
-            let mut project = project_with_sampler(Some(&a));
-            project.tracks.get_mut(&lead).expect("Lead").pan = 0.5;
-            project.validate().expect("夹具合法");
-            render_or_ok(&project, "sfz-pan")
-        }),
-    ));
+    // ⑬ `sfzTrackPan` **已退役**（`#255`）：采样器轨的 pan 现在真的生效（与 MIDI 源
+    //    共用 `track_pan_gains`），因此清单里没有它、这里也**没有**触发器。
+    //    正向判据见 `a_sampler_track_with_pan_applies_the_same_curve_as_midi`。
     // ⑮ `sfzAmplitude`：命中区域声明了 `amplitude=50`（线性百分比，不在 `total_gain()` 里）。
     triggers.push((
         "sfzAmplitude",

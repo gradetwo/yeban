@@ -58,7 +58,6 @@
 //! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定）。⚠ `master` 的 `volume_db` **有**应用，`TrackVolume` 自动化也走第二个站点（执行之后） |
 //! | `sfzLoopExpansion` | ⭐ `#221`：采样器区域要求的**循环**没有展开（每个音符只响一遍，与 `yeban_render_sfz_wav` 同一句登记）。只在真的遇到循环区域时出现 |
 //! | `sfzRegionEnvelope` | ⭐ `#221`：命中的采样器区域声明了 `ampeg_*` 幅度包络，**本渲染器不应用**（缺省值 ⇒ 与引擎逐位相同）。只在真的声明了包络时出现 |
-//! | `sfzTrackPan` | ⭐ `#221`：**采样器轨**的 `pan` 没有应用 —— 与 app 的 SFZ 导出分支（`SfzTrackSource`）同口径：那条路没有声相通路。只在"绑了采样器且 `pan != 0`"时出现，⛔ 不静默 |
 //! | `sfzAmplitude` | ⭐ `#223`：命中区域的 **`amplitude` 一族**（静态值 ≠ 100，或 `amplitude*ccN`）没有应用。`PlaybackSpec::total_gain()` 只含 `volume × 力度 × 交叉淡化`；引擎在它**之外**另乘 `(amplitude + Σ delta)/100` ⇒ 本渲染器与引擎分叉。只在真的声明时出现 |
 //! | `sfzTuneCcModulation` | ⭐ `#223`：命中区域的 **`tune` 的 CC 调制**（`tune*ccN`，`pitch*ccN` 亦归此族）没有求值 —— 基准 `tune` 已烘进 `pitch_ratio`，CC 增量需要 CC 状态，本层没有。只在真的声明时出现 |
 //! | `sfzVolumeCcModulation` | ⭐ `#223`：命中区域的 **`volume` 的 CC 调制**（`volume*ccN` / `gain_ccN`）没有求值 —— 基准 `volume` 已折进 `total_gain()`，CC 增量（dB）需要 CC 状态，本层没有。只在真的声明时出现 |
@@ -69,6 +68,12 @@
 //! ⇒ 缺失连 `unsupported` 都不报。现在的处置是**真的支持**（`TrackV3.sampler` 走
 //! [`sfz::prepare_sampler`] 发声，读数进 `data.sources[].sampler`），因此那个键
 //! **不能**再出现在 `unsupported` 里 —— 报一个已经做到的键就是假话。
+//!
+//! ⚠ **`sfzTrackPan` 这个键也已经退役**（`#255`）：修前 MCP 的 [`SamplerTrackSource`]
+//! 与 CLI 的 SFZ 导出分支同口径地**不应用**声相，因此 `pan != 0` 时登记它；
+//! `#255` 把**两侧一起**接上同一条等功率曲线（MCP 在采样器源上乘 `pan_gains`，
+//! CLI 在 `--sfz` 旁路与引擎轨上乘 `audio_clip::track_pan_gains`）⇒ 采样器轨的 `pan`
+//! **真的生效**，再报它就是说假话。`pan == 0` 仍走恒等快路径（⛔ 不乘 `√2/2`）。
 //!
 //! 已知不支持项的**全集**由 [`KNOWN_UNSUPPORTED_KEYS`] 唯一列出，并由
 //! `render::tests::every_known_unsupported_key_is_actually_reported` 逐条逼出读数
@@ -556,7 +561,10 @@ pub const SAMPLER_MIXED_SOURCE_KIND: &str = "sfz-sampler+audio-clip";
 ///
 /// ⚠ `#221` 之后 `sfzSampler` **不在**这里：采样器绑定现在真的被渲染（见
 /// [`SamplerTrackSource`]），报它就是在说假话。
-pub const KNOWN_UNSUPPORTED_KEYS: [&str; 17] = [
+///
+/// ⚠ `#255` 之后 `sfzTrackPan` 也**不在**这里：采样器轨的 `pan` 现在真的生效
+/// （MCP 与 CLI 同时接上同一条等功率曲线），报它同样是在说假话。
+pub const KNOWN_UNSUPPORTED_KEYS: [&str; 16] = [
     "audioClips",
     "automationLanes",
     "busTrackClips",
@@ -571,7 +579,6 @@ pub const KNOWN_UNSUPPORTED_KEYS: [&str; 17] = [
     "sfzLoopExpansion",
     "sfzRegionEnvelope",
     "sfzSampleSpan",
-    "sfzTrackPan",
     "sfzTuneCcModulation",
     "sfzVolumeCcModulation",
 ];
@@ -2937,18 +2944,19 @@ impl AudioSource for TrackSource {
 /// | 区域选择 / 速率 / 总增益 | `yeban-sfz` 的公开读数（`playback_rate` / `playback_spec`） | **同一份**（`domain::sfz::note_wave`） |
 /// | 样本数据 | 读到文件 PCM，读不到回退内存正弦 | **同一份**（`domain::sfz::SampleCache`） |
 /// | 轨增益 | `track_gain_scale`（`mute`/`solo` × `volume_db`） | **同一个公式**（`audible` × `db_to_linear`） |
-/// | 声相 | 不应用（SFZ 分支没有 pan 通路） | 不应用（否则峰值与 CLI 不可能相等）⇒ **`pan != 0` 时登记 `sfzTrackPan`** |
+/// | 声相 | ⭐ `#255`：`audio_clip::track_pan_gains`（`pan = 0` ⇒ `(1.0, 1.0)`） | ⭐ `#255`：**同一条**等功率曲线 [`pan_gains`]，经 [`track_pan_gains`] 与 MIDI 源共用 |
 /// | 末尾淡出 | 无 | 无（同上：与 CLI 逐位可比） |
 ///
-/// ⚠ 因此本类型**刻意**不乘 `pan_gains`：`render_master` 的 MIDI 路径乘它，
-/// 采样器路径不乘 —— 这个差别不是疏漏，是"与 CLI 同一条音源"的直接后果，
-/// 并且由 `sfzTrackPan` 在 `unsupported` 里**说出来**（第 324 条：不许静默）。
+/// ⭐ `#255`：本类型**乘 `pan_gains`**（与 [`MidiSynthSource`] 共用 [`track_pan_gains`]），
+/// 因为 CLI 的两条采样器入口也乘了同一条曲线 ⇒ 同一 `pan` 下两侧左右比相同、
+/// 与 MIDI 路径同曲线。`pan == 0`（或非有限）走**恒等快路径**（两个声道都是
+/// `track_gain`，⛔ 不乘 `√2/2`）⇒ 居中工程的字节与接线前**逐位相同**。
 struct SamplerTrackSource {
     /// 逐音符的 `(起始帧, 单声道 PCM)`（PCM 已含区域增益；⛔ 不含轨增益）。
     notes: Vec<(u64, Vec<f32>)>,
-    /// 左声道轨增益（= 右声道：采样器路径不应用声相）。
+    /// 左声道增益（轨增益 × 声相左；`pan = 0` ⇒ 就是轨增益）。
     gain_l: f32,
-    /// 右声道轨增益。
+    /// 右声道增益（轨增益 × 声相右；`pan = 0` ⇒ 就是轨增益）。
     gain_r: f32,
 }
 
@@ -3303,6 +3311,9 @@ fn build_source(
     } else {
         0.0
     };
+    // ⭐ `#255`：本轨的**左右声道增益**（轨增益 × 等功率声相）—— MIDI 源与采样器源
+    // **共用这一对**，两条路径因此不可能漂移成两条曲线或两种 `pan = 0` 快路径。
+    let (pan_gain_l, pan_gain_r) = track_pan_gains(track_gain, track.pan);
     // ⭐ `#221`：绑了采样器 ⇒ 这条轨的音符走**采样器音源**（⛔ 不走正弦振荡器）。
     //    这条判据只看 `TrackV3.sampler` 是否为 `Some`，与 app 的
     //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
@@ -3651,10 +3662,8 @@ fn build_source(
             if prepared.notes_looping > 0 {
                 note_unsupported(unsupported, counts, "sfzLoopExpansion");
             }
-            // 采样器路径**不应用声相**（与 CLI 的 SFZ 分支同口径）⇒ 有 pan 就必须说出来。
-            if track.pan.is_finite() && track.pan != 0.0 {
-                note_unsupported(unsupported, counts, "sfzTrackPan");
-            }
+            // ⭐ `#255`：采样器轨的声相**已应用**（见下面的增益构造）：与 MIDI 源共用
+            //    [`track_pan_gains`]，`pan == 0` 走恒等快路径 ⇒ 不再登记 `sfzTrackPan`。
             // ⭐ 区域级 `ampeg_*` 包络**本渲染器不应用**（只有缺省值时两条路才逐位相同）
             // ⇒ 作者真的写了包络就必须登记（第 324 条）。
             if prepared.regions_with_envelope > 0 {
@@ -3694,9 +3703,10 @@ fn build_source(
             (
                 Some(SamplerTrackSource {
                     notes: prepared.notes,
-                    // ⚠ 两个声道同值：采样器路径不应用声相（见该类型的文档表）。
-                    gain_l: track_gain,
-                    gain_r: track_gain,
+                    // ⭐ `#255`：与 MIDI 源**同一对**声道增益（同一条等功率曲线、同一个
+                    // `pan = 0` 快路径）⇒ 两侧与 MIDI 路径的左右比不可能漂移。
+                    gain_l: pan_gain_l,
+                    gain_r: pan_gain_r,
                 }),
                 Some(report),
             )
@@ -3704,16 +3714,8 @@ fn build_source(
     };
     let midi = MidiSynthSource {
         notes: scheduled,
-        gain_l: if track.pan.is_finite() && track.pan != 0.0 {
-            track_gain * pan_gains(track.pan).0
-        } else {
-            track_gain
-        },
-        gain_r: if track.pan.is_finite() && track.pan != 0.0 {
-            track_gain * pan_gains(track.pan).1
-        } else {
-            track_gain
-        },
+        gain_l: pan_gain_l,
+        gain_r: pan_gain_r,
         attack_frames,
         release_frames,
     };
@@ -3765,6 +3767,25 @@ pub(super) fn pan_gains(pan: f32) -> (f32, f32) {
     let clamped = pan.clamp(-1.0, 1.0);
     let angle = (clamped + 1.0) * core::f32::consts::FRAC_PI_4;
     (libm::cosf(angle), libm::sinf(angle))
+}
+
+/// 一条轨的**左右声道增益**（`track_gain × 等功率声相`）—— 第 255 单的**唯一**组合入口。
+///
+/// ⭐ MIDI 源（[`MidiSynthSource`]）与采样器源（[`SamplerTrackSource`]）**共用**本函数
+/// ⇒ 同一 `pan` 下两条路径的左右比相同、且不可能出现"一条乘 `pan_gains`、另一条不乘"
+/// 的分叉。
+///
+/// - `pan == 0`（或非有限）⇒ `(track_gain, track_gain)` —— ⛔ 不乘 `√2/2`：居中的
+///   工程必须与接线前**逐位相同**（这条恒等也是正对照的判据）。
+/// - 否则 `track_gain * pan_gains(pan)`（与 app 的 `audio_clip::track_pan_gains`
+///   **同一条**曲线、同一套衰减律）。
+pub(super) fn track_pan_gains(track_gain: f32, pan: f32) -> (f32, f32) {
+    if pan.is_finite() && pan != 0.0 {
+        let (left, right) = pan_gains(pan);
+        (track_gain * left, track_gain * right)
+    } else {
+        (track_gain, track_gain)
+    }
 }
 
 /// 登记一条"明确没渲染"的部分（键 + 出现次数）。
@@ -4108,6 +4129,70 @@ mod tests {
         assert!((left - 1.0).abs() < 1.0e-6 && right.abs() < 1.0e-6, "全左");
         let (left, right) = pan_gains(1.0);
         assert!((right - 1.0).abs() < 1.0e-6 && left.abs() < 1.0e-6, "全右");
+    }
+
+    /// ⭐ `#255`：MIDI 源与采样器源**共用**的左右增益 —— `pan = 0` 走恒等快路径
+    /// （⛔ 不乘 `√2/2`），`pan = -1` 的右声道**逐位 0**，`pan = -0.5` 落在 `tan(3π/8)`。
+    #[test]
+    fn the_shared_track_pan_gains_keep_center_identity_and_hard_left_silences_right() {
+        let gain = 0.375_f32;
+        let (left, right) = track_pan_gains(gain, 0.0);
+        assert_eq!(left.to_bits(), gain.to_bits(), "pan = 0 ⇒ 左 = 轨增益");
+        assert_eq!(right.to_bits(), gain.to_bits(), "pan = 0 ⇒ 右 = 轨增益");
+
+        let (left, right) = track_pan_gains(gain, -1.0);
+        assert_eq!(left.to_bits(), gain.to_bits(), "pan = -1 ⇒ 左 = 轨增益");
+        assert_eq!(right.to_bits(), 0.0_f32.to_bits(), "pan = -1 ⇒ 右逐位 0");
+
+        let (left, right) = track_pan_gains(gain, -0.5);
+        let ratio = f64::from(left) / f64::from(right);
+        let expected = core::f64::consts::FRAC_PI_8.cos() / core::f64::consts::FRAC_PI_8.sin();
+        assert!(
+            (ratio - expected).abs() < 1.0e-6,
+            "pan = -0.5 的左右比必须落在等功率曲线上：{ratio:.9} vs {expected:.9}"
+        );
+    }
+
+    /// ⭐ `#255`：采样器源的**浮点输出**在 `pan = -1` 时右声道**逐位 0**。
+    ///
+    /// 集成腿（`tests/render_master.rs`）只能读 24-bit 落盘产物，而母带一律做 TPDF
+    /// 抖动 ⇒ 零声道在**文件**里是 ±1 LSB 的抖动底噪（与 pan 无关的既有行为）。本判据
+    /// 直接量**量化之前**的源输出 ⇒ 证明"右声道没有信号"，不是"信号很小"。
+    #[test]
+    fn a_hard_left_sampler_source_writes_a_bitwise_zero_right_channel() {
+        let (gain_l, gain_r) = track_pan_gains(1.0, -1.0);
+        let mut source = SamplerTrackSource {
+            notes: vec![(0, vec![0.5_f32; 64])],
+            gain_l,
+            gain_r,
+        };
+        let mut out = vec![0.0_f32; 64 * 2];
+        source
+            .render_block(
+                BlockContext {
+                    block_index: 0,
+                    first_frame: 0,
+                    frames: 64,
+                    channels: 2,
+                    sample_rate: 48_000,
+                    seed: 0,
+                },
+                &mut out,
+            )
+            .expect("采样器源必须能渲染");
+        let left = out
+            .iter()
+            .step_by(2)
+            .map(|sample| sample.abs())
+            .fold(0.0_f32, f32::max);
+        let right = out
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .map(|sample| sample.abs())
+            .fold(0.0_f32, f32::max);
+        assert!(left > 0.0, "全左必须仍有左声道：L={left}");
+        assert_eq!(right.to_bits(), 0.0_f32.to_bits(), "全左的右声道必须逐位 0");
     }
 
     #[test]

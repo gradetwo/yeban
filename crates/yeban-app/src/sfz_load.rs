@@ -20,6 +20,20 @@
 //!
 //! 值由 [`crate::render_core`] 逐轨算出（⛔ 本模块不写第二份 `volume_db ⇒ 线性` 换算）。
 //!
+//! ## ⭐ 导出音源上的**轨声相**（任务单 `#255`；⛔ 不写第二条曲线）
+//!
+//! ```text
+//! TrackV3.pan ──▶ crate::audio_clip::track_pan_gains(project, track)  // 唯一曲线
+//!            ──▶ SfzTrackSource::with_pan((左, 右))                  // ⭐ 与 MIDI 路径同一个入口
+//!            ──▶ 乘在 render_note_into × 轨增益的输出之外            // 声相只乘一次
+//! ```
+//!
+//! ⚠ 本类型只服务 **`--sfz` 旁路**；`TrackV3.sampler` 那条**模型链条**由
+//! [`crate::export_wav::EngineTrackSource`] 在引擎轨输出（声相之前）之后乘**同一个**
+//! `track_pan_gains` ⇒ 两条采样器入口与 MIDI 振荡器路径是同一条等功率曲线。
+//! `pan == 0` ⇒ `(1.0, 1.0)` ⇒ `render_block` 走原来的"单声道铺到所有声道"分支，
+//! 导出字节与接线前**逐位相同**。
+//!
 //! ## ⭐ 模型链条：`TrackV3.sampler` ⇒ 真的发声的摊平表（任务单 `#79`）
 //!
 //! ```text
@@ -1349,6 +1363,13 @@ pub struct SfzTrackSource {
     /// （`snapshot::project_schedules`）与声部槽（`SynthEngine::set_track_gain_scales`）
     /// 共用的**唯一**实现。⛔ 本类型**不**自己写一份 `volume_db ⇒ 线性` 的换算。
     track_gain: f32,
+    /// ⭐ **轨声相**（`(左, 右)`；默认 **`(1.0, 1.0)`＝居中**，任务单 `#255`）。
+    ///
+    /// 值由 [`crate::render_core`] 从 [`crate::audio_clip::track_pan_gains`] 注入 ——
+    /// 与 MIDI 振荡器路径、引擎乐器路径、MCP 的 `SamplerTrackSource` **同一条**
+    /// 等功率曲线（⛔ 本类型不自己算 `cos`/`sin`）。`(1.0, 1.0)` ⇒ 走原来的
+    /// "单声道铺到所有声道"分支 ⇒ `pan = 0` 的导出字节逐位不变。
+    pan: (f32, f32),
     /// 每个音符的渲染状态。
     notes: Vec<SfzNoteState>,
 }
@@ -1391,6 +1412,8 @@ impl SfzTrackSource {
             // ⭐ 默认**单位增益**（⛔ 不是 `0.0`：默认不是静音）—— 与引擎侧
             // `NoteSchedule::from_sorted` 的默认 `track_gain = 1.0` 同口径。
             track_gain: 1.0,
+            // ⭐ 默认**居中**（`1.0, 1.0`）：没注入时导出字节与接线前逐位相同（`#255`）。
+            pan: (1.0, 1.0),
             notes: notes
                 .iter()
                 .map(|(start, duration, pitch, velocity)| SfzNoteState {
@@ -1459,6 +1482,17 @@ impl SfzTrackSource {
         self.track_gain
     }
 
+    /// ⭐ 写入**轨声相**（`(左, 右)`；构造期一次，任务单 `#255`）。
+    ///
+    /// 值必须来自 [`crate::audio_clip::track_pan_gains`]（MIDI 路径与音频片段路径的
+    /// **同一个**函数）—— ⛔ 本类型不接受"这里自己写一条曲线"。缺省 `(1.0, 1.0)`
+    /// ⇒ 原来的单声道铺放分支，导出字节逐位不变。
+    #[must_use]
+    pub const fn with_pan(mut self, pan: (f32, f32)) -> Self {
+        self.pan = pan;
+        self
+    }
+
     /// 保证第 `index` 个音符**整段**渲染完成（只做一次）。
     fn ensure_rendered(&mut self, index: usize) {
         if self.notes[index].rendered > 0 {
@@ -1506,6 +1540,7 @@ impl yeban_render::render::AudioSource for SfzTrackSource {
         let frames = context.frames.min(out.len() / channels);
         let block_start = context.first_frame;
         let block_end = block_start + frames as u64;
+        let (gain_l, gain_r) = self.pan;
         for index in 0..self.notes.len() {
             let note_start = self.notes[index].start_frame;
             if block_end <= note_start {
@@ -1532,8 +1567,19 @@ impl yeban_render::render::AudioSource for SfzTrackSource {
                     break;
                 }
                 let value = state.scratch[offset];
-                for channel in 0..channels {
-                    out[frame_in_block * channels + channel] += value;
+                let base = frame_in_block * channels;
+                if gain_l == 1.0 && gain_r == 1.0 {
+                    // ⭐ 居中（绝大多数工程）：原来的"单声道铺到所有声道"，逐位不变。
+                    for channel in 0..channels {
+                        out[base + channel] += value;
+                    }
+                } else {
+                    // ⭐ `#255`：等功率声相。第 0 声道左、第 1 声道右，其余保持 0
+                    //    （与 MIDI 振荡器路径 / 引擎乐器源逐声道口径相同）。
+                    out[base] += value * gain_l;
+                    if channels > 1 {
+                        out[base + 1] += value * gain_r;
+                    }
                 }
             }
         }

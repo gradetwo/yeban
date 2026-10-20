@@ -507,11 +507,11 @@ pub fn render_project_f32_with_plans_under(
                 ),
             }
             // ⭐ 与引擎侧同形（`NoteSchedule::with_track_gain`）：轨增益乘在**乐器层输出之外**。
-            // ⚠ `#251` 的边界：`--sfz` 是**采样器**替换（不是振荡器 MIDI 路径），MCP 的
-            //    `SamplerTrackSource` 也不应用声相（`render.rs` 的同一张登记表）⇒ 这里
-            //    同样不乘 pan，两条采样器路径才继续逐位一致（判据
-            //    `mcp_mount::embedded_sampler::the_mcp_export_and_the_cli_leg_agree_about_the_sampler`）。
-            .with_track_gain(track_gain);
+            // ⭐ `#255`：`--sfz` 旁路也吃**轨声相** —— 值来自 [`crate::audio_clip::track_pan_gains`]
+            //    （与 MIDI 振荡器路径／MCP 的 `SamplerTrackSource` 同一条等功率曲线）。
+            //    `pan == 0` ⇒ `(1.0, 1.0)` ⇒ 导出字节逐位不变。
+            .with_track_gain(track_gain)
+            .with_pan(track_pan_of(project, track_id));
             labels.push(track_source.sample_source());
             sources.insert(track_id, Box::new(track_source));
         }
@@ -520,15 +520,12 @@ pub fn render_project_f32_with_plans_under(
             .map_or_else(|| "sfz(无区域)".to_owned(), |label| format!("sfz({label})"))
     } else if let Some(snapshot) = snapshot.as_ref() {
         for track_id in renderable.clone() {
-            // ⭐ `#251` 的**分流边界**（与 MCP 的 `build_source` 同一条）：
-            // 绑定了采样器的轨（在快照 `sfz()` 表里）在 MCP 走 `SamplerTrackSource`，
-            // 那个源**不应用声相** ⇒ CLI 这里也保持 `(1.0, 1.0)`；只有**振荡器**轨
-            // （不在表里，MCP 走 `MidiSynthSource`）才乘 pan。
-            let pan = if snapshot.sfz().contains_key(&track_id) {
-                (1.0, 1.0)
-            } else {
-                track_pan_of(project, track_id)
-            };
+            // ⭐ `#255`：**采样器轨也乘 pan**。修前这里按 `snapshot.sfz().contains_key`
+            // 分流、把绑了采样器的轨钉成 `(1.0, 1.0)`（对齐当时**不应用**声相的 MCP
+            // `SamplerTrackSource`）。现在 MCP 那边也在同一个源上乘**同一条**曲线 ⇒
+            // 分流取消，全部走 [`track_pan_of`]（它内部是 `audio_clip::track_pan_gains`）。
+            // `render_track` 输出的是**声相之前**的单声道 ⇒ 在这里注入 pan（`#251` 的落点不变）。
+            let pan = track_pan_of(project, track_id);
             sources.insert(
                 track_id,
                 // ⭐ `Arc::clone` 是**指针复制**（ADR：实时侧只借快照）：摊平表的 PCM 留在
