@@ -30,10 +30,15 @@
 //!
 //! ## 边界（本模块没有证明什么）
 //!
-//! - 只接 [`AutomationTarget::TrackVolume`]；`TrackPan` / `SendGain` / `DeviceParam` /
-//!   `Macro` 仍由调用方如实登记为不支持；
+//! - 只接 [`AutomationTarget::TrackVolume`] 与 [`AutomationTarget::SendGain`]；
+//!   `TrackPan` / `DeviceParam` / `Macro` 仍由调用方如实登记为不支持；
 //! - 主总线的第二个站点在调用方（主总线没有源，它的 `volume_db` 在源侧无法表达）；
+//! - 发送量的落点在 [`crate::render::RenderPlan`] 的**入边归约**里（见
+//!   [`SendGainAutomation`]）：它乘的是该边的**静态增益**，与源节点的 `TrackVolume`
+//!   是两个不同的站点，互不叠加；
 //! - 没有把“自动化值”写回快照或模型：这是**离线渲染的一次性读数**。
+
+use std::collections::BTreeMap;
 
 use yeban_dsp::smoothing::ParamSmoother;
 use yeban_model::{AutomationTarget, EntityId, PPQ, TrackV3, YebanProjectV1};
@@ -115,12 +120,47 @@ impl TrackGainAutomation {
     /// ⇒ [`Self::is_identity`] 为真（调用方应整段跳过）。
     #[must_use]
     pub fn new(project: &YebanProjectV1, track_id: EntityId, sample_rate: u32) -> Self {
-        let target = AutomationTarget::TrackVolume { track_id };
-        let static_db = project
-            .tracks
-            .get(&track_id)
-            .map_or(0.0, |track| track.volume_db);
+        Self::with_target(
+            project,
+            AutomationTarget::TrackVolume { track_id },
+            track_id,
+            sample_rate,
+        )
+    }
+
+    /// 两个目标（`TrackVolume` / `SendGain`）**共用**的构造器。
+    ///
+    /// 唯一的差别是“静态值从哪里读”：`TrackVolume` 来自 `TrackV3::volume_db`，
+    /// `SendGain` 来自 `RoutingEdge::gain_db`（`None` = 单位增益 = 0 dB）。求值、
+    /// 平滑与恒等判定**没有**第二份实现 —— 这正是 [`SendGainAutomation`] 复用它的原因。
+    fn with_target(
+        project: &YebanProjectV1,
+        target: AutomationTarget,
+        track_id: EntityId,
+        sample_rate: u32,
+    ) -> Self {
+        let static_db = match target {
+            AutomationTarget::TrackVolume { .. } => project
+                .tracks
+                .get(&track_id)
+                .map_or(0.0, |track| track.volume_db),
+            AutomationTarget::SendGain { edge_id, .. } => project
+                .routing_graph
+                .edges
+                .get(&edge_id)
+                .map_or(0.0, |edge| edge.gain_db.unwrap_or(0.0)),
+            // 本模块不构造其它目标；退回单位增益并让恒等快路径兜住。
+            AutomationTarget::TrackPan { .. }
+            | AutomationTarget::DeviceParam { .. }
+            | AutomationTarget::Macro { .. } => 0.0,
+        };
         let static_gain = db_to_linear(static_db);
+        let target_exists = match target {
+            AutomationTarget::SendGain { edge_id, .. } => {
+                project.routing_graph.edges.contains_key(&edge_id)
+            }
+            _ => true,
+        };
         let lane = project.automation_lane(&target);
         let (evaluable, points, identity) = match lane {
             None => (false, 0, true),
@@ -130,16 +170,19 @@ impl TrackGainAutomation {
                 // “曲线值处处等于静态值”的充要条件：每个采样点上的**线性增益**都与
                 // 静态推子逐位相同。分段插值在两端相等时整段恒定，边界是保持；
                 // 因此只要所有点相等，整条曲线就处处相等。
-                let identity = lane
-                    .points
-                    .values()
-                    .all(|point| db_to_linear(point.value).to_bits() == static_gain.to_bits());
-                (true, lane.points.len(), identity)
+                let identity = !target_exists
+                    || lane
+                        .points
+                        .values()
+                        .all(|point| db_to_linear(point.value).to_bits() == static_gain.to_bits());
+                (target_exists, lane.points.len(), identity)
             }
         };
         // 最小求值工程：只放本轨，泳道键/值原样克隆（`automation_value_at` 的目标
         // 对账只看 `tracks` 里有没有这条轨）。没有泳道时也放一条空轨，保证目标对账
-        // 与真实工程同解。
+        // 与真实工程同解。`SendGain` 还要求那条**路由边**存在，因此克隆它（逐字段，
+        // 不改原工程）；没有这条边时 `target_exists` 已是 `false`，构造的工程不会
+        // 被求值（恒等快路径）。
         let mut evaluator = YebanProjectV1::default();
         let mut track = TrackV3 {
             id: track_id,
@@ -150,16 +193,14 @@ impl TrackGainAutomation {
             track.automation_lanes = track_ref.automation_lanes.clone();
         }
         evaluator.tracks.insert(track_id, track);
-        #[allow(clippy::cast_precision_loss)]
-        let mut smoother = ParamSmoother::with_default_time(sample_rate as f32);
-        // 首块的曲线值就是起点：不从这里“淡入”，否则 tick 0 处的自动化值会被
-        // 5 ms 的上升沿改写（那是监听侧才需要的防咔嗒行为；离线母带从 0 帧开始，
-        // 曲线在 0 帧的值就是作者写的值）。
-        if !identity && let Ok(Some(value)) = evaluator.automation_value_at(&target, 0) {
-            let ratio = automation_ratio(value, static_gain);
-            smoother.snap_to(ratio);
+        if let AutomationTarget::SendGain { edge_id, .. } = target
+            && let Some(edge) = project.routing_graph.edges.get(&edge_id)
+        {
+            evaluator.routing_graph.edges.insert(edge_id, *edge);
         }
-        Self {
+        #[allow(clippy::cast_precision_loss)]
+        let smoother = ParamSmoother::with_default_time(sample_rate as f32);
+        let mut automation = Self {
             target,
             static_db,
             static_gain,
@@ -172,7 +213,32 @@ impl TrackGainAutomation {
             points,
             blocks: 0,
             last_db: None,
+        };
+        // 首块的曲线值就是起点：不从这里“淡入”，否则 tick 0 处的自动化值会被
+        // 5 ms 的上升沿改写（那是监听侧才需要的防咔嗒行为；离线母带从 0 帧开始，
+        // 曲线在 0 帧的值就是作者写的值）。
+        automation.snap_to_start();
+        automation
+    }
+
+    /// 把平滑器直接置于 tick 0 的曲线值（构造与复位共用）。
+    fn snap_to_start(&mut self) {
+        if self.identity {
+            return;
         }
+        if let Ok(Some(value)) = self.evaluator.automation_value_at(&self.target, 0) {
+            let ratio = automation_ratio(value, self.static_gain);
+            self.smoother.snap_to(ratio);
+        }
+    }
+
+    /// 复位到“全新构造”的状态（同一个计划连续执行时调用）。
+    ///
+    /// 求值器本身只读、无跨执行状态；需要复位的是 5 ms 平滑器与读数计数器。
+    pub fn reset_for_execution(&mut self) {
+        self.blocks = 0;
+        self.last_db = None;
+        self.snap_to_start();
     }
 
     /// 曲线是否**处处**等于静态推子（⇒ 一个样本都不用碰）。
@@ -320,6 +386,178 @@ impl TrackGainAutomation {
     }
 }
 
+/// 一条**发送边**的增益自动化（`AutomationTarget::SendGain`）。
+///
+/// ## 与 `TrackVolume` 的关系
+///
+/// 求值、5 ms 平滑、恒等快路径**全部**复用 [`TrackGainAutomation`]（同一个
+/// `automation_value_at`、同一个 [`ParamSmoother`]、同一套“曲线处处等于静态值”判定）。
+/// 本类型只多两件事：
+///
+/// 1. **静态值来自路由边**（`RoutingEdge::gain_db`，`None` = 单位增益 = 0 dB），
+///    不是 `TrackV3::volume_db`；
+/// 2. **落点在入边归约**（[`crate::render::RenderPlan`] 的 `render_node`）：把
+///    “静态边增益 × R55 比率”逐样本加到目标节点缓冲，而不是乘在一个源的输出上。
+///
+/// ## 分母
+///
+/// 与 `TrackVolume` 同一条 R55 纪律：分母是**静态边增益**，⛔ 不是静音/独奏之后的
+/// 增益。发送的源若被静音，源输出已经是 0，乘任何比率仍是 0 —— 不会被“复活”。
+#[derive(Clone, Debug)]
+pub struct SendGainAutomation {
+    /// 共用核心（目标永远是 `SendGain`）。
+    inner: TrackGainAutomation,
+    /// 路由边身份（`inner.target` 的冗余只读副本，方便调用方与计划对账）。
+    edge_id: EntityId,
+}
+
+impl SendGainAutomation {
+    /// 构造一条发送边的求值器。
+    ///
+    /// 没有泳道 / `read_enabled == false` / 空泳道 / 每个点的线性增益都等于静态边增益
+    /// ⇒ [`Self::is_identity`] 为真（调用方走原来的静态累加，一个样本都不多碰）。
+    #[must_use]
+    pub fn new(
+        project: &YebanProjectV1,
+        track_id: EntityId,
+        edge_id: EntityId,
+        sample_rate: u32,
+    ) -> Self {
+        Self {
+            inner: TrackGainAutomation::with_target(
+                project,
+                AutomationTarget::SendGain { track_id, edge_id },
+                track_id,
+                sample_rate,
+            ),
+            edge_id,
+        }
+    }
+
+    /// 这条自动化所属的路由边身份。
+    #[must_use]
+    pub const fn edge_id(&self) -> EntityId {
+        self.edge_id
+    }
+
+    /// 曲线是否**处处**等于静态边增益（⇒ 一个样本都不用碰）。
+    #[must_use]
+    pub const fn is_identity(&self) -> bool {
+        self.inner.is_identity()
+    }
+
+    /// 泳道是否有可求值点（有点且 `read_enabled`）。
+    #[must_use]
+    pub const fn is_evaluable(&self) -> bool {
+        self.inner.is_evaluable()
+    }
+
+    /// 泳道的点数。
+    #[must_use]
+    pub const fn points(&self) -> usize {
+        self.inner.points()
+    }
+
+    /// 静态边增益的 dB 值。
+    #[must_use]
+    pub const fn static_db(&self) -> f32 {
+        self.inner.static_db()
+    }
+
+    /// 静态边增益的线性值。
+    #[must_use]
+    pub const fn static_gain(&self) -> f32 {
+        self.inner.static_gain()
+    }
+
+    /// 已被求值的块数（只统计**非恒等**路径）。
+    #[must_use]
+    pub const fn evaluated_blocks(&self) -> u64 {
+        self.inner.evaluated_blocks()
+    }
+
+    /// 最近一次块级曲线值（dB）；恒等路径不更新。
+    #[must_use]
+    pub const fn last_db(&self) -> Option<f32> {
+        self.inner.last_db()
+    }
+
+    /// 复位到“全新构造”的状态（同一个 [`crate::render::RenderPlan`] 连续执行时调用）。
+    pub fn reset_for_execution(&mut self) {
+        self.inner.reset_for_execution();
+    }
+
+    /// 把 `src` 按“静态边增益 × R55 比率”累加到 `dst`。
+    ///
+    /// 逐样本平滑（块级求值 + [`ParamSmoother`]）与 [`TrackGainAutomation::apply_gain_block`]
+    /// 同一个形状；区别只是这里是 `dst += src * gain`，不是 `dst *= gain`。
+    ///
+    /// 恒等 ⇒ 走与没有自动化**逐位相同**的 [`crate::sum::accumulate_into`]。
+    pub fn accumulate_block(
+        &mut self,
+        src: &[f32],
+        dst: &mut [f32],
+        first_frame: u64,
+        frames: usize,
+        channels: usize,
+        base_gain: f32,
+    ) {
+        if channels == 0 || frames == 0 {
+            return;
+        }
+        let frames = frames.min(src.len() / channels).min(dst.len() / channels);
+        if frames == 0 {
+            return;
+        }
+        if self.inner.identity {
+            crate::sum::accumulate_into(
+                &src[..frames * channels],
+                &mut dst[..frames * channels],
+                base_gain,
+            );
+            return;
+        }
+        let mut offset = 0usize;
+        while offset < frames {
+            let chunk = (frames - offset).min(AUTOMATION_BLOCK_SIZE);
+            let block_first = first_frame.saturating_add(offset as u64);
+            self.inner.begin_block(block_first);
+            for frame in 0..chunk {
+                let gain = base_gain * self.inner.smoother.process();
+                for channel in 0..channels {
+                    let index = offset * channels + frame * channels + channel;
+                    dst[index] += src[index] * gain;
+                }
+            }
+            offset += chunk;
+        }
+    }
+}
+
+/// 扫描工程里**全部** `SendGain` 泳道，给每条边构造一个求值器（按边身份升序）。
+///
+/// 两个导出（MCP 的 `yeban_render_master` 与 app 的 `--export-wav`）都调它 ⇒
+/// “哪些泳道要被接上”只有一份实现。恒等泳道也会返回（调用方按
+/// [`SendGainAutomation::is_identity`] 走静态路径，结果与“没有泳道”逐字节相同）。
+#[must_use]
+pub fn send_gain_automations(
+    project: &YebanProjectV1,
+    sample_rate: u32,
+) -> BTreeMap<EntityId, SendGainAutomation> {
+    let mut out = BTreeMap::new();
+    for (track_id, track) in &project.tracks {
+        for target in track.automation_lanes.keys() {
+            if let AutomationTarget::SendGain { edge_id, .. } = target {
+                out.insert(
+                    *edge_id,
+                    SendGainAutomation::new(project, *track_id, *edge_id, sample_rate),
+                );
+            }
+        }
+    }
+    out
+}
+
 /// R55 换域：`db_to_linear(自动化 dB) / db_to_linear(静态 dB)`。
 ///
 /// 分母为 0（静态推子下溢到 0）时比率不可表示 ⇒ 返回 `1.0`（退回静态推子），
@@ -338,7 +576,10 @@ mod tests {
     use super::*;
     use std::str::FromStr as _;
 
-    use yeban_model::{AutomationLane, AutomationPoint, AutomationWriteMode, CurveType};
+    use yeban_model::{
+        AutomationLane, AutomationPoint, AutomationWriteMode, CurveType, RoutingEdge, RoutingKind,
+        TrackKind,
+    };
 
     fn point(id: u128, tick: u64, value: f32) -> AutomationPoint {
         let text = format!("01J8Z5Q0R7K3M9X2V4B6N8{id:04}");
@@ -467,5 +708,131 @@ mod tests {
         automation.apply_ratio_block(&mut out, 0, 1_024, 1);
         assert_eq!(out.len(), 1_024);
         assert!(out.iter().all(|value| value.to_bits() == 0));
+    }
+
+    /// `SendGain` 夹具：一条发送边（`edge_gain_db`）+ 一条轨上的泳道。
+    fn project_with_send_lane(
+        values: &[(u64, f32)],
+        read_enabled: bool,
+        edge_gain_db: Option<f32>,
+    ) -> (YebanProjectV1, EntityId, EntityId) {
+        let track_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8P002").expect("ULID");
+        let master = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8M001").expect("ULID");
+        let edge_id = EntityId::from_str("01J8Z5Q0R7K3M9X2V4B6N8E002").expect("ULID");
+        let mut project = YebanProjectV1::default();
+        let mut track = TrackV3 {
+            id: track_id,
+            ..TrackV3::default()
+        };
+        if !values.is_empty() {
+            let target = AutomationTarget::SendGain { track_id, edge_id };
+            let mut points = std::collections::BTreeMap::new();
+            for (index, (tick, value)) in values.iter().enumerate() {
+                let point = point(index as u128, *tick, *value);
+                points.insert(point.id, point);
+            }
+            track.automation_lanes.insert(
+                target,
+                AutomationLane {
+                    target,
+                    points,
+                    read_enabled,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        }
+        project.tracks.insert(track_id, track);
+        project.tracks.insert(
+            master,
+            TrackV3 {
+                id: master,
+                kind: TrackKind::Master,
+                ..TrackV3::default()
+            },
+        );
+        project.routing_graph.edges.insert(
+            edge_id,
+            RoutingEdge {
+                id: edge_id,
+                source_node: track_id,
+                destination_node: master,
+                kind: RoutingKind::SendToAux,
+                gain_db: edge_gain_db,
+            },
+        );
+        (project, track_id, edge_id)
+    }
+
+    #[test]
+    fn a_send_lane_with_no_points_is_the_identity() {
+        let (project, track, edge) = project_with_send_lane(&[], true, None);
+        let automation = SendGainAutomation::new(&project, track, edge, 48_000);
+        assert!(automation.is_identity());
+        assert!(!automation.is_evaluable());
+        assert_eq!(automation.points(), 0);
+        assert_eq!(automation.edge_id(), edge);
+    }
+
+    #[test]
+    fn a_disabled_send_lane_is_the_identity() {
+        let (project, track, edge) =
+            project_with_send_lane(&[(0, -60.0), (1_920, 0.0)], false, None);
+        let automation = SendGainAutomation::new(&project, track, edge, 48_000);
+        assert!(automation.is_identity());
+        assert!(!automation.is_evaluable());
+        assert_eq!(automation.points(), 2);
+    }
+
+    #[test]
+    fn a_send_lane_flat_at_the_static_edge_gain_is_the_identity() {
+        // 静态边增益 -6 dB，泳道处处 -6 dB ⇒ 恒等（比较的是**线性增益**的位型）。
+        let (project, track, edge) =
+            project_with_send_lane(&[(0, -6.0), (1_920, -6.0)], true, Some(-6.0));
+        let automation = SendGainAutomation::new(&project, track, edge, 48_000);
+        assert!(automation.is_identity());
+        assert!(automation.is_evaluable());
+        assert!((automation.static_db() - -6.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_send_ramp_moves_the_accumulated_gain_and_uses_the_model_entry_point() {
+        let (project, track, edge) =
+            project_with_send_lane(&[(0, -60.0), (1_920, 0.0)], true, None);
+        let mut automation = SendGainAutomation::new(&project, track, edge, 48_000);
+        assert!(!automation.is_identity());
+        let src = vec![1.0f32; 2 * 96_000];
+        let mut dst = vec![0.0f32; 2 * 96_000];
+        automation.accumulate_block(&src, &mut dst, 0, 96_000, 2, 1.0);
+        let early = dst[0];
+        let late = dst[(96_000 - 1) * 2];
+        assert!(early < late, "发送渐强必须让后段更响: {early} vs {late}");
+        assert!(early > 0.0 && late <= 1.0, "增益落在静态边增益附近");
+        assert!(automation.evaluated_blocks() > 0);
+        assert_eq!(automation.last_db(), Some(0.0));
+    }
+
+    #[test]
+    fn a_send_lane_whose_edge_is_missing_is_the_identity() {
+        // 目标对账失败（边不存在）⇒ 不求值、不改字节（与 `#243` 的“关掉＝不存在”同口径）。
+        let (mut project, track, edge) =
+            project_with_send_lane(&[(0, -60.0), (1_920, 0.0)], true, None);
+        project.routing_graph.edges.remove(&edge);
+        let mut automation = SendGainAutomation::new(&project, track, edge, 48_000);
+        assert!(automation.is_identity());
+        assert!(!automation.is_evaluable());
+        let src = vec![0.25f32; 512];
+        let mut dst = vec![0.0f32; 512];
+        automation.accumulate_block(&src, &mut dst, 0, 256, 2, 1.0);
+        assert_eq!(dst, src, "恒等快路径必须只做静态累加");
+    }
+
+    #[test]
+    fn send_gain_automations_finds_one_evaluator_per_edge() {
+        let (project, _track, edge) =
+            project_with_send_lane(&[(0, -60.0), (1_920, 0.0)], true, None);
+        let automations = send_gain_automations(&project, 48_000);
+        assert_eq!(automations.len(), 1, "只有带泳道的那条边被接上");
+        assert!(!automations[&edge].is_identity());
     }
 }

@@ -88,7 +88,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use yeban_model::{AssetHash, EntityId, YebanProjectV1};
-use yeban_render::automation::TrackGainAutomation;
+use yeban_render::automation::{TrackGainAutomation, send_gain_automations};
 use yeban_render::inserts::project_inserts;
 use yeban_render::render::{
     AudioSource, BlockContext, RenderError, RenderOptions, RenderOutput, RenderPlan, db_to_linear,
@@ -452,6 +452,15 @@ pub fn render_project_f32_with_plans_under(
         &inserts,
     )
     .map_err(|error| WavExportError::Render(error.to_string()))?;
+
+    // ---- 1b. ⭐ 发送增益自动化（`SendGain`，任务单 `#256`）----
+    //
+    // 落点是**这条路由边的入边归约**（`RenderPlan::render_node`），因此与 MCP 的
+    // `yeban_render_master` 共用同一份求值/平滑实现（`yeban_render::automation`）。
+    // 没有 `SendGain` 泳道的工程一个计划槽都不改 ⇒ 产物逐字节不变。
+    for automation in send_gain_automations(project, options.sample_rate).into_values() {
+        plan.attach_send_automation(automation);
+    }
 
     // ---- 2. 每条非 master 轨道一个源 ----
     //

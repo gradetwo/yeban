@@ -49,7 +49,7 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`TrackPan` / `SendGain` / `DeviceParam` / `Macro`），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`TrackPan` / `DeviceParam` / `Macro`），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
@@ -413,7 +413,7 @@ use yeban_model::{
 use yeban_render::dither::{BitDepth, quantize};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
-use yeban_render::automation::TrackGainAutomation;
+use yeban_render::automation::{TrackGainAutomation, send_gain_automations};
 use yeban_render::inserts::{project_inserts, track_has_unhandled_dsp};
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -1443,8 +1443,9 @@ impl AudioAssetReport {
 ///
 /// - `evaluable` = 泳道有点 **且** `readEnabled == true`（`automation_value_at` 的
 ///   三个“无值”出口里的两个）；空泳道与关掉的泳道因此**不可求值**；
-/// - `supported` = 本渲染器真的消费这个目标。首期只支持 `TrackVolume`，且只支持
-///   两类落点：源节点（源侧乘 R55 比率）与主总线（执行后乘静态主推子 × 比率）；
+/// - `supported` = 本渲染器真的消费这个目标。首期支持 `TrackVolume` 与 `SendGain`：
+///   `TrackVolume` 只有两类落点（源节点 / 主总线），`SendGain` 的落点是那条**入边**
+///   在 `RenderPlan` 里的归约（任务单 `#256`）；
 /// - `applied` = `evaluable && supported`；
 /// - `unsupported` = `evaluable && !supported`（调用方据此登记 `automationLanes`）。
 ///
@@ -1542,9 +1543,17 @@ pub struct AutomationReport {
 }
 
 impl AutomationReport {
-    /// 扫描工程，生成读数。`source_nodes` 用来判定 `TrackVolume` 的落点是否可应用。
+    /// 扫描工程，生成读数。
+    ///
+    /// - `source_nodes` 用来判定 `TrackVolume` 的落点是否可应用（源节点 / 主总线）；
+    /// - `rendered_edges` 是**保留子图里的入边身份**（`RenderPlan::edge_ids()`）——
+    ///   `SendGain` 只有落在这张表里才算“会被累加”（任务单 `#256`）。
     #[must_use]
-    pub fn from_project(project: &YebanProjectV1, source_nodes: &[EntityId]) -> Self {
+    pub fn from_project(
+        project: &YebanProjectV1,
+        source_nodes: &[EntityId],
+        rendered_edges: &[EntityId],
+    ) -> Self {
         let master = project.master_bus_track_id;
         let mut tracks = Vec::with_capacity(project.tracks.len());
         let mut lanes = 0usize;
@@ -1559,11 +1568,15 @@ impl AutomationReport {
                 if is_evaluable {
                     evaluable += 1;
                 }
-                // 首期唯一支持的目标。落点：源节点（源侧）或主总线（执行后）。
+                // 支持的目标与落点：
+                // - `TrackVolume`：源节点（源侧）或主总线（执行后）；
+                // - `SendGain`：这条边在保留子图的入边归约里（`#256`）；
+                // - 其余三个目标仍不支持。
                 let supported = match target {
                     AutomationTarget::TrackVolume { track_id } => {
                         *track_id == master || source_nodes.contains(track_id)
                     }
+                    AutomationTarget::SendGain { edge_id, .. } => rendered_edges.contains(edge_id),
                     _ => false,
                 };
                 let is_applied = is_evaluable && supported;
@@ -1614,17 +1627,17 @@ impl AutomationReport {
         serde_json::json!({
             "wired": true,
             "evaluator": "YebanProjectV1::automation_value_at",
-            "targetsSupported": ["TrackVolume"],
-            "targetsUnsupported": ["TrackPan", "SendGain", "DeviceParam", "Macro"],
+            "targetsSupported": ["TrackVolume", "SendGain"],
+            "targetsUnsupported": ["TrackPan", "DeviceParam", "Macro"],
             "granularity": {
                 "blockSize": L1_BLOCK_SIZE,
                 "curve": "每块起点取一次曲线值（tick = floor(frame * PPQ * bpm / (sample_rate * 60))）",
                 "smoothing": "块内逐样本一阶低通；时间常数 5 ms",
             },
             "domainTransfer": {
-                "ratio": "db_to_linear(自动化 dB) / db_to_linear(track.volume_db)",
+                "ratio": "db_to_linear(自动化 dB) / db_to_linear(静态值 dB)（TrackVolume 取 track.volume_db；SendGain 取 edge.gain_db.unwrap_or(0.0)）",
                 "adr": "R55",
-                "denominator": "静态推子（⛔ 不是 mute/solo 之后的轨增益；静音时为 0.0 会除零）",
+                "denominator": "静态值（⛔ 不是 mute/solo 之后的增益；TrackVolume 静音时为 0.0 会除零）",
             },
             "smoother": "yeban_dsp::smoothing::ParamSmoother",
             "timeConstantSeconds": 0.005,
@@ -2126,10 +2139,13 @@ pub fn build(
     //    唯一的泳道连报都不报；空泳道又会被一律报成 `automationLanes`。现在：
     //    - 空泳道 / `readEnabled:false` / 所有点都等于静态推子 ⇒ 可求值但无效果，
     //      读数里可见，**不**进 `unsupported`；
-    //    - 有可求值点、但不是 `TrackVolume`，或 `TrackVolume` 落在不可应用的总线轨上
-    //      ⇒ 进 `unsupported`（`automationLanes`）；
-    //    - 源节点与主总线上的 `TrackVolume` 真的被应用（见 `TrackSource` 与第 9 步）。
-    let automation = AutomationReport::from_project(project, &source_nodes);
+    //    - 有可求值点、但不是 `TrackVolume`/`SendGain`，或 `TrackVolume` 落在不可
+    //      应用的总线轨上、`SendGain` 落在被剪枝的边上 ⇒ 进 `unsupported`
+    //      （`automationLanes`）；
+    //    - 源节点与主总线上的 `TrackVolume`、保留子图入边上的 `SendGain` 真的被应用
+    //      （见 `TrackSource`、第 9 步与 `RenderPlan::attach_send_automation`）。
+    let rendered_edges = probe_plan.edge_ids();
+    let automation = AutomationReport::from_project(project, &source_nodes, &rendered_edges);
     if automation.unsupported > 0 {
         note_unsupported(&mut unsupported, &mut counts, "automationLanes");
     }
@@ -2226,6 +2242,12 @@ pub fn build(
         &inserts,
     )
     .map_err(|error| render_error("渲染计划编译", &error))?;
+    // ⭐ 任务单 `#256`：把每条 `SendGain` 泳道接到计划里的**那条入边**上。
+    // 求值/平滑/恒等判定全部在 `yeban-render::automation`（MCP ⛔ 不写第二份平滑，
+    // 它不能依赖 `yeban-dsp`）；这里只负责“哪条边”。没有泳道的工程一个槽都不改。
+    for automation in send_gain_automations(project, sample_rate).into_values() {
+        plan.attach_send_automation(automation);
+    }
     let mut output = plan
         .execute(registry)
         .map_err(|error| render_error("渲染执行", &error))?;

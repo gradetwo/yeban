@@ -57,6 +57,7 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use yeban_model::{EntityId, RoutingEdge, RoutingGraph, TrackV3};
 
+use crate::automation::SendGainAutomation;
 use crate::inserts::{InsertChain, InsertRuntime};
 use crate::pdc::{self, DelayLine, PdcError};
 use crate::sum;
@@ -295,6 +296,12 @@ struct NodeState {
     source: Option<Box<dyn AudioSource>>,
     /// 入边贡献, **已按 `(source_node, edge_id)` 字典序排好**。
     incoming: Vec<Contribution>,
+    /// 与 `incoming` 一一对应的发送增益自动化（任务单 `#256`）。
+    ///
+    /// `None` = 这条边没有可求值的 `SendGain` 泳道 ⇒ 走原来的静态
+    /// [`sum::accumulate_into`]（逐位不变）；`Some` 且恒等 ⇒ 同样走静态路径；
+    /// `Some` 且非恒等 ⇒ 每块求值一次 + 逐样本平滑后累加。
+    send_automations: Vec<Option<SendGainAutomation>>,
     /// 与 `incoming` 一一对应的延迟线 (零延迟时走旁路, 不使用 `scratch`)。
     delay_lines: Vec<DelayLine>,
     /// 延迟路径用的中转缓冲。
@@ -656,6 +663,7 @@ impl RenderPlan {
                     buffer: vec![0.0; block_width],
                     source: None,
                     incoming: Vec::new(),
+                    send_automations: Vec::new(),
                     delay_lines: Vec::new(),
                     scratch: vec![0.0; block_width],
                     inserts,
@@ -687,6 +695,7 @@ impl RenderPlan {
                     DelayLine::new(contribution.delay_frames as usize, options.channels)
                 })
                 .collect();
+            states[slot].send_automations = vec![None; contributions.len()];
             states[slot].incoming = contributions;
         }
 
@@ -751,6 +760,46 @@ impl RenderPlan {
         )
     }
 
+    /// 把一条**发送边**的自动化接到计划上（任务单 `#256`）。
+    ///
+    /// 只接受**保留子图里真的有这条贡献**的边：悬挂/被剪枝的边返回 `false`（调用方
+    /// 据此把该泳道继续登记为不支持，而不是谎称应用了）。挂上之后，`execute` 在
+    /// [`render_node`] 的入边归约里对这条边乘“静态边增益 × R55 比率”。
+    ///
+    /// 恒等泳道也可以挂（`is_identity` 为真 ⇒ 仍走原来的静态累加，逐字节不变）；
+    /// 是否挂上不影响“没有泳道”的工程。
+    pub fn attach_send_automation(&mut self, automation: SendGainAutomation) -> bool {
+        let edge_id = automation.edge_id();
+        for state in &mut self.states {
+            if let Some(index) = state
+                .incoming
+                .iter()
+                .position(|contribution| contribution.edge_id == edge_id)
+            {
+                state.send_automations[index] = Some(automation);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 保留子图里全部入边身份（按 `(层号, EntityId)` 与归约顺序）。
+    ///
+    /// 读数层用它判定一条 `SendGain` 泳道的落点是否真的会进这次渲染 ——
+    /// 与 [`Self::nodes`] 是同一份剪枝事实，⛔ 不复制图算法。
+    #[must_use]
+    pub fn edge_ids(&self) -> Vec<EntityId> {
+        self.states
+            .iter()
+            .flat_map(|state| {
+                state
+                    .incoming
+                    .iter()
+                    .map(|contribution| contribution.edge_id)
+            })
+            .collect()
+    }
+
     /// 执行渲染。
     ///
     /// `sources` 为计划里**每一条需要发声的节点**提供实现。⭐ 任务单 `#240`
@@ -795,6 +844,11 @@ impl RenderPlan {
             state.source = None;
             for line in &mut state.delay_lines {
                 line.reset();
+            }
+            // 发送增益自动化的 5 ms 平滑器也是**跨执行存活**的时间状态 ⇒ 一起复位
+            // （回到“tick 0 的曲线值”，与全新构造逐位一致）。
+            for automation in state.send_automations.iter_mut().flatten() {
+                automation.reset_for_execution();
             }
             // 插入器件（EQ 的双二阶状态、混响的梳状/全通线、卷积的分块尾）也是
             // **跨执行存活**的时间状态 ⇒ 必须一起复位，否则第二次执行的尾巴会
@@ -911,6 +965,7 @@ fn render_node(
         buffer,
         source,
         incoming,
+        send_automations,
         delay_lines,
         scratch,
         inserts,
@@ -937,12 +992,30 @@ fn render_node(
     for (index, contribution) in incoming.iter().enumerate() {
         let upstream = &done[contribution.source_slot].buffer[..width];
         let line = &mut delay_lines[index];
-        if line.is_bypass() {
+        let source_slice = if line.is_bypass() {
             // 绝大多数边没有补偿延迟: 直接累加, 连一次拷贝都不要。
-            sum::accumulate_into(upstream, &mut buffer[..width], contribution.gain);
+            upstream
         } else {
             line.process(upstream, &mut scratch[..width]);
-            sum::accumulate_into(&scratch[..width], &mut buffer[..width], contribution.gain);
+            &scratch[..width]
+        };
+        // 任务单 `#256`：发送增益自动化挂在这一条**入边**上。没有泳道、或泳道恒等
+        // ⇒ 走与修前**逐位相同**的 `sum::accumulate_into`；非恒等 ⇒ 块级求值 +
+        // 逐样本 5 ms 平滑后累加（与 `TrackVolume` 共用同一套求值/平滑实现）。
+        match &mut send_automations[index] {
+            Some(automation) if !automation.is_identity() => {
+                automation.accumulate_block(
+                    source_slice,
+                    &mut buffer[..width],
+                    context.first_frame,
+                    context.frames,
+                    context.channels,
+                    contribution.gain,
+                );
+            }
+            _ => {
+                sum::accumulate_into(source_slice, &mut buffer[..width], contribution.gain);
+            }
         }
     }
     // 插入点: **输入端求和之后**（本票的裁决 —— Aux 返回轨因此也能被它自己的链处理）。

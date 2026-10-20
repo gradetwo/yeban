@@ -43,7 +43,8 @@ use yeban_mcp::domain::render::{self, RenderArtifact};
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_mcp::tools::ErrorCode;
 use yeban_model::{
-    AssetHash, AssetMetadata, ClipContent, ClipPlacement, ClipPoolEntry, DeviceDefinition,
+    AssetHash, AssetMetadata, AutomationLane, AutomationPoint, AutomationTarget,
+    AutomationWriteMode, ClipContent, ClipPlacement, ClipPoolEntry, CurveType, DeviceDefinition,
     DeviceKind, EntityId, LoopConfig, MediaKind, RoutingEdge, RoutingKind, SampleRate, TrackKind,
     TrackV3, YebanProjectV1,
 };
@@ -1669,5 +1670,398 @@ fn a_multichannel_asset_is_refused_instead_of_silently_downmixed() {
         artifact.response_data()["audio"]["assets"][0]["channelLayout"],
         "mono-to-all",
         "单声道素材走 `ChannelLayout::MonoToAll` 的规范名 (与 clip_math 同一份真相)"
+    );
+}
+
+// ===========================================================================
+// 任务单 `#256`：发送增益自动化（`SendGain`）在离线导出里真的被求值
+// ===========================================================================
+
+/// `#256` 实测：发送渐强工程的**浮点母带位级摘要**。
+///
+/// 它与 `crates/yeban-app/tests/send_gain_automation_export.rs` 里的同名常量**逐字相同**
+/// —— 这是“两条导出产出同一位级母带”的机械锚（两条判据各自钉住它，任一侧漂移就红）。
+const SEND_RAMP_MASTER_DIGEST: &str =
+    "b0897bc0e84190746037c73c9311241aeb1f97374d75e0e558379c1d9652b72f";
+
+/// 给一条**发送**边加一条 `SendGain` 泳道。
+fn with_send_lane(
+    mut project: YebanProjectV1,
+    track_id: EntityId,
+    edge_id: EntityId,
+    points: &[(u64, f32)],
+    read_enabled: bool,
+    first_point_seed: u32,
+) -> YebanProjectV1 {
+    let target = AutomationTarget::SendGain { track_id, edge_id };
+    let mut map = BTreeMap::new();
+    for (index, (tick, value)) in points.iter().enumerate() {
+        let point = AutomationPoint {
+            id: id(first_point_seed + index as u32),
+            tick: *tick,
+            value: *value,
+            curve: CurveType::Linear,
+        };
+        map.insert(point.id, point);
+    }
+    project
+        .tracks
+        .get_mut(&track_id)
+        .expect("目标音轨必须存在")
+        .automation_lanes
+        .insert(
+            target,
+            AutomationLane {
+                target,
+                points: map,
+                read_enabled,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+    project.validate().expect("带发送泳道的夹具必须合法");
+    project
+}
+
+/// 把 "Lead → Master" 改成 "Lead →(send) Aux → Master"（隔离出发送增益的落点）。
+///
+/// 直接边 `id(40)` 被取走：否则 Lead 还有一条**绕过发送**的直达路径，发送量渐强
+/// 会被直达信号掩盖，判据就测不到 `SendGain`。
+fn with_send_bus(mut fixture: Fixture) -> Fixture {
+    let lead = id(2);
+    let master = id(1);
+    let aux = id(3);
+    let send_edge = id(42);
+    let aux_edge = id(43);
+    fixture.project.tracks.insert(
+        aux,
+        TrackV3 {
+            id: aux,
+            name: "Aux".to_owned(),
+            kind: TrackKind::AuxReturn,
+            ..TrackV3::default()
+        },
+    );
+    fixture.project.routing_graph.edges.remove(&id(40));
+    fixture.project.routing_graph.nodes = vec![lead, aux, master];
+    fixture.project.routing_graph.edges.insert(
+        send_edge,
+        RoutingEdge {
+            id: send_edge,
+            source_node: lead,
+            destination_node: aux,
+            kind: RoutingKind::SendToAux,
+            gain_db: None,
+        },
+    );
+    fixture.project.routing_graph.edges.insert(
+        aux_edge,
+        RoutingEdge {
+            id: aux_edge,
+            source_node: aux,
+            destination_node: master,
+            kind: RoutingKind::BusToMaster,
+            gain_db: None,
+        },
+    );
+    fixture.project.validate().expect("发送总线夹具必须合法");
+    fixture
+}
+
+/// 4 等段的**左声道**峰值（与 app 侧 `#243` 判据同一网格：`frames / 4`）。
+fn four_window_peaks(samples: &[f32], frames: usize) -> [f32; 4] {
+    let window = frames / 4;
+    let mut peaks = [0.0f32; 4];
+    for (index, peak) in peaks.iter_mut().enumerate() {
+        let start = index * window;
+        let end = (start + window).min(samples.len() / 2);
+        *peak = (start..end).fold(0.0f32, |acc, frame| acc.max(frame_peak(samples, frame)));
+    }
+    peaks
+}
+
+/// ⭐ 判据 2/5：`tick 0 = -60 dB → tick 1920 = 0 dB` 的发送渐强 ⇒ 4 段严格递增。
+///
+/// 理论末/首 ≈ 1000×（dB 线性化后 -60→0）；判据只要 ≥ 3×（与 `#243` 同一条下界，
+/// 留出源波形/平滑的余量）。
+#[test]
+fn a_send_gain_ramp_is_strictly_monotonic_and_reported_applied() {
+    let scratch = Scratch::new("send-ramp");
+    let mut fixture = with_send_bus(fixture(
+        wav_f32(2, 48_000, &constant(48_000, 0.5)),
+        &Tune::default(),
+    ));
+    fixture.project = with_send_lane(
+        fixture.project,
+        id(2),
+        id(42),
+        &[(0, -60.0), (ONE_SECOND_TICKS, 0.0)],
+        true,
+        200,
+    );
+    let out = scratch.join("send-ramp.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    let samples = payload_samples(&artifact);
+    let peaks = four_window_peaks(&samples, 48_000);
+    println!(
+        "### MCP 发送渐强 4 段峰值 = {peaks:?} / ratio = {:.6} / sha256 = {} / masterDigest = {}",
+        peaks[3] / peaks[0],
+        artifact.sha256,
+        artifact.master_digest
+    );
+    assert!(
+        peaks[0] < peaks[1] && peaks[1] < peaks[2] && peaks[2] < peaks[3],
+        "4 段必须严格单调递增: {peaks:?}"
+    );
+    assert!(peaks[3] / peaks[0] >= 3.0, "{peaks:?}");
+    assert_eq!(
+        artifact.master_digest, SEND_RAMP_MASTER_DIGEST,
+        "发送渐强的浮点母带必须与 app 侧逐位相同"
+    );
+
+    // 读数：这条 `SendGain` 泳道真的被应用；`automationLanes` 不再出现。
+    assert_eq!(data["automation"]["lanes"], 1);
+    assert_eq!(data["automation"]["evaluableLanes"], 1);
+    assert_eq!(data["automation"]["appliedLanes"], 1);
+    assert_eq!(data["automation"]["unsupportedLanes"], 0);
+    assert_eq!(
+        data["automation"]["targetsSupported"],
+        json!(["TrackVolume", "SendGain"])
+    );
+    assert_eq!(
+        data["automation"]["tracks"][0]["lanes"][0]["target"],
+        "SendGain"
+    );
+    assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["applied"], true);
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "被应用的 SendGain 泳道不许再报 automationLanes: {data}"
+    );
+}
+
+/// ⭐ 判据 3/4：无泳道、`readEnabled:false`、曲线恒等于静态边增益 ⇒ 三者**逐字节相同**。
+#[test]
+fn send_gain_identity_paths_are_byte_identical_to_no_lane() {
+    let scratch = Scratch::new("send-identity");
+    let base = with_send_bus(fixture(
+        wav_f32(2, 48_000, &constant(48_000, 0.5)),
+        &Tune::default(),
+    ));
+    let baseline_out = scratch.join("send-base.wav");
+    let baseline = build_with(
+        &base.project,
+        &pool(&base),
+        &baseline_out,
+        args(&baseline_out),
+    )
+    .expect("渲染");
+    let baseline_len = payload_samples(&baseline).len();
+
+    // 关掉的泳道。
+    let mut disabled = with_send_bus(fixture(
+        wav_f32(2, 48_000, &constant(48_000, 0.5)),
+        &Tune::default(),
+    ));
+    disabled.project = with_send_lane(
+        disabled.project,
+        id(2),
+        id(42),
+        &[(0, -60.0), (ONE_SECOND_TICKS, 0.0)],
+        false,
+        210,
+    );
+    let disabled_out = scratch.join("send-disabled.wav");
+    let disabled = build_with(
+        &disabled.project,
+        &pool(&disabled),
+        &disabled_out,
+        args(&disabled_out),
+    )
+    .expect("渲染");
+    assert_eq!(
+        disabled.sha256, baseline.sha256,
+        "readEnabled:false 必须等于没有泳道"
+    );
+    assert_eq!(disabled.master_digest, baseline.master_digest);
+
+    // 曲线处处等于静态边增益（None = 0 dB）。
+    let mut flat = with_send_bus(fixture(
+        wav_f32(2, 48_000, &constant(48_000, 0.5)),
+        &Tune::default(),
+    ));
+    flat.project = with_send_lane(
+        flat.project,
+        id(2),
+        id(42),
+        &[(0, 0.0), (960, 0.0), (ONE_SECOND_TICKS, 0.0)],
+        true,
+        220,
+    );
+    let flat_out = scratch.join("send-flat.wav");
+    let flat = build_with(&flat.project, &pool(&flat), &flat_out, args(&flat_out)).expect("渲染");
+    println!(
+        "### MCP 恒等: baseline={} disabled={} flat={}",
+        baseline.sha256, disabled.sha256, flat.sha256
+    );
+    assert_eq!(flat.sha256, baseline.sha256, "静态恒等必须逐字节相同");
+    assert_eq!(flat.master_digest, baseline.master_digest);
+    assert_eq!(baseline_len, payload_samples(&flat).len());
+}
+
+/// ⭐ 判据 7：源轨 `mute:true` + 一条 0 dB 的发送泳道 ⇒ 仍全静音（不被复活）。
+#[test]
+fn a_send_gain_lane_does_not_resurrect_a_muted_source() {
+    let scratch = Scratch::new("send-mute");
+    let mut base = with_send_bus(fixture(
+        wav_f32(2, 48_000, &constant(48_000, 0.5)),
+        &Tune::default(),
+    ));
+    base.project.tracks.get_mut(&id(2)).expect("Lead").mute = true;
+    let base_out = scratch.join("send-mute-base.wav");
+    let baseline =
+        build_with(&base.project, &pool(&base), &base_out, args(&base_out)).expect("渲染");
+
+    let mut muted = with_send_bus(fixture(
+        wav_f32(2, 48_000, &constant(48_000, 0.5)),
+        &Tune::default(),
+    ));
+    muted.project.tracks.get_mut(&id(2)).expect("Lead").mute = true;
+    muted.project = with_send_lane(muted.project, id(2), id(42), &[(0, 0.0)], true, 230);
+    let out = scratch.join("send-mute.wav");
+    let artifact = build_with(&muted.project, &pool(&muted), &out, args(&out)).expect("渲染");
+    let samples = payload_samples(&artifact);
+    let peak = samples.iter().fold(0.0f32, |acc, s| acc.max(s.abs()));
+    println!(
+        "### MCP 静音轨 + 0 dB 发送泳道: peak={peak} sha={}",
+        artifact.sha256
+    );
+    assert!(
+        peak <= 2.0 / 8_388_608.0,
+        "静音轨的发送必须仍全静音（peak={peak}）"
+    );
+    assert_eq!(
+        artifact.sha256, baseline.sha256,
+        "自动化不许改变静音源的字节"
+    );
+}
+
+/// ⭐ 判据 6：`SendGain` 标成 `applied:true`，而 `DeviceParam`/`Macro` **仍** `applied:false`
+///（`automationLanes` 是**共用键** ⇒ 键不能删，只有 `SendGain` 从“不可应用”变成“可应用”）。
+#[test]
+fn send_gain_applies_while_device_param_and_macro_stay_unsupported() {
+    let scratch = Scratch::new("send-mixed");
+    let mut fixture = with_send_bus(fixture(
+        wav_f32(2, 48_000, &constant(48_000, 0.5)),
+        &Tune::default(),
+    ));
+    fixture
+        .project
+        .tracks
+        .get_mut(&id(2))
+        .expect("Lead")
+        .devices = vec![DeviceDefinition {
+        id: id(101),
+        name: "dev".to_owned(),
+        kind: DeviceKind::InternalEffect,
+        bypassed: false,
+        params: vec![yeban_model::ParameterValue {
+            name: "mix".to_owned(),
+            value: 0.5,
+            unit: Some("%".to_owned()),
+        }],
+        latency_samples: 0,
+    }];
+    fixture.project.tracks.get_mut(&id(2)).expect("Lead").macros =
+        vec![yeban_model::MacroParameter {
+            name: "macro".to_owned(),
+            value: 0.5,
+            mappings: Vec::new(),
+        }];
+    let target_device = AutomationTarget::DeviceParam {
+        track_id: id(2),
+        slot_index: 0,
+        param_index: 0,
+    };
+    let target_macro = AutomationTarget::Macro {
+        track_id: id(2),
+        macro_index: 0,
+    };
+    let mut project = with_send_lane(
+        fixture.project,
+        id(2),
+        id(42),
+        &[(0, -60.0), (ONE_SECOND_TICKS, 0.0)],
+        true,
+        240,
+    );
+    for (index, target) in [target_device, target_macro].into_iter().enumerate() {
+        let point = AutomationPoint {
+            id: id(250 + index as u32),
+            tick: 0,
+            value: 0.5,
+            curve: CurveType::Linear,
+        };
+        project
+            .tracks
+            .get_mut(&id(2))
+            .expect("Lead")
+            .automation_lanes
+            .insert(
+                target,
+                AutomationLane {
+                    target,
+                    points: BTreeMap::from([(point.id, point)]),
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+    }
+    project.validate().expect("混合泳道夹具必须合法");
+    fixture.project = project;
+
+    let out = scratch.join("send-mixed.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    println!(
+        "### MCP 混合泳道 automation = {}",
+        serde_json::to_string(&data["automation"]).expect("JSON")
+    );
+    let lanes = data["automation"]["tracks"][0]["lanes"]
+        .as_array()
+        .expect("lanes");
+    let lane = |target: &str| {
+        lanes
+            .iter()
+            .find(|lane| lane["target"] == target)
+            .unwrap_or_else(|| panic!("缺少 {target} 泳道: {lanes:?}"))
+    };
+    assert_eq!(lane("SendGain")["applied"], true);
+    assert_eq!(lane("DeviceParam")["applied"], false);
+    assert_eq!(lane("Macro")["applied"], false);
+    assert_eq!(data["automation"]["appliedLanes"], 1);
+    assert_eq!(data["automation"]["unsupportedLanes"], 2);
+    assert!(
+        data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "DeviceParam/Macro 仍不支持 ⇒ automationLanes 键必须留着: {data}"
+    );
+    assert_eq!(
+        data["automation"]["targetsUnsupported"],
+        json!(["TrackPan", "DeviceParam", "Macro"])
+    );
+    // 判据 2 的另一半：同一条渲染里发送渐强仍然生效。
+    let peaks = four_window_peaks(&payload_samples(&artifact), 48_000);
+    assert!(
+        peaks[0] < peaks[1] && peaks[1] < peaks[2] && peaks[2] < peaks[3],
+        "{peaks:?}"
     );
 }
