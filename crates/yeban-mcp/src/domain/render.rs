@@ -3307,8 +3307,8 @@ fn build_source(
     //    这条判据只看 `TrackV3.sampler` 是否为 `Some`，与 app 的
     //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
     let sampler_bound = track.sampler.is_some();
-    // 设备链: EQ / Freeverb / 卷积已经由 `yeban-render` 消费；只有**本切片没有消费**
-    // 的参数（滤波 / 压缩 / 增益 / 未知旋钮 / 外部器件）仍要如实登记。
+    // 设备链: 通道条（增益 / EQ / 低通）、Freeverb、卷积已经由 `yeban-render` 消费；
+    // 只有**本切片没有消费**的参数（压缩 / 未知旋钮 / 外部器件）仍要如实登记。
     if track_has_unhandled_dsp(track) {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }
