@@ -15123,3 +15123,23 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⭐ ⭐ **剩余**：⭐ `target` **约 48 G**（⭐ `deps` 46 G ＋ ⭐ `build` 1 G ＋ ⭐ `fingerprint` 70 M）⇒ ⚠ **再清就得动 `deps`** ⇒ ⭐ 那会让 `#252` 与下一次构建**从零开始** ⇒ ⭐ **我建议等 `#252` 落完再说** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待裁**: ⭐ **4 个未合并远端分支删不删**（⭐ 其中 ⭐ `feat/midi-live` 在台账里出现 **4 次** ⇒ ⭐ **删前要先查它是否已被后续提交取代**，⭐ 参照 R612–R615 的手法）＋ ⭐ `#252` 在飞 ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R970 实测追加（2026-10-20）：⭐ **`#252`（显式帧数）落地 ＋ 快进合并** ＝ ⭐ **掉线交付、⭐ 我复核后自己写提交**
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 这一单是**掉线**交付（⭐ 第 326 条）**: ⚠ 交付线 **`894161d3` 无收尾消息、⭐ 直接 failed** ⇒ ⭐ 我按纪律 ⭐ **review diff ＋ ⭐ 跑门 ＋ ⭐ 自己写提交信息** ✓
+⚠ ⭐ **我的判断：⭐ 它大概率死于磁盘** —— 交单时 ⭐ `df` 只剩 **39 Gi**、⭐ 而我接手时 `target` 已 **59 G** ⇒ ⭐ ⭐ **清掉 `target` 后 ⭐ **97 Gi**、⭐ 编译一次通过** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 改动（⭐ 我逐段读过）**: ⭐ `RenderRequest` 加 ⭐ `frames: Option<u64>` ＋ ⭐ `duration_seconds_bits: Option<u64>`（⭐ **存位型** 因为 ⭐ `#[derive(Eq)]` 对 `f64` 不成立 —— ⭐ 与既有 `target_lufs_bits` 同一手法）★ ⭐ `frames_source()` 回显 ⭐ `"projectEnd"`／⭐ `"frames"`／⭐ `"durationSeconds"` ★ ⭐ `build()` 解析逐字 ⭐ ⭐ **`request.frames.unwrap_or_else(|| math::ticks_to_frames(...))`** ⇒ ⭐ **缺省走**同一条表达式**、⭐ 逐字节不变** ✓
+★ ⭐ 校验：⭐ 两个都给且冲突 ⇒ ⭐ `INVALID_PARAMETER_RANGE`；⭐ `frames <= 0`／⭐ 秒数非有限 ⇒ ⭐ 同码；⭐ 超上限 ⇒ ⭐ ⭐ **与工程末端推导**同一个闸门、⭐ 同一条报文** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 我复核的读数**: ⭐ `cargo test -p yeban-mcp` ⇒ ⭐ ⭐ **911 passed／0 failed**（36 个 `test result: ok`）★ ⭐ 门 `premerge-gate.sh yeban-mcp` ⇒ ⭐ **rc 0**（⭐ 含 `run-gates.sh light`）★ ⭐ 守卫 **18**、⭐ `validate_schemas` **4 份**、⭐ `fmt` **0** ✓
+★ ⭐ 三条新判据：⭐ `the_default_rendering_path_stays_bit_identical_with_an_explicit_frame_count`／⭐ `an_explicit_frame_count_really_sets_the_output_length`／⭐ `illegal_explicit_frames_are_refused_without_writing_a_file` ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⚠ 缺的那一半（⭐ 我在提交信息里写明了）**: ⚠ 票里要的 ⭐ **`C1` 判据**（⭐ "⭐ MCP 的 `masterDigest` ＝ ⭐ CLI 的 `digest`"）**⛔ 没做** ⇒ ⭐ 因为它需要**两个导出器一起编** ⇒ ⭐ 我标成 ⭐ **"⭐ 下一步、⭐ ⛔ 不当作已做"** ★ ⚠ **这也正是 `#250` 勘察逐字说的"⭐ 只改代码不写判据 ＝ ⭐ 把 E1 从已知差异变成未知差异"** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ 磁盘（⭐ 人类要求清理）**: ⭐ ⭐ **`target` 59 G 已清**（⭐ 清前确认 ⭐ `pgrep -c 'cargo|rustc'` ＝ **0**、⭐ 无并发构建）⇒ ⭐ ⭐ **`df`：⭐ 39 Gi → ⭐ **97 Gi**（⭐ 90%）** ✓
+⚠ ⭐ 本轮之前那一轮已清：⭐ 4 个**已合并**的本地分支 ＋ worktree、⭐ `incremental` 28 G、⭐ `/tmp` 残留 1.4 G、⭐ 3 个**已合入**的远端分支 ⇒ ⭐ ⚠ **两轮合计回收 ≈ 60 G** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`C1` 判据**（⭐ 跨两个导出器）＋ ⭐ **4 个未合并的远端分支**（⭐ `feat/midi-live` 台账出现 4 次 ⇒ ⭐ 删前要逐函数查）＋ ⭐ **E1 本体**（⭐ 待裁）＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
