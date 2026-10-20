@@ -264,7 +264,7 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
     let clip_report = export_wav(
         &clipping_project,
         &clip_oracle,
-        WavExportOptions::resolve(&clipping_project, None, None, None),
+        WavExportOptions::resolve(&clipping_project, None, None, None, None),
     )
     .expect("对照导出必须成功");
     let clip_legacy = format!(
@@ -334,7 +334,7 @@ fn the_gui_export_reports_clipping_only_when_the_master_clips() {
     let report = export_wav(
         &clean_project,
         &oracle_path,
-        WavExportOptions::resolve(&clean_project, None, None, None),
+        WavExportOptions::resolve(&clean_project, None, None, None, None),
     )
     .expect("对照导出必须成功");
     let legacy = format!(

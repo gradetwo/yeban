@@ -369,7 +369,7 @@ pub fn usage_text() -> String {
   --export-wav <path>      把当前工程**离线渲染**成 WAV (默认 24-bit 立体声 8 秒): 音源是
                            最小音源 (**方波 + 首尾包络**, ⛔ 非引擎乐器, 见 `export_wav.rs` 的
                            诚实登记); 与 --export-midi 同族: 不给 --open 时导出演示工程;
-                           位深 / 采样率 / 时长由下面三条选
+                           位深 / 采样率 / 时长 / 帧数由下面四条选
   --wav-bit-depth <d>      --export-wav 的位深: 16 | 24 | 32f (默认 24)
                            (16/24 走 TPDF 抖动; 32f 是浮点**透传**, 不抖动;
                             ⛔ 写 `32` 是用法错误 —— 本仓 32 位只有浮点一种容器)
@@ -378,6 +378,9 @@ pub fn usage_text() -> String {
                            (默认**跟随工程** audio_config.sample_rate; 要旧口径就显式给 48000)
   --wav-seconds <秒>       --export-wav 的**时长** (默认 8 秒, 与旧行为一致;
                            帧数 = round(秒 × 采样率)); ⛔ 缺省不是\"工程可闻末端\"
+  --wav-frames <n>         --export-wav 的**精确帧数** (与 MCP render_master.frames 同量纲):
+                           原样使用, 不再做秒×采样率换算; 与 --wav-seconds **互斥**;
+                           必须是**正**整数 (0 帧是空产物, 按用法错误拒绝)
   --export-midi <path>     把当前工程导出成**标准 MIDI 文件** (SMF 1): conductor 轨
                            (tick 0 的 tempo + 拍号) + 每条含 MIDI 的轨道一条 MTrk
                            (通道按导出顺序 0,1,2,…); **PPQ 与工程一致 (960)**;
@@ -600,8 +603,9 @@ pub fn usage_text() -> String {
      没有可发声的目标音轨 / 音轨选择器命中 0 或多条 / 提交被拒 / 引擎重建失败)
   {export} --midi-in-render 的 WAV 落盘失败 (与 --export-wav 同一档)
   {usage} --record-seconds 没和 --record-wav 一起给
-  {usage} --wav-bit-depth / --wav-sample-rate / --wav-seconds 没和 --export-wav 一起给,
-      或取值非法 (位深只有 16|24|32f; 采样率只有规范枚举那五个; 秒数必须为正)
+  {usage} --wav-bit-depth / --wav-sample-rate / --wav-seconds / --wav-frames 没和
+      --export-wav 一起给, 或取值非法 (位深只有 16|24|32f; 采样率只有规范枚举那五个;
+      秒数必须为正; 帧数必须为正整数; --wav-frames 与 --wav-seconds 互斥)
   {open} --open 失败 (读文件失败 / 超过 4 GiB 上限 / 不是 `.yeban` 容器 /
      容器拒绝: 压缩法 / Zip-Slip / 解压炸弹 / 截断 / CRC 不匹配 / 缺件 / 非法 project.json …)
   {save} --save-as 失败 (临时文件 / 刷盘 / 原子重命名任一步失败, 或容器写出被拒)
@@ -629,6 +633,7 @@ pub fn usage_text() -> String {
   yeban-app --open song.yeban --export-midi song.mid
   yeban-app --open song.yeban --export-wav song.wav
   yeban-app --open song.yeban --export-wav shaped.wav --wav-bit-depth 16 --wav-sample-rate 44100 --wav-seconds 4
+  yeban-app --open song.yeban --export-wav exact.wav --wav-frames 192000  # 与 MCP render_master.frames 对齐
   yeban-app --open song.yeban --export-logic out/Song.logicx
   yeban-app --open song.yeban --export-logic out/hello   # ⭐ 缺 `.logicx` 会补成 out/hello.logicx
   yeban-app --inspect-logic \"/Library/Application Support/Logic/Logic Pro X Demosongs\"
@@ -1148,7 +1153,7 @@ pub struct Options {
     /// 与 `--export-midi` 同族：不给 `--open` 时导出**演示工程**并在输出里明说；
     /// 渲染与量化全部在内存里完成，**最后一步**才落盘（拒绝时不留半成品）。
     ///
-    /// 位深 / 采样率 / 时长由下面三个开关选（不给 ⇒ 保持旧行为，见各自文档）。
+    /// 位深 / 采样率 / 时长 / 精确帧数由下面四个开关选（不给 ⇒ 保持旧行为，见各自文档）。
     pub export_wav: Option<PathBuf>,
     /// `--wav-bit-depth <16|24|32f>`：`--export-wav` 的位深。
     ///
@@ -1173,6 +1178,13 @@ pub struct Options {
     /// ⚠ 本切片**没有**把缺省改成"工程可闻末端"：导出路径今天没有"工程有多长"的唯一权威
     /// 读数，那属**新能力**而不是接线；要更长的产物就显式给秒数。
     pub wav_seconds: Option<f32>,
+    /// `--wav-frames <n>`：`--export-wav` 的**精确帧数**（与 MCP `render_master.frames`
+    /// 同一量纲，用来让两侧的产物长度逐字节对齐）。
+    ///
+    /// 给了它就原样用，⛔ 不再做"秒 × 采样率"的取整换算；与 `--wav-seconds` **互斥**
+    /// （同时给 ⇒ [`ParseError::WavFramesConflict`]，⛔ 不靠"谁优先"发明语义）。
+    /// 取值必须是正的十进制整数（`0` 是**空产物**，按用法错误拒绝）。
+    pub wav_frames: Option<u64>,
     /// `--export-als <path>`：当前工程导出成实验性 Ableton `.als`（Gzip XML）
     /// `[ARCH-FMT-002]` / `[ROAD-M4-007]`，与 `--export-midi` 并列同属 `D47` 的 CLI 出口。
     ///
@@ -1669,6 +1681,15 @@ pub enum ParseError {
     WavSampleRateInvalid(String),
     /// `--wav-seconds` 的取值不是**正的有限**十进制秒数。
     WavSecondsInvalid(String),
+    /// `--wav-frames` 的取值不是**正的**十进制整数帧数。
+    ///
+    /// ⛔ 不接受 `0`：零帧是**空产物**，按用法错误拒绝比写一个只有头的 WAV 更诚实。
+    WavFramesInvalid(String),
+    /// `--wav-frames` 与 `--wav-seconds` 同时给了。
+    ///
+    /// 一个给**精确帧数**、一个给**秒数换算**，同时给必然有一个被静默丢掉 ——
+    /// 本仓不接受这种组合（⛔ 不靠"谁优先"发明语义）。
+    WavFramesConflict,
 }
 
 impl ParseError {
@@ -1824,6 +1845,15 @@ impl fmt::Display for ParseError {
             Self::WavSecondsInvalid(value) => write!(
                 formatter,
                 "`--wav-seconds` 的取值 `{value}` 非法 (需要正的有限秒数)"
+            ),
+            Self::WavFramesInvalid(value) => write!(
+                formatter,
+                "`--wav-frames` 的取值 `{value}` 非法 (需要正的十进制整数帧数; 0 帧是空产物)"
+            ),
+            Self::WavFramesConflict => write!(
+                formatter,
+                "`--wav-frames` 与 `--wav-seconds` 互斥 —— 一个给精确帧数、一个给秒数换算, \
+                 同时给必然有一个被静默丢掉"
             ),
         }
     }
@@ -2052,7 +2082,26 @@ pub fn parse(args: &[String]) -> Result<Options, ParseError> {
                 if options.wav_seconds.is_some() {
                     return Err(ParseError::DuplicateOption("--wav-seconds"));
                 }
+                if options.wav_frames.is_some() {
+                    return Err(ParseError::WavFramesConflict);
+                }
                 options.wav_seconds = Some(seconds);
+            }
+            "--wav-frames" => {
+                let value = take_value("--wav-frames", inline, args, &mut cursor)?;
+                let frames = value
+                    .parse::<u64>()
+                    .map_err(|_| ParseError::WavFramesInvalid(value.clone()))?;
+                if frames == 0 {
+                    return Err(ParseError::WavFramesInvalid(value));
+                }
+                if options.wav_frames.is_some() {
+                    return Err(ParseError::DuplicateOption("--wav-frames"));
+                }
+                if options.wav_seconds.is_some() {
+                    return Err(ParseError::WavFramesConflict);
+                }
+                options.wav_frames = Some(frames);
             }
             "--export-als" => {
                 let value = take_value("--export-als", inline, args, &mut cursor)?;
@@ -4115,6 +4164,7 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         (options.wav_bit_depth.is_some(), "--wav-bit-depth"),
         (options.wav_sample_rate.is_some(), "--wav-sample-rate"),
         (options.wav_seconds.is_some(), "--wav-seconds"),
+        (options.wav_frames.is_some(), "--wav-frames"),
     ] {
         if given && options.export_wav.is_none() {
             return Err(CliError::Usage(format!(
@@ -4264,13 +4314,14 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
         // ⭐ `&loaded.archive.assets` 是**归档资产池**（`--open` 读进来的 `assets/{sha256}`）：
         // 没有它，工程里摆放的 `ClipContent::Audio` 会静音 —— 引擎快照把音频片段当静音，
         // 见 `crate::audio_clip` 的模块文档。
-        // ⭐ 位深／采样率／时长在这里解析出**唯一一份**可执行选项
+        // ⭐ 位深／采样率／时长／精确帧数在这里解析出**唯一一份**可执行选项
         // （缺省口径见 `WavExportOptions::resolve`：24-bit / 跟随工程 / 8 秒）。
         let wav_options = crate::export_wav::WavExportOptions::resolve(
             &loaded.archive.project,
             options.wav_sample_rate,
             options.wav_bit_depth,
             options.wav_seconds,
+            options.wav_frames,
         );
         // ⭐ 任务单 `#168`：`--open` 那个文件所在目录 = 相对 SFZ 路径的第一个候选根
         //    ⇒ "样本放在工程旁边"在**任意 cwd** 下都读得到。样本形态（没有 `--open`）
