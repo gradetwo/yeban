@@ -950,8 +950,7 @@ impl HttpServer {
                 {
                     continue;
                 }
-                if active_connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONCURRENT_CONNECTIONS
-                {
+                if active_connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONCURRENT_CONNECTIONS {
                     active_connections.fetch_sub(1, Ordering::AcqRel);
                     continue;
                 }
