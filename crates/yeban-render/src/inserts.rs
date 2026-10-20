@@ -1,4 +1,4 @@
-//! **每轨插入链**的离线投影与运行态：[EQ] ＋ [Freeverb] ＋ [卷积混响]。
+//! **每轨插入链**的离线投影与运行态：[通道条（增益 → EQ → 低通）] ＋ [Freeverb] ＋ [卷积混响]。
 //!
 //! ## 0. 这一份是**副本** —— 必须下移到 `yeban-dsp`（待办）
 //!
@@ -7,10 +7,10 @@
 //! | 内容 | 来源（base `1d60e5eb`） |
 //! | :--- | :--- |
 //! | `InsertParams::from_devices` 的"首个含已识别参数名的设备是来源"规则 | `crates/yeban-engine/src/insert.rs:704` |
-//! | 通道条参数名白名单（EQ 部分） | `crates/yeban-engine/src/insert.rs:886-975` |
+//! | 通道条参数名白名单（增益 / EQ / 滤波 / 动态 / 级开关） | `crates/yeban-engine/src/insert.rs:869-1100` |
 //! | 混响参数名白名单（⚠ `reverb_mix` / `reverb_width` **刻意不认**） | `crates/yeban-engine/src/insert.rs:1055-1070` |
 //! | 卷积混响参数名白名单 ＋ IR 合成 | `crates/yeban-engine/src/insert.rs:622-654` |
-//! | 三件 DSP 本体 | `crates/yeban-dsp/src/shaping.rs:123`（3 段 EQ）、`reverb.rs:239`（Freeverb）、`convolution_reverb.rs:182` |
+//! | DSP 本体 | `crates/yeban-dsp/src/channel_strip.rs`（通道条；内含 `shaping.rs:123` 的 3 段 EQ）、`reverb.rs:239`（Freeverb）、`convolution_reverb.rs:182` |
 //!
 //! 为什么是副本而不是直接调用引擎：`crates/yeban-mcp` **不能依赖** `yeban-engine`
 //! （`scripts/gates/check_mcp_dependency_direction.py` 的 `FORBIDDEN` 逐字含它），
@@ -24,22 +24,24 @@
 //!
 //! ## 1. 本切片接了什么 / 没接什么
 //!
-//! **接**：3 段 EQ（低架 / 中峰 / 高架）＋ Freeverb ＋ 卷积混响。
+//! **接**：通道条的**输入增益 → 3 段 EQ → 低通滤波 → 输出增益**（与引擎同一个
+//! `yeban_dsp::ChannelStrip`）＋ Freeverb ＋ 卷积混响。
 //!
-//! **没接**（刻意，留 S2）：
+//! **没接**（刻意，仍待裁决）：
 //!
-//! - **压缩**与**滤波**：实时侧是**单声道**插入（检波器看到的是单声道），离线侧接在
-//!   **求和之后**、是立体声；把压缩接在这里会让左右声道各有一个检波器 ⇒ 声像被拉开。
-//!   那需要对"立体声 vs 单声道检波"单独裁决，不在本切片内。
-//! - **输入 / 输出增益**：同属通道条，但本切片只接 EQ；写了这些名字的设备会被
-//!   [`track_has_unhandled_dsp`] 判成"仍有未消费的参数"⇒ MCP 如实登记 `deviceChainDsp`。
+//! - **压缩**：实时侧的检波器看到的是**声相之前**的单声道信号（能量 1.0），离线侧
+//!   接在声相与求和之后（等功率居中时每声道 −3 dB）⇒ 同一个阈值在两条路上压缩量
+//!   不同。这不是"接上就完"的线性器件，需要单独裁决检波电平的口径；在那之前
+//!   **整级不执行**，写了压缩参数的名字会被 [`track_has_unhandled_dsp`] 判成
+//!   "仍有未消费的参数"⇒ MCP 如实登记 `deviceChainDsp`。
+//! - **未知旋钮 / 外部器件**：同一条如实登记口径。
 //! - **主总线插入**（⚠ 本节在任务单 `#173` **已接通**，原文见 §1 的修订段）：
 //!   本模块的 [`crate::render::RenderPlan`] 现在给**每个**节点挂链，**包括 master**。
 //!   - **为什么改**：`#173` 之前实时引擎的逐轨循环**跳过 master**
 //!     （`crates/yeban-engine/src/rt.rs` 的 `render_branch` 只处理轨道），而离线侧
 //!     也把 master 的链写成 `None` ⇒ 主总线上挂设备**两条路都听不到**。
 //!   - **改法（实时）**：主总线在汇流之后（3a⁗⁗）跑**同一条**链：立体声和
-//!     `(L+R)·0.5` 下混 → EQ → 混响 → 卷积 → 复制回两路（裁决 (甲)，与 `#158`
+//!     `(L+R)·0.5` 下混 → 通道条（增益 / EQ / 滤波）→ 混响 → 卷积 → 复制回两路（裁决 (甲)，与 `#158`
 //!     的总线插入同一条）。**改法（离线）**：`render_node` 的"求和之后"那一行对
 //!     master 也执行 ⇒ 真立体声插入。
 //!   - **仍存在的两路差异**（如实登记，⛔ 不是沉默）：实时是单声道插入，
@@ -54,8 +56,12 @@
 //! 离线：声源 → 声相 → 母线求和 → 插入（立体声）
 //! ```
 //!
-//! - **EQ 逐声道线性等价**：声相是每声道的常数增益，线性时不变滤波与常数乘法可交换
-//!   （`EQ(p·x) = p·EQ(x)`），所以 EQ 的位置差异不改变可听结果（只差浮点舍入顺序）。
+//! - **增益 / EQ / 滤波逐声道线性等价**：声相是每声道的常数增益，线性时不变器件
+//!   与常数乘法可交换（`F(p·x) = p·F(x)`），所以这三级的**位置**差异不改变可听结果
+//!   （只差浮点舍入顺序）。低通的两声道各有一份状态，居中信号下与实时的单声道
+//!   滤波器逐样本同值。
+//! - **压缩仍然整级不执行**：见 §1 —— 检波器在声相之前/之后看到的电平不同，接上会
+//!   让同一个阈值在导出里少压（居中时低 3 dB），这不是本切片能单方面裁决的差异。
 //! - **Freeverb 的干湿比与宽度会有差异**：实时侧把**声相之前**的单声道信号同时喂给
 //!   L/R 再取中值；离线侧拿到的是**声相之后**的立体声（可能左右不同）。湿路径的输入
 //!   因此不同，`width` 的展开也不同。这是**听得见的口径差**，不是 bug；人耳验收时要
@@ -78,10 +84,11 @@
 
 use std::collections::BTreeMap;
 
+use yeban_dsp::channel_strip::{ChannelStrip, ChannelStripParams};
 use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 use yeban_dsp::noise::Rng;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
-use yeban_dsp::shaping::{EqParams, ShapingEq};
+use yeban_dsp::shaping::EqParams;
 use yeban_model::{DeviceDefinition, DeviceKind, EntityId, TrackV3};
 
 /// 卷积混响 IR 的长度除数（帧数 = 采样率 ÷ 10）。
@@ -159,14 +166,17 @@ impl ConvolutionPlan {
     }
 }
 
-/// 一条轨的**插入链投影**（本切片三件：EQ、Freeverb、卷积混响）。
+/// 一条轨的**插入链投影**（通道条、Freeverb、卷积混响）。
 ///
-/// 三件**各自独立**取来源（与引擎同口径）：同一台设备可以同时是三者或其中之一的来源。
-/// `None` 表示"本轨没有这一件" ⇒ 运行态整级跳过。
+/// 三件**各自独立**取来源（与引擎 `InsertParams::from_devices` 同口径）：同一台设备
+/// 可以同时是三者或其中之一的来源。`None` 表示"本轨没有这一件" ⇒ 运行态整级跳过。
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsertChain {
-    /// EQ 三段的参数；`None` = 没有可执行的 EQ 级。
-    eq: Option<EqParams>,
+    /// 通道条参数（增益 / EQ / 滤波 / 压缩）；`None` = 没有通道条来源。
+    ///
+    /// ⚠ 投影**如实**保留引擎给出的 `compressor_enabled`，但离线运行态会把它关掉
+    /// （见 §1 的裁决）；是否真的执行某一级由 [`Self::is_empty`] 与运行态共同决定。
+    strip: Option<ChannelStripParams>,
     /// Freeverb 参数；`None` = 本轨没有混响。
     reverb: Option<ReverbParams>,
     /// 卷积混响计划；`None` = 本轨没有卷积混响。
@@ -178,7 +188,7 @@ impl InsertChain {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
-            eq: None,
+            strip: None,
             reverb: None,
             convolution: None,
         }
@@ -186,24 +196,24 @@ impl InsertChain {
 
     /// 从模型层的设备链投影（**构造期**，允许分配：卷积的 IR 在这里合成）。
     ///
-    /// 规则与引擎逐条一致：
+    /// 规则与引擎 `InsertParams::from_devices` 逐条一致：
     ///
     /// 1. 只看**非旁通**的 [`DeviceKind::InternalEffect`]；
     /// 2. 三件各自取**第一个**含该件已识别参数名的设备（先命中者不被后来者覆盖）；
     /// 3. 未出现的字段保持 `yeban-dsp` 的默认值；
     /// 4. 同名参数**后者胜**；参数名大小写不敏感；
-    /// 5. `eq_enabled = 0` 或全部 EQ 旋钮都没写 ⇒ 没有 EQ 级（不会"沉默地开一条平坦 EQ"）。
+    /// 5. 没写旋钮的级不执行（`eq_enabled` 等开关写过的优先）。
     #[must_use]
     pub fn from_devices(devices: &[DeviceDefinition], sample_rate: u32) -> Self {
-        let mut eq: Option<EqParams> = None;
+        let mut strip: Option<ChannelStripParams> = None;
         let mut reverb: Option<ReverbParams> = None;
         let mut convolution: Option<ConvolutionPlan> = None;
         for device in devices {
             if device.bypassed || device.kind != DeviceKind::InternalEffect {
                 continue;
             }
-            if eq.is_none() {
-                eq = eq_of(device);
+            if strip.is_none() {
+                strip = strip_of(device);
             }
             if reverb.is_none() {
                 reverb = reverb_of(device);
@@ -211,27 +221,51 @@ impl InsertChain {
             if convolution.is_none() {
                 convolution = convolution_of(device, sample_rate);
             }
-            if eq.is_some() && reverb.is_some() && convolution.is_some() {
+            if strip.is_some() && reverb.is_some() && convolution.is_some() {
                 break;
             }
         }
         Self {
-            eq,
+            strip: strip.map(ChannelStripParams::sanitised),
             reverb,
             convolution,
         }
     }
 
-    /// 本链是否为空（没有任何可执行的器件）。
+    /// 本链是否为空（没有任何**离线会执行**的器件）。
+    ///
+    /// 只有压缩参数的通道条不算非空：压缩级在离线侧整级不执行（§1）。
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.eq.is_none() && self.reverb.is_none() && self.convolution.is_none()
+    pub fn is_empty(&self) -> bool {
+        self.effective_strip().is_none() && self.reverb.is_none() && self.convolution.is_none()
     }
 
-    /// 投影出来的 EQ 参数（判据用：把"将要交给器件的那个数"变成可读的）。
+    /// 投影出来的通道条参数（判据用：把"将要交给器件的那个数"变成可读的）。
+    ///
+    /// ⚠ 这里保留投影的**原样**（包括 `compressor_enabled`）；运行态会把压缩级关掉。
+    #[must_use]
+    pub const fn strip(&self) -> Option<ChannelStripParams> {
+        self.strip
+    }
+
+    /// 实际会交给运行态的通道条参数：压缩级关掉，且"三级全关 + 增益 0 dB"⇒ `None`。
+    fn effective_strip(&self) -> Option<ChannelStripParams> {
+        let mut params = self.strip?;
+        params.compressor_enabled = false;
+        let identity = params.input_gain_db == 0.0
+            && params.output_gain_db == 0.0
+            && !params.eq_enabled
+            && !params.filter_enabled;
+        if identity { None } else { Some(params) }
+    }
+
+    /// 投影出来的 EQ 参数（判据用；EQ 级未启用时为 `None`）。
     #[must_use]
     pub const fn eq(&self) -> Option<EqParams> {
-        self.eq
+        match self.strip {
+            Some(params) if params.eq_enabled => Some(params.eq),
+            _ => None,
+        }
     }
 
     /// 投影出来的混响参数（判据用）。
@@ -285,11 +319,11 @@ pub fn project_inserts(
 ///   后者是音源，其参数由音源负责）；
 /// - 有**非旁通**设备一个参数都没写（"没有参数可求值"不是"已经求值"—— 与既有
 ///   MCP 判据的口径一致，保留 `deviceChainDsp` 登记）；
-/// - 有**非旁通**设备的任一参数名不在本切片三件器件的白名单里（滤波 / 压缩 / 增益 /
-///   未知第三方旋钮都算）。
+/// - 有**非旁通**设备的任一参数名不在本切片的白名单里（**压缩** / 未知第三方旋钮）。
 ///
-/// 全部非旁通设备都是本切片认识的内置效果器参数 ⇒ `false` ⇒ MCP 不再登记
-/// `deviceChainDsp`（报一个已经做到的键就是假话）。
+/// 全部非旁通设备都是本切片认识并**真的执行**的内置效果器参数 ⇒ `false` ⇒ MCP
+/// 不再登记 `deviceChainDsp`（报一个已经做到的键就是假话）。增益 / EQ / 滤波已由
+/// 通道条执行；压缩仍整级不执行（§1），因此它的名字**仍然**登记。
 #[must_use]
 pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
     track.devices.iter().any(|device| {
@@ -308,13 +342,27 @@ pub fn track_has_unhandled_dsp(track: &TrackV3) -> bool {
 
 /// 本切片**消费**的参数名（小写）全集。
 ///
-/// 刻意**不含**：`input_gain_db` / `output_gain_db` / `filter_*` / `cutoff_hz` /
-/// 压缩的七个名字 / `reverb_mix` / `reverb_width` —— 它们要么留 S2，要么与单声道
-/// 检波口径绑定。写这些名字的设备会被 [`track_has_unhandled_dsp`] 如实登记。
+/// 刻意**不含**：压缩的七个名字（`threshold*` / `ratio` / `knee*` / `detector*` /
+/// `attack*` / `release*` / `makeup*`）与 `reverb_mix` / `reverb_width`。压缩与单声道
+/// 检波口径绑定（§1）；后两个名字引擎同样不认。写这些名字的设备会被
+/// [`track_has_unhandled_dsp`] 如实登记。
 fn is_supported_param(name: &str) -> bool {
     matches!(
         name,
-        "eq_enabled"
+        // 通道条：增益 / 级开关 / EQ / 滤波（引擎 insert.rs 的 StripProjection 同集）。
+        "input_gain_db"
+            | "input_gain"
+            | "trim_db"
+            | "output_gain_db"
+            | "output_gain"
+            | "fader_db"
+            | "filter_enabled"
+            | "cutoff_hz"
+            | "resonance"
+            | "filter_resonance"
+            | "drive"
+            | "filter_drive"
+            | "eq_enabled"
             | "eq_low_gain"
             | "low_gain"
             | "eq_low_freq"
@@ -349,52 +397,192 @@ fn is_supported_param(name: &str) -> bool {
     )
 }
 
-/// 单台设备 → EQ 参数（`None` = 没有可执行的 EQ 级）。
-fn eq_of(device: &DeviceDefinition) -> Option<EqParams> {
-    let mut params = EqParams::default();
-    let mut seen = false;
-    let mut enabled: Option<bool> = None;
+/// 单台设备 → 通道条参数（`None` = 一个已识别的通道条名字都没有）。
+///
+/// 逐字镜像引擎 `crates/yeban-engine/src/insert.rs` 的 `strip_of` /
+/// `StripProjection`（`from_devices` 的"首个来源"规则也包括在内）：离线与实时
+/// 必须识别**同一组名字**、推导**同一组级开关**，否则 `deviceChainDsp` 的登记
+/// 会与真实求值脱节。镜像由测试 `strip_names_are_the_engine_whitelist` 对账。
+fn strip_of(device: &DeviceDefinition) -> Option<ChannelStripParams> {
+    let mut resolved = StripProjection::default();
     for param in &device.params {
-        let name = param.name.to_ascii_lowercase();
-        let value = param.value;
-        match name.as_str() {
-            "eq_enabled" => enabled = Some(value != 0.0),
+        resolved.apply(&param.name.to_ascii_lowercase(), param.value);
+    }
+    resolved.into_params()
+}
+
+/// 布尔参数的取值口径：非零即真（与引擎的 `flag` 同式）。
+fn flag(value: f32) -> bool {
+    value != 0.0
+}
+
+/// 通道条投影的中间态（引擎 `StripProjection` 的镜像）。
+///
+/// `None` 在开关字段上的语义是"设备没写这个开关"：没写旋钮的级必须得到 `false`，
+/// 不能沿用 dsp 默认值（那一份把三级都默认打开）。
+#[derive(Clone, Copy, Debug)]
+struct StripProjection {
+    eq: StripEq,
+    filter_seen: bool,
+    compressor_seen: bool,
+    eq_enabled: Option<bool>,
+    filter_enabled: Option<bool>,
+    compressor_enabled: Option<bool>,
+    params: ChannelStripParams,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StripEq {
+    seen: bool,
+    low_gain: Option<f32>,
+    low_freq: Option<f32>,
+    mid_gain: Option<f32>,
+    mid_freq: Option<f32>,
+    mid_q: Option<f32>,
+    high_gain: Option<f32>,
+    high_freq: Option<f32>,
+}
+
+impl Default for StripProjection {
+    fn default() -> Self {
+        Self {
+            eq: StripEq::default(),
+            filter_seen: false,
+            compressor_seen: false,
+            eq_enabled: None,
+            filter_enabled: None,
+            compressor_enabled: None,
+            params: ChannelStripParams::DEFAULT,
+        }
+    }
+}
+
+impl StripProjection {
+    fn apply(&mut self, name: &str, value: f32) {
+        match name {
+            "input_gain_db" | "input_gain" | "trim_db" => self.params.input_gain_db = value,
+            "output_gain_db" | "output_gain" | "fader_db" => self.params.output_gain_db = value,
+
+            "eq_enabled" => self.eq_enabled = Some(flag(value)),
+            "filter_enabled" => self.filter_enabled = Some(flag(value)),
+            "compressor_enabled" => {
+                self.compressor_enabled = Some(flag(value));
+                self.compressor_seen = true;
+            }
+
             "eq_low_gain" | "low_gain" => {
-                params.low_gain = value;
-                seen = true;
+                self.eq.low_gain = Some(value);
+                self.eq.seen = true;
             }
             "eq_low_freq" | "low_freq" => {
-                params.low_freq = value;
-                seen = true;
+                self.eq.low_freq = Some(value);
+                self.eq.seen = true;
             }
             "eq_mid_gain" | "mid_gain" => {
-                params.mid_gain = value;
-                seen = true;
+                self.eq.mid_gain = Some(value);
+                self.eq.seen = true;
             }
             "eq_mid_freq" | "mid_freq" => {
-                params.mid_freq = value;
-                seen = true;
+                self.eq.mid_freq = Some(value);
+                self.eq.seen = true;
             }
             "eq_mid_q" | "mid_q" => {
-                params.mid_q = value;
-                seen = true;
+                self.eq.mid_q = Some(value);
+                self.eq.seen = true;
             }
             "eq_high_gain" | "high_gain" => {
-                params.high_gain = value;
-                seen = true;
+                self.eq.high_gain = Some(value);
+                self.eq.seen = true;
             }
             "eq_high_freq" | "high_freq" => {
-                params.high_freq = value;
-                seen = true;
+                self.eq.high_freq = Some(value);
+                self.eq.seen = true;
             }
+
+            // ⚠ 只有 `cutoff_hz`：`filter_cutoff_hz` 与引擎一样**刻意不认**。
+            "cutoff_hz" => {
+                self.params.filter.cutoff_hz = value;
+                self.filter_seen = true;
+            }
+            "resonance" | "filter_resonance" => {
+                self.params.filter.resonance = value;
+                self.filter_seen = true;
+            }
+            "drive" | "filter_drive" => {
+                self.params.filter.drive = value;
+                self.filter_seen = true;
+            }
+
+            "threshold_db" | "threshold" => {
+                self.params.compressor.threshold_db = value;
+                self.compressor_seen = true;
+            }
+            "ratio" => {
+                self.params.compressor.ratio = value;
+                self.compressor_seen = true;
+            }
+            "knee_db" | "knee" => {
+                self.params.compressor.knee_db = value;
+                self.compressor_seen = true;
+            }
+            "detector_s" | "detector" => {
+                self.params.compressor.detector_s = value;
+                self.compressor_seen = true;
+            }
+            "attack_s" | "attack" => {
+                self.params.compressor.attack_s = value;
+                self.compressor_seen = true;
+            }
+            "release_s" | "release" => {
+                self.params.compressor.release_s = value;
+                self.compressor_seen = true;
+            }
+            "makeup_db" | "makeup" => {
+                self.params.compressor.makeup_db = value;
+                self.compressor_seen = true;
+            }
+
             _ => {}
         }
     }
-    // 与引擎 §4.1 同口径：`eq_enabled` 写过的优先，否则"写了旋钮才开"。
-    if enabled.unwrap_or(seen) {
+
+    fn into_params(self) -> Option<ChannelStripParams> {
+        let recognised = self.eq.seen
+            || self.filter_seen
+            || self.compressor_seen
+            || self.eq_enabled.is_some()
+            || self.filter_enabled.is_some()
+            || self.params != ChannelStripParams::DEFAULT;
+        if !recognised {
+            return None;
+        }
+        let mut params = self.params;
+        let eq = &mut params.eq;
+        if let Some(value) = self.eq.low_gain {
+            eq.low_gain = value;
+        }
+        if let Some(value) = self.eq.low_freq {
+            eq.low_freq = value;
+        }
+        if let Some(value) = self.eq.mid_gain {
+            eq.mid_gain = value;
+        }
+        if let Some(value) = self.eq.mid_freq {
+            eq.mid_freq = value;
+        }
+        if let Some(value) = self.eq.mid_q {
+            eq.mid_q = value;
+        }
+        if let Some(value) = self.eq.high_gain {
+            eq.high_gain = value;
+        }
+        if let Some(value) = self.eq.high_freq {
+            eq.high_freq = value;
+        }
+        params.eq_enabled = self.eq_enabled.unwrap_or(self.eq.seen);
+        params.filter_enabled = self.filter_enabled.unwrap_or(self.filter_seen);
+        params.compressor_enabled = self.compressor_enabled.unwrap_or(self.compressor_seen);
         Some(params)
-    } else {
-        None
     }
 }
 
@@ -490,24 +678,16 @@ fn convolution_of(device: &DeviceDefinition, sample_rate: u32) -> Option<Convolu
 /// 构造期把全部缓冲与器件状态准备好；逐块处理**零分配**。器件状态跨块存活，
 /// 因此 [`Self::reset`] 必须在每次 `execute` 开始时调用（复位契约）。
 pub(crate) struct InsertRuntime {
-    /// EQ 状态（`Some` 时 `eq_params` 是这一份参数）。
-    eq: Option<ShapingEq>,
-    /// EQ 参数（`eq` 为 `Some` 时有效）。
-    eq_params: EqParams,
+    /// 通道条状态（增益 → EQ → 低通 → 动态 → 增益；压缩级在离线侧关闭）。
+    strip: Option<ChannelStrip>,
     /// Freeverb 状态；`None` = 不动（`mix = 0` 或没有）。
     reverb: Option<Reverb>,
     /// 卷积混响状态；`None` = 不动（`wet = 0` 或没有）。
     convolution: Option<ConvolutionReverb>,
-    /// 采样率（Hz，构造期钳制后的值由器件负责）。
-    sample_rate: f32,
     /// 左声道去交错缓冲。
     left: Vec<f32>,
     /// 右声道去交错缓冲。
     right: Vec<f32>,
-    /// EQ 输出左缓冲。
-    eq_left: Vec<f32>,
-    /// EQ 输出右缓冲。
-    eq_right: Vec<f32>,
 }
 
 impl InsertRuntime {
@@ -516,10 +696,9 @@ impl InsertRuntime {
     /// **只在控制路径调用**（允许分配：卷积核与混响延迟线在这里建起来）。
     pub(crate) fn new(chain: &InsertChain, sample_rate: u32, block_size: usize) -> Self {
         let sample_rate_f32 = sample_rate as f32;
-        let (eq, eq_params) = match chain.eq {
-            Some(params) => (Some(ShapingEq::new()), params),
-            None => (None, EqParams::default()),
-        };
+        let strip = chain
+            .effective_strip()
+            .map(|params| ChannelStrip::new(params, sample_rate_f32));
         let reverb = chain.reverb.and_then(|params| {
             let mut state = Reverb::new();
             state.set_sample_rate(sample_rate_f32);
@@ -539,22 +718,18 @@ impl InsertRuntime {
             if state.is_active() { Some(state) } else { None }
         });
         Self {
-            eq,
-            eq_params,
+            strip,
             reverb,
             convolution,
-            sample_rate: sample_rate_f32,
             left: vec![0.0; block_size],
             right: vec![0.0; block_size],
-            eq_left: vec![0.0; block_size],
-            eq_right: vec![0.0; block_size],
         }
     }
 
     /// 复位全部器件的时间状态（下一次 `execute` 与"刚编译"逐位等价）。
     pub(crate) fn reset(&mut self) {
-        if let Some(eq) = &mut self.eq {
-            eq.reset();
+        if let Some(strip) = &mut self.strip {
+            strip.reset();
         }
         if let Some(reverb) = &mut self.reverb {
             reverb.reset();
@@ -566,39 +741,26 @@ impl InsertRuntime {
 
     /// 原地处理一个**立体声交错**块（`buffer.len() == frames * 2`）。
     ///
-    /// 顺序与实时引擎同一条链：EQ → Freeverb → 卷积混响。各级在参数为 0 时整级
-    /// 跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
+    /// 顺序与实时引擎同一条链：通道条 → Freeverb → 卷积混响。各级在参数为 0 时
+    /// 整级跳过（状态不推进），与器件自己的 `is_active` 守卫同口径。
     pub(crate) fn process(&mut self, buffer: &mut [f32]) {
         let frames = buffer.len() / 2;
         if frames == 0 {
             return;
         }
         let Self {
-            eq,
-            eq_params,
+            strip,
             reverb,
             convolution,
-            sample_rate,
             left,
             right,
-            eq_left,
-            eq_right,
         } = self;
         for frame in 0..frames {
             left[frame] = buffer[2 * frame];
             right[frame] = buffer[2 * frame + 1];
         }
-        if let Some(eq) = eq {
-            eq.process(
-                &left[..frames],
-                &right[..frames],
-                &mut eq_left[..frames],
-                &mut eq_right[..frames],
-                *eq_params,
-                *sample_rate,
-            );
-            left[..frames].copy_from_slice(&eq_left[..frames]);
-            right[..frames].copy_from_slice(&eq_right[..frames]);
+        if let Some(strip) = strip {
+            strip.process_stereo(&mut left[..frames], &mut right[..frames]);
         }
         if let Some(reverb) = reverb {
             reverb.process(&mut left[..frames], &mut right[..frames]);
