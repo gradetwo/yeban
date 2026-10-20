@@ -130,7 +130,13 @@ const NOTE_FADE_FRAMES: u64 = 64;
 pub const MAX_SAMPLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// 一次调用最多读多少个**不同**样本文件（去重后）。
-pub const MAX_SAMPLE_FILES_READ: usize = 32;
+///
+/// ⚠ 128 而不是 32：大库**单次装载**会被截断（真实 `freepats-spanish-classical-guitar`
+/// 48 个区域在 32 时只读到 26）。截断是**响亮报告**的（`sampleReadsTruncated`），
+/// 但"读不全"仍会让大乐器的力度层/音区层静默缺席 ⇒ 提高这一条直接补齐可演奏性。
+/// 内存的真实上界仍是 [`MAX_SAMPLE_FRAMES_TOTAL`]（按解码后帧数算），这一条只放行
+/// **文件数**，不放松总字节量。
+pub const MAX_SAMPLE_FILES_READ: usize = 128;
 
 /// 一次调用最多读入多少帧（所有文件**合计**）——第二道上界，按**解码后**的规模算。
 pub const MAX_SAMPLE_FRAMES_TOTAL: u64 = 8_000_000;
@@ -1997,4 +2003,34 @@ fn db_to_linear(db: f32) -> f32 {
         return 0.0;
     }
     libm::powf(10.0, db / 20.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// E4：文件数上限是 128，且第 129 个**响亮拒绝**而不是静默丢弃。
+    ///
+    /// 用**不存在的路径**当探针：条目表按"不同路径"计数（失败也记一条，读成功的帧数
+    /// 另算），因此不必真的造 128 个 WAV 就能钉住上限。真实大库的动机见
+    /// [`MAX_SAMPLE_FILES_READ`] 的文档。
+    #[test]
+    fn the_sample_cache_accepts_128_distinct_files_and_refuses_the_129th() {
+        let base = std::env::temp_dir().join(format!("yeban-mcp-sfz-cap-{}", std::process::id()));
+        let mut cache = SampleCache::new();
+        for index in 0..MAX_SAMPLE_FILES_READ {
+            let path = base.join(format!("missing-{index}.wav"));
+            assert!(cache.get(&path).is_err(), "不存在的文件必须如实报错");
+        }
+        assert_eq!(cache.files_failed(), MAX_SAMPLE_FILES_READ);
+        assert!(!cache.truncated(), "正好 128 个还没触发截断");
+
+        let overflow = base.join("missing-overflow.wav");
+        let reason = cache.get(&overflow).expect_err("第 129 个必须被拒绝");
+        assert!(
+            reason.contains(&MAX_SAMPLE_FILES_READ.to_string()),
+            "拒绝文案必须点名上限 128: {reason}"
+        );
+        assert!(cache.truncated(), "上限命中必须被记账");
+    }
 }
