@@ -2418,7 +2418,7 @@ fn longest_path_latency_comes_from_the_device_definitions() {
         result["data"]["longestPathFrames"], 48,
         "延迟只能来自 DeviceDefinition::latency_samples (跳过旁通设备)"
     );
-    // 设备链 DSP 没实现 ⇒ 必须如实登记。
+    // 内置乐器是音源、不是插入链来源 ⇒ 仍必须如实登记。
     assert!(
         result["data"]["unsupported"]
             .as_array()
@@ -2483,6 +2483,96 @@ fn the_requested_format_changes_the_container_but_not_the_audio() {
     );
     assert_eq!(bw64["data"]["container"], "BW64");
     assert_eq!(&fs::read(&bw64_path).expect("bw64")[..4], b"BW64");
+}
+
+/// 判据 12b：离线插入链真的消费增益 / 低通；压缩仍整级不执行、仍登记。
+///
+/// 三个读数都必须从工具响应现算：
+/// 1. 写了 `input_gain_db` / `cutoff_hz` 的 `InternalEffect` ⇒ `unsupported` **不含**
+///    `deviceChainDsp`，且 `masterDigest` 与无设备基线不同（真的改了音频）；
+/// 2. 只写压缩参数 ⇒ `deviceChainDsp` 仍登记，且 `masterDigest` 与基线**逐位相同**
+///    （压缩级没有被偷偷执行）。
+#[test]
+fn offline_inserts_consume_gain_and_filter_but_still_report_the_compressor() {
+    let scratch = Scratch::new("strip");
+    let render_spec = |spec: &Spec, tag: &str| -> Value {
+        let (mut dispatcher, auth) =
+            dispatcher_with(&project(spec), &scratch.join(&format!("{tag}.yeban")));
+        let out = scratch.join(&format!("{tag}.wav"));
+        let result = call(
+            &mut dispatcher,
+            &auth,
+            json!({"format": "wav", "sampleRate": 48000, "path": out.display().to_string()}),
+        );
+        assert_eq!(result["status"], "success", "{result}");
+        result
+    };
+    let reported = |result: &Value| -> bool {
+        result["data"]["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|key| key == "deviceChainDsp")
+    };
+    let effect = |seed: u32, params: &[(&str, f32)]| -> DeviceDefinition {
+        let mut device = device(seed, 0, false);
+        device.kind = DeviceKind::InternalEffect;
+        for (name, value) in params {
+            device.params.push(yeban_model::ParameterValue {
+                name: (*name).to_owned(),
+                value: *value,
+                unit: None,
+            });
+        }
+        device
+    };
+
+    let baseline = render_spec(&Spec::default(), "baseline");
+
+    let gain = render_spec(
+        &Spec {
+            devices: vec![effect(80, &[("input_gain_db", -6.0)])],
+            ..Spec::default()
+        },
+        "gain",
+    );
+    assert!(!reported(&gain), "增益已被离线插入链消费: {gain}");
+    assert_ne!(
+        gain["data"]["masterDigest"], baseline["data"]["masterDigest"],
+        "写进去的 -6 dB 必须改变母带字节"
+    );
+
+    let filter = render_spec(
+        &Spec {
+            devices: vec![effect(81, &[("cutoff_hz", 100.0)])],
+            ..Spec::default()
+        },
+        "filter",
+    );
+    assert!(!reported(&filter), "低通已被离线插入链消费: {filter}");
+    assert_ne!(
+        filter["data"]["masterDigest"], baseline["data"]["masterDigest"],
+        "100 Hz 低通必须改变 440 Hz 音符的母带字节"
+    );
+
+    let compressor = render_spec(
+        &Spec {
+            devices: vec![effect(
+                82,
+                &[("threshold_db", -30.0), ("ratio", 4.0), ("makeup_db", 6.0)],
+            )],
+            ..Spec::default()
+        },
+        "compressor",
+    );
+    assert!(
+        reported(&compressor),
+        "压缩没有被求值 ⇒ 必须登记: {compressor}"
+    );
+    assert_eq!(
+        compressor["data"]["masterDigest"], baseline["data"]["masterDigest"],
+        "压缩级离线不执行 ⇒ 母带必须与无设备基线逐位相同"
+    );
 }
 
 // ---------------------------------------------------------------------------
