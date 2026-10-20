@@ -7483,8 +7483,11 @@ pub fn compile(
                             "deviceId": device.id.to_canonical_string(),
                             "existingSlotIndex": existing,
                             "reason": "deviceIdAlreadyInTrack",
-                            "hint": "想改现有设备的参数请用 `setParam` (目标 `DeviceParam`); \
-                                     想换一台请先 `removeDevice`",
+                            "hint": "`setParam` **不接受**目标 `DeviceParam` \
+                                     (设备参数的静态写入在工具面没有通路); \
+                                     要改现有设备的静态参数, 只能先 `removeDevice` 取走它, \
+                                     再 `insertDevice` 重插一台带新参数的设备; \
+                                     想换一台也先 `removeDevice`",
                         }),
                     ));
                 }
@@ -12395,6 +12398,25 @@ mod tests {
         assert_eq!(
             lane_fault_data(&fault)["existingSlotIndex"],
             serde_json::json!(0)
+        );
+        // ⭐ `#264`：hint 不得把调用方指向一条**同一个工具面明确拒绝**的路。
+        // `parse_static_lane` 对目标 `DeviceParam` 报 `staticLaneNotApplicable`，
+        // 因此这里逐条钉住"实话"：说清不接受、不出现"请用 `setParam`"、并给出
+        // 真的可行的手段（先 `removeDevice` 再 `insertDevice`）。
+        let hint = lane_fault_data(&fault)["hint"]
+            .as_str()
+            .expect("hint 必须是字符串");
+        assert!(
+            hint.contains("不接受") && hint.contains("`DeviceParam`"),
+            "hint 必须说清 `setParam` 不接受 `DeviceParam`: {hint}"
+        );
+        assert!(
+            !hint.contains("请用 `setParam`"),
+            "hint 不得让调用方去用 `setParam` (同一个工具面会拒绝它): {hint}"
+        );
+        assert!(
+            hint.contains("removeDevice") && hint.contains("insertDevice"),
+            "hint 必须给出真的可行的手段 (removeDevice + insertDevice): {hint}"
         );
 
         // 音轨不存在（自带寻址的那条 `trackId` 打错了）。
