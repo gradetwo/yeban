@@ -15275,3 +15275,18 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⇒ ⭐ ⭐ **所以本单只登记"⭐ 它已可合 ＋ ⭐ 无冲突 ＋ ⭐ 最新一笔 CI 绿"、⭐ 合的动作留给它或留给人类一句话** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`line/render-insert-strip` 落地**（⭐ 已可合、⭐ 等人）＋ ⭐ **E1 本体**（⭐ 待裁、⭐ 材料已齐）＋ ⭐ **采样器声相** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R977 实测追加（2026-10-20）：⭐⭐ **`line/render-insert-strip` 已合**（⭐ 人类逐字"⭐ 那边不开发了、⭐ 都交给你了…⭐ 合并就好了"）
+
+⭐ **合并**: ⭐ ⭐ **`git merge --no-ff origin/line/render-insert-strip`** ⇒ ⭐ **`2d28d43e` → `97a0c05e`**（⭐ 5 文件 ＋597／−113）⇒ ⭐ 主推 ✓ ⭐ 合前 ⭐ `git merge-tree --write-tree` ⇒ **rc 0**（⭐ 无冲突）✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 内容（⭐ `#244` 的实质扩展）**: ⭐ ⭐ **离线插入链现在跑 ⭐ **输入/⭐ 输出增益 ＋ ⭐ EQ ＋ ⭐ 低通****（⭐ `inserts.rs` **+374／−113**）★ ⭐ 新增 ⭐ `ChannelStripParams` ＋ ⭐ `strip_of(device)` ＋ ⭐ ⭐ **`effective_strip()` 的**恒等快路径****（⭐ 逐字 ⭐ `params.input_gain_db == 0.0 && params.output_gain_db == 0.0` ⇒ ⭐ ⚠ **零参数 ⇒ ⭐ 一个样本不碰**）★ ⭐ 并 ⭐ 兼容多种键名（⭐ `input_gain_db`／⭐ `input_gain`／⭐ `output_gain_db`／⭐ `output_gain`）✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 我复核的读数**: ⭐ ⭐ **`cargo test -p yeban-render --test insert_chain` ⇒ `14 passed`** ✓ ⭐ ⭐ **`git status` 0 行** ⇒ ⭐ 合并干净 ✓
+⚠ ⭐ **CI 判决：⭐ 待读**（⭐ `gh run list` 本轮返回空 —— ⭐ 可能是限流／⭐ 尚未起跑）⇒ ⭐ **下一轮补读** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 远端清账（⭐ 本轮实测）**: ⭐ ⭐ **除 `main`／⭐ `website` 外，⭐ 只剩 5 条工作线、⭐ 其中 4 条 `ahead=0`（⭐ 已合）、⭐ 只有 `render-insert-strip` 曾 `ahead=3`** ⇒ ⭐ ⭐ **现已合 ⇒ ⭐ 远端工作线**全部归零**** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`97a0c05e` 的 CI 判决**（⭐ 下轮读）＋ ⭐ **`#255`（⭐ 采样器声相）**在飞 ⇒ ⚠ **它要 rebase 到 `97a0c05e`**（⭐ 因为 ⭐ `mcp/render.rs` 与本次有交集）＋ ⭐ **E1 本体**（⭐ 待裁）＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
