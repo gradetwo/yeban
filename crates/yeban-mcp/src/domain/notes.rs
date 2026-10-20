@@ -4491,8 +4491,10 @@ fn reject_add_routing_node_fields(object: &Map<String, Value>) -> Result<(), Fau
             "reason": "unknownAddRoutingNodeField",
             "unsupportedFields": unknown,
             "supportedAddRoutingNodeFields": ADD_ROUTING_NODE_FIELDS,
-            "hint": "本形态的载荷是空的 (只认 `kind` 与 `nodeId`); 节点身份是一个音轨或\
-                     总线的身份, 由 `yeban_query_project` 的 `tracks` 报出; 边由 `edgeId` \
+            "hint": "本形态的载荷是空的 (只认 `kind` 与 `nodeId`); 节点身份由 \
+                     `yeban_query_project` 的 `routing_graph.nodes` 报出 —— ⚠ 模型**不要求**\
+                     它对应一条真实音轨 (只查节点不重复、且每条边的两端都在 `nodes` 里), \
+                     所以新音轨要先 `addRoutingNode` 才成为节点; 边由 `edgeId` \
                      寻址 (节点与边是两种实体)",
         }),
     ))
@@ -7027,7 +7029,9 @@ pub fn compile(
                             "hint": "新建音轨是**幂等拒绝**的 (模型 `AddTrack` 的前置条件\
                                      是身份不在 `tracks` 里); 已有的音轨身份由 \
                                      `yeban_query_project` 的 `tracks` 报出。若你想改一条\
-                                     已有音轨, 用 `setParam`/`setTrackMute`/`setTrackSolo`",
+                                     已有音轨, 用 `setParam` (音量/声相) / `setTrackMute` / \
+                                     `setTrackSolo` / `setTrackName` / `setTrackColor` / \
+                                     `setTrackSampler`",
                         }),
                     ));
                 }
