@@ -758,7 +758,15 @@ impl Bext {
         BEXT_FIXED_LEN
     }
 
-    /// [`Self::to_bytes`] 会写出的负载长度（`fixed_len() + CodingHistory` 的字节数）。
+    /// [`Self::to_bytes`] 会写出的负载长度（`fixed_len()` + `CodingHistory` 的字节数,
+    /// 长度为奇数时再加 1 字节 NUL 终止符）。
+    ///
+    /// **负载长度恒为偶数**: 固定前缀 602 是偶数, 而奇数长度的 `CodingHistory`
+    /// 会在末尾补一个 NUL 并**计入 chunk 长度**（见 [`Self::to_bytes`]）。这样 `bext`
+    /// 永远不需要 chunk **外**的 RIFF 补位字节 —— hound 3.5.1 跳过未知 chunk 时
+    /// 不跳补位字节, 会把那个 0 当成下一个 chunk 头的第一个字节, 实测报
+    /// `Failed to read enough bytes.`。判据是
+    /// `an_odd_coding_history_stays_readable_by_a_third_party_reader`。
     ///
     /// 这是**纯算术**的读数, 与 `to_bytes` 末尾的 `debug_assert_eq!` 同一口径。
     /// [`ContainerPlan::for_payload`] 用它算头部长度, 因此**不需要**在那里调用
@@ -766,7 +774,9 @@ impl Bext {
     /// "这个块能不能写"（那由 [`ContainerPlan::validate`] 回答, 出口是 `Result`）。
     #[must_use]
     pub fn encoded_len(&self) -> usize {
-        self.fixed_len() + self.coding_history.len()
+        // 602 是偶数 ⇒ 总长的奇偶就是 CodingHistory 的奇偶。
+        let history = self.coding_history.len();
+        self.fixed_len() + history + (history % 2)
     }
 
     /// 编码为 `bext` chunk 的负载（固定前缀 + coding history）。
@@ -790,7 +800,8 @@ impl Bext {
     /// # 文本字段里含 NUL 也 panic（写入器只写读取器读得回同一个值的块）
     ///
     /// 五个定长文本字段是 **NUL 补位**的定长字段, `CodingHistory` 是变长字段而读取器
-    /// 会裁掉它的尾随 NUL（RIFF 的偶数字节补位就是那个 `0`, 两者在字节层无法区分）。
+    /// 会裁掉它的尾随 NUL（长度为奇数时写入器自己补的那个终止符也是 `0`,
+    /// 两者在字节层无法区分）。
     /// 因此一个**含 NUL** 的取值在这个编码里**无法表示**: [`Self::from_bytes`] 的读取在
     /// 第一个 NUL 处停止, 于是"写出去的值"与"读回来的值"不是同一个字符串。
     /// 本机实测（修复前, 六种形态各自都是这一结果）:
@@ -850,6 +861,11 @@ impl Bext {
             out.extend_from_slice(&[0u8; 190]);
         }
         out.extend_from_slice(self.coding_history.as_bytes());
+        if self.coding_history.len() % 2 == 1 {
+            // NUL 终止符计入负载, 使 chunk 长度恒偶: 见 `encoded_len` 的注释
+            // （第三方读取器的奇数补位缺陷）。读取器会把尾随 NUL 裁掉, 往返不变。
+            out.push(0);
+        }
         debug_assert_eq!(out.len(), self.encoded_len());
         out
     }
@@ -870,8 +886,8 @@ impl Bext {
     ///
     /// 定长字段的**超长截断**是**有意的**（见私有函数 `push_fixed`: 字段宽 256/32/32/10/8 字节,
     /// 写不下的部分按字符边界丢掉）, 因此它不在这里; 而 `CodingHistory` 的**尾随** NUL
-    /// 是另一个来源: 读取器必须裁掉它, 因为奇数长度的 `bext` 负载会被 RIFF 的偶数字节
-    /// 补位补一个 `0` —— 那个补位字节落在负载里。于是"调用方给的尾随 NUL"与"补位字节"
+    /// 是另一个来源: 读取器必须裁掉它, 因为长度为奇数时写入器会在负载末尾补一个 `0`
+    /// （NUL 终止符, 让 chunk 长度恒偶）。于是"调用方给的尾随 NUL"与"写入器的终止符"
     /// 在字节层无法区分, 只能拒绝前者。
     ///
     /// 返回**字段名**而不是 `bool`: 调用方（导出错误、判据）要能点名是哪个字段。
@@ -2063,7 +2079,13 @@ mod tests {
             "v1 与 v2 的固定前缀都是 602"
         );
         let bytes = block.to_bytes();
-        assert_eq!(bytes.len(), BEXT_FIXED_LEN + block.coding_history.len());
+        let history = block.coding_history.len();
+        assert_eq!(
+            bytes.len(),
+            BEXT_FIXED_LEN + history + history % 2,
+            "奇数长度的 CodingHistory 补一个 NUL 计入负载"
+        );
+        assert_eq!(bytes.len() % 2, 0, "bext 负载恒偶");
         assert_eq!(le::read_u16(&bytes, 346), Some(2), "Version 字段偏移 346");
         assert_eq!(&bytes[348..412], &[0xAB; 64], "UMID 偏移 348..412");
         assert_eq!(
@@ -2927,9 +2949,13 @@ mod tests {
         assert_eq!(file[parsed.data.end], 0, "补位字节必须是 0");
     }
 
-    /// 判据 14: 奇数长度的 `bext` 负载同样被补位, 头部长度计算仍然自洽。
+    /// 判据 14: 奇数长度的 `CodingHistory` 以 NUL 终止符补齐为偶数负载,
+    /// **不依赖** chunk 外的 RIFF 补位字节。
+    ///
+    /// 为什么必须这样做: hound 3.5.1 跳过未知 chunk 时不跳补位字节
+    /// （第三方读取腿见判据 15）。
     #[test]
-    fn odd_bext_coding_history_is_padded_consistently() {
+    fn odd_bext_coding_history_is_padded_inside_the_chunk() {
         let block = Bext {
             version: 1,
             coding_history: "ABC".to_owned(), // 602 + 3 = 605 (奇数)
@@ -2951,11 +2977,80 @@ mod tests {
             chunk_order(&file).expect("解析"),
             vec![*b"ds64", *b"fmt ", *b"bext", *b"data"]
         );
+        let bext = parsed
+            .chunks
+            .iter()
+            .find(|chunk| chunk.fourcc == *b"bext")
+            .expect("有 bext chunk");
+        assert_eq!(bext.payload_len, BEXT_FIXED_LEN + 4, "ABC + NUL");
+        assert_eq!(bext.payload_len % 2, 0, "bext 负载恒偶");
+        let last = bext.payload_offset + bext.payload_len - 1;
+        assert_eq!(file[last], 0, "最后一个字节是 NUL 终止符");
+        let data_chunk = parsed
+            .chunks
+            .iter()
+            .find(|chunk| chunk.fourcc == *b"data")
+            .expect("有 data chunk");
+        assert_eq!(
+            data_chunk.payload_offset,
+            bext.payload_offset + bext.payload_len + 8,
+            "bext 与 data 之间不得有 chunk 外的补位字节"
+        );
         assert_eq!(
             parsed.bext.expect("有 bext").coding_history,
             "ABC",
             "CodingHistory 必须原样读回"
         );
+    }
+
+    /// 判据 15: 奇数长度的 `CodingHistory` 写出的 RIFF 必须被**第三方**读取器读得动。
+    ///
+    /// hound 3.5.1 跳过未知 chunk 时**不跳** RIFF 的偶数补位字节
+    /// （`read_until_data` 的 `ChunkKind::Unknown` 分支只 `skip_bytes(len)`）:
+    /// 声明长度 602 + 641 = 1243（奇数）的 `bext` 之后, 补位字节会被当成下一个
+    /// chunk 头的第一个字节 ⇒ 实测 `Failed to read enough bytes.`。
+    /// 修法: 让 `CodingHistory` 的 NUL 终止符**计入** chunk 负载（负载恒偶）,
+    /// 补位位置与音频负载都不变。
+    #[test]
+    fn an_odd_coding_history_stays_readable_by_a_third_party_reader() {
+        // 641 与 MCP 母带实测的 codingHistory 长度同奇偶, 也同量级。
+        let history = "H".repeat(641);
+        assert_eq!(history.len() % 2, 1, "探针必须是奇数长度");
+        let block = Bext {
+            version: 1,
+            coding_history: history,
+            ..Bext::default()
+        };
+        let data = payload(4);
+        let plan = ContainerPlan::for_payload(
+            ContainerKind::Riff,
+            stereo_16bit(),
+            data.len() as u64,
+            4,
+            Some(block),
+        );
+        let mut file = Vec::new();
+        write_container(&mut file, &plan, &data).expect("写入");
+
+        // 本仓解析器: CodingHistory 原样读回。
+        let parsed = parse_container(&file).expect("解析");
+        assert_eq!(
+            parsed.bext.expect("有 bext").coding_history.len(),
+            641,
+            "CodingHistory 必须原样读回"
+        );
+
+        // 第三方读取器: 必须能打开, 且读出的样本逐样本等于写入的负载。
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(file.as_slice()))
+            .expect("hound 必须能跳过奇数长度的 bext");
+        assert_eq!(reader.spec().channels, 2);
+        assert_eq!(reader.spec().sample_rate, 48_000);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+        let samples: Vec<i16> = reader
+            .samples::<i16>()
+            .collect::<Result<_, _>>()
+            .expect("样本可读");
+        assert_eq!(samples, vec![0, 0, 3, -5, 6, -10, 9, -15]);
     }
 
     /// 判据 15: 损坏/非 WAVE 输入被明确拒绝, 不得 panic。
@@ -3275,11 +3370,22 @@ mod tests {
         for (block, expected) in cases {
             assert_eq!(block.coding_history, expected);
             let bytes = block.to_bytes();
-            assert_eq!(bytes.len(), BEXT_FIXED_LEN + expected.len());
             assert_eq!(
-                &bytes[BEXT_FIXED_LEN..],
-                expected.as_bytes(),
+                bytes.len(),
+                BEXT_FIXED_LEN + expected.len() + expected.len() % 2,
+                "奇数长度的 CodingHistory 补一个 NUL 计入负载"
+            );
+            assert_eq!(bytes.len() % 2, 0, "bext 负载恒偶");
+            let history_bytes = &bytes[BEXT_FIXED_LEN..];
+            assert!(
+                history_bytes.starts_with(expected.as_bytes()),
                 "CodingHistory 必须从固定前缀之后开始"
+            );
+            assert!(
+                history_bytes[expected.len()..]
+                    .iter()
+                    .all(|byte| *byte == 0),
+                "多余的一个字节必须是 NUL 终止符"
             );
             let decoded = Bext::from_bytes(&bytes).expect("解码");
             assert_eq!(decoded.coding_history, expected);
@@ -4371,13 +4477,17 @@ mod tests {
         );
 
         let bytes = block.to_bytes();
-        assert_eq!(bytes.len(), BEXT_FIXED_LEN + probe.len());
+        assert_eq!(
+            bytes.len(),
+            BEXT_FIXED_LEN + probe.len() + probe.len() % 2,
+            "奇数长度的 CodingHistory 补一个 NUL 计入负载"
+        );
         let decoded = Bext::from_bytes(&bytes).expect("解码");
         assert_eq!(decoded.coding_history, probe, "内部 NUL 必须逐字节读回");
         assert_eq!(decoded, block);
         assert_eq!(decoded.to_bytes(), bytes, "重新编码必须逐字节相同");
 
-        // 另一半: **尾随** NUL 仍然不可表示（读取器必须裁掉它, 那是 RIFF 补位的同一形态）。
+        // 另一半: **尾随** NUL 仍然不可表示（写入器自己补的 NUL 终止符也是这个形态）。
         let trailing = Bext {
             version: 1,
             coding_history: "A=PCM\u{0}".to_owned(),
@@ -4436,7 +4546,7 @@ mod tests {
         let decoded = Bext::from_bytes(&with_padding).expect("解码");
         assert_eq!(
             decoded.coding_history, probe,
-            "尾随 NUL（RIFF 的偶数字节补位）必须被裁掉"
+            "尾随 NUL（写入器补的终止符也是这个形态）必须被裁掉"
         );
     }
 
@@ -5466,8 +5576,12 @@ mod tests {
     /// 上面那个容器的**字节数**（实测）。
     const RIFF_PINNED_BYTES: usize = 714;
     /// 同一份字节流的 SHA-256（实测）。
+    ///
+    /// ⚠ `#255` 重钉: 夹具的 `CodingHistory` 是 27 字节（奇数）, 写入器现在把
+    /// NUL 终止符计入 `bext` 负载（`bext` 长度字段 629 → 630, 补位 0 从 chunk 外
+    /// 移到 chunk 内同一偏移）。**文件总长仍是 714**, 只有长度字段的 4 个字节变了。
     const RIFF_PINNED_SHA256: &str =
-        "104093330affb9a57aa81e87db8e7b4704cc05afcffb0d1da2a330ddac576f9f";
+        "6256a209b70c2da06bf5fe9c19d802468bafc0b4f9680d2d409c3dfe4c552500";
 
     /// 判据 (**R70② 字节契约的"两端"**): 容器在**零字节载荷**与**奇数载荷**两端也要钉住。
     ///
