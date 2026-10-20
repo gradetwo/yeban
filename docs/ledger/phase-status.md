@@ -15327,3 +15327,23 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⇒ ⭐ ⭐ **即：⭐ 插入链的增益/⭐ EQ/⭐ 低通 扩展已过 CI** ⇒ ⚠ ⭐ **而 `#255`（⭐ 采样器声相）的判决还**没回来**** ⇒ ⭐ **下轮补** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`e7938f68`／⭐ `152c0f17` 的判决** ＋ ⭐ **E1 本体**（⭐ 待裁）＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R980 实测追加（2026-10-20）：⭐ **核账 —— ⭐ "⭐ 三期"⭐那一项**已经被别人做完了****
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 我发现**`--sfz`／⭐ 最小音源**那条旧缺口已经不在了**** —— ⭐ 逐字读数:
+| ⭐ 检查 | ⭐ 读数 |
+| :-- | :--- |
+| ⭐ `track_notes_in_frames` 吃 ⭐ `micro_timing` | ⭐ ✅ `export_wav.rs:835` `let micro = i64::from(note.micro_timing_ticks.unwrap_or(0));` |
+| ⭐ 吃 ⭐ `ratchet` | ⭐ ✅ `:836` `let ratchet = u64::from(note.ratchet.unwrap_or(1).clamp(1, 16));` |
+| ⭐ 吃 ⭐ **循环** | ⭐ ✅ `:840` `placement.note_copies(note.start_tick, note.duration_ticks)`（⭐ 即 ⭐ 走 `#246` 的 **model 唯一实现**） |
+| ⭐ 吃 ⭐ `probability` | ⭐ ✅ `export_wav.rs` 里 `probability\|triggers` 共 **6** 处 |
+⇒ ⭐ ⭐ **即：⭐ `#245` 登记的那条"⭐ `--sfz` 旁路连 ratchet/micro/probability 都不吃"⭐⭐ 已由 ⭐ `a59551f5`（⭐ `fix(app): expand the sampler note schedule like the engine`）⭐ 那一族修完**** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 并核了清单（⭐ 16 项）里两项的**口径**是不是还诚实**: ⭐ ⭐ **`deviceChainDsp`** 已**收窄**成 ⭐ 「⭐ **压缩** ＋ ⭐ 未知旋钮」**（⭐ 逐字 ⭐ `render.rs:50`：⭐ ⭐ "⭐ 增益、⭐ EQ、⭐ 低通、⭐ Freeverb、⭐ 卷积**已求值**"⭐）⇒ ⭐ 那是 ⭐ `render-insert-strip` 那条线带来的 ✓
+★ ⭐ **`audioClips`** 也是**收窄**口径（⭐ 逐字 ⭐ `:49`：⭐ ⭐ "⭐ **仅当**工程 `assets` 索引**声明**了资产、⭐ 而会话 CAS 池里**没有它的字节**时才登记**"**）⇒ ⭐ ⚠ **它不是死键**（⭐ 逐字 ⭐ `:387-389`：⭐ ⭐ "⭐ 删掉它会把一个'⭐ 渲染必然失败'⭐的工程交出去"**）✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 结论（⭐ 重要）**: ⭐ ⭐ **清单 16 项里**没有一项**是"⭐ 我们能做但没做"**** ⇒ ⭐ **每项要么是**刻意差异**（`masterPan`／`noteLyrics`／`externalPlugins`）**、⭐ 要么是**待裁**（`automationLanes` 的四目标）**、⭐ 要么是**收窄后的真实边界**（`audioClips`／`deviceChainDsp`／`sidechainRouting`／`busTrackClips`／6 个 `sfz*`）** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`e7938f68` 判决** ＋ ⭐ **E1 本体**（⭐ 待裁、⭐ **唯一大件**）＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
