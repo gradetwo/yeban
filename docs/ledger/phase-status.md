@@ -15568,3 +15568,24 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 | ⭐ **S1** | ⭐ 只接 ⭐ **一个**参数（⭐ 首选 ⭐ `output_gain_db`，⭐ 与 `TrackVolume` **同形状**）⇒ ⭐ 验证"⭐ lane → name → field → block → digest"⭐整条链 | ⭐ 5 文件、⭐ ≈150–200 行生产 |
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **S0／S1／S2（全量）** ＋ ⭐ **5 条待裁**（⭐ 单位：⭐ 原生 vs ⭐ 归一化／⭐ 地址是否升级成 `device_id`＋名字／⭐ 覆盖范围是否含 Freeverb／卷积（⭐ 要运行期实例化 ⇒ **分配**）／⭐ 压缩是否接离线／⭐ `Macro` 值律 ＋ ⭐ 优先级）＋ ⭐ **`setParam` 与 hint 自相矛盾** ＋ ⭐ **E1 本体** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R990 实测追加（2026-10-21）：⭐ **`#263`（`DeviceParam` 地址解析读数）落地 ＋ 快进合并** ⇒ ⭐ **"⭐ 静默改指"⭐被证明了**
+
+⭐ **合并**: ⭐ base `6340ef93` ⇒ ⭐ `FINAL=8fab86a9`（⭐ 4 文件 ＋628／−2）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`1404 passed`／FAILED 0**（47 binary）＋ ⭐ 门 **全层 0** ＋ ⭐ 守卫 **18** ＋ ⭐ 轻门 ＋ ⭐ `validate_schemas` 4 份 ✓ ⭐ 树已拆 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 核心读数（⭐ "⭐ 插设备就改指"⭐的机械证明）**: ⭐ ⭐ **槽位 0 的泳道 ⇒ ⭐ 在槽位 0 插一台新设备** ⇒ ⭐ ⭐ **`before = 0000…0035` → ⭐ `after = 0000…006A`** **** ★ ⭐ ⭐ **而 ⭐ `target.validate_against()` **两次都 `Ok(())`**** ⇒ ⭐ ⭐ **即：⭐ 模型不报错、⭐ 只有报告里的 `resolvedDeviceId` 变了** ✓
+⇒ ⭐ ⭐ **那正是第 324 条要的"⭐ 别沉默"**：⭐ 今天它**无声发生**、⭐ 之后它**有读数** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 唯一实现（⭐ 第 10 条）**: ⭐ ⭐ **`crates/yeban-render/src/inserts.rs:475 resolve_device_param`**** ⇒ ⭐ 返回 ⭐ `device_id` ＋ ⭐ `param_name` ＋ ⭐ `is_supported` ＋ ⭐ `unresolved_reason()` ★ ⭐ **`UnresolvedReason` ＝ ⭐ `trackNotFound`／⭐ `slotOutOfRange`／⭐ `paramIndexOutOfRange`** ★ ⭐ 且 ⭐ **`paramNotSupported` 的**唯一字面量**只在 render 里**（⭐ MCP ⛔ 不拼第二份）✓
+★ ⭐ **MCP 三字段**: ⭐ `resolvedDeviceId`／⭐ `resolvedParamName`／⭐ `unresolved` ⇒ ⭐ ⚠ **非设备目标写 `null`、⭐ ⛔ 不省略键** ⇒ ⭐ **形状稳定** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 四类结果都验了**: ⭐ ① ⭐ 能解析 ⇒ ⭐ `input_gain_db` ＋ ⭐ `unresolved: null` ② ⭐ `slot=99` ⇒ ⭐ `"slotOutOfRange"` ③ ⭐ `param=99` ⇒ ⭐ `"paramIndexOutOfRange"` ④ ⭐ 白名单外（⭐ `mix`）⇒ ⭐ **仍报名字** ＋ ⭐ `"paramNotSupported"` ⇒ ⭐ ⭐ **分清"⭐ 找不到"⭐和"⭐ 找到了但用不上"** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ ⛔ 零音频改动（⭐ 硬正对照）**: ⭐ 带 `DeviceParam` 泳道的工程 ⇒ ⭐ `sha256` **`2935023d…`**（⭐ 前＝后）＋ ⭐ `masterDigest` **`b0897bc0…`**（⭐ 前＝后）✓
+
+⭐ ⚠ ⭐ ⭐ **五、⚠ 它如实划的边界**: ⚠ ⭐ **本单只让"⭐ 改指"⭐可观测、⭐ ⛔ **没有**改掉序数寻址**** ⇒ ⭐ 真要修 ⇒ ⭐ 要动模型/契约（⭐ `device_id` ＋ ⭐ 名字）⇒ ⭐ **那是 S2 的 5 条待裁之一** ✓
+★ ⭐ 并 ⭐ 登记：⭐ **`is_supported` 只判名字白名单、⭐ 不看 `bypassed`/`kind`**（⭐ 已在 rustdoc 写明）⇒ ⭐ 要"⭐ 是否真被执行"⭐应复用 ⭐ `track_has_unhandled_dsp` ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`8fab86a9` 判决** ＋ ⭐ **S1／S2（设备参数自动化）**（⭐ 5 条待裁）＋ ⭐ **`setParam` 与 hint 矛盾** ＋ ⭐ **E1 本体** ＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
