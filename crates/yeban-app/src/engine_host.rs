@@ -1327,6 +1327,21 @@ impl EngineHost {
     /// `yeban_render::automation::TrackPanAutomation`），两者共用同一条曲线、
     /// ⛔ 不共用执行。⚠ 母线仍被排除（引擎的声相表不含它）⇒ 原文的“主总线两个槽位”
     /// 只适用于 `TrackVolume`。
+    ///
+    /// ⚠ ⭐ **任务单 `#260` 对上面两条登记的修订（⭐ 只改"采样结构"，不改值）**：
+    /// ⭐ `#257` 把 `TrackPan` 发布进了引擎，但它被**嵌在** `TrackVolume` 分支的
+    /// `if let` **里面**（音量泳道缺失 ⇒ `continue` 把声相段一起跳过）⇒
+    /// **只有声相泳道、没有音量泳道**的轨（demo 的贝斯轨就是）声相自动化**一条都不下发**。
+    /// 本单把两块改成**并列的两个 `if let`**（见函数体注释 1 / 2）：
+    /// * 声相不再依赖音量泳道，也不依赖"音量这一条有效"（无效音量只丢它自己）；
+    /// * 两条都有泳道的轨：事件**条数、顺序、值**逐位不变（正对照）；
+    /// * 每轨仍是**至多 3 条**（音量 1 ＋ 声相 2）⇒ [`Self::automation_batch_capacity`]
+    ///   的 `PARAM_SLOTS * 3` = **48** 不需要变（48 = 16 条引擎槽位 × 3）；
+    /// * ⛔ **没有第二份采样**：每条泳道仍然只调一次 `automation_value_at`，仍然只有
+    ///   一个 `for track`、一次 `publish`、一份 `automation_project` 缓存；
+    /// * `automation_unapplied`（`#259` 的 gauge）**一位不动**：它数的是"实时不执行"的
+    ///   那几类目标，声相本来就不在其中。
+    ///
     /// 一跳最多下发的自动化事件数：**每条轨最多 3 条**（音量 + 声相左 + 声相右）。
     ///
     /// ⛔ 不用 [`PARAM_SLOTS`] 当上限：那个数是**引擎参数表的槽位数**（每条轨一个增益槽位）。
@@ -1343,6 +1358,9 @@ impl EngineHost {
     /// * **工程缓存**：`Some(project)` 更新缓存，`None` 跳用缓存 —— 生产的 16 ms 定时器
     ///   只在"标记变了"的那一跳才 `try_project()`（成本契约），⛔ 采样**不得**挂在入参上；
     /// * 一条轨最多 **3** 条事件：音量 1 条 + 声相 2 条（左/右**绝对**增益，语义是**替换**）；
+    /// * ⭐ **`#260`**：音量与声相是**两块并列的采样**（各自独立的 `if let`）⇒
+    ///   只有声相泳道（或只有音量泳道）的轨也各自下发；⛔ 声相**不**因音量泳道缺失 /
+    ///   关闭 / 这一跳没有值 / 值非法而被跳过（修前正是那样，`continue` 跳过了整段）；
     /// * 声相值由引擎公开的 [`pan_gains`] 与 [`PanLaw::from_model`] 在**控制侧**算好
     ///   （超越函数⛔ 不进音频线程），并 `max(0.0)` 钳位（硬右的左增益实测是负的）；
     /// * 返回**实际写入**的事件条数（没写进去的记进 [`Self::automation_counts`] 的第二个数）。
@@ -1374,49 +1392,53 @@ impl EngineHost {
         let mut len = 0usize;
         let mut dropped = 0u64;
         for track in project.tracks.values() {
-            let target = AutomationTarget::TrackVolume { track_id: track.id };
-            let Some(lane) = project.automation_lane(&target) else {
-                continue;
-            };
-            if !lane.read_enabled {
-                continue;
+            // ---- 1. 音量（`TrackVolume`，每条轨**至多 1 条**事件）----
+            //
+            // ⚠ ⭐ **`#260`：这是两个并列的块，不是一个嵌套的块。**
+            // 修前声相段（下一段）写在这个块**里面**（在 `let Some(lane) = … else { continue }`
+            // 之后）⇒ "只有声相泳道、没有音量泳道"的轨被 `continue` 整段跳过
+            // ⇒ 声相自动化**一条都不下发**。两块现在各自独立 `if let`：互不依赖。
+            // ⛔ 也**不**用 `continue` 表达"这一条无效"（那会顺带跳过声相）：
+            // 音量这一条只丢它自己，声相照旧采样。每轨最多仍是 **3** 条
+            // （音量 1 ＋ 声相 2）⇒ [`Self::automation_batch_capacity`] 的 48 不变。
+            let volume_target = AutomationTarget::TrackVolume { track_id: track.id };
+            if let Some(lane) = project.automation_lane(&volume_target)
+                && lane.read_enabled
+                && let Ok(Some(automated_db)) = project.automation_value_at(&volume_target, tick)
+            {
+                let static_gain = db_to_gain(track.volume_db);
+                let gain = if static_gain.is_finite() && static_gain > 0.0 {
+                    db_to_gain(automated_db) / static_gain
+                } else {
+                    // R61-1：静态不可闻（非有限 / 0）⇒ 直接用自动化的绝对值。
+                    db_to_gain(automated_db)
+                };
+                // 无效值（非有限 / 负）与"批满了"都只丢这一条 ⇒ 合成一个条件
+                // （⛔ 两个相同的分支会被 `clippy::if_same_then_else` 判红）。
+                if !gain.is_finite() || gain < 0.0 || len == batch_capacity {
+                    dropped += 1;
+                } else {
+                    let slot = if track.id == project.master_bus_track_id {
+                        MASTER_GAIN_SLOT
+                    } else {
+                        TRACK_GAIN_SLOT
+                    };
+                    batch[len] = EngineEvent::SetParam {
+                        target: ParamAddress::new(track.id, slot),
+                        value: gain,
+                    };
+                    len += 1;
+                }
             }
-            let Ok(Some(automated_db)) = project.automation_value_at(&target, tick) else {
-                continue;
-            };
-            let static_gain = db_to_gain(track.volume_db);
-            let gain = if static_gain.is_finite() && static_gain > 0.0 {
-                db_to_gain(automated_db) / static_gain
-            } else {
-                // R61-1：静态不可闻（非有限 / 0）⇒ 直接用自动化的绝对值。
-                db_to_gain(automated_db)
-            };
-            if !gain.is_finite() || gain < 0.0 {
-                dropped += 1;
-                continue;
-            }
-            let slot = if track.id == project.master_bus_track_id {
-                MASTER_GAIN_SLOT
-            } else {
-                TRACK_GAIN_SLOT
-            };
-            if len == batch_capacity {
-                dropped += 1;
-                continue;
-            }
-            batch[len] = EngineEvent::SetParam {
-                target: ParamAddress::new(track.id, slot),
-                value: gain,
-            };
-            len += 1;
 
-            // --- 声相（裁决 P4=(b)）：一条轨**两条**事件（左 / 右**绝对**增益）---
+            // ---- 2. 声相（裁决 P4=(b)）：一条轨**两条**事件（左 / 右**绝对**增益）----
             //
             // 语义是**替换**：泳道给的是声相位置，这里的 `pan_gains` 就是引擎在快照边界
             // 用的同一个公开函数（同一个衰减律，`PanLaw::from_model(工程)`）⇒ 值域与
             // 引擎内部一致，⛔ 不做任何分量相除。
             // ⚠ 母线**不**进声相表（引擎的 `armed_pan_gains` 明确排除它）⇒ 这里也跳过，
             // 否则两条事件会被判未映射（计数），读数上像缺陷。
+            // ⭐ `#260`：这一段**不再**嵌在音量块里（见上）—— 没有音量泳道也照样采样。
             if track.id != project.master_bus_track_id {
                 let pan_target = AutomationTarget::TrackPan { track_id: track.id };
                 if let Some(lane) = project.automation_lane(&pan_target)
@@ -2307,5 +2329,331 @@ mod tests {
             "关掉的泳道在 `None` 跳也不得下发"
         );
         assert_eq!(host.automation_counts(), before, "关掉的泳道不产生任何计数");
+    }
+
+    // ---------------------------------------------------------------------
+    // 任务单 `#260`：`TrackPan` 必须**独立于** `TrackVolume` 被采样
+    // ---------------------------------------------------------------------
+
+    /// 只有一条开着的 `TrackPan` 泳道、**没有**任何 `TrackVolume` 泳道的轨。
+    ///
+    /// demo 工程（`yeban_model::samples::demo_automation_lanes`）的**贝斯轨**（slot 1）
+    /// 就是这种轨 ⇒ 它是 `#260` 的复现夹具，⛔ 不另造夹具（否则测的就不是产品工程）。
+    fn pan_only_track(project: &YebanProjectV1) -> EntityId {
+        let mut found: Vec<EntityId> = Vec::new();
+        for (id, track) in &project.tracks {
+            let has_enabled_pan = track.automation_lanes.values().any(|lane| {
+                lane.read_enabled && matches!(lane.target, AutomationTarget::TrackPan { .. })
+            });
+            let has_volume = track
+                .automation_lanes
+                .keys()
+                .any(|target| matches!(target, AutomationTarget::TrackVolume { .. }));
+            if has_enabled_pan && !has_volume {
+                found.push(*id);
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "夹具前提：demo 恰好一条「只有声相泳道」的轨（实得 {found:?}）"
+        );
+        found.remove(0)
+    }
+
+    /// 只有一条开着的 `TrackVolume` 泳道、**没有**任何 `TrackPan` 泳道的轨（demo slot 0）。
+    fn volume_only_track(project: &YebanProjectV1) -> EntityId {
+        let mut found: Vec<EntityId> = Vec::new();
+        for (id, track) in &project.tracks {
+            let has_enabled_volume = track.automation_lanes.values().any(|lane| {
+                lane.read_enabled && matches!(lane.target, AutomationTarget::TrackVolume { .. })
+            });
+            let has_pan = track
+                .automation_lanes
+                .keys()
+                .any(|target| matches!(target, AutomationTarget::TrackPan { .. }));
+            if has_enabled_volume && !has_pan {
+                found.push(*id);
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "夹具前提：demo 恰好一条「只有音量泳道」的轨（实得 {found:?}）"
+        );
+        found.remove(0)
+    }
+
+    /// 把宿主的命令通道换成判据自己的一条，返回这一跳**真正写进 SPSC 的**事件。
+    ///
+    /// 这是判据读 `publish_automation` **值**的唯一入口（返回值只有条数）；替换的只是
+    /// 通道的消费端 —— `publish_automation` 的代码一位没动。
+    fn captured_automation_events(
+        host: &mut EngineHost,
+        project: &YebanProjectV1,
+    ) -> Vec<EngineEvent> {
+        let (sender, mut receiver) = event_channel(EVENT_CAPACITY);
+        host.events = Some(sender);
+        let written = host.publish_automation(Some(project));
+        let mut scratch = [EngineEvent::Idle; 8];
+        let drained = receiver.drain_into(&mut scratch);
+        assert_eq!(drained, written, "写进去的条数与读回来的必须一致");
+        assert_eq!(receiver.pending(), 0, "一条判据只取这一跳，通道必须取空");
+        scratch[..drained].to_vec()
+    }
+
+    /// 事件 → `(实体, 槽位, 值)`；⛔ 非 `SetParam` 一律 panic（不静默过滤）。
+    fn param_events(events: &[EngineEvent]) -> Vec<(EntityId, u16, f32)> {
+        events
+            .iter()
+            .map(|event| match event {
+                EngineEvent::SetParam { target, value } => (target.entity, target.slot, *value),
+                other => panic!("自动化只允许下发 SetParam，实得 {other:?}"),
+            })
+            .collect()
+    }
+
+    /// 一个自动化点（判据夹具）。
+    fn automation_point(tick: u64, value: f32) -> AutomationPoint {
+        AutomationPoint {
+            id: EntityId::new(),
+            tick,
+            value,
+            curve: CurveType::Linear,
+        }
+    }
+
+    /// 一串点 → 泳道的 `points` 表。
+    ///
+    /// ⚠ **键必须是点自己的 `id`**（`points: BTreeMap<EntityId, AutomationPoint>`）——
+    /// 键与内嵌 id 不一致会被 `project.validate()` 判 `EntityKeyMismatch`。
+    fn automation_points(points: &[(u64, f32)]) -> BTreeMap<EntityId, AutomationPoint> {
+        points
+            .iter()
+            .map(|(tick, value)| {
+                let point = automation_point(*tick, *value);
+                (point.id, point)
+            })
+            .collect()
+    }
+
+    /// ⭐ **`#260` 判据 1 + 2**：**只有声相泳道**的轨 ⇒ 修前 **0 条**、修后 **2 条**
+    /// （`TRACK_PAN_LEFT_SLOT` ＋ `TRACK_PAN_RIGHT_SLOT`），值落在等功率曲线上。
+    ///
+    /// demo 贝斯轨在 tick 0 的声相是 **-1.0**（硬左）⇒ 等功率 `(cos 0, sin 0) = (1.0, 0.0)`。
+    /// 采样时点 = `transport().position_ticks`；本判据不建引擎 ⇒ 它是 `cold()` 的 **0**
+    /// （⛔ 不注入墙钟：`#260` 只改"哪些泳道被采样"，不改采样时点）。
+    #[test]
+    fn pan_automation_is_sampled_without_a_volume_lane() {
+        let project = demo_project();
+        let bass = pan_only_track(&project);
+        let mut host = EngineHost::new();
+        let events = captured_automation_events(&mut host, &project);
+        let params = param_events(&events);
+        println!("### #260 pan-only events = {params:?}");
+        let bass_events: Vec<(EntityId, u16, f32)> = params
+            .iter()
+            .copied()
+            .filter(|(entity, _, _)| *entity == bass)
+            .collect();
+        // ⚠ 总数里还有 demo **另一条轨**（鼓，slot 0）的音量 1 条 —— 那是既有行为，
+        //    本判据只对贝斯轨这一格下断言（⛔ 不看总数就以为"多发"）。
+        assert_eq!(
+            bass_events.len(),
+            2,
+            "修前这条轨恒为 0 条（声相段嵌在 `TrackVolume` 分支的 `if let` 里面，\
+             音量泳道缺失时 `continue` 把整段跳过了）"
+        );
+        assert_eq!(
+            bass_events,
+            vec![
+                (bass, TRACK_PAN_LEFT_SLOT, 1.0),
+                (bass, TRACK_PAN_RIGHT_SLOT, 0.0),
+            ],
+            "声相 = -1.0 ⇒ 等功率曲线 (cos 0, sin 0) = (1.0, 0.0)"
+        );
+        assert_eq!(
+            params.len(),
+            3,
+            "同一次采样里 demo 鼓轨的音量 1 条 ＋ 贝斯声相 2 条"
+        );
+        assert_eq!(host.automation_counts(), (3, 0), "三条都写进去了、没有丢");
+        assert_eq!(host.automation_unapplied(), 0, "声相泳道不是「未落地」");
+    }
+
+    /// ⭐ **`#260` 判据 2（值）**：没有音量泳道的轨，声相仍由**同一个** `pan_gains`
+    /// 折成**绝对**左右增益（等功率 −3 dB：`L² + R² = 1`）。
+    ///
+    /// 值用**独立字面量**断言（`cos(π/8)` / `sin(π/8)`），⛔ 不在判据里调 `pan_gains`
+    /// 自证（那等于用被测函数证明被测函数）。
+    #[test]
+    fn a_pan_only_lane_lands_on_the_equal_power_curve() {
+        let mut project = demo_project();
+        let bass = pan_only_track(&project);
+        let target = AutomationTarget::TrackPan { track_id: bass };
+        let lane = project
+            .tracks
+            .get_mut(&bass)
+            .expect("贝斯轨必须在")
+            .automation_lanes
+            .get_mut(&target)
+            .expect("声相泳道必须在");
+        // 平直 -0.5 ⇒ tick 0 处没有插值歧义；θ = (pan + 1)·π/4 = π/8。
+        lane.points = automation_points(&[(0, -0.5), (1_920, -0.5)]);
+        let mut host = EngineHost::new();
+        let params = param_events(&captured_automation_events(&mut host, &project));
+        let bass_events: Vec<(EntityId, u16, f32)> = params
+            .iter()
+            .copied()
+            .filter(|(entity, _, _)| *entity == bass)
+            .collect();
+        assert_eq!(bass_events.len(), 2, "左 + 右两条");
+        let left = bass_events[0].2;
+        let right = bass_events[1].2;
+        println!("### #260 pan=-0.5 ⇒ L={left:.7} R={right:.7}");
+        assert!(
+            (left - 0.923_879_5).abs() < 1e-6,
+            "左增益 {left} ≠ cos(π/8)"
+        );
+        assert!(
+            (right - 0.382_683_43).abs() < 1e-6,
+            "右增益 {right} ≠ sin(π/8)"
+        );
+        assert!(
+            (left * left + right * right - 1.0).abs() < 1e-6,
+            "等功率 −3 dB：L² + R² 必须 = 1（实得 {}）",
+            left * left + right * right
+        );
+    }
+
+    /// ⭐ **`#260` 判据 3（正对照）**：音量 ＋ 声相**两条都有**的轨 ⇒ **3 条**事件，
+    /// 顺序 `[增益, 声相左, 声相右]`、值与修前**逐位相同**（修前它走的就是这条路）。
+    ///
+    /// 这里补上的那条音量泳道就是 `#259` 的**绕法**（`tests/automation_unapplied.rs` 的
+    /// `insert_volume_lane`）在单测侧的等价物；本判据证明它触发的仍是同一批事件，
+    /// 因此 `#260` 的修法对这组输入**零字节变化**。
+    #[test]
+    fn a_track_with_both_lanes_keeps_its_three_events() {
+        let mut project = demo_project();
+        let bass = pan_only_track(&project);
+        let target = AutomationTarget::TrackVolume { track_id: bass };
+        project
+            .tracks
+            .get_mut(&bass)
+            .expect("贝斯轨必须在")
+            .automation_lanes
+            .insert(
+                target,
+                AutomationLane {
+                    target,
+                    points: automation_points(&[(0, -3.0), (1_920, -3.0)]),
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        let mut host = EngineHost::new();
+        let params = param_events(&captured_automation_events(&mut host, &project));
+        println!("### #260 both-lanes events = {params:?}");
+        let bass_events: Vec<(EntityId, u16, f32)> = params
+            .iter()
+            .copied()
+            .filter(|(entity, _, _)| *entity == bass)
+            .collect();
+        assert_eq!(bass_events.len(), 3, "每条轨：音量 1 ＋ 声相 2");
+        // demo 贝斯静态 -6 dB、自动化 -3 dB ⇒ 比率 = 10^(3/20) = 1.4125376。
+        assert_eq!(bass_events[0].0, bass);
+        assert_eq!(bass_events[0].1, TRACK_GAIN_SLOT);
+        assert!(
+            (bass_events[0].2 - 1.412_537_6).abs() < 1e-6,
+            "3 dB 的线性比 = {}",
+            bass_events[0].2
+        );
+        assert_eq!(
+            bass_events[1],
+            (bass, TRACK_PAN_LEFT_SLOT, 1.0),
+            "顺序必须是 [增益, 声相左, 声相右]（修前修后逐位相同）"
+        );
+        assert_eq!(bass_events[2], (bass, TRACK_PAN_RIGHT_SLOT, 0.0));
+        assert_eq!(params.len(), 4, "贝斯 3 条 ＋ demo 鼓轨的音量 1 条");
+        assert_eq!(host.automation_counts(), (4, 0));
+    }
+
+    /// ⭐ **`#260` 判据 4**：**只有音量泳道**的轨 ⇒ 仍只发 **1** 条（⛔ 不多发）。
+    #[test]
+    fn a_track_with_only_a_volume_lane_still_publishes_one_event() {
+        let project = demo_project();
+        let drums = volume_only_track(&project);
+        let mut host = EngineHost::new();
+        let params = param_events(&captured_automation_events(&mut host, &project));
+        println!("### #260 volume-only events = {params:?}");
+        let drums_events: Vec<(EntityId, u16, f32)> = params
+            .iter()
+            .copied()
+            .filter(|(entity, _, _)| *entity == drums)
+            .collect();
+        assert_eq!(
+            drums_events.len(),
+            1,
+            "只有音量 ⇒ 一条，⛔ 不因为并列结构多发"
+        );
+        // demo slot 0 的自动化点 A1 与静态值同为 -3.2 dB ⇒ 比率恰为 1.0。
+        assert_eq!(drums_events[0], (drums, TRACK_GAIN_SLOT, 1.0));
+        assert_eq!(
+            params.len(),
+            3,
+            "同一次采样里鼓 1 条 ＋ 贝斯声相 2 条（修前是 1 条：声相被跳过）"
+        );
+    }
+
+    /// ⭐ **`#260` 判据 6**：`unapplied` 计数不受影响 —— 同一份工程里加一条开着的
+    /// `SendGain` 泳道 ⇒ 声相照发 2 条、`send-gain` 仍数 1、⛔ 不产生事件。
+    #[test]
+    fn unapplied_send_gain_counting_is_unchanged_by_the_pan_sampling() {
+        let mut project = demo_project();
+        let bass = pan_only_track(&project);
+        let target = AutomationTarget::SendGain {
+            track_id: bass,
+            edge_id: crate::bridge::demo_id("R1"),
+        };
+        project
+            .tracks
+            .get_mut(&bass)
+            .expect("贝斯轨必须在")
+            .automation_lanes
+            .insert(
+                target,
+                AutomationLane {
+                    target,
+                    points: automation_points(&[(0, -6.0)]),
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        assert_eq!(
+            unapplied_automation_lanes(&project).send_gain,
+            1,
+            "读数的分类处不受本单影响"
+        );
+        let mut host = EngineHost::new();
+        let events = captured_automation_events(&mut host, &project);
+        let params = param_events(&events);
+        let bass_events: Vec<(EntityId, u16, f32)> = params
+            .iter()
+            .copied()
+            .filter(|(entity, _, _)| *entity == bass)
+            .collect();
+        assert_eq!(
+            bass_events.len(),
+            2,
+            "SendGain 不产生事件 ⇒ 仍是声相那 2 条"
+        );
+        assert_eq!(params.len(), 3, "贝斯声相 2 条 ＋ 鼓的音量 1 条");
+        assert_eq!(host.automation_counts(), (3, 0), "SendGain 不记 published");
+        assert_eq!(host.automation_unapplied(), 1);
+        assert_eq!(host.automation_unapplied_breakdown().send_gain, 1);
+        assert_eq!(host.automation_unapplied_breakdown().device_param, 0);
+        assert_eq!(host.automation_unapplied_breakdown().macro_lanes, 0);
     }
 }

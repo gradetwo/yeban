@@ -105,34 +105,6 @@ fn insert_send_lane(
         );
 }
 
-/// 往一条轨上挂一条 `TrackVolume` 泳道（一个点）。用于"声相正对照"的夹具：
-/// `publish_automation` 的既有结构是**先找到音量泳道**才进该轨的声相分支，而演示
-/// 工程的声相泳道挂在一条没有音量泳道的轨上 ⇒ 不补这一条，"声相真的落地了"就没有正对照。
-fn insert_volume_lane(project: &mut YebanProjectV1, track_id: EntityId) {
-    let target = AutomationTarget::TrackVolume { track_id };
-    let point = AutomationPoint {
-        id: EntityId::new(),
-        tick: 0,
-        value: -3.0,
-        curve: CurveType::Linear,
-    };
-    project
-        .tracks
-        .get_mut(&track_id)
-        .expect("目标轨必须在")
-        .automation_lanes
-        .insert(
-            target,
-            AutomationLane {
-                target,
-                points: BTreeMap::from([(point.id, point)]),
-                read_enabled: true,
-                write_mode: AutomationWriteMode::Off,
-                domain: None,
-            },
-        );
-}
-
 /// 取一行里 `key=value` 的 `value`（到下一个空白为止；与 CLI 判据同一口径）。
 fn field(line: &str, key: &str) -> Option<String> {
     let needle = format!("{key}=");
@@ -217,12 +189,15 @@ fn a_disabled_send_gain_lane_is_not_counted() {
 /// 判据 3（正对照）：`TrackVolume` / `TrackPan` **不计** —— 它们已经真的落到引擎里了。
 ///
 /// 同时证明"读数不是恒 0"：同一份工程里那两条泳道**真的**下发了事件。
-/// ⚠ 演示工程的声相泳道在一条没有音量泳道的轨上，而 `publish_automation` 的既有结构
-/// 是"先有音量泳道才走声相分支" ⇒ 这里给那条轨补一条音量泳道，让**声相**也真的落地。
-/// ⛔ 这是夹具补全，不是改实现（本票不改音频路径）。
+///
+/// ⚠ ⭐ **任务单 `#260` 撤回了 `#259` 的绕法**：本判据原先把演示工程的贝斯轨
+/// （只有 `TrackPan`、没有 `TrackVolume`）补了一条音量泳道，理由是"`publish_automation`
+/// 的既有结构是先有音量泳道才走声相分支"。那句话**正是** `#260` 修掉的缺陷 ——
+/// 声相段已改为独立采样，⛔ 不再需要给夹具补泳道。现在**不给贝斯轨加任何东西**：
+/// 它的声相泳道必须自己发 2 条事件（下面断言 `== 3`：鼓的音量 1 ＋ 贝斯声相 2）。
 #[test]
 fn volume_and_pan_lanes_are_not_counted() {
-    let mut project = demo_project();
+    let project = demo_project();
     let pan_track = project
         .tracks
         .values()
@@ -233,7 +208,17 @@ fn volume_and_pan_lanes_are_not_counted() {
         })
         .map(|track| track.id)
         .expect("演示工程必须有一条开着的 TrackPan 泳道");
-    insert_volume_lane(&mut project, pan_track);
+    // ⭐ `#260`：夹具前提 —— 那条轨**确实没有**音量泳道（这正是缺陷的复现条件）。
+    assert!(
+        !project
+            .tracks
+            .get(&pan_track)
+            .expect("目标轨必须在")
+            .automation_lanes
+            .keys()
+            .any(|target| matches!(target, AutomationTarget::TrackVolume { .. })),
+        "夹具前提：声相泳道必须挂在一条**没有音量泳道**的轨上（#259 曾在这里补泳道绕过缺陷）"
+    );
 
     let landed = project
         .tracks
@@ -248,8 +233,8 @@ fn volume_and_pan_lanes_are_not_counted() {
         })
         .count();
     assert_eq!(
-        landed, 3,
-        "夹具前提：三条开着的「已落地」泳道（音量 ×2 + 声相 ×1）"
+        landed, 2,
+        "夹具前提：两条开着的「已落地」泳道（音量 ×1 + 声相 ×1；#260 之后不再补第三条）"
     );
     assert!(
         unapplied_automation_lanes(&project).is_empty(),
@@ -258,9 +243,10 @@ fn volume_and_pan_lanes_are_not_counted() {
 
     let mut host = EngineHost::new();
     host.reload(&project, 0).expect("重建");
-    assert!(
-        host.publish_automation(Some(&project)) >= 4,
-        "三条落地泳道 = 音量 2 条 + 声相 2 条事件（读数不是恒 0 的假探针）"
+    assert_eq!(
+        host.publish_automation(Some(&project)),
+        3,
+        "两条落地泳道 = 音量 1 条 + 声相 2 条事件（读数不是恒 0 的假探针）"
     );
     assert_eq!(host.automation_unapplied(), 0);
 }
