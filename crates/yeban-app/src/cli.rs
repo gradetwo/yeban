@@ -3987,7 +3987,8 @@ fn apply_track_sampler(
 /// 1. `--dump-elements` 的元素行（先于握手行 —— 沿用旧行为）;
 /// 2. `--print-shortcuts` 的策略表;
 /// 3. 握手行 [`HEADLESS_HANDSHAKE`]（无窗口路径**一定**打印它）;
-/// 4. 来源行 / `project:` / `project-counts:`（需要投影时再加 `view-counts:`）;
+/// 4. 来源行 / `project:` / `project-counts:` / **`automation-engine:`**
+///    （`#259`：实时引擎不执行的自动化泳道；需要投影时再加 `view-counts:`）;
 /// 5. 边界声明行（`headless:` 开头，说清这一版无头**没有**验证什么）;
 ///    ⚠ **导入（编辑）先于一切导出与保存**：`--import-midi` / `--import-audio` 的
 ///    `imported-midi:` / `imported-audio:` 报告行落在这里（顺序契约 —— 同一命令里的
@@ -4063,6 +4064,16 @@ pub fn run_batch(options: &Options) -> Result<Vec<String>, CliError> {
 
     lines.push(HEADLESS_HANDSHAKE.to_owned());
     lines.extend(project_report(&loaded));
+    // ⭐ `#259`：**自动化泳道的落地读数**。这一行说的是"监听里哪几条泳道不会生效"，
+    // 不是工程统计里多一格：`SendGain` 画得出来、MCP 写得进去，而实时引擎没有发送量
+    // 槽位 ⇒ 用户会以为它生效。数出来的口径与 `EngineHost::publish_automation` **同一条**
+    // 函数（`unapplied_automation_lanes`），⛔ 不另数一份。
+    //
+    // 位置：紧跟 `project-counts:` —— 它读的就是这一份工程；放在 `view-counts:` 之前，
+    // 因为 `--save-as` 这类不投影的命令也要看到它。
+    lines.push(crate::engine_host::automation_unapplied_line(
+        crate::engine_host::unapplied_automation_lanes(&loaded.archive.project),
+    ));
     if let Some(view) = view.as_ref() {
         lines.extend(view_report(view));
     }

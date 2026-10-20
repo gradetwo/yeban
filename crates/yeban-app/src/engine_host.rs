@@ -430,6 +430,105 @@ pub struct TransportActionRecord {
     pub quanta_pumped: u64,
 }
 
+/// **实时引擎不执行的自动化泳道**（按目标分类的读数；任务单 `#259`）。
+///
+/// `SendGain` 泳道**画得出来、写得进去**（`crate::automation` 的
+/// `track-{i}-automation-send-{edge_id}-lane` 与 MCP 的 `yeban_edit_automation`），
+/// 但实时引擎**没有发送量槽位**：`yeban_engine::param` 只有
+/// `TRACK_GAIN_SLOT` / `MASTER_GAIN_SLOT` / `TRACK_PAN_LEFT_SLOT` /
+/// `TRACK_PAN_RIGHT_SLOT`，`4..=65535` 一律 `Unmapped` ⇒ 监听时它**一条都不执行**，
+/// 而离线导出（`--export-wav`）与 MCP 渲染走
+/// `yeban_render::automation::SendGainAutomation` ⇒ **只在导出里生效**。
+/// ⇒ 这种"沉默"必须变成**读数**，⛔ 不能只在代码里静默跳过。
+///
+/// 只数 `read_enabled == true` 的泳道：关掉的泳道**本来就不该生效**，把它算成缺口
+/// 只会制造假读数。`TrackVolume` / `TrackPan` **不**计入 —— 它们已经被
+/// [`EngineHost::publish_automation`] 真的落到引擎里了。
+///
+/// `DeviceParam` / `Macro` 与 `SendGain` **不是**同一类：它们连离线渲染也没有落点
+/// （`yeban_render::automation` 对这两个目标返回 `0.0`，MCP 的 `targetsUnsupported`
+/// 至今含这两个名字）⇒ 读数里**分开列**，⛔ 不混进 `send-gain`。
+///
+/// ⚠ **这是一个 gauge（每跳重采的当前值），不是累计计数器**：它与
+/// [`EngineHost::automation_counts`] 的两个数（累计事件条数）形状不同 ——
+/// "没落地的泳道"是工程的状态，60 Hz 累加会每秒 +60，读不出"有几条"。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnappliedAutomationLanes {
+    /// 开着的 `SendGain` 泳道数（实时不生效；离线导出 / MCP 渲染生效）。
+    pub send_gain: u64,
+    /// 开着的 `DeviceParam` 泳道数（实时与离线**都**没有落点）。
+    pub device_param: u64,
+    /// 开着的 `Macro` 泳道数（实时与离线**都**没有落点）。
+    pub macro_lanes: u64,
+}
+
+impl UnappliedAutomationLanes {
+    /// 总数 = 实时引擎不执行的泳道条数。
+    #[must_use]
+    pub const fn total(&self) -> u64 {
+        self.send_gain
+            .saturating_add(self.device_param)
+            .saturating_add(self.macro_lanes)
+    }
+
+    /// 一条都没有（实时引擎能执行本工程里的**全部**自动化泳道）。
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
+/// 扫描工程里的自动化泳道，数出**实时引擎没有执行落点**的那些（任务单 `#259`）。
+///
+/// 这是**唯一**的分类处：[`EngineHost::publish_automation`] 每跳调用它更新读数，
+/// CLI 的 `automation-engine:` 行（[`automation_unapplied_line`]）也调用它
+/// ⇒ 两处不可能各数一套。
+///
+/// 成本：O(轨道数 × 每条轨的泳道数)，**无分配**；与 `publish_automation` 自己的
+/// 采样循环同阶。⚠ 它是控制面 / UI 线程的纯函数，⛔ 不碰音频线程。
+#[must_use]
+pub fn unapplied_automation_lanes(project: &YebanProjectV1) -> UnappliedAutomationLanes {
+    let mut lanes = UnappliedAutomationLanes::default();
+    for track in project.tracks.values() {
+        for lane in track.automation_lanes.values() {
+            if !lane.read_enabled {
+                continue;
+            }
+            match lane.target {
+                AutomationTarget::SendGain { .. } => {
+                    lanes.send_gain = lanes.send_gain.saturating_add(1);
+                }
+                AutomationTarget::DeviceParam { .. } => {
+                    lanes.device_param = lanes.device_param.saturating_add(1);
+                }
+                AutomationTarget::Macro { .. } => {
+                    lanes.macro_lanes = lanes.macro_lanes.saturating_add(1);
+                }
+                AutomationTarget::TrackVolume { .. } | AutomationTarget::TrackPan { .. } => {}
+            }
+        }
+    }
+    lanes
+}
+
+/// `automation-engine:` 诊断行（CLI 的 `--headless` 报告；任务单 `#259`）。
+///
+/// 它**逐字**说出缺口：有几条泳道在监听里没落地、其中哪些只在导出里生效、
+/// 哪些在任何渲染器里都没有落点。⛔ 不是"加个计数就完了"。
+#[must_use]
+pub fn automation_unapplied_line(lanes: UnappliedAutomationLanes) -> String {
+    format!(
+        "automation-engine: unapplied-lanes={} send-gain={} device-param={} macro={} \
+         note=\"有 {} 条自动化泳道在监听里没落地；SendGain 只在离线导出/MCP 渲染里生效，\
+         DeviceParam/Macro 没有任何生效路径\"",
+        lanes.total(),
+        lanes.send_gain,
+        lanes.device_param,
+        lanes.macro_lanes,
+        lanes.total(),
+    )
+}
+
 /// 引擎宿主：持有"当前这一代"的全部引擎侧对象。
 ///
 /// 字段全部私有 + 只有 [`EngineHost::reload`] 能换掉它们 —— "换引擎"这条路径只有一条，
@@ -469,6 +568,11 @@ pub struct EngineHost {
     /// ⛔ 不许静默丢：没有写进去的值会在**下一跳**重算并重发（采样是幂等的：同一个
     /// `position_ticks` 给出同一批值），同时这里逐条计数 —— 控制面能看出"最近有没有丢"。
     automation_dropped: u64,
+    /// **`#259` 的读数**：最近一跳"**实时引擎不执行**"的自动化泳道（gauge，不是累计）。
+    ///
+    /// 由 [`unapplied_automation_lanes`] 在 [`Self::publish_automation`] 的每一跳重采；
+    /// 读口见 [`Self::automation_unapplied`] / [`Self::automation_unapplied_breakdown`]。
+    automation_unapplied: UnappliedAutomationLanes,
     /// **最近一份工程**（R68 修的缓存）：自动化采样在"标记没变"的那些跳也要进行。
     ///
     /// 生产路径（`src/main.rs` 的 16 ms 定时器）只在**标记变了**的那一跳才
@@ -1244,6 +1348,9 @@ impl EngineHost {
     /// * 返回**实际写入**的事件条数（没写进去的记进 [`Self::automation_counts`] 的第二个数）。
     ///   ⛔ **不加 `#[must_use]`**：生产调用点（`host.rs` 的 `tick`）刻意忽略返回值，
     ///   加了会在 `-D warnings` 下把整条腿弄红。
+    /// * ⭐ **`#259`**：每跳还重采一次**实时引擎不执行**的泳道数（本单只点名 `SendGain`，
+    ///   顺带按目标分开数 `DeviceParam` / `Macro`），存进 [`Self::automation_unapplied`]；
+    ///   它**不产生任何事件**、⛔ 不改一个音频字节。
     pub fn publish_automation(&mut self, project: Option<&YebanProjectV1>) -> usize {
         // **工程缓存（R68 修的那一处）**：生产路径只在"标记变了"的那一跳才 `try_project()`
         // ⇒ 其余各跳传的是 `None`。若采样直接挂在入参上，自动化就**只在工程改动的那一跳
@@ -1253,8 +1360,14 @@ impl EngineHost {
             self.automation_project = Some(project.clone());
         }
         let Some(project) = self.automation_project.as_ref() else {
+            // 没有工程缓存 ⇒ 没有泳道可数（把读数归零，⛔ 不留下上一份工程的旧值）。
+            self.automation_unapplied = UnappliedAutomationLanes::default();
             return 0;
         };
+        // ⭐ `#259`：先数"这一份工程里实时引擎**不执行**的泳道"（gauge，每跳重采）。
+        // 它与下面的采样循环是两个问题：采样循环只发**落地了的**两条目标；
+        // 这里数的是**没有落点**的那几条 —— 数出来才有读数，⛔ 不是静默跳过。
+        self.automation_unapplied = unapplied_automation_lanes(project);
         let tick = self.transport().position_ticks;
         let batch_capacity = Self::automation_batch_capacity();
         let mut batch = [EngineEvent::Idle; Self::automation_batch_capacity()];
@@ -1350,6 +1463,24 @@ impl EngineHost {
     #[must_use]
     pub const fn automation_counts(&self) -> (u64, u64) {
         (self.automation_published, self.automation_dropped)
+    }
+
+    /// ⭐ **`#259` 的读数**：最近一跳**实时引擎不执行**的自动化泳道**总数**（gauge）。
+    ///
+    /// ⚠ 与 [`Self::automation_counts`] 的**形状不同**：那两个是**累计事件条数**
+    /// （写进 SPSC / 丢弃），这个是**当前工程里没落地的泳道条数** —— 每跳重采、
+    /// ⛔ 不累加。理由见 [`UnappliedAutomationLanes`]：60 Hz 的累计计数读不出"有几条"。
+    ///
+    /// 没有工程缓存（还没有调用过 `publish_automation(Some(..))`）时是 `0`。
+    #[must_use]
+    pub const fn automation_unapplied(&self) -> u64 {
+        self.automation_unapplied.total()
+    }
+
+    /// [`Self::automation_unapplied`] 的按目标分类形态（`send-gain` / `device-param` / `macro`）。
+    #[must_use]
+    pub const fn automation_unapplied_breakdown(&self) -> UnappliedAutomationLanes {
+        self.automation_unapplied
     }
 
     /// 当前快照槽的计数（[`HeartbeatReadings`] 之外的静止读数；没有引擎时 `None`）。
