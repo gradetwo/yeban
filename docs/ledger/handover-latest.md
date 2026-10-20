@@ -26,14 +26,17 @@
 
 ## 1.9 ⭐ ⭐ **最新（2026-10-20，R930–R975）** —— ⭐ 接手先读这一节
 
-⭐ **台账**：⭐ 到 **R993**；⭐ **纪律 337 条**（⭐ 本轮新增 **302–337**，⭐ 逐条在 `phase-status.md`）。
-⭐ **主干**：⭐ `dd4401ea`（⭐ 已推；⭐ 至 `a6f339f1` 为止 **CI 绿**；⭐ `f5c81528` 的 run 判 `failure` 但**红的是一条 `cancelled` 的 macOS 腿**，⭐ 其 `rust (yeban-app)` 与 `windows` 均 success —— ⭐ 见 R986）。
+⭐ **台账**：⭐ 到 **R997**；⭐ **纪律 338 条**（⭐ 本轮新增 **302–337**，⭐ 逐条在 `phase-status.md`）。
+⭐ **主干**：⭐ `e65b10dc`（⭐ 已推；⭐ 至 `a6f339f1` 为止 **CI 绿**；⭐ `f5c81528` 的 run 判 `failure` 但**红的是一条 `cancelled` 的 macOS 腿**，⭐ 其 `rust (yeban-app)` 与 `windows` 均 success —— ⭐ 见 R986）。
 
 ⭐ ⚠ ⭐ ⭐ **R989–R990 两条（⭐ 设备参数这条路的地基）**: ⭐ **勘察结论：⭐ 模型**早就支持** `DeviceParam`／`Macro` 的求值**（⭐ `automation.rs:319-332`，⭐ 且**诚实地**拒绝编造值域）⇒ ⭐ ⚠ **缺口 100% 在"⭐ 值 → DSP 参数"⭐那一段** ★ ⭐ **并发现序数寻址的隐患**（⭐ `slot_index`/`param_index` 都是 `Vec` 下标，⭐ 而模型自己的 `ops.rs:332-334` 写"⭐ 不用下标、⭐ 增删会移位"）⇒ ⭐ ⭐ **`#263` 把"⭐ 插设备就静默改指"⭐做成了**读数**（⭐ 前后 `deviceId` `…0035` → ⭐ `…006A`、⭐ 而 `validate_against` **两次都 `Ok`**）、⭐ **零音频改动** ✓
 
 ⭐ ⚠ ⭐ ⭐ **下一步（⭐ 接手者按需选）**: ⭐ ① ⭐ **S1 ＝ 只接 `output_gain_db` 一个参数**（⭐ 5 文件、⭐ ≈150–200 行、⭐ 与 `TrackVolume` **同形状**）② ⭐ **S2 ＝ 全量 ＋ ⭐ 地址升级成 `device_id`＋名字**（⭐ 要动 `schemas/**` 两处 ＋ ⭐ 旧工程兼容裁决）③ ⭐ **`setParam` 与 hint 自相矛盾**（⭐ 工具面一边说用 `setParam` 改设备参数、⭐ 一边拒绝该目标）⇒ ⭐ **独立小票** ✓
 
 ⭐ ⚠ ⭐ ⭐ **R991–R992（⭐ 工具面的"话要准"）**: ⭐ `#264` 修掉一条**自相矛盾**的 hint（⭐ 它让调用方用 `setParam` 改设备参数、⭐ 而同一工具面**拒绝**该目标）★ ⭐ **并扫了全部 93 条 hint** ⇒ ⭐ ⭐ **除那一条外没有别的"指向被拒调用"**、⭐ 但 ⭐ 挖出 **4 条不准**（⭐ 2 条 reason 名不存在 ＋ ⭐ 2 条措辞不完整）★ ⭐ R992 ⭐ **已改正那 2 条 reason 名**（⭐ `assetDeclaredDifferent` → ⭐ `assetDeclaredDifferently`；⭐ `clipNotFound` 从不发出 ⇒ ⭐ 改成"⭐ 不带 `data.reason`"）⇒ ⭐ ⭐ **R993 把那 2 条措辞也改完了**（⭐ 节点身份改指 `routing_graph.nodes` ＋ ⭐ 注明"不要求真实音轨／新音轨要先 `addRoutingNode`"；⭐ 改音轨补 `setTrackName`/`setTrackColor`/`setTrackSampler`）⇒ ⭐ ⭐ **工具面说的话现已全部对得上代码** ✓
+
+⭐ ⚠ ⭐ ⭐ **R994–R997（⭐ 判决怎样读）**: ⚠ ⭐ **我犯了一次错并当场改正** —— ⭐ 只用 `conclusion` 判"⭐ 队列卡住"、⭐ 而 ⭐ `conclusion` 为空有**两种**含义（⭐ `queued` 还没开始 ／ ⭐ `in_progress` 正在跑），⭐ ⭐ **`status` 才分得开**。⇒ ⭐ ⭐ **新纪律 338：⭐ 判队列卡住必须同时看 `status` 与 `conclusion`**；⭐ 并 ⭐ **`gh run list` 不按提交序返回** ⇒ ⭐ ⛔ **别用位置推断状态** ✓
+⭐ ⭐ **当前判决**: ⭐ **`9a26a9ec`／⭐ `58cf0137`／⭐ `9ea3b8c0` ＝ success** ★ ⚠ **2 条 in_progress ＋ ⭐ 5 条 queued**（⭐ 队列在动）✓
 
 ### 1.9.0c ⭐ ⭐ **R980–R988：自动化在监听与导出**都生效了****
 
