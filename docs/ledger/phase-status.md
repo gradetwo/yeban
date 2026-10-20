@@ -15347,3 +15347,33 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⭐ ⚠ ⭐ ⭐ **三、⭐ 结论（⭐ 重要）**: ⭐ ⭐ **清单 16 项里**没有一项**是"⭐ 我们能做但没做"**** ⇒ ⭐ **每项要么是**刻意差异**（`masterPan`／`noteLyrics`／`externalPlugins`）**、⭐ 要么是**待裁**（`automationLanes` 的四目标）**、⭐ 要么是**收窄后的真实边界**（`audioClips`／`deviceChainDsp`／`sidechainRouting`／`busTrackClips`／6 个 `sfz*`）** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`e7938f68` 判决** ＋ ⭐ **E1 本体**（⭐ 待裁、⭐ **唯一大件**）＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R981 实测追加（2026-10-21）：⭐ **`#256`（`SendGain` 自动化）落地 ＋ 快进合并**
+
+⭐ **合并**: ⭐ base `d91631c7` ⇒ ⭐ `FINAL=68d6d0db`（⭐ 6 文件 ＋1347／−43）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`2245 passed`／FAILED 0** ＋ ⭐ **`--features in-process-mcp` `894 passed`** ＋ ⭐ 门 **全层 0** ＋ ⭐ 守卫 **18** ＋ ⭐ 轻门 ＋ ⭐ `validate_schemas` 4 份 ✓ ⭐ 树已拆 ＋ `target`（45 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 勘察的关键（⭐ 决定本单很小）**: ⭐ ⭐ **发送量的**唯一乘法点** ＝ ⭐ `crates/yeban-render/src/render.rs:937-947` 的**入边归约****（⭐ `sum::accumulate_into(upstream, buffer, contribution.gain)`）⇒ ⭐ ⭐ **而 ⭐ MCP 与 app **都走那同一个 `RenderPlan`**** ⇒ ⭐ ⭐ **改一处、⭐ 两条导出都生效** ✓
+★ ⭐ 恒等快路径在 ⭐ `SendGainAutomation::is_identity`：⭐ **无泳道／⭐ `read_enabled:false`／⭐ 空泳道／⭐ 每点线性增益与静态边增益**逐位相同**** ⇒ ⭐ **`render_node:1005` 对 `None` 或恒等**调原来的** `accumulate_into`** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 复用（⭐ ⛔ 没写第二份）**: ⭐ ⭐ **`SendGainAutomation` 内核复用 `TrackGainAutomation::with_target`**（⭐ 同一个 `automation_value_at`、⭐ 同一个 `ParamSmoother` 5 ms、⭐ 同一套恒等判定）⇒ ⭐ **只把静态值从 `track.volume_db` 换成 `RoutingEdge::gain_db`** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 读数（⭐ 判得很硬）**:
+| ⭐ | ⭐ 修前 | ⭐ 修后 |
+| :-- | :--- | :--- |
+| ⭐ ramp vs no-lane | ⭐ ⭐ **同一个 `sha256`**（⭐ MCP `e33c9ef5…`／⭐ app `4cfdbfc9…`）⇒ ⭐ **发送量渐强完全没效果** | ⭐ ⭐ **4 段峰值 `[0.0026897192, 0.015129805, 0.08501685, 0.47722578]`、⭐ 比 `177.425873`**（⭐ app `177.433777`） |
+| ⭐ ⭐ **两导出** | — | ⭐ ⭐ **浮点母带 `masterDigest` **逐位相同**（⭐ `b0897bc0…`）** ⇒ ⭐ ⭐ **量化后比差 `0.0045%` 只来自两侧抖动种子（⭐ 第 337 条）** |
+| ⭐ 正对照 | ⭐ no-lane `e33c9ef5…`／`4cfdbfc9…` | ⭐ ⭐ **修前＝修后** |
+| ⭐ `read_enabled:false` | — | ⭐ ⭐ **逐字节等于 no-lane** |
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ `AutomationReport` 逐字（⭐ 第 324 条守住了）**: ⭐ ⭐ **`SendGain` `applied:true`** ★ ⭐ **而 ⭐ `DeviceParam`／⭐ `Macro` 仍 `applied:false`** ★ ⭐ **`automationLanes` 键**保留****（⭐ `unsupportedLanes=2`）⇒ ⭐ ⭐ **即：⭐ 做了的就退、⭐ 没做的仍报** ✓
+★ ⭐ `targetsSupported: ["TrackVolume","SendGain"]`、⭐ `targetsUnsupported: ["TrackPan","DeviceParam","Macro"]` ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⭐ mute 不复活（⭐ 陷阱①守住、⭐ 且按第 337 条说清层）**: ⭐ 源轨静音 ＋ ⭐ 0 dB 泳道 ⇒ ⭐ MCP peak **`0.00000011920929`（⭐ 1 LSB）**、⭐ sha **等于静音基线**（`e25bea48…`）⇒ ⭐ ⭐ **分母用**静态边增益**、⭐ ⛔ 不是 mute 后增益** ✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 双注入**: ⭐ **A**（⭐ 不乘自动化比率）⇒ ⭐ MCP **2 failed**／⭐ app **1 failed**、⭐ 峰值退回 `0.5`、⭐ sha 退回基线 ★ ⭐ **B**（⭐ 报告不认 `SendGain`）⇒ ⭐ `appliedLanes:0`、⭐ 2 failed ✓
+
+⭐ ⚠ ⭐ ⭐ **七、⚠ 它如实登记的两条边界**: ⚠ ⭐ **夹具是 **Aux 干返回**** ⇒ ⭐ **证的是"⭐ 发送量包络"、⭐ ⛔ 不是"⭐ 混响尾音"** ★ ⭐ **实时监听路径（`yeban-engine`）**本单未改**** ⇒ ⭐ ⚠ **SendGain 自动化是否在实时侧生效、⭐ 不在本单判据内** ⇒ ⭐ ⭐ **那是"⭐ 监听 ≠ 导出"⭐的一个**新小格**** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`68d6d0db` 判决** ＋ ⭐ ⚠ **`SendGain` 的**实时侧**（⭐ 新登记的小格）** ＋ ⭐ `TrackPan`／⭐ `DeviceParam`／⭐ `Macro` 自动化 ＋ ⭐ **E1 本体**（⭐ 待裁）＋ ⭐ ⚠ **仍需人类**：⭐ 四格复验 ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
