@@ -255,7 +255,9 @@ use crate::level::MAX_LINEAR_MAGNITUDE;
 use crate::meter::{MeterBank, MeterFrame, MeterPublisher, SCRATCH_METERS};
 use crate::metronome::{MetronomeVoice, render_quantum as render_metronome_quantum};
 use crate::mixer::{BusLimiter, PanLaw};
-use crate::param::{ParamTable, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT};
+use crate::param::{
+    ParamTable, SEND_GAIN_SLOT, SEND_SLOTS, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+};
 use crate::ring::{EngineEvent, EventReceiver, SCRATCH_EVENTS};
 use crate::routing::{RouteTarget, RoutingPlan};
 use crate::rt_probe::{self, RtDiagEvent};
@@ -1326,6 +1328,24 @@ fn has_armed_insert_devices(share: &BranchShare<'_>, node: &EntityId) -> bool {
             .any(|(id, armed)| *armed && id == node)
 }
 
+/// **一条出边**有没有收到过被接受的发送量目标（任务单 `#261`）。
+///
+/// 它回答的是"这条边要不要离开快路"：快路（[`sum_into_bus`] ／
+/// [`sum_into_bus_smoothed`]）只施加声相，没有地方乘**逐边**的平滑增益
+/// ⇒ 这条边一旦有目标，本轨就必须走"按边搬运"的慢路。
+///
+/// 只扫定长前缀（≤ [`SEND_SLOTS`] 项）⇒ 零分配、零锁、零 I/O [MUST-GATE-001]。
+fn send_armed(share: &BranchShare<'_>, route: &RouteTarget) -> bool {
+    route
+        .edge()
+        .and_then(|edge| {
+            share.armed_sends[..*share.armed_send_slots]
+                .iter()
+                .position(|(id, _)| *id == edge)
+        })
+        .is_some_and(|index| share.armed_send_armed[index])
+}
+
 /// **一条分支的共享混音状态**（[ARCH-RT-005] 片 2a 的借用视图）。
 ///
 /// ⚠ **为什么是字段视图而不是 `&mut self`**：混音要同时持有 `current: &EngineSnapshot`
@@ -1357,6 +1377,24 @@ struct BranchShare<'a> {
     armed_pan_r: &'a mut [ParamSmoother; MAX_TRACK_SLOTS],
     armed_pan_slots: &'a mut usize,
     armed_pan_armed: &'a mut [bool; MAX_TRACK_SLOTS],
+    /// ⭐ **逐边发送量武装表**（任务单 `#261`）：`(边身份, 静态线性边增益)`。
+    ///
+    /// 与 `armed_pan_gains` 同一个形状（前 `armed_send_slots` 项有效），但键是
+    /// **边的 `EntityId`**、不是轨 —— 这就是"同一条轨的发送边与直连边互不影响"
+    /// 的落点（`#258` 的否决判据）。
+    armed_sends: &'a [(EntityId, f32)],
+    armed_send_slots: &'a usize,
+    /// 逐边的**绝对增益**平滑器（与 `armed_sends` 同下标）。
+    ///
+    /// `armed_send_armed[i] == false` ⇒ 这条边走**静态**增益（`route.gain()`），
+    /// 平滑器一个样本都不推进 ⇒ 没有 `SendGain` 事件的工程逐位不变。
+    armed_send_gain: &'a mut [ParamSmoother; SEND_SLOTS],
+    armed_send_armed: &'a [bool; SEND_SLOTS],
+    /// 本量子起点的平滑器副本（第二处施加时重放同一条曲线；见字段文档）。
+    armed_send_replay: &'a mut [ParamSmoother; SEND_SLOTS],
+    /// 本量子已经推进过的槽位（每个平滑器每量子只推进一次）。
+    send_advanced: &'a mut [bool; SEND_SLOTS],
+    send_automation_frames: &'a mut u64,
     track_scratch: &'a mut [f32; DEFAULT_BLOCK_FRAMES],
     /// ⭐ **总线暂存池**（任务单 `#154`）：非 master 节点的立体声累积缓冲。
     ///
@@ -1587,12 +1625,34 @@ fn render_branch(
     // ⚠ 这是试听期**已知的**口径边界（与"电平读数归后渲染那条分支"同族），
     // 登记在模块头的"主总线的插入链"一节。
     process_master_chain: bool,
+    // ⭐ **逐边发送量平滑器开关**（任务单 `#261`，裁决 6）：只有**主线**传 `true`。
+    //
+    // 理由与 `process_master_chain` **同一条**（也是 `#261` 的裁决 6）：试听期同一个
+    // 量子会调用本函数两次，两次共用同一套 `armed_send_gain` 平滑器。若两次都推进，
+    // `τ ≈ 5 ms` 的单极点会变成"两倍速收敛"（0.5 τ 的有效时间常数）—— 那是听得出来
+    // 的行为差，而且只在试听期出现。⇒ 第二分支走**静态**边增益（`process_sends = false`
+    // ⇒ `SendTable::smoothed_index` 恒 `None`），平滑器每量子只被主线推进一次。
+    // ⚠ 与主总线链那条口径边界同族，登记在模块头的 A/B 一节。
+    process_sends: bool,
 ) -> usize {
     let master = current.master();
     let mut produced = 0usize;
     out.silence();
     out.set_frames(frames);
     share.bank.begin_quantum();
+    // ⭐ 任务单 `#261`：发送量平滑器的**量子起点副本** ＋ "本量子已推进"标记清零。
+    //
+    // 机制与理由见 `EngineRuntime::armed_send_replay` 的字段文档：同一条出边在一个
+    // 量子内可能被施加两次（节点自身声源 ／ 累积到它的发送），两次必须乘**同一条**
+    // 逐样本曲线，而平滑器每量子只能推进一次。
+    //
+    // 位置：**任何路由之前**（逐轨循环与 3a⁗ 都在下面），**武装之后**（武装在
+    // `render_block` 里、本函数之外）。`SEND_SLOTS × 20 B` 的 `memcpy`：零分配。
+    {
+        let send_slots = *share.armed_send_slots;
+        share.armed_send_replay[..send_slots].copy_from_slice(&share.armed_send_gain[..send_slots]);
+        share.send_advanced[..send_slots].fill(false);
+    }
     // ⭐ 任务单 `#154`：本快照的路由计划（构造期编译好的纯数据）。
     //
     // ⚠ **默认口径**：`uses_buses()` 为假（所有节点都只直连 master）⇒ 下面的
@@ -1812,7 +1872,26 @@ fn render_branch(
         // [`MAX_TRACK_SLOTS`]）时按**接线前的行为**直连 master —— 宁可忽略它那些
         // 图边，也不让一条轨在混音里凭空消失（"容量不足不静默"的读数在声部池那侧）。
         let single_unit_to_master = routes.is_empty()
-            || (routes.len() == 1 && routes[0].destination() == master && routes[0].gain() == 1.0);
+            || (routes.len() == 1
+                && routes[0].destination() == master
+                && routes[0].gain() == 1.0
+                // ⭐ `#261`：这条唯一的边**收到过**发送量目标 ⇒ 快路会让那份平滑增益
+                // 无处施加（快路只乘声相）⇒ 必须走按边搬运的慢路。⚠ 只有在**主线**
+                // 里才算（试听第二分支走静态边增益，见 `SendTable::enabled`）。
+                && !(process_sends && send_armed(share, &routes[0])));
+        // ⭐ `#261`：本轨按边搬运时的**发送量视图**（只借字段，不拥有状态）。
+        // 它只在慢路里被推进；`single_unit_to_master` 的快路（纯声相求和）用不到它，
+        // 因此"没有 SendGain 事件"的工程仍然一位不动。
+        let mut sends = SendTable {
+            edges: &share.armed_sends[..*share.armed_send_slots],
+            slots: *share.armed_send_slots,
+            gains: &mut *share.armed_send_gain,
+            armed: share.armed_send_armed,
+            replay: &*share.armed_send_replay,
+            advanced: &mut *share.send_advanced,
+            frames: &mut *share.send_automation_frames,
+            enabled: process_sends,
+        };
         if process_bus_inserts {
             // ⭐ 任务单 `#158`：**处理型总线**的自身声源先以"声相之后"的立体声并入
             // **自己的**总线暂存槽（单位增益）。出边的增益**不在这里乘**：等 3a⁗
@@ -1892,6 +1971,7 @@ fn render_branch(
                     &share.reverb_scratch[1][..frames],
                     out,
                     share.routing_buses,
+                    &mut sends,
                 );
             }
             *share.pan_automation_frames = share.pan_automation_frames.wrapping_add(frames as u64);
@@ -1924,6 +2004,7 @@ fn render_branch(
                     &share.reverb_scratch[1][..frames],
                     out,
                     share.routing_buses,
+                    &mut sends,
                 );
             }
         }
@@ -2015,6 +2096,19 @@ fn render_branch(
                 &share.reverb_scratch[1][..frames],
                 out,
                 share.routing_buses,
+                // ⭐ `#261`：总线的出边（例如 aux→master）与轨的出边同一把尺子。
+                // ⚠ 这一段在 `process_insert_chain` **之后** ⇒ 此处才借发送量表
+                // （那个助手要整份 `&mut BranchShare`）。
+                &mut SendTable {
+                    edges: &share.armed_sends[..*share.armed_send_slots],
+                    slots: *share.armed_send_slots,
+                    gains: &mut *share.armed_send_gain,
+                    armed: share.armed_send_armed,
+                    replay: &*share.armed_send_replay,
+                    advanced: &mut *share.send_advanced,
+                    frames: &mut *share.send_automation_frames,
+                    enabled: process_sends,
+                },
             );
         }
     }
@@ -2235,6 +2329,70 @@ pub struct EngineRuntime {
     /// （`yeban-dsp/src/smoothing.rs:165`）⇒ 槽位**换主人**时那次 `snap_to`
     /// 会把同量子早先设好的自动化目标一并抹掉。⛔ 不许静默：这里逐次计数。
     pan_automation_resets: u64,
+    /// ⭐ **逐边发送量武装表**（任务单 `#261`）：`(边身份, 静态线性边增益)`。
+    ///
+    /// 与 `armed_pan_gains` 同一个形状（前 `armed_send_slots` 项有效），但键是
+    /// **路由边的 `EntityId`**（`RoutingGraph::edges` 的身份，经
+    /// [`RouteTarget::edge`] 进入计划）—— ⛔ 不是轨身份。这一条就是"同一条轨的
+    /// 发送边与直连边各自独立"的来源（`#258` 的否决判据）。
+    ///
+    /// 键序 = `RoutingPlan` 的确定性顺序（拓扑序 × 边的 `BTreeMap` 键序）
+    /// ⇒ 同一份工程两次构造武装同一张表 [ARCH-DET-002]。
+    ///
+    /// 装满 [`SEND_SLOTS`] 之后多出来的边：**保留静态边增益**并逐条计数进
+    /// `send_capacity_drops`（⛔ 不 panic、⛔ 不静默）。
+    armed_sends: [(EntityId, f32); SEND_SLOTS],
+    /// 本快照武装的发送量条数（前 `n` 项有效）。
+    armed_send_slots: usize,
+    /// **逐边的绝对增益平滑器**（与 `armed_sends` 同下标）。
+    ///
+    /// 裁决 2（绝对值语义）：控制侧把 `SendGain` 泳道的 dB 折成**线性绝对增益**
+    /// （`db_to_gain(db)`）发进来，这里只做"从当前值逐样本收敛到目标值"（与声相
+    /// 同一个器件、同一个 `τ ≈ 5 ms`），⛔ 音频线程里没有除法、没有比率换算。
+    ///
+    /// `armed_send_armed[i] == false` ⇒ 这条边走**静态**边增益
+    /// （[`RouteTarget::gain`]）⇒ 没有 `SendGain` 事件的工程**逐位不变**。
+    armed_send_gain: [ParamSmoother; SEND_SLOTS],
+    /// 该槽位是否收到过**被接受的**发送量目标（真 ⇒ 走平滑路径）。
+    armed_send_armed: [bool; SEND_SLOTS],
+    /// 本量子**开始**时每条边的平滑器副本（任务单 `#261` 的重放源）。
+    ///
+    /// ## 为什么需要它（一个量子里的**第二次**施加）
+    ///
+    /// 同一条出边在一个量子内可能被 `route_panned` 访问**两次**：
+    /// ① 逐轨循环把该节点**自己的声源**按边搬运（3a⁰⁰ 那一支）；
+    /// ② 3a⁗ 把该节点**累积到的发送**按边转发（总线槽）。
+    /// 两次施加的都是**同一条边**的增益 ⇒ 必须乘**同一条逐样本曲线**，
+    /// 否则"轨自身 ＋ 发送之和"会被两条不同的曲线缩放。
+    ///
+    /// 而平滑器的状态是**时间状态**：推进两次会让 `τ ≈ 5 ms` 变成两倍速。
+    /// ⇒ 第一处施加推进真平滑器；之后的施加用本字段（量子起点的副本）把
+    /// **同一条序列重放**一遍（`ParamSmoother` 是 `Copy`，20 B/格）。
+    ///
+    /// 只在快照边界之后、逐轨循环之前刷新一次（`SEND_SLOTS × 20 B` 的 `memcpy`），
+    /// 零分配 [MUST-GATE-001]。
+    armed_send_replay: [ParamSmoother; SEND_SLOTS],
+    /// 本量子**已经推进过**的发送量槽位（保证每个平滑器每量子只推进一次）。
+    send_advanced: [bool; SEND_SLOTS],
+    /// **覆盖度见证**：被**平滑**发送量乘过的帧数（累计）。
+    ///
+    /// 与 `pan_automation_frames` 同族：那条平滑路径至少在两个可观测上与静态路径
+    /// 相同（都不分配、都不加锁）⇒ 没有这个数，"四元组全 0"可能是空转。
+    /// 读口见 [`EngineRuntime::send_automation_frames`]。
+    send_automation_frames: u64,
+    /// 被拒绝的发送量**值**数（非有限 / 负数）。
+    send_automation_value_rejects: u64,
+    /// **换主人取消**的读数：已设好的发送量目标被同量子的快照武装取消掉的次数。
+    ///
+    /// 机制与 `pan_automation_resets` 逐字相同（`ParamSmoother::snap_to` 同时写
+    /// `value` 与 `target`）⇒ 槽位换主人时那次 `snap_to` 会把同量子早先设好的
+    /// 目标一并抹掉。⛔ 不许静默：这里逐次计数。
+    send_automation_resets: u64,
+    /// **容量读数**：因 [`SEND_SLOTS`] 装满而没有武装的**边**数（累计）。
+    ///
+    /// 与 `pdc_unarmed_nodes` 同族：读数是"有几条边因此只能用静态增益"，
+    /// ⛔ 不是"换过几次采样率"。⛔ 不 panic、⛔ 不静默。
+    send_capacity_drops: u64,
     /// 本快照武装的**主总线线性增益**（构造期由
     /// [`crate::snapshot::EngineSnapshot::master_gain`] 算好）。
     ///
@@ -2505,8 +2663,9 @@ impl EngineRuntime {
     /// ⇒ `new_boxed` **调用期峰值** = `304 + 176416 + 129984` = `306704 B`，其中
     /// 一个 `EngineRuntime` 都不在栈上；改动前 `new` 的调用期峰值 =
     /// `359312 + 129984` = `489296 B`（⚠ 两个字面读数是 `#107` **之前**实测的栈帧，⛔ 未重测）。
-    /// 而**按值调用者**还要多留一份 181936 B 的
-    /// 返回值位 —— 那一份是装箱消掉的（见判据 `tests/rt_new_boxed.rs` 的阈值差 `176 KiB`）。
+    /// 而**按值调用者**还要多留一份 `size_of::<Self>()` 的返回值位（`#261` 之后
+    /// **186720 B**；`#173` 时是 181936 —— ⛔ 上面那两个栈帧字面读数仍不重测）——
+    /// 那一份是装箱消掉的（见判据 `tests/rt_new_boxed.rs` 的阈值差 `176 KiB`）。
     ///
     /// # Panics
     ///
@@ -2520,7 +2679,7 @@ impl EngineRuntime {
         events: EventReceiver,
         meters: MeterPublisher,
     ) -> Box<Self> {
-        // 堆上只要一块 `size_of::<Self>()`（`#173` 之后 181936 B）；栈帧里只有一个 `Box` 指针。
+        // 堆上只要一块 `size_of::<Self>()`（`#261` 之后 186720 B）；栈帧里只有一个 `Box` 指针。
         let mut place = Box::<Self>::new_uninit();
         // SAFETY: `write_into` 的有效性前提由本函数满足（`place` 是堆上一块有效、对齐、
         // 未初始化的 `Self`），它写满全部字段；`Box::assume_init` 再把
@@ -2725,6 +2884,28 @@ impl EngineRuntime {
             put!(pan_automation_frames, 0);
             put!(pan_automation_value_rejects, 0);
             put!(pan_automation_resets, 0);
+            // ⭐ 逐边发送量（任务单 `#261`）：**构造期**预分配全部槽位（回调内绝不
+            // 再分配）。初值采样率与声相平滑器同一个数（48 kHz），真正的采样率在
+            // **快照边界**用 `set_sample_rate` 校准（同值提前返回 ⇒ 不重复算 `exp`）。
+            put!(
+                armed_sends,
+                [(EntityId::default(), 1.0); SEND_SLOTS]
+            );
+            put!(armed_send_slots, 0);
+            put!(
+                armed_send_gain,
+                core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0))
+            );
+            put!(armed_send_armed, [false; SEND_SLOTS]);
+            put!(
+                armed_send_replay,
+                core::array::from_fn(|_| ParamSmoother::with_default_time(48_000.0))
+            );
+            put!(send_advanced, [false; SEND_SLOTS]);
+            put!(send_automation_frames, 0);
+            put!(send_automation_value_rejects, 0);
+            put!(send_automation_resets, 0);
+            put!(send_capacity_drops, 0);
             put!(armed_master_gain, 1.0);
             put!(armed_metronome_enabled, false);
             put!(armed_metronome_ticks_per_beat, 0);
@@ -3205,6 +3386,87 @@ impl EngineRuntime {
         self.pan_automation_resets
     }
 
+    /// ⭐ 本快照武装的**逐边发送量表**（诊断/判据用；前
+    /// [`Self::armed_send_table_len`] 项有效）。
+    ///
+    /// 每项是 `(边身份, 静态线性边增益)`。存在的理由与 [`Self::armed_pan_gain`]
+    /// 同族：把"武装进去的那个数"变成**可读**的，判据就不必从音频输出反推
+    /// —— 跨边独立这条判据尤其如此（"直连那一路一位不动"与"发送那一路变了"
+    /// 在混音输出上是纠缠的，读武装表才能分开看）。
+    #[must_use]
+    pub fn armed_send_edges(&self) -> &[(EntityId, f32)] {
+        &self.armed_sends[..self.armed_send_slots]
+    }
+
+    /// 本快照武装的发送量**表长**（`(边, 静态增益)` 的行数，上限 [`SEND_SLOTS`]）。
+    ///
+    /// ⚠ 它数的是"表里有几行"，⛔ 不是"有几条边收到了自动化目标"
+    /// （后者见 [`Self::armed_send_slot_count`]）。
+    #[must_use]
+    pub const fn armed_send_table_len(&self) -> usize {
+        self.armed_send_slots
+    }
+
+    /// ⭐ **收到过被接受的 `SendGain` 目标的边数**（武装 = 走平滑路径）。
+    ///
+    /// 与 [`Self::armed_send_table_len`] 是两个数：表长是"计划里可寻址的边"，
+    /// 本函数是"其中真的被自动化接管了几条"。判据用后者证明"只给发送那条边发事件
+    /// ⇒ 只有一格被武装"（⛔ 不必从输出反推）。
+    #[must_use]
+    pub fn armed_send_slot_count(&self) -> usize {
+        self.armed_send_armed[..self.armed_send_slots]
+            .iter()
+            .filter(|armed| **armed)
+            .count()
+    }
+
+    /// 读一条边**当前**的发送量增益值（平滑器输出；未武装 ⇒ `None`）。
+    #[must_use]
+    pub fn armed_send_gain(&self, edge: &EntityId) -> Option<f32> {
+        self.armed_sends[..self.armed_send_slots]
+            .iter()
+            .position(|(id, _)| id == edge)
+            .map(|index| self.armed_send_gain[index].value())
+    }
+
+    /// 读一条边**当前的发送量目标值**（平滑器目标；未武装 ⇒ `None`）。
+    ///
+    /// 口径与 [`crate::param::ParamTable::target`] 一致：它是**事件写进来的那一个数**
+    /// （绝对值、线性），与静态边增益（[`Self::armed_send_edges`] 的第二项）可分别读。
+    #[must_use]
+    pub fn armed_send_target(&self, edge: &EntityId) -> Option<f32> {
+        self.armed_sends[..self.armed_send_slots]
+            .iter()
+            .position(|(id, _)| id == edge)
+            .map(|index| self.armed_send_gain[index].target())
+    }
+
+    /// **覆盖度见证**：被**平滑**发送量乘过的帧数（累计）。
+    #[must_use]
+    pub const fn send_automation_frames(&self) -> u64 {
+        self.send_automation_frames
+    }
+
+    /// **不静默**：被拒绝的发送量**值**数（非有限 / 负数）。
+    #[must_use]
+    pub const fn send_automation_value_rejects(&self) -> u64 {
+        self.send_automation_value_rejects
+    }
+
+    /// **换主人取消**的读数：已设好的发送量目标被同量子的快照武装取消掉的次数。
+    #[must_use]
+    pub const fn send_automation_resets(&self) -> u64 {
+        self.send_automation_resets
+    }
+
+    /// **容量读数**：因 [`SEND_SLOTS`] 装满而没有武装的**边**数（累计）。
+    ///
+    /// 那些边仍然使用**静态**边增益（裁决 1）；本计数保证"装不下"可读、不静默。
+    #[must_use]
+    pub const fn send_capacity_drops(&self) -> u64 {
+        self.send_capacity_drops
+    }
+
     /// ⭐ **读一个 MIDI CC 的当前值**（任务单 `#107`；会话运行态）。
     ///
     /// * `Some(v)` ＝ 这个控制器**收到过**至少一条 [`EngineEvent::ControlChange`]，
@@ -3656,6 +3918,17 @@ impl EngineRuntime {
             pan_automation_frames,
             pan_automation_value_rejects,
             pan_automation_resets,
+            // ⭐ 逐边发送量（`#261`）：事件循环写目标、逐样本路径推进它们。
+            armed_sends,
+            armed_send_slots,
+            armed_send_gain,
+            armed_send_armed,
+            armed_send_replay,
+            send_advanced,
+            send_automation_frames,
+            send_automation_value_rejects,
+            send_automation_resets,
+            send_capacity_drops,
             pdc,
             pdc_unarmed_nodes,
             pdc_clamped_frames,
@@ -3776,6 +4049,21 @@ impl EngineRuntime {
                     } else {
                         None
                     };
+                // --- 逐边发送量：**同样的分流**（任务单 `#261`）---
+                //
+                // `ParamTable` 只认 0/1 ⇒ 槽位 4 也必须在这里被截走，否则每条
+                // `SendGain` 事件都会落进 `params.accept` 被判 `Unmapped` 并计数，
+                // 而发送量永远不动（那正是 `#258` 实测到的 45 dB 差）。
+                // ⚠ 只在**表里找得到这条边**时截走：找不到（边不存在 / 计划的默认
+                // 直连项 / 超出 [`SEND_SLOTS`] 的边）就原样交给 `params.accept` ⇒
+                // 由它判 `Unmapped` 并计数（**单一归属**，与声相逐字相同）。
+                let send_index = if target.slot == SEND_GAIN_SLOT {
+                    armed_sends[..*armed_send_slots]
+                        .iter()
+                        .position(|(id, _)| *id == target.entity)
+                } else {
+                    None
+                };
                 if let Some(index) = pan_index {
                     if !value.is_finite() || value < 0.0 {
                         // 与 `ParamTable::accept` 同一条口径：非有限 / 负值 ⇒ **计数**拒绝。
@@ -3788,6 +4076,16 @@ impl EngineRuntime {
                             armed_pan_r[index].set_target(value);
                         }
                         armed_pan_armed[index] = true;
+                    }
+                } else if let Some(index) = send_index {
+                    if !value.is_finite() || value < 0.0 {
+                        // 同一条值规则（裁决 2 的绝对值语义：负增益没有意义）⇒ 计数拒绝。
+                        *send_automation_value_rejects =
+                            send_automation_value_rejects.wrapping_add(1);
+                    } else {
+                        // **绝对值**：直接写目标（⛔ 不除以静态边增益）。
+                        armed_send_gain[index].set_target(value);
+                        armed_send_armed[index] = true;
                     }
                 } else {
                     // 三类"没有生效"的裁决（非法值 / 未映射地址 / 容量不足）由**表自己**
@@ -4020,6 +4318,58 @@ impl EngineRuntime {
                 }
                 pan_gains[..*armed_pan_slots].copy_from_slice(&armed_pan_gains[..*armed_pan_slots]);
 
+                // --- 2c⁺) ⭐ 逐**边**发送量：武装表（任务单 `#261`）---
+                //
+                // 形状照 2c) 的声相表：**构造期**（快照边界）把"带边身份的出边"
+                // 线性扫一遍写进定长槽位；逐样本路径只查表 + 推进一个平滑器。
+                //
+                // 键是**边的身份**（[`RouteTarget::edge`]）⇒ 同一条轨的发送边与直连边
+                // 各有各的槽位，只给其中一条发事件时另一条的乘数**逐位不变**
+                // （`#258` 的否决判据）。默认直连项没有边身份 ⇒ 不进表（永远静态）。
+                //
+                // **容量**（裁决 1）：装满 [`SEND_SLOTS`] 之后多出来的边**保留静态增益**
+                // 并逐条 `+1` 进 `send_capacity_drops` —— ⛔ 不 panic、⛔ 不静默。
+                //
+                // **在飞的自动化不被覆盖**（裁决 3，与声相逐字相同）：槽位换主人时
+                // 先把旧目标取消并计数；同一条边仍是主人时只校准采样率与基值，
+                // ⛔ 不 `snap_to`（那会把已设好的目标抹掉）。
+                //
+                // 顺序（`RoutingPlan::slots()` 的拓扑序 × 每条节点的出边顺序）
+                // 来自计划本身 ⇒ 同一份工程两次武装得到同一张表 [ARCH-DET-002]。
+                *armed_send_slots = 0;
+                let send_sample_rate = current.sample_rate() as f32;
+                let send_routing = current.routing();
+                for node in send_routing.slots() {
+                    for route in send_routing.routes(node) {
+                        let Some(edge) = route.edge() else {
+                            // 计划的默认直连项：没有边身份 ⇒ 没有可寻址的槽位。
+                            continue;
+                        };
+                        if *armed_send_slots >= SEND_SLOTS {
+                            *send_capacity_drops = send_capacity_drops.wrapping_add(1);
+                            continue;
+                        }
+                        let slot = *armed_send_slots;
+                        let static_gain = route.gain();
+                        if armed_sends[slot].0 != edge {
+                            // 换主人：上一任留下的自动化目标会被下面的 `snap_to` 一并取消
+                            // ⇒ **计数**，⛔ 不静默（与声相换主人同一条读数）。
+                            if armed_send_armed[slot] {
+                                *send_automation_resets = send_automation_resets.wrapping_add(1);
+                            }
+                            armed_send_armed[slot] = false;
+                        }
+                        armed_sends[slot] = (edge, static_gain);
+                        armed_send_gain[slot].set_sample_rate(send_sample_rate);
+                        if !armed_send_armed[slot] {
+                            // 裁决 3：**武装时**吸附到静态边增益（恒等点）⇒ 第一个
+                            // 事件是一段平滑的进入，而不是从 0 淡入。
+                            armed_send_gain[slot].snap_to(static_gain);
+                        }
+                        *armed_send_slots += 1;
+                    }
+                }
+
                 // --- 2c') 主总线推子：与声相表同一个形状（构造期标量，逐样本只乘）---
                 // `dB → 线性` 已经在快照构造期算完（`EngineSnapshot::master_gain`）；
                 // 这里只把这个 `f32` **读**进实时侧。主总线**不**进声相表（见上面
@@ -4250,6 +4600,13 @@ impl EngineRuntime {
                     armed_pan_r: &mut *armed_pan_r,
                     armed_pan_slots: &mut *armed_pan_slots,
                     armed_pan_armed: &mut *armed_pan_armed,
+                    armed_sends: &armed_sends[..*armed_send_slots],
+                    armed_send_slots: &*armed_send_slots,
+                    armed_send_gain: &mut *armed_send_gain,
+                    armed_send_armed: &*armed_send_armed,
+                    armed_send_replay: &mut *armed_send_replay,
+                    send_advanced: &mut *send_advanced,
+                    send_automation_frames: &mut *send_automation_frames,
                     track_scratch: &mut *track_scratch,
                     routing_buses: &mut *routing_buses,
                     scratch_meters: &mut *scratch_meters,
@@ -4275,6 +4632,8 @@ impl EngineRuntime {
                     quantum,
                     block_start_frame,
                     // ⭐ 主线：主总线的插入链在本量子里跑**一次**（任务单 `#173`）。
+                    true,
+                    // ⭐ 主线：逐边发送量的平滑器在本量子里推进**一次**（`#261` 裁决 6）。
                     true,
                 );
 
@@ -4312,6 +4671,9 @@ impl EngineRuntime {
                         block_start_frame,
                         // ⚠ 试听分支：链已经由主线那次推进过 ⇒ 这里⛔ 不再跑第二遍
                         // （否则主总线混响尾巴会以两倍速衰减）。口径见模块头。
+                        false,
+                        // ⚠ 同理：发送量平滑器也只由主线推进（`#261` 裁决 6）
+                        // ⇒ 第二分支走静态边增益，⛔ 不让 τ 变成两倍速。
                         false,
                     );
                     blend_equal_power(
@@ -4582,6 +4944,142 @@ fn render_panned_into_smoothed(
     }
 }
 
+/// ⭐ 逐边发送量的**实时视图**（任务单 `#261`）。
+///
+/// 它是对 `EngineRuntime` 里那几张武装表的**借用视图**：不拥有状态、不分配、
+/// 不引入第二份语义。`route_panned` 的每一次调用都拿到它 ⇒ 逐样本路径上只多
+/// 一次定长线性扫描（≤ [`SEND_SLOTS`] 项，`O(边数)` 与计划本身同阶）。
+struct SendTable<'a> {
+    /// 武装表的键与静态值：`(边身份, 构造期算好的线性边增益)`，前 `slots` 项有效。
+    edges: &'a [(EntityId, f32)],
+    slots: usize,
+    /// 逐边的绝对增益平滑器（与 `edges` 同下标）。
+    gains: &'a mut [ParamSmoother; SEND_SLOTS],
+    /// 该槽位是否收到过**被接受的** `SendGain` 目标（真 ⇒ 走平滑路径）。
+    armed: &'a [bool; SEND_SLOTS],
+    /// 本量子起点的平滑器副本（同一个量子里**第二次**施加同一条边时重放用）。
+    replay: &'a [ParamSmoother; SEND_SLOTS],
+    /// 本量子已经推进过的槽位（保证每个平滑器每量子只推进一次）。
+    advanced: &'a mut [bool; SEND_SLOTS],
+    /// 覆盖度见证：被**平滑**发送量乘过的帧数（累计）。
+    ///
+    /// 口径：只数**平滑器真的被推进**的那些帧（重放用的是副本，⛔ 不计数）
+    /// ⇒ 一条边一个量子最多贡献 `frames`，与"每帧恰好一次"对得上。
+    frames: &'a mut u64,
+    /// ⭐ **只有主线**那次 `render_branch` 为真（裁决 6）。
+    ///
+    /// A/B 试听期同一个量子会调用 `render_branch` **两次**（主线 A ＋ 分支 B），
+    /// 两次共用同一套平滑器状态。若两次都推进，`τ ≈ 5 ms` 会变成"两倍速收敛" ——
+    /// 那是听得出来的行为差。⇒ 第二分支传 `false`，那条分支走**静态**边增益
+    /// （与它不跑主总线链是同一条先例，见 [`render_branch`] 的 `process_sends`）。
+    enabled: bool,
+}
+
+impl SendTable<'_> {
+    /// 这条边在武装表里的下标（至多 [`SEND_SLOTS`] 项、无分配）。
+    fn index_of(&self, edge: EntityId) -> Option<usize> {
+        self.edges[..self.slots]
+            .iter()
+            .position(|(id, _)| *id == edge)
+    }
+
+    /// 这条出边**真的**走平滑路径吗（三个条件缺一不可）。
+    ///
+    /// * 没有边身份（计划的默认直连项）⇒ `None` ⇒ 静态增益；
+    /// * 表里没有这个槽位（超出 [`SEND_SLOTS`] 的边）⇒ `None` ⇒ 静态增益
+    ///   （容量不足**不静默**：武装时逐条计数，见 `send_capacity_drops`）；
+    /// * 没收到过被接受的目标 ⇒ `None` ⇒ 静态增益（恒等快路）；
+    /// * 非主线（A/B 第二分支）⇒ `None` ⇒ 静态增益（裁决 6）。
+    fn smoothed_index(&self, route: &RouteTarget) -> Option<usize> {
+        if !self.enabled {
+            return None;
+        }
+        let edge = route.edge()?;
+        let index = self.index_of(edge)?;
+        self.armed[index].then_some(index)
+    }
+
+    /// 把一条边的平滑增益加到目的地，返回**真的推进了平滑器**的帧数。
+    ///
+    /// * 本量子**第一次**施加 ⇒ 推进真平滑器（返回 `frames`）；
+    /// * 同一个量子的**后续**施加（同一条边被"逐轨自身声源"与"总线累积发送"
+    ///   各搬一次）⇒ 用本量子起点的副本**重放同一条曲线**（返回 `0`）。
+    ///
+    /// ⇒ 一条边的增益曲线在一个量子里只有**一份**，且平滑器每量子只推进一次
+    /// （把 `τ` 变成两倍速是听得出来的行为差）。
+    fn apply(
+        &mut self,
+        index: usize,
+        target_left: &mut [f32],
+        target_right: &mut [f32],
+        source_left: &[f32],
+        source_right: &[f32],
+    ) -> u64 {
+        if self.advanced[index] {
+            let mut replay = self.replay[index];
+            add_route_smoothed(
+                target_left,
+                target_right,
+                source_left,
+                source_right,
+                &mut replay,
+            );
+            0
+        } else {
+            self.advanced[index] = true;
+            add_route_smoothed(
+                target_left,
+                target_right,
+                source_left,
+                source_right,
+                &mut self.gains[index],
+            );
+            source_left.len() as u64
+        }
+    }
+}
+
+/// 把一条出边的**静态**增益乘到目的地（`*l += *sl * gain`，逐位与 `#154` 相同）。
+fn add_route_scaled(
+    target_left: &mut [f32],
+    target_right: &mut [f32],
+    source_left: &[f32],
+    source_right: &[f32],
+    gain: f32,
+) {
+    for ((l, r), (sl, sr)) in target_left
+        .iter_mut()
+        .zip(target_right.iter_mut())
+        .zip(source_left.iter().zip(source_right))
+    {
+        *l += *sl * gain;
+        *r += *sr * gain;
+    }
+}
+
+/// 同 [`add_route_scaled`]，但增益**逐帧**从那条边的平滑器里取（`#261`）。
+///
+/// 每帧每个平滑器**恰好推进一次**：调用方（[`SendTable::apply`]）保证同一条边在一个
+/// 量子里只有第一次施加推进真平滑器，后续施加走**副本重放**同一曲线
+/// ⇒ 多目的地、甚至"自身声源 ＋ 累积发送"两次施加都不会让 `τ` 变快。
+fn add_route_smoothed(
+    target_left: &mut [f32],
+    target_right: &mut [f32],
+    source_left: &[f32],
+    source_right: &[f32],
+    gain: &mut ParamSmoother,
+) {
+    for ((l, r), (sl, sr)) in target_left
+        .iter_mut()
+        .zip(target_right.iter_mut())
+        .zip(source_left.iter().zip(source_right))
+    {
+        let g = gain.process();
+        *l += *sl * g;
+        *r += *sr * g;
+    }
+}
+
 /// ⭐ **按边搬运**：把暂存里的立体声按每条出边的增益加到目的地（任务单 `#154`）。
 ///
 /// * 目的地 = `master` ⇒ 加进母线块 `out`；
@@ -4589,7 +5087,17 @@ fn render_panned_into_smoothed(
 /// * 目的地不在计划里（例如 `routing_graph.nodes` 里没有对应音轨的节点）⇒ 跳过
 ///   （没有可累积的实体；本片不发明"虚拟总线"）。
 ///
+/// ⭐ **`#261`：增益从哪来**。每条出边按 [`SendTable::smoothed_index`] 二选一：
+/// 收到过被接受的 `SendGain` 目标 ⇒ 逐帧从**那条边自己的**平滑器取值；
+/// 否则 ⇒ 构造期算好的静态增益（一位不动）。⇒ 同一条轨的"发送边"与"直连边"
+/// 各有各的槽位：只给发送边发事件时，直连那一路的乘数**逐位不变**
+/// （`#258` 的否决判据）。
+///
 /// 逐样本一次"乘 + 加"，零分配、零锁、零 I/O [MUST-GATE-001]。
+///
+/// ⚠ 参数是**逐块的借用视图**（源/目的地/总线池/发送量表），不是"配置"：
+/// 收成一个结构体只会把同一批 `&mut` 再包一层（并让三个调用点各造一个临时量）。
+#[allow(clippy::too_many_arguments)]
 fn route_panned(
     routes: &[RouteTarget],
     routing: &RoutingPlan,
@@ -4598,28 +5106,27 @@ fn route_panned(
     source_right: &[f32],
     out: &mut AudioBlock<DEFAULT_BLOCK_FRAMES>,
     buses: &mut [AudioBlock<DEFAULT_BLOCK_FRAMES>; MAX_TRACK_SLOTS],
+    sends: &mut SendTable<'_>,
 ) {
     for route in routes {
-        let gain = route.gain();
+        let smoothed = sends.smoothed_index(route);
         if route.destination() == master {
             let (left, right) = out.stereo_mut();
-            for ((l, r), (sl, sr)) in left
-                .iter_mut()
-                .zip(right.iter_mut())
-                .zip(source_left.iter().zip(source_right))
-            {
-                *l += *sl * gain;
-                *r += *sr * gain;
+            match smoothed {
+                Some(index) => {
+                    let counted = sends.apply(index, left, right, source_left, source_right);
+                    *sends.frames = (*sends.frames).wrapping_add(counted);
+                }
+                None => add_route_scaled(left, right, source_left, source_right, route.gain()),
             }
-        } else if let Some(index) = routing.slot_of(&route.destination()) {
-            let (left, right) = buses[index].stereo_mut();
-            for ((l, r), (sl, sr)) in left
-                .iter_mut()
-                .zip(right.iter_mut())
-                .zip(source_left.iter().zip(source_right))
-            {
-                *l += *sl * gain;
-                *r += *sr * gain;
+        } else if let Some(bus) = routing.slot_of(&route.destination()) {
+            let (left, right) = buses[bus].stereo_mut();
+            match smoothed {
+                Some(index) => {
+                    let counted = sends.apply(index, left, right, source_left, source_right);
+                    *sends.frames = (*sends.frames).wrapping_add(counted);
+                }
+                None => add_route_scaled(left, right, source_left, source_right, route.gain()),
             }
         }
     }
@@ -7315,6 +7822,13 @@ mod tests {
                 armed_pan_r,
                 armed_pan_slots,
                 armed_pan_armed,
+                armed_sends,
+                armed_send_slots,
+                armed_send_gain,
+                armed_send_armed,
+                armed_send_replay,
+                send_advanced,
+                send_automation_frames,
                 track_scratch,
                 routing_buses,
                 scratch_meters,
@@ -7362,6 +7876,13 @@ mod tests {
                 armed_pan_r,
                 armed_pan_slots,
                 armed_pan_armed,
+                armed_sends: &armed_sends[..*armed_send_slots],
+                armed_send_slots,
+                armed_send_gain,
+                armed_send_armed,
+                armed_send_replay,
+                send_advanced,
+                send_automation_frames,
                 track_scratch,
                 routing_buses,
                 scratch_meters,
@@ -7388,6 +7909,9 @@ mod tests {
                 block_start_frame,
                 // ⚠ 与生产主线同参：主总线链**开**。本判据的夹具没有主总线器件
                 // ⇒ 那一段是快路（⛔ 一个样本都不碰）⇒ 与下面的旧内联参照仍逐位相同。
+                true,
+                // ⚠ 同理：发送量平滑器与生产主线同参（开）。夹具没有 `SendGain`
+                // 事件 ⇒ `smoothed_index` 恒 `None` ⇒ 逐位不变。
                 true,
             );
             let _ = produced;

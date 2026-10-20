@@ -266,9 +266,10 @@ fn boxed_constructor_is_bit_identical_to_by_value() {
     );
     assert_eq!(
         core::mem::size_of::<EngineRuntime>(),
-        181_936,
-        "装箱构造不该改布局：`EngineRuntime` 的现读尺寸是 181936 B\
+        186_720,
+        "装箱构造不该改布局：`EngineRuntime` 的现读尺寸是 186720 B\
          （`#107` 的 CC 表 ＋144 → 180144；`#173` 的主总线插入槽位 ＋1792 → 181936；\
+         `#261` 的逐边发送量表/平滑器/重放副本 ＋4784 → 186720；\
          门槛仍是 192 KiB = 196608）"
     );
     assert_eq!(

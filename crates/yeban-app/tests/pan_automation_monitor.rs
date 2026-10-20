@@ -408,6 +408,11 @@ fn a_pan_only_lane_moves_the_monitor_pan() {
 }
 
 /// 判据 ⑥：`unapplied` 的读数（`SendGain` 那几列）与声相采样**互不影响**。
+///
+/// ⚠ ⭐ **`#261` 修订**：本夹具的边是普通 `TrackToBus`（实时侧**有落点**）⇒
+/// `SendGain` 泳道现在**真的**下发一条事件、且**不**计入 `send-gain`
+/// （见 `yeban_app::engine_host::unapplied_automation_lanes` 的新口径）。
+/// 声相那 2 条一位没变 ⇒ "互不影响"这条判据本身没变，变的只是发送量那一列的读数。
 #[test]
 fn unapplied_send_gain_counting_is_unchanged() {
     let (mut project, track) = fixture(true, false);
@@ -439,15 +444,23 @@ fn unapplied_send_gain_counting_is_unchanged() {
         );
     project.validate().expect("加泳道后夹具仍须合法");
 
-    assert_eq!(unapplied_automation_lanes(&project).send_gain, 1);
-    assert_eq!(published_with_engine(&project), 2, "SendGain 不产生事件");
+    assert_eq!(
+        unapplied_automation_lanes(&project).send_gain,
+        0,
+        "#261：边有实时落点 ⇒ 不再计入「未落地」"
+    );
+    assert_eq!(
+        published_with_engine(&project),
+        3,
+        "声相 2 条 ＋ 发送量 1 条（地址 = 边身份，槽位 4）"
+    );
 
     let mut host = EngineHost::new();
     host.reload(&project, 0).expect("引擎重建");
-    assert_eq!(host.publish_automation(Some(&project)), 2);
-    assert_eq!(host.automation_unapplied(), 1);
-    assert_eq!(host.automation_unapplied_breakdown().send_gain, 1);
+    assert_eq!(host.publish_automation(Some(&project)), 3);
+    assert_eq!(host.automation_unapplied(), 0);
+    assert_eq!(host.automation_unapplied_breakdown().send_gain, 0);
     assert_eq!(host.automation_unapplied_breakdown().device_param, 0);
     assert_eq!(host.automation_unapplied_breakdown().macro_lanes, 0);
-    assert_eq!(host.automation_counts(), (2, 0));
+    assert_eq!(host.automation_counts(), (3, 0));
 }

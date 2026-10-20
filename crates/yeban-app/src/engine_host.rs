@@ -120,9 +120,11 @@ use yeban_engine::level::db_to_gain;
 use yeban_engine::meter::{DEFAULT_METER_CAPACITY, MeterCollector, meter_channel};
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_engine::param::{
-    MASTER_GAIN_SLOT, PARAM_SLOTS, TRACK_GAIN_SLOT, TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
+    MASTER_GAIN_SLOT, PARAM_SLOTS, SEND_GAIN_SLOT, SEND_SLOTS, TRACK_GAIN_SLOT,
+    TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT,
 };
 use yeban_engine::ring::{EngineEvent, EventSender, ParamAddress, TransportCommand, event_channel};
+use yeban_engine::routing::edge_carries_audio;
 use yeban_engine::rt::{EngineRuntime, EngineStats};
 use yeban_engine::sfz_instrument::SfzPlan;
 use yeban_engine::snapshot::{
@@ -452,9 +454,22 @@ pub struct TransportActionRecord {
 /// ⚠ **这是一个 gauge（每跳重采的当前值），不是累计计数器**：它与
 /// [`EngineHost::automation_counts`] 的两个数（累计事件条数）形状不同 ——
 /// "没落地的泳道"是工程的状态，60 Hz 累加会每秒 +60，读不出"有几条"。
+///
+/// ⚠ ⭐ **任务单 `#261` 对上面这段的修订（⭐ 只改 `send_gain` 那一列的口径）**：
+/// 上面写"实时引擎**没有发送量槽位**"这句话**当时是真的**，现在**不再是** ——
+/// `yeban_engine::param::SEND_GAIN_SLOT = 4` 已存在，`crate::rt` 有一条逐**边**的
+/// 发送量平滑表（容量 `SEND_SLOTS = 64`），[`EngineHost::publish_automation`] 也会为
+/// 有落点的边下发 `(edge_id, 4, db_to_gain(dB))`。⇒ `send_gain` 这一列现在数的是
+/// **边在实时侧没有落点**的那些 `SendGain` 泳道（`RoutingGraph` 里查不到 / 侧链 /
+/// 源是母线 / 源不是可渲染音轨）；有落点的泳道**不再计入**（它们真的落地了）。
+/// ⛔ 原文保留（不删、不弱化）；这份读数的"不静默"职责不变。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UnappliedAutomationLanes {
-    /// 开着的 `SendGain` 泳道数（实时不生效；离线导出 / MCP 渲染生效）。
+    /// 开着的 `SendGain` 泳道数**且它的边在实时侧没有落点**。
+    ///
+    /// `#261` 之后有落点的 `SendGain` 泳道**真的**在监听里生效（逐边槽位）
+    /// ⇒ 它们不计入本列；本列只剩"边根本不在可搬运音频的图里"的那一类
+    /// （离线导出 / MCP 渲染按边求值，但对这类边同样没有落点）。
     pub send_gain: u64,
     /// 开着的 `DeviceParam` 泳道数（实时与离线**都**没有落点）。
     pub device_param: u64,
@@ -478,11 +493,39 @@ impl UnappliedAutomationLanes {
     }
 }
 
+/// 一条 `SendGain` 泳道的边在**实时侧有没有落点**（任务单 `#261`）。
+///
+/// 判据是 [`edge_carries_audio`]（引擎 `RoutingPlan::compile` 用的**同一份**过滤条件）：
+/// 只有能搬运音频的出边才会进实时侧的**逐边发送量武装表** ⇒ 只有那些边的
+/// `SendGain` 自动化才可能生效。
+///
+/// ⛔ 容量（[`SEND_SLOTS`]）**不在**本谓词里：表满时是"保留静态边增益 + 计数"，
+/// 由引擎的 `send_capacity_drops` 如实报告（⛔ 控制侧不复制一份"能装几条"的算术）。
+///
+/// 成本：一次 `BTreeMap` 查找 ＋ 一个 3 行的谓词 —— 控制面纯函数，⛔ 不碰音频线程。
+fn send_gain_lands(project: &YebanProjectV1, edge_id: EntityId) -> bool {
+    project
+        .routing_graph
+        .edges
+        .get(&edge_id)
+        .is_some_and(|edge| {
+            edge_carries_audio(edge, project.master_bus_track_id, |node| {
+                project.tracks.contains_key(&node)
+            })
+        })
+}
+
 /// 扫描工程里的自动化泳道，数出**实时引擎没有执行落点**的那些（任务单 `#259`）。
 ///
 /// 这是**唯一**的分类处：[`EngineHost::publish_automation`] 每跳调用它更新读数，
 /// CLI 的 `automation-engine:` 行（[`automation_unapplied_line`]）也调用它
 /// ⇒ 两处不可能各数一套。
+///
+/// ⚠ ⭐ **`#261` 之后 `send_gain` 的口径变了**：`SendGain` 现在**真的**落到实时引擎
+/// （逐边发送量槽位）⇒ 只有"边在实时侧**没有落点**"的泳道才计入本读数
+/// （谓词：[`send_gain_lands`]）。以前这里无条件计数 —— 那在当时是实话，
+/// 现在会变成假读数。⛔ 不是"删掉一个计数"：落点判断与 [`Self::publish_automation`]
+/// 的采样用的是**同一个**谓词。
 ///
 /// 成本：O(轨道数 × 每条轨的泳道数)，**无分配**；与 `publish_automation` 自己的
 /// 采样循环同阶。⚠ 它是控制面 / UI 线程的纯函数，⛔ 不碰音频线程。
@@ -495,8 +538,10 @@ pub fn unapplied_automation_lanes(project: &YebanProjectV1) -> UnappliedAutomati
                 continue;
             }
             match lane.target {
-                AutomationTarget::SendGain { .. } => {
-                    lanes.send_gain = lanes.send_gain.saturating_add(1);
+                AutomationTarget::SendGain { edge_id, .. } => {
+                    if !send_gain_lands(project, edge_id) {
+                        lanes.send_gain = lanes.send_gain.saturating_add(1);
+                    }
                 }
                 AutomationTarget::DeviceParam { .. } => {
                     lanes.device_param = lanes.device_param.saturating_add(1);
@@ -515,12 +560,18 @@ pub fn unapplied_automation_lanes(project: &YebanProjectV1) -> UnappliedAutomati
 ///
 /// 它**逐字**说出缺口：有几条泳道在监听里没落地、其中哪些只在导出里生效、
 /// 哪些在任何渲染器里都没有落点。⛔ 不是"加个计数就完了"。
+///
+/// ⚠ ⭐ **`#261` 之后 `send-gain` 那一列的措辞改了**：有落点的 `SendGain` 已经
+/// 在监听里生效 ⇒ 这一列只剩"**边在实时侧没有落点**"的泳道，所以后半句从
+/// "SendGain 只在离线导出/MCP 渲染里生效"改成"SendGain 的边在监听里没有落点"。
+/// ⛔ 字段名与行形状（`unapplied-lanes=` 打头、四个 `key=value`）一字未动
+/// （既有 CLI 判据按 `field(...)` 读，不按整行位置读）。
 #[must_use]
 pub fn automation_unapplied_line(lanes: UnappliedAutomationLanes) -> String {
     format!(
         "automation-engine: unapplied-lanes={} send-gain={} device-param={} macro={} \
-         note=\"有 {} 条自动化泳道在监听里没落地；SendGain 只在离线导出/MCP 渲染里生效，\
-         DeviceParam/Macro 没有任何生效路径\"",
+         note=\"有 {} 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
+         （离线导出/MCP 按边求值），DeviceParam/Macro 没有任何生效路径\"",
         lanes.total(),
         lanes.send_gain,
         lanes.device_param,
@@ -1342,13 +1393,31 @@ impl EngineHost {
     /// * `automation_unapplied`（`#259` 的 gauge）**一位不动**：它数的是"实时不执行"的
     ///   那几类目标，声相本来就不在其中。
     ///
-    /// 一跳最多下发的自动化事件数：**每条轨最多 3 条**（音量 + 声相左 + 声相右）。
+    /// ⚠ ⭐ **任务单 `#261` 对上面三条登记的修订（⭐ 只加"第三块并列采样"）**：
+    /// ⭐ `SendGain` 泳道**不再只在导出里生效** —— 实时引擎有了**逐边发送量槽位**
+    /// （`yeban_engine::param::SEND_GAIN_SLOT = 4`，容量 `SEND_SLOTS = 64`）。
+    /// 本函数为**每一对 (轨, 边)** 下发至多一条事件，地址的 `entity` 是**边身份**
+    /// （⛔ 不是轨身份）⇒ 同一条轨的发送边与直连边各自独立。
+    /// * 换域是**绝对值**（裁决 2）：`db_to_gain(自动化 dB)`，⛔ 不除以静态边增益
+    ///   （与声相两条绝对增益同一条口径；音量那一支的"÷ 静态值"是针对**乘子**语义的）；
+    /// * `read_enabled:false` ⇒ 不发（裁决 4）；
+    /// * 边在实时侧没有落点（不存在 / 侧链 / 源是母线 / 源不是可渲染音轨）⇒ 不发，
+    ///   由 [`unapplied_automation_lanes`] 计数（与声相跳过母线同一条先例）。
+    ///
+    /// 一跳最多下发的自动化事件数：**每条轨 3 条 ＋ 每条可寻址的 `SendGain` 边 1 条**。
     ///
     /// ⛔ 不用 [`PARAM_SLOTS`] 当上限：那个数是**引擎参数表的槽位数**（每条轨一个增益槽位）。
-    /// 声相走引擎里**另一条独立通路**（`rt.rs` 的逐轨声相平滑对），不占参数表的槽位
-    /// ⇒ 批次可以更大。**每跳仍然只有一次 `publish`（一条批）**，这条纪律不变。
+    /// 声相与发送量走引擎里**另外两条独立通路**（`rt.rs` 的逐轨声相平滑对 ／ 逐边发送量
+    /// 武装表），不占参数表的槽位 ⇒ 批次可以更大。**每跳仍然只有一次 `publish`
+    /// （一条批）**，这条纪律不变。
+    ///
+    /// 容量 = `PARAM_SLOTS × 3 ＋ SEND_SLOTS` = **112**：
+    /// 前半是"音量 1 ＋ 声相 2"（每条引擎轨），后半是**引擎发送量表的行数上限**
+    /// （`SendGain` 事件最多只对表里的边有落点）。⚠ 超过的部分逐条计进
+    /// `automation_dropped`（⛔ 不静默）；引擎那一侧还有自己的
+    /// `send_capacity_drops`（表满时保留静态边增益）。
     const fn automation_batch_capacity() -> usize {
-        PARAM_SLOTS * 3
+        PARAM_SLOTS * 3 + SEND_SLOTS
     }
 
     /// **把工程里的自动化泳道采样成 `SetParam` 事件并下发**（裁决 R55／R68／P4=(b)）。
@@ -1358,6 +1427,7 @@ impl EngineHost {
     /// * **工程缓存**：`Some(project)` 更新缓存，`None` 跳用缓存 —— 生产的 16 ms 定时器
     ///   只在"标记变了"的那一跳才 `try_project()`（成本契约），⛔ 采样**不得**挂在入参上；
     /// * 一条轨最多 **3** 条事件：音量 1 条 + 声相 2 条（左/右**绝对**增益，语义是**替换**）；
+    ///   ⭐ **`#261`**：另外每一条**有实时落点**的 `SendGain` 边再加 1 条（见下第三块）；
     /// * ⭐ **`#260`**：音量与声相是**两块并列的采样**（各自独立的 `if let`）⇒
     ///   只有声相泳道（或只有音量泳道）的轨也各自下发；⛔ 声相**不**因音量泳道缺失 /
     ///   关闭 / 这一跳没有值 / 值非法而被跳过（修前正是那样，`continue` 跳过了整段）；
@@ -1465,6 +1535,46 @@ impl EngineHost {
                         len += 1;
                     }
                 }
+            }
+
+            // ---- 3. ⭐ 发送量（`SendGain`，任务单 `#261`）：**每对 (轨, 边) 一条** ----
+            //
+            // 地址的 `entity` 是**边身份**（⛔ 不是轨身份）—— 实时侧的武装表按边开槽，
+            // 所以"同一条轨的发送边与直连边"是两条独立的自动化通路（`#258` 的否决判据）。
+            //
+            // **换域**（与音量那一支**不同**）：本槽位收的是**线性绝对增益**
+            // ⇒ 直接 `db_to_gain(自动化 dB)`，⛔ **不除以**静态边增益。
+            // 理由：静态边增益在实时侧是"武装时的吸附点"（`snap_to`），
+            // 而 `SendGain` 泳道表达的就是"这条发送量应该是多少"（绝对值）
+            // —— 与声相两条绝对增益同一条口径（裁决 2）。
+            //
+            // `read_enabled:false` ⇒ **不发**（等于没有这条泳道 ⇒ 引擎保持静态边增益，裁决 4）。
+            //
+            // ⚠ 与声相跳过母线**同一条先例**：边在实时侧没有落点（不存在 / 侧链 /
+            // 源是母线 / 源不是可渲染音轨）时**不发** —— 否则每一跳都会产生一条被判
+            // `Unmapped` 的事件（读数上像缺陷）。这类泳道由
+            // [`unapplied_automation_lanes`] 的 `send_gain` 计数（**不静默**）。
+            for lane in track.automation_lanes.values() {
+                let AutomationTarget::SendGain { edge_id, .. } = lane.target else {
+                    continue;
+                };
+                if !lane.read_enabled || !send_gain_lands(project, edge_id) {
+                    continue;
+                }
+                let Ok(Some(automated_db)) = project.automation_value_at(&lane.target, tick) else {
+                    continue;
+                };
+                // **绝对值**（裁决 2）：音频线程只乘、无除法。
+                let value = db_to_gain(automated_db);
+                if !value.is_finite() || value < 0.0 || len == batch_capacity {
+                    dropped += 1;
+                    continue;
+                }
+                batch[len] = EngineEvent::SetParam {
+                    target: ParamAddress::new(edge_id, SEND_GAIN_SLOT),
+                    value,
+                };
+                len += 1;
             }
         }
         let written = if len == 0 {
@@ -2606,15 +2716,20 @@ mod tests {
         );
     }
 
-    /// ⭐ **`#260` 判据 6**：`unapplied` 计数不受影响 —— 同一份工程里加一条开着的
-    /// `SendGain` 泳道 ⇒ 声相照发 2 条、`send-gain` 仍数 1、⛔ 不产生事件。
+    /// ⭐ **`#261` 判据**：一条开着的 `SendGain` 泳道（边在实时侧**有落点**）⇒
+    /// ① 它**真的**下发一条 `SetParam { entity: <边>, slot: 4, value: db_to_gain(-6 dB) }`；
+    /// ② `send-gain` 的 gauge **不**再数它（它落地了）；③ 声相照发 2 条。
+    ///
+    /// ⚠ 修前（`#259`/`#260`）这里断言的是"数 1、⛔ 不产生事件" —— 那在当时是实话；
+    /// 本单把发送量接进实时侧 ⇒ 旧断言会变成假读数，故按新裁决改写（⛔ 不删判据）。
     #[test]
-    fn unapplied_send_gain_counting_is_unchanged_by_the_pan_sampling() {
+    fn a_send_gain_lane_lands_as_an_edge_address() {
         let mut project = demo_project();
         let bass = pan_only_track(&project);
+        let edge = crate::bridge::demo_id("R1");
         let target = AutomationTarget::SendGain {
             track_id: bass,
-            edge_id: crate::bridge::demo_id("R1"),
+            edge_id: edge,
         };
         project
             .tracks
@@ -2633,27 +2748,81 @@ mod tests {
             );
         assert_eq!(
             unapplied_automation_lanes(&project).send_gain,
-            1,
-            "读数的分类处不受本单影响"
+            0,
+            "#261：有落点的 SendGain 已落地 ⇒ 不再计入「未落地」"
         );
         let mut host = EngineHost::new();
         let events = captured_automation_events(&mut host, &project);
         let params = param_events(&events);
+        // 地址的 `entity` 是**边身份**（⛔ 不是轨身份）—— 这就是跨边独立的寻址单位。
+        assert_eq!(
+            params
+                .iter()
+                .filter(|(entity, slot, _)| *entity == edge && *slot == SEND_GAIN_SLOT)
+                .count(),
+            1,
+            "每条有落点的 SendGain 边恰好一条事件（地址 = 边身份）"
+        );
+        let value = params
+            .iter()
+            .find(|(entity, slot, _)| *entity == edge && *slot == SEND_GAIN_SLOT)
+            .map(|(_, _, value)| *value)
+            .expect("上面刚数过 1 条");
+        assert_eq!(
+            value,
+            db_to_gain(-6.0),
+            "**绝对值**语义：值 = db_to_gain(泳道 dB)，⛔ 不除以静态边增益"
+        );
         let bass_events: Vec<(EntityId, u16, f32)> = params
             .iter()
             .copied()
             .filter(|(entity, _, _)| *entity == bass)
             .collect();
-        assert_eq!(
-            bass_events.len(),
-            2,
-            "SendGain 不产生事件 ⇒ 仍是声相那 2 条"
-        );
-        assert_eq!(params.len(), 3, "贝斯声相 2 条 ＋ 鼓的音量 1 条");
-        assert_eq!(host.automation_counts(), (3, 0), "SendGain 不记 published");
-        assert_eq!(host.automation_unapplied(), 1);
-        assert_eq!(host.automation_unapplied_breakdown().send_gain, 1);
+        assert_eq!(bass_events.len(), 2, "贝斯声相仍是 2 条（发送量不挤掉它）");
+        assert_eq!(params.len(), 4, "贝斯声相 2 ＋ 鼓音量 1 ＋ 发送量 1");
+        assert_eq!(host.automation_counts(), (4, 0), "四条都真的写进 SPSC");
+        assert_eq!(host.automation_unapplied(), 0);
+        assert_eq!(host.automation_unapplied_breakdown().send_gain, 0);
         assert_eq!(host.automation_unapplied_breakdown().device_param, 0);
         assert_eq!(host.automation_unapplied_breakdown().macro_lanes, 0);
+    }
+
+    /// ⭐ **`#261` 判据（负对照）**：泳道的边**没有实时落点**（这里用一个不存在的
+    /// 边身份）⇒ ① 不下发事件；② `send-gain` 数 1（不静默）；③ 声相照旧。
+    #[test]
+    fn a_send_gain_lane_without_a_landing_is_counted_and_publishes_nothing() {
+        let mut project = demo_project();
+        let bass = pan_only_track(&project);
+        let target = AutomationTarget::SendGain {
+            track_id: bass,
+            edge_id: EntityId::new(),
+        };
+        project
+            .tracks
+            .get_mut(&bass)
+            .expect("贝斯轨必须在")
+            .automation_lanes
+            .insert(
+                target,
+                AutomationLane {
+                    target,
+                    points: automation_points(&[(0, -6.0)]),
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        assert_eq!(unapplied_automation_lanes(&project).send_gain, 1);
+        let mut host = EngineHost::new();
+        let events = captured_automation_events(&mut host, &project);
+        let params = param_events(&events);
+        assert_eq!(
+            params.len(),
+            3,
+            "没有落点的 SendGain 不产生事件（贝斯声相 2 ＋ 鼓音量 1）"
+        );
+        assert_eq!(host.automation_counts(), (3, 0));
+        assert_eq!(host.automation_unapplied(), 1);
+        assert_eq!(host.automation_unapplied_breakdown().send_gain, 1);
     }
 }

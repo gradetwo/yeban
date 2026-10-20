@@ -3,28 +3,38 @@
 //! ## 本文件钉住的事实
 //!
 //! `SendGain` 泳道在界面里画得出来（`track-{i}-automation-send-{edge}-lane`）、MCP 也
-//! 写得进去（`yeban_edit_automation` 的词表含 `SendGain`），但**实时引擎没有发送量槽位**
-//! （`yeban_engine::param` 只映射 0..=3，其余 `Unmapped`）⇒ 监听时它**一条都不执行**
-//! （`#258` 实测：开头比导出响 ≈45 dB），而离线导出 / MCP 渲染**会**执行它。
+//! 写得进去（`yeban_edit_automation` 的词表含 `SendGain`）。`#259` 当时**实时引擎没有
+//! 发送量槽位**（`yeban_engine::param` 只映射 0..=3，其余 `Unmapped`）⇒ 监听时它
+//! **一条都不执行**（`#258` 实测：开头比导出响 ≈45 dB），而离线导出 / MCP 渲染**会**执行它。
 //!
 //! 本票把"沉默"变成"读数"：`EngineHost::publish_automation` 每跳数一次
 //! [`yeban_app::engine_host::unapplied_automation_lanes`]，`--headless` 打印
-//! `automation-engine:` 行。⛔ 本文件**不**改音频：SendGain 泳道**不得**产生任何
-//! `SetParam` 事件，既有 `automation_published` / `automation_dropped` 的增量与
-//! 没有这条泳道时**逐条相同**。
+//! `automation-engine:` 行。
 //!
-//! ## 判据（与任务单 §2 的七条对应）
+//! ## ⚠ ⭐ `#261` 对上面这条事实的修订（本文件已按新事实改写）
+//!
+//! 实时引擎**有了逐边发送量槽位**（`SEND_GAIN_SLOT = 4`，容量 `SEND_SLOTS = 64`）⇒
+//! **边在实时侧有落点**的 `SendGain` 泳道**真的会下发** `SetParam { entity: 边, slot: 4 }`，
+//! 而 `send-gain` 这一列只剩"**边没有实时落点**"的泳道：
+//!
+//! * 落点的判据是 `yeban_engine::routing::edge_carries_audio`（引擎编译路由计划用的
+//!   **同一份**过滤条件）—— 侧链边、源是母线、源不是可渲染音轨的边都没有落点；
+//! * 判据夹具因此用**侧链边**（工程合法：`SendGain` 的目标校验只要求边存在）来表达
+//!   "没有落点"，而用普通 `TrackToBus` 边表达"有落点、会下发"。
+//!
+//! ## 判据（与任务单 §2 的七条对应；`#261` 之后的两列）
 //!
 //! | 判据 | 测试 |
 //! | :--- | :--- |
-//! | 一条 `SendGain` ⇒ 1；两条 ⇒ 2；无 ⇒ 0 | [`one_send_gain_lane_is_counted_but_publishes_nothing`] / [`two_send_gain_lanes_count_two`] / [`volume_and_pan_lanes_are_not_counted`] |
+//! | 无落点的一条 `SendGain` ⇒ 1；两条 ⇒ 2；无 ⇒ 0 | [`a_send_gain_lane_without_a_landing_is_counted_but_publishes_nothing`] / [`two_send_gain_lanes_count_two`] / [`volume_and_pan_lanes_are_not_counted`] |
+//! | ⭐ **有落点的一条 ⇒ 0（它落地了）且**真的**下发一条 `(边, 4, db_to_gain)`** | [`a_send_gain_lane_on_an_audio_edge_lands`] |
 //! | `read_enabled:false` ⇒ 0 | [`a_disabled_send_gain_lane_is_not_counted`] |
 //! | `TrackVolume` / `TrackPan` 不计 | [`volume_and_pan_lanes_are_not_counted`] |
 //! | 读数可见（CLI 逐字） | [`headless_cli_names_the_unapplied_send_gain_lane`] |
 //! | `DeviceParam` / `Macro` 同类但分开数 | [`an_enabled_device_param_lane_is_counted_separately`] |
 //!
-//! 音频不变的正对照在 `tests/send_gain_automation_export.rs`（同一个 `--export-wav`
-//! 渲染核心，修前/修后的文件 `sha256` 相同；读数由那条判据的 `println!` 给出）。
+//! 音频**导出**不变的正对照在 `tests/send_gain_automation_export.rs`（同一个
+//! `--export-wav` 渲染核心，`#261` 不动离线路径 ⇒ 文件 `sha256` 相同）。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -36,7 +46,7 @@ use yeban_app::engine_host::{EngineHost, automation_unapplied_line, unapplied_au
 use yeban_model::container::write_project_container;
 use yeban_model::{
     AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, CurveType, EntityId,
-    YebanProjectV1,
+    RoutingKind, YebanProjectV1,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -105,6 +115,23 @@ fn insert_send_lane(
         );
 }
 
+/// 把一条边的 kind 改成 `Sidechain`（⭐ `#261` 的"**没有实时落点**"夹具）。
+///
+/// 侧链边**不搬音频** ⇒ 引擎的 `RoutingPlan` 不收它（`edge_carries_audio` 的第一条）
+/// ⇒ 实时侧没有它的发送量槽位。工程仍然**合法**：`SendGain::validate_against`
+/// 只要求"边存在"，不要求"边搬音频"。
+///
+/// ⚠ 改 kind 会顺带改变该轨的路由（R1 是 `TrackToBus`）⇒ 它退回"无音频出边 ⇒
+/// 默认直连 master"，与本文件关心的读数无关（本文件不判音频）。
+fn make_sidechain(project: &mut YebanProjectV1, edge: EntityId) {
+    let edge = project
+        .routing_graph
+        .edges
+        .get_mut(&edge)
+        .expect("夹具引用的边必须存在");
+    edge.kind = RoutingKind::Sidechain;
+}
+
 /// 取一行里 `key=value` 的 `value`（到下一个空白为止；与 CLI 判据同一口径）。
 fn field(line: &str, key: &str) -> Option<String> {
     let needle = format!("{key}=");
@@ -114,12 +141,13 @@ fn field(line: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
-/// 判据 1 + 3（负对照）：**一条开着的 `SendGain` 泳道 ⇒ 计数 1**，且它**不**产生事件
-/// （`automation_published` / `automation_dropped` 的增量与没有这条泳道时逐条相同）。
+/// 判据 1 + 3（负对照）：一条开着的 `SendGain` 泳道，**边没有实时落点**（侧链）
+/// ⇒ 计数 1，且它**不**产生事件。
 #[test]
-fn one_send_gain_lane_is_counted_but_publishes_nothing() {
+fn a_send_gain_lane_without_a_landing_is_counted_but_publishes_nothing() {
     let mut project = demo_project();
     let track = first_track(&project);
+    make_sidechain(&mut project, demo_id("R1"));
     let mut host = EngineHost::new();
     host.reload(&project, 0).expect("重建");
     let baseline_written = host.publish_automation(Some(&project));
@@ -159,11 +187,67 @@ fn one_send_gain_lane_is_counted_but_publishes_nothing() {
     );
 }
 
-/// 判据 1：**两条** `SendGain` 泳道 ⇒ 计数 2（数的是泳道，不是采样点/事件）。
+/// ⭐ `#261` 判据（正对照）：边在实时侧**有落点**（普通 `TrackToBus` 边）⇒
+/// ① `send-gain` **不**再数它（它落地了）；② 真的多下发**恰好一条**事件；
+/// ③ 关掉读开关（`read_enabled:false`）又回到"一条都不发"（裁决 4）。
+#[test]
+fn a_send_gain_lane_on_an_audio_edge_lands() {
+    let mut project = demo_project();
+    let track = first_track(&project);
+    let edge = demo_id("R1");
+    let mut host = EngineHost::new();
+    host.reload(&project, 0).expect("重建");
+    let baseline_written = host.publish_automation(Some(&project));
+    assert!(
+        baseline_written >= 1,
+        "演示工程开着的音量/声相泳道必须真的下发（实得 {baseline_written}）"
+    );
+    assert_eq!(host.automation_unapplied(), 0);
+
+    insert_send_lane(&mut project, track, edge, true);
+    let written = host.publish_automation(Some(&project));
+    assert_eq!(
+        written,
+        baseline_written + 1,
+        "有落点的 SendGain ⇒ 恰好多一条事件（baseline {baseline_written}）"
+    );
+    assert_eq!(
+        host.automation_unapplied(),
+        0,
+        "它落地了 ⇒ 不是「未落地」缺口"
+    );
+    assert_eq!(host.automation_unapplied_breakdown().send_gain, 0);
+
+    // 裁决 4：`read_enabled:false` ⇒ 等于不发事件（读数也回到 0）。
+    let mut disabled = project.clone();
+    let lane = disabled
+        .tracks
+        .get_mut(&track)
+        .expect("目标轨必须在")
+        .automation_lanes
+        .values_mut()
+        .find(|lane| matches!(lane.target, AutomationTarget::SendGain { .. }))
+        .expect("刚插进去的泳道必须在");
+    lane.read_enabled = false;
+    assert_eq!(
+        unapplied_automation_lanes(&disabled).send_gain,
+        0,
+        "关掉的泳道不是缺口"
+    );
+    assert_eq!(
+        host.publish_automation(Some(&disabled)),
+        baseline_written,
+        "关掉的 SendGain 不多发任何事件"
+    );
+}
+
+/// 判据 1：**两条**没有落点的 `SendGain` 泳道 ⇒ 计数 2（数的是泳道，不是采样点/事件）。
 #[test]
 fn two_send_gain_lanes_count_two() {
     let mut project = demo_project();
     let track = first_track(&project);
+    make_sidechain(&mut project, demo_id("R1"));
+    make_sidechain(&mut project, demo_id("R2"));
     insert_send_lane(&mut project, track, demo_id("R1"), true);
     insert_send_lane(&mut project, track, demo_id("R2"), true);
 
@@ -178,6 +262,7 @@ fn two_send_gain_lanes_count_two() {
 fn a_disabled_send_gain_lane_is_not_counted() {
     let mut project = demo_project();
     let track = first_track(&project);
+    // 边**有落点**（`TrackToBus`）⇒ 这条判据只让"关掉"这一个原因成立。
     insert_send_lane(&mut project, track, demo_id("R1"), false);
     assert_eq!(unapplied_automation_lanes(&project), Default::default());
 
@@ -280,6 +365,7 @@ fn headless_cli_names_the_unapplied_send_gain_lane() {
     let scratch = Scratch::new("cli");
     let mut project = demo_project();
     let track = first_track(&project);
+    make_sidechain(&mut project, demo_id("R1"));
     insert_send_lane(&mut project, track, demo_id("R1"), true);
     project.validate().expect("夹具工程必须合法");
 
@@ -313,8 +399,8 @@ fn headless_cli_names_the_unapplied_send_gain_lane() {
         "读数必须说清「没落地」而不是只给一个数: {line}"
     );
     assert!(
-        line.contains("只在离线导出/MCP 渲染里生效"),
-        "读数必须说清「只在导出里生效」: {line}"
+        line.contains("SendGain 的边在监听里没有落点"),
+        "读数必须说清「这条边的发送量在监听里没有落点」: {line}"
     );
 }
 
@@ -325,7 +411,7 @@ fn the_diagnostic_line_is_present_even_when_nothing_is_unapplied() {
     assert_eq!(
         line,
         "automation-engine: unapplied-lanes=0 send-gain=0 device-param=0 macro=0 \
-         note=\"有 0 条自动化泳道在监听里没落地；SendGain 只在离线导出/MCP 渲染里生效，\
-         DeviceParam/Macro 没有任何生效路径\""
+         note=\"有 0 条自动化泳道在监听里没落地；SendGain 的边在监听里没有落点\
+         （离线导出/MCP 按边求值），DeviceParam/Macro 没有任何生效路径\""
     );
 }

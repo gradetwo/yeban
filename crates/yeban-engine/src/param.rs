@@ -56,6 +56,17 @@
 //! 槽位号**与实体**必须同时匹配：一条轨只有 [`TRACK_GAIN_SLOT`]、主总线只有
 //! [`MASTER_GAIN_SLOT`] ⇒ 两个号**不通用**（互相串用一律未映射，见下面的清单）。
 //!
+//! ⚠ ⭐ **本模块只消费上面两格**。另外三个槽位号由**同一 crate 的另一条通路**消费，
+//! 它们在这里的裁决**仍然是 `Unmapped`（并且计数）** —— 这是设计，不是遗漏：
+//!
+//! | 槽位号 | 谁消费 | 引入 |
+//! | :--- | :--- | :--- |
+//! | [`TRACK_PAN_LEFT_SLOT`]／[`TRACK_PAN_RIGHT_SLOT`]（2／3） | `crate::rt` 的**事件循环先截走**，写进逐轨声相平滑对（`armed_pan_l`／`armed_pan_r`） | 裁决 P4=(b) |
+//! | [`SEND_GAIN_SLOT`]（4） | `crate::rt` 的**事件循环先截走**，写进逐**边**发送量平滑表（`armed_send_gain`） | `#261` |
+//!
+//! 两者都是"打得到那条通路 ⇒ 生效且 `param_unmapped_events` 不动；打不到 ⇒ 交回本表判
+//! `Unmapped` 并计数"（单一归属：未映射的裁决只有一处）。
+//!
 //! `1.0` 是**恒等**：既不放大也不衰减。因此"没有收到任何 `SetParam`"与
 //! "收到 `1.0`"在音频上同解（后者走恒等快路径，一位不动）。
 //!
@@ -191,6 +202,37 @@ pub const TRACK_PAN_LEFT_SLOT: u16 = 2;
 
 /// **逐轨声相右增益**的槽位号（与 [`TRACK_PAN_LEFT_SLOT`] 成对，语义相同）。
 pub const TRACK_PAN_RIGHT_SLOT: u16 = 3;
+
+/// ⭐ **逐边发送量**的槽位号（任务单 `#261`）。
+///
+/// 语义：`entity` = **路由边**（`RoutingGraph::edges` 的 `EntityId`，经
+/// [`crate::routing::RouteTarget::edge`] 进入实时计划），值是**线性绝对增益**
+/// —— 与声相同一条口径（[`TRACK_PAN_LEFT_SLOT`]）：控制侧把
+/// `AutomationTarget::SendGain` 的 dB 用 `db_to_gain` 折成绝对值发进来，
+/// 音频线程**只乘、不做除法**（⛔ 不是"相对静态边增益的比率"）。
+///
+/// * 恒等值 ＝ 该边的**静态增益**（`RouteTarget::gain()`，构造期由 `gain_db` 换算）
+///   ⇒ "事件值等于静态边增益"与"不发事件"在音频上**逐位相同**（判据）；
+/// * 槽位表是 `crate::rt` 的**独立武装表**（[`SEND_SLOTS`] 行，键 = 边身份），
+///   ⚠ **本表（[`ParamTable`]）不消费它**：[`ParamTable::accept`] 仍然只认
+///   [`TRACK_GAIN_SLOT`]／[`MASTER_GAIN_SLOT`]，其余一律 [`ParamOutcome::Unmapped`]。
+///   `slot = 4` 的事件由 `crate::rt` 的**事件循环先截走**（与声相槽位 2/3 同一条
+///   先例）⇒ 打得到边就生效且 `param_unmapped_events` 不动；打不到边（不存在的边、
+///   默认直连项、超出容量）就原样交给 `ParamTable` 判 `Unmapped` 并**计数**
+///   （单一归属：未映射的裁决只有一处）。
+pub const SEND_GAIN_SLOT: u16 = 4;
+
+/// 发送量槽位表的容量（`#261` 裁决 1）。
+///
+/// 一条边一个槽位，最多 [`SEND_SLOTS`] 条边被武装。装满之后**多出来的边**：
+/// ① 保留它的**静态**边增益（⛔ 不是静音、⛔ 不是整条发送失效）；
+/// ② 每丢一条边 `+1` 到 `EngineRuntime::send_capacity_drops`（⛔ 不 panic、⛔ 不静默）。
+///
+/// ⚠ 它**不是** `PARAM_SLOTS` 的派生量：参数表按**轨**开槽（16 = 轨道上限），
+/// 发送量表按**边**开槽（一个节点可以有多条出边）⇒ 两个上限数的是两种不同的对象。
+/// 64 是裁决给出的**固定**容量（不是"刚好够用"的推导值）；装不下那条路径由
+/// 上面第 ② 条兜底。
+pub const SEND_SLOTS: usize = 64;
 
 /// 参数目标表的槽位数：与声部池的轨道上限**同一个事实源**。
 ///
@@ -657,6 +699,33 @@ mod tests {
         );
         assert_eq!(table.rejections(), 2);
         assert_eq!(table.master_target(), 0.25);
+    }
+
+    /// 判据 ⑧（任务单 `#261`）：发送量槽位（[`SEND_GAIN_SLOT`] = 4）**不在本表消费**。
+    ///
+    /// 它的生效点在 `crate::rt` 的**逐边武装表**（事件循环先截走，与声相槽位 2/3
+    /// 同一条先例）。⚠ 本表对它的裁决**必须**仍是 `Unmapped` 并计数：
+    /// 那正是"打不到边 ⇒ 单一归属交回本表"的那一半，⛔ 不是缺陷。
+    #[test]
+    fn the_send_gain_slot_is_not_consumed_by_this_table() {
+        let edge = EntityId::new();
+        let master = EntityId::new();
+        let mut table = ParamTable::new(SR);
+        assert_eq!(
+            TRACK_PAN_RIGHT_SLOT + 1,
+            SEND_GAIN_SLOT,
+            "槽位号是三格之后的第一格（0/1 增益、2/3 声相、4 发送量）"
+        );
+        for slot in [TRACK_PAN_LEFT_SLOT, TRACK_PAN_RIGHT_SLOT, SEND_GAIN_SLOT] {
+            assert_eq!(
+                table.accept(address(edge, slot), 0.5, master),
+                ParamOutcome::Unmapped,
+                "槽位 {slot} 由 crate::rt 消费，本表必须判未映射"
+            );
+        }
+        assert_eq!(table.unmapped(), 3);
+        assert_eq!(table.slot_count(), 0, "未映射的事件不许建逐轨槽位");
+        assert_eq!(SEND_SLOTS, 64, "裁决 1：容量是 64 条边");
     }
 
     /// 判据 ⑦：主总线乘子**逐位**作用到两条声道（立体声联动），并单独记账；

@@ -47,11 +47,28 @@ use yeban_model::{EntityId, RoutingGraph, RoutingKind};
 use crate::snapshot::TrackParams;
 use crate::synth::MAX_TRACK_SLOTS;
 
-/// 一条出边在实时侧的形态：目的地 + **线性**增益。
+/// 一条出边在实时侧的形态：目的地 + **线性**增益 ＋ ⭐ **边的身份**。
+///
+/// ## `edge` 为什么是 `Option`（任务单 `#261`）
+///
+/// 发送量槽位的地址是 `ParamAddress { entity: <边的 `EntityId`>, slot: 4 }`
+/// （[`crate::param::SEND_GAIN_SLOT`]）—— "乘哪一份增益"落在**图里的一条边**上，
+/// ⛔ 不是落在一条轨上。本结构体在 `#261` 之前只有 `(destination, gain)`：
+/// 目的地相同的两条边（例如"同一条轨既发送到 aux、又直连 master"里的发送边与直连边）
+/// 在这里**无法区分**，而"只给发送那条边发自动化、直连那一路一位不动"
+/// 正需要这个区分（`#258` 的否决判据）。
+///
+/// * `Some(id)` ＝ 这条目标来自 `RoutingGraph::edges` 的一条**真实边**，`id` 是它的身份；
+/// * `None`     ＝ 计划补出来的**默认项**（"没有音频出边 ⇒ 直连 master、单位增益"）。
+///   它没有任何边身份 ⇒ 没有可寻址的发送量槽位（⛔ 不发明一个假边号）。
+///
+/// ⚠ 加字段**不改变任何既有语义**：`destination` / `gain` 的取值与顺序一位没动
+/// ⇒ 没有 `SendGain` 事件的工程输出逐位不变。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RouteTarget {
     destination: EntityId,
     gain: f32,
+    edge: Option<EntityId>,
 }
 
 impl RouteTarget {
@@ -66,6 +83,42 @@ impl RouteTarget {
     pub const fn gain(&self) -> f32 {
         self.gain
     }
+
+    /// ⭐ 这条目标对应的**路由边身份**（任务单 `#261`）。
+    ///
+    /// `None` = 默认项（计划补出来的"直连 master、单位增益"）。实时侧的发送量
+    /// 武装表只收 `Some` 的项 ⇒ 默认项**永远**走静态增益。
+    #[must_use]
+    pub const fn edge(&self) -> Option<EntityId> {
+        self.edge
+    }
+}
+
+/// ⭐ 一条边是否会被 [`RoutingPlan::compile`] 编译成**能搬运音频的出边**。
+///
+/// 三条过滤条件（与 `compile` 里的判断**同字**）：
+/// 1. `kind != Sidechain`（侧链不搬音频）；
+/// 2. `source_node != master`（母带是求和终点，不作为源）；
+/// 3. `source_node` 是一条**可渲染的音轨**（`is_track`）。
+///
+/// ## 为什么把它抽成公开函数（任务单 `#261`）
+///
+/// 发送量槽位落地之后，`yeban-app` 要回答两个问题：
+/// ① 这条 `SendGain` 泳道的边在**实时侧有没有落点**（⇒
+///    `unapplied_automation_lanes` 的 `send_gain` 读数）；② 要不要为它下发事件
+///    （没有落点就不发 —— 与声相跳过母线同一条先例）。两个答案必须与**引擎的
+///    武装表**同一把尺子 ⇒ 过滤条件只留一份（`compile` 调它，控制侧也调它）。
+///
+/// ⚠ 容量（[`crate::param::SEND_SLOTS`]）**不在**本谓词里：武装表按计划的确定性
+/// 顺序装前 `SEND_SLOTS` 条边，装不下的部分由引擎自己的 `send_capacity_drops`
+/// 计数（⛔ 控制侧不复制一份"能装几条"的算术）。
+#[must_use]
+pub fn edge_carries_audio(
+    edge: &yeban_model::RoutingEdge,
+    master: EntityId,
+    is_track: impl Fn(EntityId) -> bool,
+) -> bool {
+    edge.kind != RoutingKind::Sidechain && edge.source_node != master && is_track(edge.source_node)
 }
 
 /// `RoutingGraph` 的**实时可消费**投影。
@@ -120,12 +173,12 @@ impl RoutingPlan {
         }
 
         // --- 出边：只保留**能搬运音频**的三种 kind；Sidechain 不搬音频 ---
+        //
+        // ⚠ 过滤条件与 [`edge_carries_audio`] **同一份**：那张公开谓词是控制侧
+        // （`yeban-app` 的 `SendGain` 泳道采样）与这里的唯一共同尺子。
         let mut outgoing: BTreeMap<EntityId, Vec<RouteTarget>> = BTreeMap::new();
         for edge in graph.edges.values() {
-            if edge.kind == RoutingKind::Sidechain {
-                continue;
-            }
-            if edge.source_node == master || !tracks.contains_key(&edge.source_node) {
+            if !edge_carries_audio(edge, master, |node| tracks.contains_key(&node)) {
                 continue;
             }
             let gain = edge.gain_db.map_or(1.0, db_to_gain);
@@ -135,6 +188,10 @@ impl RoutingPlan {
                 .push(RouteTarget {
                     destination: edge.destination_node,
                     gain,
+                    // ⭐ `#261`：把**边身份**带进实时计划。它是发送量槽位的地址
+                    // （`ParamAddress { entity: <边>, slot: SEND_GAIN_SLOT }`），
+                    // 也是"同目的地两条边各自独立"的唯一区分依据。
+                    edge: Some(edge.id),
                 });
         }
 
@@ -147,6 +204,8 @@ impl RoutingPlan {
                 vec![RouteTarget {
                     destination: master,
                     gain: 1.0,
+                    // 计划补出来的项没有边身份 ⇒ 没有可寻址的发送量槽位。
+                    edge: None,
                 }]
             } else {
                 targets

@@ -569,6 +569,10 @@ fn b6_the_bus_convolution_tail_is_audible() {
 /// ⭐ 任务单 `#173` 的**代价**（本条判据就地改数，三件套）：主总线需要**自己的一格**
 /// 插入槽位（它不在 `RoutingPlan::slots()` 里，不能挤掉一条轨的槽位）⇒
 /// `INSERT_SLOTS = MAX_TRACK_SLOTS + 1 = 17`，`EngineRuntime` **180144 → 181936**
+///
+/// ⚠ ⭐ **`#261` 之后的现读值**：**186720 B**（`#173` 的 181936 ＋ 逐边发送量的
+/// 四张定长表/副本 **4784 B**；仍低于 192 KiB = 196608 的红线）。上面那行是 `#173`
+/// 当时的读数，⛔ 不删。
 /// （**＋1792 B**；量法见下）。分项（按结构体字段的 `size_of` 逐项算）：
 /// `armed_strips` ＋392、`reverb_pool` ＋1 312、`armed_reverbs` ＋24、
 /// `armed_convs` ＋24、`armed_conv_ir_hashes` ＋8、新计数 `master_insert_frames` ＋8
@@ -595,8 +599,9 @@ fn b5_sizes_stay_under_the_192_kib_red_line() {
         196_608 - runtime
     );
     assert_eq!(
-        runtime, 181_936,
-        "EngineRuntime 必须是 181936 B（#173：主总线多一格插入槽位 ＋1792 B；见本判据文档）"
+        runtime, 186_720,
+        "EngineRuntime 必须是 186720 B（#261：逐边发送量表 ＋4784 B；\
+         #173 的主总线插入 ＋1792 仍在里面；见本判据文档）"
     );
     assert_eq!(snapshot, 4_576, "EngineSnapshot 必须仍是 4576 B（＋0）");
     assert_eq!(voice, 40, "SfzVoice 必须仍是 40 B");

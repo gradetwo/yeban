@@ -473,9 +473,10 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSchedule = Vec 头部 24 + placements 计数 8"
     );
     assert_eq!(
-        runtime, 181_936,
-        "EngineRuntime 的现读值（`#173` 之后 181936 = `#135` 时的 180144 ＋ 1792 B 的\
-         主总线插入槽位/计数；本判据只要求音频片段**不再**加字节 —— 见 `tests/bus_insert.rs` 的 B5）"
+        runtime, 186_720,
+        "EngineRuntime 的现读值（`#261` 之后 186720 = `#173` 的 181936 ＋ 4784 B 的\
+         逐边发送量表/平滑器/重放副本；本判据只要求音频片段**不再**加字节 ——\
+         见 `tests/bus_insert.rs` 的 B5）"
     );
     assert!(
         (4_496..=4_608).contains(&snapshot),
