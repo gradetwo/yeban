@@ -15778,3 +15778,26 @@ RATE 44100 divergence=118 / RATE 48000 divergence=0 / RATE 96000 divergence=0
 ⭐ ⚠ ⭐ ⭐ **五、⭐ 双注入**: ⭐ **A**（⭐ 白名单检查失效）⇒ ⭐ `不在白名单必须响亮拒绝` ★ ⭐ **B**（⭐ 两个下标硬写成 0）⇒ ⭐ `left: (0, 0); right: (0, 1)` ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`a9f0fcce` 判决** ＋ ⭐ **S1／S2（⭐ 自动化侧的设备参数）** ＋ ⭐ **`Macro`**（⭐ 仍无通路、⭐ 值律未裁）＋ ⭐ **E1 本体** ＋ ⭐ ⚠ **仍需人类**：⭐ **四格复验** ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1002 实测追加（2026-10-21）：⭐⭐ **`#266`（设备参数自动化：`output_gain_db`）落地 ＋ 快进合并**
+
+⭐ **合并**: ⭐ base `63c68a7a` ⇒ ⭐ `FINAL=f2916aca`（⭐ 10 文件 ＋1660／−59）⇒ ⭐ 主干 ff 合并 ✓ ⭐ 交付线读数：⭐ **`2297 passed`／FAILED 0**（142 binary：⭐ render **486**／⭐ mcp **929**／⭐ app **881**）＋ ⭐ **`--features in-process-mcp` `918 passed`** ＋ ⭐ 门 **全层 0（⭐ 三 crate）** ＋ ⭐ 守卫 **18** ＋ ⭐ 轻门 ＋ ⭐ `validate_schemas` 4 份 ＋ ⭐ **`yeban-ui-mcp` `cargo check` rc 0** ✓ ⭐ 树已拆 ＋ `target`（48 G）已删 ✓
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 分段峰值（⭐ 判得很硬）**: ⭐ ⭐ **`[0.5000001, 0.35499334, 0.25113523, 0.17766225]`** ⇒ ⭐ **严格递减** ★ ⭐ ⭐ **而理论（⭐ 每段 −3 dB）＝ ⭐ `0.5 / 0.3536 / 0.25 / 0.1768`** ⇒ ⭐ **实测与之一致** ★ ⭐ ⭐ **MCP 与 app **同一数组、⭐ `masterDigest` 均 `a47b0538…`（⭐ 逐位相同）**** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 设计的关键（⭐ 两个必须）**: ⭐ ① ⭐ **`DeviceParamAutomation` **块级**、⭐ ⛔ **不持 `ParamSmoother`、⛔ 不乘样本**（⭐ 因为改的是**器件参数**、⭐ `set_params` 要**重算系数**）★ ⭐ ② ⭐ ⭐ **`InsertChain::with_forced_strip`** —— ⭐ ⚠ **因为 ⭐ 静态参数全恒等时 `effective_strip` 返回 `None` ⇒ ⭐ 没有器件可改** ⇒ ⭐ **有非恒等泳道时强制实例化一台恒等通道条**、⭐ 块边界再改它 ✓
+★ ⭐ **而 ⭐ 恒等泳道**不置位** ⇒ ⭐ 一个器件都不造、⭐ 产物逐字节不变** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 四条不变量都验了**: ⭐ ① ⭐ **无泳道** ⇒ ⭐ 修前/修后同（`4cfdbfc9…`）② ⭐ **`readEnabled:false`** ⇒ ⭐ 逐字节等于无泳道 ③ ⭐ ⭐ **恒等**（⭐ 泳道三点全 `0.0`）⇒ ⭐ **逐字节等于基线**（⭐ ⛔ 不是乘 1.0 近似）④ ⭐ ⭐ **恒定 −12 vs 静态 −12** ⇒ ⭐ `max_ulp = 0`、⭐ 双方 `digest fc41298e…` 相同 ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 报告逐字**: ⭐ `appliedDeviceParamNames: ["output_gain_db"]` ★ ⭐ ⭐ **`targetsSupported: ["TrackVolume","TrackPan","SendGain","DeviceParam"]`** ★ ⭐ **`targetsUnsupported: ["Macro"]`** ★ ⭐ lane：⭐ `supported:true, applied:true, resolvedParamName:"output_gain_db", unresolved:null` ✓
+★ ⭐ 白名单外（`mix`）⇒ ⭐ **不落点**（⭐ `digest` 等于基线）＋ ⭐ `unresolved:"paramNotSupported"` ＋ ⭐ ⭐ **`unsupported: ["automationLanes","deviceChainDsp"]`（⭐ ⛔ 不沉默）** ✓
+
+⭐ ⚠ ⭐ ⭐ **五、⚠ 一条**如实登记的**行为变化**（⭐ 重要）**: ⚠ ⭐ ⭐ **有非恒等 `output_gain_db` 泳道的工程若导出**单声道** ⇒ ⭐ 现在会经既有 `UnsupportedInsertChannels` **响亮失败**（⭐ 因为通道条被强制实例化）、⭐ ⛔ 不再像修前那样**静默忽略自动化**** **** ✓
+⇒ ⭐ ⭐ **那是"⭐ 从沉默变响亮"** ⇒ ⭐ **方向正确** ✓
+
+⭐ ⚠ ⭐ ⭐ **六、⭐ 双注入**: ⭐ **I1**（⭐ 求值了但不交给器件）⇒ ⭐ app `2 failed`／⭐ MCP `1 failed`、⭐ 而⭐恒等那条仍绿**（⭐ 正确）★ ⭐ **I2**（⭐ `forced_strip_tracks` 恒空）⇒ ⭐ 同一批 3 条红 ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`f2916aca` 判决** ＋ ⭐ **更多通道条名字**（⭐ `input_gain_db`／⭐ `cutoff_hz`／⭐ EQ）＋ ⭐ **`device_id` 地址**（⭐ schema 票）＋ ⭐ **实时侧 `DeviceParam` 槽位** ＋ ⭐ **`Macro`** ＋ ⭐ **E1 本体** ＋ ⭐ ⚠ **仍需人类**：⭐ **四格复验** ＋ ⭐ E1–E4／F1–F5 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
