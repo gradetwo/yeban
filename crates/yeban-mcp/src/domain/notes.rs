@@ -822,6 +822,40 @@ pub const NOTE_FIELDS: &[&str] = &[
     MICRO_TIMING_FIELD,
 ];
 
+/// `ops[].kind` 的**音符时间位置**形态名（写 [`Op::SetNoteTiming`]）。
+///
+/// ⚠ 与模型 `Op` 变体名同词（`SetNoteTiming` 的小驼峰），与四个既有音符形态
+/// （`add` / `delete` / `move` / `velocity`）同一条命名规则。
+///
+/// ⚠ **本形态补上了什么**：模型里 `start_tick` / `duration_ticks` 此前**只在 `add`
+/// 时**给定（`move` 只平移起点、⛔ 改不了时值）⇒ 改时值只能"删 + 加"，而那要求
+/// 调用方把概率 / 连击 / 微时序 / 滑音 / 弯音曲线等表现力字段全部抄一遍
+/// （漏抄一个就是**静默的表现力丢失**），且操作日志里留下**两条** op。
+pub const SET_NOTE_TIMING_KIND: &str = "setNoteTiming";
+
+/// 音符时间位置形态的**目标音符**字段名（`ops[].noteId`，必填，ULID）。
+pub const SET_NOTE_TIMING_NOTE_FIELD: &str = "noteId";
+
+/// 音符时间位置形态的**起点**字段名（`ops[].startTick`，必填，`u64` tick）。
+pub const SET_NOTE_TIMING_START_FIELD: &str = "startTick";
+
+/// 音符时间位置形态的**时值**字段名（`ops[].durationTicks`，必填，正整数 tick）。
+///
+/// ⚠ `0` 由模型 `MidiNote::validate` 的 `ZeroDuration` 响亮拒绝（契约码 `OUT_OF_RANGE`）
+/// —— 本层⛔ 不自造第二条口径（与 [`SET_CLIP_PLACEMENT_DURATION_DURATION_FIELD`] 同一纪律）。
+pub const SET_NOTE_TIMING_DURATION_FIELD: &str = "durationTicks";
+
+/// 音符时间位置形态允许出现的**全部**键（判别键 + 三个必填字段）。
+///
+/// ⚠ 两个旧值**不在**这里：它们由 [`compile`] 从**当前文档**读（⛔ 不信调用方声明），
+/// 与 `delete` / `velocity` 的撤销载荷同一条纪律。多写一个键是**响亮失败**。
+pub const SET_NOTE_TIMING_FIELDS: [&str; 4] = [
+    "kind",
+    SET_NOTE_TIMING_NOTE_FIELD,
+    SET_NOTE_TIMING_START_FIELD,
+    SET_NOTE_TIMING_DURATION_FIELD,
+];
+
 /// `yeban_edit_notes` 的**摆放**实参名（`arguments.placement`，可选）。
 ///
 /// 语义：把**已经在 `clip_pool` 里**的片段摆到 `trackId` 的时间轴上
@@ -1010,6 +1044,7 @@ pub const OP_KINDS: &[&str] = &[
     "delete",
     "move",
     "velocity",
+    SET_NOTE_TIMING_KIND,
     REMOVE_CLIP_KIND,
     REMOVE_ASSET_KIND,
     SET_ASSET_KIND,
@@ -1051,28 +1086,36 @@ pub const OP_KINDS: &[&str] = &[
 /// `domain::plan_edit_notes` 用它决定"缺参时要不要响亮拒绝"。
 ///
 /// ⚠ 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_parses_and_round_trips` 在**全部 36 个 kind** 上对账
+/// `every_catalog_kind_parses_and_round_trips` 在**全部 37 个 kind** 上对账
 /// （`OP_KINDS` 里每个 kind 的最小合法形状 → 解析 → 与本清单比对），
 /// 因此"加了一个 kind 却忘了决定它读不读 `clipId`"会立刻变红。
-pub const ENVELOPE_CLIP_KINDS: &[&str] = &["add", "delete", "move", "velocity", REMOVE_CLIP_KIND];
+pub const ENVELOPE_CLIP_KINDS: &[&str] = &[
+    "add",
+    "delete",
+    "move",
+    "velocity",
+    SET_NOTE_TIMING_KIND,
+    REMOVE_CLIP_KIND,
+];
 
 /// **读/写音符**的 kind 清单 —— [`NoteOp::is_note_level`] 的**唯一发布面**。
 ///
-/// ⭐ `#179`：本集合**恰好是四个**（`add` / `delete` / `move` / `velocity`），也就是
-/// [`ENVELOPE_CLIP_KINDS`] 里除池级 `removeClip` 之外的四个。其余 31 个形态
+/// ⭐ `#179`：本集合收窄到音符号形态之后，现在是**五个**（`add` / `delete` /
+/// `move` / `velocity` / `setNoteTiming`），也就是 [`ENVELOPE_CLIP_KINDS`] 里除
+/// 池级 `removeClip` 之外的五个。其余 32 个形态
 /// （音轨属性级 / 设备级 / 摆放属性级 / 路由级 / 段落级 / 场景级 / 资产级 /
 /// 文档级 / 音轨实体级 / 池级）**一个音符都不读**，因此不要求片段是 MIDI。
 ///
 /// ⚠ 与 [`ENVELOPE_CLIP_KINDS`] **不是**同一个清单：`removeClip` 读顶层 `clipId`
 /// 却**不**读音符（它取走整条池条目，音频条目同样取得走）；反过来，本清单里的
-/// 四个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
+/// 五个形态必然是顶层 `clipId` 的消费者 —— 因此本清单是
 /// [`ENVELOPE_CLIP_KINDS`] 去掉 `removeClip` 之后的子集，且这条包含关系由判据钉住。
 ///
 /// 两份真相（本清单 vs 谓词的 `match`）由判据
-/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 36 个 kind** 上
+/// `every_catalog_kind_compiles_to_exactly_one_op_variant` 在**全部 37 个 kind** 上
 /// 对账（`OP_KINDS` 里每个 kind 的规范形状 → 解析 → 与本清单比对），因此"加了一个
 /// kind 却忘了决定它读不读音符"会立刻变红。
-pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity"];
+pub const NOTE_LEVEL_KINDS: &[&str] = &["add", "delete", "move", "velocity", SET_NOTE_TIMING_KIND];
 
 /// `setParam` 能写的**静态目标**（[`Op::SetParam`] 里"有静态值可写"的那两个）。
 ///
@@ -2465,6 +2508,21 @@ pub enum NoteOp {
         /// 新力度 `0..=127`。
         velocity: u8,
     },
+    /// 设置音符的**时间位置**（起点与时值），不改任何其他字段。
+    ///
+    /// 载荷只有**新值**：两个旧值由 [`compile`] 从当前文档读 —— 与
+    /// [`Self::Delete`] / [`Self::Velocity`] 的撤销载荷同一条纪律（⛔ 不信调用方）。
+    /// 模型层 [`Op::SetNoteTiming`] 的前置条件要求旧值**逐字段**对上，因此同一批里
+    /// 对同一音符连写两次 `setNoteTiming` 会在模拟阶段被 `CONFLICT` 拒绝
+    /// （与连写两次 `velocity` 同口径）。
+    SetTiming {
+        /// 音符身份。
+        note_id: EntityId,
+        /// 新起点（tick）。
+        start_tick: u64,
+        /// 新时值（tick，必须 ≥ 1；`0` 由模型拒绝）。
+        duration_ticks: u64,
+    },
     /// 写**静态混音值**（[`Op::SetParam`]）：音轨音量或声相。
     ///
     /// 这是本枚举里第一个**音轨级**（而非音符级）的形态：它不读、不写任何音符，
@@ -3108,6 +3166,7 @@ impl NoteOp {
             Self::Delete { .. } => "delete",
             Self::Move { .. } => "move",
             Self::Velocity { .. } => "velocity",
+            Self::SetTiming { .. } => SET_NOTE_TIMING_KIND,
             Self::SetParam { .. } => SET_PARAM_KIND,
             Self::SetTrackFlag { flag, .. } => flag.kind_name(),
             Self::SetTransportConfig { .. } => SET_TRANSPORT_CONFIG_KIND,
@@ -3144,9 +3203,10 @@ impl NoteOp {
 
     /// 该形态是否**读/写音符**（即是否必须真的施加在一条带音符的 MIDI 片段上）。
     ///
-    /// ⭐ `#179`：本谓词收窄到**四个音符形态**（`add` / `delete` / `move` /
-    /// `velocity`）—— 它们恰好是 [`ENVELOPE_CLIP_KINDS`] 去掉池级 `removeClip`
-    /// 之后的四个（与 [`NOTE_LEVEL_KINDS`] 同一份真相）。其余 **31** 个形态一个音符
+    /// ⭐ `#179`：本谓词收窄到**音符号形态**（`add` / `delete` / `move` /
+    /// `velocity` / `setNoteTiming`）—— 它们恰好是 [`ENVELOPE_CLIP_KINDS`] 去掉
+    /// 池级 `removeClip` 之后的五个（与 [`NOTE_LEVEL_KINDS`] 同一份真相）。
+    /// 其余 **32** 个形态一个音符
     /// 都不读：音轨属性级（`setParam` / `setTrackFlag` / `setLane` / `removePoint`）、
     /// 设备级（`insertDevice` / `removeDevice` / `setDeviceName` /
     /// `setDeviceBypassed`）、摆放属性级（`setClipPlacementMuted` /
@@ -3155,19 +3215,23 @@ impl NoteOp {
     /// 场景级、资产级、文档级与音轨实体级。
     ///
     /// ⚠ `#177` 之后 [`compile`] 只在批里真有形态读顶层 `clipId` 时才查片段池，而
-    /// "必须是 MIDI 片段"那条断言挂在 `entry` 上 ⇒ 那 31 个形态里**读 `clipId` 的
-    /// 只有 `removeClip`**，其余 30 个此前虽然 `is_note_level() == true`（反选清单
+    /// "必须是 MIDI 片段"那条断言挂在 `entry` 上 ⇒ 那 32 个形态里**读 `clipId` 的
+    /// 只有 `removeClip`**，其余 31 个此前虽然 `is_note_level() == true`（反选清单
     /// 漏掉了它们），断言也**不可达**。本票把谓词改成与**语义**一致：它们从来不该
     /// 被算作音符级 ⇒ `domain::plan_edit_notes` 的提案描述也不再把这些属性写入报成
     /// "音符编辑"（它们落到"音轨级编辑"桶里，与 `setParam` 同口径）。
     ///
-    /// 旧行为逐字节不变：四个音符形态在 MIDI 片段上的编译产物仍是同一条
-    /// `Op::{AddNote, DeleteNote, MoveNote, ModifyNoteVelocity}`。
+    /// 旧行为逐字节不变：五个音符形态在 MIDI 片段上的编译产物仍是
+    /// `Op::{AddNote, DeleteNote, MoveNote, ModifyNoteVelocity, SetNoteTiming}`。
     #[must_use]
     pub const fn is_note_level(&self) -> bool {
         matches!(
             self,
-            Self::Add { .. } | Self::Delete { .. } | Self::Move { .. } | Self::Velocity { .. }
+            Self::Add { .. }
+                | Self::Delete { .. }
+                | Self::Move { .. }
+                | Self::Velocity { .. }
+                | Self::SetTiming { .. }
         )
     }
 
@@ -3245,9 +3309,10 @@ impl NoteOp {
 
     /// 该形态**读**工具顶层的 `clipId`（`#177` 坑④：`clipId` 从无条件必填改成条件必需）。
     ///
-    /// 只有四个音符形态与池级取走读它 —— 这四个半正是 [`compile`] 里 `clip_id` 的
+    /// 只有五个音符形态与池级取走读它 —— 它们正是 [`compile`] 里 `clip_id` 的
     /// **全部**消费者（`Op::AddNote` / `DeleteNote` / `MoveNote` /
-    /// `ModifyNoteVelocity` / `RemoveClip` 的载荷，以及"片段池里必须有它"那次查找）。
+    /// `ModifyNoteVelocity` / `SetNoteTiming` / `RemoveClip` 的载荷，以及"片段池里
+    /// 必须有它"那次查找）。
     /// ⚠ 与 [`Self::is_self_addressed`] **不是**同一问：音轨属性级 / 路由级 / 段落级 /
     /// 场景级 / 资产级 / 文档级形态的寻址也在操作对象里，但它们只读顶层 `trackId`
     /// （或什么都不读），**不读** `clipId`（`addTrack` 连 `trackId` 都不读）。
@@ -3263,6 +3328,7 @@ impl NoteOp {
                 | Self::Delete { .. }
                 | Self::Move { .. }
                 | Self::Velocity { .. }
+                | Self::SetTiming { .. }
                 | Self::RemoveClip
         )
     }
@@ -3503,6 +3569,14 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             note_id: read_id(object, "noteId")?,
             velocity: read_range(object, "velocity", 0, 127)?,
         }),
+        SET_NOTE_TIMING_KIND => {
+            reject_set_note_timing_fields(object)?;
+            Ok(NoteOp::SetTiming {
+                note_id: read_id(object, SET_NOTE_TIMING_NOTE_FIELD)?,
+                start_tick: read_required_u64(object, SET_NOTE_TIMING_START_FIELD)?,
+                duration_ticks: read_required_u64(object, SET_NOTE_TIMING_DURATION_FIELD)?,
+            })
+        }
         SET_PARAM_KIND => Ok(NoteOp::SetParam {
             lane: parse_static_lane(object)?,
             value: read_number(object, SET_PARAM_VALUE_FIELD)?,
@@ -3992,6 +4066,20 @@ fn reject_set_clip_placement_duration_fields(object: &Map<String, Value>) -> Res
         &SET_CLIP_PLACEMENT_DURATION_FIELDS,
         SET_CLIP_PLACEMENT_DURATION_KIND,
         "unknownSetClipPlacementDurationField",
+    )
+}
+
+/// 拒绝 `setNoteTiming` 里 [`SET_NOTE_TIMING_FIELDS`] 之外的键。
+///
+/// 与同族 `reject_*_fields` 同一口径（拼错的键必须被拒绝、⛔ 不能静默忽略）：
+/// 最像"写对了"的错法是把旧值（`oldStartTick` / `oldDurationTicks`）也写进来 ——
+/// 那会被静默忽略，而调用方以为前置条件由自己声明。
+fn reject_set_note_timing_fields(object: &Map<String, Value>) -> Result<(), Fault> {
+    reject_unknown_keys(
+        object,
+        &SET_NOTE_TIMING_FIELDS,
+        SET_NOTE_TIMING_KIND,
+        "unknownSetNoteTimingField",
     )
 }
 
@@ -6296,8 +6384,8 @@ pub fn compile(
         })?)
     };
     // "必须是 MIDI 片段"这条断言只在**真的有音符操作**时成立：`setParam` 一个音符都不读。
-    // 四个音符形态的调用因此逐字节等于旧行为（它们总是走到这条断言）。
-    // ⚠ `#177` 之后 `entry` 只在读 `clipId` 的批里是 `Some`，而四个音符形态是它的
+    // 五个音符形态的调用因此逐字节等于旧行为（它们总是走到这条断言）。
+    // ⚠ `#177` 之后 `entry` 只在读 `clipId` 的批里是 `Some`，而五个音符形态是它的
     // 子集 ⇒ 这条断言的可达集合逐条不变（`removeClip` 不读音符，故不受影响）。
     // ⭐ `#179` 把 `is_note_level` 收窄到**恰好**这四个（见 `NOTE_LEVEL_KINDS`）：
     // 六个属性级形态（名字 / 旁通 / 静音 / 颜色 / 时长）与 `setTrackName` 不再被算作
@@ -6382,6 +6470,27 @@ pub fn compile(
                     note_id: *note_id,
                     old_vel: current.velocity,
                     new_vel: *velocity,
+                }
+            }
+            NoteOp::SetTiming {
+                note_id,
+                start_tick,
+                duration_ticks,
+            } => {
+                // 撤销载荷来自**当前文档**（模型前置条件逐字段比较旧值）⇒ 本层
+                // ⛔ 不采信调用方声明的旧状态。`0` 时值也交给模型拒绝，好让
+                // 错误码只有一份真相（`ZeroDuration` ⇒ `OUT_OF_RANGE`）。
+                let current = project
+                    .note(clip_id, note_id)
+                    .map_err(|error| from_model("音符查找", &error))?;
+                Op::SetNoteTiming {
+                    track_id: *track_id,
+                    clip_id: *clip_id,
+                    note_id: *note_id,
+                    old_start_tick: current.start_tick,
+                    old_duration_ticks: current.duration_ticks,
+                    new_start_tick: *start_tick,
+                    new_duration_ticks: *duration_ticks,
                 }
             }
             NoteOp::SetParam { lane, value } => {
@@ -8786,22 +8895,22 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::ClipNotFound));
     }
 
-    /// ⭐ `#179`：`is_note_level()` **恰好**是四个音符形态。
+    /// ⭐ `#179`：`is_note_level()` **恰好**是五个音符形态。
     ///
     /// 六个**属性级**形态（`setClipName` / `setDeviceName` / `setDeviceBypassed` /
     /// `setClipPlacementMuted` / `setTrackColor` / `setClipPlacementDuration`）改的是
     /// 名字 / 旁通 / 静音 / 颜色 / 时长，**一个音符都不读**；`setTrackName` 同理。
     /// 它们此前落在反选清单的**漏网**一侧（`is_note_level() == true`），本票改成与
-    /// `NOTE_LEVEL_KINDS` 同一份真相：**只有**四个音符形态为真。
+    /// `NOTE_LEVEL_KINDS` 同一份真相：**只有**音符形态为真。
     ///
     /// 注入（实测红）：把谓词改回"反选清单"（即删掉本票的收窄）⇒ 七条 `!is_note_level`
-    /// 全红；把 `Add`/`Delete`/`Move`/`Velocity` 任一从正选里去掉 ⇒ 对应的
+    /// 全红；把 `Add`/`Delete`/`Move`/`Velocity`/`SetTiming` 任一从正选里去掉 ⇒ 对应的
     /// `is_note_level` 断言红。
     #[test]
-    fn note_level_is_exactly_the_four_note_forms() {
+    fn note_level_is_exactly_the_five_note_forms() {
         let ulid = "01J8ZQ00000000000000000999";
-        // 四个音符形态：解析后 `is_note_level()` 必须为真。
-        let four = [
+        // 五个音符形态：解析后 `is_note_level()` 必须为真。
+        let five = [
             (
                 "add",
                 serde_json::json!({"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -8818,8 +8927,12 @@ mod tests {
                 "velocity",
                 serde_json::json!({"kind": "velocity", "noteId": ulid, "velocity": 64}),
             ),
+            (
+                "setNoteTiming",
+                serde_json::json!({"kind": "setNoteTiming", "noteId": ulid, "startTick": 0, "durationTicks": 480}),
+            ),
         ];
-        for (kind, payload) in four {
+        for (kind, payload) in five {
             let ops = parse_ops(&serde_json::json!([payload]))
                 .unwrap_or_else(|fault| panic!("`{kind}` 必须能解析: {fault:?}"));
             assert_eq!(ops.len(), 1);
@@ -8867,19 +8980,84 @@ mod tests {
                 "`{kind}` 改的是属性（不读音符）, ⛔ 不得算作音符级"
             );
         }
-        // 发布清单本身：逐字 + 恰好四个（⛔ 不是常量自比）。
+        // 发布清单本身：逐字 + 恰好五个（⛔ 不是常量自比）。
         assert_eq!(
             NOTE_LEVEL_KINDS,
-            ["add", "delete", "move", "velocity"],
-            "音符级清单必须逐字是这四个"
+            ["add", "delete", "move", "velocity", "setNoteTiming"],
+            "音符级清单必须逐字是这五个"
         );
-        assert_eq!(NOTE_LEVEL_KINDS.len(), 4);
-        // 四个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
+        assert_eq!(NOTE_LEVEL_KINDS.len(), 5);
+        // 五个音符形态必然是顶层 `clipId` 的消费者（清单之间的包含关系）。
         for kind in NOTE_LEVEL_KINDS {
             assert!(
                 ENVELOPE_CLIP_KINDS.contains(kind),
                 "`{kind}` 在音符级清单里 ⇒ 必然也在 ENVELOPE_CLIP_KINDS 里"
             );
+        }
+    }
+
+    /// `setNoteTiming`：解析新值、拒绝未知键，并从**当前文档**读旧值。
+    ///
+    /// 注入（实测红）：把 `compile` 的 `old_start_tick` 换成调用方可声明的值（或 `0`）
+    /// ⇒ ③ 的逐字段断言红；删掉 `reject_set_note_timing_fields` ⇒ ② 红。
+    #[test]
+    fn set_note_timing_reads_the_old_values_from_the_document() {
+        let project = filled_project();
+        let (track, clip) = lead_clip(&project);
+        let note = *project.clip_pool[&clip]
+            .content
+            .notes()
+            .expect("MIDI 片段")
+            .keys()
+            .next()
+            .expect("样本音符");
+        let current = project.note(&clip, &note).expect("音符存在").clone();
+
+        // ① 规范形状能解析，并回环到同一个 kind。
+        let ops = parse_ops(&serde_json::json!([{
+            "kind": "setNoteTiming",
+            "noteId": note,
+            "startTick": current.start_tick + 960,
+            "durationTicks": current.duration_ticks + 240,
+        }]))
+        .expect("规范形状必须被接受");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].kind_name(), SET_NOTE_TIMING_KIND);
+        assert!(ops[0].is_note_level());
+        assert!(ops[0].reads_envelope_clip());
+
+        // ② 旧值不是调用方声明的一部分：写进来就是响亮失败。
+        let fault = parse_ops(&serde_json::json!([{
+            "kind": "setNoteTiming",
+            "noteId": note,
+            "startTick": 0,
+            "durationTicks": 480,
+            "oldStartTick": current.start_tick,
+        }]))
+        .expect_err("未知键必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "unknownSetNoteTimingField"
+        );
+
+        // ③ 编译出的旧值来自当前文档（⛔ 不是调用方声明）。
+        let compiled = compile(&project, &track, &clip, &ops).expect("编译");
+        assert_eq!(compiled.len(), 1);
+        match &compiled[0] {
+            Op::SetNoteTiming {
+                old_start_tick,
+                old_duration_ticks,
+                new_start_tick,
+                new_duration_ticks,
+                ..
+            } => {
+                assert_eq!(*old_start_tick, current.start_tick);
+                assert_eq!(*old_duration_ticks, current.duration_ticks);
+                assert_eq!(*new_start_tick, current.start_tick + 960);
+                assert_eq!(*new_duration_ticks, current.duration_ticks + 240);
+            }
+            other => panic!("必须编译成 `Op::SetNoteTiming`, 实际 {other:?}"),
         }
     }
 
@@ -9082,7 +9260,9 @@ mod tests {
         // 后为 20 —— 同样与真实 `kind` 同步。
         // 本票（路由节点）新增 `addRoutingNode`（路由级；补上"造得出节点"的**逐步**通路）
         // 后为 21 —— 同样与真实 `kind` 同步。
-        assert_eq!(OP_KINDS.len(), 36);
+        // 本票（音符时间位置）新增 `setNoteTiming`（第五个音符级形态）后为 37 —— 同样
+        // 与真实 `kind` 同步。
+        assert_eq!(OP_KINDS.len(), 37);
         assert_eq!(TrackFlag::NAMES, [SET_TRACK_MUTE_KIND, SET_TRACK_SOLO_KIND]);
         assert!(OP_KINDS.contains(&SET_TRACK_MUTE_KIND));
         assert!(OP_KINDS.contains(&SET_TRACK_SOLO_KIND));
@@ -13937,7 +14117,7 @@ mod tests {
     fn every_catalog_kind_parses_and_round_trips() {
         let ulid = "01J8ZQ00000000000000000999";
         // 每个 kind 的**最小合法形状**（只到解析期为止；文档相关的前置条件在 `compile`）。
-        let table: [(&str, serde_json::Value); 36] = [
+        let table: [(&str, serde_json::Value); 37] = [
             (
                 "add",
                 serde_json::json!({"note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}),
@@ -13950,6 +14130,10 @@ mod tests {
             (
                 "velocity",
                 serde_json::json!({"noteId": ulid, "velocity": 64}),
+            ),
+            (
+                "setNoteTiming",
+                serde_json::json!({"noteId": ulid, "startTick": 0, "durationTicks": 480}),
             ),
             ("removeClip", serde_json::json!({})),
             (
@@ -14086,6 +14270,7 @@ mod tests {
                 "delete",
                 "move",
                 "velocity",
+                "setNoteTiming",
                 "removeClip",
                 "removeAsset",
                 "setAsset",
@@ -14375,13 +14560,15 @@ mod tests {
     fn every_catalog_kind_compiles_to_exactly_one_op_variant() {
         let project = filled_project();
         let (track, clip) = lead_clip(&project);
-        let note = *project.clip_pool[&clip]
+        let sample_note = project.clip_pool[&clip]
             .content
             .notes()
             .expect("MIDI 片段")
-            .keys()
+            .values()
             .next()
-            .expect("样本音符");
+            .expect("样本音符")
+            .clone();
+        let note = sample_note.id;
         let device_track_id = device_track(&project);
         let device = project.tracks[&device_track_id].devices[0].id;
         let (node, _referencing) = a_non_master_node(&project);
@@ -14474,7 +14661,7 @@ mod tests {
             Value,
             &'a str,
         );
-        let rows: [Row<'_>; 37] = [
+        let rows: [Row<'_>; 38] = [
             (
                 "add",
                 None,
@@ -14502,6 +14689,17 @@ mod tests {
                 None,
                 serde_json::json!({"noteId": note, "velocity": 64}),
                 "ModifyNoteVelocity",
+            ),
+            (
+                "setNoteTiming",
+                None,
+                None,
+                serde_json::json!({
+                    "noteId": note,
+                    "startTick": sample_note.start_tick + 960,
+                    "durationTicks": sample_note.duration_ticks + 240,
+                }),
+                "SetNoteTiming",
             ),
             (
                 "setAsset",
@@ -14776,7 +14974,7 @@ mod tests {
         assert_eq!(
             rows.len(),
             OP_KINDS.len() + 1,
-            "36 个 kind ＋ 1 个额外载荷分支"
+            "37 个 kind ＋ 1 个额外载荷分支"
         );
 
         let mut seen: Vec<&str> = Vec::new();
@@ -14823,18 +15021,18 @@ mod tests {
         }
         // ⚠ 本数是**去重后的变体数**（`add` 的三种形态共用 `AddNote`）⇒ 与
         // `rows.len()` 可以不同，也与 `OP_KINDS.len()` 不同。本轮新增
-        // `setTransportConfig`（独占一个变体）⇒ 20 → **21**。
-        assert_eq!(seen.len(), 37);
-        // ⭐ `#179`：收窄后的音符级分支集合**恰好是四个**，且逐字等于发布清单。
+        // `setNoteTiming`（独占一个变体）⇒ 37 → **38**。
+        assert_eq!(seen.len(), 38);
+        // ⭐ `#179`：音符级分支集合**恰好是五个**，且逐字等于发布清单。
         assert_eq!(
             NOTE_LEVEL_KINDS,
-            ["add", "delete", "move", "velocity"],
-            "音符级 kind 必须恰好是四个音符形态（字面表，⛔ 不是常量自比）"
+            ["add", "delete", "move", "velocity", "setNoteTiming"],
+            "音符级 kind 必须恰好是五个音符形态（字面表，⛔ 不是常量自比）"
         );
         assert_eq!(
             note_level_seen.len(),
-            4,
-            "全部 36 个 kind 里 `is_note_level()` 为真的必须**恰好四个**，实际: {note_level_seen:?}"
+            5,
+            "全部 37 个 kind 里 `is_note_level()` 为真的必须**恰好五个**，实际: {note_level_seen:?}"
         );
         assert_eq!(
             note_level_seen,

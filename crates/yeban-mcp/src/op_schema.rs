@@ -349,6 +349,22 @@ pub fn ops_items() -> Value {
                 false,
             ),
             op(
+                "setNoteTiming",
+                "把音符的起点/时值设为绝对值（不改音高、力度与表现力字段）；两个旧值由服务端从当前文档读取，操作对象上的多余键被响亮拒绝",
+                &["kind", "noteId", "startTick", "durationTicks"],
+                json!({
+                    "kind": kind("setNoteTiming"),
+                    "noteId": id("目标音符身份"),
+                    "startTick": uint("新起点（tick，960 PPQ）"),
+                    "durationTicks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "新时值（tick；0 由模型的 `ZeroDuration` 拒绝）",
+                    },
+                }),
+                true,
+            ),
+            op(
                 "insertDevice",
                 "在目标音轨的设备链里插入一台设备。要得到 EQ / 混响 / 卷积混响：`device.kind:\"InternalEffect\"` + `bypassed:false` + 在 `device.params` 里写 `eq_*` / `reverb_*` / `conv_*` 名字（名字、单位、值域、缺省值见 `device.params.items`）",
                 &["kind", "trackId", "device"],
