@@ -25,7 +25,7 @@
 //!
 //! | # | 判据 | 作用 |
 //! | :--- | :--- | :--- |
-//! | ① | `a_flac_sample_matches_the_wav_leg_up_to_the_normalisation_gap` | **本单核心**：同一份 PCM 的 WAV／FLAC 导出**逐样本差 = 分母口径差**（差因逐位钉住） |
+//! | ① | `a_flac_sample_is_bit_identical_to_the_wav_leg_after_the_normalisation_fix` | **本单核心**：同一份 PCM 的 WAV／FLAC 导出**逐位相同**（`#254` 统一分母后） |
 //! | ② | `a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg` | 折单声道口径与 WAV 腿一致（⭐ 注入 ② 的靶子） |
 //! | ③ | `a_flac_at_another_sample_rate_is_read_at_its_own_rate` | 采样率不匹配 ⇒ **不重采样**，按引擎既有播放速率口径 |
 //!
@@ -37,18 +37,18 @@
 //! ⛔ 不影响任何 PCM 字节）。每份的 SHA-256 在下面逐条登记，判据用
 //! `yeban_model::AssetHash` 机械核对（摘要不符 = 夹具被换过 = 红）。
 //!
-//! ⚠ **实测差因（⛔ 不是"FLAC 有损"）**：两条腿的**归一化分母不同** ——
+//! ⚠ **实测差因（⛔ 不是"FLAC 有损"）**：`#254` 之前两条腿的**归一化分母不同** ——
 //!
 //! | 腿 | 公式（`24-bit` 24 位整数 `raw`） | 分母 |
 //! | :--- | :--- | :--- |
-//! | WAV（hound，`read_plain_wav_mono_f32`） | `raw as f32 * (1 / 8388607)`（= `2^23 − 1`，[`BitDepth::full_scale_max`]） | `2^23 − 1` |
+//! | WAV（hound，`read_plain_wav_mono_f32`） | ~~`raw as f32 * (1 / 8388607)`~~ → `raw as f32 * (1 / 8388608)` | ~~`2^23 − 1`~~ → `2^23` |
 //! | FLAC／OGG（symphonia → `DecodedAsset::samples`） | `(raw << 8) as f32 / 2^31` = `raw / 8388608` | `2^23` |
 //!
-//! ⇒ 同一份无损 PCM 上，两条腿的相对差 ≈ `1/(2^23 − 1)` ≈ `1.1920929e-7`
-//! （判据 ① 把两个公式**逐位**钉住，并把渲染层的差**限制**在这个分母差之下）。
-//! ⚠ 把两条腿**统一**到同一个分母是一项**跨 crate 口径改动**：改 WAV 腿会移动
-//! `sfz_sample_formats::BASELINE_WAV_READ` 的逐位指纹（本单**明令不动**），改新腿则是
-//! 在解码器归一化之上**再乘一个人造系数**（仍不可能逐位相等）⇒ **本单如实报告、不擅自统一**。
+//! ⭐ **`#254` 已把 WAV 腿统一到 `2^23`**（`read_plain_wav_mono_f32` 用
+//! `BitDepth::scale()` 而不是 `BitDepth::full_scale_max()`）⇒ 同一份无损 PCM 的两条腿
+//! 现在**逐位相同**（判据 ① 的 `differing == 0`、`max_abs_diff == 0`、两个 FNV 指纹相同）。
+//! 判据 ① 据此断言相等，并逐位钉住"两条腿都是 `raw / 2^23`"。
+//! ⚠ 这也顺带移动了 `sfz_sample_formats::BASELINE_WAV_READ` 的指纹（已按三件套重钉）。
 //!
 //! [`BitDepth::full_scale_max`]: yeban_render::dither::BitDepth::full_scale_max
 //!
@@ -67,8 +67,11 @@ use yeban_render::wav::{read_plain_wav_mono_f32, write_plain_wav};
 /// `24-bit` 满量程（夹具写入常量样本用）。
 const I24_SCALE: f32 = 8_388_608.0;
 
-/// ⭐ 两条腿的**归一化分母差**：WAV 腿用 `2^23 − 1`（[`BitDepth::Int24::full_scale_max`]），
-/// symphonia 的 FLAC 腿用 `2^23`。⇒ 相对差 ≈ `1/(2^23 − 1)`。
+/// ⭐ 两条腿**统一后**的归一化分母（`#254`）：WAV 腿与 symphonia 腿都用 `2^23`。
+///
+/// `#254` 之前 WAV 腿用 `2^23 − 1`（[`BitDepth::Int24::full_scale_max`]），两条腿的相对差
+/// 是 `1/8388607 ≈ 1.1920929e-7`。统一之后这个常量只剩**历史记录**用途（打印出来对照），
+/// ⛔ 不再被任何"差必须 ≤ 界"的断言使用。
 const DENOMINATOR_GAP: f32 = 1.0 / 8_388_607.0;
 
 /// 阶梯夹具的八段：`(线性幅度, 帧数)`，共 `4800` 帧。
@@ -285,8 +288,9 @@ fn write_sfz(dir: &Path, name: &str, pitches: &[u8], sample: &str) -> PathBuf {
 /// 把工程那条 MIDI 轨的 `sampler` 指向 `sample` 的 SFZ，然后**导出一次**。
 fn render_bound(dir: &Path, sfz_name: &str, sample: &str) -> RenderProjectOutput {
     let mut project = yeban_model::samples::filled_project();
-    // ⭐ `#243`：WAV/FLAC 两条腿的**逐样本差**只应来自解码器的归一化分母；自动化
-    // 是另一个自变量 ⇒ 在夹具里清掉（两条腿仍然同一条增益路径，但没有自动化包络）。
+    // ⭐ `#243`：WAV/FLAC 两条腿的**逐样本差**只应来自解码器（`#243` 时是归一化分母；
+    // `#254` 统一分母之后是"没有差"）；自动化是另一个自变量 ⇒ 在夹具里清掉
+    // （两条腿仍然同一条增益路径，但没有自动化包络）。
     for track in project.tracks.values_mut() {
         track.automation_lanes.clear();
     }
@@ -317,7 +321,7 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
     hash
 }
 
-/// ⭐ 判据 ①（**本单核心**）：**同一份 PCM 的 WAV 版与 FLAC 版导出逐样本差 = 已知的分母差**。
+/// ⭐ 判据 ①（**本单核心**）：**同一份 PCM 的 WAV 版与 FLAC 版导出逐位相同**（`#254` 之后）。
 ///
 /// ## 夹具
 ///
@@ -329,28 +333,31 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// * FLAC 那次的报告：`decoded_samples == 1`、`unreadable_samples` 空、`silent_region_count == 0`
 ///   （⭐ 这一条同时钉住"FLAC **不再**是 `UnsupportedFormat`"）；
 /// * `nonzero(flac) == nonzero(wav) > 0`（两条腿都真的发声 ⇒ ⛔ 不是"缺样本 ⇒ 全静音"）；
-/// * **差因（机械化）**：对八段的 `raw` 值逐位核对
-///   `wav_pcm == raw as f32 * (1/8388607)` 且 `flac_pcm == raw as f32 * (1/8388608)`；
-/// * **渲染层**：`max_abs_diff > 0`（分母不同 ⇒ 必然有差）且
-///   `max_abs_diff <= peak * DENOMINATOR_GAP * 2`（⛔ 不允许超出这个数量级）。
+/// * **同分母（机械化）**：对八段的 `raw` 值逐位核对
+///   `wav_pcm == raw as f32 * (1/8388608)` **且** `flac_pcm == raw as f32 * (1/8388608)`
+///   （`#254` 之前 WAV 腿是 `1/8388607`）；
+/// * **渲染层**：`max_abs_diff == 0`（同分母 ⇒ 无损两面必须给出**逐位**相同的 `f32`）、
+///   `fnv1a_wav == fnv1a_flac`。
 ///
-/// ## 实测读数（本机 `aarch64/macos`，2026-10-16）
+/// ## 实测读数（本机 `aarch64/macos`）
 ///
-/// `differing = 9598`（= 全部非零输出样本）、`max_abs_diff = 5.960464478e-8`、
-/// `fnv1a_wav = 0xd034eabf3ed36e39`、`fnv1a_flac = 0xa6468fe2ca254801`。
+/// | 时间点 | `differing` | `max_abs_diff` | `fnv1a_wav` | `fnv1a_flac` |
+/// | :--- | :--- | :--- | :--- | :--- |
+/// | `#254` 之前（2026-10-16） | `9598` | `5.960464478e-8` | `0xd034eabf3ed36e39` | `0xa6468fe2ca254801` |
+/// | **`#254` 之后（2026-10-20）** | **`0`** | **`0.000000000e0`** | **`0x5265a49d67ae4575`** | **`0x5265a49d67ae4575`** |
 ///
-/// ## 差因（⛔ 不是"FLAC 有损"）
+/// ## 为什么现在相等（⛔ 不是"FLAC 有损"）
 ///
-/// FLAC **无损**：`flac` 从 24-bit PCM 转出、解回来的是**同一个整数**（`raw`）。差出在
-/// **归一化分母**：hound 腿算 `raw as f32 * (1/(2^23 − 1))`，symphonia 腿算
-/// `(raw << 8) as f32 / 2^31 = raw / 2^23` ⇒ 相对差恰好 `≈ 1/(2^23 − 1) ≈ 1.1920929e-7`。
-/// 下面八段的**逐位**核对把这个差因钉成实测事实，而不是散文。
+/// FLAC **无损**：`flac` 从 24-bit PCM 转出、解回来的是**同一个整数**（`raw`）。`#254` 之前
+/// 差出在**归一化分母**：hound 腿算 `raw as f32 * (1/(2^23 − 1))`，symphonia 腿算
+/// `(raw << 8) as f32 / 2^31 = raw / 2^23`。`#254` 把 hound 腿改成 `2^23` ⇒ 两条腿同一个
+/// 公式 ⇒ `differing == 0`。下面八段的**逐位**核对把这个"同分母"钉成实测事实。
 ///
 /// ⚠ **怎么变红**：① 把分派关掉（一切走 hound）⇒ FLAC 版全静音 ⇒ `nonzero` 与
-/// `unreadable` 两条同时红；② 把分母换成 `2^24`（增益错 2×）⇒ `max_abs_diff` 超出上界；
-/// ③ 换掉夹具（SHA-256 不符）⇒ `fixture()` 红。
+/// `unreadable` 两条同时红；② 把任一条腿的分母改回 `2^23 − 1`（或换成 `2^24`）⇒
+/// 逐位核对与 `max_abs_diff == 0` 同时红；③ 换掉夹具（SHA-256 不符）⇒ `fixture()` 红。
 #[test]
-fn a_flac_sample_matches_the_wav_leg_up_to_the_normalisation_gap() {
+fn a_flac_sample_is_bit_identical_to_the_wav_leg_after_the_normalisation_fix() {
     let dir = scratch("flac-e2e");
     write_segments_wav(&dir.join("stair.wav"), &STAIR_SEGMENTS);
     std::fs::write(
@@ -436,7 +443,7 @@ fn a_flac_sample_matches_the_wav_leg_up_to_the_normalisation_gap() {
     );
 
     // ---- ⭐ 差因（机械化）：两条腿的**归一化分母**不同 ⇒ 逐位核对两个公式 ----
-    // WAV 腿：`read_plain_wav_mono_f32` 用 `BitDepth::full_scale_max()` = `2^23 − 1`。
+    // WAV 腿：`read_plain_wav_mono_f32` 用 `BitDepth::scale()` = `2^23`（`#254`）。
     // FLAC 腿：symphonia 把 24-bit 左对齐到 i32 再除 `2^31` ⇒ 等于 `raw / 2^23`。
     let (wav_pcm, wav_rate, _) =
         read_plain_wav_mono_f32(dir.join("stair.wav")).expect("回读 WAV 夹具");
@@ -450,31 +457,34 @@ fn a_flac_sample_matches_the_wav_leg_up_to_the_normalisation_gap() {
         let raw = (I24_SCALE * value) as i32;
         assert_eq!(
             wav_pcm[cursor],
-            raw as f32 * (1.0 / 8_388_607.0),
-            "WAV 腿必须**逐位**是 `raw × 1/(2^23 − 1)`（raw={raw}，段值={value}）"
+            raw as f32 * (1.0 / 8_388_608.0),
+            "WAV 腿必须**逐位**是 `raw × 1/2^23`（`#254` 起；raw={raw}，段值={value}）"
         );
         assert_eq!(
             asset.samples()[cursor],
             raw as f32 * (1.0 / 8_388_608.0),
             "FLAC 腿必须**逐位**是 `raw × 1/2^23`（raw={raw}，段值={value}）"
         );
+        assert_eq!(
+            wav_pcm[cursor],
+            asset.samples()[cursor],
+            "⭐ 同一个 `raw` 的两条腿必须**逐位**相同（`#254` 统一分母；raw={raw}）"
+        );
         cursor += frames;
     }
 
-    // ---- ⭐ 渲染层的差必须完全落在这个分母差之下 ----
-    assert!(
-        max_abs_diff > 0.0,
-        "⭐ 两条腿分母不同（`2^23 − 1` vs `2^23`）⇒ **必然**有差；若为 0，说明归一化口径被改过"
+    // ---- ⭐ 同分母 ⇒ 渲染层必须**逐位**相同（不是"差在某个界之下"）----
+    assert_eq!(
+        max_abs_diff,
+        0.0,
+        "⭐ 两条腿同分母（都是 `2^23`）⇒ 无损两面**必须**逐位相同；若 > 0，说明有一条腿\
+         的分母被改回 `2^23 − 1`（实得 {max_abs_diff:.9e}；旧口径的相对差量级\
+         ≈ {:.9e}）",
+        peak * DENOMINATOR_GAP
     );
-    assert!(
-        max_abs_diff <= peak * DENOMINATOR_GAP * 2.0,
-        "⭐ 最大逐样本差必须 ≤ `peak × 分母差 × 2`（实得 {max_abs_diff:.9e}，\
-         peak={peak:.9}，界={:.9e}）—— 超出即不是分母差能解释的（查声道折法／增益／采样率）",
-        peak * DENOMINATOR_GAP * 2.0
-    );
-    assert_ne!(
+    assert_eq!(
         wav_hash, flac_hash,
-        "分母不同 ⇒ 指纹不可能相同（若相同，说明夹具体值恰好都是 2 的幂且解码器未转换）"
+        "同分母 ⇒ FNV 指纹必须相同（wav=0x{wav_hash:016x} flac=0x{flac_hash:016x}）"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -497,8 +507,9 @@ fn a_flac_sample_matches_the_wav_leg_up_to_the_normalisation_gap() {
 /// * **FLAC 腿内部一致**：立体声 FLAC 的导出指纹 == 单声道 FLAC 参照（⭐ 折单声道那一枪的靶子）；
 /// * `read_sample_file(stereo.flac)` ⇒ 折后 `4800` 帧（⛔ 不是 `9600`）。
 ///
-/// ⚠ **为什么两条腿各自比、⛔ 不跨腿比**：两条腿的归一化分母不同（见模块文档），跨腿比
-/// 会把"分母差"和"折单声道"两件事混在一条断言里。分开比之后，下面那两条**只**对折法敏感。
+/// ⚠ **为什么两条腿各自比**：`#254` 之前两条腿的归一化分母不同（见模块文档），跨腿比会把
+/// "分母差"和"折单声道"两件事混在一条断言里。`#254` 之后分母已统一（两腿逐位相同），但
+/// 分开比仍然更好：下面那两条**只**对折法敏感，红了就只有一个原因。
 ///
 /// ⚠ **注入 ②**：把 `decode_with_yeban_decode` 里的 `step_by(channels)` 改成 `step_by(1)`
 /// （交织直传）⇒ 折后变 9600 帧、左右交替 ⇒ `flac_hash` 与帧数断言**同时红**。
@@ -616,8 +627,9 @@ fn a_stereo_flac_is_folded_to_channel_zero_like_the_wav_leg() {
 ///   ⇒ 新腿沿用**同一个**口径 ⇒ 两条腿对同一份 PCM 给同一个音频结果。
 /// * **重采样会制造第二条口径**：`rubato` 一进来，44.1 kHz 的样本值就变成"解码 × sinc"，
 ///   而 WAV 腿对 44.1 kHz 的 WAV **从不重采样**（只把 `sample_hz` 原样上报）⇒ 两条腿对
-///   同一份 PCM 会给出**不同**的样本值（现在只差一个分母常量，重采样后会差更多）。
-///   ⛔ 本单**不动**这条口径（判据 ① 已经如实登记了当前的分母差）。
+///   同一份 PCM 会给出**不同**的样本值（`#254` 之后两条腿的**分母**已统一，所以差别会
+///   **只**来自重采样本身）。
+///   ⛔ 本单**不动**这条口径（判据 ① 钉的是同分母后的逐位相同）。
 ///
 /// ## 判定量
 ///

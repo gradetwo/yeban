@@ -277,9 +277,22 @@ pub fn read_plain_wav(path: impl AsRef<Path>) -> Result<(PcmFormat, PcmBuffer), 
 ///
 /// | 输入 | 处理 |
 /// | :--- | :--- |
-/// | `Float32` | **直用**（`full_scale_max` 对浮点会 panic ⇒ 必须先分流） |
-/// | `Int16` / `Int24` | 除以 `BitDepth::full_scale_max().max(1)` |
+/// | `Float32` | **直用**（`BitDepth::scale` 对浮点会 panic ⇒ 必须先分流） |
+/// | `Int16` / `Int24` | 除以 `BitDepth::scale()` = **`2^(bits-1)`**（`32768` / `8388608`） |
 /// | 多声道 | 按声道数 `step_by(channels)` 取**第 0 声道**（⛔ 不做降混——本仓没有"怎么混"的裁决） |
+///
+/// ## 为什么分母是 `2^(bits-1)` 而**不是** `2^(bits-1) - 1`（`#254`）
+///
+/// 二补码 `n` 位的取值区间是 `[-2^(n-1), 2^(n-1) - 1]` —— **负端比正端多一个码**。
+/// 除 `2^(n-1) - 1`（`full_scale_max`）⇒ 负满量程 `-32768` 映射到 `-1.0000305…`，
+/// **越出满量程 1 LSB**；除 `2^(n-1)` ⇒ 得到 `[-1.0, 1 - 2^-(n-1)]`，负端**正好** `-1.0`
+/// 且永不越界。等价理由：`BitDepth::scale()` 就是**量化器**里 `[-1, 1] → LSB` 的系数
+/// （`dither::quantize_i16` / `quantize_i24`），本函数是它的**逆** ⇒ 用同一个 `2^(n-1)`
+/// 才能让 `解码(量化(x)) == x` 对满量程也成立。
+///
+/// ⚠ `symphonia`（MCP 腿、`yeban-decode`）本来就用 `2^(n-1)`。`#253` 测出两侧
+/// **峰值比 `32767/32768` ＝ `0.999969483`**、16-bit 素材摘要不同 —— 根因就在这里；
+/// `#254` 把这条腿对齐到 `2^(n-1)` ⇒ 两侧对整数素材**逐位相同**。
 ///
 /// ## 为什么这个函数住在 `yeban-render`
 ///
@@ -297,10 +310,12 @@ pub fn read_plain_wav_mono_f32(
     let path = path.as_ref();
     let (format, buffer) = read_plain_wav(path)?;
     let channels = usize::from(format.channels.max(1));
-    // ⚠ 顺序**必须**先判浮点：`BitDepth::full_scale_max` 对 `Float32` 是 panic。
+    // ⚠ 顺序**必须**先判浮点：`BitDepth::scale` 对 `Float32` 是 panic。
+    // `#254`：分母是 `2^(bits-1)`（`BitDepth::scale()`），⛔ 不是 `2^(bits-1) - 1`
+    // （`full_scale_max()`）—— 后者把 `-32768` 映射成 `-1.0000305`，越出满量程。
     let scale = match buffer.depth() {
         BitDepth::Float32 => 1.0_f32,
-        depth => 1.0_f32 / (depth.full_scale_max().max(1) as f32),
+        depth => 1.0_f32 / depth.scale(),
     };
     let samples: Vec<f32> = match &buffer {
         PcmBuffer::Int16(values) => values
@@ -1289,6 +1304,85 @@ mod tests {
             write_plain_wav(&path, &format, &buffer).expect("写夹具");
             let (pcm, _rate, _describe) = read_plain_wav_mono_f32(&path).expect("读回");
             assert_eq!(pcm, vec![0.125, -0.25, 0.5, -1.0], "浮点必须逐样本直用");
+        }
+    }
+
+    /// ⭐ `#254` 判据 ③：**负满量程必须落在 `-1.0`，⛔ 不是 `-1.0000305`**。
+    ///
+    /// 量的对象是"归一化后的 `f32`"（单位 1 = 满量程）：二补码 16-bit 的区间是
+    /// `[-32768, 32767]`，负端多一个码 ⇒ 只有除 `2^15` 才能让 `-32768 → -1.0`；
+    /// 除 `2^15 - 1` 会得到 `-1.0000305`（越出满量程 1 LSB）。
+    ///
+    /// 24-bit 同族一并钉住（`-8388608 → -1.0`，`8388607 → 1 - 2^-23`）。
+    #[test]
+    fn negative_full_scale_maps_to_exactly_minus_one_for_both_depths() {
+        // ---- 16-bit：-32768 ⇒ -1.0（逐位），+32767 ⇒ 1 - 2^-15 ----
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("fullscale16.wav");
+            let format = PcmFormat::integer(1, 48_000, 16);
+            let buffer = PcmBuffer::Int16(vec![i16::MIN, i16::MAX]);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let (pcm, _rate, _describe) = read_plain_wav_mono_f32(&path).expect("读回必须成功");
+            println!(
+                "[wav] 16-bit 满量程: -32768 ⇒ {:.9}（bits={:#010x}）/ +32767 ⇒ {:.9}（bits={:#010x}）",
+                pcm[0],
+                pcm[0].to_bits(),
+                pcm[1],
+                pcm[1].to_bits()
+            );
+            assert_eq!(
+                pcm[0].to_bits(),
+                (-1.0_f32).to_bits(),
+                "负满量程必须**逐位**是 -1.0（实得 {:.9}）；若得 -1.0000305 说明分母是 32767",
+                pcm[0]
+            );
+            assert_eq!(
+                pcm[1],
+                32_767.0_f32 / 32_768.0,
+                "正满量程必须是 1 - 2^-15（⛔ 不是 1.0）"
+            );
+            // R102/R111/R114（`quantifier_lower_bounds`）：量词断言必须有**根绑定**的下界
+            // ⇒ 先钉住 `pcm` 的长度（⛔ 不许"空集合上真空通过"）。
+            assert_eq!(
+                pcm.len(),
+                2,
+                "夹具只有两个样本（`i16::MIN` / `i16::MAX`）⇒ 读回必须是 2 个"
+            );
+            assert!(
+                pcm.iter().all(|value| (-1.0..=1.0).contains(value)),
+                "归一化结果必须全部落在 [-1, 1]（实得 {:?}）",
+                &pcm[..2]
+            );
+            // 反证：旧口径（除 32767）在负端越界 1 LSB —— 这条断言让"旧口径"永远红。
+            let old_negative = 32_768.0_f32 / 32_767.0;
+            assert!(
+                old_negative > 1.0,
+                "旧口径 32768/32767 = {old_negative:.9} 必须 > 1.0（越界 1 LSB）"
+            );
+        }
+        // ---- 24-bit：-8388608 ⇒ -1.0；+8388607 ⇒ 1 - 2^-23 ----
+        {
+            let directory = tempfile::tempdir().expect("临时目录");
+            let path = directory.path().join("fullscale24.wav");
+            let format = PcmFormat::integer(1, 48_000, 24);
+            let buffer = PcmBuffer::Int24(vec![-(1 << 23), (1 << 23) - 1]);
+            write_plain_wav(&path, &format, &buffer).expect("写夹具");
+            let (pcm, _rate, _describe) = read_plain_wav_mono_f32(&path).expect("读回必须成功");
+            println!(
+                "[wav] 24-bit 满量程: -8388608 ⇒ {:.9}（bits={:#010x}）/ +8388607 ⇒ {:.9}（bits={:#010x}）",
+                pcm[0],
+                pcm[0].to_bits(),
+                pcm[1],
+                pcm[1].to_bits()
+            );
+            assert_eq!(pcm[0], -1.0_f32, "24-bit 负满量程必须正好是 -1.0");
+            assert_eq!(pcm[0].to_bits(), (-1.0_f32).to_bits());
+            assert_eq!(
+                pcm[1],
+                8_388_607.0_f32 / 8_388_608.0,
+                "24-bit 正满量程必须是 1 - 2^-23"
+            );
         }
     }
 }

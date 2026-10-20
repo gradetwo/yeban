@@ -98,13 +98,15 @@
 //! | :--- | :--- | :--- |
 //! | ① | `an_ogg_vorbis_sample_is_decoded_end_to_end_and_matches_the_wav_leg_within_the_codec_tolerance` | **本单核心**：真 Vorbis ⇒ 渲染出声、报告干净、与同一份 PCM 的 WAV 腿按**实测容差**对拍 |
 //! | ② | `the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg` | ⭐ **"同一条腿"判据**：`read_sample_file` 折声道 0 后**逐位**等于 `decode_path`（⛔ 不是 hound 那条） |
-//! | ③ | `an_ogg_container_with_a_lossless_flac_payload_lands_on_the_flac_denominator_side` | ⭐ **§3.3 的分母判据（乙组）**：⚠ **Ogg 容器 ＋ FLAC 载荷**（无损）；⛔ 不证明 Vorbis 解码。`.ogg` 腿逐位是 `raw × 1/2²³`，与 FLAC 腿同分母 |
+//! | ③ | `an_ogg_container_with_a_lossless_flac_payload_is_bit_identical_to_the_wav_leg` | ⭐ **§3.3 的分母判据（乙组）**：⚠ **Ogg 容器 ＋ FLAC 载荷**（无损）；⛔ 不证明 Vorbis 解码。`#254` 之后 `.ogg` 腿与 WAV 腿用**同一个** `raw × 1/2²³` ⇒ 逐位相同 |
 //! | ④ | `a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg` | ⭐ §5.3 折单声道（注入 ② 的靶子） |
 //! | ⑤ | `a_44k_ogg_vorbis_is_read_at_its_own_rate` | ⭐ §5.3 采样率原样进、不重采样 |
 //! | ⑥ | `a_broken_ogg_is_classified_and_a_valid_ogg_in_the_same_batch_is_accepted` | ⭐ §5.4 可判别性（实测档位，⛔ 不猜） |
 //!
-//! ⚠ **⛔ 不动 WAV 腿**：本文件⛔ 不改 `src/sfz_load.rs` 的任何分派逻辑，也⛔ 不碰
-//! `sfz_sample_formats.rs` 的 `BASELINE_WAV_READ = 0x0df478fa15264e79`（只复跑它，见报告）。
+//! ⚠ **本文件⛔ 不改 `src/sfz_load.rs` 的分派逻辑**（`#254` 只改归一化分母，见
+//! `yeban-render/src/wav.rs` 的 `read_plain_wav_mono_f32`）。`#254` 之后
+//! `sfz_sample_formats.rs` 的 `BASELINE_WAV_READ` 已按三件套重钉为
+//! `0x684c580cf970b275`（旧值 `0xe8da0829d81c2115`）；本文件只复跑它。
 //!
 //! [`BitDepth::full_scale_max`]: yeban_render::dither::BitDepth::full_scale_max
 
@@ -121,8 +123,11 @@ use yeban_render::wav::{read_plain_wav_mono_f32, write_plain_wav};
 /// `24-bit` 满量程（夹具写入常量样本用；与 `write_plain_wav` 同口径）。
 const I24_SCALE: f32 = 8_388_608.0;
 
-/// ⭐ 两条腿的**归一化分母差**：WAV 腿用 `2^23 − 1`（[`BitDepth::Int24::full_scale_max`]），
-/// symphonia 腿用 `2^23`。⇒ 相对差 ≈ `1/(2^23 − 1)`。
+/// ⭐ 两条腿**统一后**的归一化分母（`#254`）：WAV 腿与 symphonia 腿都用 `2^23`。
+///
+/// `#254` 之前 WAV 腿用 `2^23 − 1`（[`BitDepth::Int24::full_scale_max`]），两条腿的相对差
+/// 是 `1/8388607 ≈ 1.1920929e-7`。统一之后这个常量只剩**历史记录**用途（打印出来对照），
+/// ⛔ 不再被任何"差必须 ≤ 界"的断言使用。
 const DENOMINATOR_GAP: f32 = 1.0 / 8_388_607.0;
 
 /// 阶梯夹具的八段：`(线性幅度, 帧数)`，共 `800` 帧（`8 × 100`）。
@@ -580,6 +585,15 @@ fn fnv1a_64(samples: &[f32]) -> u64 {
 /// `fnv1a_wav = 0x162634cbf9fddf99`、`fnv1a_ogg = 0x5a26f9f1339b6e45`、
 /// OGG 那次报告 `samples=1 silent=0 unreadable=0`。
 ///
+/// ⚠ **`#254` 复查（2026-10-20，本机 `aarch64/macos`）**：上表是 2026-10-16 的历史读数，
+/// 其中的 `differing`／`nonzero`／指纹此后**已经漂移**（与 `#254` 无关的部分也存在，
+/// 例如 `#243` 清自动化）。`#254` 当时的实测是：
+/// `differing = 6392`、`max_abs_diff = 6.614714861e-3`、
+/// `first_diff = Some((0, 0.07768417, 0.07858988))`、`peak = 0.328704327`、
+/// `wav_nonzero = ogg_nonzero = 6392`、`fnv1a_wav = 0x26a43fe5bccb0a75`、
+/// `fnv1a_ogg = 0xe1aaee04617eff11`。
+/// ⛔ 本判据**不钉**这些数（Vorbis 有损 ⇒ 只用容差判），所以它们漂移不会变红。
+///
 /// ⚠ **怎么变红**：① 把分派关掉（`.ogg` 走 hound）⇒ OGG 版全静音 ⇒ `decoded_samples`
 /// 与 `unreadable` 两条同时红；② 换掉夹具（SHA-256 不符）⇒ `fixture()` 红。
 #[test]
@@ -813,13 +827,15 @@ fn the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg() {
 /// ⚠ **它证明的是腿与分母，⛔ 不证明 Vorbis 解码**（那由甲组的 ①/②/④/⑤ 负责）。
 /// ⚠ 它是**合法真 Ogg 文件**（Ogg ＋ FLAC 映射是标准容器映射），⛔ 不是"假夹具"。
 ///
-/// ## 实测读数（本机 `aarch64/macos`，2026-10-16）
+/// ## 实测读数（本机 `aarch64/macos`）
 ///
-/// `wav_samples = ogg_samples = 768000`、`differing = 1598`、
-/// `max_abs_diff = 5.960464478e-8`（= `0.5 × 分母差`，与 `sfz_decoded_formats.rs` 的 FLAC
-/// 判据①**同一个读数**）、`peak = 0.329195499`、`bound = 7.848633032e-8`、
-/// `fnv1a_wav = 0x162634cbf9fddf99`、`fnv1a_oggflac = 0xb9234f5509b02141`、
-/// 报告 `samples=1 silent=0 unreadable=0`；逐位核对八段的两个公式**全过**。
+/// | 时间点 | `differing` | `max_abs_diff` | `fnv1a_wav` | `fnv1a_oggflac` |
+/// | :--- | :--- | :--- | :--- | :--- |
+/// | `#254` 之前（2026-10-16） | `1598` | `5.960464478e-8`（= `0.5 × 分母差`） | `0x162634cbf9fddf99` | `0xb9234f5509b02141` |
+/// | **`#254` 之后（2026-10-20）** | **`0`** | **`0.000000000e0`** | **`0x26a43fe5bccb0a75`** | **`0x26a43fe5bccb0a75`** |
+///
+/// 报告 `samples=1 silent=0 unreadable=0`；`peak = 0.328704327`。
+/// 逐位核对八段的公式**全过**（`#254` 之后两条腿是同**一个**公式 `raw × 1/2²³`）。
 ///
 /// ## 夹具
 ///
@@ -829,13 +845,13 @@ fn the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg() {
 /// ## 判定量
 ///
 /// * OGG 那次的报告：`decoded_samples == 1`、`unreadable_samples` 空、`silent_region_count == 0`；
-/// * **差因（机械化）**：对八段的 `raw` 值逐位核对
-///   `wav_pcm == raw as f32 × (1/8388607)` 且 `ogg_pcm == raw as f32 × (1/8388608)`
-///   —— ⭐ 这两行合起来**就是**"OGG 腿与 FLAC 腿同分母"的判据；
-/// * **渲染层**：`max_abs_diff > 0` 且 `max_abs_diff <= peak × DENOMINATOR_GAP × 2`
-///   （与 `sfz_decoded_formats.rs` 的 FLAC 判据**同一个界**）。
+/// * **同分母（机械化）**：对八段的 `raw` 值逐位核对
+///   `wav_pcm == raw as f32 × (1/8388608)` **且** `ogg_pcm == raw as f32 × (1/8388608)`
+///   —— ⭐ `#254` 之前 WAV 腿是 `1/8388607`，那正是两腿相差 `5.960464478e-8` 的全部原因；
+/// * **渲染层**：`max_abs_diff == 0` **且** `fnv1a_wav == fnv1a_oggflac`
+///   （同分母 ⇒ 无损两面必须逐位相同）。
 #[test]
-fn an_ogg_container_with_a_lossless_flac_payload_lands_on_the_flac_denominator_side() {
+fn an_ogg_container_with_a_lossless_flac_payload_is_bit_identical_to_the_wav_leg() {
     let dir = scratch("ogg-flac-payload");
     write_segments_wav(&dir.join("stair.wav"), &STAIR_SEGMENTS, 48_000);
     std::fs::write(
@@ -885,7 +901,7 @@ fn an_ogg_container_with_a_lossless_flac_payload_lands_on_the_flac_denominator_s
         .iter()
         .fold(0.0_f32, |acc, sample| acc.max(sample.abs()));
 
-    // ---- ⭐ 差因（机械化）：两条腿的**归一化分母**不同 ⇒ 逐位核对两个公式 ----
+    // ---- ⭐ 同分母（机械化）：两条腿都必须是 `raw × 1/2²³`（`#254` 统一） ----
     let (wav_pcm, wav_rate, _) =
         read_plain_wav_mono_f32(dir.join("stair.wav")).expect("回读 WAV 夹具");
     let asset = decode_path(&dir.join("stair_oggflac.ogg"), &DecodeOptions::default())
@@ -898,14 +914,19 @@ fn an_ogg_container_with_a_lossless_flac_payload_lands_on_the_flac_denominator_s
         let raw = (I24_SCALE * value) as i32;
         assert_eq!(
             wav_pcm[cursor],
-            raw as f32 * (1.0 / 8_388_607.0),
-            "WAV 腿必须**逐位**是 `raw × 1/(2²³ − 1)`（raw={raw}，段值={value}）"
+            raw as f32 * (1.0 / 8_388_608.0),
+            "WAV 腿必须**逐位**是 `raw × 1/2²³`（`#254` 起；raw={raw}，段值={value}）"
         );
         assert_eq!(
             asset.samples()[cursor],
             raw as f32 * (1.0 / 8_388_608.0),
-            "⭐ `.ogg` 腿必须**逐位**是 `raw × 1/2²³` —— 与 FLAC 腿**同分母**\
+            "⭐ `.ogg` 腿必须**逐位**是 `raw × 1/2²³` —— 与 WAV／FLAC 腿**同分母**\
              （raw={raw}，段值={value}）"
+        );
+        assert_eq!(
+            wav_pcm[cursor],
+            asset.samples()[cursor],
+            "⭐ 同一个 `raw` 的两条腿必须**逐位**相同（`#254`；raw={raw}）"
         );
         cursor += frames;
     }
@@ -921,19 +942,16 @@ fn an_ogg_container_with_a_lossless_flac_payload_lands_on_the_flac_denominator_s
         report.summary(),
     );
 
-    assert!(
-        max_abs_diff > 0.0,
-        "⭐ 两条腿分母不同（`2²³ − 1` vs `2²³`）⇒ **必然**有差；若为 0，说明归一化口径被改过"
-    );
-    assert!(
-        max_abs_diff <= peak * DENOMINATOR_GAP * 2.0,
-        "⭐ 最大逐样本差必须 ≤ `peak × 分母差 × 2`（实得 {max_abs_diff:.9e}，\
-         peak={peak:.9}，界={:.9e}）—— 超出即不是分母差能解释的",
+    assert_eq!(
+        max_abs_diff,
+        0.0,
+        "⭐ 两条腿同分母（都是 `2²³`）⇒ 无损两面**必须**逐位相同；若 > 0，说明有一条腿的\
+         分母被改回 `2²³ − 1`（实得 {max_abs_diff:.9e}；旧口径的界是 {:.9e}）",
         peak * DENOMINATOR_GAP * 2.0
     );
-    assert_ne!(
+    assert_eq!(
         wav_hash, ogg_hash,
-        "分母不同 ⇒ 指纹不可能相同（若相同，说明 `.ogg` 走了 hound 那条腿）"
+        "同分母 ⇒ FNV 指纹必须相同（wav=0x{wav_hash:016x} ogg=0x{ogg_hash:016x}）"
     );
 
     std::fs::remove_dir_all(&dir).ok();

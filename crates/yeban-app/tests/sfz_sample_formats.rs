@@ -27,7 +27,7 @@
 //!
 //! | # | 判据 | 作用 |
 //! | :--- | :--- | :--- |
-//! | ① | `the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint` | **应绿的反向腿**：WAV 路径逐位不变 |
+//! | ① | `the_wav_sample_path_fingerprint_is_repinned_after_the_full_scale_fix` | **重钉的见证腿**：WAV 解码路径的输出指纹（`#254` 之后） |
 //! | ② | `the_unreadable_reason_separates_missing_files_from_unsupported_formats` | **可判别性核心**：`.xyz`／损坏 FLAC 与"文件不存在"分得开 |
 //! | ③ | `the_export_report_line_carries_the_reason_counts` | 用户可见：导出报告行带可判别计数 |
 //!
@@ -71,7 +71,17 @@ const I24_SCALE: f32 = 8_388_608.0;
 /// ⚠ 为什么需要它：既有判据 `sfz_model_chain::the_model_chain_is_bit_identical_to_the_hand_built_plan`
 /// 的两条腿（`decode_sfz_plan` 与手搭 `read_sample_file`）**都要经过被本单改动的那个函数**
 /// ⇒ 它对"WAV 路径被改坏了"**不独立**。本常量是那条腿的**独立**见证。
-const BASELINE_WAV_READ: u64 = 0xe8da_0829_d81c_2115;
+///
+/// ⭐ **任务单 `#254` 重钉（第 298 条三件套）**：
+/// * 自报旧数：`0xe8da_0829_d81c_2115`（`#222` 的读数，上面那一段）；
+/// * 自报新数：`0x684c_580c_f970_b275`（本机 `aarch64/macos` 实测，判据输出见下）；
+/// * 原因：**WAV 解码路径本身被有意改了** —— `read_plain_wav_mono_f32` 的整数归一化分母
+///   从 `BitDepth::full_scale_max()`（`2^(n-1) − 1`）改成 `BitDepth::scale()`（`2^(n-1)`）。
+///   夹具是 24-bit 常量 `0.25` ⇒ 写进文件的码是 `(0.25 × 8388607).round() = 2097152`，
+///   旧口径读回 `2097152/8388607 = 0.25000003`，新口径读回 `2097152/8388608 = 0.25`
+///   **正好**。⇒ 指纹**必然**变。`nonzero` 仍是 `38392`（样本个数不变，只变幅度）。
+///   ⚠ 与 `#209`／`#222` 的关键区别：那两次都写着"WAV 解码路径一个字都没动"，这次**动了**。
+const BASELINE_WAV_READ: u64 = 0x684c_580c_f970_b275;
 
 /// 指纹的**测量平台**。
 const MEASURED_PLATFORM: &str = "aarch64/macos";
@@ -192,7 +202,7 @@ where
     path
 }
 
-/// ⭐ 判据 ①（**应绿的反向腿**）：**WAV 样本路径的输出与接线前逐位相同**。
+/// ⭐ 判据 ①（**重钉的见证腿**）：**WAV 样本路径的输出指纹（`#254` 之后）**。
 ///
 /// ## 判定量
 ///
@@ -200,14 +210,15 @@ where
 /// * `nonzero > 0`（真的发声，不是"全零也算逐位相同"）；
 /// * `fnv1a_64(samples) == BASELINE_WAV_READ`（逐位；仅在测量平台上断言）。
 ///
-/// ⚠ **为什么本判据必须仍然绿**（`#83` 增加可判别理由之后、`#85` 接线通用解码腿之后
-/// **两次**都成立）：`#83` 只增加**读失败之后**的分类信息；`#85` 只**新增**一条
-/// `非 wav/wave 后缀` 的解码腿 —— 两者都⛔ 一个字节都不碰 `read_plain_wav_mono_f32`
-/// 的调用与它的成功路径（`.wav` 后缀仍走 hound）。⇒ 指纹必须等于**本修复后重钉的**
-/// 基线（字面值 `0xe8da0829d81c2115`，`#222` 因 SFZ 起振帧修复而重钉；见常量旁的三件套）。
-/// 它变红 = 改动了 WAV 路径或离线播放头语义 —— 本判据要求前者不变、后者由 `#209` 明确改变。
+/// ⚠ **本判据的语义在 `#254` 变了**：`#83`／`#85` 那两次它是"WAV 路径逐位不变"的
+/// **反向见证**（那两单只动分类信息与非 wav 后缀的解码腿）。`#254` **有意**改了 WAV
+/// 解码路径的归一化分母（`2^(n-1) − 1` ⇒ `2^(n-1)`）⇒ 指纹必然变，故按第 298 条三件套
+/// 重钉为 `0x684c_580c_f970_b275`。现在它见证的是"**除 `#254` 那次之外**没再动过
+/// WAV 路径"：任何后续改动（分母、折单声道、位深分派）都会让它红。
+///
+/// 它变红 = 改动了 WAV 路径或离线播放头语义 —— 播放头语义由 `#209` 明确改变过。
 #[test]
-fn the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint() {
+fn the_wav_sample_path_fingerprint_is_repinned_after_the_full_scale_fix() {
     let dir = scratch("wav-fingerprint");
     write_const_sample(&dir.join("present.wav"), 0.25);
     let mut project = yeban_model::samples::filled_project();
@@ -248,8 +259,8 @@ fn the_wav_sample_path_is_bit_identical_to_the_pre_change_fingerprint() {
         assert_eq!(
             fingerprint, BASELINE_WAV_READ,
             "⭐ 同平台（本机 == {MEASURED_PLATFORM}）⇒ WAV 样本路径的输出必须逐位等于\
-             **接线前**实测指纹 0x{BASELINE_WAV_READ:016x}（实得 0x{fingerprint:016x}）\
-             —— 改坏了 WAV 路径即红"
+             `#254` 重钉的指纹 0x{BASELINE_WAV_READ:016x}（实得 0x{fingerprint:016x}）\
+             —— 除 `#254` 的分母修正外再动 WAV 路径即红"
         );
     } else {
         println!(

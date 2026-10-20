@@ -89,6 +89,20 @@ const I24_SCALE: f32 = 8_388_608.0;
 /// 运算（无超越函数）决定 ⇒ 跨平台稳定。**改它就是改判据**，必须同时说明原因。
 const A_DIGEST: &str = "c7f59b8202bdbc18695f42c5478d622e04b7fcada097bf74d336ed2fe7eca7cf";
 
+/// ⭐ **夹具 A2（16-bit 整数素材）修好后的目标值**（`#254`，2026-10-20 本机实测）。
+///
+/// 修前（`#253`）两侧是**两**个串（MCP `896faecb…` / CLI `cdb02cd1…`，差 `59/64`），
+/// 因为 CLI 那条腿把整数除 `full_scale_max`（`2^(n-1) - 1`）。`#254` 把它对齐到
+/// `2^(bits-1)`（`BitDepth::scale()`）⇒ 两侧**同一个**串。
+/// ⚠ 改它就是改判据：必须先说明为什么。
+const A2_DIGEST: &str = "896faecb4cb23de1737ef9fffef9d93abe7177878a30ed0bbb155b1bc3c57ff1";
+
+/// 夹具 A2 修好后的母带峰值 `f32` **位型**（`0x3e7a0000` = `0.244140625`）。
+///
+/// 修前 MCP/CLI 是 `0.244140625` / `0.244148076`（比 `0.999969483` = `32767/32768`）；
+/// 修后**逐位相同**。⛔ 这里必须钉位型而不是近似值：峰值比正是本单的判据。
+const A2_PEAK_BITS: u32 = 0x3e7a_0000;
+
 /// 夹具 B（纯 MIDI，`E1`）的差值量级 —— 2026-10-20 实测的**已知差异**，单位 24-bit LSB。
 ///
 /// 用"量级区间"而不是精确字符串钉：MCP 侧是 `libm::sinf` 正弦、CLI 侧是引擎的波表
@@ -314,10 +328,11 @@ fn place_clip(
 
 /// 一份**确定性**的 32-bit float 立体声素材（⛔ 不用 `sin` ⇒ 字节跨平台一致）。
 ///
-/// 为什么必须是 **float32**：MCP 走 `yeban_decode`（整数 PCM 归一化 `/32768`），CLI 走
-/// `yeban_render::wav::read_plain_wav`（`/full_scale_max` = `/32767`）—— **整数素材**会
-/// 因此差一个 `32768/32767` 的常数因子（本判据的 A2 读数把它测出来）。float32 在两条
-/// 解码路径上都是**恒等**（scale = 1.0），于是 A 只测渲染管线本身。
+/// 为什么必须是 **float32**：夹具 A 要测的是**渲染管线本身**，⛔ 不是解码归一化。
+/// 浮点在两条解码路径上都是**恒等**（scale = `1.0`）⇒ 不引入任何分母。
+/// ⚠ 整数素材的两侧分母在 `#254` 之前确实不同（CLI `/32767` vs MCP `/32768`）；
+/// 那条差异现在由判据 A2 单独钉住（`#254` 已把 CLI 对齐到 `2^(bits-1)` ⇒ 两侧相同），
+/// 因此 A 用 float32 只是为了把"解码"这个自变量从 A 里摘掉，不是因为"整数必然不同"。
 fn float_stereo_asset(scratch: &Scratch) -> (AssetHash, Vec<u8>) {
     let mut samples = Vec::with_capacity(ASSET_FRAMES * 2);
     for index in 0..ASSET_FRAMES {
@@ -711,15 +726,45 @@ fn the_pure_audio_fixture_digests_are_identical_when_the_preconditions_hold() {
     );
 }
 
-/// ⭐ 判据 A2（§1.2 的额外读数）：**16-bit 整数素材** ⇒ 两侧解码归一化口径不同。
+/// ⭐ 判据 A2（§1.2 的额外读数）：**16-bit 整数素材** ⇒ 两侧解码归一化**必须同口径**。
 ///
-/// MCP 走 `yeban_decode`（symphonia：整数 `/32768`），CLI 走
-/// `read_plain_wav`（`/full_scale_max` = `/32767`）⇒ 母带差一个 `32768/32767` 的
-/// 常数因子，摘要**必然不同**。⚠ 这不是 `E1`，也不在 `#250` 的六条清单里 —— 它是本判据
-/// 第一次把"纯音频也不总是逐位一致"测出来的地方。本判据只**登记**它（断言不同 ＋ 量级），
-/// ⛔ 不改任何一侧的解码器（任务单 `§1.4`）。
+/// ## 历史（`#253` 测出，`#254` 修好）
+///
+/// ## 这条判据的 CLI 腿**落在哪个函数**（`#254` 注入实测）
+///
+/// 夹具 A2 是**音频片段**（`add_audio_clip`）⇒ CLI 腿走
+/// `crate::audio_clip::normalize_samples`，⛔ **不是** `yeban_render::wav::read_plain_wav_mono_f32`。
+/// 两处用的是**同一张归一化表**（`#253` 时都是 `BitDepth::full_scale_max()` = `2^(n-1) − 1`）。
+/// 实测：只把 `read_plain_wav_mono_f32` 改回 `/32767` ⇒ **本条不红**（它只影响 SFZ／WAV
+/// 素材腿）；把 `normalize_samples` 改回 `/32767` ⇒ 本条立刻红。⇒ 两侧分母都在 `#254` 里改了。
+///
+/// `#253` 首次测出：MCP 走 `yeban_decode`（symphonia：整数 `/32768`），CLI 走
+/// `full_scale_max` 那一路（`/32767`）⇒ 母带差一个 `32768/32767` 的常数因子。
+/// 当时的实测（本机 stable，`main` @ `f510a1a0`）：
+///
+/// | 量 | `#253` 读数（修前） |
+/// | :--- | :--- |
+/// | MCP `masterDigest` | `896faecb4cb23de1737ef9fffef9d93abe7177878a30ed0bbb155b1bc3c57ff1` |
+/// | CLI `digest` | `cdb02cd103d02f901a1e449580693457618d249ffc5f7511b312a8f47e3774a4` |
+/// | 十六进制差 | `59/64` |
+/// | 峰值 | MCP `0.244140625` / CLI `0.244148076` |
+/// | **MCP/CLI 峰值比** | **`0.999969483`**（= `32767/32768`） |
+/// | 样本差 | `max=64` LSB、`RMS=20.286` LSB、`>1 LSB` 的样本 `92718/192000` |
+///
+/// ## 为什么 `/32768` 才对（`#254` 的裁决）
+///
+/// 二补码 16-bit 的区间是 `[-32768, 32767]` —— **负端比正端多一个码**。
+/// 除 `32768` ⇒ `[-1.0, 0.999969482]`（对称、不越界，`-32768` **正好** `-1.0`）；
+/// 除 `32767` ⇒ `[-1.0000305, 1.0]`（**负半轴越出满量程 1 LSB**）。
+/// 且 `BitDepth::scale()`（`2^(n-1)`）正是量化器的缩放系数，解码该是它的逆。
+/// ⇒ `#254` 把 CLI 的两条腿都改成 `2^(n-1)`（`yeban-render/src/wav.rs` 的
+/// `read_plain_wav_mono_f32` ＋ `yeban-app/src/audio_clip.rs` 的 `normalize_samples`），
+/// **MCP 侧一个字节都没动**（symphonia 本来就是 `2^(n-1)`）。
+///
+/// 修后本判据断言：两侧摘要**相同**、母带峰值**逐位相同**、`>1 LSB` 的样本数为 `0`。
+/// ⚠ 这条判据现在有牙：任何一侧把分母改成 `2^(n-1) - 1`（或别的）都会让它红。
 #[test]
-fn the_int16_audio_fixture_is_known_different_because_the_two_decoders_normalize_differently() {
+fn the_int16_audio_fixture_digests_are_identical_after_the_full_scale_normalization_fix() {
     let scratch = Scratch::new("digest-int16-audio");
     let (project, assets) = pure_int16_project(&scratch);
     let reading = measure(
@@ -735,25 +780,46 @@ fn the_int16_audio_fixture_is_known_different_because_the_two_decoders_normalize
     );
 
     assert!(
-        !reading.same(),
-        "16-bit 素材的两侧解码归一化（/32768 vs /32767）不同 ⇒ 摘要必须不同；\
-         若相同，说明有一条解码腿被换掉了：MCP={} CLI={}",
+        reading.same(),
+        "16-bit 素材的两侧解码归一化都是 2^(bits-1)（`#254`）⇒ 摘要必须相同；\
+         若不同，说明有一条解码腿把分母改回了 2^(bits-1) - 1：MCP={} CLI={}",
         reading.mcp_digest,
         reading.cli_digest
     );
-    assert!(
-        reading.diff.over_one_lsb > 0,
-        "整数素材的归一化差必须体现在样本上（>1 LSB 的样本数 > 0）"
+    assert_eq!(
+        reading.mcp_digest, A2_DIGEST,
+        "MCP 侧的 16-bit 素材摘要必须逐字等于 `#254` 实测值"
+    );
+    assert_eq!(
+        reading.cli_digest, A2_DIGEST,
+        "CLI 侧的 16-bit 素材摘要必须逐字等于 `#254` 实测值（修前是 cdb02cd1…）"
+    );
+    assert_eq!(
+        reading.mcp_peak_before.to_bits(),
+        reading.cli_peak.to_bits(),
+        "摘要相同 ⇒ 两侧 f32 母带峰值也必须逐位相同：{:.9} vs {:.9}",
+        reading.mcp_peak_before,
+        reading.cli_peak
+    );
+    assert_eq!(
+        reading.mcp_peak_before.to_bits(),
+        A2_PEAK_BITS,
+        "16-bit 素材的母带峰值必须逐位等于 `#254` 实测值（{:.9}）",
+        reading.mcp_peak_before
+    );
+    assert_eq!(
+        reading.diff.over_one_lsb, 0,
+        "两侧 f32 必须逐位一致 ⇒ 量化差只剩 TPDF 抖动底（>1 LSB 的样本数必须是 0，\
+         实际 {} / {}）",
+        reading.diff.over_one_lsb, reading.diff.compared
     );
     let ratio = f64::from(reading.mcp_peak_before) / f64::from(reading.cli_peak);
     println!(
-        "### [A2] MCP/CLI 峰值比 = {ratio:.9}（32767/32768 = {:.9}）",
-        32_767.0_f64 / 32_768.0
+        "### [A2] MCP/CLI 峰值比 = {ratio:.9}（修前 0.999969483 = 32767/32768；修后必须 = 1）"
     );
-    assert!(
-        (ratio - 32_767.0_f64 / 32_768.0).abs() < 1.0e-6,
-        "16-bit 素材的 MCP/CLI 峰值比必须 ≈ 32767/32768（MCP 归一化 /32768、CLI /32767），\
-         实际 {ratio:.9}"
+    assert_eq!(
+        ratio, 1.0,
+        "修后两侧峰值比必须**正好** 1.0（⛔ 不再是 32767/32768 = 0.999969483）"
     );
 }
 

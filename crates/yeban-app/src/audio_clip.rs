@@ -36,7 +36,7 @@
 //!    `audio-clips(rendered=… skipped=…)` 的计数**明说少了几段**（⛔ 不静默少一段）。
 //! 3. **多声道归一化**：共享的 `read_plain_wav_mono_f32` 会把多声道折成**第 0 声道**，
 //!    而 MCP 支持 `Identity`（立体声素材进立体声母线）。⇒ 本模块用 `read_plain_wav` 取
-//!    **保留声道数**的交织样本，并用**同一张归一化表**（`BitDepth::full_scale_max`；
+//!    **保留声道数**的交织样本，并用**同一张归一化表**（`BitDepth::scale` ＝ `2^(bits-1)`；
 //!    浮点直用）折成 `f32`。这张表就是 `read_plain_wav_mono_f32` 文档里那张。
 //!
 //! ## 本模块只服务**离线导出**（实时那半在 `crate::audio_inject`）
@@ -816,11 +816,16 @@ impl Drop for TempFile {
 /// 交织 PCM ⇒ 归一化 `f32`（**保留声道数**）。
 ///
 /// 归一化表与 [`yeban_render::wav::read_plain_wav_mono_f32`] 的文档**逐条相同**
-/// （浮点直用；`Int16` / `Int24` 除以 `BitDepth::full_scale_max`），差异只在"不折成单声道"。
+/// （浮点直用；`Int16` / `Int24` 除以 `BitDepth::scale` ＝ `2^(bits-1)`），
+/// 差异只在"不折成单声道"。
+///
+/// ⚠ `#254`：分母从前是 `full_scale_max`（`2^(n-1) - 1`），它把 `-32768` 映射成
+/// `-1.0000305`（越出满量程 1 LSB），并且与 MCP／`symphonia` 腿的 `2^(n-1)` 差一个
+/// `32768/32767` 的常数因子。⛔ 不要改回 `full_scale_max`。
 fn normalize_samples(buffer: &PcmBuffer) -> Vec<f32> {
     let scale = match buffer.depth() {
         BitDepth::Float32 => 1.0_f32,
-        depth => 1.0_f32 / (depth.full_scale_max().max(1) as f32),
+        depth => 1.0_f32 / depth.scale(),
     };
     match buffer {
         PcmBuffer::Int16(values) => values

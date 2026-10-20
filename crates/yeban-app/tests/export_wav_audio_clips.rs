@@ -16,7 +16,7 @@
 //!
 //! 1. `inside_peak`：导出 WAV 的**左声道**在摆放帧窗口 `[start, end)` 内的**峰值**（归一化
 //!    到 `[-1, 1]`）；
-//! 2. `expected_peak`：源样本（`SOURCE_INT16 / 32767`）× `db_to_linear(CLIP_GAIN_DB)`；
+//! 2. `expected_peak`：源样本（`SOURCE_INT16 / 32768`，`#254` 起解码分母是 `2^15`）× `db_to_linear(CLIP_GAIN_DB)`；
 //! 3. `outside_peak`：窗口**之外**的峰值（抖动只有 ±1 LSB，量级 `1e-7`）。
 //!
 //! 断言 `inside_peak ≈ expected_peak` 且 `outside_peak ≈ 0` ⇒ "全程非零" 或 "窗口错位"
@@ -84,7 +84,7 @@ fn synth_asset(dir: &Path, rate: u32) -> (Vec<u8>, f32) {
     .expect("写夹具 WAV");
     (
         std::fs::read(&path).expect("读夹具 WAV"),
-        f32::from(SOURCE_INT16) / 32_767.0,
+        f32::from(SOURCE_INT16) / 32_768.0,
     )
 }
 

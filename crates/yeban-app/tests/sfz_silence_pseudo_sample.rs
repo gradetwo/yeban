@@ -244,9 +244,9 @@ fn the_cli_export_of_a_silence_only_instrument_is_really_silent() {
     assert_eq!(peak(&float_pcm), 0.0, "32f 导出峰值必须逐位 0");
 
     let (pcm24, _) = run("silence-24.wav", None);
-    // 24-bit 的 1 LSB：解码腿按 `Int24 / 8_388_607` 归一（⛔ 不是 `2^-23` 的近似值）。
-    // TPDF 抖动最多带来 ±1 LSB。
-    let one_lsb = 1.0_f32 / 8_388_607.0;
+    // 24-bit 的 1 LSB：解码腿按 `Int24 / 2^23 = /8_388_608` 归一（`#254` 起；⛔ 不是
+    // `2^-23` 的近似值，也⛔ 不是 `2^23 − 1`）。TPDF 抖动最多带来 ±1 LSB。
+    let one_lsb = 1.0_f32 / 8_388_608.0;
     assert!(
         energy(&pcm24) <= pcm24.len() as f32 * one_lsb * one_lsb,
         "24-bit 导出的能量必须 ≤ 抖动底（每样本 ≤ 1 LSB²），实得 {:.12e}",
