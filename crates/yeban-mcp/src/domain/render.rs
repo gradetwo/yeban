@@ -416,7 +416,7 @@ use yeban_render::dither::{BitDepth, quantize};
 use yeban_render::automation::{
     TrackGainAutomation, TrackPanAutomation, centered_pan_gains, send_gain_automations,
 };
-use yeban_render::inserts::{project_inserts, track_has_unhandled_dsp};
+use yeban_render::inserts::{project_inserts, resolve_device_param, track_has_unhandled_dsp};
 use yeban_render::mastering;
 use yeban_render::render::{
     AudioSource, BlockContext, L1_BLOCK_SIZE, RenderError, RenderOptions, RenderOutput, RenderPlan,
@@ -1480,6 +1480,20 @@ pub struct AutomationLaneReport {
     pub first_value: Option<f32>,
     /// 末点值。
     pub last_value: Option<f32>,
+    /// ⭐ `#263`：`DeviceParam` 的**序数地址**此刻解析到的设备身份（其它目标为 `None`）。
+    ///
+    /// 有了它，"插一台设备就静默改指"从不可见变成**读数**：同一个泳道在插设备前后
+    /// 报出**两个不同的** `resolved_device_id`，而 `supported` / `evaluable` 一位不变。
+    pub resolved_device_id: Option<EntityId>,
+    /// ⭐ `#263`：解析到的参数名**原文**（解析失败 / 非设备参数为 `None`）。
+    ///
+    /// ⚠ 名字解析到了、但 DSP 不认时本字段**仍然报名字**，原因写进 [`Self::unresolved`]。
+    pub resolved_param_name: Option<String>,
+    /// ⭐ `#263`：未解析（或名字不在白名单）的**原因串**；`None` = 完全解析且支持。
+    ///
+    /// 词表只有一个来源：`yeban_render::inserts::UnresolvedReason::as_str` /
+    /// `ResolvedDeviceParam::unresolved_reason`（本模块⛔ 不拼第二份字面量）。
+    pub unresolved: Option<&'static str>,
 }
 
 impl AutomationLaneReport {
@@ -1499,6 +1513,10 @@ impl AutomationLaneReport {
             "lastTick": self.last_tick,
             "firstValue": json_f32(self.first_value),
             "lastValue": json_f32(self.last_value),
+            // ⭐ `#263`：序数地址的可观测解析（非设备参数一律 `null`，⛔ 不静默省略键）。
+            "resolvedDeviceId": self.resolved_device_id.map(|id| id.to_canonical_string()),
+            "resolvedParamName": self.resolved_param_name,
+            "unresolved": self.unresolved,
         })
     }
 }
@@ -1596,6 +1614,28 @@ impl AutomationReport {
                 let ordered = lane.points_in_tick_order();
                 let first = ordered.first().copied();
                 let last = ordered.last().copied();
+                // ⭐ `#263`：`DeviceParam` 的两个下标都是序数 ⇒ 逐泳道把"此刻指到谁"
+                // 报出来。解析的唯一实现在 `yeban_render::inserts`（本模块⛔ 不复制）；
+                // 非设备目标三个字段一律 `null`，键仍然在（⛔ 不静默省略）。
+                let (resolved_device_id, resolved_param_name, unresolved) = match target {
+                    AutomationTarget::DeviceParam {
+                        track_id,
+                        slot_index,
+                        param_index,
+                    } => {
+                        match resolve_device_param(project, *track_id, *slot_index, *param_index) {
+                            Ok(resolved) => {
+                                let reason = resolved.unresolved_reason();
+                                (Some(resolved.device_id), Some(resolved.param_name), reason)
+                            }
+                            Err(reason) => (None, None, Some(reason.as_str())),
+                        }
+                    }
+                    AutomationTarget::TrackVolume { .. }
+                    | AutomationTarget::TrackPan { .. }
+                    | AutomationTarget::SendGain { .. }
+                    | AutomationTarget::Macro { .. } => (None, None, None),
+                };
                 lane_reports.push(AutomationLaneReport {
                     target: automation_target_name(*target),
                     points: lane.points.len(),
@@ -1609,6 +1649,9 @@ impl AutomationReport {
                     last_tick: last.map(|point| point.tick),
                     first_value: first.map(|point| point.value),
                     last_value: last.map(|point| point.value),
+                    resolved_device_id,
+                    resolved_param_name,
+                    unresolved,
                 });
             }
             if !lane_reports.is_empty() {
@@ -4382,5 +4425,268 @@ mod tests {
             ],
             "MCP 与引擎同一张 (start_tick, end_tick, pitch) 表"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // ⭐ `#263`：`DeviceParam` 的**序数地址**解析成稳定名字
+    //
+    // 交付物就是 `data.automation.tracks[].lanes[]` 的三个字段，因此判据全部走
+    // `AutomationReport::from_project` + `to_value`（无头、不渲染音频）。
+    // -----------------------------------------------------------------------
+
+    use yeban_model::{
+        AutomationLane, AutomationPoint, CurveType, DeviceDefinition, ParameterValue,
+    };
+
+    fn node(seed: u32) -> EntityId {
+        let mut text = [b'0'; 26];
+        const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        for position in 0..4 {
+            text[25 - position] = ALPHABET[((seed >> (5 * position)) & 0x1F) as usize];
+        }
+        core::str::from_utf8(&text)
+            .expect("ASCII")
+            .parse()
+            .expect("合法 ULID")
+    }
+
+    fn param(name: &str, value: f32) -> ParameterValue {
+        ParameterValue {
+            name: name.to_owned(),
+            value,
+            unit: None,
+        }
+    }
+
+    fn device(id: EntityId, params: &[(&str, f32)]) -> DeviceDefinition {
+        DeviceDefinition {
+            id,
+            name: "dev".to_owned(),
+            kind: DeviceKind::InternalEffect,
+            bypassed: false,
+            params: params
+                .iter()
+                .map(|(name, value)| param(name, *value))
+                .collect(),
+            latency_samples: 0,
+        }
+    }
+
+    fn device_param(track_id: EntityId, slot_index: usize, param_index: usize) -> AutomationTarget {
+        AutomationTarget::DeviceParam {
+            track_id,
+            slot_index,
+            param_index,
+        }
+    }
+
+    /// 一条轨 + 给定的设备链 + 给定的泳道（每条泳道一个点，`readEnabled: true`）。
+    fn project_with(
+        devices: Vec<DeviceDefinition>,
+        targets: &[AutomationTarget],
+    ) -> (YebanProjectV1, EntityId) {
+        let track_id = node(1);
+        let mut track = TrackV3 {
+            id: track_id,
+            name: "Lead".to_owned(),
+            devices,
+            ..TrackV3::default()
+        };
+        for (offset, target) in targets.iter().enumerate() {
+            let point = AutomationPoint {
+                id: node(300 + offset as u32),
+                tick: 0,
+                value: 0.25,
+                curve: CurveType::Linear,
+            };
+            track.automation_lanes.insert(
+                *target,
+                AutomationLane {
+                    target: *target,
+                    points: BTreeMap::from([(point.id, point)]),
+                    read_enabled: true,
+                    write_mode: AutomationWriteMode::Off,
+                    domain: None,
+                },
+            );
+        }
+        let mut project = YebanProjectV1 {
+            master_bus_track_id: node(0xFF),
+            ..YebanProjectV1::default()
+        };
+        project.tracks.insert(track_id, track);
+        (project, track_id)
+    }
+
+    /// 报告里某条泳道的 JSON（按目标名找；同名的多条用 [`lanes_of`]）。
+    fn lane_of(report: &AutomationReport, target: &str) -> Value {
+        let value = report.to_value();
+        let lanes = value["tracks"][0]["lanes"].as_array().expect("lanes");
+        lanes
+            .iter()
+            .find(|lane| lane["target"] == target)
+            .cloned()
+            .unwrap_or_else(|| panic!("缺少 {target} 泳道: {value}"))
+    }
+
+    fn lanes_of(report: &AutomationReport) -> Vec<Value> {
+        report.to_value()["tracks"][0]["lanes"]
+            .as_array()
+            .expect("lanes")
+            .clone()
+    }
+
+    /// 判据 1：`DeviceParam { 0, 0 }` 且设备有参数 ⇒
+    /// `resolvedDeviceId`（设备 `id`）＋ `resolvedParamName`（参数名）＋ `unresolved: null`。
+    /// 非设备目标的同名字段**键仍在、值为 `null`**（⛔ 不静默省略）。
+    #[test]
+    fn a_device_param_lane_reports_the_resolved_device_and_param_name() {
+        let device_id = node(101);
+        let track_id = node(1);
+        let (project, _) = project_with(
+            vec![device(device_id, &[("input_gain_db", -3.0), ("mix", 0.5)])],
+            &[
+                AutomationTarget::TrackVolume { track_id },
+                device_param(track_id, 0, 0),
+            ],
+        );
+        let report = AutomationReport::from_project(&project, &[], &[]);
+        let lane = lane_of(&report, "DeviceParam");
+        println!(
+            "判据 1 读数: {}",
+            serde_json::to_string(&lane).expect("JSON")
+        );
+        assert_eq!(
+            lane["resolvedDeviceId"],
+            device_id.to_canonical_string(),
+            "必须是设备身份，不是下标"
+        );
+        assert_eq!(lane["resolvedParamName"], "input_gain_db");
+        assert_eq!(lane["unresolved"], Value::Null);
+
+        let structural = report.tracks[0]
+            .lanes
+            .iter()
+            .find(|lane| lane.target == "DeviceParam")
+            .expect("结构层");
+        assert_eq!(structural.resolved_device_id, Some(device_id));
+        assert_eq!(
+            structural.resolved_param_name.as_deref(),
+            Some("input_gain_db")
+        );
+        assert_eq!(structural.unresolved, None);
+
+        let volume = lane_of(&report, "TrackVolume");
+        for key in ["resolvedDeviceId", "resolvedParamName", "unresolved"] {
+            assert!(
+                volume.get(key).is_some(),
+                "非设备目标也必须带 `{key}` 键（值 null）: {volume}"
+            );
+            assert_eq!(volume[key], Value::Null, "{key} 必须是 null: {volume}");
+        }
+    }
+
+    /// 判据 2：`slot_index = 99` ⇒ `"slotOutOfRange"`；`param_index = 99` ⇒
+    /// `"paramIndexOutOfRange"`；两者都不报设备/名字（不是"猜一个"）。
+    #[test]
+    fn out_of_range_device_param_lanes_report_the_reason_verbatim() {
+        let track_id = node(1);
+        let (project, _) = project_with(
+            vec![device(node(101), &[("input_gain_db", -3.0)])],
+            &[device_param(track_id, 99, 0), device_param(track_id, 0, 99)],
+        );
+        let report = AutomationReport::from_project(&project, &[], &[]);
+        let lanes = lanes_of(&report);
+        println!(
+            "判据 2 读数: {}",
+            serde_json::to_string(&lanes).expect("JSON")
+        );
+        assert_eq!(lanes.len(), 2);
+        let by_reason = |reason: &str| {
+            lanes
+                .iter()
+                .find(|lane| lane["unresolved"] == reason)
+                .unwrap_or_else(|| panic!("缺少 unresolved={reason}: {lanes:?}"))
+                .clone()
+        };
+        let slot = by_reason("slotOutOfRange");
+        assert_eq!(slot["resolvedDeviceId"], Value::Null);
+        assert_eq!(slot["resolvedParamName"], Value::Null);
+        let index = by_reason("paramIndexOutOfRange");
+        assert_eq!(index["resolvedDeviceId"], Value::Null);
+        assert_eq!(index["resolvedParamName"], Value::Null);
+    }
+
+    /// 判据 3：名字解析到了、但 DSP 不认 ⇒ `unresolved: "paramNotSupported"`，
+    /// **名字仍然报**（⛔ 不能因为不支持就把名字也吞掉）。
+    #[test]
+    fn an_unsupported_param_name_is_still_reported_alongside_the_reason() {
+        let device_id = node(101);
+        let track_id = node(1);
+        let (project, _) = project_with(
+            vec![device(device_id, &[("mix", 0.5)])],
+            &[device_param(track_id, 0, 0)],
+        );
+        let report = AutomationReport::from_project(&project, &[], &[]);
+        let lane = lane_of(&report, "DeviceParam");
+        println!(
+            "判据 3 读数: {}",
+            serde_json::to_string(&lane).expect("JSON")
+        );
+        assert_eq!(lane["resolvedDeviceId"], device_id.to_canonical_string());
+        assert_eq!(lane["resolvedParamName"], "mix", "名字必须仍然报");
+        assert_eq!(lane["unresolved"], "paramNotSupported");
+        // ⚠ 解析成功不等于被应用：既有 `supported` / `applied` 口径一位不变。
+        assert_eq!(lane["supported"], false);
+        assert_eq!(lane["applied"], false);
+    }
+
+    /// 判据 4（**本单的核心价值**）：槽位 0 插入一台新设备 ⇒ 同一个泳道的
+    /// `resolvedDeviceId` **变成新设备的 id**，而 `validate_against` 仍是 `Ok(())`。
+    /// 这就是"插一台设备就静默改指"的机械证据。
+    #[test]
+    fn inserting_a_device_at_slot_zero_silently_retargets_the_lane() {
+        let old_device = node(101);
+        let new_device = node(202);
+        let target = device_param(node(1), 0, 0);
+        let (mut project, track_id) = project_with(
+            vec![device(old_device, &[("input_gain_db", -3.0)])],
+            &[target],
+        );
+        target.validate_against(&project).expect("插设备前目标合法");
+        let before = lane_of(
+            &AutomationReport::from_project(&project, &[], &[]),
+            "DeviceParam",
+        );
+
+        // 模型自己的插入操作（不是测试里手搓 Vec 下标）。
+        yeban_model::Op::InsertDevice {
+            track_id,
+            slot_index: 0,
+            device: device(new_device, &[("input_gain_db", 0.0)]),
+        }
+        .apply(&mut project)
+        .expect("插入设备");
+
+        // ⚠ 静默的那一半：新下标仍在范围 ⇒ 对账入口什么都不报。
+        target
+            .validate_against(&project)
+            .expect("插设备后 validate_against 仍然 Ok（这正是隐患）");
+        let after = lane_of(
+            &AutomationReport::from_project(&project, &[], &[]),
+            "DeviceParam",
+        );
+        println!(
+            "判据 4 读数: before={} after={}（两次 unresolved 都是 null）",
+            before["resolvedDeviceId"], after["resolvedDeviceId"]
+        );
+        assert_eq!(before["resolvedDeviceId"], old_device.to_canonical_string());
+        assert_eq!(after["resolvedDeviceId"], new_device.to_canonical_string());
+        assert_ne!(
+            before["resolvedDeviceId"], after["resolvedDeviceId"],
+            "插设备必须让同一序数改指 —— 否则本判据测的不是这件事"
+        );
+        assert_eq!(before["unresolved"], Value::Null);
+        assert_eq!(after["unresolved"], Value::Null);
     }
 }

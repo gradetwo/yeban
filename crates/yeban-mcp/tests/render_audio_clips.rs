@@ -2033,6 +2033,12 @@ fn send_gain_applies_while_device_param_and_macro_stay_unsupported() {
         "### MCP 混合泳道 automation = {}",
         serde_json::to_string(&data["automation"]).expect("JSON")
     );
+    // ⭐ `#263` 判据 5 的**修前/修后同一个数**：带 `DeviceParam` 泳道的整文件 sha256。
+    println!("### MCP 混合泳道 sha256 = {}", artifact.sha256);
+    println!(
+        "### MCP 混合泳道 masterDigest = {}",
+        data["masterDigest"].as_str().unwrap_or("<none>")
+    );
     let lanes = data["automation"]["tracks"][0]["lanes"]
         .as_array()
         .expect("lanes");
@@ -2045,6 +2051,22 @@ fn send_gain_applies_while_device_param_and_macro_stay_unsupported() {
     assert_eq!(lane("SendGain")["applied"], true);
     assert_eq!(lane("DeviceParam")["applied"], false);
     assert_eq!(lane("Macro")["applied"], false);
+    // ⭐ `#263`：端到端读数里，`DeviceParam` 的序数地址(0,0)必须解析成**设备身份**
+    // 与**参数名原文**；名字不在白名单 ⇒ `paramNotSupported`，但名字仍然报。
+    assert_eq!(
+        lane("DeviceParam")["resolvedDeviceId"],
+        id(101).to_canonical_string(),
+        "槽位 0 此刻指到的是 id(101)（不是下标 0）"
+    );
+    assert_eq!(lane("DeviceParam")["resolvedParamName"], "mix");
+    assert_eq!(lane("DeviceParam")["unresolved"], "paramNotSupported");
+    assert_eq!(lane("Macro")["resolvedDeviceId"], Value::Null, "非设备目标");
+    assert_eq!(
+        lane("Macro")["resolvedParamName"],
+        Value::Null,
+        "非设备目标"
+    );
+    assert_eq!(lane("Macro")["unresolved"], Value::Null, "非设备目标");
     assert_eq!(data["automation"]["appliedLanes"], 1);
     assert_eq!(data["automation"]["unsupportedLanes"], 2);
     assert!(

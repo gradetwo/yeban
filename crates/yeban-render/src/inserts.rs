@@ -89,7 +89,7 @@ use yeban_dsp::convolution_reverb::{ConvolutionReverb, ConvolutionReverbParams};
 use yeban_dsp::noise::Rng;
 use yeban_dsp::reverb::{Reverb, ReverbParams};
 use yeban_dsp::shaping::EqParams;
-use yeban_model::{DeviceDefinition, DeviceKind, EntityId, TrackV3};
+use yeban_model::{DeviceDefinition, DeviceKind, EntityId, TrackV3, YebanProjectV1};
 
 /// 卷积混响 IR 的长度除数（帧数 = 采样率 ÷ 10）。
 ///
@@ -395,6 +395,105 @@ fn is_supported_param(name: &str) -> bool {
             | "conv_ir_decay"
             | "conv_ir_seed"
     )
+}
+
+/// 一次**成功解析**的设备参数地址（序数 → 稳定身份）。
+///
+/// 为什么需要翻译：`AutomationTarget::DeviceParam` 的 `slot_index` / `param_index`
+/// 是 `track.devices` / `device.params` 两个 `Vec` 的**下标**，而模型自己的寻址
+/// 口径是 `track_id` + `device_id`（`crates/yeban-model/src/ops.rs` 的
+/// `SetDeviceBypassed` 逐字写着"⛔ 不用下标（`Vec`，增删会移位）"）。于是**中途插一台
+/// 设备**会让泳道静默改指另一台设备，而 `AutomationTarget::validate_against` 仍
+/// `Ok(())`（新下标仍在范围）。本结构不改变那个行为，只把"此刻指到谁"变成读数。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedDeviceParam {
+    /// 这个序数**此刻**指到的设备身份。
+    pub device_id: EntityId,
+    /// 这个序数**此刻**指到的参数名（**原文**，不改大小写）。
+    pub param_name: String,
+    /// 该名字是否在**本切片真的消费**的白名单里（[`is_supported_param`]，大小写不敏感）。
+    ///
+    /// ⚠ 只判**名字**：不看 `bypassed` / `kind` —— "这台设备会不会被执行"由
+    /// [`track_has_unhandled_dsp`] 与 [`InsertChain`] 各自回答。
+    pub is_supported: bool,
+}
+
+impl ResolvedDeviceParam {
+    /// 名字解析到了、但 DSP 不认时的**唯一**原因串。
+    ///
+    /// `None` = 名字在[`is_supported_param`] 里。返回 `&'static str` 而不是让调用方
+    /// 各自拼字面量：MCP 读数里 `unresolved: "paramNotSupported"` 只有这一处来源。
+    #[must_use]
+    pub const fn unresolved_reason(&self) -> Option<&'static str> {
+        if self.is_supported {
+            None
+        } else {
+            Some("paramNotSupported")
+        }
+    }
+}
+
+/// 序数地址**解析失败**的原因。
+///
+/// 变体刻意与 `yeban_model::ModelError` 的三种下标错误一一对应，但**不**携带
+/// `len` / 缺失实体：MCP 读数只要一个稳定的原因串，长度由模型的对账入口自己报。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnresolvedReason {
+    /// 音轨不存在（`project.tracks` 里没有这个身份）。
+    TrackNotFound,
+    /// `slot_index` 越界（`track.devices` 没有这个下标）。
+    SlotOutOfRange,
+    /// `param_index` 越界（该设备的 `params` 没有这个下标）。
+    ParamIndexOutOfRange,
+}
+
+impl UnresolvedReason {
+    /// 进 JSON 的逐字原因串（MCP 读数 `unresolved` 的唯一词表）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TrackNotFound => "trackNotFound",
+            Self::SlotOutOfRange => "slotOutOfRange",
+            Self::ParamIndexOutOfRange => "paramIndexOutOfRange",
+        }
+    }
+}
+
+/// 把 `(track_id, slot_index, param_index)` 这组**序数**翻译成稳定名字
+/// （**唯一实现**：MCP 只调用它，⛔ 不复制一份解析）。
+///
+/// 范围规则与 `AutomationTarget::validate_against`（`crates/yeban-model/src/automation.rs`）
+/// **同式**：先 `track.devices.get(slot_index)`，再 `param_index >= device.params.len()`。
+/// 因此"解析失败"与"模型判目标不存在"不会互相矛盾；反过来，**解析成功也不代表泳道
+/// 没改指** —— 插设备之后同一个序数仍解析成功，只是 `device_id` 换了一台。
+///
+/// # Errors
+///
+/// - 音轨不存在 → [`UnresolvedReason::TrackNotFound`]；
+/// - `slot_index` 越界 → [`UnresolvedReason::SlotOutOfRange`]；
+/// - `param_index` 越界 → [`UnresolvedReason::ParamIndexOutOfRange`]。
+pub fn resolve_device_param(
+    project: &YebanProjectV1,
+    track_id: EntityId,
+    slot_index: usize,
+    param_index: usize,
+) -> Result<ResolvedDeviceParam, UnresolvedReason> {
+    let track = project
+        .track(&track_id)
+        .map_err(|_| UnresolvedReason::TrackNotFound)?;
+    let device = track
+        .devices
+        .get(slot_index)
+        .ok_or(UnresolvedReason::SlotOutOfRange)?;
+    let param = device
+        .params
+        .get(param_index)
+        .ok_or(UnresolvedReason::ParamIndexOutOfRange)?;
+    Ok(ResolvedDeviceParam {
+        device_id: device.id,
+        param_name: param.name.clone(),
+        is_supported: is_supported_param(&param.name.to_ascii_lowercase()),
+    })
 }
 
 /// 单台设备 → 通道条参数（`None` = 一个已识别的通道条名字都没有）。
