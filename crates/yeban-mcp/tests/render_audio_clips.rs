@@ -1827,7 +1827,8 @@ fn a_send_gain_ramp_is_strictly_monotonic_and_reported_applied() {
     assert_eq!(data["automation"]["unsupportedLanes"], 0);
     assert_eq!(
         data["automation"]["targetsSupported"],
-        json!(["TrackVolume", "SendGain"])
+        json!(["TrackVolume", "TrackPan", "SendGain"]),
+        "⭐ #257：TrackPan 也进了支持集合"
     );
     assert_eq!(
         data["automation"]["tracks"][0]["lanes"][0]["target"],
@@ -2056,12 +2057,111 @@ fn send_gain_applies_while_device_param_and_macro_stay_unsupported() {
     );
     assert_eq!(
         data["automation"]["targetsUnsupported"],
-        json!(["TrackPan", "DeviceParam", "Macro"])
+        json!(["DeviceParam", "Macro"]),
+        "⭐ #257：TrackPan 已支持 ⇒ 不再出现在 targetsUnsupported（DeviceParam/Macro 仍不支持）"
     );
     // 判据 2 的另一半：同一条渲染里发送渐强仍然生效。
     let peaks = four_window_peaks(&payload_samples(&artifact), 48_000);
     assert!(
         peaks[0] < peaks[1] && peaks[1] < peaks[2] && peaks[2] < peaks[3],
         "{peaks:?}"
+    );
+}
+
+/// ⭐ `#257`：`TrackPan` 自动化在 `yeban_render_master` 里生效，且浮点母带摘要与
+/// `--export-wav` **逐位相同**（两条导出共用 `TrackPanAutomation`、同一条曲线、同一个
+/// 128 帧块网格）。
+///
+/// 判据：前段左重、后段右重（L/R 比反向）；`data.automation` 报 `TrackPan applied:true`；
+/// `masterDigest` 与 `crates/yeban-app/tests/pan_automation_export.rs` 的同名常量**逐字相同**。
+#[test]
+fn a_track_pan_ramp_moves_left_to_right_and_matches_the_cli_digest() {
+    const PAN_RAMP_MASTER_DIGEST: &str =
+        "84e17115c2895a44a7b57d7b2638ca4a4ea8aed32f98f95b7b85d70631068ad4";
+    let scratch = Scratch::new("pan-ramp");
+    let bytes = wav_f32(2, 48_000, &constant(48_000, 0.5));
+    let mut fixture = fixture(bytes, &Tune::default());
+    let lead = id(2);
+    let target = AutomationTarget::TrackPan { track_id: lead };
+    let mut points = BTreeMap::new();
+    for (seed, tick, value) in [(301u32, 0u64, -1.0f32), (302, ONE_SECOND_TICKS, 1.0)] {
+        let point = AutomationPoint {
+            id: id(seed),
+            tick,
+            value,
+            curve: CurveType::Linear,
+        };
+        points.insert(point.id, point);
+    }
+    fixture
+        .project
+        .tracks
+        .get_mut(&lead)
+        .expect("Lead")
+        .automation_lanes
+        .insert(
+            target,
+            AutomationLane {
+                target,
+                points,
+                read_enabled: true,
+                write_mode: AutomationWriteMode::Off,
+                domain: None,
+            },
+        );
+    fixture.project.validate().expect("夹具合法");
+
+    let out = scratch.join("pan-ramp.wav");
+    let artifact = build_with(&fixture.project, &pool(&fixture), &out, args(&out)).expect("渲染");
+    let data = artifact.response_data();
+    let samples = payload_samples(&artifact);
+    println!(
+        "### MCP pan automation = {}",
+        serde_json::to_string(&data["automation"]).expect("JSON")
+    );
+    let frames = usize::try_from(artifact.frames).expect("帧数");
+    let mid = frames / 2;
+    let half = |from: usize, to: usize| {
+        let mut left = 0.0f64;
+        let mut right = 0.0f64;
+        for frame in from..to {
+            left += f64::from(samples[frame * 2].abs());
+            right += f64::from(samples[frame * 2 + 1].abs());
+        }
+        (left, right)
+    };
+    let (early_l, early_r) = half(0, mid);
+    let (late_l, late_r) = half(mid, frames);
+    let early = early_l / early_r;
+    let late = late_l / late_r;
+    println!(
+        "### MCP pan ramp: digest={} sha={} early L/R={early:.6} late L/R={late:.6}",
+        data["masterDigest"], data["sha256"]
+    );
+    assert!(early > 2.0, "前段必须左重: L/R={early:.6}");
+    assert!(late < 0.5, "后段必须右重: L/R={late:.6}");
+    assert!(early > late, "两段 L/R 比必须反向: {early} vs {late}");
+    assert_eq!(
+        data["masterDigest"].as_str().expect("masterDigest"),
+        PAN_RAMP_MASTER_DIGEST,
+        "声相渐强的浮点母带必须与 CLI 侧逐位相同"
+    );
+    // 读数：TrackPan 真的被应用、`automationLanes` 不再出现。
+    assert_eq!(
+        data["automation"]["tracks"][0]["lanes"][0]["target"],
+        "TrackPan"
+    );
+    assert_eq!(data["automation"]["tracks"][0]["lanes"][0]["applied"], true);
+    assert_eq!(
+        data["automation"]["targetsSupported"],
+        json!(["TrackVolume", "TrackPan", "SendGain"])
+    );
+    assert!(
+        !data["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|value| value == "automationLanes"),
+        "被应用的 TrackPan 泳道不许再报 automationLanes: {data}"
     );
 }

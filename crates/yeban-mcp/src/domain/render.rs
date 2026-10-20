@@ -49,13 +49,13 @@
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
 //! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
-//! | `automationLanes` | ⭐ `#243` / `#256`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`TrackPan` / `DeviceParam` / `Macro`），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
+//! | `automationLanes` | ⭐ `#243` / `#256` / `#257`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`DeviceParam` / `Macro`），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）、`SendGain` 落在**被剪枝的边**上、`TrackPan` 落在**主总线**上的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；`SendGain` 在保留子图的入边归约里**真的被求值**（任务单 `#256`）；`TrackPan` 在源节点的源输出之后**真的被求值**（任务单 `#257`）；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
 //! | `notePitchBend` | 弯音曲线没有求值 |
 //! | `noteLyrics` | 歌词/音素没有歌声合成 |
 //! | `busTrackClips` | 非源节点（总线/主轨）上的片段没有渲染（只有源节点有音源） |
 //! | `sidechainRouting` | 侧链边按普通音频边处理（`yeban-render` 的既有边界） |
-//! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定）。⚠ `master` 的 `volume_db` **有**应用，`TrackVolume` 自动化也走第二个站点（执行之后） |
+//! | `masterPan` | Master 轨的 `pan` 没有应用（母带输出的声相由总线求和决定）。⚠ `master` 的 `volume_db` **有**应用，`TrackVolume` 自动化也走第二个站点（执行之后）。⚠ `#257`：`TrackPan` 落在**主总线**上的泳道因此仍登记 `automationLanes`（`supported: false`）—— 主总线没有声相落点 |
 //! | `sfzLoopExpansion` | ⭐ `#221`：采样器区域要求的**循环**没有展开（每个音符只响一遍，与 `yeban_render_sfz_wav` 同一句登记）。只在真的遇到循环区域时出现 |
 //! | `sfzRegionEnvelope` | ⭐ `#221`：命中的采样器区域声明了 `ampeg_*` 幅度包络，**本渲染器不应用**（缺省值 ⇒ 与引擎逐位相同）。只在真的声明了包络时出现 |
 //! | `sfzAmplitude` | ⭐ `#223`：命中区域的 **`amplitude` 一族**（静态值 ≠ 100，或 `amplitude*ccN`）没有应用。`PlaybackSpec::total_gain()` 只含 `volume × 力度 × 交叉淡化`；引擎在它**之外**另乘 `(amplitude + Σ delta)/100` ⇒ 本渲染器与引擎分叉。只在真的声明时出现 |
@@ -413,7 +413,9 @@ use yeban_model::{
 use yeban_render::dither::{BitDepth, quantize};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
-use yeban_render::automation::{TrackGainAutomation, send_gain_automations};
+use yeban_render::automation::{
+    TrackGainAutomation, TrackPanAutomation, centered_pan_gains, send_gain_automations,
+};
 use yeban_render::inserts::{project_inserts, track_has_unhandled_dsp};
 use yeban_render::mastering;
 use yeban_render::render::{
@@ -1443,9 +1445,10 @@ impl AudioAssetReport {
 ///
 /// - `evaluable` = 泳道有点 **且** `readEnabled == true`（`automation_value_at` 的
 ///   三个“无值”出口里的两个）；空泳道与关掉的泳道因此**不可求值**；
-/// - `supported` = 本渲染器真的消费这个目标。首期支持 `TrackVolume` 与 `SendGain`：
-///   `TrackVolume` 只有两类落点（源节点 / 主总线），`SendGain` 的落点是那条**入边**
-///   在 `RenderPlan` 里的归约（任务单 `#256`）；
+/// - `supported` = 本渲染器真的消费这个目标。首期支持 `TrackVolume`、`SendGain`
+///   与 `TrackPan`：`TrackVolume` 只有两类落点（源节点 / 主总线），`SendGain` 的落点是
+///   那条**入边**在 `RenderPlan` 里的归约（任务单 `#256`），`TrackPan` 的落点是
+///   **源节点**的源输出之后（任务单 `#257`；主总线没有声相落点 ⇒ 仍不支持）；
 /// - `applied` = `evaluable && supported`；
 /// - `unsupported` = `evaluable && !supported`（调用方据此登记 `automationLanes`）。
 ///
@@ -1571,13 +1574,17 @@ impl AutomationReport {
                 // 支持的目标与落点：
                 // - `TrackVolume`：源节点（源侧）或主总线（执行后）；
                 // - `SendGain`：这条边在保留子图的入边归约里（`#256`）；
-                // - 其余三个目标仍不支持。
+                // - `TrackPan`：源节点（源输出之后；主总线没有声相落点，`#257`）；
+                // - `DeviceParam` / `Macro` 仍不支持。
                 let supported = match target {
                     AutomationTarget::TrackVolume { track_id } => {
                         *track_id == master || source_nodes.contains(track_id)
                     }
                     AutomationTarget::SendGain { edge_id, .. } => rendered_edges.contains(edge_id),
-                    _ => false,
+                    AutomationTarget::TrackPan { track_id } => {
+                        *track_id != master && source_nodes.contains(track_id)
+                    }
+                    AutomationTarget::DeviceParam { .. } | AutomationTarget::Macro { .. } => false,
                 };
                 let is_applied = is_evaluable && supported;
                 if is_applied {
@@ -1627,15 +1634,15 @@ impl AutomationReport {
         serde_json::json!({
             "wired": true,
             "evaluator": "YebanProjectV1::automation_value_at",
-            "targetsSupported": ["TrackVolume", "SendGain"],
-            "targetsUnsupported": ["TrackPan", "DeviceParam", "Macro"],
+            "targetsSupported": ["TrackVolume", "TrackPan", "SendGain"],
+            "targetsUnsupported": ["DeviceParam", "Macro"],
             "granularity": {
                 "blockSize": L1_BLOCK_SIZE,
                 "curve": "每块起点取一次曲线值（tick = floor(frame * PPQ * bpm / (sample_rate * 60))）",
                 "smoothing": "块内逐样本一阶低通；时间常数 5 ms",
             },
             "domainTransfer": {
-                "ratio": "db_to_linear(自动化 dB) / db_to_linear(静态值 dB)（TrackVolume 取 track.volume_db；SendGain 取 edge.gain_db.unwrap_or(0.0)）",
+                "ratio": "db_to_linear(自动化 dB) / db_to_linear(静态值 dB)（TrackVolume 取 track.volume_db；SendGain 取 edge.gain_db.unwrap_or(0.0)）；TrackPan 不换域：平滑的是位置（-1..=1），乘的是等功率曲线的绝对左右增益",
                 "adr": "R55",
                 "denominator": "静态值（⛔ 不是 mute/solo 之后的增益；TrackVolume 静音时为 0.0 会除零）",
             },
@@ -2864,6 +2871,11 @@ struct TrackSource {
     /// 等于静态推子）。它在源输出**之后**乘 R55 比率，因此包含 MIDI、采样器与音频片段
     /// 三路的全部贡献。
     automation: Option<TrackGainAutomation>,
+    /// ⭐ `#257`：本轨的 `TrackPan` 自动化；`None` = 恒等快路径（没有可求值点 /
+    /// 曲线处处等于静态 `pan`）。非恒等时源侧静态声相已被关掉（`track_pan_gains`
+    /// 收到 `pan = 0`），这里在源输出之后乘**绝对**左右增益 —— 顺序在音量之前，
+    /// 与静态路径（源里的声相 → 音量）同序。
+    pan_automation: Option<TrackPanAutomation>,
 }
 
 /// ⭐ `#225`：**只读**的逐源峰值探针（包装一个 [`TrackSource`]）。
@@ -2943,6 +2955,17 @@ impl AudioSource for TrackSource {
         }
         for clips in &mut self.clips {
             clips.render_block(context, out)?;
+        }
+        // ⭐ 声相自动化乘在**源输出之外**（含上面三路），且在音量之前 ——
+        // 与静态路径同序（源里的声相 → 音量）。`None` 时整段不碰。
+        if let Some(automation) = &mut self.pan_automation {
+            automation.apply_pan_block(
+                out,
+                context.first_frame,
+                context.frames,
+                context.channels,
+                pan_gains,
+            );
         }
         // ⭐ 音量自动化乘在**源输出之外**（含上面三路）；`None` 时整段不碰。
         if let Some(automation) = &mut self.automation {
@@ -3333,9 +3356,16 @@ fn build_source(
     } else {
         0.0
     };
+    // ⭐ `#257`：本轨的 `TrackPan` 自动化。**先**构造它，再决定源侧静态声相 ——
+    // 非恒等时把静态声相关掉（`pan = 0` ⇒ `(track_gain, track_gain)`），
+    // 改由源输出之后的门乘自动化位置的绝对左右增益（同一份 `pan_gains` 曲线，
+    // 且只乘一次）。恒等 ⇒ 源侧静态声相原样保留 ⇒ 无泳道工程的字节逐位不变。
+    let pan_automation = TrackPanAutomation::new(project, track.id, sample_rate);
+    let pan_identity = pan_automation.is_identity();
+    let source_pan = if pan_identity { track.pan } else { 0.0 };
     // ⭐ `#255`：本轨的**左右声道增益**（轨增益 × 等功率声相）—— MIDI 源与采样器源
     // **共用这一对**，两条路径因此不可能漂移成两条曲线或两种 `pan = 0` 快路径。
-    let (pan_gain_l, pan_gain_r) = track_pan_gains(track_gain, track.pan);
+    let (pan_gain_l, pan_gain_r) = track_pan_gains(track_gain, source_pan);
     // ⭐ `#221`：绑了采样器 ⇒ 这条轨的音符走**采样器音源**（⛔ 不走正弦振荡器）。
     //    这条判据只看 `TrackV3.sampler` 是否为 `Some`，与 app 的
     //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
@@ -3485,8 +3515,10 @@ fn build_source(
                     continue;
                 };
                 let gain = db_to_linear(combined_db);
-                let (gain_l, gain_r) = if track.pan.is_finite() && track.pan != 0.0 {
-                    let (left, right) = pan_gains(track.pan);
+                // ⭐ `#257`：`source_pan` 是“静态声相被自动化关掉后的位置”（恒等时就是
+                // `track.pan`）⇒ 片段与 MIDI/采样器走**同一个**声相决定，⛔ 不是两条。
+                let (gain_l, gain_r) = if source_pan.is_finite() && source_pan != 0.0 {
+                    let (left, right) = pan_gains(source_pan);
                     (gain * left, gain * right)
                 } else {
                     (gain, gain)
@@ -3748,6 +3780,8 @@ fn build_source(
         sampler,
         clips,
         automation: (!automation.is_identity()).then_some(automation),
+        // ⭐ `#257`：声相自动化（恒等时 `None`，源侧静态声相保持原样）。
+        pan_automation: (!pan_identity).then_some(pan_automation),
     };
     let report = SourceReport {
         node: track.id,
@@ -3802,12 +3836,10 @@ pub(super) fn pan_gains(pan: f32) -> (f32, f32) {
 /// - 否则 `track_gain * pan_gains(pan)`（与 app 的 `audio_clip::track_pan_gains`
 ///   **同一条**曲线、同一套衰减律）。
 pub(super) fn track_pan_gains(track_gain: f32, pan: f32) -> (f32, f32) {
-    if pan.is_finite() && pan != 0.0 {
-        let (left, right) = pan_gains(pan);
-        (track_gain * left, track_gain * right)
-    } else {
-        (track_gain, track_gain)
-    }
+    // ⭐ `#257`：“居中 = 不衰减”的规则搬进 `yeban_render::automation::centered_pan_gains`
+    // ⇒ 与声相自动化共用同一个入口（同一 `pan` 值逐位同解）。数值与搬前完全相同。
+    let (left, right) = centered_pan_gains(pan, pan_gains);
+    (track_gain * left, track_gain * right)
 }
 
 /// 登记一条"明确没渲染"的部分（键 + 出现次数）。

@@ -53,6 +53,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use yeban_engine::mixer::{PanLaw, pan_gains};
 use yeban_engine::synth::{samples_per_tick, tick_to_sample};
 use yeban_model::{AssetHash, ClipContent, EntityId, YebanProjectV1};
+use yeban_render::automation::centered_pan_gains;
 use yeban_render::dither::{BitDepth, PcmBuffer};
 use yeban_render::render::{AudioSource, BlockContext, RenderError, db_to_linear};
 use yeban_render::wav::read_plain_wav;
@@ -261,16 +262,18 @@ pub(crate) struct TrackClips {
 ///   `project.audio_config.pan_law` —— ⛔ 本模块不另写第二份 `cos`/`sin`。
 ///
 /// ⚠ 只返回**声相**那一半：轨增益（推子 × 可闻门）由调用方另乘，⛔ 不在这里重复。
+///
+/// ⭐ 任务单 `#257`：“居中 = 不衰减”这条恒等规则搬进
+/// [`yeban_render::automation::centered_pan_gains`]，与**声相自动化**共用同一个入口
+/// ⇒ 同一 `pan` 值下静态轨与自动化曲线逐位同解。数值与搬前完全相同。
 #[must_use]
 pub(crate) fn track_pan_gains(
     project: &YebanProjectV1,
     track: &yeban_model::TrackV3,
 ) -> (f32, f32) {
-    if track.pan.is_finite() && track.pan != 0.0 {
-        pan_gains(track.pan, PanLaw::from_model(project.audio_config.pan_law))
-    } else {
-        (1.0, 1.0)
-    }
+    centered_pan_gains(track.pan, |pan| {
+        pan_gains(pan, PanLaw::from_model(project.audio_config.pan_law))
+    })
 }
 
 /// 判定声道布局；不支持的组合返回 `None`（调用方据此**跳过并报告**）。
@@ -313,6 +316,10 @@ fn clip_frame_span(start_tick: u64, duration_ticks: u64, bpm: f64, sample_rate: 
 /// 解析一条轨道上全部**可渲染**的音频摆放。
 ///
 /// `cache` 按资产哈希缓存解码结果（同一素材只解码一次）；`skipped` 收集**如实跳过**的原因。
+/// `static_pan_suppressed` 与 [`crate::render_core::track_pan_of`] 同一个开关（任务单
+/// `#257`）：这条轨有**非恒等**的 `TrackPan` 自动化 ⇒ 片段增益里不带静态声相
+/// （`(1.0, 1.0)`），声相由源输出之后的自动化门**只乘一次**。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_track_clips(
     project: &YebanProjectV1,
     track_id: EntityId,
@@ -321,6 +328,7 @@ pub(crate) fn resolve_track_clips(
     assets: &[(AssetHash, Vec<u8>)],
     cache: &mut BTreeMap<AssetHash, AssetResolution>,
     skipped: &mut Vec<String>,
+    static_pan_suppressed: bool,
 ) -> TrackClips {
     let empty = TrackClips {
         sources: Vec::new(),
@@ -367,7 +375,13 @@ pub(crate) fn resolve_track_clips(
         let gain = db_to_linear(clip_gain_db + track_volume_db);
         // ⭐ `#251`：声相走 [`track_pan_gains`] —— 与 MIDI 路径**同一条**曲线
         //    （`pan == 0` ⇒ `(1.0, 1.0)`，乘上去逐位不变）。
-        let (pan_l, pan_r) = track_pan_gains(project, track);
+        // ⭐ `#257`：有非恒等 `TrackPan` 自动化时静态声相在这里**关掉**，由
+        //    `AutomationPan` 在源输出之后乘自动化位置（同一条曲线、只乘一次）。
+        let (pan_l, pan_r) = if static_pan_suppressed {
+            (1.0, 1.0)
+        } else {
+            track_pan_gains(project, track)
+        };
         let (gain_l, gain_r) = (gain * pan_l, gain * pan_r);
         let resolution = resolve_asset(asset, sample_rate, assets, cache);
         let prepared = match resolution {

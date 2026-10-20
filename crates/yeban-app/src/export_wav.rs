@@ -1892,6 +1892,11 @@ mod tests {
                 track.solo = *id == track_id;
                 track.solo_safe = false;
                 track.pan = if *id == track_id { pan } else { 0.0 };
+                // ⭐ `#257`：演示工程的贝斯轨带一条**读开的 `TrackPan` 泳道**
+                // （`-1 → 0 → +1`；见 `yeban_model::samples::demo_automation_lanes`）。
+                // 声相自动化现在真的生效 ⇒ 本判据必须先把泳道清掉，否则量到的是
+                // 曲线而不是这里设置的**静态** `pan`（本测试的意图就是静态曲线）。
+                track.automation_lanes.clear();
             }
             let path = dir.join(format!("{tag}.wav"));
             let options = WavExportOptions {

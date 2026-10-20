@@ -4874,13 +4874,16 @@ fn the_known_unsupported_list_is_not_decoration() {
             render_or_ok(&project(&spec), "external")
         }),
     ));
-    // ④ `automationLanes`：**有可求值点**、但目标不在首期支持集合里（`TrackPan`）。
+    // ④ `automationLanes`：**有可求值点**、但目标落在**没有落点**的地方。
+    //    ⭐ `#257` 之后 `TrackPan` 在**源节点**上已支持 ⇒ 这里改用**主总线**上的
+    //    `TrackPan`（母带没有声相落点，仍不支持；与同文件的 master-only 判据同口径）。
     //    ⚠ 空泳道**不**触发（#243 修的第一处谎）：一条没有点的曲线没有“少做了什么”。
     triggers.push((
         "automationLanes",
         Box::new(|| {
             let mut project = project(&Spec::default());
-            let target = AutomationTarget::TrackPan { track_id: lead };
+            let master = id(1);
+            let target = AutomationTarget::TrackPan { track_id: master };
             let point = AutomationPoint {
                 id: id(120),
                 tick: 0,
@@ -4896,8 +4899,8 @@ fn the_known_unsupported_list_is_not_decoration() {
             };
             project
                 .tracks
-                .get_mut(&lead)
-                .expect("Lead")
+                .get_mut(&master)
+                .expect("Master")
                 .automation_lanes
                 .insert(target, lane);
             project.validate().expect("夹具合法");
