@@ -1,4 +1,7 @@
-//! **离线插入链**的判据：EQ（3 段）＋ Freeverb ＋ 卷积混响。
+//! **离线插入链**的判据：通道条（增益 → 3 段 EQ → 低通）＋ Freeverb ＋ 卷积混响。
+//!
+//! 通道条的**压缩**级刻意不执行（实时检波在声相之前、离线在求和之后；见
+//! `src/inserts.rs` §1），判据同时钉住"增益/滤波被消费"与"压缩仍登记"。
 //!
 //! 这些判据量的是**导出母带的样本**，不是"投影出来的参数"：每条都给出两档读数
 //! （有器件 / 无器件基线），因此"接线了"与"没接线"在读数上是可区分的两件事。
@@ -604,11 +607,230 @@ fn the_projection_recognises_only_the_documented_names() {
     assert!(not_recognised.is_empty());
 }
 
+/// 通道条的投影边界：增益 / 滤波认什么、刻意不认什么、压缩为什么是"有投影但不执行"。
+#[test]
+fn the_strip_projection_mirrors_the_engine_whitelist() {
+    let chain = InsertChain::from_devices(
+        &[effect(&[
+            ("trim_db", 3.0),
+            ("output_gain", -2.0),
+            ("cutoff_hz", 800.0),
+            ("resonance", 0.4),
+            ("filter_drive", 0.25),
+        ])],
+        SR,
+    );
+    let params = chain.strip().expect("通道条应被识别");
+    assert_eq!(
+        params.input_gain_db, 3.0,
+        "`trim_db` 是 `input_gain_db` 的别名"
+    );
+    assert_eq!(params.output_gain_db, -2.0);
+    assert!(
+        !params.eq_enabled,
+        "没写 EQ 旋钮 ⇒ EQ 级不执行（引擎 §4.1）"
+    );
+    assert!(!params.compressor_enabled, "没写动态旋钮 ⇒ 压缩级不执行");
+    assert!(params.filter_enabled);
+    assert_eq!(params.filter.cutoff_hz, 800.0);
+    assert_eq!(params.filter.resonance, 0.4);
+    assert_eq!(params.filter.drive, 0.25);
+    assert!(!chain.is_empty());
+
+    // ⚠ `filter_cutoff_hz` 刻意不认（引擎模块文档 §4.3）：只有 `cutoff_hz`。
+    let not_recognised = InsertChain::from_devices(&[effect(&[("filter_cutoff_hz", 800.0)])], SR);
+    assert!(not_recognised.is_empty());
+
+    // 只有压缩参数 ⇒ 投影里有通道条，但离线没有可执行级 ⇒ 空链；
+    // 压缩名字仍由 `track_has_unhandled_dsp` 登记（见下一个判据）。
+    let compressor_only = InsertChain::from_devices(&[effect(&[("threshold_db", -30.0)])], SR);
+    assert!(compressor_only.strip().is_some(), "压缩仍是通道条的一部分");
+    assert!(
+        compressor_only.is_empty(),
+        "压缩级离线不执行 ⇒ 不得挂运行态"
+    );
+}
+
+/// 机制判据：通道条白名单逐名对账（引擎 `insert.rs` 的**冻结副本**）。
+///
+/// `yeban-render` 不能依赖 `yeban-engine`（依赖方向门），因此这里保存一份逐字抄写的
+/// 名单。每个通道条名字都必须被投影认下；除以压缩为界外，其余名字都不得再登记
+/// `deviceChainDsp`。压缩的 13 个名字与三个刻意不认的名字（`filter_cutoff_hz` /
+/// `reverb_mix` / `reverb_width`）都必须是"仍登记"。
+#[test]
+fn strip_names_are_the_engine_whitelist() {
+    const STRIP_NAMES: &[&str] = &[
+        "input_gain_db",
+        "input_gain",
+        "trim_db",
+        "output_gain_db",
+        "output_gain",
+        "fader_db",
+        "eq_enabled",
+        "filter_enabled",
+        "compressor_enabled",
+        "cutoff_hz",
+        "resonance",
+        "filter_resonance",
+        "drive",
+        "filter_drive",
+        "eq_low_gain",
+        "low_gain",
+        "eq_low_freq",
+        "low_freq",
+        "eq_mid_gain",
+        "mid_gain",
+        "eq_mid_freq",
+        "mid_freq",
+        "eq_mid_q",
+        "mid_q",
+        "eq_high_gain",
+        "high_gain",
+        "eq_high_freq",
+        "high_freq",
+    ];
+    for &name in STRIP_NAMES {
+        let chain = InsertChain::from_devices(&[effect(&[(name, 0.5)])], SR);
+        assert!(chain.strip().is_some(), "`{name}` 必须被通道条投影认下");
+        let consumed = !track_has_unhandled_dsp(&track(vec![effect(&[(name, 0.5)])]));
+        if name == "compressor_enabled" {
+            assert!(!consumed, "压缩级离线不执行 ⇒ `{name}` 仍须登记");
+            assert!(chain.is_empty(), "没有其它可执行级 ⇒ 链必须是空的");
+        } else {
+            assert!(consumed, "`{name}` 已被消费，不该再登记 `deviceChainDsp`");
+        }
+    }
+
+    const COMPRESSOR_NAMES: &[&str] = &[
+        "compressor_enabled",
+        "threshold_db",
+        "threshold",
+        "ratio",
+        "knee_db",
+        "knee",
+        "detector_s",
+        "detector",
+        "attack_s",
+        "attack",
+        "release_s",
+        "release",
+        "makeup_db",
+        "makeup",
+    ];
+    for &name in COMPRESSOR_NAMES {
+        let devices = [effect(&[(name, -20.0)])];
+        let chain = InsertChain::from_devices(&devices, SR);
+        assert!(chain.strip().is_some(), "`{name}` 仍是引擎认的通道条名字");
+        assert!(chain.is_empty(), "`{name}` 单独出现时没有可执行级");
+        assert!(
+            track_has_unhandled_dsp(&track(vec![effect(&[(name, -20.0)])])),
+            "`{name}` 没有被求值 ⇒ 必须登记"
+        );
+    }
+
+    for &name in &["filter_cutoff_hz", "reverb_mix", "reverb_width"] {
+        let devices = [effect(&[(name, 0.5)])];
+        let chain = InsertChain::from_devices(&devices, SR);
+        assert!(chain.is_empty(), "`{name}` 刻意不认 ⇒ 不得投影出器件");
+        assert!(
+            track_has_unhandled_dsp(&track(vec![effect(&[(name, 0.5)])])),
+            "`{name}` 没有被求值 ⇒ 必须登记"
+        );
+    }
+}
+
+/// 判据：输入 / 输出增益级在离线导出里真的执行 —— 各写 -6 dB，基频带能量降 6.02 dB。
+#[test]
+fn the_gain_stages_scale_the_master_by_the_written_db() {
+    let master = node(0xFF);
+    let track_node = node(1);
+    let routing = graph(
+        &[master, track_node],
+        &[(track_node, master, RoutingKind::TrackToBus)],
+    );
+    let frames = 24_000;
+    let mono = burst(440.0, frames, frames, 0.1);
+    let baseline = render(
+        &routing,
+        master,
+        &BTreeMap::new(),
+        frames,
+        mono.clone(),
+        track_node,
+    );
+    let plain = tone_energy(&baseline.samples, 6_000, frames, 440.0);
+
+    for (name, value) in [("input_gain_db", -6.0f32), ("output_gain_db", -6.0f32)] {
+        let mut tracks = BTreeMap::new();
+        tracks.insert(track_node, track(vec![effect(&[(name, value)])]));
+        let inserts = project_inserts(&tracks, SR);
+        assert!(!inserts.is_empty(), "`{name}` 必须投影出非空链");
+        let rendered = render(&routing, master, &inserts, frames, mono.clone(), track_node);
+        let energy = tone_energy(&rendered.samples, 6_000, frames, 440.0);
+        let gain_db = 10.0 * (energy / plain).log10();
+        println!("增益读数: `{name} = {value}` ⇒ 基频带能量 {gain_db:+.3} dB");
+        assert!(
+            (gain_db - (-6.0206)).abs() < 0.05,
+            "`{name} = {value}` 的实测增益是 {gain_db:+.3} dB，不是 -6.02 dB"
+        );
+    }
+}
+
+/// 判据：低通滤波级在离线导出里真的执行 —— 500 Hz 截止把 2 kHz 基频带压低。
+#[test]
+fn the_low_pass_filter_shapes_the_master() {
+    let master = node(0xFF);
+    let track_node = node(1);
+    let routing = graph(
+        &[master, track_node],
+        &[(track_node, master, RoutingKind::TrackToBus)],
+    );
+    let frames = 24_000;
+    let mono = burst(2_000.0, frames, frames, 0.1);
+    let baseline = render(
+        &routing,
+        master,
+        &BTreeMap::new(),
+        frames,
+        mono.clone(),
+        track_node,
+    );
+    let plain = tone_energy(&baseline.samples, 6_000, frames, 2_000.0);
+
+    let mut tracks = BTreeMap::new();
+    tracks.insert(
+        track_node,
+        track(vec![effect(&[("cutoff_hz", 500.0), ("resonance", 0.0)])]),
+    );
+    let inserts = project_inserts(&tracks, SR);
+    assert!(!inserts.is_empty(), "`cutoff_hz` 必须投影出非空链");
+    let filtered = render(&routing, master, &inserts, frames, mono, track_node);
+    let energy = tone_energy(&filtered.samples, 6_000, frames, 2_000.0);
+    let attenuation_db = 10.0 * (energy / plain).log10();
+    println!("低通读数: 2 kHz 在 500 Hz 截止下 {attenuation_db:+.3} dB");
+    assert!(
+        attenuation_db <= -20.0,
+        "500 Hz 低通对 2 kHz 的衰减只有 {attenuation_db:+.3} dB —— 滤波级没有执行"
+    );
+}
+
 /// 判据：`track_has_unhandled_dsp` 的口径（MCP 的 `deviceChainDsp` 登记依据）。
 #[test]
 fn unhandled_device_classification_matches_the_slice_boundary() {
     let eq_track = track(vec![effect(&[("eq_low_gain", 6.0)])]);
     assert!(!track_has_unhandled_dsp(&eq_track), "EQ 已被消费");
+
+    let gain_track = track(vec![effect(&[("input_gain_db", -6.0)])]);
+    assert!(
+        !track_has_unhandled_dsp(&gain_track),
+        "增益级已被通道条消费"
+    );
+
+    let filter_track = track(vec![effect(&[("cutoff_hz", 500.0)])]);
+    assert!(
+        !track_has_unhandled_dsp(&filter_track),
+        "滤波级已被通道条消费"
+    );
 
     let empty_effect = track(vec![effect(&[])]);
     assert!(
@@ -634,6 +856,15 @@ fn unhandled_device_classification_matches_the_slice_boundary() {
     assert!(
         track_has_unhandled_dsp(&compressor),
         "压缩留 S2 ⇒ 必须仍登记"
+    );
+
+    let gain_and_compressor = track(vec![effect(&[
+        ("input_gain_db", -6.0),
+        ("threshold_db", -12.0),
+    ])]);
+    assert!(
+        track_has_unhandled_dsp(&gain_and_compressor),
+        "同一台设备里增益被消费不掩护压缩仍留 S2"
     );
 }
 

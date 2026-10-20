@@ -47,7 +47,7 @@
 //! | 键 | 含义 |
 //! | :--- | :--- |
 //! | `audioClips` | **收窄后的口径**：仅当工程在 `assets` 索引里**声明**了这个资产、而会话 CAS 池里**没有它的字节**时才登记（`Domain::open_in_memory` 注入的会话就是这种形态）。此时该片段当静音，且响应 `data.audio.assets[].bytesPresent = false` 如实说明。读 `.yeban` 容器时索引与字节由 `store` 双向校验必然同时存在，因此这一项在真实容器工程上**不会**出现 |
-//! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（滤波/压缩/增益/未知旋钮）没有求值；EQ、Freeverb、卷积已求值 |
+//! | `deviceChainDsp` | 设备链里**本切片没有消费**的参数（**压缩** / 未知旋钮）没有求值；增益、EQ、低通、Freeverb、卷积已求值 |
 //! | `externalPlugins` | `DeviceKind::ExternalInstrument/ExternalEffect` 没有宿主 |
 //! | `automationLanes` | ⭐ `#243`：**仅**指仍有可求值点、但本渲染器不消费的自动化目标（`TrackPan` / `SendGain` / `DeviceParam` / `Macro`），以及 `TrackVolume` 落在**总线轨**上（总线没有源、静态音量也没有落点）的情形。`TrackVolume` 在源节点与主总线上**真的被求值**；空泳道与 `readEnabled:false` 的泳道**不**登记（一条没有点的曲线没有“少做了什么”）。逐泳道的支持/应用读数见 `data.automation` |
 //! | `noteSlide` | 滑音没有实现 |
@@ -2205,7 +2205,8 @@ pub fn build(
     }
     // 8. 真编译 + 真执行。
     let options = RenderOptions::l1(frames, MASTER_CHANNELS, sample_rate, project.rng_seed);
-    // 每轨插入链：从 `TrackV3.devices` 投影（EQ + Freeverb + 卷积混响）。
+    // 每轨插入链：从 `TrackV3.devices` 投影（通道条增益/EQ/低通 + Freeverb + 卷积混响；
+    // 压缩级缺省不执行，见 `yeban_render::inserts` 模块头 §1）。
     // ⚠ **主总线也挂**（`#173` 起 `project_inserts` 不过滤 master，`inserts.rs:263`）——
     // 旧注释写"主总线上的设备链不挂"已陈（`#244` 实测点出，此处更正）。
     // 实时引擎的逐轨循环跳过 master 是**另一件事**，不要拿它推这条行为的结论。
@@ -3306,8 +3307,8 @@ fn build_source(
     //    这条判据只看 `TrackV3.sampler` 是否为 `Some`，与 app 的
     //    `sfz_pending()` → `arm_pending_sfz` 那条链的入口条件**同一个字段**。
     let sampler_bound = track.sampler.is_some();
-    // 设备链: EQ / Freeverb / 卷积已经由 `yeban-render` 消费；只有**本切片没有消费**
-    // 的参数（滤波 / 压缩 / 增益 / 未知旋钮 / 外部器件）仍要如实登记。
+    // 设备链: 通道条（增益 / EQ / 低通）、Freeverb、卷积已经由 `yeban-render` 消费；
+    // 只有**本切片没有消费**的参数（压缩 / 未知旋钮 / 外部器件）仍要如实登记。
     if track_has_unhandled_dsp(track) {
         note_unsupported(unsupported, counts, "deviceChainDsp");
     }

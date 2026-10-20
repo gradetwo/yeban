@@ -98,7 +98,7 @@ pub mod mastering;
 // 账本第 283/284 轮：编解码已**下移**到独立 crate `yeban-midi`（MCP 也能依赖它, 见该 crate 的文档）。
 // 这里**再导出**同一个模块 ⇒ `yeban_render::midi::*` 的既有调用方（app 与其判据）一行不改。
 pub use yeban_midi::midi;
-// 每轨插入链的**离线投影与运行态**（EQ ＋ Freeverb ＋ 卷积混响）。
+// 每轨插入链的**离线投影与运行态**（通道条：增益/EQ/低通 ＋ Freeverb ＋ 卷积混响）。
 //
 // ⚠ 这是 `crates/yeban-engine/src/insert.rs` 投影规则的**副本** —— `yeban-mcp` 不能
 // 依赖引擎（`scripts/gates/check_mcp_dependency_direction.py`），而本 crate 已依赖
