@@ -61,7 +61,7 @@
 //! | ② | `trigger` 门控 | **已修**（步 1：走 `matches_query`；门控不过的区域掩码全 0） |
 //! | ③ | `offset`/`end`（`SampleSpan`） | ⭐ **步 3 已闭合**：离线 `render_note_into`／摊平 `render_block_into`／实时声部三条路共用 [`reduce_span`] 的**一份**归约 ⇒ `start`（起点）与 `end`（终点）都**真正应用**，两侧逐样本差 ＝ 0 |
 //! | ④ | 无 `group`/`off_by`/`note_polyphony`/`seq_` | ⭐ **`group`/`off_by` 已由任务 `#94` 接线、`note_polyphony` ＋ `note_selfmask` 已由任务 `#100` 接线**（语义由 `yeban-sfz` 裁、槽位与窃取由 `SynthEngine` 裁；见下面"独占组"与"同音复音限制"两节）；⛔ **仍未做：`seq_`**（round-robin 序列） |
-//! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码）　⭐ ⭐ **追加修订段（任务单 `#125`）—— 被修订的是本行短标签里的「无字节预算」那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：⭐ 任务单 `#84` 起**字节预算的读数已经落地** —— [`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]（判据 S25～S27）⇒ 今天**有**预算读数、**有**超预算报告 ＋ ⭐ **口径是"引擎只报数、控制侧决定"**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；见下面 `sfz-needs-8` 那一行的 `#84` 登记）。⚠ **本行括注里那两条仍逐字成立**：⛔ **不强制上限**（＝ 括注的「无预算上限」）＋ ⛔ **无流式**（PCM 仍整段 clone 进摊平表、无流式解码）。 |
+//! | ⑤ | 无字节预算、无流式 | 未做（PCM 整段 clone 进摊平表；无预算上限、无流式解码）　⭐ ⭐ **追加修订段（任务单 `#125`）—— 被修订的是本行短标签里的「无字节预算」那一支**（⛔ 原文一字未删，口径同台账第 278 条：保留原文 ＋ 追加修订段 ＋ 点名被修订的支）：⭐ 任务单 `#84` 起**字节预算的读数已经落地** —— [`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]（判据 S25～S27）⇒ 今天**有**预算读数、**有**超预算报告 ＋ ⭐ **口径是"引擎只报数、控制侧决定"**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；见下面 `sfz-needs-8` 那一行的 `#84` 登记）。⚠ **本行括注里那两条仍逐字成立**：⛔ **不强制上限**（＝ 括注的「无预算上限」）＋ ⛔ **无流式**（PCM 仍整段 clone 进摊平表、无流式解码）。　⭐ **追加修订段（任务单 `#279`）—— 被修订的是括注里「PCM 仍整段 clone 进摊平表」那半句**：`PreparedSample.pcm` 与 `InMemorySample.pcm` 已改 `Arc<Vec<f32>>`，摊平表用 `Arc::clone` **共享**调用方那份已解码 PCM ⇒ ⛔ 不再整段 clone（同一份 PCM 只有一份字节）；⛔ **无流式解码仍逐字成立**。 |
 //! | ⑥ | 同一样本引两次 | ⭐ **步 3 已修**：去重键 ＝ `region.sample_path()`、容器 ＝ `BTreeMap`（确定性 [MODEL-AST-003]）⇒ 同一路径只 materialize **一份** [`PreparedSample`]；读数见 [`PreparedSfz::sample_count`] / [`PreparedSfz::pcm_bytes`] |
 //! | ⑦ | CC 轴交叉淡化 | 未做（回调侧没有 CC 状态 ⇒ 与离线 `playback_spec` 一致地**跳过**该轴）。⭐ ⭐ **任务单 `#108` 已接线**：上面这句是**原文保留**（第 278 条，⛔ 一字未删）；`#107` 之后"回调侧没有 CC 状态"这条**理由已不成立**，三条路现在都读探针 —— 见下面「⭐ CC 轴交叉淡化（任务单 `#108`）」一节 |
 //! | ⑧ | ⭐ **循环**（`loop_mode` / `loop_start` / `loop_end`） | ⭐ **本单已接线**（任务 `#91`：`PreparedRegion` 承载三个字段 ＋ [`mix_span_into`] 回绕；三条路共用唯一归约 [`reduce_loop_window`]）。⚠ 沿革：本行原文是"`loop_window` / `direction` / `pan` / `off_mode` 未做（读数在 `PlaybackSpec` 里，摊平表未携带）" ⇒ 循环已做；⭐ **任务 `#97` 把 `loop_end == pcm_len` 那一档从"不循环"改成"循环 ＋ 插值钳位"**（见下面"`loop_end == pcm_len`"一节）；`off_mode` 已由任务 `#94` 接线（⭐ 但**只作用于 `off_by` 关断**，见下面"独占组"一节），`direction` / `pan` **仍未做**，拆到⑩　⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是本行尾句里 `direction` 那一支**（⛔ 原文一字未删）：`direction` **已接线**、`pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
@@ -76,7 +76,7 @@
 //!
 //! | 件 | 归属 | 形状 |
 //! | :--- | :--- | :--- |
-//! | [`SfzPlan`] | 快照（控制侧投影，随快照共享） | 一条轨的摊平表（重数据：区域表 ＋ PCM 的 `Vec`） |
+//! | [`SfzPlan`] | 快照（控制侧投影，随快照共享） | 一条轨的摊平表（重数据：区域表 ＋ PCM（⭐ `#279` 起 `Arc<Vec<f32>>`，跨轨共享）） |
 //! | [`SfzVoice`] / [`SfzVoicePool`] | [`crate::synth::SynthEngine`] 的轨道槽 | 定长 `[SfzVoice; 16]`，**全 `Copy`** |
 //! | `render_track` 的第 3 参 | 快照 → 实时 | `sfz: Option<&PreparedSfz>`（与既有 `Option<&NoteSchedule>` **对称**） |
 //!
@@ -504,7 +504,7 @@
 //! | sfz-needs-5 | **轨↔SFZ 的模型绑定不存在**（⭐ 模型面已由任务单 `#76` 补齐、引擎侧由 `#78` 接线） | ⭐ ⭐ **两侧都已闭合**：模型面 = `TrackV3.sampler: Option<SamplerBinding>`（`SamplerBinding { path }`，只留痕路径、⛔ 零运行时对象，见台账 `R731`）；引擎面 = `EngineSnapshot` 携带**待摊平项** [`PendingSfz`]（`from_project` 从 `track.sampler` 投影）⇒ ⭐ **摊平仍全在控制侧**（引擎⛔ 不读盘、⛔ 不引 `symphonia`/`rubato`）：`sfz_pending()` →（读盘／解析／解码）→ [`SfzPlan::prepare_with_samples`] → [`crate::snapshot::EngineSnapshot::with_sfz`]（后者**取代**前者）。判据：`tests/sfz_instrument.rs` 的 S21／S22／S23 |
 //! | sfz-needs-6 | **循环 / ADSR / `off_mode` / `group`/`off_by` / `note_polyphony`** | ⭐ ⭐ **四片已闭合**：① 循环 ＝ 任务 `#91`（`loop_start`/`loop_end`/`loop_mode` 进 [`PreparedRegion`]、[`mix_span_into`] 回绕、`one_shot` 忽略 note-off；判据 S28～S33）；② ADSR ＝ 任务 `#92`（五个 `ampeg_*` 进 [`PreparedRegion`]、逐声部只带 5 字节推进状态、[`AmpegRun`] 分段线性；判据 S34～S38）；⭐ ③ **独占组／`off_mode` ＝ 任务 `#94`**（`group`/`off_by`/`off_mode` 进 [`PreparedRegion`]（＋8 B／区域，摊平期）、触发期 ≤16 槽线性扫描、`fast` ⇒ 硬停／`normal`＋`time` ⇒ 进释放、`one_shot` victim 忽略 `off_by`、触发者不自掐、硬停保留同槽 `pending`；判据 S39～S45）；⭐ ④ **同音复音限制 ＝ 任务 `#100`**（`note_polyphony` ＋ `note_selfmask` 早已由 `yeban-sfz` 解析并裁决，本片把这一份 `Copy` 读数搬进 [`PreparedRegion`]（＋8 B／区域，摊平期）并在 [`SfzVoicePool::trigger_note`] 的**触发期**接上限：键 ＝ `group` × 音高、掐只掐 [`NotePolyphony::masks`] 允许的在场声部、让位顺序复用 `yeban-sfz` 的 `(力度, 触发序号, 槽位下标)`、新音符永远发声、上限是 hint ⛔ 不是硬上限；⛔ **不是** `off_by`、⛔ **不是**池满窃取；判据 S49～S53）。⭐ **一处书面偏离**：`off_mode=time` 按 `normal` 处理（规范说的是**一段长度 ＝ `off_time` 的淡出**、**independent of the sample release time**；⭐ 本仓**不读 per-region `off_time`**；`off_time` 不在本片范围；⛔ 不是静默降级；见 `ADR-0008` 裁决 **C**）。⭐ `ampeg_*` 的**调制类**：**CC 支**已由任务单 `#104` 接上（`ampeg_*ccN` / `_onccN` / `_curveccN` 的**解析 ＋ 归约 ＋ 离线求值**；实时通路⛔ 仍不读 CC 状态，登记见本模块头的"CC 调制"一节）、**力度支**已由任务单 `#106` 接上（`ampeg_vel2*` 的**解析 ＋ 归约 ＋ 三条路求值**，登记见下面的"力度调制"一节）。⛔ **仍未做**：`fileg_*` / `pitcheg_*`、`off_time`、`direction`、`pan` ⭐ ⭐ **追加修订段（任务单 `#113`）—— 被修订的是这份清单里的 `direction` 那一项**（⛔ 原文一字未删）：`direction` **已接线**；`fileg_*` / `pitcheg_*` / `off_time` / `pan` **仍未做**（见下面「⭐ 播放方向（`direction`，任务单 `#113`）」一节） |
 //! | sfz-needs-7 | ⭐ **缺样本的引擎侧回退是"广播到 `samples[0]`"（内容错）** | ⭐ ⭐ **R711 已裁决、本步已闭合**：**引擎出静音并计数**（[`PreparedSfz::silent_region_count`] ＋ [`PreparedSfz::missing_sample_paths`]）、**合成替代内容是控制侧的决定**（想给替代样本 ⇒ 调用方显式放进提供表，或用广播重载 [`PreparedSfz::prepare`] 明确声明）。落地口径：`prepare_with_samples` 遇缺失路径 ⇒ 该区域 `sample_index = NO_SAMPLE` ⇒ 触发时**不建声部**（与 `span()==None` 同径）⇒ ⛔ **旧"广播到 `samples[0]`"已删除**（判据：`tests/sfz_instrument.rs` 的 S15）|
-//! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场） |
+//! | sfz-needs-8 | ⭐ **摊平表不含样本字节预算 / 流式** | ⭐ ⭐ **部分闭合（任务单 `#84`）——"可判"那一半已闭合，"流式"那一半仍未做**：①**字节预算读数 ＋ 判据**已落地（[`SfzByteBudget`] ／ [`SfzByteUsage`] ／ [`SfzBudgetOverrun`]、[`PreparedSfz::byte_usage`] ／ [`PreparedSfz::budget_overrun`]；判据 `tests/sfz_instrument.rs` 的 S25～S27）；②**超预算口径 ＝ 引擎只报数、控制侧决定**（⛔ 不报错、⛔ 不截断、⛔ 不改摊平结果；理由见 [`PreparedSfz::budget_overrun`]）；③⚠ **仍未闭合**：`prepare_with_samples` 依旧把每个被引用的 `InMemorySample::pcm` **整段 clone** 进摊平表（去重后 N 份）⇒ **无流式、无 `Arc` 共享**，且**峰值内存不受本预算约束**（调用方手里那份已解码 PCM 本就在场）　⭐ ⭐ **追加修订段（任务单 `#279`）—— 被修订的是 ③ 里的「整段 clone …无 `Arc` 共享」**（⛔ 原文一字未删）：`PreparedSample.pcm` 已是 `Arc<Vec<f32>>`、`prepare_with_samples` 只 `Arc::clone` 调用方那份 ⇒ **同一份 PCM 只有一份字节**（⛔ 不再是 N 份），峰值的"第 4 份副本"因此消失；⚠ **仍未做**：流式解码、字节预算的强制执行（本条 ①② 的口径不变）。 |
 //!
 //! # ⭐ `ampeg_*` 的 CC 调制（任务单 `#104`）
 //!
@@ -1791,7 +1791,11 @@ impl SfzInstrument {
 #[derive(Debug, Clone)]
 pub struct InMemorySample {
     /// 单声道 PCM（归一化到 `[-1, 1]`）。
-    pub pcm: Vec<f32>,
+    ///
+    /// ⭐ `#279`：`Arc<Vec<f32>>` —— 摊平表用 `Arc::clone` **共享**它（⛔ 不再整段 clone）
+    /// ⇒ "调用方手里那份已解码 PCM"与"摊平表"是**同一块内存**。调用方解码后包一次
+    /// `Arc::new` 即可；⛔ 本类型与摊平表都**只读**它（全仓对 PCM 的 `&mut` 取值点 ＝ 0）。
+    pub pcm: Arc<Vec<f32>>,
     /// 该 PCM 的原始采样率（Hz）—— 换算交给 `yeban-sfz` 的 `RenderRates`。
     pub sample_hz: f32,
 }
@@ -1806,7 +1810,10 @@ impl InMemorySample {
                 libm::sinf(phase) * 0.5
             })
             .collect();
-        Self { pcm, sample_hz }
+        Self {
+            pcm: Arc::new(pcm),
+            sample_hz,
+        }
     }
 }
 
@@ -3523,16 +3530,18 @@ pub struct PreparedSfz {
 
 /// ✂️ **摊平后的一份样本**：路径（去重键）＋ PCM ＋ 原始采样率。
 ///
-/// ⚠ PCM 是**整段 clone** 进来的（构造期分配）：无字节预算、无流式、无 `Arc` 共享
-/// ⇒ 登记为 sfz-needs-8。回调侧只**借用**它（⛔ 不 clone、⛔ 不 `Arc` clone）。
+/// ⭐ `#279`：PCM 是**共享**进来的（`Arc<Vec<f32>>`，构造期只 `Arc::clone` 一次引用计数）
+/// ⇒ 同一份已解码 PCM 在多条轨／多个摊平表之间**只有一份字节**；`PreparedSample`
+/// 因此从 **56 B → 40 B**（`String` 24 ＋ `Arc` 8 ＋ `f32` 4 ＋ 对齐）。⛔ 仍无流式与字节预算
+/// ⇒ sfz-needs-8 的"流式"那一半仍未闭合。回调侧只**借用** PCM（⛔ 不 clone、⛔ 不 `Arc` clone）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedSample {
     /// 去重键 ＝ [`yeban_sfz::instrument::Region::sample_path`] 的字符串（⛔ 不规范化、⛔ 不查文件）。
     ///
     /// ⚠ [`PreparedSfz::prepare`] 的**广播**路径没有路径身份 ⇒ 它是**空串**。
     path: String,
-    /// 单声道 PCM（归一化到 `[-1, 1]`）。
-    pcm: Vec<f32>,
+    /// 单声道 PCM（归一化到 `[-1, 1]`；与调用方 `InMemorySample.pcm` **同一块内存**）。
+    pcm: Arc<Vec<f32>>,
     /// 该 PCM 的原始采样率（Hz；摊平期已在 `Region::playback_rate` 里换算过）。
     sample_hz: f32,
 }
@@ -3544,7 +3553,7 @@ impl PreparedSample {
         &self.path
     }
 
-    /// ⭐ 只读 PCM（**实时侧借用它**，⛔ 不 clone 这个 `Vec`）。
+    /// ⭐ 只读 PCM（**实时侧借用它**，⛔ 不 clone 这份 PCM；`Arc` 也不 clone）。
     #[must_use]
     pub fn pcm(&self) -> &[f32] {
         &self.pcm
@@ -3568,11 +3577,13 @@ impl PreparedSample {
         core::mem::size_of::<f32>() * self.pcm.len()
     }
 
-    /// 从调用方给的 [`InMemorySample`] **clone** 一份（构造期；`path` 是去重键）。
+    /// 从调用方给的 [`InMemorySample`] **共享**一份（构造期；`path` 是去重键）。
+    ///
+    /// ⭐ `#279`：`Arc::clone` 只加一次引用计数（⛔ 不复制 PCM 元素）。
     fn from_in_memory(path: String, source: &InMemorySample) -> Self {
         Self {
             path,
-            pcm: source.pcm.clone(),
+            pcm: Arc::clone(&source.pcm),
             sample_hz: source.sample_hz,
         }
     }
@@ -3590,7 +3601,7 @@ impl PreparedSample {
 /// | 项 | 随什么增长 | 单独设界的理由 |
 /// | :--- | :--- | :--- |
 /// | 区域表 | 区域**条数**（每条 [`PreparedRegion`] 定长） | 它由 SFZ **文本**决定，与样本大小无关 |
-/// | PCM | 样本**帧数**（每帧一个 `f32`） | 它是"巨大音色库"的**唯一**放大器（整段 clone，`needs-8`） |
+/// | PCM | 样本**帧数**（每帧一个 `f32`） | 它是"巨大音色库"的**唯一**放大器（⭐ `#279` 起与其他持有者 `Arc` 共享；`needs-8` 的"流式"仍未做） |
 /// | 路径文本 | 路径**字符串长度**（去重后每份一份） | 极小，但它是去重键的半身 ⇒ 单独留读数 |
 ///
 /// 只给一个总数的话，"区域表悄悄长大"与"PCM 爆炸"在读数上**不可区分** ⇒
@@ -3978,8 +3989,9 @@ impl PreparedSfz {
     ///
     /// 1. **在摊平里报错来得太晚**。调用 [`Self::prepare_with_samples`] 时，
     ///    `provided_samples` 里那份已解码的 [`InMemorySample`] **已经在调用方手里**
-    ///    （本函数只是把 `pcm` 整段 clone 一份）⇒ 峰值内存在**调用之前**就已花掉一次。
-    ///    在摊平里报错 ⛔ **挡不住那个峰值**，只会把"载入成功但偏重"变成"载入失败"。
+    ///    （⭐ `#279` 起本函数只 `Arc::clone` 一次引用计数，⛔ 不再复制 PCM）⇒ 峰值内存
+    ///    在**调用方解码那一刻**就已花掉一次。在摊平里报错 ⛔ **挡不住那个峰值**，只会把
+    ///    "载入成功但偏重"变成"载入失败"。
     ///    ⇒ 真正能省内存的闸门必须落在**控制侧的解码之前**（那是 app 侧的事，本单⛔ 不动）。
     /// 2. **归属先例**：台账 `R711`（`needs-7`）已裁决"**引擎出事实 ＋ 计数**、
     ///    **产品决定交控制侧**"。字节预算是同一条分界线：引擎拥有"这张表占多少字节"这份

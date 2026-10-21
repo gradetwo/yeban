@@ -120,10 +120,12 @@ impl From<SnapshotError> for EngineSourceError {
 /// * `path`：`region.sample_path()` 的**原样**字符串（⚠ 可能已拼上
 ///   `default_path=` 前缀）—— 它同时是 `SfzPlan::prepare_with_samples` 的**去重键**，
 ///   ⛔ 本层不做任何路径规范化（与引擎的 `PreparedSfz::prepare_with_samples` 同一句）；
-/// * `pcm`：单声道、归一化到 `[-1, 1]` 的样本帧；
+/// * `pcm`：单声道、归一化到 `[-1, 1]` 的样本帧；⭐ `#279` 起是 `Arc<Vec<f32>>`
+///   —— provider 直接交出它自己那份已解码 PCM 的 `Arc::clone`（⛔ 不复制元素），
+///   引擎摊平表也只 `Arc::clone` 它 ⇒ **同一份 PCM 只有一份字节**；
 /// * `sample_hz`：该 PCM 的**原始采样率**（Hz）—— 播放速率换算交给引擎的
 ///   `RenderRates`（⛔ 本层不重采样）。
-pub type ArmedSfzSample = (String, (Vec<f32>, f32));
+pub type ArmedSfzSample = (String, (Arc<Vec<f32>>, f32));
 
 /// ⭐ `#274`：一条轨的**武装输入**（provider 的返回值）。
 ///
@@ -135,6 +137,8 @@ pub struct ArmedSfzInput {
     /// 解析后的 SFZ 文件路径（本层按它读盘）。
     pub resolved_path: PathBuf,
     /// [`ArmedSfzSample`] 的列表（去重由引擎的 `prepare_with_samples` 做）。
+    ///
+    /// ⭐ `#279`：列表只搬 `Arc` 指针（构造/搬动都是常数级）；PCM 元素不在这里被复制。
     pub samples: Vec<ArmedSfzSample>,
 }
 
@@ -403,10 +407,12 @@ pub struct EngineTrackSource {
     /// ⭐ **武装用的那份快照**（`#79`）：`render_block` 从它**借用**该轨的 SFZ 摊平表
     /// （[`EngineSnapshot::sfz`]）交给 `render_track` 的第 3 参。
     ///
-    /// ⭐ 为什么是 `Arc<EngineSnapshot>` 而**不是** clone 一份 `SfzPlan`：摊平表里带着**整段 PCM**
-    /// （[`yeban_engine::sfz_instrument::PreparedSample`]），clone 会把它按轨再复制一份。
-    /// `Arc` clone 只是**指针复制** ⇒ 与实时路径同一条纪律（"实时侧只**借用**快照，
-    /// ⛔ 不 clone 那些 `Vec`"，见 `sfz_instrument.rs` 的模块文档）。
+    /// ⭐ 为什么是 `Arc<EngineSnapshot>` 而**不是** clone 一份 `SfzPlan`：摊平表里带着
+    /// **区域表**与 PCM（[`yeban_engine::sfz_instrument::PreparedSample`]）；⭐ `#279` 起
+    /// PCM 自身已 `Arc` 共享（clone 不再复制样本字节），但 clone 一份 `SfzPlan` 仍会按轨
+    /// 复制**区域表** ⇒ 快照仍按 `Arc` 共享。`Arc` clone 只是**指针复制** ⇒ 与实时路径
+    /// 同一条纪律（"实时侧只**借用**快照，⛔ 不 clone 那些 `Vec`"，见 `sfz_instrument.rs`
+    /// 的模块文档）。
     snapshot: Arc<EngineSnapshot>,
     /// 单声道暂存（`render_track` 输出"声相之前"的单声道）。
     mono: Vec<f32>,
@@ -630,7 +636,10 @@ mod tests {
             );
             ArmedSfzInput::new(
                 sfz_path.clone(),
-                vec![("tone.wav".to_owned(), (vec![0.25_f32; 4_800], 48_000.0))],
+                vec![(
+                    "tone.wav".to_owned(),
+                    (Arc::new(vec![0.25_f32; 4_800]), 48_000.0),
+                )],
             )
         })
         .expect("武装必须成功");

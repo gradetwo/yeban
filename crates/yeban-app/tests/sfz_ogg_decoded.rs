@@ -785,7 +785,8 @@ fn the_ogg_leg_is_bit_identical_to_the_shared_decoder_not_the_hound_leg() {
         "折声道 0 之后的长度必须与 `decode_path` 的折法一致"
     );
     assert_eq!(
-        sample.pcm, expected,
+        sample.pcm.as_slice(),
+        expected.as_slice(),
         "⭐ `read_sample_file` 必须**逐位**等于 `decode_path(..).samples().step_by(channels)`\
          （这**就是**「`#85` 那条腿」的定义）"
     );
@@ -1053,7 +1054,7 @@ fn a_stereo_ogg_vorbis_is_folded_to_channel_zero_like_the_wav_leg() {
         "描述必须写折后帧数：{describe}"
     );
     assert!(
-        sample.pcm == expected,
+        sample.pcm.as_slice() == expected.as_slice(),
         "⭐ OGG 腿必须**逐位**等于 `decode_path(..).samples().step_by(2)`（取声道 0）—— \
          若不等，最可能是把**交织**样本当成了单声道（实得 {} 项 vs 期望 {} 项）",
         sample.pcm.len(),

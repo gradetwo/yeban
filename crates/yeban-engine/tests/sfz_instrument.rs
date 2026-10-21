@@ -188,12 +188,14 @@
 
 mod support;
 
+use std::sync::Arc;
+
 use support::{MixSpec, NoteSpec, note_project, render, render_snapshot, tuned_project};
 use yeban_engine::drums::DrumsParams;
 use yeban_engine::sfz_instrument::{
-    CC_CROSSFADE_CAP, CC_GATE_CAP, InMemorySample, PendingSfz, PreparedRegion, PreparedSfz,
-    SFZ_VOICES_PER_TRACK, SfzByteBudget, SfzByteUsage, SfzInstrument, SfzPlan, SfzVoice,
-    SfzVoicePool,
+    CC_CROSSFADE_CAP, CC_GATE_CAP, InMemorySample, PendingSfz, PreparedRegion, PreparedSample,
+    PreparedSfz, SFZ_VOICES_PER_TRACK, SfzByteBudget, SfzByteUsage, SfzInstrument, SfzPlan,
+    SfzVoice, SfzVoicePool,
 };
 use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::{NoteSchedule, ScheduledNote, SynthEngine, track_gain, velocity_gain};
@@ -519,7 +521,7 @@ fn s1c_a_mid_block_note_starts_on_its_own_frame_and_does_not_double() {
     )
     .expect("SFZ 必须解析成功");
     let sample = InMemorySample {
-        pcm: vec![0.5; 4_096],
+        pcm: Arc::new(vec![0.5; 4_096]),
         sample_hz: 48_000.0,
     };
     let prepared = PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平必须成功");
@@ -1376,6 +1378,79 @@ fn s12_the_same_sample_referenced_twice_is_materialized_once() {
     );
 }
 
+/// ⭐ `#279`：**摊平表共享调用方那份 PCM，而不是复制它**（`PreparedSample.pcm` 是
+/// `Arc<Vec<f32>>`）。
+///
+/// # 判定量（三条，全部可机械判定）
+///
+/// 1. **指针同一**：`plan.sample(0).pcm().as_ptr() == caller.pcm.as_ptr()`（⛔ 不是"内容相等"；
+///    内容相等在复制与否两种实现下都成立，没有鉴别力）；
+/// 2. **引用计数**：`Arc::strong_count(&caller.pcm)` —— 调用方 ＋ 提供表 ＋ 摊平表 ＝ **3**；
+///    **丢掉提供表之后 ＝ 2（调用方 ＋ 摊平表）** ⇒ 摊平表确实只加了一次引用；
+/// 3. **反向对照**：PCM 元素数 / 字节数不变（`pcm_bytes()` ＝ 一份），且播放读到的样本
+///    与调用方逐位相同（共享没有改变内容）。
+#[test]
+fn s12b_the_plan_shares_the_callers_pcm_instead_of_copying_it() {
+    const FRAMES: usize = 1_920;
+    let sfz = SfzInstrument::load(
+        "<region> sample=a.wav key=60 pitch_keycenter=60\n".to_owned(),
+        &Default::default(),
+    )
+    .expect("解析必须成功");
+    let caller = InMemorySample {
+        pcm: Arc::new(
+            (0..FRAMES)
+                .map(|frame| (frame % 97) as f32 / 97.0)
+                .collect::<Vec<f32>>(),
+        ),
+        sample_hz: 48_000.0,
+    };
+    let mut provided = vec![("a.wav".to_owned(), caller.clone())];
+    let plan = SfzPlan::prepare_with_samples(&sfz, &provided, 48_000.0).expect("摊平必须成功");
+    let sample = plan.prepared().sample(0).expect("提供表里有 a.wav");
+    println!(
+        "[engine-sfz/S12b] strong_count(caller) = {} ptr_eq = {} pcm_bytes = {}（一份 = {}）\
+         size_of::<PreparedSample>() = {} B（`#279` 前 = 56）",
+        Arc::strong_count(&caller.pcm),
+        core::ptr::eq(sample.pcm().as_ptr(), caller.pcm.as_ptr()),
+        sample.pcm_bytes(),
+        FRAMES * core::mem::size_of::<f32>(),
+        core::mem::size_of::<PreparedSample>(),
+    );
+    assert_eq!(
+        core::mem::size_of::<PreparedSample>(),
+        40,
+        "⭐ `PreparedSample` = `String` 24 ＋ `Arc` 8 ＋ `f32` 4 ＋ 对齐 ⇒ **40 B**\
+         （`#279` 前是 `Vec` 24 ⇒ 56 B；⛔ 不进实时对象）"
+    );
+    assert!(
+        core::ptr::eq(sample.pcm().as_ptr(), caller.pcm.as_ptr()),
+        "⭐ 摊平表必须**共享**调用方的 PCM（同一指针），⛔ 不是复制一份"
+    );
+    assert_eq!(
+        Arc::strong_count(&caller.pcm),
+        3,
+        "调用方 ＋ 提供表 ＋ 摊平表 ＝ 3 个强引用（⛔ 摊平表没有复制 PCM）"
+    );
+    provided.clear();
+    assert_eq!(
+        Arc::strong_count(&caller.pcm),
+        2,
+        "⭐ 丢掉提供表之后 ＝ **2**（调用方 ＋ 摊平表）—— 摊平表只加了一次引用"
+    );
+    assert_eq!(
+        sample.pcm_bytes(),
+        FRAMES * core::mem::size_of::<f32>(),
+        "字节数仍是一份（共享不改变内容规模）"
+    );
+    assert_eq!(
+        sample.pcm(),
+        caller.pcm.as_slice(),
+        "共享没有改变内容（逐位相同）"
+    );
+    assert_eq!(plan.prepared().pcm_bytes(), FRAMES * 4, "整表仍只计一份");
+}
+
 /// S13（步 3）：⭐ **`start`（`offset`）与 `end` 真正应用** —— 离线/摊平/实时三条路逐样本 0。
 ///
 /// # 判定量
@@ -2024,7 +2099,7 @@ fn constant_plan(regions: usize, key: u8) -> PreparedSfz {
     }
     let sfz = SfzInstrument::load(text, &Default::default()).expect("SFZ 必须解析成功");
     let sample = InMemorySample {
-        pcm: vec![1.0f32; SAMPLE_FRAMES],
+        pcm: Arc::new(vec![1.0f32; SAMPLE_FRAMES]),
         sample_hz: 48_000.0,
     };
     PreparedSfz::prepare(&sfz, &sample, 48_000.0).expect("摊平必须成功")
@@ -3070,9 +3145,11 @@ const LOOP_RENDER_FRAMES: usize = LOOP_END + 3 * LOOP_PERIOD;
 /// 下标**，从而把"循环周期"量成**下标的精确序列**，⛔ 不是"波形看起来像在重复"。
 fn ramp_sample(frames: usize) -> InMemorySample {
     InMemorySample {
-        pcm: (0..frames)
-            .map(|frame| (frame + 1) as f32 / 1024.0)
-            .collect(),
+        pcm: Arc::new(
+            (0..frames)
+                .map(|frame| (frame + 1) as f32 / 1024.0)
+                .collect::<Vec<f32>>(),
+        ),
         sample_hz: 48_000.0,
     }
 }
@@ -3517,7 +3594,7 @@ const AMPEG_NOTE_OFF: usize = AMPEG_SUSTAIN_START + 240;
 /// （本片实测：`frac = 0.1` 时该式**不等于** 1.0）。
 fn flat_sample(frames: usize) -> InMemorySample {
     InMemorySample {
-        pcm: vec![1.0f32; frames],
+        pcm: Arc::new(vec![1.0f32; frames]),
         sample_hz: 48_000.0,
     }
 }
@@ -4848,7 +4925,7 @@ fn s47_the_clamp_stays_inside_the_window_and_bounds_every_sample() {
     pcm[0] = -OUTLIER;
     pcm[LOOP_PCM_FRAMES - 1] = OUTLIER;
     let sample = InMemorySample {
-        pcm: pcm.clone(),
+        pcm: Arc::new(pcm.clone()),
         sample_hz: 48_000.0,
     };
     let peak = pcm.iter().fold(0.0f32, |acc, value| acc.max(value.abs()));
@@ -5770,7 +5847,7 @@ fn s55_two_cc_values_change_the_envelope_by_the_specification_formula() {
     let instrument = SfzInstrument::load(SFZ.to_owned(), &Default::default()).expect("解析");
     // ⚠ 样本**比输出缓冲更长**：否则逐样本路径会在最后一帧前停住（实测写入 71999）。
     let sample = InMemorySample {
-        pcm: vec![1.0; FRAMES + 1_024],
+        pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
     };
     let plan = prepare_with(SFZ, &sample);
@@ -5953,7 +6030,7 @@ fn s57_the_fixture_can_actually_show_the_difference() {
                             ampeg_attack=0.5 ampeg_attack_oncc100=0.5\n";
     const WITHOUT_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 ampeg_attack=0.5\n";
     let sample = InMemorySample {
-        pcm: vec![1.0; FRAMES + 1_024],
+        pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
     };
     let measure = |text: &str, cc: u8| -> usize {
@@ -6238,7 +6315,7 @@ fn s60_two_velocities_change_the_envelope_by_the_specification_formula() {
     let instrument = SfzInstrument::load(SFZ_WITH.to_owned(), &Default::default()).expect("解析");
     // ⚠ 样本**比输出缓冲更长**：否则逐样本路径会在最后一帧前停住（与 S55 同款）。
     let sample = InMemorySample {
-        pcm: vec![1.0; FRAMES + 1_024],
+        pcm: Arc::new(vec![1.0; FRAMES + 1_024]),
         sample_hz: HZ,
     };
     let plan = prepare_with(SFZ_WITH, &sample);
@@ -6332,7 +6409,7 @@ fn s61_the_realtime_path_matches_the_flat_path_bit_for_bit_at_the_same_velocity(
                        ampeg_attack=0.005 ampeg_vel2attack=-0.004\n";
     let instrument = SfzInstrument::load(SFZ.to_owned(), &Default::default()).expect("解析");
     let sample = InMemorySample {
-        pcm: vec![1.0; 4_096],
+        pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
     };
     let plan = prepare_with(SFZ, &sample);
@@ -6423,7 +6500,7 @@ fn s62_the_reverse_legs_and_the_three_load_bearing_fingerprints() {
     const ZERO_MOD: &str = "<region> sample=a.wav key=60 pitch_keycenter=60 amp_veltrack=0 \
                             ampeg_attack=0.005 ampeg_vel2attack=0\n";
     let sample = InMemorySample {
-        pcm: vec![1.0; 4_096],
+        pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
     };
     let measure = |text: &str, velocity: u8| -> (usize, Vec<f32>) {
@@ -6582,7 +6659,7 @@ fn s63_the_realtime_path_reads_cc_and_follows_the_specification_formula() {
     const HZ: f32 = 48_000.0;
     const FRAMES: usize = 512;
     let sample = InMemorySample {
-        pcm: vec![1.0; 4_096],
+        pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
     };
     let plan = prepare_with(CC_ATTACK_FIXTURE, &sample);
@@ -6685,7 +6762,7 @@ fn s64_the_three_paths_agree_bit_for_bit_at_the_same_cc() {
     let instrument = SfzInstrument::load(CC_ATTACK_FIXTURE.to_owned(), &Default::default())
         .expect("夹具必须解析成功");
     let sample = InMemorySample {
-        pcm: vec![1.0; 4_096],
+        pcm: Arc::new(vec![1.0; 4_096]),
         sample_hz: HZ,
     };
     let plan = prepare_with(CC_ATTACK_FIXTURE, &sample);
@@ -6941,7 +7018,7 @@ fn expected_cc_fade_in(v: u8, high: u8, power: bool) -> f32 {
 /// ⭐ 恒 `1.0` 的样本（S67／S68 用）：`rate == 1.0`、`frac == 0` ⇒ 插值逐位精确。
 fn constant_sample(frames: usize) -> InMemorySample {
     InMemorySample {
-        pcm: vec![1.0; frames],
+        pcm: Arc::new(vec![1.0; frames]),
         sample_hz: 48_000.0,
     }
 }
@@ -9396,7 +9473,7 @@ fn s95_reverse_is_really_reversed_and_matches_the_reversed_source_reading() {
     let mut reversed_pcm = sample.pcm[DIR_OFFSET..DIR_END_INCLUSIVE + 1].to_vec();
     reversed_pcm.reverse();
     let reversed_sample = InMemorySample {
-        pcm: reversed_pcm,
+        pcm: Arc::new(reversed_pcm),
         sample_hz: sample.sample_hz,
     };
     let reference = prepare_with(
@@ -11181,9 +11258,11 @@ fn tune_compound_fixture(items: usize, delta: i32) -> String {
 /// 在**非零帧数**与**指纹**上都分得开（`InMemorySample::sine` 的 `pcm[0] == 0` 分不开）。
 fn ramp_at(sample_hz: f32, frames: usize) -> InMemorySample {
     InMemorySample {
-        pcm: (0..frames)
-            .map(|frame| (frame + 1) as f32 / 1024.0)
-            .collect(),
+        pcm: Arc::new(
+            (0..frames)
+                .map(|frame| (frame + 1) as f32 / 1024.0)
+                .collect::<Vec<f32>>(),
+        ),
         sample_hz,
     }
 }

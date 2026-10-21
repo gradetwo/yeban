@@ -2277,10 +2277,10 @@ pub fn build(
     let mut sampler_store = sfz::SampleStore::new();
     let timbre = EngineTimbre::from_project_armed(project, sample_rate as f32, |track, raw| {
         match prepare_sampler_track(track, raw, project, project_path, &mut sampler_store) {
-            Ok(armed) => {
-                // 解码表交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`）。
+            Ok((armed, samples)) => {
+                // ⭐ `#279`：解码表**直接**交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`），
+                // ⛔ 不再经 `ArmedSamplerTrack` 中转一次深拷贝（旧 `armed.samples.clone()`）。
                 let resolved = armed.load.path.clone();
-                let samples = armed.samples.clone();
                 sampler_loads.insert(track, armed);
                 ArmedSfzInput::new(resolved, samples)
             }
@@ -3082,18 +3082,20 @@ impl AudioSource for TrackSource {
 ///
 /// 为什么把 `SfzLoad` 留在这里：`data.sources[].sampler` 的读数（区域摘要 /
 /// 样本来源 / 读失败 / 累计帧数）本来就在装载期算好 —— 再算一遍会变成第二份口径。
-/// ⚠ 解码表**只**交出引擎需要的那一份（`sample=` 原样字符串 ＋ PCM ＋ 原始采样率）。
+/// ⭐ `#279`：解码表（`ArmedSfzSample`）**不再**复制进本类型 —— 它由 provider 直接交给
+/// 引擎（`ArmedSfzInput`），本类型只剩**读数**（`load` ＋ `decoded`）。旧字段
+/// `samples: Vec<ArmedSfzSample>` 在整条渲染里**零读者**（只有一处 `clone()` 中转），
+/// 却按轨深拷一份 PCM ⇒ 删除。
 struct ArmedSamplerTrack {
     /// 本次装载的读数（与 `yeban_load_sfz` 工具同一份 `SfzLoad`）。
     load: sfz::SfzLoad,
-    /// 交给引擎的解码表（`ArmedSfzSample` ＝ `(raw_path, (pcm, sample_hz))`）。
-    samples: Vec<ArmedSfzSample>,
-    /// 解码成功的 `sample=` 原样字符串（读数用；与 `samples` 的下标一一对应）。
+    /// 解码成功的 `sample=` 原样字符串（读数用；`survey_sampler` 的 `decoded` 集合）。
     decoded: BTreeSet<String>,
 }
 
 /// ⭐ `#274` 的 **provider 实现**：解析路径 → 装载 SFZ（**一次**解析）→ 交出引擎需要的
-/// 解码表。
+/// 解码表（⭐ `#279`：返回值 ＝ `(读数 ArmedSamplerTrack, 解码表 Vec<ArmedSfzSample>)`
+/// 两件；解码表直接从池里的 `Arc` 克隆，⛔ 不复制 PCM 元素）。
 ///
 /// ## 为什么解码留在这一侧（⛔ 不下移 `yeban-decode`）
 ///
@@ -3122,7 +3124,7 @@ fn prepare_sampler_track(
     project: &YebanProjectV1,
     project_path: &Path,
     store: &mut sfz::SampleStore,
-) -> Result<ArmedSamplerTrack, Fault> {
+) -> Result<(ArmedSamplerTrack, Vec<ArmedSfzSample>), Fault> {
     let resolved = resolve_sampler_path(raw, project_path)?;
     // ⭐ `#276`：装载与提供表**同一次解析**；解码由 `store` 去重（同一文件只解一次）。
     let mut cache = sfz::TrackSampleCache::new(store);
@@ -3153,20 +3155,19 @@ fn prepare_sampler_track(
     })?;
     // 读不到 ⇒ 不进提供表（引擎按缺样本处理），原因已在 `SfzLoad::sample_failures`
     // 里如实登记。表的顺序/键与修前逐条相同：区域首见顺序、`sample_path()` 原样字符串。
+    // ⭐ `#279`：池里那份已解码 PCM 是 `Arc<Vec<f32>>` ⇒ 这里只 `Arc::clone`
+    // （⛔ 不再 `as_ref().clone()` 复制元素）；引擎摊平表随后也 `Arc::clone` 同一份
+    // ⇒ 整条渲染只有**一份** PCM 字节。
     let samples: Vec<ArmedSfzSample> = table
         .into_iter()
         .filter_map(|(raw_path, outcome)| {
             outcome
                 .ok()
-                .map(|reading| (raw_path, (reading.pcm.as_ref().clone(), reading.sample_hz)))
+                .map(|reading| (raw_path, (Arc::clone(&reading.pcm), reading.sample_hz)))
         })
         .collect();
     let decoded: BTreeSet<String> = samples.iter().map(|(path, _)| path.clone()).collect();
-    Ok(ArmedSamplerTrack {
-        load,
-        samples,
-        decoded,
-    })
+    Ok((ArmedSamplerTrack { load, decoded }, samples))
 }
 
 /// 解析（必要时解码 + 重采样）一个音频资产；结果按哈希缓存。

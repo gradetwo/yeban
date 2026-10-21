@@ -830,9 +830,10 @@ impl EngineHost {
                 .get_or_prepare(track, &key, engine_hz, |_key, hz| {
                     crate::sfz_load::decode_sfz_plan(&resolved, hz).map(|(plan, _report)| plan)
                 })?;
-            // ⚠ `PreparedSfz` 的 PCM 今天**没有** `Arc` 共享（引擎侧事实，见
-            //    `PreparedSample` 的字段文档）⇒ 注入必须按值 clone 一份给快照，缓存留着
-            //    上一份供下一次发布复用。这是**控制侧**的 memcpy，登记为 `sfz-cache-needs-1`。
+            // ⭐ `#279`：`PreparedSample.pcm` 已是 `Arc<Vec<f32>>` ⇒ 注入的 `SfzPlan::clone`
+            //    只复制**区域表/路径**（控制侧的小对象），PCM 用 `Arc::clone` 共享 —— 缓存与
+            //    快照是**同一份**样本字节，⛔ 不再 memcpy PCM（`sfz-cache-needs-1` 记的那次
+            //    PCM 拷贝不再发生；台账状态由集成者登记）。
             prebuilt.insert(track, (*plan).clone());
         }
         // ③ 复用 `#79` 的注入入口：它先注入 `prebuilt`（并**取代**待摊平项），再解码剩余

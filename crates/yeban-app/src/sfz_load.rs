@@ -142,6 +142,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yeban_decode::{DecodeError, DecodeOptions, decode_path};
 use yeban_engine::sfz_instrument::{InMemorySample, SfzInstrument, SfzPlan};
@@ -508,7 +509,8 @@ fn decode_with_hound(path: &Path) -> Result<(InMemorySample, u64, String), Unrea
             let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
             Ok((
                 InMemorySample {
-                    pcm,
+                    // ⭐ `#279`：解码结果包一次 `Arc` ⇒ 摊平表 `Arc::clone` 共享它。
+                    pcm: Arc::new(pcm),
                     sample_hz: sample_rate as f32,
                 },
                 frames,
@@ -563,7 +565,8 @@ fn decode_with_yeban_decode(
             let frames = u64::try_from(pcm.len()).unwrap_or(u64::MAX);
             Ok((
                 InMemorySample {
-                    pcm,
+                    // ⭐ `#279`：与 WAV 腿同一条 —— 包一次 `Arc`，摊平表共享它。
+                    pcm: Arc::new(pcm),
                     sample_hz: sample_rate as f32,
                 },
                 frames,
@@ -780,7 +783,7 @@ pub fn region_sample_for(
         // （那会记一次"解码尝试"并把它登记成 `NotFound`），⛔ 不回退正弦。
         return Some((
             InMemorySample {
-                pcm: Vec::new(),
+                pcm: Arc::new(Vec::new()),
                 sample_hz: 48_000.0,
             },
             BUILTIN_SILENCE_SOURCE.to_owned(),

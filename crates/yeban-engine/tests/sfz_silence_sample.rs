@@ -22,6 +22,8 @@
 //! 每个"静音"断言都配一条**同夹具、同键、只把 `sample=*silence` 换成真样本**的腿
 //! ⇒ 它**必须出声**（否则"0 帧"可能只是因为整条夹具根本不匹配音符）。
 
+use std::sync::Arc;
+
 use yeban_engine::sfz_instrument::{InMemorySample, PreparedRegion, PreparedSfz, SfzInstrument};
 use yeban_sfz::parser::ParseLimits;
 
@@ -30,7 +32,7 @@ const RATE: f32 = 48_000.0;
 /// 480 帧的常量样本（`0.25`）—— "真样本"那条腿用。
 fn sample() -> InMemorySample {
     InMemorySample {
-        pcm: vec![0.25; 480],
+        pcm: Arc::new(vec![0.25; 480]),
         sample_hz: RATE,
     }
 }

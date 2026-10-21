@@ -60,9 +60,10 @@
 //! 本模块**全部**在控制侧：`get_or_prepare` 只在**未命中**时经 `build` 读盘（那条路是
 //! [`crate::sfz_load::decode_sfz_plan`]），命中时只做一次 `BTreeMap` 查表与 `Arc` clone。
 //! ⛔ 实时线程不读盘、不查本缓存：快照里那张摊平表是唯一的实时侧事实源。
-//! ⚠ 注入要 clone 一份 `SfzPlan` 给快照（引擎侧的 `PreparedSfz` 今天**没有** `Arc` 共享 PCM，
-//! 见 `yeban_engine::sfz_instrument::PreparedSample` 的字段文档）——那是**控制侧**的 memcpy，
-//! 登记为 `sfz-cache-needs-1`，⛔ 不进回调。
+//! ⚠ 注入要 clone 一份 `SfzPlan` 给快照（⭐ `#279` 起 PCM 是 `Arc<Vec<f32>>` ⇒ 这次 clone
+//! 只复制区域表/路径，样本字节 `Arc::clone` 共享，⛔ 不再 memcpy PCM；
+//! 见 `yeban_engine::sfz_instrument::PreparedSample` 的字段文档）——`sfz-cache-needs-1` 记的
+//! 那次 PCM 拷贝不再发生，⛔ 不进回调。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
