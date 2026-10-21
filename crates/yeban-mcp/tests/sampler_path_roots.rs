@@ -40,7 +40,9 @@ use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::samples::filled_project;
-use yeban_model::{EntityId, SamplerBinding, YebanProjectV1};
+use yeban_model::{
+    ClipPlacement, EntityId, RoutingEdge, RoutingKind, SamplerBinding, YebanProjectV1,
+};
 
 /// 进程级环境状态的串行锁（`YEBAN_SAMPLE_LIBRARY` ＋ cwd）。
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -181,17 +183,18 @@ fn project_with_sampler(raw: &str) -> YebanProjectV1 {
 
 /// 渲染一次，返回**工具结果**（成功或 `error` 都在里面）。
 fn render(project_path: &Path, raw_sampler: &str, out: &Path) -> Value {
+    render_project(project_with_sampler(raw_sampler), project_path, out)
+}
+
+/// 渲染**给定的**工程（⭐ `#276` 的两轨夹具要自己装配路由）。
+fn render_project(project: YebanProjectV1, project_path: &Path, out: &Path) -> Value {
     let token = BearerToken::generate().token;
     let auth = format!("Bearer {}", token.expose());
     let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
     dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
     dispatcher
         .domain_mut()
-        .open_in_memory(
-            project_path.to_path_buf(),
-            project_with_sampler(raw_sampler),
-            false,
-        )
+        .open_in_memory(project_path.to_path_buf(), project, false)
         .expect("注入夹具工程");
     let line = json!({
         "jsonrpc": "2.0",
@@ -458,4 +461,134 @@ fn a_path_missing_from_all_four_roots_is_still_loud() {
     );
     assert!(!out.exists(), "失败时不许留下半成品");
     println!("### [#271 判据5] tried({})={:?}", tried.len(), tried);
+}
+
+/// ⭐ `#276` 判据 6 的**发声那一半**：**同一份样本被两条轨引用** ⇒ 两条轨都正常发声。
+///
+/// 夹具：`filled_project()` 的 Lead 轨克隆出一条 `Lead B`（同一条 MIDI 片段、同一个
+/// SFZ 绑定、同样直连主总线）；正对照是"只有 Lead 绑定采样器"。
+///
+/// 读数：
+/// * 两条轨的 `sources[].sampler` 各报 `decodedSamples=1`、`notesUsingFileSample=4`、
+///   `sampleFailures=[]` ⇒ 两条轨都拿到了同一份文件样本；
+/// * 双轨母带峰值 > 单轨 × 1.5 ⇒ **第二条轨真的在叠加声音**（⛔ 不是只解了一次却静音）。
+///
+/// ⚠ "**解码只发生一次**"那一半由 `crates/yeban-mcp/src/domain/sfz.rs` 的
+/// `a_shared_store_decodes_a_sample_once_and_a_second_track_reads_the_pool` 钉住
+/// （读完第一条轨后把文件删掉，第二条轨仍拿到同一份 PCM）；本判据只钉发声面。
+#[test]
+fn two_tracks_sharing_one_sample_file_both_sound() {
+    let scratch = Scratch::new("shared-sample");
+    let project_dir = scratch.join("project");
+    std::fs::create_dir_all(&project_dir).expect("建工程目录");
+    let sfz = write_sfz_with_sample(&project_dir, "shared");
+    let project_path = project_dir.join("song.yeban");
+
+    // ---- 正对照：只有 Lead 绑定采样器 ----
+    let mut single = filled_project();
+    let lead = single
+        .tracks
+        .iter()
+        .find(|(_, track)| track.name == "Lead")
+        .map(|(id, _)| *id)
+        .expect("filled_project 必须有 Lead 轨");
+    single.tracks.get_mut(&lead).expect("Lead").sampler = Some(SamplerBinding {
+        path: sfz.display().to_string(),
+    });
+    single.validate().expect("单轨夹具必须合法");
+    let single_result = render_project(single.clone(), &project_path, &scratch.join("single.wav"));
+    assert_eq!(
+        single_result["status"], "success",
+        "单轨正对照必须渲染成功: {single_result}"
+    );
+    let single_peak = single_result["data"]["peak"]["before"]
+        .as_f64()
+        .expect("peak.before");
+    assert!(single_peak > 0.0, "单轨正对照不许是静音: {single_result}");
+
+    // ---- 两轨：Lead ＋ 克隆出来的 Lead B，**同一份** SFZ ----
+    let mut two = single;
+    let mut second = two.tracks.get(&lead).expect("Lead").clone();
+    let second_id = EntityId::new();
+    second.id = second_id;
+    second.name = "Lead B".to_owned();
+    // 设备 / 宏 / 自动化泳道带的是**身份**，克隆会撞 id ⇒ 清空（本判据不测它们）。
+    second.devices.clear();
+    second.macros.clear();
+    second.automation_lanes.clear();
+    // 摆放也带身份 ⇒ 换新 id；片段池里的 clip **共享**（同一条 MIDI 内容）。
+    let placements: Vec<ClipPlacement> = second.clips.values().cloned().collect();
+    second.clips.clear();
+    for mut placement in placements {
+        let id = EntityId::new();
+        placement.id = id;
+        second.clips.insert(id, placement);
+    }
+    two.tracks.insert(second_id, second);
+    two.routing_graph.nodes.push(second_id);
+    let master = two.master_bus_track_id;
+    let edge_id = EntityId::new();
+    two.routing_graph.edges.insert(
+        edge_id,
+        RoutingEdge {
+            id: edge_id,
+            source_node: second_id,
+            destination_node: master,
+            kind: RoutingKind::TrackToBus,
+            gain_db: None,
+        },
+    );
+    two.validate().expect("两轨夹具必须合法");
+
+    let two_result = render_project(two, &project_path, &scratch.join("two.wav"));
+    assert_eq!(
+        two_result["status"], "success",
+        "两轨必须渲染成功: {two_result}"
+    );
+    let sampler_sources: Vec<&Value> = two_result["data"]["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .filter(|source| !source["sampler"].is_null())
+        .collect();
+    assert_eq!(
+        sampler_sources.len(),
+        2,
+        "两条轨都必须有采样器读数: {two_result}"
+    );
+    for source in &sampler_sources {
+        let sampler = &source["sampler"];
+        assert_eq!(
+            sampler["decodedSamples"], 1,
+            "同一份文件 ⇒ 每条轨各解出一份（共享的是**解码**、⛔ 不是提供表）: {two_result}"
+        );
+        assert_eq!(
+            sampler["notesUsingFileSample"], 4,
+            "四个音符都必须落在文件样本上: {two_result}"
+        );
+        assert_eq!(
+            sampler["sampleFailures"],
+            serde_json::json!([]),
+            "样本必须真的读到: {two_result}"
+        );
+    }
+    let two_peak = two_result["data"]["peak"]["before"]
+        .as_f64()
+        .expect("peak.before");
+    assert!(
+        two_peak > single_peak * 1.5,
+        "两条轨必须**都发声**（双轨峰值应约为单轨两倍）: 单轨={single_peak} 双轨={two_peak}"
+    );
+    println!(
+        "### [#276 判据6] 单轨峰值={single_peak:.6} 双轨峰值={two_peak:.6} 比值={:.4} \
+         两轨 sampler: {:?}",
+        two_peak / single_peak,
+        sampler_sources
+            .iter()
+            .map(|source| (
+                source["sampler"]["decodedSamples"].clone(),
+                source["sampler"]["notesUsingFileSample"].clone()
+            ))
+            .collect::<Vec<_>>()
+    );
 }

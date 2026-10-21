@@ -284,6 +284,9 @@ fn is_windows_drive_absolute(sample: &Path) -> bool {
     })
 }
 
+/// 缓存里那张**路径 → 读取结果**表（`BTreeMap` ⇒ 路径字典序 ⇒ 确定性）。
+type SampleEntries = BTreeMap<PathBuf, Result<SampleFileReading, String>>;
+
 /// 一次调用里的**样本文件缓存**（去重 + 上界 + 逐条如实记账）。
 ///
 /// 上界三条（任一命中就**停止再读**并如实标注，⛔ 不静默丢弃）：
@@ -291,7 +294,7 @@ fn is_windows_drive_absolute(sample: &Path) -> bool {
 /// ③ 累计解码帧数 > [`MAX_SAMPLE_FRAMES_TOTAL`]。
 #[derive(Debug, Default)]
 pub struct SampleCache {
-    entries: BTreeMap<PathBuf, Result<SampleFileReading, String>>,
+    entries: SampleEntries,
     frames_loaded: u64,
     truncated: bool,
 }
@@ -309,38 +312,12 @@ impl SampleCache {
     ///
     /// 返回**人话原因**：读盘失败、上界命中（含"已截断"）。
     pub fn get(&mut self, path: &Path) -> Result<SampleFileReading, String> {
-        if let Some(hit) = self.entries.get(path) {
-            return hit.clone();
-        }
-        if self.entries.len() >= MAX_SAMPLE_FILES_READ {
-            self.truncated = true;
-            let reason = format!(
-                "已有 {} 个不同样本文件, 达到本次调用的上限 {} ⇒ 不再读盘 (⛔ 不静默截断)",
-                self.entries.len(),
-                MAX_SAMPLE_FILES_READ
-            );
-            self.entries.insert(path.to_path_buf(), Err(reason.clone()));
-            return Err(reason);
-        }
-        let outcome = match read_sample_file(path) {
-            Ok(reading) => {
-                if self.frames_loaded.saturating_add(reading.frames) > MAX_SAMPLE_FRAMES_TOTAL {
-                    self.truncated = true;
-                    Err(format!(
-                        "累计样本帧数会超过本次调用的上限 {} 帧 (已读 {}), 拒绝再读 {} (⛔ 不静默截断)",
-                        MAX_SAMPLE_FRAMES_TOTAL,
-                        self.frames_loaded,
-                        path.display()
-                    ))
-                } else {
-                    self.frames_loaded = self.frames_loaded.saturating_add(reading.frames);
-                    Ok(reading)
-                }
-            }
-            Err(reason) => Err(reason),
-        };
-        self.entries.insert(path.to_path_buf(), outcome.clone());
-        outcome
+        let Self {
+            entries,
+            frames_loaded,
+            truncated,
+        } = self;
+        cache_get(path, entries, frames_loaded, truncated, read_sample_file)
     }
 
     /// 读成功的**不同**文件数。
@@ -384,6 +361,175 @@ impl SampleCache {
                 Err(reason) => format!("unreadable({path}): {reason}", path = path.display()),
             })
             .collect()
+    }
+}
+
+/// 读一份样本时的**共同记账**（[`SampleCache`] 与 [`TrackSampleCache`] 共用同一份实现）。
+///
+/// 记账口径逐条不变：命中 ⇒ 直接返回（**不**计帧、**不**计文件数）；上界命中 ⇒
+/// 记一条 `Err` 到本次调用的表里并置 `truncated`；读成功 ⇒ 累加帧数。
+fn cache_get(
+    path: &Path,
+    entries: &mut SampleEntries,
+    frames_loaded: &mut u64,
+    truncated: &mut bool,
+    read: impl FnOnce(&Path) -> Result<SampleFileReading, String>,
+) -> Result<SampleFileReading, String> {
+    if let Some(hit) = entries.get(path) {
+        return hit.clone();
+    }
+    if entries.len() >= MAX_SAMPLE_FILES_READ {
+        *truncated = true;
+        let reason = format!(
+            "已有 {} 个不同样本文件, 达到本次调用的上限 {} ⇒ 不再读盘 (⛔ 不静默截断)",
+            entries.len(),
+            MAX_SAMPLE_FILES_READ
+        );
+        entries.insert(path.to_path_buf(), Err(reason.clone()));
+        return Err(reason);
+    }
+    let outcome = match read(path) {
+        Ok(reading) => {
+            if frames_loaded.saturating_add(reading.frames) > MAX_SAMPLE_FRAMES_TOTAL {
+                *truncated = true;
+                Err(format!(
+                    "累计样本帧数会超过本次调用的上限 {} 帧 (已读 {}), 拒绝再读 {} (⛔ 不静默截断)",
+                    MAX_SAMPLE_FRAMES_TOTAL,
+                    *frames_loaded,
+                    path.display()
+                ))
+            } else {
+                *frames_loaded = frames_loaded.saturating_add(reading.frames);
+                Ok(reading)
+            }
+        }
+        Err(reason) => Err(reason),
+    };
+    entries.insert(path.to_path_buf(), outcome.clone());
+    outcome
+}
+
+/// [`load_with`] 的**只读样本视图**：让"装载"既能用一次性缓存（[`SampleCache`]），
+/// 也能用一次渲染内的共享池（[`TrackSampleCache`]），而记账口径只有一份。
+pub trait SampleReads {
+    /// 取一份样本（命中 ⇒ **不**重复读盘）。
+    ///
+    /// # Errors
+    ///
+    /// 返回**人话原因**：读盘失败、上界命中（含"已截断"）。
+    fn get(&mut self, path: &Path) -> Result<SampleFileReading, String>;
+    /// 本次调用已经过的**路径 → 结果**表（装载读数的唯一来源）。
+    fn entries(&self) -> &SampleEntries;
+    /// 是否命中过任何上界。
+    fn truncated(&self) -> bool;
+    /// 本次调用累计解码帧数（上界③的记账值）。
+    fn frames_loaded(&self) -> u64;
+}
+
+impl SampleReads for SampleCache {
+    fn get(&mut self, path: &Path) -> Result<SampleFileReading, String> {
+        SampleCache::get(self, path)
+    }
+
+    fn entries(&self) -> &SampleEntries {
+        &self.entries
+    }
+
+    fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn frames_loaded(&self) -> u64 {
+        self.frames_loaded
+    }
+}
+
+/// ⭐ `#276`：**一次渲染调用内**已解码样本的共享池。
+///
+/// 同一份样本被**多条轨**引用 ⇒ 只解码一次（`read_sample_file` 只在池里没有时调用）。
+/// ⚠ 预算（文件数 / 帧数 / 截断）**不**在池上记账 —— 它由每条轨自己的
+/// [`TrackSampleCache`] 按与 [`SampleCache`] **逐条相同**的口径记账，因此
+/// `SfzLoad` 的 `sampleSources` / `sampleFailures` / `sampleFramesLoaded` /
+/// `sampleReadsTruncated` 与"每条轨各读一遍"时**逐字相同**。
+///
+/// 生命周期＝一次 `build`（渲染）；渲染结束随作用域释放，⛔ 不跨调用留存。
+#[derive(Debug, Default)]
+pub struct SampleStore {
+    decoded: SampleEntries,
+}
+
+impl SampleStore {
+    /// 空池。
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 池里没有 ⇒ 真读一次并记住（成功与失败都记）；池里有 ⇒ 直接复用。
+    fn read(&mut self, path: &Path) -> Result<SampleFileReading, String> {
+        if let Some(hit) = self.decoded.get(path) {
+            return hit.clone();
+        }
+        let outcome = read_sample_file(path);
+        self.decoded.insert(path.to_path_buf(), outcome.clone());
+        outcome
+    }
+
+    /// 本次渲染**真的解码成功**的不同文件数（判据读数；⛔ 不是某条轨的装载读数）。
+    #[must_use]
+    pub fn decoded_files(&self) -> usize {
+        self.decoded.values().filter(|entry| entry.is_ok()).count()
+    }
+}
+
+/// 一条轨在共享池上的**预算视图**（记账口径与 [`SampleCache`] 逐条相同）。
+///
+/// 存在理由：池负责"同一文件只解码一次"，本类型负责"每条轨仍按自己的上限记账"——
+/// 两者分开，才能既省解码、又让每条轨的读数（含截断）与修前**逐字相同**。
+#[derive(Debug)]
+pub struct TrackSampleCache<'a> {
+    store: &'a mut SampleStore,
+    entries: SampleEntries,
+    frames_loaded: u64,
+    truncated: bool,
+}
+
+impl<'a> TrackSampleCache<'a> {
+    /// 在共享池上开一条轨的预算视图。
+    #[must_use]
+    pub fn new(store: &'a mut SampleStore) -> Self {
+        Self {
+            store,
+            entries: SampleEntries::new(),
+            frames_loaded: 0,
+            truncated: false,
+        }
+    }
+}
+
+impl SampleReads for TrackSampleCache<'_> {
+    fn get(&mut self, path: &Path) -> Result<SampleFileReading, String> {
+        let Self {
+            store,
+            entries,
+            frames_loaded,
+            truncated,
+        } = self;
+        cache_get(path, entries, frames_loaded, truncated, |resolved| {
+            store.read(resolved)
+        })
+    }
+
+    fn entries(&self) -> &SampleEntries {
+        &self.entries
+    }
+
+    fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn frames_loaded(&self) -> u64 {
+        self.frames_loaded
     }
 }
 
@@ -748,6 +894,40 @@ pub fn parse_load_arguments(
 /// - `IO_ERROR`：文件不存在 / 是目录 / 读失败；
 /// - `INVALID_PARAMETER_RANGE`：非 UTF-8 文本，或 SFZ 文本被解析器拒绝。
 pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result<SfzLoad, Fault> {
+    let mut cache = SampleCache::new();
+    load_with(path, sample_hz, assign_id, reused, &mut cache).map(|(load, _)| load)
+}
+
+/// 提供表的一行：`sample=` 的**原样字符串** ＋ 该文件的读取结果（读不到 ⇒ `Err`）。
+///
+/// ⭐ `#276`：这张表由 [`load_with`] 在同一次解析里产出，供引擎摊平使用。
+pub type SampledProviderEntry = (String, Result<SampleFileReading, String>);
+
+/// 引擎摊平用的**提供表**（按区域首见顺序、按 `sample=` 原样字符串去重）。
+pub type SampledProviderTable = Vec<SampledProviderEntry>;
+
+/// [`load`] 的**共享样本池 ＋ 提供表**版本（⭐ `#276`）。
+///
+/// 与 [`load`] 在**同一次解析**里多产出一件东西：引擎摊平要的那张
+/// `(sample= 的**原样字符串**, 读取结果)` 表 —— 按区域首见顺序、按原样字符串去重，
+/// 跳过内建静音（`*silence`）与空 `sample=`。于是渲染路径
+/// ⛔ 不必为了这张表再解析一遍（修前 `prepare_sampler_track` 会再开一次
+/// `with_instrument`），也 ⛔ 不必再解码一遍（修前每次渲染自建一个 [`SampleCache`]）。
+///
+/// 读盘与预算仍由 `cache`（[`SampleReads`]）记账：传 [`SampleCache`] ⇒ 与 [`load`]
+/// **完全同一条**；传 [`TrackSampleCache`] ⇒ 多轨共享已解码 PCM，而每条轨的记账
+/// （文件数 / 帧数 / 截断）逐条不变。
+///
+/// # Errors
+///
+/// 与 [`load`] 相同。
+pub fn load_with(
+    path: &Path,
+    sample_hz: f32,
+    assign_id: u64,
+    reused: bool,
+    cache: &mut dyn SampleReads,
+) -> Result<(SfzLoad, SampledProviderTable), Fault> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         Fault::domain_with_data(
             CODE_IO,
@@ -806,13 +986,16 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
         sample_failures,
         sample_reads_truncated,
         sample_frames_loaded,
+        provider,
     ) = {
         let instrument = match resolution.as_ref() {
             Some((sources, _)) => parse_expanded(&text, Some(sources.as_slice())),
             None => parse_expanded(&text, None),
         }?;
-        let mut cache = SampleCache::new();
         let mut regions: Vec<RegionSummary> = Vec::new();
+        // ⭐ `#276`：提供表在**同一次**区域遍历里产出（⛔ 第二遍解析的替代品）。
+        let mut provider: SampledProviderTable = Vec::new();
+        let mut provider_seen: BTreeSet<String> = BTreeSet::new();
         for (index, region) in instrument.regions().iter().enumerate() {
             let mut summary = summarize(index, region);
             summary.sample_file_state = if summary.builtin_silence {
@@ -825,7 +1008,14 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
                     "noSampleOpcode".to_owned()
                 } else {
                     let resolved = resolve_sample_path(path, &sample);
-                    match cache.get(&resolved) {
+                    let outcome = cache.get(&resolved);
+                    // ⭐ 提供表的键是 `sample_path()` 的**原样字符串**（含 `default_path=`
+                    // 前缀、⛔ 不规范化）—— 与引擎摊平的去重键同一句。
+                    let raw_path = sample.into_owned();
+                    if provider_seen.insert(raw_path.clone()) {
+                        provider.push((raw_path, outcome.clone()));
+                    }
+                    match outcome {
                         Ok(reading) => reading.describe,
                         Err(reason) => format!("unreadable({}): {reason}", resolved.display()),
                     }
@@ -838,12 +1028,14 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
             .filter(|region| region.builtin_silence)
             .count();
         let mut sample_sources: Vec<String> = cache
-            .entries_iter()
-            .filter_map(|(_, entry)| entry.as_ref().ok().map(|reading| reading.describe.clone()))
+            .entries()
+            .values()
+            .filter_map(|entry| entry.as_ref().ok().map(|reading| reading.describe.clone()))
             .collect();
         sample_sources.sort_unstable();
         let mut sample_failures: Vec<String> = cache
-            .entries_iter()
+            .entries()
+            .iter()
             .filter_map(|(path, entry)| {
                 entry
                     .as_ref()
@@ -859,6 +1051,7 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
             sample_failures,
             cache.truncated(),
             cache.frames_loaded(),
+            provider,
         )
     };
     // 片段序列随装载一起登记：渲染路径的 `with_instrument` 必须重放**同一份**展开结果。
@@ -866,23 +1059,26 @@ pub fn load(path: &Path, sample_hz: f32, assign_id: u64, reused: bool) -> Result
         Some((sources, issues)) => (Some(Arc::from(sources)), issues),
         None => (None, Vec::new()),
     };
-    Ok(SfzLoad {
-        id: assign_id,
-        path: path.to_path_buf(),
-        bytes: metadata.len(),
-        digest,
-        text,
-        sources,
-        include_issues,
-        regions,
-        silent_region_count,
-        reused,
-        sample_hz,
-        sample_sources,
-        sample_failures,
-        sample_reads_truncated,
-        sample_frames_loaded,
-    })
+    Ok((
+        SfzLoad {
+            id: assign_id,
+            path: path.to_path_buf(),
+            bytes: metadata.len(),
+            digest,
+            text,
+            sources,
+            include_issues,
+            regions,
+            silent_region_count,
+            reused,
+            sample_hz,
+            sample_sources,
+            sample_failures,
+            sample_reads_truncated,
+            sample_frames_loaded,
+        },
+        provider,
+    ))
 }
 
 /// 一条区域的摘要（字段直接读 `yeban-sfz` 的公开字段，⛔ 不重写键/力度判定）。
@@ -2013,5 +2209,71 @@ mod tests {
             "拒绝文案必须点名上限 128: {reason}"
         );
         assert!(cache.truncated(), "上限命中必须被记账");
+    }
+
+    /// ⭐ `#276` 判据 6 的**解码次数那一半**：共享池让同一份样本只解码一次，
+    /// 而每条轨的预算记账与 [`SampleCache`] 逐条相同（帧数照记）。
+    ///
+    /// 判法：读完第一条轨的样本后**把文件删掉** —— 第二条轨仍然能拿到同一份 PCM
+    /// ⇒ 它**不可能**是重新解码出来的。负对照用两个独立缓存：文件已删 ⇒ 必须失败，
+    /// 证明"文件真的没了"，因此正腿不是空转。
+    #[test]
+    fn a_shared_store_decodes_a_sample_once_and_a_second_track_reads_the_pool() {
+        use yeban_render::dither::PcmBuffer;
+        use yeban_render::rf64::PcmFormat;
+        use yeban_render::wav::write_plain_wav;
+
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-sfz-shared-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |delta| delta.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("tone.wav");
+        write_plain_wav(
+            &path,
+            &PcmFormat::float(1, 48_000, 32),
+            &PcmBuffer::Float32(vec![0.25; 480]),
+        )
+        .expect("写夹具 WAV");
+
+        let mut store = SampleStore::new();
+        let first = {
+            let mut track = TrackSampleCache::new(&mut store);
+            let reading = track.get(&path).expect("第一条轨必须读到文件");
+            assert_eq!(track.frames_loaded(), 480, "第一条轨照旧记账");
+            assert!(!track.truncated(), "第一条轨没有命中任何上界");
+            reading
+        };
+        assert_eq!(first.frames, 480);
+
+        // ⚠ 删掉文件：第二次若重新解码就必然失败 ⇒ "只解码一次"于是可判。
+        std::fs::remove_file(&path).expect("删夹具 WAV");
+        let second = {
+            let mut track = TrackSampleCache::new(&mut store);
+            let reading = track
+                .get(&path)
+                .expect("第二条轨必须命中共享池（⛔ 不再读盘）");
+            // 记账口径不变：命中共享池仍按该轨的预算记一次帧数（与修前逐条相同）。
+            assert_eq!(track.frames_loaded(), 480, "第二条轨同样记账");
+            assert!(!track.truncated(), "命中共享池不触发上界");
+            reading
+        };
+        assert_eq!(second.frames, 480, "同一份 PCM 的帧数必须相同");
+        assert_eq!(store.decoded_files(), 1, "同一文件只解码一次");
+
+        // 负对照（修前的形状）：两个独立缓存 ⇒ 第二次读不到刚被删掉的文件。
+        let mut independent = SampleCache::new();
+        let err = independent
+            .get(&path)
+            .expect_err("文件已删，独立缓存必须读失败");
+        assert!(
+            err.contains("tone.wav"),
+            "失败原因必须点名路径（证明对照真的在说这个文件）: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2267,12 +2267,16 @@ pub fn build(
     // 的样本摊平进快照（`SfzPlan::prepare_with_samples` ＋ `with_sfz`）。解码仍在本层
     // 当 provider（⛔ `yeban-decode` 不下移进 `yeban-render`），引擎只接已解码 PCM。
     //
+    // ⭐ `#276`：样本池（[`sfz::SampleStore`]）的生命周期＝**这一次渲染** ——
+    // 同一份样本被多条轨引用时只解码一次；每条轨的装载读数仍按自己的预算记账不变。
+    //
     // ⚠ 失败的**结构化**报文由 provider 捕获（`sampler_failure`）并在武装之后**原样**
     // 抛回 ⇒ `samplerUnreadable` 的 `tried` 列表与 `#271` 的形状一字不变。
     let mut sampler_loads: BTreeMap<EntityId, ArmedSamplerTrack> = BTreeMap::new();
     let mut sampler_failure: Option<Fault> = None;
+    let mut sampler_store = sfz::SampleStore::new();
     let timbre = EngineTimbre::from_project_armed(project, sample_rate as f32, |track, raw| {
-        match prepare_sampler_track(track, raw, project, project_path) {
+        match prepare_sampler_track(track, raw, project, project_path, &mut sampler_store) {
             Ok(armed) => {
                 // 解码表交给引擎（`(sample= 原样字符串, (PCM, 原始采样率))`）。
                 let resolved = armed.load.path.clone();
@@ -3088,7 +3092,8 @@ struct ArmedSamplerTrack {
     decoded: BTreeSet<String>,
 }
 
-/// ⭐ `#274` 的 **provider 实现**：解析路径 → 装载 SFZ → 逐 `sample=` 解码。
+/// ⭐ `#274` 的 **provider 实现**：解析路径 → 装载 SFZ（**一次**解析）→ 交出引擎需要的
+/// 解码表。
 ///
 /// ## 为什么解码留在这一侧（⛔ 不下移 `yeban-decode`）
 ///
@@ -3102,6 +3107,10 @@ struct ArmedSamplerTrack {
 /// `yeban-decode`）—— 与 `yeban_app::sfz_load::read_sample_file` **同一条腿**；
 /// 去重键是 `region.sample_path()` 的**原样字符串**（与引擎摊平的去重键同一句）。
 ///
+/// ⭐ `#276`：这条腿不再**自己**解析、也不再**自己**解码 ——
+/// [`sfz::load_with`] 在同一次装载里既产出 `SfzLoad` 读数，又产出提供表；
+/// 样本文件由 [`sfz::SampleStore`]（一次渲染共享）负责"同一文件只解码一次"。
+///
 /// 读不到 ⇒ **不放进提供表**（引擎按缺样本 ⇒ 静音 ＋ 计数，⛔ 不发明替代内容）。
 ///
 /// # Errors
@@ -3112,13 +3121,17 @@ fn prepare_sampler_track(
     raw: &str,
     project: &YebanProjectV1,
     project_path: &Path,
+    store: &mut sfz::SampleStore,
 ) -> Result<ArmedSamplerTrack, Fault> {
     let resolved = resolve_sampler_path(raw, project_path)?;
-    let load = sfz::load(
+    // ⭐ `#276`：装载与提供表**同一次解析**；解码由 `store` 去重（同一文件只解一次）。
+    let mut cache = sfz::TrackSampleCache::new(store);
+    let (load, table) = sfz::load_with(
         &resolved,
         project.audio_config.sample_rate.hz() as f32,
         0,
         false,
+        &mut cache,
     )
     .map_err(|fault| {
         let cause = fault.into_result().map_or_else(
@@ -3138,46 +3151,16 @@ fn prepare_sampler_track(
             }),
         )
     })?;
-    let samples = load
-        .with_instrument(|instrument| {
-            let mut cache = sfz::SampleCache::new();
-            let mut seen: BTreeSet<String> = BTreeSet::new();
-            let mut samples: Vec<ArmedSfzSample> = Vec::new();
-            for region in instrument.regions() {
-                // ⭐ `sample=*silence` 不是文件（`#218`）：⛔ 不读盘、⛔ 不进提供表
-                //    （引擎摊平期把它标 `NO_SAMPLE` 并计入 `silent`）。
-                if region.is_builtin_silence() {
-                    continue;
-                }
-                let raw_path = region.sample_path().into_owned();
-                if raw_path.trim().is_empty() || !seen.insert(raw_path.clone()) {
-                    continue;
-                }
-                let resolved_sample = sfz::resolve_sample_path(&resolved, &raw_path);
-                // 读不到 ⇒ 不进提供表（引擎按缺样本处理），原因已在
-                // `SfzLoad::sample_failures` 里如实登记。
-                if let Ok(reading) = cache.get(&resolved_sample) {
-                    samples.push((raw_path, (reading.pcm.as_ref().clone(), reading.sample_hz)));
-                }
-            }
-            samples
+    // 读不到 ⇒ 不进提供表（引擎按缺样本处理），原因已在 `SfzLoad::sample_failures`
+    // 里如实登记。表的顺序/键与修前逐条相同：区域首见顺序、`sample_path()` 原样字符串。
+    let samples: Vec<ArmedSfzSample> = table
+        .into_iter()
+        .filter_map(|(raw_path, outcome)| {
+            outcome
+                .ok()
+                .map(|reading| (raw_path, (reading.pcm.as_ref().clone(), reading.sample_hz)))
         })
-        .map_err(|fault| {
-            let cause = fault.into_result().map_or_else(
-                |error| serde_json::json!({ "code": error.code, "message": error.message }),
-                |value| value["error"].clone(),
-            );
-            render_failed(
-                format!("采样器区域表重放失败: {}", resolved.display()),
-                serde_json::json!({
-                    "reason": "samplerUnreadable",
-                    "path": raw,
-                    "resolvedPath": resolved.display().to_string(),
-                    "cause": cause,
-                }),
-            )
-        })?;
-    // 读数只认真的解码成功的那几份（`seen` 收的是**所有**被引用路径，含读失败的）。
+        .collect();
     let decoded: BTreeSet<String> = samples.iter().map(|(path, _)| path.clone()).collect();
     Ok(ArmedSamplerTrack {
         load,
