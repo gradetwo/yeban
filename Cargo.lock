@@ -6725,6 +6725,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "yeban-dsp",
+ "yeban-engine",
  "yeban-midi",
  "yeban-model",
 ]

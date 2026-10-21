@@ -558,7 +558,7 @@ fn a_single_source_below_full_scale_can_still_clip_the_sum() {
 /// 同一份音频片段夹具：CLI 的三项读数必须与 **MCP 侧**逐项相等
 /// （常量见 [`MCP_CLIPPED_SAMPLES`] 的文档）。
 ///
-/// ⚠ 为什么不用 MIDI 夹具：MCP 的 `MidiSynthSource` 与 app 的引擎乐器是**两条渲染路径**，
+/// ⚠ 为什么不用 MIDI 夹具：`#268` 之前 MCP 的正弦音源与 app 的引擎乐器是**两条渲染路径**，
 /// 同一份 MIDI 工程会产出**不同的音频** ⇒ 读数本来就不该相等（那是渲染路径的差异，
 /// 不是读数口径的漂移）。音频片段是两侧**语义逐条对齐**的唯一形态 ⇒ 拿它验"同一份口径"。
 #[test]

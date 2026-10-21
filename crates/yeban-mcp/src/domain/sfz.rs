@@ -1400,7 +1400,7 @@ pub struct InMemorySfzSample {
 impl InMemorySfzSample {
     /// 极短正弦：`frames` 个采样点 @ `sample_hz`。
     ///
-    /// 相位由**绝对采样点下标**算出（与 `render.rs` 的 `MidiSynthSource` 同一条口径：
+    /// 相位由**绝对采样点下标**算出（与引擎音源同一条口径：
     /// 不累加相位 ⇒ 与块边界无关、逐位可复现）。
     #[must_use]
     pub fn sine(freq_hz: f32, sample_hz: f32, frames: usize) -> Self {

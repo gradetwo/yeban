@@ -222,17 +222,19 @@
 //! 峰值，也⛔ 不是真峰值。这句话同时写在响应的 `peak.semantics` 与
 //! `tools/list` 的 `yeban_render_master` 描述里，不让调用方去猜。
 //!
-//! ## MIDI 音源**明说**是内置正弦振荡器（⭐ `#251`）
+//! ## MIDI 音源 = 引擎音色（⭐ `#268` / `ADR-0011`；`#251` 的文案已改）
 //!
-//! 此前响应里只有 `sources[].kind = "midi-synth-osc"` —— 一个**间接**标签，读的人
-//! 不会去查它是什么。于是 agent / 用户容易以为听到的是引擎音色。现在顶层
-//! `data.midiSource` 用**一句话**说清：`kind = "builtin-sine"`、`engineTimbre = false`，
-//! 并在 `note` 里逐字写"内置正弦振荡器、**不是**引擎音色"。
+//! `#251` 时 MIDI 音源是**内置正弦振荡器**，于是 `data.midiSource` 逐字写着
+//! `kind = "builtin-sine"`、`engineTimbre = false`。`#268` 按负责人逐字裁决「统一」
+//! 把音源换成 `yeban-engine` 的 `SynthEngine`（与界面 / CLI 的 `--export-wav`
+//! **同一个**音色、同一条快照投影）⇒ 旧文案今天就是假话（第 324 条），本单改成：
+//! `kind = "engine-instrument"`、`engineTimbre = true`，`note` 里逐字写
+//! "与界面/CLI 同一个音色、⛔ 不再使用内置正弦振荡器"。
 //!
-//! ⛔ 本字段**只加文案**：一个样本都不动 ⇒ `sha256` / `masterDigest` 与加它之前**逐位
-//! 相同**（判据 `tests/render_master.rs` 的 pan / 逐字节判据）。绑定了 SFZ 采样器的
-//! 轨由 `SamplerTrackSource` 发声，`sources[].sampler` 里另有读数 —— `note` 里点名这条
-//! 边界，⛔ 不写成"与引擎一致"那种假话。
+//! ⚠ **这不是只改文案**：`MidiSynthSource` 已退役，母带样本因此真的变了
+//! （`masterDigest` / `sha256` / `clippedSamples` 的旧→新读数见任务单 `#268` 的报告）。
+//! 绑定了 SFZ 采样器的轨仍由 `SamplerTrackSource` 发声（与 CLI 的 `--sfz` 旁路同形，
+//! `ADR-0011 D6` 明确不在替换面里），`sources[].sampler` 里另有读数。
 //!
 //! ## 削波**预警 + 建议 trim**（⭐ `#225`；⛔ **不自动改增益**）
 //!
@@ -411,6 +413,9 @@ use yeban_model::{
     RoutingKind, SampleRate, TrackV3, YebanProjectV1,
 };
 use yeban_render::dither::{BitDepth, quantize};
+// ⭐ `ADR-0011`（`#268`）：引擎音色源适配器（CSV：CLI 与 MCP 共用同一份实现）。
+// 本 crate ⛔ 不直接依赖 `yeban-engine`（`scripts/gates/check_mcp_dependency_direction.py`）。
+use yeban_render::engine_source::{EngineTimbre, EngineTrackSource};
 // 插入链的投影与"是否还有未消费参数"的判据都住在 `yeban-render`：MCP 不复制
 // 第二份白名单（`yeban-engine` 的投影是同一份规则的来源，但 MCP 不能依赖它）。
 use yeban_render::automation::{
@@ -510,12 +515,6 @@ pub const NOTE_UNVERIFIED_SAMPLE_RATE: &str =
     "该采样率没有核验过的 K 加权系数 (44.1/48/88.2/96 kHz 四档), 拒绝硬套 48 kHz 系数";
 
 // ---------------------------------------------------------------------------
-/// 起音时长（毫秒）。
-pub const ATTACK_MS: u32 = 5;
-
-/// 释音时长（毫秒）。
-pub const RELEASE_MS: u32 = 10;
-
 /// 单次渲染的帧数上限：1 小时 @ 48 kHz。
 ///
 /// 不是性能目标，而是一道**防呆闸门**：工程里一个错误的 `duration_ticks`
@@ -527,20 +526,24 @@ pub const MAX_RENDER_FRAMES: u64 = 48_000 * 3_600;
 pub const DEFAULT_STEM: &str = "master";
 
 /// 音频源种类（响应 `sources[].kind`）：只有 MIDI 片段的源。
-pub const SOURCE_KIND: &str = "midi-synth-osc";
+///
+/// ⭐ `ADR-0011`（`#268`）：MIDI 音源已换成 `yeban-engine` 的 `SynthEngine`
+/// （与界面 / CLI **同一个**音色）⇒ 标签从 `midi-synth-osc` 改成 `engine-instrument`。
+/// 旧标签逐字描述的是**正弦振荡器**，留着就是假话（第 324 条）。
+pub const SOURCE_KIND: &str = "engine-instrument";
 
 /// 音频源种类：只有音频片段的源。
 pub const AUDIO_SOURCE_KIND: &str = "audio-clip";
 
 /// 音频源种类：MIDI 片段与音频片段**都有**的源。
-pub const MIXED_SOURCE_KIND: &str = "midi-synth-osc+audio-clip";
+pub const MIXED_SOURCE_KIND: &str = "engine-instrument+audio-clip";
 
 /// 音频源种类：既没有音符也没有可渲染的音频片段（静音源）。
 pub const SILENT_SOURCE_KIND: &str = "silent";
 
 /// 音频源种类：⭐ `TrackV3.sampler` 绑定的**采样器音源**（`#221`）。
 ///
-/// 与 [`SOURCE_KIND`] 的区别是**发声体不同**：这个源不再用本 crate 的正弦振荡器，
+/// 与 [`SOURCE_KIND`] 的区别是**发声体不同**：这个源不用引擎的复音合成器，
 /// 而是按 SFZ 区域从样本文件（或内存正弦回退）取音 —— 与 app 的
 /// `--track-sampler` / `--export-wav` **同一条音源路径**（`domain::sfz` 的
 /// `note_wave`／`prepare_sampler`）。
@@ -1954,20 +1957,22 @@ impl RenderArtifact {
             Value::Array(self.sources.iter().map(SourceReport::to_value).collect()),
         );
         // ⭐ `#251`（S0）：MIDI 音源**显式**说明 —— 不再只靠 `sources[].kind` 的间接标签。
-        //    ⛔ 纯文案：一个样本都不动 ⇒ `sha256` / `masterDigest` 与加它之前逐位相同。
+        // ⭐ `#268`（`ADR-0011`，第 324 条）：正弦振荡器**已退休** ⇒ 这段文案必须
+        //    逐字改成实话。`kind` 与 `engineTimbre` 也跟着变：旧值（`builtin-sine` /
+        //    `false`）今天就是假话，留着会让 agent 以为听到的不是引擎音色。
         map.insert(
             "midiSource".to_owned(),
             serde_json::json!({
-                "kind": "builtin-sine",
-                "label": "内置正弦振荡器",
-                // 逐字：这不是引擎音色。⛔ 不写"与引擎一致"这种假话。
-                "engineTimbre": false,
-                "oscillator": "sin(2π · phase)",
-                "note": "MCP 的 MIDI 音符音源是内置正弦振荡器、不是引擎音色\
-                         （MidiSynthSource: amplitude × envelope × sin(2π·phase)）；\
-                         ⛔ 本次渲染不装载 yeban-engine 的乐器。绑定了 SFZ 采样器的轨\
-                         由采样器发声，见 sources[].sampler。",
-                "appliesTo": "sources[].kind == \"midi-synth-osc\"",
+                "kind": "engine-instrument",
+                "label": "yeban-engine SynthEngine（引擎音色）",
+                "engineTimbre": true,
+                "adr": "ADR-0011",
+                "engine": "yeban_engine::synth::SynthEngine（HOLLOW 加法波表 + ADSR + 双振荡器）",
+                "note": "MCP 的 MIDI 音符音源是 yeban-engine 的 SynthEngine，与界面/CLI 的\
+                         `--export-wav` **同一个音色、同一条快照投影**（ADR-0011）；\
+                         本工具⛔ 不再使用内置正弦振荡器。绑定了 SFZ 采样器的轨由采样器发声\
+                         （与 CLI 的 `--sfz` 旁路同形），见 sources[].sampler。",
+                "appliesTo": "sources[].kind == \"engine-instrument\"",
             }),
         );
         // 概率触发的**实测**读数：`probability < 1.0` 的音符里有多少被判为不触发。
@@ -2224,6 +2229,19 @@ pub fn build(
     // 资产上下文: 每个资产**解码/重采样一次**, 供所有音轨共享（`Arc<[f32]>` 只读）。
     let mut asset_cache: BTreeMap<AssetHash, Option<Arc<PreparedAsset>>> = BTreeMap::new();
     let mut asset_reports: BTreeMap<AssetHash, AudioAssetReport> = BTreeMap::new();
+    // ⭐ `#268`（`ADR-0011`）：**一次**快照投影，供全部 CPU 轨共用
+    // （与 CLI 的 `render_core` 同一条装配；`Arc::clone` 只是指针复制）。
+    // 失败 ⇒ 在**落盘之前**如实失败（不写一份"没有声部"的母带）。
+    let timbre = EngineTimbre::from_project(project).map_err(|error| {
+        render_failed(
+            format!("引擎快照投影失败: {error}"),
+            serde_json::json!({
+                "reason": "engineSource",
+                "cause": error.message(),
+                "hint": "工程必须有可用的主总线节点；路由图必须自洽",
+            }),
+        )
+    })?;
     let mut registry: BTreeMap<EntityId, Box<dyn AudioSource>> = BTreeMap::new();
     let mut pending: Vec<(EntityId, TrackSource)> = Vec::new();
     let mut reports: Vec<SourceReport> = Vec::new();
@@ -2237,6 +2255,7 @@ pub fn build(
         })?;
         let (source, report) = build_source(
             project,
+            &timbre,
             track,
             project_path,
             sample_rate,
@@ -2702,89 +2721,6 @@ fn audible_end_tick(track: &TrackV3) -> Option<u64> {
     end
 }
 
-/// 一个已排程的音符（发音所需的全部信息，与模型层解耦）。
-///
-/// 声相/音轨增益**不在**这里：一个源就是一条音轨，因此这两个量在整个源上恒定，
-/// 放在 [`MidiSynthSource`] 上（每音符复制一遍只会制造漂移面）。
-#[derive(Clone, Copy, Debug)]
-struct ScheduledNote {
-    /// 起始帧（含）。
-    start: i64,
-    /// 结束帧（不含）。
-    end: i64,
-    /// 频率 (Hz)。
-    frequency: f32,
-    /// 幅度（力度 / 127）。
-    amplitude: f32,
-}
-
-/// 确定性 MIDI 合成源：**纯函数式**振荡器（相位由绝对帧号算出，不做累加）。
-///
-/// 相位 `= (global_frame - note_start) * frequency / sample_rate`，
-/// 因此输出只依赖**绝对帧号**，与块边界、块大小、线程数完全无关 ——
-/// 这比"在块之间累加相位"更强：累加只要错一次（丢块/重复块）就会漂移。
-///
-/// **累加而不是覆写**：调用方（[`TrackSource`] 与 `yeban-render` 的 `render_node`）
-/// 负责先把缓冲清零，本源的语义是"把这一块的贡献**加上去**"。这样 MIDI 与音频片段
-/// 可以按固定顺序叠加到同一个源节点上，而不需要一块额外的中转缓冲。
-struct MidiSynthSource {
-    notes: Vec<ScheduledNote>,
-    /// 左声道增益（音轨音量 × 等功率声相）。
-    gain_l: f32,
-    /// 右声道增益。
-    gain_r: f32,
-    attack_frames: i64,
-    release_frames: i64,
-}
-
-impl AudioSource for MidiSynthSource {
-    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
-        let channels = context.channels;
-        if channels == 0 || self.notes.is_empty() {
-            return Ok(());
-        }
-        let sample_rate = f64::from(context.sample_rate);
-        if sample_rate <= 0.0 {
-            return Ok(());
-        }
-        for index in 0..context.frames {
-            let global = i64::try_from(context.first_frame + index as u64).unwrap_or(i64::MAX);
-            let mut value = 0.0f32;
-            for note in &self.notes {
-                if global < note.start || global >= note.end {
-                    continue;
-                }
-                let offset = global - note.start;
-                let envelope = math::envelope(
-                    offset,
-                    note.end - note.start,
-                    self.attack_frames,
-                    self.release_frames,
-                );
-                if envelope <= 0.0 {
-                    continue;
-                }
-                let phase = (offset as f64) * f64::from(note.frequency) / sample_rate;
-                let fraction = (phase - phase.floor()) as f32;
-                value += note.amplitude * envelope * libm::sinf(fraction * core::f32::consts::TAU);
-            }
-            if value == 0.0 {
-                continue;
-            }
-            let base = index * channels;
-            for (channel, slot) in out[base..base + channels].iter_mut().enumerate() {
-                let gain = match channel {
-                    0 => self.gain_l,
-                    1 => self.gain_r,
-                    _ => 0.0,
-                };
-                *slot += value * gain;
-            }
-        }
-        Ok(())
-    }
-}
-
 /// 一个音频片段摆放的**帧区间 + 左右增益**（tick→帧的换算已在构造时做完）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ClipSpan {
@@ -2819,7 +2755,8 @@ struct PreparedAsset {
 ///
 /// 语义（全部是刻意的、可判据化的）：
 ///
-/// - **累加**（不是覆写）：与 [`MidiSynthSource`] 一样，调用方负责清零；
+/// - **累加**（不是覆写）：调用方负责先把缓冲清零（引擎源自己 `fill(0.0)`，
+///   本类型只往上加）；
 /// - **块无关**：某帧的取值只由 `帧号 - 片段起点` 决定，与块边界、块大小、
 ///   线程数、块的到达顺序都无关 ⇒ 母带逐位可复现；
 /// - **硬切**：`placement.duration_ticks` 换算出的区间之外一律不加，
@@ -2938,10 +2875,13 @@ fn channel_gain(span: &ClipSpan, channel: usize) -> f32 {
 /// MIDI 片段与音频片段 —— 因此需要一个把两者按**固定顺序**叠起来的容器。
 /// 顺序是"先 MIDI、后音频片段"，与块边界无关，因此逐位可复现。
 ///
-/// ⭐ `#221`：`sampler` 为 `Some` 时，这条轨的音符**不再**进 `midi`
-/// （[`MidiSynthSource`] 只在没有采样器时才是发声体），改由采样器音源发声。
+/// ⭐ `#268`（`ADR-0011`）：`midi` 是 **`yeban-engine` 的引擎音源**
+/// （[`EngineTrackSource`]，与 CLI / 界面**同一份**实现）—— 本 crate 不再有正弦振荡器。
+/// `None` 的两种情形：① 该轨在快照里没有可发声音符（纯音频轨，不白建一台 109 KB 的
+/// 引擎）；② `sampler` 为 `Some`（`#221`：采样器轨由采样器音源发声，引擎那条路
+/// **不参与**，否则采样与复音会叠成两份声音）。
 struct TrackSource {
-    midi: MidiSynthSource,
+    midi: Option<EngineTrackSource>,
     sampler: Option<SamplerTrackSource>,
     clips: Vec<AudioClipSource>,
     /// ⭐ 本轨的 `TrackVolume` 自动化；`None` = 恒等快路径（没有可求值点 / 曲线处处
@@ -3010,7 +2950,10 @@ impl TrackSource {
             .sampler
             .as_ref()
             .is_some_and(|sampler| !sampler.notes.is_empty());
-        let has_midi = !self.midi.notes.is_empty();
+        let has_midi = self
+            .midi
+            .as_ref()
+            .is_some_and(|midi| midi.scheduled_notes() > 0);
         let has_audio = self.clips.iter().any(|clips| !clips.spans.is_empty());
         match (has_sampler, has_midi, has_audio) {
             (true, _, true) => SAMPLER_MIXED_SOURCE_KIND,
@@ -3026,7 +2969,12 @@ impl TrackSource {
 impl AudioSource for TrackSource {
     fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
         // 调用方（`yeban-render` 的 `render_node`）已经把缓冲清零；这里只累加。
-        self.midi.render_block(context, out)?;
+        // ⚠ 引擎源是**有状态**的（内部播放头）：它自己 `out.fill(0.0)` 再写单声道，
+        //    且强制"块必须从第 0 帧起连续升序"（见 `EngineTrackSource::render_block`）。
+        //    它是本容器的**第一路**，因此覆写不会抹掉别的贡献。
+        if let Some(midi) = &mut self.midi {
+            midi.render_block(context, out)?;
+        }
         if let Some(sampler) = &mut self.sampler {
             sampler.render_block(context, out)?;
         }
@@ -3069,7 +3017,7 @@ impl AudioSource for TrackSource {
 /// | 声相 | ⭐ `#255`：`audio_clip::track_pan_gains`（`pan = 0` ⇒ `(1.0, 1.0)`） | ⭐ `#255`：**同一条**等功率曲线 [`pan_gains`]，经 [`track_pan_gains`] 与 MIDI 源共用 |
 /// | 末尾淡出 | 无 | 无（同上：与 CLI 逐位可比） |
 ///
-/// ⭐ `#255`：本类型**乘 `pan_gains`**（与 [`MidiSynthSource`] 共用 [`track_pan_gains`]），
+/// ⭐ `#255`：本类型**乘 `pan_gains`**（与引擎音源共用 [`track_pan_gains`]），
 /// 因为 CLI 的两条采样器入口也乘了同一条曲线 ⇒ 同一 `pan` 下两侧左右比相同、
 /// 与 MIDI 路径同曲线。`pan == 0`（或非有限）走**恒等快路径**（两个声道都是
 /// `track_gain`，⛔ 不乘 `√2/2`）⇒ 居中工程的字节与接线前**逐位相同**。
@@ -3415,6 +3363,7 @@ fn resolve_sampler_path(raw: &str, project_path: &Path) -> Result<PathBuf, Fault
 #[allow(clippy::too_many_arguments)]
 fn build_source(
     project: &YebanProjectV1,
+    timbre: &EngineTimbre,
     track: &TrackV3,
     project_path: &Path,
     sample_rate: u32,
@@ -3461,11 +3410,10 @@ fn build_source(
     }) {
         note_unsupported(unsupported, counts, "externalPlugins");
     }
-    let attack_frames = math::ms_to_frames(ATTACK_MS, sample_rate);
-    let release_frames = math::ms_to_frames(RELEASE_MS, sample_rate);
-    let mut scheduled: Vec<ScheduledNote> = Vec::new();
-    // ⭐ `#221`：采样器轨的音符（`(起始帧, 时值帧, 音高, 力度)`）—— 与 `scheduled`
-    // **互斥**：绑了采样器就不排正弦振荡器的音符。
+    // ⭐ `#221`：采样器轨的音符（`(起始帧, 时值帧, 音高, 力度)`）。
+    // ⭐ `#268`（`ADR-0011`）：**非采样器轨**的音符不再在本层排成"正弦参数"——
+    //    它们由 `yeban-engine` 的 `EngineSnapshot::from_project` 投影成 `NoteSchedule`，
+    //    本层只保留**读数**（概率触发 / 连击 / 时间轴末端）与 SFZ 采样器需要的那一份。
     let mut sampler_notes: Vec<(u64, u64, u8, u8)> = Vec::new();
     // 每个资产 → 它在这条音轨上的摆放区间（同一资产的多个摆放共用一个源对象）。
     let mut per_asset: BTreeMap<AssetHash, (Arc<PreparedAsset>, Vec<ClipSpan>)> = BTreeMap::new();
@@ -3548,27 +3496,22 @@ fn build_source(
                         }
                         let base_tick = placement.start_tick.saturating_add(copy_start);
                         for pulse in 0..ratchet {
-                            let (start, end) = math::note_frame_span(
-                                base_tick.saturating_add(pulse.saturating_mul(step)),
-                                step,
-                                micro,
-                                PPQ,
-                                project.bpm,
-                                sample_rate,
-                            );
+                            // ⭐ `#268`：`note_frame_span` 现在**只服务采样器音源**。
+                            // CPU 轨的音符由引擎快照投影（同一个 `yeban-model` 的
+                            // tick→sample 换算），本层⛔ 不再排一份自己的音源参数。
                             if sampler_bound {
-                                // 采样器音源要的是"起在哪、多长、多高、多重"——
-                                // 帧区间与正弦路径**同一个** `note_frame_span`。
+                                // 采样器音源要的是"起在哪、多长、多高、多重"。
+                                let (start, end) = math::note_frame_span(
+                                    base_tick.saturating_add(pulse.saturating_mul(step)),
+                                    step,
+                                    micro,
+                                    PPQ,
+                                    project.bpm,
+                                    sample_rate,
+                                );
                                 let origin = u64::try_from(start.max(0)).unwrap_or(0);
                                 let span = u64::try_from((end - start).max(1)).unwrap_or(1);
                                 sampler_notes.push((origin, span, note.pitch, note.velocity));
-                            } else {
-                                scheduled.push(ScheduledNote {
-                                    start,
-                                    end,
-                                    frequency: pitch_to_hz(note.pitch),
-                                    amplitude: f32::from(note.velocity) / 127.0,
-                                });
                             }
                         }
                         let shifted_micro = u64::try_from(micro.max(0)).unwrap_or(0);
@@ -3714,15 +3657,8 @@ fn build_source(
             }
         }
     }
-    // 浮点求和不满足结合律 [ARCH-DET-002]: 排程顺序必须是**全序**且与输入顺序无关。
-    // 键取到"两个音符完全相同则顺序无影响"的深度即可。
-    scheduled.sort_by(|a, b| {
-        a.start
-            .cmp(&b.start)
-            .then(a.end.cmp(&b.end))
-            .then(a.frequency.to_bits().cmp(&b.frequency.to_bits()))
-            .then(a.amplitude.to_bits().cmp(&b.amplitude.to_bits()))
-    });
+    // ⭐ `#268`：本层不再有"正弦音符表"可排序 —— 音符的顺序由引擎快照投影的
+    // `project_schedules` 唯一决定（`start_sample, pitch, end_sample` 全序）。
     // `#241`：一个摆放可能产生多个 `ClipSpan`（循环的每一遍），但响应里的
     // `audioClips` 口径是**摆放数** ⇒ 用逐摆放计数器，不用 span 数。
     let audio_clips = audio_placements;
@@ -3843,12 +3779,39 @@ fn build_source(
             )
         }
     };
-    let midi = MidiSynthSource {
-        notes: scheduled,
-        gain_l: pan_gain_l,
-        gain_r: pan_gain_r,
-        attack_frames,
-        release_frames,
+    // ⭐ `#268`（`ADR-0011` D2）：CPU 轨走**引擎音色** —— 适配器住在
+    // `yeban-render::engine_source`，快照只投影一次（[`EngineTimbre`]），
+    // 引擎内部自带轨增益门（`project_schedules` 的 `track_gain_scale`）。
+    //
+    // 声相因此**只**传等功率那一半（`centered_pan_gains`）：
+    // 轨增益已经在引擎的 `note.gain` 里 ⇒ 这一层⛔ 不再乘第二次。
+    // `pan == 0` / 声相自动化接管时它逐位等于 `(1.0, 1.0)`（与 CLI 同一条快路径）。
+    //
+    // ⚠ 采样器轨**不建引擎源**（`#221` 的 `sampler` 分支是整体替换，与 CLI 的
+    //   `--sfz` 旁路同形）⇒ 否则采样与复音会叠成两份声音。
+    // ⚠ 没有可发声音符的纯音频轨也不建（一台引擎约 109 KB，白建没有收益）。
+    let midi = if sampler_bound || timbre.scheduled_notes(track.id) == 0 {
+        None
+    } else {
+        let (engine_l, engine_r) = centered_pan_gains(source_pan, pan_gains);
+        Some(
+            timbre
+                .track_source(track.id)
+                .map_err(|error| {
+                    render_failed(
+                        format!("引擎音源装配失败: {error}"),
+                        serde_json::json!({
+                            "reason": "engineSource",
+                            "cause": error.message(),
+                            "hint": format!(
+                                "轨道 {} 的引擎源装配失败（快照已投影成功时这一条不应出现）",
+                                track.id.to_canonical_string()
+                            ),
+                        }),
+                    )
+                })?
+                .with_pan((engine_l, engine_r)),
+        )
     };
     // ⭐ 本轨的 `TrackVolume` 自动化：构造期判定恒等快路径，非恒等才挂到源上。
     let automation = TrackGainAutomation::new(project, track.id, sample_rate);
@@ -3865,8 +3828,12 @@ fn build_source(
         track: track.name.clone(),
         kind: source.kind(),
         audible,
-        notes: u64::try_from(source.midi.notes.len())
-            .unwrap_or(u64::MAX)
+        notes: source
+            .midi
+            .as_ref()
+            .map_or(0, |midi| {
+                u64::try_from(midi.scheduled_notes()).unwrap_or(u64::MAX)
+            })
             .saturating_add(
                 source
                     .sampler
@@ -3887,11 +3854,6 @@ fn build_source(
     Ok((source, report))
 }
 
-/// 等程律频率：`440 * 2^((pitch - 69) / 12)`，走 `libm::powf` [ARCH-DET-001]。
-pub(super) fn pitch_to_hz(pitch: u8) -> f32 {
-    440.0 * libm::powf(2.0, (f32::from(pitch) - 69.0) / 12.0)
-}
-
 /// 等功率（−3 dB）声相增益：`θ = (pan + 1) * π/4`，`(cos θ, sin θ)`。
 ///
 /// 与模型层 `PanLaw::ConstantPowerMinus3dB` 的口径一致：居中的 `pan = 0`
@@ -3904,7 +3866,7 @@ pub(super) fn pan_gains(pan: f32) -> (f32, f32) {
 
 /// 一条轨的**左右声道增益**（`track_gain × 等功率声相`）—— 第 255 单的**唯一**组合入口。
 ///
-/// ⭐ MIDI 源（[`MidiSynthSource`]）与采样器源（[`SamplerTrackSource`]）**共用**本函数
+/// ⭐ 采样器源（[`SamplerTrackSource`]）与音频片段路径**共用**本函数
 /// ⇒ 同一 `pan` 下两条路径的左右比相同、且不可能出现"一条乘 `pan_gains`、另一条不乘"
 /// 的分叉。
 ///
@@ -4249,10 +4211,9 @@ mod tests {
     }
 
     #[test]
-    fn pitch_and_pan_follow_the_model_conventions() {
-        assert!((pitch_to_hz(69) - 440.0).abs() < 1.0e-3, "A4 = 440 Hz");
-        assert!((pitch_to_hz(81) - 880.0).abs() < 1.0e-2, "A5 = 880 Hz");
-        assert!((pitch_to_hz(57) - 220.0).abs() < 1.0e-2, "A3 = 220 Hz");
+    fn pan_follows_the_model_conventions() {
+        // ⭐ `#268`：等程律 `pitch → Hz` 的实现已随音源一起退休（引擎的
+        // `ScheduledNote::new` 在快照投影里做这一步）⇒ 本判据只保留声相。
         let (left, right) = pan_gains(0.0);
         assert!((left - right).abs() < 1.0e-6, "居中必须对称");
         assert!((left - core::f32::consts::FRAC_1_SQRT_2).abs() < 1.0e-6);

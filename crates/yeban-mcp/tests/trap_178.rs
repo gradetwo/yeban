@@ -461,7 +461,7 @@ fn the_warned_track_is_the_silent_source_in_render_master() {
         .iter()
         .find(|source| source["track"] == "Track 1")
         .unwrap_or_else(|| panic!("sources[] 里必须有 Track 1: {sources:?}"));
-    assert_eq!(sounding["kind"], "midi-synth-osc", "{sounding}");
+    assert_eq!(sounding["kind"], "engine-instrument", "{sounding}");
     assert_eq!(sounding["notes"], 1, "{sounding}");
 }
 

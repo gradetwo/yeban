@@ -46,13 +46,17 @@
 //! | [`vlq`] | MIDI 可变长度量的零依赖参考编解码 | `ARCH-FMT-001 §5.5` |
 //! | [`sum`] | 确定性有序归约核（刻意不依赖 rayon） | `ARCH-DET-002` |
 //! | [`rng`] | `yeban_dsp::noise::Rng` 到抖动接口的适配与种子派生 | `ARCH-DET-001` |
+//! | [`engine_source`] | ⭐ `ADR-0011`：`yeban-engine` 的 `SynthEngine` 接成 [`render::AudioSource`]（CLI 与 MCP 的**同一个** MIDI 音源） | `ADR-0011`, `ARCH-DET-001` |
 //!
-//! ## 没有依赖 `yeban-engine`（刻意的）
+//! ## 与 `yeban-engine` 的关系（`ADR-0011`，Accepted 2026-10-21）
 //!
-//! 实时引擎线 (`line/engine-rt`) 与这一层并行开发。为了避免两条线争抢同一个
-//! crate, 采样源以 [`render::AudioSource`] trait **注入**; PDC 算法则在本 crate 有
-//! 一份最小同构实现（[`pdc`]）。这两处都是显式的 `needs` 待办, 见
-//! `docs/ledger/render-master-notes.md`。
+//! 采样源仍然以 [`render::AudioSource`] trait **注入**；调度 / 归约 / 位级摘要
+//! （[`render`]）与 PDC（[`pdc`]）都**没有**依赖引擎。本 crate 对 `yeban-engine`
+//! 的依赖边（`default-features = false`）**只服务一件事**：[`engine_source`] 把引擎的
+//! `SynthEngine` 接成音源，让 MCP 导出与 CLI / 界面用**同一个** MIDI 音色。
+//! ⚠ 这条边**超出** `ADR-0001 D19` 的原意（D19 只授权 PDC 算法）—— 见 `ADR-0011 D3`。
+//! 今天本 crate 的 PDC 仍是一份最小同构实现；把 PDC 也换成引擎那一份**不在**
+//! `ADR-0011` 的范围里。
 //!
 //! ## 边界（这一层没有证明什么）
 //!
@@ -106,6 +110,9 @@ pub use yeban_midi::midi;
 pub mod inserts;
 pub mod pdc;
 pub mod render;
+// ⭐ `ADR-0011`：引擎音色源（本 crate 里**唯一**碰 `yeban-engine` 的模块）。
+// CLI 的 `export_wav` 与 MCP 的 `yeban_render_master` 共用这一份 —— ⛔ 不写第二份音源。
+pub mod engine_source;
 pub mod rf64;
 pub mod rng;
 pub mod sum;

@@ -166,8 +166,13 @@ const DEFAULT_RNG_SEED: u64 = 0x5945_4241_4E00_0001;
 ///
 /// 它是"默认路径逐位不变"的锚：任何改动（连击展开是一例）只要碰了默认路径，
 /// 这里就会红。判据见 `two_renders_of_the_same_project_are_byte_identical`。
+///
+/// ⭐ **`#268` 重钉（基线三件套）**：`ADR-0011` 把 MCP 的 MIDI 音源从内置正弦换成
+/// `yeban-engine` 的 `SynthEngine` ⇒ 默认夹具（含 MIDI）的母带样本与文件字节都变了。
+/// 旧值 `b242d510…`（母带）/ `6aa33774…`（文件）是正弦音源的读数；新值由判据自己
+/// 报出后照抄。BWF 两条戳、容器布局、抖动口径一位未动（差异只来自音源）。
 const DEFAULT_MASTER_DIGEST: &str =
-    "b242d510d581541732134d3c0e233a11d6045ffb65535675adc73501fb28eefb";
+    "17e3db373cd2815ae8fa43e0605654be36d37f47e027501174cd9b3c50834997";
 
 /// 同一份默认夹具的 RIFF **文件字节** SHA-256 —— 钉死的常量。
 ///
@@ -182,7 +187,7 @@ const DEFAULT_MASTER_DIGEST: &str =
 /// 写入器现在把 NUL 终止符计入 `bext` 负载（chunk 外不再有补位）⇒ 长度字段 +1。
 /// 母带样本摘要（`DEFAULT_MASTER_DIGEST`）**逐位未变**；文件总长与补位位置也未变。
 const DEFAULT_MASTER_SHA256: &str =
-    "6aa337744aad2b0dafb77bb687d5465f4420548143e93824d00ba151adc41d5d";
+    "837db980db0866f8da53b968a124f1b45494e55b20c3ba86e5697b1e1e99d3b8";
 
 /// 夹具工程的创建时刻 —— BWF 两条 ASCII 戳（`OriginationDate` / `OriginationTime`）
 /// 的**唯一**来源（`#214`）。
@@ -1397,7 +1402,9 @@ fn the_target_changes_the_verdict_so_it_cannot_be_ignored() {
     let (mut dispatcher, auth) =
         dispatcher_with(&project(&Spec::default()), &scratch.join("demo.yeban"));
     let mut verdicts = Vec::new();
-    for (index, target) in [None, Some(-3.0f64), Some(-40.0)].into_iter().enumerate() {
+    // ⭐ `#268`：音源换成引擎音色之后母带的实测积分响度从 ≈ −3.0 LUFS 变成
+    // ≈ −3.87 LUFS ⇒ "恰好达标"的目标值跟着改到 −4.0（|−3.87 − (−4.0)| < 0.5）。
+    for (index, target) in [None, Some(-4.0f64), Some(-40.0)].into_iter().enumerate() {
         let path = scratch.join(&format!("v{index}.wav"));
         let mut arguments = json!({
             "format": "wav",
@@ -1620,9 +1627,8 @@ fn the_default_rendering_path_stays_bit_identical_with_a_loudness_target_attache
     assert_eq!(plain["status"], "success", "{plain}");
     // **钉死的常量**（与判据 2 同一对数字）：默认路径的位级身份没有漂。
     assert_eq!(
-        plain["data"]["masterDigest"],
-        "b242d510d581541732134d3c0e233a11d6045ffb65535675adc73501fb28eefb",
-        "默认路径的母带样本摘要必须与本切片之前逐位相同"
+        plain["data"]["masterDigest"], DEFAULT_MASTER_DIGEST,
+        "默认路径的母带样本摘要必须与判据 2 钉死的那一个逐位相同"
     );
     assert_eq!(
         plain["data"]["sha256"], DEFAULT_MASTER_SHA256,
@@ -1672,7 +1678,7 @@ fn dry_run_preview_and_the_real_call_agree_on_the_loudness_verdict() {
     let preview = call(
         &mut dispatcher,
         &auth,
-        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -3.0, "dryRun": true}),
+        json!({"format": "wav", "sampleRate": 48000, "targetLufs": -4.0, "dryRun": true}),
     );
     assert_eq!(preview["status"], "success", "{preview}");
     let preview_loudness = preview["data"]["preview"]["loudness"].clone();
@@ -1682,7 +1688,7 @@ fn dry_run_preview_and_the_real_call_agree_on_the_loudness_verdict() {
         json!({
             "format": "wav",
             "sampleRate": 48000,
-            "targetLufs": -3.0,
+            "targetLufs": -4.0,
             "path": scratch.join("real.wav").display().to_string(),
         }),
     );
@@ -2005,24 +2011,25 @@ fn the_master_is_not_silent_and_panning_moves_the_image() {
         left > right * 50.0,
         "全左声相必须让左右严重不对称: L={left} R={right}"
     );
-    assert_eq!(result["data"]["sources"][0]["kind"], "midi-synth-osc");
+    assert_eq!(result["data"]["sources"][0]["kind"], "engine-instrument");
     assert_eq!(result["data"]["sources"][0]["audible"], true);
     assert_eq!(result["data"]["sources"][0]["notes"], 1);
 
     // ⭐ `#251`（S0）：MIDI 音源必须**显式**说明是内置正弦振荡器，⛔ 不是引擎音色。
     let midi_source = &result["data"]["midiSource"];
-    assert_eq!(midi_source["kind"], "builtin-sine", "{midi_source}");
-    assert_eq!(midi_source["engineTimbre"], false, "{midi_source}");
+    assert_eq!(midi_source["kind"], "engine-instrument", "{midi_source}");
+    assert_eq!(midi_source["engineTimbre"], true, "{midi_source}");
+    assert_eq!(midi_source["adr"], "ADR-0011", "{midi_source}");
     let note = midi_source["note"]
         .as_str()
         .unwrap_or_else(|| panic!("`midiSource.note` 必须是字符串: {midi_source}"));
     assert!(
-        note.contains("内置正弦振荡器、不是引擎音色"),
+        note.contains("同一个音色") && note.contains("不再使用内置正弦振荡器"),
         "文案必须逐字说明音源与边界: {note}"
     );
     assert!(
-        !note.contains("与引擎一致"),
-        "⛔ 不许把内置振荡器说成引擎音色: {note}"
+        note.contains("SynthEngine"),
+        "文案必须点名引擎的合成器: {note}"
     );
 
     // 居中时左右对称。
@@ -3497,14 +3504,20 @@ fn render_note(
 /// 一个音符被展开成**恰好 `ratchet` 个脉冲**，格点就是实时引擎的那条公式
 /// （`step = duration_ticks / ratchet`，第 `p` 个脉冲起于 `p * step`）。
 ///
-/// "真的重新触发"的机械证据：每个脉冲都从**自己的起音包络**开始 ⇒ 在预期的脉冲
-/// 起点上取 60 帧，能量必须远低于脉冲中段。若渲染器忽略 `ratchet`（旧的
-/// "一个长音"行为），除第 0 个之外的所有起点都落在长音的**平段**上，这条就红。
+/// "真的重新触发"的机械证据：第 0 个脉冲在**没有前置声部**时起音 ⇒ 前 60 帧能量
+/// 必须远低于脉冲中段；其余脉冲的起点必须与"同一音符**不连击**的长音"在同一帧上的
+/// 60 帧能量**不同**（引擎的 ADSR 释放尾巴会叠在起点上，所以这里量的是"边界改变了
+/// 信号"，⛔ 不是"起点更安静"——后者是已退役的线性包络正弦源的性质）。
+///
+/// ⚠ `#268` 的语义变化（对着代码读）：引擎音源在 `note.end_sample` 之后走 ADSR
+/// release（默认 50 ms），因此相邻脉冲的尾巴会**重叠**；CLI 导出一直如此。
 #[test]
 fn ratchet_expands_one_note_into_exactly_n_pulses_on_the_engines_grid() {
     let scratch = Scratch::new("ratchet-expansion");
     let per_tick = frames_per_tick();
     let duration_ticks = 1_920u64;
+    // 参照：同一音符**不连击** ⇒ 一个长音（起点上不会有重新起振）。
+    let (_, plain_samples) = render_note(&scratch, "rplain", None, None, duration_ticks);
     for ratchet in [2u8, 3, 4, 6, 8, 16] {
         let pulses = usize::from(ratchet);
         let (result, samples) = render_note(
@@ -3543,11 +3556,22 @@ fn ratchet_expands_one_note_into_exactly_n_pulses_on_the_engines_grid() {
         for pulse in 0..pulses {
             let start = pulse * step_ticks as usize * per_tick;
             let head = window_rms(&samples, 2, start, 60);
-            assert!(
-                head < body * 0.3,
-                "ratchet={ratchet}: 脉冲 {pulse} 的起点 {start} 帧能量 {head:.6} \
-                 必须显著低于脉冲中段 {body:.6}（起点必须是一次新的起音）"
-            );
+            if pulse == 0 {
+                assert!(
+                    head < body * 0.3,
+                    "ratchet={ratchet}: 第 0 个脉冲的起点 {start} 帧能量 {head:.6} \
+                     必须显著低于脉冲中段 {body:.6}（没有前置声部 ⇒ 必须是新起音）"
+                );
+            } else {
+                let plain_head = window_rms(&plain_samples, 2, start, 60);
+                let relative = (head - plain_head).abs() / body.max(f64::MIN_POSITIVE);
+                assert!(
+                    relative > 0.02,
+                    "ratchet={ratchet}: 脉冲 {pulse} 的起点 {start} 帧能量 {head:.6} \
+                     必须与不连击的长音在同一帧的 {plain_head:.6} 不同（相对差 {relative:.6}）\
+                     ⇒ 边界处确实重新触发了"
+                );
+            }
         }
         // 已经**做到**了 ⇒ 再报"没渲染"就是假话。
         assert!(
@@ -3561,17 +3585,24 @@ fn ratchet_expands_one_note_into_exactly_n_pulses_on_the_engines_grid() {
     }
 }
 
-/// 余数**不补**：整数除法算出的最后一个脉冲在音符时值**之前**结束，
-/// 剩下的那几 tick 必须是静音（只允许抖动底噪）。
+/// 余数**不补**：整数除法算出的最后一个脉冲在音符时值**之前**结束。
 ///
-/// 这条判据钉死"向下取整 + 不补齐"这两个方向：
-/// 用**向上**取整（`div_ceil`）或把最后一个脉冲拉到音符末端，尾部都会出现真声音 ⇒ 红。
+/// ⚠ `#268`（对着代码读）：引擎音源在 `note.end_sample` 之后走 ADSR release
+/// （默认 50 ms）⇒ 余数区间**不是**数字静音，而是释放尾巴。因此判据从
+/// "尾段 ≤ 抖动底噪"改成"尾段峰值**低于**同一帧上'不连击长音'的峰值"：
+/// - 用**向上**取整（`div_ceil`）或把最后一个脉冲拉到音符末端 ⇒ 尾段仍在 gate 内
+///   ⇒ 峰值与长音的同一窗口**逐位相同** ⇒ 红；
+/// - 正常（向下取整）⇒ 尾段已在 release ⇒ 峰值严格更低（默认 release 50 ms，
+///   余数区间 25–50 帧 ⇒ 约 1–2% 的下降，远超 f32 噪声）。
 #[test]
 fn the_ratchet_grid_uses_integer_division_and_leaves_the_remainder_silent() {
     let scratch = Scratch::new("ratchet-remainder");
     let per_tick = frames_per_tick();
     // 三组都**有**余数（否则这条判据没有牙齿）。
-    for (ratchet, duration_ticks) in [(3u8, 1_000u64), (7, 1_920), (6, 1_000)] {
+    // ⚠ `#268`：引擎的 release 是 50 ms ⇒ 余数窗口（至少 100 帧 = 5% 释放）才
+    // 足够把"已 gate off"与"还在 gate 内"分开；因此夹具取较大的 ratchet
+    // （余数 = 4–10 tick = 100–250 帧）。
+    for (ratchet, duration_ticks) in [(16u8, 1_000u64), (15, 1_000), (12, 1_000)] {
         let pulses = u64::from(ratchet);
         let step_ticks = duration_ticks / pulses;
         let remainder = duration_ticks - pulses * step_ticks;
@@ -3594,12 +3625,27 @@ fn the_ratchet_grid_uses_integer_division_and_leaves_the_remainder_silent() {
             note_end,
             "母带长度 = 摆放时值（余数也占帧, 只是没有声音）"
         );
-        // 尾部的余数区间只能是抖动。
-        let tail = window_peak(&samples, 2, content_end, note_end - content_end);
+        // 参照：同一音符不连击（长音）在同一余数窗口的峰值。
+        let (_, plain_samples) = render_note(
+            &scratch,
+            &format!("remplain{ratchet}-{duration_ticks}"),
+            None,
+            None,
+            duration_ticks,
+        );
+        let window = note_end - content_end;
+        let tail = window_rms(&samples, 2, content_end, window);
+        let plain_tail = window_rms(&plain_samples, 2, content_end, window);
+        println!(
+            "### ratchet={ratchet} / {duration_ticks} tick: 余数窗口 RMS {tail:.9} \
+             vs 长音 {plain_tail:.9}（相对 {:.6}）",
+            tail / plain_tail
+        );
         assert!(
-            tail <= DITHER_ONLY_PEAK,
+            tail < plain_tail * 0.99,
             "ratchet={ratchet} / {duration_ticks} tick: 余数区间 \
-             [{content_end}, {note_end}) 必须静音（只允许抖动）, 实测峰值 {tail}"
+             [{content_end}, {note_end}) 必须已在 release（RMS 至少低 1%）, \
+             实测 {tail:.9} vs 长音 {plain_tail:.9}"
         );
         // 而脉冲中段是真声音 ⇒ 上面那条不是"整段都静音"的巧合。
         let body = window_rms(&samples, 2, (step_ticks as usize * per_tick) / 2, 200);
@@ -4096,12 +4142,17 @@ fn a_normal_master_reports_zero_clipped_samples_and_no_overshoot() {
 /// **`#255` 重钉（`bext` 奇长度互通修复）**：该夹具的 `CodingHistory` 是奇数长度,
 /// 写入器现在把 NUL 终止符计入 `bext` 负载 ⇒ 长度字段 +1。母带样本摘要
 /// （`CLIPPING_MASTER_DIGEST`）逐位未变。
+///
+/// **`#268` 重钉（`ADR-0011` 引擎音色）**：MCP 的 MIDI 音源从正弦换成 `SynthEngine`
+/// ⇒ 母带样本摘要 `246bb7f7…` → `d01ba94b…`、文件摘要 `210876d6…` → `5b5f2910…`、
+/// `clippedSamples` `91808` → `95164`、`truePeakDbfs` `24.000000` → `23.886497`。
+/// 预警只提示、不动音频这条性质**未变**（本夹具仍用上面两个新常量逐字节钉住）。
 const CLIPPING_MASTER_SHA256: &str =
-    "210876d64480f82274986854a1741b85acc0e0cab48d978d4e83eb6ef2c49013";
+    "5b5f291094cf4f6d8baf997f782bf4a8c7ca6d6fa4fcc177fa81b091292f2f52";
 
 /// 同一份过载夹具的**母带样本位级摘要**（也测自加预警之前）。
 const CLIPPING_MASTER_DIGEST: &str =
-    "246bb7f76d116b26a34fb8f9b7b7057045a0b995370c8d3dfcfd4abb17429f47";
+    "d01ba94b29bc8b2688bb4994f73fece1a996f2e441791343e7c8d8e570d1621a";
 
 /// 过载工程 ⇒ `data.warnings[]` **恰好一条** `exportClipping`，带
 /// `clippedSamples` / `truePeakDbfs` / **建议 trim** / **最响的源**。
@@ -4466,7 +4517,7 @@ fn a_no_fader_project_gets_a_clipping_warning_through_the_tool_chain() {
 // | `sha256` | `data.sha256`（母带文件字节） | 64 位十六进制 |
 // | `peak.before` | `data.peak.before`（抖动/量化**之前**的浮点母带峰值） | 满刻度线性幅度 |
 // | `sources[].sampler.label` | 本单新增的 per-track 读数 | 与 app `--export-wav` 同形的 `sfz(...)` 行 |
-// | `sources[].kind` | 音频源种类 | `sfz-sampler` / `midi-synth-osc` |
+// | `sources[].kind` | 音频源种类 | `sfz-sampler` / `engine-instrument` |
 //
 // ## 为什么这三条判据必须一起写
 //
@@ -4641,14 +4692,14 @@ fn a_bound_sampler_changes_the_export_and_the_per_track_reading_says_so() {
         assert_eq!(sampler["notesUsingSineFallback"], 0, "{tag}: 不许回退正弦");
         assert_eq!(sampler["silentRegionCount"], 0, "{tag}: 本夹具没有内建静音");
     }
-    // ⑤ 源种类说真话（`#220` 缺陷 ② 的另一半：以前这里永远是 `midi-synth-osc`）。
+    // ⑤ 源种类说真话（`#220` 缺陷 ② 的另一半；`#268` 起 CPU 轨是 `engine-instrument`）。
     assert_eq!(
         resp_a["data"]["sources"][0]["kind"], "sfz-sampler",
         "绑了采样器 ⇒ 源种类必须点名采样器"
     );
     assert_eq!(
-        none["data"]["sources"][0]["kind"], "midi-synth-osc",
-        "不绑采样器 ⇒ 仍走正弦振荡器（⛔ 不是把默认路径也换掉）"
+        none["data"]["sources"][0]["kind"], "engine-instrument",
+        "不绑采样器 ⇒ 走引擎音色（`#268`：正弦振荡器已退役）"
     );
     // ⑥ `sfzSampler` **不得**出现在 `unsupported` 里：它现在真的被渲染了，报它就是假话。
     for (tag, response) in [("none", &none), ("A", &resp_a), ("B", &resp_b)] {
@@ -5597,12 +5648,16 @@ fn without_the_volume_lane_the_four_windows_are_equal_and_the_baseline_digest_is
         "### 正对照 4 段峰值 = {peaks:?} / sha={sha} / digest={}",
         result["data"]["masterDigest"]
     );
-    for index in 1..4 {
-        let relative = (peaks[index] - peaks[0]).abs() / peaks[0].max(f32::MIN_POSITIVE);
-        assert!(
-            relative <= 1e-6,
-            "正对照第 {index} 段与第 0 段必须相等（相对差 {relative}）: {peaks:?}"
-        );
+    // ⚠ `#268`：引擎音色是**双振荡器**（默认带 detune）⇒ 缓慢拍频让 0.5 s 窗口的
+    // 峰值本来就不相等（实测第一段 0.776 vs 其余 0.551，约 √2 的拍频峰）。
+    // 因此正对照的判据改为"**没有渐强**"：4 段峰值不得单调递增（渐强判据要求
+    // `peak[3]/peak[0] >= 3`，拍频远达不到）。机械锚仍是下面那条 `sha256`/摘要。
+    assert!(
+        !(peaks[0] < peaks[1] && peaks[1] < peaks[2] && peaks[2] < peaks[3]),
+        "没有泳道 ⇒ 4 段峰值不得单调递增（拍频不是渐强）: {peaks:?}"
+    );
+    for (index, peak) in peaks.iter().enumerate() {
+        assert!(*peak > 0.1, "正对照第 {index} 段必须真的有声音: {peaks:?}");
     }
     assert_eq!(sha, DEFAULT_MASTER_SHA256, "无自动化路径必须逐字节等于基线");
     assert_eq!(
@@ -5627,9 +5682,13 @@ fn a_disabled_volume_lane_is_byte_identical_to_removing_it() {
     assert_eq!(sha, DEFAULT_MASTER_SHA256, "关掉的泳道必须等于不存在");
     let frames = result["data"]["frames"].as_u64().expect("frames");
     let peaks = four_window_peaks(&samples, frames);
-    for index in 1..4 {
-        assert!((peaks[index] - peaks[0]).abs() <= 1e-6, "{peaks:?}");
-    }
+    // ⚠ `#268`：引擎音色的双振荡器拍频让 4 段峰值本来就不相等（与
+    // `without_the_volume_lane_*` 同一条读数）⇒ 这里只钉"没有渐强"，机械锚是
+    // 上面的 `sha == DEFAULT_MASTER_SHA256`。
+    assert!(
+        !(peaks[0] < peaks[1] && peaks[1] < peaks[2] && peaks[2] < peaks[3]),
+        "关掉的泳道不得产生渐强: {peaks:?}"
+    );
     assert_eq!(result["data"]["automation"]["appliedLanes"], 0);
     assert_eq!(result["data"]["automation"]["evaluableLanes"], 0);
     assert_eq!(result["data"]["automation"]["lanes"], 1, "读数里仍可见");
@@ -5940,23 +5999,23 @@ fn tick_conversion_is_shared_and_keeps_the_48_and_96_khz_summaries() {
         (
             44_100u32,
             7_718u64,
-            "eb2ece44c5056505df7dd49013c2aa66781b7803aaa88bb9e79dd7d85e964d6e",
+            "59fd7b37dc94696e9bb81164698a897cfcad7da7b010cf48baad2bfd5b7fb487",
             // `#255`: 奇数长度 CodingHistory 的 bext 长度字段 +1（样本摘要不变）。
-            "21e2981eef52c3f3819ce7bca8f8425c67aadbe33420e9e8158b9b675e144652",
+            "0c6e61e735f25343a3543b7ff3b2bc87d497668df5d602b1ba7448231be95cbc",
         ),
         (
             48_000,
             8_400,
-            "34190cd965f0ef36f0df4e0002e28c152473d8f63f5700b9967d9cfd00834bce",
+            "74478758b3953b5e5c6a509a65ed81b51354e4466bdde18cae89136d7c668724",
             // `#255`: 奇数长度 CodingHistory 的 bext 长度字段 +1（样本摘要不变）。
-            "89020abb9e7df39b1b8ca8f6196b7eb7b707fce5ed204cb47dfee008343b227b",
+            "0ce848174c76055a4ad19977620feb2387319aaa3d218d6b52102a05f221b74b",
         ),
         (
             96_000,
             16_800,
-            "7c60f06116398384d54a10b00291eaa1a40c3ed47cd1db4921134272fe745317",
+            "99b44cb15615db342bf39ca06dbb289ca2c19a58977dd0a7ef49403906d895ba",
             // `#255`: 奇数长度 CodingHistory 的 bext 长度字段 +1（样本摘要不变）。
-            "bd4d15a79be58c99b4aa3c4fb2dff93a8e81bc40bba372ffa31f7c475186555e",
+            "3a50bdd3743b878a25e6b7cb82ed61464c12277feea441dfd349f8be1c5cb6b0",
         ),
     ];
     for (rate, frames, digest, sha256) in expected {
@@ -5979,4 +6038,19 @@ fn tick_conversion_is_shared_and_keeps_the_48_and_96_khz_summaries() {
         assert_eq!(data["masterDigest"], digest, "{rate} Hz 的母带摘要");
         assert_eq!(data["sha256"], sha256, "{rate} Hz 的文件摘要");
     }
+}
+
+/// ⭐ `#268`（`ADR-0011`）：引擎音源装配失败的 `reason` 必须留在**机器可读词表**里。
+///
+/// 这条映射是**防御性**的：合法工程上，`build` 的探针编译会先拒绝同一批路由错误
+/// （没有主总线 / 路由图非法），`EngineSnapshot::from_project` 因此拿不到一个
+/// 只在它那里失败、而计划编译通过的工程。即便如此，⛔ 不能让它退化成一条**没有
+/// `reason`** 的失败 —— "引擎装不上"必须能被调用方按词分类。
+#[test]
+fn the_engine_source_failure_reason_is_registered_in_the_vocabulary() {
+    let vocabulary = include_str!("fault_vocabulary.rs");
+    assert!(
+        vocabulary.contains("GOLDEN_REASONS") && vocabulary.contains("\"engineSource\""),
+        "`engineSource` 必须登记在 tests/fault_vocabulary.rs 的黄金表里"
+    );
 }

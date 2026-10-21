@@ -103,9 +103,9 @@ use yeban_engine::snapshot::EngineSnapshot;
 use yeban_engine::synth::SynthEngine;
 
 use crate::audio_clip;
-use crate::export_wav::{
-    EngineTrackSource, NoteToneSource, WavExportError, WavExportOptions, track_notes_in_frames,
-};
+use crate::export_wav::{NoteToneSource, WavExportError, WavExportOptions, track_notes_in_frames};
+// ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`；与 MCP 共用同一份实现。
+use yeban_render::engine_source::EngineTrackSource;
 
 /// 一条轨的复合源：**先 MIDI 基座、后音频片段**（顺序与 MCP 的 `TrackSource` 相同，
 /// 且与块边界无关 ⇒ 逐位可复现）。

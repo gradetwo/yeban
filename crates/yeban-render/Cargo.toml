@@ -48,6 +48,15 @@ experimental-logic-import = []
 yeban-midi = { path = "../yeban-midi" }
 # 路由图与 EntityId 的唯一事实源 [MODEL-AST-001/004]。渲染层不复制数据模型。
 yeban-model.workspace = true
+# ⭐ `ADR-0011`（Accepted 2026-10-21）：**引擎音色源**。`yeban-engine` 的默认 feature
+# 是 `device`（拖 `cpal`）⇒ 这里必须 `default-features = false`（同 `ADR-0001` D19 的
+# 那一条边）。本 crate 里**只有** `engine_source` 模块碰它；MCP 经**已登记的**
+# `(yeban-mcp, yeban-render)` 例外使用引擎音色，⛔ 不新增任何依赖例外。
+#
+# 代价（`#250` 实测）：依赖闭包只多 `yeban-engine` 一行、零新增第三方包；
+# `cargo test -p yeban-render` / `-p yeban-mcp` **不编 `cpal`**。
+# ⚠ `--workspace` 全量构建仍会为 `yeban-app` 编 `cpal` —— ⛔ 本行不声称"整仓不编 cpal"。
+yeban-engine = { workspace = true, default-features = false }
 # 共用纯数学 DSP 原语: 确定性 xorshift RNG 与标量块混音 [ARCH-RT-001] [ARCH-DET-001]。
 # 版本由根清单钉死; 本 crate 不改变它的版本, 只把 feature 显式说清。
 yeban-dsp.workspace = true

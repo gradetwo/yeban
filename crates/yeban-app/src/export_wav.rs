@@ -75,11 +75,14 @@
 use std::path::{Path, PathBuf};
 
 use yeban_engine::level::dbfs;
+#[cfg(test)]
 use yeban_engine::snapshot::EngineSnapshot;
-use yeban_engine::synth::{NoteSchedule, SynthEngine};
 use yeban_model::project::SampleRate;
 use yeban_model::{EntityId, YebanProjectV1};
 use yeban_render::dither::{BitDepth, quantize};
+// ⭐ `ADR-0011`：引擎音色源已搬到 `yeban-render`（CLI 与 MCP 共用同一份，⛔ 不写第二份）。
+#[cfg(test)]
+use yeban_render::engine_source::EngineTrackSource;
 use yeban_render::render::{AudioSource, BlockContext, RenderError};
 use yeban_render::rng::DeterministicDitherRng;
 use yeban_render::wav::{format_of, write_plain_wav};
@@ -471,6 +474,14 @@ impl core::fmt::Display for WavExportError {
 
 impl core::error::Error for WavExportError {}
 
+// ⭐ `ADR-0011`：引擎音源装配错误（`yeban-render` 的公开错误类型）映射到本文件的
+// `Engine` 变体 —— 报文逐字保留（`NoMasterBus` 等拒绝原因不能在这里被吞掉）。
+impl From<yeban_render::engine_source::EngineSourceError> for WavExportError {
+    fn from(error: yeban_render::engine_source::EngineSourceError) -> Self {
+        Self::Engine(error.message().to_owned())
+    }
+}
+
 /// **最小音源**：按音符起止发出廉价方波（首尾各 64 帧线性包络），相位由**整数帧号**派生。
 ///
 /// ⛔ 这不是引擎乐器（见模块文档的诚实登记）；它的职责是"把导出管路打通且**可听**"，
@@ -624,146 +635,6 @@ impl NoteToneSource {
             value += square * fade_in.min(fade_out) * amp;
         }
         value
-    }
-}
-
-/// **引擎乐器音源**：每条轨道一个 [`SynthEngine`]，用**同一条离线装配路径**
-/// （`SynthEngine::arm_from_snapshot`）武装，再按轨渲染（`render_track`）。
-///
-/// ⚠ 每个源持有**自己的**引擎：`RenderPlan::execute` 会把源分发到工作线程（`threads`），
-/// 共享一个 `&mut SynthEngine` 需要锁，而"一个源一个引擎"没有锁也没有跨线程共享。
-/// ⚠ 红线 7：`arm_from_snapshot` **会分配**（`begin_snapshot` 增长区间表）⇒ 只在**离线导出**
-/// 里调用，⛔ 绝不在音频回调里调用（本文件是离线路径）。
-pub(crate) struct EngineTrackSource {
-    /// 已武装的合成器（本源独占）。
-    ///
-    /// ⭐ **为什么是 `Box<SynthEngine>` 而不是内联的 `SynthEngine`**（本票 #72 的修法）：
-    /// `size_of::<SynthEngine>()` 实测 **109152 B**（`synth.rs` 的字段文档是同一读数）。
-    /// 内联时本结构体就是 `EngineTrackSource = 109232 B`，于是**每一次按值搬动**
-    /// （`new()` 的返回位、`?` 的中间位、`Box::new` 的装箱源、`Box<T> → Box<dyn Trait>`
-    /// 的 unsize 强制转换）都要在栈上留一份 10 万字节级的副本 —— 实测
-    /// `render_project_f32_with_assets` 的栈帧因此达 **582480 B**、
-    /// `EngineTrackSource::new` 达 **327904 B**。`Box` 之后本结构体只剩一个指针（8 B）
-    /// ＋轨道 ID ＋调度表 ＋暂存 `Vec`，搬动是**常数级**。
-    /// ⚠ 这只是**把大对象从栈挪到堆**：分配点仍只有"离线导出/录音的构造期"（[`Self::new`]），
-    /// ⛔ 不进实时路径（红线 7）。
-    engine: Box<SynthEngine>,
-    /// 本源负责的轨道。
-    track: EntityId,
-    /// 该轨的调度表（来自同一份快照；`None` ⇒ 该轨静音，与 `render_track` 的文档一致）。
-    schedule: Option<NoteSchedule>,
-    /// ⭐ **武装用的那份快照**（任务单 `#79`）：`render_block` 从它**借用**该轨的 SFZ 摊平表
-    /// （[`EngineSnapshot::sfz`]）交给 `render_track` 的第 3 参。
-    ///
-    /// ⭐ 为什么是 `Arc<EngineSnapshot>` 而**不是** clone 一份 `SfzPlan`：摊平表里带着**整段 PCM**
-    /// （[`yeban_engine::sfz_instrument::PreparedSample`]），clone 会把它按轨再复制一份。
-    /// `Arc` clone 只是**指针复制** ⇒ 与实时路径同一条纪律（"实时侧只**借用**快照，
-    /// ⛔ 不 clone 那些 `Vec`"，见 `sfz_instrument.rs` 的模块文档）。
-    snapshot: std::sync::Arc<EngineSnapshot>,
-    /// 单声道暂存（`render_track` 输出"声相之前"的单声道）。
-    mono: Vec<f32>,
-    /// ⭐ **轨声相**（`(左, 右)`；默认 **`(1.0, 1.0)`＝居中**，`#251`）。
-    ///
-    /// `render_track` 产出的是**声相之前**的单声道 ⇒ 声相必须在本源补上，否则
-    /// CLI 的 MIDI 路径把用户拉过的 pan 完全丢掉（`#250` 勘察的实测缺陷）。
-    /// 值来自 [`crate::audio_clip::track_pan_gains`]（与音频片段同一条曲线）。
-    pan: (f32, f32),
-}
-
-impl EngineTrackSource {
-    /// 从快照武装一个轨道源。
-    ///
-    /// # Errors
-    ///
-    /// `arm_from_snapshot` 的拒绝（含 `NoMasterBus`）。
-    pub(crate) fn new(
-        snapshot: std::sync::Arc<EngineSnapshot>,
-        track: EntityId,
-    ) -> Result<Self, WavExportError> {
-        // ⭐ 直接构造**在堆上**：`SynthEngine::new` 的 109152 B 返回位因此只在本帧
-        //    存在一次（随后 memcpy 进 `Box`），⛔ 不再有"返回位 ＋ 中间位 ＋ 装箱源"
-        //    三份 10 万字节级副本叠在同一帧里（见字段文档的尺寸对照）。
-        let mut engine = Box::new(SynthEngine::new(snapshot.sample_rate()));
-        // ⛔ 不 `unwrap`：没有主总线时如实失败（调用方据此在**落盘之前**退出）。
-        engine
-            .arm_from_snapshot(&snapshot)
-            .map_err(|error| WavExportError::Engine(error.to_string()))?;
-        Ok(Self {
-            engine,
-            track,
-            schedule: snapshot.schedules().get(&track).cloned(),
-            snapshot,
-            mono: Vec::new(),
-            // ⭐ 默认**居中**（`1.0, 1.0`）：没注入时导出字节与接线前逐位相同（`#251`）。
-            pan: (1.0, 1.0),
-        })
-    }
-
-    /// ⭐ 写入**轨声相**（`(左, 右)`；构造期一次，`#251`）。
-    ///
-    /// 值必须来自 [`crate::audio_clip::track_pan_gains`] —— 与音频片段路径**同一个**
-    /// 函数（同一条等功率曲线）。缺省 `(1.0, 1.0)` ⇒ 原来的单声道铺放分支。
-    #[must_use]
-    pub(crate) const fn with_pan(mut self, pan: (f32, f32)) -> Self {
-        self.pan = pan;
-        self
-    }
-}
-
-impl AudioSource for EngineTrackSource {
-    fn render_block(&mut self, context: BlockContext, out: &mut [f32]) -> Result<(), RenderError> {
-        let channels = context.channels.max(1);
-        let frames = context.frames.min(out.len() / channels);
-        if self.mono.len() < frames {
-            self.mono.resize(frames, 0.0);
-        }
-        // `render_track` 从引擎**当前**播放头渲染，它**不**推进游标（契约见
-        // `SynthEngine::render_track` 与 `unknown_track_renders_silence` 的
-        // "渲染不推进播放头（由 advance 负责）"）；推进由本函数紧随其后的
-        // `advance(frames)` 负责 —— 与实时路径 `rt.rs` 的同一量子同一顺序一致。
-        // ⭐ ⭐ 第 3 参（SFZ 摊平表）**从快照借用**（任务单 `#79`）：这条轨在快照 `sfz()` 表里
-        //    ⇒ 走引擎的第三条音源支路（鼓机 ＞ SFZ ＞ 复音）；不在表里 ⇒ `None` ⇒ 退回复音，
-        //    输出与接线前**逐位相同**（`TrackV3.sampler = None` 的反向对照）。
-        //    ⛔ 这里**不** clone 摊平表（见字段文档）：只把 `&PreparedSfz` 借出去。
-        let sfz = self
-            .snapshot
-            .sfz()
-            .get(&self.track)
-            .map(yeban_engine::sfz_instrument::SfzPlan::prepared);
-        self.engine.render_track(
-            self.track,
-            self.schedule.as_ref(),
-            sfz,
-            &mut self.mono[..frames],
-        );
-        // ⭐ 任务单 `#209`：**必须**推进播放头，否则每个块都从位置 0 渲染
-        //    ⇒ 只有 tick 0 的音符会被触发一次并一直拖长，其余音符永不发声
-        //    （`#207` 实测 `--export-wav` ⇒ `distinct=1`）。
-        // ⚠ `render_track` 自带 `out.fill(0.0)` 与内部游标读取，但**不**推进位置：
-        //    推进只在 `advance`（`synth.rs` 的契约；实时路径见 `rt.rs` 的
-        //    `if running { transport.advance_frames(frames as u64); synth.advance(frames); }`）。
-        // ⚠ 本函数每块恰好渲染一次、推进一次 ⇒ 与 `first_frame` 同步，⛔ 不会推进两次。
-        self.engine.advance(frames);
-        out.fill(0.0);
-        let (gain_l, gain_r) = self.pan;
-        for index in 0..frames {
-            let value = self.mono[index];
-            let base = index * channels;
-            if gain_l == 1.0 && gain_r == 1.0 {
-                // ⭐ 居中（绝大多数工程）：原来的"单声道铺到所有声道"，逐位不变。
-                for channel in 0..channels {
-                    out[base + channel] = value;
-                }
-            } else {
-                // ⭐ `#251`：等功率声相。第 0 声道左、第 1 声道右，其余保持 0
-                //    （与 MCP 的 `MidiSynthSource::render_block` 逐声道口径相同）。
-                out[base] = value * gain_l;
-                if channels > 1 {
-                    out[base + 1] = value * gain_r;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1278,19 +1149,19 @@ mod tests {
         println!(
             "[wav-advance] blocks={BLOCKS} frames={} position={} notes_triggered={}",
             BLOCKS * FRAMES,
-            source.engine.position(),
-            source.engine.notes_triggered()
+            source.position(),
+            source.notes_triggered()
         );
         assert_eq!(
-            source.engine.position(),
+            source.position(),
             (BLOCKS * FRAMES) as u64,
             "⭐ 每块必须推进 {FRAMES} 帧（漏掉 advance ⇒ 位置停在 0）"
         );
         assert!(
-            source.engine.notes_triggered() >= 2,
+            source.notes_triggered() >= 2,
             "⭐ 渲染越过第二个音符的起点（第 12000 帧）后必须至少触发 2 个音符；\
              实测 {}（漏掉 advance ⇒ 只有 tick 0 的 C4）",
-            source.engine.notes_triggered()
+            source.notes_triggered()
         );
     }
 

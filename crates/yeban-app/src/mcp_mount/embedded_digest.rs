@@ -14,13 +14,23 @@
 //! 抖动 / 量化之前**重算（MCP `domain/render.rs:2259`；CLI `render_core.rs:706`）。
 //! 因此本判据真正测的是"**母带 f32 是否逐位相同**"，不是"两份哈希实现是否一致"。
 //!
-//! ## 三个夹具（§1.2）
+//! ## 四个夹具（A / A2 / B / C）
 //!
 //! | 夹具 | 内容 | 期望 |
 //! | :--- | :--- | :--- |
-//! | A | 单条音频轨，**32-bit float** 立体声素材（两侧解码都走恒等路径） | 若前置条件全满足 ⇒ **可能真相同** |
-//! | B | 单条 MIDI 轨（3 个音符，无概率触发 / 无 ratchet / 无微时值） | **应当不同**（`E1`：MCP 正弦振荡器 vs CLI `SynthEngine` 波表＋ADSR） |
-//! | C | A ＋ B（两条轨，都直连主总线） | 给差值；**差值应 ≈ B 的差值**（音频部分逐位抵消） |
+//! | A | 单条音频轨，**32-bit float** 立体声素材（两侧解码都走恒等路径） | **逐位相同** |
+//! | A2 | 单条音频轨，**16-bit 整数**素材（`#254` 的对齐全量程） | **逐位相同** |
+//! | B | 单条 MIDI 轨（3 个音符，无概率触发 / 无 ratchet / 无微时值） | ⭐ `#268`：MCP 也走 `SynthEngine` ⇒ **逐位相同**（修前是"已知不同"，见下） |
+//! | C | A ＋ B（两条轨，都直连主总线） | 同上 ⇒ **逐位相同** |
+//!
+//! ## `#268` 改了什么（旧→新）
+//!
+//! `#253` 的读数（`E1`）：MCP 用 `MidiSynthSource`（正弦 ＋ 线性 5/10 ms 包络）、
+//! CLI 用 `SynthEngine`（加法波表 `HOLLOW` ＋ ADSR ＋ 双振荡器）⇒ B 差 `63/64`
+//! 个十六进制字符、C 差 `58/64`，峰值差 `0.1512%`。`ADR-0011`（负责人 2026-10-21
+//! 逐字裁决「统一」）之后 MCP 的音源就是引擎音源 ⇒ B/C 应变成**逐位相同**。
+//! 本文件因此把那两条判据从"已知不同 + 钉差值"改成"**必须相同** + 钉新摘要"。
+//! ⚠ A / A2 的常量**一位不动**（音频路径没有换）：它们是"没有退化"的对照。
 //!
 //! ## 四个前置条件（写在判据里，逐条可反证）
 //!
@@ -45,7 +55,8 @@
 //!
 //! ## 它**不**证什么
 //!
-//! ⛔ 不证 E1 应该怎么修（MCP 正弦 vs CLI 引擎是**已知**的产品面差异，本单只测量）；
+//! ⛔ 不证跨块的音源状态契约（引擎音源是**有状态**的：推进顺序的判据在本仓库的
+//! `yeban-render::engine_source::tests`，不在本文件）；
 //! ⛔ 不证跨平台（`f32` 超越函数走 `libm` 是 `ARCH-DET-001` 的承诺，本判据只在同机同
 //! 工具链上钉读数）；⛔ 不证人耳听感。
 //!
@@ -103,24 +114,17 @@ const A2_DIGEST: &str = "896faecb4cb23de1737ef9fffef9d93abe7177878a30ed0bbb155b1
 /// 修后**逐位相同**。⛔ 这里必须钉位型而不是近似值：峰值比正是本单的判据。
 const A2_PEAK_BITS: u32 = 0x3e7a_0000;
 
-/// 夹具 B（纯 MIDI，`E1`）的差值量级 —— 2026-10-20 实测的**已知差异**，单位 24-bit LSB。
+/// ⭐ 夹具 B（纯 MIDI）**统一之后的**目标值（`#268` / `ADR-0011`，2026-10-21 本机实测）。
 ///
-/// 用"量级区间"而不是精确字符串钉：MCP 侧是 `libm::sinf` 正弦、CLI 侧是引擎的波表
-/// 振荡器，两者一旦有一边改音色，**摘要与这组数都会变** ⇒ 这里用 ±1% 的区间钉住"差值
-/// 有多大"，既不放过数量级变化，也不把另一平台的末位差异误判成缺陷。
-/// ⚠ 若 `E1` 被修好（两侧换成同一个 MIDI 音源），这三个数必须更新并记录**为什么**。
-const B_RMS_LSB_2026_10_20: f64 = 1_213_278.260;
-/// 最大绝对差（LSB）。
-const B_MAX_ABS_LSB_2026_10_20: i64 = 4_951_650;
-/// `|Δ| > 1 LSB` 的样本数（共 192000）。
-const B_OVER_ONE_LSB_2026_10_20: usize = 93_240;
+/// 修前（`#253`）两侧是**两**个串（MCP 正弦 vs CLI 引擎，差 `63/64`）；`#268` 之后
+/// MCP 的音源就是 `yeban-engine` 的 `SynthEngine`，两侧因此**同一个串**。
+/// ⚠ 改它就是改判据：必须先说明为什么。
+const B_DIGEST: &str = "a0adca6f2fdbc86847958bf15beaec295596795b789677c886c674303a2c0c9b";
 
-/// 夹具 C（混合）的差值量级 —— 2026-10-20 实测；应 ≈ B（音频部分逐位抵消）。
-const C_RMS_LSB_2026_10_20: f64 = 1_203_212.698;
-/// 最大绝对差（LSB）。
-const C_MAX_ABS_LSB_2026_10_20: i64 = 4_951_650;
-/// `|Δ| > 1 LSB` 的样本数（共 192000）。
-const C_OVER_ONE_LSB_2026_10_20: usize = 93_224;
+/// ⭐ 夹具 C（混合）**统一之后的**目标值（`#268`，2026-10-21 本机实测）。
+///
+/// 它 = 同一份 MIDI 内容（引擎音色）⊕ 夹具 A 的音频；音频部分两侧早已逐位相同。
+const C_DIGEST: &str = "264e4d68629cee58962cdfb2233e422897945fb5e0d1b4d7ed2b28f7098635f9";
 
 /// 一次渲染的完整读数（MCP ＋ CLI 并排）。
 #[derive(Clone, Debug)]
@@ -823,13 +827,14 @@ fn the_int16_audio_fixture_digests_are_identical_after_the_full_scale_normalizat
     );
 }
 
-/// ⭐ 判据 B（§2.2）：**纯 MIDI 工程 ⇒ 两侧摘要已知不同，差值钉死**。
+/// ⭐ 判据 B（§2.2）：**纯 MIDI 工程 ⇒ 两侧摘要逐位相同**（`#268` / `ADR-0011`）。
 ///
-/// 原因（`E1`）：MCP 用 `MidiSynthSource`（正弦 ＋ 线性 attack/release 包络，
-/// `domain/render.rs:2616`），CLI 用 `SynthEngine`（波表振荡器 ＋ ADSR）⇒ 母带**不是**
-/// 同一个信号。本单只测量"差多少"，⛔ 不修。
+/// 修前（`#253` 的 `E1` 读数）：MCP 用 `MidiSynthSource`（正弦 ＋ 线性包络）、CLI 用
+/// `SynthEngine`（波表 ＋ ADSR）⇒ 摘要差 `63/64`、峰值差 `0.1512%`。负责人逐字裁决
+/// 「统一」之后两条路只有**一个**音源 ⇒ 本判据反过来要求**逐位相同**：任何一侧把
+/// 音源换回去（或换块长/换采样口径）都会让它红。
 #[test]
-fn the_pure_midi_fixture_digests_are_known_different_and_the_gap_is_measured() {
+fn the_pure_midi_fixture_digests_are_identical_after_the_engine_voice_unification() {
     let scratch = Scratch::new("digest-pure-midi");
     let project = pure_midi_project();
     let reading = measure(
@@ -844,43 +849,45 @@ fn the_pure_midi_fixture_digests_are_known_different_and_the_gap_is_measured() {
         SAMPLE_RATE,
     );
 
-    assert!(!reading.same(), "夹具 B 的摘要必须不同（E1 的正面证据）");
+    assert!(
+        reading.same(),
+        "纯 MIDI 夹具两侧必须逐位相同（MCP 与 CLI 都走 SynthEngine）；\
+         若不同，说明有一条腿还在用别的 MIDI 音源：MCP={} CLI={}",
+        reading.mcp_digest,
+        reading.cli_digest
+    );
     assert!(
         reading.cli_peak > 0.01 && reading.mcp_peak_before > 0.01,
         "两侧都必须真的出声（MCP {:.9} / CLI {:.9}）",
         reading.mcp_peak_before,
         reading.cli_peak
     );
-    assert!(
-        reading.diff.over_one_lsb > 0,
-        "E1 必须体现在样本上（>1 LSB 的样本数 > 0）"
-    );
-    // ⭐ "钉死差值有多大"：最大值与超抖动底样本数逐值相等；RMS 钉在 ±1% 区间内
-    // （常数是 2026-10-20 的实测值，见常量文档）。
     assert_eq!(
-        reading.diff.max_abs_lsb, B_MAX_ABS_LSB_2026_10_20,
-        "夹具 B 的最大绝对差必须等于钉死值"
+        reading.mcp_peak_before.to_bits(),
+        reading.cli_peak.to_bits(),
+        "摘要相同 ⇒ 两侧 f32 母带峰值也必须逐位相同：{:.9} vs {:.9}",
+        reading.mcp_peak_before,
+        reading.cli_peak
     );
     assert_eq!(
-        reading.diff.over_one_lsb, B_OVER_ONE_LSB_2026_10_20,
-        "夹具 B 的 `|Δ| > 1 LSB` 样本数必须等于钉死值"
+        reading.diff.over_one_lsb, 0,
+        "两侧 f32 必须逐位一致 ⇒ 量化差只剩 TPDF 抖动底（>1 LSB 的样本数必须是 0，\
+         实际 {} / {}）",
+        reading.diff.over_one_lsb, reading.diff.compared
     );
-    let b_low = B_RMS_LSB_2026_10_20 * 0.99;
-    let b_high = B_RMS_LSB_2026_10_20 * 1.01;
-    assert!(
-        (b_low..=b_high).contains(&reading.diff.rms_lsb),
-        "夹具 B 的差值 RMS 必须落在钉死区间 [{b_low:.3}, {b_high:.3}] LSB 内，\
-         实际 {:.3} LSB",
-        reading.diff.rms_lsb
+    assert_eq!(
+        reading.mcp_digest, B_DIGEST,
+        "MCP 侧的纯 MIDI 摘要必须逐字等于 `#268` 实测值（修前是已知不同的两个串）"
     );
 }
 
-/// ⭐ 判据 C（§2.3）：**混合工程 ⇒ 给差值，且差值 ≈ B 的差值**（音频部分逐位抵消）。
+/// ⭐ 判据 C（§2.3）：**混合工程 ⇒ 两侧摘要逐位相同**（`#268` / `ADR-0011`）。
 ///
-/// 这条腿把"差值的来源"钉到 MIDI 音源：C 的音频轨与 A 逐位相同，因此
-/// `MCP(C) - CLI(C)` 只剩 MIDI 那一路的差，量级应与 B 的差一致（容差 2%）。
+/// C = 夹具 A 的音频 ⊕ 夹具 B 的 MIDI。音频那一路两侧早就是同一份实现（A / A2 钉住），
+/// MIDI 那一路现在也是同一份引擎音源 ⇒ 整条母带逐位相同。修前（`#253`）这里差
+/// `58/64`，且差值几乎等于 B 的差值（音频部分抵消）—— 那条读数已经随 `E1` 修好退休。
 #[test]
-fn the_mixed_fixture_digests_are_known_different_and_the_gap_comes_from_midi() {
+fn the_mixed_fixture_digests_are_identical_after_the_engine_voice_unification() {
     let scratch = Scratch::new("digest-mixed");
     let (project, assets) = mixed_project(&scratch);
     let reading = measure(
@@ -895,49 +902,30 @@ fn the_mixed_fixture_digests_are_known_different_and_the_gap_comes_from_midi() {
         SAMPLE_RATE,
     );
 
-    assert!(!reading.same(), "夹具 C（混合）的摘要必须不同");
+    assert!(
+        reading.same(),
+        "混合夹具两侧必须逐位相同：MCP={} CLI={}",
+        reading.mcp_digest,
+        reading.cli_digest
+    );
     assert!(
         reading.cli_peak > 0.1,
         "夹具 C 必须真的出声（峰值 {:.9}）",
         reading.cli_peak
     );
     assert_eq!(
-        reading.diff.max_abs_lsb, C_MAX_ABS_LSB_2026_10_20,
-        "夹具 C 的最大绝对差必须等于钉死值"
+        reading.mcp_peak_before.to_bits(),
+        reading.cli_peak.to_bits(),
+        "摘要相同 ⇒ 两侧 f32 母带峰值也必须逐位相同"
     );
     assert_eq!(
-        reading.diff.over_one_lsb, C_OVER_ONE_LSB_2026_10_20,
-        "夹具 C 的 `|Δ| > 1 LSB` 样本数必须等于钉死值"
+        reading.diff.over_one_lsb, 0,
+        "两侧 f32 逐位一致 ⇒ `|Δ| > 1 LSB` 的样本数必须是 0，实际 {} / {}",
+        reading.diff.over_one_lsb, reading.diff.compared
     );
-    let c_low = C_RMS_LSB_2026_10_20 * 0.98;
-    let c_high = C_RMS_LSB_2026_10_20 * 1.02;
-    assert!(
-        (c_low..=c_high).contains(&reading.diff.rms_lsb),
-        "夹具 C 的差值 RMS 必须落在钉死区间 [{c_low:.3}, {c_high:.3}] LSB 内，\
-         实际 {:.3} LSB",
-        reading.diff.rms_lsb
-    );
-    // 与 B 的差值比：同一个 MIDI 内容 ⇒ 差值向量必须几乎相同。
-    let b_scratch = Scratch::new("digest-mixed-baseline");
-    let b = measure(
-        "C-baseline-B",
-        &pure_midi_project(),
-        &[],
-        &b_scratch,
-        FRAMES,
-        FRAMES,
-        false,
-        SAMPLE_RATE,
-        SAMPLE_RATE,
-    );
-    let relative = (reading.diff.rms_lsb - b.diff.rms_lsb).abs() / b.diff.rms_lsb.max(1.0e-9);
-    println!(
-        "### [C] 差值 RMS: C={:.3} LSB vs B={:.3} LSB，相对差={:.6}",
-        reading.diff.rms_lsb, b.diff.rms_lsb, relative
-    );
-    assert!(
-        relative < 0.02,
-        "C 的差值必须 ≈ B 的差值（音频部分逐位抵消）：相对差 {relative:.6}"
+    assert_eq!(
+        reading.mcp_digest, C_DIGEST,
+        "MCP 侧的混合夹具摘要必须逐字等于 `#268` 实测值"
     );
 }
 

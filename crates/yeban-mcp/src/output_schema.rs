@@ -484,7 +484,7 @@ fn query_engine_state() -> Value {
 
 /// `yeban_render_master` 的成功响应 `data`（全部是**实测**数字）。
 fn render_master() -> Value {
-    // ⭐ `#251`：`midiSource` 在 `finish` 之后单独插入 —— 这份 `json!` 的键数已经贴着
+    // ⭐ `#251`/`#268`：`midiSource` 在 `finish` 之后单独插入 —— 这份 `json!` 的键数已经贴着
     // `serde_json` 宏的递归上限（默认 128），再往字面量里加一个键就会
     // `recursion limit reached`。单独插入与写在字面量里是**同一份** schema。
     let mut schema = finish(
@@ -499,9 +499,10 @@ fn render_master() -> Value {
              `suggestedTrimDb`（公式 `-(ceil(truePeakDbfs * 2) / 2)`）/ `loudestSource` /\
              `hint`），否则**空数组**。⛔ 它不自动改增益；`sources[].peak` / `.peakDbfs`\
              是逐源峰值（源节点输出，⛔ 不含插入链与路由边增益）。\
-             ⭐ `#251`：顶层 `midiSource` **明说** MIDI 音源是内置正弦振荡器\
-             （`kind:\"builtin-sine\"`、`engineTimbre:false`），⛔ 不是引擎音色；\
-             带 SFZ 采样器的轨见 `sources[].sampler`。",
+             ⭐ `#268`（`ADR-0011`）：顶层 `midiSource` **明说** MIDI 音源是\
+             `yeban-engine` 的 `SynthEngine`（`kind:\"engine-instrument\"`、\
+             `engineTimbre:true`），与界面/CLI 的 `--export-wav` 同一个音色；\
+             带 SFZ 采样器的轨由采样器发声，见 `sources[].sampler`。",
         ),
         &[
             "rendered",
