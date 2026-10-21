@@ -271,9 +271,10 @@ fn the_library_root_leg_finds_the_builtin_path() {
         sampler["notesUsingFileSample"], 4,
         "四个音符都必须用文件样本发声: {result}"
     );
-    assert_eq!(
-        sampler["notesUsingSineFallback"], 0,
-        "⛔ 不许回退正弦: {result}"
+    assert!(
+        sampler.get("notesUsingSineFallback").is_none(),
+        "⭐ `#275` 起采样器轨报告**没有**这个键（引擎无正弦回退；\
+         回退只在 `yeban_render_sfz_wav` 旁路）: {result}"
     );
     println!(
         "### [#271 判据2/3-库根] resolvedPath={} label={}",

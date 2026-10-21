@@ -501,3 +501,103 @@ fn a_44k_sample_file_plays_at_its_own_rate_not_the_engine_rate() {
          若实得 ≈4798，说明步进比又用回了 engine_hz 当 sample_hz"
     );
 }
+
+/// ⭐ `#275` 判据（B 的"能被触发"）：`notesUsingSineFallback` **不是恒 0**，且它的
+/// 语义有牙 —— 同一份 SFZ 里：
+/// - `sample=` 读不到的区域（`missing.wav`）⇒ 命中它的音符**逐个**计入；
+/// - `sample=*silence` 的区域 ⇒ 命中它的音符**一个都不计**（写零帧，另有自己的键）。
+///
+/// 分母用 `note=` 过滤固定：夹具 `filled_project()` 的音高 60 只有一个音符、音高 64
+/// 带 `ratchet=2` ⇒ 两侧各自的 `notesScheduled` 就是期望值（⛔ 不手抄数字）。
+#[test]
+fn the_sine_fallback_counter_counts_unreadable_samples_and_excludes_builtin_silence() {
+    let scratch = Scratch::new("fallback-count");
+    let sfz = scratch.join("count.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=missing.wav key=60 pitch_keycenter=60\n\
+         <region> sample=*silence key=64 pitch_keycenter=64\n",
+    )
+    .expect("写 SFZ");
+
+    let mut dispatcher = dispatcher_with_project();
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    assert_eq!(loaded["data"]["regions"], 2, "{loaded}");
+    let instrument_id = loaded["data"]["instrumentId"]
+        .as_u64()
+        .expect("instrumentId");
+
+    let render = |dispatcher: &mut Dispatcher, note: u8, name: &str| {
+        let target = scratch.join(name);
+        let response = call_tool(
+            dispatcher,
+            "yeban_render_sfz_wav",
+            serde_json::json!({
+                "instrumentId": instrument_id,
+                "frames": 24_000,
+                "note": note,
+                "path": target.display().to_string(),
+            }),
+        );
+        assert_eq!(response["status"], "success", "{response}");
+        response["data"].clone()
+    };
+
+    // ---- ① 读不到的样本 ⇒ 音符**全部**回退正弦（非 0）----
+    let missing = render(&mut dispatcher, 60, "note60.wav");
+    assert_eq!(missing["notesScheduled"], 1, "{missing}");
+    assert_eq!(missing["sampleFilesRead"], false, "{missing}");
+    assert_eq!(missing["notesUsingFileSample"], 0, "{missing}");
+    assert_eq!(missing["notesUsingBuiltinSilence"], 0, "{missing}");
+    assert_eq!(
+        missing["notesUsingSineFallback"], missing["notesScheduled"],
+        "⛔ 不许恒 0：读不到 sample= 的音符必须逐个计入: {missing}"
+    );
+    assert!(
+        missing["notesUsingSineFallback"].as_u64().unwrap_or(0) > 0,
+        "⭐ `#275` 的承重读数必须非 0: {missing}"
+    );
+    assert!(
+        missing["sampleSource"]
+            .as_str()
+            .expect("sampleSource")
+            .starts_with("in-memory-sine"),
+        "来源文案也必须说回退: {missing}"
+    );
+    println!(
+        "[#275] 无文件样本: scheduled={} fileSample={} sineFallback={} builtinSilence={} peak={}",
+        missing["notesScheduled"],
+        missing["notesUsingFileSample"],
+        missing["notesUsingSineFallback"],
+        missing["notesUsingBuiltinSilence"],
+        missing["peak"]
+    );
+
+    // ---- ② 内建静音 ⇒ **不**计入（⛔ 把 `*silence` 也数成回退）----
+    let silence = render(&mut dispatcher, 64, "note64.wav");
+    assert_eq!(
+        silence["notesScheduled"], 2,
+        "音高 64 的 ratchet=2 ⇒ 两个脉冲: {silence}"
+    );
+    assert_eq!(
+        silence["notesUsingBuiltinSilence"], silence["notesScheduled"],
+        "内建静音音符必须逐个计入 silence: {silence}"
+    );
+    assert_eq!(
+        silence["notesUsingSineFallback"], 0,
+        "⛔ `*silence` 不是回退: {silence}"
+    );
+    println!(
+        "[#275] 内建静音: scheduled={} fileSample={} sineFallback={} builtinSilence={} peak={}",
+        silence["notesScheduled"],
+        silence["notesUsingFileSample"],
+        silence["notesUsingSineFallback"],
+        silence["notesUsingBuiltinSilence"],
+        silence["peak"]
+    );
+}

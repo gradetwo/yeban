@@ -4689,7 +4689,11 @@ fn a_bound_sampler_changes_the_export_and_the_per_track_reading_says_so() {
             sampler["notesUsingFileSample"], 1,
             "{tag}: 必须真的用了文件样本"
         );
-        assert_eq!(sampler["notesUsingSineFallback"], 0, "{tag}: 不许回退正弦");
+        assert!(
+            sampler.get("notesUsingSineFallback").is_none(),
+            "{tag}: ⭐ `#275` 起采样器轨报告**没有**这个键（引擎无正弦回退；\
+             回退只在 `yeban_render_sfz_wav` 旁路）: {sampler}"
+        );
         assert_eq!(sampler["silentRegionCount"], 0, "{tag}: 本夹具没有内建静音");
     }
     // ⑤ 源种类说真话（`#220` 缺陷 ② 的另一半；`#268` 起 CPU 轨是 `engine-instrument`）。

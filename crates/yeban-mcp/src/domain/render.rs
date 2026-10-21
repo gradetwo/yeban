@@ -1227,6 +1227,11 @@ pub fn require_project(project: Option<&YebanProjectV1>) -> Result<(), Fault> {
 /// ⚠ 这些字段的**存在理由**是让"绑了采样器"与"绑了但没生效"在响应里长得不一样：
 /// `#220` 的缺陷 ② 正是这两者**逐字节相同**（同一工程经 MCP 渲染与"去掉 sampler"
 /// 相同，且 `unsupported=[]`）。
+///
+/// ⚠ ⭐ `#275`：**采样器轨没有正弦回退** —— `TrackV3.sampler` 走引擎的 SFZ 支路
+/// （`#274`），缺样本 ⇒ 静音 ＋ [`Self::notes_without_sample`]，⛔ 不发明替代音源。
+/// 因此本报告**没有** `notesUsingSineFallback` 键：那个键只在 `yeban_render_sfz_wav`
+/// 这条**旁路**上存在（会话乐器 ＋ 可缺文件的试听，见 `domain/sfz.rs`）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SamplerReport {
     /// 绑定的路径（模型里的原样字符串）。
@@ -1243,10 +1248,6 @@ pub struct SamplerReport {
     pub notes_unmatched: u64,
     /// 用文件样本发声的音符数。
     pub notes_using_file_sample: u64,
-    /// 回退内存正弦的音符数 —— ⭐ `#274` 起引擎的 SFZ 支路**没有回退**
-    /// （缺样本 ⇒ 静音 ＋ 计数）⇒ 本键恒 `0`；保留它是为了响应形状不破坏既有调用方，
-    /// 诚实的"没有样本"读数见 [`Self::notes_without_sample`]。
-    pub notes_using_sine_fallback: u64,
     /// ⭐ `#274`：有命中区域、但**没有任何已解码样本**的音符数（引擎静音 ＋ 计数）。
     pub notes_without_sample: u64,
     /// 落在内建静音区域上的音符数。
@@ -1318,7 +1319,6 @@ impl SamplerReport {
             "notes": self.notes,
             "notesUnmatched": self.notes_unmatched,
             "notesUsingFileSample": self.notes_using_file_sample,
-            "notesUsingSineFallback": self.notes_using_sine_fallback,
             "notesWithoutSample": self.notes_without_sample,
             "notesUsingBuiltinSilence": self.notes_using_builtin_silence,
             "notesLooping": self.notes_looping,
@@ -3888,9 +3888,10 @@ fn build_source(
                 notes: u64::try_from(timbre.scheduled_notes(track.id)).unwrap_or(u64::MAX),
                 notes_unmatched: survey.notes_unmatched,
                 notes_using_file_sample: survey.notes_using_file_sample,
-                // ⚠ 引擎的 SFZ 支路**没有**正弦回退（缺样本 ⇒ 静音 ＋ 计数）⇒
-                //    本键恒 0；`notesWithoutSample` 是新的、诚实的那一栏。
-                notes_using_sine_fallback: 0,
+                // ⚠ ⭐ `#275`：引擎的 SFZ 支路**没有**正弦回退（缺样本 ⇒ 静音 ＋ 计数）
+                //    ⇒ 本报告**不再有** `notesUsingSineFallback` 键（它曾恒 0、只占响应
+                //    形状）；诚实的"没有样本"读数是 `notes_without_sample`。⛔ 回退只
+                //    存在于 `yeban_render_sfz_wav` 旁路（见 `domain/sfz.rs`）。
                 notes_without_sample: survey.notes_without_sample,
                 notes_using_builtin_silence: survey.notes_using_builtin_silence,
                 notes_looping: survey.notes_looping,

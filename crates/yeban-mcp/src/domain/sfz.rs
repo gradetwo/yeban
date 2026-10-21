@@ -49,6 +49,11 @@
 //!    响应里的 `sampleSource` / `sampleFilesRead` 逐字反映读了哪些文件。
 //!    ⚠ 读不到（或没有区域声明 `sample=`）时**如实回退**到
 //!    [`InMemorySfzSample::sine`]（内存正弦）并把原因写进 `sampleSource`。
+//!    ⭐ `#275`：**何时非 0** 只有两条 —— ① 命中的区域不是 `sample=*silence`；
+//!    ② 它的 `sample=` 为空 / 路径读不到 / 解码失败。`notesUsingSineFallback` 就是
+//!    这两种情形下的音符数；`*silence` 与未命中区域**都不计**。
+//!    ⚠ 采样器轨（`yeban_render_master` 的 `TrackV3.sampler`）**没有**这条回退：
+//!    它走引擎 SFZ 支路，缺样本 ⇒ 静音 ＋ `notesWithoutSample`（`#274`/`#275`）。
 //!    ⛔ 内建静音伪样本**不走这条路**（它没有文件可读，见第 6 条）。
 //! 2. **工具面没有设备链**：`DeviceKind` 没有 SFZ 变体，本模块**不**往
 //!    `TrackV3::devices` 里塞任何东西（塞一个就是发明规范）。SFZ 音色只在这一条
@@ -1448,7 +1453,8 @@ pub struct SfzRenderOutcome {
     pub notes_using_builtin_silence: u64,
     /// 用**文件样本**发声的音符数。
     pub notes_using_file_sample: u64,
-    /// 回退到**内存正弦**的音符数。
+    /// 回退到**内存正弦**的音符数（何时非 0 见
+    /// [`SfzWavArtifact::notes_using_sine_fallback`] 的逐条定义）。
     pub notes_using_sine_fallback: u64,
     /// 本次渲染**真的读到**的样本文件来源（升序去重）。
     pub sample_sources: Vec<String>,
