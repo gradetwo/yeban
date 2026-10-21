@@ -34,6 +34,17 @@ export component SessionView inherits Rectangle {
     );
 
     callback back-to-arrangement();
+    // ⭐ 任务单 `#283`：场景按钮**真的**激发（下标由导航循环给出）。
+    // 宿主落点：`host::wire_scene_launch` → `EngineHost::queue_scene_launch`
+    // → 引擎在量化点 `transport.retune(场景 tempo)`。
+    callback scene-launch(int);
+
+    // ⭐ 任务单 `#283`：**当前场景**读数（宿主唯一写者 `host::apply_current_scene`）。
+    // `-1` / `""` = 本会话还没有启动过场景（投影一律清空 ⇒ 换工程不会带着旧场景）。
+    in property <int> current-scene-index: -1;
+    in property <string> current-scene-name: "";
+    // 启动请求的**如实**回执（没有引擎 / 事件环满时非空）；默认空串 = 不占视觉空间。
+    in property <string> scene-launch-status: "";
 
     background: Tokens.bg-void;
     clip: true;
@@ -144,9 +155,12 @@ export component SessionView inherits Rectangle {
             y: 0;
             width: parent.width - 8px;
             height: parent.height;
-            text: "场景";
+            // ⭐ `#283`：有"当前场景"时**逐字说出它**（名字来自宿主注入，
+            // 与高亮读的是同一个 `current-scene-index` ⇒ 不会指两个场景）。
+            text: root.current-scene-name == "" ? "场景" : "场景 · " + root.current-scene-name;
             color: Tokens.gold;
             font-size: Tokens.font-size-sm;
+            overflow: elide;
         }
     }
 
@@ -155,16 +169,22 @@ export component SessionView inherits Rectangle {
         y: 32px + 68px * scene_index;
         width: 104px;
         height: 64px;
-        background: Tokens.bg-panel-alt;
+        // ⭐ `#283`：**当前场景**高亮（读宿主的 `current-scene-index`；默认 `-1`
+        // ⇒ 基准帧与接线前逐像素相同）。
+        background: root.current-scene-index == scene_index ? Tokens.bg-raised : Tokens.bg-panel-alt;
         border-radius: Tokens.radius-md;
-        border-width: 1px;
-        border-color: Tokens.gold-deep;
+        border-width: root.current-scene-index == scene_index ? 2px : 1px;
+        border-color: root.current-scene-index == scene_index ? Tokens.gold-bright : Tokens.gold-deep;
         clip: true;
         accessible-role: button;
         accessible-id: "scene-launch-" + scene_index + "-button";
         accessible-label: "激发场景 " + scene_name;
         accessible-item-index: scene_index;
         accessible-item-count: root.scenes.length;
+        accessible-item-selectable: true;
+        accessible-item-selected: root.current-scene-index == scene_index;
+        // `[UI-A11Y-003]` §7.3：无障碍动作与 `TouchArea.clicked` **逐字同一落点**。
+        accessible-action-default => { root.scene-launch(scene_index); }
 
         UiMediumText {
             x: 0;
@@ -180,6 +200,7 @@ export component SessionView inherits Rectangle {
         TouchArea {
             width: parent.width;
             height: parent.height;
+            clicked => { root.scene-launch(scene_index); }
         }
     }
 
@@ -215,6 +236,30 @@ export component SessionView inherits Rectangle {
             width: parent.width;
             height: parent.height;
             clicked => { root.back-to-arrangement(); }
+        }
+    }
+
+    // -------------------------------------------------- 场景启动的**如实回执**（⭐ `#283`）
+    // 没有引擎 / 事件环满 ⇒ 宿主写一句逐字原因（默认空串，⛔ 不占视觉空间）。
+    // 位置：返回键（28px）之下再让 34px，⛔ 不压返回键、也不压截断报数那一行。
+    Rectangle {
+        x: 8px + 128px * root.visible-track-count;
+        y: 32px + 68px * root.scenes.length + 62px;
+        width: 320px;
+        height: 16px;
+        accessible-role: text;
+        accessible-id: "session-scene-launch-status";
+        accessible-label: "场景启动状态";
+
+        UiText {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            text: root.scene-launch-status;
+            color: Tokens.ink-2;
+            font-size: Tokens.font-size-xs;
+            overflow: elide;
         }
     }
 

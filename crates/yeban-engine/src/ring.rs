@@ -38,7 +38,7 @@
 //! 上，见 `mod tests` 与 `docs/ledger/engine-rt-notes.md` §3 判据 (d)。
 
 use rtrb::{Consumer, Producer, RingBuffer};
-use yeban_model::EntityId;
+use yeban_model::{EntityId, LaunchQuantization, TimeSignature};
 
 /// 事件通道的默认容量（条）。够覆盖一整个 60Hz UI 帧的参数洪峰。
 pub const DEFAULT_EVENT_CAPACITY: usize = 1024;
@@ -172,6 +172,36 @@ pub enum EngineEvent {
         controller: u8,
         /// 控制器值（`0..=127`）。
         value: u8,
+    },
+    /// ⭐ 任务单 `#283`：**一次量化场景启动请求**（控制面 → 实时侧）。
+    ///
+    /// 为什么需要这条事件（而不是只让产品直接调
+    /// [`crate::rt::EngineRuntime::queue_scene_launch`]）：产品的**设备腿**
+    /// （[`crate::device::open_output`]）把 `EngineRuntime` **按值**移进 cpal 回调线程
+    /// ⇒ 控制线程手里没有 `&mut EngineRuntime`，只有这一条既有的无锁 SPSC
+    /// [ARCH-RT-001]。没有它，"接了声卡的用户按场景按钮"就什么都不会发生。
+    ///
+    /// 载荷与 [`crate::rt::EngineRuntime::queue_scene_launch`] 的入参**一一对应**：
+    /// `scene_id` 只作读数（引擎不认识场景实体），`tempo_bpm` 是该场景的 tempo 覆盖，
+    /// `quantization` / `time_signature` 决定"何时生效"（生效帧仍由**引擎**在量子边界
+    /// 用 [`crate::transport::next_bar_tick`] 算，⛔ 不在这里预计算跨线程的绝对帧）。
+    ///
+    /// # 顺序与尺寸
+    ///
+    /// ⛔ 追加在末尾 ⇒ 既有变体的判别式与语义一个字节都没动。
+    /// 载荷是本枚举里**最大**的一个（`Option<EntityId>` ＋ `f64` ＋ 两个小枚举），
+    /// 但它仍让 `size_of::<EngineEvent>()` 停在 **48 B**（门槛 `<= 64`，判据见
+    /// 本文件库单测 `events_are_copy_and_carry_no_destructor` 的逐字读数）。
+    /// 全部字段都是 `Copy` ⇒ 事件在音频线程出队时**零分配、零释放** [MUST-GATE-001]。
+    SceneLaunch {
+        /// 目标场景身份（只作读数）。
+        scene_id: Option<EntityId>,
+        /// 该场景的 tempo 覆盖（BPM）。
+        tempo_bpm: f64,
+        /// 量化档（`Off` ⇒ 当前帧立即生效）。
+        quantization: LaunchQuantization,
+        /// 引擎快照里没有拍号 ⇒ 由控制面给出（与 `queue_scene_launch` 的入参同源）。
+        time_signature: TimeSignature,
     },
 }
 

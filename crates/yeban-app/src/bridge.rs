@@ -2997,6 +2997,40 @@ pub struct SceneView {
     pub color: Option<String>,
 }
 
+/// ⭐ 任务单 `#283`：**最近一次已接受的场景启动**的读数（Session View 的"当前场景"）。
+///
+/// ## 它为什么住在 [`ViewState`] 里，却**不是**投影产物
+///
+/// "当前场景"是**会话运行态**（`[MODEL-ISO-001]` 的中间层），⛔ 不是工程内容：
+/// 不进 `.yeban`、不进 `projectDigest`、不进撤销栈。它住在这里的唯一理由是
+/// **界面侧只有一个读数面** —— `host::apply_view` 把 `ViewState` 单向注入 `MainWindow`
+/// （D28），所以"哪个场景是当前场景"必须跟着同一份结构走，⛔ 不在 `.slint` 里另造一份。
+///
+/// ⚠ **投影从不生产它**：`ViewState::from_project*` 一律写 `None`（换工程 / 打开工程
+/// ⇒ 没有"当前场景"）；写入者只有场景按钮的宿主回调
+/// （`host::wire_scene_launch`）。判据 `the_current_scene_is_not_a_projection_product`
+/// 钉住这条边界。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentScene {
+    /// 视图内序号（与 `scene_names()` 同索引集）。
+    pub index: usize,
+    /// 场景身份规范文本（`SceneView::id`）。
+    pub id: String,
+    /// 场景名（`SceneView::name`）。
+    pub name: String,
+}
+
+impl CurrentScene {
+    /// `.slint` 的 `current-scene-index` 读数（`usize` → `i32`，越界饱和）。
+    ///
+    /// **唯一**的换算点：`host::apply_current_scene` 与 [`ViewState::current_scene_index`]
+    /// 都调它 ⇒ 界面属性与判据读数不可能用两条不同的截断规则。
+    #[must_use]
+    pub fn ui_index(&self) -> i32 {
+        i32::try_from(self.index).unwrap_or(i32::MAX)
+    }
+}
+
 /// 状态栏「音频配置」那一格的**整串文本**（台账 R9）—— 唯一的格式化实现。
 ///
 /// 两个读数都来自 `YebanProjectV1::audio_config`（`[MODEL-AST-002]` 的
@@ -3098,6 +3132,18 @@ pub struct ViewState {
     pub sections: Vec<SectionView>,
     /// 全部场景（身份升序）。
     pub scenes: Vec<SceneView>,
+    /// ⭐ 任务单 `#283`：工程配置的**场景启动量化档**
+    /// （[`yeban_model::LaunchQuantization`]，`transport.launch_quantization`）。
+    ///
+    /// 它是**投影产物**（工程内容）：场景按钮点击时宿主读它决定"何时生效"，
+    /// ⛔ 不由界面猜、⛔ 不写死成 `Bar`。
+    pub launch_quantization: yeban_model::LaunchQuantization,
+    /// ⭐ 任务单 `#283`：**最近一次已接受的场景启动**（Session View 显示"当前场景"，
+    /// 场景按钮据此高亮）。`None` = 本会话还没有启动过场景。
+    ///
+    /// ⚠ **不是投影产物**（见 [`CurrentScene`] 的文档）：`from_project*` 一律写 `None`，
+    /// 唯一写者是 [`crate::host::wire_scene_launch`]。
+    pub current_scene: Option<CurrentScene>,
     /// 素材池（`clip_pool`）的行投影（身份升序 = `BTreeMap` 键序）。
     ///
     /// ⭐ 任务单 `#133`：这是素材池面板的唯一事实源。面板按
@@ -3667,6 +3713,10 @@ impl ViewState {
             clips,
             sections,
             scenes,
+            // ⭐ `#283`：量化档是**工程配置**（投影产物）；"当前场景"是**会话运行态**
+            // ⇒ 投影一律写 `None`，只有场景按钮的宿主回调会写它。
+            launch_quantization: project.transport.launch_quantization,
+            current_scene: None,
             asset_pool,
             selected_track: display.map(|track| track.id.to_canonical_string()),
             device_track_label,
@@ -3855,6 +3905,18 @@ impl ViewState {
     #[must_use]
     pub fn scene_names(&self) -> Vec<String> {
         self.scenes.iter().map(|scene| scene.name.clone()).collect()
+    }
+
+    /// ⭐ 任务单 `#283`："当前场景"的**视图内序号**；`None` ⇒ `-1`。
+    ///
+    /// 这是 `.slint` 的 `current-scene-index` 的唯一来源（`host::apply_current_scene`
+    /// 是唯一写者）。⛔ 不返回场景名 / 颜色等第二份数据：名字从 `scene_names()` 按下标取，
+    /// 界面因此不可能同时显示"当前场景 A"而高亮 B。
+    #[must_use]
+    pub fn current_scene_index(&self) -> i32 {
+        self.current_scene
+            .as_ref()
+            .map_or(-1, CurrentScene::ui_index)
     }
 
     /// 素材池每一行的显示名（与下面两个数组**同索引集**）。

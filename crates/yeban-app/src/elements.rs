@@ -644,6 +644,16 @@ impl ElementRegistry {
             "返回编曲 (Back to Arrangement)",
             false,
         );
+        // ⭐ 任务单 `#283`：场景启动的**如实回执**（没有引擎 / 事件环满时非空）。
+        // 它不是交互控件（`accessible-role: text`），但必须有登记 —— `ui/` 里每个
+        // `accessible-id` 都要被注册表覆盖（判据 `slint_accessible_ids_and_registry_cover_each_other`）。
+        registry.add(
+            "session-scene-launch-status",
+            ElementKind::Text,
+            "workspace/session_view.slint",
+            "场景启动状态",
+            false,
+        );
         // ⭐ 任务单 `#190`：画布装不下的轨道列**如实报数**（场景列原先按 `tracks.length`
         // 定位 ⇒ 1440 档第 7 轨起 / 1024 展开态第 4 轨起被推出画布）。只在
         // `轨道数 > 容量` 时在场；注册表按"无条件声明"登记（缺失不算红）。
@@ -3856,7 +3866,13 @@ mod tests {
     /// | `"transport-branch-button"` | 切换活跃分支的 API 一处都不存在（判据 `the_three_transport_document_actions_are_not_wired_today` 已钉） |
     /// | `"transport-commit-button"` | 同上（会话里没有"待提交的编辑"这一状态） |
     /// | `"transport-revert-button"` | 同上（能力存在但未接线） |
-    /// | `"scene-launch-" + i + "-button"` | 场景激发没有宿主面（`TouchArea` 存在但没有 `clicked`） |
+    ///
+    /// ⭐ **任务单 `#283` 移出了一条**：`"scene-launch-" + i + "-button"` 现在**真的**
+    /// 可点 —— `TouchArea.clicked` 与 `accessible-action-default` 同一落点
+    /// `root.scene-launch(scene_index)` ⇒ `host::wire_scene_launch` ⇒
+    /// `EngineHost::queue_scene_launch` ⇒ 引擎在量化点 `transport.retune(场景 tempo)`
+    /// ＋ `scene_launches_applied += 1`（判据 `tests/scene_launch_wiring.rs`）。
+    /// 按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），它不再属于"没有动作"的集合。
     #[test]
     fn controls_without_any_click_source_are_exactly_the_known_empty_ones() {
         const CONTROL_ROLES: [&str; 6] = [
@@ -3922,7 +3938,13 @@ mod tests {
     /// `root.device-bypass-toggle(root.device-ids[device_index])` ⇒ 一次
     /// `Op::SetDeviceBypassed`）。⭐ `#182` 起落点报的是**设备身份**（⛔ 不是下标）。
     /// 按本判据文档的要求（"修好一个 ⇒ 从清单里删掉它"），它不再属于"没有动作"的集合。
-    const KNOWN_ACTIONLESS_CONTROLS: [&str; 9] = [
+    ///
+    /// ⭐ **任务单 `#283` 又移出了一条**（`9 → 8`）：`scene-launch-<i>-button` 现在走
+    /// `.slint` 的 `clicked` ＋ `accessible-action-default`（同一落点）⇒ 宿主
+    /// `host::wire_scene_launch` ⇒ `EngineHost::queue_scene_launch` ⇒ 引擎在量化点
+    /// `transport.retune(场景 tempo)`。它与上一条同型：**接上真动作才移出**，
+    /// ⛔ 不是"先删表行"。
+    const KNOWN_ACTIONLESS_CONTROLS: [&str; 8] = [
         "app.slint :: \"ai-rail-intent-button\"",
         "console/console_tabs.slint :: \"console-maximize-button\"",
         "console/mixer_console.slint :: \"mixer-master-mute-button\"",
@@ -3931,6 +3953,5 @@ mod tests {
         "transport.slint :: \"transport-branch-button\"",
         "transport.slint :: \"transport-commit-button\"",
         "transport.slint :: \"transport-revert-button\"",
-        "workspace/session_view.slint :: \"scene-launch-\" + scene_index + \"-button\"",
     ];
 }

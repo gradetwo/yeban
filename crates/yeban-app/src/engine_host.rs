@@ -135,6 +135,7 @@ use yeban_model::AutomationTarget;
 use yeban_model::EntityId;
 use yeban_model::project::YebanProjectV1;
 use yeban_model::{AssetHash, ClipContent};
+use yeban_model::{LaunchQuantization, TimeSignature};
 
 use crate::audio_inject::{
     AudioAssetSource, AudioCacheReadings, AudioClipInjection, AudioClipReport, AudioClipSkip,
@@ -585,6 +586,52 @@ pub fn automation_unapplied_line(lanes: UnappliedAutomationLanes) -> String {
         lanes.macro_lanes,
         lanes.total(),
     )
+}
+
+/// ⭐ 任务单 `#283`：产品路径的一次**场景启动请求**（Session View 的场景按钮 → 引擎）。
+///
+/// 字段与 [`yeban_engine::rt::EngineRuntime::queue_scene_launch`] 的入参一一对应
+/// （⛔ 不在这里另算生效帧：那是引擎在**量子边界**用
+/// [`yeban_engine::transport`] 的同一套整数算术算的，见
+/// `yeban_engine::rt::scene_launch_switch_frame`）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneLaunchRequest {
+    /// 目标场景身份（引擎只作读数）。
+    pub scene_id: Option<EntityId>,
+    /// 该场景的 tempo 覆盖（BPM）。
+    pub tempo_bpm: f64,
+    /// 工程配置的量化档。
+    pub quantization: LaunchQuantization,
+    /// 工程拍号（引擎快照里没有 ⇒ 由控制面给）。
+    pub time_signature: TimeSignature,
+}
+
+/// ⭐ 任务单 `#283`：请求**真的落到哪条腿上** —— 如实报告，⛔ 不假装成功。
+///
+/// 两种驱动形态（见本文件的"驱动形态表"）各自有唯一通路：
+///
+/// | 形态 | 通路 | 变体 |
+/// | :--- | :--- | :--- |
+/// | 控制驱动（没有声卡 / 开设备失败） | 直接 `&mut EngineRuntime::queue_scene_launch` | [`Self::Direct`] |
+/// | 设备腿（`EngineRuntime` 在 cpal 回调线程上） | 既有的事件环 `EngineEvent::SceneLaunch` | [`Self::QueuedToDevice`] |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneLaunchDisposition {
+    /// 控制驱动：请求已武装在实时运行时上（下一次量子边界开始倒计时）。
+    Direct,
+    /// 设备腿：请求已写进**既有**无锁 SPSC，cpal 回调在量子边界武装。
+    QueuedToDevice,
+    /// 事件环满（极罕见）：⛔ 一条都没写进去 ⇒ 调用方必须如实告诉用户。
+    EventQueueFull,
+    /// 没有引擎 / 没有命令通道：⛔ 一位都没动。
+    NoEngine,
+}
+
+impl SceneLaunchDisposition {
+    /// 这次请求**是否真的送到了引擎**（两个成功变体之一）。
+    #[must_use]
+    pub const fn is_delivered(self) -> bool {
+        matches!(self, Self::Direct | Self::QueuedToDevice)
+    }
 }
 
 /// 引擎宿主：持有"当前这一代"的全部引擎侧对象。
@@ -1741,6 +1788,70 @@ impl EngineHost {
         reading
     }
 
+    /// ⭐ 任务单 `#283`：**产品路径的场景启动**（Session View 的场景按钮 → 引擎）。
+    ///
+    /// 两种驱动形态各走**唯一**通路，⛔ 不新造第二条：
+    ///
+    /// * 控制驱动（`runtime` 在手里）⇒ 直接
+    ///   [`yeban_engine::rt::EngineRuntime::queue_scene_launch`]：生效帧由引擎算，
+    ///   本函数**不**推量子（与 [`Self::send_engine_events`] 一样只负责"送到"）；
+    /// * 设备腿（`runtime == None`，它在 cpal 回调线程上）⇒ 把
+    ///   [`EngineEvent::SceneLaunch`] 写进**既有**的事件环 —— 那是
+    ///   [ARCH-RT-001] 允许的唯一跨线程通路，也是"接了声卡的机器上用户按一下真的会生效"
+    ///   的关键（给按钮接一个只有控制驱动才工作的回调等于假接线）。
+    ///
+    /// 返回值如实报告落点（[`SceneLaunchDisposition`]）：没有引擎 / 环满都**不假装成功**。
+    ///
+    /// ⚠ 本函数不阻塞、**不**等命令生效（那要等下一次量子边界）；判据要观察"真的生效"
+    /// 时自己推量子（控制驱动）或等设备回调（设备腿）。
+    pub fn queue_scene_launch(&mut self, request: SceneLaunchRequest) -> SceneLaunchDisposition {
+        let SceneLaunchRequest {
+            scene_id,
+            tempo_bpm,
+            quantization,
+            time_signature,
+        } = request;
+        if let Some(runtime) = self.runtime.as_deref_mut() {
+            runtime.queue_scene_launch(scene_id, tempo_bpm, quantization, time_signature);
+            return SceneLaunchDisposition::Direct;
+        }
+        let Some(sender) = self.events.as_mut() else {
+            return SceneLaunchDisposition::NoEngine;
+        };
+        let written = sender.publish(&[EngineEvent::SceneLaunch {
+            scene_id,
+            tempo_bpm,
+            quantization,
+            time_signature,
+        }]);
+        if written == 1 {
+            SceneLaunchDisposition::QueuedToDevice
+        } else {
+            SceneLaunchDisposition::EventQueueFull
+        }
+    }
+
+    /// ⭐ 任务单 `#283`：引擎侧**有没有**排队的场景启动（判据读口）。
+    ///
+    /// ⚠ **设备腿活跃时返回 `None`**：那一代的 `EngineRuntime` 在 cpal 回调线程上
+    /// （与 [`Self::engine_stats`] 同一条已知限制，⛔ 不是本函数新造的）。
+    #[must_use]
+    pub fn has_pending_scene_launch(&self) -> Option<bool> {
+        self.runtime
+            .as_deref()
+            .map(EngineRuntime::has_pending_scene_launch)
+    }
+
+    /// ⭐ 任务单 `#283`：引擎累计**真的生效**过的场景启动次数（判据读口）。
+    ///
+    /// ⚠ 设备腿活跃时返回 `None`（同 [`Self::engine_stats`]）。
+    #[must_use]
+    pub fn scene_launches_applied(&self) -> Option<u64> {
+        self.runtime
+            .as_deref()
+            .map(EngineRuntime::scene_launches_applied)
+    }
+
     /// 等设备回调把**至少** `expected` 条命令应用掉（控制线程，有界轮询）。
     ///
     /// 判据是引擎自己的读数（[`TransportReading::commands_applied`]）前进，不是猜意图：
@@ -1936,6 +2047,48 @@ mod tests {
         assert_eq!(rebuild.meter_capacity_drops, 0);
         assert!(host.has_engine());
         assert_eq!(host.generation(), 1);
+    }
+
+    /// ⭐ 任务单 `#283`：产品 API 的落点**如实报告**（没引擎 ⇒ `NoEngine`；控制驱动 ⇒
+    /// `Direct` ＋ 请求真的武装在运行时上）。
+    ///
+    /// 设备腿那一格（`QueuedToDevice`）**不在本判据里**：它要求 `runtime == None`，而
+    /// 那一形态只有在真声卡打开之后才存在（[`EngineHost::open_device`] 把运行时 move
+    /// 进 cpal 回调）⇒ 本机 / CI 都造不出来。消费侧的等价性由 `yeban-engine` 的
+    /// `a_scene_launch_sent_through_the_event_ring_fires_like_the_control_call` 钉住。
+    #[test]
+    fn queue_scene_launch_reports_where_the_request_landed() {
+        let request = SceneLaunchRequest {
+            scene_id: None,
+            tempo_bpm: 140.0,
+            quantization: LaunchQuantization::Bar,
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+        };
+        let mut host = EngineHost::new();
+        assert_eq!(
+            host.queue_scene_launch(request),
+            SceneLaunchDisposition::NoEngine,
+            "没有引擎 ⇒ ⛔ 不假装成功"
+        );
+        assert_eq!(host.has_pending_scene_launch(), None);
+        assert_eq!(host.scene_launches_applied(), None);
+
+        let project = demo_project();
+        host.reload(&project, 0).expect("重建");
+        assert_eq!(
+            host.queue_scene_launch(request),
+            SceneLaunchDisposition::Direct,
+            "控制驱动 ⇒ 直接调运行时的 queue_scene_launch"
+        );
+        assert_eq!(
+            host.has_pending_scene_launch(),
+            Some(true),
+            "请求必须真的武装在运行时上"
+        );
+        assert_eq!(host.scene_launches_applied(), Some(0), "⛔ 还没到点生效");
     }
 
     /// 判据 2：连着重建两次 ⇒ 代数是 1、2，且每次都给一条**新**队列。

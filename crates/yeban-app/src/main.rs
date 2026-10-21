@@ -562,6 +562,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         Some(Rc::new(loaded.archive.project.clone())),
         // ⭐ 录音落进工程的写入面（`#132`）：活会话那个端口（⛔ 不是第二份）。
         Some(Rc::clone(&undo_port)),
+        // ⭐ `#283`：场景按钮的投影来源（与心跳同一个 `Rc`）。
+        Rc::clone(&view_cell),
     );
     // `[UI-A11Y-002]` §7.2 的**事件源**：BPM 敲入控件里真 `TextInput` 的
     // `preedit-text` / `has-focus` 变化 → `ime-composition-changed` / `ime-focus-changed`
@@ -695,6 +697,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
                     &engine_after,
                     Some(Rc::new(project.clone())),
                     Some(Rc::clone(&port_after)),
+                    // ⭐ `#283`：`view_after` 就是上面刚换过的那份投影（同一个 `Rc`）。
+                    Rc::clone(&view_after),
                 );
                 host::wire_keys(
                     ui,
@@ -1044,9 +1048,14 @@ fn wire_callbacks(
     engine: &Rc<RefCell<yeban_app::engine_host::EngineHost>>,
     project: Option<Rc<yeban_model::YebanProjectV1>>,
     undo: Option<Rc<yeban_app::undo::UndoPort>>,
+    // ⭐ 任务单 `#283`：场景按钮要读**当前投影**（量化档 / 场景 tempo / 拍号）并把
+    // "当前场景"写回同一份视图 ⇒ 传的是心跳对齐用的**同一个** `Rc<RefCell<ViewState>>`
+    // （⛔ 不是装配期的一份 clone：换工程之后它必须跟着换）。
+    view: Rc<RefCell<yeban_app::bridge::ViewState>>,
 ) {
     host::wire_transport(ui, Rc::clone(engine), project, undo);
     host::wire_view_callbacks(ui);
+    host::wire_scene_launch(ui, Rc::clone(engine), view);
     ui.on_accept_ai_proposal(|| trace("accept-ai-proposal"));
     ui.on_reject_ai_proposal(|| trace("reject-ai-proposal"));
     ui.on_run_acoustic_diagnosis(|| trace("run-acoustic-diagnosis"));

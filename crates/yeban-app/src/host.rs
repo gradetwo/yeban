@@ -47,8 +47,10 @@ use slint::{ModelRc, SharedString, VecModel};
 use yeban_engine::transport::TransportReading;
 use yeban_model::{EntityId, YebanProjectV1};
 
-use crate::bridge::{DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
-use crate::engine_host::{DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings};
+use crate::bridge::{CurrentScene, DEFAULT_TRACK_COLOR, RgbColor, TrackHeightLayout, ViewState};
+use crate::engine_host::{
+    DeviceOpening, EditMark, EngineHost, EngineHostError, HeartbeatReadings, SceneLaunchRequest,
+};
 use crate::input::{Action, Focus, InputContext, LogicalKey, Modifiers, Resolution, View};
 use crate::meters::{MeterRuntime, MeterSnapshot, silent_snapshot};
 use crate::scene::DemoScene;
@@ -151,6 +153,9 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     // `None` ⇒ `""`）。写方向是两条 `mixer-sampler-*` 回调（`wire_mixer_sampler`）。
     ui.set_track_sampler_paths(strings(&view.track_sampler_paths()));
     ui.set_scene_names(strings(&view.scene_names()));
+    // ⭐ 任务单 `#283`：**当前场景**的唯一注入点（完整重投影 ⇒ 回到投影的读数；
+    // 场景按钮点击走同一个写者 [`apply_current_scene`]，⛔ 不各写一份）。
+    apply_current_scene(ui, view.current_scene.as_ref());
     ui.set_section_names(strings(&view.section_names()));
     ui.set_clip_ulids(strings(&view.clip_ulids()));
     ui.set_clip_labels(strings(&view.clip_labels()));
@@ -311,6 +316,131 @@ pub fn apply_view(ui: &MainWindow, view: &ViewState, viewport_width: f32, scroll
     apply_meters(ui, &silent_snapshot(view));
     // 状态栏：与上面同一份投影（选区跨度 + 工程音频配置）。台账 R9 —— 见 `publish_status_bar`。
     publish_status_bar(ui, view);
+}
+
+/// ⭐ 任务单 `#283`：**当前场景**的唯一写者（Session View 的高亮 + 无障碍选中态）。
+///
+/// 读数是 [`ViewState::current_scene`]（[`CurrentScene`]）：投影一律给 `None`，
+/// 场景按钮的宿主回调（[`wire_scene_launch`]）成功后写进视图并调本函数。
+///
+/// ⛔ 不写场景名第二份：`.slint` 按 `current-scene-index` 在 `scene-names` 里取名字
+/// ⇒ "高亮的那一条"与"显示的名字"不可能指向两个场景。
+pub fn apply_current_scene(ui: &MainWindow, current: Option<&CurrentScene>) {
+    ui.set_current_scene_index(current.map_or(-1, CurrentScene::ui_index));
+    ui.set_current_scene_name(
+        current
+            .map_or_else(String::new, |scene| scene.name.clone())
+            .into(),
+    );
+    // 回执与"当前场景"属于同一次启动：读数被清回 `None`（换工程 / 打开工程）时，
+    // 上一次的"已排队"不再适用 ⇒ 一并作废。点击那条路先清、再由回调写新回执。
+    if current.is_none() {
+        ui.set_scene_launch_status("".into());
+    }
+}
+
+/// ⭐ 任务单 `#283`：把 **Session View 的场景按钮**接到引擎的量化启动上。
+///
+/// ## 这条链（每一环都是既有的那一个）
+///
+/// `scene-launch-<i>-button`（`.slint` 的 `TouchArea.clicked` ＋
+/// `accessible-action-default`，**同一落点**）
+/// → `MainWindow::on_scene_launch`（本函数）
+/// → [`EngineHost::queue_scene_launch`]（控制驱动 ⇒ 直接调
+/// `EngineRuntime::queue_scene_launch`；设备腿 ⇒ 既有事件环，见
+/// [`crate::engine_host::SceneLaunchDisposition`]）
+/// → 引擎在下一个**小节线**（或 `Off` 档的当前帧）生效：`transport.retune(场景 tempo)`
+/// ＋ `stats().scene_launches_applied += 1`。
+///
+/// ## 为什么"当前场景"在这里才写
+///
+/// 只有**已送到引擎**的请求才改读数（`SceneLaunchDisposition::is_delivered()`）：
+/// 没有引擎 / 事件环满时界面照旧、`scene_launch_status` 如实给出原因 ——
+/// ⛔ 不像"假装启动了一个场景"那样把按钮做成死按钮的另一种形态。
+///
+/// ⚠ 三个数据都从**视图**现读（量化档来自工程投影，tempo 覆盖来自场景，拍号来自工程）
+/// ⇒ 换工程 / 改走带配置之后点按钮用的是**当时**那一份，⛔ 不用装配期的快照。
+///
+/// ⚠ 作用域纪律：引擎的 `RefCell` 借用在写任何界面属性**之前**释放（`#212` 的崩法）。
+pub fn wire_scene_launch(
+    ui: &MainWindow,
+    engine: Rc<RefCell<EngineHost>>,
+    view: Rc<RefCell<ViewState>>,
+) {
+    let weak = slint::ComponentHandle::as_weak(ui);
+    ui.on_scene_launch(move |scene_index| {
+        let Some(ui) = weak.upgrade() else {
+            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+            return;
+        };
+        // 下标来自 `.slint` 的导航循环 ⇒ 先按**当前**投影解析成身份与 tempo。
+        let Ok(index) = usize::try_from(scene_index) else {
+            set_scene_launch_status(&ui, "场景下标非法：没有启动任何场景");
+            return;
+        };
+        let request = {
+            let view = view.borrow();
+            let Some(scene) = view.scenes.get(index) else {
+                set_scene_launch_status(&ui, "这个场景已经不在当前工程里（投影之后被删？）");
+                return;
+            };
+            SceneLaunchRequest {
+                // 引擎只把身份当读数；解析失败不阻止启动（tempo 才是可听的那一半）。
+                scene_id: scene.id.parse().ok(),
+                tempo_bpm: scene.tempo.unwrap_or(view.bpm),
+                quantization: view.launch_quantization,
+                time_signature: yeban_model::TimeSignature {
+                    numerator: view.time_signature_numerator,
+                    denominator: view.time_signature_denominator,
+                },
+            }
+        };
+        let (disposition, name) = {
+            let mut engine = engine.borrow_mut();
+            let disposition = engine.queue_scene_launch(request);
+            let name = view
+                .borrow()
+                .scenes
+                .get(index)
+                .map(|scene| scene.name.clone());
+            (disposition, name)
+        };
+        if !disposition.is_delivered() {
+            let reason = match disposition {
+                crate::engine_host::SceneLaunchDisposition::EventQueueFull => {
+                    "事件环满：这次启动没有送到引擎（再按一次）"
+                }
+                crate::engine_host::SceneLaunchDisposition::NoEngine => {
+                    "引擎没起来：这次启动没有送到引擎"
+                }
+                _ => "启动没有送到引擎",
+            };
+            set_scene_launch_status(&ui, reason);
+            return;
+        }
+        let Some(name) = name else {
+            // 投递成功之后投影换了（同一线程上不可能，除非回调里有人改了视图）⇒ 不改读数。
+            return;
+        };
+        {
+            let mut view = view.borrow_mut();
+            let id = view.scenes[index].id.clone();
+            view.current_scene = Some(CurrentScene {
+                index,
+                id,
+                name: name.clone(),
+            });
+            apply_current_scene(&ui, view.current_scene.as_ref());
+        }
+        set_scene_launch_status(&ui, &format!("已排队：{name}"));
+    });
+}
+
+/// [`wire_scene_launch`] 的状态行（**如实**报告"送到没有"）。
+///
+/// 它只写一个文本属性；默认是 `""`（没有启动过 ⇒ 不占视觉空间）。
+fn set_scene_launch_status(ui: &MainWindow, text: &str) {
+    ui.set_scene_launch_status(text.into());
 }
 
 /// **行几何**（`ADR-0004` S0/S1）的全部注入数组 —— [`apply_view`] 的**子集**，

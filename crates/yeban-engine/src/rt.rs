@@ -1179,6 +1179,56 @@ impl PendingSceneLaunch {
     }
 }
 
+/// 场景启动的**生效帧** —— 控制面 [`EngineRuntime::queue_scene_launch`] 与事件面
+/// [`EngineEvent::SceneLaunch`] 共用的**唯一**实现。
+///
+/// `Off` ⇒ 当前帧（立即）；其余档 ⇒ 从**下一个小节线**起再顺延 `step - 1` 个小节
+/// （`next_bar_tick` 的口径是"严格下一条"；档位只有小节整数倍）。
+fn scene_launch_switch_frame(
+    transport: &Transport,
+    quantization: yeban_model::LaunchQuantization,
+    time_signature: yeban_model::TimeSignature,
+) -> u64 {
+    let position_frames = transport.position_frames();
+    match quantization {
+        yeban_model::LaunchQuantization::Off => position_frames,
+        other => {
+            let step = quantization_bars(other);
+            // 量化档是"1/2/4/8 小节"⇒ 从**下一个小节线**起再顺延 (step-1) 个小节。
+            let mut tick =
+                crate::transport::next_bar_tick(transport.position_ticks(), time_signature);
+            for _ in 1..step {
+                tick = crate::transport::next_bar_tick(tick, time_signature);
+            }
+            transport.frames_for_tick(tick)
+        }
+    }
+}
+
+/// 武装一次场景启动（`queue_scene_launch` 的**唯一本体**）。
+///
+/// ⚠ 两个调用点：控制面的方法（产品在**没有**设备腿时走它）与实时侧的事件出队
+/// （设备腿里 `EngineRuntime` 在 cpal 回调线程上 ⇒ 只能经无锁事件到 [ARCH-RT-001]）。
+/// 两条路共用这一个函数 ⇒ "何时生效"不可能出现第二套口径。
+/// ⚠ 整数运算 ＋ 一次赋值：⛔ 无分配、无锁、无 I/O [MUST-GATE-001]。
+fn arm_scene_launch(
+    transport: &Transport,
+    pending: &mut Option<PendingSceneLaunch>,
+    scene_id: Option<EntityId>,
+    tempo_bpm: f64,
+    quantization: yeban_model::LaunchQuantization,
+    time_signature: yeban_model::TimeSignature,
+) {
+    let position_frames = transport.position_frames();
+    let switch_frame = scene_launch_switch_frame(transport, quantization, time_signature);
+    *pending = Some(PendingSceneLaunch::arm(
+        scene_id,
+        tempo_bpm,
+        switch_frame,
+        position_frames,
+    ));
+}
+
 impl AuditionBranch {
     /// 控制路径：按采样率**预计算等功率淡化表**，并记下本次的**切换帧**。
     ///
@@ -3079,28 +3129,14 @@ impl EngineRuntime {
         quantization: yeban_model::LaunchQuantization,
         time_signature: yeban_model::TimeSignature,
     ) {
-        let position_frames = self.transport.position_frames();
-        let switch_frame = match quantization {
-            yeban_model::LaunchQuantization::Off => position_frames,
-            other => {
-                let step = quantization_bars(other);
-                // 量化档是"1/2/4/8 小节"⇒ 从**下一个小节线**起再顺延 (step-1) 个小节。
-                let mut tick = crate::transport::next_bar_tick(
-                    self.transport.position_ticks(),
-                    time_signature,
-                );
-                for _ in 1..step {
-                    tick = crate::transport::next_bar_tick(tick, time_signature);
-                }
-                self.transport.frames_for_tick(tick)
-            }
-        };
-        self.pending_launch = Some(PendingSceneLaunch::arm(
+        arm_scene_launch(
+            &self.transport,
+            &mut self.pending_launch,
             scene_id,
             tempo_bpm,
-            switch_frame,
-            position_frames,
-        ));
+            quantization,
+            time_signature,
+        );
     }
 
     /// ⭐ 控制路径：**取消**尚未生效的启动（幂等；⛔ 已生效的不受影响）。
@@ -4134,6 +4170,30 @@ impl EngineRuntime {
             // 区分的见证（判据：`tests/sfz_instrument.rs` 的 S63）。
             if let EngineEvent::ControlChange { controller, value } = event {
                 let _ = control_change.apply(controller, value);
+            }
+            // ⭐ 任务单 `#283`：**设备腿的场景启动**。设备腿把 `EngineRuntime` 按值移进
+            // cpal 回调（[`crate::device::open_output`]）⇒ 控制线程没有 `&mut self`
+            // ⇒ 产品经这条既有的事件环把请求送进来。生效帧仍在**本函数**里按当前
+            // 位置算（与 [`EngineRuntime::queue_scene_launch`] 共用
+            // [`arm_scene_launch`]）⇒ 两条路只有一套"何时生效"的口径。
+            // ⚠ 只是整数运算 ＋ 一次 `Option` 赋值：⛔ 零分配、零锁、零 I/O。
+            // ⚠ `Off` 档：`frames_until_switch` 为 0 ⇒ 本量子末尾那条既有的
+            // "到点生效"流程当场触发（与事件同一块的语义一致）。
+            if let EngineEvent::SceneLaunch {
+                scene_id,
+                tempo_bpm,
+                quantization,
+                time_signature,
+            } = event
+            {
+                arm_scene_launch(
+                    transport,
+                    pending_launch,
+                    scene_id,
+                    tempo_bpm,
+                    quantization,
+                    time_signature,
+                );
             }
         });
         *event_bulk_pops = event_bulk_pops.wrapping_add(1);
@@ -5881,6 +5941,74 @@ mod tests {
             "⭐ 生效一次之后⛔ 不得再触发"
         );
         assert!((rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9);
+    }
+
+    /// ⭐ 判据 ⑤（任务单 `#283`）：**`TwoBars` / `FourBars` 也落在自己的小节线上**。
+    ///
+    /// 既有四条判据只钉了 `Bar` 与 `Off`（`#282` 勘察逐字："现有判据只钉了两档"）。
+    /// 本判据把另外两档补成**可独立变色**的读数：
+    ///
+    /// * `TwoBars` ⇒ 生效帧 = 第 **2** 个小节线（`96 000 × 2 / 128 = 1 500` 块）；
+    /// * `FourBars` ⇒ 生效帧 = 第 **4** 个小节线（`96 000 × 4 / 128 = 3 000` 块）。
+    ///
+    /// 独立变色：把 `quantization_bars` 的 `TwoBars` 改成 1 ⇒ 第一条断言读到 750，红；
+    /// 把 `FourBars` 改成 2 ⇒ 第二条读到 1 500，红。
+    #[test]
+    fn two_and_four_bar_quantisation_land_on_their_own_bar_lines() {
+        // (量化档, 期望生效块号)：120 bpm / 48 kHz / 4/4 ⇒ 一小节 = 96 000 帧 = 750 块。
+        for (quantization, expected_blocks) in [
+            (yeban_model::LaunchQuantization::TwoBars, 1_500_usize),
+            (yeban_model::LaunchQuantization::FourBars, 3_000_usize),
+        ] {
+            let mut rig = rig();
+            let scene_bpm = rig.runtime.transport().bpm() + 12.0;
+            rig.runtime.queue_scene_launch(
+                Some(EntityId::new()),
+                scene_bpm,
+                quantization,
+                common_time(),
+            );
+            let used = run_until_launch(&mut rig, 4_000);
+            assert_eq!(
+                used, expected_blocks,
+                "⭐ {quantization:?} ⇒ 生效帧必须恰好在第 {expected_blocks} 块（一个小节 750 块）"
+            );
+            assert!(
+                (rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9,
+                "⭐ {quantization:?} 到点后 tempo 必须变成 {scene_bpm}"
+            );
+            assert_eq!(rig.runtime.stats().scene_launches_applied, 1);
+            assert!(!rig.runtime.has_pending_scene_launch());
+        }
+    }
+
+    /// ⭐ 判据 ⑥（任务单 `#283`）：**事件环里的 `SceneLaunch` 与直接调用等价**。
+    ///
+    /// 这是设备腿（`EngineRuntime` 被 move 进 cpal 回调）唯一能走的路径：产品把请求
+    /// 写进既有的无锁 SPSC，实时侧在量子边界调用**同一个** `arm_scene_launch`。
+    ///
+    /// 独立变色：删掉事件出队里的 `EngineEvent::SceneLaunch` 分支 ⇒ 计数恒 0，
+    /// 本判据在 `used == 750` 处红。
+    #[test]
+    fn a_scene_launch_sent_through_the_event_ring_fires_like_the_control_call() {
+        let mut rig = rig();
+        let scene_bpm = rig.runtime.transport().bpm() + 21.0;
+        let written = rig.sender.publish(&[EngineEvent::SceneLaunch {
+            scene_id: Some(EntityId::new()),
+            tempo_bpm: scene_bpm,
+            quantization: yeban_model::LaunchQuantization::Bar,
+            time_signature: common_time(),
+        }]);
+        assert_eq!(written, 1, "事件必须真的进了环");
+        assert!(
+            !rig.runtime.has_pending_scene_launch(),
+            "事件在量子边界之前⛔ 不武装（控制面没有偷偷改实时态）"
+        );
+        let used = run_until_launch(&mut rig, 2_000);
+        assert_eq!(used, 750, "Bar ⇒ 下一小节线（96 000 帧 / 128 = 750 块）");
+        assert!((rig.runtime.transport().bpm() - scene_bpm).abs() < 1e-9);
+        assert_eq!(rig.runtime.stats().scene_launches_applied, 1, "⭐ 恰好一次");
+        assert!(!rig.runtime.has_pending_scene_launch());
     }
 
     /// 判据（`line/engine-26` 注入 R13 的处置）：`EngineRuntime` 每个量子开始都必须

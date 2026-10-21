@@ -1827,7 +1827,9 @@ const SIDEBAR_COMPACT: &[&str] = &[
 
 /// ③ Session 视图的控件清单（⭐ `#190` 起**按画布装得下的列数**生成）：
 /// `visible` 条轨道包头 ＋ 每列 `scenes` 个插槽 ＋ `scenes` 个场景键 ＋ 场景列头
-/// ＋ 返回编曲键 ＋（`visible < total` 时）截断报数。
+/// ＋ 返回编曲键 ＋（`visible < total` 时）截断报数 ＋ ⭐ `#283` 的场景启动回执
+/// （`session-scene-launch-status`：恒在场、空串时不画字，但**是**一个非容器节点
+/// ⇒ 本清单必须登记它，否则"段内控件数 ≠ 清单"会红）。
 fn session_controls(visible: usize, total: usize, scenes: usize) -> Vec<String> {
     let mut ids = Vec::new();
     for track in 0..visible {
@@ -1843,6 +1845,8 @@ fn session_controls(visible: usize, total: usize, scenes: usize) -> Vec<String> 
     }
     ids.push("scene-launch-column-header".to_owned());
     ids.push("session-back-to-arrangement-button".to_owned());
+    // ⭐ `#283`：场景启动的如实回执（不在 `#190` 的截断清单里，但恒在场）。
+    ids.push("session-scene-launch-status".to_owned());
     if visible < total {
         ids.push("session-track-truncation-note".to_owned());
     }
