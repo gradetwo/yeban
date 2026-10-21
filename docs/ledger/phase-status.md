@@ -16291,3 +16291,23 @@ cargo test -p yeban-engine -p yeban-render -p yeban-mcp -p yeban-app --locked --
 ⇒ ⭐ ⭐ **纪律 343**: ⭐ **磁盘告急时先删 `target/debug/incremental`、⭐ ⛔ 别 `cargo clean`** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`docs/**` 三处补登记**（⭐ `transport-engine-notes.md` §7 第 12 行 ／⭐ `app-binding-notes.md` 的 `scenes` 行 ／⭐ `feature-alignment.md`）＋ ⭐ **真声卡设备腿人工核验** ＋ ⭐ **`Macro`** ＋ ⭐ ⚠ **仍需人类**：⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
+
+---
+
+## R1025 实测追加（2026-10-22）：⚠ **`feature-alignment.md:172` 的走带行**严重过期****
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 那一行今天逐字写着（⭐ `:172`）**: ⭐ ⭐ **"⭐ 走带（播放/⭐ 停止/⭐ 录音/⭐ BPM/⭐ 时间码/⭐ 分支）| 部分｜**只有配置数据、⭐ 没有走带引擎**：… ⭐ `grep -rn "fn stop" crates/ --include=*.rs` 命中 0 …"** **** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 实测（⭐ 我刚跑）**:
+| ⭐ | ⭐ 它声称 | ⭐ 实测 |
+| :-- | :--- | :--- |
+| ⭐ **没有走带引擎** | ⭐ "⭐ 只有配置数据" | ⭐ ⚠ ⭐ ⭐ **`crates/yeban-engine/src/rt.rs` 存在、⭐ 且 ⭐ `EngineRuntime::pump` ⭐ 在跑（⭐ 本轮 `#283` 刚用它推 750 块量子）** ✓ |
+| ⭐ **`fn stop` 命中 0** | ⭐ 无停止 | ⭐ ⚠ ⭐ **命中 > 0**（⭐ 例如 ⭐ `rewind_sound.rs:350` 的 `stop_button_rewind_then_space_plays_with_sound`）⇒ ⭐ ⚠ **而 ⭐ "⭐ 有 `fn stop`"⛔ 也不等于"⭐ 有走带"** ⇒ ⭐ ⭐ **它选的**证据本身**就不对**（⭐ 走带是 `pump` ＋ ⭐ `TransportCommand`、⭐ ⛔ 不是一个叫 `stop` 的函数）** ✓ |
+⇒ ⭐ ⭐ **即：⭐ 那一行**两个断言今天都不成立**、⭐ 而且 ⭐ **它选的判据方式**从来就不对**** ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⚠ 我为什么**没直接改它****: ⚠ ⭐ **`feature-alignment.md` 是一张**巨型表**（⭐ 每行都带"⭐ 就地更正"⭐历史、⭐ 97 行）** ⇒ ⭐ ⚠ **改一行要重写整段散文**（⭐ 而 ⭐ 我这个上下文已经不够重写一段 2000 字的表格单元）⇒ ⭐ ⭐ **所以我**登记它、⭐ ⛔ 不半改它**** ✓
+★ ⭐ 并 ⭐ ⚠ **注意**：⭐ **轻门 ⛔ 不校验这张表的散文是否属实**（⭐ 它只校验**行数/⭐ 结构**）⇒ ⭐ ⭐ **所以它过期了也不会红** ⇒ ⭐ **这正是第 324 条那一族：⭐ "⭐ 有登记机制"⛔ 不等于"⭐ 登记的是真的"** ✓
+
+⭐ ⚠ ⭐ ⭐ **四、⭐ 留给接手者的**逐字**（⭐ 那一行该怎么改）**: ⭐ **走带引擎已在 `crates/yeban-engine/src/rt.rs`**（⭐ `pump(n)` 推量子、⭐ `TransportCommand` 派发、⭐ `queue_scene_launch` ＋ ⭐ `arm_scene_launch` 做量化）⇒ ⭐ **产品面**：⭐ `host.rs` 的 `wire_transport` ＋ ⭐ `EngineHost`；⭐ **判据**：⭐ `rt_zero_alloc` 的走带窗口 ＋ ⭐ `tests/scene_launch_wiring.rs` 5 条 ＋ ⭐ `rewind_sound.rs` ⇒ ⭐ ⚠ **而 `count_in_bars`（⭐ 预备拍）归 app 录音会话、⭐ 引擎**仍未实现****（⭐ 那是**对的**）⇒ ⭐ **"⭐ 部分"⭐这个状态词是对的、⭐ 而"⭐ 没有走带引擎"⭐是错的** ✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`feature-alignment.md:172` 的重写**（⭐ 留给有上下文的接手者）＋ ⭐ **`Macro`** ＋ ⭐ **E1–E4／F1–F6** ＋ ⭐ ⚠ **仍需人类**：⭐ 真声卡核验 ＋ ⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ✓
