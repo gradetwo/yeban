@@ -18,6 +18,19 @@
 //! | 5 | 四档都找不到 ⇒ 仍 `samplerUnreadable`，`tried` 四条按序 | 不变成静默 |
 //! | 6 | 同一 `YEBAN_SAMPLE_LIBRARY` 下 MCP 的库根候选逐字等于该环境变量值（app 的 `--probe-instruments` 打印的 `lib:` 同值） | 与 app 同口径 |
 //!
+//! ## 路径比较（⭐ `#281`：Windows 腿的判决）
+//!
+//! 判据比较的是**路径**（[`PathBuf`]，按组件相等），⛔ 不是 `display()` 字符串：
+//! Windows 的 `PathBuf::join("karoryfer-cowsynth/<文件>")` 会**保留**相对段里的 `/`，
+//! 而期望值由 `join("karoryfer-cowsynth").join("<文件>")` 拼成 `\` —— **同一份文件**的
+//! 两种拼写。`#281` 的 CI 判决逐字是 `5 passed; 1 failed`，两条字符串的差异只有
+//! 第 118 个字节的 `/` vs `\`（左 = `resolvedPath`，右 = 判据的 `target`）。
+//! `std` 的 `Path::eq` 按**组件**比较（`library/std/src/path.rs`：
+//! `self.components() == other.components()`），Windows 的分隔符是 `\` **和** `/`
+//! （`library/std/src/sys/path/windows.rs:12` 的 `path_separator_bytes!(b'\\', b'/')`）
+//! ⇒ 同一个判据在三个平台上都成立。这条语义本身在 Windows 腿上由
+//! [`path_equality_treats_both_windows_separators_as_the_same_file`] 钉住。
+//!
 //! ## 反向腿（注入 ⇒ 哪条红）
 //!
 //! - **注入甲**：删掉库根候选 ⇒ 判据 1 仍是红（修复方向），判据 2/3-库根/6 红；
@@ -227,6 +240,34 @@ fn sampler_report(result: &Value) -> &Value {
     &result["data"]["sources"][0]["sampler"]
 }
 
+/// ⭐ `#281`：把 JSON 里的 `resolvedPath` 读成 [`PathBuf`] 再比较（⛔ 不比 `display()` 字符串）。
+///
+/// 理由见文件头「路径比较」：Windows 上同一份文件的两种分隔符拼写在显示字符串上不等，
+/// 但 `Path` 的 `PartialEq` 按**组件**比较 ⇒ 三平台读的是同一个判据。
+fn resolved_path(sampler: &Value) -> PathBuf {
+    PathBuf::from(
+        sampler["resolvedPath"]
+            .as_str()
+            .expect("成功渲染必须报 resolvedPath 字符串"),
+    )
+}
+
+/// ⭐ `#281`：钉住 [`resolved_path`] 依赖的**平台语义**本身 —— Windows 上 `/` 与 `\`
+/// 是同一个分隔符，所以同一份文件的两种拼写按 `Path` 比较相等。
+///
+/// 只在 Windows 上编译：macOS / Linux 上 `\` 是**普通字符**，把它们当分隔符反而是错的。
+/// 这条让"⭐ 为什么 Windows 上会绿"从论证变成下一轮 CI 上的一条读数。
+#[cfg(windows)]
+#[test]
+fn path_equality_treats_both_windows_separators_as_the_same_file() {
+    let slash = Path::new("C:\\library\\karoryfer-cowsynth/cowsynth_shifty_pluck.sfz");
+    let backslash = Path::new("C:\\library\\karoryfer-cowsynth\\cowsynth_shifty_pluck.sfz");
+    assert_eq!(
+        slash, backslash,
+        "Windows 上 `/` 与 `\\` 必须是同一个分隔符（`#281` 的判据依赖这条）"
+    );
+}
+
 /// 判据 2 / 3-库根 / 6：`assets/samples/<乐器>/…` 只存在于**采样库根** ⇒ 必须命中库根。
 #[test]
 fn the_library_root_leg_finds_the_builtin_path() {
@@ -247,8 +288,8 @@ fn the_library_root_leg_finds_the_builtin_path() {
 
     let sampler = sampler_report(&result);
     assert_eq!(
-        sampler["resolvedPath"],
-        json!(target.display().to_string()),
+        resolved_path(sampler),
+        target,
         "必须解析到库根那份（⛔ 仓库根那份 / ⛔ 工程旁）: {result}"
     );
     assert!(
@@ -290,10 +331,10 @@ fn the_library_root_leg_finds_the_builtin_path() {
         .as_array()
         .expect("tried 必须是数组");
     let expected_library_candidate = library.join("karoryfer-cowsynth/not-there.sfz");
+    let actual_library_candidate = PathBuf::from(tried[1].as_str().expect("tried[1] 必须是字符串"));
     assert_eq!(
-        tried[1],
-        json!(expected_library_candidate.display().to_string()),
-        "tried[1] 必须逐字是 `<YEBAN_SAMPLE_LIBRARY>/<乐器>/<文件>`: {failed}"
+        actual_library_candidate, expected_library_candidate,
+        "tried[1] 必须是 `<YEBAN_SAMPLE_LIBRARY>/<乐器>/<文件>`（按路径比较）：{failed}"
     );
     println!(
         "### [#271 判据6] YEBAN_SAMPLE_LIBRARY={} ⇒ 库根候选={}",
@@ -323,8 +364,8 @@ fn the_project_directory_still_wins_and_the_sha256_does_not_move() {
     let result = render(&project_path, "near.sfz", &out);
     let sampler = sampler_report(&result);
     assert_eq!(
-        sampler["resolvedPath"],
-        json!(project_sfz.display().to_string()),
+        resolved_path(sampler),
+        project_sfz,
         "相对路径必须先按工程目录解析: {result}"
     );
     assert_eq!(
