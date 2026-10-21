@@ -24,3 +24,4 @@ Architecture Decision Record。当 Normative 规范之间冲突、或规范对�
 | [ADR-0008](./ADR-0008-sfz-off-time-versus-arch-rt-004.md) | SFZ `off_time` 6 ms vs `ARCH-RT-004` 3 ms | Proposed（待人类裁决）|
 | [ADR-0009](./ADR-0009-road-m1-005-historical-migration-scope.md) | `ROAD-M1-005` 历史迁移器的范围（条目是②，输入是③） | Proposed（待人类裁决）|
 | [ADR-0010](./ADR-0010-clip-loop-semantics.md) | 片段循环的坐标语义（`start_tick`/`end_tick` 是**摆放相对**坐标，按区间长度平铺） | **Accepted**（集成者，负责人 2026-10-15 授权"择优自行裁决"）|
+| [ADR-0011](./ADR-0011-render-depends-on-engine-for-the-sound-source.md) | 让 `yeban-render` 依赖 `yeban-engine`（`default-features = false`），把引擎音源接进 MCP 导出 | **Accepted**（负责人 2026-10-21 逐字裁决「统一」）|
