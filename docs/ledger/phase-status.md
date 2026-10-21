@@ -16217,3 +16217,25 @@ cargo test -p yeban-engine -p yeban-render -p yeban-mcp -p yeban-app --locked --
 ★ ⭐ **机械判法**: ⭐ ⭐ **"⭐ 这个 run 里**至少有一个真正的测试 job**（⭐ `windows`／⭐ `macos`／⭐ `rust (…)`）的 `conclusion = success"** **** ⇒ ⭐ **否则 ⭐ 它只是"⭐ 计划通过"、⭐ ⛔ 不是"⭐ 代码通过"** ✓
 
 ⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`3886730c` 的 windows 腿判决**（⭐ 期望 `sampler_path_roots` **7 passed**）＋ ⭐ `Macro` ＋ ⭐ SFZ 旁路 ＋ ⭐ 旧四件 ＋ ⭐ 真机项 ✓
+
+---
+
+## R1022 实测追加（2026-10-22）：⭐⭐⭐ **两条 CI 红**都闭合了****（⭐ `3886730c` 的 run 全绿）
+
+⭐ ⚠ ⭐ ⭐ **一、⭐ 判决逐 job（⭐ `run 39673420116`、⭐ `RUN: success`）**:
+| ⭐ job | ⭐ `conclusion` |
+| :-- | :--- |
+| ⭐ `plan`／⭐ `checks`／⭐ `deny`／⭐ `lockfile` | ⭐ success |
+| ⭐ ⭐ **`windows (…)`** | ⭐ ⭐ **success** |
+| ⭐ ⭐ **`macos (…)`** | ⭐ ⭐ **success** |
+| ⭐ **`rust (yeban-mcp)`** | ⭐ **success** |
+| ⭐ **`rust (yeban-ui-mcp)`** | ⭐ **success** |
+| ⭐ `rust (workspace 全量)` | ⭐ skipped（⭐ 按计划） |
+⇒ ⭐ ⭐ **即：⭐ `#280`（macOS 的 `s116`）与 ⭐ `#281`（Windows 的库根）**两条红都真的闭合**** ✓
+★ ⭐ ⚠ **而 ⭐ 这次**测试腿真跑了**（⭐ 第 342 条：⭐ `windows`／⭐ `macos`／⭐ `rust (yeban-mcp)` 都 `success`）⇒ ⭐ ⛔ **不是上次那种全 `skipped` 的 `success`** ✓
+
+⭐ ⚠ ⭐ ⭐ **二、⭐ 两条红的**根因**（⭐ 都本机看不见）**: ⭐ ① ⭐ macOS：⭐ 判据断言"⭐ `crates/**` 下 0 个 `.sfz`"⭐ 撞上 `#272` 的**测试夹具** ⇒ ⭐ `#280` 排除 `fixtures/` 并写明为什么 ② ⭐ ⭐ Windows：⭐ **`Path::strip_prefix` 返回**原串子切片** ⇒ ⭐ 相对段保留 `/` ⇒ ⭐ `join` 后**混合分隔符** ⇒ ⭐ 同一份文件两种拼写**（⭐ CI 两条字符串各 **143 字节**、⭐ 唯一差异 index **117**）⇒ ⭐ `#281` 改按**组件**比较 ＋ ⭐ 加一条 `#[cfg(windows)]` 判据把 std 语义变成读数 ✓
+
+⭐ ⚠ ⭐ ⭐ **三、⭐ 现在**CI 无开放红****（⭐ `workspace 全量` 按计划跳过、⛔ 不是红）★ ⭐ 并 ⭐ **本机全库 `2988 passed`／`0 failed`**（⭐ R1019 实测）✓
+
+⭐ ⚠ **本条状态词⛔ 未动**（⭐ 项数与状态词一个字未动）✓ ⚠ **仍待补**: ⭐ **`Macro`**（⭐ 卡模型值域）＋ ⭐ **SFZ 旁路**（⭐ 要你裁）＋ ⭐ **旧四件待裁** ＋ ⭐ ⚠ **仍需人类**：⭐ 听三对 ＋ ⭐ 真 MIDI ＋ ⭐ 物理回环线 ＋ ⭐ E1–E4／F1–F5 ✓
